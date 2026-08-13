@@ -78,7 +78,7 @@ jobs:
             Write-Error "MSVC 告警 $($w.Count) 条,ADR-011 要求 /W4 零 warning"; exit 1
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: SCVB-build-log-${{ github.sha }}
@@ -116,7 +116,7 @@ jobs:
       # 8) artifact(命名/保留策略见 §6.3)
       - name: Upload VST3 (PR)
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SCVB-VST3-win64-pr${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: build/**/*.vst3
@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload VST3 (dev snapshot)
         if: github.event_name == 'push' && github.ref_name == 'dev'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SCVB-VST3-win64-dev-${{ github.sha }}
           path: build/**/*.vst3
@@ -134,7 +134,7 @@ jobs:
 
       - name: Upload VST3 (preview / feature mainline)
         if: github.event_name == 'push' && github.ref_name != 'dev'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # 用 REF_SLUG 而不是 github.ref_name:feature/v1 含 '/',upload-artifact@v4 会直接
           # 报 Invalid artifact name。
@@ -145,7 +145,7 @@ jobs:
 
       - name: Upload pluginval logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SCVB-pluginval-logs-${{ github.sha }}
           path: ${{ runner.temp }}/pluginval-logs
