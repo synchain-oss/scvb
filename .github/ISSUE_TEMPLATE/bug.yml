@@ -1,0 +1,69 @@
+name: Bug 报告
+description: 报告一个缺陷(提交前请先搜索已有 issue)
+title: "[Bug] "
+labels: ["type/bug"]
+body:
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: 插件
+      description: 问题出现在哪个插件
+      options: ["Input", "Output", "两者"]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: SCVB 版本
+      placeholder: "e.g. v0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: "e.g. Windows 11 23H2"
+    validations:
+      required: true
+  - type: input
+    id: daw
+    attributes:
+      label: DAW + 版本
+      placeholder: "e.g. REAPER 7.x / Cubase 13"
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: 采样率 / 块大小
+      placeholder: "e.g. 48000 Hz / 512 samples"
+  - type: textarea
+    id: routing
+    attributes:
+      label: 路由拓扑描述
+      description: 人声轨数 / 总线名 / Input 在哪个插槽 / Output 在哪一格
+  - type: checkboxes
+    id: offline
+    attributes:
+      label: 离线渲染
+      options:
+        - label: 离线渲染时也复现
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: "1. 打开 ...\n2. 点击 ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望 vs 实际
+      description: 期望发生什么,实际发生了什么;UI 是否出现"时间线缺口/重叠"警告
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息
+      description: 截图、日志、错误信息、pluginval 输出(可选)等(提交前请移除任何凭据)

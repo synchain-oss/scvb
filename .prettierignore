@@ -1,0 +1,13 @@
+# JUCE 官方 helper,第三方代码,不归我们格式化(research/10 §2.5)
+web/js/juce/
+# .woff2 二进制,prettier 无 parser 会直接报错
+web/fonts/
+build/
+build-*/
+dist/
+node_modules/
+*.min.js
+# 宪法只读副本,sha256 与 masterPlan 同步,prettier 不得改写
+docs/constitution/
+# clang-format 配置(非 prettier 目标)
+.clang-format
