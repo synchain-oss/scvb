@@ -1,0 +1,33 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+jobs:
+  release:
+    runs-on: windows-2022
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      # 复用 build-vst3 的全部构建步骤(建议抽成 composite action .github/actions/build-scvb)。
+      # T01 只落 release 骨架并保持 disable;完整 build/ctest/pluginval 复用与 scripts/package.ps1
+      # 由 T40 补齐(06 §3.8 六条硬要求 / 07 T40)。
+      - name: Verify version matches tag
+        shell: pwsh
+        run: |
+          $projLine = (Select-String -Path CMakeLists.txt -Pattern 'VERSION' | Select-Object -First 1).Line
+          $v = (($projLine -split 'VERSION')[1]).Trim().TrimEnd(')')
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          if ($v -ne $tag) { Write-Error "CMake VERSION=$v != tag $tag"; exit 1 }
+      - name: Package
+        shell: pwsh
+        run: pwsh scripts/package.ps1 -Version "${{ github.ref_name }}".TrimStart('v') -BuildDir build -OutDir dist
+      - name: Publish job summary (供 Release note 与官网常量直接复制)
+        shell: pwsh
+        run: Get-Content dist/package-summary.md | Out-File $env:GITHUB_STEP_SUMMARY -Append
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.x.y —— 必须 pin SHA
+        with:
+          draft: true # 人工确认 release notes 后再发布
+          files: |
+            dist/SCVB-v*-win64.zip
+            dist/SCVB-v*-win64.zip.sha256

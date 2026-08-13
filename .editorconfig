@@ -1,0 +1,21 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Markdown 保留行尾两空格(软换行),关闭 trim(12 §1.8)
+[*.md]
+trim_trailing_whitespace = false
+
+# PowerShell 用 CRLF(与 .gitattributes 同款约定)
+[*.ps1]
+end_of_line = crlf
+
+# YAML / JSON 常用 2 空格
+[*.{yml,yaml,json}]
+indent_size = 2

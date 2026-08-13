@@ -1,0 +1,102 @@
+name: Branch Gate
+
+# 晋升链(v1 只有 dev 一条长期分支):
+#   feat/* | feature/*  ->  dev            (same-repo)
+#   任意分支名(除长期分支名) -> dev        (fork,J31/J41)
+# 子 PR(base=feature/*)故意不受此门禁约束(D2)。
+# 发版里程碑再打开下面被注释的 prod/stage 规则。
+
+on:
+  pull_request:
+    branches: [dev] # 发版后改为 [prod, stage, dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read # 读 commit 列表做 DCO 断言;fork PR 下本就是只读
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-gate:
+    name: branch-gate # required check context,永不改名,永不加 if:
+    runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注);三仓 branch-gate 逐字取本节
+    steps:
+      - name: Check source branch
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          # ① 机器人 PR 先放行命名规则:dependabot 的 head 形如
+          #    dependabot/github_actions/actions-checkout-5,永远不匹配 feat/*|feature/*。
+          #    不放行的话每条依赖升级 PR 都会被 required check 红叉,只能靠 admin bypass
+          #    ——12 §6.3 的整套依赖更新策略会在开源第一个月瘫痪。
+          #    注意:dependabot 分支本就是同仓分支,这条不放松任何 fork 判定。
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "bot PR ($ACTOR): skip branch naming rule"; exit 0
+          fi
+
+          # ② fork PR(J31/J41):允许,但不得用长期分支名伪装晋升;不强制 feat/*|feature/* 命名。
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            case "$HEAD" in
+              dev|stage|prod|feature/v1|feature/extraction)
+                echo "::error::Fork PR head branch must not be named '$HEAD' (reserved long-lived branch name)."
+                exit 1 ;;
+            esac
+            echo "External (fork) PR from $HEAD_REPO:'$HEAD' -> '$BASE' — naming rule skipped."
+            echo "Maintainer: please add the 'external' label manually (fork PRs get a read-only token)."
+            exit 0
+          fi
+
+          # ③ same-repo:维持晋升规则
+          if [ "$BASE" = "dev" ]; then
+            case "$HEAD" in
+              feat/*|feature/*|dependabot/*) ;;
+              *) echo "::error::Only 'feat/*' or 'feature/*' can merge into 'dev'. Got: '$HEAD'"; exit 1 ;;
+            esac
+          fi
+          # --- 发版后启用 ---
+          # if [ "$BASE" = "prod" ] && [ "$HEAD" != "stage" ] && [ "$HEAD" != "dev" ]; then ... fi
+          # if [ "$BASE" = "stage" ] && [ "$HEAD" != "dev" ]; then ... fi
+          echo "Branch gate passed: '$HEAD' -> '$BASE'"
+
+      # DCO —— 12 §1.4 把 Signed-off-by 定为贡献前提,而 PR 模板里的勾选框是纯自觉。
+      # DCO 是本项目唯一的入站许可证凭据(不采用 CLA),在 GPLv3 + 可能追加 §7 例外的场景下,
+      # 一条无 sign-off 的外部 commit 就会让后续修改例外条款必须逐一联系贡献者。
+      # 用内联 gh api 实现,不引第三方 action(org 的 allowed_actions 是白名单,第三方 DCO action 会被拦)。
+      - name: DCO check (all commits must be signed off)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # fork PR 下也可用(只读足够)
+        run: |
+          # 用 jq 直接筛出"消息里没有 Signed-off-by 行"的 commit,避免在 shell 里切多行 message
+          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits"             --jq '.[] | select((.commit.message | test("(?im)^Signed-off-by: .+ <.+@.+>$")) | not) | .sha' > dco-bad.txt
+          if [ -s dco-bad.txt ]; then
+            while read -r sha; do
+              echo "::error::commit $sha 缺少 Signed-off-by(提交时用 git commit -s;补救:git commit -s --amend 或 git rebase --signoff)"
+            done < dco-bad.txt
+            exit 1
+          fi
+          echo "DCO ok"
+
+      # 冻结契约 path guard —— CODEOWNERS 在本项目的分支保护下只有"自动 request review"的装饰作用
+      # (§7.2 把 required_pull_request_reviews 设为 null,理由见该节),所以冻结文档需要一条
+      # 真正机器可验的守卫,与 §3.2 的三条 golden 测试互补。
+      - name: Frozen-contract change guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          files=$(gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
+          touched=$(printf '%s\n' "$files" | grep -E '^(docs/PARAMETERS\.md|docs/IPC_CONTRACT\.md|docs/STATE_SCHEMA\.md|tests/golden/)' || true)
+          if [ -n "$touched" ]; then
+            doc=$(printf '%s\n' "$files" | grep -E '^docs/contract-changes/[0-9]{8}-.+\.md$' || true)
+            if [ -z "$doc" ]; then
+              echo "::error::本 PR 触碰了冻结契约文件:"; printf '  %s\n' $touched
+              echo "::error::必须在同一个 PR 里新增 docs/contract-changes/<YYYYMMDD>-<slug>.md(模板见 docs/contract-changes/TEMPLATE.md),并挂 status/frozen-contract 标签由用户批准。"
+              exit 1
+            fi
+          fi

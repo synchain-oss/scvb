@@ -1,0 +1,39 @@
+name: Compliance
+# 三仓逐字取本节;仓库间唯一差异 = 无。它不读任何 secret,也不 checkout 子模块。
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [dev, "feature/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read # 只读,fork PR 亦然;绝不向 fork PR 供密(J20)
+
+jobs:
+  compliance:
+    name: compliance # required check context,永不改名,永不加 if:
+    runs-on: ubuntu-latest # V-4 确认前一律 latest(§3.0 口径注)
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read pinned gitleaks version
+        id: ver
+        run: echo "v=$(tr -d '[:space:]' < .gitleaks-version)" >> "$GITHUB_OUTPUT"
+      - name: Install gitleaks (pinned)
+        # 版本钉在 .gitleaks-version,与 .juce-version / .pluginval-version 同模式;
+        # 不用 marketplace action(它会把版本漂移权交给第三方,且部分版本要 secrets)。
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${{ steps.ver.outputs.v }}/gitleaks_${{ steps.ver.outputs.v }}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Secret scan
+        # 与 §5.1 gate 3b 逐字同参,否则「本地绿 / CI 红」会成为常态
+        run: gitleaks detect --no-git --source . --redact -v --config .gitleaks.toml
+      - name: REUSE lint
+        # 与 §5.1 gate 3c 逐字同参
+        run: pipx run reuse lint

@@ -1,0 +1,31 @@
+name: Format
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [dev, "feature/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-format:
+    name: clang-format # required check context
+    runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned clang-format
+        # 用 pip 版而非 apt 版:apt 的版本随 runner 镜像漂移,同一份代码在本地/CI 会格式化出不同结果。
+        # 版本号必须与 scripts/gates.ps1 和 .clang-format 头注释里写的一致。
+        run: pipx install clang-format==18.1.8
+      - name: Check formatting
+        run: |
+          files=$(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | grep -v '^third_party/')
+          test -n "$files" || { echo "::error::no C++ sources found"; exit 1; }
+          clang-format --dry-run --Werror --style=file $files
+      - name: Check web assets formatting (prettier)
+        # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore
+        run: npx --yes prettier@3 --check .

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 提问 / Questions
+    url: https://github.com/synchain-oss/scvb/discussions
+    about: 使用问题请走 Discussions,不要开 issue
+  - name: 安全漏洞 / Security
+    url: https://github.com/synchain-oss/scvb/security/policy
+    about: 安全问题请勿公开提交
