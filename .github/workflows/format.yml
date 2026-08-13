@@ -16,7 +16,7 @@ jobs:
     name: clang-format # required check context
     runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install pinned clang-format
         # 用 pip 版而非 apt 版:apt 的版本随 runner 镜像漂移,同一份代码在本地/CI 会格式化出不同结果。
         # 版本号必须与 scripts/gates.ps1 和 .clang-format 头注释里写的一致。

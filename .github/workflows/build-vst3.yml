@@ -20,7 +20,7 @@ jobs:
     env:
       WEBVIEW2_NUGET_VERSION: "1.0.2957.106" # 必须与 CMakeLists 的 WEBVIEW2_VERSION 一致
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 0) 版本单一真源:JUCE / pluginval 版本只存在于仓库根的 .juce-version / .pluginval-version
       #    (12 §6.3 / D-12)。workflow 里不再硬编码 JUCE / pluginval 版本号字面量。

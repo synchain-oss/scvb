@@ -36,7 +36,7 @@ jobs:
         run: gh pr comment "${{ github.event.issue.number }}" --repo "$GITHUB_REPOSITORY" --body "已收到 /review,开始审查。"
 
       # 先 checkout 基仓的 workflow 定义(不是 PR 代码)——后续步骤用的是这一份
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.x.y —— 必须 pin SHA(§8.4)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.x.y —— 必须 pin SHA(§8.4)
         with: { persist-credentials: false }
 
       # 供密前的硬断言:PR 的 diff 一旦触及 .github/workflows/,立即中止。

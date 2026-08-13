@@ -23,7 +23,7 @@ jobs:
       issues: write # 只给这两个;故意不给 contents: write —— 收窄爆炸半径
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 1 }
       - uses: qodo-ai/pr-agent@8e4d32e5497defd43c023a404f73560c62728961 # v0.39.0 —— pin 到 commit SHA,升级手动改
         env:

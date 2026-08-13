@@ -8,7 +8,7 @@ jobs:
     runs-on: windows-2022
     permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 复用 build-vst3 的全部构建步骤(建议抽成 composite action .github/actions/build-scvb)。
       # T01 只落 release 骨架并保持 disable;完整 build/ctest/pluginval 复用与 scripts/package.ps1
       # 由 T40 补齐(06 §3.8 六条硬要求 / 07 T40)。
