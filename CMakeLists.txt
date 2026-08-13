@@ -58,6 +58,7 @@ endif()
 # ------------------------------------------------------------------
 option(SCVB_BUILD_TESTS "Build Catch2 unit tests (scvb_tests)" ON)
 option(SCVB_BUILD_IPC_TESTS "Build L1 IPC contract tests (scvb_ipc_tests, Windows only)" ON)
+option(SCVB_BUILD_TOOLS "Build validation console tools (tests/tools: scvb_nulltest)" ON)
 
 # ------------------------------------------------------------------
 # 目标(ADR-001/012:scvb_core + 两个插件 + 测试)
@@ -68,4 +69,7 @@ add_subdirectory(src/input)    # SCVBInput
 add_subdirectory(src/output)   # SCVBOutput
 if(SCVB_BUILD_TESTS)
   add_subdirectory(tests)      # scvb_tests + scvb_ipc_tests
+endif()
+if(SCVB_BUILD_TOOLS)
+  add_subdirectory(tests/tools) # scvb_nulltest(10-validation §4.2,零依赖)
 endif()
