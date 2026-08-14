@@ -26,9 +26,9 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803   # v6
         with: { fetch-depth: 1 }
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126   # v1
         env:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
           # ── 模型切换口 ── 默认 flash(性能优于 pro 且便宜);[1M] 为网关上下文标注,
@@ -39,6 +39,7 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
         with:
           anthropic_api_key: ${{ secrets.DEEPSEEK_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           track_progress: true # 由 action 托管追踪评论,不依赖模型自己去 gh pr comment
           prompt: |
             REPO: ${{ github.repository }}
