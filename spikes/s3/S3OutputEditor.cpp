@@ -9,7 +9,8 @@
 #if JUCE_WINDOWS
 // WebView2 静态 loader(JUCE NEEDS_WEBVIEW2 + 静态链接)导出;ole32 提供 CoTaskMemFree。
 extern "C" {
-long __stdcall GetAvailableCoreWebView2BrowserVersionString(const wchar_t* browserExecutableFolder, wchar_t** versionInfo);
+long __stdcall GetAvailableCoreWebView2BrowserVersionString(const wchar_t* browserExecutableFolder,
+                                                            wchar_t** versionInfo);
 void __stdcall CoTaskMemFree(void* pv);
 }
 #endif
@@ -28,10 +29,9 @@ constexpr int kStereoFrom = 14; // V14/V15 为 stereo([J57])
 double dbAt(int ch, double t)
 {
     const double env = 0.55 + 0.45 * std::sin(t * 0.11 + ch * 0.7);
-    const double v = -24.0
-                     + 18.0 * env
-                           * (0.5 * std::sin(t * 1.7 + ch * 0.9) + 0.3 * std::sin(t * 5.3 + ch * 1.3)
-                              + 0.2 * std::sin(t * 11.1 + ch * 2.1));
+    const double v = -24.0 + 18.0 * env *
+                                 (0.5 * std::sin(t * 1.7 + ch * 0.9) + 0.3 * std::sin(t * 5.3 + ch * 1.3) +
+                                  0.2 * std::sin(t * 11.1 + ch * 2.1));
     return juce::jlimit(-60.0, 0.0, v);
 }
 
@@ -61,9 +61,7 @@ private:
 } // namespace
 
 S3OutputEditor::S3OutputEditor(S3OutputProcessor& p)
-    : juce::AudioProcessorEditor(&p)
-    , processor_(p)
-    , webView_(makeOptions())
+    : juce::AudioProcessorEditor(&p), processor_(p), webView_(makeOptions())
 {
     addAndMakeVisible(webView_);
     setResizable(false, false);
@@ -144,8 +142,7 @@ juce::WebBrowserComponent::Options S3OutputEditor::makeOptions()
         complete(juce::var(o));
     };
 
-    options = options
-                  .withNativeIntegrationEnabled()
+    options = options.withNativeIntegrationEnabled()
                   .withResourceProvider([this](const juce::String& url) { return provideResource(url); },
                                         juce::URL(WBC::getResourceProviderRoot()).getOrigin())
                   .withInitialisationData("version", juce::var(juce::String(JucePlugin_VersionString)))
@@ -169,12 +166,34 @@ juce::WebBrowserComponent::Options S3OutputEditor::makeOptions()
                                       });
 
     // 05 §1.4 其余原生函数(统一 {ok:true} 回执;spike 不做真实语义)。
-    for (const char* name :
-         {"setCaptureEnabled", "setOutputEnabled", "setGroupId", "previewAnalyze", "analyze", "cancelAnalyze",
-          "setRange", "setVersionActive", "setVersionName", "copyVersion", "beginParamGesture", "setParam",
-          "endParamGesture", "setChannelConfig", "setTrackManual", "setPanCurve", "setVadParams", "setSegmentation",
-          "setTransitionRamp", "editSegment", "recaptureArm", "clearCoverage", "undo", "redo", "setLang",
-          "setActiveTab", "setGuideSeen", "setTourSeen"})
+    for (const char* name : {"setCaptureEnabled",
+                             "setOutputEnabled",
+                             "setGroupId",
+                             "previewAnalyze",
+                             "analyze",
+                             "cancelAnalyze",
+                             "setRange",
+                             "setVersionActive",
+                             "setVersionName",
+                             "copyVersion",
+                             "beginParamGesture",
+                             "setParam",
+                             "endParamGesture",
+                             "setChannelConfig",
+                             "setTrackManual",
+                             "setPanCurve",
+                             "setVadParams",
+                             "setSegmentation",
+                             "setTransitionRamp",
+                             "editSegment",
+                             "recaptureArm",
+                             "clearCoverage",
+                             "undo",
+                             "redo",
+                             "setLang",
+                             "setActiveTab",
+                             "setGuideSeen",
+                             "setTourSeen"})
     {
         options = options.withNativeFunction(juce::Identifier(name), genericOk);
     }
@@ -184,7 +203,8 @@ juce::WebBrowserComponent::Options S3OutputEditor::makeOptions()
 
 std::optional<juce::WebBrowserComponent::Resource> S3OutputEditor::provideResource(const juce::String& url) const
 {
-    const auto path = (url == "/" || url.isEmpty()) ? juce::String("index.html") : url.fromFirstOccurrenceOf("/", false, false);
+    const auto path =
+        (url == "/" || url.isEmpty()) ? juce::String("index.html") : url.fromFirstOccurrenceOf("/", false, false);
     const auto baseName = path.fromLastOccurrenceOf("/", false, false);
 
     for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
