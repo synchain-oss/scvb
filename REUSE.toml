@@ -1,0 +1,25 @@
+version = 1
+
+# ① 兜底(必须放最前;后匹配者优先)。本仓 SPDX 标识按仓取值:
+#    SCVB / Bridge = "GPL-3.0-or-later"(U2 采纳附例外时为
+#      "GPL-3.0-or-later WITH LicenseRef-WebView2-Linking-Exception");CLI = "MIT"
+[[annotations]]
+path = "**"
+SPDX-FileCopyrightText = "2026 Synchain"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# ② 以下特例块覆盖兜底
+[[annotations]]
+path = "web/js/juce/**"
+SPDX-FileCopyrightText = "Raw Material Software Limited"
+SPDX-License-Identifier = "AGPL-3.0-or-later"   # 随 JUCE 许可,不加 Synchain 版权头
+
+[[annotations]]
+path = "web/fonts/**"
+SPDX-FileCopyrightText = "见 THIRD-PARTY-NOTICES.md 的字体家族版权行"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
+path = ["tests/golden/**", "package-lock.json"]
+SPDX-FileCopyrightText = "2026 Synchain"
+SPDX-License-Identifier = "GPL-3.0-or-later"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // scvb_nulltest —— wav null test 比对器 + click 对位素材生成器。
 // 任务 T01c(07-execution-plan §2.4);功能真源 = 10-validation §4.2。
 // 零外部依赖:WAV 读写 + 整数互相关 + 残差统计全部自研,不链接 JUCE / Catch2。

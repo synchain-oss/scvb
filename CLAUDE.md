@@ -12,6 +12,10 @@
 4. 【J20 安全禁令,ADR-011 v1 新增安全条款】任何 workflow 一律不得使用 `pull_request_target`。这不是"不推荐"、不是"审计过就能用"——本项目不接受逐版本审计作为豁免理由。fork PR 的 AI 审查只走方案 D(维护者 `/review` 显式触发,实现 = `.github/workflows/review-dispatch.yml`)或方案 C(workflow_run 两阶段);其余情况 fork PR 只跑无 secrets 的构建/测试(J31)。机器检查:`grep -r pull_request_target .github/workflows` 零命中。
 5. 所有消费仓库外部文本的自动化(review bot 等)的 prompt 末尾必须带「不可信数据声明」(06 §3.4 固定结尾)。
 
+### 编码规范
+
+- **新建的 `.cpp` / `.h` / `.js` 一律首行加 SPDX 头**(标识 `GPL-3.0-or-later`,U1 已定案;`web/js/juce/**` 为 JUCE 官方 helper 除外,由 `REUSE.toml` 声明 AGPL-3.0-or-later)。`scripts/check-spdx.ps1` 逐文件把关,缺头即 gate 红(06 §5.1 gate 3c)。
+
 ## 1. 分支模型与工作流程
 
 - 默认主干 = `dev`;SCVB 主支线 = `feature/v1`(ADR-013/J13)。

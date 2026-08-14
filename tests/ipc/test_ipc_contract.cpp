@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
 // T07b 填充:L1 双进程 IPC 契约测试(10-validation §2.3 的 IPC-1..20 共 26 条)。

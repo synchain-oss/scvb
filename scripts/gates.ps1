@@ -6,7 +6,7 @@
     pwsh scripts/gates.ps1 -PluginOnly     # gate 1-7,跳过真机 GUI(gate 8)
     pwsh scripts/gates.ps1 -Quick          # 跳过 pluginval(gate 7/8),快速回环
   所有 cmake/ctest/pluginval 路径基于 -BuildDir(默认 build),并行 agent 靠它隔离构建目录。
-  [R4/J56] 本骨架不含 gate 3b(gitleaks)/ 3c(reuse lint)与 check-spdx.ps1 —— 由 T01d 一次性接入。
+  [R4/J56] gate 3b(gitleaks)/ 3c(reuse lint)与 check-spdx.ps1 已由 T01d 接入(06 §5.1)。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
@@ -123,6 +123,45 @@ Write-Host '=== Gate 3: prettier (--check .) ==='
 # ==================================================================
 $pp = (npx --yes prettier@3 --check . 2>&1)
 Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
+
+# ==================================================================
+Write-Host '=== Gate 3b: gitleaks (密钥扫描) ==='
+# ==================================================================
+$gitleaksVer = (Get-Content .gitleaks-version -Raw).Trim()
+$GitleaksExe = (Get-Command gitleaks -ErrorAction SilentlyContinue).Source
+if (-not $GitleaksExe) {
+  $candidate = Join-Path $RepoRoot '..\tools\gitleaks\gitleaks.exe'
+  if (Test-Path $candidate) { $GitleaksExe = $candidate }
+}
+if (-not $GitleaksExe -or -not (Test-Path $GitleaksExe)) {
+  Write-Host ("  gitleaks 未找到(要求 {0};设 PATH 或放 tools\gitleaks\gitleaks.exe)" -f $gitleaksVer) -ForegroundColor Red
+  Set-Gate '3b gitleaks' $false
+}
+else {
+  $gl = (& $GitleaksExe detect --no-git --redact --config .gitleaks.toml 2>&1)
+  if ($LASTEXITCODE -ne 0) { $gl | Select-Object -Last 20 | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3b gitleaks' ($LASTEXITCODE -eq 0)
+}
+
+# ==================================================================
+Write-Host '=== Gate 3c: reuse lint (REUSE 合规) ==='
+# ==================================================================
+if (Get-Command reuse -ErrorAction SilentlyContinue) {
+  $rl = (& reuse lint 2>&1)
+  $reuseExit = $LASTEXITCODE
+}
+else {
+  $rl = (pipx run reuse lint 2>&1)
+  $reuseExit = $LASTEXITCODE
+}
+if ($reuseExit -ne 0) { $rl | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
+Set-Gate '3c reuse lint' ($reuseExit -eq 0)
+
+# ==================================================================
+Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
+# ==================================================================
+& pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-spdx.ps1')
+Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
 
 # ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)

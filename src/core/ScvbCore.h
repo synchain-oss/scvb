@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 // scvb_core:SCVB 共享核心库(ADR-001)。
