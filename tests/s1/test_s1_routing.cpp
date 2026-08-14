@@ -6,12 +6,14 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX // 禁用 windows.h 的 min/max 宏,避免与 std::min 冲突
 #include <windows.h>
 
 #include "AudioRing.h"
@@ -409,26 +411,51 @@ TEST_CASE("Output 几何读取门(magic 后行:读 magic 时几何字段必已�
     REQUIRE(reader.channels() == channels);
 }
 
-TEST_CASE("AudioRing 大块(超典型 samplesPerBlock)完整往返不截断", "[s1][ring][oversized]")
+TEST_CASE("oversized 块按 chunk 处理(固定缓冲,零堆分配)完整往返不截断", "[s1][ring][oversized]")
 {
+    // review 3 收口:processBlock 不再 resize/ensureCapacity(§8 红旗)。此处镜像 processor 的
+    // chunk 循环——固定 maxBlock 尺寸的缓冲,把 oversized 块切成 ≤maxBlock 子块依次写/读,
+    // 全程只用预分配缓冲,零堆分配;数据完整不截断。
     const u32 sr = 48000;
-    const u32 ringFrames = 1u << 14; // 16384 帧,容纳大块
-    const int block = 8192; // 远大于典型 512 samplesPerBlock(review 3 的 oversized 场景)
+    const u32 ringFrames = 1u << 14; // 16384 帧,容纳 oversized 块
+    const int maxBlock = 512; // 典型 samplesPerBlock
+    const int total = 8192; // 16× maxBlock,oversized
 
     AudioRing writer(kTestGroupRing, 2);
     REQUIRE(writer.createForInput(sr, ringFrames, 1) == InitResult::kOk);
     AudioRing reader(kTestGroupRing, 2);
     REQUIRE(reader.openForOutput() == InitResult::kOk);
 
-    std::vector<float> src(static_cast<std::size_t>(block));
-    for (int i = 0; i < block; ++i)
+    std::vector<float> src(static_cast<std::size_t>(total));
+    for (int i = 0; i < total; ++i)
     {
         src[static_cast<std::size_t>(i)] = (i % 3 == 0) ? 1.0f : -0.5f;
     }
-    writer.writeBlock(0, src.data(), block); // 一整块写,不截断
-    std::vector<float> dst(static_cast<std::size_t>(block));
-    REQUIRE(reader.readBlock(0, block, dst.data()) == AudioRing::ReadStatus::kOk);
-    for (int i = 0; i < block; ++i)
+    std::vector<float> dst(static_cast<std::size_t>(total));
+
+    // 固定尺寸子块缓冲(对应 processor 的 capBuf_/trackBuf_,不 resize)。
+    std::vector<float> capBuf(static_cast<std::size_t>(maxBlock), 0.0f);
+    std::vector<float> trackBuf(static_cast<std::size_t>(maxBlock), 0.0f);
+
+    for (int start = 0; start < total; start += maxBlock)
+    {
+        const int n = std::min(maxBlock, total - start);
+        for (int i = 0; i < n; ++i)
+        {
+            capBuf[static_cast<std::size_t>(i)] = src[static_cast<std::size_t>(start + i)];
+        }
+        writer.writeBlock(start, capBuf.data(), n);
+    }
+    for (int start = 0; start < total; start += maxBlock)
+    {
+        const int n = std::min(maxBlock, total - start);
+        REQUIRE(reader.readBlock(start, n, trackBuf.data()) == AudioRing::ReadStatus::kOk);
+        for (int i = 0; i < n; ++i)
+        {
+            dst[static_cast<std::size_t>(start + i)] = trackBuf[static_cast<std::size_t>(i)];
+        }
+    }
+    for (int i = 0; i < total; ++i)
     {
         REQUIRE(floatBits(dst[static_cast<std::size_t>(i)]) == floatBits(src[static_cast<std::size_t>(i)]));
     }

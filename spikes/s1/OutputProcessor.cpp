@@ -97,21 +97,11 @@ void OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int n = buffer.getNumSamples();
-    if (n <= 0)
+    const int total = buffer.getNumSamples();
+    if (total <= 0)
     {
         return;
     }
-    if (static_cast<std::size_t>(n) > accumL_.size())
-    {
-        accumL_.resize(static_cast<std::size_t>(n));
-        accumR_.resize(static_cast<std::size_t>(n));
-    }
-    if (static_cast<std::size_t>(n) * 2 > trackBuf_.size())
-    {
-        trackBuf_.resize(static_cast<std::size_t>(n) * 2);
-    }
-    busXfade_.ensureCapacity(n);
 
     // 时间线(R2/R3 [J51]:负 t0 是有效时间线,不混音不读环;无时间线 → 总线直通)。
     i64 t0 = 0;
@@ -143,56 +133,70 @@ void OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
         noTimeline = true;
     }
 
-    if (outputActive_.load(std::memory_order_relaxed) == 0 || noTimeline || negT0)
+    const bool passthrough = (outputActive_.load(std::memory_order_relaxed) == 0 || noTimeline || negT0);
+    // acquire:配对 pollChannels 的 release,ring 元数据可见(仅激活路径需要)。
+    const u32 usable = passthrough ? 0u : usableMask_.load(std::memory_order_acquire);
+
+    // 分块循环(review 3 收口):oversized 块切成 ≤maxBlock_ 子块依次处理,
+    // accumL_/accumR_/trackBuf_ 与 BusXfade 内部缓存保持 maxBlock_ 尺寸,processBlock 零堆分配(§8)。
+    const int chunk = (maxBlock_ > 0) ? maxBlock_ : 1;
+    for (int start = 0; start < total; start += chunk)
     {
-        busXfade_.renderPassthrough(buffer.getArrayOfWritePointers(), n);
-        return;
-    }
+        const int n = juce::jmin(chunk, total - start);
+        float* outCh[2];
+        outCh[0] = buffer.getWritePointer(0) + start;
+        outCh[1] = buffer.getWritePointer(1) + start;
 
-    const u32 usable =
-        usableMask_.load(std::memory_order_acquire); // acquire:配对 pollChannels 的 release,ring 元数据可见
-    std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
-    std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
+        if (passthrough)
+        {
+            busXfade_.renderPassthrough(outCh, n);
+            continue;
+        }
 
-    for (u32 ch = 0; ch < scvb::kMaxChannels; ++ch)
-    {
-        if ((usable & (1u << ch)) == 0)
+        const i64 ct = t0 + start;
+        std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
+        std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
+
+        for (u32 ch = 0; ch < scvb::kMaxChannels; ++ch)
         {
-            continue;
-        }
-        auto& ring = rings_[ch];
-        if (ring == nullptr || !ring->isOpen())
-        {
-            continue;
-        }
-        const u32 nch = ring->channels();
-        const auto st = ring->readBlock(t0, n, trackBuf_.data());
-        if (st != scvb::AudioRing::ReadStatus::kOk)
-        {
-            gapCount_[ch].fetch_add(1, std::memory_order_relaxed); // 缺口 → 该轨该块静音 + 计数
-            continue;
-        }
-        if (nch == 1)
-        {
-            for (int i = 0; i < n; ++i)
+            if ((usable & (1u << ch)) == 0)
             {
-                const float v = trackBuf_[static_cast<std::size_t>(i)];
-                accumL_[static_cast<std::size_t>(i)] += v;
-                accumR_[static_cast<std::size_t>(i)] += v;
+                continue;
             }
-        }
-        else
-        {
-            for (int i = 0; i < n; ++i)
+            auto& ring = rings_[ch];
+            if (ring == nullptr || !ring->isOpen())
             {
-                accumL_[static_cast<std::size_t>(i)] += trackBuf_[static_cast<std::size_t>(i) * 2];
-                accumR_[static_cast<std::size_t>(i)] += trackBuf_[static_cast<std::size_t>(i) * 2 + 1];
+                continue;
             }
+            const u32 nch = ring->channels();
+            const auto st = ring->readBlock(ct, n, trackBuf_.data());
+            if (st != scvb::AudioRing::ReadStatus::kOk)
+            {
+                gapCount_[ch].fetch_add(1, std::memory_order_relaxed); // 缺口 → 该轨该块静音 + 计数
+                continue;
+            }
+            if (nch == 1)
+            {
+                for (int i = 0; i < n; ++i)
+                {
+                    const float v = trackBuf_[static_cast<std::size_t>(i)];
+                    accumL_[static_cast<std::size_t>(i)] += v;
+                    accumR_[static_cast<std::size_t>(i)] += v;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < n; ++i)
+                {
+                    accumL_[static_cast<std::size_t>(i)] += trackBuf_[static_cast<std::size_t>(i) * 2];
+                    accumR_[static_cast<std::size_t>(i)] += trackBuf_[static_cast<std::size_t>(i) * 2 + 1];
+                }
+            }
+            epochSummary_[ch].store(ring->header()->epoch.load(std::memory_order_relaxed), std::memory_order_relaxed);
         }
-        epochSummary_[ch].store(ring->header()->epoch.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    }
 
-    busXfade_.render(buffer.getArrayOfWritePointers(), accumL_.data(), accumR_.data(), n);
+        busXfade_.render(outCh, accumL_.data(), accumR_.data(), n);
+    }
 }
 
 void OutputProcessor::timerCallback()

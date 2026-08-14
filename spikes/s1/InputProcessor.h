@@ -63,7 +63,7 @@ private:
     bool isHealthy(u64 now) const;
     void setMutedFlag(bool muted);
 
-    void captureInterleaved(const juce::AudioBuffer<float>& buffer, int numSamples);
+    void captureInterleaved(const juce::AudioBuffer<float>& buffer, int offset, int numSamples);
 
     // 音频线程成员
     int srcChannels_ = 1;

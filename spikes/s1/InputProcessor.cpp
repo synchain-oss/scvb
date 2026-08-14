@@ -171,11 +171,11 @@ void InputProcessor::doClaim()
     mutePending_ = false;
 }
 
-void InputProcessor::captureInterleaved(const juce::AudioBuffer<float>& buffer, int numSamples)
+void InputProcessor::captureInterleaved(const juce::AudioBuffer<float>& buffer, int offset, int numSamples)
 {
     if (srcChannels_ == 1)
     {
-        const float* in = buffer.getReadPointer(0);
+        const float* in = buffer.getReadPointer(0) + offset;
         for (int i = 0; i < numSamples; ++i)
         {
             capBuf_[static_cast<std::size_t>(i)] = in[i];
@@ -183,8 +183,8 @@ void InputProcessor::captureInterleaved(const juce::AudioBuffer<float>& buffer, 
     }
     else
     {
-        const float* l = buffer.getReadPointer(0);
-        const float* r = buffer.getReadPointer(1);
+        const float* l = buffer.getReadPointer(0) + offset;
+        const float* r = buffer.getReadPointer(1) + offset;
         for (int i = 0; i < numSamples; ++i)
         {
             capBuf_[static_cast<std::size_t>(i) * 2] = l[i];
@@ -197,14 +197,10 @@ void InputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int n = buffer.getNumSamples();
-    if (n <= 0)
+    const int total = buffer.getNumSamples();
+    if (total <= 0)
     {
         return;
-    }
-    if (static_cast<std::size_t>(n) * static_cast<std::size_t>(srcChannels_) > capBuf_.size())
-    {
-        capBuf_.resize(static_cast<std::size_t>(n) * static_cast<std::size_t>(srcChannels_));
     }
     const int nch = juce::jmin(buffer.getNumChannels(), srcChannels_);
 
@@ -229,42 +225,62 @@ void InputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     const bool canWrite = claimed_ && ring_ != nullptr && ring_->isOpen();
 
-    if (canWrite)
+    // block 级 epoch 跳变检测(§5.1 步骤 3):停走带静止重写不算跳变。
+    if (canWrite && haveTimeline)
     {
-        if (haveTimeline && t0 >= 0)
+        if (t0 >= 0)
         {
-            captureInterleaved(buffer, n);
-            // epoch 跳变检测(§5.1 步骤 3):停走带静止重写不算跳变。
-            if (t0 != expectedNext_)
+            if (t0 != expectedNext_ && (playing || t0 != lastT0_))
             {
-                if (playing || t0 != lastT0_)
-                {
-                    ring_->bumpEpoch();
-                }
+                ring_->bumpEpoch();
             }
-            lastT0_ = t0;
-            expectedNext_ = t0 + n;
-            ring_->writeBlock(t0, capBuf_.data(), n);
         }
-        else if (haveTimeline && t0 < 0 && t0 + n > 0)
+        else if (t0 + total > 0 && 0 != expectedNext_)
         {
-            // 跨零点:只写 [0, t0+n) 尾段(G-6 / S1-P18)。
-            captureInterleaved(buffer, n);
-            const int startIdx = static_cast<int>(-t0);
-            const int tailFrames = n - startIdx;
-            if (0 != expectedNext_)
-            {
-                ring_->bumpEpoch(); // 以 0 为新起点
-            }
-            ring_->writeBlock(0, capBuf_.data() + static_cast<std::size_t>(startIdx) * srcChannels_, tailFrames);
-            expectedNext_ = tailFrames;
-            lastT0_ = 0;
+            ring_->bumpEpoch(); // 跨零点:以 0 为新起点
         }
-        // 负 t0 无跨零 / 无时间线:不写环(§5.1 步骤 2)。
     }
 
-    // 输出级仲裁(§5.1 步骤 6):SilenceStage ⇄ PassthroughStage,80ms 等功率 ramp。
-    stage_.render(buffer.getArrayOfWritePointers(), nch, n);
+    // 分块循环(review 3 收口):oversized 块切成 ≤maxBlock_ 子块依次处理,
+    // capBuf_ 保持 maxBlock_ 尺寸,processBlock 零堆分配(§8 实时线程规则)。
+    const int chunk = (maxBlock_ > 0) ? maxBlock_ : 1;
+    for (int start = 0; start < total; start += chunk)
+    {
+        const int n = juce::jmin(chunk, total - start);
+        const i64 ct = t0 + start;
+
+        if (canWrite && haveTimeline)
+        {
+            if (ct >= 0)
+            {
+                captureInterleaved(buffer, start, n);
+                ring_->writeBlock(ct, capBuf_.data(), n);
+            }
+            else if (ct < 0 && ct + n > 0)
+            {
+                // 跨零点子块:只写 [0, ct+n) 尾段(G-6 / S1-P18)。
+                captureInterleaved(buffer, start, n);
+                const int from = static_cast<int>(-ct);
+                const int tail = n - from;
+                ring_->writeBlock(0, capBuf_.data() + static_cast<std::size_t>(from) * srcChannels_, tail);
+            }
+            // 纯负 t0 子块:不写环(§5.1 步骤 2)。
+        }
+
+        // 输出级仲裁(§5.1 步骤 6):对子块渲染,SilenceStage ⇄ PassthroughStage 80ms 等功率 ramp。
+        float* ch[2];
+        for (int c = 0; c < nch; ++c)
+        {
+            ch[c] = buffer.getWritePointer(c) + start;
+        }
+        stage_.render(ch, nch, n);
+    }
+
+    if (haveTimeline)
+    {
+        lastT0_ = t0;
+        expectedNext_ = t0 + total;
+    }
 }
 
 void InputProcessor::timerCallback()
