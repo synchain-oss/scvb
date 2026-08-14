@@ -33,3 +33,8 @@ add_test(NAME scvb_tests COMMAND scvb_tests)
 if(SCVB_BUILD_IPC_TESTS AND WIN32)
   add_subdirectory(ipc)
 endif()
+
+# scvb_s1_tests:S1 路由 spike 离线验证(仅 WIN32;链接 spikes/s1 的 s1_core)。
+if(WIN32)
+  add_subdirectory(s1)
+endif()
