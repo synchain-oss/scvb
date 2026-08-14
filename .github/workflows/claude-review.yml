@@ -26,11 +26,12 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803   # v6
         with: { fetch-depth: 1 }
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126   # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           track_progress: true # 由 action 托管追踪评论,不依赖模型自己去 gh pr comment
           prompt: |
             REPO: ${{ github.repository }}
@@ -75,9 +76,8 @@ jobs:
               `maximumExpectedSamplesPerBlock` 是上限(离线渲染会给更大的块)
 
             ### 2. 参数冻结(params-v0.md)
-            - 自动化参数总数必须恰好 **81**(1 个 width + 4 版本 × 10 轨 × (pan, vol))。任何增删都是【红旗】。
-            - ParamID 字符串必须严格是 `width` / `v{v}_t{tt}_pan` / `v{v}_t{tt}_vol`(轨号两位补零),
-              index 顺序必须是 index0=width,之后 版本v(1..4) → 轨t(1..10) → (Pan, Vol)。改顺序 = 破坏
+            - 自动化参数总数必须恰好 **123**(以 docs/constitution/params-v0.md 冻结表为准)。任何增删都是【红旗】。
+            - ParamID 字符串与 index 顺序以 params-v0.md 冻结表逐字比对为准;改顺序 = 破坏
               Logic 等按索引识别的宿主 = 【红旗】。
             - 所有参数 `versionHint = 1`。改 range / 默认值 / skew 也会改变已保存工程的还原结果,视同【红旗】。
             - 新配置项一律走 state,**不得**新增自动化参数(Ableton Live 128 参数上限余量必须守住)。
