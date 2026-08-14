@@ -13,13 +13,34 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
+# [reference] 对拍依赖(仅测试;不进插件运行时,ADR-009)。默认关闭,启用需网络。
+# libebur128 默认 BUILD_SHARED_LIBS=ON,须显式关掉以静态链接(与 /MT 静态 CRT 对齐)。
+if(SCVB_TESTS_WITH_EBUR128)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    libebur128
+    GIT_REPOSITORY https://github.com/jiixyj/libebur128.git
+    GIT_TAG v1.2.6
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(libebur128)
+endif()
+
 # scvb_tests:L0 冒烟,仅链接 scvb_core(不依赖 JUCE,ADR-001/011)。
 add_executable(scvb_tests
   core/test_smoke.cpp
+  core/test_kweighting.cpp
+  core/test_features.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
 target_include_directories(scvb_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+
+if(SCVB_TESTS_WITH_EBUR128)
+  target_compile_definitions(scvb_tests PRIVATE SCVB_TESTS_WITH_EBUR128)
+  target_include_directories(scvb_tests PRIVATE ${libebur128_SOURCE_DIR}/ebur128)
+  target_link_libraries(scvb_tests PRIVATE ebur128)
+endif()
 
 if(MSVC)
   target_compile_options(scvb_tests PRIVATE /W4 /utf-8 /EHsc)
