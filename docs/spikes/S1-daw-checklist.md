@@ -12,7 +12,8 @@
    `scvb_nulltest --gen-click click --tracks 15 --stereo-tracks 2 --seconds 120 --fs 48000`
    → 得到 click_01.wav … click_13.wav(mono)、click_14.wav / click_15.wav(stereo,L/R 相位错开)。
 4. 诊断工具:每个场景播放时另开一个终端跑
-   `scvb_diag --out s1-<daw>.csv --group 1`,播完 Ctrl+C 停止,读最后几行看 gapCount/overlapCount/channels 列。
+   `scvb_diag --out s1-<daw>-<场景>.csv --group 1`,播完 Ctrl+C 停止。
+   **一个场景一个 csv 文件**(如 `s1-reaper-R1.csv`),文件命名 = 格子号,做完后不用读、不用记——汇总阶段有人读。
 
 ## 0b. 配置开关(环境变量,按需)
 
@@ -48,11 +49,24 @@
 4. 装 SCVB(15 Input + 1 Output),开 scvb_diag,开始各场景。
 5. **参考渲染 A′(PDC 变体)**:在 V03 与 V07 的 Input 前一格插入高延迟插件(线性相位 EQ 或 4096 样本延迟测试件),不装 SCVB,导出 ref_Aprime_<daw>.wav。
 
-## 2. 每格要存什么
+## 2. 记录分工(重要:大部分是自动的,你不需要写报告)
 
-- **null test**:`pwsh scripts/nulltest.ps1 ref_A_<daw>.wav test_<场景>.wav -PanLawDb <宿主pan law> -Align`(宿主 pan law 0 dB 首选;否则记标称值)。
-- **截图**:前提确认、每个特殊状态(冲突提示/只读提示/黄色失准)。
-- **csv**:每个场景的 scvb_diag 输出行(gapCount/overlapCount/channels/out_mask)。
+**你的工作量**:照着步骤跑 → 文件按格子命名存好 → 每格最多写一句结论(过/不过/听感差异)。
+**汇总报告**(S1-routing.md 回填)由调度者从你留下的文件统一做,周日结束把工作目录路径交给调度者即可。
+
+| 产物 | 谁记录 | 你要做的动作 |
+|---|---|---|
+| 诊断数据(gapCount/overlapCount/channels) | 🟢 自动 | 每格开始前开 `scvb_diag --out s1-<daw>-<场景>.csv`,该格结束 Ctrl+C。csv 自动写好,**你不用看、不用抄** |
+| null test 判定 | 🟢 半自动 | 渲染格:把导出文件命名为 `test_<场景>.wav` 存进工作目录;然后跑 `pwsh scripts/nulltest.ps1 ref_A_<daw>.wav test_<场景>.wav -PanLawDb <宿主pan law> -Align`(pan law 0 dB 首选)。脚本自动算残差并打印,**把打印结果截个图或复制一行即可** |
+| 渲染文件 | 🟡 你导出 | 离线导出按 `ref_*` / `test_<场景>` 命名存进工作目录,别删 |
+| 截图 | 🟡 手动 | 清单里标了"截图存档"的格子(前提确认、冲突/只读/失准等特殊状态) |
+| 听感判断 | 🟡 一句话 | R-1"与 A 一致?"、G-1b"有无突起"这类——写"一致/不一致"即可 |
+| 汇总报告 | 🟢 调度者 | 周日结束把工作目录路径发调度者 |
+
+**工作目录约定**(推荐):`C:\Users\lenovo\deepseekHarness\S1-2026-08-16\`,每格产物按 `s1-<daw>-<格子号>.{csv,wav,png}` 命名,做完目录原样保留。
+
+- 判据自动化的部分判 FAIL 的标准:nulltest 打印残差峰值 ≥ −120 dBFS 或偏移 ≠ 0。
+- 若某格需要你主观判断,清单该格的"判据"列会写明,否则以文件产物为准。
 
 ## 3. R 系列(REAPER 7)
 
