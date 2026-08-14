@@ -21,6 +21,10 @@ add_library(scvb_core STATIC
   analysis/LoudnessMode.h
   analysis/Segmentation.cpp
   analysis/Segmentation.h
+  analysis/Hungarian.cpp
+  analysis/Hungarian.h
+  analysis/AutoAssign.cpp
+  analysis/AutoAssign.h
 )
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
