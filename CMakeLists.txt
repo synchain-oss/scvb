@@ -59,6 +59,7 @@ endif()
 option(SCVB_BUILD_TESTS "Build Catch2 unit tests (scvb_tests)" ON)
 option(SCVB_BUILD_IPC_TESTS "Build L1 IPC contract tests (scvb_ipc_tests, Windows only)" ON)
 option(SCVB_BUILD_TOOLS "Build validation console tools (tests/tools: scvb_nulltest)" ON)
+option(SCVB_TESTS_WITH_EBUR128 "Build [reference] K-weighting tests against libebur128 (needs network)" OFF)
 
 # ------------------------------------------------------------------
 # 目标(ADR-001/012:scvb_core + 两个插件 + 测试)
