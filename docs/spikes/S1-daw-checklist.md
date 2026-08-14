@@ -25,6 +25,21 @@
 - 15 轨工程**不设 SCVB_CHANNEL**,让 15 个 Input 按加载顺序自动占 ch1..ch15(求和可交换,null test 不依赖具体号);V14/V15 是 stereo 轨,channels 列应显示 2。
 - 冲突/单实例测试才设 SCVB_CHANNEL(如 SCVB_CHANNEL=3 让两个实例抢 ch3)。
 
+## 0c. 真人声素材(可选:真实数据格)
+
+用户提供了三组已对齐的真人声单声道轨(48kHz / 24bit / mono),
+本地路径:`C:\Users\lenovo\deepseekHarness\SCVB\masterPlan\assets\vocal-test\`(gitignore,不入库)。
+**三组是三个不同项目(三首歌),严禁混用**;每次真实数据格只取一个项目。
+
+| 项目目录 | 轨数 | 时长 | 建议用途 |
+|---|---|---|---|
+| `oeuvre-527-bad-apple` | 9(全干音) | 5:17 | **首选**:9 轨全部导入 V01..V09 做真实数据矩阵(其余轨补 click 或留空);null test 判据不变 |
+| `oeuvre-523-kalafina-storia` | 6 | 3:37 | 快速冒烟(6 轨即够) |
+| `oeuvre-515-inclusion` | 39 | 4:43 | 压力/多轨格:任选其中 13 轨(主唱+和声混合)导入 V01..V13 |
+
+真实数据格操作与 click 格完全相同:先渲染无插件的 ref,再装插件渲染,
+逐样本 null(判据 10 §1.1.3);**离线渲染格建议用真人声**(正是 §8 大块路径的实战触发面)。
+
 ## 1. 通用准备(每个 DAW 都做)
 
 1. 新建工程,采样率 48000,buffer 512;导入 15 轨素材到 V01..V15(**V14/V15 必须建为 stereo 轨**);建 stereo 总线 **VOX BUS**,15 轨输出全指向它。
