@@ -12,6 +12,8 @@ add_library(scvb_core STATIC
   dsp/PanMath.h
   engine/CurveEvaluator.cpp
   engine/CurveEvaluator.h
+  analysis/Loudness.cpp
+  analysis/Loudness.h
 )
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
