@@ -31,6 +31,8 @@ add_executable(scvb_tests
   core/test_smoke.cpp
   core/test_kweighting.cpp
   core/test_features.cpp
+  core/test_pancurve.cpp
+  core/test_transition.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
