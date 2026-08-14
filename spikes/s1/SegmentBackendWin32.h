@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <string>
 
 #define WIN32_LEAN_AND_MEAN
@@ -59,14 +60,17 @@ public:
     static InitResult openExisting(const std::wstring& name, SegmentView& view);
 
     // 01 §4.0 初始化协议(registry/audio 通用;header 前两字段为 magic/abi,可选 generation):
-    //   created=true:写 abi=1、generation=1(若有)、release-store magic;
+    //   created=true:写 abi=1、generation=1(若有)、initData()(几何字段,若有)、release-store magic;
     //   created=false:自旋读 magic(50ms × 10)。magic ok 且 abi ok → kOk;
     //     abi 不符 → kAbiMismatch;超时仍 magic==0 → 覆盖式重初始化(清 slot 区、
-    //     写 abi、generation.fetch_add(1) 若有、CAS magic 0→'SCVB';失败即他人已完成,直接 attach)。
+    //     写 abi、generation.fetch_add(1) 若有、initData()、CAS magic 0→'SCVB';失败即他人已完成,直接 attach)。
     //   headerMagic/headerAbi 指向视图内的 magic/abi 字段;headerGen 可空;dataOffset 为
     //   「清 slot 区」的起始偏移(通常 = 头部大小,覆盖式重初始化时从该偏移起清零)。
+    //   initData 为「magic 发布前」必须落盘的几何字段写回(音频环: sample_rate/ring_frames/channels/写头/epoch)
+    //   ——保证 magic 后行不变式:读方看到 magic==SCVB 时几何字段必已就绪。
     static InitResult initHeader(SegmentView& view, std::atomic<u32>* headerMagic, std::atomic<u32>* headerAbi,
-                                 std::atomic<u32>* headerGen, std::size_t dataOffset);
+                                 std::atomic<u32>* headerGen, std::size_t dataOffset,
+                                 const std::function<void()>& initData = {});
 };
 
 } // namespace scvb

@@ -133,7 +133,7 @@ InitResult SegmentBackendWin32::openExisting(const std::wstring& name, SegmentVi
 
 InitResult SegmentBackendWin32::initHeader(SegmentView& view, std::atomic<u32>* headerMagic,
                                            std::atomic<u32>* headerAbi, std::atomic<u32>* headerGen,
-                                           std::size_t dataOffset)
+                                           std::size_t dataOffset, const std::function<void()>& initData)
 {
     if (view.base == nullptr || headerMagic == nullptr || headerAbi == nullptr)
     {
@@ -142,11 +142,15 @@ InitResult SegmentBackendWin32::initHeader(SegmentView& view, std::atomic<u32>* 
 
     if (view.created)
     {
-        // 内核已零初始化;magic 后行 = 初始化完成标志(01 §4.0)。
+        // 内核已零初始化;magic 后行 = 初始化完成标志(01 §4.0)。几何字段先写、magic 最后发布。
         headerAbi->store(kScvbAbi, std::memory_order_relaxed);
         if (headerGen != nullptr)
         {
             headerGen->store(1, std::memory_order_relaxed);
+        }
+        if (initData)
+        {
+            initData();
         }
         headerMagic->store(kScvbMagic, std::memory_order_release);
         return InitResult::kOk;
@@ -172,6 +176,10 @@ InitResult SegmentBackendWin32::initHeader(SegmentView& view, std::atomic<u32>* 
     if (headerGen != nullptr)
     {
         headerGen->fetch_add(1, std::memory_order_relaxed);
+    }
+    if (initData)
+    {
+        initData();
     }
     u32 expected = 0;
     if (!headerMagic->compare_exchange_strong(expected, kScvbMagic, std::memory_order_release,

@@ -388,3 +388,48 @@ TEST_CASE("双组隔离(同号 channel 零 CAS 冲突、环互不串扰)", "[s1]
         REQUIRE(floatBits(outb[static_cast<std::size_t>(i)]) == floatBits(-1.0f));
     }
 }
+
+TEST_CASE("Output 几何读取门(magic 后行:读 magic 时几何字段必已就绪)", "[s1][ring][magic-last]")
+{
+    const u32 sr = 48000;
+    const u32 ringFrames = 1u << 12;
+    const u32 channels = 2;
+
+    AudioRing writer(kTestGroupRing, 1);
+    REQUIRE(writer.createForInput(sr, ringFrames, channels) == InitResult::kOk);
+
+    AudioRing reader(kTestGroupRing, 1);
+    REQUIRE(reader.openForOutput() == InitResult::kOk);
+
+    // magic 后行不变式:openForOutput 读到 magic==SCVB 时,几何字段必已由创建者写毕(review 1)。
+    REQUIRE(reader.header()->sample_rate == sr);
+    REQUIRE(reader.header()->ring_frames == ringFrames);
+    REQUIRE(reader.header()->channels == channels);
+    REQUIRE(reader.ringFrames() == ringFrames);
+    REQUIRE(reader.channels() == channels);
+}
+
+TEST_CASE("AudioRing 大块(超典型 samplesPerBlock)完整往返不截断", "[s1][ring][oversized]")
+{
+    const u32 sr = 48000;
+    const u32 ringFrames = 1u << 14; // 16384 帧,容纳大块
+    const int block = 8192; // 远大于典型 512 samplesPerBlock(review 3 的 oversized 场景)
+
+    AudioRing writer(kTestGroupRing, 2);
+    REQUIRE(writer.createForInput(sr, ringFrames, 1) == InitResult::kOk);
+    AudioRing reader(kTestGroupRing, 2);
+    REQUIRE(reader.openForOutput() == InitResult::kOk);
+
+    std::vector<float> src(static_cast<std::size_t>(block));
+    for (int i = 0; i < block; ++i)
+    {
+        src[static_cast<std::size_t>(i)] = (i % 3 == 0) ? 1.0f : -0.5f;
+    }
+    writer.writeBlock(0, src.data(), block); // 一整块写,不截断
+    std::vector<float> dst(static_cast<std::size_t>(block));
+    REQUIRE(reader.readBlock(0, block, dst.data()) == AudioRing::ReadStatus::kOk);
+    for (int i = 0; i < block; ++i)
+    {
+        REQUIRE(floatBits(dst[static_cast<std::size_t>(i)]) == floatBits(src[static_cast<std::size_t>(i)]));
+    }
+}

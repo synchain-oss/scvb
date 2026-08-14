@@ -46,20 +46,32 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
         return r;
     }
     auto* header = static_cast<AudioRingHeader*>(view_.base);
-    const auto ir =
-        SegmentBackendWin32::initHeader(view_, &header->magic, &header->abi, nullptr, sizeof(AudioRingHeader));
+    const bool created = view_.created;
+
+    // 几何字段写回(magic 发布前落盘):sample_rate/ring_frames/channels/写头/epoch。
+    const auto writeGeometry = [&]() {
+        header->sample_rate = sampleRate;
+        header->ring_frames = ringFrames;
+        header->channels = channels;
+        header->write_head_samples.store(0, std::memory_order_relaxed);
+        header->epoch.store(0, std::memory_order_relaxed);
+    };
+
+    // magic 后行不变式:几何字段先写、magic 最后 release 发布(created 与覆盖式重初始化两路径都经 initData)。
+    const auto ir = SegmentBackendWin32::initHeader(view_, &header->magic, &header->abi, nullptr,
+                                                    sizeof(AudioRingHeader), [&]() { writeGeometry(); });
     if (ir != InitResult::kOk)
     {
         view_.reset();
         return ir;
     }
 
-    // 覆盖式(重新)初始化:字段先写,写头/epoch 后发布;epoch+1 使读方丢弃旧代数据(01 §4.1)。
-    header->sample_rate = sampleRate;
-    header->ring_frames = ringFrames;
-    header->channels = channels;
-    header->write_head_samples.store(0, std::memory_order_relaxed);
-    header->epoch.fetch_add(1, std::memory_order_release);
+    if (!created)
+    {
+        // attach 到已有有效段(自身重初始化 / 接管残段):几何字段重写后 epoch+1 作为新代发布标记(读方弃旧代)。
+        writeGeometry();
+        header->epoch.fetch_add(1, std::memory_order_release);
+    }
 
     header_ = header;
     data_ = reinterpret_cast<float*>(static_cast<char*>(view_.base) + sizeof(AudioRingHeader));
@@ -78,13 +90,14 @@ InitResult AudioRing::openForOutput()
         return r;
     }
     auto* header = static_cast<AudioRingHeader*>(view_.base);
-    // 校验 magic/abi(段可能正在被创建者初始化中)。
-    for (int i = 0; i < 10 && header->magic.load(std::memory_order_acquire) != kScvbMagic; ++i)
+    // 非阻塞单次校验:magic 未就绪(创建者尚未发布)即返回失败,由 [M] 25Hz 下一 tick 重试,
+    // 不在消息线程里 Sleep 自旋(避免串行叠加拖慢 UI/心跳,review 建议 4)。
+    if (header->magic.load(std::memory_order_acquire) != kScvbMagic)
     {
-        ::Sleep(50);
+        view_.reset();
+        return InitResult::kFailed;
     }
-    if (header->magic.load(std::memory_order_acquire) != kScvbMagic ||
-        header->abi.load(std::memory_order_acquire) != kScvbAbi)
+    if (header->abi.load(std::memory_order_acquire) != kScvbAbi)
     {
         view_.reset();
         return InitResult::kAbiMismatch;

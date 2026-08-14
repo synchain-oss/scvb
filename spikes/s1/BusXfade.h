@@ -36,6 +36,16 @@ public:
 
     bool isActive() const { return targetActive_ && !fading_; }
 
+    // 大块(离线渲染等)可超过 prepareToPlay 的 maxBlock:按真实块长扩容内部缓存(罕见)。
+    void ensureCapacity(int n)
+    {
+        if (static_cast<std::size_t>(n) > mixL_.size())
+        {
+            mixL_.resize(static_cast<std::size_t>(n));
+            mixR_.resize(static_cast<std::size_t>(n));
+        }
+    }
+
     // 音频线程:目标 = 激活(自有混音)。buf 为总线 stereo(L/R),mixL/mixR 为自有混音(长度 n)。
     void render(float* const* buf, const float* mixL, const float* mixR, int n)
     {

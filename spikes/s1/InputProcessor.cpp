@@ -197,10 +197,14 @@ void InputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int n = juce::jmin(buffer.getNumSamples(), maxBlock_);
+    const int n = buffer.getNumSamples();
     if (n <= 0)
     {
         return;
+    }
+    if (static_cast<std::size_t>(n) * static_cast<std::size_t>(srcChannels_) > capBuf_.size())
+    {
+        capBuf_.resize(static_cast<std::size_t>(n) * static_cast<std::size_t>(srcChannels_));
     }
     const int nch = juce::jmin(buffer.getNumChannels(), srcChannels_);
 

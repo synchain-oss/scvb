@@ -97,11 +97,21 @@ void OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int n = juce::jmin(buffer.getNumSamples(), maxBlock_);
+    const int n = buffer.getNumSamples();
     if (n <= 0)
     {
         return;
     }
+    if (static_cast<std::size_t>(n) > accumL_.size())
+    {
+        accumL_.resize(static_cast<std::size_t>(n));
+        accumR_.resize(static_cast<std::size_t>(n));
+    }
+    if (static_cast<std::size_t>(n) * 2 > trackBuf_.size())
+    {
+        trackBuf_.resize(static_cast<std::size_t>(n) * 2);
+    }
+    busXfade_.ensureCapacity(n);
 
     // 时间线(R2/R3 [J51]:负 t0 是有效时间线,不混音不读环;无时间线 → 总线直通)。
     i64 t0 = 0;
@@ -139,7 +149,8 @@ void OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
         return;
     }
 
-    const u32 usable = usableMask_.load(std::memory_order_relaxed);
+    const u32 usable =
+        usableMask_.load(std::memory_order_acquire); // acquire:配对 pollChannels 的 release,ring 元数据可见
     std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
     std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
 
@@ -289,7 +300,7 @@ void OutputProcessor::pollChannels(u64 now)
             onlineSince_[ch] = 0;
         }
     }
-    usableMask_.store(usable, std::memory_order_relaxed);
+    usableMask_.store(usable, std::memory_order_release); // release:发布 rings_[ch] 元数据给 [A]
     // 写 connected_mask(Input 健康判定依据;SR 不符/离线/心跳陈旧 → mask bit=0)。
     scvb::OutputSlot* out = registry_->outputSlot();
     if (out != nullptr)
