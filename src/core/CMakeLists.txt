@@ -7,6 +7,11 @@ add_library(scvb_core STATIC
   dsp/KWeighting.h
   analysis/FeatureExtractor.cpp
   analysis/FeatureExtractor.h
+  analysis/PanCurve.cpp
+  analysis/PanCurve.h
+  dsp/PanMath.h
+  engine/CurveEvaluator.cpp
+  engine/CurveEvaluator.h
 )
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
