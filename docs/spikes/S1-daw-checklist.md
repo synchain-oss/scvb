@@ -2,6 +2,8 @@
 
 > 本清单把 10-validation §1.1.2 的 R/C/L/S + G 系列整理成可照着做的人话步骤。
 > 判据真源 = 10 §1.1.3;每格做完**立即**读 csv + 跑 null test 记录,不要攒到最后。
+>
+> **DAW 范围(用户决定 2026-08-14,U27)**:Cubase 15 为主测 DAW → REAPER 7 只跑 Cubase 覆盖不了的兜底格 → Ableton Live 跳过 → Studio One 仅作可选对照。
 
 ## 0. 装机与工具(一次性准备)
 
@@ -93,53 +95,46 @@ mkdir C:\Users\lenovo\deepseekHarness\S1-2026-08-16
 - 判据自动化的部分判 FAIL 的标准:nulltest 打印残差峰值 ≥ −120 dBFS 或偏移 ≠ 0。
 - 若某格需要你主观判断,清单该格的"判据"列会写明,否则以文件产物为准。
 
-## 3. R 系列(REAPER 7)
+## 3. C 系列(Cubase 15,主测 DAW——先跑完这里)
 
-| 步   | 做                                                                      | 判据 / 存什么                                                                 |
-| ---- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| R-1  | 实时播全曲 1 遍                                                         | gapCount 全 0;听感与 A 一致                                                   |
-| R-2  | Preferences→Audio→Buffering 开 Anticipative FX                          | gapCount 全 0                                                                 |
-| R-3  | render-ahead 拉到最大(记 ms)                                            | gapCount 全 0;非 0 记首次 gap 值 → 定 ring_frames                             |
-| R-4  | 关 Anticipative                                                         | gapCount 全 0                                                                 |
-| R-5  | File→Render 1× 与 Full-speed Offline 各一次 → test_B_reaper_offline.wav | 与 A null(峰值 < −120dBFS 且偏移 0)                                           |
-| R-6  | 4 小节循环区播 100 遍                                                   | gapCount 增量==0                                                              |
-| R-7  | 播放中拖播放头定位 20 次                                                | gapCount 增量 ≤20(每次 ≤1 块)                                                 |
-| R-8  | buffer 32/128/512/2048 各 30s                                           | 各档 gapCount==0                                                              |
-| R-9  | SR 切 44100/96000 各 30s                                                | 无崩溃;SR 不符轨禁用                                                          |
-| R-10 | 单轨 solo/mute 各 5 轨;mute 轨推子拉到 −∞                               | 记录三类行为(跳过处理/照常送静音/照常送原信号);solo/mute 对 SCVB 通路失效预期 |
-| R-11 | Freeze 一条轨/渲染 stem;打开产物听                                      | 预期整段静音;替换式渲染是否覆盖原素材 → 用户数据警告                          |
-| R-12 | 插件 Run as dedicated process(右键 FX)                                  | 跨进程 shm 仍工作                                                             |
-| R-13 | 任务管理器强杀 REAPER 后重开工程                                        | 自动重连,gapCount 从 0                                                        |
-| R-14 | 两个 Input 都设 ch3(设 SCVB_CHANNEL=3)                                  | 后到者冲突,不写环;csv 里 ch3 write_head 单调无回退                            |
-| R-15 | 总线再插一个 Output                                                     | 第二只读、总线直通;删第一个 ≤3s 接管                                          |
+全部通用步骤收进 Cubase;做完 C-1..C-14 再回来看 §4 的 REAPER 兜底。
 
-## 4. C 系列(Cubase 14)
+| 步  | 做                                                                      | 判据 / 存什么                                                                 |
+| --- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| C-1  | 记首块 timeInSamples(csv 读)                                            | 起始值不一定为 0;寻址不依赖起点 0                                              |
+| C-2  | Direct Offline Processing + Render in Place(替换)各一次                 | 预期不触发 process;核对原事件是否被静音替换、能否 Undo                          |
+| C-3  | Export→Audio Mixdown 勾/不勾 Real-Time 各一次(导出命名 test_C3rt.wav / test_C3offline.wav) | 两个导出与 A 各 null,都过                                                      |
+| C-4  | ASIO-Guard 开/关各 30s                                                  | gapCount 全 0                                                                  |
+| C-5  | 实时播全曲 1 遍                                                         | gapCount 全 0;听感与 A 一致                                                     |
+| C-6  | 4 小节循环区播 100 遍                                                   | gapCount 增量==0                                                                |
+| C-7  | 播放中拖播放头定位 20 次                                                | gapCount 增量 ≤20(每次 ≤1 块)                                                   |
+| C-8  | buffer 32/128/512/2048 各 30s                                           | 各档 gapCount==0                                                                |
+| C-9  | SR 切 44100/96000 各 30s                                                | 无崩溃;SR 不符轨禁用                                                            |
+| C-10 | 单轨 solo/mute 各 5 轨;mute 轨推子拉到 −∞                               | 记录三类行为(跳过处理/照常送静音/照常送原信号);solo/mute 对 SCVB 通路失效预期   |
+| C-11 | Freeze 一条轨 / Render in Place;打开产物听                              | 预期整段静音;替换式渲染是否覆盖原素材 → 用户数据警告                            |
+| C-12 | 任务管理器强杀 Cubase 后重开工程                                        | 自动重连,gapCount 从 0                                                          |
+| C-13 | 两个 Input 都设 ch3(设 SCVB_CHANNEL=3)                                  | 后到者冲突,不写环;csv 里 ch3 write_head 单调无回退                              |
+| C-14 | 总线再插一个 Output                                                     | 第二只读、总线直通;删第一个 ≤3s 接管                                            |
 
-同 R-1/R-5/R-6/R-7/R-8/R-9/R-10/R-13/R-14/R-15,另加:
+## 4. R 系列(REAPER 7,仅兜底——只做 Cubase 没有的这 4 格)
 
-| 步  | 做                                                      | 判据                                                   |
-| --- | ------------------------------------------------------- | ------------------------------------------------------ |
-| C-1 | 记首块 timeInSamples(csv 读)                            | 起始值不一定为 0;寻址不依赖起点 0                      |
-| C-2 | Direct Offline Processing + Render in Place(替换)各一次 | 预期不触发 process;核对原事件是否被静音替换、能否 Undo |
-| C-3 | Export→Audio Mixdown 勾/不勾 Real-Time 各一次           | 两个导出与 A 各 null,都过                              |
-| C-4 | ASIO-Guard 开/关各 30s                                  | gapCount 全 0                                          |
+| 步  | 做                                                          | 判据 / 存什么                                             |
+| --- | ----------------------------------------------------------- | --------------------------------------------------------- |
+| R-2  | Preferences→Audio→Buffering 开 Anticipative FX              | gapCount 全 0                                             |
+| R-3  | render-ahead 拉到最大(记 ms)                                | gapCount 全 0;非 0 记首次 gap 值 → 定 ring_frames(S1-P8)  |
+| R-4  | 关 Anticipative                                             | gapCount 全 0                                             |
+| R-5  | File→Render 1× 与 Full-speed Offline 各一次 → test_R5.wav   | 与 A null(与 C-3 互验);这是 REAPER 特有的 Full-speed 档    |
+| R-12 | 插件 Run as dedicated process(右键 FX)                      | 跨进程 shm 仍工作                                         |
 
-## 5. L 系列(Ableton Live 12)
+> 其余 R 步骤已并入 §3 C 系列(C-5..C-14),不再单跑 REAPER。
 
-同 R-1/R-5/R-6/R-7/R-8/R-9/R-13/R-14/R-15,另加:
+## 5. L 系列(Ableton Live 12)—— 跳过
 
-| 步  | 做                                        | 判据                                             |
-| --- | ----------------------------------------- | ------------------------------------------------ |
-| L-1 | Arrangement 播 + Session 触发 clip 各一次 | 记 gapCount(Session 下 timeInSamples 可能非线性) |
-| L-2 | Freeze & Flatten 一条轨                   | 核对原 clip 是否被静音替换、能否 Undo            |
-| L-3 | Export Audio/Video Normal 与 Fast 各一次  | 与 A null(重点看 Live 离线补偿)                  |
-| L-4 | 循环跨 loop 点 100 次                     | gapCount 增量==0                                 |
+> **用户决定 2026-08-14(U27)**:Ableton Live 本轮不做。L-5(设备停用)原本已挂 T24([J55]),不受影响;Live 宿主特有问题改由发布期兼容矩阵兜底,记录在 docs/DAW_COMPATIBILITY.md 计划内。
 
-> L-5(设备停用)非本卡执行([J55] 挂 T24),跳过。
+## 6. S 系列(Studio One 7)—— 可选对照,非必要不做
 
-## 6. S 系列(Studio One 7)
-
-同 R-1/R-5/R-6/R-7/R-9/R-13/R-14/R-15,另加:
+> **用户决定 2026-08-14(U27)**:仅当 Cubase 出现疑似宿主特异现象、需要第二宿主对照时才做 S-1/S-2/S-3,平时跳过。
 
 | 步  | 做                            | 判据                                               |
 | --- | ----------------------------- | -------------------------------------------------- |
@@ -158,9 +153,9 @@ mkdir C:\Users\lenovo\deepseekHarness\S1-2026-08-16
 | G-2  | V03/V07 的 Input 前插高延迟插件,实时 + 离线                                                    | 与 A′ null;若这两轨错位 → 记错位样本数 + 是否调 IAudioPresentationLatency                                       |
 | G-3  | 同位置起播 ×3 + 存工程关 DAW 重开 ×1                                                           | 首块 timeInSamples 四次恒等、与走带标尺线性                                                                     |
 | G-4  | 两个 bundle 各跑 pluginval strict 5(对端缺席);DAW 内单侧加载各 60s                             | 不阻塞/不崩溃/不超时                                                                                            |
-| G-5  | SCVB_RING_FRAMES=8192,开 anticipative/离线快渲染                                               | 必须弃块 + gapCount+1,不得计数为 0 的可闻撕裂                                                                   |
+| G-5  | SCVB_RING_FRAMES=8192,开 REAPER anticipative / Cubase 离线快渲染                                 | 必须弃块 + gapCount+1,不得计数为 0 的可闻撕裂                                                                   |
 | G-6  | 开 count-in(≥6s)从 0 前起播                                                                    | 负 t0 不写环不越界;跨零点只写尾段;无静音↔直通切换                                                               |
 | G-7  | 分别 bypass Output 10s / Input 10s                                                             | 记听感与 gapCount                                                                                               |
 | G-8  | 同 DAW 开两个 SCVB 工程 / 两个 DAW 同开                                                        | 后开者 channel 冲突;UI 用 pid 反查进程名提示                                                                    |
 | G-9  | ①实时+离线导出后对 V14/V15 逐通道 null;②csv channels 列逐轨核对;③V07 mono 改 stereo 存重开重跑 | ①L 与 R 各自 null 过(互换/单路复制判 FAIL);②V01-13=1/V14-15=2;③channels 随 prepareToPlay 更新、gapCount 增量==0 |
-| G-10 | REAPER 内建两组(g1:2 Input ch1/2 + 1 Output;g2 同号 2 Input + 1 Output;SCVB_GROUP 区分)        | 两组 null 各自独立过、gapCount 双组 0、同号零 CAS 冲突、mask/广播不串扰                                         |
+| G-10 | Cubase 或 REAPER 内建两组(g1:2 Input ch1/2 + 1 Output;g2 同号 2 Input + 1 Output;SCVB_GROUP 区分) | 两组 null 各自独立过、gapCount 双组 0、同号零 CAS 冲突、mask/广播不串扰                                         |
