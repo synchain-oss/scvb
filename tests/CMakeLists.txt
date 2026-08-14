@@ -33,6 +33,7 @@ add_executable(scvb_tests
   core/test_features.cpp
   core/test_pancurve.cpp
   core/test_transition.cpp
+  core/test_loudness.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
