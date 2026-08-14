@@ -14,6 +14,11 @@ add_library(scvb_core STATIC
   engine/CurveEvaluator.h
   analysis/Loudness.cpp
   analysis/Loudness.h
+  analysis/EnergyVad.cpp
+  analysis/EnergyVad.h
+  analysis/IVadBackend.h
+  analysis/LoudnessMode.cpp
+  analysis/LoudnessMode.h
 )
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
