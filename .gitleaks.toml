@@ -1,0 +1,24 @@
+# SCVB gitleaks 配置(06 §5.1 gate 3b 与 §3.10 compliance job 共用)。
+# 默认规则集 + allowlist;误报逐条登记理由,不得 --no-verify 绕过。
+title = "SCVB gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "SCVB 误报放行清单(逐条登记理由)。实测默认规则对当前工作树零 finding;以下条目为 06 §5.1 / 12 §1.1 规定的防御性登记,非绕过。"
+
+# ① LICENSES/** 高熵段:许可证全文(法律文本,非凭据),被 REUSE.toml 引用,必须全文入库。
+paths = [
+  '''LICENSES/''',
+]
+
+# ② 公开常量(非凭据,永不吊销)。
+#    SCVB 无 Origin 白名单(那是 Bridge 的);当前公开常量为 IPC 共享内存段名前缀
+#    (ipc-contract-v0 冻结段名 Local\SynchainSCVB.v1.*),由 allowlist regexes 按 secret 原文匹配,不影响真实凭据。
+regexes = [
+  '''SynchainSCVB\.v1\.''',
+]
+
+# ③ 文档占位凭据串:当前仓库无故意出现的凭据形态占位串(README/文档示例里无 ghp_xxx / sk_live_xxx)。
+#    将来新增示例凭据串时,必须逐条登记到上方 regexes,不得 --no-verify 绕过。

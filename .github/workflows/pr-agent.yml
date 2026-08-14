@@ -20,8 +20,9 @@ jobs:
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest # 容器 action,slim 无 docker daemon 会挂
     permissions:
-      issues: write # 只给这两个;故意不给 contents: write —— 收窄爆炸半径
+      issues: write
       pull-requests: write
+      contents: read # C05 实测补:actions/checkout 克隆必需(06 §3.6 权限行遗漏,已勘误);仍不给 contents: write
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 1 }
@@ -36,6 +37,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.DEEPSEEK_KEY }}
           ANTHROPIC_API_BASE: https://api.deepseek.com/anthropic
           GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # C05 实测补:v0.39.0 容器同时读标准名;与点号键同值双写
           # 模型基线(用户决策 2026-08-10):默认 deepseek-v4-flash;litellm 不认 [1M] 括号,永远用裸名
           config.model: anthropic/deepseek-v4-flash
           config.fallback_models: anthropic/deepseek-v4-pro
