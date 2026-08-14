@@ -19,6 +19,8 @@ add_library(scvb_core STATIC
   analysis/IVadBackend.h
   analysis/LoudnessMode.cpp
   analysis/LoudnessMode.h
+  analysis/Segmentation.cpp
+  analysis/Segmentation.h
 )
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

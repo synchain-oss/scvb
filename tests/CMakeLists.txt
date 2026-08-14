@@ -35,6 +35,7 @@ add_executable(scvb_tests
   core/test_transition.cpp
   core/test_loudness.cpp
   core/test_vad.cpp
+  core/test_segmentation.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
