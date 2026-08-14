@@ -378,15 +378,14 @@ int runRender(const Options& o)
 
 void printUsage()
 {
-    std::cout
-        << "scvb_bench —— SCVB 性能基准 + 最小离线 host(10-validation §5.4)\n"
-        << "用法:\n"
-        << "  scvb_bench --dsp [--fs 48000] [--block 512] [--tracks 15] [--stereo-tracks 2] [--blocks 100000] "
-           "[--json out.json]\n"
-        << "    离线基准:Input/Output ns/block mean/p50/p95/p99/max + CPU%(固定种子,可跨 commit 对比)。\n"
-        << "  scvb_bench --render --out <wav> [--fs 48000] [--seconds 30] [--tracks 15] [--stereo-tracks 2]\n"
-        << "    最小离线 host:合成 15 轨 → K-weighting → pan/vol → 求和 → 写 wav。\n"
-        << "⚠ 本工具不能替代 DAW 验证(无宿主参数系统、无真实线程时序)。跑了它 ≠ 跑了 DAW 矩阵。\n";
+    std::cout << "scvb_bench —— SCVB 性能基准 + 最小离线 host(10-validation §5.4)\n"
+              << "用法:\n"
+              << "  scvb_bench --dsp [--fs 48000] [--block 512] [--tracks 15] [--stereo-tracks 2] [--blocks 100000] "
+                 "[--json out.json]\n"
+              << "    离线基准:Input/Output ns/block mean/p50/p95/p99/max + CPU%(固定种子,可跨 commit 对比)。\n"
+              << "  scvb_bench --render --out <wav> [--fs 48000] [--seconds 30] [--tracks 15] [--stereo-tracks 2]\n"
+              << "    最小离线 host:合成 15 轨 → K-weighting → pan/vol → 求和 → 写 wav。\n"
+              << "⚠ 本工具不能替代 DAW 验证(无宿主参数系统、无真实线程时序)。跑了它 ≠ 跑了 DAW 矩阵。\n";
 }
 
 bool parseArgs(int argc, char** argv, Options& o, std::string& err)
@@ -415,8 +414,8 @@ bool parseArgs(int argc, char** argv, Options& o, std::string& err)
         {
             o.render = true;
         }
-        else if (a == "--fs" || a == "--block" || a == "--tracks" || a == "--stereo-tracks" || a == "--blocks"
-                 || a == "--seconds")
+        else if (a == "--fs" || a == "--block" || a == "--tracks" || a == "--stereo-tracks" || a == "--blocks" ||
+                 a == "--seconds")
         {
             const char* v = needValue(a);
             if (v == nullptr)
@@ -515,8 +514,8 @@ int main(int argc, char** argv)
     reportBench("output", r.outputNs, deadlineNs, o, std::cout, json);
     json += ",";
     json += jsonNum("checksum", r.checksum);
-    json += ",\"block\":" + std::to_string(o.block) + ",\"fs\":" + std::to_string(o.fs)
-            + ",\"tracks\":" + std::to_string(o.tracks) + ",\"blocks\":" + std::to_string(o.blocks) + "}";
+    json += ",\"block\":" + std::to_string(o.block) + ",\"fs\":" + std::to_string(o.fs) +
+            ",\"tracks\":" + std::to_string(o.tracks) + ",\"blocks\":" + std::to_string(o.blocks) + "}";
 
     if (!o.jsonOut.empty())
     {
