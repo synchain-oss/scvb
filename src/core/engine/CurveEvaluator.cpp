@@ -85,6 +85,16 @@ void CurveEvaluator::build(const std::vector<CurveSegment>& segments, const Tran
         const double rightLen = b.endSec - b.startSec;
         tEff = std::min(tEff, std::min(config.overlapRatio * leftLen, config.overlapRatio * rightLen));
 
+        // 退化段(如零长段)会把 T_eff 夹到 0 → smoothstep(0/0)=NaN 静默污染。
+        // 退化为跳变,保证 valueAt 绝不除零(§8「绝不静默出错」)。
+        if (tEff <= 0.0)
+        {
+            bound.isJump = true;
+            bound.tEffSec = 0.0;
+            m_boundaries.push_back(bound);
+            continue;
+        }
+
         bound.tEffSec = tEff;
 
         // 超限速 warning(仅 gap=0 的可闻路径;0.9·len 夹限与 6s cap 共用同一计数,cap 不静默)。

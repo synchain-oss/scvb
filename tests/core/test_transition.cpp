@@ -332,3 +332,29 @@ TEST_CASE("TRANS-6 three short segments: overlap protection and warnings", "[tra
         prev = p;
     }
 }
+
+TEST_CASE("TRANS-7 zero-length segment degrades to jump (no NaN)", "[transition]")
+{
+    // 退化段(零长)把 T_eff 夹到 0 → 退化为跳变,不除零、不产 NaN。
+    scvb::CurveEvaluator ev;
+    ev.build(
+        {
+            scvb::CurveSegment{0.0, 0.1, -60.0, 0.0},
+            scvb::CurveSegment{0.1, 0.1, 0.0, 0.0}, // 零长段
+            scvb::CurveSegment{0.1, 0.2, 60.0, 0.0},
+        },
+        scvb::TransitionConfig{});
+
+    REQUIRE(ev.boundaries().size() == 2u);
+    REQUIRE(ev.boundaries()[0].isJump);
+    REQUIRE(ev.boundaries()[1].isJump);
+
+    for (int64_t k = 0; k <= 20000; ++k) // 0..0.2s 采样
+    {
+        const double t = static_cast<double>(k) / kFs;
+        const double p = ev.panAt(t);
+        REQUIRE(std::isfinite(p));
+        REQUIRE(p >= -100.0 - 1e-9);
+        REQUIRE(p <= 100.0 + 1e-9);
+    }
+}
