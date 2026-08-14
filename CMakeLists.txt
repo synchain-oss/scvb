@@ -65,11 +65,12 @@ option(SCVB_BUILD_TOOLS "Build validation console tools (tests/tools: scvb_nullt
 # ------------------------------------------------------------------
 include(CTest)               # enable_testing() 于顶层,让根 CTestTestfile.cmake 生成并 subdirs() 进 tests/
 add_subdirectory(src/core)     # scvb_core
-add_subdirectory(src/input)    # SCVBInput
-add_subdirectory(src/output)   # SCVBOutput
+# T02:S1 路由 spike(T01 的 src/input + src/output 空壳暂不构建,由 spikes/s1 提供两个 VST3;
+#      T06 的 PR 会把 spike 核心移植回 src/core/ipc/ 并恢复 src/input/src/output 正式插件)
+add_subdirectory(spikes/s1)    # s1_core + SCVBInput + SCVBOutput
 if(SCVB_BUILD_TESTS)
-  add_subdirectory(tests)      # scvb_tests + scvb_ipc_tests
+  add_subdirectory(tests)      # scvb_tests + scvb_ipc_tests + scvb_s1_tests
 endif()
 if(SCVB_BUILD_TOOLS)
-  add_subdirectory(tests/tools) # scvb_nulltest(10-validation §4.2,零依赖)
+  add_subdirectory(tests/tools) # scvb_nulltest + scvb_diag(10-validation §4.2)
 endif()
