@@ -26,3 +26,19 @@ if(WIN32)
     target_compile_options(scvb_diag PRIVATE -Wall -Wextra -Wpedantic)
   endif()
 endif()
+
+# scvb_bench:性能基准 + 内置最小离线 host(10-validation §5.4;T04 交付、T05 复用)。
+# 链接 scvb_core(纯 C++17,零 JUCE),可离线在任何机器运行。--dsp 出 PERF-1..4 判定依据,
+# --render 出数学层端到端(不能替代 DAW 验证,见其 --help)。
+add_executable(scvb_bench
+  scvb_bench.cpp
+)
+
+target_link_libraries(scvb_bench PRIVATE scvb_core)
+target_include_directories(scvb_bench PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+
+if(MSVC)
+  target_compile_options(scvb_bench PRIVATE /W4 /utf-8 /EHsc)
+else()
+  target_compile_options(scvb_bench PRIVATE -Wall -Wextra -Wpedantic)
+endif()

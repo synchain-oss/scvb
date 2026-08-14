@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SCVB Output — S3 spike</title>
+        <link rel="stylesheet" href="./styles.css" />
+    </head>
+    <body>
+        <div id="vst-root">
+            <div id="card">
+                <header id="header">
+                    <div class="brand">
+                        <span class="icon"></span>
+                        <div>
+                            <div class="title">SCVB Output</div>
+                            <div class="subtitle">
+                                SYNCHAIN · VOCAL BALANCER · VST3
+                            </div>
+                        </div>
+                    </div>
+                    <div class="pills">
+                        <span class="pill conn">已连接 · 15 轨</span>
+                        <span class="pill group-badge">组 A</span>
+                        <span class="pill lang">中</span>
+                    </div>
+                    <div id="version" class="version">V1 / V2</div>
+                </header>
+
+                <div id="banner" hidden></div>
+
+                <nav id="tabbar">
+                    <button class="tab">整体</button>
+                    <button class="tab">轨道</button>
+                    <button class="tab on">波形</button>
+                    <button class="tab">设置</button>
+                </nav>
+
+                <main id="content">
+                    <section id="master">
+                        <div id="global" class="global"></div>
+                        <div class="curve-wrap">
+                            <div class="eyebrow">角度域曲线 · ±12 dB</div>
+                            <canvas id="curve-canvas"></canvas>
+                        </div>
+                    </section>
+
+                    <section id="tracks">
+                        <div id="tracks-head" class="tracks-head">
+                            <span style="width: 8px"></span
+                            ><span style="width: 44px">CH</span
+                            ><span style="width: 150px">轨道</span
+                            ><span style="width: 30px">PAN</span
+                            ><span style="width: 30px">W</span
+                            ><span style="width: 268px">音量 / 电平</span
+                            ><span style="width: 66px">PRIO</span
+                            ><span style="width: 26px">LEAD</span
+                            ><span style="width: 52px">配对</span
+                            ><span style="width: 26px">音量</span
+                            ><span style="width: 26px">声像</span
+                            ><span style="width: 26px">冻结P</span
+                            ><span style="width: 26px">冻结V</span
+                            ><span style="width: 26px">ON</span>
+                        </div>
+                        <div id="tracks-body" class="tracks-body"></div>
+                    </section>
+
+                    <section id="wave">
+                        <div class="wave-stage">
+                            <canvas id="wave-static"></canvas>
+                            <canvas id="wave-dynamic"></canvas>
+                        </div>
+                        <div class="meters-wrap">
+                            <canvas id="meters-canvas"></canvas>
+                        </div>
+                    </section>
+                </main>
+
+                <footer id="footer">
+                    <span class="hint">S3 spike · 15 泳道 × 5 分钟 mock</span>
+                    <div class="footer-right">
+                        <label>
+                            缩放
+                            <select id="scale">
+                                <option value="0.5">50%</option>
+                                <option value="0.65">65%</option>
+                                <option value="0.8">80%</option>
+                                <option value="1" selected>100%</option>
+                                <option value="1.25">125%</option>
+                                <option value="1.5">150%</option>
+                                <option value="2">200%</option>
+                            </select>
+                        </label>
+                        <span id="hud" class="hud">FPS 60.0</span>
+                    </div>
+                </footer>
+
+                <div
+                    id="scale-confirm"
+                    class="scale-confirm"
+                    style="display: none"
+                >
+                    <span
+                        >缩放已应用,<span id="scale-confirm-countdown">10</span
+                        >s 后回退</span
+                    >
+                    <button id="scale-keep">保持</button>
+                    <button id="scale-revert">撤销</button>
+                </div>
+            </div>
+        </div>
+        <script type="module" src="./app.js"></script>
+    </body>
+</html>
