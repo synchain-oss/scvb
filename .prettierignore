@@ -11,3 +11,7 @@ node_modules/
 docs/constitution/
 # clang-format 配置(非 prettier 目标)
 .clang-format
+# workflow/文档非 web 资产,prettier 的 yml/md 默认格式与项目手写风格不一致(B07 bridge 同款口径)
+*.yml
+*.yaml
+*.md
