@@ -69,6 +69,8 @@ add_subdirectory(src/core)     # scvb_core
 # T02:S1 路由 spike(T01 的 src/input + src/output 空壳暂不构建,由 spikes/s1 提供两个 VST3;
 #      T06 的 PR 会把 spike 核心移植回 src/core/ipc/ 并恢复 src/input/src/output 正式插件)
 add_subdirectory(spikes/s1)    # s1_core + SCVBInput + SCVBOutput
+# T04:S3 WebView 承载力 spike(T04 的 Output 最小插件壳 + WebView2 编辑器;由 T26 的 PR 删除)
+add_subdirectory(spikes/s3)    # SCVBS3Output
 if(SCVB_BUILD_TESTS)
   add_subdirectory(tests)      # scvb_tests + scvb_ipc_tests + scvb_s1_tests
 endif()
