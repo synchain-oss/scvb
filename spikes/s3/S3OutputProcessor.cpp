@@ -37,7 +37,7 @@ bool S3OutputProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
     return layouts.getMainOutputChannelSet() == layouts.getMainInputChannelSet();
 }
 
-void S3OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void S3OutputProcessor::processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     // spike:直通,不做 DSP。UI 承载力是唯一被测对象。
