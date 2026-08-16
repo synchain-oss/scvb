@@ -20,6 +20,7 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX // windows.h 的 min/max 宏与本文件 std::min/std::max 冲突
 #include <windows.h>
 #endif
 
