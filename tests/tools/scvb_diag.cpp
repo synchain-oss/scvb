@@ -168,6 +168,9 @@ void writeHeader(std::ofstream& f)
 
 int main(int argc, char** argv)
 {
+    // 控制台按 UTF-8 解释输出(工具文案为 UTF-8 中文;GBK 控制台下会乱码)。
+    ::SetConsoleOutputCP(CP_UTF8);
+    ::SetConsoleCP(CP_UTF8);
     Options o;
     std::string err;
     if (!parseArgs(argc, argv, o, err))

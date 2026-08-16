@@ -18,6 +18,11 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace
 {
 constexpr int kExitOk = 0;
@@ -862,6 +867,11 @@ int runGenClick(const Options& o, std::string& err)
 
 int main(int argc, char** argv)
 {
+#if defined(_WIN32)
+    // 控制台按 UTF-8 解释输出(工具文案为 UTF-8 中文;GBK 控制台下会乱码)。
+    ::SetConsoleOutputCP(CP_UTF8);
+    ::SetConsoleCP(CP_UTF8);
+#endif
     Options o;
     std::string err;
     const int rc = parseArgs(argc, argv, o, err);
