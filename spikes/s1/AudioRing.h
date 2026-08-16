@@ -39,7 +39,8 @@ public:
     // Output 侧(消息线程):打开已存在的 audio 段(不存在 → kFailed)。
     InitResult openForOutput();
 
-    bool isOpen() const { return header_ != nullptr && data_ != nullptr; }
+    // v3 崩溃修复:视图基址也必须存活(view 被 reset 后 header_/data_ 即悬空)。
+    bool isOpen() const { return view_.base != nullptr && header_ != nullptr && data_ != nullptr; }
 
     u32 group() const { return group_; }
     u32 channel() const { return channel_; }
@@ -65,10 +66,14 @@ public:
     // 读后复查 write_head/epoch:w2 > t0+ring_frames 或 e2 != e1 → kGap(防 render-ahead 套圈撕裂)。
     ReadStatus readBlock(i64 t0, int frames, float* interleavedDst);
 
+    // 失败路径:清指针与几何 → isOpen()==false,关断音频线程写读(杜绝悬挂)。
+    void invalidate();
+
 private:
     u32 group_ = 1;
     u32 channel_ = 1;
     SegmentView view_;
+    SegmentView prevView_; // 退休视图保活:重映射在途期间旧映射仍存活,音频线程不悬空(v3 崩溃修复)
     AudioRingHeader* header_ = nullptr;
     float* data_ = nullptr;
     u32 ringFrames_ = 0;

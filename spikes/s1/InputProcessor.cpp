@@ -33,6 +33,8 @@ InputProcessor::InputProcessor()
 {
     parseEnvU32("SCVB_GROUP", 1, scvb::kMaxGroups, envGroup_);
     parseEnvU32("SCVB_CHANNEL", 1, scvb::kMaxChannels, envChannel_);
+    // v3 崩溃修复:音频线程缓冲构造时一次定容,此后永不再分配(§8 零堆分配)。
+    capBuf_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames) * 2, 0.0f);
 }
 
 InputProcessor::~InputProcessor()
@@ -50,7 +52,8 @@ void InputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     maxBlock_ = samplesPerBlock;
     srcChannels_ = (getTotalNumInputChannels() >= 2) ? 2 : 1;
 
-    capBuf_.assign(static_cast<std::size_t>(maxBlock_) * srcChannels_, 0.0f);
+    // v3 崩溃修复:capBuf_ 构造定容(kMaxHostBlockFrames*2),此处不再分配;超限块由分块循环 clamp。
+    jassert(maxBlock_ <= scvb::kMaxHostBlockFrames);
     stage_.prepare(sampleRate_);
 
     resolveConfig();
@@ -247,7 +250,7 @@ void InputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     // 分块循环(review 3 收口):oversized 块切成 ≤maxBlock_ 子块依次处理,
     // capBuf_ 保持 maxBlock_ 尺寸,processBlock 零堆分配(§8 实时线程规则)。
-    const int chunk = (maxBlock_ > 0) ? maxBlock_ : 1;
+    const int chunk = (maxBlock_ > 0) ? juce::jmin(maxBlock_, scvb::kMaxHostBlockFrames) : 1;
     for (int start = 0; start < total; start += chunk)
     {
         const int n = juce::jmin(chunk, total - start);

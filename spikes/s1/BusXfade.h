@@ -20,15 +20,20 @@ inline constexpr double kBusFadeSeconds = 0.120; // 120ms(80–200ms 区间内,J
 class BusXfade
 {
 public:
-    void prepare(double sampleRate, int maxBlock)
+    BusXfade()
+    {
+        // v3 崩溃修复:交叉缓存构造定容,prepare 只设参数不再分配(§8 零堆分配)。
+        mixL_.assign(static_cast<std::size_t>(kMaxHostBlockFrames), 0.0f);
+        mixR_.assign(static_cast<std::size_t>(kMaxHostBlockFrames), 0.0f);
+    }
+
+    void prepare(double sampleRate, int /*maxBlock*/)
     {
         fadeSamples_ = static_cast<int>(sampleRate * kBusFadeSeconds);
         if (fadeSamples_ < 1)
         {
             fadeSamples_ = 1;
         }
-        mixL_.assign(static_cast<std::size_t>(maxBlock > 0 ? maxBlock : 1), 0.0f);
-        mixR_.assign(static_cast<std::size_t>(maxBlock > 0 ? maxBlock : 1), 0.0f);
         theta_ = 0.0f; // 冷启动默认透传(Output 尚未激活)
         targetActive_ = false;
         fading_ = false;

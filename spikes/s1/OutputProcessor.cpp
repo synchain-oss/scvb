@@ -32,6 +32,10 @@ OutputProcessor::OutputProcessor()
                                .withOutput("Output", juce::AudioChannelSet::stereo(), true))
 {
     parseEnvGroup(group_);
+    // v3 崩溃修复:音频线程缓冲构造定容,prepareToPlay 不再分配(§8 零堆分配)。
+    accumL_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames), 0.0f);
+    accumR_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames), 0.0f);
+    trackBuf_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames) * 2, 0.0f);
 }
 
 OutputProcessor::~OutputProcessor()
@@ -48,9 +52,8 @@ void OutputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     sampleRate_ = sampleRate;
     maxBlock_ = samplesPerBlock;
 
-    accumL_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
-    accumR_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
-    trackBuf_.assign(static_cast<std::size_t>(maxBlock_) * 2, 0.0f);
+    // v3 崩溃修复:accum/trackBuf 构造定容(kMaxHostBlockFrames / *2),此处不再分配;超限块由分块循环 clamp。
+    jassert(maxBlock_ <= scvb::kMaxHostBlockFrames);
     busXfade_.prepare(sampleRate_, maxBlock_);
 
     // 每会话重置计数(→ ctrl 导出的 gapCount 从 0 起)。
@@ -141,7 +144,7 @@ void OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
 
     // 分块循环(review 3 收口):oversized 块切成 ≤maxBlock_ 子块依次处理,
     // accumL_/accumR_/trackBuf_ 与 BusXfade 内部缓存保持 maxBlock_ 尺寸,processBlock 零堆分配(§8)。
-    const int chunk = (maxBlock_ > 0) ? maxBlock_ : 1;
+    const int chunk = (maxBlock_ > 0) ? juce::jmin(maxBlock_, scvb::kMaxHostBlockFrames) : 1;
     for (int start = 0; start < total; start += chunk)
     {
         const int n = juce::jmin(chunk, total - start);
