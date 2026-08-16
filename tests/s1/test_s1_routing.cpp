@@ -511,3 +511,62 @@ TEST_CASE("oversized 块按 chunk 处理(固定缓冲,零堆分配)完整往返�
         REQUIRE(floatBits(dst[static_cast<std::size_t>(i)]) == floatBits(src[static_cast<std::size_t>(i)]));
     }
 }
+
+TEST_CASE("AudioRing 重创建(声道数切换)往返正确且旧视图保活", "[s1][ring][v3]")
+{
+    // v3 崩溃修复回归:覆盖式重映射期间旧视图退休保活(prevView_),在途 writeBlock 不落悬空地址;
+    // 几何字段刷新、新环写读往返正确。
+    const u32 sr = 48000;
+    const u32 ringFrames = 1u << 12;
+    AudioRing ring(kTestGroupRing, 14);
+    REQUIRE(ring.createForInput(sr, ringFrames, 2) == InitResult::kOk);
+    REQUIRE(ring.isOpen());
+
+    std::vector<float> stereo(64, 0.25f);
+    ring.writeBlock(0, stereo.data(), 32); // 32 帧 stereo
+    float* oldData = ring.data(); // 旧映射指针(重创建后仍须有效)
+
+    // 同环重创建(模拟采样率/声道切换):stereo → mono,几何字段刷新。
+    REQUIRE(ring.createForInput(96000, ringFrames, 1) == InitResult::kOk);
+    REQUIRE(ring.isOpen());
+    REQUIRE(ring.header()->sample_rate == 96000);
+    REQUIRE(ring.header()->ring_frames == ringFrames);
+    REQUIRE(ring.header()->channels == 1);
+    REQUIRE(ring.channels() == 1);
+
+    // 旧视图保活:解引用旧 data_ 不崩溃(读一次即止,退休视图不做内容断言)。
+    const float probe = oldData[0];
+    (void)probe;
+
+    // 新环 mono 写读往返按位相等。
+    std::vector<float> mono(32);
+    for (int i = 0; i < 32; ++i)
+    {
+        mono[static_cast<std::size_t>(i)] = (i % 2 == 0) ? 1.0f : -1.0f;
+    }
+    ring.writeBlock(0, mono.data(), 32);
+    std::vector<float> dst(32);
+    REQUIRE(ring.readBlock(0, 32, dst.data()) == AudioRing::ReadStatus::kOk);
+    for (int i = 0; i < 32; ++i)
+    {
+        REQUIRE(floatBits(dst[static_cast<std::size_t>(i)]) == floatBits(mono[static_cast<std::size_t>(i)]));
+    }
+}
+
+TEST_CASE("AudioRing createForInput 非法参数失败后 isOpen 为假且写安全", "[s1][ring][v3]")
+{
+    // v3 崩溃修复:任何失败路径(含早期参数校验)必须先清 header_/data_/几何,
+    // isOpen()==false → 音频线程写读关断,杜绝悬挂。
+    const u32 sr = 48000;
+    AudioRing ring(kTestGroupRing, 15);
+    REQUIRE(ring.createForInput(sr, 1u << 12, 1) == InitResult::kOk);
+    REQUIRE(ring.isOpen());
+
+    REQUIRE(ring.createForInput(sr, 1u << 12, 3) == InitResult::kFailed); // 非法声道数
+    REQUIRE_FALSE(ring.isOpen());
+
+    std::vector<float> block(64, 1.0f);
+    ring.writeBlock(0, block.data(), 64); // isOpen false → 早退,不崩溃、不写
+    REQUIRE(ring.header() == nullptr);
+    REQUIRE(ring.data() == nullptr);
+}

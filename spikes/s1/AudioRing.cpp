@@ -2,6 +2,7 @@
 #include "AudioRing.h"
 
 #include <cstdlib>
+#include <utility>
 
 namespace scvb
 {
@@ -29,24 +30,40 @@ u32 ringFramesFromEnv()
 
 AudioRing::~AudioRing()
 {
-    // SegmentView 析构时 Unmap/CloseHandle。
+    // SegmentView 析构时 Unmap/CloseHandle(含退休视图 prevView_)。
+}
+
+void AudioRing::invalidate()
+{
+    // v3 崩溃修复:任何失败路径先清指针与几何 → isOpen()==false,
+    // 音频线程 writeBlock/readBlock 入口关断,杜绝悬挂指针访问。
+    header_ = nullptr;
+    data_ = nullptr;
+    ringFrames_ = 0;
+    channels_ = 0;
 }
 
 InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channels)
 {
     if (channels != 1 && channels != 2)
     {
+        invalidate();
         return InitResult::kFailed;
     }
     const std::size_t size = sizeof(AudioRingHeader) + static_cast<std::size_t>(ringFrames) * channels * sizeof(float);
 
-    const auto r = SegmentBackendWin32::map(segmentAudioName(group_, channel_), size, view_);
+    // v3 崩溃修复(P0):映射进局部临时视图,期间 view_ 不动——旧映射全程存活,音频线程在途
+    // writeBlock 不会落到已解映射地址(原实现把 view_ 直接传给 map(),map 内部先 view.reset()
+    // 解除旧映射;失败窗口内 header_/data_ 仍指旧地址 → 0xC0000005 写访问违例)。
+    SegmentView tmp;
+    const auto r = SegmentBackendWin32::map(segmentAudioName(group_, channel_), size, tmp);
     if (r != InitResult::kOk)
     {
+        invalidate();
         return r;
     }
-    auto* header = static_cast<AudioRingHeader*>(view_.base);
-    const bool created = view_.created;
+    auto* header = static_cast<AudioRingHeader*>(tmp.base);
+    const bool created = tmp.created;
 
     // 几何字段写回(magic 发布前落盘):sample_rate/ring_frames/channels/写头/epoch。
     const auto writeGeometry = [&]() {
@@ -58,11 +75,12 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
     };
 
     // magic 后行不变式:几何字段先写、magic 最后 release 发布(created 与覆盖式重初始化两路径都经 initData)。
-    const auto ir = SegmentBackendWin32::initHeader(view_, &header->magic, &header->abi, nullptr,
-                                                    sizeof(AudioRingHeader), [&]() { writeGeometry(); });
+    const auto ir = SegmentBackendWin32::initHeader(tmp, &header->magic, &header->abi, nullptr, sizeof(AudioRingHeader),
+                                                    [&]() { writeGeometry(); });
     if (ir != InitResult::kOk)
     {
-        view_.reset();
+        tmp.reset();
+        invalidate();
         return ir;
     }
 
@@ -73,6 +91,9 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
         header->epoch.fetch_add(1, std::memory_order_release);
     }
 
+    // 发布:旧视图退休保活(在途写仍可安全落在旧映射上),再切新视图与指针。
+    prevView_ = std::move(view_);
+    view_ = std::move(tmp);
     header_ = header;
     data_ = reinterpret_cast<float*>(static_cast<char*>(view_.base) + sizeof(AudioRingHeader));
     ringFrames_ = ringFrames;
@@ -84,24 +105,31 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
 
 InitResult AudioRing::openForOutput()
 {
-    const auto r = SegmentBackendWin32::openExisting(segmentAudioName(group_, channel_), view_);
+    // v3 崩溃修复:同 createForInput——局部临时视图 + 旧视图保活,失败先 invalidate()。
+    SegmentView tmp;
+    const auto r = SegmentBackendWin32::openExisting(segmentAudioName(group_, channel_), tmp);
     if (r != InitResult::kOk)
     {
+        invalidate();
         return r;
     }
-    auto* header = static_cast<AudioRingHeader*>(view_.base);
+    auto* header = static_cast<AudioRingHeader*>(tmp.base);
     // 非阻塞单次校验:magic 未就绪(创建者尚未发布)即返回失败,由 [M] 25Hz 下一 tick 重试,
     // 不在消息线程里 Sleep 自旋(避免串行叠加拖慢 UI/心跳,review 建议 4)。
     if (header->magic.load(std::memory_order_acquire) != kScvbMagic)
     {
-        view_.reset();
+        tmp.reset();
+        invalidate();
         return InitResult::kFailed;
     }
     if (header->abi.load(std::memory_order_acquire) != kScvbAbi)
     {
-        view_.reset();
+        tmp.reset();
+        invalidate();
         return InitResult::kAbiMismatch;
     }
+    prevView_ = std::move(view_);
+    view_ = std::move(tmp);
     header_ = header;
     ringFrames_ = header->ring_frames;
     channels_ = header->channels;

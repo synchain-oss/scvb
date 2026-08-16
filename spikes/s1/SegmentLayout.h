@@ -28,6 +28,9 @@ using i64 = std::int64_t;
 constexpr u32 kScvbAbi = 1;
 constexpr u32 kMaxChannels = 15; // [J59] 10→15
 constexpr u32 kMaxGroups = 8; // [J66]
+// 宿主最大块帧数上界(1<<14 = 16384 帧):音频线程固定缓冲容量(Input capBuf_ / Output accum/trackBuf /
+// BusXfade mix),全部构造时一次定容、prepareToPlay 不再分配;oversized 块按 ≤ 此值分块处理(v3 崩溃修复)。
+constexpr int kMaxHostBlockFrames = 1 << 14;
 
 // 'SCVB' 按内存字节序 'S','C','V','B'(小端主机上内存观感即 "SCVB")。两端同机同字节序,
 // 用同一常量比对即可;此处不用实现定义的多字符字面量。
