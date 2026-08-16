@@ -38,7 +38,12 @@ InputProcessor::InputProcessor()
     parseEnvU32("SCVB_CHANNEL", 1, scvb::kMaxChannels, envChannel_);
     // v3 崩溃修复:音频线程缓冲构造时一次定容,此后永不再分配(§8 零堆分配)。
     capBuf_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames) * 2, 0.0f);
-    scvb::journal::boot("Input", "v6");
+    scvb::journal::boot("Input", "v8");
+    // v8 诊断:把 env 配置写进日志(认领塌缩排查用,一眼看清实例是否被 env 强制了 channel)。
+    scvb::journal::log(
+        "Input", "cfg",
+        scvb::journal::join({scvb::journal::kv("envCh", static_cast<unsigned long long>(envChannel_)),
+                             scvb::journal::kv("envGroup", static_cast<unsigned long long>(envGroup_))}));
 }
 
 InputProcessor::~InputProcessor()
@@ -156,14 +161,15 @@ void InputProcessor::doClaim()
         return;
     }
 
-    // claim(0 = 自动最低空闲 slot)。
+    // claim(0 = 自动最低空闲 slot;v8:用 claimInputAuto——不得经同 pid 刷新抢走他人已占 slot,
+    // 否则 15 个实例全部挤在 ch1,channel 塌缩、导出只剩单轨内容)。
     if (channel_ == 0)
     {
         channel_ = 0;
         for (u32 c = 1; c <= scvb::kMaxChannels; ++c)
         {
-            if (registry_->claimInput(c, pid_, static_cast<u32>(sampleRate_), static_cast<u32>(maxBlock_),
-                                      scvb::steadyNowMs()) == scvb::Registry::ClaimResult::kClaimed)
+            if (registry_->claimInputAuto(c, pid_, static_cast<u32>(sampleRate_), static_cast<u32>(maxBlock_),
+                                          scvb::steadyNowMs()) == scvb::Registry::ClaimResult::kClaimed)
             {
                 channel_ = c;
                 break;
@@ -502,6 +508,10 @@ void InputProcessor::setStateInformation(const void* data, int sizeInBytes)
     {
         stateChannel_ = channel;
     }
+    scvb::journal::log("Input", "state",
+                       scvb::journal::join({scvb::journal::kv("abi", static_cast<unsigned long long>(abi)),
+                                            scvb::journal::kv("group", static_cast<unsigned long long>(group)),
+                                            scvb::journal::kv("channel", static_cast<unsigned long long>(channel))}));
 }
 
 void InputProcessor::setCurrentProgram(int) {}

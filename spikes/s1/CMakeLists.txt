@@ -110,7 +110,7 @@ endif()
 
 # CTest 注册:每场景独立进程(崩溃 = 测试失败,进程异常退出码直接判红)。
 # 环帧数压到 1<<13 让「越界位置」几块之内到达(mono2stereo 首个 stereo 块即越界)。
-foreach(_scenario mono2stereo flip outputcheck churn)
+foreach(_scenario mono2stereo flip outputcheck churn multiclaim)
   add_test(NAME s1_stress_${_scenario} COMMAND scvb_stress ${_scenario})
   set_tests_properties(s1_stress_${_scenario} PROPERTIES ENVIRONMENT "SCVB_RING_FRAMES=8192")
 endforeach()

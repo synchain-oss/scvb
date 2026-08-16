@@ -64,7 +64,7 @@ if (-not $UnitTestsOnly) {
 
   $stressExe = Get-ChildItem -Path $buildDirAbs -Recurse -Filter scvb_stress.exe | Where-Object { $_.FullName -match "\\Release\\" } | Select-Object -First 1
   if ($null -eq $stressExe) { throw "未找到 scvb_stress.exe(先构建或检查 -BuildDir)" }
-  $scenarios = @("mono2stereo", "flip", "outputcheck", "churn")
+  $scenarios = @("mono2stereo", "flip", "outputcheck", "churn", "multiclaim")
   foreach ($s in $scenarios) {
     Write-Step ("stress scenario: " + $s)
     $outFile = Join-Path $runDir ("stress-" + $s + ".out.txt")

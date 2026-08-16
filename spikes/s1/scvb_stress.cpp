@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "AudioRing.h"
+#include "Registry.h"
 #include "SegmentBackendWin32.h"
 #include "SegmentLayout.h"
 
@@ -164,6 +165,54 @@ int scenarioChurn()
     std::printf("churn: PASS\n");
     return 0;
 }
+
+// v8 认领塌缩回归:15 个实例(同 pid)按 InputProcessor 自动认领循环选槽,
+// 必须落在 15 个不同 channel;v2..v7 的 claimInput 同 pid 刷新会全部挤在 ch1。
+int scenarioMulticlaim()
+{
+    Registry reg(8); // 组 8:避开 DAW 实测组 g1/g2,测试进程退出后段随进程销毁
+    if (reg.open() != Registry::ClaimResult::kClaimed)
+    {
+        return fail("registry open");
+    }
+    const u32 pid = static_cast<u32>(::GetCurrentProcessId());
+    const u64 now = steadyNowMs();
+    u32 got[kMaxChannels + 1] = {};
+    u32 claimed = 0;
+    for (int i = 0; i < static_cast<int>(kMaxChannels); ++i)
+    {
+        u32 ch = 0;
+        for (u32 c = 1; c <= kMaxChannels; ++c)
+        {
+            if (reg.claimInputAuto(c, pid, 48000, 512, now) == Registry::ClaimResult::kClaimed)
+            {
+                ch = c;
+                break;
+            }
+        }
+        if (ch == 0)
+        {
+            return fail("instance could not claim any channel");
+        }
+        if (got[ch] != 0)
+        {
+            std::printf("FAIL: duplicate channel ch%u (instance %d)\n", ch, i);
+            return 1;
+        }
+        got[ch] = 1;
+        ++claimed;
+    }
+    u32 mask = 0;
+    for (u32 c = 1; c <= kMaxChannels; ++c)
+    {
+        if (got[c] != 0)
+        {
+            mask |= (1u << (c - 1));
+        }
+    }
+    std::printf("multiclaim: PASS (%u instances on %u distinct channels, mask=%u)\n", claimed, claimed, mask);
+    return mask == 0x7FFFu ? 0 : 1;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -190,6 +239,10 @@ int main(int argc, char** argv)
     if (scenario == "churn")
     {
         return scenarioChurn();
+    }
+    if (scenario == "multiclaim")
+    {
+        return scenarioMulticlaim();
     }
     std::printf("unknown scenario: %s\n", scenario.c_str());
     return 2;

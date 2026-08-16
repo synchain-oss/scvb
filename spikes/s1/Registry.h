@@ -93,6 +93,11 @@ public:
 
     // claim 一个 Input channel(消息线程;CAS 0→1 填字段→2;被占且满足接管双条件则接管)。
     ClaimResult claimInput(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
+
+    // 自动认领专用(v8):只拿 Free slot(或陈旧+死 pid 接管);**不做同 pid 刷新/接管**。
+    // v2 的同 pid 刷新曾让每个新实例都把第一个实例的 slot「认领成功」→ 15 实例全挤 ch1
+    // (channel 塌缩,导出只剩单轨内容)。此变体供 InputProcessor 的 channel_==0 自动选槽循环使用。
+    ClaimResult claimInputAuto(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
     // 释放本实例占用的 Input channel(析构路径,消息线程)。
     void releaseInput(u32 channel, u32 pid);
 

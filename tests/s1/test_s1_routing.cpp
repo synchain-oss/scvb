@@ -64,8 +64,10 @@ std::vector<float> makeClickTrack(int trackIndex, bool stereo, int frames, int p
 constexpr u32 kTestGroupRing = 8;
 constexpr u32 kTestGroupRegistry = 6;
 constexpr u32 kTestGroupFull = 7;
-constexpr u32 kTestGroupA = 1;
-constexpr u32 kTestGroupB = 2;
+// 组 1/2 是用户 DAW 实测组(默认 g1、G-10 用 g2),测试一律避开,否则 DAW 开着时
+// 测试会与活的插件实例抢 slot(2026-08-16 实测踩坑:v8 回归轮 line 440 因此误红)。
+constexpr u32 kTestGroupA = 4;
+constexpr u32 kTestGroupB = 5;
 } // namespace
 
 TEST_CASE("AudioRing mono 往返按位相等", "[s1][ring]")
@@ -233,6 +235,29 @@ TEST_CASE("Registry 同 pid 重认领(采样率切换)成功并刷新 slot", "[s
     // 他人 pid 仍冲突(同 pid 分支不放宽接管语义)。
     REQUIRE(reg.claimInput(3, pid + 1, 48000, 256, now2) == Registry::ClaimResult::kConflict);
     reg.releaseInput(3, pid);
+}
+
+TEST_CASE("Registry 自动认领不抢同 pid 已占 slot(v8 认领塌缩回归)", "[s1][registry][v8]")
+{
+    Registry reg(kTestGroupRegistry);
+    REQUIRE(reg.open() == Registry::ClaimResult::kClaimed);
+    const u32 pid = static_cast<u32>(::GetCurrentProcessId());
+    const u64 now = steadyNowMs();
+
+    // 实例 1 占 ch1
+    REQUIRE(reg.claimInput(1, pid, 48000, 512, now) == Registry::ClaimResult::kClaimed);
+    // 实例 2(同 pid)自动认领 ch1:已占 → 必须冲突,不得「认领成功」(v2 塌缩根因)
+    REQUIRE(reg.claimInputAuto(1, pid, 48000, 512, now) == Registry::ClaimResult::kConflict);
+    // 转而拿下一个 Free slot → 成功
+    REQUIRE(reg.claimInputAuto(2, pid, 48000, 512, now) == Registry::ClaimResult::kClaimed);
+    REQUIRE(reg.inputSlot(2)->pid == pid);
+    // 陈旧+死 pid 仍可接管(接管语义保留)
+    InputSlot* s = reg.inputSlot(1);
+    s->heartbeat_ms.store(now - 6000, std::memory_order_relaxed);
+    s->pid = 0;
+    REQUIRE(reg.claimInputAuto(1, pid + 1, 48000, 512, now) == Registry::ClaimResult::kClaimed);
+    reg.releaseInput(1, pid + 1);
+    reg.releaseInput(2, pid);
 }
 
 TEST_CASE("Registry claimOutput 同 pid 重认领不清 connected_mask", "[s1][registry][reclaim]")

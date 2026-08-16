@@ -117,6 +117,48 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
     return ClaimResult::kConflict;
 }
 
+Registry::ClaimResult Registry::claimInputAuto(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs)
+{
+    InputSlot* slot = inputSlot(channel);
+    if (slot == nullptr)
+    {
+        return ClaimResult::kUnavailable;
+    }
+    InputSlot& s = *slot;
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        const u32 cur = s.state.load(std::memory_order_acquire);
+        if (cur == kSlotFree)
+        {
+            u32 expected = kSlotFree;
+            if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+            {
+                fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
+                return ClaimResult::kClaimed;
+            }
+            continue;
+        }
+
+        // v8:自动认领不得走「同 pid 刷新」——否则新实例会把已占 slot 直接判「认领成功」,
+        // 所有实例挤在最小号 slot 上(channel 塌缩)。此处只允许陈旧+死 pid 接管。
+        const u64 hb = s.heartbeat_ms.load(std::memory_order_acquire);
+        if (isTakeoverStale(hb, nowMs) && !isProcessAlive(s.pid))
+        {
+            u32 expected = cur;
+            if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+            {
+                fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
+                return ClaimResult::kClaimed;
+            }
+            continue;
+        }
+        return ClaimResult::kConflict;
+    }
+    return ClaimResult::kConflict;
+}
+
 void Registry::releaseInput(u32 channel, u32 pid)
 {
     InputSlot* slot = inputSlot(channel);
