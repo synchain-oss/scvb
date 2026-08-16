@@ -91,7 +91,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           files=$(gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
-          touched=$(printf '%s\n' "$files" | grep -E '^(docs/PARAMETERS\.md|docs/IPC_CONTRACT\.md|docs/STATE_SCHEMA\.md|tests/golden/)' || true)
+          touched=$(printf '%s\n' "$files" | grep -E '^(docs/PARAMETERS\.md|docs/IPC_CONTRACT\.md|docs/STATE_SCHEMA\.md|docs/SCVB_CONTRACT\.md|tests/golden/)' || true)
           if [ -n "$touched" ]; then
             doc=$(printf '%s\n' "$files" | grep -E '^docs/contract-changes/[0-9]{8}-.+\.md$' || true)
             if [ -z "$doc" ]; then
