@@ -6,8 +6,16 @@
 // 寻址口径(一次性定死,与 SegmentLayout.h 的 ring_frames 注释互为镜像,读写两侧必须一致):
 //   float 偏移 = ((timeline_pos & (ring_frames-1)) * channels + c)。
 //   ring_frames = 帧数(不是样本数、不是帧对数)。
+//
+// v5 修复:几何与视图以「不可分快照」(AudioRingGeometry)经单一 atomic 指针发布。
+// 宿主编排(实测 Cubase 14/15 的 freeze/RIP/导出)会反复以 mono⇄stereo 重建环;
+// 旧实现先换视图再改几何,音频线程可读到「新(小)视图 + 旧(大)声道数」组合,
+// 越界写入 → 0xC0000005(转储寄存器实锤:故障地址 = 2MB mono 视图基址 + 2MB + 4KB)。
+// 现在写/读线程一次 load 拿到自洽的 {view, data, frames, channels},旧快照保活。
 
+#include <atomic>
 #include <cstddef>
+#include <vector>
 
 #include "SegmentBackendWin32.h"
 #include "SegmentLayout.h"
@@ -21,6 +29,17 @@ inline constexpr u32 kDefaultRingFrames = 1u << 19;
 
 // 从环境变量读取 ring_frames 覆盖(测试用,须为 2^k;未设/非法则回落默认)。
 u32 ringFramesFromEnv();
+
+// 几何 + 视图不可分快照(v5)。对象与视图同寿命:几何对象入 retired 池永不释放,
+// 视图按 v4 泄漏策略(SegmentView::reset 不解映射)进程寿命存活。
+struct AudioRingGeometry
+{
+    SegmentView view; // 拥有映射
+    AudioRingHeader* header = nullptr;
+    float* data = nullptr;
+    u32 frames = 0;
+    u32 channels = 0;
+};
 
 class AudioRing
 {
@@ -39,16 +58,15 @@ public:
     // Output 侧(消息线程):打开已存在的 audio 段(不存在 → kFailed)。
     InitResult openForOutput();
 
-    // v3 崩溃修复:视图基址也必须存活(view 被 reset 后 header_/data_ 即悬空)。
-    bool isOpen() const { return view_.base != nullptr && header_ != nullptr && data_ != nullptr; }
+    bool isOpen() const { return geom_.load(std::memory_order_relaxed) != nullptr; }
 
     u32 group() const { return group_; }
     u32 channel() const { return channel_; }
-    AudioRingHeader* header() { return header_; }
-    float* data() { return data_; }
-    u32 ringFrames() const { return ringFrames_; }
-    u32 channels() const { return channels_; }
-    u32 mask() const { return ringFrames_ - 1; }
+    AudioRingHeader* header(); // 当前快照头(无几何 → nullptr)
+    float* data(); // 当前快照数据指针(无几何 → nullptr)
+    u32 ringFrames() const;
+    u32 channels() const;
+    u32 mask() const;
 
     // 音频线程写(t0>=0)。interleavedSrc 含 frames*channels 个 float(mono 原样、stereo interleaved LR)。
     void writeBlock(i64 t0, const float* interleavedSrc, int frames);
@@ -66,18 +84,14 @@ public:
     // 读后复查 write_head/epoch:w2 > t0+ring_frames 或 e2 != e1 → kGap(防 render-ahead 套圈撕裂)。
     ReadStatus readBlock(i64 t0, int frames, float* interleavedDst);
 
-    // 失败路径:清指针与几何 → isOpen()==false,关断音频线程写读(杜绝悬挂)。
+    // 失败路径:发布空快照 → isOpen()==false,关断音频线程写读(杜绝悬挂/越界)。
     void invalidate();
 
 private:
     u32 group_ = 1;
     u32 channel_ = 1;
-    SegmentView view_;
-    SegmentView prevView_; // 退休视图保活:重映射在途期间旧映射仍存活,音频线程不悬空(v3 崩溃修复)
-    AudioRingHeader* header_ = nullptr;
-    float* data_ = nullptr;
-    u32 ringFrames_ = 0;
-    u32 channels_ = 0;
+    std::atomic<AudioRingGeometry*> geom_{nullptr}; // 单一发布点(v5)
+    std::vector<AudioRingGeometry*> retiredGeom_; // 旧快照保活(环对象入泄漏池,随其存活)
 
     // 读侧状态(仅 Output 音频线程访问,单读者无需原子)。
     i64 lastEpoch_ = -1; // 上次看到的 epoch(-1 = 尚未读过)
