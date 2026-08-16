@@ -2,7 +2,6 @@
 #include "AudioRing.h"
 
 #include <cstdlib>
-#include <utility>
 
 namespace scvb
 {
@@ -30,17 +29,48 @@ u32 ringFramesFromEnv()
 
 AudioRing::~AudioRing()
 {
-    // SegmentView 析构时 Unmap/CloseHandle(含退休视图 prevView_)。
+    // 几何快照与视图不在此释放:环对象由 LeakPool 进程寿命保活(v4),
+    // 几何对象与其视图同寿命(泄漏策略);见 LeakPool.h 与 SegmentView::reset 注释。
 }
 
 void AudioRing::invalidate()
 {
-    // v3 崩溃修复:任何失败路径先清指针与几何 → isOpen()==false,
-    // 音频线程 writeBlock/readBlock 入口关断,杜绝悬挂指针访问。
-    header_ = nullptr;
-    data_ = nullptr;
-    ringFrames_ = 0;
-    channels_ = 0;
+    // v5:发布空快照 → isOpen()==false;旧快照交还保活池(在途写读仍安全)。
+    AudioRingGeometry* old = geom_.exchange(nullptr, std::memory_order_acq_rel);
+    if (old != nullptr)
+    {
+        retiredGeom_.push_back(old);
+    }
+}
+
+AudioRingHeader* AudioRing::header()
+{
+    AudioRingGeometry* g = geom_.load(std::memory_order_acquire);
+    return g != nullptr ? g->header : nullptr;
+}
+
+float* AudioRing::data()
+{
+    AudioRingGeometry* g = geom_.load(std::memory_order_acquire);
+    return g != nullptr ? g->data : nullptr;
+}
+
+u32 AudioRing::ringFrames() const
+{
+    AudioRingGeometry* g = geom_.load(std::memory_order_acquire);
+    return g != nullptr ? g->frames : 0;
+}
+
+u32 AudioRing::channels() const
+{
+    AudioRingGeometry* g = geom_.load(std::memory_order_acquire);
+    return g != nullptr ? g->channels : 0;
+}
+
+u32 AudioRing::mask() const
+{
+    AudioRingGeometry* g = geom_.load(std::memory_order_acquire);
+    return (g != nullptr && g->frames > 0) ? g->frames - 1 : 0;
 }
 
 InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channels)
@@ -52,18 +82,19 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
     }
     const std::size_t size = sizeof(AudioRingHeader) + static_cast<std::size_t>(ringFrames) * channels * sizeof(float);
 
-    // v3 崩溃修复(P0):映射进局部临时视图,期间 view_ 不动——旧映射全程存活,音频线程在途
-    // writeBlock 不会落到已解映射地址(原实现把 view_ 直接传给 map(),map 内部先 view.reset()
-    // 解除旧映射;失败窗口内 header_/data_ 仍指旧地址 → 0xC0000005 写访问违例)。
-    SegmentView tmp;
-    const auto r = SegmentBackendWin32::map(segmentAudioName(group_, channel_), size, tmp);
+    // v5:全新几何快照(自有视图),完全就绪后经 geom_ 单点发布;
+    // 旧快照交还 retiredGeom_ 保活——写/读线程拿到的永远是一套自洽的
+    // {view, data, frames, channels},不再有「新视图 + 旧几何」的越界窗口。
+    auto* g = new AudioRingGeometry();
+    const auto r = SegmentBackendWin32::map(segmentAudioName(group_, channel_), size, g->view);
     if (r != InitResult::kOk)
     {
+        delete g; // 视图按泄漏策略不解映射,对象本身可安全释放
         invalidate();
         return r;
     }
-    auto* header = static_cast<AudioRingHeader*>(tmp.base);
-    const bool created = tmp.created;
+    auto* header = static_cast<AudioRingHeader*>(g->view.base);
+    const bool created = g->view.created;
 
     // 几何字段写回(magic 发布前落盘):sample_rate/ring_frames/channels/写头/epoch。
     const auto writeGeometry = [&]() {
@@ -75,11 +106,11 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
     };
 
     // magic 后行不变式:几何字段先写、magic 最后 release 发布(created 与覆盖式重初始化两路径都经 initData)。
-    const auto ir = SegmentBackendWin32::initHeader(tmp, &header->magic, &header->abi, nullptr, sizeof(AudioRingHeader),
-                                                    [&]() { writeGeometry(); });
+    const auto ir = SegmentBackendWin32::initHeader(g->view, &header->magic, &header->abi, nullptr,
+                                                    sizeof(AudioRingHeader), [&]() { writeGeometry(); });
     if (ir != InitResult::kOk)
     {
-        tmp.reset();
+        delete g;
         invalidate();
         return ir;
     }
@@ -91,13 +122,16 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
         header->epoch.fetch_add(1, std::memory_order_release);
     }
 
-    // 发布:旧视图退休保活(在途写仍可安全落在旧映射上),再切新视图与指针。
-    prevView_ = std::move(view_);
-    view_ = std::move(tmp);
-    header_ = header;
-    data_ = reinterpret_cast<float*>(static_cast<char*>(view_.base) + sizeof(AudioRingHeader));
-    ringFrames_ = ringFrames;
-    channels_ = channels;
+    g->header = header;
+    g->data = reinterpret_cast<float*>(static_cast<char*>(g->view.base) + sizeof(AudioRingHeader));
+    g->frames = ringFrames;
+    g->channels = channels;
+
+    AudioRingGeometry* old = geom_.exchange(g, std::memory_order_acq_rel);
+    if (old != nullptr)
+    {
+        retiredGeom_.push_back(old);
+    }
     lastEpoch_ = -1;
     validFrom_ = 0;
     return InitResult::kOk;
@@ -105,35 +139,39 @@ InitResult AudioRing::createForInput(u32 sampleRate, u32 ringFrames, u32 channel
 
 InitResult AudioRing::openForOutput()
 {
-    // v3 崩溃修复:同 createForInput——局部临时视图 + 旧视图保活,失败先 invalidate()。
-    SegmentView tmp;
-    const auto r = SegmentBackendWin32::openExisting(segmentAudioName(group_, channel_), tmp);
+    // v5:同 createForInput——全新快照完全就绪后单点发布;失败先 invalidate()。
+    auto* g = new AudioRingGeometry();
+    const auto r = SegmentBackendWin32::openExisting(segmentAudioName(group_, channel_), g->view);
     if (r != InitResult::kOk)
     {
+        delete g;
         invalidate();
         return r;
     }
-    auto* header = static_cast<AudioRingHeader*>(tmp.base);
+    auto* header = static_cast<AudioRingHeader*>(g->view.base);
     // 非阻塞单次校验:magic 未就绪(创建者尚未发布)即返回失败,由 [M] 25Hz 下一 tick 重试,
     // 不在消息线程里 Sleep 自旋(避免串行叠加拖慢 UI/心跳,review 建议 4)。
     if (header->magic.load(std::memory_order_acquire) != kScvbMagic)
     {
-        tmp.reset();
+        delete g;
         invalidate();
         return InitResult::kFailed;
     }
     if (header->abi.load(std::memory_order_acquire) != kScvbAbi)
     {
-        tmp.reset();
+        delete g;
         invalidate();
         return InitResult::kAbiMismatch;
     }
-    prevView_ = std::move(view_);
-    view_ = std::move(tmp);
-    header_ = header;
-    ringFrames_ = header->ring_frames;
-    channels_ = header->channels;
-    data_ = reinterpret_cast<float*>(static_cast<char*>(view_.base) + sizeof(AudioRingHeader));
+    g->header = header;
+    g->data = reinterpret_cast<float*>(static_cast<char*>(g->view.base) + sizeof(AudioRingHeader));
+    g->frames = header->ring_frames;
+    g->channels = header->channels;
+    AudioRingGeometry* old = geom_.exchange(g, std::memory_order_acq_rel);
+    if (old != nullptr)
+    {
+        retiredGeom_.push_back(old);
+    }
     lastEpoch_ = -1;
     validFrom_ = 0;
     return InitResult::kOk;
@@ -141,43 +179,46 @@ InitResult AudioRing::openForOutput()
 
 void AudioRing::writeBlock(i64 t0, const float* interleavedSrc, int frames)
 {
-    if (!isOpen() || t0 < 0 || frames <= 0 || interleavedSrc == nullptr)
+    AudioRingGeometry* g = geom_.load(std::memory_order_acquire);
+    if (g == nullptr || t0 < 0 || frames <= 0 || interleavedSrc == nullptr)
     {
         return;
     }
-    const u32 nch = channels_;
-    const u32 m = mask();
+    const u32 nch = g->channels;
+    const u32 m = g->frames - 1;
     for (int i = 0; i < frames; ++i)
     {
         const std::size_t base = (static_cast<std::size_t>(t0 + i) & m) * nch;
         for (u32 c = 0; c < nch; ++c)
         {
-            data_[base + c] = interleavedSrc[static_cast<std::size_t>(i) * nch + c];
+            g->data[base + c] = interleavedSrc[static_cast<std::size_t>(i) * nch + c];
         }
     }
     // 数据先写,写头后发布(01 §5.1 步骤 4)。
-    header_->write_head_samples.store(static_cast<u64>(t0 + frames), std::memory_order_release);
+    g->header->write_head_samples.store(static_cast<u64>(t0 + frames), std::memory_order_release);
 }
 
 void AudioRing::bumpEpoch()
 {
-    if (isOpen())
+    AudioRingGeometry* g = geom_.load(std::memory_order_relaxed);
+    if (g != nullptr)
     {
-        header_->epoch.fetch_add(1, std::memory_order_release);
+        g->header->epoch.fetch_add(1, std::memory_order_release);
     }
 }
 
 AudioRing::ReadStatus AudioRing::readBlock(i64 t0, int frames, float* interleavedDst)
 {
-    if (!isOpen() || t0 < 0 || frames <= 0 || interleavedDst == nullptr)
+    AudioRingGeometry* g = geom_.load(std::memory_order_acquire);
+    if (g == nullptr || t0 < 0 || frames <= 0 || interleavedDst == nullptr)
     {
         return ReadStatus::kGap;
     }
-    const u32 nch = channels_;
-    const u32 m = mask();
+    const u32 nch = g->channels;
+    const u32 m = g->frames - 1;
 
-    const u64 e1 = header_->epoch.load(std::memory_order_acquire);
-    const u64 w = header_->write_head_samples.load(std::memory_order_acquire);
+    const u64 e1 = g->header->epoch.load(std::memory_order_acquire);
+    const u64 w = g->header->write_head_samples.load(std::memory_order_acquire);
     if (e1 != static_cast<u64>(lastEpoch_))
     {
         lastEpoch_ = static_cast<i64>(e1);
@@ -186,7 +227,7 @@ AudioRing::ReadStatus AudioRing::readBlock(i64 t0, int frames, float* interleave
 
     const u64 t0u = static_cast<u64>(t0);
     const bool covered =
-        (t0 >= validFrom_) && (w >= t0u + static_cast<u64>(frames)) && (w - t0u <= static_cast<u64>(ringFrames_));
+        (t0 >= validFrom_) && (w >= t0u + static_cast<u64>(frames)) && (w - t0u <= static_cast<u64>(g->frames));
     if (!covered)
     {
         return ReadStatus::kGap;
@@ -197,14 +238,14 @@ AudioRing::ReadStatus AudioRing::readBlock(i64 t0, int frames, float* interleave
         const std::size_t base = (static_cast<std::size_t>(t0 + i) & m) * nch;
         for (u32 c = 0; c < nch; ++c)
         {
-            interleavedDst[static_cast<std::size_t>(i) * nch + c] = data_[base + c];
+            interleavedDst[static_cast<std::size_t>(i) * nch + c] = g->data[base + c];
         }
     }
 
     // 读后 write_head 复查(R1):读中被写方套圈 → 弃块 + gapCount(调用方)+1。
-    const u64 e2 = header_->epoch.load(std::memory_order_acquire);
-    const u64 w2 = header_->write_head_samples.load(std::memory_order_acquire);
-    if (e2 != e1 || w2 > t0u + static_cast<u64>(ringFrames_))
+    const u64 e2 = g->header->epoch.load(std::memory_order_acquire);
+    const u64 w2 = g->header->write_head_samples.load(std::memory_order_acquire);
+    if (e2 != e1 || w2 > t0u + static_cast<u64>(g->frames))
     {
         return ReadStatus::kGap;
     }
