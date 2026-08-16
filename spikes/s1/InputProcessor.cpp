@@ -349,6 +349,27 @@ void InputProcessor::timerCallback()
         registry_->heartbeatInput(channel_, now);
     }
 
+    // v7 自愈:宿主编排(RIP/undo)会复制插件实例,复制体经「同 pid 重认领」路径短暂接管
+    // 本实例的 slot,其析构时 releaseInput 把 slot 置 Free,而本实例不再收到 prepareToPlay →
+    // 「Input 直通 + Output 静音」永久卡死(Cubase 14 RIP(dry)+Ctrl-Z 实测)。
+    // 发现 claimed 但 slot 已非 Active 即重认领(≤40ms 自愈;复制体重叠期间 state=Active 不触发,
+    // 无打架;认领失败按既有语义 claimed_=false 走直通,不循环)。
+    if (claimed_ && channel_ != 0 && registry_ != nullptr && registry_->isOpen())
+    {
+        scvb::InputSlot* slot = registry_->inputSlot(channel_);
+        if (slot == nullptr || slot->state.load(std::memory_order_acquire) != scvb::kSlotActive)
+        {
+            scvb::journal::log(
+                "Input", "reclaim",
+                scvb::journal::join(
+                    {scvb::journal::kv("slot", static_cast<unsigned long long>(channel_)),
+                     scvb::journal::kv("state",
+                                       static_cast<unsigned long long>(
+                                           slot != nullptr ? slot->state.load(std::memory_order_relaxed) : 0))}));
+            doClaim();
+        }
+    }
+
     // v6 诊断:音频线程计数差量落盘(仅块数变化时写,空闲期静默)。
     if ((tick_ % 6) == 0)
     {
