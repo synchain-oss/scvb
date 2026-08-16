@@ -7,3 +7,7 @@
 /docs/SCVB_CONTRACT.md     @DLsnows
 /tests/golden/             @DLsnows
 /.github/workflows/        @DLsnows
+
+# UI 目录所有权(T27 首个 UI PR 固化;web/ 与 web-preview/ 由 UI 会话交付)
+/web/                      @DLsnows
+/web-preview/              @DLsnows
