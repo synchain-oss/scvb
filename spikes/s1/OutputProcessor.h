@@ -96,5 +96,9 @@ private:
     scvb::BusXfade busXfade_;
     u32 tick_ = 0;
 
+    // v6 诊断计数(仅音频线程写,消息线程读;§8 零 I/O)。
+    std::atomic<u64> audioBlocks_{0};
+    u64 lastLoggedBlocks_ = 0;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OutputProcessor)
 };

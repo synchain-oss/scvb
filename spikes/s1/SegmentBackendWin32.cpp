@@ -15,6 +15,25 @@ std::wstring prefix(u32 group)
     // Local\SynchainSCVB.v1.g{G}.
     return L"Local\\SynchainSCVB.v1.g" + std::to_wstring(group) + L".";
 }
+
+// 真实段大小:GetFileSizeEx 对 section 句柄返回段大小(精确);失败回退 VirtualQuery
+// (64KB 对齐上界,对容量校验是安全超集)。v6 起 view.size 一律填真实值,不再填请求值
+// ——v1..v5 根因:同名段已存在时 CreateFileMapping 返回旧段句柄,请求大小被忽略,
+// 旧实现却把请求大小当实际大小发布几何 → 小视图 + 大几何 → 写环越界 0xC0000005。
+std::size_t realSectionSize(HANDLE h, void* base)
+{
+    LARGE_INTEGER li{};
+    if (::GetFileSizeEx(h, &li) != FALSE && li.QuadPart > 0)
+    {
+        return static_cast<std::size_t>(li.QuadPart);
+    }
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (::VirtualQuery(base, &mbi, sizeof(mbi)) != 0 && mbi.RegionSize > 0)
+    {
+        return mbi.RegionSize;
+    }
+    return 0;
+}
 } // namespace
 
 std::wstring segmentRegistryName(u32 group)
@@ -100,7 +119,7 @@ InitResult SegmentBackendWin32::map(const std::wstring& name, std::size_t size, 
     }
 
     view.base = base;
-    view.size = size;
+    view.size = realSectionSize(h, base); // v6:真实段大小(同名段已存在时可能远小于请求值)
     view.mapping = h;
     view.created = created;
     return InitResult::kOk;
@@ -121,7 +140,7 @@ InitResult SegmentBackendWin32::openExisting(const std::wstring& name, SegmentVi
         return InitResult::kFailed;
     }
     view.base = base;
-    view.size = 0;
+    view.size = realSectionSize(h, base); // v6:真实段大小(供 AudioRing 容量校验)
     view.mapping = h;
     view.created = false;
     return InitResult::kOk;

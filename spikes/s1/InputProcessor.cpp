@@ -4,6 +4,7 @@
 #include <cstdlib>
 
 #include "LeakPool.h"
+#include "ScvbJournal.h"
 
 namespace
 {
@@ -37,6 +38,7 @@ InputProcessor::InputProcessor()
     parseEnvU32("SCVB_CHANNEL", 1, scvb::kMaxChannels, envChannel_);
     // v3 崩溃修复:音频线程缓冲构造时一次定容,此后永不再分配(§8 零堆分配)。
     capBuf_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames) * 2, 0.0f);
+    scvb::journal::boot("Input", "v6");
 }
 
 InputProcessor::~InputProcessor()
@@ -56,6 +58,7 @@ InputProcessor::~InputProcessor()
     {
         retiredRegistries().push_back(std::move(registry_));
     }
+    scvb::journal::log("Input", "dtor", "");
 }
 
 void InputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
@@ -67,6 +70,10 @@ void InputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     // v3 崩溃修复:capBuf_ 构造定容(kMaxHostBlockFrames*2),此处不再分配;超限块由分块循环 clamp。
     jassert(maxBlock_ <= scvb::kMaxHostBlockFrames);
     stage_.prepare(sampleRate_);
+    scvb::journal::log("Input", "prepareToPlay",
+                       scvb::journal::join({scvb::journal::kv("sr", static_cast<unsigned long long>(sampleRate_)),
+                                            scvb::journal::kv("block", static_cast<unsigned long long>(maxBlock_)),
+                                            scvb::journal::kv("inCh", static_cast<unsigned long long>(srcChannels_))}));
 
     resolveConfig();
     doClaim();
@@ -82,6 +89,7 @@ void InputProcessor::releaseResources()
     // P0 修复:不再 stopTimer()。宿主挂起非渲染轨插件时(如 Render-in-Place、采样率切换重准备)
     // 会调 releaseResources;停心跳会让 Output 把本 channel 从 connected_mask 摘掉,恢复后总线缺轨。
     // 心跳/健康仲裁定时器跨宿主挂起周期存活(析构仍会 stopTimer + releaseInput)。
+    scvb::journal::log("Input", "releaseResources", "");
 }
 
 bool InputProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -193,6 +201,13 @@ void InputProcessor::doClaim()
 
     claimed_ = true;
     active_ = ring_->isOpen();
+    scvb::journal::log(
+        "Input", "claim",
+        scvb::journal::join({scvb::journal::kv("slot", static_cast<unsigned long long>(channel_)),
+                             scvb::journal::kv("pid", static_cast<unsigned long long>(pid_)),
+                             scvb::journal::kv("sr", static_cast<unsigned long long>(sampleRate_)),
+                             scvb::journal::kv("chans", static_cast<unsigned long long>(srcChannels_)),
+                             scvb::journal::kv("open", static_cast<unsigned long long>(active_ ? 1 : 0))}));
     lastT0_ = -1;
     expectedNext_ = -1;
     unhealthySince_ = 0;
@@ -253,6 +268,17 @@ void InputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     const bool canWrite = claimed_ && ring_ != nullptr && ring_->isOpen();
+
+    // v6 诊断:音频线程只做原子计数(§8 零 I/O),消息线程 timerCallback 落盘。
+    audioBlocks_.fetch_add(1, std::memory_order_relaxed);
+    if (haveTimeline)
+    {
+        lastWriteT0_.store(t0, std::memory_order_relaxed);
+        if (canWrite)
+        {
+            audioSamples_.fetch_add(static_cast<u64>(total), std::memory_order_relaxed);
+        }
+    }
 
     // block 级 epoch 跳变检测(§5.1 步骤 3):停走带静止重写不算跳变。
     if (canWrite && haveTimeline)
@@ -321,6 +347,21 @@ void InputProcessor::timerCallback()
     if ((tick_ % 6) == 0 && claimed_ && registry_ != nullptr)
     {
         registry_->heartbeatInput(channel_, now);
+    }
+
+    // v6 诊断:音频线程计数差量落盘(仅块数变化时写,空闲期静默)。
+    if ((tick_ % 6) == 0)
+    {
+        const u64 blocks = audioBlocks_.load(std::memory_order_relaxed);
+        if (blocks != lastLoggedBlocks_)
+        {
+            lastLoggedBlocks_ = blocks;
+            scvb::journal::log(
+                "Input", "stats",
+                scvb::journal::join({scvb::journal::kv("blocks", blocks),
+                                     scvb::journal::kv("samples", audioSamples_.load(std::memory_order_relaxed)),
+                                     scvb::journal::kv("lastT0", lastWriteT0_.load(std::memory_order_relaxed))}));
+        }
     }
 
     pollHealth(now);

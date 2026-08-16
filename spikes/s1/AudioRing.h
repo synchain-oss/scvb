@@ -96,6 +96,9 @@ private:
     // 读侧状态(仅 Output 音频线程访问,单读者无需原子)。
     i64 lastEpoch_ = -1; // 上次看到的 epoch(-1 = 尚未读过)
     i64 validFrom_ = 0; // 本代有效数据起始时间线位置(epoch 跳变后 = 当前块起点)
+
+    // v6 诊断:ringReject 日志节流时间戳(消息线程)。
+    u64 lastRejectLogMs_ = 0;
 };
 
 } // namespace scvb

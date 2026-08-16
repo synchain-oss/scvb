@@ -73,6 +73,12 @@ private:
     i64 lastT0_ = -1;
     i64 expectedNext_ = -1;
 
+    // v6 诊断计数(仅音频线程写,消息线程读;§8 零 I/O)。
+    std::atomic<u64> audioBlocks_{0};
+    std::atomic<u64> audioSamples_{0};
+    std::atomic<i64> lastWriteT0_{-1};
+    u64 lastLoggedBlocks_ = 0;
+
     // 配置
     u32 group_ = 1;
     u32 channel_ = 0; // 0 = 自动 claim 最低空闲 slot
