@@ -87,6 +87,18 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
             continue; // 竞争者赢了,重试
         }
 
+        // 同 pid 重认领(采样率切换:宿主对所有插件重新 prepareToPlay → doClaim 再走一遍)。
+        // slot 被自己占用时永远不满足接管双条件(pid 探活成功),必须在此直接刷新并认领成功,
+        // 否则 Input 收到 kConflict 会停心跳、停环,Output 收窄 connected_mask → 总线永久静音(P0)。
+        if (cur == kSlotActive && s.pid == pid)
+        {
+            // 自己拥有 slot,无需 CAS;fillInputSlot 刷新 sample_rate/max_block/心跳。
+            // 注意:fillInputSlot 会把 flags 清零 —— spike 里 capture 未启用、muted 位由 Input
+            // 100ms 后重新置位,可接受;T06 正式版需保留 kFlagCapturing。
+            fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
+            return ClaimResult::kClaimed;
+        }
+
         // 被占:接管双条件(J10:心跳陈旧 ≥5000ms 且 pid 探活失败)。
         const u64 hb = s.heartbeat_ms.load(std::memory_order_acquire);
         if (isTakeoverStale(hb, nowMs) && !isProcessAlive(s.pid))
@@ -148,6 +160,16 @@ Registry::ClaimResult Registry::claimOutput(u32 pid, u64 nowMs)
             }
             continue;
         }
+
+        // 同 pid 重认领(采样率切换 / 同进程新实例):只刷新 pid/心跳,【不清】 connected_mask。
+        // 清 mask 会把 Output 自己的 Input 拓扑判定打掉 → Input 健康判定跟掉 → 总线静音(P0)。
+        if (cur == kSlotActive && s.pid == pid)
+        {
+            s.pid = pid;
+            s.heartbeat_ms.store(nowMs, std::memory_order_relaxed);
+            return ClaimResult::kClaimed;
+        }
+
         const u64 hb = s.heartbeat_ms.load(std::memory_order_acquire);
         if (isTakeoverStale(hb, nowMs) && !isProcessAlive(s.pid))
         {

@@ -207,6 +207,57 @@ TEST_CASE("Registry 双阈值接管(J10)", "[s1][registry][j10]")
     reg.releaseInput(2, myPid);
 }
 
+TEST_CASE("Registry 同 pid 重认领(采样率切换)成功并刷新 slot", "[s1][registry][reclaim]")
+{
+    Registry reg(kTestGroupRegistry);
+    REQUIRE(reg.open() == Registry::ClaimResult::kClaimed);
+    const u32 pid = static_cast<u32>(::GetCurrentProcessId());
+    const u64 now = steadyNowMs();
+
+    REQUIRE(reg.claimInput(3, pid, 44100, 512, now) == Registry::ClaimResult::kClaimed);
+    InputSlot* s = reg.inputSlot(3);
+    REQUIRE(s != nullptr);
+    REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
+    REQUIRE(s->sample_rate == 44100);
+
+    // 采样率切换后的重认领:slot 被【自己】占用 → 直接成功并刷新 sample_rate/max_block/心跳,
+    // 不得 kConflict(否则 Input 停心跳停环 → Output mask 塌缩 → 总线静音,P0)。
+    const u64 now2 = now + 100;
+    REQUIRE(reg.claimInput(3, pid, 48000, 256, now2) == Registry::ClaimResult::kClaimed);
+    REQUIRE(s->pid == pid);
+    REQUIRE(s->sample_rate == 48000);
+    REQUIRE(s->max_block == 256);
+    REQUIRE(s->heartbeat_ms.load(std::memory_order_acquire) == now2);
+    REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
+
+    // 他人 pid 仍冲突(同 pid 分支不放宽接管语义)。
+    REQUIRE(reg.claimInput(3, pid + 1, 48000, 256, now2) == Registry::ClaimResult::kConflict);
+    reg.releaseInput(3, pid);
+}
+
+TEST_CASE("Registry claimOutput 同 pid 重认领不清 connected_mask", "[s1][registry][reclaim]")
+{
+    Registry reg(kTestGroupRegistry);
+    REQUIRE(reg.open() == Registry::ClaimResult::kClaimed);
+    const u32 pid = static_cast<u32>(::GetCurrentProcessId());
+    const u64 now = steadyNowMs();
+
+    REQUIRE(reg.claimOutput(pid, now) == Registry::ClaimResult::kClaimed);
+    OutputSlot* out = reg.outputSlot();
+    REQUIRE(out != nullptr);
+    const u32 mask = 0x5a5a;
+    out->connected_mask.store(mask, std::memory_order_relaxed);
+
+    // 采样率切换重认领:同 pid → 成功,且 connected_mask 保持(清 mask 会打掉 Input 拓扑判定,P0)。
+    REQUIRE(reg.claimOutput(pid, now + 100) == Registry::ClaimResult::kClaimed);
+    REQUIRE(out->connected_mask.load(std::memory_order_relaxed) == mask);
+    REQUIRE(out->state.load(std::memory_order_acquire) == kSlotActive);
+
+    // 他人 pid 仍冲突。
+    REQUIRE(reg.claimOutput(pid + 1, now + 200) == Registry::ClaimResult::kConflict);
+    reg.releaseOutput(pid);
+}
+
 TEST_CASE("RampSwitcher 稳态静音/直通", "[s1][stage]")
 {
     RampSwitcher rs;
