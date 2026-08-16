@@ -28,6 +28,7 @@
 
 - 15 轨工程**不设 SCVB_CHANNEL**,让 15 个 Input 按加载顺序自动占 ch1..ch15(求和可交换,null test 不依赖具体号);V14/V15 是 stereo 轨,channels 列应显示 2。
 - 冲突/单实例测试才设 SCVB_CHANNEL(如 SCVB_CHANNEL=3 让两个实例抢 ch3)。
+- **设置方式**:环境变量在插件加载时读取一次。先关闭 DAW → PowerShell 执行 `$env:SCVB_CHANNEL="3"`(G-5 用 `$env:SCVB_RING_FRAMES="8192"`,G-10 用 `$env:SCVB_GROUP="2"`)→ **从同一个窗口**启动 DAW 再加载工程;该格做完后关闭 DAW、重新普通启动即回到默认。
 
 ## 0c. 真人声素材(可选:真实数据格)
 
@@ -44,6 +45,13 @@
 真实数据格操作与 click 格完全相同:先渲染无插件的 ref,再装插件渲染,
 逐样本 null(判据 10 §1.1.3);**离线渲染格建议用真人声**(正是 §8 大块路径的实战触发面)。
 
+## 0d. 修复版重跑须知(2026-08-16)
+
+本包为**修复版**(修复:同进程重认领通道冲突 → 导出/切换采样率后系统锁死静音的 bug;心跳定时器跨宿主挂起存活)。
+- §1 通用准备**从头重做**:工程采样率设为 **48000**(Project → Project Setup),导出也选 48000(与工程一致,避免重采样路径);重导 `ref_A` / `ref_Aprime`(上一轮的旧 ref 留作对照,不作判据)。
+- **无需重跑**(你已在重启后健康态完成,结果有效):C-10、C-12、C-14;C-1 可顺手重记一次。
+- **必须用本修复版重跑**:C-2、C-3、C-4、C-5、C-6、C-7、C-8、C-9、C-11(上一轮这些格在 bug 态下完成,数据无效:mask 恒 0、导出为纯静音、gapCount 空洞为 0)。
+- **G 系列(全部)用本修复版跑**;G-2 与重导后的 `ref_Aprime` 对 null。
 ## 1. 通用准备(每个 DAW 都做)
 
 1. 新建工程,采样率 48000,buffer 512;导入 15 轨素材到 V01..V15(**V14/V15 必须建为 stereo 轨**);建 stereo 总线 **VOX BUS**,15 轨输出全指向它。
@@ -113,7 +121,7 @@ mkdir C:\Users\lenovo\deepseekHarness\S1-2026-08-16
 | C-10 | 单轨 solo/mute 各 5 轨;mute 轨推子拉到 −∞                               | 记录三类行为(跳过处理/照常送静音/照常送原信号);solo/mute 对 SCVB 通路失效预期   |
 | C-11 | Freeze 一条轨 / Render in Place;打开产物听                              | 预期整段静音;替换式渲染是否覆盖原素材 → 用户数据警告                            |
 | C-12 | 任务管理器强杀 Cubase 后重开工程                                        | 自动重连,gapCount 从 0                                                          |
-| C-13 | 两个 Input 都设 ch3(设 SCVB_CHANNEL=3)                                  | 后到者冲突,不写环;csv 里 ch3 write_head 单调无回退                              |
+| C-13 | 两个 Input 都设 ch3:新建 2 轨小工程插 2 个 Input;关闭 Cubase → PowerShell 执行 `$env:SCVB_CHANNEL="3"` → **同一窗口**启动 Cubase 加载工程播放(设置方式见 §0b) | 后到者冲突,不写环;csv 里 ch3 write_head 单调无回退 |
 | C-14 | 总线再插一个 Output                                                     | 第二只读、总线直通;删第一个 ≤3s 接管                                            |
 
 ## 4. R 系列(REAPER 7,仅兜底——只做 Cubase 没有的这 4 格)
