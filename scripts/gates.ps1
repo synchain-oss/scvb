@@ -213,7 +213,7 @@ else {
   else {
     $logDir = Join-Path $BuildDir 'pluginval-logs'
     New-Item -ItemType Directory -Force $logDir | Out-Null
-    # [J68/issue #24] 只统计本 spike 的两个 bundle;其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
+    # [issue #24] 只统计本 spike 的两个 bundle;其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
     $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') })
     $pv = $true
     if ($bundles.Count -ne 2) {
