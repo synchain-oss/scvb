@@ -213,7 +213,8 @@ else {
   else {
     $logDir = Join-Path $BuildDir 'pluginval-logs'
     New-Item -ItemType Directory -Force $logDir | Out-Null
-    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory)
+    # [J68/issue #24] 只统计本 spike 的两个 bundle;其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
+    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') })
     $pv = $true
     if ($bundles.Count -ne 2) {
       Write-Host ("  期望 2 个 .vst3 bundle(SCVB Input / SCVB Output),实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
@@ -254,7 +255,7 @@ else {
     try {
       $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
       New-Item -ItemType Directory -Force $logDir | Out-Null
-      $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory)
+      $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') })
       if ($bundles.Count -ne 2) {
         Write-Host ("  期望 2 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
         $pv = $false
