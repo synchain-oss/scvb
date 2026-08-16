@@ -64,7 +64,9 @@ void InputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 
 void InputProcessor::releaseResources()
 {
-    stopTimer();
+    // P0 修复:不再 stopTimer()。宿主挂起非渲染轨插件时(如 Render-in-Place、采样率切换重准备)
+    // 会调 releaseResources;停心跳会让 Output 把本 channel 从 connected_mask 摘掉,恢复后总线缺轨。
+    // 心跳/健康仲裁定时器跨宿主挂起周期存活(析构仍会 stopTimer + releaseInput)。
 }
 
 bool InputProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -160,6 +162,8 @@ void InputProcessor::doClaim()
     {
         ring_ = std::make_unique<scvb::AudioRing>(group_, channel_);
     }
+    // 采样率切换重认领路径:同 pid 认领成功后无条件重挂环(SegmentBackendWin32::map 先 reset 再重映射,
+    // 已打开时走 attach 分支重写几何字段 sample_rate 并 epoch+1),保证环头真实、读方弃旧代(P0 修复)。
     ring_->createForInput(static_cast<u32>(sampleRate_), scvb::ringFramesFromEnv(), static_cast<u32>(srcChannels_));
 
     claimed_ = true;

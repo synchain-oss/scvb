@@ -80,7 +80,9 @@ void OutputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 
 void OutputProcessor::releaseResources()
 {
-    stopTimer();
+    // P0 修复:不再 stopTimer()。宿主挂起非渲染轨插件时(Render-in-Place 等)会调 releaseResources;
+    // 停轮询会让 connected_mask 停更、Input 心跳失联 → mask 塌缩、恢复后总线静音。
+    // 轮询/心跳定时器跨宿主挂起周期存活(析构仍会 stopTimer + releaseOutput)。
 }
 
 bool OutputProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
