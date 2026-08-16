@@ -18,5 +18,5 @@
 
 ## 审批
 
-- 待 DeepSeek native 可实现性评审(§9.3 检查清单:34 函数可实现性、32 项定名、`requestWaveform` 同步/异步口径、`heartbeatAgeMs`/`generation`/`occupiedMask`/`channelLabels` 载荷字段)
-- 用户明确批准后:契约状态行改「已冻结」,PR 挂 `status/frozen-contract` 标签合入
+- [x] DeepSeek native 可实现性评审:**通过**(2026-08-16;34+7 函数全可实现、32 项定名确认、`requestWaveform` 定案「异步」、`heartbeatAgeMs`/`generation`/`occupiedMask`/`channelLabels` 四载荷字段可实现;评审附注已回填契约 §1.8/§1.27/§2.6/§4.1/§9.3)
+- [x] 用户批准(2026-08-16):契约状态行已改「已冻结」,PR 挂 `status/frozen-contract` 标签(用户人工审核后合入)

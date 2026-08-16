@@ -1,7 +1,7 @@
 # SCVB_CONTRACT —— SCVB JS↔C++ 桥契约(冻结契约)
 
-> **版本**:1.0(草案)
-> **状态**:草案——待 DeepSeek native 可实现性评审 + 用户批准后冻结;冻结后按 §9 走「只增不改」变更流程
+> **版本**:1.0(已冻结)
+> **状态**:已冻结(2026-08-16;DeepSeek native 可实现性评审通过 + 用户批准);此后任何改动按 §9 走「只增不改」变更流程
 > **真源**:函数名/签名形态/事件名 = `masterPlan/plan/05-ui-spec.md` §1.4(含 §2.3a payload、§2.0/§2.1/§2.3/§2.4/§3 组件表、§6.2/§6.3 数据面);载荷字段语义与线程/节流/防回环细则 = `masterPlan/plan/01-architecture.md` §6.1/§6.4(ctrl 段 §4.4、跨组探测 §4.5);参数面/state 字段 = `docs/constitution/params-v0.md`(v2.2);IPC 段与枚举 = `docs/constitution/ipc-contract-v0.md`(v1.5);裁定规则 = `masterPlan/plan/07-execution-plan.md` T25
 
 ---
@@ -92,7 +92,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, guide_seen:bool, tour_seen:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
-| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(Tab4 存储状态显示,04 §5.4/ADR-007);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。 |
+| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(Tab4 存储状态显示,04 §5.4/ADR-007);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步;每个编辑器生命周期至少调用一次 |
@@ -176,7 +176,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `mode`: **`"follow" \| "daw_loop" \| "manual"`**(三值,默认 `follow`);`startS: f64`;`endS: f64` |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` 或 `{ok:false, reason:"noLoop"}` |
-| 语义 | 写 state `global.range`(J04)。`follow` 时**忽略 `startS`/`endS`**(调用方可传 0,C++ 不解释),**无哨兵约定**——v0 的「manual+[0,曲末] / start=end=0」已废除。`manual` 要求 `startS < endS`,否则返回 `{ok:false, reason:"badArg"}` 且不改 state。`daw_loop` 时 C++ 跟随宿主循环区;宿主 `kCycleValid` 瞬态缺失时**保持最后有效值**、不回退档位、不清空起止(04 §2.2 条 4)。Tab3「设为范围」按钮即以 `mode="manual"` 调用本函数。 |
+| 语义 | 写 state `global.range`(J04)。`follow` 时**忽略 `startS`/`endS`**(调用方可传 0,C++ 不解释),**无哨兵约定**——v0 的「manual+[0,曲末] / start=end=0」已废除。`manual` 要求 `startS < endS`,否则返回 `{ok:false, reason:"badArg"}` 且不改 state。`daw_loop` 时 C++ 跟随宿主循环区;宿主 `kCycleValid` 瞬态缺失时**保持最后有效值**、不回退档位、不清空起止(04 §2.2 条 4)。宿主 loop 端点仅提供 PPQ 时,秒值按 `PPQ × 60 / bpm` 线性近似(best-effort,变拍工程不保证精确;评审附注 2026-08-16)。Tab3「设为范围」按钮即以 `mode="manual"` 调用本函数。 |
 | 拒绝态 | `{ok:false, reason:"badArg"}`(manual 且 `startS >= endS`);宿主从不提供 loop 字段时 `daw_loop` 返回 `{ok:false, reason:"noLoop"}`(UI 侧该档位 disabled 但**绝不隐藏**) |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
@@ -380,7 +380,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 语义 | 拉取式下采样(canvas 分块渲染)。C++ 从特征流(`kw_ms`/`peak`)降采样出每列 min/max dB 包络、VAD 判决位、覆盖位、stale 位与 passId(不同采集轮次底色微差)。**`valleys[]`(T25 新增字段,见 §9.2)** = 该区间内的**能量谷时间点列表(秒,升序)**,供边界拖拽吸附(05 §6.3 明文「由 C++ 在 `requestWaveform` 附带谷点列表」但未定字段名)。未覆盖列:`covered=0` 且 `minDb=maxDb=-INF 哨兵 -160`。 |
 | 拒绝态 | 参数越界(`ch`/`cols` 越界、`startS >= endS`) |
 | 撤销 | 否 |
-| 线程/频率 | **[M] 受理,结果以 Promise 异步 resolve**(降采样可在 [W] 完成后回 [M] 兑现——每次调用要从特征环降采样 6 个 `cols` 长数组 + 谷点检测,视口约 1000 列 × 每可见轨一次,不宜在消息线程同步做完);**一次调用一次 resolve,绝不进事件流**(01 §6.4)。UI 侧按视口变化拉取,静止 120ms 后取新块,块内 LRU 缓存归 UI(05 §6.3)。**同步/异步的最终口径待 DeepSeek native 评审确认**(JUCE `withNativeFunction` 的 completion 回调两种都可实现) |
+| 线程/频率 | **[M] 受理,结果以 Promise 异步 resolve**(降采样可在 [W] 完成后回 [M] 兑现——每次调用要从特征环降采样 6 个 `cols` 长数组 + 谷点检测,视口约 1000 列 × 每可见轨一次,不宜在消息线程同步做完);**一次调用一次 resolve,绝不进事件流**(01 §6.4)。UI 侧按视口变化拉取,静止 120ms 后取新块,块内 LRU 缓存归 UI(05 §6.3)。**定案(DeepSeek native 评审,2026-08-16):异步**——JUCE 8 `withNativeFunction` 的 Promise completion 可任意线程回调,降采样放 [W] 完成后回 [M] 兑现;native 须保证每次调用**恰好一次** completion(含 `badArg`),UI promise 永不悬挂 |
 | 真源 | 05 §1.4 / §6.3;01 §6.4 |
 
 ### 1.28 `setUiScale(f)` / 1.29 `commitUiScale()`
@@ -519,7 +519,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 频率 | **30 Hz**(05 §1.4 逐字;同 §2.5,**A-28**:逐类频率为准,基准 Timer 不入契约) |
 | 载荷 | `{ timeS:f64, isPlaying:bool, loopStartS?:f64, loopEndS?:f64, inRange:bool }` |
-| 字段纪律 | `loopStartS`/`loopEndS` 仅在宿主提供且有效(`kCycleValid`)时出现;缺失即字段不存在(**不发哨兵值**)。`inRange` = 播放头是否落在 `global.range` 内(`mode="follow"` 时恒 true——follow 无界,05 §2.1 ②)。UI 侧 rAF 插值平滑。 |
+| 字段纪律 | `loopStartS`/`loopEndS` 仅在宿主提供且有效(`kCycleValid`)时出现;缺失即字段不存在(**不发哨兵值**)。宿主仅提供 PPQ 时按 §1.8 同款 best-effort 近似换算。`inRange` = 播放头是否落在 `global.range` 内(`mode="follow"` 时恒 true——follow 无界,05 §2.1 ②)。UI 侧 rAF 插值平滑。 |
 | UI 消费 | 播放头竖线、采集中/出范围提示、PRINT 态判定(`output_enabled ∧ isPlaying ∧ inRange`) |
 | 真源 | 05 §1.4 / §2.1 |
 
@@ -631,7 +631,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 频率 | 变化时(diff-then-emit;首帧必发) |
 | 载荷 | `{ channel_id:0..15, group_id:1..8, claim:"unassigned"\|"idle"\|"active"\|"conflict"\|"abiMismatch"\|"srMismatch", abi:u32, abi_remote?:u32, ui:{scale:f32, language:"zh"\|"en"\|"fr"} }` |
-| 字段纪律 | `claim` 六态定义见 §5.2。`abi` = 本机 abi(**T25 定名**,§9.2),`abi_remote` = 探测到的对端 abi(**T25 定名**,§9.2)——05 §3 明文「两端 abi 占位符取 `scvb.state`」,供 `banner.abiMismatch`「(Output abi {a} / Input abi {b})」渲染;探测不到时 `abi_remote` 字段不存在。`ui:{scale, language}` 为 `setUiScale`/`setLang` 写入后的回推路径(**T25 定名**,§9.2;与 §3.1 快照同拼写,A-30 统一)。**`capturing` 不在本事件**——本实例 `InputSlot.flags` bit0 的唯一桥面落点是 §4.2 `scvb.conn.capturing`(逐字照 05 §1.4 Input events 表;消除同一位的双载,§0.1 第 4 条)。05 §3「采集指示」行的数据来源列写作 `scvb.state`,属 05 内部偏差,记 §8.3。 |
+| 字段纪律 | `claim` 六态定义见 §5.2。`abi` = 本机 abi(**T25 定名**,§9.2;**取值 = ipc 段布局 abi,`RegistryHeader.abi` 同源;state chunk abi 不落本字段,只经 `scvb.error.newerState.detail` 暴露**),`abi_remote` = 探测到的对端 abi(**T25 定名**,§9.2)——05 §3 明文「两端 abi 占位符取 `scvb.state`」,供 `banner.abiMismatch`「(Output abi {a} / Input abi {b})」渲染;探测不到时 `abi_remote` 字段不存在。`ui:{scale, language}` 为 `setUiScale`/`setLang` 写入后的回推路径(**T25 定名**,§9.2;与 §3.1 快照同拼写,A-30 统一)。**`capturing` 不在本事件**——本实例 `InputSlot.flags` bit0 的唯一桥面落点是 §4.2 `scvb.conn.capturing`(逐字照 05 §1.4 Input events 表;消除同一位的双载,§0.1 第 4 条)。05 §3「采集指示」行的数据来源列写作 `scvb.state`,属 05 内部偏差,记 §8.3。 |
 | UI 消费 | 组胶囊/通道卡选中态、claim 错误态红 pill 与卡内横幅、`banner.abiMismatch` 两端 abi 数字 |
 | 真源 | 05 §1.4 / §3;01 §6.2;与 §3.1 快照同拼写(A-30 统一) |
 
@@ -771,7 +771,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 
 ```json
 {
-  "contractVersion": "1.0-draft",
+  "contractVersion": "1.0",
   "output": {
     "functions": [
       {"name": "requestInitialState", "params": [], "returns": "OutputSnapshot"},
@@ -922,7 +922,7 @@ T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本�
 
 ### 9.0 变更纪律
 
-1. 本契约当前为 **1.0(草案)**。冻结条件:DeepSeek native 可实现性评审通过 + 用户明确批准。
+1. 本契约 **1.0 已于 2026-08-16 冻结**(DeepSeek native 可实现性评审通过 + 用户明确批准,PR #33)。
 2. 冻结后任何改动一律走仓库 `CLAUDE.md` §5 的冻结契约变更规范:① 先获用户明确批准;② 写变更文档到 `docs/contract-changes/<YYYYMMDD>-<slug>.md`;③ PR 挂 `status/frozen-contract` 标签。
 3. 「只增不改」的允许面见 §0.1 第 3 条。任何改名/删除/收窄一律视为**契约破坏性变更**(`contractVersion` 主版本号 +1),须同批更新 mock 后端、C++ 常量表与 `check-bridge-parity.mjs`。**该变更不触发 ipc/params 的 `abi` 升级**——`abi` 仅由 ipc-contract-v0 §5(共享内存段布局改动 → abi+1 且段名 v2,新旧不互认)与 params-v0 §四(state chunk 拒载/迁移判定)定义的改动触发。桥面是纯进程内 JS↔C++ 接口,改名既不改段布局也不改 state chunk 结构,**绝不可为一次桥面重命名把 ipc abi 升到 2**。
 4. 每次改动必须同步更新 §7 manifest 与本节版本行,并跑 `node scripts/check-bridge-parity.mjs` 退出码 0。
@@ -982,7 +982,7 @@ T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本�
 
 ### 9.3 冻结前检查清单
 
-- [ ] DeepSeek native 侧确认 §1/§3 全部函数可实现,§9.2 **32 项**定名无异议(含 `requestWaveform` 的同步/异步口径 §1.27、`heartbeatAgeMs`/`generation`/`occupiedMask` 三个新载荷字段的可实现性,以及统筹裁定新增的 `confirmPrintGuard`(§1.34)与 `channelLabels`(§4.3))
+- [x] DeepSeek native 侧确认(**2026-08-16 通过**):§1/§3 全部 34+7 函数可实现;§9.2 **32 项**定名无异议;`requestWaveform` 口径定案「异步」(§1.27);`heartbeatAgeMs`/`generation`/`occupiedMask`/`channelLabels` 四载荷字段可实现;`confirmPrintGuard`(§1.34)可行。附注:`requestWaveform.passId` 与 `scvb.segments.stale` 依赖特征段数据面最终落地(J35 run_id / fingerprint watchdog),桥面形状先冻结、首版可回退常量,值填充不触发契约变更。
 - [x] §9.1 五项已由统筹会话裁定并回填(**A-28~A-32**,2026-08-16);DeepSeek 评审可按 §9.0 重开
-- [ ] `node scripts/check-bridge-parity.mjs` 退出码 0
-- [ ] 用户批准后:状态行改「已冻结」,新增 `docs/contract-changes/` 首条记录,PR 挂 `status/frozen-contract`
+- [x] `node scripts/check-bridge-parity.mjs` 退出码 0(2026-08-16 实测;当前 B/C 两侧 SKIP,三方比对待 T28/T29)
+- [x] 用户批准(**2026-08-16**):状态行已改「已冻结」;变更记录 `docs/contract-changes/20260816-scvb-contract-v1-initial.md` 随本 PR 入库;PR 挂 `status/frozen-contract` 标签
