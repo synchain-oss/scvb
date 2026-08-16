@@ -66,7 +66,9 @@ private:
     // IPC
     u32 pid_ = 0;
     std::unique_ptr<scvb::Registry> registry_;
-    std::array<std::unique_ptr<scvb::AudioRing>, scvb::kMaxChannels> rings_;
+    // v4:裸指针数组(64 位对齐,读取不撕裂);对象创建后立即交还泄漏池,永不析构。
+    // [M] 只在 nullptr 时创建并发布,[A] 每块只读。
+    std::array<scvb::AudioRing*, scvb::kMaxChannels> ringsRaw_{};
     std::atomic<u32> outputActive_{0}; // 0=observer/off,1=active(主实例)
     bool observer_ = false;
 

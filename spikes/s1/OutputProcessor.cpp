@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "LeakPool.h"
+
 namespace
 {
 // 新上线 channel 置 mask 位后延迟注入的时长(J32:≥200ms 或 Input muted 位先到者)。
@@ -44,6 +46,12 @@ OutputProcessor::~OutputProcessor()
     if (outputActive_.load(std::memory_order_relaxed) == 1 && registry_ != nullptr)
     {
         registry_->releaseOutput(pid_);
+    }
+    // v4 崩溃修复:registry 对象交还进程寿命池,绝不析构(见 LeakPool.h);
+    // ringsRaw_ 指向的对象早已入池。配合 SegmentView 泄漏,在途 readBlock 安全。
+    if (registry_)
+    {
+        retiredRegistries().push_back(std::move(registry_));
     }
 }
 
@@ -168,7 +176,7 @@ void OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
             {
                 continue;
             }
-            auto& ring = rings_[ch];
+            scvb::AudioRing* ring = ringsRaw_[ch];
             if (ring == nullptr || !ring->isOpen())
             {
                 continue;
@@ -279,13 +287,16 @@ void OutputProcessor::pollChannels(u64 now)
             if (online)
             {
                 connected |= (1u << ch);
-                if (rings_[ch] == nullptr)
+                if (ringsRaw_[ch] == nullptr)
                 {
-                    rings_[ch] = std::make_unique<scvb::AudioRing>(group_, ch + 1);
+                    // v4:对象创建后立即交还泄漏池(永不析构),仅发布裸指针。
+                    auto ring = std::make_unique<scvb::AudioRing>(group_, ch + 1);
+                    ringsRaw_[ch] = ring.get();
+                    retiredRings().push_back(std::move(ring));
                 }
-                if (!rings_[ch]->isOpen())
+                if (!ringsRaw_[ch]->isOpen())
                 {
-                    rings_[ch]->openForOutput();
+                    ringsRaw_[ch]->openForOutput();
                 }
                 if (onlineSince_[ch] == 0)
                 {
@@ -309,7 +320,7 @@ void OutputProcessor::pollChannels(u64 now)
             onlineSince_[ch] = 0;
         }
     }
-    usableMask_.store(usable, std::memory_order_release); // release:发布 rings_[ch] 元数据给 [A]
+    usableMask_.store(usable, std::memory_order_release); // release:发布 ringsRaw_[ch] 元数据给 [A]
     // 写 connected_mask(Input 健康判定依据;SR 不符/离线/心跳陈旧 → mask bit=0)。
     scvb::OutputSlot* out = registry_->outputSlot();
     if (out != nullptr)

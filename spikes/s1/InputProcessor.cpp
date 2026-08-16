@@ -3,6 +3,8 @@
 
 #include <cstdlib>
 
+#include "LeakPool.h"
+
 namespace
 {
 // Input state 布局(ADR-004「Input state 只存 channel id + UI 偏好」+ [J66] group_id)。
@@ -43,6 +45,16 @@ InputProcessor::~InputProcessor()
     if (claimed_ && registry_ != nullptr)
     {
         registry_->releaseInput(channel_, pid_);
+    }
+    // v4 崩溃修复:环与 registry 对象交还进程寿命池,绝不析构(见 LeakPool.h)。
+    // 配合 SegmentView 泄漏,在途 writeBlock 不会落到已解映射地址。
+    if (ring_)
+    {
+        retiredRings().push_back(std::move(ring_));
+    }
+    if (registry_)
+    {
+        retiredRegistries().push_back(std::move(registry_));
     }
 }
 
@@ -101,7 +113,15 @@ void InputProcessor::doClaim()
     // 组号变化 → 重建 IPC 对象(组号 G 是构造参数)。
     if (registry_ == nullptr || registry_->group() != group_)
     {
+        if (registry_)
+        {
+            retiredRegistries().push_back(std::move(registry_));
+        }
         registry_ = std::make_unique<scvb::Registry>(group_);
+        if (ring_)
+        {
+            retiredRings().push_back(std::move(ring_));
+        }
         ring_ = std::make_unique<scvb::AudioRing>(group_, channel_ == 0 ? 1 : channel_);
     }
 
@@ -163,6 +183,8 @@ void InputProcessor::doClaim()
     // 环可能因 channel 变化而换对象。
     if (ring_->channel() != channel_ || ring_->group() != group_)
     {
+        // v4:替换前旧环交还泄漏池(在途写安全),绝不析构。
+        retiredRings().push_back(std::move(ring_));
         ring_ = std::make_unique<scvb::AudioRing>(group_, channel_);
     }
     // 采样率切换重认领路径:同 pid 认领成功后无条件重挂环(SegmentBackendWin32::map 先 reset 再重映射,
