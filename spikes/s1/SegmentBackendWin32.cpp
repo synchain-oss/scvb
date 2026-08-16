@@ -65,16 +65,12 @@ SegmentView::~SegmentView()
 
 void SegmentView::reset()
 {
-    if (base != nullptr)
-    {
-        ::UnmapViewOfFile(base);
-        base = nullptr;
-    }
-    if (mapping != nullptr)
-    {
-        ::CloseHandle(mapping);
-        mapping = nullptr;
-    }
+    // v4 崩溃修复:spike 阶段故意不 UnmapViewOfFile/CloseHandle(泄漏视图)。
+    // 实测 Cubase 15 会在未完全挂起处理线程时销毁/重建插件实例;在途
+    // writeBlock/readBlock 仍持有旧视图指针,解映射即 0xC0000005。
+    // 视图引用计数由内核管理,进程退出统一回收;T06 正式版改为引用计数 + 握手释放。
+    base = nullptr;
+    mapping = nullptr;
     size = 0;
     created = false;
 }
