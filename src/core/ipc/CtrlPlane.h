@@ -184,7 +184,7 @@ private:
 
     ISegmentBackend& backend_;
     u32 group_ = 1;
-    SegmentView view_;
+    SegmentHandle handle_; // 引用计数句柄:析构经 release() 握手释放(消息线程)
     unsigned char* base_ = nullptr;
 
     // 命令环生产者 seq 计数(Input [M] 单线程)。

@@ -86,6 +86,15 @@ InitResult SegmentBackendInProcess::openExisting(const std::wstring& name, Segme
     return InitResult::kOk;
 }
 
+void SegmentBackendInProcess::unmap(SegmentView& view)
+{
+    // 缓冲由全局 map 持有(进程寿命),此处只清视图指针,不释放缓冲——其它实例可能仍引用同名段。
+    view.base = nullptr;
+    view.mapping = nullptr;
+    view.size = 0;
+    view.created = false;
+}
+
 void SegmentBackendInProcess::resetAll()
 {
     std::lock_guard<std::mutex> lock(segmentsMutex());

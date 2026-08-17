@@ -22,6 +22,9 @@ public:
     // 仅打开已存在段;不存在 → kFailed。
     InitResult openExisting(const std::wstring& name, SegmentView& view) override;
 
+    // 解映射:只清视图指针,缓冲由全局 map 持有(进程寿命,其它实例仍可能引用)。
+    void unmap(SegmentView& view) override;
+
     // 清空所有模拟段(测试隔离:每个 TEST_CASE 开始时调用,避免跨用例共享残留)。
     static void resetAll();
 };

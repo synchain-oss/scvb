@@ -34,9 +34,12 @@ public:
     // 段不存在 → kFailed。映射整段;view.size 回填真实段大小(v6,供容量校验)。
     InitResult openExisting(const std::wstring& name, SegmentView& view) override;
 
-    // 01 §4.0:音频段可选 VirtualLock(先提升工作集配额再锁定);失败降级为仅预触碰并记日志,
-    // 绝不失败。
-    static void tryVirtualLock(const SegmentView& view);
+    // 解映射 + 关闭句柄(仅消息线程;与 createOrOpen 对称)。
+    void unmap(SegmentView& view) override;
+
+    // 创建者写触碰后锁定(01 §4.0 / DeepSeek 复审【重要】4):VirtualLock,先提升工作集配额;
+    // 失败降级为仅预触碰并记日志,绝不失败。只读 attach 方不调用。
+    void tryLock(const SegmentView& view) override;
 };
 
 } // namespace scvb

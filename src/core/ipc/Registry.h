@@ -76,6 +76,19 @@ inline u32 resolveInputChannelForClaim(u32 envCh, u32 stateCh, bool claimed, u32
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// AudioRingHeader 几何字段快照纪律(供 T23/T24 环读写实现引用;几何 = sample_rate / ring_frames /
+// channels 三个 plain u32,非原子)。两条硬性纪律:
+// 1. 几何只在 attach 时读一次,快照进本地(不可分快照对象/结构),后续每块只读本地快照,绝不每块
+//    重读段头几何字段。段头几何与视图必须作为同一快照原子发布,否则宿主编排(mono⇄stereo 重建环)
+//    会让读/写线程读到「新几何 + 旧视图」或「旧几何 + 新视图」的撕裂组合 → 越界写共享内存
+//    (0xC0000005;S1 v5 AudioRingGeometry 快照教训)。
+// 2. 段恒按 stereo 容量创建(ring_frames × 2 float),声道切换(1→2)不扩容段——mono 只用
+//    ring_frames×1 的前半,stereo 用满容量;几何 channels 字段在 prepareToPlay 写定后运行期不变。
+//    任何依赖「切换声道时重开更大段」的假设都违反此纪律(ring_frames 口径 = 帧数,不是样本数,
+//    见 SegmentLayout.h AudioRingHeader 注释)。
+// ---------------------------------------------------------------------------
+
 class Registry
 {
 public:
@@ -114,6 +127,10 @@ public:
     // 返回指向共享内存的可变指针(const 方法:Registry 的 const 与共享内存内容无关)。
     InputSlot* inputSlot(u32 channel) const; // channel ∈ [1,15],非法/未打开 → nullptr
     OutputSlot* outputSlot() const;
+
+    // 音频线程按块租约(引用计数握手释放):块首 lease(),块末析构归还;持有期内保证 registry
+    // 段不解映射(消息线程 release() 会推迟到 leaseCount 归零)。release() 请求后返回空租约。
+    SegmentHandle::Lease lease() const { return handle_.lease(); }
 
     // claim 一个 Input channel(消息线程;CAS 0→1 填字段→2;被占且满足接管双条件则接管)。
     ClaimResult claimInput(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
@@ -161,7 +178,7 @@ private:
     u32 group_ = 1;
     ProcessProbe probe_;
     AbiMismatchHandler abiMismatchHandler_;
-    SegmentView view_;
+    SegmentHandle handle_; // 引用计数句柄:析构/改组经 release() 握手释放(消息线程)
     RegistryHeader* header_ = nullptr;
 
     // 本实例持有的资源(changeGroup/析构释放用)。

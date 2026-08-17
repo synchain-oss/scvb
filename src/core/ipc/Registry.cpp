@@ -65,24 +65,27 @@ Registry::~Registry()
 {
     releaseOwnedSlot();
     header_ = nullptr;
-    view_.reset();
+    handle_.release(); // 握手释放(消息线程;leaseCount 归零后经 backend->unmap 解映射)
 }
 
 Registry::ClaimResult Registry::open()
 {
     header_ = nullptr;
-    view_.reset();
-    const auto r = backend_.createOrOpen(registryFullName(group_), kRegistrySegmentSize, view_);
+    handle_.release(); // 释放旧句柄(重开/改组路径)
+    SegmentView view;
+    const auto r = backend_.createOrOpen(registryFullName(group_), kRegistrySegmentSize, view);
     if (r != InitResult::kOk)
     {
         return ClaimResult::kUnavailable;
     }
-    auto* header = static_cast<RegistryHeader*>(view_.base);
-    const auto ir = backend_.initHeader(view_, &header->magic, &header->abi, &header->generation, kInputSlotOffset);
+    auto* header = static_cast<RegistryHeader*>(view.base);
+    // owner 角色(createOrOpen):allowOverwrite=true(覆盖式重初始化分支仅限创建者)。
+    const auto ir = backend_.initHeader(view, &header->magic, &header->abi, &header->generation, kInputSlotOffset,
+                                        /*initData=*/{}, /*allowOverwrite=*/true);
     if (ir == InitResult::kAbiMismatch)
     {
         const u32 remoteAbi = header->abi.load(std::memory_order_acquire);
-        view_.reset();
+        backend_.unmap(view); // 释放刚映射的视图
         header_ = nullptr;
         if (abiMismatchHandler_)
         {
@@ -92,9 +95,10 @@ Registry::ClaimResult Registry::open()
     }
     if (ir != InitResult::kOk)
     {
-        view_.reset();
+        backend_.unmap(view);
         return ClaimResult::kUnavailable;
     }
+    handle_ = SegmentHandle(std::move(view), &backend_);
     header_ = header;
     return ClaimResult::kClaimed;
 }
@@ -115,7 +119,7 @@ InputSlot* Registry::inputSlot(u32 channel) const
     {
         return nullptr;
     }
-    auto* base = static_cast<char*>(view_.base);
+    auto* base = static_cast<char*>(handle_.base());
     return reinterpret_cast<InputSlot*>(base + kInputSlotOffset + (channel - 1) * sizeof(InputSlot));
 }
 
@@ -125,7 +129,7 @@ OutputSlot* Registry::outputSlot() const
     {
         return nullptr;
     }
-    auto* base = static_cast<char*>(view_.base);
+    auto* base = static_cast<char*>(handle_.base());
     return reinterpret_cast<OutputSlot*>(base + kOutputSlotOffset);
 }
 
@@ -395,7 +399,7 @@ Registry::ClaimResult Registry::changeGroup(u32 newGroup)
     }
     releaseOwnedSlot(); // 释放旧组 slot(state→0)
     header_ = nullptr;
-    view_.reset(); // 卸载旧组 registry 段
+    handle_.release(); // 卸载旧组 registry 段(握手释放)
     group_ = newGroup;
     return open(); // 映射新组 registry + §4.0 初始化
 }

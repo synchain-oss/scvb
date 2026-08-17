@@ -22,26 +22,30 @@ CtrlPlane::CtrlPlane(ISegmentBackend& backend, u32 group) : backend_(backend), g
 CtrlPlane::~CtrlPlane()
 {
     base_ = nullptr;
-    view_.reset();
+    handle_.release(); // 握手释放(消息线程;leaseCount 归零后经 backend->unmap 解映射)
 }
 
 InitResult CtrlPlane::open()
 {
     base_ = nullptr;
-    view_.reset();
-    const auto r = backend_.createOrOpen(ctrlFullName(group_), kCtrlSegmentSize, view_);
+    handle_.release(); // 释放旧句柄(重开路径)
+    SegmentView view;
+    const auto r = backend_.createOrOpen(ctrlFullName(group_), kCtrlSegmentSize, view);
     if (r != InitResult::kOk)
     {
         return r;
     }
-    auto* header = static_cast<CtrlHeader*>(view_.base);
-    const auto ir = backend_.initHeader(view_, &header->magic, &header->abi, &header->generation, kCtrlBroadcastOffset);
+    auto* header = static_cast<CtrlHeader*>(view.base);
+    // owner 角色(createOrOpen):allowOverwrite=true(覆盖式重初始化分支仅限创建者)。
+    const auto ir = backend_.initHeader(view, &header->magic, &header->abi, &header->generation, kCtrlBroadcastOffset,
+                                        /*initData=*/{}, /*allowOverwrite=*/true);
     if (ir != InitResult::kOk)
     {
-        view_.reset();
+        backend_.unmap(view);
         return ir;
     }
-    base_ = static_cast<unsigned char*>(view_.base);
+    handle_ = SegmentHandle(std::move(view), &backend_);
+    base_ = static_cast<unsigned char*>(handle_.base());
     return InitResult::kOk;
 }
 
@@ -51,7 +55,7 @@ u32 CtrlPlane::generation() const
     {
         return 0;
     }
-    return static_cast<CtrlHeader*>(view_.base)->generation.load(std::memory_order_acquire);
+    return static_cast<CtrlHeader*>(handle_.base())->generation.load(std::memory_order_acquire);
 }
 
 CtrlRing* CtrlPlane::ringAt(u32 channel) const

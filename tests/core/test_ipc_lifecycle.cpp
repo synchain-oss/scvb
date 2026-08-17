@@ -661,3 +661,66 @@ TEST_CASE("时钟与 pid 探活基础", "[ipc][lifecycle]")
     REQUIRE(b >= a); // 单调
     REQUIRE_FALSE(scvb::isProcessAlive(0)); // pid 0 恒判死
 }
+
+// ---------------------------------------------------------------------------
+// DeepSeek 复审【重要】1:SegmentHandle 引用计数租约 + 消息线程握手释放
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SegmentHandle 引用计数租约与握手释放", "[ipc][lifecycle][handle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::SegmentView v;
+    REQUIRE(backend.createOrOpen(L"Local\\SynchainSCVB.v1.g1.registry", scvb::kRegistrySegmentSize, v) ==
+            scvb::InitResult::kOk);
+    auto* hdr = static_cast<scvb::RegistryHeader*>(v.base);
+    REQUIRE(backend.initHeader(v, &hdr->magic, &hdr->abi, &hdr->generation, sizeof(scvb::RegistryHeader)) ==
+            scvb::InitResult::kOk);
+
+    scvb::SegmentHandle handle(std::move(v), &backend);
+    REQUIRE(handle.valid());
+    const void* base = handle.base();
+    REQUIRE(base != nullptr);
+
+    // 音频线程按块租约:持有期内不解映射。
+    {
+        auto lease = handle.lease();
+        REQUIRE(static_cast<bool>(lease));
+        REQUIRE(lease.base() == base);
+        // 消息线程请求释放 → 有租约在途,推迟(宽限期)。
+        REQUIRE_FALSE(handle.release());
+        REQUIRE(handle.valid()); // 仍未解映射
+    } // lease 析构 → 租约归还
+
+    // 宽限期:消息线程再调 release → 解映射。
+    REQUIRE(handle.release());
+    REQUIRE_FALSE(handle.valid());
+    REQUIRE(handle.base() == nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// DeepSeek 复审【重要】3:initHeader 覆盖式重初始化分支仅限段 owner
+// ---------------------------------------------------------------------------
+
+TEST_CASE("initHeader allowOverwrite=false 只读方不覆盖残段", "[ipc][lifecycle][init]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::SegmentView created;
+    REQUIRE(backend.createOrOpen(L"Local\\SynchainSCVB.v1.g1.registry", scvb::kRegistrySegmentSize, created) ==
+            scvb::InitResult::kOk);
+    // 残段:magic==0(创建者死于初始化,未 initHeader)。
+    scvb::SegmentView attached;
+    REQUIRE(backend.openExisting(L"Local\\SynchainSCVB.v1.g1.registry", attached) == scvb::InitResult::kOk);
+    auto* hdr = static_cast<scvb::RegistryHeader*>(attached.base);
+    REQUIRE(hdr->magic.load() == 0);
+
+    // 只读方(allowOverwrite=false):非阻塞单次 magic/abi 校验,不覆盖、不重写,直接 kFailed。
+    const auto r = backend.initHeader(attached, &hdr->magic, &hdr->abi, &hdr->generation, sizeof(scvb::RegistryHeader),
+                                      {}, /*allowOverwrite=*/false);
+    REQUIRE(r == scvb::InitResult::kFailed);
+    REQUIRE(hdr->magic.load() == 0); // 未覆盖
+    REQUIRE(hdr->abi.load() == 0); // 未重写
+}
