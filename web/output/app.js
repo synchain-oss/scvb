@@ -69,8 +69,10 @@ function setLang(next) {
             '[data-lang="zh"], [data-lang="en"], [data-lang="fr"]',
         )
         .forEach((btn) => {
+            // 语言胶囊是普通 button(非 role="tab"),可达属性用 aria-pressed;
+            // aria-selected 只在 role="tab" 的四个主 tab 上使用(见 activateTab)。
             btn.setAttribute(
-                "aria-selected",
+                "aria-pressed",
                 String(btn.getAttribute("data-lang") === lang),
             );
         });
@@ -167,7 +169,9 @@ function trackRowHtml(ch, label) {
       </span>
       <span class="sc-toggle" role="cell" style="width:26px" data-on="0" data-gb="tracks-row-${ch}-leadlock" title="lead lock"></span>
       <span style="width:52px;display:inline-flex;align-items:center;gap:2px" role="cell">
-        <select class="sc-select" style="width:100%" data-gb="tracks-row-${ch}-pair">
+        <!-- aria-label 是首帧兜底:本模板在 applyI18n(document) 之后才注入 DOM,
+             data-t-aria 要等下一次 setLang 才生效(a11y 占位名,T31 换词条)。 -->
+        <select class="sc-select" style="width:100%" aria-label="配对" data-t-aria="pair" data-gb="tracks-row-${ch}-pair">
           <!-- 词条待立:下拉「无」选项(05 §2.2 配对列,字典缺 none 词) -->
           <option value="0" data-gb-todo="词条待立">–</option>
           <option value="1">A</option><option value="2">B</option><option value="3">C</option>
@@ -242,8 +246,11 @@ if (leadSelect) {
 // 轨头/曲线叠加层/特征波形/VAD 着色/分段边界/采集覆盖进度 六件套,画布仅给尺寸注释,
 // 零绘制逻辑。播放头与选区手柄是共享覆盖层,已在 index.html 静态占位,不随行生成。
 function waveLaneHtml(ch, label) {
+    // 泳道不是表格行(无 columnheader 对位,轨头里还有 checkbox),原先的 role="row"
+    // 既无 table/grid 祖先、子元素也不是 cell,axe 会同时报 aria-required-parent 与
+    // aria-required-children 两条 critical;这里去掉 role,保留纯视觉容器语义。
     return `
-    <div class="wave-lane" role="row" data-gb="wave-lane-${ch}" data-ch="${ch}">
+    <div class="wave-lane" data-gb="wave-lane-${ch}" data-ch="${ch}">
       <div class="wave-lane__head" data-gb="wave-lane-${ch}-head">
         <input type="checkbox" data-gb="wave-lane-${ch}-checkbox" aria-label="select track ${ch}" />
         <span class="wave-lane__label" data-gb="wave-lane-${ch}-label">${label}</span>

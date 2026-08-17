@@ -51,7 +51,10 @@ let currentLang = "zh";
 applyI18n(document, currentLang);
 
 // ---------------------------------------------------------------------------
-// 语言胶囊(05 §2.0:点击瞬时切换,aria-pressed 同步,纯 UI 本地)
+// 语言胶囊(05 §2.0:点击瞬时切换,选中态属性同步,纯 UI 本地)
+// 本页胶囊挂的是 role="tab"(外层 role="tablist"),选中态属性因此是 aria-selected;
+// Output 侧同款胶囊是普通 <button>,那边用 aria-pressed(普通 button 上 aria-selected
+// 违反 ARIA)。两页语义分叉、都通过 axe,统一由 T31 定夺。
 // ---------------------------------------------------------------------------
 const langSeg = document.querySelector('[data-gb="input.header.lang"]');
 if (langSeg) {

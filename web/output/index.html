@@ -63,6 +63,21 @@
                 gap: var(--sp-14);
             }
 
+            /* ---- 胶囊选中态:aria-pressed 补挂(a11y,非新视觉) ----
+               shared/base.css 的 .sc-seg__item 选中态挂在 [aria-selected="true"] 上,
+               但普通 <button> 用 aria-selected 违反 ARIA(axe aria-allowed-attr),
+               胶囊已按 05 §2.0 原文改用 aria-pressed。这里只把同一套 base.css 值
+               原样补挂到 [aria-pressed="true"],不引入任何新颜色/尺寸。
+               aria-selected 仍保留给四个 role="tab" 主 tab(base.css .sc-tabs__item)。 */
+            .sc-seg__item[aria-pressed="true"] {
+                background: var(--seg-on-bg);
+                color: var(--acc-ink);
+            }
+            .sc-seg--sm .sc-seg__item[aria-pressed="true"] {
+                background: rgba(var(--wh), 0.85);
+                color: var(--txt-1);
+            }
+
             /* ---- header(05 §1.1 骨架行1 + §2.0 通用件表) ---- */
             #header {
                 display: flex;
@@ -703,7 +718,7 @@
                     >
                         <button
                             class="sc-seg__item"
-                            aria-selected="true"
+                            aria-pressed="true"
                             data-lang="zh"
                             data-gb="header-lang-zh"
                         >
@@ -711,7 +726,7 @@
                         </button>
                         <button
                             class="sc-seg__item"
-                            aria-selected="false"
+                            aria-pressed="false"
                             data-lang="en"
                             data-gb="header-lang-en"
                         >
@@ -719,7 +734,7 @@
                         </button>
                         <button
                             class="sc-seg__item"
-                            aria-selected="false"
+                            aria-pressed="false"
                             data-lang="fr"
                             data-gb="header-lang-fr"
                         >
@@ -1011,6 +1026,7 @@
                                     data-on="0"
                                     role="switch"
                                     aria-checked="false"
+                                    data-t-aria="capture"
                                     data-gb="master-capture-toggle-switch"
                                 ></div>
                                 <!-- [T3x] bridge.setCaptureEnabled(on) —— 契约 §1.2 -->
@@ -1048,6 +1064,7 @@
                                     data-on="0"
                                     role="switch"
                                     aria-checked="false"
+                                    data-t-aria="output"
                                     data-gb="master-output-toggle-switch"
                                 ></div>
                                 <!-- 词条待立:Latch/Write 提示行「要录成自动化:在 DAW 侧对本插件参数开 Latch(推荐)或 Write;请勿使用 Touch」(05 §2.1①,字典缺完整句) -->
@@ -1108,7 +1125,7 @@
                                 >
                                     <button
                                         class="sc-seg__item"
-                                        aria-selected="true"
+                                        aria-pressed="true"
                                         data-group="1"
                                         data-gb="master-group-A"
                                     >
@@ -1220,6 +1237,7 @@
                                     max="150"
                                     step="1"
                                     value="100"
+                                    data-t-aria="width"
                                     data-gb="master-width-slider"
                                 />
                                 <p
@@ -1250,6 +1268,7 @@
                                     max="100"
                                     step="1"
                                     value="0"
+                                    data-t-aria="msBalance"
                                     data-gb="master-msbalance-slider"
                                 />
                                 <p class="sc-hint" data-t="master.msHint">
@@ -1266,6 +1285,7 @@
                                 </div>
                                 <select
                                     class="sc-select"
+                                    data-t-aria="leadSelect"
                                     data-gb="master-leadselect-select"
                                 >
                                     <option
@@ -1288,7 +1308,14 @@
                             </div>
 
                             <!-- ④ 声像/音量分布图(回流⑥新原件) -->
-                            <div class="sc-card" data-gb="master-distchart">
+                            <!-- tabindex="0":.master-grid > * 是 overflow:auto 的滚动容器,
+                                 本卡内无可聚焦子元素,需自身可聚焦才能用键盘滚动
+                                 (axe scrollable-region-focusable)。 -->
+                            <div
+                                class="sc-card"
+                                data-gb="master-distchart"
+                                tabindex="0"
+                            >
                                 <!-- 词条待立:eyebrow「声像 / 音量分布」(05 §2.1④,字典缺) -->
                                 <div class="sc-eyebrow" data-gb-todo="词条待立">
                                     声像 / 音量分布
@@ -1332,6 +1359,7 @@
                                     max="300"
                                     step="1"
                                     value="80"
+                                    data-t-aria="transition"
                                     data-gb="master-transition-slider"
                                 />
                                 <!-- 内联斜坡示意 SVG,零绘制逻辑(设计定稿新增) -->
@@ -1369,7 +1397,7 @@
                                 >
                                     <button
                                         class="sc-seg__item"
-                                        aria-selected="true"
+                                        aria-pressed="true"
                                         data-t="range.followShort"
                                     >
                                         全曲
@@ -1441,26 +1469,34 @@
                                                 min="1"
                                                 step="1"
                                                 value="1"
+                                                aria-label="起点小节"
                                             />
+                                            <!-- a11y 占位名,T31 换词条 -->
                                             <input
                                                 type="number"
                                                 min="1"
                                                 step="1"
                                                 value="1"
+                                                aria-label="起点拍"
                                             />
+                                            <!-- a11y 占位名,T31 换词条 -->
                                             <input
                                                 type="number"
                                                 min="0"
                                                 step="1"
                                                 value="0"
+                                                aria-label="起点 tick"
                                             />
+                                            <!-- a11y 占位名,T31 换词条 -->
                                         </span>
                                         <input
                                             class="sc-mono"
                                             type="text"
                                             data-gb="master-range-start-time"
                                             value="00:00.000"
+                                            aria-label="起点时间码"
                                         />
+                                        <!-- a11y 占位名,T31 换词条 -->
                                         <!-- 词条待立:「设为播放头」按钮文案(05 §2.1②,字典缺) -->
                                         <button
                                             class="sc-btn"
@@ -1488,26 +1524,34 @@
                                                 min="1"
                                                 step="1"
                                                 value="1"
+                                                aria-label="终点小节"
                                             />
+                                            <!-- a11y 占位名,T31 换词条 -->
                                             <input
                                                 type="number"
                                                 min="1"
                                                 step="1"
                                                 value="1"
+                                                aria-label="终点拍"
                                             />
+                                            <!-- a11y 占位名,T31 换词条 -->
                                             <input
                                                 type="number"
                                                 min="0"
                                                 step="1"
                                                 value="0"
+                                                aria-label="终点 tick"
                                             />
+                                            <!-- a11y 占位名,T31 换词条 -->
                                         </span>
                                         <input
                                             class="sc-mono"
                                             type="text"
                                             data-gb="master-range-end-time"
                                             value="00:00.000"
+                                            aria-label="终点时间码"
                                         />
+                                        <!-- a11y 占位名,T31 换词条 -->
                                         <!-- 词条待立:「设为播放头」按钮文案(05 §2.1②,字典缺) -->
                                         <button
                                             class="sc-btn"
@@ -1550,7 +1594,12 @@
                             </div>
 
                             <!-- ④ pan 角度域增益曲线编辑器 -->
-                            <div class="sc-dark" data-gb="master-pancurve">
+                            <!-- tabindex="0":同上,滚动容器内无可聚焦子元素 -->
+                            <div
+                                class="sc-dark"
+                                data-gb="master-pancurve"
+                                tabindex="0"
+                            >
                                 <!-- 词条待立:窗内 eyebrow「角度域曲线 · ±12 dB」(05 §2.1④,字典缺) -->
                                 <div
                                     class="sc-eyebrow sc-eyebrow--dark"
@@ -1594,7 +1643,15 @@
                             >
                         </div>
 
-                        <div class="tracks-wrap" data-gb="tracks-wrap">
+                        <!-- role="table":内部 .tracks-head(role=row)/#tracks-body(role=rowgroup)
+                             必须有 table/grid 祖先,否则 axe aria-required-parent 报 critical。
+                             tabindex="0":可滚动容器需能用键盘滚动。 -->
+                        <div
+                            class="tracks-wrap"
+                            data-gb="tracks-wrap"
+                            role="table"
+                            tabindex="0"
+                        >
                             <!-- 列序与分组严格照 05 §2.2 代码块,列宽为注释标注的设计 px,不精调 -->
                             <div
                                 class="tracks-head sc-eyebrow"
@@ -1868,6 +1925,7 @@
                                         min="0"
                                         max="100"
                                         value="50"
+                                        data-t-aria="sensitivity"
                                     />
                                 </label>
                                 <label
@@ -2108,11 +2166,13 @@
                         ></div>
 
                         <!-- 泳道区(垂直滚动,15 条;左侧轨头 158px) -->
+                        <!-- tabindex="0":可滚动容器需能用键盘滚动(axe scrollable-region-focusable) -->
                         <div
                             class="wave-lanes"
                             id="wave-lanes"
                             data-gb="wave-lanes"
                             data-tour="lanes"
+                            tabindex="0"
                         >
                             <!-- app.js 用 FIFTEEN_TRACKS 生成 15 条泳道,仅撑开骨架,零绘制逻辑 -->
 
@@ -2211,6 +2271,7 @@
                                     min="-100"
                                     max="100"
                                     step="1"
+                                    data-t-aria="pan"
                                 />
                                 <span
                                     class="sc-knob"
@@ -2231,7 +2292,9 @@
                                     min="-24"
                                     max="12"
                                     step="0.1"
+                                    aria-label="音量"
                                 />
+                                <!-- a11y 占位名,T31 换词条 -->
                             </div>
                             <div
                                 class="inspector-field"
@@ -2254,6 +2317,7 @@
                                     data-on="0"
                                     role="switch"
                                     aria-checked="false"
+                                    data-t-aria="locked"
                                 ></span>
                             </div>
                             <div
@@ -2384,7 +2448,7 @@
                                         <!-- 词条待立:选项「K 加权段积分(默认)」(05 §2.4,字典缺;词条正名非 LUFS-S) -->
                                         <button
                                             class="sc-seg__item"
-                                            aria-selected="true"
+                                            aria-pressed="true"
                                             data-value="kw_integrated"
                                             data-gb-todo="词条待立"
                                         >
@@ -2441,7 +2505,7 @@
                                         <!-- 词条待立:选项「按优先级排队(默认)」(05 §2.4,字典缺) -->
                                         <button
                                             class="sc-seg__item"
-                                            aria-selected="true"
+                                            aria-pressed="true"
                                             data-value="priority_queue"
                                             data-gb-todo="词条待立"
                                         >
@@ -2481,6 +2545,7 @@
                                          = web/shared/design-box.js;不在 HTML 里写死第二真源) -->
                                     <select
                                         class="sc-select"
+                                        data-t-aria="scale"
                                         data-gb="settings-scale-select"
                                     ></select>
                                     <!-- 10 秒确认防呆(机制同 Bridge,05 §1.2) -->
@@ -2534,7 +2599,7 @@
                                     >
                                         <button
                                             class="sc-seg__item"
-                                            aria-selected="true"
+                                            aria-pressed="true"
                                             data-lang="zh"
                                         >
                                             中
@@ -2641,6 +2706,7 @@
                              = web/shared/design-box.js;不在 HTML 里写死第二真源) -->
                         <select
                             class="sc-select"
+                            data-t-aria="scale"
                             data-gb="footer-scale-select"
                         ></select>
                         <span class="sc-mono" data-gb="footer-version"
