@@ -66,12 +66,33 @@ Registry::~Registry()
     releaseOwnedSlot();
     header_ = nullptr;
     handle_.release(); // 握手释放(消息线程;leaseCount 归零后经 backend->unmap 解映射)
+    // pendingReleases_ 的 SegmentHandle 元素随 vector 析构各自 release(进程退出兜底)。
+}
+
+void Registry::reapPendingReleases()
+{
+    // [M] 心跳/轮询周期调用:逐项 release(),成功(租约归零)即移除并解映射。
+    for (auto it = pendingReleases_.begin(); it != pendingReleases_.end();)
+    {
+        if (it->release())
+        {
+            it = pendingReleases_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 Registry::ClaimResult Registry::open()
 {
     header_ = nullptr;
-    handle_.release(); // 释放旧句柄(重开/改组路径)
+    if (!handle_.release())
+    {
+        // 租约在途:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
+        pendingReleases_.push_back(std::move(handle_));
+    }
     SegmentView view;
     const auto r = backend_.createOrOpen(registryFullName(group_), kRegistrySegmentSize, view);
     if (r != InitResult::kOk)
@@ -173,7 +194,15 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
         // 同 channel 复制体直接抢走原实例的槽 → 两个实例同写一个环;与 ipc §1「已被占且心跳新鲜
         // → 冲突」对齐。本实例自己的采样率重认领改走 updateOwnedInputSlot,不经本函数。
 
-        // 被占:接管双条件(J10:心跳陈旧 ≥5000ms 且 pid 探活失败)。
+        // kSlotClaimed = 进行中(另一 claimer 正填字段,pid=0/hb=0):视为进行中,重试(3 次后 kConflict),
+        // 绝不接管(pr-agent 复审:否则第二 claimer 会以 isTakeoverStale(hb==0)&&!probe(pid==0) 误接管,
+        // 双实例同认为自己持有同 channel → 双写同一 SPSC 环)。
+        if (cur == kSlotClaimed)
+        {
+            continue;
+        }
+
+        // 被占(kSlotActive):接管双条件(J10:心跳陈旧 ≥5000ms 且 pid 探活失败)。
         const u64 hb = s.heartbeat_ms.load(std::memory_order_acquire);
         if (isTakeoverStale(hb, nowMs) && !probe_(s.pid))
         {
@@ -274,6 +303,13 @@ Registry::ClaimResult Registry::claimOutput(u32 pid, u64 nowMs)
             return ClaimResult::kClaimed;
         }
 
+        // kSlotClaimed = 进行中(pid=0/hb=0):重试,绝不接管(与 claimInput 同因,pr-agent 复审)。
+        if (cur == kSlotClaimed)
+        {
+            continue;
+        }
+
+        // kSlotActive 且异 pid:接管双条件(J10)。
         const u64 hb = s.heartbeat_ms.load(std::memory_order_acquire);
         if (isTakeoverStale(hb, nowMs) && !probe_(s.pid))
         {
@@ -399,7 +435,11 @@ Registry::ClaimResult Registry::changeGroup(u32 newGroup)
     }
     releaseOwnedSlot(); // 释放旧组 slot(state→0)
     header_ = nullptr;
-    handle_.release(); // 卸载旧组 registry 段(握手释放)
+    if (!handle_.release())
+    {
+        // 租约在途:旧组句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收。
+        pendingReleases_.push_back(std::move(handle_));
+    }
     group_ = newGroup;
     return open(); // 映射新组 registry + §4.0 初始化
 }

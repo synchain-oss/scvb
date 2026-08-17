@@ -4,7 +4,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <cstdint>
+#include <thread>
 #include <type_traits>
 
 #include "ipc/CtrlPlane.h"
@@ -723,4 +725,145 @@ TEST_CASE("initHeader allowOverwrite=false 只读方不覆盖残段", "[ipc][lif
     REQUIRE(r == scvb::InitResult::kFailed);
     REQUIRE(hdr->magic.load() == 0); // 未覆盖
     REQUIRE(hdr->abi.load() == 0); // 未重写
+}
+
+// ---------------------------------------------------------------------------
+// PR#38 复审【重要】1:命令环 SPSC 双线程混跑(丢最旧 + 撕裂防护自洽)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("命令环双线程混跑(SPSC 丢最旧自洽)", "[ipc][lifecycle][cmdring][concurrent]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+    scvb::CtrlPlane plane(backend, 1);
+    REQUIRE(plane.open() == scvb::InitResult::kOk);
+
+    constexpr u32 kN = 100000;
+    std::atomic<bool> producerDone{false};
+
+    // 生产者:持续 enqueue;seq 从 1 递增(0 保留为「在写」标记),value == i == seq-1。
+    std::thread producer([&] {
+        for (u32 i = 0; i < kN; ++i)
+        {
+            plane.enqueue(3, scvb::CtrlOp::kSetPriority, i);
+        }
+        producerDone.store(true, std::memory_order_release);
+    });
+
+    // 消费者:持续 dequeue;校验 seq 单调、无 0、value==seq-1(无撕裂记录)。
+    u32 lastSeq = 0;
+    bool first = true;
+    u32 dequeued = 0;
+    for (;;)
+    {
+        scvb::CtrlRecord rec;
+        if (plane.dequeue(3, rec))
+        {
+            const u32 seq = rec.seq.load(std::memory_order_relaxed);
+            const u32 ch = rec.channel.load(std::memory_order_relaxed);
+            const u64 val = rec.value.load(std::memory_order_relaxed);
+            REQUIRE(seq != 0); // 无「在写」记录泄漏
+            REQUIRE(ch == 3);
+            REQUIRE(val == static_cast<u64>(seq - 1)); // 无撕裂(seq 与 value 同记录)
+            if (!first)
+            {
+                REQUIRE(seq > lastSeq); // 单调递增无回退
+            }
+            lastSeq = seq;
+            first = false;
+            ++dequeued;
+        }
+        else if (producerDone.load(std::memory_order_acquire))
+        {
+            break;
+        }
+        else
+        {
+            std::this_thread::yield();
+        }
+    }
+    producer.join();
+
+    // 溢出计数与丢记录数自洽:生产者只在「见满」时 overflow++,其 read_pos 快照可能略陈旧
+    // (消费者刚消费/跳过的槽被误判为满)→ overflow 是丢记录数的上界,绝不低估。
+    // 守恒律(每条记录要么被消费、要么被丢)给出 exact 关系:overflow >= kN - dequeued。
+    const u32 overflow = plane.overflowCount(3);
+    REQUIRE(dequeued + overflow >= kN); // overflow 是丢记录上界(生产者的陈旧 read_pos 可能少量高估)
+    REQUIRE(overflow <= kN); // 显然上界:每 enqueue 至多 overflow++ 一次
+}
+
+// ---------------------------------------------------------------------------
+// PR#38 复审【重要】2:接管分支仅限 kSlotActive(kSlotClaimed 进行中绝不接管)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("claimInput 接管分支仅限 kSlotActive", "[ipc][lifecycle][takeover]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    // 手工把槽置为 kSlotClaimed(进行中)+ pid=0/hb=0。
+    auto* slot = a.inputSlot(3);
+    slot->state.store(kSlotClaimed, std::memory_order_release);
+    slot->pid = 0;
+    slot->heartbeat_ms.store(0, std::memory_order_relaxed);
+
+    // 第二 claimer(死 pid 探活、时间远超 5000ms)必须 kConflict,不得接管进行中的槽。
+    const bool holderAlive = false;
+    scvb::Registry b(backend, 1, [&](u32) { return holderAlive; });
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(b.claimInput(3, 1002, 48000, 512, kT0 + 6000) == scvb::Registry::ClaimResult::kConflict);
+
+    // 槽仍 kSlotClaimed、pid 0(未被接管)。
+    REQUIRE(slot->state.load() == kSlotClaimed);
+    REQUIRE(slot->pid == 0);
+}
+
+TEST_CASE("claimOutput 接管分支仅限 kSlotActive", "[ipc][lifecycle][takeover]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    auto* oslot = a.outputSlot();
+    oslot->state.store(kSlotClaimed, std::memory_order_release);
+    oslot->pid = 0;
+    oslot->heartbeat_ms.store(0, std::memory_order_relaxed);
+
+    const bool holderAlive = false;
+    scvb::Registry b(backend, 1, [&](u32) { return holderAlive; });
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(b.claimOutput(2002, kT0 + 6000) == scvb::Registry::ClaimResult::kConflict);
+    REQUIRE(oslot->state.load() == kSlotClaimed);
+    REQUIRE(oslot->pid == 0);
+}
+
+// ---------------------------------------------------------------------------
+// PR#38 复审【重要】3:延迟释放句柄(租约在途入 pending,reap 回收,不泄漏)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("延迟释放句柄:租约在途入 pending,reap 回收", "[ipc][lifecycle][handle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry reg(backend, 1);
+    REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(reg.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+
+    {
+        // 音频线程持有租约(旧组 g1 段)。
+        auto lease = reg.lease();
+        REQUIRE(static_cast<bool>(lease));
+
+        // 改组:租约在途 → 旧句柄入 pendingReleases_(未解映射,不泄漏)。
+        REQUIRE(reg.changeGroup(2) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(reg.pendingReleaseCount() == 1);
+    } // lease 析构 → 租约归还
+
+    // [M] reap → 已解映射。
+    reg.reapPendingReleases();
+    REQUIRE(reg.pendingReleaseCount() == 0);
 }

@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "ISegmentBackend.h"
 #include "SegmentLayout.h"
@@ -149,6 +150,12 @@ public:
     u32 group() const { return group_; }
     u32 generation() const;
 
+    // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(),
+    // 成功(租约已归零)即移除并解映射。pr-agent 复审:open()/重开时 release() 返回 false 的旧句柄
+    // 压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。
+    void reapPendingReleases();
+    std::size_t pendingReleaseCount() const { return pendingReleases_.size(); }
+
     // ---- OutputGlobalInfo(J09)----
     // Output [M] 每 250ms 刷新;Input/验证工具只读。
     void refreshGlobalInfo(const OutputGlobalInfoSnapshot& s);
@@ -185,10 +192,12 @@ private:
     ISegmentBackend& backend_;
     u32 group_ = 1;
     SegmentHandle handle_; // 引用计数句柄:析构经 release() 握手释放(消息线程)
+    std::vector<SegmentHandle> pendingReleases_; // 延迟释放(租约在途)的旧句柄,[M] reapPendingReleases 回收
     unsigned char* base_ = nullptr;
 
-    // 命令环生产者 seq 计数(Input [M] 单线程)。
-    u32 nextSeq_ = 0;
+    // 命令环生产者 seq 计数(Input [M] 单线程)。从 1 起,0 保留为「记录在写」标记
+    // (CtrlRecord::seq,见 enqueue/dequeue 的 seq 协议)。
+    u32 nextSeq_ = 1;
 
     // 停摆看门狗状态。
     std::function<u64()> blockCounterSource_;

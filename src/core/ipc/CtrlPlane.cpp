@@ -23,12 +23,33 @@ CtrlPlane::~CtrlPlane()
 {
     base_ = nullptr;
     handle_.release(); // 握手释放(消息线程;leaseCount 归零后经 backend->unmap 解映射)
+    // pendingReleases_ 的 SegmentHandle 元素随 vector 析构各自 release(进程退出兜底)。
+}
+
+void CtrlPlane::reapPendingReleases()
+{
+    // [M] 心跳/轮询周期调用:逐项 release(),成功(租约归零)即移除并解映射。
+    for (auto it = pendingReleases_.begin(); it != pendingReleases_.end();)
+    {
+        if (it->release())
+        {
+            it = pendingReleases_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 InitResult CtrlPlane::open()
 {
     base_ = nullptr;
-    handle_.release(); // 释放旧句柄(重开路径)
+    if (!handle_.release())
+    {
+        // 租约在途:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
+        pendingReleases_.push_back(std::move(handle_));
+    }
     SegmentView view;
     const auto r = backend_.createOrOpen(ctrlFullName(group_), kCtrlSegmentSize, view);
     if (r != InitResult::kOk)
@@ -125,12 +146,19 @@ bool CtrlPlane::enqueue(u32 channel, CtrlOp op, u64 value)
     const u32 r = ring->read_pos.load(std::memory_order_acquire);
     if (w - r >= kCtrlRingCapacity)
     {
-        // 满环:丢最旧 → 推进 read_pos 一格(消费者未来从下一条读起)+ 计数。
-        ring->read_pos.fetch_add(1, std::memory_order_relaxed);
+        // 满环:丢最旧。SPSC 纪律:生产者【不碰 read_pos】(read_pos 仅消费者写)——由消费者在
+        // dequeue 检测 w-r>capacity 时自行追到最旧可用;此处只记溢出计数。
         ring->overflow_count.fetch_add(1, std::memory_order_relaxed);
     }
     const u32 idx = w & (kCtrlRingCapacity - 1);
-    ring->records[idx] = CtrlRecord{nextSeq_++, channel, op, value};
+    CtrlRecord& rec = ring->records[idx];
+    // seq 协议(防撕裂读):seq=0(release)标记「在写」→ channel/op/value(relaxed)→ seq=真值(release),
+    // 最后 write_pos.store(w+1, release) 发布。消费者见 write_pos 推进即知记录已提交。
+    rec.seq.store(0, std::memory_order_release);
+    rec.channel.store(channel, std::memory_order_relaxed);
+    rec.op.store(static_cast<u32>(op), std::memory_order_relaxed);
+    rec.value.store(value, std::memory_order_relaxed);
+    rec.seq.store(nextSeq_++, std::memory_order_release);
     ring->write_pos.store(w + 1, std::memory_order_release);
     return true;
 }
@@ -142,15 +170,53 @@ bool CtrlPlane::dequeue(u32 channel, CtrlRecord& out)
     {
         return false;
     }
-    const u32 r = ring->read_pos.load(std::memory_order_acquire);
-    const u32 w = ring->write_pos.load(std::memory_order_acquire);
-    if (r == w)
+
+    for (int attempt = 0; attempt < 3; ++attempt)
     {
-        return false;
+        u32 r = ring->read_pos.load(std::memory_order_acquire);
+        const u32 w = ring->write_pos.load(std::memory_order_acquire);
+        if (r == w)
+        {
+            return false; // 空
+        }
+
+        if (w - r > kCtrlRingCapacity)
+        {
+            // 生产者已套圈(丢最旧):追到最旧可用,差额吞掉(与 overflow_count 口径自洽)。
+            r = w - kCtrlRingCapacity;
+            ring->read_pos.store(r, std::memory_order_release);
+        }
+
+        CtrlRecord& rec = ring->records[r & (kCtrlRingCapacity - 1)];
+        const u32 s1 = rec.seq.load(std::memory_order_acquire);
+        if (s1 == 0)
+        {
+            return false; // 记录在写(seq=0 标记)
+        }
+        const u32 ch = rec.channel.load(std::memory_order_relaxed);
+        const u32 opv = rec.op.load(std::memory_order_relaxed);
+        const u64 val = rec.value.load(std::memory_order_relaxed);
+        const u32 s2 = rec.seq.load(std::memory_order_acquire);
+        if (s1 != s2)
+        {
+            continue; // 撕裂读(生产者正覆写同槽)→ 重试
+        }
+        if (s1 != r + 1)
+        {
+            // 槽被更高序号记录覆写(本快照 w 陈旧、未触发套圈检测)→ 重试:重读 w 并重做套圈跳。
+            // 不能消费本记录(它对应 read_pos=s1-1,须在其正确位置读到),否则跳过中间有效记录。
+            continue;
+        }
+
+        // s1 == r+1:期望记录,一致性快照成功。
+        out.seq.store(s1, std::memory_order_relaxed);
+        out.channel.store(ch, std::memory_order_relaxed);
+        out.op.store(opv, std::memory_order_relaxed);
+        out.value.store(val, std::memory_order_relaxed);
+        ring->read_pos.store(r + 1, std::memory_order_release);
+        return true;
     }
-    out = ring->records[r & (kCtrlRingCapacity - 1)];
-    ring->read_pos.store(r + 1, std::memory_order_release);
-    return true;
+    return false; // 多次撕裂/套圈,放弃(下次 [M] 25Hz 重试)
 }
 
 u32 CtrlPlane::overflowCount(u32 channel) const

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "ISegmentBackend.h"
 #include "SegmentLayout.h"
@@ -165,6 +166,12 @@ public:
     // §4.0 初始化。返回新组的 open 结果;claim 由调用方随后执行(01 §4.1/§4.2 改组转移)。
     ClaimResult changeGroup(u32 newGroup);
 
+    // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(),
+    // 成功(租约已归零)即移除并解映射。pr-agent 复审:open()/changeGroup() 时 release() 返回 false
+    // 的旧句柄压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。
+    void reapPendingReleases();
+    std::size_t pendingReleaseCount() const { return pendingReleases_.size(); }
+
     // 本实例持有资源状态(供 changeGroup/析构与测试断言)。
     u32 ownedInputChannel() const { return ownedChannel_; }
     bool ownsOutput() const { return ownsOutput_; }
@@ -179,6 +186,7 @@ private:
     ProcessProbe probe_;
     AbiMismatchHandler abiMismatchHandler_;
     SegmentHandle handle_; // 引用计数句柄:析构/改组经 release() 握手释放(消息线程)
+    std::vector<SegmentHandle> pendingReleases_; // 延迟释放(租约在途)的旧句柄,[M] reapPendingReleases 回收
     RegistryHeader* header_ = nullptr;
 
     // 本实例持有的资源(changeGroup/析构释放用)。

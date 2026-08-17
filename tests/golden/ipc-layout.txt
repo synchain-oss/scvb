@@ -69,3 +69,16 @@ field CtrlRecord.seq offset 0
 field CtrlRecord.channel offset 4
 field CtrlRecord.op offset 8
 field CtrlRecord.value offset 16
+struct CtrlHeader size 64 align 64
+field CtrlHeader.magic offset 0
+field CtrlHeader.abi offset 4
+field CtrlHeader.generation offset 8
+field CtrlHeader._pad offset 12
+field CtrlHeader._reserved offset 16
+struct CtrlRing size 448 align 64
+field CtrlRing.write_pos offset 0
+field CtrlRing.read_pos offset 4
+field CtrlRing.overflow_count offset 8
+field CtrlRing._pad offset 12
+field CtrlRing._reserved offset 16
+field CtrlRing.records offset 64

@@ -177,12 +177,16 @@ enum class CtrlOp : u32
 // 命令环记录(每 slot 一条 SPSC,15 条)。[J46]:value 是 u64 不是 u32 ——
 // kFpReport 载荷按 value = (u64(tile_idx) << 48) | (hash & 0x0000FFFFFFFFFFFF) 打包
 // (tile_idx 高 16 位、fingerprint 截断低 48 位),单条记录原子;生产者 = Input [M] 25Hz 排水。
+//
+// [J48 先例] 四字段声明为 atomic(seq/channel/op/value),尺寸/偏移不变(非布局改动;golden 不变):
+// 命令环是单写单读 SPSC,记录 24 字节非原子时,生产者满环覆写与消费者读同一条记录会撕裂读;
+// atomic 化让 seq 可作「在写标记/一致性快照」锚点(见 CtrlPlane::enqueue/dequeue 的 seq 协议)。
 struct CtrlRecord
 {
-    u32 seq; // 0
-    u32 channel; // 4
-    CtrlOp op; // 8
-    u64 value; // 16
+    std::atomic<u32> seq; // 0   0 = 记录在写(生产者先写 0 标记),非 0 = 已提交
+    std::atomic<u32> channel; // 4
+    std::atomic<u32> op; // 8   底层存储 CtrlOp 的 u32 值
+    std::atomic<u64> value; // 16
 };
 
 // ---------------------------------------------------------------------------
