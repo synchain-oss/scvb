@@ -44,6 +44,15 @@ pwsh web-preview/serve.ps1 -SmokeTest   # 起服 → 自发三条请求 → 打�
 | `serve.ps1` | 一键静态服务器(固定端口 / no-store / `-SmokeTest` 自检 / `-Inject` 兜底) |
 | `mock/juce-bridge-mock.js` | mock 后端:契约全集函数与事件(Output 34/9、Input 7/5),数据一律经 `web/shared/mock-data.js` 生成器 |
 | `mock/state-driver.js` | 场景/fixture 驱动:解析 `?fixture=`/`?scenario=`/`&loop=`,组装初始状态,按契约 §2 频率推周期事件 |
+| `tests/smoke-mock.mjs` | mock 冒烟(node,无 DOM):同形自检 / 六 fixture × 双侧 / 场景化拒绝 / 重分析保护用户段 / 参数夹取 |
+| `tests/smoke-ready-race.mjs` | 首帧竞态回归:定时器早于 `requestInitialState()` 起跑时,「首帧必发」不得被门控期记账抑制 |
+
+两个冒烟脚本零依赖、自己推仓库根,直接跑即可(退出码 0 = 全绿):
+
+```bash
+node web-preview/tests/smoke-mock.mjs
+node web-preview/tests/smoke-ready-race.mjs
+```
 
 `shell.js` 是本卡在任务卡交付物清单之外新增的文件(统筹批准),目的是让两张壳页不各抄一份
 注入逻辑;已记入 `scratchpad/t28/deviations.md`。
@@ -177,4 +186,5 @@ npx @axe-core/cli "http://127.0.0.1:8823/web/output/index.html"
   **[J04] 哨兵式全曲判断**(v0 那套「`manual` + 一对零值端点 = 全曲」)在 `web-preview/` 零命中 ——
   这条断言的 grep 模式同样**连文档里的示例都算命中**,所以此处只描述、不抄模式原文,
   模式以 07 卡 T28 验收行为准;
-- 门禁:`node scripts/check-bridge-parity.mjs` + `npx prettier@3 --check "web-preview/**"`。
+- 门禁:`node scripts/check-bridge-parity.mjs` + `npx prettier@3 --check "web-preview/**"`
+  + `tests/` 下两个冒烟脚本(见第 2 节文件表)。

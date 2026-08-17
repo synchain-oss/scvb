@@ -127,6 +127,14 @@ const AUTO_REQUEST_INITIAL_STATE_MS = 1500;
 // 1. 查询参数解析
 // -----------------------------------------------------------------------------
 
+/**
+ * 自有键判定 —— 查询串是外部输入,`SCENARIO_MAP[q.get("scenario")]` 这种写法会让
+ * `?scenario=constructor` 从原型链上取到一个真值,当场把它当成「已实现的场景名」。
+ */
+function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 function toSearchParams(params) {
     if (params instanceof URLSearchParams) return params;
     if (typeof params === "string") return new URLSearchParams(params);
@@ -149,22 +157,26 @@ export function parsePreviewQuery(params) {
 
     const rawFixture = q.get("fixture");
     const rawScenario = q.get("scenario");
-    let fixture = DEFAULT_FIXTURE;
+    const fixtureOk = !!rawFixture && FIXTURES.includes(rawFixture);
+    const scenarioFixture =
+        rawScenario && hasOwn(SCENARIO_MAP, rawScenario)
+            ? SCENARIO_MAP[rawScenario]
+            : null;
 
-    if (rawFixture) {
-        if (FIXTURES.includes(rawFixture)) {
-            fixture = rawFixture;
-        } else {
-            warnings.push(
-                `fixture ${rawFixture} 不存在(六个:${FIXTURES.join(" / ")}),已回落 ${DEFAULT_FIXTURE}`,
-            );
-        }
-    } else if (rawScenario) {
-        if (SCENARIO_MAP[rawScenario]) {
-            fixture = SCENARIO_MAP[rawScenario];
-        } else {
-            warnings.push(`场景 ${rawScenario} 待 T31-T36 接线`);
-        }
+    // 优先级:合法 fixture > 已实现 scenario 的映射 > 默认档。
+    // 非法 fixture **不**吃掉同时给出的 scenario —— 拼错一个参数就把另一个参数
+    // 一起丢进默认档,拿到的是「看起来像但不是你要的那档」,比直接回默认档更难发现。
+    let fixture = DEFAULT_FIXTURE;
+    if (fixtureOk) fixture = rawFixture;
+    else if (scenarioFixture) fixture = scenarioFixture;
+
+    if (rawFixture && !fixtureOk) {
+        warnings.push(
+            `fixture ${rawFixture} 不存在(六个:${FIXTURES.join(" / ")}),已回落 ${fixture}`,
+        );
+    }
+    if (rawScenario && !scenarioFixture) {
+        warnings.push(`场景 ${rawScenario} 待 T31-T36 接线`);
     }
 
     const rawLoop = q.get("loop");

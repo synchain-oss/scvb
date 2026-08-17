@@ -23,6 +23,17 @@
 //   • **range.mode 三值枚举**(J04):`follow | daw_loop | manual`,默认 follow;
 //     v0 的「全曲 = 起止哨兵」约定已废除,本文件不得残留任何哨兵式全曲判断。
 //
+// 重分析语义已按 J34 建模(§1.6 / §1.18 / §1.19 / §2.8):
+//   `analyze()` 与 VAD/分段的松手档重算段表时**保护用户段**,不是拿生成器产物整表覆盖 ——
+//   • `clearManual:false`(默认):只覆盖 `origin="auto"` 且未 `locked` 的段(ADR-008 v1.1);
+//     `origin≠"auto"` **或** `locked===true` 的段逐字节原样留在表里;
+//   • `clearManual:true`:未锁定的用户段 `origin` 重置为 auto 后参与重算,
+//     **`locked===true` 段仍免疫**(契约「locked 免疫,须先逐段解锁」,04 §4.4);
+//   • 保留段与新算出的 auto 段合并后按 `t0S` 排序、`segIdx` 0 基重编号;新段若与保留段
+//     时间重叠则整段丢弃(保留段优先),`diff.kept` = 本次保留的用户/锁定段数(§2.8 的 {k})。
+//   反例(本文件早前的写法):重算 = `model.segByCh.set(ch, 生成器产物)` —— 用户刚编辑或
+//   锁定的段会在下一次重分析里凭空消失,而契约的 locked 保护恰恰要靠这条建模在 UI 侧预演。
+//
 // 场景化拒绝(fixture 定义见 state-driver.js,`caps` 由 world 传入):
 //   • `second-output`:`caps.readOnly=true` → 「返回」行登记了 `{observer:true}` 的
 //     五个写函数(setGroupId / setChannelConfig / setTrackManual / editSegment /
@@ -62,6 +73,15 @@ function clone(v) {
 
 function isPlainObject(v) {
     return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * 自有键判定 —— 一律走 `Object.prototype.hasOwnProperty.call`。
+ * 用 `key in obj` / `obj[key]` 会把原型链上的键当成命中:UI 传来的 id 与查询串是**外部输入**,
+ * `setParam("constructor", …)`、`?scenario=toString` 这类值就能骗过「表里有没有这个名字」的判断。
+ */
+function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
 /** 深合并:普通对象递归,数组与标量整体替换(与 mock-data 的 mergeDeep 同口径)。 */
@@ -121,9 +141,47 @@ export function maskOfChannels(list) {
 
 const PAN_OR_VOL_ID = /_(pan|vol)$/;
 
+/** 每轨 id 的前缀(`v{v}_t{tt}_`);剥掉它就得到「哪个旋钮」。 */
+const PER_TRACK_PREFIX = /^v\d+_t\d{2}_/;
+
+/**
+ * params-v0 的「范围」列(§1.12-§1.14 可驱动 ParamID 全集逐字):
+ * 全局三件 + 每轨两件。`int:true` = step 1 的整数档,先取整再夹取。
+ * 轨 `pan`/`vol` 不在此表 —— 它们根本不进 gesture 通道(`isWritableParamId` 已挡在前面)。
+ */
+const GLOBAL_PARAM_RANGE = Object.freeze({
+    width: { lo: 0, hi: 150 },
+    ms_balance: { lo: -100, hi: 100 },
+    lead_select: { lo: 0, hi: 15, int: true },
+});
+const PER_TRACK_PARAM_RANGE = Object.freeze({
+    width: { lo: 0, hi: 100 },
+    freeze: { lo: 0, hi: 3, int: true }, // bit0=pan / bit1=vol(J65)
+});
+
 /** 该 id 是否属于 gesture 三段式可驱动的参数面(否则一律 `{ok:false, reason:"badArg"}`)。 */
 function isWritableParamId(values, id) {
-    return typeof id === "string" && id in values && !PAN_OR_VOL_ID.test(id);
+    return (
+        typeof id === "string" && hasOwn(values, id) && !PAN_OR_VOL_ID.test(id)
+    );
+}
+
+/**
+ * 按 params-v0 的范围夹取(契约 §0.8 第 2 条:越界**夹取或拒绝**,绝不静默照收)。
+ * 表外的 id 原样返回 —— 调用方已用 `isWritableParamId` 把 id 限死在上面两张表里,
+ * 这条只是不让将来新增 id 时悄悄走到 undefined 上。
+ */
+function clampParamValue(id, value) {
+    const knob = id.replace(PER_TRACK_PREFIX, "");
+    const spec = hasOwn(GLOBAL_PARAM_RANGE, id)
+        ? GLOBAL_PARAM_RANGE[id]
+        : hasOwn(PER_TRACK_PARAM_RANGE, knob)
+          ? PER_TRACK_PARAM_RANGE[knob]
+          : null;
+    if (!spec) return value;
+    return spec.int
+        ? clamp(Math.round(value), spec.lo, spec.hi)
+        : clamp(value, spec.lo, spec.hi);
 }
 
 /**
@@ -221,7 +279,13 @@ function makeContext(role, world) {
         }
         const list = listeners.get(name);
         if (!list || list.length === 0) return false;
-        const frozen = clone(payload);
+        // 直发的一帧也记账,与 `emitIfChanged` 的「值未变不发」(§0.4)对齐:写函数刚经
+        // emit 推过一份 conn/params,driver 的周期 diff-then-emit 就不该在 250ms 后把
+        // 同一份载荷再推一次。记账**必须**在上面的 §0.6 门控之后 —— 门控期记账会把
+        // 门控解除后的「首帧必发」(§0.4 第 3 条)自己抑制掉(见 emitIfChanged 的注释)。
+        const json = JSON.stringify(payload);
+        const frozen = json === undefined ? undefined : JSON.parse(json);
+        lastSent.set(name, json);
         for (const cb of list.slice()) cb(frozen);
         return true;
     }
@@ -258,8 +322,18 @@ function makeContext(role, world) {
 
     // ---- range / PRINT 判定(契约 §5.3 / §2.6)---------------------------------
 
+    /**
+     * 宿主循环区 —— 「有没有」的唯一判据。
+     * 不只看 `loopAvailable` 开关:world 组装出错或宿主瞬态给了半个窗口时,`caps.loop`
+     * 可能缺失/不是有限数,读 `loop.startS` 就成了 undefined 顺着 patchState 写进 state。
+     * 拿不到完整窗口一律当「宿主没提供」(调用方据此回 `{ok:false,reason:"noLoop"}`)。
+     */
     function loopWindow() {
-        return model.caps.loopAvailable ? model.caps.loop : null;
+        const loop = model.caps.loopAvailable ? model.caps.loop : null;
+        if (!isPlainObject(loop)) return null;
+        return isFiniteNumber(loop.startS) && isFiniteNumber(loop.endS)
+            ? loop
+            : null;
     }
 
     /** 播放头是否落在 `global.range` 内。follow 恒 true(§5.3:follow 无界)。 */
@@ -348,7 +422,7 @@ function makeContext(role, world) {
      * 容器与字段全部照 §2.8;段对象本身一律是生成器造的(或生成器产物的就地编辑),
      * 本函数不新造段字段。
      */
-    function segmentsPayload(reason, chList) {
+    function segmentsPayload(reason, chList, keptOverride) {
         const channels = chList
             .map((ch) => model.segByCh.get(ch))
             .filter(Boolean)
@@ -358,9 +432,13 @@ function makeContext(role, world) {
         for (const entry of channels) {
             total += entry.segments.length;
             for (const seg of entry.segments) {
-                if (seg.origin !== "auto") kept++;
+                // §2.8 词条:kept = 「手动编辑/**锁定**段已保留」计数 —— `set_locked` 把
+                // 一条 auto 段锁上后它同样免疫重分析,故判据是「用户段 ∪ 锁定段」。
+                if (isProtectedSegment(seg)) kept++;
             }
         }
+        // 重算类事件由调用方给准确的「本次保留了几段」(上面这份是全表口径的计数)。
+        if (Number.isInteger(keptOverride)) kept = keptOverride;
         // 首帧快照/切版本是「全量给到」而非「改了多少」(与 mock-data 的 isFullDump 同口径)
         const isFullDump = reason === "snapshot" || reason === "versionActive";
         return {
@@ -377,24 +455,90 @@ function makeContext(role, world) {
     }
 
     /**
-     * 用生成器重算给定轨的段表(analyze / 版本切换 / 版本复制共用)。
+     * 重分析免疫判定(J34 / ADR-008 v1.1):用户段与锁定段都不被重算结果覆盖。
+     * `clearManual:true` 只把**未锁定**的用户段 `origin` 重置后交给重算,
+     * `locked===true` 段照旧免疫(契约 §1.6:「须先逐段解锁」)。
+     */
+    function isProtectedSegment(seg, clearManual = false) {
+        if (seg.locked === true) return true;
+        return clearManual ? false : seg.origin !== "auto";
+    }
+
+    /**
+     * 重算结果 ← 旧段表的合并(重分析语义,见文件头「重分析语义已按 J34 建模」)。
+     * @returns {{merged:object[], kept:number}} `kept` = 本次原样保留的用户/锁定段数。
+     */
+    function mergeReanalyzed(oldList, freshList, clearManual) {
+        const kept = oldList.filter((s) => isProtectedSegment(s, clearManual));
+        // 重算产物一律是**分析产出**:origin 归 auto、locked 归 false。
+        // (生成器为了让首帧好看会掺几条 user_edited/user_created,那是「上次留下的用户段」
+        //  的画像,不该被当成本次算出来的东西二次冒充成保留段。)
+        const fresh = freshList.map((s) => ({
+            ...s,
+            origin: "auto",
+            locked: false,
+        }));
+        // 重叠处理:保留段优先,与之相交的新段**整段丢弃**。
+        // (裁掉重叠部分会造出生成器没产过的半截段——边界、响度、diff 三处都要跟着补算;
+        //  丢弃只需一次相交判定,且时间轴上不会出现两段抢同一区间,故取丢弃。)
+        const survivors = fresh.filter(
+            (s) => !kept.some((k) => s.t0S < k.t1S && k.t0S < s.t1S),
+        );
+        const merged = kept
+            .concat(survivors)
+            .sort((a, b) => a.t0S - b.t0S || a.t1S - b.t1S);
+        return { merged: renumber(merged), kept: kept.length };
+    }
+
+    /**
+     * 用生成器重算给定轨的段表(analyze / VAD/分段松手档 / 版本切换 / 版本复制共用)。
      * `store:false` 用于「结果不属当前激活版本」的情形(copyVersion 到非激活版本):
      * 事件照发(载荷带 `version`),但内部显示用的段表不被换掉。
+     * `reanalysis:true` 走上面的合并(保护用户段);版本切换/复制**不走** —— 那是「换出
+     * 另一版本的曲线真身」,不是在同一版本上重算,整表替换才是对的(§1.9/§1.11)。
+     * 返回的 `frame.diff.kept` 在合并档被改写成本次真实保留数(§2.8 的 {k})。
      */
     function regenerateSegments(
         version,
         reason,
         chList,
-        { store = true } = {},
+        { store = true, reanalysis = false, clearManual = false } = {},
     ) {
         const frame = makeSegments(version, reason, chList);
         if (store) {
+            let kept = 0;
             for (const entry of frame.channels) {
-                model.segByCh.set(entry.ch, clone(entry));
+                if (reanalysis) {
+                    const merged = mergeReanalyzed(
+                        segmentsOf(entry.ch),
+                        clone(entry.segments),
+                        clearManual,
+                    );
+                    kept += merged.kept;
+                    model.segByCh.set(entry.ch, {
+                        ...clone(entry),
+                        segments: merged.merged,
+                    });
+                } else {
+                    model.segByCh.set(entry.ch, clone(entry));
+                }
             }
             model.segVersion = version;
+            if (reanalysis) frame.diff.kept = kept;
         }
         return frame;
+    }
+
+    /**
+     * 重算类事件的一帧:段表取**内部模型**(合并后的后置状态),
+     * diff 的增删改明细沿用生成器算出的那份,`kept` 用本次真实保留数。
+     */
+    function emitRecomputedSegments(reason, chList, frame) {
+        const payload = segmentsPayload(reason, chList, frame.diff.kept);
+        payload.diff.changed = frame.diff.changed;
+        payload.diff.added = frame.diff.added;
+        payload.diff.removed = frame.diff.removed;
+        emit("scvb.segments", payload);
     }
 
     function allChannels() {
@@ -499,11 +643,14 @@ function makeContext(role, world) {
         fullStatePayload,
         segmentsPayload,
         regenerateSegments,
+        emitRecomputedSegments,
+        isProtectedSegment,
         segmentsOf,
         renumber,
         later,
         isPrinting,
         inRangeAt,
+        loopWindow,
         allChannels,
     };
 }
@@ -521,10 +668,13 @@ function buildOutputBackend(ctx) {
         patchState,
         segmentsPayload,
         regenerateSegments,
+        emitRecomputedSegments,
+        isProtectedSegment,
         segmentsOf,
         renumber,
         later,
         isPrinting,
+        loopWindow,
         allChannels,
     } = ctx;
 
@@ -561,7 +711,9 @@ function buildOutputBackend(ctx) {
             if (hit.length === 0) continue;
             tracks++;
             intervals += hit.length;
-            manualKept += hit.filter((s) => s.origin !== "auto").length;
+            // dry-run 的「将保留」判据必须与真跑一致(否则预览行报的数和事后 diff.kept 对不上):
+            // 默认档保护用户段 ∪ 锁定段,与 `regenerateSegments({reanalysis:true})` 同一口径。
+            manualKept += hit.filter((s) => isProtectedSegment(s)).length;
         }
         return { intervals, tracks, manualKept, channels: chList };
     }
@@ -577,8 +729,12 @@ function buildOutputBackend(ctx) {
         debounceId = later(300, () => {
             debounceId = null;
             const v = model.snapshot.global.version_active;
-            regenerateSegments(v, reason, allChannels());
-            pushSegments(reason, allChannels());
+            // §1.18/§1.19 语义行:松手档**仅改写 `origin=auto` 且未 `locked` 的段**,
+            // 用户段逐字节不动 —— 所以走合并档(clearManual 与本路径无关,恒 false)。
+            const frame = regenerateSegments(v, reason, allChannels(), {
+                reanalysis: true,
+            });
+            emitRecomputedSegments(reason, allChannels(), frame);
         });
     }
 
@@ -651,25 +807,19 @@ function buildOutputBackend(ctx) {
             }
             later(800, () => {
                 if (!model.snapshot.analysis_run.running) return;
+                // 合并档:用户段/锁定段原样保留,只有 auto 未锁定的位置换成重算结果;
+                // `clearManual:true` 让未锁定的用户段 origin 重置后参与重算,locked 仍免疫
+                // (语义与边界见文件头「重分析语义已按 J34 建模」)。
                 const frame = regenerateSegments(
                     version,
                     "analyze",
                     a.channels,
+                    {
+                        reanalysis: true,
+                        clearManual,
+                    },
                 );
-                if (clearManual) {
-                    // `clearManual:true` 只重置 origin,locked 段免疫(04 §4.4 / J34)。
-                    for (const ch of a.channels) {
-                        for (const seg of segmentsOf(ch)) {
-                            if (!seg.locked) seg.origin = "auto";
-                        }
-                    }
-                }
-                // 段表取内部模型(带 clearManual 的后置状态),diff 明细沿用生成器算出的那份。
-                const payload = segmentsPayload("analyze", a.channels);
-                payload.diff.changed = frame.diff.changed;
-                payload.diff.added = frame.diff.added;
-                payload.diff.removed = frame.diff.removed;
-                emit("scvb.segments", payload);
+                emitRecomputedSegments("analyze", a.channels, frame);
                 patchState({ analysis_run: { running: false, progress: 1 } });
             });
             return { ok: true, affected };
@@ -685,9 +835,6 @@ function buildOutputBackend(ctx) {
         // ---- §1.8(J04 三值枚举;follow 忽略起止,无哨兵约定)---------------------
         setRange(mode, startS, endS) {
             if (!ENUMS.rangeMode.includes(mode)) return BAD_ARG();
-            if (mode === "daw_loop" && !model.caps.loopAvailable) {
-                return { ok: false, reason: "noLoop" };
-            }
             const current = model.snapshot.global.range;
             if (mode === "manual") {
                 if (
@@ -703,7 +850,11 @@ function buildOutputBackend(ctx) {
                 return OK();
             }
             if (mode === "daw_loop") {
-                const loop = model.caps.loop;
+                // 「宿主提供了完整循环区」是本档的唯一前置(§1.8 拒绝态 `noLoop`)。
+                // 判据统一走 loopWindow():只看 caps.loopAvailable 开关的话,窗口缺失时
+                // 下面会把 undefined 的起止写进 state。
+                const loop = loopWindow();
+                if (!loop) return { ok: false, reason: "noLoop" };
                 patchState({
                     global: {
                         range: {
@@ -809,10 +960,14 @@ function buildOutputBackend(ctx) {
         // ---- §1.13 ------------------------------------------------------------
         setParam(id, value) {
             if (!isWritableParamId(model.params.values, id)) return BAD_ARG();
+            // §0.8 第 2 条「夹取或拒绝」:非有限值没有可夹取的语义 → 拒绝;
+            // 越界的有限值按 params-v0 的「范围」列夹取,并把**夹取后的值**回推
+            // (回推原值会让 UI 显示的和引擎里的两份不一致)。
             if (!isFiniteNumber(value)) return BAD_ARG();
-            model.params.values[id] = value;
+            const next = clampParamValue(id, value);
+            model.params.values[id] = next;
             emit("scvb.params", {
-                values: { [id]: value },
+                values: { [id]: next },
                 hostEcho: false,
                 full: false,
                 versionActive: model.snapshot.global.version_active,
