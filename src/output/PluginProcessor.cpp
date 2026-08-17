@@ -4,11 +4,18 @@
 ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
                                .withInput("Input", juce::AudioChannelSet::stereo(), true)
-                               .withOutput("Output", juce::AudioChannelSet::stereo(), true))
+                               .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+      apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
 }
 
 ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor() = default;
+
+juce::AudioProcessorValueTreeState::ParameterLayout ScvbOutputAudioProcessor::createParameterLayout()
+{
+    // T15:123 参数冻结布局(params-v0 v2.1 §一 / J59 / J65)。
+    return scvb::params::makeOutputLayout();
+}
 
 const juce::String ScvbOutputAudioProcessor::getName() const
 {
@@ -49,9 +56,20 @@ const juce::String ScvbOutputAudioProcessor::getProgramName(int /*index*/)
 
 void ScvbOutputAudioProcessor::changeProgramName(int /*index*/, const juce::String& /*newName*/) {}
 
-void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& /*destData*/) {}
+void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
+{
+    // T15:最小状态接线 —— 123 参数的保存/恢复(pluginval gate 7 状态往返依赖)。
+    const auto state = apvts.copyState();
+    std::unique_ptr<juce::XmlElement> xml(state.createXml());
+    copyXmlToBinary(*xml, destData);
+}
 
-void ScvbOutputAudioProcessor::setStateInformation(const void* /*data*/, int /*sizeInBytes*/) {}
+void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+    std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data, sizeInBytes));
+    if (xml != nullptr)
+        apvts.replaceState(juce::ValueTree::fromXml(*xml));
+}
 
 // juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

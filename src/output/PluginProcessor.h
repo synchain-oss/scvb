@@ -3,9 +3,12 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "OutputParams.h"
+
 // T01 空壳:processBlock 直通的最小 Output 插件。
 // ADR-002:Output 最终将从共享内存环读取各 channel 时间线区间,做每轨 gain/pan 后求和替换总线输入。
 // 本骨架仅直通;共享内存/IPC/时间线寻址由 S1 spike(T02)与后续任务填充。
+// T15:APVTS 接入 123 参数冻结布局(scvb::params::makeOutputLayout)。
 class ScvbOutputAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -37,6 +40,12 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
+    // T15:123 参数冻结布局(APVTS)。
+    juce::AudioProcessorValueTreeState& getAPVTS() { return apvts; }
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
 private:
+    juce::AudioProcessorValueTreeState apvts;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScvbOutputAudioProcessor)
 };
