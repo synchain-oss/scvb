@@ -11,6 +11,9 @@ juce_add_plugin(SCVBInput
   VST3_CATEGORIES          "Fx"
 
   BUNDLE_ID                "com.synchain.scvb.input"
+
+  # Windows:链接 WebView2 静态 loader(顶层 CMakeLists 已预置 NuGet 包)。
+  NEEDS_WEBVIEW2           TRUE
 )
 
 target_sources(SCVBInput PRIVATE
@@ -20,7 +23,10 @@ target_sources(SCVBInput PRIVATE
 
 target_include_directories(SCVBInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(SCVBInput PRIVATE scvb_core)
+target_link_libraries(SCVBInput PRIVATE
+  scvb_core
+  scvb_plugin_common            # WebViewHost 装配层(INTERFACE,源编入本 target)
+)
 
 if(MSVC)
   target_compile_options(SCVBInput PRIVATE /W4 /utf-8)
@@ -31,3 +37,11 @@ endif()
 target_compile_definitions(SCVBInput PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0
 )
+
+# Windows:WebView2 宏(JUCE_WEB_BROWSER 已由 scvb_plugin_common 提供;这三个与 Bridge 先例一致)。
+if(WIN32)
+  target_compile_definitions(SCVBInput PUBLIC
+    JUCE_USE_WIN_WEBVIEW2=1
+    JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
+  )
+endif()

@@ -66,11 +66,11 @@ option(SCVB_TESTS_WITH_EBUR128 "Build [reference] K-weighting tests against libe
 # ------------------------------------------------------------------
 include(CTest)               # enable_testing() 于顶层,让根 CTestTestfile.cmake 生成并 subdirs() 进 tests/
 add_subdirectory(src/core)     # scvb_core
+# T26:两插件共用的 WebView2 装配层(WebViewHost/PlatformWebView/ResourceProvider/FallbackPanel/BridgeBase)
+add_subdirectory(src/plugin-common)  # scvb_plugin_common(INTERFACE,源编入各插件)
 # T01:src/input + src/output 正式插件(T06 的 PR 恢复;S1 spike 核心已移植回 src/core/ipc/)
 add_subdirectory(src/input)    # SCVBInput
 add_subdirectory(src/output)   # SCVBOutput
-# T04:S3 WebView 承载力 spike(T04 的 Output 最小插件壳 + WebView2 编辑器;由 T26 的 PR 删除)
-add_subdirectory(spikes/s3)    # SCVBS3Output
 # T05:S4 状态体量 spike(T05 的满配 state 编解码 + 验收跑分;由 T19 的 PR 删除)
 add_subdirectory(spikes/s4)    # s4_state + scvb_s4_state
 if(SCVB_BUILD_TESTS)

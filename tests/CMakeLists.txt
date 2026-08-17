@@ -42,7 +42,7 @@ add_executable(scvb_tests
   core/test_authority.cpp
   core/test_ipc_layout.cpp
   core/test_ipc_lifecycle.cpp
-  core/analysis_coverage_test.cpp
+  core/analysis_coverage_test.cpp`r`n  core/test_design_box.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
@@ -89,6 +89,38 @@ else()
 endif()
 
 add_test(NAME scvb_params_tests COMMAND scvb_params_tests)
+
+# scvb_plugin_common_tests:T26 WebView 装配层 L0 单测(链接 juce_gui_extra,离线 Catch2)。
+# 只编 ResourceProvider/BridgeBase/FallbackPanel(不启 WebView2 loader,故不编
+# WebViewHost/PlatformWebView,避免 Windows 下未链接 WebView2 loader 的 undefined symbol)。
+add_executable(scvb_plugin_common_tests
+  webview/test_plugin_common.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/ResourceProvider.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/BridgeBase.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/FallbackPanel.cpp
+)
+
+target_link_libraries(scvb_plugin_common_tests PRIVATE
+  Catch2::Catch2WithMain
+  juce::juce_gui_extra
+)
+
+target_include_directories(scvb_plugin_common_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/plugin-common
+  ${CMAKE_SOURCE_DIR}/src/core
+)
+
+target_compile_definitions(scvb_plugin_common_tests PRIVATE
+  JUCE_WEB_BROWSER=1
+)
+
+if(MSVC)
+  target_compile_options(scvb_plugin_common_tests PRIVATE /W4 /utf-8 /EHsc)
+else()
+  target_compile_options(scvb_plugin_common_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME scvb_plugin_common_tests COMMAND scvb_plugin_common_tests)
 
 # scvb_ipc_tests:L1 双进程 IPC 契约测试骨架(仅 WIN32;实现由 T07b 填充)。
 if(SCVB_BUILD_IPC_TESTS AND WIN32)
