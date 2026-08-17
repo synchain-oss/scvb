@@ -550,6 +550,46 @@ TEST_CASE("读方 seqlock:受限追赶分拍补完 + 真回退丢弃", "[featrin
     REQUIRE(p4 == 0);
 }
 
+TEST_CASE("FeatRing 几何快照:attach 读一次,越界映射拒绝绑定", "[featring][geometry]")
+{
+    // 声明容量 > 实际映射 → 拒绝绑定(bound()==false),processBlock 静默不写、不推进 write_hop。
+    scvb::FeatHeader header;
+    std::vector<scvb::FeatFrame> ring(2048);
+    header.magic.store(scvb::kScvbMagic, std::memory_order_release);
+    header.abi.store(scvb::kScvbAbi, std::memory_order_release);
+    header.capacity_hops = 4096; // 声明的几何
+    header.hop_ms = scvb::kFeatHopMs;
+    header.base_hop.store(0, std::memory_order_release);
+    header.write_hop.store(0, std::memory_order_release);
+
+    scvb::FeatRing wr;
+    wr.bind(&header, ring.data(), 2048); // 实际映射 2048 < 声明 4096
+    REQUIRE_FALSE(wr.bound());
+
+    wr.prepare(48000.0, 1, 480);
+    wr.setCapturing(true);
+    wr.startRun(0);
+    std::vector<float> sig(480, 0.5f);
+    const float* ch[1] = {sig.data()};
+    REQUIRE(wr.processBlock(ch, 480) == 0); // 未绑定 → 不写
+    REQUIRE(header.write_hop.load() == 0); // 不推进
+
+    // 合法:声明 == 实际映射 → 绑定成功,快照 == 段头几何。
+    scvb::FeatHeader okHeader;
+    std::vector<scvb::FeatFrame> okRing(4096);
+    okHeader.magic.store(scvb::kScvbMagic, std::memory_order_release);
+    okHeader.abi.store(scvb::kScvbAbi, std::memory_order_release);
+    okHeader.capacity_hops = 4096;
+    okHeader.hop_ms = scvb::kFeatHopMs;
+    okHeader.base_hop.store(0, std::memory_order_release);
+    okHeader.write_hop.store(0, std::memory_order_release);
+    scvb::FeatRing ok;
+    ok.bind(&okHeader, okRing.data(), 4096);
+    REQUIRE(ok.bound());
+    REQUIRE(ok.capacityHops() == 4096);
+    REQUIRE(ok.hopMs() == scvb::kFeatHopMs);
+}
+
 // ---------------------------------------------------------------------------
 // ⑥ [P4/G11] 布防期门控:工作选区 ∩ 选中轨掩码
 // ---------------------------------------------------------------------------

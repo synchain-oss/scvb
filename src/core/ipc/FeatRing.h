@@ -7,6 +7,13 @@
 // J33/04 §3.2)+ biquad 首 hop 预热(复用 analysis::FeatureExtractor 的 T08 口径)+ 采集 OFF 静默丢弃。
 // 读侧(Output):25Hz 增量拉取(seqlock:base→write→base 双读)+ 受限追赶(04 §3.3)。
 // 时间线寻址以 FeatHeader.base_hop/write_hop(hop 序号)为唯一真源,不另造时间线概念。
+//
+// 【几何快照纪律(04 §3 / PR#36 复审,硬性)】FeatHeader 的几何字段 hop_ms/capacity_hops 是
+// plain u32(非原子)。写侧/读侧都必须在 attach(bind)时一次性读进本地快照,此后每拍只读快照、
+// 绝不回读段头几何字段 —— 回读在 re-prepare 并发改写几何时是数据竞争。特征段恒按固定容量
+// kFeatCapacityHops 创建、无运行期扩容;索引 hop % capacity 有界于快照,保住「几何 ≤ 实际映射」
+// 不变式(v1..v5 越界类事故)。bind 的 mappedCapacity = 实际映射的 FeatFrame 槽数,必须 >= 段头
+// 声明的 capacity_hops,否则拒绝绑定(静默不写/不读)。
 
 #include <array>
 #include <cstdint>
@@ -37,8 +44,10 @@ class FeatRing
 public:
     FeatRing() = default;
 
-    // 绑定特征段(Input 写侧;header/ring 可写)。
-    void bind(FeatHeader* header, FeatFrame* ring, u32 capacity) noexcept;
+    // 绑定特征段(Input 写侧;header/ring 可写)。mappedCapacity = 实际映射的 FeatFrame 槽数。
+    // 见文件头【几何快照纪律】:attach 时快照 header->capacity_hops/hop_ms 进本地,此后不回读段头;
+    // mappedCapacity < capacity_hops → 拒绝绑定(bound()==false,processBlock 静默不写)。
+    void bind(FeatHeader* header, FeatFrame* ring, u32 mappedCapacity) noexcept;
 
     // 准备提取器(采样率/声道/最大块;分配缓冲,只应在消息/准备线程调用,不得在音频线程)。
     void prepare(double sampleRate, int channels, int maxBlockSamples);
@@ -46,6 +55,7 @@ public:
     // 采集开关布防(04 §1.1)。OFF → processBlock 静默丢弃,不写段、不推进 write_hop。
     void setCapturing(bool on) noexcept { capturing_ = on; }
     bool capturing() const noexcept { return capturing_; }
+    bool bound() const noexcept { return bound_; }
 
     // run 切换协议(04 §3.2):base_hop.store(h0) 先、write_hop.store(h0) 后(顺序不可倒,J33),
     // 再 reset + 首完整 hop 预热(FeatureExtractor 口径)。betweenStores 仅供测试注入交错读取。
@@ -59,11 +69,14 @@ public:
     double sampleRate() const noexcept { return extractor_.sampleRate(); }
     int channels() const noexcept { return extractor_.channels(); }
     uint64_t nextHop() const noexcept { return nextHop_; }
+    u32 capacityHops() const noexcept { return capacityHops_; } // 几何快照(attach 时读一次)
+    u32 hopMs() const noexcept { return hopMs_; }
 
 private:
     FeatHeader* header_ = nullptr;
     FeatFrame* ring_ = nullptr;
-    u32 capacity_ = 0;
+    u32 capacityHops_ = 0; // 几何快照:bind 时读 header->capacity_hops,此后只读它(索引模数)
+    u32 hopMs_ = 0; // 几何快照:bind 时读 header->hop_ms(=kFeatHopMs,一致性观测)
     bool capturing_ = false;
     bool prepared_ = false;
     bool bound_ = false;
@@ -77,6 +90,7 @@ private:
 };
 
 // §3.3 读侧:单 channel 一次 seqlock 增量拉取。返回本拍写入 FrameStore 的 hop 数。
+// capacity 必须是 attach 时的几何快照(见 FeatPuller::bind),不得回读段头 capacity_hops。
 uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 capacity, FeatPullState& state,
                          analysis::ChannelFrames& store, analysis::HopRange timeGate);
 
@@ -86,7 +100,8 @@ uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 ca
 class FeatPuller
 {
 public:
-    void bind(u32 channel, const FeatHeader* header, const FeatFrame* ring, u32 capacity);
+    // mappedCapacity = 实际映射的 FeatFrame 槽数;attach 时快照 header->capacity_hops,见文件头纪律。
+    void bind(u32 channel, const FeatHeader* header, const FeatFrame* ring, u32 mappedCapacity);
     void pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask);
 
     FeatPullState& state(u32 channel);
@@ -97,7 +112,7 @@ private:
     {
         const FeatHeader* header = nullptr;
         const FeatFrame* ring = nullptr;
-        u32 capacity = 0;
+        u32 capacity = 0; // 几何快照:bind 时读 header->capacity_hops,此后只读它(索引模数)
         bool bound = false;
     };
 

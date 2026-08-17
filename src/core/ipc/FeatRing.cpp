@@ -6,12 +6,17 @@
 namespace scvb
 {
 
-void FeatRing::bind(FeatHeader* header, FeatFrame* ring, u32 capacity) noexcept
+void FeatRing::bind(FeatHeader* header, FeatFrame* ring, u32 mappedCapacity) noexcept
 {
     header_ = header;
     ring_ = ring;
-    capacity_ = capacity;
-    bound_ = (header_ != nullptr && ring_ != nullptr && capacity_ != 0);
+    // 【几何快照纪律(04 §3 / PR#36)】hop_ms/capacity_hops 是 plain u32,attach 时一次性读进本地,
+    // 此后每拍只读快照绝不回读段头;特征段恒按固定容量创建、无运行期扩容。mappedCapacity 必须 >=
+    // 声明的 capacity_hops,否则拒绝绑定,保住「几何 ≤ 实际映射」不变式(v1..v5 越界类事故)。
+    const u32 declared = (header_ != nullptr) ? header_->capacity_hops : 0;
+    capacityHops_ = declared;
+    hopMs_ = (header_ != nullptr) ? header_->hop_ms : 0;
+    bound_ = (header_ != nullptr && ring_ != nullptr && declared != 0 && mappedCapacity >= declared);
 }
 
 void FeatRing::prepare(double sampleRate, int channels, int maxBlockSamples)
@@ -85,7 +90,7 @@ int FeatRing::processBlock(const float* const* channels, int numSamples)
     for (int i = 0; i < got; ++i)
     {
         const uint64_t hop = nextHop_;
-        ring_[hop % capacity_] =
+        ring_[hop % capacityHops_] =
             FeatFrame{out_[static_cast<std::size_t>(i)].kw_ms, out_[static_cast<std::size_t>(i)].peak};
         ++nextHop_;
         header_->write_hop.store(nextHop_, std::memory_order_release); // 稳态:写帧后推进 write_hop
@@ -134,7 +139,7 @@ uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 ca
     return pulled;
 }
 
-void FeatPuller::bind(u32 channel, const FeatHeader* header, const FeatFrame* ring, u32 capacity)
+void FeatPuller::bind(u32 channel, const FeatHeader* header, const FeatFrame* ring, u32 mappedCapacity)
 {
     if (channel < 1 || channel > kMaxChannels)
     {
@@ -143,8 +148,11 @@ void FeatPuller::bind(u32 channel, const FeatHeader* header, const FeatFrame* ri
     auto& b = bindings_[channel - 1];
     b.header = header;
     b.ring = ring;
-    b.capacity = capacity;
-    b.bound = (header != nullptr && ring != nullptr && capacity != 0);
+    // 【几何快照纪律(04 §3 / PR#36)】attach 时读一次 capacity_hops 进快照,此后每拍只读快照;
+    // mappedCapacity 必须 >= 声明的 capacity_hops,否则拒绝绑定(越界类事故)。
+    const u32 declared = (header != nullptr) ? header->capacity_hops : 0;
+    b.capacity = declared;
+    b.bound = (header != nullptr && ring != nullptr && declared != 0 && mappedCapacity >= declared);
 }
 
 void FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask)
