@@ -58,6 +58,8 @@ private:
     void resolveConfig();
     // claim + 创建环(消息线程)。
     void doClaim();
+    // v9:认领失败落一条诊断日志(每次失败事件仅一条,成功时复位)。
+    void logClaimFail(const char* reason);
     // 25Hz 健康仲裁(5s 滞回仅作用于 静音→直通)。
     void pollHealth(u64 now);
     bool isHealthy(u64 now) const;
@@ -72,6 +74,12 @@ private:
     std::vector<float> capBuf_; // interleaved, maxBlock*srcChannels
     i64 lastT0_ = -1;
     i64 expectedNext_ = -1;
+
+    // v6 诊断计数(仅音频线程写,消息线程读;§8 零 I/O)。
+    std::atomic<u64> audioBlocks_{0};
+    std::atomic<u64> audioSamples_{0};
+    std::atomic<i64> lastWriteT0_{-1};
+    u64 lastLoggedBlocks_ = 0;
 
     // 配置
     u32 group_ = 1;
@@ -89,6 +97,7 @@ private:
 
     bool claimed_ = false;
     bool active_ = false;
+    bool claimFailLogged_ = false; // v9:每次失败事件只落一条 claimFail 日志
 
     // 健康仲裁状态
     u64 unhealthySince_ = 0;

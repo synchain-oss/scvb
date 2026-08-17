@@ -64,8 +64,10 @@ std::vector<float> makeClickTrack(int trackIndex, bool stereo, int frames, int p
 constexpr u32 kTestGroupRing = 8;
 constexpr u32 kTestGroupRegistry = 6;
 constexpr u32 kTestGroupFull = 7;
-constexpr u32 kTestGroupA = 1;
-constexpr u32 kTestGroupB = 2;
+// 组 1/2 是用户 DAW 实测组(默认 g1、G-10 用 g2),测试一律避开,否则 DAW 开着时
+// 测试会与活的插件实例抢 slot(2026-08-16 实测踩坑:v8 回归轮 line 440 因此误红)。
+constexpr u32 kTestGroupA = 4;
+constexpr u32 kTestGroupB = 5;
 } // namespace
 
 TEST_CASE("AudioRing mono 往返按位相等", "[s1][ring]")
@@ -207,7 +209,7 @@ TEST_CASE("Registry 双阈值接管(J10)", "[s1][registry][j10]")
     reg.releaseInput(2, myPid);
 }
 
-TEST_CASE("Registry 同 pid 重认领(采样率切换)成功并刷新 slot", "[s1][registry][reclaim]")
+TEST_CASE("Registry 同 pid 对 Active 槽 claimInput 冲突 + updateOwnedInputSlot 刷新(v10)", "[s1][registry][v10]")
 {
     Registry reg(kTestGroupRegistry);
     REQUIRE(reg.open() == Registry::ClaimResult::kClaimed);
@@ -220,19 +222,97 @@ TEST_CASE("Registry 同 pid 重认领(采样率切换)成功并刷新 slot", "[s
     REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
     REQUIRE(s->sample_rate == 44100);
 
-    // 采样率切换后的重认领:slot 被【自己】占用 → 直接成功并刷新 sample_rate/max_block/心跳,
-    // 不得 kConflict(否则 Input 停心跳停环 → Output mask 塌缩 → 总线静音,P0)。
-    const u64 now2 = now + 100;
-    REQUIRE(reg.claimInput(3, pid, 48000, 256, now2) == Registry::ClaimResult::kClaimed);
+    // v10:Active 槽上的同 pid claimInput 必须冲突(复制轨道带同 channel 的复制体不得偷槽)。
+    REQUIRE(reg.claimInput(3, pid, 48000, 256, now + 100) == Registry::ClaimResult::kConflict);
     REQUIRE(s->pid == pid);
-    REQUIRE(s->sample_rate == 48000);
-    REQUIRE(s->max_block == 256);
-    REQUIRE(s->heartbeat_ms.load(std::memory_order_acquire) == now2);
+    REQUIRE(s->sample_rate == 44100); // 未被刷新
     REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
 
-    // 他人 pid 仍冲突(同 pid 分支不放宽接管语义)。
-    REQUIRE(reg.claimInput(3, pid + 1, 48000, 256, now2) == Registry::ClaimResult::kConflict);
+    // 采样率切换重认领 = 本实例自己刷新自己的槽(不经 claimInput)。
+    reg.updateOwnedInputSlot(3, pid, 48000, 256);
+    REQUIRE(s->sample_rate == 48000);
+    REQUIRE(s->max_block == 256);
+    REQUIRE(s->pid == pid);
+    REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
+
+    // 非属主调用 updateOwnedInputSlot = 空操作。
+    reg.updateOwnedInputSlot(3, pid + 1, 96000, 64);
+    REQUIRE(s->sample_rate == 48000);
+    REQUIRE(s->max_block == 256);
+
+    // 他人 pid claimInput 仍冲突(接管语义不放宽)。
+    REQUIRE(reg.claimInput(3, pid + 1, 48000, 256, now + 200) == Registry::ClaimResult::kConflict);
     reg.releaseInput(3, pid);
+}
+
+TEST_CASE("Registry 自动认领不抢同 pid 已占 slot(v8 认领塌缩回归)", "[s1][registry][v8]")
+{
+    Registry reg(kTestGroupRegistry);
+    REQUIRE(reg.open() == Registry::ClaimResult::kClaimed);
+    const u32 pid = static_cast<u32>(::GetCurrentProcessId());
+    const u64 now = steadyNowMs();
+
+    // 实例 1 占 ch1
+    REQUIRE(reg.claimInput(1, pid, 48000, 512, now) == Registry::ClaimResult::kClaimed);
+    // 实例 2(同 pid)自动认领 ch1:已占 → 必须冲突,不得「认领成功」(v2 塌缩根因)
+    REQUIRE(reg.claimInputAuto(1, pid, 48000, 512, now) == Registry::ClaimResult::kConflict);
+    // 转而拿下一个 Free slot → 成功
+    REQUIRE(reg.claimInputAuto(2, pid, 48000, 512, now) == Registry::ClaimResult::kClaimed);
+    REQUIRE(reg.inputSlot(2)->pid == pid);
+    // 陈旧+死 pid 仍可接管(接管语义保留)
+    InputSlot* s = reg.inputSlot(1);
+    s->heartbeat_ms.store(now - 6000, std::memory_order_relaxed);
+    s->pid = 0;
+    REQUIRE(reg.claimInputAuto(1, pid + 1, 48000, 512, now) == Registry::ClaimResult::kClaimed);
+    reg.releaseInput(1, pid + 1);
+    reg.releaseInput(2, pid);
+}
+
+TEST_CASE("Input 通道解析策略:已认领自动模式跨 re-prepare 保持原 channel(v9 迁槽回归)", "[s1][registry][v9]")
+{
+    // env > state > 已认领保持 > 0(自动)
+    REQUIRE(resolveInputChannelForClaim(0, 0, false, 0) == 0);
+    REQUIRE(resolveInputChannelForClaim(0, 0, true, 7) == 7); // 已认领保持(核心)
+    REQUIRE(resolveInputChannelForClaim(0, 0, true, 0) == 0); // 认领态但 channel 非法 → 0
+    REQUIRE(resolveInputChannelForClaim(0, 3, true, 7) == 3); // state 强制 > 保持
+    REQUIRE(resolveInputChannelForClaim(5, 0, true, 7) == 5); // env 强制 > state/保持
+    REQUIRE(resolveInputChannelForClaim(0, 16, true, 7) == 7); // state 越界视作未设 → 保持
+    REQUIRE(resolveInputChannelForClaim(0, 0, true, 16) == 0); // 保持值越界 → 0
+}
+
+TEST_CASE("Registry 满 15 槽后释放一槽,自动认领可补位(v9 未认领重试机制)", "[s1][registry][v9]")
+{
+    Registry reg(kTestGroupRegistry);
+    REQUIRE(reg.open() == Registry::ClaimResult::kClaimed);
+    const u32 pid = static_cast<u32>(::GetCurrentProcessId());
+    const u64 now = steadyNowMs();
+
+    // 15 槽全占(同 pid,自动认领铺开)
+    for (u32 c = 1; c <= kMaxChannels; ++c)
+    {
+        REQUIRE(reg.claimInputAuto(c, pid, 48000, 512, now) == Registry::ClaimResult::kClaimed);
+    }
+    // 第 16 个实例:任何槽都拿不到(同 pid 已占 → 冲突,不得刷新抢占)
+    for (u32 c = 1; c <= kMaxChannels; ++c)
+    {
+        REQUIRE(reg.claimInputAuto(c, pid, 48000, 512, now) == Registry::ClaimResult::kConflict);
+    }
+    // 用户删掉 ch7 的实例 → 槽释放 → 重试拿最低空闲槽 = 7
+    reg.releaseInput(7, pid);
+    u32 got = 0;
+    for (u32 c = 1; c <= kMaxChannels; ++c)
+    {
+        if (reg.claimInputAuto(c, pid, 48000, 512, now) == Registry::ClaimResult::kClaimed)
+        {
+            got = c;
+            break;
+        }
+    }
+    REQUIRE(got == 7);
+    for (u32 c = 1; c <= kMaxChannels; ++c)
+    {
+        reg.releaseInput(c, pid);
+    }
 }
 
 TEST_CASE("Registry claimOutput 同 pid 重认领不清 connected_mask", "[s1][registry][reclaim]")

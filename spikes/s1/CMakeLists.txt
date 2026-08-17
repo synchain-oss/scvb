@@ -6,9 +6,11 @@ add_library(s1_core STATIC
   SegmentBackendWin32.cpp
   Registry.cpp
   AudioRing.cpp
+  ScvbJournal.cpp
   SegmentBackendWin32.h
   Registry.h
   AudioRing.h
+  ScvbJournal.h
   SegmentLayout.h
   OutputStage.h
   BusXfade.h
@@ -89,3 +91,27 @@ endif()
 target_compile_definitions(SCVBOutput PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0
 )
+
+# ---------------------------------------------------------------------------
+# scvb_stress:S1 免 DAW 压测宿主(v6)。链接 s1_core,命令行复现宿主编排
+# (freeze/RIP/导出的 mono⇄stereo 重建)。每场景独立进程运行,崩溃由 WER 转储。
+# ---------------------------------------------------------------------------
+add_executable(scvb_stress
+  scvb_stress.cpp
+)
+
+target_link_libraries(scvb_stress PRIVATE s1_core)
+
+if(MSVC)
+  target_compile_options(scvb_stress PRIVATE /W4 /utf-8)
+else()
+  target_compile_options(scvb_stress PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# CTest 注册:每场景独立进程(崩溃 = 测试失败,进程异常退出码直接判红)。
+# 环帧数压到 1<<13 让「越界位置」几块之内到达(mono2stereo 首个 stereo 块即越界)。
+foreach(_scenario mono2stereo flip outputcheck churn multiclaim)
+  add_test(NAME s1_stress_${_scenario} COMMAND scvb_stress ${_scenario})
+  set_tests_properties(s1_stress_${_scenario} PROPERTIES ENVIRONMENT "SCVB_RING_FRAMES=8192")
+endforeach()
+

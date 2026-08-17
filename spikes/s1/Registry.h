@@ -51,6 +51,27 @@ inline bool isProcessAlive(u32 pid)
     return ok && code == STILL_ACTIVE;
 }
 
+// v9:Input 通道解析策略(env > state > 已认领保持 > 自动 0)。
+// 已认领的自动模式实例跨宿主 re-prepare 必须保持原 channel:若每次被 state 默认值
+// 打回 0,auto 路径会改抢最低空闲槽 → 实例迁槽、旧槽心跳陈旧但 state 仍 Active
+// (幽灵槽,实测 15 轨 mask 变 32764 缺两位)。
+inline u32 resolveInputChannelForClaim(u32 envCh, u32 stateCh, bool claimed, u32 currentCh)
+{
+    if (envCh >= 1 && envCh <= kMaxChannels)
+    {
+        return envCh;
+    }
+    if (stateCh >= 1 && stateCh <= kMaxChannels)
+    {
+        return stateCh;
+    }
+    if (claimed && currentCh >= 1 && currentCh <= kMaxChannels)
+    {
+        return currentCh;
+    }
+    return 0;
+}
+
 // 显示陈旧(>2000ms)。
 inline bool isStaleDisplay(u64 heartbeatMs, u64 nowMs)
 {
@@ -93,6 +114,13 @@ public:
 
     // claim 一个 Input channel(消息线程;CAS 0→1 填字段→2;被占且满足接管双条件则接管)。
     ClaimResult claimInput(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
+    // v10:仅刷新【本实例自己持有】的 slot 字段(采样率切换重认领),非属主调用为空操作。
+    void updateOwnedInputSlot(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock);
+
+    // 自动认领专用(v8):只拿 Free slot(或陈旧+死 pid 接管);**不做同 pid 刷新/接管**。
+    // v2 的同 pid 刷新曾让每个新实例都把第一个实例的 slot「认领成功」→ 15 实例全挤 ch1
+    // (channel 塌缩,导出只剩单轨内容)。此变体供 InputProcessor 的 channel_==0 自动选槽循环使用。
+    ClaimResult claimInputAuto(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
     // 释放本实例占用的 Input channel(析构路径,消息线程)。
     void releaseInput(u32 channel, u32 pid);
 

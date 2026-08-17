@@ -87,17 +87,10 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
             continue; // 竞争者赢了,重试
         }
 
-        // 同 pid 重认领(采样率切换:宿主对所有插件重新 prepareToPlay → doClaim 再走一遍)。
-        // slot 被自己占用时永远不满足接管双条件(pid 探活成功),必须在此直接刷新并认领成功,
-        // 否则 Input 收到 kConflict 会停心跳、停环,Output 收窄 connected_mask → 总线永久静音(P0)。
-        if (cur == kSlotActive && s.pid == pid)
-        {
-            // 自己拥有 slot,无需 CAS;fillInputSlot 刷新 sample_rate/max_block/心跳。
-            // 注意:fillInputSlot 会把 flags 清零 —— spike 里 capture 未启用、muted 位由 Input
-            // 100ms 后重新置位,可接受;T06 正式版需保留 kFlagCapturing。
-            fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
-            return ClaimResult::kClaimed;
-        }
+        // v10:Active 槽不再「同 pid 刷新接管」(v2 语义废除)。同 pid 刷新会让「复制轨道」
+        // 带来的同 channel 复制体直接抢走原实例的槽,两个实例同写一个环(内容互相覆盖,
+        // C-13 实测「后到者听感正常」正是此缺陷);与 ipc §1「已被占且心跳新鲜 → 冲突」
+        // 对齐。本实例自己的采样率重认领改走 updateOwnedInputSlot(见下),不经本函数。
 
         // 被占:接管双条件(J10:心跳陈旧 ≥5000ms 且 pid 探活失败)。
         const u64 hb = s.heartbeat_ms.load(std::memory_order_acquire);
@@ -115,6 +108,65 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
         return ClaimResult::kConflict;
     }
     return ClaimResult::kConflict;
+}
+
+Registry::ClaimResult Registry::claimInputAuto(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs)
+{
+    InputSlot* slot = inputSlot(channel);
+    if (slot == nullptr)
+    {
+        return ClaimResult::kUnavailable;
+    }
+    InputSlot& s = *slot;
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        const u32 cur = s.state.load(std::memory_order_acquire);
+        if (cur == kSlotFree)
+        {
+            u32 expected = kSlotFree;
+            if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+            {
+                fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
+                return ClaimResult::kClaimed;
+            }
+            continue;
+        }
+
+        // v8:自动认领不得走「同 pid 刷新」——否则新实例会把已占 slot 直接判「认领成功」,
+        // 所有实例挤在最小号 slot 上(channel 塌缩)。此处只允许陈旧+死 pid 接管。
+        const u64 hb = s.heartbeat_ms.load(std::memory_order_acquire);
+        if (isTakeoverStale(hb, nowMs) && !isProcessAlive(s.pid))
+        {
+            u32 expected = cur;
+            if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+            {
+                fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
+                return ClaimResult::kClaimed;
+            }
+            continue;
+        }
+        return ClaimResult::kConflict;
+    }
+    return ClaimResult::kConflict;
+}
+
+void Registry::updateOwnedInputSlot(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock)
+{
+    // v10:本实例对【自己已持有】的 slot 做字段刷新(采样率切换重认领路径)。
+    // 与 claimInput 的区别:不做 CAS、不抢任何非本实例的槽;非属主调用是空操作。
+    InputSlot* slot = inputSlot(channel);
+    if (slot == nullptr)
+    {
+        return;
+    }
+    InputSlot& s = *slot;
+    if (s.pid == pid && s.state.load(std::memory_order_acquire) == kSlotActive)
+    {
+        s.sample_rate = sampleRate;
+        s.max_block = maxBlock;
+    }
 }
 
 void Registry::releaseInput(u32 channel, u32 pid)

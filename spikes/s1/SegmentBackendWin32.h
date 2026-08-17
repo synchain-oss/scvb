@@ -56,7 +56,7 @@ public:
     static InitResult map(const std::wstring& name, std::size_t size, SegmentView& view);
 
     // 仅打开已存在的命名段(OpenFileMappingW,不创建)——Output 侧 attach audio.chN 用。
-    // 段不存在 → kFailed。映射整段(view.size 置 0,由调用方按 header 字段推算)。
+    // 段不存在 → kFailed。映射整段;view.size 回填真实段大小(v6,供容量校验)。
     static InitResult openExisting(const std::wstring& name, SegmentView& view);
 
     // 01 §4.0 初始化协议(registry/audio 通用;header 前两字段为 magic/abi,可选 generation):

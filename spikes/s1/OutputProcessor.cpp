@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include "LeakPool.h"
+#include "ScvbJournal.h"
 
 namespace
 {
@@ -38,6 +39,7 @@ OutputProcessor::OutputProcessor()
     accumL_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames), 0.0f);
     accumR_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames), 0.0f);
     trackBuf_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames) * 2, 0.0f);
+    scvb::journal::boot("Output", "v6");
 }
 
 OutputProcessor::~OutputProcessor()
@@ -53,6 +55,7 @@ OutputProcessor::~OutputProcessor()
     {
         retiredRegistries().push_back(std::move(registry_));
     }
+    scvb::journal::log("Output", "dtor", "");
 }
 
 void OutputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
@@ -63,6 +66,9 @@ void OutputProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     // v3 崩溃修复:accum/trackBuf 构造定容(kMaxHostBlockFrames / *2),此处不再分配;超限块由分块循环 clamp。
     jassert(maxBlock_ <= scvb::kMaxHostBlockFrames);
     busXfade_.prepare(sampleRate_, maxBlock_);
+    scvb::journal::log("Output", "prepareToPlay",
+                       scvb::journal::join({scvb::journal::kv("sr", static_cast<unsigned long long>(sampleRate_)),
+                                            scvb::journal::kv("block", static_cast<unsigned long long>(maxBlock_))}));
 
     // 每会话重置计数(→ ctrl 导出的 gapCount 从 0 起)。
     for (u32 ch = 0; ch < scvb::kMaxChannels; ++ch)
@@ -94,6 +100,7 @@ void OutputProcessor::releaseResources()
     // P0 修复:不再 stopTimer()。宿主挂起非渲染轨插件时(Render-in-Place 等)会调 releaseResources;
     // 停轮询会让 connected_mask 停更、Input 心跳失联 → mask 塌缩、恢复后总线静音。
     // 轮询/心跳定时器跨宿主挂起周期存活(析构仍会 stopTimer + releaseOutput)。
+    scvb::journal::log("Output", "releaseResources", "");
 }
 
 bool OutputProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -147,6 +154,9 @@ void OutputProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
     }
 
     const bool passthrough = (outputActive_.load(std::memory_order_relaxed) == 0 || noTimeline || negT0);
+
+    // v6 诊断:音频线程只做原子计数(§8 零 I/O),消息线程 timerCallback 落盘。
+    audioBlocks_.fetch_add(1, std::memory_order_relaxed);
     // acquire:配对 pollChannels 的 release,ring 元数据可见(仅激活路径需要)。
     const u32 usable = passthrough ? 0u : usableMask_.load(std::memory_order_acquire);
 
@@ -217,6 +227,28 @@ void OutputProcessor::timerCallback()
     const u64 now = scvb::steadyNowMs();
     ++tick_;
 
+    // v6 诊断:音频线程计数差量落盘(仅块数变化时写,空闲期静默)。
+    if ((tick_ % 6) == 0)
+    {
+        const u64 blocks = audioBlocks_.load(std::memory_order_relaxed);
+        if (blocks != lastLoggedBlocks_)
+        {
+            lastLoggedBlocks_ = blocks;
+            u64 gaps = 0;
+            for (u32 ch = 0; ch < scvb::kMaxChannels; ++ch)
+            {
+                gaps += gapCount_[ch].load(std::memory_order_relaxed);
+            }
+            scvb::journal::log(
+                "Output", "stats",
+                scvb::journal::join({scvb::journal::kv("blocks", blocks), scvb::journal::kv("gaps", gaps),
+                                     scvb::journal::kv("active", static_cast<unsigned long long>(
+                                                                     outputActive_.load(std::memory_order_relaxed))),
+                                     scvb::journal::kv("usable", static_cast<unsigned long long>(
+                                                                     usableMask_.load(std::memory_order_relaxed)))}));
+        }
+    }
+
     if (registry_ == nullptr || !registry_->isOpen())
     {
         return;
@@ -252,9 +284,14 @@ void OutputProcessor::tryClaim(u64 now)
         if (r == scvb::Registry::ClaimResult::kClaimed)
         {
             outputActive_.store(1, std::memory_order_relaxed);
+            scvb::journal::log("Output", "claim", "state=active");
         }
         else if (r == scvb::Registry::ClaimResult::kConflict)
         {
+            if (!observer_)
+            {
+                scvb::journal::log("Output", "observer", "");
+            }
             observer_ = true; // ADR-002:第二个 Output 只读观察
         }
         return;
@@ -267,6 +304,7 @@ void OutputProcessor::tryClaim(u64 now)
         {
             outputActive_.store(1, std::memory_order_relaxed);
             observer_ = false;
+            scvb::journal::log("Output", "claim", "state=active(takeover)");
         }
     }
 }
