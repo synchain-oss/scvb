@@ -41,9 +41,9 @@ float msBalanceFromString(const juce::String& text)
 
     const juce::juce_wchar c = t[0];
     if (c == 'M' || c == 'm')
-        return juce::jlimit(-100.0f, 100.0f, -t.substring(1).getFloatValue());
+        return juce::jlimit(-100.0f, 0.0f, -t.substring(1).getFloatValue());
     if (c == 'S' || c == 's')
-        return juce::jlimit(-100.0f, 100.0f, t.substring(1).getFloatValue());
+        return juce::jlimit(0.0f, 100.0f, t.substring(1).getFloatValue());
     return juce::jlimit(-100.0f, 100.0f, t.getFloatValue());
 }
 
@@ -89,9 +89,9 @@ float panFromString(const juce::String& text)
 
     const juce::juce_wchar c = t[0];
     if (c == 'L' || c == 'l')
-        return juce::jlimit(-100.0f, 100.0f, -t.substring(1).getFloatValue());
+        return juce::jlimit(-100.0f, 0.0f, -t.substring(1).getFloatValue());
     if (c == 'R' || c == 'r')
-        return juce::jlimit(-100.0f, 100.0f, t.substring(1).getFloatValue());
+        return juce::jlimit(0.0f, 100.0f, t.substring(1).getFloatValue());
     return juce::jlimit(-100.0f, 100.0f, t.getFloatValue());
 }
 
@@ -247,6 +247,9 @@ ParamHandles collectParamHandles(juce::AudioProcessorValueTreeState& apvts)
     h.width = dynamic_cast<juce::AudioParameterFloat*>(apvts.getParameter("width"));
     h.msBalance = dynamic_cast<juce::AudioParameterFloat*>(apvts.getParameter("ms_balance"));
     h.leadSelect = dynamic_cast<juce::AudioParameterInt*>(apvts.getParameter("lead_select"));
+    jassert(h.width != nullptr);
+    jassert(h.msBalance != nullptr);
+    jassert(h.leadSelect != nullptr);
 
     h.rawWidth = apvts.getRawParameterValue("width");
     h.rawMsBalance = apvts.getRawParameterValue("ms_balance");
@@ -263,6 +266,10 @@ ParamHandles collectParamHandles(juce::AudioProcessorValueTreeState& apvts)
             h.vol[v][t] = dynamic_cast<juce::AudioParameterFloat*>(apvts.getParameter(volId(ver, trk)));
             h.trkW[v][t] = dynamic_cast<juce::AudioParameterFloat*>(apvts.getParameter(widthId(ver, trk)));
             h.frz[v][t] = dynamic_cast<juce::AudioParameterInt*>(apvts.getParameter(freezeId(ver, trk)));
+            jassert(h.pan[v][t] != nullptr);
+            jassert(h.vol[v][t] != nullptr);
+            jassert(h.trkW[v][t] != nullptr);
+            jassert(h.frz[v][t] != nullptr);
 
             h.rawPan[v][t] = apvts.getRawParameterValue(panId(ver, trk));
             h.rawVol[v][t] = apvts.getRawParameterValue(volId(ver, trk));

@@ -101,6 +101,12 @@ bool isIntParam(const juce::AudioProcessorParameter* p)
     return dynamic_cast<const juce::AudioParameterInt*>(p) != nullptr;
 }
 
+bool endsWithFreeze(const std::string& id)
+{
+    const std::string suffix = "_freeze";
+    return id.size() >= suffix.size() && id.compare(id.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
 std::string paramRow(int index, const juce::RangedAudioParameter* p)
 {
     const auto range = p->getNormalisableRange();
@@ -123,11 +129,14 @@ std::string paramRow(int index, const juce::RangedAudioParameter* p)
     else
         os << fmtFloat(rawDefault);
 
+    os << '\t' << p->getVersionHint() << '\t' << (isInt ? "int" : "float");
+
     return os.str();
 }
 
 // 复刻 JUCE 8.0.8 VST3 wrapper 的 ParamID hash:String::hashCode()(31 乘子,uint32 回绕)
 // 截为非负 32 位(& 0x7fffffff,JUCE_USE_STUDIO_ONE_COMPATIBLE_PARAMETERS 默认 =1)。
+// 算法随 JUCE 版本复核:JUCE 升级 PR 必须重跑本 hash 断言(03 §8 P-3)。
 std::uint32_t vstParamIdHash(const std::string& s)
 {
     std::uint32_t h = 0;
@@ -256,6 +265,72 @@ TEST_CASE("freeze 离散步进(4 档)与 string 互逆", "[params][discrete]")
         INFO("freeze " << v);
         CHECK(scvb::params::freezeFromString(scvb::params::freezeToString(v, 1024)) == v);
     }
+}
+
+TEST_CASE("全部参数 versionHint==1 且类型 int/float 正确", "[params][version]")
+{
+    ParamsUnderTest t;
+    for (const auto* p : t.params())
+    {
+        const auto* ranged = asRanged(p);
+        REQUIRE(ranged != nullptr);
+        const std::string id = ranged->getParameterID().toStdString();
+        INFO("param " << id);
+
+        CHECK(ranged->getVersionHint() == 1);
+
+        const bool isInt = isIntParam(p);
+        const bool expectInt = (id == "lead_select") || endsWithFreeze(id);
+        if (expectInt)
+            CHECK(isInt);
+        else
+            CHECK(!isInt);
+    }
+}
+
+TEST_CASE("pan/vol/width/ms_balance 的 string 互逆往返", "[params][strings]")
+{
+    const float msVals[] = {-100.0f, -50.0f, -1.0f, 0.0f, 1.0f, 50.0f, 100.0f};
+    for (const float v : msVals)
+    {
+        INFO("ms_balance " << v);
+        CHECK(juce::approximatelyEqual(scvb::params::msBalanceFromString(scvb::params::msBalanceToString(v, 1024)), v));
+    }
+
+    const float panVals[] = {-100.0f, -37.5f, -30.0f, -1.0f, 0.0f, 1.0f, 30.0f, 37.5f, 100.0f};
+    for (const float v : panVals)
+    {
+        INFO("pan " << v);
+        CHECK(juce::approximatelyEqual(scvb::params::panFromString(scvb::params::panToString(v, 1024)), v));
+    }
+
+    const float volVals[] = {-24.0f, -12.5f, -1.0f, 0.0f, 1.0f, 3.2f, 12.0f};
+    for (const float v : volVals)
+    {
+        INFO("vol " << v);
+        CHECK(juce::approximatelyEqual(scvb::params::volFromString(scvb::params::volToString(v, 1024)), v));
+    }
+
+    const float widthVals[] = {0.0f, 50.0f, 100.0f, 150.0f};
+    for (const float v : widthVals)
+    {
+        INFO("width " << v);
+        CHECK(juce::approximatelyEqual(scvb::params::widthFromString(scvb::params::widthToString(v, 1024)), v));
+    }
+
+    const float twVals[] = {0.0f, 50.0f, 100.0f};
+    for (const float v : twVals)
+    {
+        INFO("trackWidth " << v);
+        CHECK(
+            juce::approximatelyEqual(scvb::params::trackWidthFromString(scvb::params::trackWidthToString(v, 1024)), v));
+    }
+
+    // 符号钳制:M/L 前缀强制非正、S/R 前缀强制非负(修复 M-100 → +100 的符号反转)。
+    CHECK(scvb::params::msBalanceFromString("M-100") <= 0.0f);
+    CHECK(scvb::params::msBalanceFromString("S-50") >= 0.0f);
+    CHECK(scvb::params::panFromString("L-100") <= 0.0f);
+    CHECK(scvb::params::panFromString("R-50") >= 0.0f);
 }
 
 TEST_CASE("version_active 不在参数列表里", "[params]")
