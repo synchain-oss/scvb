@@ -63,11 +63,15 @@ void DspArbiter::armSmoother(scvb::dsp::LinearSmoother& s, float target, bool is
         return;
     }
 
+    // 稳态非切换且目标未变:不重 arm,保护进行中的 30ms 切换斜坡不被截断(§2.4)。
+    if (!isSwitch && s.getTargetValue() == target)
+        return;
+
     const double ramp = isSwitch ? m_cfg.switchRampSec : m_cfg.normalRampSec;
-    s.reset(m_sampleRate, ramp);
-    s.setTargetValue(target);
+    s.reset(m_sampleRate, ramp); // 只改后续 setTargetValue 的斜坡时长,不重置当前值
+    s.setTargetValue(target); // 从当前实际值滑向目标(零跳变)
     if (isSwitch)
-        s.reset(m_sampleRate, m_cfg.normalRampSec); // 切换 block 用 30ms,之后回到常规 10ms
+        s.reset(m_sampleRate, m_cfg.normalRampSec); // 第二次 reset 只影响下一次换档,不打断本次 30ms 斜坡
 }
 
 std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processBlock(bool engineAuthority, double tSec)

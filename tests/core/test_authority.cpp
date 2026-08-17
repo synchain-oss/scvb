@@ -470,6 +470,43 @@ TEST_CASE("AUTH-SMOOTH-4 LinearSmoother 直接语义(零跳变/落靶/换档不�
     REQUIRE(s.getCurrentValue() == Approx(50.0f).margin(1e-4));
 }
 
+TEST_CASE("AUTH-SMOOTH-5 跨 block 逐 512 样本重 arm 不截断 30ms 斜坡", "[authority][smooth]")
+{
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+    f.rawPan[0].store(-50.0f);
+    f.curves[0] = constCurve(50.0, -3.0);
+    f.bind();
+
+    (void)f.arbiter.processBlock(false, 0.0);
+    advance(f.arbiter, 8);
+
+    // 权威切换 → 30ms 斜坡(1440 样本 @48k)。
+    (void)f.arbiter.processBlock(true, 0.0);
+    REQUIRE(f.arbiter.lastBlockWasSwitch());
+
+    int total = 0;
+    while (total < 1440)
+    {
+        // 模拟逐 block 调用:每 512 样本重 processBlock(目标不变,稳态非切换)。
+        if (total > 0 && total % 512 == 0)
+        {
+            (void)f.arbiter.processBlock(true, 0.0);
+            REQUIRE_FALSE(f.arbiter.lastBlockWasSwitch());
+        }
+
+        (void)f.arbiter.nextSample();
+        ++total;
+
+        // 关键:第 1439 样本必须仍在平滑 —— 若被截断成 10ms 会在 992 样本就落靶。
+        if (total == 1439)
+            REQUIRE(f.arbiter.panSmoother(0).isSmoothing());
+    }
+
+    REQUIRE_FALSE(f.arbiter.panSmoother(0).isSmoothing()); // 1440 落靶
+    REQUIRE(f.arbiter.panSmoother(0).getCurrentValue() == Approx(50.0f).margin(1e-4));
+}
+
 // ============================================================================
 // §2.3 DSP 取值仲裁:双源 + PRINT 不经过参数 + freeze。
 // ============================================================================

@@ -27,12 +27,16 @@ public:
     static constexpr int kNumTracks = 15; // [J59]
 
     // 每轨的「活动版本」取值来源。裸指针由 Output 侧持有;null 表示未接线(按默认值读)。
+    // 值域契约:raw* 全部来自 APVTS getRawParameterValue(),JUCE 8 返回的是**去归一化**的实际单位
+    // (ParameterAdapter::unnormalisedValue = convertFrom0to1(getValue())),不是 0..1 归一化值 ——
+    // pan ∈ [-100,100]、vol ∈ [-24,12]、width ∈ [0,100]、freeze ∈ [0,3]、lead_select ∈ [0,15]。
+    // 切勿在此再 convertFrom0to1(会双重转换),契约由 tests/core/test_authority_params.cpp AUTH-PARAMS-5 锁定。
     struct TrackSources
     {
-        const std::atomic<float>* rawPan = nullptr; // host 参数 pan(-100..100)
-        const std::atomic<float>* rawVol = nullptr; // host 参数 vol(-24..12)
-        const std::atomic<float>* rawTrkW = nullptr; // 每轨 width(0..100,[J57])
-        const std::atomic<float>* rawFrz = nullptr; // 每轨 freeze(0..3,[J65],int 存 float)
+        const std::atomic<float>* rawPan = nullptr; // host 参数 pan(-100..100,去归一化)
+        const std::atomic<float>* rawVol = nullptr; // host 参数 vol(-24..12,去归一化)
+        const std::atomic<float>* rawTrkW = nullptr; // 每轨 width(0..100,[J57],去归一化)
+        const std::atomic<float>* rawFrz = nullptr; // 每轨 freeze(0..3,[J65],int 存 float,去归一化)
         const CurveEvaluator* curve = nullptr; // 活动版本曲线真身(null → 恒 0)
     };
 

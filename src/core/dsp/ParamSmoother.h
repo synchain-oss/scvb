@@ -36,8 +36,13 @@ public:
     }
 
     // 设目标:从当前值经 reset() 设定的斜坡时长线性滑向 target。target==current 时立即完成。
+    // 对齐 juce::LinearSmoothedValue:目标未变时早退,绝不重置进行中的斜坡 —— 否则逐 block
+    // 重 arm 会把跨 block 的 30ms 切换斜坡在下一 block 截断重算(§2.4)。
     void setTargetValue(float target) noexcept
     {
+        if (target == m_target)
+            return;
+
         m_target = target;
         if (m_sampleRate > 0.0 && m_rampSeconds > 0.0 && m_target != m_current)
         {

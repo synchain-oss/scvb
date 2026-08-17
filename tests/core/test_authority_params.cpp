@@ -179,3 +179,30 @@ TEST_CASE("AUTH-PARAMS-4 freeze 参数经真实 JUCE 参数冻结维度", "[auth
     REQUIRE(t[0].pan == Approx(-40.0f).margin(1e-6));
     REQUIRE(t[0].volDb == Approx(5.0f).margin(1e-6));
 }
+
+// 值域契约锁定:APVTS getRawParameterValue() 在 JUCE 8 返回**去归一化**实际单位
+// (ParameterAdapter::unnormalisedValue = convertFrom0to1(getValue())),不是 0..1 归一化值。
+// 用默认值区分:若存归一化,pan 默认 0 会是 0.5、每轨 width 默认 100 会是 1.0、全局 width 会是 0.667。
+TEST_CASE("AUTH-PARAMS-5 raw 值是去归一化单位(非 0..1)—— 值域契约锁定", "[authority][params]")
+{
+    AuthorityParamsFixture f;
+
+    // pan 默认 0(范围 -100..100):去归一化=0,归一化=0.5。
+    REQUIRE(*f.handles.rawPan[0][0] == Approx(0.0f).margin(1e-6));
+    // vol 默认 0(范围 -24..12):去归一化=0,归一化=24/36=0.6667。
+    REQUIRE(*f.handles.rawVol[0][0] == Approx(0.0f).margin(1e-6));
+    // 每轨 width 默认 100(范围 0..100):去归一化=100,归一化=1.0。
+    REQUIRE(*f.handles.rawTrkW[0][0] == Approx(100.0f).margin(1e-6));
+    // 全局 width 默认 100(范围 0..150):去归一化=100,归一化=100/150=0.6667。
+    REQUIRE(*f.handles.rawWidth == Approx(100.0f).margin(1e-6));
+
+    // 经 JUCE API 写值后再读,仍为去归一化单位。
+    auto* pan = f.handles.pan[0][0];
+    pan->setValueNotifyingHost(pan->convertTo0to1(50.0f));
+    REQUIRE(*f.handles.rawPan[0][0] == Approx(50.0f).margin(1e-4));
+
+    // lead_select(int 0..15)写 3 → raw=3(去归一化),不是 3/15=0.2。
+    // 注意:AudioParameterInt::setValueNotifyingHost(float) 吃归一化值,这里用 operator=(int) 吃实际值。
+    *f.handles.leadSelect = 3;
+    REQUIRE(*f.handles.rawLeadSelect == Approx(3.0f).margin(1e-4));
+}
