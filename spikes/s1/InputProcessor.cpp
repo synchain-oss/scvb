@@ -38,7 +38,7 @@ InputProcessor::InputProcessor()
     parseEnvU32("SCVB_CHANNEL", 1, scvb::kMaxChannels, envChannel_);
     // v3 崩溃修复:音频线程缓冲构造时一次定容,此后永不再分配(§8 零堆分配)。
     capBuf_.assign(static_cast<std::size_t>(scvb::kMaxHostBlockFrames) * 2, 0.0f);
-    scvb::journal::boot("Input", "v8");
+    scvb::journal::boot("Input", "v9");
     // v8 诊断:把 env 配置写进日志(认领塌缩排查用,一眼看清实例是否被 env 强制了 channel)。
     scvb::journal::log(
         "Input", "cfg",
@@ -112,9 +112,10 @@ void InputProcessor::resolveConfig()
     const unsigned int g = (envGroup_ >= 1 && envGroup_ <= scvb::kMaxGroups)
                                ? envGroup_
                                : ((stateGroup_ >= 1 && stateGroup_ <= scvb::kMaxGroups) ? stateGroup_ : 1);
-    const unsigned int c = (envChannel_ >= 1 && envChannel_ <= scvb::kMaxChannels)
-                               ? envChannel_
-                               : (stateChannel_ <= scvb::kMaxChannels ? stateChannel_ : 0);
+    // v9:已认领的自动模式实例跨 re-prepare 保持原 channel(env > state > 已认领保持 > 0)。
+    // 旧实现每次用 state 默认值把 channel 打回 0,auto 路径改抢最低空闲槽 → 迁槽 +
+    // 旧槽幽灵化(心跳停止但 state 仍 Active,mask 永久缺位)。
+    const unsigned int c = scvb::resolveInputChannelForClaim(envChannel_, stateChannel_, claimed_, channel_);
     group_ = g;
     channel_ = c;
 }
@@ -122,6 +123,7 @@ void InputProcessor::resolveConfig()
 void InputProcessor::doClaim()
 {
     pid_ = static_cast<u32>(::GetCurrentProcessId());
+    const u32 prevChannel = channel_;
 
     // 组号变化 → 重建 IPC 对象(组号 G 是构造参数)。
     if (registry_ == nullptr || registry_->group() != group_)
@@ -145,20 +147,24 @@ void InputProcessor::doClaim()
         {
             claimed_ = false;
             active_ = false;
+            logClaimFail("registry");
             return; // abi 不符 / 映射失败
         }
     }
 
-    // 已有环且 SR/声道未变 → 仅更新 max_block。
+    // 已有环且 SR/声道未变且槽仍归本实例 → 仅更新 max_block。
+    // v9:补槽属主校验——被宿主编排复制体窃槽后若盲返,自愈路径的 doClaim 等于空转,
+    // 槽永远 Free、实例永远 claimed_(「Input 直通 + Output 静音」卡死)。
     if (claimed_ && ring_ != nullptr && ring_->isOpen() && channel_ != 0 &&
         ring_->header()->sample_rate == static_cast<u32>(sampleRate_) &&
         ring_->header()->channels == static_cast<u32>(srcChannels_))
     {
-        if (scvb::InputSlot* slot = registry_->inputSlot(channel_))
+        scvb::InputSlot* slot = registry_->inputSlot(channel_);
+        if (slot != nullptr && slot->state.load(std::memory_order_acquire) == scvb::kSlotActive && slot->pid == pid_)
         {
             slot->max_block = static_cast<u32>(maxBlock_);
+            return;
         }
-        return;
     }
 
     // claim(0 = 自动最低空闲 slot;v8:用 claimInputAuto——不得经同 pid 刷新抢走他人已占 slot,
@@ -183,6 +189,7 @@ void InputProcessor::doClaim()
         {
             claimed_ = false;
             active_ = false;
+            logClaimFail("conflict");
             return; // 冲突:不写环,输出走直通
         }
     }
@@ -191,6 +198,7 @@ void InputProcessor::doClaim()
     {
         claimed_ = false;
         active_ = false;
+        logClaimFail("noSlot");
         return; // 15 slot 全占
     }
 
@@ -205,8 +213,17 @@ void InputProcessor::doClaim()
     // 已打开时走 attach 分支重写几何字段 sample_rate 并 epoch+1),保证环头真实、读方弃旧代(P0 修复)。
     ring_->createForInput(static_cast<u32>(sampleRate_), scvb::ringFramesFromEnv(), static_cast<u32>(srcChannels_));
 
+    // v9:channel 迁移前释放旧槽(防幽灵槽:旧槽心跳停止但 state 仍 Active)。
+    // 正常路径 prevChannel == channel_ 或 prevChannel == 0,此分支仅在 env/state
+    // 变更触发的真实迁槽时命中。
+    if (claimed_ && prevChannel != 0 && prevChannel != channel_)
+    {
+        registry_->releaseInput(prevChannel, pid_);
+    }
+
     claimed_ = true;
     active_ = ring_->isOpen();
+    claimFailLogged_ = false;
     scvb::journal::log(
         "Input", "claim",
         scvb::journal::join({scvb::journal::kv("slot", static_cast<unsigned long long>(channel_)),
@@ -219,6 +236,20 @@ void InputProcessor::doClaim()
     unhealthySince_ = 0;
     silenceCommandedAt_ = 0;
     mutePending_ = false;
+}
+
+void InputProcessor::logClaimFail(const char* reason)
+{
+    // v9:每次失败事件只落一条(定时器重试路径会反复调 doClaim,不能刷屏);
+    // 成功路径复位 claimFailLogged_,下一次失败事件再落一条。
+    if (claimFailLogged_)
+    {
+        return;
+    }
+    claimFailLogged_ = true;
+    scvb::journal::log("Input", "claimFail",
+                       scvb::journal::join({scvb::journal::kv("reason", reason),
+                                            scvb::journal::kv("channel", static_cast<unsigned long long>(channel_))}));
 }
 
 void InputProcessor::captureInterleaved(const juce::AudioBuffer<float>& buffer, int offset, int numSamples)
@@ -374,6 +405,15 @@ void InputProcessor::timerCallback()
                                            slot != nullptr ? slot->state.load(std::memory_order_relaxed) : 0))}));
             doClaim();
         }
+    }
+
+    // v9:未认领的自动模式实例周期重试(每 1s = 25 tick)。15 槽全满时插入的第 16/17 个
+    // Input(例如 stereo 轨重插产生的重复实例)不能永久静默直通——有槽释放或被陈旧死 pid
+    // 接管后 1s 内自动认领。失败日志由 logClaimFail 节流。
+    if (!claimed_ && registry_ != nullptr && registry_->isOpen() && (tick_ % 25) == 0 &&
+        scvb::resolveInputChannelForClaim(envChannel_, stateChannel_, false, 0) == 0)
+    {
+        doClaim();
     }
 
     // v6 诊断:音频线程计数差量落盘(仅块数变化时写,空闲期静默)。

@@ -51,6 +51,27 @@ inline bool isProcessAlive(u32 pid)
     return ok && code == STILL_ACTIVE;
 }
 
+// v9:Input 通道解析策略(env > state > 已认领保持 > 自动 0)。
+// 已认领的自动模式实例跨宿主 re-prepare 必须保持原 channel:若每次被 state 默认值
+// 打回 0,auto 路径会改抢最低空闲槽 → 实例迁槽、旧槽心跳陈旧但 state 仍 Active
+// (幽灵槽,实测 15 轨 mask 变 32764 缺两位)。
+inline u32 resolveInputChannelForClaim(u32 envCh, u32 stateCh, bool claimed, u32 currentCh)
+{
+    if (envCh >= 1 && envCh <= kMaxChannels)
+    {
+        return envCh;
+    }
+    if (stateCh >= 1 && stateCh <= kMaxChannels)
+    {
+        return stateCh;
+    }
+    if (claimed && currentCh >= 1 && currentCh <= kMaxChannels)
+    {
+        return currentCh;
+    }
+    return 0;
+}
+
 // 显示陈旧(>2000ms)。
 inline bool isStaleDisplay(u64 heartbeatMs, u64 nowMs)
 {
