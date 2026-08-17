@@ -82,7 +82,7 @@ if (scaleSelect) {
     for (const f of DESIGN.input.presets) {
         const opt = document.createElement("option");
         opt.value = String(f);
-        opt.textContent = f + "x";
+        opt.textContent = Math.round(f * 100) + "%"; // 与 Output/Bridge 同口径(用户反馈:x 后缀观感差)
         if (f === 1) opt.selected = true;
         scaleSelect.appendChild(opt);
     }

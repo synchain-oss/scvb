@@ -108,6 +108,13 @@
                 fill: none;
                 stroke-width: 1.6px;
             }
+            .brand__logo {
+                width: 30px;
+                height: 30px;
+                /* logo 源图为白底黑线稿:multiply 让白底融入玻璃底,线稿保持深色 */
+                mix-blend-mode: multiply;
+                border-radius: var(--r-tag);
+            }
             .brand__title {
                 font-family: var(--ff-grotesk);
                 font-weight: 600;
@@ -597,10 +604,13 @@
                 <header id="header" data-gb="header">
                     <div class="brand" data-gb="header-brand">
                         <span class="brand__icon" aria-hidden="true">
-                            <svg width="20" height="20" viewBox="0 0 20 20">
-                                <circle cx="10" cy="10" r="6.5" />
-                                <path d="M10 3.5v13M3.5 10h13" />
-                            </svg>
+                            <!-- Synchain logo(org 头像同源,web/shared/logo.png 本地副本;
+                                 白底经 mix-blend-mode:multiply 融入玻璃,用户指定替换 2026-08-17)-->
+                            <img
+                                class="brand__logo"
+                                src="../shared/logo.png"
+                                alt=""
+                            />
                         </span>
                         <div>
                             <div class="brand__title">SCVB Output</div>
