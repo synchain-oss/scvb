@@ -9,6 +9,9 @@ node_modules/
 *.min.js
 # 宪法只读副本,sha256 与 masterPlan 同步,prettier 不得改写
 docs/constitution/
+# 设计稿只读归档(T31):与 masterPlan/assets/design-v2 **字节级一致**(sha256 9D79B0E0…),
+# 是 T31-T36 的视觉真源;prettier 一改写就毁掉字节比对。同 docs/constitution/ 口径。
+docs/design/
 # clang-format 配置(非 prettier 目标)
 .clang-format
 # PowerShell 脚本:prettier 没有 PS parser。gate 3 的 `--check .` 本来就只挑得动的文件,

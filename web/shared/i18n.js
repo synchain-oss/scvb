@@ -255,6 +255,47 @@ export const T = {
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
+
+        // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
+        // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
+        // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "common.cancel": "取消",
+        "tab.master": "整体调整",
+        "tab.tracks": "轨道",
+        "tab.wave": "波形与分段",
+        "tab.settings": "设置",
+        "version.emptyBadge": "空",
+        "master.copyConfirmPrimary": "覆盖并复制",
+        "master.captureOff": "采集 OFF",
+        "master.step2.desc": "将影响 {n} 区段 / {m} 轨;{k} 处手动编辑将保留",
+        "master.step2.desc.noData": "当前范围内无采集数据——调整范围或先采集",
+        "master.step2.coverage": "范围内 {p}% 已覆盖,未覆盖部分将保持原状",
+        "master.analyzing": "分析中…",
+        "master.analyzeDone": "分析完成",
+        "master.step3.desc": "要录成自动化:在 DAW 侧对本插件参数开",
+        "master.step3.descStrong": "Latch(推荐)或 Write;请勿使用 Touch",
+        "master.writeConfirm.ok": "知道了,开始",
+        "master.writeConfirm.undo": "撤销(关回跟随宿主)",
+        "master.groupEyebrow": "组 · GROUP",
+        "master.widthEyebrow": "WIDTH · 最大角度",
+        "master.rangeEyebrow": "RANGE · 范围",
+        "master.distEyebrow": "声像 / 音量分布",
+        "master.curveEyebrow": "角度域曲线 · ±12 dB",
+        "master.curveLegendMs": "MS 等效增益",
+        "master.curveAxisX": "左 L −100 · −50 · 中 C 0 · +50 · 右 R +100",
+        "master.curveEmptyHint": "双击添加控制点",
+        "master.leadSelectDefaultNote": "0 = 遵循分析(默认)",
+        "range.manual": "手动",
+        "master.rangeLoopStale": "循环区已失效,沿用上次范围",
+        "master.rangeLoopMissing": "宿主未提供循环区——档位保留但不可选",
+        "master.rangeStart": "起点",
+        "master.rangeEnd": "终点",
+        "master.setToPlayhead": "设为播放头",
+        "master.barsEstimateNote": "小节为估算值,播放该区域后精确",
+        "footer.defaultHint":
+            "采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围",
+        "scale.current": "当前",
+        "scale.overflow": "超出当前屏幕",
     },
 
     en: {
@@ -489,6 +530,55 @@ export const T = {
             "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
+
+        // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
+        // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
+        // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "common.cancel": "Cancel",
+        "tab.master": "Master",
+        "tab.tracks": "Tracks",
+        "tab.wave": "Waveform & Segments",
+        "tab.settings": "Settings",
+        "version.emptyBadge": "EMPTY",
+        "master.copyConfirmPrimary": "Overwrite & copy",
+        "master.captureOff": "CAPTURE OFF",
+        "master.step2.desc":
+            "Affects {n} intervals / {m} tracks; {k} manual edits will be kept",
+        "master.step2.desc.noData":
+            "No captured data in the current range — adjust the range or capture first",
+        "master.step2.coverage":
+            "{p}% of the range is covered; uncovered parts stay as they are",
+        "master.analyzing": "Analyzing…",
+        "master.analyzeDone": "Analysis done",
+        "master.step3.desc":
+            "To record it as automation, arm this plug-in's parameters in the DAW with",
+        "master.step3.descStrong":
+            "Latch (recommended) or Write; never use Touch",
+        "master.writeConfirm.ok": "Got it, start",
+        "master.writeConfirm.undo": "Undo (back to Follow Host)",
+        "master.groupEyebrow": "GROUP",
+        "master.widthEyebrow": "WIDTH · MAX ANGLE",
+        "master.rangeEyebrow": "RANGE",
+        "master.distEyebrow": "PAN / VOLUME DISTRIBUTION",
+        "master.curveEyebrow": "ANGLE-DOMAIN CURVE · ±12 dB",
+        "master.curveLegendMs": "MS equivalent gain",
+        "master.curveAxisX": "L −100 · −50 · C 0 · +50 · R +100",
+        "master.curveEmptyHint": "Double-click to add a control point",
+        "master.leadSelectDefaultNote": "0 = follow analysis (default)",
+        "range.manual": "Manual",
+        "master.rangeLoopStale":
+            "Loop region is no longer valid — keeping the previous range",
+        "master.rangeLoopMissing":
+            "Host provides no loop region — the mode stays listed but cannot be selected",
+        "master.rangeStart": "Range start",
+        "master.rangeEnd": "Range end",
+        "master.setToPlayhead": "Set to playhead",
+        "master.barsEstimateNote":
+            "Bar numbers are estimates; they become exact after playing this area",
+        "footer.defaultHint":
+            "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
+        "scale.current": "Current",
+        "scale.overflow": "Exceeds current screen",
     },
 
     fr: {
@@ -728,6 +818,56 @@ export const T = {
             "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
+
+        // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
+        // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
+        // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "common.cancel": "Annuler",
+        "tab.master": "Général",
+        "tab.tracks": "Pistes",
+        "tab.wave": "Formes d'onde et segments",
+        "tab.settings": "Réglages",
+        "version.emptyBadge": "VIDE",
+        "master.copyConfirmPrimary": "Écraser et copier",
+        "master.captureOff": "CAPTURE DÉSACTIVÉE",
+        "master.step2.desc":
+            "Affecte {n} intervalles / {m} pistes ; {k} modifications manuelles seront conservées",
+        "master.step2.desc.noData":
+            "Aucune donnée capturée dans la plage actuelle — ajustez la plage ou capturez d'abord",
+        "master.step2.coverage":
+            "{p}% de la plage est couverte ; les parties non couvertes restent inchangées",
+        "master.analyzing": "Analyse en cours…",
+        "master.analyzeDone": "Analyse terminée",
+        "master.step3.desc":
+            "Pour l'enregistrer en automation, armez les paramètres de ce plug-in dans le DAW en",
+        "master.step3.descStrong":
+            "Latch (recommandé) ou Write ; n'utilisez jamais Touch",
+        "master.writeConfirm.ok": "Compris, démarrer",
+        "master.writeConfirm.undo": "Annuler (revenir au suivi hôte)",
+        "master.groupEyebrow": "GROUPE",
+        "master.widthEyebrow": "LARGEUR · ANGLE MAX",
+        "master.rangeEyebrow": "PLAGE",
+        "master.distEyebrow": "RÉPARTITION PAN / VOLUME",
+        "master.curveEyebrow": "COURBE ANGULAIRE · ±12 dB",
+        "master.curveLegendMs": "Gain équivalent M/S",
+        "master.curveAxisX": "G −100 · −50 · C 0 · +50 · D +100",
+        "master.curveEmptyHint":
+            "Double-cliquez pour ajouter un point de contrôle",
+        "master.leadSelectDefaultNote": "0 = suivre l'analyse (par défaut)",
+        "range.manual": "Manuel",
+        "master.rangeLoopStale":
+            "La boucle n'est plus valide — la plage précédente est conservée",
+        "master.rangeLoopMissing":
+            "L'hôte ne fournit pas de boucle — le mode reste affiché mais non sélectionnable",
+        "master.rangeStart": "Début de plage",
+        "master.rangeEnd": "Fin de plage",
+        "master.setToPlayhead": "Définir sur la tête de lecture",
+        "master.barsEstimateNote":
+            "Les numéros de mesure sont estimés ; ils deviennent exacts après lecture de cette zone",
+        "footer.defaultHint":
+            "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
+        "scale.current": "Actuel",
+        "scale.overflow": "Dépasse l'écran actuel",
     },
 };
 
