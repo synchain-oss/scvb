@@ -317,7 +317,9 @@ public:
         return *this;
     }
 
-    // 只经 implPtr_(atomic 裸指针)读,音频线程也可安全调用(不触碰 shared_ptr 成员)。
+    // valid()/base()/size() 只经 implPtr_(atomic 裸指针)读,不触碰 shared_ptr 成员;但【不持租约时
+    // 仅消息线程使用】——消息线程是唯一解映射者,不与自己并发。音频线程一律经 Lease::base() 访问
+    // (leaseCount≠0 阻止解映射,保证裸指针有效)。
     bool valid() const { return implPtr_.load(std::memory_order_acquire) != nullptr; }
     void* base() const
     {

@@ -165,8 +165,8 @@ public:
     OutputGlobalInfoSnapshot readGlobalInfo() const;
 
     // ---- 命令环(J36/J46)----
-    // Input [M] 生产(每 slot 一条 SPSC);满环丢最旧 + overflow_count++。seq 由本实例内部
-    // 单调递增计数器维护(单生产者 [M])。返回 false = channel 非法/未打开。
+    // Input [M] 生产(每 slot 一条 SPSC);满环丢最旧 + overflow_count++。seq = 共享 write_pos 派生
+    // (w+1),重启安全(见 CtrlPlane.cpp enqueue)。返回 false = channel 非法/未打开。
     bool enqueue(u32 channel, CtrlOp op, u64 value);
     // Output [M] 消费;无记录返回 false。
     bool dequeue(u32 channel, CtrlRecord& out);

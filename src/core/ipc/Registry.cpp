@@ -214,18 +214,17 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
                 {
                     return ClaimResult::kConflict;
                 }
-                // 幽灵接管(CAS 1→1 确认仍 claimed,再填槽;宽限期远大于合法 claim 的微秒级窗口)。
+                // 幽灵接管(Claude/DeepSeek 一致建议):CAS state kSlotClaimed→kSlotFree【改变 state,
+                // 天然恰一胜者】——旧 CAS(1→1) 值不变、无排他性,两实例会双接管双写同环(破坏 SPSC)。
                 u32 expected = kSlotClaimed;
-                if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                if (s.state.compare_exchange_strong(expected, kSlotFree, std::memory_order_acq_rel,
                                                     std::memory_order_acquire))
                 {
-                    fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
+                    // 胜者:清观测,continue 重走 Free 路径 CAS(0→1) 正常认领(该 CAS 才是排他终裁)。
                     ghostSeenMs_[channel - 1] = 0;
-                    ownedChannel_ = channel;
-                    ownedPid_ = pid;
-                    return ClaimResult::kClaimed;
+                    continue;
                 }
-                continue; // state 变了,重试
+                continue; // 败者:state 已变(被他人释放/认领),重试循环
             }
             // 进行中(pid 或 hb 已填):视为进行中,重试(3 次后 kConflict),绝不接管。
             continue;
@@ -350,21 +349,16 @@ Registry::ClaimResult Registry::claimOutput(u32 pid, u64 nowMs)
                 {
                     return ClaimResult::kConflict;
                 }
+                // 幽灵接管(与 claimInput 同法):CAS kSlotClaimed→kSlotFree【改变 state,恰一胜者】。
                 u32 expected = kSlotClaimed;
-                if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                if (s.state.compare_exchange_strong(expected, kSlotFree, std::memory_order_acq_rel,
                                                     std::memory_order_acquire))
                 {
-                    s.pid = pid;
-                    s.heartbeat_ms.store(nowMs, std::memory_order_relaxed);
-                    s.connected_mask.store(0, std::memory_order_relaxed);
-                    s.config_seq.store(0, std::memory_order_relaxed);
-                    s.state.store(kSlotActive, std::memory_order_release);
+                    // 胜者:清观测,continue 重走 Free 路径 CAS(0→1) 正常认领。
                     outputGhostSeenMs_ = 0;
-                    ownsOutput_ = true;
-                    ownedPid_ = pid;
-                    return ClaimResult::kClaimed;
+                    continue;
                 }
-                continue;
+                continue; // 败者:重试循环
             }
             // 进行中(pid 或 hb 已填):重试,绝不接管。
             continue;
@@ -413,7 +407,9 @@ void Registry::releaseOutput(u32 pid)
 void Registry::heartbeatInput(u32 channel, u64 nowMs)
 {
     InputSlot* slot = inputSlot(channel);
-    if (slot != nullptr && slot->state.load(std::memory_order_acquire) == kSlotActive)
+    // 防御性属主校验:仅本实例持有该 channel 且 pid 匹配时才刷新(防非属主 spoof 心跳)。
+    if (slot != nullptr && ownedChannel_ == channel && ownedPid_ == slot->pid &&
+        slot->state.load(std::memory_order_acquire) == kSlotActive)
     {
         slot->heartbeat_ms.store(nowMs, std::memory_order_release);
     }
@@ -422,7 +418,8 @@ void Registry::heartbeatInput(u32 channel, u64 nowMs)
 void Registry::heartbeatOutput(u64 nowMs)
 {
     OutputSlot* slot = outputSlot();
-    if (slot != nullptr && slot->state.load(std::memory_order_acquire) == kSlotActive)
+    if (slot != nullptr && ownsOutput_ && ownedPid_ == slot->pid &&
+        slot->state.load(std::memory_order_acquire) == kSlotActive)
     {
         slot->heartbeat_ms.store(nowMs, std::memory_order_release);
     }

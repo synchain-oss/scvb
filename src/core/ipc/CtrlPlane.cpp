@@ -158,6 +158,8 @@ bool CtrlPlane::enqueue(u32 channel, CtrlOp op, u64 value)
     // 最后 write_pos.store(w+1, release) 发布。消费者见 write_pos 推进即知记录已提交。
     // seq 由共享 write_pos 派生(seq = w+1):记录 w 的 seq=w+1,消费者 s1==r+1 判据天然成立,
     // 且生产者重启后新实例续用共享 write_pos,seq 不中断(环不卡死)。
+    // 理论边界:w+1 在 u32 回绕点为 0,与「在写」标记(seq=0)撞车;≈5.4 年 @25Hz 才回绕一次,
+    // v1 不接受此理论边界(abi+1 增补清单),故不做跳过处理。
     rec.seq.store(0, std::memory_order_release);
     rec.channel.store(channel, std::memory_order_relaxed);
     rec.op.store(static_cast<u32>(op), std::memory_order_relaxed);

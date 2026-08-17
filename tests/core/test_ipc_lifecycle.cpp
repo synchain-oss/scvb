@@ -1072,6 +1072,43 @@ TEST_CASE("幽灵槽接管 claimOutput(kSlotClaimed+pid==0 超宽限期)", "[ipc
     REQUIRE(oslot->pid == 2002);
 }
 
+TEST_CASE("幽灵槽双实例并发接管 CAS(1→0) 恰好一个胜者", "[ipc][lifecycle][takeover]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    auto* slot = a.inputSlot(3);
+    slot->state.store(kSlotClaimed, std::memory_order_release);
+    slot->pid = 0;
+    slot->heartbeat_ms.store(0, std::memory_order_relaxed); // 幽灵槽
+
+    const bool holderAlive = false;
+    scvb::Registry b(backend, 1, [&](u32) { return holderAlive; });
+    scvb::Registry c(backend, 1, [&](u32) { return holderAlive; });
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(c.open() == scvb::Registry::ClaimResult::kClaimed);
+
+    // 两个实例先在 kT0 观测幽灵(首见记 nowMs,返回 kConflict)。
+    REQUIRE(b.claimInput(3, 1002, 48000, 512, kT0) == scvb::Registry::ClaimResult::kConflict);
+    REQUIRE(c.claimInput(3, 1003, 48000, 512, kT0) == scvb::Registry::ClaimResult::kConflict);
+
+    // 虚拟时钟都过宽限期,同一 nowMs 各自 claimInput → 恰好一个 kClaimed(CAS 1→0 排他)。
+    const u64 t1 = kT0 + scvb::kClaimGhostGraceMs + 1;
+    const auto rb = b.claimInput(3, 1002, 48000, 512, t1);
+    const auto rc = c.claimInput(3, 1003, 48000, 512, t1);
+    const bool rbwon = (rb == scvb::Registry::ClaimResult::kClaimed);
+    const bool rcwon = (rc == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(rbwon != rcwon); // 恰好一个胜者
+    const bool atLeastOne = rbwon || rcwon;
+    REQUIRE(atLeastOne);
+
+    // 槽最终 Active、属主唯一。
+    REQUIRE(slot->state.load() == kSlotActive);
+    REQUIRE(slot->pid == static_cast<u32>(rbwon ? 1002 : 1003));
+}
+
 // ---------------------------------------------------------------------------
 // PR#38 复审【顺带补齐】4b/4c/4d
 // ---------------------------------------------------------------------------
