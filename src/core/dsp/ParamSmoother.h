@@ -47,7 +47,6 @@ public:
         if (m_sampleRate > 0.0 && m_rampSeconds > 0.0 && m_target != m_current)
         {
             const int steps = std::max(1, static_cast<int>(m_rampSeconds * m_sampleRate + 0.5));
-            m_stepsToTarget = steps;
             m_step = (m_target - m_current) / static_cast<float>(steps);
             m_countdown = steps;
         }
@@ -83,7 +82,6 @@ private:
     float m_current = 0.0f;
     float m_target = 0.0f;
     float m_step = 0.0f;
-    int m_stepsToTarget = 0;
     int m_countdown = 0;
     double m_sampleRate = 0.0;
     double m_rampSeconds = 0.0;

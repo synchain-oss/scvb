@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "engine/DspArbiter.h"
 
+#include <algorithm>
+
 namespace scvb::engine
 {
 
@@ -17,22 +19,25 @@ void DspArbiter::prepare(double sampleRate, const DspArbiterConfig& cfg)
         s.reset(m_sampleRate, m_cfg.normalRampSec);
 
     m_initialized = false;
-    m_sourcesDirty = false;
+    m_prevSnapshot = nullptr;
     m_prevEngineAuthority = false;
     m_prevLeadSelect = 0;
     m_prevFrz.fill(0);
     m_lastAnySwitch = false;
+    // 注意:m_snapshot 原子不在此重置 —— 由消息线程 publish 独占管理。prepare(音频线程)与
+    // publish(消息线程)经原子安全并置;首个 processBlock 因 m_initialized=false 走硬置位。
 }
 
-void DspArbiter::setSources(const std::array<TrackSources, kNumTracks>& sources)
+void DspArbiter::publish(const Snapshot* snapshot)
 {
-    m_sources = sources;
-    m_sourcesDirty = true; // 视为版本切换(首个 processBlock 会因 !m_initialized 走硬置位)
+    // 消息线程:release-store。发布前快照须已完整构造;旧快照由发布方保活(进程寿命)。
+    m_snapshot.store(snapshot, std::memory_order_release);
 }
 
-void DspArbiter::setLeadSelectSource(const std::atomic<float>* rawLeadSelect)
+const std::array<DspArbiter::TrackSources, DspArbiter::kNumTracks>& DspArbiter::emptySources()
 {
-    m_rawLeadSelect = rawLeadSelect;
+    static const std::array<TrackSources, kNumTracks> s{}; // 全 null = 未接线默认值
+    return s;
 }
 
 float DspArbiter::readRaw(const std::atomic<float>* p) const
@@ -45,14 +50,15 @@ float DspArbiter::readRawDefault(const std::atomic<float>* p, float def) const
     return (p != nullptr) ? p->load(std::memory_order_relaxed) : def;
 }
 
-int DspArbiter::readFrz(int track) const
+int DspArbiter::readFrz(const TrackSources& src) const
 {
-    return static_cast<int>(readRaw(m_sources[static_cast<std::size_t>(track)].rawFrz));
+    return static_cast<int>(readRaw(src.rawFrz));
 }
 
-int DspArbiter::readLeadSelect() const
+int DspArbiter::readLeadSelect(const std::atomic<float>* rawLead) const
 {
-    return static_cast<int>(readRaw(m_rawLeadSelect));
+    // 防越界值误触发全轨 30ms:钳到声明值域 [0, kNumTracks]。
+    return std::clamp(static_cast<int>(readRaw(rawLead)), 0, kNumTracks);
 }
 
 void DspArbiter::armSmoother(scvb::dsp::LinearSmoother& s, float target, bool isSwitch)
@@ -76,17 +82,22 @@ void DspArbiter::armSmoother(scvb::dsp::LinearSmoother& s, float target, bool is
 
 std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processBlock(bool engineAuthority, double tSec)
 {
+    // 每 block 只 acquire-load 一次快照,整 block 用同一份(无撕裂)。
+    const Snapshot* snap = m_snapshot.load(std::memory_order_acquire);
+    const auto& sources = (snap != nullptr) ? snap->sources : emptySources();
+    const std::atomic<float>* rawLead = (snap != nullptr) ? snap->rawLeadSelect : nullptr;
+
     const bool authorityChanged = engineAuthority != m_prevEngineAuthority;
-    const int lead = readLeadSelect();
+    const int lead = readLeadSelect(rawLead);
     const bool leadChanged = lead != m_prevLeadSelect;
-    const bool versionChanged = m_sourcesDirty && m_initialized;
+    const bool versionChanged = (snap != m_prevSnapshot) && m_initialized;
 
     bool anyFrzChanged = false;
 
     for (int t = 0; t < kNumTracks; ++t)
     {
-        const TrackSources& src = m_sources[static_cast<std::size_t>(t)];
-        const int frz = readFrz(t);
+        const TrackSources& src = sources[static_cast<std::size_t>(t)];
+        const int frz = readFrz(src);
         const int prevFrz = m_prevFrz[static_cast<std::size_t>(t)];
         if (frz != prevFrz)
             anyFrzChanged = true;
@@ -115,6 +126,7 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
         }
 
         // [J58] lead_select 覆盖层:仅把第 n 轨 pan 强制居中;vol 不受影响,其余轨不动。
+        // 覆盖优先级高于 freeze:被冻结 pan 的轨若同时被 lead_select 选中,仍强制居中。
         if (lead == t + 1)
             panTarget = 0.0f;
 
@@ -135,9 +147,9 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
         m_prevFrz[static_cast<std::size_t>(t)] = frz;
     }
 
+    m_prevSnapshot = snap;
     m_prevEngineAuthority = engineAuthority;
     m_prevLeadSelect = lead;
-    m_sourcesDirty = false;
     m_initialized = true;
     m_lastAnySwitch = authorityChanged || leadChanged || versionChanged || anyFrzChanged;
 

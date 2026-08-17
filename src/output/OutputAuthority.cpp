@@ -8,7 +8,6 @@ void OutputAuthority::prepare(double sampleRate, const scvb::params::ParamHandle
 {
     m_handles = handles;
     m_arbiter.prepare(sampleRate);
-    m_arbiter.setLeadSelectSource(m_handles.rawLeadSelect);
     m_versionActive = 1;
     m_prepared = true;
     rebindSources();
@@ -54,18 +53,21 @@ void OutputAuthority::rebindSources()
 {
     const int v = m_versionActive - 1; // 0-based
 
-    std::array<scvb::engine::DspArbiter::TrackSources, kNumTracks> sources{};
+    // 构建不可变快照,完整构造后原子发布;旧快照进池保活(进程寿命)。
+    auto snap = std::make_unique<scvb::engine::DspArbiter::Snapshot>();
     for (int t = 0; t < kNumTracks; ++t)
     {
-        auto& s = sources[static_cast<std::size_t>(t)];
+        auto& s = snap->sources[static_cast<std::size_t>(t)];
         s.rawPan = m_handles.rawPan[v][t];
         s.rawVol = m_handles.rawVol[v][t];
         s.rawTrkW = m_handles.rawTrkW[v][t];
         s.rawFrz = m_handles.rawFrz[v][t];
         s.curve = m_curves[static_cast<std::size_t>(v)][static_cast<std::size_t>(t)];
     }
+    snap->rawLeadSelect = m_handles.rawLeadSelect;
 
-    m_arbiter.setSources(sources);
+    m_arbiter.publish(snap.get()); // release-store
+    m_snapshotPool.push_back(std::move(snap)); // 进程寿命保活
 }
 
 } // namespace scvb::output

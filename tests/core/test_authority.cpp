@@ -8,6 +8,8 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <memory>
+#include <thread>
 #include <vector>
 
 #include "dsp/ParamSmoother.h"
@@ -47,6 +49,7 @@ struct ArbiterFixture
     std::array<std::atomic<float>, DspArbiter::kNumTracks> rawFrz{};
     std::atomic<float> rawLeadSelect{0.0f};
     std::array<scvb::CurveEvaluator, DspArbiter::kNumTracks> curves{};
+    std::vector<std::unique_ptr<DspArbiter::Snapshot>> pool; // 进程寿命保活已发布快照
 
     ArbiterFixture()
     {
@@ -63,17 +66,18 @@ struct ArbiterFixture
 
     void bind()
     {
-        std::array<DspArbiter::TrackSources, DspArbiter::kNumTracks> sources{};
+        auto snap = std::make_unique<DspArbiter::Snapshot>();
         for (int t = 0; t < DspArbiter::kNumTracks; ++t)
         {
-            sources[t].rawPan = &rawPan[static_cast<std::size_t>(t)];
-            sources[t].rawVol = &rawVol[static_cast<std::size_t>(t)];
-            sources[t].rawTrkW = &rawTrkW[static_cast<std::size_t>(t)];
-            sources[t].rawFrz = &rawFrz[static_cast<std::size_t>(t)];
-            sources[t].curve = &curves[static_cast<std::size_t>(t)];
+            snap->sources[static_cast<std::size_t>(t)].rawPan = &rawPan[static_cast<std::size_t>(t)];
+            snap->sources[static_cast<std::size_t>(t)].rawVol = &rawVol[static_cast<std::size_t>(t)];
+            snap->sources[static_cast<std::size_t>(t)].rawTrkW = &rawTrkW[static_cast<std::size_t>(t)];
+            snap->sources[static_cast<std::size_t>(t)].rawFrz = &rawFrz[static_cast<std::size_t>(t)];
+            snap->sources[static_cast<std::size_t>(t)].curve = &curves[static_cast<std::size_t>(t)];
         }
-        arbiter.setSources(sources);
-        arbiter.setLeadSelectSource(&rawLeadSelect);
+        snap->rawLeadSelect = &rawLeadSelect;
+        arbiter.publish(snap.get());
+        pool.push_back(std::move(snap)); // 进程寿命保活
     }
 };
 
@@ -424,7 +428,7 @@ TEST_CASE("AUTH-SMOOTH-2 常规跟随 10ms(非切换目标变化)", "[authority]
     REQUIRE(f.arbiter.panSmoother(0).getCurrentValue() == Approx(20.0f).margin(1e-4));
 }
 
-TEST_CASE("AUTH-SMOOTH-3 版本切换 30ms(setSources 重绑)", "[authority][smooth]")
+TEST_CASE("AUTH-SMOOTH-3 版本切换 30ms(新快照发布)", "[authority][smooth]")
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
@@ -573,6 +577,41 @@ TEST_CASE("AUTH-ARB-3 freeze 冻结维度改读 host 参数(引擎权威下优�
     t = f.arbiter.processBlock(true, 0.0);
     REQUIRE(t[0].pan == Approx(-40.0f).margin(1e-6));
     REQUIRE(t[0].volDb == Approx(5.0f).margin(1e-6));
+}
+
+TEST_CASE("AUTH-ARB-4 lead_select 覆盖优先于 freeze(叠加)", "[authority][arbitrate]")
+{
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+    f.curves[0] = constCurve(30.0, -3.0);
+    f.rawPan[0].store(-40.0f); // 冻结后的 host pan 值
+    f.rawFrz[0].store(1.0f); // 冻结 pan
+    f.rawLeadSelect.store(1.0f); // lead_select=1 → t01(索引0)
+    f.bind();
+
+    // 引擎权威 + freeze pan(→ host -40)+ lead_select 选中 t01:pan 强制居中 0,覆盖 freeze。
+    const auto t = f.arbiter.processBlock(true, 0.0);
+    REQUIRE(t[0].pan == Approx(0.0f).margin(1e-9)); // lead_select 覆盖优先于 freeze
+    REQUIRE(t[0].volDb == Approx(-3.0f).margin(1e-6)); // vol 不受 lead_select / freeze(bit1)影响
+}
+
+TEST_CASE("AUTH-ARB-5 lead_select 越界值钳到 0..15", "[authority][arbitrate]")
+{
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+    f.rawLeadSelect.store(99.0f); // 越界(声明值域 0..15)
+    f.bind();
+
+    const auto t = f.arbiter.processBlock(true, 0.0);
+    // 99 钳到 15 → t15(索引14)强制居中;若越界原样,99 不匹配任何 t+1 会无覆盖。
+    REQUIRE(t[14].pan == Approx(0.0f).margin(1e-9));
+    // t00(索引0)保持曲线值 -70(曲线 pan = t*10-70)。
+    REQUIRE(t[0].pan == Approx(-70.0f).margin(1e-6));
+
+    // 负越界钳到 0(无覆盖)。
+    f.rawLeadSelect.store(-5.0f);
+    (void)f.arbiter.processBlock(true, 0.0);
+    REQUIRE(f.arbiter.lastTargets()[14].pan == Approx(70.0f).margin(1e-6));
 }
 
 // ============================================================================
@@ -733,4 +772,63 @@ TEST_CASE("AUTH-LEAD-5 PRINT 态覆盖层生效但不额外产生 gesture(打印
     REQUIRE(f.arbiter.lastTargets()[2].pan == Approx(0.0f).margin(1e-9)); // DSP 覆盖生效
     // 打印头采样的是曲线真身(仍 -50),不是覆盖值 0 —— 覆盖不混进打印。
     REQUIRE(f.curves[2].panAt(0.0) == Approx(-50.0).margin(1e-9));
+}
+
+// ============================================================================
+// 并发冒烟:消息线程换快照 × 音频线程读,每 block 快照自洽(不撕裂、不崩)。
+// ============================================================================
+
+TEST_CASE("AUTH-SMOKE-1 原子快照并发发布/读取不撕裂", "[authority][concurrency]")
+{
+    constexpr int kIterations = 4000;
+
+    // 冻结值池:值 = 池索引,发布后不再改(避免值级数据竞争干扰快照自洽判定)。
+    std::vector<std::atomic<float>> values(static_cast<std::size_t>(kIterations));
+    for (int i = 0; i < kIterations; ++i)
+        values[static_cast<std::size_t>(i)].store(static_cast<float>(i));
+
+    DspArbiter arbiter;
+    arbiter.prepare(kFs);
+
+    std::atomic<bool> start{false};
+    std::atomic<bool> torn{false};
+    std::vector<std::unique_ptr<DspArbiter::Snapshot>> pool; // 仅发布线程访问
+
+    std::thread publisher([&] {
+        while (!start.load(std::memory_order_acquire))
+        {
+        }
+        for (int i = 0; i < kIterations; ++i)
+        {
+            auto snap = std::make_unique<DspArbiter::Snapshot>();
+            for (int t = 0; t < DspArbiter::kNumTracks; ++t)
+                snap->sources[static_cast<std::size_t>(t)].rawPan = &values[static_cast<std::size_t>(i)];
+            arbiter.publish(snap.get()); // release-store
+            pool.push_back(std::move(snap)); // 保活
+        }
+    });
+
+    std::thread reader([&] {
+        while (!start.load(std::memory_order_acquire))
+        {
+        }
+        for (int i = 0; i < kIterations; ++i)
+        {
+            (void)arbiter.processBlock(false, 0.0); // FOLLOW:target = rawPan 值
+            (void)arbiter.nextSample();
+            const auto& t = arbiter.lastTargets();
+            // 自洽:本块 15 轨须来自同一快照 → pan 全等;若撕裂会混入不同代值。
+            for (int k = 1; k < DspArbiter::kNumTracks; ++k)
+            {
+                if (t[static_cast<std::size_t>(k)].pan != t[0].pan)
+                    torn.store(true, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    start.store(true, std::memory_order_release);
+    publisher.join();
+    reader.join();
+
+    REQUIRE_FALSE(torn.load());
 }
