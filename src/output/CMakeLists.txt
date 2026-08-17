@@ -16,6 +16,8 @@ juce_add_plugin(SCVBOutput
 target_sources(SCVBOutput PRIVATE
   PluginProcessor.h
   PluginProcessor.cpp
+  OutputParams.h
+  OutputParams.cpp
 )
 
 target_include_directories(SCVBOutput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
