@@ -184,8 +184,17 @@ void InputProcessor::doClaim()
     }
     else
     {
-        if (registry_->claimInput(channel_, pid_, static_cast<u32>(sampleRate_), static_cast<u32>(maxBlock_),
-                                  scvb::steadyNowMs()) != scvb::Registry::ClaimResult::kClaimed)
+        // v10:先判「槽仍归本实例」——自己持有的槽只刷新字段(采样率切换重认领),
+        // 不经过 claimInput;claimInput 的 Active+同 pid 刷新已废除,复制轨道带过来的
+        // 同 channel 复制体会在 claimInput 拿到 kConflict → 直通,不再偷槽双写。
+        scvb::InputSlot* slot = registry_->inputSlot(channel_);
+        if (claimed_ && slot != nullptr && slot->state.load(std::memory_order_acquire) == scvb::kSlotActive &&
+            slot->pid == pid_)
+        {
+            registry_->updateOwnedInputSlot(channel_, pid_, static_cast<u32>(sampleRate_), static_cast<u32>(maxBlock_));
+        }
+        else if (registry_->claimInput(channel_, pid_, static_cast<u32>(sampleRate_), static_cast<u32>(maxBlock_),
+                                       scvb::steadyNowMs()) != scvb::Registry::ClaimResult::kClaimed)
         {
             claimed_ = false;
             active_ = false;

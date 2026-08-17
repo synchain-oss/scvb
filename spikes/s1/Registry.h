@@ -114,6 +114,8 @@ public:
 
     // claim 一个 Input channel(消息线程;CAS 0→1 填字段→2;被占且满足接管双条件则接管)。
     ClaimResult claimInput(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
+    // v10:仅刷新【本实例自己持有】的 slot 字段(采样率切换重认领),非属主调用为空操作。
+    void updateOwnedInputSlot(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock);
 
     // 自动认领专用(v8):只拿 Free slot(或陈旧+死 pid 接管);**不做同 pid 刷新/接管**。
     // v2 的同 pid 刷新曾让每个新实例都把第一个实例的 slot「认领成功」→ 15 实例全挤 ch1

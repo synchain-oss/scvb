@@ -209,7 +209,7 @@ TEST_CASE("Registry 双阈值接管(J10)", "[s1][registry][j10]")
     reg.releaseInput(2, myPid);
 }
 
-TEST_CASE("Registry 同 pid 重认领(采样率切换)成功并刷新 slot", "[s1][registry][reclaim]")
+TEST_CASE("Registry 同 pid 对 Active 槽 claimInput 冲突 + updateOwnedInputSlot 刷新(v10)", "[s1][registry][v10]")
 {
     Registry reg(kTestGroupRegistry);
     REQUIRE(reg.open() == Registry::ClaimResult::kClaimed);
@@ -222,18 +222,26 @@ TEST_CASE("Registry 同 pid 重认领(采样率切换)成功并刷新 slot", "[s
     REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
     REQUIRE(s->sample_rate == 44100);
 
-    // 采样率切换后的重认领:slot 被【自己】占用 → 直接成功并刷新 sample_rate/max_block/心跳,
-    // 不得 kConflict(否则 Input 停心跳停环 → Output mask 塌缩 → 总线静音,P0)。
-    const u64 now2 = now + 100;
-    REQUIRE(reg.claimInput(3, pid, 48000, 256, now2) == Registry::ClaimResult::kClaimed);
+    // v10:Active 槽上的同 pid claimInput 必须冲突(复制轨道带同 channel 的复制体不得偷槽)。
+    REQUIRE(reg.claimInput(3, pid, 48000, 256, now + 100) == Registry::ClaimResult::kConflict);
     REQUIRE(s->pid == pid);
-    REQUIRE(s->sample_rate == 48000);
-    REQUIRE(s->max_block == 256);
-    REQUIRE(s->heartbeat_ms.load(std::memory_order_acquire) == now2);
+    REQUIRE(s->sample_rate == 44100); // 未被刷新
     REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
 
-    // 他人 pid 仍冲突(同 pid 分支不放宽接管语义)。
-    REQUIRE(reg.claimInput(3, pid + 1, 48000, 256, now2) == Registry::ClaimResult::kConflict);
+    // 采样率切换重认领 = 本实例自己刷新自己的槽(不经 claimInput)。
+    reg.updateOwnedInputSlot(3, pid, 48000, 256);
+    REQUIRE(s->sample_rate == 48000);
+    REQUIRE(s->max_block == 256);
+    REQUIRE(s->pid == pid);
+    REQUIRE(s->state.load(std::memory_order_acquire) == kSlotActive);
+
+    // 非属主调用 updateOwnedInputSlot = 空操作。
+    reg.updateOwnedInputSlot(3, pid + 1, 96000, 64);
+    REQUIRE(s->sample_rate == 48000);
+    REQUIRE(s->max_block == 256);
+
+    // 他人 pid claimInput 仍冲突(接管语义不放宽)。
+    REQUIRE(reg.claimInput(3, pid + 1, 48000, 256, now + 200) == Registry::ClaimResult::kConflict);
     reg.releaseInput(3, pid);
 }
 

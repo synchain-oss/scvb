@@ -41,10 +41,11 @@ void fillSine(float* p, int frames, int channels, float freq)
 // v5 崩溃序列:mono 段先建 → 写 → 宿主切 stereo(冻结/导出路径)→ 写。
 // v5:第二次 createForInput attach 到旧 mono 段却发布 stereo 几何 → 越界崩溃;
 // v6:段恒按 stereo 容量创建 → 全程安全,几何随请求切换。
+// v10:组 8(测试专用组,避开 DAW 活实例组 g1/g2;段随进程退出销毁)。
 int scenarioMono2Stereo()
 {
     const u32 frames = ringFramesFromEnv();
-    AudioRing ring(1, 1);
+    AudioRing ring(8, 1);
     if (ring.createForInput(48000, frames, 1) != InitResult::kOk)
     {
         return fail("mono create");
@@ -81,7 +82,7 @@ int scenarioMono2Stereo()
 int scenarioFlip()
 {
     const u32 frames = ringFramesFromEnv();
-    AudioRing ring(1, 1);
+    AudioRing ring(8, 1);
     std::vector<float> buf(static_cast<std::size_t>(512) * 2);
     fillSine(buf.data(), 512, 2, 440.0f);
     i64 t0 = 0;
@@ -113,7 +114,7 @@ int scenarioOutputCheck()
     const u32 frames = ringFramesFromEnv();
     SegmentView v;
     const std::size_t monoBytes = sizeof(AudioRingHeader) + static_cast<std::size_t>(frames) * sizeof(float);
-    if (SegmentBackendWin32::map(segmentAudioName(1, 1), monoBytes, v) != InitResult::kOk)
+    if (SegmentBackendWin32::map(segmentAudioName(8, 1), monoBytes, v) != InitResult::kOk)
     {
         return fail("map mono segment");
     }
@@ -126,7 +127,7 @@ int scenarioOutputCheck()
     h->abi.store(kScvbAbi, std::memory_order_relaxed);
     h->magic.store(kScvbMagic, std::memory_order_release);
 
-    AudioRing ring(1, 1);
+    AudioRing ring(8, 1);
     const auto r = ring.openForOutput();
     if (r == InitResult::kOk || ring.isOpen())
     {
@@ -140,7 +141,7 @@ int scenarioOutputCheck()
 int scenarioChurn()
 {
     const u32 frames = ringFramesFromEnv();
-    AudioRing ring(1, 1);
+    AudioRing ring(8, 1);
     std::vector<float> buf(static_cast<std::size_t>(1024) * 2);
     fillSine(buf.data(), 1024, 2, 220.0f);
     i64 t0 = 0;
