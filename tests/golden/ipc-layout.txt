@@ -1,6 +1,6 @@
 # SCVB IPC 段布局冻结 golden(ipc-contract-v0 v1.5 + 01 §4.4-a)。T06:逐字节冻进 abi=1;布局改动必须 abi+1 且段名 v2。
 abi 1
-magic 0x53435642
+magic 0x42564353
 max_channels 15
 max_groups 8
 default_ring_frames 524288

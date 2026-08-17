@@ -32,16 +32,16 @@ inline constexpr u32 kDefaultRingFrames = 1u << 19;
 inline constexpr u32 kFeatCapacityHops = 1u << 17;
 inline constexpr u32 kFeatHopMs = 10;
 
-// FourCC 常量:makeFourCc 把 4 个字符按「大端读法」打包 —— makeFourCc('S','C','V','B') 的
-// 数值字面量读作 0x53435642(与 S4 state 容器 kContainerMagic 同约定)。两端同机同字节序,
-// 用同一常量比对即可;此处不用实现定义的多字符字面量。
+// 'SCVB' 按内存字节序 'S','C','V','B'(小端主机上内存观感即 "SCVB")。两端同机同字节序,
+// 用同一常量比对即可;此处不用实现定义的多字符字面量。数值 = 0x42564353(与 S1 spike 的
+// kScvbMagic 完全一致,保持对 S1 已验证部署与诊断工具链的二进制兼容)。
 constexpr u32 makeFourCc(char c0, char c1, char c2, char c3) noexcept
 {
-    return (static_cast<u32>(static_cast<unsigned char>(c0)) << 24) |
-           (static_cast<u32>(static_cast<unsigned char>(c1)) << 16) |
-           (static_cast<u32>(static_cast<unsigned char>(c2)) << 8) | static_cast<u32>(static_cast<unsigned char>(c3));
+    return static_cast<u32>(static_cast<unsigned char>(c0)) | (static_cast<u32>(static_cast<unsigned char>(c1)) << 8) |
+           (static_cast<u32>(static_cast<unsigned char>(c2)) << 16) |
+           (static_cast<u32>(static_cast<unsigned char>(c3)) << 24);
 }
-inline constexpr u32 kScvbMagic = makeFourCc('S', 'C', 'V', 'B'); // 0x53435642
+inline constexpr u32 kScvbMagic = makeFourCc('S', 'C', 'V', 'B'); // 0x42564353(段内前 4 字节字面拼出 "SCVB")
 
 // ---------------------------------------------------------------------------
 // §1 Registry 段结构体
