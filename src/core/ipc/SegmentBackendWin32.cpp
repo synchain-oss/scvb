@@ -83,7 +83,8 @@ InitResult SegmentBackendWin32::createOrOpen(const std::wstring& name, std::size
     view.mapping = h;
     view.created = created;
 
-    tryVirtualLock(view); // 01 §4.0:可选锁定,失败降级不失败
+    // 锁定推迟到 initHeader 的 created 分支(写触碰之后再锁,DeepSeek 复审【重要】4);
+    // attach(created=false)不锁,仅创建者/写者锁。
     return InitResult::kOk;
 }
 
@@ -106,11 +107,11 @@ InitResult SegmentBackendWin32::openExisting(const std::wstring& name, SegmentVi
     view.mapping = h;
     view.created = false;
 
-    tryVirtualLock(view); // 01 §4.0:可选锁定,失败降级不失败
+    // 只读 attach 路径不再 VirtualLock(仅创建者/写者锁,DeepSeek 复审【重要】4)。
     return InitResult::kOk;
 }
 
-void SegmentBackendWin32::tryVirtualLock(const SegmentView& view)
+void SegmentBackendWin32::tryLock(const SegmentView& view)
 {
     if (view.base == nullptr || view.size == 0)
     {
@@ -132,6 +133,22 @@ void SegmentBackendWin32::tryVirtualLock(const SegmentView& view)
         // 降级:仅预触碰(已在 initHeader 完成),记日志不失败(01 §4.0)。
         logVirtualLockFailure(L"<mapped segment>");
     }
+}
+
+void SegmentBackendWin32::unmap(SegmentView& view)
+{
+    if (view.base != nullptr)
+    {
+        ::UnmapViewOfFile(view.base);
+    }
+    if (view.mapping != nullptr)
+    {
+        ::CloseHandle(static_cast<HANDLE>(view.mapping));
+    }
+    view.base = nullptr;
+    view.mapping = nullptr;
+    view.size = 0;
+    view.created = false;
 }
 
 } // namespace scvb

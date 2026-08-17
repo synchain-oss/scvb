@@ -28,6 +28,12 @@ add_library(scvb_core STATIC
   ipc/SegmentLayout.h
   ipc/ISegmentBackend.h
   ipc/SegmentBackendWin32.h
+  ipc/Registry.cpp
+  ipc/Registry.h
+  ipc/CtrlPlane.cpp
+  ipc/CtrlPlane.h
+  ipc/SegmentBackendInProcess.cpp
+  ipc/SegmentBackendInProcess.h
 )
 
 # SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。

@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "ipc/CtrlPlane.h"
 #include "ipc/SegmentLayout.h"
 
 #ifdef WIN32
@@ -100,6 +101,10 @@ std::size_t structSize(const std::string& s)
         return sizeof(scvb::OutputGlobalInfo);
     if (s == "CtrlRecord")
         return sizeof(scvb::CtrlRecord);
+    if (s == "CtrlHeader")
+        return sizeof(scvb::CtrlHeader);
+    if (s == "CtrlRing")
+        return sizeof(scvb::CtrlRing);
     return kNotFound;
 }
 
@@ -121,6 +126,10 @@ std::size_t structAlign(const std::string& s)
         return alignof(scvb::OutputGlobalInfo);
     if (s == "CtrlRecord")
         return alignof(scvb::CtrlRecord);
+    if (s == "CtrlHeader")
+        return alignof(scvb::CtrlHeader);
+    if (s == "CtrlRing")
+        return alignof(scvb::CtrlRing);
     return kNotFound;
 }
 
@@ -248,6 +257,36 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
             return offsetof(scvb::CtrlRecord, op);
         if (f == "value")
             return offsetof(scvb::CtrlRecord, value);
+        return kNotFound;
+    }
+    if (s == "CtrlHeader")
+    {
+        if (f == "magic")
+            return offsetof(scvb::CtrlHeader, magic);
+        if (f == "abi")
+            return offsetof(scvb::CtrlHeader, abi);
+        if (f == "generation")
+            return offsetof(scvb::CtrlHeader, generation);
+        if (f == "_pad")
+            return offsetof(scvb::CtrlHeader, _pad);
+        if (f == "_reserved")
+            return offsetof(scvb::CtrlHeader, _reserved);
+        return kNotFound;
+    }
+    if (s == "CtrlRing")
+    {
+        if (f == "write_pos")
+            return offsetof(scvb::CtrlRing, write_pos);
+        if (f == "read_pos")
+            return offsetof(scvb::CtrlRing, read_pos);
+        if (f == "overflow_count")
+            return offsetof(scvb::CtrlRing, overflow_count);
+        if (f == "_pad")
+            return offsetof(scvb::CtrlRing, _pad);
+        if (f == "_reserved")
+            return offsetof(scvb::CtrlRing, _reserved);
+        if (f == "records")
+            return offsetof(scvb::CtrlRing, records);
         return kNotFound;
     }
     return kNotFound;
@@ -408,9 +447,13 @@ TEST_CASE("OutputGlobalInfo layout matches 01 4.4-a", "[ipc][layout]")
     REQUIRE(offsetof(scvb::OutputGlobalInfo, epoch_summary) == 136);
 }
 
-TEST_CASE("CtrlRecord freezes u64 value at offset 16", "[ipc][layout]")
+TEST_CASE("CtrlRecord freezes atomic fields (size 24, offsets)", "[ipc][layout]")
 {
-    static_assert(std::is_same_v<decltype(scvb::CtrlRecord::value), u64>);
+    // [J48 先例] 四字段 atomic 化,尺寸/偏移不变(非布局改动);offsetof 对 atomic 成员成立。
+    static_assert(std::is_same_v<decltype(scvb::CtrlRecord::seq), std::atomic<u32>>);
+    static_assert(std::is_same_v<decltype(scvb::CtrlRecord::channel), std::atomic<u32>>);
+    static_assert(std::is_same_v<decltype(scvb::CtrlRecord::op), std::atomic<u32>>);
+    static_assert(std::is_same_v<decltype(scvb::CtrlRecord::value), std::atomic<u64>>);
     static_assert(sizeof(scvb::CtrlRecord) == 24);
     static_assert(offsetof(scvb::CtrlRecord, op) == 8);
     static_assert(offsetof(scvb::CtrlRecord, value) == 16);
