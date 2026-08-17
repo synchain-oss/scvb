@@ -5,6 +5,7 @@ add_library(scvb_core STATIC
   ScvbCore.h
   dsp/KWeighting.cpp
   dsp/KWeighting.h
+  dsp/ParamSmoother.h
   analysis/FeatureExtractor.cpp
   analysis/FeatureExtractor.h
   analysis/PanCurve.cpp
@@ -12,6 +13,10 @@ add_library(scvb_core STATIC
   dsp/PanMath.h
   engine/CurveEvaluator.cpp
   engine/CurveEvaluator.h
+  engine/AuthorityMode.cpp
+  engine/AuthorityMode.h
+  engine/DspArbiter.cpp
+  engine/DspArbiter.h
   analysis/Loudness.cpp
   analysis/Loudness.h
   analysis/EnergyVad.cpp
