@@ -204,6 +204,7 @@ export const T = {
         "demo.ch13": "念白",
         "demo.ch14": "群唱 C",
         "demo.ch15": "尾音",
+        "demo.versionName": "基础平衡", // tour demo 的 V1 版本名(用户命名语义的演示值;deepseek-review 建议 5)
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
         // 两插件共用的扁平 key 组,取代旧 in.groupSwitchConfirm / out.set.groupSwitchConfirm /
@@ -431,6 +432,7 @@ export const T = {
         "demo.ch13": "Spoken",
         "demo.ch14": "Group Vocal C",
         "demo.ch15": "Tail",
+        "demo.versionName": "Base balance", // T27 自译,待人工审校
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
         // 两插件共用的扁平 key 组,取代旧 in.groupSwitchConfirm / out.set.groupSwitchConfirm /
@@ -667,6 +669,7 @@ export const T = {
         "demo.ch13": "Parlé",
         "demo.ch14": "Chœur C",
         "demo.ch15": "Fin de note",
+        "demo.versionName": "Équilibre de base", // T27 自译,待人工审校
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
         // 两插件共用的扁平 key 组,取代旧 in.groupSwitchConfirm / out.set.groupSwitchConfirm /
@@ -751,13 +754,16 @@ export function dict(lang) {
  */
 export function applyI18n(root, lang) {
     const t = dict(lang);
+    // own-property 判定与 normLang 同口径(PR #32 claude-review 建议 1):
+    // data-t="toString" 一类原型链键不得命中(check-i18n 会拦,运行期同样要硬)
+    const has = (k) => Object.prototype.hasOwnProperty.call(t, k);
     root.querySelectorAll("[data-t]").forEach((el) => {
         const key = el.getAttribute("data-t");
-        if (t[key] != null) el.textContent = t[key];
+        if (has(key)) el.textContent = t[key];
     });
     root.querySelectorAll("[data-t-aria]").forEach((el) => {
         const key = el.getAttribute("data-t-aria");
-        if (t[key] != null) el.setAttribute("aria-label", t[key]);
+        if (has(key)) el.setAttribute("aria-label", t[key]);
     });
     if (typeof document !== "undefined" && document.documentElement) {
         document.documentElement.lang = normLang(lang);

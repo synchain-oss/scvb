@@ -44,3 +44,4 @@ configure.log
 pluginval-logs/
 *.log
 .npm-cache/
+__pycache__/

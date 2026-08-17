@@ -295,6 +295,10 @@ export const DEMO_LABEL_KEYS = Object.freeze(
     DEMO_TRACKS.map((t) => `demo.ch${t.ch}`),
 );
 
+/** tour demo 的 V1 版本名词条 key(zh 值 = 下方快照里的「基础平衡」,同改纪律同上;
+ *  PR #32 deepseek-review 建议 5:版本名同为我方 demo 内容,切语言应可跟随)。 */
+export const DEMO_VERSION_NAME_KEY = "demo.versionName";
+
 /** tour demo 的 stereo 轨号(source_channels=2;J60 → participate_in_auto_pan 默认 false)。 */
 export const DEMO_STEREO_CHANNELS = Object.freeze(
     DEMO_TRACKS.filter((t) => t.sourceChannels === 2).map((t) => t.ch),
