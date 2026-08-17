@@ -11,6 +11,11 @@ node_modules/
 docs/constitution/
 # clang-format 配置(非 prettier 目标)
 .clang-format
+# PowerShell 脚本:prettier 没有 PS parser。gate 3 的 `--check .` 本来就只挑得动的文件,
+# 碰不到 .ps1;但 T28 卡的附加 gate 是显式通配 `--check "web-preview/**"`,显式匹配到
+# web-preview/serve.ps1 时 prettier 会以 "No parser could be inferred" 直接报错退出 2。
+# 列进忽略表让两种调用口径都成立(scripts/*.ps1 同理)。
+*.ps1
 # workflow/文档非 web 资产,prettier 的 yml/md 默认格式与项目手写风格不一致(B07 bridge 同款口径)
 *.yml
 *.yaml
