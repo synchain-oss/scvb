@@ -1,0 +1,663 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// test_ipc_lifecycle —— IPC 生命周期状态机单测(T07)。用 SegmentBackendInProcess 模拟多实例
+// (快速回归;跨进程用例归 T07b)。覆盖 01 §4.3 a-h 八场景 + 接管四格 + 组隔离 + 命令环 + 看门狗。
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstdint>
+#include <type_traits>
+
+#include "ipc/CtrlPlane.h"
+#include "ipc/Registry.h"
+#include "ipc/SegmentBackendInProcess.h"
+
+using scvb::kMaxChannels;
+using scvb::kSlotActive;
+using scvb::kSlotClaimed;
+using scvb::kSlotFree;
+using scvb::u32;
+using scvb::u64;
+
+namespace
+{
+constexpr u64 kT0 = 1000;
+}
+
+// ---------------------------------------------------------------------------
+// ① 01 §4.3 八个时序场景
+// ---------------------------------------------------------------------------
+
+TEST_CASE("§4.3-a 冷启动 Output 先加载", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry out(backend, 1);
+    REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(out.generation() == 1); // 创建者路径 generation=1
+    REQUIRE(out.claimOutput(/*pid=*/2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(out.outputSlot()->state.load() == kSlotActive);
+
+    scvb::Registry in(backend, 1);
+    REQUIRE(in.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in.claimInput(/*ch=*/3, /*pid=*/1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in.inputSlot(3)->state.load() == kSlotActive);
+
+    // Output 判 CH_ONLINE 后置 mask 位,Input 侧可读(同组共享 OutputSlot)。
+    out.setConnectedMaskBit(3);
+    REQUIRE(out.connectedMask() == (1u << 2));
+    REQUIRE(in.connectedMask() == (1u << 2));
+}
+
+TEST_CASE("§4.3-b 冷启动 Input 先加载(让位协议)", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry in(backend, 1);
+    REQUIRE(in.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    // OutputSlot 空 → 健康判定不成立(Input 直通,状态灯「Output 离线」)。
+    REQUIRE(in.outputSlot()->state.load() == kSlotFree);
+
+    // Output 加载 → O2 → 判 CH_ONLINE → 置 mask 位。
+    scvb::Registry out(backend, 1);
+    REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(out.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    out.setConnectedMaskBit(3);
+
+    // Input 25Hz 轮询见 mask 位 → 健康判定成立。
+    REQUIRE(in.connectedMask() == (1u << 2));
+    REQUIRE((in.connectedMask() & (1u << 2)) != 0);
+}
+
+TEST_CASE("§4.3-c channel 冲突(组内)", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry in1(backend, 1);
+    REQUIRE(in1.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in1.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    in1.heartbeatInput(3, kT0 + 100); // 保持心跳新鲜
+
+    scvb::Registry in2(backend, 1);
+    REQUIRE(in2.open() == scvb::Registry::ClaimResult::kClaimed);
+    // 后到者 CAS 失败且心跳新鲜 → kConflict。
+    REQUIRE(in2.claimInput(3, 1002, 48000, 512, kT0 + 200) == scvb::Registry::ClaimResult::kConflict);
+    // 绝不双写同环:仍只有 in1 持有。
+    REQUIRE(in1.inputSlot(3)->pid == 1001);
+    REQUIRE(in1.inputSlot(3)->state.load() == kSlotActive);
+}
+
+TEST_CASE("§4.3-d 心跳丢失(对端失联)", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry out(backend, 1);
+    REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(out.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    const u64 hb = out.outputSlot()->heartbeat_ms.load();
+
+    // 2100ms 后陈旧(>2000ms 显示阈值),但未到 5000ms 接管阈值。
+    REQUIRE(scvb::isStaleDisplay(hb, kT0 + 2100));
+    REQUIRE_FALSE(scvb::isTakeoverStale(hb, kT0 + 2100));
+}
+
+TEST_CASE("§4.3-e DAW 崩溃残段(陈旧接管)", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry in1(backend, 1);
+    REQUIRE(in1.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in1.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    // 崩溃:无清理;心跳陈旧化由对端处理。
+
+    const bool holderAlive = false; // pid 已死
+    scvb::Registry in2(backend, 1, [&](u32) { return holderAlive; });
+    REQUIRE(in2.open() == scvb::Registry::ClaimResult::kClaimed);
+    // 5100ms 后:陈旧 + 死 pid → 覆盖式接管。
+    REQUIRE(in2.claimInput(3, 1002, 48000, 512, kT0 + 5100) == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in2.inputSlot(3)->pid == 1002);
+}
+
+TEST_CASE("§4.3-f 采样率不符", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry in(backend, 1);
+    REQUIRE(in.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in.claimInput(3, 1001, 44100, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    const u32 outputSr = 48000;
+    // Output 读到 slot.sample_rate != 自身 SR → CH_SR_MISMATCH(禁用不崩溃)。
+    REQUIRE(in.inputSlot(3)->sample_rate == 44100);
+    REQUIRE(in.inputSlot(3)->sample_rate != outputSr);
+    // updateOwnedInputSlot:采样率切换重认领后一致。
+    in.updateOwnedInputSlot(3, 1001, 48000, 512);
+    REQUIRE(in.inputSlot(3)->sample_rate == 48000);
+}
+
+TEST_CASE("§4.3-g DAW 卸载单个插件", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry in(backend, 1);
+    REQUIRE(in.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    // 析构路径释放 slot(state→0)。
+    in.releaseInput(3, 1001);
+    REQUIRE(in.inputSlot(3)->state.load() == kSlotFree);
+}
+
+TEST_CASE("§4.3-h 复制粘贴 Input(同 channel 冲突)", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 复制实例携带同一 channel_id state → 解析到同号。
+    const u32 ch = scvb::resolveInputChannelForClaim(/*env=*/0, /*state=*/5, false, 0);
+    REQUIRE(ch == 5);
+
+    scvb::Registry in1(backend, 1);
+    REQUIRE(in1.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in1.claimInput(ch, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+
+    scvb::Registry in2(backend, 1);
+    REQUIRE(in2.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(in2.claimInput(ch, 1002, 48000, 512, kT0 + 100) == scvb::Registry::ClaimResult::kConflict);
+}
+
+// ---------------------------------------------------------------------------
+// ② 双实例抢同 channel 只有一个活跃
+// ---------------------------------------------------------------------------
+
+TEST_CASE("双实例抢同 channel 只有一个活跃", "[ipc][lifecycle][conflict]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    a.heartbeatInput(3, kT0 + 100);
+
+    scvb::Registry b(backend, 1);
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(b.claimInput(3, 1002, 48000, 512, kT0 + 200) == scvb::Registry::ClaimResult::kConflict);
+
+    // 只有一个活跃:slot 仍属 a。
+    REQUIRE(a.inputSlot(3)->state.load() == kSlotActive);
+    REQUIRE(a.inputSlot(3)->pid == 1001);
+}
+
+// ---------------------------------------------------------------------------
+// ③ 接管判定四格(J10 双条件)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("接管判定四格(J10 双条件)", "[ipc][lifecycle][takeover]")
+{
+    SECTION("4900ms × pid 存活 → 不接管")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry first(backend, 1);
+        REQUIRE(first.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(first.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        const bool holderAlive = true;
+        scvb::Registry second(backend, 1, [&](u32) { return holderAlive; });
+        REQUIRE(second.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(second.claimInput(3, 1002, 48000, 512, kT0 + 4900) == scvb::Registry::ClaimResult::kConflict);
+        REQUIRE(first.inputSlot(3)->pid == 1001);
+    }
+
+    SECTION("4900ms × pid 已死 → 不接管(未过 5000ms)")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry first(backend, 1);
+        REQUIRE(first.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(first.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        const bool holderAlive = false;
+        scvb::Registry second(backend, 1, [&](u32) { return holderAlive; });
+        REQUIRE(second.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(second.claimInput(3, 1002, 48000, 512, kT0 + 4900) == scvb::Registry::ClaimResult::kConflict);
+        REQUIRE(first.inputSlot(3)->pid == 1001);
+    }
+
+    SECTION("5100ms × pid 存活 → 不接管(探活是第二必要条件)")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry first(backend, 1);
+        REQUIRE(first.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(first.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        const bool holderAlive = true;
+        scvb::Registry second(backend, 1, [&](u32) { return holderAlive; });
+        REQUIRE(second.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(second.claimInput(3, 1002, 48000, 512, kT0 + 5100) == scvb::Registry::ClaimResult::kConflict);
+        REQUIRE(first.inputSlot(3)->pid == 1001);
+    }
+
+    SECTION("5100ms × pid 已死 → CAS 接管且唯一胜者")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry first(backend, 1);
+        REQUIRE(first.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(first.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        const bool holderAlive = false;
+        scvb::Registry second(backend, 1, [&](u32) { return holderAlive; });
+        scvb::Registry third(backend, 1, [&](u32) { return holderAlive; });
+        REQUIRE(second.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(third.open() == scvb::Registry::ClaimResult::kClaimed);
+        const auto r2 = second.claimInput(3, 1002, 48000, 512, kT0 + 5100);
+        const auto r3 = third.claimInput(3, 1003, 48000, 512, kT0 + 5100);
+        const bool r2won = (r2 == scvb::Registry::ClaimResult::kClaimed);
+        const bool r3won = (r3 == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(r2won != r3won); // 恰好一个胜者(CAS 保证唯一)
+        const bool atLeastOne = r2won || r3won;
+        REQUIRE(atLeastOne);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ④ 2000ms 边界两格(仅 UI 陈旧,不触发接管)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("2000ms 边界只影响 UI 陈旧显示", "[ipc][lifecycle][threshold]")
+{
+    const u64 hb = kT0;
+    REQUIRE_FALSE(scvb::isStaleDisplay(hb, hb + 1900)); // 1900ms 未陈旧
+    REQUIRE(scvb::isStaleDisplay(hb, hb + 2100)); // 2100ms 陈旧
+    REQUIRE_FALSE(scvb::isTakeoverStale(hb, hb + 1900)); // 都不触发接管
+    REQUIRE_FALSE(scvb::isTakeoverStale(hb, hb + 2100));
+
+    // 2100ms × pid 已死 → 仍 kConflict(未过 5000ms 接管阈值)。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+    scvb::Registry first(backend, 1);
+    REQUIRE(first.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(first.claimInput(3, 1001, 48000, 512, hb) == scvb::Registry::ClaimResult::kClaimed);
+    const bool holderAlive = false;
+    scvb::Registry second(backend, 1, [&](u32) { return holderAlive; });
+    REQUIRE(second.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(second.claimInput(3, 1002, 48000, 512, hb + 2100) == scvb::Registry::ClaimResult::kConflict);
+}
+
+// ---------------------------------------------------------------------------
+// ⑤ J40 abi 不符 → 不连接 + 横幅回调
+// ---------------------------------------------------------------------------
+
+TEST_CASE("J40 abi 不符 → 不连接 + 横幅回调", "[ipc][lifecycle][abi]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 预置一个 magic 相符但 abi=99 的段(模拟旧/新版本不互认)。
+    scvb::SegmentView view;
+    REQUIRE(backend.createOrOpen(L"Local\\SynchainSCVB.v1.g1.registry", scvb::kRegistrySegmentSize, view) ==
+            scvb::InitResult::kOk);
+    auto* hdr = static_cast<scvb::RegistryHeader*>(view.base);
+    hdr->magic.store(scvb::kScvbMagic, std::memory_order_release);
+    hdr->abi.store(99, std::memory_order_release);
+
+    bool called = false;
+    u32 localAbi = 0;
+    u32 remoteAbi = 0;
+    scvb::Registry reg(backend, 1);
+    reg.setAbiMismatchHandler([&](u32 l, u32 r) {
+        called = true;
+        localAbi = l;
+        remoteAbi = r;
+    });
+    REQUIRE(reg.open() == scvb::Registry::ClaimResult::kAbiMismatch);
+    REQUIRE(called);
+    REQUIRE(localAbi == scvb::kScvbAbi);
+    REQUIRE(remoteAbi == 99);
+    REQUIRE_FALSE(reg.isOpen()); // 绝不半兼容
+}
+
+// ---------------------------------------------------------------------------
+// ⑥ OutputGlobalInfo 单测(Output 写 → Input 读同值,gap_count 可读)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("OutputGlobalInfo Output 写 → Input 读", "[ipc][lifecycle][globalinfo]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::CtrlPlane out(backend, 1);
+    REQUIRE(out.open() == scvb::InitResult::kOk);
+    scvb::CtrlPlane in(backend, 1);
+    REQUIRE(in.open() == scvb::InitResult::kOk);
+
+    scvb::OutputGlobalInfoSnapshot s;
+    s.capture_enabled = 1;
+    s.output_sample_rate = 48000;
+    s.flags = scvb::kOutputEnabled;
+    for (u32 i = 0; i < kMaxChannels; ++i)
+    {
+        s.gap_count[i] = i + 100;
+        s.overlap_count[i] = i + 200;
+        s.epoch_summary[i] = i + 300;
+    }
+    out.refreshGlobalInfo(s);
+
+    const auto got = in.readGlobalInfo();
+    REQUIRE(got.capture_enabled == 1);
+    REQUIRE(got.output_sample_rate == 48000);
+    REQUIRE(got.flags == scvb::kOutputEnabled);
+    REQUIRE(got.gap_count[0] == 100);
+    REQUIRE(got.gap_count[14] == 114);
+    REQUIRE(got.overlap_count[14] == 214);
+    REQUIRE(got.epoch_summary[14] == 314);
+}
+
+// ---------------------------------------------------------------------------
+// ⑦ CtrlOp 单测(底层类型 u32、三值、未知 op 安全忽略)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CtrlOp 底层类型 u32 且三值与 01 §4.4-c 一致", "[ipc][lifecycle][ctrlop]")
+{
+    static_assert(std::is_same_v<std::underlying_type_t<scvb::CtrlOp>, u32>);
+    REQUIRE(static_cast<u32>(scvb::CtrlOp::kNone) == 0);
+    REQUIRE(static_cast<u32>(scvb::CtrlOp::kSetPriority) == 1);
+    REQUIRE(static_cast<u32>(scvb::CtrlOp::kFpReport) == 2);
+
+    REQUIRE(scvb::isKnownCtrlOp(scvb::CtrlOp::kNone));
+    REQUIRE(scvb::isKnownCtrlOp(scvb::CtrlOp::kSetPriority));
+    REQUIRE(scvb::isKnownCtrlOp(scvb::CtrlOp::kFpReport));
+    REQUIRE_FALSE(scvb::isKnownCtrlOp(static_cast<scvb::CtrlOp>(99))); // 未知 op 读方安全忽略
+}
+
+// ---------------------------------------------------------------------------
+// ⑧ J46 fp_report 打包/解包往返
+// ---------------------------------------------------------------------------
+
+TEST_CASE("fp_report 打包/解包往返(J46)", "[ipc][lifecycle][fpreport]")
+{
+    const u32 tiles[] = {0, 1, 0xFFFF};
+    const u64 hashes[] = {0, 1, 0xFFFFFFFFFFFFull, 0x123456789ABCull, 0xFFFFFFFFFFFFFFFFull};
+    for (const u32 tile : tiles)
+    {
+        for (const u64 hash : hashes)
+        {
+            const u64 v = scvb::packFpReport(tile, hash);
+            INFO("tile=" << tile << " hash=" << hash);
+            REQUIRE((v >> 48) == tile);
+            REQUIRE((v & 0xFFFFFFFFFFFFull) == (hash & 0xFFFFFFFFFFFFull));
+            REQUIRE(scvb::unpackFpReportTileIdx(v) == tile);
+            REQUIRE(scvb::unpackFpReportHash(v) == (hash & 0xFFFFFFFFFFFFull));
+        }
+    }
+
+    // tile_idx > 0xFFFF → 钳制到 0xFFFF(明确定义,非未定义行为)。
+    REQUIRE(scvb::unpackFpReportTileIdx(scvb::packFpReport(0x10000, 0xAB)) == 0xFFFF);
+    REQUIRE(scvb::unpackFpReportTileIdx(scvb::packFpReport(0xFFFFFFFF, 0)) == 0xFFFF);
+    // hash 高位(>48 位)被截断。
+    REQUIRE(scvb::unpackFpReportHash(scvb::packFpReport(0, 0x0001FFFFFFFFFFFFull)) == 0xFFFFFFFFFFFFull);
+}
+
+// ---------------------------------------------------------------------------
+// ⑨ 命令环满 → 丢最旧 + 计数递增
+// ---------------------------------------------------------------------------
+
+TEST_CASE("命令环满 → 丢最旧 + 计数递增", "[ipc][lifecycle][cmdring]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::CtrlPlane in(backend, 1);
+    REQUIRE(in.open() == scvb::InitResult::kOk);
+
+    for (u32 i = 0; i < scvb::kCtrlRingCapacity; ++i)
+    {
+        REQUIRE(in.enqueue(3, scvb::CtrlOp::kSetPriority, i));
+    }
+    REQUIRE(in.overflowCount(3) == 0); // 恰好填满,未溢出
+
+    REQUIRE(in.enqueue(3, scvb::CtrlOp::kSetPriority, 100)); // 第 17 条 → 丢最旧
+    REQUIRE(in.overflowCount(3) == 1);
+
+    scvb::CtrlRecord rec;
+    u32 count = 0;
+    u64 firstValue = 0;
+    while (in.dequeue(3, rec))
+    {
+        if (count == 0)
+        {
+            firstValue = rec.value;
+        }
+        ++count;
+    }
+    REQUIRE(count == scvb::kCtrlRingCapacity);
+    REQUIRE(firstValue == 1); // 最旧(value 0)被丢
+}
+
+// ---------------------------------------------------------------------------
+// ⑩ R3/J52 停摆看门狗四格
+// ---------------------------------------------------------------------------
+
+TEST_CASE("停摆看门狗四格(R3/J52)", "[ipc][lifecycle][watchdog]")
+{
+    SECTION("停滞 400ms × write_head 推进 → 不清 mask")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        out.setConnectedMaskBit(1); // channel 1 在线
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0; // blockCounter 停滞
+        u64 wh = 0; // write_head 推进
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone); // init
+        wh = 100;
+        const auto r = cp.tickWatchdog(400);
+        REQUIRE(r.action == scvb::WatchdogAction::kNone); // 未过 0.5s
+        REQUIRE(out.connectedMask() == (1u << 0));
+    }
+
+    SECTION("停滞 600ms × write_head 推进 → 清 mask")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        out.setConnectedMaskBit(1);
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        wh = 100;
+        const auto r = cp.tickWatchdog(600);
+        REQUIRE(r.action == scvb::WatchdogAction::kClearMask);
+    }
+
+    SECTION("停滞 600ms × write_head 也停 → 不清 mask(工程停止播放)")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        out.setConnectedMaskBit(1);
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        const u64 wh = 0; // write_head 也停
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        const auto r = cp.tickWatchdog(600);
+        REQUIRE(r.action == scvb::WatchdogAction::kNone); // 两个条件缺一不可
+        REQUIRE(out.connectedMask() == (1u << 0));
+    }
+
+    SECTION("清 mask 后恢复推进 → 让位协议逐轨重置信位(不得硬切)")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        out.setConnectedMaskBit(1);
+        out.setConnectedMaskBit(2);
+        out.setConnectedMaskBit(3); // 在线轨 1,2,3
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        wh = 100;
+        REQUIRE(cp.tickWatchdog(600).action == scvb::WatchdogAction::kClearMask);
+        out.clearConnectedMask(); // 执行器清 mask
+
+        block = 1; // blockCounter 恢复推进
+        const auto r1 = cp.tickWatchdog(700);
+        REQUIRE(r1.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r1.channel == 1); // 让位协议:最小号在线轨先置位,不得硬切
+
+        const auto r2 = cp.tickWatchdog(800);
+        REQUIRE(r2.action == scvb::WatchdogAction::kNone); // ≥200ms 窗口内
+
+        const auto r3 = cp.tickWatchdog(900);
+        REQUIRE(r3.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r3.channel == 2);
+
+        const auto r4 = cp.tickWatchdog(1100);
+        REQUIRE(r4.action == scvb::WatchdogAction::kReacquireBit);
+        REQUIRE(r4.channel == 3);
+
+        const auto r5 = cp.tickWatchdog(1300);
+        REQUIRE(r5.action == scvb::WatchdogAction::kNone); // 重置信位序列结束
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ⑪ J66 组隔离两格
+// ---------------------------------------------------------------------------
+
+TEST_CASE("组隔离两格(J66)", "[ipc][lifecycle][group]")
+{
+    SECTION("两组各自 claim 同号 channel → 零冲突 + 互不可见")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+
+        scvb::Registry g1in(backend, 1);
+        REQUIRE(g1in.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(g1in.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        scvb::Registry g1out(backend, 1);
+        REQUIRE(g1out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(g1out.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        g1out.setConnectedMaskBit(3);
+
+        // g2 同号 channel 零冲突(独立段)。
+        scvb::Registry g2in(backend, 2);
+        REQUIRE(g2in.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(g2in.claimInput(3, 1002, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        scvb::Registry g2out(backend, 2);
+        REQUIRE(g2out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(g2out.claimOutput(2002, kT0) == scvb::Registry::ClaimResult::kClaimed);
+
+        // mask 互不可见。
+        REQUIRE(g1out.connectedMask() == (1u << 2));
+        REQUIRE(g2out.connectedMask() == 0);
+
+        // 心跳互不可见(同号 slot 各自独立)。
+        g1in.heartbeatInput(3, kT0 + 100);
+        g2in.heartbeatInput(3, kT0 + 500);
+        REQUIRE(g1in.inputSlot(3)->heartbeat_ms.load() == kT0 + 100);
+        REQUIRE(g2in.inputSlot(3)->heartbeat_ms.load() == kT0 + 500);
+    }
+
+    SECTION("改组 API → 旧组归零 + 新组 claim + 异组 O3 不触发")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+
+        scvb::Registry reg(backend, 1);
+        REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(reg.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(reg.inputSlot(3)->state.load() == kSlotActive);
+
+        // 改组到 g2。
+        REQUIRE(reg.changeGroup(2) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(reg.group() == 2);
+
+        // 旧组 g1 slot 3 归零。
+        scvb::Registry probe(backend, 1);
+        REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(probe.inputSlot(3)->state.load() == kSlotFree);
+
+        // 新组 claim 成功。
+        REQUIRE(reg.claimInput(3, 1001, 48000, 512, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(reg.inputSlot(3)->state.load() == kSlotActive);
+
+        // 异组 OutputSlot 占用不触发本组 O3(只读观察为同组内语义)。
+        scvb::Registry g1out(backend, 1);
+        REQUIRE(g1out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(g1out.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        scvb::Registry g2out(backend, 2);
+        REQUIRE(g2out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(g2out.claimOutput(2002, kT0) == scvb::Registry::ClaimResult::kClaimed); // 非 O3 冲突
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 辅助语义:resolveInputChannelForClaim + 时钟/pid 探活基础
+// ---------------------------------------------------------------------------
+
+TEST_CASE("resolveInputChannelForClaim 解析优先级", "[ipc][lifecycle]")
+{
+    using scvb::kMaxChannels;
+    using scvb::resolveInputChannelForClaim;
+    // env 优先。
+    REQUIRE(resolveInputChannelForClaim(2, 3, false, 0) == 2);
+    // 无 env → state。
+    REQUIRE(resolveInputChannelForClaim(0, 4, false, 0) == 4);
+    // 无 env/state → 已认领保持。
+    REQUIRE(resolveInputChannelForClaim(0, 0, true, 7) == 7);
+    // 全无 → 0(自动)。
+    REQUIRE(resolveInputChannelForClaim(0, 0, false, 0) == 0);
+    // env 越界 → 回落 state。
+    REQUIRE(resolveInputChannelForClaim(99, 5, false, 0) == 5);
+    // 边界:env=15 有效,env=16 越界。
+    REQUIRE(resolveInputChannelForClaim(15, 0, false, 0) == 15);
+    REQUIRE(resolveInputChannelForClaim(16, 0, false, 0) == 0);
+    (void)kMaxChannels;
+}
+
+TEST_CASE("时钟与 pid 探活基础", "[ipc][lifecycle]")
+{
+    const u64 a = scvb::steadyNowMs();
+    const u64 b = scvb::steadyNowMs();
+    REQUIRE(b >= a); // 单调
+    REQUIRE_FALSE(scvb::isProcessAlive(0)); // pid 0 恒判死
+}

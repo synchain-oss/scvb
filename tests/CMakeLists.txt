@@ -40,6 +40,7 @@ add_executable(scvb_tests
   core/test_assign.cpp
   core/test_balance.cpp
   core/test_ipc_layout.cpp
+  core/test_ipc_lifecycle.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
@@ -64,4 +65,3 @@ add_test(NAME scvb_tests COMMAND scvb_tests)
 if(SCVB_BUILD_IPC_TESTS AND WIN32)
   add_subdirectory(ipc)
 endif()
-
