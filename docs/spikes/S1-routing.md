@@ -22,14 +22,14 @@
 
 | DAW / 版本   | 场景                               | 判据                                   | 实测值                      | P/F | 备注                 |
 | ------------ | ---------------------------------- | -------------------------------------- | --------------------------- | --- | -------------------- |
-| REAPER 7.xx  | R-1 实时播放                       | gapCount==0                            | 0×15                        |     |                      |
-| REAPER 7.xx  | R-2 anticipative 开                | gapCount==0                            |                             |     |                      |
-| REAPER 7.xx  | R-3 anticipative max               | gapCount==0                            | render-ahead=_**ms → gap=** |     | **ring_frames 依据** |
-| REAPER 7.xx  | R-4 anticipative 关                | gapCount==0                            |                             |     |                      |
+| REAPER 7.xx  | R-1 实时播放                       | gapCount==0(稳态窗口,起播 burst 除外)                            | 0×15                        |     |                      |
+| REAPER 7.xx  | R-2 anticipative 开                | gapCount==0(稳态窗口,起播 burst 除外)                            |                             |     |                      |
+| REAPER 7.xx  | R-3 anticipative max               | gapCount==0(稳态窗口,起播 burst 除外)                            | render-ahead=_**ms → gap=** |     | **ring_frames 依据** |
+| REAPER 7.xx  | R-4 anticipative 关                | gapCount==0(稳态窗口,起播 burst 除外)                            |                             |     |                      |
 | REAPER 7.xx  | R-5 离线渲染                       | null 峰值 < −120dBFS                   | ___ dBFS / 偏移 __ 样本     |     |                      |
 | REAPER 7.xx  | R-6 loop ×100                      | gapCount 增量==0                       |                             |     |                      |
 | REAPER 7.xx  | R-7 定位 ×20                       | gapCount 增量 ≤20                      |                             |     |                      |
-| REAPER 7.xx  | R-8 buffer 32/128/512/2048         | 各档 gapCount==0                       |                             |     |                      |
+| REAPER 7.xx  | R-8 buffer 32/128/512/2048         | 各档 gapCount==0(稳态窗口,起播 burst 除外)                       |                             |     |                      |
 | REAPER 7.xx  | R-9 SR 44100/96000                 | 无崩溃/SR 不符禁用                     |                             |     |                      |
 | REAPER 7.xx  | R-10 solo/mute/推子                | 记录三类行为                           |                             |     |                      |
 | REAPER 7.xx  | R-11 freeze/stem                   | 记录行为(静音产物)                     |                             |     |                      |
@@ -90,12 +90,12 @@
 
 - [ ] IPC-3/IPC-4(§2.3)已覆盖 R-6/R-7 的语义
 - [ ] IPC-5b(套圈弃块)已覆盖 G-5;IPC-11a/11b + IPC-12a/12b(双阈值接管)已覆盖 G-1c;IPC-19(stereo interleaved 环)已覆盖 G-9 ①([J57]);IPC-20a/20b(组隔离)已覆盖 G-10 ①②([J66])
-- [ ] spikes/s1/ 已由 T06 的 PR 删除(J16);scvb_diag 已迁到 tests/tools/ 常驻(不删除)
+- [ ] spikes/s1/ 已由 T06 的 PR 删除(J16);scvb_diag / scvb_nulltest 已迁到 tests/tools/ 常驻(不删除)
 ## 6. 收口报告(2026-08-16/17 实测,PR #30 已合入 feature/v1)
 
 ### 6.1 执行概况
 
-- **宿主覆盖**:C 系列主体在 **Cubase 15(新机)** 完成,其中 C-3/C-5/G-1a/G-2/G-9 先在 **Cubase 14(本机)** 通过、再在 Cubase 15 复验;Cubase 14 还贡献 C-1/C-2/C-4/C-6~C-14 与 G-1b~G-4/G-6/G-7 的首轮验证;R 系列在 REAPER 7(新机)。Live 12 跳过 / Studio One 7 可选对照(用户 08-14 裁定 U27)。
+- **宿主覆盖**:Cubase 系列主体在 **Cubase 15(新机)** 完成,其中 C-3/C-5/G-1a/G-2/G-9 先在 **Cubase 14(本机)** 通过、再在 Cubase 15 复验;Cubase 14 还贡献 C-1/C-2/C-4/C-6~C-14 与 G-1b/G-3/G-4/G-6/G-7 的首轮验证;R 系列在 REAPER 7(新机)。Live 12 跳过 / Studio One 7 可选对照(用户 08-14 裁定 U27)。
 - **格覆盖**:C-1..C-14 全 ✅;G-1a..G-10 全 ✅(G-9③ 由压测 mono2stereo 覆盖);R-2..R-5/R-12 全 ✅。逐格实测与判读 = `docs/spikes/S1-daw-checklist.md`(完成列),证据 wav/csv 归档于调度者侧 workv7。
 - **修复链 v1..v10**:mono/stereo 重建越界(v5/v6 几何快照+容量)、宿主异步销毁 AV(v4 寿命泄漏)、RIP/undo 复制体释放 slot 后 Input 自愈重认领 + 心跳跨宿主挂起存活(v7)、channel 塌缩(v8 claimInputAuto)、re-prepare 迁槽幽灵槽 + 未认领永不重试(v9)、复制体同 pid 抢槽(v10 conflict 语义)。
 - **离线验证**:单测 19 例 / 24262+ 断言;压测 5 场景(mono2stereo/flip/outputcheck/churn/multiclaim,组 8 隔离);gates 1-7 全绿(PluginOnly)。
@@ -108,7 +108,7 @@
 - **R-3 实测 render-ahead 上限 5000ms(REAPER)下 gap 全 0** → 生产 ring_frames 按 stereo 预算 1<<19 有余量;
 - **G-5 实测**:8192 帧环 + render-ahead 5000ms → gap 大量被计数(最大 1110),无计数为 0 的撕裂;mask 部分掉位 = 健康回退按设计;
 - **上游 PDC 实测**:Cubase 15 高延迟插件在 V03/V07 前插 → rt/offline 均零错位(offset 0),无需 IAudioPresentationLatency 检测告警(记录在案,发布矩阵兜底);
-- **起播瞬态(验收口径)**:停→播瞬间一次性 ~350ms 缺口计数(全通道 ≈15 gap,环初建/epoch 换代时),之后稳态零 gap;checklist C-4/C-5/C-6/C-8 的「gapCount 全 0」判据 = **稳态窗口**(播放进入稳态后计数,起播窗口除外)。T06 验收若按此定值,须同样排除起播窗口,否则会被起播 burst 误判失败。offline 导出存在 J32 注入延迟 200ms 的起始位移(产品级待办:T24 处理)。
+- **起播瞬态(验收口径)**:停→播瞬间一次性 ~350ms 缺口计数(全通道 ≈15 gap,环初建/首次停→播时,常规定位/循环回跳不产生此量级(C-6/C-7 已证)),之后稳态零 gap;checklist C-4/C-5/C-6/C-8 的「gapCount 全 0」判据 = **稳态窗口**(播放进入稳态后计数,起播窗口除外)。T06 验收若按此定值,须同样排除起播窗口,否则会被起播 burst 误判失败。offline 导出存在 J32 注入延迟 200ms 的起始位移(产品级待办:T24 处理)。
 
 ### 6.3 遗留与去向
 
