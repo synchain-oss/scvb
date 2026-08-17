@@ -1145,6 +1145,7 @@
                                         class="sc-seg__item"
                                         data-group="2"
                                         data-gb="master-group-B"
+                                        aria-pressed="false"
                                     >
                                         B
                                     </button>
@@ -1152,6 +1153,7 @@
                                         class="sc-seg__item"
                                         data-group="3"
                                         data-gb="master-group-C"
+                                        aria-pressed="false"
                                     >
                                         C
                                     </button>
@@ -1159,6 +1161,7 @@
                                         class="sc-seg__item"
                                         data-group="4"
                                         data-gb="master-group-D"
+                                        aria-pressed="false"
                                     >
                                         D
                                     </button>
@@ -1166,6 +1169,7 @@
                                         class="sc-seg__item"
                                         data-group="5"
                                         data-gb="master-group-E"
+                                        aria-pressed="false"
                                     >
                                         E
                                     </button>
@@ -1173,6 +1177,7 @@
                                         class="sc-seg__item"
                                         data-group="6"
                                         data-gb="master-group-F"
+                                        aria-pressed="false"
                                     >
                                         F
                                     </button>
@@ -1180,6 +1185,7 @@
                                         class="sc-seg__item"
                                         data-group="7"
                                         data-gb="master-group-G"
+                                        aria-pressed="false"
                                     >
                                         G
                                     </button>
@@ -1187,6 +1193,7 @@
                                         class="sc-seg__item"
                                         data-group="8"
                                         data-gb="master-group-H"
+                                        aria-pressed="false"
                                     >
                                         H
                                     </button>
@@ -1422,6 +1429,7 @@
                                         data-gb="master-range-seg-loop"
                                         title="宿主未提供循环区"
                                         data-gb-todo="词条待立"
+                                        aria-pressed="false"
                                     >
                                         循环区
                                     </button>
@@ -1430,6 +1438,7 @@
                                         class="sc-seg__item"
                                         data-gb="master-range-seg-manual"
                                         data-gb-todo="词条待立"
+                                        aria-pressed="false"
                                     >
                                         手动
                                     </button>
@@ -2233,13 +2242,11 @@
                              波形分块重新拉取(05 §6.3)。尺寸:随泳道区等宽、高 12 设计 px,
                              轨头 158px 处留同宽空档以与泳道对齐。零交互逻辑,T33 实现。 -->
                         <div class="wave-hzoom" data-gb="wave-hzoom">
+                            <!-- 灰模阶段不带 scrollbar role/ARIA:惰性 div 冒充可操作滚动条会误导
+                                 读屏(PR #37 pr-agent);T33 实现真实交互时连同键盘处理一并补 -->
                             <div
                                 class="wave-hzoom__scroll"
                                 data-gb="wave-hscroll"
-                                role="scrollbar"
-                                aria-orientation="horizontal"
-                                aria-controls="wave-lanes"
-                                aria-valuenow="0"
                             ></div>
                             <!-- [T3x] bridge.requestWaveform(ch, startS, endS, cols) —— 契约 §1.27(档位变化触发分块重拉,05 §6.3) -->
                         </div>
@@ -2469,6 +2476,7 @@
                                             class="sc-seg__item"
                                             data-value="rms"
                                             data-gb-todo="词条待立"
+                                            aria-pressed="false"
                                         >
                                             RMS
                                         </button>
@@ -2477,6 +2485,7 @@
                                             class="sc-seg__item"
                                             data-value="peak_dbfs"
                                             data-gb-todo="词条待立"
+                                            aria-pressed="false"
                                         >
                                             峰值 dBFS
                                         </button>
@@ -2526,6 +2535,7 @@
                                             class="sc-seg__item"
                                             data-value="lead_exclusive"
                                             data-gb-todo="词条待立"
+                                            aria-pressed="false"
                                         >
                                             主唱独占
                                         </button>
@@ -2534,6 +2544,7 @@
                                             class="sc-seg__item"
                                             data-value="even_spread"
                                             data-gb-todo="词条待立"
+                                            aria-pressed="false"
                                         >
                                             均分微偏
                                         </button>
@@ -2617,12 +2628,14 @@
                                         <button
                                             class="sc-seg__item"
                                             data-lang="en"
+                                            aria-pressed="false"
                                         >
                                             EN
                                         </button>
                                         <button
                                             class="sc-seg__item"
                                             data-lang="fr"
+                                            aria-pressed="false"
                                         >
                                             FR
                                         </button>

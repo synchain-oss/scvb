@@ -50,6 +50,8 @@
             /* 卡片外壳:.sc-shell 给玻璃底/描边/圆角(05 §1.1「玻璃面板,圆角 20」);
                宽高由 app.js 写 --ipt-w/--ipt-h(design-box.js 单一真源)。 */
             #ipt-shell {
+                /* toast 槽等 absolute 子层的定位基准(PR #37 pr-agent:否则锚到视口) */
+                position: relative;
                 width: var(--ipt-w, 460px);
                 height: var(--ipt-h, 560px);
                 padding: var(--sp-20);

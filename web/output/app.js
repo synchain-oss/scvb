@@ -40,7 +40,6 @@ try {
     );
     const hint = document.getElementById("footer-hint");
     if (hint) {
-        hint.removeAttribute("data-t");
         hint.textContent = "未接后端——请经 web-preview 入口预览(T28)";
     }
 }
@@ -286,6 +285,11 @@ if (waveLanes) {
         .join("");
     waveLanes.insertAdjacentHTML("afterbegin", lanesHtml);
 }
+
+// 模板注入完成后重刷一次字典:上面首刷发生在行/泳道注入之前,注入子树内的
+// data-t/data-t-aria(确认条/提示条/角标等)否则要等下一次切语言才生效
+// (PR #37 评审建议 2)。
+applyI18n(document, lang);
 
 // ------------------------------------------------------------- 缩放下拉(footer / 设置页,05 §1.2)
 // 档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2「常量真源」栏)。
