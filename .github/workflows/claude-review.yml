@@ -46,6 +46,7 @@ jobs:
             - docs/PARAMETERS.md                 自动化参数表(ParamID 与 index 顺序永久冻结)
             - docs/IPC_CONTRACT.md               共享内存契约(段名/结构体布局冻结)
             - docs/STATE_SCHEMA.md               state schema 与 abi 兼容规则
+            - docs/SCVB_CONTRACT.md              JS↔C++ 桥契约(函数/事件名与载荷形状冻结)
             - docs/constitution/ADR.md           宪法原文只读副本(含 v1/v1.1 修订段)
             - docs/constitution/params-v0.md     宪法原文只读副本(参数面,含 v1/v1.1)
             - docs/constitution/ipc-contract-v0.md  宪法原文只读副本(IPC 契约,含 v1/v1.1)
