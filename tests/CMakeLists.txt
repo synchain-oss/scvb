@@ -60,6 +60,31 @@ endif()
 
 add_test(NAME scvb_tests COMMAND scvb_tests)
 
+# scvb_params_tests:L0 参数层 golden 测试(链接 JUCE,离线 Catch2)。
+# ADR-001 三主目标之外的辅助目标(J22);scvb_tests 保持 JUCE-free(ADR-011)。
+# 03 §8 P-1/P-2/P-3:遍历 makeOutputLayout 的实际 getParameters() 对拍 tests/golden/params_v0.tsv。
+add_executable(scvb_params_tests
+  core/test_params_golden.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
+)
+
+target_link_libraries(scvb_params_tests PRIVATE
+  scvb_core
+  Catch2::Catch2WithMain
+  juce::juce_audio_processors
+)
+
+target_include_directories(scvb_params_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/output)
+target_compile_definitions(scvb_params_tests PRIVATE SCVB_TEST_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
+
+if(MSVC)
+  target_compile_options(scvb_params_tests PRIVATE /W4 /utf-8 /EHsc)
+else()
+  target_compile_options(scvb_params_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME scvb_params_tests COMMAND scvb_params_tests)
+
 # scvb_ipc_tests:L1 双进程 IPC 契约测试骨架(仅 WIN32;实现由 T07b 填充)。
 if(SCVB_BUILD_IPC_TESTS AND WIN32)
   add_subdirectory(ipc)
