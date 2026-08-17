@@ -89,3 +89,26 @@
 - [ ] IPC-3/IPC-4(§2.3)已覆盖 R-6/R-7 的语义
 - [ ] IPC-5b(套圈弃块)已覆盖 G-5;IPC-11a/11b + IPC-12a/12b(双阈值接管)已覆盖 G-1c;IPC-19(stereo interleaved 环)已覆盖 G-9 ①([J57]);IPC-20a/20b(组隔离)已覆盖 G-10 ①②([J66])
 - [ ] spikes/s1/ 已由 T06 的 PR 删除(J16);scvb_diag 已迁到 tests/tools/ 常驻(不删除)
+## 6. 收口报告(2026-08-16/17 实测,PR #30 已合入 feature/v1)
+
+### 6.1 执行概况
+
+- **宿主覆盖**:Cubase 14(本机)、Cubase 15 + REAPER 7(新机)。Live 12 跳过 / Studio One 7 可选对照(用户 08-14 裁定 U27)。
+- **格覆盖**:C-1..C-14 全 ✅;G-1a..G-10 全 ✅(G-9③ 由压测 mono2stereo 覆盖);R-2..R-5/R-12 全 ✅。逐格实测与判读 = `docs/spikes/S1-daw-checklist.md`(完成列),证据 wav/csv 归档于调度者侧 workv7。
+- **修复链 v1..v10**:mono/stereo 重建越界(v5/v6 几何快照+容量)、宿主异步销毁 AV(v4 寿命泄漏)、采样率切换总线静音(v7 槽位自愈)、channel 塌缩(v8 claimInputAuto)、re-prepare 迁槽幽灵槽 + 未认领永不重试(v9)、复制体同 pid 抢槽(v10 conflict 语义)。
+- **离线验证**:单测 19 例 / 24262+ 断言;压测 5 场景(mono2stereo/flip/outputcheck/churn/multiclaim,组 8 隔离);gates 1-7 全绿(PluginOnly)。
+
+### 6.2 关键定值(回填 T06)
+
+- **ring_frames 默认 = 1<<19(524288 帧,按 stereo 预算 ≈10.9s @48k)**;SCVB_RING_FRAMES 可压到 8192 做套圈压测;
+- **环容量规则**:段恒按 stereo 容量创建(CreateFileMapping 对已存在段忽略请求大小,必须读回真实段大小并 clamp 声道数);
+- **认领语义**:自动认领只拿 Free / 陈旧+死 pid 接管;同 pid 对 Active 槽一律 conflict(复制体直通);本实例自己刷新走 updateOwnedInputSlot;
+- **R-3 实测 render-ahead 上限 5000ms(REAPER)下 gap 全 0** → 生产 ring_frames 按 stereo 预算 1<<19 有余量;
+- **G-5 实测**:8192 帧环 + render-ahead 5000ms → gap 大量被计数(最大 1110),无计数为 0 的撕裂;mask 部分掉位 = 健康回退按设计;
+- **上游 PDC 实测**:Cubase 15 高延迟插件在 V03/V07 前插 → rt/offline 均零错位(offset 0),无需 IAudioPresentationLatency 检测告警(记录在案,发布矩阵兜底);
+- **起播瞬态**:按播放瞬间一次性 ~350ms 缺口计数(全通道 ≈15 gap)为已知瞬态,之后零 gap;offline 导出存在 J32 注入延迟 200ms 的起始位移(产品级待办:T24 处理)。
+
+### 6.3 遗留与去向
+
+- spikes/s1/ 由 T06 的 PR 删除(J16);scvb_diag / scvb_nulltest / scvb_stress 迁 tests/tools/ 常驻;
+- 声像法则残余(mix 为轨前直和 vs ref 过 pan law)属 spike 设计边界,T06 平衡引擎应用声像/电平。
