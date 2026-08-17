@@ -152,6 +152,24 @@ int feedFeatRing(scvb::FeatRing& wr, const std::vector<float>& sig, int start, i
     return total;
 }
 
+// 拉取直到写指针追平(write_hop <= lastPulled),返回累计拉取 hop 数。
+// 首次 pullIncremental 是确认拍(init/run 切换,return 0),故必须循环而非单次调用。
+uint32_t drainFeat(const scvb::FeatHeader& header, const scvb::FeatFrame* ring, u32 capacity, scvb::FeatPullState& st,
+                   scvb::analysis::ChannelFrames& cf, scvb::analysis::HopRange gate)
+{
+    uint32_t total = 0;
+    for (int i = 0; i < 100000; ++i)
+    {
+        const uint64_t w = header.write_hop.load(std::memory_order_acquire);
+        if (st.initialized && st.lastPulled >= w)
+        {
+            break; // 已追平
+        }
+        total += scvb::pullIncremental(header, ring, capacity, st, cf, gate);
+    }
+    return total;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -421,11 +439,7 @@ TEST_CASE("5 分钟单轨采集 = 30000±1 hop 且 FrameStore 内存 < 1MB", "[s
     ChannelFrames& cf = store.channel(1);
     cf.setReadOnly(false);
     scvb::FeatPullState st;
-    uint32_t pulled = 0;
-    do
-    {
-        pulled = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
-    } while (pulled != 0);
+    drainFeat(fx.header, fx.ring.data(), kCap, st, cf, kFull);
 
     REQUIRE(cf.coveredHops(kFull) == 30000);
     REQUIRE(cf.pageCount() == 8); // 30000/4096 向上取整
@@ -506,17 +520,17 @@ TEST_CASE("startRun 顺序:base 先 write 后,交错读见新 base+旧 write 零
     ChannelFrames& cf = store.channel(1);
     cf.setReadOnly(false);
     scvb::FeatPullState st;
-    scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    drainFeat(fx.header, fx.ring.data(), kCap, st, cf, kFull);
     REQUIRE(st.lastPulled == 10);
     REQUIRE(cf.coveredHops(kFull) == 10);
 
-    // 前跳 seek 到 h0 = 100000。betweenStores 在两 store 之间跑一次读方。
+    // 前跳 seek 到 h0 = 200(小前跳,< 容量,不触发环回绕守卫)。betweenStores 在两 store 之间跑一次读方。
     uint32_t stalePulled = 0;
-    const int64_t jumpSample = 100000LL * 480;
+    const int64_t jumpSample = 200LL * 480;
     fx.wr.startRun(jumpSample,
                    [&]() { stalePulled = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull); });
 
-    // 正确顺序(base 先):交错读见「新 base + 旧 write」,w < lastPulled → 零污染。
+    // 正确顺序(base 先):交错读见「新 base + 旧 write」,run 切换确认拍 → 零污染。
     REQUIRE(stalePulled == 0);
     REQUIRE(cf.coveredHops(kFull) == 10);
 }
@@ -536,18 +550,124 @@ TEST_CASE("读方 seqlock:受限追赶分拍补完 + 真回退丢弃", "[featrin
     cf.setReadOnly(false);
     scvb::FeatPullState st;
 
-    // 每拍最多 kMaxBurstHops=256,分拍补完。
-    uint32_t p1 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    // 首次是确认拍(init),return 0;之后每拍最多 kMaxBurstHops=256,分拍补完。
+    const uint32_t p0 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    REQUIRE(p0 == 0);
+    const uint32_t p1 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
     REQUIRE(p1 == scvb::kMaxBurstHops);
-    uint32_t p2 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
-    uint32_t p3 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    const uint32_t p2 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    const uint32_t p3 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
     REQUIRE(p2 + p3 == static_cast<uint32_t>(600 - scvb::kMaxBurstHops));
     REQUIRE(cf.coveredHops(kFull) == 600);
 
-    // 真回退:w < lastPulled → 本拍丢弃(不拉)。
+    // 真回退:w < lastPulled → 重置 lastPulled 到 b1 并 return 0(不保留陈旧 lastPulled)。
     st.lastPulled = 700; // 人为制造回退
     const uint32_t p4 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
     REQUIRE(p4 == 0);
+    REQUIRE(st.lastPulled == 0); // 重置到 b1
+}
+
+TEST_CASE("FeatRing 超大块:按 maxBlockSamples 分段,无越界且逐位一致", "[featring][chunk]")
+{
+    constexpr double fs = 48000.0;
+    const auto sig = makeMix(fs, 1, 997.0, 3171.0, 777.0);
+    const int blockSamples = 4096; // 超大块:>> prepare 的 maxBlock 480
+
+    FeatRingFixture fx(4096, 1, 480);
+    fx.wr.startRun(0);
+    const float* ch[1] = {sig.data()};
+    const int got = fx.wr.processBlock(ch, blockSamples);
+    REQUIRE(got == blockSamples / 480); // 4096/480 = 8 完整 hop
+    REQUIRE(fx.header.write_hop.load() == static_cast<u64>(got));
+
+    // 参考:全新 extractor 直接喂 4096 样本(不分段),结果应逐位一致(分段不破坏 hop 边界)。
+    scvb::analysis::FeatureExtractor ref;
+    ref.prepare(fs, 1);
+    const auto refFrames = runExtractor(ref, ch, blockSamples, {blockSamples});
+    REQUIRE(refFrames.size() == static_cast<std::size_t>(got));
+    for (int i = 0; i < got; ++i)
+    {
+        const scvb::FeatFrame& f = fx.ring[static_cast<std::size_t>(i)];
+        INFO("hop " << i);
+        REQUIRE(f.kw_ms == refFrames[static_cast<std::size_t>(i)].kw_ms);
+        REQUIRE(f.peak == refFrames[static_cast<std::size_t>(i)].peak);
+    }
+}
+
+TEST_CASE("回卷 seek 交错:run 切换确认拍 0 污染", "[featring][rewind]")
+{
+    constexpr u32 kCap = 4096;
+    FeatRingFixture fx(kCap, 1, 480);
+    fx.wr.startRun(0);
+    std::vector<float> sig(480 * 100, 0.5f);
+    feedFeatRing(fx.wr, sig, 0, 480 * 100, {480}); // run A:100 hop,write=100
+    REQUIRE(fx.header.write_hop.load() == 100);
+
+    FrameStore store;
+    ChannelFrames& cf = store.channel(1);
+    cf.setReadOnly(false);
+    scvb::FeatPullState st;
+    drainFeat(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    REQUIRE(st.lastPulled == 100);
+    REQUIRE(cf.coveredHops(kFull) == 100);
+
+    // 回卷 seek 到 h0=50,betweenStores 注入读方(见「新 base + 旧 write」)。
+    uint32_t stalePulled = 0;
+    fx.wr.startRun(50LL * 480,
+                   [&]() { stalePulled = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull); });
+    REQUIRE(stalePulled == 0); // run 切换确认拍
+    REQUIRE(cf.coveredHops(kFull) == 100); // 无新污染
+}
+
+TEST_CASE("同 base 重开:w 回退 → 重置 lastPulled,新 run 前缀正常重拉", "[featring][rewind]")
+{
+    constexpr u32 kCap = 4096;
+    FeatRingFixture fx(kCap, 1, 480);
+    fx.wr.startRun(0);
+    std::vector<float> sig(480 * 200, 0.5f);
+    feedFeatRing(fx.wr, sig, 0, 480 * 100, {480}); // run A:100 hop
+    REQUIRE(fx.header.write_hop.load() == 100);
+
+    FrameStore store;
+    ChannelFrames& cf = store.channel(1);
+    cf.setReadOnly(false);
+    scvb::FeatPullState st;
+    drainFeat(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    REQUIRE(st.lastPulled == 100);
+
+    // 同 base 重开:startRun(0) → base 仍 0,write 回退到 0(不触发 run 切换,b1 不变)。
+    fx.wr.startRun(0);
+    REQUIRE(fx.header.base_hop.load() == 0);
+    REQUIRE(fx.header.write_hop.load() == 0);
+
+    const uint32_t p1 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    REQUIRE(p1 == 0);
+    REQUIRE(st.lastPulled == 0); // 不得保留陈旧 lastPulled=100
+
+    feedFeatRing(fx.wr, sig, 0, 480 * 30, {480}); // 新 run 写 30 hop
+    REQUIRE(fx.header.write_hop.load() == 30);
+    const uint32_t p2 = scvb::pullIncremental(fx.header, fx.ring.data(), kCap, st, cf, kFull);
+    REQUIRE(p2 == 30); // 新 run 前缀 [0,30) 被重拉
+}
+
+TEST_CASE("环回绕守卫:停滞 > 容量 → 0 污染", "[featring][wrap]")
+{
+    constexpr u32 kCap = 4096;
+    scvb::FeatHeader header;
+    std::vector<scvb::FeatFrame> ring(kCap);
+    header.base_hop.store(0, std::memory_order_release);
+    header.write_hop.store(5000, std::memory_order_release); // 写方已写 5000 > 容量 4096
+
+    scvb::analysis::ChannelFrames cf;
+    cf.setReadOnly(false);
+    scvb::FeatPullState st;
+    st.initialized = true;
+    st.lastBase = 0;
+    st.lastPulled = 0; // 读方停滞在 0,落后 > 容量
+
+    const uint32_t p = scvb::pullIncremental(header, ring.data(), kCap, st, cf, kFull);
+    REQUIRE(p == 0); // 守卫拦截
+    REQUIRE(cf.coveredHops(kFull) == 0); // 0 污染
 }
 
 TEST_CASE("FeatRing 几何快照:attach 读一次,越界映射拒绝绑定", "[featring][geometry]")
@@ -625,7 +745,8 @@ TEST_CASE("[P4/G11] 布防期录入 hop 数 == 选区内选中轨 hop 数", "[pu
     const u32 selectedMask = (1u << 0) | (1u << 2); // ch1 + ch3
     const u32 activeMask = (1u << 0) | (1u << 1) | (1u << 2); // 3 轨全在线
 
-    puller.pullTick(store, workSel, selectedMask, activeMask);
+    puller.pullTick(store, workSel, selectedMask, activeMask); // 确认拍(init)
+    puller.pullTick(store, workSel, selectedMask, activeMask); // 拉取
 
     REQUIRE(store.channel(1).coveredHops(kFull) == 60); // 选中 + 选区内
     REQUIRE(store.channel(2).coveredHops(kFull) == 0); // 未选中轨 → 丢弃
@@ -639,7 +760,8 @@ TEST_CASE("[P4/G11] 布防期录入 hop 数 == 选区内选中轨 hop 数", "[pu
     scvb::FeatPuller puller2;
     for (u32 ch = 1; ch <= 3; ++ch)
         puller2.bind(ch, &fxs[ch - 1]->header, fxs[ch - 1]->ring.data(), kCap);
-    puller2.pullTick(store2, workSel, /*selectedMask=*/0, activeMask);
+    puller2.pullTick(store2, workSel, /*selectedMask=*/0, activeMask); // 确认拍(init)
+    puller2.pullTick(store2, workSel, /*selectedMask=*/0, activeMask); // 拉取
     REQUIRE(store2.channel(1).coveredHops(kFull) == 60);
     REQUIRE(store2.channel(2).coveredHops(kFull) == 60);
     REQUIRE(store2.channel(3).coveredHops(kFull) == 60);

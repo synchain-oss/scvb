@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "analysis/FrameStore.h"
 
+#include <cassert>
 #include <cmath>
 
 namespace scvb::analysis
@@ -143,15 +144,24 @@ float ChannelFrames::peak(uint64_t hop) const
 ChannelFrames& FrameStore::channel(uint32_t ch)
 {
     const uint32_t n = static_cast<uint32_t>(channels_.size());
-    const uint32_t idx = (ch >= 1 && ch <= n) ? (ch - 1) : 0;
-    return channels_[idx];
+    if (ch >= 1 && ch <= n)
+    {
+        return channels_[ch - 1];
+    }
+    // 越界:debug 断言,release 回落只读哨兵(写被丢弃),绝不静默回落 ch1 污染真实轨数据(PR#42)。
+    assert(false && "FrameStore::channel: channel out of range");
+    return invalidChannel_;
 }
 
 const ChannelFrames& FrameStore::channel(uint32_t ch) const
 {
     const uint32_t n = static_cast<uint32_t>(channels_.size());
-    const uint32_t idx = (ch >= 1 && ch <= n) ? (ch - 1) : 0;
-    return channels_[idx];
+    if (ch >= 1 && ch <= n)
+    {
+        return channels_[ch - 1];
+    }
+    assert(false && "FrameStore::channel: channel out of range");
+    return invalidChannel_;
 }
 
 std::size_t FrameStore::totalPageCount() const noexcept

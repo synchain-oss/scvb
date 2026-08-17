@@ -13,18 +13,21 @@ void FeatRing::bind(FeatHeader* header, FeatFrame* ring, u32 mappedCapacity) noe
     // 【几何快照纪律(04 §3 / PR#36)】hop_ms/capacity_hops 是 plain u32,attach 时一次性读进本地,
     // 此后每拍只读快照绝不回读段头;特征段恒按固定容量创建、无运行期扩容。mappedCapacity 必须 >=
     // 声明的 capacity_hops,否则拒绝绑定,保住「几何 ≤ 实际映射」不变式(v1..v5 越界类事故)。
+    const bool magicOk = (header_ != nullptr) && header_->magic.load(std::memory_order_acquire) == kScvbMagic;
+    const bool abiOk = (header_ != nullptr) && header_->abi.load(std::memory_order_acquire) == kScvbAbi;
     const u32 declared = (header_ != nullptr) ? header_->capacity_hops : 0;
     capacityHops_ = declared;
     hopMs_ = (header_ != nullptr) ? header_->hop_ms : 0;
-    bound_ = (header_ != nullptr && ring_ != nullptr && declared != 0 && mappedCapacity >= declared);
+    bound_ = (magicOk && abiOk && ring_ != nullptr && declared != 0 && mappedCapacity >= declared);
 }
 
 void FeatRing::prepare(double sampleRate, int channels, int maxBlockSamples)
 {
     extractor_.prepare(sampleRate, channels);
+    maxBlockSamples_ = std::max(1, maxBlockSamples);
     const int ch = extractor_.channels();
     shifted_.assign(static_cast<std::size_t>(ch), nullptr);
-    const int maxFrames = std::max(1, maxBlockSamples / extractor_.hopSize() + 2);
+    const int maxFrames = std::max(1, maxBlockSamples_ / extractor_.hopSize() + 2);
     out_.assign(static_cast<std::size_t>(maxFrames), analysis::FeatFrame{});
     prepared_ = true;
     pendingSkip_ = 0;
@@ -67,36 +70,48 @@ int FeatRing::processBlock(const float* const* channels, int numSamples)
         return 0; // 采集 OFF 或未就绪:静默丢弃(release 不写段、不推进 write_hop)
     }
 
-    int offset = 0;
+    int consumed = 0;
     if (pendingSkip_ > 0)
     {
-        offset = static_cast<int>(std::min<int64_t>(pendingSkip_, static_cast<int64_t>(numSamples)));
-        pendingSkip_ -= offset;
+        const int skip = static_cast<int>(std::min<int64_t>(pendingSkip_, static_cast<int64_t>(numSamples)));
+        pendingSkip_ -= skip;
+        consumed = skip;
         if (pendingSkip_ > 0)
         {
             return 0; // 整块仍是 run 起始部分 hop 的尾巴,丢弃
         }
     }
 
-    const int n = numSamples - offset;
+    // 大块按 maxBlockSamples_ 分段喂 extractor:out_ 只按 maxBlockSamples_/hopSize+2 分配,
+    // 宿主离线渲染/bounce 时块长可超 maximumExpectedSamplesPerBlock,一次性喂会越界读 out_(PR#42 红旗)。
     const int ch = extractor_.channels();
-    for (int c = 0; c < ch; ++c)
+    int written = 0;
+    int remaining = numSamples - consumed;
+    while (remaining > 0)
     {
-        shifted_[static_cast<std::size_t>(c)] = channels[c] + offset;
+        const int chunk = std::min(remaining, maxBlockSamples_);
+        for (int c = 0; c < ch; ++c)
+        {
+            shifted_[static_cast<std::size_t>(c)] = channels[c] + consumed;
+        }
+
+        const int got = extractor_.processBlock(shifted_.data(), chunk, out_.data(), static_cast<int>(out_.size()));
+        // 兜底 clamp:正常分段下 got <= out_.size();防御性钳制,杜绝任何越界读。
+        const int nFrames = std::min(got, static_cast<int>(out_.size()));
+        for (int i = 0; i < nFrames; ++i)
+        {
+            const uint64_t hop = nextHop_;
+            ring_[hop % capacityHops_] =
+                FeatFrame{out_[static_cast<std::size_t>(i)].kw_ms, out_[static_cast<std::size_t>(i)].peak};
+            ++nextHop_;
+            header_->write_hop.store(nextHop_, std::memory_order_release); // 稳态:写帧后推进 write_hop
+        }
+        written += nFrames;
+        consumed += chunk;
+        remaining -= chunk;
     }
 
-    const int got = extractor_.processBlock(shifted_.data(), n, out_.data(), static_cast<int>(out_.size()));
-
-    for (int i = 0; i < got; ++i)
-    {
-        const uint64_t hop = nextHop_;
-        ring_[hop % capacityHops_] =
-            FeatFrame{out_[static_cast<std::size_t>(i)].kw_ms, out_[static_cast<std::size_t>(i)].peak};
-        ++nextHop_;
-        header_->write_hop.store(nextHop_, std::memory_order_release); // 稳态:写帧后推进 write_hop
-    }
-
-    return got;
+    return written;
 }
 
 uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 capacity, FeatPullState& state,
@@ -112,14 +127,29 @@ uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 ca
 
     if (!state.initialized || b1 != state.lastBase)
     {
-        state.lastPulled = b1; // 新 run:从 base 起
+        // run 切换(含首次):重置后本拍 return 0(确认拍,下拍再读)。若 run 切换(回卷 seek)落在
+        // base.store 与 write.store 之间,读方见「新 base + 旧 write」,直接拉会把旧 run 槽按新 run
+        // 记账 —— 确认拍避免(J33/PR#42)。
+        state.lastPulled = b1;
         state.lastBase = b1;
         state.initialized = true;
+        return 0;
     }
 
     if (w < state.lastPulled)
     {
-        return 0; // 真回退异常,本拍丢弃重读
+        // 真回退(含同 base 重开:stop→rewind→start 时 base 不变):重置到 b1,不得保留陈旧 lastPulled,
+        // 否则新 run 前缀 [b1, 旧lastPulled) 会被跳过不拉(PR#42)。
+        state.lastPulled = b1;
+        return 0;
+    }
+
+    // 环回绕守卫:读方落后超过容量(停滞 > capacity hop),则 [lastPulled, w-capacity) 的槽已被写方
+    // 覆盖(h%capacity 已装下后 hop 的数据),继续拉会「把已覆盖槽按旧 hop 号入库」→ 重同步,如实记洞。
+    if (w > state.lastPulled + capacity)
+    {
+        state.lastPulled = b1;
+        return 0;
     }
 
     const uint64_t start = std::max(state.lastPulled, b1);
@@ -149,10 +179,12 @@ void FeatPuller::bind(u32 channel, const FeatHeader* header, const FeatFrame* ri
     b.header = header;
     b.ring = ring;
     // 【几何快照纪律(04 §3 / PR#36)】attach 时读一次 capacity_hops 进快照,此后每拍只读快照;
-    // mappedCapacity 必须 >= 声明的 capacity_hops,否则拒绝绑定(越界类事故)。
+    // mappedCapacity 必须 >= 声明的 capacity_hops,否则拒绝绑定(越界类事故)。magic/abi 不符 → 拒绑。
+    const bool magicOk = (header != nullptr) && header->magic.load(std::memory_order_acquire) == kScvbMagic;
+    const bool abiOk = (header != nullptr) && header->abi.load(std::memory_order_acquire) == kScvbAbi;
     const u32 declared = (header != nullptr) ? header->capacity_hops : 0;
     b.capacity = declared;
-    b.bound = (header != nullptr && ring != nullptr && declared != 0 && mappedCapacity >= declared);
+    b.bound = (magicOk && abiOk && ring != nullptr && declared != 0 && mappedCapacity >= declared);
 }
 
 void FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask)

@@ -62,7 +62,8 @@ public:
     void startRun(int64_t timelineSample, const std::function<void()>& betweenStores = {});
 
     // 推入平面声道数据;完成的 hop 写入 ring 并推进 write_hop。返回本块写入的 hop 数。
-    // 实时线程零分配(缓冲均在 prepare 分配)。
+    // 超大块按 prepare 的 maxBlockSamples 分段喂 extractor(离线渲染块长可超 prepare 时的 maxBlock,
+    // 一次性喂会越界读 out_)。实时线程零分配(缓冲均在 prepare 分配)。
     int processBlock(const float* const* channels, int numSamples);
 
     int hopSize() const noexcept { return extractor_.hopSize(); }
@@ -85,6 +86,7 @@ private:
     std::vector<const float*> shifted_; // prepare 分配,processBlock 复用(零分配)
     std::vector<analysis::FeatFrame> out_; // prepare 分配,processBlock 复用(零分配)
 
+    int maxBlockSamples_ = 0; // prepare 时的最大块长;processBlock 按此分段喂 extractor
     int64_t pendingSkip_ = 0; // run 起始的部分 hop 待丢弃样本数
     uint64_t nextHop_ = 0; // 下一个待写帧的时间线 hop 序号
 };

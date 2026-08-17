@@ -82,7 +82,7 @@ private:
     double sampleRate_ = 48000.0;
     std::map<uint64_t, std::unique_ptr<FeatPage>> pages_;
     CoverageMap coverage_;
-    bool readOnly_ = true;
+    bool readOnly_ = true; // 采集 OFF/未布防默认只读:Output 布防路径必须先 setReadOnly(false) 才能记账
     HopRange gate_{0, std::numeric_limits<uint64_t>::max()};
 };
 
@@ -101,6 +101,7 @@ public:
 
 private:
     std::vector<ChannelFrames> channels_;
+    ChannelFrames invalidChannel_; // 越界 channel 的只读哨兵:写被丢弃,不污染任何真实轨
 };
 
 } // namespace scvb::analysis
