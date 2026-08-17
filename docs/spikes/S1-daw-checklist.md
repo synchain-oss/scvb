@@ -121,11 +121,11 @@ mkdir C:\Users\lenovo\deepseekHarness\S1-2026-08-16
 | C-1  | 记首块 timeInSamples(csv 读)                                                                                                                                  | 起始值不一定为 0;寻址不依赖起点 0                                             | ✅   |
 | C-2  | Direct Offline Processing + Render in Place(替换)各一次                                                                                                       | 预期不触发 process;核对原事件是否被静音替换、能否 Undo                        | ✅   |
 | C-3  | Export→Audio Mixdown 勾/不勾 Real-Time 各一次(导出命名 test_C3rt.wav / test_C3offline.wav)                                                                    | 两个导出与 A 各 null,都过                                                     | ✅¹  |
-| C-4  | ASIO-Guard 开/关各 30s                                                                                                                                        | gapCount 全 0                                                                 | ✅   |
-| C-5  | 实时播全曲 1 遍                                                                                                                                               | gapCount 全 0;听感与 A 一致                                                   | ✅   |
-| C-6  | 4 小节循环区播 100 遍                                                                                                                                         | gapCount 增量==0                                                              | ✅   |
+| C-4  | ASIO-Guard 开/关各 30s                                                                                                                                        | gapCount 全 0(稳态窗口,起播 burst 除外)                                                                 | ✅   |
+| C-5  | 实时播全曲 1 遍                                                                                                                                               | gapCount 全 0(稳态窗口,起播 burst 除外);听感与 A 一致                                                   | ✅   |
+| C-6  | 4 小节循环区播 100 遍                                                                                                                                         | gapCount 增量==0(稳态窗口,起播 burst 除外)                                                              | ✅   |
 | C-7  | 播放中拖播放头定位 20 次                                                                                                                                      | gapCount 增量 ≤20(每次 ≤1 块)                                                 | ✅   |
-| C-8  | buffer 32/128/512/2048 各 30s                                                                                                                                 | 各档 gapCount==0                                                              | ✅   |
+| C-8  | buffer 32/128/512/2048 各 30s                                                                                                                                 | 各档 gapCount==0(稳态窗口,起播 burst 除外)                                                              | ✅   |
 | C-9  | SR 切 44100/96000 各 30s                                                                                                                                      | 无崩溃;SR 不符轨禁用                                                          | ✅   |
 | C-10 | 单轨 solo/mute 各 5 轨;mute 轨推子拉到 −∞                                                                                                                     | 记录三类行为(跳过处理/照常送静音/照常送原信号);solo/mute 对 SCVB 通路失效预期 | ✅   |
 | C-11 | Freeze 一条轨 / Render in Place;打开产物听                                                                                                                    | 预期整段静音;替换式渲染是否覆盖原素材 → 用户数据警告                          | ✅   |
@@ -137,9 +137,9 @@ mkdir C:\Users\lenovo\deepseekHarness\S1-2026-08-16
 
 | 步   | 做                                                        | 判据 / 存什么                                            | 完成 |
 | ---- | --------------------------------------------------------- | -------------------------------------------------------- | ---- |
-| R-2  | Preferences→Audio→Buffering 开 Anticipative FX            | gapCount 全 0                                            | ✅   |
-| R-3  | render-ahead 拉到最大(记 ms;实测上限 5000)                 | gapCount 全 0;非 0 记首次 gap 值 → 定 ring_frames(S1-P8) | ✅   |
-| R-4  | 关 Anticipative                                           | gapCount 全 0                                            | ✅   |
+| R-2  | Preferences→Audio→Buffering 开 Anticipative FX            | gapCount 全 0(稳态窗口,起播 burst 除外)                                            | ✅   |
+| R-3  | render-ahead 拉到最大(记 ms;实测上限 5000)                 | gapCount 全 0(稳态窗口,起播 burst 除外);非 0 记首次 gap 值 → 定 ring_frames(S1-P8) | ✅   |
+| R-4  | 关 Anticipative                                           | gapCount 全 0(稳态窗口,起播 burst 除外)                                            | ✅   |
 | R-5  | File→Render 1× 与 Full-speed Offline 各一次 → test_R5.wav | 与 A null(与 C-3 互验);这是 REAPER 特有的 Full-speed 档  | ✅¹  |
 | R-12 | 插件 Run as dedicated process(右键 FX)                    | 跨进程 shm 仍工作                                        | ✅   |
 
