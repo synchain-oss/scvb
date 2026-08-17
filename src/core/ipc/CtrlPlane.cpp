@@ -22,16 +22,16 @@ CtrlPlane::CtrlPlane(ISegmentBackend& backend, u32 group) : backend_(backend), g
 CtrlPlane::~CtrlPlane()
 {
     base_ = nullptr;
-    handle_.release(); // 握手释放(消息线程;leaseCount 归零后经 backend->unmap 解映射)
+    handle_.release(steadyNowMs()); // 握手释放(消息线程;租约归零且宽限期届满后经 backend->unmap 解映射)
     // pendingReleases_ 的 SegmentHandle 元素随 vector 析构各自 release(进程退出兜底)。
 }
 
-void CtrlPlane::reapPendingReleases()
+void CtrlPlane::reapPendingReleases(u64 nowMs)
 {
-    // [M] 心跳/轮询周期调用:逐项 release(),成功(租约归零)即移除并解映射。
+    // [M] 心跳/轮询周期调用:逐项 release(nowMs),成功(租约归零且宽限期届满)即移除并解映射。
     for (auto it = pendingReleases_.begin(); it != pendingReleases_.end();)
     {
-        if (it->release())
+        if (it->release(nowMs))
         {
             it = pendingReleases_.erase(it);
         }
@@ -45,9 +45,9 @@ void CtrlPlane::reapPendingReleases()
 InitResult CtrlPlane::open()
 {
     base_ = nullptr;
-    if (!handle_.release())
+    if (!handle_.release(steadyNowMs()))
     {
-        // 租约在途:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
+        // 租约在途/宽限期未满:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
         pendingReleases_.push_back(std::move(handle_));
     }
     SegmentView view;
@@ -104,14 +104,16 @@ void CtrlPlane::refreshGlobalInfo(const OutputGlobalInfoSnapshot& s)
     {
         return;
     }
-    g->capture_enabled.store(s.capture_enabled, std::memory_order_relaxed);
-    g->output_sample_rate.store(s.output_sample_rate, std::memory_order_relaxed);
-    g->flags.store(s.flags, std::memory_order_relaxed);
+    // 写侧 release、读侧 acquire(见 readGlobalInfo)配对:诊断快照无需跨 48 字段的原子一致性,
+    // 但单字段须有 happens-before,保证 Input 读到任一字段即见其完整写入。
+    g->capture_enabled.store(s.capture_enabled, std::memory_order_release);
+    g->output_sample_rate.store(s.output_sample_rate, std::memory_order_release);
+    g->flags.store(s.flags, std::memory_order_release);
     for (u32 i = 0; i < kMaxChannels; ++i)
     {
-        g->gap_count[i].store(s.gap_count[i], std::memory_order_relaxed);
-        g->overlap_count[i].store(s.overlap_count[i], std::memory_order_relaxed);
-        g->epoch_summary[i].store(s.epoch_summary[i], std::memory_order_relaxed);
+        g->gap_count[i].store(s.gap_count[i], std::memory_order_release);
+        g->overlap_count[i].store(s.overlap_count[i], std::memory_order_release);
+        g->epoch_summary[i].store(s.epoch_summary[i], std::memory_order_release);
     }
 }
 
@@ -154,11 +156,13 @@ bool CtrlPlane::enqueue(u32 channel, CtrlOp op, u64 value)
     CtrlRecord& rec = ring->records[idx];
     // seq 协议(防撕裂读):seq=0(release)标记「在写」→ channel/op/value(relaxed)→ seq=真值(release),
     // 最后 write_pos.store(w+1, release) 发布。消费者见 write_pos 推进即知记录已提交。
+    // seq 由共享 write_pos 派生(seq = w+1):记录 w 的 seq=w+1,消费者 s1==r+1 判据天然成立,
+    // 且生产者重启后新实例续用共享 write_pos,seq 不中断(环不卡死)。
     rec.seq.store(0, std::memory_order_release);
     rec.channel.store(channel, std::memory_order_relaxed);
     rec.op.store(static_cast<u32>(op), std::memory_order_relaxed);
     rec.value.store(value, std::memory_order_relaxed);
-    rec.seq.store(nextSeq_++, std::memory_order_release);
+    rec.seq.store(w + 1, std::memory_order_release);
     ring->write_pos.store(w + 1, std::memory_order_release);
     return true;
 }

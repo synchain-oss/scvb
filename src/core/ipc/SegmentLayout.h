@@ -309,12 +309,16 @@ static_assert(offsetof(OutputGlobalInfo, overlap_count) == 76);
 static_assert(offsetof(OutputGlobalInfo, epoch_summary) == 136);
 static_assert(alignof(OutputGlobalInfo) == 64);
 
-// CtrlRecord([J46]:value 定型 u64)
+// CtrlRecord([J46]:value 定型 u64;四字段 atomic 化,尺寸/偏移不变)
 static_assert(sizeof(CtrlRecord) == 24, "CtrlRecord 必须 24 字节");
 static_assert(offsetof(CtrlRecord, seq) == 0);
 static_assert(offsetof(CtrlRecord, channel) == 4);
 static_assert(offsetof(CtrlRecord, op) == 8);
 static_assert(offsetof(CtrlRecord, value) == 16);
+static_assert(decltype(CtrlRecord::seq)::is_always_lock_free, "CtrlRecord.seq 必须 lock-free");
+static_assert(decltype(CtrlRecord::channel)::is_always_lock_free, "CtrlRecord.channel 必须 lock-free");
+static_assert(decltype(CtrlRecord::op)::is_always_lock_free, "CtrlRecord.op 必须 lock-free");
+static_assert(decltype(CtrlRecord::value)::is_always_lock_free, "CtrlRecord.value 必须 lock-free");
 
 // 段预算(01 §5.3 / 契约 §1/§4)
 static_assert(sizeof(RegistryHeader) + 15 * sizeof(InputSlot) + sizeof(OutputSlot) <= 4096, "registry 段必须 ≤ 4 KB");

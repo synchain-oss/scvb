@@ -65,16 +65,16 @@ Registry::~Registry()
 {
     releaseOwnedSlot();
     header_ = nullptr;
-    handle_.release(); // 握手释放(消息线程;leaseCount 归零后经 backend->unmap 解映射)
+    handle_.release(steadyNowMs()); // 握手释放(消息线程;租约归零且宽限期届满后经 backend->unmap 解映射)
     // pendingReleases_ 的 SegmentHandle 元素随 vector 析构各自 release(进程退出兜底)。
 }
 
-void Registry::reapPendingReleases()
+void Registry::reapPendingReleases(u64 nowMs)
 {
-    // [M] 心跳/轮询周期调用:逐项 release(),成功(租约归零)即移除并解映射。
+    // [M] 心跳/轮询周期调用:逐项 release(nowMs),成功(租约归零且宽限期届满)即移除并解映射。
     for (auto it = pendingReleases_.begin(); it != pendingReleases_.end();)
     {
-        if (it->release())
+        if (it->release(nowMs))
         {
             it = pendingReleases_.erase(it);
         }
@@ -88,9 +88,9 @@ void Registry::reapPendingReleases()
 Registry::ClaimResult Registry::open()
 {
     header_ = nullptr;
-    if (!handle_.release())
+    if (!handle_.release(steadyNowMs()))
     {
-        // 租约在途:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
+        // 租约在途/宽限期未满:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
         pendingReleases_.push_back(std::move(handle_));
     }
     SegmentView view;
@@ -176,6 +176,10 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
     for (int attempt = 0; attempt < 3; ++attempt)
     {
         const u32 cur = s.state.load(std::memory_order_acquire);
+        if (cur != kSlotClaimed)
+        {
+            ghostSeenMs_[channel - 1] = 0; // state 变化(非幽灵/进行中),清观测
+        }
         if (cur == kSlotFree)
         {
             u32 expected = kSlotFree;
@@ -194,11 +198,36 @@ Registry::ClaimResult Registry::claimInput(u32 channel, u32 pid, u32 sampleRate,
         // 同 channel 复制体直接抢走原实例的槽 → 两个实例同写一个环;与 ipc §1「已被占且心跳新鲜
         // → 冲突」对齐。本实例自己的采样率重认领改走 updateOwnedInputSlot,不经本函数。
 
-        // kSlotClaimed = 进行中(另一 claimer 正填字段,pid=0/hb=0):视为进行中,重试(3 次后 kConflict),
-        // 绝不接管(pr-agent 复审:否则第二 claimer 会以 isTakeoverStale(hb==0)&&!probe(pid==0) 误接管,
-        // 双实例同认为自己持有同 channel → 双写同一 SPSC 环)。
+        // kSlotClaimed:区分「进行中」与「幽灵槽」。
         if (cur == kSlotClaimed)
         {
+            if (s.pid == 0 && s.heartbeat_ms.load(std::memory_order_acquire) == 0)
+            {
+                // 幽灵槽:claim 者 CAS 后、fill 前崩溃(pid=0/hb=0)→ 永久不可认领。
+                // 首见记录 nowMs 返回 kConflict;同一槽持续该状态超过 kClaimGhostGraceMs 后才允许接管。
+                if (ghostSeenMs_[channel - 1] == 0)
+                {
+                    ghostSeenMs_[channel - 1] = nowMs;
+                    return ClaimResult::kConflict;
+                }
+                if (nowMs - ghostSeenMs_[channel - 1] < kClaimGhostGraceMs)
+                {
+                    return ClaimResult::kConflict;
+                }
+                // 幽灵接管(CAS 1→1 确认仍 claimed,再填槽;宽限期远大于合法 claim 的微秒级窗口)。
+                u32 expected = kSlotClaimed;
+                if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                                                    std::memory_order_acquire))
+                {
+                    fillInputSlot(s, pid, sampleRate, maxBlock, nowMs);
+                    ghostSeenMs_[channel - 1] = 0;
+                    ownedChannel_ = channel;
+                    ownedPid_ = pid;
+                    return ClaimResult::kClaimed;
+                }
+                continue; // state 变了,重试
+            }
+            // 进行中(pid 或 hb 已填):视为进行中,重试(3 次后 kConflict),绝不接管。
             continue;
         }
 
@@ -274,6 +303,10 @@ Registry::ClaimResult Registry::claimOutput(u32 pid, u64 nowMs)
     for (int attempt = 0; attempt < 3; ++attempt)
     {
         const u32 cur = s.state.load(std::memory_order_acquire);
+        if (cur != kSlotClaimed)
+        {
+            outputGhostSeenMs_ = 0; // state 变化(非幽灵/进行中),清观测
+        }
         if (cur == kSlotFree)
         {
             u32 expected = kSlotFree;
@@ -303,9 +336,37 @@ Registry::ClaimResult Registry::claimOutput(u32 pid, u64 nowMs)
             return ClaimResult::kClaimed;
         }
 
-        // kSlotClaimed = 进行中(pid=0/hb=0):重试,绝不接管(与 claimInput 同因,pr-agent 复审)。
+        // kSlotClaimed:区分「进行中」与「幽灵槽」(与 claimInput 同语义)。
         if (cur == kSlotClaimed)
         {
+            if (s.pid == 0 && s.heartbeat_ms.load(std::memory_order_acquire) == 0)
+            {
+                if (outputGhostSeenMs_ == 0)
+                {
+                    outputGhostSeenMs_ = nowMs;
+                    return ClaimResult::kConflict;
+                }
+                if (nowMs - outputGhostSeenMs_ < kClaimGhostGraceMs)
+                {
+                    return ClaimResult::kConflict;
+                }
+                u32 expected = kSlotClaimed;
+                if (s.state.compare_exchange_strong(expected, kSlotClaimed, std::memory_order_acq_rel,
+                                                    std::memory_order_acquire))
+                {
+                    s.pid = pid;
+                    s.heartbeat_ms.store(nowMs, std::memory_order_relaxed);
+                    s.connected_mask.store(0, std::memory_order_relaxed);
+                    s.config_seq.store(0, std::memory_order_relaxed);
+                    s.state.store(kSlotActive, std::memory_order_release);
+                    outputGhostSeenMs_ = 0;
+                    ownsOutput_ = true;
+                    ownedPid_ = pid;
+                    return ClaimResult::kClaimed;
+                }
+                continue;
+            }
+            // 进行中(pid 或 hb 已填):重试,绝不接管。
             continue;
         }
 
@@ -435,9 +496,9 @@ Registry::ClaimResult Registry::changeGroup(u32 newGroup)
     }
     releaseOwnedSlot(); // 释放旧组 slot(state→0)
     header_ = nullptr;
-    if (!handle_.release())
+    if (!handle_.release(steadyNowMs()))
     {
-        // 租约在途:旧组句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收。
+        // 租约在途/宽限期未满:旧组句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收。
         pendingReleases_.push_back(std::move(handle_));
     }
     group_ = newGroup;

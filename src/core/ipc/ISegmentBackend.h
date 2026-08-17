@@ -253,126 +253,192 @@ struct SegmentMapping
 };
 } // namespace detail
 
-// 引用计数句柄(替换 T06「故意泄漏」策略,DeepSeek 复审【重要】1):
-// - 视图经引用计数句柄在消息线程间共享(std::shared_ptr<detail::SegmentMapping>)。
-// - 音频线程按块持有租约 lease()(leaseCount 原子增减,不触碰系统调用)。
-// - 解映射只在消息线程且 leaseCount==0 后执行(release()/宽限期回收)。
+// 稳态时钟毫秒(跨进程单调,01 §3 心跳/看门狗真源;定义在 Registry.cpp)。Windows = GetTickCount64;
+// 非 Windows 回退进程内 steady_clock(v1 仅 Windows)。
+u64 steadyNowMs() noexcept;
+
+// 引用计数句柄(替换 T06「故意泄漏」策略;经三轮复审定型):
+// - 消息线程【独占】std::shared_ptr<detail::SegmentMapping> 保活(音频线程永不触碰 shared_ptr 成员本身,
+//   消除 shared_ptr 数据竞争 / UAF)。
+// - 音频线程经 std::atomic<detail::SegmentMapping*> implPtr_ 读裸指针并增减 leaseCount(原子,无系统调用)。
+// - 解映射只在消息线程,且 leaseCount==0 且宽限期届满后执行。
 // 握手/宽限期策略(01 §4.0/§4.2 未钦定释放协议,本卡自设计):
-//   消息线程 release() 置 releaseRequested;若此刻 leaseCount==0 立即 backend->unmap,否则推迟;
-//   [M] 心跳周期(宽限期)再调 release() 回收(音频块租约最长一个 processBlock,一个心跳周期内
-//   必归零;release() 幂等,每心跳尝试一次即可)。
+//   release(nowMs):先置 releaseRequested → 摘 implPtr_(store nullptr,阻止新租约)→ unmapIfIdle()。
+//   unmapIfIdle:leaseCount==0 时记录宽限期起始,宽限期(≥2 个 [M] 4Hz 心跳 = 500ms,>宿主最大块时长)
+//   届满才 backend->unmap + impl_.reset——audio 已读到裸指针的在途块必在宽限期内完成并归还 lease。
+//   T23/T24 接入时 release() 调用点 = releaseResources/宿主挂起(音频已停),宽限期是兜底双保险;
+//   析构若早于宽限期届满,退回「进程退出统一回收」(罕见边界,进程正在卸载)。
 class SegmentHandle
 {
 public:
+    // 宽限期(兜底双保险):500ms = 2 个 4Hz 心跳,>宿主最大块时长。
+    static constexpr u64 kReleaseGraceMs = 500;
+
     SegmentHandle() = default;
 
     // 接管 SegmentView 所有权(createOrOpen/openExisting + initHeader 之后调用;仅消息线程)。
     SegmentHandle(SegmentView&& view, ISegmentBackend* backend)
         : impl_(std::make_shared<detail::SegmentMapping>(std::move(view))), backend_(backend)
     {
+        implPtr_.store(impl_.get(), std::memory_order_release);
     }
 
-    ~SegmentHandle() { release(); }
+    ~SegmentHandle() { release(steadyNowMs()); }
 
-    SegmentHandle(const SegmentHandle&) = default;
-    SegmentHandle& operator=(const SegmentHandle&) = default;
-    SegmentHandle(SegmentHandle&&) noexcept = default;
-    SegmentHandle& operator=(SegmentHandle&&) noexcept = default;
+    SegmentHandle(const SegmentHandle&) = delete;
+    SegmentHandle& operator=(const SegmentHandle&) = delete;
 
-    bool valid() const { return impl_ != nullptr && impl_->view.base != nullptr; }
-    void* base() const { return valid() ? impl_->view.base : nullptr; }
-    std::size_t size() const { return valid() ? impl_->view.size : 0; }
+    // 移动:纯所有权转移,不触发释放。约定:调用方须先 release()/移入 pendingReleases_ 再移动,
+    // 否则旧 impl_ 被覆盖即泄漏(Registry/CtrlPlane 均遵守此约定)。
+    SegmentHandle(SegmentHandle&& o) noexcept
+        : impl_(std::move(o.impl_)), backend_(o.backend_), graceStartMs_(o.graceStartMs_),
+          graceStarted_(o.graceStarted_)
+    {
+        implPtr_.store(impl_.get(), std::memory_order_release);
+        o.implPtr_.store(nullptr, std::memory_order_release);
+        o.backend_ = nullptr;
+        o.graceStartMs_ = 0;
+        o.graceStarted_ = false;
+    }
+    SegmentHandle& operator=(SegmentHandle&& o) noexcept
+    {
+        if (this != &o)
+        {
+            impl_ = std::move(o.impl_);
+            backend_ = o.backend_;
+            graceStartMs_ = o.graceStartMs_;
+            graceStarted_ = o.graceStarted_;
+            implPtr_.store(impl_.get(), std::memory_order_release);
+            o.implPtr_.store(nullptr, std::memory_order_release);
+            o.backend_ = nullptr;
+            o.graceStartMs_ = 0;
+            o.graceStarted_ = false;
+        }
+        return *this;
+    }
+
+    // 只经 implPtr_(atomic 裸指针)读,音频线程也可安全调用(不触碰 shared_ptr 成员)。
+    bool valid() const { return implPtr_.load(std::memory_order_acquire) != nullptr; }
+    void* base() const
+    {
+        auto* p = implPtr_.load(std::memory_order_acquire);
+        return p != nullptr ? p->view.base : nullptr;
+    }
+    std::size_t size() const
+    {
+        auto* p = implPtr_.load(std::memory_order_acquire);
+        return p != nullptr ? p->view.size : 0;
+    }
 
     // 音频线程按块租约:持有期内保证不解映射;leaseCount 原子增减,不触碰系统调用。
-    // 块首 lease(),基址经 Lease::base() 访问,块末析构归还。release() 请求后不再发放新租约。
+    // 块首 lease(),基址经 Lease::base() 访问,块末析构归还。release() 摘指针后不再发放新租约。
     class Lease
     {
     public:
         Lease() = default;
         ~Lease()
         {
-            if (impl_)
+            if (p_ != nullptr)
             {
-                impl_->leaseCount.fetch_sub(1, std::memory_order_acq_rel);
+                p_->leaseCount.fetch_sub(1, std::memory_order_acq_rel);
             }
         }
         Lease(const Lease&) = delete;
         Lease& operator=(const Lease&) = delete;
-        Lease(Lease&& o) noexcept : impl_(std::move(o.impl_)) {}
+        Lease(Lease&& o) noexcept : p_(o.p_) { o.p_ = nullptr; }
         Lease& operator=(Lease&& o) noexcept
         {
             if (this != &o)
             {
-                if (impl_)
+                if (p_ != nullptr)
                 {
-                    impl_->leaseCount.fetch_sub(1, std::memory_order_acq_rel);
+                    p_->leaseCount.fetch_sub(1, std::memory_order_acq_rel);
                 }
-                impl_ = std::move(o.impl_);
+                p_ = o.p_;
+                o.p_ = nullptr;
             }
             return *this;
         }
-        explicit operator bool() const { return impl_ != nullptr && impl_->view.base != nullptr; }
-        void* base() const { return static_cast<bool>(*this) ? impl_->view.base : nullptr; }
+        explicit operator bool() const { return p_ != nullptr; }
+        void* base() const { return p_ != nullptr ? p_->view.base : nullptr; }
 
     private:
         friend class SegmentHandle;
-        // 构造不增减 leaseCount;租约计数由 SegmentHandle::lease() 在构造前递增。
-        explicit Lease(std::shared_ptr<detail::SegmentMapping> impl) : impl_(std::move(impl)) {}
-        std::shared_ptr<detail::SegmentMapping> impl_;
+        // 构造不增减 leaseCount;租约计数由 SegmentHandle::lease() 在构造前递增。仅持裸指针。
+        explicit Lease(detail::SegmentMapping* p) : p_(p) {}
+        detail::SegmentMapping* p_ = nullptr;
     };
 
-    // 音频线程按块调用。先原子增 leaseCount 再查 releaseRequested,与 release() 的
-    // 「先置请求再查计数」构成握手,消除「查请求→增计数」间隙里的解映射竞态。
+    // 音频线程按块调用。先 p=implPtr_.load(acquire) 读裸指针(不触碰 shared_ptr);再原子增 leaseCount;
+    // 再查 releaseRequested,已置则退还并返回空。与 release() 的「先置请求再摘指针」构成握手。
     Lease lease() const
     {
-        if (!valid())
+        detail::SegmentMapping* p = implPtr_.load(std::memory_order_acquire);
+        if (p == nullptr)
         {
             return Lease{};
         }
-        impl_->leaseCount.fetch_add(1, std::memory_order_acq_rel);
-        if (impl_->releaseRequested.load(std::memory_order_acquire))
+        p->leaseCount.fetch_add(1, std::memory_order_acq_rel);
+        if (p->releaseRequested.load(std::memory_order_acquire))
         {
-            impl_->leaseCount.fetch_sub(1, std::memory_order_acq_rel); // 释放已请求,退还租约
+            p->leaseCount.fetch_sub(1, std::memory_order_acq_rel); // 释放已请求,退还租约
             return Lease{};
         }
-        return Lease(impl_);
+        return Lease(p);
     }
 
-    // 消息线程:请求释放。返回 true=已解映射(此刻无音频租约),false=已置释放请求、待 [M]
-    // 心跳宽限期(leaseCount 归零后)再调本函数回收。幂等。
-    bool release()
+    // 消息线程:请求释放。返回 true=已解映射(租约归零且宽限期届满),false=仍在释放流程中
+    // (租约在途 / 宽限期未满),[M] 心跳周期再调本函数回收。幂等。
+    bool release(u64 nowMs)
     {
         if (!impl_)
         {
             return true;
         }
-        impl_->releaseRequested.store(true, std::memory_order_release);
-        return unmapIfIdle();
+        impl_->releaseRequested.store(true, std::memory_order_release); // 先置释放请求
+        implPtr_.store(nullptr, std::memory_order_release); // 再摘指针(阻止新租约)
+        return unmapIfIdle(nowMs);
     }
 
 private:
-    bool unmapIfIdle()
+    bool unmapIfIdle(u64 nowMs)
     {
         if (!impl_)
         {
             return true;
         }
-        if (impl_->releaseRequested.load(std::memory_order_acquire) &&
-            impl_->leaseCount.load(std::memory_order_acquire) == 0)
+        if (impl_->leaseCount.load(std::memory_order_acquire) != 0)
         {
-            if (backend_)
-            {
-                backend_->unmap(impl_->view); // 解映射 + 关闭句柄(仅消息线程)
-            }
-            impl_.reset();
-            backend_ = nullptr;
-            return true;
+            return false; // 租约在途
         }
-        return false;
+        // leaseCount==0:记录宽限期起始(兜底双保险),宽限期届满后才解映射。
+        if (!graceStarted_)
+        {
+            graceStarted_ = true;
+            graceStartMs_ = nowMs;
+            return false;
+        }
+        if (nowMs - graceStartMs_ < kReleaseGraceMs)
+        {
+            return false; // 宽限期未满
+        }
+        // 宽限期届满:解映射 + 释放保活 shared_ptr(仅消息线程)。
+        if (backend_)
+        {
+            backend_->unmap(impl_->view);
+        }
+        impl_.reset();
+        backend_ = nullptr;
+        graceStarted_ = false;
+        graceStartMs_ = 0;
+        return true;
     }
 
-    std::shared_ptr<detail::SegmentMapping> impl_;
+    std::shared_ptr<detail::SegmentMapping> impl_; // 消息线程独占(保活);音频线程永不触碰
+    std::atomic<detail::SegmentMapping*> implPtr_{nullptr}; // 音频线程经此读裸指针
     ISegmentBackend* backend_ = nullptr;
+    u64 graceStartMs_ = 0; // 宽限期起始(消息线程)
+    bool graceStarted_ = false; // 宽限期是否已开始(消息线程)
 };
 
 } // namespace scvb

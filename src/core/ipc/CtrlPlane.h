@@ -143,17 +143,20 @@ public:
     CtrlPlane(const CtrlPlane&) = delete;
     CtrlPlane& operator=(const CtrlPlane&) = delete;
 
-    // 映射 + §4.0 初始化(消息线程)。
+    // 映射 + §4.0 初始化(消息线程)。allowOverwrite 恒 true(create-or-open 双方 owner 语义):
+    // Input 写命令环、Output 写广播/全局信息,双方都是本组 ctrl 段的合法创建/覆盖者(与 Registry
+    // 同口径);真正的只读 attach(allowOverwrite=false)属 T20/T23/T24 的 openExisting(audio/feat 环)
+    // 路径,非本卡。故不设角色参数。
     InitResult open();
 
     bool isOpen() const { return base_ != nullptr; }
     u32 group() const { return group_; }
     u32 generation() const;
 
-    // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(),
-    // 成功(租约已归零)即移除并解映射。pr-agent 复审:open()/重开时 release() 返回 false 的旧句柄
-    // 压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。
-    void reapPendingReleases();
+    // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(nowMs),
+    // 成功(租约归零且宽限期届满)即移除并解映射。pr-agent 复审:open()/重开时 release() 返回 false
+    // 的旧句柄压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。
+    void reapPendingReleases(u64 nowMs);
     std::size_t pendingReleaseCount() const { return pendingReleases_.size(); }
 
     // ---- OutputGlobalInfo(J09)----
@@ -195,9 +198,8 @@ private:
     std::vector<SegmentHandle> pendingReleases_; // 延迟释放(租约在途)的旧句柄,[M] reapPendingReleases 回收
     unsigned char* base_ = nullptr;
 
-    // 命令环生产者 seq 计数(Input [M] 单线程)。从 1 起,0 保留为「记录在写」标记
-    // (CtrlRecord::seq,见 enqueue/dequeue 的 seq 协议)。
-    u32 nextSeq_ = 1;
+    // 命令环记录 seq 由共享 write_pos 派生(seq = w+1),不持进程内计数器——多 channel 各自按
+    // 本环 write_pos 派生;生产者崩溃/重启后新实例 w 续用共享 write_pos,seq 不中断、环不卡死。
 
     // 停摆看门狗状态。
     std::function<u64()> blockCounterSource_;

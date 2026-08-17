@@ -31,14 +31,14 @@ inline constexpr u64 kTakeoverMs = 5000; // 接管需 ≥5000ms 且 pid 探活�
 // 心跳写入节奏:4Hz = 250ms([M] 定时器按此判定是否到写点)。
 inline constexpr u64 kHeartbeatIntervalMs = 250;
 
+// 幽灵槽接管宽限期:claim 者 CAS 后、fill 前崩溃 → state 卡 kSlotClaimed(pid=0/hb=0)。
+// 合法 claim 是微秒级,1s 远大于任何在途窗口;同一槽持续该状态超过此宽限期才允许接管。
+inline constexpr u64 kClaimGhostGraceMs = 1000;
+
 // registry 段布局偏移(与 SegmentLayout.h 的 static_assert 对齐)。
 inline constexpr std::size_t kRegistrySegmentSize = 4096;
 inline constexpr std::size_t kInputSlotOffset = sizeof(RegistryHeader);
 inline constexpr std::size_t kOutputSlotOffset = sizeof(RegistryHeader) + kMaxChannels * sizeof(InputSlot);
-
-// 稳态时钟毫秒。Windows 用 GetTickCount64(系统级单调、跨进程同一时钟源——心跳必须用它,
-// 不能用 std::chrono::steady_clock 的进程内 epoch);非 Windows 回退进程内 steady_clock(v1 仅 Windows)。
-u64 steadyNowMs() noexcept;
 
 // 真实 pid 探活(Windows:OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)+GetExitCodeProcess)。
 // 探活失败(句柄拿不到/退出码非 STILL_ACTIVE)一律判「死」——J10「pid 存活探测失败」条件。
@@ -139,6 +139,7 @@ public:
     // (同 pid 刷新会让复制轨道带来的同 channel 复制体抢走原实例的槽 → 双写同环)。
     ClaimResult claimInputAuto(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock, u64 nowMs);
     // v10:仅刷新【本实例自己持有】的 slot 字段(采样率切换重认领),非属主调用为空操作。
+    // 仅 re-prepare 且音频停摆时调用(采样率切换重认领路径);音频运行中不得调(改几何不重建环)。
     void updateOwnedInputSlot(u32 channel, u32 pid, u32 sampleRate, u32 maxBlock);
     // 释放本实例占用的 Input channel(析构/改组路径,消息线程)。
     void releaseInput(u32 channel, u32 pid);
@@ -166,10 +167,10 @@ public:
     // §4.0 初始化。返回新组的 open 结果;claim 由调用方随后执行(01 §4.1/§4.2 改组转移)。
     ClaimResult changeGroup(u32 newGroup);
 
-    // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(),
-    // 成功(租约已归零)即移除并解映射。pr-agent 复审:open()/changeGroup() 时 release() 返回 false
-    // 的旧句柄压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。
-    void reapPendingReleases();
+    // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(nowMs),
+    // 成功(租约归零且宽限期届满)即移除并解映射。pr-agent 复审:open()/changeGroup() 时 release() 返回
+    // false 的旧句柄压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。
+    void reapPendingReleases(u64 nowMs);
     std::size_t pendingReleaseCount() const { return pendingReleases_.size(); }
 
     // 本实例持有资源状态(供 changeGroup/析构与测试断言)。
@@ -193,6 +194,10 @@ private:
     u32 ownedChannel_ = 0; // 0 = 未持有 Input slot
     bool ownsOutput_ = false;
     u32 ownedPid_ = 0;
+
+    // 幽灵槽本地观测时钟(消息线程):首见 kSlotClaimed+pid==0+hb==0 时记录 nowMs;state 变化即清。
+    u64 ghostSeenMs_[kMaxChannels] = {};
+    u64 outputGhostSeenMs_ = 0;
 };
 
 } // namespace scvb
