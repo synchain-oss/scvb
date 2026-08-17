@@ -182,6 +182,29 @@ export const T = {
         "tour.step7.title": "以后在这里可以再看一次",
         "tour.step7.body": "引导随时可重看,红字九条也在同一块里展开",
 
+        // tour demo 的 15 条轨名(J62)。真值在 web/shared/mock-data.js 的 DEMO_LABELS,
+        // key 表在同文件的 DEMO_LABEL_KEYS(mock-data.js 不 import 本文件,依赖方向照 06 §6.2)。
+        // 为什么它们要进词典:用户轨的 label 是用户数据、保持原样,而 **tour demo 是我们自己造的
+        // UI 内容**,05 §5「切语言同步全部可见文案」对它成立 —— 否则 EN/FR 用户看到英/法文讲解框
+        // 配 15 条中文轨名。渲染 label 还是 t(key) 由 T31 决定,mock-data.js 两者都给。
+        // zh 逐字 = mock-data.js DEMO_TRACKS 的 label(设计稿 CH_LABELS + T27 补的 14/15);
+        // EN/FR 为 T27 自译,与 tour.step* 同批待人工审校。L/R/C 的 FR 侧照 master.distAxis 取 G/D/C。
+        "demo.ch1": "主唱",
+        "demo.ch2": "主唱双",
+        "demo.ch3": "和声 L",
+        "demo.ch4": "和声 R",
+        "demo.ch5": "和声 C",
+        "demo.ch6": "Ad-lib 1",
+        "demo.ch7": "Ad-lib 2",
+        "demo.ch8": "低八度",
+        "demo.ch9": "高八度",
+        "demo.ch10": "群唱 L",
+        "demo.ch11": "群唱 R",
+        "demo.ch12": "呼吸轨",
+        "demo.ch13": "念白",
+        "demo.ch14": "群唱 C",
+        "demo.ch15": "尾音",
+
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
         // 两插件共用的扁平 key 组,取代旧 in.groupSwitchConfirm / out.set.groupSwitchConfirm /
         // in.oneGroupPerTrack / in.groupHint.noOutputInGroup(旧 key 作废,不得并存)。
@@ -391,6 +414,23 @@ export const T = {
         "tour.step7.title": "You can replay this tour here",
         "tour.step7.body":
             "The tour can be replayed at any time, and the nine hard rules open in the same block.",
+
+        // tour demo 的 15 条轨名(J62;口径见 zh 侧同组注释)。EN 为 T27 自译,待人工审校。
+        "demo.ch1": "Lead Vocal",
+        "demo.ch2": "Lead Double",
+        "demo.ch3": "Harmony L",
+        "demo.ch4": "Harmony R",
+        "demo.ch5": "Harmony C",
+        "demo.ch6": "Ad-lib 1",
+        "demo.ch7": "Ad-lib 2",
+        "demo.ch8": "Octave Down",
+        "demo.ch9": "Octave Up",
+        "demo.ch10": "Group Vocal L",
+        "demo.ch11": "Group Vocal R",
+        "demo.ch12": "Breath",
+        "demo.ch13": "Spoken",
+        "demo.ch14": "Group Vocal C",
+        "demo.ch15": "Tail",
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
         // 两插件共用的扁平 key 组,取代旧 in.groupSwitchConfirm / out.set.groupSwitchConfirm /
@@ -609,6 +649,24 @@ export const T = {
         "tour.step7.title": "Vous pourrez revoir cette visite ici",
         "tour.step7.body":
             "La visite peut être rejouée à tout moment, et les neuf règles strictes s'ouvrent dans le même bloc.",
+
+        // tour demo 的 15 条轨名(J62;口径见 zh 侧同组注释)。FR 为 T27 自译,待人工审校;
+        // L/R/C 照 master.distAxis 的 fr 侧取 G/D/C。
+        "demo.ch1": "Voix principale",
+        "demo.ch2": "Double voix principale",
+        "demo.ch3": "Harmonie G",
+        "demo.ch4": "Harmonie D",
+        "demo.ch5": "Harmonie C",
+        "demo.ch6": "Ad-lib 1",
+        "demo.ch7": "Ad-lib 2",
+        "demo.ch8": "Octave inférieure",
+        "demo.ch9": "Octave supérieure",
+        "demo.ch10": "Chœur G",
+        "demo.ch11": "Chœur D",
+        "demo.ch12": "Souffle",
+        "demo.ch13": "Parlé",
+        "demo.ch14": "Chœur C",
+        "demo.ch15": "Fin de note",
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
         // 两插件共用的扁平 key 组,取代旧 in.groupSwitchConfirm / out.set.groupSwitchConfirm /
