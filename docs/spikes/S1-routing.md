@@ -18,6 +18,8 @@
 
 ## 2. 逐 DAW 结果
 
+> 本表为 10-validation 原始模板,P/F 列以 `docs/spikes/S1-daw-checklist.md` 完成列为准(逐格实测/判读/证据归档在该清单与 §6 收口报告)。
+
 | DAW / 版本   | 场景                               | 判据                                   | 实测值                      | P/F | 备注                 |
 | ------------ | ---------------------------------- | -------------------------------------- | --------------------------- | --- | -------------------- |
 | REAPER 7.xx  | R-1 实时播放                       | gapCount==0                            | 0×15                        |     |                      |
@@ -93,22 +95,22 @@
 
 ### 6.1 执行概况
 
-- **宿主覆盖**:Cubase 14(本机)、Cubase 15 + REAPER 7(新机)。Live 12 跳过 / Studio One 7 可选对照(用户 08-14 裁定 U27)。
+- **宿主覆盖**:C 系列主体在 **Cubase 15(新机)** 完成,其中 C-3/C-5/G-1a/G-2/G-9 先在 **Cubase 14(本机)** 通过、再在 Cubase 15 复验;Cubase 14 还贡献 C-1/C-2/C-4/C-6~C-14 与 G-1b~G-4/G-6/G-7 的首轮验证;R 系列在 REAPER 7(新机)。Live 12 跳过 / Studio One 7 可选对照(用户 08-14 裁定 U27)。
 - **格覆盖**:C-1..C-14 全 ✅;G-1a..G-10 全 ✅(G-9③ 由压测 mono2stereo 覆盖);R-2..R-5/R-12 全 ✅。逐格实测与判读 = `docs/spikes/S1-daw-checklist.md`(完成列),证据 wav/csv 归档于调度者侧 workv7。
-- **修复链 v1..v10**:mono/stereo 重建越界(v5/v6 几何快照+容量)、宿主异步销毁 AV(v4 寿命泄漏)、采样率切换总线静音(v7 槽位自愈)、channel 塌缩(v8 claimInputAuto)、re-prepare 迁槽幽灵槽 + 未认领永不重试(v9)、复制体同 pid 抢槽(v10 conflict 语义)。
+- **修复链 v1..v10**:mono/stereo 重建越界(v5/v6 几何快照+容量)、宿主异步销毁 AV(v4 寿命泄漏)、RIP/undo 复制体释放 slot 后 Input 自愈重认领 + 心跳跨宿主挂起存活(v7)、channel 塌缩(v8 claimInputAuto)、re-prepare 迁槽幽灵槽 + 未认领永不重试(v9)、复制体同 pid 抢槽(v10 conflict 语义)。
 - **离线验证**:单测 19 例 / 24262+ 断言;压测 5 场景(mono2stereo/flip/outputcheck/churn/multiclaim,组 8 隔离);gates 1-7 全绿(PluginOnly)。
 
 ### 6.2 关键定值(回填 T06)
 
 - **ring_frames 默认 = 1<<19(524288 帧,按 stereo 预算 ≈10.9s @48k)**;SCVB_RING_FRAMES 可压到 8192 做套圈压测;
 - **环容量规则**:段恒按 stereo 容量创建(CreateFileMapping 对已存在段忽略请求大小,必须读回真实段大小并 clamp 声道数);
-- **认领语义**:自动认领只拿 Free / 陈旧+死 pid 接管;同 pid 对 Active 槽一律 conflict(复制体直通);本实例自己刷新走 updateOwnedInputSlot;
+- **认领语义**:自动认领只拿 Free / 陈旧+死 pid 接管;同 pid 对 Active 槽一律 conflict(复制体直通);本实例自己刷新走 updateOwnedInputSlot;**两条释放-接管路径区分**:宿主优雅删除插件 = 析构释放 slot → Free → 新实例立即认领(R-15「≤3s 接管」);强杀进程/心跳停摆 = J10 双阈值(≥5000ms + pid 探活失败)接管(G-1c);
 - **R-3 实测 render-ahead 上限 5000ms(REAPER)下 gap 全 0** → 生产 ring_frames 按 stereo 预算 1<<19 有余量;
 - **G-5 实测**:8192 帧环 + render-ahead 5000ms → gap 大量被计数(最大 1110),无计数为 0 的撕裂;mask 部分掉位 = 健康回退按设计;
 - **上游 PDC 实测**:Cubase 15 高延迟插件在 V03/V07 前插 → rt/offline 均零错位(offset 0),无需 IAudioPresentationLatency 检测告警(记录在案,发布矩阵兜底);
-- **起播瞬态**:按播放瞬间一次性 ~350ms 缺口计数(全通道 ≈15 gap)为已知瞬态,之后零 gap;offline 导出存在 J32 注入延迟 200ms 的起始位移(产品级待办:T24 处理)。
+- **起播瞬态(验收口径)**:停→播瞬间一次性 ~350ms 缺口计数(全通道 ≈15 gap,环初建/epoch 换代时),之后稳态零 gap;checklist C-4/C-5/C-6/C-8 的「gapCount 全 0」判据 = **稳态窗口**(播放进入稳态后计数,起播窗口除外)。T06 验收若按此定值,须同样排除起播窗口,否则会被起播 burst 误判失败。offline 导出存在 J32 注入延迟 200ms 的起始位移(产品级待办:T24 处理)。
 
 ### 6.3 遗留与去向
 
-- spikes/s1/ 由 T06 的 PR 删除(J16);scvb_diag / scvb_nulltest / scvb_stress 迁 tests/tools/ 常驻;
+- spikes/s1/ 由 T06 的 PR 删除(J16);**已迁** tests/tools/ 常驻:scvb_diag、scvb_nulltest;**随 T06 一并迁**:scvb_stress(当前仍在 spikes/s1/);
 - 声像法则残余(mix 为轨前直和 vs ref 过 pan law)属 spike 设计边界,T06 平衡引擎应用声像/电平。
