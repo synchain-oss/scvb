@@ -39,10 +39,12 @@ add_executable(scvb_tests
   core/test_hungarian.cpp
   core/test_assign.cpp
   core/test_balance.cpp
+  core/test_ipc_layout.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
 target_include_directories(scvb_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+target_compile_definitions(scvb_tests PRIVATE SCVB_TEST_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 
 if(SCVB_TESTS_WITH_EBUR128)
   target_compile_definitions(scvb_tests PRIVATE SCVB_TESTS_WITH_EBUR128)
@@ -63,7 +65,3 @@ if(SCVB_BUILD_IPC_TESTS AND WIN32)
   add_subdirectory(ipc)
 endif()
 
-# scvb_s1_tests:S1 路由 spike 离线验证(仅 WIN32;链接 spikes/s1 的 s1_core)。
-if(WIN32)
-  add_subdirectory(s1)
-endif()
