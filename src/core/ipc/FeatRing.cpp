@@ -144,12 +144,13 @@ uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 ca
         return 0;
     }
 
-    // 环回绕守卫:读方落后超过容量(停滞 > capacity hop),则 [lastPulled, w-capacity) 的槽已被写方
-    // 覆盖(h%capacity 已装下后 hop 的数据),继续拉会「把已覆盖槽按旧 hop 号入库」→ 重同步,如实记洞。
-    if (w > state.lastPulled + capacity)
+    // 环回绕守卫(PR#42 复审 R1):读方落后 >= capacity 时,[lastPulled, w-capacity) 的槽已被写方覆盖
+    // (h%capacity 已装下后 hop 的数据)。跳前到可恢复前沿 w-capacity(跳过的区间如实记洞)后继续拉最新
+    // 窗口;绝不 return 0,否则该 channel 在本 run 剩余时间永久停更(静默漏拉/假覆盖)。用 >= 兜住
+    // w==lastPulled+capacity 的覆写竞态(off-by-one);w>capacity 无下溢,边界回落 b1。
+    if (w >= state.lastPulled + capacity)
     {
-        state.lastPulled = b1;
-        return 0;
+        state.lastPulled = (w > capacity) ? (w - capacity) : b1;
     }
 
     const uint64_t start = std::max(state.lastPulled, b1);

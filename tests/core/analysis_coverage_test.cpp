@@ -650,7 +650,7 @@ TEST_CASE("同 base 重开:w 回退 → 重置 lastPulled,新 run 前缀正常�
     REQUIRE(p2 == 30); // 新 run 前缀 [0,30) 被重拉
 }
 
-TEST_CASE("环回绕守卫:停滞 > 容量 → 0 污染", "[featring][wrap]")
+TEST_CASE("环回绕守卫:停滞 > 容量 → 跳前重同步,0 污染", "[featring][wrap]")
 {
     constexpr u32 kCap = 4096;
     scvb::FeatHeader header;
@@ -666,8 +666,37 @@ TEST_CASE("环回绕守卫:停滞 > 容量 → 0 污染", "[featring][wrap]")
     st.lastPulled = 0; // 读方停滞在 0,落后 > 容量
 
     const uint32_t p = scvb::pullIncremental(header, ring.data(), kCap, st, cf, kFull);
-    REQUIRE(p == 0); // 守卫拦截
-    REQUIRE(cf.coveredHops(kFull) == 0); // 0 污染
+    REQUIRE(p == scvb::kMaxBurstHops); // 跳到 w-capacity=904,拉最新窗口 [904,1160)
+    REQUIRE(st.lastPulled == 904 + scvb::kMaxBurstHops);
+    REQUIRE_FALSE(cf.hasHop(0)); // 覆盖槽不按旧 hop 号入库(0 污染)
+    REQUIRE_FALSE(cf.hasHop(903));
+    REQUIRE(cf.hasHop(904)); // 可恢复前沿正常入库
+}
+
+TEST_CASE("环回绕守卫:重同步后下一拍恢复,不永久停更", "[featring][wrap]")
+{
+    constexpr u32 kCap = 4096;
+    scvb::FeatHeader header;
+    std::vector<scvb::FeatFrame> ring(kCap);
+    header.base_hop.store(0, std::memory_order_release);
+    header.write_hop.store(5000, std::memory_order_release);
+
+    scvb::analysis::ChannelFrames cf;
+    cf.setReadOnly(false);
+    scvb::FeatPullState st;
+    st.initialized = true;
+    st.lastBase = 0;
+    st.lastPulled = 0; // 读方停滞
+
+    const uint32_t p1 = scvb::pullIncremental(header, ring.data(), kCap, st, cf, kFull);
+    REQUIRE(p1 == scvb::kMaxBurstHops); // 守卫触发:跳前 + 拉最新窗口
+    REQUIRE(st.lastPulled == 904 + scvb::kMaxBurstHops); // = 1160
+
+    header.write_hop.store(5010); // 写方再喂 10 hop
+
+    const uint32_t p2 = scvb::pullIncremental(header, ring.data(), kCap, st, cf, kFull);
+    REQUIRE(p2 == scvb::kMaxBurstHops); // 下一拍继续追赶(不永久停更)
+    REQUIRE(st.lastPulled == 904 + 2 * scvb::kMaxBurstHops); // 前进到 1416
 }
 
 TEST_CASE("FeatRing 几何快照:attach 读一次,越界映射拒绝绑定", "[featring][geometry]")
