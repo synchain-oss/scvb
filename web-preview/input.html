@@ -1,0 +1,41 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  web-preview/input.html —— Input 侧**薄壳页**(T28)。
+
+  与 output.html 逐字同构,只差 `role: "input"`:画面 100% 来自真源 web/input/index.html
+  (同源 iframe 引用),壳页只负责注入 window.__SCVB_MOCK__ + 一条预览工具条。
+  注入机制、时序假设与失败回退见 web-preview/shell.js 文件头;README 有摘要。
+
+  06 §6.2 硬约束 1:web/ 是唯一真源,本文件里**没有一行复制来的 UI 代码**。
+
+  URL 参数(由 mock/state-driver.js 解析,壳页只透传 location.search):
+    ?fixture=empty|fifteen-tracks|misaligned|channel-conflict|second-output|stereo-mixed
+    ?scenario=<05 §2.5 场景名>   —— 兼容口径,未接线的场景回落 fifteen-tracks 并 warn
+  Input 侧无 Range 档,`&loop=none` 对本页无效果(它只改 Output 的 setRange 拒绝行为)。
+
+  必须经 serve.ps1(http://127.0.0.1)打开;file:// 下 iframe 变跨源,注入不成立。
+-->
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SCVB Input · web-preview</title>
+    </head>
+    <body>
+        <header class="pv-bar">
+            <a href="./index.html">← 预览导航</a>
+            <strong>SCVB Input</strong>
+            <span class="pv-meta"></span>
+            <span class="pv-status" data-ok="wait" role="status">初始化…</span>
+            <span class="pv-warn"></span>
+            <button type="button" class="pv-reload">重载</button>
+        </header>
+        <!-- iframe 由 shell.js 建并按 design-box.js 的设计盒给最小尺寸,故此处只留舞台容器 -->
+        <main class="pv-stage"></main>
+        <script type="module">
+            import { mountPreview } from "./shell.js";
+            mountPreview({ role: "input" });
+        </script>
+    </body>
+</html>

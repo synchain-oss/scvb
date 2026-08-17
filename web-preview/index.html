@@ -1,0 +1,307 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  web-preview/index.html —— 预览导航页(T28)。
+
+  朴素即可、零设计要求(简报「交付物」栏原文):它的全部价值是把
+  「两插件 × 六 fixture × 关键变体」摆成一屏可点的直达链接,让不装 DAW 的人
+  (以及 Claude Design 回路)一次点到每一个 UI 状态。
+  本页**不引用 web/ 的任何样式**——它是预览器的家具,不是插件画面,
+  长得像插件反而会让目视验收分不清哪块是被验收对象。
+-->
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SCVB web-preview · 导航</title>
+        <style>
+            /* 朴素排版,零 hex 字面量(与 shell.js 同口径,用 rgb()/具名色)。 */
+            body {
+                margin: 0 auto;
+                padding: 24px 20px 64px;
+                max-width: 60rem;
+                background: rgb(18 18 20);
+                color: rgb(238 238 242);
+                font:
+                    15px/1.65 system-ui,
+                    "Segoe UI",
+                    sans-serif;
+            }
+            h1 {
+                font-size: 1.5rem;
+                margin: 0 0 4px;
+            }
+            h2 {
+                font-size: 1.1rem;
+                margin: 32px 0 8px;
+                border-bottom: 1px solid rgb(72 72 82);
+                padding-bottom: 4px;
+            }
+            a {
+                color: rgb(150 202 255);
+            }
+            code {
+                font-family: ui-monospace, Consolas, monospace;
+                background: rgb(38 38 44);
+                padding: 0 4px;
+                border-radius: 3px;
+            }
+            table {
+                border-collapse: collapse;
+                width: 100%;
+            }
+            caption {
+                text-align: left;
+                padding-bottom: 6px;
+                color: rgb(196 196 206);
+            }
+            th,
+            td {
+                border: 1px solid rgb(72 72 82);
+                padding: 6px 8px;
+                text-align: left;
+                vertical-align: top;
+            }
+            th {
+                background: rgb(38 38 44);
+            }
+            .note {
+                color: rgb(196 196 206);
+            }
+            .warn {
+                color: rgb(240 214 128);
+            }
+        </style>
+    </head>
+    <body>
+        <h1>SCVB <code>web-preview</code></h1>
+        <p class="note">
+            不装 DAW 也能在浏览器里看全部 UI 状态。画面来自真源
+            <code>web/output/index.html</code> /
+            <code>web/input/index.html</code>(同源 iframe 引用,预览器不复制任何
+            UI 代码);数据来自 <code>web-preview/mock/</code> 的 mock 后端。
+        </p>
+        <p class="warn">
+            必须经 <code>pwsh web-preview/serve.ps1</code> 起的
+            <code>http://127.0.0.1</code> 打开。<code>file://</code> 下 ES
+            module 被 CORS 拒绝、iframe 也会变跨源,mock 注入不成立。
+        </p>
+
+        <h2>两插件 × 六 fixture</h2>
+        <table>
+            <caption>
+                每格一个直达链接;fixture 定义见
+                <code>web-preview/README.md</code>
+            </caption>
+            <thead>
+                <tr>
+                    <th scope="col">fixture</th>
+                    <th scope="col">Output</th>
+                    <th scope="col">Input</th>
+                    <th scope="col">看点</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <th scope="row"><code>empty</code></th>
+                    <td>
+                        <a href="./output.html?fixture=empty">Output · empty</a>
+                    </td>
+                    <td>
+                        <a href="./input.html?fixture=empty">Input · empty</a>
+                    </td>
+                    <td>
+                        0 轨连接、无
+                        coverage、<code>guide_seen=true</code>(不弹引导);Tab1
+                        空态引导卡语境;<code>range.mode=follow</code>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>fifteen-tracks</code></th>
+                    <td>
+                        <a href="./output.html?fixture=fifteen-tracks"
+                            >Output · fifteen-tracks</a
+                        >
+                    </td>
+                    <td>
+                        <a href="./input.html?fixture=fifteen-tracks"
+                            >Input · fifteen-tracks</a
+                        >
+                    </td>
+                    <td>
+                        健康满配:15 轨全连、4 stereo、327 段、覆盖
+                        84–92%;<strong
+                            ><code>range.mode=follow</code> 默认档代表</strong
+                        >
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>misaligned</code></th>
+                    <td>
+                        <a href="./output.html?fixture=misaligned"
+                            >Output · misaligned</a
+                        >
+                    </td>
+                    <td>
+                        <a href="./input.html?fixture=misaligned"
+                            >Input · misaligned</a
+                        >
+                    </td>
+                    <td>
+                        路由失准:2–3 轨 <code>misalignCount&gt;0</code> →
+                        琥珀横幅① + Tab2 对应轨 ⚠ 计数
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>channel-conflict</code></th>
+                    <td>
+                        <a href="./output.html?fixture=channel-conflict"
+                            >Output · channel-conflict</a
+                        >
+                    </td>
+                    <td>
+                        <a href="./input.html?fixture=channel-conflict"
+                            >Input · channel-conflict</a
+                        >
+                    </td>
+                    <td>
+                        Input 侧场景:<code>claim="conflict"</code> +
+                        <code>channelConflict</code> 错误 + occupiedMask
+                        含目标位(Output 侧不受影响)
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>second-output</code></th>
+                    <td>
+                        <a href="./output.html?fixture=second-output"
+                            >Output · second-output</a
+                        >
+                    </td>
+                    <td>
+                        <a href="./input.html?fixture=second-output"
+                            >Input · second-output</a
+                        >
+                    </td>
+                    <td>
+                        <code>outputReadOnly=true</code> + 红横幅②(带组号)+
+                        全写控件 disabled;<strong
+                            ><code>range.mode=daw_loop</code> 且宿主提供
+                            loop(daw_loop 代表档)</strong
+                        >
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>stereo-mixed</code></th>
+                    <td>
+                        <a href="./output.html?fixture=stereo-mixed"
+                            >Output · stereo-mixed</a
+                        >
+                    </td>
+                    <td>
+                        <a href="./input.html?fixture=stereo-mixed"
+                            >Input · stereo-mixed</a
+                        >
+                    </td>
+                    <td>
+                        mono+stereo 混存:stereo 轨带 ST 标识、<code
+                            >participate_in_auto_pan=false</code
+                        >
+                        默认、每轨 width 旋钮可用
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>关键变体 · <code>loop=none</code>(能力级降级态)</h2>
+        <p class="note">
+            <code>&amp;loop=none</code>
+            表示<strong>宿主不提供循环区</strong>:mock 的
+            <code>setRange("daw_loop")</code> 回
+            <code>{ok:false, reason:"noLoop"}</code>,Range 档位落在灰模已有的
+            「宿主未提供循环区」disabled + tooltip 占位上。该参数只对 Output
+            侧有意义(Input 无 Range 档),可挂在上表任一 Output 链接后面;下面是
+            fixture 表定义的那一个,以及两个常用组合。
+        </p>
+        <ul>
+            <li>
+                <a href="./output.html?fixture=stereo-mixed&amp;loop=none"
+                    >Output · stereo-mixed &amp; loop=none</a
+                >
+                —— fixture 表定义的降级态基准
+            </li>
+            <li>
+                <a href="./output.html?fixture=fifteen-tracks&amp;loop=none"
+                    >Output · fifteen-tracks &amp; loop=none</a
+                >
+                —— 健康满配下只缺 loop 能力,便于与默认档逐项对照
+            </li>
+            <li>
+                <a href="./output.html?fixture=second-output&amp;loop=none"
+                    >Output · second-output &amp; loop=none</a
+                >
+                —— daw_loop 代表档失去宿主 loop 后的表现(只读 + 无 loop 双压)
+            </li>
+        </ul>
+
+        <h2>Range 档位速查(J04:三值枚举,无哨兵)</h2>
+        <p class="note">
+            <code>range.mode</code> 一律取 <code>follow</code> /
+            <code>daw_loop</code> / <code>manual</code>,默认
+            <code>follow</code>。v0 那套「<code>manual</code>
+            配一对零值端点表示全曲」的哨兵约定已废除,mock 与 fixture
+            里不得残留。默认档看
+            <a href="./output.html?fixture=fifteen-tracks">fifteen-tracks</a
+            >,<code>daw_loop</code> 档看
+            <a href="./output.html?fixture=second-output">second-output</a
+            >,能力缺失降级看上一节的 <code>loop=none</code>。
+        </p>
+
+        <h2><code>?scenario=</code> 兼容口径</h2>
+        <p class="note">
+            05 §2.5 / §3
+            的场景名同样可用:<code>./output.html?scenario=&lt;名&gt;</code>。已实现的映射到上表
+            fixture,<strong
+                >未实现的回落 <code>fifteen-tracks</code> 并在 console
+                打一句「场景 {x} 待 T31–T36 接线」——不假装支持</strong
+            >。
+        </p>
+        <ul>
+            <li>
+                Output(05 §2.5):<code>misaligned</code> ·
+                <code>conflict</code> · <code>empty</code> ·
+                <code>stale</code> · <code>printing</code> ·
+                <code>newer-state</code> · <code>sidecar-missing</code> ·
+                <code>no-timeline</code> · <code>project-copy</code> ·
+                <code>sidecar-switched</code> · <code>low-sample</code> ·
+                <code>print-guard</code> · <code>first-run</code> ·
+                <code>recapture-armed</code> · <code>first-run-tour</code> ·
+                <code>group-switch</code>
+            </li>
+            <li>
+                Input(05 §3):<code>occupied</code> · <code>no-output</code> ·
+                <code>connected</code> · <code>passthrough</code> ·
+                <code>abi-mismatch</code> · <code>sr-mismatch</code> ·
+                <code>group-mismatch</code>
+            </li>
+        </ul>
+        <p class="note">
+            示例:<a href="./output.html?scenario=misaligned"
+                >?scenario=misaligned</a
+            >(映射到 <code>misaligned</code>)、<a
+                href="./input.html?scenario=occupied"
+                >?scenario=occupied</a
+            >(映射到 <code>channel-conflict</code>)、<a
+                href="./output.html?scenario=printing"
+                >?scenario=printing</a
+            >(尚未接线 → 回落 + console 提示)。
+        </p>
+
+        <h2>裸开真源页面(对照用)</h2>
+        <p class="note">
+            不经壳页直接打开真源,可用来确认「灰模在无后端时也不炸」(app.js 会
+            catch 住 createBridge 失败并在 footer 落一行提示,零 console error):
+            <a href="../web/output/index.html">web/output/index.html</a> ·
+            <a href="../web/input/index.html">web/input/index.html</a>
+        </p>
+    </body>
+</html>
