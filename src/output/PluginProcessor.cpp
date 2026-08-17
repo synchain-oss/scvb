@@ -24,7 +24,11 @@ const juce::String ScvbOutputAudioProcessor::getName() const
 
 void ScvbOutputAudioProcessor::prepareToPlay(double /*sampleRate*/, int /*samplesPerBlock*/) {}
 
-void ScvbOutputAudioProcessor::releaseResources() {}
+void ScvbOutputAudioProcessor::releaseResources()
+{
+    // T17:releaseResources 出口兜底闭合 gesture(GestureGuard 四出口之一,§3.3 R12)。
+    printer.endAllGestures();
+}
 
 bool ScvbOutputAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
