@@ -30,6 +30,8 @@ add_library(scvb_core STATIC
   analysis/LoudnessMode.h
   analysis/Segmentation.cpp
   analysis/Segmentation.h
+  analysis/Reanalysis.cpp
+  analysis/Reanalysis.h
   analysis/Hungarian.cpp
   analysis/Hungarian.h
   analysis/AutoAssign.cpp
