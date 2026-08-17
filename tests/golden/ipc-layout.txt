@@ -1,0 +1,71 @@
+# SCVB IPC 段布局冻结 golden(ipc-contract-v0 v1.5 + 01 §4.4-a)。T06:逐字节冻进 abi=1;布局改动必须 abi+1 且段名 v2。
+abi 1
+magic 0x42564353
+max_channels 15
+max_groups 8
+default_ring_frames 524288
+feat_capacity_hops 131072
+budget_registry_bytes 4096
+budget_ctrl_bytes 16384
+name g1 registry SynchainSCVB.v1.g1.registry
+name g1 audio.ch1 SynchainSCVB.v1.g1.audio.ch1
+name g1 feat.ch1 SynchainSCVB.v1.g1.feat.ch1
+name g1 ctrl SynchainSCVB.v1.g1.ctrl
+name g8 registry SynchainSCVB.v1.g8.registry
+name g8 audio.ch15 SynchainSCVB.v1.g8.audio.ch15
+name g8 feat.ch15 SynchainSCVB.v1.g8.feat.ch15
+name g8 ctrl SynchainSCVB.v1.g8.ctrl
+struct RegistryHeader size 64 align 64
+field RegistryHeader.magic offset 0
+field RegistryHeader.abi offset 4
+field RegistryHeader.generation offset 8
+field RegistryHeader._pad offset 12
+field RegistryHeader._reserved offset 16
+struct InputSlot size 64 align 64
+field InputSlot.state offset 0
+field InputSlot.pid offset 4
+field InputSlot.sample_rate offset 8
+field InputSlot.max_block offset 12
+field InputSlot.heartbeat_ms offset 16
+field InputSlot.capture_write_pos offset 24
+field InputSlot.flags offset 32
+field InputSlot._pad offset 36
+struct OutputSlot size 64 align 64
+field OutputSlot.state offset 0
+field OutputSlot.pid offset 4
+field OutputSlot.heartbeat_ms offset 8
+field OutputSlot.connected_mask offset 16
+field OutputSlot.config_seq offset 20
+field OutputSlot._pad offset 24
+struct AudioRingHeader size 40 align 8
+field AudioRingHeader.magic offset 0
+field AudioRingHeader.abi offset 4
+field AudioRingHeader.sample_rate offset 8
+field AudioRingHeader.ring_frames offset 12
+field AudioRingHeader.channels offset 16
+field AudioRingHeader._pad offset 20
+field AudioRingHeader.write_head_samples offset 24
+field AudioRingHeader.epoch offset 32
+struct FeatHeader size 32 align 8
+field FeatHeader.magic offset 0
+field FeatHeader.abi offset 4
+field FeatHeader.hop_ms offset 8
+field FeatHeader.capacity_hops offset 12
+field FeatHeader.base_hop offset 16
+field FeatHeader.write_hop offset 24
+struct FeatFrame size 8 align 4
+field FeatFrame.kw_ms offset 0
+field FeatFrame.peak offset 4
+struct OutputGlobalInfo size 256 align 64
+field OutputGlobalInfo.capture_enabled offset 0
+field OutputGlobalInfo.output_sample_rate offset 4
+field OutputGlobalInfo.flags offset 8
+field OutputGlobalInfo._pad offset 12
+field OutputGlobalInfo.gap_count offset 16
+field OutputGlobalInfo.overlap_count offset 76
+field OutputGlobalInfo.epoch_summary offset 136
+struct CtrlRecord size 24 align 8
+field CtrlRecord.seq offset 0
+field CtrlRecord.channel offset 4
+field CtrlRecord.op offset 8
+field CtrlRecord.value offset 16

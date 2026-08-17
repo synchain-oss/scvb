@@ -25,7 +25,15 @@ add_library(scvb_core STATIC
   analysis/Hungarian.h
   analysis/AutoAssign.cpp
   analysis/AutoAssign.h
+  ipc/SegmentLayout.h
+  ipc/ISegmentBackend.h
+  ipc/SegmentBackendWin32.h
 )
+
+# SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。
+if(WIN32)
+  target_sources(scvb_core PRIVATE ipc/SegmentBackendWin32.cpp)
+endif()
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

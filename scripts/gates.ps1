@@ -213,9 +213,9 @@ else {
   else {
     $logDir = Join-Path $BuildDir 'pluginval-logs'
     New-Item -ItemType Directory -Force $logDir | Out-Null
-    # [issue #24] 只统计本 spike 的两个 bundle;其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
-    # [issue #24] 只统计本 spike 的两个 bundle;再按路径收窄到 spikes/s1(生产 src/input、src/output 共享构建目录,同名 bundle 会重复计数)。
-    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') -and $_.FullName -match '[\\/]spikes[\\/]s1[\\/]' })
+    # [issue #24] 只统计正式插件的两个 bundle;其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
+    # [issue #24] 再按路径收窄到 src/input、src/output(生产插件目录,同名 bundle 不重复计数)。
+    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output)[\\/]' })
     $pv = $true
     if ($bundles.Count -ne 2) {
       Write-Host ("  期望 2 个 .vst3 bundle(SCVB Input / SCVB Output),实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
@@ -256,8 +256,8 @@ else {
     try {
       $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
       New-Item -ItemType Directory -Force $logDir | Out-Null
-      # [issue #24] 只统计本 spike 的两个 bundle;再按路径收窄到 spikes/s1(生产 src/input、src/output 共享构建目录,同名 bundle 会重复计数)。
-    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') -and $_.FullName -match '[\\/]spikes[\\/]s1[\\/]' })
+      # [issue #24] 再按路径收窄到 src/input、src/output(生产插件目录,同名 bundle 不重复计数)。
+    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output)[\\/]' })
       if ($bundles.Count -ne 2) {
         Write-Host ("  期望 2 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
         $pv = $false
