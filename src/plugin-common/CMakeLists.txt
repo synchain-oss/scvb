@@ -11,6 +11,7 @@ target_sources(scvb_plugin_common INTERFACE
   WebViewHost.cpp
   PlatformWebView.h
   PlatformWebView.cpp
+  PlatformWebViewRuntime.cpp
   ResourceProvider.h
   ResourceProvider.cpp
   FallbackPanel.h

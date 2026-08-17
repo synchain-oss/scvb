@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <memory>
+
 #include <BridgeBase.h>
 #include <FallbackPanel.h>
+#include <PlatformWebView.h>
 #include <ResourceProvider.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -129,4 +132,137 @@ TEST_CASE("FallbackPanel load-timeout variant hides install")
     CHECK(panel.getNumChildComponents() == 3); // title + message + retry
     CHECK(panel.findChildWithID("fallback.install") == nullptr);
     CHECK(panel.findChildWithID("fallback.retry") != nullptr);
+}
+TEST_CASE("normalizeLang accepts {zh,en,fr} and falls back to zh (§1.30)")
+{
+    using scvb::bridge::normalizeLang;
+    CHECK(normalizeLang("zh") == "zh");
+    CHECK(normalizeLang("en") == "en");
+    CHECK(normalizeLang("fr") == "fr");
+    CHECK(normalizeLang("de") == "zh"); // 未知 code 回退 zh
+    CHECK(normalizeLang("") == "zh");
+}
+
+TEST_CASE("parseUiScaleArg rejects non-numeric and clamps numeric (§1.28)")
+{
+    using scvb::bridge::parseUiScaleArg;
+    float out = 0.0f;
+
+    juce::Array<juce::var> nonNumeric;
+    nonNumeric.add(juce::var("abc"));
+    CHECK_FALSE(parseUiScaleArg(nonNumeric, out)); // 非数字 → badArg
+
+    juce::Array<juce::var> empty;
+    CHECK_FALSE(parseUiScaleArg(empty, out)); // 缺参 → badArg
+
+    juce::Array<juce::var> small;
+    small.add(juce::var(0.1));
+    REQUIRE(parseUiScaleArg(small, out));
+    CHECK(out == scvb::bridge::plugin::MinUiScale); // 数值 → clamp 下界
+
+    juce::Array<juce::var> big;
+    big.add(juce::var(9.0));
+    REQUIRE(parseUiScaleArg(big, out));
+    CHECK(out == scvb::bridge::plugin::MaxUiScale); // clamp 上界
+
+    juce::Array<juce::var> ok;
+    ok.add(juce::var(1.5));
+    REQUIRE(parseUiScaleArg(ok, out));
+    CHECK(out == 1.5f);
+}
+
+TEST_CASE("badArgResponse has {ok:false, reason:badArg} shape (§1.28)")
+{
+    const auto v = scvb::bridge::badArgResponse();
+    auto* obj = v.getDynamicObject();
+    REQUIRE(obj != nullptr);
+    CHECK_FALSE(static_cast<bool>(obj->getProperty("ok")));
+    CHECK(obj->getProperty("reason").toString() == "badArg");
+}
+
+TEST_CASE("buildUiSeedPairs/buildUiSnapshot share Init keys (state pushback §1.30)")
+{
+    scvb::bridge::UiSeed seed;
+    seed.role = "output";
+    seed.version = "0.1.0";
+    seed.lang = "fr";
+    seed.uiScale = 1.25f;
+    seed.channelLimit = 15;
+
+    const auto pairs = scvb::bridge::buildUiSeedPairs(seed);
+    REQUIRE(pairs.size() == 5);
+    CHECK(pairs[0].first == scvb::bridge::Init::Version);
+    CHECK(pairs[1].first == scvb::bridge::Init::Role);
+    CHECK(pairs[2].first == scvb::bridge::Init::ChannelLimit);
+    CHECK(pairs[3].first == scvb::bridge::Init::Lang);
+    CHECK(pairs[4].first == scvb::bridge::Init::UiScale);
+
+    // setLang 写入后经本快照回推实际生效值(scvb.state)。
+    const auto snap = scvb::bridge::buildUiSnapshot(seed);
+    auto* obj = snap.getDynamicObject();
+    REQUIRE(obj != nullptr);
+    CHECK(obj->getProperty(scvb::bridge::Init::Lang).toString() == "fr");
+    CHECK(obj->getProperty(scvb::bridge::Init::Role).toString() == "output");
+    CHECK(static_cast<int>(obj->getProperty(scvb::bridge::Init::ChannelLimit)) == 15);
+    CHECK(obj->getProperty(scvb::bridge::Init::Version).toString() == "0.1.0");
+}
+
+TEST_CASE("makeWebViewOptions selects WebView2 backend + unique userDataFolder (§9/#5)")
+{
+    using WBC = juce::WebBrowserComponent;
+#if JUCE_WINDOWS
+    const auto o1 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
+    CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
+    const auto f1 = o1.getWinWebView2BackendOptions().getUserDataFolder();
+    CHECK(f1.getFileName().startsWith("SCVBInputWV2_")); // 机制 2:临时目录 + 每实例后缀
+
+    const auto o2 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
+    const auto f2 = o2.getWinWebView2BackendOptions().getUserDataFolder();
+    CHECK_FALSE(f1.getFileName() == f2.getFileName()); // 多实例同名 folder 抢占防护
+#else
+    const auto o1 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
+    CHECK(o1.getBackend() == WBC::Options::Backend::defaultBackend); // 非 Windows 走系统默认
+#endif
+}
+
+TEST_CASE("FallbackPanel deferred retry avoids use-after-free (SafePointer + callAsync)")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+
+    // holder 用 shared_ptr 持有,保证 pending callAsync 捕获的 holder 不悬垂;panel 销毁后
+    // SafePointer 自动置空,pending callAsync 安全 no-op。
+    struct RetryHolder
+    {
+        std::unique_ptr<scvb::webview::FallbackPanel> panel;
+        juce::Component::SafePointer<scvb::webview::FallbackPanel> safe;
+    };
+    auto holder = std::make_shared<RetryHolder>();
+
+    scvb::webview::FallbackPanel::Options options;
+    options.title = "SCVB Output";
+    options.message = "defer";
+    // 复刻 WebViewHost::showFallback 的 onRetry 接线:onClick 内**只调度**延后销毁,不同步 reset,
+    // 否则会销毁正执行 onClick 的按钮(use-after-free)。
+    options.onRetry = [holder] {
+        juce::MessageManager::callAsync([holder] {
+            if (holder->safe != nullptr)
+                holder->panel.reset();
+        });
+    };
+
+    holder->panel = std::make_unique<scvb::webview::FallbackPanel>(std::move(options));
+    holder->safe = juce::Component::SafePointer<scvb::webview::FallbackPanel>(holder->panel.get());
+
+    auto* retryBtn = dynamic_cast<juce::TextButton*>(holder->panel->findChildWithID("fallback.retry"));
+    REQUIRE(retryBtn != nullptr);
+    retryBtn->onClick(); // 只调度延后销毁
+
+    // 同步点:面板必须仍存活(延后未执行)——防 use-after-free 的关键断言。
+    CHECK(holder->panel != nullptr);
+    CHECK(holder->safe != nullptr);
+
+    // 手动清理(不依赖 modal loop,本测试进程 JUCE_MODAL_LOOPS_PERMITTED=0):删除面板后
+    // SafePointer 置空,残留的 pending callAsync 据此安全 no-op。
+    holder->panel.reset();
+    CHECK(holder->safe == nullptr);
 }

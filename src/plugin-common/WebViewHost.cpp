@@ -37,6 +37,8 @@ WebViewHost::WebViewHost(juce::AudioProcessor& processor, Config config)
 {
     addAndMakeVisible(webView_);
 
+    // 真 WebView2 实例化与 runtimeAvailable 探测无法离线单测(需 WebView2 loader + 真机),
+    // 属硬前置:T29/T30 接 InputEditor/OutputEditor 后经 gate 8 真机 GUI pluginval 验证。
     setResizable(false, false); // 仅经缩放档位下拉(setUiScale)编程改尺寸,不开自由拖角。
     resizeToDesignBox(uiScale_);
 
@@ -95,13 +97,13 @@ void WebViewHost::persistUiScaleAsDefault()
 
 juce::var WebViewHost::buildSnapshot()
 {
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty(bridge::Init::Lang, lang_);
-    obj->setProperty(bridge::Init::UiScale, uiScale_);
-    obj->setProperty(bridge::Init::Role, config_.role);
-    obj->setProperty(bridge::Init::Version, config_.version);
-    obj->setProperty(bridge::Init::ChannelLimit, config_.channelLimit);
-    return juce::var(obj);
+    bridge::UiSeed seed;
+    seed.role = config_.role;
+    seed.version = config_.version;
+    seed.lang = lang_;
+    seed.uiScale = uiScale_;
+    seed.channelLimit = config_.channelLimit;
+    return bridge::buildUiSnapshot(seed);
 }
 
 // -----------------------------------------------------------------------------
@@ -119,7 +121,14 @@ void WebViewHost::showFallback(FallbackReason reason)
     options.message = missing ? missingRuntimeMessage() : loadTimeoutMessage();
     options.showInstall = missing;
     options.onInstall = [] { juce::URL("https://go.microsoft.com/fwlink/p/?LinkId=2124703").launchInDefaultBrowser(); };
-    options.onRetry = [this] { retryWebView(); };
+    // 延后到消息线程执行:FallbackPanel 的 retry onClick 内同步 reset 会销毁正执行回调的按钮
+    // (use-after-free)。SafePointer 兜底 WebViewHost 先于回调被销毁的情况。
+    options.onRetry = [safeThis = juce::Component::SafePointer<WebViewHost>(this)] {
+        juce::MessageManager::callAsync([safeThis] {
+            if (safeThis != nullptr)
+                safeThis->retryWebView();
+        });
+    };
 
     fallback_ = std::make_unique<FallbackPanel>(std::move(options));
     addAndMakeVisible(*fallback_);
@@ -158,16 +167,17 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
 {
     auto options = PlatformWebView::makeWebViewOptions(WBC::Options{}, config_.userDataFolderName);
 
-    options = options.withNativeIntegrationEnabled()
-                  .withResourceProvider([this](const juce::String& url) { return provider_.provide(url); },
-                                        juce::URL(WBC::getResourceProviderRoot()).getOrigin())
-                  // 首帧同步 seed(机制 5):version / 角色 / channel 上限 / lang / uiScale。
-                  .withInitialisationData(bridge::Init::Version, juce::var(config_.version))
-                  .withInitialisationData(bridge::Init::Role, juce::var(config_.role))
-                  .withInitialisationData(bridge::Init::ChannelLimit, juce::var(config_.channelLimit))
-                  .withInitialisationData(bridge::Init::Lang, juce::var(lang_))
-                  .withInitialisationData(bridge::Init::UiScale, juce::var(uiScale_))
-                  // JS -> C++(机制 6):通用缩放/语言/首帧;插件专属函数由 augmentOptions 追加。
+    options = options.withNativeIntegrationEnabled().withResourceProvider(
+        [this](const juce::String& url) { return provider_.provide(url); },
+        juce::URL(WBC::getResourceProviderRoot()).getOrigin());
+
+    // 首帧同步 seed(机制 5):version / 角色 / channel 上限 / lang / uiScale(键值对与 buildSnapshot 同源)。
+    for (const auto& seedPair :
+         bridge::buildUiSeedPairs({config_.role, config_.version, lang_, uiScale_, config_.channelLimit}))
+        options = options.withInitialisationData(seedPair.first, seedPair.second);
+
+    // JS -> C++(机制 6):通用缩放/语言/首帧;插件专属函数由 augmentOptions 追加。
+    options = options
                   .withNativeFunction(juce::Identifier(bridge::Fn::RequestInitialState),
                                       [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
                                           handleRequestInitialState(a, std::move(c));
@@ -203,29 +213,26 @@ void WebViewHost::handleRequestInitialState(const juce::Array<juce::var>&, WBC::
 void WebViewHost::handleSetLang(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
 {
     const juce::String code = args.size() > 0 ? args[0].toString() : juce::String("zh");
-    lang_ = code;
+    lang_ = bridge::normalizeLang(code); // §1.30:仅 {zh,en,fr},未知回退 zh;实际值经 buildSnapshot 回推 scvb.state
     complete(bridge::okResponse());
 }
 
 void WebViewHost::handleSetUiScale(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
 {
-    const double f = args.size() > 0 ? static_cast<double>(args[0]) : 1.0;
-    setUiScale(static_cast<float>(f)); // 只实时预览、不落盘(机制 9 前半)
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty("ok", true);
-    obj->setProperty("scale", uiScale_);
-    obj->setProperty("w", getWidth());
-    obj->setProperty("h", getHeight());
-    complete(juce::var(obj));
+    float scale = uiScale_;
+    if (!bridge::parseUiScaleArg(args, scale))
+    {
+        complete(bridge::badArgResponse()); // §1.28:非法参数(缺参/非数值)→ badArg
+        return;
+    }
+    setUiScale(scale); // 只实时预览、不落盘(机制 9 前半)
+    complete(bridge::okResponse()); // §1.28:{ok:true}
 }
 
 void WebViewHost::handleCommitUiScale(const juce::Array<juce::var>&, WBC::NativeFunctionCompletion complete)
 {
     commitUiScale(); // 防呆确认「保持」后落盘(机制 9 后半)
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty("ok", true);
-    obj->setProperty("scale", uiScale_);
-    complete(juce::var(obj));
+    complete(bridge::okResponse()); // §1.29:{ok:true}
 }
 
 // -----------------------------------------------------------------------------

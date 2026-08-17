@@ -91,13 +91,16 @@ endif()
 add_test(NAME scvb_params_tests COMMAND scvb_params_tests)
 
 # scvb_plugin_common_tests:T26 WebView 装配层 L0 单测(链接 juce_gui_extra,离线 Catch2)。
-# 只编 ResourceProvider/BridgeBase/FallbackPanel(不启 WebView2 loader,故不编
-# WebViewHost/PlatformWebView,避免 Windows 下未链接 WebView2 loader 的 undefined symbol)。
+# 只编可离线单测的 TU:ResourceProvider/BridgeBase/FallbackPanel/PlatformWebView。
+# PlatformWebView.cpp 只含 makeWebViewOptions(纯 Options 装配);runtimeAvailable 已拆到
+# PlatformWebViewRuntime.cpp(引用 WebView2 loader),与 WebViewHost(真 WebView2 实例化)一样
+# 留待 T29/T30 接编辑器后真机验证,不编入本测试。
 add_executable(scvb_plugin_common_tests
   webview/test_plugin_common.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin-common/ResourceProvider.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin-common/BridgeBase.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin-common/FallbackPanel.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/PlatformWebView.cpp
 )
 
 target_link_libraries(scvb_plugin_common_tests PRIVATE
