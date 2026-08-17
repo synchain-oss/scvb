@@ -1,0 +1,2847 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  SCVB Output —— T27b 结构化灰模(零视觉发挥/零业务逻辑)。
+  真源:masterPlan/plan/05-ui-spec.md §1.1(卡片骨架)/§2.0(通用件)/§2.1-§2.4(四 tab)/§2.6(tour 锚点)。
+  每个占位节点带 data-gb="<语义锚点>"(T31-T36 按锚点替换,不新建文件);
+  文案只用 data-t 引用 web/shared/i18n.js 现有 key;字典没有的概念用中文明文占位 +
+  data-gb-todo="词条待立"(取值逐字照 brief,与 web/input/index.html 同口径;门禁/grep
+  口径 = data-gb-todo="词条待立"),缺 key 的具体原因写在该节点紧邻上方的 HTML 注释
+  「词条待立:<原因>」里,并逐条记入 scratchpad/t27b/deviations.md §B。
+  15 轨行 / 15 泳道由 app.js 用 web/shared/mock-data.js 的 FIFTEEN_TRACKS 生成(仅撑开骨架)。
+-->
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SCVB Output</title>
+        <link rel="stylesheet" href="../shared/tokens.css" />
+        <link rel="stylesheet" href="../shared/base.css" />
+        <style>
+            /* =================================================================
+               页面专属布局脚手架(05 §1.1/§1.2/§2.1-§2.4)。
+               纪律(T27b):零裸色值、零新颜色、零阴影/渐变/圆角新配方 —— 本块只写
+               flex/grid/尺寸/间距(var(--sp-*)),颜色/圆角/阴影一律来自 tokens.css
+               的 var(--x) 或 base.css 的 .sc-* 共享组件类。
+               设计盒 1180×780 真源 = web/shared/design-box.js DESIGN.output,由
+               app.js 写 --box-w/--box-h;这里的默认值只是同值锚定,不是第二真源。
+               ================================================================= */
+            :root {
+                --box-w: 1180px;
+                --box-h: 780px;
+            }
+            /* ---- [hidden] 兜底(布局脚手架,非视觉规则) ----
+               base.css 的共享组件类显式声明了 display(.sc-banner/.sc-confirm/
+               .sc-toast: flex;.sc-scrim: position:absolute;inset:0;display:flex),
+               作者样式优先级高于 UA 的 [hidden]{display:none},导致所有「默认隐藏」
+               占位节点(警告条/确认条/toast/两个 .sc-scrim 遮罩)照样渲染,scrim 更会
+               铺满整张卡片吃掉 tabnav 点击。此处补一条通用兜底,使裸 hidden 属性生效。
+               不新增配色/阴影/圆角,属 05 §0 允许的页面布局脚手架。 */
+            [hidden] {
+                display: none !important;
+            }
+            html,
+            body {
+                height: 100%;
+                overflow: hidden;
+            }
+            body {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            #vst-root {
+                display: flex;
+            }
+            #card {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                width: var(--box-w);
+                height: var(--box-h);
+                padding: var(--sp-20);
+                gap: var(--sp-14);
+            }
+
+            /* ---- 胶囊选中态:aria-pressed 补挂(a11y,非新视觉) ----
+               shared/base.css 的 .sc-seg__item 选中态挂在 [aria-selected="true"] 上,
+               但普通 <button> 用 aria-selected 违反 ARIA(axe aria-allowed-attr),
+               胶囊已按 05 §2.0 原文改用 aria-pressed。这里只把同一套 base.css 值
+               原样补挂到 [aria-pressed="true"],不引入任何新颜色/尺寸。
+               aria-selected 仍保留给四个 role="tab" 主 tab(base.css .sc-tabs__item)。 */
+            .sc-seg__item[aria-pressed="true"] {
+                background: var(--seg-on-bg);
+                color: var(--acc-ink);
+            }
+            .sc-seg--sm .sc-seg__item[aria-pressed="true"] {
+                background: rgba(var(--wh), 0.85);
+                color: var(--txt-1);
+            }
+
+            /* ---- header(05 §1.1 骨架行1 + §2.0 通用件表) ---- */
+            #header {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: var(--sp-14);
+                flex: none;
+            }
+            .brand {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-10);
+                flex: none;
+            }
+            .brand__icon {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 38px;
+                height: 38px;
+                flex: none;
+                border-radius: var(--r-md);
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+            }
+            .brand__icon svg {
+                stroke: var(--txt-1);
+                fill: none;
+                stroke-width: 1.6px;
+            }
+            .brand__logo {
+                width: 30px;
+                height: 30px;
+                /* logo 源图为白底黑线稿:multiply 让白底融入玻璃底,线稿保持深色 */
+                mix-blend-mode: multiply;
+                border-radius: var(--r-tag);
+            }
+            .brand__title {
+                font-family: var(--ff-grotesk);
+                font-weight: 600;
+                font-size: var(--fs-160);
+                color: var(--txt-1);
+            }
+            .brand__subtitle {
+                font-size: var(--fs-75);
+                color: var(--txt-3);
+            }
+            .header__mid {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+                margin-left: auto;
+            }
+            .header__version {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-7);
+            }
+            .header__version-chips {
+                display: flex;
+                gap: var(--sp-5);
+            }
+
+            /* ---- 警告条区(05 §1.1 骨架行2 + §2.0 banner 行,默认全隐藏) ---- */
+            #banner-region {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-9);
+                flex: none;
+            }
+
+            /* ---- tab 导航(05 §1.1 骨架行3) ---- */
+            #tabbar {
+                flex: none;
+            }
+            .tabnav__stale-dot {
+                margin-left: var(--sp-5);
+            }
+
+            /* ---- 内容区(05 §1.1 骨架行4,四 tab 用 data-tab 属性显隐) ---- */
+            #content {
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+            }
+            #content > section {
+                display: none;
+                flex: 1;
+                min-height: 0;
+                flex-direction: column;
+                gap: var(--sp-14);
+                overflow: auto;
+                position: relative;
+            }
+            #content[data-tab="master"] > section[data-tab-panel="master"],
+            #content[data-tab="tracks"] > section[data-tab-panel="tracks"],
+            #content[data-tab="wave"] > section[data-tab-panel="wave"],
+            #content[data-tab="settings"] > section[data-tab-panel="settings"] {
+                display: flex;
+            }
+
+            /* ---- Tab1 整体(05 §2.1) ---- */
+            .master-flow {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-16);
+                flex: none;
+                padding: var(--sp-14);
+                border-radius: var(--r-lg);
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+            }
+            .master-flow__step {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-6);
+                flex: 1;
+                min-width: 0;
+            }
+            .master-grid {
+                display: grid;
+                grid-template-columns: 352px 1fr 1fr 196px;
+                grid-template-rows: auto auto auto;
+                gap: var(--sp-14);
+                flex: 1;
+                min-height: 0;
+            }
+            .master-grid > * {
+                min-width: 0;
+                min-height: 0;
+                overflow: auto;
+            }
+            [data-gb="master-group-selector"] {
+                grid-column: 1;
+                grid-row: 1;
+            }
+            [data-gb="master-width"] {
+                grid-column: 2;
+                grid-row: 1;
+            }
+            [data-gb="master-msbalance"] {
+                grid-column: 3;
+                grid-row: 1;
+            }
+            [data-gb="master-leadselect"] {
+                grid-column: 4;
+                grid-row: 1;
+            }
+            [data-gb="master-distchart"] {
+                grid-column: 1 / 3;
+                grid-row: 2 / 4;
+            }
+            [data-gb="master-transition"] {
+                grid-column: 3;
+                grid-row: 2;
+            }
+            [data-gb="master-range"] {
+                grid-column: 4;
+                grid-row: 2;
+            }
+            [data-gb="master-pancurve"] {
+                grid-column: 3 / 5;
+                grid-row: 3;
+            }
+            .master-distchart-canvas,
+            .master-pancurve-canvas {
+                width: 100%;
+                height: 100%;
+                min-height: 120px;
+            }
+            .master-transition-ramp {
+                stroke: var(--txt-3);
+                fill: none;
+            }
+            /* manual 档控件组(05 §2.1②):只排布局,尺寸/间距走 var(--sp-*)。 */
+            .master-range-manual {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-5);
+            }
+            .master-range-manual__row {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                flex-wrap: wrap;
+            }
+            .master-range-manual__bars {
+                display: inline-flex;
+                gap: var(--sp-3);
+            }
+            .master-range-manual input {
+                min-width: 0;
+                width: 44px;
+            }
+
+            /* ---- Tab2 轨道(05 §2.2) ---- */
+            .tracks-wrap {
+                flex: 1;
+                min-height: 0;
+                overflow: auto;
+                border-radius: var(--r-lg);
+                border: 1px solid var(--card-border);
+            }
+            .tracks-head,
+            .tracks-row {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-6);
+                padding: 0 var(--sp-8);
+            }
+            .tracks-head {
+                position: sticky;
+                top: 0;
+                z-index: 2;
+                height: 28px;
+                background: var(--card-bg);
+                border-bottom: 1px solid var(--card-border);
+            }
+            .tracks-row {
+                position: relative;
+                height: 44px;
+                border-bottom: 1px solid var(--card-border);
+            }
+            /* 冻结开关组:真实盒(不用 display:contents,否则 data-tour="freeze" 的
+               getBoundingClientRect() 恒为 0×0,T36b spotlight 无亮区)。
+               内部 gap 与行 gap 同为 --sp-6,26+6+26=58px,与表头两列逐像素对齐。 */
+            .tracks-row__freezegroup {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-6);
+                flex: none;
+            }
+            /* 行内确认层(R3 防误伤 / R2 解冻提示):就地展开在该行下方,默认 hidden。 */
+            .tracks-row__confirm {
+                position: absolute;
+                left: var(--sp-8);
+                right: var(--sp-8);
+                top: 100%;
+                z-index: 3;
+            }
+            .tracks-row__ch {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-3);
+            }
+            .tracks-row__label {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .tracks-row__voltube {
+                position: relative;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-6);
+            }
+            .tracks-legend {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: var(--sp-9);
+                flex: none;
+            }
+
+            /* ---- Tab3 波形(05 §2.3/§2.3a) ---- */
+            .wave-toolbar {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: var(--sp-9);
+                flex: none;
+                padding: var(--sp-9);
+                border-radius: var(--r-lg);
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+            }
+            .wave-toolbar__group {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: var(--sp-7);
+            }
+            .wave-slider {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-2);
+                font-size: var(--fs-90);
+            }
+            .wave-toolbar__actions {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: var(--sp-7);
+            }
+            .wave-autostop {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-4);
+                font-size: var(--fs-95);
+            }
+            .wave-ruler {
+                flex: none;
+                height: 20px;
+            }
+            .wave-lanes {
+                flex: 1;
+                min-height: 0;
+                overflow: auto;
+                position: relative;
+                border-radius: var(--r-lg);
+                border: 1px solid var(--card-border);
+            }
+            /* 底部缩放/滚动条(05 §2.3 布局末件):轨头 158px 处留同宽空档与泳道对齐。 */
+            .wave-hzoom {
+                flex: none;
+                display: flex;
+                height: 12px;
+                padding-left: 158px;
+            }
+            .wave-hzoom__scroll {
+                flex: 1;
+                min-width: 0;
+                border-radius: var(--r-tag);
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+            }
+            .wave-lane {
+                display: flex;
+                height: 60px;
+                border-bottom: 1px solid var(--card-border);
+            }
+            .wave-lane__head {
+                flex: none;
+                width: 158px;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                padding: 0 var(--sp-6);
+                font-size: var(--fs-90);
+            }
+            .wave-lane__label {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .wave-lane__stage {
+                flex: 1;
+                min-width: 0;
+                position: relative;
+            }
+            .wave-lane__stage canvas {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+            }
+            .wave-lane__boundaries,
+            .wave-lane__coverage {
+                position: absolute;
+                inset: 0;
+                pointer-events: none;
+            }
+            .wave-selection {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                left: 30%;
+                width: 30%;
+                pointer-events: none;
+            }
+            .wave-selection__handle {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                width: 9px;
+                cursor: ew-resize;
+                pointer-events: all;
+                border-radius: var(--r-xs);
+                background: var(--w-24);
+            }
+            .wave-selection__handle--left {
+                left: -4px;
+            }
+            .wave-selection__handle--right {
+                right: -4px;
+            }
+            .wave-selection__setrange {
+                position: absolute;
+                top: var(--sp-4);
+                left: 50%;
+                transform: translateX(-50%);
+            }
+            .wave-playhead {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                left: 12%;
+                width: 1px;
+                background: var(--w-24);
+                pointer-events: none;
+            }
+            .segment-inspector {
+                flex: none;
+                width: 260px;
+                padding: var(--sp-14);
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-9);
+                position: absolute;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                overflow: auto;
+                z-index: 3;
+            }
+            .inspector-field {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: var(--sp-7);
+            }
+            .wave-diff {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-5);
+            }
+
+            /* ---- Tab4 设置(05 §2.4) ---- */
+            .settings-grid {
+                display: flex;
+                gap: var(--sp-14);
+                flex: 1;
+                min-height: 0;
+            }
+            .settings-main {
+                flex: 1;
+                min-width: 0;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-14);
+                overflow: auto;
+            }
+            .settings-side {
+                flex: none;
+                width: 330px;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-14);
+                overflow: auto;
+            }
+            .settings-guideblock-rules {
+                margin-top: var(--sp-9);
+            }
+
+            /* ---- footer(05 §1.1 骨架行5) ---- */
+            footer {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: var(--sp-14);
+                flex: none;
+            }
+            .footer-hint {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                min-width: 0;
+            }
+            .footer-right {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+                flex: none;
+            }
+
+            /* ---- toast / 首启引导 overlay(05 §2.0,绝对定位于卡片内) ---- */
+            #toast-region {
+                position: absolute;
+                right: var(--sp-20);
+                bottom: 64px;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-9);
+                z-index: 8;
+                max-width: 330px;
+            }
+            #guide-overlay {
+                position: absolute;
+                inset: 0;
+                z-index: 9;
+            }
+            .guide-overlay__panel {
+                max-width: 640px;
+                max-height: 84%;
+                overflow: auto;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-9);
+            }
+        </style>
+    </head>
+    <body>
+        <div id="vst-root">
+            <!-- 05 §1.1:卡片(玻璃面板,圆角20,内边距20) -->
+            <div id="card" class="sc-shell" data-gb="card">
+                <div
+                    class="sc-halo sc-halo--1"
+                    style="top: -60px; left: -40px"
+                    aria-hidden="true"
+                ></div>
+                <div
+                    class="sc-halo sc-halo--2"
+                    style="bottom: -70px; right: -50px"
+                    aria-hidden="true"
+                ></div>
+                <div
+                    class="sc-halo sc-halo--3"
+                    style="top: 35%; right: 8%"
+                    aria-hidden="true"
+                ></div>
+
+                <!-- ============================== Header(05 §1.1 + §2.0) ============================== -->
+                <header id="header" data-gb="header">
+                    <div class="brand" data-gb="header-brand">
+                        <span class="brand__icon" aria-hidden="true">
+                            <!-- Synchain logo(org 头像同源,web/shared/logo.png 本地副本;
+                                 白底经 mix-blend-mode:multiply 融入玻璃,用户指定替换 2026-08-17)-->
+                            <img
+                                class="brand__logo"
+                                src="../shared/logo.png"
+                                alt=""
+                            />
+                        </span>
+                        <div>
+                            <div class="brand__title">SCVB Output</div>
+                            <div class="brand__subtitle sc-mono">
+                                SYNCHAIN · VOCAL BALANCER · VST3
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="header__mid" data-gb="header-mid">
+                        <!-- 05 §2.0 行1:Header 连接摘要 pill -->
+                        <span
+                            class="sc-pill"
+                            data-tone="gray"
+                            data-gb="header-conn-pill"
+                        >
+                            <span class="sc-pill__dot"></span>
+                            <span class="sc-mono" data-gb="header-conn-count"
+                                >0/15</span
+                            >
+                            <span data-t="state.notConnected">未连接</span>
+                        </span>
+                        <!-- 05 §2.0 行2:组号 badge「组 {X}」(J71③) -->
+                        <span class="sc-pill" data-gb="header-group-badge">
+                            <span data-t="group.label">组</span>
+                            <span
+                                class="sc-mono"
+                                data-gb="header-group-badge-letter"
+                                >A</span
+                            >
+                        </span>
+                    </div>
+
+                    <!-- 05 §2.0 行3 / §2.1③:Version 切换与复制(回流②,迁至 header 全局位) -->
+                    <div class="header__version" data-gb="header-version">
+                        <span class="sc-eyebrow" data-t="version">版本</span>
+                        <div
+                            class="header__version-chips"
+                            data-gb="header-version-chips"
+                        >
+                            <button
+                                class="sc-chip"
+                                data-set="1"
+                                data-gb="header-version-chip-1"
+                            >
+                                V1
+                            </button>
+                            <button
+                                class="sc-chip"
+                                data-gb="header-version-chip-2"
+                            >
+                                V2
+                            </button>
+                        </div>
+                        <button
+                            class="sc-btn"
+                            data-gb="header-version-copy"
+                            data-t="copyTo"
+                        >
+                            复制到
+                        </button>
+                        <!-- [T3x] bridge.setVersionActive(v) —— 契约 §1.9 -->
+                        <!-- [T3x] bridge.setVersionName(v, name) —— 契约 §1.10 -->
+                        <!-- [T3x] bridge.copyVersion(src, dst) —— 契约 §1.11 -->
+                        <!-- 复制确认框(深色玻璃,同缩放确认族) -->
+                        <div
+                            class="sc-scrim"
+                            data-gb="header-version-copy-confirm"
+                            hidden
+                        >
+                            <div class="sc-modal">
+                                <p
+                                    class="sc-modal__body"
+                                    data-t="master.copyConfirmWarn"
+                                >
+                                    目标已有数据将被覆盖——{name} 的 15 轨 pan /
+                                    vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。
+                                </p>
+                                <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
+                                <button
+                                    class="sc-btn--dark"
+                                    data-gb="header-version-copy-cancel"
+                                    data-gb-todo="词条待立"
+                                >
+                                    取消
+                                </button>
+                                <!-- 词条待立:确认按钮「复制」/「覆盖并复制」文案(字典缺) -->
+                                <button
+                                    class="sc-btn--cta"
+                                    data-gb="header-version-copy-ok"
+                                    data-gb-todo="词条待立"
+                                >
+                                    复制
+                                </button>
+                            </div>
+                        </div>
+                        <!-- 版本 chip 双击重命名(行内 input,≤16 字符);ARMED 轻确认(A6) -->
+                        <!-- 词条待立:ARMED 轻确认「引擎输出将平滑切至新版本,继续?」(A6,字典缺) -->
+                        <div
+                            class="sc-confirm"
+                            data-gb="header-version-armed-confirm"
+                            hidden
+                            data-gb-todo="词条待立"
+                        >
+                            引擎输出将平滑切至新版本,继续?
+                        </div>
+                    </div>
+
+                    <!-- 05 §2.0 行4:语言胶囊(中/EN/FR) -->
+                    <div
+                        class="sc-seg sc-seg--sm"
+                        role="group"
+                        aria-label="language"
+                        data-gb="header-lang"
+                    >
+                        <button
+                            class="sc-seg__item"
+                            aria-pressed="true"
+                            data-lang="zh"
+                            data-gb="header-lang-zh"
+                        >
+                            中
+                        </button>
+                        <button
+                            class="sc-seg__item"
+                            aria-pressed="false"
+                            data-lang="en"
+                            data-gb="header-lang-en"
+                        >
+                            EN
+                        </button>
+                        <button
+                            class="sc-seg__item"
+                            aria-pressed="false"
+                            data-lang="fr"
+                            data-gb="header-lang-fr"
+                        >
+                            FR
+                        </button>
+                        <!-- [T3x] bridge.setLang(code) —— 契约 §1.30(切语言本地即时,注释桩留待接线) -->
+                    </div>
+                </header>
+
+                <!-- ============================== 警告条区(05 §2.0 banner 行,①-⑦全部默认隐藏) ============================== -->
+                <div
+                    id="banner-region"
+                    data-gb="banner-region"
+                    aria-live="polite"
+                >
+                    <!-- ① 路由失准 -->
+                    <div class="sc-banner" data-gb="banner-misaligned" hidden>
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <!-- 词条待立:banner①「路由失准:M 轨检测到时间线缺口——检查人声轨是否仍指向本总线」全文(05 §2.0,字典缺完整句;misaligned 仅短标签) -->
+                        <span data-gb-todo="词条待立"
+                            >路由失准:M
+                            轨检测到时间线缺口——检查人声轨是否仍指向本总线</span
+                        >
+                    </div>
+                    <!-- ② 组内只读观察 -->
+                    <div
+                        class="sc-banner sc-banner--red"
+                        data-gb="banner-secondOutput"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span data-t="banner.secondOutput"
+                            >组 {X} 已有主 Output,本实例只读观察</span
+                        >
+                    </div>
+                    <!-- ③ 采样率不一致 -->
+                    <div
+                        class="sc-banner sc-banner--red"
+                        data-gb="banner-srMismatch"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <!-- 词条待立:banner③「轨 N 采样率不一致,已禁用」全文(05 §2.0,字典缺;in.pill.srMismatch 是 Input 侧短标) -->
+                        <span data-gb-todo="词条待立"
+                            >轨 N 采样率不一致,已禁用</span
+                        >
+                    </div>
+                    <!-- ④ 工程版本过旧 -->
+                    <div
+                        class="sc-banner sc-banner--red"
+                        data-gb="banner-versionMismatch"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span data-t="banner.versionMismatch"
+                            >此工程由更新版本的 SCVB 保存,请升级插件(本机 abi
+                            {a} / 工程 abi {b})</span
+                        >
+                    </div>
+                    <!-- ⑤ 采集数据缺失/过期 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-sidecarMissing"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <!-- 词条待立:banner⑤「采集数据缺失/过期,请重新采集」全文(05 §2.0,字典缺) -->
+                        <span data-gb-todo="词条待立"
+                            >采集数据缺失/过期,请重新采集</span
+                        >
+                    </div>
+                    <!-- ⑥ 宿主未提供时间线 -->
+                    <div class="sc-banner" data-gb="banner-noTimeline" hidden>
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <!-- 词条待立:banner⑥「宿主未提供时间线」全文(05 §2.0,字典缺) -->
+                        <span data-gb-todo="词条待立">宿主未提供时间线</span>
+                    </div>
+                    <!-- ⑦ 加载守卫:引擎驱动状态随工程恢复 -->
+                    <div class="sc-banner" data-gb="banner-printGuard" hidden>
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span data-t="banner.printGuard"
+                            >输出开关处于引擎驱动状态(随工程恢复)</span
+                        >
+                        <button
+                            class="sc-btn sc-btn--cta"
+                            data-gb="banner-printGuard-confirm"
+                            data-t="banner.printGuard.confirm"
+                        >
+                            继续引擎驱动
+                        </button>
+                        <!-- [T3x] bridge.confirmPrintGuard() —— 契约 §1.34 -->
+                    </div>
+                </div>
+
+                <!-- ============================== Tab 导航(05 §1.1 + §2.0) ============================== -->
+                <nav
+                    class="sc-tabs"
+                    id="tabbar"
+                    data-gb="tabnav"
+                    role="tablist"
+                    aria-label="tabs"
+                >
+                    <div
+                        class="sc-tabs__slate"
+                        id="tabs-slate"
+                        aria-hidden="true"
+                    ></div>
+                    <!-- 词条待立:tab 名「整体」(05 §1.1,字典缺 tab 名 key) -->
+                    <button
+                        class="sc-tabs__item"
+                        role="tab"
+                        aria-selected="true"
+                        data-tab-btn="master"
+                        data-gb="tabnav-master"
+                        data-gb-todo="词条待立"
+                    >
+                        整体
+                    </button>
+                    <!-- 词条待立:tab 名「轨道」(05 §1.1,字典缺 tab 名 key) -->
+                    <button
+                        class="sc-tabs__item"
+                        role="tab"
+                        aria-selected="false"
+                        data-tab-btn="tracks"
+                        data-gb="tabnav-tracks"
+                        data-gb-todo="词条待立"
+                    >
+                        轨道
+                    </button>
+                    <!-- 词条待立:tab 名「波形」(05 §1.1,字典缺 tab 名 key) -->
+                    <button
+                        class="sc-tabs__item"
+                        role="tab"
+                        aria-selected="false"
+                        data-tab-btn="wave"
+                        data-gb="tabnav-wave"
+                        data-gb-todo="词条待立"
+                    >
+                        波形
+                        <span
+                            class="sc-dot tabnav__stale-dot"
+                            data-tone="amber"
+                            data-gb="tabnav-wave-stale-dot"
+                            hidden
+                            aria-hidden="true"
+                        ></span>
+                    </button>
+                    <!-- 词条待立:tab 名「设置」(05 §1.1,字典缺 tab 名 key;J71⑥ tab 名与说明块 eyebrow 不得互换) -->
+                    <button
+                        class="sc-tabs__item"
+                        role="tab"
+                        aria-selected="false"
+                        data-tab-btn="settings"
+                        data-gb="tabnav-settings"
+                        data-gb-todo="词条待立"
+                    >
+                        设置
+                    </button>
+                    <!-- [T3x] bridge.setActiveTab(tab) —— 契约 §1.31(灰模不写 state,仅 CSS 显隐,见 app.js 注释) -->
+                </nav>
+
+                <!-- ============================== 内容区(四 tab) ============================== -->
+                <main id="content" data-gb="content">
+                    <!-- ========================================================= -->
+                    <!-- Tab1 整体(Master)—— 05 §2.1                                -->
+                    <!-- ========================================================= -->
+                    <section data-tab-panel="master" data-gb="tab-master">
+                        <!-- 空态(A1,J72:无设计稿依据,依本节文字实现) -->
+                        <div
+                            class="sc-banner"
+                            data-gb="master-emptystate"
+                            hidden
+                        >
+                            <div>
+                                <!-- 词条待立:Tab1 空态红字前提句(05 §2.1 末段,ADR-002 红线,字典缺) -->
+                                <p class="sc-hint" data-gb-todo="词条待立">
+                                    SCVB Output
+                                    插在人声轨共同路由到的总线第一格;人声轨的输出路由保持指向该总线——不要改
+                                </p>
+                                <ol>
+                                    <!-- 词条待立:空态步骤1「在每条人声轨末插 SCVB Input」(字典缺) -->
+                                    <li data-gb-todo="词条待立">
+                                        在每条人声轨末插 SCVB Input
+                                    </li>
+                                    <!-- 词条待立:空态步骤2「采集并播放」(字典缺) -->
+                                    <li data-gb-todo="词条待立">采集并播放</li>
+                                    <!-- 词条待立:空态步骤3「分析并开启输出」(字典缺) -->
+                                    <li data-gb-todo="词条待立">
+                                        分析并开启输出
+                                    </li>
+                                </ol>
+                            </div>
+                        </div>
+
+                        <!-- ① 三件套:采集 → 分析 → 输出(视觉流程带) -->
+                        <div class="master-flow" data-gb="master-flow">
+                            <div
+                                class="master-flow__step"
+                                data-gb="master-capture-toggle"
+                                data-tour="cap"
+                            >
+                                <span data-t="capture">采集</span>
+                                <div
+                                    class="sc-toggle"
+                                    data-on="0"
+                                    role="switch"
+                                    aria-checked="false"
+                                    data-t-aria="capture"
+                                    data-gb="master-capture-toggle-switch"
+                                ></div>
+                                <!-- [T3x] bridge.setCaptureEnabled(on) —— 契约 §1.2 -->
+                            </div>
+                            <div class="sc-divider" aria-hidden="true"></div>
+                            <div
+                                class="master-flow__step"
+                                data-gb="master-analyze-btn"
+                                data-tour="an"
+                            >
+                                <button class="sc-btn" data-t="analyze">
+                                    分析
+                                </button>
+                                <!-- 词条待立:分析点击前影响预览行「将影响 N 区段 / M 轨;K 处手动编辑将保留」(05 §2.1①,字典缺句式) -->
+                                <p
+                                    class="sc-hint"
+                                    data-gb="master-analyze-preview"
+                                    data-gb-todo="词条待立"
+                                >
+                                    将影响 N 区段 / M 轨;K 处手动编辑将保留
+                                </p>
+                                <!-- [T3x] bridge.previewAnalyze(scope) —— 契约 §1.5 -->
+                                <!-- [T3x] bridge.analyze(scope, opts?) —— 契约 §1.6 -->
+                                <!-- [T3x] bridge.cancelAnalyze() —— 契约 §1.7 -->
+                            </div>
+                            <div class="sc-divider" aria-hidden="true"></div>
+                            <div
+                                class="master-flow__step"
+                                data-gb="master-output-toggle"
+                                data-tour="out"
+                            >
+                                <span data-t="output">输出</span>
+                                <div
+                                    class="sc-toggle"
+                                    data-on="0"
+                                    role="switch"
+                                    aria-checked="false"
+                                    data-t-aria="output"
+                                    data-gb="master-output-toggle-switch"
+                                ></div>
+                                <!-- 词条待立:Latch/Write 提示行「要录成自动化:在 DAW 侧对本插件参数开 Latch(推荐)或 Write;请勿使用 Touch」(05 §2.1①,字典缺完整句) -->
+                                <p class="sc-hint" data-gb-todo="词条待立">
+                                    要录成自动化:在 DAW 侧对本插件参数开
+                                    Latch(推荐)或 Write;请勿使用 Touch
+                                </p>
+                                <!-- [T3x] bridge.setOutputEnabled(on) —— 契约 §1.3 -->
+                            </div>
+                        </div>
+
+                        <!-- write 确认条(条件出现,首次 OFF→ON) -->
+                        <div
+                            class="sc-confirm"
+                            data-gb="master-write-confirm"
+                            hidden
+                        >
+                            <span data-t="out.master.writeConfirm"
+                                >引擎驱动 {v} · 范围 {x}–{y} · 30 条车道;若 DAW
+                                侧已arm
+                                Latch/Write,播放本范围将覆盖该范围已有自动化;未
+                                arm 则仅试听、不落盘。</span
+                            >
+                            <!-- 词条待立:「知道了,开始」按钮文案(字典缺) -->
+                            <button
+                                class="sc-btn sc-btn--cta"
+                                data-gb="master-write-confirm-ok"
+                                data-gb-todo="词条待立"
+                            >
+                                知道了,开始
+                            </button>
+                            <!-- 词条待立:「撤销(关回跟随宿主)」按钮文案(字典缺) -->
+                            <button
+                                class="sc-btn"
+                                data-gb="master-write-confirm-undo"
+                                data-gb-todo="词条待立"
+                            >
+                                撤销(关回跟随宿主)
+                            </button>
+                        </div>
+
+                        <!-- 四列网格 352/1fr/1fr/196 × 三行(05 §2.1 布局表) -->
+                        <div class="master-grid" data-gb="master-grid">
+                            <!-- ⓪ 组选择器(J66,回流③;网格列1行1) -->
+                            <div
+                                class="sc-card"
+                                data-gb="master-group-selector"
+                            >
+                                <!-- 词条待立:块 eyebrow「组 · GROUP」(05 §2.1⓪,字典缺) -->
+                                <div class="sc-eyebrow" data-gb-todo="词条待立">
+                                    组 · GROUP
+                                </div>
+                                <div
+                                    class="sc-seg"
+                                    role="group"
+                                    aria-label="group"
+                                    data-gb="master-group-seg"
+                                >
+                                    <button
+                                        class="sc-seg__item"
+                                        aria-pressed="true"
+                                        data-group="1"
+                                        data-gb="master-group-A"
+                                    >
+                                        A
+                                    </button>
+                                    <button
+                                        class="sc-seg__item"
+                                        data-group="2"
+                                        data-gb="master-group-B"
+                                        aria-pressed="false"
+                                    >
+                                        B
+                                    </button>
+                                    <button
+                                        class="sc-seg__item"
+                                        data-group="3"
+                                        data-gb="master-group-C"
+                                        aria-pressed="false"
+                                    >
+                                        C
+                                    </button>
+                                    <button
+                                        class="sc-seg__item"
+                                        data-group="4"
+                                        data-gb="master-group-D"
+                                        aria-pressed="false"
+                                    >
+                                        D
+                                    </button>
+                                    <button
+                                        class="sc-seg__item"
+                                        data-group="5"
+                                        data-gb="master-group-E"
+                                        aria-pressed="false"
+                                    >
+                                        E
+                                    </button>
+                                    <button
+                                        class="sc-seg__item"
+                                        data-group="6"
+                                        data-gb="master-group-F"
+                                        aria-pressed="false"
+                                    >
+                                        F
+                                    </button>
+                                    <button
+                                        class="sc-seg__item"
+                                        data-group="7"
+                                        data-gb="master-group-G"
+                                        aria-pressed="false"
+                                    >
+                                        G
+                                    </button>
+                                    <button
+                                        class="sc-seg__item"
+                                        data-group="8"
+                                        data-gb="master-group-H"
+                                        aria-pressed="false"
+                                    >
+                                        H
+                                    </button>
+                                </div>
+                                <p
+                                    class="sc-hint"
+                                    data-t="group.oneInstanceNote"
+                                >
+                                    本实例只属于一个组
+                                </p>
+                                <div
+                                    class="sc-confirm"
+                                    data-gb="master-group-switch-confirm"
+                                    hidden
+                                >
+                                    <span data-t="group.switchConfirm.out"
+                                        >切换到组 {x} 将断开本组全部 {n}
+                                        条连接</span
+                                    >
+                                    <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
+                                    <button
+                                        class="sc-btn"
+                                        data-gb="master-group-switch-cancel"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        取消
+                                    </button>
+                                    <button
+                                        class="sc-btn sc-btn--cta"
+                                        data-gb="master-group-switch-confirm-btn"
+                                        data-t="group.switchConfirm.primary"
+                                    >
+                                        切换到 {x}
+                                    </button>
+                                </div>
+                                <!-- [T3x] bridge.setGroupId(g) —— 契约 §1.4 -->
+                            </div>
+
+                            <!-- ④ Width -->
+                            <div class="sc-card" data-gb="master-width">
+                                <div class="sc-eyebrow">
+                                    <span data-t="width">宽度</span>
+                                    <!-- 词条待立:eyebrow 后缀「· 最大角度」(05 §2.1④,字典缺) -->
+                                    <span data-gb-todo="词条待立"
+                                        >· 最大角度</span
+                                    >
+                                </div>
+                                <div
+                                    class="sc-mono"
+                                    style="font-size: var(--fs-150)"
+                                    data-gb="master-width-reading"
+                                >
+                                    ±0°
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="150"
+                                    step="1"
+                                    value="100"
+                                    data-t-aria="width"
+                                    data-gb="master-width-slider"
+                                />
+                                <p
+                                    class="sc-hint"
+                                    data-t="master.widthAngleHint"
+                                >
+                                    左右各摆到最外时的角度;0–90°(自动化参数
+                                    width 0–150%)
+                                </p>
+                                <!-- [T3x] bridge.beginParamGesture("width") / setParam("width", v) / endParamGesture("width") —— 契约 §1.12-1.14 -->
+                            </div>
+
+                            <!-- ④ MS Balance -->
+                            <div class="sc-card" data-gb="master-msbalance">
+                                <div class="sc-eyebrow" data-t="msBalance">
+                                    MS 平衡
+                                </div>
+                                <div
+                                    class="sc-mono"
+                                    style="font-size: var(--fs-150)"
+                                    data-gb="master-msbalance-reading"
+                                >
+                                    0
+                                </div>
+                                <input
+                                    type="range"
+                                    min="-100"
+                                    max="100"
+                                    step="1"
+                                    value="0"
+                                    data-t-aria="msBalance"
+                                    data-gb="master-msbalance-slider"
+                                />
+                                <p class="sc-hint" data-t="master.msHint">
+                                    −100 偏 Mid / +100 偏 Side,双击回
+                                    0——拖动看下方曲线
+                                </p>
+                                <!-- [T3x] bridge.beginParamGesture("ms_balance") / setParam("ms_balance", v) / endParamGesture("ms_balance") —— 契约 §1.12-1.14 -->
+                            </div>
+
+                            <!-- ④ Lead Select -->
+                            <div class="sc-card" data-gb="master-leadselect">
+                                <div class="sc-eyebrow" data-t="leadSelect">
+                                    主唱选择
+                                </div>
+                                <select
+                                    class="sc-select"
+                                    data-t-aria="leadSelect"
+                                    data-gb="master-leadselect-select"
+                                >
+                                    <option
+                                        value="0"
+                                        data-t="leadFollowAnalysis"
+                                    >
+                                        遵循分析
+                                    </option>
+                                    <!-- app.js 补 15 个「轨 01..15」选项(FIFTEEN_TRACKS 撑骨架) -->
+                                </select>
+                                <p
+                                    class="sc-hint"
+                                    data-gb="master-leadselect-hint"
+                                    data-t="master.leadSelectHint"
+                                    hidden
+                                >
+                                    该轨强制居中;音量豁免为独立选项,不随此联动
+                                </p>
+                                <!-- [T3x] bridge.beginParamGesture("lead_select") / setParam("lead_select", v) / endParamGesture("lead_select") —— 契约 §1.12-1.14 -->
+                            </div>
+
+                            <!-- ④ 声像/音量分布图(回流⑥新原件) -->
+                            <!-- tabindex="0":.master-grid > * 是 overflow:auto 的滚动容器,
+                                 本卡内无可聚焦子元素,需自身可聚焦才能用键盘滚动
+                                 (axe scrollable-region-focusable)。 -->
+                            <div
+                                class="sc-card"
+                                data-gb="master-distchart"
+                                tabindex="0"
+                            >
+                                <!-- 词条待立:eyebrow「声像 / 音量分布」(05 §2.1④,字典缺) -->
+                                <div class="sc-eyebrow" data-gb-todo="词条待立">
+                                    声像 / 音量分布
+                                </div>
+                                <p class="sc-hint" data-t="master.distHint">
+                                    柱高 = 音量,横位 = 声像;横线 =
+                                    立体声源张开度
+                                </p>
+                                <!-- canvas 尺寸注释:占满网格列1-2×行2-3(约 352+1fr 宽 / 剩余高),零绘制逻辑,T31 实现 -->
+                                <canvas
+                                    class="master-distchart-canvas"
+                                    data-gb="master-distchart-canvas"
+                                    width="360"
+                                    height="200"
+                                ></canvas>
+                                <div
+                                    class="sc-mono sc-hint"
+                                    data-t="master.distAxis"
+                                >
+                                    左 L · −50 · 中 C · +50 · 右 R
+                                </div>
+                            </div>
+
+                            <!-- ④ 过渡时间 -->
+                            <div class="sc-card" data-gb="master-transition">
+                                <div class="sc-eyebrow" data-t="transition">
+                                    过渡
+                                </div>
+                                <div
+                                    class="sc-mono"
+                                    data-gb="master-transition-reading"
+                                >
+                                    80 ms
+                                </div>
+                                <div class="sc-mono sc-hint" aria-hidden="true">
+                                    20 · 300 ms
+                                </div>
+                                <input
+                                    type="range"
+                                    min="20"
+                                    max="300"
+                                    step="1"
+                                    value="80"
+                                    data-t-aria="transition"
+                                    data-gb="master-transition-slider"
+                                />
+                                <!-- 内联斜坡示意 SVG,零绘制逻辑(设计定稿新增) -->
+                                <svg
+                                    class="master-transition-ramp"
+                                    data-gb="master-transition-ramp"
+                                    width="100%"
+                                    height="28"
+                                    viewBox="0 0 160 28"
+                                    aria-hidden="true"
+                                >
+                                    <path
+                                        d="M4 22h40l30-16h40l30 16h12"
+                                        stroke-width="1.4"
+                                    />
+                                </svg>
+                                <p
+                                    class="sc-hint"
+                                    data-t="master.transitionHint"
+                                >
+                                    段与段之间参数不瞬切,走完这段斜坡才到下一段的值。太短交界会「跳」,太长声像糊在两处之间。
+                                </p>
+                                <!-- [T3x] bridge.setTransitionRamp(ms) —— 契约 §1.20 -->
+                            </div>
+
+                            <!-- ② Range 选择 -->
+                            <div class="sc-card" data-gb="master-range">
+                                <div class="sc-eyebrow" data-t="range">
+                                    范围
+                                </div>
+                                <div
+                                    class="sc-seg sc-seg--sm"
+                                    role="group"
+                                    data-gb="master-range-seg"
+                                >
+                                    <button
+                                        class="sc-seg__item"
+                                        aria-pressed="true"
+                                        data-t="range.followShort"
+                                    >
+                                        全曲
+                                    </button>
+                                    <!-- 05 §2.1② 分层规则①「能力级缺失」:宿主从不提供 loop 字段(04 §2.6 降级矩阵判定)
+                                         → 本档 disabled + tooltip「宿主未提供循环区」,档位仍占位显示、绝不隐藏。
+                                         灰模只落 tooltip 占位与锚点,disabled 的判定与切换留 T31。 -->
+                                    <!-- 词条待立:「循环区」档能力级缺失 tooltip「宿主未提供循环区」(05 §2.1②,字典缺) -->
+                                    <button
+                                        class="sc-seg__item"
+                                        data-t="loopRegion"
+                                        data-gb="master-range-seg-loop"
+                                        title="宿主未提供循环区"
+                                        data-gb-todo="词条待立"
+                                        aria-pressed="false"
+                                    >
+                                        循环区
+                                    </button>
+                                    <!-- 词条待立:模式段选第三档「手动」(05 §2.1②,字典缺;range/follow/loopRegion 已有,manual 无对应词) -->
+                                    <button
+                                        class="sc-seg__item"
+                                        data-gb="master-range-seg-manual"
+                                        data-gb-todo="词条待立"
+                                        aria-pressed="false"
+                                    >
+                                        手动
+                                    </button>
+                                </div>
+                                <p
+                                    class="sc-hint"
+                                    data-t="master.rangeFollowHint"
+                                >
+                                    跟随播放,自动扩展范围。已分析区域共 {n} 段 ·
+                                    合计 {t}
+                                </p>
+                                <!-- 05 §2.1② 分层规则②「会话内瞬态缺失」(宿主提供 loop 但当前 kCycleValid 暂缺):
+                                     保持最后有效值 + 本行内提示,不回退档位、不清空起止。 -->
+                                <!-- 词条待立:「循环区已失效,沿用上次范围」行内提示(05 §2.1②,字典缺) -->
+                                <p
+                                    class="sc-hint"
+                                    data-gb="master-range-loop-stale-hint"
+                                    data-gb-todo="词条待立"
+                                    hidden
+                                >
+                                    循环区已失效,沿用上次范围
+                                </p>
+                                <!-- manual 档控件组(05 §2.1②:起/终各一组「小节+拍+tick」与「mm:ss.mmm」
+                                     双向联动输入(04 §2.3;双向校验 start<end)+「设为播放头」两钮 +「±4 小节」步进钮)。
+                                     默认 hidden —— 灰模档位停在 follow(默认档),T31 按 range.mode 切显隐;
+                                     ppq 不可用时按 04 §2.6 降级矩阵隐藏「小节+拍+tick」输入组(不是隐藏本面板)。 -->
+                                <div
+                                    class="master-range-manual"
+                                    data-gb="master-range-manual"
+                                    hidden
+                                >
+                                    <div class="master-range-manual__row">
+                                        <!-- 词条待立:manual 档起点行标「起」(05 §2.1②,字典缺) -->
+                                        <span
+                                            class="sc-eyebrow"
+                                            data-gb-todo="词条待立"
+                                            >起</span
+                                        >
+                                        <!-- 词条待立:「小节+拍+tick」三段输入组标(05 §2.1②/04 §2.3,字典缺) -->
+                                        <span
+                                            class="master-range-manual__bars"
+                                            data-gb="master-range-start-bars"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                step="1"
+                                                value="1"
+                                                aria-label="起点小节"
+                                            />
+                                            <!-- a11y 占位名,T31 换词条 -->
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                step="1"
+                                                value="1"
+                                                aria-label="起点拍"
+                                            />
+                                            <!-- a11y 占位名,T31 换词条 -->
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                value="0"
+                                                aria-label="起点 tick"
+                                            />
+                                            <!-- a11y 占位名,T31 换词条 -->
+                                        </span>
+                                        <input
+                                            class="sc-mono"
+                                            type="text"
+                                            data-gb="master-range-start-time"
+                                            value="00:00.000"
+                                            aria-label="起点时间码"
+                                        />
+                                        <!-- a11y 占位名,T31 换词条 -->
+                                        <!-- 词条待立:「设为播放头」按钮文案(05 §2.1②,字典缺) -->
+                                        <button
+                                            class="sc-btn"
+                                            data-gb="master-range-start-setplayhead"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            设为播放头
+                                        </button>
+                                    </div>
+                                    <div class="master-range-manual__row">
+                                        <!-- 词条待立:manual 档终点行标「终」(05 §2.1②,字典缺) -->
+                                        <span
+                                            class="sc-eyebrow"
+                                            data-gb-todo="词条待立"
+                                            >终</span
+                                        >
+                                        <!-- 词条待立:「小节+拍+tick」三段输入组标(05 §2.1②/04 §2.3,字典缺) -->
+                                        <span
+                                            class="master-range-manual__bars"
+                                            data-gb="master-range-end-bars"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                step="1"
+                                                value="1"
+                                                aria-label="终点小节"
+                                            />
+                                            <!-- a11y 占位名,T31 换词条 -->
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                step="1"
+                                                value="1"
+                                                aria-label="终点拍"
+                                            />
+                                            <!-- a11y 占位名,T31 换词条 -->
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                value="0"
+                                                aria-label="终点 tick"
+                                            />
+                                            <!-- a11y 占位名,T31 换词条 -->
+                                        </span>
+                                        <input
+                                            class="sc-mono"
+                                            type="text"
+                                            data-gb="master-range-end-time"
+                                            value="00:00.000"
+                                            aria-label="终点时间码"
+                                        />
+                                        <!-- a11y 占位名,T31 换词条 -->
+                                        <!-- 词条待立:「设为播放头」按钮文案(05 §2.1②,字典缺) -->
+                                        <button
+                                            class="sc-btn"
+                                            data-gb="master-range-end-setplayhead"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            设为播放头
+                                        </button>
+                                    </div>
+                                    <div class="master-range-manual__row">
+                                        <!-- 词条待立:「±4 小节」步进钮文案(05 §2.1②,字典缺) -->
+                                        <button
+                                            class="sc-btn"
+                                            data-gb="master-range-step-minus4"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            −4 小节
+                                        </button>
+                                        <!-- 词条待立:「±4 小节」步进钮文案(05 §2.1②,字典缺) -->
+                                        <button
+                                            class="sc-btn"
+                                            data-gb="master-range-step-plus4"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            +4 小节
+                                        </button>
+                                    </div>
+                                    <!-- tempo 表未覆盖区域小节值显示为估算态(斜体/半透明 + tooltip「播放该区域后精确」)——
+                                         视觉态与双向联动/start<end 校验一律留 T31,灰模零业务逻辑。 -->
+                                </div>
+                                <span
+                                    class="sc-badge--amber"
+                                    data-gb="master-range-recapture-badge"
+                                    data-t="wave.recaptureArmed"
+                                    hidden
+                                >
+                                    重采集布防中 · 选区 {x}–{y} · {n} 轨
+                                </span>
+                                <!-- [T3x] bridge.setRange(mode, startS, endS) —— 契约 §1.8 -->
+                            </div>
+
+                            <!-- ④ pan 角度域增益曲线编辑器 -->
+                            <!-- tabindex="0":同上,滚动容器内无可聚焦子元素 -->
+                            <div
+                                class="sc-dark"
+                                data-gb="master-pancurve"
+                                tabindex="0"
+                            >
+                                <!-- 词条待立:窗内 eyebrow「角度域曲线 · ±12 dB」(05 §2.1④,字典缺) -->
+                                <div
+                                    class="sc-eyebrow sc-eyebrow--dark"
+                                    data-gb-todo="词条待立"
+                                >
+                                    角度域曲线 · ±12 dB
+                                </div>
+                                <!-- canvas 尺寸注释:占满网格列3-4×行3(1fr+196px 宽 / 剩余高),零绘制逻辑,T31 实现 -->
+                                <canvas
+                                    class="master-pancurve-canvas"
+                                    data-gb="master-pancurve-canvas"
+                                    width="420"
+                                    height="180"
+                                ></canvas>
+                                <!-- 词条待立:空态中央淡字「双击添加控制点」(05 §2.1④,字典缺) -->
+                                <p
+                                    class="sc-hint"
+                                    data-gb="master-pancurve-emptyhint"
+                                    data-gb-todo="词条待立"
+                                >
+                                    双击添加控制点
+                                </p>
+                                <!-- [T3x] bridge.setPanCurve(points) —— 契约 §1.17 -->
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- ========================================================= -->
+                    <!-- Tab2 轨道(Tracks)—— 05 §2.2                                -->
+                    <!-- ========================================================= -->
+                    <section data-tab-panel="tracks" data-gb="tab-tracks">
+                        <!-- 空态 -->
+                        <div
+                            class="sc-banner"
+                            data-gb="tracks-emptystate"
+                            hidden
+                        >
+                            <span data-t="tracks.emptyGroup"
+                                >组 {g} 尚无输入——在人声轨插件链最后一格插入
+                                SCVB Input 并选择组 {g}</span
+                            >
+                        </div>
+
+                        <!-- role="table":内部 .tracks-head(role=row)/#tracks-body(role=rowgroup)
+                             必须有 table/grid 祖先,否则 axe aria-required-parent 报 critical。
+                             tabindex="0":可滚动容器需能用键盘滚动。 -->
+                        <div
+                            class="tracks-wrap"
+                            data-gb="tracks-wrap"
+                            role="table"
+                            tabindex="0"
+                        >
+                            <!-- 列序与分组严格照 05 §2.2 代码块,列宽为注释标注的设计 px,不精调 -->
+                            <div
+                                class="tracks-head sc-eyebrow"
+                                data-gb="tracks-head"
+                                role="row"
+                            >
+                                <span
+                                    style="width: 8px"
+                                    role="columnheader"
+                                ></span>
+                                <!-- 词条待立:列头「CH」缩写(字典缺) -->
+                                <span
+                                    style="width: 44px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >CH</span
+                                >
+                                <span
+                                    style="width: 150px"
+                                    role="columnheader"
+                                    data-t="track"
+                                >
+                                    轨道
+                                </span>
+                                <span style="width: 30px" role="columnheader"
+                                    >PAN</span
+                                >
+                                <!-- 词条待立:列头「W」= width 缩写(字典缺) -->
+                                <span
+                                    style="width: 30px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >W</span
+                                >
+                                <!-- 词条待立:列头「音量 / 电平」合成件表头(05 §2.2 回流⑦,字典缺) -->
+                                <span
+                                    style="width: 268px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >音量 / 电平</span
+                                >
+                                <!-- 词条待立:列头「PRIO」缩写(字典缺,priority 全称非缩写) -->
+                                <span
+                                    style="width: 66px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >PRIO</span
+                                >
+                                <!-- 词条待立:列头「LEAD」缩写(字典缺) -->
+                                <span
+                                    style="width: 26px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >LEAD</span
+                                >
+                                <span
+                                    style="width: 52px"
+                                    role="columnheader"
+                                    data-t="pair"
+                                >
+                                    配对
+                                </span>
+                                <span
+                                    class="sc-divider"
+                                    aria-hidden="true"
+                                ></span>
+                                <!-- 词条待立:列头短标签「音量」=音量豁免(回流⑬,字典缺短标) -->
+                                <span
+                                    style="width: 26px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >音量</span
+                                >
+                                <!-- 词条待立:列头短标签「声像」=参与自动声像(回流⑬,字典缺短标) -->
+                                <span
+                                    style="width: 26px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >声像</span
+                                >
+                                <span
+                                    class="sc-divider"
+                                    aria-hidden="true"
+                                ></span>
+                                <!-- 词条待立:列头「冻结P」缩写(字典缺) -->
+                                <span
+                                    style="width: 26px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >冻结P</span
+                                >
+                                <!-- 词条待立:列头「冻结V」缩写(字典缺) -->
+                                <span
+                                    style="width: 26px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >冻结V</span
+                                >
+                                <span
+                                    class="sc-divider"
+                                    aria-hidden="true"
+                                ></span>
+                                <!-- 词条待立:列头「ON」缩写=启用(字典缺) -->
+                                <span
+                                    style="width: 26px"
+                                    role="columnheader"
+                                    data-gb-todo="词条待立"
+                                    >ON</span
+                                >
+                            </div>
+                            <div
+                                class="tracks-body"
+                                id="tracks-body"
+                                data-gb="tracks-body"
+                                role="rowgroup"
+                            >
+                                <!-- app.js 用 FIFTEEN_TRACKS 生成 15 行,仅撑开骨架,零状态渲染逻辑 -->
+                            </div>
+                        </div>
+
+                        <div
+                            class="tracks-legend sc-hint"
+                            data-gb="tracks-legend"
+                        >
+                            <span data-t="tracks.colLegend">
+                                音量＝音量豁免,该轨不进音量平衡计算 ·
+                                声像＝参与自动声像,该轨是否进声像重分布(stereo
+                                轨默认关,仍参与音量平衡) ·
+                                冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)
+                            </span>
+                            <!-- 词条待立:「多主唱居中」提示(A8,05 §2.2 主唱锁行,字典缺;多行共用一处提示) -->
+                            <span
+                                class="sc-badge--amber"
+                                data-gb="tracks-legend-multilead-badge"
+                                hidden
+                                data-gb-todo="词条待立"
+                            >
+                                多主唱居中
+                            </span>
+                            <span
+                                class="sc-badge--amber"
+                                data-gb="tracks-legend-recapture-badge"
+                                hidden
+                                data-t="wave.recaptureArmed"
+                            >
+                                重采集布防中 · 选区 {x}–{y} · {n} 轨
+                            </span>
+                            <!-- 词条待立:mono 小字「15 轨 · 滚动 + 表头 sticky」(05 §2.2,字典缺) -->
+                            <span class="sc-mono" data-gb-todo="词条待立">
+                                15 轨 · 滚动 + 表头 sticky
+                            </span>
+                        </div>
+                        <!-- [T3x] bridge.setChannelConfig(ch, patch) —— 契约 §1.15(label/priority/lead_lock/lead_vol_exempt/participate_in_auto_pan/pair_id/enabled) -->
+                        <!-- [T3x] bridge.setTrackManual(ch, "pan"|"vol", value) —— 契约 §1.16(pan 旋钮 / 音量推子手动值) -->
+                        <!-- [T3x] bridge.beginParamGesture / setParam / endParamGesture(`v{active}_t{ch}_width`) —— 契约 §1.12-1.14(width 旋钮) -->
+                        <!-- [T3x] bridge.beginParamGesture / setParam / endParamGesture(`v{active}_t{ch}_freeze`) —— 契约 §1.12-1.14(冻结P/V 两开关共写一个参数) -->
+                    </section>
+
+                    <!-- ========================================================= -->
+                    <!-- Tab3 波形(Waveform)—— 05 §2.3 / §2.3a                       -->
+                    <!-- ========================================================= -->
+                    <section data-tab-panel="wave" data-gb="tab-wave">
+                        <!-- 空态 -->
+                        <div class="sc-banner" data-gb="wave-emptystate" hidden>
+                            <!-- 词条待立:Tab3 空态文案「尚无采集数据——开启采集开关并播放」(05 §2.3 末,字典缺) -->
+                            <span data-gb-todo="词条待立">
+                                尚无采集数据——开启采集开关并播放
+                            </span>
+                        </div>
+
+                        <!-- 工具条:7 滑杆一排(VAD 5 + 分段 2)+ 动作按钮排 + 轨选提示/选区 chip -->
+                        <div class="wave-toolbar" data-gb="wave-toolbar">
+                            <div
+                                class="wave-toolbar__group"
+                                data-gb="wave-vad-group"
+                            >
+                                <span class="sc-eyebrow" data-t="threshold">
+                                    阈值
+                                </span>
+                                <label
+                                    class="wave-slider"
+                                    data-gb="wave-vad-threshold"
+                                >
+                                    <!-- 词条待立:threshold_db 短标(05 §2.3,字典缺;threshold 为泛用词非专属短标) -->
+                                    <span
+                                        class="sc-mono"
+                                        data-gb-todo="词条待立"
+                                        >threshold_db</span
+                                    >
+                                    <input
+                                        type="range"
+                                        min="-60"
+                                        max="0"
+                                        value="-30"
+                                    />
+                                </label>
+                                <label
+                                    class="wave-slider"
+                                    data-gb="wave-vad-hysteresis"
+                                >
+                                    <!-- 词条待立:hysteresis_db 短标(05 §2.3,字典缺) -->
+                                    <span
+                                        class="sc-mono"
+                                        data-gb-todo="词条待立"
+                                        >hysteresis_db</span
+                                    >
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="24"
+                                        value="6"
+                                    />
+                                </label>
+                                <label
+                                    class="wave-slider"
+                                    data-gb="wave-vad-hangover"
+                                >
+                                    <!-- 词条待立:hangover_ms 短标(05 §2.3,字典缺) -->
+                                    <span
+                                        class="sc-mono"
+                                        data-gb-todo="词条待立"
+                                        >hangover_ms</span
+                                    >
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="1000"
+                                        value="250"
+                                    />
+                                </label>
+                                <label
+                                    class="wave-slider"
+                                    data-gb="wave-vad-paddingpre"
+                                >
+                                    <span data-t="paddingPre">前留白</span>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="500"
+                                        value="120"
+                                    />
+                                </label>
+                                <label
+                                    class="wave-slider"
+                                    data-gb="wave-vad-paddingpost"
+                                >
+                                    <span data-t="paddingPost">后留白</span>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="500"
+                                        value="200"
+                                    />
+                                </label>
+                                <!-- [T3x] bridge.setVadParams(p) —— 契约 §1.18(拖动=非破坏预览;松手 300ms 由 C++ 防抖跑完整流水线) -->
+                            </div>
+                            <div class="sc-divider" aria-hidden="true"></div>
+                            <div
+                                class="wave-toolbar__group"
+                                data-gb="wave-seg-group"
+                            >
+                                <span class="sc-eyebrow" data-t="sensitivity">
+                                    灵敏度
+                                </span>
+                                <label
+                                    class="wave-slider"
+                                    data-gb="wave-seg-sensitivity"
+                                >
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="100"
+                                        value="50"
+                                        data-t-aria="sensitivity"
+                                    />
+                                </label>
+                                <label
+                                    class="wave-slider"
+                                    data-gb="wave-seg-minlen"
+                                >
+                                    <!-- 词条待立:min_segment_ms 短标(05 §2.3,字典缺) -->
+                                    <span
+                                        class="sc-mono"
+                                        data-gb-todo="词条待立"
+                                        >min_segment_ms</span
+                                    >
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        value="120"
+                                        class="sc-select"
+                                        style="width: 64px"
+                                    />
+                                </label>
+                                <!-- [T3x] bridge.setSegmentation(p) —— 契约 §1.19(两段式同 setVadParams) -->
+                            </div>
+
+                            <!-- A2① 300ms 后应用倒计时条 -->
+                            <!-- 词条待立:「300ms 后应用…」倒计时文案(A2①,05 §2.3 工具条,字典缺) -->
+                            <div
+                                class="sc-confirm"
+                                data-gb="wave-debounce-countdown"
+                                hidden
+                                data-gb-todo="词条待立"
+                            >
+                                300ms 后应用…
+                            </div>
+                            <!-- 稿内已有一态:正在应用…(菊花条) -->
+                            <div
+                                class="sc-confirm"
+                                data-gb="wave-applying-spinner"
+                                hidden
+                            >
+                                <span
+                                    class="sc-spinner"
+                                    style="--sz: 11px"
+                                ></span>
+                                <!-- 词条待立:「正在应用…」+ 内嵌「N 处手动编辑/锁定段已保留」短句(设计稿已有此态,字典缺;wave.diffKept 为 diff 列表首行长句变体) -->
+                                <span data-gb-todo="词条待立"> 正在应用… </span>
+                            </div>
+
+                            <div
+                                class="wave-toolbar__actions"
+                                data-gb="wave-actions"
+                            >
+                                <!-- 词条待立:「重采集选区」按钮文案(05 §2.3,字典缺) -->
+                                <button
+                                    class="sc-btn"
+                                    data-gb="wave-btn-recapture"
+                                    data-gb-todo="词条待立"
+                                >
+                                    重采集选区
+                                </button>
+                                <label
+                                    class="wave-autostop"
+                                    data-gb="wave-chk-autostop"
+                                >
+                                    <input type="checkbox" />
+                                    <span data-t="autoStop">播完自动停</span>
+                                </label>
+                                <!-- 词条待立:「重分析选区」按钮文案(05 §2.3,字典缺) -->
+                                <button
+                                    class="sc-btn"
+                                    data-gb="wave-btn-reanalyze"
+                                    data-gb-todo="词条待立"
+                                >
+                                    重分析选区
+                                </button>
+                                <button
+                                    class="sc-btn"
+                                    data-gb="wave-btn-reidentify"
+                                    data-t="reidentify"
+                                >
+                                    重新识别(含手动段)
+                                </button>
+                                <button
+                                    class="sc-btn"
+                                    data-gb="wave-btn-clearcoverage"
+                                    data-t="clearCapture"
+                                >
+                                    清除采集数据
+                                </button>
+                                <!-- A2③ 应用到分段(仅抑制期出现:PRINT 态或分析进行中) -->
+                                <button
+                                    class="sc-btn"
+                                    data-gb="wave-btn-applysegments"
+                                    hidden
+                                    data-t="applyToSegments"
+                                >
+                                    应用到分段
+                                </button>
+                                <!-- [T3x] bridge.recaptureArm(tracksMask, startS, endS, autoStop?) —— 契约 §1.23 -->
+                                <!-- [T3x] bridge.analyze(scope) —— 契约 §1.6(重分析选区) -->
+                                <!-- [T3x] bridge.analyze(scope, {clearManual:true}) —— 契约 §1.6(重新识别,含手动段) -->
+                                <!-- [T3x] bridge.clearCoverage(tracksMask, startS, endS) —— 契约 §1.24 -->
+                            </div>
+
+                            <div
+                                class="sc-hint"
+                                data-gb="wave-trackpickhint"
+                                data-t="wave.trackPickHint"
+                            >
+                                勾选左侧轨头选择目标轨(可多选,shift 连选)
+                            </div>
+                            <div
+                                class="sc-chip"
+                                data-set="1"
+                                data-gb="wave-selchip"
+                                hidden
+                            >
+                                <span data-t="wave.selChip">
+                                    上面四个操作作用于 {n} 轨
+                                </span>
+                                <span
+                                    class="sc-mono"
+                                    data-gb="wave-selchip-list"
+                                >
+                                    03 04 07
+                                </span>
+                                <button
+                                    aria-label="clear"
+                                    data-gb="wave-selchip-clear"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            <!-- 重采集布防 badge①(05 §2.3「重采集选区」行 ①:Tab3 工具条与 Tab1 Range 控件旁同时显示;
+                                 点击跳 Tab3 并定位选区 —— 本处即 Tab3 侧落点,Tab1 侧为 master-range-recapture-badge,
+                                 Tab2 行首为 tracks-row-{ch}-recapture-badge)。数据源 scvb.state.recapture,显隐留 T31。 -->
+                            <span
+                                class="sc-badge--amber"
+                                data-gb="wave-recapture-badge"
+                                data-t="wave.recaptureArmed"
+                                hidden
+                            >
+                                重采集布防中 · 选区 {x}–{y} · {n} 轨
+                            </span>
+
+                            <!-- A2⑦ 重分析选区点击前影响预览行 -->
+                            <!-- 词条待立:重分析选区点击前影响预览行「将影响 N 区段 / M 轨;K 处手动保留」(A2⑦,05 §2.3,字典缺句式) -->
+                            <div
+                                class="sc-hint"
+                                data-gb="wave-reanalyze-preview"
+                                data-gb-todo="词条待立"
+                            >
+                                将影响 N 区段 / M 轨;K 处手动保留
+                            </div>
+
+                            <!-- A2② diff 变更列表(重分析/松手自动应用后,一次性反馈,非常驻视图) -->
+                            <div
+                                class="wave-diff"
+                                data-gb="wave-diff-list"
+                                hidden
+                            >
+                                <p class="sc-hint" data-t="wave.diffKept">
+                                    {k} 处手动编辑/锁定段已保留
+                                </p>
+                                <ul data-gb="wave-diff-list-items"></ul>
+                            </div>
+
+                            <!-- A2④ 「重新识别」二次确认框 -->
+                            <div
+                                class="sc-scrim"
+                                data-gb="wave-confirm-reidentify"
+                                hidden
+                            >
+                                <div class="sc-modal">
+                                    <!-- 词条待立:「将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?」(05 §2.3,字典缺) -->
+                                    <p
+                                        class="sc-modal__body"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        将清除 {k} 个手动编辑标记并重算;{l}
+                                        个已锁定段保持不变,确定?
+                                    </p>
+                                    <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
+                                    <button
+                                        class="sc-btn--dark"
+                                        data-gb="wave-confirm-reidentify-cancel"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        取消
+                                    </button>
+                                    <button
+                                        class="sc-btn--cta"
+                                        data-gb="wave-confirm-reidentify-ok"
+                                        data-t="reidentify"
+                                    >
+                                        重新识别(含手动段)
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- A2⑤ 「清除选区采集数据」确认框 -->
+                            <div
+                                class="sc-scrim"
+                                data-gb="wave-confirm-clearcoverage"
+                                hidden
+                            >
+                                <div class="sc-modal">
+                                    <!-- 词条待立:「将删除选中轨×选区的采集特征数据」(05 §2.3,字典缺) -->
+                                    <p
+                                        class="sc-modal__body"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        将删除选中轨×选区的采集特征数据
+                                    </p>
+                                    <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
+                                    <button
+                                        class="sc-btn--dark"
+                                        data-gb="wave-confirm-clearcoverage-cancel"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        取消
+                                    </button>
+                                    <button
+                                        class="sc-btn--cta"
+                                        data-gb="wave-confirm-clearcoverage-ok"
+                                        data-t="clearCapture"
+                                    >
+                                        清除采集数据
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 时间标尺 -->
+                        <div
+                            class="wave-ruler sc-mono"
+                            data-gb="wave-timeline-ruler"
+                            aria-hidden="true"
+                        ></div>
+
+                        <!-- 泳道区(垂直滚动,15 条;左侧轨头 158px) -->
+                        <!-- tabindex="0":可滚动容器需能用键盘滚动(axe scrollable-region-focusable) -->
+                        <div
+                            class="wave-lanes"
+                            id="wave-lanes"
+                            data-gb="wave-lanes"
+                            data-tour="lanes"
+                            tabindex="0"
+                        >
+                            <!-- app.js 用 FIFTEEN_TRACKS 生成 15 条泳道,仅撑开骨架,零绘制逻辑 -->
+
+                            <!-- 选区手柄(工作选区,独立对象,不改 Range;A3 已补稿) -->
+                            <div
+                                class="wave-selection"
+                                data-gb="wave-selection-handles"
+                                hidden
+                            >
+                                <div
+                                    class="wave-selection__handle wave-selection__handle--left"
+                                    data-gb="wave-selection-handle-left"
+                                ></div>
+                                <div
+                                    class="wave-selection__handle wave-selection__handle--right"
+                                    data-gb="wave-selection-handle-right"
+                                ></div>
+                                <button
+                                    class="sc-btn sc-btn--cta wave-selection__setrange"
+                                    data-gb="wave-selection-setrange"
+                                    data-t="setAsRange"
+                                >
+                                    设为范围
+                                </button>
+                                <!-- 一次性提示条(「设为范围」点击后) -->
+                                <div
+                                    class="sc-confirm"
+                                    data-gb="wave-selection-setrange-tip"
+                                    hidden
+                                    data-t="wave.setRangeTip"
+                                >
+                                    作用范围已改为选区 {x}–{y}——Range
+                                    档位已切到「手动」,工作选区本身不变
+                                </div>
+                                <!-- [T3x] bridge.setRange(mode, startS, endS) —— 契约 §1.8(「设为范围」单向写入 manual Range) -->
+                            </div>
+                            <!-- 播放头(共享覆盖层,rAF 插值) -->
+                            <div
+                                class="wave-playhead"
+                                data-gb="wave-playhead"
+                                hidden
+                            ></div>
+                        </div>
+
+                        <!-- 底部缩放/滚动条(05 §2.3 布局链路末件:顶部工具条 → 时间标尺 →
+                             15 条波形泳道 → 底部缩放/滚动条)。交互定义(05 §2.3 末段):
+                             Ctrl+滚轮以光标为中心缩放、拖拽底部滚动条/空白平移;档位变化触发
+                             波形分块重新拉取(05 §6.3)。尺寸:随泳道区等宽、高 12 设计 px,
+                             轨头 158px 处留同宽空档以与泳道对齐。零交互逻辑,T33 实现。 -->
+                        <div class="wave-hzoom" data-gb="wave-hzoom">
+                            <!-- 灰模阶段不带 scrollbar role/ARIA:惰性 div 冒充可操作滚动条会误导
+                                 读屏(PR #37 pr-agent);T33 实现真实交互时连同键盘处理一并补 -->
+                            <div
+                                class="wave-hzoom__scroll"
+                                data-gb="wave-hscroll"
+                            ></div>
+                            <!-- [T3x] bridge.requestWaveform(ch, startS, endS, cols) —— 契约 §1.27(档位变化触发分块重拉,05 §6.3) -->
+                        </div>
+
+                        <!-- 段检查器(J44;选中段 → 右侧面板;J67 结果列表视图已废除) -->
+                        <aside
+                            class="segment-inspector sc-glass"
+                            data-gb="segment-inspector"
+                            hidden
+                        >
+                            <!-- 词条待立:段检查器面板标题(05 §2.3a,字典缺) -->
+                            <div class="sc-eyebrow" data-gb-todo="词条待立">
+                                段检查器
+                            </div>
+                            <div
+                                class="sc-hint"
+                                data-gb="inspector-followhost-note"
+                                hidden
+                                data-t="followHost"
+                            >
+                                跟随宿主
+                            </div>
+                            <div
+                                class="inspector-field"
+                                data-gb="inspector-times"
+                            >
+                                <!-- 词条待立:段起止/时长只读字段(05 §2.3a,字典缺字段名) -->
+                                <span class="sc-mono" data-gb-todo="词条待立"
+                                    >00:00.000 – 00:00.000</span
+                                >
+                            </div>
+                            <div
+                                class="inspector-field"
+                                data-gb="inspector-pan"
+                            >
+                                <span data-t="pan">声像</span>
+                                <input
+                                    type="number"
+                                    min="-100"
+                                    max="100"
+                                    step="1"
+                                    data-t-aria="pan"
+                                />
+                                <span
+                                    class="sc-knob"
+                                    style="width: 20px; height: 20px"
+                                    aria-hidden="true"
+                                >
+                                    <span class="sc-knob__needle"></span>
+                                </span>
+                            </div>
+                            <div
+                                class="inspector-field"
+                                data-gb="inspector-vol"
+                            >
+                                <!-- 词条待立:Vol 字段名(05 §2.3a,字典缺;vol 无独立词条) -->
+                                <span data-gb-todo="词条待立">Vol</span>
+                                <input
+                                    type="number"
+                                    min="-24"
+                                    max="12"
+                                    step="0.1"
+                                    aria-label="音量"
+                                />
+                                <!-- a11y 占位名,T31 换词条 -->
+                            </div>
+                            <div
+                                class="inspector-field"
+                                data-gb="inspector-origin"
+                            >
+                                <!-- 词条待立:origin 角标字段名(05 §2.3a,字典缺字段标签;E/C 角标本身见 originLegend) -->
+                                <span data-gb-todo="词条待立">origin</span>
+                                <span
+                                    class="sc-chip"
+                                    data-gb="inspector-origin-value"
+                                ></span>
+                            </div>
+                            <div
+                                class="inspector-field"
+                                data-gb="inspector-locked"
+                            >
+                                <span data-t="locked">已锁定</span>
+                                <span
+                                    class="sc-toggle"
+                                    data-on="0"
+                                    role="switch"
+                                    aria-checked="false"
+                                    data-t-aria="locked"
+                                ></span>
+                            </div>
+                            <div
+                                class="inspector-field"
+                                data-gb="inspector-loudness"
+                            >
+                                <!-- 词条待立:段响度字段名(05 §2.3a,字典缺;单位 LUFS) -->
+                                <span data-gb-todo="词条待立">LUFS</span>
+                                <span class="sc-mono">−12.0</span>
+                            </div>
+                            <p
+                                class="sc-hint"
+                                data-t="wave.originLegend"
+                                data-gb="inspector-legend"
+                            >
+                                origin:E = 手动编辑,C = 手动创建,auto
+                                段无角标。锁定段在重新识别时保持不变。
+                            </p>
+                            <!-- [T3x] bridge.editSegment(ch, "move_boundary", {segIdx, edge, tS}) —— 契约 §1.22 -->
+                            <!-- [T3x] bridge.editSegment(ch, "split", {segIdx, tS}) —— 契约 §1.22 -->
+                            <!-- [T3x] bridge.editSegment(ch, "merge", {segIdxA, segIdxB}) —— 契约 §1.22 -->
+                            <!-- [T3x] bridge.editSegment(ch, "set_values", {segIdx, pan?, volDb?}) —— 契约 §1.22 -->
+                            <!-- [T3x] bridge.editSegment(ch, "set_locked", {segIdx, locked}) —— 契约 §1.22 -->
+                        </aside>
+                    </section>
+
+                    <!-- ========================================================= -->
+                    <!-- Tab4 设置(Settings)—— 05 §2.4                              -->
+                    <!-- ========================================================= -->
+                    <section data-tab-panel="settings" data-gb="tab-settings">
+                        <div class="settings-grid" data-gb="settings-grid">
+                            <div class="settings-main" data-gb="settings-main">
+                                <!-- 说明块(eyebrow 逐字「使用说明」,J71⑥/回流④) -->
+                                <div
+                                    class="sc-card"
+                                    data-gb="settings-guideblock"
+                                >
+                                    <!-- 词条待立:eyebrow 逐字「使用说明」(05 §2.4,J71⑥,字典缺;不得用近似词) -->
+                                    <div
+                                        class="sc-eyebrow"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        使用说明
+                                    </div>
+                                    <ol data-gb="settings-guideblock-steps">
+                                        <!-- 词条待立:三步工作流步骤1文字(05 §2.4,字典缺) -->
+                                        <li data-gb-todo="词条待立">采集</li>
+                                        <!-- 词条待立:三步工作流步骤2文字(05 §2.4,字典缺) -->
+                                        <li data-gb-todo="词条待立">分析</li>
+                                        <!-- 词条待立:三步工作流步骤3文字(05 §2.4,字典缺) -->
+                                        <li data-gb-todo="词条待立">输出</li>
+                                    </ol>
+                                    <div
+                                        class="sc-banner--red settings-guideblock-rules"
+                                        data-gb="settings-guideblock-rules"
+                                    >
+                                        <p
+                                            class="sc-modal__title"
+                                            data-t="guide.title"
+                                        ></p>
+                                        <ol
+                                            data-gb="settings-guideblock-rules-list"
+                                        >
+                                            <!-- guide.rule1..9 为 scripts/gen-hard-rules.mjs 从
+                                                 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入 i18n.js 的产物,
+                                                 T27b 时点字典尚未生成 —— 不得手抄、不得用 data-t 引用不存在的 key。 -->
+                                            <!-- 词条待立:guide.rule1(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成) -->
+                                            <li data-gb-todo="词条待立">…</li>
+                                            <!-- 词条待立:guide.rule2(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成) -->
+                                            <li data-gb-todo="词条待立">…</li>
+                                            <!-- 词条待立:guide.rule3(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成) -->
+                                            <li data-gb-todo="词条待立">…</li>
+                                        </ol>
+                                        <!-- 词条待立:「查看全部九条」按钮文案(05 §2.4,字典缺) -->
+                                        <button
+                                            class="sc-btn"
+                                            data-gb="settings-guideblock-expand"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            查看全部九条
+                                        </button>
+                                    </div>
+                                    <button
+                                        class="sc-btn"
+                                        data-gb="settings-reopentour"
+                                        data-t="set.reopenGuide"
+                                        data-tour="review"
+                                    >
+                                        重看引导
+                                    </button>
+                                    <!-- 词条待立:文档入口文案(05 §2.4,待定项③,字典缺) -->
+                                    <a
+                                        href="#"
+                                        data-gb="settings-docs"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        文档
+                                    </a>
+                                    <!-- [T3x] bridge.setGuideSeen(seen, alsoGlobal=true) —— 契约 §1.32(「不再显示」勾选的落盘,见 guide-overlay) -->
+                                    <!-- [T3x] bridge.setTourSeen(seen, alsoGlobal=true) —— 契约 §1.33(「重看引导」重启 tour,T36b tour.js 消费) -->
+                                </div>
+
+                                <!-- 第二响度指标(J69) -->
+                                <div
+                                    class="sc-card"
+                                    data-gb="settings-loudnessmode"
+                                >
+                                    <!-- 词条待立:eyebrow「第二响度指标」(05 §2.4,字典缺) -->
+                                    <div
+                                        class="sc-eyebrow"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        第二响度指标
+                                    </div>
+                                    <div
+                                        class="sc-modal__title"
+                                        style="
+                                            font-size: var(--fs-140);
+                                            color: var(--txt-1);
+                                        "
+                                        data-t="set.loudnessMode.title"
+                                    ></div>
+                                    <div
+                                        class="sc-seg"
+                                        role="group"
+                                        data-gb="settings-loudnessmode-seg"
+                                    >
+                                        <!-- 词条待立:选项「K 加权段积分(默认)」(05 §2.4,字典缺;词条正名非 LUFS-S) -->
+                                        <button
+                                            class="sc-seg__item"
+                                            aria-pressed="true"
+                                            data-value="kw_integrated"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            K 加权段积分
+                                        </button>
+                                        <!-- 词条待立:选项「RMS」(05 §2.4,字典缺) -->
+                                        <button
+                                            class="sc-seg__item"
+                                            data-value="rms"
+                                            data-gb-todo="词条待立"
+                                            aria-pressed="false"
+                                        >
+                                            RMS
+                                        </button>
+                                        <!-- 词条待立:选项「峰值 dBFS」(05 §2.4,字典缺) -->
+                                        <button
+                                            class="sc-seg__item"
+                                            data-value="peak_dbfs"
+                                            data-gb-todo="词条待立"
+                                            aria-pressed="false"
+                                        >
+                                            峰值 dBFS
+                                        </button>
+                                    </div>
+                                    <p
+                                        class="sc-hint"
+                                        data-t="set.loudnessMode.note"
+                                    ></p>
+                                </div>
+
+                                <!-- 中心槽策略(J69) -->
+                                <div
+                                    class="sc-card"
+                                    data-gb="settings-centerslot"
+                                >
+                                    <!-- 词条待立:eyebrow「中心槽策略」(05 §2.4,字典缺) -->
+                                    <div
+                                        class="sc-eyebrow"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        中心槽策略
+                                    </div>
+                                    <div
+                                        class="sc-modal__title"
+                                        style="
+                                            font-size: var(--fs-140);
+                                            color: var(--txt-1);
+                                        "
+                                        data-t="set.centerSlot.title"
+                                    ></div>
+                                    <div
+                                        class="sc-seg"
+                                        role="group"
+                                        data-gb="settings-centerslot-seg"
+                                    >
+                                        <!-- 词条待立:选项「按优先级排队(默认)」(05 §2.4,字典缺) -->
+                                        <button
+                                            class="sc-seg__item"
+                                            aria-pressed="true"
+                                            data-value="priority_queue"
+                                            data-gb-todo="词条待立"
+                                        >
+                                            按优先级排队
+                                        </button>
+                                        <!-- 词条待立:选项「主唱独占」(05 §2.4,字典缺) -->
+                                        <button
+                                            class="sc-seg__item"
+                                            data-value="lead_exclusive"
+                                            data-gb-todo="词条待立"
+                                            aria-pressed="false"
+                                        >
+                                            主唱独占
+                                        </button>
+                                        <!-- 词条待立:选项「均分微偏」(05 §2.4,字典缺) -->
+                                        <button
+                                            class="sc-seg__item"
+                                            data-value="even_spread"
+                                            data-gb-todo="词条待立"
+                                            aria-pressed="false"
+                                        >
+                                            均分微偏
+                                        </button>
+                                    </div>
+                                    <p
+                                        class="sc-hint"
+                                        data-t="set.centerSlot.note"
+                                    ></p>
+                                    <!-- [T3x] bridge.setAnalysisConfig({loudness_mode?, center_slot_policy?}) —— 契约 §1.21 -->
+                                </div>
+                            </div>
+
+                            <div class="settings-side" data-gb="settings-side">
+                                <div class="sc-card" data-gb="settings-scale">
+                                    <span class="sc-eyebrow" data-t="scale">
+                                        界面缩放
+                                    </span>
+                                    <!-- 档位 <option> 由 app.js 按 DESIGN.output.presets 生成(05 §1.2 常量真源
+                                         = web/shared/design-box.js;不在 HTML 里写死第二真源) -->
+                                    <select
+                                        class="sc-select"
+                                        data-t-aria="scale"
+                                        data-gb="settings-scale-select"
+                                    ></select>
+                                    <!-- 10 秒确认防呆(机制同 Bridge,05 §1.2) -->
+                                    <div
+                                        class="sc-scrim"
+                                        data-gb="settings-scale-confirm"
+                                        hidden
+                                    >
+                                        <div class="sc-modal">
+                                            <!-- 词条待立:缩放确认倒计时文案(05 §1.2,字典缺) -->
+                                            <p
+                                                class="sc-modal__body"
+                                                data-gb-todo="词条待立"
+                                            >
+                                                缩放已应用,<span
+                                                    class="sc-mono"
+                                                    data-gb="settings-scale-confirm-countdown"
+                                                    >10</span
+                                                >s 后回退
+                                            </p>
+                                            <!-- 词条待立:缩放确认「撤销」按钮(字典缺) -->
+                                            <button
+                                                class="sc-btn--dark"
+                                                data-gb="settings-scale-confirm-revert"
+                                                data-gb-todo="词条待立"
+                                            >
+                                                撤销
+                                            </button>
+                                            <!-- 词条待立:缩放确认「保持」按钮(字典缺) -->
+                                            <button
+                                                class="sc-btn--cta"
+                                                data-gb="settings-scale-confirm-keep"
+                                                data-gb-todo="词条待立"
+                                            >
+                                                保持
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <!-- [T3x] bridge.setUiScale(f) —— 契约 §1.28 -->
+                                    <!-- [T3x] bridge.commitUiScale() —— 契约 §1.29 -->
+                                </div>
+
+                                <div class="sc-card" data-gb="settings-lang">
+                                    <span class="sc-eyebrow" data-t="language">
+                                        语言
+                                    </span>
+                                    <div
+                                        class="sc-seg sc-seg--sm"
+                                        role="group"
+                                        data-gb="settings-lang-seg"
+                                    >
+                                        <button
+                                            class="sc-seg__item"
+                                            aria-pressed="true"
+                                            data-lang="zh"
+                                        >
+                                            中
+                                        </button>
+                                        <button
+                                            class="sc-seg__item"
+                                            data-lang="en"
+                                            aria-pressed="false"
+                                        >
+                                            EN
+                                        </button>
+                                        <button
+                                            class="sc-seg__item"
+                                            data-lang="fr"
+                                            aria-pressed="false"
+                                        >
+                                            FR
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="sc-card" data-gb="settings-version">
+                                    <span class="sc-eyebrow" data-t="version">
+                                        版本
+                                    </span>
+                                    <span
+                                        class="sc-mono"
+                                        data-gb="settings-version-value"
+                                        >0.1.0 · abi 1</span
+                                    >
+                                    <!-- [T3x] bridge.requestInitialState() —— 契约 §1.1(version.plugin/version.abi) -->
+                                </div>
+
+                                <div class="sc-card" data-gb="settings-storage">
+                                    <!-- 词条待立:eyebrow「存储状态」(05 §2.4,字典缺) -->
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        存储状态
+                                    </span>
+                                    <!-- 词条待立:「内嵌于工程(x.x MB)」/「已转外部文件(>8MB 自动)」两态句式(05 §2.4,字典缺) -->
+                                    <div
+                                        data-gb="settings-storage-value"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        内嵌于工程(0.0 MB)
+                                    </div>
+                                    <span
+                                        class="sc-mono sc-hint"
+                                        data-gb="settings-storage-guid"
+                                    ></span>
+                                </div>
+
+                                <div
+                                    class="sc-card"
+                                    data-gb="settings-diagnostics"
+                                >
+                                    <!-- 词条待立:eyebrow「诊断」(05 §2.4,字典缺) -->
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        诊断
+                                    </span>
+                                    <div
+                                        class="sc-hint"
+                                        data-gb="settings-diagnostics-list"
+                                    ></div>
+                                    <!-- 词条待立:「复制诊断信息」按钮文案(05 §2.4,字典缺) -->
+                                    <button
+                                        class="sc-btn"
+                                        data-gb="settings-diagnostics-copy"
+                                        data-gb-todo="词条待立"
+                                    >
+                                        复制诊断信息
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </main>
+
+                <!-- ============================== Footer(05 §1.1) ============================== -->
+                <footer data-gb="footer">
+                    <span
+                        class="sc-hint footer-hint"
+                        id="footer-hint"
+                        data-gb="footer-hint"
+                    >
+                        SCVB Output greybox
+                    </span>
+                    <!-- 重采集布防 badge③(05 §2.3「重采集选区」行 ③ / §2.1① 输出开关行):
+                         输出开关为 ON 或在布防期被打开 → footer 追加琥珀警告。
+                         数据源 scvb.state.recapture + 输出开关态,显隐留 T31。 -->
+                    <span
+                        class="sc-badge--amber"
+                        data-gb="footer-recapture-warn"
+                        data-t="footer.recaptureOutputWarn"
+                        hidden
+                    >
+                        输出引擎仍按全局范围工作,与本次重采集选区无关
+                    </span>
+                    <div class="footer-right" data-gb="footer-right">
+                        <!-- 档位 <option> 由 app.js 按 DESIGN.output.presets 生成(05 §1.2 常量真源
+                             = web/shared/design-box.js;不在 HTML 里写死第二真源) -->
+                        <select
+                            class="sc-select"
+                            data-t-aria="scale"
+                            data-gb="footer-scale-select"
+                        ></select>
+                        <span class="sc-mono" data-gb="footer-version"
+                            >v0.1.0</span
+                        >
+                    </div>
+                </footer>
+
+                <!-- ============================== Output toast(右下角,05 §2.0) ============================== -->
+                <div
+                    id="toast-region"
+                    data-gb="toast-region"
+                    aria-live="polite"
+                >
+                    <div class="sc-toast" data-gb="toast-projectCopy" hidden>
+                        <span class="sc-toast__dot"></span>
+                        <!-- 词条待立:toast①「检测到工程副本,已创建独立采集数据副本」(05 §2.0,字典缺) -->
+                        <span data-gb-todo="词条待立">
+                            检测到工程副本,已创建独立采集数据副本
+                        </span>
+                    </div>
+                    <div
+                        class="sc-toast"
+                        data-gb="toast-sidecarSwitched"
+                        hidden
+                    >
+                        <span class="sc-toast__dot"></span>
+                        <!-- 词条待立:toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」(05 §2.0,字典缺) -->
+                        <span data-gb-todo="词条待立">
+                            采集数据已超过
+                            8MB,已转存外部文件——发给他人需重新采集
+                        </span>
+                    </div>
+                    <div class="sc-toast" data-gb="toast-recaptured" hidden>
+                        <span class="sc-toast__dot"></span>
+                        <!-- 词条待立:toast③「已重采集 X.Xs,建议重分析该范围」(05 §2.0,字典缺) -->
+                        <span data-gb-todo="词条待立">
+                            已重采集 X.Xs,建议重分析该范围
+                        </span>
+                        <!-- 词条待立:「立即重分析」按钮(05 §2.0,字典缺) -->
+                        <button
+                            class="sc-btn--dark"
+                            data-gb="toast-recaptured-goto"
+                            data-gb-todo="词条待立"
+                        >
+                            立即重分析
+                        </button>
+                        <button
+                            class="sc-toast__close"
+                            data-gb="toast-recaptured-close"
+                            aria-label="close"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ============================== 首次启动引导页(overlay,05 §2.0) ============================== -->
+                <div
+                    class="sc-scrim"
+                    id="guide-overlay"
+                    data-gb="guide-overlay"
+                    hidden
+                >
+                    <div
+                        class="sc-modal guide-overlay__panel"
+                        data-gb="guide-overlay-panel"
+                    >
+                        <p class="sc-modal__title" data-t="guide.title"></p>
+                        <!-- 九条硬约束正文 = guide.rule1..9,由 scripts/gen-hard-rules.mjs 从
+                             docs/USER_GUIDE.zh-CN.md#硬约束 生成写入 i18n.js(T31 落地前字典无此 key,
+                             故此处不用 data-t,仅占位;05 §0.1/§5 明令禁止手抄)。 -->
+                        <!-- 词条待立:guide.rule1..9(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成,禁止手抄/禁用 data-t) -->
+                        <ol
+                            data-gb="guide-overlay-rules"
+                            data-gb-todo="词条待立"
+                        ></ol>
+                        <label>
+                            <input
+                                type="checkbox"
+                                data-gb="guide-overlay-dontshow"
+                            />
+                            <span data-t="guide.dontShowAgain"></span>
+                        </label>
+                        <button
+                            class="sc-btn sc-btn--cta"
+                            data-gb="guide-overlay-start"
+                            data-t="guide.start"
+                        ></button>
+                        <!-- [T3x] bridge.setGuideSeen(true, true) —— 契约 §1.32(「不再显示」勾选落盘) -->
+                    </div>
+                </div>
+
+                <!-- ============================== tour 询问步(J62,首启顺序:红字页 → 询问步 → tour) ============================== -->
+                <div class="sc-scrim" data-gb="tour-ask" hidden>
+                    <div class="sc-modal">
+                        <p class="sc-modal__body" data-t="tour.ask"></p>
+                        <button
+                            class="sc-btn--cta"
+                            data-gb="tour-ask-start"
+                            data-t="tour.ask.start"
+                        ></button>
+                        <button
+                            class="sc-btn--dark"
+                            data-gb="tour-ask-later"
+                            data-t="tour.ask.later"
+                        ></button>
+                        <!-- [T3x] bridge.setTourSeen(true, true) —— 契约 §1.33(完成/暂不均置位;tour 本体见 output/tour.js,T36b) -->
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script type="module" src="./app.js"></script>
+    </body>
+</html>
