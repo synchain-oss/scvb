@@ -54,6 +54,10 @@ add_library(scvb_core STATIC
   state/StateCodec.h
   state/StateMigration.cpp
   state/StateMigration.h
+  state/FeaturesCodec.cpp
+  state/FeaturesCodec.h
+  state/SidecarStore.cpp
+  state/SidecarStore.h
 )
 
 # SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。
@@ -62,6 +66,17 @@ if(WIN32)
 endif()
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# T21:miniz(vendored,third_party/miniz;zlib 兼容,gzip 用,ADR-011 零新依赖)。
+# 第三方源码按 C++ 编译并关警告(不污染 /W4 零 warning 门禁);miniz.h 仅由 FeaturesCodec.cpp 内部包含。
+target_include_directories(scvb_core PRIVATE ${CMAKE_SOURCE_DIR}/third_party/miniz)
+target_sources(scvb_core PRIVATE ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c)
+set_source_files_properties(${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c PROPERTIES LANGUAGE CXX)
+if(MSVC)
+  set_source_files_properties(${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "/w")
+else()
+  set_source_files_properties(${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "-w")
+endif()
 
 if(MSVC)
   target_compile_options(scvb_core PRIVATE /W4 /utf-8)
