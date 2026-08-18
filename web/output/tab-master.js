@@ -1032,11 +1032,15 @@ export function createTabMaster(opts) {
         if (el.coverage) el.coverage.hidden = p === null;
         if (p !== null) fill(el.coverage, t, "master.step2.coverage", { p });
 
-        // 分析按钮四态(单一状态源 = data-analyze)
+        // 分析按钮四态(单一状态源 = data-analyze)。
+        // disabled 判「无数据」取覆盖与段表的**并集**:只看 totals.n(已分析段数)会鸡生蛋——
+        // 首次采集完还没分析过,段表恒空,分析键永远点不开(PR #52 bot 建议);
+        // 只看覆盖率又会误伤重开工程——§2.7 captureProgress 非播放不发,覆盖帧
+        // 未到但段表有货的工程本可再分析。两者都空才是真没数据。
         let an = "ready";
         if (s.analysis_run && s.analysis_run.running) an = "running";
         else if (now() < local.analyzeFlashUntil) an = "done";
-        else if (isWriteBlocked() || totals.n === 0) an = "disabled";
+        else if (isWriteBlocked() || (!p && totals.n === 0)) an = "disabled";
         el.flow.setAttribute("data-analyze", an);
 
         for (const sw of [el.capSwitch, el.outSwitch]) {
