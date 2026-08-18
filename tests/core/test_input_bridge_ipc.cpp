@@ -134,6 +134,26 @@ TEST_CASE("T30 groupsOnline:本组位 + 跨组只读探测(01 §4.5/J70)")
     CHECK(s.groupsOnline(5000) == 0);
 }
 
+TEST_CASE("T30 groupsOnline:未分配(channel_id=0)实例本组位经只读探测点亮(PR#54 R2)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 未分配实例:不 prepare、不 claim,本组 registry 未打开(openAndClaim 未走)。
+    InputSession s(backend, 1001);
+    CHECK(s.groupsOnline(100) == 0); // 无任何 Output → 全灭
+
+    // g1 有活跃 Output → 本组位经只读探测点亮(修复前 outputSlot()==nullptr 恒 0)。
+    scvb::Registry out(backend, 1);
+    REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(out.claimOutput(2001, 100) == scvb::Registry::ClaimResult::kClaimed);
+    out.heartbeatOutput(100);
+    CHECK(s.groupsOnline(150) == 0b00000001);
+
+    // 心跳陈旧(>2000ms)→ 熄灭。
+    CHECK(s.groupsOnline(5000) == 0);
+}
+
 TEST_CASE("T30 CtrlPlane::isRingFull:满环判定与覆盖语义(IPC-13)")
 {
     scvb::SegmentBackendInProcess::resetAll();

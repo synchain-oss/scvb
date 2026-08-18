@@ -199,8 +199,10 @@ InputConnSnapshot InputSession::connSnapshot(u64 nowMs) const
 std::uint8_t InputSession::groupsOnline(u64 nowMs) const
 {
     // 本组位 = 本组 OutputSlot 心跳新鲜;其余 7 组经只读探测(01 §4.5,失败组判离线不报错)。
-    std::uint8_t bits = probeGroupsOnline(backend_, groupId_, nowMs);
+    // channel_id=0(未分配)时本组 registry 未打开,outputSlot() 为空 → 回退对本组也做只读探测
+    // (pr-agent PR#54 R2:未分配实例的本组绿点恒灭)。
     const OutputSlot* os = registry_.outputSlot();
+    std::uint8_t bits = probeGroupsOnline(backend_, groupId_, nowMs, /*includeOwnGroup=*/os == nullptr);
     if (os != nullptr && os->state.load(std::memory_order_acquire) == kSlotActive &&
         !isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs))
     {

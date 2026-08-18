@@ -14,7 +14,9 @@
 namespace scvb
 {
 // 返回 u8 位图(bit0=组A/g1 … bit7=组H/g8):bit{G-1} 置位 = 组 G 的 OutputSlot 活跃且心跳新鲜
-// (≤kStaleDisplayMs)。ownGroup 的位恒为 0(本组位由调用方从本组 registry 填,见 InputSession::
-// groupsOnline),其余 7 组逐一探测。
-std::uint8_t probeGroupsOnline(ISegmentBackend& backend, u32 ownGroup, u64 nowMs) noexcept;
+// (≤kStaleDisplayMs)。ownGroup 的位默认恒为 0(本组位由调用方从本组 registry 填,见 InputSession::
+// groupsOnline),其余 7 组逐一探测。includeOwnGroup=true 时本组也探测(调用方本组 registry 未打开
+// 的回退路径,PR#54 R2)。
+std::uint8_t probeGroupsOnline(ISegmentBackend& backend, u32 ownGroup, u64 nowMs,
+                               bool includeOwnGroup = false) noexcept;
 } // namespace scvb

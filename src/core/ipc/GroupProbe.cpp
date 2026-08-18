@@ -18,14 +18,14 @@ std::wstring registryFullName(u32 group)
 }
 } // namespace
 
-std::uint8_t probeGroupsOnline(ISegmentBackend& backend, u32 ownGroup, u64 nowMs) noexcept
+std::uint8_t probeGroupsOnline(ISegmentBackend& backend, u32 ownGroup, u64 nowMs, bool includeOwnGroup) noexcept
 {
     std::uint8_t bits = 0;
     for (u32 g = 1; g <= kMaxGroups; ++g)
     {
-        if (g == ownGroup)
+        if (g == ownGroup && !includeOwnGroup)
         {
-            continue; // 本组位由调用方从本组 registry 填
+            continue; // 本组位由调用方从本组 registry 填(回退探测路径除外)
         }
         SegmentView view;
         if (backend.openExistingReadOnly(registryFullName(g), view) != InitResult::kOk)
