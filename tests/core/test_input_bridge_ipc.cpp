@@ -326,3 +326,40 @@ TEST_CASE("T30 checkHeaderReadOnly:只读 magic/abi 校验不写(PR#54 R8)")
     CHECK(header->abi.load(std::memory_order_acquire) == abiBefore);
     backend.unmap(view);
 }
+
+TEST_CASE("T30 CtrlPlane::release:释放后未打开,可重新懒开(PR#54 R9)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::CtrlPlane plane(backend, 1);
+    REQUIRE(plane.open() == InitResult::kOk);
+    REQUIRE(plane.isOpen());
+
+    plane.release();
+    CHECK_FALSE(plane.isOpen());
+
+    // 释放后可重新懒开(与 ensureCtrlOpen 的懒开语义一致)。
+    REQUIRE(plane.open() == InitResult::kOk);
+    CHECK(plane.isOpen());
+}
+
+TEST_CASE("T30 CtrlPlane::changeGroup:换组失败返回 kAbiMismatch(PR#54 R9)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 预先创建 g2 ctrl 段并把 abi 写成非法值(模拟旧版本残留损坏段)。
+    scvb::SegmentView v;
+    REQUIRE(backend.createOrOpen(L"Local\\SynchainSCVB.v1.g2.ctrl", scvb::kCtrlSegmentSize, v) == InitResult::kOk);
+    auto* header = static_cast<scvb::CtrlHeader*>(v.base);
+    REQUIRE(backend.initHeader(v, &header->magic, &header->abi, &header->generation, scvb::kCtrlBroadcastOffset,
+                               /*initData=*/{}, /*allowOverwrite=*/true) == InitResult::kOk);
+    header->abi.store(99, std::memory_order_release); // 损坏 abi
+    backend.unmap(v);
+
+    // g1 正常打开后换组到 g2 → kAbiMismatch(调用方据此回退,避免 session 新组 + ctrl 旧组错位)。
+    scvb::CtrlPlane plane(backend, 1);
+    REQUIRE(plane.open() == InitResult::kOk);
+    CHECK(plane.changeGroup(2) == InitResult::kAbiMismatch);
+}

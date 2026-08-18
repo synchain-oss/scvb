@@ -110,6 +110,16 @@ InitResult CtrlPlane::changeGroup(u32 newGroup)
     return open();
 }
 
+void CtrlPlane::release()
+{
+    base_ = nullptr;
+    // 与 changeGroup 释放旧句柄同构:valid() 守卫防 moved-from;租约在途 → pendingReleases_ 延迟回收。
+    if (handle_.valid() && !handle_.release(steadyNowMs()))
+    {
+        pendingReleases_.push_back(std::move(handle_));
+    }
+}
+
 CtrlRing* CtrlPlane::ringAt(u32 channel) const
 {
     if (base_ == nullptr || channel < 1 || channel > kMaxChannels)

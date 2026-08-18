@@ -161,6 +161,10 @@ public:
     // kFailed。与 Registry::changeGroup 同构(Output 改组时 registry 与 ctrl 同时换组)。
     InitResult changeGroup(u32 newGroup);
 
+    // 释放本组 ctrl 段句柄(消息线程;channel_id=0 未分配/释放时调用,保持「channel_id=0 不建段」
+    // 口径,PR#54 R9)。与 changeGroup 释放旧句柄同构:租约在途则压入 pendingReleases_ 延迟回收。
+    void release();
+
     // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(nowMs),
     // 成功(租约归零且宽限期届满)即移除并解映射。pr-agent 复审:open()/重开时 release() 返回 false
     // 的旧句柄压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。

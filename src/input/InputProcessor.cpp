@@ -352,19 +352,28 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
         return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
     }
 
+    const int oldGroupId = groupId_;
     channelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
     uiScale_ = static_cast<int>(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
     session_.setChannelId(s.channelId);
     session_.setGroupId(s.groupId);
-    // T30 PR#54 复审【重要】1:ctrl_ 命令环段组必须与 state 的 group_id 同组 —— 否则
-    // remoteSetPriority 把记录投进默认组(g1)命令环、srMismatch 推导读默认组 SR,新组的 Output
-    // 永远消费不到(setGroupId 的同组 early-return 使「重选同组」无法自愈)。与 setGroupId 同构:
-    // 组变才换段;同组不换(懒开或已开均正确,打开时机交给 ensureCtrlOpen)。
-    if (ctrl_.group() != s.groupId)
+    // T30 PR#54 复审【重要】1 + R9:ctrl_ 命令环段组必须与 state 的 group_id 同组 —— 否则
+    // remoteSetPriority 把记录投进旧组命令环、srMismatch 推导读旧组 SR。channel_id=0 释放段;
+    // 否则换组失败回退旧组、保持 session/ctrl 一致(避免「session 新组 + ctrl 未开/旧组」错位)。
+    if (s.channelId == 0)
     {
-        ctrl_.changeGroup(s.groupId);
+        ctrl_.release();
+    }
+    else if (ctrl_.group() != s.groupId)
+    {
+        if (ctrl_.changeGroup(s.groupId) != scvb::InitResult::kOk)
+        {
+            ctrl_.changeGroup(static_cast<scvb::u32>(oldGroupId)); // 尽力回退旧组段
+            groupId_ = oldGroupId;
+            session_.setGroupId(static_cast<scvb::u32>(oldGroupId));
+        }
     }
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     // 若已 prepare,立即 re-claim;否则由下一次 prepareToPlay 走 claim。
@@ -385,6 +394,10 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
     const juce::ScopedLock lock(lifecycleMutex_);
     channelId_ = channelId;
     session_.setChannelId(static_cast<scvb::u32>(channelId));
+    if (channelId == 0)
+    {
+        ctrl_.release(); // channel_id=0 不 claim 任何段(T23 口径):命令环段随释放(PR#54 R9)
+    }
     session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                      static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
     if (session_.state() != scvb::input::InputClaimState::kActive)
@@ -402,15 +415,21 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     {
         return session_.state(); // 同组 no-op(§3.3:{ok:true})
     }
+    const scvb::u32 newGroup = static_cast<scvb::u32>(groupId);
+    const scvb::u32 oldGroup = static_cast<scvb::u32>(groupId_);
+    // T30:命令环 ctrl 段随组走(per-组各一份,ipc v1.5 [J66];与 Registry::changeGroup 同构)。
+    // PR#54 R9:先换 ctrl 段,失败则回退旧组、不切 session —— 避免「session 新组 + ctrl 未开/旧组」
+    // 错位(remoteSetPriority 写错组、srMismatch 读错组),与 session_.changeGroup 的失败语义对齐。
+    if (ctrl_.changeGroup(newGroup) != scvb::InitResult::kOk)
+    {
+        ctrl_.changeGroup(oldGroup); // 尽力回退旧组段(通常成功;双重失败则 ctrl 未开,ensureCtrlOpen 重试)
+        return session_.state(); // 不切 session group,保持旧组一致态
+    }
     groupId_ = groupId;
     // 改组(J66):释放旧组 slot → 新组重走 claim;期间输出走直通档(01 §4.1)。
     stageMachine_.forcePassthrough();
-    session_.changeGroup(static_cast<scvb::u32>(groupId), static_cast<scvb::u32>(sampleRate_),
-                         static_cast<scvb::u32>(preparedMaxBlock_), static_cast<scvb::u32>(srcChannels_),
-                         scvb::steadyNowMs());
-    // T30:命令环 ctrl 段随组走(per-组各一份,ipc v1.5 [J66];与 Registry::changeGroup 同构:
-    // 释放旧段(valid() 守卫)→ 重开新组段)。
-    ctrl_.changeGroup(static_cast<scvb::u32>(groupId));
+    session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                         static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
     return session_.state(); // T30 桥:{conflict:true} ⇔ 新组同 channel 被占(I2)
 }
 
@@ -424,7 +443,13 @@ juce::AudioProcessorEditor* ScvbInputAudioProcessor::createEditor()
 // ---------------------------------------------------------------------------
 void ScvbInputAudioProcessor::ensureCtrlOpen()
 {
-    // 调用方已持 lifecycleMutex_。Input 是本组 ctrl 段的合法创建/覆盖者(CtrlPlane::open 注释)。
+    // 调用方已持 lifecycleMutex_。channel_id=0(未分配)不建/不开命令环段(T23「channel_id=0 无痕迹/
+    // 不建段」口径);释放回到 0 时由 setChannelId/setStateInformation 调 ctrl_.release() 释放(PR#54 R9)。
+    if (channelId_ == 0)
+    {
+        return;
+    }
+    // Input 是本组 ctrl 段的合法创建/覆盖者(CtrlPlane::open 注释)。
     if (!ctrl_.isOpen())
     {
         ctrl_.open();
