@@ -39,6 +39,7 @@ add_executable(scvb_tests
   core/test_hungarian.cpp
   core/test_assign.cpp
   core/test_balance.cpp
+  core/test_authority.cpp
   core/test_ipc_layout.cpp
   core/test_ipc_lifecycle.cpp
   core/analysis_coverage_test.cpp
@@ -67,7 +68,9 @@ add_test(NAME scvb_tests COMMAND scvb_tests)
 # 03 §8 P-1/P-2/P-3:遍历 makeOutputLayout 的实际 getParameters() 对拍 tests/golden/params_v0.tsv。
 add_executable(scvb_params_tests
   core/test_params_golden.cpp
+  core/test_authority_params.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
 )
 
 target_link_libraries(scvb_params_tests PRIVATE
