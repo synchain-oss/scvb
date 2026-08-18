@@ -593,7 +593,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     {
         scvb::state::CrvsData decoded;
         if (scvb::state::decodeCrvs(crvs->payload.data(), crvs->payload.size(), decoded))
+        {
             crvsData_ = std::move(decoded);
+            crvsRevision_.fetch_add(1, std::memory_order_release); // 加载工程/预设后刷新段表(PR#55 第8轮缺陷1)
+        }
     }
 
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。

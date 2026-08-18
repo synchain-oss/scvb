@@ -185,12 +185,16 @@ void OutputEditor::emitTick()
     emitMeters(); // 25Hz + 0.3dB 阈值
     emitPlayhead(); // 25Hz + diff
 
-    // 段表快照:首帧必发;sample rate 变化(含宿主 prepareToPlay 前后)必重发 —— 否则 prepare 前用
-    // 0.0/默认率换算的旧时间会一直残留到下一次段编辑/undo/切版本(PR#55 第7轮缺陷1)。
+    // 段表快照:首帧必发;sample rate 变化(含宿主 prepareToPlay 前后)或 CRVS 修订号变化(加载工程/
+    // 预设后 setStateInformation 替换段真身)必重发 —— 否则旧时间/旧段表残留到下一次段编辑/undo/切版本
+    // (PR#55 第7轮缺陷1 / 第8轮缺陷1)。
     const double srNow = processor_.sampleRate();
-    if (first || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)))
+    const std::uint32_t crvsRev = processor_.crvsRevision();
+    if (first || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)) ||
+        crvsRev != lastCrvsRevision_)
     {
         lastSegmentsSampleRate_ = srNow;
+        lastCrvsRevision_ = crvsRev;
         emitSegments("snapshot", true);
     }
 
@@ -964,65 +968,74 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     bool hasPairId = false;
     int pairId = 0;
 
-    if (a.size() > 1 && a[1].isObject())
+    if (a.size() < 2 || !a[1].isObject())
     {
-        const juce::var patch = a[1];
-        if (patch.hasProperty("source_channels") || patch.hasProperty("auto_pan") || patch.hasProperty("auto_vol"))
+        c(badArgResp()); // 必须传对象 patch(PR#55 第8轮缺陷2)
+        return;
+    }
+    const juce::var patch = a[1];
+    if (patch.hasProperty("source_channels") || patch.hasProperty("auto_pan") || patch.hasProperty("auto_vol"))
+    {
+        c(badArgResp()); // 只读/已删字段不可写(§1.15)
+        return;
+    }
+    if (patch.hasProperty("enabled"))
+    {
+        if (!strictBool(patch.getProperty("enabled", cur.enabled), enabled))
         {
-            c(badArgResp()); // 只读/已删字段不可写(§1.15)
+            c(badArgResp());
             return;
         }
-        if (patch.hasProperty("enabled"))
+        hasEnabled = true;
+    }
+    if (patch.hasProperty("label"))
+    {
+        label = patch.getProperty("label", juce::String()).toString().substring(0, 24);
+        hasLabel = true;
+    }
+    if (patch.hasProperty("priority"))
+    {
+        priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", cur.priority)));
+        hasPriority = true;
+    }
+    if (patch.hasProperty("lead_lock"))
+    {
+        if (!strictBool(patch.getProperty("lead_lock", cur.leadLock), leadLock))
         {
-            if (!strictBool(patch.getProperty("enabled", cur.enabled), enabled))
-            {
-                c(badArgResp());
-                return;
-            }
-            hasEnabled = true;
+            c(badArgResp());
+            return;
         }
-        if (patch.hasProperty("label"))
+        hasLeadLock = true;
+    }
+    if (patch.hasProperty("lead_vol_exempt"))
+    {
+        if (!strictBool(patch.getProperty("lead_vol_exempt", cur.leadVolExempt), leadVolExempt))
         {
-            label = patch.getProperty("label", juce::String()).toString().substring(0, 24);
-            hasLabel = true;
+            c(badArgResp());
+            return;
         }
-        if (patch.hasProperty("priority"))
+        hasLeadVolExempt = true;
+    }
+    if (patch.hasProperty("participate_in_auto_pan"))
+    {
+        if (!strictBool(patch.getProperty("participate_in_auto_pan", false), participate))
         {
-            priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", cur.priority)));
-            hasPriority = true;
+            c(badArgResp());
+            return;
         }
-        if (patch.hasProperty("lead_lock"))
-        {
-            if (!strictBool(patch.getProperty("lead_lock", cur.leadLock), leadLock))
-            {
-                c(badArgResp());
-                return;
-            }
-            hasLeadLock = true;
-        }
-        if (patch.hasProperty("lead_vol_exempt"))
-        {
-            if (!strictBool(patch.getProperty("lead_vol_exempt", cur.leadVolExempt), leadVolExempt))
-            {
-                c(badArgResp());
-                return;
-            }
-            hasLeadVolExempt = true;
-        }
-        if (patch.hasProperty("participate_in_auto_pan"))
-        {
-            if (!strictBool(patch.getProperty("participate_in_auto_pan", false), participate))
-            {
-                c(badArgResp());
-                return;
-            }
-            hasParticipate = true;
-        }
-        if (patch.hasProperty("pair_id"))
-        {
-            pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", cur.pairId)));
-            hasPairId = true;
-        }
+        hasParticipate = true;
+    }
+    if (patch.hasProperty("pair_id"))
+    {
+        pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", cur.pairId)));
+        hasPairId = true;
+    }
+
+    // 至少一个字段(空对象 patch → badArg,PR#55 第8轮缺陷2)。
+    if (!(hasEnabled || hasLabel || hasPriority || hasLeadLock || hasLeadVolExempt || hasParticipate || hasPairId))
+    {
+        c(badArgResp());
+        return;
     }
 
     // 阶段2:全部通过后一次性应用,变化才 bump config_seq。

@@ -150,6 +150,8 @@ public:
     bool isReadOnly() const { return session_.state() == scvb::output::OutputClaimState::kObserver; }
     // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。
     bool isPrepared() const { return sampleRate_ > 0.0; }
+    // CRVS 修订号:setStateInformation 替换 crvsData_ 后 +1;editor 据此重发 scvb.segments(PR#55 第8轮缺陷1)。
+    std::uint32_t crvsRevision() const { return crvsRevision_.load(std::memory_order_acquire); }
     // [M] 该轨累计失准计数(gapCount;scvb.conn.channels[].misalignCount 数据源)。
     scvb::u32 gapCount(int channel) const { return session_.gapCount(static_cast<scvb::u32>(channel)); }
 
@@ -258,6 +260,7 @@ private:
     uint32_t podEpoch_ = 0;
     std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数 / [M] 健康前置
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
+    std::atomic<uint32_t> crvsRevision_{0}; // CRVS 替换修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
 
     // 音频线程零分配缓冲(prepareToPlay 分配)。
     std::vector<float> accumL_;
