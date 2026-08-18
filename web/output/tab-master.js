@@ -1329,9 +1329,15 @@ export function createTabMaster(opts) {
         const vals = st.params.values || {};
         const v = (s.global && s.global.version_active) || 1;
         const chans = s.channels || [];
+        const connChans = (st.conn && st.conn.channels) || [];
         const spans = [];
         const bars = [];
         for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
+            // 只画已连接轨(slotState=2 ∧ heartbeatFresh,与 pill 同判据)——
+            // 空闲轨无参数值,vol=0 会被 distGeometry 画成居中高「幽灵柱」
+            // (设计稿绘制前滤掉 idle/srErr 轨;PR #52 bot 抓取)。
+            const cc = connChans[ch - 1];
+            if (!(cc && cc.slotState === 2 && cc.heartbeatFresh)) continue;
             const p = `v${v}_t${tt(ch)}_`;
             const cfg = chans[ch - 1] || {};
             const geo = distGeometry(

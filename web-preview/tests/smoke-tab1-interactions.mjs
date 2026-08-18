@@ -241,6 +241,12 @@ log("=== ① 契约映射的纯函数 ===");
 // §1.8 manual 起止校验(mm:ss.mmm ↔ 秒;桥面单位只有秒)
 {
     eq(TM.secondsToTimecode(72.4), "01:12.400", "秒 → mm:ss.mmm");
+    eq(
+        TM.secondsToTimecode(72.9996),
+        "01:13.000",
+        "毫秒四舍五入进位不产生四位 ms(踩坑口径锁死)",
+    );
+    eq(TM.secondsToTimecode(59.9996), "01:00.000", "毫秒进位链到分钟");
     eq(TM.timecodeToSeconds("01:12.400"), 72.4, "mm:ss.mmm → 秒");
     eq(TM.timecodeToSeconds("42"), 42, "裸秒数也收");
     eq(TM.timecodeToSeconds(""), null, "空串非法");
