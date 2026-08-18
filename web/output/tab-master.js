@@ -292,6 +292,18 @@ export function segmentTotals(segments) {
  * 0% 一路爬到真值,截图与手测都像坏页。分母取已知轨 = 「在已知的轨上,范围内覆盖了多少」,
  * 首帧即稳定。**一轨都没报到时返回 null**,调用方据此把整行隐掉(不显示假的 0%)。
  */
+/**
+ * 分析按钮「无数据」判据 —— 覆盖与段表的**并集**判空(两者都无才算真没数据)。
+ * 只看段表会鸡生蛋(首采未析永远禁用);只看覆盖会误伤重开工程
+ * (§2.7 captureProgress 非播放不发,覆盖帧未到但段表有货)。
+ * 此口径两度踩坑(PR #52 首审【重要】+ pr-agent 建议),抽纯函数配 smoke 断言锁死。
+ * @param {number|null} coveragePct coveragePercent() 的返回(null=无帧)
+ * @param {number} segTotalN 已分析段数(segmentTotals().n)
+ */
+export function analyzeNoData(coveragePct, segTotalN) {
+    return !coveragePct && segTotalN === 0;
+}
+
 export function coveragePercent(coverage) {
     const list = Object.values(coverage || {}).filter((v) =>
         Number.isFinite(v),
@@ -1040,7 +1052,8 @@ export function createTabMaster(opts) {
         let an = "ready";
         if (s.analysis_run && s.analysis_run.running) an = "running";
         else if (now() < local.analyzeFlashUntil) an = "done";
-        else if (isWriteBlocked() || (!p && totals.n === 0)) an = "disabled";
+        else if (isWriteBlocked() || analyzeNoData(p, totals.n))
+            an = "disabled";
         el.flow.setAttribute("data-analyze", an);
         // disabled 的原因面分离(PR #52 bot 建议 4):写权限缺失(只读/无时间线)时
         // 不能亮「当前范围内无采集数据」——真实原因由横幅②/⑥承载,原因句只留给 nodata。

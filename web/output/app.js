@@ -809,10 +809,11 @@ function renderGuideRules() {
 if (guideUi.start) {
     guideUi.start.addEventListener("click", () => {
         store.session.guideClosed = true;
-        if (guideUi.dontShow && guideUi.dontShow.checked) {
-            // 契约 §1.32:唯一写入口,alsoGlobal 默认 true(「不再显示」承诺跨工程成立)
-            call("setGuideSeen", true, true);
-        }
+        // params-v0 [J50]:guide_seen = 首启引导页「已读标记」——正常关闭即已读,
+        // 必须落**工程位**,否则重开工程引导页又弹(PR #52 bot 开放项 1)。
+        // 「不再显示」勾选才加写全局位(契约 §1.32 alsoGlobal;跨工程承诺)。
+        const alsoGlobal = !!(guideUi.dontShow && guideUi.dontShow.checked);
+        call("setGuideSeen", true, alsoGlobal);
         if (guideUi.overlay) guideUi.overlay.hidden = true;
     });
 }

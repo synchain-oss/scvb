@@ -333,6 +333,24 @@ log("=== ① 契约映射的纯函数 ===");
     eq(echo, { width: 130, ms_balance: -20 }, "nextParamEcho 不改入参");
 }
 
+// §1.6:分析按钮「无数据」= 覆盖 ∪ 段表并集判空 —— 此口径两度踩坑
+// (PR #52 首审【重要】鸡生蛋 + pr-agent 补丁的覆盖帧未到回归面),三形态锁死。
+{
+    check(
+        !TM.analyzeNoData(84, 0),
+        "首采未析(覆盖>0,段表空)⇒ 可分析(鸡生蛋回归面)",
+    );
+    check(
+        !TM.analyzeNoData(null, 327),
+        "重开工程未播放(§2.7 无覆盖帧,段表有货)⇒ 可分析",
+    );
+    check(TM.analyzeNoData(null, 0), "双空 ⇒ 禁用(真无数据)");
+    check(
+        TM.analyzeNoData(0, 0),
+        "覆盖 0%(range ∩ coverage = ∅)且段表空 ⇒ 禁用",
+    );
+}
+
 // 分布图几何(设计稿 L2037-2056)
 {
     const g = TM.distGeometry(0, -6, 100);
