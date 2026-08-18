@@ -76,6 +76,12 @@ public:
     void setVersionActive(int version);
     int groupId() const { return groupId_; }
 
+    // PR#53 R1:setStateInformation 读到 abi > kCurrentAbi → 拒载并置位(冻结契约 §7.3:高版本拒载
+    // + 提示升级,绝不静默降级;原 blob 由宿主工程保有)。消息线程读写(setStateInformation 持
+    // lifecycleMutex_),T30 桥经此把 abiMismatch 横幅推给 UI(Input PR#51 红旗#1 同款)。
+    bool hasStateAbiMismatch() const noexcept { return stateAbiMismatch_; }
+    scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
+
 private:
     // 25Hz [M] 定时器:心跳(4Hz 折半)+ session tick(per-channel 判定/看门狗/全局小节)。
     void timerCallback() override;
@@ -119,6 +125,12 @@ private:
     int versionActive_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
+
+    // PR#53 R1:state abi 拒载标志 + 保留的宿主原始字节 + 上次成功加载的容器(未知 chunk 原样回写)。
+    bool stateAbiMismatch_ = false;
+    scvb::u32 stateAbiSeen_ = 0;
+    std::vector<std::uint8_t> preservedStateBlob_; // 拒载更高 abi 后保留的宿主原始字节(getStateInformation 原样回写)
+    scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
 
     bool prepared_ = false;
     double sampleRate_ = 48000.0;

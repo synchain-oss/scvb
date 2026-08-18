@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "output/MixMath.h"
+#include "state/StateMigration.h"
 
 namespace
 {
@@ -210,7 +211,8 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         }
         const float* const* in = buffer.getArrayOfReadPointers();
         float* const* out = buffer.getArrayOfWritePointers();
-        busXfade_.render(out, in, out, n, /*targetMix=*/false);
+        const float* lastMix[2] = {accumL_.data(), accumR_.data()};
+        busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
         return;
     }
 
@@ -223,7 +225,8 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         // 无注入轨(全部离线/注入延迟中):总线直通,经同一 busXfade 状态机(无硬切)。
         const float* const* in = buffer.getArrayOfReadPointers();
         float* const* out = buffer.getArrayOfWritePointers();
-        busXfade_.render(out, in, out, n, /*targetMix=*/false);
+        const float* lastMix[2] = {accumL_.data(), accumR_.data()};
+        busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
         return;
     }
 
@@ -309,10 +312,17 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buffer, int n, int64_t t0)
 {
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
+    // PR#53 I1:无注入轨或无可读源 → 直通(不改 buffer),绝不把总线替换成静音。
+    const scvb::u32 inject = session_.injectMask();
+    if (inject == 0)
+    {
+        return; // 总线上只挂 Output / 尚无 Input:直通
+    }
+
     std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
     std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
 
-    const scvb::u32 inject = session_.injectMask();
+    bool anyData = false;
     for (int ch = 1; ch <= 15; ++ch)
     {
         if ((inject & (1u << (ch - 1))) == 0)
@@ -328,6 +338,7 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         {
             continue; // 缺口 → 该轨该块静音(失准计数已在 read 内)
         }
+        anyData = true;
         const scvb::u32 srcCh = src.channels();
         for (int i = 0; i < n; ++i)
         {
@@ -345,6 +356,11 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
                     trackBuf_[static_cast<std::size_t>(ch - 1)][static_cast<std::size_t>(2 * i + 1)];
             }
         }
+    }
+
+    if (!anyData)
+    {
+        return; // 有注入轨但均无可读数据(缺口):直通,不输出静音
     }
 
     auto* outL = buffer.getWritePointer(0);
@@ -408,6 +424,9 @@ void ScvbOutputAudioProcessor::timerCallback()
         {
             session_.forceClearMask();
             timelineInvalidTicks_ = kTimelineInvalidTicks; // 钳住,避免重复清
+            // [J51] 诊断:上报连续无时间线期间累计的无效块数(timelineInvalidBlocks_ 接线落点)。
+            DBG("SCVB Output: timeline invalid ≥0.5s, clearing inject mask ("
+                << timelineInvalidBlocks_.load(std::memory_order_relaxed) << " invalid blocks)");
         }
     }
     else
@@ -432,7 +451,16 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
 
-    scvb::state::StateChunks chunks;
+    // PR#53 R1:拒载更高 abi 后原样回写宿主原始字节(preservedOriginal 语义,Input PR#51 重要#2 同款),
+    // 绝不把高版本 blob 覆盖成当前版数据。
+    if (stateAbiMismatch_ && !preservedStateBlob_.empty())
+    {
+        destData.append(preservedStateBlob_.data(), preservedStateBlob_.size());
+        return;
+    }
+
+    // 从上次成功加载的容器重建:原位替换 PRMS/CFGS,其余 chunk(FEAT/CRVS/未知 fourcc)原样回写(T19)。
+    scvb::state::StateChunks chunks = loadedChunks_;
     chunks.abi = scvb::state::kCurrentAbi;
 
     // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)。
@@ -472,12 +500,35 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     {
         return;
     }
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    const std::size_t size = static_cast<std::size_t>(sizeInBytes);
+
+    // PR#53 R1:经 loadState 做 abi 判读 + 迁移(高 abi 拒载、低 abi 走迁移链;未知 chunk 原样保留)。
     scvb::state::StateChunks chunks;
-    if (scvb::state::decodeContainer(static_cast<const std::uint8_t*>(data), static_cast<std::size_t>(sizeInBytes),
-                                     chunks) != scvb::state::DecodeStatus::Ok)
+    const scvb::state::StateLoadResult res = scvb::state::loadState(bytes, size, chunks);
+
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    // 冻结契约(CLAUDE.md §7.3 / STATE_SCHEMA):读到高版本 abi → 拒载并提示升级,绝不静默降级;
+    // 同时保留原字节供 getStateInformation 原样回写(Input PR#51 红旗#1/重要#2 同款)。
+    if (res.status == scvb::state::StateLoadStatus::RejectedNewer)
     {
-        return; // 不可信字节:解码失败 → 拒载(不崩溃、不半填充)
+        scvb::state::StateHeader hdr;
+        stateAbiMismatch_ = true;
+        stateAbiSeen_ = scvb::state::parseHeader(bytes, size, hdr) ? hdr.abi : 0u;
+        preservedStateBlob_.assign(bytes, bytes + size);
+        DBG("SCVB Output: state abi " << stateAbiSeen_ << " > current " << scvb::state::kCurrentAbi
+                                      << "; refusing load (upgrade required)");
+        return;
     }
+    if (res.status != scvb::state::StateLoadStatus::Ok && res.status != scvb::state::StateLoadStatus::Migrated)
+    {
+        return; // Corrupt:不可信字节,拒载(不崩溃、不半填充)
+    }
+
+    stateAbiMismatch_ = false;
+    preservedStateBlob_.clear();
+    loadedChunks_ = chunks; // 保真 FEAT/CRVS/未知 fourcc 供 save 原样回写(T19 未知 fourcc 回写纪律)
 
     // PRMS:123 参数(宿主自动化面)。
     if (const scvb::state::Chunk* prms = chunks.find(scvb::state::kFourccPrms); prms != nullptr)
@@ -502,7 +553,6 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
     }
 
-    const juce::ScopedLock lock(lifecycleMutex_);
     groupId_ = static_cast<int>(s.groupId);
     captureEnabled_ = s.captureEnabled != 0;
     outputEnabled_ = s.outputEnabled != 0;

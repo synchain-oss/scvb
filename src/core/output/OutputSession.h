@@ -5,7 +5,7 @@
 // JUCE-free,可离线单测(用 SegmentBackendInProcess 模拟多实例;跨进程真实行为归 T07b)。
 //
 // 状态机:O0/O1 未映射/abi 不符(总线直通)、O2 ACTIVE(claim 本组 OutputSlot,读本组环混音)、
-// O3 OBSERVER(同组 OutputSlot 已被占用 → 总线直通,1Hz 重试 claim/接管)。改组(J66)=
+// O3 OBSERVER(同组 OutputSlot 已被占用 → 总线直通,25Hz 重试 claim/接管)。改组(J66)=
 // 释放旧组 OutputSlot → Unmap 旧组段 → 新组 claim。
 //
 // per-channel 子状态(§4.2,[M] 25Hz 评估):CH_OFFLINE / CH_SR_MISMATCH / CH_SUSPENDED /
@@ -90,7 +90,7 @@ public:
     u32 groupId() const noexcept { return groupId_; }
     u32 pid() const noexcept { return pid_; }
     u32 sampleRate() const noexcept { return sampleRate_; }
-    OutputClaimState state() const noexcept { return state_; }
+    OutputClaimState state() const noexcept { return state_.load(std::memory_order_acquire); }
 
     // [M] 聚合用([J09] 全局小节 / 看门狗)。
     u32 gapCount(u32 channel) const;
@@ -119,7 +119,8 @@ private:
     u32 groupId_ = kOutputDefaultGroup;
     u32 sampleRate_ = 0;
     u32 maxBlock_ = 0;
-    OutputClaimState state_ = OutputClaimState::kUnavailable;
+    // claim 态([M] 写 / [A] 经 state() acquire-load;processBlock 据此判 observer)。
+    std::atomic<OutputClaimState> state_{OutputClaimState::kUnavailable};
 
     Registry registry_;
     CtrlPlane ctrl_;

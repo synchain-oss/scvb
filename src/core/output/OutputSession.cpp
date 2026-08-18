@@ -10,6 +10,9 @@ std::wstring audioFullName(u32 group, u32 channel)
 {
     return L"Local\\" + segmentLogicalName(group, SegmentKind::kAudio, channel);
 }
+
+// 文件级空源:音频线程经 mixSource(非法 channel)访问时,不经过 magic-static 守卫(实时线程禁锁)。
+ShmRingMixSource gEmptyMixSource;
 } // namespace
 
 OutputSession::OutputSession(ISegmentBackend& backend, u32 pid)
@@ -32,7 +35,7 @@ OutputClaimState OutputSession::prepare(u32 sampleRate, u32 maxBlock, u64 nowMs)
 
 void OutputSession::heartbeat(u64 nowMs)
 {
-    if (state_ == OutputClaimState::kActive)
+    if (state_.load(std::memory_order_relaxed) == OutputClaimState::kActive)
     {
         registry_.heartbeatOutput(nowMs);
     }
@@ -46,13 +49,13 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
         const auto gr = registry_.changeGroup(groupId_);
         if (gr == Registry::ClaimResult::kAbiMismatch)
         {
-            state_ = OutputClaimState::kAbiMismatch;
-            return state_;
+            state_.store(OutputClaimState::kAbiMismatch, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
         if (gr != Registry::ClaimResult::kClaimed)
         {
-            state_ = OutputClaimState::kUnavailable;
-            return state_;
+            state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
     }
     else if (!registry_.isOpen())
@@ -60,13 +63,13 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
         const auto r = registry_.open();
         if (r == Registry::ClaimResult::kAbiMismatch)
         {
-            state_ = OutputClaimState::kAbiMismatch;
-            return state_;
+            state_.store(OutputClaimState::kAbiMismatch, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
         if (r != Registry::ClaimResult::kClaimed)
         {
-            state_ = OutputClaimState::kUnavailable;
-            return state_;
+            state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
     }
 
@@ -76,13 +79,13 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
         const auto cr = ctrl_.changeGroup(groupId_);
         if (cr == InitResult::kAbiMismatch)
         {
-            state_ = OutputClaimState::kAbiMismatch;
-            return state_;
+            state_.store(OutputClaimState::kAbiMismatch, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
         if (cr != InitResult::kOk)
         {
-            state_ = OutputClaimState::kUnavailable;
-            return state_;
+            state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
     }
     else if (!ctrl_.isOpen())
@@ -90,13 +93,13 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
         const auto cr = ctrl_.open();
         if (cr == InitResult::kAbiMismatch)
         {
-            state_ = OutputClaimState::kAbiMismatch;
-            return state_;
+            state_.store(OutputClaimState::kAbiMismatch, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
         if (cr != InitResult::kOk)
         {
-            state_ = OutputClaimState::kUnavailable;
-            return state_;
+            state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
+            return state_.load(std::memory_order_relaxed);
         }
     }
 
@@ -108,18 +111,18 @@ OutputClaimState OutputSession::openAndClaim(u64 nowMs)
     const auto cr = registry_.claimOutput(pid_, nowMs);
     if (cr == Registry::ClaimResult::kConflict)
     {
-        state_ = OutputClaimState::kObserver;
+        state_.store(OutputClaimState::kObserver, std::memory_order_release);
         injectMask_.store(0, std::memory_order_release);
-        return state_;
+        return state_.load(std::memory_order_relaxed);
     }
     if (cr != Registry::ClaimResult::kClaimed)
     {
-        state_ = OutputClaimState::kUnavailable;
-        return state_;
+        state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
+        return state_.load(std::memory_order_relaxed);
     }
-    state_ = OutputClaimState::kActive;
+    state_.store(OutputClaimState::kActive, std::memory_order_release);
     attachAudioRings();
-    return state_;
+    return state_.load(std::memory_order_relaxed);
 }
 
 void OutputSession::attachAudioRings()
@@ -159,7 +162,6 @@ void OutputSession::attachAudioRings()
         float* adata = reinterpret_cast<float*>(ah + 1);
         audioHandles_[idx] = SegmentHandle(std::move(av), &backend_);
         sources_[idx].bind(ah, adata);
-        sources_[idx].resetTimeline();
     }
 }
 
@@ -264,23 +266,23 @@ void OutputSession::consumeCommands(u64 /*nowMs*/)
 
 void OutputSession::tick(u64 nowMs)
 {
-    if (state_ == OutputClaimState::kObserver)
+    if (state_.load(std::memory_order_relaxed) == OutputClaimState::kObserver)
     {
-        // O3:1Hz 重试 claim / 接管(主实例卸载或心跳陈旧 + pid 探活失败)。
+        // O3:25Hz 重试 claim / 接管(主实例卸载或心跳陈旧 + pid 探活失败)。
         const auto cr = registry_.claimOutput(pid_, nowMs);
         if (cr == Registry::ClaimResult::kClaimed)
         {
-            state_ = OutputClaimState::kActive;
+            state_.store(OutputClaimState::kActive, std::memory_order_release);
             attachAudioRings();
         }
         else if (cr == Registry::ClaimResult::kAbiMismatch)
         {
-            state_ = OutputClaimState::kAbiMismatch;
+            state_.store(OutputClaimState::kAbiMismatch, std::memory_order_release);
         }
         return; // observer:不写 registry/ctrl、不消费 cmd、不注入(§4.2 O3)
     }
 
-    if (state_ != OutputClaimState::kActive)
+    if (state_.load(std::memory_order_relaxed) != OutputClaimState::kActive)
     {
         return;
     }
@@ -311,7 +313,7 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     releaseSlot();
     releaseSegments();
     injectMask_.store(0, std::memory_order_release);
-    state_ = OutputClaimState::kUnavailable;
+    state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
 
     groupId_ = (newGroup >= 1 && newGroup <= kMaxGroups) ? newGroup : kOutputDefaultGroup;
     sampleRate_ = sampleRate;
@@ -326,7 +328,7 @@ void OutputSession::release(u64 nowMs)
     releaseSlot();
     releaseSegments();
     injectMask_.store(0, std::memory_order_release);
-    state_ = OutputClaimState::kUnavailable;
+    state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
     reap(nowMs);
 }
 
@@ -349,22 +351,14 @@ void OutputSession::reap(u64 nowMs)
 
 ShmRingMixSource& OutputSession::mixSource(u32 channel)
 {
-    static ShmRingMixSource sEmpty;
-    if (channel < 1 || channel > kMaxChannels)
-    {
-        return sEmpty;
-    }
-    return sources_[static_cast<std::size_t>(channel - 1)];
+    return (channel >= 1 && channel <= kMaxChannels) ? sources_[static_cast<std::size_t>(channel - 1)]
+                                                     : gEmptyMixSource;
 }
 
 const ShmRingMixSource& OutputSession::mixSource(u32 channel) const
 {
-    static ShmRingMixSource sEmpty;
-    if (channel < 1 || channel > kMaxChannels)
-    {
-        return sEmpty;
-    }
-    return sources_[static_cast<std::size_t>(channel - 1)];
+    return (channel >= 1 && channel <= kMaxChannels) ? sources_[static_cast<std::size_t>(channel - 1)]
+                                                     : gEmptyMixSource;
 }
 
 u32 OutputSession::gapCount(u32 channel) const
@@ -428,7 +422,7 @@ void OutputSession::releaseHandle(SegmentHandle& handle)
 
 void OutputSession::releaseSlot()
 {
-    if (state_ == OutputClaimState::kActive)
+    if (state_.load(std::memory_order_relaxed) == OutputClaimState::kActive)
     {
         registry_.releaseOutput(pid_);
     }

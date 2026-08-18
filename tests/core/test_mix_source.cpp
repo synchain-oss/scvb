@@ -4,9 +4,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <atomic>
 #include <cstdint>
+#include <thread>
 #include <vector>
 
+#include "output/BusXfade.h"
 #include "output/MixMath.h"
 #include "output/ShmRingMixSource.h"
 
@@ -185,4 +188,103 @@ TEST_CASE("MixMath stereo dual-pan + width", "[mix][math]")
     scvb::output::mixStereoSample(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 100.0f, 1.0f, ml, mr);
     CHECK(ml == Catch::Approx(0.70710678f).margin(1e-5));
     CHECK(mr == Catch::Approx(0.70710678f).margin(1e-5));
+}
+
+TEST_CASE("ShmRingMixSource bind/unbind 与 read 并发不崩(原子快照)", "[mix][ring][concurrency]")
+{
+    RingFixture f(64, 2);
+    f.header.write_head_samples.store(64, std::memory_order_release);
+    for (u32 i = 0; i < 64; ++i)
+    {
+        f.data[static_cast<std::size_t>(i) * 2] = static_cast<float>(i);
+        f.data[static_cast<std::size_t>(i) * 2 + 1] = static_cast<float>(i);
+    }
+
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    REQUIRE(src.bound());
+
+    std::atomic<bool> stop{false};
+    std::vector<float> buf(8 * 2);
+
+    std::thread reader([&] {
+        int64_t t0 = 0;
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            (void)src.read(t0, buf.data(), 8);
+            t0 = (t0 + 8) & 63; // 在 64 帧环内循环(covered)
+        }
+    });
+
+    // 主线程反复 bind/unbind 抖动;reader 并发 read —— 原子快照下不得空指针解引用/撕裂。
+    for (int i = 0; i < 2000; ++i)
+    {
+        src.unbind();
+        src.bind(&f.header, f.data.data());
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    reader.join();
+
+    // 重新稳定绑定,确认仍可读(无永久损坏)。
+    src.unbind();
+    src.bind(&f.header, f.data.data());
+    REQUIRE(src.bound());
+    std::vector<float> out(8 * 2);
+    REQUIRE(src.read(0, out.data(), 8));
+    REQUIRE(out[0] == 0.0f);
+    REQUIRE(out[1] == 0.0f);
+}
+
+TEST_CASE("BusXfade 直通⇄混音等功率交叉(无别名/无 +3dB 泵感)", "[mix][busxfade]")
+{
+    scvb::output::BusXfade xf;
+    xf.prepare(48000.0, 80.0);
+    const int n = 512;
+
+    std::vector<float> in(static_cast<std::size_t>(n), 1.0f); // 直通源 = 单位 DC
+    std::vector<float> mix(static_cast<std::size_t>(n), 0.0f); // 自有混音 = 静音(模拟最后一混音块)
+    std::vector<float> out(static_cast<std::size_t>(n), 0.0f);
+    const float* ip[2] = {in.data(), in.data()};
+    const float* mp[2] = {mix.data(), mix.data()};
+    float* op[2] = {out.data(), out.data()};
+
+    // 1) 稳态直通:theta=0 → render(false) 零开销,不写输出。
+    out.assign(static_cast<std::size_t>(n), 7.0f);
+    xf.render(op, ip, mp, n, false);
+    REQUIRE(xf.isSettledPassthrough());
+    REQUIRE(out[0] == 7.0f);
+
+    // 2) 直通→混音:out = in*cos(θ)+mix*sin(θ)=cos(θ)(in=1,mix=0),单调降且恒 ≤1(无 +3dB 泵感)。
+    xf.render(op, ip, mp, n, true);
+    REQUIRE_FALSE(xf.isSettledMix());
+    float prev = 2.0f;
+    for (int i = 0; i < n; ++i)
+    {
+        const float v = out[static_cast<std::size_t>(i)];
+        REQUIRE(v <= 1.0f + 1e-6f);
+        REQUIRE(v <= prev + 1e-6f); // cos 单调降
+        prev = v;
+    }
+
+    // 3) 推至稳态混音:余下样本直接拷贝 mix(此处 mix=0)。
+    for (int k = 0; k < 20; ++k)
+    {
+        xf.render(op, ip, mp, n, true);
+    }
+    REQUIRE(xf.isSettledMix());
+    REQUIRE(out[0] == 0.0f); // mix=0 → 稳态输出 0
+
+    // 4) 混音→直通:out = cos(θ)(θ 从 π/2 降),单调升、恒 ≤1;首样本≈mix(无硬切)。
+    xf.render(op, ip, mp, n, false);
+    REQUIRE_FALSE(xf.isSettledPassthrough());
+    prev = -1.0f;
+    for (int i = 0; i < n; ++i)
+    {
+        const float v = out[static_cast<std::size_t>(i)];
+        REQUIRE(v <= 1.0f + 1e-6f);
+        REQUIRE(v >= prev - 1e-6f); // cos 单调升
+        prev = v;
+    }
+    REQUIRE(out[0] == Catch::Approx(0.0f).margin(1e-4f)); // 首样本≈mix=0,与上一块稳态混音连续(无阶跃)
 }
