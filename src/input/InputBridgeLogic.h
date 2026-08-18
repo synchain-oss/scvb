@@ -24,16 +24,19 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
 
 // --- remoteSetPriority 拒绝判定(§3.4/§5.6)-----------------------------------------
 // 判定顺序(全部不满足 = 投递):channel_id==0 → unassigned;Output 离线 → outputOffline;
+// 非活跃态(conflict/abiMismatch/unavailable,不持有 slot)→ unassigned(§5.2 未 claim 任何 slot;
+//   SPSC 纪律:非持有者不得写命令环,见 InputProcessor::bridgeRemoteSetPriority);
 // 命令环满 → ringFull(满环仍投递:写方覆盖最旧 + 溢出计数,回执 queued:false 提示重试)。
 enum class PriorityReject
 {
     kNone,
     kRingFull,
     kOutputOffline,
-    kUnassigned
+    kUnassigned,
+    kNotActive
 };
 
-PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull);
+PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active);
 juce::String priorityRejectReason(PriorityReject r); // kNone → ""
 
 // --- 数值参数解析(§0.8.2 类型不符/越界 → 拒绝)------------------------------------

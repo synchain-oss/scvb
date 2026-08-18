@@ -72,6 +72,7 @@ juce::var InputEditor::buildSnapshot()
     lastErrorJson_.clear();
     lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵:首 tick 必发一次 scvb.config(§0.4;其后仅 seq 变化才发)
     lastClaim_ = claim; // error 仍只发迁移边沿;启动即异常态由 scvb.state.claim 承载(§4.5)
+    lastErrorChannelId_ = snap.channelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
     lastConnMs_ = 0; // 复位 4Hz 折半 → 首 tick 必发 scvb.conn
     lastGroupsMs_ = 0; // 复位 1Hz 折半 → 首 tick 必发 scvb.groups(关闭 ≤1s 空态窗口)
 
@@ -135,10 +136,13 @@ void InputEditor::emitTick()
     }
 
     // scvb.error:claim 态迁移边沿(§4.5;conflict/srMismatch 进出,abi 不占 error code)。
-    if (claim != lastClaim_)
+    // 边沿键 = (claim, channelId):claim 不变但 channel 变化(如 conflict A → conflict B)也必须
+    // 重发,否则 channelConflict/srMismatch 的 ch 载荷残留旧 channel(PR#54 R3)。
+    if (claim != lastClaim_ || snap.channelId != lastErrorChannelId_)
     {
         const juce::String prev = lastClaim_;
         lastClaim_ = claim;
+        lastErrorChannelId_ = snap.channelId;
         emitClaimError(claim, prev, snap.channelId, snap.groupId, juce::roundToInt(snap.sampleRate),
                        static_cast<int>(snap.globalInfo.output_sample_rate));
     }

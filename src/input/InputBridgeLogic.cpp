@@ -31,7 +31,7 @@ bool srMismatch(InputClaimState state, u32 outputSampleRate, u32 localSampleRate
     return state == InputClaimState::kActive && outputSampleRate != 0 && outputSampleRate != localSampleRate;
 }
 
-PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull)
+PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active)
 {
     if (channelId == 0)
     {
@@ -40,6 +40,10 @@ PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull
     if (!outputOnline)
     {
         return PriorityReject::kOutputOffline;
+    }
+    if (!active)
+    {
+        return PriorityReject::kNotActive;
     }
     if (ringFull)
     {
@@ -53,6 +57,7 @@ juce::String priorityRejectReason(PriorityReject r)
     switch (r)
     {
     case PriorityReject::kUnassigned:
+    case PriorityReject::kNotActive:
         return "unassigned";
     case PriorityReject::kOutputOffline:
         return "outputOffline";

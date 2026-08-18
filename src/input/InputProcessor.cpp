@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "InputProcessor.h"
 
+#include "InputBridgeLogic.h"
 #include "InputEditor.h"
 
 #include <algorithm>
@@ -465,24 +466,28 @@ ScvbInputAudioProcessor::PriorityResult ScvbInputAudioProcessor::bridgeRemoteSet
     const auto now = scvb::steadyNowMs();
     PriorityResult r;
 
-    // §3.4 拒绝态:channel_id=0 → unassigned;Output 离线 → outputOffline;满环 → ringFull。
-    // 满环仍投递(写方覆盖最旧 + 溢出计数,契约 §6/10 IPC-13),回执 queued:false 提示重试。
-    if (channelId_ == 0)
-    {
-        r.reason = "unassigned";
-        return r;
-    }
-    if (!session_.connSnapshot(now).outputOnline)
-    {
-        r.reason = "outputOffline";
-        return r;
-    }
     const scvb::u32 ch = static_cast<scvb::u32>(channelId_);
+    const bool outputOnline = session_.connSnapshot(now).outputOnline;
+    const bool active = session_.state() == scvb::input::InputClaimState::kActive;
     const bool ringFull = ctrl_.isRingFull(ch);
-    ctrl_.enqueue(ch, scvb::CtrlOp::kSetPriority, static_cast<scvb::u64>(n));
-    if (ringFull)
+    // §3.4/§5.6 拒绝判定(真源 = bridge::priorityRejection 纯函数)。判定顺序:unassigned >
+    // outputOffline > 非活跃 > ringFull。非活跃实例(conflict/abiMismatch/unavailable)不是
+    // channel 持有者,SPSC 纪律禁止其向共享命令环 enqueue —— 否则两个实例成双生产者竞写
+    // write_pos/覆盖最旧,损坏环或向不拥有的 channel 注入控制命令(PR#54 R3)。reason 取
+    // §5.6 闭集内最近似的 "unassigned"(未持有 slot;channelConflict 是 §5.1 errorCode 而非
+    // reason,闭集内无对应项,故不新造 reason,保持 §3.4 remoteSetPriority 返回形状冻结)。
+    const auto reject = scvb::input::bridge::priorityRejection(channelId_, outputOnline, ringFull, active);
+
+    // 满环仍投递(写方覆盖最旧 + 溢出计数,§6/10 IPC-13);其余拒绝态一律不投递。
+    if (reject == scvb::input::bridge::PriorityReject::kRingFull ||
+        reject == scvb::input::bridge::PriorityReject::kNone)
     {
-        r.reason = "ringFull";
+        ctrl_.enqueue(ch, scvb::CtrlOp::kSetPriority, static_cast<scvb::u64>(n));
+    }
+
+    if (reject != scvb::input::bridge::PriorityReject::kNone)
+    {
+        r.reason = scvb::input::bridge::priorityRejectReason(reject);
         return r;
     }
     r.queued = true;

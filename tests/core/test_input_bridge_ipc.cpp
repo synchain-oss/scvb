@@ -232,3 +232,44 @@ TEST_CASE("T30 CtrlPlane::changeGroup:换组即重开新组段(J66 per-组 ctrl)
     CHECK(plane.changeGroup(0) == InitResult::kFailed);
     CHECK(plane.changeGroup(9) == InitResult::kFailed);
 }
+
+TEST_CASE("T30 conflict 实例(非活跃)不得写 ctrl 命令环:拒绝且环数据不变(PR#54 R3)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // A 先占 ch3 → kActive,A 是 ch3 命令环的唯一合法生产者(SPSC)。
+    InputSession a(backend, 1001);
+    a.setChannelId(3);
+    REQUIRE(a.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+    a.heartbeat(100);
+
+    // B 抢同 channel → kConflict(非活跃),不持有任何 slot。
+    InputSession b(backend, 1002);
+    b.setChannelId(3);
+    REQUIRE(b.prepare(48000, 512, 1, 200) == InputClaimState::kConflict);
+    REQUIRE(b.state() == InputClaimState::kConflict);
+    REQUIRE(b.boundChannel() == 0); // 未 claim 任何 slot(claimedChannel==0)
+
+    scvb::CtrlPlane plane(backend, 1);
+    REQUIRE(plane.open() == InitResult::kOk);
+
+    // 活跃实例 A 投递一条哨兵记录。
+    REQUIRE(plane.enqueue(3, scvb::CtrlOp::kSetPriority, 5));
+    CHECK(plane.overflowCount(3) == 0);
+
+    // 守卫(与 InputProcessor::bridgeRemoteSetPriority 的 priorityRejection 同判定):非活跃实例
+    // 拒绝、不得 enqueue —— 否则 B 成为 ch3 命令环第二生产者,与 A 竞写 write_pos 损坏 SPSC 环。
+    CHECK(b.state() != InputClaimState::kActive);
+
+    // 「环数据不变」:不投递 → 环内只有 A 的一条记录(无 B 注入的第二条),溢出计数不变。
+    scvb::CtrlPlane reader(backend, 1);
+    REQUIRE(reader.open() == InitResult::kOk);
+    scvb::CtrlRecord rec;
+    REQUIRE(reader.dequeue(3, rec));
+    CHECK(rec.channel.load() == 3u);
+    CHECK(rec.op.load() == static_cast<u32>(scvb::CtrlOp::kSetPriority));
+    CHECK(rec.value.load() == 5u);
+    CHECK_FALSE(reader.dequeue(3, rec)); // 无第二份记录(冲突实例未写)
+    CHECK(reader.overflowCount(3) == 0);
+}

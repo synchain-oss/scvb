@@ -96,16 +96,20 @@ TEST_CASE("T30 srMismatch 推导:仅 claim active ∧ Output SR 非零 ∧ ≠ �
     CHECK_FALSE(srMismatch(InputClaimState::kAbiMismatch, 44100, 48000));
 }
 
-TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOffline > ringFull(§3.4/§5.6)")
+TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOffline > notActive > ringFull(§3.4/§5.6)")
 {
-    CHECK(priorityRejection(0, true, false) == PriorityReject::kUnassigned);
-    CHECK(priorityRejection(0, false, true) == PriorityReject::kUnassigned); // channel=0 最优先
-    CHECK(priorityRejection(3, false, true) == PriorityReject::kOutputOffline); // 离线优先于满环
-    CHECK(priorityRejection(3, false, false) == PriorityReject::kOutputOffline);
-    CHECK(priorityRejection(3, true, true) == PriorityReject::kRingFull);
-    CHECK(priorityRejection(3, true, false) == PriorityReject::kNone);
+    CHECK(priorityRejection(0, true, false, true) == PriorityReject::kUnassigned);
+    CHECK(priorityRejection(0, false, true, false) == PriorityReject::kUnassigned); // channel=0 最优先
+    CHECK(priorityRejection(3, false, true, false) == PriorityReject::kOutputOffline); // 离线优先于满环/非活跃
+    CHECK(priorityRejection(3, false, false, false) == PriorityReject::kOutputOffline);
+    CHECK(priorityRejection(3, true, false, false) ==
+          PriorityReject::kNotActive); // conflict/abiMismatch/unavailable 非持有者
+    CHECK(priorityRejection(3, true, true, false) == PriorityReject::kNotActive); // 非活跃优先于满环(不写环)
+    CHECK(priorityRejection(3, true, true, true) == PriorityReject::kRingFull);
+    CHECK(priorityRejection(3, true, false, true) == PriorityReject::kNone);
 
     CHECK(priorityRejectReason(PriorityReject::kUnassigned) == "unassigned");
+    CHECK(priorityRejectReason(PriorityReject::kNotActive) == "unassigned"); // §5.6 闭集内最近似:未持有 slot
     CHECK(priorityRejectReason(PriorityReject::kOutputOffline) == "outputOffline");
     CHECK(priorityRejectReason(PriorityReject::kRingFull) == "ringFull");
     CHECK(priorityRejectReason(PriorityReject::kNone).isEmpty());

@@ -62,6 +62,7 @@ private:
     juce::String lastErrorJson_;
     juce::uint32 lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵 = 首 tick 必发 scvb.config(§0.4;其后仅 seq 变化才发)
     juce::String lastClaim_; // 快照时初始化为当前 claim(error 只发迁移边沿)
+    int lastErrorChannelId_ = -1; // error 边沿键的 channel 分量(claim 同但 channel 变也重发;哨兵 -1)
     juce::uint64 lastConnMs_ = 0; // 4Hz 折半(快照回执复位 → 首 tick 必发 scvb.conn)
     juce::uint64 lastGroupsMs_ = 0; // 1Hz 折半(快照回执复位 → 首 tick 必发 scvb.groups)
 
