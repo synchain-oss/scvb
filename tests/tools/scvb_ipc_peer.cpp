@@ -506,22 +506,36 @@ int runCtrlReader(const Args& a)
     }
     long long count = 0;
     unsigned long long last = 0;
-    bool first = true;
     u32 lastSeq = 0;
     CtrlRecord rec;
-    while (plane.dequeue(static_cast<u32>(a.ch), rec))
+
+    // 握手(IPC-13):writer 先 enqueue;reader 带超时轮询到第一条记录再继续,避免 writer 被抢占时
+    // 读到空环(count==0 误判)。
+    bool got = false;
+    const u64 deadline = ::GetTickCount64() + 10000;
+    for (;;)
+    {
+        got = plane.dequeue(static_cast<u32>(a.ch), rec);
+        if (got || ::GetTickCount64() >= deadline)
+        {
+            break;
+        }
+        ::Sleep(0);
+    }
+
+    while (got)
     {
         const u32 seq = rec.seq.load(std::memory_order_relaxed);
         const unsigned long long val = rec.value.load(std::memory_order_relaxed);
-        if (!first && seq <= lastSeq)
+        if (count > 0 && seq <= lastSeq)
         {
             writeCsv(a.out, "seq_regression 1\n");
             return 2;
         }
         lastSeq = seq;
         last = val;
-        first = false;
         ++count;
+        got = plane.dequeue(static_cast<u32>(a.ch), rec);
     }
     std::string csv;
     csv += "count " + std::to_string(count) + "\n";
@@ -562,7 +576,20 @@ int runGlobalInfoReader(const Args& a)
     {
         return 3;
     }
-    const auto s = plane.readGlobalInfo();
+    // 握手(IPC-16):writer refreshGlobalInfo 前 capture_enabled 保持 0;带超时轮询到非零再读全量,
+    // 避免 writer 被抢占时读到全零快照。
+    OutputGlobalInfoSnapshot s;
+    const u64 deadline = ::GetTickCount64() + 10000;
+    for (;;)
+    {
+        s = plane.readGlobalInfo();
+        if (s.capture_enabled != 0 || ::GetTickCount64() >= deadline)
+        {
+            break;
+        }
+        ::Sleep(0);
+    }
+
     std::string csv;
     csv += "capture_enabled " + std::to_string(s.capture_enabled) + "\n";
     csv += "output_sample_rate " + std::to_string(s.output_sample_rate) + "\n";
@@ -697,6 +724,20 @@ int runFeatReader(const Args& a)
     store.channel(static_cast<u32>(a.ch)).setReadOnly(false); // ChannelFrames 默认只读,须显式放行写入
     const u32 activeMask = 1u << (a.ch - 1);
     const analysis::HopRange gate{0, std::numeric_limits<uint64_t>::max()};
+
+    // 握手(建议 4):先带超时等 writer 开写(write_hop > base_hop),再进入稳定收敛计数;否则 writer
+    // 尚未开写时连续 3 拍无进展会提前退出(空 coverage)。
+    {
+        const u64 deadline = ::GetTickCount64() + 10000;
+        while (hdr->write_hop.load(std::memory_order_acquire) <= hdr->base_hop.load(std::memory_order_acquire))
+        {
+            if (::GetTickCount64() >= deadline)
+            {
+                break;
+            }
+            ::Sleep(0);
+        }
+    }
 
     // 拉到 lastPulled 不再推进(写方已退出且全部数据已拉取;连续 3 拍无进展即停)。
     int stableTicks = 0;

@@ -57,13 +57,47 @@ namespace
 // 进程 spawn / 等待 / 杀进程 helper
 // ---------------------------------------------------------------------------
 
-#ifndef SCVB_IPC_PEER_PATH
-#error "SCVB_IPC_PEER_PATH 未定义(须由 tests/ipc/CMakeLists.txt 注入)"
-#endif
-
 std::wstring peerExe()
 {
-    return SCVB_IPC_PEER_PATH;
+    // 运行期解析对端进程路径:不编译期烘焙 $<TARGET_FILE>(VS 生成器渲染反斜杠路径会触发 MSVC
+    // C4129 或损坏转义,PR#46 复审)。从测试 exe 自身路径推导:
+    //   测试 exe = <build>/tests/ipc[/<Config>]/scvb_ipc_tests.exe
+    //   对端 exe = <build>/tests/tools[/<Config>]/scvb_ipc_peer.exe
+    wchar_t self[MAX_PATH];
+    const DWORD n = ::GetModuleFileNameW(nullptr, self, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH)
+    {
+        return L"";
+    }
+    std::wstring dir(self, self + n);
+    const std::size_t slash = dir.find_last_of(L"\\/");
+    if (slash == std::wstring::npos)
+    {
+        return L"";
+    }
+    dir.resize(slash); // 测试 exe 目录
+
+    // 候选链:Ninja 单配置 <build>/tests/tools/ 与 VS 多配置 <build>/tests/tools/<Config>/。
+    // (dir 末段为 <Config> 时须回退两层:dir/.. = <build>/tests/ipc,dir/../.. = <build>/tests。)
+    std::vector<std::wstring> candidates;
+    candidates.push_back(dir + L"/../tools/scvb_ipc_peer.exe"); // Ninja
+    const std::size_t lastSlash = dir.find_last_of(L"\\/");
+    if (lastSlash != std::wstring::npos)
+    {
+        const std::wstring config = dir.substr(lastSlash + 1);
+        candidates.push_back(dir + L"/../../tools/" + config + L"/scvb_ipc_peer.exe"); // VS 多配置
+    }
+
+    for (const auto& cand : candidates)
+    {
+        wchar_t full[MAX_PATH];
+        if (::GetFullPathNameW(cand.c_str(), MAX_PATH, full, nullptr) != 0 &&
+            ::GetFileAttributesW(full) != INVALID_FILE_ATTRIBUTES)
+        {
+            return std::wstring(full);
+        }
+    }
+    return L"";
 }
 
 std::wstring wide(const std::string& s)
@@ -99,7 +133,16 @@ PROCESS_INFORMATION spawnPeer(const std::vector<std::string>& args, int* spawnEr
     STARTUPINFOW si{};
     si.cb = sizeof(si);
 
-    std::wstring cmd = L"\"" + peerExe() + L"\"";
+    const std::wstring exe = peerExe();
+    if (exe.empty())
+    {
+        if (spawnErr != nullptr)
+        {
+            *spawnErr = static_cast<int>(ERROR_FILE_NOT_FOUND); // 2(winerror.h 宏,勿加 :: 前缀)
+        }
+        return PROCESS_INFORMATION{};
+    }
+    std::wstring cmd = L"\"" + exe + L"\"";
     for (const auto& a : args)
     {
         cmd += L" " + wide(quote(a));
@@ -1225,23 +1268,31 @@ TEST_CASE("IPC-16 ctrl 全局小节跨进程逐项一致", "[ipc][contract]")
 // ===========================================================================
 TEST_CASE("IPC-17 直通/静音健康仲裁信号", "[ipc][contract]")
 {
+    scvb::SegmentBackendWin32 backend;
+    resetRegistry(backend, 1); // 清掉 IPC-11b 等可能残留的 OutputSlot 状态,消除残留态耦合
+
     PeerGuard holder;
     int err = 0;
     holder.pi = spawnPeer({"--role=holder", "--kind=output", "--group=1", "--ch=1"}, &err);
     REQUIRE(err == 0);
+    const u32 holderPid = holder.pi.dwProcessId;
 
-    scvb::SegmentBackendWin32 backend;
     scvb::Registry reg(backend, 1);
     REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
-    for (int i = 0; i < 200 && reg.outputSlot()->state.load() != kSlotActive; ++i)
+    // 轮询到「mask 非零 且 属主 pid == 本 holder」再断言:claimOutput 先 store mask=0 再 setMaskBit,
+    // 只轮询 state==active 会与 mask 置位竞态;pid 校验确保是本次 holder 真正 claim 成功(非残留态)。
+    for (int i = 0; i < 200 && (reg.outputSlot()->pid != holderPid || reg.connectedMask() == 0); ++i)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    REQUIRE(reg.outputSlot()->pid == holderPid);
     REQUIRE(reg.outputSlot()->state.load() == kSlotActive);
+    REQUIRE(reg.connectedMask() == (1u << 0));
+    // 校验 holder 未早退(claim 失败会 exit 2;成功则持住不退出)。
+    REQUIRE(::WaitForSingleObject(holder.pi.hProcess, 0) == WAIT_TIMEOUT);
 
     const u64 hbFresh = reg.outputSlot()->heartbeat_ms.load();
     REQUIRE_FALSE(scvb::isStaleDisplay(hbFresh, hbFresh));
-    REQUIRE(reg.connectedMask() == (1u << 0));
 
     REQUIRE(scvb::isStaleDisplay(hbFresh, hbFresh + 2100));
 

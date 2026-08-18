@@ -7,8 +7,9 @@ add_executable(scvb_ipc_tests
 
 target_link_libraries(scvb_ipc_tests PRIVATE scvb_core Catch2::Catch2WithMain)
 target_include_directories(scvb_ipc_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
-# 对端进程路径(供测试 CreateProcessW 拉起;TARGET_FILE 在 generate 期求值,跨目录引用 OK)。
-target_compile_definitions(scvb_ipc_tests PRIVATE SCVB_IPC_PEER_PATH=L"$<TARGET_FILE:scvb_ipc_peer>")
+# 对端进程路径不再编译期烘焙 $<TARGET_FILE>(VS 生成器渲染反斜杠路径会触发 MSVC C4129 或
+# 损坏转义,PR#46 复审);改由 test_ipc_contract.cpp 运行期 GetModuleFileNameW 推导(Ninja 单配置
+# 与 VS 多配置两态都探测),见其 peerExe()。
 
 if(MSVC)
   target_compile_options(scvb_ipc_tests PRIVATE /W4 /utf-8 /EHsc)
