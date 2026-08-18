@@ -164,6 +164,15 @@ Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
 Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
 
 # ==================================================================
+Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)==='
+# ==================================================================
+# 设计盒常量唯一真源 = web/shared/design-box.js;生成物 src/core/DesignBox.h 必须逐字节一致
+# (01 §6.1 / 05 §1.2;消除 Bridge 双处硬编码技术债)。--check 重生成并对拍,漂移即红。
+$designBox = (& python scripts\gen-design-box.py --check 2>&1)
+if ($LASTEXITCODE -ne 0) { $designBox | ForEach-Object { Write-Host ("  " + $_) } }
+Set-Gate '3d 设计盒真源' ($LASTEXITCODE -eq 0)
+
+# ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)
 # ==================================================================
 $cfg = (& cmake -S . -B $BuildDir "-DCMAKE_BUILD_TYPE=$Config" "-DSCVB_BUILD_TESTS=ON" "-DJUCE_PATH=$JucePath" 2>&1)

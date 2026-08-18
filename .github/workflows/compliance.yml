@@ -37,3 +37,7 @@ jobs:
       - name: REUSE lint
         # 与 §5.1 gate 3c 逐字同参
         run: pipx run reuse lint
+      - name: Design-box single-source check
+        # 设计盒常量唯一真源守卫:生成物 src/core/DesignBox.h 与 web/shared/design-box.js 对拍
+        # (与 gates.ps1 gate 3d 同参;纯脚本步骤,不引入新 action)
+        run: python3 scripts/gen-design-box.py --check
