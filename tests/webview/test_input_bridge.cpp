@@ -17,6 +17,7 @@ namespace
 {
 using scvb::input::InputClaimState;
 using scvb::input::InputConnSnapshot;
+using scvb::input::bridge::advanceEmitCache;
 using scvb::input::bridge::buildConfigPayload;
 using scvb::input::bridge::buildConnPayload;
 using scvb::input::bridge::buildErrorPayload;
@@ -113,6 +114,29 @@ TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOff
     CHECK(priorityRejectReason(PriorityReject::kOutputOffline) == "outputOffline");
     CHECK(priorityRejectReason(PriorityReject::kRingFull) == "ringFull");
     CHECK(priorityRejectReason(PriorityReject::kNone).isEmpty());
+}
+
+TEST_CASE("T30 advanceEmitCache:不可见不推进缓存,恢复可见重发(PR#54 R4)")
+{
+    juce::String last;
+
+    // 不可见:json 变了也不推进缓存、返回不 emit(隐藏期事件不被吞)。
+    CHECK_FALSE(advanceEmitCache("a", last, false));
+    CHECK(last.isEmpty());
+
+    // 恢复可见:缓存仍是旧值 → 同一 json 推进缓存并返回 emit(事件重发)。
+    CHECK(advanceEmitCache("a", last, true));
+    CHECK(last == "a");
+
+    // 已发过(缓存 == json):不再重发,且不受可见性影响。
+    CHECK_FALSE(advanceEmitCache("a", last, true));
+    CHECK_FALSE(advanceEmitCache("a", last, false));
+
+    // 新值不可见 → 不推进;恢复可见 → 重发新值(缓存最终对齐已发出值)。
+    CHECK_FALSE(advanceEmitCache("b", last, false));
+    CHECK(last == "a");
+    CHECK(advanceEmitCache("b", last, true));
+    CHECK(last == "b");
 }
 
 TEST_CASE("T30 parseIntArg:类型不符/越界 → 空(回 badArg);数值截断(§0.8.2)")

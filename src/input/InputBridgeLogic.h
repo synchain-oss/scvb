@@ -39,6 +39,13 @@ enum class PriorityReject
 PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull, bool active);
 juce::String priorityRejectReason(PriorityReject r); // kNone → ""
 
+// --- diff-then-emit 缓存推进(§0.4 变化才发 + 首帧必发;PR#54 R4)------------------
+// 判定:json == lastJson → false 不重发;json != lastJson 且 visible → 推进 lastJson 并返回
+// true(调用方 emit);json != lastJson 且不可见 → 保持 lastJson 并返回 false —— 隐藏期
+// emitEventIfBrowserIsVisible 会丢弃事件,缓存不推进则恢复可见后下一 tick 因 json != lastJson
+// 自然重发(避免隐藏期变化永久丢失 → UI 陈旧)。
+bool advanceEmitCache(const juce::String& json, juce::String& lastJson, bool visible);
+
 // --- 数值参数解析(§0.8.2 类型不符/越界 → 拒绝)------------------------------------
 // 非数值(缺参/字符串/对象/null)→ 空 Optional,调用方回 {ok:false, reason:"badArg"};
 // 数值(JS number 走 double,截断)且在 int 全域内 → 值;double 越界/NaN → 空(cast 前挡下,

@@ -69,6 +69,20 @@ juce::String priorityRejectReason(PriorityReject r)
     return {};
 }
 
+bool advanceEmitCache(const juce::String& json, juce::String& lastJson, bool visible)
+{
+    if (json == lastJson)
+    {
+        return false;
+    }
+    if (!visible)
+    {
+        return false; // 缓存不推进:恢复可见后 json != lastJson 仍成立,下一 tick 自然重发
+    }
+    lastJson = json;
+    return true;
+}
+
 juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
 {
     if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))

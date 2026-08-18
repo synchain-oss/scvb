@@ -199,11 +199,13 @@ void InputEditor::handleRemoteSetPriority(const juce::Array<juce::var>& args, WB
 void InputEditor::emitIfChanged(const char* name, const juce::var& payload, juce::String& lastJson)
 {
     const juce::String json = juce::JSON::toString(payload);
-    if (json == lastJson)
+    // diff-then-emit:缓存只在事件真正发出(编辑器可见)后才推进。隐藏(关闭/最小化)时
+    // emitEventIfBrowserIsVisible 会丢弃事件,若先推进缓存则隐藏期变化被吞、恢复可见后不再
+    // 重发 → UI 陈旧(PR#54 R4)。不可见时保持旧缓存,恢复可见后下一 tick 因 json != lastJson 重发。
+    if (!bridge::advanceEmitCache(json, lastJson, webView().isVisible()))
     {
         return;
     }
-    lastJson = json;
     webView().emitEventIfBrowserIsVisible(juce::Identifier(name), payload);
 }
 
