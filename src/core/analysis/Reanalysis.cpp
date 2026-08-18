@@ -37,7 +37,8 @@ bool nearestSilenceLeft(const SilenceWindow& win, int64_t lo, int64_t hi, float 
     int64_t i = lo;
     while (i < hi)
     {
-        if (dbAt(win, i) >= exitDb)
+        // NaN 对 >= / < 都为 false → 会令 i 不推进而死循环;按非静音跳过(PR#45 复审)。
+        if (std::isnan(dbAt(win, i)) || dbAt(win, i) >= exitDb)
         {
             ++i;
             continue;
@@ -63,7 +64,8 @@ bool nearestSilenceRight(const SilenceWindow& win, int64_t lo, int64_t hi, float
     int64_t i = lo;
     while (i < hi)
     {
-        if (dbAt(win, i) >= exitDb)
+        // NaN 对 >= / < 都为 false → 会令 i 不推进而死循环;按非静音跳过(PR#45 复审)。
+        if (std::isnan(dbAt(win, i)) || dbAt(win, i) >= exitDb)
         {
             ++i;
             continue;
@@ -150,9 +152,14 @@ void guardExtend(const SilenceWindow& win, int64_t r0, int64_t r1, const GuardPa
             outR1 = candidate;
     }
 
-    // 截断到窗口覆盖的样本范围。
-    outR0 = std::max(outR0, winLo * hs);
-    outR1 = std::min(outR1, winHi * hs);
+    // 截断只作用于 guard 扩展,始终保留 R(R⁺ ⊇ R 不变式,PR#45 复审):仅当窗口边界
+    // 落在 R 外侧时才截断;窗口不覆盖 R 的一侧退化为固定 guard,避免 R⁺ 倒置/缩小。
+    const int64_t winStart = winLo * hs;
+    const int64_t winEnd = winHi * hs;
+    if (winStart <= r0)
+        outR0 = std::max(outR0, winStart);
+    if (winEnd >= r1)
+        outR1 = std::min(outR1, winEnd);
 }
 
 std::vector<AnalysisSegment> spliceTrack(const std::vector<AnalysisSegment>& oldSegments,

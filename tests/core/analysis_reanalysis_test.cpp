@@ -253,6 +253,60 @@ TEST_CASE("GUARD-4: 窗口边缘截断 + 短静音 run 不触发延伸", "[reana
     CHECK(p1 == sec(41.0));
 }
 
+TEST_CASE("GUARD-5: 窗口不覆盖 R → R⁺ 仍覆盖 R(不缩小/不倒置)", "[reanalysis][guard]")
+{
+    GuardParams p;
+
+    // 窗口整体在 R 左侧([0,5s) vs R=[10,20s)):无静音 → 两侧退化为固定 1s guard。
+    {
+        auto db = makeLoudnessDb(500); // [0,5s)。
+        int64_t o0 = 0;
+        int64_t o1 = 0;
+        scvb::analysis::guardExtend(windowOf(db), sec(10.0), sec(20.0), p, o0, o1);
+        REQUIRE(o0 <= sec(10.0));
+        REQUIRE(o1 >= sec(20.0));
+        CHECK(o0 == sec(9.0));
+        CHECK(o1 == sec(21.0));
+    }
+
+    // 窗口部分覆盖 R([0,15s) vs R=[10,20s)):右尾 [15,20s) 不被窗口覆盖,仍须保留。
+    {
+        auto db = makeLoudnessDb(1500); // [0,15s)。
+        int64_t o0 = 0;
+        int64_t o1 = 0;
+        scvb::analysis::guardExtend(windowOf(db), sec(10.0), sec(20.0), p, o0, o1);
+        REQUIRE(o0 <= sec(10.0));
+        REQUIRE(o1 >= sec(20.0));
+        CHECK(o0 == sec(9.0));
+        CHECK(o1 == sec(21.0));
+    }
+
+    // 窗口整体在 R 右侧([25,30s) vs R=[10,20s)):同样退化为固定 1s guard。
+    {
+        auto db = makeLoudnessDb(500); // [25,30s)。
+        int64_t o0 = 0;
+        int64_t o1 = 0;
+        scvb::analysis::guardExtend(windowOf(db, 2500), sec(10.0), sec(20.0), p, o0, o1);
+        REQUIRE(o0 <= sec(10.0));
+        REQUIRE(o1 >= sec(20.0));
+        CHECK(o0 == sec(9.0));
+        CHECK(o1 == sec(21.0));
+    }
+}
+
+TEST_CASE("GUARD-6: loudnessDb 含 NaN → 不挂起,按非静音跳过", "[reanalysis][guard]")
+{
+    auto db = makeLoudnessDb(6000); // 60s 全有声(-20)。
+    db[1500] = std::nanf(""); // 15s,左扫描区。
+    db[4500] = std::nanf(""); // 45s,右扫描区。
+    GuardParams p;
+    int64_t o0 = 0;
+    int64_t o1 = 0;
+    scvb::analysis::guardExtend(windowOf(db), sec(30.0), sec(40.0), p, o0, o1);
+    CHECK(o0 == sec(29.0));
+    CHECK(o1 == sec(41.0));
+}
+
 // ============================================================================
 // splice:候选截断
 // ============================================================================
