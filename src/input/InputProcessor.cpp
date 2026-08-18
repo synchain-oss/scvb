@@ -418,12 +418,16 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     const scvb::u32 newGroup = static_cast<scvb::u32>(groupId);
     const scvb::u32 oldGroup = static_cast<scvb::u32>(groupId_);
     // T30:命令环 ctrl 段随组走(per-组各一份,ipc v1.5 [J66];与 Registry::changeGroup 同构)。
-    // PR#54 R9:先换 ctrl 段,失败则回退旧组、不切 session —— 避免「session 新组 + ctrl 未开/旧组」
-    // 错位(remoteSetPriority 写错组、srMismatch 读错组),与 session_.changeGroup 的失败语义对齐。
-    if (ctrl_.changeGroup(newGroup) != scvb::InitResult::kOk)
+    // PR#54 R9 + R10:有通道时先换 ctrl 段,失败回退旧组、不切 session —— 避免「session 新组 +
+    // ctrl 未开/旧组」错位;channel_id=0(未分配)不建/不换 ctrl 段(保持「channel_id=0 不建段」
+    // 口径),ctrl 段留到首次 setChannelId 的 ensureCtrlOpen 懒开(懒开按当前组对齐)。
+    if (channelId_ != 0)
     {
-        ctrl_.changeGroup(oldGroup); // 尽力回退旧组段(通常成功;双重失败则 ctrl 未开,ensureCtrlOpen 重试)
-        return session_.state(); // 不切 session group,保持旧组一致态
+        if (ctrl_.changeGroup(newGroup) != scvb::InitResult::kOk)
+        {
+            ctrl_.changeGroup(oldGroup); // 尽力回退旧组段(通常成功;双重失败则 ctrl 未开,ensureCtrlOpen 重试)
+            return session_.state(); // 不切 session group,保持旧组一致态
+        }
     }
     groupId_ = groupId;
     // 改组(J66):释放旧组 slot → 新组重走 claim;期间输出走直通档(01 §4.1)。
@@ -448,6 +452,12 @@ void ScvbInputAudioProcessor::ensureCtrlOpen()
     if (channelId_ == 0)
     {
         return;
+    }
+    // PR#54 R10:release 只清 base_ 不改 group_;channel_id=0 + 非默认组加载后再分配通道时 group_
+    // 可能残留旧组 —— 懒开前先按当前 groupId_ 换组对齐,否则 remoteSetPriority/srMismatch 落到错组。
+    if (ctrl_.group() != static_cast<scvb::u32>(groupId_))
+    {
+        ctrl_.changeGroup(static_cast<scvb::u32>(groupId_));
     }
     // Input 是本组 ctrl 段的合法创建/覆盖者(CtrlPlane::open 注释)。
     if (!ctrl_.isOpen())
@@ -507,7 +517,15 @@ ScvbInputAudioProcessor::PriorityResult ScvbInputAudioProcessor::bridgeRemoteSet
     if (reject == scvb::input::bridge::PriorityReject::kRingFull ||
         reject == scvb::input::bridge::PriorityReject::kNone)
     {
-        ctrl_.enqueue(ch, scvb::CtrlOp::kSetPriority, static_cast<scvb::u64>(n));
+        // PR#54 R10:enqueue 返回 false = 命令未写入(ctrl 段未打开/打开失败,如 abi 不符的残留损坏
+        // 段)。不得再回 queued:true,否则 UI 误以为成功。reason 取 §5.6 八值闭集内最近似的 busy
+        // (临时可重试;其余七值语义均不匹配:badArg/noTimeline/noLoop/notAdjacent 属其它函数、
+        // ringFull/outputOffline/unassigned 已有专属判定),不新造 reason。
+        if (!ctrl_.enqueue(ch, scvb::CtrlOp::kSetPriority, static_cast<scvb::u64>(n)))
+        {
+            r.reason = "busy";
+            return r;
+        }
     }
 
     if (reject != scvb::input::bridge::PriorityReject::kNone)

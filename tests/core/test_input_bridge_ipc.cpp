@@ -363,3 +363,58 @@ TEST_CASE("T30 CtrlPlane::changeGroup:换组失败返回 kAbiMismatch(PR#54 R9)"
     REQUIRE(plane.open() == InitResult::kOk);
     CHECK(plane.changeGroup(2) == InitResult::kAbiMismatch);
 }
+
+TEST_CASE("T30 CtrlPlane:release 后组号保持,changeGroup 重对齐读写落新组(PR#54 R10)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::CtrlPlane plane(backend, 1);
+    REQUIRE(plane.open() == InitResult::kOk);
+    plane.release();
+    CHECK_FALSE(plane.isOpen());
+    CHECK(plane.group() == 1); // release 只清 base_,不改 group_(懒开前需按 groupId_ 重对齐)
+
+    // 重对齐到组2(ensureCtrlOpen 的组号对齐逻辑同款),写/读都落组2。
+    REQUIRE(plane.changeGroup(2) == InitResult::kOk);
+    CHECK(plane.group() == 2);
+    REQUIRE(plane.enqueue(3, scvb::CtrlOp::kSetPriority, 7));
+
+    scvb::CtrlPlane reader2(backend, 2);
+    REQUIRE(reader2.open() == InitResult::kOk);
+    scvb::CtrlRecord rec;
+    REQUIRE(reader2.dequeue(3, rec));
+    CHECK(rec.value.load() == 7u);
+}
+
+TEST_CASE("T30 CtrlPlane:未 open 不建段(PR#54 R10 懒开口径)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::CtrlPlane plane(backend, 2);
+    // 从未 open → g2 ctrl 段不存在(channel_id=0 未分配不建段)。
+    scvb::SegmentView v;
+    CHECK(backend.openExisting(L"Local\\SynchainSCVB.v1.g2.ctrl", v) == InitResult::kFailed);
+}
+
+TEST_CASE("T30 CtrlPlane:abi 损坏段 open 失败,enqueue 返回 false(PR#54 R10)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 预置 g1 ctrl 段 abi 损坏。
+    scvb::SegmentView v;
+    REQUIRE(backend.createOrOpen(L"Local\\SynchainSCVB.v1.g1.ctrl", scvb::kCtrlSegmentSize, v) == InitResult::kOk);
+    auto* header = static_cast<scvb::CtrlHeader*>(v.base);
+    REQUIRE(backend.initHeader(v, &header->magic, &header->abi, &header->generation, scvb::kCtrlBroadcastOffset,
+                               /*initData=*/{}, /*allowOverwrite=*/true) == InitResult::kOk);
+    header->abi.store(99, std::memory_order_release);
+    backend.unmap(v);
+
+    scvb::CtrlPlane plane(backend, 1);
+    CHECK(plane.open() == InitResult::kAbiMismatch);
+    CHECK_FALSE(plane.isOpen());
+    // 段未打开 → enqueue 写不进去(返回 false),bridgeRemoteSetPriority 据此回 busy,不再回 queued:true。
+    CHECK_FALSE(plane.enqueue(3, scvb::CtrlOp::kSetPriority, 5));
+}

@@ -71,7 +71,8 @@ public:
     struct PriorityResult
     {
         bool queued = false;
-        juce::String reason; // ""=成功;"ringFull" | "outputOffline" | "unassigned"(§3.4/§5.6)
+        juce::String reason; // ""=成功;"ringFull" | "outputOffline" | "unassigned" | "busy"(§3.4/§5.6;busy=ctrl
+                             // 段未打开,临时可重试)
     };
     struct BridgeTickSnapshot
     {
