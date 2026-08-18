@@ -191,6 +191,23 @@ TEST_CASE("T30 CtrlPlane::changeGroup:换组即重开新组段(J66 per-组 ctrl)
     REQUIRE(plane.changeGroup(3) == InitResult::kOk);
     CHECK(plane.isOpen());
 
+    // PR#54 复审【重要】1 支撑断言:换组后 enqueue 必须落到新组段(g3 环可见)、旧组段(g2)为空 ——
+    // InputProcessor::setStateInformation 载入非默认组 state 后依赖此语义把命令环对准 state 的
+    // group_id(remoteSetPriority 上行 / srMismatch 推导真源)。
+    REQUIRE(plane.enqueue(5, scvb::CtrlOp::kSetPriority, 7));
+    scvb::CtrlPlane reader3(backend, 3);
+    REQUIRE(reader3.open() == InitResult::kOk);
+    scvb::CtrlRecord rec;
+    REQUIRE(reader3.dequeue(5, rec));
+    CHECK(rec.channel.load() == 5u);
+    CHECK(rec.op.load() == static_cast<u32>(scvb::CtrlOp::kSetPriority));
+    CHECK(rec.value.load() == 7u);
+
+    scvb::CtrlPlane reader2(backend, 2);
+    REQUIRE(reader2.open() == InitResult::kOk);
+    scvb::CtrlRecord stale;
+    CHECK_FALSE(reader2.dequeue(5, stale)); // 旧组段无记录(换组未串组)
+
     // 非法组号。
     CHECK(plane.changeGroup(0) == InitResult::kFailed);
     CHECK(plane.changeGroup(9) == InitResult::kFailed);

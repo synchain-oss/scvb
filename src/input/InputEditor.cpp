@@ -14,17 +14,6 @@ namespace scvb::input
 namespace
 {
 using WBC = juce::WebBrowserComponent;
-
-// §3.2/§3.3 参数夹取口径:非数值 → 0(→ setChannelId 0=释放 / setGroupId 0 被 clamp 到 1);
-// 范围越界由处理器 clamp(契约返回值只有 {ok}/{conflict:true},无 badArg 分支)。
-int intArgOrZero(const juce::Array<juce::var>& args)
-{
-    if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))
-    {
-        return static_cast<int>(args[0]);
-    }
-    return 0;
-}
 } // namespace
 
 InputEditor::InputEditor(ScvbInputAudioProcessor& processor)
@@ -71,9 +60,20 @@ juce::var InputEditor::buildSnapshot()
                                           static_cast<scvb::u32>(snap.sampleRate));
     const juce::String claim = bridge::claimValue(snap.claimState, snap.conn.maskBit, srMis);
 
-    // 首帧后以当前 config_seq/claim 为 diff 基线:scvb.config 只在 seq 变化再发、error 只发迁移边沿。
-    lastConfigSeq_ = snap.configSeq;
-    lastClaim_ = claim;
+    // 每次 requestInitialState(含 WebView 导航/重载后的二次调用)都重置全部 diff 基线:
+    // 否则重载后的新页面因缓存残留旧 JSON 而首帧拿不到 scvb.state / scvb.groups —— claim 的
+    // 唯一事件通道就是 scvb.state(§3.1 快照不含 claim)。T28 P0 教训的镜像:「就绪门控期不得
+    // 更新 lastSent 缓存」;此处反向操作 —— 快照回执时清空缓存 + 复位节流基线,下一个 emitTick
+    // 重发各事件首帧(§0.4 状态类首帧各必发一次)。
+    lastStateJson_.clear();
+    lastConnJson_.clear();
+    lastConfigJson_.clear();
+    lastGroupsJson_.clear();
+    lastErrorJson_.clear();
+    lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵:首 tick 必发一次 scvb.config(§0.4;其后仅 seq 变化才发)
+    lastClaim_ = claim; // error 仍只发迁移边沿;启动即异常态由 scvb.state.claim 承载(§4.5)
+    lastConnMs_ = 0; // 复位 4Hz 折半 → 首 tick 必发 scvb.conn
+    lastGroupsMs_ = 0; // 复位 1Hz 折半 → 首 tick 必发 scvb.groups(关闭 ≤1s 空态窗口)
 
     scvb::input::InputConnSnapshot conn = snap.conn;
     conn.passthrough = snap.passthrough;
@@ -158,19 +158,37 @@ void InputEditor::persistUiScaleAsDefault()
 
 void InputEditor::handleSetChannelId(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
 {
-    const auto st = processor_.setChannelId(intArgOrZero(args)); // 内部 clamp 0..15;n=0 = 释放
+    const juce::Optional<int> n = bridge::parseIntArg(args); // §0.8.2:类型不符 → badArg(0=释放是合法业务值,不夹取)
+    if (!n.hasValue())
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    const auto st = processor_.setChannelId(*n); // 内部 clamp 0..15;n=0 = 释放
     complete(st == InputClaimState::kConflict ? bridge::conflictResponse() : scvb::bridge::okResponse());
 }
 
 void InputEditor::handleSetGroupId(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
 {
-    const auto st = processor_.setGroupId(intArgOrZero(args)); // 内部 clamp 1..8;同组 = no-op
+    const juce::Optional<int> g = bridge::parseIntArg(args); // §0.8.2:类型不符 → badArg(不静默改回组 1)
+    if (!g.hasValue())
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    const auto st = processor_.setGroupId(*g); // 内部 clamp 1..8;同组 = no-op
     complete(st == InputClaimState::kConflict ? bridge::conflictResponse() : scvb::bridge::okResponse());
 }
 
 void InputEditor::handleRemoteSetPriority(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
 {
-    const auto r = processor_.bridgeRemoteSetPriority(intArgOrZero(args)); // 内部 clamp 0..10
+    const juce::Optional<int> n = bridge::parseIntArg(args); // §0.8.2:类型不符 → badArg(0 是合法优先级,不夹取)
+    if (!n.hasValue())
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    const auto r = processor_.bridgeRemoteSetPriority(*n); // 内部 clamp 0..10
     complete(bridge::buildPriorityResponse(r.queued, r.reason));
 }
 

@@ -24,7 +24,7 @@ public:
     ~InputEditor() override = default;
 
 protected:
-    // 首帧全量快照(§3.1 InputSnapshot)。
+    // 首帧全量快照(§3.1 InputSnapshot;每次调用重置 diff 基线,WebView 重载安全)。
     juce::var buildSnapshot() override;
     // 25Hz diff-then-emit(机制 7;仅在 mBridgeReady 且非兜底时被 WebViewHost 调用)。
     void emitTick() override;
@@ -54,16 +54,16 @@ private:
     ScvbInputAudioProcessor& processor_;
     juce::String pluginVersion_; // JucePlugin_VersionString(§3.1 version.plugin)
 
-    // diff-then-emit 状态。
+    // diff-then-emit 状态(buildSnapshot 快照回执时全部重置 → 重载后的新页面首帧必收各事件)。
     juce::String lastStateJson_;
     juce::String lastConnJson_;
     juce::String lastConfigJson_;
     juce::String lastGroupsJson_;
     juce::String lastErrorJson_;
-    juce::uint32 lastConfigSeq_ = 0xFFFFFFFFu; // 首帧快照后以当前 seq 为基线(变化才发)
-    juce::String lastClaim_; // 首帧快照时初始化为当前 claim(error 只发迁移边沿)
-    juce::uint64 lastConnMs_ = 0; // 4Hz 折半
-    juce::uint64 lastGroupsMs_ = 0; // 1Hz 折半
+    juce::uint32 lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵 = 首 tick 必发 scvb.config(§0.4;其后仅 seq 变化才发)
+    juce::String lastClaim_; // 快照时初始化为当前 claim(error 只发迁移边沿)
+    juce::uint64 lastConnMs_ = 0; // 4Hz 折半(快照回执复位 → 首 tick 必发 scvb.conn)
+    juce::uint64 lastGroupsMs_ = 0; // 1Hz 折半(快照回执复位 → 首 tick 必发 scvb.groups)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(InputEditor)
 };

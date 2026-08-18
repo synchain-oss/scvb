@@ -62,6 +62,15 @@ juce::String priorityRejectReason(PriorityReject r)
     return {};
 }
 
+juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
+{
+    if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))
+    {
+        return static_cast<int>(args[0]);
+    }
+    return {};
+}
+
 juce::var buildStatePayload(int channelId, int groupId, const juce::String& claim, u32 abi,
                             const juce::Optional<u32>& abiRemote, float uiScale, const juce::String& lang)
 {

@@ -138,6 +138,13 @@ public:
     // 仅打开已存在的命名段(不创建)——Output 侧 attach audio.chN 用。段不存在 → kFailed。
     virtual InitResult openExisting(const std::wstring& name, SegmentView& view) = 0;
 
+    // 只读权限打开已存在段(契约 §2.4 异组探测/数据面 attach 的最小权限口径:Win32 = FILE_MAP_READ)。
+    // 默认实现退回 openExisting(后端无权限区分,如 InProcess)。
+    virtual InitResult openExistingReadOnly(const std::wstring& name, SegmentView& view)
+    {
+        return openExisting(name, view);
+    }
+
     // 解映射 + 关闭平台句柄(仅消息线程,与 createOrOpen 对称;供 SegmentHandle::release 调用)。
     // 调用后 view 置空。InProcess 后端只清视图(缓冲由全局 map 持有,进程寿命)。
     virtual void unmap(SegmentView& view) = 0;

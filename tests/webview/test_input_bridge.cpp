@@ -25,6 +25,7 @@ using scvb::input::bridge::buildStatePayload;
 using scvb::input::bridge::claimValue;
 using scvb::input::bridge::ConfigSnapshot;
 using scvb::input::bridge::conflictResponse;
+using scvb::input::bridge::parseIntArg;
 using scvb::input::bridge::PriorityReject;
 using scvb::input::bridge::priorityRejection;
 using scvb::input::bridge::priorityRejectReason;
@@ -106,6 +107,20 @@ TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOff
     CHECK(priorityRejectReason(PriorityReject::kOutputOffline) == "outputOffline");
     CHECK(priorityRejectReason(PriorityReject::kRingFull) == "ringFull");
     CHECK(priorityRejectReason(PriorityReject::kNone).isEmpty());
+}
+
+TEST_CASE("T30 parseIntArg:类型不符 → 空(回 badArg);数值截断(§0.8.2)")
+{
+    CHECK_FALSE(parseIntArg({}).hasValue()); // 缺参
+    CHECK_FALSE(parseIntArg({juce::var("oops")}).hasValue()); // 字符串
+    CHECK_FALSE(parseIntArg({juce::var()}).hasValue()); // void/null
+    CHECK_FALSE(parseIntArg({juce::var(juce::String("3"))}).hasValue()); // 数字串也是类型不符
+
+    CHECK(*parseIntArg({juce::var(0)}) == 0); // 0 是合法业务值(setChannelId 释放/优先级 0),不夹取为拒绝
+    CHECK(*parseIntArg({juce::var(7)}) == 7);
+    CHECK(*parseIntArg({juce::var(3.9)}) == 3); // JS number 走 double,截断
+    CHECK(*parseIntArg({juce::var(-1)}) == -1); // 越界夹取归处理器(§0.8.2 夹取路径),不在本层拒绝
+    CHECK(*parseIntArg({juce::var(99), juce::var(1)}) == 99); // 多余参数忽略(取 args[0])
 }
 
 TEST_CASE("T30 buildStatePayload:键名 + abi_remote 条件存在(§4.1)")

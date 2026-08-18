@@ -28,9 +28,9 @@ std::uint8_t probeGroupsOnline(ISegmentBackend& backend, u32 ownGroup, u64 nowMs
             continue; // 本组位由调用方从本组 registry 填
         }
         SegmentView view;
-        if (backend.openExisting(registryFullName(g), view) != InitResult::kOk)
+        if (backend.openExistingReadOnly(registryFullName(g), view) != InitResult::kOk)
         {
-            continue; // 段不存在 → 该组离线(不创建,只读探测)
+            continue; // 段不存在 → 该组离线(不创建,只读探测;契约 §2.4 FILE_MAP_READ 最小权限)
         }
         auto* header = static_cast<RegistryHeader*>(view.base);
         // 只读 attach(allowOverwrite=false):非阻塞单次 magic/abi 校验,magic 未就绪 → kFailed(离线)。

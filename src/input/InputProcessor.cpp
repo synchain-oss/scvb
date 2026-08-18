@@ -357,6 +357,14 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
     session_.setChannelId(s.channelId);
     session_.setGroupId(s.groupId);
+    // T30 PR#54 复审【重要】1:ctrl_ 命令环段组必须与 state 的 group_id 同组 —— 否则
+    // remoteSetPriority 把记录投进默认组(g1)命令环、srMismatch 推导读默认组 SR,新组的 Output
+    // 永远消费不到(setGroupId 的同组 early-return 使「重选同组」无法自愈)。与 setGroupId 同构:
+    // 组变才换段;同组不换(懒开或已开均正确,打开时机交给 ensureCtrlOpen)。
+    if (ctrl_.group() != s.groupId)
+    {
+        ctrl_.changeGroup(s.groupId);
+    }
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     // 若已 prepare,立即 re-claim;否则由下一次 prepareToPlay 走 claim。
     if (prepared_)
