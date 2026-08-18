@@ -184,7 +184,10 @@ def render(design):
     in_p_line = ", ".join(in_p)
 
     return (
+# REUSE-IgnoreStart —— 下方字符串是生成文件(C++ 头)的 SPDX 头模板,
+# 含转义 \n 与引号,REUSE 会误读为无效表达式,故整段忽略扫描。
         "// SPDX-License-Identifier: GPL-3.0-or-later\n"
+# REUSE-IgnoreEnd
         "// 本文件由 scripts/gen-design-box.py 从 web/shared/design-box.js 自动生成 —— 请勿手工编辑。\n"
         "// 设计盒常量唯一真源 = web/shared/design-box.js(05 §1.2;07 T27 设计定稿回流①)。\n"
         "// 改值请编辑 design-box.js 后重跑:python scripts/gen-design-box.py\n"
