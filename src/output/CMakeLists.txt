@@ -17,8 +17,8 @@ juce_add_plugin(SCVBOutput
 )
 
 target_sources(SCVBOutput PRIVATE
-  PluginProcessor.h
-  PluginProcessor.cpp
+  OutputProcessor.h
+  OutputProcessor.cpp
   OutputParams.h
   OutputParams.cpp
   OutputAuthority.h

@@ -79,6 +79,21 @@ u32 CtrlPlane::generation() const
     return static_cast<CtrlHeader*>(handle_.base())->generation.load(std::memory_order_acquire);
 }
 
+InitResult CtrlPlane::changeGroup(u32 newGroup)
+{
+    if (newGroup < 1 || newGroup > kMaxGroups)
+    {
+        return InitResult::kFailed;
+    }
+    base_ = nullptr;
+    if (!handle_.release(steadyNowMs()))
+    {
+        pendingReleases_.push_back(std::move(handle_));
+    }
+    group_ = newGroup;
+    return open();
+}
+
 CtrlRing* CtrlPlane::ringAt(u32 channel) const
 {
     if (base_ == nullptr || channel < 1 || channel > kMaxChannels)

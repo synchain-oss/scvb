@@ -53,6 +53,8 @@ add_executable(scvb_tests
   core/test_input_state.cpp
   core/test_input_session.cpp
   core/test_feat_ring_concurrency.cpp
+  core/test_mix_source.cpp
+  core/test_output_session.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
