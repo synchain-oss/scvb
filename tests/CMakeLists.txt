@@ -41,6 +41,7 @@ add_executable(scvb_tests
   core/test_assign.cpp
   core/test_balance.cpp
   core/test_authority.cpp
+  core/test_version.cpp
   core/test_ipc_layout.cpp
   core/test_ipc_lifecycle.cpp
   core/analysis_coverage_test.cpp
@@ -72,6 +73,7 @@ add_executable(scvb_params_tests
   core/test_params_golden.cpp
   core/test_authority_params.cpp
   core/test_printer.cpp
+  core/test_version_params.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
   ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp

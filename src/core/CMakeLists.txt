@@ -22,6 +22,8 @@ add_library(scvb_core STATIC
   engine/DspArbiter.cpp
   engine/DspArbiter.h
   engine/PlayheadShot.h
+  engine/VersionStore.cpp
+  engine/VersionStore.h
   analysis/Loudness.cpp
   analysis/Loudness.h
   analysis/EnergyVad.cpp

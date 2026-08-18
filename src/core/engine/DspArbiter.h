@@ -3,13 +3,14 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 
 #include "dsp/ParamSmoother.h"
 #include "engine/CurveEvaluator.h"
 
 // DspArbiter:DSP 取值仲裁 + 统一平滑层(03 §2.3 / §2.4)。
 // 双源:分析曲线(CurveEvaluator,真身)vs host 参数(raw atomic,打印头)。
-// 纯 C++17:只读 const std::atomic<float>* 与 const CurveEvaluator*,绝不写入曲线/参数真身(ADR-005)。
+// 纯 C++17:只读 const std::atomic<float>* 与 std::shared_ptr<const CurveEvaluator>,绝不写入曲线/参数真身(ADR-005)。
 // 平滑:pan 在参数值域、vol 在 dB 域、每轨 width 在其值域;常规 10ms,权威/版本/lead_select/freeze
 // 切换 30ms,切换只换目标不重置当前值 → 零跳变。
 // 线程契约:来源经「不可变快照 + std::atomic<const Snapshot*>」发布 —— 消息线程构建完整快照后
@@ -31,7 +32,10 @@ public:
 
     static_assert(std::atomic<float>::is_always_lock_free, "DspArbiter requires lock-free std::atomic<float>");
 
-    // 每轨的「活动版本」取值来源。裸指针由 Output 侧持有;null 表示未接线(按默认值读)。
+    // 每轨的「活动版本」取值来源。raw* 裸指针由 Output 侧持有(APVTS 生命周期);curve 由
+    // std::shared_ptr<const CurveEvaluator> 持有 —— 曲线不可变契约(PR #43 终审):setCurve 注入后
+    // 曲线对象必须不可变、生命周期 ≥ 音频线程寿命;快照持 shared_ptr 保活旧曲线,音频线程只经
+    // const 解引用采样,零分配、零锁、绝不 write 曲线真身。
     // 值域契约:raw* 全部来自 APVTS getRawParameterValue(),JUCE 8 返回的是**去归一化**的实际单位
     // (ParameterAdapter::unnormalisedValue = convertFrom0to1(getValue())),不是 0..1 归一化值 ——
     // pan ∈ [-100,100]、vol ∈ [-24,12]、width ∈ [0,100]、freeze ∈ [0,3]、lead_select ∈ [0,15]。
@@ -42,7 +46,7 @@ public:
         const std::atomic<float>* rawVol = nullptr; // host 参数 vol(-24..12,去归一化)
         const std::atomic<float>* rawTrkW = nullptr; // 每轨 width(0..100,[J57],去归一化)
         const std::atomic<float>* rawFrz = nullptr; // 每轨 freeze(0..3,[J65],int 存 float,去归一化)
-        const CurveEvaluator* curve = nullptr; // 活动版本曲线真身(null → 恒 0)
+        std::shared_ptr<const CurveEvaluator> curve; // 活动版本曲线真身(null → 恒 0)
     };
 
     // 不可变来源快照:消息线程完整构建后经 publish 一次性发布;发布后不得再改任何字段。
