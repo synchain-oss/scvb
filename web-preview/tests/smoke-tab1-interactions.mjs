@@ -291,8 +291,16 @@ log("=== ① 契约映射的纯函数 ===");
         TM.footerPrintKey("follow", false),
         TM.footerPrintKey("follow", true),
     ]) {
+        // 先断言键在三语字典里存在且非空 —— 否则 String(undefined) 里没有
+        // {x}/{y},下面的空洞断言会对缺失键静默放行(PR #52 bot 加固建议)。
+        for (const lang of ["zh", "en", "fr"]) {
+            check(
+                typeof T[lang][key] === "string" && T[lang][key].trim() !== "",
+                `follow 变体 ${key} 在 ${lang} 字典缺失或为空`,
+            );
+        }
         check(
-            !/\{x\}|\{y\}/.test(T.zh[key]),
+            !/\{x\}|\{y\}/.test(T.zh[key] || ""),
             `follow 变体 ${key} 不得含 {x}/{y} 空洞`,
         );
     }
