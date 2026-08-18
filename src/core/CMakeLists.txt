@@ -50,6 +50,12 @@ add_library(scvb_core STATIC
   ipc/FeatRing.h
   ipc/SegmentBackendInProcess.cpp
   ipc/SegmentBackendInProcess.h
+  ipc/AudioRing.cpp
+  ipc/AudioRing.h
+  input/InputSession.cpp
+  input/InputSession.h
+  input/OutputStage.cpp
+  input/OutputStage.h
   state/StateCodec.cpp
   state/StateCodec.h
   state/StateMigration.cpp
@@ -58,6 +64,8 @@ add_library(scvb_core STATIC
   state/FeaturesCodec.h
   state/SidecarStore.cpp
   state/SidecarStore.h
+  state/InputStateCodec.cpp
+  state/InputStateCodec.h
 )
 
 # SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。
