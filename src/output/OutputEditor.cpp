@@ -345,7 +345,7 @@ void OutputEditor::emitPlayhead()
     // 读音频线程发布的 playheadShot_ SPSC 快照(PR#55 建议①;不直读宿主 AudioPlayHead)。
     const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
     const bool playing = (pod.flags & scvb::engine::kPlayheadIsPlaying) != 0;
-    const double timeS = pod.timeSamples >= 0 ? static_cast<double>(pod.timeSamples) / processor_.sampleRate() : 0.0;
+    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
 
     // inRange(§2.6):mode=follow 恒 true;否则落在 [startS, endS)。
     const auto& rt = processor_.runtime();
@@ -561,8 +561,8 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, bool al
             const auto& s = segments[i];
             juce::var seg = obj();
             put(seg, "segIdx", static_cast<int>(i));
-            put(seg, "t0S", static_cast<double>(s.t0) / sr);
-            put(seg, "t1S", static_cast<double>(s.t1) / sr);
+            put(seg, "t0S", samplesToSeconds(s.t0, sr)); // 安全换算(PR#55 第6轮缺陷1)
+            put(seg, "t1S", samplesToSeconds(s.t1, sr));
             put(seg, "pan", static_cast<double>(s.pan));
             put(seg, "volDb", static_cast<double>(s.volDb));
             put(seg, "origin", originName(scvb::state::segmentOrigin(s.flags)));
@@ -1205,9 +1205,20 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     }
     const juce::var p = a[0];
     auto& rt = processor_.runtime();
+
+    // mode 白名单(vad_only / valley),白名单外 badArg(PR#55 第6轮缺陷2)。
     const juce::String mode = p.getProperty("mode", rt.segmentationMode).toString();
-    const float sens = static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity));
-    const int mms = static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs));
+    if (!isSegmentationMode(mode))
+    {
+        c(badArgResp());
+        return;
+    }
+    // sensitivity 0..100、min_segment_ms 50..500(02-dsp-spec §0.3 常量表),越界 clamp。
+    const float sens =
+        juce::jlimit(0.0f, 100.0f, static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity)));
+    const int mms =
+        juce::jlimit(50, 500, static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs)));
+
     const bool changed =
         mode != rt.segmentationMode || sens != rt.segmentationSensitivity || mms != rt.segmentationMinSegmentMs;
     rt.segmentationMode = mode;
@@ -1309,6 +1320,11 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
     }
 
     const double sr = processor_.sampleRate();
+    if (sr <= 0.0) // 未 prepare(样本率未知)→ 拒绝秒↔样本换算(PR#55 第6轮缺陷1)
+    {
+        c(badArgResp());
+        return;
+    }
     scvb::state::SegmentEditArgs args;
     bool valid = true;
 

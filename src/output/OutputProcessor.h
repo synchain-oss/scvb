@@ -48,7 +48,7 @@ struct OutputRuntimeState
     int vadHangoverMs = 200;
     int vadPaddingPreMs = 120;
     int vadPaddingPostMs = 200;
-    juce::String segmentationMode = "energy";
+    juce::String segmentationMode = "valley"; // 02-dsp-spec §362:valley(默认)/ vad_only
     float segmentationSensitivity = 50.0f;
     int segmentationMinSegmentMs = 120;
     float transitionRampMs = 80.0f;

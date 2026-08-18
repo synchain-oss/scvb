@@ -53,4 +53,16 @@ inline bool isGestureParam(const juce::String& id, int activeVersion)
     return false;
 }
 
+// segmentation.mode 白名单(02-dsp-spec §362,params-v0):vad_only(不做 S1)/ valley(默认)。
+inline bool isSegmentationMode(const juce::String& mode)
+{
+    return mode == "vad_only" || mode == "valley";
+}
+
+// 样本→秒安全换算:sampleRate<=0 返回 0.0 哨兵,绝不把 NaN/inf 进 JSON(PR#55 第6轮缺陷1)。
+inline double samplesToSeconds(std::int64_t samples, double sampleRate)
+{
+    return sampleRate > 0.0 ? static_cast<double>(samples) / sampleRate : 0.0;
+}
+
 } // namespace scvb::output

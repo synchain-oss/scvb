@@ -128,3 +128,20 @@ TEST_CASE("BRIDGEARGS-GESTURE-1 gesture 白名单(PR#55 第3轮重要2)", "[brid
     REQUIRE_FALSE(scvb::output::isGestureParam("v2_t01_freeze", 1));
     REQUIRE_FALSE(scvb::output::isGestureParam("bogus", 1));
 }
+
+TEST_CASE("BRIDGEARGS-SEGMODE-1 segmentation.mode 白名单(PR#55 第6轮缺陷2)", "[bridgeargs][segmode]")
+{
+    REQUIRE(scvb::output::isSegmentationMode("vad_only"));
+    REQUIRE(scvb::output::isSegmentationMode("valley"));
+    REQUIRE_FALSE(scvb::output::isSegmentationMode("energi")); // 拼错拒绝
+    REQUIRE_FALSE(scvb::output::isSegmentationMode("energy")); // 旧默认值已废
+    REQUIRE_FALSE(scvb::output::isSegmentationMode(""));
+}
+
+TEST_CASE("BRIDGEARGS-S2S-1 样本→秒安全换算(PR#55 第6轮缺陷1)", "[bridgeargs][s2s]")
+{
+    REQUIRE(scvb::output::samplesToSeconds(48000, 48000.0) == Approx(1.0));
+    REQUIRE(scvb::output::samplesToSeconds(0, 48000.0) == Approx(0.0));
+    REQUIRE(scvb::output::samplesToSeconds(48000, 0.0) == Approx(0.0)); // 零除守卫 → 0.0 哨兵
+    REQUIRE(scvb::output::samplesToSeconds(48000, -1.0) == Approx(0.0));
+}
