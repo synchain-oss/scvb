@@ -1,13 +1,24 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!--
-  SCVB Output —— T27b 结构化灰模(零视觉发挥/零业务逻辑)。
-  真源:masterPlan/plan/05-ui-spec.md §1.1(卡片骨架)/§2.0(通用件)/§2.1-§2.4(四 tab)/§2.6(tour 锚点)。
-  每个占位节点带 data-gb="<语义锚点>"(T31-T36 按锚点替换,不新建文件);
-  文案只用 data-t 引用 web/shared/i18n.js 现有 key;字典没有的概念用中文明文占位 +
-  data-gb-todo="词条待立"(取值逐字照 brief,与 web/input/index.html 同口径;门禁/grep
-  口径 = data-gb-todo="词条待立"),缺 key 的具体原因写在该节点紧邻上方的 HTML 注释
-  「词条待立:<原因>」里,并逐条记入 scratchpad/t27b/deviations.md §B。
-  15 轨行 / 15 泳道由 app.js 用 web/shared/mock-data.js 的 FIFTEEN_TRACKS 生成(仅撑开骨架)。
+  SCVB Output —— 外壳 + Tab1 为 T31 Wave 1 正式实现(设计稿视觉复现);
+  Tab2/Tab3/Tab4 仍是 T27b 结构化灰模,待 T32/T33-T34/T35 按同法替换。
+
+  真源(不可颠倒):
+    • 视觉(布局/形态/密度)= masterPlan/assets/design-v2「SCVB 设计稿.dc.html」,
+      逐块行号见页内 <style> 与各节注释;移植地图 = scratchpad/t31/design-map-tab1.md。
+    • 交互语义与词条 = masterPlan/plan/05-ui-spec.md §1.1/§1.2/§1.3/§2.0/§2.1/§5。
+    • 桥面 = docs/SCVB_CONTRACT.md(冻结);调用点一律以 [T3x] 注释桩落位。
+    • 设计盒尺寸 = web/shared/design-box.js 的 DESIGN.output,由 app.js 写 --box-w/--box-h;
+      本文件零硬编码尺寸(grep 断言)。
+
+  纪律:
+    • 每个节点保留 data-gb="<语义锚点>"、data-t / data-t-aria、data-tour 六锚点;
+      替换的是结构与样式,不是锚点体系。
+    • 组件状态一律 data-* 属性 + CSS 选择器(05 §1.3),Wave 2 接数据只改属性值。
+    • 字典缺 key 的概念仍用中文明文占位 + data-gb-todo="词条待立"(门禁/grep 口径),
+      原因写在紧邻上方的 HTML 注释「词条待立:<原因>」里,并记入 scratchpad/t31/deviations.md。
+    • 零裸 hex:颜色一律 var(--x) / rgba(var(--分量), a),见页内 <style> 头注。
+  15 轨行 / 15 泳道 / 八组胶囊 / 分布图柱体由 app.js 用 web/shared/mock-data.js 生成。
 -->
 <!doctype html>
 <html lang="zh">
@@ -19,24 +30,194 @@
         <link rel="stylesheet" href="../shared/base.css" />
         <style>
             /* =================================================================
-               页面专属布局脚手架(05 §1.1/§1.2/§2.1-§2.4)。
-               纪律(T27b):零裸色值、零新颜色、零阴影/渐变/圆角新配方 —— 本块只写
-               flex/grid/尺寸/间距(var(--sp-*)),颜色/圆角/阴影一律来自 tokens.css
-               的 var(--x) 或 base.css 的 .sc-* 共享组件类。
-               设计盒 1180×780 真源 = web/shared/design-box.js DESIGN.output,由
-               app.js 写 --box-w/--box-h;这里的默认值只是同值锚定,不是第二真源。
-               ================================================================= */
+       T31 Wave 1 —— Output 外壳 + Tab1 的设计稿视觉复现。
+       真源:masterPlan/assets/design-v2「SCVB 设计稿.dc.html」(行号见每条注释),
+       移植地图 scratchpad/t31/design-map-tab1.md,交互语义与词条 05 §2.0/§2.1/§5。
+
+       纪律:
+       • 零裸 hex —— 颜色一律 var(--x) / rgba(var(--分量), a);tokens.css 里没有的
+         设计稿原值在下面 :root 块内落成局部变量并注明「设计稿 L{行号} 原值」,
+         可复用者已在 scratchpad/t31/deviations.md 提议进 tokens.css(本波不改 shared)。
+       • 设计盒的宽高数字不在本文件出现 —— 真源 web/shared/design-box.js,由 app.js
+         写 --box-w/--box-h(页面零硬编码,grep 断言)。
+       • 组件状态一律 data-* 属性 + CSS 选择器(05 §1.3),Wave 2 接数据只改属性值,
+         不改选择器,不拼 class 字符串。
+
+       ---- 预览用 data 属性速查(Wave 1 静态验证:DevTools 里改属性即可看全部状态)----
+         [data-gb="header-version"]  data-mode="normal|rename"
+         .ver-chip                   data-active="0|1" data-empty="0|1" data-disabled="0|1"
+         #tabbar                     --tab-i:0..3(app.js 写;滑块 left=3+(tab-1)*136)
+         [data-gb="master-flow"]     data-cap="off|armed|capturing|outside"
+                                     data-analyze="ready|running|done|disabled"
+                                     data-out="0|1" data-lock="0|1"
+         [data-gb="master-write-confirm"]  hidden 属性(首次 OFF→ON 就地展开)
+         [data-gb="master-group-selector"] data-confirm="0|1";
+                                     .group-pill aria-pressed / data-online / data-pending
+         [data-gb="master-leadselect"]     data-selected="0|1"
+         [data-gb="master-range"]    data-range="follow|loop|manual" data-loop-missing="0|1"
+         [data-gb="master-pancurve"] data-empty="0|1"
+         [data-gb="footer"]          data-mode="default|print|printDone|follow"
+         [data-gb="footer-scale"]    data-open="0|1";档位项 data-current/data-over
+       ---- Wave 2 追加的 data 属性(由事件/交互写,DevTools 里改同样生效)----
+         [data-gb="master-group-selector"] data-disabled="0|1"(PRINT / 只读观察态整组不可操作)
+         [data-gb="master-width|master-msbalance|master-leadselect|master-distchart"]
+                                     data-host-echo="0|1"(§0.5 hostEcho 灰显,只更新显示不回写)
+         .range-manual__tc           data-invalid="0|1"(manual 起止校验失败)
+         [data-gb="scale-confirm"]   hidden(10 秒防呆确认,卡片层单例)
+         [data-gb="guide-overlay-rules-missing"] hidden(guide.rule1..9 未生成时的占位注记)
+       ================================================================= */
+
             :root {
-                --box-w: 1180px;
-                --box-h: 780px;
+                /* ---- 设计稿原值:tokens.css 未收录的档位(全部 var 包裹,零裸 hex) ---- */
+                --tab-w: 136px; /* 设计稿 L1681/L1877 原值:tab 项宽与滑块宽恒为 136px */
+                --tabbar-w: 552px; /* 设计稿 L287 原值:3+4×136+3 内容宽 + 2×1px 描边 */
+                --ls-brand-sub: 0.2em; /* 设计稿 L232/L242 原值:副标与「版本」小标字距 */
+                --ls-demo-chip: 0.16em; /* 设计稿 L238 原值:演示数据 chip 字距 */
+                --ls-footer-ver: 0.12em; /* 设计稿 L1021 原值:footer 版本号字距 */
+                --w-14: rgba(
+                    255,
+                    255,
+                    255,
+                    0.14
+                ); /* 设计稿 L251/L270 原值:胶囊组底 */
+                --w-18: rgba(
+                    255,
+                    255,
+                    255,
+                    0.18
+                ); /* 设计稿 L400/L406 原值:manual 输入底 */
+                --w-28: rgba(
+                    255,
+                    255,
+                    255,
+                    0.28
+                ); /* 设计稿 L251/L270 原值:胶囊组描边 */
+                --w-30: rgba(
+                    255,
+                    255,
+                    255,
+                    0.3
+                ); /* 设计稿 L262/L2007 原值:图标钮/下拉描边 */
+                --w-32: rgba(
+                    255,
+                    255,
+                    255,
+                    0.32
+                ); /* 设计稿 L400/L1017 原值:输入/缩放钮描边 */
+                --w-35: rgba(
+                    255,
+                    255,
+                    255,
+                    0.35
+                ); /* 设计稿 L320/L434 原值:竖分隔线/参考线 */
+                --w-44: rgba(
+                    255,
+                    255,
+                    255,
+                    0.44
+                ); /* 设计稿 L234 原值:组 badge 描边 */
+                --w-45: rgba(
+                    255,
+                    255,
+                    255,
+                    0.45
+                ); /* 设计稿 L436/L542 原值:虚线标记/分布图中线 */
+                --w-55: rgba(
+                    255,
+                    255,
+                    255,
+                    0.55
+                ); /* 设计稿 L460 原值:MS 轨 0 位竖线 */
+                --w-72: rgba(
+                    255,
+                    255,
+                    255,
+                    0.72
+                ); /* 设计稿 L1995 原值:选中版本 chip 底 */
+                --w-78: rgba(
+                    255,
+                    255,
+                    255,
+                    0.78
+                ); /* 设计稿 L246 原值:重命名 input 底 */
+                --w-80: rgba(
+                    255,
+                    255,
+                    255,
+                    0.8
+                ); /* 设计稿 L1996 原值:选中版本 chip 描边 */
+                --w-82: rgba(
+                    255,
+                    255,
+                    255,
+                    0.82
+                ); /* 设计稿 L1896 原值:选中组胶囊底 */
+                --w-85: rgba(
+                    255,
+                    255,
+                    255,
+                    0.85
+                ); /* 设计稿 L271 原值:选中语言胶囊底 */
+                --w-90: rgba(
+                    255,
+                    255,
+                    255,
+                    0.9
+                ); /* 设计稿 L1897 原值:选中组胶囊描边 */
+                --sep-vert: linear-gradient(
+                    180deg,
+                    transparent,
+                    rgba(255, 255, 255, 0.35),
+                    transparent
+                ); /* 设计稿 L320 原值:三件套竖分隔线 */
+                --an-shadow-run: 0 4px 14px rgba(150, 130, 200, 0.2); /* 设计稿 L1924 原值 */
+                --an-shadow-done: 0 4px 16px rgba(120, 176, 142, 0.3); /* 设计稿 L1924 原值 */
+                --an-disabled-fg: rgba(
+                    82,
+                    82,
+                    92,
+                    0.45
+                ); /* 设计稿 L1922 原值(= --txt-2 的 45%,待议 token --txt-2-rgb) */
+                --range-dis-fg: rgba(
+                    106,
+                    106,
+                    116,
+                    0.45
+                ); /* 设计稿 L1979 原值(= --txt-3 的 45%,待议 token --txt-3-rgb) */
+                --txt-est: rgba(
+                    122,
+                    122,
+                    132,
+                    0.85
+                ); /* 设计稿 L404/L410/L417 原值:估算值斜体(= --txt-4 的 85%) */
+                --ramp-stroke: rgba(
+                    155,
+                    147,
+                    196,
+                    0.95
+                ); /* 设计稿 L435 原值:斜坡折线 */
+                --dist-bar-fill: linear-gradient(
+                    180deg,
+                    rgba(181, 172, 201, 0.95),
+                    rgba(150, 140, 192, 0.6)
+                ); /* 设计稿 L2049 原值 */
+                --dist-bar-lead: linear-gradient(
+                    180deg,
+                    rgba(120, 176, 142, 0.95),
+                    rgba(120, 176, 142, 0.55)
+                ); /* 设计稿 L2049 原值 */
+                --zoom-panel-bg: linear-gradient(
+                    158deg,
+                    rgba(34, 31, 44, 0.92),
+                    rgba(22, 20, 30, 0.94)
+                ); /* 设计稿 L1026 原值 */
+                --zoom-panel-shadow: 0 18px 40px rgba(18, 14, 26, 0.4); /* 设计稿 L1026 原值 */
             }
-            /* ---- [hidden] 兜底(布局脚手架,非视觉规则) ----
-               base.css 的共享组件类显式声明了 display(.sc-banner/.sc-confirm/
-               .sc-toast: flex;.sc-scrim: position:absolute;inset:0;display:flex),
-               作者样式优先级高于 UA 的 [hidden]{display:none},导致所有「默认隐藏」
-               占位节点(警告条/确认条/toast/两个 .sc-scrim 遮罩)照样渲染,scrim 更会
-               铺满整张卡片吃掉 tabnav 点击。此处补一条通用兜底,使裸 hidden 属性生效。
-               不新增配色/阴影/圆角,属 05 §0 允许的页面布局脚手架。 */
+
+            /* ---- [hidden] 兜底(布局脚手架,非视觉规则;T27b 起沿用) ----
+       base.css 的共享组件类显式声明了 display(.sc-banner/.sc-confirm/.sc-toast: flex;
+       .sc-scrim: position:absolute;inset:0;display:flex),作者样式优先级高于 UA 的
+       [hidden]{display:none},导致所有「默认隐藏」占位节点照样渲染。此处补通用兜底。 */
             [hidden] {
                 display: none !important;
             }
@@ -53,45 +234,45 @@
             #vst-root {
                 display: flex;
             }
+            /* 设计稿 L224:内容层 padding:18px 18px 12px;gap:10px。
+       --box-w/--box-h 由 app.js 从 design-box.js 写入(页面不写第二真源)。 */
             #card {
                 position: relative;
                 display: flex;
                 flex-direction: column;
                 width: var(--box-w);
                 height: var(--box-h);
-                padding: var(--sp-20);
-                gap: var(--sp-14);
+                padding: var(--sp-18) var(--sp-18) var(--sp-12);
+                gap: var(--sp-10);
             }
 
             /* ---- 胶囊选中态:aria-pressed 补挂(a11y,非新视觉) ----
-               shared/base.css 的 .sc-seg__item 选中态挂在 [aria-selected="true"] 上,
-               但普通 <button> 用 aria-selected 违反 ARIA(axe aria-allowed-attr),
-               胶囊已按 05 §2.0 原文改用 aria-pressed。这里只把同一套 base.css 值
-               原样补挂到 [aria-pressed="true"],不引入任何新颜色/尺寸。
-               aria-selected 仍保留给四个 role="tab" 主 tab(base.css .sc-tabs__item)。 */
+       base.css 的 .sc-seg__item 选中态挂在 [aria-selected="true"] 上,但普通 <button>
+       用 aria-selected 违反 ARIA(axe aria-allowed-attr),胶囊按 05 §2.0 改用
+       aria-pressed。这里把同一套值原样补挂,不引入新颜色/尺寸。 */
             .sc-seg__item[aria-pressed="true"] {
                 background: var(--seg-on-bg);
                 color: var(--acc-ink);
             }
             .sc-seg--sm .sc-seg__item[aria-pressed="true"] {
-                background: rgba(var(--wh), 0.85);
+                background: var(--w-85);
                 color: var(--txt-1);
             }
 
-            /* ---- header(05 §1.1 骨架行1 + §2.0 通用件表) ---- */
+            /* ================================ Header(设计稿 L226-275) ================================ */
             #header {
                 display: flex;
-                flex-wrap: wrap;
                 align-items: center;
-                gap: var(--sp-14);
+                gap: var(--sp-12);
                 flex: none;
             }
             .brand {
                 display: flex;
                 align-items: center;
-                gap: var(--sp-10);
+                gap: var(--sp-12);
                 flex: none;
             }
+            /* 设计稿 L227:38×38、radius 11、底 .22、描边 .42、内高光 .7 + 外阴影 --sh-md */
             .brand__icon {
                 display: flex;
                 align-items: center;
@@ -99,14 +280,10 @@
                 width: 38px;
                 height: 38px;
                 flex: none;
-                border-radius: var(--r-md);
-                background: var(--card-bg);
-                border: 1px solid var(--card-border);
-            }
-            .brand__icon svg {
-                stroke: var(--txt-1);
-                fill: none;
-                stroke-width: 1.6px;
+                border-radius: var(--r-banner);
+                background: rgba(var(--wh), 0.22);
+                border: 1px solid var(--w-42);
+                box-shadow: var(--hl-inset-strong), var(--sh-md);
             }
             .brand__logo {
                 width: 30px;
@@ -115,49 +292,266 @@
                 mix-blend-mode: multiply;
                 border-radius: var(--r-tag);
             }
+            .brand__text {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-2);
+            }
             .brand__title {
+                margin: 0; /* h1 语义标签(axe),视觉照旧 */
                 font-family: var(--ff-grotesk);
                 font-weight: 600;
-                font-size: var(--fs-160);
+                font-size: var(--fs-180);
+                letter-spacing: -0.01em; /* 设计稿 L231 原值 */
                 color: var(--txt-1);
             }
+            /* landmark 外壳不参与布局(石板条几何全在 .sc-tabs 上) */
+            .sc-tabs-wrap {
+                display: contents;
+            }
             .brand__subtitle {
-                font-size: var(--fs-75);
-                color: var(--txt-3);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-80);
+                letter-spacing: var(--ls-brand-sub);
+                color: var(--txt-4);
             }
-            .header__mid {
-                display: flex;
+            /* 组 badge(设计稿 L234-236;J71③ 独立 badge,不是 pill 后缀) */
+            .hdr-group-badge {
+                display: inline-flex;
                 align-items: center;
-                gap: var(--sp-9);
-                margin-left: auto;
+                gap: var(--sp-5);
+                flex: none;
+                padding: var(--sp-5) var(--sp-11);
+                border-radius: var(--r-pill);
+                background: var(--w-24);
+                border: 1px solid var(--w-44);
+                box-shadow: inset 0 1px 0 rgba(var(--wh), 0.6);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-100);
+                letter-spacing: var(--mono-ls);
+                color: var(--txt-1);
+                white-space: nowrap;
             }
+            /* 演示数据 chip(设计稿 L237-239) */
+            .hdr-demo-chip {
+                flex: none;
+                padding: var(--sp-4) var(--sp-10);
+                border-radius: var(--r-pill);
+                background: rgba(var(--sem-amber), 0.2);
+                border: 1px solid rgba(var(--sem-amber), 0.5);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-90);
+                letter-spacing: var(--ls-demo-chip);
+                color: var(--sem-amber-ink);
+            }
+            .header__spacer {
+                flex: 1;
+                min-width: 0;
+            }
+            /* 版本区(设计稿 L241-265):正常态 chips / 重命名态 input,由 data-mode 二选一 */
             .header__version {
+                position: relative;
                 display: flex;
                 align-items: center;
                 gap: var(--sp-7);
+                flex: none;
+            }
+            .header__version-label {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                letter-spacing: var(--ls-brand-sub);
+                color: var(--txt-3);
+            }
+            .header__version[data-mode="normal"] .ver-rename,
+            .header__version[data-mode="rename"] .header__version-chips {
+                display: none;
             }
             .header__version-chips {
                 display: flex;
+                gap: var(--sp-3);
+                padding: var(--sp-3);
+                border-radius: var(--r-pill);
+                background: var(--w-14);
+                border: 1px solid var(--w-28);
+            }
+            /* 版本 chip 五态(设计稿 L1987-1999):普通 / 激活 / 空态角标 / PRINT disabled / 重命名中 */
+            .ver-chip {
+                position: relative;
+                overflow: hidden;
+                display: inline-flex;
+                align-items: center;
                 gap: var(--sp-5);
+                padding: var(--sp-6) var(--sp-13);
+                border-radius: var(--r-pill);
+                cursor: pointer;
+                white-space: nowrap;
+                font-family: var(--ff-sans);
+                font-size: var(--fs-115);
+                font-weight: 400;
+                background: var(--w-14);
+                border: 1px solid var(--w-28);
+                color: var(--txt-3);
+                transition:
+                    background var(--dur-1) var(--ease),
+                    color var(--dur-1) var(--ease);
+            }
+            .ver-chip[data-active="1"] {
+                font-weight: 600;
+                color: var(--txt-1);
+                background: var(--w-72);
+                border-color: var(--w-80);
+                box-shadow: 0 3px 10px rgba(var(--ink), 0.14);
+            }
+            .ver-chip[data-empty="1"] {
+                opacity: 0.5;
+            }
+            .ver-chip[data-disabled="1"] {
+                opacity: 0.45;
+                cursor: not-allowed;
+            }
+            /* 空版本角标(设计稿 L256) */
+            .ver-chip__empty {
+                padding: 0 var(--sp-4);
+                border-radius: var(--r-tag);
+                background: rgba(var(--sem-gray), 0.28);
+                border: 1px solid rgba(var(--sem-gray), 0.42);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-80);
+                color: var(--sem-gray-ink);
+            }
+            .ver-chip[data-empty="0"] .ver-chip__empty {
+                display: none;
+            }
+            /* 重命名态(设计稿 L243-249) */
+            .ver-rename {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-6);
+                padding: var(--sp-3);
+                border-radius: var(--r-pill);
+                background: var(--w-14);
+                border: 1px solid var(--w-28);
+            }
+            .ver-rename__chip0 {
+                padding: var(--sp-5) var(--sp-12);
+                border-radius: var(--r-pill);
+                font-size: var(--fs-115);
+                color: var(--txt-3);
+                white-space: nowrap;
+            }
+            .ver-rename__input {
+                width: 104px;
+                padding: var(--sp-4) var(--sp-10);
+                border-radius: var(--r-pill);
+                border: 1px solid rgba(var(--acc), 0.85);
+                background: var(--w-78);
+                font-family: var(--ff-sans);
+                font-size: var(--fs-110);
+                color: var(--txt-1);
+                outline: none;
+                box-shadow: 0 0 0 3px rgba(var(--acc), 0.28);
+            }
+            .ver-rename__count {
+                padding-right: var(--sp-4);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                letter-spacing: var(--mono-ls-pill);
+                color: var(--txt-4);
+            }
+            /* 「复制到…」图标钮(设计稿 L262-264) */
+            .hdr-copy-btn {
+                position: relative;
+                overflow: hidden;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 26px;
+                height: 26px;
+                flex: none;
+                border-radius: var(--r-xs);
+                background: var(--w-16);
+                border: 1px solid var(--w-30);
+                cursor: pointer;
+            }
+            /* PRINT 态(或 C++ 回 {rejected:"printing"})不可复制版本:05 §2.1 ③ 逐字
+               「按钮 disabled + tooltip」——与 .ver-chip[data-disabled] 同款视觉。 */
+            .hdr-copy-btn[data-disabled="1"] {
+                opacity: 0.45;
+                cursor: not-allowed;
+            }
+            .hdr-copy-btn svg {
+                fill: none;
+                stroke: var(--txt-2);
+                stroke-width: 1.6px;
+                stroke-linecap: round;
+            }
+            /* 语言胶囊(设计稿 L270-274):比 base.css 的 .sc-seg--sm 略宽一档 */
+            .hdr-lang {
+                gap: var(--sp-2);
+                padding: var(--sp-2);
+                background: var(--w-14);
+                border-color: var(--w-28);
+            }
+            .hdr-lang .sc-seg__item {
+                padding: var(--sp-4) var(--sp-10);
+                font-size: var(--fs-105);
+                color: var(--txt-3);
+            }
+            .hdr-lang .sc-seg__item[aria-pressed="true"] {
+                background: var(--w-85);
+                font-weight: 600;
+                color: var(--txt-1);
             }
 
-            /* ---- 警告条区(05 §1.1 骨架行2 + §2.0 banner 行,默认全隐藏) ---- */
+            /* ================================ 警告横幅区(设计稿 L277-285) ================================ */
+            /* 两色系全部来自 base.css 的 .sc-banner / .sc-banner--red;此处只补正文占宽,
+       让可选操作钮(banner⑦「继续引擎驱动」)贴右。 */
             #banner-region {
                 display: flex;
                 flex-direction: column;
                 gap: var(--sp-9);
                 flex: none;
             }
+            #banner-region .sc-banner > span[data-t],
+            #banner-region .sc-banner > span[data-gb-todo] {
+                flex: 1;
+                min-width: 0;
+            }
 
-            /* ---- tab 导航(05 §1.1 骨架行3) ---- */
+            /* ================================ Tab 导航(设计稿 L287-297) ================================ */
             #tabbar {
+                width: var(--tabbar-w);
                 flex: none;
             }
+            .sc-tabs__item {
+                width: var(--tab-w);
+            }
+            /* 石板滑块(设计稿 1874-1881 逐字):left = 3px(外壳 padding)+ (tab-1)×136px,
+       宽恒 136px,位移 transition:left .42s cubic-bezier(.2,.7,.2,1)(= --dur-slate/--ease,
+       由 base.css .sc-tabs__slate 提供)。
+       **双写,两者必须同值**(deviations §F3):
+         • 下面这条 CSS 的 calc(--sp-3 + --tab-i × --tab-w) 是首帧/无 JS 的兜底,app.js 的
+           activateTab() 写 --tab-i(0..3);
+         • activateTab() 同时把 slateLeftPx(idx) 写成**行内 left**(设计稿 slateStyle 本身
+           就是行内 style),行内优先级更高,是运行时真值。
+       两条算式共用 --sp-3 / --tab-w 两个几何常量(app.js 的兜底常量 3 / 136 与之同值),
+       改任一处必须同改另一处;删掉行内 left 或删掉本条 CSS 都会踩坑。
+       不读 offsetLeft/offsetWidth:首帧布局未定时它们为 0,正是灰模「滑块只盖住最左一点」
+       的成因(用户反馈①)。
+       [Wave 2 冒烟断言] getComputedStyle(slate).left === slateLeftPx(activeIdx) + "px"
+                        —— 把兜底常量与 CSS 变量的一致性钉住。 */
+            #tabs-slate {
+                left: calc(var(--sp-3) + var(--tab-i, 0) * var(--tab-w));
+                width: var(--tab-w);
+            }
+            /* 第 3 个 tab 的 stale 琥珀点(设计稿 L292-294:absolute top 5 right 12,6×6) */
             .tabnav__stale-dot {
-                margin-left: var(--sp-5);
+                position: absolute;
+                top: 5px;
+                right: 12px;
             }
 
-            /* ---- 内容区(05 §1.1 骨架行4,四 tab 用 data-tab 属性显隐) ---- */
+            /* ================================ 内容区(05 §1.1 骨架行4) ================================ */
             #content {
                 flex: 1;
                 min-height: 0;
@@ -169,9 +563,13 @@
                 flex: 1;
                 min-height: 0;
                 flex-direction: column;
-                gap: var(--sp-14);
+                gap: var(--sp-12); /* 设计稿 L308 原值 */
                 overflow: auto;
                 position: relative;
+            }
+            /* Tab1 是绝对定位式满铺(设计稿 L308 inset:0),内部自行分配高度,不整屏滚动 */
+            #content > section[data-tab-panel="master"] {
+                overflow: hidden;
             }
             #content[data-tab="master"] > section[data-tab-panel="master"],
             #content[data-tab="tracks"] > section[data-tab-panel="tracks"],
@@ -180,37 +578,224 @@
                 display: flex;
             }
 
-            /* ---- Tab1 整体(05 §2.1) ---- */
+            /* ======================== Tab1 ① 三件套流程带(设计稿 L310-347) ======================== */
             .master-flow {
-                display: flex;
-                align-items: center;
-                gap: var(--sp-16);
                 flex: none;
-                padding: var(--sp-14);
+                display: flex;
+                align-items: stretch;
+                gap: var(--sp-14);
+                padding: var(--sp-12) var(--sp-16);
                 border-radius: var(--r-lg);
                 background: var(--card-bg);
                 border: 1px solid var(--card-border);
+                box-shadow: var(--card-inset);
             }
             .master-flow__step {
                 display: flex;
                 flex-direction: column;
+                gap: var(--sp-7);
+                min-width: 0;
+            }
+            .master-flow__step--cap {
+                width: 250px;
+                flex: none;
+            } /* 设计稿 L311 */
+            .master-flow__step--an {
+                width: 296px;
+                flex: none;
                 gap: var(--sp-6);
+            } /* 设计稿 L321 */
+            .master-flow__step--out {
+                flex: 1;
+                min-width: 0;
+            } /* 设计稿 L333 */
+            .master-flow__sep {
+                width: 1px;
+                flex: none;
+                align-self: stretch;
+                background: var(--sep-vert);
+            }
+            .master-flow__row {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+            }
+            .master-flow__label {
+                font-size: var(--fs-120);
+                color: var(--txt-1);
+            }
+            .master-flow__label--out {
+                font-weight: 600;
+            }
+            .master-flow__desc {
+                font-size: var(--fs-100);
+                line-height: 1.4;
+                color: var(--txt-min);
+                text-wrap: pretty;
+            }
+            .master-flow__desc strong {
+                font-weight: 600;
+                color: var(--txt-1);
+            }
+            .master-flow__sub {
+                font-size: var(--fs-95);
+                color: var(--txt-4);
+                min-height: 1em;
+            }
+
+            /* 01 采集 —— 四态(off / armed / capturing / outside,设计稿 L1906-1911) */
+            .cap-dot {
+                width: var(--sp-6);
+                height: var(--sp-6);
+                border-radius: 50%;
+                flex: none;
+                background: rgb(var(--sem-gray));
+            }
+            .master-flow[data-cap="armed"] .cap-dot,
+            .master-flow[data-cap="outside"] .cap-dot {
+                background: rgb(var(--sem-amber));
+            }
+            .master-flow[data-cap="capturing"] .cap-dot {
+                background: rgb(var(--sem-green));
+                animation: livePulse var(--pulse-dur) infinite;
+            }
+            .cap-label {
+                display: none;
+            }
+            .master-flow[data-cap="off"] .cap-label[data-cap-label="off"],
+            .master-flow[data-cap="armed"] .cap-label[data-cap-label="armed"],
+            .master-flow[data-cap="capturing"]
+                .cap-label[data-cap-label="capturing"],
+            .master-flow[data-cap="outside"]
+                .cap-label[data-cap-label="outside"] {
+                display: inline;
+            }
+            /* 采集开关随 data-cap 联动(tog(cap==="capturing"||cap==="armed"),设计稿 L1907)——
+               但**开关的「开」视觉不在这里写**:唯一来源是 base.css 的 `.sc-toggle[data-on="1"]`
+               (绿轨 + 把手 translateX(11px))。页面若另写一份 `[data-cap=armed] .cap-toggle{绿}`,
+               就会把 base 组件的状态源旁路掉:视觉转绿而 DOM 上的 data-on/aria-checked 仍是 0/false,
+               屏幕阅读器读「关」、眼睛看「开」。派生方向固定为
+                   data-cap ∈ {armed, capturing}  ⇒  .cap-toggle[data-on="1"][aria-checked="true"]
+               由 app.js 的 syncFlowToggles() 一处完成(MutationObserver 盯 .master-flow 的属性,
+               手改 data-cap 也会同步 aria)——见 app.js「三件套开关的 data-on/aria 派生」段。 */
+
+            /* 02 分析 —— 四态(ready / running / done / disabled,设计稿 L1916-1926) */
+            .an-btn {
+                position: relative;
+                overflow: hidden;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: var(--sp-7);
+                width: 100%;
+                padding: var(--sp-9) 0;
+                border-radius: var(--r-banner);
+                cursor: pointer;
+                font-family: var(--ff-grotesk);
+                font-weight: 600;
+                font-size: var(--fs-125);
+                color: var(--txt-1);
+                background: rgba(var(--acc), 0.3);
+                border: 1px solid var(--w-42);
+                box-shadow: var(--an-shadow-run);
+                transition: background var(--dur-1) var(--ease);
+            }
+            /* 按钮四态全部挂在流程带的 data-analyze 上(单一状态源:Wave 2 只改一个属性,
+               按钮底色/字/菊花/预览行/覆盖率行一起走,不会出现「底色变了字没变」的半态)。 */
+            .master-flow[data-analyze="done"] .an-btn {
+                background: rgba(var(--sem-green), 0.3);
+                border-color: rgba(var(--sem-green), 0.55);
+                box-shadow: var(--an-shadow-done);
+            }
+            .master-flow[data-analyze="disabled"] .an-btn {
+                color: var(--an-disabled-fg);
+                opacity: 0.55;
+                cursor: not-allowed;
+            }
+            .an-btn .sc-spinner {
+                --sz: 12px;
+            }
+            .an-btn__label {
+                display: none;
+            }
+            .master-flow[data-analyze="ready"]
+                .an-btn__label[data-an-label="ready"],
+            .master-flow[data-analyze="disabled"]
+                .an-btn__label[data-an-label="ready"],
+            .master-flow[data-analyze="running"]
+                .an-btn__label[data-an-label="running"],
+            .master-flow[data-analyze="done"]
+                .an-btn__label[data-an-label="done"] {
+                display: inline;
+            }
+            .master-flow:not([data-analyze="running"]) .an-btn .sc-spinner {
+                display: none;
+            }
+            /* 影响预览行两态:disabled 走「无采集数据」原因句,其余走影响预览。
+               原因句只属 data-analyze-reason="nodata";写权限缺失(只读/无时间线,
+               reason="blocked")时整行不亮——真实原因由横幅②/⑥承载,避免张冠李戴。 */
+            .master-flow[data-analyze="disabled"] .an-preview[data-when="ok"],
+            .master-flow:not([data-analyze="disabled"])
+                .an-preview[data-when="nodata"],
+            .master-flow[data-analyze-reason="blocked"]
+                .an-preview[data-when="nodata"],
+            .master-flow[data-analyze="disabled"] .an-coverage {
+                display: none;
+            }
+
+            /* 03 输出 —— 2 态 + 锁 + 提示行(设计稿 L333-346) */
+            .out-pulse {
+                width: var(--sp-6);
+                height: var(--sp-6);
+                border-radius: 50%;
+                flex: none;
+                background: rgb(var(--sem-green));
+                animation: livePulse 1.2s infinite; /* 设计稿 L339 原值:输出脉冲 1.2s(采集为 2.4s) */
+            }
+            .out-lock svg {
+                display: block;
+                fill: none;
+                stroke: var(--sem-amber-icon);
+                stroke-width: 1.6px;
+                stroke-linecap: round;
+            }
+            .master-flow[data-out="0"] .out-pulse,
+            .master-flow[data-out="0"] .out-label[data-out-label="on"],
+            .master-flow[data-out="1"] .out-label[data-out-label="off"],
+            .master-flow[data-lock="0"] .out-lock {
+                display: none;
+            }
+            /* 输出开关的「开」视觉同 01 采集:只走 base.css `.sc-toggle[data-on="1"]`,
+               本页不复写;data-out="1" ⇒ data-on="1" + aria-checked="true" 由 syncFlowToggles() 派生。 */
+
+            /* ======================== Tab1 ② write 确认条(设计稿 L349-355) ======================== */
+            .master-write-confirm {
+                padding: var(--sp-11) var(--sp-14);
+                font-size: var(--fs-110);
+                line-height: 1.5;
+            }
+            .master-write-confirm__text {
                 flex: 1;
                 min-width: 0;
             }
+            .master-write-confirm strong {
+                font-weight: 600;
+            }
+
+            /* ======================== Tab1 ③ 四列网格(设计稿 L357) ======================== */
             .master-grid {
-                display: grid;
-                grid-template-columns: 352px 1fr 1fr 196px;
-                grid-template-rows: auto auto auto;
-                gap: var(--sp-14);
                 flex: 1;
                 min-height: 0;
+                display: grid;
+                grid-template-columns: 352px 1fr 1fr 196px;
+                grid-template-rows: auto auto 1fr;
+                gap: var(--sp-12);
             }
             .master-grid > * {
                 min-width: 0;
                 min-height: 0;
-                overflow: auto;
             }
+            /* 显式坐标(移植地图 §2.3;组卡在设计稿里靠隐式流落 col1/row1,此处按地图建议补显式值) */
             [data-gb="master-group-selector"] {
                 grid-column: 1;
                 grid-row: 1;
@@ -228,8 +813,8 @@
                 grid-row: 1;
             }
             [data-gb="master-distchart"] {
-                grid-column: 1 / 3;
-                grid-row: 2 / 4;
+                grid-column: 1 / span 2;
+                grid-row: 2 / span 2;
             }
             [data-gb="master-transition"] {
                 grid-column: 3;
@@ -240,38 +825,578 @@
                 grid-row: 2;
             }
             [data-gb="master-pancurve"] {
-                grid-column: 3 / 5;
+                grid-column: 3 / span 2;
                 grid-row: 3;
             }
-            .master-distchart-canvas,
-            .master-pancurve-canvas {
-                width: 100%;
-                height: 100%;
-                min-height: 120px;
-            }
-            .master-transition-ramp {
-                stroke: var(--txt-3);
-                fill: none;
-            }
-            /* manual 档控件组(05 §2.1②):只排布局,尺寸/间距走 var(--sp-*)。 */
-            .master-range-manual {
+            /* 用户反馈③:四列网格全部卡片同款玻璃配方(.sc-card = 底 .10 + 描边 .24 + 内高光 .42
+       + radius 15 + padding --card-pad),差别只在 gap/局部 padding。 */
+            .master-grid > .sc-card {
                 display: flex;
                 flex-direction: column;
-                gap: var(--sp-5);
+                gap: var(--sp-8);
             }
-            .master-range-manual__row {
+            .card-head {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: var(--sp-8);
+            }
+            /* 卡内大读数(设计稿 L446/L457/L425:mono tabular 15px,色 = --txt-1) */
+            .card-read {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-150);
+                color: var(--txt-1);
+                white-space: nowrap;
+            }
+
+            /* ---- ⓪ 组选择卡(设计稿 L359-381) ---- */
+            [data-gb="master-group-selector"] {
+                padding: var(--sp-11) var(--sp-14); /* 设计稿 L359 原值 */
+                gap: var(--sp-9);
+            }
+            .group-pills {
+                display: flex;
+                gap: var(--sp-3);
+                padding: var(--sp-3);
+                border-radius: var(--r-pill);
+                background: var(--w-10);
+                border: 1px solid var(--glass-border);
+            }
+            .group-pill {
+                position: relative;
+                overflow: hidden;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: var(--sp-4);
+                padding: var(--sp-5) var(--sp-11);
+                border-radius: var(--r-pill);
+                cursor: pointer;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-110);
+                font-weight: 500;
+                letter-spacing: var(--mono-ls-tag);
+                background: transparent;
+                border: 1px solid transparent;
+                color: var(--txt-3);
+                transition: background var(--dur-1) var(--ease);
+            }
+            .group-pill[aria-pressed="true"] {
+                background: var(--w-82);
+                border-color: var(--w-90);
+                color: var(--txt-1);
+                box-shadow: 0 3px 9px rgba(var(--ink), 0.14);
+            }
+            /* 改组确认条弹出时,待切换的目标胶囊转琥珀预选态(设计稿 L1896-1898) */
+            .group-pill[data-pending="1"] {
+                background: rgba(var(--sem-amber), 0.22);
+                border-color: rgba(var(--sem-amber), 0.5);
+                color: var(--sem-amber-ink);
+            }
+            .group-pill__dot {
+                width: 4px;
+                height: 4px;
+                border-radius: 50%;
+                flex: none;
+                background: rgb(var(--sem-green));
+            }
+            .group-pill[data-online="0"] .group-pill__dot {
+                display: none;
+            }
+            /* 确认条(设计稿 L375:padding 8/10、radius 12) */
+            .inline-confirm {
+                padding: var(--sp-8) var(--sp-10);
+                border-radius: var(--r-sm);
+            }
+            .inline-confirm__text {
+                flex: 1;
+                min-width: 0;
+                line-height: 1.4;
+            }
+            .inline-confirm .sc-btn {
+                padding: var(--sp-4) var(--sp-10);
+                font-size: var(--fs-100);
+            }
+            [data-gb="master-group-selector"][data-confirm="0"]
+                [data-gb="master-group-switch-confirm"] {
+                display: none;
+            }
+
+            /* ---- ④ Width / MS Balance 滑轨(设计稿 L448-451 / L459-463) ---- */
+            .ms-track__mid {
+                position: absolute;
+                left: 50%;
+                top: -3px;
+                bottom: -3px;
+                width: 1px;
+                background: var(--w-55);
+            }
+            /* MS 填充从中点双向扩展:--ms-left/--ms-w 由 Wave 2 写(设计稿 L2022-2023) */
+            .ms-track .sc-slider__fill {
+                left: var(--ms-left, 50%);
+                width: var(--ms-w, 0%);
+            }
+
+            /* ---- ④ Lead Select(设计稿 L466-473 / L2003-2011) ---- */
+            .lead-select {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+                padding: var(--sp-6) var(--sp-10);
+                border-radius: var(--r-tab);
+                font-family: var(--ff-sans);
+                font-size: var(--fs-115);
+                letter-spacing: normal;
+                background-color: var(--w-16);
+                border: 1px solid var(--w-30);
+                color: var(--txt-2);
+                background-position: right var(--sp-10) center;
+            }
+            .lead-select:hover {
+                background-color: var(--w-24);
+            }
+            [data-gb="master-leadselect"][data-selected="1"] .lead-select {
+                background-color: rgba(var(--sem-green), 0.22);
+                border-color: rgba(var(--sem-green), 0.5);
+                color: var(--sem-green-ink);
+            }
+            /* ---- 自定义下拉(用户反馈 2026-08-18:选项列表要做样式)----
+               面板 = 缩放下拉同款深色玻璃配方(.footer-scale__panel),向下展开;
+               16 项超高走内部滚动,不撑破 780 设计盒。 */
+            .lead-select-wrap {
+                position: relative;
+                width: 100%;
+            }
+            .lead-select-wrap .lead-select {
+                width: 100%;
+                text-align: left;
+            }
+            .lead-select-wrap[data-open="1"] .lead-select {
+                background-color: var(--w-24);
+                border-color: rgba(var(--acc), 0.6);
+            }
+            .lead-select__panel {
+                position: absolute;
+                z-index: 9;
+                left: 0;
+                right: 0;
+                top: calc(100% + var(--sp-5));
+                max-height: 236px;
+                overflow-y: auto;
+                padding: var(--sp-5);
+                border-radius: var(--r-md);
+                background-color: var(--dark-solid);
+                background-image: var(--zoom-panel-bg);
+                border: 1px solid var(--dark-window-border);
+                box-shadow: var(--zoom-panel-shadow);
+            }
+            .lead-select-wrap[data-open="0"] .lead-select__panel {
+                display: none;
+            }
+            .lead-select__opt {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-7);
+                width: 100%;
+                padding: var(--sp-6) var(--sp-10);
+                border-radius: var(--r-xs);
+                cursor: pointer;
+                background: transparent;
+                border: 0;
+                text-align: left;
+                font-family: var(--ff-sans);
+                font-size: var(--fs-105);
+                color: var(--txt-dark-2);
+            }
+            .lead-select__opt:hover,
+            .lead-select__opt:focus-visible {
+                background: var(--w-10);
+            }
+            .lead-select__opt[data-current="1"] {
+                background: rgba(var(--sem-green), 0.18);
+                color: rgba(var(--wh), 0.95);
+            }
+            .lead-select__opt .lead-select__ch {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls-pill);
+                color: rgba(var(--wh), 0.45);
+            }
+            .lead-select__opt[data-current="1"] .lead-select__ch {
+                color: rgba(var(--sem-green), 0.9);
+            }
+            [data-gb="master-leadselect"][data-selected="0"]
+                .lead-note[data-when="on"],
+            [data-gb="master-leadselect"][data-selected="1"]
+                .lead-note[data-when="off"] {
+                display: none;
+            }
+            [data-gb="master-leadselect"][data-selected="1"] .lead-note {
+                color: var(--sem-green-ink);
+            }
+
+            /* ---- ④ 声像 / 音量分布图(设计稿 L536-556;纯 DOM + CSS 绝对定位) ---- */
+            [data-gb="master-distchart"] {
+                padding: var(--sp-10) var(--sp-14) var(--sp-8); /* 设计稿 L536 原值 */
+                gap: var(--sp-6);
+            }
+            .dist-head {
+                display: flex;
+                align-items: baseline;
+                gap: var(--sp-12);
+            }
+            .dist-plot {
+                position: relative;
+                flex: 1;
+                min-height: 0;
+                overflow: hidden;
+                border-radius: var(--r-xs);
+                background: var(--w-10);
+                border: 1px solid var(--w-20);
+            }
+            /* canvas 锚点保留(T3x 可改走 canvas 绘制);Wave 1 由下面的 DOM 层出图,画布留空。 */
+            .dist-plot__canvas {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+            }
+            .dist-plot__mid {
+                position: absolute;
+                left: 50%;
+                top: 4px;
+                bottom: 14px;
+                width: 1px;
+                background: var(--w-45);
+            }
+            .dist-plot__q {
+                position: absolute;
+                top: 9px;
+                bottom: 14px;
+                width: 1px;
+                background: var(--w-20);
+            }
+            .dist-plot__q--l {
+                left: 25%;
+            }
+            .dist-plot__q--r {
+                left: 75%;
+            }
+            .dist-plot__base {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: 14px;
+                height: 1px;
+                background: var(--w-35);
+            }
+            .dist-bar {
+                position: absolute;
+                bottom: 15px;
+                left: var(--x, 50%);
+                width: 7px;
+                margin-left: -3.5px;
+                height: var(--h, 30%);
+                border-radius: 3px 3px 1px 1px;
+                background: var(--dist-bar-fill);
+                transition: all var(--dur-1) var(--ease);
+            }
+            .dist-bar[data-lead="1"] {
+                background: var(--dist-bar-lead);
+            }
+            .dist-span {
+                position: absolute;
+                bottom: var(--y, 40%);
+                left: var(--x0, 45%);
+                width: var(--w, 10%);
+                height: 1.5px;
+                border-radius: var(--r-pill);
+                background: rgba(var(--acc), 0.55);
+                transition: all var(--dur-1) var(--ease);
+            }
+            /* 底轴五刻度(设计稿 L552-554:左 L / −50 / 中 C / +50 / 右 R) */
+            .dist-axis {
+                position: absolute;
+                left: var(--sp-8);
+                right: var(--sp-8);
+                bottom: 0;
+                height: 13px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                color: var(--txt-4);
+            }
+            .dist-axis > span:nth-child(odd) {
+                color: var(--txt-2);
+            }
+
+            /* ---- ④ 过渡时间卡 + 斜坡 SVG(设计稿 L422-441) ---- */
+            .trans-row {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+            }
+            .trans-scale {
+                flex: none;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls-pill);
+                color: var(--txt-4);
+            }
+            .master-transition-ramp {
+                display: block;
+                flex: 1;
+                min-width: 0;
+            }
+            .master-transition-ramp .ramp-axis {
+                stroke: var(--w-35);
+                stroke-width: 1;
+            }
+            /* 斜坡折线:M0 16 L{a} 16 L{b} 5 L300 5 —— Wave 2 按 ramp ms 改 {a}/{b} 随值变形 */
+            .master-transition-ramp .ramp-path {
+                fill: none;
+                stroke: var(--ramp-stroke);
+                stroke-width: 2;
+                stroke-linejoin: round;
+            }
+            .master-transition-ramp .ramp-mark {
+                stroke: var(--w-45);
+                stroke-width: 1;
+                stroke-dasharray: 2 3;
+            }
+
+            /* ---- ② Range 窄列:三档三态(设计稿 L384-420 / L1974-1984) ---- */
+            .range-seg {
+                display: flex;
+                padding: var(--sp-3);
+                border-radius: var(--r-banner);
+                background: var(--w-10);
+                border: 1px solid var(--card-border);
+            }
+            .range-seg__item {
+                flex: 1;
+                text-align: center;
+                padding: var(--sp-5) 0;
+                border-radius: var(--r-xs);
+                cursor: pointer;
+                white-space: nowrap;
+                font-family: var(--ff-sans);
+                font-size: var(--fs-105);
+                font-weight: 400;
+                color: var(--txt-3);
+                background: transparent;
+                border: 1px solid transparent;
+                transition: background var(--dur-1) var(--ease);
+            }
+            .range-seg__item[aria-pressed="true"] {
+                font-weight: 600;
+                color: var(--txt-1);
+                background: var(--slate-bg);
+                border-color: var(--slate-border);
+                box-shadow: 0 3px 9px rgba(var(--ink), 0.12);
+            }
+            /* 能力级缺失:档位保留、绝不隐藏,只置灰 + not-allowed(05 §2.1② 分层规则①) */
+            .range-seg__item[data-disabled="1"] {
+                cursor: not-allowed;
+                color: var(--range-dis-fg);
+            }
+            .range-body {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-8);
+            }
+            .range-pane {
+                display: none;
+            }
+            [data-gb="master-range"][data-range="follow"]
+                .range-pane[data-pane="follow"],
+            [data-gb="master-range"][data-range="loop"]:not(
+                    [data-loop-missing="1"]
+                )
+                .range-pane[data-pane="loop"],
+            [data-gb="master-range"][data-loop-missing="1"]
+                .range-pane[data-pane="loopMissing"] {
+                display: block;
+            }
+            [data-gb="master-range"][data-range="manual"]
+                .range-pane[data-pane="manual"] {
+                display: flex;
+            }
+            .range-pane[data-pane="follow"] {
+                font-size: var(--fs-105);
+                line-height: 1.5;
+                color: var(--txt-min);
+            }
+            .range-pane[data-pane="loop"] {
+                font-size: var(--fs-105);
+                line-height: 1.5;
+                color: var(--sem-amber-ink);
+            }
+            .range-pane[data-pane="loopMissing"] {
+                font-size: var(--fs-105);
+                line-height: 1.5;
+                color: var(--txt-est);
+            }
+            .range-manual {
+                flex-direction: column;
+                gap: var(--sp-6);
+            }
+            .range-manual__row {
                 display: flex;
                 align-items: center;
                 gap: var(--sp-5);
-                flex-wrap: wrap;
             }
-            .master-range-manual__bars {
-                display: inline-flex;
-                gap: var(--sp-3);
-            }
-            .master-range-manual input {
+            .range-manual__tc {
+                flex: 1;
                 min-width: 0;
-                width: 44px;
+                text-align: center;
+                padding: var(--sp-4) var(--sp-6);
+                border-radius: var(--r-xs);
+                border: 1px solid var(--w-32);
+                background: var(--w-18);
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-100);
+                color: var(--txt-1);
+                outline: none;
+            }
+            .range-manual__arrow {
+                flex: none;
+                font-size: var(--fs-100);
+                color: var(--txt-4);
+            }
+            .range-manual__conv {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-95);
+                font-style: italic;
+                color: var(--txt-est);
+            }
+            .range-manual__btn {
+                padding: var(--sp-4) var(--sp-8);
+                border-radius: var(--r-xs);
+                background: var(--w-18);
+                border: 1px solid var(--w-32);
+                font-family: var(--ff-sans);
+                font-size: var(--fs-95);
+                color: var(--txt-2);
+                cursor: pointer;
+                white-space: nowrap;
+            }
+            .range-manual__btn--wide {
+                flex: 1;
+                text-align: center;
+            }
+            .range-manual__btn--step {
+                font-family: var(--ff-mono);
+            }
+            .range-manual__note {
+                font-size: var(--fs-90);
+                line-height: 1.4;
+                font-style: italic;
+                color: var(--txt-est);
+            }
+
+            /* ---- ④ 角度域曲线编辑器:深色雕刻窗外框(设计稿 L475-534;窗内曲线交互归 T34) ---- */
+            [data-gb="master-pancurve"] {
+                position: relative;
+                min-height: 0;
+            }
+            .curve-head {
+                position: absolute;
+                z-index: 3;
+                top: 9px;
+                left: 14px;
+                right: 14px;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-14);
+            }
+            /* J71④:图例只保留一项「MS 等效增益」(稿内两项为旧口径,不采) */
+            .curve-legend {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                margin-left: auto;
+            }
+            .curve-legend__swatch {
+                width: 12px;
+                height: 2px;
+                border-radius: 2px;
+                background: var(--acc-strong);
+            }
+            .curve-legend__label {
+                font-size: var(--fs-95);
+                color: var(--txt-dark-3);
+            }
+            .curve-plot {
+                position: absolute;
+                inset: 26px 14px 26px 34px;
+            }
+            .curve-plot svg,
+            .curve-plot canvas {
+                position: absolute;
+                inset: 0;
+                display: block;
+                width: 100%;
+                height: 100%;
+            }
+            .curve-grid line {
+                stroke: var(--dark-grid);
+                stroke-width: 1;
+            }
+            .curve-grid line.is-axis {
+                stroke: var(--dark-grid-axis);
+            }
+            .curve-path {
+                fill: none;
+                stroke: var(--acc-strong);
+                stroke-width: 2;
+            }
+            .curve-yaxis {
+                position: absolute;
+                left: 6px;
+                top: 26px;
+                bottom: 26px;
+                width: 26px;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                align-items: flex-end;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                color: var(--txt-dark-dim);
+            }
+            .curve-xaxis {
+                position: absolute;
+                left: 34px;
+                right: 14px;
+                bottom: 6px;
+                height: 16px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                color: var(--txt-dark-dim);
+            }
+            .curve-xaxis > span:nth-child(odd) {
+                color: var(--txt-dark-3);
+            }
+            .curve-empty {
+                position: absolute;
+                left: 50%;
+                top: 50%;
+                transform: translate(-50%, -50%);
+                font-size: var(--fs-115);
+                color: var(--txt-dark-4);
+            }
+            [data-gb="master-pancurve"][data-empty="0"] .curve-empty {
+                display: none;
             }
 
             /* ---- Tab2 轨道(05 §2.2) ---- */
@@ -303,8 +1428,8 @@
                 border-bottom: 1px solid var(--card-border);
             }
             /* 冻结开关组:真实盒(不用 display:contents,否则 data-tour="freeze" 的
-               getBoundingClientRect() 恒为 0×0,T36b spotlight 无亮区)。
-               内部 gap 与行 gap 同为 --sp-6,26+6+26=58px,与表头两列逐像素对齐。 */
+       getBoundingClientRect() 恒为 0×0,T36b spotlight 无亮区)。
+       内部 gap 与行 gap 同为 --sp-6,26+6+26=58px,与表头两列逐像素对齐。 */
             .tracks-row__freezegroup {
                 display: inline-flex;
                 align-items: center;
@@ -533,19 +1658,44 @@
                 margin-top: var(--sp-9);
             }
 
-            /* ---- footer(05 §1.1 骨架行5) ---- */
+            /* ================================ Footer(设计稿 L1015-1034) ================================ */
             footer {
                 display: flex;
                 align-items: center;
-                justify-content: space-between;
-                gap: var(--sp-14);
+                gap: var(--sp-12);
                 flex: none;
+                padding-top: var(--sp-9);
+                border-top: 1px solid var(--glass-border);
             }
             .footer-hint {
+                flex: 1;
+                min-width: 0;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
-                min-width: 0;
+                font-size: var(--fs-110);
+                color: var(--txt-min);
+                font-variant-numeric: tabular-nums lining-nums;
+            }
+            /* 打印状态行(print / follow)走 mono 10.5px + .1em 字距(设计稿 L2198-2203) */
+            .footer-hint--mono {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-105);
+                letter-spacing: var(--mono-ls-pill);
+            }
+            footer [data-gb="footer-print-status"],
+            footer [data-gb="footer-print-done"] {
+                display: none;
+            }
+            footer[data-mode="print"] [data-gb="footer-hint"],
+            footer[data-mode="follow"] [data-gb="footer-hint"],
+            footer[data-mode="printDone"] [data-gb="footer-hint"] {
+                display: none;
+            }
+            footer[data-mode="print"] [data-gb="footer-print-status"],
+            footer[data-mode="follow"] [data-gb="footer-print-status"],
+            footer[data-mode="printDone"] [data-gb="footer-print-done"] {
+                display: block;
             }
             .footer-right {
                 display: flex;
@@ -553,12 +1703,92 @@
                 gap: var(--sp-9);
                 flex: none;
             }
+            /* 缩放下拉:触发钮 + 深色浮层面板(设计稿 L1017-1020 / L1026-1033) */
+            .footer-scale {
+                position: relative;
+            }
+            .footer-scale__trigger {
+                position: relative;
+                overflow: hidden;
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-6);
+                padding: var(--sp-4) var(--sp-10);
+                border-radius: var(--r-xs);
+                background: var(--w-16);
+                border: 1px solid var(--w-32);
+                cursor: pointer;
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-100);
+                color: var(--txt-2);
+            }
+            .footer-scale__trigger svg {
+                fill: none;
+                stroke: var(--txt-3);
+                stroke-width: 1.6px;
+                stroke-linecap: round;
+            }
+            .footer-scale__panel {
+                position: absolute;
+                z-index: 9;
+                right: 0;
+                bottom: calc(100% + var(--sp-9));
+                width: 168px;
+                padding: var(--sp-5);
+                border-radius: var(--r-md);
+                background-color: var(--dark-solid);
+                background-image: var(--zoom-panel-bg);
+                border: 1px solid var(--dark-window-border);
+                box-shadow: var(--zoom-panel-shadow);
+            }
+            .footer-scale[data-open="0"] .footer-scale__panel {
+                display: none;
+            }
+            .footer-scale__opt {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: var(--sp-10);
+                width: 100%;
+                padding: var(--sp-7) var(--sp-10);
+                border-radius: var(--r-xs);
+                cursor: pointer;
+                background: transparent;
+                border: 0;
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-110);
+                color: var(--txt-dark-2);
+            }
+            .footer-scale__opt[data-current="1"] {
+                background: var(--w-10);
+            }
+            /* 超屏档位:灰掉 + 说明,不隐藏(05 §1.2) */
+            .footer-scale__opt[data-over="1"] {
+                cursor: not-allowed;
+                color: var(--txt-dark-dim);
+            }
+            .footer-scale__note {
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls-pill);
+                color: rgba(var(--wh), 0.45);
+            }
+            .footer-scale__opt[data-over="1"] .footer-scale__note {
+                color: rgba(var(--sem-amber), 0.75);
+            }
+            .footer-version {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-95);
+                letter-spacing: var(--ls-footer-ver);
+                color: var(--txt-4);
+            }
 
             /* ---- toast / 首启引导 overlay(05 §2.0,绝对定位于卡片内) ---- */
             #toast-region {
                 position: absolute;
-                right: var(--sp-20);
-                bottom: 64px;
+                right: var(--sp-18);
+                bottom: 56px;
                 display: flex;
                 flex-direction: column;
                 gap: var(--sp-9);
@@ -577,6 +1807,126 @@
                 display: flex;
                 flex-direction: column;
                 gap: var(--sp-9);
+            }
+
+            /* =================================================================
+               T31 Wave 2 追加(交互态外观;视觉仍照设计稿同族组件,零新配方)
+               ================================================================= */
+
+            /* ---- A1 空态卡(J72 发挥件;用户裁定 2026-08-18:五步制,
+                   前三步红字 = ADR-002 红线,后两步常规色)。 ---- */
+            .master-empty {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-6);
+                min-width: 0;
+            }
+            .master-empty__steps {
+                margin: 0;
+                padding-left: var(--sp-18);
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-4);
+                color: var(--txt-2);
+                font-size: var(--fs-110);
+                line-height: 1.4;
+            }
+            .master-empty__steps li[data-red="1"] {
+                color: var(--sem-red-ink);
+                font-weight: 600;
+            }
+
+            /* ---- hostEcho 灰显(契约 §0.5 / §2.2):ARMED/PRINT 下 scvb.params 来自宿主回吐,
+                   参数卡只更新显示、绝不回写 —— **纯视觉降透明,不吃指针事件**。
+                   契约 §1.12-§1.14 拒绝态行逐字「无(PRINT/ARMED 下照常允许——这是宿主可录的
+                   用户操作面)」;且 hostEcho 是「最近一批」的标志,打印停止后值不再变(§0.4
+                   值未变不发)就再也不会翻回 0 —— pointer-events:none 会把四张卡永久锁死。 ---- */
+            [data-host-echo="1"] {
+                opacity: 0.55;
+            }
+
+            /* ---- 引导页:九条红字缺失时的醒目占位注记(gen-hard-rules.mjs 归 T39b)---- */
+            .guide-overlay__missing {
+                margin: 0;
+                padding: var(--sp-8) var(--sp-10);
+                border-radius: var(--r-xs);
+                background: rgba(var(--sem-red), 0.18);
+                border: 1px solid rgba(var(--sem-red), 0.45);
+                color: var(--sem-red-ink-dark);
+                font-size: var(--fs-115);
+                line-height: 1.45;
+            }
+            /* 「不再显示」勾选(用户反馈 2026-08-18:样式优化)——
+               原生 checkbox 在深色玻璃上突兀,改自绘方框 + 对勾。 */
+            .guide-overlay__dontshow {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-7);
+                cursor: pointer;
+                user-select: none;
+                color: var(--txt-dark-2);
+                font-size: var(--fs-105);
+            }
+            .guide-overlay__dontshow:hover {
+                color: rgba(var(--wh), 0.92);
+            }
+            .guide-overlay__dontshow input {
+                appearance: none;
+                -webkit-appearance: none;
+                flex: none;
+                width: 16px;
+                height: 16px;
+                margin: 0;
+                border-radius: var(--r-xs);
+                border: 1px solid rgba(var(--wh), 0.4);
+                background: rgba(var(--wh), 0.08);
+                cursor: pointer;
+                display: grid;
+                place-content: center;
+            }
+            .guide-overlay__dontshow:hover input {
+                border-color: rgba(var(--wh), 0.62);
+            }
+            .guide-overlay__dontshow input:checked {
+                background: rgba(var(--acc), 0.92);
+                border-color: rgba(var(--acc), 0.92);
+            }
+            .guide-overlay__dontshow input:checked::after {
+                content: "";
+                width: 8px;
+                height: 4px;
+                margin-top: -2px;
+                border-left: 2px solid var(--dark-solid);
+                border-bottom: 2px solid var(--dark-solid);
+                transform: rotate(-45deg);
+            }
+            .guide-overlay__dontshow input:focus-visible {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                outline-offset: 2px;
+            }
+            [data-gb="guide-overlay-rules"] {
+                margin: 0;
+                padding-left: var(--sp-18);
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-4);
+            }
+
+            /* ---- 缩放 10 秒防呆确认(卡片层单例;.sc-scrim 已给 position:absolute;inset:0)---- */
+            [data-gb="scale-confirm"] {
+                z-index: 9;
+            }
+
+            /* ---- PRINT 态 / 只读观察态:组胶囊整组不可操作(05 §2.1 ⓪;契约 §1.4)---- */
+            [data-gb="master-group-selector"][data-disabled="1"] .group-pills {
+                opacity: 0.45;
+                pointer-events: none;
+            }
+
+            /* ---- Range 手动档校验失败(startS ≥ endS ⇒ 不发 setRange,契约 §1.8)---- */
+            .range-manual__tc[data-invalid="1"] {
+                border-color: rgba(var(--sem-red), 0.7);
+                color: var(--sem-red-ink);
             }
         </style>
     </head>
@@ -601,81 +1951,158 @@
                 ></div>
 
                 <!-- ============================== Header(05 §1.1 + §2.0) ============================== -->
+                <!-- 设计稿 L226-275:品牌块 → 组 badge → 演示数据 chip → 弹簧 → 版本区(+复制) → 连接 pill → 语言胶囊 -->
                 <header id="header" data-gb="header">
                     <div class="brand" data-gb="header-brand">
                         <span class="brand__icon" aria-hidden="true">
                             <!-- Synchain logo(org 头像同源,web/shared/logo.png 本地副本;
-                                 白底经 mix-blend-mode:multiply 融入玻璃,用户指定替换 2026-08-17)-->
+                 白底经 mix-blend-mode:multiply 融入玻璃,用户指定替换 2026-08-17)-->
                             <img
                                 class="brand__logo"
                                 src="../shared/logo.png"
                                 alt=""
                             />
                         </span>
-                        <div>
-                            <div class="brand__title">SCVB Output</div>
-                            <div class="brand__subtitle sc-mono">
+                        <div class="brand__text">
+                            <!-- h1:axe page-has-heading-one;视觉全由 .brand__title 承担 -->
+                            <h1 class="brand__title">SCVB Output</h1>
+                            <div class="brand__subtitle">
                                 SYNCHAIN · VOCAL BALANCER · VST3
                             </div>
                         </div>
                     </div>
 
-                    <div class="header__mid" data-gb="header-mid">
-                        <!-- 05 §2.0 行1:Header 连接摘要 pill -->
-                        <span
-                            class="sc-pill"
-                            data-tone="gray"
-                            data-gb="header-conn-pill"
-                        >
-                            <span class="sc-pill__dot"></span>
-                            <span class="sc-mono" data-gb="header-conn-count"
-                                >0/15</span
-                            >
-                            <span data-t="state.notConnected">未连接</span>
-                        </span>
-                        <!-- 05 §2.0 行2:组号 badge「组 {X}」(J71③) -->
-                        <span class="sc-pill" data-gb="header-group-badge">
-                            <span data-t="group.label">组</span>
-                            <span
-                                class="sc-mono"
-                                data-gb="header-group-badge-letter"
-                                >A</span
-                            >
-                        </span>
-                    </div>
+                    <!-- 05 §2.0 行2 / J71③:独立「组 {X}」badge(不是连接 pill 的后缀) -->
+                    <span class="hdr-group-badge" data-gb="header-group-badge">
+                        <span data-t="group.label">组</span>
+                        <span data-gb="header-group-badge-letter">A</span>
+                    </span>
 
-                    <!-- 05 §2.0 行3 / §2.1③:Version 切换与复制(回流②,迁至 header 全局位) -->
-                    <div class="header__version" data-gb="header-version">
-                        <span class="sc-eyebrow" data-t="version">版本</span>
+                    <!-- 演示数据 chip(设计稿 L237-239;tour demo 期间出现,默认隐藏) -->
+                    <span
+                        class="hdr-demo-chip"
+                        data-gb="header-demo-chip"
+                        data-t="tour.demoBadge"
+                        hidden
+                        >演示数据</span
+                    >
+
+                    <span class="header__spacer" aria-hidden="true"></span>
+
+                    <!-- 05 §2.0 行3 / §2.1③:Version 切换与复制。data-mode="normal|rename" 二选一 -->
+                    <div
+                        class="header__version"
+                        data-gb="header-version"
+                        data-mode="normal"
+                    >
+                        <span class="header__version-label" data-t="version"
+                            >版本</span
+                        >
+
+                        <!-- 正常态:两枚版本 chip(设计稿 L250-261 / L1987-1999)
+             五态由 data-* 驱动:data-active(激活)/ data-empty(空态角标)/
+             data-disabled(PRINT 中不可切换);第五态「重命名中」= 外层 data-mode="rename"。
+             可达名:与语言胶囊/组胶囊同口径(A5)—— `<button>` + `aria-pressed`,
+             激活枚 true。**data-active 与 aria-pressed 必须成对写**,只改底色不改 aria
+             会让屏幕阅读器读不出「当前是哪个版本」。
+             [Wave 2] setVersionActive(v) 的接线点:切换时同时写 data-active 与 aria-pressed
+                      (契约 §1.11;ARMED 轻确认 / PRINT 拒绝渲染 rejected 见 tab-master.js)。 -->
                         <div
                             class="header__version-chips"
                             data-gb="header-version-chips"
                         >
                             <button
-                                class="sc-chip"
-                                data-set="1"
+                                class="ver-chip"
+                                data-glow="1"
                                 data-gb="header-version-chip-1"
+                                aria-pressed="false"
+                                data-active="0"
+                                data-empty="0"
+                                data-disabled="0"
+                                aria-disabled="false"
                             >
                                 V1
+                                <span
+                                    class="ver-chip__empty"
+                                    data-t="version.emptyBadge"
+                                    aria-hidden="true"
+                                    >空</span
+                                >
                             </button>
                             <button
-                                class="sc-chip"
+                                class="ver-chip"
+                                data-glow="1"
                                 data-gb="header-version-chip-2"
+                                aria-pressed="true"
+                                data-active="1"
+                                data-empty="0"
+                                data-disabled="0"
+                                aria-disabled="false"
                             >
                                 V2
+                                <span
+                                    class="ver-chip__empty"
+                                    data-t="version.emptyBadge"
+                                    aria-hidden="true"
+                                    >空</span
+                                >
                             </button>
                         </div>
+
+                        <!-- 重命名态:chip0 + 行内 input(≤16 字符)+ 字数提示(设计稿 L243-249) -->
+                        <div class="ver-rename" data-gb="header-version-rename">
+                            <span
+                                class="ver-rename__chip0"
+                                data-gb="header-version-rename-chip0"
+                                >V1</span
+                            >
+                            <input
+                                class="ver-rename__input"
+                                type="text"
+                                maxlength="16"
+                                value=""
+                                data-t-aria="renameVersion"
+                                data-gb="header-version-rename-input"
+                            />
+                            <span
+                                class="ver-rename__count sc-num"
+                                data-gb="header-version-rename-count"
+                                aria-hidden="true"
+                                >0/16</span
+                            >
+                        </div>
+
                         <button
-                            class="sc-btn"
+                            class="hdr-copy-btn"
+                            data-glow="1"
                             data-gb="header-version-copy"
-                            data-t="copyTo"
+                            data-t-aria="copyTo"
+                            data-disabled="0"
+                            aria-disabled="false"
                         >
-                            复制到
+                            <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 14 14"
+                                aria-hidden="true"
+                            >
+                                <rect
+                                    x="5"
+                                    y="5"
+                                    width="7"
+                                    height="7"
+                                    rx="1.6"
+                                ></rect>
+                                <path
+                                    d="M9 3.4H3.2A1.2 1.2 0 0 0 2 4.6v5.8"
+                                ></path>
+                            </svg>
                         </button>
                         <!-- [T3x] bridge.setVersionActive(v) —— 契约 §1.9 -->
                         <!-- [T3x] bridge.setVersionName(v, name) —— 契约 §1.10 -->
                         <!-- [T3x] bridge.copyVersion(src, dst) —— 契约 §1.11 -->
-                        <!-- 复制确认框(深色玻璃,同缩放确认族) -->
+
+                        <!-- 复制确认框(深色玻璃,同缩放确认族;设计稿 L1131-1152) -->
                         <div
                             class="sc-scrim"
                             data-gb="header-version-copy-confirm"
@@ -689,41 +2116,70 @@
                                     目标已有数据将被覆盖——{name} 的 15 轨 pan /
                                     vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。
                                 </p>
-                                <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
                                 <button
-                                    class="sc-btn--dark"
+                                    class="sc-btn sc-btn--dark"
                                     data-gb="header-version-copy-cancel"
-                                    data-gb-todo="词条待立"
+                                    data-t="common.cancel"
                                 >
                                     取消
                                 </button>
-                                <!-- 词条待立:确认按钮「复制」/「覆盖并复制」文案(字典缺) -->
                                 <button
-                                    class="sc-btn--cta"
+                                    class="sc-btn sc-btn--cta"
                                     data-gb="header-version-copy-ok"
-                                    data-gb-todo="词条待立"
+                                    data-t="master.copyConfirmPrimary"
                                 >
-                                    复制
+                                    覆盖并复制
                                 </button>
                             </div>
                         </div>
-                        <!-- 版本 chip 双击重命名(行内 input,≤16 字符);ARMED 轻确认(A6) -->
-                        <!-- 词条待立:ARMED 轻确认「引擎输出将平滑切至新版本,继续?」(A6,字典缺) -->
+                        <!-- ARMED 轻确认(05 §2.1③:FOLLOW 直接切 / ARMED 弹本条 / PRINT chip 全 disabled)。
+                             词条 master.versionArmedConfirm + common.cancel / common.continue(T31 Wave 2 新增)。 -->
                         <div
-                            class="sc-confirm"
+                            class="sc-confirm inline-confirm"
                             data-gb="header-version-armed-confirm"
                             hidden
-                            data-gb-todo="词条待立"
                         >
-                            引擎输出将平滑切至新版本,继续?
+                            <span
+                                class="inline-confirm__text"
+                                data-t="master.versionArmedConfirm"
+                                >引擎输出将平滑切至新版本,继续?</span
+                            >
+                            <button
+                                class="sc-btn"
+                                data-gb="header-version-armed-cancel"
+                                data-t="common.cancel"
+                            >
+                                取消
+                            </button>
+                            <button
+                                class="sc-btn sc-btn--cta"
+                                data-gb="header-version-armed-ok"
+                                data-t="common.continue"
+                            >
+                                继续
+                            </button>
                         </div>
                     </div>
 
-                    <!-- 05 §2.0 行4:语言胶囊(中/EN/FR) -->
+                    <!-- 05 §2.0 行1:Header 连接摘要 pill(设计稿 L266-269 pill() 工厂 = base.css .sc-pill) -->
+                    <span
+                        class="sc-pill"
+                        data-tone="gray"
+                        data-gb="header-conn-pill"
+                    >
+                        <span class="sc-pill__dot"></span>
+                        <span class="sc-num" data-gb="header-conn-count"
+                            >0/15</span
+                        >
+                        <span data-t="state.notConnected">未连接</span>
+                    </span>
+
+                    <!-- 05 §2.0 行4:语言胶囊(中/EN/FR;设计稿 L270-274) -->
                     <div
-                        class="sc-seg sc-seg--sm"
+                        class="sc-seg sc-seg--sm hdr-lang"
                         role="group"
-                        aria-label="language"
+                        data-t-aria="language"
+                        aria-label="语言"
                         data-gb="header-lang"
                     >
                         <button
@@ -775,9 +2231,12 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner①「路由失准:M 轨检测到时间线缺口——检查人声轨是否仍指向本总线」全文(05 §2.0,字典缺完整句;misaligned 仅短标签) -->
-                        <span data-gb-todo="词条待立"
-                            >路由失准:M
+                        <!-- 词条 banner.misaligned(T31 Wave 2 新增,zh 逐字取 05 §2.0;
+                             {m} = scvb.conn 里 misalignCount>0 的轨数) -->
+                        <span
+                            data-t="banner.misaligned"
+                            data-gb="banner-misaligned-text"
+                            >路由失准:{m}
                             轨检测到时间线缺口——检查人声轨是否仍指向本总线</span
                         >
                     </div>
@@ -823,9 +2282,11 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner③「轨 N 采样率不一致,已禁用」全文(05 §2.0,字典缺;in.pill.srMismatch 是 Input 侧短标) -->
-                        <span data-gb-todo="词条待立"
-                            >轨 N 采样率不一致,已禁用</span
+                        <!-- 词条 banner.srMismatch(T31 Wave 2 新增;{n} = scvb.error.ch) -->
+                        <span
+                            data-t="banner.srMismatch"
+                            data-gb="banner-srMismatch-text"
+                            >轨 {n} 采样率不一致,已禁用</span
                         >
                     </div>
                     <!-- ④ 工程版本过旧 -->
@@ -871,8 +2332,8 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner⑤「采集数据缺失/过期,请重新采集」全文(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立"
+                        <!-- 词条 banner.sidecarMissing(T31 Wave 2 新增) -->
+                        <span data-t="banner.sidecarMissing"
                             >采集数据缺失/过期,请重新采集</span
                         >
                     </div>
@@ -891,8 +2352,8 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner⑥「宿主未提供时间线」全文(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">宿主未提供时间线</span>
+                        <!-- 词条 banner.noTimeline(T31 Wave 2 新增) -->
+                        <span data-t="banner.noTimeline">宿主未提供时间线</span>
                     </div>
                     <!-- ⑦ 加载守卫:引擎驱动状态随工程恢复 -->
                     <div class="sc-banner" data-gb="banner-printGuard" hidden>
@@ -924,70 +2385,76 @@
                 </div>
 
                 <!-- ============================== Tab 导航(05 §1.1 + §2.0) ============================== -->
+                <!-- 设计稿 L287-297:552px 宽石板条,4 × 136px tab 项 + 绝对定位滑块。
+     滑块位置 = 3px + (tab-1)×136px,由 app.js 写 --tab-i(见页内 #tabs-slate 规则)。 -->
+                <!-- 外层 nav 供 landmark(axe region);role=tablist 会顶掉 nav 的
+                     landmark 角色,所以 tablist 落在内层 div 上,nav 自身不参与布局。 -->
                 <nav
-                    class="sc-tabs"
-                    id="tabbar"
-                    data-gb="tabnav"
-                    role="tablist"
-                    aria-label="tabs"
+                    class="sc-tabs-wrap"
+                    aria-label="标签页"
+                    data-t-aria="tabs"
                 >
                     <div
-                        class="sc-tabs__slate"
-                        id="tabs-slate"
-                        aria-hidden="true"
-                    ></div>
-                    <!-- 词条待立:tab 名「整体」(05 §1.1,字典缺 tab 名 key) -->
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="true"
-                        data-tab-btn="master"
-                        data-gb="tabnav-master"
-                        data-gb-todo="词条待立"
+                        class="sc-tabs"
+                        id="tabbar"
+                        data-gb="tabnav"
+                        role="tablist"
+                        aria-label="标签页"
+                        data-t-aria="tabs"
                     >
-                        整体
-                    </button>
-                    <!-- 词条待立:tab 名「轨道」(05 §1.1,字典缺 tab 名 key) -->
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="false"
-                        data-tab-btn="tracks"
-                        data-gb="tabnav-tracks"
-                        data-gb-todo="词条待立"
-                    >
-                        轨道
-                    </button>
-                    <!-- 词条待立:tab 名「波形」(05 §1.1,字典缺 tab 名 key) -->
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="false"
-                        data-tab-btn="wave"
-                        data-gb="tabnav-wave"
-                        data-gb-todo="词条待立"
-                    >
-                        波形
-                        <span
-                            class="sc-dot tabnav__stale-dot"
-                            data-tone="amber"
-                            data-gb="tabnav-wave-stale-dot"
-                            hidden
+                        <div
+                            class="sc-tabs__slate"
+                            id="tabs-slate"
                             aria-hidden="true"
-                        ></span>
-                    </button>
-                    <!-- 词条待立:tab 名「设置」(05 §1.1,字典缺 tab 名 key;J71⑥ tab 名与说明块 eyebrow 不得互换) -->
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="false"
-                        data-tab-btn="settings"
-                        data-gb="tabnav-settings"
-                        data-gb-todo="词条待立"
-                    >
-                        设置
-                    </button>
-                    <!-- [T3x] bridge.setActiveTab(tab) —— 契约 §1.31(灰模不写 state,仅 CSS 显隐,见 app.js 注释) -->
+                        ></div>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="true"
+                            data-tab-btn="master"
+                            data-gb="tabnav-master"
+                            data-t="tab.master"
+                        >
+                            整体调整
+                        </button>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="false"
+                            data-tab-btn="tracks"
+                            data-gb="tabnav-tracks"
+                            data-t="tab.tracks"
+                        >
+                            轨道
+                        </button>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="false"
+                            data-tab-btn="wave"
+                            data-gb="tabnav-wave"
+                        >
+                            <span data-t="tab.wave">波形与分段</span>
+                            <span
+                                class="sc-dot tabnav__stale-dot"
+                                data-tone="amber"
+                                data-gb="tabnav-wave-stale-dot"
+                                hidden
+                                aria-hidden="true"
+                            ></span>
+                        </button>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="false"
+                            data-tab-btn="settings"
+                            data-gb="tabnav-settings"
+                            data-t="tab.settings"
+                        >
+                            设置
+                        </button>
+                        <!-- [T3x] bridge.setActiveTab(tab) —— 契约 §1.31(Wave 1 只切 CSS 显隐,见 app.js 注释) -->
+                    </div>
                 </nav>
 
                 <!-- ============================== 内容区(四 tab) ============================== -->
@@ -996,233 +2463,372 @@
                     <!-- Tab1 整体(Master)—— 05 §2.1                                -->
                     <!-- ========================================================= -->
                     <section data-tab-panel="master" data-gb="tab-master">
-                        <!-- 空态(A1,J72:无设计稿依据,依本节文字实现) -->
+                        <!-- 空态(A1,J72 发挥件:设计稿无依据,依 05 §2.1 末段文字实现;显隐逻辑 Wave 2) -->
                         <div
                             class="sc-banner"
                             data-gb="master-emptystate"
                             hidden
                         >
-                            <div>
-                                <!-- 词条待立:Tab1 空态红字前提句(05 §2.1 末段,ADR-002 红线,字典缺) -->
-                                <p class="sc-hint" data-gb-todo="词条待立">
-                                    SCVB Output
-                                    插在人声轨共同路由到的总线第一格;人声轨的输出路由保持指向该总线——不要改
-                                </p>
-                                <ol>
-                                    <!-- 词条待立:空态步骤1「在每条人声轨末插 SCVB Input」(字典缺) -->
-                                    <li data-gb-todo="词条待立">
-                                        在每条人声轨末插 SCVB Input
+                            <div class="master-empty">
+                                <!-- 用户裁定 2026-08-18:五步制,前三步红字(ADR-002 红线,
+                                     预防性传达);先跳线(步 2)后插 Output(步 3);
+                                     步 1 强调插入位置(J45 宿主中立口径「插件链最后一格」)。 -->
+                                <ol class="master-empty__steps">
+                                    <li
+                                        data-red="1"
+                                        data-gb="master-emptystate-step1"
+                                        data-t="master.empty.step1"
+                                    >
+                                        在每条人声轨插件链最后一格(所有处理之后)插入
+                                        SCVB Input
                                     </li>
-                                    <!-- 词条待立:空态步骤2「采集并播放」(字典缺) -->
-                                    <li data-gb-todo="词条待立">采集并播放</li>
-                                    <!-- 词条待立:空态步骤3「分析并开启输出」(字典缺) -->
-                                    <li data-gb-todo="词条待立">
+                                    <li
+                                        data-red="1"
+                                        data-gb="master-emptystate-step2"
+                                        data-t="master.empty.step2"
+                                    >
+                                        人声轨的输出路由保持指向共同总线
+                                    </li>
+                                    <li
+                                        data-red="1"
+                                        data-gb="master-emptystate-step3"
+                                        data-t="master.empty.step3"
+                                    >
+                                        SCVB Output 插在该总线第一格
+                                    </li>
+                                    <li
+                                        data-gb="master-emptystate-step4"
+                                        data-t="master.empty.step4"
+                                    >
+                                        采集并播放
+                                    </li>
+                                    <li
+                                        data-gb="master-emptystate-step5"
+                                        data-t="master.empty.step5"
+                                    >
                                         分析并开启输出
                                     </li>
                                 </ol>
                             </div>
                         </div>
 
-                        <!-- ① 三件套:采集 → 分析 → 输出(视觉流程带) -->
-                        <div class="master-flow" data-gb="master-flow">
+                        <!-- ============ ① 三件套流程带:采集 → 分析 → 输出(设计稿 L310-347) ============
+         用户反馈②:每段 = 编号 eyebrow + 标题/控件行 + 说明句 + 状态行,两条竖分隔线分区。
+         状态全部由本容器上的 data-cap / data-analyze / data-out / data-lock 驱动。 -->
+                        <div
+                            class="master-flow"
+                            data-gb="master-flow"
+                            data-cap="off"
+                            data-analyze="ready"
+                            data-out="0"
+                            data-lock="0"
+                        >
+                            <!-- 01 采集(设计稿 L311-319,宽 250px) -->
                             <div
-                                class="master-flow__step"
+                                class="master-flow__step master-flow__step--cap"
                                 data-gb="master-capture-toggle"
                                 data-tour="cap"
                             >
-                                <span data-t="capture">采集</span>
-                                <div
-                                    class="sc-toggle"
-                                    data-on="0"
-                                    role="switch"
-                                    aria-checked="false"
-                                    data-t-aria="capture"
-                                    data-gb="master-capture-toggle-switch"
-                                ></div>
+                                <span class="sc-eyebrow"
+                                    >01 <span data-t="capture">采集</span></span
+                                >
+                                <div class="master-flow__row">
+                                    <div
+                                        class="sc-toggle cap-toggle"
+                                        data-on="0"
+                                        role="switch"
+                                        aria-checked="false"
+                                        tabindex="0"
+                                        data-t-aria="capture"
+                                        data-gb="master-capture-toggle-switch"
+                                    ></div>
+                                    <span
+                                        class="cap-dot"
+                                        data-gb="master-capture-dot"
+                                        aria-hidden="true"
+                                    ></span>
+                                    <!-- 四态标签(设计稿 L1908):采集 OFF / 已布防·等待播放 / 采集中 / 已离开采集范围 -->
+                                    <span
+                                        class="master-flow__label"
+                                        data-gb="master-capture-label"
+                                    >
+                                        <span
+                                            class="cap-label"
+                                            data-cap-label="off"
+                                            data-t="master.captureOff"
+                                            >采集 OFF</span
+                                        >
+                                        <span
+                                            class="cap-label"
+                                            data-cap-label="armed"
+                                            data-t="armedWaiting"
+                                            >已布防·等待播放</span
+                                        >
+                                        <span
+                                            class="cap-label"
+                                            data-cap-label="capturing"
+                                            data-t="capturing"
+                                            >采集中</span
+                                        >
+                                        <span
+                                            class="cap-label"
+                                            data-cap-label="outside"
+                                            data-t="outOfRange"
+                                            >已离开采集范围</span
+                                        >
+                                    </span>
+                                </div>
+                                <span
+                                    class="master-flow__desc"
+                                    data-t="master.step1.desc"
+                                    >开关打开后播放本范围,插件记录响度特征——这一步不写任何自动化</span
+                                >
                                 <!-- [T3x] bridge.setCaptureEnabled(on) —— 契约 §1.2 -->
                             </div>
-                            <div class="sc-divider" aria-hidden="true"></div>
+
                             <div
-                                class="master-flow__step"
+                                class="master-flow__sep"
+                                aria-hidden="true"
+                            ></div>
+
+                            <!-- 02 分析(设计稿 L321-331,宽 296px) -->
+                            <div
+                                class="master-flow__step master-flow__step--an"
                                 data-gb="master-analyze-btn"
                                 data-tour="an"
                             >
-                                <button class="sc-btn" data-t="analyze">
-                                    分析
-                                </button>
-                                <!-- 词条待立:分析点击前影响预览行「将影响 N 区段 / M 轨;K 处手动编辑将保留」(05 §2.1①,字典缺句式) -->
-                                <p
-                                    class="sc-hint"
-                                    data-gb="master-analyze-preview"
-                                    data-gb-todo="词条待立"
+                                <span class="sc-eyebrow"
+                                    >02 <span data-t="analyze">分析</span></span
                                 >
-                                    将影响 N 区段 / M 轨;K 处手动编辑将保留
-                                </p>
+                                <!-- 影响预览行两态(设计稿 L1927-1928) -->
+                                <span
+                                    class="master-flow__desc an-preview"
+                                    data-when="ok"
+                                    data-gb="master-analyze-preview"
+                                    data-t="master.step2.desc"
+                                    >将影响 {n} 区段 / {m} 轨;{k}
+                                    处手动编辑将保留</span
+                                >
+                                <span
+                                    class="master-flow__desc an-preview"
+                                    data-when="nodata"
+                                    data-gb="master-analyze-preview-nodata"
+                                    data-t="master.step2.desc.noData"
+                                    >当前范围内无采集数据——调整范围或先采集</span
+                                >
+                                <button
+                                    class="an-btn"
+                                    data-glow="1"
+                                    data-gb="master-analyze-button"
+                                >
+                                    <span
+                                        class="sc-spinner"
+                                        aria-hidden="true"
+                                    ></span>
+                                    <span
+                                        class="an-btn__label"
+                                        data-an-label="ready"
+                                        data-t="analyze"
+                                        >分析</span
+                                    >
+                                    <span
+                                        class="an-btn__label"
+                                        data-an-label="running"
+                                        data-t="master.analyzing"
+                                        >分析中…</span
+                                    >
+                                    <span
+                                        class="an-btn__label"
+                                        data-an-label="done"
+                                        data-t="master.analyzeDone"
+                                        >分析完成</span
+                                    >
+                                </button>
+                                <span
+                                    class="master-flow__sub an-coverage"
+                                    data-gb="master-analyze-coverage"
+                                    data-t="master.step2.coverage"
+                                    >范围内 {p}%
+                                    已覆盖,未覆盖部分将保持原状</span
+                                >
                                 <!-- [T3x] bridge.previewAnalyze(scope) —— 契约 §1.5 -->
                                 <!-- [T3x] bridge.analyze(scope, opts?) —— 契约 §1.6 -->
                                 <!-- [T3x] bridge.cancelAnalyze() —— 契约 §1.7 -->
                             </div>
-                            <div class="sc-divider" aria-hidden="true"></div>
+
                             <div
-                                class="master-flow__step"
+                                class="master-flow__sep"
+                                aria-hidden="true"
+                            ></div>
+
+                            <!-- 03 输出(设计稿 L333-346,flex:1) -->
+                            <div
+                                class="master-flow__step master-flow__step--out"
                                 data-gb="master-output-toggle"
                                 data-tour="out"
                             >
-                                <span data-t="output">输出</span>
-                                <div
-                                    class="sc-toggle"
-                                    data-on="0"
-                                    role="switch"
-                                    aria-checked="false"
-                                    data-t-aria="output"
-                                    data-gb="master-output-toggle-switch"
-                                ></div>
-                                <!-- 词条待立:Latch/Write 提示行「要录成自动化:在 DAW 侧对本插件参数开 Latch(推荐)或 Write;请勿使用 Touch」(05 §2.1①,字典缺完整句) -->
-                                <p class="sc-hint" data-gb-todo="词条待立">
-                                    要录成自动化:在 DAW 侧对本插件参数开
-                                    Latch(推荐)或 Write;请勿使用 Touch
-                                </p>
+                                <span class="sc-eyebrow"
+                                    >03 <span data-t="output">输出</span></span
+                                >
+                                <div class="master-flow__row">
+                                    <div
+                                        class="sc-toggle out-toggle"
+                                        data-on="0"
+                                        role="switch"
+                                        aria-checked="false"
+                                        tabindex="0"
+                                        data-t-aria="output"
+                                        data-gb="master-output-toggle-switch"
+                                    ></div>
+                                    <span
+                                        class="master-flow__label master-flow__label--out"
+                                        data-gb="master-output-label"
+                                    >
+                                        <span
+                                            class="out-label"
+                                            data-out-label="off"
+                                            data-t="followHost"
+                                            >跟随宿主</span
+                                        >
+                                        <span
+                                            class="out-label"
+                                            data-out-label="on"
+                                            data-t="engineDrive"
+                                            >引擎驱动</span
+                                        >
+                                    </span>
+                                    <span
+                                        class="out-pulse"
+                                        data-gb="master-output-pulse"
+                                        aria-hidden="true"
+                                    ></span>
+                                    <!-- 加载守卫小锁(设计稿 L341-343):输出态随工程恢复、尚未确认时出现 -->
+                                    <span
+                                        class="out-lock"
+                                        data-gb="master-output-lock"
+                                        aria-hidden="true"
+                                    >
+                                        <svg
+                                            width="13"
+                                            height="13"
+                                            viewBox="0 0 14 14"
+                                        >
+                                            <rect
+                                                x="3"
+                                                y="6.2"
+                                                width="8"
+                                                height="5.3"
+                                                rx="1.6"
+                                            ></rect>
+                                            <path
+                                                d="M4.8 6.2V4.6a2.2 2.2 0 0 1 4.4 0v1.6"
+                                            ></path>
+                                        </svg>
+                                    </span>
+                                </div>
+                                <span
+                                    class="master-flow__desc"
+                                    data-gb="master-output-latch-hint"
+                                >
+                                    <span data-t="master.step3.desc"
+                                        >要录成自动化:在 DAW
+                                        侧对本插件参数开</span
+                                    >
+                                    <strong data-t="master.step3.descStrong"
+                                        >Latch(推荐)或 Write;请勿使用
+                                        Touch</strong
+                                    >
+                                </span>
                                 <!-- [T3x] bridge.setOutputEnabled(on) —— 契约 §1.3 -->
                             </div>
                         </div>
 
-                        <!-- write 确认条(条件出现,首次 OFF→ON) -->
+                        <!-- ============ ② write 确认条(设计稿 L349-355;首次 OFF→ON 就地展开,非模态) ============ -->
                         <div
-                            class="sc-confirm"
+                            class="sc-confirm master-write-confirm"
                             data-gb="master-write-confirm"
                             hidden
                         >
-                            <span data-t="out.master.writeConfirm"
+                            <span
+                                class="master-write-confirm__text"
+                                data-t="out.master.writeConfirm"
+                                data-gb="master-write-confirm-text"
                                 >引擎驱动 {v} · 范围 {x}–{y} · 30 条车道;若 DAW
-                                侧已arm
+                                侧已 arm
                                 Latch/Write,播放本范围将覆盖该范围已有自动化;未
-                                arm 则仅试听、不落盘。</span
+                                arm 则仅试听、不落盘</span
                             >
-                            <!-- 词条待立:「知道了,开始」按钮文案(字典缺) -->
                             <button
                                 class="sc-btn sc-btn--cta"
+                                data-glow="1"
                                 data-gb="master-write-confirm-ok"
-                                data-gb-todo="词条待立"
+                                data-t="master.writeConfirm.ok"
                             >
                                 知道了,开始
                             </button>
-                            <!-- 词条待立:「撤销(关回跟随宿主)」按钮文案(字典缺) -->
                             <button
                                 class="sc-btn"
+                                data-glow="1"
                                 data-gb="master-write-confirm-undo"
-                                data-gb-todo="词条待立"
+                                data-t="master.writeConfirm.undo"
                             >
                                 撤销(关回跟随宿主)
                             </button>
                         </div>
 
-                        <!-- 四列网格 352/1fr/1fr/196 × 三行(05 §2.1 布局表) -->
+                        <!-- ============ ③ 四列网格 352 / 1fr / 1fr / 196 × 三行(设计稿 L357) ============
+         用户反馈③:全部卡片同款玻璃配方 .sc-card,尺寸只由网格坐标决定。 -->
                         <div class="master-grid" data-gb="master-grid">
-                            <!-- ⓪ 组选择器(J66,回流③;网格列1行1) -->
+                            <!-- ⓪ 组选择卡(设计稿 L359-381;col1 row1) -->
                             <div
                                 class="sc-card"
                                 data-gb="master-group-selector"
+                                data-confirm="0"
                             >
-                                <!-- 词条待立:块 eyebrow「组 · GROUP」(05 §2.1⓪,字典缺) -->
-                                <div class="sc-eyebrow" data-gb-todo="词条待立">
-                                    组 · GROUP
+                                <div class="card-head">
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="master.groupEyebrow"
+                                        >组 · GROUP</span
+                                    >
+                                    <span
+                                        class="sc-hint"
+                                        data-t="group.oneInstanceNote"
+                                        >本实例只属于一个组</span
+                                    >
                                 </div>
                                 <div
-                                    class="sc-seg"
+                                    class="group-pills"
                                     role="group"
-                                    aria-label="group"
+                                    data-t-aria="group"
+                                    aria-label="组"
                                     data-gb="master-group-seg"
                                 >
-                                    <button
-                                        class="sc-seg__item"
-                                        aria-pressed="true"
-                                        data-group="1"
-                                        data-gb="master-group-A"
-                                    >
-                                        A
-                                    </button>
-                                    <button
-                                        class="sc-seg__item"
-                                        data-group="2"
-                                        data-gb="master-group-B"
-                                        aria-pressed="false"
-                                    >
-                                        B
-                                    </button>
-                                    <button
-                                        class="sc-seg__item"
-                                        data-group="3"
-                                        data-gb="master-group-C"
-                                        aria-pressed="false"
-                                    >
-                                        C
-                                    </button>
-                                    <button
-                                        class="sc-seg__item"
-                                        data-group="4"
-                                        data-gb="master-group-D"
-                                        aria-pressed="false"
-                                    >
-                                        D
-                                    </button>
-                                    <button
-                                        class="sc-seg__item"
-                                        data-group="5"
-                                        data-gb="master-group-E"
-                                        aria-pressed="false"
-                                    >
-                                        E
-                                    </button>
-                                    <button
-                                        class="sc-seg__item"
-                                        data-group="6"
-                                        data-gb="master-group-F"
-                                        aria-pressed="false"
-                                    >
-                                        F
-                                    </button>
-                                    <button
-                                        class="sc-seg__item"
-                                        data-group="7"
-                                        data-gb="master-group-G"
-                                        aria-pressed="false"
-                                    >
-                                        G
-                                    </button>
-                                    <button
-                                        class="sc-seg__item"
-                                        data-group="8"
-                                        data-gb="master-group-H"
-                                        aria-pressed="false"
-                                    >
-                                        H
-                                    </button>
+                                    <!-- 八枚 A–H 胶囊由 app.js 生成(GROUP_IDS 单一来源,避免八段复制粘贴);
+                     每枚:aria-pressed(选中白底)/ data-online(在线绿点)/ data-pending(改组预选琥珀) -->
                                 </div>
-                                <p
-                                    class="sc-hint"
-                                    data-t="group.oneInstanceNote"
-                                >
-                                    本实例只属于一个组
-                                </p>
+                                <!-- 改组确认条(设计稿 L374-380) -->
                                 <div
-                                    class="sc-confirm"
+                                    class="sc-confirm inline-confirm"
                                     data-gb="master-group-switch-confirm"
-                                    hidden
                                 >
-                                    <span data-t="group.switchConfirm.out"
+                                    <span
+                                        class="inline-confirm__text"
+                                        data-t="group.switchConfirm.out"
                                         >切换到组 {x} 将断开本组全部 {n}
                                         条连接</span
                                     >
-                                    <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
                                     <button
                                         class="sc-btn"
+                                        data-glow="1"
                                         data-gb="master-group-switch-cancel"
-                                        data-gb-todo="词条待立"
+                                        data-t="common.cancel"
                                     >
                                         取消
                                     </button>
                                     <button
                                         class="sc-btn sc-btn--cta"
+                                        data-glow="1"
                                         data-gb="master-group-switch-confirm-btn"
                                         data-t="group.switchConfirm.primary"
                                     >
@@ -1232,31 +2838,35 @@
                                 <!-- [T3x] bridge.setGroupId(g) —— 契约 §1.4 -->
                             </div>
 
-                            <!-- ④ Width -->
+                            <!-- ④ Width：角度域大读数(设计稿 L443-453;col2 row1) -->
                             <div class="sc-card" data-gb="master-width">
-                                <div class="sc-eyebrow">
-                                    <span data-t="width">宽度</span>
-                                    <!-- 词条待立:eyebrow 后缀「· 最大角度」(05 §2.1④,字典缺) -->
-                                    <span data-gb-todo="词条待立"
-                                        >· 最大角度</span
+                                <div class="card-head">
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="master.widthEyebrow"
+                                        >WIDTH · 最大角度</span
+                                    >
+                                    <!-- 大读数 ±{θ}°,θ = round(width% × 0.6)(设计稿 L2015);默认 width=100 → ±60° -->
+                                    <span
+                                        class="card-read"
+                                        data-gb="master-width-reading"
+                                        >±60°</span
                                     >
                                 </div>
                                 <div
-                                    class="sc-mono"
-                                    style="font-size: var(--fs-150)"
-                                    data-gb="master-width-reading"
-                                >
-                                    ±0°
-                                </div>
-                                <input
-                                    type="range"
-                                    min="0"
-                                    max="150"
-                                    step="1"
-                                    value="100"
+                                    class="sc-slider"
+                                    role="slider"
+                                    aria-valuemin="0"
+                                    aria-valuemax="150"
+                                    aria-valuenow="100"
+                                    tabindex="0"
                                     data-t-aria="width"
                                     data-gb="master-width-slider"
-                                />
+                                    style="--v: 66.7%"
+                                >
+                                    <div class="sc-slider__fill"></div>
+                                    <div class="sc-slider__knob"></div>
+                                </div>
                                 <p
                                     class="sc-hint"
                                     data-t="master.widthAngleHint"
@@ -1267,27 +2877,40 @@
                                 <!-- [T3x] bridge.beginParamGesture("width") / setParam("width", v) / endParamGesture("width") —— 契约 §1.12-1.14 -->
                             </div>
 
-                            <!-- ④ MS Balance -->
+                            <!-- ④ MS Balance:与 Width 同款卡(设计稿 L454-465;col3 row1) -->
                             <div class="sc-card" data-gb="master-msbalance">
-                                <div class="sc-eyebrow" data-t="msBalance">
-                                    MS 平衡
+                                <div class="card-head">
+                                    <!-- 统筹 Wave 2 增补①:eyebrow 照设计稿走 mono 大写「MS BALANCE」,
+                                         三语同值不译(词条 master.msEyebrow) -->
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="master.msEyebrow"
+                                        >MS BALANCE</span
+                                    >
+                                    <span
+                                        class="card-read"
+                                        data-gb="master-msbalance-reading"
+                                        >0</span
+                                    >
                                 </div>
                                 <div
-                                    class="sc-mono"
-                                    style="font-size: var(--fs-150)"
-                                    data-gb="master-msbalance-reading"
-                                >
-                                    0
-                                </div>
-                                <input
-                                    type="range"
-                                    min="-100"
-                                    max="100"
-                                    step="1"
-                                    value="0"
+                                    class="sc-slider ms-track"
+                                    role="slider"
+                                    aria-valuemin="-100"
+                                    aria-valuemax="100"
+                                    aria-valuenow="0"
+                                    tabindex="0"
                                     data-t-aria="msBalance"
                                     data-gb="master-msbalance-slider"
-                                />
+                                    style="--ms-left: 50%; --ms-w: 0%; --v: 50%"
+                                >
+                                    <div
+                                        class="ms-track__mid"
+                                        aria-hidden="true"
+                                    ></div>
+                                    <div class="sc-slider__fill"></div>
+                                    <div class="sc-slider__knob"></div>
+                                </div>
                                 <p class="sc-hint" data-t="master.msHint">
                                     −100 偏 Mid / +100 偏 Side,双击回
                                     0——拖动看下方曲线
@@ -1295,104 +2918,203 @@
                                 <!-- [T3x] bridge.beginParamGesture("ms_balance") / setParam("ms_balance", v) / endParamGesture("ms_balance") —— 契约 §1.12-1.14 -->
                             </div>
 
-                            <!-- ④ Lead Select -->
-                            <div class="sc-card" data-gb="master-leadselect">
-                                <div class="sc-eyebrow" data-t="leadSelect">
-                                    主唱选择
-                                </div>
-                                <select
-                                    class="sc-select"
-                                    data-t-aria="leadSelect"
-                                    data-gb="master-leadselect-select"
+                            <!-- ④ Lead Select:同款卡(用户反馈③;设计稿 L466-473;col4 row1) -->
+                            <div
+                                class="sc-card"
+                                data-gb="master-leadselect"
+                                data-selected="0"
+                            >
+                                <!-- 统筹 Wave 2 增补①:eyebrow 照设计稿走 mono 大写「LEAD SELECT」,
+                                     三语同值不译(词条 master.leadEyebrow) -->
+                                <span
+                                    class="sc-eyebrow"
+                                    data-t="master.leadEyebrow"
+                                    >LEAD SELECT</span
                                 >
-                                    <option
-                                        value="0"
-                                        data-t="leadFollowAnalysis"
+                                <!-- 自定义下拉(用户反馈 2026-08-18:拉开的选项列表要做样式,
+                                     原生 <select> 弹层不可定制)——面板复用缩放下拉的深色玻璃配方;
+                                     选项由 tab-master renderLeadOptions 生成:0=遵循分析 + 轨 01..15 -->
+                                <div
+                                    class="lead-select-wrap"
+                                    data-gb="master-leadselect-select"
+                                    data-open="0"
+                                >
+                                    <button
+                                        type="button"
+                                        class="sc-select lead-select"
+                                        data-t-aria="leadSelect"
+                                        aria-haspopup="listbox"
+                                        aria-expanded="false"
+                                        data-gb="master-leadselect-trigger"
                                     >
-                                        遵循分析
-                                    </option>
-                                    <!-- app.js 补 15 个「轨 01..15」选项(FIFTEEN_TRACKS 撑骨架) -->
-                                </select>
+                                        <span
+                                            data-gb="master-leadselect-label"
+                                            data-t="leadFollowAnalysis"
+                                            >遵循分析</span
+                                        >
+                                    </button>
+                                    <div
+                                        class="lead-select__panel"
+                                        role="listbox"
+                                        data-t-aria="leadSelect"
+                                        data-gb="master-leadselect-panel"
+                                    ></div>
+                                </div>
                                 <p
-                                    class="sc-hint"
+                                    class="sc-hint lead-note"
+                                    data-when="off"
+                                    data-gb="master-leadselect-note-default"
+                                    data-t="master.leadSelectDefaultNote"
+                                >
+                                    0 = 遵循分析(默认)
+                                </p>
+                                <p
+                                    class="sc-hint lead-note"
+                                    data-when="on"
                                     data-gb="master-leadselect-hint"
                                     data-t="master.leadSelectHint"
-                                    hidden
                                 >
                                     该轨强制居中;音量豁免为独立选项,不随此联动
                                 </p>
                                 <!-- [T3x] bridge.beginParamGesture("lead_select") / setParam("lead_select", v) / endParamGesture("lead_select") —— 契约 §1.12-1.14 -->
                             </div>
 
-                            <!-- ④ 声像/音量分布图(回流⑥新原件) -->
-                            <!-- tabindex="0":.master-grid > * 是 overflow:auto 的滚动容器,
-                                 本卡内无可聚焦子元素,需自身可聚焦才能用键盘滚动
-                                 (axe scrollable-region-focusable)。 -->
-                            <div
-                                class="sc-card"
-                                data-gb="master-distchart"
-                                tabindex="0"
-                            >
-                                <!-- 词条待立:eyebrow「声像 / 音量分布」(05 §2.1④,字典缺) -->
-                                <div class="sc-eyebrow" data-gb-todo="词条待立">
-                                    声像 / 音量分布
+                            <!-- ④ 声像 / 音量分布图(设计稿 L536-556;col1-2 row2-3,纯 DOM + CSS 绝对定位) -->
+                            <div class="sc-card" data-gb="master-distchart">
+                                <div class="dist-head">
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="master.distEyebrow"
+                                        >声像 / 音量分布</span
+                                    >
+                                    <span
+                                        class="sc-hint"
+                                        data-t="master.distHint"
+                                        >柱高 = 音量,横位 = 声像;横线 =
+                                        立体声源张开度</span
+                                    >
                                 </div>
-                                <p class="sc-hint" data-t="master.distHint">
-                                    柱高 = 音量,横位 = 声像;横线 =
-                                    立体声源张开度
-                                </p>
-                                <!-- canvas 尺寸注释:占满网格列1-2×行2-3(约 352+1fr 宽 / 剩余高),零绘制逻辑,T31 实现 -->
-                                <canvas
-                                    class="master-distchart-canvas"
-                                    data-gb="master-distchart-canvas"
-                                    width="360"
-                                    height="200"
-                                ></canvas>
                                 <div
-                                    class="sc-mono sc-hint"
-                                    data-t="master.distAxis"
+                                    class="dist-plot"
+                                    data-gb="master-distchart-plot"
                                 >
-                                    左 L · −50 · 中 C · +50 · 右 R
+                                    <!-- canvas 锚点保留(T3x 若改走画布绘制直接接管);Wave 1 出图走下面的 DOM 层 -->
+                                    <canvas
+                                        class="dist-plot__canvas"
+                                        data-gb="master-distchart-canvas"
+                                        width="360"
+                                        height="200"
+                                        aria-hidden="true"
+                                    ></canvas>
+                                    <!-- 参考线(设计稿 L542-545):中线 50% / ±25% 竖线 / 底部基线 -->
+                                    <div
+                                        class="dist-plot__mid"
+                                        aria-hidden="true"
+                                    ></div>
+                                    <div
+                                        class="dist-plot__q dist-plot__q--l"
+                                        aria-hidden="true"
+                                    ></div>
+                                    <div
+                                        class="dist-plot__q dist-plot__q--r"
+                                        aria-hidden="true"
+                                    ></div>
+                                    <div
+                                        class="dist-plot__base"
+                                        aria-hidden="true"
+                                    ></div>
+                                    <!-- 柱体 + 立体声张开横线由 app.js 生成(设计稿 L546-551 两遍 sc-for) -->
+                                    <div
+                                        class="dist-bars"
+                                        data-gb="master-distchart-bars"
+                                        aria-hidden="true"
+                                    ></div>
+                                    <!-- 底轴五刻度(设计稿 L552-554);文本 = master.distAxis 单条词条,
+                     由 app.js 按 " · " 拆成五格(不新增词条、不硬写自由文案)。
+                     data-t-split 是本页约定的「拆格」钩子,不是 i18n.js 的 applyI18n 契约 ——
+                     applyI18n 只认 data-t / data-t-aria,故这里不能写 data-t(会被整串覆盖)。 -->
+                                    <div
+                                        class="dist-axis"
+                                        data-gb="master-distchart-axis"
+                                        data-t-split="master.distAxis"
+                                    ></div>
                                 </div>
                             </div>
 
-                            <!-- ④ 过渡时间 -->
+                            <!-- ④ 过渡时间卡 + 斜坡 SVG(设计稿 L422-441;col3 row2) -->
                             <div class="sc-card" data-gb="master-transition">
-                                <div class="sc-eyebrow" data-t="transition">
-                                    过渡
+                                <div class="card-head">
+                                    <!-- 统筹 Wave 2 增补②:eyebrow 改「过渡时间」(05 §2.1 ④ 标题与设计稿一致) -->
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="master.transitionEyebrow"
+                                        >过渡时间</span
+                                    >
+                                    <span
+                                        class="card-read"
+                                        data-gb="master-transition-reading"
+                                        >80 ms</span
+                                    >
                                 </div>
                                 <div
-                                    class="sc-mono"
-                                    data-gb="master-transition-reading"
-                                >
-                                    80 ms
-                                </div>
-                                <div class="sc-mono sc-hint" aria-hidden="true">
-                                    20 · 300 ms
-                                </div>
-                                <input
-                                    type="range"
-                                    min="20"
-                                    max="300"
-                                    step="1"
-                                    value="80"
+                                    class="sc-slider"
+                                    role="slider"
+                                    aria-valuemin="20"
+                                    aria-valuemax="300"
+                                    aria-valuenow="80"
+                                    tabindex="0"
                                     data-t-aria="transition"
                                     data-gb="master-transition-slider"
-                                />
-                                <!-- 内联斜坡示意 SVG,零绘制逻辑(设计定稿新增) -->
-                                <svg
-                                    class="master-transition-ramp"
-                                    data-gb="master-transition-ramp"
-                                    width="100%"
-                                    height="28"
-                                    viewBox="0 0 160 28"
-                                    aria-hidden="true"
+                                    style="--v: 21%"
                                 >
-                                    <path
-                                        d="M4 22h40l30-16h40l30 16h12"
-                                        stroke-width="1.4"
-                                    />
-                                </svg>
+                                    <div class="sc-slider__fill"></div>
+                                    <div class="sc-slider__knob"></div>
+                                </div>
+                                <div class="trans-row">
+                                    <span class="trans-scale" aria-hidden="true"
+                                        >20 · 300 ms</span
+                                    >
+                                    <!-- 斜坡示意(设计稿 L433-438):中轴参考线 + 折线 + 两条起止虚线。
+                     Wave 2 按 ramp ms 改折线拐点与虚线 x,使斜坡随值变形。 -->
+                                    <svg
+                                        class="master-transition-ramp"
+                                        data-gb="master-transition-ramp"
+                                        width="100%"
+                                        height="20"
+                                        viewBox="0 0 300 20"
+                                        preserveAspectRatio="none"
+                                        aria-hidden="true"
+                                    >
+                                        <line
+                                            class="ramp-axis"
+                                            x1="0"
+                                            y1="10"
+                                            x2="300"
+                                            y2="10"
+                                        ></line>
+                                        <path
+                                            class="ramp-path"
+                                            data-gb="master-transition-ramp-path"
+                                            d="M0 16 L112 16 L146 5 L300 5"
+                                        ></path>
+                                        <line
+                                            class="ramp-mark"
+                                            data-gb="master-transition-ramp-mark-a"
+                                            x1="112"
+                                            y1="1"
+                                            x2="112"
+                                            y2="19"
+                                        ></line>
+                                        <line
+                                            class="ramp-mark"
+                                            data-gb="master-transition-ramp-mark-b"
+                                            x1="146"
+                                            y1="1"
+                                            x2="146"
+                                            y2="19"
+                                        ></line>
+                                    </svg>
+                                </div>
                                 <p
                                     class="sc-hint"
                                     data-t="master.transitionHint"
@@ -1402,204 +3124,149 @@
                                 <!-- [T3x] bridge.setTransitionRamp(ms) —— 契约 §1.20 -->
                             </div>
 
-                            <!-- ② Range 选择 -->
-                            <div class="sc-card" data-gb="master-range">
-                                <div class="sc-eyebrow" data-t="range">
-                                    范围
-                                </div>
+                            <!-- ② Range 窄列:三档三态(设计稿 L384-420;col4 row2) -->
+                            <div
+                                class="sc-card"
+                                data-gb="master-range"
+                                data-range="follow"
+                                data-loop-missing="0"
+                            >
+                                <span
+                                    class="sc-eyebrow"
+                                    data-t="master.rangeEyebrow"
+                                    >RANGE · 范围</span
+                                >
                                 <div
-                                    class="sc-seg sc-seg--sm"
+                                    class="range-seg"
                                     role="group"
+                                    data-t-aria="range"
+                                    aria-label="范围"
                                     data-gb="master-range-seg"
                                 >
                                     <button
-                                        class="sc-seg__item"
+                                        class="range-seg__item"
                                         aria-pressed="true"
+                                        data-range-mode="follow"
+                                        data-gb="master-range-seg-follow"
                                         data-t="range.followShort"
                                     >
                                         全曲
                                     </button>
-                                    <!-- 05 §2.1② 分层规则①「能力级缺失」:宿主从不提供 loop 字段(04 §2.6 降级矩阵判定)
-                                         → 本档 disabled + tooltip「宿主未提供循环区」,档位仍占位显示、绝不隐藏。
-                                         灰模只落 tooltip 占位与锚点,disabled 的判定与切换留 T31。 -->
-                                    <!-- 词条待立:「循环区」档能力级缺失 tooltip「宿主未提供循环区」(05 §2.1②,字典缺) -->
+                                    <!-- 05 §2.1② 分层规则①「能力级缺失」:宿主从不提供 loop 字段 → 本档 disabled
+                     + tooltip「宿主未提供循环区」,档位仍占位显示、绝不隐藏。 -->
                                     <button
-                                        class="sc-seg__item"
-                                        data-t="loopRegion"
-                                        data-gb="master-range-seg-loop"
-                                        title="宿主未提供循环区"
-                                        data-gb-todo="词条待立"
+                                        class="range-seg__item"
                                         aria-pressed="false"
+                                        data-range-mode="loop"
+                                        data-disabled="0"
+                                        data-gb="master-range-seg-loop"
+                                        data-t="loopRegion"
                                     >
                                         循环区
                                     </button>
-                                    <!-- 词条待立:模式段选第三档「手动」(05 §2.1②,字典缺;range/follow/loopRegion 已有,manual 无对应词) -->
                                     <button
-                                        class="sc-seg__item"
-                                        data-gb="master-range-seg-manual"
-                                        data-gb-todo="词条待立"
+                                        class="range-seg__item"
                                         aria-pressed="false"
+                                        data-range-mode="manual"
+                                        data-gb="master-range-seg-manual"
+                                        data-t="range.manual"
                                     >
                                         手动
                                     </button>
                                 </div>
-                                <p
-                                    class="sc-hint"
-                                    data-t="master.rangeFollowHint"
-                                >
-                                    跟随播放,自动扩展范围。已分析区域共 {n} 段 ·
-                                    合计 {t}
-                                </p>
-                                <!-- 05 §2.1② 分层规则②「会话内瞬态缺失」(宿主提供 loop 但当前 kCycleValid 暂缺):
-                                     保持最后有效值 + 本行内提示,不回退档位、不清空起止。 -->
-                                <!-- 词条待立:「循环区已失效,沿用上次范围」行内提示(05 §2.1②,字典缺) -->
-                                <p
-                                    class="sc-hint"
-                                    data-gb="master-range-loop-stale-hint"
-                                    data-gb-todo="词条待立"
-                                    hidden
-                                >
-                                    循环区已失效,沿用上次范围
-                                </p>
-                                <!-- manual 档控件组(05 §2.1②:起/终各一组「小节+拍+tick」与「mm:ss.mmm」
-                                     双向联动输入(04 §2.3;双向校验 start<end)+「设为播放头」两钮 +「±4 小节」步进钮)。
-                                     默认 hidden —— 灰模档位停在 follow(默认档),T31 按 range.mode 切显隐;
-                                     ppq 不可用时按 04 §2.6 降级矩阵隐藏「小节+拍+tick」输入组(不是隐藏本面板)。 -->
-                                <div
-                                    class="master-range-manual"
-                                    data-gb="master-range-manual"
-                                    hidden
-                                >
-                                    <div class="master-range-manual__row">
-                                        <!-- 词条待立:manual 档起点行标「起」(05 §2.1②,字典缺) -->
+                                <div class="range-body">
+                                    <!-- 全曲跟随态(设计稿 L394-396) -->
+                                    <p
+                                        class="range-pane"
+                                        data-pane="follow"
+                                        data-gb="master-range-follow-hint"
+                                        data-t="master.rangeFollowHint"
+                                    >
+                                        跟随播放,自动扩展范围。已分析区域共 {n}
+                                        段 · 合计 {t}
+                                    </p>
+                                    <!-- 会话内瞬态缺失(设计稿 L413-415;05 §2.1② 分层规则②) -->
+                                    <p
+                                        class="range-pane"
+                                        data-pane="loop"
+                                        data-gb="master-range-loop-stale-hint"
+                                        data-t="master.rangeLoopStale"
+                                    >
+                                        循环区已失效,沿用上次范围
+                                    </p>
+                                    <!-- 能力级缺失(设计稿 L416-418) -->
+                                    <p
+                                        class="range-pane"
+                                        data-pane="loopMissing"
+                                        data-gb="master-range-loop-missing-hint"
+                                        data-t="master.rangeLoopMissing"
+                                    >
+                                        宿主未提供循环区——档位保留但不可选
+                                    </p>
+                                    <!-- 手动档控件组(设计稿 L397-412) -->
+                                    <div
+                                        class="range-pane range-manual"
+                                        data-pane="manual"
+                                        data-gb="master-range-manual"
+                                    >
+                                        <div class="range-manual__row">
+                                            <input
+                                                class="range-manual__tc"
+                                                type="text"
+                                                value="00:00.000"
+                                                data-t-aria="master.rangeStart"
+                                                data-gb="master-range-start-bars"
+                                            />
+                                            <span
+                                                class="range-manual__arrow"
+                                                aria-hidden="true"
+                                                >→</span
+                                            >
+                                            <input
+                                                class="range-manual__tc"
+                                                type="text"
+                                                value="00:00.000"
+                                                data-t-aria="master.rangeEnd"
+                                                data-gb="master-range-end-bars"
+                                            />
+                                        </div>
+                                        <!-- 「小节+拍+tick」↔「mm:ss.mmm」双向联动(04 §2.3);换算行(设计稿 L404)。
+                                             [T31 Wave 2 偏差 A17] 桥面只收秒(契约 §1.8),而**宿主 tempo map 没有任何桥入口**,
+                                             小节↔秒换算做不出来 —— 故本波把**可编辑侧**改成桥面单位 mm:ss.mmm,
+                                             换算行显示同一区间的另一种写法;拿到 tempo map(T33)后再把小节侧接回来。 -->
                                         <span
-                                            class="sc-eyebrow"
-                                            data-gb-todo="词条待立"
-                                            >起</span
+                                            class="range-manual__conv sc-num"
+                                            data-gb="master-range-timecode"
+                                            >01:12.400 → 01:47.900</span
                                         >
-                                        <!-- 词条待立:「小节+拍+tick」三段输入组标(05 §2.1②/04 §2.3,字典缺) -->
+                                        <div class="range-manual__row">
+                                            <button
+                                                class="range-manual__btn range-manual__btn--wide"
+                                                data-gb="master-range-setplayhead"
+                                                data-t="master.setToPlayhead"
+                                            >
+                                                设为播放头
+                                            </button>
+                                            <button
+                                                class="range-manual__btn range-manual__btn--step"
+                                                data-gb="master-range-step-minus4"
+                                            >
+                                                −4
+                                            </button>
+                                            <button
+                                                class="range-manual__btn range-manual__btn--step"
+                                                data-gb="master-range-step-plus4"
+                                            >
+                                                +4
+                                            </button>
+                                        </div>
+                                        <!-- tempo 表未覆盖区域:小节值为估算态(斜体/半透明,设计稿 L410) -->
                                         <span
-                                            class="master-range-manual__bars"
-                                            data-gb="master-range-start-bars"
-                                            data-gb-todo="词条待立"
+                                            class="range-manual__note"
+                                            data-t="master.barsEstimateNote"
+                                            >小节为估算值,播放该区域后精确</span
                                         >
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                step="1"
-                                                value="1"
-                                                aria-label="起点小节"
-                                            />
-                                            <!-- a11y 占位名,T31 换词条 -->
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                step="1"
-                                                value="1"
-                                                aria-label="起点拍"
-                                            />
-                                            <!-- a11y 占位名,T31 换词条 -->
-                                            <input
-                                                type="number"
-                                                min="0"
-                                                step="1"
-                                                value="0"
-                                                aria-label="起点 tick"
-                                            />
-                                            <!-- a11y 占位名,T31 换词条 -->
-                                        </span>
-                                        <input
-                                            class="sc-mono"
-                                            type="text"
-                                            data-gb="master-range-start-time"
-                                            value="00:00.000"
-                                            aria-label="起点时间码"
-                                        />
-                                        <!-- a11y 占位名,T31 换词条 -->
-                                        <!-- 词条待立:「设为播放头」按钮文案(05 §2.1②,字典缺) -->
-                                        <button
-                                            class="sc-btn"
-                                            data-gb="master-range-start-setplayhead"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            设为播放头
-                                        </button>
                                     </div>
-                                    <div class="master-range-manual__row">
-                                        <!-- 词条待立:manual 档终点行标「终」(05 §2.1②,字典缺) -->
-                                        <span
-                                            class="sc-eyebrow"
-                                            data-gb-todo="词条待立"
-                                            >终</span
-                                        >
-                                        <!-- 词条待立:「小节+拍+tick」三段输入组标(05 §2.1②/04 §2.3,字典缺) -->
-                                        <span
-                                            class="master-range-manual__bars"
-                                            data-gb="master-range-end-bars"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                step="1"
-                                                value="1"
-                                                aria-label="终点小节"
-                                            />
-                                            <!-- a11y 占位名,T31 换词条 -->
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                step="1"
-                                                value="1"
-                                                aria-label="终点拍"
-                                            />
-                                            <!-- a11y 占位名,T31 换词条 -->
-                                            <input
-                                                type="number"
-                                                min="0"
-                                                step="1"
-                                                value="0"
-                                                aria-label="终点 tick"
-                                            />
-                                            <!-- a11y 占位名,T31 换词条 -->
-                                        </span>
-                                        <input
-                                            class="sc-mono"
-                                            type="text"
-                                            data-gb="master-range-end-time"
-                                            value="00:00.000"
-                                            aria-label="终点时间码"
-                                        />
-                                        <!-- a11y 占位名,T31 换词条 -->
-                                        <!-- 词条待立:「设为播放头」按钮文案(05 §2.1②,字典缺) -->
-                                        <button
-                                            class="sc-btn"
-                                            data-gb="master-range-end-setplayhead"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            设为播放头
-                                        </button>
-                                    </div>
-                                    <div class="master-range-manual__row">
-                                        <!-- 词条待立:「±4 小节」步进钮文案(05 §2.1②,字典缺) -->
-                                        <button
-                                            class="sc-btn"
-                                            data-gb="master-range-step-minus4"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            −4 小节
-                                        </button>
-                                        <!-- 词条待立:「±4 小节」步进钮文案(05 §2.1②,字典缺) -->
-                                        <button
-                                            class="sc-btn"
-                                            data-gb="master-range-step-plus4"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            +4 小节
-                                        </button>
-                                    </div>
-                                    <!-- tempo 表未覆盖区域小节值显示为估算态(斜体/半透明 + tooltip「播放该区域后精确」)——
-                                         视觉态与双向联动/start<end 校验一律留 T31,灰模零业务逻辑。 -->
                                 </div>
                                 <span
                                     class="sc-badge--amber"
@@ -1612,36 +3279,145 @@
                                 <!-- [T3x] bridge.setRange(mode, startS, endS) —— 契约 §1.8 -->
                             </div>
 
-                            <!-- ④ pan 角度域增益曲线编辑器 -->
-                            <!-- tabindex="0":同上,滚动容器内无可聚焦子元素 -->
+                            <!-- ④ 角度域增益曲线编辑器:深色雕刻窗(设计稿 L475-534;col3-4 row3)
+             本波只做外框 / 图例 / 网格 / 刻度 / 空态;窗内曲线数学与控制点交互归 T34。 -->
                             <div
                                 class="sc-dark"
                                 data-gb="master-pancurve"
-                                tabindex="0"
+                                data-empty="1"
                             >
-                                <!-- 词条待立:窗内 eyebrow「角度域曲线 · ±12 dB」(05 §2.1④,字典缺) -->
-                                <div
-                                    class="sc-eyebrow sc-eyebrow--dark"
-                                    data-gb-todo="词条待立"
-                                >
-                                    角度域曲线 · ±12 dB
+                                <div class="curve-head">
+                                    <span
+                                        class="sc-eyebrow sc-eyebrow--dark"
+                                        data-t="master.curveEyebrow"
+                                        >角度域曲线 · ±12 dB</span
+                                    >
+                                    <!-- J71④:图例只保留一项(稿内「声像增益 / 音量补偿」两项为旧口径,不采) -->
+                                    <span
+                                        class="curve-legend"
+                                        data-gb="master-pancurve-legend"
+                                    >
+                                        <span
+                                            class="curve-legend__swatch"
+                                            aria-hidden="true"
+                                        ></span>
+                                        <span
+                                            class="curve-legend__label"
+                                            data-t="master.curveLegendMs"
+                                            >MS 等效增益</span
+                                        >
+                                    </span>
                                 </div>
-                                <!-- canvas 尺寸注释:占满网格列3-4×行3(1fr+196px 宽 / 剩余高),零绘制逻辑,T31 实现 -->
-                                <canvas
-                                    class="master-pancurve-canvas"
-                                    data-gb="master-pancurve-canvas"
-                                    width="420"
-                                    height="180"
-                                ></canvas>
-                                <!-- 词条待立:空态中央淡字「双击添加控制点」(05 §2.1④,字典缺) -->
-                                <p
-                                    class="sc-hint"
+                                <div class="curve-plot">
+                                    <svg
+                                        viewBox="0 0 660 214"
+                                        preserveAspectRatio="none"
+                                        aria-hidden="true"
+                                    >
+                                        <!-- 5 条水平 + 5 条竖直网格线,中线加强(设计稿 L484-491) -->
+                                        <g class="curve-grid">
+                                            <line
+                                                x1="0"
+                                                y1="35"
+                                                x2="660"
+                                                y2="35"
+                                            ></line>
+                                            <line
+                                                x1="0"
+                                                y1="72"
+                                                x2="660"
+                                                y2="72"
+                                            ></line>
+                                            <line
+                                                class="is-axis"
+                                                x1="0"
+                                                y1="109"
+                                                x2="660"
+                                                y2="109"
+                                            ></line>
+                                            <line
+                                                x1="0"
+                                                y1="146"
+                                                x2="660"
+                                                y2="146"
+                                            ></line>
+                                            <line
+                                                x1="0"
+                                                y1="183"
+                                                x2="660"
+                                                y2="183"
+                                            ></line>
+                                            <line
+                                                x1="0"
+                                                y1="0"
+                                                x2="0"
+                                                y2="214"
+                                            ></line>
+                                            <line
+                                                x1="165"
+                                                y1="0"
+                                                x2="165"
+                                                y2="214"
+                                            ></line>
+                                            <line
+                                                class="is-axis"
+                                                x1="330"
+                                                y1="0"
+                                                x2="330"
+                                                y2="214"
+                                            ></line>
+                                            <line
+                                                x1="495"
+                                                y1="0"
+                                                x2="495"
+                                                y2="214"
+                                            ></line>
+                                            <line
+                                                x1="660"
+                                                y1="0"
+                                                x2="660"
+                                                y2="214"
+                                            ></line>
+                                        </g>
+                                        <!-- 叠加线:Wave 1 为空态退化直线(设计稿 L2012 curveEmpty 分支 M0 109 L660 109)。
+                         Wave 2 只画 J68 单线静态近似;真算法(gainAt/volAt/控制点)归 T34。 -->
+                                        <path
+                                            class="curve-path"
+                                            data-gb="master-pancurve-path"
+                                            d="M0 109 L660 109"
+                                        ></path>
+                                    </svg>
+                                    <!-- canvas 锚点保留:T34 的曲线绘制与命中测试直接接管本层 -->
+                                    <canvas
+                                        data-gb="master-pancurve-canvas"
+                                        width="660"
+                                        height="214"
+                                        aria-hidden="true"
+                                    ></canvas>
+                                </div>
+                                <!-- Y 轴刻度(设计稿 L496-498)与 X 轴刻度(L499-501,五格由 app.js 按词条拆分) -->
+                                <div
+                                    class="curve-yaxis sc-num"
+                                    aria-hidden="true"
+                                >
+                                    <span>+12</span><span>+6</span><span>0</span
+                                    ><span>−6</span><span>−12</span>
+                                </div>
+                                <div
+                                    class="curve-xaxis sc-num"
+                                    data-gb="master-pancurve-axis"
+                                    data-t-split="master.curveAxisX"
+                                    aria-hidden="true"
+                                ></div>
+                                <!-- 空态(设计稿 L502-504) -->
+                                <div
+                                    class="curve-empty"
                                     data-gb="master-pancurve-emptyhint"
-                                    data-gb-todo="词条待立"
+                                    data-t="master.curveEmptyHint"
                                 >
                                     双击添加控制点
-                                </p>
-                                <!-- [T3x] bridge.setPanCurve(points) —— 契约 §1.17 -->
+                                </div>
+                                <!-- [T3x] bridge.setPanCurve(points) —— 契约 §1.17(控制点编辑归 T34) -->
                             </div>
                         </div>
                     </section>
@@ -2569,42 +4345,11 @@
                                         data-t-aria="scale"
                                         data-gb="settings-scale-select"
                                     ></select>
-                                    <!-- 10 秒确认防呆(机制同 Bridge,05 §1.2) -->
-                                    <div
-                                        class="sc-scrim"
-                                        data-gb="settings-scale-confirm"
-                                        hidden
-                                    >
-                                        <div class="sc-modal">
-                                            <!-- 词条待立:缩放确认倒计时文案(05 §1.2,字典缺) -->
-                                            <p
-                                                class="sc-modal__body"
-                                                data-gb-todo="词条待立"
-                                            >
-                                                缩放已应用,<span
-                                                    class="sc-mono"
-                                                    data-gb="settings-scale-confirm-countdown"
-                                                    >10</span
-                                                >s 后回退
-                                            </p>
-                                            <!-- 词条待立:缩放确认「撤销」按钮(字典缺) -->
-                                            <button
-                                                class="sc-btn--dark"
-                                                data-gb="settings-scale-confirm-revert"
-                                                data-gb-todo="词条待立"
-                                            >
-                                                撤销
-                                            </button>
-                                            <!-- 词条待立:缩放确认「保持」按钮(字典缺) -->
-                                            <button
-                                                class="sc-btn--cta"
-                                                data-gb="settings-scale-confirm-keep"
-                                                data-gb-todo="词条待立"
-                                            >
-                                                保持
-                                            </button>
-                                        </div>
-                                    </div>
+                                    <!-- 10 秒确认防呆(机制同 Bridge,05 §1.2)的 scrim 已上提到
+                                         **卡片层** `data-gb="scale-confirm"`(见文件末,guide-overlay 旁):
+                                         footer 缩放下拉与本 select 是同一台状态机的两个入口,确认框只能有一个;
+                                         留在 .settings-side 里时它随 Tab4 面板一起隐藏,从 footer 改档就看不见倒计时。
+                                         [T31 Wave 2] setUiScale / commitUiScale 的接线在 app.js。 -->
                                     <!-- [T3x] bridge.setUiScale(f) —— 契约 §1.28 -->
                                     <!-- [T3x] bridge.commitUiScale() —— 契约 §1.29 -->
                                 </div>
@@ -2705,17 +4450,38 @@
                 </main>
 
                 <!-- ============================== Footer(05 §1.1) ============================== -->
-                <footer data-gb="footer">
+                <!-- 设计稿 L1015-1022:提示行 + 缩放下拉 + 版本号,上缘 1px 分隔。
+     data-mode="default|print|printDone|follow" 选中三条提示行之一(设计稿 footerMap L1837-1842);
+     print/follow 两态走 mono 10.5px + .1em 字距(设计稿 L2198-2203)。 -->
+                <footer data-gb="footer" data-mode="default">
                     <span
-                        class="sc-hint footer-hint"
+                        class="footer-hint"
                         id="footer-hint"
                         data-gb="footer-hint"
+                        data-t="footer.defaultHint"
                     >
-                        SCVB Output greybox
+                        采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围
+                    </span>
+                    <!-- 打印中(引擎驱动走带):mono 态;follow 档 Wave 2 换成 footer.printing.follow -->
+                    <span
+                        class="footer-hint footer-hint--mono"
+                        data-gb="footer-print-status"
+                        data-t="footer.printing"
+                    >
+                        引擎驱动 {v} · {x}–{y} 小节
+                    </span>
+                    <!-- 打印结束:非 mono 长句 -->
+                    <span
+                        class="footer-hint"
+                        data-gb="footer-print-done"
+                        data-t="footer.printDone"
+                    >
+                        本次打印覆盖
+                        {x}–{y};若在录制自动化,建议切回跟随宿主试听核对
                     </span>
                     <!-- 重采集布防 badge③(05 §2.3「重采集选区」行 ③ / §2.1① 输出开关行):
-                         输出开关为 ON 或在布防期被打开 → footer 追加琥珀警告。
-                         数据源 scvb.state.recapture + 输出开关态,显隐留 T31。 -->
+         输出开关为 ON 或在布防期被打开 → footer 追加琥珀警告。
+         数据源 scvb.state.recapture + 输出开关态,显隐留 Wave 2。 -->
                     <span
                         class="sc-badge--amber"
                         data-gb="footer-recapture-warn"
@@ -2725,14 +4491,42 @@
                         输出引擎仍按全局范围工作,与本次重采集选区无关
                     </span>
                     <div class="footer-right" data-gb="footer-right">
-                        <!-- 档位 <option> 由 app.js 按 DESIGN.output.presets 生成(05 §1.2 常量真源
-                             = web/shared/design-box.js;不在 HTML 里写死第二真源) -->
-                        <select
-                            class="sc-select"
-                            data-t-aria="scale"
+                        <!-- 缩放下拉(设计稿 L1017-1020 触发钮 + L1026-1033 深色浮层)。
+             档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2),
+             7 个档位项由 app.js 生成;超屏档位 data-over="1" 灰掉不隐藏,当前档 data-current="1"。 -->
+                        <div
+                            class="footer-scale"
                             data-gb="footer-scale-select"
-                        ></select>
-                        <span class="sc-mono" data-gb="footer-version"
+                            data-open="0"
+                        >
+                            <button
+                                class="footer-scale__trigger"
+                                data-glow="1"
+                                data-t-aria="scale"
+                                aria-haspopup="listbox"
+                                aria-expanded="false"
+                                data-gb="footer-scale-trigger"
+                            >
+                                <span data-gb="footer-scale-label">100%</span>
+                                <svg
+                                    width="10"
+                                    height="10"
+                                    viewBox="0 0 12 12"
+                                    aria-hidden="true"
+                                >
+                                    <path d="M3 4.8 6 7.8l3-3"></path>
+                                </svg>
+                            </button>
+                            <div
+                                class="footer-scale__panel"
+                                role="listbox"
+                                data-t-aria="scale"
+                                data-gb="footer-scale-panel"
+                            ></div>
+                        </div>
+                        <!-- [T3x] bridge.setUiScale(f) —— 契约 §1.28;bridge.commitUiScale() —— §1.29
+             (10 秒防呆倒计时 / 取消 / 超时回退 / 超屏档位灰显 tooltip 全在 Wave 2) -->
+                        <span class="footer-version" data-gb="footer-version"
                             >v0.1.0</span
                         >
                     </div>
@@ -2746,10 +4540,10 @@
                 >
                     <div class="sc-toast" data-gb="toast-projectCopy" hidden>
                         <span class="sc-toast__dot"></span>
-                        <!-- 词条待立:toast①「检测到工程副本,已创建独立采集数据副本」(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">
-                            检测到工程副本,已创建独立采集数据副本
-                        </span>
+                        <!-- toast①(05 §2.0 逐字;词条 toast.projectCopy 为 T31 Wave 2 新增,04 §5.6) -->
+                        <span data-t="toast.projectCopy"
+                            >检测到工程副本,已创建独立采集数据副本</span
+                        >
                     </div>
                     <div
                         class="sc-toast"
@@ -2757,11 +4551,11 @@
                         hidden
                     >
                         <span class="sc-toast__dot"></span>
-                        <!-- 词条待立:toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">
-                            采集数据已超过
-                            8MB,已转存外部文件——发给他人需重新采集
-                        </span>
+                        <!-- toast②(05 §2.0 逐字;词条 toast.sidecarSwitched 为 T31 Wave 2 新增,04 §5.4) -->
+                        <span data-t="toast.sidecarSwitched"
+                            >采集数据已超过
+                            8MB,已转存外部文件——发给他人需重新采集</span
+                        >
                     </div>
                     <div class="sc-toast" data-gb="toast-recaptured" hidden>
                         <span class="sc-toast__dot"></span>
@@ -2787,6 +4581,42 @@
                     </div>
                 </div>
 
+                <!-- ============================== 缩放 10 秒防呆确认(05 §1.2) ==============================
+                     卡片层单例:footer 缩放下拉与设置页 select 共用本框(两个入口一台状态机)。
+                     倒计时归零 = 超时回退,与「撤销」同路径;「保持」才调 commitUiScale()(契约 §1.29)。 -->
+                <div class="sc-scrim" data-gb="scale-confirm" hidden>
+                    <div class="sc-modal">
+                        <!-- 正文词条 scale.confirmBody 带 {s}(剩余秒数)占位符,**分三格填**:
+                             applyI18n 写的是整串 textContent,直接挂 data-t 会把中间的倒计时
+                             span 一起抹掉;故由 app.js renderScaleConfirm() 按 {s} 切成
+                             前缀 / 数字 / 后缀三段写入(切语言与每一拍倒计时都重写)。 -->
+                        <p class="sc-modal__body" data-gb="scale-confirm-body">
+                            <span data-gb="scale-confirm-body-pre"></span
+                            ><span
+                                class="sc-mono"
+                                data-gb="scale-confirm-countdown"
+                                >10</span
+                            ><span data-gb="scale-confirm-body-post"></span>
+                        </p>
+                        <!-- 「取消」= 回退(05 §1.2 逐字「取消/超时/关窗都回退」),复用 common.cancel;
+                             锚点名 scale-confirm-revert 不改(deviations §F 已登记)。 -->
+                        <button
+                            class="sc-btn sc-btn--dark"
+                            data-gb="scale-confirm-revert"
+                            data-t="common.cancel"
+                        >
+                            取消
+                        </button>
+                        <button
+                            class="sc-btn sc-btn--cta"
+                            data-gb="scale-confirm-keep"
+                            data-t="scale.keep"
+                        >
+                            保持
+                        </button>
+                    </div>
+                </div>
+
                 <!-- ============================== 首次启动引导页(overlay,05 §2.0) ============================== -->
                 <div
                     class="sc-scrim"
@@ -2802,12 +4632,19 @@
                         <!-- 九条硬约束正文 = guide.rule1..9,由 scripts/gen-hard-rules.mjs 从
                              docs/USER_GUIDE.zh-CN.md#硬约束 生成写入 i18n.js(T31 落地前字典无此 key,
                              故此处不用 data-t,仅占位;05 §0.1/§5 明令禁止手抄)。 -->
-                        <!-- 词条待立:guide.rule1..9(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成,禁止手抄/禁用 data-t) -->
-                        <ol
-                            data-gb="guide-overlay-rules"
+                        <!-- 词条待立:guide.rule1..9(生成物,T39b 由 gen-hard-rules.mjs 写入;当前字典未生成,禁止手抄/禁用 data-t)
+                             app.js 的 renderGuideRules() 在字典里有 guide.rule1..9 时逐条 <li> 渲染,
+                             缺失时改渲染下面那条醒目占位注记(并把 <ol> 留空)。 -->
+                        <ol data-gb="guide-overlay-rules"></ol>
+                        <p
+                            class="guide-overlay__missing"
+                            data-gb="guide-overlay-rules-missing"
                             data-gb-todo="词条待立"
-                        ></ol>
-                        <label>
+                            hidden
+                        >
+                            九条红字待 gen-hard-rules 生成(T39b)
+                        </p>
+                        <label class="guide-overlay__dontshow">
                             <input
                                 type="checkbox"
                                 data-gb="guide-overlay-dontshow"
@@ -2819,7 +4656,7 @@
                             data-gb="guide-overlay-start"
                             data-t="guide.start"
                         ></button>
-                        <!-- [T3x] bridge.setGuideSeen(true, true) —— 契约 §1.32(「不再显示」勾选落盘) -->
+                        <!-- [T3x] bridge.setGuideSeen(true, true) —— 契约 §1.32(「不再显示」勾选落盘;app.js 已接线) -->
                     </div>
                 </div>
 
