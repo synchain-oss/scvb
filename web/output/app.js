@@ -58,7 +58,8 @@ try {
     console.warn("SCVB Output:createBridge 未接上后端 —— " + e.message);
     const hint = document.getElementById("footer-hint");
     if (hint) {
-        hint.textContent = "未接后端——请经 web-preview 入口预览(T28)";
+        // dev 兜底(仅无后端直开浏览器可见):不入词条,用英文避免硬编码中文
+        hint.textContent = "No backend attached — open via web-preview (T28)";
     }
 }
 
@@ -670,7 +671,9 @@ verUi.chips.forEach((chip, i) => {
 
 function updateRenameCount() {
     if (!verUi.renameCount || !verUi.renameInput) return;
-    verUi.renameCount.textContent = verUi.renameInput.value.length + "/16";
+    // 码点计数(与 §1.10 C++ 截断口径一致;.length 是 UTF-16 码元,增补平面字符会虚高)
+    verUi.renameCount.textContent =
+        Array.from(verUi.renameInput.value).length + "/16";
 }
 
 function endRename(commit) {

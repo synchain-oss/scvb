@@ -1042,6 +1042,12 @@ export function createTabMaster(opts) {
         else if (now() < local.analyzeFlashUntil) an = "done";
         else if (isWriteBlocked() || (!p && totals.n === 0)) an = "disabled";
         el.flow.setAttribute("data-analyze", an);
+        // disabled 的原因面分离(PR #52 bot 建议 4):写权限缺失(只读/无时间线)时
+        // 不能亮「当前范围内无采集数据」——真实原因由横幅②/⑥承载,原因句只留给 nodata。
+        el.flow.setAttribute(
+            "data-analyze-reason",
+            an === "disabled" && isWriteBlocked() ? "blocked" : "nodata",
+        );
 
         for (const sw of [el.capSwitch, el.outSwitch]) {
             if (sw)

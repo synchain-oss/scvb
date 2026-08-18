@@ -17,7 +17,7 @@ $needle = "$tag" + ': ' + $LicenseId
 
 # docs/design/**:设计稿归档物(J69-J73,与 claude.ai/design 项目字节级一致、sha256 备案),
 # 加 SPDX 头会破坏字节一致性 —— 按 third_party 同性质排除(REUSE.toml 兜底覆盖许可)。
-$files = @(git ls-files '*.cpp' '*.h' '*.hpp' '*.cc' '*.js' |
+$files = @(git ls-files '*.cpp' '*.h' '*.hpp' '*.cc' '*.js' '*.mjs' |
   Where-Object { $_ -notmatch '^web/js/juce/' -and $_ -notmatch '^third_party/' -and
     $_ -notmatch '^docs/design/' })
 

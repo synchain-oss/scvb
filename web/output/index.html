@@ -731,9 +731,13 @@
             .master-flow:not([data-analyze="running"]) .an-btn .sc-spinner {
                 display: none;
             }
-            /* 影响预览行两态:disabled 走「无采集数据」原因句,其余走影响预览 */
+            /* 影响预览行两态:disabled 走「无采集数据」原因句,其余走影响预览。
+               原因句只属 data-analyze-reason="nodata";写权限缺失(只读/无时间线,
+               reason="blocked")时整行不亮——真实原因由横幅②/⑥承载,避免张冠李戴。 */
             .master-flow[data-analyze="disabled"] .an-preview[data-when="ok"],
             .master-flow:not([data-analyze="disabled"])
+                .an-preview[data-when="nodata"],
+            .master-flow[data-analyze-reason="blocked"]
                 .an-preview[data-when="nodata"],
             .master-flow[data-analyze="disabled"] .an-coverage {
                 display: none;
@@ -2278,13 +2282,18 @@
      滑块位置 = 3px + (tab-1)×136px,由 app.js 写 --tab-i(见页内 #tabs-slate 规则)。 -->
                 <!-- 外层 nav 供 landmark(axe region);role=tablist 会顶掉 nav 的
                      landmark 角色,所以 tablist 落在内层 div 上,nav 自身不参与布局。 -->
-                <nav class="sc-tabs-wrap" aria-label="tabs">
+                <nav
+                    class="sc-tabs-wrap"
+                    aria-label="标签页"
+                    data-t-aria="tabs"
+                >
                     <div
                         class="sc-tabs"
                         id="tabbar"
                         data-gb="tabnav"
                         role="tablist"
-                        aria-label="tabs"
+                        aria-label="标签页"
+                        data-t-aria="tabs"
                     >
                         <div
                             class="sc-tabs__slate"
