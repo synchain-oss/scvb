@@ -26,6 +26,7 @@ using scvb::input::bridge::buildInputSnapshot;
 using scvb::input::bridge::buildPriorityResponse;
 using scvb::input::bridge::buildStatePayload;
 using scvb::input::bridge::claimEdgeConsumed;
+using scvb::input::bridge::claimErrorEdgeChanged;
 using scvb::input::bridge::claimValue;
 using scvb::input::bridge::ConfigSnapshot;
 using scvb::input::bridge::conflictResponse;
@@ -149,6 +150,21 @@ TEST_CASE("T30 claimEdgeConsumed:隐藏 + error 边沿不消费,恢复可见消�
     // 有 error 边沿(needsError=true):隐藏 → 不消费(基线不推进);恢复可见 → 消费(error 重发)。
     CHECK_FALSE(claimEdgeConsumed(true, false));
     CHECK(claimEdgeConsumed(true, true));
+}
+
+TEST_CASE("T30 claimErrorEdgeChanged:五分量边沿键任一变化即重发(PR#54 R6)")
+{
+    // 同 claim/channel 换组 → 有边沿(重发,groupId 新值)。
+    CHECK(claimErrorEdgeChanged("conflict", 3, 2, 48000, 48000, "conflict", 3, 1, 48000, 48000));
+
+    // 同 srMismatch 改 outputSr → 有边沿(重发,outputSr 新值)。
+    CHECK(claimErrorEdgeChanged("srMismatch", 3, 1, 48000, 48000, "srMismatch", 3, 1, 48000, 44100));
+
+    // 同 srMismatch 改 inputSr → 有边沿。
+    CHECK(claimErrorEdgeChanged("srMismatch", 3, 1, 44100, 48000, "srMismatch", 3, 1, 48000, 48000));
+
+    // 五分量全同 → 无边沿(不重发)。
+    CHECK_FALSE(claimErrorEdgeChanged("conflict", 3, 1, 48000, 48000, "conflict", 3, 1, 48000, 48000));
 }
 
 TEST_CASE("T30 parseIntArg:类型不符/越界 → 空(回 badArg);数值截断(§0.8.2)")

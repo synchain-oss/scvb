@@ -51,6 +51,13 @@ bool advanceEmitCache(const juce::String& json, juce::String& lastJson, bool vis
 // 边沿恒消费。隐藏 + error 边沿 → 不消费 → 基线保持 → 恢复可见后下一 tick 重发。
 bool claimEdgeConsumed(bool needsError, bool visible);
 
+// §4.5 error 边沿键检测(PR#54 R6):(claim, channelId, groupId, inputSr, outputSr)任一变化即
+// true —— 同 claim 换组(conflict 的 detail.groupId)、srMismatch 的 SR 变化都须重发,否则 UI
+// 横幅陈旧。
+bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId, int inputSr, int outputSr,
+                           const juce::String& lastClaim, int lastChannelId, int lastGroupId, int lastInputSr,
+                           int lastOutputSr);
+
 // --- 数值参数解析(§0.8.2 类型不符/越界 → 拒绝)------------------------------------
 // 非数值(缺参/字符串/对象/null)→ 空 Optional,调用方回 {ok:false, reason:"badArg"};
 // 数值(JS number 走 double,截断)且在 int 全域内 → 值;double 越界/NaN → 空(cast 前挡下,

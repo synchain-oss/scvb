@@ -73,6 +73,9 @@ juce::var InputEditor::buildSnapshot()
     lastConfigSeq_ = 0xFFFFFFFFu; // 哨兵:首 tick 必发一次 scvb.config(§0.4;其后仅 seq 变化才发)
     lastClaim_ = claim; // error 仍只发迁移边沿;启动即异常态由 scvb.state.claim 承载(§4.5)
     lastErrorChannelId_ = snap.channelId; // error 边沿键的 channel 分量(与 lastClaim_ 同基线)
+    lastErrorGroupId_ = snap.groupId; // error 边沿键的 group 分量(同基线)
+    lastErrorInputSr_ = juce::roundToInt(snap.sampleRate); // error 边沿键的 inputSr 分量(同基线)
+    lastErrorOutputSr_ = static_cast<int>(snap.globalInfo.output_sample_rate); // error 边沿键的 outputSr 分量(同基线)
     lastConnMs_ = 0; // 复位 4Hz 折半 → 首 tick 必发 scvb.conn
     lastGroupsMs_ = 0; // 复位 1Hz 折半 → 首 tick 必发 scvb.groups(关闭 ≤1s 空态窗口)
 
@@ -136,18 +139,24 @@ void InputEditor::emitTick()
     }
 
     // scvb.error:claim 态迁移边沿(§4.5;conflict/srMismatch 进出,abi 不占 error code)。
-    // 边沿键 = (claim, channelId):claim 不变但 channel 变化(如 conflict A → conflict B)也必须
-    // 重发,否则 channelConflict/srMismatch 的 ch 载荷残留旧 channel(PR#54 R3)。
+    // 边沿键 = (claim, channelId, groupId, inputSr, outputSr):任一变化即重发 —— claim/channel 变
+    // (PR#54 R3)、同 claim 换组(conflict 的 detail.groupId 陈旧)、srMismatch 的 SR 变化
+    // (inputSr/outputSr 陈旧)都须刷新(PR#54 R6)。
     // 基线仅在边沿已消费(emitClaimError 返回 true)后推进:编辑器隐藏时 error 事件被丢弃,基线
     // 保持旧值,恢复可见后下一 tick 因边沿仍成立而重发(PR#54 R5,与 advanceEmitCache 同口径)。
-    if (claim != lastClaim_ || snap.channelId != lastErrorChannelId_)
+    const int inputSr = juce::roundToInt(snap.sampleRate);
+    const int outputSr = static_cast<int>(snap.globalInfo.output_sample_rate);
+    if (bridge::claimErrorEdgeChanged(claim, snap.channelId, snap.groupId, inputSr, outputSr, lastClaim_,
+                                      lastErrorChannelId_, lastErrorGroupId_, lastErrorInputSr_, lastErrorOutputSr_))
     {
         const juce::String prev = lastClaim_;
-        if (emitClaimError(claim, prev, snap.channelId, snap.groupId, juce::roundToInt(snap.sampleRate),
-                           static_cast<int>(snap.globalInfo.output_sample_rate)))
+        if (emitClaimError(claim, prev, snap.channelId, snap.groupId, inputSr, outputSr))
         {
             lastClaim_ = claim;
             lastErrorChannelId_ = snap.channelId;
+            lastErrorGroupId_ = snap.groupId;
+            lastErrorInputSr_ = inputSr;
+            lastErrorOutputSr_ = outputSr;
         }
     }
 }

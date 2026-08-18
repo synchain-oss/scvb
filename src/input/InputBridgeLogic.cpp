@@ -88,6 +88,14 @@ bool claimEdgeConsumed(bool needsError, bool visible)
     return !needsError || visible;
 }
 
+bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId, int inputSr, int outputSr,
+                           const juce::String& lastClaim, int lastChannelId, int lastGroupId, int lastInputSr,
+                           int lastOutputSr)
+{
+    return claim != lastClaim || channelId != lastChannelId || groupId != lastGroupId || inputSr != lastInputSr ||
+           outputSr != lastOutputSr;
+}
+
 juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
 {
     if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))
