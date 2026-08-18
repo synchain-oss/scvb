@@ -20,6 +20,9 @@ namespace
 
 using namespace scvb::outputbridge;
 
+// 全轨位图(u16,bit0=ch1…bit14=ch15)。增量段事件用单轨位;snapshot/versionActive/copyVersion/undo/redo 用全轨。
+constexpr std::uint16_t kAllTracksMask = 0x7FFF;
+
 // ---- juce::var 构造助手 ----
 juce::var obj()
 {
@@ -195,7 +198,7 @@ void OutputEditor::emitTick()
     {
         lastSegmentsSampleRate_ = srNow;
         lastCrvsRevision_ = crvsRev;
-        emitSegments("snapshot", true);
+        emitSegments("snapshot", kAllTracksMask);
     }
 
     // scvb.captureProgress:仅播放中 2Hz;T29 无采集覆盖数据源,非播放不发(§2.7)。
@@ -382,9 +385,9 @@ void OutputEditor::emitCaptureProgress()
     // §2.7:非播放不发;T29 无覆盖增量数据源,不实现(占位,避免遗漏事件名)。
 }
 
-void OutputEditor::emitSegments(const juce::String& reason, bool allTracks)
+void OutputEditor::emitSegments(const juce::String& reason, std::uint16_t tracksMask)
 {
-    webView().emitEventIfBrowserIsVisible(Event::Segments, buildSegmentsPayload(reason, allTracks));
+    webView().emitEventIfBrowserIsVisible(Event::Segments, buildSegmentsPayload(reason, tracksMask));
 }
 
 void OutputEditor::emitError(const juce::String& code, int ch, const juce::var& detail, bool active)
@@ -549,7 +552,7 @@ juce::var OutputEditor::buildConnPayload() const
     return o;
 }
 
-juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, bool allTracks) const
+juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::uint16_t tracksMask) const
 {
     const int v = processor_.versionActive();
     const scvb::state::CrvsData crvs = processor_.crvsSnapshot(); // 持锁快照(PR#55 重要1)
@@ -559,9 +562,9 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, bool al
     juce::var channels = mkArray();
     for (int t = 0; t < 15; ++t)
     {
+        if ((tracksMask & (1u << t)) == 0)
+            continue; // 只含掩码内轨(PR#55 第11轮缺陷2)
         const auto& segments = vc.tracks[static_cast<std::size_t>(t)].segments;
-        if (!allTracks && segments.empty())
-            continue; // 增量:只含受影响(有段)轨;snapshot/versionActive 含全部轨
 
         juce::var ch = obj();
         put(ch, "ch", t + 1);
@@ -810,7 +813,7 @@ void OutputEditor::handleSetVersionActive(const ArgList& a, Completion c)
     {
         ++processor_.runtime().configSeq; // 配置变更(PR#55 缺陷4)
         // §1.9/§2.2:切版本后全量重发 segments + state + params(PR#55 重要2)。
-        emitSegments("versionActive", true);
+        emitSegments("versionActive", kAllTracksMask);
         lastStateJson_.clear();
         lastParamsJson_.clear();
         lastParamsValues_.clear();
@@ -865,7 +868,7 @@ void OutputEditor::handleCopyVersion(const ArgList& a, Completion c)
         return;
     }
 
-    emitSegments("copyVersion", true);
+    emitSegments("copyVersion", kAllTracksMask);
     c(okResp());
 }
 
@@ -1113,7 +1116,7 @@ void OutputEditor::handleSetTrackManual(const ArgList& a, Completion c)
         return;
     }
 
-    emitSegments("trackManual", false);
+    emitSegments("trackManual", static_cast<std::uint16_t>(1u << (ch - 1))); // 仅该轨(PR#55 第11轮缺陷2)
     juce::var o = obj();
     put(o, "ok", true);
     put(o, "replacedSegments", replacedSegments);
@@ -1359,42 +1362,65 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
+    if (!payload.isObject())
+    {
+        c(badArgResp()); // payload 必须为对象(PR#55 第11轮缺陷1)
+        return;
+    }
+
     scvb::state::SegmentEditArgs args;
-    bool valid = true;
 
     if (op == "move_boundary")
     {
+        if (!payload.hasProperty("segIdx") || !payload.hasProperty("tS") || !payload.hasProperty("edge"))
+        {
+            c(badArgResp()); // 必填字段缺失(PR#55 第11轮缺陷1)
+            return;
+        }
         args.op = scvb::state::SegmentEditOp::MoveBoundary;
-        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
-        const juce::String edge =
-            payload.isObject() ? payload.getProperty("edge", juce::String()).toString() : juce::String();
+        args.segIdx = static_cast<int>(payload.getProperty("segIdx", 0));
+        const juce::String edge = payload.getProperty("edge", juce::String()).toString();
         args.edgeIsT0 = (edge == "t0");
         if (edge != "t0" && edge != "t1")
-            valid = false;
+        {
+            c(badArgResp());
+            return;
+        }
         args.tSamples =
-            payload.isObject()
-                ? static_cast<std::int64_t>(std::llround(static_cast<double>(payload.getProperty("tS", 0.0)) * sr))
-                : 0;
+            static_cast<std::int64_t>(std::llround(static_cast<double>(payload.getProperty("tS", 0.0)) * sr));
     }
     else if (op == "split")
     {
+        if (!payload.hasProperty("segIdx") || !payload.hasProperty("tS"))
+        {
+            c(badArgResp());
+            return;
+        }
         args.op = scvb::state::SegmentEditOp::Split;
-        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
+        args.segIdx = static_cast<int>(payload.getProperty("segIdx", 0));
         args.tSamples =
-            payload.isObject()
-                ? static_cast<std::int64_t>(std::llround(static_cast<double>(payload.getProperty("tS", 0.0)) * sr))
-                : 0;
+            static_cast<std::int64_t>(std::llround(static_cast<double>(payload.getProperty("tS", 0.0)) * sr));
     }
     else if (op == "merge")
     {
+        if (!payload.hasProperty("segIdxA") || !payload.hasProperty("segIdxB"))
+        {
+            c(badArgResp());
+            return;
+        }
         args.op = scvb::state::SegmentEditOp::Merge;
-        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdxA", -1)) : -1;
-        args.segIdxB = payload.isObject() ? static_cast<int>(payload.getProperty("segIdxB", -1)) : -1;
+        args.segIdx = static_cast<int>(payload.getProperty("segIdxA", 0));
+        args.segIdxB = static_cast<int>(payload.getProperty("segIdxB", 0));
     }
     else if (op == "set_values")
     {
+        if (!payload.hasProperty("segIdx"))
+        {
+            c(badArgResp());
+            return;
+        }
         args.op = scvb::state::SegmentEditOp::SetValues;
-        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
+        args.segIdx = static_cast<int>(payload.getProperty("segIdx", 0));
         if (payload.hasProperty("pan"))
         {
             args.hasPan = true;
@@ -1406,25 +1432,31 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
             args.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(payload.getProperty("volDb", 0.0)));
         }
         if (!args.hasPan && !args.hasVol)
-            valid = false;
+        {
+            c(badArgResp());
+            return;
+        }
     }
     else if (op == "set_locked")
     {
+        if (!payload.hasProperty("segIdx") || !payload.hasProperty("locked"))
+        {
+            c(badArgResp()); // locked 必填(PR#55 第11轮缺陷1)
+            return;
+        }
         args.op = scvb::state::SegmentEditOp::SetLocked;
-        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
+        args.segIdx = static_cast<int>(payload.getProperty("segIdx", 0));
         bool lockedVal = false;
-        if (!payload.isObject() || !strictBool(payload.getProperty("locked", false), lockedVal))
-            valid = false;
+        if (!strictBool(payload.getProperty("locked", false), lockedVal))
+        {
+            c(badArgResp());
+            return;
+        }
         args.locked = lockedVal;
     }
     else
     {
-        valid = false;
-    }
-
-    if (!valid)
-    {
-        c(badArgResp());
+        c(badArgResp()); // 未知 op
         return;
     }
 
@@ -1448,7 +1480,7 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
         return;
     }
 
-    emitSegments("edit", false);
+    emitSegments("edit", static_cast<std::uint16_t>(1u << (ch - 1))); // 仅该轨(PR#55 第11轮缺陷2)
     c(okResp());
 }
 
@@ -1543,7 +1575,7 @@ void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
     }
     const bool ok = processor_.undo(); // 持锁(PR#55 重要1)
     if (ok)
-        emitSegments("undo", true); // 全量段表(PR#55 建议①)
+        emitSegments("undo", kAllTracksMask); // 全量段表(PR#55 建议①)
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);
@@ -1558,7 +1590,7 @@ void OutputEditor::handleRedo(const ArgList& /*a*/, Completion c)
     }
     const bool ok = processor_.redo(); // 持锁(PR#55 重要1)
     if (ok)
-        emitSegments("redo", true); // 全量段表(PR#55 建议①)
+        emitSegments("redo", kAllTracksMask); // 全量段表(PR#55 建议①)
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);

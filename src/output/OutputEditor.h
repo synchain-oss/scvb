@@ -43,15 +43,16 @@ private:
     void emitMeters();
     void emitPlayhead();
     void emitCaptureProgress();
-    void emitSegments(const juce::String& reason, bool allTracks);
+    // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
+    void emitSegments(const juce::String& reason, std::uint16_t tracksMask);
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
 
     // 契约 §2.1 的 state 子树(快照与 scvb.state 共用,防两处漂移)。
     juce::var buildStateSubtree(bool full) const;
     // 契约 §2.3 scvb.conn 载荷。
     juce::var buildConnPayload() const;
-    // 契约 §2.8 scvb.segments 载荷(reason ∈ 十值;allTracks=false 只含受影响轨)。
-    juce::var buildSegmentsPayload(const juce::String& reason, bool allTracks) const;
+    // 契约 §2.8 scvb.segments 载荷(reason ∈ 十值;只输出 tracksMask 掩码内轨)。
+    juce::var buildSegmentsPayload(const juce::String& reason, std::uint16_t tracksMask) const;
 
     // ---- native function 注册 ----
     void registerNativeFunctions(juce::WebBrowserComponent::Options& options);
