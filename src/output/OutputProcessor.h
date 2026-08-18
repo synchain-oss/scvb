@@ -143,13 +143,13 @@ public:
     int versionActive() const { return versionActive_; }
     bool captureEnabled() const { return captureEnabled_; }
     bool outputEnabled() const { return outputEnabled_; }
-    double sampleRate() const { return sampleRate_; }
+    double sampleRate() const { return sampleRate_.load(std::memory_order_relaxed); } // 原子读(PR#55 第9轮)
     int uiScalePercent() const { return uiScale_; }
     juce::String uiLanguage() const { return uiLanguage_; }
     // 只读观察态(O3:同组已有主 Output);写函数据此回 {observer:true}。
     bool isReadOnly() const { return session_.state() == scvb::output::OutputClaimState::kObserver; }
     // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。
-    bool isPrepared() const { return sampleRate_ > 0.0; }
+    bool isPrepared() const { return sampleRate_.load(std::memory_order_relaxed) > 0.0; }
     // CRVS 修订号:setStateInformation 替换 crvsData_ 后 +1;editor 据此重发 scvb.segments(PR#55 第8轮缺陷1)。
     std::uint32_t crvsRevision() const { return crvsRevision_.load(std::memory_order_acquire); }
     // [M] 该轨累计失准计数(gapCount;scvb.conn.channels[].misalignCount 数据源)。
@@ -251,7 +251,9 @@ private:
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
 
     bool prepared_ = false;
-    double sampleRate_ = 0.0; // 0 = 未 prepare(宿主 prepareToPlay 前),防御零除(PR#55 第7轮)
+    // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。
+    std::atomic<double> sampleRate_{0.0}; // 0 = 未 prepare(宿主 prepareToPlay 前),防御零除(PR#55 第7轮)
+    static_assert(std::atomic<double>::is_always_lock_free, "sampleRate_ 必须 lock-free(§8 实时线程纪律)");
     int preparedMaxBlock_ = 512;
 
     // 音频线程时间线状态(§5.2 步骤 2)。

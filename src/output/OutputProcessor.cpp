@@ -51,7 +51,8 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 {
     const juce::ScopedLock lock(lifecycleMutex_);
 
-    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    sampleRate_.store(sampleRate > 0.0 ? sampleRate : 48000.0, std::memory_order_relaxed); // 原子写(PR#55 第9轮)
+    const double sr = sampleRate_.load(std::memory_order_relaxed);
     preparedMaxBlock_ = samplesPerBlock > 0 ? samplesPerBlock : 512;
     accumL_.assign(static_cast<std::size_t>(preparedMaxBlock_), 0.0f);
     accumR_.assign(static_cast<std::size_t>(preparedMaxBlock_), 0.0f);
@@ -63,18 +64,18 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     handles_ = scvb::params::collectParamHandles(apvts);
 
     const auto now = scvb::steadyNowMs();
-    session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_), now);
-    authority_.prepare(sampleRate_, handles_);
-    busXfade_.prepare(sampleRate_);
+    session_.prepare(static_cast<scvb::u32>(sr), static_cast<scvb::u32>(preparedMaxBlock_), now);
+    authority_.prepare(sr, handles_);
+    busXfade_.prepare(sr);
     busXfade_.resetToPassthrough();
 
     // 平滑器:ms_balance g_M/g_S 与全局 width 10ms;per-channel 注入 fade 80ms(§5.2 过渡语义)。
-    gMSmoother_.reset(sampleRate_, 0.010);
-    gSSmoother_.reset(sampleRate_, 0.010);
-    globalWidthSmoother_.reset(sampleRate_, 0.010);
+    gMSmoother_.reset(sr, 0.010);
+    gSSmoother_.reset(sr, 0.010);
+    globalWidthSmoother_.reset(sr, 0.010);
     for (auto& f : channelFade_)
     {
-        f.reset(sampleRate_, 0.080);
+        f.reset(sr, 0.080);
     }
 
     // 打印器接线(C8 setShot 已在构造完成;此处重绑车道 + 启 50Hz)。
@@ -123,7 +124,7 @@ void ScvbOutputAudioProcessor::publishPlayhead(const juce::AudioPlayHead::Positi
                                                bool playing)
 {
     scvb::engine::PlayheadPod pod;
-    pod.sampleRate = sampleRate_;
+    pod.sampleRate = sampleRate_.load(std::memory_order_relaxed); // 原子读(PR#55 第9轮)
     pod.epoch = podEpoch_;
     pod.timeSamples = haveTime ? *pos.getTimeInSamples() : -1;
     if (playing)
@@ -237,7 +238,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     }
 
     // 仲裁 + arm 平滑(整 block 用同一份快照;engineAuthority = output_enabled)。
-    const double tSec = static_cast<double>(t0) / sampleRate_;
+    const double tSec = static_cast<double>(t0) / sampleRate_.load(std::memory_order_relaxed); // 原子读(PR#55 第9轮)
     authority_.processBlock(session_.outputEnabled(), tSec);
 
     // 读注入 channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
@@ -608,13 +609,13 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         const scvb::u32 newGroup = static_cast<scvb::u32>(groupId_);
         if (session_.groupId() != newGroup)
         {
-            session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_),
+            session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_.load(std::memory_order_relaxed)),
                                  static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
         }
         else
         {
-            session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
-                             scvb::steadyNowMs());
+            session_.prepare(static_cast<scvb::u32>(sampleRate_.load(std::memory_order_relaxed)),
+                             static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
         }
         rebindVersion();
     }
@@ -637,7 +638,8 @@ void ScvbOutputAudioProcessor::setGroupId(int groupId)
     // 改组(J66):释放旧组 OutputSlot → 新组 claim(期间输出直通,§4.2)。
     if (prepared_)
     {
-        session_.changeGroup(static_cast<scvb::u32>(groupId), static_cast<scvb::u32>(sampleRate_),
+        session_.changeGroup(static_cast<scvb::u32>(groupId),
+                             static_cast<scvb::u32>(sampleRate_.load(std::memory_order_relaxed)),
                              static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
     }
 }
@@ -674,7 +676,8 @@ juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
 
 void ScvbOutputAudioProcessor::rebuildAllCurves()
 {
-    if (sampleRate_ <= 0.0)
+    const double sr = sampleRate_.load(std::memory_order_relaxed); // 原子读(PR#55 第9轮)
+    if (sr <= 0.0)
         return; // 未 prepare → 不构建不发布(防 NaN/inf CurveSegment,PR#55 第7轮缺陷2)
 
     for (int v = 1; v <= scvb::state::kNumVersions; ++v)
@@ -694,8 +697,8 @@ void ScvbOutputAudioProcessor::rebuildAllCurves()
             for (const auto& s : src)
             {
                 scvb::CurveSegment cs;
-                cs.startSec = static_cast<double>(s.t0) / sampleRate_;
-                cs.endSec = static_cast<double>(s.t1) / sampleRate_;
+                cs.startSec = static_cast<double>(s.t0) / sr;
+                cs.endSec = static_cast<double>(s.t1) / sr;
                 cs.pan = static_cast<double>(s.pan);
                 cs.volDb = static_cast<double>(s.volDb);
                 curveSegments.push_back(cs);
