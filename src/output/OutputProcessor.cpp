@@ -574,16 +574,31 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     versionActive_ = static_cast<int>(s.versionActive);
     uiScale_ = static_cast<int>(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
-    session_.setGroupId(s.groupId);
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     if (prepared_)
     {
-        session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
-                         scvb::steadyNowMs());
+        // PR#53 缺陷1:已 prepared 加载到不同 group 的 state → 走 changeGroup(释放旧 OutputSlot 与旧环
+        // 绑定 → 新组 claim 后 attach 新环);直接 prepare() 会让旧 group OutputSlot 保持 active 且已绑
+        // sources 继续读旧环。group 未变则 prepare() 幂等 re-claim。
+        const scvb::u32 newGroup = static_cast<scvb::u32>(groupId_);
+        if (session_.groupId() != newGroup)
+        {
+            session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_),
+                                 static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
+        }
+        else
+        {
+            session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                             scvb::steadyNowMs());
+        }
         rebindVersion();
+    }
+    else
+    {
+        session_.setGroupId(static_cast<scvb::u32>(groupId_));
     }
 }
 

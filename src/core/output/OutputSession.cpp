@@ -279,6 +279,9 @@ void OutputSession::tick(u64 nowMs)
         {
             state_.store(OutputClaimState::kAbiMismatch, std::memory_order_release);
         }
+        // PR#53 缺陷2:observer 分支也要 reap —— changeGroup 改到被占 group 时压入 pendingReleases_/
+        // pendingSegments_ 的句柄须在宽限期届满后回收,否则反复改组积累共享内存映射直到插件销毁。
+        reap(nowMs);
         return; // observer:不写 registry/ctrl、不消费 cmd、不注入(§4.2 O3)
     }
 

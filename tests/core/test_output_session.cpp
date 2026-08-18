@@ -205,3 +205,87 @@ TEST_CASE("Output state 容器:重建 PRMS/CFGS 时 FEAT/CRVS 原样回写", "[o
     REQUIRE(round.find(scvb::state::kFourccFeat)->payload == feat); // 原样保留
     REQUIRE(round.find(scvb::state::kFourccCrvs)->payload == crvs); // 原样保留
 }
+
+TEST_CASE("[J66] 改组切换后 sources 读新组环 + 旧 slot 释放(缺陷1 语义)", "[output][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // group 1:Input ch1 写环,Output claim + attach。
+    InputSession in1(backend, 1001);
+    in1.setChannelId(1);
+    REQUIRE(in1.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in1.heartbeat(1100);
+    float b1[16] = {};
+    for (int i = 0; i < 16; ++i)
+    {
+        b1[i] = 1.0f;
+    }
+    scvb::AudioRing::write(in1.audioRing().acquire(), 0, b1, 16);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    REQUIRE(out.mixSource(1).bound());
+    float d0[16] = {};
+    REQUIRE(out.mixSource(1).read(0, d0, 16));
+    REQUIRE(d0[0] == 1.0f); // 读 group 1 环
+
+    // group 2:Input ch1 写不同数据。
+    InputSession in2(backend, 1002);
+    in2.setChannelId(1);
+    in2.setGroupId(2);
+    REQUIRE(in2.prepare(48000, 512, 1, 1300) == InputClaimState::kActive);
+    in2.heartbeat(1400);
+    float b2[16] = {};
+    for (int i = 0; i < 16; ++i)
+    {
+        b2[i] = 2.0f;
+    }
+    scvb::AudioRing::write(in2.audioRing().acquire(), 0, b2, 16);
+
+    // 切组:旧 slot 释放、旧绑定解除、新组 claim + attach 新环。
+    REQUIRE(out.changeGroup(2, 48000, 512, 1500) == OutputClaimState::kActive);
+
+    scvb::Registry p1(backend, 1);
+    REQUIRE(p1.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(p1.outputSlot()->state.load() == kSlotFree); // 旧 group 1 OutputSlot 释放
+
+    REQUIRE(out.mixSource(1).bound());
+    float d1[16] = {};
+    REQUIRE(out.mixSource(1).read(0, d1, 16));
+    REQUIRE(d1[0] == 2.0f); // 读新 group 2 环,不再是旧 group 1 环
+}
+
+TEST_CASE("observer 态 tick 会 reap pending 句柄(缺陷2)", "[output][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 统一用真实稳态时钟作时间基准,保证 claim 心跳新鲜度与 500ms 宽限期口径一致。
+    const scvb::u64 base = scvb::steadyNowMs();
+
+    // a 占 group 2。
+    OutputSession a(backend, 2001);
+    REQUIRE(a.prepare(48000, 512, base) == OutputClaimState::kActive);
+    REQUIRE(a.changeGroup(2, 48000, 512, base + 100) == OutputClaimState::kActive);
+
+    // group 1 的 Input 写环,使 b 在 group 1 attach audio 环。
+    InputSession in(backend, 1001);
+    in.setChannelId(1);
+    REQUIRE(in.prepare(48000, 512, 1, base) == InputClaimState::kActive);
+    in.heartbeat(base + 100);
+    float buf[16] = {};
+    scvb::AudioRing::write(in.audioRing().acquire(), 0, buf, 16);
+
+    // b 在 group 1 活跃(attach group 1 audio 环)。
+    OutputSession b(backend, 2002);
+    REQUIRE(b.prepare(48000, 512, base + 200) == OutputClaimState::kActive);
+
+    // 切到被占 group 2 → observer(a 心跳距 base+300 仅 200ms,仍新鲜,非 stale 接管)。
+    REQUIRE(b.changeGroup(2, 48000, 512, base + 300) == OutputClaimState::kObserver);
+    REQUIRE(b.pendingReleaseCount() > 0);
+
+    // observer 分支 tick → reap:宽限期 500ms 届满后 pending 清空(缺陷2 修复,否则映射积累)。
+    b.tick(base + 1000);
+    REQUIRE(b.pendingReleaseCount() == 0);
+}
