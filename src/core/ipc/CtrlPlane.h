@@ -153,6 +153,10 @@ public:
     u32 group() const { return group_; }
     u32 generation() const;
 
+    // 改组(J66):释放本组 ctrl 段句柄 → 换新组 → 重新映射 + §4.0 初始化。返回 kOk / kAbiMismatch /
+    // kFailed。与 Registry::changeGroup 同构(Output 改组时 registry 与 ctrl 同时换组)。
+    InitResult changeGroup(u32 newGroup);
+
     // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(nowMs),
     // 成功(租约归零且宽限期届满)即移除并解映射。pr-agent 复审:open()/重开时 release() 返回 false
     // 的旧句柄压入 pendingReleases_,否则旧 mapping 无人再 release → 永久泄漏。

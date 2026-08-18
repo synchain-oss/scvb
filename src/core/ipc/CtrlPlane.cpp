@@ -45,7 +45,9 @@ void CtrlPlane::reapPendingReleases(u64 nowMs)
 InitResult CtrlPlane::open()
 {
     base_ = nullptr;
-    if (!handle_.release(steadyNowMs()))
+    // 与 changeGroup 一致:handle_ 尚未打开/已 moved-from 时先判 valid(),避免把 moved-from 句柄推进
+    // pendingReleases_(releaseHandle() 同模式)。
+    if (handle_.valid() && !handle_.release(steadyNowMs()))
     {
         // 租约在途/宽限期未满:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
         pendingReleases_.push_back(std::move(handle_));
@@ -77,6 +79,23 @@ u32 CtrlPlane::generation() const
         return 0;
     }
     return static_cast<CtrlHeader*>(handle_.base())->generation.load(std::memory_order_acquire);
+}
+
+InitResult CtrlPlane::changeGroup(u32 newGroup)
+{
+    if (newGroup < 1 || newGroup > kMaxGroups)
+    {
+        return InitResult::kFailed;
+    }
+    base_ = nullptr;
+    // 组变更可能发生在 prepare/open 之前(handle_ 尚未打开或已 moved-from):先判 valid(),与
+    // releaseHandle() 同模式,避免把 moved-from 句柄推进 pendingReleases_。
+    if (handle_.valid() && !handle_.release(steadyNowMs()))
+    {
+        pendingReleases_.push_back(std::move(handle_));
+    }
+    group_ = newGroup;
+    return open();
 }
 
 CtrlRing* CtrlPlane::ringAt(u32 channel) const

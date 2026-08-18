@@ -560,6 +560,35 @@ TEST_CASE("停摆看门狗四格(R3/J52)", "[ipc][lifecycle][watchdog]")
         const auto r5 = cp.tickWatchdog(1300);
         REQUIRE(r5.action == scvb::WatchdogAction::kNone); // 重置信位序列结束
     }
+
+    SECTION("blockCounter 持续推进 × write_head 推进 → 不误判停摆(bumpBlockCounter 语义)")
+    {
+        scvb::SegmentBackendInProcess::resetAll();
+        scvb::SegmentBackendInProcess backend;
+        scvb::Registry out(backend, 1);
+        REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(out.claimOutput(2001, 0) == scvb::Registry::ClaimResult::kClaimed);
+        out.setConnectedMaskBit(1);
+
+        scvb::CtrlPlane cp(backend, 1);
+        REQUIRE(cp.open() == scvb::InitResult::kOk);
+        u64 block = 0;
+        u64 wh = 0;
+        cp.setBlockCounterSource([&] { return block; });
+        cp.setWriteHeadSource([&](u32 ch) { return ch == 1 ? wh : 0; });
+        cp.setConnectedMaskSource([&] { return out.connectedMask(); });
+
+        REQUIRE(cp.tickWatchdog(0).action == scvb::WatchdogAction::kNone);
+        // bypass 期间 processBlockBypassed 也 bumpBlockCounter:blockCounter 与 write_head 同时推进 → 不误判停摆。
+        for (u64 t = 100; t <= 1000; t += 100)
+        {
+            block = t;
+            wh = t;
+            const auto r = cp.tickWatchdog(t);
+            REQUIRE(r.action == scvb::WatchdogAction::kNone);
+        }
+        REQUIRE(out.connectedMask() == (1u << 0)); // mask 未被清
+    }
 }
 
 // ---------------------------------------------------------------------------
