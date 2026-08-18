@@ -81,6 +81,18 @@ u32 CtrlPlane::generation() const
     return static_cast<CtrlHeader*>(handle_.base())->generation.load(std::memory_order_acquire);
 }
 
+bool CtrlPlane::isRingFull(u32 channel) const
+{
+    const CtrlRing* ring = ringAt(channel);
+    if (ring == nullptr)
+    {
+        return false;
+    }
+    const u32 w = ring->write_pos.load(std::memory_order_relaxed);
+    const u32 r = ring->read_pos.load(std::memory_order_acquire);
+    return w - r >= kCtrlRingCapacity;
+}
+
 InitResult CtrlPlane::changeGroup(u32 newGroup)
 {
     if (newGroup < 1 || newGroup > kMaxGroups)

@@ -106,6 +106,7 @@ Registry::ClaimResult Registry::open()
     if (ir == InitResult::kAbiMismatch)
     {
         const u32 remoteAbi = header->abi.load(std::memory_order_acquire);
+        remoteAbi_ = remoteAbi; // T30 桥 abi_remote 来源(探测不到 = 0,桥侧字段不存在)
         backend_.unmap(view); // 释放刚映射的视图
         header_ = nullptr;
         if (abiMismatchHandler_)

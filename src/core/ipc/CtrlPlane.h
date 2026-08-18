@@ -153,6 +153,10 @@ public:
     u32 group() const { return group_; }
     u32 generation() const;
 
+    // 满环判定(写方 [M] 在 enqueue 前调用;SPSC 纪律:生产者只读 read_pos,read_pos 仅消费者写)。
+    // remoteSetPriority(§3.4)据此回 {queued:false, reason:"ringFull"}(enqueue 仍执行:丢最旧 + 计数)。
+    bool isRingFull(u32 channel) const;
+
     // 改组(J66):释放本组 ctrl 段句柄 → 换新组 → 重新映射 + §4.0 初始化。返回 kOk / kAbiMismatch /
     // kFailed。与 Registry::changeGroup 同构(Output 改组时 registry 与 ctrl 同时换组)。
     InitResult changeGroup(u32 newGroup);

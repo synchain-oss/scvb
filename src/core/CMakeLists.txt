@@ -42,6 +42,8 @@ add_library(scvb_core STATIC
   ipc/SegmentLayout.h
   ipc/ISegmentBackend.h
   ipc/SegmentBackendWin32.h
+  ipc/GroupProbe.h
+  ipc/GroupProbe.cpp
   ipc/Registry.cpp
   ipc/Registry.h
   ipc/CtrlPlane.cpp
