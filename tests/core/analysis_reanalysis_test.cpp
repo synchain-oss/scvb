@@ -623,3 +623,66 @@ TEST_CASE("REAN-5: 随机局部重分析三不变式(50 轮)", "[reanalysis][inv
         }
     }
 }
+
+// ============================================================================
+// 防御:请求区间校验(PR#45 审查【重要】#1)
+// ============================================================================
+
+TEST_CASE("SPLICE-2: R⁺ 倒置/空区间 → 原样返回旧段(逐字节不变)", "[reanalysis][splice]")
+{
+    const std::vector<AnalysisSegment> old = {seg(0.0, 10.0), seg(10.0, 20.0)};
+    const std::vector<AnalysisSegment> cands = {seg(5.0, 15.0, Origin::Auto, false, 42.0, 1.0)};
+    const std::vector<uint8_t> oldBytes = serializeSegments(old);
+
+    // 倒置 R⁺(rPlus0 > rPlus1)。
+    const auto inverted = scvb::analysis::spliceTrack(old, cands, {}, sec(20.0), sec(10.0), MergeParams{});
+    REQUIRE(serializeSegments(inverted) == oldBytes);
+
+    // 空 R⁺(rPlus0 == rPlus1)。
+    const auto empty = scvb::analysis::spliceTrack(old, cands, {}, sec(10.0), sec(10.0), MergeParams{});
+    REQUIRE(serializeSegments(empty) == oldBytes);
+}
+
+TEST_CASE("REAN-6: 请求区间倒置/空/负 → 原样返回(逐字节不变)", "[reanalysis][acceptance]")
+{
+    const auto before = makeModel();
+    const std::vector<uint8_t> beforeBytes = scvb::analysis::serializeVersion(before);
+
+    const RecomputeFn recompute = [](uint32_t, int64_t r0, int64_t r1) {
+        return std::vector<AnalysisSegment>{seg(static_cast<double>(r0) / kSampleRate,
+                                                static_cast<double>(r1) / kSampleRate, Origin::Auto, false, 42.0, 1.0)};
+    };
+
+    // 倒置区间(end < start)。
+    {
+        ReanalysisRequest req;
+        req.tracks = {3};
+        req.startSample = sec(40.0);
+        req.endSample = sec(30.0);
+        const auto after =
+            scvb::analysis::reanalyze(before, req, FeatureProvider{}, recompute, GuardParams{}, MergeParams{});
+        REQUIRE(scvb::analysis::serializeVersion(after) == beforeBytes);
+    }
+
+    // 空区间(end == start)。
+    {
+        ReanalysisRequest req;
+        req.tracks = {3};
+        req.startSample = sec(30.0);
+        req.endSample = sec(30.0);
+        const auto after =
+            scvb::analysis::reanalyze(before, req, FeatureProvider{}, recompute, GuardParams{}, MergeParams{});
+        REQUIRE(scvb::analysis::serializeVersion(after) == beforeBytes);
+    }
+
+    // 负起点(start < 0)。
+    {
+        ReanalysisRequest req;
+        req.tracks = {3};
+        req.startSample = -sec(1.0);
+        req.endSample = sec(30.0);
+        const auto after =
+            scvb::analysis::reanalyze(before, req, FeatureProvider{}, recompute, GuardParams{}, MergeParams{});
+        REQUIRE(scvb::analysis::serializeVersion(after) == beforeBytes);
+    }
+}

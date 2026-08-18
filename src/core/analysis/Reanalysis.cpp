@@ -160,6 +160,11 @@ std::vector<AnalysisSegment> spliceTrack(const std::vector<AnalysisSegment>& old
                                          const std::vector<ExcludedRange>& excludedRanges, int64_t rPlus0,
                                          int64_t rPlus1, const MergeParams& p)
 {
+    // 防御(PR#45 审查):R⁺ 倒置/空区间会经跨界分裂产生重叠段,破坏「按 t0 排序
+    // 互不重叠」不变量。直接返回旧段,不改动任何数据。
+    if (rPlus0 >= rPlus1)
+        return oldSegments;
+
     // 候选在 R⁺ 边界截断(04 §4.3);零长/负长丢弃。
     std::vector<AnalysisSegment> clipped;
     clipped.reserve(candidates.size());
@@ -182,6 +187,11 @@ std::vector<AnalysisSegment> spliceTrack(const std::vector<AnalysisSegment>& old
 VersionAnalysis reanalyze(const VersionAnalysis& in, const ReanalysisRequest& req, const FeatureProvider& features,
                           const RecomputeFn& recompute, const GuardParams& guard, const MergeParams& merge)
 {
+    // 防御(PR#45 审查):拒绝空/倒置区间(end ≤ start)与负起点,避免跨界分裂产生
+    // 重叠段、破坏「按 t0 排序互不重叠」不变量。原样返回,不改动任何数据。
+    if (req.endSample <= req.startSample || req.startSample < 0)
+        return in;
+
     VersionAnalysis out = in; // 深拷贝全部轨 → T 外轨与 excluded 逐字节不变。
 
     for (const uint32_t track : req.tracks)
