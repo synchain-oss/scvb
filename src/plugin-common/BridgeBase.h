@@ -87,9 +87,11 @@ juce::var buildUiSnapshot(const UiSeed& seed);
 // setLang 归一化(§1.30):仅 {zh,en,fr},未知 code 回退 "zh"。
 juce::String normalizeLang(const juce::String& code);
 
-// setUiScale 参数校验(§1.28):数量≥1 且数值(isDouble/isInt);合法则 outScale=clamp(f),返回 true;
-// 非法(缺参/非数值)返回 false(调用方回 {ok:false, reason:"badArg"})。
-bool parseUiScaleArg(const juce::Array<juce::var>& args, float& outScale);
+// setUiScale 参数校验(§1.28):数量≥1、数值(isDouble/isInt)、且在 role 的档位表内
+// (Input 用 kInputPresets / Output 用 kOutputPresets,唯一真源 = DesignBox.h)。档位是 double,
+// 用 double 比较避免 0.33 类精度误判。命中则 outScale=档位值并返回 true;
+// 否则(缺参/非数值/不在档位表)返回 false(调用方回 {ok:false, reason:"badArg"})。
+bool parseUiScaleArg(const juce::Array<juce::var>& args, const juce::String& role, float& outScale);
 
 // --- 回执助手(两插件共用的原生函数回执构造)-------------------------------------------
 // {ok:true}

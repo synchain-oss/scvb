@@ -220,9 +220,9 @@ void WebViewHost::handleSetLang(const juce::Array<juce::var>& args, WBC::NativeF
 void WebViewHost::handleSetUiScale(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
 {
     float scale = uiScale_;
-    if (!bridge::parseUiScaleArg(args, scale))
+    if (!bridge::parseUiScaleArg(args, config_.role, scale))
     {
-        complete(bridge::badArgResponse()); // §1.28:非法参数(缺参/非数值)→ badArg
+        complete(bridge::badArgResponse()); // §1.28:非法参数(缺参/非数值/不在档位表)→ badArg
         return;
     }
     setUiScale(scale); // 只实时预览、不落盘(机制 9 前半)

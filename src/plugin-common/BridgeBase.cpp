@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "BridgeBase.h"
 
+#include <algorithm>
+
 namespace scvb::bridge
 {
 
@@ -35,14 +37,26 @@ juce::String normalizeLang(const juce::String& code)
     return "zh"; // 未知 code 回退 zh(§1.30)
 }
 
-bool parseUiScaleArg(const juce::Array<juce::var>& args, float& outScale)
+bool parseUiScaleArg(const juce::Array<juce::var>& args, const juce::String& role, float& outScale)
 {
     if (args.size() < 1)
         return false;
     const auto& v = args[0];
     if (!(v.isDouble() || v.isInt()))
         return false;
-    outScale = clampUiScale(static_cast<float>(static_cast<double>(v)));
+
+    const double f = static_cast<double>(v);
+    // §1.28 拒绝态:f 不在档位表 → badArg。档位唯一真源 = DesignBox.h,double 比较避免精度误判。
+    // kInputPresets(10 档)与 kOutputPresets(7 档)是不同类型(std::array 长度不同),须分分支。
+    const bool inTable = (role == "input")
+                             ? std::find(scvb::design::kInputPresets.begin(), scvb::design::kInputPresets.end(), f) !=
+                                   scvb::design::kInputPresets.end()
+                             : std::find(scvb::design::kOutputPresets.begin(), scvb::design::kOutputPresets.end(), f) !=
+                                   scvb::design::kOutputPresets.end();
+    if (!inTable)
+        return false;
+
+    outScale = static_cast<float>(f);
     return true;
 }
 

@@ -53,7 +53,7 @@ TEST_CASE("ResourceProvider empty source returns nullopt (no fake resources)")
     CHECK_FALSE(provider.provide("/js/juce/index.js").has_value());
 }
 
-TEST_CASE("ResourceProvider serves by original filename")
+TEST_CASE("ResourceProvider serves by original filename (root-relative + full URL)")
 {
     scvb::webview::ResourceProvider::Source src;
     src.resourceCount = 1;
@@ -62,10 +62,21 @@ TEST_CASE("ResourceProvider serves by original filename")
     src.getNamedResource = &fakeGetResource;
 
     scvb::webview::ResourceProvider provider(src);
+
+    // root-relative 口径(JUCE 8.0.8 的 Windows/mac 后端调 provider 前已剥 origin,根请求给 "/")。
+    REQUIRE(provider.provide("/index.html").has_value());
+    REQUIRE(provider.provide("/").has_value()); // 根文档 → index.html
+
+    // full-URL 口径(防御性兜底,§6.1 机制 4,保证跨后端/跨版本一致)。
+    REQUIRE(provider.provide("https://juce.backend/").has_value());
+    REQUIRE(provider.provide("https://juce.backend/index.html").has_value());
+
     const auto res = provider.provide("/index.html");
     REQUIRE(res.has_value());
     CHECK(res->mimeType == juce::String("text/html"));
     CHECK(res->data.size() == 5);
+
+    CHECK_FALSE(provider.provide("/other.css").has_value()); // 未命中 → nullopt
 }
 
 TEST_CASE("clampUiScale matches Bridge bounds")
@@ -143,32 +154,42 @@ TEST_CASE("normalizeLang accepts {zh,en,fr} and falls back to zh (§1.30)")
     CHECK(normalizeLang("") == "zh");
 }
 
-TEST_CASE("parseUiScaleArg rejects non-numeric and clamps numeric (§1.28)")
+TEST_CASE("parseUiScaleArg rejects non-numeric/off-preset and accepts preset (§1.28)")
 {
     using scvb::bridge::parseUiScaleArg;
     float out = 0.0f;
 
     juce::Array<juce::var> nonNumeric;
     nonNumeric.add(juce::var("abc"));
-    CHECK_FALSE(parseUiScaleArg(nonNumeric, out)); // 非数字 → badArg
+    CHECK_FALSE(parseUiScaleArg(nonNumeric, "output", out)); // 非数字 → badArg
 
     juce::Array<juce::var> empty;
-    CHECK_FALSE(parseUiScaleArg(empty, out)); // 缺参 → badArg
+    CHECK_FALSE(parseUiScaleArg(empty, "output", out)); // 缺参 → badArg
 
-    juce::Array<juce::var> small;
-    small.add(juce::var(0.1));
-    REQUIRE(parseUiScaleArg(small, out));
-    CHECK(out == scvb::bridge::plugin::MinUiScale); // 数值 → clamp 下界
+    // Output 档位表 = [0.5,0.65,0.8,1,1.25,1.5,2]
+    juce::Array<juce::var> offPreset;
+    offPreset.add(juce::var(1.3));
+    CHECK_FALSE(parseUiScaleArg(offPreset, "output", out)); // 非档位 → badArg
 
-    juce::Array<juce::var> big;
-    big.add(juce::var(9.0));
-    REQUIRE(parseUiScaleArg(big, out));
-    CHECK(out == scvb::bridge::plugin::MaxUiScale); // clamp 上界
+    juce::Array<juce::var> outOfRange;
+    outOfRange.add(juce::var(2.5));
+    CHECK_FALSE(parseUiScaleArg(outOfRange, "output", out)); // 超 Output 上限 2.0 → badArg
 
-    juce::Array<juce::var> ok;
-    ok.add(juce::var(1.5));
-    REQUIRE(parseUiScaleArg(ok, out));
+    juce::Array<juce::var> okOutput;
+    okOutput.add(juce::var(1.5));
+    REQUIRE(parseUiScaleArg(okOutput, "output", out));
     CHECK(out == 1.5f);
+
+    // Input 档位表 = [0.33,0.5,0.75,1,1.25,1.5,1.75,2,2.5,3];0.33 与 2.5 合法
+    juce::Array<juce::var> in033;
+    in033.add(juce::var(0.33));
+    REQUIRE(parseUiScaleArg(in033, "input", out));
+    CHECK(out == 0.33f);
+
+    juce::Array<juce::var> in25;
+    in25.add(juce::var(2.5));
+    REQUIRE(parseUiScaleArg(in25, "input", out));
+    CHECK(out == 2.5f);
 }
 
 TEST_CASE("badArgResponse has {ok:false, reason:badArg} shape (§1.28)")
