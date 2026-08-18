@@ -71,8 +71,7 @@ add_subdirectory(src/plugin-common)  # scvb_plugin_common(INTERFACE,源编入各
 # T01:src/input + src/output 正式插件(T06 的 PR 恢复;S1 spike 核心已移植回 src/core/ipc/)
 add_subdirectory(src/input)    # SCVBInput
 add_subdirectory(src/output)   # SCVBOutput
-# T05:S4 状态体量 spike(T05 的满配 state 编解码 + 验收跑分;由 T19 的 PR 删除)
-add_subdirectory(spikes/s4)    # s4_state + scvb_s4_state
+
 if(SCVB_BUILD_TESTS)
   add_subdirectory(tests)      # scvb_tests + scvb_ipc_tests
 endif()

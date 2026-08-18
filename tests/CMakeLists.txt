@@ -46,6 +46,7 @@ add_executable(scvb_tests
   core/test_ipc_lifecycle.cpp
   core/analysis_coverage_test.cpp
   core/test_design_box.cpp
+  core/test_state_codec.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
