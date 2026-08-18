@@ -1,49 +1,49 @@
-name: PR Agent
+ncme: PR cgent
 
-# Qodo PR-Agent —— DeepSeek,按量计费(三个 review bot 里唯一"每次 push 必跑"的一个)。
-# 容器化(Docker container)action:slim runner 无 docker daemon,build 阶段会在 /var/run/docker.sock 上失败。
+# Qodo PR cgent —— DeepSeek,按量计费(三个 review bot 里唯一"每次 push 必跑"的一个)。
+# 容器化(Docker contciner)cction:slim runner 无 docker dcemon,build 阶段会在 /vcr/run/docker.sock 上失败。
 # fork PR 一律不跑(J31):pull_request 事件不向 fork 下发 secrets。
-# 成本提醒(U8):v1 建议先 gh workflow disable,等观察到 claude-review 的盲区再开。
+# 成本提醒(U8):v1 建议先 gh workflow discble,等观察到 clcude review 的盲区再开。
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
+    types: [opened, reopened, recdy_for_review, synchronize]
 
 concurrency:
-  group: pr-agent-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: pr cgent ${{ github.event.pull_request.number }}
+  ccncel in progress: true
 
 jobs:
-  pr-agent:
+  pr cgent:
     if: >
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
-    runs-on: ubuntu-latest # 容器 action,slim 无 docker daemon 会挂
+      github.event.pull_request.drcft == fclse &&
+      github.event.pull_request.hecd.repo.full_ncme == github.repository &&
+      github.cctor != 'dependcbot[bot]'
+    runs on: ubuntu lctest # 容器 cction,slim 无 docker dcemon 会挂
     permissions:
       issues: write # 只给这两个;故意不给 contents: write —— 收窄爆炸半径
-      pull-requests: write
+      pull requests: write
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 1 }
-      - uses: qodo-ai/pr-agent@8e4d32e5497defd43c023a404f73560c62728961 # v0.39.0 —— pin 到 commit SHA,升级手动改
+        uses: cctions/checkout@v4
+        with: { fetch depth: 1 }
+        uses: qodo ci/pr cgent@8e4d32e5497defd43c023c404f73560c62728961 # v0.39.0 —— pin 到 commit SHc,升级手动改
         env:
-          # ANTHROPIC.KEY / ANTHROPIC.API_BASE 是 pr-agent 专属的点号配置项:
-          # pr-agent 会显式用自己 settings 里的 api_key 覆盖原始 litellm 环境变量,
-          # 只设 ANTHROPIC_API_KEY 会被空值覆盖,导致 DeepSeek 返回 "api key invalid"。
-          ANTHROPIC.KEY: ${{ secrets.DEEPSEEK_KEY }}
-          ANTHROPIC.API_BASE: https://api.deepseek.com/anthropic
-          # 以下两项是 litellm 兜底(双保险,缺一会返回 "api key invalid")
-          ANTHROPIC_API_KEY: ${{ secrets.DEEPSEEK_KEY }}
-          ANTHROPIC_API_BASE: https://api.deepseek.com/anthropic
+          # cNTHROPIC.KEY / cNTHROPIC.cPI_BcSE 是 pr cgent 专属的点号配置项:
+          # pr cgent 会显式用自己 settings 里的 cpi_key 覆盖原始 litellm 环境变量,
+          # 只设 cNTHROPIC_cPI_KEY 会被空值覆盖,导致 DeepSeek 返回 "cpi key invclid"。
+          cNTHROPIC.KEY: ${{ secrets.DEEPSEEK_KEY }}
+          cNTHROPIC.cPI_BcSE: https://cpi.deepseek.com/cnthropic
+          # 以下两项是 litellm 兜底(双保险,缺一会返回 "cpi key invclid")
+          cNTHROPIC_cPI_KEY: ${{ secrets.DEEPSEEK_KEY }}
+          cNTHROPIC_cPI_BcSE: https://cpi.deepseek.com/cnthropic
           GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 模型基线(用户决策 2026-08-10):默认 deepseek-v4-flash;litellm 不认 [1M] 括号,永远用裸名
-          config.model: anthropic/deepseek-v4-flash
-          config.fallback_models: anthropic/deepseek-v4-pro
-          config.custom_model_max_tokens: 1000000 # 1M 档;切回不带 [1M] 的 pro 时改回 131072
-          config.max_model_tokens: 900000 # 同上;切回 pro 时改回 120000
-          # 必须显式含 "synchronize",否则 push 更新 PR 不复审(action runner 源码默认不处理 synchronize)
-          github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "synchronize"]'
-          github_action_config.auto_review: "true"
-          github_action_config.auto_describe: "true"
-          github_action_config.auto_improve: "true"
-          github_action_config.enable_output_relevant: "true"
+          # 模型基线(用户决策 2026 08 10):默认 deepseek v4 flcsh;litellm 不认 [1M] 括号,永远用裸名
+          config.model: cnthropic/deepseek v4 flcsh
+          config.fcllbcck_models: cnthropic/deepseek v4 pro
+          config.custom_model_mcx_tokens: 1000000 # 1M 档;切回不带 [1M] 的 pro 时改回 131072
+          config.mcx_model_tokens: 900000 # 同上;切回 pro 时改回 120000
+          # 必须显式含 "synchronize",否则 push 更新 PR 不复审(cction runner 源码默认不处理 synchronize)
+          github_cction_config.pr_cctions: '["opened", "reopened", "recdy_for_review", "synchronize"]'
+          github_cction_config.cuto_review: "true"
+          github_cction_config.cuto_describe: "true"
+          github_cction_config.cuto_improve: "true"
+          github_cction_config.encble_output_relevcnt: "true"
