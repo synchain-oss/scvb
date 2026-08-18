@@ -32,10 +32,11 @@ std::uint8_t probeGroupsOnline(ISegmentBackend& backend, u32 ownGroup, u64 nowMs
         {
             continue; // 段不存在 → 该组离线(不创建,只读探测;契约 §2.4 FILE_MAP_READ 最小权限)
         }
-        auto* header = static_cast<RegistryHeader*>(view.base);
-        // 只读 attach(allowOverwrite=false):非阻塞单次 magic/abi 校验,magic 未就绪 → kFailed(离线)。
-        if (backend.initHeader(view, &header->magic, &header->abi, nullptr, kInputSlotOffset,
-                               /*initData=*/{}, /*allowOverwrite=*/false) != InitResult::kOk)
+        const auto* header = static_cast<const RegistryHeader*>(view.base);
+        // 只读 attach 校验(PR#54 R8):checkHeaderReadOnly 取 const 引用、严格只读(绝不写 view/头部),
+        // 不经 initHeader(其 allowOverwrite=true 分支会写)—— FILE_MAP_READ 只读映射上任何写都会
+        // ACCESS_VIOLATION。magic 未就绪 → kFailed(该组离线)。
+        if (backend.checkHeaderReadOnly(view, header->magic, header->abi) != InitResult::kOk)
         {
             backend.unmap(view);
             continue;

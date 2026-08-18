@@ -302,3 +302,27 @@ TEST_CASE("T30 conflict 实例(非活跃)不得写 ctrl 命令环:拒绝且环�
     CHECK_FALSE(reader.dequeue(3, rec)); // 无第二份记录(冲突实例未写)
     CHECK(reader.overflowCount(3) == 0);
 }
+
+TEST_CASE("T30 checkHeaderReadOnly:只读 magic/abi 校验不写(PR#54 R8)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 创建并 claim g1 registry(magic/abi 就绪)。
+    scvb::Registry reg(backend, 1);
+    REQUIRE(reg.open() == scvb::Registry::ClaimResult::kClaimed);
+
+    // 只读打开(InProcess 下回退 openExisting,但仍走同一 checkHeaderReadOnly 路径)+ 校验。
+    scvb::SegmentView view;
+    REQUIRE(backend.openExistingReadOnly(L"Local\\SynchainSCVB.v1.g1.registry", view) == InitResult::kOk);
+    const auto* header = static_cast<const scvb::RegistryHeader*>(view.base);
+    const u32 magicBefore = header->magic.load(std::memory_order_acquire);
+    const u32 abiBefore = header->abi.load(std::memory_order_acquire);
+
+    REQUIRE(backend.checkHeaderReadOnly(view, header->magic, header->abi) == InitResult::kOk);
+
+    // 校验后头部未被写(严格只读)。
+    CHECK(header->magic.load(std::memory_order_acquire) == magicBefore);
+    CHECK(header->abi.load(std::memory_order_acquire) == abiBefore);
+    backend.unmap(view);
+}
