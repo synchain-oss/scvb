@@ -977,11 +977,20 @@ export function createTabMaster(opts) {
                 if (t === null || t === undefined) return;
                 // 就近端点吸到播放头(设计稿只给一个「设为播放头」钮,不区分起止)
                 const cur = readManualRange();
-                if (Math.abs(t - cur.startS) <= Math.abs(t - cur.endS)) {
-                    writeManualInputs(t, cur.endS);
+                let startS = cur.startS;
+                let endS = cur.endS;
+                if (startS === endS) {
+                    // 空区间(如双 0)时就近吸附会写出 start >= end 的非法区间
+                    // 被 applyRange 静默拒 —— 撑成 [0, 播放头] 合法区间
+                    // (PR #52 bot 建议)。
+                    startS = 0;
+                    endS = Math.max(t, 0.001);
+                } else if (Math.abs(t - startS) <= Math.abs(t - endS)) {
+                    startS = t;
                 } else {
-                    writeManualInputs(cur.startS, t);
+                    endS = t;
                 }
+                writeManualInputs(startS, endS);
                 applyRange("manual");
             });
         }
