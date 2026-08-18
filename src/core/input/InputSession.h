@@ -48,6 +48,7 @@ struct InputSessionBlockView
 {
     const AudioRingBinding* audio = nullptr; // 音频环绑定(可为 null → 不写环)
     u32 channel = 0; // claimed channel 快照(0 = 未绑定)
+    InputSlot* registrySlot = nullptr; // 经 registryLease 基址 + 冻结偏移快照(PR#51 第3轮红旗)
     SegmentHandle::Lease registryLease; // registry 段租约
     SegmentHandle::Lease audioLease; // audio 段租约
     SegmentHandle::Lease featLease; // feat 段租约
@@ -80,8 +81,9 @@ public:
     void setMuted(bool muted);
 
     // [A] capturing 位(C17):采集门控,一律 fetch_or/fetch_and([J48],禁 load-modify-store)。
-    // channel 来自 acquireBlock() 的块视图快照;调用方须持块视图租约(registry 段保活)。
-    void setCapturing(u32 channel, bool capturing);
+    // slot 来自 acquireBlock() 的块视图快照(经 registry 租约基址 + 冻结偏移寻址,音频线程
+    // 绝不裸读 registry_ 可变 header_,PR#51 第3轮红旗);调用方须持块视图租约(段保活)。
+    void setCapturing(InputSlot* slot, bool capturing);
 
     // [M] 25Hz 健康判定([J12]):见文件头。claim 未就绪/OutputSlot 空 → false(直通)。
     bool isHealthy(u64 nowMs) const;

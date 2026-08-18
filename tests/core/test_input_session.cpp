@@ -4,8 +4,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "input/InputSession.h"
@@ -161,6 +163,52 @@ TEST_CASE("健康判定:无 Output → false;Output 活跃 + mask → true", "[i
     // mask 位清除 → 不健康。
     out.clearConnectedMaskBit(3);
     REQUIRE_FALSE(in.isHealthy(1200));
+}
+
+TEST_CASE("PR#51 第3轮:播放中改组 × 音频线程 setCapturing 并发无崩溃(租约基址寻址)", "[input][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession s(backend, 1001);
+    s.setChannelId(3);
+    REQUIRE(s.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+
+    std::atomic<bool> stop{false};
+    std::thread audio([&s, &stop] {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            // 音频线程:每块 acquire 块视图(slot 经租约基址 + 冻结偏移快照),再写 capturing 位。
+            auto view = s.acquireBlock();
+            if (view.registrySlot != nullptr)
+            {
+                s.setCapturing(view.registrySlot, true);
+                s.setCapturing(view.registrySlot, false);
+            }
+        }
+    });
+
+    // 消息线程:反复改组 1↔2(释放旧组 slot/段 → 新组重走 claim)。
+    for (int i = 0; i < 200; ++i)
+    {
+        const u32 g = (i % 2 == 0) ? 2u : 1u;
+        (void)s.changeGroup(g, 48000, 512, 1, static_cast<scvb::u64>(i) * 10);
+    }
+    stop.store(true, std::memory_order_release);
+    audio.join();
+
+    // 收敛:改组回 g1 后正常 claim,capturing 位经块视图可写且被 registry 观测。
+    REQUIRE(s.changeGroup(1, 48000, 512, 1, 5000) == InputClaimState::kActive);
+    auto view = s.acquireBlock();
+    REQUIRE(view.registrySlot != nullptr);
+    s.setCapturing(view.registrySlot, true);
+
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE((probe.inputSlot(3)->flags.load() & scvb::kFlagCapturing) != 0);
+    s.setCapturing(view.registrySlot, false);
+    REQUIRE((probe.inputSlot(3)->flags.load() & scvb::kFlagCapturing) == 0);
+    SUCCEED("改组 × 音频线程 setCapturing 并发无崩溃,收敛后 capturing 位正确");
 }
 
 TEST_CASE("channel_id=0 后 prepare 不残留旧 claim", "[input][session]")

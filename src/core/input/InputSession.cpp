@@ -108,24 +108,21 @@ void InputSession::setMuted(bool muted)
     }
 }
 
-void InputSession::setCapturing(u32 channel, bool capturing)
+void InputSession::setCapturing(InputSlot* slot, bool capturing)
 {
-    if (channel == 0)
-    {
-        return;
-    }
-    InputSlot* s = registry_.inputSlot(channel);
-    if (s == nullptr)
+    // PR#51 第3轮红旗:slot 来自 acquireBlock() 块视图快照(经 registry 租约基址 + 冻结偏移寻址),
+    // 音频线程不再裸读 registry_ 可变 header_/handle_ —— 改组瞬间不构成撕裂组合。
+    if (slot == nullptr)
     {
         return;
     }
     if (capturing)
     {
-        s->flags.fetch_or(kFlagCapturing, std::memory_order_relaxed);
+        slot->flags.fetch_or(kFlagCapturing, std::memory_order_relaxed);
     }
     else
     {
-        s->flags.fetch_and(static_cast<u32>(~kFlagCapturing), std::memory_order_relaxed);
+        slot->flags.fetch_and(static_cast<u32>(~kFlagCapturing), std::memory_order_relaxed);
     }
 }
 
@@ -162,6 +159,9 @@ InputSessionBlockView InputSession::acquireBlock() const
     v.featLease = featHandle_.lease();
     v.audio = audioRing_.acquire();
     v.channel = claimedChannel_.load(std::memory_order_acquire);
+    // PR#51 第3轮红旗:经租约基址 + 冻结偏移快照 InputSlot*,不读 registry_ 可变 header_。
+    // 租约为空(改组已请求释放)→ base 为 null → registrySlot 为 null(setCapturing 空操作)。
+    v.registrySlot = Registry::inputSlotAtBase(v.registryLease.base(), v.channel);
     return v;
 }
 

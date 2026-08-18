@@ -207,7 +207,9 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     {
         const bool armed = captureArmed_.load(std::memory_order_relaxed) != 0;
         session_.featRing().setCapturing(armed);
-        session_.setCapturing(block.channel, armed); // 经块视图 channel + registry 租约(红旗#2/重要#3)
+        session_.setCapturing(
+            block.registrySlot,
+            armed); // 经块视图 slot 快照(第3轮红旗) // 经块视图 channel + registry 租约(红旗#2/重要#3)
         planarPtrs_[0] = src[0];
         planarPtrs_[1] = (srcCh >= 2) ? src[1] : nullptr;
         if (n > 0)
@@ -220,7 +222,7 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     }
     else
     {
-        session_.setCapturing(block.channel, false);
+        session_.setCapturing(block.registrySlot, false);
     }
 
     float peak = 0.0f;

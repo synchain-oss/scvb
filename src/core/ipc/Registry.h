@@ -129,6 +129,18 @@ public:
     InputSlot* inputSlot(u32 channel) const; // channel ∈ [1,15],非法/未打开 → nullptr
     OutputSlot* outputSlot() const;
 
+    // 音频线程经租约基址寻址 InputSlot(不读可变 header_,PR#51 第3轮红旗):布局冻结
+    // (kInputSlotOffset = sizeof(RegistryHeader)),base 由调用方 SegmentHandle 租约持有保证有效。
+    static InputSlot* inputSlotAtBase(void* base, u32 channel) noexcept
+    {
+        if (base == nullptr || channel == 0 || channel > kMaxChannels)
+        {
+            return nullptr;
+        }
+        auto* p = static_cast<char*>(base);
+        return reinterpret_cast<InputSlot*>(p + kInputSlotOffset + (channel - 1) * sizeof(InputSlot));
+    }
+
     // 音频线程按块租约(引用计数握手释放):块首 lease(),块末析构归还;持有期内保证 registry
     // 段不解映射(消息线程 release() 会推迟到 leaseCount 归零)。release() 请求后返回空租约。
     SegmentHandle::Lease lease() const { return handle_.lease(); }
