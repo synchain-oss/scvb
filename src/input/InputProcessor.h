@@ -98,6 +98,8 @@ private:
     // PR#51 红旗#1:state abi 拒载标志(setStateInformation 持锁写;T30 桥消息线程读)。
     bool stateAbiMismatch_ = false;
     scvb::u32 stateAbiSeen_ = 0;
+    // PR#51 重要#2:拒载更高 abi 后保留的宿主原始字节(getStateInformation 原样回写,持 lifecycleMutex_)。
+    std::vector<std::uint8_t> preservedStateBlob_;
 
     // 音频线程零分配缓冲(prepareToPlay 分配)。
     double sampleRate_ = 48000.0;

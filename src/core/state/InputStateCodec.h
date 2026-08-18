@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "state/StateCodec.h"
+
 namespace scvb::state
 {
 
@@ -37,6 +39,20 @@ struct InputState
     std::uint32_t uiScale = 100; // percent
     std::string uiLanguage = "en";
 };
+
+// PR#51 重要#2(第 2 轮)决策门:state 容器 abi 高于当前 → 拒载(接线层必须 preservedOriginal 原样回写,
+// 绝不把高版本 blob 覆盖成当前版;冻结契约 CLAUDE.md §7.3 / STATE_SCHEMA)。abi==当前或更低(v1 无历史
+// 版本)按当前布局直解。
+enum class InputStateAbiDecision
+{
+    Accept,
+    RejectNewer,
+};
+
+inline InputStateAbiDecision decideInputStateAbi(std::uint32_t abi) noexcept
+{
+    return (abi > kCurrentAbi) ? InputStateAbiDecision::RejectNewer : InputStateAbiDecision::Accept;
+}
 
 // 编码;语言超长截断(≤kInputLanguageMaxBytes)。返回 false = 无法分配。
 bool encodeInputState(const InputState& s, std::vector<std::uint8_t>& out);

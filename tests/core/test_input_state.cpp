@@ -103,3 +103,15 @@ TEST_CASE("Input state 范围校验(不可信字节拒载)", "[input][state]")
     // 空数据 → 拒载。
     REQUIRE_FALSE(scvb::state::decodeInputState(nullptr, 0, out));
 }
+
+TEST_CASE("state abi 决策门:高版本拒载,当前/低版本接受(PR#51 重要#2)", "[input][state]")
+{
+    using scvb::state::decideInputStateAbi;
+    using scvb::state::InputStateAbiDecision;
+    using scvb::state::kCurrentAbi;
+
+    REQUIRE(decideInputStateAbi(kCurrentAbi) == InputStateAbiDecision::Accept);
+    REQUIRE(decideInputStateAbi(0) == InputStateAbiDecision::Accept); // v1 无历史版本,低版本按当前布局直解
+    REQUIRE(decideInputStateAbi(kCurrentAbi + 1) == InputStateAbiDecision::RejectNewer);
+    REQUIRE(decideInputStateAbi(100) == InputStateAbiDecision::RejectNewer);
+}

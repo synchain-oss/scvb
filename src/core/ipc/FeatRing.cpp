@@ -27,30 +27,30 @@ void FeatRing::bind(FeatHeader* header, FeatFrame* ring, u32 mappedCapacity)
 
 void FeatRing::prepare(double sampleRate, int channels, int maxBlockSamples)
 {
-    extractor_.prepare(sampleRate, channels);
-    maxBlockSamples_ = std::max(1, maxBlockSamples);
-    const int ch = extractor_.channels();
-    shifted_.assign(static_cast<std::size_t>(ch), nullptr);
-    const int maxFrames = std::max(1, maxBlockSamples_ / extractor_.hopSize() + 2);
-    out_.assign(static_cast<std::size_t>(maxFrames), analysis::FeatFrame{});
-    prepared_ = true;
-    pendingSkip_ = 0;
-    nextHop_ = 0;
+    // 不可变运行态发布(PR#51 红旗第 2 轮):构造全新状态,绝不原地 assign —— 播放中并发 re-prepare
+    // 时,音频线程在途调用仍持旧状态指针(ownedState_ 保活),无悬垂、无锁、无自旋。
+    auto s = std::make_unique<FeatRunState>();
+    s->extractor->prepare(sampleRate, channels);
+    s->maxBlockSamples = std::max(1, maxBlockSamples);
+    const int ch = s->extractor->channels();
+    s->shifted.assign(static_cast<std::size_t>(ch), nullptr);
+    const int maxFrames = std::max(1, s->maxBlockSamples / s->extractor->hopSize() + 2);
+    s->out.assign(static_cast<std::size_t>(maxFrames), analysis::FeatFrame{});
+
+    state_.store(s.get(), std::memory_order_release);
+    ownedState_.push_back(std::move(s));
 }
 
 void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& betweenStores)
 {
-    if (!prepared_)
-    {
-        return;
-    }
+    FeatRunState* s = state_.load(std::memory_order_acquire);
     const FeatRingBinding* b = binding_.load(std::memory_order_acquire);
-    if (b == nullptr || !b->bound)
+    if (s == nullptr || b == nullptr || !b->bound)
     {
         return;
     }
 
-    const int64_t hopSamples = extractor_.hopSize();
+    const int64_t hopSamples = s->extractor->hopSize();
     // 首个完整 hop(04 §3.2 ceilDiv)。
     const uint64_t h0 = static_cast<uint64_t>((timelineSample + hopSamples - 1) / hopSamples);
 
@@ -65,64 +65,67 @@ void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& bet
     b->header->write_hop.store(h0, std::memory_order_release);
 
     // biquad 预热:run 边界 reset + 首完整 hop 预热(T08 口径,run B 首 hop 不残留 run A 滤波态)。
-    extractor_.startRun();
+    s->extractor->startRun();
 
     const int64_t firstFullSample = static_cast<int64_t>(h0) * hopSamples;
-    pendingSkip_ = (firstFullSample > timelineSample) ? (firstFullSample - timelineSample) : 0;
-    nextHop_ = h0;
+    s->pendingSkip = (firstFullSample > timelineSample) ? (firstFullSample - timelineSample) : 0;
+    s->nextHop = h0;
 }
 
 int FeatRing::processBlock(const float* const* channels, int numSamples)
 {
-    if (!capturing_ || !prepared_ || numSamples <= 0)
+    if (!capturing_.load(std::memory_order_relaxed) || numSamples <= 0)
     {
-        return 0; // 采集 OFF 或未就绪:静默丢弃(release 不写段、不推进 write_hop)
+        return 0; // 采集 OFF 或空块:静默丢弃(release 不写段、不推进 write_hop)
     }
+    FeatRunState* s = state_.load(std::memory_order_acquire);
     const FeatRingBinding* b = binding_.load(std::memory_order_acquire);
-    if (b == nullptr || !b->bound)
+    if (s == nullptr || b == nullptr || !b->bound)
     {
-        return 0; // 未绑定:静默不写、不推进 write_hop
+        return 0; // 未就绪/未绑定:静默不写、不推进 write_hop
     }
 
     int consumed = 0;
-    if (pendingSkip_ > 0)
+    bool tailDropped = false;
+    if (s->pendingSkip > 0)
     {
-        const int skip = static_cast<int>(std::min<int64_t>(pendingSkip_, static_cast<int64_t>(numSamples)));
-        pendingSkip_ -= skip;
+        const int skip = static_cast<int>(std::min<int64_t>(s->pendingSkip, static_cast<int64_t>(numSamples)));
+        s->pendingSkip -= skip;
         consumed = skip;
-        if (pendingSkip_ > 0)
-        {
-            return 0; // 整块仍是 run 起始部分 hop 的尾巴,丢弃
-        }
+        tailDropped = s->pendingSkip > 0; // 整块仍是 run 起始部分 hop 的尾巴,丢弃
     }
 
-    // 大块按 maxBlockSamples_ 分段喂 extractor:out_ 只按 maxBlockSamples_/hopSize+2 分配,
-    // 宿主离线渲染/bounce 时块长可超 maximumExpectedSamplesPerBlock,一次性喂会越界读 out_(PR#42 红旗)。
-    const int ch = extractor_.channels();
     int written = 0;
-    int remaining = numSamples - consumed;
-    while (remaining > 0)
+    if (!tailDropped)
     {
-        const int chunk = std::min(remaining, maxBlockSamples_);
-        for (int c = 0; c < ch; ++c)
+        // 大块按 maxBlockSamples 分段喂 extractor:out 只按 maxBlockSamples/hopSize+2 分配,
+        // 宿主离线渲染/bounce 时块长可超 maximumExpectedSamplesPerBlock,一次性喂会越界读 out(PR#42 红旗)。
+        const int ch = s->extractor->channels();
+        int remaining = numSamples - consumed;
+        while (remaining > 0)
         {
-            shifted_[static_cast<std::size_t>(c)] = channels[c] + consumed;
-        }
+            const int chunk = std::min(remaining, s->maxBlockSamples);
+            for (int c = 0; c < ch; ++c)
+            {
+                s->shifted[static_cast<std::size_t>(c)] = channels[c] + consumed;
+            }
 
-        const int got = extractor_.processBlock(shifted_.data(), chunk, out_.data(), static_cast<int>(out_.size()));
-        // 兜底 clamp:正常分段下 got <= out_.size();防御性钳制,杜绝任何越界读。
-        const int nFrames = std::min(got, static_cast<int>(out_.size()));
-        for (int i = 0; i < nFrames; ++i)
-        {
-            const uint64_t hop = nextHop_;
-            b->ring[hop % b->capacity] =
-                FeatFrame{out_[static_cast<std::size_t>(i)].kw_ms, out_[static_cast<std::size_t>(i)].peak};
-            ++nextHop_;
-            b->header->write_hop.store(nextHop_, std::memory_order_release); // 稳态:写帧后推进 write_hop
+            const int got =
+                s->extractor->processBlock(s->shifted.data(), chunk, s->out.data(), static_cast<int>(s->out.size()));
+            // 兜底 clamp:正常分段下 got <= out.size();防御性钳制,杜绝任何越界读。
+            const int nFrames = std::min(got, static_cast<int>(s->out.size()));
+            for (int i = 0; i < nFrames; ++i)
+            {
+                const uint64_t hop = s->nextHop;
+                b->ring[hop % b->capacity] =
+                    FeatFrame{s->out[static_cast<std::size_t>(i)].kw_ms, s->out[static_cast<std::size_t>(i)].peak};
+                ++s->nextHop;
+                b->header->write_hop.store(s->nextHop, std::memory_order_release); // 稳态:写帧后推进 write_hop
+            }
+            written += nFrames;
+            consumed += chunk;
+            remaining -= chunk;
         }
-        written += nFrames;
-        consumed += chunk;
-        remaining -= chunk;
     }
 
     return written;

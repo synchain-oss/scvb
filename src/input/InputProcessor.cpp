@@ -275,6 +275,14 @@ void ScvbInputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
 
+    // 【PR#51 重要#2】曾拒载更高 abi 的 state:保存时原样回写宿主传入的原字节(preservedOriginal
+    // 语义,T19 同款),绝不把高版本 blob 覆盖成当前版数据。
+    if (stateAbiMismatch_ && !preservedStateBlob_.empty())
+    {
+        destData.append(preservedStateBlob_.data(), preservedStateBlob_.size());
+        return;
+    }
+
     scvb::state::InputState s;
     s.channelId = static_cast<scvb::u32>(channelId_);
     s.groupId = static_cast<scvb::u32>(groupId_);
@@ -309,18 +317,22 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         return; // 不可信字节:解码失败 → 拒载(不崩溃、不半填充)
     }
+    const juce::ScopedLock lock(lifecycleMutex_);
+
     // 【PR#51 红旗#1】冻结契约(CLAUDE.md §7.3 / STATE_SCHEMA):读到高版本 abi → 拒载并提示升级,
-    // 绝不静默丢数据(原 blob 由宿主工程保有,preservedOriginal 语义;本插件运行时 state 不被触碰)。
-    // 低版本 abi:v1 为首版,无历史版本可迁移;按当前布局直解,失败则拒载。
-    if (chunks.abi > scvb::state::kCurrentAbi)
+    // 绝不静默丢数据;同时保留原字节供 getStateInformation 原样回写(PR#51 重要#2,preservedOriginal)。
+    if (scvb::state::decideInputStateAbi(chunks.abi) == scvb::state::InputStateAbiDecision::RejectNewer)
     {
         stateAbiMismatch_ = true;
         stateAbiSeen_ = chunks.abi;
+        preservedStateBlob_.assign(static_cast<const std::uint8_t*>(data),
+                                   static_cast<const std::uint8_t*>(data) + sizeInBytes);
         DBG("SCVB Input: state abi " << chunks.abi << " > current " << scvb::state::kCurrentAbi
                                      << "; refusing load (upgrade required)");
         return;
     }
     stateAbiMismatch_ = false;
+    preservedStateBlob_.clear();
 
     const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
     if (cfg == nullptr)
@@ -333,7 +345,6 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
         return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
     }
 
-    const juce::ScopedLock lock(lifecycleMutex_);
     channelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
     uiScale_ = static_cast<int>(s.uiScale);
