@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "InputBridgeLogic.h"
 
+#include <limits>
+
 #include "ipc/SegmentLayout.h" // kMaxChannels(§4.3 channelLabels 15 张卡)
 
 namespace scvb::input::bridge
@@ -66,7 +68,16 @@ juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
 {
     if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))
     {
-        return static_cast<int>(args[0]);
+        // PR#54 R2:double 越界(如 1e300)直接 static_cast<int> 是 UB,且处理器 clamp 在 cast 之后
+        // 永远跑不到 —— 越界/NaN 必须在解析层挡下(§0.8.2「夹取或拒绝」,拒绝路径)。int 全域可被
+        // double 精确表示,边界判定无舍入歧义。
+        const double d = static_cast<double>(args[0]);
+        if (!(d >= static_cast<double>(std::numeric_limits<int>::min()) &&
+              d <= static_cast<double>(std::numeric_limits<int>::max())))
+        {
+            return {};
+        }
+        return static_cast<int>(d);
     }
     return {};
 }

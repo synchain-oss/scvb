@@ -6,6 +6,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
+
 #include <juce_core/juce_core.h>
 
 #include "InputBridgeApi.h"
@@ -109,17 +111,24 @@ TEST_CASE("T30 remoteSetPriority 拒绝语义与优先级:unassigned > outputOff
     CHECK(priorityRejectReason(PriorityReject::kNone).isEmpty());
 }
 
-TEST_CASE("T30 parseIntArg:类型不符 → 空(回 badArg);数值截断(§0.8.2)")
+TEST_CASE("T30 parseIntArg:类型不符/越界 → 空(回 badArg);数值截断(§0.8.2)")
 {
     CHECK_FALSE(parseIntArg({}).hasValue()); // 缺参
     CHECK_FALSE(parseIntArg({juce::var("oops")}).hasValue()); // 字符串
     CHECK_FALSE(parseIntArg({juce::var()}).hasValue()); // void/null
     CHECK_FALSE(parseIntArg({juce::var(juce::String("3"))}).hasValue()); // 数字串也是类型不符
 
+    // double 越界/NaN:cast 前挡下(直接 static_cast<int> 是 UB;处理器 clamp 在 cast 后跑不到)。
+    CHECK_FALSE(parseIntArg({juce::var(1e300)}).hasValue());
+    CHECK_FALSE(parseIntArg({juce::var(-1e300)}).hasValue());
+    CHECK_FALSE(parseIntArg({juce::var(std::numeric_limits<double>::quiet_NaN())}).hasValue());
+    CHECK_FALSE(parseIntArg({juce::var(2147483648.0)}).hasValue()); // INT_MAX+1
+
     CHECK(*parseIntArg({juce::var(0)}) == 0); // 0 是合法业务值(setChannelId 释放/优先级 0),不夹取为拒绝
     CHECK(*parseIntArg({juce::var(7)}) == 7);
     CHECK(*parseIntArg({juce::var(3.9)}) == 3); // JS number 走 double,截断
-    CHECK(*parseIntArg({juce::var(-1)}) == -1); // 越界夹取归处理器(§0.8.2 夹取路径),不在本层拒绝
+    CHECK(*parseIntArg({juce::var(-1)}) == -1); // int 域内越界归处理器 clamp(§0.8.2 夹取路径)
+    CHECK(*parseIntArg({juce::var(2147483647.0)}) == 2147483647); // INT_MAX 边界值本身合法
     CHECK(*parseIntArg({juce::var(99), juce::var(1)}) == 99); // 多余参数忽略(取 args[0])
 }
 

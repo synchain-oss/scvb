@@ -36,10 +36,11 @@ enum class PriorityReject
 PriorityReject priorityRejection(int channelId, bool outputOnline, bool ringFull);
 juce::String priorityRejectReason(PriorityReject r); // kNone → ""
 
-// --- 数值参数解析(§0.8.2 类型不符 → 拒绝)--------------------------------------------
+// --- 数值参数解析(§0.8.2 类型不符/越界 → 拒绝)------------------------------------
 // 非数值(缺参/字符串/对象/null)→ 空 Optional,调用方回 {ok:false, reason:"badArg"};
-// 数值(JS number 走 double,截断)→ 值。范围越界不在本层处理(处理器 clamp,夹取路径)。
-// 绝不把非数值静默夹取为 0:0 是 setChannelId「释放」与 remoteSetPriority 的合法业务值。
+// 数值(JS number 走 double,截断)且在 int 全域内 → 值;double 越界/NaN → 空(cast 前挡下,
+// 处理器 clamp 只处理 int 域内的业务范围)。绝不把非数值静默夹取为 0:0 是 setChannelId「释放」
+// 与 remoteSetPriority 的合法业务值。
 juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args);
 
 // --- 载荷构造(键名与契约逐字一致;全部返回新 DynamicObject)--------------------------
