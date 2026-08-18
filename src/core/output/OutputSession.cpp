@@ -315,6 +315,7 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     // 释放旧组 OutputSlot → Unmap 旧组段。
     releaseSlot();
     releaseSegments();
+    resetChannelTracking(); // PR#53 第5轮:释放旧组后重置 per-channel 跟踪(旧组时序不得污染新组判定)
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
 
@@ -330,6 +331,7 @@ void OutputSession::release(u64 nowMs)
 {
     releaseSlot();
     releaseSegments();
+    resetChannelTracking();
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
     reap(nowMs);
@@ -421,6 +423,18 @@ void OutputSession::releaseHandle(SegmentHandle& handle)
     {
         pendingSegments_.push_back(std::move(handle));
     }
+}
+
+void OutputSession::resetChannelTracking() noexcept
+{
+    // 释放旧组/段后清零 per-channel 跟踪,防止旧组时序污染新组判定:onlinePrev_ 残留 true 会跳过
+    // [J32] 200ms 注入延迟(切换瞬间立即注入);陈旧 lastWriteHeadChangeMs_ 可能误触 kSuspendStallMs 提前挂起。
+    onlinePrev_.fill(false);
+    onlineSinceMs_.fill(0);
+    misalignedSinceMs_.fill(0);
+    lastGapCount_.fill(0);
+    lastWriteHead_.fill(0);
+    lastWriteHeadChangeMs_.fill(0);
 }
 
 void OutputSession::releaseSlot()

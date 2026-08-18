@@ -289,3 +289,44 @@ TEST_CASE("observer 态 tick 会 reap pending 句柄(缺陷2)", "[output][sessio
     b.tick(base + 1000);
     REQUIRE(b.pendingReleaseCount() == 0);
 }
+
+TEST_CASE("[J66] changeGroup 后新组同 idx 轨重新过 200ms 注入延迟(第5轮)", "[output][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // group 1:Input ch3 上线,Output 注入满 200ms。
+    InputSession in1(backend, 1001);
+    in1.setChannelId(3);
+    REQUIRE(in1.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in1.heartbeat(1100);
+    float buf1[16] = {};
+    scvb::AudioRing::write(in1.audioRing().acquire(), 0, buf1, 16);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    out.tick(1300); // 首次上线(onlineSinceMs=1300)
+    out.tick(1600); // ≥200ms → injectMask 置 ch3
+    REQUIRE((out.injectMask() & (1u << 2)) != 0);
+
+    // group 2:Input ch3 上线(同 idx)。
+    InputSession in2(backend, 1002);
+    in2.setChannelId(3);
+    in2.setGroupId(2);
+    REQUIRE(in2.prepare(48000, 512, 1, 1600) == InputClaimState::kActive);
+    in2.heartbeat(1700);
+    float buf2[16] = {};
+    scvb::AudioRing::write(in2.audioRing().acquire(), 0, buf2, 16);
+
+    // 切到 group 2:per-channel 跟踪被重置 → 同 idx 轨首次上线必须重新过 200ms 注入延迟。
+    REQUIRE(out.changeGroup(2, 48000, 512, 1800) == OutputClaimState::kActive);
+
+    out.tick(1900); // 新组 ch3 首次上线:injectMask 不应立即置位(旧 onlinePrev_ 残留会绕过延迟)
+    scvb::Registry probe2(backend, 2);
+    REQUIRE(probe2.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE((probe2.connectedMask() & (1u << 2)) != 0); // ch3 在线(未被陈旧 write_head 误判挂起)
+    REQUIRE((out.injectMask() & (1u << 2)) == 0); // 200ms 注入延迟重新计时
+
+    out.tick(2200); // 1900+300ms ≥200ms → 注入
+    REQUIRE((out.injectMask() & (1u << 2)) != 0);
+}

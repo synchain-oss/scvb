@@ -110,6 +110,7 @@ private:
     void releaseSegments();
     void releaseHandle(SegmentHandle& handle);
     void releaseSlot();
+    void resetChannelTracking() noexcept;
     void evaluateChannels(u64 nowMs);
     void refreshGlobalInfo(u64 nowMs);
     void consumeCommands(u64 nowMs);
