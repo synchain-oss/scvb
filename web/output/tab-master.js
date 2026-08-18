@@ -160,9 +160,18 @@ export function mmss(totalS) {
 /** mm:ss.mmm(Range 手动档输入框的桥面单位显示;契约 §1.8 只收秒)。 */
 export function secondsToTimecode(sec) {
     const s = Math.max(0, Number(sec) || 0);
-    const mm = Math.floor(s / 60);
-    const ss = Math.floor(s % 60);
-    const ms = Math.round((s - Math.floor(s)) * 1000);
+    let mm = Math.floor(s / 60);
+    let ss = Math.floor(s % 60);
+    // 毫秒四舍五入可能进到 1000(如 72.9996)——进位到秒/分,否则输出 "01:12.1000"
+    let ms = Math.round((s - Math.floor(s)) * 1000);
+    if (ms >= 1000) {
+        ms -= 1000;
+        ss += 1;
+        if (ss >= 60) {
+            ss -= 60;
+            mm += 1;
+        }
+    }
     return tt(mm) + ":" + tt(ss) + "." + String(ms).padStart(3, "0");
 }
 
