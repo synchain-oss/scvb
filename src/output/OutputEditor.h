@@ -96,6 +96,7 @@ private:
     // ---- diff-then-emit 状态(消息线程独占)----
     bool firstFrame_ = true; // mBridgeReady 后首帧必发各事件(§0.4)
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
+    double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     juce::String lastStateJson_;
     juce::String lastParamsJson_;
     juce::String lastConnJson_;

@@ -671,6 +671,9 @@ juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
 
 void ScvbOutputAudioProcessor::rebuildAllCurves()
 {
+    if (sampleRate_ <= 0.0)
+        return; // 未 prepare → 不构建不发布(防 NaN/inf CurveSegment,PR#55 第7轮缺陷2)
+
     for (int v = 1; v <= scvb::state::kNumVersions; ++v)
     {
         for (int t = 0; t < scvb::state::kNumTracks; ++t)

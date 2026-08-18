@@ -185,8 +185,14 @@ void OutputEditor::emitTick()
     emitMeters(); // 25Hz + 0.3dB 阈值
     emitPlayhead(); // 25Hz + diff
 
-    if (first)
+    // 段表快照:首帧必发;sample rate 变化(含宿主 prepareToPlay 前后)必重发 —— 否则 prepare 前用
+    // 0.0/默认率换算的旧时间会一直残留到下一次段编辑/undo/切版本(PR#55 第7轮缺陷1)。
+    const double srNow = processor_.sampleRate();
+    if (first || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)))
+    {
+        lastSegmentsSampleRate_ = srNow;
         emitSegments("snapshot", true);
+    }
 
     // scvb.captureProgress:仅播放中 2Hz;T29 无采集覆盖数据源,非播放不发(§2.7)。
     // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
@@ -843,6 +849,11 @@ void OutputEditor::handleCopyVersion(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
+    if (!processor_.isPrepared()) // 未 prepare → 拒绝(触发 rebuild,PR#55 第7轮缺陷2)
+    {
+        c(badArgResp());
+        return;
+    }
     const auto result = processor_.copyVersion(src, dst); // 持锁事务(PR#55 重要1)
     if (result != scvb::engine::CopyVersionResult::Ok)
     {
@@ -1074,6 +1085,11 @@ void OutputEditor::handleSetTrackManual(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
+    if (!processor_.isPrepared()) // 未 prepare → 拒绝(触发 rebuild,PR#55 第7轮缺陷2)
+    {
+        c(badArgResp());
+        return;
+    }
 
     int replacedSegments = 0;
     int replacedLocked = 0;
@@ -1234,6 +1250,11 @@ void OutputEditor::handleSetTransitionRamp(const ArgList& a, Completion c)
     if (isReadOnly())
     {
         c(observerResp());
+        return;
+    }
+    if (!processor_.isPrepared()) // 未 prepare → 拒绝(触发 rebuild,PR#55 第7轮缺陷2)
+    {
+        c(badArgResp());
         return;
     }
     const float ms = a.size() > 0 ? static_cast<float>(a[0]) : 80.0f;

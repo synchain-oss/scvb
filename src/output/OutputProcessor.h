@@ -148,6 +148,8 @@ public:
     juce::String uiLanguage() const { return uiLanguage_; }
     // 只读观察态(O3:同组已有主 Output);写函数据此回 {observer:true}。
     bool isReadOnly() const { return session_.state() == scvb::output::OutputClaimState::kObserver; }
+    // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。
+    bool isPrepared() const { return sampleRate_ > 0.0; }
     // [M] 该轨累计失准计数(gapCount;scvb.conn.channels[].misalignCount 数据源)。
     scvb::u32 gapCount(int channel) const { return session_.gapCount(static_cast<scvb::u32>(channel)); }
 
@@ -247,7 +249,7 @@ private:
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
 
     bool prepared_ = false;
-    double sampleRate_ = 48000.0;
+    double sampleRate_ = 0.0; // 0 = 未 prepare(宿主 prepareToPlay 前),防御零除(PR#55 第7轮)
     int preparedMaxBlock_ = 512;
 
     // 音频线程时间线状态(§5.2 步骤 2)。
