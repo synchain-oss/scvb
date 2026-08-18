@@ -48,7 +48,7 @@ struct ArbiterFixture
     std::array<std::atomic<float>, DspArbiter::kNumTracks> rawTrkW{};
     std::array<std::atomic<float>, DspArbiter::kNumTracks> rawFrz{};
     std::atomic<float> rawLeadSelect{0.0f};
-    std::array<scvb::CurveEvaluator, DspArbiter::kNumTracks> curves{};
+    std::array<std::shared_ptr<scvb::CurveEvaluator>, DspArbiter::kNumTracks> curves{};
     std::vector<std::unique_ptr<DspArbiter::Snapshot>> pool; // 进程寿命保活已发布快照
 
     ArbiterFixture()
@@ -59,7 +59,8 @@ struct ArbiterFixture
             rawVol[static_cast<std::size_t>(t)].store(0.0f);
             rawTrkW[static_cast<std::size_t>(t)].store(100.0f);
             rawFrz[static_cast<std::size_t>(t)].store(0.0f);
-            curves[static_cast<std::size_t>(t)] = constCurve(static_cast<double>(t) * 10.0 - 70.0, -3.0);
+            curves[static_cast<std::size_t>(t)] =
+                std::make_shared<scvb::CurveEvaluator>(constCurve(static_cast<double>(t) * 10.0 - 70.0, -3.0));
         }
         rawLeadSelect.store(0.0f);
     }
@@ -73,7 +74,7 @@ struct ArbiterFixture
             snap->sources[static_cast<std::size_t>(t)].rawVol = &rawVol[static_cast<std::size_t>(t)];
             snap->sources[static_cast<std::size_t>(t)].rawTrkW = &rawTrkW[static_cast<std::size_t>(t)];
             snap->sources[static_cast<std::size_t>(t)].rawFrz = &rawFrz[static_cast<std::size_t>(t)];
-            snap->sources[static_cast<std::size_t>(t)].curve = &curves[static_cast<std::size_t>(t)];
+            snap->sources[static_cast<std::size_t>(t)].curve = curves[static_cast<std::size_t>(t)];
         }
         snap->rawLeadSelect = &rawLeadSelect;
         arbiter.publish(snap.get());
@@ -379,7 +380,7 @@ TEST_CASE("AUTH-SMOOTH-1 权威切换 30ms 且零跳变(数值断言)", "[author
 
     // 曲线 pan=+50(轨0),host pan=-50;先 FOLLOW 定在 -50。
     f.rawPan[0].store(-50.0f);
-    f.curves[0] = constCurve(50.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(50.0, -3.0));
     f.bind();
 
     (void)f.arbiter.processBlock(false, 0.0);
@@ -432,7 +433,7 @@ TEST_CASE("AUTH-SMOOTH-3 版本切换 30ms(新快照发布)", "[authority][smoot
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[0] = constCurve(50.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(50.0, -3.0));
     f.bind();
 
     (void)f.arbiter.processBlock(true, 0.0);
@@ -440,7 +441,7 @@ TEST_CASE("AUTH-SMOOTH-3 版本切换 30ms(新快照发布)", "[authority][smoot
     REQUIRE(f.arbiter.panSmoother(0).getCurrentValue() == Approx(50.0f).margin(1e-6));
 
     // 版本切换:曲线真身从 +50 换到 -50。
-    f.curves[0] = constCurve(-50.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(-50.0, -3.0));
     f.bind();
     (void)f.arbiter.processBlock(true, 0.0);
     REQUIRE(f.arbiter.lastBlockWasSwitch());
@@ -479,7 +480,7 @@ TEST_CASE("AUTH-SMOOTH-5 跨 block 逐 512 样本重 arm 不截断 30ms 斜坡",
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
     f.rawPan[0].store(-50.0f);
-    f.curves[0] = constCurve(50.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(50.0, -3.0));
     f.bind();
 
     (void)f.arbiter.processBlock(false, 0.0);
@@ -519,7 +520,7 @@ TEST_CASE("AUTH-ARB-1 PRINT 态音频不经过参数(篡改参数不改变 DSP �
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[0] = constCurve(30.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(30.0, -3.0));
     // host 参数被「人为篡改」成 +10/+2。
     f.rawPan[0].store(10.0f);
     f.rawVol[0].store(2.0f);
@@ -541,7 +542,7 @@ TEST_CASE("AUTH-ARB-2 FOLLOW 态 host 参数是权威", "[authority][arbitrate]"
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[0] = constCurve(30.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(30.0, -3.0));
     f.rawPan[0].store(-40.0f);
     f.rawVol[0].store(5.0f);
     f.bind();
@@ -555,7 +556,7 @@ TEST_CASE("AUTH-ARB-3 freeze 冻结维度改读 host 参数(引擎权威下优�
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[0] = constCurve(30.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(30.0, -3.0));
     f.rawPan[0].store(-40.0f);
     f.rawVol[0].store(5.0f);
     f.bind();
@@ -583,7 +584,7 @@ TEST_CASE("AUTH-ARB-4 lead_select 覆盖优先于 freeze(叠加)", "[authority][
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[0] = constCurve(30.0, -3.0);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(30.0, -3.0));
     f.rawPan[0].store(-40.0f); // 冻结后的 host pan 值
     f.rawFrz[0].store(1.0f); // 冻结 pan
     f.rawLeadSelect.store(1.0f); // lead_select=1 → t01(索引0)
@@ -712,7 +713,7 @@ TEST_CASE("AUTH-LEAD-3 覆盖期间曲线真身逐字节不变(覆盖不落盘)"
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[2] = constCurve(-50.0, -2.5);
+    f.curves[2] = std::make_shared<scvb::CurveEvaluator>(constCurve(-50.0, -2.5));
     f.bind();
 
     // 覆盖前对曲线真身采样快照。
@@ -720,8 +721,8 @@ TEST_CASE("AUTH-LEAD-3 覆盖期间曲线真身逐字节不变(覆盖不落盘)"
     for (int k = 0; k < 1000; ++k)
     {
         const double t = static_cast<double>(k) / kFs;
-        before.push_back(f.curves[2].panAt(t));
-        before.push_back(f.curves[2].volAt(t));
+        before.push_back(f.curves[2]->panAt(t));
+        before.push_back(f.curves[2]->volAt(t));
     }
 
     // lead_select=3 覆盖运行(PRINT 态)。
@@ -734,8 +735,8 @@ TEST_CASE("AUTH-LEAD-3 覆盖期间曲线真身逐字节不变(覆盖不落盘)"
     for (int k = 0; k < 1000; ++k)
     {
         const double t = static_cast<double>(k) / kFs;
-        REQUIRE(f.curves[2].panAt(t) == before[idx++]);
-        REQUIRE(f.curves[2].volAt(t) == before[idx++]);
+        REQUIRE(f.curves[2]->panAt(t) == before[idx++]);
+        REQUIRE(f.curves[2]->volAt(t) == before[idx++]);
     }
 }
 
@@ -743,7 +744,7 @@ TEST_CASE("AUTH-LEAD-4 lead_select=3 且 lead_vol_exempt=false → vol 照常(�
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[2] = constCurve(-50.0, -2.5);
+    f.curves[2] = std::make_shared<scvb::CurveEvaluator>(constCurve(-50.0, -2.5));
     f.bind();
 
     // lead=0:vol 目标 = 曲线值。
@@ -762,7 +763,7 @@ TEST_CASE("AUTH-LEAD-5 PRINT 态覆盖层生效但不额外产生 gesture(打印
 {
     ArbiterFixture f;
     f.arbiter.prepare(kFs);
-    f.curves[2] = constCurve(-50.0, -2.5);
+    f.curves[2] = std::make_shared<scvb::CurveEvaluator>(constCurve(-50.0, -2.5));
     f.bind();
 
     // PRINT(engine authority)+ lead_select=3:DSP 目标被覆盖到中心,但曲线真身仍是 -50。
@@ -771,7 +772,7 @@ TEST_CASE("AUTH-LEAD-5 PRINT 态覆盖层生效但不额外产生 gesture(打印
 
     REQUIRE(f.arbiter.lastTargets()[2].pan == Approx(0.0f).margin(1e-9)); // DSP 覆盖生效
     // 打印头采样的是曲线真身(仍 -50),不是覆盖值 0 —— 覆盖不混进打印。
-    REQUIRE(f.curves[2].panAt(0.0) == Approx(-50.0).margin(1e-9));
+    REQUIRE(f.curves[2]->panAt(0.0) == Approx(-50.0).margin(1e-9));
 }
 
 // ============================================================================
