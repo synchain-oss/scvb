@@ -3,6 +3,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "AutomationPrinter.h"
 #include "OutputParams.h"
 
 // T01 空壳:processBlock 直通的最小 Output 插件。
@@ -44,8 +45,15 @@ public:
     juce::AudioProcessorValueTreeState& getAPVTS() { return apvts; }
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
+    // T17:50Hz 打印器挂 Processor 而非 Editor(§4.2 REAPER:GUI 关闭也要打印)。
+    // 【端到端接线归 T24】T17 只挂实例并接 releaseResources 兜底;运行态接线
+    // (processBlock 发布 PlayheadShot、setMode/setCurves/bindVersion/startPrinting、
+    // installHostEchoShield)由 T24 的 OutputProcessor 完整 processBlock 完成。
+    scvb::output::AutomationPrinter& getPrinter() { return printer; }
+
 private:
     juce::AudioProcessorValueTreeState apvts;
+    scvb::output::AutomationPrinter printer; // 声明在 apvts 之后 → 析构先于 apvts(参数存活)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScvbOutputAudioProcessor)
 };

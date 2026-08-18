@@ -71,8 +71,10 @@ add_test(NAME scvb_tests COMMAND scvb_tests)
 add_executable(scvb_params_tests
   core/test_params_golden.cpp
   core/test_authority_params.cpp
+  core/test_printer.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp
 )
 
 target_link_libraries(scvb_params_tests PRIVATE

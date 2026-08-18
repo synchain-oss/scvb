@@ -23,6 +23,8 @@ target_sources(SCVBOutput PRIVATE
   OutputParams.cpp
   OutputAuthority.h
   OutputAuthority.cpp
+  AutomationPrinter.h
+  AutomationPrinter.cpp
 )
 
 target_include_directories(SCVBOutput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
