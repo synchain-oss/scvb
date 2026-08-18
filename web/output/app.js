@@ -1247,9 +1247,20 @@ refreshI18n();
     const snap = await call("requestInitialState");
     if (snap) {
         store.snapshot = snap;
-        // §1.1:快照的 state 子树字段集 = §2.1 事件的字段集(两者不得各自漂移)
-        store.state = deepMerge(store.state, stripFull(snap));
-        store.conn = snap.conn || store.conn;
+        // §1.1:快照 = state 子树 + 五个快照专属键(session_guid / version /
+        // guide_seen_global / tour_seen_global / conn)。只把 state 子树并入
+        // store.state,元数据留在 store.snapshot 旁路 —— 混入会让后续 §2.1
+        // 增量深合并把它们当 state 字段拖着走(PR #52 bot 建议)。
+        const {
+            session_guid: _sg,
+            version: _ver,
+            guide_seen_global: _gg,
+            tour_seen_global: _tg,
+            conn: snapConn,
+            ...stateFields
+        } = snap;
+        store.state = deepMerge(store.state, stripFull(stateFields));
+        store.conn = snapConn || store.conn;
         store.ready = true;
         syncUiFromState();
         tabMaster.refreshPreview();

@@ -494,6 +494,7 @@ export function createTabMaster(opts) {
     const local = {
         pendingGroup: 0, // 改组确认条的预选组(0 = 未弹)
         analyzeFlashUntil: 0, // data-analyze="done" 闪绿的截止时刻
+        analyzePending: false, // analyze 受理回执→state 确认之间的在途标志
         preview: null, // previewAnalyze 的最近一次返回
         previewTimer: 0,
         previewKey: "", // scope 指纹,变了才重新 previewAnalyze
@@ -624,9 +625,14 @@ export function createTabMaster(opts) {
                 if (el.flow.getAttribute("data-analyze") === "disabled") return;
                 if (el.flow.getAttribute("data-analyze") === "running") {
                     // 契约 §1.7:进行中再点 = 取消
+                    local.analyzePending = false;
                     await call("cancelAnalyze");
                     return;
                 }
+                // 在途标志:受理回执到 state 确认之间还有别的事件帧(params/playhead)
+                // 会触发 render,只写 DOM 属性会被 renderFlow 冲回——flag 让它撑住
+                // (PR #52 bot 建议);state.analysis_run 确认后由 renderFlow 清。
+                local.analyzePending = true;
                 el.flow.setAttribute("data-analyze", "running");
                 const res = await call(
                     "analyze",
@@ -634,7 +640,10 @@ export function createTabMaster(opts) {
                 );
                 // 受理回执 ≠ 最终结果(契约 §1.6):失败(busy / 空影响面)立刻回落,
                 // 成功则等 scvb.state.analysis_run 与 scvb.segments 接管。
-                if (!res || res.ok === false) render();
+                if (!res || res.ok === false) {
+                    local.analyzePending = false;
+                    render();
+                }
             });
         }
     }
@@ -1109,8 +1118,12 @@ export function createTabMaster(opts) {
         // 只看覆盖率又会误伤重开工程——§2.7 captureProgress 非播放不发,覆盖帧
         // 未到但段表有货的工程本可再分析。两者都空才是真没数据。
         let an = "ready";
-        if (s.analysis_run && s.analysis_run.running) an = "running";
-        else if (now() < local.analyzeFlashUntil) an = "done";
+        if (s.analysis_run && s.analysis_run.running) {
+            local.analyzePending = false; // 状态面已确认,交回 state 驱动
+            an = "running";
+        } else if (now() < local.analyzeFlashUntil) an = "done";
+        else if (local.analyzePending)
+            an = "running"; // 受理回执前的在途窗口
         else if (isWriteBlocked() || analyzeNoData(p, totals.n))
             an = "disabled";
         el.flow.setAttribute("data-analyze", an);
@@ -1485,6 +1498,7 @@ export function createTabMaster(opts) {
             token === "vad" ||
             token === "segmentation"
         ) {
+            local.analyzePending = false; // 完成路径兜底清在途标志
             local.analyzeFlashUntil = now() + 1600;
             setTimeout(render, 1650);
         }
