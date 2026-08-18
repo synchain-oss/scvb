@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "OutputEditor.h"
 #include "output/MixMath.h"
 #include "state/StateMigration.h"
 
@@ -25,6 +26,10 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);
     printer_.installHostEchoShield(apvts);
+
+    // CRVS 段真身默认版本名([J05]:空值回落 V{n};加载 CRVS 时会被覆盖)。
+    crvsData_.versions[0].meta.name = "V1";
+    crvsData_.versions[1].meta.name = "V2";
 }
 
 ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor()
@@ -91,8 +96,7 @@ void ScvbOutputAudioProcessor::releaseResources()
 void ScvbOutputAudioProcessor::rebindVersion()
 {
     authority_.setVersionActive(versionActive_);
-    std::array<const scvb::CurveEvaluator*, 15> curves{}; // T24:无分析曲线(后续任务注入真身)
-    printer_.setCurves(curves);
+    rebuildAllCurves(); // 由 CRVS 段真身重建曲线 + 打印器重取活动版本曲线(T29)
     printer_.bindVersion(versionActive_, handles_);
 }
 
@@ -501,6 +505,11 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     }
     chunks.set(scvb::state::kFourccCfgs, std::move(cfg));
 
+    // CRVS:段真身(版本名/段表/pan_curve)从 live crvsData_ 编码(T29;覆盖 loadedChunks_ 的旧 CRVS)。
+    std::vector<std::uint8_t> crvs;
+    if (scvb::state::encodeCrvs(crvsData_, crvs))
+        chunks.set(scvb::state::kFourccCrvs, std::move(crvs));
+
     std::vector<std::uint8_t> blob;
     if (!scvb::state::encodeContainer(chunks, blob))
     {
@@ -577,6 +586,14 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
+    // CRVS:段真身解码(版本名/段表/pan_curve;decode 失败 → 保留默认,不崩溃)。
+    if (const scvb::state::Chunk* crvs = chunks.find(scvb::state::kFourccCrvs); crvs != nullptr)
+    {
+        scvb::state::CrvsData decoded;
+        if (scvb::state::decodeCrvs(crvs->payload.data(), crvs->payload.size(), decoded))
+            crvsData_ = std::move(decoded);
+    }
+
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     if (prepared_)
     {
@@ -643,6 +660,101 @@ void ScvbOutputAudioProcessor::setVersionActive(int version)
     {
         rebindVersion();
     }
+}
+
+juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
+{
+    return new scvb::output::OutputEditor(*this);
+}
+
+void ScvbOutputAudioProcessor::rebuildAllCurves()
+{
+    for (int v = 1; v <= scvb::state::kNumVersions; ++v)
+    {
+        for (int t = 0; t < scvb::state::kNumTracks; ++t)
+        {
+            const auto& src =
+                crvsData_.versions[static_cast<std::size_t>(v - 1)].tracks[static_cast<std::size_t>(t)].segments;
+            if (src.empty())
+            {
+                authority_.setCurve(v, t, nullptr);
+                continue;
+            }
+
+            std::vector<scvb::CurveSegment> curveSegments;
+            curveSegments.reserve(src.size());
+            for (const auto& s : src)
+            {
+                scvb::CurveSegment cs;
+                cs.startSec = static_cast<double>(s.t0) / sampleRate_;
+                cs.endSec = static_cast<double>(s.t1) / sampleRate_;
+                cs.pan = static_cast<double>(s.pan);
+                cs.volDb = static_cast<double>(s.volDb);
+                curveSegments.push_back(cs);
+            }
+
+            scvb::TransitionConfig cfg;
+            cfg.transitionRampSec = static_cast<double>(runtime_.transitionRampMs) / 1000.0;
+            scvb::CurveEvaluator ev;
+            ev.build(curveSegments, cfg);
+            authority_.setCurve(v, t, &ev); // 不可变契约:setCurve 深拷贝
+        }
+    }
+    // 打印器重取活动版本曲线(编辑后打印头立即反映新曲线真身,ADR-005)。
+    printer_.setCurves(authority_.activeCurves());
+}
+
+std::uint8_t ScvbOutputAudioProcessor::probeGroupsOnline()
+{
+    std::uint8_t bitmap = 0;
+
+    // 本组:直接读已映射的本组 OutputSlot 判定(state==active → 本组在线;observer → 同组已有主 Output)。
+    const auto ownState = session_.state();
+    if (ownState == scvb::output::OutputClaimState::kActive || ownState == scvb::output::OutputClaimState::kObserver)
+        bitmap |= static_cast<std::uint8_t>(1u << (groupId_ - 1));
+
+    const scvb::u64 now = scvb::steadyNowMs();
+    for (int g = 1; g <= scvb::kMaxGroups; ++g)
+    {
+        if (g == groupId_)
+            continue; // 本组已判定
+
+        // 契约 §2.4:异组只读探测 —— OpenFileMappingW(FILE_MAP_READ),只映射 RegistryHeader + OutputSlot,
+        // 绝不写异组任何字节、绝不 CAS/claim;失败(段不存在/映射失败/abi 不符)= 0 位,不重试不报错。
+        const HANDLE h =
+            ::OpenFileMappingW(FILE_MAP_READ, FALSE, scvb::segmentRegistryName(static_cast<scvb::u32>(g)).c_str());
+        if (h == nullptr)
+            continue;
+        void* base = ::MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0);
+        if (base == nullptr)
+        {
+            ::CloseHandle(h);
+            continue;
+        }
+
+        LARGE_INTEGER sectionSize{};
+        const bool sizeOk =
+            ::GetFileSizeEx(h, &sectionSize) != FALSE &&
+            sectionSize.QuadPart >= static_cast<LONGLONG>(scvb::kOutputSlotOffset + sizeof(scvb::OutputSlot));
+        if (sizeOk)
+        {
+            const auto* hdr = static_cast<const scvb::RegistryHeader*>(base);
+            if (hdr->magic.load(std::memory_order_acquire) == scvb::kScvbMagic &&
+                hdr->abi.load(std::memory_order_acquire) == scvb::kScvbAbi)
+            {
+                const auto* slot =
+                    reinterpret_cast<const scvb::OutputSlot*>(static_cast<const char*>(base) + scvb::kOutputSlotOffset);
+                if (slot->state.load(std::memory_order_acquire) == scvb::kSlotActive &&
+                    !scvb::isStaleDisplay(slot->heartbeat_ms.load(std::memory_order_acquire), now))
+                {
+                    bitmap |= static_cast<std::uint8_t>(1u << (g - 1));
+                }
+            }
+        }
+        ::UnmapViewOfFile(base);
+        ::CloseHandle(h);
+    }
+    return bitmap;
 }
 
 // juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。

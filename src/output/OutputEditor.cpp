@@ -1,0 +1,1431 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "OutputEditor.h"
+
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <string>
+
+#include "engine/CurveEvaluator.h"
+#include "state/SegmentEdit.h"
+#include "state/StateCodec.h"
+
+namespace scvb::output
+{
+
+namespace
+{
+
+using namespace scvb::outputbridge;
+
+// ---- juce::var 构造助手 ----
+juce::var obj()
+{
+    return juce::var(new juce::DynamicObject());
+}
+
+void put(juce::var& o, const char* key, const juce::var& value)
+{
+    if (auto* d = o.getDynamicObject())
+        d->setProperty(juce::Identifier(key), value);
+}
+
+juce::var mkArray()
+{
+    return juce::var(juce::Array<juce::var>());
+}
+
+void push(juce::var& arr, const juce::var& value)
+{
+    arr.append(value);
+}
+
+// ---- 回执助手 ----
+juce::var okResp()
+{
+    juce::var o = obj();
+    put(o, "ok", true);
+    return o;
+}
+
+juce::var badArgResp()
+{
+    juce::var o = obj();
+    put(o, "ok", false);
+    put(o, "reason", "badArg");
+    return o;
+}
+
+juce::var observerResp()
+{
+    juce::var o = obj();
+    put(o, "observer", true);
+    return o;
+}
+
+// ---- 枚举 → 字符串 ----
+const char* rangeModeName(int mode)
+{
+    switch (mode)
+    {
+    case 1:
+        return "daw_loop";
+    case 2:
+        return "manual";
+    case 0:
+    default:
+        return "follow";
+    }
+}
+
+const char* originName(scvb::state::SegmentOrigin o)
+{
+    switch (o)
+    {
+    case scvb::state::SegmentOrigin::UserEdited:
+        return "user_edited";
+    case scvb::state::SegmentOrigin::UserCreated:
+        return "user_created";
+    case scvb::state::SegmentOrigin::Auto:
+    default:
+        return "auto";
+    }
+}
+
+const char* shapeName(scvb::PanCurveShape s)
+{
+    switch (s)
+    {
+    case scvb::PanCurveShape::shelf:
+        return "shelf";
+    case scvb::PanCurveShape::cut:
+        return "cut";
+    case scvb::PanCurveShape::bell:
+    default:
+        return "bell";
+    }
+}
+
+const char* sideName(scvb::PanCurveSide s)
+{
+    switch (s)
+    {
+    case scvb::PanCurveSide::left:
+        return "left";
+    case scvb::PanCurveSide::right:
+        return "right";
+    case scvb::PanCurveSide::out:
+    default:
+        return "out";
+    }
+}
+
+// ---- 参数读取(消息线程)----
+float readParam(juce::AudioProcessorValueTreeState& apvts, const juce::String& id)
+{
+    if (const auto* p = apvts.getRawParameterValue(id))
+        return p->load(std::memory_order_relaxed);
+    return 0.0f;
+}
+
+// ---- CRVS 变更事务(全量快照 + 重建曲线 + 单条撤销)----
+class CrvsTransactionAction final : public juce::UndoableAction
+{
+public:
+    CrvsTransactionAction(ScvbOutputAudioProcessor& processor, scvb::state::CrvsData oldData,
+                          scvb::state::CrvsData newData)
+        : processor_(processor), oldData_(std::move(oldData)), newData_(std::move(newData))
+    {
+    }
+
+    bool perform() override
+    {
+        processor_.crvsData() = newData_;
+        processor_.rebuildAllCurves();
+        return true;
+    }
+
+    bool undo() override
+    {
+        processor_.crvsData() = oldData_;
+        processor_.rebuildAllCurves();
+        return true;
+    }
+
+    int getSizeInUnits() override { return 1; }
+
+private:
+    ScvbOutputAudioProcessor& processor_;
+    scvb::state::CrvsData oldData_;
+    scvb::state::CrvsData newData_;
+};
+
+} // namespace
+
+// ============================================================================
+// 构造
+// ============================================================================
+OutputEditor::OutputEditor(ScvbOutputAudioProcessor& processor)
+    : scvb::webview::WebViewHost(processor,
+                                 [&] {
+                                     scvb::webview::WebViewHost::Config config;
+                                     config.role = "output";
+                                     config.userDataFolderName = "scvb-output-webview";
+                                     config.version = "0.1.0"; // 项目版本(CMake project VERSION)
+                                     config.lang = processor.uiLanguage().toStdString();
+                                     config.uiScale = static_cast<float>(processor.uiScalePercent()) / 100.0f;
+                                     config.channelLimit = 15;
+                                     config.resourceSource = {}; // 空 Source(web 资源嵌入归 T27b/T28)
+                                     config.augmentOptions = [this](juce::WebBrowserComponent::Options& o) {
+                                         registerNativeFunctions(o);
+                                     };
+                                     return config;
+                                 }()),
+      processor_(processor)
+{
+}
+
+// ============================================================================
+// 首帧全量快照(契约 §1.1)
+// ============================================================================
+juce::var OutputEditor::buildSnapshot()
+{
+    juce::var o = buildStateSubtree(true);
+
+    // 快照专属字段(§1.1 语义行):session_guid / version / guide_seen_global / tour_seen_global / conn。
+    put(o, "session_guid", juce::var("00000000-0000-0000-0000-000000000000")); // 会话 GUID 归 T21/T40 持久化
+    juce::var version = obj();
+    put(version, "plugin", "0.1.0");
+    put(version, "abi", static_cast<int>(scvb::kScvbAbi));
+    put(o, "version", version);
+    put(o, "guide_seen_global", false); // 系统级全局默认(T31 落盘)
+    put(o, "tour_seen_global", false);
+    put(o, "conn", buildConnPayload());
+    return o;
+}
+
+// ============================================================================
+// 25Hz diff-then-emit(契约 §0.4)
+// ============================================================================
+void OutputEditor::emitTick()
+{
+    ++tickCount_;
+    const bool first = firstFrame_;
+    if (first)
+        firstFrame_ = false;
+
+    emitState(first);
+    emitParams(first);
+    if (first || (tickCount_ % 6 == 0))
+        emitConn(); // ~4Hz(25Hz 6 分频)
+    if (first || (tickCount_ % 25 == 0))
+        emitGroups(); // 1Hz(25Hz 25 分频)
+    emitMeters(); // 25Hz + 0.3dB 阈值
+    emitPlayhead(); // 25Hz + diff
+
+    if (first)
+        emitSegments("snapshot", true);
+
+    // scvb.captureProgress:仅播放中 2Hz;T29 无采集覆盖数据源,非播放不发(§2.7)。
+    // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
+}
+
+// ============================================================================
+// 事件发射
+// ============================================================================
+void OutputEditor::emitState(bool forceFull)
+{
+    (void)forceFull; // T29 增量子树未实现:一律 full:true 全量下发(UI 全量替换)。
+    juce::var payload = buildStateSubtree(true);
+    put(payload, "full", true);
+
+    const juce::String json = juce::JSON::toString(payload);
+    if (json != lastStateJson_)
+    {
+        lastStateJson_ = json;
+        webView().emitEventIfBrowserIsVisible(Event::State, payload);
+    }
+}
+
+void OutputEditor::emitParams(bool forceFull)
+{
+    auto& apvts = processor_.getAPVTS();
+    const int v = processor_.versionActive();
+
+    // 63 个 id:全局三件 + 当前激活版本 15 轨 × 4。
+    juce::Array<juce::String> ids;
+    ids.add("width");
+    ids.add("ms_balance");
+    ids.add("lead_select");
+    for (int t = 1; t <= 15; ++t)
+    {
+        ids.add(scvb::params::panId(v, t));
+        ids.add(scvb::params::volId(v, t));
+        ids.add(scvb::params::widthId(v, t));
+        ids.add(scvb::params::freezeId(v, t));
+    }
+
+    juce::var values = obj();
+    bool any = false;
+    for (const auto& id : ids)
+    {
+        const float value = readParam(apvts, id);
+        const auto it = lastParamsValues_.find(id);
+        const bool changed = it == lastParamsValues_.end() ||
+                             !juce::approximatelyEqual(static_cast<double>(it->second), static_cast<double>(value));
+        if (forceFull || changed)
+        {
+            put(values, id.toRawUTF8(), juce::var(value));
+            lastParamsValues_[id] = value;
+            any = true;
+        }
+    }
+
+    if (!any && !forceFull)
+        return;
+
+    juce::var payload = obj();
+    put(payload, "values", values);
+    put(payload, "hostEcho", false); // host echo 屏蔽→灰显归 T31/T32;桥面先恒 false
+    put(payload, "full", forceFull);
+    put(payload, "versionActive", v);
+
+    const juce::String json = juce::JSON::toString(payload);
+    if (json != lastParamsJson_)
+    {
+        lastParamsJson_ = json;
+        webView().emitEventIfBrowserIsVisible(Event::Params, payload);
+    }
+}
+
+void OutputEditor::emitConn()
+{
+    juce::var payload = buildConnPayload();
+    const juce::String json = juce::JSON::toString(payload);
+    if (json != lastConnJson_)
+    {
+        lastConnJson_ = json;
+        webView().emitEventIfBrowserIsVisible(Event::Conn, payload);
+    }
+}
+
+void OutputEditor::emitGroups()
+{
+    const std::uint8_t bitmap = processor_.probeGroupsOnline();
+    if (bitmap == lastGroupsOnline_)
+        return;
+
+    lastGroupsOnline_ = bitmap;
+    juce::var payload = obj();
+    put(payload, "groups_online", static_cast<int>(bitmap));
+    webView().emitEventIfBrowserIsVisible(Event::Groups, payload);
+}
+
+void OutputEditor::emitMeters()
+{
+    // T29: no live meter source (post-gain levels wired in T32), all tracks sit at the -60 dB floor.
+    // 0.3 dB threshold (contract 0.4-2): emit only when any track/bus moved >= threshold, first frame always.
+    constexpr float kFloorDb = -60.0f;
+    constexpr float kMeterThresholdDb = 0.3f;
+
+    std::array<float, 15> db;
+    std::array<float, 15> peak;
+    db.fill(kFloorDb);
+    peak.fill(kFloorDb);
+    const float busL = kFloorDb;
+    const float busR = kFloorDb;
+
+    bool changed = !metersEverSent_;
+    for (int t = 0; t < 15 && !changed; ++t)
+        changed = std::fabs(db[static_cast<std::size_t>(t)] - lastMeterDb_[static_cast<std::size_t>(t)]) >=
+                      kMeterThresholdDb ||
+                  std::fabs(peak[static_cast<std::size_t>(t)] - lastMeterPeak_[static_cast<std::size_t>(t)]) >=
+                      kMeterThresholdDb;
+    if (!changed)
+        changed = std::fabs(busL - lastBusL_) >= kMeterThresholdDb || std::fabs(busR - lastBusR_) >= kMeterThresholdDb;
+
+    if (!changed)
+        return;
+
+    metersEverSent_ = true;
+    lastMeterDb_ = db;
+    lastMeterPeak_ = peak;
+    lastBusL_ = busL;
+    lastBusR_ = busR;
+
+    juce::var tracks = mkArray();
+    for (int t = 0; t < 15; ++t)
+    {
+        juce::var tr = obj();
+        put(tr, "db", static_cast<double>(db[static_cast<std::size_t>(t)]));
+        put(tr, "peakDb", static_cast<double>(peak[static_cast<std::size_t>(t)]));
+        push(tracks, tr);
+    }
+    juce::var bus = obj();
+    juce::var l = obj();
+    put(l, "db", static_cast<double>(busL));
+    put(l, "peakDb", static_cast<double>(busL));
+    juce::var r = obj();
+    put(r, "db", static_cast<double>(busR));
+    put(r, "peakDb", static_cast<double>(busR));
+    put(bus, "l", l);
+    put(bus, "r", r);
+
+    juce::var payload = obj();
+    put(payload, "tracks", tracks);
+    put(payload, "bus", bus);
+    webView().emitEventIfBrowserIsVisible(Event::Meters, payload);
+}
+
+void OutputEditor::emitPlayhead()
+{
+    double timeS = 0.0;
+    bool playing = false;
+    if (auto* ph = processor_.getPlayHead())
+    {
+        const auto pos = ph->getPosition();
+        if (pos.hasValue())
+        {
+            playing = pos->getIsPlaying();
+            if (const auto ts = pos->getTimeInSamples(); ts.hasValue())
+                timeS = static_cast<double>(*ts) / processor_.sampleRate();
+        }
+    }
+
+    // inRange(§2.6):mode=follow 恒 true;否则落在 [startS, endS)。
+    const auto& rt = processor_.runtime();
+    bool inRange = true;
+    if (rt.rangeMode != 0)
+        inRange = timeS >= rt.rangeStartS && timeS < rt.rangeEndS;
+
+    juce::var payload = obj();
+    put(payload, "timeS", timeS);
+    put(payload, "isPlaying", playing);
+    put(payload, "inRange", inRange);
+    // loopStartS/loopEndS:仅宿主提供且 kCycleValid 时出现;T29 未接 loop 换算,缺失即不出现。
+
+    const juce::String json = juce::JSON::toString(payload);
+    if (json != lastPlayheadJson_)
+    {
+        lastPlayheadJson_ = json;
+        webView().emitEventIfBrowserIsVisible(Event::Playhead, payload);
+    }
+}
+
+void OutputEditor::emitCaptureProgress()
+{
+    // §2.7:非播放不发;T29 无覆盖增量数据源,不实现(占位,避免遗漏事件名)。
+}
+
+void OutputEditor::emitSegments(const juce::String& reason, bool allTracks)
+{
+    webView().emitEventIfBrowserIsVisible(Event::Segments, buildSegmentsPayload(reason, allTracks));
+}
+
+void OutputEditor::emitError(const juce::String& code, int ch, const juce::var& detail, bool active)
+{
+    juce::var payload = obj();
+    put(payload, "code", code);
+    if (ch >= 1 && ch <= 15)
+        put(payload, "ch", ch);
+    put(payload, "detail", detail);
+    put(payload, "active", active);
+    webView().emitEventIfBrowserIsVisible(Event::Error, payload);
+}
+
+// ============================================================================
+// 载荷构造
+// ============================================================================
+juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
+{
+    const auto& rt = processor_.runtime();
+    const auto& crvs = processor_.crvsData();
+
+    juce::var o = obj();
+    put(o, "config_seq", static_cast<int>(rt.configSeq));
+    put(o, "group_id", processor_.groupId());
+
+    juce::var global = obj();
+    put(global, "capture_enabled", processor_.captureEnabled());
+    put(global, "output_enabled", processor_.outputEnabled());
+    put(global, "version_active", processor_.versionActive());
+    juce::var range = obj();
+    put(range, "mode", rangeModeName(rt.rangeMode));
+    put(range, "start_s", rt.rangeStartS);
+    put(range, "end_s", rt.rangeEndS);
+    put(global, "range", range);
+    put(o, "global", global);
+
+    juce::var analysis = obj();
+    juce::var vad = obj();
+    put(vad, "threshold_db", rt.vadThresholdDb);
+    put(vad, "hysteresis_db", rt.vadHysteresisDb);
+    put(vad, "hangover_ms", rt.vadHangoverMs);
+    put(vad, "padding_pre_ms", rt.vadPaddingPreMs);
+    put(vad, "padding_post_ms", rt.vadPaddingPostMs);
+    put(analysis, "vad", vad);
+    juce::var segmentation = obj();
+    put(segmentation, "mode", rt.segmentationMode);
+    put(segmentation, "sensitivity", rt.segmentationSensitivity);
+    put(segmentation, "min_segment_ms", rt.segmentationMinSegmentMs);
+    put(analysis, "segmentation", segmentation);
+    put(analysis, "transition_ramp_ms", rt.transitionRampMs);
+    put(analysis, "loudness_mode", rt.loudnessMode);
+    put(analysis, "center_slot_policy", rt.centerSlotPolicy);
+    put(o, "analysis", analysis);
+
+    juce::var channels = mkArray();
+    for (int t = 0; t < 15; ++t)
+    {
+        const auto& c = rt.channels[static_cast<std::size_t>(t)];
+        juce::var ch = obj();
+        put(ch, "enabled", c.enabled);
+        put(ch, "label", c.label);
+        put(ch, "source_channels", c.sourceChannels);
+        // J60:未显式设置时按 mono=true / stereo=false 推导。
+        const bool participate = c.participateAutoPanSet ? c.participateAutoPan : (c.sourceChannels == 1);
+        put(ch, "participate_in_auto_pan", participate);
+        put(ch, "priority", c.priority);
+        put(ch, "lead_lock", c.leadLock);
+        put(ch, "lead_vol_exempt", c.leadVolExempt);
+        put(ch, "pair_id", c.pairId);
+        push(channels, ch);
+    }
+    put(o, "channels", channels);
+
+    juce::var versions = mkArray();
+    for (int v = 0; v < 2; ++v)
+    {
+        const auto& vc = crvs.versions[static_cast<std::size_t>(v)];
+        juce::var ver = obj();
+        const juce::String name =
+            vc.meta.name.empty() ? juce::String::formatted("V%d", v + 1) : juce::String::fromUTF8(vc.meta.name.c_str());
+        put(ver, "name", name);
+        bool empty = true;
+        for (int t = 0; t < 15 && empty; ++t)
+            empty = vc.tracks[static_cast<std::size_t>(t)].segments.empty();
+        put(ver, "empty", empty);
+        juce::var panCurve = obj();
+        juce::var points = mkArray();
+        for (const auto& p : vc.panCurve)
+        {
+            juce::var pt = obj();
+            put(pt, "angle", p.angle);
+            put(pt, "gain_db", p.gainDb);
+            put(pt, "shape", shapeName(p.shape));
+            put(pt, "q", p.q);
+            put(pt, "side", sideName(p.side));
+            push(points, pt);
+        }
+        put(panCurve, "points", points);
+        put(ver, "pan_curve", panCurve);
+        push(versions, ver);
+    }
+    put(o, "versions", versions);
+
+    juce::var features = obj();
+    put(features, "embedded", false);
+    put(features, "bytes", static_cast<juce::int64>(0));
+    put(o, "features", features);
+
+    juce::var ui = obj();
+    put(ui, "scale", static_cast<float>(processor_.uiScalePercent()) / 100.0f);
+    put(ui, "language", processor_.uiLanguage());
+    put(ui, "active_tab", rt.activeTab);
+    put(ui, "guide_seen", rt.guideSeen);
+    put(ui, "tour_seen", rt.tourSeen);
+    put(o, "ui", ui);
+
+    juce::var printGuard = obj();
+    put(printGuard, "pending", rt.printGuardPending);
+    put(o, "print_guard", printGuard);
+
+    juce::var recapture = obj();
+    put(recapture, "armed", rt.recaptureArmed);
+    put(recapture, "tracksMask", static_cast<int>(rt.recaptureTracksMask));
+    put(recapture, "startS", rt.recaptureStartS);
+    put(recapture, "endS", rt.recaptureEndS);
+    put(recapture, "autoStop", rt.recaptureAutoStop);
+    put(o, "recapture", recapture);
+
+    juce::var analysisRun = obj();
+    put(analysisRun, "running", rt.analysisRunning);
+    if (rt.analysisHasProgress)
+        put(analysisRun, "progress", rt.analysisProgress);
+    put(o, "analysis_run", analysisRun);
+
+    return o;
+}
+
+juce::var OutputEditor::buildConnPayload() const
+{
+    const bool readOnly = processor_.isReadOnly();
+
+    juce::var channels = mkArray();
+    for (int t = 0; t < 15; ++t)
+    {
+        juce::var ch = obj();
+        // T29:per-channel slotState/heartbeat 真身归 T30/T32(读本组 registry InputSlot);
+        // 此处以 session 视角的最小面填充:空闲 0 / 活跃 2(仅当本实例为 active)。
+        const int slotState = (!readOnly) ? 2 : 0;
+        put(ch, "slotState", slotState);
+        put(ch, "heartbeatAgeMs", static_cast<juce::int64>(0xFFFFFFFFu)); // 哨兵「无数据」
+        put(ch, "heartbeatFresh", !readOnly);
+        put(ch, "capturing", false);
+        put(ch, "misalignCount", static_cast<int>(processor_.gapCount(t + 1)));
+        put(ch, "srMismatch", false);
+        push(channels, ch);
+    }
+
+    juce::var o = obj();
+    put(o, "channels", channels);
+    put(o, "outputReadOnly", readOnly);
+    put(o, "generation", 0);
+    return o;
+}
+
+juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, bool allTracks) const
+{
+    const int v = processor_.versionActive();
+    const auto& crvs = processor_.crvsData();
+    const auto& vc = crvs.versions[static_cast<std::size_t>(v - 1)];
+    const double sr = processor_.sampleRate();
+
+    juce::var channels = mkArray();
+    for (int t = 0; t < 15; ++t)
+    {
+        const auto& segments = vc.tracks[static_cast<std::size_t>(t)].segments;
+        if (!allTracks && segments.empty())
+            continue; // 增量:只含受影响(有段)轨;snapshot/versionActive 含全部轨
+
+        juce::var ch = obj();
+        put(ch, "ch", t + 1);
+        juce::var segArr = mkArray();
+        for (std::size_t i = 0; i < segments.size(); ++i)
+        {
+            const auto& s = segments[i];
+            juce::var seg = obj();
+            put(seg, "segIdx", static_cast<int>(i));
+            put(seg, "t0S", static_cast<double>(s.t0) / sr);
+            put(seg, "t1S", static_cast<double>(s.t1) / sr);
+            put(seg, "pan", static_cast<double>(s.pan));
+            put(seg, "volDb", static_cast<double>(s.volDb));
+            put(seg, "origin", originName(scvb::state::segmentOrigin(s.flags)));
+            put(seg, "locked", scvb::state::segmentLocked(s.flags));
+            put(seg, "loudnessLufs", 0.0); // 段内积分响度归 T21 分析管线
+            push(segArr, seg);
+        }
+        put(ch, "segments", segArr);
+        put(ch, "stale", false);
+        push(channels, ch);
+    }
+
+    juce::var diff = obj();
+    put(diff, "kept", 0);
+    put(diff, "changed", mkArray());
+    put(diff, "added", 0);
+    put(diff, "removed", 0);
+
+    juce::var o = obj();
+    put(o, "version", v);
+    put(o, "reason", reason);
+    put(o, "channels", channels);
+    put(o, "diff", diff);
+    return o;
+}
+
+// ============================================================================
+// native function 注册(30 个插件专属)
+// ============================================================================
+void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& options)
+{
+    using WBC = juce::WebBrowserComponent;
+
+    auto add = [&options, this](const char* name, void (OutputEditor::*handler)(const ArgList&, Completion)) {
+        options = options.withNativeFunction(juce::Identifier(name), [this, handler](const ArgList& a, Completion c) {
+            (this->*handler)(a, std::move(c));
+        });
+    };
+
+    add(Fn::SetCaptureEnabled, &OutputEditor::handleSetCaptureEnabled);
+    add(Fn::SetOutputEnabled, &OutputEditor::handleSetOutputEnabled);
+    add(Fn::SetGroupId, &OutputEditor::handleSetGroupId);
+    add(Fn::PreviewAnalyze, &OutputEditor::handlePreviewAnalyze);
+    add(Fn::Analyze, &OutputEditor::handleAnalyze);
+    add(Fn::CancelAnalyze, &OutputEditor::handleCancelAnalyze);
+    add(Fn::SetRange, &OutputEditor::handleSetRange);
+    add(Fn::SetVersionActive, &OutputEditor::handleSetVersionActive);
+    add(Fn::SetVersionName, &OutputEditor::handleSetVersionName);
+    add(Fn::CopyVersion, &OutputEditor::handleCopyVersion);
+    add(Fn::BeginParamGesture, &OutputEditor::handleBeginParamGesture);
+    add(Fn::SetParam, &OutputEditor::handleSetParam);
+    add(Fn::EndParamGesture, &OutputEditor::handleEndParamGesture);
+    add(Fn::SetChannelConfig, &OutputEditor::handleSetChannelConfig);
+    add(Fn::SetTrackManual, &OutputEditor::handleSetTrackManual);
+    add(Fn::SetPanCurve, &OutputEditor::handleSetPanCurve);
+    add(Fn::SetVadParams, &OutputEditor::handleSetVadParams);
+    add(Fn::SetSegmentation, &OutputEditor::handleSetSegmentation);
+    add(Fn::SetTransitionRamp, &OutputEditor::handleSetTransitionRamp);
+    add(Fn::SetAnalysisConfig, &OutputEditor::handleSetAnalysisConfig);
+    add(Fn::EditSegment, &OutputEditor::handleEditSegment);
+    add(Fn::RecaptureArm, &OutputEditor::handleRecaptureArm);
+    add(Fn::ClearCoverage, &OutputEditor::handleClearCoverage);
+    add(Fn::Undo, &OutputEditor::handleUndo);
+    add(Fn::Redo, &OutputEditor::handleRedo);
+    add(Fn::RequestWaveform, &OutputEditor::handleRequestWaveform);
+    add(Fn::SetActiveTab, &OutputEditor::handleSetActiveTab);
+    add(Fn::SetGuideSeen, &OutputEditor::handleSetGuideSeen);
+    add(Fn::SetTourSeen, &OutputEditor::handleSetTourSeen);
+    add(Fn::ConfirmPrintGuard, &OutputEditor::handleConfirmPrintGuard);
+}
+
+// ============================================================================
+// CRVS 事务 + 只读态
+// ============================================================================
+void OutputEditor::commitCrvsTransaction(const juce::String& name, const std::function<void()>& mutator)
+{
+    auto& mgr = processor_.authority().undoManager();
+    const scvb::state::CrvsData oldData = processor_.crvsData();
+    mutator(); // 就地改 crvsData_
+    const scvb::state::CrvsData newData = processor_.crvsData();
+    mgr.beginNewTransaction(name);
+    mgr.perform(new CrvsTransactionAction(processor_, oldData, newData));
+}
+
+bool OutputEditor::isReadOnly() const
+{
+    return processor_.isReadOnly();
+}
+
+// ============================================================================
+// handlers
+// ============================================================================
+void OutputEditor::handleSetCaptureEnabled(const ArgList& a, Completion c)
+{
+    const bool on = a.size() > 0 && static_cast<bool>(a[0]);
+    processor_.setCaptureEnabled(on);
+    c(okResp());
+}
+
+void OutputEditor::handleSetOutputEnabled(const ArgList& a, Completion c)
+{
+    const bool on = a.size() > 0 && static_cast<bool>(a[0]);
+    processor_.setOutputEnabled(on);
+    c(okResp());
+}
+
+void OutputEditor::handleSetGroupId(const ArgList& a, Completion c)
+{
+    const int g = a.size() > 0 ? static_cast<int>(a[0]) : 1;
+    if (g < 1 || g > 8)
+    {
+        c(badArgResp());
+        return;
+    }
+    processor_.setGroupId(g);
+    c(okResp());
+}
+
+void OutputEditor::handlePreviewAnalyze(const ArgList& /*a*/, Completion c)
+{
+    // 纯只读 dry-run:范围∩覆盖 ∩ origin≠auto 段相交;T29 无覆盖/分析管线 → 空集合。
+    juce::var o = obj();
+    put(o, "intervals", 0);
+    put(o, "tracks", 0);
+    put(o, "manualKept", 0);
+    c(o);
+}
+
+void OutputEditor::handleAnalyze(const ArgList& /*a*/, Completion c)
+{
+    // §1.6:受理回执 + 影响面,立即 resolve(长耗时分析绝不阻塞消息线程)。
+    // T29:分析管线(FeatureExtractor/Segmentation/Reanalysis)未接线 → affected {0,0,0},不置 running。
+    auto& rt = processor_.runtime();
+    if (rt.analysisRunning)
+    {
+        juce::var o = obj();
+        put(o, "ok", false);
+        put(o, "reason", "busy");
+        c(o);
+        return;
+    }
+    juce::var affected = obj();
+    put(affected, "intervals", 0);
+    put(affected, "tracks", 0);
+    put(affected, "manualKept", 0);
+    juce::var o = obj();
+    put(o, "ok", true);
+    put(o, "affected", affected);
+    c(o);
+}
+
+void OutputEditor::handleCancelAnalyze(const ArgList& /*a*/, Completion c)
+{
+    // T29:无进行中的分析。
+    juce::var o = obj();
+    put(o, "ok", false);
+    c(o);
+}
+
+void OutputEditor::handleSetRange(const ArgList& a, Completion c)
+{
+    const juce::String mode = a.size() > 0 ? a[0].toString() : juce::String("follow");
+    const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
+    const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
+
+    int modeInt = 0;
+    if (mode == "daw_loop")
+        modeInt = 1;
+    else if (mode == "manual")
+        modeInt = 2;
+    else if (mode != "follow")
+    {
+        c(badArgResp());
+        return;
+    }
+
+    if (modeInt == 2 && startS >= endS)
+    {
+        c(badArgResp());
+        return;
+    }
+
+    auto& rt = processor_.runtime();
+    rt.rangeMode = modeInt;
+    if (modeInt != 0) // follow 忽略 startS/endS
+    {
+        rt.rangeStartS = startS;
+        rt.rangeEndS = endS;
+    }
+    c(okResp());
+}
+
+void OutputEditor::handleSetVersionActive(const ArgList& a, Completion c)
+{
+    const int v = a.size() > 0 ? static_cast<int>(a[0]) : 1;
+    if (v < 1 || v > 2)
+    {
+        c(badArgResp());
+        return;
+    }
+    processor_.setVersionActive(v);
+    // §1.9:切版本后全量重发 segments + state。
+    emitSegments("versionActive", true);
+    lastStateJson_.clear(); // 强制 state 重发
+    c(okResp());
+}
+
+void OutputEditor::handleSetVersionName(const ArgList& a, Completion c)
+{
+    const int v = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    const juce::String name = a.size() > 1 ? a[1].toString() : juce::String();
+
+    std::string effective;
+    const auto result = scvb::engine::normalizeVersionName(v, name.toStdString(), effective);
+    if (result == scvb::engine::SetNameResult::InvalidIndex)
+    {
+        c(badArgResp());
+        return;
+    }
+
+    if (processor_.crvsData().versions[static_cast<std::size_t>(v - 1)].meta.name == effective)
+    {
+        juce::var o = obj();
+        put(o, "ok", true);
+        put(o, "name", juce::String::fromUTF8(effective.c_str()));
+        c(o);
+        return;
+    }
+
+    commitCrvsTransaction("Rename V" + juce::String(v), [&] {
+        processor_.crvsData().versions[static_cast<std::size_t>(v - 1)].meta.name = effective;
+    });
+
+    juce::var o = obj();
+    put(o, "ok", true);
+    put(o, "name", juce::String::fromUTF8(effective.c_str()));
+    c(o);
+}
+
+void OutputEditor::handleCopyVersion(const ArgList& a, Completion c)
+{
+    const int src = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    const int dst = a.size() > 1 ? static_cast<int>(a[1]) : 0;
+    if (src < 1 || src > 2 || dst < 1 || dst > 2 || src == dst)
+    {
+        c(badArgResp());
+        return;
+    }
+
+    commitCrvsTransaction("Copy V" + juce::String(src) + " -> V" + juce::String(dst), [&] {
+        auto& crvs = processor_.crvsData();
+        auto& dstCurve = crvs.versions[static_cast<std::size_t>(dst - 1)];
+        const auto& srcCurve = crvs.versions[static_cast<std::size_t>(src - 1)];
+        dstCurve.tracks = srcCurve.tracks; // 深拷贝段表(含 origin/locked)
+        dstCurve.panCurve = srcCurve.panCurve;
+        // name 不复制(保留目标名,J05);meta 记 copied_from/copied_at。
+        dstCurve.meta.copiedFrom = src;
+        dstCurve.meta.copiedAtMs = static_cast<std::int64_t>(juce::Time::getCurrentTime().toMilliseconds());
+    });
+
+    emitSegments("copyVersion", true);
+    c(okResp());
+}
+
+void OutputEditor::handleBeginParamGesture(const ArgList& a, Completion c)
+{
+    const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
+    if (auto* p = processor_.getAPVTS().getParameter(id))
+    {
+        p->beginChangeGesture();
+        c(okResp());
+        return;
+    }
+    c(badArgResp());
+}
+
+void OutputEditor::handleSetParam(const ArgList& a, Completion c)
+{
+    const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
+    const float value = a.size() > 1 ? static_cast<float>(a[1]) : 0.0f;
+    if (auto* p = processor_.getAPVTS().getParameter(id))
+    {
+        p->setValueNotifyingHost(p->convertTo0to1(value)); // 工程值 → 归一化(§1.13)
+        c(okResp());
+        return;
+    }
+    c(badArgResp());
+}
+
+void OutputEditor::handleEndParamGesture(const ArgList& a, Completion c)
+{
+    const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
+    if (auto* p = processor_.getAPVTS().getParameter(id))
+    {
+        p->endChangeGesture();
+        c(okResp());
+        return;
+    }
+    c(badArgResp());
+}
+
+void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
+{
+    const int ch = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    if (ch < 1 || ch > 15)
+    {
+        c(badArgResp());
+        return;
+    }
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
+    auto& channel = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
+    if (a.size() > 1 && a[1].isObject())
+    {
+        const juce::var patch = a[1];
+        if (patch.hasProperty("source_channels") || patch.hasProperty("auto_pan") || patch.hasProperty("auto_vol"))
+        {
+            c(badArgResp()); // 只读/已删字段不可写(§1.15)
+            return;
+        }
+        if (patch.hasProperty("enabled"))
+            channel.enabled = static_cast<bool>(patch.getProperty("enabled", channel.enabled));
+        if (patch.hasProperty("label"))
+        {
+            channel.label = patch.getProperty("label", juce::String()).toString().substring(0, 24);
+        }
+        if (patch.hasProperty("priority"))
+            channel.priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", channel.priority)));
+        if (patch.hasProperty("lead_lock"))
+            channel.leadLock = static_cast<bool>(patch.getProperty("lead_lock", channel.leadLock));
+        if (patch.hasProperty("lead_vol_exempt"))
+            channel.leadVolExempt = static_cast<bool>(patch.getProperty("lead_vol_exempt", channel.leadVolExempt));
+        if (patch.hasProperty("participate_in_auto_pan"))
+        {
+            channel.participateAutoPan = static_cast<bool>(patch.getProperty("participate_in_auto_pan", false));
+            channel.participateAutoPanSet = true;
+        }
+        if (patch.hasProperty("pair_id"))
+            channel.pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", channel.pairId)));
+    }
+
+    ++processor_.runtime().configSeq; // 广播区整体版本号 bump(§4.3)
+    c(okResp());
+}
+
+void OutputEditor::handleSetTrackManual(const ArgList& a, Completion c)
+{
+    const int ch = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    const juce::String panOrVol = a.size() > 1 ? a[1].toString() : juce::String();
+    const float value = a.size() > 2 ? static_cast<float>(a[2]) : 0.0f;
+    if (ch < 1 || ch > 15 || (panOrVol != "pan" && panOrVol != "vol"))
+    {
+        c(badArgResp());
+        return;
+    }
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
+    // 覆盖全时间线的单段常值(§1.16 方案 A;t1 用大值近似「全时间线」,真末端由宿主时间线提供)。
+    const std::int64_t endSamples = static_cast<std::int64_t>(1) << 40;
+    scvb::state::Segment seg;
+    seg.t0 = 0;
+    seg.t1 = endSamples;
+    if (panOrVol == "pan")
+    {
+        seg.pan = juce::jlimit(-100.0f, 100.0f, value);
+        seg.volDb = 0.0f;
+    }
+    else
+    {
+        seg.pan = 0.0f;
+        seg.volDb = juce::jlimit(-24.0f, 12.0f, value);
+    }
+    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+
+    commitCrvsTransaction("Track manual ch" + juce::String(ch), [&] {
+        auto& crvs = processor_.crvsData();
+        auto& track = crvs.versions[static_cast<std::size_t>(processor_.versionActive() - 1)]
+                          .tracks[static_cast<std::size_t>(ch - 1)];
+        track.segments.assign(1, seg);
+    });
+
+    emitSegments("trackManual", false);
+    juce::var o = obj();
+    put(o, "ok", true);
+    put(o, "replacedSegments", 1);
+    put(o, "replacedLocked", 0);
+    c(o);
+}
+
+void OutputEditor::handleSetPanCurve(const ArgList& a, Completion c)
+{
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
+    std::vector<scvb::PanCurvePoint> points;
+    if (a.size() > 0 && a[0].isArray())
+    {
+        const auto* arr = a[0].getArray();
+        if (arr == nullptr || arr->size() > 16)
+        {
+            c(badArgResp());
+            return;
+        }
+        for (const auto& item : *arr)
+        {
+            if (!item.isObject())
+            {
+                c(badArgResp());
+                return;
+            }
+            scvb::PanCurvePoint p;
+            p.angle = static_cast<float>(item.getProperty("angle", 0.0));
+            p.gainDb = static_cast<float>(item.getProperty("gain_db", 0.0));
+            p.q = static_cast<float>(item.getProperty("q", 1.5));
+            const juce::String shape = item.getProperty("shape", juce::String()).toString();
+            const juce::String side = item.getProperty("side", juce::String("out")).toString();
+            if (shape == "shelf")
+                p.shape = scvb::PanCurveShape::shelf;
+            else if (shape == "cut")
+                p.shape = scvb::PanCurveShape::cut;
+            else if (shape != "bell")
+            {
+                c(badArgResp());
+                return;
+            }
+            if (side == "left")
+                p.side = scvb::PanCurveSide::left;
+            else if (side == "right")
+                p.side = scvb::PanCurveSide::right;
+            else if (side != "out")
+            {
+                c(badArgResp());
+                return;
+            }
+            if (p.q <= 0.0f || p.angle < -100.0f || p.angle > 100.0f)
+            {
+                c(badArgResp());
+                return;
+            }
+            points.push_back(p);
+        }
+    }
+
+    commitCrvsTransaction("Set pan curve", [&] {
+        processor_.crvsData().versions[static_cast<std::size_t>(processor_.versionActive() - 1)].panCurve = points;
+    });
+    lastStateJson_.clear(); // pan_curve 经 scvb.state 回推
+    c(okResp());
+}
+
+void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
+{
+    if (a.size() < 1 || !a[0].isObject())
+    {
+        c(badArgResp());
+        return;
+    }
+    const juce::var p = a[0];
+    auto& rt = processor_.runtime();
+    rt.vadThresholdDb = static_cast<float>(p.getProperty("threshold_db", rt.vadThresholdDb));
+    rt.vadHysteresisDb = static_cast<float>(p.getProperty("hysteresis_db", rt.vadHysteresisDb));
+    rt.vadHangoverMs = static_cast<int>(p.getProperty("hangover_ms", rt.vadHangoverMs));
+    rt.vadPaddingPreMs = static_cast<int>(p.getProperty("padding_pre_ms", rt.vadPaddingPreMs));
+    rt.vadPaddingPostMs = static_cast<int>(p.getProperty("padding_post_ms", rt.vadPaddingPostMs));
+    c(okResp());
+}
+
+void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
+{
+    if (a.size() < 1 || !a[0].isObject())
+    {
+        c(badArgResp());
+        return;
+    }
+    const juce::var p = a[0];
+    auto& rt = processor_.runtime();
+    rt.segmentationMode = p.getProperty("mode", rt.segmentationMode).toString();
+    rt.segmentationSensitivity = static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity));
+    rt.segmentationMinSegmentMs = static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs));
+    c(okResp());
+}
+
+void OutputEditor::handleSetTransitionRamp(const ArgList& a, Completion c)
+{
+    const float ms = a.size() > 0 ? static_cast<float>(a[0]) : 80.0f;
+    processor_.runtime().transitionRampMs = juce::jlimit(20.0f, 300.0f, ms);
+    c(okResp());
+}
+
+void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
+{
+    if (a.size() < 1 || !a[0].isObject())
+    {
+        c(badArgResp());
+        return;
+    }
+    const juce::var patch = a[0];
+    auto& rt = processor_.runtime();
+    if (patch.hasProperty("loudness_mode"))
+    {
+        const juce::String m = patch.getProperty("loudness_mode", juce::String()).toString();
+        if (m != "kw_integrated" && m != "rms" && m != "peak_dbfs")
+        {
+            c(badArgResp());
+            return;
+        }
+        rt.loudnessMode = m;
+    }
+    if (patch.hasProperty("center_slot_policy"))
+    {
+        const juce::String m = patch.getProperty("center_slot_policy", juce::String()).toString();
+        if (m != "priority_queue" && m != "lead_exclusive" && m != "even_spread")
+        {
+            c(badArgResp());
+            return;
+        }
+        rt.centerSlotPolicy = m;
+    }
+    c(okResp());
+}
+
+void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
+{
+    const int ch = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    const juce::String op = a.size() > 1 ? a[1].toString() : juce::String();
+    const juce::var payload = a.size() > 2 ? a[2] : juce::var();
+
+    if (ch < 1 || ch > 15)
+    {
+        c(badArgResp());
+        return;
+    }
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
+    const double sr = processor_.sampleRate();
+    scvb::state::SegmentEditArgs args;
+    bool valid = true;
+
+    if (op == "move_boundary")
+    {
+        args.op = scvb::state::SegmentEditOp::MoveBoundary;
+        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
+        const juce::String edge =
+            payload.isObject() ? payload.getProperty("edge", juce::String()).toString() : juce::String();
+        args.edgeIsT0 = (edge == "t0");
+        if (edge != "t0" && edge != "t1")
+            valid = false;
+        args.tSamples =
+            payload.isObject()
+                ? static_cast<std::int64_t>(std::llround(static_cast<double>(payload.getProperty("tS", 0.0)) * sr))
+                : 0;
+    }
+    else if (op == "split")
+    {
+        args.op = scvb::state::SegmentEditOp::Split;
+        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
+        args.tSamples =
+            payload.isObject()
+                ? static_cast<std::int64_t>(std::llround(static_cast<double>(payload.getProperty("tS", 0.0)) * sr))
+                : 0;
+    }
+    else if (op == "merge")
+    {
+        args.op = scvb::state::SegmentEditOp::Merge;
+        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdxA", -1)) : -1;
+        args.segIdxB = payload.isObject() ? static_cast<int>(payload.getProperty("segIdxB", -1)) : -1;
+    }
+    else if (op == "set_values")
+    {
+        args.op = scvb::state::SegmentEditOp::SetValues;
+        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
+        if (payload.hasProperty("pan"))
+        {
+            args.hasPan = true;
+            args.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(payload.getProperty("pan", 0.0)));
+        }
+        if (payload.hasProperty("volDb"))
+        {
+            args.hasVol = true;
+            args.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(payload.getProperty("volDb", 0.0)));
+        }
+        if (!args.hasPan && !args.hasVol)
+            valid = false;
+    }
+    else if (op == "set_locked")
+    {
+        args.op = scvb::state::SegmentEditOp::SetLocked;
+        args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
+        args.locked = payload.isObject() && static_cast<bool>(payload.getProperty("locked", false));
+    }
+    else
+    {
+        valid = false;
+    }
+
+    if (!valid)
+    {
+        c(badArgResp());
+        return;
+    }
+
+    const int track = ch - 1;
+    const int version = processor_.versionActive();
+    auto result = scvb::state::SegmentEditResult::BadArg;
+
+    commitCrvsTransaction("Edit segment ch" + juce::String(ch), [&] {
+        auto& segments = processor_.crvsData()
+                             .versions[static_cast<std::size_t>(version - 1)]
+                             .tracks[static_cast<std::size_t>(track)]
+                             .segments;
+        result = scvb::state::editTrackSegments(segments, args);
+    });
+
+    if (result != scvb::state::SegmentEditResult::Ok)
+    {
+        if (result == scvb::state::SegmentEditResult::NotAdjacent)
+        {
+            juce::var o = obj();
+            put(o, "ok", false);
+            put(o, "reason", "notAdjacent");
+            c(o);
+        }
+        else
+        {
+            c(badArgResp());
+        }
+        return;
+    }
+
+    emitSegments("edit", false);
+    c(okResp());
+}
+
+void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
+{
+    const int tracksMask = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
+    const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
+    const bool autoStop = a.size() > 3 ? static_cast<bool>(a[3]) : false;
+
+    auto& rt = processor_.runtime();
+    juce::var o = obj();
+
+    // tracksMask=0 且 startS=endS=0 → 撤销布防。
+    if (tracksMask == 0 && startS == 0.0 && endS == 0.0)
+    {
+        rt.recaptureArmed = false;
+        rt.recaptureTracksMask = 0;
+        put(o, "armed", false);
+        put(o, "tracksMask", 0);
+        put(o, "startS", 0.0);
+        put(o, "endS", 0.0);
+        c(o);
+        return;
+    }
+
+    const char* reason = nullptr;
+    if (tracksMask == 0)
+        reason = "noTracks";
+    else if (startS >= endS)
+        reason = "noSelection";
+    else if (isReadOnly())
+        reason = "readOnly";
+
+    if (reason != nullptr)
+    {
+        rt.recaptureArmed = false;
+        put(o, "armed", false);
+        put(o, "tracksMask", tracksMask);
+        put(o, "startS", startS);
+        put(o, "endS", endS);
+        put(o, "reason", reason);
+        c(o);
+        return;
+    }
+
+    rt.recaptureArmed = true;
+    rt.recaptureTracksMask = static_cast<std::uint16_t>(tracksMask & 0x7FFF);
+    rt.recaptureStartS = startS;
+    rt.recaptureEndS = endS;
+    rt.recaptureAutoStop = autoStop;
+    put(o, "armed", true);
+    put(o, "tracksMask", tracksMask);
+    put(o, "startS", startS);
+    put(o, "endS", endS);
+    c(o);
+}
+
+void OutputEditor::handleClearCoverage(const ArgList& a, Completion c)
+{
+    const int tracksMask = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
+    const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
+    if (tracksMask == 0 || startS >= endS)
+    {
+        c(badArgResp());
+        return;
+    }
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+    // T29 无采集特征数据源(FrameStore 接线归 T21/T33)→ clearedS=0。
+    juce::var o = obj();
+    put(o, "ok", true);
+    put(o, "clearedS", 0.0);
+    c(o);
+}
+
+void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
+{
+    const bool ok = processor_.authority().undoManager().undo();
+    if (ok)
+        emitSegments("undo", false);
+    juce::var o = obj();
+    put(o, "ok", ok);
+    c(o);
+}
+
+void OutputEditor::handleRedo(const ArgList& /*a*/, Completion c)
+{
+    const bool ok = processor_.authority().undoManager().redo();
+    if (ok)
+        emitSegments("redo", false);
+    juce::var o = obj();
+    put(o, "ok", ok);
+    c(o);
+}
+
+void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
+{
+    const int ch = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
+    const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
+    const int cols = a.size() > 3 ? static_cast<int>(a[3]) : 0;
+    if (ch < 1 || ch > 15 || cols < 1 || cols > 4096 || startS >= endS)
+    {
+        c(badArgResp());
+        return;
+    }
+
+    // §1.27:拉取式 request/response,一次调用一次 resolve(绝不进事件流)。
+    // T29 无特征数据源(FrameStore/feat 环接线归 T21/T33)→ 未覆盖列:covered=0,minDb=maxDb=-160 哨兵。
+    juce::var minDb = mkArray();
+    juce::var maxDb = mkArray();
+    juce::var vad = mkArray();
+    juce::var covered = mkArray();
+    juce::var stale = mkArray();
+    juce::var passId = mkArray();
+    for (int i = 0; i < cols; ++i)
+    {
+        push(minDb, -160.0);
+        push(maxDb, -160.0);
+        push(vad, 0);
+        push(covered, 0);
+        push(stale, 0);
+        push(passId, 0);
+    }
+    juce::var valleys = mkArray();
+
+    juce::var o = obj();
+    put(o, "minDb", minDb);
+    put(o, "maxDb", maxDb);
+    put(o, "vad", vad);
+    put(o, "covered", covered);
+    put(o, "stale", stale);
+    put(o, "passId", passId);
+    put(o, "valleys", valleys);
+    c(o);
+}
+
+void OutputEditor::handleSetActiveTab(const ArgList& a, Completion c)
+{
+    const juce::String tab = a.size() > 0 ? a[0].toString() : juce::String();
+    if (tab != "master" && tab != "tracks" && tab != "wave" && tab != "settings")
+    {
+        c(badArgResp());
+        return;
+    }
+    processor_.runtime().activeTab = tab;
+    c(okResp());
+}
+
+void OutputEditor::handleSetGuideSeen(const ArgList& a, Completion c)
+{
+    const bool seen = a.size() > 0 && static_cast<bool>(a[0]);
+    processor_.runtime().guideSeen = seen;
+    // alsoGlobal 落盘全局默认归 T31(commitUiScale 通道)。
+    c(okResp());
+}
+
+void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
+{
+    const bool seen = a.size() > 0 && static_cast<bool>(a[0]);
+    processor_.runtime().tourSeen = seen;
+    c(okResp());
+}
+
+void OutputEditor::handleConfirmPrintGuard(const ArgList& /*a*/, Completion c)
+{
+    processor_.runtime().printGuardPending = false; // 幂等(§1.34)
+    c(okResp());
+}
+
+} // namespace scvb::output

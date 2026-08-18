@@ -76,6 +76,8 @@ add_library(scvb_core STATIC
   state/InputStateCodec.h
   state/OutputStateCodec.cpp
   state/OutputStateCodec.h
+  state/SegmentEdit.cpp
+  state/SegmentEdit.h
 )
 
 # SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。
