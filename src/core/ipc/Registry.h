@@ -123,6 +123,9 @@ public:
     u32 group() const { return group_; }
     u32 generation() const; // RegistryHeader.generation(覆盖式重初始化 +1)
     u32 abi() const; // 本段 abi(连接成功后 = kScvbAbi)
+    // 最近一次 abi 不符时探测到的对端 abi(0 = 未探测到;open()/changeGroup() 失败路径记录)。
+    // T30 桥 abi_remote 来源(scvb.state.abi_remote;探测不到则字段不存在)。
+    u32 remoteAbi() const noexcept { return remoteAbi_; }
 
     RegistryHeader* header() { return header_; }
     // 返回指向共享内存的可变指针(const 方法:Registry 的 const 与共享内存内容无关)。
@@ -210,6 +213,8 @@ private:
     // 幽灵槽本地观测时钟(消息线程):首见 kSlotClaimed+pid==0+hb==0 时记录 nowMs;state 变化即清。
     u64 ghostSeenMs_[kMaxChannels] = {};
     u64 outputGhostSeenMs_ = 0;
+
+    u32 remoteAbi_ = 0; // 最近一次 abi 不符时探测到的对端 abi(0 = 未探测到;T30 桥来源)
 };
 
 } // namespace scvb

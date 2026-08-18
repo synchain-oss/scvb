@@ -19,6 +19,11 @@ juce_add_plugin(SCVBInput
 target_sources(SCVBInput PRIVATE
   InputProcessor.h
   InputProcessor.cpp
+  InputBridgeApi.h       # T30:桥名常量表(parity C 侧真源)
+  InputBridgeLogic.h     # T30:纯载荷/判定逻辑(离线可测)
+  InputBridgeLogic.cpp
+  InputEditor.h          # T30:WebView 编辑器 + diff-then-emit
+  InputEditor.cpp
 )
 
 target_include_directories(SCVBInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

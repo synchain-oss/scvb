@@ -90,13 +90,24 @@ InitResult SegmentBackendWin32::createOrOpen(const std::wstring& name, std::size
 
 InitResult SegmentBackendWin32::openExisting(const std::wstring& name, SegmentView& view)
 {
+    return openExistingWithAccess(name, view, FILE_MAP_ALL_ACCESS);
+}
+
+InitResult SegmentBackendWin32::openExistingReadOnly(const std::wstring& name, SegmentView& view)
+{
+    // 契约 §2.4:异组只读探测/数据面 attach 用 FILE_MAP_READ,避免将来误写异组字节(最小权限)。
+    return openExistingWithAccess(name, view, FILE_MAP_READ);
+}
+
+InitResult SegmentBackendWin32::openExistingWithAccess(const std::wstring& name, SegmentView& view, DWORD access)
+{
     view.reset();
-    HANDLE h = ::OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name.c_str());
+    HANDLE h = ::OpenFileMappingW(access, FALSE, name.c_str());
     if (h == nullptr)
     {
         return InitResult::kFailed;
     }
-    void* base = ::MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    void* base = ::MapViewOfFile(h, access, 0, 0, 0);
     if (base == nullptr)
     {
         ::CloseHandle(h);

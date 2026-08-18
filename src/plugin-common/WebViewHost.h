@@ -39,6 +39,7 @@ public:
 
     // 缩放(机制 9):uiScale 实时预览(不落盘);commitUiScale 防呆确认后落盘全局默认。
     float uiScale() const { return uiScale_; }
+    const juce::String& lang() const { return lang_; } // T30:scvb.state ui.language / 落 state 用
     void setUiScale(float scale); // clamp + setSize(DESIGN×scale) 预览
     void commitUiScale(); // 落盘(子类覆写 persistUiScaleAsDefault)
 
@@ -60,8 +61,8 @@ protected:
     // 通用原生函数 handler(两插件共用;子类可复用/覆写)。
     void handleRequestInitialState(const juce::Array<juce::var>& args,
                                    juce::WebBrowserComponent::NativeFunctionCompletion complete);
-    void handleSetLang(const juce::Array<juce::var>& args,
-                       juce::WebBrowserComponent::NativeFunctionCompletion complete);
+    virtual void handleSetLang(const juce::Array<juce::var>& args,
+                               juce::WebBrowserComponent::NativeFunctionCompletion complete);
     void handleSetUiScale(const juce::Array<juce::var>& args,
                           juce::WebBrowserComponent::NativeFunctionCompletion complete);
     void handleCommitUiScale(const juce::Array<juce::var>& args,

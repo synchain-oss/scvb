@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "InputProcessor.h"
 
+#include "InputBridgeLogic.h"
+#include "InputEditor.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -14,7 +17,8 @@ ScvbInputAudioProcessor::ScvbInputAudioProcessor()
     : juce::AudioProcessor(BusesProperties()
                                .withInput("Input", juce::AudioChannelSet::stereo(), true)
                                .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId()))
+      session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId())),
+      ctrl_(backend_, scvb::input::kInputDefaultGroup)
 {
     setLatencySamples(0); // ADR-002:Input 报告 latency=0
 }
@@ -251,6 +255,7 @@ void ScvbInputAudioProcessor::timerCallback()
         lastHeartbeatMs_ = now;
         session_.heartbeat(now);
         session_.reap(now);
+        ctrl_.reapPendingReleases(now); // T30:命令环段延迟释放回收([M] 4Hz,与 session_.reap 同点)
     }
 
     // 健康判定 → C18 模式字([M] 25Hz 写)。
@@ -347,12 +352,29 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
         return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
     }
 
+    const int oldGroupId = groupId_;
     channelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
     uiScale_ = static_cast<int>(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
     session_.setChannelId(s.channelId);
     session_.setGroupId(s.groupId);
+    // T30 PR#54 复审【重要】1 + R9:ctrl_ 命令环段组必须与 state 的 group_id 同组 —— 否则
+    // remoteSetPriority 把记录投进旧组命令环、srMismatch 推导读旧组 SR。channel_id=0 释放段;
+    // 否则换组失败回退旧组、保持 session/ctrl 一致(避免「session 新组 + ctrl 未开/旧组」错位)。
+    if (s.channelId == 0)
+    {
+        ctrl_.release();
+    }
+    else if (ctrl_.group() != s.groupId)
+    {
+        if (ctrl_.changeGroup(s.groupId) != scvb::InitResult::kOk)
+        {
+            ctrl_.changeGroup(static_cast<scvb::u32>(oldGroupId)); // 尽力回退旧组段
+            groupId_ = oldGroupId;
+            session_.setGroupId(static_cast<scvb::u32>(oldGroupId));
+        }
+    }
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     // 若已 prepare,立即 re-claim;否则由下一次 prepareToPlay 走 claim。
     if (prepared_)
@@ -366,34 +388,177 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     }
 }
 
-void ScvbInputAudioProcessor::setChannelId(int channelId)
+scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId)
 {
     channelId = juce::jlimit(0, kChannelIdMax, channelId);
     const juce::ScopedLock lock(lifecycleMutex_);
     channelId_ = channelId;
     session_.setChannelId(static_cast<scvb::u32>(channelId));
+    if (channelId == 0)
+    {
+        ctrl_.release(); // channel_id=0 不 claim 任何段(T23 口径):命令环段随释放(PR#54 R9)
+    }
     session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                      static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
     if (session_.state() != scvb::input::InputClaimState::kActive)
     {
         stageMachine_.forcePassthrough();
     }
+    return session_.state(); // T30 桥:{conflict:true} ⇔ kConflict,其余 {ok:true}
 }
 
-void ScvbInputAudioProcessor::setGroupId(int groupId)
+scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
 {
     groupId = juce::jlimit(1, kGroupIdMax, groupId);
     const juce::ScopedLock lock(lifecycleMutex_);
     if (groupId == groupId_)
     {
-        return;
+        return session_.state(); // 同组 no-op(§3.3:{ok:true})
+    }
+    const scvb::u32 newGroup = static_cast<scvb::u32>(groupId);
+    const scvb::u32 oldGroup = static_cast<scvb::u32>(groupId_);
+    // T30:命令环 ctrl 段随组走(per-组各一份,ipc v1.5 [J66];与 Registry::changeGroup 同构)。
+    // PR#54 R9 + R10:有通道时先换 ctrl 段,失败回退旧组、不切 session —— 避免「session 新组 +
+    // ctrl 未开/旧组」错位;channel_id=0(未分配)不建/不换 ctrl 段(保持「channel_id=0 不建段」
+    // 口径),ctrl 段留到首次 setChannelId 的 ensureCtrlOpen 懒开(懒开按当前组对齐)。
+    if (channelId_ != 0)
+    {
+        if (ctrl_.changeGroup(newGroup) != scvb::InitResult::kOk)
+        {
+            ctrl_.changeGroup(oldGroup); // 尽力回退旧组段(通常成功;双重失败则 ctrl 未开,ensureCtrlOpen 重试)
+            return session_.state(); // 不切 session group,保持旧组一致态
+        }
     }
     groupId_ = groupId;
     // 改组(J66):释放旧组 slot → 新组重走 claim;期间输出走直通档(01 §4.1)。
     stageMachine_.forcePassthrough();
-    session_.changeGroup(static_cast<scvb::u32>(groupId), static_cast<scvb::u32>(sampleRate_),
-                         static_cast<scvb::u32>(preparedMaxBlock_), static_cast<scvb::u32>(srcChannels_),
-                         scvb::steadyNowMs());
+    session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                         static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+    return session_.state(); // T30 桥:{conflict:true} ⇔ 新组同 channel 被占(I2)
+}
+
+juce::AudioProcessorEditor* ScvbInputAudioProcessor::createEditor()
+{
+    return new scvb::input::InputEditor(*this);
+}
+
+// ---------------------------------------------------------------------------
+// T30 Input 桥接入面([M] 编辑器线程;除注明外持 lifecycleMutex_)
+// ---------------------------------------------------------------------------
+void ScvbInputAudioProcessor::ensureCtrlOpen()
+{
+    // 调用方已持 lifecycleMutex_。channel_id=0(未分配)不建/不开命令环段(T23「channel_id=0 无痕迹/
+    // 不建段」口径);释放回到 0 时由 setChannelId/setStateInformation 调 ctrl_.release() 释放(PR#54 R9)。
+    if (channelId_ == 0)
+    {
+        return;
+    }
+    // PR#54 R10:release 只清 base_ 不改 group_;channel_id=0 + 非默认组加载后再分配通道时 group_
+    // 可能残留旧组 —— 懒开前先按当前 groupId_ 换组对齐,否则 remoteSetPriority/srMismatch 落到错组。
+    if (ctrl_.group() != static_cast<scvb::u32>(groupId_))
+    {
+        ctrl_.changeGroup(static_cast<scvb::u32>(groupId_));
+    }
+    // Input 是本组 ctrl 段的合法创建/覆盖者(CtrlPlane::open 注释)。
+    if (!ctrl_.isOpen())
+    {
+        ctrl_.open();
+    }
+}
+
+ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickSnapshot()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    const auto now = scvb::steadyNowMs();
+    BridgeTickSnapshot s;
+    s.channelId = channelId_;
+    s.groupId = groupId_;
+    s.claimState = session_.state();
+    s.conn = session_.connSnapshot(now);
+    s.healthy = session_.isHealthy(now);
+    s.passthrough = stageMachine_.target() == scvb::input::OutputStageMode::kPassthrough;
+    s.sampleRate = sampleRate_;
+    s.sourceChannels = srcChannels_;
+    ensureCtrlOpen();
+    s.globalInfo = ctrl_.readGlobalInfo();
+    s.configSeq = session_.configSeq();
+    s.localAbi = session_.localAbi();
+    s.remoteAbi = session_.remoteAbi();
+    return s;
+}
+
+std::uint8_t ScvbInputAudioProcessor::bridgeGroupsOnline()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return session_.groupsOnline(scvb::steadyNowMs());
+}
+
+ScvbInputAudioProcessor::PriorityResult ScvbInputAudioProcessor::bridgeRemoteSetPriority(int n)
+{
+    n = juce::jlimit(0, 10, n);
+    const juce::ScopedLock lock(lifecycleMutex_);
+    ensureCtrlOpen();
+    const auto now = scvb::steadyNowMs();
+    PriorityResult r;
+
+    const scvb::u32 ch = static_cast<scvb::u32>(channelId_);
+    const bool outputOnline = session_.connSnapshot(now).outputOnline;
+    const bool active = session_.state() == scvb::input::InputClaimState::kActive;
+    const bool ringFull = ctrl_.isRingFull(ch);
+    // §3.4/§5.6 拒绝判定(真源 = bridge::priorityRejection 纯函数)。判定顺序:unassigned >
+    // outputOffline > 非活跃 > ringFull。非活跃实例(conflict/abiMismatch/unavailable)不是
+    // channel 持有者,SPSC 纪律禁止其向共享命令环 enqueue —— 否则两个实例成双生产者竞写
+    // write_pos/覆盖最旧,损坏环或向不拥有的 channel 注入控制命令(PR#54 R3)。reason 取
+    // §5.6 闭集内最近似的 "unassigned"(未持有 slot;channelConflict 是 §5.1 errorCode 而非
+    // reason,闭集内无对应项,故不新造 reason,保持 §3.4 remoteSetPriority 返回形状冻结)。
+    const auto reject = scvb::input::bridge::priorityRejection(channelId_, outputOnline, ringFull, active);
+
+    // 满环仍投递(写方覆盖最旧 + 溢出计数,§6/10 IPC-13);其余拒绝态一律不投递。
+    if (reject == scvb::input::bridge::PriorityReject::kRingFull ||
+        reject == scvb::input::bridge::PriorityReject::kNone)
+    {
+        // PR#54 R10:enqueue 返回 false = 命令未写入(ctrl 段未打开/打开失败,如 abi 不符的残留损坏
+        // 段)。不得再回 queued:true,否则 UI 误以为成功。reason 取 §5.6 八值闭集内最近似的 busy
+        // (临时可重试;其余七值语义均不匹配:badArg/noTimeline/noLoop/notAdjacent 属其它函数、
+        // ringFull/outputOffline/unassigned 已有专属判定),不新造 reason。
+        if (!ctrl_.enqueue(ch, scvb::CtrlOp::kSetPriority, static_cast<scvb::u64>(n)))
+        {
+            r.reason = "busy";
+            return r;
+        }
+    }
+
+    if (reject != scvb::input::bridge::PriorityReject::kNone)
+    {
+        r.reason = scvb::input::bridge::priorityRejectReason(reject);
+        return r;
+    }
+    r.queued = true;
+    return r;
+}
+
+void ScvbInputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiLanguage_ = lang; // 已由桥层 normalize({zh,en,fr});getStateInformation 持久化
+}
+
+void ScvbInputAudioProcessor::bridgeSetUiScalePercent(int percent)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiScale_ = juce::jlimit(33, 300, percent); // 0.33..3.0 × 100(params-v0 §三 uiScale)
+}
+
+int ScvbInputAudioProcessor::bridgeUiScalePercent() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return uiScale_;
+}
+
+juce::String ScvbInputAudioProcessor::bridgeUiLanguage() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return uiLanguage_;
 }
 
 // juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。

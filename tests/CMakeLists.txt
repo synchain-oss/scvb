@@ -53,6 +53,7 @@ add_executable(scvb_tests
   core/test_output_stage.cpp
   core/test_input_state.cpp
   core/test_input_session.cpp
+  core/test_input_bridge_ipc.cpp
   core/test_feat_ring_concurrency.cpp
   core/test_mix_source.cpp
   core/test_output_session.cpp
@@ -142,6 +143,34 @@ else()
 endif()
 
 add_test(NAME scvb_plugin_common_tests COMMAND scvb_plugin_common_tests)
+
+# scvb_input_bridge_tests:T30 Input 桥 L0 单测(claim 六值/载荷形状/拒绝语义;链接 JUCE,离线 Catch2)。
+# 只编可离线单测的 TU:InputBridgeLogic + BridgeBase(InputEditor 依赖 WebViewHost 真 WebView2
+# 实例化,留待 gate 8 真机 GUI pluginval 验证,不编入本测试)。
+add_executable(scvb_input_bridge_tests
+  webview/test_input_bridge.cpp
+  ${CMAKE_SOURCE_DIR}/src/input/InputBridgeLogic.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/BridgeBase.cpp
+)
+
+target_link_libraries(scvb_input_bridge_tests PRIVATE
+  Catch2::Catch2WithMain
+  juce::juce_core
+)
+
+target_include_directories(scvb_input_bridge_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/input
+  ${CMAKE_SOURCE_DIR}/src/plugin-common
+  ${CMAKE_SOURCE_DIR}/src/core
+)
+
+if(MSVC)
+  target_compile_options(scvb_input_bridge_tests PRIVATE /W4 /utf-8 /EHsc)
+else()
+  target_compile_options(scvb_input_bridge_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME scvb_input_bridge_tests COMMAND scvb_input_bridge_tests)
 
 # scvb_ipc_tests:L1 双进程 IPC 契约测试骨架(仅 WIN32;实现由 T07b 填充)。
 if(SCVB_BUILD_IPC_TESTS AND WIN32)

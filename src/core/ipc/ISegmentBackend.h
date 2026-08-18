@@ -138,6 +138,13 @@ public:
     // 仅打开已存在的命名段(不创建)——Output 侧 attach audio.chN 用。段不存在 → kFailed。
     virtual InitResult openExisting(const std::wstring& name, SegmentView& view) = 0;
 
+    // 只读权限打开已存在段(契约 §2.4 异组探测/数据面 attach 的最小权限口径:Win32 = FILE_MAP_READ)。
+    // 默认实现退回 openExisting(后端无权限区分,如 InProcess)。
+    virtual InitResult openExistingReadOnly(const std::wstring& name, SegmentView& view)
+    {
+        return openExisting(name, view);
+    }
+
     // 解映射 + 关闭平台句柄(仅消息线程,与 createOrOpen 对称;供 SegmentHandle::release 调用)。
     // 调用后 view 置空。InProcess 后端只清视图(缓冲由全局 map 持有,进程寿命)。
     virtual void unmap(SegmentView& view) = 0;
@@ -145,6 +152,27 @@ public:
     // 创建者写触碰后锁定页(平台相关:Win32 = VirtualLock,失败降级为仅预触碰并记日志;
     // POSIX v2 = mlock)。只读 attach 方不调用(仅创建者/写者锁,DeepSeek 复审【重要】4)。
     virtual void tryLock(const SegmentView& view) { (void)view; }
+
+    // 只读 attach 方的非破坏性 magic/abi 校验(openExistingReadOnly 用,PR#54 R8):
+    // 只读触碰 + 非阻塞单次 acquire 读 magic/abi;绝不写 view/头部、绝不覆盖式重初始化。
+    // headerMagic/headerAbi 取 const 引用,类型层面禁止写入 —— 消除「非 const 指针传入 initHeader
+    // 落在 FILE_MAP_READ 只读映射上写崩溃」的潜在风险(initHeader 的 allowOverwrite=false 分支
+    // 仅 readTouchPages + load,无 store/memcpy,核实见 initHeader 实现)。
+    // magic 未就绪 → kFailed([M] 25Hz 重试);abi 不符 → kAbiMismatch。
+    InitResult checkHeaderReadOnly(const SegmentView& view, const std::atomic<u32>& headerMagic,
+                                   const std::atomic<u32>& headerAbi) const
+    {
+        if (view.base == nullptr)
+        {
+            return InitResult::kFailed;
+        }
+        detail::readTouchPages(view.base, view.size);
+        if (headerMagic.load(std::memory_order_acquire) == kScvbMagic)
+        {
+            return (headerAbi.load(std::memory_order_acquire) == kScvbAbi) ? InitResult::kOk : InitResult::kAbiMismatch;
+        }
+        return InitResult::kFailed;
+    }
 
     // 01 §4.0 初始化协议(registry/audio/ctrl 通用;非虚共用)。
     // header 前两字段为 magic/abi,可选 generation;dataOffset 为「清 slot 区」的起始偏移

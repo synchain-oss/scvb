@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "input/InputSession.h"
 
+#include "ipc/GroupProbe.h"
+
 namespace scvb::input
 {
 
@@ -148,6 +150,67 @@ bool InputSession::isHealthy(u64 nowMs) const
     }
     const u32 mask = os->connected_mask.load(std::memory_order_acquire);
     return (mask & (1u << (ch - 1))) != 0;
+}
+
+InputConnSnapshot InputSession::connSnapshot(u64 nowMs) const
+{
+    InputConnSnapshot s;
+    const u32 ch = claimedChannel_.load(std::memory_order_acquire);
+
+    const OutputSlot* os = registry_.outputSlot();
+    if (os != nullptr)
+    {
+        // §4.2 outputOnline = 本组 OutputSlot 心跳新鲜 ≤2000ms;附 state 校验防「释放后 ≤2s 残留新鲜」。
+        s.outputOnline = os->state.load(std::memory_order_acquire) == kSlotActive &&
+                         !isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs);
+        // §4.2 maskBit 以 outputOnline 为前提(PR#54 R5):Output 心跳陈旧时 connected_mask 位
+        // 仍在也不置位,否则 kActive 的 claimValue 会误判为 "active"(已死 Output 显示健康)。
+        if (s.outputOnline && ch >= 1 && ch <= kMaxChannels)
+        {
+            const u32 mask = os->connected_mask.load(std::memory_order_acquire);
+            s.maskBit = (mask & (1u << (ch - 1))) != 0;
+        }
+    }
+
+    if (ch >= 1 && ch <= kMaxChannels)
+    {
+        if (const InputSlot* is = registry_.inputSlot(ch))
+        {
+            s.capturing = (is->flags.load(std::memory_order_acquire) & kFlagCapturing) != 0;
+        }
+    }
+
+    // §4.2 occupiedMask:置位 = 心跳新鲜(≤2000ms)且 state≥1(含本实例自己占的位);
+    // 陈旧占用(双条件可覆盖)不置位,保持「陈旧可覆盖」语义。
+    for (u32 c = 1; c <= kMaxChannels; ++c)
+    {
+        const InputSlot* is = registry_.inputSlot(c);
+        if (is == nullptr)
+        {
+            continue;
+        }
+        if (is->state.load(std::memory_order_acquire) >= kSlotClaimed &&
+            !isStaleDisplay(is->heartbeat_ms.load(std::memory_order_acquire), nowMs))
+        {
+            s.occupiedMask = static_cast<std::uint16_t>(s.occupiedMask | (1u << (c - 1)));
+        }
+    }
+    return s;
+}
+
+std::uint8_t InputSession::groupsOnline(u64 nowMs) const
+{
+    // 本组位 = 本组 OutputSlot 心跳新鲜;其余 7 组经只读探测(01 §4.5,失败组判离线不报错)。
+    // channel_id=0(未分配)时本组 registry 未打开,outputSlot() 为空 → 回退对本组也做只读探测
+    // (pr-agent PR#54 R2:未分配实例的本组绿点恒灭)。
+    const OutputSlot* os = registry_.outputSlot();
+    std::uint8_t bits = probeGroupsOnline(backend_, groupId_, nowMs, /*includeOwnGroup=*/os == nullptr);
+    if (os != nullptr && os->state.load(std::memory_order_acquire) == kSlotActive &&
+        !isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs))
+    {
+        bits = static_cast<std::uint8_t>(bits | (1u << (groupId_ - 1)));
+    }
+    return bits;
 }
 
 InputSessionBlockView InputSession::acquireBlock() const

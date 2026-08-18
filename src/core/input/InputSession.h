@@ -54,6 +54,18 @@ struct InputSessionBlockView
     SegmentHandle::Lease featLease; // feat 段租约
 };
 
+// T30 桥 scvb.conn 六字段快照([M] 采集;契约 §4.2)。IPC 可推的四字段由 connSnapshot 填,
+// passthrough/passthroughPending 由输出级仲裁方(InputProcessor 的 StageSwitchStateMachine)回填。
+struct InputConnSnapshot
+{
+    bool outputOnline = false; // 本组 OutputSlot 活跃且心跳 ≤2000ms(J66 本组语义)
+    bool maskBit = false; // 本组 connected_mask 中本 channel 位
+    bool capturing = false; // 本实例 InputSlot.flags bit0
+    bool passthrough = true; // 当前音频路径:true=直通,false=静音转发(已接管)
+    bool passthroughPending = false; // 「静音→直通」5s 滞回窗口内(J32)
+    std::uint16_t occupiedMask = 0; // 本组 15 个 InputSlot 心跳新鲜占用位图(bit0=ch1;含本实例)
+};
+
 class InputSession
 {
 public:
@@ -107,6 +119,13 @@ public:
     FeatRing& featRing() noexcept { return featRing_; }
     u32 boundChannel() const noexcept { return claimedChannel_.load(std::memory_order_acquire); }
     InputClaimState state() const noexcept { return state_; }
+
+    // --- T30 桥只读快照入口([M],持 lifecycleMutex;只读共享内存原子,绝不触碰音频线程成员)---
+    u32 localAbi() const noexcept { return kScvbAbi; } // 本机 SCVB abi(= RegistryHeader.abi 同源)
+    u32 remoteAbi() const noexcept { return registry_.remoteAbi(); } // abi 不符时探测到的对端 abi
+    u32 configSeq() const { return registry_.configSeq(); } // 本组 OutputSlot.config_seq(§4.3 变化检测)
+    InputConnSnapshot connSnapshot(u64 nowMs) const; // §4.2 的 IPC 四字段 + occupiedMask
+    std::uint8_t groupsOnline(u64 nowMs) const; // 本组位(OutputSlot 心跳)+ 跨组只读探测(01 §4.5/J70)
 
 private:
     bool openAndClaim(u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);

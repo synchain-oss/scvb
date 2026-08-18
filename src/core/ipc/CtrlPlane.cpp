@@ -81,6 +81,18 @@ u32 CtrlPlane::generation() const
     return static_cast<CtrlHeader*>(handle_.base())->generation.load(std::memory_order_acquire);
 }
 
+bool CtrlPlane::isRingFull(u32 channel) const
+{
+    const CtrlRing* ring = ringAt(channel);
+    if (ring == nullptr)
+    {
+        return false;
+    }
+    const u32 w = ring->write_pos.load(std::memory_order_relaxed);
+    const u32 r = ring->read_pos.load(std::memory_order_acquire);
+    return w - r >= kCtrlRingCapacity;
+}
+
 InitResult CtrlPlane::changeGroup(u32 newGroup)
 {
     if (newGroup < 1 || newGroup > kMaxGroups)
@@ -96,6 +108,16 @@ InitResult CtrlPlane::changeGroup(u32 newGroup)
     }
     group_ = newGroup;
     return open();
+}
+
+void CtrlPlane::release()
+{
+    base_ = nullptr;
+    // 与 changeGroup 释放旧句柄同构:valid() 守卫防 moved-from;租约在途 → pendingReleases_ 延迟回收。
+    if (handle_.valid() && !handle_.release(steadyNowMs()))
+    {
+        pendingReleases_.push_back(std::move(handle_));
+    }
 }
 
 CtrlRing* CtrlPlane::ringAt(u32 channel) const

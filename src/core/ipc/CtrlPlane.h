@@ -153,9 +153,17 @@ public:
     u32 group() const { return group_; }
     u32 generation() const;
 
+    // 满环判定(写方 [M] 在 enqueue 前调用;SPSC 纪律:生产者只读 read_pos,read_pos 仅消费者写)。
+    // remoteSetPriority(§3.4)据此回 {queued:false, reason:"ringFull"}(enqueue 仍执行:丢最旧 + 计数)。
+    bool isRingFull(u32 channel) const;
+
     // 改组(J66):释放本组 ctrl 段句柄 → 换新组 → 重新映射 + §4.0 初始化。返回 kOk / kAbiMismatch /
     // kFailed。与 Registry::changeGroup 同构(Output 改组时 registry 与 ctrl 同时换组)。
     InitResult changeGroup(u32 newGroup);
+
+    // 释放本组 ctrl 段句柄(消息线程;channel_id=0 未分配/释放时调用,保持「channel_id=0 不建段」
+    // 口径,PR#54 R9)。与 changeGroup 释放旧句柄同构:租约在途则压入 pendingReleases_ 延迟回收。
+    void release();
 
     // 延迟释放回收([M] 心跳/轮询周期调用,文档注明调用点):对 pendingReleases_ 逐项 release(nowMs),
     // 成功(租约归零且宽限期届满)即移除并解映射。pr-agent 复审:open()/重开时 release() 返回 false

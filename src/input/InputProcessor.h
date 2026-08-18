@@ -17,6 +17,7 @@
 
 #include "input/InputSession.h"
 #include "input/OutputStage.h"
+#include "ipc/CtrlPlane.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "state/InputStateCodec.h"
 #include "state/StateCodec.h"
@@ -37,8 +38,8 @@ public:
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) override;
 
-    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
-    bool hasEditor() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override;
+    bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return "SCVB Input"; }
     bool acceptsMidi() const override { return false; }
@@ -56,8 +57,9 @@ public:
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     // [M] UI/桥入口(T25 冻结契约):设置 channel/group,触发 claim 迁移(01 §4.1)。
-    void setChannelId(int channelId);
-    void setGroupId(int groupId);
+    // 返回迁移后的 claim 态(T30 桥据此回 {ok}/{conflict:true} 并经 scvb.state 回推 claim)。
+    scvb::input::InputClaimState setChannelId(int channelId);
+    scvb::input::InputClaimState setGroupId(int groupId);
 
     // PR#51 红旗#1:setStateInformation 读到 abi > kCurrentAbi → 拒载并置位(冻结契约 §7.3:
     // 高版本拒载 + 提示升级,绝不静默丢数据;原 blob 由宿主工程保有)。消息线程读写(setStateInformation
@@ -65,9 +67,43 @@ public:
     bool hasStateAbiMismatch() const noexcept { return stateAbiMismatch_; }
     scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
 
+    // --- T30 Input 桥接入面([M] 编辑器消息线程;除注明外均持 lifecycleMutex_,绝不触碰音频线程成员)---
+    struct PriorityResult
+    {
+        bool queued = false;
+        juce::String reason; // ""=成功;"ringFull" | "outputOffline" | "unassigned" | "busy"(§3.4/§5.6;busy=ctrl
+                             // 段未打开,临时可重试)
+    };
+    struct BridgeTickSnapshot
+    {
+        int channelId = 0;
+        int groupId = 1;
+        scvb::input::InputClaimState claimState = scvb::input::InputClaimState::kUnassigned;
+        scvb::input::InputConnSnapshot conn;
+        bool healthy = false; // session_.isHealthy(now)
+        bool passthrough = true; // StageSwitchStateMachine 当前目标档
+        double sampleRate = 48000.0;
+        int sourceChannels = 1;
+        scvb::OutputGlobalInfoSnapshot globalInfo; // 本组 ctrl 段 OutputGlobalInfo(srMismatch 推导源)
+        scvb::u32 configSeq = 0;
+        scvb::u32 localAbi = scvb::kScvbAbi;
+        scvb::u32 remoteAbi = 0; // abi 不符时探测到的对端 abi(0 = 未探测到)
+    };
+    BridgeTickSnapshot bridgeTickSnapshot(); // 25Hz emitTick 单次持锁采集(含 ctrl 段懒打开)
+    std::uint8_t bridgeGroupsOnline(); // 1Hz:本组位 + 跨组只读探测(01 §4.5/J70)
+    PriorityResult bridgeRemoteSetPriority(int n); // remoteSetPriority(§3.4;内部 clamp 0..10)
+    void bridgeSetUiLanguage(const juce::String& lang); // setLang 落 state(normalize 由桥层做)
+    void bridgeSetUiScalePercent(int percent); // commitUiScale 落 state(clamp 33..300)
+    int bridgeUiScalePercent() const;
+    juce::String bridgeUiLanguage() const;
+
 private:
     // 25Hz [M] 定时器:健康判定 → C18 模式字;每 ~250ms 心跳(4Hz)。
     void timerCallback() override;
+
+    // 命令环 ctrl 段懒打开(调用方已持 lifecycleMutex_):Input 是本组 ctrl 段的合法创建/覆盖者
+    // (写命令环 + 读 OutputGlobalInfo;CtrlPlane::open 注释同口径)。
+    void ensureCtrlOpen();
 
     // 捕获:interleaved capBuf 打包([J57] 不下混、不互换)。
     static void captureFrames(const float* const* src, int srcCh, float* dst, int n);
@@ -79,6 +115,9 @@ private:
     // IPC(段操作持 lifecycleMutex_ 于非实时线程;音频线程只经 session_ 拿裸指针做原子读写)。
     scvb::SegmentBackendWin32 backend_;
     scvb::input::InputSession session_;
+    // 本组 ctrl 段(T30 桥:remoteSetPriority 命令环上行 + OutputGlobalInfo 只读;per-组语义 J66,
+    // setGroupId 经 CtrlPlane::changeGroup 随组走)。
+    scvb::CtrlPlane ctrl_;
 
     // 输出级仲裁(J12/J32)。
     scvb::input::StageSwitchStateMachine stageMachine_;
