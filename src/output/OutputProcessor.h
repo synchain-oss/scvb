@@ -182,6 +182,9 @@ public:
     // 成功返回 true;replacedSegments/replacedLocked = 替换前的段数 / 锁定段数(供确认条计数)。
     bool setTrackManual(int ch, bool isPan, float value, int& replacedSegments, int& replacedLocked);
     void setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
+    // 设置过渡 ramp(ms):值变化才重建全部曲线并重新发布(transitionRampSec 烘焙进 CurveEvaluator)。
+    // 返回 true = 值已变化并重建(PR#55 第5轮缺陷2)。
+    bool setTransitionRamp(float ms);
     bool undo();
     bool redo();
 

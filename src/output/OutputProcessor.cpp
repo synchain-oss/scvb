@@ -840,6 +840,18 @@ void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::
         [] {}); // pan_curve 不参与 CurveEvaluator,不 rebuild
 }
 
+bool ScvbOutputAudioProcessor::setTransitionRamp(float ms)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    const float clamped = juce::jlimit(20.0f, 300.0f, ms);
+    if (runtime_.transitionRampMs == clamped)
+        return false; // 未变,不重建
+
+    runtime_.transitionRampMs = clamped;
+    rebuildAllCurves(); // 新 ramp 立即烘焙进 CurveEvaluator 并重新发布(PR#55 第5轮缺陷2)
+    return true;
+}
+
 bool ScvbOutputAudioProcessor::undo()
 {
     const juce::ScopedLock lock(lifecycleMutex_);

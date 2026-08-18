@@ -1100,8 +1100,14 @@ void OutputEditor::handleSetPanCurve(const ArgList& a, Completion c)
         return;
     }
 
+    // 缺参/非数组 → badArg,绝不静默清空曲线(PR#55 第5轮缺陷1);空数组 = 整表替换为空(显式清空)。
+    if (a.size() < 1 || !a[0].isArray())
+    {
+        c(badArgResp());
+        return;
+    }
+
     std::vector<scvb::PanCurvePoint> points;
-    if (a.size() > 0 && a[0].isArray())
     {
         const auto* arr = a[0].getArray();
         if (arr == nullptr || arr->size() > 16)
@@ -1220,12 +1226,9 @@ void OutputEditor::handleSetTransitionRamp(const ArgList& a, Completion c)
         return;
     }
     const float ms = a.size() > 0 ? static_cast<float>(a[0]) : 80.0f;
-    const float clamped = juce::jlimit(20.0f, 300.0f, ms);
-    if (processor_.runtime().transitionRampMs != clamped)
-    {
-        processor_.runtime().transitionRampMs = clamped;
-        ++processor_.runtime().configSeq; // PR#55 缺陷4
-    }
+    // 持锁 + 变化才重建全部曲线(transitionRampSec 烘焙进 CurveEvaluator,PR#55 第5轮缺陷2)。
+    if (processor_.setTransitionRamp(ms))
+        ++processor_.runtime().configSeq; // 变化才 bump(PR#55 缺陷4)
     c(okResp());
 }
 
