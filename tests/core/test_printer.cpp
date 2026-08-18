@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_printer —— T17:AutomationPrinter + GestureGuard + PlayheadShot。
 // 覆盖(03 §3.2/§3.3、P-6):五个 gesture 出口后 gestureOpen 全 false;区间外零 gesture(R5);
-// deadband 段内常量零写;段边界必写点;ScopedSelfWriteFlag listener 短路;isLaneParam 分类。
+// deadband 段内常量零写;段边界必写点;ScopedSelfWriteFlag listener 短路;host echo 三层屏蔽行为;
+// freeze(J65)与 track-enabled 停写/恢复;epoch 跳变自动闭合并重新 begin。
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -9,7 +10,6 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
-#include <memory>
 
 #include "AutomationPrinter.h"
 #include "OutputParams.h"
@@ -96,6 +96,13 @@ struct SelfWriteProbe final : juce::AudioProcessorParameter::Listener
     void parameterGestureChanged(int, bool) override {}
 };
 
+// 模拟宿主回吐(音频线程):VST3 宿主自动化经 sendValueChangedMessageToListeners 进入,
+// 等价于「无 ScopedSelfWriteFlag 的 setValueNotifyingHost」。isSelfWrite()==false → 走模式屏蔽。
+void hostEcho(juce::AudioParameterFloat* p, float normalizedValue)
+{
+    p->setValueNotifyingHost(normalizedValue);
+}
+
 scvb::CurveEvaluator constCurve(double pan, double volDb)
 {
     scvb::CurveEvaluator ev;
@@ -138,12 +145,13 @@ struct PrinterFixture
         printer.setCurves(ptrs);
     }
 
-    void publishAtSec(double tSec, double sampleRate = kFs)
+    void publishAtSec(double tSec, double sampleRate = kFs, uint32_t epoch = 0, bool playing = true)
     {
         PlayheadPod p;
         p.timeSamples = static_cast<int64_t>(tSec * sampleRate);
         p.sampleRate = sampleRate;
-        p.flags = scvb::engine::kPlayheadIsPlaying;
+        p.epoch = epoch;
+        p.flags = playing ? scvb::engine::kPlayheadIsPlaying : 0u;
         shot.publish(p);
     }
 };
@@ -199,24 +207,33 @@ TEST_CASE("PRINTER-GUARD-2 离区间(R5)后 gestureOpen 全 false 且零写入",
     f.handles.pan[0][0]->removeListener(&panL);
 }
 
-TEST_CASE("PRINTER-GUARD-3 epoch 跳变(endAllGestures)幂等且可重新 begin", "[printer]")
+TEST_CASE("PRINTER-GUARD-3 epoch 跳变自动闭合并重新 begin(loop 回跳)", "[printer]")
 {
     PrinterFixture f;
     f.setCurve0(constCurve(30.0, -3.0));
+    CountingListener panL;
+    f.handles.pan[0][0]->addListener(&panL);
 
     f.printer.setMode(AuthorityMode::Print);
-    f.publishAtSec(0.0);
+    f.publishAtSec(0.0); // epoch 0
     f.printer.tick();
-    REQUIRE(f.printer.anyGestureOpen());
-
-    // epoch 跳变:endAllGestures() 幂等,连续两次不崩溃、不双 end。
-    f.printer.endAllGestures();
-    f.printer.endAllGestures();
-    REQUIRE_FALSE(f.printer.anyGestureOpen());
-
-    // 跳变后仍在区间内 → 下一 tick 重新 begin(不是重复 begin 叠加)。
-    f.printer.tick();
+    REQUIRE(panL.gestureBegins == 1);
     REQUIRE(f.printer.numGesturesOpen() == 2);
+
+    // loop 回跳:epoch 0 → 1,位置仍在区间内 → 自动 endAllGestures + 重新 begin(§2.2 TimelineJump)。
+    f.publishAtSec(1.0, kFs, /*epoch=*/1);
+    f.printer.tick();
+    REQUIRE(panL.gestureEnds == 1); // 旧 pass 自动闭合
+    REQUIRE(panL.gestureBegins == 2); // 新 pass 重新 begin
+    REQUIRE(f.printer.numGesturesOpen() == 2);
+
+    // 同一 epoch 再 tick:不重复闭合(幂等)。
+    f.publishAtSec(1.1, kFs, /*epoch=*/1);
+    f.printer.tick();
+    REQUIRE(panL.gestureEnds == 1);
+    REQUIRE(panL.gestureBegins == 2);
+
+    f.handles.pan[0][0]->removeListener(&panL);
 }
 
 TEST_CASE("PRINTER-GUARD-4 析构路径闭合全部 gesture", "[printer]")
@@ -262,6 +279,97 @@ TEST_CASE("PRINTER-GUARD-4 析构路径闭合全部 gesture", "[printer]")
 
     handles.pan[0][0]->removeListener(&panL);
     handles.vol[0][0]->removeListener(&volL);
+}
+
+TEST_CASE("PRINTER-GUARD-5 transport 停止(无 isPlaying 标志)不打印", "[printer]")
+{
+    PrinterFixture f;
+    f.setCurve0(constCurve(30.0, -3.0));
+    CountingListener panL;
+    f.handles.pan[0][0]->addListener(&panL);
+
+    f.printer.setMode(AuthorityMode::Print);
+    f.publishAtSec(0.0, kFs, 0, /*playing=*/false); // transport 已停但 mode 尚未切 ARMED
+    f.printer.tick();
+
+    REQUIRE(panL.gestureBegins == 0);
+    REQUIRE(panL.valueChanges == 0);
+    REQUIRE_FALSE(f.printer.anyGestureOpen());
+
+    f.handles.pan[0][0]->removeListener(&panL);
+}
+
+// ============================================================================
+// freeze(J65)与 track enabled:冻结/禁用停写并闭合 gesture,解冻/启用恢复。
+// ============================================================================
+
+TEST_CASE("PRINTER-FREEZE-1 freeze 冻结维度停写闭合,解冻重新 begin", "[printer]")
+{
+    PrinterFixture f;
+    f.setCurve0(constCurve(30.0, -3.0));
+    CountingListener panL;
+    CountingListener volL;
+    f.handles.pan[0][0]->addListener(&panL);
+    f.handles.vol[0][0]->addListener(&volL);
+
+    f.printer.setMode(AuthorityMode::Print);
+    f.publishAtSec(0.0);
+    f.printer.tick();
+    REQUIRE(panL.gestureBegins == 1);
+    REQUIRE(volL.gestureBegins == 1);
+    REQUIRE(panL.valueChanges == 1);
+    REQUIRE(volL.valueChanges == 1);
+
+    // freeze=1(bit0=冻结 pan):pan 车道停写并闭合 gesture;vol 照常。
+    f.handles.rawFrz[0][0]->store(1.0f);
+    f.publishAtSec(0.1);
+    f.printer.tick();
+    REQUIRE(panL.gestureEnds == 1);
+    REQUIRE(volL.gestureEnds == 0);
+    REQUIRE(panL.valueChanges == 1); // pan 不再写
+    REQUIRE_FALSE(f.printer.lanes()[0].gestureOpen); // pan lane 闭合
+    REQUIRE(f.printer.lanes()[1].gestureOpen); // vol lane 仍开
+
+    // 解冻:pan 重新 begin(仍在区间内,§1.8)。
+    f.handles.rawFrz[0][0]->store(0.0f);
+    f.publishAtSec(0.2);
+    f.printer.tick();
+    REQUIRE(panL.gestureBegins == 2); // 重新 begin
+    REQUIRE(panL.gestureEnds == 1); // 无额外 end
+    REQUIRE(f.printer.lanes()[0].gestureOpen);
+
+    f.handles.pan[0][0]->removeListener(&panL);
+    f.handles.vol[0][0]->removeListener(&volL);
+}
+
+TEST_CASE("PRINTER-TRACK-1 track enabled=false 整轨不 begin 不写,启用恢复", "[printer]")
+{
+    PrinterFixture f;
+    f.setCurve0(constCurve(30.0, -3.0));
+    CountingListener panL;
+    CountingListener volL;
+    f.handles.pan[0][0]->addListener(&panL);
+    f.handles.vol[0][0]->addListener(&volL);
+
+    f.printer.setTrackEnabled(0, false);
+    f.printer.setMode(AuthorityMode::Print);
+    f.publishAtSec(0.0);
+    f.printer.tick();
+    REQUIRE(panL.gestureBegins == 0);
+    REQUIRE(volL.gestureBegins == 0);
+    REQUIRE(panL.valueChanges == 0);
+    REQUIRE(volL.valueChanges == 0);
+    REQUIRE(f.printer.numGesturesOpen() == 0);
+
+    // 重新启用:下一 tick 恢复 begin + 写。
+    f.printer.setTrackEnabled(0, true);
+    f.publishAtSec(0.1);
+    f.printer.tick();
+    REQUIRE(panL.gestureBegins == 1);
+    REQUIRE(panL.valueChanges == 1);
+
+    f.handles.pan[0][0]->removeListener(&panL);
+    f.handles.vol[0][0]->removeListener(&volL);
 }
 
 // ============================================================================
@@ -337,7 +445,7 @@ TEST_CASE("PRINTER-SELFW-1 ScopedSelfWriteFlag 生效(listener 短路)", "[print
 }
 
 // ============================================================================
-// §3.5 层 1:isLaneParam 分类(host echo 按模式屏蔽只作用于 30 条打印车道)。
+// §3.5 层 1:isLaneParam 分类 + host echo 三层屏蔽行为(真正消费方)。
 // ============================================================================
 
 TEST_CASE("PRINTER-ECHO-1 isLaneParam 分类", "[printer]")
@@ -351,6 +459,49 @@ TEST_CASE("PRINTER-ECHO-1 isLaneParam 分类", "[printer]")
     REQUIRE_FALSE(AutomationPrinter::isLaneParam("lead_select"));
     REQUIRE_FALSE(AutomationPrinter::isLaneParam("v1_t01_width"));
     REQUIRE_FALSE(AutomationPrinter::isLaneParam("v1_t01_freeze"));
+    REQUIRE_FALSE(AutomationPrinter::isLaneParam("width_pan")); // 严格前缀匹配,不误判假 ID
+}
+
+TEST_CASE("PRINTER-ECHO-2 宿主回吐在 PRINT 记 echo,自写不记", "[printer]")
+{
+    PrinterFixture f;
+    f.setCurve0(constCurve(30.0, -3.0));
+    f.printer.installHostEchoShield(f.apvts);
+
+    f.printer.setMode(AuthorityMode::Print);
+    f.publishAtSec(0.0);
+    f.printer.tick(); // 自写(setValueNotifyingHost)→ 层 2 短路,不记 echo
+    REQUIRE(f.printer.hostEchoCount() == 0);
+
+    // 宿主回吐车道参数(音频线程 setValue)→ 层 1b:PRINT 记 echo。
+    hostEcho(f.handles.pan[0][0], 0.75f); // 归一化 0.75 → pan 值域 +50
+    REQUIRE(f.printer.hostEchoCount() == 1);
+    REQUIRE(f.printer.lastHostEchoValue() == Approx(50.0f));
+
+    f.printer.removeHostEchoShield(f.apvts);
+}
+
+TEST_CASE("PRINTER-ECHO-3 FOLLOW 态与非车道参数不记 echo,ARMED 记 echo", "[printer]")
+{
+    PrinterFixture f;
+    f.setCurve0(constCurve(30.0, -3.0));
+    f.printer.installHostEchoShield(f.apvts);
+
+    // FOLLOW:车道参数宿主回吐直接进 DSP(§2.3),不记 echo。
+    hostEcho(f.handles.pan[0][0], 0.75f);
+    REQUIRE(f.printer.hostEchoCount() == 0);
+
+    // 非车道参数(width)host 恒权威,不记 echo(层 1a)。
+    f.printer.setMode(AuthorityMode::Print);
+    hostEcho(f.handles.width, 0.4f);
+    REQUIRE(f.printer.hostEchoCount() == 0);
+
+    // ARMED(引擎权威)车道参数记 echo。
+    f.printer.setMode(AuthorityMode::Armed);
+    hostEcho(f.handles.pan[0][0], 0.25f);
+    REQUIRE(f.printer.hostEchoCount() == 1);
+
+    f.printer.removeHostEchoShield(f.apvts);
 }
 
 // ============================================================================

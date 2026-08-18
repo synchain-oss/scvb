@@ -27,6 +27,9 @@ void ScvbOutputAudioProcessor::prepareToPlay(double /*sampleRate*/, int /*sample
 void ScvbOutputAudioProcessor::releaseResources()
 {
     // T17:releaseResources 出口兜底闭合 gesture(GestureGuard 四出口之一,§3.3 R12)。
+    // 注:endAllGestures 幂等;T17 运行态无手势(未接线),故此处为安全 no-op。T24 接线时若
+    // releaseResources 在音频线程被调,须按 §3.5 禁用 callAsync 的前提下,把闭合延后到
+    // 消息线程(如标志位由下一 tick 消费),避免与 50Hz Timer 并发改 Lane 状态。
     printer.endAllGestures();
 }
 

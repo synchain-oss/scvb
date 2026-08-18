@@ -46,6 +46,9 @@ bool AutomationPrinter::isLaneParam(const juce::String& paramId)
 {
     // §3.5 层 1:仅 v{v}_t{tt}_{pan|vol} 是打印车道。全局三件(width/ms_balance/lead_select)与
     // 每轨 width/freeze 不落打印面(host 恒权威),宿主回吐对它们按「非车道」短路,不按模式屏蔽。
+    // 严格按冻结 ParamID 形状判定(panId/volId 生成式),避免 suffix 宽松匹配误判。
+    if (!paramId.startsWith("v") || !paramId.contains("_t"))
+        return false;
     return paramId.endsWith("_pan") || paramId.endsWith("_vol");
 }
 
@@ -122,6 +125,30 @@ int AutomationPrinter::numGesturesOpen() const
     return n;
 }
 
+void AutomationPrinter::recordHostEcho(float value) noexcept
+{
+    m_hostEchoCount.fetch_add(1, std::memory_order_relaxed);
+    m_lastHostEchoValue.store(value, std::memory_order_relaxed);
+}
+
+void AutomationPrinter::installHostEchoShield(juce::AudioProcessorValueTreeState& apvts)
+{
+    for (auto* p : apvts.processor.getParameters())
+    {
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+            apvts.addParameterListener(rp->getParameterID(), &m_hostEchoListener);
+    }
+}
+
+void AutomationPrinter::removeHostEchoShield(juce::AudioProcessorValueTreeState& apvts)
+{
+    for (auto* p : apvts.processor.getParameters())
+    {
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+            apvts.removeParameterListener(rp->getParameterID(), &m_hostEchoListener);
+    }
+}
+
 bool AutomationPrinter::laneFrozen(const Lane& lane) const
 {
     if (lane.freezeRaw == nullptr)
@@ -172,6 +199,13 @@ void AutomationPrinter::tick()
         return;
     }
 
+    // —— 播放态防护:transport 已停但 mode 尚未切 ARMED 时不打印冻结位置(§5.4)——
+    if ((shot.flags & scvb::engine::kPlayheadIsPlaying) == 0)
+    {
+        endAllGestures();
+        return;
+    }
+
     // —— 无有效时间线:零写入、闭合 gesture ——
     if (shot.timeSamples < 0 || shot.sampleRate <= 0.0)
     {
@@ -189,6 +223,13 @@ void AutomationPrinter::tick()
         endAllGestures();
         return;
     }
+
+    // —— §2.2 TimelineJump:epoch 跳变(loop 回跳)→ endAllGestures;区间内下一循环重新 begin ——
+    const bool epochJump = m_hasLastEpoch && shot.epoch != m_lastEpoch;
+    m_lastEpoch = shot.epoch;
+    m_hasLastEpoch = true;
+    if (epochJump)
+        endAllGestures();
 
     for (int i = 0; i < kNumLanes; ++i)
     {
