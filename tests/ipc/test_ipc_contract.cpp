@@ -346,6 +346,9 @@ struct FeatHeaderBox
 
 void initFeatHeader(scvb::FeatHeader* h)
 {
+    // PR#42 起 FeatRing::bind / FeatPuller::bind 校验 magic/abi(不符拒绑);in-process 构造须显式置位。
+    h->magic.store(kScvbMagic, std::memory_order_relaxed);
+    h->abi.store(kScvbAbi, std::memory_order_relaxed);
     h->hop_ms = scvb::kFeatHopMs;
     h->capacity_hops = scvb::kFeatCapacityHops;
     h->base_hop.store(0, std::memory_order_relaxed);
@@ -1086,15 +1089,13 @@ TEST_CASE("IPC-14 特征环 run 协议", "[ipc][contract]")
         analysis::ChannelFrames store;
         store.setReadOnly(false);
         scvb::FeatPullState state;
-        while (state.lastPulled < 3000)
+        // 首次调用是「确认拍」(init/run 切换 return 0,不拉取,下拍才拉);循环到追平 write_hop,
+        // 不要把确认拍的 0 当作「拉完」。
+        for (int tick = 0; tick < 1000 && !(state.initialized && state.lastPulled >= 3000); ++tick)
         {
             const u32 pulled = scvb::pullIncremental(*box.hdr, ring.data(), static_cast<u32>(ring.size()), state, store,
                                                      analysis::HopRange{0, UINT64_MAX});
-            REQUIRE(pulled <= scvb::kMaxBurstHops);
-            if (pulled == 0)
-            {
-                break;
-            }
+            REQUIRE(pulled <= scvb::kMaxBurstHops); // 每拍 ≤256 hop
         }
         REQUIRE(store.coverage().coversFully(analysis::HopRange{0, 3000}));
     }
@@ -1111,14 +1112,11 @@ TEST_CASE("IPC-14 特征环 run 协议", "[ipc][contract]")
         store.setReadOnly(false);
         scvb::FeatPullState state;
         box.hdr->write_hop.store(2000, std::memory_order_release);
-        // 受限追赶:每拍 ≤ kMaxBurstHops,拉到 lastPulled==write_hop。
-        while (state.lastPulled < 2000)
+        // 受限追赶:每拍 ≤ kMaxBurstHops;首次调用是确认拍(return 0),循环到追平 write_hop。
+        for (int tick = 0; tick < 1000 && !(state.initialized && state.lastPulled >= 2000); ++tick)
         {
-            if (scvb::pullIncremental(*box.hdr, ring.data(), static_cast<u32>(ring.size()), state, store,
-                                      analysis::HopRange{0, UINT64_MAX}) == 0)
-            {
-                break;
-            }
+            scvb::pullIncremental(*box.hdr, ring.data(), static_cast<u32>(ring.size()), state, store,
+                                  analysis::HopRange{0, UINT64_MAX});
         }
         REQUIRE(store.coverage().coversFully(analysis::HopRange{0, 2000}));
 
@@ -1126,13 +1124,12 @@ TEST_CASE("IPC-14 特征环 run 协议", "[ipc][contract]")
         box.hdr->base_hop.store(10000, std::memory_order_release);
         box.hdr->write_hop.store(10500, std::memory_order_release);
 
-        while (state.lastPulled < 10500)
+        // run 切换到 base=10000 后第一拍也是确认拍(return 0,重设 lastPulled=10000),重试后才拉到
+        // [10000,10500);旧 run 未拉积压 [2000,3000) 仍整段跳过(不进 coverage)。
+        for (int tick = 0; tick < 1000 && !(state.initialized && state.lastPulled >= 10500); ++tick)
         {
-            if (scvb::pullIncremental(*box.hdr, ring.data(), static_cast<u32>(ring.size()), state, store,
-                                      analysis::HopRange{0, UINT64_MAX}) == 0)
-            {
-                break;
-            }
+            scvb::pullIncremental(*box.hdr, ring.data(), static_cast<u32>(ring.size()), state, store,
+                                  analysis::HopRange{0, UINT64_MAX});
         }
 
         REQUIRE_FALSE(store.coverage().coversFully(analysis::HopRange{2000, 3000}));
