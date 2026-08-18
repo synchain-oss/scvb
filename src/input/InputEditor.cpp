@@ -138,13 +138,17 @@ void InputEditor::emitTick()
     // scvb.error:claim 态迁移边沿(§4.5;conflict/srMismatch 进出,abi 不占 error code)。
     // 边沿键 = (claim, channelId):claim 不变但 channel 变化(如 conflict A → conflict B)也必须
     // 重发,否则 channelConflict/srMismatch 的 ch 载荷残留旧 channel(PR#54 R3)。
+    // 基线仅在边沿已消费(emitClaimError 返回 true)后推进:编辑器隐藏时 error 事件被丢弃,基线
+    // 保持旧值,恢复可见后下一 tick 因边沿仍成立而重发(PR#54 R5,与 advanceEmitCache 同口径)。
     if (claim != lastClaim_ || snap.channelId != lastErrorChannelId_)
     {
         const juce::String prev = lastClaim_;
-        lastClaim_ = claim;
-        lastErrorChannelId_ = snap.channelId;
-        emitClaimError(claim, prev, snap.channelId, snap.groupId, juce::roundToInt(snap.sampleRate),
-                       static_cast<int>(snap.globalInfo.output_sample_rate));
+        if (emitClaimError(claim, prev, snap.channelId, snap.groupId, juce::roundToInt(snap.sampleRate),
+                           static_cast<int>(snap.globalInfo.output_sample_rate)))
+        {
+            lastClaim_ = claim;
+            lastErrorChannelId_ = snap.channelId;
+        }
     }
 }
 
@@ -209,11 +213,14 @@ void InputEditor::emitIfChanged(const char* name, const juce::var& payload, juce
     webView().emitEventIfBrowserIsVisible(juce::Identifier(name), payload);
 }
 
-void InputEditor::emitClaimError(const juce::String& claim, const juce::String& prevClaim, int channelId, int groupId,
+bool InputEditor::emitClaimError(const juce::String& claim, const juce::String& prevClaim, int channelId, int groupId,
                                  int localSr, int outputSr)
 {
+    const bool visible = webView().isVisible();
+    bool needsError = false;
     if (claim == "conflict" || prevClaim == "conflict")
     {
+        needsError = true;
         auto* detail = new juce::DynamicObject();
         detail->setProperty("groupId", groupId);
         emitIfChanged(bridge::kEvError,
@@ -222,6 +229,7 @@ void InputEditor::emitClaimError(const juce::String& claim, const juce::String& 
     }
     if (claim == "srMismatch" || prevClaim == "srMismatch")
     {
+        needsError = true;
         auto* detail = new juce::DynamicObject();
         detail->setProperty("inputSr", localSr);
         detail->setProperty("outputSr", outputSr);
@@ -229,6 +237,8 @@ void InputEditor::emitClaimError(const juce::String& claim, const juce::String& 
                       bridge::buildErrorPayload("srMismatch", channelId, juce::var(detail), claim == "srMismatch"),
                       lastErrorJson_);
     }
+    // 边沿消费:无 error 边沿恒消费;有 error 边沿仅当可见(已实际发出)才消费(PR#54 R5)。
+    return bridge::claimEdgeConsumed(needsError, visible);
 }
 
 } // namespace scvb::input

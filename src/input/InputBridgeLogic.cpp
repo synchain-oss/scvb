@@ -83,6 +83,11 @@ bool advanceEmitCache(const juce::String& json, juce::String& lastJson, bool vis
     return true;
 }
 
+bool claimEdgeConsumed(bool needsError, bool visible)
+{
+    return !needsError || visible;
+}
+
 juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
 {
     if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))

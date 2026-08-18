@@ -48,7 +48,9 @@ private:
     // JSON 串比对后按需 emit(DynamicObject 的 var== 是指针比较,不可用于 diff)。
     void emitIfChanged(const char* name, const juce::var& payload, juce::String& lastJson);
     // claim 态迁移边沿 → scvb.error(conflict 进出 / srMismatch 进出)。
-    void emitClaimError(const juce::String& claim, const juce::String& prevClaim, int channelId, int groupId,
+    // 返回 true = 边沿已消费(无 error 边沿,或 error 事件已实际发出)→ 调用方推进基线;
+    // false = error 事件因隐藏被丢弃 → 调用方保持基线,恢复可见后下一 tick 重发(PR#54 R5)。
+    bool emitClaimError(const juce::String& claim, const juce::String& prevClaim, int channelId, int groupId,
                         int localSr, int outputSr);
 
     ScvbInputAudioProcessor& processor_;

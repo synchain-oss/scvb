@@ -48,6 +48,35 @@ TEST_CASE("T30 connSnapshot:无 Output → 默认;Output 活跃 + mask → 在�
     CHECK(c1.maskBit);
 }
 
+TEST_CASE("T30 connSnapshot:Output 心跳陈旧 → maskBit 不置位(PR#54 R5 门控)")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession s(backend, 1001);
+    s.setChannelId(3);
+    REQUIRE(s.prepare(48000, 512, 1, 100) == InputClaimState::kActive);
+    s.heartbeat(100);
+
+    // Output 活跃 + connected_mask bit3 置位。
+    scvb::Registry out(backend, 1);
+    REQUIRE(out.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(out.claimOutput(2001, 100) == scvb::Registry::ClaimResult::kClaimed);
+    out.heartbeatOutput(100);
+    out.setConnectedMaskBit(3);
+
+    // 心跳新鲜(≤2000ms):在线 + maskBit 置位。
+    const auto c0 = s.connSnapshot(200);
+    CHECK(c0.outputOnline);
+    CHECK(c0.maskBit);
+
+    // 心跳陈旧(>2000ms)但 connected_mask 位仍在:outputOnline=false 且 maskBit 必须为 false
+    // (否则 claimValue(kActive, maskBit=true, …) 会把已死 Output 判为 "active" 而非 "idle")。
+    const auto c1 = s.connSnapshot(5000);
+    CHECK_FALSE(c1.outputOnline);
+    CHECK_FALSE(c1.maskBit);
+}
+
 TEST_CASE("T30 occupiedMask:心跳陈旧/幽灵槽不置位(§4.2 陈旧可覆盖语义)")
 {
     scvb::SegmentBackendInProcess::resetAll();

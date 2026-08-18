@@ -46,6 +46,11 @@ juce::String priorityRejectReason(PriorityReject r); // kNone → ""
 // 自然重发(避免隐藏期变化永久丢失 → UI 陈旧)。
 bool advanceEmitCache(const juce::String& json, juce::String& lastJson, bool visible);
 
+// §4.5 claim 边沿消费判定(PR#54 R5,与 advanceEmitCache 同口径):有 error 边沿(needsError =
+// claim/prev 为 conflict/srMismatch)时仅当 visible(事件已实际发出)才消费并推进基线;无 error
+// 边沿恒消费。隐藏 + error 边沿 → 不消费 → 基线保持 → 恢复可见后下一 tick 重发。
+bool claimEdgeConsumed(bool needsError, bool visible);
+
 // --- 数值参数解析(§0.8.2 类型不符/越界 → 拒绝)------------------------------------
 // 非数值(缺参/字符串/对象/null)→ 空 Optional,调用方回 {ok:false, reason:"badArg"};
 // 数值(JS number 走 double,截断)且在 int 全域内 → 值;double 越界/NaN → 空(cast 前挡下,

@@ -163,9 +163,11 @@ InputConnSnapshot InputSession::connSnapshot(u64 nowMs) const
         // §4.2 outputOnline = 本组 OutputSlot 心跳新鲜 ≤2000ms;附 state 校验防「释放后 ≤2s 残留新鲜」。
         s.outputOnline = os->state.load(std::memory_order_acquire) == kSlotActive &&
                          !isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs);
-        const u32 mask = os->connected_mask.load(std::memory_order_acquire);
-        if (ch >= 1 && ch <= kMaxChannels)
+        // §4.2 maskBit 以 outputOnline 为前提(PR#54 R5):Output 心跳陈旧时 connected_mask 位
+        // 仍在也不置位,否则 kActive 的 claimValue 会误判为 "active"(已死 Output 显示健康)。
+        if (s.outputOnline && ch >= 1 && ch <= kMaxChannels)
         {
+            const u32 mask = os->connected_mask.load(std::memory_order_acquire);
             s.maskBit = (mask & (1u << (ch - 1))) != 0;
         }
     }

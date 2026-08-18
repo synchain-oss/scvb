@@ -25,6 +25,7 @@ using scvb::input::bridge::buildGroupsPayload;
 using scvb::input::bridge::buildInputSnapshot;
 using scvb::input::bridge::buildPriorityResponse;
 using scvb::input::bridge::buildStatePayload;
+using scvb::input::bridge::claimEdgeConsumed;
 using scvb::input::bridge::claimValue;
 using scvb::input::bridge::ConfigSnapshot;
 using scvb::input::bridge::conflictResponse;
@@ -137,6 +138,17 @@ TEST_CASE("T30 advanceEmitCache:不可见不推进缓存,恢复可见重发(PR#5
     CHECK(last == "a");
     CHECK(advanceEmitCache("b", last, true));
     CHECK(last == "b");
+}
+
+TEST_CASE("T30 claimEdgeConsumed:隐藏 + error 边沿不消费,恢复可见消费(PR#54 R5)")
+{
+    // 无 error 边沿(非 conflict/srMismatch 边沿)恒消费,不受可见性影响。
+    CHECK(claimEdgeConsumed(false, false));
+    CHECK(claimEdgeConsumed(false, true));
+
+    // 有 error 边沿(needsError=true):隐藏 → 不消费(基线不推进);恢复可见 → 消费(error 重发)。
+    CHECK_FALSE(claimEdgeConsumed(true, false));
+    CHECK(claimEdgeConsumed(true, true));
 }
 
 TEST_CASE("T30 parseIntArg:类型不符/越界 → 空(回 badArg);数值截断(§0.8.2)")
