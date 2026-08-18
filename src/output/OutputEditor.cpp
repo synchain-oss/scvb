@@ -935,8 +935,24 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
         return;
     }
 
-    auto& channel = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
-    bool changed = false;
+    const auto& cur = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
+
+    // 阶段1:先对全部 patch 字段做完整校验到局部临时量,绝不触碰 channel(PR#55 第4轮缺陷2)。
+    bool hasEnabled = false;
+    bool enabled = false;
+    bool hasLabel = false;
+    juce::String label;
+    bool hasPriority = false;
+    int priority = 0;
+    bool hasLeadLock = false;
+    bool leadLock = false;
+    bool hasLeadVolExempt = false;
+    bool leadVolExempt = false;
+    bool hasParticipate = false;
+    bool participate = false;
+    bool hasPairId = false;
+    int pairId = 0;
+
     if (a.size() > 1 && a[1].isObject())
     {
         const juce::var patch = a[1];
@@ -947,67 +963,95 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
         }
         if (patch.hasProperty("enabled"))
         {
-            bool b = false;
-            if (!strictBool(patch.getProperty("enabled", channel.enabled), b))
+            if (!strictBool(patch.getProperty("enabled", cur.enabled), enabled))
             {
                 c(badArgResp());
                 return;
             }
-            changed |= b != channel.enabled;
-            channel.enabled = b;
+            hasEnabled = true;
         }
         if (patch.hasProperty("label"))
         {
-            const juce::String l = patch.getProperty("label", juce::String()).toString().substring(0, 24);
-            changed |= l != channel.label;
-            channel.label = l;
+            label = patch.getProperty("label", juce::String()).toString().substring(0, 24);
+            hasLabel = true;
         }
         if (patch.hasProperty("priority"))
         {
-            const int pr = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", channel.priority)));
-            changed |= pr != channel.priority;
-            channel.priority = pr;
+            priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", cur.priority)));
+            hasPriority = true;
         }
         if (patch.hasProperty("lead_lock"))
         {
-            bool b = false;
-            if (!strictBool(patch.getProperty("lead_lock", channel.leadLock), b))
+            if (!strictBool(patch.getProperty("lead_lock", cur.leadLock), leadLock))
             {
                 c(badArgResp());
                 return;
             }
-            changed |= b != channel.leadLock;
-            channel.leadLock = b;
+            hasLeadLock = true;
         }
         if (patch.hasProperty("lead_vol_exempt"))
         {
-            bool b = false;
-            if (!strictBool(patch.getProperty("lead_vol_exempt", channel.leadVolExempt), b))
+            if (!strictBool(patch.getProperty("lead_vol_exempt", cur.leadVolExempt), leadVolExempt))
             {
                 c(badArgResp());
                 return;
             }
-            changed |= b != channel.leadVolExempt;
-            channel.leadVolExempt = b;
+            hasLeadVolExempt = true;
         }
         if (patch.hasProperty("participate_in_auto_pan"))
         {
-            bool b = false;
-            if (!strictBool(patch.getProperty("participate_in_auto_pan", false), b))
+            if (!strictBool(patch.getProperty("participate_in_auto_pan", false), participate))
             {
                 c(badArgResp());
                 return;
             }
-            changed |= b != channel.participateAutoPan;
-            channel.participateAutoPan = b;
-            channel.participateAutoPanSet = true;
+            hasParticipate = true;
         }
         if (patch.hasProperty("pair_id"))
         {
-            const int pr = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", channel.pairId)));
-            changed |= pr != channel.pairId;
-            channel.pairId = pr;
+            pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", cur.pairId)));
+            hasPairId = true;
         }
+    }
+
+    // 阶段2:全部通过后一次性应用,变化才 bump config_seq。
+    auto& channel = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
+    bool changed = false;
+    if (hasEnabled)
+    {
+        changed |= enabled != channel.enabled;
+        channel.enabled = enabled;
+    }
+    if (hasLabel)
+    {
+        changed |= label != channel.label;
+        channel.label = label;
+    }
+    if (hasPriority)
+    {
+        changed |= priority != channel.priority;
+        channel.priority = priority;
+    }
+    if (hasLeadLock)
+    {
+        changed |= leadLock != channel.leadLock;
+        channel.leadLock = leadLock;
+    }
+    if (hasLeadVolExempt)
+    {
+        changed |= leadVolExempt != channel.leadVolExempt;
+        channel.leadVolExempt = leadVolExempt;
+    }
+    if (hasParticipate)
+    {
+        changed |= participate != channel.participateAutoPan;
+        channel.participateAutoPan = participate;
+        channel.participateAutoPanSet = true;
+    }
+    if (hasPairId)
+    {
+        changed |= pairId != channel.pairId;
+        channel.pairId = pairId;
     }
 
     if (changed)
@@ -1199,28 +1243,45 @@ void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
     }
     const juce::var patch = a[0];
     auto& rt = processor_.runtime();
-    bool changed = false;
+
+    // 阶段1:先校验全部枚举字段到局部量(PR#55 第4轮缺陷2)。
+    juce::String loudnessMode = rt.loudnessMode;
+    juce::String centerSlotPolicy = rt.centerSlotPolicy;
+    bool hasLoudness = false;
+    bool hasCenter = false;
     if (patch.hasProperty("loudness_mode"))
     {
-        const juce::String m = patch.getProperty("loudness_mode", juce::String()).toString();
-        if (m != "kw_integrated" && m != "rms" && m != "peak_dbfs")
+        loudnessMode = patch.getProperty("loudness_mode", juce::String()).toString();
+        if (loudnessMode != "kw_integrated" && loudnessMode != "rms" && loudnessMode != "peak_dbfs")
         {
             c(badArgResp());
             return;
         }
-        changed |= m != rt.loudnessMode;
-        rt.loudnessMode = m;
+        hasLoudness = true;
     }
     if (patch.hasProperty("center_slot_policy"))
     {
-        const juce::String m = patch.getProperty("center_slot_policy", juce::String()).toString();
-        if (m != "priority_queue" && m != "lead_exclusive" && m != "even_spread")
+        centerSlotPolicy = patch.getProperty("center_slot_policy", juce::String()).toString();
+        if (centerSlotPolicy != "priority_queue" && centerSlotPolicy != "lead_exclusive" &&
+            centerSlotPolicy != "even_spread")
         {
             c(badArgResp());
             return;
         }
-        changed |= m != rt.centerSlotPolicy;
-        rt.centerSlotPolicy = m;
+        hasCenter = true;
+    }
+
+    // 阶段2:全部通过后一次性应用,变化才 bump。
+    bool changed = false;
+    if (hasLoudness)
+    {
+        changed |= loudnessMode != rt.loudnessMode;
+        rt.loudnessMode = loudnessMode;
+    }
+    if (hasCenter)
+    {
+        changed |= centerSlotPolicy != rt.centerSlotPolicy;
+        rt.centerSlotPolicy = centerSlotPolicy;
     }
     if (changed)
         ++rt.configSeq; // PR#55 缺陷4
@@ -1422,6 +1483,11 @@ void OutputEditor::handleClearCoverage(const ArgList& a, Completion c)
 
 void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
 {
+    if (isReadOnly()) // observer 只读实例不得改本地 CRVS/UndoManager(PR#55 第4轮缺陷1)
+    {
+        c(observerResp());
+        return;
+    }
     const bool ok = processor_.undo(); // 持锁(PR#55 重要1)
     if (ok)
         emitSegments("undo", true); // 全量段表(PR#55 建议①)
@@ -1432,6 +1498,11 @@ void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
 
 void OutputEditor::handleRedo(const ArgList& /*a*/, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     const bool ok = processor_.redo(); // 持锁(PR#55 重要1)
     if (ok)
         emitSegments("redo", true); // 全量段表(PR#55 建议①)
