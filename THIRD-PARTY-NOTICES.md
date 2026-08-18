@@ -9,6 +9,7 @@
 | IBM Plex Sans(`web/fonts/`) | Version 3.201 | OFL-1.1     | https://github.com/IBM/plex                     |
 | IBM Plex Mono(`web/fonts/`) | Version 2.3   | OFL-1.1     | https://github.com/IBM/plex                     |
 | Noto Sans SC(`web/fonts/`)  | Version 2.004 | OFL-1.1     | https://github.com/notofonts/noto-cjk           |
+| miniz(`third_party/miniz/`) | Version 2.2.0 | MIT         | https://github.com/richgel999/miniz             |
 | <依赖名>                      | <版本>        | <SPDX 标识> | <上游 URL>                                      |
 
 字体四条(T27)是 `text=` 子集产物,由 `scripts/fetch_fonts.py` 生成,随插件二进制分发 ——

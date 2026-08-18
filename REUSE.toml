@@ -23,3 +23,9 @@ SPDX-License-Identifier = "OFL-1.1"
 path = ["tests/golden/**", "package-lock.json"]
 SPDX-FileCopyrightText = "2026 Synchain"
 SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# ③ 第三方 vendored 源码(miniz,zlib 兼容;T21 gzip 用)。保留上游版权与 MIT 许可。
+[[annotations]]
+path = "third_party/miniz/**"
+SPDX-FileCopyrightText = "2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC"
+SPDX-License-Identifier = "MIT"
