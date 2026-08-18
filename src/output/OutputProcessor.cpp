@@ -94,6 +94,8 @@ void ScvbOutputAudioProcessor::releaseResources()
     session_.release(scvb::steadyNowMs());
     printer_.endAllGestures();
     prepared_ = false;
+    sampleRate_.store(
+        0.0, std::memory_order_relaxed); // 复位:isPrepared()/sr 守卫在 release 后回到「未 prepare」(PR#55 第10轮缺陷1)
 }
 
 void ScvbOutputAudioProcessor::rebindVersion()
@@ -589,16 +591,25 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
-    // CRVS:段真身解码(版本名/段表/pan_curve;decode 失败 → 保留默认,不崩溃)。
+    // CRVS:段真身解码(版本名/段表/pan_curve)。成功 → 替换;无 chunk 或解码失败 → 重置全新默认
+    // (不残留旧编辑写回,PR#55 第10轮缺陷2)。无论结果都 +修订号刷新段表(PR#55 第8轮缺陷1)。
+    bool crvsLoaded = false;
     if (const scvb::state::Chunk* crvs = chunks.find(scvb::state::kFourccCrvs); crvs != nullptr)
     {
         scvb::state::CrvsData decoded;
         if (scvb::state::decodeCrvs(crvs->payload.data(), crvs->payload.size(), decoded))
         {
             crvsData_ = std::move(decoded);
-            crvsRevision_.fetch_add(1, std::memory_order_release); // 加载工程/预设后刷新段表(PR#55 第8轮缺陷1)
+            crvsLoaded = true;
         }
     }
+    if (!crvsLoaded)
+    {
+        crvsData_ = scvb::state::CrvsData{};
+        crvsData_.versions[0].meta.name = "V1"; // 默认版本名([J05])
+        crvsData_.versions[1].meta.name = "V2";
+    }
+    crvsRevision_.fetch_add(1, std::memory_order_release);
 
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
     if (prepared_)
