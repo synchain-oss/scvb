@@ -86,7 +86,9 @@ InitResult CtrlPlane::changeGroup(u32 newGroup)
         return InitResult::kFailed;
     }
     base_ = nullptr;
-    if (!handle_.release(steadyNowMs()))
+    // 组变更可能发生在 prepare/open 之前(handle_ 尚未打开或已 moved-from):先判 valid(),与
+    // releaseHandle() 同模式,避免把 moved-from 句柄推进 pendingReleases_。
+    if (handle_.valid() && !handle_.release(steadyNowMs()))
     {
         pendingReleases_.push_back(std::move(handle_));
     }
