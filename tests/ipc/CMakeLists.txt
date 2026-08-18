@@ -3,6 +3,7 @@
 # 的环读写语义。IPC-1..20 共 26 条验收真源 = masterPlan 10-validation §2.3。
 add_executable(scvb_ipc_tests
   test_ipc_contract.cpp
+  test_registry_probe.cpp
 )
 
 target_link_libraries(scvb_ipc_tests PRIVATE scvb_core Catch2::Catch2WithMain)

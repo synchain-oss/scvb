@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "OutputEditor.h"
+#include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
 #include "state/StateMigration.h"
 
@@ -713,46 +714,14 @@ std::uint8_t ScvbOutputAudioProcessor::probeGroupsOnline()
     if (ownState == scvb::output::OutputClaimState::kActive || ownState == scvb::output::OutputClaimState::kObserver)
         bitmap |= static_cast<std::uint8_t>(1u << (groupId_ - 1));
 
+    // 异组:只读探测(契约 §2.4;失败=0 位,不重试不报错)。尺寸校验用 VirtualQuery(PR#55 缺陷1)。
     const scvb::u64 now = scvb::steadyNowMs();
     for (int g = 1; g <= scvb::kMaxGroups; ++g)
     {
         if (g == groupId_)
             continue; // 本组已判定
-
-        // 契约 §2.4:异组只读探测 —— OpenFileMappingW(FILE_MAP_READ),只映射 RegistryHeader + OutputSlot,
-        // 绝不写异组任何字节、绝不 CAS/claim;失败(段不存在/映射失败/abi 不符)= 0 位,不重试不报错。
-        const HANDLE h =
-            ::OpenFileMappingW(FILE_MAP_READ, FALSE, scvb::segmentRegistryName(static_cast<scvb::u32>(g)).c_str());
-        if (h == nullptr)
-            continue;
-        void* base = ::MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0);
-        if (base == nullptr)
-        {
-            ::CloseHandle(h);
-            continue;
-        }
-
-        LARGE_INTEGER sectionSize{};
-        const bool sizeOk =
-            ::GetFileSizeEx(h, &sectionSize) != FALSE &&
-            sectionSize.QuadPart >= static_cast<LONGLONG>(scvb::kOutputSlotOffset + sizeof(scvb::OutputSlot));
-        if (sizeOk)
-        {
-            const auto* hdr = static_cast<const scvb::RegistryHeader*>(base);
-            if (hdr->magic.load(std::memory_order_acquire) == scvb::kScvbMagic &&
-                hdr->abi.load(std::memory_order_acquire) == scvb::kScvbAbi)
-            {
-                const auto* slot =
-                    reinterpret_cast<const scvb::OutputSlot*>(static_cast<const char*>(base) + scvb::kOutputSlotOffset);
-                if (slot->state.load(std::memory_order_acquire) == scvb::kSlotActive &&
-                    !scvb::isStaleDisplay(slot->heartbeat_ms.load(std::memory_order_acquire), now))
-                {
-                    bitmap |= static_cast<std::uint8_t>(1u << (g - 1));
-                }
-            }
-        }
-        ::UnmapViewOfFile(base);
-        ::CloseHandle(h);
+        if (scvb::probeRegistryGroupOnline(static_cast<scvb::u32>(g), now))
+            bitmap |= static_cast<std::uint8_t>(1u << (g - 1));
     }
     return bitmap;
 }

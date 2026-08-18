@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 
+#include "SegmentEditService.h"
 #include "engine/CurveEvaluator.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -127,38 +128,6 @@ float readParam(juce::AudioProcessorValueTreeState& apvts, const juce::String& i
         return p->load(std::memory_order_relaxed);
     return 0.0f;
 }
-
-// ---- CRVS 变更事务(全量快照 + 重建曲线 + 单条撤销)----
-class CrvsTransactionAction final : public juce::UndoableAction
-{
-public:
-    CrvsTransactionAction(ScvbOutputAudioProcessor& processor, scvb::state::CrvsData oldData,
-                          scvb::state::CrvsData newData)
-        : processor_(processor), oldData_(std::move(oldData)), newData_(std::move(newData))
-    {
-    }
-
-    bool perform() override
-    {
-        processor_.crvsData() = newData_;
-        processor_.rebuildAllCurves();
-        return true;
-    }
-
-    bool undo() override
-    {
-        processor_.crvsData() = oldData_;
-        processor_.rebuildAllCurves();
-        return true;
-    }
-
-    int getSizeInUnits() override { return 1; }
-
-private:
-    ScvbOutputAudioProcessor& processor_;
-    scvb::state::CrvsData oldData_;
-    scvb::state::CrvsData newData_;
-};
 
 } // namespace
 
@@ -684,12 +653,8 @@ void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& o
 // ============================================================================
 void OutputEditor::commitCrvsTransaction(const juce::String& name, const std::function<void()>& mutator)
 {
-    auto& mgr = processor_.authority().undoManager();
-    const scvb::state::CrvsData oldData = processor_.crvsData();
-    mutator(); // 就地改 crvsData_
-    const scvb::state::CrvsData newData = processor_.crvsData();
-    mgr.beginNewTransaction(name);
-    mgr.perform(new CrvsTransactionAction(processor_, oldData, newData));
+    scvb::output::commitCrvsTransaction(processor_.authority().undoManager(), processor_.crvsData(), name, mutator,
+                                        [this] { processor_.rebuildAllCurves(); });
 }
 
 bool OutputEditor::isReadOnly() const
@@ -820,6 +785,12 @@ void OutputEditor::handleSetVersionName(const ArgList& a, Completion c)
     const int v = a.size() > 0 ? static_cast<int>(a[0]) : 0;
     const juce::String name = a.size() > 1 ? a[1].toString() : juce::String();
 
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
     std::string effective;
     const auto result = scvb::engine::normalizeVersionName(v, name.toStdString(), effective);
     if (result == scvb::engine::SetNameResult::InvalidIndex)
@@ -851,6 +822,11 @@ void OutputEditor::handleCopyVersion(const ArgList& a, Completion c)
 {
     const int src = a.size() > 0 ? static_cast<int>(a[0]) : 0;
     const int dst = a.size() > 1 ? static_cast<int>(a[1]) : 0;
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     if (src < 1 || src > 2 || dst < 1 || dst > 2 || src == dst)
     {
         c(badArgResp());
@@ -1226,15 +1202,11 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
 
     const int track = ch - 1;
     const int version = processor_.versionActive();
-    auto result = scvb::state::SegmentEditResult::BadArg;
-
-    commitCrvsTransaction("Edit segment ch" + juce::String(ch), [&] {
-        auto& segments = processor_.crvsData()
-                             .versions[static_cast<std::size_t>(version - 1)]
-                             .tracks[static_cast<std::size_t>(track)]
-                             .segments;
-        result = scvb::state::editTrackSegments(segments, args);
-    });
+    // 结果门控(PR#55 缺陷3):先 editTrackSegments 判结果,仅 Ok 才压入 undo 事务并 rebuild;
+    // 失败(BadArg/NotAdjacent)不改原表、不碰 undo、不 rebuild。
+    const scvb::state::SegmentEditResult result =
+        scvb::output::editSegmentTransactional(processor_.authority().undoManager(), processor_.crvsData(), version,
+                                               track, args, [this] { processor_.rebuildAllCurves(); });
 
     if (result != scvb::state::SegmentEditResult::Ok)
     {
