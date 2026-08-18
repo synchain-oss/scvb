@@ -10,7 +10,10 @@
 //   • **Wave 1 的 WAVE1_NUMBERS 静态填数路径已删除**:所有 {n}/{m}/{k}/{p}/{t}
 //     一律由事件算出(mock fixture 下渲染结果与 Wave 1 同数,因为两者同源于
 //     scvb.segments / scvb.captureProgress)。
-//   • Tab2 / Tab3 / Tab4 仍是 T27b 灰模骨架,行/泳道模板保持原样待 T32-T35 替换 ——
+//   • **T32 Wave 1**:Tab2 的列头 / 15 轨行矩阵 / 图例脚注已迁到
+//     web/output/tab-tracks.js(createTabTracks),本文件只留一句装配调用;
+//     电平弹道空壳在 web/output/canvas/meter.js(Wave 2 实现)。
+//   • Tab3 / Tab4 仍是 T27b 灰模骨架,泳道模板保持原样待 T33-T35 替换 ——
 //     它们的模板仍用 web/shared/mock-data.js 撑列宽,零状态渲染逻辑。
 //   • 浏览器直开(无 __JUCE__、无注入的 window.__SCVB_MOCK__)必须零 console.error——
 //     createBridge 的失败走 try/catch,只 console.warn 一句并在 footer 落一行提示。
@@ -37,6 +40,7 @@ import {
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
 } from "./tab-master.js";
+import { createTabTracks } from "./tab-tracks.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -103,10 +107,7 @@ const store = {
 const REJECT_HINT_MS = 4000;
 
 // ------------------------------------------------------------- 小工具
-function tt(ch) {
-    return String(ch).padStart(2, "0");
-}
-
+// (两位轨号 tt() 随 Tab2 行模板一并迁去 tab-tracks.js —— 外壳层已用不到)
 function $(gb) {
     return document.querySelector(`[data-gb="${gb}"]`);
 }
@@ -292,103 +293,17 @@ const tabMaster = createTabMaster({
 });
 tabMaster.mount();
 
-// ------------------------------------------------------------- Tab2:15 轨行模板生成(05 §2.2)
-// T27b 灰模骨架,原样保留待 T32 替换:仅用 FIFTEEN_TRACKS 撑开列宽,零状态渲染逻辑。
-function trackRowHtml(ch, label) {
-    // data-tour="freeze":05 §2.6 步骤5「一条轨道行的冻结开关组(pad 14)」,取首行为代表。
-    // 锚点必须挂在**有 principal box** 的元素上 —— T36b 的 spotlight 用 getBoundingClientRect()
-    // 算亮区,display:contents 的元素返回 0×0@(0,0)(见下方冻结组注释)。
-    const isFreezeAnchor = ch === 1;
-    return `
-    <div class="tracks-row" role="row" data-gb="tracks-row-${ch}" data-ch="${ch}">
-      <span class="sc-dot" data-tone="gray" role="cell" style="width:8px" data-gb="tracks-row-${ch}-statuslight" title=""></span>
-      <!-- 轨状态增补(05 §2.2 line 282,R1):采集后有效唱段 <1.5s 的轨在状态灯旁显示黄标
-           「样本不足,结果可能不稳」(04 §7 步7;Tab3 轨头同款 = wave-lane-{ch}-lowsample)。
-           词条 lowSample 字典已备,不需 todo;显隐数据源 scvb.captureProgress/scvb.segments,留 T32。 -->
-      <span class="sc-badge--amber" data-t="lowSample" data-gb="tracks-row-${ch}-lowsample" hidden></span>
-      <!-- 重采集布防 badge②(05 §2.3「重采集选区」行 ②:Tab2 目标轨行首同款小 badge) -->
-      <span class="sc-badge--amber" data-t="wave.recaptureArmed" data-gb="tracks-row-${ch}-recapture-badge" hidden></span>
-      <span class="tracks-row__ch sc-mono" role="cell" style="width:44px" data-gb="tracks-row-${ch}-ch">
-        ${tt(ch)}
-        <span class="sc-badge" data-t="stereoBadge" data-gb="tracks-row-${ch}-stereo" hidden>ST</span>
-      </span>
-      <span class="tracks-row__label" role="cell" style="width:150px" data-gb="tracks-row-${ch}-label">${label}</span>
-      <span class="sc-knob" data-live="1" role="cell" style="width:30px;--ang:0deg" data-gb="tracks-row-${ch}-pan"><span class="sc-knob__needle"></span></span>
-      <span class="sc-knob" data-live="1" role="cell" style="width:30px;--ang:0deg" data-gb="tracks-row-${ch}-width"><span class="sc-knob__needle"></span></span>
-      <span class="tracks-row__voltube" role="cell" style="width:268px" data-gb="tracks-row-${ch}-voltube">
-        <span class="sc-tube">
-          <span class="sc-tube__slot">
-            <span class="sc-tube__liquid" style="--lv:0%"></span>
-            <span class="sc-tube__peak" style="--pk:0%"></span>
-          </span>
-          <span class="sc-tube__gloss"></span>
-          <span class="sc-tube__collar" style="--vol:50%" data-frozen="0" data-gb="tracks-row-${ch}-vol-collar"></span>
-        </span>
-        <span class="sc-badge--amber" data-t="leadVolExempt" data-gb="tracks-row-${ch}-volexempt-badge" hidden></span>
-        <!-- 词条待立:冻结后行尾生效版本小字(A8,05 §2.2 回流⑦,字典缺) -->
-        <span class="sc-mono" data-gb="tracks-row-${ch}-freeze-version" data-gb-todo="词条待立" hidden>V1</span>
-      </span>
-      <span class="sc-stepper" role="cell" style="width:66px" data-gb="tracks-row-${ch}-priority">
-        <button data-gb="tracks-row-${ch}-priority-dec" aria-label="dec">−</button>
-        <span class="sc-stepper__val sc-mono">5</span>
-        <button data-gb="tracks-row-${ch}-priority-inc" aria-label="inc">+</button>
-      </span>
-      <span class="sc-toggle" role="cell" style="width:26px" data-on="0" data-gb="tracks-row-${ch}-leadlock" title="lead lock"></span>
-      <span style="width:52px;display:inline-flex;align-items:center;gap:2px" role="cell">
-        <!-- aria-label 是首帧兜底:本模板在 applyI18n(document) 之后才注入 DOM,
-             data-t-aria 要等下一次 setLang 才生效(a11y 占位名,T32 换词条)。 -->
-        <select class="sc-select" style="width:100%" aria-label="配对" data-t-aria="pair" data-gb="tracks-row-${ch}-pair">
-          <!-- 词条待立:下拉「无」选项(05 §2.2 配对列,字典缺 none 词) -->
-          <option value="0" data-gb-todo="词条待立">–</option>
-          <option value="1">A</option><option value="2">B</option><option value="3">C</option>
-          <option value="4">D</option><option value="5">E</option><option value="6">F</option>
-          <option value="7">G</option>
-        </select>
-        <!-- 词条待立:「配对超员」标(A8,05 §2.2 配对行,字典缺) -->
-        <span class="sc-badge--amber" data-gb="tracks-row-${ch}-pair-overflow" hidden data-gb-todo="词条待立">满</span>
-      </span>
-      <span class="sc-divider" aria-hidden="true"></span>
-      <span class="sc-toggle" role="cell" style="width:26px" data-on="0" data-gb="tracks-row-${ch}-volexempt"></span>
-      <span class="sc-toggle" role="cell" style="width:26px" data-on="0" data-gb="tracks-row-${ch}-autopan"></span>
-      <span class="sc-divider" aria-hidden="true"></span>
-      <!-- 冻结开关组:必须是**真实 inline-flex 盒**(不用 display:contents)——
-           display:contents 的元素不生成 principal box,getBoundingClientRect() 恒为 0×0@(0,0),
-           T36b 的 spotlight 会退化成左上角零尺寸洞;role=cell 在 display:contents 下也不进 a11y 树。
-           宽度 26+gap(--sp-6 = 6px)+26 = 58px,与 §2.2 表头「冻结P」「冻结V」两列(各 26px,
-           列间同为 --sp-6)逐像素对齐;内部 gap 与行 gap 同值,故换成一个盒不改变列位。 -->
-      <span class="tracks-row__freezegroup" role="cell" style="width:58px"${isFreezeAnchor ? ' data-tour="freeze"' : ""}>
-        <span class="sc-toggle" style="width:26px" data-on="0" data-gb="tracks-row-${ch}-freezepan"></span>
-        <span class="sc-toggle" style="width:26px" data-on="0" data-gb="tracks-row-${ch}-freezevol"></span>
-      </span>
-      <span class="sc-divider" aria-hidden="true"></span>
-      <span class="sc-toggle" role="cell" style="width:26px" data-on="1" data-gb="tracks-row-${ch}-enable"></span>
-      <!-- R3 防误伤(05 §2.2 pan 旋钮行 / §1.4 setTrackManual;验收出处 05 §2.5 倒数第 5 条):
-           每轨**首次**手动拖 pan 旋钮 / vol 推子前就地展开一次性行内确认(每轨每会话一次,无条件);
-           存在 locked 段时正文追加 tracks.manualOverwriteConfirm.locked「(含 {l} 个锁定段)」。
-           灰模只落 DOM 与词条,一次性判定/展开/撤销栈全留 T32。 -->
-      <div class="sc-confirm tracks-row__confirm" data-gb="tracks-row-${ch}-manual-overwrite-confirm" hidden>
-        <span data-t="tracks.manualOverwriteConfirm"></span>
-        <span data-t="tracks.manualOverwriteConfirm.locked" data-gb="tracks-row-${ch}-manual-overwrite-confirm-locked" hidden></span>
-        <button class="sc-btn" data-gb="tracks-row-${ch}-manual-overwrite-cancel" data-t="common.cancel"></button>
-        <button class="sc-btn sc-btn--cta" data-gb="tracks-row-${ch}-manual-overwrite-ok" data-t="common.continue"></button>
-        <!-- [T3x] bridge.setTrackManual(ch, "pan"|"vol", value) —— 契约 §1.16(确认后才落) -->
-      </div>
-      <!-- R2 语义保留(05 §2.2 冻结行):解冻(该位 1→0)且该轨当前版本曲线为「单段全时限
-           user_edited 常值」(setTrackManual 产物)时,行内提示 + 单轨重新识别入口。 -->
-      <div class="sc-confirm tracks-row__confirm" data-gb="tracks-row-${ch}-manualdriven-hint" hidden>
-        <span data-t="tracks.manualDrivenHint"></span>
-        <button class="sc-btn" data-gb="tracks-row-${ch}-manualdriven-reidentify" data-t="reidentify"></button>
-        <!-- [T3x] bridge.analyze({tracksMask:1<<(${ch}-1)}, {clearManual:true}) —— 契约 §1.6(单轨重新识别;二次确认同 §2.3;locked 段免疫) -->
-      </div>
-    </div>`;
-}
-
-const tracksBody = document.getElementById("tracks-body");
-if (tracksBody) {
-    tracksBody.innerHTML = FIFTEEN_TRACKS.labels
-        .map((label, i) => trackRowHtml(i + 1, label))
-        .join("");
-}
+// ------------------------------------------------------------- Tab2(tab-tracks.js)
+// T32 Wave 1:列头 + 15 轨行矩阵 + 图例脚注全部由 createTabTracks() 生成
+// (列宽单一真源 = tab-tracks.js 的 TRACK_COLS,页面与 app.js 都不写第二份)。
+const tabTracks = createTabTracks({
+    root: document,
+    bridge,
+    getStore: () => store,
+    getT: () => dictNow,
+    onLocalChange: () => render(),
+});
+tabTracks.mount();
 
 // ------------------------------------------------------------- Tab3:15 泳道模板生成(05 §2.3)
 // 轨头/曲线叠加层/特征波形/VAD 着色/分段边界/采集覆盖进度 六件套,画布仅给尺寸注释,
@@ -851,6 +766,7 @@ function render() {
     renderScale();
     renderGuide();
     tabMaster.render();
+    tabTracks.render();
 }
 
 function renderHeader() {

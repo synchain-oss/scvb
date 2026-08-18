@@ -241,6 +241,45 @@ export const T = {
             "音量＝音量豁免,该轨不进音量平衡计算 · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
+        // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
+        // 列头短名一律 mono 大写微标,三语同值或极简缩写(与 master.msEyebrow 同族纪律:
+        // 这是视觉层的 mono 标签,不是句子;26px 列宽下任何长词都会被 overflow 截掉)。
+        // EN/FR 待人工审校(05 §5),逐条见 T32 差异清单。
+        "tracks.colCh": "CH",
+        "tracks.colState": "状态",
+        "tracks.colPan": "PAN",
+        "tracks.colW": "W",
+        "tracks.colVolLevel": "音量 / 电平",
+        "tracks.colPrio": "PRIO",
+        "tracks.colLead": "LEAD",
+        // 参与性两列的列头短标签(回流⑬);其全称与语义靠 tracks.colLegend 长句说明,
+        // 该长句里同名的三个词(设计稿 626 行的三处 <strong>)由 tab-tracks.js 的
+        // legendSegments() 按「段首 → 首个等号」自行切出并加粗,不依赖本组 key。
+        "tracks.colVolExempt": "音量",
+        "tracks.colAutoPan": "声像",
+        "tracks.colFreezePan": "冻结P",
+        "tracks.colFreezeVol": "冻结V",
+        "tracks.colOn": "ON",
+        "tracks.footNote": "15 轨 · 滚动 + 表头 sticky",
+        "tracks.emptyRoute": "人声轨的输出路由须保持指向本总线(不要改)",
+        // 「样本不足」角标保短版(裸词条 lowSample),全句进 tooltip(统筹裁定 B12)
+        "lowSample.full": "样本不足,结果可能不稳",
+        "tracks.panAutoHint": "自动模式——由分析曲线驱动",
+        // 推子右侧的豁免角标:34px 槽内只放缩写,全称走 tooltip(词条 leadVolExempt)
+        "tracks.exemptBadge": "豁免",
+        // Lead Select 选中轨的行首居中标记(05 §2.2 主唱锁行;全句走 master.leadSelectHint)
+        "tracks.leadCenter": "居中",
+        "tracks.multiLead": "多主唱居中",
+        "tracks.misaligned": "失准 ×{n}",
+        "tracks.srErr": "采样率不一致",
+        "tracks.freezeVersion": "手动值属版本 {v}",
+        "tracks.labelEdit": "轨道名称(≤24 字符)",
+        "tracks.reidentifyOne": "重新识别轨 {n}",
+        "tracks.pairNone": "无",
+        "tracks.pairFullSuffix": "(满)",
+        "tracks.pairOverflow": "配对超员",
+        "common.decrease": "减",
+        "common.increase": "增",
         "wave.trackPickHint": "勾选左侧轨头选择目标轨(可多选,shift 连选)",
         "wave.selChip": "上面四个操作作用于 {n} 轨",
         "wave.setRangeTip":
@@ -560,6 +599,37 @@ export const T = {
             "Vol = volume exempt, this track is excluded from level balancing · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
         "tracks.emptyGroup":
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
+        // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
+        "tracks.colCh": "CH",
+        "tracks.colState": "State",
+        "tracks.colPan": "PAN",
+        "tracks.colW": "W",
+        "tracks.colVolLevel": "VOL / LEVEL",
+        "tracks.colPrio": "PRIO",
+        "tracks.colLead": "LEAD",
+        "tracks.colVolExempt": "Vol",
+        "tracks.colAutoPan": "Pan",
+        "tracks.colFreezePan": "FRZ P",
+        "tracks.colFreezeVol": "FRZ V",
+        "tracks.colOn": "ON",
+        "tracks.footNote": "15 tracks · scroll + sticky header",
+        "tracks.emptyRoute":
+            "Keep each vocal track's output routing pointed at this bus (do not change it)",
+        "lowSample.full": "Low sample — the result may be unstable",
+        "tracks.panAutoHint": "Auto mode — driven by the analysis curve",
+        "tracks.exemptBadge": "EXM",
+        "tracks.leadCenter": "CTR",
+        "tracks.multiLead": "Multiple leads centred",
+        "tracks.misaligned": "Misaligned ×{n}",
+        "tracks.srErr": "Sample rate mismatch",
+        "tracks.freezeVersion": "Manual value belongs to version {v}",
+        "tracks.labelEdit": "Track name (24 characters max)",
+        "tracks.reidentifyOne": "Re-identify track {n}",
+        "tracks.pairNone": "None",
+        "tracks.pairFullSuffix": " (full)",
+        "tracks.pairOverflow": "Pair over capacity",
+        "common.decrease": "Decrease",
+        "common.increase": "Increase",
         "wave.trackPickHint":
             "Tick the lane headers on the left to choose target tracks (multi-select, shift for a range)",
         "wave.selChip": "The four actions above apply to {n} tracks",
@@ -883,6 +953,38 @@ export const T = {
             "Vol = exemption de volume, la piste est exclue de l'équilibrage · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
+        // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
+        "tracks.colCh": "CH",
+        "tracks.colState": "État",
+        "tracks.colPan": "PAN",
+        "tracks.colW": "W",
+        "tracks.colVolLevel": "VOL / NIVEAU",
+        "tracks.colPrio": "PRIO",
+        "tracks.colLead": "LEAD",
+        "tracks.colVolExempt": "Vol",
+        "tracks.colAutoPan": "Pan",
+        "tracks.colFreezePan": "GEL P",
+        "tracks.colFreezeVol": "GEL V",
+        "tracks.colOn": "ON",
+        "tracks.footNote": "15 pistes · défilement + en-tête fixe",
+        "tracks.emptyRoute":
+            "Le routage de sortie des pistes vocales doit rester dirigé vers ce bus (ne pas le modifier)",
+        "lowSample.full":
+            "Échantillon insuffisant — le résultat peut être instable",
+        "tracks.panAutoHint": "Mode auto — piloté par la courbe d'analyse",
+        "tracks.exemptBadge": "EXM",
+        "tracks.leadCenter": "CTR",
+        "tracks.multiLead": "Plusieurs voix principales centrées",
+        "tracks.misaligned": "Désalignement ×{n}",
+        "tracks.srErr": "Fréquence d'échantillonnage incompatible",
+        "tracks.freezeVersion": "Valeur manuelle liée à la version {v}",
+        "tracks.labelEdit": "Nom de piste (24 caractères max)",
+        "tracks.reidentifyOne": "Ré-identifier la piste {n}",
+        "tracks.pairNone": "Aucun",
+        "tracks.pairFullSuffix": " (complet)",
+        "tracks.pairOverflow": "Paire en surnombre",
+        "common.decrease": "Diminuer",
+        "common.increase": "Augmenter",
         "wave.trackPickHint":
             "Cochez les en-têtes de piste à gauche pour choisir les cibles (multi-sélection, maj pour une plage)",
         "wave.selChip":
