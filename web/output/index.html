@@ -962,6 +962,72 @@
                 border-color: rgba(var(--sem-green), 0.5);
                 color: var(--sem-green-ink);
             }
+            /* ---- 自定义下拉(用户反馈 2026-08-18:选项列表要做样式)----
+               面板 = 缩放下拉同款深色玻璃配方(.footer-scale__panel),向下展开;
+               16 项超高走内部滚动,不撑破 780 设计盒。 */
+            .lead-select-wrap {
+                position: relative;
+                width: 100%;
+            }
+            .lead-select-wrap .lead-select {
+                width: 100%;
+                text-align: left;
+            }
+            .lead-select-wrap[data-open="1"] .lead-select {
+                background-color: var(--w-24);
+                border-color: rgba(var(--acc), 0.6);
+            }
+            .lead-select__panel {
+                position: absolute;
+                z-index: 9;
+                left: 0;
+                right: 0;
+                top: calc(100% + var(--sp-5));
+                max-height: 236px;
+                overflow-y: auto;
+                padding: var(--sp-5);
+                border-radius: var(--r-md);
+                background-color: var(--dark-solid);
+                background-image: var(--zoom-panel-bg);
+                border: 1px solid var(--dark-window-border);
+                box-shadow: var(--zoom-panel-shadow);
+            }
+            .lead-select-wrap[data-open="0"] .lead-select__panel {
+                display: none;
+            }
+            .lead-select__opt {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-7);
+                width: 100%;
+                padding: var(--sp-6) var(--sp-10);
+                border-radius: var(--r-xs);
+                cursor: pointer;
+                background: transparent;
+                border: 0;
+                text-align: left;
+                font-family: var(--ff-sans);
+                font-size: var(--fs-105);
+                color: var(--txt-dark-2);
+            }
+            .lead-select__opt:hover,
+            .lead-select__opt:focus-visible {
+                background: var(--w-10);
+            }
+            .lead-select__opt[data-current="1"] {
+                background: rgba(var(--sem-green), 0.18);
+                color: rgba(var(--wh), 0.95);
+            }
+            .lead-select__opt .lead-select__ch {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls-pill);
+                color: rgba(var(--wh), 0.45);
+            }
+            .lead-select__opt[data-current="1"] .lead-select__ch {
+                color: rgba(var(--sem-green), 0.9);
+            }
             [data-gb="master-leadselect"][data-selected="0"]
                 .lead-note[data-when="on"],
             [data-gb="master-leadselect"][data-selected="1"]
@@ -2815,19 +2881,35 @@
                                     data-t="master.leadEyebrow"
                                     >LEAD SELECT</span
                                 >
-                                <select
-                                    class="sc-select lead-select"
-                                    data-t-aria="leadSelect"
+                                <!-- 自定义下拉(用户反馈 2026-08-18:拉开的选项列表要做样式,
+                                     原生 <select> 弹层不可定制)——面板复用缩放下拉的深色玻璃配方;
+                                     选项由 tab-master renderLeadOptions 生成:0=遵循分析 + 轨 01..15 -->
+                                <div
+                                    class="lead-select-wrap"
                                     data-gb="master-leadselect-select"
+                                    data-open="0"
                                 >
-                                    <option
-                                        value="0"
-                                        data-t="leadFollowAnalysis"
+                                    <button
+                                        type="button"
+                                        class="sc-select lead-select"
+                                        data-t-aria="leadSelect"
+                                        aria-haspopup="listbox"
+                                        aria-expanded="false"
+                                        data-gb="master-leadselect-trigger"
                                     >
-                                        遵循分析
-                                    </option>
-                                    <!-- app.js 补 15 个「轨 01..15」选项(FIFTEEN_TRACKS 标签) -->
-                                </select>
+                                        <span
+                                            data-gb="master-leadselect-label"
+                                            data-t="leadFollowAnalysis"
+                                            >遵循分析</span
+                                        >
+                                    </button>
+                                    <div
+                                        class="lead-select__panel"
+                                        role="listbox"
+                                        data-t-aria="leadSelect"
+                                        data-gb="master-leadselect-panel"
+                                    ></div>
+                                </div>
                                 <p
                                     class="sc-hint lead-note"
                                     data-when="off"

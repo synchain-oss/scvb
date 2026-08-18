@@ -527,7 +527,10 @@ export function createTabMaster(opts) {
         msSlider: $("master-msbalance-slider"),
         msRead: $("master-msbalance-reading"),
         leadCard: $("master-leadselect"),
-        leadSelect: $("master-leadselect-select"),
+        leadWrap: $("master-leadselect-select"),
+        leadTrigger: $("master-leadselect-trigger"),
+        leadLabel: $("master-leadselect-label"),
+        leadPanel: $("master-leadselect-panel"),
         distCard: $("master-distchart"),
         distBars: $("master-distchart-bars"),
         transSlider: $("master-transition-slider"),
@@ -696,13 +699,60 @@ export function createTabMaster(opts) {
         wireSliderGesture(el.widthSlider, "width");
         wireSliderGesture(el.msSlider, "ms_balance");
 
-        if (el.leadSelect) {
-            // <select> 没有拖动过程,一次 change = 一个完整 gesture(begin → set → end)。
-            el.leadSelect.addEventListener("change", () => {
-                const v = clamp(0, CHANNEL_COUNT, Number(el.leadSelect.value));
-                oneShotGesture("lead_select", v);
+        wireLeadDropdown();
+    }
+
+    /**
+     * 主唱选择自定义下拉(用户反馈 2026-08-18:原生 <select> 弹层不可样式化)。
+     * 选中 = 一个完整 gesture(begin → set → end,同原生 change 语义);
+     * 键盘等价原生 select:焦点在触发钮上时 ↑/↓ 逐项换值(不必开面板)。
+     */
+    function wireLeadDropdown() {
+        if (!el.leadTrigger || !el.leadWrap) return;
+        const openLead = (open) => {
+            el.leadWrap.setAttribute("data-open", open ? "1" : "0");
+            el.leadTrigger.setAttribute(
+                "aria-expanded",
+                open ? "true" : "false",
+            );
+        };
+        el.leadTrigger.addEventListener("click", () => {
+            openLead(el.leadWrap.getAttribute("data-open") !== "1");
+        });
+        el.leadTrigger.addEventListener("keydown", (e) => {
+            if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+            e.preventDefault();
+            const cur = Math.round(readParam("lead_select"));
+            const v = clamp(
+                0,
+                CHANNEL_COUNT,
+                cur + (e.key === "ArrowDown" ? 1 : -1),
+            );
+            if (v !== cur) oneShotGesture("lead_select", v);
+        });
+        if (el.leadPanel) {
+            el.leadPanel.addEventListener("click", (e) => {
+                const opt =
+                    e.target instanceof Element
+                        ? e.target.closest("[data-lead]")
+                        : null;
+                if (!opt) return;
+                openLead(false);
+                el.leadTrigger.focus();
+                oneShotGesture(
+                    "lead_select",
+                    clamp(0, CHANNEL_COUNT, Number(opt.dataset.lead)),
+                );
             });
         }
+        // 点外关、Esc 关(与缩放下拉同手感)
+        root.addEventListener("pointerdown", (e) => {
+            if (!(e.target instanceof Node) || !el.leadWrap.contains(e.target))
+                openLead(false);
+        });
+        root.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") openLead(false);
+        });
     }
 
     /**
@@ -1135,32 +1185,56 @@ export function createTabMaster(opts) {
 
     /**
      * Lead Select 的 15 个「{ch} · {label}」选项来自 `scvb.state.channels[].label`
-     * (契约 §2.1);option 0「遵循分析」是 index.html 里的静态词条节点,必须保留。
+     * (契约 §2.1);自定义下拉面板(用户反馈 2026-08-18:原生 <select> 弹层
+     * 不可样式化),0 项「遵循分析」随选项一起重建、带 data-t。
      * 标签签名没变就不重建 —— 重建会打断用户正在展开的下拉。
      */
     let leadSig = "";
     function renderLeadOptions(s) {
-        if (!el.leadSelect) return;
+        if (!el.leadPanel) return;
         const chans = s.channels || [];
         const labels = [];
         for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
             labels.push((chans[ch - 1] && chans[ch - 1].label) || "");
         }
-        const sig = labels.join("");
+        const sig = labels.join("\u0001");
         if (sig === leadSig) return;
         leadSig = sig;
-        for (const opt of [...el.leadSelect.querySelectorAll("option")]) {
-            if (opt.value !== "0") opt.remove();
-        }
+        // DOM API 建项(轨名是用户数据,不走 innerHTML);0 项带 data-t,
+        // 语言切换由 applyI18n 统一刷,重建时用当前字典先填一遍。
+        const t = getT();
+        const frag = document.createDocumentFragment();
+        const mkOpt = (v) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "lead-select__opt";
+            b.setAttribute("role", "option");
+            b.setAttribute("aria-selected", "false");
+            b.setAttribute("data-lead", String(v));
+            b.setAttribute("data-current", "0");
+            return b;
+        };
+        const follow = mkOpt(0);
+        const followText = document.createElement("span");
+        followText.setAttribute("data-t", "leadFollowAnalysis");
+        followText.textContent = t.leadFollowAnalysis || "遵循分析";
+        follow.appendChild(followText);
+        frag.appendChild(follow);
         for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
-            const opt = document.createElement("option");
-            opt.value = String(ch);
-            // label 为空(空工程、轨未命名)时只显轨号,不留一个悬空的「01 · 」
-            opt.textContent = labels[ch - 1]
-                ? tt(ch) + " · " + labels[ch - 1]
-                : tt(ch);
-            el.leadSelect.appendChild(opt);
+            const opt = mkOpt(ch);
+            const num = document.createElement("span");
+            num.className = "lead-select__ch";
+            num.textContent = tt(ch);
+            opt.appendChild(num);
+            // label 为空(空工程、轨未命名)时只显轨号,不留一个悬空的轨名位
+            if (labels[ch - 1]) {
+                const name = document.createElement("span");
+                name.textContent = labels[ch - 1];
+                opt.appendChild(name);
+            }
+            frag.appendChild(opt);
         }
+        el.leadPanel.replaceChildren(frag);
     }
 
     // ④ Width / MS / Lead(scvb.params)-------------------------------------
@@ -1193,8 +1267,29 @@ export function createTabMaster(opts) {
         }
         if (el.msRead) el.msRead.textContent = msReading(ms);
 
-        if (el.leadSelect && document.activeElement !== el.leadSelect) {
-            el.leadSelect.value = String(Math.round(lead));
+        // 触发钮标签 + 面板当前项(自定义下拉;0 走词条,轨走「NN 轨名」)
+        const leadV = Math.round(lead);
+        if (el.leadLabel) {
+            if (leadV === 0) {
+                el.leadLabel.setAttribute("data-t", "leadFollowAnalysis");
+                el.leadLabel.textContent =
+                    getT().leadFollowAnalysis || "遵循分析";
+            } else {
+                el.leadLabel.removeAttribute("data-t");
+                const chans = (getStore().state || {}).channels || [];
+                const label =
+                    (chans[leadV - 1] && chans[leadV - 1].label) || "";
+                el.leadLabel.textContent = label
+                    ? tt(leadV) + " " + label
+                    : tt(leadV);
+            }
+        }
+        if (el.leadPanel) {
+            for (const opt of el.leadPanel.querySelectorAll("[data-lead]")) {
+                const cur = Number(opt.dataset.lead) === leadV;
+                opt.setAttribute("data-current", cur ? "1" : "0");
+                opt.setAttribute("aria-selected", cur ? "true" : "false");
+            }
         }
         if (el.leadCard) {
             el.leadCard.setAttribute("data-selected", lead > 0 ? "1" : "0");
