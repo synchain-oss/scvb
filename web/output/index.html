@@ -1813,19 +1813,13 @@
                T31 Wave 2 追加(交互态外观;视觉仍照设计稿同族组件,零新配方)
                ================================================================= */
 
-            /* ---- A1 空态卡(J72 发挥件;05 §2.1 末段:步 0 红字前提 + 1→2→3 三步)。
-                   容器复用 .sc-banner 的琥珀玻璃,红字只落在步 0 那句(ADR-002 红线)。 ---- */
+            /* ---- A1 空态卡(J72 发挥件;用户裁定 2026-08-18:五步制,
+                   前三步红字 = ADR-002 红线,后两步常规色)。 ---- */
             .master-empty {
                 display: flex;
                 flex-direction: column;
                 gap: var(--sp-6);
                 min-width: 0;
-            }
-            .master-empty__red {
-                margin: 0;
-                color: var(--sem-red-ink);
-                font-size: var(--fs-115);
-                line-height: 1.45;
             }
             .master-empty__steps {
                 margin: 0;
@@ -1836,6 +1830,10 @@
                 color: var(--txt-2);
                 font-size: var(--fs-110);
                 line-height: 1.4;
+            }
+            .master-empty__steps li[data-red="1"] {
+                color: var(--sem-red-ink);
+                font-weight: 600;
             }
 
             /* ---- hostEcho 灰显(契约 §0.5 / §2.2):ARMED/PRINT 下 scvb.params 来自宿主回吐,
@@ -1858,10 +1856,53 @@
                 font-size: var(--fs-115);
                 line-height: 1.45;
             }
+            /* 「不再显示」勾选(用户反馈 2026-08-18:样式优化)——
+               原生 checkbox 在深色玻璃上突兀,改自绘方框 + 对勾。 */
             .guide-overlay__dontshow {
                 display: flex;
                 align-items: center;
-                gap: var(--sp-6);
+                gap: var(--sp-7);
+                cursor: pointer;
+                user-select: none;
+                color: var(--txt-dark-2);
+                font-size: var(--fs-105);
+            }
+            .guide-overlay__dontshow:hover {
+                color: rgba(var(--wh), 0.92);
+            }
+            .guide-overlay__dontshow input {
+                appearance: none;
+                -webkit-appearance: none;
+                flex: none;
+                width: 16px;
+                height: 16px;
+                margin: 0;
+                border-radius: var(--r-xs);
+                border: 1px solid rgba(var(--wh), 0.4);
+                background: rgba(var(--wh), 0.08);
+                cursor: pointer;
+                display: grid;
+                place-content: center;
+            }
+            .guide-overlay__dontshow:hover input {
+                border-color: rgba(var(--wh), 0.62);
+            }
+            .guide-overlay__dontshow input:checked {
+                background: rgba(var(--acc), 0.92);
+                border-color: rgba(var(--acc), 0.92);
+            }
+            .guide-overlay__dontshow input:checked::after {
+                content: "";
+                width: 8px;
+                height: 4px;
+                margin-top: -2px;
+                border-left: 2px solid var(--dark-solid);
+                border-bottom: 2px solid var(--dark-solid);
+                transform: rotate(-45deg);
+            }
+            .guide-overlay__dontshow input:focus-visible {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                outline-offset: 2px;
             }
             [data-gb="guide-overlay-rules"] {
                 margin: 0;
@@ -2429,32 +2470,41 @@
                             hidden
                         >
                             <div class="master-empty">
-                                <!-- 步 0 前提(ADR-002 红线,预防性传达):词条 master.empty.prerequisite
-                                     (T31 Wave 2 新增,zh 逐字取 05 §2.1 末段) -->
-                                <p
-                                    class="master-empty__red"
-                                    data-gb="master-emptystate-prereq"
-                                    data-t="master.empty.prerequisite"
-                                >
-                                    SCVB Output
-                                    插在人声轨共同路由到的总线第一格;人声轨的输出路由保持指向该总线——不要改
-                                </p>
+                                <!-- 用户裁定 2026-08-18:五步制,前三步红字(ADR-002 红线,
+                                     预防性传达);先跳线(步 2)后插 Output(步 3);
+                                     步 1 强调插入位置(J45 宿主中立口径「插件链最后一格」)。 -->
                                 <ol class="master-empty__steps">
                                     <li
+                                        data-red="1"
                                         data-gb="master-emptystate-step1"
                                         data-t="master.empty.step1"
                                     >
-                                        在每条人声轨末插 SCVB Input
+                                        在每条人声轨插件链最后一格(所有处理之后)插入
+                                        SCVB Input
                                     </li>
                                     <li
+                                        data-red="1"
                                         data-gb="master-emptystate-step2"
                                         data-t="master.empty.step2"
+                                    >
+                                        人声轨的输出路由保持指向共同总线
+                                    </li>
+                                    <li
+                                        data-red="1"
+                                        data-gb="master-emptystate-step3"
+                                        data-t="master.empty.step3"
+                                    >
+                                        SCVB Output 插在该总线第一格
+                                    </li>
+                                    <li
+                                        data-gb="master-emptystate-step4"
+                                        data-t="master.empty.step4"
                                     >
                                         采集并播放
                                     </li>
                                     <li
-                                        data-gb="master-emptystate-step3"
-                                        data-t="master.empty.step3"
+                                        data-gb="master-emptystate-step5"
+                                        data-t="master.empty.step5"
                                     >
                                         分析并开启输出
                                     </li>

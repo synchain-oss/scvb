@@ -733,10 +733,12 @@ log("=== ④ 词条(T31 Wave 2 新增 + 05 §5 禁词)===");
         "banner.sidecarMissing",
         "banner.noTimeline",
         "master.versionArmedConfirm",
-        "master.empty.prerequisite",
+        // 空态卡五步制(用户裁定 2026-08-18:原 prerequisite 红字并入步 2/3)
         "master.empty.step1",
         "master.empty.step2",
         "master.empty.step3",
+        "master.empty.step4",
+        "master.empty.step5",
         "common.continue",
         "master.msEyebrow",
         "master.leadEyebrow",

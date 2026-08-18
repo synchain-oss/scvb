@@ -309,12 +309,14 @@ export const T = {
         "banner.noTimeline": "宿主未提供时间线",
         // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
         "master.versionArmedConfirm": "引擎输出将平滑切至新版本,继续?",
-        // Tab1 空态卡(A1,05 §2.1 末段逐字:步 0 红字前提 + 1/2/3 三步)
-        "master.empty.prerequisite":
-            "SCVB Output 插在人声轨共同路由到的总线第一格;人声轨的输出路由保持指向该总线——不要改",
-        "master.empty.step1": "在每条人声轨末插 SCVB Input",
-        "master.empty.step2": "采集并播放",
-        "master.empty.step3": "分析并开启输出",
+        // Tab1 空态卡(A1;用户裁定 2026-08-18:五步制,前三步红字,
+        // 先跳线后插 Output;步 1 强调插入位置——措辞按 J45 宿主中立口径)
+        "master.empty.step1":
+            "在每条人声轨插件链最后一格(所有处理之后)插入 SCVB Input",
+        "master.empty.step2": "人声轨的输出路由保持指向共同总线",
+        "master.empty.step3": "SCVB Output 插在该总线第一格",
+        "master.empty.step4": "采集并播放",
+        "master.empty.step5": "分析并开启输出",
         // 轻确认条的主按钮(与 common.cancel 成对;05 未给逐字,取最短肯定式)
         "common.continue": "继续",
         // eyebrow(视觉层 mono 大写元素,照设计稿 **三语同值不译**;统筹 Wave 2 增补①:
@@ -633,12 +635,14 @@ export const T = {
         "banner.noTimeline": "Host provides no timeline",
         "master.versionArmedConfirm":
             "Engine output will fade smoothly to the new version. Continue?",
-        "master.empty.prerequisite":
-            "Insert SCVB Output in the first slot of the bus all vocal tracks route to; keep every vocal track's output routed to that bus — do not change it",
         "master.empty.step1":
-            "Insert SCVB Input at the end of every vocal track",
-        "master.empty.step2": "Capture and play",
-        "master.empty.step3": "Analyze and switch output on",
+            "Insert SCVB Input in the last slot of each vocal track's plugin chain (after all processing)",
+        "master.empty.step2":
+            "Keep each vocal track's output routed to the shared bus",
+        "master.empty.step3":
+            "Insert SCVB Output in the first slot of that bus",
+        "master.empty.step4": "Capture and play",
+        "master.empty.step5": "Analyze and switch output on",
         "common.continue": "Continue",
         // eyebrow:三语同值(视觉层 mono 大写元素,照设计稿不译)
         "master.msEyebrow": "MS BALANCE",
@@ -957,11 +961,14 @@ export const T = {
         "banner.noTimeline": "L'hôte ne fournit aucune timeline",
         "master.versionArmedConfirm":
             "La sortie du moteur passera progressivement à la nouvelle version. Continuer ?",
-        "master.empty.prerequisite":
-            "Insérez SCVB Output dans le premier emplacement du bus vers lequel toutes les pistes voix sont routées ; conservez le routage de sortie de chaque piste voix vers ce bus — ne le modifiez pas",
-        "master.empty.step1": "Insérez SCVB Input en fin de chaque piste voix",
-        "master.empty.step2": "Capturez et lisez",
-        "master.empty.step3": "Analysez et activez la sortie",
+        "master.empty.step1":
+            "Insérez SCVB Input dans le dernier emplacement de la chaîne d'effets de chaque piste voix (après tout traitement)",
+        "master.empty.step2":
+            "Conservez le routage de sortie de chaque piste voix vers le bus commun",
+        "master.empty.step3":
+            "Insérez SCVB Output dans le premier emplacement de ce bus",
+        "master.empty.step4": "Capturez et lisez",
+        "master.empty.step5": "Analysez et activez la sortie",
         "common.continue": "Continuer",
         // eyebrow:三语同值(视觉层 mono 大写元素,照设计稿不译)
         "master.msEyebrow": "MS BALANCE",

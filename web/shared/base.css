@@ -207,6 +207,9 @@ input::placeholder {
 .sc-shell {
     position: relative;
     overflow: hidden;
+    /* 光晕 z-index:-1 的收容边界:不开 isolation,负 z 会穿到页面背景之下
+       (光晕直接消失);开了则按栈序画在壳背景之上、内容之下。 */
+    isolation: isolate;
     border-radius: var(--r-shell);
     background: var(--page-gradient);
     border: 1px solid var(--shell-border);
@@ -226,7 +229,10 @@ input::placeholder {
     pointer-events: none;
 }
 
-/* 外壳背后的柔光球(3–4 个,05 §4)。位置由页面定,尺寸/模糊/颜色在此定死。 */
+/* 外壳背后的柔光球(3–4 个,05 §4)。位置由页面定,尺寸/模糊/颜色在此定死。
+   统筹 2026-08-18(用户反馈:琥珀横幅文字看不清的病根):z-index 0 的定位元素
+   会画在后续**未定位**内容之上,62% 不透明度的光晕把顶部横幅/文字整体洗淡 ——
+   降到 -1(.sc-shell 已开 isolation 收容),光晕回到「壳背景之上、内容之下」。 */
 .sc-halo {
     position: absolute;
     width: var(--halo-size);
@@ -234,7 +240,7 @@ input::placeholder {
     border-radius: 50%;
     filter: blur(var(--halo-blur));
     pointer-events: none;
-    z-index: 0;
+    z-index: -1;
 }
 
 .sc-halo--1 {
@@ -653,10 +659,13 @@ input[type="range"] {
     padding: var(--sp-10) var(--sp-13);
     border-radius: var(--r-banner);
     font-size: var(--fs-115);
+    /* 统筹 2026-08-18(用户反馈:琥珀横幅文字看不清):字重 400→500,
+       与 --sem-amber-ink 加深同批;横幅是警示面,可读性优先 */
+    font-weight: 500;
     line-height: 1.45;
     text-wrap: pretty;
-    background: rgba(var(--sem-amber), 0.15);
-    border: 1px solid rgba(var(--sem-amber), 0.42);
+    background: rgba(var(--sem-amber), 0.18);
+    border: 1px solid rgba(var(--sem-amber), 0.5);
     color: var(--sem-amber-ink);
 }
 
