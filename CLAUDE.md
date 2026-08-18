@@ -19,7 +19,7 @@
 ## 1. 分支模型与工作流程
 
 - 默认主干 = `dev`;SCVB 主支线 = `feature/v1`(ADR-013/J13)。
-- same-repo 只收 `feat/*` / `feature/*` 到 `dev`;子 PR(base=feature/v1)只跑 review bot,不跑完整 CI(D2)。
+- same-repo 只收 `feat/*` / `feature/*` 到 `dev`;子 PR(base=feature/v1)跑 review bot + 完整 CI(2026-08-19 起,见 §4)。
 - fork PR:任意分支名(不用 `dev`/`stage`/`prod`/`feature/v1`/`feature/extraction`),维护者手工加 `external` label(J31/J41)。
 - commit 规范:`type(scope): 中文描述`,全部 `git commit -s`(Signed-off-by)。
 
@@ -28,7 +28,7 @@
 - 一律经 `pwsh scripts/gates.ps1`(06 §5.1 的 8 道 gate)。
 - 子 PR 用 `-PluginOnly`(gate 1-7 已与 CI 等价);feature→dev 收口 PR 必须全量(含 gate 8 真机 GUI pluginval)。
 - 并行 agent 必须各用独立 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
-- **子 PR 不触发完整 CI 是设计,不是缺陷;不要为了让它跑 CI 去改 workflow 触发规则。**
+- **2026-08-19 起子 PR 同样触发完整 CI**(仓库已公开、Actions 免费,用户指令:所有将并入 dev 的 PR 都跑 build-vst3/format/compliance;gate 8 真机 GUI pluginval 仍为本地收口 gate)。
 
 ## 3. 评审规则
 
@@ -36,8 +36,8 @@
 
 ## 4. 各 Workflow 触发范围一览
 
-- `build-vst3` / `format` / `branch-gate`:pull_request→dev + push→dev,'feature/**'。
-- `compliance`(gitleaks + reuse lint):同触发面,无 secrets,fork PR 同样跑。
+- `build-vst3` / `format` / `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(2026-08-19 用户指令:子 PR 同样跑 CI);`branch-gate`(命名门禁)仍仅 pull_request→dev。
+- `compliance`(gitleaks + reuse lint):无 secrets,fork PR 同样跑。
 - `claude-review`:所有 base 分支、仅 same-repo;deepseek-review / release 默认 disable。
 
 ## 5. 冻结契约变更规范

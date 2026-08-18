@@ -3,7 +3,7 @@ name: Branch Gate
 # 晋升链(v1 只有 dev 一条长期分支):
 #   feat/* | feature/*  ->  dev            (same-repo)
 #   任意分支名(除长期分支名) -> dev        (fork,J31/J41)
-# 子 PR(base=feature/*)故意不受此门禁约束(D2)。
+# 子 PR(base=feature/*)故意不受此命名门禁约束(D2;完整 CI 自 2026-08-19 起已覆盖 feature/** PR)。
 # 发版里程碑再打开下面被注释的 prod/stage 规则。
 
 on:

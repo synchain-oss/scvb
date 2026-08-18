@@ -2,7 +2,8 @@ name: Build & Validate
 
 on:
   pull_request:
-    branches: [dev] # 只有并入主干的 PR 走完整 CI(D2)
+    # 2026-08-19 用户指令:仓库已公开、Actions 免费,所有将并入 dev 的 PR(含 feature/** 子 PR)都跑完整 CI。
+    branches: [dev, "feature/**"]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [dev, "feature/**"] # feature 主支线推送 → preview artifact(D3 通道3)
