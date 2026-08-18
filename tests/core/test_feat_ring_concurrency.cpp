@@ -24,8 +24,7 @@ struct FeatFixture
     scvb::FeatHeader header;
     std::vector<scvb::FeatFrame> ring;
 
-    FeatFixture()
-        : ring(static_cast<std::size_t>(scvb::kFeatCapacityHops))
+    FeatFixture() : ring(static_cast<std::size_t>(scvb::kFeatCapacityHops))
     {
         header.magic.store(kScvbMagic, std::memory_order_release);
         header.abi.store(kScvbAbi, std::memory_order_release);
