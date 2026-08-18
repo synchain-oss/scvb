@@ -58,6 +58,11 @@ bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId
                            const juce::String& lastClaim, int lastChannelId, int lastGroupId, int lastInputSr,
                            int lastOutputSr);
 
+// §4.3 config_seq 基线推进(PR#54 R7,与 advanceEmitCache/claimEdgeConsumed 同口径):config_seq
+// 变化即需重发,仅当事件实际发出(emitted)时推进基线并返回 true;隐藏时保持基线返回 false,恢复
+// 可见后下一 tick 因 seq 仍 != 基线而重发。
+bool advanceConfigSeq(u32 configSeq, bool emitted, u32& lastConfigSeq);
+
 // --- 数值参数解析(§0.8.2 类型不符/越界 → 拒绝)------------------------------------
 // 非数值(缺参/字符串/对象/null)→ 空 Optional,调用方回 {ok:false, reason:"badArg"};
 // 数值(JS number 走 double,截断)且在 int 全域内 → 值;double 越界/NaN → 空(cast 前挡下,

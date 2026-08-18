@@ -124,11 +124,14 @@ void InputEditor::emitTick()
     // scvb.config:25Hz 轮询,config_seq 变化才发(§4.3)。
     if (snap.configSeq != lastConfigSeq_)
     {
-        lastConfigSeq_ = snap.configSeq;
         bridge::ConfigSnapshot cfg;
         cfg.sourceChannels = snap.sourceChannels;
         cfg.configSeq = snap.configSeq;
-        emitIfChanged(bridge::kEvConfig, bridge::buildConfigPayload(cfg), lastConfigJson_);
+        // 基线仅在事件实际发出(可见)后推进:否则隐藏时事件被丢弃但 seq 已推进,恢复可见后
+        // configSeq 不再变化 → config 长期陈旧(PR#54 R7,与 R4/R5 口径一致)。
+        bridge::advanceConfigSeq(snap.configSeq,
+                                 emitIfChanged(bridge::kEvConfig, bridge::buildConfigPayload(cfg), lastConfigJson_),
+                                 lastConfigSeq_);
     }
 
     // scvb.groups:1Hz diff-then-emit(§4.4)。
@@ -209,7 +212,7 @@ void InputEditor::handleRemoteSetPriority(const juce::Array<juce::var>& args, WB
     complete(bridge::buildPriorityResponse(r.queued, r.reason));
 }
 
-void InputEditor::emitIfChanged(const char* name, const juce::var& payload, juce::String& lastJson)
+bool InputEditor::emitIfChanged(const char* name, const juce::var& payload, juce::String& lastJson)
 {
     const juce::String json = juce::JSON::toString(payload);
     // diff-then-emit:缓存只在事件真正发出(编辑器可见)后才推进。隐藏(关闭/最小化)时
@@ -217,9 +220,10 @@ void InputEditor::emitIfChanged(const char* name, const juce::var& payload, juce
     // 重发 → UI 陈旧(PR#54 R4)。不可见时保持旧缓存,恢复可见后下一 tick 因 json != lastJson 重发。
     if (!bridge::advanceEmitCache(json, lastJson, webView().isVisible()))
     {
-        return;
+        return false;
     }
     webView().emitEventIfBrowserIsVisible(juce::Identifier(name), payload);
+    return true;
 }
 
 bool InputEditor::emitClaimError(const juce::String& claim, const juce::String& prevClaim, int channelId, int groupId,

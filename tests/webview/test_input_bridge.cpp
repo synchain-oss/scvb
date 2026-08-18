@@ -17,6 +17,7 @@ namespace
 {
 using scvb::input::InputClaimState;
 using scvb::input::InputConnSnapshot;
+using scvb::input::bridge::advanceConfigSeq;
 using scvb::input::bridge::advanceEmitCache;
 using scvb::input::bridge::buildConfigPayload;
 using scvb::input::bridge::buildConnPayload;
@@ -165,6 +166,19 @@ TEST_CASE("T30 claimErrorEdgeChanged:五分量边沿键任一变化即重发(PR#
 
     // 五分量全同 → 无边沿(不重发)。
     CHECK_FALSE(claimErrorEdgeChanged("conflict", 3, 1, 48000, 48000, "conflict", 3, 1, 48000, 48000));
+}
+
+TEST_CASE("T30 advanceConfigSeq:隐藏不推进基线,恢复可见重发(PR#54 R7)")
+{
+    scvb::u32 last = 0;
+
+    // 隐藏(未发出)→ 基线不推进(seq 仍 != 基线,恢复可见后下一 tick 重发)。
+    CHECK_FALSE(advanceConfigSeq(7, false, last));
+    CHECK(last == 0);
+
+    // 恢复可见(已发出)→ 推进基线(seq 新值)。
+    CHECK(advanceConfigSeq(7, true, last));
+    CHECK(last == 7);
 }
 
 TEST_CASE("T30 parseIntArg:类型不符/越界 → 空(回 badArg);数值截断(§0.8.2)")

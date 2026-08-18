@@ -96,6 +96,16 @@ bool claimErrorEdgeChanged(const juce::String& claim, int channelId, int groupId
            outputSr != lastOutputSr;
 }
 
+bool advanceConfigSeq(u32 configSeq, bool emitted, u32& lastConfigSeq)
+{
+    if (!emitted)
+    {
+        return false; // 隐藏/未发出:基线保持,恢复可见后 seq 仍 != 基线 → 下一 tick 重发
+    }
+    lastConfigSeq = configSeq;
+    return true;
+}
+
 juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
 {
     if (args.size() > 0 && (args[0].isInt() || args[0].isDouble()))
