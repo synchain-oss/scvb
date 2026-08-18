@@ -736,7 +736,9 @@ scvb::state::CrvsData ScvbOutputAudioProcessor::crvsSnapshot()
 scvb::engine::PlayheadPod ScvbOutputAudioProcessor::playheadSnapshot() const
 {
     scvb::engine::PlayheadPod pod{};
-    playheadShot_.read(pod); // 撕裂读返回 false → 沿用上帧(此处 pod 为零值/上次值,下一 tick 自愈)
+    // read 失败(写者正在写/读期间更新)时 pod 未被子写,保持零值 —— 是「撕裂混合值」,非「沿用上帧」;
+    // 下一 25Hz tick 重读自愈(PR#55 建议④注释修正)。
+    playheadShot_.read(pod);
     return pod;
 }
 
@@ -830,6 +832,8 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
 void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
+    if (version < 1 || version > scvb::state::kNumVersions)
+        return; // 越界拒绝(public API 防 UB,PR#55 建议②)
     scvb::output::commitCrvsTransaction(
         authority_.undoManager(), crvsData_, "Set pan curve",
         [&] { crvsData_.versions[static_cast<std::size_t>(version - 1)].panCurve = points; },

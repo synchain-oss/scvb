@@ -99,7 +99,6 @@ private:
     juce::String lastStateJson_;
     juce::String lastParamsJson_;
     juce::String lastConnJson_;
-    juce::String lastMetersJson_;
     juce::String lastPlayheadJson_;
     std::uint8_t lastGroupsOnline_ = 0;
     bool groupsEverSent_ = false; // scvb.groups 首帧必发(§0.4;独立于位图值)

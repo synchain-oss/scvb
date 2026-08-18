@@ -122,14 +122,6 @@ const char* sideName(scvb::PanCurveSide s)
     }
 }
 
-// ---- 参数读取(消息线程)----
-float readParam(juce::AudioProcessorValueTreeState& apvts, const juce::String& id)
-{
-    if (const auto* p = apvts.getRawParameterValue(id))
-        return p->load(std::memory_order_relaxed);
-    return 0.0f;
-}
-
 } // namespace
 
 // ============================================================================
@@ -239,7 +231,7 @@ void OutputEditor::emitParams(bool forceFull)
     bool any = false;
     for (const auto& id : ids)
     {
-        const float value = readParam(apvts, id);
+        const float value = readParamEngineering(apvts, id); // 工程值(非归一化,PR#55 第3轮重要1)
         const auto it = lastParamsValues_.find(id);
         const bool changed = it == lastParamsValues_.end() ||
                              !juce::approximatelyEqual(static_cast<double>(it->second), static_cast<double>(value));
@@ -870,6 +862,11 @@ void OutputEditor::handleBeginParamGesture(const ArgList& a, Completion c)
         return;
     }
     const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
+    if (!isGestureParam(id, processor_.versionActive())) // 白名单外 badArg(PR#55 第3轮重要2)
+    {
+        c(badArgResp());
+        return;
+    }
     if (auto* p = processor_.getAPVTS().getParameter(id))
     {
         p->beginChangeGesture();
@@ -887,6 +884,11 @@ void OutputEditor::handleSetParam(const ArgList& a, Completion c)
         return;
     }
     const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
+    if (!isGestureParam(id, processor_.versionActive())) // 白名单外 badArg(PR#55 第3轮重要2)
+    {
+        c(badArgResp());
+        return;
+    }
     const float value = a.size() > 1 ? static_cast<float>(a[1]) : 0.0f;
     if (auto* p = processor_.getAPVTS().getParameter(id))
     {
@@ -905,6 +907,11 @@ void OutputEditor::handleEndParamGesture(const ArgList& a, Completion c)
         return;
     }
     const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
+    if (!isGestureParam(id, processor_.versionActive())) // 白名单外 badArg(PR#55 第3轮重要2)
+    {
+        c(badArgResp());
+        return;
+    }
     if (auto* p = processor_.getAPVTS().getParameter(id))
     {
         p->endChangeGesture();
@@ -1417,7 +1424,7 @@ void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
 {
     const bool ok = processor_.undo(); // 持锁(PR#55 重要1)
     if (ok)
-        emitSegments("undo", false);
+        emitSegments("undo", true); // 全量段表(PR#55 建议①)
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);
@@ -1427,7 +1434,7 @@ void OutputEditor::handleRedo(const ArgList& /*a*/, Completion c)
 {
     const bool ok = processor_.redo(); // 持锁(PR#55 重要1)
     if (ok)
-        emitSegments("redo", false);
+        emitSegments("redo", true); // 全量段表(PR#55 建议①)
     juce::var o = obj();
     put(o, "ok", ok);
     c(o);
