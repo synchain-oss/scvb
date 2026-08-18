@@ -24,6 +24,7 @@
 #include "output/BusXfade.h"
 #include "output/OutputSession.h"
 #include "state/OutputStateCodec.h"
+#include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
 
 namespace scvb::output
@@ -157,23 +158,32 @@ public:
     scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
 
     // ---- T29 桥面入口(消息线程)----
-    // 版本层 + 撤销(T18;桥经此做 setVersionName/copyVersion/undo/redo)。
+    // 版本层 + 撤销(T18;供测试/后续)。
     scvb::output::OutputAuthority& authority() { return authority_; }
 
-    // 段数据真身(CRVS,样本域;版本名/段表/pan_curve)。消息线程独占读写。
-    const scvb::state::CrvsData& crvsData() const { return crvsData_; }
-    scvb::state::CrvsData& crvsData() { return crvsData_; }
+    // 段真身只读快照(持 lifecycleMutex_;供 emitTick 构建 scvb.state/scvb.segments,避免与宿主
+    // prepareToPlay/setStateInformation 的 CRVS 写竞争 —— PR#55 重要1)。
+    scvb::state::CrvsData crvsSnapshot();
 
-    // 运行时 state(消息线程独占)。
+    // 运行时 state(消息线程独占;仅桥 native function 写 / emitTick 读,宿主不触,无需锁)。
     OutputRuntimeState& runtime() { return runtime_; }
     const OutputRuntimeState& runtime() const { return runtime_; }
 
-    // 由 CRVS 段真身重建全部 30 轨 CurveEvaluator 并注入 authority + 打印器重取活动版本曲线
-    // (消息线程;不可变契约;任何 CRVS 段表变更后调用,ADR-005 曲线真身)。
-    void rebuildAllCurves();
-
     // [J70] 跨组只读探测(u8 位图,bit0=组A…bit7=组H;探测失败=0 位,不弹错、不重试)。
     std::uint8_t probeGroupsOnline();
+
+    // 音频线程 playhead 快照(SPSC,供 scvb.playhead;避免消息线程直读宿主 AudioPlayHead)。
+    scvb::engine::PlayheadPod playheadSnapshot() const;
+
+    // ---- CRVS 写事务(全部持 lifecycleMutex_,与 prepareToPlay/setStateInformation 同锁纪律)----
+    scvb::engine::SetNameResult setVersionName(int version, const juce::String& name, juce::String& effectiveOut);
+    scvb::engine::CopyVersionResult copyVersion(int src, int dst);
+    scvb::state::SegmentEditResult editSegment(int track, const scvb::state::SegmentEditArgs& args);
+    // 成功返回 true;replacedSegments/replacedLocked = 替换前的段数 / 锁定段数(供确认条计数)。
+    bool setTrackManual(int ch, bool isPan, float value, int& replacedSegments, int& replacedLocked);
+    void setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
+    bool undo();
+    bool redo();
 
 private:
     // 25Hz [M] 定时器:心跳(4Hz 折半)+ session tick(per-channel 判定/看门狗/全局小节)。
@@ -191,6 +201,10 @@ private:
 
     // [M] 版本切换/接线:authority 重绑活动版本 + 打印器重绑车道(曲线真身)。
     void rebindVersion();
+
+    // 由 CRVS 段真身重建全部 30 轨 CurveEvaluator 并注入 authority + 打印器重取活动版本曲线。
+    // 不可变契约(ADR-005);非锁定 —— 调用方须已持 lifecycleMutex_(rebindVersion 与 CRVS 写事务)。
+    void rebuildAllCurves();
 
     juce::CriticalSection lifecycleMutex_; // 串行化 prepare/release/setState/claim/心跳
 

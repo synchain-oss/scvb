@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 
+#include "BridgeArgs.h"
 #include "SegmentEditService.h"
 #include "engine/CurveEvaluator.h"
 #include "state/SegmentEdit.h"
@@ -281,9 +282,10 @@ void OutputEditor::emitConn()
 void OutputEditor::emitGroups()
 {
     const std::uint8_t bitmap = processor_.probeGroupsOnline();
-    if (bitmap == lastGroupsOnline_)
-        return;
+    if (groupsEverSent_ && bitmap == lastGroupsOnline_)
+        return; // 变化才发(首帧必发)
 
+    groupsEverSent_ = true;
     lastGroupsOnline_ = bitmap;
     juce::var payload = obj();
     put(payload, "groups_online", static_cast<int>(bitmap));
@@ -348,18 +350,10 @@ void OutputEditor::emitMeters()
 
 void OutputEditor::emitPlayhead()
 {
-    double timeS = 0.0;
-    bool playing = false;
-    if (auto* ph = processor_.getPlayHead())
-    {
-        const auto pos = ph->getPosition();
-        if (pos.hasValue())
-        {
-            playing = pos->getIsPlaying();
-            if (const auto ts = pos->getTimeInSamples(); ts.hasValue())
-                timeS = static_cast<double>(*ts) / processor_.sampleRate();
-        }
-    }
+    // 读音频线程发布的 playheadShot_ SPSC 快照(PR#55 建议①;不直读宿主 AudioPlayHead)。
+    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
+    const bool playing = (pod.flags & scvb::engine::kPlayheadIsPlaying) != 0;
+    const double timeS = pod.timeSamples >= 0 ? static_cast<double>(pod.timeSamples) / processor_.sampleRate() : 0.0;
 
     // inRange(§2.6):mode=follow 恒 true;否则落在 [startS, endS)。
     const auto& rt = processor_.runtime();
@@ -408,7 +402,7 @@ void OutputEditor::emitError(const juce::String& code, int ch, const juce::var& 
 juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
 {
     const auto& rt = processor_.runtime();
-    const auto& crvs = processor_.crvsData();
+    const scvb::state::CrvsData crvs = processor_.crvsSnapshot(); // 持锁快照(PR#55 重要1)
 
     juce::var o = obj();
     put(o, "config_seq", static_cast<int>(rt.configSeq));
@@ -539,7 +533,7 @@ juce::var OutputEditor::buildConnPayload() const
         const int slotState = (!readOnly) ? 2 : 0;
         put(ch, "slotState", slotState);
         put(ch, "heartbeatAgeMs", static_cast<juce::int64>(0xFFFFFFFFu)); // 哨兵「无数据」
-        put(ch, "heartbeatFresh", !readOnly);
+        put(ch, "heartbeatFresh", false); // heartbeatAgeMs=0xFFFFFFFF 哨兵 → fresh=false(§2.3 派生一致)
         put(ch, "capturing", false);
         put(ch, "misalignCount", static_cast<int>(processor_.gapCount(t + 1)));
         put(ch, "srMismatch", false);
@@ -556,7 +550,7 @@ juce::var OutputEditor::buildConnPayload() const
 juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, bool allTracks) const
 {
     const int v = processor_.versionActive();
-    const auto& crvs = processor_.crvsData();
+    const scvb::state::CrvsData crvs = processor_.crvsSnapshot(); // 持锁快照(PR#55 重要1)
     const auto& vc = crvs.versions[static_cast<std::size_t>(v - 1)];
     const double sr = processor_.sampleRate();
 
@@ -649,14 +643,8 @@ void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& o
 }
 
 // ============================================================================
-// CRVS 事务 + 只读态
+// 只读态
 // ============================================================================
-void OutputEditor::commitCrvsTransaction(const juce::String& name, const std::function<void()>& mutator)
-{
-    scvb::output::commitCrvsTransaction(processor_.authority().undoManager(), processor_.crvsData(), name, mutator,
-                                        [this] { processor_.rebuildAllCurves(); });
-}
-
 bool OutputEditor::isReadOnly() const
 {
     return processor_.isReadOnly();
@@ -667,14 +655,34 @@ bool OutputEditor::isReadOnly() const
 // ============================================================================
 void OutputEditor::handleSetCaptureEnabled(const ArgList& a, Completion c)
 {
-    const bool on = a.size() > 0 && static_cast<bool>(a[0]);
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+    bool on = false;
+    if (a.size() < 1 || !strictBool(a[0], on))
+    {
+        c(badArgResp());
+        return;
+    }
     processor_.setCaptureEnabled(on);
     c(okResp());
 }
 
 void OutputEditor::handleSetOutputEnabled(const ArgList& a, Completion c)
 {
-    const bool on = a.size() > 0 && static_cast<bool>(a[0]);
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+    bool on = false;
+    if (a.size() < 1 || !strictBool(a[0], on))
+    {
+        c(badArgResp());
+        return;
+    }
     processor_.setOutputEnabled(on);
     c(okResp());
 }
@@ -688,6 +696,12 @@ void OutputEditor::handleSetGroupId(const ArgList& a, Completion c)
         return;
     }
     processor_.setGroupId(g);
+    // §1.4:改组后新组已有主 Output → 本实例进只读观察 → {observer:true}(PR#55 建议②)。
+    if (processor_.isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     c(okResp());
 }
 
@@ -734,6 +748,11 @@ void OutputEditor::handleCancelAnalyze(const ArgList& /*a*/, Completion c)
 
 void OutputEditor::handleSetRange(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     const juce::String mode = a.size() > 0 ? a[0].toString() : juce::String("follow");
     const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
     const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
@@ -756,27 +775,45 @@ void OutputEditor::handleSetRange(const ArgList& a, Completion c)
     }
 
     auto& rt = processor_.runtime();
+    // 值变化才 config_seq+1(PR#55 缺陷4)。
+    const bool changed =
+        rt.rangeMode != modeInt || (modeInt != 0 && (rt.rangeStartS != startS || rt.rangeEndS != endS));
     rt.rangeMode = modeInt;
     if (modeInt != 0) // follow 忽略 startS/endS
     {
         rt.rangeStartS = startS;
         rt.rangeEndS = endS;
     }
+    if (changed)
+        ++rt.configSeq;
     c(okResp());
 }
 
 void OutputEditor::handleSetVersionActive(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     const int v = a.size() > 0 ? static_cast<int>(a[0]) : 1;
     if (v < 1 || v > 2)
     {
         c(badArgResp());
         return;
     }
+    const int old = processor_.versionActive();
     processor_.setVersionActive(v);
-    // §1.9:切版本后全量重发 segments + state。
-    emitSegments("versionActive", true);
-    lastStateJson_.clear(); // 强制 state 重发
+    if (v != old)
+    {
+        ++processor_.runtime().configSeq; // 配置变更(PR#55 缺陷4)
+        // §1.9/§2.2:切版本后全量重发 segments + state + params(PR#55 重要2)。
+        emitSegments("versionActive", true);
+        lastStateJson_.clear();
+        lastParamsJson_.clear();
+        lastParamsValues_.clear();
+        emitParams(true); // full:true 全量重发 params
+    }
     c(okResp());
 }
 
@@ -791,30 +828,17 @@ void OutputEditor::handleSetVersionName(const ArgList& a, Completion c)
         return;
     }
 
-    std::string effective;
-    const auto result = scvb::engine::normalizeVersionName(v, name.toStdString(), effective);
+    juce::String effective;
+    const auto result = processor_.setVersionName(v, name, effective); // 持锁事务(PR#55 重要1)
     if (result == scvb::engine::SetNameResult::InvalidIndex)
     {
         c(badArgResp());
         return;
     }
 
-    if (processor_.crvsData().versions[static_cast<std::size_t>(v - 1)].meta.name == effective)
-    {
-        juce::var o = obj();
-        put(o, "ok", true);
-        put(o, "name", juce::String::fromUTF8(effective.c_str()));
-        c(o);
-        return;
-    }
-
-    commitCrvsTransaction("Rename V" + juce::String(v), [&] {
-        processor_.crvsData().versions[static_cast<std::size_t>(v - 1)].meta.name = effective;
-    });
-
     juce::var o = obj();
     put(o, "ok", true);
-    put(o, "name", juce::String::fromUTF8(effective.c_str()));
+    put(o, "name", effective);
     c(o);
 }
 
@@ -827,22 +851,12 @@ void OutputEditor::handleCopyVersion(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
-    if (src < 1 || src > 2 || dst < 1 || dst > 2 || src == dst)
+    const auto result = processor_.copyVersion(src, dst); // 持锁事务(PR#55 重要1)
+    if (result != scvb::engine::CopyVersionResult::Ok)
     {
         c(badArgResp());
         return;
     }
-
-    commitCrvsTransaction("Copy V" + juce::String(src) + " -> V" + juce::String(dst), [&] {
-        auto& crvs = processor_.crvsData();
-        auto& dstCurve = crvs.versions[static_cast<std::size_t>(dst - 1)];
-        const auto& srcCurve = crvs.versions[static_cast<std::size_t>(src - 1)];
-        dstCurve.tracks = srcCurve.tracks; // 深拷贝段表(含 origin/locked)
-        dstCurve.panCurve = srcCurve.panCurve;
-        // name 不复制(保留目标名,J05);meta 记 copied_from/copied_at。
-        dstCurve.meta.copiedFrom = src;
-        dstCurve.meta.copiedAtMs = static_cast<std::int64_t>(juce::Time::getCurrentTime().toMilliseconds());
-    });
 
     emitSegments("copyVersion", true);
     c(okResp());
@@ -850,6 +864,11 @@ void OutputEditor::handleCopyVersion(const ArgList& a, Completion c)
 
 void OutputEditor::handleBeginParamGesture(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
     if (auto* p = processor_.getAPVTS().getParameter(id))
     {
@@ -862,6 +881,11 @@ void OutputEditor::handleBeginParamGesture(const ArgList& a, Completion c)
 
 void OutputEditor::handleSetParam(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
     const float value = a.size() > 1 ? static_cast<float>(a[1]) : 0.0f;
     if (auto* p = processor_.getAPVTS().getParameter(id))
@@ -875,6 +899,11 @@ void OutputEditor::handleSetParam(const ArgList& a, Completion c)
 
 void OutputEditor::handleEndParamGesture(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     const juce::String id = a.size() > 0 ? a[0].toString() : juce::String();
     if (auto* p = processor_.getAPVTS().getParameter(id))
     {
@@ -900,6 +929,7 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
     }
 
     auto& channel = processor_.runtime().channels[static_cast<std::size_t>(ch - 1)];
+    bool changed = false;
     if (a.size() > 1 && a[1].isObject())
     {
         const juce::var patch = a[1];
@@ -909,27 +939,72 @@ void OutputEditor::handleSetChannelConfig(const ArgList& a, Completion c)
             return;
         }
         if (patch.hasProperty("enabled"))
-            channel.enabled = static_cast<bool>(patch.getProperty("enabled", channel.enabled));
+        {
+            bool b = false;
+            if (!strictBool(patch.getProperty("enabled", channel.enabled), b))
+            {
+                c(badArgResp());
+                return;
+            }
+            changed |= b != channel.enabled;
+            channel.enabled = b;
+        }
         if (patch.hasProperty("label"))
         {
-            channel.label = patch.getProperty("label", juce::String()).toString().substring(0, 24);
+            const juce::String l = patch.getProperty("label", juce::String()).toString().substring(0, 24);
+            changed |= l != channel.label;
+            channel.label = l;
         }
         if (patch.hasProperty("priority"))
-            channel.priority = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", channel.priority)));
+        {
+            const int pr = juce::jlimit(0, 10, static_cast<int>(patch.getProperty("priority", channel.priority)));
+            changed |= pr != channel.priority;
+            channel.priority = pr;
+        }
         if (patch.hasProperty("lead_lock"))
-            channel.leadLock = static_cast<bool>(patch.getProperty("lead_lock", channel.leadLock));
+        {
+            bool b = false;
+            if (!strictBool(patch.getProperty("lead_lock", channel.leadLock), b))
+            {
+                c(badArgResp());
+                return;
+            }
+            changed |= b != channel.leadLock;
+            channel.leadLock = b;
+        }
         if (patch.hasProperty("lead_vol_exempt"))
-            channel.leadVolExempt = static_cast<bool>(patch.getProperty("lead_vol_exempt", channel.leadVolExempt));
+        {
+            bool b = false;
+            if (!strictBool(patch.getProperty("lead_vol_exempt", channel.leadVolExempt), b))
+            {
+                c(badArgResp());
+                return;
+            }
+            changed |= b != channel.leadVolExempt;
+            channel.leadVolExempt = b;
+        }
         if (patch.hasProperty("participate_in_auto_pan"))
         {
-            channel.participateAutoPan = static_cast<bool>(patch.getProperty("participate_in_auto_pan", false));
+            bool b = false;
+            if (!strictBool(patch.getProperty("participate_in_auto_pan", false), b))
+            {
+                c(badArgResp());
+                return;
+            }
+            changed |= b != channel.participateAutoPan;
+            channel.participateAutoPan = b;
             channel.participateAutoPanSet = true;
         }
         if (patch.hasProperty("pair_id"))
-            channel.pairId = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", channel.pairId)));
+        {
+            const int pr = juce::jlimit(0, 7, static_cast<int>(patch.getProperty("pair_id", channel.pairId)));
+            changed |= pr != channel.pairId;
+            channel.pairId = pr;
+        }
     }
 
-    ++processor_.runtime().configSeq; // 广播区整体版本号 bump(§4.3)
+    if (changed)
+        ++processor_.runtime().configSeq; // 广播区整体版本号,值变化才 bump(PR#55 缺陷4)
     c(okResp());
 }
 
@@ -949,35 +1024,20 @@ void OutputEditor::handleSetTrackManual(const ArgList& a, Completion c)
         return;
     }
 
-    // 覆盖全时间线的单段常值(§1.16 方案 A;t1 用大值近似「全时间线」,真末端由宿主时间线提供)。
-    const std::int64_t endSamples = static_cast<std::int64_t>(1) << 40;
-    scvb::state::Segment seg;
-    seg.t0 = 0;
-    seg.t1 = endSamples;
-    if (panOrVol == "pan")
+    int replacedSegments = 0;
+    int replacedLocked = 0;
+    // 持锁事务 + 如实统计替换前段数/锁定段数(PR#55 重要1/建议⑤)。
+    if (!processor_.setTrackManual(ch, panOrVol == "pan", value, replacedSegments, replacedLocked))
     {
-        seg.pan = juce::jlimit(-100.0f, 100.0f, value);
-        seg.volDb = 0.0f;
+        c(badArgResp());
+        return;
     }
-    else
-    {
-        seg.pan = 0.0f;
-        seg.volDb = juce::jlimit(-24.0f, 12.0f, value);
-    }
-    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
-
-    commitCrvsTransaction("Track manual ch" + juce::String(ch), [&] {
-        auto& crvs = processor_.crvsData();
-        auto& track = crvs.versions[static_cast<std::size_t>(processor_.versionActive() - 1)]
-                          .tracks[static_cast<std::size_t>(ch - 1)];
-        track.segments.assign(1, seg);
-    });
 
     emitSegments("trackManual", false);
     juce::var o = obj();
     put(o, "ok", true);
-    put(o, "replacedSegments", 1);
-    put(o, "replacedLocked", 0);
+    put(o, "replacedSegments", replacedSegments);
+    put(o, "replacedLocked", replacedLocked);
     c(o);
 }
 
@@ -1038,15 +1098,18 @@ void OutputEditor::handleSetPanCurve(const ArgList& a, Completion c)
         }
     }
 
-    commitCrvsTransaction("Set pan curve", [&] {
-        processor_.crvsData().versions[static_cast<std::size_t>(processor_.versionActive() - 1)].panCurve = points;
-    });
+    processor_.setPanCurve(processor_.versionActive(), points); // 持锁事务(PR#55 重要1)
     lastStateJson_.clear(); // pan_curve 经 scvb.state 回推
     c(okResp());
 }
 
 void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     if (a.size() < 1 || !a[0].isObject())
     {
         c(badArgResp());
@@ -1054,16 +1117,30 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     }
     const juce::var p = a[0];
     auto& rt = processor_.runtime();
-    rt.vadThresholdDb = static_cast<float>(p.getProperty("threshold_db", rt.vadThresholdDb));
-    rt.vadHysteresisDb = static_cast<float>(p.getProperty("hysteresis_db", rt.vadHysteresisDb));
-    rt.vadHangoverMs = static_cast<int>(p.getProperty("hangover_ms", rt.vadHangoverMs));
-    rt.vadPaddingPreMs = static_cast<int>(p.getProperty("padding_pre_ms", rt.vadPaddingPreMs));
-    rt.vadPaddingPostMs = static_cast<int>(p.getProperty("padding_post_ms", rt.vadPaddingPostMs));
+    const float t = static_cast<float>(p.getProperty("threshold_db", rt.vadThresholdDb));
+    const float h = static_cast<float>(p.getProperty("hysteresis_db", rt.vadHysteresisDb));
+    const int hm = static_cast<int>(p.getProperty("hangover_ms", rt.vadHangoverMs));
+    const int pp = static_cast<int>(p.getProperty("padding_pre_ms", rt.vadPaddingPreMs));
+    const int po = static_cast<int>(p.getProperty("padding_post_ms", rt.vadPaddingPostMs));
+    const bool changed = t != rt.vadThresholdDb || h != rt.vadHysteresisDb || hm != rt.vadHangoverMs ||
+                         pp != rt.vadPaddingPreMs || po != rt.vadPaddingPostMs;
+    rt.vadThresholdDb = t;
+    rt.vadHysteresisDb = h;
+    rt.vadHangoverMs = hm;
+    rt.vadPaddingPreMs = pp;
+    rt.vadPaddingPostMs = po;
+    if (changed)
+        ++rt.configSeq; // PR#55 缺陷4
     c(okResp());
 }
 
 void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     if (a.size() < 1 || !a[0].isObject())
     {
         c(badArgResp());
@@ -1071,21 +1148,43 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     }
     const juce::var p = a[0];
     auto& rt = processor_.runtime();
-    rt.segmentationMode = p.getProperty("mode", rt.segmentationMode).toString();
-    rt.segmentationSensitivity = static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity));
-    rt.segmentationMinSegmentMs = static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs));
+    const juce::String mode = p.getProperty("mode", rt.segmentationMode).toString();
+    const float sens = static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity));
+    const int mms = static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs));
+    const bool changed =
+        mode != rt.segmentationMode || sens != rt.segmentationSensitivity || mms != rt.segmentationMinSegmentMs;
+    rt.segmentationMode = mode;
+    rt.segmentationSensitivity = sens;
+    rt.segmentationMinSegmentMs = mms;
+    if (changed)
+        ++rt.configSeq; // PR#55 缺陷4
     c(okResp());
 }
 
 void OutputEditor::handleSetTransitionRamp(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     const float ms = a.size() > 0 ? static_cast<float>(a[0]) : 80.0f;
-    processor_.runtime().transitionRampMs = juce::jlimit(20.0f, 300.0f, ms);
+    const float clamped = juce::jlimit(20.0f, 300.0f, ms);
+    if (processor_.runtime().transitionRampMs != clamped)
+    {
+        processor_.runtime().transitionRampMs = clamped;
+        ++processor_.runtime().configSeq; // PR#55 缺陷4
+    }
     c(okResp());
 }
 
 void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
 {
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
     if (a.size() < 1 || !a[0].isObject())
     {
         c(badArgResp());
@@ -1093,6 +1192,7 @@ void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
     }
     const juce::var patch = a[0];
     auto& rt = processor_.runtime();
+    bool changed = false;
     if (patch.hasProperty("loudness_mode"))
     {
         const juce::String m = patch.getProperty("loudness_mode", juce::String()).toString();
@@ -1101,6 +1201,7 @@ void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
             c(badArgResp());
             return;
         }
+        changed |= m != rt.loudnessMode;
         rt.loudnessMode = m;
     }
     if (patch.hasProperty("center_slot_policy"))
@@ -1111,8 +1212,11 @@ void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
             c(badArgResp());
             return;
         }
+        changed |= m != rt.centerSlotPolicy;
         rt.centerSlotPolicy = m;
     }
+    if (changed)
+        ++rt.configSeq; // PR#55 缺陷4
     c(okResp());
 }
 
@@ -1187,7 +1291,10 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
     {
         args.op = scvb::state::SegmentEditOp::SetLocked;
         args.segIdx = payload.isObject() ? static_cast<int>(payload.getProperty("segIdx", -1)) : -1;
-        args.locked = payload.isObject() && static_cast<bool>(payload.getProperty("locked", false));
+        bool lockedVal = false;
+        if (!payload.isObject() || !strictBool(payload.getProperty("locked", false), lockedVal))
+            valid = false;
+        args.locked = lockedVal;
     }
     else
     {
@@ -1201,12 +1308,8 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
     }
 
     const int track = ch - 1;
-    const int version = processor_.versionActive();
-    // 结果门控(PR#55 缺陷3):先 editTrackSegments 判结果,仅 Ok 才压入 undo 事务并 rebuild;
-    // 失败(BadArg/NotAdjacent)不改原表、不碰 undo、不 rebuild。
-    const scvb::state::SegmentEditResult result =
-        scvb::output::editSegmentTransactional(processor_.authority().undoManager(), processor_.crvsData(), version,
-                                               track, args, [this] { processor_.rebuildAllCurves(); });
+    // 持锁 + 结果门控事务(PR#55 重要1/缺陷3)。
+    const scvb::state::SegmentEditResult result = processor_.editSegment(track, args);
 
     if (result != scvb::state::SegmentEditResult::Ok)
     {
@@ -1233,7 +1336,12 @@ void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
     const int tracksMask = a.size() > 0 ? static_cast<int>(a[0]) : 0;
     const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
     const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
-    const bool autoStop = a.size() > 3 ? static_cast<bool>(a[3]) : false;
+    bool autoStop = false;
+    if (a.size() > 3 && !strictBool(a[3], autoStop))
+    {
+        c(badArgResp());
+        return;
+    }
 
     auto& rt = processor_.runtime();
     juce::var o = obj();
@@ -1307,7 +1415,7 @@ void OutputEditor::handleClearCoverage(const ArgList& a, Completion c)
 
 void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
 {
-    const bool ok = processor_.authority().undoManager().undo();
+    const bool ok = processor_.undo(); // 持锁(PR#55 重要1)
     if (ok)
         emitSegments("undo", false);
     juce::var o = obj();
@@ -1317,7 +1425,7 @@ void OutputEditor::handleUndo(const ArgList& /*a*/, Completion c)
 
 void OutputEditor::handleRedo(const ArgList& /*a*/, Completion c)
 {
-    const bool ok = processor_.authority().undoManager().redo();
+    const bool ok = processor_.redo(); // 持锁(PR#55 重要1)
     if (ok)
         emitSegments("redo", false);
     juce::var o = obj();
@@ -1381,7 +1489,12 @@ void OutputEditor::handleSetActiveTab(const ArgList& a, Completion c)
 
 void OutputEditor::handleSetGuideSeen(const ArgList& a, Completion c)
 {
-    const bool seen = a.size() > 0 && static_cast<bool>(a[0]);
+    bool seen = false;
+    if (a.size() < 1 || !strictBool(a[0], seen))
+    {
+        c(badArgResp());
+        return;
+    }
     processor_.runtime().guideSeen = seen;
     // alsoGlobal 落盘全局默认归 T31(commitUiScale 通道)。
     c(okResp());
@@ -1389,7 +1502,12 @@ void OutputEditor::handleSetGuideSeen(const ArgList& a, Completion c)
 
 void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
 {
-    const bool seen = a.size() > 0 && static_cast<bool>(a[0]);
+    bool seen = false;
+    if (a.size() < 1 || !strictBool(a[0], seen))
+    {
+        c(badArgResp());
+        return;
+    }
     processor_.runtime().tourSeen = seen;
     c(okResp());
 }

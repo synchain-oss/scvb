@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "OutputEditor.h"
+#include "SegmentEditService.h"
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
 #include "state/StateMigration.h"
@@ -724,6 +725,127 @@ std::uint8_t ScvbOutputAudioProcessor::probeGroupsOnline()
             bitmap |= static_cast<std::uint8_t>(1u << (g - 1));
     }
     return bitmap;
+}
+
+scvb::state::CrvsData ScvbOutputAudioProcessor::crvsSnapshot()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return crvsData_;
+}
+
+scvb::engine::PlayheadPod ScvbOutputAudioProcessor::playheadSnapshot() const
+{
+    scvb::engine::PlayheadPod pod{};
+    playheadShot_.read(pod); // 撕裂读返回 false → 沿用上帧(此处 pod 为零值/上次值,下一 tick 自愈)
+    return pod;
+}
+
+scvb::engine::SetNameResult ScvbOutputAudioProcessor::setVersionName(int version, const juce::String& name,
+                                                                     juce::String& effectiveOut)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    std::string eff;
+    const scvb::engine::SetNameResult result = scvb::engine::normalizeVersionName(version, name.toStdString(), eff);
+    effectiveOut = juce::String::fromUTF8(eff.c_str());
+    if (result == scvb::engine::SetNameResult::InvalidIndex)
+        return result;
+    if (crvsData_.versions[static_cast<std::size_t>(version - 1)].meta.name == eff)
+        return result; // 未变,不产生空撤销事务
+
+    scvb::output::commitCrvsTransaction(
+        authority_.undoManager(), crvsData_, "Rename V" + juce::String(version),
+        [&] { crvsData_.versions[static_cast<std::size_t>(version - 1)].meta.name = eff; },
+        [] {}); // 改名不影响曲线,不 rebuild
+    return result;
+}
+
+scvb::engine::CopyVersionResult ScvbOutputAudioProcessor::copyVersion(int src, int dst)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    if (src < 1 || src > 2 || dst < 1 || dst > 2 || src == dst)
+        return scvb::engine::CopyVersionResult::InvalidIndex;
+
+    scvb::output::commitCrvsTransaction(
+        authority_.undoManager(), crvsData_, "Copy V" + juce::String(src) + " -> V" + juce::String(dst),
+        [&] {
+            auto& d = crvsData_.versions[static_cast<std::size_t>(dst - 1)];
+            const auto& s = crvsData_.versions[static_cast<std::size_t>(src - 1)];
+            d.tracks = s.tracks; // 深拷贝段表(含 origin/locked)
+            d.panCurve = s.panCurve;
+            d.meta.copiedFrom = src; // name 不复制(保留目标名,J05)
+            d.meta.copiedAtMs = static_cast<std::int64_t>(juce::Time::getCurrentTime().toMilliseconds());
+        },
+        [this] { rebuildAllCurves(); });
+    return scvb::engine::CopyVersionResult::Ok;
+}
+
+scvb::state::SegmentEditResult ScvbOutputAudioProcessor::editSegment(int track,
+                                                                     const scvb::state::SegmentEditArgs& args)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // 结果门控:仅 Ok 才压入 undo 事务并 rebuild(PR#55 缺陷3)。
+    return scvb::output::editSegmentTransactional(authority_.undoManager(), crvsData_, versionActive_, track, args,
+                                                  [this] { rebuildAllCurves(); });
+}
+
+bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, int& replacedSegments,
+                                              int& replacedLocked)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    if (ch < 1 || ch > 15)
+        return false;
+
+    auto& track =
+        crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)].tracks[static_cast<std::size_t>(ch - 1)];
+    replacedSegments = static_cast<int>(track.segments.size());
+    replacedLocked = 0;
+    for (const auto& s : track.segments)
+        if (scvb::state::segmentLocked(s.flags))
+            ++replacedLocked; // 如实统计锁定段(PR#55 建议⑤)
+
+    scvb::state::Segment seg;
+    seg.t0 = 0;
+    seg.t1 = static_cast<std::int64_t>(1) << 40; // 覆盖全时间线近似(真末端由宿主时间线提供)
+    if (isPan)
+    {
+        seg.pan = juce::jlimit(-100.0f, 100.0f, value);
+        seg.volDb = 0.0f;
+    }
+    else
+    {
+        seg.pan = 0.0f;
+        seg.volDb = juce::jlimit(-24.0f, 12.0f, value);
+    }
+    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+
+    scvb::output::commitCrvsTransaction(
+        authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
+        [&] { track.segments.assign(1, seg); }, [this] { rebuildAllCurves(); });
+    return true;
+}
+
+void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    scvb::output::commitCrvsTransaction(
+        authority_.undoManager(), crvsData_, "Set pan curve",
+        [&] { crvsData_.versions[static_cast<std::size_t>(version - 1)].panCurve = points; },
+        [] {}); // pan_curve 不参与 CurveEvaluator,不 rebuild
+}
+
+bool ScvbOutputAudioProcessor::undo()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return authority_.undoManager().undo();
+}
+
+bool ScvbOutputAudioProcessor::redo()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return authority_.undoManager().redo();
 }
 
 // juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。

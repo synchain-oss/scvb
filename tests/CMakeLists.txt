@@ -85,6 +85,7 @@ add_executable(scvb_params_tests
   core/test_printer.cpp
   core/test_version_params.cpp
   core/test_segment_edit_service.cpp
+  core/test_bridge_args.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
   ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp

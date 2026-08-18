@@ -88,10 +88,6 @@ private:
     void handleSetTourSeen(const ArgList& a, Completion c);
     void handleConfirmPrintGuard(const ArgList& a, Completion c);
 
-    // ---- CRVS 变更事务(全量快照 + 重建曲线 + 单条撤销)----
-    // 事务式修改 crvsData:先快照 old,调 mutator 改新,成功则 perform(undo 回 old、redo 回 new)。
-    void commitCrvsTransaction(const juce::String& name, const std::function<void()>& mutator);
-
     // 只读观察态判定(OutputSession kObserver)。
     bool isReadOnly() const;
 
@@ -105,7 +101,8 @@ private:
     juce::String lastConnJson_;
     juce::String lastMetersJson_;
     juce::String lastPlayheadJson_;
-    std::uint8_t lastGroupsOnline_ = 0xFF; // 0xFF = 尚未发送(首帧必发)
+    std::uint8_t lastGroupsOnline_ = 0;
+    bool groupsEverSent_ = false; // scvb.groups 首帧必发(§0.4;独立于位图值)
     std::map<juce::String, float> lastParamsValues_; // scvb.params 稀疏 diff 缓存
     std::array<float, 15> lastMeterDb_{}; // meters 0.3dB 阈值(§0.4)
     std::array<float, 15> lastMeterPeak_{};
