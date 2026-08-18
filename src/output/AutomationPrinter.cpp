@@ -24,11 +24,11 @@ AutomationPrinter::~AutomationPrinter()
 
 void AutomationPrinter::setMode(scvb::engine::AuthorityMode mode)
 {
-    if (mode == m_mode)
+    if (mode == m_mode.load(std::memory_order_relaxed))
         return;
 
-    const bool leavingPrint = (m_mode == scvb::engine::AuthorityMode::Print);
-    m_mode = mode;
+    const bool leavingPrint = (m_mode.load(std::memory_order_relaxed) == scvb::engine::AuthorityMode::Print);
+    m_mode.store(mode, std::memory_order_relaxed);
 
     // §2.2 / §3.3:离开 PRINT 的所有路径(stop / 关 Output / 离开区间 / epoch 跳变)统一 endAllGestures。
     if (leavingPrint)
@@ -193,7 +193,7 @@ void AutomationPrinter::tick()
     const scvb::engine::PlayheadPod& shot = m_lastShot;
 
     // —— 非 PRINT:零写入、闭合任何遗留 gesture ——
-    if (m_mode != scvb::engine::AuthorityMode::Print)
+    if (m_mode.load(std::memory_order_relaxed) != scvb::engine::AuthorityMode::Print)
     {
         endAllGestures();
         return;

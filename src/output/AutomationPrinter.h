@@ -154,7 +154,7 @@ public:
     // 测试/诊断内省。
     bool anyGestureOpen() const;
     int numGesturesOpen() const;
-    scvb::engine::AuthorityMode mode() const noexcept { return m_mode; }
+    scvb::engine::AuthorityMode mode() const noexcept { return m_mode.load(std::memory_order_relaxed); }
     const std::array<Lane, kNumLanes>& lanes() const noexcept { return m_lanes; }
 
     // 直接推进一帧打印(等价一次 50Hz timerCallback)。供测试驱动,消息线程调用。
@@ -166,7 +166,8 @@ private:
     bool laneFrozen(const Lane& lane) const;
     bool nearSegmentBoundary(const scvb::CurveEvaluator* curve, double tSec) const;
 
-    scvb::engine::AuthorityMode m_mode = scvb::engine::AuthorityMode::Follow;
+    // 跨线程读写红线(与 m_selfWrite 同口径):消息线程 setMode 写,音频线程 HostEchoListener 读。
+    std::atomic<scvb::engine::AuthorityMode> m_mode{scvb::engine::AuthorityMode::Follow};
     const scvb::engine::PlayheadShot* m_shot = nullptr;
     scvb::engine::PlayheadPod m_lastShot{};
 
@@ -196,5 +197,7 @@ private:
 };
 
 static_assert(std::atomic<bool>::is_always_lock_free, "AutomationPrinter.m_selfWrite 必须无锁(CLAUDE.md §8)");
+static_assert(std::atomic<scvb::engine::AuthorityMode>::is_always_lock_free,
+              "AutomationPrinter.m_mode 必须无锁(CLAUDE.md §8)");
 
 } // namespace scvb::output

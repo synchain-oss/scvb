@@ -8,6 +8,8 @@
 // (03 §3.1 / 01 C8 / 04 §2.2)。单写(音频线程)单读(消息线程),最新值语义:
 // 写方每块整体发布一次,零分配零锁;读方 seq 奇偶协议双读,撕裂即沿用上帧(不自旋)。
 // 纯 C++17,无 JUCE(ADR-011:core 不得依赖 JUCE)。
+// 取舍:pod 为普通字段(标准 seqlock,Linux 内核 / JUCE 同款),严格 C++ 内存模型下并发读写属
+// 数据竞争,但 seq 奇偶配对 + acquire/release 成对 + fence 收边在实践上安全;撕裂读返回 false 沿用上帧。
 namespace scvb::engine
 {
 
