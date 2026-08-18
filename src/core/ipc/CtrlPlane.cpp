@@ -45,7 +45,9 @@ void CtrlPlane::reapPendingReleases(u64 nowMs)
 InitResult CtrlPlane::open()
 {
     base_ = nullptr;
-    if (!handle_.release(steadyNowMs()))
+    // 与 changeGroup 一致:handle_ 尚未打开/已 moved-from 时先判 valid(),避免把 moved-from 句柄推进
+    // pendingReleases_(releaseHandle() 同模式)。
+    if (handle_.valid() && !handle_.release(steadyNowMs()))
     {
         // 租约在途/宽限期未满:旧句柄未解映射,压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
         pendingReleases_.push_back(std::move(handle_));

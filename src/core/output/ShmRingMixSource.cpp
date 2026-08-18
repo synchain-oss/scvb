@@ -74,6 +74,8 @@ u64 ShmRingMixSource::epoch() const noexcept
 
 bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
 {
+    // 硬约束:本方法 acquire 的绑定裸指针只在「本块」内有效 —— 底层共享内存段由 OutputSession 的
+    // SegmentHandle 500ms 宽限期(kReleaseGraceMs > 单块 wall-clock)保活,不得跨块持有裸指针(S1 验收)。
     const AudioRingBinding* b = binding_.load(std::memory_order_acquire);
     if (b == nullptr || !b->bound || dst == nullptr || n <= 0 || t0 < 0)
     {

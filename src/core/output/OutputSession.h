@@ -121,6 +121,7 @@ private:
     u32 maxBlock_ = 0;
     // claim 态([M] 写 / [A] 经 state() acquire-load;processBlock 据此判 observer)。
     std::atomic<OutputClaimState> state_{OutputClaimState::kUnavailable};
+    static_assert(decltype(state_)::is_always_lock_free, "OutputSession::state_ 必须 lock-free(§8 实时线程纪律)");
 
     Registry registry_;
     CtrlPlane ctrl_;

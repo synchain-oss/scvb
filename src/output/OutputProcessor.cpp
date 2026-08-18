@@ -313,15 +313,16 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
 {
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
     // PR#53 I1:无注入轨或无可读源 → 直通(不改 buffer),绝不把总线替换成静音。
+    // PR#53 复审:早退发生在清零之前 —— 无数据时不清 accum,保留 lastMix 供后续「混音→直通」等功率交叉。
     const scvb::u32 inject = session_.injectMask();
     if (inject == 0)
     {
         return; // 总线上只挂 Output / 尚无 Input:直通
     }
 
-    std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
-    std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
-
+    // 第一遍:读注入源到 trackBuf_,只判定「是否有可读数据」,不触碰 accum。
+    std::array<bool, 15> hasData{};
+    std::array<scvb::u32, 15> srcCh{};
     bool anyData = false;
     for (int ch = 1; ch <= 15; ++ch)
     {
@@ -338,29 +339,42 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
         {
             continue; // 缺口 → 该轨该块静音(失准计数已在 read 内)
         }
+        hasData[static_cast<std::size_t>(ch - 1)] = true;
+        srcCh[static_cast<std::size_t>(ch - 1)] = src.channels();
         anyData = true;
-        const scvb::u32 srcCh = src.channels();
+    }
+
+    if (!anyData)
+    {
+        return; // 有注入轨但均无可读数据(缺口):直通,不清 accum(保留 lastMix)
+    }
+
+    // 确认有数据才清零并求和。
+    std::fill(accumL_.begin(), accumL_.begin() + n, 0.0f);
+    std::fill(accumR_.begin(), accumR_.begin() + n, 0.0f);
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        if (!hasData[static_cast<std::size_t>(ch)])
+        {
+            continue;
+        }
+        const scvb::u32 chCount = srcCh[static_cast<std::size_t>(ch)];
         for (int i = 0; i < n; ++i)
         {
-            if (srcCh == 1)
+            if (chCount == 1)
             {
-                const float s = trackBuf_[static_cast<std::size_t>(ch - 1)][static_cast<std::size_t>(i)];
+                const float s = trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(i)];
                 accumL_[static_cast<std::size_t>(i)] += s;
                 accumR_[static_cast<std::size_t>(i)] += s;
             }
             else
             {
                 accumL_[static_cast<std::size_t>(i)] +=
-                    trackBuf_[static_cast<std::size_t>(ch - 1)][static_cast<std::size_t>(2 * i)];
+                    trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(2 * i)];
                 accumR_[static_cast<std::size_t>(i)] +=
-                    trackBuf_[static_cast<std::size_t>(ch - 1)][static_cast<std::size_t>(2 * i + 1)];
+                    trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(2 * i + 1)];
             }
         }
-    }
-
-    if (!anyData)
-    {
-        return; // 有注入轨但均无可读数据(缺口):直通,不输出静音
     }
 
     auto* outL = buffer.getWritePointer(0);
@@ -381,6 +395,7 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
     {
         return;
     }
+    session_.bumpBlockCounter(); // [J52] 存活计数 → [M] 停摆看门狗(§4.2);bypass 期间同样推进
 
     int64_t t0 = 0;
     bool haveT0 = false;
