@@ -7,6 +7,10 @@ add_library(scvb_core STATIC
   dsp/KWeighting.h
   analysis/FeatureExtractor.cpp
   analysis/FeatureExtractor.h
+  analysis/CoverageMap.cpp
+  analysis/CoverageMap.h
+  analysis/FrameStore.cpp
+  analysis/FrameStore.h
   analysis/PanCurve.cpp
   analysis/PanCurve.h
   dsp/PanMath.h
@@ -32,6 +36,8 @@ add_library(scvb_core STATIC
   ipc/Registry.h
   ipc/CtrlPlane.cpp
   ipc/CtrlPlane.h
+  ipc/FeatRing.cpp
+  ipc/FeatRing.h
   ipc/SegmentBackendInProcess.cpp
   ipc/SegmentBackendInProcess.h
 )
