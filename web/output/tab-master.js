@@ -1162,6 +1162,9 @@ export function createTabMaster(opts) {
             // PRINT 态整组 disabled(05 §2.1 ⓪);只读观察态同理。
             const off = phase === "print" || isWriteBlocked();
             el.groupCard.setAttribute("data-disabled", off ? "1" : "0");
+            // 已展开的改组确认条随禁用一并收起(PR #52 bot 建议):否则确认钮
+            // 仍可在 PRINT/只读态下提交 setGroupId,绕过整卡 disabled。
+            if (off) local.pendingGroup = 0;
             // 05 §2.1 ⓪ 逐字要求 disabled **+ tooltip**;词条 master.printLock.group(T31 新增)。
             // title 不走 applyI18n(它只刷 data-t / data-t-aria),故每次渲染按当前字典重写。
             setTitle(
