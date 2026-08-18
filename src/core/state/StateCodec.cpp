@@ -55,6 +55,8 @@ public:
 
     void bytes(const void* p, std::size_t n)
     {
+        if (n == 0)
+            return; // 空 payload 的 data() 可能为 nullptr,nullptr + 0 属未定义行为(UB guard)
         const auto* b = static_cast<const std::uint8_t*>(p);
         buf_.insert(buf_.end(), b, b + n);
     }
@@ -281,7 +283,7 @@ bool encodeCrvs(const CrvsData& data, std::vector<std::uint8_t>& out)
     ByteWriter w;
     w.u16(kCrvsMinorVersion);
     w.u8(static_cast<std::uint8_t>(data.versions.size()));
-    w.u8(kNumTracks);
+    w.u8(static_cast<std::uint8_t>(kNumTracks));
     for (const auto& v : data.versions)
     {
         if (v.meta.name.size() > kMaxVersionNameBytes)

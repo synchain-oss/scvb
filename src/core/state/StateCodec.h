@@ -12,7 +12,7 @@
 //
 // 容器(定长头 + TLV 块,little-endian):
 //   偏移  字段
-//   0     u32 magic = 'SCVB' (0x53435642)
+//   0     u32 magic = 'SCVB' (0x42564353,小端内存序;与 ipc/SegmentLayout.h kScvbMagic 同源)
 //   4     u32 abi   = 1(与 IPC abi 独立计数)
 //   8     u32 flags = 0
 //   12    u32 chunkCount
@@ -22,11 +22,23 @@
 // FEAT 是 gzip(04 §5.2,归 T21)——三者在 scvb_core(无 JUCE)层面都是**不透明 payload**,
 // 本层只负责容器承载与未知块回写(03 §6.1)。CRVS 是自定义紧凑二进制,本层负责其编解码。
 // 未知 fourcc 的块在 load 时原样保留、save 时原样回写(前向小版本兼容)。
+//
+// 【挂账 / 后续接线契约落点】(本卡不改代码,只记账):
+// 1. PRMS/CFGS 的 ValueTree 字段级编码(123 参数 + ui{…}、group_id/global/analysis/channels[15]
+//    的 source_channels/participate_in_auto_pan 回填与 auto_pan/auto_vol 丢弃)归 Output/JUCE 层
+//    的 getStateInformation/setStateInformation 接线卡(本层仅 opaque 承载 + fourcc 常量)。
+// 2. 同 abi 内 CRVS 的 minor 高于当前(kCrvsMinorVersion)时,decodeCrvs 只拒解本块,容器级 loadState
+//    仍返回 Ok —— Output 接线卡必须把「同 abi 但 CRVS minor 更高」按「等同拒载 + preservedOriginal
+//    原样回写 + 提示升级」处理,不得让旧插件抹掉新版曲线数据。
+// 3. docs/STATE_SCHEMA.md 目前是 T39a 占位空壳;本 codec 是 wire-format 先行真源,T39a 回填时以本
+//    头 + tests/golden/state/abi1.bin 为准交叉校验。
 namespace scvb::state
 {
 
 // ---- 容器常量(03 §6.1)----
-inline constexpr std::uint32_t kStateMagic = 0x53435642u; // 'SCVB'
+// magic 与仓内 IPC 已冻结常量同源(ipc/SegmentLayout.h kScvbMagic = makeFourCc('S','C','V','B') =
+// 0x42564353):小端写盘后前 4 字节字面拼出 "SCVB",与 tests/golden/ipc-layout.txt 的 magic 0x42564353 一致。
+inline constexpr std::uint32_t kStateMagic = 0x42564353u; // 'SCVB'(小端内存序,与 SegmentLayout.h 同源)
 inline constexpr std::uint32_t kCurrentAbi = 1u;
 
 inline constexpr std::uint32_t kFourccPrms = 0x534D5250u; // 'PRMS'
@@ -45,6 +57,8 @@ inline constexpr std::uint16_t kMaxPanPointsPerVersion = 4096u;
 // [J59] 版本数 4→2、轨道数 10→15。
 inline constexpr std::size_t kNumVersions = 2;
 inline constexpr std::size_t kNumTracks = 15;
+// CRVS 头用 u8 承载版本/轨道数,须在单字节内(防窄化静默截断)。
+static_assert(kNumVersions <= 255 && kNumTracks <= 255, "CRVS counts must fit in u8");
 
 // ---- segment flags([J34]:替换 manual_edited;03 §6.1)----
 enum class SegmentOrigin : std::uint32_t
@@ -86,7 +100,7 @@ struct TrackCurve
 struct VersionMeta
 {
     std::string name; // [J05] 默认 "V1"/"V2",≤16 字符;UTF-8 变长
-    std::int32_t copiedFrom = 0; // T18 VersionMeta(0 = 未复制)
+    std::int32_t copiedFrom = 0; // T18 VersionMeta(0 = 未复制;非 0 = 1-based 来源版本号,勿作数组下标)
     std::int64_t copiedAtMs = 0; // 复制时刻(epoch 毫秒)
 };
 

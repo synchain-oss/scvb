@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "state/StateCodec.h"
@@ -185,7 +186,7 @@ TEST_CASE("STATE-VALIDATE-1 magic 不符 → Corrupt", "[state][validate]")
 
 TEST_CASE("STATE-VALIDATE-2 头部截断 → Corrupt", "[state][validate]")
 {
-    const std::uint8_t head[8] = {0x42, 0x56, 0x43, 0x53, 1, 0, 0, 0}; // magic + abi(不足 16 字节)
+    const std::uint8_t head[8] = {0x53, 0x43, 0x56, 0x42, 1, 0, 0, 0}; // magic 'SCVB'(小端内存序)+ abi(不足 16 字节)
     StateChunks out;
     REQUIRE(scvb::state::loadState(head, sizeof(head), out).status == StateLoadStatus::Corrupt);
 }
