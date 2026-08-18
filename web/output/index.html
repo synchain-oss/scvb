@@ -58,6 +58,13 @@
          [data-gb="master-pancurve"] data-empty="0|1"
          [data-gb="footer"]          data-mode="default|print|printDone|follow"
          [data-gb="footer-scale"]    data-open="0|1";档位项 data-current/data-over
+       ---- Wave 2 追加的 data 属性(由事件/交互写,DevTools 里改同样生效)----
+         [data-gb="master-group-selector"] data-disabled="0|1"(PRINT / 只读观察态整组不可操作)
+         [data-gb="master-width|master-msbalance|master-leadselect|master-distchart"]
+                                     data-host-echo="0|1"(§0.5 hostEcho 灰显,只更新显示不回写)
+         .range-manual__tc           data-invalid="0|1"(manual 起止校验失败)
+         [data-gb="scale-confirm"]   hidden(10 秒防呆确认,卡片层单例)
+         [data-gb="guide-overlay-rules-missing"] hidden(guide.rule1..9 未生成时的占位注记)
        ================================================================= */
 
             :root {
@@ -460,6 +467,12 @@
                 background: var(--w-16);
                 border: 1px solid var(--w-30);
                 cursor: pointer;
+            }
+            /* PRINT 态(或 C++ 回 {rejected:"printing"})不可复制版本:05 §2.1 ③ 逐字
+               「按钮 disabled + tooltip」——与 .ver-chip[data-disabled] 同款视觉。 */
+            .hdr-copy-btn[data-disabled="1"] {
+                opacity: 0.45;
+                cursor: not-allowed;
             }
             .hdr-copy-btn svg {
                 fill: none;
@@ -1720,6 +1733,85 @@
                 flex-direction: column;
                 gap: var(--sp-9);
             }
+
+            /* =================================================================
+               T31 Wave 2 追加(交互态外观;视觉仍照设计稿同族组件,零新配方)
+               ================================================================= */
+
+            /* ---- A1 空态卡(J72 发挥件;05 §2.1 末段:步 0 红字前提 + 1→2→3 三步)。
+                   容器复用 .sc-banner 的琥珀玻璃,红字只落在步 0 那句(ADR-002 红线)。 ---- */
+            .master-empty {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-6);
+                min-width: 0;
+            }
+            .master-empty__red {
+                margin: 0;
+                color: var(--sem-red-ink);
+                font-size: var(--fs-115);
+                line-height: 1.45;
+            }
+            .master-empty__steps {
+                margin: 0;
+                padding-left: var(--sp-18);
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-4);
+                color: var(--txt-2);
+                font-size: var(--fs-110);
+                line-height: 1.4;
+            }
+
+            /* ---- hostEcho 灰显(契约 §0.5 / §2.2):ARMED/PRINT 下 scvb.params 来自宿主回吐,
+                   参数卡只更新显示、绝不回写 —— **纯视觉降透明,不吃指针事件**。
+                   契约 §1.12-§1.14 拒绝态行逐字「无(PRINT/ARMED 下照常允许——这是宿主可录的
+                   用户操作面)」;且 hostEcho 是「最近一批」的标志,打印停止后值不再变(§0.4
+                   值未变不发)就再也不会翻回 0 —— pointer-events:none 会把四张卡永久锁死。 ---- */
+            [data-host-echo="1"] {
+                opacity: 0.55;
+            }
+
+            /* ---- 引导页:九条红字缺失时的醒目占位注记(gen-hard-rules.mjs 归 T39b)---- */
+            .guide-overlay__missing {
+                margin: 0;
+                padding: var(--sp-8) var(--sp-10);
+                border-radius: var(--r-xs);
+                background: rgba(var(--sem-red), 0.18);
+                border: 1px solid rgba(var(--sem-red), 0.45);
+                color: var(--sem-red-ink-dark);
+                font-size: var(--fs-115);
+                line-height: 1.45;
+            }
+            .guide-overlay__dontshow {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-6);
+            }
+            [data-gb="guide-overlay-rules"] {
+                margin: 0;
+                padding-left: var(--sp-18);
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-4);
+            }
+
+            /* ---- 缩放 10 秒防呆确认(卡片层单例;.sc-scrim 已给 position:absolute;inset:0)---- */
+            [data-gb="scale-confirm"] {
+                z-index: 9;
+            }
+
+            /* ---- PRINT 态 / 只读观察态:组胶囊整组不可操作(05 §2.1 ⓪;契约 §1.4)---- */
+            [data-gb="master-group-selector"][data-disabled="1"] .group-pills {
+                opacity: 0.45;
+                pointer-events: none;
+            }
+
+            /* ---- Range 手动档校验失败(startS ≥ endS ⇒ 不发 setRange,契约 §1.8)---- */
+            .range-manual__tc[data-invalid="1"] {
+                border-color: rgba(var(--sem-red), 0.7);
+                color: var(--sem-red-ink);
+            }
         </style>
     </head>
     <body>
@@ -1810,6 +1902,7 @@
                                 data-active="0"
                                 data-empty="0"
                                 data-disabled="0"
+                                aria-disabled="false"
                             >
                                 V1
                                 <span
@@ -1827,6 +1920,7 @@
                                 data-active="1"
                                 data-empty="0"
                                 data-disabled="0"
+                                aria-disabled="false"
                             >
                                 V2
                                 <span
@@ -1866,6 +1960,8 @@
                             data-glow="1"
                             data-gb="header-version-copy"
                             data-t-aria="copyTo"
+                            data-disabled="0"
+                            aria-disabled="false"
                         >
                             <svg
                                 width="13"
@@ -1919,15 +2015,32 @@
                                 </button>
                             </div>
                         </div>
-                        <!-- ARMED 轻确认(A6):切版本时引擎平滑过渡的一次性确认 -->
-                        <!-- 词条待立:ARMED 轻确认「引擎输出将平滑切至新版本,继续?」(A6,05 §2.1③ 未给逐字句,字典缺) -->
+                        <!-- ARMED 轻确认(05 §2.1③:FOLLOW 直接切 / ARMED 弹本条 / PRINT chip 全 disabled)。
+                             词条 master.versionArmedConfirm + common.cancel / common.continue(T31 Wave 2 新增)。 -->
                         <div
-                            class="sc-confirm"
+                            class="sc-confirm inline-confirm"
                             data-gb="header-version-armed-confirm"
                             hidden
-                            data-gb-todo="词条待立"
                         >
-                            引擎输出将平滑切至新版本,继续?
+                            <span
+                                class="inline-confirm__text"
+                                data-t="master.versionArmedConfirm"
+                                >引擎输出将平滑切至新版本,继续?</span
+                            >
+                            <button
+                                class="sc-btn"
+                                data-gb="header-version-armed-cancel"
+                                data-t="common.cancel"
+                            >
+                                取消
+                            </button>
+                            <button
+                                class="sc-btn sc-btn--cta"
+                                data-gb="header-version-armed-ok"
+                                data-t="common.continue"
+                            >
+                                继续
+                            </button>
                         </div>
                     </div>
 
@@ -2001,9 +2114,12 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner①「路由失准:M 轨检测到时间线缺口——检查人声轨是否仍指向本总线」全文(05 §2.0,字典缺完整句;misaligned 仅短标签) -->
-                        <span data-gb-todo="词条待立"
-                            >路由失准:M
+                        <!-- 词条 banner.misaligned(T31 Wave 2 新增,zh 逐字取 05 §2.0;
+                             {m} = scvb.conn 里 misalignCount>0 的轨数) -->
+                        <span
+                            data-t="banner.misaligned"
+                            data-gb="banner-misaligned-text"
+                            >路由失准:{m}
                             轨检测到时间线缺口——检查人声轨是否仍指向本总线</span
                         >
                     </div>
@@ -2049,9 +2165,11 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner③「轨 N 采样率不一致,已禁用」全文(05 §2.0,字典缺;in.pill.srMismatch 是 Input 侧短标) -->
-                        <span data-gb-todo="词条待立"
-                            >轨 N 采样率不一致,已禁用</span
+                        <!-- 词条 banner.srMismatch(T31 Wave 2 新增;{n} = scvb.error.ch) -->
+                        <span
+                            data-t="banner.srMismatch"
+                            data-gb="banner-srMismatch-text"
+                            >轨 {n} 采样率不一致,已禁用</span
                         >
                     </div>
                     <!-- ④ 工程版本过旧 -->
@@ -2097,8 +2215,8 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner⑤「采集数据缺失/过期,请重新采集」全文(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立"
+                        <!-- 词条 banner.sidecarMissing(T31 Wave 2 新增) -->
+                        <span data-t="banner.sidecarMissing"
                             >采集数据缺失/过期,请重新采集</span
                         >
                     </div>
@@ -2117,8 +2235,8 @@
                                 stroke-linecap="round"
                             />
                         </svg>
-                        <!-- 词条待立:banner⑥「宿主未提供时间线」全文(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">宿主未提供时间线</span>
+                        <!-- 词条 banner.noTimeline(T31 Wave 2 新增) -->
+                        <span data-t="banner.noTimeline">宿主未提供时间线</span>
                     </div>
                     <!-- ⑦ 加载守卫:引擎驱动状态随工程恢复 -->
                     <div class="sc-banner" data-gb="banner-printGuard" hidden>
@@ -2225,21 +2343,34 @@
                             data-gb="master-emptystate"
                             hidden
                         >
-                            <div>
-                                <!-- 词条待立:Tab1 空态红字前提句(05 §2.1 末段,ADR-002 红线,字典缺) -->
-                                <p class="sc-hint" data-gb-todo="词条待立">
+                            <div class="master-empty">
+                                <!-- 步 0 前提(ADR-002 红线,预防性传达):词条 master.empty.prerequisite
+                                     (T31 Wave 2 新增,zh 逐字取 05 §2.1 末段) -->
+                                <p
+                                    class="master-empty__red"
+                                    data-gb="master-emptystate-prereq"
+                                    data-t="master.empty.prerequisite"
+                                >
                                     SCVB Output
                                     插在人声轨共同路由到的总线第一格;人声轨的输出路由保持指向该总线——不要改
                                 </p>
-                                <ol>
-                                    <!-- 词条待立:空态步骤1「在每条人声轨末插 SCVB Input」(字典缺) -->
-                                    <li data-gb-todo="词条待立">
+                                <ol class="master-empty__steps">
+                                    <li
+                                        data-gb="master-emptystate-step1"
+                                        data-t="master.empty.step1"
+                                    >
                                         在每条人声轨末插 SCVB Input
                                     </li>
-                                    <!-- 词条待立:空态步骤2「采集并播放」(字典缺) -->
-                                    <li data-gb-todo="词条待立">采集并播放</li>
-                                    <!-- 词条待立:空态步骤3「分析并开启输出」(字典缺) -->
-                                    <li data-gb-todo="词条待立">
+                                    <li
+                                        data-gb="master-emptystate-step2"
+                                        data-t="master.empty.step2"
+                                    >
+                                        采集并播放
+                                    </li>
+                                    <li
+                                        data-gb="master-emptystate-step3"
+                                        data-t="master.empty.step3"
+                                    >
                                         分析并开启输出
                                     </li>
                                 </ol>
@@ -2614,8 +2745,12 @@
                             <!-- ④ MS Balance:与 Width 同款卡(设计稿 L454-465;col3 row1) -->
                             <div class="sc-card" data-gb="master-msbalance">
                                 <div class="card-head">
-                                    <span class="sc-eyebrow" data-t="msBalance"
-                                        >MS 平衡</span
+                                    <!-- 统筹 Wave 2 增补①:eyebrow 照设计稿走 mono 大写「MS BALANCE」,
+                                         三语同值不译(词条 master.msEyebrow) -->
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="master.msEyebrow"
+                                        >MS BALANCE</span
                                     >
                                     <span
                                         class="card-read"
@@ -2654,8 +2789,12 @@
                                 data-gb="master-leadselect"
                                 data-selected="0"
                             >
-                                <span class="sc-eyebrow" data-t="leadSelect"
-                                    >主唱选择</span
+                                <!-- 统筹 Wave 2 增补①:eyebrow 照设计稿走 mono 大写「LEAD SELECT」,
+                                     三语同值不译(词条 master.leadEyebrow) -->
+                                <span
+                                    class="sc-eyebrow"
+                                    data-t="master.leadEyebrow"
+                                    >LEAD SELECT</span
                                 >
                                 <select
                                     class="sc-select lead-select"
@@ -2754,8 +2893,11 @@
                             <!-- ④ 过渡时间卡 + 斜坡 SVG(设计稿 L422-441;col3 row2) -->
                             <div class="sc-card" data-gb="master-transition">
                                 <div class="card-head">
-                                    <span class="sc-eyebrow" data-t="transition"
-                                        >过渡</span
+                                    <!-- 统筹 Wave 2 增补②:eyebrow 改「过渡时间」(05 §2.1 ④ 标题与设计稿一致) -->
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="master.transitionEyebrow"
+                                        >过渡时间</span
                                     >
                                     <span
                                         class="card-read"
@@ -2920,7 +3062,7 @@
                                             <input
                                                 class="range-manual__tc"
                                                 type="text"
-                                                value="33.1.000"
+                                                value="00:00.000"
                                                 data-t-aria="master.rangeStart"
                                                 data-gb="master-range-start-bars"
                                             />
@@ -2932,12 +3074,15 @@
                                             <input
                                                 class="range-manual__tc"
                                                 type="text"
-                                                value="49.4.480"
+                                                value="00:00.000"
                                                 data-t-aria="master.rangeEnd"
                                                 data-gb="master-range-end-bars"
                                             />
                                         </div>
-                                        <!-- 「小节+拍+tick」↔「mm:ss.mmm」双向联动(04 §2.3);换算行(设计稿 L404) -->
+                                        <!-- 「小节+拍+tick」↔「mm:ss.mmm」双向联动(04 §2.3);换算行(设计稿 L404)。
+                                             [T31 Wave 2 偏差 A17] 桥面只收秒(契约 §1.8),而**宿主 tempo map 没有任何桥入口**,
+                                             小节↔秒换算做不出来 —— 故本波把**可编辑侧**改成桥面单位 mm:ss.mmm,
+                                             换算行显示同一区间的另一种写法;拿到 tempo map(T33)后再把小节侧接回来。 -->
                                         <span
                                             class="range-manual__conv sc-num"
                                             data-gb="master-range-timecode"
@@ -4049,42 +4194,11 @@
                                         data-t-aria="scale"
                                         data-gb="settings-scale-select"
                                     ></select>
-                                    <!-- 10 秒确认防呆(机制同 Bridge,05 §1.2) -->
-                                    <div
-                                        class="sc-scrim"
-                                        data-gb="settings-scale-confirm"
-                                        hidden
-                                    >
-                                        <div class="sc-modal">
-                                            <!-- 词条待立:缩放确认倒计时文案(05 §1.2,字典缺) -->
-                                            <p
-                                                class="sc-modal__body"
-                                                data-gb-todo="词条待立"
-                                            >
-                                                缩放已应用,<span
-                                                    class="sc-mono"
-                                                    data-gb="settings-scale-confirm-countdown"
-                                                    >10</span
-                                                >s 后回退
-                                            </p>
-                                            <!-- 词条待立:缩放确认「撤销」按钮(字典缺) -->
-                                            <button
-                                                class="sc-btn--dark"
-                                                data-gb="settings-scale-confirm-revert"
-                                                data-gb-todo="词条待立"
-                                            >
-                                                撤销
-                                            </button>
-                                            <!-- 词条待立:缩放确认「保持」按钮(字典缺) -->
-                                            <button
-                                                class="sc-btn--cta"
-                                                data-gb="settings-scale-confirm-keep"
-                                                data-gb-todo="词条待立"
-                                            >
-                                                保持
-                                            </button>
-                                        </div>
-                                    </div>
+                                    <!-- 10 秒确认防呆(机制同 Bridge,05 §1.2)的 scrim 已上提到
+                                         **卡片层** `data-gb="scale-confirm"`(见文件末,guide-overlay 旁):
+                                         footer 缩放下拉与本 select 是同一台状态机的两个入口,确认框只能有一个;
+                                         留在 .settings-side 里时它随 Tab4 面板一起隐藏,从 footer 改档就看不见倒计时。
+                                         [T31 Wave 2] setUiScale / commitUiScale 的接线在 app.js。 -->
                                     <!-- [T3x] bridge.setUiScale(f) —— 契约 §1.28 -->
                                     <!-- [T3x] bridge.commitUiScale() —— 契约 §1.29 -->
                                 </div>
@@ -4275,10 +4389,10 @@
                 >
                     <div class="sc-toast" data-gb="toast-projectCopy" hidden>
                         <span class="sc-toast__dot"></span>
-                        <!-- 词条待立:toast①「检测到工程副本,已创建独立采集数据副本」(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">
-                            检测到工程副本,已创建独立采集数据副本
-                        </span>
+                        <!-- toast①(05 §2.0 逐字;词条 toast.projectCopy 为 T31 Wave 2 新增,04 §5.6) -->
+                        <span data-t="toast.projectCopy"
+                            >检测到工程副本,已创建独立采集数据副本</span
+                        >
                     </div>
                     <div
                         class="sc-toast"
@@ -4286,11 +4400,11 @@
                         hidden
                     >
                         <span class="sc-toast__dot"></span>
-                        <!-- 词条待立:toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」(05 §2.0,字典缺) -->
-                        <span data-gb-todo="词条待立">
-                            采集数据已超过
-                            8MB,已转存外部文件——发给他人需重新采集
-                        </span>
+                        <!-- toast②(05 §2.0 逐字;词条 toast.sidecarSwitched 为 T31 Wave 2 新增,04 §5.4) -->
+                        <span data-t="toast.sidecarSwitched"
+                            >采集数据已超过
+                            8MB,已转存外部文件——发给他人需重新采集</span
+                        >
                     </div>
                     <div class="sc-toast" data-gb="toast-recaptured" hidden>
                         <span class="sc-toast__dot"></span>
@@ -4316,6 +4430,42 @@
                     </div>
                 </div>
 
+                <!-- ============================== 缩放 10 秒防呆确认(05 §1.2) ==============================
+                     卡片层单例:footer 缩放下拉与设置页 select 共用本框(两个入口一台状态机)。
+                     倒计时归零 = 超时回退,与「撤销」同路径;「保持」才调 commitUiScale()(契约 §1.29)。 -->
+                <div class="sc-scrim" data-gb="scale-confirm" hidden>
+                    <div class="sc-modal">
+                        <!-- 正文词条 scale.confirmBody 带 {s}(剩余秒数)占位符,**分三格填**:
+                             applyI18n 写的是整串 textContent,直接挂 data-t 会把中间的倒计时
+                             span 一起抹掉;故由 app.js renderScaleConfirm() 按 {s} 切成
+                             前缀 / 数字 / 后缀三段写入(切语言与每一拍倒计时都重写)。 -->
+                        <p class="sc-modal__body" data-gb="scale-confirm-body">
+                            <span data-gb="scale-confirm-body-pre"></span
+                            ><span
+                                class="sc-mono"
+                                data-gb="scale-confirm-countdown"
+                                >10</span
+                            ><span data-gb="scale-confirm-body-post"></span>
+                        </p>
+                        <!-- 「取消」= 回退(05 §1.2 逐字「取消/超时/关窗都回退」),复用 common.cancel;
+                             锚点名 scale-confirm-revert 不改(deviations §F 已登记)。 -->
+                        <button
+                            class="sc-btn sc-btn--dark"
+                            data-gb="scale-confirm-revert"
+                            data-t="common.cancel"
+                        >
+                            取消
+                        </button>
+                        <button
+                            class="sc-btn sc-btn--cta"
+                            data-gb="scale-confirm-keep"
+                            data-t="scale.keep"
+                        >
+                            保持
+                        </button>
+                    </div>
+                </div>
+
                 <!-- ============================== 首次启动引导页(overlay,05 §2.0) ============================== -->
                 <div
                     class="sc-scrim"
@@ -4331,12 +4481,19 @@
                         <!-- 九条硬约束正文 = guide.rule1..9,由 scripts/gen-hard-rules.mjs 从
                              docs/USER_GUIDE.zh-CN.md#硬约束 生成写入 i18n.js(T31 落地前字典无此 key,
                              故此处不用 data-t,仅占位;05 §0.1/§5 明令禁止手抄)。 -->
-                        <!-- 词条待立:guide.rule1..9(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成,禁止手抄/禁用 data-t) -->
-                        <ol
-                            data-gb="guide-overlay-rules"
+                        <!-- 词条待立:guide.rule1..9(生成物,T39b 由 gen-hard-rules.mjs 写入;当前字典未生成,禁止手抄/禁用 data-t)
+                             app.js 的 renderGuideRules() 在字典里有 guide.rule1..9 时逐条 <li> 渲染,
+                             缺失时改渲染下面那条醒目占位注记(并把 <ol> 留空)。 -->
+                        <ol data-gb="guide-overlay-rules"></ol>
+                        <p
+                            class="guide-overlay__missing"
+                            data-gb="guide-overlay-rules-missing"
                             data-gb-todo="词条待立"
-                        ></ol>
-                        <label>
+                            hidden
+                        >
+                            九条红字待 gen-hard-rules 生成(T39b)
+                        </p>
+                        <label class="guide-overlay__dontshow">
                             <input
                                 type="checkbox"
                                 data-gb="guide-overlay-dontshow"
@@ -4348,7 +4505,7 @@
                             data-gb="guide-overlay-start"
                             data-t="guide.start"
                         ></button>
-                        <!-- [T3x] bridge.setGuideSeen(true, true) —— 契约 §1.32(「不再显示」勾选落盘) -->
+                        <!-- [T3x] bridge.setGuideSeen(true, true) —— 契约 §1.32(「不再显示」勾选落盘;app.js 已接线) -->
                     </div>
                 </div>
 

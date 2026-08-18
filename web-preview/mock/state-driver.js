@@ -86,6 +86,10 @@ export const SCENARIO_MAP = Object.freeze({
     occupied: "channel-conflict",
     "group-switch": "second-output",
     "no-output": "empty",
+    // T31 接线两档:落在健康满配世界上,由 buildWorld 的场景覆写改快照初值
+    // (print_guard.pending / ui.guide_seen),否则加载守卫与引导页在浏览器不可达。
+    "print-guard": "fifteen-tracks",
+    "first-run": "fifteen-tracks",
 });
 
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
@@ -262,7 +266,8 @@ function demoCoverage(fixture) {
 
 /**
  * 组装一个 fixture 的初始世界。
- * @param {{role:string, fixture:string, loop:"host"|"none"|null, play:boolean|null}} opts
+ * @param {{role:string, fixture:string, loop:"host"|"none"|null, play:boolean|null,
+ *          scenario?:string|null}} opts
  */
 export function buildWorld(opts = {}) {
     const fixture = FIXTURES.includes(opts.fixture)
@@ -393,6 +398,26 @@ export function buildWorld(opts = {}) {
         outputParams = makeParams({ versionActive: 1 });
         outputSegments = makeTourDemoSegments(1, "snapshot");
         inputSnapshot = connectedInputSnapshot(1);
+    }
+
+    // ---- 场景覆写(SCENARIO_MAP 已把这两个名字映射到 fifteen-tracks)-----------
+    // 只改快照初值,不动周期事件与函数语义;字段形状照 mock-data 生成器原样。
+    if (opts.scenario === "print-guard" && outputSnapshot) {
+        // 05 §2.0 横幅⑦:工程刚加载、上次退出时输出仍为 ON ⇒ 守卫待确认。
+        // 走带停在 0(守卫场景=刚打开工程,确认前只允许 ARMED)。
+        outputSnapshot = {
+            ...outputSnapshot,
+            print_guard: { ...outputSnapshot.print_guard, pending: true },
+        };
+        transport = { timeS: 0, isPlaying: false };
+    }
+    if (opts.scenario === "first-run" && outputSnapshot) {
+        // 05 §2.5 first-run:两级 guide_seen 全 false ⇒ 引导页 overlay 弹出。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, guide_seen: false },
+            guide_seen_global: false,
+        };
     }
 
     // ---- 查询参数覆写 ----------------------------------------------------------
@@ -662,7 +687,13 @@ export function createPreviewSession(opts = {}) {
     const loop = opts.loop ?? parsed.loop;
     const play = typeof opts.play === "boolean" ? opts.play : parsed.play;
 
-    const world = buildWorld({ role, fixture, loop, play });
+    const world = buildWorld({
+        role,
+        fixture,
+        loop,
+        play,
+        scenario: parsed.scenario,
+    });
     const { backend, ctl } = createMockBackend({ role, world });
     const driver = makeDriver(ctl, world);
 

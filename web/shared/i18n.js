@@ -119,7 +119,7 @@ export const T = {
         "banner.printGuard.confirm": "继续引擎驱动",
         "out.master.writeConfirm":
             "引擎驱动 {v} · 范围 {x}–{y} · 30 条车道;若 DAW 侧已 arm Latch/Write,播放本范围将覆盖该范围已有自动化;未 arm 则仅试听、不落盘",
-        "footer.printing": "引擎驱动 {v} · {x}–{y} 小节",
+        "footer.printing": "引擎驱动 {v} · {x}–{y}",
         "footer.printDone":
             "本次打印覆盖 {x}–{y};若在录制自动化,建议切回跟随宿主试听核对",
         "out.master.writeConfirm.follow":
@@ -296,6 +296,48 @@ export const T = {
             "采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围",
         "scale.current": "当前",
         "scale.overflow": "超出当前屏幕",
+
+        // ---- T31 Wave 2 新增(统筹裁定「§E 九处 + Wave 2 增补」;zh 逐字取 05 §2.0/§2.1 正文)----
+        // 建议 05 §5 收录;EN/FR 为 T31 自译,已入待审校清单(scratchpad/t31/deviations.md)。
+        // 横幅①③(05 §2.0「持续横幅」行):正文原句里的「M 轨」「轨 N」两处计数改写成
+        // 占位符 {m} / {n} —— 数字来自 scvb.conn(misalignCount / srMismatch),不占位就填不进去。
+        "banner.misaligned":
+            "路由失准:{m} 轨检测到时间线缺口——检查人声轨是否仍指向本总线",
+        "banner.srMismatch": "轨 {n} 采样率不一致,已禁用",
+        "banner.sidecarMissing": "采集数据缺失/过期,请重新采集",
+        "banner.noTimeline": "宿主未提供时间线",
+        // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
+        "master.versionArmedConfirm": "引擎输出将平滑切至新版本,继续?",
+        // Tab1 空态卡(A1,05 §2.1 末段逐字:步 0 红字前提 + 1/2/3 三步)
+        "master.empty.prerequisite":
+            "SCVB Output 插在人声轨共同路由到的总线第一格;人声轨的输出路由保持指向该总线——不要改",
+        "master.empty.step1": "在每条人声轨末插 SCVB Input",
+        "master.empty.step2": "采集并播放",
+        "master.empty.step3": "分析并开启输出",
+        // 轻确认条的主按钮(与 common.cancel 成对;05 未给逐字,取最短肯定式)
+        "common.continue": "继续",
+        // eyebrow(视觉层 mono 大写元素,照设计稿 **三语同值不译**;统筹 Wave 2 增补①:
+        // 立 key 而非静态文本,免得切语言时被 applyI18n 漏掉)
+        "master.msEyebrow": "MS BALANCE",
+        "master.leadEyebrow": "LEAD SELECT",
+        // 过渡卡 eyebrow(统筹 Wave 2 增补②:05 §2.1 ④ 标题「过渡时间」与设计稿一致,
+        // 取代 Wave 1 用的裸词条 `transition`)
+        "master.transitionEyebrow": "过渡时间",
+
+        // ---- T31 Wave 2 评审修订新增(对抗校验 P2-4 / P2-6;建议 05 §5 一并收录)----
+        // Output toast ①②(05 §2.0 组件表「Output toast」行逐字;来源 04 §5.6 / §5.4)。
+        // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
+        "toast.projectCopy": "检测到工程副本,已创建独立采集数据副本",
+        "toast.sidecarSwitched":
+            "采集数据已超过 8MB,已转存外部文件——发给他人需重新采集",
+        // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
+        // 05 只给机制未给逐字正文;{s} = 剩余秒数,按钮「取消」复用 common.cancel。
+        "scale.confirmBody": "缩放已应用,{s} 秒后回退",
+        "scale.keep": "保持",
+        // PRINT 态三处 disabled 的 tooltip(兑现 deviations A22;zh 逐字取 05 §2.1 ⓪/③)
+        "master.printLock.group": "打印中不可切组",
+        "master.printLock.version": "打印中不可切换版本,请先停止走带",
+        "master.printLock.copy": "打印中不可复制版本",
     },
 
     en: {
@@ -389,7 +431,7 @@ export const T = {
         "banner.printGuard.confirm": "Continue engine drive",
         "out.master.writeConfirm":
             "Engine drive {v} · range {x}–{y} · 30 lanes. If Latch/Write is armed in your DAW, playing this range will overwrite existing automation there; if not armed, this is monitoring only.",
-        "footer.printing": "ENGINE DRIVE {v} · BARS {x}–{y}",
+        "footer.printing": "ENGINE DRIVE {v} · {x}–{y}",
         "footer.printDone":
             "Pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
         "out.master.writeConfirm.follow":
@@ -579,6 +621,39 @@ export const T = {
             "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
         "scale.current": "Current",
         "scale.overflow": "Exceeds current screen",
+
+        // ---- T31 Wave 2 新增(EN 自译,待人工审校)----
+        "banner.misaligned":
+            "Route mismatch: timeline gaps detected on {m} track(s) — check that the vocal tracks still route to this bus",
+        "banner.srMismatch": "Track {n} sample rate mismatch — disabled",
+        "banner.sidecarMissing":
+            "Capture data missing or outdated — please re-capture",
+        "banner.noTimeline": "Host provides no timeline",
+        "master.versionArmedConfirm":
+            "Engine output will fade smoothly to the new version. Continue?",
+        "master.empty.prerequisite":
+            "Insert SCVB Output in the first slot of the bus all vocal tracks route to; keep every vocal track's output routed to that bus — do not change it",
+        "master.empty.step1":
+            "Insert SCVB Input at the end of every vocal track",
+        "master.empty.step2": "Capture and play",
+        "master.empty.step3": "Analyze and switch output on",
+        "common.continue": "Continue",
+        // eyebrow:三语同值(视觉层 mono 大写元素,照设计稿不译)
+        "master.msEyebrow": "MS BALANCE",
+        "master.leadEyebrow": "LEAD SELECT",
+        "master.transitionEyebrow": "TRANSITION TIME",
+
+        // ---- T31 Wave 2 评审修订新增(EN 自译,待人工审校)----
+        "toast.projectCopy":
+            "Project copy detected — a separate capture data copy was created",
+        "toast.sidecarSwitched":
+            "Capture data exceeded 8 MB and was moved to an external file — sharing this project requires re-capturing",
+        "scale.confirmBody": "Scale applied, reverting in {s} s",
+        "scale.keep": "Keep",
+        "master.printLock.group": "Can't switch group while printing",
+        "master.printLock.version":
+            "Can't switch version while printing — stop the transport first",
+        "master.printLock.copy": "Can't copy a version while printing",
     },
 
     fr: {
@@ -672,7 +747,7 @@ export const T = {
         "banner.printGuard.confirm": "Continuer le pilotage moteur",
         "out.master.writeConfirm":
             "Pilotage moteur {v} · plage {x}–{y} · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
-        "footer.printing": "PILOTAGE MOTEUR {v} · MESURES {x}–{y}",
+        "footer.printing": "PILOTAGE MOTEUR {v} · {x}–{y}",
         "footer.printDone":
             "Passe couvrant {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "out.master.writeConfirm.follow":
@@ -868,6 +943,41 @@ export const T = {
             "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
         "scale.current": "Actuel",
         "scale.overflow": "Dépasse l'écran actuel",
+
+        // ---- T31 Wave 2 新增(FR 自译,**发布前必须人工审校**,05 §5)----
+        "banner.misaligned":
+            "Routage désaligné : trous de timeline détectés sur {m} piste(s) — vérifiez que les pistes voix pointent toujours vers ce bus",
+        "banner.srMismatch":
+            "Piste {n} : fréquence d'échantillonnage incohérente — désactivée",
+        "banner.sidecarMissing":
+            "Données de capture manquantes ou périmées — veuillez recapturer",
+        "banner.noTimeline": "L'hôte ne fournit aucune timeline",
+        "master.versionArmedConfirm":
+            "La sortie du moteur passera progressivement à la nouvelle version. Continuer ?",
+        "master.empty.prerequisite":
+            "Insérez SCVB Output dans le premier emplacement du bus vers lequel toutes les pistes voix sont routées ; conservez le routage de sortie de chaque piste voix vers ce bus — ne le modifiez pas",
+        "master.empty.step1": "Insérez SCVB Input en fin de chaque piste voix",
+        "master.empty.step2": "Capturez et lisez",
+        "master.empty.step3": "Analysez et activez la sortie",
+        "common.continue": "Continuer",
+        // eyebrow:三语同值(视觉层 mono 大写元素,照设计稿不译)
+        "master.msEyebrow": "MS BALANCE",
+        "master.leadEyebrow": "LEAD SELECT",
+        "master.transitionEyebrow": "TEMPS DE TRANSITION",
+
+        // ---- T31 Wave 2 评审修订新增(FR 自译,**发布前必须人工审校**,05 §5)----
+        "toast.projectCopy":
+            "Copie de projet détectée — une copie indépendante des données de capture a été créée",
+        "toast.sidecarSwitched":
+            "Les données de capture dépassent 8 Mo et ont été déplacées dans un fichier externe — un envoi à un tiers nécessite une nouvelle capture",
+        "scale.confirmBody": "Échelle appliquée, retour dans {s} s",
+        "scale.keep": "Conserver",
+        "master.printLock.group":
+            "Changement de groupe impossible pendant l'impression",
+        "master.printLock.version":
+            "Changement de version impossible pendant l'impression — arrêtez d'abord le transport",
+        "master.printLock.copy":
+            "Copie de version impossible pendant l'impression",
     },
 };
 
