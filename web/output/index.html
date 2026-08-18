@@ -298,11 +298,16 @@
                 gap: var(--sp-2);
             }
             .brand__title {
+                margin: 0; /* h1 语义标签(axe),视觉照旧 */
                 font-family: var(--ff-grotesk);
                 font-weight: 600;
                 font-size: var(--fs-180);
                 letter-spacing: -0.01em; /* 设计稿 L231 原值 */
                 color: var(--txt-1);
+            }
+            /* landmark 外壳不参与布局(石板条几何全在 .sc-tabs 上) */
+            .sc-tabs-wrap {
+                display: contents;
             }
             .brand__subtitle {
                 font-family: var(--ff-mono);
@@ -1848,7 +1853,8 @@
                             />
                         </span>
                         <div class="brand__text">
-                            <div class="brand__title">SCVB Output</div>
+                            <!-- h1:axe page-has-heading-one;视觉全由 .brand__title 承担 -->
+                            <h1 class="brand__title">SCVB Output</h1>
                             <div class="brand__subtitle">
                                 SYNCHAIN · VOCAL BALANCER · VST3
                             </div>
@@ -2270,65 +2276,69 @@
                 <!-- ============================== Tab 导航(05 §1.1 + §2.0) ============================== -->
                 <!-- 设计稿 L287-297:552px 宽石板条,4 × 136px tab 项 + 绝对定位滑块。
      滑块位置 = 3px + (tab-1)×136px,由 app.js 写 --tab-i(见页内 #tabs-slate 规则)。 -->
-                <nav
-                    class="sc-tabs"
-                    id="tabbar"
-                    data-gb="tabnav"
-                    role="tablist"
-                    aria-label="tabs"
-                >
+                <!-- 外层 nav 供 landmark(axe region);role=tablist 会顶掉 nav 的
+                     landmark 角色,所以 tablist 落在内层 div 上,nav 自身不参与布局。 -->
+                <nav class="sc-tabs-wrap" aria-label="tabs">
                     <div
-                        class="sc-tabs__slate"
-                        id="tabs-slate"
-                        aria-hidden="true"
-                    ></div>
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="true"
-                        data-tab-btn="master"
-                        data-gb="tabnav-master"
-                        data-t="tab.master"
+                        class="sc-tabs"
+                        id="tabbar"
+                        data-gb="tabnav"
+                        role="tablist"
+                        aria-label="tabs"
                     >
-                        整体调整
-                    </button>
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="false"
-                        data-tab-btn="tracks"
-                        data-gb="tabnav-tracks"
-                        data-t="tab.tracks"
-                    >
-                        轨道
-                    </button>
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="false"
-                        data-tab-btn="wave"
-                        data-gb="tabnav-wave"
-                    >
-                        <span data-t="tab.wave">波形与分段</span>
-                        <span
-                            class="sc-dot tabnav__stale-dot"
-                            data-tone="amber"
-                            data-gb="tabnav-wave-stale-dot"
-                            hidden
+                        <div
+                            class="sc-tabs__slate"
+                            id="tabs-slate"
                             aria-hidden="true"
-                        ></span>
-                    </button>
-                    <button
-                        class="sc-tabs__item"
-                        role="tab"
-                        aria-selected="false"
-                        data-tab-btn="settings"
-                        data-gb="tabnav-settings"
-                        data-t="tab.settings"
-                    >
-                        设置
-                    </button>
-                    <!-- [T3x] bridge.setActiveTab(tab) —— 契约 §1.31(Wave 1 只切 CSS 显隐,见 app.js 注释) -->
+                        ></div>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="true"
+                            data-tab-btn="master"
+                            data-gb="tabnav-master"
+                            data-t="tab.master"
+                        >
+                            整体调整
+                        </button>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="false"
+                            data-tab-btn="tracks"
+                            data-gb="tabnav-tracks"
+                            data-t="tab.tracks"
+                        >
+                            轨道
+                        </button>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="false"
+                            data-tab-btn="wave"
+                            data-gb="tabnav-wave"
+                        >
+                            <span data-t="tab.wave">波形与分段</span>
+                            <span
+                                class="sc-dot tabnav__stale-dot"
+                                data-tone="amber"
+                                data-gb="tabnav-wave-stale-dot"
+                                hidden
+                                aria-hidden="true"
+                            ></span>
+                        </button>
+                        <button
+                            class="sc-tabs__item"
+                            role="tab"
+                            aria-selected="false"
+                            data-tab-btn="settings"
+                            data-gb="tabnav-settings"
+                            data-t="tab.settings"
+                        >
+                            设置
+                        </button>
+                        <!-- [T3x] bridge.setActiveTab(tab) —— 契约 §1.31(Wave 1 只切 CSS 显隐,见 app.js 注释) -->
+                    </div>
                 </nav>
 
                 <!-- ============================== 内容区(四 tab) ============================== -->
