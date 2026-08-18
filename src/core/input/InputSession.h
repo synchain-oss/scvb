@@ -9,9 +9,16 @@
 // 健康判定(ipc v1 [J12 联动])= 本实例 I4 ACTIVE ∧ 本组 OutputSlot 心跳新鲜(2000ms 口径)
 //   ∧ connected_mask 含本 channel。改组(J66)= 释放旧组 slot → Unmap 旧组段 → 新组重走 claim。
 //
-// 所有段操作只发生在持 lifecycleMutex 的消息线程([M] 或宿主生命周期回调,01 §3.1 R1);
-// 音频线程只经 audioRing()/featRing() 拿裸指针做原子读写。
+// 所有段操作只发生在持 lifecycleMutex 的消息线程([M] 或宿主生命周期回调,01 §3.1 R1)。
+//
+// 音频线程同步模型(PR#51 红旗修复,T16 Snapshot 同款):
+//   音频线程每 block 调 acquireBlock() —— acquire-load 一次不可变绑定快照(AudioRing/FeatRing 的
+//   atomic<const Binding*>)+ 取 registry/audio/feat 三段 SegmentHandle 租约(引用计数,持有期内
+//   [M] release() 不解映射),整 block 复用同一份视图;旧绑定由 AudioRing/FeatRing 内部 owned_ 保活
+//   (进程寿命),绑定内裸指针指向的段由租约保证块内有效。音频线程绝不直接触碰 registry_/audioHandle_/
+//   featHandle_ 的可变成员,也不读 claimedChannel_(经块视图 channel 快照)。
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -36,6 +43,16 @@ enum class InputClaimState
     kUnavailable // I0:段未打开/映射失败
 };
 
+// 音频线程每 block acquire 一次的不可变视图:绑定快照 + 段租约(持有期内段不解映射)。
+struct InputSessionBlockView
+{
+    const AudioRingBinding* audio = nullptr; // 音频环绑定(可为 null → 不写环)
+    u32 channel = 0; // claimed channel 快照(0 = 未绑定)
+    SegmentHandle::Lease registryLease; // registry 段租约
+    SegmentHandle::Lease audioLease; // audio 段租约
+    SegmentHandle::Lease featLease; // feat 段租约
+};
+
 class InputSession
 {
 public:
@@ -53,7 +70,7 @@ public:
 
     // prepare(消息线程/生命周期回调,持 lifecycleMutex):依 channel_id/group_id 走 claim 或 I6。
     // channels=1|2([J57],由宿主布局判定)。返回 claim 态。
-    // 已 active 且同 channel+group → I5:更新 slot.sample_rate/max_block、重建环头(epoch+1)。
+    // 已 active 且同 channel+group → 仅当 SR/声道布局变化才重建环头(epoch+1)+ 重备 extractor。
     InputClaimState prepare(u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs);
 
     // [M] 4Hz 心跳(kActive 才写)。
@@ -63,7 +80,8 @@ public:
     void setMuted(bool muted);
 
     // [A] capturing 位(C17):采集门控,一律 fetch_or/fetch_and([J48],禁 load-modify-store)。
-    void setCapturing(bool capturing);
+    // channel 来自 acquireBlock() 的块视图快照;调用方须持块视图租约(registry 段保活)。
+    void setCapturing(u32 channel, bool capturing);
 
     // [M] 25Hz 健康判定([J12]):见文件头。claim 未就绪/OutputSlot 空 → false(直通)。
     bool isHealthy(u64 nowMs) const;
@@ -79,10 +97,13 @@ public:
     // 释放(析构/releaseResources,消息线程):释放 slot + Unmap 段。registry 段保持映射(进程寿命内复用)。
     void release(u64 nowMs);
 
+    // 音频线程每 block 调用:acquire 绑定快照 + 取段租约(见文件头同步模型)。
+    InputSessionBlockView acquireBlock() const;
+
     // 音频线程访问(仅 active 后非空/非绑定)。
     AudioRing& audioRing() noexcept { return audioRing_; }
     FeatRing& featRing() noexcept { return featRing_; }
-    u32 boundChannel() const noexcept { return claimedChannel_; }
+    u32 boundChannel() const noexcept { return claimedChannel_.load(std::memory_order_acquire); }
     InputClaimState state() const noexcept { return state_; }
 
 private:
@@ -97,8 +118,12 @@ private:
     u32 pid_;
     u32 channelId_ = 0;
     u32 groupId_ = kInputDefaultGroup;
-    u32 claimedChannel_ = 0;
+    std::atomic<u32> claimedChannel_{0}; // [M] 写 / [A] 经块视图 acquire-load
     InputClaimState state_ = InputClaimState::kUnassigned;
+
+    // 上次 prepare 的几何(用于判断 re-prepare 是否真发生 SR/布局变化)。
+    u32 lastSampleRate_ = 0;
+    u32 lastChannels_ = 0;
 
     Registry registry_;
     AudioRing audioRing_;

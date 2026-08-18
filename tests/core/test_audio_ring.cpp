@@ -3,7 +3,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 #include "ipc/AudioRing.h"
@@ -51,7 +54,7 @@ TEST_CASE("J57① mono 轨 channels==1 且环内容与输入逐样本一致", "[
         src[static_cast<std::size_t>(i)] = static_cast<float>(i) * 0.003f - 0.4f;
     }
     const int64_t t0 = 100;
-    ring.write(t0, src.data(), n);
+    scvb::AudioRing::write(ring.acquire(), t0, src.data(), n);
 
     for (int i = 0; i < n; ++i)
     {
@@ -79,7 +82,7 @@ TEST_CASE("J57② stereo 轨 channels==2 interleaved LR 且 L/R 不下混不互�
         src[static_cast<std::size_t>(i) * 2 + 1] = r;
     }
     const int64_t t0 = 50;
-    ring.write(t0, src.data(), n);
+    scvb::AudioRing::write(ring.acquire(), t0, src.data(), n);
 
     for (int i = 0; i < n; ++i)
     {
@@ -111,9 +114,44 @@ TEST_CASE("J57③ 布局变更 channels 随 prepareToPlay 更新且同次 prepar
     const int n = 64;
     std::vector<float> stereo(static_cast<std::size_t>(n) * 2, 1.0f);
     stereo[1] = 2.0f;
-    ring.write(0, stereo.data(), n);
+    scvb::AudioRing::write(ring.acquire(), 0, stereo.data(), n);
     // 快照 channels==2 → 按 interleaved 写;若误读段头(channels==1)则 L/R 会错位。
     REQUIRE(ring.geometry().channels == 2);
     REQUIRE(f.data[0] == stereo[0]); // L
     REQUIRE(f.data[1] == stereo[1]); // R(未按 1 通道写)
+}
+
+TEST_CASE("PR#51 红旗#2 并发发布/读:快照发布与音频线程读不撕裂不悬垂", "[input][audioring]")
+{
+    RingFixture f(2);
+    scvb::AudioRing ring;
+    ring.bind(&f.header, f.data.data());
+    REQUIRE(ring.bound());
+
+    std::atomic<bool> stop{false};
+    std::thread publisher([&ring, &f, &stop] {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            ring.bind(&f.header, f.data.data()); // 消息线程:反复发布新快照
+        }
+    });
+    std::thread reader([&ring, &stop] {
+        std::vector<float> buf(128 * 2, 1.0f);
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            const scvb::AudioRingBinding* b = ring.acquire(); // 音频线程:每块 acquire 一次
+            scvb::AudioRing::write(b, 0, buf.data(), 128);
+        }
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    stop.store(true, std::memory_order_release);
+    publisher.join();
+    reader.join();
+
+    // 发布线程结束后绑定仍有效(owned_ 保活),几何快照一致。
+    const scvb::AudioRingBinding* b = ring.acquire();
+    REQUIRE(b != nullptr);
+    REQUIRE(b->geo.channels == 2);
+    REQUIRE(b->geo.ringFrames == kRingFrames);
 }

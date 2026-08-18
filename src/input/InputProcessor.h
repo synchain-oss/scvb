@@ -59,14 +59,20 @@ public:
     void setChannelId(int channelId);
     void setGroupId(int groupId);
 
+    // PR#51 红旗#1:setStateInformation 读到 abi > kCurrentAbi → 拒载并置位(冻结契约 §7.3:
+    // 高版本拒载 + 提示升级,绝不静默丢数据;原 blob 由宿主工程保有)。消息线程读写(setStateInformation
+    // 持 lifecycleMutex_),T30 桥经此把 abiMismatch 横幅推给 UI。
+    bool hasStateAbiMismatch() const noexcept { return stateAbiMismatch_; }
+    scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
+
 private:
     // 25Hz [M] 定时器:健康判定 → C18 模式字;每 ~250ms 心跳(4Hz)。
     void timerCallback() override;
 
     // 捕获:interleaved capBuf 打包([J57] 不下混、不互换)。
     static void captureFrames(const float* const* src, int srcCh, float* dst, int n);
-    // 跨零点块:写 t0>=0 尾段(R3,01 §5.1 步骤 2)。
-    void writeTailFromZero(const float* interleaved, int n, int64_t t0);
+    // 跨零点块:写 t0>=0 尾段(R3,01 §5.1 步骤 2)。b = 本块 acquireBlock() 的音频环绑定快照。
+    void writeTailFromZero(const scvb::AudioRingBinding* b, const float* interleaved, int n, int64_t t0);
 
     juce::CriticalSection lifecycleMutex_; // 串行化 prepareToPlay/release/setState/claim/心跳([M] 与宿主回调互斥)
 
@@ -88,6 +94,10 @@ private:
     juce::String uiLanguage_ = "en";
 
     bool prepared_ = false;
+
+    // PR#51 红旗#1:state abi 拒载标志(setStateInformation 持锁写;T30 桥消息线程读)。
+    bool stateAbiMismatch_ = false;
+    scvb::u32 stateAbiSeen_ = 0;
 
     // 音频线程零分配缓冲(prepareToPlay 分配)。
     double sampleRate_ = 48000.0;

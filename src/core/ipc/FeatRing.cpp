@@ -6,19 +6,23 @@
 namespace scvb
 {
 
-void FeatRing::bind(FeatHeader* header, FeatFrame* ring, u32 mappedCapacity) noexcept
+void FeatRing::bind(FeatHeader* header, FeatFrame* ring, u32 mappedCapacity)
 {
-    header_ = header;
-    ring_ = ring;
-    // 【几何快照纪律(04 §3 / PR#36)】hop_ms/capacity_hops 是 plain u32,attach 时一次性读进本地,
-    // 此后每拍只读快照绝不回读段头;特征段恒按固定容量创建、无运行期扩容。mappedCapacity 必须 >=
-    // 声明的 capacity_hops,否则拒绝绑定,保住「几何 ≤ 实际映射」不变式(v1..v5 越界类事故)。
-    const bool magicOk = (header_ != nullptr) && header_->magic.load(std::memory_order_acquire) == kScvbMagic;
-    const bool abiOk = (header_ != nullptr) && header_->abi.load(std::memory_order_acquire) == kScvbAbi;
-    const u32 declared = (header_ != nullptr) ? header_->capacity_hops : 0;
-    capacityHops_ = declared;
-    hopMs_ = (header_ != nullptr) ? header_->hop_ms : 0;
-    bound_ = (magicOk && abiOk && ring_ != nullptr && declared != 0 && mappedCapacity >= declared);
+    // 构造不可变绑定快照并 release 发布(【几何快照纪律】hop_ms/capacity_hops 是 plain u32,attach
+    // 时一次性读进快照,此后 startRun/processBlock 只读快照绝不回读段头;mappedCapacity 必须 >= 声明
+    // 的 capacity_hops,否则拒绝绑定,保住「几何 ≤ 实际映射」不变式)。
+    auto b = std::make_unique<FeatRingBinding>();
+    b->header = header;
+    b->ring = ring;
+    const bool magicOk = (header != nullptr) && header->magic.load(std::memory_order_acquire) == kScvbMagic;
+    const bool abiOk = (header != nullptr) && header->abi.load(std::memory_order_acquire) == kScvbAbi;
+    const u32 declared = (header != nullptr) ? header->capacity_hops : 0;
+    b->capacity = declared;
+    b->hopMs = (header != nullptr) ? header->hop_ms : 0;
+    b->bound = (magicOk && abiOk && ring != nullptr && declared != 0 && mappedCapacity >= declared);
+
+    binding_.store(b.get(), std::memory_order_release);
+    owned_.push_back(std::move(b));
 }
 
 void FeatRing::prepare(double sampleRate, int channels, int maxBlockSamples)
@@ -36,7 +40,12 @@ void FeatRing::prepare(double sampleRate, int channels, int maxBlockSamples)
 
 void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& betweenStores)
 {
-    if (!prepared_ || !bound_ || header_ == nullptr || ring_ == nullptr)
+    if (!prepared_)
+    {
+        return;
+    }
+    const FeatRingBinding* b = binding_.load(std::memory_order_acquire);
+    if (b == nullptr || !b->bound)
     {
         return;
     }
@@ -48,12 +57,12 @@ void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& bet
     // 顺序不可倒(J33/04 §3.2):先 base 后 write。读方若插在两 store 之间只能见
     // 「新 base + 旧 write」(前跳 seek 空循环 / 回卷幂等重拉,均安全);倒置则见
     // 「旧 base + 新 write」,前跳 seek 把从未写入的陈旧槽整段拉进 FrameStore。
-    header_->base_hop.store(h0, std::memory_order_release);
+    b->header->base_hop.store(h0, std::memory_order_release);
     if (betweenStores)
     {
         betweenStores();
     }
-    header_->write_hop.store(h0, std::memory_order_release);
+    b->header->write_hop.store(h0, std::memory_order_release);
 
     // biquad 预热:run 边界 reset + 首完整 hop 预热(T08 口径,run B 首 hop 不残留 run A 滤波态)。
     extractor_.startRun();
@@ -65,9 +74,14 @@ void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& bet
 
 int FeatRing::processBlock(const float* const* channels, int numSamples)
 {
-    if (!capturing_ || !prepared_ || !bound_ || header_ == nullptr || ring_ == nullptr || numSamples <= 0)
+    if (!capturing_ || !prepared_ || numSamples <= 0)
     {
         return 0; // 采集 OFF 或未就绪:静默丢弃(release 不写段、不推进 write_hop)
+    }
+    const FeatRingBinding* b = binding_.load(std::memory_order_acquire);
+    if (b == nullptr || !b->bound)
+    {
+        return 0; // 未绑定:静默不写、不推进 write_hop
     }
 
     int consumed = 0;
@@ -101,10 +115,10 @@ int FeatRing::processBlock(const float* const* channels, int numSamples)
         for (int i = 0; i < nFrames; ++i)
         {
             const uint64_t hop = nextHop_;
-            ring_[hop % capacityHops_] =
+            b->ring[hop % b->capacity] =
                 FeatFrame{out_[static_cast<std::size_t>(i)].kw_ms, out_[static_cast<std::size_t>(i)].peak};
             ++nextHop_;
-            header_->write_hop.store(nextHop_, std::memory_order_release); // 稳态:写帧后推进 write_hop
+            b->header->write_hop.store(nextHop_, std::memory_order_release); // 稳态:写帧后推进 write_hop
         }
         written += nFrames;
         consumed += chunk;

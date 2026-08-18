@@ -27,6 +27,27 @@ enum class OutputStageMode : std::uint32_t
 inline constexpr double kStageRampMs = 80.0;
 inline constexpr double kPassthroughHysteresisMs = 5000.0;
 
+// 块长规划(01 §5.1 步骤 1):采集/写环按夹取后的 captureSamples(越界夹取),输出级渲染按
+// renderSamples = 全块 numSamples(消除静音档大块尾段泄漏,PR#51 重要#2)。JUCE-free 纯函数。
+struct InputBlockPlan
+{
+    int captureSamples = 0; // 采集/写环长度 = min(numSamples, preparedMaxBlock)
+    int renderSamples = 0; // 输出级渲染长度 = numSamples(全块)
+};
+
+inline InputBlockPlan planBlock(int numSamples, int preparedMaxBlock) noexcept
+{
+    InputBlockPlan p;
+    p.renderSamples = numSamples > 0 ? numSamples : 0;
+    const int cap = preparedMaxBlock > 0 ? preparedMaxBlock : 0;
+    p.captureSamples = numSamples < cap ? numSamples : cap;
+    if (p.captureSamples < 0)
+    {
+        p.captureSamples = 0;
+    }
+    return p;
+}
+
 // 输出级策略接口(01 §8-2)。ch 为平面声道指针(numChannels 路,每路 numSamples)。
 class IOutputStage
 {

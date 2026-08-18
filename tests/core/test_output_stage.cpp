@@ -136,3 +136,34 @@ TEST_CASE("5s 滞回只作用于 静音→直通 方向", "[input][outputstage]"
     sm.forcePassthrough();
     REQUIRE(sm.target() == OutputStageMode::kPassthrough);
 }
+
+TEST_CASE("planBlock:采集夹取、renderSamples 全块(PR#51 重要#2)", "[input][outputstage]")
+{
+    using scvb::input::planBlock;
+    REQUIRE(planBlock(512, 512).captureSamples == 512);
+    REQUIRE(planBlock(512, 512).renderSamples == 512);
+    const auto big = planBlock(2048, 512);
+    REQUIRE(big.captureSamples == 512);
+    REQUIRE(big.renderSamples == 2048);
+    REQUIRE(planBlock(0, 512).captureSamples == 0);
+    REQUIRE(planBlock(0, 512).renderSamples == 0);
+    const auto neg = planBlock(-1, 512);
+    REQUIRE(neg.captureSamples == 0);
+    REQUIRE(neg.renderSamples == 0);
+}
+
+TEST_CASE("大块静音档全块清零(PR#51 重要#2)", "[input][outputstage]")
+{
+    // 宿主大块(numSamples > preparedMaxBlock):渲染按全块,静音稳态下整块(含尾段)清零,无旧音频泄漏。
+    RampSwitcher rs;
+    rs.prepare(48000.0);
+    const int n = 8192;
+    auto buf = makeSignal(n);
+    float* ch[1] = {buf.data()};
+    rs.render(ch, 1, n, OutputStageMode::kSilence);
+    REQUIRE(rs.isSettledSilence());
+    for (int i = 3840; i < n; ++i)
+    {
+        REQUIRE(ch[0][i] == 0.0f); // ramp 结束后的全块尾段必须为零
+    }
+}

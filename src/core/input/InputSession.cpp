@@ -48,12 +48,19 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
         return state_;
     }
 
-    // 已 active 且同 channel+group → I5:更新 slot.sample_rate/max_block、重建环头(epoch+1)。
-    if (registry_.isOpen() && claimedChannel_ == channelId_ && registry_.group() == groupId_)
+    // 已 active 且同 channel+group:仅当 SR/声道布局变化才重建环头(epoch+1)+ 重备 extractor。
+    if (registry_.isOpen() && claimedChannel_.load(std::memory_order_relaxed) == channelId_ &&
+        registry_.group() == groupId_)
     {
         registry_.updateOwnedInputSlot(channelId_, pid_, sampleRate, maxBlock);
-        rebuildAudioGeometry(sampleRate, channels);
-        featRing_.prepare(static_cast<double>(sampleRate), static_cast<int>(channels), static_cast<int>(maxBlock));
+        // 纯块长变化不触碰几何/提取器(避免与音频线程并发重置;SR/布局变化属宿主停止音频的重配置)。
+        if (sampleRate != lastSampleRate_ || channels != lastChannels_)
+        {
+            rebuildAudioGeometry(sampleRate, channels);
+            featRing_.prepare(static_cast<double>(sampleRate), static_cast<int>(channels), static_cast<int>(maxBlock));
+            lastSampleRate_ = sampleRate;
+            lastChannels_ = channels;
+        }
         state_ = InputClaimState::kActive;
         return state_;
     }
@@ -72,19 +79,21 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
 
 void InputSession::heartbeat(u64 nowMs)
 {
-    if (state_ == InputClaimState::kActive && claimedChannel_ != 0)
+    const u32 ch = claimedChannel_.load(std::memory_order_relaxed);
+    if (state_ == InputClaimState::kActive && ch != 0)
     {
-        registry_.heartbeatInput(claimedChannel_, nowMs);
+        registry_.heartbeatInput(ch, nowMs);
     }
 }
 
 void InputSession::setMuted(bool muted)
 {
-    if (claimedChannel_ == 0)
+    const u32 ch = claimedChannel_.load(std::memory_order_relaxed);
+    if (ch == 0)
     {
         return;
     }
-    InputSlot* s = registry_.inputSlot(claimedChannel_);
+    InputSlot* s = registry_.inputSlot(ch);
     if (s == nullptr)
     {
         return;
@@ -99,13 +108,13 @@ void InputSession::setMuted(bool muted)
     }
 }
 
-void InputSession::setCapturing(bool capturing)
+void InputSession::setCapturing(u32 channel, bool capturing)
 {
-    if (claimedChannel_ == 0)
+    if (channel == 0)
     {
         return;
     }
-    InputSlot* s = registry_.inputSlot(claimedChannel_);
+    InputSlot* s = registry_.inputSlot(channel);
     if (s == nullptr)
     {
         return;
@@ -122,7 +131,8 @@ void InputSession::setCapturing(bool capturing)
 
 bool InputSession::isHealthy(u64 nowMs) const
 {
-    if (state_ != InputClaimState::kActive || claimedChannel_ == 0)
+    const u32 ch = claimedChannel_.load(std::memory_order_acquire);
+    if (state_ != InputClaimState::kActive || ch == 0)
     {
         return false;
     }
@@ -140,7 +150,19 @@ bool InputSession::isHealthy(u64 nowMs) const
         return false;
     }
     const u32 mask = os->connected_mask.load(std::memory_order_acquire);
-    return (mask & (1u << (claimedChannel_ - 1))) != 0;
+    return (mask & (1u << (ch - 1))) != 0;
+}
+
+InputSessionBlockView InputSession::acquireBlock() const
+{
+    InputSessionBlockView v;
+    // 先取段租约(阻止 [M] 在块内解映射),再 acquire 绑定快照 + channel。
+    v.registryLease = registry_.lease();
+    v.audioLease = audioHandle_.lease();
+    v.featLease = featHandle_.lease();
+    v.audio = audioRing_.acquire();
+    v.channel = claimedChannel_.load(std::memory_order_acquire);
+    return v;
 }
 
 InputClaimState InputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 maxBlock, u32 channels, u64 nowMs)
@@ -149,7 +171,7 @@ InputClaimState InputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 maxB
     releaseSlot();
     releaseSegments();
     state_ = InputClaimState::kUnassigned;
-    claimedChannel_ = 0;
+    claimedChannel_.store(0, std::memory_order_release);
 
     groupId_ = (newGroup >= 1 && newGroup <= kMaxGroups) ? newGroup : kInputDefaultGroup;
 
@@ -171,7 +193,7 @@ void InputSession::release(u64 nowMs)
     releaseSlot();
     releaseSegments();
     state_ = InputClaimState::kUnassigned;
-    claimedChannel_ = 0;
+    claimedChannel_.store(0, std::memory_order_release);
     reap(nowMs);
 }
 
@@ -235,29 +257,32 @@ bool InputSession::openAndClaim(u32 sampleRate, u32 maxBlock, u32 channels, u64 
         state_ = InputClaimState::kUnavailable;
         return false;
     }
-    claimedChannel_ = channelId_;
+    claimedChannel_.store(channelId_, std::memory_order_release);
 
     if (!createSegments(sampleRate, channels))
     {
-        registry_.releaseInput(claimedChannel_, pid_);
-        claimedChannel_ = 0;
+        registry_.releaseInput(channelId_, pid_);
+        claimedChannel_.store(0, std::memory_order_release);
         state_ = InputClaimState::kUnavailable;
         return false;
     }
     featRing_.prepare(static_cast<double>(sampleRate), static_cast<int>(channels), static_cast<int>(maxBlock));
+    lastSampleRate_ = sampleRate;
+    lastChannels_ = channels;
     return true;
 }
 
 bool InputSession::createSegments(u32 sampleRate, u32 channels)
 {
-    if (claimedChannel_ == 0)
+    if (claimedChannel_.load(std::memory_order_relaxed) == 0)
     {
         return false;
     }
 
     // audio.chN:几何(sample_rate/ring_frames/channels)在 initData 写定;magic 最后发布。
     SegmentView av;
-    if (backend_.createOrOpen(audioFullName(groupId_, claimedChannel_), audioSegmentSize(), av) != InitResult::kOk)
+    if (backend_.createOrOpen(audioFullName(groupId_, claimedChannel_.load(std::memory_order_relaxed)),
+                              audioSegmentSize(), av) != InitResult::kOk)
     {
         return false;
     }
@@ -281,10 +306,12 @@ bool InputSession::createSegments(u32 sampleRate, u32 channels)
     audioHandle_ = SegmentHandle(std::move(av), &backend_);
     audioRing_.bind(ah, adata);
 
-    // feat.chN。
+    // feat.chN。失败须释放已建的 audio 段(PR#51 泄漏修复)。
     SegmentView fv;
-    if (backend_.createOrOpen(featFullName(groupId_, claimedChannel_), featSegmentSize(), fv) != InitResult::kOk)
+    if (backend_.createOrOpen(featFullName(groupId_, claimedChannel_.load(std::memory_order_relaxed)),
+                              featSegmentSize(), fv) != InitResult::kOk)
     {
+        releaseSegments();
         return false;
     }
     auto* fh = static_cast<FeatHeader*>(fv.base);
@@ -300,34 +327,42 @@ bool InputSession::createSegments(u32 sampleRate, u32 channels)
     if (fir != InitResult::kOk)
     {
         backend_.unmap(fv);
+        releaseSegments();
         return false;
     }
     FeatFrame* fdata = reinterpret_cast<FeatFrame*>(fh + 1);
     featHandle_ = SegmentHandle(std::move(fv), &backend_);
     featRing_.bind(fh, fdata, kFeatCapacityHops);
 
-    return audioRing_.bound() && featRing_.bound();
+    if (!audioRing_.bound() || !featRing_.bound())
+    {
+        releaseSegments();
+        return false;
+    }
+    return true;
 }
 
 void InputSession::rebuildAudioGeometry(u32 sampleRate, u32 channels)
 {
-    AudioRingHeader* ah = audioRing_.header();
-    if (ah == nullptr)
+    const AudioRingBinding* b = audioRing_.acquire();
+    if (b == nullptr || !b->bound)
     {
         return;
     }
-    // 几何(plain u32)写定 → epoch+1 → write_head 重置 → re-bind 快照(几何与视图同快照发布)。
+    AudioRingHeader* ah = b->header;
+    float* adata = b->data;
+    // 几何(plain u32)写定 → epoch+1 → write_head 重置 → 重新发布快照(几何与视图同快照发布)。
     ah->sample_rate = sampleRate;
     ah->channels = channels;
     ah->write_head_samples.store(0, std::memory_order_release);
     ah->epoch.fetch_add(1, std::memory_order_release);
-    audioRing_.bind(ah, audioRing_.data());
+    audioRing_.bind(ah, adata);
 }
 
 void InputSession::releaseSegments()
 {
-    audioRing_.bind(nullptr, nullptr); // 解绑(防悬垂)
-    featRing_.bind(nullptr, nullptr, 0);
+    audioRing_.bind(nullptr, nullptr); // 解绑(发布 nullptr,防悬垂)
+    featRing_.unbind();
     // 段视图经 SegmentHandle 释放(消息线程;租约归零且宽限期届满后 unmap)。
     releaseHandle(audioHandle_);
     releaseHandle(featHandle_);
@@ -348,10 +383,11 @@ void InputSession::releaseHandle(SegmentHandle& handle)
 
 void InputSession::releaseSlot()
 {
-    if (claimedChannel_ != 0)
+    const u32 ch = claimedChannel_.load(std::memory_order_relaxed);
+    if (ch != 0)
     {
-        registry_.releaseInput(claimedChannel_, pid_);
-        claimedChannel_ = 0;
+        registry_.releaseInput(ch, pid_);
+        claimedChannel_.store(0, std::memory_order_release);
     }
 }
 

@@ -89,7 +89,8 @@ void ScvbInputAudioProcessor::captureFrames(const float* const* src, int srcCh, 
     }
 }
 
-void ScvbInputAudioProcessor::writeTailFromZero(const float* interleaved, int n, int64_t t0)
+void ScvbInputAudioProcessor::writeTailFromZero(const scvb::AudioRingBinding* b, const float* interleaved, int n,
+                                                int64_t t0)
 {
     // 跨零点块(t0<0 且 t0+n>0):写 [0, t0+n) 尾段(R3,01 §5.1 步骤 2)。
     const int skip = static_cast<int>(-t0);
@@ -101,25 +102,29 @@ void ScvbInputAudioProcessor::writeTailFromZero(const float* interleaved, int n,
     if (0 != expectedNext_)
     {
         // epoch 检测以 0 为新起点(R3)。
-        session_.audioRing().bumpEpoch();
+        scvb::AudioRing::bumpEpoch(b);
         session_.featRing().startRun(0);
     }
     lastT0_ = 0;
     expectedNext_ = tail;
-    session_.audioRing().write(0, interleaved + static_cast<std::size_t>(skip) * static_cast<std::size_t>(srcChannels_),
-                               tail);
+    scvb::AudioRing::write(b, 0, interleaved + static_cast<std::size_t>(skip) * static_cast<std::size_t>(srcChannels_),
+                           tail);
 }
 
 void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
 {
     const juce::ScopedNoDenormals noDenormals;
 
-    // 越界夹取(research/01 §2.3,Bridge #169 教训)。
-    const int n = juce::jmin(buffer.getNumSamples(), preparedMaxBlock_);
-    if (n <= 0)
+    // 块长规划(PR#51 重要#2):采集/写环按夹取后的 captureSamples(research/01 §2.3 越界夹取,
+    // Bridge #169 教训),输出级渲染按 renderSamples = 全块 —— 消除静音档大块尾段残留旧音频的泄漏。
+    const int numIn = buffer.getNumSamples();
+    if (numIn <= 0)
     {
         return;
     }
+    const scvb::input::InputBlockPlan plan = scvb::input::planBlock(numIn, preparedMaxBlock_);
+    const int n = plan.captureSamples;
+    const int nRender = plan.renderSamples;
 
     const int srcCh = srcChannels_;
     const float* const* src = buffer.getArrayOfReadPointers();
@@ -128,8 +133,16 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         return;
     }
 
-    // 1) 捕获(ADR-003 v2.0 [J57]):mono 直取,stereo interleaved LR 打包,零分配。
-    captureFrames(src, srcCh, capInterleaved_.data(), n);
+    // 音频线程块视图(PR#51 红旗#2,T16 Snapshot 同款):每 block acquire-load 一次不可变绑定快照
+    // + 取 registry/audio/feat 三段 SegmentHandle 租约(持有期内 [M] 不解映射),整 block 复用;
+    // 音频线程绝不触碰 session_ 的可变成员(claimedChannel_ 经块视图快照)。
+    const scvb::input::InputSessionBlockView block = session_.acquireBlock();
+
+    // 1) 捕获(ADR-003 v2.0 [J57]):mono 直取,stereo interleaved LR 打包,零分配(仅夹取部分)。
+    if (n > 0)
+    {
+        captureFrames(src, srcCh, capInterleaved_.data(), n);
+    }
 
     // 2) 时间线定位(负 timeInSamples = 倒计时/pre-roll,[J51] 有效时间线但 Input 不整块写环/写特征)。
     bool playing = false;
@@ -154,7 +167,7 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     {
         if (haveT0 && t0 + n > 0)
         {
-            writeTailFromZero(capInterleaved_.data(), n, t0);
+            writeTailFromZero(block.audio, capInterleaved_.data(), n, t0);
         }
         // 无/负时间线:输出走当前档(步骤 6)。
         float peak = 0.0f;
@@ -164,7 +177,7 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         }
         meter_.store(peak, std::memory_order_relaxed);
         const scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
-        rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), n,
+        rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,
                              mode == static_cast<scvb::u32>(scvb::input::OutputStageMode::kSilence)
                                  ? scvb::input::OutputStageMode::kSilence
                                  : scvb::input::OutputStageMode::kPassthrough);
@@ -176,29 +189,38 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     {
         if (playing || t0 != lastT0_)
         {
-            session_.audioRing().bumpEpoch();
+            scvb::AudioRing::bumpEpoch(block.audio);
             session_.featRing().startRun(t0); // run 切换:biquad 预热(T08/04 §3.2)
         }
     }
     lastT0_ = t0;
-    expectedNext_ = t0 + n;
+    expectedNext_ = t0 + nRender;
 
     // 4) 写音频环:时间线寻址,frame index = pos & (ring_frames-1);stereo interleaved LR。
-    session_.audioRing().write(t0, capInterleaved_.data(), n);
+    if (n > 0)
+    {
+        scvb::AudioRing::write(block.audio, t0, capInterleaved_.data(), n);
+    }
 
     // 5) 特征提取(ADR-007:采集开才写特征段;K 加权与 hop 累加在播放中恒跑)。
     if (playing)
     {
         const bool armed = captureArmed_.load(std::memory_order_relaxed) != 0;
         session_.featRing().setCapturing(armed);
-        session_.setCapturing(armed);
+        session_.setCapturing(block.channel, armed); // 经块视图 channel + registry 租约(红旗#2/重要#3)
         planarPtrs_[0] = src[0];
         planarPtrs_[1] = (srcCh >= 2) ? src[1] : nullptr;
-        session_.featRing().processBlock(planarPtrs_.data(), n);
+        if (n > 0)
+        {
+            if (n > 0)
+            {
+                session_.featRing().processBlock(planarPtrs_.data(), n);
+            }
+        }
     }
     else
     {
-        session_.setCapturing(false);
+        session_.setCapturing(block.channel, false);
     }
 
     float peak = 0.0f;
@@ -210,7 +232,7 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 
     // 6) 输出级仲裁(ADR-002 v1/J12+J32):读 C18 模式字经 RampSwitcher 渲染。
     const scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
-    rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), n,
+    rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,
                          mode == static_cast<scvb::u32>(scvb::input::OutputStageMode::kSilence)
                              ? scvb::input::OutputStageMode::kSilence
                              : scvb::input::OutputStageMode::kPassthrough);
@@ -287,6 +309,19 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         return; // 不可信字节:解码失败 → 拒载(不崩溃、不半填充)
     }
+    // 【PR#51 红旗#1】冻结契约(CLAUDE.md §7.3 / STATE_SCHEMA):读到高版本 abi → 拒载并提示升级,
+    // 绝不静默丢数据(原 blob 由宿主工程保有,preservedOriginal 语义;本插件运行时 state 不被触碰)。
+    // 低版本 abi:v1 为首版,无历史版本可迁移;按当前布局直解,失败则拒载。
+    if (chunks.abi > scvb::state::kCurrentAbi)
+    {
+        stateAbiMismatch_ = true;
+        stateAbiSeen_ = chunks.abi;
+        DBG("SCVB Input: state abi " << chunks.abi << " > current " << scvb::state::kCurrentAbi
+                                     << "; refusing load (upgrade required)");
+        return;
+    }
+    stateAbiMismatch_ = false;
+
     const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
     if (cfg == nullptr)
     {
