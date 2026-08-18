@@ -64,6 +64,9 @@ public:
     // ---- 插件自有撤销(§5.3:一次复制 = 单条撤销;供 UI/T25 桥接 undo/redo)----
     juce::UndoManager& undoManager() { return m_undoManager; }
 
+    // 活动版本各轨曲线裸指针(消息线程;供 T29 打印器重绑,曲线对象由 VersionStore 保活)。
+    std::array<const scvb::CurveEvaluator*, kNumTracks> activeCurves() const;
+
     int warningCount() const;
     bool isPrepared() const { return m_prepared; }
 

@@ -44,6 +44,7 @@ add_library(scvb_core STATIC
   ipc/SegmentBackendWin32.h
   ipc/Registry.cpp
   ipc/Registry.h
+  ipc/RegistryProbe.h
   ipc/CtrlPlane.cpp
   ipc/CtrlPlane.h
   ipc/FeatRing.cpp
@@ -76,11 +77,13 @@ add_library(scvb_core STATIC
   state/InputStateCodec.h
   state/OutputStateCodec.cpp
   state/OutputStateCodec.h
+  state/SegmentEdit.cpp
+  state/SegmentEdit.h
 )
 
 # SegmentBackendWin32.cpp 仅 Windows 命名共享内存(CreateFileMappingW);Posix 实现归 v2。
 if(WIN32)
-  target_sources(scvb_core PRIVATE ipc/SegmentBackendWin32.cpp)
+  target_sources(scvb_core PRIVATE ipc/SegmentBackendWin32.cpp ipc/RegistryProbe.cpp)
 endif()
 
 target_include_directories(scvb_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

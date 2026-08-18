@@ -25,6 +25,10 @@ target_sources(SCVBOutput PRIVATE
   OutputAuthority.cpp
   AutomationPrinter.h
   AutomationPrinter.cpp
+  OutputEditor.h
+  OutputEditor.cpp
+  OutputBridgeApi.h
+  SegmentEditService.h
 )
 
 target_include_directories(SCVBOutput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -48,6 +48,7 @@ add_executable(scvb_tests
   core/test_design_box.cpp
   core/test_state_codec.cpp
   core/test_state_features_roundtrip.cpp
+  core/test_segment_edit.cpp
   core/test_audio_ring.cpp
   core/test_output_stage.cpp
   core/test_input_state.cpp
@@ -83,6 +84,8 @@ add_executable(scvb_params_tests
   core/test_authority_params.cpp
   core/test_printer.cpp
   core/test_version_params.cpp
+  core/test_segment_edit_service.cpp
+  core/test_bridge_args.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
   ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp

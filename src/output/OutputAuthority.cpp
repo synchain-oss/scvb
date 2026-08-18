@@ -187,6 +187,17 @@ int OutputAuthority::warningCount() const
     return m_versions.warningCount();
 }
 
+std::array<const scvb::CurveEvaluator*, OutputAuthority::kNumTracks> OutputAuthority::activeCurves() const
+{
+    std::array<const scvb::CurveEvaluator*, kNumTracks> out{};
+    const int v = m_versions.versionActive();
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        out[static_cast<std::size_t>(t)] = m_versions.curve(v, t);
+    }
+    return out;
+}
+
 std::array<scvb::engine::DspArbiter::TrackValues, OutputAuthority::kNumTracks>
 OutputAuthority::processBlock(bool engineAuthority, double tSec)
 {
