@@ -17,8 +17,8 @@ juce_add_plugin(SCVBInput
 )
 
 target_sources(SCVBInput PRIVATE
-  PluginProcessor.h
-  PluginProcessor.cpp
+  InputProcessor.h
+  InputProcessor.cpp
 )
 
 target_include_directories(SCVBInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

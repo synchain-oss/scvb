@@ -48,6 +48,10 @@ add_executable(scvb_tests
   core/test_design_box.cpp
   core/test_state_codec.cpp
   core/test_state_features_roundtrip.cpp
+  core/test_audio_ring.cpp
+  core/test_output_stage.cpp
+  core/test_input_state.cpp
+  core/test_input_session.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
