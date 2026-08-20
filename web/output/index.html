@@ -1730,6 +1730,13 @@
                 cursor: pointer;
                 font-size: var(--fs-100);
             }
+            /* 键盘焦点落在不可见覆盖层上必须有可见焦点环——画在 chip 外框上
+               (PR #60 复审【重要】1:配对键盘可达) */
+            .tracks-row__pair:has(.tracks-row__pair-select:focus-visible) {
+                outline: 2px solid rgba(var(--acc), 0.85);
+                outline-offset: 2px;
+                border-radius: var(--r-tag);
+            }
             /* 配对超员琥珀标(05 §2.2):52px chip 内放不下「配对超员」四字,
        压成右上角琥珀角点 + tooltip(全称走词条 tracks.pairOverflow)。 */
             .tracks-row__pair-full {

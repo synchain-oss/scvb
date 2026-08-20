@@ -246,6 +246,9 @@ export const T = {
         // 这是视觉层的 mono 标签,不是句子;26px 列宽下任何长词都会被 overflow 截掉)。
         // EN/FR 待人工审校(05 §5),逐条见 T32 差异清单。
         "tracks.colCh": "CH",
+        "tracks.labelPlaceholder": "轨 {n}",
+        "tracks.volExemptTip":
+            "音量豁免——主唱居中时该轨音量不让位;声像侧退出用「声像」参与开关",
         "tracks.colState": "状态",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
@@ -605,6 +608,9 @@ export const T = {
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
         "tracks.colCh": "CH",
+        "tracks.labelPlaceholder": "Track {n}",
+        "tracks.volExemptTip":
+            "Volume exempt — this track's level does not duck while a lead is centered; use the Pan participation toggle to opt out of auto-pan",
         "tracks.colState": "State",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
@@ -961,6 +967,9 @@ export const T = {
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
         "tracks.colCh": "CH",
+        "tracks.labelPlaceholder": "Piste {n}",
+        "tracks.volExemptTip":
+            "Exemption de volume — le niveau de cette piste ne s'atténue pas quand un lead est centré ; utilisez l'interrupteur de participation Pan pour quitter l'auto-pan",
         "tracks.colState": "État",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",

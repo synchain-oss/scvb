@@ -240,9 +240,13 @@ export function clampPriority(v) {
 /** Label 长度上限(05 §2.2:点击变行内 input,≤24 字符)。 */
 export const LABEL_MAX = 24;
 
-/** 空 label 的淡色占位(设计稿 1734:`"Track " + 两位轨号`)。 */
-export function labelPlaceholder(ch) {
-    return "Track " + tt(ch);
+/**
+ * 空 label 的淡色占位(设计稿 1734 为硬编码 "Track NN";用户可见文案须有 key
+ * ——查字典 `tracks.labelPlaceholder`({n} 占位),字典缺失时回落设计稿原文。
+ */
+export function labelPlaceholder(ch, t) {
+    const tpl = t && t["tracks.labelPlaceholder"];
+    return tpl ? format(tpl, { n: tt(ch) }) : "Track " + tt(ch);
 }
 
 /**
@@ -604,7 +608,7 @@ export function trackRowHtml(t) {
         <span class="tracks-row__label" data-placeholder="${t.label ? 0 : 1}" data-gb="${gb("label")}">${esc(t.label || labelPlaceholder(ch))}</span>
         <!-- 05 §2.2 Label 行:点击变行内 input(≤${LABEL_MAX} 字符),Enter/失焦提交。
              提交 → bridge.setChannelConfig(${ch}, {label})(契约 §1.15;按码点截断)。 -->
-        <input class="tracks-row__label-input" type="text" maxlength="${LABEL_MAX}"
+        <input class="tracks-row__label-input" type="text" maxlength="${LABEL_MAX * 2}"
                data-t-aria="tracks.labelEdit" data-gb="${gb("label-input")}" />
         <!-- Lead Select≠0 选中轨的行首居中标记(05 §2.2 主唱锁行 → §2.1 ④) -->
         <span class="tracks-row__leadmark" data-t="tracks.leadCenter" data-gb="${gb("leadcenter")}"${t.leadCenter ? "" : " hidden"}></span>
@@ -970,8 +974,9 @@ export function createTabTracks(opts) {
         local.manualEcho.set(manualKey(ch, dim), v);
         // 契约 §1.16:入撤销栈(Ctrl+Z 由 app.js 的全局键盘钩子映射到 undo())。
         call("setTrackManual", ch, dim, v).then((res) => {
-            // 只读观察 → {observer:true} 且不改 state:撤掉乐观值,别让 UI 撒谎
-            if (res && res.observer)
+            // 非成功响应(observer / badArg / 桥异常 res=null)一律撤乐观值,
+            // 别让 UI 显示一个从没写进引擎的数(PR #60 复审【重要】2)
+            if (!(res && res.ok === true))
                 local.manualEcho.delete(manualKey(ch, dim));
             requestRender();
         });
@@ -1015,7 +1020,8 @@ export function createTabTracks(opts) {
             { tracksMask: 1 << (ch - 1) },
             { clearManual: true },
         );
-        if (!res || res.ok !== false) local.unfreezeHint.delete(ch);
+        // 只有真发起了重析才清提示;桥异常(res=null)什么都没发生,提示要留着
+        if (res && res.ok === true) local.unfreezeHint.delete(ch);
         requestRender();
     }
 
@@ -1408,11 +1414,14 @@ export function createTabTracks(opts) {
             return;
         }
         if (e.key === " " || e.key === "Enter") {
-            // role="switch"/button 的键盘可达(toggle 六枚 + PRIO ± + label + 确认条)
+            // role="switch"/button 的键盘可达(toggle 六枚 + PRIO ± + label + 确认条)。
+            // pair 也放行:原生 <select> 的 Space/Enter 打开行为不能被
+            // preventDefault 吞掉(PR #60 复审【重要】1,axe 测不到的键盘回归)
             if (
                 h.part === "pan" ||
                 h.part === "width" ||
-                h.part === "vol-collar"
+                h.part === "vol-collar" ||
+                h.part === "pair"
             )
                 return;
             e.preventDefault();
@@ -1646,7 +1655,7 @@ export function createTabTracks(opts) {
         show(n.stereo, !!row.st);
         if (local.editingCh !== ch) {
             attr(n.labelcell, "data-editing", "0");
-            text(n.label, row.label || labelPlaceholder(ch));
+            text(n.label, row.label || labelPlaceholder(ch, t));
             attr(n.label, "data-placeholder", row.label ? 0 : 1);
         }
         setTitle(n.labelInput, t["tracks.labelEdit"]);
@@ -1690,7 +1699,10 @@ export function createTabTracks(opts) {
         attr(n.volCollar, "aria-valuenow", quantize(VOL_RANGE, volDb));
         attr(n.volCollar, "data-host-echo", ctx.echo);
         show(n.volexemptBadge, !!row.ex);
-        setTitle(n.volexemptBadge, t.leadVolExempt);
+        // 用户反馈 2026-08-20:角标要说清是**音量**豁免(v1 仅此一种;
+        // 声像侧退出是「声像」参与开关,不叫豁免)——详文进 tooltip,
+        // 角标本体维持「豁免」(34px 槽放不下四字,槽加宽会破 1133 宽度预算)
+        setTitle(n.volexemptBadge, t["tracks.volExemptTip"]);
         show(n.freezeVersion, !!freeze.vol);
         text(n.freezeVersion, row.version);
         // tooltip 用版本全名(词条 {v} 占位)
