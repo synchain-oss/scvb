@@ -400,7 +400,9 @@ log("=== ④ store → 15 行模型 ===");
     eq(rows[2].st, 1, "轨 3 stereo ⇒ ST 标");
     eq(rows[2].w, 42, "轨 3 width 跟随参数面");
     eq(rows[2].leadCenter, 1, "lead_select=3 ⇒ 轨 3 行首居中标记");
-    eq(rows[0].version, "主版", "冻结生效版本名取 versions[].name");
+    // 16px 槽放短号,全名进 tooltip(统筹亲验 2026-08-20:全名会在槽内竖排)
+    eq(rows[0].version, "V1", "冻结生效版本槽显短号 V{n}");
+    eq(rows[0].versionName, "主版", "版本全名取 versions[].name(tooltip 用)");
     eq(rows[3].status, "idle", "轨 4 未连接");
     eq(rows[4].on, 0, "轨 5 enabled=false ⇒ 整行 .3");
     eq(rows[0].prio, 9, "优先级跟随 state");

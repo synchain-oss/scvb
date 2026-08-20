@@ -510,7 +510,10 @@ export function rowsFromStore(store) {
             on: cfg.enabled === false ? 0 : 1,
             low: lowErr && lowErr.ch === ch ? 1 : 0,
             misalign: cc ? Math.trunc(num(cc.misalignCount, 0)) : 0,
-            version: ver,
+            // 16px 槽只放短号「V{n}」,版本全名(可长至 16 字)进 tooltip ——
+            // 塞全名会在槽内竖排(统筹亲验 2026-08-20)
+            version: "V" + active,
+            versionName: ver,
             leadCenter: leadSel === ch ? 1 : 0,
             pairFull: isPairOverflow(counts, pair) ? 1 : 0,
             recapture: recMask & (1 << (ch - 1)) ? 1 : 0,
@@ -552,9 +555,13 @@ export function trackHeadHtml() {
             return `<span class="sc-divider" aria-hidden="true"></span>`;
         }
         const t = c.t ? ` data-t="${c.t}"` : "";
-        const aria = c.aria ? ` aria-label="状态" data-t-aria="${c.aria}"` : "";
         const tight = c.tight ? ` data-tight="1"` : "";
-        return `<span class="tracks-head__col" role="columnheader" style="width:${c.w}px"${tight}${t}${aria} data-gb="tracks-head-${c.key}"></span>`;
+        // 无字列头给 sr-only 实文本(axe empty-table-header 认可视文本/隐藏文本,
+        // 纯 aria-label 仍报 minor);词条随 data-t 走三语。
+        const srText = c.aria
+            ? `<span class="sr-only" data-t="${c.aria}">状态</span>`
+            : "";
+        return `<span class="tracks-head__col" role="columnheader" style="width:${c.w}px"${tight}${t} data-gb="tracks-head-${c.key}">${srText}</span>`;
     }).join("");
 }
 
@@ -1668,7 +1675,8 @@ export function createTabTracks(opts) {
         if (n.width)
             n.width.style.setProperty("--ang", widthAngleDeg(width) + "deg");
         attr(n.width, "data-disabled", wDis);
-        attr(n.width, "aria-disabled", wDis);
+        // ARIA 只认 true/false(data-* 的 "1"/"0" 惯性会触发 axe aria-valid-attr-value)
+        attr(n.width, "aria-disabled", wDis === "1" ? "true" : "false");
         attr(n.width, "aria-valuenow", Math.round(width));
         attr(n.width, "data-host-echo", ctx.echo);
         setTitle(n.width, row.st ? "" : t["tracks.monoWidthNoop"]);
@@ -1685,9 +1693,10 @@ export function createTabTracks(opts) {
         setTitle(n.volexemptBadge, t.leadVolExempt);
         show(n.freezeVersion, !!freeze.vol);
         text(n.freezeVersion, row.version);
+        // tooltip 用版本全名(词条 {v} 占位)
         setTitle(
             n.freezeVersion,
-            fmt(t["tracks.freezeVersion"], { v: row.version }),
+            fmt(t["tracks.freezeVersion"], { v: row.versionName }),
         );
 
         // ---- PRIO / LEAD / 配对 ----
