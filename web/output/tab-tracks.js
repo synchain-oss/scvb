@@ -973,11 +973,27 @@ export function createTabTracks(opts) {
         }
         local.manualEcho.set(manualKey(ch, dim), v);
         // 契约 §1.16:入撤销栈(Ctrl+Z 由 app.js 的全局键盘钩子映射到 undo())。
+        const echoKey = manualKey(ch, dim);
         call("setTrackManual", ch, dim, v).then((res) => {
-            // 非成功响应(observer / badArg / 桥异常 res=null)一律撤乐观值,
-            // 别让 UI 显示一个从没写进引擎的数(PR #60 复审【重要】2)
-            if (!(res && res.ok === true))
-                local.manualEcho.delete(manualKey(ch, dim));
+            // 非成功响应(observer / badArg / 桥异常 res=null)撤乐观值,
+            // 别让 UI 显示一个从没写进引擎的数(PR #60 复审【重要】2)。
+            // 但只撤**本次发送**的值:两笔在途时旧笔失败不得抹掉新笔的乐观值
+            // (pr-agent 在途竞态)
+            if (
+                !(res && res.ok === true) &&
+                local.manualEcho.get(echoKey) === v
+            )
+                local.manualEcho.delete(echoKey);
+            // 用户裁定 2026-08-20:拖动 = 接管手动 —— 写入成功后把该维度的
+            // 冻结位同步置 1,开关如实反映「当前由手动驾驶」;不置位的话轨子
+            // 卡在「手动常值但开关灭」的哑态:解冻提示只认 1→0 转换,永远
+            // 不会触发,回实时的正规出口(解冻 → 重新识别)也就断了。
+            if (res && res.ok === true) {
+                const fid = paramIdOf(activeVersion(), ch, "freeze");
+                const bits = freezeBits(readParam(fid, 0));
+                if (!(dim === "vol" ? bits.vol : bits.pan))
+                    toggleFreeze(ch, dim);
+            }
             requestRender();
         });
         requestRender();
@@ -1350,9 +1366,18 @@ export function createTabTracks(opts) {
                 e.preventDefault();
                 requestManual(h.ch, "pan", PAN_RANGE.def);
             } else if (h.part === "width") {
+                // mono 轨 v1 no-op:双击回默认也要跟 beginWidthDrag 同款拦截,
+                // 灰显控件不得发起写(PR #60 pr-agent)
+                const st = getStore();
+                if (
+                    (((st.state || {}).channels || [])[h.ch - 1] || {})
+                        .source_channels !== 2
+                ) {
+                    return;
+                }
                 e.preventDefault();
                 oneShotGesture(
-                    paramIdOf(activeVersion(), h.ch, "width"),
+                    paramIdOf(activeVersion(st), h.ch, "width"),
                     WIDTH_RANGE.def,
                 );
             }

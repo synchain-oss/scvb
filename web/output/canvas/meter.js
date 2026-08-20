@@ -145,7 +145,9 @@ export function createMeterRenderer(opts) {
     let latest = null;
     let nodes = [];
     let raf = 0;
-    let lastMs = 0;
+    // null 哨兵:首帧时间戳恰为 0 时(如 tick(0)),truthy 判定会让第二帧
+    // dt=0 白空转一帧(pr-agent)
+    let lastMs = null;
 
     /** 缓存 15 行的液柱/峰线节点(mount 之后、start 之前调一次)。 */
     function attach() {
@@ -199,7 +201,7 @@ export function createMeterRenderer(opts) {
 
     /** 单帧推进(导出到返回对象上,便于 node 侧不起 rAF 也能驱动)。 */
     function tick(nowMs) {
-        const dt = lastMs ? nowMs - lastMs : 0;
+        const dt = lastMs === null ? 0 : nowMs - lastMs;
         lastMs = nowMs;
         // 非激活 tab:液柱不可见,整帧早退(lastMs 已推进,回到前台的第一帧 dt 仍正常)
         if (!isActive()) return;
@@ -223,7 +225,7 @@ export function createMeterRenderer(opts) {
     function start() {
         if (raf || typeof requestAnimationFrame !== "function") return;
         if (!nodes.length) attach();
-        lastMs = 0;
+        lastMs = null;
         const loop = (ts) => {
             raf = requestAnimationFrame(loop);
             tick(ts);
