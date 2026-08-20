@@ -1294,6 +1294,21 @@ export function createTabTracks(opts) {
         if (v !== undefined) sendManual(d.ch, d.kind, v);
     }
 
+    /** pointercancel:中止不提交。width 仍要 endParamGesture 收束(契约 §1.14
+     *  begin 必配 end);pan/vol 丢弃本次乐观值(回到引擎值),不 sendManual。 */
+    function cancelDrag() {
+        const d = local.drag;
+        if (!d) return;
+        local.drag = null;
+        if (d.kind === "width") {
+            local.gesture = null;
+            call("endParamGesture", d.id);
+            return;
+        }
+        local.manualEcho.delete(manualKey(d.ch, d.kind));
+        requestRender();
+    }
+
     function currentVolDb(ch) {
         const row = rowOf(ch);
         return readManual(ch, "vol", row ? row.volDb : VOL_RANGE.def);
@@ -1418,7 +1433,9 @@ export function createTabTracks(opts) {
         });
         body.addEventListener("pointermove", onDragMove);
         body.addEventListener("pointerup", endDrag);
-        body.addEventListener("pointercancel", endDrag);
+        // cancel ≠ up:手势被系统中止(Esc/触控板滚动接管)不得把拖了一半的值
+        // 提交进引擎+撤销栈——丢弃本次拖动并回退乐观值(pr-agent Reviewer Guide)
+        body.addEventListener("pointercancel", cancelDrag);
 
         // pan 滚轮 ±1(05 §2.2 冻结态);滚完 300ms 才提交一次,不逐格灌撤销栈
         body.addEventListener(
@@ -1930,8 +1947,15 @@ export function createTabTracks(opts) {
     function onSegments(payload) {
         for (const c of (payload && payload.channels) || []) {
             if (!c) continue;
-            local.manualEcho.delete(manualKey(c.ch, "pan"));
-            local.manualEcho.delete(manualKey(c.ch, "vol"));
+            // 拖动中的那个 (ch,dim) 不清:§2.8 回推可能来自别的轨/别的编辑,
+            // 清掉在拖的乐观值会让 endDrag 读到 undefined 静默丢弃最终值
+            // (pr-agent 在途竞态②)
+            const dragging = (dim) =>
+                local.drag && local.drag.ch === c.ch && local.drag.kind === dim;
+            if (!dragging("pan"))
+                local.manualEcho.delete(manualKey(c.ch, "pan"));
+            if (!dragging("vol"))
+                local.manualEcho.delete(manualKey(c.ch, "vol"));
         }
     }
 

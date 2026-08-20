@@ -1544,6 +1544,11 @@
             .tracks-row[data-confirm="1"] {
                 z-index: 3;
             }
+            /* 配对面板向下展开时同款抬升:行是 isolation 隔离的兄弟层叠上下文,
+               不抬升会被后续行的 chip/开关画在面板之上(PR #60 复审【重要】) */
+            .tracks-row:has(.tracks-row__pair-panel[data-open="1"]) {
+                z-index: 3;
+            }
             .tracks-row__cell {
                 flex: none;
                 display: flex;
