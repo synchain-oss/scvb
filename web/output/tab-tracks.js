@@ -991,6 +991,11 @@ export function createTabTracks(opts) {
         local.manualEcho.set(manualKey(ch, dim), v);
         // 契约 §1.16:入撤销栈(Ctrl+Z 由 app.js 的全局键盘钩子映射到 undo())。
         const echoKey = manualKey(ch, dim);
+        // 请求前捕获:该维度此刻是否未冻结(auto-freeze 只服务「未冻结拖动接管」)
+        const bitsNow = freezeBits(
+            readParam(paramIdOf(activeVersion(), ch, "freeze"), 0),
+        );
+        const wasUnfrozen = !(dim === "vol" ? bitsNow.vol : bitsNow.pan);
         call("setTrackManual", ch, dim, v).then((res) => {
             // 非成功响应(observer / badArg / 桥异常 res=null)撤乐观值,
             // 别让 UI 显示一个从没写进引擎的数(PR #60 复审【重要】2)。
@@ -1005,7 +1010,10 @@ export function createTabTracks(opts) {
             // 冻结位同步置 1,开关如实反映「当前由手动驾驶」;不置位的话轨子
             // 卡在「手动常值但开关灭」的哑态:解冻提示只认 1→0 转换,永远
             // 不会触发,回实时的正规出口(解冻 → 重新识别)也就断了。
-            if (res && res.ok === true) {
+            // 只在「请求时就是未冻结」且「落地时仍未冻结」双条件下置位:
+            // 冻结态拖动本就不该动开关;在途期间用户手动改过的也不覆盖
+            // (Reviewer Guide 在途竞态)
+            if (res && res.ok === true && wasUnfrozen) {
                 const fid = paramIdOf(activeVersion(), ch, "freeze");
                 const bits = freezeBits(readParam(fid, 0));
                 if (!(dim === "vol" ? bits.vol : bits.pan))
@@ -1269,10 +1277,14 @@ export function createTabTracks(opts) {
             WIDTH_RANGE,
             d.start + dy * (WIDTH_RANGE.max - WIDTH_RANGE.min) * fine,
         );
-        // 契约 §1.12-§1.14 线程/频率行:拖动期间 setParam 由 UI 侧节流(建议 ≤50 Hz)
+        // 契约 §1.12-§1.14 线程/频率行:拖动期间 setParam 由 UI 侧节流(建议 ≤50 Hz)。
+        // 末值必达:落在 20ms 窗内的最后一动记入 lastVal,endDrag 收尾补发,
+        // 否则松手位置与引擎里落的值差最后一格(Reviewer Guide)
+        d.lastVal = next;
         const t = Date.now();
         if (t - d.lastSent < 20) return;
         d.lastSent = t;
+        d.lastSentVal = next;
         sendParam(d.id, next);
     }
 
@@ -1282,6 +1294,9 @@ export function createTabTracks(opts) {
         local.drag = null;
         if (d.kind === "width") {
             local.gesture = null;
+            // 节流窗吞掉的末值在 end 前补发(begin…set*…end 序不变)
+            if (d.lastVal !== undefined && d.lastVal !== d.lastSentVal)
+                sendParam(d.id, d.lastVal);
             call("endParamGesture", d.id);
             return;
         }
