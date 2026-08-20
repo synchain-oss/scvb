@@ -1467,7 +1467,10 @@
                 top: 0;
                 z-index: 5;
                 height: 30px; /* 设计稿 571;间距阶梯无 30 档,就地字面量 */
-                background: var(--w-16);
+                /* sticky 表头浮在滚过的行**内容**之上:纯 .16 玻璃会与行文字
+                   重叠打架(用户反馈 2026-08-20)——不透明兜底 + 原色相盖层 */
+                background-color: var(--light-solid);
+                background-image: linear-gradient(var(--w-16), var(--w-16));
                 /* .30 白线:现有档位是 .24/.28/.32,不为一个描边新建 token */
                 border-bottom: 1px solid rgba(var(--wh), 0.3);
             }
