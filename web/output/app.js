@@ -294,8 +294,9 @@ const tabMaster = createTabMaster({
 tabMaster.mount();
 
 // ------------------------------------------------------------- Tab2(tab-tracks.js)
-// T32 Wave 1:列头 + 15 轨行矩阵 + 图例脚注全部由 createTabTracks() 生成
-// (列宽单一真源 = tab-tracks.js 的 TRACK_COLS,页面与 app.js 都不写第二份)。
+// T32:列头 + 15 轨行矩阵 + 图例脚注全部由 createTabTracks() 生成(列宽单一真源 =
+// tab-tracks.js 的 TRACK_COLS,页面与 app.js 都不写第二份);Wave 2 起 15 行的值
+// 全部由事件算出,行内全部上行调用也在该文件(本文件只做订阅转发)。
 const tabTracks = createTabTracks({
     root: document,
     bridge,
@@ -1045,7 +1046,15 @@ if (bridge) {
         // 少了这一步,任一次本地拖动都会把该 ParamID 的显示**永久遮蔽**——
         // 宿主自动化回吐(hostEcho)与切版本的全量重发(full:true)都再进不了 UI。
         tabMaster.onParams(p);
+        // Tab2 同款让位 + 冻结位 1→0 的解冻提示判定(05 §2.2 R2)
+        tabTracks.onParams(p);
         render();
+    });
+
+    // §2.5 30 Hz:**只喂 Tab2 的 rAF 弹道,不触发 render** —— 15 行 × 30 Hz 的
+    // 整页重渲染扛不住,而液柱/峰线本来就由 canvas/meter.js 逐帧直写三个属性。
+    bridge.on("scvb.meters", (m) => {
+        tabTracks.onMeters(m);
     });
 
     bridge.on("scvb.conn", (c) => {
@@ -1067,6 +1076,8 @@ if (bridge) {
     bridge.on("scvb.segments", (seg) => {
         store.segments = mergeSegments(store.segments, seg);
         tabMaster.onSegments(seg);
+        // Tab2:手动常值的乐观显示让位给回推的段表(§1.16 的写入结果经本事件回来)
+        tabTracks.onSegments(seg);
         // J69 stale:任一轨 stale → tab 导航「波形与分段」挂琥珀点
         const stale = (seg && seg.channels ? seg.channels : []).some(
             (c) => c && c.stale,

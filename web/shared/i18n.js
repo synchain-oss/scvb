@@ -275,6 +275,10 @@ export const T = {
         "tracks.freezeVersion": "手动值属版本 {v}",
         "tracks.labelEdit": "轨道名称(≤24 字符)",
         "tracks.reidentifyOne": "重新识别轨 {n}",
+        // 单轨重新识别的**二次确认**(05 §2.2「二次确认同 §2.3」;契约 §1.6 的
+        // clearManual 分支:locked 段不受影响,须先逐段解锁)。T32 Wave 2 新增。
+        "tracks.reidentifyConfirm":
+            "将清除轨 {n} 的手动固定值并重新识别;已锁定段保持不变,确定?",
         "tracks.pairNone": "无",
         "tracks.pairFullSuffix": "(满)",
         "tracks.pairOverflow": "配对超员",
@@ -625,6 +629,8 @@ export const T = {
         "tracks.freezeVersion": "Manual value belongs to version {v}",
         "tracks.labelEdit": "Track name (24 characters max)",
         "tracks.reidentifyOne": "Re-identify track {n}",
+        "tracks.reidentifyConfirm":
+            "This clears the manual fixed value on track {n} and re-identifies it. Locked segments are left untouched. Continue?",
         "tracks.pairNone": "None",
         "tracks.pairFullSuffix": " (full)",
         "tracks.pairOverflow": "Pair over capacity",
@@ -980,6 +986,8 @@ export const T = {
         "tracks.freezeVersion": "Valeur manuelle liée à la version {v}",
         "tracks.labelEdit": "Nom de piste (24 caractères max)",
         "tracks.reidentifyOne": "Ré-identifier la piste {n}",
+        "tracks.reidentifyConfirm":
+            "La valeur fixe manuelle de la piste {n} sera effacée puis ré-identifiée ; les segments verrouillés restent inchangés. Continuer ?",
         "tracks.pairNone": "Aucun",
         "tracks.pairFullSuffix": " (complet)",
         "tracks.pairOverflow": "Paire en surnombre",

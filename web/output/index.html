@@ -1794,6 +1794,14 @@
                 padding: var(--sp-10) var(--sp-13);
                 font-size: var(--fs-110);
                 line-height: 1.5;
+                /* 行内浮层叠在下一行内容上:不透明兜底 + 琥珀色相盖层,
+                   否则 .15 玻璃会与底行文字打架(统筹亲验 2026-08-20) */
+                background-color: var(--light-solid);
+                background-image: linear-gradient(
+                    rgba(var(--sem-amber), 0.15),
+                    rgba(var(--sem-amber), 0.15)
+                );
+                box-shadow: var(--zoom-panel-shadow);
             }
             .tracks-row__confirm-text {
                 flex: 1;
@@ -1811,7 +1819,13 @@
                 gap: var(--sp-10);
                 padding: var(--sp-9) var(--sp-13);
                 border-radius: var(--r-md);
-                background: rgba(var(--wh), 0.12);
+                /* 同确认条:不透明兜底 + 中性玻璃盖层(浮在下一行内容上) */
+                background-color: var(--light-solid);
+                background-image: linear-gradient(
+                    rgba(var(--wh), 0.12),
+                    rgba(var(--wh), 0.12)
+                );
+                box-shadow: var(--zoom-panel-shadow);
                 border: 1px solid rgba(var(--wh), 0.26);
                 font-size: var(--fs-110);
                 color: var(--txt-2);
