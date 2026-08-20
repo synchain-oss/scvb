@@ -238,6 +238,20 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
 // =============================================================================
 log("=== ④ store → 15 行模型 ===");
 {
+    // 红旗防回归(PR #60):labelPlaceholder 传字典路径曾因漏导入 format 抛
+    // ReferenceError——空轨名是 mock 与真机的常态默认,必须直接断言三语输出。
+    for (const lang of ["zh", "en", "fr"]) {
+        const out = TT.labelPlaceholder(7, T[lang]);
+        check(
+            typeof out === "string" && out.includes("07"),
+            `labelPlaceholder(${lang}) 含两位轨号(实得 ${out})`,
+        );
+        check(!out.includes("{n}"), `labelPlaceholder(${lang}) 占位已替换`);
+    }
+    eq(TT.labelPlaceholder(3, null), "Track 03", "无字典回落设计稿原文");
+}
+
+{
     // 状态灯五态(05 §2.2 / 契约 §2.3)
     eq(TT.trackStatusOf(null), "idle", "无 conn ⇒ idle");
     eq(

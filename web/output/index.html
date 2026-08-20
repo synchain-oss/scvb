@@ -1701,45 +1701,107 @@
                 display: block;
             }
             /* 七色轮(tokens.css 第 19 组):A–C 逐字取设计稿,D–G 为 T32 补足 */
-            .tracks-row__pair[data-pair="1"] .tracks-row__pair-dot {
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="1"]
+                .tracks-row__pair-dot {
                 background: var(--t2-pair-1);
             }
-            .tracks-row__pair[data-pair="2"] .tracks-row__pair-dot {
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="2"]
+                .tracks-row__pair-dot {
                 background: var(--t2-pair-2);
             }
-            .tracks-row__pair[data-pair="3"] .tracks-row__pair-dot {
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="3"]
+                .tracks-row__pair-dot {
                 background: var(--t2-pair-3);
             }
-            .tracks-row__pair[data-pair="4"] .tracks-row__pair-dot {
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="4"]
+                .tracks-row__pair-dot {
                 background: var(--t2-pair-4);
             }
-            .tracks-row__pair[data-pair="5"] .tracks-row__pair-dot {
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="5"]
+                .tracks-row__pair-dot {
                 background: var(--t2-pair-5);
             }
-            .tracks-row__pair[data-pair="6"] .tracks-row__pair-dot {
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="6"]
+                .tracks-row__pair-dot {
                 background: var(--t2-pair-6);
             }
-            .tracks-row__pair[data-pair="7"] .tracks-row__pair-dot {
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="7"]
+                .tracks-row__pair-dot {
                 background: var(--t2-pair-7);
             }
-            /* 透明覆盖的原生下拉:inset 上下各 -2px 把命中区撑到 24px(RE-06) */
-            .tracks-row__pair-select {
+            /* 自定义下拉触发钮:透明覆盖 chip,inset 上下各 -2px 把命中区
+               撑到 24px(RE-06);面板复用 Tab1 主唱选择的深色玻璃配方
+               (用户反馈 2026-08-20:原生 select 弹层不可样式化) */
+            .tracks-row__pair-trigger {
                 position: absolute;
                 left: 0;
                 right: 0;
                 top: -2px;
                 bottom: -2px;
                 width: 100%;
+                padding: 0;
+                border: 0;
+                background: transparent;
                 opacity: 0;
                 cursor: pointer;
-                font-size: var(--fs-100);
             }
-            /* 键盘焦点落在不可见覆盖层上必须有可见焦点环——画在 chip 外框上
-               (PR #60 复审【重要】1:配对键盘可达) */
-            .tracks-row__pair:has(.tracks-row__pair-select:focus-visible) {
+            .tracks-row__pair-trigger:disabled {
+                cursor: default;
+            }
+            /* 焦点环画在 chip 外框上(触发钮不可见;PR #60 键盘可达) */
+            .tracks-row__pair:has(.tracks-row__pair-trigger:focus-visible) {
                 outline: 2px solid rgba(var(--acc), 0.85);
                 outline-offset: 2px;
                 border-radius: var(--r-tag);
+            }
+            .tracks-row__pair-panel {
+                position: absolute;
+                z-index: 8;
+                left: 0;
+                top: calc(100% + var(--sp-4));
+                min-width: 96px;
+                padding: var(--sp-4);
+                border-radius: var(--r-md);
+                background-color: var(--dark-solid);
+                background-image: var(--zoom-panel-bg);
+                border: 1px solid var(--dark-window-border);
+                box-shadow: var(--zoom-panel-shadow);
+                display: flex;
+                flex-direction: column;
+            }
+            /* 第 11 轨起向上展开,免被滚动容器裁掉 */
+            .tracks-row__pair-panel[data-up="1"] {
+                top: auto;
+                bottom: calc(100% + var(--sp-4));
+            }
+            .tracks-row__pair-panel[data-open="0"] {
+                display: none;
+            }
+            .tracks-row__pair-opt {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-6);
+                padding: var(--sp-4) var(--sp-9);
+                border-radius: var(--r-xs);
+                border: 0;
+                background: transparent;
+                cursor: pointer;
+                text-align: left;
+                font-family: var(--ff-sans);
+                font-size: var(--fs-100);
+                color: var(--txt-dark-2);
+            }
+            .tracks-row__pair-opt:hover,
+            .tracks-row__pair-opt:focus-visible {
+                background: var(--w-10);
+            }
+            .tracks-row__pair-opt[data-current="1"] {
+                background: rgba(var(--sem-green), 0.18);
+                color: rgba(var(--wh), 0.95);
+            }
+            /* 选项里的配对色点恒显(chip 上的 data-set 门控不适用) */
+            .tracks-row__pair-opt .tracks-row__pair-dot {
+                display: block;
             }
             /* 配对超员琥珀标(05 §2.2):52px chip 内放不下「配对超员」四字,
        压成右上角琥珀角点 + tooltip(全称走词条 tracks.pairOverflow)。 */

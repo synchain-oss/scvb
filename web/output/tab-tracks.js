@@ -36,8 +36,10 @@
 
 // 弹道渲染器(契约 §2.5 的 30 Hz 事件 → rAF 补间);模块顶层零副作用,node 可直接 import。
 import { createMeterRenderer } from "./canvas/meter.js";
-// hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字。
-import { HOST_ECHO_FRESH_MS } from "./tab-master.js";
+// hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字;
+// format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
+// PR #60 红旗)。
+import { HOST_ECHO_FRESH_MS, format } from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -670,14 +672,28 @@ export function trackRowHtml(t) {
         <span class="tracks-row__pair" data-set="${t.pair ? 1 : 0}" data-pair="${t.pair}" data-gb="${gb("pair-chip")}">
           <span class="tracks-row__pair-dot"></span>
           <span class="tracks-row__pair-text" data-gb="${gb("pair-text")}">${esc(pairLetter(t.pair))}</span>
-          <select class="tracks-row__pair-select" data-t-aria="pair" data-gb="${gb("pair")}"${dead ? " disabled" : ""}>
-            <option class="tracks-row__pair-none" value="0"></option>
-            ${PAIR_LETTERS.map((L, i) => `<option value="${i + 1}">${L}</option>`).join("")}
-          </select>
+          <!-- 自定义下拉(用户反馈 2026-08-20:原生 select 弹层不可样式化)——
+               触发钮透明覆盖 chip(命中区 RE-06 不变),面板复用 Tab1 主唱选择
+               的深色玻璃配方;第 11 轨起向上展开(免被滚动容器裁掉)。 -->
+          <button type="button" class="tracks-row__pair-trigger" data-t-aria="pair"
+                  aria-haspopup="listbox" aria-expanded="false"
+                  data-gb="${gb("pair")}"${dead ? " disabled" : ""}></button>
+          <span class="tracks-row__pair-panel" role="listbox" data-t-aria="pair"
+                data-open="0"${ch > 10 ? ' data-up="1"' : ""} data-gb="${gb("pair-panel")}">
+            ${[0, 1, 2, 3, 4, 5, 6, 7]
+                .map(
+                    (
+                        v,
+                    ) => `<button type="button" class="tracks-row__pair-opt" role="option"
+                     aria-selected="false" data-pair="${v}" data-current="0"
+                     data-gb="${gb(`pair-opt-${v}`)}">${v ? `<span class="tracks-row__pair-dot"></span><span class="tracks-row__pair-optlabel">${PAIR_LETTERS[v - 1]}</span>` : `<span class="tracks-row__pair-optlabel" data-gb="${gb("pair-opt-none-label")}"></span>`}</button>`,
+                )
+                .join("")}
+          </span>
           <!-- 某组已满 2 轨仍可选,行上出琥珀标「配对超员」(05 §2.2);52px 内改用角点 + tooltip -->
           <span class="tracks-row__pair-full" data-gb="${gb("pair-overflow")}"${t.pairFull ? "" : " hidden"}></span>
         </span>
-        <!-- change → bridge.setChannelConfig(${ch}, {pair_id})(契约 §1.15;0 | 1..7) -->
+        <!-- 选中 → bridge.setChannelConfig(${ch}, {pair_id})(契约 §1.15;0 | 1..7) -->
       </span>
       <span class="sc-divider" aria-hidden="true"></span>
       <span class="tracks-row__cell" role="cell" style="width:${W.volexempt}px">
@@ -787,6 +803,7 @@ export function createTabTracks(opts) {
         gesture: null, // 拖动中的 ParamID(灰显/让位判定要排除自己)
         drag: null, // {ch, kind, id, startX, startY, start, moved, node}
         unfreezeHint: new Map(), // ch → 触发提示的 freeze 位(1..3)
+        pairOpen: 0, // 配对面板展开中的轨(0 = 无;单例,同一时刻只开一个)
         editingCh: 0, // label 行内编辑中的轨(渲染不得覆写该行的输入框)
         freezePrev: new Map(), // ParamID → 上一次见到的 freeze 值(检测 1→0)
         // 延迟提交计时器 **per (ch,dim)**:共享单个句柄时,在轨 1 滚完 300ms 内去滚轨 2
@@ -1329,6 +1346,15 @@ export function createTabTracks(opts) {
         if (Object.prototype.hasOwnProperty.call(CONFIG_TOGGLES, part)) {
             return toggleConfig(ch, CONFIG_TOGGLES[part]);
         }
+        // 配对自定义下拉:触发钮开合;选项 = 选中 pair_id 并收起(契约 §1.15,0|1..7)
+        if (part === "pair") {
+            return openPairPanel(local.pairOpen === ch ? 0 : ch);
+        }
+        if (part.startsWith("pair-opt-")) {
+            const v = clamp(0, PAIR_LETTERS.length, Number(part.slice(9)) || 0);
+            openPairPanel(0);
+            return patchConfig(ch, { pair_id: v });
+        }
         switch (part) {
             case "freezepan":
                 return toggleFreeze(ch, "pan");
@@ -1412,11 +1438,16 @@ export function createTabTracks(opts) {
         );
 
         body.addEventListener("keydown", onKeyDown);
-        body.addEventListener("change", (e) => {
-            const h = hit(e);
-            if (!h || h.part !== "pair") return;
-            // 契约 §1.15:pair_id = 0(无)| 1..7
-            patchConfig(h.ch, { pair_id: Number(h.el.value) || 0 });
+        // 配对面板点外收起(触发钮/面板内部除外)
+        root.addEventListener("pointerdown", (e) => {
+            if (!local.pairOpen) return;
+            if (
+                e.target instanceof Node &&
+                e.target instanceof Element &&
+                e.target.closest(".tracks-row__pair")
+            )
+                return;
+            openPairPanel(0);
         });
         body.addEventListener("focusout", (e) => {
             const h = hit(e);
@@ -1438,15 +1469,18 @@ export function createTabTracks(opts) {
             }
             return;
         }
+        if (e.key === "Escape" && local.pairOpen) {
+            e.preventDefault();
+            return openPairPanel(0);
+        }
         if (e.key === " " || e.key === "Enter") {
-            // role="switch"/button 的键盘可达(toggle 六枚 + PRIO ± + label + 确认条)。
-            // pair 也放行:原生 <select> 的 Space/Enter 打开行为不能被
-            // preventDefault 吞掉(PR #60 复审【重要】1,axe 测不到的键盘回归)
+            // role="switch"/button 的键盘可达(toggle 六枚 + PRIO ± + label +
+            // 确认条 + 配对触发钮/选项——自定义下拉后 pair 走 activate 开合,
+            // 不再有原生 select 行为可放行)
             if (
                 h.part === "pan" ||
                 h.part === "width" ||
-                h.part === "vol-collar" ||
-                h.part === "pair"
+                h.part === "vol-collar"
             )
                 return;
             e.preventDefault();
@@ -1462,6 +1496,14 @@ export function createTabTracks(opts) {
         if (!dir) return;
         if (isRowDead(h.ch) || isWriteBlocked()) return;
         const ch = h.ch;
+        // 配对触发钮:↑/↓ 不开面板直接换值(复刻原生 collapsed select 手感)
+        if (h.part === "pair") {
+            e.preventDefault();
+            const cur = Math.trunc(num(channelCfg(ch).pair_id, 0));
+            const v = clamp(0, PAIR_LETTERS.length, cur + dir);
+            if (v !== cur) patchConfig(ch, { pair_id: v });
+            return;
+        }
         if (h.part === "vol-collar") {
             e.preventDefault();
             // 键盘步进 ±0.1 dB,Shift 加速 ×10(05 §2.2 的 -24..+12 dB 域)。
@@ -1538,6 +1580,8 @@ export function createTabTracks(opts) {
             "pair-chip",
             "pair-text",
             "pair",
+            "pair-panel",
+            "pair-opt-none-label",
             "pair-overflow",
             "volexempt",
             "autopan",
@@ -1741,7 +1785,7 @@ export function createTabTracks(opts) {
         attr(n.priorityDec, "data-disabled", dis);
         attr(n.priorityInc, "data-disabled", dis);
         syncToggle(n.leadlock, row.lead, dis);
-        syncPair(n, row, t, ctx.counts, dis);
+        syncPair(n, row, t, ctx.counts, dis, ch);
 
         // ---- 参与性两枚 + 冻结两枚 + ON ----
         syncToggle(n.volexempt, row.ex, dis);
@@ -1764,7 +1808,24 @@ export function createTabTracks(opts) {
         attr(node, "aria-disabled", dis === "1" ? "true" : "false");
     }
 
-    function syncPair(n, row, t, counts, dis) {
+    /** 配对面板开合(单例:同一时刻只开一个;ch=0 = 全收)。 */
+    function openPairPanel(ch) {
+        if (local.pairOpen === ch) return;
+        const prev = local.rows.get(local.pairOpen);
+        local.pairOpen = ch;
+        if (prev) {
+            attr(prev.pairPanel, "data-open", 0);
+            attr(prev.pair, "aria-expanded", "false");
+        }
+        const cur = local.rows.get(ch);
+        if (cur) {
+            attr(cur.pairPanel, "data-open", 1);
+            attr(cur.pair, "aria-expanded", "true");
+        }
+        requestRender();
+    }
+
+    function syncPair(n, row, t, counts, dis, ch) {
         attr(n.pairChip, "data-set", row.pair ? 1 : 0);
         attr(n.pairChip, "data-pair", row.pair);
         // chip 上的字:无配对显示词条「无」,有配对显示 A–G(设计稿 1768 pairText)
@@ -1774,23 +1835,31 @@ export function createTabTracks(opts) {
         );
         show(n.pairOverflow, !!row.pairFull);
         setTitle(n.pairOverflow, t["tracks.pairOverflow"]);
-        const sel = n.pair;
-        if (!sel) return;
-        if (dis === "1") sel.setAttribute("disabled", "");
-        else sel.removeAttribute("disabled");
-        // 选项文案:「无」+ A–G;某组已满 2 轨的选项**仍可选**,只加「(满)」后缀(05 §2.2)
-        for (const opt of sel.options) {
-            const v = Number(opt.value) || 0;
-            if (!v) {
-                text(opt, t["tracks.pairNone"] || "");
-                continue;
+        const trig = n.pair;
+        if (!trig) return;
+        if (dis === "1") {
+            trig.setAttribute("disabled", "");
+            if (local.pairOpen === ch) openPairPanel(0);
+        } else trig.removeAttribute("disabled");
+        attr(n.pairPanel, "data-open", local.pairOpen === ch ? 1 : 0);
+        attr(trig, "aria-expanded", local.pairOpen === ch ? "true" : "false");
+        if (!n.pairPanel) return;
+        // 选项:「无」+ A–G;某组已满 2 轨的选项**仍可选**,只加「(满)」后缀(05 §2.2)
+        if (n.pairOptNoneLabel)
+            text(n.pairOptNoneLabel, t["tracks.pairNone"] || "");
+        for (const opt of n.pairPanel.querySelectorAll("[data-pair]")) {
+            const v = Number(opt.getAttribute("data-pair")) || 0;
+            const curSel = v === row.pair;
+            attr(opt, "data-current", curSel ? 1 : 0);
+            attr(opt, "aria-selected", curSel ? "true" : "false");
+            if (v) {
+                const label = opt.querySelector(".tracks-row__pair-optlabel");
+                const suffix = isPairFullOption(counts, v, row.pair)
+                    ? t["tracks.pairFullSuffix"] || ""
+                    : "";
+                if (label) text(label, PAIR_LETTERS[v - 1] + suffix);
             }
-            const suffix = isPairFullOption(counts, v, row.pair)
-                ? t["tracks.pairFullSuffix"] || ""
-                : "";
-            text(opt, PAIR_LETTERS[v - 1] + suffix);
         }
-        if (sel.value !== String(row.pair)) sel.value = String(row.pair);
     }
 
     /**
