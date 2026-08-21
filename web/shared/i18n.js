@@ -247,8 +247,6 @@ export const T = {
         // EN/FR 待人工审校(05 §5),逐条见 T32 差异清单。
         "tracks.colCh": "CH",
         "tracks.labelPlaceholder": "轨 {n}",
-        "tracks.volExemptTip":
-            "音量豁免——主唱居中时该轨音量不让位;声像侧退出用「声像」参与开关",
         "tracks.colState": "状态",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
@@ -269,13 +267,11 @@ export const T = {
         "lowSample.full": "样本不足,结果可能不稳",
         "tracks.panAutoHint": "自动模式——由分析曲线驱动",
         // 推子右侧的豁免角标:34px 槽内只放缩写,全称走 tooltip(词条 leadVolExempt)
-        "tracks.exemptBadge": "豁免",
         // Lead Select 选中轨的行首居中标记(05 §2.2 主唱锁行;全句走 master.leadSelectHint)
         "tracks.leadCenter": "居中",
         "tracks.multiLead": "多主唱居中",
         "tracks.misaligned": "失准 ×{n}",
         "tracks.srErr": "采样率不一致",
-        "tracks.freezeVersion": "手动值属版本 {v}",
         "tracks.labelEdit": "轨道名称(≤24 字符)",
         "tracks.reidentifyOne": "重新识别轨 {n}",
         // 单轨重新识别的**二次确认**(05 §2.2「二次确认同 §2.3」;契约 §1.6 的
@@ -609,8 +605,6 @@ export const T = {
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
         "tracks.colCh": "CH",
         "tracks.labelPlaceholder": "Track {n}",
-        "tracks.volExemptTip":
-            "Volume exempt — this track's level does not duck while a lead is centered; use the Pan participation toggle to opt out of auto-pan",
         "tracks.colState": "State",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
@@ -627,12 +621,10 @@ export const T = {
             "Keep each vocal track's output routing pointed at this bus (do not change it)",
         "lowSample.full": "Low sample — the result may be unstable",
         "tracks.panAutoHint": "Auto mode — driven by the analysis curve",
-        "tracks.exemptBadge": "EXM",
         "tracks.leadCenter": "CTR",
         "tracks.multiLead": "Multiple leads centred",
         "tracks.misaligned": "Misaligned ×{n}",
         "tracks.srErr": "Sample rate mismatch",
-        "tracks.freezeVersion": "Manual value belongs to version {v}",
         "tracks.labelEdit": "Track name (24 characters max)",
         "tracks.reidentifyOne": "Re-identify track {n}",
         "tracks.reidentifyConfirm":
@@ -968,8 +960,6 @@ export const T = {
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
         "tracks.colCh": "CH",
         "tracks.labelPlaceholder": "Piste {n}",
-        "tracks.volExemptTip":
-            "Exemption de volume — le niveau de cette piste ne s'atténue pas quand un lead est centré ; utilisez l'interrupteur de participation Pan pour quitter l'auto-pan",
         "tracks.colState": "État",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
@@ -987,12 +977,10 @@ export const T = {
         "lowSample.full":
             "Échantillon insuffisant — le résultat peut être instable",
         "tracks.panAutoHint": "Mode auto — piloté par la courbe d'analyse",
-        "tracks.exemptBadge": "EXM",
         "tracks.leadCenter": "CTR",
         "tracks.multiLead": "Plusieurs voix principales centrées",
         "tracks.misaligned": "Désalignement ×{n}",
         "tracks.srErr": "Fréquence d'échantillonnage incompatible",
-        "tracks.freezeVersion": "Valeur manuelle liée à la version {v}",
         "tracks.labelEdit": "Nom de piste (24 caractères max)",
         "tracks.reidentifyOne": "Ré-identifier la piste {n}",
         "tracks.reidentifyConfirm":

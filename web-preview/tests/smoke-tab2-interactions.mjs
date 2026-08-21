@@ -414,13 +414,15 @@ log("=== ④ store → 15 行模型 ===");
     eq(rows[2].st, 1, "轨 3 stereo ⇒ ST 标");
     eq(rows[2].w, 42, "轨 3 width 跟随参数面");
     eq(rows[2].leadCenter, 1, "lead_select=3 ⇒ 轨 3 行首居中标记");
-    // 16px 槽放短号,全名进 tooltip(统筹亲验 2026-08-20:全名会在槽内竖排)
-    eq(rows[0].version, "V1", "冻结生效版本槽显短号 V{n}");
-    eq(rows[0].versionName, "主版", "版本全名取 versions[].name(tooltip 用)");
     eq(rows[3].status, "idle", "轨 4 未连接");
     eq(rows[4].on, 0, "轨 5 enabled=false ⇒ 整行 .3");
     eq(rows[0].prio, 9, "优先级跟随 state");
-    eq(rows[1].ex, 1, "lead_vol_exempt ⇒ 豁免角标");
+    eq(
+        rows[1].volPart,
+        0,
+        "lead_vol_exempt ⇒ 音量参与开关显示 OFF(参与语义,显示层取反)",
+    );
+    eq(rows[0].volPart, 1, "未豁免 ⇒ 参与开关显示 ON");
     eq(rows[0].multiLead, 0, "只有 1 轨 lead_lock ⇒ 无多主唱 badge");
 
     // 值域与量化(契约 §1.16 的 value 域;05 §2.2 的双击回默认)
@@ -668,7 +670,6 @@ log("=== ⑦ 词条(Wave 2 新增 key + 占位符 + 禁词)===");
         "tracks.pairOverflow",
         "tracks.panAutoHint",
         "tracks.monoWidthNoop",
-        "tracks.freezeVersion",
         "tracks.labelEdit",
         "tracks.misaligned",
         "tracks.srErr",

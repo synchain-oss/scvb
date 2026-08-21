@@ -73,18 +73,12 @@ export const ROW_PAD_X = 10;
 /** 玻璃管宽 268px(设计稿 594;tokens.css `--t2-tube-w` 同值)。 */
 export const TUBE_W = 268;
 /**
- * 管右侧两枚附件的固定预留槽(A 组自由发挥件,设计稿未画):
- *   • 豁免角标(05 §2.2「ON 时推子旁『豁免』角标」)—— 34px;
- *   • 冻结生效版本 mono 小字(J65「行尾 mono 小字标注生效版本」)—— 16px。
- * **必须是固定槽而不是内容撑开**:两件都按轨显隐,若让它们参与撑宽,同一列会在
- * 「有角标的行」与「没角标的行」之间左右错开,列头也就对不上了。
+ * 「音量 / 电平」列宽 = 管本身(设计稿 594 的 268)。
+ * 曾有豁免角标(34px)与冻结生效版本小字(16px)两枚附件槽——用户裁定
+ * 2026-08-21 移除(豁免改参与语义开关、版本归属信任用户),05 §2.2 对应
+ * 验收行建议同步删除(见 deviations §P)。
  */
-export const EXEMPT_SLOT_W = 34;
-export const VERSION_SLOT_W = 16;
-
-/** 「音量 / 电平」整列宽 = 管 + 两枚附件槽(设计稿的 268 只是管本身)。 */
-export const VOL_COL_W =
-    TUBE_W + 6 + EXEMPT_SLOT_W + 6 + VERSION_SLOT_W; /* = 330 */
+export const VOL_COL_W = TUBE_W;
 
 /**
  * 列表(顺序不可重排,05 §2.2「列序与分组」代码块 = 真源;宽度取设计稿 2059-2064)。
@@ -508,7 +502,7 @@ export function rowsFromStore(store) {
             pk: 0,
             prio: clampPriority(num(cfg.priority, 5)),
             lead: cfg.lead_lock ? 1 : 0,
-            ex: cfg.lead_vol_exempt ? 1 : 0,
+            volPart: cfg.lead_vol_exempt ? 0 : 1, // 显示层参与语义(=!exempt)
             part: cfg.participate_in_auto_pan ? 1 : 0,
             pair,
             fp: bits.pan ? 1 : 0,
@@ -516,10 +510,6 @@ export function rowsFromStore(store) {
             on: cfg.enabled === false ? 0 : 1,
             low: lowErr && lowErr.ch === ch ? 1 : 0,
             misalign: cc ? Math.trunc(num(cc.misalignCount, 0)) : 0,
-            // 16px 槽只放短号「V{n}」,版本全名(可长至 16 字)进 tooltip ——
-            // 塞全名会在槽内竖排(统筹亲验 2026-08-20)
-            version: "V" + active,
-            versionName: ver,
             leadCenter: leadSel === ch ? 1 : 0,
             pairFull: isPairOverflow(counts, pair) ? 1 : 0,
             recapture: recMask & (1 << (ch - 1)) ? 1 : 0,
@@ -653,8 +643,6 @@ export function trackRowHtml(t) {
                 aria-valuenow="${num(t.volDb, 0)}" data-t-aria="tracks.colVolLevel"
                 data-gb="${gb("vol-collar")}"></span>
         </span>
-        <span class="sc-badge--amber tracks-row__exempt" data-t="tracks.exemptBadge" data-gb="${gb("volexempt-badge")}"${t.ex ? "" : " hidden"}></span>
-        <span class="tracks-row__version" data-gb="${gb("freeze-version")}"${t.fv ? "" : " hidden"}>${esc(t.version)}</span>
       </span>
       <span class="tracks-row__cell sc-stepper tracks-row__prio" role="cell" style="width:${W.prio}px" data-gb="${gb("priority")}">
         <button type="button" data-t-aria="common.decrease" data-gb="${gb("priority-dec")}"${dis}>−</button>
@@ -697,8 +685,10 @@ export function trackRowHtml(t) {
       </span>
       <span class="sc-divider" aria-hidden="true"></span>
       <span class="tracks-row__cell" role="cell" style="width:${W.volexempt}px">
-        <span class="sc-toggle" data-on="${t.ex}" data-disabled="${dead}"${sw(t.ex)}
-              data-t-aria="leadVolExempt" data-gb="${gb("volexempt")}"></span>
+        <!-- 参与语义(用户裁定 2026-08-21:开=参与音量调节,与声像一致;
+             契约字段仍是反义的 lead_vol_exempt,仅显示层取反,桥面不动) -->
+        <span class="sc-toggle" data-on="${t.volPart}" data-disabled="${dead}"${sw(t.volPart)}
+              data-t-aria="tracks.colVolExempt" data-gb="${gb("volexempt")}"></span>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.autopan}px">
         <span class="sc-toggle" data-on="${t.part}" data-disabled="${dead}"${sw(t.part)}
@@ -1381,7 +1371,8 @@ export function createTabTracks(opts) {
             return openPairPanel(local.pairOpen === ch ? 0 : ch);
         }
         if (part.startsWith("pair-opt-")) {
-            const v = clamp(0, PAIR_LETTERS.length, Number(part.slice(9)) || 0);
+            const raw = Number(part.slice(9)) || 0;
+            const v = Math.min(PAIR_LETTERS.length, Math.max(0, raw));
             openPairPanel(0);
             return patchConfig(ch, { pair_id: v });
         }
@@ -1532,7 +1523,7 @@ export function createTabTracks(opts) {
         if (h.part === "pair") {
             e.preventDefault();
             const cur = Math.trunc(num(channelCfg(ch).pair_id, 0));
-            const v = clamp(0, PAIR_LETTERS.length, cur + dir);
+            const v = Math.min(PAIR_LETTERS.length, Math.max(0, cur + dir));
             if (v !== cur) patchConfig(ch, { pair_id: v });
             return;
         }
@@ -1603,8 +1594,6 @@ export function createTabTracks(opts) {
             "width",
             "vol-tube",
             "vol-collar",
-            "volexempt-badge",
-            "freeze-version",
             "priority-val",
             "priority-dec",
             "priority-inc",
@@ -1799,19 +1788,6 @@ export function createTabTracks(opts) {
         // 量化后再写:volDb 可能直接来自段表/参数面的 f32,原样写会出 -3.4000000000000004
         attr(n.volCollar, "aria-valuenow", quantize(VOL_RANGE, volDb));
         attr(n.volCollar, "data-host-echo", ctx.echo);
-        show(n.volexemptBadge, !!row.ex);
-        // 用户反馈 2026-08-20:角标要说清是**音量**豁免(v1 仅此一种;
-        // 声像侧退出是「声像」参与开关,不叫豁免)——详文进 tooltip,
-        // 角标本体维持「豁免」(34px 槽放不下四字,槽加宽会破 1133 宽度预算)
-        setTitle(n.volexemptBadge, t["tracks.volExemptTip"]);
-        show(n.freezeVersion, !!freeze.vol);
-        text(n.freezeVersion, row.version);
-        // tooltip 用版本全名(词条 {v} 占位)
-        setTitle(
-            n.freezeVersion,
-            fmt(t["tracks.freezeVersion"], { v: row.versionName }),
-        );
-
         // ---- PRIO / LEAD / 配对 ----
         text(n.priorityVal, String(row.prio));
         attr(n.priorityDec, "data-disabled", dis);
@@ -1820,7 +1796,7 @@ export function createTabTracks(opts) {
         syncPair(n, row, t, ctx.counts, dis, ch);
 
         // ---- 参与性两枚 + 冻结两枚 + ON ----
-        syncToggle(n.volexempt, row.ex, dis);
+        syncToggle(n.volexempt, row.volPart, dis);
         syncToggle(n.autopan, row.part, dis);
         syncToggle(n.freezepan, freeze.pan ? 1 : 0, dis);
         syncToggle(n.freezevol, freeze.vol ? 1 : 0, dis);
