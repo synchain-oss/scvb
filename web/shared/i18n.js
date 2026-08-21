@@ -60,7 +60,6 @@ export const T = {
         version: "版本",
         priority: "优先级",
         leadLock: "主唱锁中",
-        leadVolExempt: "音量豁免",
         leadSelect: "主唱选择",
         leadFollowAnalysis: "遵循分析",
         msBalance: "MS 平衡",
@@ -247,6 +246,7 @@ export const T = {
         // EN/FR 待人工审校(05 §5),逐条见 T32 差异清单。
         "tracks.colCh": "CH",
         "tracks.labelPlaceholder": "轨 {n}",
+        "tracks.colVolPart": "参与音量调节",
         "tracks.colState": "状态",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
@@ -266,7 +266,6 @@ export const T = {
         // 「样本不足」角标保短版(裸词条 lowSample),全句进 tooltip(统筹裁定 B12)
         "lowSample.full": "样本不足,结果可能不稳",
         "tracks.panAutoHint": "自动模式——由分析曲线驱动",
-        // 推子右侧的豁免角标:34px 槽内只放缩写,全称走 tooltip(词条 leadVolExempt)
         // Lead Select 选中轨的行首居中标记(05 §2.2 主唱锁行;全句走 master.leadSelectHint)
         "tracks.leadCenter": "居中",
         "tracks.multiLead": "多主唱居中",
@@ -416,7 +415,6 @@ export const T = {
         version: "Version",
         priority: "Priority",
         leadLock: "Lead Lock",
-        leadVolExempt: "Vol Exempt",
         leadSelect: "Lead Select",
         leadFollowAnalysis: "Follow analysis",
         msBalance: "MS Balance",
@@ -605,6 +603,7 @@ export const T = {
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
         "tracks.colCh": "CH",
         "tracks.labelPlaceholder": "Track {n}",
+        "tracks.colVolPart": "Volume participation",
         "tracks.colState": "State",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
@@ -767,7 +766,6 @@ export const T = {
         version: "Version",
         priority: "Priorité",
         leadLock: "Verrou lead",
-        leadVolExempt: "Volume exempté",
         leadSelect: "Sélection lead",
         leadFollowAnalysis: "Suivre l'analyse",
         msBalance: "Balance M/S",
@@ -960,6 +958,7 @@ export const T = {
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
         "tracks.colCh": "CH",
         "tracks.labelPlaceholder": "Piste {n}",
+        "tracks.colVolPart": "Participation volume",
         "tracks.colState": "État",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",

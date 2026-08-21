@@ -1633,9 +1633,8 @@
                 border-radius: 50%;
                 background: rgb(var(--sem-amber));
             }
-            /* 「音量 / 电平」合成件所在列 = 管(268)+ 豁免角标槽 + 生效版本槽;
-       两枚附件都是**固定槽**,不参与撑宽 —— 否则有角标的行会把后面的列推歪。
-       槽宽的算式在 tab-tracks.js 的 VOL_COL_W,这里只给上限防溢出。 */
+            /* 「音量 / 电平」列 = 管本身 268(附件槽已随用户裁定 2026-08-21 移除,
+       见 tab-tracks.js VOL_COL_W 注释与 deviations §P)。 */
             .tracks-row__voltube {
                 gap: var(--sp-6);
             }

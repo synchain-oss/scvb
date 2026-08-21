@@ -464,7 +464,6 @@ export function rowsFromStore(store) {
         st.errors && typeof st.errors.get === "function"
             ? st.errors.get("lowSample")
             : null;
-    const ver = versionLabel(state, active);
 
     const rows = [];
     for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
@@ -688,7 +687,7 @@ export function trackRowHtml(t) {
         <!-- 参与语义(用户裁定 2026-08-21:开=参与音量调节,与声像一致;
              契约字段仍是反义的 lead_vol_exempt,仅显示层取反,桥面不动) -->
         <span class="sc-toggle" data-on="${t.volPart}" data-disabled="${dead}"${sw(t.volPart)}
-              data-t-aria="tracks.colVolExempt" data-gb="${gb("volexempt")}"></span>
+              data-t-aria="tracks.colVolPart" data-gb="${gb("volexempt")}"></span>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.autopan}px">
         <span class="sc-toggle" data-on="${t.part}" data-disabled="${dead}"${sw(t.part)}
