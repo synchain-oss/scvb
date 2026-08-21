@@ -1323,6 +1323,10 @@ export function createTabTracks(opts) {
         local.drag = null;
         if (d.kind === "width") {
             local.gesture = null;
+            // 「中止不提交」对 width 同样成立:拖动期已发过中间值,
+            // 收束前回滚到抓握值(与 pan/vol 的丢弃语义对齐;pr-agent)
+            if (d.lastSentVal !== undefined && d.lastSentVal !== d.start)
+                sendParam(d.id, d.start);
             call("endParamGesture", d.id);
             return;
         }
@@ -1959,10 +1963,16 @@ export function createTabTracks(opts) {
             // (pr-agent 在途竞态②)
             const dragging = (dim) =>
                 local.drag && local.drag.ch === c.ch && local.drag.kind === dim;
-            if (!dragging("pan"))
-                local.manualEcho.delete(manualKey(c.ch, "pan"));
-            if (!dragging("vol"))
-                local.manualEcho.delete(manualKey(c.ch, "vol"));
+            for (const dim of ["pan", "vol"]) {
+                if (dragging(dim)) continue;
+                const k = manualKey(c.ch, dim);
+                local.manualEcho.delete(k);
+                // 300ms 防抖窗内到达的段表回推:连待提交计时器一并取消,
+                // 否则计时器稍后会把**过期值**写回引擎、auto-freeze 再锁一次
+                // (pr-agent)
+                clearTimeout(local.manualTimers.get(k));
+                local.manualTimers.delete(k);
+            }
         }
     }
 
