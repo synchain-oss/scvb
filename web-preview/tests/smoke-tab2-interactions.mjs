@@ -717,6 +717,22 @@ log("=== ⑦ 词条(Wave 2 新增 key + 占位符 + 禁词)===");
 // =============================================================================
 log("=== ⑧ 提交节流与空提交(撤销栈纪律,契约 §0.9 / §1.16)===");
 {
+    // 接线回归(源码级;Reviewer Guide 两条新行为):
+    const tt = src("web/output/tab-tracks.js");
+    check(
+        /d\.lastVal = next;[\s\S]{0,400}?if \(t - d\.lastSent < 20\) return;/.test(
+            tt,
+        ),
+        "width 末值:lastVal 记录在节流 return 之前(补发才有值可补)",
+    );
+    check(
+        /const freezeId = paramIdOf\(activeVersion\(\), ch, "freeze"\);/.test(
+            tt,
+        ) && /res\.ok === true && wasUnfrozen/.test(tt),
+        "auto-freeze:请求前捕获 freezeId+wasUnfrozen,回调双条件",
+    );
+}
+{
     const s = src("web/output/tab-tracks.js");
 
     // 延迟提交的计时器必须 **per (ch,dim)**:共享单句柄时,轨 1 滚完 300ms 内去滚轨 2

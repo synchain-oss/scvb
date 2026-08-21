@@ -980,10 +980,11 @@ export function createTabTracks(opts) {
         local.manualEcho.set(manualKey(ch, dim), v);
         // 契约 §1.16:入撤销栈(Ctrl+Z 由 app.js 的全局键盘钩子映射到 undo())。
         const echoKey = manualKey(ch, dim);
-        // 请求前捕获:该维度此刻是否未冻结(auto-freeze 只服务「未冻结拖动接管」)
-        const bitsNow = freezeBits(
-            readParam(paramIdOf(activeVersion(), ch, "freeze"), 0),
-        );
+        // 请求前捕获:冻结参数 id **连同版本上下文**一起定格(在途切版本时,
+        // 回调若重算 activeVersion 会把置位落到新版本的参数上——整笔判定
+        // 绑到发起时的版本;Reviewer Guide 边缘)
+        const freezeId = paramIdOf(activeVersion(), ch, "freeze");
+        const bitsNow = freezeBits(readParam(freezeId, 0));
         const wasUnfrozen = !(dim === "vol" ? bitsNow.vol : bitsNow.pan);
         call("setTrackManual", ch, dim, v).then((res) => {
             // 非成功响应(observer / badArg / 桥异常 res=null)撤乐观值,
@@ -1003,10 +1004,20 @@ export function createTabTracks(opts) {
             // 冻结态拖动本就不该动开关;在途期间用户手动改过的也不覆盖
             // (Reviewer Guide 在途竞态)
             if (res && res.ok === true && wasUnfrozen) {
-                const fid = paramIdOf(activeVersion(), ch, "freeze");
-                const bits = freezeBits(readParam(fid, 0));
-                if (!(dim === "vol" ? bits.vol : bits.pan))
-                    toggleFreeze(ch, dim);
+                // 复用请求时捕获的 freezeId(不经 toggleFreeze 以免其内部重算版本)
+                const bits = freezeBits(readParam(freezeId, 0));
+                if (!(dim === "vol" ? bits.vol : bits.pan)) {
+                    const next =
+                        dim === "vol"
+                            ? freezeValue(bits.pan, true)
+                            : freezeValue(true, bits.vol);
+                    noteFreezeTransition(
+                        ch,
+                        freezeValue(bits.pan, bits.vol),
+                        next,
+                    );
+                    oneShotGesture(freezeId, next);
+                }
             }
             requestRender();
         });
