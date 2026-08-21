@@ -639,7 +639,7 @@ export function trackRowHtml(t) {
                → bridge.setTrackManual(${ch}, "vol", v) —— 契约 §1.16。 -->
           <span class="sc-tube__collar" style="--vol:${t.vol * 100}%" data-frozen="${t.fv}" data-disabled="${dead}"
                 role="slider" tabindex="0" aria-valuemin="${VOL_RANGE.min}" aria-valuemax="${VOL_RANGE.max}"
-                aria-valuenow="${num(t.volDb, 0)}" data-t-aria="tracks.colVolLevel"
+                aria-valuenow="${quantize(VOL_RANGE, num(t.volDb, 0))}" data-t-aria="tracks.colVolLevel"
                 data-gb="${gb("vol-collar")}"></span>
         </span>
       </span>
