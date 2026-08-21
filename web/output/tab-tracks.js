@@ -1064,6 +1064,7 @@ export function createTabTracks(opts) {
 
     /** 单轨重新识别(契约 §1.6:`analyze(scope, {clearManual:true})`;locked 段仍免疫)。 */
     async function doReidentify(ch) {
+        if (isWriteBlocked()) return;
         const res = await call(
             "analyze",
             { tracksMask: 1 << (ch - 1) },
@@ -1332,7 +1333,12 @@ export function createTabTracks(opts) {
             call("endParamGesture", d.id);
             return;
         }
-        local.manualEcho.delete(manualKey(d.ch, d.kind));
+        const k = manualKey(d.ch, d.kind);
+        local.manualEcho.delete(k);
+        // 同键的滚轮/键盘防抖计时器一并取消——否则中止后计时器仍会把
+        // 未确认的过期值 sendManual 进引擎(持久评审)
+        clearTimeout(local.manualTimers.get(k));
+        local.manualTimers.delete(k);
         requestRender();
     }
 
@@ -1381,6 +1387,8 @@ export function createTabTracks(opts) {
         if (part === "manual-overwrite-cancel") return closeConfirm();
         if (part === "manual-overwrite-ok") return acceptConfirm();
         if (part === "manualdriven-reidentify") {
+            // 只读观察/无时间线不得发起重析(analyze 是写面;持久评审)
+            if (isWriteBlocked()) return;
             // 05 §2.2:单轨重新识别走二次确认(同 §2.3「重新识别(含手动段)」)
             return openConfirm(ch, "reidentify", "", 0);
         }
