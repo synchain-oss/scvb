@@ -1095,7 +1095,9 @@ export function createTabTracks(opts) {
 
     /** 单轨重新识别(契约 §1.6:`analyze(scope, {clearManual:true})`;locked 段仍免疫)。 */
     async function doReidentify(ch) {
-        if (isWriteBlocked()) return;
+        // 与 patchConfig/toggleFreeze 同口径双守卫:解冻提示条按钮不受整行
+        // disabled 约束,srErr 轨挂着提示时点「重新识别」也不得发写面调用
+        if (isWriteBlocked() || isRowDead(ch)) return;
         const res = await call(
             "analyze",
             { tracksMask: 1 << (ch - 1) },
