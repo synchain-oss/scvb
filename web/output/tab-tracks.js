@@ -1056,7 +1056,17 @@ export function createTabTracks(opts) {
         if (c.kind === "manual") {
             // 每轨每会话一次:确认过之后同轨的后续拖动直接落
             local.manualConfirmed.add(c.ch);
-            sendManual(c.ch, c.dim, c.value);
+            // 值未变(拖动发起的确认只带**抓握值**)⇒ 只标记不写入——
+            // 原值写整轨是纯破坏(白建手动段+自动冻结+撤销项,零听感变化),
+            // 用户确认后的下一次拖动才是真调整;滚轮/键盘发起的确认带
+            // **已调整值**,照常写入(持久评审 Drag Confirm)
+            const cur = c.dim === "vol" ? currentVolDb(c.ch) : currentPan(c.ch);
+            const rng = c.dim === "vol" ? VOL_RANGE : PAN_RANGE;
+            if (quantize(rng, c.value) !== quantize(rng, cur)) {
+                sendManual(c.ch, c.dim, c.value);
+            } else {
+                requestRender();
+            }
             return;
         }
         doReidentify(c.ch);
