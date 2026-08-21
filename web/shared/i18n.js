@@ -67,7 +67,8 @@ export const T = {
         participateAutoPan: "参与自动声像",
         trackWidth: "轨道宽度",
         "tracks.monoWidthNoop": "mono 源:宽度在 v1 无效",
-        "master.leadSelectHint": "该轨强制居中;是否参与音量调节为独立开关,不随此联动",
+        "master.leadSelectHint":
+            "该轨强制居中;是否参与音量调节为独立开关,不随此联动",
         pair: "配对",
         threshold: "阈值",
         sensitivity: "灵敏度",
