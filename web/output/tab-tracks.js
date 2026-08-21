@@ -908,7 +908,13 @@ export function createTabTracks(opts) {
      */
     function dropParamEcho(payload) {
         if (!payload || payload.full) {
-            local.paramEcho.clear();
+            // full(切版本/全量重发)整表作废,**唯拖动中的 id 保留到松手**——
+            // 否则指针还按着旋钮就被广播抢跳(pr-agent;与增量分支的
+            // gesture 保护同口径。注:Tab1 nextParamEcho 的 full 分支尚为
+            // 全清,口径对齐记 deviations 归 T33 批)
+            for (const id of [...local.paramEcho.keys()]) {
+                if (id !== local.gesture) local.paramEcho.delete(id);
+            }
             return;
         }
         for (const id of Object.keys(payload.values || {})) {
