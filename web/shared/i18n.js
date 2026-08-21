@@ -67,7 +67,7 @@ export const T = {
         participateAutoPan: "参与自动声像",
         trackWidth: "轨道宽度",
         "tracks.monoWidthNoop": "mono 源:宽度在 v1 无效",
-        "master.leadSelectHint": "该轨强制居中;音量豁免为独立选项,不随此联动",
+        "master.leadSelectHint": "该轨强制居中;是否参与音量调节为独立开关,不随此联动",
         pair: "配对",
         threshold: "阈值",
         sensitivity: "灵敏度",
@@ -237,7 +237,7 @@ export const T = {
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
         "tracks.colLegend":
-            "音量＝音量豁免,该轨不进音量平衡计算 · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
+            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开)· 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
         // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
@@ -293,7 +293,7 @@ export const T = {
             "影响分析时的段间响度归一化基准;改后需重分析。",
         "set.centerSlot.title": "多轨争抢中心位时怎么办",
         "set.centerSlot.note":
-            "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
+            "主唱锁与 Lead Select 之外的兜底规则;不影响参与音量调节开关。",
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
@@ -423,7 +423,7 @@ export const T = {
         trackWidth: "Track Width",
         "tracks.monoWidthNoop": "Mono source: width has no effect in v1",
         "master.leadSelectHint":
-            "Track forced to center; Vol Exempt is independent and unaffected",
+            "Track forced to center; the volume participation switch is independent and unaffected",
         pair: "Pair",
         threshold: "Threshold",
         sensitivity: "Sensitivity",
@@ -597,7 +597,7 @@ export const T = {
         "master.copyConfirmWarn":
             "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = volume exempt, this track is excluded from level balancing · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
+            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
         "tracks.emptyGroup":
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
@@ -646,7 +646,7 @@ export const T = {
         "set.centerSlot.title":
             "What happens when tracks compete for the center slot",
         "set.centerSlot.note":
-            "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
+            "Fallback rule beyond Lead Lock and Lead Select; it does not affect the volume participation switch.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
 
@@ -774,7 +774,7 @@ export const T = {
         trackWidth: "Largeur de piste",
         "tracks.monoWidthNoop": "Source mono : la largeur est sans effet en v1",
         "master.leadSelectHint":
-            "Piste forcée au centre ; l'exemption de volume est indépendante",
+            "Piste forcée au centre ; l'interrupteur de participation au volume est indépendant",
         pair: "Paire",
         threshold: "Seuil",
         sensitivity: "Sensibilité",
@@ -952,7 +952,7 @@ export const T = {
         "master.copyConfirmWarn":
             "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = exemption de volume, la piste est exclue de l'équilibrage · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
+            "Vol = participation au volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
@@ -1003,7 +1003,7 @@ export const T = {
         "set.centerSlot.title":
             "Que faire quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
-            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
+            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'interrupteur de participation au volume.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
 
