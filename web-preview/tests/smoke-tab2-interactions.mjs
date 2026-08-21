@@ -801,6 +801,15 @@ log("=== ⑧ 提交节流与空提交(撤销栈纪律,契约 §0.9 / §1.16)==="
         "Shift 微调取该控件自己的值域常量",
     );
 
+    // sendParam 与 sendManual 同款非成功回滚:写被拒时 25Hz 回推不会点名该 id,
+    // 乐观值会挂死(冻结开关显示已开、引擎从未接受)——钉住「echo 仍是本次值才删」
+    check(
+        /function sendParam\([\s\S]{0,600}paramEcho\.get\(id\) === value[\s\S]{0,120}paramEcho\.delete\(id\)/.test(
+            s,
+        ),
+        "sendParam 非成功回滚乐观值(且仅当 echo 仍是本次值)",
+    );
+
     // aria-valuenow 不得漏出 f32 浮点尾巴(-3.4000000000000004)
     check(
         /aria-valuenow",\s*quantize\(VOL_RANGE, volDb\)/.test(s),

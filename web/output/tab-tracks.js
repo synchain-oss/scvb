@@ -890,7 +890,17 @@ export function createTabTracks(opts) {
 
     function sendParam(id, value) {
         local.paramEcho.set(id, value); // 乐观本地态:等 25 Hz 回推之前先动起来
-        call("setParam", id, value);
+        call("setParam", id, value).then((res) => {
+            // 写被拒时 25Hz 回推不会点名该 id,乐观值会挂死;与 sendManual
+            // 同款:非成功且 echo 仍是本次值才回滚(后到的写不受累)
+            if (
+                !(res && res.ok === true) &&
+                local.paramEcho.get(id) === value
+            ) {
+                local.paramEcho.delete(id);
+                requestRender();
+            }
+        });
         requestRender();
     }
 
