@@ -976,6 +976,17 @@ export function createTabTracks(opts) {
     }
 
     function sendManual(ch, dim, value) {
+        // 中央闸口:确认条挂着/拖动期间面板可能转只读或该轨转 srErr——
+        // 所有入口(accept/endDrag/防抖计时器)统一在此复检,拦下则连
+        // 乐观值一并撤(持久评审 Write race)
+        if (isWriteBlocked() || isRowDead(ch)) {
+            const k0 = manualKey(ch, dim);
+            local.manualEcho.delete(k0);
+            clearTimeout(local.manualTimers.get(k0));
+            local.manualTimers.delete(k0);
+            requestRender();
+            return;
+        }
         const rng = dim === "vol" ? VOL_RANGE : PAN_RANGE;
         const v = quantize(rng, value);
         // 同一 (ch,dim) 上若还挂着延迟提交,直接落这一次就够了(否则稍后会再发一遍旧值)

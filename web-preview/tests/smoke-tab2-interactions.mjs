@@ -751,7 +751,7 @@ log("=== ⑧ 提交节流与空提交(撤销栈纪律,契约 §0.9 / §1.16)==="
     );
     // 直接提交(拖动松手 / 双击 / 确认条)要吃掉同键的待提交,否则稍后再发一遍旧值
     check(
-        /function sendManual\([\s\S]{0,400}manualTimers\.delete\(manualKey\(ch, dim\)\)/.test(
+        /function sendManual\([\s\S]{0,900}manualTimers\.delete\(manualKey\(ch, dim\)\)/.test(
             s,
         ),
         "sendManual 先吃掉同 (ch,dim) 的待提交",
