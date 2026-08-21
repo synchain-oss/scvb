@@ -1032,6 +1032,8 @@ export function createTabTracks(opts) {
 
     // ------------------------------------------------------------- 行内确认层
     function openConfirm(ch, kind, dim, value) {
+        // 与配对面板互斥:确认条是「需要一个决定」,同格浮层不共存(持久评审 UI Overlap)
+        openPairPanel(0);
         local.confirm = {
             ch,
             kind,
@@ -1388,6 +1390,8 @@ export function createTabTracks(opts) {
         }
         // 配对自定义下拉:触发钮开合;选项 = 选中 pair_id 并收起(契约 §1.15,0|1..7)
         if (part === "pair") {
+            // 该行确认条未决时不开面板(两浮层同挂 top:100%,开了会盖住确认文案)
+            if (local.confirm && local.confirm.ch === ch) return;
             return openPairPanel(local.pairOpen === ch ? 0 : ch);
         }
         if (part.startsWith("pair-opt-")) {
