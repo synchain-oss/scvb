@@ -1975,13 +1975,17 @@ export function createTabTracks(opts) {
             // (pr-agent 在途竞态②)
             const dragging = (dim) =>
                 local.drag && local.drag.ch === c.ch && local.drag.kind === dim;
+            // 按事件源分叉(持久评审两轮竞态的合并解):
+            //   • reason="trackManual" = 用户自己的写入回推——同轨**另一维度**
+            //     排队中的新意图(300ms 防抖)必须存活,只清无待提交的陈旧乐观值;
+            //   • 其余 reason(analyze/copy/versionActive/…)= 失效性回推——
+            //     排队值落地会重新弄脏刚清好的轨,echo 与计时器一并作废。
+            const ownWrite = payload && payload.reason === "trackManual";
             for (const dim of ["pan", "vol"]) {
                 if (dragging(dim)) continue;
                 const k = manualKey(c.ch, dim);
+                if (ownWrite && local.manualTimers.has(k)) continue;
                 local.manualEcho.delete(k);
-                // 300ms 防抖窗内到达的段表回推:连待提交计时器一并取消,
-                // 否则计时器稍后会把**过期值**写回引擎、auto-freeze 再锁一次
-                // (pr-agent)
                 clearTimeout(local.manualTimers.get(k));
                 local.manualTimers.delete(k);
             }
