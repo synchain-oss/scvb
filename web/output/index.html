@@ -2275,6 +2275,165 @@
             }
             .settings-guideblock-rules {
                 margin-top: var(--sp-9);
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-8);
+            }
+            /* 说明块:三步工作流正文(设计稿 L924:11.5px / 1.7 / #52525C) */
+            .settings-guideblock__workflow {
+                margin: 0;
+                font-size: var(--fs-115);
+                line-height: 1.7;
+                color: var(--txt-2);
+                text-wrap: pretty;
+            }
+            .settings-guideblock-rules__title {
+                margin: 0;
+                font-size: var(--fs-115);
+                font-weight: 600;
+                line-height: 1.6;
+                color: var(--sem-red-ink);
+            }
+            .settings-guideblock-rules ol {
+                list-style: none;
+                margin: 0;
+                padding: 0;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-8);
+            }
+            .settings-guideblock-rules li {
+                display: flex;
+                gap: var(--sp-8);
+                font-size: var(--fs-105);
+                line-height: 1.6;
+                color: var(--sem-red-ink);
+                text-wrap: pretty;
+            }
+            /* 展开后的第 4-9 条降一档色重(05 §2.4「降一档色重」) */
+            .settings-guideblock-rules li[data-rest="1"] {
+                opacity: 0.82;
+            }
+            /* 收起态只留前 3 条摘要(块内展开,不复用引导页 overlay,J71⑤) */
+            [data-gb="settings-guideblock-rules"][data-open="0"]
+                li[data-rest="1"] {
+                display: none;
+            }
+            .settings-guideblock-rules__num {
+                flex: none;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-100);
+                color: var(--sem-red-icon);
+            }
+            .settings-guideblock-rules__foot {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-10);
+                padding-top: var(--sp-2);
+            }
+            .settings-guideblock-rules__spacer {
+                flex: 1;
+            }
+            /* 「查看全部九条」= 下划线文字链(设计稿 L942:10.5px / 红 / underline) */
+            .sc-btn[data-gb="settings-guideblock-expand"] {
+                padding: 0;
+                background: transparent;
+                border: 0;
+                font-size: var(--fs-105);
+                color: var(--sem-red-icon);
+                text-decoration: underline;
+            }
+            .settings-guideblock__docs {
+                align-self: flex-start;
+                font-size: var(--fs-105);
+                color: var(--acc-link-on-glass);
+                text-decoration: underline;
+            }
+            /* ---- J69 两设置块:标题 + 三段选同排(设计稿 L952-958) ---- */
+            .set-block__row {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-12);
+            }
+            .set-block__title {
+                flex: 1;
+                min-width: 0;
+                font-size: var(--fs-115);
+                color: var(--txt-1);
+            }
+            .set-block__row .sc-seg {
+                flex: none;
+            }
+            .set-block__stale {
+                align-self: flex-start;
+            }
+            /* ---- 存储状态 ---- */
+            .settings-storage__value {
+                font-size: var(--fs-115);
+                color: var(--txt-1);
+            }
+            /* ---- 诊断区(折叠;设计稿 L995-1008) ---- */
+            .settings-diagnostics__head {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-8);
+            }
+            .settings-diagnostics__head .sc-eyebrow {
+                flex: 1;
+            }
+            .settings-diagnostics__chevron {
+                width: 18px;
+                height: 18px;
+                flex: none;
+                border: 0;
+                cursor: pointer;
+                background-color: transparent;
+                background-image: var(--chevron);
+                background-repeat: no-repeat;
+                background-position: center;
+                transition: transform var(--dur-1) var(--ease);
+            }
+            [data-gb="settings-diagnostics"][data-open="1"]
+                .settings-diagnostics__chevron {
+                transform: rotate(180deg);
+            }
+            .settings-diagnostics__body {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-3);
+                min-height: 0;
+                overflow-y: auto;
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-95);
+                color: var(--txt-3);
+            }
+            [data-gb="settings-diagnostics"][data-open="0"]
+                .settings-diagnostics__body {
+                display: none;
+            }
+            .settings-diagnostics__row {
+                display: flex;
+                gap: var(--sp-8);
+            }
+            .settings-diagnostics__cols {
+                color: var(--txt-4);
+                letter-spacing: var(--mono-ls-tag);
+            }
+            .settings-diagnostics__ch {
+                width: 26px;
+            }
+            .settings-diagnostics__hb {
+                width: 44px;
+            }
+            .settings-diagnostics__mis {
+                width: 34px;
+            }
+            .settings-diagnostics__gen {
+                width: 34px;
+            }
+            .settings-diagnostics__seq {
+                flex: 1;
             }
 
             /* ================================ Footer(设计稿 L1015-1034) ================================ */
@@ -4678,79 +4837,74 @@
                     </section>
 
                     <!-- ========================================================= -->
+                    <!-- ========================================================= -->
                     <!-- Tab4 设置(Settings)—— 05 §2.4                              -->
                     <!-- ========================================================= -->
                     <section data-tab-panel="settings" data-gb="tab-settings">
                         <div class="settings-grid" data-gb="settings-grid">
                             <div class="settings-main" data-gb="settings-main">
-                                <!-- 说明块(eyebrow 逐字「使用说明」,J71⑥/回流④) -->
+                                <!-- 说明块(eyebrow 逐字「使用说明」,J71⑥/回流④;05 §2.4 全部行) -->
                                 <div
                                     class="sc-card"
                                     data-gb="settings-guideblock"
                                 >
-                                    <!-- 词条待立:eyebrow 逐字「使用说明」(05 §2.4,J71⑥,字典缺;不得用近似词) -->
-                                    <div
+                                    <span
                                         class="sc-eyebrow"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        使用说明
-                                    </div>
-                                    <ol data-gb="settings-guideblock-steps">
-                                        <!-- 词条待立:三步工作流步骤1文字(05 §2.4,字典缺) -->
-                                        <li data-gb-todo="词条待立">采集</li>
-                                        <!-- 词条待立:三步工作流步骤2文字(05 §2.4,字典缺) -->
-                                        <li data-gb-todo="词条待立">分析</li>
-                                        <!-- 词条待立:三步工作流步骤3文字(05 §2.4,字典缺) -->
-                                        <li data-gb-todo="词条待立">输出</li>
-                                    </ol>
+                                        data-t="set.usage.eyebrow"
+                                    ></span>
+                                    <p
+                                        class="settings-guideblock__workflow"
+                                        data-gb="settings-guideblock-steps"
+                                        data-t="set.usage.workflow"
+                                    ></p>
                                     <div
                                         class="sc-banner--red settings-guideblock-rules"
                                         data-gb="settings-guideblock-rules"
+                                        data-open="0"
                                     >
                                         <p
-                                            class="sc-modal__title"
+                                            class="settings-guideblock-rules__title"
                                             data-t="guide.title"
                                         ></p>
+                                        <!-- guide.rule1..9 为 scripts/gen-hard-rules.mjs 生成物(12 §3.4 / 05 §5
+                                             禁止手抄);T35 只读取排版(前 3 条摘要 + 查看全部九条块内展开),
+                                             tab-settings.js 渲染;字典未生成时由下方 rules-missing 占位。 -->
                                         <ol
                                             data-gb="settings-guideblock-rules-list"
+                                        ></ol>
+                                        <p
+                                            class="sc-hint"
+                                            data-gb="settings-guideblock-rules-missing"
+                                            data-t="set.guide.rulesMissing"
+                                            hidden
+                                        ></p>
+                                        <div
+                                            class="settings-guideblock-rules__foot"
                                         >
-                                            <!-- guide.rule1..9 为 scripts/gen-hard-rules.mjs 从
-                                                 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入 i18n.js 的产物,
-                                                 T27b 时点字典尚未生成 —— 不得手抄、不得用 data-t 引用不存在的 key。 -->
-                                            <!-- 词条待立:guide.rule1(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成) -->
-                                            <li data-gb-todo="词条待立">…</li>
-                                            <!-- 词条待立:guide.rule2(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成) -->
-                                            <li data-gb-todo="词条待立">…</li>
-                                            <!-- 词条待立:guide.rule3(生成物,T31 由 gen-hard-rules.mjs 写入;当前字典未生成) -->
-                                            <li data-gb-todo="词条待立">…</li>
-                                        </ol>
-                                        <!-- 词条待立:「查看全部九条」按钮文案(05 §2.4,字典缺) -->
-                                        <button
-                                            class="sc-btn"
-                                            data-gb="settings-guideblock-expand"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            查看全部九条
-                                        </button>
+                                            <button
+                                                class="sc-btn"
+                                                data-gb="settings-guideblock-expand"
+                                                data-t="set.guide.showAll"
+                                            ></button>
+                                            <span
+                                                class="settings-guideblock-rules__spacer"
+                                            ></span>
+                                            <button
+                                                class="sc-btn"
+                                                data-gb="settings-reopentour"
+                                                data-t="set.reopenGuide"
+                                                data-tour="review"
+                                            ></button>
+                                        </div>
                                     </div>
-                                    <button
-                                        class="sc-btn"
-                                        data-gb="settings-reopentour"
-                                        data-t="set.reopenGuide"
-                                        data-tour="review"
-                                    >
-                                        重看引导
-                                    </button>
-                                    <!-- 词条待立:文档入口文案(05 §2.4,待定项③,字典缺) -->
                                     <a
                                         href="#"
+                                        class="settings-guideblock__docs"
                                         data-gb="settings-docs"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        文档
-                                    </a>
-                                    <!-- [T3x] bridge.setGuideSeen(seen, alsoGlobal=true) —— 契约 §1.32(「不再显示」勾选的落盘,见 guide-overlay) -->
-                                    <!-- [T3x] bridge.setTourSeen(seen, alsoGlobal=true) —— 契约 §1.33(「重看引导」重启 tour,T36b tour.js 消费) -->
+                                        data-t="set.usage.docs"
+                                    ></a>
+                                    <!-- 待定项③:文档入口(纯文案 vs 经 native 打开外部浏览器)未定,先落纯文案链接 -->
+                                    <!-- [T36b] 重看引导 = 重启交互式 tour(tour.js 消费 data-tour="review") -->
                                 </div>
 
                                 <!-- 第二响度指标(J69) -->
@@ -4758,57 +4912,30 @@
                                     class="sc-card"
                                     data-gb="settings-loudnessmode"
                                 >
-                                    <!-- 词条待立:eyebrow「第二响度指标」(05 §2.4,字典缺) -->
-                                    <div
+                                    <span
                                         class="sc-eyebrow"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        第二响度指标
-                                    </div>
-                                    <div
-                                        class="sc-modal__title"
-                                        style="
-                                            font-size: var(--fs-140);
-                                            color: var(--txt-1);
-                                        "
-                                        data-t="set.loudnessMode.title"
-                                    ></div>
-                                    <div
-                                        class="sc-seg"
-                                        role="group"
-                                        data-gb="settings-loudnessmode-seg"
-                                    >
-                                        <!-- 词条待立:选项「K 加权段积分(默认)」(05 §2.4,字典缺;词条正名非 LUFS-S) -->
-                                        <button
-                                            class="sc-seg__item"
-                                            aria-pressed="true"
-                                            data-value="kw_integrated"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            K 加权段积分
-                                        </button>
-                                        <!-- 词条待立:选项「RMS」(05 §2.4,字典缺) -->
-                                        <button
-                                            class="sc-seg__item"
-                                            data-value="rms"
-                                            data-gb-todo="词条待立"
-                                            aria-pressed="false"
-                                        >
-                                            RMS
-                                        </button>
-                                        <!-- 词条待立:选项「峰值 dBFS」(05 §2.4,字典缺) -->
-                                        <button
-                                            class="sc-seg__item"
-                                            data-value="peak_dbfs"
-                                            data-gb-todo="词条待立"
-                                            aria-pressed="false"
-                                        >
-                                            峰值 dBFS
-                                        </button>
+                                        data-t="set.loudnessMode.eyebrow"
+                                    ></span>
+                                    <div class="set-block__row">
+                                        <div
+                                            class="set-block__title"
+                                            data-t="set.loudnessMode.title"
+                                        ></div>
+                                        <div
+                                            class="sc-seg"
+                                            role="group"
+                                            data-gb="settings-loudnessmode-seg"
+                                        ></div>
                                     </div>
                                     <p
                                         class="sc-hint"
                                         data-t="set.loudnessMode.note"
+                                    ></p>
+                                    <p
+                                        class="sc-badge--amber set-block__stale"
+                                        data-gb="settings-loudnessmode-stale"
+                                        data-t="set.reanalyze"
+                                        hidden
                                     ></p>
                                 </div>
 
@@ -4817,87 +4944,55 @@
                                     class="sc-card"
                                     data-gb="settings-centerslot"
                                 >
-                                    <!-- 词条待立:eyebrow「中心槽策略」(05 §2.4,字典缺) -->
-                                    <div
+                                    <span
                                         class="sc-eyebrow"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        中心槽策略
-                                    </div>
-                                    <div
-                                        class="sc-modal__title"
-                                        style="
-                                            font-size: var(--fs-140);
-                                            color: var(--txt-1);
-                                        "
-                                        data-t="set.centerSlot.title"
-                                    ></div>
-                                    <div
-                                        class="sc-seg"
-                                        role="group"
-                                        data-gb="settings-centerslot-seg"
-                                    >
-                                        <!-- 词条待立:选项「按优先级排队(默认)」(05 §2.4,字典缺) -->
-                                        <button
-                                            class="sc-seg__item"
-                                            aria-pressed="true"
-                                            data-value="priority_queue"
-                                            data-gb-todo="词条待立"
-                                        >
-                                            按优先级排队
-                                        </button>
-                                        <!-- 词条待立:选项「主唱独占」(05 §2.4,字典缺) -->
-                                        <button
-                                            class="sc-seg__item"
-                                            data-value="lead_exclusive"
-                                            data-gb-todo="词条待立"
-                                            aria-pressed="false"
-                                        >
-                                            主唱独占
-                                        </button>
-                                        <!-- 词条待立:选项「均分微偏」(05 §2.4,字典缺) -->
-                                        <button
-                                            class="sc-seg__item"
-                                            data-value="even_spread"
-                                            data-gb-todo="词条待立"
-                                            aria-pressed="false"
-                                        >
-                                            均分微偏
-                                        </button>
+                                        data-t="set.centerSlot.eyebrow"
+                                    ></span>
+                                    <div class="set-block__row">
+                                        <div
+                                            class="set-block__title"
+                                            data-t="set.centerSlot.title"
+                                        ></div>
+                                        <div
+                                            class="sc-seg"
+                                            role="group"
+                                            data-gb="settings-centerslot-seg"
+                                        ></div>
                                     </div>
                                     <p
                                         class="sc-hint"
                                         data-t="set.centerSlot.note"
                                     ></p>
-                                    <!-- [T3x] bridge.setAnalysisConfig({loudness_mode?, center_slot_policy?}) —— 契约 §1.21 -->
+                                    <p
+                                        class="sc-badge--amber set-block__stale"
+                                        data-gb="settings-centerslot-stale"
+                                        data-t="set.reanalyze"
+                                        hidden
+                                    ></p>
+                                    <!-- [T35] bridge.setAnalysisConfig({loudness_mode?, center_slot_policy?}) —— 契约 §1.21 -->
                                 </div>
                             </div>
 
                             <div class="settings-side" data-gb="settings-side">
                                 <div class="sc-card" data-gb="settings-scale">
-                                    <span class="sc-eyebrow" data-t="scale">
-                                        界面缩放
-                                    </span>
-                                    <!-- 档位 <option> 由 app.js 按 DESIGN.output.presets 生成(05 §1.2 常量真源
-                                         = web/shared/design-box.js;不在 HTML 里写死第二真源) -->
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="scale"
+                                    ></span>
+                                    <!-- 档位 <option> 由 app.js 按 DESIGN.output.presets 生成(05 §1.2 常量真源);
+                                         10 秒确认防呆 scrim 在卡片层 data-gb="scale-confirm"(app.js 状态机)。 -->
                                     <select
                                         class="sc-select"
                                         data-t-aria="scale"
                                         data-gb="settings-scale-select"
                                     ></select>
-                                    <!-- 10 秒确认防呆(机制同 Bridge,05 §1.2)的 scrim 已上提到
-                                         **卡片层** `data-gb="scale-confirm"`(见文件末,guide-overlay 旁):
-                                         footer 缩放下拉与本 select 是同一台状态机的两个入口,确认框只能有一个;
-                                         留在 .settings-side 里时它随 Tab4 面板一起隐藏,从 footer 改档就看不见倒计时。
-                                         [T31 Wave 2] setUiScale / commitUiScale 的接线在 app.js。 -->
-                                    <!-- [T3x] bridge.setUiScale(f) —— 契约 §1.28 -->
-                                    <!-- [T3x] bridge.commitUiScale() —— 契约 §1.29 -->
                                 </div>
 
                                 <div class="sc-card" data-gb="settings-lang">
-                                    <span class="sc-eyebrow" data-t="language">
-                                        语言
-                                    </span>
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="language"
+                                    ></span>
                                     <div
                                         class="sc-seg sc-seg--sm"
                                         role="group"
@@ -4928,32 +5023,25 @@
                                 </div>
 
                                 <div class="sc-card" data-gb="settings-version">
-                                    <span class="sc-eyebrow" data-t="version">
-                                        版本
-                                    </span>
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="version"
+                                    ></span>
                                     <span
                                         class="sc-mono"
                                         data-gb="settings-version-value"
-                                        >0.1.0 · abi 1</span
-                                    >
-                                    <!-- [T3x] bridge.requestInitialState() —— 契约 §1.1(version.plugin/version.abi) -->
+                                    ></span>
                                 </div>
 
                                 <div class="sc-card" data-gb="settings-storage">
-                                    <!-- 词条待立:eyebrow「存储状态」(05 §2.4,字典缺) -->
                                     <span
                                         class="sc-eyebrow"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        存储状态
-                                    </span>
-                                    <!-- 词条待立:「内嵌于工程(x.x MB)」/「已转外部文件(>8MB 自动)」两态句式(05 §2.4,字典缺) -->
+                                        data-t="set.storage.eyebrow"
+                                    ></span>
                                     <div
+                                        class="settings-storage__value"
                                         data-gb="settings-storage-value"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        内嵌于工程(0.0 MB)
-                                    </div>
+                                    ></div>
                                     <span
                                         class="sc-mono sc-hint"
                                         data-gb="settings-storage-guid"
@@ -4963,26 +5051,61 @@
                                 <div
                                     class="sc-card"
                                     data-gb="settings-diagnostics"
+                                    data-open="0"
                                 >
-                                    <!-- 词条待立:eyebrow「诊断」(05 §2.4,字典缺) -->
-                                    <span
-                                        class="sc-eyebrow"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        诊断
-                                    </span>
+                                    <div class="settings-diagnostics__head">
+                                        <span
+                                            class="sc-eyebrow"
+                                            data-t="set.diag.eyebrow"
+                                        ></span>
+                                        <button
+                                            class="settings-diagnostics__chevron"
+                                            data-gb="settings-diagnostics-chevron"
+                                            aria-expanded="false"
+                                            aria-label="diagnostics"
+                                        ></button>
+                                    </div>
                                     <div
-                                        class="sc-hint"
-                                        data-gb="settings-diagnostics-list"
-                                    ></div>
-                                    <!-- 词条待立:「复制诊断信息」按钮文案(05 §2.4,字典缺) -->
+                                        class="settings-diagnostics__body"
+                                        data-gb="settings-diagnostics-body"
+                                    >
+                                        <div
+                                            class="settings-diagnostics__row settings-diagnostics__cols"
+                                        >
+                                            <span
+                                                class="settings-diagnostics__ch"
+                                                >CH</span
+                                            >
+                                            <span
+                                                class="settings-diagnostics__hb"
+                                                >HB</span
+                                            >
+                                            <span
+                                                class="settings-diagnostics__mis"
+                                                >MIS</span
+                                            >
+                                            <span
+                                                class="settings-diagnostics__gen"
+                                                >GEN</span
+                                            >
+                                            <span
+                                                class="settings-diagnostics__seq"
+                                                >SEQ</span
+                                            >
+                                        </div>
+                                        <div
+                                            data-gb="settings-diagnostics-rows"
+                                        ></div>
+                                        <!-- 未知 error code 的降级落点(app.js renderBanners 写入 <li>) -->
+                                        <ul
+                                            data-gb="settings-diagnostics-list"
+                                        ></ul>
+                                    </div>
                                     <button
                                         class="sc-btn"
                                         data-gb="settings-diagnostics-copy"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        复制诊断信息
-                                    </button>
+                                        data-t="set.diag.copy"
+                                    ></button>
                                 </div>
                             </div>
                         </div>
