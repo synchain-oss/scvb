@@ -294,10 +294,42 @@ export const T = {
             "影响分析时的段间响度归一化基准;改后需重分析。",
         "set.centerSlot.title": "多轨争抢中心位时怎么办",
         "set.centerSlot.note":
-            "主唱锁与 Lead Select 之外的兜底规则;不影响参与音量调节开关。",
+            "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
+
+        // ---- T35 新增(Output Tab4 设置;05 §2.4 全部行 + J69 两设置块)----
+        // zh 逐字取 05 §2.4 / §5.2(选项正名「K 加权段积分」非 LUFS-S,05 §2.4);
+        // EN/FR 为 T35 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "set.usage.eyebrow": "使用说明",
+        "set.usage.workflow":
+            "采集 → 分析 → 输出。开启采集并播放,插件记录每条轨的响度特征;分析在离线状态下算出每个乐句的声像/音量方案;输出切到「引擎驱动」后由插件驱动参数,要落盘则在 DAW 侧开 Latch 或 Write。",
+        "set.usage.docs": "文档",
+        "set.loudnessMode.eyebrow": "第二响度指标",
+        "set.loudnessMode.opt.kw_integrated": "K 加权段积分",
+        "set.loudnessMode.opt.rms": "RMS",
+        "set.loudnessMode.opt.peak_dbfs": "峰值 dBFS",
+        "set.centerSlot.eyebrow": "中心槽策略",
+        "set.centerSlot.opt.priority_queue": "按优先级排队",
+        "set.centerSlot.opt.lead_exclusive": "主唱独占",
+        "set.centerSlot.opt.even_spread": "均分微偏",
+        "set.guide.showAll": "查看全部九条",
+        "set.guide.collapse": "收起",
+        "set.guide.rulesMissing": "九条约束全文将在发布版补齐",
+        "set.storage.eyebrow": "存储状态",
+        "set.storage.embedded": "内嵌于工程({mb} MB)",
+        "set.storage.external": "已转外部文件(>8MB 自动)",
+        "set.storage.sessionGuid": "session {guid}",
+        "set.diag.eyebrow": "诊断",
+        "set.diag.copy": "复制诊断信息",
+        "set.diag.copied": "已复制",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
+        "set.reanalyze": "改后需重分析",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -647,9 +679,40 @@ export const T = {
         "set.centerSlot.title":
             "What happens when tracks compete for the center slot",
         "set.centerSlot.note":
-            "Fallback rule beyond Lead Lock and Lead Select; it does not affect the volume participation switch.",
+            "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
+
+        // ---- T35 新增(EN 自译,待人工审校)----
+        "set.usage.eyebrow": "USAGE",
+        "set.usage.workflow":
+            "Capture → Analyze → Output. Turn on capture and play; the plug-in records each track's loudness features. Analysis computes a pan/level plan for every phrase offline. Switch Output to ENGINE DRIVE and the plug-in drives the parameters; to record them, arm Latch or Write on the DAW side.",
+        "set.usage.docs": "Docs",
+        "set.loudnessMode.eyebrow": "SECOND LOUDNESS METRIC",
+        "set.loudnessMode.opt.kw_integrated": "K-weighted integral",
+        "set.loudnessMode.opt.rms": "RMS",
+        "set.loudnessMode.opt.peak_dbfs": "Peak dBFS",
+        "set.centerSlot.eyebrow": "CENTER SLOT POLICY",
+        "set.centerSlot.opt.priority_queue": "Priority queue",
+        "set.centerSlot.opt.lead_exclusive": "Lead exclusive",
+        "set.centerSlot.opt.even_spread": "Even spread",
+        "set.guide.showAll": "Show all nine",
+        "set.guide.collapse": "Collapse",
+        "set.guide.rulesMissing":
+            "The full nine rules will be included in the release build",
+        "set.storage.eyebrow": "STORAGE",
+        "set.storage.embedded": "Embedded in project ({mb} MB)",
+        "set.storage.external": "Moved to external file (>8 MB automatic)",
+        "set.storage.sessionGuid": "session {guid}",
+        "set.diag.eyebrow": "DIAGNOSTICS",
+        "set.diag.copy": "Copy diagnostics",
+        "set.diag.copied": "Copied",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
+        "set.reanalyze": "Re-analysis required",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -1004,9 +1067,41 @@ export const T = {
         "set.centerSlot.title":
             "Que faire quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
-            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'interrupteur de participation au volume.",
+            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
+
+        // ---- T35 新增(FR 自译,待人工审校)----
+        "set.usage.eyebrow": "MODE D'EMPLOI",
+        "set.usage.workflow":
+            "Capture → Analyser → Sortie. Activez la capture et lancez la lecture ; le plug-in enregistre les caractéristiques de loudness de chaque piste. L'analyse calcule un plan pan/volume pour chaque phrase hors ligne. Passez la sortie en PILOTAGE MOTEUR pour que le plug-in pilote les paramètres ; pour les enregistrer, armez Latch ou Write côté DAW.",
+        "set.usage.docs": "Documentation",
+        "set.loudnessMode.eyebrow": "SECOND INDICATEUR DE LOUDNESS",
+        "set.loudnessMode.opt.kw_integrated": "Intégrale pondérée K",
+        "set.loudnessMode.opt.rms": "RMS",
+        "set.loudnessMode.opt.peak_dbfs": "Crête dBFS",
+        "set.centerSlot.eyebrow": "STRATÉGIE DE CRÉNEAU CENTRAL",
+        "set.centerSlot.opt.priority_queue": "File de priorité",
+        "set.centerSlot.opt.lead_exclusive": "Exclusivité lead",
+        "set.centerSlot.opt.even_spread": "Répartition égale",
+        "set.guide.showAll": "Voir les neuf règles",
+        "set.guide.collapse": "Replier",
+        "set.guide.rulesMissing":
+            "Les neuf règles complètes seront incluses dans la version publiée",
+        "set.storage.eyebrow": "STOCKAGE",
+        "set.storage.embedded": "Intégré au projet ({mb} Mo)",
+        "set.storage.external":
+            "Déplacé vers un fichier externe (>8 Mo automatique)",
+        "set.storage.sessionGuid": "session {guid}",
+        "set.diag.eyebrow": "DIAGNOSTIC",
+        "set.diag.copy": "Copier les diagnostics",
+        "set.diag.copied": "Copié",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
+        "set.reanalyze": "Ré-analyse requise",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;

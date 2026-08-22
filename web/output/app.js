@@ -41,6 +41,7 @@ import {
     HOST_ECHO_FRESH_MS,
 } from "./tab-master.js";
 import { createTabTracks } from "./tab-tracks.js";
+import { createTabSettings } from "./tab-settings.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -305,6 +306,18 @@ const tabTracks = createTabTracks({
     onLocalChange: () => render(),
 });
 tabTracks.mount();
+
+// ------------------------------------------------------------- Tab4(tab-settings.js)
+// T35:缩放 select 与语言胶囊的接线仍在本文件(scale/语言是外壳级),Tab4 的
+// 其余全部内容(两设置块 / 说明块 / 存储 / 诊断 / 版本号)在 createTabSettings。
+const tabSettings = createTabSettings({
+    root: document,
+    bridge,
+    getStore: () => store,
+    getT: () => dictNow,
+    onLocalChange: () => render(),
+});
+tabSettings.mount();
 
 // ------------------------------------------------------------- Tab3:15 泳道模板生成(05 §2.3)
 // 轨头/曲线叠加层/特征波形/VAD 着色/分段边界/采集覆盖进度 六件套,画布仅给尺寸注释,
@@ -768,6 +781,7 @@ function render() {
     renderGuide();
     tabMaster.render();
     tabTracks.render();
+    tabSettings.render();
 }
 
 function renderHeader() {
@@ -1078,6 +1092,8 @@ if (bridge) {
         tabMaster.onSegments(seg);
         // Tab2:手动常值的乐观显示让位给回推的段表(§1.16 的写入结果经本事件回来)
         tabTracks.onSegments(seg);
+        // Tab4:全量分析完成 → 清「改后需重分析」标志(03 §6.3 applied.* 同步)
+        tabSettings.onSegments(seg);
         // J69 stale:任一轨 stale → tab 导航「波形与分段」挂琥珀点
         const stale = (seg && seg.channels ? seg.channels : []).some(
             (c) => c && c.stale,
