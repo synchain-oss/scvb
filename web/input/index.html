@@ -99,6 +99,7 @@
             .ipt-header__pillsub {
                 max-width: 200px;
                 text-align: right;
+                color: var(--txt-2);
             }
             /* 组 badge(J71③:独立「组 {X}」badge,不是 pill 后缀;空/未连接态同样常显) */
             .ipt-group-badge {
@@ -141,6 +142,10 @@
                 display: flex;
                 flex-direction: column;
                 gap: var(--sp-10);
+            }
+            /* 引导副行是正文级信息(非辅助标签),不下沉到 .sc-hint 的 --txt-4 幽灵灰 */
+            .ipt-content .sc-hint {
+                color: var(--txt-2);
             }
 
             /* ---- 组选择器(05 §3:压通道网格顶行、比卡片矮一档;胶囊族样式) */
@@ -193,7 +198,8 @@
             }
             .ipt-group__warn {
                 color: var(--sem-red-ink);
-                font-size: var(--fs-90);
+                font-weight: 600;
+                font-size: var(--fs-100);
                 line-height: 1.45;
                 text-wrap: pretty;
             }
