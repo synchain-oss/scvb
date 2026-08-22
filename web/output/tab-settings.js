@@ -183,7 +183,6 @@ export function createTabSettings(opts) {
         loudnessSeg: $("settings-loudnessmode-seg"),
         centerSeg: $("settings-centerslot-seg"),
         loudnessStale: $("settings-loudnessmode-stale"),
-        centerStale: $("settings-centerslot-stale"),
         guideBox: $("settings-guideblock-rules"),
         guideList: $("settings-guideblock-rules-list"),
         guideMissing: $("settings-guideblock-rules-missing"),
@@ -208,7 +207,7 @@ export function createTabSettings(opts) {
     const local = {
         analysisConfigDirty: false,
         nineOpen: false,
-        diagOpen: false,
+        diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
     };
 
@@ -287,7 +286,9 @@ export function createTabSettings(opts) {
                     requestRender();
                     return;
                 }
-                local.analysisConfigDirty = true;
+                // 改后需重分析提示只在 loudness_mode 变化时出现;
+                // center_slot_policy 变化不弹该提示(用户 preview 口径)。
+                if (field === "loudness_mode") local.analysisConfigDirty = true;
                 requestRender();
             });
         });
@@ -393,16 +394,9 @@ export function createTabSettings(opts) {
 
     function syncStale() {
         show(el.loudnessStale, local.analysisConfigDirty);
-        show(el.centerStale, local.analysisConfigDirty);
         if (el.loudnessStale)
             attr(
                 el.loudnessStale,
-                "data-stale",
-                local.analysisConfigDirty ? "1" : "0",
-            );
-        if (el.centerStale)
-            attr(
-                el.centerStale,
                 "data-stale",
                 local.analysisConfigDirty ? "1" : "0",
             );

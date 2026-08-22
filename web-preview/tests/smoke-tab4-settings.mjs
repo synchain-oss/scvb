@@ -12,7 +12,7 @@
 //     analysisConfigOf / diagRowsOf / diagText;
 //   ③ mock 端到端:setAnalysisConfig 写入 + badArg(含 02/03 拼写不互认)+ save/load 往返不丢;
 //   ④ 词条:T35 新增 set.* key 三语齐、占位符三语一致、05 §5 禁词零命中;
-//   ⑤ 源码级:改任一项 → 置「改后需重分析」stale;九条 = 读取 guide.rule* 生成物零手抄;
+//   ⑤ 源码级:改 loudness_mode → 置「改后需重分析」stale(center_slot_policy 不弹);九条 = 读取 guide.rule* 生成物零手抄;
 //     「查看全部九条」= 块内展开;J45 措辞零命中。
 //
 // 用法:node web-preview/tests/smoke-tab4-settings.mjs [仓库根绝对路径]
@@ -351,18 +351,25 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
     const ts = src("web/output/tab-settings.js");
     const html = src("web/output/index.html");
 
-    // 改任一项 → 置「改后需重分析」stale + setAnalysisConfig 落 state
+    // 「改后需重分析」只在 loudness_mode 变化时出现(用户 preview 口径);
+    // center_slot_policy 变化不弹该提示 + setAnalysisConfig 落 state
     check(
         /call\("setAnalysisConfig", \{ \[field\]: value \}\)/.test(ts),
         "两设置块经 setAnalysisConfig(§1.21)落 state",
     );
     check(
-        /analysisConfigDirty = true/.test(ts),
-        "改动置 stale(analysisConfigDirty)",
+        /field === "loudness_mode"[\s\S]{0,80}analysisConfigDirty = true/.test(
+            ts,
+        ),
+        "改后需重分析只在 loudness_mode 变化时置位",
     );
     check(
         /set.reanalyze/.test(html) && /settings-loudnessmode-stale/.test(html),
-        "「改后需重分析」提示落点(三语 key set.reanalyze)",
+        "「改后需重分析」提示落点(三语 key set.reanalyze,只在响度块)",
+    );
+    check(
+        !/settings-centerslot-stale/.test(html),
+        "中心槽策略块不弹「改后需重分析」提示",
     );
 
     // 九条 = 读取 guide.rule* 生成物,零手抄
@@ -427,6 +434,19 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
     check(
         /settings-scale-select/.test(html) && /scale-confirm/.test(html),
         "缩放 select 与 10 秒防呆确认框同源(app.js)",
+    );
+
+    // 诊断区初始展开(用户 preview:避免下方空一块)
+    check(
+        ts.includes("diagOpen: true") && html.includes('data-open="1"'),
+        "诊断区初始展开(diagOpen:true + data-open=1)",
+    );
+
+    // 版本号用干净 sans(非等宽细体;用户 preview)
+    check(
+        html.includes(".settings-version__value") &&
+            html.includes("font-family: var(--ff-sans)"),
+        "版本号排印改干净 sans(--ff-sans,非 sc-mono)",
     );
 }
 

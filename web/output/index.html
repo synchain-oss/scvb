@@ -2372,6 +2372,15 @@
             .set-block__stale {
                 align-self: flex-start;
             }
+            /* ---- 版本号(用户 preview:不用等宽细体,改干净 sans + 中粗 + tabular) ---- */
+            .settings-version__value {
+                font-family: var(--ff-sans);
+                font-weight: 500;
+                font-size: var(--fs-115);
+                font-variant-numeric: tabular-nums lining-nums;
+                letter-spacing: normal;
+                color: var(--txt-1);
+            }
             /* ---- 存储状态 ---- */
             .settings-storage__value {
                 font-size: var(--fs-115);
@@ -4968,12 +4977,6 @@
                                         class="sc-hint"
                                         data-t="set.centerSlot.note"
                                     ></p>
-                                    <p
-                                        class="sc-badge--amber set-block__stale"
-                                        data-gb="settings-centerslot-stale"
-                                        data-t="set.reanalyze"
-                                        hidden
-                                    ></p>
                                     <!-- [T35] bridge.setAnalysisConfig({loudness_mode?, center_slot_policy?}) —— 契约 §1.21 -->
                                 </div>
                             </div>
@@ -5033,7 +5036,7 @@
                                         data-t="version"
                                     ></span>
                                     <span
-                                        class="sc-mono"
+                                        class="settings-version__value"
                                         data-gb="settings-version-value"
                                     ></span>
                                 </div>
@@ -5056,7 +5059,7 @@
                                 <div
                                     class="sc-card"
                                     data-gb="settings-diagnostics"
-                                    data-open="0"
+                                    data-open="1"
                                 >
                                     <div class="settings-diagnostics__head">
                                         <span
@@ -5066,7 +5069,7 @@
                                         <button
                                             class="settings-diagnostics__chevron"
                                             data-gb="settings-diagnostics-chevron"
-                                            aria-expanded="false"
+                                            aria-expanded="true"
                                             data-t-aria="set.diag.eyebrow"
                                         ></button>
                                     </div>
