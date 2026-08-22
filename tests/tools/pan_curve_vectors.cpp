@@ -123,9 +123,8 @@ int main()
             const PanCurvePoint& pt = s.points[pi];
             if (pi != 0)
                 std::cout << ",";
-            std::cout << "{\"angle\":" << pt.angle << ",\"gain_db\":" << pt.gainDb
-                      << ",\"shape\":\"" << shapeName(pt.shape) << "\",\"q\":" << pt.q
-                      << ",\"side\":\"" << sideName(pt.side) << "\"}";
+            std::cout << "{\"angle\":" << pt.angle << ",\"gain_db\":" << pt.gainDb << ",\"shape\":\""
+                      << shapeName(pt.shape) << "\",\"q\":" << pt.q << ",\"side\":\"" << sideName(pt.side) << "\"}";
         }
         std::cout << "],\n      \"lut\": [";
         for (int i = 0; i < scvb::kPanCurveLutSize; ++i)
