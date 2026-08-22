@@ -1398,7 +1398,11 @@ function buildInputBackend(ctx) {
     /** claim 结果 → §5.2 六态。 */
     function claimStateFor(channelId) {
         if (channelId === 0) return "unassigned";
-        return model.conn.outputOnline ? "active" : "idle";
+        // §5.2:active 需「被本组 Output 健康读取」(connected_mask 本位=1);
+        // outputOnline 在线但 maskBit=0(等待 Output/passthrough)应归 idle,不得归 active。
+        return model.conn.outputOnline && model.conn.maskBit
+            ? "active"
+            : "idle";
     }
 
     const backend = {

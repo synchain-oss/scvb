@@ -177,7 +177,25 @@ await withInput("scenario=connected", async (b, seen) => {
         st && st.group_id === 2,
         `切组后 group_id 应 2,实得 ${st && st.group_id}`,
     );
+    check(
+        st && st.claim === "active",
+        `connected(maskBit=1) 切组后 claim 应 active,实得 ${st && st.claim}`,
+    );
     log(`  setGroupId(2) → ${JSON.stringify(r)}`);
+});
+// claimStateFor(§5.2):active 需 outputOnline && maskBit;maskBit=0 → idle
+await withInput("scenario=passthrough", async (b, seen) => {
+    const r = await b.setGroupId(2);
+    check(
+        r.ok === true,
+        `passthrough setGroupId(2) 应 {ok:true},实得 ${JSON.stringify(r)}`,
+    );
+    const st = seen.get("scvb.state:last");
+    check(
+        st && st.claim === "idle",
+        `passthrough(maskBit=0) 切组后 claim 应 idle,实得 ${st && st.claim}`,
+    );
+    log(`  passthrough setGroupId(2) → claim=${st && st.claim}`);
 });
 // 新组同 channel 被占(groupConflict cap)→ 冲突
 {
