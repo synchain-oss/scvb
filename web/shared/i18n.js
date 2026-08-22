@@ -60,7 +60,6 @@ export const T = {
         version: "版本",
         priority: "优先级",
         leadLock: "主唱锁中",
-        leadVolExempt: "音量豁免",
         leadSelect: "主唱选择",
         leadFollowAnalysis: "遵循分析",
         msBalance: "MS 平衡",
@@ -68,7 +67,8 @@ export const T = {
         participateAutoPan: "参与自动声像",
         trackWidth: "轨道宽度",
         "tracks.monoWidthNoop": "mono 源:宽度在 v1 无效",
-        "master.leadSelectHint": "该轨强制居中;音量豁免为独立选项,不随此联动",
+        "master.leadSelectHint":
+            "该轨强制居中;是否参与音量调节为独立开关,不随此联动",
         pair: "配对",
         threshold: "阈值",
         sensitivity: "灵敏度",
@@ -238,9 +238,51 @@ export const T = {
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
         "tracks.colLegend":
-            "音量＝音量豁免,该轨不进音量平衡计算 · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
+            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开)· 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
+        // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
+        // 列头短名一律 mono 大写微标,三语同值或极简缩写(与 master.msEyebrow 同族纪律:
+        // 这是视觉层的 mono 标签,不是句子;26px 列宽下任何长词都会被 overflow 截掉)。
+        // EN/FR 待人工审校(05 §5),逐条见 T32 差异清单。
+        "tracks.colCh": "CH",
+        "tracks.labelPlaceholder": "轨 {n}",
+        "tracks.colVolPart": "参与音量调节",
+        "tracks.colState": "状态",
+        "tracks.colPan": "PAN",
+        "tracks.colW": "W",
+        "tracks.colVolLevel": "音量 / 电平",
+        "tracks.colPrio": "PRIO",
+        "tracks.colLead": "LEAD",
+        // 参与性两列的列头短标签(回流⑬);其全称与语义靠 tracks.colLegend 长句说明,
+        // 该长句里同名的三个词(设计稿 626 行的三处 <strong>)由 tab-tracks.js 的
+        // legendSegments() 按「段首 → 首个等号」自行切出并加粗,不依赖本组 key。
+        "tracks.colVolExempt": "音量",
+        "tracks.colAutoPan": "声像",
+        "tracks.colFreezePan": "冻结P",
+        "tracks.colFreezeVol": "冻结V",
+        "tracks.colOn": "ON",
+        "tracks.footNote": "15 轨 · 滚动 + 表头 sticky",
+        "tracks.emptyRoute": "人声轨的输出路由须保持指向本总线(不要改)",
+        // 「样本不足」角标保短版(裸词条 lowSample),全句进 tooltip(统筹裁定 B12)
+        "lowSample.full": "样本不足,结果可能不稳",
+        "tracks.panAutoHint": "自动模式——由分析曲线驱动",
+        // Lead Select 选中轨的行首居中标记(05 §2.2 主唱锁行;全句走 master.leadSelectHint)
+        "tracks.leadCenter": "居中",
+        "tracks.multiLead": "多主唱居中",
+        "tracks.misaligned": "失准 ×{n}",
+        "tracks.srErr": "采样率不一致",
+        "tracks.labelEdit": "轨道名称(≤24 字符)",
+        "tracks.reidentifyOne": "重新识别轨 {n}",
+        // 单轨重新识别的**二次确认**(05 §2.2「二次确认同 §2.3」;契约 §1.6 的
+        // clearManual 分支:locked 段不受影响,须先逐段解锁)。T32 Wave 2 新增。
+        "tracks.reidentifyConfirm":
+            "将清除轨 {n} 的手动固定值并重新识别;已锁定段保持不变,确定?",
+        "tracks.pairNone": "无",
+        "tracks.pairFullSuffix": "(满)",
+        "tracks.pairOverflow": "配对超员",
+        "common.decrease": "减",
+        "common.increase": "增",
         "wave.trackPickHint": "勾选左侧轨头选择目标轨(可多选,shift 连选)",
         "wave.selChip": "上面四个操作作用于 {n} 轨",
         "wave.setRangeTip":
@@ -252,7 +294,7 @@ export const T = {
             "影响分析时的段间响度归一化基准;改后需重分析。",
         "set.centerSlot.title": "多轨争抢中心位时怎么办",
         "set.centerSlot.note":
-            "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
+            "主唱锁与 Lead Select 之外的兜底规则;不影响参与音量调节开关。",
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
@@ -374,7 +416,6 @@ export const T = {
         version: "Version",
         priority: "Priority",
         leadLock: "Lead Lock",
-        leadVolExempt: "Vol Exempt",
         leadSelect: "Lead Select",
         leadFollowAnalysis: "Follow analysis",
         msBalance: "MS Balance",
@@ -383,7 +424,7 @@ export const T = {
         trackWidth: "Track Width",
         "tracks.monoWidthNoop": "Mono source: width has no effect in v1",
         "master.leadSelectHint":
-            "Track forced to center; Vol Exempt is independent and unaffected",
+            "Track forced to center; the volume participation switch is independent and unaffected",
         pair: "Pair",
         threshold: "Threshold",
         sensitivity: "Sensitivity",
@@ -557,9 +598,42 @@ export const T = {
         "master.copyConfirmWarn":
             "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = volume exempt, this track is excluded from level balancing · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
+            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
         "tracks.emptyGroup":
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
+        // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
+        "tracks.colCh": "CH",
+        "tracks.labelPlaceholder": "Track {n}",
+        "tracks.colVolPart": "Volume participation",
+        "tracks.colState": "State",
+        "tracks.colPan": "PAN",
+        "tracks.colW": "W",
+        "tracks.colVolLevel": "VOL / LEVEL",
+        "tracks.colPrio": "PRIO",
+        "tracks.colLead": "LEAD",
+        "tracks.colVolExempt": "Vol",
+        "tracks.colAutoPan": "Pan",
+        "tracks.colFreezePan": "FRZ P",
+        "tracks.colFreezeVol": "FRZ V",
+        "tracks.colOn": "ON",
+        "tracks.footNote": "15 tracks · scroll + sticky header",
+        "tracks.emptyRoute":
+            "Keep each vocal track's output routing pointed at this bus (do not change it)",
+        "lowSample.full": "Low sample — the result may be unstable",
+        "tracks.panAutoHint": "Auto mode — driven by the analysis curve",
+        "tracks.leadCenter": "CTR",
+        "tracks.multiLead": "Multiple leads centred",
+        "tracks.misaligned": "Misaligned ×{n}",
+        "tracks.srErr": "Sample rate mismatch",
+        "tracks.labelEdit": "Track name (24 characters max)",
+        "tracks.reidentifyOne": "Re-identify track {n}",
+        "tracks.reidentifyConfirm":
+            "This clears the manual fixed value on track {n} and re-identifies it. Locked segments are left untouched. Continue?",
+        "tracks.pairNone": "None",
+        "tracks.pairFullSuffix": " (full)",
+        "tracks.pairOverflow": "Pair over capacity",
+        "common.decrease": "Decrease",
+        "common.increase": "Increase",
         "wave.trackPickHint":
             "Tick the lane headers on the left to choose target tracks (multi-select, shift for a range)",
         "wave.selChip": "The four actions above apply to {n} tracks",
@@ -573,7 +647,7 @@ export const T = {
         "set.centerSlot.title":
             "What happens when tracks compete for the center slot",
         "set.centerSlot.note":
-            "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
+            "Fallback rule beyond Lead Lock and Lead Select; it does not affect the volume participation switch.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
 
@@ -693,7 +767,6 @@ export const T = {
         version: "Version",
         priority: "Priorité",
         leadLock: "Verrou lead",
-        leadVolExempt: "Volume exempté",
         leadSelect: "Sélection lead",
         leadFollowAnalysis: "Suivre l'analyse",
         msBalance: "Balance M/S",
@@ -702,7 +775,7 @@ export const T = {
         trackWidth: "Largeur de piste",
         "tracks.monoWidthNoop": "Source mono : la largeur est sans effet en v1",
         "master.leadSelectHint":
-            "Piste forcée au centre ; l'exemption de volume est indépendante",
+            "Piste forcée au centre ; l'interrupteur de participation au volume est indépendant",
         pair: "Paire",
         threshold: "Seuil",
         sensitivity: "Sensibilité",
@@ -880,9 +953,43 @@ export const T = {
         "master.copyConfirmWarn":
             "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = exemption de volume, la piste est exclue de l'équilibrage · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
+            "Vol = participation au volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
+        // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
+        "tracks.colCh": "CH",
+        "tracks.labelPlaceholder": "Piste {n}",
+        "tracks.colVolPart": "Participation volume",
+        "tracks.colState": "État",
+        "tracks.colPan": "PAN",
+        "tracks.colW": "W",
+        "tracks.colVolLevel": "VOL / NIVEAU",
+        "tracks.colPrio": "PRIO",
+        "tracks.colLead": "LEAD",
+        "tracks.colVolExempt": "Vol",
+        "tracks.colAutoPan": "Pan",
+        "tracks.colFreezePan": "GEL P",
+        "tracks.colFreezeVol": "GEL V",
+        "tracks.colOn": "ON",
+        "tracks.footNote": "15 pistes · défilement + en-tête fixe",
+        "tracks.emptyRoute":
+            "Le routage de sortie des pistes vocales doit rester dirigé vers ce bus (ne pas le modifier)",
+        "lowSample.full":
+            "Échantillon insuffisant — le résultat peut être instable",
+        "tracks.panAutoHint": "Mode auto — piloté par la courbe d'analyse",
+        "tracks.leadCenter": "CTR",
+        "tracks.multiLead": "Plusieurs voix principales centrées",
+        "tracks.misaligned": "Désalignement ×{n}",
+        "tracks.srErr": "Fréquence d'échantillonnage incompatible",
+        "tracks.labelEdit": "Nom de piste (24 caractères max)",
+        "tracks.reidentifyOne": "Ré-identifier la piste {n}",
+        "tracks.reidentifyConfirm":
+            "La valeur fixe manuelle de la piste {n} sera effacée puis ré-identifiée ; les segments verrouillés restent inchangés. Continuer ?",
+        "tracks.pairNone": "Aucun",
+        "tracks.pairFullSuffix": " (complet)",
+        "tracks.pairOverflow": "Paire en surnombre",
+        "common.decrease": "Diminuer",
+        "common.increase": "Augmenter",
         "wave.trackPickHint":
             "Cochez les en-têtes de piste à gauche pour choisir les cibles (multi-sélection, maj pour une plage)",
         "wave.selChip":
@@ -897,7 +1004,7 @@ export const T = {
         "set.centerSlot.title":
             "Que faire quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
-            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
+            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'interrupteur de participation au volume.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
 

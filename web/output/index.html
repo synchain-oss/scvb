@@ -1399,73 +1399,561 @@
                 display: none;
             }
 
-            /* ---- Tab2 轨道(05 §2.2) ---- */
+            /* ================================ Tab2 轨道(05 §2.2;设计稿 561-648) ================================ */
+            /* **列宽不在本段出现**:唯一真源是 web/output/tab-tracks.js 的 TRACK_COLS,
+       由它同时写列头与轨行的行内 width(设计稿把两处宽度表分开手写、靠同一组 px 值对齐,
+       移植时各写一份必然错位)。本段只管「与状态无关的外观」。 */
+            #content > section[data-tab-panel="tracks"] {
+                gap: var(--sp-9); /* 设计稿 562:Tab2 比 Tab1 的 12px 更紧 */
+                overflow: hidden; /* 表格自带内滚动,页面不整屏滚 */
+            }
+            /* 空态与表格**互斥**(设计稿 563/569 的 emptyTracks / showTracks 两分支不共存)。
+       一个 data-empty 驱动三处显隐,DevTools 改这一个属性即可静态验证两态。 */
+            [data-gb="tab-tracks"][data-empty="1"] .tracks-wrap,
+            [data-gb="tab-tracks"][data-empty="1"] .tracks-legend {
+                display: none;
+            }
+            [data-gb="tab-tracks"]:not([data-empty="1"]) .tracks-empty {
+                display: none;
+            }
+            /* 0 轨空态引导(设计稿 564-566):整屏垂直+水平居中的两行文案,
+       **不是横幅**(灰模的 .sc-banner 写法已按设计定稿废弃)。 */
+            .tracks-empty {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: var(--sp-12);
+            }
+            .tracks-empty__main {
+                max-width: 560px;
+                text-align: center;
+                font-size: var(--fs-130);
+                line-height: 1.7;
+                color: var(--txt-2);
+                text-wrap: pretty;
+            }
+            .tracks-empty__sub {
+                max-width: 600px;
+                text-align: center;
+                font-size: var(--fs-110);
+                line-height: 1.6;
+                color: var(--txt-4);
+                text-wrap: pretty;
+            }
+            /* 表格外框(设计稿 570):玻璃底 + 描边 + 内高光三件齐(灰模缺前两件)。
+       表头用 position:sticky(灰模写法),与设计稿的「flex 列 + 内层单独滚动」视觉等价。 */
             .tracks-wrap {
                 flex: 1;
                 min-height: 0;
                 overflow: auto;
                 border-radius: var(--r-lg);
+                background: var(--glass-bg);
                 border: 1px solid var(--card-border);
+                box-shadow: var(--card-inset);
             }
             .tracks-head,
             .tracks-row {
                 display: flex;
                 align-items: center;
-                gap: var(--sp-6);
-                padding: 0 var(--sp-8);
+                gap: var(
+                    --sp-14
+                ); /* 设计稿 571/1737:列间距 14px,行与列头同值 */
+                padding: 0 var(--sp-10);
             }
             .tracks-head {
                 position: sticky;
                 top: 0;
-                z-index: 2;
-                height: 28px;
-                background: var(--card-bg);
-                border-bottom: 1px solid var(--card-border);
+                z-index: 5;
+                height: 30px; /* 设计稿 571;间距阶梯无 30 档,就地字面量 */
+                /* sticky 表头浮在滚过的行**内容**之上:纯 .16 玻璃会与行文字
+                   重叠打架(用户反馈 2026-08-20)——不透明兜底;盖层用强调色相
+                   压暗(叠白色会显得太白太亮,用户反馈二改) */
+                background-color: var(--light-solid);
+                background-image: linear-gradient(
+                    rgba(var(--acc), 0.16),
+                    rgba(var(--acc), 0.16)
+                );
+                /* .30 白线:现有档位是 .24/.28/.32,不为一个描边新建 token */
+                border-bottom: 1px solid rgba(var(--wh), 0.3);
+            }
+            /* 列头字(设计稿 2066-2068):8px + .14em,**不是** .sc-eyebrow 的 8.5px + .22em */
+            .tracks-head__col {
+                flex: none;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-80);
+                letter-spacing: var(--mono-ls);
+                line-height: 1.15;
+                color: var(--txt-3);
+                white-space: nowrap;
+                overflow: hidden;
+            }
+            /* 26px 列里塞 3 个汉字(冻结P / 冻结V)的唯一字号例外(设计稿 2067):
+       7.5px + 零字距 + 允许折行,line-height 1.15 保证两行仍在 30px 表头内。
+       不做这条,这两列会被 overflow:hidden 截字。 */
+            .tracks-head__col[data-tight="1"] {
+                font-size: var(--fs-75);
+                letter-spacing: 0;
+                white-space: normal;
             }
             .tracks-row {
                 position: relative;
-                height: 44px;
-                border-bottom: 1px solid var(--card-border);
+                /* 收容下面 z-index:-1 的行跟随光:不开 isolation,负 z 会穿到
+           .tracks-wrap 的玻璃底之下(光晕直接消失)。 */
+                isolation: isolate;
+                height: 44px; /* 设计稿 1737 行高常量([J59] 密度实测同口径) */
+                border-bottom: 1px solid var(--w-16);
             }
-            /* 冻结开关组:真实盒(不用 display:contents,否则 data-tour="freeze" 的
-       getBoundingClientRect() 恒为 0×0,T36b spotlight 无亮区)。
-       内部 gap 与行 gap 同为 --sp-6,26+6+26=58px,与表头两列逐像素对齐。 */
-            .tracks-row__freezegroup {
-                display: inline-flex;
-                align-items: center;
-                gap: var(--sp-6);
-                flex: none;
+            /* 行跟随光(设计稿 1739 的 radial-gradient 160px = --glow-row)。
+       base.css 的通用 [data-glow]::after 是 110px 且 z-index:6 —— 那一层会盖住卡箍,
+       故 Tab2 关掉它,改用 ::before + z-index:-1;坐标 --mx/--my 仍由 app.js 的
+       document 级单监听写(15 轨密排下不能每行挂监听)。 */
+            .tracks-row[data-glow]::after {
+                content: none;
             }
-            /* 行内确认层(R3 防误伤 / R2 解冻提示):就地展开在该行下方,默认 hidden。 */
-            .tracks-row__confirm {
+            .tracks-row::before {
+                content: "";
                 position: absolute;
-                left: var(--sp-8);
-                right: var(--sp-8);
-                top: 100%;
+                z-index: -1;
+                inset: 0;
+                pointer-events: none;
+                background-image: var(--glow-row);
+                opacity: var(--glow-o, 0);
+                transition: opacity var(--dur-1) ease;
+            }
+            /* 行五态(设计稿 1730 的判定链 idle → off → dead;三条选择器权重相同,
+       故**书写顺序即优先级**:后写者赢 ⇒ 必须按 srErr → off → idle 排列。
+       离线轨即使 ON 关掉也只降到 .5(配置仍可改,ADR-004)。
+       warn / lost 两态行本身无变化,只有状态灯变琥珀。 */
+            .tracks-row[data-status="srErr"] {
+                opacity: 0.45;
+            }
+            .tracks-row[data-on="0"] {
+                opacity: 0.3;
+            }
+            .tracks-row[data-status="idle"] {
+                opacity: 0.5;
+            }
+            /* lead 行极轻底纹 = 本页唯一的「选中」类视觉(设计稿 1738) */
+            .tracks-row[data-lead="1"] {
+                background: rgba(var(--wh), 0.05);
+            }
+            /* 行内确认层展开时把本行抬到相邻行之上(行是 position:relative,
+       z-index auto 时后面的行会盖住溢出到行外的确认条)。 */
+            .tracks-row[data-confirm="1"] {
                 z-index: 3;
             }
-            .tracks-row__ch {
+            /* 配对面板向下展开时同款抬升:行是 isolation 隔离的兄弟层叠上下文,
+               不抬升会被后续行的 chip/开关画在面板之上(PR #60 复审【重要】) */
+            .tracks-row:has(.tracks-row__pair-panel[data-open="1"]) {
+                z-index: 3;
+            }
+            .tracks-row__cell {
+                flex: none;
                 display: flex;
                 align-items: center;
-                gap: var(--sp-3);
+                min-width: 0;
+            }
+            /* 状态灯 8px(设计稿 1740);base.css 的 .sc-dot 默认 6px,两轴都要覆盖,
+       只写 width 会渲染成 8×6 的椭圆。 */
+            .tracks-row__light {
+                width: var(--sp-8);
+                height: var(--sp-8);
+            }
+            .tracks-row__ch {
+                gap: var(--sp-4);
+            }
+            /* 通道号(设计稿 581):mono + tabular-nums,**无字距**(不套 .sc-mono 的 .14em) */
+            .tracks-row__chnum {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums lining-nums;
+                font-size: var(--fs-110);
+                color: var(--txt-2);
+            }
+            .tracks-row__labelcell {
+                gap: var(--sp-6);
             }
             .tracks-row__label {
+                min-width: 0;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
+                font-size: var(--fs-115);
+                color: var(--txt-1);
             }
+            /* 空 label 的淡色占位「Track 01」(设计稿 1734/1743) */
+            .tracks-row__label[data-placeholder="1"] {
+                color: var(--txt-placeholder);
+            }
+            /* Label 行内编辑态(05 §2.2:点击变 input,≤24 字符,Enter/失焦提交)。
+       设计稿只画了只读 span,配方取稿内 246 行的版本重命名 input,按 150px 列宽改窄。 */
+            .tracks-row__label-input {
+                width: 100%;
+                min-width: 0;
+                padding: var(--sp-3) var(--sp-8);
+                border-radius: var(--r-xs);
+                border: 1px solid rgba(var(--acc), 0.85);
+                background: rgba(var(--wh), 0.78);
+                font-family: var(--ff-sans);
+                font-size: var(--fs-110);
+                color: var(--txt-1);
+                outline: none;
+                box-shadow: 0 0 0 3px rgba(var(--acc), 0.28);
+            }
+            .tracks-row__labelcell:not([data-editing="1"])
+                .tracks-row__label-input {
+                display: none;
+            }
+            .tracks-row__labelcell[data-editing="1"] .tracks-row__label,
+            .tracks-row__labelcell[data-editing="1"] .tracks-row__mark,
+            .tracks-row__labelcell[data-editing="1"] .tracks-row__leadmark,
+            .tracks-row__labelcell[data-editing="1"] .tracks-row__dotmark {
+                display: none;
+            }
+            .tracks-row__mark {
+                flex: none;
+            }
+            /* Lead Select≠0 的行首居中标记(05 §2.2 主唱锁行;设计稿完全无此件)。
+       取强调紫而非琥珀:它是「当前选中」信息,不是警告。 */
+            .tracks-row__leadmark {
+                flex: none;
+                padding: 1px var(--sp-5);
+                border-radius: var(--r-tag);
+                background: rgba(var(--acc), 0.38);
+                font-size: var(--fs-80);
+                white-space: nowrap;
+                color: var(--txt-1);
+            }
+            /* 长句类行内提示(重采集布防)在 150px 列里塞不下,压成 6px 琥珀点 + tooltip */
+            .tracks-row__dotmark {
+                flex: none;
+                width: var(--sp-6);
+                height: var(--sp-6);
+                border-radius: 50%;
+                background: rgb(var(--sem-amber));
+            }
+            /* 「音量 / 电平」列 = 管本身 268(附件槽已随用户裁定 2026-08-21 移除,
+       见 tab-tracks.js VOL_COL_W 注释与 deviations §P)。 */
             .tracks-row__voltube {
+                gap: var(--sp-6);
+            }
+            /* PRIO 步进(设计稿 602-605):66px + space-between 才是设计稿的排布。
+       设计稿的 −/+ 是无交互 <span>,这里保留灰模的 <button>(可聚焦,a11y 更好),
+       只把 button 重置成视觉等同 span。 */
+            .tracks-row__prio button {
                 position: relative;
+                padding: 0;
+                border: 0;
+                background: transparent;
+                cursor: pointer;
+                font-family: inherit;
+                font-size: var(--fs-110);
+                line-height: 1;
+                color: var(--txt-3);
+            }
+            .tracks-row__prio button[data-disabled="1"] {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+            /* 配对 chip(设计稿 609/1763-1768):52px 只读 chip 的视觉 + 原生 select 的语义
+       (05 明文「下拉:无 / A–G」)—— select 透明叠在 chip 之上,箭头不画(52px 塞不下
+       箭头 + 色点 + 字母)。 */
+            .tracks-row__pair {
+                position: relative;
+                box-sizing: border-box;
+                width: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: var(--sp-5);
+                padding: var(--sp-3) var(--sp-6);
+                border-radius: var(--r-xs);
+                background: var(--glass-bg);
+                border: 1px solid var(--card-border);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-100);
+                letter-spacing: var(--mono-ls-ui);
+                color: var(--txt-4);
+            }
+            .tracks-row__pair[data-set="1"] {
+                background: var(--w-20);
+                color: var(--txt-1);
+            }
+            .tracks-row__pair-dot {
+                display: none;
+                flex: none;
+                width: var(--sp-6);
+                height: var(--sp-6);
+                border-radius: 50%;
+            }
+            .tracks-row__pair[data-set="1"] .tracks-row__pair-dot {
+                display: block;
+            }
+            /* 七色轮(tokens.css 第 19 组):A–C 逐字取设计稿,D–G 为 T32 补足 */
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="1"]
+                .tracks-row__pair-dot {
+                background: var(--t2-pair-1);
+            }
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="2"]
+                .tracks-row__pair-dot {
+                background: var(--t2-pair-2);
+            }
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="3"]
+                .tracks-row__pair-dot {
+                background: var(--t2-pair-3);
+            }
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="4"]
+                .tracks-row__pair-dot {
+                background: var(--t2-pair-4);
+            }
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="5"]
+                .tracks-row__pair-dot {
+                background: var(--t2-pair-5);
+            }
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="6"]
+                .tracks-row__pair-dot {
+                background: var(--t2-pair-6);
+            }
+            :is(.tracks-row__pair, .tracks-row__pair-opt)[data-pair="7"]
+                .tracks-row__pair-dot {
+                background: var(--t2-pair-7);
+            }
+            /* 自定义下拉触发钮:透明覆盖 chip,inset 上下各 -2px 把命中区
+               撑到 24px(RE-06);面板复用 Tab1 主唱选择的深色玻璃配方
+               (用户反馈 2026-08-20:原生 select 弹层不可样式化) */
+            .tracks-row__pair-trigger {
+                position: absolute;
+                left: 0;
+                right: 0;
+                top: -2px;
+                bottom: -2px;
+                width: 100%;
+                padding: 0;
+                border: 0;
+                background: transparent;
+                opacity: 0;
+                cursor: pointer;
+            }
+            .tracks-row__pair-trigger:disabled {
+                cursor: default;
+            }
+            /* 焦点环画在 chip 外框上(触发钮不可见;PR #60 键盘可达) */
+            .tracks-row__pair:has(.tracks-row__pair-trigger:focus-visible) {
+                outline: 2px solid rgba(var(--acc), 0.85);
+                outline-offset: 2px;
+                border-radius: var(--r-tag);
+            }
+            .tracks-row__pair-panel {
+                position: absolute;
+                z-index: 8;
+                left: 0;
+                top: calc(100% + var(--sp-4));
+                min-width: 96px;
+                padding: var(--sp-4);
+                border-radius: var(--r-md);
+                background-color: var(--dark-solid);
+                background-image: var(--zoom-panel-bg);
+                border: 1px solid var(--dark-window-border);
+                box-shadow: var(--zoom-panel-shadow);
+                display: flex;
+                flex-direction: column;
+            }
+            /* 第 11 轨起向上展开,免被滚动容器裁掉 */
+            .tracks-row__pair-panel[data-up="1"] {
+                top: auto;
+                bottom: calc(100% + var(--sp-4));
+            }
+            .tracks-row__pair-panel[data-open="0"] {
+                display: none;
+            }
+            .tracks-row__pair-opt {
                 display: flex;
                 align-items: center;
                 gap: var(--sp-6);
+                padding: var(--sp-4) var(--sp-9);
+                border-radius: var(--r-xs);
+                border: 0;
+                background: transparent;
+                cursor: pointer;
+                text-align: left;
+                font-family: var(--ff-sans);
+                font-size: var(--fs-100);
+                color: var(--txt-dark-2);
             }
+            .tracks-row__pair-opt:hover,
+            .tracks-row__pair-opt:focus-visible {
+                background: var(--w-10);
+            }
+            .tracks-row__pair-opt[data-current="1"] {
+                background: rgba(var(--sem-green), 0.18);
+                color: rgba(var(--wh), 0.95);
+            }
+            /* 选项里的配对色点恒显(chip 上的 data-set 门控不适用) */
+            .tracks-row__pair-opt .tracks-row__pair-dot {
+                display: block;
+            }
+            /* 配对超员琥珀标(05 §2.2):52px chip 内放不下「配对超员」四字,
+       压成右上角琥珀角点 + tooltip(全称走词条 tracks.pairOverflow)。 */
+            .tracks-row__pair-full {
+                position: absolute;
+                top: -3px;
+                right: -3px;
+                width: var(--sp-6);
+                height: var(--sp-6);
+                border-radius: 50%;
+                background: rgb(var(--sem-amber));
+                border: 1px solid rgba(var(--wh), 0.6);
+            }
+            /* 冻结开关组:必须是**真实 inline-flex 盒**(不用 display:contents)——
+       display:contents 的元素不生成 principal box,getBoundingClientRect() 恒为 0×0,
+       T36b 的 spotlight 会退化成左上角零尺寸洞。
+       宽度 26 + gap(--sp-14)+ 26 = 66px,与表头「冻结P」「冻结V」两列(各 26px,
+       列间同为 --sp-14)逐像素对齐;内部 gap 与行 gap 同值,故换成一个盒不改变列位。 */
+            .tracks-row__freezegroup {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-14);
+                flex: none;
+            }
+            /* ---- RE-06 透明命中扩展([J59] 实测小靶区清单)----
+       一律「加透明扩展」,不缩靶区、不改视觉尺寸。三处:
+         • toggle 26×15 → 上下各 +5px = 26×25(六枚 toggle 同理);
+         • 卡箍 11×24 → 左右各 +6.5px = 24×24;
+         • PRIO ± 23×21 → 24×24 居中扩展。
+       .sc-toggle 的 ::after 是把手,故命中层用 ::before(先画,不遮把手)。 */
+            .tracks-row .sc-toggle::before,
+            .tracks-row .sc-tube__collar::before,
+            .tracks-row__prio button::before {
+                content: "";
+                position: absolute;
+            }
+            .tracks-row .sc-toggle::before {
+                left: 0;
+                right: 0;
+                top: -5px;
+                bottom: -5px;
+            }
+            .tracks-row .sc-tube__collar::before {
+                left: -6.5px;
+                right: -6.5px;
+                top: 0;
+                bottom: 0;
+            }
+            .tracks-row__prio button::before {
+                left: 50%;
+                top: 50%;
+                width: 24px;
+                height: 24px;
+                transform: translate(-50%, -50%);
+            }
+            /* 行内确认层(R3 防误伤):就地展开在该行下方,默认 hidden。
+       视觉配方照设计稿 634-637(容器 10/13 + r-md + 琥珀 .15/.42),
+       只把正文字号从 .sc-confirm 的 10.5px 提到设计稿的 11px。 */
+            .tracks-row__confirm {
+                position: absolute;
+                left: var(--sp-10);
+                right: var(--sp-10);
+                top: 100%;
+                z-index: 3;
+                gap: var(--sp-12);
+                padding: var(--sp-10) var(--sp-13);
+                font-size: var(--fs-110);
+                line-height: 1.5;
+                /* 行内浮层叠在下一行内容上:不透明兜底 + 琥珀色相盖层,
+                   否则 .15 玻璃会与底行文字打架(统筹亲验 2026-08-20) */
+                background-color: var(--light-solid);
+                background-image: linear-gradient(
+                    rgba(var(--sem-amber), 0.15),
+                    rgba(var(--sem-amber), 0.15)
+                );
+                box-shadow: var(--zoom-panel-shadow);
+            }
+            .tracks-row__confirm-text {
+                flex: 1;
+            }
+            /* 解冻后手动常值提示(设计稿 641-643):**中性玻璃底**,不是琥珀 ——
+       与上面的确认条刻意区分(提示 ≠ 需要一个决定);动作取下划线链接形态(统筹裁定 B14)。 */
+            .tracks-row__hint {
+                position: absolute;
+                left: var(--sp-10);
+                right: var(--sp-10);
+                top: 100%;
+                z-index: 3;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-10);
+                padding: var(--sp-9) var(--sp-13);
+                border-radius: var(--r-md);
+                /* 同确认条:不透明兜底 + 中性玻璃盖层(浮在下一行内容上) */
+                background-color: var(--light-solid);
+                background-image: linear-gradient(
+                    rgba(var(--wh), 0.12),
+                    rgba(var(--wh), 0.12)
+                );
+                box-shadow: var(--zoom-panel-shadow);
+                border: 1px solid rgba(var(--wh), 0.26);
+                font-size: var(--fs-110);
+                color: var(--txt-2);
+            }
+            .tracks-row__hint > span:first-child {
+                flex: 1;
+            }
+            /* 重新识别入口:小按钮形态(用户反馈 2026-08-20:下划线链接显草稿感,
+               且点开是正式确认弹窗,入口也该像"会打开确认"的按钮)——B14 改判 */
+            .tracks-row__relink {
+                padding: var(--sp-3) var(--sp-9);
+                border: 1px solid rgba(var(--acc), 0.55);
+                border-radius: var(--r-pill);
+                background: rgba(var(--wh), 0.5);
+                font-family: inherit;
+                font-size: var(--fs-100);
+                color: var(--acc-link-on-glass);
+                cursor: pointer;
+                white-space: nowrap;
+            }
+            .tracks-row__relink:hover {
+                background: rgba(var(--wh), 0.68);
+                border-color: rgba(var(--acc), 0.8);
+            }
+            /* 表尾图例行(设计稿 625-632,回流⑬):flex-start + 12px,**不换行**;
+       中间靠一个 flex:1 的空占位把右侧两件推到右端(灰模缺这枚占位,三件挤在左端)。 */
             .tracks-legend {
                 display: flex;
-                flex-wrap: wrap;
-                align-items: center;
-                gap: var(--sp-9);
+                align-items: flex-start;
+                gap: var(--sp-12);
                 flex: none;
+            }
+            .tracks-legend__text {
+                max-width: 800px;
+            }
+            .tracks-legend__text strong {
+                font-weight: 600;
+                color: var(--txt-min);
+            }
+            .tracks-legend__spacer {
+                flex: 1;
+            }
+            /* 重采集布防 badge(设计稿 628-630):pill 圆角 + mono + 底 .18 ——
+       与 .sc-badge--amber(r-tag + sans + 底 .22)不是同一件,故就地写而不改公共类。 */
+            .tracks-legend__badge {
+                flex: none;
+                padding: var(--sp-2) var(--sp-8);
+                border-radius: var(--r-pill);
+                background: rgba(var(--sem-amber), 0.18);
+                border: 1px solid rgba(var(--sem-amber), 0.45);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                color: var(--sem-amber-ink);
+                white-space: nowrap;
+            }
+            .tracks-legend__note {
+                flex: none;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls);
+                color: var(--txt-4);
+                white-space: nowrap;
             }
 
             /* ---- Tab3 波形(05 §2.3/§2.3a) ---- */
@@ -2974,7 +3462,7 @@
                                     data-gb="master-leadselect-hint"
                                     data-t="master.leadSelectHint"
                                 >
-                                    该轨强制居中;音量豁免为独立选项,不随此联动
+                                    该轨强制居中;是否参与音量调节为独立开关,不随此联动
                                 </p>
                                 <!-- [T3x] bridge.beginParamGesture("lead_select") / setParam("lead_select", v) / endParamGesture("lead_select") —— 契约 §1.12-1.14 -->
                             </div>
@@ -3425,184 +3913,105 @@
                     <!-- ========================================================= -->
                     <!-- Tab2 轨道(Tracks)—— 05 §2.2                                -->
                     <!-- ========================================================= -->
-                    <section data-tab-panel="tracks" data-gb="tab-tracks">
-                        <!-- 空态 -->
-                        <div
-                            class="sc-banner"
-                            data-gb="tracks-emptystate"
-                            hidden
-                        >
-                            <span data-t="tracks.emptyGroup"
-                                >组 {g} 尚无输入——在人声轨插件链最后一格插入
-                                SCVB Input 并选择组 {g}</span
+                    <!-- data-empty:0 = 有轨(表格 + 图例),1 = 0 轨(整屏居中空态引导)。
+                         两态互斥,改这一个属性即可静态验证;
+                         [T32 Wave 2] 由「连接轨数 === 0」判定(scvb.conn)自动回写。 -->
+                    <section
+                        data-tab-panel="tracks"
+                        data-gb="tab-tracks"
+                        data-empty="0"
+                    >
+                        <!-- 0 轨空态引导(设计定稿:居中两行文案,取代旧横幅写法)。
+                             与表格**互斥** —— 显隐全由 section 上的 data-empty 一个属性驱动,
+                             CSS 见 §Tab2「空态与表格互斥」。主句是组号变体(句中 {g} 出现两次),
+                             由 tab-tracks.js 按当前组填。 -->
+                        <div class="tracks-empty" data-gb="tracks-emptystate">
+                            <span
+                                class="tracks-empty__main"
+                                data-t="tracks.emptyGroup"
+                                data-gb="tracks-emptystate-main"
                             >
+                                组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB
+                                Input 并选择组 {g}
+                            </span>
+                            <span
+                                class="tracks-empty__sub"
+                                data-t="tracks.emptyRoute"
+                                data-gb="tracks-emptystate-sub"
+                            >
+                                人声轨的输出路由须保持指向本总线(不要改)
+                            </span>
                         </div>
 
                         <!-- role="table":内部 .tracks-head(role=row)/#tracks-body(role=rowgroup)
                              必须有 table/grid 祖先,否则 axe aria-required-parent 报 critical。
-                             tabindex="0":可滚动容器需能用键盘滚动。 -->
+                             tabindex="0":可滚动容器需能用键盘滚动。
+                             **列头与 15 行都由 web/output/tab-tracks.js 生成**,共用同一份列宽表
+                             (TRACK_COLS)—— 页面里不写第二份列宽,错位无从排查的坑就此堵死。 -->
                         <div
                             class="tracks-wrap"
                             data-gb="tracks-wrap"
                             role="table"
                             tabindex="0"
                         >
-                            <!-- 列序与分组严格照 05 §2.2 代码块,列宽为注释标注的设计 px,不精调 -->
                             <div
-                                class="tracks-head sc-eyebrow"
+                                class="tracks-head"
+                                id="tracks-head"
                                 data-gb="tracks-head"
                                 role="row"
-                            >
-                                <span
-                                    style="width: 8px"
-                                    role="columnheader"
-                                ></span>
-                                <!-- 词条待立:列头「CH」缩写(字典缺) -->
-                                <span
-                                    style="width: 44px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >CH</span
-                                >
-                                <span
-                                    style="width: 150px"
-                                    role="columnheader"
-                                    data-t="track"
-                                >
-                                    轨道
-                                </span>
-                                <span style="width: 30px" role="columnheader"
-                                    >PAN</span
-                                >
-                                <!-- 词条待立:列头「W」= width 缩写(字典缺) -->
-                                <span
-                                    style="width: 30px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >W</span
-                                >
-                                <!-- 词条待立:列头「音量 / 电平」合成件表头(05 §2.2 回流⑦,字典缺) -->
-                                <span
-                                    style="width: 268px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >音量 / 电平</span
-                                >
-                                <!-- 词条待立:列头「PRIO」缩写(字典缺,priority 全称非缩写) -->
-                                <span
-                                    style="width: 66px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >PRIO</span
-                                >
-                                <!-- 词条待立:列头「LEAD」缩写(字典缺) -->
-                                <span
-                                    style="width: 26px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >LEAD</span
-                                >
-                                <span
-                                    style="width: 52px"
-                                    role="columnheader"
-                                    data-t="pair"
-                                >
-                                    配对
-                                </span>
-                                <span
-                                    class="sc-divider"
-                                    aria-hidden="true"
-                                ></span>
-                                <!-- 词条待立:列头短标签「音量」=音量豁免(回流⑬,字典缺短标) -->
-                                <span
-                                    style="width: 26px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >音量</span
-                                >
-                                <!-- 词条待立:列头短标签「声像」=参与自动声像(回流⑬,字典缺短标) -->
-                                <span
-                                    style="width: 26px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >声像</span
-                                >
-                                <span
-                                    class="sc-divider"
-                                    aria-hidden="true"
-                                ></span>
-                                <!-- 词条待立:列头「冻结P」缩写(字典缺) -->
-                                <span
-                                    style="width: 26px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >冻结P</span
-                                >
-                                <!-- 词条待立:列头「冻结V」缩写(字典缺) -->
-                                <span
-                                    style="width: 26px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >冻结V</span
-                                >
-                                <span
-                                    class="sc-divider"
-                                    aria-hidden="true"
-                                ></span>
-                                <!-- 词条待立:列头「ON」缩写=启用(字典缺) -->
-                                <span
-                                    style="width: 26px"
-                                    role="columnheader"
-                                    data-gb-todo="词条待立"
-                                    >ON</span
-                                >
-                            </div>
+                            ></div>
                             <div
                                 class="tracks-body"
                                 id="tracks-body"
                                 data-gb="tracks-body"
                                 role="rowgroup"
-                            >
-                                <!-- app.js 用 FIFTEEN_TRACKS 生成 15 行,仅撑开骨架,零状态渲染逻辑 -->
-                            </div>
+                            ></div>
                         </div>
 
-                        <div
-                            class="tracks-legend sc-hint"
-                            data-gb="tracks-legend"
-                        >
-                            <span data-t="tracks.colLegend">
-                                音量＝音量豁免,该轨不进音量平衡计算 ·
+                        <!-- 表尾图例脚注行(05 §2.2 回流⑬ / 设计稿 625-632):
+                             长句 + flex:1 占位 + 右端两件(布防 badge / mono 尾注)。
+                             长句里的三处 <strong> 由 tab-tracks.js 的 legendSegments() 切出 ——
+                             data-t 只能写整串 textContent,加粗必须在 applyI18n 之后重建。 -->
+                        <div class="tracks-legend" data-gb="tracks-legend">
+                            <span
+                                class="tracks-legend__text sc-hint"
+                                data-t="tracks.colLegend"
+                                data-gb="tracks-legend-text"
+                            >
+                                音量＝参与音量调节,该轨是否进音量平衡计算(默认开)·
                                 声像＝参与自动声像,该轨是否进声像重分布(stereo
-                                轨默认关,仍参与音量平衡) ·
+                                轨默认关,仍参与音量平衡)·
                                 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)
                             </span>
-                            <!-- 词条待立:「多主唱居中」提示(A8,05 §2.2 主唱锁行,字典缺;多行共用一处提示) -->
                             <span
-                                class="sc-badge--amber"
+                                class="tracks-legend__spacer"
+                                aria-hidden="true"
+                            ></span>
+                            <!-- 多主唱琥珀提示(05 §2.2 主唱锁行):多行共用图例行这一处 -->
+                            <span
+                                class="tracks-legend__badge"
                                 data-gb="tracks-legend-multilead-badge"
                                 hidden
-                                data-gb-todo="词条待立"
+                                data-t="tracks.multiLead"
                             >
                                 多主唱居中
                             </span>
                             <span
-                                class="sc-badge--amber"
+                                class="tracks-legend__badge"
                                 data-gb="tracks-legend-recapture-badge"
                                 hidden
                                 data-t="wave.recaptureArmed"
                             >
                                 重采集布防中 · 选区 {x}–{y} · {n} 轨
                             </span>
-                            <!-- 词条待立:mono 小字「15 轨 · 滚动 + 表头 sticky」(05 §2.2,字典缺) -->
-                            <span class="sc-mono" data-gb-todo="词条待立">
+                            <span
+                                class="tracks-legend__note"
+                                data-t="tracks.footNote"
+                                data-gb="tracks-legend-note"
+                            >
                                 15 轨 · 滚动 + 表头 sticky
                             </span>
                         </div>
-                        <!-- [T3x] bridge.setChannelConfig(ch, patch) —— 契约 §1.15(label/priority/lead_lock/lead_vol_exempt/participate_in_auto_pan/pair_id/enabled) -->
-                        <!-- [T3x] bridge.setTrackManual(ch, "pan"|"vol", value) —— 契约 §1.16(pan 旋钮 / 音量推子手动值) -->
-                        <!-- [T3x] bridge.beginParamGesture / setParam / endParamGesture(`v{active}_t{ch}_width`) —— 契约 §1.12-1.14(width 旋钮) -->
-                        <!-- [T3x] bridge.beginParamGesture / setParam / endParamGesture(`v{active}_t{ch}_freeze`) —— 契约 §1.12-1.14(冻结P/V 两开关共写一个参数) -->
                     </section>
 
                     <!-- ========================================================= -->
