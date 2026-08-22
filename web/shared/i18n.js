@@ -316,7 +316,7 @@ export const T = {
         "set.centerSlot.opt.even_spread": "均分微偏",
         "set.guide.showAll": "查看全部九条",
         "set.guide.collapse": "收起",
-        "set.guide.rulesMissing": "九条红字待 gen-hard-rules 生成(T39b)",
+        "set.guide.rulesMissing": "九条约束全文将在发布版补齐",
         "set.storage.eyebrow": "存储状态",
         "set.storage.embedded": "内嵌于工程({mb} MB)",
         "set.storage.external": "已转外部文件(>8MB 自动)",
@@ -694,7 +694,7 @@ export const T = {
         "set.guide.showAll": "Show all nine",
         "set.guide.collapse": "Collapse",
         "set.guide.rulesMissing":
-            "Nine hard rules pending gen-hard-rules (T39b)",
+            "The full nine rules will be included in the release build",
         "set.storage.eyebrow": "STORAGE",
         "set.storage.embedded": "Embedded in project ({mb} MB)",
         "set.storage.external": "Moved to external file (>8 MB automatic)",
@@ -1076,7 +1076,8 @@ export const T = {
         "set.centerSlot.opt.even_spread": "Répartition égale",
         "set.guide.showAll": "Voir les neuf règles",
         "set.guide.collapse": "Replier",
-        "set.guide.rulesMissing": "Neuf règles en attente de génération (T39b)",
+        "set.guide.rulesMissing":
+            "Les neuf règles complètes seront incluses dans la version publiée",
         "set.storage.eyebrow": "STOCKAGE",
         "set.storage.embedded": "Intégré au projet ({mb} Mo)",
         "set.storage.external":
