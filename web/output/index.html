@@ -1473,9 +1473,14 @@
                 padding: 2px;
                 cursor: pointer;
             }
-            /* J71④:图例唯一一项「MS 等效增益」= 叠加线 g_eq(浅色虚线),与主曲线(accent)区分 */
+            /* J71④:图例唯一一项「MS 等效增益」= 叠加线 g_eq(浅色虚线),与主曲线(accent)区分。
+               线型与画布叠加线一致(setLineDash [5,4] → 5px 实 / 4px 空),稿内 volPath 同款虚线。 */
             .curve-legend__swatch {
-                background: var(--txt-dark-1);
+                background: repeating-linear-gradient(
+                    90deg,
+                    var(--txt-dark-1) 0 5px,
+                    transparent 5px 9px
+                );
             }
             /* 浮条提示(中心点请选择方向 / 16 点上限) */
             .curve-toast {
