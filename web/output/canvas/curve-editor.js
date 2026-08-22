@@ -642,11 +642,36 @@ export function createCurveEditor(opts) {
             showHint(getT()["curve.maxPoints"] || "curve.maxPoints");
             return;
         }
-        const next = addPoint(cur, xToAngle(lp.x), yToDb(lp.y));
+        const angle = xToAngle(lp.x);
+        const db = yToDb(lp.y);
+        // 预先归一化出「即将插入的点」,addPoint 内部对同一组入参做同样归一化,
+        // 故 next 里必有一项与 newPt 逐字段相等;据此回找真实下标(按 angle 排序后
+        // 新点未必在末尾,旧写法 next.length-1 会选中最右旧点,让工具条/方向键/aria 落错)。
+        const newPt = normalizePoint({
+            angle,
+            gain_db: db,
+            shape: DEFAULT_SHAPE,
+            q: DEFAULT_Q,
+            side: DEFAULT_SIDE,
+        });
+        const next = addPoint(cur, newPt.angle, newPt.gain_db);
         if (!next) return;
         commit(next);
-        local.selected = next.length - 1;
+        const idx = next.findIndex(
+            (p) =>
+                p.angle === newPt.angle &&
+                p.gain_db === newPt.gain_db &&
+                p.shape === newPt.shape &&
+                p.q === newPt.q &&
+                p.side === newPt.side,
+        );
+        local.selected = idx >= 0 ? idx : 0;
         syncToolbar();
+        if (local.selected >= 0 && local.selected < next.length) {
+            announce(
+                announcePoint(local.selected, next[local.selected], getT()),
+            );
+        }
         draw();
     }
 
@@ -716,6 +741,7 @@ export function createCurveEditor(opts) {
 
     // ---- 滚轮 Q ------------------------------------------------------------
     function onWheel(e) {
+        if (local.selected >= points().length) local.selected = -1;
         if (local.selected < 0) return;
         e.preventDefault();
         const cur = points();
@@ -736,8 +762,61 @@ export function createCurveEditor(opts) {
 
     // ---- 键盘 -------------------------------------------------------------
     function onKeyDown(e) {
-        if (local.selected < 0) return;
         const cur = points();
+        const n = cur.length;
+
+        // Esc:取消选中(键盘可退出编辑态)
+        if (e.key === "Escape") {
+            if (local.selected >= 0) {
+                local.selected = -1;
+                syncToolbar();
+                draw();
+            }
+            return;
+        }
+
+        // Enter/Space:加点到默认位(角度 0、0 dB)。pan 曲线是角度域,无「播放位置」维度,
+        // 故取中性默认位;达 16 点上限时浮条提示。
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            if (n >= MAX_POINTS) {
+                showHint(getT()["curve.maxPoints"] || "curve.maxPoints");
+                return;
+            }
+            addAt({ x: PLOT_W / 2, y: PLOT_ZERO_Y });
+            return;
+        }
+
+        // Shift+←/→:在点间移动选中(循环;无选中时从首/末进入)。
+        // 普通方向键按 05 §6.2「方向键微调」保留给选中点微调,故导航走 Shift 修饰。
+        if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+            e.preventDefault();
+            if (n === 0) return;
+            let idx = local.selected;
+            if (idx < 0) idx = e.key === "ArrowRight" ? 0 : n - 1;
+            else
+                idx =
+                    e.key === "ArrowRight" ? (idx + 1) % n : (idx - 1 + n) % n;
+            select(idx);
+            return;
+        }
+
+        // 无选中时的普通方向键:选中首个点(键盘选点入口)
+        if (local.selected < 0) {
+            if (n === 0) return;
+            if (e.key.startsWith("Arrow")) {
+                e.preventDefault();
+                select(0);
+            }
+            return;
+        }
+
+        // selected 越界防御(版本切换/删除后 store 可能先于 render 变化)
+        if (local.selected >= n) {
+            local.selected = -1;
+            return;
+        }
+
         const idx = local.selected;
         const pt = cur[idx];
         let angle = pt.angle;
