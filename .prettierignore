@@ -24,3 +24,8 @@ docs/design/
 *.yaml
 *.md
 *.png
+
+# T34 对拍 golden:由 tests/tools/pan_curve_vectors.cpp 打印的 C++ 侧真源(2049 点 LUT
+# + 采样浮点),%.9g 精确往返 float32;prettier 重排会把 8×2049 数组展开成巨文件,
+# 且与生成器字节比对失去意义。同 docs/design/、docs/constitution/ 的「生成物不改写」口径。
+scripts/curve-parity-golden.json

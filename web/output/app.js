@@ -41,6 +41,7 @@ import {
     HOST_ECHO_FRESH_MS,
 } from "./tab-master.js";
 import { createTabTracks } from "./tab-tracks.js";
+import { createCurveEditor } from "./canvas/curve-editor.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -305,6 +306,19 @@ const tabTracks = createTabTracks({
     onLocalChange: () => render(),
 });
 tabTracks.mount();
+
+// ------------------------------------------------------------- Tab1 曲线编辑器(T34)
+// 曲线窗内部(加点/拖拽/Q/shape/删除/side 三段选/叠加线/a11y)全部在 canvas/curve-editor.js;
+// 本文件只做一句装配调用(与 Tab2 的 createTabTracks 同款),state/params 经 getStore 读取。
+const curveEditor = createCurveEditor({
+    canvas: document.querySelector('[data-gb="master-pancurve-canvas"]'),
+    root: document,
+    bridge,
+    getStore: () => store,
+    getT: () => dictNow,
+    onLocalChange: () => render(),
+});
+curveEditor.mount();
 
 // ------------------------------------------------------------- Tab3:15 泳道模板生成(05 §2.3)
 // 轨头/曲线叠加层/特征波形/VAD 着色/分段边界/采集覆盖进度 六件套,画布仅给尺寸注释,
@@ -768,6 +782,7 @@ function render() {
     renderGuide();
     tabMaster.render();
     tabTracks.render();
+    curveEditor.render();
 }
 
 function renderHeader() {

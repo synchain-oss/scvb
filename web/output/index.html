@@ -1399,6 +1399,109 @@
                 display: none;
             }
 
+            /* ---- ④ 曲线编辑器(T34):浮条工具条 / 提示 / 画布焦点 / 叠加线图例 ----
+               设计稿 L505-520(curveHandles/curveSel 深色玻璃浮条);同族组件,复用稿内配方。 */
+            .curve-toolbar {
+                position: absolute;
+                z-index: 4;
+                top: 16px;
+                display: flex;
+                align-items: center;
+                gap: 9px;
+                padding: 8px 11px;
+                border-radius: 12px;
+                background: var(--dark-solid);
+                border: 1px solid rgba(var(--wh), 0.16);
+                box-shadow: 0 14px 34px rgba(14, 10, 22, 0.45);
+            }
+            .curve-toolbar[hidden] {
+                display: none;
+            }
+            .curve-toolbar__group {
+                display: flex;
+                padding: 2px;
+                border-radius: 9px;
+                background: rgba(var(--wh), 0.07);
+            }
+            .curve-toolbar__group[hidden] {
+                display: none;
+            }
+            .curve-toolbar__opt {
+                padding: 3px 8px;
+                border-radius: 7px;
+                border: 0;
+                background: transparent;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-95);
+                color: rgba(230, 225, 240, 0.45);
+                cursor: pointer;
+                white-space: nowrap;
+            }
+            .curve-toolbar__opt[data-active="1"] {
+                background: rgba(var(--wh), 0.16);
+                color: var(--txt-dark-1);
+            }
+            .curve-toolbar__opt:hover {
+                color: var(--txt-dark-1);
+            }
+            .curve-toolbar__q {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .curve-toolbar__q-label {
+                font-family: var(--ff-mono);
+                font-size: 9px;
+                letter-spacing: 0.14em;
+                color: rgba(230, 225, 240, 0.5);
+            }
+            .curve-toolbar__q input[type="range"] {
+                width: 64px;
+                accent-color: var(--acc-slider);
+                cursor: pointer;
+            }
+            .curve-toolbar__q-read {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-95);
+                color: var(--txt-dark-1);
+            }
+            .curve-toolbar__delete {
+                display: grid;
+                place-items: center;
+                border: 0;
+                background: transparent;
+                padding: 2px;
+                cursor: pointer;
+            }
+            /* J71④:图例唯一一项「MS 等效增益」= 叠加线 g_eq(浅色虚线),与主曲线(accent)区分 */
+            .curve-legend__swatch {
+                background: var(--txt-dark-1);
+            }
+            /* 浮条提示(中心点请选择方向 / 16 点上限) */
+            .curve-toast {
+                position: absolute;
+                z-index: 5;
+                left: 50%;
+                bottom: 10px;
+                transform: translateX(-50%);
+                padding: 6px 12px;
+                border-radius: 9px;
+                background: var(--dark-solid);
+                border: 1px solid rgba(var(--wh), 0.18);
+                color: var(--txt-dark-2);
+                font-size: var(--fs-95);
+                white-space: nowrap;
+                box-shadow: 0 8px 22px rgba(14, 10, 22, 0.4);
+            }
+            .curve-toast[hidden] {
+                display: none;
+            }
+            /* 画布键盘焦点(role=application + tabindex=0,选中点可用方向键/Delete) */
+            [data-gb="master-pancurve-canvas"]:focus-visible {
+                outline: 2px solid var(--acc-strong);
+                outline-offset: -2px;
+            }
+
             /* ================================ Tab2 轨道(05 §2.2;设计稿 561-648) ================================ */
             /* **列宽不在本段出现**:唯一真源是 web/output/tab-tracks.js 的 TRACK_COLS,
        由它同时写列头与轨行的行内 width(设计稿把两处宽度表分开手写、靠同一组 px 值对齐,
