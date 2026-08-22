@@ -299,6 +299,22 @@ export const T = {
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
 
+        // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
+        // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "in.pillSub.passthrough": "直通中:本轨按原路径出声(未经平衡)",
+        "in.pillSub.takenOver": "已接管:本轨静音转发,由 Output 总线出声",
+        "in.pillSub.hysteresis": "连接不稳定,即将切换直通",
+        "in.pillSub.stereo": "本轨为立体声源,SCVB 将保留其宽度",
+        "in.source.mono": "本轨为单声道源",
+        "in.group.note": "须与 Output 同组才能连接;单组使用保持 A 即可",
+        "in.channels.emptyHint": "选择本轨的通道编号(与 Output 轨道页一一对应)",
+        "in.unassigned": "未分配",
+        "in.releaseConfirm.primary": "释放",
+        "in.channels.manual.confirm": "确认",
+        "in.priority.note": "此设置保存在 Output",
+        "in.priority.offline": "需 Output 在线",
+        "in.footer.hint": "就绪",
+
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
@@ -650,6 +666,28 @@ export const T = {
             "Fallback rule beyond Lead Lock and Lead Select; it does not affect the volume participation switch.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
+
+        // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
+        // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "in.pillSub.passthrough":
+            "Passthrough: this track plays on its original path (unbalanced)",
+        "in.pillSub.takenOver":
+            "Taken over: this track is muted and routed through the Output bus",
+        "in.pillSub.hysteresis":
+            "Connection unstable — switching to passthrough",
+        "in.pillSub.stereo":
+            "This track is a stereo source — SCVB preserves its width",
+        "in.source.mono": "This track is a mono source",
+        "in.group.note":
+            "Must share a group with Output to connect; keep A for single-group use",
+        "in.channels.emptyHint":
+            "Choose this track's channel number (matches the Output Tracks page)",
+        "in.unassigned": "Unassigned",
+        "in.releaseConfirm.primary": "Release",
+        "in.channels.manual.confirm": "Confirm",
+        "in.priority.note": "This setting is stored on Output",
+        "in.priority.offline": "Requires Output online",
+        "in.footer.hint": "Ready",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -1007,6 +1045,28 @@ export const T = {
             "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'interrupteur de participation au volume.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
+
+        // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
+        // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "in.pillSub.passthrough":
+            "Direct : cette piste suit son chemin d'origine (sans équilibrage)",
+        "in.pillSub.takenOver":
+            "Pris en charge : cette piste est coupée et routée par le bus Output",
+        "in.pillSub.hysteresis":
+            "Connexion instable — passage en direct imminent",
+        "in.pillSub.stereo":
+            "Cette piste est une source stéréo — SCVB préserve sa largeur",
+        "in.source.mono": "Cette piste est une source mono",
+        "in.group.note":
+            "Doit partager un groupe avec Output pour se connecter ; gardez A en usage mono-groupe",
+        "in.channels.emptyHint":
+            "Choisissez le numéro de canal de cette piste (correspond à la page Pistes de l'Output)",
+        "in.unassigned": "Non assigné",
+        "in.releaseConfirm.primary": "Libérer",
+        "in.channels.manual.confirm": "Confirmer",
+        "in.priority.note": "Ce réglage est enregistré côté Output",
+        "in.priority.offline": "Nécessite Output en ligne",
+        "in.footer.hint": "Prêt",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
