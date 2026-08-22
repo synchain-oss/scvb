@@ -65,6 +65,7 @@ export function createPlayhead(opts) {
 
     /** 单帧写入(降级档 ≥1 时限 30Hz —— 两次写入间隔 < 33ms 的帧跳过)。 */
     function tick(nowMs) {
+        if (!ev) return; // 首帧事件前无位置可写(调用方的写入面保持初始态)
         if (
             degradeLevel() >= 1 &&
             lastWriteMs >= 0 &&

@@ -409,7 +409,8 @@ export const T = {
         "wave.applying": "正在应用…",
         // 布防行的行内短说明(B-04 裁定:长句移 footer.recaptureOutputWarn,这里留短句)
         "wave.recaptureInlineNote": "本次布防只门控采集,不改变输出范围",
-        // 段检查器(05 §2.3a;标题 eyebrow + 只读字段名;ORIGIN 为 mono 微标三语同值)
+        // 段检查器(05 §2.3a;标题 eyebrow + 只读字段名;origin 角标与标题
+        // 同行,角标值 E/C 本身非词条 —— §17②,无独立字段行)
         "wave.inspectorTitle": "段检查器",
         "wave.segStart": "起",
         "wave.segEnd": "止",
@@ -417,7 +418,6 @@ export const T = {
         // 段响度标签正名(契约 §1.21:loudness_mode 默认 kw_integrated;
         // [J72a] C-12:该字段的旧显示名已废,不得回流)
         "wave.segLoudness": "K 加权段积分",
-        "wave.originField": "ORIGIN",
         "wave.volField": "VOL",
         "wave.lockSegment": "锁定本段",
         // 泳道内锁定小标(图例帧 778 文字;检查器行走 wave.lockSegment)
@@ -811,7 +811,6 @@ export const T = {
         "wave.segEnd": "End",
         "wave.segLen": "Length",
         "wave.segLoudness": "K-weighted segment integral",
-        "wave.originField": "ORIGIN",
         "wave.volField": "VOL",
         "wave.lockSegment": "Lock this segment",
         "wave.lockBadge": "LOCKED",
@@ -1213,7 +1212,6 @@ export const T = {
         "wave.segEnd": "Fin",
         "wave.segLen": "Durée",
         "wave.segLoudness": "Intégrale de segment pondérée K",
-        "wave.originField": "ORIGIN",
         "wave.volField": "VOL",
         "wave.lockSegment": "Verrouiller ce segment",
         "wave.lockBadge": "VERROUILLÉ",

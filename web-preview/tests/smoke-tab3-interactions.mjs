@@ -187,6 +187,8 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
     // ---- tab-wave 纯函数
     eq(TW.fmtTimeMs(72.4), "01:12.400", "mm:ss.mmm 主显(B-12)");
     eq(TW.fmtTimeMs(0), "00:00.000", "零点格式");
+    eq(TW.fmtTimeMs(1.9996), "00:02.000", "毫秒四舍五入进位联动到秒");
+    eq(TW.fmtTimeMs(59.9999), "01:00.000", "进位联动到分");
     near(TW.panYPx(100), 19, 1e-9, "pan +100 → y 19(中线 12 ± 7)");
     near(TW.panYPx(-100), 5, 1e-9, "pan -100 → y 5");
     near(TW.volYPx(12), 15, 1e-9, "vol +12dB → 基线 22 − 7");
@@ -271,6 +273,19 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
     );
     check(TW.isLanesEmpty({ coverage: {} }), "全轨无 coverage = 空态");
     check(!TW.isLanesEmpty({ coverage: { 3: 1 } }), "任一轨有 coverage 即非空");
+    // 契约 §0.4:captureProgress 只在播放中发,空态由 scvb.state 承载 ——
+    // 停播打开面板(coverage 事件仓恒空)也不得误判空态
+    check(
+        !TW.isLanesEmpty({
+            coverage: {},
+            state: { features: { embedded: true, bytes: 3145728 } },
+        }),
+        "state.features.bytes>0 即非空(停播场景)",
+    );
+    check(
+        !TW.isLanesEmpty({ coverage: {}, segments: { channels: [segCh] } }),
+        "有段表即非空(快照 reason:snapshot 场景)",
+    );
     // 标尺刻度:步长取「≤10 枚」最小档,首刻度对齐步长整数倍
     const ticks = TW.rulerTicks({ startS: 0, endS: 300 });
     check(ticks.length <= 11 && ticks[0].tS === 0, "标尺刻度数与首刻度");
@@ -368,7 +383,6 @@ log("=== ③ 词条(T33 新增 key 三语 + 占位符 + 禁词)===");
         "wave.segEnd",
         "wave.segLen",
         "wave.segLoudness",
-        "wave.originField",
         "wave.volField",
         "wave.lockSegment",
         "wave.lockBadge",
@@ -497,6 +511,11 @@ log("=== ④ [J67] + 契约禁项(源码级零命中)===");
         !/on\(["']scvb\.waveform/.test(tw),
         "无波形事件订阅(§1.27 绝不进事件流)",
     );
+    // 复审回修钉桩:hidpi 的 dpr 变化监听必须有调用方(05 §6.1 重建闭环)
+    check(
+        tw.includes("observeResolution("),
+        "dpr 变化重建后备存储已接线(05 §6.1)",
+    );
 }
 
 // =============================================================================
@@ -535,6 +554,19 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
         html.indexOf(".inspector-note"),
     );
     check(!/position:\s*absolute/.test(tab3), "检查器无 absolute 浮层定位");
+    // B-06:泳道状态灯 8×8 —— base.css 的 .sc-dot 默认 6px,两轴都须覆盖
+    check(
+        /\.wave-lane__light\s*\{[^}]*width:\s*var\(--sp-8\)[^}]*height:\s*var\(--sp-8\)/.test(
+            html,
+        ),
+        "泳道状态灯 8×8 尺寸规则在(B-06)",
+    );
+    // 图谱 §12 层序:包络先画、VAD 罩压在其上(canvas 后画者在上)
+    const wf = src("web/output/canvas/waveform.js");
+    check(
+        wf.indexOf("fillStyle = pal.env") < wf.indexOf("fillStyle = pal.vad"),
+        "静态层先包络后 VAD 罩(图谱 §12 层序)",
+    );
 
     // ---- mock:5 分钟 ×15 轨,契约 §1.27 形状 / 确定性 / stale / valleys
     eq(MD.DEMO_DURATION_S, 300, "mock 时间线 5 分钟(J59 / 05 §6.3 验收)");

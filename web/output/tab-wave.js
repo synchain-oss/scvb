@@ -34,7 +34,11 @@ import {
     zoomLabel,
     scrollThumb,
 } from "./canvas/timeline.js";
-import { backingScale, resizeCanvas } from "./canvas/hidpi.js";
+import {
+    backingScale,
+    resizeCanvas,
+    observeResolution,
+} from "./canvas/hidpi.js";
 import { createLayerStack } from "./canvas/layers.js";
 import { createPlayhead } from "./canvas/playhead.js";
 import {
@@ -147,12 +151,16 @@ export function fmtSliderValue(def, v) {
     return def.unit ? `${s} ${def.unit}` : s;
 }
 
-/** 秒 → `mm:ss.mmm`(检查器/选区读数主显,05 §2.3a 行 331 / B-12)。 */
+/**
+ * 秒 → `mm:ss.mmm`(检查器/选区读数主显,05 §2.3a 行 331 / B-12)。
+ * 先整体量化到毫秒再拆位:毫秒四舍五入的进位联动到秒/分
+ * (1.9996 → "00:02.000",不会出现 ".1000" 四位毫秒)。
+ */
 export function fmtTimeMs(s) {
-    const t = Math.max(num(s, 0), 0);
-    const m = Math.floor(t / 60);
-    const sec = Math.floor(t % 60);
-    const ms = Math.round((t - Math.floor(t)) * 1000);
+    const totalMs = Math.round(Math.max(num(s, 0), 0) * 1000);
+    const m = Math.floor(totalMs / 60000);
+    const sec = Math.floor((totalMs % 60000) / 1000);
+    const ms = totalMs % 1000;
     return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
 }
 
@@ -207,9 +215,20 @@ export function laneModelFromStore(store) {
     return lanes;
 }
 
-/** 空态判定(05 §2.3 行 318:**全部轨**无 coverage 才空)。 */
+/**
+ * 空态判定(05 §2.3 行 318:**全部轨**无 coverage 才空)。
+ * 「有无 coverage」的真源是 **scvb.state**(契约 §0.4:captureProgress 只在
+ * 播放中发,首启非播放时不发,「空态由 scvb.state 承载」)—— 停播打开面板时
+ * 以 state.features.bytes(§2.1:特征数据字节数)与段表判非空,coverage
+ * 事件只作播放中的增量补充,不能单独当空态依据。
+ */
 export function isLanesEmpty(store) {
-    const cov = (store || {}).coverage || {};
+    const st = store || {};
+    if (num(((st.state || {}).features || {}).bytes, 0) > 0) return false;
+    for (const c of (st.segments && st.segments.channels) || []) {
+        if (((c && c.segments) || []).length > 0) return false;
+    }
+    const cov = st.coverage || {};
     for (const k of Object.keys(cov)) {
         if (num(cov[k], 0) > 0) return false;
     }
@@ -421,8 +440,10 @@ export function createTabWave(opts) {
         segmentation: { ...DEFAULT_SEGMENTATION }, // §1.19 整包缓存
         staticDirty: true, // 静态层(波形位图)需重绘
         overlayDirty: true, // 共享动态层(曲线/边界)需重绘
-        marksDirty: true, // 段角标 DOM 需重建
+        marksDirty: true, // 段角标 DOM 需重建(舞台量不到宽时保留脏位)
         repaintQueued: false,
+        lastUiScale: NaN, // ui.scale 档位账(变化 = 后备存储重建,05 §6.1)
+        gutterPx: -1, // 泳道区纵向滚动条宽账(标尺/刻度列对基用)
         lanes: new Map(), // ch → 节点缓存(15 行 × 事件频率下不逐帧 querySelector)
     };
 
@@ -466,16 +487,19 @@ export function createTabWave(opts) {
         drawDynamic: () => false,
     });
 
-    // 播放头(rAF 插值;降级档位由 layers 的帧时账供给)
+    // 播放头(rAF 插值;降级档位由 layers 的帧时账供给)。
+    // 暂停/停播**不隐藏**:05 行 315 只说「竖线,rAF 插值平滑」,无显隐条件;
+    // playhead.js 的插值契约「停住则原地」—— 暂停位置是要保住的静态视觉。
+    // 首帧 §2.6 事件到达前 playhead.js 不调 apply,竖线维持 HTML 初始 hidden。
     const playhead = createPlayhead({
         degradeLevel: () => layers.governor.level(),
-        apply: (tS, playing) => {
+        apply: (tS) => {
             const el = els.playhead;
             if (!el) return;
             const stageW = stageWidth();
             const vp = timeline.viewport();
             const x = timeToX(vp, stageW, tS);
-            const visible = playing && x >= 0 && x <= stageW;
+            const visible = stageW > 0 && x >= 0 && x <= stageW;
             if (el.hidden === visible) el.hidden = !visible;
             if (visible) el.style.left = HEAD_W + x + "px";
         },
@@ -485,6 +509,23 @@ export function createTabWave(opts) {
     function stageWidth() {
         const w = els.lanes ? els.lanes.clientWidth : 0;
         return Math.max(w - HEAD_W - SCALE_COL_W, 0);
+    }
+
+    /**
+     * 标尺/刻度列与舞台的横向对基。舞台坐标系基于泳道容器 clientWidth(不含
+     * 纵向滚动条),而标尺与右缘刻度列在窗级布局(含滚动条)—— 15×34 内容出
+     * 滚动条时两套基准差恒等于滚动条宽,时间刻度会相对波形整体右漂。
+     * 这里把滚动条宽同步成标尺右让/刻度列右偏,让三者共用舞台坐标系。
+     */
+    function syncScrollGutter() {
+        if (!els.lanes) return;
+        const sb = Math.max(els.lanes.offsetWidth - els.lanes.clientWidth, 0);
+        if (local.gutterPx === sb) return;
+        local.gutterPx = sb;
+        if (els.rulerScale) {
+            els.rulerScale.style.marginRight = SCALE_COL_W + sb + "px";
+        }
+        if (els.scalecol) els.scalecol.style.right = sb + "px";
     }
 
     /** 后备存储倍率(05 §6.1:k = uiScale × dpr)。 */
@@ -528,6 +569,7 @@ export function createTabWave(opts) {
         els.window = $("wave-window");
         els.lanes = $("wave-lanes");
         els.rulerScale = $("wave-ruler-scale");
+        els.scalecol = $("wave-scalecol");
         els.overlay = $("wave-overlay");
         els.playhead = $("wave-playhead");
         els.playheadCap = $("wave-playhead-cap");
@@ -592,12 +634,23 @@ export function createTabWave(opts) {
             );
         }
         if (typeof ResizeObserver === "function" && els.lanes) {
+            // 尺寸变化走整个 render():除 canvas 重绘外,还要补两件几何账 ——
+            // ① 滚动条对基(syncScrollGutter);② 非激活期(display:none,
+            // 量不到宽)攒下的 marksDirty,在切回本页尺寸恢复时重建角标。
             new ResizeObserver(() => {
                 local.staticDirty = true;
                 local.overlayDirty = true;
-                schedulePaint();
+                render();
             }).observe(els.lanes);
         }
+        // 后备存储重建闭环(05 §6.1:「dpr 变化(matchMedia('(resolution)'))
+        // 触发重建」):拖到另一块屏/改系统缩放 → 全 canvas 按新 k 重绘;
+        // 非激活期只落脏位(schedulePaint 早退),切回时补绘。
+        observeResolution(() => {
+            local.staticDirty = true;
+            local.overlayDirty = true;
+            schedulePaint();
+        });
 
         // [Wave 2] 交互接线全部落在这里,一处一条(Wave 1 零监听器):
         //   TODO(T33 Wave 2) 泳道点选 + shift 连选(05 行 288;稿内 pick() 照抄)
@@ -615,6 +668,12 @@ export function createTabWave(opts) {
         //        拖动期先 blit,静止 120ms 取新块)
         //   TODO(T33 Wave 2) 布防 badge 点击跳转定位选区;footer 琥珀警告接线(B-04)
         //   TODO(T33 Wave 2) 空态 CTA 跳 Tab1;曲线可见 eye 钮;标尺键盘可达性
+        //   TODO(T33 Wave 2) rAF 帧时喂 layers.governor:playhead 与交互期的
+        //        持续 rAF 循环把每帧耗时 push 进帧时账 —— Wave 1 唯一持续循环
+        //        (playhead.js)不喂账,降级第①档在播放场景不会自行触发
+        //   TODO(T33 Wave 2) canvas 调色接真值:mount 时 getComputedStyle 换算
+        //        tokens.css 十色注入 paintWaveTile 的 palette 参(Wave 1 用
+        //        waveform.js DEFAULT_PALETTE 字面镜像,改 token 需同步)
         render();
     }
 
@@ -645,6 +704,16 @@ export function createTabWave(opts) {
         const t = getT();
         timeline.setDuration(durationOf(store));
         const vp = timeline.viewport();
+        syncScrollGutter();
+
+        // ui.scale 档位变化 = 后备存储 k 变(05 §6.1)→ 全 canvas 标脏重建;
+        // dpr 侧的同款触发走 mount 里的 observeResolution。
+        const uiScale = num(((store.state || {}).ui || {}).scale, 1);
+        if (local.lastUiScale !== uiScale) {
+            local.lastUiScale = uiScale;
+            local.staticDirty = true;
+            local.overlayDirty = true;
+        }
 
         // ---- 空态(data-empty 驱动泳道/空态互斥;标尺与底部条仍在,§15)
         attr(els.window, "data-empty", isLanesEmpty(store) ? 1 : 0);
@@ -774,8 +843,12 @@ export function createTabWave(opts) {
             els.thumb.style.width = th.width * 100 + "%";
         }
 
-        // ---- 段角标 DOM(segments 事件后标脏才重建,避免逐拍重建 innerHTML)
-        if (local.marksDirty) {
+        // ---- 段角标 DOM(segments 事件后标脏才重建,避免逐拍重建 innerHTML)。
+        //      stageW=0(非激活面板 display:none)时保留脏位不消费 —— 口径同
+        //      schedulePaint 的 isPanelActive 早退;否则 timeToX 全 0 会把
+        //      NaN% 拼进 style 并让越界过滤失效。切回本页时 ResizeObserver
+        //      的 render() 补建。
+        if (local.marksDirty && stageW > 0) {
             local.marksDirty = false;
             renderSegMarks(store, vp, stageW);
         }

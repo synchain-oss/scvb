@@ -137,20 +137,25 @@ export function createLayerStack(opts) {
     }
 
     function loop(ts) {
-        raf = 0;
+        // tick 期间**保留** raf 句柄(已触发句柄 cancel 是 no-op):绘制回调里
+        // 同步再调 start()/invalidateStatic() 时 start 会因 raf≠0 直接返回,
+        // 不会另排一个 rAF 叠出双循环(脏位已置,靠 tick 的返回值续帧)。
         if (tick(ts)) {
             raf = requestAnimationFrame(loop);
         } else {
+            raf = 0;
             lastMs = null; // 空闲零 rAF:自停,时间基线清掉
         }
     }
 
+    function start() {
+        if (raf || typeof requestAnimationFrame !== "function") return;
+        lastMs = null;
+        raf = requestAnimationFrame(loop);
+    }
+
     return {
-        start() {
-            if (raf || typeof requestAnimationFrame !== "function") return;
-            lastMs = null;
-            raf = requestAnimationFrame(loop);
-        },
+        start,
         stop() {
             if (raf && typeof cancelAnimationFrame === "function") {
                 cancelAnimationFrame(raf);
@@ -158,10 +163,11 @@ export function createLayerStack(opts) {
             raf = 0;
             lastMs = null;
         },
-        /** 静态层脏标记(数据/视口变化时调;下一帧重绘一次)。 */
+        /** 静态层脏标记(数据/视口变化时调;下一帧重绘一次)。
+         *  经闭包引 start,不经 this —— 解构使用也安全。 */
         invalidateStatic() {
             staticDirty = true;
-            this.start();
+            start();
         },
         running: () => raf !== 0,
         governor,

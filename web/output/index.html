@@ -1990,7 +1990,9 @@
                 gap: var(--sp-16);
             }
             /* 两个参数组是真实盒(不用 display:contents —— tour spotlight 量不到 0×0 盒);
-               flex 比 = 组内滑杆数(5:2),配合组内同款 gap 实现七等分 */
+               grow 比 = 组内滑杆数(5:2),但纯 grow 会把组内 gap 数差(4:1)也
+               按 5:2 摊掉 → 两组杆宽差一档;flex-basis 先行垫掉各组内 gap 总宽,
+               剩余空间再按杆数分 —— 七杆等宽(图谱 §3「七等分弹性宽」) */
             .wave-toolbar__group {
                 display: flex;
                 align-items: center;
@@ -1998,10 +2000,10 @@
                 min-width: 0;
             }
             .wave-toolbar__group--vad {
-                flex: 5;
+                flex: 5 1 calc(4 * var(--sp-16));
             }
             .wave-toolbar__group--seg {
-                flex: 2;
+                flex: 2 1 var(--sp-16);
             }
             .wave-slider {
                 flex: 1;
@@ -2253,6 +2255,9 @@
                 width: 158px;
                 flex: none;
             }
+            /* 44px 让位刻度列;泳道区出纵向滚动条时 tab-wave.js 的
+               syncScrollGutter 以行内 margin-right 再加滚动条宽(标尺基准 =
+               窗宽、舞台基准 = 滚动容器 clientWidth,两者差须归零) */
             .wave-ruler__scale {
                 flex: 1;
                 min-width: 0;
@@ -2364,6 +2369,12 @@
                 content: "";
                 position: absolute;
                 inset: -19px; /* RE-06:11px 靶补到 ≥24 物理 px @0.5 档 */
+            }
+            /* 状态灯统一 Tab2 的 8×8(B-06 裁定,先例 .tracks-row__light):
+               base.css 的 .sc-dot 默认 6px,两轴都要覆盖,只写 width 会成椭圆 */
+            .wave-lane__light {
+                width: var(--sp-8);
+                height: var(--sp-8);
             }
             .wave-lane__label {
                 flex: 1;
@@ -2518,7 +2529,9 @@
             .wave-rangeline[data-mode="manual"] {
                 background: rgba(var(--sem-amber), 0.55);
             }
-            /* 右缘 44px 双刻度列(786-797):全泳道区共用一列(B-11),窗级覆盖层 */
+            /* 右缘 44px 双刻度列(786-797):全泳道区共用一列(B-11),窗级覆盖层;
+               right 由 syncScrollGutter 行内同步滚动条宽(不盖滚动条、与 canvas
+               右缘对齐,口径同 .wave-ruler__scale) */
             .wave-scalecol {
                 position: absolute;
                 right: 0;
@@ -5517,12 +5530,23 @@
                             >
                                 跟随宿主中:编辑已保存,开启输出后生效
                             </div>
-                            <div class="inspector-head">
+                            <!-- 标题行(881-884,§17②):eyebrow + origin 角标
+                                 同行;角标为面板版描边淡底(与泳道内实心版刻意
+                                 不同);auto 无角标 / E / C 三态 -->
+                            <div
+                                class="inspector-head"
+                                data-gb="inspector-origin"
+                            >
                                 <span
                                     class="sc-eyebrow"
                                     data-t="wave.inspectorTitle"
                                     >段检查器</span
                                 >
+                                <span
+                                    class="inspector-origin-chip"
+                                    data-gb="inspector-origin-value"
+                                    hidden
+                                ></span>
                             </div>
                             <!-- 时间与响度只读组(885-890):主显 mm:ss.mmm,有 tempo 表
                                  并列小节值(B-12);响度标签用正名词条(C-12) -->
@@ -5552,23 +5576,6 @@
                                         >--</span
                                     >
                                 </div>
-                            </div>
-                            <!-- origin 角标行(881-884):面板版描边淡底,与泳道内实心版
-                                 刻意不同;auto 无角标 / E / C 三态 -->
-                            <div
-                                class="inspector-field"
-                                data-gb="inspector-origin"
-                            >
-                                <span
-                                    class="inspector-field__label"
-                                    data-t="wave.originField"
-                                    >ORIGIN</span
-                                >
-                                <span
-                                    class="inspector-origin-chip"
-                                    data-gb="inspector-origin-value"
-                                    hidden
-                                ></span>
                             </div>
                             <!-- PAN 行(892-898):.sc-knob 手动态缩小版 + 数字输入
                                  (-100..+100,step 1 / shift 0.1,05 §2.3a) -->

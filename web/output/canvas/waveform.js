@@ -14,8 +14,9 @@
 //   • 05 §2.3(316)+ 统筹裁定 B-07:底部覆盖条 **2px + accent 薰衣草**。
 //
 // 本文件零 DOM 查询:画到调用方给的 2D ctx 上;取数走注入的 request 函数。
-// 颜色经 palette 注入(默认值 = tokens.css Tab3 深色泳道组的字面镜像 ——
-// canvas 读不到 CSS 变量,tab-wave.js 在 mount 时用 getComputedStyle 换算真值)。
+// 颜色经 palette 参注入;**Wave 1 调用方不传 palette,恒用 DEFAULT_PALETTE
+// 字面镜像**(canvas 读不到 CSS 变量)—— 改 tokens.css 对应色须同步这里;
+// [Wave 2] tab-wave.js 在 mount 时 getComputedStyle 换算真值注入(TODO 已挂)。
 // =============================================================================
 
 /** LRU 容量:8 块/轨(05 §6.3 逐字)。 */
@@ -165,8 +166,9 @@ export function createWaveformSource(opts) {
 
 // -----------------------------------------------------------------------------
 // 静态层画笔 —— 一块 tile → 一条泳道的静态位图(在 ctx 上按 CSS px 作画,
-// hidpi.js 已 setTransform)。层序(图谱 §12,DOM 序即层序):
-// 未覆盖底纹 → passId 微差 → VAD 罩 → 包络柱 → stale 斜条纹 → 覆盖条。
+// hidpi.js 已 setTransform)。层序(图谱 §12 钉死,DOM 序即层序:852 包络 →
+// 853-855 VAD,**VAD 罩压在包络之上**,半透明叠色不可交换):
+// 未覆盖底纹 → passId 微差 → 包络柱 → VAD 罩 → stale 斜条纹 → 覆盖条。
 // -----------------------------------------------------------------------------
 
 /** 逐列位数组 → [start, end) 连续段表(减少 fillRect 次数的预算意识,05 §6.3)。 */
@@ -237,18 +239,7 @@ export function paintWaveTile(ctx, tile, w, h, palette) {
         }
     }
 
-    // ③ VAD 绿罩(满高;阈值拖动重取重绘,05 §2.3 行 312)
-    if (Array.isArray(tile.vad)) {
-        ctx.fillStyle = pal.vad;
-        for (const [a, b] of runsOf(
-            tile.vad,
-            (v, i) => tile.covered[i] && v > 0,
-        )) {
-            ctx.fillRect(x0(a), 0, (b - a) * colW, h);
-        }
-    }
-
-    // ④ min/max 包络柱(05 §2.3 行 311):外柱 = max 半透明,内柱 = min 提亮,
+    // ③ min/max 包络柱(05 §2.3 行 311):外柱 = max 半透明,内柱 = min 提亮,
     //    纵向对称于泳道中线(实景帧的居中几何,图谱 §12 ①)
     ctx.fillStyle = pal.env;
     for (let i = 0; i < cols; i++) {
@@ -263,6 +254,18 @@ export function paintWaveTile(ctx, tile, w, h, palette) {
         ctx.fillRect(x0(i), mid - lo, Math.max(colW - 1, 0.5), lo * 2);
     }
     ctx.globalAlpha = 1;
+
+    // ④ VAD 绿罩(满高、压在包络之上 —— 图谱 §12 层序;阈值拖动重取重绘,
+    //    05 §2.3 行 312)
+    if (Array.isArray(tile.vad)) {
+        ctx.fillStyle = pal.vad;
+        for (const [a, b] of runsOf(
+            tile.vad,
+            (v, i) => tile.covered[i] && v > 0,
+        )) {
+            ctx.fillRect(x0(a), 0, (b - a) * colW, h);
+        }
+    }
 
     // ⑤ stale = 琥珀斜条纹叠加(05 §2.3 行 311;⚠ 角标是 DOM 件,Wave 2)
     if (Array.isArray(tile.stale)) {
