@@ -587,6 +587,9 @@ export function trackRowHtml(t) {
     <div class="tracks-row" role="row" data-glow="1" data-gb="tracks-row-${ch}" data-ch="${ch}"
          data-status="${t.status}" data-on="${t.on}" data-lead="${t.lead}" data-dead="${dead}"
          data-confirm="0">
+      <!-- 重采集布防目标轨的行首 badge(05 §2.3 ②,B-05 裁定「行首」:贴行左缘的
+           琥珀点 + tooltip —— 152px label 列里塞不下长句,压成点;T33 Wave 2 迁位) -->
+      <span class="tracks-row__dotmark" data-gb="${gb("recapture-badge")}"${t.recapture ? "" : " hidden"}></span>
       <span class="tracks-row__cell" role="cell" style="width:${W.light}px">
         <span class="sc-dot tracks-row__light" data-tone="${vis.tone}" data-pulse="${vis.pulse ? 1 : 0}" data-gb="${gb("statuslight")}"></span>
       </span>
@@ -605,8 +608,6 @@ export function trackRowHtml(t) {
         <span class="tracks-row__leadmark" data-t="tracks.leadCenter" data-gb="${gb("leadcenter")}"${t.leadCenter ? "" : " hidden"}></span>
         <!-- 采集后有效唱段 <1.5s(05 §2.2 R1):角标保短版,全句「样本不足,结果可能不稳」进 tooltip(统筹裁定 B12) -->
         <span class="sc-badge--amber tracks-row__mark" data-t="lowSample" data-gb="${gb("lowsample")}"${t.low ? "" : " hidden"}></span>
-        <!-- 重采集布防目标轨的行首 badge(05 §2.3 ②):52px 内塞不下长句,压成琥珀点 + tooltip -->
-        <span class="tracks-row__dotmark" data-gb="${gb("recapture-badge")}"${t.recapture ? "" : " hidden"}></span>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.pan}px">
         <!-- 冻结态:垂直拖拽 / 滚轮 ±1 / 双击回 0 → bridge.setTrackManual(${ch}, "pan", v)(契约 §1.16;

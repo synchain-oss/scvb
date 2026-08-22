@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // =============================================================================
-// SCVB web-preview —— Tab3 波形页冒烟(node,无 DOM;T33 Wave 1)
+// SCVB web-preview —— Tab3 波形页冒烟(node,无 DOM;T33 Wave 1+2)
 // =============================================================================
-// 口径同 smoke-tab1/tab2:仓内零 node_modules,断言面 = 纯函数 + 源码级字面断言
-// (mock 端到端与交互断言归 Wave 2 的 ⑥-⑧;DOM 侧由统筹在 8823 端口逐屏走)。
+// 口径同 smoke-tab1/tab2:仓内零 node_modules,断言面 = 纯函数 + mock 端到端 +
+// 源码级字面断言(DOM 侧由统筹在 8823 端口逐屏走)。
 //
-// 跑什么(Wave 1 的 ①-⑤):
+// 跑什么(①-⑤ = Wave 1;⑥-⑧ = Wave 2):
+//   ⑥ mock 端到端:两段式(松手 300ms 防抖在 mock 侧、reason vad/segmentation
+//      + diff、segIdx 重编号)、editSegment 五 op(后置状态/notAdjacent)、
+//      recaptureArm(§5.5 reason / state 回读 / 撤防)、clearCoverage 真扣除
+//      (covered 哨兵 + §1.5 coverage 口径)、setRange manual(badArg);
+//   ⑦ 交互纯函数(点选/位图/重绑/吸附/scope 计数)+ 源码级纪律(≤50Hz 节流、
+//      整包下发、UI 不自建防抖、释放才发、onSegments 重绑、中央写闸覆盖);
+//   ⑧ Wave 2 新词条三语 + 占位符一致;
 //   ① 纯函数:视口换算/夹取/以光标为中心缩放(canvas/timeline.js)、命中半径与
 //      RE-06 透明扩展(shared/hit.js)、播放头插值(canvas/playhead.js)、帧时账
 //      三档降级(canvas/layers.js)、LRU 8 块/轨 + 包络映射(canvas/waveform.js)、
@@ -502,10 +509,28 @@ log("=== ④ [J67] + 契约禁项(源码级零命中)===");
             check(!s.includes(bad.toLowerCase()), `${f} 全文无禁词「${bad}」`);
         }
     }
-    // 桥面零新增:tab-wave.js 里出现的 bridge 调用名必须都在契约 §7 manifest 内
+    // 桥面零新增(brief §0.11):tab-wave.js 里出现的 bridge 调用名必须都落在
+    // 本卡契约面(§1.5/§1.6/§1.8/§1.18/§1.19/§1.22/§1.23/§1.24/§1.27)内
     const tw = src("web/output/tab-wave.js");
-    const called = [...tw.matchAll(/call\("(\w+)"/g)].map((m) => m[1]);
-    eq(called, ["requestWaveform"], "Wave 1 桥面只拉波形块(§1.27)");
+    const ALLOWED = new Set([
+        "requestWaveform",
+        "setVadParams",
+        "setSegmentation",
+        "previewAnalyze",
+        "analyze",
+        "editSegment",
+        "setRange",
+        "recaptureArm",
+        "clearCoverage",
+    ]);
+    const called = [...tw.matchAll(/call\(\s*"(\w+)"/g)].map((m) => m[1]);
+    check(called.length >= 9, `桥面调用点数量(实得 ${called.length})`);
+    for (const n of new Set(called)) {
+        check(ALLOWED.has(n), `桥面调用 ${n} 在本卡契约面内(零新增)`);
+    }
+    for (const n of ALLOWED) {
+        check(called.includes(n), `Wave 2 桥面 ${n} 已接线`);
+    }
     // requestWaveform 纪律:request/response,不当事件消费(不 on() 它)
     check(
         !/on\(["']scvb\.waveform/.test(tw),
@@ -634,6 +659,367 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
     check(rec && rec.armed === true, "布防快照 armed=true");
     check(rec.tracksMask > 0 && rec.startS < rec.endS, "布防面(mask+选区)成立");
     eq(rec.autoStop, false, "autoStop 契约默认 false");
+}
+
+// =============================================================================
+log("=== ⑥ mock 端到端(两段式 / 五 op / 布防 / 清除 / setRange)===");
+{
+    const { createBridge } = await import(u("web/shared/bridge.js"));
+    const driver = await import(u("web-preview/mock/state-driver.js"));
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    async function withOutput(params, fn) {
+        const s = driver.createPreviewSession({ role: "output", params });
+        const b = createBridge({ role: "output", mockBackend: s.mock });
+        const segEvents = [];
+        b.on("scvb.segments", (p) => segEvents.push(p));
+        s.start();
+        await b.requestInitialState();
+        segEvents.length = 0; // 快照帧不计入断言账
+        const r = await fn(b, segEvents, s);
+        s.stop();
+        return r;
+    }
+
+    // ---- 两段式:拖动档 setVadParams 整包不触发段表;松手 300ms 防抖在
+    //      mock 侧跑流水线 → reason:"vad" + diff(A-01/A-02 的数据面)
+    await withOutput("fixture=fifteen-tracks", async (b, seen) => {
+        const vad = {
+            threshold_db: -40,
+            hysteresis_db: 6,
+            hangover_ms: 180,
+            padding_pre_ms: 120,
+            padding_post_ms: 200,
+        };
+        eq((await b.setVadParams(vad)).ok, true, "setVadParams 整包受理");
+        await sleep(120);
+        eq(seen.length, 0, "300ms 内不出段表(防抖在 mock 侧)");
+        // 防抖重置:再来一发,前一发的计时器作废
+        eq(
+            (await b.setVadParams({ ...vad, threshold_db: -42 })).ok,
+            true,
+            "第二发重置防抖",
+        );
+        await sleep(420);
+        eq(seen.length, 1, "松手后恰好一帧段表");
+        const ev = seen[0];
+        eq(ev.reason, "vad", "reason = vad(§2.8)");
+        check(
+            ev.diff && Number.isInteger(ev.diff.kept),
+            "diff.kept 在(wave.diffKept 的 {k})",
+        );
+        // §2.8 字段纪律:segIdx 每次事件后重新编号(0 基连续)
+        for (const c of ev.channels.slice(0, 2)) {
+            check(
+                c.segments.every((s, i) => s.segIdx === i),
+                `ch${c.ch} segIdx 重新编号 0 基连续`,
+            );
+        }
+        // 松手档只改写 auto 未锁定段:用户/锁定段逐字节保留
+        const before = await b.setSegmentation({
+            mode: "valley",
+            sensitivity: 0.5,
+            min_segment_ms: 420,
+        });
+        eq(before.ok, true, "setSegmentation 整包受理");
+        await sleep(420);
+        eq(seen.length, 2, "分段参数松手后一帧段表");
+        eq(seen[1].reason, "segmentation", "reason = segmentation");
+    });
+
+    // ---- editSegment 五 op(§1.22/§5.4)+ notAdjacent + 布防 + 清除 + setRange
+    await withOutput("fixture=fifteen-tracks", async (b, seen, s) => {
+        const st = await b.requestInitialState();
+        const ch = 1;
+        const seg0 = (await b.requestWaveform(ch, 0, 10, 16)) || {};
+        void seg0;
+        // set_values:origin → user_edited 且 locked(J44 前半)
+        let r = await b.editSegment(ch, "set_values", { segIdx: 0, pan: 12 });
+        eq(r.ok, true, "set_values 受理");
+        let last = seen[seen.length - 1];
+        eq(last.reason, "edit", "编辑帧 reason = edit");
+        const c1 = last.channels.find((c) => c.ch === ch);
+        eq(
+            [c1.segments[0].origin, c1.segments[0].locked, c1.segments[0].pan],
+            ["user_edited", true, 12],
+            "set_values 后置状态(origin/locked/值)",
+        );
+        // set_locked:**不改 origin**(§5.4)
+        r = await b.editSegment(ch, "set_locked", { segIdx: 1, locked: true });
+        eq(r.ok, true, "set_locked 受理");
+        last = seen[seen.length - 1];
+        const s1 = last.channels.find((c) => c.ch === ch).segments[1];
+        check(s1.locked === true, "set_locked 锁上");
+        check(s1.origin === "auto", "set_locked 不改 origin");
+        // move_boundary(释放才发的那一发)
+        const t0 = last.channels.find((c) => c.ch === ch).segments[1].t0S;
+        r = await b.editSegment(ch, "move_boundary", {
+            segIdx: 1,
+            edge: "t0",
+            tS: t0 + 0.4,
+        });
+        eq(r.ok, true, "move_boundary 受理");
+        // split:两子段继承原值
+        last = seen[seen.length - 1];
+        const segsNow = last.channels.find((c) => c.ch === ch).segments;
+        const tgt = segsNow[0];
+        r = await b.editSegment(ch, "split", {
+            segIdx: 0,
+            tS: (tgt.t0S + tgt.t1S) / 2,
+        });
+        eq(r.ok, true, "split 受理");
+        last = seen[seen.length - 1];
+        const after = last.channels.find((c) => c.ch === ch).segments;
+        eq(after.length, segsNow.length + 1, "split 段数 +1");
+        near(after[0].pan, after[1].pan, 1e-9, "两子段继承原值(pan)");
+        // merge:相邻可并;不相邻回 notAdjacent(UI 行内反馈词条已备)
+        r = await b.editSegment(ch, "merge", { segIdxA: 0, segIdxB: 1 });
+        eq(r.ok, true, "merge 相邻受理");
+        r = await b.editSegment(ch, "merge", { segIdxA: 0, segIdxB: 2 });
+        eq(r.reason, "notAdjacent", "merge 不相邻拒绝");
+
+        // 布防(§1.23):armed:false 走 §5.5 reason;成态落 state.recapture;
+        // mask=0∧start=end=0 = 撤销布防(无 reason)
+        eq(
+            (await b.recaptureArm(0, 1, 5)).reason,
+            "noTracks",
+            "布防拒绝 noTracks",
+        );
+        eq(
+            (await b.recaptureArm(0b111, 5, 5)).reason,
+            "noSelection",
+            "布防拒绝 noSelection",
+        );
+        r = await b.recaptureArm(0b111, 30, 60, true);
+        eq(r.armed, true, "布防受理");
+        const rec = (await b.requestInitialState()).recapture;
+        eq(
+            [rec.armed, rec.tracksMask, rec.autoStop],
+            [true, 7, true],
+            "state.recapture 回读(armed/mask/autoStop)",
+        );
+        r = await b.recaptureArm(0, 0, 0);
+        check(
+            r.armed === false && !("reason" in r),
+            "撤销布防 armed:false 无 reason",
+        );
+
+        // 清除(§1.24):真扣除 → clearedS>0、波形 covered 哨兵、coveragePct 降
+        const covBefore = (await b.requestWaveform(ch, 20, 40, 64)).covered;
+        check(
+            covBefore.some((v) => v === 1),
+            "清除前 20-40s 有覆盖列",
+        );
+        r = await b.clearCoverage(1, 20, 40);
+        eq(r.ok, true, "clearCoverage 受理");
+        check(r.clearedS > 0, "clearedS 为真扣除量");
+        const tile = await b.requestWaveform(ch, 20, 40, 64);
+        check(
+            tile.covered.every((v) => v === 0),
+            "清除区间 covered 全 0",
+        );
+        check(
+            tile.minDb.every((v) => v === -160),
+            "清除区间回未覆盖哨兵 -160(§1.27)",
+        );
+        // §1.5 coverage 口径:清干净的区间 dry-run 数不到段
+        const pv = await b.previewAnalyze({
+            tracksMask: 1,
+            startS: 20,
+            endS: 40,
+        });
+        eq(pv.intervals, 0, "previewAnalyze:range∩coverage=∅ → 0");
+
+        // setRange(§1.8):Tab3「设为范围」manual 档;startS>=endS → badArg
+        r = await b.setRange("manual", 30, 60);
+        eq(r.ok, true, "setRange manual 受理");
+        eq(
+            (await b.requestInitialState()).global.range.mode,
+            "manual",
+            "Range 档位已切 manual",
+        );
+        eq(
+            (await b.setRange("manual", 60, 60)).reason,
+            "badArg",
+            "退化选区拒绝 badArg 且不改 state",
+        );
+        void st;
+        void s;
+    });
+}
+
+// =============================================================================
+log("=== ⑦ 交互纯函数 + 源码级纪律断言(Wave 2)===");
+{
+    // ---- 泳道点选(05 行 288 语义:toggle / shift 锚点连选并集追加)
+    eq(TW.applyPick([], 3, false), [3], "点选追加");
+    eq(TW.applyPick([3], 3, false), [], "再点 toggle 掉");
+    eq(
+        TW.applyPick([5, 2], 6, true),
+        [5, 2, 3, 4, 6],
+        "shift 以尾元素为锚点连选",
+    );
+    eq(TW.applyPick([2], 2, true), [2], "shift 含自身不重复");
+    eq(TW.maskOfPicked([1, 3, 15]), 0b100000000000101, "轨表 → u16 位图");
+    eq(TW.maskOfPicked([0, 16]), 0, "越界轨不入位图");
+
+    // ---- segIdx 重绑(brief §0.7):时间锚中点包含 → 最大重叠 → 失效
+    const segsNew = [
+        { t0S: 0, t1S: 4 },
+        { t0S: 4, t1S: 9 },
+        { t0S: 9, t1S: 12 },
+    ];
+    eq(
+        TW.rebindSegKeys([{ idx: 5, t0S: 4.2, t1S: 8.8 }], segsNew),
+        [{ idx: 1, t0S: 4, t1S: 9 }],
+        "中点包含重绑(旧 idx 作废)",
+    );
+    eq(
+        TW.rebindSegKeys([{ idx: 0, t0S: 40, t1S: 44 }], segsNew),
+        [],
+        "找不到即失效(不保留旧下标)",
+    );
+    eq(
+        TW.rebindSegKeys(
+            [
+                { idx: 0, t0S: 4.1, t1S: 8.9 },
+                { idx: 1, t0S: 4.2, t1S: 8.8 },
+            ],
+            segsNew,
+        ).length,
+        1,
+        "重复命中去重",
+    );
+
+    // ---- 边界吸附(A-14:半径按 px/秒换算;Alt 关吸附)
+    eq(
+        TW.snapBoundary(10.02, [9.0, 10.05], 100, false),
+        { tS: 10.05, snapped: true },
+        "半径内吸最近谷点",
+    );
+    eq(
+        TW.snapBoundary(10.02, [9.0, 10.05], 100, true),
+        { tS: 10.02, snapped: false },
+        "Alt 关吸附",
+    );
+    eq(
+        TW.snapBoundary(10.02, [9.0], 100, false).snapped,
+        false,
+        "半径外不吸附",
+    );
+
+    // ---- scope 内计数(确认框 {k}/{l} 与「将覆盖 K 段」)
+    const segTable = {
+        channels: [
+            {
+                ch: 1,
+                segments: [
+                    { t0S: 0, t1S: 5, origin: "user_edited", locked: false },
+                    { t0S: 5, t1S: 9, origin: "auto", locked: true },
+                    { t0S: 9, t1S: 20, origin: "auto", locked: false },
+                ],
+            },
+            { ch: 2, segments: [{ t0S: 0, t1S: 9, origin: "auto" }] },
+        ],
+    };
+    eq(
+        TW.countsInScope(segTable, 0b1, 0, 10),
+        { marks: 1, locked: 1, overlap: 3 },
+        "countsInScope(mask×区间相交)",
+    );
+    eq(TW.countsInScope(segTable, 0b11, 0, 10).overlap, 4, "多轨并入 overlap");
+
+    // ---- 检查器读数
+    eq(TW.fmtSigned(2, 1), "+2.0", "带符号正值");
+    eq(TW.fmtSigned(-14.25, 1), "-14.2", "负值四舍五入");
+    eq(TW.fmtSigned(-0.01, 1), "0.0", "-0 归零");
+
+    // ---- 源码级纪律(tab-wave.js)
+    const tw = src("web/output/tab-wave.js");
+    check(
+        TW.PARAM_THROTTLE_MS >= 20,
+        `拖动下发 ≤50Hz(节流 ${TW.PARAM_THROTTLE_MS}ms ≥ 20ms)`,
+    );
+    check(
+        tw.includes('call("setVadParams", { ...local.vadParams })'),
+        "setVadParams 五字段整包下发(不发单字段)",
+    );
+    check(
+        tw.includes('call("setSegmentation", { ...local.segmentation })'),
+        "setSegmentation 三字段整包下发",
+    );
+    // UI 不自建 300ms 防抖去调 analyze(brief §0.5):releaseSlider 体内无 analyze
+    const relBody = tw.slice(
+        tw.indexOf("function releaseSlider"),
+        tw.indexOf("function armCountdown"),
+    );
+    check(
+        !relBody.includes("analyze"),
+        "松手档不调 analyze(300ms 防抖在 C++/mock 侧)",
+    );
+    // 释放才发(§1.22):拖动帧函数体内无 editSegment,提交在 commit/up 路径
+    const dragBody = tw.slice(
+        tw.indexOf("function updateBoundDrag"),
+        tw.indexOf("function commitBoundDrag"),
+    );
+    check(
+        !dragBody.includes("sendEdit") && !dragBody.includes("editSegment"),
+        "边界拖动帧不发 editSegment(释放才发)",
+    );
+    const commitBody = tw.slice(
+        tw.indexOf("function commitBoundDrag"),
+        tw.indexOf("function mountSelection"),
+    );
+    check(
+        commitBody.includes('"move_boundary"'),
+        "commitBoundDrag 提交 move_boundary",
+    );
+    // segIdx 重绑(brief §0.7):onSegments 里必须过 rebindSegKeys
+    const onSegBody = tw.slice(
+        tw.indexOf("function onSegments"),
+        tw.indexOf("function onCaptureProgress"),
+    );
+    check(
+        onSegBody.includes("rebindSegKeys"),
+        "onSegments 重绑选中段(segIdx 每事件重编号)",
+    );
+    // 中央写闸:写面统一过 isWriteBlocked()(采样点计数下限)
+    const gateHits = (tw.match(/isWriteBlocked\(\)/g) || []).length;
+    check(gateHits >= 10, `isWriteBlocked() 闸口覆盖(实得 ${gateHits} 处)`);
+    // 频率纪律:previewAnalyze 节流、视口静止 120ms 取新块
+    check(TW.PREVIEW_THROTTLE_MS >= 100, "previewAnalyze 节流窗");
+    check(
+        tw.includes("IDLE_REFETCH_MS"),
+        "视口静止 120ms 才取新块已接线(§6.3)",
+    );
+}
+
+// =============================================================================
+log("=== ⑧ Wave 2 新词条三语(反馈件族;U17 注记)===");
+{
+    const KEYS2 = [
+        "wave.armReason.noTracks",
+        "wave.armReason.noSelection",
+        "wave.armReason.readOnly",
+        "wave.armReason.noTimeline",
+        "wave.notAdjacent",
+        "wave.btnMerge",
+        "wave.recaptureOverlap",
+        "wave.diffItem",
+        "wave.diffAddedRemoved",
+        "wave.clearedCoverage",
+    ];
+    const ph = (s) => (String(s).match(/\{\w+\}/g) || []).sort().join(",");
+    for (const k of KEYS2) {
+        for (const lang of ["zh", "en", "fr"]) {
+            check(
+                typeof T[lang][k] === "string" && T[lang][k].length > 0,
+                `${lang}.${k} 非空`,
+            );
+        }
+        eq(ph(T.en[k]), ph(T.zh[k]), `${k} en 占位符与 zh 一致`);
+        eq(ph(T.fr[k]), ph(T.zh[k]), `${k} fr 占位符与 zh 一致`);
+    }
 }
 
 // =============================================================================

@@ -1607,8 +1607,7 @@
             }
             .tracks-row__labelcell[data-editing="1"] .tracks-row__label,
             .tracks-row__labelcell[data-editing="1"] .tracks-row__mark,
-            .tracks-row__labelcell[data-editing="1"] .tracks-row__leadmark,
-            .tracks-row__labelcell[data-editing="1"] .tracks-row__dotmark {
+            .tracks-row__labelcell[data-editing="1"] .tracks-row__leadmark {
                 display: none;
             }
             .tracks-row__mark {
@@ -1625,9 +1624,13 @@
                 white-space: nowrap;
                 color: var(--txt-1);
             }
-            /* 长句类行内提示(重采集布防)在 150px 列里塞不下,压成 6px 琥珀点 + tooltip */
+            /* 长句类行内提示(重采集布防)压成 6px 琥珀点 + tooltip;
+               B-05 裁定「目标轨行首」——贴行左缘绝对定位(T33 Wave 2 迁位) */
             .tracks-row__dotmark {
-                flex: none;
+                position: absolute;
+                left: 2px;
+                top: 50%;
+                margin-top: calc(var(--sp-6) / -2);
                 width: var(--sp-6);
                 height: var(--sp-6);
                 border-radius: 50%;
@@ -2331,13 +2334,15 @@
             .wave-lane[data-status="idle"] {
                 opacity: 0.5;
             }
-            /* 轨头 158px 装六件(B-08 裁定:曲线可见压成眼睛钮,覆盖率+段数并一行) */
+            /* 轨头 158px 装六件(B-08 裁定:曲线可见压成眼睛钮,覆盖率+段数并一行)。
+               Wave 1 亲验:gap 7 + covseg fs-90 下 label 只剩 ~17px(「主…」)——
+               收 gap 至 5、covseg 降 fs-80、label 保底 30px(deviations 登记) */
             .wave-lane__head {
                 width: 158px;
                 flex: none;
                 display: flex;
                 align-items: center;
-                gap: var(--sp-7);
+                gap: var(--sp-5);
                 padding: 0 var(--sp-10);
                 border-right: 1px solid var(--dark-rule);
                 border-bottom: 1px solid var(--dark-rule-weak);
@@ -2378,7 +2383,7 @@
             }
             .wave-lane__label {
                 flex: 1;
-                min-width: 0;
+                min-width: 30px; /* 轨头 label 保底可读宽(QA 复核项) */
                 font-size: var(--fs-105);
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -2392,7 +2397,7 @@
             .wave-lane__covseg {
                 flex: none;
                 font-family: var(--ff-mono);
-                font-size: var(--fs-90);
+                font-size: var(--fs-80); /* fs-90 → fs-80:让位 label(QA 复核) */
                 color: rgba(233, 229, 244, 0.45);
                 white-space: nowrap;
             }
@@ -2495,6 +2500,73 @@
                 z-index: 2;
                 background: rgba(var(--sem-amber), 0.07);
                 pointer-events: none;
+            }
+            /* 重采集布防受覆盖区域(05 行 300):琥珀斜条纹高亮(A-08 同族配方) */
+            .wave-recapband {
+                position: absolute;
+                top: 0;
+                z-index: 2;
+                background: repeating-linear-gradient(
+                    45deg,
+                    rgba(var(--sem-amber), 0.22) 0 3px,
+                    transparent 3px 8px
+                );
+                pointer-events: none;
+            }
+            /* 段边界拖拽手柄(图例帧 767-772:9×26 圆角竖条 + 双竖线纹,
+               垂直居中于泳道 B-10;auto=白描边浅底 / 手动=薰衣草白重底+发光
+               两级权重;纯视觉浮标 —— 命中在泳道容器上做,±6px hit.js 口径) */
+            .wave-bhandle {
+                position: absolute;
+                width: 9px;
+                height: 26px;
+                margin-left: -4.5px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 4px;
+                background: rgba(226, 222, 244, 0.28);
+                border: 1px solid rgba(var(--wh), 0.55);
+                color: rgba(var(--wh), 0.9);
+                z-index: 4;
+                pointer-events: none;
+            }
+            .wave-bhandle[data-manual="1"] {
+                background: rgba(240, 236, 255, 0.5);
+                border-color: rgba(var(--wh), 0.85);
+                box-shadow: 0 0 12px rgba(226, 222, 244, 0.5);
+                color: var(--ink-on-amber);
+            }
+            /* 拖拽吸附命中能量谷(A-14:竖线加亮 + 手柄琥珀高亮;Alt 关吸附) */
+            .wave-bhandle[data-snap="1"] {
+                background: rgba(var(--sem-amber-hi), 0.85);
+                border-color: rgba(var(--wh), 0.85);
+                box-shadow: 0 0 12px rgba(var(--sem-amber-hi), 0.7);
+                color: var(--ink-on-amber);
+            }
+            /* 布防拒绝态行内说明(§5.5 四值 reason:出说明、不点亮 badge) */
+            .wave-armnote {
+                color: var(--sem-amber-ink);
+            }
+            /* 布防 badge 三处的点击跳转(05 行 300 ①:点击跳 Tab3 定位选区) */
+            [data-gb="master-range-recapture-badge"],
+            [data-gb="tracks-legend-recapture-badge"] {
+                cursor: pointer;
+            }
+            /* diff 变更列表条目(A-02:mono 数值行,首行 wave.diffKept 已有) */
+            .wave-diff ul {
+                margin: 0;
+                padding: 0;
+                list-style: none;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-2);
+            }
+            .wave-diff li {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-90);
+                color: var(--txt-3);
             }
             /* 播放头(838):滚动层内纵贯;采集中的绿色进度点(A-15)是头部子件 */
             .wave-playhead {
@@ -5100,6 +5172,22 @@
                                     >
                                         应用到分段
                                     </button>
+                                    <!-- 选中相邻两段的工具条合并入口(05 行 313;
+                                         Delete 键同径;merge notAdjacent → 行内反馈) -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-mergesegs"
+                                        hidden
+                                        data-t="wave.btnMerge"
+                                    >
+                                        合并选中两段
+                                    </button>
+                                    <span
+                                        class="sc-hint wave-armnote"
+                                        data-gb="wave-arm-note"
+                                        hidden
+                                    ></span>
                                     <div
                                         class="wave-trackpickhint"
                                         data-gb="wave-trackpickhint"
@@ -5215,6 +5303,12 @@
                                         data-t="wave.recaptureInlineNote"
                                         >本次布防只门控采集,不改变输出范围</span
                                     >
+                                    <!-- 05 行 300:受覆盖提示「将覆盖 K 段已有数据」 -->
+                                    <span
+                                        class="wave-recap__note"
+                                        data-gb="wave-recapture-overlap"
+                                        hidden
+                                    ></span>
                                 </div>
 
                                 <!-- A2⑦ 重分析影响预览行(05 行 301;previewAnalyze 纯只读
@@ -5336,6 +5430,36 @@
                                         data-gb="wave-selband"
                                         hidden
                                     ></div>
+                                    <!-- 重采集布防受覆盖区域(05 行 300:斜条纹高亮;
+                                         几何由 JS 按 state.recapture 写) -->
+                                    <div
+                                        class="wave-recapband"
+                                        data-gb="wave-recapband"
+                                        hidden
+                                    ></div>
+                                    <!-- 段边界拖拽手柄(图例帧 767-772 的 9×26 两级
+                                         权重;悬停命中 ±6px 时浮现于该边界,视觉件,
+                                         命中检测在泳道容器上,pointer-events:none) -->
+                                    <div
+                                        class="wave-bhandle"
+                                        data-gb="wave-boundary-handle"
+                                        data-manual="0"
+                                        hidden
+                                        aria-hidden="true"
+                                    >
+                                        <svg
+                                            width="5"
+                                            height="10"
+                                            viewBox="0 0 5 10"
+                                        >
+                                            <path
+                                                d="M1.4 1v8M3.6 1v8"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="1.1"
+                                            />
+                                        </svg>
+                                    </div>
                                     <!-- 播放头(838):rAF 插值(canvas/playhead.js);
                                          采集中头部追加绿色进度点(A-15) -->
                                     <div

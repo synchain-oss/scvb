@@ -433,6 +433,23 @@ export const T = {
         "wave.reidentifyConfirm":
             "将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?",
         "wave.clearCoverageConfirm": "将删除选中轨×选区的采集特征数据,确定?",
+        // ---- T33 Wave 2 交互反馈件(05 §2.3 行 300-313 / 契约 §5.5;
+        //      EN/FR 入 U17 待审校)----
+        // recaptureArm 拒绝态四值的行内说明(§5.5:出说明、不点亮 badge)
+        "wave.armReason.noTracks": "未勾选目标轨——先在左侧轨头勾选",
+        "wave.armReason.noSelection": "无有效选区——先在时间标尺上拖出选区",
+        "wave.armReason.readOnly": "只读观察态,布防未生效",
+        "wave.armReason.noTimeline": "宿主未提供时间线,无法布防",
+        // merge 的 notAdjacent 拒绝反馈(契约 §1.22)与工具条合并钮(05 行 313)
+        "wave.notAdjacent": "只能合并相邻两段",
+        "wave.btnMerge": "合并选中两段",
+        // 重采集受覆盖提示(05 行 300:「将覆盖 K 段已有数据」)
+        "wave.recaptureOverlap": "将覆盖 {k} 段已有数据",
+        // diff 变更列表条目与增删摘要(A-02;首行走 wave.diffKept)
+        "wave.diffItem": "轨 {ch} · 段 {i}:pan {pf}→{pt} · vol {vf}→{vt}",
+        "wave.diffAddedRemoved": "新增 {a} 段 · 移除 {r} 段",
+        // clearCoverage 回执反馈(契约 §1.24 的 clearedS)
+        "wave.clearedCoverage": "已清除 {s} s 采集数据",
     },
 
     en: {
@@ -823,6 +840,20 @@ export const T = {
             "This clears {k} manual edit marks and recomputes; {l} locked segments stay unchanged. Continue?",
         "wave.clearCoverageConfirm":
             "This deletes the captured feature data for the selected tracks × selection. Continue?",
+        // ---- T33 Wave 2 interaction feedback (05 §2.3 / contract §5.5; U17 review pending) ----
+        "wave.armReason.noTracks":
+            "No target tracks — check track heads on the left first",
+        "wave.armReason.noSelection":
+            "No valid selection — drag one on the time ruler first",
+        "wave.armReason.readOnly":
+            "Read-only observer — arming did not take effect",
+        "wave.armReason.noTimeline": "Host provides no timeline — cannot arm",
+        "wave.notAdjacent": "Only two adjacent segments can be merged",
+        "wave.btnMerge": "Merge selected pair",
+        "wave.recaptureOverlap": "Will overwrite {k} segments of existing data",
+        "wave.diffItem": "Track {ch} · seg {i}: pan {pf}→{pt} · vol {vf}→{vt}",
+        "wave.diffAddedRemoved": "{a} added · {r} removed",
+        "wave.clearedCoverage": "Cleared {s} s of captured data",
     },
 
     fr: {
@@ -1224,6 +1255,22 @@ export const T = {
             "Efface {k} marques d'édition manuelle et recalcule ; {l} segments verrouillés restent inchangés. Continuer ?",
         "wave.clearCoverageConfirm":
             "Supprime les données de caractéristiques capturées pour les pistes sélectionnées × la sélection. Continuer ?",
+        // ---- Retours d'interaction T33 Wave 2(05 §2.3 / contrat §5.5;relecture U17 en attente)----
+        "wave.armReason.noTracks":
+            "Aucune piste cible — cochez d'abord les en-têtes de piste à gauche",
+        "wave.armReason.noSelection":
+            "Aucune sélection valide — tracez-en une sur la règle temporelle",
+        "wave.armReason.readOnly":
+            "Observateur en lecture seule — l'armement n'a pas pris effet",
+        "wave.armReason.noTimeline":
+            "L'hôte ne fournit pas de ligne temporelle — armement impossible",
+        "wave.notAdjacent":
+            "Seuls deux segments adjacents peuvent être fusionnés",
+        "wave.btnMerge": "Fusionner la paire sélectionnée",
+        "wave.recaptureOverlap": "Écrasera {k} segments de données existantes",
+        "wave.diffItem": "Piste {ch} · seg {i} : pan {pf}→{pt} · vol {vf}→{vt}",
+        "wave.diffAddedRemoved": "{a} ajoutés · {r} supprimés",
+        "wave.clearedCoverage": "{s} s de données capturées effacées",
     },
 };
 

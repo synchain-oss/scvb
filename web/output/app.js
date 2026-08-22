@@ -100,6 +100,8 @@ const store = {
         // 之所以要一个时间戳而不是就地 setAttribute:renderHeader 每次都按 phase 重算 chip 的
         // data-disabled,就地写会在同一拍被抹回 0(UI 与引擎状态不同步时 phase 恰恰不是 print)。
         rejectedPrintingUntil: 0,
+        // B-04:布防期内输出开关 ON 过的粘滞位(footer 琥珀警告的「或被打开」半边)
+        recapOutputOpened: false,
     },
 };
 
@@ -316,8 +318,26 @@ const tabWave = createTabWave({
     getStore: () => store,
     getT: () => dictNow,
     onLocalChange: () => render(),
+    // 空态 CTA「去 Tab1 打开采集」等页间跳转(05 §2.3 行 318)
+    gotoTab: (name) => activateTab(name),
 });
 tabWave.mount();
+
+// 布防 badge 三处的点击跳转(05 §2.3 行 300 ①:点击跳 Tab3 定位选区)——
+// Tab1 Range 旁与 Tab2 图例行两枚在别的卡里,跳转归外壳;Tab3 自己的 badge
+// 由 tab-wave.js 内部接线(同一 locateRecapture 口径)。
+for (const gb of [
+    "master-range-recapture-badge",
+    "tracks-legend-recapture-badge",
+]) {
+    const el = $(gb);
+    if (el) {
+        el.addEventListener("click", () => {
+            activateTab("wave");
+            tabWave.locateRecapture();
+        });
+    }
+}
 
 // ------------------------------------------------------------- 缩放档位(footer 下拉 + 设置页,05 §1.2)
 // 档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2「常量真源」栏)。
@@ -932,9 +952,17 @@ function renderFooter() {
         y: secondsToTimecode(range.end_s),
     });
 
-    // 重采集布防 badge③:输出开关 ON 且布防中 → footer 追加琥珀警告(05 §2.3)
+    // 重采集布防警告③(05 §2.3 行 300 / B-04 裁定):触发 =「输出开关 ON
+    // **或在布防期被打开**」—— 布防期内输出一旦 ON 过就置粘滞位,关回 OFF
+    // 警告仍挂(引擎已按全局范围工作过);撤防才复位。
     const rec = s.recapture;
-    show($("footer-recapture-warn"), !!(rec && rec.armed && g.output_enabled));
+    const armed = !!(rec && rec.armed);
+    if (!armed) store.session.recapOutputOpened = false;
+    else if (g.output_enabled) store.session.recapOutputOpened = true;
+    show(
+        $("footer-recapture-warn"),
+        armed && (!!g.output_enabled || !!store.session.recapOutputOpened),
+    );
 
     // 版本号(§1.1 快照的 version.plugin;快照没到之前保持 HTML 里的占位)
     const ver = $("footer-version");

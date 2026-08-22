@@ -57,6 +57,7 @@ import {
     makeParams,
     makeSegments,
     makeWaveformTile,
+    coverageRangesOf,
 } from "../../web/shared/mock-data.js";
 
 // -----------------------------------------------------------------------------
@@ -129,6 +130,59 @@ export function maskOfChannels(list) {
     let mask = 0;
     for (const ch of list) mask |= 1 << (ch - 1);
     return mask >>> 0;
+}
+
+// -----------------------------------------------------------------------------
+// 0b. 覆盖区间代数(coverage 预览缓存的纯计算面;T33 Wave 2 / T32 遗留批)
+// -----------------------------------------------------------------------------
+// `{startS, endS}[]`(升序、互不重叠)上的并集/差集/求交 —— 供 §1.5 affectedOf
+// 的「range ∩ coverage」口径、§1.24 clearCoverage 的真扣除、§1.27 requestWaveform
+// 的 covered 位与 §2.7 captureProgress 增量共用同一份缓存讲同一个故事。
+
+/** 并入一批区间(captureProgress.addedRanges 的缓存写入)。 */
+export function unionRanges(ranges, added) {
+    const all = [...(ranges || []), ...(added || [])]
+        .filter((r) => r && isFiniteNumber(r.startS) && r.endS > r.startS)
+        .sort((a, b) => a.startS - b.startS);
+    const out = [];
+    for (const r of all) {
+        const last = out[out.length - 1];
+        if (last && r.startS <= last.endS) {
+            last.endS = Math.max(last.endS, r.endS);
+        } else {
+            out.push({ startS: r.startS, endS: r.endS });
+        }
+    }
+    return out;
+}
+
+/** 扣掉 `[startS, endS)`(clearCoverage 的真扣除)。 */
+export function subtractRange(ranges, startS, endS) {
+    const out = [];
+    for (const r of ranges || []) {
+        if (r.endS <= startS || r.startS >= endS) {
+            out.push({ ...r });
+            continue;
+        }
+        if (r.startS < startS) out.push({ startS: r.startS, endS: startS });
+        if (r.endS > endS) out.push({ startS: endS, endS: r.endS });
+    }
+    return out;
+}
+
+/** `[startS, endS)` 与区间表有无交集(affectedOf 的段级判定)。 */
+export function overlapsRanges(ranges, startS, endS) {
+    for (const r of ranges || []) {
+        if (r.endS > startS && r.startS < endS) return true;
+    }
+    return false;
+}
+
+/** 区间表覆盖总长(秒;coveragePct 重算)。 */
+function coveredLenOf(ranges) {
+    let sum = 0;
+    for (const r of ranges || []) sum += Math.max(r.endS - r.startS, 0);
+    return sum;
 }
 
 // -----------------------------------------------------------------------------
@@ -233,6 +287,11 @@ function makeContext(role, world) {
         segVersion: role === "output" ? world.output.segments.version : 1,
         segByCh: new Map(),
         coveragePct: new Map(),
+        // coverage 预览缓存(T32 遗留批,T33 Wave 2 落地):ch → {startS,endS}[]。
+        // 初值 = fixture 覆盖画像;captureProgress 的 addedRanges 增量并入;
+        // clearCoverage 真扣除。affectedOf(§1.5「range ∩ coverage」)与
+        // requestWaveform 的 covered 位都从这里读,三处讲同一个故事。
+        coverageRanges: new Map(),
         errors: clone(world.errors[role] || []),
         timers: new Set(),
     };
@@ -243,6 +302,13 @@ function makeContext(role, world) {
         }
         for (const entry of world.output.coverage || []) {
             model.coveragePct.set(entry.ch, entry.coveragePct);
+            // 覆盖率 >0 的轨才有区间画像;empty fixture(0%)保持空表
+            model.coverageRanges.set(
+                entry.ch,
+                entry.coveragePct > 0
+                    ? coverageRangesOf(entry.ch, model.durationS)
+                    : [],
+            );
         }
     }
 
@@ -275,6 +341,16 @@ function makeContext(role, world) {
         if (name === "scvb.captureProgress") {
             for (const entry of payload.channels || []) {
                 model.coveragePct.set(entry.ch, entry.coveragePct);
+                // 预览缓存:本帧新增覆盖并入区间表(affectedOf / requestWaveform 同源)
+                if ((entry.addedRanges || []).length) {
+                    model.coverageRanges.set(
+                        entry.ch,
+                        unionRanges(
+                            model.coverageRanges.get(entry.ch),
+                            entry.addedRanges,
+                        ),
+                    );
+                }
             }
         }
         const list = listeners.get(name);
@@ -692,7 +768,12 @@ function buildOutputBackend(ctx) {
         return model.caps.noTimeline === true;
     }
 
-    /** 分析 dry-run:只数 `range ∩ coverage` 内的段(§1.5,纯只读、不写 state)。 */
+    /**
+     * 分析 dry-run:只数 `range ∩ coverage` 内的段(§1.5,纯只读、不写 state)。
+     * T33 Wave 2(T32 遗留批):补齐 §1.5 的 coverage 口径 —— 段除了与 scope
+     * 相交,还必须与该轨 coverage 预览缓存(model.coverageRanges)相交才计数;
+     * 没采到的区间里没有可重算的对象,`range ∩ coverage = ∅ ⇒ {0,0,0}`。
+     */
     function affectedOf(scope) {
         const mask =
             scope === "all" || scope === undefined || scope === null
@@ -705,8 +786,16 @@ function buildOutputBackend(ctx) {
         const startS = isFiniteNumber(scope?.startS) ? scope.startS : -Infinity;
         const endS = isFiniteNumber(scope?.endS) ? scope.endS : Infinity;
         for (const ch of chList) {
+            const cov = model.coverageRanges.get(ch) || [];
             const hit = segmentsOf(ch).filter(
-                (s) => s.t1S > startS && s.t0S < endS,
+                (s) =>
+                    s.t1S > startS &&
+                    s.t0S < endS &&
+                    overlapsRanges(
+                        cov,
+                        Math.max(s.t0S, startS),
+                        Math.min(s.t1S, endS),
+                    ),
             );
             if (hit.length === 0) continue;
             tracks++;
@@ -722,12 +811,22 @@ function buildOutputBackend(ctx) {
         emit("scvb.segments", segmentsPayload(reason, chList));
     }
 
-    /** 松手档 300ms 防抖(§1.18/§1.19):停止调用后才跑「流水线」。 */
+    /**
+     * 松手档 300ms 防抖(§1.18/§1.19):停止调用后才跑「流水线」。
+     * 抑制条件**只有** PRINT 态或分析进行中(J47,契约 §1.18 语义行):
+     * 抑制时不自动应用(计时器不排/到点不跑),UI 侧退回显式
+     * 「应用到分段(重分析)」按钮 = analyze(scope)。
+     */
     let debounceId = null;
     function debounceAnalysisPipeline(reason) {
         if (debounceId !== null) clearTimeout(debounceId);
+        if (isPrinting() || model.snapshot.analysis_run.running) {
+            debounceId = null;
+            return;
+        }
         debounceId = later(300, () => {
             debounceId = null;
+            if (isPrinting() || model.snapshot.analysis_run.running) return;
             const v = model.snapshot.global.version_active;
             // §1.18/§1.19 语义行:松手档**仅改写 `origin=auto` 且未 `locked` 的段**,
             // 用户段逐字节不动 —— 所以走合并档(clearManual 与本路径无关,恒 false)。
@@ -1301,17 +1400,28 @@ function buildOutputBackend(ctx) {
                 return BAD_ARG();
             }
             const chList = channelsOfMask(mask);
-            const span = endS - startS;
-            const pctDrop = (span / model.durationS) * 100;
+            // 从 coverage 预览缓存里**真扣除**(T33 Wave 2):波形侧 covered 位、
+            // affectedOf 的 §1.5 口径与 coveragePct 三处随之一致。
+            let clearedS = 0;
             const channels = chList.map((ch) => {
-                const before = model.coveragePct.get(ch) ?? 0;
-                const after = round(clamp(before - pctDrop, 0, 100), 1);
-                model.coveragePct.set(ch, after);
+                const before = model.coverageRanges.get(ch) || [];
+                const after = subtractRange(before, startS, endS);
+                clearedS += coveredLenOf(before) - coveredLenOf(after);
+                model.coverageRanges.set(ch, after);
+                const pct = round(
+                    clamp(
+                        (coveredLenOf(after) / model.durationS) * 100,
+                        0,
+                        100,
+                    ),
+                    1,
+                );
+                model.coveragePct.set(ch, pct);
                 // §2.7 的 addedRanges 只表达「新增」,清除只体现在 coveragePct 上。
-                return { ch, addedRanges: [], coveragePct: after };
+                return { ch, addedRanges: [], coveragePct: pct };
             });
             emit("scvb.captureProgress", { channels });
-            return { ok: true, clearedS: round(span * chList.length, 2) };
+            return { ok: true, clearedS: round(clearedS, 2) };
         },
 
         // ---- §1.25 / §1.26(brief:栈空即可)------------------------------------
@@ -1337,7 +1447,25 @@ function buildOutputBackend(ctx) {
             ) {
                 return BAD_ARG();
             }
-            return makeWaveformTile(ch, startS, endS, cols);
+            const tile = makeWaveformTile(ch, startS, endS, cols);
+            // 用 coverage 预览缓存把 covered 位收敛到当前真覆盖(clearCoverage
+            // 扣掉的区域立刻变未覆盖哨兵;§1.27 未覆盖列纪律不变)。
+            const cov = model.coverageRanges.get(ch);
+            if (cov) {
+                const colW = (endS - startS) / cols;
+                for (let i = 0; i < cols; i++) {
+                    if (!tile.covered[i]) continue;
+                    const c0 = startS + i * colW;
+                    if (overlapsRanges(cov, c0, c0 + colW)) continue;
+                    tile.covered[i] = 0;
+                    tile.minDb[i] = -160;
+                    tile.maxDb[i] = -160;
+                    tile.vad[i] = 0;
+                    tile.stale[i] = 0;
+                    tile.passId[i] = 0;
+                }
+            }
+            return tile;
         },
 
         // ---- §1.28 / §1.29 ----------------------------------------------------

@@ -347,7 +347,7 @@ function phrasesOf(ch, durationS = DEMO_DURATION_S) {
  * 某轨的采集覆盖区间(两轮采集:passId 1 / 2,中间留一段没采到的空当)。
  * 契约 §2.7 的 `coverage_ranges` 真身在 C++ 侧;这里造的是同形状的预览值。
  */
-function coverageRangesOf(ch, durationS = DEMO_DURATION_S) {
+export function coverageRangesOf(ch, durationS = DEMO_DURATION_S) {
     const u = unit(0x9201, ch);
     const v = unit(0x9202, ch);
     return [
@@ -469,18 +469,21 @@ export function makeOutputState(overrides = {}) {
             range: { mode: "follow", start_s: 0, end_s: 0 },
         },
         analysis: {
-            // 默认值取 02 §2.1 VadParams / §3.1-§3.2(J23 的 pre/post = 120/200)
+            // 默认值口径(T33 Wave 2 统一):05 §2.3 滑杆值域 + 设计稿默认
+            // (threshold −60..−10 dB、sensitivity 0..1;J23 的 pre/post = 120/200)。
+            // 02 §2.1 旧默认(threshold 30 正值 / sensitivity 50)与 05 的 UI 值域
+            // 相悖,mock 是 UI 消费面 —— 取 05,登记 deviations 供 02 复核。
             vad: {
-                threshold_db: 30,
+                threshold_db: -38,
                 hysteresis_db: 6,
-                hangover_ms: 250,
+                hangover_ms: 180,
                 padding_pre_ms: 120,
                 padding_post_ms: 200,
             },
             segmentation: {
                 mode: "valley",
-                sensitivity: 50,
-                min_segment_ms: 120,
+                sensitivity: 0.62,
+                min_segment_ms: 420,
             },
             transition_ramp_ms: 80,
             loudness_mode: "kw_integrated", // §1.21 默认档
@@ -750,12 +753,14 @@ export function makeSegments(
         const segments = phrases.map((p, i) => {
             const panJitter = unit(0x8101 + version, ch * 149 + i) * 12 - 6;
             const volJitter = unit(0x8102 + version, ch * 151 + i) * 3 - 1.5;
-            // 每 11 段左右出一段用户编辑段(编辑后按 J34/J44 必定 locked)
-            const mark = (ch * 7 + i * 13) % 11;
+            // 每 23 段左右出一段用户编辑段(编辑后按 J34/J44 必定 locked)。
+            // T33 Wave 1 亲验:11 取模下 fifteen-tracks 满屏琥珀「锁定」chip,
+            // 视觉噪音过大 —— 密度减半(角标尺寸维持图例帧规格),登记 deviations。
+            const mark = (ch * 7 + i * 13) % 23;
             const origin =
                 mark === 0
                     ? "user_edited"
-                    : mark === 5 && i > 0
+                    : mark === 11 && i > 0
                       ? "user_created"
                       : "auto";
             const seg = {
