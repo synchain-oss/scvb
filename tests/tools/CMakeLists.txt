@@ -63,3 +63,18 @@ if(MSVC)
 else()
   target_compile_options(scvb_bench PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+# pan_curve_vectors:T34 对拍离线工具(02 §7 / PanCurve.h)。打印 parity 点集的 2049 点 LUT
+# 与采样插值,供 scripts/check-curve-parity.mjs 生成 scripts/curve-parity-golden.json
+# (JS↔C++ 对拍的 C++ 侧真源)。零外部依赖,只链接 scvb_core(纯 C++17,不链接 JUCE / Catch2)。
+add_executable(pan_curve_vectors
+  pan_curve_vectors.cpp
+)
+
+target_link_libraries(pan_curve_vectors PRIVATE scvb_core)
+target_include_directories(pan_curve_vectors PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+
+if(MSVC)
+  target_compile_options(pan_curve_vectors PRIVATE /W4 /utf-8 /EHsc)
+else()
+  target_compile_options(pan_curve_vectors PRIVATE -Wall -Wextra -Wpedantic)
+endif()
