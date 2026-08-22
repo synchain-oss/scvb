@@ -45,3 +45,6 @@ pluginval-logs/
 *.log
 .npm-cache/
 __pycache__/
+
+# 预览截图产物(web-preview/shot.mjs 落点;不入库)
+web-preview/.shots/
