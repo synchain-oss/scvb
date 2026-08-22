@@ -424,6 +424,63 @@ console.log("=== ⑦ 源码级不变式:叠加线纯显示(draw/render 零写) =
 }
 
 // =============================================================================
+console.log(
+    "=== ⑧ 源码级不变式:Q 拖动单绘制源(无回跳)+ qRead 即时 + LUT 缓存 ===",
+);
+{
+    const ceSrc = readFileSync(
+        join(ROOT, "web/output/canvas/curve-editor.js"),
+        "utf8",
+    );
+    // draw()/syncToolbar() 以 local.dragPoints 为优先绘制源(本地拖动态为准,单绘制源)
+    const srcCount = ceSrc.split("local.dragPoints || points()").length - 1;
+    check(
+        srcCount >= 2,
+        "draw()/syncToolbar() 读 local.dragPoints || points()(单绘制源)",
+    );
+    // render() 不得清 local.dragPoints(否则 store 回显与本地态打架 → 曲线「一跳一跳」)
+    check(
+        !/if \(!local\.dragging\) local\.dragPoints = null/.test(ceSrc),
+        "render() 不再清 local.dragPoints",
+    );
+    // commit() 在 echo 之后(finally)才清 dragPoints
+    check(
+        /finally[\s\S]*?dragPoints\s*=\s*null/.test(ceSrc),
+        "commit() 在 finally 清 dragPoints(echo 后)",
+    );
+    // draw() 有 LUT 缓存(不逐事件重建)
+    check(/lutCache/.test(ceSrc), "draw() 有 LUT 缓存(lutCache)");
+    // Q input 处理器立即写 qRead(不等 store 回显)
+    check(
+        /_toolbar\.qRead\.textContent = qLabel\(v\)/.test(ceSrc),
+        "Q input 处理器立即写 qRead",
+    );
+}
+
+// =============================================================================
+console.log("=== ⑨ Q 逐事件递增的纯函数面(曲线连续:改 q 不动其余字段) ===");
+{
+    let cur = [{ angle: 0, gain_db: 0, shape: "bell", q: 1, side: "out" }];
+    for (const q of [1.5, 2.0, 2.5, 3.0, 3.5]) {
+        const next = CE.updatePoint(cur, 0, { q });
+        eq(next[0].q, q, "updatePoint 逐事件 q 单调递增:" + q);
+        eq(
+            [next[0].angle, next[0].gain_db, next[0].shape, next[0].side],
+            [0, 0, "bell", "out"],
+            "改 q 不动 angle/gain/shape/side",
+        );
+        cur = next;
+    }
+    // qLabel 数值单调(驱动 qRead 文本单调)
+    let prev = -Infinity;
+    for (let q = 0.5; q <= 10; q += 0.1) {
+        const v = parseFloat(CE.qLabel(q));
+        check(v >= prev, "qLabel 单调非降 @q=" + q.toFixed(1));
+        prev = v;
+    }
+}
+
+// =============================================================================
 if (fail > 0) {
     console.error("smoke-curve-editor 失败(" + fail + " 项)");
     process.exit(1);

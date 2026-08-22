@@ -386,6 +386,7 @@ export function createCurveEditor(opts) {
         shift: false,
         commitTimer: 0,
         hintTimer: 0,
+        lutCache: { key: "", lut: null },
     };
 
     function points() {
@@ -475,7 +476,29 @@ export function createCurveEditor(opts) {
         ctx.clearRect(0, 0, PLOT_W, PLOT_H);
         const c = colors();
         const pts = local.dragPoints || points();
-        const lut = buildLut(pts);
+        // LUT 缓存:仅点集变化才重建;MS 叠加线拖动时主曲线 LUT 复用,不逐事件重建
+        const lutKey = pts
+            .map(
+                (p) =>
+                    p.angle +
+                    "," +
+                    p.gain_db +
+                    "," +
+                    p.shape +
+                    "," +
+                    p.q +
+                    "," +
+                    p.side,
+            )
+            .join("|");
+        let lut;
+        if (local.lutCache.key === lutKey && local.lutCache.lut) {
+            lut = local.lutCache.lut;
+        } else {
+            lut = buildLut(pts);
+            local.lutCache.key = lutKey;
+            local.lutCache.lut = lut;
+        }
         drawGrid(c);
 
         // 主曲线 G(P):accent 2px + 半透明填充(填充到窗底 −12 dB 线)
@@ -572,13 +595,20 @@ export function createCurveEditor(opts) {
 
     // ---- 上行提交(契约 §1.17:pointerup/工具条变更后整表提交)---------------
     async function commit(next) {
-        if (!bridge || typeof bridge.setPanCurve !== "function") return;
+        if (!bridge || typeof bridge.setPanCurve !== "function") {
+            local.dragPoints = null;
+            return;
+        }
         try {
             await bridge.setPanCurve(next);
         } catch (e) {
             console.warn(
                 "SCVB curve-editor:setPanCurve() 调用失败 —— " + e.message,
             );
+        } finally {
+            // echo 之后才清本地待提交态:避免 commit 与回显之间的窗口里
+            // render()/draw() 退回旧 store 造成「曲线一跳一跳」。只清「仍是当前这批」。
+            if (local.dragPoints === next) local.dragPoints = null;
         }
     }
 
@@ -731,7 +761,6 @@ export function createCurveEditor(opts) {
             next[idx] = { ...target, side: resolveSide(target) };
             showHint(getT()["curve.centerSide"] || "curve.centerSide");
         }
-        local.dragPoints = null;
         commit(next);
         local.selected = idx;
         syncToolbar();
@@ -755,7 +784,6 @@ export function createCurveEditor(opts) {
         draw();
         clearTimeout(local.commitTimer);
         local.commitTimer = setTimeout(() => {
-            local.dragPoints = null;
             commit(next);
         }, 140);
     }
@@ -901,11 +929,14 @@ export function createCurveEditor(opts) {
             if (local.selected >= cur.length) return;
             const next = updatePoint(cur, local.selected, { q: v });
             local.dragPoints = next;
+            // ① 立即写 qRead(不等 syncToolbar、不等 store 回显)
+            if (_toolbar && _toolbar.qRead) {
+                _toolbar.qRead.textContent = qLabel(v);
+            }
             syncToolbar();
             draw();
             clearTimeout(local.commitTimer);
             local.commitTimer = setTimeout(() => {
-                local.dragPoints = null;
                 commit(next);
             }, 140);
         });
@@ -964,7 +995,7 @@ export function createCurveEditor(opts) {
         const idx = local.selected;
         tb.bar.hidden = idx < 0;
         if (idx < 0) return;
-        const cur = points();
+        const cur = local.dragPoints || points();
         const pt = cur[idx];
         if (!pt) return;
         for (const b of tb.bar.querySelectorAll("[data-curve-shape]")) {
@@ -1034,7 +1065,6 @@ export function createCurveEditor(opts) {
             local.selected = -1;
             syncToolbar();
         }
-        if (!local.dragging) local.dragPoints = null;
         draw();
         if (_toolbar) {
             for (const b of _toolbar.bar.querySelectorAll(

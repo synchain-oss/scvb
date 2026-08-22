@@ -1045,7 +1045,7 @@ export const T = {
         "common.cancel": "Annuler",
         "tab.master": "Général",
         "tab.tracks": "Pistes",
-        "tab.wave": "Formes d'onde et segments",
+        "tab.wave": "Ondes & segments",
         "tab.settings": "Réglages",
         "version.emptyBadge": "VIDE",
         "master.copyConfirmPrimary": "Écraser et copier",
