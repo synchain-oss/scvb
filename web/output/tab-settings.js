@@ -242,6 +242,11 @@ export function createTabSettings(opts) {
         return analysisConfigOf((st || getStore()).state);
     }
 
+    /** 只读观察态(second-output / conn.outputReadOnly):J69 两设置块整组不可操作。 */
+    function isReadOnly() {
+        return !!getStore().readOnly;
+    }
+
     // ---------------------------------------------------------------- mount
     function renderOptions(container, modes) {
         if (!container) return;
@@ -263,6 +268,7 @@ export function createTabSettings(opts) {
     function wireSeg(container, field) {
         if (!container) return;
         container.addEventListener("click", (e) => {
+            if (isReadOnly()) return; // 只读观察态:整组不可操作(契约 §5.6 {observer:true})
             const btn =
                 e.target instanceof Element
                     ? e.target.closest("[data-value]")
@@ -271,6 +277,11 @@ export function createTabSettings(opts) {
             const value = btn.getAttribute("data-value");
             if (value === config()[field]) return; // 点击已选中档不重复写
             call("setAnalysisConfig", { [field]: value }).then((res) => {
+                // 只读被 C++ 拒绝:不做乐观 dirty(§5.6 {observer:true})
+                if (res && res.observer) {
+                    requestRender();
+                    return;
+                }
                 // 契约 §1.21:badArg 时不做乐观态 —— 等 scvb.state 回推纠正
                 if (res && res.ok === false) {
                     requestRender();
@@ -364,6 +375,7 @@ export function createTabSettings(opts) {
     // --------------------------------------------------------------- render
     function syncOptions() {
         const c = config();
+        const ro = isReadOnly();
         const pairs = [
             [el.loudnessSeg, c.loudness_mode],
             [el.centerSeg, c.center_slot_policy],
@@ -373,6 +385,8 @@ export function createTabSettings(opts) {
             for (const btn of seg.querySelectorAll("[data-value]")) {
                 const on = btn.getAttribute("data-value") === cur;
                 attr(btn, "aria-pressed", String(on));
+                attr(btn, "data-disabled", ro ? "1" : "0");
+                attr(btn, "aria-disabled", ro ? "true" : "false");
             }
         }
     }

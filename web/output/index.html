@@ -2233,6 +2233,11 @@
             .set-block__row .sc-seg {
                 flex: none;
             }
+            /* 只读观察态:J69 两设置块整组置灰不可点(契约 §5.6 {observer:true}) */
+            .set-block__row .sc-seg__item[data-disabled="1"] {
+                opacity: 0.45;
+                cursor: not-allowed;
+            }
             .set-block__stale {
                 align-self: flex-start;
             }
@@ -4931,7 +4936,7 @@
                                             class="settings-diagnostics__chevron"
                                             data-gb="settings-diagnostics-chevron"
                                             aria-expanded="false"
-                                            aria-label="diagnostics"
+                                            data-t-aria="set.diag.eyebrow"
                                         ></button>
                                     </div>
                                     <div
@@ -4943,24 +4948,24 @@
                                         >
                                             <span
                                                 class="settings-diagnostics__ch"
-                                                >CH</span
-                                            >
+                                                data-t="set.diag.colCh"
+                                            ></span>
                                             <span
                                                 class="settings-diagnostics__hb"
-                                                >HB</span
-                                            >
+                                                data-t="set.diag.colHb"
+                                            ></span>
                                             <span
                                                 class="settings-diagnostics__mis"
-                                                >MIS</span
-                                            >
+                                                data-t="set.diag.colMis"
+                                            ></span>
                                             <span
                                                 class="settings-diagnostics__gen"
-                                                >GEN</span
-                                            >
+                                                data-t="set.diag.colGen"
+                                            ></span>
                                             <span
                                                 class="settings-diagnostics__seq"
-                                                >SEQ</span
-                                            >
+                                                data-t="set.diag.colSeq"
+                                            ></span>
                                         </div>
                                         <div
                                             data-gb="settings-diagnostics-rows"
