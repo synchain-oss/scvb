@@ -449,7 +449,8 @@ export function buildWorld(opts = {}) {
                 passthrough: true,
                 occupiedMask: 1, // 本实例占 ch1
             },
-            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+            // Output 离线 → 无广播区 → channelLabels 留空(与「通道表为空」语义一致)
+            config: { config_seq: 42 },
         });
         inputClaim = "idle";
         groupsOnline = 0;
@@ -515,7 +516,8 @@ export function buildWorld(opts = {}) {
                 passthrough: true,
                 occupiedMask: 1, // 本实例占 ch1
             },
-            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+            // 本组无 Output → 无广播区 → channelLabels 留空(与「通道表为空」语义一致)
+            config: { config_seq: 42 },
         });
         inputClaim = "idle";
         groupsOnline = 0b00000001; // 只有组 A 在线(异组),本组 B 无 Output

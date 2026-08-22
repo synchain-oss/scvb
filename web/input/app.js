@@ -530,7 +530,9 @@ function pillState() {
             vals: {},
         };
     }
-    if (channelId === 0 || claim === "unassigned") {
+    // 首帧门:快照/首帧 scvb.state 到达前 channel_id 为 undefined ——
+    // 不拦在这里会一路落到 state.connected 绿「已连接」(违反契约 §0.6 首帧前不得渲染真实数据态)。
+    if (channelId === 0 || channelId == null || claim === "unassigned") {
         return { key: "state.noChannel", tone: "gray", pulse: false, vals: {} };
     }
     if (conn.outputOnline === false) {
