@@ -237,6 +237,23 @@ log("=== ③ mock 端到端:setAnalysisConfig(§1.21)+ save/load 往返 ===");
         "setAnalysisConfig 不触发 scvb.params(零 gesture)",
     );
 
+    // 只读观察态(second-output fixture):setAnalysisConfig → {observer:true}(§5.6)
+    const roSession = driver.createPreviewSession({
+        role: "output",
+        params: "fixture=second-output",
+    });
+    const roBridge = createBridge({
+        role: "output",
+        mockBackend: roSession.mock,
+    });
+    roSession.start();
+    eq(
+        await roBridge.setAnalysisConfig({ loudness_mode: "rms" }),
+        { observer: true },
+        "只读观察态 setAnalysisConfig → {observer:true}",
+    );
+    roSession.stop();
+
     session.stop();
 }
 
@@ -259,6 +276,11 @@ log("=== ④ 词条:T35 新增 set.* key ===");
         "set.diag.eyebrow",
         "set.diag.copy",
         "set.diag.copied",
+        "set.diag.colCh",
+        "set.diag.colHb",
+        "set.diag.colMis",
+        "set.diag.colGen",
+        "set.diag.colSeq",
         "set.reanalyze",
     ];
     for (const k of KEYS) {
@@ -374,6 +396,31 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
         /navigator\.clipboard/.test(ts) &&
             /settings-diagnostics-copy/.test(html),
         "诊断区有复制落点(navigator.clipboard)",
+    );
+
+    // 只读观察态:J69 两设置块整组禁用 + observer 短路(契约 §5.6)
+    check(
+        ts.includes("isReadOnly") &&
+            ts.includes("res.observer") &&
+            ts.includes('attr(btn, "data-disabled"'),
+        "readOnly 门控 + res.observer 短路 + data-disabled 落点",
+    );
+    check(
+        html.includes('.set-block__row .sc-seg__item[data-disabled="1"]'),
+        "只读态三段选置灰 CSS 落点",
+    );
+
+    // 诊断区 a11y 词条化(不硬编码 CH/HB/MIS/GEN/SEQ 与 aria-label)
+    check(
+        html.includes('data-t-aria="set.diag.eyebrow"') &&
+            html.includes('data-t="set.diag.colCh"') &&
+            html.includes('data-t="set.diag.colSeq"'),
+        "诊断区 aria-label 与表头走 data-t/data-t-aria(不硬编码)",
+    );
+    check(
+        !html.includes('aria-label="diagnostics"') &&
+            !html.includes(">CH</span"),
+        "诊断区无硬编码 aria-label 与表头字面量",
     );
 
     // 缩放 10 秒防呆与 Bridge 一致:复用 app.js 既有状态机,不重复实现

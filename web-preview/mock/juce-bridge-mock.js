@@ -1137,6 +1137,7 @@ function buildOutputBackend(ctx) {
 
         // ---- §1.21 ------------------------------------------------------------
         setAnalysisConfig(patch) {
+            if (readOnly()) return OBSERVER(); // 只读观察态(§5.6)
             if (!isPlainObject(patch)) return BAD_ARG();
             const next = {};
             if ("loudness_mode" in patch) {

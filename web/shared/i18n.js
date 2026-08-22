@@ -324,6 +324,11 @@ export const T = {
         "set.diag.eyebrow": "诊断",
         "set.diag.copy": "复制诊断信息",
         "set.diag.copied": "已复制",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
         "set.reanalyze": "改后需重分析",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
@@ -724,6 +729,11 @@ export const T = {
         "set.diag.eyebrow": "DIAGNOSTICS",
         "set.diag.copy": "Copy diagnostics",
         "set.diag.copied": "Copied",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
         "set.reanalyze": "Re-analysis required",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
@@ -1131,6 +1141,11 @@ export const T = {
         "set.diag.eyebrow": "DIAGNOSTIC",
         "set.diag.copy": "Copier les diagnostics",
         "set.diag.copied": "Copié",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
         "set.reanalyze": "Ré-analyse requise",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
