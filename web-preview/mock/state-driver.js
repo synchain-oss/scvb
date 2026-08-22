@@ -90,6 +90,9 @@ export const SCENARIO_MAP = Object.freeze({
     // (print_guard.pending / ui.guide_seen),否则加载守卫与引导页在浏览器不可达。
     "print-guard": "fifteen-tracks",
     "first-run": "fifteen-tracks",
+    // T33 接线:布防态落在健康满配世界上,由 buildWorld 场景覆写改快照初值
+    // (state.recapture 按契约 §9.2 形状回读,Tab3 三处 badge 的数据源)
+    "recapture-armed": "fifteen-tracks",
 });
 
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
@@ -97,6 +100,13 @@ const HOST_LOOP = Object.freeze({ startS: 24, endS: 96 });
 
 /** `stereo-mixed` 的手动区间(第三个枚举值 `manual` 的代表档)。 */
 const MANUAL_RANGE = Object.freeze({ startS: 12, endS: 96 });
+
+/** `recapture-armed` 的布防面(轨 3/4/7/12 × 选区 78-114s;autoStop 默认 false)。 */
+const RECAPTURE_DEMO = Object.freeze({
+    channels: Object.freeze([3, 4, 7, 12]),
+    startS: 78,
+    endS: 114,
+});
 
 /** `misaligned` 的失准轨与计数(琥珀横幅① + Tab2 该轨 ⚠ 计数的数据源)。 */
 const MISALIGN_COUNTS = Object.freeze({ 3: 4, 7: 1, 11: 9 });
@@ -410,6 +420,21 @@ export function buildWorld(opts = {}) {
             print_guard: { ...outputSnapshot.print_guard, pending: true },
         };
         transport = { timeS: 0, isPlaying: false };
+    }
+    if (opts.scenario === "recapture-armed" && outputSnapshot) {
+        // 05 §2.3「重采集选区」行:armed 后三处 badge + footer 警告的可验收世界。
+        // 快照直接带 armed 态(= 用户在上一拍点过布防;切 tab/重开面板靠
+        // scvb.state.recapture 恢复显示,契约 §9.2:只读回读**无 reason**)。
+        outputSnapshot = {
+            ...outputSnapshot,
+            recapture: {
+                armed: true,
+                tracksMask: maskOfChannels(RECAPTURE_DEMO.channels.slice()),
+                startS: RECAPTURE_DEMO.startS,
+                endS: RECAPTURE_DEMO.endS,
+                autoStop: false,
+            },
+        };
     }
     if (opts.scenario === "first-run" && outputSnapshot) {
         // 05 §2.5 first-run:两级 guide_seen 全 false ⇒ 引导页 overlay 弹出。

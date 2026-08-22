@@ -25,7 +25,6 @@
 import { createBridge } from "../shared/bridge.js";
 import { applyI18n, LANGS } from "../shared/i18n.js";
 import { DESIGN } from "../shared/design-box.js";
-import { FIFTEEN_TRACKS } from "../shared/mock-data.js";
 import {
     createTabMaster,
     deepMerge,
@@ -41,6 +40,7 @@ import {
     HOST_ECHO_FRESH_MS,
 } from "./tab-master.js";
 import { createTabTracks } from "./tab-tracks.js";
+import { createTabWave } from "./tab-wave.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -306,50 +306,18 @@ const tabTracks = createTabTracks({
 });
 tabTracks.mount();
 
-// ------------------------------------------------------------- Tab3:15 泳道模板生成(05 §2.3)
-// 轨头/曲线叠加层/特征波形/VAD 着色/分段边界/采集覆盖进度 六件套,画布仅给尺寸注释,
-// 零绘制逻辑。播放头与选区手柄是共享覆盖层,已在 index.html 静态占位,不随行生成。
-function waveLaneHtml(ch, label) {
-    // 泳道不是表格行(无 columnheader 对位,轨头里还有 checkbox),原先的 role="row"
-    // 既无 table/grid 祖先、子元素也不是 cell,axe 会同时报 aria-required-parent 与
-    // aria-required-children 两条 critical;这里去掉 role,保留纯视觉容器语义。
-    return `
-    <div class="wave-lane" data-gb="wave-lane-${ch}" data-ch="${ch}">
-      <div class="wave-lane__head" data-gb="wave-lane-${ch}-head">
-        <input type="checkbox" data-gb="wave-lane-${ch}-checkbox" aria-label="select track ${ch}" />
-        <span class="wave-lane__label" data-gb="wave-lane-${ch}-label">${label}</span>
-        <span class="sc-dot" data-tone="gray"></span>
-        <!-- 05 §2.3 泳道轨头行状态列:有效唱段 <1.5s 黄标「样本不足」(04 §7 步7;与 Tab2
-             tracks-row-{ch}-lowsample 同款,词条 lowSample 字典已备,不需 todo)。 -->
-        <span class="sc-badge--amber" data-t="lowSample" data-gb="wave-lane-${ch}-lowsample" hidden></span>
-        <span class="sc-mono" data-gb="wave-lane-${ch}-coverage">0%</span>
-        <span class="sc-mono" data-gb="wave-lane-${ch}-segcount">0</span>
-        <!-- 词条待立:「曲线可见」toggle 无独立 tooltip 词条(05 §2.3 泳道,字典缺) -->
-        <span class="sc-toggle" data-on="1" style="width:20px" data-gb="wave-lane-${ch}-curvevisible" data-gb-todo="词条待立"></span>
-      </div>
-      <div class="sc-dark wave-lane__stage" data-gb="wave-lane-${ch}-stage">
-        <!-- 画布尺寸注释:随泳道区宽度撑满、高 60 设计 px,零绘制逻辑,T33 实现 -->
-        <!-- [T3x] bridge.requestWaveform(ch, startS, endS, cols) —— 契约 §1.27
-             (05 §2.3 泳道「特征波形」行的数据来源 = 拉取式分块;异步 Promise,
-             每次调用恰好一次 completion;VAD 着色取同一返回的 .vad[]) -->
-        <canvas class="wave-lane__waveform" data-gb="wave-lane-${ch}-waveform" width="900" height="60"></canvas>
-        <canvas class="wave-lane__vad" data-gb="wave-lane-${ch}-vad" width="900" height="60"></canvas>
-        <canvas class="wave-lane__curve" data-gb="wave-lane-${ch}-curve" width="900" height="60"></canvas>
-        <div class="wave-lane__boundaries" data-gb="wave-lane-${ch}-boundaries"></div>
-        <div class="wave-lane__coverage" data-gb="wave-lane-${ch}-coverage-bar"></div>
-      </div>
-    </div>`;
-}
-
-const waveLanes = document.getElementById("wave-lanes");
-if (waveLanes) {
-    // insertAdjacentHTML("afterbegin") 插在既有子节点(选区手柄/播放头,index.html 静态占位)
-    // 之前——两者是 position:absolute 覆盖层,留在后面的 DOM 顺序保证层叠在泳道之上。
-    const lanesHtml = FIFTEEN_TRACKS.labels
-        .map((label, i) => waveLaneHtml(i + 1, label))
-        .join("");
-    waveLanes.insertAdjacentHTML("afterbegin", lanesHtml);
-}
+// ------------------------------------------------------------- Tab3(tab-wave.js)
+// T33:工具条/标尺/15 泳道/选区叠加层/段检查器全部由 createTabWave() 生成与投影
+// (泳道模板的单一真源 = tab-wave.js 的 waveLaneHtml,本文件不再写第二份);
+// 本文件只做装配调用与订阅转发(segments / captureProgress / playhead,见下)。
+const tabWave = createTabWave({
+    root: document,
+    bridge,
+    getStore: () => store,
+    getT: () => dictNow,
+    onLocalChange: () => render(),
+});
+tabWave.mount();
 
 // ------------------------------------------------------------- 缩放档位(footer 下拉 + 设置页,05 §1.2)
 // 档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2「常量真源」栏)。
@@ -768,6 +736,7 @@ function render() {
     renderGuide();
     tabMaster.render();
     tabTracks.render();
+    tabWave.render();
 }
 
 function renderHeader() {
@@ -1070,6 +1039,9 @@ if (bridge) {
 
     bridge.on("scvb.playhead", (p) => {
         store.playhead = p;
+        // Tab3:播放头 rAF 插值层直接吃 30Hz 事件(canvas/playhead.js;
+        // render() 只管其余投影,不逐帧驱动播放头)
+        tabWave.onPlayhead(p);
         render();
     });
 
@@ -1078,6 +1050,8 @@ if (bridge) {
         tabMaster.onSegments(seg);
         // Tab2:手动常值的乐观显示让位给回推的段表(§1.16 的写入结果经本事件回来)
         tabTracks.onSegments(seg);
+        // Tab3:段角标/曲线/边界层标脏(渲染在 store 合并之后的 render() 里)
+        tabWave.onSegments(seg);
         // J69 stale:任一轨 stale → tab 导航「波形与分段」挂琥珀点
         const stale = (seg && seg.channels ? seg.channels : []).some(
             (c) => c && c.stale,
@@ -1092,6 +1066,8 @@ if (bridge) {
         for (const c of (cp && cp.channels) || []) {
             store.coverage[c.ch] = c.coveragePct;
         }
+        // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
+        tabWave.onCaptureProgress(cp);
         render();
     });
 

@@ -383,6 +383,56 @@ export const T = {
         "master.printLock.group": "打印中不可切组",
         "master.printLock.version": "打印中不可切换版本,请先停止走带",
         "master.printLock.copy": "打印中不可复制版本",
+
+        // ---- T33 Wave 1 新增(Output Tab3 正式实现;05 §2.3/§2.3a 有语义无 key 的位置,
+        // 图谱 A-17/A-18/A-19 + 各件所需)。EN/FR 为 T33 自译,已入 U17 待人工审校清单。----
+        // 7 滑杆短标:mono 大写微标族,三语同值(A-19 统筹裁定,同 tracks.colCh 纪律;
+        // 顺序 = 05 §2.3 的 setVadParams 五字段 + setSegmentation 两字段,不可重排)
+        "wave.sldThreshold": "THRESHOLD",
+        "wave.sldHysteresis": "HYSTERESIS",
+        "wave.sldHangover": "HANGOVER",
+        "wave.sldPadPre": "PAD PRE",
+        "wave.sldPadPost": "PAD POST",
+        "wave.sldSensitivity": "SENSITIVITY",
+        "wave.sldMinSeg": "MIN SEG",
+        // 泳道空态(05 §2.3 行 318 逐字;A-17)
+        "wave.emptyMain": "尚无采集数据——开启采集开关并播放",
+        "wave.emptyCta": "去 Tab1 打开采集",
+        // 检查器顶部「跟随宿主」提示(05 §2.3a ADR-005 第 3 条逐字;A-18)
+        "wave.followHostNote": "跟随宿主中:编辑已保存,开启输出后生效",
+        // 工具条四钮(05 §2.3 行 300-303 表内名;「重新识别」复用裸词条 reidentify)
+        "wave.btnRecapture": "重采集选区",
+        "wave.btnReanalyze": "重分析选区",
+        "wave.btnClearCoverage": "清除选区采集数据",
+        // 两段式反馈(05 §2.3 行 298 三段式的 ①② 态;diff 首行走 wave.diffKept)
+        "wave.applyCountdown": "300ms 后应用…",
+        "wave.applying": "正在应用…",
+        // 布防行的行内短说明(B-04 裁定:长句移 footer.recaptureOutputWarn,这里留短句)
+        "wave.recaptureInlineNote": "本次布防只门控采集,不改变输出范围",
+        // 段检查器(05 §2.3a;标题 eyebrow + 只读字段名;ORIGIN 为 mono 微标三语同值)
+        "wave.inspectorTitle": "段检查器",
+        "wave.segStart": "起",
+        "wave.segEnd": "止",
+        "wave.segLen": "时长",
+        // 段响度标签正名(契约 §1.21:loudness_mode 默认 kw_integrated;
+        // [J72a] C-12:该字段的旧显示名已废,不得回流)
+        "wave.segLoudness": "K 加权段积分",
+        "wave.originField": "ORIGIN",
+        "wave.volField": "VOL",
+        "wave.lockSegment": "锁定本段",
+        // 泳道内锁定小标(图例帧 778 文字;检查器行走 wave.lockSegment)
+        "wave.lockBadge": "锁定",
+        // 轨头件(B-08 裁定:覆盖率与段数并成一行;曲线可见压成眼睛图标钮)
+        "wave.covSeg": "{p}% · {n} 段",
+        "wave.curveVisible": "曲线可见",
+        "wave.pickTrack": "选择轨 {n}",
+        // 边界手柄 tooltip(A-14 裁定:Alt 关吸附写进 tooltip;双击分割一并说明)
+        "wave.boundaryHandleTip":
+            "拖动移动边界(自动吸附能量谷,按住 Alt 关闭);双击在此分割",
+        // 二次确认框两枚(05 §2.3 行 302/303 逐字)
+        "wave.reidentifyConfirm":
+            "将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?",
+        "wave.clearCoverageConfirm": "将删除选中轨×选区的采集特征数据,确定?",
     },
 
     en: {
@@ -734,6 +784,46 @@ export const T = {
         "master.printLock.version":
             "Can't switch version while printing — stop the transport first",
         "master.printLock.copy": "Can't copy a version while printing",
+
+        // ---- T33 Wave 1 新增(EN 为 T33 自译,待 U17 人工审校;
+        // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
+        "wave.sldThreshold": "THRESHOLD",
+        "wave.sldHysteresis": "HYSTERESIS",
+        "wave.sldHangover": "HANGOVER",
+        "wave.sldPadPre": "PAD PRE",
+        "wave.sldPadPost": "PAD POST",
+        "wave.sldSensitivity": "SENSITIVITY",
+        "wave.sldMinSeg": "MIN SEG",
+        "wave.emptyMain":
+            "No captured data yet — turn on the capture switch and play",
+        "wave.emptyCta": "Open capture in Tab 1",
+        "wave.followHostNote":
+            "Following host: edits are saved and take effect once output is on",
+        "wave.btnRecapture": "Re-capture selection",
+        "wave.btnReanalyze": "Re-analyze selection",
+        "wave.btnClearCoverage": "Clear selection capture data",
+        "wave.applyCountdown": "Applying in 300 ms…",
+        "wave.applying": "Applying…",
+        "wave.recaptureInlineNote":
+            "Arming only gates capture; the output range is unchanged",
+        "wave.inspectorTitle": "Segment inspector",
+        "wave.segStart": "Start",
+        "wave.segEnd": "End",
+        "wave.segLen": "Length",
+        "wave.segLoudness": "K-weighted segment integral",
+        "wave.originField": "ORIGIN",
+        "wave.volField": "VOL",
+        "wave.lockSegment": "Lock this segment",
+        "wave.lockBadge": "LOCKED",
+        "wave.covSeg": "{p}% · {n} seg",
+        "wave.curveVisible": "Curves visible",
+        "wave.pickTrack": "Select track {n}",
+        "wave.boundaryHandleTip":
+            "Drag to move the boundary (snaps to energy valleys, hold Alt to disable); double-click to split here",
+        "wave.reidentifyConfirm":
+            "This clears {k} manual edit marks and recomputes; {l} locked segments stay unchanged. Continue?",
+        "wave.clearCoverageConfirm":
+            "This deletes the captured feature data for the selected tracks × selection. Continue?",
     },
 
     fr: {
@@ -1095,6 +1185,47 @@ export const T = {
             "Changement de version impossible pendant l'impression — arrêtez d'abord le transport",
         "master.printLock.copy":
             "Copie de version impossible pendant l'impression",
+
+        // ---- T33 Wave 1 新增(FR 为 T33 自译,**发布前必须人工审校**,05 §5 / U17;
+        // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
+        "wave.sldThreshold": "THRESHOLD",
+        "wave.sldHysteresis": "HYSTERESIS",
+        "wave.sldHangover": "HANGOVER",
+        "wave.sldPadPre": "PAD PRE",
+        "wave.sldPadPost": "PAD POST",
+        "wave.sldSensitivity": "SENSITIVITY",
+        "wave.sldMinSeg": "MIN SEG",
+        "wave.emptyMain":
+            "Aucune donnée capturée — activez l'interrupteur de capture puis lancez la lecture",
+        "wave.emptyCta": "Ouvrir la capture dans l'onglet 1",
+        "wave.followHostNote":
+            "Suivi hôte : les modifications sont enregistrées et prendront effet une fois la sortie activée",
+        "wave.btnRecapture": "Re-capturer la sélection",
+        "wave.btnReanalyze": "Ré-analyser la sélection",
+        "wave.btnClearCoverage":
+            "Effacer les données de capture de la sélection",
+        "wave.applyCountdown": "Application dans 300 ms…",
+        "wave.applying": "Application…",
+        "wave.recaptureInlineNote":
+            "L'armement ne concerne que la capture ; la plage de sortie est inchangée",
+        "wave.inspectorTitle": "Inspecteur de segment",
+        "wave.segStart": "Début",
+        "wave.segEnd": "Fin",
+        "wave.segLen": "Durée",
+        "wave.segLoudness": "Intégrale de segment pondérée K",
+        "wave.originField": "ORIGIN",
+        "wave.volField": "VOL",
+        "wave.lockSegment": "Verrouiller ce segment",
+        "wave.lockBadge": "VERROUILLÉ",
+        "wave.covSeg": "{p}% · {n} seg",
+        "wave.curveVisible": "Courbes visibles",
+        "wave.pickTrack": "Sélectionner la piste {n}",
+        "wave.boundaryHandleTip":
+            "Glissez pour déplacer la limite (aimantée aux creux d'énergie, Alt pour désactiver) ; double-clic pour scinder ici",
+        "wave.reidentifyConfirm":
+            "Efface {k} marques d'édition manuelle et recalcule ; {l} segments verrouillés restent inchangés. Continuer ?",
+        "wave.clearCoverageConfirm":
+            "Supprime les données de caractéristiques capturées pour les pistes sélectionnées × la sélection. Continuer ?",
     },
 };
 

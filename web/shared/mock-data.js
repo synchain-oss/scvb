@@ -304,8 +304,9 @@ export const DEMO_STEREO_CHANNELS = Object.freeze(
     DEMO_TRACKS.filter((t) => t.sourceChannels === 2).map((t) => t.ch),
 );
 
-/** tour demo 的时间线长度(秒)。段表 / 覆盖 / 波形三处共用同一条时间线。 */
-export const DEMO_DURATION_S = 180;
+/** tour demo 的时间线长度(秒)。段表 / 覆盖 / 波形三处共用同一条时间线。
+ *  = 5 分钟 ×15 轨(J59;05 §6.3 验收行「预览 mock 注入 5 分钟 ×15 轨假数据」逐字)。 */
+export const DEMO_DURATION_S = 300;
 
 /** tour demo 的在线组位图(设计稿 1261 行 GROUPS_ONLINE = A/B/E → bit0|bit1|bit4)。 */
 export const DEMO_GROUPS_ONLINE = 0b00010011;
@@ -359,6 +360,22 @@ function coverageRangesOf(ch, durationS = DEMO_DURATION_S) {
             endS: round(durationS - 3 - v * 5, 2),
         },
     ];
+}
+
+/** 波形 stale 演示轨(T33:琥珀斜条纹 + ⚠ 的稳定验收面;三轨错开取样)。 */
+export const STALE_DEMO_CHANNELS = Object.freeze([2, 7, 12]);
+
+/**
+ * 某轨的 stale 区间(fingerprint watchdog 语义预留,05 §2.3「特征波形」行)。
+ * 只有 STALE_DEMO_CHANNELS 三轨各有一段,落在**第二轮采集**(passId 2)内,
+ * 确定性、与调用顺序无关;其余轨回空(健康数据)。
+ * @returns {{startS:number, endS:number}[]}
+ */
+export function staleRangesOf(ch, durationS = DEMO_DURATION_S) {
+    if (!STALE_DEMO_CHANNELS.includes(ch)) return [];
+    const u = unit(0x9301, ch);
+    const startS = round(durationS * (0.56 + u * 0.05), 2);
+    return [{ startS, endS: round(startS + durationS * 0.08, 2) }];
 }
 
 /**
@@ -904,7 +921,7 @@ export function makeInputSnapshot(overrides = {}) {
  * 纪律:
  *   - 未覆盖列 `covered=0` 且 `minDb=maxDb=-160`(哨兵),`vad`/`stale`/`passId` 一律 0;
  *   - `passId` 取该列所属采集轮次(本 mock 里 = 覆盖区间下标 +1),不同轮次 UI 底色微差;
- *   - `stale` 默认全 0(健康数据);需要「过期采集」底色的场景由 T28 fixture 覆盖该数组;
+ *   - `stale` 由 `staleRangesOf(ch)` 派生(T33:三轨各一段琥珀斜条纹,其余全 0);
  *   - `valleys` = 升序的能量谷时间点(秒),取乐句之间的间隙中点,供边界拖拽吸附;
  *   - 包络值是**时间的函数**而非列下标的函数 —— 换个 cols/视口再拉同一段,波形长得一样。
  * @param {number} ch 1..15
@@ -923,6 +940,7 @@ export function makeWaveformTile(ch, startS, endS, cols) {
 
     const ranges = coverageRangesOf(ch);
     const phrases = phrasesOf(ch);
+    const staleRanges = staleRangesOf(ch);
     const minDb = [];
     const maxDb = [];
     const vad = [];
@@ -953,7 +971,7 @@ export function makeWaveformTile(ch, startS, endS, cols) {
         minDb.push(round(clamp(hi - depth, -80, 0), 1));
         vad.push(voiced ? 1 : 0);
         covered.push(1);
-        stale.push(0);
+        stale.push(indexOfRange(staleRanges, tMid) >= 0 ? 1 : 0);
         passId.push(rIdx + 1);
     }
 
