@@ -164,6 +164,29 @@ await withInput("scenario=no-output", async (b) => {
         `  setChannelId(0) → ${JSON.stringify(rel)}; setChannelId(3) → ${JSON.stringify(r)}`,
     );
 });
+// 释放 → 重选原通道 往返(§3.2;occupiedMask 位变化正确)
+await withInput("scenario=connected", async (b, seen) => {
+    const rel = await b.setChannelId(0);
+    check(rel.ok === true, `释放应 {ok:true},实得 ${JSON.stringify(rel)}`);
+    const afterRelease = seen.get("scvb.conn:last");
+    check(
+        afterRelease && ((afterRelease.occupiedMask >>> 0) & 1) === 0,
+        `释放后 ch1 位应清,实得 ${afterRelease && afterRelease.occupiedMask}`,
+    );
+    const r = await b.setChannelId(1);
+    check(
+        r.ok === true,
+        `释放后重选原通道 ch1 应成功,实得 ${JSON.stringify(r)}`,
+    );
+    const afterClaim = seen.get("scvb.conn:last");
+    check(
+        afterClaim && ((afterClaim.occupiedMask >>> 0) & 1) === 1,
+        `重选后 ch1 位应置,实得 ${afterClaim && afterClaim.occupiedMask}`,
+    );
+    log(
+        `  释放→重选 ch1: ${JSON.stringify(rel)} → ${JSON.stringify(r)}, occupiedMask=${afterClaim && afterClaim.occupiedMask}`,
+    );
+});
 
 log("\n=== ③ setGroupId 成功 / 冲突 ===");
 await withInput("scenario=connected", async (b, seen) => {

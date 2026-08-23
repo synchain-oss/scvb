@@ -736,22 +736,30 @@ function renderPriority() {
 }
 
 function renderRemoteSummary() {
-    // 05 §3:Output 离线隐藏;确认条展开期间暂隐(守 560px 高度预算)
+    // 05 §3:Output 离线隐藏;确认条展开期间暂隐(守 560px 高度预算);
+    // lead/pair/freeze 全默认(无内容)时也不显示,避免露出空玻璃面板。
     const conn = store.conn || {};
     const confirmOpen =
         store.local.pendingGroup !== 0 || store.local.pendingRelease;
     const cfg = store.config;
-    const showRow = !!cfg && conn.outputOnline === true && !confirmOpen;
+    const hasLead = !!(cfg && cfg.lead_lock);
+    const hasPair = !!(cfg && (cfg.pair_id || 0) !== 0);
+    const hasFreeze = !!(cfg && (cfg.freeze || 0) !== 0);
+    const showRow =
+        !!cfg &&
+        conn.outputOnline === true &&
+        !confirmOpen &&
+        (hasLead || hasPair || hasFreeze);
     show($("input.remoteSummary"), showRow);
     if (!showRow || !cfg) return;
-    show($("input.remoteSummary.lead"), !!cfg.lead_lock);
-    show($("input.remoteSummary.pair"), (cfg.pair_id || 0) !== 0);
-    if ((cfg.pair_id || 0) !== 0) {
+    show($("input.remoteSummary.lead"), hasLead);
+    show($("input.remoteSummary.pair"), hasPair);
+    if (hasPair) {
         $("input.remoteSummary.pairId").textContent = String(cfg.pair_id);
     }
-    const f = cfg.freeze || 0;
-    show($("input.remoteSummary.freeze"), f !== 0);
-    if (f !== 0) {
+    show($("input.remoteSummary.freeze"), hasFreeze);
+    if (hasFreeze) {
+        const f = cfg.freeze || 0;
         const parts = [];
         if (f & 1) parts.push(dictNow["tracks.colFreezePan"] || "冻结P");
         if (f & 2) parts.push(dictNow["tracks.colFreezeVol"] || "冻结V");

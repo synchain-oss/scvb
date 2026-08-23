@@ -227,6 +227,9 @@ export function parsePreviewQuery(params) {
  * @param {number} ch 本实例占的通道号
  */
 function connectedInputSnapshot(ch, extraConfig = {}) {
+    // 远程只读摘要的 lead/pair/priority 取 FIFTEEN_TRACKS 该轨画像(主唱=lead+pair1),
+    // 否则远程摘要行永远无内容,连「有内容时正常显示」都验证不到。
+    const profile = FIFTEEN_TRACKS.snapshot.channels[ch - 1] || {};
     return makeInputSnapshot({
         channel_id: ch,
         group_id: 1,
@@ -240,7 +243,9 @@ function connectedInputSnapshot(ch, extraConfig = {}) {
         },
         config: {
             label: DEMO_LABELS[ch - 1],
-            priority: 5,
+            priority: profile.priority ?? 5,
+            lead_lock: !!profile.lead_lock,
+            pair_id: profile.pair_id ?? 0,
             config_seq: 42,
             channelLabels: DEMO_LABELS.slice(),
             ...extraConfig,
@@ -528,6 +533,12 @@ export function buildWorld(opts = {}) {
     if (opts.loop === "none") caps.loopAvailable = false;
     if (opts.loop === "host") caps.loopAvailable = true;
     if (typeof opts.play === "boolean") transport.isPlaying = opts.play;
+
+    // 本实例已占的通道从「他人占用」位图剔除(§4.2 含自己的位;否则释放后重选原通道
+    // 会被误判为他占 → conflict)。channel_id=0(未分配)时无需剔除。
+    if (inputSnapshot && inputSnapshot.channel_id >= 1) {
+        caps.occupiedMask &= ~(1 << (inputSnapshot.channel_id - 1));
+    }
 
     return {
         fixture,
