@@ -158,43 +158,6 @@ export const OVERVIEW_COLS = 512;
 /** 概览块重取节流(ms);只在视口静止时触发,采集中不至于每 500ms 重拉一次。 */
 export const OVERVIEW_REFRESH_MS = 3000;
 
-/**
- * 概览块垫底时整体透明度系数(见 `dimPalette`)。
- *
- * 为什么必须压:概览一列跨 0.59s(512 列 / 5 分钟),外柱取的是区间 **max**
- * —— 粗列把柱子铺得又满又高,几乎连成实心带;而它旁边由细块画的部分逐列
- * 有起伏、露得出底色。于是「垫底的那截**比真数据还亮**」,接缝一眼可见,
- * 用户 preview 圈出的正是这一块。
- *
- * 画得更细治标不治本:取数成本上去了,缩放比一大(放到 ×13 时概览一列铺
- * 16px)照样露馅。垫底件的语义本就是「真数据还没到,先给个轮廓」,让它
- * **退让**才是对的 —— 0.55 下它读作一层淡影,补住了空白又不抢戏。
- */
-export const OVERVIEW_DIM = 0.55;
-
-/**
- * 按系数缩放调色板里每个 `rgba()` 的 alpha(非 rgba 值原样带过)。
- * 只在过渡帧给概览块用;`DEFAULT_PALETTE` 是冻结对象,这里恒返回新对象。
- */
-export function dimPalette(palette, k) {
-    const f = Number.isFinite(k) ? Math.min(Math.max(k, 0), 1) : 1;
-    const src = { ...DEFAULT_PALETTE, ...(palette || {}) };
-    const out = {};
-    for (const key of Object.keys(src)) {
-        const v = src[key];
-        const m =
-            typeof v === "string"
-                ? v.match(
-                      /^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/,
-                  )
-                : null;
-        out[key] = m
-            ? `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${Number(m[4]) * f})`
-            : v;
-    }
-    return out;
-}
-
 function num(v, dflt) {
     return Number.isFinite(v) ? v : dflt;
 }
@@ -652,8 +615,7 @@ function paintStripes(ctx, x, y, w, h, color, period, lineW) {
  *   `{tileStartS, tileEndS, viewStartS, viewEndS}` —— 把这块**按时间**画进当前
  *   视口(块只覆盖视口的一段时就只占那一段);缺省 = 块铺满 [0,w] 的老口径。
  *   `{clear:false}` —— 不清屏,供多块拼合(缩小时用几块老块补齐视口)。
- *   `{xFrom, xTo}` —— **只画这段 x**(画布坐标);只收**循环**窗口,像素级
- *   裁剪仍要调用方自己 `ctx.clip()`(列宽可能跨过边界,循环只能取到整列)。
+
  *
  * ⚠ 这是「视口变化中」那条路径的正解,不要退回位图拉伸,也不要用 `ctx.scale`:
  *   · `ctx.scale` 会把 45° 斜纹剪切成缓坡、把 lineWidth 横向拉粗(前两轮的病根);
@@ -685,18 +647,11 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
     // 视口时 90% 的列在画布外)。不裁的话那些列照样逐列 fillRect —— 多块拼合下
     // 每帧十几万次绘制调用,帧率直接崩,表现为**整页卡片闪白**(用户实测)。
     // 越界 canvas 自己会剪,但调用开销省不掉,必须在循环层面剪。
-    //
-    // `xFrom/xTo` 把窗口进一步收到「这次真要填的那段空隙」:多块拼合时每块
-    // 常常只补两侧一点点,按整幅可见范围跑循环纯属白算 —— 概览块接进来后
-    // 实测超 32ms 长帧从 3 涨到 13(brief §4.5 红线),收窄后回到 3。
-    // 各留一列余量:列宽可能跨过边界,少算一列就会在接缝处露出一条缝。
-    const xLo = Math.max(num(o.xFrom, 0), 0);
-    const xHi = Math.min(num(o.xTo, w), w);
     const iFrom = mapped
-        ? Math.max(0, Math.floor((xLo - originX) / colW) - 1)
+        ? Math.max(0, Math.floor((0 - originX) / colW) - 1)
         : 0;
     const iTo = mapped
-        ? Math.min(cols, Math.ceil((xHi - originX) / colW) + 1)
+        ? Math.min(cols, Math.ceil((w - originX) / colW) + 1)
         : cols;
     if (!(iTo > iFrom)) {
         if (o.clear !== false) ctx.clearRect(0, 0, w, h);

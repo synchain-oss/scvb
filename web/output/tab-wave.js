@@ -53,8 +53,6 @@ import {
     IDLE_REFETCH_MS,
     VAD_ALPHA,
     OVERVIEW_COLS,
-    OVERVIEW_DIM,
-    dimPalette,
 } from "./canvas/waveform.js";
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
@@ -3623,78 +3621,59 @@ export function createTabWave(opts) {
             // ⚠ 概览只在**前面确实没盖满**时才动用(见下面 `ov` 的用法):它跨整
             // 首曲子,每帧每轨都拉进来画的话代价可观 —— 实测超 32ms 的长帧
             // 3 → 13(brief §4.5 红线)。多数帧其实盖得满,不该为兜底付这笔钱。
+            // 过渡帧**只用一个源**画满整幅 —— 这是四轮反复后的结论。
+            //
+            // 弯路记档(每一条都是用户 preview 报回来的):
+            //   ① 「重跑画笔 + ctx.scale」—— 45° 斜纹被剪成缓坡、线宽被拉粗;
+            //   ② 「drawImage 位图拉伸」—— 放大糊、缩小两侧露白;
+            //   ③ 「多块叠着画」—— 波形半透明,重叠区 α 叠到 0.9 几乎纯白;
+            //   ④ 「多块空隙拼接」—— 不叠了、也不露白了,但**块与块观感不同**:
+            //      各块是不同时刻/不同档位的快照,列宽差一倍观感就差一截(外柱
+            //      取列内 max,列越粗柱子铺得越满越高)。拼在一起就是一片深浅
+            //      不一的补丁 —— 用户实测「反复缩放几次后出现亮块暗块,
+            //      **动画一停马上消失**」。给垫底件压暗反而更糟:唯一那块真数据
+            //      成了亮度台阶(实测各段 39/41/39/39/…/**81**/42/43,静止后
+            //      74/83/82/78/…/88/82/88 —— 81 那条就是用户圈出来的亮块)。
+            //
+            // 所以不再拼:挑**一个**源画满整幅。优先用能完整盖住当前视口、且
+            // 列宽最接近 1px(最像稳态)的缓存块 —— 放大时上一档那块正好符合,
+            // 于是缩放全程清晰;盖不住(缩小/平移)就整幅交给全曲概览块,它必然
+            // 覆盖,画面是均匀的一档粗,像地图平移时的低清瓦片,不会花。
+            // 单源 ⇒ 补丁在几何上不可能出现,也不需要空隙裁剪与压暗调色板。
             const near = moving
                 ? waveSource.peekOverlapping(ch, vp.startS, vp.endS)
                 : [];
             const ov = moving ? waveSource.peekOverview(ch) : null;
-            if (!sameVp && (near.length || ov)) {
-                // 过渡帧:按时间映射重画缓存块,**细节块先占位、宽块只补空隙**。
-                //
-                // 四轮才收敛,前三轮各错一处(全是用户实测报回来的):
-                //   ① 「重跑画笔 + ctx.scale」—— 45° 斜纹被剪成缓坡、线宽被拉粗;
-                //   ② 「drawImage 位图拉伸」—— 放大糊、缩小两侧露白;
-                //   ③ 「多块叠着画」—— 波形是半透明的(外柱 α=.52 / 内柱 α=.6),
-                //      重叠区画两三遍就把 α 叠到 0.89 / 0.94 **几乎纯白**,
-                //      一动视口波形区域就闪白。
-                // 现在:列映射重画(几何恒正确)+ **空隙裁剪**(每块只画前面没
-                // 画过的 x 区间 ⇒ 同一像素恒只画一次,α 不叠)。
+            let src = null;
+            if (moving) {
+                const EPS = 1e-6;
+                let bestErr = Infinity;
+                for (const b of near) {
+                    // 只认能盖满整幅的块:盖不满就得拼,拼就会花
+                    if (!(b.startS <= vp.startS + EPS)) continue;
+                    if (!(b.endS >= vp.endS - EPS)) continue;
+                    const cols = ((b.tile || {}).minDb || []).length;
+                    if (!cols || !(span > 0)) continue;
+                    const colW = ((b.endS - b.startS) / cols / span) * w;
+                    if (!(colW > 0)) continue;
+                    const err = Math.abs(Math.log(colW)); // 离 1px 的对数距离
+                    if (err < bestErr) {
+                        bestErr = err;
+                        src = b;
+                    }
+                }
+                if (!src) src = ov;
+            }
+            if (!sameVp && src) {
                 ctx.clearRect(0, 0, w, laneH);
                 local.canvasVp.set(ch, null); // 画布内容不再对应任何完整视口
-                const filled = []; // 已画区间 [x0,x1](升序、互不相交)
-                const drawBlock = (blk, blkPal) => {
-                    const bx0 = Math.max(timeToX(vp, w, blk.startS), 0);
-                    const bx1 = Math.min(timeToX(vp, w, blk.endS), w);
-                    if (!(bx1 > bx0)) return;
-                    // 该块可画的空隙 = [bx0,bx1] 减去 filled
-                    const gaps = [];
-                    let cur = bx0;
-                    for (const [f0, f1] of filled) {
-                        if (f1 <= cur) continue;
-                        if (f0 >= bx1) break;
-                        if (f0 > cur) gaps.push([cur, Math.min(f0, bx1)]);
-                        cur = Math.max(cur, f1);
-                        if (cur >= bx1) break;
-                    }
-                    if (cur < bx1) gaps.push([cur, bx1]);
-                    if (!gaps.length) return;
-                    // **逐空隙**画,并把列循环收到这一段(xFrom/xTo)。一次 clip
-                    // 全部空隙再整块画一遍看着更省事,但 clip 只裁像素、不裁循环
-                    // —— 概览块跨整首曲子,那样每帧每轨都要按整幅可见范围空跑上
-                    // 千列,实测超 32ms 长帧从 3 涨到 13(brief §4.5 红线)。
-                    for (const [g0, g1] of gaps) {
-                        ctx.save();
-                        ctx.beginPath();
-                        ctx.rect(g0, 0, g1 - g0, laneH);
-                        ctx.clip();
-                        paintWaveTile(ctx, blk.tile, w, laneH, blkPal || pal, {
-                            clear: false,
-                            xFrom: g0,
-                            xTo: g1,
-                            tileStartS: blk.startS,
-                            tileEndS: blk.endS,
-                            viewStartS: vp.startS,
-                            viewEndS: vp.endS,
-                        });
-                        ctx.restore();
-                    }
-                    filled.push(...gaps);
-                    filled.sort((a, b) => a[0] - b[0]);
-                };
-                for (const blk of near) drawBlock(blk);
-                // 兜底:前面画完还有没盖到的地方才动用概览块(它跨整首曲子,
-                // 拉进来就要按空隙逐段跑列循环,不该每帧白付)。判据 = 已画区间
-                // 的总长是否够到整幅宽;留 0.5px 余量,免得浮点尾数逼出一次
-                // 无谓的整块重画。
-                // 概览用**压暗**的调色板(OVERVIEW_DIM):它一列跨 0.59s、外柱取
-                // 区间 max,粗列把柱子铺得又满又高 —— 不压的话垫底那截比旁边真
-                // 数据还亮,接缝一眼可见(用户 preview 圈出的就是这块)。
-                if (ov) {
-                    let covered = 0;
-                    for (const [f0, f1] of filled) covered += f1 - f0;
-                    if (covered < w - 0.5)
-                        drawBlock(ov, dimPalette(pal, OVERVIEW_DIM));
-                }
-                // 视口在动就**不取新块**(契约 §1.27 行 383 / brief §0.8:静止
+                paintWaveTile(ctx, src.tile, w, laneH, pal, {
+                    clear: false,
+                    tileStartS: src.startS,
+                    tileEndS: src.endS,
+                    viewStartS: vp.startS,
+                    viewEndS: vp.endS,
+                }); // 视口在动就**不取新块**(契约 §1.27 行 383 / brief §0.8:静止
                 // 120ms 后才取)。缩放期每帧跨度都不同 = 每帧都是新键,LRU 与
                 // 在途去重全失效,不设闸就是每帧 × 每条可见泳道一次桥调用。
                 continue;

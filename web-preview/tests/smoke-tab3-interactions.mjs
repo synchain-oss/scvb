@@ -405,38 +405,6 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             !!src.peekOverview(1),
             "软失效后概览仍可垫底(2Hz 采集事件不该让它每 500ms 消失)",
         );
-        // 概览垫底必须**压暗**:它一列跨 0.59s、外柱取区间 max,粗列把柱子铺得
-        // 又满又高,不压的话垫底那截比旁边真数据还亮,接缝一眼可见(用户 preview
-        // 圈出的就是这块)。实测拖动中墨迹平均亮度 217→202、平均 α 105→80,
-        // 而稳态两者完全一致(224/117)—— 只动过渡帧。
-        const dim = WF.dimPalette(WF.DEFAULT_PALETTE, WF.OVERVIEW_DIM);
-        const alphaOf = (s) => Number(String(s).match(/([\d.]+)\s*\)$/)[1]);
-        check(
-            WF.OVERVIEW_DIM > 0 && WF.OVERVIEW_DIM < 1,
-            `OVERVIEW_DIM 落在 (0,1) 之间(实得 ${WF.OVERVIEW_DIM})`,
-        );
-        check(
-            Math.abs(
-                alphaOf(dim.env) -
-                    alphaOf(WF.DEFAULT_PALETTE.env) * WF.OVERVIEW_DIM,
-            ) < 1e-9,
-            "dimPalette 按系数缩放 env 的 alpha",
-        );
-        check(
-            Math.abs(
-                alphaOf(dim.envCore) -
-                    alphaOf(WF.DEFAULT_PALETTE.envCore) * WF.OVERVIEW_DIM,
-            ) < 1e-9,
-            "dimPalette 同样缩放 envCore(亮芯是最抢眼的一层)",
-        );
-        // 非 rgba 的键要原样带过:调用方(tab-wave 的 computedPalette)从
-        // tokens 换算真值时可能给出 #hex 或 color() 形式,正则匹配不上就把整个
-        // 键吞掉 ⇒ 那一层直接不画。
-        const kept = WF.dimPalette({ env: "#ffeeff", stale: "red" }, 0.5);
-        check(
-            kept.env === "#ffeeff" && kept.stale === "red",
-            "dimPalette 对非 rgba 值原样带过(吞掉的话该层直接不画)",
-        );
         // 硬失效(clearCoverage)必须真丢 —— 数据没了还垫底就是画不存在的波形
         src.invalidate(1, null, { keepStale: false });
         check(
@@ -1706,7 +1674,7 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
     // **列宽随映射变而画笔不变** ⇒ 斜纹/线宽/覆盖条几何恒正确;缩小档再把
     // 缓存里所有与视口相交的块按跨度从宽到窄拼上去,两侧不再留白。
     check(
-        /paintWaveTile\(ctx, blk\.tile, w, laneH, blkPal \|\| pal, \{[\s\S]{0,300}tileStartS: blk\.startS/.test(
+        /paintWaveTile\(ctx, src\.tile, w, laneH, pal, \{[\s\S]{0,300}tileStartS: src\.startS/.test(
             tw,
         ),
         "过渡帧按**时间映射**重画缓存块(不是位图拉伸)",
@@ -1719,57 +1687,46 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         !/ctx\.scale\(\(last\.endS - last\.startS\) \/ span, 1\)/.test(tw),
         "非等比 ctx.scale 重映射未复活(斜纹被剪切 / 线宽被拉粗的根因)",
     );
+    // **单源**:过渡帧只用一个块画满整幅。多块空隙拼接那一版不叠 α 也不露白,
+    // 但块与块是不同时刻/不同档位的快照,列宽差一倍观感就差一截(外柱取列内
+    // max,列越粗铺得越满越高)⇒ 一片深浅不一的补丁,用户实测「反复缩放几次后
+    // 出现亮块暗块,**动画一停马上消失**」。给垫底件压暗反而更糟:唯一那块真
+    // 数据成了亮度台阶(逐段实测 39/41/39/39/…/81/42/43,静止后 74/83/82/78/
+    // …/88/82/88 —— 81 那条就是用户圈出来的亮块)。
+    // 换单源后同测法:段间差 26.4 → 7.2,最大 47.9 → 13.5,且过渡帧各段**跟随**
+    // 静止帧的形状;顺带超 32ms 长帧 2 → 0(拼接的开销一并没了)。
     check(
-        /peekOverlapping\(\s*ch,\s*vp\.startS,\s*vp\.endS,?\s*\)[\s\S]{0,4000}for \(const blk of near\) drawBlock\(blk\)/.test(
-            tw,
-        ),
-        "缩小档用**多块拼合**补满视口(单块只覆盖一段 ⇒ 两侧露白)",
+        !/const filled = \[\]/.test(tw) &&
+            !/for \(const blk of near\)/.test(tw),
+        "过渡帧不再多块拼接(混用不同档位的快照 ⇒ 深浅不一的补丁)",
     );
     check(
-        /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,400}const drawBlock = /.test(
-            tw,
-        ),
-        "拼合前整幅 clearRect 一次(每块自己不再清屏,clear:false)",
+        !/dimPalette|OVERVIEW_DIM/.test(tw),
+        "压暗调色板已随拼接一并删除(单源下压暗只会造出亮度台阶)",
     );
     check(
-        /const sameVp =[\s\S]{0,1600}!sameVp && \(near\.length \|\| ov\)/.test(
+        /if \(!\(b\.startS <= vp\.startS \+ EPS\)\) continue;[\s\S]{0,200}if \(!\(b\.endS >= vp\.endS - EPS\)\) continue;/.test(
             tw,
         ),
+        "候选块必须**盖满整幅**(盖不满就得拼,拼就会花)",
+    );
+    check(
+        /const err = Math\.abs\(Math\.log\(colW\)\);/.test(tw),
+        "在盖得满的块里挑**列宽最接近 1px** 的(最像稳态那一档)",
+    );
+    check(
+        /if \(!src\) src = ov;/.test(tw),
+        "没有盖得满的块就整幅交给概览(它必然覆盖 ⇒ 运动时不会留白)",
+    );
+    check(
+        /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,200}paintWaveTile\(ctx, src\.tile/.test(
+            tw,
+        ),
+        "画前整幅 clearRect 一次(单源画满,不留上一帧残迹)",
+    );
+    check(
+        /const sameVp =[\s\S]{0,3000}!sameVp && src/.test(tw),
         "画布已是当前视口时不清屏(宽度抖动导致的键失配不该闪空)",
-    );
-    // 概览兜底是**惰性**的:只有前面几块没盖满才动用。它跨整首曲子,每帧每轨
-    // 都拉进来画的话超 32ms 长帧 3 → 13(brief §4.5 红线);多数帧本就盖得满。
-    check(
-        /for \(const \[f0, f1\] of filled\) covered \+= f1 - f0;[\s\S]{0,200}if \(covered < w - 0\.5\)\s*\n?\s*drawBlock\(/.test(
-            tw,
-        ),
-        "概览块只在前面没盖满时才动用(每帧无条件画 ⇒ 长帧超预算)",
-    );
-    check(
-        /drawBlock\(\s*\n?\s*ov,\s*dimPalette\(pal, OVERVIEW_DIM\)/.test(tw),
-        "概览垫底用压暗调色板(不压则垫底那截比真数据还亮,接缝一眼可见)",
-    );
-    // **空隙裁剪**:波形是半透明的(外柱 α=.52 / 内柱 α=.6),重叠区被画两三遍
-    // 就把 α 叠到 0.89 / 0.94 —— 几乎纯白,一动视口波形区域就闪白(用户实测)。
-    check(
-        /const filled = \[\];[\s\S]{0,1600}ctx\.clip\(\);[\s\S]{0,400}paintWaveTile\(/.test(
-            tw,
-        ),
-        "过渡帧按已画区间裁剪后再画(同一像素恒只画一次,α 不叠)",
-    );
-    // 裁剪边界**不得**对齐到整像素:实测那样能把发丝级接缝补到 0,但相邻空隙
-    // 因此重叠,半透明又叠出白 —— 近白像素占比 0 → 14.6%,正是打了三轮的那个病。
-    check(
-        !/ctx\.rect\(\s*Math\.(floor|round)\(g0\)/.test(tw),
-        "空隙裁剪不取整(取整会让相邻段重叠,α 叠加回潮成闪白)",
-    );
-    check(
-        /xFrom: g0,\s*\n\s*xTo: g1,/.test(tw),
-        "逐空隙画且把列循环收到该段(clip 只裁像素不裁循环,空跑上千列)",
-    );
-    check(
-        /filled\.push\(\.\.\.gaps\)/.test(tw),
-        "画完把空隙并入已画区间(后续宽块不再覆盖同一段)",
     );
     // 时间映射的纯函数面:块只覆盖视口一段时,只占那一段
     {
