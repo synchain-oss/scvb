@@ -247,6 +247,80 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             "硬删(keepStale:false)连影子一并清 —— 不画已不存在的波形",
         );
     }
+    // 过渡帧**块数封顶**:每帧 × 每条可见泳道各跑一次,不封顶时 LRU 8 + 影子 8
+    // 一帧要画十几块 × 每块上千列 ⇒ 帧率崩、整页卡片闪白(用户实测)。
+    {
+        eq(WF.TRANSIENT_BLOCK_CAP, 3, "过渡帧最多拼 3 块");
+        const mk = (n) => ({
+            minDb: Array(n).fill(-20),
+            maxDb: Array(n).fill(-10),
+            covered: Array(n).fill(1),
+            vad: Array(n).fill(0),
+            stale: Array(n).fill(0),
+            passId: Array(n).fill(1),
+            valleys: [],
+        });
+        const src = WF.createWaveformSource({
+            request: async (ch, a, b, c) => mk(c),
+        });
+        // 造 6 块都与视口相交(跨度递减)
+        for (const [a, b] of [
+            [0, 300],
+            [0, 200],
+            [50, 180],
+            [80, 160],
+            [90, 150],
+            [100, 140],
+        ]) {
+            await src.getTile(4, a, b, 60);
+        }
+        const near = src.peekOverlapping(4, 100, 140);
+        eq(near.length, 3, "相交块超上限时只取 3 块");
+        check(
+            near[0].endS - near[0].startS === 300,
+            "垫底的仍是最宽那块(两侧才补得满)",
+        );
+    }
+    // 可见列裁剪:块只有一小截落在画布内时,画布外的列不该逐列 fillRect
+    {
+        let fills = 0;
+        const ctx = {
+            clearRect: () => {},
+            fillRect: () => fills++,
+            save: () => {},
+            restore: () => {},
+            beginPath: () => {},
+            rect: () => {},
+            clip: () => {},
+            moveTo: () => {},
+            lineTo: () => {},
+            stroke: () => {},
+            set fillStyle(_v) {},
+            set strokeStyle(_v) {},
+            set lineWidth(_v) {},
+        };
+        const n = 1000;
+        const big = {
+            minDb: Array(n).fill(-20),
+            maxDb: Array(n).fill(-10),
+            covered: Array(n).fill(1),
+            vad: Array(n).fill(0),
+            stale: Array(n).fill(0),
+            passId: Array(n).fill(1),
+            valleys: [],
+        };
+        // 1000 列的块覆盖 [0,300),视口只看 [150,153) ⇒ 仅约 10 列可见
+        WF.paintWaveTile(ctx, big, 300, 34, undefined, {
+            tileStartS: 0,
+            tileEndS: 300,
+            viewStartS: 150,
+            viewEndS: 153,
+        });
+        check(
+            fills > 0 && fills < 80,
+            `可见列裁剪生效(1000 列块只画可见的十几列,实得 ${fills} 次 fillRect)`,
+        );
+    }
     // 在途请求被失效后**不得回写**(pr-agent):采集中 2Hz 的区间级失效与用户
     // 平移取数会重叠,迟到的 resolve 若照写就是把失效前算出的旧块塞回缓存,
     // 后续 peek 命中它 ⇒ 新采/新清的区域一直显示旧图,直到下次失效才纠正。

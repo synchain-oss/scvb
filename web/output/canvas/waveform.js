@@ -84,6 +84,13 @@ export const DEFAULT_PALETTE = Object.freeze({
 /** 覆盖条高(px;B-07 裁定 2px)。 */
 export const COVERAGE_BAR_PX = 2;
 
+/**
+ * 过渡帧最多拼几块(每帧 × 每条可见泳道各跑一次,必须封顶)。
+ * 3 = 一块垫底(最宽,补两侧)+ 两块压顶(最新鲜、细节最贴当前视口)。
+ * 不封顶时 LRU 8 + 影子 8 一帧要画十几块 × 每块上千列 ⇒ 帧率崩、整页闪白。
+ */
+export const TRANSIENT_BLOCK_CAP = 3;
+
 function num(v, dflt) {
     return Number.isFinite(v) ? v : dflt;
 }
@@ -285,7 +292,13 @@ export function createWaveformSource(opts) {
                 );
             };
             // 陈旧块先(垫底),新鲜块后(压在上面)—— 两组各自宽到窄。
-            return pick(perChStale.get(ch)).concat(pick(perCh.get(ch)));
+            const all = pick(perChStale.get(ch)).concat(pick(perCh.get(ch)));
+            if (all.length <= TRANSIENT_BLOCK_CAP) return all;
+            // **封顶**:过渡帧是每帧 × 每条可见泳道跑一次,块数不设上限时
+            // (LRU 8 + 影子 8)一帧要画十几块 × 每块上千列 ⇒ 帧率崩、整页
+            // 卡片闪白(用户实测)。留最宽的一块垫底 + 最后几块(= 最新鲜、
+            // 细节最贴当前视口的)压顶,视觉上与全画等价。
+            return [all[0]].concat(all.slice(-(TRANSIENT_BLOCK_CAP - 1)));
         },
         /** 只查缓存(在途 Promise 不算命中)——渲染帧禁止 await。 */
         peek(ch, startS, endS, cols) {
@@ -387,12 +400,18 @@ export function createWaveformSource(opts) {
 // deviations §S 登记(见下面 ③ 处的长注)。
 // -----------------------------------------------------------------------------
 
-/** 逐列位数组 → [start, end) 连续段表(减少 fillRect 次数的预算意识,05 §6.3)。 */
-export function runsOf(flags, predicate) {
+/**
+ * 逐列位数组 → [start, end) 连续段表(减少 fillRect 次数的预算意识,05 §6.3)。
+ * `i0`/`i1` 可选,只扫这一段 —— 时间映射下块常常只有一小截落在画布内,
+ * 全扫等于给画布外的列白算一遍(多块拼合时是数量级差别)。
+ */
+export function runsOf(flags, predicate, i0, i1) {
     const runs = [];
     let s = -1;
-    const n = flags ? flags.length : 0;
-    for (let i = 0; i <= n; i++) {
+    const len = flags ? flags.length : 0;
+    const from = Math.max(0, Math.trunc(num(i0, 0)));
+    const n = Math.min(len, i1 === undefined ? len : Math.trunc(num(i1, len)));
+    for (let i = from; i <= n; i++) {
         const on = i < n && predicate(flags[i], i);
         if (on && s < 0) s = i;
         if (!on && s >= 0) {
@@ -458,10 +477,25 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
     const mid = h / 2;
     const x0 = (i) => originX + i * colW;
 
+    // **可见列裁剪**:映射后块往往只有一小段落在画布内(整曲概览块放大到 30s
+    // 视口时 90% 的列在画布外)。不裁的话那些列照样逐列 fillRect —— 多块拼合下
+    // 每帧十几万次绘制调用,帧率直接崩,表现为**整页卡片闪白**(用户实测)。
+    // 越界 canvas 自己会剪,但调用开销省不掉,必须在循环层面剪。
+    const iFrom = mapped
+        ? Math.max(0, Math.floor((0 - originX) / colW) - 1)
+        : 0;
+    const iTo = mapped
+        ? Math.min(cols, Math.ceil((w - originX) / colW) + 1)
+        : cols;
+    if (!(iTo > iFrom)) {
+        if (o.clear !== false) ctx.clearRect(0, 0, w, h);
+        return; // 整块在画布外
+    }
+
     if (o.clear !== false) ctx.clearRect(0, 0, w, h);
 
     // ① 未覆盖 = 空白底纹(细斜纹,不是纯掏空 —— [J72a] C-03)
-    for (const [a, b] of runsOf(tile.covered, (v) => !v)) {
+    for (const [a, b] of runsOf(tile.covered, (v) => !v, iFrom, iTo)) {
         paintStripes(ctx, x0(a), 0, (b - a) * colW, h, pal.uncovered, 7, 1);
     }
 
@@ -471,6 +505,8 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
         for (const [a, b] of runsOf(
             tile.passId,
             (v, i) => tile.covered[i] && v > 0 && v % 2 === 0,
+            iFrom,
+            iTo,
         )) {
             ctx.fillRect(x0(a), 0, (b - a) * colW, h);
         }
@@ -489,7 +525,12 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
     //    静态层 <8ms 预算的大头,05 §6.3)。带与包络的 1px 咬合见 VAD_BAND_PX 头注:
     //    包络在本层**之后**画(③→④),柱尖盖回那 1px,粉白不被染。
     if (Array.isArray(tile.vad)) {
-        const runs = runsOf(tile.vad, (v, i) => tile.covered[i] && v > 0);
+        const runs = runsOf(
+            tile.vad,
+            (v, i) => tile.covered[i] && v > 0,
+            iFrom,
+            iTo,
+        );
         const band = Math.min(VAD_BAND_PX, h);
         ctx.fillStyle = pal.vad;
         for (const [a, b] of runs) {
@@ -506,14 +547,14 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
     //    外柱铺满列宽成连续包络,亮芯留 0.6px 缝 = 图例帧 756 的条纹感。
     //    Wave 4 配色:外柱淡粉紫 / 内柱近白(用户裁定⑥的「粉 + 白」半透明)。
     ctx.fillStyle = pal.env;
-    for (let i = 0; i < cols; i++) {
+    for (let i = iFrom; i < iTo; i++) {
         if (!tile.covered[i]) continue;
         const hi = envelopeHalfPx(tile.maxDb[i], h);
         ctx.fillRect(x0(i), mid - hi, Math.max(colW, 0.6), hi * 2);
     }
     ctx.fillStyle = pal.envCore;
     const coreW = Math.max(colW - 0.6, 0.4);
-    for (let i = 0; i < cols; i++) {
+    for (let i = iFrom; i < iTo; i++) {
         if (!tile.covered[i]) continue;
         const lo = envelopeHalfPx(tile.minDb[i], h);
         ctx.fillRect(x0(i), mid - lo, coreW, lo * 2);
@@ -524,6 +565,8 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
         for (const [a, b] of runsOf(
             tile.stale,
             (v, i) => tile.covered[i] && v > 0,
+            iFrom,
+            iTo,
         )) {
             paintStripes(ctx, x0(a), 0, (b - a) * colW, h, pal.stale, 8, 3);
         }
@@ -531,7 +574,7 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
 
     // ⑥ 底部 2px 覆盖条(已覆盖 = accent 薰衣草;B-07 裁定)
     ctx.fillStyle = pal.coverage;
-    for (const [a, b] of runsOf(tile.covered, (v) => !!v)) {
+    for (const [a, b] of runsOf(tile.covered, (v) => !!v, iFrom, iTo)) {
         ctx.fillRect(
             x0(a),
             h - COVERAGE_BAR_PX,

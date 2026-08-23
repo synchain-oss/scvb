@@ -2106,13 +2106,24 @@ export function createTabWave(opts) {
             });
         });
 
-        // Ctrl+滚轮:以光标为中心缩放(05 行 319;挂窗级,标尺上也生效)
-        const wheelHost = els.window || els.lanes;
+        // Ctrl+滚轮:以光标为中心缩放(05 行 319)。
+        //
+        // **挂整个 Tab3 面板**,不是只挂泳道窗:Ctrl+滚轮是浏览器的页面缩放手势,
+        // 没被 preventDefault 的地方(工具条、检查器、窗外留白)会让**整页**跟着
+        // 缩放 —— 所有卡片一起变、看着就是闪一下(用户实测「放大缩小的时候全部
+        // 卡片都会变白」)。面板内一律拦下:落在泳道窗内的按视口缩放,落在别处的
+        // 只拦截、不缩放(用户显然不是想缩放浏览器)。
+        const wheelHost = els.panel || els.window || els.lanes;
         wheelHost.addEventListener(
             "wheel",
             (e) => {
                 if (!e.ctrlKey) return;
-                e.preventDefault();
+                e.preventDefault(); // 先拦下页面缩放,再决定要不要动视口
+                const inWindow =
+                    els.window &&
+                    typeof els.window.contains === "function" &&
+                    els.window.contains(e.target);
+                if (!inWindow) return;
                 const stageW = stageWidth();
                 if (!(stageW > 0)) return;
                 const x = stageXFromClient(e.clientX);
