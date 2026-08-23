@@ -455,6 +455,12 @@ console.log(
         /_toolbar\.qRead\.textContent = qLabel\(v\)/.test(ceSrc),
         "Q input 处理器立即写 qRead",
     );
+    // onPointerUp 在 commit 前设 local.dragPoints = next(使 commit finally 的引用守卫
+    // 成立;next 是 .slice() 出的新数组,不重指则 finally 永不清 → 拖后一直读旧数组)
+    check(
+        /local\.dragPoints = next;\s*commit\(next\)/.test(ceSrc),
+        "onPointerUp 在 commit 前设 local.dragPoints = next",
+    );
 }
 
 // =============================================================================

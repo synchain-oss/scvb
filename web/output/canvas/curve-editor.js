@@ -761,6 +761,10 @@ export function createCurveEditor(opts) {
             next[idx] = { ...target, side: resolveSide(target) };
             showHint(getT()["curve.centerSide"] || "curve.centerSide");
         }
+        // 使 commit() finally 的引用守卫(local.dragPoints === next)成立:next 是
+        // .slice() 出的新数组,必须先把 dragPoints 重新指向它,否则 finally 永远不清,
+        // 拖后 draw() 一直读旧数组(切版本不刷新 / side 改向显示错 / 键盘微调不可见)。
+        local.dragPoints = next;
         commit(next);
         local.selected = idx;
         syncToolbar();
