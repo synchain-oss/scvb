@@ -118,6 +118,24 @@ export const ENV_CORE_MAX_COL_PX = 2.5;
 export const ENV_CORE_MIN_COL_PX = 0.8;
 
 /**
+ * 亮芯宽度(CSS px);**恒定**,不随列宽走。
+ *
+ * 0.4 = 稳态那一档的实际值(colW≈1 时旧式 `colW − 0.6` 正好给出 0.4),所以
+ * 这个常量对稳态画面是逐像素等价的,只改过渡帧。
+ *
+ * 为什么必须恒定:亮芯颜色近白(α=.6),0.4px 宽时被抗锯齿摊成一层柔光,
+ * 而门内上沿(colW→2.5)按旧式算法会长到 1.9px —— **实心细线**,亮度陡增。
+ * 逐像素采样过:拖动缩放条到最缩小档时近白像素占画布 14.6%(稳态恒 0),
+ * 主色 `245,234,245 α=207` 正是「单层外柱 + 单层亮芯」的精确合成值
+ * (α = .6 + .52×.4 = .808 = 207)—— 不是叠加,就是这一层自己变粗了。
+ * 用户报的「一缩放就发白」在门内这一段仍由它贡献。
+ *
+ * ⚠ 别再试图「按列宽比例缩放亮芯」:那正是 `ENV_CORE_MAX_COL_PX` 头注里
+ * 记的两次弯路(实心白板 / 孤立白竖线)的同一个错误换个写法。
+ */
+export const ENV_CORE_W = 0.4;
+
+/**
  * 过渡帧最多拼几块(每帧 × 每条可见泳道各跑一次,必须封顶)。
  * 3 = 一块垫底(最宽,补两侧)+ 两块压顶(最新鲜、细节最贴当前视口)。
  * 不封顶时 LRU 8 + 影子 8 一帧要画十几块 × 每块上千列 ⇒ 帧率崩、整页闪白。
@@ -712,12 +730,13 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
     // 列太宽 → 白板或白竖线;列太窄 → 逐列重叠堆成白带。两种都被 preview 判过,
     // 而两种在稳态都不会发生 —— 这层的前提本就是 cols 按视口像素宽请求。
     if (colW >= ENV_CORE_MIN_COL_PX && colW <= ENV_CORE_MAX_COL_PX) {
+        // 宽度恒定(见 ENV_CORE_W):门内上沿按旧式 `colW − 0.6` 会长到 1.9px、
+        // 由柔光变实心细线,近白像素 0 → 14.6%。稳态那一档值不变。
         ctx.fillStyle = pal.envCore;
-        const coreW = Math.max(colW - 0.6, 0.4);
         for (let i = iFrom; i < iTo; i++) {
             if (!tile.covered[i]) continue;
             const lo = envelopeHalfPx(tile.minDb[i], h);
-            ctx.fillRect(x0(i), mid - lo, coreW, lo * 2);
+            ctx.fillRect(x0(i), mid - lo, ENV_CORE_W, lo * 2);
         }
     }
 
