@@ -177,19 +177,19 @@ export const FALLBACK_DURATION_S = 300;
 export const SLIDERS = Object.freeze(
     [
         // prettier-ignore
-        { key: "threshold", field: "threshold_db", api: "vad", gb: "wave-vad-threshold", t: "wave.sldThreshold", min: -60, max: -10, def: -38, unit: "dB", dp: 0 },
+        { key: "threshold", field: "threshold_db", api: "vad", gb: "wave-vad-threshold", t: "wave.sldThreshold", tip: "wave.tipThreshold", min: -60, max: -10, def: -38, unit: "dB", dp: 0 },
         // prettier-ignore
-        { key: "hysteresis", field: "hysteresis_db", api: "vad", gb: "wave-vad-hysteresis", t: "wave.sldHysteresis", min: 0, max: 20, def: 6, unit: "dB", dp: 0 },
+        { key: "hysteresis", field: "hysteresis_db", api: "vad", gb: "wave-vad-hysteresis", t: "wave.sldHysteresis", tip: "wave.tipHysteresis", min: 0, max: 20, def: 6, unit: "dB", dp: 0 },
         // prettier-ignore
-        { key: "hangover", field: "hangover_ms", api: "vad", gb: "wave-vad-hangover", t: "wave.sldHangover", min: 0, max: 500, def: 180, unit: "ms", dp: 0 },
+        { key: "hangover", field: "hangover_ms", api: "vad", gb: "wave-vad-hangover", t: "wave.sldHangover", tip: "wave.tipHold", min: 0, max: 500, def: 180, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "paddingpre", field: "padding_pre_ms", api: "vad", gb: "wave-vad-paddingpre", t: "wave.sldPadPre", min: 0, max: 500, def: 120, unit: "ms", dp: 0 },
+        { key: "paddingpre", field: "padding_pre_ms", api: "vad", gb: "wave-vad-paddingpre", t: "wave.sldPadPre", tip: "wave.tipPadPre", min: 0, max: 500, def: 120, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", min: 0, max: 500, def: 200, unit: "ms", dp: 0 },
+        { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 0, max: 500, def: 200, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", min: 0, max: 1, def: 0.62, unit: "", dp: 2 },
+        { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", tip: "wave.tipSensitivity", min: 0, max: 1, def: 0.62, unit: "", dp: 2 },
         // prettier-ignore
-        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", min: 0, max: 1500, def: 420, unit: "ms", dp: 0 },
+        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", tip: "wave.tipMinSeg", min: 0, max: 1500, def: 420, unit: "ms", dp: 0 },
     ].map(Object.freeze),
 );
 
@@ -1619,6 +1619,7 @@ export function createTabWave(opts) {
             const box = $(def.gb);
             return {
                 def,
+                box, // 悬停说明挂整件(短标 + 值 + 轨都能触发,26px 短标太小)
                 val: $(def.gb + "-val"),
                 track: box ? box.querySelector(".wave-slider__track") : null,
             };
@@ -2835,6 +2836,16 @@ export function createTabWave(opts) {
                     String(sliderPercent(s.def, v)),
                 );
                 attr(s.track, "aria-valuenow", v);
+            }
+            // 悬停说明:七个短标是 mono 微标(THRESHOLD/HOLD/…),不看说明猜不出
+            // 各自管什么 —— 用户 preview 就是逐个问过来的。写在 render 里跟得上
+            // 切语言;`{d}` 由 02 §0.3 的默认值填,让人知道出厂档在哪。
+            const tip = t[s.def.tip];
+            if (s.box && tip) {
+                const s2 = format(tip, { d: fmtSliderValue(s.def, s.def.def) });
+                if (s.box.getAttribute("title") !== s2) {
+                    attr(s.box, "title", s2);
+                }
             }
         }
 

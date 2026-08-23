@@ -391,11 +391,36 @@ export const T = {
         // 顺序 = 05 §2.3 的 setVadParams 五字段 + setSegmentation 两字段,不可重排)
         "wave.sldThreshold": "THRESHOLD",
         "wave.sldHysteresis": "HYSTERESIS",
-        "wave.sldHangover": "HANGOVER",
+        // 桥面字段是 `hangover_ms`(契约 §1.18,冻结不动);**显示名取 HOLD** ——
+        // hangover 是 VAD/语音编码域的标准词(G.729B、AMR VAD),而本插件的用户
+        // 是混音师,他们脑内的词是 gate 的 Attack/**Hold**/Release;两者在 02
+        // §2.3 的状态机里功能完全等同(releaseCount ≥ hangoverFrames 才出段)。
+        // 术语链靠 tip 里的括注不断。用户 preview 提出,统筹裁定(deviations)。
+        "wave.sldHangover": "HOLD",
         "wave.sldPadPre": "PAD PRE",
         "wave.sldPadPost": "PAD POST",
         "wave.sldSensitivity": "SENSITIVITY",
         "wave.sldMinSeg": "MIN SEG",
+        // 七条悬停说明(A-19 同族自造;`{d}` = 02 §0.3 的出厂默认档)。
+        // 七个 mono 微标不看说明猜不出各自管什么 —— 用户 preview 逐个问过来了。
+        "wave.tipThreshold":
+            "有声门限:比它响算「在唱」,比它轻算静音。调高只认响的地方,调低连气声也算进来(默认 {d})",
+        "wave.tipHysteresis":
+            "回滞:开门用门限值,关门要再低这么多才关。防止音量在门限附近抖动、把一句话切成碎片(默认 {d})",
+        "wave.tipHold":
+            "静音保持(VAD hangover):跌破门限后仍当作「在唱」的时长,防止字与字之间的短停顿被判成句子结束(默认 {d})",
+        "wave.tipPadPre":
+            "前留白:有声区往前扩这么多,别把起音的头咬掉(默认 {d})",
+        "wave.tipPadPost":
+            "后留白:有声区往后扩这么多,别把尾音和混响咬掉(默认 {d})",
+        // 02 §3.1/§3.2:谷切分只对**长于 maxSegment(默认 8s)**的段生效 ⇒ 典型
+        // 乐句(1–4s)下拖动本杆看不到变化。已转 native 侧评估,tip 先据实说明。
+        "wave.tipSensitivity":
+            "分段灵敏度:越高越容易在能量谷处切段。仅对长于 8 秒的段生效,短乐句上不会有变化(默认 {d})",
+        // 02 §2.3 后处理 P1 逐字:「core 段长 < minSegmentMs → **丢弃**」,且在
+        // padding 之前判定。**不是**并进邻段(合并是内部常量 mergeGap,不暴露)。
+        "wave.tipMinSeg":
+            "最短段长:短于此的段直接丢弃(在前后留白之前判定)。调大可滤掉杂音,但也会丢掉短促的 ad-lib 与单字和声(默认 {d})",
         // 泳道空态(05 §2.3 行 318 逐字;A-17)
         "wave.emptyMain": "尚无采集数据——开启采集开关并播放",
         "wave.emptyCta": "去 Tab1 打开采集",
@@ -825,11 +850,25 @@ export const T = {
         // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
         "wave.sldThreshold": "THRESHOLD",
         "wave.sldHysteresis": "HYSTERESIS",
-        "wave.sldHangover": "HANGOVER",
+        "wave.sldHangover": "HOLD",
         "wave.sldPadPre": "PAD PRE",
         "wave.sldPadPost": "PAD POST",
         "wave.sldSensitivity": "SENSITIVITY",
         "wave.sldMinSeg": "MIN SEG",
+        "wave.tipThreshold":
+            "Voicing threshold: louder than this counts as singing, quieter counts as silence. Raise it to catch only loud passages, lower it to include breathy notes (default {d})",
+        "wave.tipHysteresis":
+            "Hysteresis: opens at the threshold but only closes this far below it — stops level jitter near the threshold from shredding a phrase (default {d})",
+        "wave.tipHold":
+            "Hold (VAD hangover): keep treating the signal as voiced for this long after it drops below the threshold, so short gaps between words are not read as the end of a phrase (default {d})",
+        "wave.tipPadPre":
+            "Pre-padding: extend each voiced region backwards by this much so attacks are not clipped (default {d})",
+        "wave.tipPadPost":
+            "Post-padding: extend each voiced region forwards by this much so tails and reverb are not clipped (default {d})",
+        "wave.tipSensitivity":
+            "Segmentation sensitivity: higher splits more readily at energy valleys. Only applies to segments longer than 8 s, so short phrases will not change (default {d})",
+        "wave.tipMinSeg":
+            "Minimum segment length: segments shorter than this are discarded (judged before padding). Raising it filters noise but also drops short ad-libs and one-word harmonies (default {d})",
         "wave.emptyMain":
             "No captured data yet — turn on the capture switch and play",
         "wave.emptyCta": "Open capture in Tab 1",
@@ -1249,11 +1288,25 @@ export const T = {
         // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
         "wave.sldThreshold": "THRESHOLD",
         "wave.sldHysteresis": "HYSTERESIS",
-        "wave.sldHangover": "HANGOVER",
+        "wave.sldHangover": "HOLD",
         "wave.sldPadPre": "PAD PRE",
         "wave.sldPadPost": "PAD POST",
         "wave.sldSensitivity": "SENSITIVITY",
         "wave.sldMinSeg": "MIN SEG",
+        "wave.tipThreshold":
+            "Seuil de voix : au-dessus, on considère qu\u2019il y a chant ; en dessous, du silence. Augmentez pour ne retenir que les passages forts, baissez pour inclure les sons soufflés (défaut {d})",
+        "wave.tipHysteresis":
+            "Hystérésis : ouverture au seuil, fermeture seulement à cette distance en dessous — évite qu\u2019un niveau instable près du seuil ne hache une phrase (défaut {d})",
+        "wave.tipHold":
+            "Maintien (hangover VAD) : durée pendant laquelle le signal reste considéré comme chanté après être passé sous le seuil, pour que les brèves pauses entre les mots ne soient pas prises pour une fin de phrase (défaut {d})",
+        "wave.tipPadPre":
+            "Marge avant : étend chaque zone voisée vers l\u2019amont pour ne pas rogner les attaques (défaut {d})",
+        "wave.tipPadPost":
+            "Marge après : étend chaque zone voisée vers l\u2019aval pour ne pas rogner les queues de son et la réverbération (défaut {d})",
+        "wave.tipSensitivity":
+            "Sensibilité de segmentation : plus elle est haute, plus on coupe aux creux d\u2019énergie. N\u2019agit que sur les segments de plus de 8 s, donc sans effet sur les phrases courtes (défaut {d})",
+        "wave.tipMinSeg":
+            "Longueur minimale de segment : les segments plus courts sont supprimés (jugé avant les marges). Augmenter filtre le bruit mais supprime aussi les ad-libs brefs et les harmonies d\u2019un mot (défaut {d})",
         "wave.emptyMain":
             "Aucune donnée capturée — activez l'interrupteur de capture puis lancez la lecture",
         "wave.emptyCta": "Ouvrir la capture dans l'onglet 1",
