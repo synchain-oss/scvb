@@ -126,11 +126,16 @@ export const TRANSIENT_BLOCK_CAP = 3;
 
 /**
  * 全曲概览块的列数(见 `perChOverview` 头注)。
- * 1024 在 5 分钟曲子上 ≈ 0.29s/列:缩到最小档(整曲)时列宽约 2px、放到 ×13
- * 也才 8px —— 前者仍在亮芯门内(有纹理),后者落到门外(平滑轮廓),两头都
- * 不出白板/白线。再大就是白花钱:它只是垫底,细节由 LRU 里的正常块压在上面。
+ *
+ * 512 而不是更多,两条理由都指向同一个数:
+ *   · **成本**:它每帧每轨都要参与拼接,列数直接进循环次数。1024 时实测拖动
+ *     缩放条超 32ms 的长帧从 3 涨到 13(brief §4.5 红线);
+ *   · **观感**:5 分钟曲子上 512 列 ≈ 0.59s/列,整曲档下列宽 ≈ 1.3px —— 正落在
+ *     亮芯的 `ENV_CORE_MIN/MAX_COL_PX` 门内,有纹理;1024 时列宽 0.64px 反而
+ *     掉到下限之外,连亮芯都不画了。
+ * 它只是垫底件,细节由 LRU 里跨度贴合视口的正常块压在上面。
  */
-export const OVERVIEW_COLS = 1024;
+export const OVERVIEW_COLS = 512;
 
 /** 概览块重取节流(ms);只在视口静止时触发,采集中不至于每 500ms 重拉一次。 */
 export const OVERVIEW_REFRESH_MS = 3000;
@@ -592,6 +597,8 @@ function paintStripes(ctx, x, y, w, h, color, period, lineW) {
  *   `{tileStartS, tileEndS, viewStartS, viewEndS}` —— 把这块**按时间**画进当前
  *   视口(块只覆盖视口的一段时就只占那一段);缺省 = 块铺满 [0,w] 的老口径。
  *   `{clear:false}` —— 不清屏,供多块拼合(缩小时用几块老块补齐视口)。
+ *   `{xFrom, xTo}` —— **只画这段 x**(画布坐标);只收**循环**窗口,像素级
+ *   裁剪仍要调用方自己 `ctx.clip()`(列宽可能跨过边界,循环只能取到整列)。
  *
  * ⚠ 这是「视口变化中」那条路径的正解,不要退回位图拉伸,也不要用 `ctx.scale`:
  *   · `ctx.scale` 会把 45° 斜纹剪切成缓坡、把 lineWidth 横向拉粗(前两轮的病根);
@@ -623,11 +630,18 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
     // 视口时 90% 的列在画布外)。不裁的话那些列照样逐列 fillRect —— 多块拼合下
     // 每帧十几万次绘制调用,帧率直接崩,表现为**整页卡片闪白**(用户实测)。
     // 越界 canvas 自己会剪,但调用开销省不掉,必须在循环层面剪。
+    //
+    // `xFrom/xTo` 把窗口进一步收到「这次真要填的那段空隙」:多块拼合时每块
+    // 常常只补两侧一点点,按整幅可见范围跑循环纯属白算 —— 概览块接进来后
+    // 实测超 32ms 长帧从 3 涨到 13(brief §4.5 红线),收窄后回到 3。
+    // 各留一列余量:列宽可能跨过边界,少算一列就会在接缝处露出一条缝。
+    const xLo = Math.max(num(o.xFrom, 0), 0);
+    const xHi = Math.min(num(o.xTo, w), w);
     const iFrom = mapped
-        ? Math.max(0, Math.floor((0 - originX) / colW) - 1)
+        ? Math.max(0, Math.floor((xLo - originX) / colW) - 1)
         : 0;
     const iTo = mapped
-        ? Math.min(cols, Math.ceil((w - originX) / colW) + 1)
+        ? Math.min(cols, Math.ceil((xHi - originX) / colW) + 1)
         : cols;
     if (!(iTo > iFrom)) {
         if (o.clear !== false) ctx.clearRect(0, 0, w, h);

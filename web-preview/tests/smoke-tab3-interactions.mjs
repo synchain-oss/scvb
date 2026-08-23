@@ -1674,32 +1674,48 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         "非等比 ctx.scale 重映射未复活(斜纹被剪切 / 线宽被拉粗的根因)",
     );
     check(
-        /peekOverlapping\(\s*ch,\s*vp\.startS,\s*vp\.endS,?\s*\)[\s\S]{0,1200}for \(const blk of near\)/.test(
+        /peekOverlapping\(\s*ch,\s*vp\.startS,\s*vp\.endS,?\s*\)[\s\S]{0,4000}for \(const blk of near\) drawBlock\(blk\)/.test(
             tw,
         ),
         "缩小档用**多块拼合**补满视口(单块只覆盖一段 ⇒ 两侧露白)",
     );
     check(
-        /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,400}for \(const blk of near\)/.test(
+        /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,400}const drawBlock = /.test(
             tw,
         ),
         "拼合前整幅 clearRect 一次(每块自己不再清屏,clear:false)",
     );
     check(
-        /const sameVp =[\s\S]{0,1200}!sameVp && near\.length/.test(tw),
+        /const sameVp =[\s\S]{0,1600}!sameVp && \(near\.length \|\| ov\)/.test(
+            tw,
+        ),
         "画布已是当前视口时不清屏(宽度抖动导致的键失配不该闪空)",
     );
+    // 概览兜底是**惰性**的:只有前面几块没盖满才动用。它跨整首曲子,每帧每轨
+    // 都拉进来画的话超 32ms 长帧 3 → 13(brief §4.5 红线);多数帧本就盖得满。
     check(
-        /peekOverview\(ch\)[\s\S]{0,200}near = near\.concat\(\[ov\]\)/.test(tw),
-        "全曲概览块排在拼接序最后兜底(补不满 ⇒ 运动时整条泳道留白)",
+        /for \(const \[f0, f1\] of filled\) covered \+= f1 - f0;[\s\S]{0,200}if \(covered < w - 0\.5\) drawBlock\(ov\)/.test(
+            tw,
+        ),
+        "概览块只在前面没盖满时才动用(每帧无条件画 ⇒ 长帧超预算)",
     );
     // **空隙裁剪**:波形是半透明的(外柱 α=.52 / 内柱 α=.6),重叠区被画两三遍
     // 就把 α 叠到 0.89 / 0.94 —— 几乎纯白,一动视口波形区域就闪白(用户实测)。
     check(
-        /const filled = \[\];[\s\S]{0,1200}ctx\.clip\(\);[\s\S]{0,400}paintWaveTile\(/.test(
+        /const filled = \[\];[\s\S]{0,1600}ctx\.clip\(\);[\s\S]{0,400}paintWaveTile\(/.test(
             tw,
         ),
         "过渡帧按已画区间裁剪后再画(同一像素恒只画一次,α 不叠)",
+    );
+    // 裁剪边界**不得**对齐到整像素:实测那样能把发丝级接缝补到 0,但相邻空隙
+    // 因此重叠,半透明又叠出白 —— 近白像素占比 0 → 14.6%,正是打了三轮的那个病。
+    check(
+        !/ctx\.rect\(\s*Math\.(floor|round)\(g0\)/.test(tw),
+        "空隙裁剪不取整(取整会让相邻段重叠,α 叠加回潮成闪白)",
+    );
+    check(
+        /xFrom: g0,\s*\n\s*xTo: g1,/.test(tw),
+        "逐空隙画且把列循环收到该段(clip 只裁像素不裁循环,空跑上千列)",
     );
     check(
         /filled\.push\(\.\.\.gaps\)/.test(tw),
