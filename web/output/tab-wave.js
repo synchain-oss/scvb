@@ -3211,6 +3211,30 @@ export function createTabWave(opts) {
     }
 
     /**
+     * 把刚画好的一幅**存成位图老底**(blit 的搬运源)。
+     * 存位图而不是存 tile:blit 时用 `drawImage` 光栅重采样,平移与缩放走同一
+     * 条路径;存 tile 就只能重跑矢量画笔,那在非等比 scale 下会把 45° 斜纹剪切、
+     * 把 lineWidth 拉粗(用户 preview 报的「放大缩小错乱」正是这条)。
+     * 离屏画布按 ch 复用,尺寸跟随后备存储(行高/dpr 变了自然重建)。
+     */
+    function snapshotLane(ch, srcCanvas, vp) {
+        if (!srcCanvas || !srcCanvas.width) return;
+        let rec = local.lastPaint.get(ch);
+        if (!rec || !rec.bmp) rec = { bmp: document.createElement("canvas") };
+        const bmp = rec.bmp;
+        if (bmp.width !== srcCanvas.width) bmp.width = srcCanvas.width;
+        if (bmp.height !== srcCanvas.height) bmp.height = srcCanvas.height;
+        const bctx = bmp.getContext ? bmp.getContext("2d") : null;
+        if (!bctx) return;
+        bctx.setTransform(1, 0, 0, 1, 0, 0); // 老底按**后备像素**存,不带 k 变换
+        bctx.clearRect(0, 0, bmp.width, bmp.height);
+        bctx.drawImage(srcCanvas, 0, 0);
+        rec.startS = vp.startS;
+        rec.endS = vp.endS;
+        local.lastPaint.set(ch, rec);
+    }
+
+    /**
      * 静态层:每条可见泳道一块 tile → 一张位图(缓存命中直画,未命中取到再补)。
      *
      * **blit 只在平移期用**(Wave 4 用户反馈③ 的根因修)。05 §6.3 的原文是
@@ -3257,11 +3281,7 @@ export function createTabWave(opts) {
             const tile = waveSource.peek(ch, vp.startS, vp.endS, cols);
             if (tile) {
                 paintWaveTile(ctx, tile, w, laneH, pal);
-                local.lastPaint.set(ch, {
-                    tile,
-                    startS: vp.startS,
-                    endS: vp.endS,
-                });
+                snapshotLane(ch, n.canvas, vp);
                 local.canvasVp.set(ch, { startS: vp.startS, endS: vp.endS });
                 continue;
             }
@@ -3271,33 +3291,41 @@ export function createTabWave(opts) {
             const sameVp =
                 !!drawn && drawn.startS === vp.startS && drawn.endS === vp.endS;
             const last = local.lastPaint.get(ch);
-            // 老底与当前视口**同跨度** = 纯平移;跨度不等(缩放)即缓存失效
-            const panOnly =
-                !!last &&
-                last.endS > last.startS &&
-                Math.abs(last.endS - last.startS - span) <= span * 1e-9;
-            if (!sameVp && moving && panOnly) {
-                // 平移 blit:变换前先整幅清 —— clearRect 在 translate 之后只清得到
-                // 平移后的那一段,边缘会留下上一帧的拖影(平移期的「拖尾」正是这条)
+            if (
+                !sameVp &&
+                moving &&
+                last &&
+                last.bmp &&
+                last.endS > last.startS
+            ) {
+                // blit = **位图搬运**,一次 drawImage 同时吃下平移与缩放:
+                // 把老底的 [startS,endS] 按时间映射贴到新视口对应的像素段上。
+                // 位图缩放走光栅重采样,**不重跑矢量画笔** —— 45° 斜纹不会被
+                // 剪切、lineWidth 不会被拉粗(那正是把 blit 写成「重跑画笔 +
+                // ctx.scale」时的病根)。代价只是放大档糊一点,手停 120ms 即清晰。
+                const dx = ((last.startS - vp.startS) / span) * w;
+                const dw = ((last.endS - last.startS) / span) * w;
                 ctx.clearRect(0, 0, w, laneH);
                 local.canvasVp.set(ch, null); // 画布内容不再对应任何完整视口
-                ctx.save();
-                ctx.translate(((last.startS - vp.startS) / span) * w, 0);
-                paintWaveTile(ctx, last.tile, w, laneH, pal);
-                ctx.restore();
-                // 平移期**不取新块**(05 §6.3:静止 120ms 后才取)——
-                // 老底顶着,vpIdleTimer 到点会标脏再走下面的取数分支
+                if (dw > 0 && dx < w && dx + dw > 0) {
+                    ctx.drawImage(
+                        last.bmp,
+                        0,
+                        0,
+                        last.bmp.width,
+                        last.bmp.height,
+                        dx,
+                        0,
+                        dw,
+                        laneH,
+                    );
+                }
+                // 视口在动就**不取新块**(契约 §1.27 行 383 / brief §0.8:静止
+                // 120ms 后才取)。缩放期每帧跨度都不同 = 每帧都是新键,LRU 与
+                // 在途去重全失效,不设闸就是每帧 × 每条可见泳道一次桥调用。
                 continue;
             }
-            // 其余(缩放 / 首绘 / cols 失配):**画布原样留着当降级底**,
-            // 不清也不拉伸,等新块到了整幅重画(见函数头注)。
-            if (moving) {
-                // 视口还在动 —— **缩放档与平移档共用同一道闸**:静止 120ms
-                // 才取新块(契约 §1.27 行 383 / brief §0.8)。缩放期每帧换键,
-                // 去重与 LRU 都挡不住,不设闸就是每帧 × 每条可见泳道一次桥调用。
-                // vpIdleTimer 到点会标脏,静止后走下面的取数分支整幅重画。
-                continue;
-            }
+            if (moving) continue; // 没有老底可搬(首绘)——留白等 vpIdleTimer
             // 取数在途:resolve 后补一次静态重绘(契约 §1.27 一次调用一次
             // resolve;peek 不 await —— 渲染帧禁止阻塞)。
             const reqStartS = vp.startS;

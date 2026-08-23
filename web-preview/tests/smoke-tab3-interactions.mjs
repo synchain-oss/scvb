@@ -1355,51 +1355,57 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         "扩展不挂 12px 框上(±18px 会抢左邻按钮的事件)",
     );
 
-    // ---- ③ blit 只在平移(span 不变)时用;**平移与缩放共用「静止 120ms」闸**
+    // ---- ③ blit = **位图搬运**,平移与缩放走同一条路径;两者共用「静止 120ms」闸
+    //
+    // 用户 preview 两轮都报「放大缩小错乱」。第一轮的实现是「重跑矢量画笔 +
+    // ctx.scale」——非等比 scale 把 45° 斜纹剪成缓坡、lineWidth 横向拉粗;
+    // 第二轮改成「只 translate,跨度一变就不 blit」——缩放期波形整幅停在旧
+    // 视口的比例上,而标尺/曲线/边界/播放头每帧都跟着新视口走,层与层时间轴
+    // 对不上(无头实测:旧图保留 ~150ms 才被新块换掉)。
+    // 终修:老底存**位图**,一次 drawImage 按时间映射贴过去 —— 光栅重采样不
+    // 重跑画笔,斜纹与线宽都不会变形,平移(dw==w)与缩放(dw!=w)同一条路径。
     check(
-        /Math\.abs\(last\.endS - last\.startS - span\)/.test(tw),
-        "blit 前比对老底跨度与当前跨度(同跨度才认平移)",
-    );
-    check(
-        /if \(!sameVp && moving && panOnly\) \{[\s\S]{0,600}ctx\.translate\(/.test(
+        /function snapshotLane\([\s\S]{0,700}bctx\.drawImage\(srcCanvas, 0, 0\)/.test(
             tw,
         ),
-        "平移 blit 只 translate(且只在同跨度分支里)",
+        "命中后把整幅存成位图老底(blit 的搬运源,不再存 tile 重跑画笔)",
     );
     check(
-        !/ctx\.scale\(\(last\.endS - last\.startS\) \/ span, 1\)/.test(tw),
-        "缩放期的非等比 ctx.scale 重映射已删除(45° 斜纹被剪切的根因)",
+        !/paintWaveTile\(ctx, last\.tile/.test(tw) &&
+            !/ctx\.scale\(\(last\.endS - last\.startS\) \/ span, 1\)/.test(tw),
+        "blit 不再重跑矢量画笔(斜纹被剪切/线宽被拉粗的根因已删除)",
     );
     check(
-        /if \(!sameVp && moving && panOnly\) \{[\s\S]{0,300}ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,300}ctx\.translate\(/.test(
+        /const dx = \(\(last\.startS - vp\.startS\) \/ span\) \* w;[\s\S]{0,200}const dw = \(\(last\.endS - last\.startS\) \/ span\) \* w;/.test(
             tw,
         ),
-        "变换前先整幅 clearRect(平移拖影的根因)",
+        "老底按**时间映射**定位(dx/dw 同时吃下平移与缩放)",
     );
     check(
-        /const sameVp =[\s\S]{0,600}if \(!sameVp && moving && panOnly\)/.test(
+        /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,400}ctx\.drawImage\(\s*last\.bmp,/.test(
+            tw,
+        ),
+        "blit 前整幅 clearRect(否则边缘留上一帧拖影)",
+    );
+    check(
+        /const sameVp =[\s\S]{0,400}!sameVp &&\s*moving &&\s*last &&\s*last\.bmp/.test(
             tw,
         ),
         "画布已是当前视口时不清屏(宽度抖动导致的键失配不该闪空)",
     );
     check(
-        /画布原样留着当降级底[\s\S]{0,1600}if \(!got\) \{[\s\S]{0,1200}clearRect/.test(
-            tw,
-        ),
-        "缩放期留上一帧当降级底,取数回 null 才清(降级底有界)",
+        /if \(!got\) \{[\s\S]{0,1200}clearRect/.test(tw),
+        "取数回 null 才清(降级底有界,不把错档的图永久留在屏上)",
+    );
+    // 缩放那半边的钉子:缩放期每帧跨度都不同 = 每帧新键,LRU 与在途去重全失效,
+    // 不设闸就是每帧 × 每条可见泳道一次桥调用(实测 20 次 ctrl+滚轮 = 308 次)。
+    check(
+        /视口在动就\*\*不取新块\*\*[\s\S]{0,400}continue;/.test(tw),
+        "blit 分支内不取新块(05 §6.3:静止 120ms 后才取)",
     );
     check(
-        /平移期\*\*不取新块\*\*[\s\S]{0,200}continue;/.test(tw),
-        "平移期不取新块(05 §6.3:静止 120ms 后才取)",
-    );
-    // 缩放那半边的钉子(修订轮补):Wave 4 只钉了平移,缩放期每帧、每条可见
-    // 泳道各发一次 requestWaveform(实测 20 次 ctrl+滚轮 = 308 次桥调用),
-    // 门禁对它完全无感。缩放时每帧跨度都不同 = 每帧新键,LRU 与在途去重全失效。
-    check(
-        /if \(moving\) \{[\s\S]{0,600}continue;\n\s*\}\n[\s\S]{0,400}waveSource\.getTile\(/.test(
-            tw,
-        ),
-        "缩放/首绘同样过 moving 闸(取数分支前无条件 continue)",
+        /if \(moving\) continue;[\s\S]{0,600}waveSource\.getTile\(/.test(tw),
+        "没有老底可搬(首绘)也过 moving 闸,取数分支前无条件 continue",
     );
     check(
         /const moving = !!local\.vpIdleTimer;/.test(tw) &&
