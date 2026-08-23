@@ -202,10 +202,20 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         WF.envelopeHalfPx(-40, 34) < 4.5,
         "有声/静默的半高比拉得开(γ=1 的等高栅栏会 ≥7px)",
     );
-    // VAD 绿罩 alpha 只有一处真源(DEFAULT_PALETTE 与 tab-wave 的 computedPalette
-    // 各写一份字面量正是本波踩过的坑)。Wave 4 用户 preview 裁定:.13 的灰绿仍
-    // 「太灰太淡」→ 提到 .20 并换成比 --sem-green 更鲜亮的绿(tokens §20a)。
-    eq(WF.VAD_ALPHA, 0.2, "VAD 绿罩 alpha 取 Wave 4 用户裁定的 .20");
+    // VAD 罩 alpha 只有一处真源(DEFAULT_PALETTE 与 tab-wave 的 computedPalette
+    // 各写一份字面量正是本波踩过的坑)。Wave 4 用户 preview:.13 的灰绿「太灰太淡」
+    // → .20 + 更鲜亮的绿(tokens §20a);**Wave 5 第二轮**:满高罩「像绿底放了个
+    // 波」→ 收成顶部标注带 + alpha 提到 .55(带窄了就可以画实)。
+    eq(WF.VAD_ALPHA, 0.55, "VAD 标注带 alpha 取 Wave 5 用户裁定的 .55");
+    eq(
+        WF.VAD_BAND_PX,
+        5,
+        "VAD 标注带高 5px(裁定「顶部一条 5–6px,含 1.5px 亮线」)",
+    );
+    check(
+        WF.VAD_BAND_PX <= 34 / 2 - WF.envelopeHalfPx(0, 34) + 1,
+        "带高不越过包络顶(半高上限 h/2−4 ⇒ 柱尖恒在 y=4,最多咬 1px 且被柱盖回)",
+    );
     check(
         WF.DEFAULT_PALETTE.vad === `rgba(88, 208, 148, ${WF.VAD_ALPHA})`,
         "DEFAULT_PALETTE.vad 由 VAD_ALPHA 拼出(不写死字面 alpha)",
@@ -679,32 +689,30 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
             wf.indexOf("fillStyle = pal.coverage"),
         "覆盖条仍画在最上(B-07)",
     );
-    // 修订轮:仅「对调层序」不够 —— pal.env 是 α=.52 的半透明,底下的绿会**混
-    // 进来**(getImageData 实测:有声区柱子 R−G 从 17.5 掉到 5.6,粉相被抵消)。
-    // 绿罩改成按列裁掉包络带:只填 [0, mid−hi) 与 [mid+hi, h),与波形本体零重叠。
+    // Wave 5 用户裁定①:绿从「铺满包络之外的上下两片」收成**顶部一条标注带**,
+    // 带下一寸不填(用户原话「像绿底放了个波」= 绿面积比波形还大)。
     check(
-        /ctx\.fillStyle = pal\.vad;[\s\S]{0,400}const hi = envelopeHalfPx\(tile\.maxDb\[i\], h\);[\s\S]{0,300}if \(top > 0\) ctx\.rect\([\s\S]{0,200}if \(bot < h\) ctx\.rect\(/.test(
+        /ctx\.fillStyle = pal\.vad;[\s\S]{0,200}ctx\.fillRect\(x0\(a\), 0, \(b - a\) \* colW, band\)/.test(
             wf,
         ),
-        "VAD 罩只画包络之外(半透明包络会把满高绿罩混进粉柱)",
+        "VAD 只画顶部标注带(每 run 一次 fillRect,带高 = VAD_BAND_PX)",
+    );
+    check(
+        !/if \(top > 0\) ctx\.rect\(/.test(wf) &&
+            !/if \(bot < h\) ctx\.rect\(/.test(wf),
+        "「铺满包络之外」的旧画法已删(上下两片空白不再填绿)",
     );
     check(
         !/ctx\.fillStyle = pal\.vad;\s*\n\s*for \(const \[a, b\] of runs\) \{\s*\n\s*ctx\.fillRect\(x0\(a\), 0, \(b - a\) \* colW, h\);/.test(
             wf,
         ),
-        "满高绿罩铺底的旧画法已删",
+        "满高绿罩铺底的更旧画法仍然不在",
     );
     check(
-        /ctx\.fillStyle = pal\.vadEdge;[\s\S]{0,400}ctx\.fillRect\(x0\(a\), 0, \(b - a\) \* colW, 1\.5\);[\s\S]{0,200}ctx\.fillRect\(x0\(a\), edgeY, \(b - a\) \* colW, 1\.5\)/.test(
+        /ctx\.fillStyle = pal\.vadEdge;[\s\S]{0,200}ctx\.fillRect\(x0\(a\), 0, \(b - a\) \* colW, 1\.5\)/.test(
             wf,
-        ),
-        "亮线上下各一条(行高拉到 88 时罩体被厚包络挤薄,边线是区间起止唯一稳定读法)",
-    );
-    check(
-        /ctx\.beginPath\(\);[\s\S]{0,600}ctx\.fill\(\);\s*\n\s*ctx\.fillStyle = pal\.vadEdge;/.test(
-            wf,
-        ),
-        "整条 run 一次 beginPath + 一次 fill(929 列 × 15 轨的静态层 <8ms 预算)",
+        ) && !/edgeY/.test(wf),
+        "亮线只剩最上沿一条(带下已无罩体,下缘线失去依附对象)",
     );
 
     // ---- mock:5 分钟 ×15 轨,契约 §1.27 形状 / 确定性 / stale / valleys
@@ -1545,18 +1553,70 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
             ),
         "pointermove 里按 buttons===0 兜底收尾(拖拽态卡住 = 悬停即跳值)",
     );
-    eq(
-        TW.VZOOM_GUTTER_W,
-        24,
-        "纵向缩放条自留槽 24 = 命中扩展 6 + 杆 12 + 间隙 6",
+    // ---- Wave 5 用户裁定②:纵向缩放条移到窗口右下角(与纵向滚动条同一右缘、
+    //      在其轨道下方),泳道区内的 24px 自留槽随之撤销
+    eq(TW.VZOOM_GUTTER_W, undefined, "纵向缩放条自留槽常量已撤销(裁定②)");
+    check(
+        /Math\.max\(w - HEAD_W - SCALE_COL_W, 0\)/.test(tw) &&
+            !/export const VZOOM_GUTTER_W/.test(tw),
+        "舞台宽拿回自留槽(= 容器宽 − 158 − 44,C-04 舞台坐标系)",
     );
     check(
-        /w - HEAD_W - SCALE_COL_W - VZOOM_GUTTER_W/.test(tw),
-        "舞台宽让出自留槽(杆与命中区不再压泳道 canvas,消除 24×74 指针死区)",
+        /\.wave-ruler__scale \{[^}]*margin-right: 44px;/.test(html) &&
+            /\.wave-overlay \{[^}]*right: 44px;/.test(html) &&
+            /\.wave-lane__badges \{[^}]*right: 44px;/.test(html) &&
+            /\.wave-lane__static \{[^}]*right: 44px;/.test(html),
+        "标尺/overlay/角标层/静态层四处右让口径归并到单一 44(code-review finding 1)",
     );
     check(
-        /\.wave-vzoom::after \{[^}]*inset: -6px;/.test(html),
-        "纵向杆命中区 24×74 CSS px,整块落在槽内(与 RE-06 的口径差已在注释登记)",
+        /els\.rulerScale\.style\.marginRight = SCALE_COL_W \+ sb \+ "px"/.test(
+            tw,
+        ) && !/els\.vzoom\.style\.right/.test(tw),
+        "syncScrollGutter 不再给纵向杆算右让(它已在底部条的常规流里)",
+    );
+    {
+        // 位置:落在 `.wave-hzoom` 行内、且排在横向缩放控件**之后** = 最右端
+        const bar = html.indexOf('class="wave-hzoom"');
+        const hz = html.indexOf('class="wave-hzoom__zoomctl"', bar);
+        const vz = html.indexOf('class="wave-hzoom__vzoomctl"', bar);
+        const barEnd = html.indexOf('class="segment-inspector"');
+        check(
+            bar > 0 && vz > hz && vz < barEnd,
+            "纵向缩放条在底部条行内、横向缩放控件之后(窗口右下角、滚动条轨道下方)",
+        );
+        check(
+            html.indexOf('class="wave-window"') < bar &&
+                !/data-gb="wave-vzoom"[\s\S]{0,200}aria-orientation="vertical"/.test(
+                    html,
+                ),
+            "泳道区内不再有该件(竖杆形制随位置改成短横轨)",
+        );
+    }
+    eq(TW.VZOOM_W, 44, "纵向缩放条轨长 44(与 .wave-hzoom__zoombar 同族短轨)");
+    check(
+        /\.wave-vzoom \{[^}]*width: 44px;[^}]*height: 6px;/.test(html),
+        "杆本体 44×6 横轨",
+    );
+    check(
+        /\.wave-vzoom::after \{[^}]*inset: -7px -8px;/.test(html),
+        "命中扩展 20×60 CSS px(纵轴吃满底条 20px 行高;与横向杆同账)",
+    );
+    check(
+        /return laneHFromPercent\(\(e\.clientX - rect\.left\) \/ rect\.width\)/.test(
+            tw,
+        ),
+        "拖拽换算改横轴(clientX ÷ 轨宽)",
+    );
+    check(
+        /els\.vzoomThumb\.style\.left = laneHPercent\(v\) \* 100 \+ "%"/.test(
+            tw,
+        ),
+        "thumb 走百分比行程(与 .wave-hzoom__zoomthumb 同一套定位)",
+    );
+    check(
+        /if \(els\.vzoomVal\) text\(els\.vzoomVal, "⇕ " \+ v\)/.test(tw) &&
+            html.includes('data-gb="wave-vzoom-value"'),
+        "补可见读数「⇕ 34」(此前只有 tooltip / aria-valuetext)",
     );
 
     // ---- ⑤⑥ 新增 token 与「只改波形本体」纪律
@@ -1640,6 +1700,340 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         check(
             /Delete|合并|merge|fusionner|Suppr/i.test(tip),
             `${lang} 边界 tooltip 说清 Delete 合并(反馈⑧)`,
+        );
+    }
+}
+
+// =============================================================================
+log("=== ⑫ Wave 5 用户 preview 第二轮四条(绿罩/缩放条位/选中态/检查器)===");
+{
+    const tw = src("web/output/tab-wave.js");
+    const html = src("web/output/index.html");
+
+    // ---- ③ 选中段高亮:泳道内画薰衣草半透明底 + 四边实框
+    check(
+        /const SEG_SEL_FILL = "rgba\(181,172,201,\.22\)"/.test(tw) &&
+            /const SEG_SEL_EDGE = "rgba\(214,208,235,\.95\)"/.test(tw) &&
+            /const SEG_SEL_EDGE_W = 2;/.test(tw),
+        "选中段高亮配色 = 薰衣草底 .22 + 亮薰衣草 2px 边(亲验:点段同时勾选该轨,行底已是 .16)",
+    );
+    check(
+        /local\.selectedCh === ch && local\.selectedSegs\.length/.test(tw),
+        "高亮按 local.selectedSegs **整表**画(shift 连选的两段都高亮)",
+    );
+    {
+        const i = tw.indexOf("local.selectedCh === ch && local.selectedSegs");
+        const win = tw.slice(i, i + 1200);
+        check(
+            /ctx\.fillStyle = SEG_SEL_FILL;[\s\S]{0,120}ctx\.fillRect\(cx0, y0, cw, laneH\)/.test(
+                win,
+            ),
+            "半透明底铺满段 × 泳道行高",
+        );
+        check(
+            /ctx\.fillRect\(cx0, y0, cw, ew\); \/\/ 上/.test(win) &&
+                /ctx\.fillRect\(cx0, y0 \+ laneH - ew, cw, ew\); \/\/ 下/.test(
+                    win,
+                ),
+            "上下两条水平边线",
+        );
+        check(
+            /if \(sx0 >= 0\) ctx\.fillRect\(cx0, y0, ew, laneH\)/.test(win) &&
+                /if \(sx1 <= w\) \{[\s\S]{0,120}ctx\.fillRect\(cx0 \+ cw - ew, y0, ew, laneH\)/.test(
+                    win,
+                ),
+            "左右两条竖边只在段端真的在视口内时画(否则成假边界)",
+        );
+        // 层序:高亮在曲线/边界**之前**,且在「曲线可见 toggle 灭 → continue」之前
+        check(
+            i < tw.indexOf("drawStepCurve(ctx, segs, vp, w, y0, rampPx,") &&
+                i <
+                    tw.indexOf(
+                        'eye.eye.getAttribute("aria-pressed") === "false"',
+                    ),
+            "高亮画在曲线/边界之前,且不受曲线可见 toggle 影响(选中态属身份指示)",
+        );
+    }
+    check(
+        /local\.overlayDirty = true;[\s\S]{0,120}requestRender\(\);\s*\}\s*\n\s*function clearSegSelection/.test(
+            tw,
+        ),
+        "selectSegment 标脏共享动态层(否则 schedulePaint 空转,高亮画不出来)",
+    );
+
+    // ---- ④ 检查器「常驻 + 开关」(覆盖 C-11 的条件渲染)
+    check(
+        /inspectorOpen: true,/.test(tw),
+        "面板开关本地态默认开(关掉则点段无任何面板反应,J67 入口不可发现)",
+    );
+    check(
+        /show\(els\.inspector, local\.inspectorOpen\);/.test(tw) &&
+            !/show\(els\.inspector, !!cur\)/.test(tw),
+        "面板显隐只由开关决定,与「有没有选中段」解耦(=零布局抖动)",
+    );
+    check(
+        /attr\(els\.inspector, "data-empty", cur \? 0 : 1\)/.test(tw),
+        "无选中段 → data-empty=1 出空态句(面板宽不变)",
+    );
+    check(
+        /\.segment-inspector\[data-empty="1"\] \.inspector-times,/.test(html) &&
+            /\.segment-inspector:not\(\[data-empty="1"\]\) \.inspector-empty \{/.test(
+                html,
+            ),
+        "空态/实态互斥的 CSS 就位",
+    );
+    for (const gb of [
+        "wave-btn-inspector",
+        "inspector-close",
+        "inspector-empty",
+    ]) {
+        check(html.includes(`data-gb="${gb}"`), `新件锚点 ${gb} 就位`);
+    }
+    {
+        const i = html.indexOf('data-gb="wave-btn-inspector"');
+        const win = html.slice(Math.max(i - 300, 0), i + 300);
+        check(/aria-pressed=/.test(win), "面板开关走 aria-pressed(不自造属性)");
+        check(
+            win.includes('data-t="wave.inspectorToggle"'),
+            "开关文案走词条 wave.inspectorToggle",
+        );
+    }
+    check(
+        /attr\(\s*els\.inspToggle,\s*"aria-pressed"/.test(tw),
+        "开关按下态每帧与本地态同源",
+    );
+    check(
+        /local\.lastPaint\.clear\(\);[\s\S]{0,200}local\.staticDirty = true;[\s\S]{0,200}schedulePaint\(\);/.test(
+            tw.slice(tw.indexOf("const setInspectorOpen")),
+        ),
+        "开关改左栏宽 ⇒ 清 blit 老底 + 两层标脏(旧舞台宽的位图会被横向拉伸)",
+    );
+    // 桥面零新增:开关不写 state、不新增桥函数(契约无 UI 偏好落点)
+    check(
+        !/setInspectorOpen[\s\S]{0,400}call\(/.test(tw),
+        "面板开关不碰桥面(契约 §7 manifest 无 UI 偏好写面,只存内存)",
+    );
+
+    for (const [lang, dict] of [
+        ["zh", T.zh],
+        ["en", T.en],
+        ["fr", T.fr],
+    ]) {
+        for (const k of ["wave.inspectorToggle", "wave.inspectorEmpty"]) {
+            check(
+                typeof dict[k] === "string" && dict[k].length > 0,
+                `${lang} 有词条 ${k}`,
+            );
+        }
+    }
+}
+
+// =============================================================================
+log("\n=== ⑬ /code-review high 七条 finding(Wave 5 下半场)===");
+{
+    const tw = src("web/output/tab-wave.js");
+    const html = src("web/output/index.html");
+
+    // ---- 1. 段角标层宽必须与舞台坐标系同源(角标右漂)
+    check(
+        !/VZOOM_GUTTER_W\s*[=:]/.test(tw),
+        "finding 1:VZOOM_GUTTER_W 已撤销(纵向缩放条移到底部条右端,舞台不再自留槽)",
+    );
+    check(
+        /return Math\.max\(w - HEAD_W - SCALE_COL_W, 0\);/.test(tw),
+        "finding 1:stageWidth() = clientW − 158 − 44(单一右让口径)",
+    );
+    for (const cls of [
+        "wave-lane__static",
+        "wave-lane__badges",
+        "wave-overlay",
+    ]) {
+        const i = html.indexOf(`.${cls} {`);
+        check(i > 0, `finding 1:${cls} 规则在`);
+        const win = html.slice(i, i + 400);
+        check(
+            /right:\s*44px;/.test(win),
+            `finding 1:.${cls} 右让 = 44(与 SCALE_COL_W / stageWidth 同一个数)`,
+        );
+    }
+    check(
+        TW.SCALE_COL_W === 44,
+        "finding 1:SCALE_COL_W 与 CSS 里的 44px 逐字同值",
+    );
+
+    // ---- 2. 标尺 data-sig 必须含刻度落点(小幅平移时不得冻结)
+    {
+        const i = tw.indexOf("function renderRuler(");
+        const win = tw.slice(i, i + 1400);
+        check(
+            /const sig = parts\.map\(\(p\) => `\$\{p\.label\}@\$\{p\.left\}\$\{p\.last\}`\)/.test(
+                win,
+            ),
+            "finding 2:sig 由「标签 + 算好的 left + 末位标记」组成(与渲染输出逐字同源)",
+        );
+        check(
+            !/const sig = ticks\.map\(\(k\) => k\.label\)\.join\("\|"\) \+ "@" \+ span/.test(
+                win,
+            ),
+            "finding 2:老的「标签串 + span」sig 已不在(平移不足一格时会早退冻结)",
+        );
+        check(
+            /style="left:\$\{p\.left\}%"/.test(win),
+            "finding 2:写进 style 的 left 与进 sig 的 left 是同一个值",
+        );
+    }
+
+    // ---- 3 + 4. 检查器数字框:零位移不发 / Enter 不发两次
+    {
+        const i = tw.indexOf("function wireNumInput(");
+        check(i > 0, "finding 3:wireNumInput 在");
+        const win = tw.slice(i, i + 2000);
+        check(
+            /if \(st && st\.last !== null && st\.last === q1\) \{/.test(win),
+            "finding 3:解析值等于「最后渲染进框的值」即早退,一个字节都不上行",
+        );
+        check(
+            /if \(st\) st\.last = q1;\s*\n\s*spec\.commit\(q1\);/.test(win),
+            "finding 4:commit 真送出时把基准推到刚送的值 ⇒ 紧随的 blur 落进零位移早退",
+        );
+        // 基准的唯一写入点:render 写值(setNumBox)+ commit 送出
+        const setter = tw.slice(
+            tw.indexOf("function setNumBox("),
+            tw.indexOf("function setNumBox(") + 600,
+        );
+        check(
+            /if \(root\.activeElement === input\) return;/.test(setter),
+            "finding 3:聚焦中的框不覆写、基准也按兵不动(基准 = 用户开编前框里的值)",
+        );
+        check(
+            /st\.last = Math\.round\(num\(v, 0\) \* q\) \/ q;/.test(setter),
+            "finding 3:基准与提交值同精度量化(dp 位),避免 +12.34 → 「12.3」被误判为改动",
+        );
+        check(
+            (tw.match(/numBoxes\.get\(/g) || []).length >= 2 &&
+                /numBoxes\.set\(input, \{ last: null \}\)/.test(tw),
+            "finding 3:每个数字框各有一份基准账",
+        );
+        check(
+            /setNumBox\(els\.inspPanInput, pan, 1\);/.test(tw) &&
+                /setNumBox\(els\.inspVolInput, vol, 1\);/.test(tw),
+            "finding 3:PAN/VOL 两框的渲染写值都过 setNumBox(否则基准永远是 null)",
+        );
+        check(
+            !/if \(root\.activeElement !== els\.insp(Pan|Vol)Input\) \{/.test(
+                tw,
+            ),
+            "finding 3:renderInspector 里裸写 input.value 的老路径已收口",
+        );
+    }
+
+    // ---- 5. 播放头只抬高、不压低时间轴估计
+    {
+        const D = TW.FALLBACK_DURATION_S;
+        eq(
+            TW.durationOf({ playhead: { timeS: 0.03 } }),
+            D,
+            "finding 5:空态刚起播(playhead 0.03s,无段无 range)⇒ 仍是 FALLBACK,不塌成 0.03",
+        );
+        eq(TW.durationOf({}), D, "finding 5:全空 ⇒ FALLBACK");
+        eq(
+            TW.durationOf({ playhead: { timeS: 420 } }),
+            420,
+            "finding 5:播放头越过 FALLBACK ⇒ 照旧把估计抬上去(只抬不压)",
+        );
+        eq(
+            TW.durationOf({
+                state: { global: { range: { end_s: 120 } } },
+                playhead: { timeS: 0.03 },
+            }),
+            120,
+            "finding 5:有 range 证据时播放头不把它压低",
+        );
+        eq(
+            TW.durationOf({
+                state: { global: { range: { end_s: 120 } } },
+                playhead: { timeS: 200 },
+            }),
+            200,
+            "finding 5:播放头超出 range ⇒ 取大",
+        );
+        eq(
+            TW.durationOf({
+                segments: { channels: [{ segments: [{ t1S: 88 }] }] },
+                playhead: { timeS: 1 },
+            }),
+            88,
+            "finding 5:段表证据同理(88 不被 1s 的播放头压掉)",
+        );
+        // 塌轴的判据:若 durationOf 回 0.03,视口会被夹到 MIN_SPAN_S
+        check(
+            TW.durationOf({ playhead: { timeS: 0.03 } }) > TL.MIN_SPAN_S,
+            "finding 5:空态起播的估计必须大于 MIN_SPAN_S(否则标尺/读数/滚动条塌成 1 秒)",
+        );
+    }
+
+    // ---- 6. 重新识别确认框:切语言不退回 {k}/{l}
+    {
+        check(
+            /function renderReidentifyBody\(\)/.test(tw),
+            "finding 6:确认框正文有独立的补填函数",
+        );
+        const win = tw.slice(
+            tw.indexOf("function renderReidentifyBody()"),
+            tw.indexOf("function renderReidentifyBody()") + 700,
+        );
+        check(
+            /if \(!box \|\| box\.hidden \|\| !local\.reidentifyCounts\) return;/.test(
+                win,
+            ),
+            "finding 6:只在框可见且计数已定格时补填",
+        );
+        check(
+            /fmtKey\("wave\.reidentifyConfirm", local\.reidentifyCounts\)/.test(
+                win,
+            ),
+            "finding 6:补填用开框那刻定格的计数(不在 render 里重算 scope)",
+        );
+        // 补填必须挂在 render 里:refreshI18n = applyI18n(整串覆盖) + render(补填)
+        const rIdx = tw.indexOf("    function render() {");
+        const rEnd = tw.indexOf("schedulePaint();", rIdx);
+        check(
+            rIdx > 0 &&
+                tw.slice(rIdx, rEnd).includes("renderReidentifyBody();"),
+            "finding 6:render() 里补填(切语言走 applyI18n + render,补填必排在整串覆盖之后)",
+        );
+        check(
+            /local\.reidentifyCounts = \{ k: counts\.marks, l: counts\.locked \};/.test(
+                tw,
+            ),
+            "finding 6:开框只负责定格计数",
+        );
+        // data-t 保留:check-i18n 的覆盖盘点 + 未注入词典时的兜底原文
+        check(
+            html.includes('data-t="wave.reidentifyConfirm"'),
+            "finding 6:正文节点保留 data-t(词条覆盖盘点与兜底原文都靠它)",
+        );
+    }
+
+    // ---- 7. 锁角标 tooltip 随语言
+    {
+        check(
+            /if \(local\.lastDict !== t\) \{\s*\n\s*local\.lastDict = t;\s*\n\s*local\.marksDirty = true;/.test(
+                tw,
+            ),
+            "finding 7:词典对象一变就置 marksDirty(切语言既不动视口也不来 segments 事件)",
+        );
+        check(/lastDict: null,/.test(tw), "finding 7:词典账在 local 里有落点");
+        // 恒等比较成立的前提:dict(lang) 每门语言返回同一个常量对象
+        const { dict } = await import(u("web/shared/i18n.js"));
+        check(
+            dict("zh") === dict("zh") && dict("zh") !== dict("en"),
+            "finding 7:i18n.dict() 按语言返回稳定的同一对象 ⇒ 恒等比较是切语言的准信号",
+        );
+        check(
+            /const tip = esc\(t\["wave\.lockBadge"\] \|\| ""\);/.test(tw) &&
+                /aria-label="\$\{tip\}" title="\$\{tip\}"/.test(tw),
+            "finding 7:锁角标的 aria-label/title 仍烤自当帧词典(所以必须靠 marksDirty 重建)",
         );
     }
 }

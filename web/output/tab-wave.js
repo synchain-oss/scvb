@@ -129,15 +129,19 @@ export const INSPECTOR_W = 262;
 export const SCALE_COL_W = 44;
 
 /**
- * 纵向缩放条自留槽宽(CSS px;修订轮新增)。
- * Wave 4 把 12px 的纵向缩放条直接浮在泳道 canvas 最右 18px 上,连同它的
- * `::after` 命中扩展造出一块 24×74px 的**指针死区** —— 那一块上的点选段 /
- * 拖边界 / 拖拽平移全部失灵(z-index 高于选区叠加层,事件也不冒泡到
- * `.wave-lanes`)。修法:把舞台宽再让出这一槽,杆与它的命中扩展整个落在
- * 槽内(槽 24 = 命中扩展 6 + 杆 12 + 与刻度列的间隙 6),canvas 上零死区。
- * 代价 = 舞台宽 929 → 905(-2.6%),换回泳道右缘可点。
+ * ⚠ **VZOOM_GUTTER_W 已撤销(Wave 5 用户裁定②)**。
+ *
+ * 沿革:Wave 4 把 12px 的竖直纵向缩放条浮在泳道 canvas 最右 18px 上,造出
+ * 24×74px 指针死区 → 修订轮从舞台宽让出 24px 自留槽把它挪进去。用户 preview
+ * 第二轮的原话是「为什么没有贴着右侧,放在纵向滚动的进度条下面?」—— 杆缩在
+ * 双刻度列**左侧**、压在泳道区内,既不贴边也占着舞台宽。
+ *
+ * 裁定:杆整件移到**窗口右下角的底部缩放条行内**(`.wave-hzoom__vzoomctl`,
+ * 与纵向滚动条同一右缘、在其轨道**下方**),槽随之撤销 —— 舞台宽从
+ * `w − 158 − 44 − 24` 回到 `w − 158 − 44`,`.wave-overlay` / `.wave-lane__static`
+ * / `.wave-lane__badges` 三处右让口径一并归并到单一的 44(code-review 提的
+ * badges 右让没跟着改的账,一并了结)。
  */
-export const VZOOM_GUTTER_W = 24;
 
 /** 时间标尺行高(实景帧 807)。 */
 export const RULER_H = 22;
@@ -149,11 +153,17 @@ export const BOTTOM_BAR_H = 20;
 export const BOTTOM_HEAD_W = 148;
 
 /**
- * 纵向缩放条几何(**与 index.html `.wave-vzoom` 同步**:总高 62px,两端各留
- * 7px 端头让 10px 圆点 thumb 不越出杆身)。Wave 4 用户新件。
+ * 纵向缩放条轨长(**与 index.html `.wave-vzoom` 同步**;Wave 5 改制)。
+ *
+ * Wave 4 是 12×62 的**竖杆**(端头各留 7px 让圆点 thumb 不越界);Wave 5 裁定②
+ * 把它搬进底部条右端后,20px 行高容不下 62px 竖杆 —— 形制随位置改成与横向缩放条
+ * 同族的**短横轨 + 圆点 thumb**(44×6),thumb 行程走百分比 + `margin-left:-5.5px`
+ * (与 `.wave-hzoom__zoomthumb` 同一套,端头不再需要 PAD 常量)。
+ * 语义不变:仍是「纵向缩放 = 泳道行高 22..88px」,读数「⇕ 34」写在轨左侧,
+ * 方向键上/右加高、下/左减矮(两轴都收,竖直习惯不丢)。
+ * deviations §S 登记:竖杆 → 横轨是**位置裁定的连带形变**,不是新增件。
  */
-export const VZOOM_H = 62;
-export const VZOOM_PAD = 7;
+export const VZOOM_W = 44;
 
 /** 无任何时长线索时的兜底工程时长(秒;mock 假数据同为 5 分钟,J59)。 */
 export const FALLBACK_DURATION_S = 300;
@@ -263,6 +273,13 @@ export function fmtTimeMs(s) {
 /**
  * 工程时长推定(秒)。契约没有独立「时长」字段 —— 取 store 里能见到的最大时间线索:
  * Range 终点 / 段表最大 t1S / 播放头。全空时回落 5 分钟(mock 假数据口径)。
+ *
+ * **播放头只抬高、不压低**(code-review finding 5):空态(无段 + follow 档
+ * `range.end_s=0`)下一开始播放,`playhead.timeS≈0.03` 是**唯一非零线索**,
+ * 老写法把它当成工程时长 ⇒ `d≈0.03` → 视口被夹到 `MIN_SPAN_S`,标尺/缩放
+ * 读数/滚动条整体塌成 1 秒再随播放慢慢爬回来。播放头是「已经放到这儿了,
+ * 工程至少这么长」的**下界证据**,不是长度本身 —— 故:有别的长度证据时它
+ * 只参与取大;没有时下限压在 FALLBACK 上(播放头越过 5 分钟仍能把估计抬上去)。
  */
 export function durationOf(store) {
     const st = store || {};
@@ -274,8 +291,8 @@ export function durationOf(store) {
             d = Math.max(d, num(seg && seg.t1S, 0));
         }
     }
-    d = Math.max(d, num(st.playhead && st.playhead.timeS, 0));
-    return d > 0 ? d : FALLBACK_DURATION_S;
+    const ph = num(st.playhead && st.playhead.timeS, 0);
+    return Math.max(d > 0 ? d : FALLBACK_DURATION_S, ph);
 }
 
 /**
@@ -413,6 +430,27 @@ const CURVE_W_MANUAL = 1.6;
  */
 const CURVE_HALO = "rgba(18,15,28,.72)";
 const CURVE_HALO_W = 0.8;
+
+/**
+ * **选中段高亮**(Wave 5 用户裁定③:「选择了片段之后,那个片段最好有一个高亮之类
+ * 的效果,不然不清楚选中的是哪个」)。
+ *
+ * 此前点段只开检查器,泳道上零指示 —— 多选(shift 连选两段)时更是完全看不出选中
+ * 的是哪两段。这里补一层**薰衣草半透明底 + 四边实框**:
+ *   · 底 α .22 —— 压在包络柱与 VAD 顶带上能读出「这一段被框住了」,又不至于把
+ *     粉白波形染成紫(与裁定⑥「不能盖住波形」同一条底线)。
+ *     ⚠ 亲验后从 .16 提到 .22:点段**同时**会勾选该轨(05 行 288 的整行点选语义),
+ *     行底本身已是 `rgba(acc,.16)` 的淡薰衣草,底对底的差被吃掉大半;
+ *   · **四边都画**(不只上下):同一笔账 —— 只靠底色差在已选中的行里读不出来,
+ *     真正让它「一眼是个框」的是那圈 2px 亮边。竖边压在段边界线上是**故意**的:
+ *     选中段的两端本来就是它的边界;亮薰衣草 2px 与 auto 白虚 / 手动白实
+ *     (1 / 1.6px)在色相与粗细上双重两分,不会读混。
+ * 层序:画在共享动态层**最底**(曲线/边界之前),曲线永远压在高亮之上。
+ * 与选区压暗(窗级 DOM)/ 布防斜纹(滚动层 DOM)分属不同层,互不遮挡。
+ */
+const SEG_SEL_FILL = "rgba(181,172,201,.22)";
+const SEG_SEL_EDGE = "rgba(214,208,235,.95)";
+const SEG_SEL_EDGE_W = 2;
 
 /**
  * 标尺刻度(mm:ss;稿内是静态小节号,tempo 表 v1 不可得 → 取时间刻度,
@@ -704,6 +742,26 @@ export function createTabWave(opts) {
 
     const els = {};
     /**
+     * 检查器数字框的「最后渲染进框的解析值」账(input → {last})。
+     * `wireNumInput` 的零位移去重基准,写入点只有两处:render 把模型值写进框时
+     * (`setNumBox`)、以及 commit 真把值送上行时。见 wireNumInput 头注。
+     */
+    const numBoxes = new Map();
+
+    /**
+     * 把模型值渲染进数字框,并同步去重基准。
+     * **聚焦中的框不覆写**(否则用户正在打的字会被每帧 render 抹掉),基准也
+     * 一并按兵不动 —— 那正是「用户开始编辑之前框里是什么」,即零位移的参照。
+     */
+    function setNumBox(input, v, dp) {
+        if (!input) return;
+        if (root.activeElement === input) return;
+        input.value = fmtSigned(v, dp);
+        const q = 10 ** dp;
+        const st = numBoxes.get(input);
+        if (st) st.last = Math.round(num(v, 0) * q) / q;
+    }
+    /**
      * 页面内一次性状态(不属 state chunk)。
      * `lanePick` 保持**点击顺序数组**(shift 锚点语义依赖它,05 行 288);
      * `selectedSegs` 存 `{idx,t0S,t1S}` 时间锚,**每次 segments 事件后经
@@ -715,6 +773,7 @@ export function createTabWave(opts) {
         staticDirty: true, // 静态层(波形位图)需重绘
         overlayDirty: true, // 共享动态层(曲线/边界)需重绘
         marksDirty: true, // 段角标 DOM 需重建(舞台量不到宽时保留脏位)
+        lastDict: null, // 上一帧的词典对象(恒等比较 = 切语言检测,见 render)
         repaintQueued: false,
         lastUiScale: NaN, // ui.scale 档位账(变化 = 后备存储重建,05 §6.1)
         gutterPx: -1, // 泳道区纵向滚动条宽账(标尺/刻度列对基用)
@@ -725,6 +784,16 @@ export function createTabWave(opts) {
         selDrag: null, // "L" | "R" | "create"
         selectedCh: 0, // 段选中所在轨(0 = 无)
         selectedSegs: [], // [{idx,t0S,t1S}] ≤2(两段 = 合并候选)
+        /**
+         * 段检查器面板开关(Wave 5 用户裁定④,**覆盖 C-11 的条件渲染**)。
+         * 默认**开**:关掉的话点段就没有任何面板反应,J67「段编辑唯一入口」会
+         * 变得不可发现;开着时无选中段出空态句,点不同段只换内容、不改宽度。
+         * **持久化落点**:契约 §7 manifest 里没有 UI 偏好的写面(`ui.*` 只有
+         * scale/language/active_tab/guide_seen/tour_seen),桥面零新增是硬纪律 →
+         * 只存本进程内存,切 tab 保持、重开面板回默认开。deviations 登记。
+         */
+        inspectorOpen: true,
+        reidentifyCounts: null, // {k,l}:重新识别确认框正文的定格计数(切语言补填用)
         boundDrag: null, // {ch, segIdx, tS, snapped, minS, maxS}
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
         sliderKeyTimer: 0, // 键盘档「视为松手」计时
@@ -834,13 +903,13 @@ export function createTabWave(opts) {
     });
 
     /**
-     * 舞台宽(CSS px)= 泳道容器宽 − 轨头 158 − 刻度列 44 − 纵向缩放条槽 24
-     * (C-04 舞台坐标系;末项见 VZOOM_GUTTER_W 头注 —— 杆与其命中扩展整个
-     * 落在槽内,泳道 canvas 上不留指针死区)。
+     * 舞台宽(CSS px)= 泳道容器宽 − 轨头 158 − 右缘刻度列 44(C-04 舞台坐标系)。
+     * Wave 5 裁定②把纵向缩放条搬去底部条右端后,它在泳道区内的 24px 自留槽撤销
+     * (见 VZOOM_GUTTER_W 头注的撤销说明)—— 舞台宽拿回那 24px。
      */
     function stageWidth() {
         const w = els.lanes ? els.lanes.clientWidth : 0;
-        return Math.max(w - HEAD_W - SCALE_COL_W - VZOOM_GUTTER_W, 0);
+        return Math.max(w - HEAD_W - SCALE_COL_W, 0);
     }
 
     /**
@@ -855,14 +924,11 @@ export function createTabWave(opts) {
         if (local.gutterPx === sb) return;
         local.gutterPx = sb;
         if (els.rulerScale) {
-            els.rulerScale.style.marginRight =
-                SCALE_COL_W + VZOOM_GUTTER_W + sb + "px";
+            els.rulerScale.style.marginRight = SCALE_COL_W + sb + "px";
         }
         if (els.scalecol) els.scalecol.style.right = sb + "px";
-        // 纵向缩放条落在双刻度列**左侧的自留槽**里(修订轮):同一套滚动条宽账,
-        // 免得 15×88 出滚动条时它压到刻度列的 -100/-24 读数上;左边界靠
-        // stageWidth() 让出的 VZOOM_GUTTER_W 兜住,不再压泳道 canvas
-        if (els.vzoom) els.vzoom.style.right = SCALE_COL_W + sb + 6 + "px";
+        // 纵向缩放条不再参与这套右让账:Wave 5 起它在底部条(`.wave-hzoom`)的
+        // 常规流里,天然贴窗口右下角、在纵向滚动条轨道下方,与刻度列零交叠。
     }
 
     /**
@@ -885,19 +951,17 @@ export function createTabWave(opts) {
         local.overlayDirty = true;
         if (els.vzoom) {
             attr(els.vzoom, "aria-valuenow", v);
-            // 读数:裸 22..88 播报成「88」读不出单位,横向杆有「×N」可见读数、
-            // 这条没有(修订轮 minor 登记)→ 补 aria-valuetext 带单位供 AT。
-            // 悬停 tooltip(词条 · 行高)在 render() 里写 —— 那里才跟得上切语言。
+            // 读数:裸 22..88 播报成「88」读不出单位 → aria-valuetext 带单位供 AT;
+            // Wave 5 起可见读数「⇕ 34」也就位(横向杆的「×N」一直有,这条以前
+            // 只有 tooltip)。悬停 tooltip(词条 · 行高)在 render() 里写 ——
+            // 那里才跟得上切语言。
             attr(els.vzoom, "aria-valuetext", v + "px");
+            // Wave 5:短横轨 + 圆点 thumb(`margin-left:-5.5px` 居中),行程比
+            // 左→右 = 矮→高;与 `.wave-hzoom__zoomthumb` 同一套定位口径。
             if (els.vzoomThumb) {
-                // p=0(最矮)在杆底、p=1(最高)在杆顶:向上拖 = 泳道变高。
-                // 62px 的短杆上用百分比会让 thumb 在两端各露出一半在杆外
-                // (7 滑杆的长轨可以,这里不行)→ 按端头内缩量算 px。
-                els.vzoomThumb.style.top =
-                    VZOOM_PAD +
-                    (1 - laneHPercent(v)) * (VZOOM_H - VZOOM_PAD * 2) +
-                    "px";
+                els.vzoomThumb.style.left = laneHPercent(v) * 100 + "%";
             }
+            if (els.vzoomVal) text(els.vzoomVal, "⇕ " + v);
         }
         if (rerender !== false) {
             schedulePaint();
@@ -1232,6 +1296,9 @@ export function createTabWave(opts) {
             local.selectedSegs = [key];
         }
         local.echo = {};
+        // 选中态现在有可见落点(共享动态层的高亮,裁定③)→ 必须标脏重画,
+        // 否则 render() 末尾的 schedulePaint 会因两个脏位全空而空转
+        local.overlayDirty = true;
         requestRender();
     }
 
@@ -1240,6 +1307,7 @@ export function createTabWave(opts) {
         local.selectedCh = 0;
         local.selectedSegs = [];
         local.echo = {};
+        local.overlayDirty = true; // 同上:高亮要擦掉
         requestRender();
     }
 
@@ -1317,16 +1385,29 @@ export function createTabWave(opts) {
             scope ? scope.startS : -Infinity,
             scope ? scope.endS : Infinity,
         );
-        const body = els.confirmReidentify
-            ? els.confirmReidentify.querySelector("[data-t]")
-            : null;
-        if (body) {
-            body.textContent = fmtKey("wave.reidentifyConfirm", {
-                k: counts.marks,
-                l: counts.locked,
-            });
-        }
+        // 计数只在开框这一刻定格,填文本交给 render(见 renderReidentifyBody)。
+        local.reidentifyCounts = { k: counts.marks, l: counts.locked };
         show(els.confirmReidentify, true);
+        renderReidentifyBody();
+    }
+
+    /**
+     * 重新识别确认框正文填充(code-review finding 6)。
+     *
+     * 正文节点带 `data-t="wave.reidentifyConfirm"`,而 `applyI18n` 会把整串
+     * textContent 换成词条**原文**(含 `{k}` / `{l}` 占位符)—— 老写法只在开框
+     * 那一次做格式化,框开着切语言就当场退回「将清除 {k} 个…{l} 个…」。
+     * `data-t` 不能删(check-i18n 靠它盘点覆盖,也是未注入词典时的兜底原文),
+     * 所以走另一半:**框可见就在 render 里补填**。refreshI18n = applyI18n +
+     * render(),补填必然排在整串覆盖之后。
+     */
+    function renderReidentifyBody() {
+        const box = els.confirmReidentify;
+        if (!box || box.hidden || !local.reidentifyCounts) return;
+        const body = box.querySelector("[data-t]");
+        if (!body) return;
+        const txt = fmtKey("wave.reidentifyConfirm", local.reidentifyCounts);
+        if (body.textContent !== txt) body.textContent = txt;
     }
 
     async function doReidentify() {
@@ -1444,6 +1525,7 @@ export function createTabWave(opts) {
         els.hzoomVal = $("wave-hzoom-value");
         els.vzoom = $("wave-vzoom");
         els.vzoomThumb = $("wave-vzoom-thumb");
+        els.vzoomVal = $("wave-vzoom-value");
         els.rangeline = $("wave-rangeline");
         els.hint = $("wave-trackpickhint");
         els.chip = $("wave-selchip");
@@ -1496,6 +1578,8 @@ export function createTabWave(opts) {
         els.hscroll = $("wave-hscroll");
         els.emptyCta = $("wave-empty-cta");
         els.inspector = $("segment-inspector");
+        els.inspToggle = $("wave-btn-inspector");
+        els.inspClose = $("inspector-close");
         els.inspNote = $("inspector-followhost-note");
         els.inspOrigin = $("inspector-origin-value");
         els.inspStart = $("inspector-time-start");
@@ -2325,13 +2409,11 @@ export function createTabWave(opts) {
             });
         }
 
-        // ---- 纵向:杆顶 = 最高行,杆底 = 最矮行
+        // ---- 纵向:轨左 = 最矮行,轨右 = 最高行(Wave 5 改横轨后与横向杆同轴向)
         const vzoomHeightFromEvent = (e) => {
             const rect = els.vzoom.getBoundingClientRect();
-            if (!(rect.height > 0)) return null;
-            const inner = Math.max(rect.height - VZOOM_PAD * 2, 1);
-            const p = 1 - (e.clientY - rect.top - VZOOM_PAD) / inner;
-            return laneHFromPercent(p);
+            if (!(rect.width > 0)) return null;
+            return laneHFromPercent((e.clientX - rect.left) / rect.width);
         };
         if (els.vzoom) {
             els.vzoom.addEventListener("pointerdown", (e) => {
@@ -2394,6 +2476,34 @@ export function createTabWave(opts) {
 
     // ------------------------------------------------ mount:段检查器(§17)
     function mountInspector() {
+        /**
+         * 面板开关(裁定④):工具条那枚 aria-pressed 按钮与标题栏 ✕ 同一个本地态。
+         * 开关一按,左栏宽度就变 → 舞台宽变 → canvas 后备存储要按新宽重建,
+         * 两层都标脏(与 applyLaneH 同一笔账);blit 老底也清 —— 那幅是旧舞台宽的
+         * 位图,drawImage 上去会横向拉伸。
+         */
+        const setInspectorOpen = (on) => {
+            const v = !!on;
+            if (local.inspectorOpen === v) return;
+            local.inspectorOpen = v;
+            local.lastPaint.clear();
+            local.canvasVp.clear();
+            local.staticDirty = true;
+            local.overlayDirty = true;
+            schedulePaint();
+            requestRender();
+        };
+        if (els.inspToggle) {
+            els.inspToggle.addEventListener("click", () => {
+                setInspectorOpen(!local.inspectorOpen);
+            });
+        }
+        if (els.inspClose) {
+            els.inspClose.addEventListener("click", () => {
+                setInspectorOpen(false);
+            });
+        }
+
         // PAN:数字输入(step 1 / shift 0.1,05 §2.3a)——提交在 Enter/失焦
         if (els.inspPanInput) {
             wireNumInput(els.inspPanInput, {
@@ -2513,8 +2623,24 @@ export function createTabWave(opts) {
         }
     }
 
-    /** 检查器数字输入通用接线:Enter/失焦提交,方向键步进后同径提交。 */
+    /**
+     * 检查器数字输入通用接线:Enter/失焦提交,方向键步进后同径提交。
+     *
+     * **零位移不发**(code-review finding 3,严重;与本分支 `commitBoundDrag`
+     * 的「零位移不发」同一族):`set_values` 的后置是 `origin=user_edited` +
+     * `locked=true`(契约 §5.4),而重新识别对 `locked` 段免疫 —— 老写法 blur
+     * 无条件 commit,于是「Tab 键掠过 PAN/VOL 框」或「点另一个段(触发 blur)」
+     * 就能把一个 auto 段永久变成 edited+locked:用户零可见变化,却不可逆。
+     * 这里记住**最后一次渲染进框的解析值**(`numBoxes` 的 `last`,由
+     * `setNumBox` 在 render 写值时同步),解析值与它相等就一个字节都不发。
+     *
+     * **Enter 不再发两次**(finding 4):`commit(); input.blur();` 里 blur 事件
+     * 会再进一次 commit ⇒ 两次 `set_values`、两条撤销栈。commit 成功后把 `last`
+     * 推到刚送出的值(段表要等 §2.8 回推才更新,不能拿模型值当去重基准),
+     * 紧接着那次 blur 的 commit 就落进上面的零位移早退。
+     */
     function wireNumInput(input, spec) {
+        numBoxes.set(input, { last: null });
         const commit = () => {
             const cur = canEditSelected();
             if (!cur) return;
@@ -2524,9 +2650,16 @@ export function createTabWave(opts) {
                 return;
             }
             const q = 10 ** spec.dp;
-            spec.commit(
-                Math.round(Math.min(Math.max(v, spec.min), spec.max) * q) / q,
-            );
+            const q1 =
+                Math.round(Math.min(Math.max(v, spec.min), spec.max) * q) / q;
+            const st = numBoxes.get(input);
+            if (st && st.last !== null && st.last === q1) {
+                // 值没动:Tab 掠过 / 点走别处 / Enter 后的那次 blur ⇒ 不上行
+                if (input.value !== fmtSigned(q1, spec.dp)) requestRender();
+                return;
+            }
+            if (st) st.last = q1;
+            spec.commit(q1);
         };
         input.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
@@ -2633,6 +2766,16 @@ export function createTabWave(opts) {
             local.lastUiScale = uiScale;
             local.staticDirty = true;
             local.overlayDirty = true;
+        }
+
+        // 词典换了 = 段角标里烤进 aria-label/title 的 `wave.lockBadge` 过期了
+        // (code-review finding 7)。角标 DOM 只在 marksDirty 时重建,而切语言走的是
+        // applyI18n + render(),既不动视口也不来 segments 事件 —— 不在这里置位,
+        // 锁角标的 tooltip/朗读文本就一直停在挂载时那门语言。i18n.dict() 每门语言
+        // 返回同一个常量对象,恒等比较即「语言变了」的准信号。
+        if (local.lastDict !== t) {
+            local.lastDict = t;
+            local.marksDirty = true;
         }
 
         // ---- 空态(data-empty 驱动泳道/空态互斥;标尺与底部条仍在,§15)
@@ -2959,6 +3102,8 @@ export function createTabWave(opts) {
         // ---- 工作选区叠加层 + 选区外压暗(§10 / A-09)与段检查器(§17)
         renderSelection(vp, stageW);
         renderInspector(store);
+        // 确认框正文的占位符补填(applyI18n 会把带 data-t 的整串换回原文)
+        renderReidentifyBody();
 
         schedulePaint();
     }
@@ -3077,14 +3222,32 @@ export function createTabWave(opts) {
     }
 
     /**
-     * 段检查器投影(§17):点选段展开(J67 唯一入口);pan/vol 显示乐观回声
-     * 优先(local.echo,§2.8 事件后失效);锁定 toggle / origin 角标 / B-12
-     * mm:ss.mmm 主显 / A-18 跟随宿主提示(输出开关 OFF 即显,05 §2.3a 350)。
+     * 段检查器投影(§17):pan/vol 显示乐观回声优先(local.echo,§2.8 事件后失效);
+     * 锁定 toggle / origin 角标 / B-12 mm:ss.mmm 主显 / A-18 跟随宿主提示
+     * (输出开关 OFF 即显,05 §2.3a 350)。
+     *
+     * **显隐口径(Wave 5 裁定④,覆盖 C-11)**:面板显隐**只**由本地开关
+     * `local.inspectorOpen` 决定,与「有没有选中段」彻底解耦 —— 后者只切
+     * `data-empty`(面板宽不变,所以点不同段零布局抖动)。
      */
     function renderInspector(store) {
         const cur = currentSeg();
-        show(els.inspector, !!cur);
-        if (!cur) return;
+        show(els.inspector, local.inspectorOpen);
+        attr(
+            els.inspToggle,
+            "aria-pressed",
+            local.inspectorOpen ? "true" : "false",
+        );
+        attr(els.inspector, "data-empty", cur ? 0 : 1);
+        if (!cur) {
+            // 空态也要复位标题行的 origin 角标(Wave 5 /code-review minor):
+            // `[data-empty="1"]` 的 CSS 盘点里没有 .inspector-head,面板改常驻后
+            // 它是**可见**的 —— 不清就会挂着上一个段的 E/C,与正下方「点选泳道内的段
+            // 以编辑」同框。触发路径不止 Escape:§2.8 段表重编号后 rebindSegKeys
+            // 失效 → selectedCh=0,走的也是这条早退。
+            show(els.inspOrigin, false);
+            return;
+        }
         const seg = cur.seg;
         show(els.inspNote, !((store.state || {}).global || {}).output_enabled);
         if (seg.origin === "user_edited" || seg.origin === "user_created") {
@@ -3114,9 +3277,7 @@ export function createTabWave(opts) {
             attr(els.inspPanKnob, "aria-disabled", editable ? "false" : "true");
         }
         if (els.inspPanInput) {
-            if (root.activeElement !== els.inspPanInput) {
-                els.inspPanInput.value = fmtSigned(pan, 1);
-            }
+            setNumBox(els.inspPanInput, pan, 1);
             els.inspPanInput.disabled = !editable;
         }
         if (els.inspVolSlider) {
@@ -3129,9 +3290,7 @@ export function createTabWave(opts) {
             );
         }
         if (els.inspVolInput) {
-            if (root.activeElement !== els.inspVolInput) {
-                els.inspVolInput.value = fmtSigned(vol, 1);
-            }
+            setNumBox(els.inspVolInput, vol, 1);
             els.inspVolInput.disabled = !editable;
         }
         if (els.inspLock) {
@@ -3141,20 +3300,34 @@ export function createTabWave(opts) {
         }
     }
 
+    /**
+     * 时间标尺重排。
+     *
+     * **data-sig 必须包含刻度的横向落点**(code-review finding 2):老 sig 只有
+     * 「标签串 + span」,而刻度位置是 `(tS − vp.startS)/span` 的函数 —— 平移量
+     * 小于一个刻度步长时标签集与 span 都不变,sig 相等就早退不重排,可波形/
+     * 播放头/选区/边界全在动,标尺最多冻结一整格才「跳」一次。这里直接把算好
+     * 的 `left`(即最终写进 style 的那两位小数)编进 sig:与渲染输出**逐字同源**,
+     * 一像素都没动时照旧早退,动了就必排。
+     */
     function renderRuler(vp) {
         const scale = els.rulerScale;
         if (!scale) return;
         const ticks = rulerTicks(vp);
         const span = spanOf(vp);
-        const sig = ticks.map((k) => k.label).join("|") + "@" + span;
+        const parts = ticks.map((k, i) => {
+            const left = (((k.tS - vp.startS) / span) * 100).toFixed(2);
+            const last = i === ticks.length - 1 && +left > 90 ? 1 : 0;
+            return { label: k.label, left, last };
+        });
+        const sig = parts.map((p) => `${p.label}@${p.left}${p.last}`).join("|");
         if (scale.getAttribute("data-sig") === sig) return;
         scale.setAttribute("data-sig", sig);
-        scale.innerHTML = ticks
-            .map((k, i) => {
-                const left = ((k.tS - vp.startS) / span) * 100;
-                const last = i === ticks.length - 1 && left > 90 ? 1 : 0;
-                return `<span class="wave-ruler__tick" style="left:${left.toFixed(2)}%"${last ? ' data-last="1"' : ""}>${k.label}</span>`;
-            })
+        scale.innerHTML = parts
+            .map(
+                (p) =>
+                    `<span class="wave-ruler__tick" style="left:${p.left}%"${p.last ? ' data-last="1"' : ""}>${p.label}</span>`,
+            )
             .join("");
     }
 
@@ -3390,6 +3563,34 @@ export function createTabWave(opts) {
             const segs = (segCh && segCh.segments) || [];
             if (!segs.length) continue;
             const y0 = (ch - 1) * laneH;
+
+            // ⓪ 选中段高亮(裁定③;见 SEG_SEL_* 头注)。画在曲线/边界**之前**,
+            //    并且刻意排在「曲线可见 toggle 灭 → continue」的**上面** ——
+            //    曲线关掉了也得看得出选中的是哪一段(选中态属身份指示,不属曲线)。
+            if (local.selectedCh === ch && local.selectedSegs.length) {
+                for (const k of local.selectedSegs) {
+                    const s = segs[k.idx];
+                    if (!s) continue;
+                    const sx0 = timeToX(vp, w, num(s.t0S, 0));
+                    const sx1 = timeToX(vp, w, num(s.t1S, 0));
+                    if (sx1 < 0 || sx0 > w) continue;
+                    const cx0 = Math.max(sx0, 0);
+                    const cw = Math.min(sx1, w) - cx0;
+                    if (!(cw > 0)) continue;
+                    const ew = SEG_SEL_EDGE_W;
+                    ctx.fillStyle = SEG_SEL_FILL;
+                    ctx.fillRect(cx0, y0, cw, laneH);
+                    ctx.fillStyle = SEG_SEL_EDGE;
+                    ctx.fillRect(cx0, y0, cw, ew); // 上
+                    ctx.fillRect(cx0, y0 + laneH - ew, cw, ew); // 下
+                    // 左右两条只在**段端真的在视口内**时画:段被视口切掉的那一侧
+                    // 画上去就成了假边界(读成「段在这里结束」)
+                    if (sx0 >= 0) ctx.fillRect(cx0, y0, ew, laneH);
+                    if (sx1 <= w) {
+                        ctx.fillRect(cx0 + cw - ew, y0, ew, laneH);
+                    }
+                }
+            }
 
             // 曲线可见 toggle(眼睛钮)灭 → 本轨曲线与边界都不画(防遮挡语义)
             const eye = local.lanes.get(ch);

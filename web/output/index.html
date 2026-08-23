@@ -2062,12 +2062,58 @@
                 background: #fff;
                 box-shadow: var(--sh-xs);
             }
-            /* 动作行(669-691):四钮 + 播完自动停 + 轨选提示/选区 chip + 占位 + 反馈件 */
+            /* 动作行(669-691):05 行 300-303 的四个动作钮 + 播完自动停 + 占位
+               + 段检查器开关。**成员恒定**——里面没有一件是条件显隐的。
+               **Wave 5 /code-review major:一行拆两行 + 条件件全部下放**。
+               稿内 669-691 是一条 flex-wrap 行,装的是「四钮 + 提示/chip + 菊花条」五件;
+               实现侧按 05/A2 又往里塞了播完自动停、应用到分段、合并选中两段、倒计时条、
+               段检查器开关 —— 十件挤在一行,zh 默认视口下行内容右缘已到 1033/可用 1035,
+               余量见底。后果是**任何条件件一显隐就折行**:shift 连选第二个段让
+               「合并选中两段」现身,整行 30px → 69px,泳道窗当场下坠 39px =
+               裁定④要根治的「点段就抖」换了个轴(en 同病,35px)。
+               改法不是缩窄某一件(那只是把翻车推迟到下一句译文),而是**让会折行的那一行
+               不含任何条件件**:恒定成员 ⇒ 折不折行由语言与视口决定、**与交互无关** ⇒
+               每种语言下行高是常量(zh 30 / en 26 / fr 61,fr 本来就两行)。
+               条件件(轨选提示/选区 chip/应用到分段/合并选中两段/倒计时/菊花条)
+               整体下放到 .wave-toolbar__status,那行按最高成员预留高度。 */
             .wave-toolbar__actions {
                 display: flex;
                 flex-wrap: wrap;
                 align-items: center;
                 gap: var(--sp-9);
+            }
+            /* 状态行(动作行的下位行,同属稿内 669-691 那一块):布防 reason 行内说明 /
+               轨选提示 / 选区 chip / 应用到分段 / 合并选中两段 / 倒计时条 / 菊花条。
+               这行里**全部是条件显隐件**——它们的显隐由交互驱动,所以必须与恒定成员
+               分开,并且这行的高度要按最高成员预留死,而不是按当前可见成员算。
+               两枚条件钮(应用到分段 / 合并选中两段)跟着下来,不留在钮簇里:
+               它们本就是上下文动作(前者仅抑制期出现、后者仅选中相邻两段时出现),
+               挨着选区 chip 与反馈条读起来也更顺;05 行 313 只要求「工具条有合并入口」,
+               不规定它排在哪一行。
+               `min-height` **按行内最高的成员预留**,不是按当前可见成员算高:
+               轨选提示 14px(纯文本)/ 选区 chip 25px(4+4 内边距 + 1+1 描边 + 10.5px
+               行盒)/ 倒计时条与菊花条 27px(5+5 + 1+1 + 行盒)/ 两枚条件钮 **30px**
+               (6+6 + 1+1 + 中文 11px 行盒 16;en/fr 拉丁行盒矮一档 = 26)。
+               取 30px = 上确界(含最高的 zh 钮)—— 否则勾一次轨、现一枚钮、闪一次菊花,
+               行高就跳一次,泳道窗又被推下去一截,与本次要根治的是同一件事。
+               代价是工具条恒定占住这 30px(相对「只显提示」态多 16px),换的是
+               泳道窗顶边成为常量:**宁可少一行泳道,不要点一下抖一下**。 */
+            .wave-toolbar__status {
+                display: flex;
+                /* **nowrap 是本行的关键**:动作行折行是「文字不能截、只能换行」的正确
+                   降级(钮文案一截就不知道按下去会发生什么);状态行则相反 —— 它有一件
+                   天生可截的成员(选区轨号串),所以这里选「压缩 + 省略号」而不是折行。
+                   折行 = 行高变 = 泳道窗被推,正是要根治的病;压缩只让轨号串少露两个号。 */
+                flex-wrap: nowrap;
+                align-items: center;
+                gap: var(--sp-9);
+                min-height: 30px;
+            }
+            /* nowrap 下压力要有确定的落点:除选区 chip(行内唯一有可截断内容的件)与
+               弹性占位外,成员一律 `flex: none` —— 钮与反馈条被压窄只会让中文按字断行、
+               把行顶高,那就白拆这一行了。宁可极窄视口下右端溢出,也不改行高。 */
+            .wave-toolbar__status > :not(.wave-selchip):not(.wave-flexspacer) {
+                flex: none;
             }
             .wave-btn {
                 position: relative;
@@ -2092,6 +2138,19 @@
                 color: rgba(82, 82, 92, 0.4);
                 opacity: 0.5;
                 cursor: not-allowed;
+            }
+            /* 开关型按钮(段检查器面板,裁定④):形制同四个动作钮,但按下态要**看得出
+               现在是开还是关** —— 开 = 薰衣草实底(与轨头选中态 --acc-strong 同族),
+               关 = 与普通按钮同款玻璃底。状态语义走 aria-pressed,不另发明属性。 */
+            .wave-btn--toggle[aria-pressed="true"] {
+                background-color: rgba(var(--acc), 0.5);
+                border-color: rgba(var(--acc), 0.85);
+                /* 字色取 --acc-ink(#241f2e)而不是 --acc-ink-on-glass(#5b5075):
+                   按下态底是 acc .5 叠在工具条玻璃上(合成 ≈ rgb(205,196,220)),
+                   #5b5075 在 11px 正文上只有 ≈4.4:1,贴着 AA 线下沿;#241f2e 同底
+                   ≈10:1。本仓对对比度有先例纪律(--sem-amber-ink 因同类反馈由
+                   #7E6836 加深到 #5e4b21)—— 同族按钮的按下态照此处理。 */
+                color: var(--acc-ink);
             }
             /* 「播放结束自动停止」勾选(A2⑥;T33 Wave 4 用户反馈②:原生 input 与
                设计系统不符 → 改自绘勾选框,形制取 Tab3 轨头 .wave-lane__check 同族
@@ -2160,7 +2219,9 @@
                若把 ±18px 扩展挂在框上,横向那 18px 会盖住左邻「重采集选区」按钮
                (行内 gap 只有 9px)—— 靶区不得靠抢邻件的事件来凑。
                纵向取**非对称** 8/26:向上只到动作行上沿(不侵入滑杆行的 22px
-               命中带),向下落进工具条内边距与提示行(纯文本,无事件)。
+               命中带),向下落进工具条内边距与下一行的状态行。状态行里唯一带事件的
+               是选区 chip 的 ✕ —— 它在 DOM 里更靠后、同为 z-index:auto 的定位元素,
+               命中顺序在本扩展**之上**,不会被吃掉;其余是纯文本。
                合计 14 + 8 + 26 = 48 CSS px = 0.5 档 24 物理 px。 */
             .wave-autostop::after {
                 content: "";
@@ -2174,8 +2235,14 @@
                 font-size: var(--fs-95);
                 color: var(--txt-4);
             }
-            /* 选区 chip(677-681):词条只含 {n} 轨句(B-02);范围 mono 串另置轨号串前 */
+            /* 选区 chip(677-681):词条只含 {n} 轨句(B-02);范围 mono 串另置轨号串前。
+               `min-width: 0` 让它成为状态行里唯一可被压缩的件:轨号串长度**无上界**
+               (15 轨全勾 = 「01 · 02 · … · 15」),不给压缩余地的话它会顶得整行折行,
+               状态行的高度预留就白做了。压力先由轨号串吃(见下,省略号),主句与
+               范围串、✕ 都留着 —— 轨号串是可推断信息(轨头勾选框就在左边),
+               主句「上面四个操作作用于 {n} 轨」不可省。 */
             .wave-selchip {
+                min-width: 0;
                 display: flex;
                 align-items: center;
                 gap: var(--sp-7);
@@ -2188,6 +2255,19 @@
             }
             .wave-selchip strong {
                 font-weight: 600;
+            }
+            /* 除轨号串外一律不参与压缩:主句是中文,若允许收缩会按字断行,
+               chip 变两行 = 状态行的 27px 预留当场被顶穿 */
+            .wave-selchip > :not(.wave-selchip__list) {
+                flex: none;
+                white-space: nowrap;
+            }
+            /* 轨号串是 chip 里唯一可截断的部分(理由见 .wave-selchip 上的注释) */
+            .wave-selchip__list {
+                min-width: 0;
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
             }
             .wave-selchip__range,
             .wave-selchip__list {
@@ -2336,9 +2416,10 @@
                 min-width: 0;
                 position: relative;
                 height: 100%;
-                /* 44 刻度列 + 24 纵向缩放条自留槽;运行时由 syncScrollGutter
-                   连同滚动条宽一起改写(三者共用舞台坐标系) */
-                margin-right: 68px;
+                /* 44 = 右缘双刻度列;运行时由 syncScrollGutter 连同滚动条宽
+                   一起改写(标尺 / 刻度列 / 舞台三者共用舞台坐标系)。
+                   Wave 5:纵向缩放条迁去底部条后,24px 自留槽已撤销 */
+                margin-right: 44px;
             }
             .wave-ruler__tick {
                 position: absolute;
@@ -2586,12 +2667,14 @@
                 pointer-events: auto;
             }
             /* 共享动态层(§6.3:边界/曲线一张覆盖 canvas,随泳道滚动;高度 JS 写) */
-            /* right = 刻度列 44 + 纵向缩放条自留槽 24(tab-wave.js VZOOM_GUTTER_W);
+            /* right = 右缘双刻度列 44,与 `.wave-lane__static` / `.wave-lane__badges`
+               **同一个数**(Wave 5 撤销纵向缩放条自留槽后三处归并;此前 overlay 让
+               68 而 badges 只让 44 的不一致是 code-review finding 1 的账)。
                实际宽由 resizeCanvas 写死 style.width,这里只是同口径的静态兜底 */
             .wave-overlay {
                 position: absolute;
                 left: 158px;
-                right: 68px;
+                right: 44px;
                 top: 0;
                 z-index: 2;
                 pointer-events: none;
@@ -2990,55 +3073,59 @@
                 outline: 2px solid rgba(var(--acc), 0.8);
                 outline-offset: 3px;
             }
-            /* ---- 纵向缩放拖拽条(同上,用户新件):泳道区**右缘底部**一枚竖直短滑杆,
-               拖动改泳道行高(22..88px,默认 34)。落在右缘 44px 双刻度列左侧的
-               **自留槽**里(槽宽 24 = tab-wave.js VZOOM_GUTTER_W,已从舞台宽让出;
-               right 由 syncScrollGutter 随滚动条宽同步)——修订轮前它整个压在泳道
-               canvas 最右 18px 上,连同 ::after 造出 24×74px 指针死区(点选/拖边界/
-               平移全失灵),现在杆与命中区都不越过 canvas 右缘。
-               对比度:--dark-chip(.72)压在同族深底上几乎读不出,改用更深的实底 +
-               更亮的描边,让「这儿有个控件」在 1× 下也看得见。 */
+            /* ---- 纵向缩放拖拽条(Wave 4 用户新件;**Wave 5 用户裁定②迁位 + 改制**)
+               ------------------------------------------------------------------
+               旧制 = 泳道区右缘一枚 12×62 竖杆,先浮在 canvas 上(24×74 指针死区),
+               后退到双刻度列左侧的 24px 自留槽里。用户 preview 第二轮:「为什么没有
+               贴着右侧,放在纵向滚动的进度条下面?」——那个位置既不贴边、又白占舞台宽。
+               新制 = 落在底部缩放条行(`.wave-hzoom`)的**最右端**:窗口右下角、在
+               纵向滚动条轨道的**斜下方**;泳道 canvas 零占用(VZOOM_GUTTER_W
+               随之撤销),刻度列的 -100/-24 读数也不再有被压的可能。
+               ⚠ 位置的**事实口径**(Wave 5 /code-review minor,PR 描述照此写,不要写成
+               「与滚动条同一右缘」):杆右缘停在 `.wave-hzoom` 的右内边距处(=双刻度列
+               右缘,1036),泳道区纵向滚动条占 1037..1046 —— 两者差 10px,杆落在**刻度列**
+               正下方而非滚动条正下方。试过用负 margin 抵掉那 10px 让两者右缘齐平,截图
+               确认杆的圆头会被窗口 15px 圆角啃住、比现在难看,故**保留 10px 内边距**、
+               只把描述改准。
+               形制随位置改:20px 行高放不下竖杆 → 与横向缩放条同族的短横轨(44×6)
+               + 圆点 thumb,左侧配可见读数「⇕ 34」把「这条管行高」说清楚;
+               `⇕` 与横向的 `×N` 一眼两分,不会读成同一件。 */
+            .wave-hzoom__vzoomctl {
+                flex: none;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                margin-left: var(--sp-10);
+            }
             .wave-vzoom {
-                position: absolute;
-                bottom: 26px;
-                width: 12px;
-                height: 62px;
+                position: relative;
+                width: 44px;
+                height: 6px;
                 border-radius: var(--r-pill);
-                background: rgba(12, 10, 18, 0.82);
-                border: 1px solid rgba(var(--wh), 0.42);
-                box-shadow: 0 2px 8px rgba(18, 14, 26, 0.55);
-                z-index: 6;
-                cursor: ns-resize;
+                background: rgba(var(--wh), 0.08);
+                border: 1px solid rgba(var(--wh), 0.14);
+                /* Wave 5 /code-review minor:改制成横轨后取值只读 clientX
+                   (tab-wave.js `vzoomHeightFromEvent`),纵向位移完全不参与 —— 光标
+                   必须跟着改成 ew-resize,与并排同族的 .wave-hzoom__zoombar 一致。
+                   留着 ns-resize 就是在邀请用户上下拖一条只吃横向位移的轨
+                   (同一次改制里 aria-orientation="vertical" 已按横向删掉)。 */
+                cursor: ew-resize;
             }
-            .wave-vzoom::before {
-                /* 轨:竖直细线,居中 */
-                content: "";
-                position: absolute;
-                left: 50%;
-                top: 7px;
-                bottom: 7px;
-                width: 2px;
-                margin-left: -1px;
-                border-radius: var(--r-pill);
-                background: rgba(var(--wh), 0.22);
-            }
-            /* 命中扩展:12×62 → **24×74 CSS px**,整块落在 24px 自留槽内。
-               ⚠ 与 RE-06 的口径差登记在案:0.5 档下这是 12×37 物理 px,不足
-               24×24 的一半宽。补到 48 CSS px(hit.js hitExpansionPx(12)=18/侧)
-               会让命中盒重新压回泳道 canvas 18px,正是本轮要修掉的指针死区 ——
-               两者只能取一,这里取「泳道可点」并把缺口交 J72 用户 preview 定夺
-               (deviations 登记;可选出路 = 把杆本体加宽到 24 并再让 12px 槽)。 */
+            /* 命中扩展:6×44 → **20×60 CSS px**(纵轴吃满底条 20px 行高)。
+               ⚠ 与 RE-06「0.5 档 ≥24 物理 px」的口径差与横向缩放条同账:纵轴
+               上限就是底条自身的 20px(设计稿 866 固定高),再往上扩会压回泳道
+               canvas 造指针死区 —— 正是本件迁位要根治的病。缺口登记 deviations。 */
             .wave-vzoom::after {
                 content: "";
                 position: absolute;
-                inset: -6px;
+                inset: -7px -8px;
             }
             .wave-vzoom__thumb {
                 position: absolute;
-                left: 50%;
-                width: 10px;
-                height: 10px;
-                margin: -5px 0 0 -5px;
+                top: 50%;
+                width: 11px;
+                height: 11px;
+                margin: -5.5px 0 0 -5.5px;
                 border-radius: 50%;
                 background: rgba(var(--wh), 0.88);
                 box-shadow: 0 2px 6px rgba(18, 14, 26, 0.45);
@@ -3048,7 +3135,14 @@
                 outline: 2px solid rgba(var(--acc), 0.8);
                 outline-offset: 3px;
             }
-            /* ---- 段检查器(876-914):262px flex 兄弟,挤压左栏(C-11) ---- */
+            /* ---- 段检查器(876-914):262px flex 兄弟,挤压左栏(C-11) ------------
+               **Wave 5 用户裁定④覆盖 C-11 的「条件渲染」半句**:面板改成
+               「常驻 + 显式开关」—— 开着就一直占位(无选中段时出 `.inspector-empty`
+               空态句),关掉就一直不占位。理由是用户原话「不然会导致一直在闪烁」:
+               条件渲染下每点一次段,左栏宽度就跳 274px(262 + gap 12),舞台宽随之
+               变、canvas 全量重建 —— 点段这个最高频动作反而最抖。
+               挤压左栏的 flex 形制(C-11 的另半句,反灰模 absolute 浮层)不变。
+               deviations 登记「覆盖 C-11」并建议 05 §2.3(286)「可展开」同步改口径。 */
             .segment-inspector {
                 flex: none;
                 width: 262px; /* 稿内 262(灰模 260 → 统一 262,登记差异) */
@@ -3061,6 +3155,27 @@
                 border: 1px solid var(--card-border);
                 box-shadow: var(--card-inset);
                 overflow-y: auto;
+            }
+            /* 空态与实态互斥:没选中段时只留标题行 + 一句指路,其余字段整组不占位
+               (面板宽固定,所以这一切换**不动**左栏宽度 —— 抖动源在面板显隐,
+               不在面板内容) */
+            .segment-inspector[data-empty="1"] .inspector-note,
+            .segment-inspector[data-empty="1"] .inspector-times,
+            .segment-inspector[data-empty="1"] .inspector-field,
+            .segment-inspector[data-empty="1"] .inspector-lockrow,
+            .segment-inspector[data-empty="1"] .sc-hint {
+                display: none;
+            }
+            .segment-inspector:not([data-empty="1"]) .inspector-empty {
+                display: none;
+            }
+            .inspector-empty {
+                margin: var(--sp-16) 0;
+                text-align: center;
+                font-size: var(--fs-105);
+                line-height: 1.5;
+                color: var(--txt-4);
+                text-wrap: pretty;
             }
             /* 跟随宿主提示(878-880;05 §2.3a ADR-005 ③:面板首件) */
             .inspector-note {
@@ -5424,28 +5539,40 @@
                                     >
                                         清除选区采集数据
                                     </button>
-                                    <!-- A2③「应用到分段」:仅自动应用被抑制时出现,抑制条件
-                                         只有 PRINT 态或分析进行中(J47;brief §0.5) -->
+                                    <span
+                                        class="wave-flexspacer"
+                                        aria-hidden="true"
+                                    ></span>
+                                    <!-- 段检查器开关(Wave 5 用户裁定④,**覆盖此前
+                                         C-11「条件渲染」裁定**):用户原话「右侧的编辑窗口
+                                         最好做成可以开关的常驻(要么一直在要么一直不在,
+                                         有个可以点击的开关),不然会导致一直在闪烁」——
+                                         条件渲染下每点一个段整条泳道区宽度就变一次 =
+                                         布局抖动。开着就一直占位(无选中时出空态提示),
+                                         关掉就一直不占位;状态存本地 UI 态(契约无落点,
+                                         不新增桥函数、不写 state,deviations 登记)。
+                                         位置:动作行**最右端**(spacer 之后),与它管的
+                                         右侧面板同一侧;它不是 05 行 300-303 那四个动作
+                                         之一,不混进钮簇里 -->
                                     <button
-                                        class="wave-btn"
+                                        class="wave-btn wave-btn--toggle"
                                         data-glow="1"
-                                        data-gb="wave-btn-applysegments"
-                                        hidden
-                                        data-t="applyToSegments"
+                                        data-gb="wave-btn-inspector"
+                                        data-t="wave.inspectorToggle"
+                                        aria-pressed="true"
                                     >
-                                        应用到分段
+                                        段检查器
                                     </button>
-                                    <!-- 选中相邻两段的工具条合并入口(05 行 313;
-                                         Delete 键同径;merge notAdjacent → 行内反馈) -->
-                                    <button
-                                        class="wave-btn"
-                                        data-glow="1"
-                                        data-gb="wave-btn-mergesegs"
-                                        hidden
-                                        data-t="wave.btnMerge"
-                                    >
-                                        合并选中两段
-                                    </button>
+                                </div>
+
+                                <!-- 行②b 状态行(Wave 5 /code-review major:从动作行拆出)。
+                                     只放**文字与反馈**:布防 reason 行内说明 / 轨选提示 /
+                                     选区 chip / 倒计时条 / 菊花条 —— 全是条件显隐件,
+                                     单独成行后怎么换都不再顶到上面那排钮,工具条高度成常量 -->
+                                <div
+                                    class="wave-toolbar__status"
+                                    data-gb="wave-status"
+                                >
                                     <span
                                         class="sc-hint wave-armnote"
                                         data-gb="wave-arm-note"
@@ -5461,7 +5588,11 @@
                                     </div>
                                     <!-- 选区 chip(677-681):词条只含 {n} 轨句(B-02),
                                          范围 mono 串独立于词条置于轨号串前;轨号串 · 分隔
-                                         (B-03 取稿内);✕ 带 RE-06 透明命中扩展 -->
+                                         (B-03 取稿内);✕ 带 RE-06 透明命中扩展。
+                                         ⚠ 与上一行 .wave-autostop::after 的向下命中扩展
+                                         (-26px)有横纵交叠:两者都是 position:relative /
+                                         z-index:auto,本件在 DOM 里更靠后 → 命中在上,
+                                         ✕ 仍可点;交叠处 chip 其余部分本就无事件 -->
                                     <div
                                         class="wave-selchip"
                                         data-gb="wave-selchip"
@@ -5488,6 +5619,28 @@
                                             ✕
                                         </button>
                                     </div>
+                                    <!-- A2③「应用到分段」:仅自动应用被抑制时出现,抑制条件
+                                         只有 PRINT 态或分析进行中(J47;brief §0.5) -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-applysegments"
+                                        hidden
+                                        data-t="applyToSegments"
+                                    >
+                                        应用到分段
+                                    </button>
+                                    <!-- 选中相邻两段的工具条合并入口(05 行 313;
+                                         Delete 键同径;merge notAdjacent → 行内反馈) -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-mergesegs"
+                                        hidden
+                                        data-t="wave.btnMerge"
+                                    >
+                                        合并选中两段
+                                    </button>
                                     <span
                                         class="wave-flexspacer"
                                         aria-hidden="true"
@@ -5794,26 +5947,8 @@
                                         ><span>-24</span>
                                     </div>
                                 </div>
-                                <!-- 纵向缩放拖拽条(T33 Wave 4 用户新件,J72:附截图供
-                                     preview):泳道区右缘底部竖直短滑杆,拖动改泳道行高
-                                     (22..88px,默认 34);方向键步进,role=slider + aria。
-                                     right 由 syncScrollGutter 随纵向滚动条宽同步 -->
-                                <div
-                                    class="wave-vzoom"
-                                    data-gb="wave-vzoom"
-                                    role="slider"
-                                    tabindex="0"
-                                    aria-orientation="vertical"
-                                    aria-valuemin="22"
-                                    aria-valuemax="88"
-                                    aria-valuenow="34"
-                                    data-t-aria="wave.vZoomBar"
-                                >
-                                    <div
-                                        class="wave-vzoom__thumb"
-                                        data-gb="wave-vzoom-thumb"
-                                    ></div>
-                                </div>
+                                <!-- ⚠ 纵向缩放拖拽条已迁至底部条右端(Wave 5 用户裁定②;
+                                     见 `.wave-hzoom__vzoomctl`)—— 泳道区内不再有该件 -->
                                 <!-- 选区外压暗两片(05 行 314;A-09 方向修正) -->
                                 <div
                                     class="wave-dim"
@@ -5945,6 +6080,35 @@
                                             ></div>
                                         </div>
                                     </div>
+                                    <!-- 纵向缩放拖拽条(Wave 4 新件,Wave 5 用户裁定②
+                                         迁位):原本是浮在泳道区右缘的 12×62 竖杆,用户
+                                         preview「为什么没有贴着右侧,放在纵向滚动的进度条
+                                         下面?」→ 移到本行**最右端** = 窗口右下角、与纵向
+                                         滚动条同一右缘、在其轨道下方,泳道 canvas 与刻度列
+                                         读数都不再被压。20px 行高容不下竖杆,形制随位置改成
+                                         短横轨 + 圆点 thumb(与横向缩放条同族),读数「⇕ 34」
+                                         直接可见;方向键上/右加高、下/左减矮 -->
+                                    <div class="wave-hzoom__vzoomctl">
+                                        <span
+                                            class="wave-hzoom__zoomval"
+                                            data-gb="wave-vzoom-value"
+                                        ></span>
+                                        <div
+                                            class="wave-vzoom"
+                                            data-gb="wave-vzoom"
+                                            role="slider"
+                                            tabindex="0"
+                                            aria-valuemin="22"
+                                            aria-valuemax="88"
+                                            aria-valuenow="34"
+                                            data-t-aria="wave.vZoomBar"
+                                        >
+                                            <div
+                                                class="wave-vzoom__thumb"
+                                                data-gb="wave-vzoom-thumb"
+                                            ></div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -5986,7 +6150,33 @@
                                     data-gb="inspector-origin-value"
                                     hidden
                                 ></span>
+                                <span
+                                    class="wave-flexspacer"
+                                    aria-hidden="true"
+                                ></span>
+                                <!-- 标题栏关闭钮(裁定④的第二个开关面:与工具条那枚
+                                     同一个本地态,关掉后面板整件不占位)。
+                                     aria 走 wave.inspectorClose 而**不是** common.cancel
+                                     (Wave 5 /code-review minor):它的动作是折叠常驻面板,
+                                     在一个刚提交过 pan/vol 的面板上读成「取消」会被听成
+                                     「撤销刚才的编辑」;common.cancel 是确认框族专用 -->
+                                <button
+                                    class="wave-selchip__clear"
+                                    data-gb="inspector-close"
+                                    data-t-aria="wave.inspectorClose"
+                                >
+                                    ✕
+                                </button>
                             </div>
+                            <!-- 空态(裁定④):面板常驻,没选中段时给一句指路,
+                                 而不是整件消失造成布局抖动 -->
+                            <p
+                                class="inspector-empty"
+                                data-gb="inspector-empty"
+                                data-t="wave.inspectorEmpty"
+                            >
+                                点选泳道内的段以编辑
+                            </p>
                             <!-- 时间与响度只读组(885-890):主显 mm:ss.mmm,有 tempo 表
                                  并列小节值(B-12);响度标签用正名词条(C-12) -->
                             <div

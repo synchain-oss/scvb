@@ -413,6 +413,14 @@ export const T = {
         // 段检查器(05 §2.3a;标题 eyebrow + 只读字段名;origin 角标与标题
         // 同行,角标值 E/C 本身非词条 —— §17②,无独立字段行)
         "wave.inspectorTitle": "段检查器",
+        // 面板开关 + 空态句(T33 Wave 5 用户裁定④:检查器改「常驻 + 显式开关」,
+        // 覆盖 C-11 的条件渲染;建议 05 §2.3 行 286「可展开」同步改口径)
+        "wave.inspectorToggle": "段检查器",
+        // 标题栏 ✕ 的 aria-label(Wave 5 /code-review minor⑥):它折叠的是常驻面板,
+        // 与工具条那枚开关同一个本地态 —— 不是「取消/放弃刚才的编辑」,
+        // 因此不得复用确认框族的 common.cancel(EN/FR 自译,入 U17 待审校)
+        "wave.inspectorClose": "收起段检查器",
+        "wave.inspectorEmpty": "点选泳道内的段以编辑",
         "wave.segStart": "起",
         "wave.segEnd": "止",
         "wave.segLen": "时长",
@@ -835,6 +843,9 @@ export const T = {
         "wave.recaptureInlineNote":
             "Arming only gates capture; the output range is unchanged",
         "wave.inspectorTitle": "Segment inspector",
+        "wave.inspectorToggle": "Inspector",
+        "wave.inspectorClose": "Collapse segment inspector",
+        "wave.inspectorEmpty": "Click a segment in a lane to edit it",
         "wave.segStart": "Start",
         "wave.segEnd": "End",
         "wave.segLen": "Length",
@@ -1257,6 +1268,10 @@ export const T = {
         "wave.recaptureInlineNote":
             "L'armement ne concerne que la capture ; la plage de sortie est inchangée",
         "wave.inspectorTitle": "Inspecteur de segment",
+        "wave.inspectorToggle": "Inspecteur",
+        "wave.inspectorClose": "Réduire l'inspecteur de segment",
+        "wave.inspectorEmpty":
+            "Cliquez sur un segment dans une piste pour le modifier",
         "wave.segStart": "Début",
         "wave.segEnd": "Fin",
         "wave.segLen": "Durée",
