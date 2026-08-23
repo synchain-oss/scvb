@@ -342,6 +342,9 @@ export const T = {
         "in.priority.note": "此设置保存在 Output",
         "in.priority.offline": "需 Output 在线",
         "in.footer.hint": "就绪",
+        "in.footer.noBackend": "未接后端——请经 web-preview 预览入口打开",
+        "in.priority.unassigned": "需先选择通道",
+        "ch.occupied.group": "通道已被占用(组 {g})",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -768,6 +771,9 @@ export const T = {
         "in.priority.note": "This setting is stored on Output",
         "in.priority.offline": "Requires Output online",
         "in.footer.hint": "Ready",
+        "in.footer.noBackend": "No backend attached — open via web-preview",
+        "in.priority.unassigned": "Select a channel first",
+        "ch.occupied.group": "A channel is already taken (group {g})",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -1201,6 +1207,9 @@ export const T = {
         "in.priority.note": "Ce réglage est enregistré côté Output",
         "in.priority.offline": "Nécessite Output en ligne",
         "in.footer.hint": "Prêt",
+        "in.footer.noBackend": "Aucun backend — ouvrez via web-preview",
+        "in.priority.unassigned": "Sélectionnez d'abord un canal",
+        "ch.occupied.group": "Un canal est déjà occupé (groupe {g})",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;

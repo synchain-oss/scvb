@@ -36,7 +36,10 @@ try {
 } catch (e) {
     console.warn("SCVB Input:createBridge 未接上后端 —— " + e.message);
     const hint = document.querySelector('[data-gb="input.footer.hint"]');
-    if (hint) hint.textContent = "No backend attached — open via web-preview";
+    if (hint) {
+        hint.setAttribute("data-t", "in.footer.noBackend");
+        hint.textContent = dict("zh")["in.footer.noBackend"];
+    }
 }
 
 // ------------------------------------------------------------- 事件仓(单向渲染源)
@@ -125,10 +128,12 @@ function showOccupiedToast(channel, group) {
     const toast = $("input.toast.occupied");
     const text = $("input.toast.occupied.text");
     if (!toast) return;
-    fill(text, "ch.occupied", {
-        n: channel,
-        g: groupLetter(group),
-    });
+    if (channel >= 1) {
+        fill(text, "ch.occupied", { n: channel, g: groupLetter(group) });
+    } else {
+        // 未选通道(channel=0)时切组冲突不带通道号,避免误导「通道 1」
+        fill(text, "ch.occupied.group", { g: groupLetter(group) });
+    }
     toast.hidden = false;
     if (store.local.toastTimer) clearTimeout(store.local.toastTimer);
     store.local.toastTimer = setTimeout(() => {
@@ -272,7 +277,7 @@ function wireGroup() {
                 const pill =
                     seg && seg.querySelector('[data-group="' + g + '"]');
                 shake(pill);
-                showOccupiedToast(store.state.channel_id || 1, g);
+                showOccupiedToast(store.state.channel_id || 0, g);
             }
             render();
         });
@@ -346,6 +351,9 @@ function wireChannels() {
 }
 
 async function claimChannel(ch) {
+    // 主动切卡 = 放弃未决的释放/切组确认(否则残留确认条会误释放刚 claim 的通道)
+    store.local.pendingRelease = false;
+    store.local.pendingGroup = 0;
     // 契约 §3.2:claim 本组 InputSlot[n-1];已被心跳新鲜实例占 → {conflict:true}
     const res = await call("setChannelId", ch);
     if (res && res.conflict === true) {
@@ -370,17 +378,16 @@ function currentPriority() {
     return store.config ? store.config.priority : 0;
 }
 
-function priorityBlocked() {
+/** 契约 §3.4 拒绝态两 reason:unassigned(channel_id=0)/ offline(Output 离线)。 */
+function priorityBlockReason() {
+    if ((store.state.channel_id || 0) === 0) return "unassigned";
     const conn = store.conn || {};
-    return (
-        !store.ready ||
-        !conn.outputOnline ||
-        (store.state.channel_id || 0) === 0
-    );
+    if (!conn.outputOnline) return "offline";
+    return null;
 }
 
 async function stepPriority(delta) {
-    if (priorityBlocked()) return;
+    if (priorityBlockReason() !== null) return;
     const next = Math.max(0, Math.min(10, currentPriority() + delta));
     // 本地乐观显示,以 scvb.config 回执为准(契约 §3.4)
     store.local.priorityLocal = next;
@@ -702,16 +709,30 @@ function renderSource() {
 function renderPriority() {
     const val = $("input.priority.stepper.val");
     if (val) val.textContent = String(currentPriority());
-    const blocked = priorityBlocked();
+    const reason = priorityBlockReason();
+    const blocked = reason !== null;
     const stepper = $("input.priority.stepper");
     if (stepper) {
         stepper.setAttribute("data-disabled", blocked ? "1" : "0");
-        setTitle(stepper, blocked ? dictNow["in.priority.offline"] : "");
+        setTitle(
+            stepper,
+            blocked
+                ? dictNow[
+                      reason === "unassigned"
+                          ? "in.priority.unassigned"
+                          : "in.priority.offline"
+                  ]
+                : "",
+        );
     }
-    const dec = $("input.priority.stepper.dec");
-    const inc = $("input.priority.stepper.inc");
-    if (dec) dec.setAttribute("data-disabled", blocked ? "1" : "0");
-    if (inc) inc.setAttribute("data-disabled", blocked ? "1" : "0");
+    for (const btn of [
+        $("input.priority.stepper.dec"),
+        $("input.priority.stepper.inc"),
+    ]) {
+        if (!btn) continue;
+        btn.disabled = blocked;
+        btn.setAttribute("aria-disabled", String(blocked));
+    }
 }
 
 function renderRemoteSummary() {
