@@ -419,7 +419,6 @@ tour = createTour({
     requestRender: () => requestRender(),
 });
 tour.mount();
-}
 
 // ------------------------------------------------------------- 缩放档位(footer 下拉 + 设置页,05 §1.2)
 // 档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2「常量真源」栏)。
