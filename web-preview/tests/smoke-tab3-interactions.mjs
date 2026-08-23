@@ -919,6 +919,32 @@ log("=== ⑦ 交互纯函数 + 源码级纪律断言(Wave 2)===");
     eq(TW.maskOfPicked([1, 3, 15]), 0b100000000000101, "轨表 → u16 位图");
     eq(TW.maskOfPicked([0, 16]), 0, "越界轨不入位图");
 
+    // 布防条纹只盖布防轨(05 行 300 的 {布防轨}×{选区} 交集;无头 QA 实拍
+    // 抓到过「一条满高带盖 15 泳道」的回归 —— 位图→条带这层必须钉住)
+    eq(
+        TW.maskRuns(TW.maskOfPicked([3, 4, 7, 12])),
+        [
+            { ch0: 3, count: 2 },
+            { ch0: 7, count: 1 },
+            { ch0: 12, count: 1 },
+        ],
+        "相邻布防轨并成一条,不相邻各自成条",
+    );
+    eq(TW.maskRuns(0), [], "未布防 ⇒ 零条带");
+    eq(
+        TW.maskRuns(
+            TW.maskOfPicked(Array.from({ length: 15 }, (_, i) => i + 1)),
+        ),
+        [{ ch0: 1, count: 15 }],
+        "全轨布防 ⇒ 并成满高一条",
+    );
+    check(
+        /wave-recapband__seg[\s\S]{0,240}\(r\.ch0 - 1\) \* LANE_H/.test(
+            src("web/output/tab-wave.js"),
+        ),
+        "recapband 按 maskRuns 建子块(不再整条满高)",
+    );
+
     // ---- segIdx 重绑(brief §0.7):时间锚中点包含 → 最大重叠 → 失效
     const segsNew = [
         { t0S: 0, t1S: 4 },

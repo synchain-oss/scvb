@@ -2532,12 +2532,19 @@
                 position: absolute;
                 top: 0;
                 z-index: 2;
+                pointer-events: none;
+            }
+            /* 条纹落在**布防轨**的子块里,不是整条满高带:05 行 300 的高亮面是
+               {布防轨}×{选区} 的交集,画满 15 泳道会读成「全部轨都要重采集」 */
+            .wave-recapband__seg {
+                position: absolute;
+                left: 0;
+                right: 0;
                 background: repeating-linear-gradient(
                     45deg,
                     rgba(var(--sem-amber), 0.22) 0 3px,
                     transparent 3px 8px
                 );
-                pointer-events: none;
             }
             /* 段边界拖拽手柄(图例帧 767-772:9×26 圆角竖条 + 双竖线纹,
                垂直居中于泳道 B-10;auto=白描边浅底 / 手动=薰衣草白重底+发光

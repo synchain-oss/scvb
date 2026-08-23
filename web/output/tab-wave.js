@@ -387,6 +387,26 @@ export function applyPick(cur, ch, shiftKey) {
     return has ? list.filter((x) => x !== ch) : list.concat([ch]);
 }
 
+/**
+ * u16 位图 → **相邻轨合并后的纵向条带**([{ch0, count}],ch0 为 1-based 起轨)。
+ * 布防斜条纹只该盖 `{布防轨} × {选区}` 的交集(05 行 300)—— 一条覆盖 15 泳道的
+ * 满高带会让用户以为全部轨都要被重采集(无头 QA 实拍抓到)。相邻轨并成一条,少建 DOM。
+ */
+export function maskRuns(mask) {
+    const m = Math.trunc(num(mask, 0));
+    const runs = [];
+    let cur = null;
+    for (let ch = 1; ch <= LANE_COUNT; ch++) {
+        if (m & (1 << (ch - 1))) {
+            if (cur) cur.count += 1;
+            else runs.push((cur = { ch0: ch, count: 1 }));
+        } else {
+            cur = null;
+        }
+    }
+    return runs;
+}
+
 /** 点选轨表 → u16 位图(契约 §0.2:bit0=ch1 … bit14=ch15)。 */
 export function maskOfPicked(picked) {
     let mask = 0;
@@ -2477,10 +2497,23 @@ export function createTabWave(opts) {
         if (armed && stageW > 0) {
             const rx0 = Math.max(timeToX(vp, stageW, num(rec.startS, 0)), 0);
             const rx1 = Math.min(timeToX(vp, stageW, num(rec.endS, 0)), stageW);
-            if (rx1 > rx0 && els.recapband) {
+            const runs = maskRuns(rec.tracksMask);
+            if (rx1 > rx0 && runs.length && els.recapband) {
                 els.recapband.style.left = HEAD_W + rx0 + "px";
                 els.recapband.style.width = rx1 - rx0 + "px";
                 els.recapband.style.height = LANE_COUNT * LANE_H + "px";
+                // 只在**布防轨**上画条纹:容器仍是满高(供 top 定位),条纹落在
+                // 每段相邻布防轨的子块里(签名比对,避免逐帧重建 innerHTML)
+                const sig = runs.map((r) => r.ch0 + "x" + r.count).join(",");
+                if (els.recapband.getAttribute("data-runs") !== sig) {
+                    els.recapband.setAttribute("data-runs", sig);
+                    els.recapband.innerHTML = runs
+                        .map(
+                            (r) =>
+                                `<span class="wave-recapband__seg" style="top:${(r.ch0 - 1) * LANE_H}px;height:${r.count * LANE_H}px"></span>`,
+                        )
+                        .join("");
+                }
                 show(els.recapband, true);
             } else {
                 show(els.recapband, false);
