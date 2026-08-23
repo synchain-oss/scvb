@@ -732,7 +732,10 @@ function renderPriority() {
         );
     }
     const prio = String(currentPriority());
-    if (val) val.textContent = prio;
+    if (val) {
+        val.textContent = prio;
+        val.setAttribute("data-disabled", blocked ? "1" : "0");
+    }
     if (slider) {
         slider.disabled = blocked;
         slider.setAttribute("aria-disabled", String(blocked));

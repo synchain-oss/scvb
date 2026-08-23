@@ -308,13 +308,23 @@
                 align-items: center;
                 gap: var(--sp-12);
             }
-            .ipt-priority__slider {
+            input.ipt-priority__slider {
                 flex: 1;
                 min-width: 0;
+                height: var(--fs-140);
             }
             .ipt-priority__slider[disabled] {
                 opacity: 0.4;
                 cursor: not-allowed;
+            }
+            .ipt-priority__val {
+                font-size: var(--fs-260);
+                line-height: 1;
+                color: var(--txt-1);
+                transition: color var(--dur-1) var(--ease);
+            }
+            .ipt-priority__val[data-disabled="1"] {
+                color: var(--txt-4);
             }
 
             /* ---- 远程只读摘要:一行五张小卡片(MONO/STEREO/lead/pair/freeze),点亮/熄灭 */
@@ -708,7 +718,7 @@
                             data-t-aria="priority"
                         />
                         <span
-                            class="sc-stepper__val"
+                            class="sc-stepper__val ipt-priority__val"
                             data-gb="input.priority.stepper.val"
                             >0</span
                         >
