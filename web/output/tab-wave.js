@@ -809,6 +809,7 @@ export function createTabWave(opts) {
         reidentifyCounts: null, // {k,l}:重新识别确认框正文的定格计数(切语言补填用)
         boundDrag: null, // {ch, segIdx, tS, snapped, minS, maxS}
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
+        autostopUser: false, // 「播放结束自动停止」是用户手勾的(撤防不复位它)
         sliderKeyTimer: 0, // 键盘档「视为松手」计时
         lastParamSend: 0, // ≤50Hz 节流账(Date.now 系)
         paramTimer: 0, // 节流尾包计时器
@@ -1630,6 +1631,13 @@ export function createTabWave(opts) {
         els.recapOverlap = $("wave-recapture-overlap");
         const autostopBox = $("wave-chk-autostop");
         els.autostop = autostopBox ? autostopBox.querySelector("input") : null;
+        // 「这一勾是不是用户自己点的」——撤防复位时据此区分:state 回显写进来的
+        // 勾要清掉(否则下一次布防悄悄复用旧 autoStop),用户手动勾的意图要留着。
+        if (els.autostop) {
+            els.autostop.addEventListener("change", () => {
+                local.autostopUser = !!els.autostop.checked;
+            });
+        }
         els.confirmReidentify = $("wave-confirm-reidentify");
         els.confirmReidentifyCancel = $("wave-confirm-reidentify-cancel");
         els.confirmReidentifyOk = $("wave-confirm-reidentify-ok");
@@ -2364,6 +2372,13 @@ export function createTabWave(opts) {
             };
             h.addEventListener("pointerup", up);
             h.addEventListener("pointercancel", up);
+            // 窗级兜底(与滑杆 / 两条缩放条同口径,pr-agent):capturePointer 抛错
+            // 或指针在窗外释放时松手事件不回到手柄上,selDrag 会卡在该侧 —— 此后
+            // 任何一次经过手柄的悬停都当成拖动改选区。窗级这道只收尾不取值。
+            if (typeof window !== "undefined") {
+                window.addEventListener("pointerup", up);
+                window.addEventListener("pointercancel", up);
+            }
             // 键盘可达:方向键微调该侧(1% 视口跨度)
             h.addEventListener("keydown", (e) => {
                 const dir =
@@ -3124,6 +3139,15 @@ export function createTabWave(opts) {
             show(els.recapOverlap, counts.overlap > 0);
             // 布防勾选回显(scvb.state.recapture.autoStop;切 tab/重开不丢)
             if (els.autostop) els.autostop.checked = !!rec.autoStop;
+        } else if (
+            els.autostop &&
+            els.autostop.checked &&
+            !local.autostopUser
+        ) {
+            // 撤防后 rec 变 null,勾选框原来会**留着上一轮的态** ⇒ 下一次布防
+            // 悄悄复用旧的 autoStop(pr-agent)。这里只复位「不是用户自己勾的」
+            // 那一种(= 上一轮由 state 回显写进来的),用户手动勾的意图要留着。
+            els.autostop.checked = false;
         }
         // 布防受覆盖区域斜条纹(05 行 300;A-08 同族配方,滚动层内)
         if (armed && stageW > 0) {

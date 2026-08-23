@@ -1275,6 +1275,9 @@ const KNOWN_CODES = new Set([
  * 键集不同、出现非标量(引用不等)时一律判不同,宁可多渲染一帧也不漏。
  */
 function samePlayhead(a, b) {
+    // 两侧都缺(null/undefined)= 同样的「没有播放头」,派生投影一模一样;
+    // 原来一律判不同,连发 null 会每次都排一次整页渲染(pr-agent)。
+    if (!a && !b) return true;
     if (!a || !b) return false;
     const ka = Object.keys(a);
     if (ka.length !== Object.keys(b).length) return false;
