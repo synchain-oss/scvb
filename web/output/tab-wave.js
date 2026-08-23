@@ -52,6 +52,7 @@ import {
     MAX_COLS,
     IDLE_REFETCH_MS,
     VAD_ALPHA,
+    OVERVIEW_COLS,
 } from "./canvas/waveform.js";
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
@@ -3588,6 +3589,7 @@ export function createTabWave(opts) {
         const laneH = local.laneH;
         const cols = Math.min(Math.max(Math.round(w), 1), MAX_COLS);
         const span = spanOf(vp);
+        const durS = timeline.durationS();
         const moving = !!local.vpIdleTimer;
         const pal = local.palette || undefined;
         for (const ch of visibleLanes()) {
@@ -3595,6 +3597,11 @@ export function createTabWave(opts) {
             if (!n || !n.canvas) continue;
             const ctx = resizeCanvas(n.canvas, w, laneH, k);
             if (!ctx) continue;
+            // 概览块只在**视口静止**时补(动的时候一律不取数,§1.27「静止 120ms
+            // 才取新块」);ensureOverview 自带节流,可以每帧无脑调。
+            if (!moving && durS > 0) {
+                waveSource.ensureOverview(ch, 0, durS, OVERVIEW_COLS);
+            }
             const tile = waveSource.peek(ch, vp.startS, vp.endS, cols);
             if (tile) {
                 paintWaveTile(ctx, tile, w, laneH, pal);
@@ -3606,9 +3613,16 @@ export function createTabWave(opts) {
             // 别清,留着它等新块;不然任何一次宽度抖动都会把整屏闪空
             const sameVp =
                 !!drawn && drawn.startS === vp.startS && drawn.endS === vp.endS;
-            const near = moving
-                ? waveSource.peekOverlapping(ch, vp.startS, vp.endS)
-                : [];
+            // 过渡帧的拼接序:LRU 里相交的块(窄→宽、新鲜优先)在前,
+            // **全曲概览块垫最后**。概览必然覆盖整个视口,所以「清空后补不满」
+            // 在几何上不再可能 —— 那正是用户实测「运动时波形显示不全 + 闪烁」
+            // 的成因(补不满留白 / 一块都不相交时又整幅留着,两态逐帧交替)。
+            let near = [];
+            if (moving) {
+                near = waveSource.peekOverlapping(ch, vp.startS, vp.endS);
+                const ov = waveSource.peekOverview(ch);
+                if (ov) near = near.concat([ov]);
+            }
             if (!sameVp && near.length) {
                 // 过渡帧:按时间映射重画缓存块,**细节块先占位、宽块只补空隙**。
                 //

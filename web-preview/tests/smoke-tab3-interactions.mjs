@@ -350,6 +350,54 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         check(coreOf(fills).length === 0, "细块(colW=0.5)整层不画亮芯");
         check(envOf(fills).length > 0, "细块的外柱照画(跳过的只是亮芯)");
     }
+    // **全曲概览块**:过渡帧的兜底垫底件(见 waveform.js `perChOverview` 头注)。
+    // LRU 只有 8 块/轨、块宽都 ≈ 取它时的视口宽,过渡帧还要再砍到 3 块 ——
+    // 缩小时它们合起来盖不满新视口,清屏后就是大片留白。实测:拖动缩放条时
+    // 「完全没画的列」占比一路涨到 98.6%(接上概览后全程 0%)。
+    {
+        const calls = [];
+        const mkTile = (n, cov) => ({
+            minDb: Array(n).fill(-30),
+            maxDb: Array(n).fill(-10),
+            covered: Array(n).fill(cov ? 1 : 0),
+            valleys: [],
+        });
+        const src = WF.createWaveformSource({
+            request: (ch, s, e, n) => {
+                calls.push([ch, s, e, n]);
+                return Promise.resolve(mkTile(n, true));
+            },
+        });
+        check(src.peekOverview(1) === null, "没取过时概览为 null");
+        src.ensureOverview(1, 0, 300, WF.OVERVIEW_COLS);
+        await new Promise((r) => setTimeout(r, 0));
+        const ov = src.peekOverview(1);
+        check(!!ov, "ensureOverview 取到后 peekOverview 命中");
+        check(
+            ov && ov.startS === 0 && ov.endS === 300,
+            "概览块自带几何(0..300),拼接方按它映射",
+        );
+        check(
+            calls.length === 1 && calls[0][3] === WF.OVERVIEW_COLS,
+            `按 OVERVIEW_COLS(${WF.OVERVIEW_COLS})取,且只取一次`,
+        );
+        // 节流:紧接着再调不该再发一次(采集中每帧都会调到)
+        src.ensureOverview(1, 0, 300, WF.OVERVIEW_COLS);
+        await new Promise((r) => setTimeout(r, 0));
+        check(calls.length === 1, "节流生效:同参紧接着再调不重复取数");
+        // 软失效(captureProgress 那类)只标脏,手上那份继续垫底
+        src.invalidate(1, [{ startS: 10, endS: 10.5 }]);
+        check(
+            !!src.peekOverview(1),
+            "软失效后概览仍可垫底(2Hz 采集事件不该让它每 500ms 消失)",
+        );
+        // 硬失效(clearCoverage)必须真丢 —— 数据没了还垫底就是画不存在的波形
+        src.invalidate(1, null, { keepStale: false });
+        check(
+            src.peekOverview(1) === null,
+            "clearCoverage 走硬删:概览一并丢弃",
+        );
+    }
     // 可见列裁剪:块只有一小截落在画布内时,画布外的列不该逐列 fillRect
     {
         let fills = 0;
@@ -1638,8 +1686,12 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         "拼合前整幅 clearRect 一次(每块自己不再清屏,clear:false)",
     );
     check(
-        /const sameVp =[\s\S]{0,400}!sameVp && near\.length/.test(tw),
+        /const sameVp =[\s\S]{0,1200}!sameVp && near\.length/.test(tw),
         "画布已是当前视口时不清屏(宽度抖动导致的键失配不该闪空)",
+    );
+    check(
+        /peekOverview\(ch\)[\s\S]{0,200}near = near\.concat\(\[ov\]\)/.test(tw),
+        "全曲概览块排在拼接序最后兜底(补不满 ⇒ 运动时整条泳道留白)",
     );
     // **空隙裁剪**:波形是半透明的(外柱 α=.52 / 内柱 α=.6),重叠区被画两三遍
     // 就把 α 叠到 0.89 / 0.94 —— 几乎纯白,一动视口波形区域就闪白(用户实测)。

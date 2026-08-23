@@ -124,6 +124,17 @@ export const ENV_CORE_MIN_COL_PX = 0.8;
  */
 export const TRANSIENT_BLOCK_CAP = 3;
 
+/**
+ * 全曲概览块的列数(见 `perChOverview` 头注)。
+ * 1024 在 5 分钟曲子上 ≈ 0.29s/列:缩到最小档(整曲)时列宽约 2px、放到 ×13
+ * 也才 8px —— 前者仍在亮芯门内(有纹理),后者落到门外(平滑轮廓),两头都
+ * 不出白板/白线。再大就是白花钱:它只是垫底,细节由 LRU 里的正常块压在上面。
+ */
+export const OVERVIEW_COLS = 1024;
+
+/** 概览块重取节流(ms);只在视口静止时触发,采集中不至于每 500ms 重拉一次。 */
+export const OVERVIEW_REFRESH_MS = 3000;
+
 function num(v, dflt) {
     return Number.isFinite(v) ? v : dflt;
 }
@@ -241,6 +252,25 @@ export function createWaveformSource(opts) {
      */
     const perChStale = new Map();
 
+    /**
+     * ch → **全曲概览块**(`{want, have, at, dirty, inflight}`);LRU 之外单独存,
+     * 永不被淘汰,只供过渡帧**兜底垫满**。
+     *
+     * 为什么非要它:过渡帧原来只能拿 LRU 里恰好与视口相交的块来拼,而
+     *   ① LRU 只有 8 块/轨,块的跨度都 ≈ 当时的视口宽,**盖不满**变宽后的视口;
+     *   ② `TRANSIENT_BLOCK_CAP` 还要再砍到 3 块;
+     *   ③ 采集中 2Hz 的 `captureProgress` 不断把块挪进影子。
+     * 三条叠起来的结果是:视口一动,**清空画布后补不满**,大片留白;而下一帧
+     * 若一块都不相交就走「原样留着」分支,画面又整个回来 —— 两种状态逐帧交替,
+     * 就是用户实测的「运动时波形显示不全 + 闪烁」。
+     *
+     * 概览块跨整首曲子,**必然覆盖任何视口**,排在拼接序最后补空隙,于是
+     * 「补不满」这件事在几何上不再可能发生,闪烁也就没了源头。
+     * 代价是每轨多一次 `requestWaveform`(OVERVIEW_COLS 列),且只在视口静止时
+     * 按 `OVERVIEW_REFRESH_MS` 节流重取 —— 不进 LRU,不挤占正常块。
+     */
+    const perChOverview = new Map();
+
     function cacheOf(ch) {
         if (!perCh.has(ch)) perCh.set(ch, createTileCache());
         return perCh.get(ch);
@@ -293,8 +323,72 @@ export function createWaveformSource(opts) {
         return p;
     }
 
+    /**
+     * 确保该轨有一份可用的全曲概览块;自带节流,可以每帧无脑调。
+     * **只在视口静止时调**(动的时候一律不取数,见 §1.27「静止 120ms 才取新块」)。
+     * 返回当前手上那份(可能是上一轮的旧数据)——取新的是后台事,不 await。
+     */
+    function ensureOverview(ch, startS, endS, cols) {
+        if (typeof request !== "function") return null;
+        const a = num(startS, 0);
+        const b = num(endS, 0);
+        if (!(b > a)) return null;
+        const n = Math.min(
+            Math.max(Math.trunc(num(cols, OVERVIEW_COLS)), 1),
+            MAX_COLS,
+        );
+        let rec = perChOverview.get(ch);
+        if (!rec) {
+            rec = {
+                want: null,
+                have: null,
+                at: 0,
+                dirty: true,
+                inflight: null,
+            };
+            perChOverview.set(ch, rec);
+        }
+        const want = rec.want;
+        const spanChanged =
+            !want || want.a !== a || want.b !== b || want.n !== n;
+        if (spanChanged) {
+            rec.want = { a, b, n };
+            rec.dirty = true;
+        }
+        const now = Date.now();
+        const due = rec.dirty && now - rec.at >= OVERVIEW_REFRESH_MS;
+        // 曲长/列数变了要立刻重取(旧那份的几何已经对不上了),其余情况按节流走
+        if (rec.inflight || !(spanChanged || due)) {
+            return rec.have;
+        }
+        rec.at = now;
+        const p = Promise.resolve()
+            .then(() => request(ch, a, b, n))
+            .then((tile) => {
+                if (rec.inflight !== p) return; // 已被更新的一笔取代
+                rec.inflight = null;
+                if (!isTileShape(tile)) return;
+                // have 自带几何:want 可能已经被下一笔改掉,画的时候必须用
+                // **这份数据自己的**起止,否则曲长一变就画歪
+                rec.have = { tile, startS: a, endS: b };
+                rec.dirty = false;
+                rec.at = Date.now();
+            })
+            .catch(() => {
+                if (rec.inflight === p) rec.inflight = null;
+            });
+        rec.inflight = p;
+        return rec.have;
+    }
+
     return {
         getTile,
+        ensureOverview,
+        /** 概览块(只读,不触发取数);没有就 null。 */
+        peekOverview(ch) {
+            const rec = perChOverview.get(ch);
+            return rec && rec.have ? rec.have : null;
+        },
         /**
          * 取该轨缓存里**所有与 [startS,endS) 相交**的成品块(不含在途 Promise),
          * 附各自的时间范围;**按跨度从宽到窄**排序,调用方顺序画上去即可 ——
@@ -363,6 +457,14 @@ export function createWaveformSource(opts) {
          */
         invalidate(ch, ranges, o) {
             const keepStale = !(o && o.keepStale === false);
+            // 概览块:软失效只**标脏**(手上那份继续垫底,静止后按节流换新);
+            // 硬删才真丢 —— 数据没了还拿它垫底就是画不存在的波形。
+            // 不按 ranges 细分:它跨整首曲子,和任何区间都相交,细分等于必删。
+            for (const [c, rec] of perChOverview) {
+                if (ch != null && c !== ch) continue;
+                if (keepStale) rec.dirty = true;
+                else perChOverview.delete(c);
+            }
             const retire = (cache, stale, key) => {
                 const v = cache.peek ? cache.peek(key) : undefined;
                 cache.delete(key);
