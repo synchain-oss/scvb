@@ -276,13 +276,8 @@ export function createTabSettings(opts) {
             const value = btn.getAttribute("data-value");
             if (value === config()[field]) return; // 点击已选中档不重复写
             call("setAnalysisConfig", { [field]: value }).then((res) => {
-                // 只读被 C++ 拒绝:不做乐观 dirty(§5.6 {observer:true})
-                if (res && res.observer) {
-                    requestRender();
-                    return;
-                }
-                // 契约 §1.21:badArg 时不做乐观态 —— 等 scvb.state 回推纠正
-                if (res && res.ok === false) {
+                // 桥缺失/异常(res===null)、只读被拒(observer)、badArg 一律不做乐观 dirty
+                if (!res || res.observer || res.ok === false) {
                     requestRender();
                     return;
                 }
@@ -357,6 +352,8 @@ export function createTabSettings(opts) {
         if (ok) {
             local.copyDoneUntil = Date.now() + 2000;
             requestRender();
+            // 「已复制」回落兜底:2s 后补一拍渲染翻回「复制诊断信息」
+            setTimeout(() => requestRender(), 2000);
         }
     }
 
