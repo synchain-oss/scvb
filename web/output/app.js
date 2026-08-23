@@ -35,6 +35,8 @@ import {
     footerPrintKey,
     secondsToTimecode,
     shouldShowGuide,
+    errorStoreKey,
+    errorKeysToDrop,
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
@@ -85,7 +87,10 @@ const store = {
     playhead: null, // §2.6
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
-    errors: new Map(), // §2.9 code → payload(active:false 即删)
+    // §2.9 errorStoreKey(e) → payload(active:false 即删)。键 = 裸 code,**唯
+    // `lowSample` 用 `lowSample#{ch}` 复合键**(轨级且会同时命中多轨,裸 code 存一条
+    // 会互相覆盖);消费侧走 tab-master.js 的 lowSampleChannels(),与键形解耦。
+    errors: new Map(),
     unknownCodes: [], // §5.1 降级纪律①:未知 code 原样入诊断区
     readOnly: false, // secondOutput / conn.outputReadOnly
     noTimeline: false, // §5.1 noTimeline
@@ -107,6 +112,13 @@ const store = {
 
 /** 拒绝态提示的挂留时长(与 footer 打印结束提示同族的一次性可见反馈)。 */
 const REJECT_HINT_MS = 4000;
+
+// 渲染调度的两个模块级位(声明必须早于第一次 activateTab() —— 它在 tab 装配前
+// 就跑过一次;语义与用法见文件下半部「渲染」小节的 requestRender/render)。
+/** 三个 tab 装配完毕的门控:装配前 render() 直接返回。 */
+let tabsReady = false;
+/** 本帧已排过一次整页 render(rAF 合帧)。 */
+let renderQueued = false;
 
 // ------------------------------------------------------------- 小工具
 // (两位轨号 tt() 随 Tab2 行模板一并迁去 tab-tracks.js —— 外壳层已用不到)
@@ -213,7 +225,11 @@ function slateLeftPx(idx) {
 function activateTab(name, { push = true } = {}) {
     const idx = TAB_ORDER.indexOf(name);
     if (idx < 0) return;
+    const was = content.getAttribute("data-tab");
     content.setAttribute("data-tab", name);
+    // T33 性能批:render() 只投影**当前激活**的那个 tab(见 render 的注释),
+    // 故切 tab 必须补一次整页 render —— 新页的投影可能停在上次离开时的那帧。
+    if (was !== name) requestRender();
     tabbar.style.setProperty("--tab-i", String(idx));
     if (slate) slate.style.left = slateLeftPx(idx) + "px";
     tabbar.querySelectorAll("[data-tab-btn]").forEach((btn) => {
@@ -291,7 +307,7 @@ const tabMaster = createTabMaster({
     bridge,
     getStore: () => store,
     getT: () => dictNow,
-    onLocalChange: () => render(),
+    onLocalChange: () => requestRender(),
 });
 tabMaster.mount();
 
@@ -304,7 +320,7 @@ const tabTracks = createTabTracks({
     bridge,
     getStore: () => store,
     getT: () => dictNow,
-    onLocalChange: () => render(),
+    onLocalChange: () => requestRender(),
 });
 tabTracks.mount();
 
@@ -317,11 +333,12 @@ const tabWave = createTabWave({
     bridge,
     getStore: () => store,
     getT: () => dictNow,
-    onLocalChange: () => render(),
+    onLocalChange: () => requestRender(),
     // 空态 CTA「去 Tab1 打开采集」等页间跳转(05 §2.3 行 318)
     gotoTab: (name) => activateTab(name),
 });
 tabWave.mount();
+tabsReady = true; // 三个 tab 装配完毕,render() 从这里起可以跑
 
 // 布防 badge 三处的点击跳转(05 §2.3 行 300 ①:点击跳 Tab3 定位选区)——
 // Tab1 Range 旁与 Tab2 图例行两枚在别的卡里,跳转归外壳;Tab3 自己的 badge
@@ -399,6 +416,8 @@ const scaleUi = {
 let scaleTimer = 0;
 // hostEcho 灰显的退出定时器(批次停发后补一拍 render;见 scvb.params 订阅)。
 let hostEchoTimer = 0;
+// footer「打印结束」提示的 8 秒窗到点补一拍(见 renderFooter)。
+let printDoneTimer = 0;
 let scalePrev = 1;
 let scaleLeft = 0;
 
@@ -533,13 +552,13 @@ function versionName(v) {
  */
 function noteRejectedPrinting() {
     store.session.rejectedPrintingUntil = Date.now() + REJECT_HINT_MS;
-    setTimeout(render, REJECT_HINT_MS + 50);
+    setTimeout(requestRender, REJECT_HINT_MS + 50);
 }
 
 async function switchVersion(v) {
     const res = await call("setVersionActive", v);
     if (res && res.rejected === "printing") noteRejectedPrinting();
-    render();
+    requestRender();
 }
 
 verUi.chips.forEach((chip, i) => {
@@ -595,7 +614,7 @@ function endRename(commit) {
                 store.state = { ...store.state, versions };
             }
         }
-        render();
+        requestRender();
     });
 }
 
@@ -633,7 +652,7 @@ if (verUi.copyBtn) {
         // 05 §2.1 ③:PRINT 态按钮 disabled + tooltip「打印中不可复制版本」(渲染在 renderHeader)。
         if (verUi.copyBtn.getAttribute("data-disabled") === "1") return;
         if (verUi.copyConfirm) verUi.copyConfirm.hidden = false;
-        render();
+        requestRender();
     });
 }
 if (verUi.copyCancel) {
@@ -650,7 +669,7 @@ if (verUi.copyOk) {
         // PRINT 态 C++ 硬拒绝 {rejected:"printing"} —— 与 setVersionActive 同款渲染,不静默。
         const res = await call("copyVersion", src, dst);
         if (res && res.rejected === "printing") noteRejectedPrinting();
-        render();
+        requestRender();
     });
 }
 
@@ -665,7 +684,7 @@ if (guardBtn) {
         // 即不再补弹。守卫本身就是「输出 ON 且后果已被告知」的确认,此后再 OFF→ON 不该
         // 又弹一遍 write 确认条,故在这里把本会话的一次性判定一并置真。
         if (!res || res.ok !== false) store.session.writeConfirmSeen = true;
-        render();
+        requestRender();
     });
 }
 
@@ -746,17 +765,66 @@ document.addEventListener(
 );
 
 // ============================================================================
-// 渲染:外壳(header / 横幅 / footer / 引导页)+ Tab1
+// 渲染:外壳(header / 横幅 / footer / 引导页)+ 当前激活 tab
+// ----------------------------------------------------------------------------
+// T33 性能批(t32/deviations §N「渲染性能批」)。改造前:每一次事件到达 / 每一次
+// 本地态改变都**同步**跑一遍整页 —— 30Hz 的 §2.6 playhead、25Hz 的 §2.2 params、
+// 拖动期按显示帧率触发的 onLocalChange 全都各跑一遍 header+横幅+footer+缩放+引导页
+// +Tab1+Tab2 十五行+Tab3 十五泳道。改造后两条:
+//   ① **rAF 合帧**:一律走 requestRender(),同一帧内 N 次请求只在下一帧跑一次
+//      render()(事件风暴 → 每帧至多一次整页);
+//   ② **按需**:四个面板同在 DOM,只有当前激活的那个逐帧重投影;切 tab 由
+//      activateTab() 补一次 render。三个 tab 的 render 都是「store+本地态 → DOM」
+//      的幂等纯投影,晚一帧投影与提前投影的结果逐字相同。
+// 更细一档(拖动期只更新受影响的那一行,不跑整页)在 tab-tracks.js 的
+// requestRowRender() —— 那条路径连整页 render 都不排。
 // ============================================================================
+/**
+ * 重采集布防期的「输出开关被打开过」粘滞位(B-04)。
+ *
+ * **边沿判定必须逐 §2.1 事件做**,不能寄生在 render() 里:render 本波改成 rAF
+ * 合帧,只跑每帧最后一次的 store 快照 —— 同一帧内 `output_enabled` ON→OFF 的成对
+ * patch(契约 §0.4「值未变不发」不排除一帧两拍)会让 ON 那一拍不被观测到,footer
+ * 琥珀警告就此漏挂(对抗校验 minor)。撤防(armed=false)复位。
+ */
+function trackRecapOutput() {
+    const s = store.state || {};
+    if (!(s.recapture && s.recapture.armed)) {
+        store.session.recapOutputOpened = false;
+    } else if ((s.global || {}).output_enabled) {
+        store.session.recapOutputOpened = true;
+    }
+}
+
+/** 整页重渲染**请求**(rAF 合帧;高频路径一律走它,不要直呼 render())。 */
+function requestRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    const run = () => {
+        renderQueued = false;
+        render();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else run();
+}
+
 function render() {
+    if (!tabsReady) return;
     renderHeader();
     renderBanners();
     renderFooter();
     renderScale();
     renderGuide();
-    tabMaster.render();
-    tabTracks.render();
-    tabWave.render();
+    switch (content.getAttribute("data-tab")) {
+        case "master":
+            return tabMaster.render();
+        case "tracks":
+            return tabTracks.render();
+        case "wave":
+            return tabWave.render();
+        default:
+            return undefined; // Tab4 设置页无逐帧投影
+    }
 }
 
 function renderHeader() {
@@ -935,6 +1003,16 @@ function renderFooter() {
     if (printing) mode = range.mode === "follow" ? "follow" : "print";
     else if (Date.now() < store.session.printDoneUntil) mode = "printDone";
     if (footer) footer.setAttribute("data-mode", mode);
+    // printDone 是**时间窗**,窗口到点必须补一拍才会回默认行 —— 契约 §0.4 是
+    // 「值未变不发」,打印结束后走带停住、事件流随之安静,不能指望「下一帧事件」
+    // 把它带下来(与 rejectedPrintingUntil / hostEcho 同款自带定时器)。
+    if (mode === "printDone") {
+        clearTimeout(printDoneTimer);
+        printDoneTimer = setTimeout(
+            requestRender,
+            store.session.printDoneUntil - Date.now() + 50,
+        );
+    }
 
     // {x}/{y} 一律填 **mm:ss.mmm**(桥面单位,契约 §1.8/§0.2 第 3 条:UI 永不见样本、只收秒),
     // 与 Range 卡可编辑侧、write 确认条同一单位。词条 footer.printing 的 zh 写作
@@ -955,10 +1033,9 @@ function renderFooter() {
     // 重采集布防警告③(05 §2.3 行 300 / B-04 裁定):触发 =「输出开关 ON
     // **或在布防期被打开**」—— 布防期内输出一旦 ON 过就置粘滞位,关回 OFF
     // 警告仍挂(引擎已按全局范围工作过);撤防才复位。
-    const rec = s.recapture;
-    const armed = !!(rec && rec.armed);
-    if (!armed) store.session.recapOutputOpened = false;
-    else if (g.output_enabled) store.session.recapOutputOpened = true;
+    // 粘滞位的**边沿判定不在这里**(见 trackRecapOutput):render 是 rAF 合帧的,
+    // 只看得到每帧最后一份快照;本函数只读位、只投影。
+    const armed = !!(s.recapture && s.recapture.armed);
     show(
         $("footer-recapture-warn"),
         armed && (!!g.output_enabled || !!store.session.recapOutputOpened),
@@ -1013,9 +1090,10 @@ if (bridge) {
         // §2.1 字段纪律:full:true = 全量快照;full:false = 增量(只含变化子树,UI 做深合并)
         store.state =
             s && s.full ? stripFull(s) : deepMerge(store.state, stripFull(s));
+        trackRecapOutput(); // B-04 粘滞位:逐事件做边沿判定(render 是合帧的)
         syncUiFromState();
         tabMaster.refreshPreview();
-        render();
+        requestRender();
     });
 
     bridge.on("scvb.params", (p) => {
@@ -1037,7 +1115,7 @@ if (bridge) {
         };
         if (p && p.hostEcho) {
             clearTimeout(hostEchoTimer);
-            hostEchoTimer = setTimeout(render, HOST_ECHO_FRESH_MS + 50);
+            hostEchoTimer = setTimeout(requestRender, HOST_ECHO_FRESH_MS + 50);
         }
         // 本地乐观值让位给引擎回推(必须排在 render 之前;规则见 tab-master.js nextParamEcho):
         // 少了这一步,任一次本地拖动都会把该 ParamID 的显示**永久遮蔽**——
@@ -1045,7 +1123,7 @@ if (bridge) {
         tabMaster.onParams(p);
         // Tab2 同款让位 + 冻结位 1→0 的解冻提示判定(05 §2.2 R2)
         tabTracks.onParams(p);
-        render();
+        requestRender();
     });
 
     // §2.5 30 Hz:**只喂 Tab2 的 rAF 弹道,不触发 render** —— 15 行 × 30 Hz 的
@@ -1056,21 +1134,26 @@ if (bridge) {
 
     bridge.on("scvb.conn", (c) => {
         store.conn = c;
-        render();
+        requestRender();
     });
 
     // §2.4:事件缺失时绿点全灭、零报错 —— 故默认值 0 且此处不做任何字段校验
     bridge.on("scvb.groups", (g) => {
         store.groups = (g && g.groups_online) || 0;
-        render();
+        requestRender();
     });
 
     bridge.on("scvb.playhead", (p) => {
+        // 契约 §0.4「值未变不发」的 UI 侧防御(T33 空闲零 rAF):与上一帧**逐字相同**
+        // 的 30Hz 事件不排整页重渲染 —— 投影只由载荷字段派生,同样的输入必然渲染出
+        // 同样的输出。走带停住而宿主照旧按 30Hz 重发同一位置时,这一条把 30 次/秒的
+        // 空转整页渲染削成 0。
+        const same = samePlayhead(store.playhead, p);
         store.playhead = p;
         // Tab3:播放头 rAF 插值层直接吃 30Hz 事件(canvas/playhead.js;
         // render() 只管其余投影,不逐帧驱动播放头)
         tabWave.onPlayhead(p);
-        render();
+        if (!same) requestRender();
     });
 
     bridge.on("scvb.segments", (seg) => {
@@ -1085,7 +1168,7 @@ if (bridge) {
             (c) => c && c.stale,
         );
         show($("tabnav-wave-stale-dot"), stale);
-        render();
+        requestRender();
     });
 
     bridge.on("scvb.captureProgress", (cp) => {
@@ -1096,18 +1179,24 @@ if (bridge) {
         }
         // Tab3:该轨波形块缓存失效 + 轨头覆盖率重投影(2px 覆盖条归 T33)
         tabWave.onCaptureProgress(cp);
-        render();
+        requestRender();
     });
 
     bridge.on("scvb.error", (e) => {
         if (!e || !e.code) return;
-        // §2.9:active 缺省视为 true;false = 条件已解除(持续性横幅据此撤下)
-        if (e.active === false) store.errors.delete(e.code);
-        else store.errors.set(e.code, e);
+        // §2.9:active 缺省视为 true;false = 条件已解除(持续性横幅据此撤下)。
+        // 键由 errorStoreKey 统一(lowSample = code+ch 复合键);撤下走
+        // errorKeysToDrop —— 契约没保证解除事件必带 ch,不带 ch 的解除必须把该
+        // code 的全部轨级条目一并撤掉,否则黄标永不熄灭。
+        if (e.active === false) {
+            for (const k of errorKeysToDrop(store.errors, e)) {
+                store.errors.delete(k);
+            }
+        } else store.errors.set(errorStoreKey(e), e);
         if (!KNOWN_CODES.has(e.code) && !store.unknownCodes.includes(e.code)) {
             store.unknownCodes.push(e.code);
         }
-        render();
+        requestRender();
     });
 }
 
@@ -1123,6 +1212,22 @@ const KNOWN_CODES = new Set([
     "sidecarSwitched",
     "lowSample",
 ]);
+
+/**
+ * §2.6 载荷是**扁平的标量集**(`timeS` / `isPlaying` / `loopStartS?` / `loopEndS?` /
+ * `inRange`)—— 逐键严格相等即可断定「由它派生的一切投影都相同」。
+ * 键集不同、出现非标量(引用不等)时一律判不同,宁可多渲染一帧也不漏。
+ */
+function samePlayhead(a, b) {
+    if (!a || !b) return false;
+    const ka = Object.keys(a);
+    if (ka.length !== Object.keys(b).length) return false;
+    for (const k of ka) {
+        if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+        if (a[k] !== b[k]) return false;
+    }
+    return true;
+}
 
 /** `full` 是事件专用标志,不属 state 树,合并前摘掉免得污染快照字段集(§1.1 语义行)。 */
 function stripFull(s) {
@@ -1172,7 +1277,7 @@ refreshI18n();
 
 (async function boot() {
     if (!bridge) {
-        render();
+        requestRender();
         return;
     }
     const snap = await call("requestInitialState");
@@ -1191,6 +1296,7 @@ refreshI18n();
             ...stateFields
         } = snap;
         store.state = deepMerge(store.state, stripFull(stateFields));
+        trackRecapOutput(); // 快照落地也算一拍(布防中打开着输出重开面板)
         store.conn = snapConn || store.conn;
         store.ready = true;
         syncUiFromState();

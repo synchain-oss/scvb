@@ -128,6 +128,13 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
     // ---- hidpi:k = uiScale × dpr(05 §6.1 逐字)
     eq(HD.backingScale(1.25, 2), 2.5, "backingScale = uiScale×dpr");
     eq(HD.backingScale(undefined, undefined), 1, "缺参回 1");
+    eq(HD.backingScale(0, 0), 0.1, "下夹 0.1(0 会让位图尺寸为 0)");
+    eq(HD.MAX_BACKING_SCALE, 4, "后备存储倍率上限 4");
+    eq(
+        HD.backingScale(2, 6),
+        4,
+        "上夹 4:超高 dpr 不把位图面积按 k² 涨到分配失败",
+    );
 
     // ---- playhead:插值外推 + 封顶;暂停原地
     near(
@@ -182,6 +189,30 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
     near(WF.envelopeHalfPx(0, 34), 13, 1e-9, "0 dB 顶到半高 13(34px 泳道)");
     near(WF.envelopeHalfPx(-80, 34), 1, 1e-9, "地板画最细 1px");
     near(WF.envelopeHalfPx(-160, 34), 1, 1e-9, "哨兵 -160 夹到地板");
+    // **中段**必须钉住:两个端点在任意 γ 下恒等(0^γ=0、1^γ=1),只测端点时把
+    // ENV_GAMMA 改回 1(= 退回本批要修的「等高栅栏」)五套 smoke 照样全绿。
+    eq(WF.ENV_GAMMA, 2.2, "包络对比度整形指数 γ=2.2");
+    near(
+        WF.envelopeHalfPx(-40, 34),
+        1 + Math.pow(0.5, 2.2) * 12,
+        1e-9,
+        "中段按 γ 幂整形(-40 dB ≈ 3.61px,线性档会是 7px)",
+    );
+    check(
+        WF.envelopeHalfPx(-40, 34) < 4.5,
+        "有声/静默的半高比拉得开(γ=1 的等高栅栏会 ≥7px)",
+    );
+    // VAD 绿罩 alpha 只有一处真源(DEFAULT_PALETTE 与 tab-wave 的 computedPalette
+    // 各写一份字面量正是本波踩过的坑)
+    eq(
+        WF.VAD_ALPHA,
+        0.13,
+        "VAD 绿罩取图谱 §12 ② 两档中的上档 .13(图例帧 752-754)",
+    );
+    check(
+        WF.DEFAULT_PALETTE.vad === `rgba(120, 176, 142, ${WF.VAD_ALPHA})`,
+        "DEFAULT_PALETTE.vad 由 VAD_ALPHA 拼出(不写死字面 alpha)",
+    );
     eq(
         WF.runsOf([0, 1, 1, 0, 1], (v) => v > 0),
         [
@@ -245,6 +276,31 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         "轨头六件投影(状态/覆盖率/段数/stale/黄标)",
     );
     eq(lanes[1].status, "idle", "无 conn 的轨 = idle");
+    // T33:§2.9 lowSample 是 code+ch 复合键(t32/deviations §N)——多轨同时低采样时
+    // Tab3 轨头与 Tab2 轨行**消费同一份**,不再互相覆盖成一枚黄标。
+    {
+        const multi = TW.laneModelFromStore({
+            errors: new Map([
+                ["lowSample#4", { code: "lowSample", ch: 4 }],
+                ["lowSample#11", { code: "lowSample", ch: 11 }],
+                ["noTimeline", { code: "noTimeline" }],
+            ]),
+        });
+        eq(
+            multi.filter((l) => l.low).map((l) => l.n),
+            [4, 11],
+            "两轨同时低采样 ⇒ 两条泳道各自挂黄标(复合键)",
+        );
+        eq(
+            TW.laneModelFromStore({
+                errors: new Map([["lowSample", { code: "lowSample", ch: 6 }]]),
+            })
+                .filter((l) => l.low)
+                .map((l) => l.n),
+            [6],
+            "裸 lowSample 键同样命中(消费侧与键形解耦)",
+        );
+    }
     // 边界与角标(05 行 310/313:相邻任一段非 auto → 实线;锁定标独立)
     const segCh = {
         ch: 1,
@@ -1020,6 +1076,140 @@ log("=== ⑧ Wave 2 新词条三语(反馈件族;U17 注记)===");
         eq(ph(T.en[k]), ph(T.zh[k]), `${k} en 占位符与 zh 一致`);
         eq(ph(T.fr[k]), ph(T.zh[k]), `${k} fr 占位符与 zh 一致`);
     }
+}
+
+// =============================================================================
+log("=== ⑨ 空闲零 rAF(brief §0.13 性能预算;T33 收尾)===");
+{
+    const tw = src("web/output/tab-wave.js");
+    // Tab3 只有三处 rAF 循环,三处都必须**自停**:
+    //   ① layers.js 的分层循环 —— tick() 返回 false(无脏层、无动态层)即不续帧;
+    //   ② playhead.js 的插值循环 —— 事件 isPlaying=false 即不续帧;
+    //   ③ tab-wave 的帧时账 ticker —— 无交互且未播放即不续帧。
+    check(
+        /if \(tick\(ts\)\) \{\s*raf = requestAnimationFrame\(loop\);\s*\} else \{\s*raf = 0;/.test(
+            src("web/output/canvas/layers.js"),
+        ),
+        "layers 循环在无脏层时自停(空闲零 rAF)",
+    );
+    check(
+        /if \(ev && ev\.isPlaying\) raf = requestAnimationFrame\(loop\);/.test(
+            src("web/output/canvas/playhead.js"),
+        ),
+        "playhead 循环只在播放中续帧",
+    );
+    check(
+        /interactionActive\(\) \|\| \(p && p\.isPlaying\)[\s\S]{0,120}requestAnimationFrame\(loop\)/.test(
+            tw,
+        ),
+        "帧时账 ticker 只在交互中或播放中续帧",
+    );
+    // 反向哨兵:模块顶层不许起常驻循环(mount 里挂一个 setInterval/rAF 长跑)
+    check(
+        !/setInterval\(/.test(tw),
+        "tab-wave 无常驻 setInterval(空闲不烧 CPU)",
+    );
+    // 拖动期不跑整页:交互路径请求的是外壳合帧的 requestRender,而画布走 schedulePaint
+    check(
+        /function schedulePaint\(\)[\s\S]{0,400}if \(!isPanelActive\(\)\) return;/.test(
+            tw,
+        ),
+        "非前台不烧 canvas(schedulePaint 早退)",
+    );
+    // 「只投影当前激活 tab」在 **rAF 侧**也要成立:停在 Tab1/Tab2 且宿主在播放时,
+    // Tab3 的播放头插值与帧时账两条自持循环必须一起停(否则每显示帧仍有 2 个回调
+    // 在给 display:none 的 Tab3 写 DOM)。
+    check(
+        /function onPlayhead\(p\) \{[\s\S]{0,600}if \(!isPanelActive\(\)\) \{[\s\S]{0,200}playhead\.stop\(\);\s*return;/.test(
+            tw,
+        ),
+        "非前台不驱动播放头插值(onPlayhead 早退并停帧)",
+    );
+    check(
+        /function ensureTicker\(\)[\s\S]{0,400}if \(!isPanelActive\(\)\) \{[\s\S]{0,120}return;/.test(
+            tw,
+        ),
+        "非前台不起帧时账(ensureTicker 早退)",
+    );
+    check(
+        /function resumePlayhead\(\)[\s\S]{0,300}onPlayhead\(local\.playheadEv\);/.test(
+            tw,
+        ) && /function render\(\)[\s\S]{0,400}resumePlayhead\(\);/.test(tw),
+        "切回本页由 render 补一次起帧(按需起帧的配对不变式)",
+    );
+    check(
+        /if \(\s*ev\.isPlaying &&\s*degradeLevel\(\) >= 1/.test(
+            src("web/output/canvas/playhead.js"),
+        ),
+        "降级档节流只在播放中生效(停播那一帧不许被吞,否则位置永久错位)",
+    );
+}
+
+// =============================================================================
+log("\n=== ⑩ Wave 3 视觉修的口径钉子(对抗校验修订批)===");
+{
+    const tw = src("web/output/tab-wave.js");
+    const html = src("web/output/index.html");
+
+    // (a) 边界拖拽:点一下不拖 ⇒ 零位移不发 move_boundary(契约 §5.4 的后置会把
+    //     该段变成 user_edited + locked,且 analyze(clearManual) 对 locked 免疫)
+    check(
+        /function commitBoundDrag\(\)[\s\S]{0,900}if \(tS === Math\.round\(d\.origT \* 1000\) \/ 1000\) return;[\s\S]{0,200}sendEdit\(d\.ch, "move_boundary"/.test(
+            tw,
+        ),
+        "commitBoundDrag 有零位移短路(误点不再把 auto 段钉死成 locked)",
+    );
+
+    // (b) 曲线两色锁死 05 行 310 / 图谱 §12 ③:pan = 薰衣草 181,172,201、vol = 白;
+    //     两级权重只走线宽(B-09)与 alpha,不改色相
+    check(
+        !/198,\s*190,\s*232/.test(tw),
+        "手动档 pan 不再用 tokens 里查无此项的 rgb(198,190,232)",
+    );
+    eq(
+        (tw.match(/rgba\(181,172,201,\.(?:98|82)\)/g) || []).length,
+        2,
+        "pan 两档同色相(181,172,201),只差 alpha",
+    );
+    check(
+        /const CURVE_HALO_W = 0\.8;/.test(tw) &&
+            /ctx\.lineWidth = lw \+ CURVE_HALO_W;/.test(tw),
+        "曲线深底 halo 收到 +0.8px(不再以 2.4:1 的墨量压过本色)",
+    );
+
+    // (c) 角标落在泳道底带,避开 pan(y 5..19)与 vol(y 15..22)两条曲线
+    check(
+        /\.wave-seg-marks \{[^}]*bottom: 2px;/.test(html),
+        "段角标组落在泳道底带(bottom:2px,让开 pan/vol 曲线)",
+    );
+    check(
+        /\.wave-lane__badges \{[^}]*overflow: hidden;/.test(html),
+        "角标层 overflow:hidden(末段角标不溢到右缘 44px 刻度列)",
+    );
+    check(
+        /\.wave-seg-lock \{[^}]*pointer-events: auto;/.test(html),
+        "锁定角标收回指针事件(「锁定」词条的 title 才弹得出来)",
+    );
+
+    // (d) 轨头 158px:轨名优先于覆盖率读数
+    check(
+        /\.wave-lane__label \{[^}]*min-width: 38px;/.test(html),
+        "轨头 label 保底 38px(「Ad-lib 1/2」不再截成同一串)",
+    );
+    check(
+        /\.wave-lane__covseg \{[^}]*flex: 0 1 auto;[^}]*text-overflow: ellipsis;/.test(
+            html,
+        ),
+        "覆盖率读数可收缩并省略(次要读数先让位)",
+    );
+
+    // (e) VAD alpha 两处同源:tab-wave 的 computedPalette 不许再写第二份字面量
+    check(
+        /pal\.vad = `rgba\(\$\{v\("--sem-green"\)\}, \$\{VAD_ALPHA\}\)`/.test(
+            tw,
+        ),
+        "computedPalette 的 VAD alpha 从 waveform.js import(不写第二份字面量)",
+    );
 }
 
 // =============================================================================

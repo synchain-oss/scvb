@@ -66,7 +66,11 @@ export function createPlayhead(opts) {
     /** 单帧写入(降级档 ≥1 时限 30Hz —— 两次写入间隔 < 33ms 的帧跳过)。 */
     function tick(nowMs) {
         if (!ev) return; // 首帧事件前无位置可写(调用方的写入面保持初始态)
+        // 节流**只在播放中**生效:停播那一帧是 loop 自停前的最后一帧,被节流吞掉
+        // 就再没有补写的机会 —— 此后 push() 的 idle 早退(同位置 + 非播放)不再
+        // 起帧,竖线会永久停在停播前外推出来的错位置上(对抗校验 minor)。
         if (
+            ev.isPlaying &&
             degradeLevel() >= 1 &&
             lastWriteMs >= 0 &&
             nowMs - lastWriteMs < DEGRADED_PERIOD_MS
@@ -84,12 +88,26 @@ export function createPlayhead(opts) {
         if (ev && ev.isPlaying) raf = requestAnimationFrame(loop);
     }
 
+    /** 两帧事件的**位置面**是否逐字相同(停住时判「还要不要再写一帧」)。 */
+    function samePosition(a, b) {
+        return (
+            !!a &&
+            !!b &&
+            num(a.timeS, 0) === num(b.timeS, 0) &&
+            !!a.isPlaying === !!b.isPlaying
+        );
+    }
+
     return {
         /** §2.6 事件入口(30 Hz);播放中自动起 rAF,停下写一帧后自停。 */
         push(next) {
+            // 空闲零 rAF(05 §6.1):契约 §0.4 是「值未变不发」,但停住时若宿主
+            // (或 mock)照旧按 30Hz 重发同一位置,逐个事件排一帧 rAF 只会把同一个
+            // left 再写一遍 —— 与上一帧**逐字相同**的停住事件不再起帧。
+            const idle = !raf && samePosition(ev, next) && !next.isPlaying;
             ev = next || null;
             evAtMs = typeof performance !== "undefined" ? performance.now() : 0;
-            if (typeof requestAnimationFrame !== "function") return;
+            if (idle || typeof requestAnimationFrame !== "function") return;
             if (!raf) raf = requestAnimationFrame(loop);
         },
         stop() {

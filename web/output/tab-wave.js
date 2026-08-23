@@ -50,6 +50,7 @@ import {
     paintWaveTile,
     MAX_COLS,
     IDLE_REFETCH_MS,
+    VAD_ALPHA,
 } from "./canvas/waveform.js";
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
@@ -62,7 +63,7 @@ import {
     labelPlaceholder,
     tt,
 } from "./tab-tracks.js";
-import { format, outputPhase } from "./tab-master.js";
+import { format, outputPhase, lowSampleChannels } from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -199,10 +200,9 @@ export function laneModelFromStore(store) {
     const st = store || {};
     const chans = (st.state && st.state.channels) || [];
     const conn = (st.conn && st.conn.channels) || [];
-    const lowErr =
-        st.errors && typeof st.errors.get === "function"
-            ? st.errors.get("lowSample")
-            : null;
+    // §2.9 lowSample 是轨级 error 且会同时命中多轨 —— 与 Tab2 轨行**消费同一份**
+    // (app.js 按 `lowSample#{ch}` 复合键存,这里扫成轨号集合;T33)。
+    const low = lowSampleChannels(st.errors);
     const lanes = [];
     for (let ch = 1; ch <= LANE_COUNT; ch++) {
         const cfg = chans[ch - 1] || {};
@@ -214,7 +214,7 @@ export function laneModelFromStore(store) {
             cov: Math.round(num((st.coverage || {})[ch], 0)),
             segs: ((segCh && segCh.segments) || []).length,
             stale: !!(segCh && segCh.stale),
-            low: lowErr && lowErr.ch === ch ? 1 : 0,
+            low: low.has(ch) ? 1 : 0,
             picked: 0,
         });
     }
@@ -302,6 +302,19 @@ export function panYPx(pan) {
 export function volYPx(volDb) {
     return 22 - (volPercent(volDb) / 100) * 7;
 }
+
+/** 阶梯曲线线宽(B-09:放大帧 2.4/3 不直接搬,实景取 1/1.6 保 +0.6px 差)。 */
+const CURVE_W_AUTO = 1;
+const CURVE_W_MANUAL = 1.6;
+/**
+ * 曲线深底描边:压在同色系包络柱上仍能读出两条线(Wave 3 视觉修)。
+ * 描边宽 = 本色线宽 + `CURVE_HALO_W`。**深底不得压过本色**:+1.4/α.88 时
+ * auto 档(lw=1)成 2.4px 近黑带里一根 1px 芯丝,墨量 2.4:1,05 行 310 的
+ * 「薰衣草 / 白」两色在实景里读成近黑发丝(对抗校验 minor)→ 收到 +0.8/α.72,
+ * 每侧只露 0.4px 垫底。
+ */
+const CURVE_HALO = "rgba(18,15,28,.72)";
+const CURVE_HALO_W = 0.8;
 
 /**
  * 标尺刻度(mm:ss;稿内是静态小节号,tempo 表 v1 不可得 → 取时间刻度,
@@ -618,8 +631,9 @@ export function createTabWave(opts) {
         echo: {}, // 检查器拖拽乐观值 {pan?, vol?}(segments 事件后失效)
         lastPaint: new Map(), // ch → {tile,startS,endS}(拖动期 blit 的老底)
         tickerRaf: 0, // 交互/播放期帧时账 rAF(喂 layers.governor)
-        renderQueued: false,
         palette: null, // mount 时 getComputedStyle 换算的 canvas 调色
+        playheadEv: null, // 最近一次 §2.6 载荷(非前台期间只存不驱动)
+        playheadHeld: false, // 非前台把播放头/帧时账挂起过 ⇒ 切回时补起帧
     };
 
     /**
@@ -756,19 +770,13 @@ export function createTabWave(opts) {
     }
 
     // ------------------------------------------------------------ Wave 2 底座
-    /** 外壳重渲染请求(rAF 合帧:拖动 50Hz 事件流只折成每帧一次 render)。 */
+    /**
+     * 外壳重渲染请求(拖动 50Hz 事件流只折成每帧一次 render)。
+     * **合帧在外壳里做**(T33:app.js 的 requestRender 是全页唯一的 rAF 合帧点)——
+     * 这里再排一层 rAF 会把本地态的可见反馈整整推迟两帧(拖动手感肉眼可辨)。
+     */
     function requestRender() {
-        if (local.renderQueued) return;
-        local.renderQueued = true;
-        const run = () => {
-            local.renderQueued = false;
-            if (typeof opts.onLocalChange === "function") opts.onLocalChange();
-        };
-        if (typeof requestAnimationFrame === "function") {
-            requestAnimationFrame(run);
-        } else {
-            run();
-        }
+        if (typeof opts.onLocalChange === "function") opts.onLocalChange();
     }
 
     function nowMs() {
@@ -840,12 +848,23 @@ export function createTabWave(opts) {
         if (local.tickerRaf || typeof requestAnimationFrame !== "function") {
             return;
         }
+        // 非前台不起帧时账:Tab3 不在前台时本页一帧都不画,量到的帧时不是本页的
+        // 成本,喂进 governor 只会误触降级序列(§6.1)。切回由 resumePlayhead()/
+        // 交互入口补起。
+        if (!isPanelActive()) {
+            local.playheadHeld = true;
+            return;
+        }
         let last = 0;
         const loop = (ts) => {
             local.tickerRaf = 0;
             if (last > 0) layers.governor.push(ts - last);
             last = ts;
             const p = getStore().playhead;
+            if (!isPanelActive()) {
+                local.playheadHeld = true;
+                return;
+            }
             if (interactionActive() || (p && p.isPlaying)) {
                 local.tickerRaf = requestAnimationFrame(loop);
             }
@@ -1402,7 +1421,12 @@ export function createTabWave(opts) {
             const v = (n) => String(cs.getPropertyValue(n) || "").trim();
             const pal = {};
             if (v("--wave-env")) pal.env = v("--wave-env");
-            if (v("--sem-green")) pal.vad = `rgba(${v("--sem-green")}, 0.07)`;
+            // 透明度**从 waveform.js import**(本函数只换 rgb 真值)—— 两处各写
+            // 一份字面 alpha 会静默失同步(对抗校验 major);envCore / vadEdge
+            // 无对应 token,留给字面镜像走 spread 兜底。
+            if (v("--sem-green")) {
+                pal.vad = `rgba(${v("--sem-green")}, ${VAD_ALPHA})`;
+            }
             if (v("--sem-amber")) pal.stale = `rgba(${v("--sem-amber")}, 0.22)`;
             if (v("--acc")) pal.coverage = `rgba(${v("--acc")}, 0.85)`;
             if (v("--wh")) {
@@ -1820,10 +1844,18 @@ export function createTabWave(opts) {
         local.overlayDirty = true;
         schedulePaint();
         if (!d) return;
+        // **零位移不发**(同 tab-tracks 拖拽路径的空转短路):边界 ±6px 命中区在
+        // 15 泳道密集边界上一点就中,「点一下不拖」若照发 move_boundary,契约 §5.4
+        // 的后置会把该 auto 段变成 origin=user_edited + locked=true 并压入撤销栈 ——
+        // 而 analyze(scope,{clearManual:true}) 对 locked 段免疫(须先逐段解锁),
+        // 于是一次误点就把这段永久钉死,用户没有任何可见反馈。按**下发口径**
+        // (ms 量化后)比原位,子毫秒抖动同样算零位移。
+        const tS = Math.round(d.tS * 1000) / 1000;
+        if (tS === Math.round(d.origT * 1000) / 1000) return;
         sendEdit(d.ch, "move_boundary", {
             segIdx: d.segIdx,
             edge: "t0",
-            tS: Math.round(d.tS * 1000) / 1000,
+            tS,
         });
     }
 
@@ -2211,6 +2243,9 @@ export function createTabWave(opts) {
     function render() {
         const store = getStore();
         const t = getT();
+        // 切 tab 由 app.js 的 activateTab 补一次整页 render —— 播放头插值与帧时账
+        // 的「按需起帧」配对不变式接在这里(见 onPlayhead / ensureTicker)。
+        resumePlayhead();
         timeline.setDuration(durationOf(store));
         const vp = timeline.viewport();
         const stageW = stageWidth();
@@ -2242,11 +2277,16 @@ export function createTabWave(opts) {
             attr(n.light, "data-tone", vis.tone);
             attr(n.light, "data-pulse", vis.pulse ? 1 : 0);
             setTitle(n.light, t[vis.key] || "");
-            text(n.label, lane.label || labelPlaceholder(lane.n, t));
-            text(
-                n.covseg,
-                fmtKey("wave.covSeg", { p: lane.cov, n: lane.segs }),
-            );
+            const labelText = lane.label || labelPlaceholder(lane.n, t);
+            text(n.label, labelText);
+            // 158px 轨头装六件,长轨名仍可能省略 —— 全文走 title 兜住(covseg 同理)
+            setTitle(n.label, labelText);
+            const covSeg = fmtKey("wave.covSeg", {
+                p: lane.cov,
+                n: lane.segs,
+            });
+            text(n.covseg, covSeg);
+            setTitle(n.covseg, covSeg);
             show(n.low, !!lane.low);
             setTitle(n.low, lane.low ? t["lowSample.full"] || "" : "");
             if (n.check) {
@@ -2693,23 +2733,38 @@ export function createTabWave(opts) {
             .join("");
     }
 
-    /** 段角标(E/C/锁定)重建;词条 wave.lockBadge 随语言切换(render 会再进来)。 */
+    /**
+     * 段角标(E/C + 锁定)重建;词条 wave.lockBadge 随语言切换(render 会再进来)。
+     * **同一段起点的角标合成一组**(flex 行,只画一次):图例帧 774-779 的口径是
+     * 「E/C 薰衣草实心 chip」与「另挂的琥珀锁形小标」两件并列,不是一枚大胶囊。
+     * 锁标在 34px 实景泳道里只留 stroke 锁形,「锁定」词条走 aria-label(deviations)。
+     */
     function renderSegMarks(store, vp, stageW) {
         const t = getT();
+        const tip = esc(t["wave.lockBadge"] || "");
+        const lockHtml = `<span class="wave-seg-lock" role="img" aria-label="${tip}" title="${tip}"><svg width="6" height="6" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.4" y="5.2" width="7.2" height="4.6" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4 5.2V3.9a2 2 0 0 1 4 0v1.3" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>`;
         for (let ch = 1; ch <= LANE_COUNT; ch++) {
             const n = local.lanes.get(ch);
             if (!n || !n.badges) continue;
-            const marks = segMarksOf(segmentsOfCh(store.segments, ch));
+            const groups = new Map();
+            for (const m of segMarksOf(segmentsOfCh(store.segments, ch))) {
+                const g = groups.get(m.tS) || [];
+                g.push(m.kind);
+                groups.set(m.tS, g);
+            }
             let html = "";
-            for (const m of marks) {
-                const x = timeToX(vp, stageW, m.tS);
+            for (const [tS, kinds] of groups) {
+                const x = timeToX(vp, stageW, tS);
                 if (x < 0 || x > stageW) continue;
                 const left = ((x / stageW) * 100).toFixed(2);
-                if (m.kind === "lock") {
-                    html += `<span class="wave-seg-lock" style="left:calc(${left}% + 26px)"><svg width="9" height="9" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.4" y="5.2" width="7.2" height="4.6" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4 5.2V3.9a2 2 0 0 1 4 0v1.3" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>${esc(t["wave.lockBadge"] || "")}</span>`;
-                } else {
-                    html += `<span class="wave-seg-badge" style="left:calc(${left}% + 9px)">${m.kind}</span>`;
+                let inner = "";
+                for (const kind of kinds) {
+                    inner +=
+                        kind === "lock"
+                            ? lockHtml
+                            : `<span class="wave-seg-badge">${kind}</span>`;
                 }
+                html += `<span class="wave-seg-marks" style="left:calc(${left}% + 2px)">${inner}</span>`;
             }
             if (n.badges.innerHTML !== html) n.badges.innerHTML = html;
         }
@@ -2863,7 +2918,13 @@ export function createTabWave(opts) {
         }
     }
 
-    /** 单维阶梯曲线:逐段水平线 + 相邻段值差处以边界为中心的对称斜坡。 */
+    /**
+     * 单维阶梯曲线:逐段水平线 + 相邻段值差处以边界为中心的对称斜坡。
+     * 每段先描一道深底 halo(线宽 +CURVE_HALO_W)再上本色 —— pan 的薰衣草与包络柱
+     * 同色系、且恰好压在泳道中线上,不垫深底就读不出来(Wave 2 亲验第 3 条)。
+     * 两级权重(05 行 310)靠**线宽 1/1.6(B-09 的 +0.6px 差)+ 透明度**双轨保留,
+     * auto 档透明度从 .5/.42 提到 .82/.72(深底档,见 deviations §R)。
+     */
     function drawStepCurve(ctx, segs, vp, w, laneY, rampPx, dim) {
         const yOf = (seg) =>
             laneY + (dim === "pan" ? panYPx(seg.pan) : volYPx(seg.volDb));
@@ -2871,16 +2932,6 @@ export function createTabWave(opts) {
             const seg = segs[i];
             if (!seg) continue;
             const manual = seg.origin && seg.origin !== "auto";
-            // 两级权重(05 行 310):auto 半透明细线,手动实线加重 +0.6px
-            ctx.strokeStyle =
-                dim === "pan"
-                    ? manual
-                        ? "rgba(181,172,201,.98)"
-                        : "rgba(181,172,201,.5)"
-                    : manual
-                      ? "rgba(255,255,255,.92)"
-                      : "rgba(255,255,255,.42)";
-            ctx.lineWidth = manual ? 1.6 : 1;
             const x0 = timeToX(vp, w, num(seg.t0S, 0));
             const x1 = timeToX(vp, w, num(seg.t1S, 0));
             if (x1 < 0 || x0 > w) continue;
@@ -2888,19 +2939,32 @@ export function createTabWave(opts) {
             const half = rampPx / 2;
             const prev = segs[i - 1];
             const next = segs[i + 1];
-            ctx.beginPath();
+            const path = new Path2D();
             // 段头:有上一段且值不同 → 从斜坡终点起画(斜坡由上一段迭代画上半)
-            ctx.moveTo(Math.max(x0 + (prev ? half : 0), 0), y);
-            ctx.lineTo(Math.min(x1 - (next ? half : 0), w), y);
-            ctx.stroke();
+            path.moveTo(Math.max(x0 + (prev ? half : 0), 0), y);
+            path.lineTo(Math.min(x1 - (next ? half : 0), w), y);
             // 边界斜坡(跨在边界两侧,以边界为中心对称;绝不垂直跳变)
             if (next) {
-                const yNext = yOf(next);
-                ctx.beginPath();
-                ctx.moveTo(x1 - half, y);
-                ctx.lineTo(x1 + half, yNext);
-                ctx.stroke();
+                path.moveTo(x1 - half, y);
+                path.lineTo(x1 + half, yOf(next));
             }
+            const lw = manual ? CURVE_W_MANUAL : CURVE_W_AUTO;
+            ctx.strokeStyle = CURVE_HALO;
+            ctx.lineWidth = lw + CURVE_HALO_W;
+            ctx.stroke(path);
+            // 色相锁死 05 行 310 / 图谱 §12 ③ 的两色:pan = accent 薰衣草
+            // rgba(181,172,201)、vol = 白;两级权重只走线宽(B-09)与 alpha,
+            // **不改 rgb**(本波曾顺手换过一档手动色相,tokens.css 零命中,已回退)。
+            ctx.strokeStyle =
+                dim === "pan"
+                    ? manual
+                        ? "rgba(181,172,201,.98)"
+                        : "rgba(181,172,201,.82)"
+                    : manual
+                      ? "rgba(255,255,255,.95)"
+                      : "rgba(255,255,255,.72)";
+            ctx.lineWidth = lw;
+            ctx.stroke(path);
         }
     }
 
@@ -2948,12 +3012,32 @@ export function createTabWave(opts) {
 
     /** §2.6(30Hz):播放头 rAF 插值;采集中头部绿色进度点(A-15)。 */
     function onPlayhead(p) {
+        local.playheadEv = p || null;
+        // 「只投影当前激活 tab」在 rAF 侧同样成立(对抗校验 major):Tab3 不在前台
+        // 时舞台 display:none ⇒ stageWidth()=0,插值循环每帧只是把竖线反复置
+        // hidden;帧时账也没有可测的帧。事件照存不照画,切回本页由 render() 的
+        // resumePlayhead() 补一次 push + 起帧。
+        if (!isPanelActive()) {
+            local.playheadHeld = true;
+            if (playhead.running()) playhead.stop();
+            return;
+        }
         playhead.push(p || null);
         const st = getStore();
         const capturing = !!((st.state || {}).global || {}).capture_enabled;
         show(els.playheadCap, !!(p && p.isPlaying) && capturing);
         // 播放期帧时账开跑(空闲零 rAF:停播且无交互时循环自停)
         if (p && p.isPlaying) ensureTicker();
+    }
+
+    /**
+     * 切回本页:把非前台期间挂起的播放头/帧时账接回来(只在**挂起过**时补一次
+     * —— 每帧无脑重 push 会把插值基线 evAtMs 每帧归零,播放头反而冻住)。
+     */
+    function resumePlayhead() {
+        if (!local.playheadHeld || !isPanelActive()) return;
+        local.playheadHeld = false;
+        onPlayhead(local.playheadEv);
     }
 
     return {

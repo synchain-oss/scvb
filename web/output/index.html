@@ -2335,15 +2335,18 @@
                 opacity: 0.5;
             }
             /* 轨头 158px 装六件(B-08 裁定:曲线可见压成眼睛钮,覆盖率+段数并一行)。
-               Wave 1 亲验:gap 7 + covseg fs-90 下 label 只剩 ~17px(「主…」)——
-               收 gap 至 5、covseg 降 fs-80、label 保底 30px(deviations 登记) */
+               Wave 1 亲验:gap 7 + covseg fs-90 下 label 只剩 ~17px(「主…」);
+               Wave 3 亲验:gap 5 + covseg fs-80 仍只剩 33px,「Ad-lib 1/2」两轨同截成
+               「Ad-li…」(EN 更窄到 30px)—— 区分度是轨头的第一职责,故再腾 8px:
+               gap 5→4、padding 10→8;covseg 降 fs-75 并允许收缩,label 保底 38px。
+               (deviations §R 登记) */
             .wave-lane__head {
                 width: 158px;
                 flex: none;
                 display: flex;
                 align-items: center;
-                gap: var(--sp-5);
-                padding: 0 var(--sp-10);
+                gap: var(--sp-4);
+                padding: 0 var(--sp-8);
                 border-right: 1px solid var(--dark-rule);
                 border-bottom: 1px solid var(--dark-rule-weak);
             }
@@ -2383,7 +2386,9 @@
             }
             .wave-lane__label {
                 flex: 1;
-                min-width: 30px; /* 轨头 label 保底可读宽(QA 复核项) */
+                /* 保底可读宽:「Ad-lib 1」/「Ad-lib 2」在 zh/en 下都要 37px 才不吃掉
+                   末位区分字符;38px 是「轨名先满足、覆盖率后让位」的分配优先级 */
+                min-width: 38px;
                 font-size: var(--fs-105);
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -2394,12 +2399,17 @@
                 font-weight: 600;
                 color: var(--txt-dark-0);
             }
+            /* 覆盖率+段数:轨头里的**次要**读数 —— 空间不够时它先让位(收缩 + 省略号,
+               全文走 title),轨名永远优先(fs-80 → fs-75,EN「{p}% · {n} seg」更长) */
             .wave-lane__covseg {
-                flex: none;
+                flex: 0 1 auto;
+                min-width: 0;
                 font-family: var(--ff-mono);
-                font-size: var(--fs-80); /* fs-90 → fs-80:让位 label(QA 复核) */
+                font-size: var(--fs-75);
                 color: rgba(233, 229, 244, 0.45);
                 white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             /* 「样本不足」黄标:158px 内压成琥珀点 + tooltip(同 Tab2 dotmark 手法) */
             .wave-lane__lowdot {
@@ -2451,38 +2461,54 @@
                 top: 0;
                 right: 44px;
                 bottom: 0;
+                /* 共享动态层(曲线/边界)是 z-index:2 的兄弟,pan 走极端值时曲线
+                   会横穿段角标 —— 身份标压在曲线之上、边界手柄(z-index:4)之下 */
+                z-index: 3;
                 pointer-events: none;
+                /* 角标组是左对齐的实体(renderSegMarks 只按锚点 x 裁剪),末段起点
+                   靠近舞台右端时会压到右缘 44px 双刻度列上 —— 层本身兜住 */
+                overflow: hidden;
             }
-            /* E/C 角标(774-775):薰衣草实心小 chip;auto 段无角标 */
-            .wave-seg-badge {
+            /* 段起点角标组(图例帧 774-779):E/C 薰衣草实心 chip + **另挂**琥珀锁形
+               小标 —— 同一段起点的两件排成一行,绝不各自 absolute 叠成一枚大胶囊。
+               图例帧是 ×4 放大稿,其 9px/8.5px 字与 1px 5px 内衬按 34px 实景泳道
+               等比缩回 = 2px 糊块 → 实景档取 fs-75 + 0 3px 内衬,锁标只留 stroke
+               锁形、「锁定」词条移 aria-label(见 deviations §R)。
+               **纵向落点 = 泳道底带**(而非图例帧的段顶角):34px 实景泳道里 pan 曲线
+               走 y=5..19、vol 走 y=15..22,顶带角标必然压住 pan 线 —— 而 E/C 角标恰恰
+               只出现在「被人改过 pan/vol」的段上,那正是 J44 闭环要核对曲线值的段。
+               底带 y=23..31 在 vol 之下、2px 覆盖条(y=32..34)之上,两条曲线全避开。*/
+            .wave-seg-marks {
                 position: absolute;
-                top: 2px;
-                transform: translateX(-50%);
-                padding: 1px 5px;
-                border-radius: var(--r-tag);
-                background: rgba(var(--acc), 0.9);
-                font-family: var(--ff-mono);
-                font-size: var(--fs-90);
-                font-weight: 600;
-                line-height: 1.2;
-                color: var(--ink-on-amber);
-            }
-            /* 锁定小标(777-779):stroke 锁形 svg + 文字,无 emoji */
-            .wave-seg-lock {
-                position: absolute;
-                top: 2px;
-                transform: translateX(-50%);
+                bottom: 2px;
                 display: flex;
                 align-items: center;
-                gap: 4px;
-                padding: 1px 6px 1px 4px;
-                border-radius: var(--r-tag);
+                gap: 2px;
+            }
+            .wave-seg-badge {
+                padding: 0 3px;
+                border-radius: 3px;
+                background: rgba(var(--acc), 0.9);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-75);
+                font-weight: 600;
+                line-height: 8px;
+                color: var(--ink-on-amber);
+            }
+            .wave-seg-lock {
+                display: flex;
+                width: 8px;
+                height: 8px;
+                align-items: center;
+                justify-content: center;
+                border-radius: 2px;
                 background: rgba(var(--sem-amber), 0.24);
                 border: 1px solid rgba(var(--sem-amber), 0.5);
-                font-family: var(--ff-mono);
-                font-size: var(--fs-85);
-                line-height: 1.2;
                 color: var(--sem-amber-ink-dark);
+                /* 祖先 .wave-lane__badges 是 pointer-events:none —— 不在这里收回来,
+                   「锁定」词条(title)就永远弹不出 tooltip,只剩屏幕阅读器可达。
+                   指针事件照旧冒泡到 .wave-lanes 的舞台手势,点选/平移不受影响。 */
+                pointer-events: auto;
             }
             /* 共享动态层(§6.3:边界/曲线一张覆盖 canvas,随泳道滚动;高度 JS 写) */
             .wave-overlay {

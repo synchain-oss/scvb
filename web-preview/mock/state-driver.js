@@ -425,8 +425,12 @@ export function buildWorld(opts = {}) {
         // 05 §2.3「重采集选区」行:armed 后三处 badge + footer 警告的可验收世界。
         // 快照直接带 armed 态(= 用户在上一拍点过布防;切 tab/重开面板靠
         // scvb.state.recapture 恢复显示,契约 §9.2:只读回读**无 reason**)。
+        // **输出开关同时 ON**:B-04 的 footer 警告判据是「输出开关 ON 或布防期
+        // 被打开」—— 基线 output_enabled:false 时这条警告按判据就**不该**挂,
+        // 场景开箱跑不通验收锚④(对抗校验 minor)。故本场景连输出一起摆开。
         outputSnapshot = {
             ...outputSnapshot,
+            global: { ...outputSnapshot.global, output_enabled: true },
             recapture: {
                 armed: true,
                 tracksMask: maskOfChannels(RECAPTURE_DEMO.channels.slice()),

@@ -19,12 +19,23 @@ function num(v, dflt) {
 }
 
 /**
+ * 后备存储倍率上限。真机 dpr ≤ 3(uiScale ≤ 1.25 ⇒ k ≤ 3.75),k=4 已覆盖全部
+ * 交付档位;再往上只会把位图面积按 k² 涨上去 —— 15 泳道共享动态层在 k=12 时是
+ * 11148×6120(约 273 MB 后备存储),分配失败后 canvas 静默空掉,整片泳道渲染成
+ * 浅色(Wave 3 无头亲验的高倍复现)。05 §6.1 的片段没给上限,这里补一道封顶:
+ * 超过 4 的部分按 4 画再由浏览器上采样,**画得糙好过画不出来**。
+ */
+export const MAX_BACKING_SCALE = 4;
+
+/**
  * 后备存储倍率 k = uiScale × dpr(05 §6.1 逐字)。
- * 两参皆容错:非法值按 1;下夹 0.1(0/负值会让 canvas 尺寸为 0 并抛)。
+ * 两参皆容错:非法值按 1;下夹 0.1(0/负值会让 canvas 尺寸为 0 并抛),
+ * 上夹 MAX_BACKING_SCALE。
  */
 export function backingScale(uiScale, dpr) {
     const k = num(uiScale, 1) * num(dpr, 1);
-    return k > 0.1 ? k : 0.1;
+    if (!(k > 0.1)) return 0.1;
+    return k > MAX_BACKING_SCALE ? MAX_BACKING_SCALE : k;
 }
 
 /**
@@ -42,6 +53,16 @@ export function resizeCanvas(canvas, cssW, cssH, k) {
     // 尺寸未变不重建:给 canvas.width 赋同值也会清空位图(平移 blit 的老底就没了)
     if (canvas.width !== w) canvas.width = w;
     if (canvas.height !== h) canvas.height = h;
+    // CSS 尺寸必须**显式写死**:canvas 的 width/height 属性会作为表现层提示映射到
+    // CSS width/height,与 `left+right` / `top+bottom` 双向定位互相过约束 —— dpr>1
+    // 时 right/bottom 被丢弃,位图按后备像素数当 CSS px 摊开,泳道整体放大 dpr 倍
+    // 再被 overflow 裁掉(Wave 3 无头亲验实拍;05 §6.1 的片段没写这两行)。
+    const cw = `${cssW}px`;
+    const ch = `${cssH}px`;
+    if (canvas.style) {
+        if (canvas.style.width !== cw) canvas.style.width = cw;
+        if (canvas.style.height !== ch) canvas.style.height = ch;
+    }
     const ctx = canvas.getContext ? canvas.getContext("2d") : null;
     if (ctx) ctx.setTransform(k, 0, 0, k, 0, 0);
     return ctx;

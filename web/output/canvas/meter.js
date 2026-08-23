@@ -148,6 +148,8 @@ export function createMeterRenderer(opts) {
     // null 哨兵:首帧时间戳恰为 0 时(如 tick(0)),truthy 判定会让第二帧
     // dt=0 白空转一帧(pr-agent)
     let lastMs = null;
+    /** 上一帧 tick 报告「15 行都没动」(空闲零 rAF 的起帧判据;见 push)。 */
+    let settled = false;
 
     /** 缓存 15 行的液柱/峰线节点(mount 之后、start 之前调一次)。 */
     function attach() {
@@ -169,9 +171,42 @@ export function createMeterRenderer(opts) {
         }
     }
 
-    /** 30 Hz 事件入口(契约 §2.5);只存不画,画在 rAF 里。 */
+    /**
+     * 30 Hz 事件入口(契约 §2.5);只存不画,画在 rAF 里。
+     * **空闲零 rAF(T33)**:循环在弹道停住时自停(见 loop),新事件由这里重新起帧。
+     * 两处不起帧:①轨道页不在前台(`tick` 本来就整帧早退,起了只是白排一次 rAF,
+     * 切回本页由 tab-tracks 的 render 补 start());②弹道已停在不动点、且本帧事件与
+     * 上一帧**逐字相同** —— 起帧也画不出任何变化(走带停住时 15 行全在地板,
+     * 宿主/mock 仍按 30Hz 重发同一份地板值,正是这一档)。
+     */
     function push(m) {
-        if (m && Array.isArray(m.tracks)) latest = m.tracks;
+        const next = m && Array.isArray(m.tracks) ? m.tracks : latest;
+        const same = sameFrame(latest, next);
+        latest = next;
+        if (!isActive()) return;
+        if (settled && same) return;
+        start();
+    }
+
+    /** 两帧弹道态是否逐字相同(相同 ⇒ 本帧无可见变化,可以停帧)。 */
+    function sameState(a, b) {
+        return (
+            a.db === b.db &&
+            a.peakDb === b.peakDb &&
+            a.peakHeldMs === b.peakHeldMs
+        );
+    }
+
+    /** 两帧 §2.5 载荷的电平面是否逐字相同(只比弹道读的那两个字段)。 */
+    function sameFrame(a, b) {
+        if (a === b) return true;
+        if (!a || !b || a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+            const x = a[i] || {};
+            const y = b[i] || {};
+            if (x.db !== y.db || x.peakDb !== y.peakDb) return false;
+        }
+        return true;
     }
 
     /** 停止态(`scvb.playhead.isPlaying === false`)复位归零,不留残影(口径④)。 */
@@ -199,36 +234,59 @@ export function createMeterRenderer(opts) {
         }
     }
 
-    /** 单帧推进(导出到返回对象上,便于 node 侧不起 rAF 也能驱动)。 */
+    /**
+     * 单帧推进(导出到返回对象上,便于 node 侧不起 rAF 也能驱动)。
+     * @returns {boolean} 本帧有没有可见变化 —— rAF 循环据此决定续帧还是自停(T33)。
+     *   弹道停在不动点(液柱/峰线/保持计时三者都不再变)时返回 false,循环就此让出
+     *   主线程;新的 §2.5 事件由 push() 重新起帧。**弹道数值一字未改**。
+     */
     function tick(nowMs) {
         const dt = lastMs === null ? 0 : nowMs - lastMs;
         lastMs = nowMs;
         // 非激活 tab:液柱不可见,整帧早退(lastMs 已推进,回到前台的第一帧 dt 仍正常)
-        if (!isActive()) return;
+        if (!isActive()) return false;
         const stopped = isStopped();
+        let moved = false;
         for (let i = 0; i < METER_CHANNELS; i++) {
+            const prev = tracks[i];
             if (stopped) {
                 tracks[i] = restState();
             } else {
                 const m = latest ? latest[i] : null;
                 tracks[i] = advance(
-                    tracks[i],
+                    prev,
                     m ? m.db : METER_FLOOR_DB,
                     dt,
                     m ? m.peakDb : undefined,
                 );
             }
+            if (!sameState(prev, tracks[i])) moved = true;
             writeRow(i, tracks[i]);
         }
+        settled = !moved;
+        return moved;
     }
 
     function start() {
         if (raf || typeof requestAnimationFrame !== "function") return;
         if (!nodes.length) attach();
         lastMs = null;
+        // **起帧后的第一帧不参与自停判据**(对抗校验 red):`lastMs = null` 让首帧
+        // 恒为 `dt = 0`,而 advance() 在 dt=0 时只做上行瞬时跟随、**下行一步不走**
+        // (口径② fast-follow 与口径③ peak 衰减都按 dt 计)。若首帧就允许自停,
+        // 回落序列会走成「push → dt=0 → moved=false → 立刻自停 → 下个事件再 dt=0」
+        // 的死循环:液柱只升不降,永远卡在瞬态电平上。自停判据必须至少看到一帧
+        // 真实 dt 才作数,故首帧无条件续一帧。
+        let first = true;
         const loop = (ts) => {
-            raf = requestAnimationFrame(loop);
-            tick(ts);
+            raf = 0;
+            // 空闲零 rAF(05 §6.1):弹道不动就停帧,别按显示帧率空转 15 行 ——
+            // 改造前这个循环是**永久**的(mount 起跑、从不 cancel),Tab2 不在前台、
+            // 走带停住、甚至整页无事发生时照样每帧跑一遍 15 轨。
+            const moved = tick(ts);
+            if (moved || first) raf = requestAnimationFrame(loop);
+            else lastMs = null; // 时间基线清掉:重新起帧的第一帧 dt=0
+            first = false;
         };
         raf = requestAnimationFrame(loop);
     }
@@ -239,6 +297,7 @@ export function createMeterRenderer(opts) {
         }
         raf = 0;
         latest = null;
+        settled = false;
         for (let i = 0; i < METER_CHANNELS; i++) {
             tracks[i] = restState();
             writeRow(i, tracks[i]);

@@ -345,6 +345,31 @@ log("=== ① 契约映射的纯函数 ===");
     );
     eq(TM.nextParamEcho(echo, null, null), {}, "空载荷不抛错(按整表作废处理)");
     eq(echo, { width: 130, ms_balance: -20 }, "nextParamEcho 不改入参");
+
+    // T33:full 分支与 Tab2 dropParamEcho 口径对齐(t32/deviations §O 登记项)——
+    // 整表作废,**唯拖动中的 id 保留到松手**;指针还按在把手上时不许被全量广播抢跳。
+    eq(
+        TM.nextParamEcho(echo, { values: { width: 100 }, full: true }, "width"),
+        { width: 130 },
+        "full:true 拖动中的 id 保留(与 Tab2 dropParamEcho 同口径)",
+    );
+    eq(
+        TM.nextParamEcho(
+            echo,
+            { values: { width: 100 }, full: true },
+            "lead_select",
+        ),
+        {},
+        "full:true 时拖动中的 id 不在表里 ⇒ 仍是空表(不凭空造 undefined 项)",
+    );
+    eq(echo, { width: 130, ms_balance: -20 }, "full 分支同样不改入参");
+    // 两 tab 的 full 分支必须都留 gesture:Tab2 侧是源码级不变式(它没有纯函数出口)
+    check(
+        /if \(!payload \|\| payload\.full\) \{[\s\S]{0,600}?id !== local\.gesture/.test(
+            readFileSync(join(ROOT, "web/output/tab-tracks.js"), "utf8"),
+        ),
+        "Tab2 dropParamEcho 的 full 分支仍保留拖动中的 id(两 tab 口径一致)",
+    );
 }
 
 // §1.6:分析按钮「无数据」= 覆盖 ∪ 段表并集判空 —— 此口径两度踩坑
@@ -859,7 +884,9 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
         "isParamBlocked() 不得再按 hostEcho 阻断 gesture",
     );
 
-    // P1:scvb.params 订阅里必须让乐观值失效,且排在 render() 之前
+    // P1:scvb.params 订阅里必须让乐观值失效,且排在**请求重渲染**之前。
+    // T33 起整页渲染走 rAF 合帧的 requestRender()(app.js「渲染」小节),
+    // 排序不变式照旧 —— 尾包的 requestRender() 必须在两个 onParams 之后。
     const paramsSub = /bridge\.on\("scvb\.params"[\s\S]*?\n    \}\);/.exec(
         appJs,
     );
@@ -870,9 +897,15 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
             body.includes("tabMaster.onParams("),
             "scvb.params 订阅调用 tabMaster.onParams()(乐观值逐帧失效)",
         );
+        // 末尾那一句请求重渲染的位置(取最后一次出现,hostEcho 的定时器兜底不算)
+        const renderAt = body.lastIndexOf("requestRender()");
         check(
-            body.indexOf("tabMaster.onParams(") < body.indexOf("render()"),
-            "onParams 必须排在 render() 之前(否则本帧仍读到已作废的乐观值)",
+            renderAt > 0 && body.indexOf("tabMaster.onParams(") < renderAt,
+            "onParams 必须排在请求重渲染之前(否则本帧仍读到已作废的乐观值)",
+        );
+        check(
+            body.indexOf("tabTracks.onParams(") < renderAt,
+            "Tab2 的 onParams 同款排在请求重渲染之前",
         );
     }
 

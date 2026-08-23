@@ -35,12 +35,27 @@ export const UNCOVERED_DB = -160;
 export const ENV_FLOOR_DB = -80;
 
 /**
+ * VAD 绿罩透明度(**唯一真源**)。
+ *
+ * 图谱 §12 ② 给的是两档:「15 泳道实景 .07 / 放大或单轨展开态 .13」。Wave 2 亲验
+ * 证实实景 .07 在深底上整屏读不出绿(05 行 312 的核心可读性件失效),故实景档取
+ * **图例帧 752-754 的 .13**(两档中的上档),另配顶缘 1.5px 亮线补区间起止;
+ * 下档(.07)在 v1 无消费者(不存在单轨展开态),不落实现。差异登记 deviations §R。
+ *
+ * ⚠ tab-wave.js 的 computedPalette() 只把 rgb 换成 tokens 真值,**alpha 从这里
+ * import**——两处各写一份字面量正是本波踩过的坑(smoke-tab3 有断言钉住)。
+ */
+export const VAD_ALPHA = 0.13;
+
+/**
  * 默认调色(= tokens.css 字面镜像;键名即语义)。
  * env/vad/coverage 的出处见图谱 §12,stale 配方见图谱 A-08 统筹建议。
  */
 export const DEFAULT_PALETTE = Object.freeze({
-    env: "rgba(196, 190, 220, 0.5)", // --wave-env
-    vad: "rgba(120, 176, 142, 0.07)", // rgba(var(--sem-green), .07) 实景档
+    env: "rgba(196, 190, 220, 0.5)", // --wave-env(外柱 = maxDb 峰包络)
+    envCore: "rgba(230, 226, 248, 0.55)", // 内柱 = minDb 亮芯(峰/谷两级可读)
+    vad: `rgba(120, 176, 142, ${VAD_ALPHA})`, // rgba(var(--sem-green), VAD_ALPHA)
+    vadEdge: "rgba(134, 198, 158, 0.6)", // VAD 区顶缘 1.5px 亮线(区间起止可读)
     uncovered: "rgba(255, 255, 255, 0.05)", // 空白底纹(斜纹亮线)
     stale: "rgba(212, 176, 118, 0.22)", // rgba(var(--sem-amber), .22)
     passTint: "rgba(255, 255, 255, 0.03)", // passId 偶数轮次的底色微差
@@ -62,16 +77,26 @@ export function tileKey(startS, endS, cols) {
 }
 
 /**
+ * 包络对比度整形指数。dB 是对数量,在 -80..0 上做**线性**映射会把
+ * 「有声 −7..−16」与「静默 −44..−54」压成同高一排栅栏(Wave 2 亲验第 4 条);
+ * 取 γ=2.2 的幂整形后二者半高比 ≈ 4:1,乐句起伏才读得出来。
+ * 两端不动(0 dB → 满高、−80 dB → 1px),线性档的验收点不受影响。
+ */
+export const ENV_GAMMA = 2.2;
+
+/**
  * dB → 包络半高(px)。地板(≤ -80)画 1px 最细柱,0 dB 顶到
  * `laneH/2 − 4`(上下各留 4px 呼吸,34px 泳道时 = 13px,与设计稿
- * 「半高 4..12px」带一致)。未覆盖哨兵(-160)也会落在最细柱 —— 调用方
- * 先按 covered 位裁掉,不依赖本函数分辨。
+ * 「半高 4..12px」带一致);中间按 ENV_GAMMA 幂整形拉开动态。
+ * 未覆盖哨兵(-160)也会落在最细柱 —— 调用方先按 covered 位裁掉,
+ * 不依赖本函数分辨。
  */
 export function envelopeHalfPx(db, laneH) {
     const h = Math.max(num(laneH, 34), 8);
     const max = h / 2 - 4;
     const d = Math.min(Math.max(num(db, ENV_FLOOR_DB), ENV_FLOOR_DB), 0);
-    return 1 + ((d - ENV_FLOOR_DB) / -ENV_FLOOR_DB) * (max - 1);
+    const u = (d - ENV_FLOOR_DB) / -ENV_FLOOR_DB;
+    return 1 + Math.pow(u, ENV_GAMMA) * (max - 1);
 }
 
 /**
@@ -239,31 +264,37 @@ export function paintWaveTile(ctx, tile, w, h, palette) {
         }
     }
 
-    // ③ min/max 包络柱(05 §2.3 行 311):外柱 = max 半透明,内柱 = min 提亮,
-    //    纵向对称于泳道中线(实景帧的居中几何,图谱 §12 ①)
+    // ③ min/max 包络柱(05 §2.3 行 311):外柱 = max 峰包络(半透明晕),
+    //    内柱 = min 亮芯,纵向对称于泳道中线(实景帧的居中几何,图谱 §12 ①)。
+    //    外柱铺满列宽成连续包络,亮芯留 0.6px 缝 = 图例帧 756 的条纹感。
     ctx.fillStyle = pal.env;
     for (let i = 0; i < cols; i++) {
         if (!tile.covered[i]) continue;
         const hi = envelopeHalfPx(tile.maxDb[i], h);
-        ctx.fillRect(x0(i), mid - hi, Math.max(colW - 1, 0.5), hi * 2);
+        ctx.fillRect(x0(i), mid - hi, Math.max(colW, 0.6), hi * 2);
     }
-    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = pal.envCore;
+    const coreW = Math.max(colW - 0.6, 0.4);
     for (let i = 0; i < cols; i++) {
         if (!tile.covered[i]) continue;
         const lo = envelopeHalfPx(tile.minDb[i], h);
-        ctx.fillRect(x0(i), mid - lo, Math.max(colW - 1, 0.5), lo * 2);
+        ctx.fillRect(x0(i), mid - lo, coreW, lo * 2);
     }
-    ctx.globalAlpha = 1;
 
     // ④ VAD 绿罩(满高、压在包络之上 —— 图谱 §12 层序;阈值拖动重取重绘,
-    //    05 §2.3 行 312)
+    //    05 §2.3 行 312)。深底上纯 .07 罩几乎不可见(Wave 2 亲验第 2 条)→
+    //    取图谱 §12 ② 两档中的上档 = 图例帧 752-754 的 .13(常量 VAD_ALPHA)
+    //    + 顶缘 1.5px 亮线,让「哪段被判为有声」在满屏 15 泳道下一眼可读,
+    //    又不盖掉包络。
     if (Array.isArray(tile.vad)) {
+        const runs = runsOf(tile.vad, (v, i) => tile.covered[i] && v > 0);
         ctx.fillStyle = pal.vad;
-        for (const [a, b] of runsOf(
-            tile.vad,
-            (v, i) => tile.covered[i] && v > 0,
-        )) {
+        for (const [a, b] of runs) {
             ctx.fillRect(x0(a), 0, (b - a) * colW, h);
+        }
+        ctx.fillStyle = pal.vadEdge;
+        for (const [a, b] of runs) {
+            ctx.fillRect(x0(a), 0, (b - a) * colW, 1.5);
         }
     }
 
