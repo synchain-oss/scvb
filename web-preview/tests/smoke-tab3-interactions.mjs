@@ -405,6 +405,38 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             !!src.peekOverview(1),
             "软失效后概览仍可垫底(2Hz 采集事件不该让它每 500ms 消失)",
         );
+        // 概览垫底必须**压暗**:它一列跨 0.59s、外柱取区间 max,粗列把柱子铺得
+        // 又满又高,不压的话垫底那截比旁边真数据还亮,接缝一眼可见(用户 preview
+        // 圈出的就是这块)。实测拖动中墨迹平均亮度 217→202、平均 α 105→80,
+        // 而稳态两者完全一致(224/117)—— 只动过渡帧。
+        const dim = WF.dimPalette(WF.DEFAULT_PALETTE, WF.OVERVIEW_DIM);
+        const alphaOf = (s) => Number(String(s).match(/([\d.]+)\s*\)$/)[1]);
+        check(
+            WF.OVERVIEW_DIM > 0 && WF.OVERVIEW_DIM < 1,
+            `OVERVIEW_DIM 落在 (0,1) 之间(实得 ${WF.OVERVIEW_DIM})`,
+        );
+        check(
+            Math.abs(
+                alphaOf(dim.env) -
+                    alphaOf(WF.DEFAULT_PALETTE.env) * WF.OVERVIEW_DIM,
+            ) < 1e-9,
+            "dimPalette 按系数缩放 env 的 alpha",
+        );
+        check(
+            Math.abs(
+                alphaOf(dim.envCore) -
+                    alphaOf(WF.DEFAULT_PALETTE.envCore) * WF.OVERVIEW_DIM,
+            ) < 1e-9,
+            "dimPalette 同样缩放 envCore(亮芯是最抢眼的一层)",
+        );
+        // 非 rgba 的键要原样带过:调用方(tab-wave 的 computedPalette)从
+        // tokens 换算真值时可能给出 #hex 或 color() 形式,正则匹配不上就把整个
+        // 键吞掉 ⇒ 那一层直接不画。
+        const kept = WF.dimPalette({ env: "#ffeeff", stale: "red" }, 0.5);
+        check(
+            kept.env === "#ffeeff" && kept.stale === "red",
+            "dimPalette 对非 rgba 值原样带过(吞掉的话该层直接不画)",
+        );
         // 硬失效(clearCoverage)必须真丢 —— 数据没了还垫底就是画不存在的波形
         src.invalidate(1, null, { keepStale: false });
         check(
@@ -1674,7 +1706,7 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
     // **列宽随映射变而画笔不变** ⇒ 斜纹/线宽/覆盖条几何恒正确;缩小档再把
     // 缓存里所有与视口相交的块按跨度从宽到窄拼上去,两侧不再留白。
     check(
-        /paintWaveTile\(ctx, blk\.tile, w, laneH, pal, \{[\s\S]{0,300}tileStartS: blk\.startS/.test(
+        /paintWaveTile\(ctx, blk\.tile, w, laneH, blkPal \|\| pal, \{[\s\S]{0,300}tileStartS: blk\.startS/.test(
             tw,
         ),
         "过渡帧按**时间映射**重画缓存块(不是位图拉伸)",
@@ -1708,10 +1740,14 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
     // 概览兜底是**惰性**的:只有前面几块没盖满才动用。它跨整首曲子,每帧每轨
     // 都拉进来画的话超 32ms 长帧 3 → 13(brief §4.5 红线);多数帧本就盖得满。
     check(
-        /for \(const \[f0, f1\] of filled\) covered \+= f1 - f0;[\s\S]{0,200}if \(covered < w - 0\.5\) drawBlock\(ov\)/.test(
+        /for \(const \[f0, f1\] of filled\) covered \+= f1 - f0;[\s\S]{0,200}if \(covered < w - 0\.5\)\s*\n?\s*drawBlock\(/.test(
             tw,
         ),
         "概览块只在前面没盖满时才动用(每帧无条件画 ⇒ 长帧超预算)",
+    );
+    check(
+        /drawBlock\(\s*\n?\s*ov,\s*dimPalette\(pal, OVERVIEW_DIM\)/.test(tw),
+        "概览垫底用压暗调色板(不压则垫底那截比真数据还亮,接缝一眼可见)",
     );
     // **空隙裁剪**:波形是半透明的(外柱 α=.52 / 内柱 α=.6),重叠区被画两三遍
     // 就把 α 叠到 0.89 / 0.94 —— 几乎纯白,一动视口波形区域就闪白(用户实测)。

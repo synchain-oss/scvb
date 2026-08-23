@@ -158,6 +158,43 @@ export const OVERVIEW_COLS = 512;
 /** 概览块重取节流(ms);只在视口静止时触发,采集中不至于每 500ms 重拉一次。 */
 export const OVERVIEW_REFRESH_MS = 3000;
 
+/**
+ * 概览块垫底时整体透明度系数(见 `dimPalette`)。
+ *
+ * 为什么必须压:概览一列跨 0.59s(512 列 / 5 分钟),外柱取的是区间 **max**
+ * —— 粗列把柱子铺得又满又高,几乎连成实心带;而它旁边由细块画的部分逐列
+ * 有起伏、露得出底色。于是「垫底的那截**比真数据还亮**」,接缝一眼可见,
+ * 用户 preview 圈出的正是这一块。
+ *
+ * 画得更细治标不治本:取数成本上去了,缩放比一大(放到 ×13 时概览一列铺
+ * 16px)照样露馅。垫底件的语义本就是「真数据还没到,先给个轮廓」,让它
+ * **退让**才是对的 —— 0.55 下它读作一层淡影,补住了空白又不抢戏。
+ */
+export const OVERVIEW_DIM = 0.55;
+
+/**
+ * 按系数缩放调色板里每个 `rgba()` 的 alpha(非 rgba 值原样带过)。
+ * 只在过渡帧给概览块用;`DEFAULT_PALETTE` 是冻结对象,这里恒返回新对象。
+ */
+export function dimPalette(palette, k) {
+    const f = Number.isFinite(k) ? Math.min(Math.max(k, 0), 1) : 1;
+    const src = { ...DEFAULT_PALETTE, ...(palette || {}) };
+    const out = {};
+    for (const key of Object.keys(src)) {
+        const v = src[key];
+        const m =
+            typeof v === "string"
+                ? v.match(
+                      /^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/,
+                  )
+                : null;
+        out[key] = m
+            ? `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${Number(m[4]) * f})`
+            : v;
+    }
+    return out;
+}
+
 function num(v, dflt) {
     return Number.isFinite(v) ? v : dflt;
 }

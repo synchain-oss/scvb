@@ -53,6 +53,8 @@ import {
     IDLE_REFETCH_MS,
     VAD_ALPHA,
     OVERVIEW_COLS,
+    OVERVIEW_DIM,
+    dimPalette,
 } from "./canvas/waveform.js";
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
@@ -3639,7 +3641,7 @@ export function createTabWave(opts) {
                 ctx.clearRect(0, 0, w, laneH);
                 local.canvasVp.set(ch, null); // 画布内容不再对应任何完整视口
                 const filled = []; // 已画区间 [x0,x1](升序、互不相交)
-                const drawBlock = (blk) => {
+                const drawBlock = (blk, blkPal) => {
                     const bx0 = Math.max(timeToX(vp, w, blk.startS), 0);
                     const bx1 = Math.min(timeToX(vp, w, blk.endS), w);
                     if (!(bx1 > bx0)) return;
@@ -3664,7 +3666,7 @@ export function createTabWave(opts) {
                         ctx.beginPath();
                         ctx.rect(g0, 0, g1 - g0, laneH);
                         ctx.clip();
-                        paintWaveTile(ctx, blk.tile, w, laneH, pal, {
+                        paintWaveTile(ctx, blk.tile, w, laneH, blkPal || pal, {
                             clear: false,
                             xFrom: g0,
                             xTo: g1,
@@ -3683,10 +3685,14 @@ export function createTabWave(opts) {
                 // 拉进来就要按空隙逐段跑列循环,不该每帧白付)。判据 = 已画区间
                 // 的总长是否够到整幅宽;留 0.5px 余量,免得浮点尾数逼出一次
                 // 无谓的整块重画。
+                // 概览用**压暗**的调色板(OVERVIEW_DIM):它一列跨 0.59s、外柱取
+                // 区间 max,粗列把柱子铺得又满又高 —— 不压的话垫底那截比旁边真
+                // 数据还亮,接缝一眼可见(用户 preview 圈出的就是这块)。
                 if (ov) {
                     let covered = 0;
                     for (const [f0, f1] of filled) covered += f1 - f0;
-                    if (covered < w - 0.5) drawBlock(ov);
+                    if (covered < w - 0.5)
+                        drawBlock(ov, dimPalette(pal, OVERVIEW_DIM));
                 }
                 // 视口在动就**不取新块**(契约 §1.27 行 383 / brief §0.8:静止
                 // 120ms 后才取)。缩放期每帧跨度都不同 = 每帧都是新键,LRU 与
