@@ -6,14 +6,14 @@
 // DOM 侧(蒙版/亮区/说明框定位、点击推进、跨 tab 翻页)归浏览器手测 / Playwright 截图。
 //
 // 跑什么:
-//   ① 步骤清单:恰 7 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
+//   ① 步骤清单:全参数导览 32 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
 //   ② shouldShowTourAsk 四种组合(J50a 镜像);
 //   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
 //     落工程位与全局位,再取快照往返不丢;
 //   ⑤ 词条:tour.* 三语齐、占位符三语一致、step4 措辞纪律(无「写入完成」);
 //   ⑥ 源码级:零 Audio API、唯一桥调用=setTourSeen、role=dialog、aria-live、
-//     Esc=Skip、←/→、左键推进;data-tour 六锚点齐、demo badge / 询问步 / 重看入口落点齐。
+//     Esc=Skip、←/→、左键推进;data-tour 全锚点齐、demo badge / 询问步 / 重看入口落点齐。
 //
 // 用法:node web-preview/tests/smoke-tour.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -51,31 +51,92 @@ const eq = (a, b, msg) =>
     );
 
 // =============================================================================
-log("=== ① 步骤清单(7 步基线,J71①)===");
+log("=== ① 步骤清单(全参数导览 32 步)===");
 {
-    eq(TOUR.TOUR_STEPS.length, 7, "步数 == 7");
+    eq(TOUR.TOUR_STEPS.length, 32, "步数 == 32");
     eq(
         TOUR.TOUR_ANCHORS,
-        ["cap", "an", "out", "freeze", "lanes", "review"],
-        "锚点连续无跳号,末步=review",
+        [
+            "cap",
+            "an",
+            "out",
+            "width",
+            "msbalance",
+            "leadselect",
+            "range",
+            "transition",
+            "trackrow",
+            "pan",
+            "widthknob",
+            "vollevel",
+            "prio",
+            "leadlock",
+            "volexempt",
+            "autopan",
+            "pair",
+            "freeze",
+            "enable",
+            "lanes",
+            "selection",
+            "actions",
+            "inspector",
+            "segments",
+            "vad",
+            "guideblock",
+            "loudnessmode",
+            "centerslot",
+            "scalelang",
+            "storage",
+            "review",
+        ],
+        "31 锚点连续无跳号,末步=review",
     );
     eq(TOUR.TOUR_STEPS[0].anchor, null, "首步无 spotlight(居中说明框)");
     eq(TOUR.TOUR_STEPS[0].tab, null, "首步留当前 tab");
     eq(
         TOUR.TOUR_STEPS.map((s) => s.tab),
-        [null, "master", "master", "master", "tracks", "wave", "settings"],
-        "跨 tab 翻页目标逐条对拍",
+        [
+            null,
+            "master",
+            "master",
+            "master",
+            "master",
+            "master",
+            "master",
+            "master",
+            "master",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "tracks",
+            "wave",
+            "wave",
+            "wave",
+            "wave",
+            "wave",
+            "wave",
+            "settings",
+            "settings",
+            "settings",
+            "settings",
+            "settings",
+            "settings",
+        ],
+        "跨 tab 翻页目标逐条对拍(8 master / 11 tracks / 6 wave / 6 settings)",
     );
     eq(
-        TOUR.TOUR_STEPS[6].anchor,
+        TOUR.TOUR_STEPS[31].anchor,
         "review",
         "末步固定 = 设置页「重看引导」入口",
     );
-    eq(
-        TOUR.TOUR_STEPS[2].anchor,
-        "an",
-        "第 3 步 = 三件套「02 分析」段(补步,J71①)",
-    );
+    eq(TOUR.TOUR_STEPS[2].anchor, "an", "第 3 步 = 三件套「02 分析」段");
     check(TOUR.SPOT_PAD >= 8, "spotlight 内边距 ≥8 设计 px");
 }
 
@@ -238,7 +299,7 @@ log("=== ⑤ 词条:tour.* 三语 ===");
         "done",
         "demoBadge",
     ];
-    for (let i = 1; i <= 7; i++) {
+    for (let i = 1; i <= 32; i++) {
         KEYS.push("step" + i + ".title", "step" + i + ".body");
     }
     for (const k of KEYS) {
@@ -315,16 +376,56 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
     check(ts.includes("e.button !== 0"), "仅左键推进(button===0)");
     check(ts.includes('closest("[data-tour-btn]")'), "说明框按钮例外");
 
-    // data-tour 六锚点(§2.6 步骤表)
-    for (const a of ["cap", "an", "out", "lanes", "review"]) {
+    // data-tour 锚点:index.html 静态锚 + tab-tracks.js 首行动态锚(dt() 助手)
+    const staticAnchors = [
+        "cap",
+        "an",
+        "out",
+        "width",
+        "msbalance",
+        "leadselect",
+        "range",
+        "transition",
+        "lanes",
+        "selection",
+        "actions",
+        "inspector",
+        "segments",
+        "vad",
+        "guideblock",
+        "review",
+        "loudnessmode",
+        "centerslot",
+        "scalelang",
+        "storage",
+    ];
+    for (const a of staticAnchors) {
         check(
             html.includes('data-tour="' + a + '"'),
             "index.html data-tour=" + a,
         );
     }
+    const trackAnchors = [
+        "trackrow",
+        "pan",
+        "widthknob",
+        "vollevel",
+        "prio",
+        "leadlock",
+        "volexempt",
+        "autopan",
+        "pair",
+        "enable",
+    ];
+    for (const a of trackAnchors) {
+        check(
+            tracks.includes('dt("' + a + '")'),
+            "tab-tracks.js dt(" + a + ")",
+        );
+    }
     check(
         tracks.includes('data-tour="freeze"'),
-        "tab-tracks.js data-tour=freeze",
+        "tab-tracks.js data-tour=freeze(第 1 行冻结组)",
     );
 
     // demo badge / 询问步 / 重看入口 落点

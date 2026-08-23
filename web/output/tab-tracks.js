@@ -603,6 +603,8 @@ export function trackRowHtml(t) {
     const ch = t.n;
     const dead = t.status === "srErr" ? 1 : 0; // srErr:全行控件 disabled(设计稿 1729)
     const gb = (suffix) => `tracks-row-${ch}-${suffix}`;
+    // 全参数导览(tour)锚点:只挂第 1 行(与 freeze 同款),挂在有 principal box 的真实盒上
+    const dt = (name) => (ch === 1 ? ` data-tour="${name}"` : "");
     // pan 旋钮:**未冻结 = live**(引擎驱动、只读表盘),冻结才解锁为手动(设计稿 1731)
     const panLive = t.fp ? 0 : 1;
     // width 旋钮:`live` 恒 false —— 它直写自动化参数,不受冻结位管辖(设计稿 1732);
@@ -615,7 +617,7 @@ export function trackRowHtml(t) {
         ` role="switch" aria-checked="${on ? "true" : "false"}" tabindex="0"`;
 
     return `
-    <div class="tracks-row" role="row" data-glow="1" data-gb="tracks-row-${ch}" data-ch="${ch}"
+    <div class="tracks-row" role="row" data-glow="1" data-gb="tracks-row-${ch}"${dt("trackrow")} data-ch="${ch}"
          data-status="${t.status}" data-on="${t.on}" data-lead="${t.lead}" data-dead="${dead}"
          data-confirm="0">
       <!-- 重采集布防目标轨的行首 badge(05 §2.3 ②,B-05 裁定「行首」:贴行左缘的
@@ -648,7 +650,7 @@ export function trackRowHtml(t) {
         <span class="sc-knob" data-live="${panLive}" data-disabled="${dead}"
               role="slider" tabindex="0" aria-valuemin="${PAN_RANGE.min}" aria-valuemax="${PAN_RANGE.max}"
               aria-valuenow="${Math.round(num(t.pan, 0))}" data-t-aria="tracks.colPan"
-              style="--ang:${panAngleDeg(t.pan)}deg" data-gb="${gb("pan")}"><span class="sc-knob__needle"></span></span>
+              style="--ang:${panAngleDeg(t.pan)}deg" data-gb="${gb("pan")}"${dt("pan")}><span class="sc-knob__needle"></span></span>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.width}px">
         <!-- bridge.beginParamGesture / setParam / endParamGesture(v{active}_t${tt(ch)}_width)
@@ -656,10 +658,10 @@ export function trackRowHtml(t) {
         <span class="sc-knob" data-live="0" data-disabled="${wDis}"
               role="slider" tabindex="0" aria-valuemin="${WIDTH_RANGE.min}" aria-valuemax="${WIDTH_RANGE.max}"
               aria-valuenow="${Math.round(num(t.w, 100))}" data-t-aria="tracks.colW"
-              style="--ang:${widthAngleDeg(t.w)}deg" data-gb="${gb("width")}"><span class="sc-knob__needle"></span></span>
+              style="--ang:${widthAngleDeg(t.w)}deg" data-gb="${gb("width")}"${dt("widthknob")}><span class="sc-knob__needle"></span></span>
       </span>
       <span class="tracks-row__cell tracks-row__voltube" role="cell" style="width:${W.vol}px" data-gb="${gb("voltube")}">
-        <span class="sc-tube" data-gb="${gb("vol-tube")}">
+        <span class="sc-tube" data-gb="${gb("vol-tube")}"${dt("vollevel")}>
           <span class="sc-tube__slot">
             <span class="sc-tube__liquid" style="--lv:${t.lv * 100}%"></span>
             <span class="sc-tube__peak" style="--pk:${t.pk * 100}%" data-alert="${t.pk > PEAK_ALERT_RATIO ? 1 : 0}"${t.pk ? "" : " hidden"}></span>
@@ -675,7 +677,7 @@ export function trackRowHtml(t) {
                 data-gb="${gb("vol-collar")}"></span>
         </span>
       </span>
-      <span class="tracks-row__cell sc-stepper tracks-row__prio" role="cell" style="width:${W.prio}px" data-gb="${gb("priority")}">
+      <span class="tracks-row__cell sc-stepper tracks-row__prio" role="cell" style="width:${W.prio}px" data-gb="${gb("priority")}"${dt("prio")}>
         <button type="button" data-t-aria="common.decrease" data-gb="${gb("priority-dec")}"${dis}>−</button>
         <span class="sc-stepper__val" data-gb="${gb("priority-val")}">${clampPriority(t.prio)}</span>
         <button type="button" data-t-aria="common.increase" data-gb="${gb("priority-inc")}"${dis}>+</button>
@@ -683,12 +685,12 @@ export function trackRowHtml(t) {
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.lead}px">
         <span class="sc-toggle" data-on="${t.lead}" data-disabled="${dead}"${sw(t.lead)}
-              data-t-aria="leadLock" data-gb="${gb("leadlock")}"></span>
+              data-t-aria="leadLock" data-gb="${gb("leadlock")}"${dt("leadlock")}></span>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.pair}px">
         <!-- 配对:05 要「下拉:无 / A–G」,设计稿画的是只读 chip —— 保留原生 select 语义,
              视觉压成设计稿那枚 52px chip(select 透明叠在 chip 之上,统筹裁定 B16)。 -->
-        <span class="tracks-row__pair" data-set="${t.pair ? 1 : 0}" data-pair="${t.pair}" data-gb="${gb("pair-chip")}">
+        <span class="tracks-row__pair" data-set="${t.pair ? 1 : 0}" data-pair="${t.pair}" data-gb="${gb("pair-chip")}"${dt("pair")}>
           <span class="tracks-row__pair-dot"></span>
           <span class="tracks-row__pair-text" data-gb="${gb("pair-text")}">${esc(pairLetter(t.pair))}</span>
           <!-- 自定义下拉(用户反馈 2026-08-20:原生 select 弹层不可样式化)——
@@ -719,11 +721,11 @@ export function trackRowHtml(t) {
         <!-- 参与语义(用户裁定 2026-08-21:开=参与音量调节,与声像一致;
              契约字段仍是反义的 lead_vol_exempt,仅显示层取反,桥面不动) -->
         <span class="sc-toggle" data-on="${t.volPart}" data-disabled="${dead}"${sw(t.volPart)}
-              data-t-aria="tracks.colVolPart" data-gb="${gb("volexempt")}"></span>
+              data-t-aria="tracks.colVolPart" data-gb="${gb("volexempt")}"${dt("volexempt")}></span>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.autopan}px">
         <span class="sc-toggle" data-on="${t.part}" data-disabled="${dead}"${sw(t.part)}
-              data-t-aria="participateAutoPan" data-gb="${gb("autopan")}"></span>
+              data-t-aria="participateAutoPan" data-gb="${gb("autopan")}"${dt("autopan")}></span>
       </span>
       <span class="sc-divider" aria-hidden="true"></span>
       <span class="tracks-row__cell" role="cell" style="width:${FREEZE_GROUP_W}px">
@@ -742,7 +744,7 @@ export function trackRowHtml(t) {
       <span class="sc-divider" aria-hidden="true"></span>
       <span class="tracks-row__cell" role="cell" style="width:${W.on}px">
         <span class="sc-toggle" data-on="${t.on}" data-disabled="${dead}"${sw(t.on)}
-              data-t-aria="tracks.colOn" data-gb="${gb("enable")}"></span>
+              data-t-aria="tracks.colOn" data-gb="${gb("enable")}"${dt("enable")}></span>
         <!-- 切换 → bridge.setChannelConfig(${ch}, {enabled})(契约 §1.15) -->
       </span>
       <!-- R3 防误伤(05 §2.2 / §1.4 setTrackManual):每轨**首次**手动拖 pan 旋钮 / vol 卡箍前
