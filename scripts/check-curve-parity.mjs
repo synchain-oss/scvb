@@ -34,7 +34,7 @@ const CE = await import(
 
 // =============================================================================
 // parity 点集 —— 必须与 tests/tools/pan_curve_vectors.cpp 的 paritySets() 逐字节一致。
-// 覆盖:side 三值、side=out 且 |P0|<5(确定性回退)、三 shape、cut 谐振、clamp 上限。
+// 覆盖:side 三值、side=out 且 |P0|<5(确定性回退)、三 shape、cut slope(s∈{6,12,24})、clamp 上限。
 // =============================================================================
 const PARITY_SETS = [
     {
@@ -56,7 +56,9 @@ const PARITY_SETS = [
     },
     {
         id: "curve-4",
-        points: [{ angle: -40, gain_db: -12, shape: "cut", q: 2, side: "out" }],
+        points: [
+            { angle: -30, gain_db: -12, shape: "cut", q: 12, side: "out" },
+        ],
     },
     {
         id: "curve-5",
@@ -70,17 +72,35 @@ const PARITY_SETS = [
     },
     {
         id: "out-center-left",
-        points: [{ angle: -3, gain_db: -8, shape: "cut", q: 3, side: "out" }],
+        points: [{ angle: -3, gain_db: -8, shape: "cut", q: 12, side: "out" }],
+    },
+    {
+        id: "cut-right-s6",
+        points: [
+            { angle: 30, gain_db: -12, shape: "cut", q: 6, side: "right" },
+        ],
+    },
+    {
+        id: "cut-right-s12",
+        points: [
+            { angle: 30, gain_db: -12, shape: "cut", q: 12, side: "right" },
+        ],
+    },
+    {
+        id: "cut-left-s24",
+        points: [
+            { angle: 30, gain_db: -12, shape: "cut", q: 24, side: "left" },
+        ],
     },
     {
         id: "mixed",
         points: [
             { angle: -70, gain_db: -4, shape: "shelf", q: 1, side: "left" },
             { angle: -30, gain_db: 3, shape: "bell", q: 2, side: "out" },
-            { angle: -8, gain_db: -2, shape: "cut", q: 2.5, side: "out" },
+            { angle: -8, gain_db: -2, shape: "cut", q: 12, side: "out" },
             { angle: 15, gain_db: 2.5, shape: "bell", q: 1.5, side: "out" },
             { angle: 55, gain_db: -3, shape: "shelf", q: 0.8, side: "right" },
-            { angle: 85, gain_db: 1.5, shape: "cut", q: 4, side: "right" },
+            { angle: 85, gain_db: -1.5, shape: "cut", q: 6, side: "right" },
         ],
     },
 ];

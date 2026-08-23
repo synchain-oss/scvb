@@ -54,22 +54,26 @@ std::vector<Set> paritySets()
         {"curve-3",
          {P(0.0f, 8.0f, PanCurveShape::bell, 1.5f, PanCurveSide::out),
           P(0.0f, 8.0f, PanCurveShape::bell, 1.5f, PanCurveSide::out)}},
-        // CURVE-5:cut A=−12, P0=−40, Q=2, side=out(谐振)
-        {"curve-4", {P(-40.0f, -12.0f, PanCurveShape::cut, 2.0f, PanCurveSide::out)}},
+        // CURVE-5:cut A=−12, P0=−30, s=12, side=out(P0<0 → left)
+        {"curve-4", {P(-30.0f, -12.0f, PanCurveShape::cut, 12.0f, PanCurveSide::out)}},
         // CURVE-6:CURVE-2 改 side=right(镜像)
         {"curve-5", {P(-45.0f, -6.0f, PanCurveShape::shelf, 2.0f, PanCurveSide::right)}},
         // side=out 且 |P0|<5(确定性回退:angle≥0 → right)
         {"out-center-right", {P(2.0f, -6.0f, PanCurveShape::shelf, 2.0f, PanCurveSide::out)}},
-        // side=out 且 |P0|<5(确定性回退:angle<0 → left)+ cut 谐振
-        {"out-center-left", {P(-3.0f, -8.0f, PanCurveShape::cut, 3.0f, PanCurveSide::out)}},
-        // 混合:三 shape × 三 side 全覆盖
+        // side=out 且 |P0|<5(确定性回退:angle<0 → left)+ cut slope
+        {"out-center-left", {P(-3.0f, -8.0f, PanCurveShape::cut, 12.0f, PanCurveSide::out)}},
+        // cut slope 档位覆盖:s=6(right)、s=12(right)、s=24(left)
+        {"cut-right-s6", {P(30.0f, -12.0f, PanCurveShape::cut, 6.0f, PanCurveSide::right)}},
+        {"cut-right-s12", {P(30.0f, -12.0f, PanCurveShape::cut, 12.0f, PanCurveSide::right)}},
+        {"cut-left-s24", {P(30.0f, -12.0f, PanCurveShape::cut, 24.0f, PanCurveSide::left)}},
+        // 混合:三 shape × 三 side 全覆盖(cut 的 q 承载 slope)
         {"mixed",
          {P(-70.0f, -4.0f, PanCurveShape::shelf, 1.0f, PanCurveSide::left),
           P(-30.0f, 3.0f, PanCurveShape::bell, 2.0f, PanCurveSide::out),
-          P(-8.0f, -2.0f, PanCurveShape::cut, 2.5f, PanCurveSide::out),
+          P(-8.0f, -2.0f, PanCurveShape::cut, 12.0f, PanCurveSide::out),
           P(15.0f, 2.5f, PanCurveShape::bell, 1.5f, PanCurveSide::out),
           P(55.0f, -3.0f, PanCurveShape::shelf, 0.8f, PanCurveSide::right),
-          P(85.0f, 1.5f, PanCurveShape::cut, 4.0f, PanCurveSide::right)}},
+          P(85.0f, -1.5f, PanCurveShape::cut, 6.0f, PanCurveSide::right)}},
     };
 }
 

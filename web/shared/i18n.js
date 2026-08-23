@@ -338,6 +338,13 @@ export const T = {
         "curve.side.left": "向左",
         "curve.side.right": "向右",
         "curve.qLabel": "Q",
+        "curve.slopeLabel": "斜率",
+        "curve.slope.opt6": "6 dB/oct",
+        "curve.slope.opt12": "12 dB/oct",
+        "curve.slope.opt18": "18 dB/oct",
+        "curve.slope.opt24": "24 dB/oct",
+        "curve.sideTooltip":
+            "向外:以该点为界,切除远离中心的外侧;向左/向右:只切该侧",
         "curve.deleteLabel": "删除控制点",
         "curve.announcePoint": "点 {n}:角度 {angle},{gain} dB,{shape},Q {q}",
         "curve.announcePointDir":
@@ -710,6 +717,13 @@ export const T = {
         "curve.side.left": "Left",
         "curve.side.right": "Right",
         "curve.qLabel": "Q",
+        "curve.slopeLabel": "Slope",
+        "curve.slope.opt6": "6 dB/oct",
+        "curve.slope.opt12": "12 dB/oct",
+        "curve.slope.opt18": "18 dB/oct",
+        "curve.slope.opt24": "24 dB/oct",
+        "curve.sideTooltip":
+            "Out: cuts the outer side away from center, bounded by this point. Left/Right: cuts only that side",
         "curve.deleteLabel": "Delete point",
         "curve.announcePoint":
             "Point {n}: angle {angle}, {gain} dB, {shape}, Q {q}",
@@ -1084,6 +1098,13 @@ export const T = {
         "curve.side.left": "Gauche",
         "curve.side.right": "Droite",
         "curve.qLabel": "Q",
+        "curve.slopeLabel": "Pente",
+        "curve.slope.opt6": "6 dB/oct",
+        "curve.slope.opt12": "12 dB/oct",
+        "curve.slope.opt18": "18 dB/oct",
+        "curve.slope.opt24": "24 dB/oct",
+        "curve.sideTooltip":
+            "Extérieur: coupe le côté extérieur, loin du centre, délimité par ce point. Gauche/Droite: coupe uniquement ce côté",
         "curve.deleteLabel": "Supprimer le point",
         "curve.announcePoint":
             "Point {n} : angle {angle}, {gain} dB, {shape}, Q {q}",

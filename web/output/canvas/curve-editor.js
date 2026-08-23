@@ -13,10 +13,12 @@
 // 数学真源(与 src/core/analysis/PanCurve.{h,cpp} 逐字同构):
 //   G(P) = clamp( Σ_k Shape_k(P), −24, +12 )   [dB]
 //   半宽 Δ = 100 / Q;bell u=(P−P₀)/Δ;A·2^(−u²)
-//   shelf/cut:u 由 side 决定 —— right→(P−P₀)/Δ、left→(P₀−P)/Δ、
-//              out→P₀≥0 按 right / P₀<0 按 left(对任意 P₀ 确定性求值,无未定义区)
-//   shelf:A·0.5·(1+tanh(2u));cut 追加谐振 R=resDb·2^(−(4(P−P₀)/Δ)²),
-//        resDb=clamp(20·log10(Q/0.7071), 0, 12)
+//   shelf:u 由 side 决定 —— right→(P−P₀)/Δ、left→(P₀−P)/Δ、
+//          out→P₀≥0 按 right / P₀<0 按 left(对任意 P₀ 确定性求值,无未定义区)
+//   shelf:A·0.5·(1+tanh(2u))
+//   cut:slope 模型 —— d = 侧向距离(right→P−P₀、left→P₀−P、out→sign(P₀) 定),
+//        d=max(|d|,d0)(d0=1°),u=log2(d/d0),u_b=|A|/s(q 承载 slope),
+//        G=A·smoothstep(u/u_b) clamp 到 [A,0];d≤0(保留侧)→0
 //   LUT = 2049 点(−100..+100,步长 ≈0.0977,奇数保证 0° 恰为格点);
 //        gainDb(P)=clamp + 线性插值。
 //   MS 等效增益(02 §8.4,J68 纯显示层):
@@ -43,6 +45,14 @@ export const DEFAULT_Q = 1;
 /** 加点默认 shape / side(05 §6.2 + 契约 §1.17)。 */
 export const DEFAULT_SHAPE = "bell";
 export const DEFAULT_SIDE = "out";
+
+/** cut 斜率档位(dB/oct;02 §7.1 修订 / 契约 §1.17)。 */
+export const SLOPES = Object.freeze([6, 12, 18, 24]);
+/** cut 默认斜率(dB/oct)。 */
+export const DEFAULT_SLOPE = 12;
+
+/** cut slope 模型侧向距离地板 d0 = 1.0(度)。 */
+export const CUT_D0 = 1;
 
 /** shape / side 枚举(契约 §1.17;side 默认 out,J07)。 */
 export const SHAPES = Object.freeze(["bell", "shelf", "cut"]);
@@ -90,30 +100,34 @@ export function halfWidth(q) {
     return 100 / q;
 }
 
-/** cut 谐振 dB:clamp(20·log10(Q/0.7071), 0, 12)。0.7071 为规格字面常量(非 √2/2)。 */
-export function resonanceDb(q) {
-    const db = 20 * Math.log10(q / 0.7071);
-    return db < 0 ? 0 : db > 12 ? 12 : db;
-}
-
-/** 单点形状求值(dB,不 clamp)。与 PanCurve.cpp uForSide/bellValue/shelfValue/cutValue 同构。 */
+/** 单点形状求值(dB,不 clamp)。与 PanCurve.cpp bellValue/shelfValue/cutValue 同构。 */
 export function evalShape(pt, pan) {
-    const delta = halfWidth(pt.q);
     if (pt.shape === "shelf" || pt.shape === "cut") {
-        let u;
-        if (pt.side === "left") u = (pt.angle - pan) / delta;
-        else if (pt.side === "right") u = (pan - pt.angle) / delta;
-        else
-            u =
-                pt.angle >= 0
-                    ? (pan - pt.angle) / delta
-                    : (pt.angle - pan) / delta;
-        const base = pt.gain_db * 0.5 * (1 + Math.tanh(2 * u));
-        if (pt.shape === "shelf") return base;
-        const r = (4 * (pan - pt.angle)) / delta;
-        return base + resonanceDb(pt.q) * Math.pow(2, -(r * r));
+        // 侧向距离 d(带号,切除侧为正):right→(P−P₀)、left→(P₀−P)、out→sign(P₀)。
+        let d;
+        if (pt.side === "left") d = pt.angle - pan;
+        else if (pt.side === "right") d = pan - pt.angle;
+        else d = pt.angle >= 0 ? pan - pt.angle : pt.angle - pan;
+        if (pt.shape === "shelf") {
+            const u = d / halfWidth(pt.q);
+            return pt.gain_db * 0.5 * (1 + Math.tanh(2 * u));
+        }
+        // cut:slope 模型(q 承载 slope dB/oct);无谐振凸起 R。
+        if (d <= 0) return 0; // 保留侧:只切该侧,切点自身不受影响
+        const a = pt.gain_db; // A(cut 恒 ≤0)
+        const s = pt.q; // slope(dB/oct)
+        if (!(s > 0)) return 0;
+        const dd = Math.max(d, CUT_D0);
+        const u = Math.log2(dd / CUT_D0);
+        const ub = Math.abs(a) / s;
+        if (!(ub > 0)) return 0; // A=0 → 无切除(避免 0/0 = NaN)
+        const w = clamp(0, 1, u / ub);
+        const ss = w * w * (3 - 2 * w);
+        const lo = Math.min(a, 0);
+        const hi = Math.max(a, 0);
+        return clamp(lo, hi, a * ss); // clamp 到 [A, 0]
     }
-    const u = (pan - pt.angle) / delta;
+    const u = (pan - pt.angle) / halfWidth(pt.q);
     return pt.gain_db * Math.pow(2, -(u * u));
 }
 
@@ -197,6 +211,16 @@ export function needsSideHint(pt) {
 /** 夹取/回填默认值,产出可提交的点(不改入参)。 */
 export function normalizePoint(pt) {
     const p = pt || {};
+    const shape = SHAPES.includes(p.shape) ? p.shape : DEFAULT_SHAPE;
+    const qRaw = Number.isFinite(p.q)
+        ? p.q
+        : shape === "cut"
+          ? DEFAULT_SLOPE
+          : DEFAULT_Q;
+    const q =
+        shape === "cut"
+            ? qRaw // cut:q 承载 slope(dB/oct),不受 Q 值域夹取
+            : clamp(Q_RANGE.min, Q_RANGE.max, qRaw);
     return {
         angle: clamp(
             ANGLE_MIN,
@@ -208,12 +232,8 @@ export function normalizePoint(pt) {
             GAIN_DB_MAX,
             Number.isFinite(p.gain_db) ? p.gain_db : 0,
         ),
-        shape: SHAPES.includes(p.shape) ? p.shape : DEFAULT_SHAPE,
-        q: clamp(
-            Q_RANGE.min,
-            Q_RANGE.max,
-            Number.isFinite(p.q) ? p.q : DEFAULT_Q,
-        ),
+        shape,
+        q,
         side: SIDES.includes(p.side) ? p.side : DEFAULT_SIDE,
     };
 }
@@ -772,7 +792,7 @@ export function createCurveEditor(opts) {
         draw();
     }
 
-    // ---- 滚轮 Q ------------------------------------------------------------
+    // ---- 滚轮:bell/shelf 调 Q,cut 步进斜率档 ----------------------------------
     function onWheel(e) {
         if (local.selected >= points().length) local.selected = -1;
         if (local.selected < 0) return;
@@ -780,9 +800,21 @@ export function createCurveEditor(opts) {
         const cur = points();
         const idx = local.selected;
         const pt = cur[idx];
-        const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-        const q = clamp(Q_RANGE.min, Q_RANGE.max, pt.q * factor);
-        const next = updatePoint(cur, idx, { q });
+        let next;
+        if (pt.shape === "cut") {
+            const dir = e.deltaY < 0 ? 1 : -1;
+            const i = SLOPES.indexOf(Math.round(pt.q));
+            const ni = clamp(
+                0,
+                SLOPES.length - 1,
+                i < 0 ? (dir > 0 ? 0 : SLOPES.length - 1) : i + dir,
+            );
+            next = updatePoint(cur, idx, { q: SLOPES[ni] });
+        } else {
+            const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+            const q = clamp(Q_RANGE.min, Q_RANGE.max, pt.q * factor);
+            next = updatePoint(cur, idx, { q });
+        }
         local.dragPoints = next;
         syncToolbar();
         draw();
@@ -912,7 +944,37 @@ export function createCurveEditor(opts) {
             b.addEventListener("click", () => setSide(s));
             sideGroup.appendChild(b);
         }
+        const sideInfo = document.createElement("span");
+        sideInfo.className = "curve-toolbar__info";
+        sideInfo.setAttribute("data-curve-side-info", "1");
+        sideInfo.textContent = "ⓘ";
+        sideInfo.title = getT()["curve.sideTooltip"] || "";
+        sideInfo.setAttribute("aria-label", getT()["curve.sideTooltip"] || "");
+        sideGroup.appendChild(sideInfo);
         bar.appendChild(sideGroup);
+
+        const slopeGroup = document.createElement("div");
+        slopeGroup.className = "curve-toolbar__group curve-toolbar__slope";
+        slopeGroup.setAttribute("role", "group");
+        slopeGroup.setAttribute(
+            "aria-label",
+            getT()["curve.slopeLabel"] || "slope",
+        );
+        slopeGroup.setAttribute("data-curve-slope-group", "1");
+        const slopeLabelEl = document.createElement("span");
+        slopeLabelEl.className = "curve-toolbar__slope-label";
+        slopeLabelEl.textContent = getT()["curve.slopeLabel"] || "slope";
+        slopeGroup.appendChild(slopeLabelEl);
+        for (const s of SLOPES) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "curve-toolbar__opt";
+            b.setAttribute("data-curve-slope", s);
+            b.textContent = getT()["curve.slope.opt" + s] || s + " dB/oct";
+            b.addEventListener("click", () => setSlope(s));
+            slopeGroup.appendChild(b);
+        }
+        bar.appendChild(slopeGroup);
 
         const qWrap = document.createElement("div");
         qWrap.className = "curve-toolbar__q";
@@ -962,7 +1024,16 @@ export function createCurveEditor(opts) {
         bar.appendChild(del);
 
         card.appendChild(bar);
-        _toolbar = { bar, shapeGroup, sideGroup, qSlider, qRead };
+        _toolbar = {
+            bar,
+            shapeGroup,
+            sideGroup,
+            slopeGroup,
+            sideInfo,
+            qWrap,
+            qSlider,
+            qRead,
+        };
         return _toolbar;
     }
 
@@ -970,7 +1041,14 @@ export function createCurveEditor(opts) {
         if (!SHAPES.includes(s) || local.selected < 0) return;
         const cur = points();
         const idx = local.selected;
-        const next = updatePoint(cur, idx, { shape: s });
+        const pt = cur[idx];
+        const patch = { shape: s };
+        // shape 切换时回填默认档:→cut 用默认斜率 12;→bell/shelf 用默认 Q 1
+        if (s === "cut" && !SLOPES.includes(Math.round(pt.q)))
+            patch.q = DEFAULT_SLOPE;
+        else if (s !== "cut" && (pt.q < Q_RANGE.min || pt.q > Q_RANGE.max))
+            patch.q = DEFAULT_Q;
+        const next = updatePoint(cur, idx, patch);
         // shape→shelf/cut 且 side=out 且 |angle|<5 → 自动改选方向 + 浮条
         if (needsSideHint(next[idx])) {
             next[idx] = { ...next[idx], side: resolveSide(next[idx]) };
@@ -987,6 +1065,17 @@ export function createCurveEditor(opts) {
         const cur = points();
         const idx = local.selected;
         const next = updatePoint(cur, idx, { side: s });
+        commit(next);
+        syncToolbar();
+        draw();
+        announce(announcePoint(idx, next[idx], getT()));
+    }
+
+    function setSlope(s) {
+        if (!SLOPES.includes(s) || local.selected < 0) return;
+        const cur = points();
+        const idx = local.selected;
+        const next = updatePoint(cur, idx, { q: s });
         commit(next);
         syncToolbar();
         draw();
@@ -1014,8 +1103,22 @@ export function createCurveEditor(opts) {
             b.setAttribute("data-active", on ? "1" : "0");
             b.setAttribute("aria-pressed", on ? "true" : "false");
         }
-        tb.qSlider.value = String(Math.round(pt.q * 10) / 10);
-        tb.qRead.textContent = qLabel(pt.q);
+        // cut → 斜率分段钮;bell/shelf → Q 滑杆(二者互斥)
+        const isCut = pt.shape === "cut";
+        if (tb.slopeGroup) tb.slopeGroup.hidden = !isCut;
+        if (tb.qWrap) tb.qWrap.hidden = isCut;
+        if (isCut) {
+            for (const b of tb.bar.querySelectorAll("[data-curve-slope]")) {
+                const on =
+                    Number(b.getAttribute("data-curve-slope")) ===
+                    Math.round(pt.q);
+                b.setAttribute("data-active", on ? "1" : "0");
+                b.setAttribute("aria-pressed", on ? "true" : "false");
+            }
+        } else {
+            tb.qSlider.value = String(Math.round(pt.q * 10) / 10);
+            tb.qRead.textContent = qLabel(pt.q);
+        }
         // 定位:工具条沿选中点附近,夹在窗内(设计稿 L508 深色玻璃浮条)
         const xPct = ((angleToX(pt.angle) - 150) / PLOT_W) * 100;
         tb.bar.style.left = Math.max(2, Math.min(78, xPct)).toFixed(1) + "%";
@@ -1085,6 +1188,22 @@ export function createCurveEditor(opts) {
             }
             const ql = _toolbar.bar.querySelector(".curve-toolbar__q-label");
             if (ql) ql.textContent = getT()["curve.qLabel"] || "Q";
+            const sl = _toolbar.bar.querySelector(
+                ".curve-toolbar__slope-label",
+            );
+            if (sl) sl.textContent = getT()["curve.slopeLabel"] || "slope";
+            for (const b of _toolbar.bar.querySelectorAll(
+                "[data-curve-slope]",
+            )) {
+                const s = b.getAttribute("data-curve-slope");
+                b.textContent = getT()["curve.slope.opt" + s] || s + " dB/oct";
+            }
+            const si = _toolbar.bar.querySelector("[data-curve-side-info]");
+            if (si) {
+                const tip = getT()["curve.sideTooltip"] || "";
+                si.title = tip;
+                si.setAttribute("aria-label", tip);
+            }
             const del = _toolbar.bar.querySelector(".curve-toolbar__delete");
             if (del)
                 del.setAttribute(

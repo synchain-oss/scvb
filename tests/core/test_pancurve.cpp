@@ -130,14 +130,42 @@ TEST_CASE("side=out with |P0|<5 is deterministic", "[pancurve]")
     }
 }
 
-TEST_CASE("CURVE-5 cut (primary analytic assertion)", "[pancurve]")
+TEST_CASE("CURVE-5 cut slope (primary analytic assertion)", "[pancurve]")
 {
-    // A=−12, P₀=−40, Q=2, side=out(P₀<0 → 向左);resDb=20·log10(2/0.7071)=9.0310。
-    const PanCurvePoint p = point(-40.0f, -12.0f, PanCurveShape::cut, 2.0f, PanCurveSide::out);
-    // G(−40) = A/2 + resDb = −6 + 9.0310 = +3.0310
-    REQUIRE(scvb::evalShape(p, -40.0) == Catch::Approx(3.0310).margin(1e-4));
-    REQUIRE(scvb::evalShape(p, -100.0) == Catch::Approx(-11.9020).margin(1e-4));
-    REQUIRE(scvb::evalShape(p, 0.0) == Catch::Approx(-0.4625).margin(1e-4));
+    // cut 改 slope 模型:q 字段承载 slope(dB/oct);d = max(|侧向距离|, 1°),
+    // u = log2(d/1°),u_b = |A|/s,G = A·smoothstep(u/u_b) 并 clamp 到 [A, 0]。
+    // d≤0(保留侧)→ G=0;d<1°(切点自身及 1° 内)→ G=0。解析期望值,非实现回放。
+    const double sqrt2 = std::sqrt(2.0);
+
+    // A=−12,s=12 → u_b=1;side=right:d = P−30(P>30 为切除侧)。
+    const PanCurvePoint p12r = point(30.0f, -12.0f, PanCurveShape::cut, 12.0f, PanCurveSide::right);
+    REQUIRE(scvb::evalShape(p12r, 32.0) == Catch::Approx(-12.0).margin(1e-4)); // d=2°→u=1→smoothstep=1
+    REQUIRE(scvb::evalShape(p12r, 30.0 + sqrt2) == Catch::Approx(-6.0).margin(1e-4)); // d=√2°→u=0.5→smoothstep=0.5
+    REQUIRE(scvb::evalShape(p12r, 31.0) == Catch::Approx(0.0).margin(1e-4)); // d=1°→G=0
+    REQUIRE(scvb::evalShape(p12r, 30.5) == Catch::Approx(0.0).margin(1e-4)); // d=0.5°<d0→G=0
+    REQUIRE(scvb::evalShape(p12r, 20.0) == Catch::Approx(0.0).margin(1e-4)); // 保留侧(d<0)→G=0
+
+    // side=left(镜像):d = 30−P(P<30 为切除侧)。
+    const PanCurvePoint p12l = point(30.0f, -12.0f, PanCurveShape::cut, 12.0f, PanCurveSide::left);
+    REQUIRE(scvb::evalShape(p12l, 28.0) == Catch::Approx(-12.0).margin(1e-4)); // d=2°
+    REQUIRE(scvb::evalShape(p12l, 30.0 - sqrt2) == Catch::Approx(-6.0).margin(1e-4)); // d=√2°
+    REQUIRE(scvb::evalShape(p12l, 40.0) == Catch::Approx(0.0).margin(1e-4)); // 保留侧(P>30)→G=0
+
+    // side=out,P₀=−30(<0 → left):d = −30−P。
+    const PanCurvePoint pOut = point(-30.0f, -12.0f, PanCurveShape::cut, 12.0f, PanCurveSide::out);
+    REQUIRE(scvb::evalShape(pOut, -32.0) == Catch::Approx(-12.0).margin(1e-4)); // d=2°
+    REQUIRE(scvb::evalShape(pOut, -20.0) == Catch::Approx(0.0).margin(1e-4)); // 保留侧(P>−30)→G=0
+
+    // s=6 → u_b=2:满切在 d=2²=4°。
+    const PanCurvePoint p6 = point(30.0f, -12.0f, PanCurveShape::cut, 6.0f, PanCurveSide::right);
+    REQUIRE(scvb::evalShape(p6, 34.0) == Catch::Approx(-12.0).margin(1e-4)); // d=4°→u=2→u/u_b=1
+    REQUIRE(scvb::evalShape(p6, 32.0) == Catch::Approx(-6.0).margin(1e-4)); // d=2°→u=1→u/u_b=0.5
+
+    // s=24 → u_b=0.5:满切在 d=2^0.5=√2°。
+    const PanCurvePoint p24 = point(30.0f, -12.0f, PanCurveShape::cut, 24.0f, PanCurveSide::right);
+    REQUIRE(scvb::evalShape(p24, 30.0 + sqrt2) == Catch::Approx(-12.0).margin(1e-4)); // d=√2°→u=0.5→u/u_b=1
+    REQUIRE(scvb::evalShape(p24, 30.0 + std::sqrt(sqrt2)) ==
+            Catch::Approx(-6.0).margin(1e-4)); // d=2^0.25→u=0.25→u/u_b=0.5
 }
 
 TEST_CASE("CURVE-6 shelf side=right (mirror)", "[pancurve]")

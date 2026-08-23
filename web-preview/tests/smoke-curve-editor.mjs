@@ -79,11 +79,16 @@ console.log(
         "CURVE-6 镜像 G(-95)≈-0.1079",
     );
 
-    const cut = { angle: -40, gain_db: -12, shape: "cut", q: 2, side: "out" };
+    // cut slope:q 承载 slope(dB/oct);A=−12,s=12 → u_b=1,side=right(d=P−30)。
+    const cut = { angle: 30, gain_db: -12, shape: "cut", q: 12, side: "right" };
+    check(CE.evalShape(cut, 32) === -12, "CURVE-5 cut slope d=2°→G=−12");
     check(
-        Math.abs(CE.evalShape(cut, -40) - 3.031) < 1e-3,
-        "CURVE-5 cut 谐振 G(-40)≈+3.031",
+        Math.abs(CE.evalShape(cut, 30 + Math.SQRT2) - -6) < 1e-6,
+        "CURVE-5 cut slope d=√2°→G=−6(smoothstep(0.5)=0.5)",
     );
+    check(CE.evalShape(cut, 31) === 0, "CURVE-5 cut slope d=1°→G=0");
+    check(CE.evalShape(cut, 30.5) === 0, "CURVE-5 cut slope d=0.5°<d0→G=0");
+    check(CE.evalShape(cut, 20) === 0, "CURVE-5 cut slope 保留侧(d<0)→G=0");
 
     check(
         CE.evalCurve(
@@ -291,6 +296,12 @@ console.log("=== ⑤ aria 播报(05 §6.2 a11y) ===");
         "curve.side.left",
         "curve.side.right",
         "curve.qLabel",
+        "curve.slopeLabel",
+        "curve.slope.opt6",
+        "curve.slope.opt12",
+        "curve.slope.opt18",
+        "curve.slope.opt24",
+        "curve.sideTooltip",
         "curve.deleteLabel",
         "curve.announcePoint",
         "curve.announcePointDir",
@@ -356,7 +367,7 @@ console.log(
     const snap = await bridge.requestInitialState();
     store.state = CE_deepMerge(store.state, stripFull(snap));
 
-    // fifteen-tracks 有 5 个 demo pan_curve 点(makeTourDemoSnapshot 的 demoPanCurve)
+    // fifteen-tracks 有 6 个 demo pan_curve 点(makeTourDemoSnapshot 的 demoPanCurve,含 cut slope 点)
     const v0 = (store.state.versions || [])[0];
     const pts = v0 && v0.pan_curve && v0.pan_curve.points;
     check(
@@ -383,7 +394,7 @@ console.log(
             await bridge.setPanCurve([
                 { angle: -70, gain_db: -4, shape: "shelf", q: 1, side: "left" },
                 { angle: 2, gain_db: -2, shape: "shelf", q: 2, side: "out" },
-                { angle: 60, gain_db: 3, shape: "cut", q: 1.5, side: "right" },
+                { angle: 60, gain_db: -3, shape: "cut", q: 12, side: "right" },
             ])
         ).ok,
         true,
@@ -484,6 +495,39 @@ console.log("=== ⑨ Q 逐事件递增的纯函数面(曲线连续:改 q 不动�
         check(v >= prev, "qLabel 单调非降 @q=" + q.toFixed(1));
         prev = v;
     }
+}
+
+// =============================================================================
+console.log(
+    "=== ⑩ cut slope 分段钮 / cut 无 Q 滑杆 / bell 有 Q(源码级不变式) ===",
+);
+{
+    const ceSrc = readFileSync(
+        join(ROOT, "web/output/canvas/curve-editor.js"),
+        "utf8",
+    );
+    check(
+        /data-curve-slope/.test(ceSrc) &&
+            /SLOPES/.test(ceSrc) &&
+            /setSlope/.test(ceSrc),
+        "cut → 斜率分段钮(data-curve-slope + SLOPES + setSlope)",
+    );
+    check(
+        /tb\.qWrap\.hidden = isCut/.test(ceSrc),
+        "cut 选中时 Q 滑杆隐藏(qWrap.hidden = isCut)",
+    );
+    check(
+        /tb\.slopeGroup\.hidden = !isCut/.test(ceSrc),
+        "bell/shelf 选中时斜率组隐藏(slopeGroup.hidden = !isCut)",
+    );
+    check(
+        /curve-toolbar__q/.test(ceSrc) && /qSlider/.test(ceSrc),
+        "bell/shelf 仍有 Q 滑杆(qWrap/qSlider 保留)",
+    );
+    check(
+        /curve\.sideTooltip/.test(ceSrc),
+        "side 选择器带 tooltip(curve.sideTooltip)",
+    );
 }
 
 // =============================================================================

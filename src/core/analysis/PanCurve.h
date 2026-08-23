@@ -30,7 +30,7 @@ struct PanCurvePoint
     float angle = 0.0f; // P₀ ∈ [−100, +100]
     float gainDb = 0.0f; // A(dB)
     PanCurveShape shape = PanCurveShape::bell;
-    float q = 1.5f; // Q ∈ [0.5, 10]
+    float q = 1.5f; // bell/shelf 为 Q ∈ [0.5, 10];cut 为 slope(dB/oct,6|12|18|24,默认 12)
     PanCurveSide side = PanCurveSide::out;
 };
 
@@ -38,6 +38,10 @@ struct PanCurvePoint
 // 801 点(步长 0.25)的线性插值误差在部分机器上可超 0.03 dB(CI 实测 0.0567),
 // 提密度至 2049 后误差 ≈0.009 dB,全平台稳过 02 §7.2 的 ≤0.03 dB 上限。
 inline constexpr int kPanCurveLutSize = 2049;
+
+// cut slope 模型的侧向距离地板:d = max(|d|, d0),d0 = 1.0(度)。
+// d<d0(切点自身及 1° 内)→ G=0,斜坡自 1° 起。
+inline constexpr double kPanCurveCutD0Deg = 1.0;
 
 // 曲线整体 clamp 边界(02 §7.1)。
 inline constexpr float kPanCurveMinDb = -24.0f;
@@ -48,8 +52,11 @@ double panCurveHalfWidth(float q);
 
 // 单点形状求值(dB,不 clamp)。
 // bell:u = (P − P₀)/Δ(side 忽略);
-// shelf/cut:u 由 side 决定 —— right → (P − P₀)/Δ、left → (P₀ − P)/Δ、
-//           out → P₀≥0 按 right / P₀<0 按 left(对任意 P₀ 确定性求值,无未定义区)。
+// shelf:u 由 side 决定 —— right → (P − P₀)/Δ、left → (P₀ − P)/Δ、
+//        out → P₀≥0 按 right / P₀<0 按 left(对任意 P₀ 确定性求值,无未定义区)。
+// cut:slope 模型 —— d = 侧向距离(right→P−P₀、left→P₀−P、out→sign(P₀) 定),
+//      d = max(|d|, d0)(d0=1°),u = log2(d/d0),u_b = |A|/s(s=point.q),
+//      G = A·smoothstep(u/u_b) 并 clamp 到 [A, 0];d≤0(保留侧)→ G=0。
 double evalShape(const PanCurvePoint& point, double pan);
 
 // 整条曲线解析求值:Σ 各点 + clamp 到 [−24, +12] dB。
