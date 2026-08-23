@@ -7,7 +7,7 @@
 //   • 点集覆盖 side 三值,并显式含 side=out 且 |P0|<5 的点(验证两侧确定性回退一致);
 //   • 对拍 = JS↔C++ 实现差,**≤0.01 dB**(不是 CURVE-4 的 0.03 dB,不得放宽)。
 //
-// 两侧跑同一张 2049 点 LUT(PanCurve.h kPanCurveLutSize,CI #56 提密)与同一套公式:
+// 两侧跑同一张 32769 点 LUT(PanCurve.h kPanCurveLutSize,cut slope 窄斜坡提密)与同一套公式:
 //   - C++ 侧真源 = scripts/curve-parity-golden.json,由 tests/tools/pan_curve_vectors.cpp
 //     (链接 scvb_core 的 PanCurve.{h,cpp})打印生成;
 //   - JS 侧 = web/output/canvas/curve-editor.js 的 buildLut / lutGainDb / evalCurve。

@@ -117,8 +117,9 @@ console.log(
         "G(±100) 有限、无 NaN",
     );
     check(
-        Math.abs(CE.lutGainDb(lut, 0) - lut[1024]) < 1e-9,
-        "网格点(pan=0 → i=1024)插值 = 表值",
+        Math.abs(CE.lutGainDb(lut, 0) - lut[Math.floor(CE.LUT_SIZE / 2)]) <
+            1e-9,
+        "网格点(pan=0 → i=LUT_SIZE/2)插值 = 表值",
     );
 }
 

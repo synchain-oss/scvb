@@ -2,7 +2,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cmath>
+#include <iostream>
 #include <random>
 #include <vector>
 
@@ -62,6 +64,13 @@ TEST_CASE("CURVE-4 LUT vs analytic <= 0.03 dB", "[pancurve]")
     std::uniform_int_distribution<int> shapeDist(0, 2);
     std::uniform_int_distribution<int> sideDist(0, 2);
     std::uniform_real_distribution<double> panDist(-100.0, 100.0);
+    // cut:q 承载 slope(dB/oct,6|12|18|24);gain 取代表性切除深度(避免极小 |A| 的病态窄斜坡)。
+    std::uniform_int_distribution<int> slopeIdxDist(0, 3);
+    std::uniform_int_distribution<int> cutGainIdxDist(0, 4);
+    const std::array<float, 4> kSlopes = {6.0f, 12.0f, 18.0f, 24.0f};
+    const std::array<float, 5> kCutGains = {-3.0f, -6.0f, -12.0f, -18.0f, -24.0f};
+
+    double worstErr = 0.0;
 
     for (int iter = 0; iter < 20; ++iter)
     {
@@ -73,11 +82,18 @@ TEST_CASE("CURVE-4 LUT vs analytic <= 0.03 dB", "[pancurve]")
             const float angle = (i == 0) ? ((iter % 2 == 0) ? 2.0f : -3.0f) : static_cast<float>(angleDist(rng));
             const PanCurveShape shape = (i == 0) ? PanCurveShape::shelf : static_cast<PanCurveShape>(shapeDist(rng));
             const PanCurveSide side = (i == 0) ? PanCurveSide::out : static_cast<PanCurveSide>(sideDist(rng));
+            float gain = static_cast<float>(gainDist(rng));
+            float q = static_cast<float>(qDist(rng));
+            if (shape == PanCurveShape::cut)
+            {
+                q = kSlopes[slopeIdxDist(rng)];
+                gain = kCutGains[cutGainIdxDist(rng)];
+            }
             pts.push_back(PanCurvePoint{
                 angle,
-                static_cast<float>(gainDist(rng)),
+                gain,
                 shape,
-                static_cast<float>(qDist(rng)),
+                q,
                 side,
             });
         }
@@ -91,7 +107,10 @@ TEST_CASE("CURVE-4 LUT vs analytic <= 0.03 dB", "[pancurve]")
             const float pan = -100.0f + 200.0f * static_cast<float>(g) / static_cast<float>(scvb::kPanCurveLutSize - 1);
             const double analytic = scvb::evalCurve(pts, static_cast<double>(pan));
             const double lutVal = static_cast<double>(lut.gainDb(pan));
-            REQUIRE(std::fabs(lutVal - analytic) <= 0.03);
+            const double err = std::fabs(lutVal - analytic);
+            if (err > worstErr)
+                worstErr = err;
+            REQUIRE(err <= 0.03);
         }
 
         // 网格间随机点(200 点)。
@@ -100,9 +119,15 @@ TEST_CASE("CURVE-4 LUT vs analytic <= 0.03 dB", "[pancurve]")
             const double pan = panDist(rng);
             const double analytic = scvb::evalCurve(pts, pan);
             const double lutVal = static_cast<double>(lut.gainDb(static_cast<float>(pan)));
-            REQUIRE(std::fabs(lutVal - analytic) <= 0.03);
+            const double err = std::fabs(lutVal - analytic);
+            if (err > worstErr)
+                worstErr = err;
+            REQUIRE(err <= 0.03);
         }
     }
+
+    // 打印最坏误差(CI 定位用;正常应 ≤0.03 且有明显余量)。
+    std::cout << "  CURVE-4 worst LUT-vs-analytic = " << worstErr << " dB\n";
 
     // G(±100) 有限、无 NaN。
     const std::vector<PanCurvePoint> pts = {
@@ -175,4 +200,44 @@ TEST_CASE("CURVE-6 shelf side=right (mirror)", "[pancurve]")
     REQUIRE(scvb::evalShape(p, -45.0) == Catch::Approx(-3.0).margin(1e-4));
     REQUIRE(scvb::evalShape(p, -95.0) == Catch::Approx(-0.1079).margin(1e-4));
     REQUIRE(scvb::evalShape(p, 5.0) == Catch::Approx(-5.8921).margin(1e-4));
+}
+
+TEST_CASE("CURVE-7 cut slope LUT worst-case <= 0.015 dB", "[pancurve]")
+{
+    // 确定性最坏误差断言:cut slope 斜坡在角度域极窄,线性插值最坏误差 ≤0.015 dB
+    // (0.03 dB 测试上限的 2× 余量)。覆盖 A∈{-3..-24} × s∈{6,12,18,24} × side 三值 ×
+    // P0 代表性扫描(含模拟实测最坏相位),斜坡区 ±2° @ 0.001° 细扫。
+    const std::array<float, 5> kCutGains = {-3.0f, -6.0f, -12.0f, -18.0f, -24.0f};
+    const std::array<float, 4> kSlopes = {6.0f, 12.0f, 18.0f, 24.0f};
+    const std::array<PanCurveSide, 3> kSides = {PanCurveSide::out, PanCurveSide::left, PanCurveSide::right};
+    const std::array<float, 6> kP0 = {-64.5f, -33.9f, -3.0f, 2.0f, 30.0f, 45.0f};
+
+    double worst = 0.0;
+    PanCurvePoint worstPt;
+    double worstPan = 0.0;
+
+    for (const float gain : kCutGains)
+        for (const float slope : kSlopes)
+            for (const PanCurveSide side : kSides)
+                for (const float p0 : kP0)
+                {
+                    const PanCurvePoint pt = point(p0, gain, PanCurveShape::cut, slope, side);
+                    scvb::PanCurveLut lut;
+                    lut.rebuild({pt});
+                    for (double pan = static_cast<double>(p0) - 2.0; pan <= static_cast<double>(p0) + 2.0; pan += 0.001)
+                    {
+                        const double err = std::fabs(static_cast<double>(lut.gainDb(static_cast<float>(pan))) -
+                                                     scvb::evalShape(pt, pan));
+                        if (err > worst)
+                        {
+                            worst = err;
+                            worstPt = pt;
+                            worstPan = pan;
+                        }
+                    }
+                }
+
+    std::cout << "  CURVE-7 worst LUT error = " << worst << " dB @ P0=" << worstPt.angle << ", A=" << worstPt.gainDb
+              << ", s=" << worstPt.q << ", side=" << static_cast<int>(worstPt.side) << ", pan=" << worstPan << "\n";
+    REQUIRE(worst <= 0.015);
 }

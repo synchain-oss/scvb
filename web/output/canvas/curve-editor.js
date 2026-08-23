@@ -70,8 +70,8 @@ export const GAIN_DB_MAX = 12;
 export const CURVE_DB_MIN = -24;
 export const CURVE_DB_MAX = 12;
 
-/** LUT 点数(2049;PanCurve.h kPanCurveLutSize,CI #56 提密后口径)。 */
-export const LUT_SIZE = 2049;
+/** LUT 点数(32769;PanCurve.h kPanCurveLutSize,cut slope 窄斜坡提密后口径)。 */
+export const LUT_SIZE = 32769;
 
 /** side=out 中心区阈值(02 §7.1:UI 在 |angle|<5 时强制改选 left/right)。 */
 export const CENTER_SIDE_THRESHOLD = 5;
@@ -147,9 +147,9 @@ export function evalCurve(points, pan) {
 }
 
 /**
- * 2049 点 LUT(与 PanCurveLut::rebuild 同构)。返回 Float32Array —— C++ 侧
- * m_lut 是 std::array<float,2049>,(float)clampDb(db) 的 float32 取整与 Float32Array
- * 存储天然一致。网格 pan = −100 + 200·i/2048 是 256 分母的二进制有理数,float/double 均精确。
+ * 32769 点 LUT(与 PanCurveLut::rebuild 同构)。返回 Float32Array —— C++ 侧
+ * m_lut 是 std::array<float,32769>,(float)clampDb(db) 的 float32 取整与 Float32Array
+ * 存储天然一致。网格 pan = −100 + 200·i/32768 是二进制有理数,float/double 均精确。
  */
 export function buildLut(points) {
     const lut = new Float32Array(LUT_SIZE);
