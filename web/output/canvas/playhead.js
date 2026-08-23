@@ -46,8 +46,9 @@ export function interpolate(ev, evAtMs, nowMs) {
  * @param {object} opts
  * @param {(tS:number, playing:boolean) => void} opts.apply 每帧写入面
  * @param {() => number} [opts.degradeLevel] 当前降级档(layers.js governor.level)
- * @returns {{push:(ev:object)=>void, stop:()=>void, tick:(nowMs:number)=>void,
- *            valueAt:(nowMs:number)=>number, running:()=>boolean}}
+ * @returns {{push:(ev:object)=>void, refresh:()=>void, stop:()=>void,
+ *            tick:(nowMs:number)=>void, valueAt:(nowMs:number)=>number,
+ *            running:()=>boolean}}
  */
 export function createPlayhead(opts) {
     const o = opts || {};
@@ -58,6 +59,10 @@ export function createPlayhead(opts) {
     let evAtMs = 0;
     let raf = 0;
     let lastWriteMs = -1;
+
+    function now() {
+        return typeof performance !== "undefined" ? performance.now() : 0;
+    }
 
     function valueAt(nowMs) {
         return interpolate(ev, evAtMs, nowMs);
@@ -109,6 +114,21 @@ export function createPlayhead(opts) {
             evAtMs = typeof performance !== "undefined" ? performance.now() : 0;
             if (idle || typeof requestAnimationFrame !== "function") return;
             if (!raf) raf = requestAnimationFrame(loop);
+        },
+        /**
+         * **写入面几何变了、位置没变**时补写一帧(视口平移/缩放、行高变化、
+         * 面板尺寸变化)。停播时 rAF 循环已自停(§6.1 空闲零 rAF),没有任何东西
+         * 会把竖线搬到新像素位上 —— 波形在竖线底下滑走,直到下一次 §2.6 事件才
+         * 复位,而「值未变不发」+ 空闲去重下那个事件可能永不到来(PR#64 评审
+         * 【重要】3)。
+         *
+         * 三条纪律都保住:① `ev == null`(首帧事件前)一律不写,写入面维持 HTML
+         * 初始 hidden;② 不碰 `lastWriteMs`,降级档的 30Hz 节流账不受几何事件干扰;
+         * ③ 不起 rAF —— 空闲仍是零 rAF。
+         */
+        refresh() {
+            if (!ev) return;
+            apply(valueAt(now()), !!ev.isPlaying);
         },
         stop() {
             if (raf && typeof cancelAnimationFrame === "function") {

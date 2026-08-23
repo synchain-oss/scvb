@@ -146,24 +146,37 @@ export const SCALE_COL_W = 44;
 /** 时间标尺行高(实景帧 807)。 */
 export const RULER_H = 22;
 
-/** 底部缩放/滚动条行高(866)。 */
-export const BOTTOM_BAR_H = 20;
+/**
+ * 底部缩放/滚动条行高。
+ *
+ * 稿内 866 是 20px;**Wave 6 用户裁定把它抬到 44** —— 用户 preview 第三轮要求
+ * 纵向缩放条「纵向放置、在纵向进度条的下方、与横向缩放条呈 90 度」,而 Wave 5
+ * 把它压成横轨的唯一理由就是「20px 行高放不下竖杆」。既然形制由用户定,腾空间
+ * 的代价就由布局出:底部条 44px(内高 43)= 6×22 竖轨(VZOOM_H)+ 上下各 10.5px
+ * 余量,那道余量同时是**圆角账**(见 index.html `.wave-hzoom__vzoomctl` 头注)。
+ * 泳道 canvas 少 24px 高,纵向滚动条兜住;`.wave-scalecol` / `.wave-selection` /
+ * `.wave-dim` 三处 `bottom` 与本值同步。deviations 登记「覆盖稿内 866 的 20px」。
+ */
+export const BOTTOM_BAR_H = 44;
 
 /** 底部条左空档(867;+ 左 padding 10 = HEAD_W)。 */
 export const BOTTOM_HEAD_W = 148;
 
 /**
- * 纵向缩放条轨长(**与 index.html `.wave-vzoom` 同步**;Wave 5 改制)。
+ * 纵向缩放条轨长(**与 index.html `.wave-vzoom` 的 height 同步**)。
  *
- * Wave 4 是 12×62 的**竖杆**(端头各留 7px 让圆点 thumb 不越界);Wave 5 裁定②
- * 把它搬进底部条右端后,20px 行高容不下 62px 竖杆 —— 形制随位置改成与横向缩放条
- * 同族的**短横轨 + 圆点 thumb**(44×6),thumb 行程走百分比 + `margin-left:-5.5px`
- * (与 `.wave-hzoom__zoomthumb` 同一套,端头不再需要 PAD 常量)。
- * 语义不变:仍是「纵向缩放 = 泳道行高 22..88px」,读数「⇕ 34」写在轨左侧,
- * 方向键上/右加高、下/左减矮(两轴都收,竖直习惯不丢)。
- * deviations §S 登记:竖杆 → 横轨是**位置裁定的连带形变**,不是新增件。
+ * 三轮沿革:Wave 4 = 泳道区右缘 12×62 竖杆;Wave 5 = 迁进 20px 底部条后被压成
+ * 44×6 横轨;**Wave 6 用户裁定竖回来** —— 6×22 竖轨落在底部条最右端的
+ * `.wave-hzoom__vzoomslot`(= 泳道区纵向滚动条那一列)里,与横向缩放条呈 90°。
+ * 22 = 底部条内高 43 − 上下各 10.5px 余量,那道余量是**圆角账**:11px 圆点
+ * thumb 走到最矮档(触轨底)时得离窗口内圆角(14)够远才不被啃 —— 26px 轨长
+ * 实测就啃了一口(见 index.html `.wave-hzoom__vzoomctl` 头注的逐项算式)。
+ * thumb 行程走百分比 + `margin-top:-5.5px`,**上 = 高**(与「向上拖 = 泳道变高」
+ * 同向),端头不需要 PAD 常量。
+ * 语义三轮不变:纵向缩放 = 泳道行高 22..88px,读数「⇕ 34」在轨左侧,
+ * 方向键上/右加高、下/左减矮。
  */
-export const VZOOM_W = 44;
+export const VZOOM_H = 22;
 
 /** 无任何时长线索时的兜底工程时长(秒;mock 假数据同为 5 分钟,J59)。 */
 export const FALLBACK_DURATION_S = 300;
@@ -808,8 +821,7 @@ export function createTabWave(opts) {
         preview: null, // previewAnalyze 结果缓存(A-07)
         previewTimer: 0,
         rangeTip: null, // {x,y}:「设为范围」一次性提示(§7)
-        lastVpChange: 0, // 视口最近变化时刻(静止 120ms 才取新块,§6.3)
-        vpIdleTimer: 0,
+        vpIdleTimer: 0, // 视口静止 120ms 才取新块的计时(§6.3)
         panDrag: null, // 空白拖拽平移 {lastX}
         thumbDrag: null, // 底部条拖拽 {startX, vp0}
         pendingDown: null, // 舞台按下未定性(点选 vs 平移)
@@ -857,7 +869,7 @@ export function createTabWave(opts) {
             local.staticDirty = true;
             local.overlayDirty = true;
             local.marksDirty = true;
-            local.lastVpChange = Date.now();
+            refreshPlayheadGeometry();
             if (local.vpIdleTimer) clearTimeout(local.vpIdleTimer);
             local.vpIdleTimer = setTimeout(() => {
                 local.vpIdleTimer = 0;
@@ -903,6 +915,26 @@ export function createTabWave(opts) {
     });
 
     /**
+     * 舞台几何变了(视口平移/缩放、容器尺寸变化)⇒ 竖线的**像素位**要跟着重算,
+     * 尽管 `tS` 一点没动。播放中由 playhead 自己的 rAF 下一帧顺手改正;**停播时
+     * 循环已自停**(§6.1 空闲零 rAF),没有任何东西会去搬它 —— 暂停态拖视口会看到
+     * 波形从静止的竖线底下滑走,且契约 §0.4「值未变不发」+ app.js 的空闲去重下,
+     * 下一次 §2.6 事件可能永远不来(PR#64 评审【重要】3)。
+     *
+     * `playhead.refresh()` 对首帧事件前(内部 ev==null)是空操作,「首帧事件前不写
+     * 入、竖线维持 HTML 初始 hidden」的既有纪律不受影响;也不碰降级节流账、不起 rAF。
+     *
+     * **不加 `if (!playhead.running())` 前置**:播放中多写这一次是幂等的
+     * (下一帧 rAF 本来也要写同一个值),省不下什么;而「循环在不在跑」并不等于
+     * 「停播没停播」—— 宿主/mock 停住时若仍按 30Hz 重发**位置有微抖**的事件,
+     * `push()` 的空闲去重不成立、rAF 常驻,加了前置反而恰好在最像 bug 的那一档
+     * 上把补写跳掉(web-preview 实测就是这一档)。
+     */
+    function refreshPlayheadGeometry() {
+        playhead.refresh();
+    }
+
+    /**
      * 舞台宽(CSS px)= 泳道容器宽 − 轨头 158 − 右缘刻度列 44(C-04 舞台坐标系)。
      * Wave 5 裁定②把纵向缩放条搬去底部条右端后,它在泳道区内的 24px 自留槽撤销
      * (见 VZOOM_GUTTER_W 头注的撤销说明)—— 舞台宽拿回那 24px。
@@ -927,8 +959,13 @@ export function createTabWave(opts) {
             els.rulerScale.style.marginRight = SCALE_COL_W + sb + "px";
         }
         if (els.scalecol) els.scalecol.style.right = sb + "px";
-        // 纵向缩放条不再参与这套右让账:Wave 5 起它在底部条(`.wave-hzoom`)的
-        // 常规流里,天然贴窗口右下角、在纵向滚动条轨道下方,与刻度列零交叠。
+        // Wave 6:纵向缩放条要与纵向滚动条**同列**(用户裁定「在纵向进度条的下方」),
+        // 所以这笔滚动条宽账它也要用 —— 但方向相反:不是右让,是把底部条右端那只槽
+        // 撑成滚动条那么宽,竖轨在槽内居中即与滚动条同心。槽宽兜底 16px 写在 CSS 的
+        // `max()` 里(9px 窄滚动条下 11px 圆点会被窗口圆角啃,见 index.html 头注)。
+        if (els.hzoomRow) {
+            els.hzoomRow.style.setProperty("--wave-gutter", sb + "px");
+        }
     }
 
     /**
@@ -956,10 +993,10 @@ export function createTabWave(opts) {
             // 只有 tooltip)。悬停 tooltip(词条 · 行高)在 render() 里写 ——
             // 那里才跟得上切语言。
             attr(els.vzoom, "aria-valuetext", v + "px");
-            // Wave 5:短横轨 + 圆点 thumb(`margin-left:-5.5px` 居中),行程比
-            // 左→右 = 矮→高;与 `.wave-hzoom__zoomthumb` 同一套定位口径。
+            // Wave 6:竖轨 + 圆点 thumb(`margin-top:-5.5px` 居中),行程比
+            // **下→上 = 矮→高**,故 top = (1 − p);与拖拽向上 = 变高同向。
             if (els.vzoomThumb) {
-                els.vzoomThumb.style.left = laneHPercent(v) * 100 + "%";
+                els.vzoomThumb.style.top = (1 - laneHPercent(v)) * 100 + "%";
             }
             if (els.vzoomVal) text(els.vzoomVal, "⇕ " + v);
         }
@@ -1016,6 +1053,24 @@ export function createTabWave(opts) {
 
     function nowMs() {
         return Date.now();
+    }
+
+    /**
+     * 指针捕获(全页唯一口径)。`setPointerCapture` 在 pointerId 不是**活动指针**时
+     * 抛 `NotFoundError` —— 触控笔切换、指针已抬起、以及无头脚本合成的 PointerEvent
+     * 都会命中。两条缩放条本来各写了一份 try/catch;泳道 / 标尺 / 选区手柄 / 底部条 /
+     * 检查器旋钮与滑杆这些点上没写,而那几处的 `setPointerCapture` 恰好排在
+     * `local.xxxDrag = …` **之前** —— 一抛就把整个手势的建态语句甩掉,按下之后所有
+     * pointermove 都当悬停走,失败形态是「按住拖动完全没反应且零报错」。收成一个 helper,
+     * 捕获拿不到就退化成不捕获(窗级/元素级的松手兜底照旧收尾)。
+     */
+    function capturePointer(el, e) {
+        if (!el || typeof el.setPointerCapture !== "function") return;
+        try {
+            el.setPointerCapture(e.pointerId);
+        } catch {
+            /* 非活动指针:不捕获也能跑,松手兜底见各自 up 处 */
+        }
     }
 
     /** data-disabled + aria-disabled 双写(按钮判据的唯一落点)。 */
@@ -1075,7 +1130,12 @@ export function createTabWave(opts) {
             local.panDrag ||
             local.thumbDrag ||
             local.knobDrag ||
-            local.vslDrag
+            local.vslDrag ||
+            // 两条缩放条(评审【建议】6):拖它们同样是一路 rAF 重绘,漏进来
+            // 会让帧时账在缩放拖拽期收不到样本 —— §6.1 的三档降级序列对
+            // 「15 泳道连续换倍率」这个最重的路径恰好失效
+            local.hzoomDrag ||
+            local.vzoomDrag
         );
     }
 
@@ -1164,6 +1224,23 @@ export function createTabWave(opts) {
      * 抑制期(J47)不显示倒计时 —— render 会亮出「应用到分段」显式按钮。
      */
     function releaseSlider(s) {
+        // **零改动闸**(评审【重要】4;与边界拖拽 / 检查器输入框的零位移闸同族):
+        // pointerup 无条件走这里,原地点一下杆(值落回同一量化档)也会整包下发
+        // setVadParams/setSegmentation —— C++/mock 侧 300ms 防抖照跑整条流水线,
+        // 回来一帧空 diff 让 A-02 变更列表白闪一下。本次手势一个值都没改过就什么
+        // 都不发,倒计时条也不挂。`sliderDirty` 由四条写入路径(按下 / 移动 /
+        // 松手补值 / 方向键)在 setSliderValue 真的改了值时置位。
+        //
+        // ⚠ 脏位**按杆记账**(`s.dirty`),不是全页一个共享位:键盘档的松手是
+        // 250ms 后异步触发的,共享位下「这 250ms 内在另一根杆上按一下」会把
+        // 前一根杆的脏位清掉 ⇒ 那一手势的整包下发与倒计时条被整条吞掉
+        // (两位校验员各自实测到,api 不同组也会互吃)。
+        const dirty = !!s.dirty;
+        s.dirty = false;
+        // clearTimeout 必须排在 `!dirty` 早退**之后**:节流尾包是跨杆共享的
+        // 单例,零改动的那一次释放去清它,会把别的杆已排队的最后一档值丢掉
+        // 且不补发 —— 修复反而制造新的丢包路径。
+        if (!dirty) return;
         if (local.paramTimer) {
             clearTimeout(local.paramTimer);
             local.paramTimer = 0;
@@ -1520,6 +1597,7 @@ export function createTabWave(opts) {
         els.zoom = $("wave-zoom-readout");
         els.thumb = $("wave-hscroll-thumb");
         // 缩放拖拽条两枚(Wave 4 用户新件)
+        els.hzoomRow = $("wave-hzoom"); // 底部条本体:承 `--wave-gutter`(竖轨对列)
         els.hzoomBar = $("wave-hzoom-bar");
         els.hzoomThumb = $("wave-hzoom-thumb");
         els.hzoomVal = $("wave-hzoom-value");
@@ -1646,6 +1724,9 @@ export function createTabWave(opts) {
             new ResizeObserver(() => {
                 local.staticDirty = true;
                 local.overlayDirty = true;
+                // 舞台宽变了 ⇒ 停播态的竖线像素位同样要补算(与 timeline.onChange
+                // 同因;见 refreshPlayheadGeometry 头注)
+                refreshPlayheadGeometry();
                 render();
             }).observe(els.lanes);
         }
@@ -1715,11 +1796,11 @@ export function createTabWave(opts) {
                 if (e.button !== 0 || isWriteBlocked()) return;
                 e.preventDefault();
                 local.sliderDrag = s;
-                if (s.track.setPointerCapture) {
-                    s.track.setPointerCapture(e.pointerId);
-                }
+                s.dirty = false; // 本次手势的「改过值没有」账从零开始(按杆记)
+                capturePointer(s.track, e);
                 const v = sliderValueFromEvent(s, e);
                 if (v !== null && setSliderValue(s, v)) {
+                    s.dirty = true;
                     sendParamsThrottled(s.def.api);
                 }
                 ensureTicker();
@@ -1728,18 +1809,28 @@ export function createTabWave(opts) {
                 if (local.sliderDrag !== s) return;
                 const v = sliderValueFromEvent(s, e);
                 if (v !== null && setSliderValue(s, v)) {
+                    s.dirty = true;
                     sendParamsThrottled(s.def.api);
                 }
             });
             const up = (e) => {
                 if (local.sliderDrag !== s) return;
                 local.sliderDrag = null;
-                const v = sliderValueFromEvent(s, e);
-                if (v !== null) setSliderValue(s, v);
+                const v = e ? sliderValueFromEvent(s, e) : null;
+                if (v !== null && setSliderValue(s, v)) {
+                    s.dirty = true;
+                }
                 releaseSlider(s);
             };
             s.track.addEventListener("pointerup", up);
             s.track.addEventListener("pointercancel", up);
+            // 窗级兜底(与两条缩放条同口径):setPointerCapture 抛错 / 指针在窗外
+            // 释放时松手事件不回到杆上,拖拽态会卡住 —— 此后任何一次经过本杆的
+            // 悬停都会当成拖动直接改值。窗级这一道拿不到杆内坐标,故只收尾不取值。
+            if (typeof window !== "undefined") {
+                window.addEventListener("pointerup", () => up(null));
+                window.addEventListener("pointercancel", () => up(null));
+            }
             // 键盘可达:方向键步进(dp0 → 1,dp2 → 0.01),静默 250ms 视为松手
             s.track.addEventListener("keydown", (e) => {
                 const dir =
@@ -1762,7 +1853,10 @@ export function createTabWave(opts) {
                             s.def.max,
                         ) * q,
                     ) / q;
-                if (setSliderValue(s, v)) sendParamsThrottled(s.def.api);
+                if (setSliderValue(s, v)) {
+                    s.dirty = true;
+                    sendParamsThrottled(s.def.api);
+                }
                 if (local.sliderKeyTimer) clearTimeout(local.sliderKeyTimer);
                 local.sliderKeyTimer = setTimeout(() => {
                     local.sliderKeyTimer = 0;
@@ -1882,23 +1976,31 @@ export function createTabWave(opts) {
                 const bounds = boundariesOf(segCh);
                 const xs = bounds.map((b) => timeToX(vp, stageW, b.tS));
                 const j = nearestHit(p.x, xs, BOUNDARY_HIT_PX);
-                if (j >= 0) {
+                // 可拖窗 = 左段起点 +50ms .. 右段终点 −50ms(两侧各留最短段)。
+                // 相邻两段**总宽 <100ms** 时 minS > maxS,窗反转:updateBoundDrag 的
+                // clamp `min(max(t,minS),maxS)` 恒取 maxS,手柄钉在左段内部一动不动,
+                // 释放时又必然 !== origT ⇒ 照发 move_boundary,把边界推到左段里去
+                // (PR#64 评审【重要】5)。窗不成立就**不建 boundDrag**,让这一按
+                // 落到②的点选/平移路径 —— 这类段只能用分割/合并处理。
+                const minS = j < 0 ? 0 : num(segs[j] && segs[j].t0S, 0) + 0.05;
+                const maxS =
+                    j < 0
+                        ? 0
+                        : num(
+                              segs[j + 1] && segs[j + 1].t1S,
+                              timeline.durationS(),
+                          ) - 0.05;
+                if (j >= 0 && minS < maxS) {
                     e.preventDefault();
-                    if (els.lanes.setPointerCapture) {
-                        els.lanes.setPointerCapture(e.pointerId);
-                    }
+                    capturePointer(els.lanes, e);
                     local.boundDrag = {
                         ch: p.ch,
                         segIdx: j + 1, // 边界 j = 段 j+1 的 t0(edge:"t0")
                         tS: bounds[j].tS,
                         origT: bounds[j].tS, // 原位(拖动期动态层跳过原线画预览线)
                         snapped: false,
-                        minS: num(segs[j] && segs[j].t0S, 0) + 0.05,
-                        maxS:
-                            num(
-                                segs[j + 1] && segs[j + 1].t1S,
-                                timeline.durationS(),
-                            ) - 0.05,
+                        minS,
+                        maxS,
                     };
                     local.overlayDirty = true;
                     schedulePaint();
@@ -1908,14 +2010,11 @@ export function createTabWave(opts) {
             }
             // ② 其余:按下未定性 —— 位移 >3px 转空白平移(05 行 319),
             //    原地抬起转舞台点选(段 → 检查器;空白 → 勾选该轨)
-            if (els.lanes.setPointerCapture) {
-                els.lanes.setPointerCapture(e.pointerId);
-            }
+            capturePointer(els.lanes, e);
             local.pendingDown = {
                 x: p.x,
                 ch: p.ch,
                 shift: e.shiftKey,
-                moved: 0,
             };
         });
 
@@ -1965,7 +2064,10 @@ export function createTabWave(opts) {
         };
         els.lanes.addEventListener("pointerup", lanesUp);
         els.lanes.addEventListener("pointercancel", () => {
-            local.boundDrag = null;
+            // 走统一出口:就地置 null 会漏掉 showBoundHandle(false),9×26 手柄
+            // 留在屏上、.wave-lanes 的 ew-resize 光标也不复位(三条出口口径
+            // 不一致的那条就是这里)。
+            if (local.boundDrag) cancelBoundDrag();
             local.panDrag = null;
             local.pendingDown = null;
             local.overlayDirty = true;
@@ -2132,6 +2234,28 @@ export function createTabWave(opts) {
         schedulePaint();
     }
 
+    /**
+     * 边界拖拽**作废**(不提交)。用于段表在拖拽期间被换掉的情形:
+     * `boundDrag` 在 pointerdown 那一刻把 `segIdx: j+1` 锁死,而契约 §2.8
+     * 「`segIdx` 每次事件后重新编号」—— 拖拽期间另一轨分析完成 / 有人撤销 /
+     * 切版本,本轨段表整条替换后旧下标要么指向别的段、要么越界拿 `badArg`
+     * (PR#64 评审【重要】2)。
+     *
+     * 为什么是**取消**而不是按 {t0S,t1S} 重绑(同 `rebindSegKeys`):重绑只解决
+     * 「这一段还在」的情形,而段表换掉时被拖的那条边界本身可能已经不存在
+     * (合并/清除/切版本),此时没有任何正确的 segIdx 可写;且用户按下时看到的
+     * 那张图已经不是现在这张,把手势结果套到新表上属于替用户做决定。取消是
+     * 唯一无歧义的处置,并且与「释放才发」纪律不冲突 —— 什么都没发过。
+     */
+    function cancelBoundDrag() {
+        if (!local.boundDrag) return;
+        local.boundDrag = null;
+        showBoundHandle(false);
+        if (els.bhandle) attr(els.bhandle, "data-snap", 0);
+        local.overlayDirty = true;
+        schedulePaint();
+    }
+
     /** 边界拖拽提交:**释放才发**(契约 §1.22 线程栏;拖动中纯本地重绘)。 */
     function commitBoundDrag() {
         const d = local.boundDrag;
@@ -2166,9 +2290,7 @@ export function createTabWave(opts) {
                 const stageW = stageWidth();
                 if (!(stageW > 0)) return;
                 e.preventDefault();
-                if (els.rulerScale.setPointerCapture) {
-                    els.rulerScale.setPointerCapture(e.pointerId);
-                }
+                capturePointer(els.rulerScale, e);
                 const vp = timeline.viewport();
                 const t = xToTime(
                     vp,
@@ -2212,7 +2334,7 @@ export function createTabWave(opts) {
                 if (e.button !== 0 || !local.selection) return;
                 e.preventDefault();
                 e.stopPropagation();
-                if (h.setPointerCapture) h.setPointerCapture(e.pointerId);
+                capturePointer(h, e);
                 local.selDrag = side;
                 requestRender();
                 ensureTicker();
@@ -2278,9 +2400,7 @@ export function createTabWave(opts) {
             if (e.button !== 0) return;
             e.preventDefault();
             e.stopPropagation();
-            if (els.thumb.setPointerCapture) {
-                els.thumb.setPointerCapture(e.pointerId);
-            }
+            capturePointer(els.thumb, e);
             local.thumbDrag = { startX: e.clientX, vp0: timeline.viewport() };
             ensureTicker();
         });
@@ -2346,13 +2466,7 @@ export function createTabWave(opts) {
             els.hzoomBar.addEventListener("pointerdown", (e) => {
                 if (e.button !== 0) return;
                 e.preventDefault();
-                if (els.hzoomBar.setPointerCapture) {
-                    try {
-                        els.hzoomBar.setPointerCapture(e.pointerId);
-                    } catch {
-                        /* 合成事件的 pointerId 非活动指针(无头脚本);忽略 */
-                    }
-                }
+                capturePointer(els.hzoomBar, e);
                 local.hzoomDrag = true;
                 const p = hzoomPercentFromEvent(e);
                 if (p !== null) applyHZoomPercent(p);
@@ -2410,26 +2524,22 @@ export function createTabWave(opts) {
             });
         }
 
-        // ---- 纵向:轨左 = 最矮行,轨右 = 最高行(Wave 5 改横轨后与横向杆同轴向)
+        // ---- 纵向:轨**底** = 最矮行,轨**顶** = 最高行(Wave 6 竖回来后取值改读
+        //      clientY —— 向上拖 = 泳道变高,与竖轨的空间直觉同向)
         const vzoomHeightFromEvent = (e) => {
             const rect = els.vzoom.getBoundingClientRect();
-            if (!(rect.width > 0)) return null;
-            return laneHFromPercent((e.clientX - rect.left) / rect.width);
+            if (!(rect.height > 0)) return null;
+            return laneHFromPercent(1 - (e.clientY - rect.top) / rect.height);
         };
         if (els.vzoom) {
             els.vzoom.addEventListener("pointerdown", (e) => {
                 if (e.button !== 0) return;
                 e.preventDefault();
-                if (els.vzoom.setPointerCapture) {
-                    try {
-                        els.vzoom.setPointerCapture(e.pointerId);
-                    } catch {
-                        /* 同上 */
-                    }
-                }
+                capturePointer(els.vzoom, e);
                 local.vzoomDrag = true;
                 const h = vzoomHeightFromEvent(e);
                 if (h !== null) applyLaneH(h);
+                ensureTicker(); // 同横向杆:拖拽期喂帧时账(interactionActive 已含)
             });
             els.vzoom.addEventListener("pointermove", (e) => {
                 if (!local.vzoomDrag) return;
@@ -2533,9 +2643,7 @@ export function createTabWave(opts) {
                 const cur = canEditSelected();
                 if (e.button !== 0 || !cur) return;
                 e.preventDefault();
-                if (els.inspPanKnob.setPointerCapture) {
-                    els.inspPanKnob.setPointerCapture(e.pointerId);
-                }
+                capturePointer(els.inspPanKnob, e);
                 local.knobDrag = {
                     startY: e.clientY,
                     startVal: num(local.echo.pan, num(cur.seg.pan, 0)),
@@ -2575,9 +2683,7 @@ export function createTabWave(opts) {
                 const cur = canEditSelected();
                 if (e.button !== 0 || !cur) return;
                 e.preventDefault();
-                if (els.inspVolSlider.setPointerCapture) {
-                    els.inspVolSlider.setPointerCapture(e.pointerId);
-                }
+                capturePointer(els.inspVolSlider, e);
                 local.vslDrag = {};
                 const v = valFrom(e);
                 if (v !== null) {
@@ -2703,6 +2809,19 @@ export function createTabWave(opts) {
                 (a.tagName === "INPUT" ||
                     a.tagName === "TEXTAREA" ||
                     a.isContentEditable);
+            // 焦点在按钮/自定义控件上时,页级快捷键不吞键(评审【建议】7):
+            // Backspace 在这些角色上是浏览器/AT 的既有语义(且 Delete 也不该在
+            // 「四动作」按钮上被改写成合并),空格/回车激活按钮之后紧接着的一次
+            // Backspace 会莫名合并掉两段。工具条按钮与 role=slider 全部排除。
+            const role = a && a.getAttribute && a.getAttribute("role");
+            const onControl =
+                a &&
+                (a.tagName === "BUTTON" ||
+                    a.tagName === "SELECT" ||
+                    role === "button" ||
+                    role === "slider" ||
+                    role === "switch" ||
+                    role === "checkbox");
             if (e.key === "Escape") {
                 if (
                     (els.confirmReidentify && !els.confirmReidentify.hidden) ||
@@ -2718,7 +2837,11 @@ export function createTabWave(opts) {
                 return;
             }
             // 选中相邻两段 Delete = 合并(05 行 313;notAdjacent 行内反馈)
-            if ((e.key === "Delete" || e.key === "Backspace") && !inField) {
+            if (
+                (e.key === "Delete" || e.key === "Backspace") &&
+                !inField &&
+                !onControl
+            ) {
                 if (local.selectedSegs.length === 2) {
                     e.preventDefault();
                     doMerge();
@@ -3719,6 +3842,25 @@ export function createTabWave(opts) {
     function onSegments(seg) {
         local.overlayDirty = true;
         local.marksDirty = true;
+        // 进行中的边界拖拽同样持有旧 segIdx —— 与选中态一并处理,否则释放时
+        // move_boundary 会指向重编号后的错段或越界 badArg(评审【重要】2)。
+        // **只掐被本次事件重编号的那一轨**:§2.8 与 applySegmentsEvent 都是按 ch
+        // 整条替换,未列入 channels 的轨编号一个都没动,一律取消属于误伤(拖到
+        // 一半手柄归位、无任何提示,手势得重来)。全量类 reason 没有 channels
+        // 语义(整表替换),那才该无条件取消。
+        const segAll =
+            !seg ||
+            !Array.isArray(seg.channels) ||
+            seg.reason === "snapshot" ||
+            seg.reason === "versionActive" ||
+            seg.reason === "copyVersion";
+        if (
+            local.boundDrag &&
+            (segAll ||
+                seg.channels.some((c) => c && c.ch === local.boundDrag.ch))
+        ) {
+            cancelBoundDrag();
+        }
         if (local.selectedCh && local.selectedSegs.length) {
             const segCh = segmentsOfCh(getStore().segments, local.selectedCh);
             local.selectedSegs = rebindSegKeys(

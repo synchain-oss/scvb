@@ -52,7 +52,7 @@ export const ENV_FLOOR_DB = -80;
  * ⚠ tab-wave.js 的 computedPalette() 只把 rgb 换成 tokens 真值,**alpha 从这里
  * import**——两处各写一份字面量正是本波踩过的坑(smoke-tab3 有断言钉住)。
  */
-export const VAD_ALPHA = 0.55;
+export const VAD_ALPHA = 0.62;
 
 /**
  * VAD 标注带高(CSS px;Wave 5 裁定「顶部一条 5–6px,含 1.5px 亮线」取 5)。
@@ -62,7 +62,7 @@ export const VAD_ALPHA = 0.55;
  * 且包络在带**之后**画(层序 ③→④),那 1px 由粉柱盖回去,「粉白不被染」成立。
  * 22px 最矮档下带占 23% 高度仍读得出,88px 最高档下也不至于糊成一条边。
  */
-export const VAD_BAND_PX = 5;
+export const VAD_BAND_PX = 3;
 
 /**
  * 默认调色(= tokens.css 字面镜像;键名即语义)。
@@ -73,8 +73,8 @@ export const VAD_BAND_PX = 5;
 export const DEFAULT_PALETTE = Object.freeze({
     env: "rgba(216, 186, 216, 0.52)", // --wave-env-pink(外柱 = maxDb 峰包络)
     envCore: "rgba(255, 250, 255, 0.6)", // --wave-env-core(内柱 = minDb 亮芯)
-    vad: `rgba(88, 208, 148, ${VAD_ALPHA})`, // rgba(var(--wave-vad), VAD_ALPHA)
-    vadEdge: "rgba(120, 236, 172, 0.78)", // --wave-vad-edge(顶缘 1.5px 亮线)
+    vad: `rgba(122, 205, 178, ${VAD_ALPHA})`, // rgba(var(--wave-vad), VAD_ALPHA)
+    vadEdge: "rgba(154, 226, 202, 0.72)", // --wave-vad-edge(顶缘 1.5px 亮线)
     uncovered: "rgba(255, 255, 255, 0.05)", // 空白底纹(斜纹亮线)
     stale: "rgba(212, 176, 118, 0.22)", // rgba(var(--sem-amber), .22)
     passTint: "rgba(255, 255, 255, 0.03)", // passId 偶数轮次的底色微差
@@ -116,6 +116,30 @@ export function envelopeHalfPx(db, laneH) {
     const d = Math.min(Math.max(num(db, ENV_FLOOR_DB), ENV_FLOOR_DB), 0);
     const u = (d - ENV_FLOOR_DB) / -ENV_FLOOR_DB;
     return 1 + Math.pow(u, ENV_GAMMA) * (max - 1);
+}
+
+/**
+ * 契约 §1.27 返回形状的**最小守卫**:绘制循环真正下标的三条
+ * (`minDb` / `maxDb` / `covered`)必须都在、且等长。
+ *
+ * 为什么不能只校验 `minDb`(PR#64 评审【建议】4):`paintWaveTile` 的④包络循环写
+ * `tile.covered[i]` 与 `tile.maxDb[i]`,②passId 分支的谓词也读 `tile.covered[i]`
+ * —— 缺 `covered` 的畸形响应会在 rAF 绘制里抛 TypeError,炸掉的不是这一条泳道
+ * 而是整帧静态层重绘(且 `drawStatic` 里没有 try/catch,脏位已被清掉,重试都不会
+ * 再来一次)。长度不等同样致命:`covered` 比 `minDb` 短一列就读到 undefined、
+ * 长一列则整块画歪。可选的 `vad`/`stale`/`passId` 各自有 `Array.isArray` 分支,
+ * 短于 cols 时 `runsOf` 只扫到自己的长度,不需要进本守卫。
+ */
+export function isTileShape(tile) {
+    if (!tile) return false;
+    const { minDb, maxDb, covered } = tile;
+    return (
+        Array.isArray(minDb) &&
+        Array.isArray(maxDb) &&
+        Array.isArray(covered) &&
+        minDb.length === maxDb.length &&
+        minDb.length === covered.length
+    );
 }
 
 /**
@@ -175,8 +199,9 @@ export function createWaveformSource(opts) {
         const p = Promise.resolve()
             .then(() => request(ch, startS, endS, n))
             .then((tile) => {
-                // 契约 §5.5 风格的拒绝载荷({reason}/{observer})一律当无数据
-                if (!tile || !Array.isArray(tile.minDb)) {
+                // 契约 §5.5 风格的拒绝载荷({reason}/{observer})与畸形响应
+                // 一律当无数据(形状守卫见 isTileShape 头注)
+                if (!isTileShape(tile)) {
                     cache.delete(key);
                     return null;
                 }
@@ -262,7 +287,9 @@ function paintStripes(ctx, x, y, w, h, color, period, lineW) {
  * @param {object} [palette] 覆盖 DEFAULT_PALETTE 的键
  */
 export function paintWaveTile(ctx, tile, w, h, palette) {
-    if (!ctx || !tile || !Array.isArray(tile.minDb)) return;
+    // 画笔自守:本函数是导出件(T43 复用面 + smoke 直调),不能只依赖
+    // createWaveformSource 那一道闸
+    if (!ctx || !isTileShape(tile)) return;
     const pal = { ...DEFAULT_PALETTE, ...(palette || {}) };
     const cols = tile.minDb.length;
     if (!cols || !(w > 0) || !(h > 0)) return;

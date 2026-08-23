@@ -138,6 +138,11 @@ export const T = {
         "tracks.manualDrivenHint": "该轨仍由手动固定值驱动——重新识别该轨?",
         "in.releaseConfirm": "将释放通道 {n},本轨回到直通",
         "wave.recaptureArmed": "重采集布防中 · 选区 {x}–{y} · {n} 轨",
+        // 无占位符短式(T33 PR#64 评审【重要】1 / 【建议】2):Tab2 行首圆点 badge 的
+        // tooltip 与 Tab3 badge 的静态兜底文案都只拿得到「在布防中」这一个布尔位,
+        // 拿不到 {x}{y}{n} —— 灌长式会把字典原文连占位符一起写进 title / textContent。
+        // 范围与轨数在两处 badge(Tab1 Range / Tab2 图例行)上由 fmt 灌完整串。
+        "wave.recaptureArmedShort": "重采集布防中",
         "footer.recaptureOutputWarn":
             "输出引擎仍按全局范围工作,与本次重采集选区无关",
 
@@ -607,6 +612,7 @@ export const T = {
         "in.releaseConfirm":
             "Release channel {n} — this track returns to passthrough",
         "wave.recaptureArmed": "RECAPTURE ARMED · {x}–{y} · {n} TRACKS",
+        "wave.recaptureArmedShort": "RECAPTURE ARMED",
         "footer.recaptureOutputWarn":
             "Engine still drives the global range — unaffected by the recapture selection",
 
@@ -1036,6 +1042,7 @@ export const T = {
         "in.releaseConfirm":
             "Libérer le canal {n} — cette piste repasse en direct",
         "wave.recaptureArmed": "RÉ-CAPTURE ARMÉE · {x}–{y} · {n} PISTES",
+        "wave.recaptureArmedShort": "RÉ-CAPTURE ARMÉE",
         "footer.recaptureOutputWarn":
             "Le moteur pilote toujours la plage globale — indépendamment de la sélection de ré-capture",
 

@@ -492,8 +492,11 @@
      语义色一律不动。--wave-env 保留为设计稿原值存档,不再有消费者。
      ⚠ VAD 的 **alpha 单一真源 = canvas/waveform.js 的 VAD_ALPHA**:本组只给
      rgb 三元(同 --sem-green 写法),computedPalette() 拼 alpha,两处不各写一份。 */
-    --wave-vad: 88, 208, 148; /* VAD 绿罩基色 rgb(比 --sem-green 更鲜亮) */
-    --wave-vad-edge: rgba(120, 236, 172, 0.78); /* VAD 区顶缘 1.5px 亮线 */
+    /* Wave 6 用户 preview 判「颜色也不是很好看」→ 亮薄荷 88,208,148 换柔和青绿:
+       原色偏黄绿、饱和度高,与本主题的薰衣草/粉相冲;新色偏青,与 --acc
+       (181,172,201)成邻近色。同轮带高 5→3px、alpha .55→.62(带窄了画实)。 */
+    --wave-vad: 122, 205, 178; /* VAD 标注带基色 rgb */
+    --wave-vad-edge: rgba(154, 226, 202, 0.72); /* 标注带顶缘 1.5px 亮线 */
     --wave-env-pink: rgba(216, 186, 216, 0.52); /* 波形外柱(峰包络)淡粉紫 */
     --wave-env-core: rgba(255, 250, 255, 0.6); /* 波形内柱亮芯(近白) */
 }

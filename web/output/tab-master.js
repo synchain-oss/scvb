@@ -127,6 +127,64 @@ export function nextParamEcho(echo, payload, gestureId) {
 }
 
 /**
+ * `scvb.segments` **版本闸**(契约 §2.8 载荷首字段 `version:1..2`)。
+ *
+ * 事件仓只存**当前激活版本**的段表:`store.segments` 是 Tab1 计数 / Tab2 手动常值 /
+ * Tab3 泳道与检查器的共同渲染源,而这三处显示的都是 `global.version_active` 那一版。
+ * 唯一会送来别版本段表的面是 `copyVersion(src, dst)` —— 契约 §1.11 只说「完成后经
+ * `scvb.segments`(`reason:"copyVersion"`)回推段表」,**没有**规定 dst 不是激活版本时
+ * 发不发;web-preview 的 mock 照发(载荷 `version = dst`,只是自己内部不换表)。
+ * 不闸的话「复制到非激活版本」会把 `store.segments` 换成一份看不见的版本的表,
+ * Tab3 段数/边界与版本 chip 当场不一致(PR#64 评审【重要】6)。
+ *
+ * ⚠ **C++ 侧对非激活 dst 到底发不发这个事件,待 native 侧确认**。确认为「不发」后
+ *   本闸退化成恒真的防御层,不必拆 —— 它同时挡住任何别的版本串台。
+ *
+ * `reason:"versionActive"` 例外:该事件自身就是「激活版本刚换成 `version`」的通告,
+ * 而契约没有规定它与携新 `version_active` 的 `scvb.state` 谁先到 —— 按版本闸判会把
+ * 新版本的全量段表整帧误丢。`version` 或 `activeVersion` 任一不是整数时同样放行
+ * (首帧 snapshot 早于 state 落地、老载荷不带 `version` 都归这一支)。
+ *
+ * @param {object|null} seg `scvb.segments` 载荷
+ * @param {number|undefined} activeVersion `state.global.version_active`
+ */
+export function segmentsEventApplies(seg, activeVersion) {
+    if (!seg) return false;
+    if (seg.reason === "versionActive") return true;
+    if (!Number.isInteger(seg.version) || !Number.isInteger(activeVersion)) {
+        return true;
+    }
+    return seg.version === activeVersion;
+}
+
+/**
+ * §2.8:`channels` 只含受影响轨(snapshot / versionActive / copyVersion 时为全部轨),
+ * 段表是该轨的**完整列表**(不做段级增量)—— 所以按 ch 整条替换即可。
+ *
+ * 命名:本函数此前在 app.js 里用的局部名,与契约 §8.2「禁止复活名单」上那个已废弃的
+ * **桥函数**(01 草案的段合并 API,现由 `editSegment(ch,'merge',…)` 取代)逐字撞名。
+ * 名单靠整词扫描落实(scripts/check-bridge-parity.mjs 的 FORBIDDEN 表),留着一个同名
+ * 局部件迟早让机器扫出假阳性 —— 改叫 `applySegmentsEvent`(PR#64 评审【建议】1)。
+ */
+export function applySegmentsEvent(prev, next) {
+    if (!next) return prev;
+    if (
+        !prev ||
+        next.reason === "snapshot" ||
+        next.reason === "versionActive" ||
+        next.reason === "copyVersion"
+    ) {
+        return next;
+    }
+    const byCh = new Map((prev.channels || []).map((c) => [c.ch, c]));
+    for (const c of next.channels || []) byCh.set(c.ch, c);
+    return {
+        ...next,
+        channels: [...byCh.values()].sort((a, b) => a.ch - b.ch),
+    };
+}
+
+/**
  * `scvb.state` 深合并(契约 §2.1 字段纪律:`full:false` = 增量,只含变化子树,UI 做深合并)。
  * 数组整体替换 —— `channels[15]` / `versions[2]` 是定长表,逐元素合并会把「C++ 只发前两轨」
  * 误解成「后 13 轨保持旧值」以外的东西;契约说的是子树替换语义,数组即叶子。

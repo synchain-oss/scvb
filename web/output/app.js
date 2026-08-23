@@ -37,6 +37,8 @@ import {
     shouldShowGuide,
     errorStoreKey,
     errorKeysToDrop,
+    segmentsEventApplies,
+    applySegmentsEvent,
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
@@ -1157,7 +1159,19 @@ if (bridge) {
     });
 
     bridge.on("scvb.segments", (seg) => {
-        store.segments = mergeSegments(store.segments, seg);
+        // 版本闸(§2.8 载荷 `version`):非当前激活版本的段表整帧丢弃 —— 既不进
+        // store,也不转发给三个 tab(转发同样有害:tabWave.onSegments 会按它撤
+        // 倒计时条、弹 diff、作废检查器乐观值与进行中的边界拖拽)。判据与理由
+        // 见 tab-master.js `segmentsEventApplies` 头注(含 native 侧待确认项)。
+        if (
+            !segmentsEventApplies(
+                seg,
+                (store.state.global || {}).version_active,
+            )
+        ) {
+            return;
+        }
+        store.segments = applySegmentsEvent(store.segments, seg);
         tabMaster.onSegments(seg);
         // Tab2:手动常值的乐观显示让位给回推的段表(§1.16 的写入结果经本事件回来)
         tabTracks.onSegments(seg);
@@ -1235,28 +1249,6 @@ function stripFull(s) {
     const out = { ...s };
     delete out.full;
     return out;
-}
-
-/**
- * §2.8:`channels` 只含受影响轨(snapshot / versionActive 时为全部轨),
- * 段表是该轨的**完整列表**(不做段级增量)—— 所以按 ch 整条替换即可。
- */
-function mergeSegments(prev, next) {
-    if (!next) return prev;
-    if (
-        !prev ||
-        next.reason === "snapshot" ||
-        next.reason === "versionActive" ||
-        next.reason === "copyVersion"
-    ) {
-        return next;
-    }
-    const byCh = new Map((prev.channels || []).map((c) => [c.ch, c]));
-    for (const c of next.channels || []) byCh.set(c.ch, c);
-    return {
-        ...next,
-        channels: [...byCh.values()].sort((a, b) => a.ch - b.ch),
-    };
 }
 
 /** state 里的 UI 面(语言 / tab)回推到页面本地态 —— 回推不再往上行,避免自激。 */

@@ -2807,12 +2807,13 @@
             }
             /* 右缘 44px 双刻度列(786-797):全泳道区共用一列(B-11),窗级覆盖层;
                right 由 syncScrollGutter 行内同步滚动条宽(不盖滚动条、与 canvas
-               右缘对齐,口径同 .wave-ruler__scale) */
+               右缘对齐,口径同 .wave-ruler__scale)。
+               bottom = 底部条行高(Wave 6 起 44,见 .wave-hzoom) */
             .wave-scalecol {
                 position: absolute;
                 right: 0;
                 top: 22px;
-                bottom: 20px;
+                bottom: 44px;
                 width: 44px;
                 display: flex;
                 border-left: 1px solid var(--dark-rule);
@@ -2863,7 +2864,7 @@
             .wave-selection {
                 position: absolute;
                 top: 0;
-                bottom: 20px;
+                bottom: 44px;
                 z-index: 5;
                 pointer-events: none;
             }
@@ -2969,16 +2970,23 @@
             .wave-dim {
                 position: absolute;
                 top: 22px;
-                bottom: 20px;
+                bottom: 44px;
                 z-index: 4;
                 background: rgba(15, 13, 21, 0.35);
                 pointer-events: none;
             }
             /* 底部缩放/滚动条(866-871):148 + 左 padding 10 = 158 与轨头对齐;
-               148px 空档放缩放档位 mono 读数(A-16 裁定) */
+               148px 空档放缩放档位 mono 读数(A-16 裁定)。
+               ---- Wave 6 用户裁定:行高 20 → 44 ----------------------------------
+               用户 preview 第三轮原话:「横向缩放的在横向进度条的右侧(右下角),
+               纵向缩放条在纵向进度条的下方,**纵向放置**,两个缩放条呈 90 度」。
+               Wave 5 把纵向缩放条压成横轨的唯一理由就是「20px 行高放不下竖杆」——
+               既然用户要竖杆,代价就由布局出:底部条加高到 44px(泳道 canvas 让出
+               24px 高,滚动条兜住),竖杆 6×22 + 上下各 10.5px 余量正好落进来。
+               稿内 866 的 20px 固定高**被本裁定覆盖**,deviations 登记。 */
             .wave-hzoom {
                 flex: none;
-                height: 20px;
+                height: 44px;
                 display: flex;
                 align-items: center;
                 padding: 0 var(--sp-10);
@@ -3047,16 +3055,14 @@
                 border: 1px solid rgba(var(--wh), 0.14);
                 cursor: ew-resize;
             }
-            /* 命中扩展:6×64 → **20×80 CSS px**(= 把底条 20px 的整个行高吃满)。
-               ⚠ 与 RE-06「0.5 档 ≥24 物理 px」的口径差登记在案:纵轴上限是底条
-               自身的 20px(设计稿 866 的固定高),再往上/下扩会被 .wave-window 的
-               overflow:hidden 裁掉(向下),或压进泳道 canvas 右下角造指针死区
-               (向上)—— 与本轮刚修掉的 .wave-vzoom 死区同一笔账。缺口连同该件的
-               J72 用户 preview 一并交统筹(deviations 登记)。 */
+            /* 命中扩展:6×64 → **30×80 CSS px**。Wave 6 底条加高到 44px 后纵轴不再
+               受 20px 行高卡脖子,顺手把 RE-06「0.5 档 ≥24 物理 px」的旧缺口补上
+               (30 > 24);上限仍是底条自身的 44px —— 再往上扩会压进泳道 canvas 右下角
+               造指针死区,那是 Wave 5 刚修掉的病,不再犯。 */
             .wave-hzoom__zoombar::after {
                 content: "";
                 position: absolute;
-                inset: -7px -8px;
+                inset: -12px -8px;
             }
             .wave-hzoom__zoomthumb {
                 position: absolute;
@@ -3073,56 +3079,92 @@
                 outline: 2px solid rgba(var(--acc), 0.8);
                 outline-offset: 3px;
             }
-            /* ---- 纵向缩放拖拽条(Wave 4 用户新件;**Wave 5 用户裁定②迁位 + 改制**)
+            /* ---- 纵向缩放拖拽条(Wave 4 用户新件;**Wave 6 用户裁定:竖回来**)
                ------------------------------------------------------------------
-               旧制 = 泳道区右缘一枚 12×62 竖杆,先浮在 canvas 上(24×74 指针死区),
-               后退到双刻度列左侧的 24px 自留槽里。用户 preview 第二轮:「为什么没有
-               贴着右侧,放在纵向滚动的进度条下面?」——那个位置既不贴边、又白占舞台宽。
-               新制 = 落在底部缩放条行(`.wave-hzoom`)的**最右端**:窗口右下角、在
-               纵向滚动条轨道的**斜下方**;泳道 canvas 零占用(VZOOM_GUTTER_W
-               随之撤销),刻度列的 -100/-24 读数也不再有被压的可能。
-               ⚠ 位置的**事实口径**(Wave 5 /code-review minor,PR 描述照此写,不要写成
-               「与滚动条同一右缘」):杆右缘停在 `.wave-hzoom` 的右内边距处(=双刻度列
-               右缘,1036),泳道区纵向滚动条占 1037..1046 —— 两者差 10px,杆落在**刻度列**
-               正下方而非滚动条正下方。试过用负 margin 抵掉那 10px 让两者右缘齐平,截图
-               确认杆的圆头会被窗口 15px 圆角啃住、比现在难看,故**保留 10px 内边距**、
-               只把描述改准。
-               形制随位置改:20px 行高放不下竖杆 → 与横向缩放条同族的短横轨(44×6)
-               + 圆点 thumb,左侧配可见读数「⇕ 34」把「这条管行高」说清楚;
-               `⇕` 与横向的 `×N` 一眼两分,不会读成同一件。 */
+               沿革三轮:
+                 Wave 4 = 泳道区右缘一枚 12×62 竖杆,浮在 canvas 上(24×74 指针死区);
+                 Wave 5 = 迁进底部条右端,但 20px 行高放不下竖杆 → 压成 44×6 横轨;
+                 Wave 6 = 用户 preview 第三轮原话「纵向缩放条在纵向进度条的下方,
+                          **纵向放置**,两个缩放条呈 90 度,都在右下角」—— Wave 5 的
+                          横轨与要求相反,竖直形制**恢复**,腾空间的代价由布局承担
+                          (底部条 20 → 44px,见 .wave-hzoom 头注)。
+               现制 = 窗口右下角一枚 6×22 竖轨 + 圆点 thumb,与横向缩放条呈 90°:
+               横的在左(横向滚动条右侧),竖的在最右(纵向滚动条正下方)。
+               ⚠ 「同一列」这次是**真的**:`.wave-hzoom__vzoomslot` 用负 margin 抵掉
+               底部条的 10px 右内边距、贴到窗口右内缘,槽宽取 max(滚动条宽, 16px),
+               竖轨在槽内居中 → 轨心恒在距右内缘 8px 处,与泳道区纵向滚动条(占
+               右起 0..gutter,实测 gutter=9)同列。
+               ⚠ 16px 兜底与 22px 轨长都是**圆角账**,不是随手取的:窗口 `overflow:hidden`
+               + 15px 圆角(内圆角 14)会啃掉右下角 14×14 那块,而 thumb 是 11px 圆点。
+               9px 窄滚动条下若严格按 4.5px 轨心居中,圆点直接探出窗口右内缘被啃圆头
+               (Wave 5 头注里记的正是这一笔)→ 轨心退到距右内缘 8px。纵轴同理:26px 轨
+               (上下各 8.5px 余量)在**最矮档**(thumb 触轨底)实测圆点右下角仍被啃掉一块
+               (见 .shots/w6-corner-min),轨长收到 22 → 上下各 10.5px 余量后,thumb 圆心
+               距内圆角弧心 6.95px、加半径 5.5 = 12.45 < 14,两端极值都干净。
+               ⚠ 残留口径差(**PR 描述照此写**):轨心停在距右内缘 8px、纵向滚动条列是
+               右起 0..9px(轨心 4.5px)—— 两者差 3.5px,6px 宽的轨与 9px 宽的滚动条列
+               有 4px 重叠,读作「同一列」成立,但不是严格同心;要严格同心就得让圆点探进
+               圆角被啃,取舍取前者。
+               `⇕` 读数与横向的 `×N` 一眼两分,不会读成同一件。 */
             .wave-hzoom__vzoomctl {
                 flex: none;
+                align-self: stretch;
                 display: flex;
                 align-items: center;
                 gap: var(--sp-5);
                 margin-left: var(--sp-10);
+                /* 抵掉 .wave-hzoom 的右内边距:整组贴到窗口右内缘,槽才能与
+                   泳道区纵向滚动条同列(见上「同一列」账) */
+                margin-right: calc(var(--sp-10) * -1);
+                /* 角落区(用户裁定⑦「两条共用一个角落容器 + 与底部条同族的浅色底」):
+                   竖轨贴着窗口右内缘,没有这层底就是一根孤零零杵在圆角里的针;
+                   一道分隔线 + 3.5% 提亮把「⇕ 34 + 竖轨」圈成一件,与左边的
+                   「×1.0 + 横轨」一眼分组、90° 的关系也才立得住。
+                   宽 = 双刻度列 44 + 滚动条列 —— 这道左分隔线就与 `.wave-scalecol`
+                   的 border-left **连成一条直线**(角落区 = 那两列的正下方),
+                   否则两条竖线错开 5px,一眼就是没对齐。
+                   `flex-end`:槽必须贴右内缘,富余宽一律让给左侧。 */
+                width: calc(44px + var(--wave-gutter, 0px));
+                justify-content: flex-end;
+                padding-left: var(--sp-5);
+                background: rgba(var(--wh), 0.035);
+                border-left: 1px solid var(--dark-rule);
+            }
+            /* 纵向滚动条那一列:宽 = 实测滚动条宽(syncScrollGutter 写
+               `--wave-gutter`),兜底 16px(圆角账,见上) */
+            .wave-hzoom__vzoomslot {
+                flex: none;
+                align-self: stretch;
+                width: max(var(--wave-gutter, 0px), 16px);
+                display: flex;
+                align-items: center;
+                justify-content: center;
             }
             .wave-vzoom {
                 position: relative;
-                width: 44px;
-                height: 6px;
+                width: 6px;
+                height: 22px;
                 border-radius: var(--r-pill);
                 background: rgba(var(--wh), 0.08);
                 border: 1px solid rgba(var(--wh), 0.14);
-                /* Wave 5 /code-review minor:改制成横轨后取值只读 clientX
-                   (tab-wave.js `vzoomHeightFromEvent`),纵向位移完全不参与 —— 光标
-                   必须跟着改成 ew-resize,与并排同族的 .wave-hzoom__zoombar 一致。
-                   留着 ns-resize 就是在邀请用户上下拖一条只吃横向位移的轨
-                   (同一次改制里 aria-orientation="vertical" 已按横向删掉)。 */
-                cursor: ew-resize;
+                /* 竖轨 = 只吃纵向位移(tab-wave.js `vzoomHeightFromEvent` 读 clientY,
+                   向上拖 = 泳道变高),光标随之回到 ns-resize */
+                cursor: ns-resize;
             }
-            /* 命中扩展:6×44 → **20×60 CSS px**(纵轴吃满底条 20px 行高)。
-               ⚠ 与 RE-06「0.5 档 ≥24 物理 px」的口径差与横向缩放条同账:纵轴
-               上限就是底条自身的 20px(设计稿 866 固定高),再往上扩会压回泳道
-               canvas 造指针死区 —— 正是本件迁位要根治的病。缺口登记 deviations。 */
+            /* 命中扩展:6×22 → **20×42 CSS px**(横轴 20 与横向杆同族;纵轴 42 吃满
+               44px 底条行高,不越界到泳道 canvas 上去造指针死区)。
+               ⚠ 横轴 20 仍差 RE-06 的 24 物理 px 半档 4px —— 再宽就要探出窗口右内缘
+               被圆角啃,缺口登记 deviations(纵轴 42 已达标)。 */
             .wave-vzoom::after {
                 content: "";
                 position: absolute;
-                inset: -7px -8px;
+                inset: -10px -7px;
             }
+            /* 竖轨的 thumb:横向恒居中(left:50%),纵向走行程(top 由 applyLaneH 写,
+               **上 = 高**,与「向上拖 = 泳道变高」同向) */
             .wave-vzoom__thumb {
                 position: absolute;
-                top: 50%;
+                left: 50%;
                 width: 11px;
                 height: 11px;
                 margin: -5.5px 0 0 -5.5px;
@@ -3133,7 +3175,8 @@
             }
             .wave-vzoom:focus-visible {
                 outline: 2px solid rgba(var(--acc), 0.8);
-                outline-offset: 3px;
+                /* 贴窗口右内缘,offset 收到 2px 免得描边被圆角啃 */
+                outline-offset: 2px;
             }
             /* ---- 段检查器(876-914):262px flex 兄弟,挤压左栏(C-11) ------------
                **Wave 5 用户裁定④覆盖 C-11 的「条件渲染」半句**:面板改成
@@ -4923,7 +4966,7 @@
                                 <span
                                     class="sc-badge--amber"
                                     data-gb="master-range-recapture-badge"
-                                    data-t="wave.recaptureArmed"
+                                    data-t="wave.recaptureArmedShort"
                                     hidden
                                 >
                                     重采集布防中 · 选区 {x}–{y} · {n} 轨
@@ -5164,7 +5207,7 @@
                                 class="tracks-legend__badge"
                                 data-gb="tracks-legend-recapture-badge"
                                 hidden
-                                data-t="wave.recaptureArmed"
+                                data-t="wave.recaptureArmedShort"
                             >
                                 重采集布防中 · 选区 {x}–{y} · {n} 轨
                             </span>
@@ -5707,9 +5750,15 @@
                                     data-gb="wave-recapture-row"
                                     hidden
                                 >
+                                    <!-- 静态兜底文案走**无占位符**短式 key(词条一律走
+                                         key 纪律;PR#64 评审【建议】2):布防中由
+                                         tab-wave.js render() 用 wave.recaptureArmed
+                                         灌完整的 {x}–{y}·{n} 串覆盖本文本,长式 key 放
+                                         data-t 会在切语言那一拍闪出裸占位符。 -->
                                     <button
                                         class="wave-recap__badge"
                                         data-gb="wave-recapture-badge"
+                                        data-t="wave.recaptureArmedShort"
                                     >
                                         重采集布防中
                                     </button>
@@ -6080,33 +6129,36 @@
                                             ></div>
                                         </div>
                                     </div>
-                                    <!-- 纵向缩放拖拽条(Wave 4 新件,Wave 5 用户裁定②
-                                         迁位):原本是浮在泳道区右缘的 12×62 竖杆,用户
-                                         preview「为什么没有贴着右侧,放在纵向滚动的进度条
-                                         下面?」→ 移到本行**最右端** = 窗口右下角、与纵向
-                                         滚动条同一右缘、在其轨道下方,泳道 canvas 与刻度列
-                                         读数都不再被压。20px 行高容不下竖杆,形制随位置改成
-                                         短横轨 + 圆点 thumb(与横向缩放条同族),读数「⇕ 34」
-                                         直接可见;方向键上/右加高、下/左减矮 -->
+                                    <!-- 纵向缩放拖拽条(Wave 4 新件;Wave 6 用户裁定:
+                                         **竖回来**)。用户 preview 第三轮:「纵向缩放条在
+                                         纵向进度条的下方,纵向放置,两个缩放条呈 90 度,
+                                         都在右下角」→ 本组落在行的**最右端**,槽宽跟着
+                                         滚动条宽走(`--wave-gutter`),6×22 竖轨与泳道区
+                                         纵向滚动条同列、在其轨道正下方;与左边的横向缩放
+                                         条成 90°。读数「⇕ 34」在轨左侧;拖拽读 clientY
+                                         (上=高),方向键上/右加高、下/左减矮 -->
                                     <div class="wave-hzoom__vzoomctl">
                                         <span
                                             class="wave-hzoom__zoomval"
                                             data-gb="wave-vzoom-value"
                                         ></span>
-                                        <div
-                                            class="wave-vzoom"
-                                            data-gb="wave-vzoom"
-                                            role="slider"
-                                            tabindex="0"
-                                            aria-valuemin="22"
-                                            aria-valuemax="88"
-                                            aria-valuenow="34"
-                                            data-t-aria="wave.vZoomBar"
-                                        >
+                                        <div class="wave-hzoom__vzoomslot">
                                             <div
-                                                class="wave-vzoom__thumb"
-                                                data-gb="wave-vzoom-thumb"
-                                            ></div>
+                                                class="wave-vzoom"
+                                                data-gb="wave-vzoom"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-orientation="vertical"
+                                                aria-valuemin="22"
+                                                aria-valuemax="88"
+                                                aria-valuenow="34"
+                                                data-t-aria="wave.vZoomBar"
+                                            >
+                                                <div
+                                                    class="wave-vzoom__thumb"
+                                                    data-gb="wave-vzoom-thumb"
+                                                ></div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

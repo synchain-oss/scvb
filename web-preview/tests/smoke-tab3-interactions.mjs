@@ -206,18 +206,17 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
     // 各写一份字面量正是本波踩过的坑)。Wave 4 用户 preview:.13 的灰绿「太灰太淡」
     // → .20 + 更鲜亮的绿(tokens §20a);**Wave 5 第二轮**:满高罩「像绿底放了个
     // 波」→ 收成顶部标注带 + alpha 提到 .55(带窄了就可以画实)。
-    eq(WF.VAD_ALPHA, 0.55, "VAD 标注带 alpha 取 Wave 5 用户裁定的 .55");
-    eq(
-        WF.VAD_BAND_PX,
-        5,
-        "VAD 标注带高 5px(裁定「顶部一条 5–6px,含 1.5px 亮线」)",
-    );
+    // **Wave 6 第三轮**:5px 判「有点太粗,颜色也不是很好看」→ 带收到 3px;
+    // 亮薄荷 rgb(88,208,148) 换柔和青绿 rgb(122,205,178) —— 原色偏黄绿且饱和度
+    // 高,与粉紫主题相冲,新色偏青、与薰衣草成邻近色;带窄了 alpha 再提到 .62。
+    eq(WF.VAD_ALPHA, 0.62, "VAD 标注带 alpha 取 Wave 6 用户裁定的 .62");
+    eq(WF.VAD_BAND_PX, 3, "VAD 标注带高 3px(Wave 6:5px 判「太粗」后收窄)");
     check(
         WF.VAD_BAND_PX <= 34 / 2 - WF.envelopeHalfPx(0, 34) + 1,
         "带高不越过包络顶(半高上限 h/2−4 ⇒ 柱尖恒在 y=4,最多咬 1px 且被柱盖回)",
     );
     check(
-        WF.DEFAULT_PALETTE.vad === `rgba(88, 208, 148, ${WF.VAD_ALPHA})`,
+        WF.DEFAULT_PALETTE.vad === `rgba(122, 205, 178, ${WF.VAD_ALPHA})`,
         "DEFAULT_PALETTE.vad 由 VAD_ALPHA 拼出(不写死字面 alpha)",
     );
     // 波形本体「粉 + 白」(Wave 4 反馈⑥):外柱淡粉紫 / 内柱近白,与 tokens 同值
@@ -233,8 +232,8 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
     );
     eq(
         WF.DEFAULT_PALETTE.vadEdge,
-        "rgba(120, 236, 172, 0.78)",
-        "VAD 顶缘线 = --wave-vad-edge",
+        "rgba(154, 226, 202, 0.72)",
+        "VAD 顶缘线 = --wave-vad-edge(Wave 6 随带体同步收敛)",
     );
     // 只改波形本体与 VAD:覆盖条(accent)与 stale(amber)的语义色一字不动
     eq(
@@ -398,7 +397,11 @@ log("=== ② 布局常量(设计稿几何:158 / 34 / 262 / 44 …)===");
     eq(TW.INSPECTOR_W, 262, "检查器 262(灰模 260 → 统一稿内 262)");
     eq(TW.SCALE_COL_W, 44, "右缘双刻度列 44(B-11 共用一列)");
     eq(TW.RULER_H, 22, "标尺行高 22");
-    eq(TW.BOTTOM_BAR_H, 20, "底部条 20");
+    eq(
+        TW.BOTTOM_BAR_H,
+        44,
+        "底部条 44(Wave 6 裁定:20 → 44,腾出竖直纵向缩放条)",
+    );
     eq(TW.BOTTOM_HEAD_W, 148, "底部空档 148(+padding 10 = 158)");
     check(TW.BOTTOM_HEAD_W + 10 === TW.HEAD_W, "148+10=158 对齐链");
 
@@ -496,6 +499,7 @@ log("=== ③ 词条(T33 新增 key 三语 + 占位符 + 禁词)===");
         "wave.originLegend",
         "wave.diffKept",
         "wave.recaptureArmed",
+        "wave.recaptureArmedShort", // PR#64【重要】1 新增的无占位符短式
         "footer.recaptureOutputWarn",
     ];
     const ph = (s) => (String(s).match(/\{\w+\}/g) || []).sort().join(",");
@@ -1553,7 +1557,7 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
             ),
         "pointermove 里按 buttons===0 兜底收尾(拖拽态卡住 = 悬停即跳值)",
     );
-    // ---- Wave 5 用户裁定②:纵向缩放条移到窗口右下角(与纵向滚动条同一右缘、
+    // ---- Wave 5 用户裁定②:纵向缩放条移到窗口右下角(与纵向滚动条同列、
     //      在其轨道下方),泳道区内的 24px 自留槽随之撤销
     eq(TW.VZOOM_GUTTER_W, undefined, "纵向缩放条自留槽常量已撤销(裁定②)");
     check(
@@ -1572,7 +1576,7 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         /els\.rulerScale\.style\.marginRight = SCALE_COL_W \+ sb \+ "px"/.test(
             tw,
         ) && !/els\.vzoom\.style\.right/.test(tw),
-        "syncScrollGutter 不再给纵向杆算右让(它已在底部条的常规流里)",
+        "syncScrollGutter 不给纵向杆算右让(它在底部条的常规流里)",
     );
     {
         // 位置:落在 `.wave-hzoom` 行内、且排在横向缩放控件**之后** = 最右端
@@ -1585,33 +1589,85 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
             "纵向缩放条在底部条行内、横向缩放控件之后(窗口右下角、滚动条轨道下方)",
         );
         check(
-            html.indexOf('class="wave-window"') < bar &&
-                !/data-gb="wave-vzoom"[\s\S]{0,200}aria-orientation="vertical"/.test(
-                    html,
-                ),
-            "泳道区内不再有该件(竖杆形制随位置改成短横轨)",
+            html.indexOf('class="wave-window"') < bar,
+            "泳道区内不再有该件(件整体在底部条里)",
         );
     }
-    eq(TW.VZOOM_W, 44, "纵向缩放条轨长 44(与 .wave-hzoom__zoombar 同族短轨)");
-    check(
-        /\.wave-vzoom \{[^}]*width: 44px;[^}]*height: 6px;/.test(html),
-        "杆本体 44×6 横轨",
+    // ---- Wave 6 用户裁定:纵向缩放条**竖回来**(preview 第三轮原话:「纵向缩放条
+    //      在纵向进度条的下方,纵向放置,两个缩放条呈 90 度,都在右下角」)
+    eq(TW.VZOOM_W, undefined, "横轨轨长常量 VZOOM_W 已撤销(Wave 6 竖回来)");
+    eq(
+        TW.VZOOM_H,
+        22,
+        "纵向缩放条轨长 22(竖轨;底部条内高 43 − 上下各 10.5 圆角余量)",
     );
     check(
-        /\.wave-vzoom::after \{[^}]*inset: -7px -8px;/.test(html),
-        "命中扩展 20×60 CSS px(纵轴吃满底条 20px 行高;与横向杆同账)",
+        /\.wave-vzoom \{[^}]*width: 6px;[^}]*height: 22px;/.test(html),
+        "杆本体 6×22 竖轨(与横向杆 64×6 呈 90°)",
     );
     check(
-        /return laneHFromPercent\(\(e\.clientX - rect\.left\) \/ rect\.width\)/.test(
+        /data-gb="wave-vzoom"[\s\S]{0,200}aria-orientation="vertical"/.test(
+            html,
+        ),
+        "竖轨补回 aria-orientation=vertical(Wave 5 改横轨时删掉的那条)",
+    );
+    check(
+        /\.wave-vzoom \{[^}]*cursor: ns-resize;/.test(html),
+        "光标 ns-resize(竖轨只吃纵向位移)",
+    );
+    check(
+        /\.wave-vzoom::after \{[^}]*inset: -10px -7px;/.test(html),
+        "命中扩展 20×42 CSS px(纵轴吃满 44px 底条行高,不越界压泳道 canvas)",
+    );
+    check(
+        /return laneHFromPercent\(1 - \(e\.clientY - rect\.top\) \/ rect\.height\)/.test(
             tw,
         ),
-        "拖拽换算改横轴(clientX ÷ 轨宽)",
+        "拖拽换算回纵轴(clientY ÷ 轨高,且**向上 = 变高**)",
     );
     check(
-        /els\.vzoomThumb\.style\.left = laneHPercent\(v\) \* 100 \+ "%"/.test(
+        /els\.vzoomThumb\.style\.top = \(1 - laneHPercent\(v\)\) \* 100 \+ "%"/.test(
             tw,
         ),
-        "thumb 走百分比行程(与 .wave-hzoom__zoomthumb 同一套定位)",
+        "thumb 走纵向百分比行程(top = 1 − p,上 = 高,与拖拽同向)",
+    );
+    // 与纵向滚动条同列:槽宽跟 syncScrollGutter 实测的滚动条宽走(兜底 16px 是
+    // 圆角账 —— 9px 窄滚动条下严格居中会让 11px 圆点探出窗口右内缘被啃)
+    check(
+        /els\.hzoomRow\.style\.setProperty\("--wave-gutter", sb \+ "px"\)/.test(
+            tw,
+        ),
+        "syncScrollGutter 把滚动条宽写成 --wave-gutter(竖轨与滚动条对列)",
+    );
+    check(
+        /\.wave-hzoom__vzoomslot \{[^}]*width: max\(var\(--wave-gutter, 0px\), 16px\);/.test(
+            html,
+        ),
+        "槽宽 = max(滚动条宽, 16px),竖轨在槽内居中 = 与滚动条同列",
+    );
+    check(
+        /\.wave-hzoom__vzoomctl \{[^}]*margin-right: calc\(var\(--sp-10\) \* -1\);/.test(
+            html,
+        ),
+        "角落组抵掉底部条 10px 右内边距(不抵就落在刻度列正下方,不是滚动条下方)",
+    );
+    check(
+        /\.wave-hzoom__vzoomctl \{[^}]*background: rgba\(var\(--wh\), 0\.035\);[^}]*border-left: 1px solid var\(--dark-rule\);/.test(
+            html,
+        ),
+        "裁定⑦:两条共用的角落区有同族浅色底 + 分隔线(竖轨不再是孤零零一根针)",
+    );
+    // 底部条抬高到 44 后,三处窗级覆盖层的 bottom 必须同步(否则盖住底部条)
+    for (const cls of ["wave-scalecol", "wave-selection", "wave-dim"]) {
+        const i = html.indexOf(`.${cls} {`);
+        check(
+            i > 0 && /bottom: 44px;/.test(html.slice(i, i + 400)),
+            `${cls} 的 bottom 与底部条 44 同步`,
+        );
+    }
+    check(
+        /\.wave-hzoom \{[^}]*height: 44px;/.test(html),
+        "底部条行高 44px(与 BOTTOM_BAR_H 同步)",
     );
     check(
         /if \(els\.vzoomVal\) text\(els\.vzoomVal, "⇕ " \+ v\)/.test(tw) &&
@@ -1628,11 +1684,11 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
     ]) {
         check(css.includes(t), `tokens.css 含 ${t}`);
     }
+    // 钉「注明了用户裁定来历」这件事本身,不钉某一次的具体色值 —— 色值经三轮
+    // preview 改过两次(亮薄荷 → 柔和青绿),把 rgb 写进正则等于每调一次色就红一次。
     check(
-        /用户 preview 裁定[\s\S]{0,900}--wave-vad: 88, 208, 148;[^\n]*更鲜亮/.test(
-            css,
-        ),
-        "新 token 注明「用户 preview 裁定:比 --sem-green 更鲜亮」",
+        /Wave 6 用户 preview[\s\S]{0,400}--wave-vad: 122, 205, 178;/.test(css),
+        "--wave-vad 为 Wave 6 柔和青绿且注明用户裁定来历",
     );
     check(
         !/--sem-green: 88/.test(css) &&
@@ -2035,6 +2091,486 @@ log("\n=== ⑬ /code-review high 七条 finding(Wave 5 下半场)===");
                 /aria-label="\$\{tip\}" title="\$\{tip\}"/.test(tw),
             "finding 7:锁角标的 aria-label/title 仍烤自当帧词典(所以必须靠 marksDirty 重建)",
         );
+    }
+}
+
+// =============================================================================
+log("\n=== ⑭ PR #64 评审处置(重要 6 条 + 建议若干)===");
+{
+    const tw = src("web/output/tab-wave.js");
+    const tt = src("web/output/tab-tracks.js");
+    const ap = src("web/output/app.js");
+    const html = src("web/output/index.html");
+    const TM = await import(u("web/output/tab-master.js"));
+
+    // ---- 【重要】1:Tab2 布防圆点 tooltip 不泄漏占位符 --------------------
+    {
+        for (const lang of ["zh", "en", "fr"]) {
+            eq(
+                (
+                    String(T[lang]["wave.recaptureArmedShort"]).match(
+                        /\{\w+\}/g,
+                    ) || []
+                ).length,
+                0,
+                `重要1:${lang}.wave.recaptureArmedShort 零占位符`,
+            );
+        }
+        check(
+            /setTitle\(n\.recaptureBadge, t\["wave\.recaptureArmedShort"\]\)/.test(
+                tt,
+            ),
+            "重要1:行首圆点 tooltip 走无占位符短式",
+        );
+        check(
+            !/setTitle\(n\.recaptureBadge, t\["wave\.recaptureArmed"\]\)/.test(
+                tt,
+            ),
+            "重要1:行模型只有布尔位,长式(带 {x}{y}{n})不得再灌进 title",
+        );
+    }
+
+    // ---- 【重要】2:段表事件到达即作废进行中的边界拖拽 --------------------
+    {
+        check(
+            /function cancelBoundDrag\(\) \{/.test(tw),
+            "重要2:有独立的边界拖拽作废口",
+        );
+        const cIdx = tw.indexOf("function cancelBoundDrag() {");
+        const cWin = tw.slice(cIdx, cIdx + 260);
+        check(
+            /local\.boundDrag = null;/.test(cWin) && !/sendEdit\(/.test(cWin),
+            "重要2:作废只清态、**不发** move_boundary(与「释放才发」不冲突)",
+        );
+        const oIdx = tw.indexOf("    function onSegments(seg) {");
+        const oWin = tw.slice(oIdx, tw.indexOf("local.echo = {};", oIdx));
+        check(
+            oWin.includes("cancelBoundDrag();"),
+            "重要2:onSegments 与 rebindSegKeys 同拍作废边界拖拽(segIdx 已重编号)",
+        );
+        check(
+            oWin.includes("rebindSegKeys("),
+            "重要2:选中态重绑仍在(两条重绑纪律同处)",
+        );
+    }
+
+    // ---- 【重要】3:停播态视口变化后播放头补写一帧 ------------------------
+    {
+        // 纯函数面:refresh() 的三条纪律(首帧前不写 / 不起 rAF / 不动节流账)
+        const seen = [];
+        const p = PH.createPlayhead({
+            apply: (tS, playing) => seen.push([tS, playing]),
+        });
+        p.refresh();
+        eq(
+            seen.length,
+            0,
+            "重要3:首帧 §2.6 事件前 refresh() 不写入(维持初始 hidden)",
+        );
+        p.push({ timeS: 12.5, isPlaying: false });
+        const afterPush = seen.length;
+        check(!p.running(), "重要3:停播事件 push 后 rAF 不常驻(空闲零 rAF)");
+        p.refresh();
+        eq(seen.length, afterPush + 1, "重要3:停播态 refresh() 恰好补写一帧");
+        eq(seen[seen.length - 1][0], 12.5, "重要3:补写的是当前 tS(停住则原地)");
+        eq(seen[seen.length - 1][1], false, "重要3:playing 位如实传下去");
+        check(!p.running(), "重要3:refresh() 不起 rAF");
+        // 播放中 refresh() 同样只写一帧、不多起 rAF(补写是幂等的)
+        const p2 = PH.createPlayhead({ apply: () => {} });
+        p2.push({ timeS: 3, isPlaying: true });
+        const rafBefore = p2.running();
+        p2.refresh();
+        eq(
+            p2.running(),
+            rafBefore,
+            "重要3:播放中 refresh() 不改变 rAF 常驻状态",
+        );
+        // 接线面:视口变化与容器尺寸变化两处都补;**不得**加「循环没跑才补」前置
+        // ——「循环在不在跑」不等于「停播没停播」(位置微抖的 30Hz 停住事件会让
+        // rAF 常驻,加了前置恰好在最像 bug 的那一档上把补写跳掉)
+        const gIdx = tw.indexOf("function refreshPlayheadGeometry() {");
+        const gWin = tw.slice(gIdx, tw.indexOf("\n    }", gIdx));
+        check(
+            gWin.includes("playhead.refresh();") &&
+                !gWin.includes("playhead.running()"),
+            "重要3:补写无条件执行(不按 running() 前置跳过)",
+        );
+        const tlIdx = tw.indexOf("const timeline = createTimeline({");
+        const tlWin = tw.slice(tlIdx, tw.indexOf("});", tlIdx));
+        check(
+            tlWin.includes("refreshPlayheadGeometry();"),
+            "重要3:timeline.onChange 里补一次(平移/缩放)",
+        );
+        check(
+            /new ResizeObserver\(\(\) => \{[\s\S]{0,400}?refreshPlayheadGeometry\(\);/.test(
+                tw,
+            ),
+            "重要3:容器尺寸变化(舞台宽变)同样补一次",
+        );
+    }
+
+    // ---- 【重要】4:滑杆零改动点击不整包下发 ------------------------------
+    {
+        const rIdx = tw.indexOf("    function releaseSlider(s) {");
+        const rWin = tw.slice(rIdx, tw.indexOf("\n    }", rIdx));
+        // 脏位**按杆记账**:共享位下键盘档那 250ms 内在另一根杆上按一下,会把
+        // 前一根杆的脏位吃掉 ⇒ 整包下发与倒计时条被整条吞掉(校验实测)。
+        check(
+            /const dirty = !!s\.dirty;/.test(rWin) &&
+                /s\.dirty = false;/.test(rWin),
+            "重要4:releaseSlider 取并清**本杆**的「改过值没有」闸(不用共享位)",
+        );
+        check(
+            !/local\.sliderDirty/.test(tw),
+            "重要4:全页共享脏位已废除(共享位会跨杆互吃提交)",
+        );
+        // 节流尾包是跨杆共享的单例:零改动的那一次释放若先去清它,会把别的杆
+        // 已排队的最后一档值丢掉且不补发 —— 修复反而制造新的丢包路径。
+        check(
+            rWin.indexOf("if (!dirty) return;") <
+                rWin.indexOf("clearTimeout(local.paramTimer)"),
+            "重要4:清共享节流尾包排在 !dirty 早退**之后**(别吃掉别的杆的在途值)",
+        );
+        check(
+            rWin.indexOf("if (!dirty) return;") > 0 &&
+                rWin.indexOf("if (!dirty) return;") <
+                    rWin.indexOf("sendParams(s.def.api);"),
+            "重要4:闸排在整包下发**之前**(零改动 ⇒ setVadParams/setSegmentation 都不发)",
+        );
+        check(
+            rWin.indexOf("if (!dirty) return;") > 0 &&
+                rWin.indexOf("if (!dirty) return;") <
+                    rWin.indexOf("armCountdown("),
+            "重要4:零改动也不挂倒计时条(C++ 侧根本不会跑流水线)",
+        );
+        eq(
+            (tw.match(/s\.dirty = true;/g) || []).length,
+            4,
+            "重要4:四条写入路径(按下 / 移动 / 松手补值 / 方向键)各自置位",
+        );
+    }
+
+    // ---- 【重要】5:总宽 <100ms 的相邻两段不建边界拖拽 --------------------
+    {
+        check(
+            /if \(j >= 0 && minS < maxS\) \{/.test(tw),
+            "重要5:可拖窗反转(minS >= maxS)时不建 boundDrag",
+        );
+        // 窗定义没被改动:两侧各留 50ms
+        check(
+            /const minS = j < 0 \? 0 : num\(segs\[j\] && segs\[j\]\.t0S, 0\) \+ 0\.05;/.test(
+                tw,
+            ),
+            "重要5:左界仍是左段起点 +50ms",
+        );
+        check(/\) - 0\.05;/.test(tw), "重要5:右界仍是右段终点 −50ms");
+    }
+
+    // ---- 【重要】6:非激活版本的 scvb.segments 不进 store ------------------
+    {
+        const A = { version: 1, reason: "edit", channels: [{ ch: 1 }] };
+        const B = { version: 2, reason: "copyVersion", channels: [{ ch: 1 }] };
+        check(
+            TM.segmentsEventApplies(A, 1),
+            "重要6:版本与 version_active 一致 ⇒ 消费",
+        );
+        check(
+            !TM.segmentsEventApplies(B, 1),
+            "重要6:copyVersion 到非激活 dst(version=2,active=1)⇒ 丢弃",
+        );
+        check(
+            TM.segmentsEventApplies({ ...B, version: 1 }, 1),
+            "重要6:copyVersion 到**激活** dst ⇒ 照常消费",
+        );
+        check(
+            TM.segmentsEventApplies({ version: 2, reason: "versionActive" }, 1),
+            "重要6:versionActive 例外(与 scvb.state 的先后契约没规定,不得误丢新表)",
+        );
+        check(
+            TM.segmentsEventApplies({ reason: "snapshot" }, 1),
+            "重要6:载荷不带 version ⇒ 放行(不把老/简载荷判死)",
+        );
+        check(
+            TM.segmentsEventApplies(
+                { version: 1, reason: "snapshot" },
+                undefined,
+            ),
+            "重要6:version_active 尚未落地 ⇒ 放行(首帧顺序不确定)",
+        );
+        check(!TM.segmentsEventApplies(null, 1), "重要6:空载荷不消费");
+        // 合并语义本身没被改动
+        const prev = {
+            version: 1,
+            reason: "snapshot",
+            channels: [
+                { ch: 1, segments: [] },
+                { ch: 2, segments: [] },
+            ],
+        };
+        const inc = {
+            version: 1,
+            reason: "edit",
+            channels: [{ ch: 2, segments: [{ segIdx: 0 }] }],
+        };
+        const out = TM.applySegmentsEvent(prev, inc);
+        eq(
+            out.channels.length,
+            2,
+            "重要6:增量 reason 按 ch 整条替换,其余轨保留",
+        );
+        eq(out.channels[1].segments.length, 1, "重要6:受影响轨换成新表");
+        eq(
+            TM.applySegmentsEvent(prev, { version: 1, reason: "snapshot" })
+                .reason,
+            "snapshot",
+            "重要6:全量 reason 整表替换",
+        );
+        // 接线面:丢弃是整帧丢弃(不转发给三个 tab)
+        const sIdx = ap.indexOf('bridge.on("scvb.segments"');
+        const sWin = ap.slice(
+            sIdx,
+            ap.indexOf("tabMaster.onSegments(seg);", sIdx),
+        );
+        check(
+            /segmentsEventApplies\(\s*seg,\s*\(store\.state\.global \|\| \{\}\)\.version_active,?\s*\)/.test(
+                sWin,
+            ) && sWin.includes("return;"),
+            "重要6:app.js 在转发给任何 tab 之前先过版本闸",
+        );
+        check(
+            /待 native 侧确认/.test(src("web/output/tab-master.js")),
+            "重要6:「C++ 对非激活 dst 是否发事件」的待确认项写在代码注释里",
+        );
+        // mock 的既有行为不动(不拿 mock 掩盖问题)
+        check(
+            /const store = dst === model\.snapshot\.global\.version_active;/.test(
+                src("web-preview/mock/juce-bridge-mock.js"),
+            ),
+            "重要6:mock 仍按原样对非激活 dst 发事件(UI 侧防御,不改 mock)",
+        );
+    }
+
+    // ---- 【建议】1:局部件不再与契约 §8.2 禁项撞名 ------------------------
+    {
+        const banned = "merge" + "Segments";
+        for (const f of [
+            "web/output/app.js",
+            "web/output/tab-master.js",
+            "web/output/tab-wave.js",
+            "web/output/tab-tracks.js",
+        ]) {
+            check(!src(f).includes(banned), `建议1:${f} 无与禁项撞名的标识符`);
+        }
+        check(
+            /export function applySegmentsEvent\(prev, next\)/.test(
+                src("web/output/tab-master.js"),
+            ),
+            "建议1:改名后的件仍是可 import 的纯函数(node 侧可断言)",
+        );
+    }
+
+    // ---- 【建议】2:Tab3 布防 badge 的静态兜底走 key ----------------------
+    {
+        check(
+            /data-gb="wave-recapture-badge"\s+data-t="wave\.recaptureArmedShort"/.test(
+                html,
+            ),
+            "建议2:Tab3 badge 补 data-t(词条一律走 key)",
+        );
+        check(
+            !/data-gb="wave-recapture-badge"[\s\S]{0,200}data-t="wave\.recaptureArmed"[^S]/.test(
+                html,
+            ),
+            "建议2:兜底用的是短式 —— 长式挂 data-t 会在切语言那一拍闪出裸占位符",
+        );
+        check(
+            /fmtKey\("wave\.recaptureArmed", \{/.test(tw),
+            "建议2:布防中仍由 render() 用长式灌完整的 {x}–{y}·{n} 串覆盖",
+        );
+    }
+
+    // ---- 【建议】3:Tab2 图例行 badge 不再是死接线 ------------------------
+    {
+        check(
+            /const recaptureBadge = \$\("tracks-legend-recapture-badge"\);/.test(
+                tt,
+            ),
+            "建议3:图例 badge 有节点句柄",
+        );
+        check(
+            /show\(recaptureBadge, armed\);/.test(tt),
+            "建议3:按 §2.1 recapture 显隐(此前从没有人 show 它)",
+        );
+        check(
+            /fmt\(t\["wave\.recaptureArmed"\], \{[\s\S]{0,160}?x: secondsToTimecode/.test(
+                tt,
+            ),
+            "建议3:显示前 fmt 灌值 —— 一显示就裸渲占位符的情形已消除",
+        );
+        check(
+            html.includes('data-gb="tracks-legend-recapture-badge"'),
+            "建议3:app.js 的点击跳转接线与 CSS 都还指着这个锚点",
+        );
+    }
+
+    // ---- 【建议】4:tab-tracks 的过期注释已更正 ---------------------------
+    {
+        check(
+            !/Tab1 nextParamEcho 的 full 分支尚为/.test(tt),
+            "建议4:「Tab1 full 分支尚为全清」的过期断言已从注释里去掉",
+        );
+        // 事实面:Tab1 的 full 分支现在确实保留拖动中的 id(两 tab 口径一致)
+        const npIdx = src("web/output/tab-master.js").indexOf(
+            "export function nextParamEcho(",
+        );
+        const npWin = src("web/output/tab-master.js").slice(npIdx, npIdx + 420);
+        check(
+            /if \(payload\.full\) \{[\s\S]{0,220}?held \? \{ \[gestureId\]: src\[gestureId\] \} : \{\}/.test(
+                npWin,
+            ),
+            "建议4:Tab1 full 分支保留 gestureId(注释更正后的事实依据)",
+        );
+    }
+
+    // ---- 【额外】指针捕获统一走会吞异常的 helper --------------------------
+    // setPointerCapture 对非活动指针抛 NotFoundError,而多数调用点排在
+    // `local.xxxDrag = …` **之前** —— 一抛就把建态语句甩掉,症状是「按住拖动
+    // 完全没反应且零报错」。本波在 web-preview 的合成 PointerEvent 上实测到:
+    // 边界拖拽的 pointerdown 整段被这一抛吞掉。
+    {
+        check(
+            /function capturePointer\(el, e\) \{[\s\S]{0,220}?try \{[\s\S]{0,80}?el\.setPointerCapture\(e\.pointerId\);[\s\S]{0,60}?\} catch \{/.test(
+                tw,
+            ),
+            "额外:capturePointer 把 setPointerCapture 包进 try/catch",
+        );
+        // 除 helper 自身外,全页不得再有裸调
+        const bare = [...tw.matchAll(/(\w[\w.]*)\.setPointerCapture\(/g)].map(
+            (m) => m[1],
+        );
+        eq(
+            bare.join(","),
+            "el",
+            "额外:全页只剩 helper 内那一处 setPointerCapture(其余一律走 capturePointer)",
+        );
+        eq(
+            (tw.match(/capturePointer\(/g) || []).length,
+            11, // 1 处定义 + 10 个手势入口
+            "额外:十个手势入口(滑杆 / 泳道两支 / 标尺 / 选区手柄 / 底部条 / 两条缩放条 / 检查器旋钮与滑杆)全部改道",
+        );
+    }
+
+    // ---- 【建议】5:waveform 块形状守卫 ----------------------------------
+    {
+        const ok = { minDb: [-20], maxDb: [-10], covered: [1] };
+        check(WF.isTileShape(ok), "建议5:齐全等长的块通过");
+        check(!WF.isTileShape(null), "建议5:空载荷不通过");
+        check(
+            !WF.isTileShape({ minDb: [-20] }),
+            "建议5:只有 minDb(旧守卫的全部)不通过 —— 绘制循环还要下标 covered/maxDb",
+        );
+        check(
+            !WF.isTileShape({ minDb: [-20], maxDb: [-10], covered: [1, 1] }),
+            "建议5:三条不等长不通过",
+        );
+        check(
+            !WF.isTileShape({ minDb: [-20], maxDb: [-10] }),
+            "建议5:缺 covered 不通过(§1.27 拒绝载荷 {reason}/{observer} 同归此支)",
+        );
+        // 画笔自守:畸形块进来只是不画,不抛
+        let threw = false;
+        const stub = {
+            clearRect() {},
+            fillRect() {},
+            save() {},
+            restore() {},
+            beginPath() {},
+            rect() {},
+            clip() {},
+            moveTo() {},
+            lineTo() {},
+            stroke() {},
+        };
+        try {
+            WF.paintWaveTile(stub, { minDb: [-20] }, 100, 34);
+            WF.paintWaveTile(stub, { minDb: [-20], passId: [1] }, 100, 34);
+        } catch {
+            threw = true;
+        }
+        check(!threw, "建议5:畸形块进画笔只是不画,不炸 rAF 静态层重绘");
+        check(
+            /if \(!isTileShape\(tile\)\) \{/.test(
+                src("web/output/canvas/waveform.js"),
+            ),
+            "建议5:拉取侧同一道守卫(畸形响应不进 LRU)",
+        );
+    }
+
+    // ---- 【建议】6:两条缩放条进帧时账 ------------------------------------
+    {
+        const iIdx = tw.indexOf("function interactionActive() {");
+        const iWin = tw.slice(iIdx, tw.indexOf("\n    }", iIdx));
+        check(
+            iWin.includes("local.hzoomDrag") &&
+                iWin.includes("local.vzoomDrag"),
+            "建议6:横/纵缩放条拖拽计入交互期(否则降级序列在最重的路径上失效)",
+        );
+        check(
+            /local\.vzoomDrag = true;[\s\S]{0,200}?ensureTicker\(\);/.test(tw),
+            "建议6:纵向条按下也起帧时账循环",
+        );
+    }
+
+    // ---- 【建议】7:滑杆窗级松手兜底 --------------------------------------
+    {
+        check(
+            /window\.addEventListener\("pointerup", \(\) => up\(null\)\);/.test(
+                tw,
+            ) &&
+                /window\.addEventListener\("pointercancel", \(\) => up\(null\)\);/.test(
+                    tw,
+                ),
+            "建议7:指针在窗外释放 / setPointerCapture 抛错时滑杆不卡在拖拽态",
+        );
+        check(
+            /const v = e \? sliderValueFromEvent\(s, e\) : null;/.test(tw),
+            "建议7:窗级那一道拿不到杆内坐标 ⇒ 只收尾不取值",
+        );
+    }
+
+    // ---- 【建议】8:Backspace 在按钮/控件聚焦时不吞键 ---------------------
+    {
+        const kIdx = tw.indexOf("function mountKeyboard() {");
+        const kWin = tw.slice(kIdx, tw.indexOf("\n    }\n", kIdx));
+        check(
+            /const onControl =/.test(kWin) &&
+                /a\.tagName === "BUTTON"/.test(kWin) &&
+                /role === "slider"/.test(kWin),
+            "建议8:按钮 / role=slider 等自定义控件算「焦点在控件上」",
+        );
+        check(
+            /e\.key === "Delete" \|\| e\.key === "Backspace"\) &&\s*\n\s*!inField &&\s*\n\s*!onControl/.test(
+                kWin,
+            ),
+            "建议8:合并快捷键在控件聚焦时让路(不再吞 Backspace)",
+        );
+        check(
+            kWin.indexOf('e.key === "Escape"') < kWin.indexOf("!onControl"),
+            "建议8:Escape 不受此闸影响(按钮上按 Esc 仍能关确认框)",
+        );
+    }
+
+    // ---- 【建议】9:死字段清掉 --------------------------------------------
+    {
+        check(
+            !tw.includes("lastVpChange"),
+            "建议9:只写不读的 lastVpChange 已删",
+        );
+        check(
+            !/local\.pendingDown = \{[\s\S]{0,120}?moved: 0,/.test(tw),
+            "建议9:从未被读的 pendingDown.moved 已删",
+        );
+        check(/vpIdleTimer: 0,/.test(tw), "建议9:真正在用的静止计时账保留");
     }
 }
 

@@ -39,7 +39,12 @@ import { createMeterRenderer } from "./canvas/meter.js";
 // hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字;
 // format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
 // PR #60 红旗)。
-import { HOST_ECHO_FRESH_MS, format, lowSampleChannels } from "./tab-master.js";
+import {
+    HOST_ECHO_FRESH_MS,
+    format,
+    lowSampleChannels,
+    secondsToTimecode,
+} from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -800,6 +805,7 @@ export function createTabTracks(opts) {
     const legend = $("tracks-legend-text");
     const emptyMain = $("tracks-emptystate-main");
     const multiLeadBadge = $("tracks-legend-multilead-badge");
+    const recaptureBadge = $("tracks-legend-recapture-badge");
 
     /**
      * 页面内一次性状态(不属 state chunk,重开面板即重置)。
@@ -956,8 +962,9 @@ export function createTabTracks(opts) {
         if (!payload || payload.full) {
             // full(切版本/全量重发)整表作废,**唯拖动中的 id 保留到松手**——
             // 否则指针还按着旋钮就被广播抢跳(pr-agent;与增量分支的
-            // gesture 保护同口径。注:Tab1 nextParamEcho 的 full 分支尚为
-            // 全清,口径对齐记 deviations 归 T33 批)
+            // gesture 保护同口径)。Tab1 的 `nextParamEcho` full 分支已在本波
+            // 对齐到同一口径(tab-master.js:保留 gestureId),两 tab 不再有差异
+            // ——旧注里「Tab1 尚为全清、口径对齐记 deviations 归 T33 批」已作废。
             for (const id of [...local.paramEcho.keys()]) {
                 if (id !== local.gesture) local.paramEcho.delete(id);
             }
@@ -1780,8 +1787,33 @@ export function createTabTracks(opts) {
             }
         }
         // 多主唱琥珀 badge(05 §2.2 主唱锁行:多轨同时锁中允许,但要显示提示)
-        const chans = (getStore().state || {}).channels || [];
+        const st = getStore();
+        const chans = (st.state || {}).channels || [];
         show(multiLeadBadge, leadLockCount(chans) >= 2);
+        // 布防 badge②(三处之一,05 行 300 ①;点击跳转在 app.js 接的)。
+        // PR#64 评审【建议】3:此前只有 app.js 的点击接线与 CSS,从没有人 show 它,
+        // 而 HTML 里 data-t="wave.recaptureArmed" 又是带 {x}{y}{n} 的长式 ——
+        // 一旦显示就是裸占位符。改为在这里按 §2.1 `recapture` 显隐 + fmt 灌值。
+        if (recaptureBadge) {
+            const rec = (st.state || {}).recapture || null;
+            const armed = !!(rec && rec.armed);
+            show(recaptureBadge, armed);
+            if (armed) {
+                const mask = Math.trunc(num(rec.tracksMask, 0));
+                let cnt = 0;
+                for (let b = 0; b < CHANNEL_COUNT; b++) {
+                    if (mask & (1 << b)) cnt++;
+                }
+                text(
+                    recaptureBadge,
+                    fmt(t["wave.recaptureArmed"], {
+                        x: secondsToTimecode(num(rec.startS, 0)),
+                        y: secondsToTimecode(num(rec.endS, 0)),
+                        n: cnt,
+                    }),
+                );
+            }
+        }
     }
 
     function renderEmpty(t, st) {
@@ -1906,7 +1938,11 @@ export function createTabTracks(opts) {
         show(n.lowsample, !!row.low);
         setTitle(n.lowsample, t["lowSample.full"]);
         show(n.recaptureBadge, !!row.recapture);
-        setTitle(n.recaptureBadge, t["wave.recaptureArmed"]);
+        // tooltip 走**无占位符**短式:行模型只有布尔 `recapture` 位(rowFromStore
+        // 由 recMask 派生),拿不到 {x}{y}{n} —— 灌 `wave.recaptureArmed` 会把字典
+        // 原文连同占位符一起写进 title(PR#64 评审【重要】1)。范围/轨数的完整串
+        // 在图例行 badge 与 Tab1 Range badge 上,两处都有 fmt 灌值。
+        setTitle(n.recaptureBadge, t["wave.recaptureArmedShort"]);
 
         // ---- pan 旋钮(冻结 = 手动可拖;未冻结 = 只读实时表盘)----
         if (n.pan) n.pan.style.setProperty("--ang", panAngleDeg(pan) + "deg");
