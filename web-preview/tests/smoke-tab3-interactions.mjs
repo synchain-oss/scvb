@@ -323,23 +323,32 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         };
         // 10 列铺满 300px ⇒ colW = 30px(过渡帧放大档的典型值)
         WF.paintWaveTile(ctx, t3, 300, 34);
-        const coreFills = fills.filter(
-            (f) => f.style === WF.DEFAULT_PALETTE.envCore,
-        );
-        check(coreFills.length > 0, "亮芯层确实画了");
+        const coreOf = (fs) =>
+            fs.filter((f) => f.style === WF.DEFAULT_PALETTE.envCore);
+        const envOf = (fs) =>
+            fs.filter((f) => f.style === WF.DEFAULT_PALETTE.env);
+        check(coreOf(fills).length === 0, "粗块(colW=30)整层不画亮芯");
         check(
-            coreFills.every((f) => f.w <= WF.ENV_CORE_MAX_W + 1e-9),
-            `亮芯宽度封顶 ${WF.ENV_CORE_MAX_W}px(实得最大 ${Math.max(
-                ...coreFills.map((f) => f.w),
-            )})`,
+            envOf(fills).some((f) => f.w > WF.ENV_CORE_MAX_COL_PX),
+            "外柱仍随列宽铺满成连续轮廓(跳过的只是亮芯,不是整根柱子)",
         );
-        const envFills = fills.filter(
-            (f) => f.style === WF.DEFAULT_PALETTE.env,
-        );
+
+        // 同一块铺到 1px/列的稳态宽度:亮芯必须回来,否则「跳过」就退化成
+        // 「永远不画」—— 那是另一个缺陷,而且同样能让上面两条断言变绿。
+        fills.length = 0;
+        WF.paintWaveTile(ctx, t3, n, 34);
+        check(coreOf(fills).length > 0, "稳态(colW=1)照常画亮芯");
         check(
-            envFills.some((f) => f.w > WF.ENV_CORE_MAX_W),
-            "外柱仍随列宽铺满(只有亮芯封顶,不是把整根柱子削细)",
+            coreOf(fills).every((f) => f.w <= WF.ENV_CORE_MAX_COL_PX),
+            "稳态亮芯宽度不超过列宽门限",
         );
+
+        // 镜像病:缩小时一列被压到 0.5px,而亮芯有 0.4px 最小宽度 ⇒ 列列重叠,
+        // 一个像素里叠进两三道近白,合成实心白带(实测缩小过程白占 5.5%)。
+        fills.length = 0;
+        WF.paintWaveTile(ctx, t3, n * 0.5, 34);
+        check(coreOf(fills).length === 0, "细块(colW=0.5)整层不画亮芯");
+        check(envOf(fills).length > 0, "细块的外柱照画(跳过的只是亮芯)");
     }
     // 可见列裁剪:块只有一小截落在画布内时,画布外的列不该逐列 fillRect
     {

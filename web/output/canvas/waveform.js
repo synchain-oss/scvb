@@ -85,16 +85,37 @@ export const DEFAULT_PALETTE = Object.freeze({
 export const COVERAGE_BAR_PX = 2;
 
 /**
- * 内柱亮芯的**最大宽度**(CSS px)。
+ * 画内柱亮芯的**列宽上限**(CSS px);列宽超过它就整层不画。
  *
- * 亮芯是柱子里的一道**细高光**(图例帧 756 的条纹感),颜色近白
- * (`--wave-env-core` α=.6)。原来宽度写成 `colW − 0.6` 随列宽走 —— 稳态
- * colW≈1px 时没问题,但过渡帧里源列少、列宽会涨到十几二十 px,亮芯就成了
- * 近白**实心板**并连成一片:实测放大过程中近白像素占画布 **17.2%**(稳态 0%),
- * 正是用户报的「一放大缩小,波形区域就闪白」。封顶后大列宽下仍是细高光,
- * 白面积恒定,过渡帧与稳态观感一致。
+ * 亮芯是柱子**内部的一道纹理**(图例帧 756 的条纹感),颜色近白
+ * (`--wave-env-core` α=.6),语义是「这一列的 min 包络」。它成立的前提是
+ * 一列≈1px —— 稳态恒成立(cols 按视口像素宽请求)。过渡帧拿粗块垫底时列宽
+ * 会涨到十几二十 px,这个前提就塌了,而两轮 preview 各暴露一种塌法:
+ *
+ *   · 宽度随列宽走(`colW − 0.6`):亮芯成近白**实心板**并连成一片 ——
+ *     实测放大过程近白像素占画布 17.2%(稳态 0%),即「波形区整片闪白」;
+ *   · 只封宽度(本常量的前身 `ENV_CORE_MAX_W`):白面积降到 2%,但每根宽粉柱
+ *     中间留下一道孤立细白线 —— 用户判「有亮的竖线,比刚才还严重」。
+ *
+ * 病根是**粗块上这层没有信息可表达**:一列跨零点几秒,其 min 包络画成一根线
+ * 只是噪声。所以不封宽度、直接跳过 —— 粗块渲染成连续的粉色轮廓(④外柱本就
+ * 铺满列宽、列列相邻),过渡帧比稳态**略欠纹理**,而不是多出白板或白线。
+ * 2.5 的取法:稳态 colW≈1,视口刚动、块还没换时最多到 2 出头,恰好都在门内。
  */
-export const ENV_CORE_MAX_W = 1;
+export const ENV_CORE_MAX_COL_PX = 2.5;
+
+/**
+ * 画亮芯的**列宽下限**(CSS px);列宽低于它同样整层不画。
+ *
+ * 是 `ENV_CORE_MAX_COL_PX` 的镜像病:缩小时视口变宽,细块被压到一列不足 1px,
+ * 而亮芯有 0.4px 的最小宽度(不给下限就会细到消失)—— 于是列列重叠,
+ * 一个像素里叠进两三道 α=.6 的近白,合成出一条**实心白带**。
+ * 实测缩小过程近白像素占画布 5.5%(稳态 0%),正是用户看到的另一半闪白。
+ *
+ * 0.8 而不是 1.0:稳态 colW 名义为 1,但 `cols` 取整、HiDPI 下 `k` 非整数时
+ * 实际会落在 0.9x,卡在 1.0 会把稳态自己关在门外(那就成了「永远不画」)。
+ */
+export const ENV_CORE_MIN_COL_PX = 0.8;
 
 /**
  * 过渡帧最多拼几块(每帧 × 每条可见泳道各跑一次,必须封顶)。
@@ -571,15 +592,17 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
         const hi = envelopeHalfPx(tile.maxDb[i], h);
         ctx.fillRect(x0(i), mid - hi, Math.max(colW, 0.6), hi * 2);
     }
-    ctx.fillStyle = pal.envCore;
-    // 亮芯封顶(见 ENV_CORE_MAX_W):不随列宽膨胀成近白实心板,并居中放在
-    // 列里 —— 大列宽下是「宽粉柱 + 中间一道细高光」,与稳态观感一致。
-    const coreW = Math.min(Math.max(colW - 0.6, 0.4), ENV_CORE_MAX_W);
-    const coreDx = Math.max((colW - coreW) / 2, 0);
-    for (let i = iFrom; i < iTo; i++) {
-        if (!tile.covered[i]) continue;
-        const lo = envelopeHalfPx(tile.minDb[i], h);
-        ctx.fillRect(x0(i) + coreDx, mid - lo, coreW, lo * 2);
+    // 亮芯只在「一列≈一像素」时画(见 ENV_CORE_MIN/MAX_COL_PX 两条头注):
+    // 列太宽 → 白板或白竖线;列太窄 → 逐列重叠堆成白带。两种都被 preview 判过,
+    // 而两种在稳态都不会发生 —— 这层的前提本就是 cols 按视口像素宽请求。
+    if (colW >= ENV_CORE_MIN_COL_PX && colW <= ENV_CORE_MAX_COL_PX) {
+        ctx.fillStyle = pal.envCore;
+        const coreW = Math.max(colW - 0.6, 0.4);
+        for (let i = iFrom; i < iTo; i++) {
+            if (!tile.covered[i]) continue;
+            const lo = envelopeHalfPx(tile.minDb[i], h);
+            ctx.fillRect(x0(i), mid - lo, coreW, lo * 2);
+        }
     }
 
     // ⑤ stale = 琥珀斜条纹叠加(05 §2.3 行 311;⚠ 角标是 DOM 件,Wave 2)
