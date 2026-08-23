@@ -237,8 +237,8 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         );
         const near = src.peekOverlapping(3, 100, 200);
         check(
-            near.length === 2 && near[0].endS - near[0].startS === 300,
-            "过渡帧仍拿得到陈旧块垫底,且宽块排在前(先画=垫底)",
+            near.length === 2 && near[0].endS - near[0].startS === 30,
+            "过渡帧仍拿得到陈旧块补位,且**窄块排在前**(细节先占位)",
         );
         // clearCoverage 那类:数据真删了,影子也要清
         src.invalidate(3, null, { keepStale: false });
@@ -276,9 +276,69 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         }
         const near = src.peekOverlapping(4, 100, 140);
         eq(near.length, 3, "相交块超上限时只取 3 块");
+        // **窄→宽**:细节块先占位,宽块只补空隙。反过来「宽块垫底窄块压顶」
+        // 会让重叠区被半透明波形画两三遍,α 叠到近 1 ⇒ 波形闪白(用户实测)。
+        const spans = near.map((b) => b.endS - b.startS);
         check(
-            near[0].endS - near[0].startS === 300,
-            "垫底的仍是最宽那块(两侧才补得满)",
+            spans[0] <= spans[1] && spans[1] <= spans[2],
+            `过渡帧块序是窄→宽(细节优先),实得 ${spans.join("/")}`,
+        );
+    }
+    // **亮芯不随列宽膨胀**(用户实测「一放大缩小波形区域就闪白」的根因):
+    // 亮芯色近白(α=.6)。原来宽度 = colW−0.6,稳态 colW≈1px 无碍,但过渡帧
+    // 源列少、列宽涨到十几二十 px 时它就成了近白实心板并连成一片 ——
+    // 逐像素实测:放大过程中近白像素占画布 17.2%(稳态 0%)。封顶后降到 2%。
+    {
+        const fills = [];
+        let style = "";
+        const ctx = {
+            clearRect: () => {},
+            fillRect: (x, y, w2) => fills.push({ style, w: w2 }),
+            save: () => {},
+            restore: () => {},
+            beginPath: () => {},
+            rect: () => {},
+            clip: () => {},
+            moveTo: () => {},
+            lineTo: () => {},
+            stroke: () => {},
+            set fillStyle(v) {
+                style = v;
+            },
+            get fillStyle() {
+                return style;
+            },
+            set strokeStyle(_v) {},
+            set lineWidth(_v) {},
+        };
+        const n = 10;
+        const t3 = {
+            minDb: Array(n).fill(-20),
+            maxDb: Array(n).fill(-10),
+            covered: Array(n).fill(1),
+            vad: Array(n).fill(0),
+            stale: Array(n).fill(0),
+            passId: Array(n).fill(1),
+            valleys: [],
+        };
+        // 10 列铺满 300px ⇒ colW = 30px(过渡帧放大档的典型值)
+        WF.paintWaveTile(ctx, t3, 300, 34);
+        const coreFills = fills.filter(
+            (f) => f.style === WF.DEFAULT_PALETTE.envCore,
+        );
+        check(coreFills.length > 0, "亮芯层确实画了");
+        check(
+            coreFills.every((f) => f.w <= WF.ENV_CORE_MAX_W + 1e-9),
+            `亮芯宽度封顶 ${WF.ENV_CORE_MAX_W}px(实得最大 ${Math.max(
+                ...coreFills.map((f) => f.w),
+            )})`,
+        );
+        const envFills = fills.filter(
+            (f) => f.style === WF.DEFAULT_PALETTE.env,
+        );
+        check(
+            envFills.some((f) => f.w > WF.ENV_CORE_MAX_W),
+            "外柱仍随列宽铺满(只有亮芯封顶,不是把整根柱子削细)",
         );
     }
     // 可见列裁剪:块只有一小截落在画布内时,画布外的列不该逐列 fillRect
@@ -1571,6 +1631,18 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
     check(
         /const sameVp =[\s\S]{0,400}!sameVp && near\.length/.test(tw),
         "画布已是当前视口时不清屏(宽度抖动导致的键失配不该闪空)",
+    );
+    // **空隙裁剪**:波形是半透明的(外柱 α=.52 / 内柱 α=.6),重叠区被画两三遍
+    // 就把 α 叠到 0.89 / 0.94 —— 几乎纯白,一动视口波形区域就闪白(用户实测)。
+    check(
+        /const filled = \[\];[\s\S]{0,1200}ctx\.clip\(\);[\s\S]{0,400}paintWaveTile\(/.test(
+            tw,
+        ),
+        "过渡帧按已画区间裁剪后再画(同一像素恒只画一次,α 不叠)",
+    );
+    check(
+        /filled\.push\(\.\.\.gaps\)/.test(tw),
+        "画完把空隙并入已画区间(后续宽块不再覆盖同一段)",
     );
     // 时间映射的纯函数面:块只覆盖视口一段时,只占那一段
     {

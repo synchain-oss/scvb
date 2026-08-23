@@ -85,6 +85,18 @@ export const DEFAULT_PALETTE = Object.freeze({
 export const COVERAGE_BAR_PX = 2;
 
 /**
+ * 内柱亮芯的**最大宽度**(CSS px)。
+ *
+ * 亮芯是柱子里的一道**细高光**(图例帧 756 的条纹感),颜色近白
+ * (`--wave-env-core` α=.6)。原来宽度写成 `colW − 0.6` 随列宽走 —— 稳态
+ * colW≈1px 时没问题,但过渡帧里源列少、列宽会涨到十几二十 px,亮芯就成了
+ * 近白**实心板**并连成一片:实测放大过程中近白像素占画布 **17.2%**(稳态 0%),
+ * 正是用户报的「一放大缩小,波形区域就闪白」。封顶后大列宽下仍是细高光,
+ * 白面积恒定,过渡帧与稳态观感一致。
+ */
+export const ENV_CORE_MAX_W = 1;
+
+/**
  * 过渡帧最多拼几块(每帧 × 每条可见泳道各跑一次,必须封顶)。
  * 3 = 一块垫底(最宽,补两侧)+ 两块压顶(最新鲜、细节最贴当前视口)。
  * 不封顶时 LRU 8 + 影子 8 一帧要画十几块 × 每块上千列 ⇒ 帧率崩、整页闪白。
@@ -291,14 +303,21 @@ export function createWaveformSource(opts) {
                     (x, y) => y.endS - y.startS - (x.endS - x.startS),
                 );
             };
-            // 陈旧块先(垫底),新鲜块后(压在上面)—— 两组各自宽到窄。
-            const all = pick(perChStale.get(ch)).concat(pick(perCh.get(ch)));
-            if (all.length <= TRANSIENT_BLOCK_CAP) return all;
-            // **封顶**:过渡帧是每帧 × 每条可见泳道跑一次,块数不设上限时
-            // (LRU 8 + 影子 8)一帧要画十几块 × 每块上千列 ⇒ 帧率崩、整页
-            // 卡片闪白(用户实测)。留最宽的一块垫底 + 最后几块(= 最新鲜、
-            // 细节最贴当前视口的)压顶,视觉上与全画等价。
-            return [all[0]].concat(all.slice(-(TRANSIENT_BLOCK_CAP - 1)));
+            // **窄块在前、宽块在后**(新鲜组优先于陈旧组):调用方按此序画,
+            // 每块只画**前面没画过的空隙** —— 细节最好的先占位,宽块只补两侧。
+            //
+            // ⚠ 顺序不能反过来「宽块垫底、窄块压顶」:波形是半透明的
+            // (外柱 α=.52 / 内柱 α=.6),重叠区被画两三遍就把 α 叠成
+            // 0.89 / 0.94 —— **几乎纯白**,用户实测「一动视口波形区域就闪白」
+            // 正是这条。空隙裁剪由调用方做(它才知道像素坐标),这里只保证序。
+            // pick 给的是宽→窄;各自反过来成窄→宽,再让**新鲜组整体排在前**
+            // (同样宽度下新鲜的先占位,陈旧的只补它够不着的地方)。
+            const fresh = pick(perCh.get(ch)).reverse();
+            const stale = pick(perChStale.get(ch)).reverse();
+            const all = fresh.concat(stale);
+            // 封顶:过渡帧每帧 × 每条可见泳道跑一次,LRU 8 + 影子 8 不设上限时
+            // 一帧要画十几块 × 每块上千列。窄→宽取前 N 块即可(细节优先)。
+            return all.slice(0, TRANSIENT_BLOCK_CAP);
         },
         /** 只查缓存(在途 Promise 不算命中)——渲染帧禁止 await。 */
         peek(ch, startS, endS, cols) {
@@ -553,11 +572,14 @@ export function paintWaveTile(ctx, tile, w, h, palette, opts) {
         ctx.fillRect(x0(i), mid - hi, Math.max(colW, 0.6), hi * 2);
     }
     ctx.fillStyle = pal.envCore;
-    const coreW = Math.max(colW - 0.6, 0.4);
+    // 亮芯封顶(见 ENV_CORE_MAX_W):不随列宽膨胀成近白实心板,并居中放在
+    // 列里 —— 大列宽下是「宽粉柱 + 中间一道细高光」,与稳态观感一致。
+    const coreW = Math.min(Math.max(colW - 0.6, 0.4), ENV_CORE_MAX_W);
+    const coreDx = Math.max((colW - coreW) / 2, 0);
     for (let i = iFrom; i < iTo; i++) {
         if (!tile.covered[i]) continue;
         const lo = envelopeHalfPx(tile.minDb[i], h);
-        ctx.fillRect(x0(i), mid - lo, coreW, lo * 2);
+        ctx.fillRect(x0(i) + coreDx, mid - lo, coreW, lo * 2);
     }
 
     // ⑤ stale = 琥珀斜条纹叠加(05 §2.3 行 311;⚠ 角标是 DOM 件,Wave 2)

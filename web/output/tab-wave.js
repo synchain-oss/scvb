@@ -3610,20 +3610,40 @@ export function createTabWave(opts) {
                 ? waveSource.peekOverlapping(ch, vp.startS, vp.endS)
                 : [];
             if (!sameVp && near.length) {
-                // 过渡帧:把缓存里**所有与新视口相交的块**按时间映射画上去,
-                // 宽块打底、窄块压顶(peekOverlapping 已按跨度排好序)。
+                // 过渡帧:按时间映射重画缓存块,**细节块先占位、宽块只补空隙**。
                 //
-                // 三轮才收敛到这个写法,前两轮各错一半:
-                //   · 「重跑画笔 + ctx.scale」—— 45° 斜纹被剪切成缓坡、lineWidth
-                //     被横向拉粗;
-                //   · 「drawImage 位图拉伸」—— 放大档糊、**缩小档两侧露白**
-                //     (老块比新视口窄,没东西可贴),两条都是用户实测报回来的。
-                // 现在按**列映射**重画:列宽随映射变而画笔不变 ⇒ 斜纹/线宽/覆盖条
-                // 几何恒正确;缩小档由多块拼合补满两侧。横向细节随源列数走
-                // (放大档柱子变粗但清晰),静止 120ms 取到新块即补满(§1.27)。
+                // 四轮才收敛,前三轮各错一处(全是用户实测报回来的):
+                //   ① 「重跑画笔 + ctx.scale」—— 45° 斜纹被剪成缓坡、线宽被拉粗;
+                //   ② 「drawImage 位图拉伸」—— 放大糊、缩小两侧露白;
+                //   ③ 「多块叠着画」—— 波形是半透明的(外柱 α=.52 / 内柱 α=.6),
+                //      重叠区画两三遍就把 α 叠到 0.89 / 0.94 **几乎纯白**,
+                //      一动视口波形区域就闪白。
+                // 现在:列映射重画(几何恒正确)+ **空隙裁剪**(每块只画前面没
+                // 画过的 x 区间 ⇒ 同一像素恒只画一次,α 不叠)。
                 ctx.clearRect(0, 0, w, laneH);
                 local.canvasVp.set(ch, null); // 画布内容不再对应任何完整视口
+                const filled = []; // 已画区间 [x0,x1](升序、互不相交)
                 for (const blk of near) {
+                    const bx0 = Math.max(timeToX(vp, w, blk.startS), 0);
+                    const bx1 = Math.min(timeToX(vp, w, blk.endS), w);
+                    if (!(bx1 > bx0)) continue;
+                    // 该块可画的空隙 = [bx0,bx1] 减去 filled
+                    const gaps = [];
+                    let cur = bx0;
+                    for (const [f0, f1] of filled) {
+                        if (f1 <= cur) continue;
+                        if (f0 >= bx1) break;
+                        if (f0 > cur) gaps.push([cur, Math.min(f0, bx1)]);
+                        cur = Math.max(cur, f1);
+                        if (cur >= bx1) break;
+                    }
+                    if (cur < bx1) gaps.push([cur, bx1]);
+                    if (!gaps.length) continue;
+                    ctx.save();
+                    ctx.beginPath();
+                    for (const [g0, g1] of gaps)
+                        ctx.rect(g0, 0, g1 - g0, laneH);
+                    ctx.clip();
                     paintWaveTile(ctx, blk.tile, w, laneH, pal, {
                         clear: false,
                         tileStartS: blk.startS,
@@ -3631,6 +3651,9 @@ export function createTabWave(opts) {
                         viewStartS: vp.startS,
                         viewEndS: vp.endS,
                     });
+                    ctx.restore();
+                    filled.push(...gaps);
+                    filled.sort((a, b) => a[0] - b[0]);
                 }
                 // 视口在动就**不取新块**(契约 §1.27 行 383 / brief §0.8:静止
                 // 120ms 后才取)。缩放期每帧跨度都不同 = 每帧都是新键,LRU 与
