@@ -38,24 +38,35 @@ export const ENV_FLOOR_DB = -80;
  * VAD 绿罩透明度(**唯一真源**)。
  *
  * 图谱 §12 ② 给的是两档:「15 泳道实景 .07 / 放大或单轨展开态 .13」。Wave 2 亲验
- * 证实实景 .07 在深底上整屏读不出绿(05 行 312 的核心可读性件失效),故实景档取
- * **图例帧 752-754 的 .13**(两档中的上档),另配顶缘 1.5px 亮线补区间起止;
- * 下档(.07)在 v1 无消费者(不存在单轨展开态),不落实现。差异登记 deviations §R。
+ * 证实实景 .07 在深底上整屏读不出绿(05 行 312 的核心可读性件失效),故实景档先
+ * 取图例帧 752-754 的 .13;**Wave 4 用户 preview 仍判「太灰太淡」,裁定提到 .20**
+ * 并同步把罩色换成比 `--sem-green` 更鲜亮的绿(见 DEFAULT_PALETTE.vad 与
+ * tokens.css §20a `--wave-vad`),另配顶缘 1.5px 亮线补区间起止。
+ * 下档(.07)在 v1 无消费者(不存在单轨展开态),不落实现。差异登记 deviations §S。
+ *
+ * ⚠ **口径诚实登记(修订轮)**:.20 铺在泳道深底(≈ 44,40,54)上合成出来是
+ * (53,74,73)—— **暗浊青绿,不是「鲜艳」**。「一眼可辨有声区」成立(比 .13 的
+ * (54,58,66) 拉开了明显的绿相),但离用户原话仍有距离;真正跳出来的是
+ * `--wave-vad-edge` 那两条 1.5px 亮线。继续提 alpha 会把绿压回波形的可读性
+ * (罩虽已按列裁掉包络带,但柱间空当越亮、栅栏感越强),故 alpha 不再动,
+ * 缺口连同本件的 J72 用户 preview 一并交统筹。
  *
  * ⚠ tab-wave.js 的 computedPalette() 只把 rgb 换成 tokens 真值,**alpha 从这里
  * import**——两处各写一份字面量正是本波踩过的坑(smoke-tab3 有断言钉住)。
  */
-export const VAD_ALPHA = 0.13;
+export const VAD_ALPHA = 0.2;
 
 /**
  * 默认调色(= tokens.css 字面镜像;键名即语义)。
- * env/vad/coverage 的出处见图谱 §12,stale 配方见图谱 A-08 统筹建议。
+ * env/vad/coverage 的出处见图谱 §12,stale 配方见图谱 A-08 统筹建议;
+ * env/envCore/vad/vadEdge 四色在 Wave 4 按用户 preview 裁定换成「粉 + 白」波形 +
+ * 鲜亮绿罩(tokens.css §20a),其余键不动。
  */
 export const DEFAULT_PALETTE = Object.freeze({
-    env: "rgba(196, 190, 220, 0.5)", // --wave-env(外柱 = maxDb 峰包络)
-    envCore: "rgba(230, 226, 248, 0.55)", // 内柱 = minDb 亮芯(峰/谷两级可读)
-    vad: `rgba(120, 176, 142, ${VAD_ALPHA})`, // rgba(var(--sem-green), VAD_ALPHA)
-    vadEdge: "rgba(134, 198, 158, 0.6)", // VAD 区顶缘 1.5px 亮线(区间起止可读)
+    env: "rgba(216, 186, 216, 0.52)", // --wave-env-pink(外柱 = maxDb 峰包络)
+    envCore: "rgba(255, 250, 255, 0.6)", // --wave-env-core(内柱 = minDb 亮芯)
+    vad: `rgba(88, 208, 148, ${VAD_ALPHA})`, // rgba(var(--wave-vad), VAD_ALPHA)
+    vadEdge: "rgba(120, 236, 172, 0.78)", // --wave-vad-edge(顶缘 1.5px 亮线)
     uncovered: "rgba(255, 255, 255, 0.05)", // 空白底纹(斜纹亮线)
     stale: "rgba(212, 176, 118, 0.22)", // rgba(var(--sem-amber), .22)
     passTint: "rgba(255, 255, 255, 0.03)", // passId 偶数轮次的底色微差
@@ -191,9 +202,14 @@ export function createWaveformSource(opts) {
 
 // -----------------------------------------------------------------------------
 // 静态层画笔 —— 一块 tile → 一条泳道的静态位图(在 ctx 上按 CSS px 作画,
-// hidpi.js 已 setTransform)。层序(图谱 §12 钉死,DOM 序即层序:852 包络 →
-// 853-855 VAD,**VAD 罩压在包络之上**,半透明叠色不可交换):
-// 未覆盖底纹 → passId 微差 → 包络柱 → VAD 罩 → stale 斜条纹 → 覆盖条。
+// hidpi.js 已 setTransform)。层序:
+// 未覆盖底纹 → passId 微差 → **VAD 罩(只填包络之外)** → 包络柱 →
+// stale 斜条纹 → 覆盖条。
+// ⚠ 图谱 §12 按设计稿 DOM 序(852 包络 → 853-855 VAD)要求「VAD 压在包络之上」;
+// T33 Wave 4 用户裁定⑤⑥把绿罩提到 .20 并把波形改成粉+白后,压在上面会把粉柱
+// 整体染绿(与裁定⑤自带的验收句「不能盖住波形」直接冲突)→ 两者对调;
+// 修订轮进一步证实「对调」不够(半透明包络会把绿混进来),故绿罩改为**按列
+// 裁掉包络带**,与波形本体零重叠。deviations §S 登记(见下面 ③ 处的长注)。
 // -----------------------------------------------------------------------------
 
 /** 逐列位数组 → [start, end) 连续段表(减少 fillRect 次数的预算意识,05 §6.3)。 */
@@ -264,9 +280,51 @@ export function paintWaveTile(ctx, tile, w, h, palette) {
         }
     }
 
-    // ③ min/max 包络柱(05 §2.3 行 311):外柱 = max 峰包络(半透明晕),
+    // ③ VAD 绿罩(**包络band 之外**的空当 + 上下缘各 1.5px 亮线;阈值拖动
+    //    重取重绘,05 §2.3 行 312)。
+    //    档位史:.07(图谱 §12 ② 下档)深底上读不出 → .13(上档,Wave 2)→
+    //    Wave 4 用户 preview 仍判「太灰太淡」→ 更鲜亮的绿 + VAD_ALPHA=.20
+    //    (alpha 单一真源仍在 VAD_ALPHA)。
+    //    **层序/形状变更(Wave 4,与图谱 §12 的 DOM 序相反,deviations §S 登记)**:
+    //    罩从「满高铺底 + 压在包络之上」改到**只画包络之外的区域**。理由是
+    //    用户裁定⑤的验收句本身 ——「一眼能看出有声区,但**不能盖住波形**」。
+    //    ⚠ 修订轮亲验(getImageData 采样)证实:仅把罩下沉到包络之下**不够** ——
+    //    外柱 pal.env 是 α=.52 的半透明,底下的绿会**混进来**而不是被挡住,
+    //    有声区柱子合成成中性灰紫(R−G 从 17.5 掉到 5.6),粉相基本被抵消。
+    //    所以这里改成按列裁掉包络带:绿只填 `[0, mid−hi)` 与 `[mid+hi, h)`,
+    //    与波形本体**零重叠**,粉白一分不掺,而柱与柱之间的高低差照样让绿
+    //    连成可读的有声区。整条 run 一次 `beginPath` + 一次 `fill`(逐列
+    //    fillRect 在 929 列 × 15 轨下是静态层 <8ms 预算的大头,05 §6.3)。
+    //    亮线上下**各一条**:包络半高上限是 h/2−4,够不到 y<1.5 与
+    //    y>h−COVERAGE_BAR_PX−1.5 的两条线;行高拉到 88 时罩体被厚包络挤薄,
+    //    这两条边线是「区间起止」唯一稳定的读法(修订轮 minor 登记项)。
+    if (Array.isArray(tile.vad)) {
+        const runs = runsOf(tile.vad, (v, i) => tile.covered[i] && v > 0);
+        const cw = Math.max(colW, 0.6);
+        ctx.fillStyle = pal.vad;
+        ctx.beginPath();
+        for (const [a, b] of runs) {
+            for (let i = a; i < b; i++) {
+                const hi = envelopeHalfPx(tile.maxDb[i], h);
+                const top = mid - hi;
+                const bot = mid + hi;
+                if (top > 0) ctx.rect(x0(i), 0, cw, top);
+                if (bot < h) ctx.rect(x0(i), bot, cw, h - bot);
+            }
+        }
+        ctx.fill();
+        ctx.fillStyle = pal.vadEdge;
+        const edgeY = Math.max(h - COVERAGE_BAR_PX - 1.5, 1.5);
+        for (const [a, b] of runs) {
+            ctx.fillRect(x0(a), 0, (b - a) * colW, 1.5);
+            ctx.fillRect(x0(a), edgeY, (b - a) * colW, 1.5);
+        }
+    }
+
+    // ④ min/max 包络柱(05 §2.3 行 311):外柱 = max 峰包络(半透明晕),
     //    内柱 = min 亮芯,纵向对称于泳道中线(实景帧的居中几何,图谱 §12 ①)。
     //    外柱铺满列宽成连续包络,亮芯留 0.6px 缝 = 图例帧 756 的条纹感。
+    //    Wave 4 配色:外柱淡粉紫 / 内柱近白(用户裁定⑥的「粉 + 白」半透明)。
     ctx.fillStyle = pal.env;
     for (let i = 0; i < cols; i++) {
         if (!tile.covered[i]) continue;
@@ -279,23 +337,6 @@ export function paintWaveTile(ctx, tile, w, h, palette) {
         if (!tile.covered[i]) continue;
         const lo = envelopeHalfPx(tile.minDb[i], h);
         ctx.fillRect(x0(i), mid - lo, coreW, lo * 2);
-    }
-
-    // ④ VAD 绿罩(满高、压在包络之上 —— 图谱 §12 层序;阈值拖动重取重绘,
-    //    05 §2.3 行 312)。深底上纯 .07 罩几乎不可见(Wave 2 亲验第 2 条)→
-    //    取图谱 §12 ② 两档中的上档 = 图例帧 752-754 的 .13(常量 VAD_ALPHA)
-    //    + 顶缘 1.5px 亮线,让「哪段被判为有声」在满屏 15 泳道下一眼可读,
-    //    又不盖掉包络。
-    if (Array.isArray(tile.vad)) {
-        const runs = runsOf(tile.vad, (v, i) => tile.covered[i] && v > 0);
-        ctx.fillStyle = pal.vad;
-        for (const [a, b] of runs) {
-            ctx.fillRect(x0(a), 0, (b - a) * colW, h);
-        }
-        ctx.fillStyle = pal.vadEdge;
-        for (const [a, b] of runs) {
-            ctx.fillRect(x0(a), 0, (b - a) * colW, 1.5);
-        }
     }
 
     // ⑤ stale = 琥珀斜条纹叠加(05 §2.3 行 311;⚠ 角标是 DOM 件,Wave 2)

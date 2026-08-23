@@ -203,15 +203,39 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         "有声/静默的半高比拉得开(γ=1 的等高栅栏会 ≥7px)",
     );
     // VAD 绿罩 alpha 只有一处真源(DEFAULT_PALETTE 与 tab-wave 的 computedPalette
-    // 各写一份字面量正是本波踩过的坑)
-    eq(
-        WF.VAD_ALPHA,
-        0.13,
-        "VAD 绿罩取图谱 §12 ② 两档中的上档 .13(图例帧 752-754)",
-    );
+    // 各写一份字面量正是本波踩过的坑)。Wave 4 用户 preview 裁定:.13 的灰绿仍
+    // 「太灰太淡」→ 提到 .20 并换成比 --sem-green 更鲜亮的绿(tokens §20a)。
+    eq(WF.VAD_ALPHA, 0.2, "VAD 绿罩 alpha 取 Wave 4 用户裁定的 .20");
     check(
-        WF.DEFAULT_PALETTE.vad === `rgba(120, 176, 142, ${WF.VAD_ALPHA})`,
+        WF.DEFAULT_PALETTE.vad === `rgba(88, 208, 148, ${WF.VAD_ALPHA})`,
         "DEFAULT_PALETTE.vad 由 VAD_ALPHA 拼出(不写死字面 alpha)",
+    );
+    // 波形本体「粉 + 白」(Wave 4 反馈⑥):外柱淡粉紫 / 内柱近白,与 tokens 同值
+    eq(
+        WF.DEFAULT_PALETTE.env,
+        "rgba(216, 186, 216, 0.52)",
+        "外柱 = --wave-env-pink 淡粉紫",
+    );
+    eq(
+        WF.DEFAULT_PALETTE.envCore,
+        "rgba(255, 250, 255, 0.6)",
+        "内柱亮芯 = --wave-env-core 近白",
+    );
+    eq(
+        WF.DEFAULT_PALETTE.vadEdge,
+        "rgba(120, 236, 172, 0.78)",
+        "VAD 顶缘线 = --wave-vad-edge",
+    );
+    // 只改波形本体与 VAD:覆盖条(accent)与 stale(amber)的语义色一字不动
+    eq(
+        WF.DEFAULT_PALETTE.coverage,
+        "rgba(181, 172, 201, 0.85)",
+        "覆盖条仍是 accent 薰衣草(B-07 不受配色批影响)",
+    );
+    eq(
+        WF.DEFAULT_PALETTE.stale,
+        "rgba(212, 176, 118, 0.22)",
+        "stale 仍是 amber 斜条纹",
     );
     eq(
         WF.runsOf([0, 1, 1, 0, 1], (v) => v > 0),
@@ -642,11 +666,45 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
         ),
         "泳道状态灯 8×8 尺寸规则在(B-06)",
     );
-    // 图谱 §12 层序:包络先画、VAD 罩压在其上(canvas 后画者在上)
+    // 层序:Wave 4 用户裁定⑤⑥后 **VAD 罩在包络之下**(canvas 后画者在上)——
+    // .20 的绿压在粉柱上会把「粉 + 白」整体染绿,与裁定⑤的验收句「不能盖住
+    // 波形」冲突;图谱 §12 的 DOM 序对调,deviations §S 登记。
     const wf = src("web/output/canvas/waveform.js");
     check(
-        wf.indexOf("fillStyle = pal.env") < wf.indexOf("fillStyle = pal.vad"),
-        "静态层先包络后 VAD 罩(图谱 §12 层序)",
+        wf.indexOf("fillStyle = pal.vad") < wf.indexOf("fillStyle = pal.env"),
+        "静态层先 VAD 罩后包络柱(Wave 4 层序:绿罩不盖波形)",
+    );
+    check(
+        wf.indexOf("fillStyle = pal.env") <
+            wf.indexOf("fillStyle = pal.coverage"),
+        "覆盖条仍画在最上(B-07)",
+    );
+    // 修订轮:仅「对调层序」不够 —— pal.env 是 α=.52 的半透明,底下的绿会**混
+    // 进来**(getImageData 实测:有声区柱子 R−G 从 17.5 掉到 5.6,粉相被抵消)。
+    // 绿罩改成按列裁掉包络带:只填 [0, mid−hi) 与 [mid+hi, h),与波形本体零重叠。
+    check(
+        /ctx\.fillStyle = pal\.vad;[\s\S]{0,400}const hi = envelopeHalfPx\(tile\.maxDb\[i\], h\);[\s\S]{0,300}if \(top > 0\) ctx\.rect\([\s\S]{0,200}if \(bot < h\) ctx\.rect\(/.test(
+            wf,
+        ),
+        "VAD 罩只画包络之外(半透明包络会把满高绿罩混进粉柱)",
+    );
+    check(
+        !/ctx\.fillStyle = pal\.vad;\s*\n\s*for \(const \[a, b\] of runs\) \{\s*\n\s*ctx\.fillRect\(x0\(a\), 0, \(b - a\) \* colW, h\);/.test(
+            wf,
+        ),
+        "满高绿罩铺底的旧画法已删",
+    );
+    check(
+        /ctx\.fillStyle = pal\.vadEdge;[\s\S]{0,400}ctx\.fillRect\(x0\(a\), 0, \(b - a\) \* colW, 1\.5\);[\s\S]{0,200}ctx\.fillRect\(x0\(a\), edgeY, \(b - a\) \* colW, 1\.5\)/.test(
+            wf,
+        ),
+        "亮线上下各一条(行高拉到 88 时罩体被厚包络挤薄,边线是区间起止唯一稳定读法)",
+    );
+    check(
+        /ctx\.beginPath\(\);[\s\S]{0,600}ctx\.fill\(\);\s*\n\s*ctx\.fillStyle = pal\.vadEdge;/.test(
+            wf,
+        ),
+        "整条 run 一次 beginPath + 一次 fill(929 列 × 15 轨的静态层 <8ms 预算)",
     );
 
     // ---- mock:5 分钟 ×15 轨,契约 §1.27 形状 / 确定性 / stale / valleys
@@ -939,10 +997,10 @@ log("=== ⑦ 交互纯函数 + 源码级纪律断言(Wave 2)===");
         "全轨布防 ⇒ 并成满高一条",
     );
     check(
-        /wave-recapband__seg[\s\S]{0,240}\(r\.ch0 - 1\) \* LANE_H/.test(
+        /wave-recapband__seg[\s\S]{0,240}\(r\.ch0 - 1\) \* local\.laneH/.test(
             src("web/output/tab-wave.js"),
         ),
-        "recapband 按 maskRuns 建子块(不再整条满高)",
+        "recapband 按 maskRuns 建子块(不再整条满高),子块几何读运行时行高",
     );
 
     // ---- segIdx 重绑(brief §0.7):时间锚中点包含 → 最大重叠 → 失效
@@ -1231,11 +1289,353 @@ log("\n=== ⑩ Wave 3 视觉修的口径钉子(对抗校验修订批)===");
 
     // (e) VAD alpha 两处同源:tab-wave 的 computedPalette 不许再写第二份字面量
     check(
-        /pal\.vad = `rgba\(\$\{v\("--sem-green"\)\}, \$\{VAD_ALPHA\}\)`/.test(
+        /pal\.vad = `rgba\(\$\{v\("--wave-vad"\)\}, \$\{VAD_ALPHA\}\)`/.test(
             tw,
         ),
         "computedPalette 的 VAD alpha 从 waveform.js import(不写第二份字面量)",
     );
+}
+
+// =============================================================================
+log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 / blit)===");
+{
+    const tw = src("web/output/tab-wave.js");
+    const html = src("web/output/index.html");
+    const css = src("web/shared/tokens.css");
+
+    // ---- ① 文案:「播完自动停」整句化,三语齐(key 不变)
+    eq(T.zh.autoStop, "播放结束自动停止", "zh autoStop 改完整句");
+    check(
+        /playback ends/i.test(T.en.autoStop),
+        "en autoStop 是同义完整句(不再是 Auto-stop 短语)",
+    );
+    check(
+        /lecture/i.test(T.fr.autoStop),
+        "fr autoStop 是同义完整句(不再是 Arrêt auto 短语)",
+    );
+    check(
+        ![T.zh, T.en, T.fr].some((d) =>
+            Object.values(d).some((v) =>
+                /播完自动停|Auto-stop|Arrêt auto/.test(String(v)),
+            ),
+        ),
+        "旧短语在三语词条值里零命中(html 的旧文案由 applyI18n 覆盖)",
+    );
+
+    // ---- ② 自绘勾选框:仍是真 input(只视觉隐藏),同族形制 + 焦点环 + ≥24 命中
+    check(
+        /<input\s+type="checkbox"\s+class="wave-autostop__input"/.test(html),
+        "autoStop 仍是真 checkbox(不是 div/role=checkbox)",
+    );
+    check(
+        /\.wave-autostop__input \{[^}]*opacity: 0;/.test(html),
+        "input 只做视觉隐藏(留在 DOM 与 tab 序)",
+    );
+    check(
+        /\.wave-autostop__input:checked \+ \.wave-autostop__box \{/.test(html),
+        "勾选态由原生 :checked 驱动自绘框",
+    );
+    check(
+        /\.wave-autostop__input:focus-visible \+ \.wave-autostop__box \{[^}]*outline:/.test(
+            html,
+        ),
+        "focus-visible 焦点环落在自绘框上",
+    );
+    // RE-06 的实测口径:0.5 档要 ≥24 物理 px ⇒ ≥48 CSS px(hit.js
+    // hitExpansionPx(14) = 17/侧)。扩展挂 **label**(横轴 94..127px 早就够,
+    // 缺的只有 14px 的纵轴);挂 12px 框上会横向盖住左邻按钮(行内 gap 9px)。
+    check(
+        /\.wave-autostop::after \{[^}]*top: -8px;[\s\S]{0,80}bottom: -26px;/.test(
+            html,
+        ),
+        "RE-06:命中扩展挂 label,14 + 8 + 26 = 48 CSS px(= 0.5 档 24 物理 px)",
+    );
+    check(
+        !/\.wave-autostop__box::after \{/.test(html),
+        "扩展不挂 12px 框上(±18px 会抢左邻按钮的事件)",
+    );
+
+    // ---- ③ blit 只在平移(span 不变)时用;**平移与缩放共用「静止 120ms」闸**
+    check(
+        /Math\.abs\(last\.endS - last\.startS - span\)/.test(tw),
+        "blit 前比对老底跨度与当前跨度(同跨度才认平移)",
+    );
+    check(
+        /if \(!sameVp && moving && panOnly\) \{[\s\S]{0,600}ctx\.translate\(/.test(
+            tw,
+        ),
+        "平移 blit 只 translate(且只在同跨度分支里)",
+    );
+    check(
+        !/ctx\.scale\(\(last\.endS - last\.startS\) \/ span, 1\)/.test(tw),
+        "缩放期的非等比 ctx.scale 重映射已删除(45° 斜纹被剪切的根因)",
+    );
+    check(
+        /if \(!sameVp && moving && panOnly\) \{[\s\S]{0,300}ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,300}ctx\.translate\(/.test(
+            tw,
+        ),
+        "变换前先整幅 clearRect(平移拖影的根因)",
+    );
+    check(
+        /const sameVp =[\s\S]{0,600}if \(!sameVp && moving && panOnly\)/.test(
+            tw,
+        ),
+        "画布已是当前视口时不清屏(宽度抖动导致的键失配不该闪空)",
+    );
+    check(
+        /画布原样留着当降级底[\s\S]{0,1600}if \(!got\) \{[\s\S]{0,1200}clearRect/.test(
+            tw,
+        ),
+        "缩放期留上一帧当降级底,取数回 null 才清(降级底有界)",
+    );
+    check(
+        /平移期\*\*不取新块\*\*[\s\S]{0,200}continue;/.test(tw),
+        "平移期不取新块(05 §6.3:静止 120ms 后才取)",
+    );
+    // 缩放那半边的钉子(修订轮补):Wave 4 只钉了平移,缩放期每帧、每条可见
+    // 泳道各发一次 requestWaveform(实测 20 次 ctrl+滚轮 = 308 次桥调用),
+    // 门禁对它完全无感。缩放时每帧跨度都不同 = 每帧新键,LRU 与在途去重全失效。
+    check(
+        /if \(moving\) \{[\s\S]{0,600}continue;\n\s*\}\n[\s\S]{0,400}waveSource\.getTile\(/.test(
+            tw,
+        ),
+        "缩放/首绘同样过 moving 闸(取数分支前无条件 continue)",
+    );
+    check(
+        /const moving = !!local\.vpIdleTimer;/.test(tw) &&
+            /IDLE_REFETCH_MS\)/.test(tw),
+        "moving 唯一真源 = vpIdleTimer(到点即 IDLE_REFETCH_MS = 120 标脏补取)",
+    );
+    check(
+        /if \(!got\) \{[\s\S]{0,700}drawn\.startS !== reqStartS \|\| drawn\.endS !== reqEndS/.test(
+            tw,
+        ),
+        "迟到的 null 不擦掉更新的一帧(比对请求视口与画布现视口)",
+    );
+    check(
+        /if \(!got\) \{[\s\S]{0,900}const w2 = stageWidth\(\);[\s\S]{0,300}backingK\(\)/.test(
+            tw,
+        ),
+        "null 分支的宽/k 当场重读(不用发起帧的闭包值)",
+    );
+
+    // ---- ④ 两条缩放拖拽条:运行时行高 + 键盘可达 + aria
+    eq(TW.LANE_H_DEFAULT, 34, "行高默认档仍是 34(设计稿 1812)");
+    eq(TW.LANE_H, TW.LANE_H_DEFAULT, "LANE_H 兼容别名 = 默认档");
+    eq([TW.LANE_H_MIN, TW.LANE_H_MAX], [22, 88], "行高区间 22..88");
+    eq(TW.clampLaneH(10), 22, "行高下夹");
+    eq(TW.clampLaneH(999), 88, "行高上夹");
+    eq(TW.clampLaneH(undefined), 34, "非法值回默认档");
+    near(TW.laneHPercent(34), (34 - 22) / 66, 1e-9, "行高 → 行程比");
+    eq(TW.laneHFromPercent(0), 22, "行程比 0 = 最矮");
+    eq(TW.laneHFromPercent(1), 88, "行程比 1 = 最高");
+    // 曲线纵向几何按行高等比缩放(34 档的既有断言不受影响)
+    near(TW.panYPx(100), 19, 1e-9, "pan +100 @34 仍是 19");
+    near(TW.panYPx(100, 68), 38, 1e-9, "行高翻倍 ⇒ pan 落点等比翻倍");
+    near(TW.volYPx(-24, 68), 44, 1e-9, "行高翻倍 ⇒ vol 基线等比翻倍");
+    // 编译期常量不再被交互期几何引用(几何唯一真源 = local.laneH)
+    check(
+        !/[^_]\bLANE_H\b(?!_)/.test(
+            tw.slice(tw.indexOf("function createTabWave")),
+        ),
+        "createTabWave 内零 LANE_H 直引(几何一律读 local.laneH)",
+    );
+    // 横向缩放条:对数刻度换算 + 视口中心为锚
+    near(TW.zoomMaxFactor(300), 300, 1e-9, "最大倍率 = 全长 / MIN_SPAN_S");
+    near(TW.zoomFactorFromPercent(0, 300), 1, 1e-9, "行程 0 = 全览 ×1");
+    near(TW.zoomFactorFromPercent(1, 300), 300, 1e-9, "行程 1 = 最大倍率");
+    near(
+        TW.zoomPercentOfFactor(TW.zoomFactorFromPercent(0.37, 300), 300),
+        0.37,
+        1e-9,
+        "行程 ↔ 倍率互逆",
+    );
+    check(
+        /const anchorT = \(vp\.startS \+ vp\.endS\) \/ 2; \/\/ 视口中心为锚/.test(
+            tw,
+        ),
+        "横向缩放条以视口中心为锚(与 Ctrl+滚轮同一 timeline API)",
+    );
+    for (const gb of [
+        "wave-hzoom-bar",
+        "wave-hzoom-thumb",
+        "wave-hzoom-value",
+        "wave-vzoom",
+        "wave-vzoom-thumb",
+    ]) {
+        check(html.includes(`data-gb="${gb}"`), `新件锚点 ${gb} 就位`);
+    }
+    check(
+        /data-gb="wave-hscroll-thumb"/.test(html) &&
+            /\.wave-hzoom__thumb \{/.test(html),
+        "既有底部滚动条(平移)保留不变",
+    );
+    for (const [sel, key] of [
+        ["wave-hzoom-bar", "wave.hZoomBar"],
+        ["wave-vzoom", "wave.vZoomBar"],
+    ]) {
+        const i = html.indexOf(`data-gb="${sel}"`);
+        const win = html.slice(Math.max(i - 400, 0), i + 600);
+        check(/role="slider"/.test(win), `${sel} 是 role=slider`);
+        check(/tabindex="0"/.test(win), `${sel} 键盘可聚焦`);
+        check(/aria-valuenow=/.test(win), `${sel} 有 aria-valuenow`);
+        check(/aria-valuemin=/.test(win), `${sel} 有 aria-valuemin`);
+        check(/aria-valuemax=/.test(win), `${sel} 有 aria-valuemax`);
+        check(
+            win.includes(`data-t-aria="${key}"`),
+            `${sel} 的 aria-label 走词条 ${key}`,
+        );
+    }
+    check(
+        /\.wave-lane__stage \{[^}]*height: var\(--lane-h, 34px\);/.test(html),
+        "泳道舞台高读运行时变量 --lane-h",
+    );
+    check(
+        /function applyLaneH\([\s\S]{0,900}local\.lastPaint\.clear\(\)/.test(
+            tw,
+        ),
+        "行高变化清 blit 老底(旧行高的位图会纵向错位)",
+    );
+    // ---- ④a 修订轮:两条杆的 aria 同源 + 键盘全套 + 拖拽态兜底 + 纵向杆自留槽
+    check(
+        /attr\(els\.hzoomBar, "aria-valuetext", zoomLabel\(vp, durS\)\)/.test(
+            tw,
+        ),
+        "横向杆 aria-valuetext 复用可见读数(线性 valuenow 与对数行程不同源)",
+    );
+    check(
+        /attr\(els\.vzoom, "aria-valuetext", v \+ "px"\)/.test(tw),
+        "纵向杆 aria-valuetext 带单位(裸 22..88 播报读不出是什么)",
+    );
+    for (const [bar, name] of [
+        ["hzoomBar", "横向"],
+        ["vzoom", "纵向"],
+    ]) {
+        const i = tw.indexOf(`els.${bar}.addEventListener("keydown"`);
+        const win = tw.slice(i, i + 1400);
+        check(
+            i > 0 && /"Home"/.test(win) && /"End"/.test(win),
+            `${name}杆 role=slider 的 Home/End 已实现`,
+        );
+        check(
+            /"PageUp"/.test(win) && /"PageDown"/.test(win),
+            `${name}杆 role=slider 的 PageUp/PageDown 已实现`,
+        );
+    }
+    for (const up of ["hup", "vup"]) {
+        check(
+            new RegExp(
+                `window\\.addEventListener\\("pointerup", ${up}\\)`,
+            ).test(tw),
+            `拖拽态在窗级也收 pointerup(${up}:setPointerCapture 抛错时的兜底)`,
+        );
+    }
+    check(
+        /if \(e\.buttons === 0\) \{[\s\S]{0,200}local\.hzoomDrag = null;/.test(
+            tw,
+        ) &&
+            /if \(e\.buttons === 0\) \{[\s\S]{0,200}local\.vzoomDrag = null;/.test(
+                tw,
+            ),
+        "pointermove 里按 buttons===0 兜底收尾(拖拽态卡住 = 悬停即跳值)",
+    );
+    eq(
+        TW.VZOOM_GUTTER_W,
+        24,
+        "纵向缩放条自留槽 24 = 命中扩展 6 + 杆 12 + 间隙 6",
+    );
+    check(
+        /w - HEAD_W - SCALE_COL_W - VZOOM_GUTTER_W/.test(tw),
+        "舞台宽让出自留槽(杆与命中区不再压泳道 canvas,消除 24×74 指针死区)",
+    );
+    check(
+        /\.wave-vzoom::after \{[^}]*inset: -6px;/.test(html),
+        "纵向杆命中区 24×74 CSS px,整块落在槽内(与 RE-06 的口径差已在注释登记)",
+    );
+
+    // ---- ⑤⑥ 新增 token 与「只改波形本体」纪律
+    for (const t of [
+        "--wave-vad:",
+        "--wave-vad-edge:",
+        "--wave-env-pink:",
+        "--wave-env-core:",
+    ]) {
+        check(css.includes(t), `tokens.css 含 ${t}`);
+    }
+    check(
+        /用户 preview 裁定[\s\S]{0,900}--wave-vad: 88, 208, 148;[^\n]*更鲜亮/.test(
+            css,
+        ),
+        "新 token 注明「用户 preview 裁定:比 --sem-green 更鲜亮」",
+    );
+    check(
+        !/--sem-green: 88/.test(css) &&
+            css.includes("--sem-green: 120, 176, 142;"),
+        "既有 token --sem-green 值未被改动(只新增不改既有值)",
+    );
+    check(
+        css.includes("--wave-env: rgba(196, 190, 220, 0.5);"),
+        "稿内原值 --wave-env 保留存档(不改既有值)",
+    );
+
+    // ---- ⑦⑧ 边界手柄可发现性 + 分割/合并说明可循
+    check(
+        /\.wave-bhandle \{[^}]*cursor: ew-resize;/.test(html),
+        "边界手柄 cursor: ew-resize",
+    );
+    check(
+        /\.wave-bhandle \{[^}]*pointer-events: auto;/.test(html),
+        "手柄收回 pointer-events(否则 title tooltip 永远弹不出)",
+    );
+    // 修订轮:① `.wave-bhandle::after` 对有效靶区一寸也加不了(命中判定在 JS
+    // 里按 BOUNDARY_HIT_PX=6 对 .wave-lanes 做,手柄只在已命中 ±6 时才出现),
+    // 纯装饰 → 删;② aria-label 写在 aria-hidden 的子树上是死代码 → 删,
+    // 语义由 title tooltip 单独承担。
+    check(
+        !/\.wave-bhandle::after \{/.test(html),
+        "手柄不挂假的 RE-06 扩展(有效靶区就是 ±6 CSS px,05 §6.3 边界专用口径)",
+    );
+    check(
+        /function setBoundHandleTip\([\s\S]{0,900}setTitle\(els\.bhandle, s\);/.test(
+            tw,
+        ) &&
+            !/function setBoundHandleTip\([\s\S]{0,900}setAttribute\("aria-label"/.test(
+                tw,
+            ),
+        "手柄只写 title(节点 aria-hidden,aria-label 无消费者)",
+    );
+    check(
+        /data-gb="wave-boundary-handle"[\s\S]{0,200}aria-hidden="true"/.test(
+            html,
+        ),
+        "手柄仍是 aria-hidden 的纯视觉浮标(不进 tab 序 / 无障碍树)",
+    );
+    for (const [lang, dict] of [
+        ["zh", T.zh],
+        ["en", T.en],
+        ["fr", T.fr],
+    ]) {
+        for (const k of [
+            "wave.boundarySnapTip",
+            "wave.hZoomBar",
+            "wave.vZoomBar",
+        ]) {
+            check(
+                typeof dict[k] === "string" && dict[k].length > 0,
+                `${lang} 有词条 ${k}`,
+            );
+        }
+        const tip = dict["wave.boundaryHandleTip"] || "";
+        check(/Alt/i.test(tip), `${lang} 边界 tooltip 说清 Alt 关吸附`);
+        check(
+            /分割|split|scinder/i.test(tip),
+            `${lang} 边界 tooltip 说清双击分割(反馈⑧)`,
+        );
+        check(
+            /Delete|合并|merge|fusionner|Suppr/i.test(tip),
+            `${lang} 边界 tooltip 说清 Delete 合并(反馈⑧)`,
+        );
+    }
 }
 
 // =============================================================================

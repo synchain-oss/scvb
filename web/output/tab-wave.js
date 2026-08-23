@@ -37,6 +37,7 @@ import {
     zoomLabel,
     scrollThumb,
     ZOOM_STEP,
+    MIN_SPAN_S,
 } from "./canvas/timeline.js";
 import {
     backingScale,
@@ -75,14 +76,68 @@ export const LANE_COUNT = CHANNEL_COUNT;
 /** 轨头列宽(设计稿 808/841/867 三处共用;底部空档 148 + padding 10 = 158)。 */
 export const HEAD_W = 158;
 
-/** 泳道行高 34px(实景帧 1812;[J72a] C-10:TAB_ROWS 的 44 是旧口径,不取)。 */
-export const LANE_H = 34;
+/**
+ * 泳道行高**默认**档 34px(实景帧 1812;[J72a] C-10:TAB_ROWS 的 44 是旧口径,不取)。
+ *
+ * T33 Wave 4(用户新件):行高改成**运行时可变**(纵向缩放条)—— 编译期常量只剩
+ * 「默认值 + 纯函数面的换算基准」。**运行期几何一律读 `local.laneH`**
+ * (泳道行 CSS 高 / canvas 高 / overlay 高 / visibleLanes / recapband 子块 /
+ *  角标 / 播放头 / 选区叠加层),不得再引本常量。
+ */
+export const LANE_H_DEFAULT = 34;
+
+/**
+ * 兼容别名(= 默认档)。纯函数断言面、T34/T43 复用面与设计稿换算注释按它引用;
+ * 交互期几何请读 `local.laneH`。
+ */
+export const LANE_H = LANE_H_DEFAULT;
+
+/**
+ * 运行时行高夹取区间(Wave 4 纵向缩放条)。
+ * 下限 22:`envelopeHalfPx` 的 `h/2−4` 在 22px 档还剩 7px 可画(再矮包络就摊成
+ * 一条线,05 行 311 的 min/max 包络失去意义)。
+ * ⚠ 修订轮更正:原注写的「pan(中线 12±7)与 vol(基线 22−7)两带压到 22px
+ * 仍不重叠」是错的 —— 两带的实现是纯等比(panYPx/volYPx 见下),pan 值域
+ * [5k,19k] 与 vol 值域 [15k,22k] 对任意 k>0 都交于 [15k,19k],34px 默认档就
+ * 已相交;等比缩放不改变相对关系,所以这条既不是下限 22 的理由,也不是退化。
+ * 上限 88:15 泳道 × 88 = 1320px,纵向滚动条兜住,再高单屏一条都看不全。
+ */
+export const LANE_H_MIN = 22;
+export const LANE_H_MAX = 88;
+
+/** 行高夹取(非法值回默认档)。 */
+export function clampLaneH(h) {
+    const v = num(h, LANE_H_DEFAULT);
+    return Math.round(Math.min(Math.max(v, LANE_H_MIN), LANE_H_MAX));
+}
+
+/** 行高 → 滑杆行程比(0..1;纵向缩放条 thumb 与 aria 同源)。 */
+export function laneHPercent(h) {
+    return (clampLaneH(h) - LANE_H_MIN) / (LANE_H_MAX - LANE_H_MIN);
+}
+
+/** 滑杆行程比 → 行高(0..1 线性)。 */
+export function laneHFromPercent(p) {
+    const x = Math.min(Math.max(num(p, 0), 0), 1);
+    return clampLaneH(LANE_H_MIN + x * (LANE_H_MAX - LANE_H_MIN));
+}
 
 /** 段检查器宽(稿内 877;灰模 260 → 统一 262,登记差异)。 */
 export const INSPECTOR_W = 262;
 
 /** 右缘双刻度列宽(图例帧 786;B-11:全泳道区共用一列)。 */
 export const SCALE_COL_W = 44;
+
+/**
+ * 纵向缩放条自留槽宽(CSS px;修订轮新增)。
+ * Wave 4 把 12px 的纵向缩放条直接浮在泳道 canvas 最右 18px 上,连同它的
+ * `::after` 命中扩展造出一块 24×74px 的**指针死区** —— 那一块上的点选段 /
+ * 拖边界 / 拖拽平移全部失灵(z-index 高于选区叠加层,事件也不冒泡到
+ * `.wave-lanes`)。修法:把舞台宽再让出这一槽,杆与它的命中扩展整个落在
+ * 槽内(槽 24 = 命中扩展 6 + 杆 12 + 与刻度列的间隙 6),canvas 上零死区。
+ * 代价 = 舞台宽 929 → 905(-2.6%),换回泳道右缘可点。
+ */
+export const VZOOM_GUTTER_W = 24;
 
 /** 时间标尺行高(实景帧 807)。 */
 export const RULER_H = 22;
@@ -92,6 +147,13 @@ export const BOTTOM_BAR_H = 20;
 
 /** 底部条左空档(867;+ 左 padding 10 = HEAD_W)。 */
 export const BOTTOM_HEAD_W = 148;
+
+/**
+ * 纵向缩放条几何(**与 index.html `.wave-vzoom` 同步**:总高 62px,两端各留
+ * 7px 端头让 10px 圆点 thumb 不越出杆身)。Wave 4 用户新件。
+ */
+export const VZOOM_H = 62;
+export const VZOOM_PAD = 7;
 
 /** 无任何时长线索时的兜底工程时长(秒;mock 假数据同为 5 分钟,J59)。 */
 export const FALLBACK_DURATION_S = 300;
@@ -156,6 +218,33 @@ export function fmtSliderValue(def, v) {
     const x = num(v, def.def);
     const s = def.dp > 0 ? x.toFixed(def.dp) : String(Math.round(x));
     return def.unit ? `${s} ${def.unit}` : s;
+}
+
+/**
+ * 横向缩放条的行程 ↔ 倍率换算(T33 Wave 4 用户新件)。
+ * 倍率 = 全长 / 视口跨度 ∈ [1, 全长/MIN_SPAN_S];行程取**对数刻度** ——
+ * 线性刻度下 300s 工程的前 1% 行程就把跨度从 300s 掐到 3s,后 99% 全在 1×~1.03×
+ * 之间空转。对数刻度让每一段等长行程都对应等比例的跨度变化(与 Ctrl+滚轮的
+ * 定比 ZOOM_STEP 同构)。
+ */
+export function zoomMaxFactor(durationS) {
+    return Math.max(num(durationS, 0) / MIN_SPAN_S, 1);
+}
+
+/** 行程比(0..1)→ 缩放倍率。 */
+export function zoomFactorFromPercent(p, durationS) {
+    const fMax = zoomMaxFactor(durationS);
+    if (!(fMax > 1)) return 1;
+    const x = Math.min(Math.max(num(p, 0), 0), 1);
+    return Math.pow(fMax, x);
+}
+
+/** 缩放倍率 → 行程比(0..1)。 */
+export function zoomPercentOfFactor(factor, durationS) {
+    const fMax = zoomMaxFactor(durationS);
+    if (!(fMax > 1)) return 0;
+    const f = Math.min(Math.max(num(factor, 1), 1), fMax);
+    return Math.log(f) / Math.log(fMax);
 }
 
 /**
@@ -292,15 +381,24 @@ export function segMarksOf(segChannel) {
     return out;
 }
 
-/** pan 值 → 泳道内 y(px;实景帧 1819:中线 12 ± 7,pan ∈ -100..100)。 */
-export function panYPx(pan) {
+/**
+ * pan 值 → 泳道内 y(px;实景帧 1819:中线 12 ± 7,pan ∈ -100..100)。
+ * `laneH` 缺省 = 默认档 34;行高变化时**整套纵向几何按比例缩放**(Wave 4 纵向
+ * 缩放条)—— 等比缩放不改变两带的相对关系(修订轮更正:两带值域本来就相交,
+ * pan [5k,19k] ∩ vol [15k,22k] = [15k,19k],34px 默认档亦然;真正把两条线分开的
+ * 是**颜色与线宽**(pan = accent 薰衣草 / vol = 白,05 行 310),不是值域)。
+ */
+export function panYPx(pan, laneH) {
     const p = Math.min(Math.max(num(pan, 0), -100), 100);
-    return 12 + (p / 100) * 7;
+    return (12 + (p / 100) * 7) * (clampLaneH(laneH) / LANE_H_DEFAULT);
 }
 
 /** volDb → 泳道内 y(px;实景帧 1821:基线 22 − 行程比 × 7;行程比同 Tab2 卡箍)。 */
-export function volYPx(volDb) {
-    return 22 - (volPercent(volDb) / 100) * 7;
+export function volYPx(volDb, laneH) {
+    return (
+        (22 - (volPercent(volDb) / 100) * 7) *
+        (clampLaneH(laneH) / LANE_H_DEFAULT)
+    );
 }
 
 /** 阶梯曲线线宽(B-09:放大帧 2.4/3 不直接搬,实景取 1/1.6 保 +0.6px 差)。 */
@@ -649,7 +747,11 @@ export function createTabWave(opts) {
         knobDrag: null, // 检查器 PAN 旋钮拖拽 {startY, startVal, val}
         vslDrag: null, // 检查器 VOL 滑杆拖拽 {val}
         echo: {}, // 检查器拖拽乐观值 {pan?, vol?}(segments 事件后失效)
-        lastPaint: new Map(), // ch → {tile,startS,endS}(拖动期 blit 的老底)
+        lastPaint: new Map(), // ch → {tile,startS,endS}(**平移期** blit 的老底)
+        canvasVp: new Map(), // ch → 画布上现在这幅对应的视口(null = 不可信)
+        laneH: LANE_H_DEFAULT, // 运行时泳道行高(Wave 4 纵向缩放条;几何唯一真源)
+        hzoomDrag: null, // 横向缩放条拖拽 {rect}
+        vzoomDrag: null, // 纵向缩放条拖拽 {rect}
         tickerRaf: 0, // 交互/播放期帧时账 rAF(喂 layers.governor)
         palette: null, // mount 时 getComputedStyle 换算的 canvas 调色
         playheadEv: null, // 最近一次 §2.6 载荷(非前台期间只存不驱动)
@@ -731,10 +833,14 @@ export function createTabWave(opts) {
         },
     });
 
-    /** 舞台宽(CSS px)= 泳道容器宽 − 轨头 158 − 刻度列 44(C-04 舞台坐标系)。 */
+    /**
+     * 舞台宽(CSS px)= 泳道容器宽 − 轨头 158 − 刻度列 44 − 纵向缩放条槽 24
+     * (C-04 舞台坐标系;末项见 VZOOM_GUTTER_W 头注 —— 杆与其命中扩展整个
+     * 落在槽内,泳道 canvas 上不留指针死区)。
+     */
     function stageWidth() {
         const w = els.lanes ? els.lanes.clientWidth : 0;
-        return Math.max(w - HEAD_W - SCALE_COL_W, 0);
+        return Math.max(w - HEAD_W - SCALE_COL_W - VZOOM_GUTTER_W, 0);
     }
 
     /**
@@ -749,9 +855,54 @@ export function createTabWave(opts) {
         if (local.gutterPx === sb) return;
         local.gutterPx = sb;
         if (els.rulerScale) {
-            els.rulerScale.style.marginRight = SCALE_COL_W + sb + "px";
+            els.rulerScale.style.marginRight =
+                SCALE_COL_W + VZOOM_GUTTER_W + sb + "px";
         }
         if (els.scalecol) els.scalecol.style.right = sb + "px";
+        // 纵向缩放条落在双刻度列**左侧的自留槽**里(修订轮):同一套滚动条宽账,
+        // 免得 15×88 出滚动条时它压到刻度列的 -100/-24 读数上;左边界靠
+        // stageWidth() 让出的 VZOOM_GUTTER_W 兜住,不再压泳道 canvas
+        if (els.vzoom) els.vzoom.style.right = SCALE_COL_W + sb + 6 + "px";
+    }
+
+    /**
+     * 泳道行高落地(Wave 4 纵向缩放条的唯一写入点)。
+     * 行高是**几何真源**:CSS 变量 `--lane-h` 驱动泳道行/舞台高,滚动层内容高
+     * (共享动态层 + 播放头)按 15 × 行高改写,canvas 后备存储由下一帧的
+     * `resizeCanvas` 按新高重建 —— 故这里必须把两层都标脏(全 canvas 重绘)。
+     * `local.lastPaint` 一并清:老底的高度是旧行高,blit 上去会纵向错位。
+     */
+    function applyLaneH(h, rerender) {
+        const v = clampLaneH(h);
+        local.laneH = v;
+        if (els.lanes) els.lanes.style.setProperty("--lane-h", v + "px");
+        const contentH = LANE_COUNT * v;
+        if (els.overlay) els.overlay.style.height = contentH + "px";
+        if (els.playhead) els.playhead.style.height = contentH + "px";
+        local.lastPaint.clear();
+        local.canvasVp.clear();
+        local.staticDirty = true;
+        local.overlayDirty = true;
+        if (els.vzoom) {
+            attr(els.vzoom, "aria-valuenow", v);
+            // 读数:裸 22..88 播报成「88」读不出单位,横向杆有「×N」可见读数、
+            // 这条没有(修订轮 minor 登记)→ 补 aria-valuetext 带单位供 AT。
+            // 悬停 tooltip(词条 · 行高)在 render() 里写 —— 那里才跟得上切语言。
+            attr(els.vzoom, "aria-valuetext", v + "px");
+            if (els.vzoomThumb) {
+                // p=0(最矮)在杆底、p=1(最高)在杆顶:向上拖 = 泳道变高。
+                // 62px 的短杆上用百分比会让 thumb 在两端各露出一半在杆外
+                // (7 滑杆的长轨可以,这里不行)→ 按端头内缩量算 px。
+                els.vzoomThumb.style.top =
+                    VZOOM_PAD +
+                    (1 - laneHPercent(v)) * (VZOOM_H - VZOOM_PAD * 2) +
+                    "px";
+            }
+        }
+        if (rerender !== false) {
+            schedulePaint();
+            requestRender();
+        }
     }
 
     /** 后备存储倍率(05 §6.1:k = uiScale × dpr)。 */
@@ -1036,7 +1187,7 @@ export function createTabWave(opts) {
         return {
             x: (e.clientX - rect.left) * sx - HEAD_W,
             y,
-            ch: Math.floor(y / LANE_H) + 1,
+            ch: Math.floor(y / local.laneH) + 1,
         };
     }
 
@@ -1204,6 +1355,7 @@ export function createTabWave(opts) {
             // 契约 §1.24:清除后 UI 须重新 requestWaveform —— 块缓存整轨失效
             for (const ch of local.lanePick) waveSource.invalidate(ch);
             local.lastPaint.clear();
+            local.canvasVp.clear();
             local.staticDirty = true;
             setToolbarNote("wave.clearedCoverage", { s: res.clearedS });
             schedulePreview();
@@ -1286,6 +1438,12 @@ export function createTabWave(opts) {
         els.playheadCap = $("wave-playhead-cap");
         els.zoom = $("wave-zoom-readout");
         els.thumb = $("wave-hscroll-thumb");
+        // 缩放拖拽条两枚(Wave 4 用户新件)
+        els.hzoomBar = $("wave-hzoom-bar");
+        els.hzoomThumb = $("wave-hzoom-thumb");
+        els.hzoomVal = $("wave-hzoom-value");
+        els.vzoom = $("wave-vzoom");
+        els.vzoomThumb = $("wave-vzoom-thumb");
         els.rangeline = $("wave-rangeline");
         els.hint = $("wave-trackpickhint");
         els.chip = $("wave-selchip");
@@ -1381,10 +1539,9 @@ export function createTabWave(opts) {
                 track: box ? box.querySelector(".wave-slider__track") : null,
             };
         });
-        // 共享动态层与播放头的纵向覆盖高度 = 15 × 34(滚动层内容高)
-        const contentH = LANE_COUNT * LANE_H;
-        if (els.overlay) els.overlay.style.height = contentH + "px";
-        if (els.playhead) els.playhead.style.height = contentH + "px";
+        // 共享动态层与播放头的纵向覆盖高度 = 15 × 行高(滚动层内容高;
+        // 行高可变 ⇒ 统一走 applyLaneH,它同时写 CSS 变量与两层高度)
+        applyLaneH(local.laneH, false);
 
         // 泳道区滚动/尺寸变化 → 按可见集重绘静态层(brief §0.13;passive 只标脏)
         if (els.lanes && typeof els.lanes.addEventListener === "function") {
@@ -1423,6 +1580,7 @@ export function createTabWave(opts) {
         mountLanesPointer();
         mountSelection();
         mountBottomBar();
+        mountZoomBars();
         mountInspector();
         mountKeyboard();
         render();
@@ -1440,13 +1598,16 @@ export function createTabWave(opts) {
             const cs = getComputedStyle(root.documentElement);
             const v = (n) => String(cs.getPropertyValue(n) || "").trim();
             const pal = {};
-            if (v("--wave-env")) pal.env = v("--wave-env");
+            // 波形本体「粉 + 白」两色(Wave 4 用户裁定;--wave-env 是稿内原值存档)
+            if (v("--wave-env-pink")) pal.env = v("--wave-env-pink");
+            if (v("--wave-env-core")) pal.envCore = v("--wave-env-core");
             // 透明度**从 waveform.js import**(本函数只换 rgb 真值)—— 两处各写
-            // 一份字面 alpha 会静默失同步(对抗校验 major);envCore / vadEdge
-            // 无对应 token,留给字面镜像走 spread 兜底。
-            if (v("--sem-green")) {
-                pal.vad = `rgba(${v("--sem-green")}, ${VAD_ALPHA})`;
+            // 一份字面 alpha 会静默失同步(对抗校验 major);顶缘线无 alpha 纪律,
+            // 整条 rgba 走 --wave-vad-edge。
+            if (v("--wave-vad")) {
+                pal.vad = `rgba(${v("--wave-vad")}, ${VAD_ALPHA})`;
             }
+            if (v("--wave-vad-edge")) pal.vadEdge = v("--wave-vad-edge");
             if (v("--sem-amber")) pal.stale = `rgba(${v("--sem-amber")}, 0.22)`;
             if (v("--acc")) pal.coverage = `rgba(${v("--acc")}, 0.85)`;
             if (v("--wh")) {
@@ -1800,6 +1961,36 @@ export function createTabWave(opts) {
         if (!on && els.lanes) els.lanes.style.cursor = "";
     }
 
+    /**
+     * 手柄纵向落点(泳道内垂直居中,B-10)。26px 是手柄高;行高压到 22..25px 档时
+     * 手柄比泳道高,居中后上下各溢出 (26−h)/2 —— 溢出到相邻泳道无碍(z-index:4
+     * 浮标)。**只有第一条轨要夹**:ch=1 且 h<26 时居中会算出负 top(22px 档 =
+     * −2px),被 `.wave-lanes` 的滚动裁剪切掉,手柄顶部缺一角 —— 这里下夹到 0。
+     */
+    function bhandleTop(ch) {
+        const h = local.laneH;
+        return Math.max((ch - 1) * h + (h - 26) / 2, 0) + "px";
+    }
+
+    /**
+     * 手柄可发现性(Wave 4 用户反馈⑦:「这个把手是干嘛的」= 可发现性缺陷)。
+     * title 走词条 —— 常态说清「分段边界 + 拖动/Alt/双击分割/Delete 合并」,
+     * 吸附命中(金色)态换成「已吸附到能量谷」,让金色自解释。
+     *
+     * ⚠ **只写 title,不写 aria-label**(修订轮更正):手柄节点在 index.html 上
+     * 带 `aria-hidden="true"`(纯视觉浮标,不进 tab 序),整个子树被移出无障碍树
+     * —— 往上面写 aria-label 是死代码,「AT 悬停可读」不成立。摘掉 aria-hidden
+     * 也不解决:非交互 div 上的 aria-label 本就没有稳定的播报路径。边界编辑的
+     * 无障碍入口在段检查器(有名的按钮/输入),不在这枚浮标上。
+     */
+    function setBoundHandleTip(snapped) {
+        const t = getT();
+        const s = snapped
+            ? t["wave.boundarySnapTip"] || ""
+            : t["wave.boundaryHandleTip"] || "";
+        setTitle(els.bhandle, s);
+    }
+
     function updateBoundHover(p) {
         if (!els.bhandle || p.ch < 1 || p.ch > LANE_COUNT) {
             showBoundHandle(false);
@@ -1820,9 +2011,10 @@ export function createTabWave(opts) {
             return;
         }
         els.bhandle.style.left = HEAD_W + xs[j] + "px";
-        els.bhandle.style.top = (p.ch - 1) * LANE_H + (LANE_H - 26) / 2 + "px";
+        els.bhandle.style.top = bhandleTop(p.ch);
         attr(els.bhandle, "data-manual", bounds[j].manual ? 1 : 0);
-        setTitle(els.bhandle, getT()["wave.boundaryHandleTip"] || "");
+        attr(els.bhandle, "data-snap", 0);
+        setBoundHandleTip(false);
         show(els.bhandle, true);
         if (els.lanes) els.lanes.style.cursor = "ew-resize";
     }
@@ -1846,9 +2038,9 @@ export function createTabWave(opts) {
         // 9×26 手柄跟手(吸附命中态经 data-manual 之外的 data-snap 高亮,A-14)
         if (els.bhandle) {
             els.bhandle.style.left = HEAD_W + timeToX(vp, stageW, t) + "px";
-            els.bhandle.style.top =
-                (d.ch - 1) * LANE_H + (LANE_H - 26) / 2 + "px";
+            els.bhandle.style.top = bhandleTop(d.ch);
             attr(els.bhandle, "data-snap", d.snapped ? 1 : 0);
+            setBoundHandleTip(d.snapped);
             show(els.bhandle, true);
         }
         local.overlayDirty = true;
@@ -2035,6 +2227,169 @@ export function createTabWave(opts) {
             const mid = frac * timeline.durationS();
             timeline.set({ startS: mid - half, endS: mid + half });
         });
+    }
+
+    // ------------------------ mount:缩放拖拽条两枚(T33 Wave 4 用户新件)------
+    /**
+     * 横向缩放条:拖动改视口跨度,**以视口中心为锚**(与 Ctrl+滚轮同一
+     * `timeline.zoom(anchorT, factor)` API,只是锚点从光标换成中心)。
+     * 底部滚动条(平移)不动,两件形制两分(见 index.html 的 CSS 注释)。
+     * 纵向缩放条:拖动改 `local.laneH`(22..88px)→ applyLaneH 全 canvas 重绘。
+     * 两条都键盘可达(方向键步进)+ role=slider/aria-valuenow(render 里同步)。
+     */
+    function mountZoomBars() {
+        // ---- 横向:行程比 p ∈ [0,1] ↔ 倍率(对数刻度,zoomFactorFromPercent)
+        const applyHZoomPercent = (p) => {
+            const d = timeline.durationS();
+            const vp = timeline.viewport();
+            const anchorT = (vp.startS + vp.endS) / 2; // 视口中心为锚
+            const nextSpan = d / zoomFactorFromPercent(p, d);
+            const cur = spanOf(vp);
+            if (!(nextSpan > 0) || !(cur > 0)) return;
+            timeline.zoom(anchorT, cur / nextSpan);
+            requestRender();
+        };
+        const hzoomPercentFromEvent = (e) => {
+            const rect = els.hzoomBar.getBoundingClientRect();
+            if (!(rect.width > 0)) return null;
+            return Math.min(
+                Math.max((e.clientX - rect.left) / rect.width, 0),
+                1,
+            );
+        };
+        if (els.hzoomBar) {
+            els.hzoomBar.addEventListener("pointerdown", (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                if (els.hzoomBar.setPointerCapture) {
+                    try {
+                        els.hzoomBar.setPointerCapture(e.pointerId);
+                    } catch {
+                        /* 合成事件的 pointerId 非活动指针(无头脚本);忽略 */
+                    }
+                }
+                local.hzoomDrag = true;
+                const p = hzoomPercentFromEvent(e);
+                if (p !== null) applyHZoomPercent(p);
+                ensureTicker();
+            });
+            els.hzoomBar.addEventListener("pointermove", (e) => {
+                if (!local.hzoomDrag) return;
+                // 兜底:捕获没拿到时 pointerup 会落在别处,拖拽态清不掉 ——
+                // 键已松(buttons=0)就当场收尾,否则此后任何一次悬停经过
+                // 本杆都会直接跳缩放
+                if (e.buttons === 0) {
+                    local.hzoomDrag = null;
+                    return;
+                }
+                const p = hzoomPercentFromEvent(e);
+                if (p !== null) applyHZoomPercent(p);
+            });
+            const hup = () => {
+                local.hzoomDrag = null;
+            };
+            els.hzoomBar.addEventListener("pointerup", hup);
+            els.hzoomBar.addEventListener("pointercancel", hup);
+            // setPointerCapture 抛错(触控笔切换 / pointerId 已失效 / 无头合成
+            // 事件)时松手事件不会回到杆上,所以窗级再收一道
+            if (typeof window !== "undefined") {
+                window.addEventListener("pointerup", hup);
+                window.addEventListener("pointercancel", hup);
+            }
+            // 键盘(role=slider 全套):方向键 = 一格 ZOOM_STEP(与 Ctrl+滚轮
+            // 一格同量);PageUp/PageDown = 四格大步;Home/End = 全览 / 最大倍率
+            els.hzoomBar.addEventListener("keydown", (e) => {
+                const vp = timeline.viewport();
+                if (e.key === "Home" || e.key === "End") {
+                    e.preventDefault();
+                    applyHZoomPercent(e.key === "Home" ? 0 : 1);
+                    return;
+                }
+                const big =
+                    e.key === "PageUp" ? 1 : e.key === "PageDown" ? -1 : 0;
+                const dir =
+                    big ||
+                    (e.key === "ArrowRight" || e.key === "ArrowUp"
+                        ? 1
+                        : e.key === "ArrowLeft" || e.key === "ArrowDown"
+                          ? -1
+                          : 0);
+                if (!dir) return;
+                e.preventDefault();
+                const step = Math.pow(ZOOM_STEP, big ? 4 : 1);
+                timeline.zoom(
+                    (vp.startS + vp.endS) / 2,
+                    dir > 0 ? step : 1 / step,
+                );
+                requestRender();
+            });
+        }
+
+        // ---- 纵向:杆顶 = 最高行,杆底 = 最矮行
+        const vzoomHeightFromEvent = (e) => {
+            const rect = els.vzoom.getBoundingClientRect();
+            if (!(rect.height > 0)) return null;
+            const inner = Math.max(rect.height - VZOOM_PAD * 2, 1);
+            const p = 1 - (e.clientY - rect.top - VZOOM_PAD) / inner;
+            return laneHFromPercent(p);
+        };
+        if (els.vzoom) {
+            els.vzoom.addEventListener("pointerdown", (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                if (els.vzoom.setPointerCapture) {
+                    try {
+                        els.vzoom.setPointerCapture(e.pointerId);
+                    } catch {
+                        /* 同上 */
+                    }
+                }
+                local.vzoomDrag = true;
+                const h = vzoomHeightFromEvent(e);
+                if (h !== null) applyLaneH(h);
+            });
+            els.vzoom.addEventListener("pointermove", (e) => {
+                if (!local.vzoomDrag) return;
+                if (e.buttons === 0) {
+                    // 同横向杆:捕获失败时的兜底收尾(见上)
+                    local.vzoomDrag = null;
+                    return;
+                }
+                const h = vzoomHeightFromEvent(e);
+                if (h !== null && h !== local.laneH) applyLaneH(h);
+            });
+            const vup = () => {
+                local.vzoomDrag = null;
+            };
+            els.vzoom.addEventListener("pointerup", vup);
+            els.vzoom.addEventListener("pointercancel", vup);
+            if (typeof window !== "undefined") {
+                window.addEventListener("pointerup", vup);
+                window.addEventListener("pointercancel", vup);
+            }
+            // 键盘(role=slider 全套):上/右 = 加高一步,下/左 = 减矮一步
+            // (2px 一步,22..88 共 33 步);PageUp/PageDown = 10px 大步;
+            // Home/End = 最矮/最高
+            els.vzoom.addEventListener("keydown", (e) => {
+                if (e.key === "Home" || e.key === "End") {
+                    e.preventDefault();
+                    applyLaneH(e.key === "Home" ? LANE_H_MIN : LANE_H_MAX);
+                    return;
+                }
+                const big =
+                    e.key === "PageUp" ? 1 : e.key === "PageDown" ? -1 : 0;
+                const dir =
+                    big ||
+                    (e.key === "ArrowUp" || e.key === "ArrowRight"
+                        ? 1
+                        : e.key === "ArrowDown" || e.key === "ArrowLeft"
+                          ? -1
+                          : 0);
+                if (!dir) return;
+                e.preventDefault();
+                applyLaneH(local.laneH + dir * (big ? 10 : 2));
+            });
+        }
     }
 
     // ------------------------------------------------ mount:段检查器(§17)
@@ -2501,16 +2856,20 @@ export function createTabWave(opts) {
             if (rx1 > rx0 && runs.length && els.recapband) {
                 els.recapband.style.left = HEAD_W + rx0 + "px";
                 els.recapband.style.width = rx1 - rx0 + "px";
-                els.recapband.style.height = LANE_COUNT * LANE_H + "px";
+                els.recapband.style.height = LANE_COUNT * local.laneH + "px";
                 // 只在**布防轨**上画条纹:容器仍是满高(供 top 定位),条纹落在
                 // 每段相邻布防轨的子块里(签名比对,避免逐帧重建 innerHTML)
-                const sig = runs.map((r) => r.ch0 + "x" + r.count).join(",");
+                // 签名带上行高:纵向缩放改行高后子块的 top/height 必须重建
+                const sig =
+                    local.laneH +
+                    ":" +
+                    runs.map((r) => r.ch0 + "x" + r.count).join(",");
                 if (els.recapband.getAttribute("data-runs") !== sig) {
                     els.recapband.setAttribute("data-runs", sig);
                     els.recapband.innerHTML = runs
                         .map(
                             (r) =>
-                                `<span class="wave-recapband__seg" style="top:${(r.ch0 - 1) * LANE_H}px;height:${r.count * LANE_H}px"></span>`,
+                                `<span class="wave-recapband__seg" style="top:${(r.ch0 - 1) * local.laneH}px;height:${r.count * local.laneH}px"></span>`,
                         )
                         .join("");
                 }
@@ -2547,11 +2906,44 @@ export function createTabWave(opts) {
 
         // ---- 标尺 + 缩放读数 + 底部 thumb(视口投影)
         renderRuler(vp);
-        text(els.zoom, zoomLabel(vp, timeline.durationS()));
+        const durS = timeline.durationS();
+        text(els.zoom, zoomLabel(vp, durS));
         if (els.thumb) {
-            const th = scrollThumb(vp, timeline.durationS());
+            const th = scrollThumb(vp, durS);
             els.thumb.style.left = th.left * 100 + "%";
             els.thumb.style.width = th.width * 100 + "%";
+        }
+        // ---- 横向缩放条(Wave 4):thumb 行程 + ×N 读数 + aria 三者同源于当前倍率
+        if (els.hzoomBar) {
+            const factor = durS / Math.max(spanOf(vp), MIN_SPAN_S);
+            const p = zoomPercentOfFactor(factor, durS);
+            if (els.hzoomThumb) els.hzoomThumb.style.left = p * 100 + "%";
+            text(
+                els.hzoomVal,
+                "×" + (factor >= 10 ? Math.round(factor) : factor.toFixed(1)),
+            );
+            attr(els.hzoomBar, "aria-valuemin", 1);
+            attr(
+                els.hzoomBar,
+                "aria-valuemax",
+                Math.round(zoomMaxFactor(durS)),
+            );
+            attr(els.hzoomBar, "aria-valuenow", Math.round(factor * 10) / 10);
+            // aria-valuetext:aria-valuenow 是**线性**的 1..300,而 thumb 行程与
+            // 拖拽换算是**对数**的(×23 时 thumb 在 55%,线性读数只有 7.7%),
+            // 两者不同源。屏幕阅读器念 valuetext 优先 —— 直接复用可见读数
+            //(「×4.0 / 75s」),播报与眼见/行程三者同源。
+            attr(els.hzoomBar, "aria-valuetext", zoomLabel(vp, durS));
+        }
+        // 纵向缩放条的悬停 tooltip:「纵向缩放(…)· 34px」。写在 render 里而不是
+        // applyLaneH 里 —— 切语言走的是 applyI18n + render(),applyLaneH 不重跑,
+        // 在那边拼的 title 会一直停在挂载时那门语言(而挂载时词典还没注入,
+        // 拼出来是个孤零零的「 · 34px」)。
+        if (els.vzoom) {
+            setTitle(
+                els.vzoom,
+                (getT()["wave.vZoomBar"] || "") + " · " + local.laneH + "px",
+            );
         }
 
         // ---- 段角标 DOM(segments 事件后标脏才重建,避免逐拍重建 innerHTML)。
@@ -2657,7 +3049,7 @@ export function createTabWave(opts) {
         text(els.selReadL, fmtTimeMs(sel.startS));
         text(els.selReadR, fmtTimeMs(sel.endS));
         setBtnEnabled(els.setrange, !isWriteBlocked());
-        const contentH = LANE_COUNT * LANE_H;
+        const contentH = LANE_COUNT * local.laneH;
         if (els.selband) {
             els.selband.style.left = HEAD_W + cx0 + "px";
             els.selband.style.width = cx1 - cx0 + "px";
@@ -2812,59 +3204,132 @@ export function createTabWave(opts) {
         const bottom = top + lanesEl.clientHeight;
         const out = [];
         for (let ch = 1; ch <= LANE_COUNT; ch++) {
-            const y0 = (ch - 1) * LANE_H;
-            if (y0 + LANE_H >= top && y0 <= bottom) out.push(ch);
+            const y0 = (ch - 1) * local.laneH;
+            if (y0 + local.laneH >= top && y0 <= bottom) out.push(ch);
         }
         return out;
     }
 
     /**
      * 静态层:每条可见泳道一块 tile → 一张位图(缓存命中直画,未命中取到再补)。
-     * 拖动/缩放进行中(vpIdleTimer 挂起 = 视口未静止 120ms)缓存未命中时
-     * **不发新请求**,把最近一次画过的块按新视口横向重映射先顶上(05 §6.3
-     * 「拖动平移先 blit 旧位图,静止 120ms 后取新块」);静止后 vpIdleTimer
-     * 标脏再走取数分支。
+     *
+     * **blit 只在平移期用**(Wave 4 用户反馈③ 的根因修)。05 §6.3 的原文是
+     * 「拖动**平移**先 blit 旧位图,静止 120ms 后取新块」—— 本波之前把它也套在了
+     * 缩放上,做法是把上一块按 `ctx.scale(spanOld/spanNew, 1)` 重跑一遍**矢量
+     * 画笔**。这在缩放时三重错:
+     *   ① `paintWaveTile` 首行的 `clearRect(0,0,w,h)` 是在**变换后**的坐标里清,
+     *      清掉的只是老块映射到的那一段,画布其余部分留着上一帧的残迹;
+     *   ② 未覆盖底纹与 stale 的 45° 斜条纹在非等比 scale 下被**剪切**成缓坡,
+     *      `lineWidth` 同时被横向拉粗(无头亲验:整片斜纹糊成宽带);
+     *   ③ 各轨的 `lastPaint` 停在**各自**上一次命中的视口上,一起重映射就摊成
+     *      逐轨错位的「阶梯」。
+     * 修法(统筹裁定):**span 不变(纯平移)才 blit,且只 translate 不 scale**
+     * ——45° 斜纹在纯平移下保角、线宽不变、几何逐像素正确;**span 一变即视为
+     * 缓存失效**,取数在途**留上一帧原样当降级底**(不清、不拉伸):上一帧是
+     * 完整正确的一幅,只是比标尺晚一档,比逐帧闪空好得多。取数**回 null**
+     * (无数据/被拒)才清 —— 降级底有界,不会把一幅错档的图永久留在屏上。
+     *
+     * ⚠ **取数闸盖住缩放,不只是平移**(Wave 4 修订轮的红线修):契约
+     * §1.27(行 383)与 brief §0.8 都写「静止 120ms 后取新块」,没有分平移/
+     * 缩放两档。缩放时**每一帧跨度都不同 = 每一帧都是新键**,LRU 8 块/轨与
+     * 在途去重**全部失效**(旧块反被逐出),所以这里必须与平移档共用同一个
+     * `moving` 闸:视口在动就一律不取,交给 `vpIdleTimer`(IDLE_REFETCH_MS
+     * = 120)标脏后补一轮。之前只在平移档设闸,实测拖 40 帧缩放条 = 560 次
+     * `requestWaveform`(14 条可见泳道 × 每帧一次),真机每次还要在 [M] 受理
+     * 并降采样 6 个 cols 长数组,brief §4.5「拖动平移/缩放无 >32ms 长帧」
+     * 不可能守住。代价 = 缩放期波形停在上一档(降级底),手停 120ms 内补齐。
      */
     function paintStaticLanes() {
         const vp = timeline.viewport();
         const w = stageWidth();
         if (!(w > 0)) return;
         const k = backingK();
+        const laneH = local.laneH;
         const cols = Math.min(Math.max(Math.round(w), 1), MAX_COLS);
+        const span = spanOf(vp);
         const moving = !!local.vpIdleTimer;
         const pal = local.palette || undefined;
         for (const ch of visibleLanes()) {
             const n = local.lanes.get(ch);
             if (!n || !n.canvas) continue;
-            const ctx = resizeCanvas(n.canvas, w, LANE_H, k);
+            const ctx = resizeCanvas(n.canvas, w, laneH, k);
             if (!ctx) continue;
             const tile = waveSource.peek(ch, vp.startS, vp.endS, cols);
             if (tile) {
-                paintWaveTile(ctx, tile, w, LANE_H, pal);
+                paintWaveTile(ctx, tile, w, laneH, pal);
                 local.lastPaint.set(ch, {
                     tile,
                     startS: vp.startS,
                     endS: vp.endS,
                 });
-            } else if (moving) {
-                const last = local.lastPaint.get(ch);
-                if (last && last.endS > last.startS) {
-                    const span = spanOf(vp);
-                    ctx.save();
-                    ctx.translate(((last.startS - vp.startS) / span) * w, 0);
-                    ctx.scale((last.endS - last.startS) / span, 1);
-                    paintWaveTile(ctx, last.tile, w, LANE_H, pal);
-                    ctx.restore();
-                }
-            } else {
-                // 取数在途:resolve 后补一次静态重绘(契约 §1.27 一次调用一次
-                // resolve;peek 不 await —— 渲染帧禁止阻塞)
-                waveSource.getTile(ch, vp.startS, vp.endS, cols).then((got) => {
-                    if (!got) return;
-                    local.staticDirty = true;
-                    schedulePaint();
-                });
+                local.canvasVp.set(ch, { startS: vp.startS, endS: vp.endS });
+                continue;
             }
+            const drawn = local.canvasVp.get(ch);
+            // 画布上现在这幅**就是当前视口**(cols 变了 1px 之类的键失配)——
+            // 别清,留着它等新块;不然任何一次宽度抖动都会把整屏闪空
+            const sameVp =
+                !!drawn && drawn.startS === vp.startS && drawn.endS === vp.endS;
+            const last = local.lastPaint.get(ch);
+            // 老底与当前视口**同跨度** = 纯平移;跨度不等(缩放)即缓存失效
+            const panOnly =
+                !!last &&
+                last.endS > last.startS &&
+                Math.abs(last.endS - last.startS - span) <= span * 1e-9;
+            if (!sameVp && moving && panOnly) {
+                // 平移 blit:变换前先整幅清 —— clearRect 在 translate 之后只清得到
+                // 平移后的那一段,边缘会留下上一帧的拖影(平移期的「拖尾」正是这条)
+                ctx.clearRect(0, 0, w, laneH);
+                local.canvasVp.set(ch, null); // 画布内容不再对应任何完整视口
+                ctx.save();
+                ctx.translate(((last.startS - vp.startS) / span) * w, 0);
+                paintWaveTile(ctx, last.tile, w, laneH, pal);
+                ctx.restore();
+                // 平移期**不取新块**(05 §6.3:静止 120ms 后才取)——
+                // 老底顶着,vpIdleTimer 到点会标脏再走下面的取数分支
+                continue;
+            }
+            // 其余(缩放 / 首绘 / cols 失配):**画布原样留着当降级底**,
+            // 不清也不拉伸,等新块到了整幅重画(见函数头注)。
+            if (moving) {
+                // 视口还在动 —— **缩放档与平移档共用同一道闸**:静止 120ms
+                // 才取新块(契约 §1.27 行 383 / brief §0.8)。缩放期每帧换键,
+                // 去重与 LRU 都挡不住,不设闸就是每帧 × 每条可见泳道一次桥调用。
+                // vpIdleTimer 到点会标脏,静止后走下面的取数分支整幅重画。
+                continue;
+            }
+            // 取数在途:resolve 后补一次静态重绘(契约 §1.27 一次调用一次
+            // resolve;peek 不 await —— 渲染帧禁止阻塞)。
+            const reqStartS = vp.startS;
+            const reqEndS = vp.endS;
+            waveSource.getTile(ch, reqStartS, reqEndS, cols).then((got) => {
+                if (!got) {
+                    // 无数据/被拒:降级底到此为止 —— 清掉,别把错档的图留在屏上。
+                    // ⚠ 两条纪律:
+                    //  ① **迟到的 null 不得擦掉更新的一帧** —— 画布上现在这幅
+                    //     若已对应别的视口(期间缓存命中画对了),本次 null 弃掉;
+                    //  ② 宽/行高/k **当场重读**,不用发起帧的闭包值:舞台宽在途
+                    //     中变过时,按旧宽 resizeCanvas 会把后备存储也建错。
+                    const drawn = local.canvasVp.get(ch);
+                    if (
+                        drawn &&
+                        (drawn.startS !== reqStartS || drawn.endS !== reqEndS)
+                    ) {
+                        return;
+                    }
+                    const cv = (local.lanes.get(ch) || {}).canvas;
+                    const w2 = stageWidth();
+                    const c2 =
+                        cv && w2 > 0
+                            ? resizeCanvas(cv, w2, local.laneH, backingK())
+                            : null;
+                    if (c2) c2.clearRect(0, 0, w2, local.laneH);
+                    local.canvasVp.set(ch, null);
+                    return;
+                }
+                local.staticDirty = true;
+                schedulePaint();
+            });
         }
     }
 
@@ -2878,7 +3343,8 @@ export function createTabWave(opts) {
         const canvas = els.overlay;
         if (!canvas) return;
         const w = stageWidth();
-        const h = LANE_COUNT * LANE_H;
+        const laneH = local.laneH;
+        const h = LANE_COUNT * laneH;
         if (!(w > 0)) return;
         const ctx = resizeCanvas(canvas, w, h, backingK());
         if (!ctx) return;
@@ -2895,7 +3361,7 @@ export function createTabWave(opts) {
             const segCh = segmentsOfCh(store.segments, ch);
             const segs = (segCh && segCh.segments) || [];
             if (!segs.length) continue;
-            const y0 = (ch - 1) * LANE_H;
+            const y0 = (ch - 1) * laneH;
 
             // 曲线可见 toggle(眼睛钮)灭 → 本轨曲线与边界都不画(防遮挡语义)
             const eye = local.lanes.get(ch);
@@ -2908,8 +3374,8 @@ export function createTabWave(opts) {
             }
 
             // ① 两条阶梯曲线(pan = accent 薰衣草 / vol = 白,05 行 310)
-            drawStepCurve(ctx, segs, vp, w, y0, rampPx, "pan");
-            drawStepCurve(ctx, segs, vp, w, y0, rampPx, "vol");
+            drawStepCurve(ctx, segs, vp, w, y0, rampPx, "pan", laneH);
+            drawStepCurve(ctx, segs, vp, w, y0, rampPx, "vol", laneH);
 
             // ② 段边界(auto 白虚线 5 5 / 手动白实线;图例帧 763-764)。
             //    拖拽中的那条跳过原位 —— 预览线在循环外统一画。
@@ -2925,7 +3391,7 @@ export function createTabWave(opts) {
                     : "rgba(255,255,255,.3)";
                 ctx.lineWidth = 1;
                 ctx.moveTo(x, y0);
-                ctx.lineTo(x, y0 + LANE_H);
+                ctx.lineTo(x, y0 + laneH);
                 ctx.stroke();
             }
             ctx.setLineDash([]);
@@ -2937,7 +3403,7 @@ export function createTabWave(opts) {
         if (d) {
             const x = timeToX(vp, w, d.tS);
             if (x >= 0 && x <= w) {
-                const y0 = (d.ch - 1) * LANE_H;
+                const y0 = (d.ch - 1) * laneH;
                 ctx.beginPath();
                 ctx.setLineDash([]);
                 ctx.strokeStyle = d.snapped
@@ -2945,7 +3411,7 @@ export function createTabWave(opts) {
                     : "rgba(255,255,255,.85)";
                 ctx.lineWidth = d.snapped ? 2 : 1.6;
                 ctx.moveTo(x, y0);
-                ctx.lineTo(x, y0 + LANE_H);
+                ctx.lineTo(x, y0 + laneH);
                 ctx.stroke();
             }
         }
@@ -2958,9 +3424,10 @@ export function createTabWave(opts) {
      * 两级权重(05 行 310)靠**线宽 1/1.6(B-09 的 +0.6px 差)+ 透明度**双轨保留,
      * auto 档透明度从 .5/.42 提到 .82/.72(深底档,见 deviations §R)。
      */
-    function drawStepCurve(ctx, segs, vp, w, laneY, rampPx, dim) {
+    function drawStepCurve(ctx, segs, vp, w, laneY, rampPx, dim, laneH) {
         const yOf = (seg) =>
-            laneY + (dim === "pan" ? panYPx(seg.pan) : volYPx(seg.volDb));
+            laneY +
+            (dim === "pan" ? panYPx(seg.pan, laneH) : volYPx(seg.volDb, laneH));
         for (let i = 0; i < segs.length; i++) {
             const seg = segs[i];
             if (!seg) continue;

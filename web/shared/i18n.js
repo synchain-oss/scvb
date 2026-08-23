@@ -100,7 +100,8 @@ export const T = {
         takenOver: "已接管",
         printing: "打印中",
         lowSample: "样本不足",
-        autoStop: "播完自动停",
+        // T33 Wave 4 用户 preview 裁定:短语「播完自动停」读不成句,改完整句(key 不变)
+        autoStop: "播放结束自动停止",
         reidentify: "重新识别(含手动段)",
         applyToSegments: "应用到分段",
         setAsRange: "设为范围",
@@ -426,9 +427,16 @@ export const T = {
         "wave.covSeg": "{p}% · {n} 段",
         "wave.curveVisible": "曲线可见",
         "wave.pickTrack": "选择轨 {n}",
-        // 边界手柄 tooltip(A-14 裁定:Alt 关吸附写进 tooltip;双击分割一并说明)
+        // 边界手柄 tooltip(A-14 裁定:Alt 关吸附写进 tooltip;双击分割一并说明)。
+        // T33 Wave 4 用户 preview 反馈⑦:原句没说清「这个把手是干嘛的」——补主语
+        // 「分段边界」,并把双击分割 / Delete 合并两条一并写进同一句(反馈⑧)。
         "wave.boundaryHandleTip":
-            "拖动移动边界(自动吸附能量谷,按住 Alt 关闭);双击在此分割",
+            "分段边界:拖动改边界(自动吸附能量谷,按住 Alt 关闭吸附);双击段内=在此分割;选中相邻两段按 Delete=合并",
+        // 吸附命中(金色)态的补充说明(反馈⑦③:金色是「已吸附」而不是别的意思)
+        "wave.boundarySnapTip": "已吸附到能量谷(按住 Alt 关闭吸附)",
+        // 缩放拖拽条两枚(T33 Wave 4 用户新件;05 无此件,J72 口径)
+        "wave.hZoomBar": "横向缩放(拖动改视口跨度,方向键步进)",
+        "wave.vZoomBar": "纵向缩放(拖动改泳道行高,方向键步进)",
         // 二次确认框两枚(05 §2.3 行 302/303 逐字)
         "wave.reidentifyConfirm":
             "将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?",
@@ -522,7 +530,10 @@ export const T = {
         takenOver: "TAKEN OVER",
         printing: "PRINTING",
         lowSample: "LOW SAMPLE",
-        autoStop: "Auto-stop",
+        // 完整句(zh 同处纪律);⚠ 长度受工具条动作行约束 —— 37 字符的
+        // 「Stop automatically when playback ends」实测把 EN 动作行挤成两行
+        // (30px → 48px,可见泳道少一条),修订轮压回 23 字符
+        autoStop: "Stop when playback ends",
         reidentify: "Re-identify (incl. edited)",
         applyToSegments: "Apply",
         setAsRange: "Set as Range",
@@ -835,7 +846,13 @@ export const T = {
         "wave.curveVisible": "Curves visible",
         "wave.pickTrack": "Select track {n}",
         "wave.boundaryHandleTip":
-            "Drag to move the boundary (snaps to energy valleys, hold Alt to disable); double-click to split here",
+            "Segment boundary: drag to move it (snaps to energy valleys, hold Alt to disable); double-click inside a segment to split there; select two adjacent segments and press Delete to merge",
+        "wave.boundarySnapTip":
+            "Snapped to an energy valley (hold Alt to disable)",
+        "wave.hZoomBar":
+            "Horizontal zoom (drag to change the viewport span, arrow keys to step)",
+        "wave.vZoomBar":
+            "Vertical zoom (drag to change the lane height, arrow keys to step)",
         "wave.reidentifyConfirm":
             "This clears {k} manual edit marks and recomputes; {l} locked segments stay unchanged. Continue?",
         "wave.clearCoverageConfirm":
@@ -926,7 +943,8 @@ export const T = {
         takenOver: "PRIS EN CHARGE",
         printing: "IMPRESSION",
         lowSample: "ÉCHANTILLON INSUFFISANT",
-        autoStop: "Arrêt auto",
+        // 同 EN:整句但压短,免得动作行换行(FR 最长态是工具条的宽度基准)
+        autoStop: "Arrêter en fin de lecture",
         reidentify: "Ré-identifier (incl. modifiés)",
         applyToSegments: "Appliquer",
         setAsRange: "Définir comme plage",
@@ -1250,7 +1268,13 @@ export const T = {
         "wave.curveVisible": "Courbes visibles",
         "wave.pickTrack": "Sélectionner la piste {n}",
         "wave.boundaryHandleTip":
-            "Glissez pour déplacer la limite (aimantée aux creux d'énergie, Alt pour désactiver) ; double-clic pour scinder ici",
+            "Limite de segment : glissez pour la déplacer (aimantée aux creux d'énergie, Alt pour désactiver) ; double-clic dans un segment pour scinder ici ; sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner",
+        "wave.boundarySnapTip":
+            "Aimantée à un creux d'énergie (Alt pour désactiver)",
+        "wave.hZoomBar":
+            "Zoom horizontal (glissez pour changer l'étendue de la vue, flèches pour avancer pas à pas)",
+        "wave.vZoomBar":
+            "Zoom vertical (glissez pour changer la hauteur des pistes, flèches pour avancer pas à pas)",
         "wave.reidentifyConfirm":
             "Efface {k} marques d'édition manuelle et recalcule ; {l} segments verrouillés restent inchangés. Continuer ?",
         "wave.clearCoverageConfirm":

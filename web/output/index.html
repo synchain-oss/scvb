@@ -2093,12 +2093,82 @@
                 opacity: 0.5;
                 cursor: not-allowed;
             }
+            /* 「播放结束自动停止」勾选(A2⑥;T33 Wave 4 用户反馈②:原生 input 与
+               设计系统不符 → 改自绘勾选框,形制取 Tab3 轨头 .wave-lane__check 同族
+               (方形圆角 + 薰衣草描边;勾选态实心 + 白勾 svg)。
+               **仍是真 input**:只做视觉隐藏,留在 DOM 与 tab 序里,label 包住即关联,
+               :checked / :focus-visible 全走原生状态,不自建 role=checkbox。 */
             .wave-autostop {
+                position: relative;
                 display: flex;
                 align-items: center;
-                gap: var(--sp-4);
+                gap: var(--sp-6);
                 font-size: var(--fs-95);
                 color: var(--txt-2);
+                cursor: pointer;
+                user-select: none;
+            }
+            .wave-autostop__input {
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                margin: 0;
+                padding: 0;
+                opacity: 0;
+                pointer-events: none;
+            }
+            .wave-autostop__box {
+                position: relative;
+                flex: none;
+                width: 12px;
+                height: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 3px;
+                /* 描边取 --acc-link-on-glass 的 rgb 分量:--acc(181,172,201)与
+                   工具条玻璃底几乎同值,1px 描边在浅底上根本看不见(无头亲验) */
+                border: 1px solid rgba(var(--acc-link-on-glass-rgb), 0.55);
+                background: rgba(var(--wh), 0.55);
+                transition:
+                    background var(--dur-1) var(--ease),
+                    border-color var(--dur-1) var(--ease);
+            }
+            .wave-autostop:hover .wave-autostop__box {
+                border-color: rgba(var(--acc-link-on-glass-rgb), 0.85);
+            }
+            .wave-autostop__box svg {
+                display: none;
+            }
+            /* 勾选实心底取 --acc-link-on-glass(深紫)而不是轨头的 --acc-strong:
+               轨头在深色泳道上,--acc-strong 的浅薰衣草足够跳;工具条是**浅玻璃**面,
+               同一档浅薰衣草上压白勾只有 ~1.9:1,读不出勾。同族形制、深一档底色。 */
+            .wave-autostop__input:checked + .wave-autostop__box {
+                background: var(--acc-link-on-glass);
+                border-color: var(--acc-link-on-glass);
+            }
+            .wave-autostop__input:checked + .wave-autostop__box svg {
+                display: block;
+            }
+            .wave-autostop__input:focus-visible + .wave-autostop__box {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                outline-offset: 2px;
+            }
+            /* RE-06:命中区补到 **≥24×24 物理 px @0.5 档**(= ≥48×48 CSS px)。
+               扩展挂在 **label** 上而不是 12px 的框上:label 本身已是 94(zh)/
+               127(en)/119(fr) CSS px 宽,横轴早就够;缺的只有纵轴(14 CSS px)。
+               若把 ±18px 扩展挂在框上,横向那 18px 会盖住左邻「重采集选区」按钮
+               (行内 gap 只有 9px)—— 靶区不得靠抢邻件的事件来凑。
+               纵向取**非对称** 8/26:向上只到动作行上沿(不侵入滑杆行的 22px
+               命中带),向下落进工具条内边距与提示行(纯文本,无事件)。
+               合计 14 + 8 + 26 = 48 CSS px = 0.5 档 24 物理 px。 */
+            .wave-autostop::after {
+                content: "";
+                position: absolute;
+                left: 0;
+                right: 0;
+                top: -8px;
+                bottom: -26px;
             }
             .wave-trackpickhint {
                 font-size: var(--fs-95);
@@ -2266,7 +2336,9 @@
                 min-width: 0;
                 position: relative;
                 height: 100%;
-                margin-right: 44px;
+                /* 44 刻度列 + 24 纵向缩放条自留槽;运行时由 syncScrollGutter
+                   连同滚动条宽一起改写(三者共用舞台坐标系) */
+                margin-right: 68px;
             }
             .wave-ruler__tick {
                 position: absolute;
@@ -2439,12 +2511,15 @@
                 position: absolute;
                 inset: -17px; /* RE-06 */
             }
-            /* 泳道舞台(851):34px;右缘 44px 让位共用刻度列(B-11) */
+            /* 泳道舞台(851):默认 34px;右缘 44px 让位共用刻度列(B-11)。
+               T33 Wave 4 用户新件「纵向缩放条」:行高改成运行时变量 --lane-h
+               (22..88px,tab-wave.js 的 applyLaneH 写在 .wave-lanes 上),
+               canvas/overlay/播放头/角标/选区几何一律跟着 local.laneH 走。 */
             .wave-lane__stage {
                 flex: 1;
                 min-width: 0;
                 position: relative;
-                height: 34px;
+                height: var(--lane-h, 34px);
                 border-bottom: 1px solid var(--dark-rule-weak);
                 overflow: hidden;
             }
@@ -2511,10 +2586,12 @@
                 pointer-events: auto;
             }
             /* 共享动态层(§6.3:边界/曲线一张覆盖 canvas,随泳道滚动;高度 JS 写) */
+            /* right = 刻度列 44 + 纵向缩放条自留槽 24(tab-wave.js VZOOM_GUTTER_W);
+               实际宽由 resizeCanvas 写死 style.width,这里只是同口径的静态兜底 */
             .wave-overlay {
                 position: absolute;
                 left: 158px;
-                right: 44px;
+                right: 68px;
                 top: 0;
                 z-index: 2;
                 pointer-events: none;
@@ -2548,7 +2625,17 @@
             }
             /* 段边界拖拽手柄(图例帧 767-772:9×26 圆角竖条 + 双竖线纹,
                垂直居中于泳道 B-10;auto=白描边浅底 / 手动=薰衣草白重底+发光
-               两级权重;纯视觉浮标 —— 命中在泳道容器上做,±6px hit.js 口径) */
+               两级权重;命中在泳道容器上做,±6px hit.js 口径)。
+               T33 Wave 4 反馈⑦(可发现性):① cursor:ew-resize 落在手柄上;
+               ② pointer-events 由 none 收回 auto —— 祖先 none 会把 title tooltip
+               一并吃掉(先例 .wave-seg-lock 的同款账),指针事件照旧冒泡到
+               .wave-lanes 的舞台手势,拖拽/点选/平移不受影响。
+               ⚠ 本件**不加 RE-06 透明扩展**:命中判定完全在 JS 里按
+               hit.js BOUNDARY_HIT_PX=6 对 .wave-lanes 的指针坐标做(tab-wave.js
+               updateBoundHover / 拖拽起点都不看 e.target),手柄本身也只在已经
+               命中 ±6 时才 hidden→显示 —— 扩展区对有效靶区一寸也加不了,
+               Wave 4 的 `::after{left/right:-8px}` 是纯装饰,修订轮删除。
+               有效靶区 = ±6 CSS px(05 §6.3 行 696 的边界专用口径,不走 RE-06)。 */
             .wave-bhandle {
                 position: absolute;
                 width: 9px;
@@ -2562,7 +2649,8 @@
                 border: 1px solid rgba(var(--wh), 0.55);
                 color: rgba(var(--wh), 0.9);
                 z-index: 4;
-                pointer-events: none;
+                cursor: ew-resize;
+                pointer-events: auto;
             }
             .wave-bhandle[data-manual="1"] {
                 background: rgba(240, 236, 255, 0.5);
@@ -2842,6 +2930,123 @@
                     var(--wh),
                     0.26
                 ); /* 869 就地(近 --scroll-thumb) */
+                cursor: grab;
+            }
+            /* ---- 横向缩放拖拽条(T33 Wave 4 用户新件;05/设计稿均无此件 →
+               J72 口径:实现 + 附截图供用户 preview)----------------------------
+               与既有底部滚动条(平移)**同排但形制两分**,免得读成同一件:
+                 · 滚动条 = 长轨 + 长条 thumb(占满剩余宽,thumb 宽 = 视口/全长);
+                 · 缩放条 = 短轨(64px)+ 圆点 thumb + 一枚 mono「×N」读数。
+               交互与 Ctrl+滚轮同一 timeline API(以**视口中心**为锚),现有
+               「×1.0 / 300s」总读数保留在左侧 148px 空档里,拖动时实时更新。 */
+            .wave-hzoom__zoomctl {
+                flex: none;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                margin-left: var(--sp-10);
+            }
+            .wave-hzoom__zoomval {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-80);
+                letter-spacing: var(--mono-ls-tag);
+                color: var(--txt-dark-dim);
+                min-width: 26px;
+                text-align: right;
+            }
+            .wave-hzoom__zoombar {
+                position: relative;
+                width: 64px;
+                height: 6px;
+                border-radius: var(--r-pill);
+                background: rgba(var(--wh), 0.08);
+                border: 1px solid rgba(var(--wh), 0.14);
+                cursor: ew-resize;
+            }
+            /* 命中扩展:6×64 → **20×80 CSS px**(= 把底条 20px 的整个行高吃满)。
+               ⚠ 与 RE-06「0.5 档 ≥24 物理 px」的口径差登记在案:纵轴上限是底条
+               自身的 20px(设计稿 866 的固定高),再往上/下扩会被 .wave-window 的
+               overflow:hidden 裁掉(向下),或压进泳道 canvas 右下角造指针死区
+               (向上)—— 与本轮刚修掉的 .wave-vzoom 死区同一笔账。缺口连同该件的
+               J72 用户 preview 一并交统筹(deviations 登记)。 */
+            .wave-hzoom__zoombar::after {
+                content: "";
+                position: absolute;
+                inset: -7px -8px;
+            }
+            .wave-hzoom__zoomthumb {
+                position: absolute;
+                top: 50%;
+                width: 11px;
+                height: 11px;
+                margin: -5.5px 0 0 -5.5px;
+                border-radius: 50%;
+                background: rgba(var(--wh), 0.88);
+                box-shadow: 0 2px 6px rgba(18, 14, 26, 0.45);
+                pointer-events: none;
+            }
+            .wave-hzoom__zoombar:focus-visible {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                outline-offset: 3px;
+            }
+            /* ---- 纵向缩放拖拽条(同上,用户新件):泳道区**右缘底部**一枚竖直短滑杆,
+               拖动改泳道行高(22..88px,默认 34)。落在右缘 44px 双刻度列左侧的
+               **自留槽**里(槽宽 24 = tab-wave.js VZOOM_GUTTER_W,已从舞台宽让出;
+               right 由 syncScrollGutter 随滚动条宽同步)——修订轮前它整个压在泳道
+               canvas 最右 18px 上,连同 ::after 造出 24×74px 指针死区(点选/拖边界/
+               平移全失灵),现在杆与命中区都不越过 canvas 右缘。
+               对比度:--dark-chip(.72)压在同族深底上几乎读不出,改用更深的实底 +
+               更亮的描边,让「这儿有个控件」在 1× 下也看得见。 */
+            .wave-vzoom {
+                position: absolute;
+                bottom: 26px;
+                width: 12px;
+                height: 62px;
+                border-radius: var(--r-pill);
+                background: rgba(12, 10, 18, 0.82);
+                border: 1px solid rgba(var(--wh), 0.42);
+                box-shadow: 0 2px 8px rgba(18, 14, 26, 0.55);
+                z-index: 6;
+                cursor: ns-resize;
+            }
+            .wave-vzoom::before {
+                /* 轨:竖直细线,居中 */
+                content: "";
+                position: absolute;
+                left: 50%;
+                top: 7px;
+                bottom: 7px;
+                width: 2px;
+                margin-left: -1px;
+                border-radius: var(--r-pill);
+                background: rgba(var(--wh), 0.22);
+            }
+            /* 命中扩展:12×62 → **24×74 CSS px**,整块落在 24px 自留槽内。
+               ⚠ 与 RE-06 的口径差登记在案:0.5 档下这是 12×37 物理 px,不足
+               24×24 的一半宽。补到 48 CSS px(hit.js hitExpansionPx(12)=18/侧)
+               会让命中盒重新压回泳道 canvas 18px,正是本轮要修掉的指针死区 ——
+               两者只能取一,这里取「泳道可点」并把缺口交 J72 用户 preview 定夺
+               (deviations 登记;可选出路 = 把杆本体加宽到 24 并再让 12px 槽)。 */
+            .wave-vzoom::after {
+                content: "";
+                position: absolute;
+                inset: -6px;
+            }
+            .wave-vzoom__thumb {
+                position: absolute;
+                left: 50%;
+                width: 10px;
+                height: 10px;
+                margin: -5px 0 0 -5px;
+                border-radius: 50%;
+                background: rgba(var(--wh), 0.88);
+                box-shadow: 0 2px 6px rgba(18, 14, 26, 0.45);
+                pointer-events: none;
+            }
+            .wave-vzoom:focus-visible {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                outline-offset: 3px;
             }
             /* ---- 段检查器(876-914):262px flex 兄弟,挤压左栏(C-11) ---- */
             .segment-inspector {
@@ -5148,14 +5353,39 @@
                                     >
                                         重采集选区
                                     </button>
-                                    <!-- A2⑥「播完自动停」(recaptureArm 的 autoStop,默认 false) -->
+                                    <!-- A2⑥「播放结束自动停止」(recaptureArm 的 autoStop,
+                                         默认 false)。Wave 4 反馈②:自绘勾选框(轨头
+                                         .wave-lane__check 同族),input 仅视觉隐藏 —— 仍是
+                                         真 checkbox,label 包住即关联,tab 序不变 -->
                                     <label
                                         class="wave-autostop"
                                         data-gb="wave-chk-autostop"
                                     >
-                                        <input type="checkbox" />
+                                        <input
+                                            type="checkbox"
+                                            class="wave-autostop__input"
+                                        />
+                                        <span
+                                            class="wave-autostop__box"
+                                            aria-hidden="true"
+                                        >
+                                            <svg
+                                                width="8"
+                                                height="8"
+                                                viewBox="0 0 8 8"
+                                            >
+                                                <path
+                                                    d="M1.5 4.2 3.2 6 6.5 2"
+                                                    fill="none"
+                                                    stroke="#fff"
+                                                    stroke-width="1.8"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                />
+                                            </svg>
+                                        </span>
                                         <span data-t="autoStop"
-                                            >播完自动停</span
+                                            >播放结束自动停止</span
                                         >
                                     </label>
                                     <!-- [Wave 2] bridge.analyze(scope) —— 契约 §1.6;
@@ -5471,8 +5701,15 @@
                                         hidden
                                     ></div>
                                     <!-- 段边界拖拽手柄(图例帧 767-772 的 9×26 两级
-                                         权重;悬停命中 ±6px 时浮现于该边界,视觉件,
-                                         命中检测在泳道容器上,pointer-events:none) -->
+                                         权重;悬停命中 ±6px 时浮现于该边界)。
+                                         纯视觉浮标:命中检测一律在泳道容器上按
+                                         hit.js BOUNDARY_HIT_PX=6 做,本节点
+                                         pointer-events:auto 只为让 title tooltip
+                                         弹得出来(祖先 none 会连 tooltip 一起吃掉),
+                                         指针事件照旧冒泡到 .wave-lanes。
+                                         aria-hidden:手柄不进 tab 序、不进无障碍树,
+                                         语义由 tooltip 承担(见 tab-wave.js
+                                         setBoundHandleTip 头注) -->
                                     <div
                                         class="wave-bhandle"
                                         data-gb="wave-boundary-handle"
@@ -5556,6 +5793,26 @@
                                         <span>+12</span><span>0</span
                                         ><span>-24</span>
                                     </div>
+                                </div>
+                                <!-- 纵向缩放拖拽条(T33 Wave 4 用户新件,J72:附截图供
+                                     preview):泳道区右缘底部竖直短滑杆,拖动改泳道行高
+                                     (22..88px,默认 34);方向键步进,role=slider + aria。
+                                     right 由 syncScrollGutter 随纵向滚动条宽同步 -->
+                                <div
+                                    class="wave-vzoom"
+                                    data-gb="wave-vzoom"
+                                    role="slider"
+                                    tabindex="0"
+                                    aria-orientation="vertical"
+                                    aria-valuemin="22"
+                                    aria-valuemax="88"
+                                    aria-valuenow="34"
+                                    data-t-aria="wave.vZoomBar"
+                                >
+                                    <div
+                                        class="wave-vzoom__thumb"
+                                        data-gb="wave-vzoom-thumb"
+                                    ></div>
                                 </div>
                                 <!-- 选区外压暗两片(05 行 314;A-09 方向修正) -->
                                 <div
@@ -5662,6 +5919,31 @@
                                             class="wave-hzoom__thumb"
                                             data-gb="wave-hscroll-thumb"
                                         ></div>
+                                    </div>
+                                    <!-- 横向缩放拖拽条(T33 Wave 4 用户新件,J72:
+                                         附截图供 preview)。与滚动条同排、形制两分;
+                                         拖动 = 以视口中心为锚改跨度(同 Ctrl+滚轮的
+                                         timeline API);方向键步进,role=slider + aria -->
+                                    <div class="wave-hzoom__zoomctl">
+                                        <span
+                                            class="wave-hzoom__zoomval"
+                                            data-gb="wave-hzoom-value"
+                                        ></span>
+                                        <div
+                                            class="wave-hzoom__zoombar"
+                                            data-gb="wave-hzoom-bar"
+                                            role="slider"
+                                            tabindex="0"
+                                            aria-valuemin="1"
+                                            aria-valuemax="1"
+                                            aria-valuenow="1"
+                                            data-t-aria="wave.hZoomBar"
+                                        >
+                                            <div
+                                                class="wave-hzoom__zoomthumb"
+                                                data-gb="wave-hzoom-thumb"
+                                            ></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
