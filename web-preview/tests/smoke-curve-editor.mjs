@@ -531,6 +531,32 @@ console.log(
 }
 
 // =============================================================================
+console.log("=== ⑪ 工具条溢出防线(紧凑标签 + title/aria 全称 + 单行浮条) ===");
+{
+    const ceSrc = readFileSync(
+        join(ROOT, "web/output/canvas/curve-editor.js"),
+        "utf8",
+    );
+    const cssSrc = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+    // slope 按钮用纯数字紧凑标签(避免 "6 dB/oct" 长文本把工具条撑出窗格)
+    check(
+        /b\.textContent = String\(s\)/.test(ceSrc),
+        "slope 按钮紧凑纯数字标签(textContent = String(s))",
+    );
+    // 全称 "N dB/oct" 保留在 title/aria-label(a11y + hover 提示)
+    check(
+        /b\.title = full/.test(ceSrc) && /aria-label", full/.test(ceSrc),
+        "slope 按钮 title/aria-label 带全称 dB/oct",
+    );
+    // 工具条单行浮条(禁 flex-wrap,防两行遮画布)
+    const tbBlock = /\.curve-toolbar\s*\{([^}]*)\}/.exec(cssSrc)?.[1] || "";
+    check(
+        !/flex-wrap\s*:\s*wrap/.test(tbBlock),
+        "工具条无 flex-wrap: wrap(单行)",
+    );
+}
+
+// =============================================================================
 if (fail > 0) {
     console.error("smoke-curve-editor 失败(" + fail + " 项)");
     process.exit(1);

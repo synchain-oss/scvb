@@ -970,7 +970,11 @@ export function createCurveEditor(opts) {
             b.type = "button";
             b.className = "curve-toolbar__opt";
             b.setAttribute("data-curve-slope", s);
-            b.textContent = getT()["curve.slope.opt" + s] || s + " dB/oct";
+            // 紧凑纯数字标签;全称 "N dB/oct" 走 title/aria-label(a11y + hover 提示)
+            const full = getT()["curve.slope.opt" + s] || s + " dB/oct";
+            b.textContent = String(s);
+            b.title = full;
+            b.setAttribute("aria-label", full);
             b.addEventListener("click", () => setSlope(s));
             slopeGroup.appendChild(b);
         }
@@ -1196,7 +1200,9 @@ export function createCurveEditor(opts) {
                 "[data-curve-slope]",
             )) {
                 const s = b.getAttribute("data-curve-slope");
-                b.textContent = getT()["curve.slope.opt" + s] || s + " dB/oct";
+                const full = getT()["curve.slope.opt" + s] || s + " dB/oct";
+                b.title = full;
+                b.setAttribute("aria-label", full);
             }
             const si = _toolbar.bar.querySelector("[data-curve-side-info]");
             if (si) {
