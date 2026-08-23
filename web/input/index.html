@@ -1,13 +1,10 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!--
-  web/input/index.html —— SCVB Input 单页灰模(T27b,结构化骨架,零视觉发挥/零业务逻辑)。
+  web/input/index.html —— SCVB Input 单页(T36 正式实现,在 T27b 灰模上替换)。
   真源:masterPlan/plan/05-ui-spec.md §3(Input 全表)/ §1.1(卡片通用骨架)/ §1.2(设计盒)。
   契约:docs/SCVB_CONTRACT.md §3-§4(Input native functions / events)。
-  字典:web/shared/i18n.js —— 页内 data-t / data-t-aria 全部引用其现有 key,不自造 key。
-  锚点纪律:每个占位节点带 data-gb="<语义 id>"(T31 消费,替换实现时按锚点定位,不新建文件);
-  概念缺 key 的节点额外带 data-gb-todo="词条待立" + 中文明文占位,清单见
-  scratchpad/t27b/deviations.md;逐条核对表见 scratchpad/t27b/checklist.md。
-  05 §2.6 明文「仅 Output;Input 无 tour」——本页不埋 data-tour 锚点。
+  字典:web/shared/i18n.js —— 页内 data-t / data-t-aria 全部引用其现有 key;新增 in.* 词条见 T36。
+  锚点纪律:每个节点带 data-gb="<语义 id>"(app.js 消费);视觉零裸 hex,颜色/圆角/阴影一律 tokens.css。
 -->
 <!doctype html>
 <html lang="zh">
@@ -21,19 +18,7 @@
         <link rel="stylesheet" href="../shared/tokens.css" />
         <link rel="stylesheet" href="../shared/base.css" />
         <style>
-            /* ------------------------------------------------------------------
-               页面本地布局脚手架(05 §0「硬规格·DOM 与占位」允许项):
-               只排布局(flex/grid + var(--sp-*) 间距),零裸色值、零新颜色、
-               零阴影/渐变/圆角新配方 —— 颜色/圆角/阴影一律引用 tokens.css 既有变量。
-               设计盒尺寸不在此写死:460×560 由 app.js 从 web/shared/design-box.js
-               的 DESIGN.input 读值后写入 #ipt-shell 的内联 style(05 §1.2 JS 设置项)。
-               ------------------------------------------------------------------ */
-            /* ---- [hidden] 兜底(布局脚手架,非视觉规则) ----
-               base.css 的 .sc-banner/.sc-confirm/.sc-toast 显式声明 display:flex,
-               作者样式胜过 UA 的 [hidden]{display:none},使「默认隐藏」占位节点照样
-               渲染(本页 input.banner.abiMismatch / input.group.confirm /
-               input.channels.releaseConfirm 三处)。此处补通用兜底,下方三条
-               .ipt-*[hidden] 局部规则随之成为冗余(保留不影响,亦不再是唯一防线)。 */
+            /* ---- 本地布局脚手架(05 §0 硬规格允许项):只排布局,零新颜色配方 ---- */
             [hidden] {
                 display: none !important;
             }
@@ -46,11 +31,7 @@
                 align-items: center;
                 justify-content: center;
             }
-
-            /* 卡片外壳:.sc-shell 给玻璃底/描边/圆角(05 §1.1「玻璃面板,圆角 20」);
-               宽高由 app.js 写 --ipt-w/--ipt-h(design-box.js 单一真源)。 */
             #ipt-shell {
-                /* toast 槽等 absolute 子层的定位基准(PR #37 pr-agent:否则锚到视口) */
                 position: relative;
                 width: var(--ipt-w, 460px);
                 height: var(--ipt-h, 560px);
@@ -60,7 +41,7 @@
                 gap: var(--sp-14);
             }
 
-            /* ---- Header(05 §1.1:图标块 38×38 + 品牌名/副标题 | 右侧连接摘要 pill + 语言胶囊) */
+            /* ---- Header(05 §1.1:品牌块 + 连接状态 pill + 语言胶囊) */
             .ipt-header {
                 flex: none;
                 display: flex;
@@ -77,7 +58,6 @@
             .ipt-brand__logo {
                 width: 30px;
                 height: 30px;
-                /* logo 源图为白底黑线稿:multiply 让白底融入玻璃底,线稿保持深色 */
                 mix-blend-mode: multiply;
                 border-radius: var(--r-tag);
             }
@@ -117,19 +97,37 @@
                 gap: var(--sp-5);
             }
             .ipt-header__pillsub {
-                max-width: 190px;
+                max-width: 200px;
                 text-align: right;
+                color: var(--txt-2);
+            }
+            /* 组 badge(J71③:独立「组 {X}」badge,不是 pill 后缀;空/未连接态同样常显) */
+            .ipt-group-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-5);
+                flex: none;
+                padding: var(--sp-4) var(--sp-10);
+                border-radius: var(--r-pill);
+                background: var(--w-24);
+                border: 1px solid rgba(var(--wh), 0.44);
+                box-shadow: inset 0 1px 0 rgba(var(--wh), 0.6);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-100);
+                letter-spacing: var(--mono-ls);
+                color: var(--txt-1);
+                white-space: nowrap;
             }
 
-            /* ---- 警告条区(05 §1.1「[警告条区…默认隐藏]」);本页仅 abiMismatch 一条(§3/§4.5) */
+            /* ---- 警告条区(§3:group.noOutput 引导 + abiMismatch 红横幅) */
             .ipt-banner-zone {
                 flex: none;
-            }
-            .ipt-banner-zone[hidden] {
-                display: none;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-7);
             }
 
-            /* ---- 内容区(flex column, gap 14,05 §1.1) */
+            /* ---- 内容区(flex column, gap 14,可纵向滚动守 560px 高度) */
             .ipt-content {
                 flex: 1;
                 min-height: 0;
@@ -145,39 +143,73 @@
                 flex-direction: column;
                 gap: var(--sp-10);
             }
+            /* 引导副行是正文级信息(非辅助标签),不下沉到 .sc-hint 的 --txt-4 幽灵灰 */
+            .ipt-content .sc-hint {
+                color: var(--txt-2);
+            }
 
-            /* ---- 组选择器(05 §3:置于通道 4×4 网格顶行、比卡片矮一档) */
+            /* ---- 组选择器(05 §3:压通道网格顶行、比卡片矮一档;胶囊族样式) */
             .ipt-group__head {
                 display: flex;
                 align-items: center;
                 gap: var(--sp-8);
             }
             .ipt-group__pills {
+                display: inline-flex;
                 flex-wrap: wrap;
+                gap: var(--sp-2);
+                padding: var(--sp-3);
+                border-radius: var(--r-pill);
+                background: rgba(var(--wh), 0.14);
+                border: 1px solid rgba(var(--wh), 0.28);
             }
             .ipt-group__pill {
-                font-family: var(--ff-mono);
-                letter-spacing: var(--mono-ls-ui);
-                text-transform: uppercase;
+                position: relative;
                 display: inline-flex;
                 align-items: center;
                 gap: var(--sp-4);
+                padding: var(--sp-4) var(--sp-9);
+                border-radius: var(--r-pill);
+                cursor: pointer;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-105);
+                font-weight: 500;
+                letter-spacing: var(--mono-ls-tag);
+                background: transparent;
+                border: 0;
+                color: var(--txt-3);
+                transition: background var(--dur-1) var(--ease);
+            }
+            .ipt-group__pill[aria-selected="true"] {
+                background: var(--seg-on-bg);
+                color: var(--acc-ink);
+            }
+            .ipt-group__pill[data-pending="1"] {
+                background: rgba(var(--sem-amber), 0.22);
+                color: var(--sem-amber-ink);
+            }
+            .ipt-group__pill .sc-dot {
+                width: 4px;
+                height: 4px;
+                background: rgb(var(--sem-green));
+            }
+            .ipt-group__pill[data-online="0"] .sc-dot {
+                display: none;
             }
             .ipt-group__warn {
                 color: var(--sem-red-ink);
-                font-size: var(--fs-90);
+                font-weight: 600;
+                font-size: var(--fs-100);
                 line-height: 1.45;
                 text-wrap: pretty;
             }
-            /* .sc-divider 基类是竖线配方(width:1px + align-self:stretch,用于横排场景);
-               组选择器/通道选择器之间要的是横线,覆盖为 height:1px + width:auto。 */
             .ipt-hr {
                 width: auto;
                 height: 1px;
                 align-self: stretch;
             }
 
-            /* ---- 通道选择器:4×4 紧凑网格(05 §3:428px 内宽下每张约 100×40,不精调) */
+            /* ---- 通道选择器:4×4 紧凑网格(05 §3) */
             .ipt-channels__grid {
                 display: grid;
                 grid-template-columns: repeat(4, 1fr);
@@ -185,14 +217,14 @@
             }
             .ipt-chcard {
                 position: relative;
-                min-height: 40px; /* 设计 px 参考值,05 §3;不精调 */
+                min-height: 40px;
                 display: flex;
                 flex-direction: column;
                 align-items: center;
                 justify-content: center;
                 gap: var(--sp-2);
                 padding: var(--sp-4);
-                line-height: 1; /* 数字垂直居中(用户反馈 2026-08-17:此前偏上) */
+                line-height: 1;
                 cursor: pointer;
                 border-radius: var(--r-sm);
                 background: var(--card-bg);
@@ -205,8 +237,6 @@
                 color: var(--txt-1);
             }
             .ipt-chcard__num {
-                /* 用户反馈(2026-08-17):数字字体与居中打磨——mono 表数、等宽数字、
-                   放大到 11.5px、加字距;未分配(CJK)经 mono 栈回落 Noto 同尺寸 */
                 font-family: var(--ff-mono);
                 font-size: var(--fs-115);
                 font-weight: 500;
@@ -218,15 +248,41 @@
                 font-size: var(--fs-80);
                 color: var(--txt-4);
                 line-height: 1;
+                max-width: 100%;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
             }
             .ipt-chcard__label:empty {
-                /* 空 label 不占位——此前 min-height:1em 把数字顶得偏上(用户反馈) */
                 display: none;
             }
+            /* 占用文字标(A8 缺件:右上角灰点 + 「占用」文字标) */
             .ipt-chcard__occupied {
                 position: absolute;
-                top: 4px;
-                right: 4px;
+                top: 3px;
+                right: 3px;
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-3);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-75);
+                letter-spacing: var(--mono-ls-tag);
+                color: var(--sem-gray-ink);
+            }
+            .ipt-chcard__occupied .sc-dot {
+                width: 4px;
+                height: 4px;
+            }
+
+            /* ---- 本轨 mono/stereo 实测结果(J57,只读) */
+            .ipt-source {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-7);
+            }
+            .ipt-source .sc-badge {
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls);
             }
 
             .ipt-manual {
@@ -245,38 +301,75 @@
                 padding: var(--sp-3) var(--sp-7);
             }
 
-            /* ---- 优先级 stepper */
-            .ipt-stepper__btn {
-                width: 20px;
-                height: 20px;
-                border-radius: var(--r-micro);
-                border: 1px solid var(--card-border);
-                background: rgba(var(--wh), 0.24);
-                color: var(--txt-2);
-                cursor: pointer;
-                font-family: var(--ff-mono);
-                line-height: 1;
-            }
-
-            /* ---- 远程只读摘要 */
-            .ipt-remote {
-                flex-direction: row;
-                flex-wrap: wrap;
+            /* ---- 优先级滑杆(05 §3 stepper → range,用户 2026-08-23 preview 指令;
+                基础 range 样式(tokens.css/base.css 的 accent-color/height/width)已全站一致) */
+            .ipt-priority {
+                display: flex;
                 align-items: center;
                 gap: var(--sp-12);
             }
-            .ipt-remote__item {
-                display: inline-flex;
-                align-items: center;
-                gap: var(--sp-5);
+            input.ipt-priority__slider {
+                flex: 1;
+                min-width: 0;
+                height: var(--fs-140);
+            }
+            .ipt-priority__slider[disabled] {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+            .ipt-priority__val {
+                font-size: var(--fs-200);
+                line-height: 1;
+                color: var(--txt-1);
+                transition: color var(--dur-1) var(--ease);
+            }
+            .ipt-priority__val[data-disabled="1"] {
+                color: var(--txt-4);
             }
 
-            /* ---- 采集指示:小绿点行,05 §3「非采集隐藏」 */
+            /* ---- 远程只读摘要:一行五张小卡片(MONO/STEREO/lead/pair/freeze),点亮/熄灭 */
+            .ipt-remote {
+                flex-direction: row;
+                flex-wrap: nowrap;
+                align-items: center;
+                gap: var(--sp-6);
+            }
+            .ipt-status {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-3);
+                padding: var(--sp-3) var(--sp-7);
+                border-radius: var(--r-pill);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls-tag);
+                line-height: 1;
+                white-space: nowrap;
+                color: var(--txt-4);
+                border: 1px solid rgba(var(--wh), 0.24);
+                background: rgba(var(--wh), 0.06);
+                transition:
+                    background var(--dur-1) var(--ease),
+                    color var(--dur-1) var(--ease),
+                    border-color var(--dur-1) var(--ease),
+                    box-shadow var(--dur-1) var(--ease);
+            }
+            .ipt-status[data-lit="1"] {
+                background: rgba(var(--acc), 0.3);
+                border-color: rgba(var(--acc), 0.65);
+                color: var(--acc-ink);
+                box-shadow: 0 0 8px var(--acc-cta-shadow);
+            }
+            .ipt-status__num {
+                font-size: var(--fs-75);
+                line-height: 1;
+            }
+
             .ipt-capture[hidden] {
                 display: none;
             }
 
-            /* ---- Footer(05 §1.1:左提示文案 ellipsis | 右缩放下拉 + 版本号) */
+            /* ---- Footer */
             .ipt-footer {
                 flex: none;
                 display: flex;
@@ -297,7 +390,7 @@
                 gap: var(--sp-8);
             }
 
-            /* ---- 一次性 toast(占用冲突反馈,05 §3 ch.occupied) */
+            /* ---- 一次性 toast(占用冲突反馈 ch.occupied) */
             .ipt-toast-slot {
                 position: absolute;
                 right: var(--sp-14);
@@ -306,13 +399,32 @@
             .ipt-toast-slot[hidden] {
                 display: none;
             }
+
+            /* ---- 缩放 10 秒防呆确认(复用 Output 同族 .sc-scrim/.sc-modal) */
+            .ipt-scale__actions {
+                display: flex;
+                justify-content: flex-end;
+                gap: var(--sp-10);
+                margin-top: var(--sp-16);
+            }
         </style>
     </head>
     <body>
         <div id="ipt-shell" class="sc-shell" data-gb="input.shell">
-            <!-- ============================================================
-                 Header(05 §1.1 通用骨架 + §3 Header 行)
-                 ============================================================ -->
+            <span
+                class="sc-halo sc-halo--1"
+                style="top: -120px; left: -80px"
+            ></span>
+            <span
+                class="sc-halo sc-halo--2"
+                style="top: 60px; right: -120px"
+            ></span>
+            <span
+                class="sc-halo sc-halo--3"
+                style="bottom: -120px; left: 40px"
+            ></span>
+
+            <!-- Header -->
             <header class="ipt-header" data-gb="input.header">
                 <div class="ipt-brand">
                     <span
@@ -320,8 +432,6 @@
                         data-gb="input.header.icon"
                         aria-hidden="true"
                     >
-                        <!-- Synchain logo(org 头像同源,web/shared/logo.png 本地副本;
-                             白底经 mix-blend-mode:multiply 融入玻璃,用户指定替换 2026-08-17)-->
                         <img
                             class="ipt-brand__logo"
                             src="../shared/logo.png"
@@ -329,8 +439,6 @@
                         />
                     </span>
                     <div class="ipt-brand__text">
-                        <!-- 05 §1.1 待定项②:品牌显示名待用户确认,暂按建议值明文(非 i18n 概念,
-                             产品名跨语言不译,同 ADR-001 PRODUCT_NAME 不受 UI 显示名影响)——见 deviations.md -->
                         <div
                             class="ipt-brand__title"
                             data-gb="input.header.title"
@@ -346,28 +454,29 @@
                     </div>
                 </div>
                 <div class="ipt-header__status">
-                    <!-- pill 四态 + abi/sr 两红态(05 §3);灰模只落一个代表态(空态首开 = 未选择通道),
-                         其余态(已连接/等待 Output/Output 未运行/版本不匹配/采样率不一致)由 T31 按
-                         scvb.state.claim + scvb.conn 驱动切换 data-tone/data-t,同一节点复用 -->
+                    <!-- 独立「组 {X}」badge(J71③;空/未连接态同样常显) -->
+                    <span
+                        class="ipt-group-badge"
+                        data-gb="input.header.groupBadge"
+                    >
+                        <span data-t="group.label">组</span>
+                        <span data-gb="input.header.groupBadgeLetter">A</span>
+                    </span>
                     <div
                         class="sc-pill"
                         data-gb="input.header.pill"
                         data-tone="gray"
                     >
                         <span class="sc-pill__dot"></span>
-                        <span data-t="state.noChannel"></span>
+                        <span
+                            data-gb="input.header.pillText"
+                            data-t="state.noChannel"
+                        ></span>
                     </div>
-                    <!-- 副行(音频路径解释句,J12/J32):05 §3 明文的完整句无对应 key
-                         (现有 state.passthrough/state.takenOver 只是短术语),中文明文占位 -->
                     <div
                         class="ipt-header__pillsub sc-hint"
                         data-gb="input.header.pillSub"
-                        data-gb-todo="词条待立"
-                    >
-                        直通中:本轨按原路径出声(未经平衡)
-                    </div>
-                    <!-- 语言胶囊(05 §2.0):中/EN/FR 为语言自称,惯例不译(自己的语言名不受切换语言影响),
-                         故不带 data-t——非缺 key,是刻意豁免,理由见 deviations.md -->
+                    ></div>
                     <div
                         class="sc-seg sc-seg--sm"
                         data-gb="input.header.lang"
@@ -408,10 +517,32 @@
                 </div>
             </header>
 
-            <!-- ============================================================
-                 警告条区(05 §1.1;本页仅 abiMismatch 常驻横幅,默认隐藏,05 §3/契约 §4.5)
-                 ============================================================ -->
+            <!-- 警告条区 -->
             <div class="ipt-banner-zone" data-gb="input.bannerZone">
+                <!-- group.noOutput 异组引导(amber,信息图标;05 §3) -->
+                <div class="sc-banner" data-gb="input.banner.noOutput" hidden>
+                    <svg
+                        class="sc-banner__icon"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        aria-hidden="true"
+                    >
+                        <circle cx="8" cy="8" r="6.4" stroke-width="1.6" />
+                        <line
+                            x1="8"
+                            y1="7"
+                            x2="8"
+                            y2="11"
+                            stroke-width="1.6"
+                            stroke-linecap="round"
+                        />
+                        <circle cx="8" cy="4.6" r="0.9" fill="currentColor" />
+                    </svg>
+                    <span data-gb="input.banner.noOutput.text"></span>
+                </div>
+                <!-- banner.abiMismatch 红横幅(05 §3 / 契约 §4.5;两端 abi 数字可见) -->
                 <div
                     class="sc-banner sc-banner--red"
                     data-gb="input.banner.abiMismatch"
@@ -436,20 +567,17 @@
                         />
                         <circle cx="8" cy="11.2" r="0.9" fill="currentColor" />
                     </svg>
-                    <span data-t="banner.abiMismatch"></span>
+                    <span data-gb="input.banner.abiMismatch.text"></span>
                 </div>
             </div>
 
-            <!-- ============================================================
-                 内容区(flex column, gap 14)
-                 ============================================================ -->
+            <!-- 内容区 -->
             <div class="ipt-content" data-gb="input.content">
-                <!-- ---- 组选择器 + 通道选择器(05 §3:组胶囊压顶行 + 4×4 网格,同一玻璃面板) ---- -->
+                <!-- 组选择器 + 通道选择器 -->
                 <section
                     class="ipt-panel sc-glass"
                     data-gb="input.channelPanel"
                 >
-                    <!-- 组选择器(J66) -->
                     <div data-gb="input.group">
                         <div class="ipt-group__head">
                             <span
@@ -458,146 +586,33 @@
                                 data-t="group.label"
                             ></span>
                             <div
-                                class="sc-seg ipt-group__pills"
+                                class="ipt-group__pills"
                                 data-gb="input.group.pills"
                                 role="tablist"
-                            >
-                                <!-- A-H 八胶囊单选(05 §3);默认 A=group_id 1 选中 -->
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="1"
-                                    role="tab"
-                                    aria-selected="true"
-                                >
-                                    A<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="2"
-                                    role="tab"
-                                    aria-selected="false"
-                                >
-                                    B<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="3"
-                                    role="tab"
-                                    aria-selected="false"
-                                >
-                                    C<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="4"
-                                    role="tab"
-                                    aria-selected="false"
-                                >
-                                    D<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="5"
-                                    role="tab"
-                                    aria-selected="false"
-                                >
-                                    E<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="6"
-                                    role="tab"
-                                    aria-selected="false"
-                                >
-                                    F<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="7"
-                                    role="tab"
-                                    aria-selected="false"
-                                >
-                                    G<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="sc-seg__item ipt-group__pill"
-                                    data-gb="input.group.pill"
-                                    data-group="8"
-                                    role="tab"
-                                    aria-selected="false"
-                                >
-                                    H<span
-                                        class="sc-dot"
-                                        aria-hidden="true"
-                                    ></span>
-                                </button>
-                            </div>
+                            ></div>
                         </div>
-                        <!-- 旁注小字(05 §3 明文,现有词典无对应 key,中文明文占位) -->
                         <p
                             class="sc-hint"
                             data-gb="input.group.note"
-                            data-gb-todo="词条待立"
-                        >
-                            须与 Output 同组才能连接;单组使用保持 A 即可
-                        </p>
-                        <!-- 红字级常驻提示(J66/J72a:必须红字级 + 全句,不得降级/截断) -->
+                            data-t="in.group.note"
+                        ></p>
                         <p
                             class="ipt-group__warn"
                             data-gb="input.group.oneOnly"
                             data-t="group.oneOnly"
                         ></p>
-                        <!-- 行内确认条(复用释放确认条组件族,琥珀);默认隐藏,点击非当前组时展开 -->
                         <div
                             class="sc-confirm"
                             data-gb="input.group.confirm"
                             hidden
                         >
-                            <span data-t="group.switchConfirm"></span>
+                            <span data-gb="input.group.confirm.text"></span>
                             <button
                                 type="button"
                                 class="sc-btn"
                                 data-gb="input.group.confirm.cancel"
-                                data-gb-todo="词条待立"
-                            >
-                                取消
-                            </button>
+                                data-t="common.cancel"
+                            ></button>
                             <button
                                 type="button"
                                 class="sc-btn sc-btn--cta"
@@ -609,7 +624,6 @@
 
                     <div class="sc-divider ipt-hr" aria-hidden="true"></div>
 
-                    <!-- Channel 选择器:4×4 紧凑网格(未分配 + 01-15) -->
                     <div data-gb="input.channels">
                         <span
                             class="sc-eyebrow"
@@ -619,262 +633,11 @@
                         <div
                             class="ipt-channels__grid"
                             data-gb="input.channels.grid"
-                        >
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="0"
-                                aria-pressed="true"
-                            >
-                                <span
-                                    class="ipt-chcard__num sc-mono"
-                                    data-gb-todo="词条待立"
-                                    >未分配</span
-                                >
-                                <span class="ipt-chcard__label sc-mono"></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="1"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">01</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="2"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">02</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="3"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">03</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="4"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">04</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="5"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">05</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="6"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">06</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="7"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">07</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="8"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">08</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="9"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">09</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="10"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">10</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="11"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">11</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="12"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">12</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="13"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">13</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="14"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">14</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ipt-chcard"
-                                data-gb="input.channels.card"
-                                data-ch="15"
-                                aria-pressed="false"
-                            >
-                                <span class="ipt-chcard__num sc-mono">15</span>
-                                <span class="ipt-chcard__label sc-mono"></span>
-                                <span
-                                    class="sc-dot ipt-chcard__occupied"
-                                    data-t-aria="occupied"
-                                    hidden
-                                ></span>
-                            </button>
-                        </div>
-
-                        <!-- 空态(首开,未选 channel):05 §3 明文引导句,现有词典无对应 key -->
+                        ></div>
                         <p
                             class="sc-hint"
                             data-gb="input.channels.emptyHint"
-                            data-gb-todo="词条待立"
-                        >
-                            选择本轨的通道编号(与 Output 轨道页一一对应)
-                        </p>
-                        <!-- group-mismatch 场景引导行(05 §3;两个既有 key,默认隐藏) -->
-                        <p
-                            class="sc-hint"
-                            data-gb="input.channels.noOutputHint"
-                            data-t="group.noOutput"
-                            hidden
+                            data-t="in.channels.emptyHint"
                         ></p>
                         <p
                             class="sc-hint"
@@ -882,33 +645,41 @@
                             data-t="in.chHint.groupEmpty"
                             hidden
                         ></p>
-
-                        <!-- 释放确认条(点未分配卡/再点当前已选卡触发,05 §3);默认隐藏 -->
+                        <!-- 本轨 mono/stereo 实测结果(J57,只读) -->
+                        <div class="ipt-source" data-gb="input.source" hidden>
+                            <span class="sc-badge" data-gb="input.source.badge"
+                                >ST</span
+                            >
+                            <span
+                                class="sc-hint"
+                                data-gb="input.source.hint"
+                                data-t="in.pillSub.stereo"
+                            ></span>
+                        </div>
+                        <!-- 释放确认条(点未分配卡/再点当前卡触发) -->
                         <div
                             class="sc-confirm"
                             data-gb="input.channels.releaseConfirm"
                             hidden
                         >
-                            <span data-t="in.releaseConfirm"></span>
+                            <span
+                                data-gb="input.channels.releaseConfirm.text"
+                                data-t="in.releaseConfirm"
+                            ></span>
                             <button
                                 type="button"
                                 class="sc-btn"
                                 data-gb="input.channels.releaseConfirm.cancel"
-                                data-gb-todo="词条待立"
-                            >
-                                取消
-                            </button>
+                                data-t="common.cancel"
+                            ></button>
                             <button
                                 type="button"
                                 class="sc-btn sc-btn--cta"
                                 data-gb="input.channels.releaseConfirm.primary"
-                                data-gb-todo="词条待立"
-                            >
-                                释放
-                            </button>
+                                data-t="in.releaseConfirm.primary"
+                            ></button>
                         </div>
-
-                        <!-- 手动输入兜底(05 §3:0-15,清空/输入 0 = 释放) -->
+                        <!-- 手动输入兜底(0-15,清空/输入 0 = 释放) -->
                         <div class="ipt-manual" data-gb="input.channels.manual">
                             <input
                                 type="number"
@@ -922,89 +693,94 @@
                                 type="button"
                                 class="sc-btn"
                                 data-gb="input.channels.manual.confirm"
-                                data-gb-todo="词条待立"
-                            >
-                                确认
-                            </button>
+                                data-t="in.channels.manual.confirm"
+                            ></button>
                         </div>
                     </div>
                 </section>
 
-                <!-- ---- 优先级(远程视图,05 §3) ---- -->
+                <!-- 优先级(远程视图) -->
                 <section class="ipt-panel sc-glass" data-gb="input.priority">
                     <span
                         class="sc-eyebrow"
                         data-gb="input.priority.eyebrow"
                         data-t="priority"
                     ></span>
-                    <div
-                        class="sc-stepper"
-                        data-gb="input.priority.stepper"
-                        title="需 Output 在线"
-                        data-gb-todo="词条待立"
-                    >
-                        <button
-                            type="button"
-                            class="ipt-stepper__btn"
-                            data-gb="input.priority.stepper.dec"
-                            aria-label="-"
-                        >
-                            −
-                        </button>
+                    <div class="ipt-priority" data-gb="input.priority.stepper">
+                        <input
+                            type="range"
+                            class="ipt-priority__slider"
+                            data-gb="input.priority.slider"
+                            min="0"
+                            max="10"
+                            step="1"
+                            value="0"
+                            data-t-aria="priority"
+                        />
                         <span
-                            class="sc-stepper__val sc-mono"
+                            class="sc-stepper__val ipt-priority__val"
                             data-gb="input.priority.stepper.val"
                             >0</span
                         >
-                        <button
-                            type="button"
-                            class="ipt-stepper__btn"
-                            data-gb="input.priority.stepper.inc"
-                            aria-label="+"
-                        >
-                            +
-                        </button>
                     </div>
-                    <!-- 旁注:05 §3 明文「此设置保存在 Output」,现有词典无对应 key -->
                     <p
                         class="sc-hint"
                         data-gb="input.priority.note"
-                        data-gb-todo="词条待立"
-                    >
-                        此设置保存在 Output
-                    </p>
+                        data-t="in.priority.note"
+                    ></p>
                 </section>
 
-                <!-- ---- 远程只读摘要(05 §3:lead/pair/冻结 状态图标一行) ---- -->
+                <!-- 远程只读摘要:一行五张小卡片(MONO/STEREO/lead/pair/freeze),点亮/熄灭 -->
                 <section
                     class="ipt-panel ipt-remote sc-glass"
                     data-gb="input.remoteSummary"
                     hidden
                 >
                     <span
-                        class="ipt-remote__item"
+                        class="ipt-status"
+                        data-gb="input.remoteSummary.mono"
+                        data-lit="0"
+                        role="status"
+                        >MONO</span
+                    >
+                    <span
+                        class="ipt-status"
+                        data-gb="input.remoteSummary.stereo"
+                        data-lit="0"
+                        role="status"
+                        >ST</span
+                    >
+                    <span
+                        class="ipt-status"
                         data-gb="input.remoteSummary.lead"
+                        data-lit="0"
+                        role="status"
                     >
-                        <span class="sc-badge" data-t="leadLock"></span>
+                        <span data-t="leadLock"></span>
                     </span>
                     <span
-                        class="ipt-remote__item"
+                        class="ipt-status"
                         data-gb="input.remoteSummary.pair"
+                        data-lit="0"
+                        role="status"
                     >
-                        <span class="sc-badge" data-t="pair"></span>
+                        <span data-t="pair"></span>
+                        <span
+                            class="ipt-status__num sc-mono"
+                            data-gb="input.remoteSummary.pairId"
+                        ></span>
                     </span>
-                    <!-- 冻结 P/V 状态图标:05 §3 明文概念,现有词典仅有整句图例(tracks.colLegend,
-                         Tab2 专用长句不适配本处紧凑角标),中文明文占位 -->
                     <span
-                        class="ipt-remote__item"
+                        class="ipt-status"
                         data-gb="input.remoteSummary.freeze"
-                        data-gb-todo="词条待立"
+                        data-lit="0"
+                        role="status"
                     >
-                        <span class="sc-badge">冻结 P/V</span>
+                        <span data-gb="input.remoteSummary.freezeLabel"></span>
                     </span>
                 </section>
 
-                <!-- ---- 采集指示(05 §3:小绿点「采集中」,非采集隐藏) ---- -->
+                <!-- 采集指示(小绿点,非采集隐藏) -->
                 <div
                     class="sc-pill ipt-capture"
                     data-gb="input.captureIndicator"
@@ -1016,21 +792,14 @@
                 </div>
             </div>
 
-            <!-- ============================================================
-                 Footer(05 §1.1:左提示文案 | 右缩放下拉 + 版本号)
-                 ============================================================ -->
+            <!-- Footer -->
             <footer class="ipt-footer" data-gb="input.footer">
-                <!-- 左提示文案:05 §3 未给 Input footer 的默认态词条(Output 侧 footer.* 均为
-                     打印状态专文,不适配 Input),中文明文占位,常态由 T31 按 scvb.conn 驱动 -->
                 <span
                     class="ipt-footer__hint sc-hint"
                     data-gb="input.footer.hint"
-                    data-gb-todo="词条待立"
-                    >就绪</span
-                >
+                    data-t="in.footer.hint"
+                ></span>
                 <div class="ipt-footer__right">
-                    <!-- 缩放下拉:档位表由 app.js 从 design-box.js 的 DESIGN.input.presets 生成
-                         (05 §2.7 A8「Input 缩放下拉与档位表」,无设计稿依据,依 05 §1.2 表实现) -->
                     <select
                         class="sc-select"
                         data-gb="input.footer.scale"
@@ -1044,14 +813,54 @@
                 </div>
             </footer>
 
-            <!-- 一次性 toast:claim 冲突反馈(05 §3 ch.occupied,契约 §5.1 channelConflict) -->
+            <!-- 一次性 toast:claim 冲突反馈(ch.occupied) -->
             <div
                 class="sc-toast ipt-toast-slot"
                 data-gb="input.toast.occupied"
                 hidden
             >
                 <span class="sc-toast__dot" aria-hidden="true"></span>
-                <span data-t="ch.occupied"></span>
+                <span
+                    data-gb="input.toast.occupied.text"
+                    data-t="ch.occupied"
+                ></span>
+            </div>
+
+            <!-- 缩放 10 秒防呆确认框(05 §1.2;复用 Output 同族 .sc-scrim/.sc-modal) -->
+            <div class="sc-scrim" data-gb="input.scale.confirm" hidden>
+                <div
+                    class="sc-modal"
+                    role="alertdialog"
+                    aria-modal="true"
+                    aria-label="UI Scale"
+                >
+                    <div
+                        class="sc-modal__body"
+                        data-gb="input.scale.confirm.body"
+                    >
+                        <span data-gb="input.scale.confirm.bodyPre"></span>
+                        <span
+                            class="sc-num"
+                            data-gb="input.scale.confirm.countdown"
+                            >10</span
+                        >
+                        <span data-gb="input.scale.confirm.bodyPost"></span>
+                    </div>
+                    <div class="ipt-scale__actions">
+                        <button
+                            type="button"
+                            class="sc-btn sc-btn--dark"
+                            data-gb="input.scale.confirm.revert"
+                            data-t="common.cancel"
+                        ></button>
+                        <button
+                            type="button"
+                            class="sc-btn sc-btn--cta"
+                            data-gb="input.scale.confirm.keep"
+                            data-t="scale.keep"
+                        ></button>
+                    </div>
+                </div>
             </div>
         </div>
 

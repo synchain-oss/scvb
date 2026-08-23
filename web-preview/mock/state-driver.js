@@ -85,7 +85,13 @@ export const SCENARIO_MAP = Object.freeze({
     conflict: "channel-conflict",
     occupied: "channel-conflict",
     "group-switch": "second-output",
-    "no-output": "empty",
+    "no-output": "fifteen-tracks",
+    // T36 接线五档(Input 七态中的 no-output / passthrough / abi-mismatch /
+    // sr-mismatch / group-mismatch):落在健康满配世界上,由 buildWorld 的场景覆写改 Input 快照初值。
+    passthrough: "fifteen-tracks",
+    "abi-mismatch": "fifteen-tracks",
+    "sr-mismatch": "fifteen-tracks",
+    "group-mismatch": "fifteen-tracks",
     // T31 接线两档:落在健康满配世界上,由 buildWorld 的场景覆写改快照初值
     // (print_guard.pending / ui.guide_seen),否则加载守卫与引导页在浏览器不可达。
     "print-guard": "fifteen-tracks",
@@ -93,6 +99,8 @@ export const SCENARIO_MAP = Object.freeze({
     // T33 接线:布防态落在健康满配世界上,由 buildWorld 场景覆写改快照初值
     // (state.recapture 按契约 §9.2 形状回读,Tab3 三处 badge 的数据源)
     "recapture-armed": "fifteen-tracks",
+    // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
+    "curve-editor": "fifteen-tracks",
 });
 
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
@@ -229,6 +237,9 @@ export function parsePreviewQuery(params) {
  * @param {number} ch 本实例占的通道号
  */
 function connectedInputSnapshot(ch, extraConfig = {}) {
+    // 远程只读摘要的 lead/pair/priority 取 FIFTEEN_TRACKS 该轨画像(主唱=lead+pair1),
+    // 否则远程摘要行永远无内容,连「有内容时正常显示」都验证不到。
+    const profile = FIFTEEN_TRACKS.snapshot.channels[ch - 1] || {};
     return makeInputSnapshot({
         channel_id: ch,
         group_id: 1,
@@ -242,7 +253,9 @@ function connectedInputSnapshot(ch, extraConfig = {}) {
         },
         config: {
             label: DEMO_LABELS[ch - 1],
-            priority: 5,
+            priority: profile.priority ?? 5,
+            lead_lock: !!profile.lead_lock,
+            pair_id: profile.pair_id ?? 0,
             config_seq: 42,
             channelLabels: DEMO_LABELS.slice(),
             ...extraConfig,
@@ -302,6 +315,7 @@ export function buildWorld(opts = {}) {
     let outputSegments = null;
     let inputSnapshot = null;
     let inputClaim = "active"; // §5.2 六态;不属 §3.1 快照字段集,单独给
+    let inputAbiRemote; // §4.1 abi_remote;探测不到对端 = undefined(字段不存在)
 
     if (fixture === "empty") {
         // 0 轨连接、无 coverage、guide_seen=true(不弹引导)、range 默认 follow。
@@ -448,11 +462,112 @@ export function buildWorld(opts = {}) {
             guide_seen_global: false,
         };
     }
+    if (opts.scenario === "curve-editor" && outputParams) {
+        // T34:MS 等效增益叠加线演示 —— 非零 ms_balance 使 g_eq 曲线偏离 0 dB 可见。
+        outputParams = {
+            ...outputParams,
+            values: { ...outputParams.values, ms_balance: 42 },
+        };
+    }
+
+    // ---- Input 七态场景覆写(T36;只改 Input 快照初值,不动周期事件与函数语义)----
+    // 字段形状照 mock-data 生成器原样;claim/abi_remote 不属 §3.1 快照字段集,单独给。
+    if (opts.scenario === "no-output") {
+        // 灰「Output 未运行」:通道已选但本组 Output 离线;groups_online 全 0 也不报错(J70)。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: false,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: 1, // 本实例占 ch1
+            },
+            // Output 离线 → 无广播区 → channelLabels 留空(与「通道表为空」语义一致)
+            config: { config_seq: 42 },
+        });
+        inputClaim = "idle";
+        groupsOnline = 0;
+        caps.occupiedMask = 0; // 本组无其它 Input,只有本实例占 ch1
+    } else if (opts.scenario === "passthrough") {
+        // 直通副文案:Output 在线但本 channel 未被健康读取 → 等待 Output + 直通中。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: true,
+                maskBit: false,
+                passthrough: true,
+                passthroughPending: false,
+                occupiedMask: ALL_CHANNELS_MASK,
+            },
+            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+        });
+        inputClaim = "idle";
+    } else if (opts.scenario === "abi-mismatch") {
+        // 红 pill「版本不匹配」+ banner.abiMismatch(两端 abi 数字)+ 直通副文案照常。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: true,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: ALL_CHANNELS_MASK,
+            },
+            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+        });
+        inputClaim = "abiMismatch";
+        inputAbiRemote = 2; // 对端 Output abi(本机 = LOCAL_ABI = 1)
+    } else if (opts.scenario === "sr-mismatch") {
+        // 红 pill「采样率不一致」+ 直通副文案照常。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 1,
+            conn: {
+                outputOnline: true,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: ALL_CHANNELS_MASK,
+            },
+            config: { config_seq: 42, channelLabels: DEMO_LABELS.slice() },
+        });
+        inputClaim = "srMismatch";
+        errors.input.push(
+            makeError("srMismatch", {
+                ch: 1,
+                detail: { inputSr: 44100, outputSr: 48000 },
+            }),
+        );
+    } else if (opts.scenario === "group-mismatch") {
+        // 本组(B)无 Output 但异组(A)在线 → pill「等待 Output · 组 B」+ group.noOutput。
+        inputSnapshot = makeInputSnapshot({
+            channel_id: 1,
+            group_id: 2, // 非默认组 B
+            conn: {
+                outputOnline: false,
+                maskBit: false,
+                passthrough: true,
+                occupiedMask: 1, // 本实例占 ch1
+            },
+            // 本组无 Output → 无广播区 → channelLabels 留空(与「通道表为空」语义一致)
+            config: { config_seq: 42 },
+        });
+        inputClaim = "idle";
+        groupsOnline = 0b00000001; // 只有组 A 在线(异组),本组 B 无 Output
+        caps.occupiedMask = 0; // 本组(B)无其它 Input
+    }
 
     // ---- 查询参数覆写 ----------------------------------------------------------
     if (opts.loop === "none") caps.loopAvailable = false;
     if (opts.loop === "host") caps.loopAvailable = true;
     if (typeof opts.play === "boolean") transport.isPlaying = opts.play;
+
+    // 本实例已占的通道从「他人占用」位图剔除(§4.2 含自己的位;否则释放后重选原通道
+    // 会被误判为他占 → conflict)。channel_id=0(未分配)时无需剔除。
+    if (inputSnapshot && inputSnapshot.channel_id >= 1) {
+        caps.occupiedMask &= ~(1 << (inputSnapshot.channel_id - 1));
+    }
 
     return {
         fixture,
@@ -467,7 +582,11 @@ export function buildWorld(opts = {}) {
             segments: outputSegments,
             coverage: demoCoverage(fixture),
         },
-        input: { snapshot: inputSnapshot, claim: inputClaim },
+        input: {
+            snapshot: inputSnapshot,
+            claim: inputClaim,
+            abiRemote: inputAbiRemote,
+        },
     };
 }
 

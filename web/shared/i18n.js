@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// =============================================================================
-// SCVB — 界面文案字典(中 / EN / FR)
-// =============================================================================
-// 真源:masterPlan/plan/05-ui-spec.md §5(状态词规范 512-524 / 术语表 530-618)、
+// ======================================================================// SCVB — 界面文案字典(中 / EN / FR)
+// ======================================================================// 真源:masterPlan/plan/05-ui-spec.md §5(状态词规范 512-524 / 术语表 530-618)、
 // §5.1(分组词条组 619-633)、§5.2(设计定稿回流 635-658)、§2.6(tour 步骤表 421-429)。
 // 全部词条逐字照 05 转写,占位符({a} {b} {g} {k} {l} {n} {t} {v} {x} {y} {X} {name})原样保留;
 // 改文案先改 05,再回改本文件,不得只改一处。
@@ -23,8 +21,7 @@
 // T27 自译(05 未给三语)的条目:state.* 六条 FR、state.waitingForOutput.group 的 EN/FR、
 // state.groupSuffix 三语、tour.step1..7 的 EN/FR —— 均待人工审校,逐条清单见 T27 差异清单
 // 的「i18n.js」小节(05 §5 要求 fr 发布前人工审校,那份清单就是审校人的入口)。
-// =============================================================================
-
+// ======================================================================
 export const T = {
     zh: {
         // 状态词规范(05 §5,512-524 行):连接类状态每态唯一用词,正文一律引用 key。
@@ -300,10 +297,60 @@ export const T = {
             "影响分析时的段间响度归一化基准;改后需重分析。",
         "set.centerSlot.title": "多轨争抢中心位时怎么办",
         "set.centerSlot.note":
-            "主唱锁与 Lead Select 之外的兜底规则;不影响参与音量调节开关。",
+            "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
+
+        // ---- T35 新增(Output Tab4 设置;05 §2.4 全部行 + J69 两设置块)----
+        // zh 逐字取 05 §2.4 / §5.2(选项正名「K 加权段积分」非 LUFS-S,05 §2.4);
+        // EN/FR 为 T35 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "set.usage.eyebrow": "使用说明",
+        "set.usage.workflow":
+            "采集 → 分析 → 输出。开启采集并播放,插件记录每条轨的响度特征;分析在离线状态下算出每个乐句的声像/音量方案;输出切到「引擎驱动」后由插件驱动参数,要落盘则在 DAW 侧开 Latch 或 Write。",
+        "set.usage.docs": "文档",
+        "set.loudnessMode.eyebrow": "第二响度指标",
+        "set.loudnessMode.opt.kw_integrated": "K 加权段积分",
+        "set.loudnessMode.opt.rms": "RMS",
+        "set.loudnessMode.opt.peak_dbfs": "峰值 dBFS",
+        "set.centerSlot.eyebrow": "中心槽策略",
+        "set.centerSlot.opt.priority_queue": "按优先级排队",
+        "set.centerSlot.opt.lead_exclusive": "主唱独占",
+        "set.centerSlot.opt.even_spread": "均分微偏",
+        "set.guide.showAll": "查看全部九条",
+        "set.guide.collapse": "收起",
+        "set.guide.rulesMissing": "九条约束全文将在发布版补齐",
+        "set.storage.eyebrow": "存储状态",
+        "set.storage.embedded": "内嵌于工程({mb} MB)",
+        "set.storage.external": "已转外部文件(>8MB 自动)",
+        "set.storage.sessionGuid": "session {guid}",
+        "set.diag.eyebrow": "诊断",
+        "set.diag.copy": "复制诊断信息",
+        "set.diag.copied": "已复制",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
+        "set.reanalyze": "改后需重分析",
+        // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
+        // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "in.pillSub.passthrough": "直通中:本轨按原路径出声(未经平衡)",
+        "in.pillSub.takenOver": "已接管:本轨静音转发,由 Output 总线出声",
+        "in.pillSub.hysteresis": "连接不稳定,即将切换直通",
+        "in.pillSub.stereo": "本轨为立体声源,SCVB 将保留其宽度",
+        "in.source.mono": "本轨为单声道源",
+        "in.group.note": "须与 Output 同组才能连接;单组使用保持 A 即可",
+        "in.channels.emptyHint": "选择本轨的通道编号(与 Output 轨道页一一对应)",
+        "in.unassigned": "未分配",
+        "in.releaseConfirm.primary": "释放",
+        "in.channels.manual.confirm": "确认",
+        "in.priority.note": "此设置保存在 Output",
+        "in.priority.offline": "需 Output 在线",
+        "in.footer.hint": "就绪",
+        "in.footer.noBackend": "未接后端——请经 web-preview 预览入口打开",
+        "in.priority.unassigned": "需先选择通道",
+        "ch.occupied.group": "通道已被占用(组 {g})",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -333,6 +380,28 @@ export const T = {
         "master.curveLegendMs": "MS 等效增益",
         "master.curveAxisX": "左 L −100 · −50 · 中 C 0 · +50 · 右 R +100",
         "master.curveEmptyHint": "双击添加控制点",
+        // ---- T34 曲线编辑器(curve.*;shape/side 术语逐字对拍 05 §5 术语表)----
+        "curve.canvasLabel": "角度域增益曲线编辑器",
+        "curve.maxPoints": "已达 16 点上限",
+        "curve.centerSide": "中心点请选择方向",
+        "curve.shape.bell": "钟形",
+        "curve.shape.shelf": "搁架",
+        "curve.shape.cut": "切除",
+        "curve.side.out": "向外",
+        "curve.side.left": "向左",
+        "curve.side.right": "向右",
+        "curve.qLabel": "Q",
+        "curve.slopeLabel": "斜率",
+        "curve.slope.opt6": "6 dB/oct",
+        "curve.slope.opt12": "12 dB/oct",
+        "curve.slope.opt18": "18 dB/oct",
+        "curve.slope.opt24": "24 dB/oct",
+        "curve.sideTooltip":
+            "向外:以该点为界,切除远离中心的外侧;向左/向右:只切该侧",
+        "curve.deleteLabel": "删除控制点",
+        "curve.announcePoint": "点 {n}:角度 {angle},{gain} dB,{shape},Q {q}",
+        "curve.announcePointDir":
+            "点 {n}:角度 {angle},{gain} dB,{shape},Q {q} · 方向 {side}",
         "master.leadSelectDefaultNote": "0 = 遵循分析(默认)",
         "range.manual": "手动",
         "master.rangeLoopStale": "循环区已失效,沿用上次范围",
@@ -764,9 +833,64 @@ export const T = {
         "set.centerSlot.title":
             "What happens when tracks compete for the center slot",
         "set.centerSlot.note":
-            "Fallback rule beyond Lead Lock and Lead Select; it does not affect the volume participation switch.",
+            "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
+
+        // ---- T35 新增(EN 自译,待人工审校)----
+        "set.usage.eyebrow": "USAGE",
+        "set.usage.workflow":
+            "Capture → Analyze → Output. Turn on capture and play; the plug-in records each track's loudness features. Analysis computes a pan/level plan for every phrase offline. Switch Output to ENGINE DRIVE and the plug-in drives the parameters; to record them, arm Latch or Write on the DAW side.",
+        "set.usage.docs": "Docs",
+        "set.loudnessMode.eyebrow": "SECOND LOUDNESS METRIC",
+        "set.loudnessMode.opt.kw_integrated": "K-weighted integral",
+        "set.loudnessMode.opt.rms": "RMS",
+        "set.loudnessMode.opt.peak_dbfs": "Peak dBFS",
+        "set.centerSlot.eyebrow": "CENTER SLOT POLICY",
+        "set.centerSlot.opt.priority_queue": "Priority queue",
+        "set.centerSlot.opt.lead_exclusive": "Lead exclusive",
+        "set.centerSlot.opt.even_spread": "Even spread",
+        "set.guide.showAll": "Show all nine",
+        "set.guide.collapse": "Collapse",
+        "set.guide.rulesMissing":
+            "The full nine rules will be included in the release build",
+        "set.storage.eyebrow": "STORAGE",
+        "set.storage.embedded": "Embedded in project ({mb} MB)",
+        "set.storage.external": "Moved to external file (>8 MB automatic)",
+        "set.storage.sessionGuid": "session {guid}",
+        "set.diag.eyebrow": "DIAGNOSTICS",
+        "set.diag.copy": "Copy diagnostics",
+        "set.diag.copied": "Copied",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
+        "set.reanalyze": "Re-analysis required",
+        // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
+        // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "in.pillSub.passthrough":
+            "Passthrough: this track plays on its original path (unbalanced)",
+        "in.pillSub.takenOver":
+            "Taken over: this track is muted and routed through the Output bus",
+        "in.pillSub.hysteresis":
+            "Connection unstable — switching to passthrough",
+        "in.pillSub.stereo":
+            "This track is a stereo source — SCVB preserves its width",
+        "in.source.mono": "This track is a mono source",
+        "in.group.note":
+            "Must share a group with Output to connect; keep A for single-group use",
+        "in.channels.emptyHint":
+            "Choose this track's channel number (matches the Output Tracks page)",
+        "in.unassigned": "Unassigned",
+        "in.releaseConfirm.primary": "Release",
+        "in.channels.manual.confirm": "Confirm",
+        "in.priority.note": "This setting is stored on Output",
+        "in.priority.offline": "Requires Output online",
+        "in.footer.hint": "Ready",
+        "in.footer.noBackend": "No backend attached — open via web-preview",
+        "in.priority.unassigned": "Select a channel first",
+        "ch.occupied.group": "A channel is already taken (group {g})",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -801,6 +925,29 @@ export const T = {
         "master.curveLegendMs": "MS equivalent gain",
         "master.curveAxisX": "L −100 · −50 · C 0 · +50 · R +100",
         "master.curveEmptyHint": "Double-click to add a control point",
+        // ---- T34 曲线编辑器(curve.*;shape/side 术语逐字对拍 05 §5 术语表)----
+        "curve.canvasLabel": "Angle-domain gain curve editor",
+        "curve.maxPoints": "Maximum of 16 points reached",
+        "curve.centerSide": "Center point — choose a direction",
+        "curve.shape.bell": "Bell",
+        "curve.shape.shelf": "Shelf",
+        "curve.shape.cut": "Cut",
+        "curve.side.out": "Out",
+        "curve.side.left": "Left",
+        "curve.side.right": "Right",
+        "curve.qLabel": "Q",
+        "curve.slopeLabel": "Slope",
+        "curve.slope.opt6": "6 dB/oct",
+        "curve.slope.opt12": "12 dB/oct",
+        "curve.slope.opt18": "18 dB/oct",
+        "curve.slope.opt24": "24 dB/oct",
+        "curve.sideTooltip":
+            "Out: cuts the outer side away from center, bounded by this point. Left/Right: cuts only that side",
+        "curve.deleteLabel": "Delete point",
+        "curve.announcePoint":
+            "Point {n}: angle {angle}, {gain} dB, {shape}, Q {q}",
+        "curve.announcePointDir":
+            "Point {n}: angle {angle}, {gain} dB, {shape}, Q {q} · direction {side}",
         "master.leadSelectDefaultNote": "0 = follow analysis (default)",
         "range.manual": "Manual",
         "master.rangeLoopStale":
@@ -1199,9 +1346,65 @@ export const T = {
         "set.centerSlot.title":
             "Que faire quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
-            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'interrupteur de participation au volume.",
+            "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
+
+        // ---- T35 新增(FR 自译,待人工审校)----
+        "set.usage.eyebrow": "MODE D'EMPLOI",
+        "set.usage.workflow":
+            "Capture → Analyser → Sortie. Activez la capture et lancez la lecture ; le plug-in enregistre les caractéristiques de loudness de chaque piste. L'analyse calcule un plan pan/volume pour chaque phrase hors ligne. Passez la sortie en PILOTAGE MOTEUR pour que le plug-in pilote les paramètres ; pour les enregistrer, armez Latch ou Write côté DAW.",
+        "set.usage.docs": "Documentation",
+        "set.loudnessMode.eyebrow": "SECOND INDICATEUR DE LOUDNESS",
+        "set.loudnessMode.opt.kw_integrated": "Intégrale pondérée K",
+        "set.loudnessMode.opt.rms": "RMS",
+        "set.loudnessMode.opt.peak_dbfs": "Crête dBFS",
+        "set.centerSlot.eyebrow": "STRATÉGIE DE CRÉNEAU CENTRAL",
+        "set.centerSlot.opt.priority_queue": "File de priorité",
+        "set.centerSlot.opt.lead_exclusive": "Exclusivité lead",
+        "set.centerSlot.opt.even_spread": "Répartition égale",
+        "set.guide.showAll": "Voir les neuf règles",
+        "set.guide.collapse": "Replier",
+        "set.guide.rulesMissing":
+            "Les neuf règles complètes seront incluses dans la version publiée",
+        "set.storage.eyebrow": "STOCKAGE",
+        "set.storage.embedded": "Intégré au projet ({mb} Mo)",
+        "set.storage.external":
+            "Déplacé vers un fichier externe (>8 Mo automatique)",
+        "set.storage.sessionGuid": "session {guid}",
+        "set.diag.eyebrow": "DIAGNOSTIC",
+        "set.diag.copy": "Copier les diagnostics",
+        "set.diag.copied": "Copié",
+        "set.diag.colCh": "CH",
+        "set.diag.colHb": "HB",
+        "set.diag.colMis": "MIS",
+        "set.diag.colGen": "GEN",
+        "set.diag.colSeq": "SEQ",
+        "set.reanalyze": "Ré-analyse requise",
+        // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
+        // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
+        "in.pillSub.passthrough":
+            "Direct : cette piste suit son chemin d'origine (sans équilibrage)",
+        "in.pillSub.takenOver":
+            "Pris en charge : cette piste est coupée et routée par le bus Output",
+        "in.pillSub.hysteresis":
+            "Connexion instable — passage en direct imminent",
+        "in.pillSub.stereo":
+            "Cette piste est une source stéréo — SCVB préserve sa largeur",
+        "in.source.mono": "Cette piste est une source mono",
+        "in.group.note":
+            "Doit partager un groupe avec Output pour se connecter ; gardez A en usage mono-groupe",
+        "in.channels.emptyHint":
+            "Choisissez le numéro de canal de cette piste (correspond à la page Pistes de l'Output)",
+        "in.unassigned": "Non assigné",
+        "in.releaseConfirm.primary": "Libérer",
+        "in.channels.manual.confirm": "Confirmer",
+        "in.priority.note": "Ce réglage est enregistré côté Output",
+        "in.priority.offline": "Nécessite Output en ligne",
+        "in.footer.hint": "Prêt",
+        "in.footer.noBackend": "Aucun backend — ouvrez via web-preview",
+        "in.priority.unassigned": "Sélectionnez d'abord un canal",
+        "ch.occupied.group": "Un canal est déjà occupé (groupe {g})",
 
         // T31 新增(Output 外壳 + Tab1 正式实现,05 §2.0/§2.1 语义 + design-v2 定稿文案)。
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
@@ -1209,7 +1412,7 @@ export const T = {
         "common.cancel": "Annuler",
         "tab.master": "Général",
         "tab.tracks": "Pistes",
-        "tab.wave": "Formes d'onde et segments",
+        "tab.wave": "Ondes & segments",
         "tab.settings": "Réglages",
         "version.emptyBadge": "VIDE",
         "master.copyConfirmPrimary": "Écraser et copier",
@@ -1237,6 +1440,29 @@ export const T = {
         "master.curveAxisX": "G −100 · −50 · C 0 · +50 · D +100",
         "master.curveEmptyHint":
             "Double-cliquez pour ajouter un point de contrôle",
+        // ---- T34 曲线编辑器(curve.*;shape/side 术语逐字对拍 05 §5 术语表)----
+        "curve.canvasLabel": "Éditeur de courbe de gain angulaire",
+        "curve.maxPoints": "Limite de 16 points atteinte",
+        "curve.centerSide": "Point central — choisissez une direction",
+        "curve.shape.bell": "Cloche",
+        "curve.shape.shelf": "Plateau",
+        "curve.shape.cut": "Coupe",
+        "curve.side.out": "Extérieur",
+        "curve.side.left": "Gauche",
+        "curve.side.right": "Droite",
+        "curve.qLabel": "Q",
+        "curve.slopeLabel": "Pente",
+        "curve.slope.opt6": "6 dB/oct",
+        "curve.slope.opt12": "12 dB/oct",
+        "curve.slope.opt18": "18 dB/oct",
+        "curve.slope.opt24": "24 dB/oct",
+        "curve.sideTooltip":
+            "Extérieur: coupe le côté extérieur, loin du centre, délimité par ce point. Gauche/Droite: coupe uniquement ce côté",
+        "curve.deleteLabel": "Supprimer le point",
+        "curve.announcePoint":
+            "Point {n} : angle {angle}, {gain} dB, {shape}, Q {q}",
+        "curve.announcePointDir":
+            "Point {n} : angle {angle}, {gain} dB, {shape}, Q {q} · direction {side}",
         "master.leadSelectDefaultNote": "0 = suivre l'analyse (par défaut)",
         "range.manual": "Manuel",
         "master.rangeLoopStale":

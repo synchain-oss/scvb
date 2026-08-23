@@ -267,7 +267,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 | 项 | 定义 |
 |---|---|
-| 参数 | `points`: 数组(**整表提交**,≤16 点),元素 `{ angle:f32(-100..100), gain_db:f32(建议显示域 ±12), shape:"bell"\|"shelf"\|"cut", q:f32(>0), side:"out"\|"left"\|"right"(默认 "out") }` |
+| 参数 | `points`: 数组(**整表提交**,≤16 点),元素 `{ angle:f32(-100..100), gain_db:f32(建议显示域 ±12), shape:"bell"\|"shelf"\|"cut", q:f32(>0; shape="cut" 时承载 slope: 6\|12\|18\|24 dB/oct,默认 12;bell/shelf 时即 Q), side:"out"\|"left"\|"right"(默认 "out") }` |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
 | 语义 | 写**当前激活版本**的 `pan_curve.points[]`(params-v0 v2.0:`pan_curve` 属 `versions[2]`,J07/J59)。整表语义 = 给定数组即全量替换,**不做点级增删接口**(`setPanCurvePoint`/`removePanCurvePoint` 已归并,§8)。**写入后经 `scvb.state` 回推 `versions[active].pan_curve`**(下行落点见 §1.1/§2.1)——曲线编辑器渲染既有点集的唯一数据源。`side` 默认 `out`,方向由 `sign(angle)` 决定;`shape∈{shelf,cut} ∧ side="out" ∧ |angle|<5` 的组合在 UI 侧自动改选 left/right,数据层若仍出现按 02 §7.1 确定性回退(`angle≥0`→right,`angle<0`→left),**不报错**。 |
 | 拒绝态 | 点数 >16 或字段越界 → `{ok:false, reason:"badArg"}` |

@@ -998,11 +998,12 @@ export function makeWaveformTile(ch, startS, endS, cols) {
 //   选 FOLLOW 而不是 PRINT:tour 要逐个高亮控件讲解,PRINT 态会把版本 chip 等大片控件
 //   置灰/硬拒绝(§1.9/§5.6),demo 里不该出现「点不动」的东西。
 
-/** demo 的 V1 pan 曲线(≤16 点,§1.17 整表提交语义)。 */
+/** demo 的 V1 pan 曲线(≤16 点,§1.17 整表提交语义)。cut 点的 q 承载 slope(dB/oct)。 */
 function demoPanCurve() {
     return {
         points: [
             { angle: -72, gain_db: -2.5, shape: "shelf", q: 0.7, side: "left" },
+            { angle: -50, gain_db: -12, shape: "cut", q: 12, side: "out" },
             { angle: -24, gain_db: 1.5, shape: "bell", q: 1.2, side: "out" },
             { angle: 0, gain_db: 0, shape: "bell", q: 1, side: "out" },
             { angle: 28, gain_db: 1.8, shape: "bell", q: 1.1, side: "out" },

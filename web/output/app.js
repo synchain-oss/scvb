@@ -45,6 +45,8 @@ import {
 } from "./tab-master.js";
 import { createTabTracks } from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
+import { createCurveEditor } from "./canvas/curve-editor.js";
+import { createTabSettings } from "./tab-settings.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -326,6 +328,20 @@ const tabTracks = createTabTracks({
 });
 tabTracks.mount();
 
+// ------------------------------------------------------------- Tab1 曲线编辑器(T34)
+// 曲线窗内部(加点/拖拽/Q/shape/删除/side 三段选/叠加线/a11y)全部在 canvas/curve-editor.js;
+// 本文件只做一句装配调用(与 Tab2 的 createTabTracks 同款),state/params 经 getStore 读取。
+const curveEditor = createCurveEditor({
+    canvas: document.querySelector('[data-gb="master-pancurve-canvas"]'),
+    root: document,
+    bridge,
+    getStore: () => store,
+    getT: () => dictNow,
+    // T33 起全页统一走 rAF 合帧的 requestRender(),不再逐事件同步整页 render()
+    onLocalChange: () => requestRender(),
+});
+curveEditor.mount();
+
 // ------------------------------------------------------------- Tab3(tab-wave.js)
 // T33:工具条/标尺/15 泳道/选区叠加层/段检查器全部由 createTabWave() 生成与投影
 // (泳道模板的单一真源 = tab-wave.js 的 waveLaneHtml,本文件不再写第二份);
@@ -340,7 +356,18 @@ const tabWave = createTabWave({
     gotoTab: (name) => activateTab(name),
 });
 tabWave.mount();
-tabsReady = true; // 三个 tab 装配完毕,render() 从这里起可以跑
+
+// ------------------------------------------------------------- Tab4(tab-settings.js)
+// T35:缩放 select 与语言胶囊的接线仍在本文件(scale/语言是外壳级),Tab4 的
+// 其余全部内容(两设置块 / 说明块 / 存储 / 诊断 / 版本号)在 createTabSettings。
+const tabSettings = createTabSettings({
+    root: document,
+    bridge,
+    getStore: () => store,
+    getT: () => dictNow,
+    onLocalChange: () => render(),
+});
+tabSettings.mount();
 
 // 布防 badge 三处的点击跳转(05 §2.3 行 300 ①:点击跳 Tab3 定位选区)——
 // Tab1 Range 旁与 Tab2 图例行两枚在别的卡里,跳转归外壳;Tab3 自己的 badge
@@ -817,15 +844,23 @@ function render() {
     renderFooter();
     renderScale();
     renderGuide();
+    // 只投影当前激活 tab(T33 渲染性能批):四面板同在 DOM,但每个 tab 的
+    // render 都是「store + 本地态 → DOM」的幂等纯投影,切回来时 activateTab
+    // 会补一次 requestRender(),晚一帧与提前一帧结果逐字相同。
+    // 合并 T34/T35 后:曲线编辑器属 Tab1、设置页属 Tab4,各自归位。
     switch (content.getAttribute("data-tab")) {
         case "master":
-            return tabMaster.render();
+            tabMaster.render();
+            curveEditor.render();
+            return undefined;
         case "tracks":
             return tabTracks.render();
         case "wave":
             return tabWave.render();
+        case "settings":
+            return tabSettings.render();
         default:
-            return undefined; // Tab4 设置页无逐帧投影
+            return undefined;
     }
 }
 
@@ -1177,6 +1212,8 @@ if (bridge) {
         tabTracks.onSegments(seg);
         // Tab3:段角标/曲线/边界层标脏(渲染在 store 合并之后的 render() 里)
         tabWave.onSegments(seg);
+        // Tab4:全量分析完成 → 清「改后需重分析」标志(03 §6.3 applied.* 同步)
+        tabSettings.onSegments(seg);
         // J69 stale:任一轨 stale → tab 导航「波形与分段」挂琥珀点
         const stale = (seg && seg.channels ? seg.channels : []).some(
             (c) => c && c.stale,
