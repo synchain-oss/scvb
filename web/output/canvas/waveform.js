@@ -166,6 +166,8 @@ export function createTileCache(cap = TILE_LRU_CAP) {
         delete: (key) => map.delete(key),
         clear: () => map.clear(),
         size: () => map.size,
+        /** 只看不保鲜(身份比对用;走 get 会重排 LRU 序,把将死的块又救活)。 */
+        peek: (key) => map.get(key),
         // 区间级失效要按键遍历(键里编着起止时间);拷成数组再遍历,
         // 免得边删边迭代
         keys: () => [...map.keys()],
@@ -199,20 +201,34 @@ export function createWaveformSource(opts) {
         const key = tileKey(startS, endS, n);
         const hit = cache.get(key);
         if (hit) return hit.then ? hit : hit;
-        const p = Promise.resolve()
-            .then(() => request(ch, startS, endS, n))
-            .then((tile) => {
-                // 契约 §5.5 风格的拒绝载荷({reason}/{observer})与畸形响应
-                // 一律当无数据(形状守卫见 isTileShape 头注)
-                if (!isTileShape(tile)) {
-                    cache.delete(key);
-                    return null;
-                }
-                cache.set(key, tile);
-                return tile;
-            })
-            .catch(() => {
+        // 「这一笔还是不是当前有效的那一笔」的判据:resolve 时缓存里挂的仍是
+        // **本 promise** 才算数。否则 —— invalidate 在请求在途时删了键(区间级
+        // 失效走的正是这条路:采集中 2Hz 的 addedRanges 一边失效、用户一边
+        // 平移/缩放取数),这笔迟到的 resolve 会把**失效前**算出来的块重新塞
+        // 回缓存,后续 peek 命中它 ⇒ 新采/新清的区域一直显示旧图,直到下一次
+        // 失效或手动平移重取才纠正(pr-agent)。
+        // 用 promise 身份比对而不是代次计数:同一个键被 invalidate 后又发起
+        // 新请求时,新笔会覆盖 cache[key],旧笔自然判出局,不需要额外账。
+        let p;
+        const settle = (tile) => {
+            const cur = cache.peek ? cache.peek(key) : undefined;
+            if (cur !== p) return tile || null; // 已被失效/被新笔取代:不回写
+            if (!isTileShape(tile)) {
                 cache.delete(key);
+                return null;
+            }
+            cache.set(key, tile);
+            return tile;
+        };
+        p = Promise.resolve()
+            .then(() => request(ch, startS, endS, n))
+            // 契约 §5.5 风格的拒绝载荷({reason}/{observer})与畸形响应
+            // 一律当无数据(形状守卫见 isTileShape 头注)
+            .then(settle)
+            .catch(() => {
+                if ((cache.peek ? cache.peek(key) : undefined) === p) {
+                    cache.delete(key);
+                }
                 return null;
             });
         cache.set(key, p);

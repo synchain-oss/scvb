@@ -210,6 +210,34 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         src.invalidate(1); // 缺 ranges = 整轨清(clearCoverage 那类语义)
         check(src.peek(1, 60, 70, 1) === null, "不给区间仍是整轨清");
     }
+    // 在途请求被失效后**不得回写**(pr-agent):采集中 2Hz 的区间级失效与用户
+    // 平移取数会重叠,迟到的 resolve 若照写就是把失效前算出的旧块塞回缓存,
+    // 后续 peek 命中它 ⇒ 新采/新清的区域一直显示旧图,直到下次失效才纠正。
+    {
+        let release;
+        const gate = new Promise((r) => (release = r));
+        const src = WF.createWaveformSource({ request: () => gate });
+        const inflight = src.getTile(2, 0, 10, 1);
+        // **必须用区间级失效**:整轨清走 perCh.delete(ch) 会把整个 Map 换掉,
+        // 旧笔回写进的是已成孤儿的 Map,天然无害 —— 拿它做判据测不出这条竞态
+        // (本断言第一版就栽在这,反向验证时才发现)。区间级走的是同一个 Map 上
+        // 的 cache.delete(key),正是 pr-agent 指明的隐患路径。
+        src.invalidate(2, [{ startS: 0, endS: 10 }]);
+        release({
+            minDb: [0],
+            maxDb: [0],
+            covered: [1],
+            vad: [0],
+            stale: [0],
+            passId: [1],
+            valleys: [],
+        });
+        await inflight;
+        check(
+            src.peek(2, 0, 10, 1) === null,
+            "在途期间被失效 ⇒ 迟到的 resolve 不回写缓存",
+        );
+    }
     near(WF.envelopeHalfPx(0, 34), 13, 1e-9, "0 dB 顶到半高 13(34px 泳道)");
     near(WF.envelopeHalfPx(-80, 34), 1, 1e-9, "地板画最细 1px");
     near(WF.envelopeHalfPx(-160, 34), 1, 1e-9, "哨兵 -160 夹到地板");
