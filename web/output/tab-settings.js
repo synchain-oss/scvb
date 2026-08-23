@@ -311,8 +311,10 @@ export function createTabSettings(opts) {
     }
 
     function reopenTour() {
-        // [T36b] tour.js 消费 data-tour="review" 锚点并重启交互式引导;T35 只落入口。
+        // [T36b] tour.js 消费 data-tour="review" 锚点并重启交互式引导(tour_seen 已置位也可再开);
+        // T35 只落入口,真正重启经 opts.onReopenTour 回 app.js 调 tour.start()。
         // 无 tour 时零副作用(按钮本身不写 state、不发桥函数)。
+        if (typeof opts.onReopenTour === "function") opts.onReopenTour();
     }
 
     function toggleDiag() {

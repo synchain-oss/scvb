@@ -47,6 +47,7 @@ import { createTabTracks } from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
 import { createTabSettings } from "./tab-settings.js";
+import { createTour, shouldShowTourAsk } from "./tour.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -113,6 +114,16 @@ const store = {
         recapOutputOpened: false,
     },
 };
+
+/**
+ * 渲染视图切换:tour 激活期返回 demo store(纯 UI 展示层),否则返回真实事件仓 store。
+ * 真实事件始终写 store(期间照常入内存、逐字节不变);只有渲染消费面被临时切到 demo。
+ */
+let tour = null;
+
+function viewStore() {
+    return tour && tour.isActive() ? tour.demoStore() : store;
+}
 
 /** 拒绝态提示的挂留时长(与 footer 打印结束提示同族的一次性可见反馈)。 */
 const REJECT_HINT_MS = 4000;
@@ -309,7 +320,7 @@ document.addEventListener("pointermove", (e) => {
 const tabMaster = createTabMaster({
     root: document,
     bridge,
-    getStore: () => store,
+    getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
 });
@@ -322,7 +333,7 @@ tabMaster.mount();
 const tabTracks = createTabTracks({
     root: document,
     bridge,
-    getStore: () => store,
+    getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
 });
@@ -335,7 +346,7 @@ const curveEditor = createCurveEditor({
     canvas: document.querySelector('[data-gb="master-pancurve-canvas"]'),
     root: document,
     bridge,
-    getStore: () => store,
+    getStore: () => viewStore(),
     getT: () => dictNow,
     // T33 起全页统一走 rAF 合帧的 requestRender(),不再逐事件同步整页 render()
     onLocalChange: () => requestRender(),
@@ -349,7 +360,7 @@ curveEditor.mount();
 const tabWave = createTabWave({
     root: document,
     bridge,
-    getStore: () => store,
+    getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
     // 空态 CTA「去 Tab1 打开采集」等页间跳转(05 §2.3 行 318)
@@ -363,9 +374,10 @@ tabWave.mount();
 const tabSettings = createTabSettings({
     root: document,
     bridge,
-    getStore: () => store,
+    getStore: () => viewStore(),
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
+    onReopenTour: () => tour && tour.start(),
 });
 tabSettings.mount();
 // 四个 tab 装配完毕,render() 从这里起可以跑(装配前 render 直接早退 ——
@@ -388,6 +400,21 @@ for (const gb of [
             tabWave.locateRecapture();
         });
     }
+}
+
+// ------------------------------------------------------------- tour(T36b)
+// 首启交互式引导;蒙版/spotlight/说明框/步骤机/demo badge 在 tour.js。
+// 询问步(tour-ask)与「重看引导」入口(settings-reopentour)在上/下方接线。
+tour = createTour({
+    root: document,
+    card,
+    bridge,
+    getT: () => dictNow,
+    activateTab,
+    getActiveTab: () => content.getAttribute("data-tab"),
+    requestRender: () => requestRender(),
+});
+tour.mount();
 }
 
 // ------------------------------------------------------------- 缩放档位(footer 下拉 + 设置页,05 §1.2)
@@ -456,7 +483,7 @@ let scalePrev = 1;
 let scaleLeft = 0;
 
 function currentScale() {
-    const ui = store.state.ui;
+    const ui = viewStore().state.ui;
     return ui && Number.isFinite(ui.scale) ? ui.scale : 1;
 }
 
@@ -573,7 +600,7 @@ let renamingVersion = 0;
 let armedPendingVersion = 0;
 
 function versionName(v) {
-    const arr = store.state.versions || [];
+    const arr = viewStore().state.versions || [];
     const entry = arr[v - 1];
     return entry && entry.name ? entry.name : "V" + v;
 }
@@ -772,6 +799,36 @@ if (guideUi.start) {
         const alsoGlobal = !!(guideUi.dontShow && guideUi.dontShow.checked);
         call("setGuideSeen", true, alsoGlobal);
         if (guideUi.overlay) guideUi.overlay.hidden = true;
+        // J62:开始使用 → 询问步衔接(ui.tour_seen=false 且全局默认未置位时弹小卡)。
+        if (
+            tourAskUi.overlay &&
+            shouldShowTourAsk(store.state, store.snapshot)
+        ) {
+            tourAskUi.overlay.hidden = false;
+        }
+    });
+}
+
+// ============================================================================
+// tour 询问步(J62:红字页「开始使用」→ 询问步 → tour;契约 §1.33 setTourSeen)
+// ============================================================================
+const tourAskUi = {
+    overlay: $("tour-ask"),
+    start: $("tour-ask-start"),
+    later: $("tour-ask-later"),
+};
+
+if (tourAskUi.start) {
+    tourAskUi.start.addEventListener("click", () => {
+        if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
+        if (tour) tour.start();
+    });
+}
+if (tourAskUi.later) {
+    tourAskUi.later.addEventListener("click", () => {
+        // 暂不 = 婉拒 tour,同样置位(§2.6:完成与暂不都 setTourSeen(true, true))。
+        call("setTourSeen", true, true);
+        if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
     });
 }
 
@@ -870,12 +927,12 @@ function render() {
 }
 
 function renderHeader() {
-    const s = store.state;
+    const s = viewStore().state;
     const g = s.global || {};
-    const phase = outputPhase(s, store.playhead);
+    const phase = outputPhase(s, viewStore().playhead);
 
     // 连接摘要 pill:N/15 只统计 slotState=2 ∧ heartbeatFresh(契约 §2.3,J01)
-    const n = connectedCount(store.conn);
+    const n = connectedCount(viewStore().conn);
     const pill = $("header-conn-pill");
     const count = $("header-conn-count");
     if (count) count.textContent = n + "/" + CHANNEL_COUNT;
@@ -900,7 +957,7 @@ function renderHeader() {
     // disabled 的两个来源:①UI 自己判定的 PRINT 态(05 §2.1 ③);②C++ 回的
     // `{rejected:"printing"}`(§5.6 双保险的另一半,UI 与引擎不同步时才命中)。
     const active = g.version_active || 1;
-    const rejected = Date.now() < store.session.rejectedPrintingUntil;
+    const rejected = Date.now() < viewStore().session.rejectedPrintingUntil;
     const printLocked = phase === "print" || rejected;
     verUi.chips.forEach((chip, i) => {
         if (!chip) return;
@@ -947,20 +1004,20 @@ function renderHeader() {
  * ②持续性条件(①-⑥)不可手动关闭,`active:false` 才撤下(所以显隐一律从 store.errors 算)。
  */
 function renderBanners() {
-    const s = store.state;
-    const err = store.errors;
+    const vs = viewStore();
+    const s = vs.state;
+    const err = vs.errors;
     const groupLetter = GROUP_IDS[(s.group_id || 1) - 1];
 
     // ① 路由失准(数据源 scvb.conn 的 misalignCount,非 error code)
-    const mis = misalignedTracks(store.conn);
+    const mis = misalignedTracks(vs.conn);
     show($("banner-misaligned"), mis > 0);
     fill($("banner-misaligned-text"), "banner.misaligned", { m: mis });
 
     // ② 组内只读观察 → 全 UI 写控件 disabled
     const second = err.get("secondOutput");
-    const readOnly =
-        !!second || !!(store.conn && store.conn.outputReadOnly === true);
-    store.readOnly = readOnly;
+    const readOnly = !!second || !!(vs.conn && vs.conn.outputReadOnly === true);
+    vs.readOnly = readOnly;
     show($("banner-secondOutput"), readOnly);
     if (readOnly) {
         const gid =
@@ -994,8 +1051,8 @@ function renderBanners() {
 
     // ⑤ 采集数据缺失/过期  ⑥ 宿主未提供时间线(后者同时 disable 采集/输出开关)
     show($("banner-sidecarMissing"), err.has("sidecarMissing"));
-    store.noTimeline = err.has("noTimeline");
-    show($("banner-noTimeline"), store.noTimeline);
+    vs.noTimeline = err.has("noTimeline");
+    show($("banner-noTimeline"), vs.noTimeline);
 
     // ⑦ 加载守卫(数据源 scvb.state.print_guard,不是 error code)
     show($("banner-printGuard"), !!(s.print_guard && s.print_guard.pending));
@@ -1006,9 +1063,9 @@ function renderBanners() {
 
     // 未知 code:原样显示并入 Tab4 诊断区(ADR-002 / ipc §5,UI 不静默)
     const diag = $("settings-diagnostics-list");
-    if (diag && store.unknownCodes.length) {
+    if (diag && vs.unknownCodes.length) {
         diag.replaceChildren(
-            ...store.unknownCodes.map((code) => {
+            ...vs.unknownCodes.map((code) => {
                 const li = document.createElement("li");
                 li.textContent = code;
                 return li;
@@ -1029,21 +1086,22 @@ function setTitle(node, text) {
 }
 
 function renderFooter() {
-    const s = store.state;
+    const vs = viewStore();
+    const s = vs.state;
     const g = s.global || {};
     const range = g.range || { mode: "follow", start_s: 0, end_s: 0 };
     const footer = $("footer");
-    const printing = outputPhase(s, store.playhead) === "print";
+    const printing = outputPhase(s, vs.playhead) === "print";
 
     // print → printDone 的一次性切换(打印结束提示只挂 8 秒,之后回默认提示行)
-    if (store.session.wasPrinting && !printing) {
-        store.session.printDoneUntil = Date.now() + 8000;
+    if (vs.session.wasPrinting && !printing) {
+        vs.session.printDoneUntil = Date.now() + 8000;
     }
-    store.session.wasPrinting = printing;
+    vs.session.wasPrinting = printing;
 
     let mode = "default";
     if (printing) mode = range.mode === "follow" ? "follow" : "print";
-    else if (Date.now() < store.session.printDoneUntil) mode = "printDone";
+    else if (Date.now() < vs.session.printDoneUntil) mode = "printDone";
     if (footer) footer.setAttribute("data-mode", mode);
     // printDone 是**时间窗**,窗口到点必须补一拍才会回默认行 —— 契约 §0.4 是
     // 「值未变不发」,打印结束后走带停住、事件流随之安静,不能指望「下一帧事件」
@@ -1085,8 +1143,8 @@ function renderFooter() {
 
     // 版本号(§1.1 快照的 version.plugin;快照没到之前保持 HTML 里的占位)
     const ver = $("footer-version");
-    if (ver && store.snapshot && store.snapshot.version) {
-        ver.textContent = "v" + store.snapshot.version.plugin;
+    if (ver && vs.snapshot && vs.snapshot.version) {
+        ver.textContent = "v" + vs.snapshot.version.plugin;
     }
 }
 
@@ -1118,9 +1176,9 @@ function renderGuide() {
     renderGuideRules();
     // 首启判定归 tab-master.js 的 shouldShowGuide()(纯函数,node 侧可断言)。
     guideUi.overlay.hidden = !shouldShowGuide(
-        store.state,
-        store.ready ? store.snapshot : null,
-        store.session.guideClosed,
+        viewStore().state,
+        viewStore().ready ? viewStore().snapshot : null,
+        viewStore().session.guideClosed,
     );
 }
 
@@ -1302,6 +1360,8 @@ function syncUiFromState() {
     if (ui.language && ui.language !== lang && LANGS.includes(ui.language)) {
         setLang(ui.language, { push: false });
     }
+    // tour 期间 tab 为 UI 本地态,真实 state 的 active_tab 不回推(§2.6)。
+    if (tour && tour.isActive()) return;
     if (ui.active_tab && content.getAttribute("data-tab") !== ui.active_tab) {
         activateTab(ui.active_tab, { push: false });
     }

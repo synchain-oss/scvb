@@ -99,6 +99,8 @@ export const SCENARIO_MAP = Object.freeze({
     // T33 接线:布防态落在健康满配世界上,由 buildWorld 场景覆写改快照初值
     // (state.recapture 按契约 §9.2 形状回读,Tab3 三处 badge 的数据源)
     "recapture-armed": "fifteen-tracks",
+    // T36b 首启交互式引导:guide 已过、tour_seen=false(见 buildWorld 覆写)
+    "first-run-tour": "fifteen-tracks",
     // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
     "curve-editor": "fifteen-tracks",
 });
@@ -460,6 +462,16 @@ export function buildWorld(opts = {}) {
             ...outputSnapshot,
             ui: { ...outputSnapshot.ui, guide_seen: false },
             guide_seen_global: false,
+        };
+    }
+    if (opts.scenario === "first-run-tour" && outputSnapshot) {
+        // 05 §2.5 / J62:guide 已过、tour 尚未看 → 引导页不弹,tour 经 Tab4「重看引导」重启。
+        // makeTourDemoSnapshot 默认即 guide_seen=true / tour_seen=false,此处显式覆写自文档化。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, guide_seen: true, tour_seen: false },
+            guide_seen_global: true,
+            tour_seen_global: false,
         };
     }
     if (opts.scenario === "curve-editor" && outputParams) {
