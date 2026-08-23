@@ -84,6 +84,9 @@ struct Args
     long long lingerMs = 0;
     // 读方读多少帧(覆盖 blocks*blocksize 的默认值;reader 与 writer 块长不同时由父进程显式传入)。
     long long totalFrames = 0;
+    // 读前显式等写方静止(write_head 到达该值,超时 10s)。用于「错误口径」类用例:让覆盖判定在
+    // 确定性时机触发,消除「读方追平写方 → 无 gap → 周期性 ramp 使错位内容哈希恰等于期望」的 flake。
+    long long waitWriteHead = 0;
 };
 
 bool hasArg(int argc, char** argv, const char* key)
@@ -158,6 +161,7 @@ Args parse(int argc, char** argv)
     a.featChannels = static_cast<int>(ll(argValue(argc, argv, "--feat-channels"), 1));
     a.lingerMs = ll(argValue(argc, argv, "--linger-ms"), 0);
     a.totalFrames = ll(argValue(argc, argv, "--total-frames"), 0);
+    a.waitWriteHead = ll(argValue(argc, argv, "--wait-write-head"), 0);
     return a;
 }
 
@@ -351,6 +355,21 @@ int runReader(const Args& a)
     long long blockIndex = 0;
     long long gapTimeout = 0;
     long long gapReadBlock = 0;
+
+    // 可选:读前显式等写方静止(见 Args::waitWriteHead)。覆盖判定(写方超过半环)由此在确定性
+    // 时机触发,而不是依赖「写方是否恰好先写完」的进程调度时序。
+    if (a.waitWriteHead > 0)
+    {
+        const u64 deadline = ::GetTickCount64() + 10000;
+        while (hdr->write_head_samples.load(std::memory_order_acquire) < static_cast<u64>(a.waitWriteHead))
+        {
+            if (::GetTickCount64() >= deadline)
+            {
+                break;
+            }
+            ::Sleep(0);
+        }
+    }
 
     // 从第一个非负块开始读(负 t0 区间 Output 直通不读环,§5.2)。
     while (framesRead < totalFrames)
