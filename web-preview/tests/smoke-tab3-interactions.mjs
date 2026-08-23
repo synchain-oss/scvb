@@ -186,6 +186,30 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         cache.get("b") === undefined && cache.get("a") === 1,
         "LRU 挤最久未用、get 保鲜",
     );
+    // 区间级失效(pr-agent):§2.7 是 2Hz 增量事件,整轨清会把 8 块全丢 ⇒
+    // 采集中反复整轨重取。只该丢与 addedRanges 相交的块。
+    {
+        const src = WF.createWaveformSource({
+            request: async () => ({
+                minDb: [0],
+                maxDb: [0],
+                covered: [1],
+                vad: [0],
+                stale: [0],
+                passId: [1],
+                valleys: [],
+            }),
+        });
+        await src.getTile(1, 0, 10, 1); // 键 0:10000:1
+        await src.getTile(1, 60, 70, 1); // 键 60000:70000:1
+        src.invalidate(1, [{ startS: 2, endS: 3 }]); // 只碰前一块
+        check(
+            src.peek(1, 0, 10, 1) === null && src.peek(1, 60, 70, 1) !== null,
+            "区间级失效只丢相交块,不相交的块留着",
+        );
+        src.invalidate(1); // 缺 ranges = 整轨清(clearCoverage 那类语义)
+        check(src.peek(1, 60, 70, 1) === null, "不给区间仍是整轨清");
+    }
     near(WF.envelopeHalfPx(0, 34), 13, 1e-9, "0 dB 顶到半高 13(34px 泳道)");
     near(WF.envelopeHalfPx(-80, 34), 1, 1e-9, "地板画最细 1px");
     near(WF.envelopeHalfPx(-160, 34), 1, 1e-9, "哨兵 -160 夹到地板");

@@ -3883,10 +3883,17 @@ export function createTabWave(opts) {
         requestRender();
     }
 
-    /** §2.7(播放中 2Hz):覆盖条延伸 → 该轨块缓存失效 + 静态层脏。 */
+    /**
+     * §2.7(播放中 2Hz):覆盖条延伸 → 该轨块缓存失效 + 静态层脏。
+     * **只失效与 `addedRanges` 相交的块**:2Hz 增量事件通常只新增很小一段,
+     * 整轨清会把 8 块 LRU 全丢 ⇒ 采集中反复整轨重取(pr-agent)。载荷没带
+     * `addedRanges` 时退回整轨清(语义 =「这轨变了但不知道哪变了」)。
+     */
     function onCaptureProgress(cp) {
         for (const c of (cp && cp.channels) || []) {
-            if (c && c.ch) waveSource.invalidate(c.ch);
+            if (!c || !c.ch) continue;
+            const added = Array.isArray(c.addedRanges) ? c.addedRanges : null;
+            waveSource.invalidate(c.ch, added && added.length ? added : null);
         }
         local.staticDirty = true;
         schedulePaint();

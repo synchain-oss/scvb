@@ -166,6 +166,9 @@ export function createTileCache(cap = TILE_LRU_CAP) {
         delete: (key) => map.delete(key),
         clear: () => map.clear(),
         size: () => map.size,
+        // 区间级失效要按键遍历(键里编着起止时间);拷成数组再遍历,
+        // 免得边删边迭代
+        keys: () => [...map.keys()],
     };
 }
 
@@ -225,10 +228,39 @@ export function createWaveformSource(opts) {
             const v = cache.get(tileKey(startS, endS, cols));
             return v && !v.then ? v : null;
         },
-        /** 数据失效(clearCoverage / 重采集完成后调;缺 ch = 全轨)。 */
-        invalidate(ch) {
-            if (ch == null) perCh.clear();
-            else perCh.delete(ch);
+        /**
+         * 数据失效(clearCoverage / 重采集完成后调;缺 ch = 全轨)。
+         *
+         * `ranges`(可选,`[{startS,endS}…]`)= **只失效与这些区间相交的块**。
+         * `scvb.captureProgress` 是 2Hz 增量事件(§2.7),载荷通常只新增很小
+         * 一段;不给区间就整轨 8 块全丢 ⇒ 采集中反复整轨重取(pr-agent)。
+         * 缺省仍是整轨清 —— clearCoverage 那类「整轨语义变了」的场合要的就是它。
+         */
+        invalidate(ch, ranges) {
+            if (ch == null) {
+                perCh.clear();
+                return;
+            }
+            if (!Array.isArray(ranges) || !ranges.length) {
+                perCh.delete(ch);
+                return;
+            }
+            const cache = perCh.get(ch);
+            if (!cache) return;
+            for (const key of cache.keys()) {
+                // 键形 = `${起 ms}:${止 ms}:${cols}`(tileKey)
+                const parts = String(key).split(":");
+                const t0 = Number(parts[0]) / 1000;
+                const t1 = Number(parts[1]) / 1000;
+                if (!(t1 > t0)) {
+                    cache.delete(key); // 键形不认识就按失效处理,不留脏块
+                    continue;
+                }
+                const hit = ranges.some(
+                    (r) => r && Number(r.endS) > t0 && Number(r.startS) < t1,
+                );
+                if (hit) cache.delete(key);
+            }
         },
     };
 }

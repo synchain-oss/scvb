@@ -1448,22 +1448,40 @@ function buildOutputBackend(ctx) {
                 return BAD_ARG();
             }
             const tile = makeWaveformTile(ch, startS, endS, cols);
-            // 用 coverage 预览缓存把 covered 位收敛到当前真覆盖(clearCoverage
-            // 扣掉的区域立刻变未覆盖哨兵;§1.27 未覆盖列纪律不变)。
+            // 用 coverage 预览缓存把 covered 位收敛到当前真覆盖,**双向**:
+            //  · `clearCoverage` 扣掉的 → 变未覆盖哨兵(§1.27 未覆盖列纪律);
+            //  · `captureProgress.addedRanges` 新增的 → 从哨兵补回可画值。
+            // 只做单向(pr-agent)会让新采区永远画成未覆盖斜纹,而同一份 mock 的
+            // `coveragePct` / `affectedOf` 已经把它算作覆盖 —— mock 自己不自洽。
+            // ⚠ 补值 -80 是**占位近似**,不是真降采样结果:本 mock 的 fixture 波形
+            // 由 makeWaveformTile 按固定种子生成,采集时段之外没有"真实素材"可降,
+            // 故只保证「可画且不像静音」。真引擎从特征流降采样,不走这条路。
             const cov = model.coverageRanges.get(ch);
             if (cov) {
                 const colW = (endS - startS) / cols;
                 for (let i = 0; i < cols; i++) {
-                    if (!tile.covered[i]) continue;
                     const c0 = startS + i * colW;
-                    if (overlapsRanges(cov, c0, c0 + colW)) continue;
-                    tile.covered[i] = 0;
-                    tile.minDb[i] = -160;
-                    tile.maxDb[i] = -160;
-                    tile.vad[i] = 0;
-                    tile.stale[i] = 0;
-                    tile.passId[i] = 0;
+                    const inCov = overlapsRanges(cov, c0, c0 + colW);
+                    if (inCov === !!tile.covered[i]) continue;
+                    if (!inCov) {
+                        tile.covered[i] = 0;
+                        tile.minDb[i] = -160;
+                        tile.maxDb[i] = -160;
+                        tile.vad[i] = 0;
+                        tile.stale[i] = 0;
+                        tile.passId[i] = 0;
+                    } else {
+                        tile.covered[i] = 1;
+                        tile.minDb[i] = -80;
+                        tile.maxDb[i] = -80;
+                        tile.passId[i] = 1;
+                    }
                 }
+                // 吸附候选也只保留仍在覆盖内的:否则边界拖拽会吸到已被
+                // clearCoverage 清掉的区域里去(那里根本没有能量谷可言)。
+                tile.valleys = (tile.valleys || []).filter((v) =>
+                    overlapsRanges(cov, v, v + 0.01),
+                );
             }
             return tile;
         },
