@@ -301,19 +301,18 @@
                 padding: var(--sp-3) var(--sp-7);
             }
 
-            /* ---- 优先级 stepper */
-            .ipt-stepper__btn {
-                width: 20px;
-                height: 20px;
-                border-radius: var(--r-micro);
-                border: 1px solid var(--card-border);
-                background: rgba(var(--wh), 0.24);
-                color: var(--txt-2);
-                cursor: pointer;
-                font-family: var(--ff-mono);
-                line-height: 1;
+            /* ---- 优先级滑杆(05 §3 stepper → range,用户 2026-08-23 preview 指令;
+                基础 range 样式(tokens.css/base.css 的 accent-color/height/width)已全站一致) */
+            .ipt-priority {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-12);
             }
-            .ipt-stepper__btn[disabled] {
+            .ipt-priority__slider {
+                flex: 1;
+                min-width: 0;
+            }
+            .ipt-priority__slider[disabled] {
                 opacity: 0.4;
                 cursor: not-allowed;
             }
@@ -672,32 +671,22 @@
                         data-gb="input.priority.eyebrow"
                         data-t="priority"
                     ></span>
-                    <div
-                        class="sc-stepper"
-                        data-gb="input.priority.stepper"
-                        data-t-aria="priority"
-                    >
-                        <button
-                            type="button"
-                            class="ipt-stepper__btn"
-                            data-gb="input.priority.stepper.dec"
-                            aria-label="−"
-                        >
-                            −
-                        </button>
+                    <div class="ipt-priority" data-gb="input.priority.stepper">
+                        <input
+                            type="range"
+                            class="ipt-priority__slider"
+                            data-gb="input.priority.slider"
+                            min="0"
+                            max="10"
+                            step="1"
+                            value="0"
+                            data-t-aria="priority"
+                        />
                         <span
                             class="sc-stepper__val"
                             data-gb="input.priority.stepper.val"
                             >0</span
                         >
-                        <button
-                            type="button"
-                            class="ipt-stepper__btn"
-                            data-gb="input.priority.stepper.inc"
-                            aria-label="+"
-                        >
-                            +
-                        </button>
                     </div>
                     <p
                         class="sc-hint"

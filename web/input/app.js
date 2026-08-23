@@ -364,13 +364,28 @@ async function claimChannel(ch) {
     render();
 }
 
-// ------------------------------------------------------------- 优先级 stepper 接线
+// ------------------------------------------------------------- 优先级滑杆接线
+// (05 §3 stepper → range,用户 2026-08-23 preview 指令;语义不变:0..10,10=最高)
 function wirePriority() {
-    const dec = $("input.priority.stepper.dec");
-    const inc = $("input.priority.stepper.inc");
-    if (!dec || !inc) return;
-    dec.addEventListener("click", () => stepPriority(-1));
-    inc.addEventListener("click", () => stepPriority(1));
+    const slider = $("input.priority.slider");
+    if (!slider) return;
+    // 拖动档:本地乐观显示(priorityLocal),回执以 scvb.config 为准(契约 §3.4)
+    slider.addEventListener("input", () => {
+        store.local.priorityLocal = Number(slider.value);
+        render();
+    });
+    // 松手档:经 ctrl 命令环写 remoteSetPriority(契约 §3.4)
+    slider.addEventListener("change", () => {
+        const next = Number(slider.value);
+        if (priorityBlockReason() !== null) return;
+        call("remoteSetPriority", next).then((res) => {
+            if (res && res.queued === false && res.reason === "ringFull") {
+                // 满环:设置未送达 —— 回滚乐观值(契约 §3.4 的 UI 提示由 footer 承担)
+                store.local.priorityLocal = null;
+                render();
+            }
+        });
+    });
 }
 
 function currentPriority() {
@@ -384,20 +399,6 @@ function priorityBlockReason() {
     const conn = store.conn || {};
     if (!conn.outputOnline) return "offline";
     return null;
-}
-
-async function stepPriority(delta) {
-    if (priorityBlockReason() !== null) return;
-    const next = Math.max(0, Math.min(10, currentPriority() + delta));
-    // 本地乐观显示,以 scvb.config 回执为准(契约 §3.4)
-    store.local.priorityLocal = next;
-    render();
-    const res = await call("remoteSetPriority", next);
-    if (res && res.queued === false && res.reason === "ringFull") {
-        // 满环:设置未送达 —— 回滚乐观值(契约 §3.4 的 UI 提示由 footer 承担)
-        store.local.priorityLocal = null;
-        render();
-    }
 }
 
 // ------------------------------------------------------------- 缩放(05 §1.2 / 契约 §3.5/§3.6)
@@ -708,7 +709,7 @@ function renderSource() {
 
 function renderPriority() {
     const val = $("input.priority.stepper.val");
-    if (val) val.textContent = String(currentPriority());
+    const slider = $("input.priority.slider");
     const reason = priorityBlockReason();
     const blocked = reason !== null;
     const stepper = $("input.priority.stepper");
@@ -725,13 +726,14 @@ function renderPriority() {
                 : "",
         );
     }
-    for (const btn of [
-        $("input.priority.stepper.dec"),
-        $("input.priority.stepper.inc"),
-    ]) {
-        if (!btn) continue;
-        btn.disabled = blocked;
-        btn.setAttribute("aria-disabled", String(blocked));
+    const prio = String(currentPriority());
+    if (val) val.textContent = prio;
+    if (slider) {
+        slider.disabled = blocked;
+        slider.setAttribute("aria-disabled", String(blocked));
+        slider.value = prio;
+        slider.setAttribute("aria-valuenow", prio);
+        slider.setAttribute("aria-valuetext", prio);
     }
 }
 
