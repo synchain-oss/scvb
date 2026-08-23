@@ -128,6 +128,22 @@ log("=== ② 纯函数 ===");
         },
         "缺字段回落默认",
     );
+    // 改后需重分析 = 当前值 !== 基线值(用户 preview:改回原值提示立即消失)
+    eq(
+        TS.analysisConfigStale("rms", "kw_integrated"),
+        true,
+        "loudness_mode 改走 → 提示出现",
+    );
+    eq(
+        TS.analysisConfigStale("kw_integrated", "kw_integrated"),
+        false,
+        "loudness_mode 改回初值 → 提示消失",
+    );
+    eq(
+        TS.analysisConfigStale("peak_dbfs", "rms"),
+        true,
+        "再次改走 → 提示再出现",
+    );
     eq(
         TS.diagRowsOf({
             conn: {
@@ -358,10 +374,9 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
         "两设置块经 setAnalysisConfig(§1.21)落 state",
     );
     check(
-        /field === "loudness_mode"[\s\S]{0,80}analysisConfigDirty = true/.test(
-            ts,
-        ),
-        "改后需重分析只在 loudness_mode 变化时置位",
+        ts.includes("analysisConfigBaseline") &&
+            ts.includes("analysisConfigStale("),
+        "改后需重分析由「当前值 vs 基线」派生(仅响度口径)",
     );
     check(
         /set.reanalyze/.test(html) && /settings-loudnessmode-stale/.test(html),

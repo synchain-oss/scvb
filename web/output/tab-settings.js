@@ -117,6 +117,14 @@ export function analysisConfigOf(state) {
 }
 
 /**
+ * 响度口径「改后需重分析」判定:当前值 !== 基线值。
+ * 改走 → true(提示出现);改回基线值 → false(提示立即消失)。纯函数供 node 断言。
+ */
+export function analysisConfigStale(currentMode, baselineMode) {
+    return currentMode !== baselineMode;
+}
+
+/**
  * 诊断区行模型(05 §2.4:每轨 heartbeat 年龄 / 失准计数 / generation / config_seq)。
  * @param {object} store app.js 事件仓({state, conn})
  */
@@ -200,12 +208,13 @@ export function createTabSettings(opts) {
     };
 
     // 页面内一次性状态(不属 state chunk,重开面板即重置):
-    //   analysisConfigDirty —— J69 两设置项改动后的「改后需重分析」标志。03 §6.3 把
-    //   analysis_settings_stale 定义为 (当前 ≠ applied.*) 的**派生字段**,但 T25 冻结契约
-    //   §1.1/§2.1 的 state 载荷未暴露 applied.* / analysis_settings_stale,故 UI 侧以本地态
-    //   承载同语义:改动置位,收到 reason="analyze" 的全量段表回推后清零。
+    //   analysisConfigBaseline —— 响度口径的「基线值」= 分析已应用的口径。03 §6.3 把
+    //   analysis_settings_stale 定义为 (当前 ≠ applied.*) 的派生字段,但 T25 冻结契约
+    //   §1.1/§2.1 未暴露 applied.* / analysis_settings_stale,故 UI 以本地基线承载同语义:
+    //   mount 时快照当前值(mock 环境即初值);真插件下由分析完成事件(onSegments)同步;
+    //   stale = 当前值 !== 基线值 —— 改走提示出现,改回基线值立即消失。
     const local = {
-        analysisConfigDirty: false,
+        analysisConfigBaseline: null,
         nineOpen: false,
         diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
@@ -281,9 +290,8 @@ export function createTabSettings(opts) {
                     requestRender();
                     return;
                 }
-                // 改后需重分析提示只在 loudness_mode 变化时出现;
-                // center_slot_policy 变化不弹该提示(用户 preview 口径)。
-                if (field === "loudness_mode") local.analysisConfigDirty = true;
+                // 不做乐观 dirty —— syncStale 按「当前值 vs 基线」派生提示;
+                // 且该提示只由 loudness_mode 承载(center_slot_policy 不弹,用户 preview 口径)。
                 requestRender();
             });
         });
@@ -362,6 +370,8 @@ export function createTabSettings(opts) {
         renderOptions(el.centerSeg, CENTER_SLOT_POLICIES);
         wireSeg(el.loudnessSeg, "loudness_mode");
         wireSeg(el.centerSeg, "center_slot_policy");
+        // 基线 = mount 时当前响度口径(mock 环境即初值;真插件下由 onSegments 同步)
+        local.analysisConfigBaseline = config().loudness_mode;
         if (el.guideExpand)
             el.guideExpand.addEventListener("click", toggleNine);
         if (el.reopenTour) el.reopenTour.addEventListener("click", reopenTour);
@@ -390,13 +400,15 @@ export function createTabSettings(opts) {
     }
 
     function syncStale() {
-        show(el.loudnessStale, local.analysisConfigDirty);
-        if (el.loudnessStale)
-            attr(
-                el.loudnessStale,
-                "data-stale",
-                local.analysisConfigDirty ? "1" : "0",
+        const stale =
+            local.analysisConfigBaseline !== null &&
+            analysisConfigStale(
+                config().loudness_mode,
+                local.analysisConfigBaseline,
             );
+        show(el.loudnessStale, stale);
+        if (el.loudnessStale)
+            attr(el.loudnessStale, "data-stale", stale ? "1" : "0");
     }
 
     function renderGuideRules() {
@@ -502,12 +514,12 @@ export function createTabSettings(opts) {
     }
 
     /**
-     * 全量分析完成(scvb.segments reason="analyze")→ 清「改后需重分析」标志(03 §6.3:
-     * 全量分析完成时同步 applied.*,派生 stale 归零)。局部分析/快照不清。
+     * 全量分析完成(scvb.segments reason="analyze")→ 基线同步为当前值(03 §6.3:
+     * 全量分析完成时同步 applied.*,派生 stale 归零)。局部分析/快照不同步。
      */
     function onSegments(seg) {
-        if (seg && seg.reason === "analyze" && local.analysisConfigDirty) {
-            local.analysisConfigDirty = false;
+        if (seg && seg.reason === "analyze") {
+            local.analysisConfigBaseline = config().loudness_mode;
             requestRender();
         }
     }
