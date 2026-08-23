@@ -738,8 +738,7 @@ function renderPriority() {
 }
 
 function renderRemoteSummary() {
-    // 05 §3:Output 离线隐藏;确认条展开期间暂隐(守 560px 高度预算);
-    // lead/pair/freeze 全默认(无内容)时也不显示,避免露出空玻璃面板。
+    // 05 §3:Output 离线隐藏;确认条展开期间暂隐;lead/pair/freeze 全默认时整行隐藏。
     const conn = store.conn || {};
     const confirmOpen =
         store.local.pendingGroup !== 0 || store.local.pendingRelease;
@@ -754,19 +753,38 @@ function renderRemoteSummary() {
         (hasLead || hasPair || hasFreeze);
     show($("input.remoteSummary"), showRow);
     if (!showRow || !cfg) return;
-    show($("input.remoteSummary.lead"), hasLead);
-    show($("input.remoteSummary.pair"), hasPair);
-    if (hasPair) {
-        $("input.remoteSummary.pairId").textContent = String(cfg.pair_id);
-    }
-    show($("input.remoteSummary.freeze"), hasFreeze);
-    if (hasFreeze) {
-        const f = cfg.freeze || 0;
-        const parts = [];
-        if (f & 1) parts.push(dictNow["tracks.colFreezePan"] || "冻结P");
-        if (f & 2) parts.push(dictNow["tracks.colFreezeVol"] || "冻结V");
-        $("input.remoteSummary.freezeText").textContent = parts.join("/");
-    }
+
+    // 一行三盏小灯:激活 data-lit=1、未激活 0(不隐藏单盏)。
+    const f = cfg.freeze || 0;
+    const freezeParts = [];
+    if (f & 1) freezeParts.push(dictNow["tracks.colFreezePan"] || "冻结P");
+    if (f & 2) freezeParts.push(dictNow["tracks.colFreezeVol"] || "冻结V");
+    const freezeLabel = freezeParts.length
+        ? freezeParts.join("/")
+        : (dictNow["tracks.colFreezePan"] || "冻结P") +
+          "/" +
+          (dictNow["tracks.colFreezeVol"] || "冻结V");
+    const pairLabel = hasPair
+        ? (dictNow["pair"] || "配对") + " " + cfg.pair_id
+        : dictNow["pair"] || "配对";
+
+    const lead = $("input.remoteSummary.lead");
+    const pair = $("input.remoteSummary.pair");
+    const freeze = $("input.remoteSummary.freeze");
+
+    lead.setAttribute("data-lit", hasLead ? "1" : "0");
+    setTitle(lead, dictNow["leadLock"]);
+    lead.setAttribute("aria-label", dictNow["leadLock"]);
+
+    pair.setAttribute("data-lit", hasPair ? "1" : "0");
+    setTitle(pair, pairLabel);
+    pair.setAttribute("aria-label", pairLabel);
+    const num = $("input.remoteSummary.pairId");
+    if (num) num.textContent = hasPair ? String(cfg.pair_id) : "";
+
+    freeze.setAttribute("data-lit", hasFreeze ? "1" : "0");
+    setTitle(freeze, freezeLabel);
+    freeze.setAttribute("aria-label", freezeLabel);
 }
 
 function renderCapture() {

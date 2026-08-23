@@ -317,17 +317,36 @@
                 cursor: not-allowed;
             }
 
-            /* ---- 远程只读摘要 */
+            /* ---- 远程只读摘要:一行三盏小灯(lead/pair/freeze),点亮/熄灭 */
             .ipt-remote {
                 flex-direction: row;
                 flex-wrap: wrap;
                 align-items: center;
-                gap: var(--sp-12);
+                gap: var(--sp-16);
             }
             .ipt-remote__item {
                 display: inline-flex;
                 align-items: center;
                 gap: var(--sp-5);
+            }
+            .ipt-light {
+                width: var(--sp-6);
+                height: var(--sp-6);
+                border-radius: 50%;
+                flex: none;
+                background: rgba(var(--sem-gray), 0.5);
+                transition:
+                    background var(--dur-1) var(--ease),
+                    box-shadow var(--dur-1) var(--ease);
+            }
+            .ipt-remote__item[data-lit="1"] .ipt-light {
+                background: var(--acc-strong);
+                box-shadow: 0 0 6px var(--acc-cta-shadow);
+            }
+            .ipt-remote__pairnum {
+                font-size: var(--fs-80);
+                color: var(--txt-3);
+                line-height: 1;
             }
 
             .ipt-capture[hidden] {
@@ -695,7 +714,7 @@
                     ></p>
                 </section>
 
-                <!-- 远程只读摘要(lead/pair/冻结) -->
+                <!-- 远程只读摘要:一行三盏小灯(lead/pair/freeze),点亮/熄灭 -->
                 <section
                     class="ipt-panel ipt-remote sc-glass"
                     data-gb="input.remoteSummary"
@@ -704,30 +723,30 @@
                     <span
                         class="ipt-remote__item"
                         data-gb="input.remoteSummary.lead"
-                        hidden
+                        data-lit="0"
+                        role="status"
                     >
-                        <span class="sc-badge" data-t="leadLock"></span>
+                        <span class="ipt-light" aria-hidden="true"></span>
                     </span>
                     <span
                         class="ipt-remote__item"
                         data-gb="input.remoteSummary.pair"
-                        hidden
+                        data-lit="0"
+                        role="status"
                     >
-                        <span class="sc-badge" data-t="pair"></span>
+                        <span class="ipt-light" aria-hidden="true"></span>
                         <span
-                            class="sc-badge sc-mono"
+                            class="ipt-remote__pairnum sc-mono"
                             data-gb="input.remoteSummary.pairId"
                         ></span>
                     </span>
                     <span
                         class="ipt-remote__item"
                         data-gb="input.remoteSummary.freeze"
-                        hidden
+                        data-lit="0"
+                        role="status"
                     >
-                        <span
-                            class="sc-badge"
-                            data-gb="input.remoteSummary.freezeText"
-                        ></span>
+                        <span class="ipt-light" aria-hidden="true"></span>
                     </span>
                 </section>
 
