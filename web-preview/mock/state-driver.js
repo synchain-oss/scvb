@@ -90,6 +90,8 @@ export const SCENARIO_MAP = Object.freeze({
     // (print_guard.pending / ui.guide_seen),否则加载守卫与引导页在浏览器不可达。
     "print-guard": "fifteen-tracks",
     "first-run": "fifteen-tracks",
+    // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
+    "curve-editor": "fifteen-tracks",
 });
 
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
@@ -417,6 +419,13 @@ export function buildWorld(opts = {}) {
             ...outputSnapshot,
             ui: { ...outputSnapshot.ui, guide_seen: false },
             guide_seen_global: false,
+        };
+    }
+    if (opts.scenario === "curve-editor" && outputParams) {
+        // T34:MS 等效增益叠加线演示 —— 非零 ms_balance 使 g_eq 曲线偏离 0 dB 可见。
+        outputParams = {
+            ...outputParams,
+            values: { ...outputParams.values, ms_balance: 42 },
         };
     }
 
