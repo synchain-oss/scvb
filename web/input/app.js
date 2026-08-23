@@ -100,6 +100,11 @@ function setTitle(node, text) {
     else node.removeAttribute("title");
 }
 
+/** 状态卡点亮:data-lit="0|1" 驱动 CSS 亮/暗。 */
+function setLit(node, lit) {
+    if (node) node.setAttribute("data-lit", lit ? "1" : "0");
+}
+
 /** 词条 + 占位符 → textContent(先写 key 供切语言重刷,再填占位符)。 */
 function fillKeyed(node, key, vals) {
     if (!node) return;
@@ -738,53 +743,70 @@ function renderPriority() {
 }
 
 function renderRemoteSummary() {
-    // 05 §3:Output 离线隐藏;确认条展开期间暂隐;lead/pair/freeze 全默认时整行隐藏。
+    // 05 §3:Output 离线隐藏;确认条展开期间暂隐;其余(已选通道)显示,未激活 = 暗淡。
     const conn = store.conn || {};
     const confirmOpen =
         store.local.pendingGroup !== 0 || store.local.pendingRelease;
     const cfg = store.config;
-    const hasLead = !!(cfg && cfg.lead_lock);
-    const hasPair = !!(cfg && (cfg.pair_id || 0) !== 0);
-    const hasFreeze = !!(cfg && (cfg.freeze || 0) !== 0);
     const showRow =
         !!cfg &&
         conn.outputOnline === true &&
         !confirmOpen &&
-        (hasLead || hasPair || hasFreeze);
+        (store.state.channel_id || 0) >= 1;
     show($("input.remoteSummary"), showRow);
     if (!showRow || !cfg) return;
 
-    // 一行三盏小灯:激活 data-lit=1、未激活 0(不隐藏单盏)。
+    // MONO / STEREO:源类型状态(只读 J57),当前哪种亮哪种。
+    const stereo = (cfg.source_channels || 1) === 2;
+    setLit($("input.remoteSummary.mono"), !stereo);
+    setLit($("input.remoteSummary.stereo"), stereo);
+    const monoCard = $("input.remoteSummary.mono");
+    const stereoCard = $("input.remoteSummary.stereo");
+    setTitle(monoCard, "MONO");
+    monoCard.setAttribute("aria-label", "MONO");
+    setTitle(stereoCard, "STEREO");
+    stereoCard.setAttribute("aria-label", "STEREO");
+
+    // lead / pair / freeze:激活点亮,未激活暗淡(不隐藏)。
+    const hasLead = !!cfg.lead_lock;
+    const hasPair = (cfg.pair_id || 0) !== 0;
     const f = cfg.freeze || 0;
-    const freezeParts = [];
-    if (f & 1) freezeParts.push(dictNow["tracks.colFreezePan"] || "冻结P");
-    if (f & 2) freezeParts.push(dictNow["tracks.colFreezeVol"] || "冻结V");
-    const freezeLabel = freezeParts.length
-        ? freezeParts.join("/")
-        : (dictNow["tracks.colFreezePan"] || "冻结P") +
-          "/" +
-          (dictNow["tracks.colFreezeVol"] || "冻结V");
-    const pairLabel = hasPair
-        ? (dictNow["pair"] || "配对") + " " + cfg.pair_id
-        : dictNow["pair"] || "配对";
+    const hasFreeze = f !== 0;
+    setLit($("input.remoteSummary.lead"), hasLead);
+    setLit($("input.remoteSummary.pair"), hasPair);
+    setLit($("input.remoteSummary.freeze"), hasFreeze);
 
     const lead = $("input.remoteSummary.lead");
-    const pair = $("input.remoteSummary.pair");
-    const freeze = $("input.remoteSummary.freeze");
-
-    lead.setAttribute("data-lit", hasLead ? "1" : "0");
     setTitle(lead, dictNow["leadLock"]);
     lead.setAttribute("aria-label", dictNow["leadLock"]);
 
-    pair.setAttribute("data-lit", hasPair ? "1" : "0");
+    const pair = $("input.remoteSummary.pair");
+    const pairLabel = hasPair
+        ? (dictNow["pair"] || "配对") + " " + cfg.pair_id
+        : dictNow["pair"] || "配对";
     setTitle(pair, pairLabel);
     pair.setAttribute("aria-label", pairLabel);
     const num = $("input.remoteSummary.pairId");
     if (num) num.textContent = hasPair ? String(cfg.pair_id) : "";
 
-    freeze.setAttribute("data-lit", hasFreeze ? "1" : "0");
-    setTitle(freeze, freezeLabel);
-    freeze.setAttribute("aria-label", freezeLabel);
+    const freeze = $("input.remoteSummary.freeze");
+    // 短标:"冻结P"→"冻结"、"FRZ P"→"FRZ"、"GEL P"→"GEL"
+    const freezeBase = (dictNow["tracks.colFreezePan"] || "冻结P").replace(
+        /\s*[PV]$/,
+        "",
+    );
+    const freezeLabelEl = $("input.remoteSummary.freezeLabel");
+    if (freezeLabelEl) freezeLabelEl.textContent = freezeBase;
+    const parts = [];
+    if (f & 1) parts.push(dictNow["tracks.colFreezePan"] || "冻结P");
+    if (f & 2) parts.push(dictNow["tracks.colFreezeVol"] || "冻结V");
+    const freezeTitle = parts.length
+        ? parts.join("/")
+        : (dictNow["tracks.colFreezePan"] || "冻结P") +
+          "/" +
+          (dictNow["tracks.colFreezeVol"] || "冻结V");
+    setTitle(freeze, freezeTitle);
+    freeze.setAttribute("aria-label", freezeTitle);
 }
 
 function renderCapture() {
