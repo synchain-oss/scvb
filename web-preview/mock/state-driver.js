@@ -465,12 +465,13 @@ export function buildWorld(opts = {}) {
         };
     }
     if (opts.scenario === "first-run-tour" && outputSnapshot) {
-        // 05 §2.5 / J62:guide 已过、tour 尚未看 → 引导页不弹,tour 经 Tab4「重看引导」重启。
-        // makeTourDemoSnapshot 默认即 guide_seen=true / tour_seen=false,此处显式覆写自文档化。
+        // 05 §2.6 首启顺序固定 = 红字九条页 → 询问步 → tour;场景必须复现完整链条,
+        // 故两级 guide_seen 与 tour_seen 全 false(与 first-run 同款 + 显式 tour 位):
+        // 引导页正常弹出 → 「开始使用」→ 询问步 → 「开始引导」→ 7 步 → 完成落设置页。
         outputSnapshot = {
             ...outputSnapshot,
-            ui: { ...outputSnapshot.ui, guide_seen: true, tour_seen: false },
-            guide_seen_global: true,
+            ui: { ...outputSnapshot.ui, guide_seen: false, tour_seen: false },
+            guide_seen_global: false,
             tour_seen_global: false,
         };
     }

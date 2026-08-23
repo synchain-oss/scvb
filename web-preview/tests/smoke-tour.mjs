@@ -111,6 +111,48 @@ log("=== ② shouldShowTourAsk(J50a 镜像)===");
         false,
         "首帧未到(§0.6 门控)⇒ 不弹",
     );
+
+    // 启动兜底:guide 已见 + tour 未置位 ⇒ 直接显示询问步(不需「开始使用」点击)
+    eq(
+        TOUR.shouldAutoShowTourAsk(
+            { ui: { guide_seen: true, tour_seen: false } },
+            { tour_seen_global: false },
+        ),
+        true,
+        "guide 已见 ∧ tour 未置位 ⇒ 兜底直弹询问步",
+    );
+    eq(
+        TOUR.shouldAutoShowTourAsk(
+            { ui: { guide_seen: false, tour_seen: false } },
+            { tour_seen_global: false },
+        ),
+        false,
+        "guide 未看 ⇒ 走红字页路径,不兜底直弹",
+    );
+    eq(
+        TOUR.shouldAutoShowTourAsk(
+            { ui: { guide_seen: true, tour_seen: true } },
+            { tour_seen_global: false },
+        ),
+        false,
+        "tour 已置位 ⇒ 不弹",
+    );
+    eq(
+        TOUR.shouldAutoShowTourAsk(
+            { ui: { guide_seen: true, tour_seen: false } },
+            { tour_seen_global: true },
+        ),
+        false,
+        "全局默认已置 ⇒ 不弹",
+    );
+    eq(
+        TOUR.shouldAutoShowTourAsk(
+            { ui: { guide_seen: true, tour_seen: false } },
+            null,
+        ),
+        false,
+        "首帧未到 ⇒ 不兜底直弹",
+    );
 }
 
 // =============================================================================
@@ -143,9 +185,14 @@ log("=== ④ mock 端到端:first-run-tour + setTourSeen ===");
     const bridge = createBridge({ role: "output", mockBackend: session.mock });
     session.start();
     const snap = await bridge.requestInitialState();
+    // first-run-tour 复现完整首启链:两级 guide_seen 与 tour_seen 全 false
     check(
-        snap && snap.ui && snap.ui.guide_seen === true,
-        "guide 已过(不弹引导页)",
+        snap && snap.ui && snap.ui.guide_seen === false,
+        "guide_seen=false(红字页会弹,完整链起点)",
+    );
+    check(
+        snap && snap.guide_seen_global === false,
+        "guide_seen_global=false(全局默认未置位)",
     );
     check(
         snap && snap.ui && snap.ui.tour_seen === false,

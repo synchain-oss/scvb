@@ -47,7 +47,11 @@ import { createTabTracks } from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
 import { createTabSettings } from "./tab-settings.js";
-import { createTour, shouldShowTourAsk } from "./tour.js";
+import {
+    createTour,
+    shouldShowTourAsk,
+    shouldAutoShowTourAsk,
+} from "./tour.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -906,6 +910,7 @@ function render() {
     renderFooter();
     renderScale();
     renderGuide();
+    syncTourAsk();
     // 只投影当前激活 tab(T33 渲染性能批):四面板同在 DOM,但每个 tab 的
     // render 都是「store + 本地态 → DOM」的幂等纯投影,切回来时 activateTab
     // 会补一次 requestRender(),晚一帧与提前一帧结果逐字相同。
@@ -1180,6 +1185,21 @@ function renderGuide() {
         viewStore().ready ? viewStore().snapshot : null,
         viewStore().session.guideClosed,
     );
+}
+
+/**
+ * 询问步启动兜底(05 §2.6 首启顺序 + 真实世界边角)。
+ * 正常路径 guide 未看 → 红字页 → 「开始使用」→ 询问步;但若某会话已过红字页却
+ * 没答询问步(guide_seen=true ∧ tour_seen=false ∧ 全局默认未置位),红字页不再弹、
+ * 没有「开始使用」可点,询问步将永远无入口 —— 故每次 render 时直接把它显示出来。
+ * 与「开始使用」处理器共用 shouldShowTourAsk;tour 进行中不重弹(问询只在 tour 前一次)。
+ */
+function syncTourAsk() {
+    if (!tourAskUi.overlay) return;
+    if (tour && tour.isActive()) return;
+    if (shouldAutoShowTourAsk(store.state, store.snapshot)) {
+        tourAskUi.overlay.hidden = false;
+    }
 }
 
 // ============================================================================

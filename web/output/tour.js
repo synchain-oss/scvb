@@ -77,6 +77,20 @@ export function shouldShowTourAsk(state, snapshot) {
 }
 
 /**
+ * 询问步的**启动兜底**判定(05 §2.6 首启顺序 + 真实世界边角)。
+ * 正常路径:guide 未看 → 红字页 → 「开始使用」→ 询问步(shouldShowTourAsk);
+ * 但若某会话已过红字页(ui.guide_seen=true)却没答询问步(tour 未置位),红字页不会再弹、
+ * 「开始使用」无处可点,询问步就永远没有入口 —— 故渲染层在 guide 已见 + tour 未置位时
+ * **直接显示询问步**,与「开始使用」处理器共用 shouldShowTourAsk 同一判定。
+ * @param {object} state    工程 state 子树(含 ui.guide_seen / ui.tour_seen)
+ * @param {object} snapshot §1.1 快照(含 tour_seen_global)
+ */
+export function shouldAutoShowTourAsk(state, snapshot) {
+    const ui = (state && state.ui) || {};
+    return ui.guide_seen === true && shouldShowTourAsk(state, snapshot);
+}
+
+/**
  * 由 FIFTEEN_TRACKS(J62 健康满配 15 轨 demo)造一份与 app.js 事件仓同形的渲染视图。
  *
  * 为什么不直接改 app.js 的 store:tour 期间真实事件必须照常入内存(store 逐字节不变),
