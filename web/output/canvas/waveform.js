@@ -185,12 +185,30 @@ export function createTileCache(cap = TILE_LRU_CAP) {
  */
 export function createWaveformSource(opts) {
     const request = (opts || {}).request;
-    /** ch → LRU。 */
+    /** ch → LRU(**新鲜**块;权威绘制只认这一份)。 */
     const perCh = new Map();
+    /**
+     * ch → LRU(**陈旧影子**;只供过渡帧垫底,`peek` 永不命中它)。
+     *
+     * 为什么要它:`scvb.captureProgress` 是 2Hz 增量事件,每帧的 `addedRanges`
+     * 只有半秒宽 —— 但**跨度大的块和几乎每个新增区间都相交**,硬删的话,
+     * 采集中「整曲概览」那块每 500ms 就被清一次,缩小视口时两侧永远没东西
+     * 垫底、露出空白(用户实测)。软失效把它挪到影子里:数据是旧的,但对
+     * 「过渡半秒钟别露白」这件事足够用,新块一到就被盖掉。
+     *
+     * ⚠ `clearCoverage` 那类**数据被真删掉**的失效必须走硬删(keepStale:false):
+     * 那时候旧块画出来的是「已经不存在的波形」,垫底就是骗人。
+     */
+    const perChStale = new Map();
 
     function cacheOf(ch) {
         if (!perCh.has(ch)) perCh.set(ch, createTileCache());
         return perCh.get(ch);
+    }
+
+    function staleOf(ch) {
+        if (!perChStale.has(ch)) perChStale.set(ch, createTileCache());
+        return perChStale.get(ch);
     }
 
     async function getTile(ch, startS, endS, cols) {
@@ -237,6 +255,38 @@ export function createWaveformSource(opts) {
 
     return {
         getTile,
+        /**
+         * 取该轨缓存里**所有与 [startS,endS) 相交**的成品块(不含在途 Promise),
+         * 附各自的时间范围;**按跨度从宽到窄**排序,调用方顺序画上去即可 ——
+         * 宽块打底、窄块(细节多)压在上面。
+         *
+         * 用途:视口变化中的过渡帧。只画「当前视口那一块」时,缩小档会因为老块
+         * 比新视口窄而在两侧留白(用户实测);把几块老块按时间拼上去就补满了。
+         * 不走 `get` 是刻意的:过渡帧的读取不该重排 LRU、把将淘汰的块救活。
+         */
+        peekOverlapping(ch, startS, endS) {
+            const a = num(startS, 0);
+            const b = num(endS, 0);
+            if (!(b > a)) return [];
+            const pick = (cache) => {
+                const out = [];
+                if (!cache || !cache.keys) return out;
+                for (const key of cache.keys()) {
+                    const parts = String(key).split(":");
+                    const t0 = Number(parts[0]) / 1000;
+                    const t1 = Number(parts[1]) / 1000;
+                    if (!(t1 > t0) || t1 <= a || t0 >= b) continue;
+                    const v = cache.peek ? cache.peek(key) : undefined;
+                    if (!v || v.then) continue; // 在途 Promise 不算
+                    out.push({ tile: v, startS: t0, endS: t1 });
+                }
+                return out.sort(
+                    (x, y) => y.endS - y.startS - (x.endS - x.startS),
+                );
+            };
+            // 陈旧块先(垫底),新鲜块后(压在上面)—— 两组各自宽到窄。
+            return pick(perChStale.get(ch)).concat(pick(perCh.get(ch)));
+        },
         /** 只查缓存(在途 Promise 不算命中)——渲染帧禁止 await。 */
         peek(ch, startS, endS, cols) {
             const cache = perCh.get(ch);
@@ -251,18 +301,42 @@ export function createWaveformSource(opts) {
          * `scvb.captureProgress` 是 2Hz 增量事件(§2.7),载荷通常只新增很小
          * 一段;不给区间就整轨 8 块全丢 ⇒ 采集中反复整轨重取(pr-agent)。
          * 缺省仍是整轨清 —— clearCoverage 那类「整轨语义变了」的场合要的就是它。
+         *
+         * `keepStale`(默认 **true**)= 失效的块挪进影子缓存供过渡帧垫底,
+         * 而不是直接扔。采集中跨度大的块与每个 `addedRanges` 都相交,硬删会
+         * 让「整曲概览」每 500ms 消失一次、缩小时两侧露白(用户实测)。
+         * **`clearCoverage` 必须传 `keepStale:false`** —— 数据真被删了,
+         * 拿旧块垫底就是画一段已经不存在的波形。
          */
-        invalidate(ch, ranges) {
+        invalidate(ch, ranges, o) {
+            const keepStale = !(o && o.keepStale === false);
+            const retire = (cache, stale, key) => {
+                const v = cache.peek ? cache.peek(key) : undefined;
+                cache.delete(key);
+                if (keepStale && v && !v.then) stale.set(key, v);
+            };
             if (ch == null) {
+                if (keepStale) {
+                    for (const [c, cache] of perCh) {
+                        const stale = staleOf(c);
+                        for (const key of cache.keys())
+                            retire(cache, stale, key);
+                    }
+                }
                 perCh.clear();
-                return;
-            }
-            if (!Array.isArray(ranges) || !ranges.length) {
-                perCh.delete(ch);
+                if (!keepStale) perChStale.clear();
                 return;
             }
             const cache = perCh.get(ch);
             if (!cache) return;
+            if (!Array.isArray(ranges) || !ranges.length) {
+                const stale = staleOf(ch);
+                for (const key of cache.keys()) retire(cache, stale, key);
+                perCh.delete(ch);
+                if (!keepStale) perChStale.delete(ch);
+                return;
+            }
+            const stale = staleOf(ch);
             for (const key of cache.keys()) {
                 // 键形 = `${起 ms}:${止 ms}:${cols}`(tileKey)
                 const parts = String(key).split(":");
@@ -275,7 +349,27 @@ export function createWaveformSource(opts) {
                 const hit = ranges.some(
                     (r) => r && Number(r.endS) > t0 && Number(r.startS) < t1,
                 );
-                if (hit) cache.delete(key);
+                if (hit) retire(cache, stale, key);
+            }
+            // 硬删场景:影子里与该区间相交的也要一起清(否则垫底的还是旧数据)
+            if (!keepStale && perChStale.has(ch)) {
+                const sc = perChStale.get(ch);
+                for (const key of sc.keys()) {
+                    const parts = String(key).split(":");
+                    const t0 = Number(parts[0]) / 1000;
+                    const t1 = Number(parts[1]) / 1000;
+                    if (
+                        !(t1 > t0) ||
+                        ranges.some(
+                            (r) =>
+                                r &&
+                                Number(r.endS) > t0 &&
+                                Number(r.startS) < t1,
+                        )
+                    ) {
+                        sc.delete(key);
+                    }
+                }
             }
         },
     };
@@ -333,19 +427,38 @@ function paintStripes(ctx, x, y, w, h, color, period, lineW) {
  * @param {number} w
  * @param {number} h
  * @param {object} [palette] 覆盖 DEFAULT_PALETTE 的键
+ * @param {object} [opts] 时间映射与清屏控制:
+ *   `{tileStartS, tileEndS, viewStartS, viewEndS}` —— 把这块**按时间**画进当前
+ *   视口(块只覆盖视口的一段时就只占那一段);缺省 = 块铺满 [0,w] 的老口径。
+ *   `{clear:false}` —— 不清屏,供多块拼合(缩小时用几块老块补齐视口)。
+ *
+ * ⚠ 这是「视口变化中」那条路径的正解,不要退回位图拉伸,也不要用 `ctx.scale`:
+ *   · `ctx.scale` 会把 45° 斜纹剪切成缓坡、把 lineWidth 横向拉粗(前两轮的病根);
+ *   · `drawImage` 位图拉伸则是放大糊、缩小两侧露白(第三轮用户实测)。
+ *   按本映射重画时,**列宽变而画笔不变** —— 斜纹、线宽、覆盖条都画在目标
+ *   坐标系里,几何恒正确;代价只是横向细节随源列数走(放大档变粗但清晰),
+ *   静止 120ms 取到新块后自然补满(契约 §1.27)。
  */
-export function paintWaveTile(ctx, tile, w, h, palette) {
+export function paintWaveTile(ctx, tile, w, h, palette, opts) {
     // 画笔自守:本函数是导出件(T43 复用面 + smoke 直调),不能只依赖
     // createWaveformSource 那一道闸
     if (!ctx || !isTileShape(tile)) return;
     const pal = { ...DEFAULT_PALETTE, ...(palette || {}) };
     const cols = tile.minDb.length;
     if (!cols || !(w > 0) || !(h > 0)) return;
-    const colW = w / cols;
+    const o = opts || {};
+    const viewSpan = num(o.viewEndS, 0) - num(o.viewStartS, 0);
+    const tileSpan = num(o.tileEndS, 0) - num(o.tileStartS, 0);
+    // 映射齐备才走时间映射;否则退回「整块铺满 [0,w]」的老口径
+    const mapped = viewSpan > 0 && tileSpan > 0;
+    const colW = mapped ? (tileSpan / cols / viewSpan) * w : w / cols;
+    const originX = mapped
+        ? ((num(o.tileStartS, 0) - num(o.viewStartS, 0)) / viewSpan) * w
+        : 0;
     const mid = h / 2;
-    const x0 = (i) => i * colW;
+    const x0 = (i) => originX + i * colW;
 
-    ctx.clearRect(0, 0, w, h);
+    if (o.clear !== false) ctx.clearRect(0, 0, w, h);
 
     // ① 未覆盖 = 空白底纹(细斜纹,不是纯掏空 —— [J72a] C-03)
     for (const [a, b] of runsOf(tile.covered, (v) => !v)) {

@@ -210,6 +210,43 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         src.invalidate(1); // 缺 ranges = 整轨清(clearCoverage 那类语义)
         check(src.peek(1, 60, 70, 1) === null, "不给区间仍是整轨清");
     }
+    // **软失效**:失效的块进影子缓存供过渡帧垫底,`peek` 永不命中它。
+    // 病根:captureProgress 每 500ms 一个半秒宽的 addedRanges,而跨度大的块
+    // 与几乎每个新增区间都相交 ⇒ 硬删的话「整曲概览」每 500ms 消失一次,
+    // 缩小视口时两侧永远露白(用户实测三轮的第二个现象)。
+    {
+        const mk = (n) => ({
+            minDb: Array(n).fill(-20),
+            maxDb: Array(n).fill(-10),
+            covered: Array(n).fill(1),
+            vad: Array(n).fill(0),
+            stale: Array(n).fill(0),
+            passId: Array(n).fill(1),
+            valleys: [],
+        });
+        const src = WF.createWaveformSource({
+            request: async (ch, a, b, c) => mk(c),
+        });
+        await src.getTile(3, 0, 300, 90); // 整曲概览块
+        await src.getTile(3, 140, 170, 90); // 放大后的窄块
+        // 模拟一次采集帧:半秒新增区间 —— 两块都与它相交
+        src.invalidate(3, [{ startS: 150, endS: 150.5 }]);
+        check(
+            src.peek(3, 0, 300, 90) === null,
+            "软失效后 peek 不再命中(权威绘制只认新鲜块)",
+        );
+        const near = src.peekOverlapping(3, 100, 200);
+        check(
+            near.length === 2 && near[0].endS - near[0].startS === 300,
+            "过渡帧仍拿得到陈旧块垫底,且宽块排在前(先画=垫底)",
+        );
+        // clearCoverage 那类:数据真删了,影子也要清
+        src.invalidate(3, null, { keepStale: false });
+        check(
+            src.peekOverlapping(3, 100, 200).length === 0,
+            "硬删(keepStale:false)连影子一并清 —— 不画已不存在的波形",
+        );
+    }
     // 在途请求被失效后**不得回写**(pr-agent):采集中 2Hz 的区间级失效与用户
     // 平移取数会重叠,迟到的 resolve 若照写就是把失效前算出的旧块塞回缓存,
     // 后续 peek 命中它 ⇒ 新采/新清的区域一直显示旧图,直到下次失效才纠正。
@@ -1419,44 +1456,104 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         "扩展不挂 12px 框上(±18px 会抢左邻按钮的事件)",
     );
 
-    // ---- ③ blit = **位图搬运**,平移与缩放走同一条路径;两者共用「静止 120ms」闸
+    // ---- ③ 过渡帧 = **按列映射重画 + 多块拼合**;与取数共用「静止 120ms」闸
     //
-    // 用户 preview 两轮都报「放大缩小错乱」。第一轮的实现是「重跑矢量画笔 +
-    // ctx.scale」——非等比 scale 把 45° 斜纹剪成缓坡、lineWidth 横向拉粗;
-    // 第二轮改成「只 translate,跨度一变就不 blit」——缩放期波形整幅停在旧
-    // 视口的比例上,而标尺/曲线/边界/播放头每帧都跟着新视口走,层与层时间轴
-    // 对不上(无头实测:旧图保留 ~150ms 才被新块换掉)。
-    // 终修:老底存**位图**,一次 drawImage 按时间映射贴过去 —— 光栅重采样不
-    // 重跑画笔,斜纹与线宽都不会变形,平移(dw==w)与缩放(dw!=w)同一条路径。
+    // 用户 preview 三轮才收敛,前三版各错一处:
+    //   ① 「重跑画笔 + ctx.scale」—— 非等比 scale 把 45° 斜纹剪成缓坡、
+    //      lineWidth 横向拉粗;
+    //   ② 「只 translate,跨度一变就不 blit」—— 缩放期波形整幅停在旧视口比例上,
+    //      而标尺/曲线/边界/播放头每帧跟着新视口走,层间时间轴对不上;
+    //   ③ 「drawImage 位图拉伸」—— 放大档糊(光栅升采样)、**缩小档两侧露白**
+    //      (老块比新视口窄,margin 没东西可贴)。三条都是用户实测报回来的。
+    // 终修:`paintWaveTile` 支持时间映射(tileStartS/EndS → viewStartS/EndS),
+    // **列宽随映射变而画笔不变** ⇒ 斜纹/线宽/覆盖条几何恒正确;缩小档再把
+    // 缓存里所有与视口相交的块按跨度从宽到窄拼上去,两侧不再留白。
     check(
-        /function snapshotLane\([\s\S]{0,700}bctx\.drawImage\(srcCanvas, 0, 0\)/.test(
+        /paintWaveTile\(ctx, blk\.tile, w, laneH, pal, \{[\s\S]{0,300}tileStartS: blk\.startS/.test(
             tw,
         ),
-        "命中后把整幅存成位图老底(blit 的搬运源,不再存 tile 重跑画笔)",
+        "过渡帧按**时间映射**重画缓存块(不是位图拉伸)",
     );
     check(
-        !/paintWaveTile\(ctx, last\.tile/.test(tw) &&
-            !/ctx\.scale\(\(last\.endS - last\.startS\) \/ span, 1\)/.test(tw),
-        "blit 不再重跑矢量画笔(斜纹被剪切/线宽被拉粗的根因已删除)",
+        !/ctx\.drawImage\(/.test(tw) && !/snapshotLane/.test(tw),
+        "位图老底与 drawImage 拉伸已删除(放大糊 / 缩小露白的根因)",
     );
     check(
-        /const dx = \(\(last\.startS - vp\.startS\) \/ span\) \* w;[\s\S]{0,200}const dw = \(\(last\.endS - last\.startS\) \/ span\) \* w;/.test(
+        !/ctx\.scale\(\(last\.endS - last\.startS\) \/ span, 1\)/.test(tw),
+        "非等比 ctx.scale 重映射未复活(斜纹被剪切 / 线宽被拉粗的根因)",
+    );
+    check(
+        /peekOverlapping\(\s*ch,\s*vp\.startS,\s*vp\.endS,?\s*\)[\s\S]{0,1200}for \(const blk of near\)/.test(
             tw,
         ),
-        "老底按**时间映射**定位(dx/dw 同时吃下平移与缩放)",
+        "缩小档用**多块拼合**补满视口(单块只覆盖一段 ⇒ 两侧露白)",
     );
     check(
-        /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,400}ctx\.drawImage\(\s*last\.bmp,/.test(
+        /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,400}for \(const blk of near\)/.test(
             tw,
         ),
-        "blit 前整幅 clearRect(否则边缘留上一帧拖影)",
+        "拼合前整幅 clearRect 一次(每块自己不再清屏,clear:false)",
     );
     check(
-        /const sameVp =[\s\S]{0,400}!sameVp &&\s*moving &&\s*last &&\s*last\.bmp/.test(
-            tw,
-        ),
+        /const sameVp =[\s\S]{0,400}!sameVp && near\.length/.test(tw),
         "画布已是当前视口时不清屏(宽度抖动导致的键失配不该闪空)",
     );
+    // 时间映射的纯函数面:块只覆盖视口一段时,只占那一段
+    {
+        const calls = [];
+        const fakeCtx = {
+            clearRect: (...a) => calls.push(["clear", ...a]),
+            fillRect: (...a) => calls.push(["fill", ...a]),
+            save: () => {},
+            restore: () => {},
+            beginPath: () => {},
+            rect: () => {},
+            clip: () => {},
+            moveTo: () => {},
+            lineTo: () => {},
+            stroke: () => {},
+            set fillStyle(_v) {},
+            set strokeStyle(_v) {},
+            set lineWidth(_v) {},
+        };
+        const t2 = {
+            minDb: [-20, -20],
+            maxDb: [-10, -10],
+            covered: [1, 1],
+            vad: [0, 0],
+            stale: [0, 0],
+            passId: [1, 1],
+            valleys: [],
+        };
+        // 块覆盖 [0,10),视口 [0,20) ⇒ 只该画在左半边 [0,100) 的 100px 宽里
+        WF.paintWaveTile(fakeCtx, t2, 200, 34, undefined, {
+            clear: true,
+            tileStartS: 0,
+            tileEndS: 10,
+            viewStartS: 0,
+            viewEndS: 20,
+        });
+        const fills = calls.filter((c) => c[0] === "fill");
+        check(
+            fills.length > 0 && fills.every((c) => c[1] >= 0 && c[1] < 100),
+            "时间映射:块只覆盖视口前半 ⇒ 绘制全部落在左半边",
+        );
+        check(
+            calls.some((c) => c[0] === "clear"),
+            "clear 缺省为 true(单块路径与老口径一致)",
+        );
+        const calls2 = [];
+        const ctx2 = {
+            ...fakeCtx,
+            clearRect: (...a) => calls2.push(["clear", ...a]),
+            fillRect: () => {},
+        };
+        WF.paintWaveTile(ctx2, t2, 200, 34, undefined, { clear: false });
+        check(
+            !calls2.some((c) => c[0] === "clear"),
+            "clear:false 不清屏(多块拼合时只在最外层清一次)",
+        );
+    }
     check(
         /if \(!got\) \{[\s\S]{0,1200}clearRect/.test(tw),
         "取数回 null 才清(降级底有界,不把错档的图永久留在屏上)",
@@ -1560,11 +1657,13 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         /\.wave-lane__stage \{[^}]*height: var\(--lane-h, 34px\);/.test(html),
         "泳道舞台高读运行时变量 --lane-h",
     );
+    // 位图老底已废除(过渡帧改按 tile 数据重画)⇒ 行高变化不再需要清老底,
+    // 但两层必须标脏:canvas 后备存储要按新行高重建。
     check(
-        /function applyLaneH\([\s\S]{0,900}local\.lastPaint\.clear\(\)/.test(
+        /function applyLaneH\([\s\S]{0,900}local\.staticDirty = true;[\s\S]{0,200}local\.overlayDirty = true;/.test(
             tw,
         ),
-        "行高变化清 blit 老底(旧行高的位图会纵向错位)",
+        "行高变化 ⇒ 静态层与动态层两层标脏(后备存储按新行高重建)",
     );
     // ---- ④a 修订轮:两条杆的 aria 同源 + 键盘全套 + 拖拽态兜底 + 纵向杆自留槽
     check(
@@ -1911,10 +2010,10 @@ log("=== ⑫ Wave 5 用户 preview 第二轮四条(绿罩/缩放条位/选中态
         "开关按下态每帧与本地态同源",
     );
     check(
-        /local\.lastPaint\.clear\(\);[\s\S]{0,200}local\.staticDirty = true;[\s\S]{0,200}schedulePaint\(\);/.test(
+        /local\.staticDirty = true;[\s\S]{0,300}schedulePaint\(\);/.test(
             tw.slice(tw.indexOf("const setInspectorOpen")),
         ),
-        "开关改左栏宽 ⇒ 清 blit 老底 + 两层标脏(旧舞台宽的位图会被横向拉伸)",
+        "开关改左栏宽 ⇒ 标脏重绘(舞台宽变了,canvas 后备存储要重建)",
     );
     // 桥面零新增:开关不写 state、不新增桥函数(契约无 UI 偏好落点)
     check(

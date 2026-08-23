@@ -829,7 +829,6 @@ export function createTabWave(opts) {
         knobDrag: null, // 检查器 PAN 旋钮拖拽 {startY, startVal, val}
         vslDrag: null, // 检查器 VOL 滑杆拖拽 {val}
         echo: {}, // 检查器拖拽乐观值 {pan?, vol?}(segments 事件后失效)
-        lastPaint: new Map(), // ch → {tile,startS,endS}(**平移期** blit 的老底)
         canvasVp: new Map(), // ch → 画布上现在这幅对应的视口(null = 不可信)
         laneH: LANE_H_DEFAULT, // 运行时泳道行高(Wave 4 纵向缩放条;几何唯一真源)
         hzoomDrag: null, // 横向缩放条拖拽 {rect}
@@ -974,7 +973,6 @@ export function createTabWave(opts) {
      * 行高是**几何真源**:CSS 变量 `--lane-h` 驱动泳道行/舞台高,滚动层内容高
      * (共享动态层 + 播放头)按 15 × 行高改写,canvas 后备存储由下一帧的
      * `resizeCanvas` 按新高重建 —— 故这里必须把两层都标脏(全 canvas 重绘)。
-     * `local.lastPaint` 一并清:老底的高度是旧行高,blit 上去会纵向错位。
      */
     function applyLaneH(h, rerender) {
         const v = clampLaneH(h);
@@ -983,7 +981,6 @@ export function createTabWave(opts) {
         const contentH = LANE_COUNT * v;
         if (els.overlay) els.overlay.style.height = contentH + "px";
         if (els.playhead) els.playhead.style.height = contentH + "px";
-        local.lastPaint.clear();
         local.canvasVp.clear();
         local.staticDirty = true;
         local.overlayDirty = true;
@@ -1511,9 +1508,12 @@ export function createTabWave(opts) {
             scope.endS,
         );
         if (res && res.ok) {
-            // 契约 §1.24:清除后 UI 须重新 requestWaveform —— 块缓存整轨失效
-            for (const ch of local.lanePick) waveSource.invalidate(ch);
-            local.lastPaint.clear();
+            // 契约 §1.24:清除后 UI 须重新 requestWaveform —— 块缓存整轨失效。
+            // **硬删**(keepStale:false):数据真被删了,拿旧块给过渡帧垫底
+            // 等于画一段已经不存在的波形。
+            for (const ch of local.lanePick) {
+                waveSource.invalidate(ch, null, { keepStale: false });
+            }
             local.canvasVp.clear();
             local.staticDirty = true;
             setToolbarNote("wave.clearedCoverage", { s: res.clearedS });
@@ -2612,7 +2612,6 @@ export function createTabWave(opts) {
             const v = !!on;
             if (local.inspectorOpen === v) return;
             local.inspectorOpen = v;
-            local.lastPaint.clear();
             local.canvasVp.clear();
             local.staticDirty = true;
             local.overlayDirty = true;
@@ -3542,30 +3541,6 @@ export function createTabWave(opts) {
     }
 
     /**
-     * 把刚画好的一幅**存成位图老底**(blit 的搬运源)。
-     * 存位图而不是存 tile:blit 时用 `drawImage` 光栅重采样,平移与缩放走同一
-     * 条路径;存 tile 就只能重跑矢量画笔,那在非等比 scale 下会把 45° 斜纹剪切、
-     * 把 lineWidth 拉粗(用户 preview 报的「放大缩小错乱」正是这条)。
-     * 离屏画布按 ch 复用,尺寸跟随后备存储(行高/dpr 变了自然重建)。
-     */
-    function snapshotLane(ch, srcCanvas, vp) {
-        if (!srcCanvas || !srcCanvas.width) return;
-        let rec = local.lastPaint.get(ch);
-        if (!rec || !rec.bmp) rec = { bmp: document.createElement("canvas") };
-        const bmp = rec.bmp;
-        if (bmp.width !== srcCanvas.width) bmp.width = srcCanvas.width;
-        if (bmp.height !== srcCanvas.height) bmp.height = srcCanvas.height;
-        const bctx = bmp.getContext ? bmp.getContext("2d") : null;
-        if (!bctx) return;
-        bctx.setTransform(1, 0, 0, 1, 0, 0); // 老底按**后备像素**存,不带 k 变换
-        bctx.clearRect(0, 0, bmp.width, bmp.height);
-        bctx.drawImage(srcCanvas, 0, 0);
-        rec.startS = vp.startS;
-        rec.endS = vp.endS;
-        local.lastPaint.set(ch, rec);
-    }
-
-    /**
      * 静态层:每条可见泳道一块 tile → 一张位图(缓存命中直画,未命中取到再补)。
      *
      * **blit 只在平移期用**(Wave 4 用户反馈③ 的根因修)。05 §6.3 的原文是
@@ -3612,7 +3587,6 @@ export function createTabWave(opts) {
             const tile = waveSource.peek(ch, vp.startS, vp.endS, cols);
             if (tile) {
                 paintWaveTile(ctx, tile, w, laneH, pal);
-                snapshotLane(ch, n.canvas, vp);
                 local.canvasVp.set(ch, { startS: vp.startS, endS: vp.endS });
                 continue;
             }
@@ -3621,35 +3595,31 @@ export function createTabWave(opts) {
             // 别清,留着它等新块;不然任何一次宽度抖动都会把整屏闪空
             const sameVp =
                 !!drawn && drawn.startS === vp.startS && drawn.endS === vp.endS;
-            const last = local.lastPaint.get(ch);
-            if (
-                !sameVp &&
-                moving &&
-                last &&
-                last.bmp &&
-                last.endS > last.startS
-            ) {
-                // blit = **位图搬运**,一次 drawImage 同时吃下平移与缩放:
-                // 把老底的 [startS,endS] 按时间映射贴到新视口对应的像素段上。
-                // 位图缩放走光栅重采样,**不重跑矢量画笔** —— 45° 斜纹不会被
-                // 剪切、lineWidth 不会被拉粗(那正是把 blit 写成「重跑画笔 +
-                // ctx.scale」时的病根)。代价只是放大档糊一点,手停 120ms 即清晰。
-                const dx = ((last.startS - vp.startS) / span) * w;
-                const dw = ((last.endS - last.startS) / span) * w;
+            const near = moving
+                ? waveSource.peekOverlapping(ch, vp.startS, vp.endS)
+                : [];
+            if (!sameVp && near.length) {
+                // 过渡帧:把缓存里**所有与新视口相交的块**按时间映射画上去,
+                // 宽块打底、窄块压顶(peekOverlapping 已按跨度排好序)。
+                //
+                // 三轮才收敛到这个写法,前两轮各错一半:
+                //   · 「重跑画笔 + ctx.scale」—— 45° 斜纹被剪切成缓坡、lineWidth
+                //     被横向拉粗;
+                //   · 「drawImage 位图拉伸」—— 放大档糊、**缩小档两侧露白**
+                //     (老块比新视口窄,没东西可贴),两条都是用户实测报回来的。
+                // 现在按**列映射**重画:列宽随映射变而画笔不变 ⇒ 斜纹/线宽/覆盖条
+                // 几何恒正确;缩小档由多块拼合补满两侧。横向细节随源列数走
+                // (放大档柱子变粗但清晰),静止 120ms 取到新块即补满(§1.27)。
                 ctx.clearRect(0, 0, w, laneH);
                 local.canvasVp.set(ch, null); // 画布内容不再对应任何完整视口
-                if (dw > 0 && dx < w && dx + dw > 0) {
-                    ctx.drawImage(
-                        last.bmp,
-                        0,
-                        0,
-                        last.bmp.width,
-                        last.bmp.height,
-                        dx,
-                        0,
-                        dw,
-                        laneH,
-                    );
+                for (const blk of near) {
+                    paintWaveTile(ctx, blk.tile, w, laneH, pal, {
+                        clear: false,
+                        tileStartS: blk.startS,
+                        tileEndS: blk.endS,
+                        viewStartS: vp.startS,
+                        viewEndS: vp.endS,
+                    });
                 }
                 // 视口在动就**不取新块**(契约 §1.27 行 383 / brief §0.8:静止
                 // 120ms 后才取)。缩放期每帧跨度都不同 = 每帧都是新键,LRU 与
