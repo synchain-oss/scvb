@@ -365,9 +365,14 @@ const tabSettings = createTabSettings({
     bridge,
     getStore: () => store,
     getT: () => dictNow,
-    onLocalChange: () => render(),
+    onLocalChange: () => requestRender(),
 });
 tabSettings.mount();
+// 四个 tab 装配完毕,render() 从这里起可以跑(装配前 render 直接早退 ——
+// activateTab 在装配之前就跑过一次)。**必须排在最后一个 mount() 之后**:
+// 合并 T34/T35 时这一行曾被解冲突弄丢,整页会永不渲染而 smoke 照样全绿
+// (node 侧断言面不含 DOM 投影)。
+tabsReady = true;
 
 // 布防 badge 三处的点击跳转(05 §2.3 行 300 ①:点击跳 Tab3 定位选区)——
 // Tab1 Range 旁与 Tab2 图例行两枚在别的卡里,跳转归外壳;Tab3 自己的 badge
