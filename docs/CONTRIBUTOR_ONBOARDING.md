@@ -60,7 +60,7 @@ pwsh scripts/build.ps1 -Target Output -Config Debug -SkipTests
 
 `-Install` 会把两个 bundle 复制到 `C:\Program Files\Common Files\VST3\`(需要管理员权限)。手动装也行,直接整目录复制过去即可。
 
-装完在 DAW 里重新扫描插件。**装的时候两个都要装** —— Input 与 Output 版本必须一致,SCVB 检测到两端版本不匹配会**拒绝连接**(这是设计,不是 bug)。
+装完在 DAW 里重新扫描插件。**装的时候两个都要装**,且**两端请保持同一发布版本**;共享内存契约(`abi`)不匹配会**拒绝连接并提示升级**(这是设计,不是 bug —— 见 `src/core/ipc/Registry.cpp` 的 `kAbiMismatch`)。
 
 用法上的硬约束(路由、插槽位置、宿主 pan 居中等)见用户手册 `docs/USER_GUIDE.md` 的九条硬约束。**开发时也请照着摆** —— 大部分「插件没反应」的自查最后都落在这九条上。
 

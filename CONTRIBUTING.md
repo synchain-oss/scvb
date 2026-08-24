@@ -9,7 +9,7 @@ issue 与 PR 都欢迎。开工之前请把本文读完 —— 尤其是 **§8 �
 
 - issue / PR 可以用**中文或英文**;维护者用你使用的语言回复。维护者内部沟通用中文。
 - **用户可见的硬约束(九条硬约束)以中文版为语义权威**:中英文各一份,两版出现歧义时以中文版为准。理由是 SCVB 的路由约束属于「读错就出静音或错音」的硬约束,而核心用户是中文 DAW 用户 —— 中文版必须是完整镜像,不是摘要。
-- **标题文案统一写「九条」**(实际条目数就是 9 条)。早期草稿里出现过别的数量词,任何非「九条」的写法都是错的 —— 这条有 grep 机检把关,数量词写错即红。
+- **标题文案统一写「九条」**(实际条目数就是 9 条)。早期草稿里出现过别的数量词,任何非「九条」的写法都是错的 —— **UI 侧**有禁词机检把关(`web-preview/tests/smoke-tab1-interactions.mjs` 扫 `web/shared/i18n.js` 的 zh/en/fr 全部词条值 + 三个 `web/output/` 源文件,数量词写错即红);**markdown 侧目前靠评审时的 grep**,不要指望 CI 替你兜住。
 - **九条硬约束只有一个真源,禁止在任何位置手抄。** 真源 = `docs/USER_GUIDE.zh-CN.md` 的 `#硬约束` 小节;另外 6 处落地面(`docs/USER_GUIDE.md` 的 EN 块、两份 README 的 Quick start 块、`web/shared/i18n.js` 的 `guide.rule1..9` zh/en/fr 三语 key)全部由 `node scripts/gen-hard-rules.mjs` 生成。要改条目文本,**只能改真源再跑生成器**。提交前必须跑:
 
   ```powershell
@@ -17,7 +17,7 @@ issue 与 PR 都欢迎。开工之前请把本文读完 —— 尤其是 **§8 �
   node scripts/check-i18n.mjs               # zh/en/fr 三语 key 集合全等
   ```
 
-- **插槽措辞**:统一写「**人声轨插件链最后一格**」。**不要用推子相关的插槽说法**(ADR-002 v1.2 / J45 已把旧措辞修宪掉:多数宿主根本没有 fader slot 这个概念,用户按字面找不到)。这条同样有 grep 机检把关。逐宿主的具体位置说法归 `docs/DAW_COMPATIBILITY.md`。
+- **插槽措辞**:统一写「**人声轨插件链最后一格**」。**不要用推子相关的插槽说法**(ADR-002 v1.2 / J45 已把旧措辞修宪掉:多数宿主根本没有 fader slot 这个概念,用户按字面找不到)。它和上一条共用同一份 UI 侧禁词机检(markdown 侧同样靠评审 grep)。逐宿主的具体位置说法归 `docs/DAW_COMPATIBILITY.md`。
 - 法语(fr)只覆盖插件 UI 文案,不覆盖 README 与用户手册;**fr 的九条硬约束必须经人工审校后才能发布**,不接受未审校的机翻直接进产品。
 
 ## 1. 行为准则
@@ -82,7 +82,13 @@ pwsh scripts/gates.ps1 -Quick -BuildDir build-mine               # 跳过 plugin
 
 **含 GUI 的全量校验只能在本地真机做** —— CI 的 runner 是无头的,跑不了 WebView2 编辑器,所以 PR 模板里那一项勾选有实际意义,请不要不跑就勾。并行开工时每个人各用独立的 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
 
-只改文档时,请至少跑一次 `npx --yes markdown-link-check` 确认没有死链。
+只改文档时,请至少跑一次死链检查:
+
+```powershell
+npx --yes markdown-link-check -c .markdown-link-check.json -q CONTRIBUTING.md docs/*.md
+```
+
+配置必须用 `-c` 显式传 —— markdown-link-check 的 **CLI 不会自动发现** `.markdown-link-check.json`(自动读配置的是它的 GitHub Action wrapper);而且不给文件参数它会转去读 stdin,看起来就是卡住。
 
 ## 7. 评审流程与期望响应时间
 
