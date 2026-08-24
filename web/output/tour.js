@@ -90,7 +90,7 @@ export const TOUR_STEPS = Object.freeze(
         { anchor: "lang", tab: "settings" }, // 40
         { anchor: "storage", tab: "settings" }, // 41
         { anchor: "diagnostic", tab: "settings" }, // 42
-        { anchor: "version", tab: "settings", special: "version" }, // 43
+        { anchor: "version", tab: "settings" }, // 43
         { anchor: "review", tab: "settings" }, // 44
     ].map(Object.freeze),
 );
@@ -210,7 +210,6 @@ export function createTour(opts) {
     const getActiveTab = opts.getActiveTab || (() => "master");
     const requestRender = opts.requestRender || (() => {});
     const setLang = opts.setLang || (() => {}); // 步 1 语言胶囊点击直切(纯 UI 回调)
-    const copyVersion = opts.copyVersion || (() => {}); // 步 43 版本 chip 点击复制(纯 UI 回调)
     const expandGuide = opts.expandGuide || (() => {}); // 步 36 自动展开「查看全部九条」
 
     async function call(name, ...args) {
@@ -704,13 +703,6 @@ export function createTour(opts) {
                     if (langBtn) {
                         setLang(langBtn.getAttribute("data-lang"));
                         updateText(); // 切语言后说明框随全局 i18n 刷新
-                        return;
-                    }
-                }
-                // 步 43 版本 chip:点击复制版本信息,不推进
-                if (cfg.special === "version") {
-                    if (hitAt('[data-tour="version"]')) {
-                        copyVersion();
                         return;
                     }
                 }

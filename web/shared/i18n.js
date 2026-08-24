@@ -283,9 +283,9 @@ export const T = {
             "特征数据可以内嵌在工程里,也可以存到外部;占用大小可在这里查看。",
         "tour.step42.title": "诊断",
         "tour.step42.body": "可复制每轨心跳与失准计数,用于排查连接问题。",
-        "tour.step43.title": "版本号与复制",
+        "tour.step43.title": "版本与复制",
         "tour.step43.body":
-            "右上角是当前版本号,点击即可复制版本信息;遇到问题寻求帮助时,把它一起发给我们。",
+            "右上角是版本区:V1 / V2 两套平衡方案可随时切换,「复制」按钮可把当前版本整套复制到另一个版本;插件版本号显示在右下角,遇到问题时请连同诊断信息一起反馈。",
         "tour.step44.title": "以后在这里可以再看一次",
         "tour.step44.body": "引导随时可以重看,红字九条也在同一块里展开。",
 
@@ -942,9 +942,9 @@ export const T = {
         "tour.step42.title": "Diagnostics",
         "tour.step42.body":
             "Copy per-track heartbeat and misalignment counts to troubleshoot connections.",
-        "tour.step43.title": "Version and copy",
+        "tour.step43.title": "Version & Copy",
         "tour.step43.body":
-            "The top-right is the current version number; click to copy the version info. Send it to us when you need help.",
+            "The top-right is the version area: two balance versions V1 / V2 can be switched anytime; the Copy button copies the current version to the other. The plug-in version number is shown at the bottom-right — send it together with diagnostics when you need help.",
         "tour.step44.title": "You can replay this tour here",
         "tour.step44.body":
             "The tour can be replayed at any time, and the nine red rules open in the same block.",
@@ -1567,9 +1567,9 @@ export const T = {
         "tour.step42.title": "Diagnostic",
         "tour.step42.body":
             "Copiez le heartbeat et les compteurs de désalignement par piste pour diagnostiquer les connexions.",
-        "tour.step43.title": "Version et copie",
+        "tour.step43.title": "Versions et copie",
         "tour.step43.body":
-            "En haut à droite se trouve le numéro de version ; cliquez pour copier l'information de version. Envoyez-le-nous quand vous demandez de l'aide.",
+            "En haut à droite se trouve la zone des versions : deux versions V1 / V2 commutables à tout moment ; le bouton Copier copie la version actuelle vers l'autre. Le numéro de version du plug-in s'affiche en bas à droite — envoyez-le avec les diagnostics si vous demandez de l'aide.",
         "tour.step44.title": "Vous pourrez revoir cette visite ici",
         "tour.step44.body":
             "La visite peut être rejouée à tout moment, et les neuf règles strictes s'ouvrent dans le même bloc.",
