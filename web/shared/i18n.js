@@ -27,7 +27,7 @@ export const T = {
         // 状态词规范(05 §5,512-524 行):连接类状态每态唯一用词,正文一律引用 key。
         // state.* 前缀为 T27 自定(05 只给表格未给 key);FR 除 passthrough/takenOver 取自术语表外为 T27 自译。
         "state.notConnected": "未连接",
-        "state.staleLink": "失联",
+        "state.staleLink": "链接异常(心跳陈旧:仍在线但通信停更)",
         "state.connected": "已连接", // Output Tab2 轨「活跃」与 Input pill「健康接管」同词,共用一条
         "state.noChannel": "未选择通道",
         "state.outputOffline": "Output 未运行",
@@ -46,7 +46,7 @@ export const T = {
         width: "宽度",
         track: "轨道",
         channel: "通道",
-        group: "组",
+        group: "分组",
         segment: "分段",
         capture: "采集",
         tabs: "标签页",
@@ -58,14 +58,13 @@ export const T = {
         priority: "优先级",
         leadLock: "主唱锁中",
         leadSelect: "主唱选择",
-        leadFollowAnalysis: "遵循分析",
+        leadFollowAnalysis: "自动选择",
         msBalance: "MS 平衡",
         stereoBadge: "立体声",
         participateAutoPan: "参与自动声像",
         trackWidth: "轨道宽度",
-        "tracks.monoWidthNoop": "mono 源:宽度在 v1 无效",
-        "master.leadSelectHint":
-            "该轨强制居中;是否参与音量调节为独立开关,不随此联动",
+        "tracks.monoWidthNoop": "mono 源无法调整宽度",
+        "master.leadSelectHint": "该轨设置为 Lead 并强制居中",
         pair: "配对",
         threshold: "阈值",
         sensitivity: "灵敏度",
@@ -105,7 +104,7 @@ export const T = {
         clearCapture: "清除采集数据",
         scale: "界面缩放",
         language: "语言",
-        armedWaiting: "已布防·等待播放",
+        armedWaiting: "已就绪·等待播放",
         outOfRange: "已离开采集范围",
         occupied: "占用",
 
@@ -117,36 +116,36 @@ export const T = {
         "banner.printGuard": "输出开关处于引擎驱动状态(随工程恢复)",
         "banner.printGuard.confirm": "继续引擎驱动",
         "out.master.writeConfirm":
-            "引擎驱动 {v} · 范围 {x}–{y} · 30 条车道;若 DAW 侧已 arm Latch/Write,播放本范围将覆盖该范围已有自动化;未 arm 则仅试听、不落盘",
+            "引擎驱动 {v} · 范围 {x}–{y} · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存",
         "footer.printing": "引擎驱动 {v} · {x}–{y}",
         "footer.printDone":
-            "本次打印覆盖 {x}–{y};若在录制自动化,建议切回跟随宿主试听核对",
+            "本次录制覆盖 {x}–{y};若在录制自动化,建议切回跟随宿主试听核对",
         "out.master.writeConfirm.follow":
-            "引擎驱动 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条车道;若 DAW 侧已 arm Latch/Write,播放已分析区域将覆盖其已有自动化;未 arm 则仅试听、不落盘",
+            "引擎驱动 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放已分析区域将覆盖其已有自动化;未激活则仅试听、不保存",
         "footer.printing.follow": "引擎驱动 {v} · 全曲跟随(已分析区域内)",
         "footer.printDone.follow":
-            "本次打印覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
+            "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
         "wave.diffKept": "{k} 处手动编辑/锁定段已保留",
         "tracks.manualOverwriteConfirm":
             "将以固定值替换该轨(当前版本)的全部分段结果,可撤销",
         "tracks.manualOverwriteConfirm.locked": "(含 {l} 个锁定段)",
         "in.pill.abiMismatch": "版本不匹配",
         "in.pill.srMismatch": "采样率不一致",
-        "tracks.manualDrivenHint": "该轨仍由手动固定值驱动——重新识别该轨?",
-        "in.releaseConfirm": "将释放通道 {n},本轨回到直通",
-        "wave.recaptureArmed": "重采集布防中 · 选区 {x}–{y} · {n} 轨",
+        "tracks.manualDrivenHint": "该轨仍由手动固定值驱动,是否重新识别该轨?",
+        "in.releaseConfirm": "将释放通道 {n},不再对本轨做任何处理",
+        "wave.recaptureArmed": "重采集已就绪 · 选区 {x}–{y} · {n} 轨",
         // 无占位符短式(T33 PR#64 评审【重要】1 / 【建议】2):Tab2 行首圆点 badge 的
         // tooltip 与 Tab3 badge 的静态兜底文案都只拿得到「在布防中」这一个布尔位,
         // 拿不到 {x}{y}{n} —— 灌长式会把字典原文连占位符一起写进 title / textContent。
         // 范围与轨数在两处 badge(Tab1 Range / Tab2 图例行)上由 fmt 灌完整串。
-        "wave.recaptureArmedShort": "重采集布防中",
+        "wave.recaptureArmedShort": "重采集已就绪",
         "footer.recaptureOutputWarn":
             "输出引擎仍按全局范围工作,与本次重采集选区无关",
 
         // 首次启动引导页(05 §5,606-610 行)。
         // guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入(05 §5 / §0.1,禁止手抄)。
         "guide.title":
-            "必读:SCVB 的九条硬约束,违反其中任何一条都会导致静音、错音或分析失效。",
+            "必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、错音或分析失效。",
         "guide.dontShowAgain": "不再显示",
         "guide.start": "开始使用",
         "set.reopenGuide": "重看引导",
@@ -206,7 +205,7 @@ export const T = {
             "段间过渡:20–300ms;决定区间之间音量和声像过渡的速度。",
         "tour.step15.title": "角度域曲线",
         "tour.step15.body":
-            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,选中后删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点。",
+            "每条声像曲线由控制点构成:双击任意位置添加点,拖动调整角度与增益,选中后双击删除;每个点可选钟形 / 搁架 / 切除(带 6–24 dB/oct 斜率),最多 16 点",
         "tour.step16.title": "本页:轨道",
         "tour.step16.body":
             "每个通道占一行,构成 15 轨矩阵;行内是每轨的微调控件,冻结后才会解锁为手动调节。",
@@ -257,7 +256,7 @@ export const T = {
         "tour.step31.title": "框选后工具条",
         "tour.step31.body":
             "重采集 / 重分析 / 重新识别 / 清除,作用于选中的轨道 × 选区。",
-        "tour.step35.title": "段检查器",
+        "tour.step35.title": "段落详情与编辑",
         "tour.step35.body":
             "已为你选中一段:检查器里可编辑该段的 pan / vol、查看 origin(E / C)、锁定该段。",
         "tour.step30.title": "分段工具条",
@@ -312,8 +311,8 @@ export const T = {
         // 配 15 条中文轨名。渲染 label 还是 t(key) 由 T31 决定,mock-data.js 两者都给。
         // zh 逐字 = mock-data.js DEMO_TRACKS 的 label(设计稿 CH_LABELS + T27 补的 14/15);
         // EN/FR 为 T27 自译,与 tour.step* 同批待人工审校。L/R/C 的 FR 侧照 master.distAxis 取 G/D/C。
-        "demo.ch1": "主唱",
-        "demo.ch2": "主唱双",
+        "demo.ch1": "主唱1",
+        "demo.ch2": "主唱2",
         "demo.ch3": "和声 L",
         "demo.ch4": "和声 R",
         "demo.ch5": "和声 C",
@@ -321,12 +320,12 @@ export const T = {
         "demo.ch7": "Ad-lib 2",
         "demo.ch8": "低八度",
         "demo.ch9": "高八度",
-        "demo.ch10": "群唱 L",
-        "demo.ch11": "群唱 R",
-        "demo.ch12": "呼吸轨",
+        "demo.ch10": "和唱 L",
+        "demo.ch11": "和唱 R",
+        "demo.ch12": "音效轨",
         "demo.ch13": "念白",
-        "demo.ch14": "群唱 C",
-        "demo.ch15": "尾音",
+        "demo.ch14": "和唱 C",
+        "demo.ch15": "outro",
         "demo.versionName": "基础平衡", // tour demo 的 V1 版本名(用户命名语义的演示值;deepseek-review 建议 5)
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
@@ -348,19 +347,16 @@ export const T = {
         "range.followShort": "全曲",
         "master.rangeFollowHint":
             "跟随播放,自动扩展范围。已分析区域共 {n} 段 · 合计 {t}",
-        "master.step1.desc":
-            "开关打开后播放本范围,插件记录响度特征——这一步不写任何自动化",
-        "master.widthAngleHint":
-            "左右各摆到最外时的角度;0–90°(自动化参数 width 0–150%)",
-        "master.msHint": "−100 偏 Mid / +100 偏 Side,双击回 0——拖动看下方曲线",
+        "master.step1.desc": "开关打开后播放本范围以记录响度特征",
+        "master.widthAngleHint": "最外层人声的角度。0–90°",
+        "master.msHint": "−100 偏 Mid / +100 偏 Side",
         "master.distHint": "柱高 = 音量,横位 = 声像;横线 = 立体声源张开度",
         "master.distAxis": "左 L · −50 · 中 C · +50 · 右 R",
-        "master.transitionHint":
-            "段与段之间参数不瞬切,走完这段斜坡才到下一段的值。太短交界会「跳」,太长声像糊在两处之间。",
+        "master.transitionHint": "段与段之间参数切换的过渡时间",
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
         "tracks.colLegend":
-            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开)· 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
+            "音量＝该轨是否进音量平衡计算(默认开)和音量调节· 声像＝该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)和声像调节· 冻结P/V＝正常计入引擎计算,但不再被引擎驱动,旋钮解锁为纯手动控制(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
         // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
@@ -373,7 +369,7 @@ export const T = {
         "tracks.colState": "状态",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
-        "tracks.colVolLevel": "音量 / 电平",
+        "tracks.colVolLevel": "音量",
         "tracks.colPrio": "PRIO",
         "tracks.colLead": "LEAD",
         // 参与性两列的列头短标签(回流⑬);其全称与语义靠 tracks.colLegend 长句说明,
@@ -384,11 +380,11 @@ export const T = {
         "tracks.colFreezePan": "冻结P",
         "tracks.colFreezeVol": "冻结V",
         "tracks.colOn": "ON",
-        "tracks.footNote": "15 轨 · 滚动 + 表头 sticky",
-        "tracks.emptyRoute": "人声轨的输出路由须保持指向本总线(不要改)",
+        "tracks.footNote": "15 轨",
+        "tracks.emptyRoute": "人声轨的输出路由须保持指向本总线",
         // 「样本不足」角标保短版(裸词条 lowSample),全句进 tooltip(统筹裁定 B12)
-        "lowSample.full": "样本不足,结果可能不稳",
-        "tracks.panAutoHint": "自动模式——由分析曲线驱动",
+        "lowSample.full": "样本不足,分析结果可能不稳定",
+        "tracks.panAutoHint": "自动模式:由分析曲线驱动",
         // Lead Select 选中轨的行首居中标记(05 §2.2 主唱锁行;全句走 master.leadSelectHint)
         "tracks.leadCenter": "居中",
         "tracks.multiLead": "多主唱居中",
@@ -399,22 +395,22 @@ export const T = {
         // 单轨重新识别的**二次确认**(05 §2.2「二次确认同 §2.3」;契约 §1.6 的
         // clearManual 分支:locked 段不受影响,须先逐段解锁)。T32 Wave 2 新增。
         "tracks.reidentifyConfirm":
-            "将清除轨 {n} 的手动固定值并重新识别;已锁定段保持不变,确定?",
+            "将清除轨 {n} 的手动固定值并重新识别;已锁定段保持不变,是否继续?",
         "tracks.pairNone": "无",
         "tracks.pairFullSuffix": "(满)",
         "tracks.pairOverflow": "配对超员",
         "common.decrease": "减",
         "common.increase": "增",
-        "wave.trackPickHint": "勾选左侧轨头选择目标轨(可多选,shift 连选)",
+        "wave.trackPickHint": "勾选左侧轨头选择目标轨(可多选,按 Shift 连选)",
         "wave.selChip": "上面四个操作作用于 {n} 轨",
         "wave.setRangeTip":
             "作用范围已改为选区 {x}–{y}——Range 档位已切到「手动」,工作选区本身不变",
         "wave.originLegend":
             "origin:E = 手动编辑,C = 手动创建,auto 段无角标。锁定段在重新识别时保持不变。",
-        "set.loudnessMode.title": "段响度用哪个口径",
+        "set.loudnessMode.title": "段落响度分析算法",
         "set.loudnessMode.note":
             "影响分析时的段间响度归一化基准;改后需重分析。",
-        "set.centerSlot.title": "多轨争抢中心位时怎么办",
+        "set.centerSlot.title": "多轨争抢中心位时的优先级",
         "set.centerSlot.note":
             "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
@@ -426,7 +422,7 @@ export const T = {
         // EN/FR 为 T35 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "set.usage.eyebrow": "使用说明",
         "set.usage.workflow":
-            "采集 → 分析 → 输出。开启采集并播放,插件记录每条轨的响度特征;分析在离线状态下算出每个乐句的声像/音量方案;输出切到「引擎驱动」后由插件驱动参数,要落盘则在 DAW 侧开 Latch 或 Write。",
+            "采集 → 分析 → 输出。开启采集并播放,插件记录每条轨的响度特征;分析在离线状态下算出每个乐句的声像/音量方案;输出切到「引擎驱动」后由插件驱动参数,在 DAW 侧开启 Latch 或 Write 模式以录制为自动化轨道。",
         "set.usage.docs": "文档",
         "set.loudnessMode.eyebrow": "第二响度指标",
         "set.loudnessMode.opt.kw_integrated": "K 加权段积分",
@@ -441,7 +437,7 @@ export const T = {
         "set.guide.rulesMissing": "九条约束全文将在发布版补齐",
         "set.storage.eyebrow": "存储状态",
         "set.storage.embedded": "内嵌于工程({mb} MB)",
-        "set.storage.external": "已转外部文件(>8MB 自动)",
+        "set.storage.external": "已保存为外部文件(>8MB 自动)",
         "set.storage.sessionGuid": "session {guid}",
         "set.diag.eyebrow": "诊断",
         "set.diag.copy": "复制诊断信息",
@@ -454,8 +450,8 @@ export const T = {
         "set.reanalyze": "改后需重分析",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
-        "in.pillSub.passthrough": "直通中:本轨按原路径出声(未经平衡)",
-        "in.pillSub.takenOver": "已接管:本轨静音转发,由 Output 总线出声",
+        "in.pillSub.passthrough": "直通中:未对本轨做任何处理",
+        "in.pillSub.takenOver": "已接管:本轨静音,声音由插入 Output 的总线输出",
         "in.pillSub.hysteresis": "连接不稳定,即将切换直通",
         "in.pillSub.stereo": "本轨为立体声源,SCVB 将保留其宽度",
         "in.source.mono": "本轨为单声道源",
@@ -487,15 +483,16 @@ export const T = {
         "master.step2.coverage": "范围内 {p}% 已覆盖,未覆盖部分将保持原状",
         "master.analyzing": "分析中…",
         "master.analyzeDone": "分析完成",
-        "master.step3.desc": "要录成自动化:在 DAW 侧对本插件参数开",
-        "master.step3.descStrong": "Latch(推荐)或 Write;请勿使用 Touch",
+        "master.step3.desc": "请在 DAW 中打开自动化录入",
+        "master.step3.descStrong":
+            "如果可选,请使用 Latch(推荐)或 Write 模式;请勿使用 Touch 模式",
         "master.writeConfirm.ok": "知道了,开始",
-        "master.writeConfirm.undo": "撤销(关回跟随宿主)",
-        "master.groupEyebrow": "组 · GROUP",
+        "master.writeConfirm.undo": "撤销(回溯到跟随宿主)",
+        "master.groupEyebrow": "GROUP · 分组",
         "master.widthEyebrow": "WIDTH · 最大角度",
         "master.rangeEyebrow": "RANGE · 范围",
         "master.distEyebrow": "声像 / 音量分布",
-        "master.curveEyebrow": "角度域曲线 · ±12 dB",
+        "master.curveEyebrow": "基于角度的音量调整 · ±12 dB",
         "master.curveLegendMs": "MS 等效增益",
         "master.curveAxisX": "左 L −100 · −50 · 中 C 0 · +50 · 右 R +100",
         "master.curveEmptyHint": "双击添加控制点",
@@ -521,14 +518,14 @@ export const T = {
         "curve.announcePoint": "点 {n}:角度 {angle},{gain} dB,{shape},Q {q}",
         "curve.announcePointDir":
             "点 {n}:角度 {angle},{gain} dB,{shape},Q {q} · 方向 {side}",
-        "master.leadSelectDefaultNote": "0 = 遵循分析(默认)",
+        "master.leadSelectDefaultNote": "0 = 自动选择(默认)",
         "range.manual": "手动",
         "master.rangeLoopStale": "循环区已失效,沿用上次范围",
         "master.rangeLoopMissing": "宿主未提供循环区——档位保留但不可选",
         "master.rangeStart": "起点",
         "master.rangeEnd": "终点",
         "master.setToPlayhead": "设为播放头",
-        "master.barsEstimateNote": "小节为估算值,播放该区域后精确",
+        "master.barsEstimateNote": "小节为估算值,播放该区域后校准",
         "footer.defaultHint":
             "采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围",
         "scale.current": "当前",
@@ -544,7 +541,7 @@ export const T = {
         "banner.sidecarMissing": "采集数据缺失/过期,请重新采集",
         "banner.noTimeline": "宿主未提供时间线",
         // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
-        "master.versionArmedConfirm": "引擎输出将平滑切至新版本,继续?",
+        "master.versionArmedConfirm": "引擎输出将平滑切至新版本,是否继续?",
         // Tab1 空态卡(A1;用户裁定 2026-08-18:五步制,前三步红字,
         // 先跳线后插 Output;步 1 强调插入位置——措辞按 J45 宿主中立口径)
         "master.empty.step1":
@@ -568,15 +565,15 @@ export const T = {
         // toast③「已重采集 …」归 T33(Tab3 重采集本波未接线),故不立。
         "toast.projectCopy": "检测到工程副本,已创建独立采集数据副本",
         "toast.sidecarSwitched":
-            "采集数据已超过 8MB,已转存外部文件——发给他人需重新采集",
+            "采集数据已转存外部文件(>8MB),位置见设置页(路径管理与导入导出待功能卡)",
         // 缩放 10 秒防呆确认框(05 §1.2:立即预览 → 10 秒倒计时 → 取消/超时/关窗回退)。
         // 05 只给机制未给逐字正文;{s} = 剩余秒数,按钮「取消」复用 common.cancel。
         "scale.confirmBody": "缩放已应用,{s} 秒后回退",
-        "scale.keep": "保持",
+        "scale.keep": "保存",
         // PRINT 态三处 disabled 的 tooltip(兑现 deviations A22;zh 逐字取 05 §2.1 ⓪/③)
-        "master.printLock.group": "打印中不可切组",
-        "master.printLock.version": "打印中不可切换版本,请先停止走带",
-        "master.printLock.copy": "打印中不可复制版本",
+        "master.printLock.group": "自动化写入中不可切换分组",
+        "master.printLock.version": "自动化写入中不可切换版本",
+        "master.printLock.copy": "自动化写入中不可复制",
 
         // ---- T33 Wave 1 新增(Output Tab3 正式实现;05 §2.3/§2.3a 有语义无 key 的位置,
         // 图谱 A-17/A-18/A-19 + 各件所需)。EN/FR 为 T33 自译,已入 U17 待人工审校清单。----
@@ -596,16 +593,14 @@ export const T = {
         "wave.sldMinSeg": "MIN SEG",
         // 七条悬停说明(A-19 同族自造;`{d}` = 02 §0.3 的出厂默认档)。
         // 七个 mono 微标不看说明猜不出各自管什么 —— 用户 preview 逐个问过来了。
-        "wave.tipThreshold":
-            "有声门限:比它响算「在唱」,比它轻算静音。调高只认响的地方,调低连气声也算进来(默认 {d})",
+        "wave.tipThreshold": "门限阈值:比它响则被识别,比它小被忽略(默认 {d})",
         "wave.tipHysteresis":
             "回滞:开门用门限值,关门要再低这么多才关。防止音量在门限附近抖动、把一句话切成碎片(默认 {d})",
         "wave.tipHold":
-            "静音保持(VAD hangover):跌破门限后仍当作「在唱」的时长,防止字与字之间的短停顿被判成句子结束(默认 {d})",
+            "静音保持(VAD hangover):跌破门限后仍被识别的时长,防止字与字之间的短停顿被判成句子结束(默认 {d})",
         "wave.tipPadPre":
-            "前留白:有声区往前扩这么多,别把起音的头咬掉(默认 {d})",
-        "wave.tipPadPost":
-            "后留白:有声区往后扩这么多,别把尾音和混响咬掉(默认 {d})",
+            "前留白:识别区域之前的留白,用于保留音头、气口(默认 {d})",
+        "wave.tipPadPost": "后留白:识别区域之后的留白,用于保留尾音(默认 {d})",
         // 02 §3.1/§3.2:谷切分只对**长于 maxSegment(默认 8s)**的段生效 ⇒ 典型
         // 乐句(1–4s)下拖动本杆看不到变化。已转 native 侧评估,tip 先据实说明。
         "wave.tipSensitivity":
@@ -613,7 +608,7 @@ export const T = {
         // 02 §2.3 后处理 P1 逐字:「core 段长 < minSegmentMs → **丢弃**」,且在
         // padding 之前判定。**不是**并进邻段(合并是内部常量 mergeGap,不暴露)。
         "wave.tipMinSeg":
-            "最短段长:短于此的段直接丢弃(在前后留白之前判定)。调大可滤掉杂音,但也会丢掉短促的 ad-lib 与单字和声(默认 {d})",
+            "最短段长:短于此长度的段会被直接丢弃(在前后留白之前判定),用于过滤杂音,但也会丢掉短促的 ad-lib 与单字和声(默认 {d})",
         // 泳道空态(05 §2.3 行 318 逐字;A-17)
         "wave.emptyMain": "尚无采集数据——开启采集开关并播放",
         "wave.emptyCta": "去 Tab1 打开采集",
@@ -627,20 +622,21 @@ export const T = {
         "wave.applyCountdown": "300ms 后应用…",
         "wave.applying": "正在应用…",
         // 布防行的行内短说明(B-04 裁定:长句移 footer.recaptureOutputWarn,这里留短句)
-        "wave.recaptureInlineNote": "本次布防只门控采集,不改变输出范围",
-        // 段检查器(05 §2.3a;标题 eyebrow + 只读字段名;origin 角标与标题
+        "wave.recaptureInlineNote":
+            "本次重采集只针对选区进行,不影响输出引擎的工作范围",
+        // 段落详情与编辑(05 §2.3a;标题 eyebrow + 只读字段名;origin 角标与标题
         // 同行,角标值 E/C 本身非词条 —— §17②,无独立字段行)
-        "wave.inspectorTitle": "段检查器",
+        "wave.inspectorTitle": "段落详情与编辑",
         // 面板开关 + 空态句(T33 Wave 5 用户裁定④:检查器改「常驻 + 显式开关」,
         // 覆盖 C-11 的条件渲染;建议 05 §2.3 行 286「可展开」同步改口径)
-        "wave.inspectorToggle": "段检查器",
+        "wave.inspectorToggle": "段落详情与编辑",
         // 标题栏 ✕ 的 aria-label(Wave 5 /code-review minor⑥):它折叠的是常驻面板,
         // 与工具条那枚开关同一个本地态 —— 不是「取消/放弃刚才的编辑」,
         // 因此不得复用确认框族的 common.cancel(EN/FR 自译,入 U17 待审校)
-        "wave.inspectorClose": "收起段检查器",
+        "wave.inspectorClose": "收起",
         "wave.inspectorEmpty": "点选泳道内的段以编辑",
-        "wave.segStart": "起",
-        "wave.segEnd": "止",
+        "wave.segStart": "开始",
+        "wave.segEnd": "结束",
         "wave.segLen": "时长",
         // 段响度标签正名(契约 §1.21:loudness_mode 默认 kw_integrated;
         // [J72a] C-12:该字段的旧显示名已废,不得回流)
@@ -666,14 +662,15 @@ export const T = {
         // 二次确认框两枚(05 §2.3 行 302/303 逐字)
         "wave.reidentifyConfirm":
             "将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?",
-        "wave.clearCoverageConfirm": "将删除选中轨×选区的采集特征数据,确定?",
+        "wave.clearCoverageConfirm":
+            "将删除选中轨×选区的采集特征数据,是否继续?",
         // ---- T33 Wave 2 交互反馈件(05 §2.3 行 300-313 / 契约 §5.5;
         //      EN/FR 入 U17 待审校)----
         // recaptureArm 拒绝态四值的行内说明(§5.5:出说明、不点亮 badge)
-        "wave.armReason.noTracks": "未勾选目标轨——先在左侧轨头勾选",
-        "wave.armReason.noSelection": "无有效选区——先在时间标尺上拖出选区",
-        "wave.armReason.readOnly": "只读观察态,布防未生效",
-        "wave.armReason.noTimeline": "宿主未提供时间线,无法布防",
+        "wave.armReason.noTracks": "未勾选目标轨,点击左侧轨头勾选",
+        "wave.armReason.noSelection": "无有效选区,在时间标尺上拖出选区",
+        "wave.armReason.readOnly": "只读观察态,写入未生效",
+        "wave.armReason.noTimeline": "宿主未提供时间线,无法写入",
         // merge 的 notAdjacent 拒绝反馈(契约 §1.22)与工具条合并钮(05 行 313)
         "wave.notAdjacent": "只能合并相邻两段",
         "wave.btnMerge": "合并选中两段",
@@ -690,7 +687,8 @@ export const T = {
         // 状态词规范(05 §5,512-524 行):连接类状态每态唯一用词,正文一律引用 key。
         // state.* 前缀为 T27 自定(05 只给表格未给 key);FR 除 passthrough/takenOver 取自术语表外为 T27 自译。
         "state.notConnected": "NOT CONNECTED",
-        "state.staleLink": "STALE LINK",
+        "state.staleLink":
+            "Link anomaly (stale heartbeat: still online but updates stopped)",
         "state.connected": "CONNECTED",
         "state.noChannel": "NO CHANNEL",
         "state.outputOffline": "OUTPUT OFFLINE",
@@ -706,7 +704,7 @@ export const T = {
         width: "Width",
         track: "Track",
         channel: "Channel",
-        group: "Group",
+        group: "Grouping",
         segment: "Segment",
         capture: "Capture",
         tabs: "Tabs",
@@ -718,14 +716,14 @@ export const T = {
         priority: "Priority",
         leadLock: "Lead Lock",
         leadSelect: "Lead Select",
-        leadFollowAnalysis: "Follow analysis",
+        leadFollowAnalysis: "Auto-select",
         msBalance: "MS Balance",
         stereoBadge: "ST",
         participateAutoPan: "Auto-Pan Participate",
         trackWidth: "Track Width",
-        "tracks.monoWidthNoop": "Mono source: width has no effect in v1",
+        "tracks.monoWidthNoop": "Mono source cannot adjust width",
         "master.leadSelectHint":
-            "Track forced to center; the volume participation switch is independent and unaffected",
+            "This track is set as Lead and forced to center",
         pair: "Pair",
         threshold: "Threshold",
         sensitivity: "Sensitivity",
@@ -766,7 +764,7 @@ export const T = {
         clearCapture: "Clear capture",
         scale: "UI Scale",
         language: "Language",
-        armedWaiting: "ARMED · WAITING",
+        armedWaiting: "READY · WAITING",
         outOfRange: "OUT OF RANGE",
         occupied: "OCCUPIED",
 
@@ -779,15 +777,15 @@ export const T = {
             "Output is in ENGINE DRIVE (restored with project)",
         "banner.printGuard.confirm": "Continue engine drive",
         "out.master.writeConfirm":
-            "Engine drive {v} · range {x}–{y} · 30 lanes. If Latch/Write is armed in your DAW, playing this range will overwrite existing automation there; if not armed, this is monitoring only.",
+            "Engine drive {v} · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
         "footer.printing": "ENGINE DRIVE {v} · {x}–{y}",
         "footer.printDone":
-            "Pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
+            "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
         "out.master.writeConfirm.follow":
-            "Engine drive {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 lanes. If Latch/Write is armed in your DAW, playing analyzed areas will overwrite existing automation there; if not armed, this is monitoring only.",
+            "Engine drive {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
         "footer.printing.follow": "ENGINE DRIVE {v} · FOLLOW (ANALYZED AREAS)",
         "footer.printDone.follow":
-            "Pass covered the analyzed areas. If you were recording automation, switch back to Follow Host to check.",
+            "This pass covered the analyzed areas. If you were recording automation, switch back to Follow Host to check.",
         "wave.diffKept": "{k} edited/locked segments preserved",
         "tracks.manualOverwriteConfirm":
             "This replaces all analyzed segments of this track (current version) with a fixed value. Undoable.",
@@ -796,18 +794,18 @@ export const T = {
         "in.pill.abiMismatch": "VERSION MISMATCH",
         "in.pill.srMismatch": "SR MISMATCH",
         "tracks.manualDrivenHint":
-            "Track still driven by a manual fixed value — re-identify this track?",
+            "Track still driven by a manual fixed value — re-identify it?",
         "in.releaseConfirm":
-            "Release channel {n} — this track returns to passthrough",
-        "wave.recaptureArmed": "RECAPTURE ARMED · {x}–{y} · {n} TRACKS",
-        "wave.recaptureArmedShort": "RECAPTURE ARMED",
+            "Release channel {n} — no further processing on this track",
+        "wave.recaptureArmed": "RECAPTURE READY · {x}–{y} · {n} TRACKS",
+        "wave.recaptureArmedShort": "RECAPTURE READY",
         "footer.recaptureOutputWarn":
             "Engine still drives the global range — unaffected by the recapture selection",
 
         // 首次启动引导页(05 §5,606-610 行)。
         // guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入(05 §5 / §0.1,禁止手抄)。
         "guide.title":
-            "Must read: SCVB's nine hard rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
+            "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
         "guide.dontShowAgain": "Don't show again",
         "guide.start": "Get started",
         "set.reopenGuide": "Show guide again",
@@ -868,7 +866,7 @@ export const T = {
             "Inter-segment transition: 20–300 ms; sets how fast level and pan ramp between intervals.",
         "tour.step15.title": "Angle-domain curve",
         "tour.step15.body":
-            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and select a point to delete. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
+            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and double-click to delete. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
         "tour.step16.title": "This page: Tracks",
         "tour.step16.body":
             "One row per channel, a 15-track matrix; the controls in each row tweak that track and only unlock to manual when frozen.",
@@ -920,7 +918,7 @@ export const T = {
         "tour.step31.title": "Post-selection toolbar",
         "tour.step31.body":
             "Re-capture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
-        "tour.step35.title": "Segment inspector",
+        "tour.step35.title": "Segment details & editing",
         "tour.step35.body":
             "A segment has been selected for you: in the inspector you can edit its pan/vol, check its origin (E/C), and lock it.",
         "tour.step30.title": "Segmentation toolbar",
@@ -973,8 +971,8 @@ export const T = {
             "Priority: host automation > frozen manual value > manual tweak > engine analysis curve",
 
         // tour demo 的 15 条轨名(J62;口径见 zh 侧同组注释)。EN 为 T27 自译,待人工审校。
-        "demo.ch1": "Lead Vocal",
-        "demo.ch2": "Lead Double",
+        "demo.ch1": "Lead Vocal 1",
+        "demo.ch2": "Lead Vocal 2",
         "demo.ch3": "Harmony L",
         "demo.ch4": "Harmony R",
         "demo.ch5": "Harmony C",
@@ -982,12 +980,12 @@ export const T = {
         "demo.ch7": "Ad-lib 2",
         "demo.ch8": "Octave Down",
         "demo.ch9": "Octave Up",
-        "demo.ch10": "Group Vocal L",
-        "demo.ch11": "Group Vocal R",
-        "demo.ch12": "Breath",
+        "demo.ch10": "Harmony L",
+        "demo.ch11": "Harmony R",
+        "demo.ch12": "FX",
         "demo.ch13": "Spoken",
-        "demo.ch14": "Group Vocal C",
-        "demo.ch15": "Tail",
+        "demo.ch14": "Harmony C",
+        "demo.ch15": "Outro",
         "demo.versionName": "Base balance", // T27 自译,待人工审校
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
@@ -1013,20 +1011,18 @@ export const T = {
         "master.rangeFollowHint":
             "Follows playback, range extends automatically. {n} analyzed segments · {t} total",
         "master.step1.desc":
-            "Turn it on and play this range; the plug-in records loudness features — nothing is written to automation",
-        "master.widthAngleHint":
-            "Angle at the outermost position on each side; 0–90° (automation parameter width 0–150%)",
-        "master.msHint":
-            "−100 toward Mid / +100 toward Side; double-click to reset — drag to preview on the curve below",
+            "Turn it on and play this range to record loudness features",
+        "master.widthAngleHint": "The angle of the outermost vocals. 0–90°",
+        "master.msHint": "−100 toward Mid / +100 toward Side",
         "master.distHint":
             "Bar height = level, horizontal position = pan; the line = stereo source width",
         "master.distAxis": "L · −50 · C · +50 · R",
         "master.transitionHint":
-            "Values ramp between segments instead of jumping. Too short and the seam clicks; too long and the image smears between two spots.",
+            "How fast parameters transition between segments.",
         "master.copyConfirmWarn":
             "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
+            "Vol = whether this track joins volume balancing (on by default) and the volume control · Pan = whether this track joins pan redistribution (stereo off by default, still volume-balanced) and the pan control · Freeze P/V = still counted by the engine but no longer driven; the knob unlocks to pure manual control (both switches share one per-track automation parameter)",
         "tracks.emptyGroup":
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
@@ -1036,7 +1032,7 @@ export const T = {
         "tracks.colState": "State",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
-        "tracks.colVolLevel": "VOL / LEVEL",
+        "tracks.colVolLevel": "VOLUME",
         "tracks.colPrio": "PRIO",
         "tracks.colLead": "LEAD",
         "tracks.colVolExempt": "Vol",
@@ -1044,11 +1040,11 @@ export const T = {
         "tracks.colFreezePan": "FRZ P",
         "tracks.colFreezeVol": "FRZ V",
         "tracks.colOn": "ON",
-        "tracks.footNote": "15 tracks · scroll + sticky header",
+        "tracks.footNote": "15 tracks",
         "tracks.emptyRoute":
-            "Keep each vocal track's output routing pointed at this bus (do not change it)",
-        "lowSample.full": "Low sample — the result may be unstable",
-        "tracks.panAutoHint": "Auto mode — driven by the analysis curve",
+            "Keep each vocal track's output routing pointed at this bus",
+        "lowSample.full": "Low sample — analysis may be unstable",
+        "tracks.panAutoHint": "Auto mode: driven by the analysis curve",
         "tracks.leadCenter": "CTR",
         "tracks.multiLead": "Multiple leads centred",
         "tracks.misaligned": "Misaligned ×{n}",
@@ -1063,17 +1059,17 @@ export const T = {
         "common.decrease": "Decrease",
         "common.increase": "Increase",
         "wave.trackPickHint":
-            "Tick the lane headers on the left to choose target tracks (multi-select, shift for a range)",
+            "Tick the lane headers on the left to choose target tracks (multi-select, Shift for a range)",
         "wave.selChip": "The four actions above apply to {n} tracks",
         "wave.setRangeTip":
             "Working range set to selection {x}–{y} — Range switched to Manual; the selection itself is unchanged",
         "wave.originLegend":
             "origin: E = edited, C = created by hand; auto segments carry no badge. Locked segments survive re-identification.",
-        "set.loudnessMode.title": "Which metric for segment loudness",
+        "set.loudnessMode.title": "Segment loudness analysis algorithm",
         "set.loudnessMode.note":
             "Sets the reference for segment-to-segment loudness normalization; changing it requires re-analysis.",
         "set.centerSlot.title":
-            "What happens when tracks compete for the center slot",
+            "Priority when tracks compete for the center slot",
         "set.centerSlot.note":
             "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
         "in.chHint.groupEmpty":
@@ -1082,7 +1078,7 @@ export const T = {
         // ---- T35 新增(EN 自译,待人工审校)----
         "set.usage.eyebrow": "USAGE",
         "set.usage.workflow":
-            "Capture → Analyze → Output. Turn on capture and play; the plug-in records each track's loudness features. Analysis computes a pan/level plan for every phrase offline. Switch Output to ENGINE DRIVE and the plug-in drives the parameters; to record them, arm Latch or Write on the DAW side.",
+            "Capture → Analyze → Output. Turn on capture and play; the plug-in records each track's loudness features. Analysis computes a pan/level plan for every phrase offline. Switch Output to ENGINE DRIVE and the plug-in drives the parameters; enable Latch or Write mode in your DAW to record them as an automation track.",
         "set.usage.docs": "Docs",
         "set.loudnessMode.eyebrow": "SECOND LOUDNESS METRIC",
         "set.loudnessMode.opt.kw_integrated": "K-weighted integral",
@@ -1098,7 +1094,7 @@ export const T = {
             "The full nine rules will be included in the release build",
         "set.storage.eyebrow": "STORAGE",
         "set.storage.embedded": "Embedded in project ({mb} MB)",
-        "set.storage.external": "Moved to external file (>8 MB automatic)",
+        "set.storage.external": "Saved as an external file (>8 MB automatic)",
         "set.storage.sessionGuid": "session {guid}",
         "set.diag.eyebrow": "DIAGNOSTICS",
         "set.diag.copy": "Copy diagnostics",
@@ -1111,10 +1107,9 @@ export const T = {
         "set.reanalyze": "Re-analysis required",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
-        "in.pillSub.passthrough":
-            "Passthrough: this track plays on its original path (unbalanced)",
+        "in.pillSub.passthrough": "Passthrough: no processing on this track",
         "in.pillSub.takenOver":
-            "Taken over: this track is muted and routed through the Output bus",
+            "Taken over: this track is muted, and audio is output by the bus inserted into Output",
         "in.pillSub.hysteresis":
             "Connection unstable — switching to passthrough",
         "in.pillSub.stereo":
@@ -1153,19 +1148,19 @@ export const T = {
             "{p}% of the range is covered; uncovered parts stay as they are",
         "master.analyzing": "Analyzing…",
         "master.analyzeDone": "Analysis done",
-        "master.step3.desc":
-            "To record it as automation, arm this plug-in's parameters in the DAW with",
+        "master.step3.desc": "Enable automation recording in your DAW",
         "master.step3.descStrong":
-            "Latch (recommended) or Write; never use Touch",
+            "If available, use Latch (recommended) or Write mode; never use Touch mode",
         "master.writeConfirm.ok": "Got it, start",
         "master.writeConfirm.undo": "Undo (back to Follow Host)",
         "master.groupEyebrow": "GROUP",
         "master.widthEyebrow": "WIDTH · MAX ANGLE",
         "master.rangeEyebrow": "RANGE",
         "master.distEyebrow": "PAN / VOLUME DISTRIBUTION",
-        "master.curveEyebrow": "ANGLE-DOMAIN CURVE · ±12 dB",
+        "master.curveEyebrow": "ANGLE-BASED LEVEL ADJUST · ±12 dB",
         "master.curveLegendMs": "MS equivalent gain",
-        "master.curveAxisX": "L −100 · −50 · C 0 · +50 · R +100",
+        "master.curveAxisX":
+            "Left L −100 · −50 · Center C 0 · +50 · Right R +100",
         "master.curveEmptyHint": "Double-click to add a control point",
         // ---- T34 曲线编辑器(curve.*;shape/side 术语逐字对拍 05 §5 术语表)----
         "curve.canvasLabel": "Angle-domain gain curve editor",
@@ -1190,7 +1185,7 @@ export const T = {
             "Point {n}: angle {angle}, {gain} dB, {shape}, Q {q}",
         "curve.announcePointDir":
             "Point {n}: angle {angle}, {gain} dB, {shape}, Q {q} · direction {side}",
-        "master.leadSelectDefaultNote": "0 = follow analysis (default)",
+        "master.leadSelectDefaultNote": "0 = auto-select (default)",
         "range.manual": "Manual",
         "master.rangeLoopStale":
             "Loop region is no longer valid — keeping the previous range",
@@ -1200,7 +1195,7 @@ export const T = {
         "master.rangeEnd": "Range end",
         "master.setToPlayhead": "Set to playhead",
         "master.barsEstimateNote":
-            "Bar numbers are estimates; they become exact after playing this area",
+            "Bar numbers are estimates; they calibrate after playing this area",
         "footer.defaultHint":
             "Capture → Analyze → Output: turn on the capture switch in Tab 1 and play this range",
         "scale.current": "Current",
@@ -1233,13 +1228,13 @@ export const T = {
         "toast.projectCopy":
             "Project copy detected — a separate capture data copy was created",
         "toast.sidecarSwitched":
-            "Capture data exceeded 8 MB and was moved to an external file — sharing this project requires re-capturing",
+            "Capture data was moved to an external file (>8 MB); see Settings (path management and import/export are future work)",
         "scale.confirmBody": "Scale applied, reverting in {s} s",
-        "scale.keep": "Keep",
-        "master.printLock.group": "Can't switch group while printing",
+        "scale.keep": "Save",
+        "master.printLock.group": "Can't switch group while writing automation",
         "master.printLock.version":
-            "Can't switch version while printing — stop the transport first",
-        "master.printLock.copy": "Can't copy a version while printing",
+            "Can't switch version while writing automation",
+        "master.printLock.copy": "Can't copy while writing automation",
 
         // ---- T33 Wave 1 新增(EN 为 T33 自译,待 U17 人工审校;
         // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
@@ -1251,19 +1246,19 @@ export const T = {
         "wave.sldSensitivity": "SENSITIVITY",
         "wave.sldMinSeg": "MIN SEG",
         "wave.tipThreshold":
-            "Voicing threshold: louder than this counts as singing, quieter counts as silence. Raise it to catch only loud passages, lower it to include breathy notes (default {d})",
+            "Threshold: louder than this is recognized, quieter is ignored (default {d})",
         "wave.tipHysteresis":
             "Hysteresis: opens at the threshold but only closes this far below it — stops level jitter near the threshold from shredding a phrase (default {d})",
         "wave.tipHold":
-            "Hold (VAD hangover): keep treating the signal as voiced for this long after it drops below the threshold, so short gaps between words are not read as the end of a phrase (default {d})",
+            "Hold (VAD hangover): how long to keep treating the signal as voiced after it drops below the threshold, so short pauses between words aren't split (default {d})",
         "wave.tipPadPre":
-            "Pre-padding: extend each voiced region backwards by this much so attacks are not clipped (default {d})",
+            "Pre-pad: padding before the detected region, to keep the attack and breath (default {d})",
         "wave.tipPadPost":
-            "Post-padding: extend each voiced region forwards by this much so tails and reverb are not clipped (default {d})",
+            "Post-pad: padding after the detected region, to keep the tail (default {d})",
         "wave.tipSensitivity":
             "Segmentation sensitivity: higher splits more readily at energy valleys. Only applies to segments longer than 8 s, so short phrases will not change (default {d})",
         "wave.tipMinSeg":
-            "Minimum segment length: segments shorter than this are discarded (judged before padding). Raising it filters noise but also drops short ad-libs and one-word harmonies (default {d})",
+            "Minimum segment length: shorter segments are discarded (judged before padding) to filter noise, but it also drops brief ad-libs and single-note harmonies (default {d})",
         "wave.emptyMain":
             "No captured data yet — turn on the capture switch and play",
         "wave.emptyCta": "Open capture in Tab 1",
@@ -1275,10 +1270,10 @@ export const T = {
         "wave.applyCountdown": "Applying in 300 ms…",
         "wave.applying": "Applying…",
         "wave.recaptureInlineNote":
-            "Arming only gates capture; the output range is unchanged",
-        "wave.inspectorTitle": "Segment inspector",
-        "wave.inspectorToggle": "Inspector",
-        "wave.inspectorClose": "Collapse segment inspector",
+            "This recapture applies only to the selection and does not affect the output engine's range",
+        "wave.inspectorTitle": "Segment details & editing",
+        "wave.inspectorToggle": "Segment details & editing",
+        "wave.inspectorClose": "Collapse",
         "wave.inspectorEmpty": "Click a segment in a lane to edit it",
         "wave.segStart": "Start",
         "wave.segEnd": "End",
@@ -1304,12 +1299,12 @@ export const T = {
             "This deletes the captured feature data for the selected tracks × selection. Continue?",
         // ---- T33 Wave 2 interaction feedback (05 §2.3 / contract §5.5; U17 review pending) ----
         "wave.armReason.noTracks":
-            "No target tracks — check track heads on the left first",
+            "No target tracks — tick the track heads on the left",
         "wave.armReason.noSelection":
-            "No valid selection — drag one on the time ruler first",
+            "No valid selection — drag one on the time ruler",
         "wave.armReason.readOnly":
-            "Read-only observer — arming did not take effect",
-        "wave.armReason.noTimeline": "Host provides no timeline — cannot arm",
+            "Read-only observer — writing did not take effect",
+        "wave.armReason.noTimeline": "Host provides no timeline — cannot write",
         "wave.notAdjacent": "Only two adjacent segments can be merged",
         "wave.btnMerge": "Merge selected pair",
         "wave.recaptureOverlap": "Will overwrite {k} segments of existing data",
@@ -1322,7 +1317,8 @@ export const T = {
         // 状态词规范(05 §5,512-524 行):连接类状态每态唯一用词,正文一律引用 key。
         // state.* 前缀为 T27 自定(05 只给表格未给 key);FR 除 passthrough/takenOver 取自术语表外为 T27 自译。
         "state.notConnected": "NON CONNECTÉ",
-        "state.staleLink": "LIEN OBSOLÈTE",
+        "state.staleLink":
+            "Lien anormal (heartbeat obsolète : toujours en ligne mais plus de mises à jour)",
         "state.connected": "CONNECTÉ",
         "state.noChannel": "AUCUN CANAL",
         "state.outputOffline": "OUTPUT HORS LIGNE",
@@ -1338,7 +1334,7 @@ export const T = {
         width: "Largeur",
         track: "Piste",
         channel: "Canal",
-        group: "Groupe",
+        group: "Groupement",
         segment: "Segment",
         capture: "Capture",
         tabs: "Onglets",
@@ -1350,14 +1346,15 @@ export const T = {
         priority: "Priorité",
         leadLock: "Verrou lead",
         leadSelect: "Sélection lead",
-        leadFollowAnalysis: "Suivre l'analyse",
+        leadFollowAnalysis: "Sélection auto",
         msBalance: "Balance M/S",
         stereoBadge: "ST",
         participateAutoPan: "Participation pan auto",
         trackWidth: "Largeur de piste",
-        "tracks.monoWidthNoop": "Source mono : la largeur est sans effet en v1",
+        "tracks.monoWidthNoop":
+            "Une source mono ne peut pas ajuster la largeur",
         "master.leadSelectHint":
-            "Piste forcée au centre ; l'interrupteur de participation au volume est indépendant",
+            "Cette piste est définie comme Lead et forcée au centre",
         pair: "Paire",
         threshold: "Seuil",
         sensitivity: "Sensibilité",
@@ -1396,7 +1393,7 @@ export const T = {
         clearCapture: "Effacer la capture",
         scale: "Échelle",
         language: "Langue",
-        armedWaiting: "ARMÉ · EN ATTENTE",
+        armedWaiting: "PRÊT · EN ATTENTE",
         outOfRange: "HORS PLAGE",
         occupied: "OCCUPÉ",
 
@@ -1409,16 +1406,16 @@ export const T = {
             "La sortie est en PILOTAGE MOTEUR (restauré avec le projet)",
         "banner.printGuard.confirm": "Continuer le pilotage moteur",
         "out.master.writeConfirm":
-            "Pilotage moteur {v} · plage {x}–{y} · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
+            "Pilotage moteur {v} · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
         "footer.printing": "PILOTAGE MOTEUR {v} · {x}–{y}",
         "footer.printDone":
-            "Passe couvrant {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
+            "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "out.master.writeConfirm.follow":
-            "Pilotage moteur {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
+            "Pilotage moteur {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
         "footer.printing.follow":
             "PILOTAGE MOTEUR {v} · SUIVI (ZONES ANALYSÉES)",
         "footer.printDone.follow":
-            "Passe couvrant les zones analysées. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
+            "Cette passe a couvert les zones analysées. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "wave.diffKept": "{k} segments modifiés/verrouillés préservés",
         "tracks.manualOverwriteConfirm":
             "Remplace tous les segments analysés de cette piste (version actuelle) par une valeur fixe. Annulable.",
@@ -1427,18 +1424,18 @@ export const T = {
         "in.pill.abiMismatch": "VERSION INCOMPATIBLE",
         "in.pill.srMismatch": "FRÉQ. INCOHÉRENTE",
         "tracks.manualDrivenHint":
-            "Piste encore pilotée par une valeur fixe manuelle — ré-identifier cette piste ?",
+            "Piste encore pilotée par une valeur fixe manuelle — la ré-identifier ?",
         "in.releaseConfirm":
-            "Libérer le canal {n} — cette piste repasse en direct",
-        "wave.recaptureArmed": "RÉ-CAPTURE ARMÉE · {x}–{y} · {n} PISTES",
-        "wave.recaptureArmedShort": "RÉ-CAPTURE ARMÉE",
+            "Libérer le canal {n} — plus aucun traitement sur cette piste",
+        "wave.recaptureArmed": "RÉ-CAPTURE PRÊTE · {x}–{y} · {n} PISTES",
+        "wave.recaptureArmedShort": "RÉ-CAPTURE PRÊTE",
         "footer.recaptureOutputWarn":
             "Le moteur pilote toujours la plage globale — indépendamment de la sélection de ré-capture",
 
         // 首次启动引导页(05 §5,606-610 行)。
         // guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入(05 §5 / §0.1,禁止手抄)。
         "guide.title":
-            "À lire : les neuf règles strictes de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
+            "À lire : les neuf règles d'utilisation de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
         "guide.dontShowAgain": "Ne plus afficher",
         "guide.start": "Commencer",
         "set.reopenGuide": "Revoir le guide",
@@ -1500,7 +1497,7 @@ export const T = {
             "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre les intervalles.",
         "tour.step15.title": "Courbe du domaine angulaire",
         "tour.step15.body":
-            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et sélectionnez un point pour le supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
+            "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et double-cliquez pour supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
         "tour.step16.title": "Cette page : Pistes",
         "tour.step16.body":
             "Une ligne par canal, une matrice de 15 pistes ; les commandes de chaque ligne règlent la piste et ne se déverrouillent en manuel qu'une fois gelées.",
@@ -1552,7 +1549,7 @@ export const T = {
         "tour.step31.title": "Barre post-sélection",
         "tour.step31.body":
             "Re-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes sélectionnées × la sélection.",
-        "tour.step35.title": "Inspecteur de segment",
+        "tour.step35.title": "Détails et édition du segment",
         "tour.step35.body":
             "Un segment a été sélectionné pour vous : dans l'inspecteur, modifiez son pan/vol, consultez son origine (E/C) et verrouillez-le.",
         "tour.step30.title": "Barre de segmentation",
@@ -1606,8 +1603,8 @@ export const T = {
 
         // tour demo 的 15 条轨名(J62;口径见 zh 侧同组注释)。FR 为 T27 自译,待人工审校;
         // L/R/C 照 master.distAxis 的 fr 侧取 G/D/C。
-        "demo.ch1": "Voix principale",
-        "demo.ch2": "Double voix principale",
+        "demo.ch1": "Voix principale 1",
+        "demo.ch2": "Voix principale 2",
         "demo.ch3": "Harmonie G",
         "demo.ch4": "Harmonie D",
         "demo.ch5": "Harmonie C",
@@ -1615,12 +1612,12 @@ export const T = {
         "demo.ch7": "Ad-lib 2",
         "demo.ch8": "Octave inférieure",
         "demo.ch9": "Octave supérieure",
-        "demo.ch10": "Chœur G",
-        "demo.ch11": "Chœur D",
-        "demo.ch12": "Souffle",
+        "demo.ch10": "Harmonie G",
+        "demo.ch11": "Harmonie D",
+        "demo.ch12": "Effets",
         "demo.ch13": "Parlé",
-        "demo.ch14": "Chœur C",
-        "demo.ch15": "Fin de note",
+        "demo.ch14": "Harmonie C",
+        "demo.ch15": "Outro",
         "demo.versionName": "Équilibre de base", // T27 自译,待人工审校
 
         // 分组词条组(05 §5.1,623-633 行;J71② 整组采设计稿三语提案表)。
@@ -1647,20 +1644,18 @@ export const T = {
         "master.rangeFollowHint":
             "Suit la lecture, la plage s'étend automatiquement. {n} segments analysés · {t} au total",
         "master.step1.desc":
-            "Activez et lisez cette plage ; le plug-in enregistre les caractéristiques de loudness — rien n'est écrit dans l'automation",
-        "master.widthAngleHint":
-            "Angle à la position la plus extérieure de chaque côté ; 0–90° (paramètre d'automation width 0–150 %)",
-        "master.msHint":
-            "−100 vers Mid / +100 vers Side ; double-clic pour réinitialiser — glissez pour voir la courbe ci-dessous",
+            "Activez et lisez cette plage pour enregistrer les caractéristiques de loudness",
+        "master.widthAngleHint": "L'angle des voix les plus externes. 0–90°",
+        "master.msHint": "−100 vers Mid / +100 vers Side",
         "master.distHint":
             "Hauteur = volume, position horizontale = panoramique ; le trait = largeur de la source stéréo",
         "master.distAxis": "G · −50 · C · +50 · D",
         "master.transitionHint":
-            "Les valeurs suivent une rampe entre segments au lieu de sauter. Trop court, la jointure « saute » ; trop long, l'image se brouille entre deux positions.",
+            "Durée de transition des paramètres entre segments.",
         "master.copyConfirmWarn":
             "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = participation au volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
+            "Vol = si la piste entre dans l'équilibrage du volume (activé par défaut) et le réglage du volume · Pan = si la piste entre dans la redistribution du pan (stéréo désactivé par défaut, équilibrage du volume conservé) et le réglage du pan · Gel P/V = toujours pris en compte par le moteur mais plus piloté ; le potentiomètre se déverrouille en contrôle manuel pur (les deux interrupteurs partagent un même paramètre d'automation par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----
@@ -1670,7 +1665,7 @@ export const T = {
         "tracks.colState": "État",
         "tracks.colPan": "PAN",
         "tracks.colW": "W",
-        "tracks.colVolLevel": "VOL / NIVEAU",
+        "tracks.colVolLevel": "VOLUME",
         "tracks.colPrio": "PRIO",
         "tracks.colLead": "LEAD",
         "tracks.colVolExempt": "Vol",
@@ -1678,12 +1673,12 @@ export const T = {
         "tracks.colFreezePan": "GEL P",
         "tracks.colFreezeVol": "GEL V",
         "tracks.colOn": "ON",
-        "tracks.footNote": "15 pistes · défilement + en-tête fixe",
+        "tracks.footNote": "15 pistes",
         "tracks.emptyRoute":
-            "Le routage de sortie des pistes vocales doit rester dirigé vers ce bus (ne pas le modifier)",
+            "Le routage de sortie des pistes vocales doit rester dirigé vers ce bus",
         "lowSample.full":
-            "Échantillon insuffisant — le résultat peut être instable",
-        "tracks.panAutoHint": "Mode auto — piloté par la courbe d'analyse",
+            "Échantillon insuffisant — l'analyse peut être instable",
+        "tracks.panAutoHint": "Mode auto : piloté par la courbe d'analyse",
         "tracks.leadCenter": "CTR",
         "tracks.multiLead": "Plusieurs voix principales centrées",
         "tracks.misaligned": "Désalignement ×{n}",
@@ -1698,18 +1693,19 @@ export const T = {
         "common.decrease": "Diminuer",
         "common.increase": "Augmenter",
         "wave.trackPickHint":
-            "Cochez les en-têtes de piste à gauche pour choisir les cibles (multi-sélection, maj pour une plage)",
+            "Cochez les en-têtes de piste à gauche pour choisir les cibles (multi-sélection, Maj pour une plage)",
         "wave.selChip":
             "Les quatre actions ci-dessus s'appliquent à {n} pistes",
         "wave.setRangeTip":
             "Plage de travail définie sur la sélection {x}–{y} — Range est passé en « Manuel » ; la sélection reste inchangée",
         "wave.originLegend":
             "origin : E = modifié, C = créé manuellement ; les segments auto n'ont pas de badge. Les segments verrouillés survivent à la ré-identification.",
-        "set.loudnessMode.title": "Quelle mesure pour le loudness de segment",
+        "set.loudnessMode.title":
+            "Algorithme d'analyse de loudness des segments",
         "set.loudnessMode.note":
             "Définit la référence de normalisation du loudness entre segments ; tout changement impose une ré-analyse.",
         "set.centerSlot.title":
-            "Que faire quand plusieurs pistes se disputent le centre",
+            "Priorité quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
             "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
         "in.chHint.groupEmpty":
@@ -1718,7 +1714,7 @@ export const T = {
         // ---- T35 新增(FR 自译,待人工审校)----
         "set.usage.eyebrow": "MODE D'EMPLOI",
         "set.usage.workflow":
-            "Capture → Analyser → Sortie. Activez la capture et lancez la lecture ; le plug-in enregistre les caractéristiques de loudness de chaque piste. L'analyse calcule un plan pan/volume pour chaque phrase hors ligne. Passez la sortie en PILOTAGE MOTEUR pour que le plug-in pilote les paramètres ; pour les enregistrer, armez Latch ou Write côté DAW.",
+            "Capture → Analyser → Sortie. Activez la capture et lancez la lecture ; le plug-in enregistre les caractéristiques de loudness de chaque piste. L'analyse calcule un plan pan/volume pour chaque phrase hors ligne. Passez la sortie en PILOTAGE MOTEUR pour que le plug-in pilote les paramètres ; activez le mode Latch ou Write dans votre DAW pour les enregistrer comme piste d'automation.",
         "set.usage.docs": "Documentation",
         "set.loudnessMode.eyebrow": "SECOND INDICATEUR DE LOUDNESS",
         "set.loudnessMode.opt.kw_integrated": "Intégrale pondérée K",
@@ -1735,7 +1731,7 @@ export const T = {
         "set.storage.eyebrow": "STOCKAGE",
         "set.storage.embedded": "Intégré au projet ({mb} Mo)",
         "set.storage.external":
-            "Déplacé vers un fichier externe (>8 Mo automatique)",
+            "Enregistré comme fichier externe (>8 Mo automatique)",
         "set.storage.sessionGuid": "session {guid}",
         "set.diag.eyebrow": "DIAGNOSTIC",
         "set.diag.copy": "Copier les diagnostics",
@@ -1748,10 +1744,9 @@ export const T = {
         "set.reanalyze": "Ré-analyse requise",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
-        "in.pillSub.passthrough":
-            "Direct : cette piste suit son chemin d'origine (sans équilibrage)",
+        "in.pillSub.passthrough": "Direct : aucun traitement sur cette piste",
         "in.pillSub.takenOver":
-            "Pris en charge : cette piste est coupée et routée par le bus Output",
+            "Pris en charge : cette piste est coupée, et le son sort par le bus inséré dans Output",
         "in.pillSub.hysteresis":
             "Connexion instable — passage en direct imminent",
         "in.pillSub.stereo":
@@ -1791,18 +1786,19 @@ export const T = {
         "master.analyzing": "Analyse en cours…",
         "master.analyzeDone": "Analyse terminée",
         "master.step3.desc":
-            "Pour l'enregistrer en automation, armez les paramètres de ce plug-in dans le DAW en",
+            "Activez l'enregistrement d'automation dans votre DAW",
         "master.step3.descStrong":
-            "Latch (recommandé) ou Write ; n'utilisez jamais Touch",
+            "Si disponible, utilisez le mode Latch (recommandé) ou Write ; n'utilisez jamais le mode Touch",
         "master.writeConfirm.ok": "Compris, démarrer",
         "master.writeConfirm.undo": "Annuler (revenir au suivi hôte)",
         "master.groupEyebrow": "GROUPE",
         "master.widthEyebrow": "LARGEUR · ANGLE MAX",
         "master.rangeEyebrow": "PLAGE",
         "master.distEyebrow": "RÉPARTITION PAN / VOLUME",
-        "master.curveEyebrow": "COURBE ANGULAIRE · ±12 dB",
+        "master.curveEyebrow": "RÉGLAGE DE NIVEAU PAR ANGLE · ±12 dB",
         "master.curveLegendMs": "Gain équivalent M/S",
-        "master.curveAxisX": "G −100 · −50 · C 0 · +50 · D +100",
+        "master.curveAxisX":
+            "Gauche G −100 · −50 · Centre C 0 · +50 · Droite D +100",
         "master.curveEmptyHint":
             "Double-cliquez pour ajouter un point de contrôle",
         // ---- T34 曲线编辑器(curve.*;shape/side 术语逐字对拍 05 §5 术语表)----
@@ -1828,7 +1824,7 @@ export const T = {
             "Point {n} : angle {angle}, {gain} dB, {shape}, Q {q}",
         "curve.announcePointDir":
             "Point {n} : angle {angle}, {gain} dB, {shape}, Q {q} · direction {side}",
-        "master.leadSelectDefaultNote": "0 = suivre l'analyse (par défaut)",
+        "master.leadSelectDefaultNote": "0 = sélection auto (par défaut)",
         "range.manual": "Manuel",
         "master.rangeLoopStale":
             "La boucle n'est plus valide — la plage précédente est conservée",
@@ -1838,7 +1834,7 @@ export const T = {
         "master.rangeEnd": "Fin de plage",
         "master.setToPlayhead": "Définir sur la tête de lecture",
         "master.barsEstimateNote":
-            "Les numéros de mesure sont estimés ; ils deviennent exacts après lecture de cette zone",
+            "Les numéros de mesure sont estimés ; ils se calibrent après lecture de cette zone",
         "footer.defaultHint":
             "Capture → Analyse → Sortie : activez la capture dans l'onglet 1 et lisez cette plage",
         "scale.current": "Actuel",
@@ -1872,15 +1868,15 @@ export const T = {
         "toast.projectCopy":
             "Copie de projet détectée — une copie indépendante des données de capture a été créée",
         "toast.sidecarSwitched":
-            "Les données de capture dépassent 8 Mo et ont été déplacées dans un fichier externe — un envoi à un tiers nécessite une nouvelle capture",
+            "Les données de capture ont été déplacées dans un fichier externe (>8 Mo) ; voir les réglages (gestion des chemins et import/export à venir)",
         "scale.confirmBody": "Échelle appliquée, retour dans {s} s",
-        "scale.keep": "Conserver",
+        "scale.keep": "Enregistrer",
         "master.printLock.group":
-            "Changement de groupe impossible pendant l'impression",
+            "Changement de groupe impossible pendant l'écriture d'automation",
         "master.printLock.version":
-            "Changement de version impossible pendant l'impression — arrêtez d'abord le transport",
+            "Changement de version impossible pendant l'écriture d'automation",
         "master.printLock.copy":
-            "Copie de version impossible pendant l'impression",
+            "Copie impossible pendant l'écriture d'automation",
 
         // ---- T33 Wave 1 新增(FR 为 T33 自译,**发布前必须人工审校**,05 §5 / U17;
         // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
@@ -1892,19 +1888,19 @@ export const T = {
         "wave.sldSensitivity": "SENSITIVITY",
         "wave.sldMinSeg": "MIN SEG",
         "wave.tipThreshold":
-            "Seuil de voix : au-dessus, on considère qu\u2019il y a chant ; en dessous, du silence. Augmentez pour ne retenir que les passages forts, baissez pour inclure les sons soufflés (défaut {d})",
+            "Seuil : ce qui est plus fort est identifié, ce qui est plus faible est ignoré (défaut {d})",
         "wave.tipHysteresis":
             "Hystérésis : ouverture au seuil, fermeture seulement à cette distance en dessous — évite qu\u2019un niveau instable près du seuil ne hache une phrase (défaut {d})",
         "wave.tipHold":
-            "Maintien (hangover VAD) : durée pendant laquelle le signal reste considéré comme chanté après être passé sous le seuil, pour que les brèves pauses entre les mots ne soient pas prises pour une fin de phrase (défaut {d})",
+            "Maintien (hangover VAD) : durée pendant laquelle le signal reste identifié après être passé sous le seuil, pour éviter de couper entre les mots (défaut {d})",
         "wave.tipPadPre":
-            "Marge avant : étend chaque zone voisée vers l\u2019amont pour ne pas rogner les attaques (défaut {d})",
+            "Marge avant : marge avant la région identifiée, pour conserver l'attaque et la respiration (défaut {d})",
         "wave.tipPadPost":
-            "Marge après : étend chaque zone voisée vers l\u2019aval pour ne pas rogner les queues de son et la réverbération (défaut {d})",
+            "Marge après : marge après la région identifiée, pour conserver la queue de son (défaut {d})",
         "wave.tipSensitivity":
             "Sensibilité de segmentation : plus elle est haute, plus on coupe aux creux d\u2019énergie. N\u2019agit que sur les segments de plus de 8 s, donc sans effet sur les phrases courtes (défaut {d})",
         "wave.tipMinSeg":
-            "Longueur minimale de segment : les segments plus courts sont supprimés (jugé avant les marges). Augmenter filtre le bruit mais supprime aussi les ad-libs brefs et les harmonies d\u2019un mot (défaut {d})",
+            "Longueur minimale de segment : les segments plus courts sont supprimés (jugé avant les marges) pour filtrer le bruit, mais cela supprime aussi les ad-libs brefs et les harmonies d'une note (défaut {d})",
         "wave.emptyMain":
             "Aucune donnée capturée — activez l'interrupteur de capture puis lancez la lecture",
         "wave.emptyCta": "Ouvrir la capture dans l'onglet 1",
@@ -1917,10 +1913,10 @@ export const T = {
         "wave.applyCountdown": "Application dans 300 ms…",
         "wave.applying": "Application…",
         "wave.recaptureInlineNote":
-            "L'armement ne concerne que la capture ; la plage de sortie est inchangée",
-        "wave.inspectorTitle": "Inspecteur de segment",
-        "wave.inspectorToggle": "Inspecteur",
-        "wave.inspectorClose": "Réduire l'inspecteur de segment",
+            "Cette ré-capture ne concerne que la sélection et n'affecte pas la plage du moteur de sortie",
+        "wave.inspectorTitle": "Détails et édition du segment",
+        "wave.inspectorToggle": "Détails et édition du segment",
+        "wave.inspectorClose": "Réduire",
         "wave.inspectorEmpty":
             "Cliquez sur un segment dans une piste pour le modifier",
         "wave.segStart": "Début",
@@ -1947,13 +1943,13 @@ export const T = {
             "Supprime les données de caractéristiques capturées pour les pistes sélectionnées × la sélection. Continuer ?",
         // ---- Retours d'interaction T33 Wave 2(05 §2.3 / contrat §5.5;relecture U17 en attente)----
         "wave.armReason.noTracks":
-            "Aucune piste cible — cochez d'abord les en-têtes de piste à gauche",
+            "Aucune piste cible — cochez les en-têtes de piste à gauche",
         "wave.armReason.noSelection":
             "Aucune sélection valide — tracez-en une sur la règle temporelle",
         "wave.armReason.readOnly":
-            "Observateur en lecture seule — l'armement n'a pas pris effet",
+            "Observateur en lecture seule — l'écriture n'a pas pris effet",
         "wave.armReason.noTimeline":
-            "L'hôte ne fournit pas de ligne temporelle — armement impossible",
+            "L'hôte ne fournit pas de ligne temporelle — écriture impossible",
         "wave.notAdjacent":
             "Seuls deux segments adjacents peuvent être fusionnés",
         "wave.btnMerge": "Fusionner la paire sélectionnée",
