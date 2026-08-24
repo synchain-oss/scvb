@@ -2,7 +2,7 @@
 // test_printer —— T17:AutomationPrinter + GestureGuard + PlayheadShot。
 // 覆盖(03 §3.2/§3.3、P-6):五个 gesture 出口后 gestureOpen 全 false;区间外零 gesture(R5);
 // deadband 段内常量零写;段边界必写点;ScopedSelfWriteFlag listener 短路;host echo 三层屏蔽行为;
-// freeze(J65)与 track-enabled 停写/恢复;epoch 跳变自动闭合并重新 begin。
+// freeze(J65)打印平直线(恒值,不随曲线)、track-enabled 停写/恢复;epoch 跳变自动闭合并重新 begin。
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +10,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
+#include <vector>
 
 #include "AutomationPrinter.h"
 #include "OutputParams.h"
@@ -94,6 +95,23 @@ struct SelfWriteProbe final : juce::AudioProcessorParameter::Listener
             sawSelfWriteTrue = true;
     }
     void parameterGestureChanged(int, bool) override {}
+};
+
+// 记录每次 setValueNotifyingHost 触发的值(验证冻结车道输出「平直线」恒值)。
+struct ValueRecorder final : juce::AudioProcessorParameter::Listener
+{
+    std::vector<float> values;
+    int gestureBegins = 0;
+    int gestureEnds = 0;
+
+    void parameterValueChanged(int, float v) override { values.push_back(v); }
+    void parameterGestureChanged(int, bool starting) override
+    {
+        if (starting)
+            ++gestureBegins;
+        else
+            ++gestureEnds;
+    }
 };
 
 // 模拟宿主回吐(音频线程):VST3 宿主自动化经 sendValueChangedMessageToListeners 进入,
@@ -300,10 +318,11 @@ TEST_CASE("PRINTER-GUARD-5 transport 停止(无 isPlaying 标志)不打印", "[p
 }
 
 // ============================================================================
-// freeze(J65)与 track enabled:冻结/禁用停写并闭合 gesture,解冻/启用恢复。
+// freeze(J65)与 track enabled:冻结维度以「平直线」写恒值(用户 2026-08-24 设计决定),
+// track disabled 仍零写入;解冻/启用恢复曲线打印。
 // ============================================================================
 
-TEST_CASE("PRINTER-FREEZE-1 freeze 冻结维度停写闭合,解冻重新 begin", "[printer]")
+TEST_CASE("PRINTER-FREEZE-1 freeze 冻结维度保持 gesture 打开并写恒值,解冻恢复曲线", "[printer]")
 {
     PrinterFixture f;
     f.setCurve0(constCurve(30.0, -3.0));
@@ -320,26 +339,68 @@ TEST_CASE("PRINTER-FREEZE-1 freeze 冻结维度停写闭合,解冻重新 begin",
     REQUIRE(panL.valueChanges == 1);
     REQUIRE(volL.valueChanges == 1);
 
-    // freeze=1(bit0=冻结 pan):pan 车道停写并闭合 gesture;vol 照常。
+    // freeze=1(bit0=冻结 pan):pan 仍保持 gesture 打开并写恒值(平直线),不闭合;vol 照常。
     f.handles.rawFrz[0][0]->store(1.0f);
     f.publishAtSec(0.1);
     f.printer.tick();
-    REQUIRE(panL.gestureEnds == 1);
+    REQUIRE(panL.gestureEnds == 0); // 冻结不再闭合 pan gesture
     REQUIRE(volL.gestureEnds == 0);
-    REQUIRE(panL.valueChanges == 1); // pan 不再写
-    REQUIRE_FALSE(f.printer.lanes()[0].gestureOpen); // pan lane 闭合
+    REQUIRE(panL.valueChanges == 2); // pan 仍写(恒值平直线)
+    REQUIRE(f.printer.lanes()[0].gestureOpen); // pan lane 仍开
     REQUIRE(f.printer.lanes()[1].gestureOpen); // vol lane 仍开
 
-    // 解冻:pan 重新 begin(仍在区间内,§1.8)。
+    // 解冻:pan 继续按曲线打印(仍在区间内,§1.8);gesture 从未闭合 → 不重复 begin。
     f.handles.rawFrz[0][0]->store(0.0f);
     f.publishAtSec(0.2);
     f.printer.tick();
-    REQUIRE(panL.gestureBegins == 2); // 重新 begin
-    REQUIRE(panL.gestureEnds == 1); // 无额外 end
+    REQUIRE(panL.gestureBegins == 1); // 不重复 begin
+    REQUIRE(panL.gestureEnds == 0);
     REQUIRE(f.printer.lanes()[0].gestureOpen);
 
     f.handles.pan[0][0]->removeListener(&panL);
     f.handles.vol[0][0]->removeListener(&volL);
+}
+
+TEST_CASE("PRINTER-FREEZE-2 冻结 pan 输出平直线(恒值不随曲线),未冻结 vol 仍按曲线", "[printer]")
+{
+    PrinterFixture f;
+    f.setCurve0(boundaryCurve()); // pan 0 → +6(跨 t=1.0),vol 恒 0 dB
+    ValueRecorder panRec;
+    ValueRecorder volRec;
+    f.handles.pan[0][0]->addListener(&panRec);
+    f.handles.vol[0][0]->addListener(&volRec);
+
+    f.printer.setMode(AuthorityMode::Print);
+
+    // 冻结 pan(bit0),宿主置静态值 norm 0.25(pan=-50);vol 不冻结。
+    f.handles.rawFrz[0][0]->store(1.0f);
+    f.handles.pan[0][0]->setValueNotifyingHost(0.25f); // 模拟宿主写入冻结静态值
+
+    const double times[] = {0.2, 0.5, 0.8, 1.1, 1.4, 2.0};
+    for (const double t : times)
+    {
+        f.publishAtSec(t);
+        f.printer.tick();
+    }
+
+    // pan:每次 tick 写恒值 0.25(平直线),不随曲线 0→+6 波动;gesture 单次 begin 且从不闭合。
+    for (const float v : panRec.values)
+        REQUIRE(v == Catch::Approx(0.25f));
+    REQUIRE(panRec.values.size() == 7); // 1 次宿主置值 + 6 次 tick 平直线写
+    REQUIRE(panRec.gestureBegins == 1);
+    REQUIRE(panRec.gestureEnds == 0);
+    REQUIRE(f.handles.pan[0][0]->convertTo0to1(f.handles.pan[0][0]->get()) == Catch::Approx(0.25f));
+    REQUIRE(f.printer.lanes()[0].gestureOpen); // 冻结不闭合 gesture
+
+    // vol:未冻结,仍按曲线(恒 0 dB);首写 + 段边界必写点都输出曲线值,不随冻结 pan 波动。
+    const float volNorm = f.handles.vol[0][0]->convertTo0to1(0.0f);
+    REQUIRE_FALSE(volRec.values.empty()); // 未冻结车道确实有写
+    for (const float v : volRec.values)
+        REQUIRE(v == Catch::Approx(volNorm));
+    REQUIRE(f.handles.vol[0][0]->convertTo0to1(f.handles.vol[0][0]->get()) == Catch::Approx(volNorm));
+
+    f.handles.pan[0][0]->removeListener(&panRec);
+    f.handles.vol[0][0]->removeListener(&volRec);
 }
 
 TEST_CASE("PRINTER-TRACK-1 track enabled=false 整轨不 begin 不写,启用恢复", "[printer]")
