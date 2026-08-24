@@ -244,26 +244,26 @@ export const T = {
         "tour.step26.title": "本页:波形",
         "tour.step26.body":
             "查看分析结果、调整分段;上方是泳道曲线,下方是工具条;拖动、框选、缩放都在这页完成。",
-        "tour.step27.title": "下方面板与操作",
-        "tour.step27.body":
-            "框选泳道建立选区;拖拽边界微调分段;用滚轮或底部缩放条缩放 / 平移;双击可分割,选中段可合并。",
-        "tour.step28.title": "泳道区",
-        "tour.step28.body":
-            "已为你放大泳道:每条泳道叠着 pan / vol 阶梯曲线,播放头随走带移动;上排 pan(声像)、下排 vol(音量)",
-        "tour.step29.title": "选区手柄",
-        "tour.step29.body":
-            "已为你创建一段示例选区:两端就是手柄,拖动手柄可改范围;『设为范围』会把选区写入 Range",
-        "tour.step30.title": "框选后工具条",
-        "tour.step30.body":
-            "重采集 / 重分析 / 重新识别 / 清除,作用于选中的轨道 × 选区。",
-        "tour.step31.title": "段检查器",
-        "tour.step31.body":
-            "选中段后可编辑 pan / vol、查看 origin(E / C)、锁定该段。",
-        "tour.step32.title": "分段工具条",
+        "tour.step32.title": "下方面板与操作",
         "tour.step32.body":
-            "SENSITIVITY / MIN SEG 分段滑杆;边界可拖拽,双击可分割,选中相邻两段按 Delete 合并。",
-        "tour.step33.title": "VAD 滑杆(语音检测)",
+            "框选泳道建立选区;拖拽边界微调分段;用滚轮或底部缩放条缩放 / 平移;双击可分割,选中段可合并。",
+        "tour.step30.title": "泳道区",
+        "tour.step30.body":
+            "已为你放大泳道:每条泳道叠着 pan / vol 阶梯曲线,播放头随走带移动;上排 pan(声像)、下排 vol(音量)",
+        "tour.step31.title": "选区手柄",
+        "tour.step31.body":
+            "已为你创建一段示例选区:两端就是手柄,拖动手柄可改范围;『设为范围』会把选区写入 Range",
+        "tour.step29.title": "框选后工具条",
+        "tour.step29.body":
+            "重采集 / 重分析 / 重新识别 / 清除,作用于选中的轨道 × 选区。",
+        "tour.step33.title": "段检查器",
         "tour.step33.body":
+            "已为你选中一段:检查器里可编辑该段的 pan / vol、查看 origin(E / C)、锁定该段。",
+        "tour.step28.title": "分段工具条",
+        "tour.step28.body":
+            "SENSITIVITY / MIN SEG 分段滑杆;边界可拖拽,双击可分割,选中相邻两段按 Delete 合并。",
+        "tour.step27.title": "VAD 滑杆(语音检测)",
+        "tour.step27.body":
             "这五个滑杆决定「哪里算人声、哪里算静音」,是分段的基础:THRESHOLD 响度门限——比它响才算在唱;HYSTERESIS 回滞——关门比开门低一档,防止门限附近抖动把句子切碎;HOLD 静音保持——短暂停顿仍算在唱,避免字与字之间被断句;PAD PRE / PAD POST 前后留白——不咬掉起音与尾音。",
         "tour.step34.title": "本页:设置",
         "tour.step34.body":
@@ -906,26 +906,26 @@ export const T = {
         "tour.step26.title": "This page: Waveform",
         "tour.step26.body":
             "Review results and adjust segments; lane curves on top, toolbar below; drag, box-select and zoom all happen here.",
-        "tour.step27.title": "Bottom panel and actions",
-        "tour.step27.body":
-            "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/pan; double-click to split, merge a selected segment.",
-        "tour.step28.title": "Lane area",
-        "tour.step28.body":
-            "The lanes are zoomed in for you: each lane stacks the pan/vol step curves, and the playhead follows the transport; the top row is pan, the bottom row is vol.",
-        "tour.step29.title": "Selection handles",
-        "tour.step29.body":
-            'A sample selection has been created for you: the two ends are the handles — drag them to change the range; "Set as Range" writes the selection to Range.',
-        "tour.step30.title": "Post-selection toolbar",
-        "tour.step30.body":
-            "Recapture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
-        "tour.step31.title": "Segment inspector",
-        "tour.step31.body":
-            "Edit pan/vol, see origin (E/C) and lock a selected segment.",
-        "tour.step32.title": "Segmentation toolbar",
+        "tour.step32.title": "Bottom panel and actions",
         "tour.step32.body":
-            "SENSITIVITY / MIN SEG sliders; drag boundaries, double-click to split, select two adjacent segments and press Delete to merge.",
-        "tour.step33.title": "VAD sliders (voice detection)",
+            "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/pan; double-click to split, merge a selected segment.",
+        "tour.step30.title": "Lane area",
+        "tour.step30.body":
+            "The lanes are zoomed in for you: each lane stacks the pan/vol step curves, and the playhead follows the transport; the top row is pan, the bottom row is vol.",
+        "tour.step31.title": "Selection handles",
+        "tour.step31.body":
+            'A sample selection has been created for you: the two ends are the handles — drag them to change the range; "Set as Range" writes the selection to Range.',
+        "tour.step29.title": "Post-selection toolbar",
+        "tour.step29.body":
+            "Recapture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
+        "tour.step33.title": "Segment inspector",
         "tour.step33.body":
+            "A segment has been selected for you: in the inspector you can edit its pan/vol, check its origin (E/C), and lock it.",
+        "tour.step28.title": "Segmentation toolbar",
+        "tour.step28.body":
+            "SENSITIVITY / MIN SEG sliders; drag boundaries, double-click to split, select two adjacent segments and press Delete to merge.",
+        "tour.step27.title": "VAD sliders (voice detection)",
+        "tour.step27.body":
             "These five sliders decide what counts as voice versus silence — the basis of segmentation: THRESHOLD is the loudness gate — only louder than it counts as singing; HYSTERESIS closes the gate a step lower than it opens, so flutter near the threshold doesn't chop sentences; HOLD keeps short pauses counting as singing, so word-to-word gaps aren't split; PAD PRE / PAD POST add head and tail padding — so attacks and tails aren't clipped.",
         "tour.step34.title": "This page: Settings",
         "tour.step34.body":
@@ -1537,26 +1537,26 @@ export const T = {
         "tour.step26.title": "Cette page : Formes d'onde",
         "tour.step26.body":
             "Vérifiez les résultats et ajustez les segments ; courbes en haut, barre d'outils en bas ; glisser, sélectionner, zoomer se font ici.",
-        "tour.step27.title": "Panneau inférieur et actions",
-        "tour.step27.body":
-            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, fusionner un segment sélectionné.",
-        "tour.step28.title": "Zone de pistes",
-        "tour.step28.body":
-            "Les pistes sont agrandies pour vous : chaque piste superpose les courbes en escalier pan/vol, la tête de lecture suit le transport ; rangée du haut = pan, du bas = vol.",
-        "tour.step29.title": "Poignées de sélection",
-        "tour.step29.body":
-            "Une sélection d'exemple a été créée pour vous : les deux extrémités sont les poignées — faites-les glisser pour changer la plage ; « Définir comme plage » écrit la sélection dans Range.",
-        "tour.step30.title": "Barre post-sélection",
-        "tour.step30.body":
-            "Ré-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes × sélection choisies.",
-        "tour.step31.title": "Inspecteur de segment",
-        "tour.step31.body":
-            "Modifiez pan/vol, voyez l'origine (E/C) et verrouillez un segment sélectionné.",
-        "tour.step32.title": "Barre de segmentation",
+        "tour.step32.title": "Panneau inférieur et actions",
         "tour.step32.body":
-            "Curseurs SENSIBILITÉ / SEG MIN ; glissez les limites, double-clic pour diviser, sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner.",
-        "tour.step33.title": "Curseurs VAD (détection vocale)",
+            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, fusionner un segment sélectionné.",
+        "tour.step30.title": "Zone de pistes",
+        "tour.step30.body":
+            "Les pistes sont agrandies pour vous : chaque piste superpose les courbes en escalier pan/vol, la tête de lecture suit le transport ; rangée du haut = pan, du bas = vol.",
+        "tour.step31.title": "Poignées de sélection",
+        "tour.step31.body":
+            "Une sélection d'exemple a été créée pour vous : les deux extrémités sont les poignées — faites-les glisser pour changer la plage ; « Définir comme plage » écrit la sélection dans Range.",
+        "tour.step29.title": "Barre post-sélection",
+        "tour.step29.body":
+            "Ré-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes × sélection choisies.",
+        "tour.step33.title": "Inspecteur de segment",
         "tour.step33.body":
+            "Un segment a été sélectionné pour vous : dans l'inspecteur, modifiez son pan/vol, consultez son origine (E/C) et verrouillez-le.",
+        "tour.step28.title": "Barre de segmentation",
+        "tour.step28.body":
+            "Curseurs SENSIBILITÉ / SEG MIN ; glissez les limites, double-clic pour diviser, sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner.",
+        "tour.step27.title": "Curseurs VAD (détection vocale)",
+        "tour.step27.body":
             "Ces cinq curseurs décident ce qui compte comme voix ou silence — la base de la segmentation : THRESHOLD est le seuil de niveau — seul ce qui est plus fort compte comme chant ; HYSTERESIS ferme la porte un cran plus bas qu'elle ne l'ouvre, pour éviter que le flottement près du seuil ne hache les phrases ; HOLD garde les pauses courtes comme chant, pour ne pas couper entre les mots ; PAD PRE / PAD POST ajoutent du blanc avant/après — pour ne pas tronquer l'attaque ni la chute.",
         "tour.step34.title": "Cette page : Réglages",
         "tour.step34.body":

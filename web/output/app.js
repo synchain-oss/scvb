@@ -423,6 +423,7 @@ tour = createTour({
     expandGuide: () => tabSettings.expandNine(),
     zoomLanes: () => tabWave.zoomLanes(),
     showDemoSelection: () => tabWave.showDemoSelection(),
+    showDemoSegment: () => tabWave.showDemoSegment(),
     resetWaveView: () => tabWave.resetWaveView(),
 });
 tour.mount();

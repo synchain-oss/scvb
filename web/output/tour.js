@@ -75,13 +75,13 @@ export const TOUR_STEPS = Object.freeze(
         { anchor: "freeze", tab: "tracks" }, // 24
         { anchor: "enable", tab: "tracks" }, // 25
         { anchor: "tab3", tab: "wave" }, // 26
-        { anchor: "wave-panel", tab: "wave" }, // 27
-        { anchor: "lanes", tab: "wave", action: "zoomLanes" }, // 28
-        { anchor: "selection", tab: "wave", action: "showDemoSelection" }, // 29
-        { anchor: "actions", tab: "wave" }, // 30
-        { anchor: "inspector", tab: "wave" }, // 31
-        { anchor: "segments", tab: "wave" }, // 32
-        { anchor: "vad", tab: "wave" }, // 33
+        { anchor: "vad", tab: "wave" }, // 27
+        { anchor: "segments", tab: "wave" }, // 28
+        { anchor: "actions", tab: "wave" }, // 29
+        { anchor: "lanes", tab: "wave", action: "zoomLanes" }, // 30
+        { anchor: "selection", tab: "wave", action: "showDemoSelection" }, // 31
+        { anchor: "wave-panel", tab: "wave" }, // 32
+        { anchor: "inspector", tab: "wave", action: "showDemoSegment" }, // 33
         { anchor: "tab4", tab: "settings" }, // 34
         { anchor: null, tab: "settings" }, // 35
         { anchor: "guideblock", tab: "settings", action: "expandGuide" }, // 36
@@ -211,9 +211,10 @@ export function createTour(opts) {
     const getActiveTab = opts.getActiveTab || (() => "master");
     const requestRender = opts.requestRender || (() => {});
     const expandGuide = opts.expandGuide || (() => {}); // 步 36 自动展开「查看全部九条」
-    const zoomLanes = opts.zoomLanes || (() => {}); // 步 28 放大泳道(纯视图层)
-    const showDemoSelection = opts.showDemoSelection || (() => {}); // 步 29 示例选区(纯视图层)
-    const resetWaveView = opts.resetWaveView || (() => {}); // 退出 28/29 或 tour 结束还原
+    const zoomLanes = opts.zoomLanes || (() => {}); // 步 30 放大泳道(纯视图层)
+    const showDemoSelection = opts.showDemoSelection || (() => {}); // 步 31 示例选区(纯视图层)
+    const showDemoSegment = opts.showDemoSegment || (() => {}); // 步 33 段检查器示例选中(纯视图层)
+    const resetWaveView = opts.resetWaveView || (() => {}); // 退出 30/31/33 或 tour 结束还原
 
     async function call(name, ...args) {
         if (!bridge || typeof bridge[name] !== "function") return null;
@@ -602,12 +603,13 @@ export function createTour(opts) {
     }
 
     function showStep(i) {
-        // 退出 wave 视图增强步(28 放大泳道 / 29 示例选区)时还原(恢复缩放 + 清选区)。
+        // 退出 wave 视图增强步(30 放大泳道 / 31 示例选区 / 33 示例选中段)时还原。
         const leaving = TOUR_STEPS[step - 1];
         if (
             leaving &&
             (leaving.action === "zoomLanes" ||
-                leaving.action === "showDemoSelection")
+                leaving.action === "showDemoSelection" ||
+                leaving.action === "showDemoSegment")
         ) {
             resetWaveView();
         }
@@ -615,10 +617,11 @@ export function createTour(opts) {
         const cfg = TOUR_STEPS[step - 1];
         // 跨 tab 自动翻页:tour 期间 tab 切换为 UI 本地态,不经 setActiveTab 写 state(§2.6)。
         if (cfg.tab) activateTab(cfg.tab, { push: false });
-        // per-step 动作钩子(步 28 放大泳道 / 步 29 示例选区 / 步 36 自动展开九条)
+        // per-step 动作钩子(步 30 放大泳道 / 步 31 示例选区 / 步 33 示例选中段 / 步 36 自动展开九条)
         if (cfg.action === "expandGuide") expandGuide();
         else if (cfg.action === "zoomLanes") zoomLanes();
         else if (cfg.action === "showDemoSelection") showDemoSelection();
+        else if (cfg.action === "showDemoSegment") showDemoSegment();
         updateIndicator();
         updateText();
         // 双 rAF:等 tab 切换(display 变化)与 scrollIntoView 后布局落定再量几何。
@@ -651,7 +654,7 @@ export function createTour(opts) {
 
     function endTour(completed) {
         if (!active) return;
-        resetWaveView(); // 还原缩放 + 清选区(步 28/29 视图增强)
+        resetWaveView(); // 还原缩放 + 清选区/段选中(步 30/31/33 视图增强)
         // 完成与 Skip 都置位(§2.6:两者都经 setTourSeen(true, true));唯一桥调用。
         call("setTourSeen", true, true);
         active = false;

@@ -1372,12 +1372,25 @@ export function createTabWave(opts) {
         setSelection(2, Math.min(4, d));
     }
 
+    function showDemoSegment() {
+        // 选第一个有段的轨的第一段(每段都带 pan/vol 数据),让检查器立即有可编辑内容。
+        const chans = (getStore().segments || {}).channels || [];
+        for (const c of chans) {
+            if (c && c.segments && c.segments.length) {
+                selectSegment(c.ch, 0);
+                return;
+            }
+        }
+    }
+
     function resetWaveView() {
-        if (!tourView) return;
-        applyLaneH(tourView.laneH);
-        timeline.set(tourView.vp);
-        clearSelection();
-        tourView = null;
+        if (tourView) {
+            applyLaneH(tourView.laneH);
+            timeline.set(tourView.vp);
+            clearSelection();
+            tourView = null;
+        }
+        clearSegSelection(); // 段检查器示例选中(步 33)还原;幂等
     }
 
     // ---- 段选中(J67 唯一入口:泳道点选 + 段检查器)---------------------------
@@ -4042,6 +4055,7 @@ export function createTabWave(opts) {
         // tour 视图层增强(T36b 第四轮:步 28 放大泳道 / 步 29 示例选区;只动渲染,不写 state)
         zoomLanes,
         showDemoSelection,
+        showDemoSegment,
         resetWaveView,
         // 布防 badge 三处的共用跳转口径(05 行 300 ①;Tab1/Tab2 badge 经
         // app.js 切到本页后调用,定位选区 + 勾选目标轨)

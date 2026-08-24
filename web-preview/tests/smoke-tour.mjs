@@ -84,13 +84,13 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "freeze",
             "enable",
             "tab3",
-            "wave-panel",
+            "vad",
+            "segments",
+            "actions",
             "lanes",
             "selection",
-            "actions",
+            "wave-panel",
             "inspector",
-            "segments",
-            "vad",
             "tab4",
             null,
             "guideblock",
@@ -167,11 +167,16 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
         "末步固定 = 设置页「重看引导」入口",
     );
     eq(TOUR.TOUR_STEPS[4].anchor, "an", "第 5 步 = 三件套「02 分析」段");
-    eq(TOUR.TOUR_STEPS[27].action, "zoomLanes", "步 28 泳道区自动放大泳道");
+    eq(TOUR.TOUR_STEPS[29].action, "zoomLanes", "步 30 泳道区自动放大泳道");
     eq(
-        TOUR.TOUR_STEPS[28].action,
+        TOUR.TOUR_STEPS[30].action,
         "showDemoSelection",
-        "步 29 选区手柄自动创建示例选区",
+        "步 31 选区手柄自动创建示例选区",
+    );
+    eq(
+        TOUR.TOUR_STEPS[32].action,
+        "showDemoSegment",
+        "步 33 段检查器自动选中示例段",
     );
     eq(TOUR.TOUR_STEPS[35].action, "expandGuide", "步 36 自动展开九条");
     check(TOUR.SPOT_PAD >= 8, "spotlight 内边距 ≥8 设计 px");
@@ -495,6 +500,7 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
         wave.includes("showDemoSelection"),
         "tab-wave.js 暴露 showDemoSelection",
     );
+    check(wave.includes("showDemoSegment"), "tab-wave.js 暴露 showDemoSegment");
     check(wave.includes("resetWaveView"), "tab-wave.js 暴露 resetWaveView");
     check(
         ts.includes("resetWaveView()"),
