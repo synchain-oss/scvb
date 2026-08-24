@@ -196,6 +196,7 @@ export function createTabSettings(opts) {
         guideMissing: $("settings-guideblock-rules-missing"),
         guideExpand: $("settings-guideblock-expand"),
         reopenTour: $("settings-reopentour"),
+        viewWorkflow: $("settings-viewworkflow"),
         versionValue: $("settings-version-value"),
         storageValue: $("settings-storage-value"),
         storageGuid: $("settings-storage-guid"),
@@ -310,9 +311,28 @@ export function createTabSettings(opts) {
         }
     }
 
+    /** 幂等展开「查看全部九条」(tour 步 36 的 per-step 动作钩子;已展开则不动)。 */
+    function expandNine() {
+        if (local.nineOpen) return;
+        local.nineOpen = true;
+        if (el.guideBox) attr(el.guideBox, "data-open", "1");
+        if (el.guideExpand) {
+            const key = "set.guide.collapse";
+            attr(el.guideExpand, "data-t", key);
+            text(el.guideExpand, hasOwn(getT(), key) ? getT()[key] : key);
+        }
+    }
+
     function reopenTour() {
-        // [T36b] tour.js 消费 data-tour="review" 锚点并重启交互式引导;T35 只落入口。
+        // [T36b] tour.js 消费 data-tour="review" 锚点并重启交互式引导(tour_seen 已置位也可再开);
+        // T35 只落入口,真正重启经 opts.onReopenTour 回 app.js 调 tour.start()。
         // 无 tour 时零副作用(按钮本身不写 state、不发桥函数)。
+        if (typeof opts.onReopenTour === "function") opts.onReopenTour();
+    }
+
+    function viewWorkflow() {
+        // 查看工作流程大卡(与 tour 步 2 同一张大卡);回 app.js 打开独立 overlay。
+        if (typeof opts.onViewWorkflow === "function") opts.onViewWorkflow();
     }
 
     function toggleDiag() {
@@ -375,6 +395,8 @@ export function createTabSettings(opts) {
         if (el.guideExpand)
             el.guideExpand.addEventListener("click", toggleNine);
         if (el.reopenTour) el.reopenTour.addEventListener("click", reopenTour);
+        if (el.viewWorkflow)
+            el.viewWorkflow.addEventListener("click", viewWorkflow);
         if (el.diagChevron)
             el.diagChevron.addEventListener("click", toggleDiag);
         if (el.diagCopy) el.diagCopy.addEventListener("click", copyDiag);
@@ -524,5 +546,5 @@ export function createTabSettings(opts) {
         }
     }
 
-    return { mount, render, onSegments };
+    return { mount, render, onSegments, expandNine };
 }
