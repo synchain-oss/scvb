@@ -196,6 +196,7 @@ export function createTabSettings(opts) {
         guideMissing: $("settings-guideblock-rules-missing"),
         guideExpand: $("settings-guideblock-expand"),
         reopenTour: $("settings-reopentour"),
+        viewWorkflow: $("settings-viewworkflow"),
         versionValue: $("settings-version-value"),
         storageValue: $("settings-storage-value"),
         storageGuid: $("settings-storage-guid"),
@@ -329,6 +330,11 @@ export function createTabSettings(opts) {
         if (typeof opts.onReopenTour === "function") opts.onReopenTour();
     }
 
+    function viewWorkflow() {
+        // 查看工作流程大卡(与 tour 步 2 同一张大卡);回 app.js 打开独立 overlay。
+        if (typeof opts.onViewWorkflow === "function") opts.onViewWorkflow();
+    }
+
     function toggleDiag() {
         local.diagOpen = !local.diagOpen;
         if (el.diagBox)
@@ -389,6 +395,8 @@ export function createTabSettings(opts) {
         if (el.guideExpand)
             el.guideExpand.addEventListener("click", toggleNine);
         if (el.reopenTour) el.reopenTour.addEventListener("click", reopenTour);
+        if (el.viewWorkflow)
+            el.viewWorkflow.addEventListener("click", viewWorkflow);
         if (el.diagChevron)
             el.diagChevron.addEventListener("click", toggleDiag);
         if (el.diagCopy) el.diagCopy.addEventListener("click", copyDiag);

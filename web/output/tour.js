@@ -50,40 +50,40 @@ export const SPOT_FEATHER = 12;
 export const TOUR_STEPS = Object.freeze(
     [
         { anchor: null, tab: "master" }, // 1
-        { anchor: "tab1", tab: "master" }, // 2
-        { anchor: "group", tab: "master" }, // 3
-        { anchor: "cap", tab: "master" }, // 4
-        { anchor: "an", tab: "master" }, // 5
-        { anchor: "out", tab: "master" }, // 6
-        { anchor: "dist", tab: "master" }, // 7
-        { anchor: "width", tab: "master" }, // 8
-        { anchor: "msbalance", tab: "master" }, // 9
-        { anchor: "leadselect", tab: "master" }, // 10
-        { anchor: "range", tab: "master" }, // 11
-        { anchor: "transition", tab: "master" }, // 12
-        { anchor: "curve", tab: "master" }, // 13
-        { anchor: "tab2", tab: "tracks" }, // 14
-        { anchor: "trackrow", tab: "tracks" }, // 15
-        { anchor: "pan", tab: "tracks" }, // 16
-        { anchor: "widthknob", tab: "tracks" }, // 17
-        { anchor: "vollevel", tab: "tracks" }, // 18
-        { anchor: "prio", tab: "tracks" }, // 19
-        { anchor: "leadlock", tab: "tracks" }, // 20
-        { anchor: "volexempt", tab: "tracks" }, // 21
-        { anchor: "autopan", tab: "tracks" }, // 22
-        { anchor: "pair", tab: "tracks" }, // 23
-        { anchor: "freeze", tab: "tracks" }, // 24
-        { anchor: "enable", tab: "tracks" }, // 25
-        { anchor: "tab3", tab: "wave" }, // 26
-        { anchor: "vad", tab: "wave" }, // 27
-        { anchor: "segments", tab: "wave" }, // 28
-        { anchor: "actions", tab: "wave" }, // 29
-        { anchor: "lanes", tab: "wave", action: "zoomLanes" }, // 30
-        { anchor: "selection", tab: "wave", action: "showDemoSelection" }, // 31
-        { anchor: "wave-panel", tab: "wave" }, // 32
-        { anchor: "inspector", tab: "wave", action: "showDemoSegment" }, // 33
-        { anchor: "tab4", tab: "settings" }, // 34
-        { anchor: null, tab: "settings" }, // 35
+        { anchor: null, tab: "master" }, // 2 工作流程与优先级(居中大卡)
+        { anchor: "tab1", tab: "master" }, // 3
+        { anchor: "group", tab: "master" }, // 4
+        { anchor: "cap", tab: "master" }, // 5
+        { anchor: "an", tab: "master" }, // 6
+        { anchor: "out", tab: "master" }, // 7
+        { anchor: "dist", tab: "master" }, // 8
+        { anchor: "width", tab: "master" }, // 9
+        { anchor: "msbalance", tab: "master" }, // 10
+        { anchor: "leadselect", tab: "master" }, // 11
+        { anchor: "range", tab: "master" }, // 12
+        { anchor: "transition", tab: "master" }, // 13
+        { anchor: "curve", tab: "master" }, // 14
+        { anchor: "tab2", tab: "tracks" }, // 15
+        { anchor: "trackrow", tab: "tracks" }, // 16
+        { anchor: "pan", tab: "tracks" }, // 17
+        { anchor: "widthknob", tab: "tracks" }, // 18
+        { anchor: "vollevel", tab: "tracks" }, // 19
+        { anchor: "prio", tab: "tracks" }, // 20
+        { anchor: "leadlock", tab: "tracks" }, // 21
+        { anchor: "volexempt", tab: "tracks" }, // 22
+        { anchor: "autopan", tab: "tracks" }, // 23
+        { anchor: "pair", tab: "tracks" }, // 24
+        { anchor: "freeze", tab: "tracks" }, // 25
+        { anchor: "enable", tab: "tracks" }, // 26
+        { anchor: "tab3", tab: "wave" }, // 27
+        { anchor: "vad", tab: "wave" }, // 28
+        { anchor: "segments", tab: "wave" }, // 29
+        { anchor: "actions", tab: "wave" }, // 30
+        { anchor: "lanes", tab: "wave", action: "zoomLanes" }, // 31
+        { anchor: "selection", tab: "wave", action: "showDemoSelection" }, // 32
+        { anchor: "wave-panel", tab: "wave" }, // 33
+        { anchor: "inspector", tab: "wave", action: "showDemoSegment" }, // 34
+        { anchor: "tab4", tab: "settings" }, // 35
         { anchor: "guideblock", tab: "settings", action: "expandGuide" }, // 36
         { anchor: "loudnessmode", tab: "settings" }, // 37
         { anchor: "centerslot", tab: "settings" }, // 38
@@ -211,10 +211,10 @@ export function createTour(opts) {
     const getActiveTab = opts.getActiveTab || (() => "master");
     const requestRender = opts.requestRender || (() => {});
     const expandGuide = opts.expandGuide || (() => {}); // 步 36 自动展开「查看全部九条」
-    const zoomLanes = opts.zoomLanes || (() => {}); // 步 30 放大泳道(纯视图层)
-    const showDemoSelection = opts.showDemoSelection || (() => {}); // 步 31 示例选区(纯视图层)
-    const showDemoSegment = opts.showDemoSegment || (() => {}); // 步 33 段检查器示例选中(纯视图层)
-    const resetWaveView = opts.resetWaveView || (() => {}); // 退出 30/31/33 或 tour 结束还原
+    const zoomLanes = opts.zoomLanes || (() => {}); // 步 31 放大泳道(纯视图层)
+    const showDemoSelection = opts.showDemoSelection || (() => {}); // 步 32 示例选区(纯视图层)
+    const showDemoSegment = opts.showDemoSegment || (() => {}); // 步 34 段检查器示例选中(纯视图层)
+    const resetWaveView = opts.resetWaveView || (() => {}); // 退出 31/32/34 或 tour 结束还原
 
     async function call(name, ...args) {
         if (!bridge || typeof bridge[name] !== "function") return null;
@@ -536,7 +536,7 @@ export function createTour(opts) {
         dotsEl.replaceChildren(frag);
     }
 
-    /** 步 35 工作流程图:五个节点箭头相连 + 优先级行(词条 workflow.*,三语)。 */
+    /** 步 2 工作流程图:五个节点箭头相连 + 优先级行(词条 workflow.*,三语)。 */
     function renderWorkflow(t) {
         const nodes = [
             "workflow.capture",
@@ -584,8 +584,8 @@ export function createTour(opts) {
             hintEl.textContent = "";
         }
 
-        // 步 35 工作流程图(节点 + 优先级行;居中大卡)
-        if (step === 35) {
+        // 步 2 工作流程图(节点 + 优先级行;居中大卡)
+        if (step === 2) {
             workflowEl.hidden = false;
             renderWorkflow(t);
         } else {
@@ -603,7 +603,7 @@ export function createTour(opts) {
     }
 
     function showStep(i) {
-        // 退出 wave 视图增强步(30 放大泳道 / 31 示例选区 / 33 示例选中段)时还原。
+        // 退出 wave 视图增强步(31 放大泳道 / 32 示例选区 / 34 示例选中段)时还原。
         const leaving = TOUR_STEPS[step - 1];
         if (
             leaving &&
@@ -617,7 +617,7 @@ export function createTour(opts) {
         const cfg = TOUR_STEPS[step - 1];
         // 跨 tab 自动翻页:tour 期间 tab 切换为 UI 本地态,不经 setActiveTab 写 state(§2.6)。
         if (cfg.tab) activateTab(cfg.tab, { push: false });
-        // per-step 动作钩子(步 30 放大泳道 / 步 31 示例选区 / 步 33 示例选中段 / 步 36 自动展开九条)
+        // per-step 动作钩子(步 31 放大泳道 / 步 32 示例选区 / 步 34 示例选中段 / 步 36 自动展开九条)
         if (cfg.action === "expandGuide") expandGuide();
         else if (cfg.action === "zoomLanes") zoomLanes();
         else if (cfg.action === "showDemoSelection") showDemoSelection();

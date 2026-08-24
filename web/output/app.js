@@ -385,6 +385,7 @@ const tabSettings = createTabSettings({
     getT: () => dictNow,
     onLocalChange: () => requestRender(),
     onReopenTour: () => tour && tour.start(),
+    onViewWorkflow: () => showWorkflowCard(),
 });
 tabSettings.mount();
 // 四个 tab 装配完毕,render() 从这里起可以跑(装配前 render 直接早退 ——
@@ -439,6 +440,98 @@ langStart = createLangStart({
     },
 });
 langStart.mount();
+
+// ------------------------------------------------------------- 查看工作流程大卡(与 tour 步 2 同一张大卡)
+// 设置页「查看工作流程」入口:独立 overlay,渲染 workflow.* 五节点 + 优先级;零桥、零 state。
+let workflowCard = null;
+function ensureWorkflowCard() {
+    if (workflowCard) return workflowCard;
+    const style = document.createElement("style");
+    style.id = "scvb-workflow-card-style";
+    style.textContent = [
+        ".workflow-card__flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-6); margin-top: var(--sp-12); }",
+        ".workflow-card__node { padding: var(--sp-6) var(--sp-10); border-radius: var(--r-pill); background: rgba(var(--wh), 0.12); border: 1px solid rgba(var(--wh), 0.2); font-size: var(--fs-110); color: var(--txt-dark-2); white-space: nowrap; }",
+        ".workflow-card__arrow { color: var(--txt-dark-4); }",
+        ".workflow-card__priority { margin-top: var(--sp-10); padding: var(--sp-8) var(--sp-10); border-radius: var(--r-md); background: rgba(var(--wh), 0.08); border: 1px solid rgba(var(--wh), 0.16); font-size: var(--fs-115); color: var(--txt-dark-3); }",
+        ".workflow-card__close { margin-top: var(--sp-14); }",
+    ].join("\n");
+    document.head.appendChild(style);
+
+    const overlay = document.createElement("div");
+    overlay.className = "sc-scrim";
+    overlay.setAttribute("data-gb", "workflow-card");
+    overlay.style.zIndex = "150";
+    overlay.hidden = true;
+
+    const panel = document.createElement("div");
+    panel.className = "sc-modal";
+    panel.style.width = "480px";
+    panel.style.maxWidth = "calc(100% - 2 * var(--sp-24))";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    panel.setAttribute("aria-labelledby", "workflow-card-title");
+
+    const title = document.createElement("p");
+    title.className = "sc-modal__title";
+    title.id = "workflow-card-title";
+    title.setAttribute("data-t", "tour.step2.title");
+
+    const flow = document.createElement("div");
+    flow.className = "workflow-card__flow";
+    [
+        "workflow.capture",
+        "workflow.analyze",
+        "workflow.tweak",
+        "workflow.write",
+        "workflow.manual",
+    ].forEach((key, i) => {
+        if (i > 0) {
+            const arrow = document.createElement("span");
+            arrow.className = "workflow-card__arrow";
+            arrow.textContent = "→";
+            flow.appendChild(arrow);
+        }
+        const node = document.createElement("span");
+        node.className = "workflow-card__node";
+        node.setAttribute("data-t", key);
+        flow.appendChild(node);
+    });
+
+    const priority = document.createElement("div");
+    priority.className = "workflow-card__priority";
+    priority.setAttribute("data-t", "workflow.priority");
+
+    const close = document.createElement("button");
+    close.className = "sc-btn workflow-card__close";
+    close.type = "button";
+    close.setAttribute("data-t", "common.cancel");
+    close.addEventListener("click", () => {
+        workflowCard.hidden = true;
+    });
+
+    panel.append(title, flow, priority, close);
+    overlay.appendChild(panel);
+    card.appendChild(overlay);
+
+    // 点蒙版(卡外)关闭;Esc 关闭。
+    overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) overlay.hidden = true;
+    });
+    overlay.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") overlay.hidden = true;
+    });
+
+    workflowCard = overlay;
+    return workflowCard;
+}
+
+function showWorkflowCard() {
+    const c = ensureWorkflowCard();
+    applyI18n(c, lang); // 用当前语言刷标题/五节点/优先级/关闭按钮
+    c.hidden = false;
+    const btn = c.querySelector(".workflow-card__close");
+    if (btn) btn.focus({ preventScroll: true });
+}
 
 // ------------------------------------------------------------- 缩放档位(footer 下拉 + 设置页,05 §1.2)
 // 档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2「常量真源」栏)。

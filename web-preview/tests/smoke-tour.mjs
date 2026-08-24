@@ -59,6 +59,7 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
         TOUR.TOUR_ANCHORS,
         [
             null,
+            null,
             "tab1",
             "group",
             "cap",
@@ -92,7 +93,6 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "wave-panel",
             "inspector",
             "tab4",
-            null,
             "guideblock",
             "loudnessmode",
             "centerslot",
@@ -103,7 +103,7 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "version",
             "review",
         ],
-        "44 锚点(含步 1/35 两个居中卡 null),末步=review",
+        "44 锚点(含步 1/2 两个居中卡 null),末步=review",
     );
     eq(
         TOUR.TOUR_STEPS[0].anchor,
@@ -111,6 +111,11 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
         "首步 = 欢迎公告(无 spotlight,居中大卡)",
     );
     eq(TOUR.TOUR_STEPS[0].tab, "master", "首步欢迎公告在整体调整页");
+    eq(
+        TOUR.TOUR_STEPS[1].anchor,
+        null,
+        "第 2 步 = 工作流程与优先级(居中大卡,无 spotlight)",
+    );
     eq(
         TOUR.TOUR_STEPS.map((s) => s.tab),
         [
@@ -127,6 +132,7 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "master",
             "master",
             "master",
+            "master",
             "tracks",
             "tracks",
             "tracks",
@@ -147,7 +153,6 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "wave",
             "wave",
             "wave",
-            "settings",
             "settings",
             "settings",
             "settings",
@@ -159,24 +164,24 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "settings",
             "settings",
         ],
-        "跨 tab 翻页目标逐条对拍(13 master / 12 tracks / 8 wave / 11 settings)",
+        "跨 tab 翻页目标逐条对拍(14 master / 12 tracks / 8 wave / 10 settings)",
     );
     eq(
         TOUR.TOUR_STEPS[43].anchor,
         "review",
         "末步固定 = 设置页「重看引导」入口",
     );
-    eq(TOUR.TOUR_STEPS[4].anchor, "an", "第 5 步 = 三件套「02 分析」段");
-    eq(TOUR.TOUR_STEPS[29].action, "zoomLanes", "步 30 泳道区自动放大泳道");
+    eq(TOUR.TOUR_STEPS[5].anchor, "an", "第 6 步 = 三件套「02 分析」段");
+    eq(TOUR.TOUR_STEPS[30].action, "zoomLanes", "步 31 泳道区自动放大泳道");
     eq(
-        TOUR.TOUR_STEPS[30].action,
+        TOUR.TOUR_STEPS[31].action,
         "showDemoSelection",
-        "步 31 选区手柄自动创建示例选区",
+        "步 32 选区手柄自动创建示例选区",
     );
     eq(
-        TOUR.TOUR_STEPS[32].action,
+        TOUR.TOUR_STEPS[33].action,
         "showDemoSegment",
-        "步 33 段检查器自动选中示例段",
+        "步 34 段检查器自动选中示例段",
     );
     eq(TOUR.TOUR_STEPS[35].action, "expandGuide", "步 36 自动展开九条");
     check(TOUR.SPOT_PAD >= 8, "spotlight 内边距 ≥8 设计 px");
@@ -358,29 +363,29 @@ log("=== ⑤ 词条:tour.* 三语 ===");
     }
     // 措辞纪律:输出开关一步不得出现「写入完成」(05 §2.6 / J45)
     check(
-        !/写入完成/.test(T.zh["tour.step3.body"]),
-        "zh step3 不含「写入完成」",
+        !/写入完成/.test(T.zh["tour.step4.body"]),
+        "zh step4 不含「写入完成」",
     );
     check(
-        !/write complete|written to/i.test(T.en["tour.step3.body"]),
-        "en step3 不含 write complete / written",
+        !/write complete|written to/i.test(T.en["tour.step4.body"]),
+        "en step4 不含 write complete / written",
     );
     // 组这一步只讲组的作用(用户实机发现:组选择器在三件套**下方**,原「下方/从左到右」方向表述有误,已删)
     check(
-        !/从左到右|下方三个模块/.test(T.zh["tour.step3.body"]),
-        "zh step3 无「下方/从左到右」方向表述",
+        !/从左到右|下方三个模块/.test(T.zh["tour.step4.body"]),
+        "zh step4 无「下方/从左到右」方向表述",
     );
     check(
-        /组把通道分成 A–H 八个独立工作区/.test(T.zh["tour.step3.body"]),
-        "zh step3 只讲组的作用",
+        /组把通道分成 A–H 八个独立工作区/.test(T.zh["tour.step4.body"]),
+        "zh step4 只讲组的作用",
     );
     check(
-        !/left to right/i.test(T.en["tour.step3.body"]),
-        "en step3 无 left to right 方向表述",
+        !/left to right/i.test(T.en["tour.step4.body"]),
+        "en step4 无 left to right 方向表述",
     );
     check(
-        !/gauche à droite/i.test(T.fr["tour.step3.body"]),
-        "fr step3 无 gauche à droite 方向表述",
+        !/gauche à droite/i.test(T.fr["tour.step4.body"]),
+        "fr step4 无 gauche à droite 方向表述",
     );
     check(
         /左键点击任意处/.test(T.zh["tour.clickAnywhere"]),
