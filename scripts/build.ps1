@@ -51,7 +51,7 @@ if ($juceTag -and ($juceTag.Trim() -ne $juceVersion)) {
 }
 Write-Host ("JUCE         {0}(要求 {1})" -f $JucePath, $juceVersion)
 
-$freeGB = [math]::Round((Get-PSDrive -Name (Split-Path -Qualifier $RepoRoot)).Free / 1GB, 1)
+$freeGB = [math]::Round((Get-PSDrive -Name ((Split-Path -Qualifier $RepoRoot).TrimEnd(':'))).Free / 1GB, 1)
 if ($freeGB -lt 5) { Fail ("磁盘空间不足(剩余 {0} GB,需 >= 5 GB)" -f $freeGB) }
 Write-Host ("磁盘空间     {0} GB 可用" -f $freeGB)
 Write-Host ("pluginval    要求 {0}" -f $pluginvalVersion)
@@ -96,7 +96,7 @@ else {
     Write-Host ("  {0}" -f $b.FullName)
   }
 }
-$projLine = (Select-String -Path CMakeLists.txt -Pattern 'VERSION' | Select-Object -First 1).Line
+$projLine = (Select-String -Path CMakeLists.txt -Pattern 'project\(SCVB VERSION' | Select-Object -First 1).Line
 $projVer = (($projLine -split 'VERSION')[1]).Trim().TrimEnd(')')
 Write-Host ("版本: {0}" -f $projVer)
 Write-Host ("构建耗时: {0:N1} 秒" -f $sw.Elapsed.TotalSeconds)
