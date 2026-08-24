@@ -1188,24 +1188,31 @@
                 min-height: 0;
                 gap: var(--sp-6);
             }
-            /* y 刻度列(−100..+100,与曲线编辑器同刻度)。行高写死 11px 是为了让
-               首末两格的**文字中心**正好落在画布的 +100 / −100 网格线上:
-               画布顶部留白 PAD_TOP=6、底部时间标签行 AXIS_H=14(trajectory-chart.js),
-               故上下内边距 = 6 − 11/2 = 0.5px 与 14 − 11/2 = 8.5px。 */
+            /* y 刻度列(−100..+100,与曲线编辑器同刻度)。刻度**逐格绝对定位** ——
+               纵向缩放后格数与格距都随档位变,`space-between` 的等分排法对不上网格线;
+               每格的 y 由 trajectory-chart.js 用画折线那一套换算算好推过来(onPanAxis),
+               两边不会各算一份而漂开。
+               透明 1px 边框是为了让本列的定位原点与 .traj-stage 的**内**框对齐:
+               画布走 inset:0,落在 stage 的 1px 边框以内,不补这一层全列会整体高 1px。 */
             .traj-axis-y {
                 flex: none;
+                position: relative;
                 width: 62px;
-                display: flex;
-                flex-direction: column;
-                justify-content: space-between;
-                align-items: flex-end;
-                padding: 0.5px 0 8.5px;
+                border: 1px solid transparent;
                 font-family: var(--ff-mono);
                 font-size: var(--fs-85);
                 line-height: 11px;
                 color: var(--txt-4);
             }
-            .traj-axis-y > span:nth-child(odd) {
+            .traj-axis-y__tick {
+                position: absolute;
+                right: 0;
+                transform: translateY(-50%);
+                white-space: nowrap;
+            }
+            /* ±100 / 0 三条锚刻度(带 L/C/R 方位词的那三格)提亮。纵向放大到看不见
+               它们时本列就只剩数字 —— 方位词只挂在真正的 ±100/0 上,别的刻度挂了是骗人。 */
+            .traj-axis-y__tick.is-anchor {
                 color: var(--txt-2);
             }
             .traj-stage {
@@ -1246,10 +1253,19 @@
                 color: var(--txt-4);
                 pointer-events: none;
             }
-            .traj-stage__follow {
+            /* 两枚浮标按钮(纵向复位 / 回到播放头)排一行,右上角对齐。
+               两枚都可能单独隐藏,故靠 flex 收拢而不是各自 absolute ——
+               「回到播放头」在右,位置与只有它时逐像素一致;「纵向复位」出现时向左长。
+               浮在画布上,不占卡片版面。 */
+            .traj-stage__actions {
                 position: absolute;
                 right: var(--sp-8);
                 top: var(--sp-5);
+                display: flex;
+                gap: var(--sp-4);
+            }
+            .traj-stage__reset,
+            .traj-stage__follow {
                 padding: var(--sp-3) var(--sp-9);
                 border-radius: var(--r-pill);
                 border: 1px solid var(--w-42);
@@ -1261,6 +1277,7 @@
                 box-shadow: var(--sh-sm);
                 transition: background var(--dur-1) var(--ease);
             }
+            .traj-stage__reset:hover,
             .traj-stage__follow:hover {
                 background: rgba(var(--wh), 0.9);
             }
@@ -5281,18 +5298,18 @@
                                     ></div>
                                 </div>
                                 <!-- [J75] A 轨迹图:x = 工程时间线(复用 T33 的 canvas/timeline.js 视口模型),
-                     y = pan 角度域 −100..100(与曲线编辑器同刻度)。绘制在
-                     web/shared/trajectory-chart.js;本页只提供骨架与三个写入面
-                     (画布 / 播放头竖线 / 缩放读数)。左侧 y 刻度列走 data-t-split 拆格,
-                     与分布图底轴同一个钩子。 -->
+                     y = pan 角度域 −100..100(与曲线编辑器同刻度,可纵向缩放)。绘制在
+                     web/shared/trajectory-chart.js;本页只提供骨架与几个写入面
+                     (画布 / 播放头竖线 / 缩放读数 / 两枚浮标按钮 / y 刻度列)。 -->
                                 <div
                                     class="traj-plot"
                                     data-gb="master-trajchart-plot"
                                 >
+                                    <!-- 刻度格由 tab-master.js 按 onPanAxis 推来的 y 逐格建
+                             (纵向缩放后格数与格距都随档位变,拆不出固定的五格)。 -->
                                     <div
                                         class="traj-axis-y"
                                         data-gb="master-trajchart-axis-y"
-                                        data-t-split="chart.trajAxisY"
                                         aria-hidden="true"
                                     ></div>
                                     <div
@@ -5305,7 +5322,7 @@
                                             role="application"
                                             tabindex="0"
                                             data-t-aria="chart.trajCanvasAria"
-                                            aria-label="声像轨迹图:滚轮缩放,拖拽或方向键平移"
+                                            aria-label="声像轨迹图:滚轮横向缩放,Shift+滚轮纵向缩放,拖拽或方向键平移"
                                         ></canvas>
                                         <div
                                             class="traj-stage__playhead"
@@ -5323,15 +5340,26 @@
                                         >
                                             尚无分段结果——分析之后这里显示每轨的声像轨迹
                                         </p>
-                                        <!-- 跟随模式脱离后才出现(J75 A);点击即回到跟随 -->
-                                        <button
-                                            class="traj-stage__follow"
-                                            data-gb="master-trajchart-follow"
-                                            data-t="chart.backToPlayhead"
-                                            hidden
-                                        >
-                                            回到播放头
-                                        </button>
+                                        <div class="traj-stage__actions">
+                                            <!-- 纵向缩放非全域时才出现;只回 y 轴,横向视口与跟随态不动 -->
+                                            <button
+                                                class="traj-stage__reset"
+                                                data-gb="master-trajchart-reset"
+                                                data-t="chart.resetPanZoom"
+                                                hidden
+                                            >
+                                                纵向复位
+                                            </button>
+                                            <!-- 跟随模式脱离后才出现(J75 A);点击即回到跟随 -->
+                                            <button
+                                                class="traj-stage__follow"
+                                                data-gb="master-trajchart-follow"
+                                                data-t="chart.backToPlayhead"
+                                                hidden
+                                            >
+                                                回到播放头
+                                            </button>
+                                        </div>
                                         <span
                                             class="traj-stage__zoom"
                                             data-gb="master-trajchart-zoom"

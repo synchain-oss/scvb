@@ -360,10 +360,14 @@ export const T = {
         "chart.modeTrajectory": "轨迹",
         "chart.trajHint":
             "每轨一条线 = 该轨最终打印的声像;没有分段的区间不画线",
-        "chart.trajAxisY": "右 R +100 · +50 · 中 C 0 · −50 · 左 L −100",
-        "chart.trajCanvasAria": "声像轨迹图:滚轮缩放,拖拽或方向键平移",
+        // y 轴的三个方位词(上 / 中 / 下 = +100 / 0 / −100)。刻度**数字**由
+        // trajectory-chart.js 按当前纵向缩放档算,方位词只贴在这三条锚刻度上。
+        "chart.trajAxisSides": "右 R · 中 C · 左 L",
+        "chart.trajCanvasAria":
+            "声像轨迹图:滚轮横向缩放,Shift+滚轮纵向缩放,拖拽或方向键平移",
         "chart.zoomAria": "时间轴缩放档位",
         "chart.backToPlayhead": "回到播放头",
+        "chart.resetPanZoom": "纵向复位",
         "chart.trajEmpty": "尚无分段结果——分析之后这里显示每轨的声像轨迹",
         "chart.legendAria": "轨道配色图例",
         "chart.legendHint": "色点对应轨号;悬停高亮该轨",
@@ -1040,11 +1044,12 @@ export const T = {
         "chart.modeTrajectory": "Trajectory",
         "chart.trajHint":
             "One line per track = that track's final printed pan; no line where there are no segments",
-        "chart.trajAxisY": "R +100 · +50 · C 0 · −50 · L −100",
+        "chart.trajAxisSides": "R · C · L",
         "chart.trajCanvasAria":
-            "Pan trajectory chart: scroll to zoom, drag or arrow keys to scroll",
+            "Pan trajectory chart: scroll to zoom horizontally, Shift+scroll to zoom vertically, drag or arrow keys to scroll",
         "chart.zoomAria": "Timeline zoom level",
         "chart.backToPlayhead": "Back to playhead",
+        "chart.resetPanZoom": "Reset Y zoom",
         "chart.trajEmpty":
             "No segments yet — each track's pan trajectory appears here after analysis",
         "chart.legendAria": "Track colour legend",
@@ -1691,11 +1696,12 @@ export const T = {
         "chart.modeTrajectory": "Trajectoire",
         "chart.trajHint":
             "Une ligne par piste = le panoramique final imprimé de cette piste ; aucune ligne là où il n'y a pas de segment",
-        "chart.trajAxisY": "D +100 · +50 · C 0 · −50 · G −100",
+        "chart.trajAxisSides": "D · C · G",
         "chart.trajCanvasAria":
-            "Graphique de trajectoire du panoramique : molette pour zoomer, glisser ou flèches pour défiler",
+            "Graphique de trajectoire du panoramique : molette pour zoomer horizontalement, Maj+molette pour zoomer verticalement, glisser ou flèches pour défiler",
         "chart.zoomAria": "Niveau de zoom de la timeline",
         "chart.backToPlayhead": "Revenir à la tête de lecture",
+        "chart.resetPanZoom": "Réinit. zoom Y",
         "chart.trajEmpty":
             "Aucun segment pour l'instant — la trajectoire de panoramique de chaque piste apparaît ici après l'analyse",
         "chart.legendAria": "Légende des couleurs de piste",

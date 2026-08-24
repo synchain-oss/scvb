@@ -7,7 +7,8 @@
 //
 // 跑什么:
 //   ① 轨迹图纯几何(web/shared/trajectory-chart.js):断线判据、台阶折线、降采样、
-//      pan→y、跟随模式的带内不动/越带重定位、时间刻度 nice-number;
+//      pan→y、跟随模式的带内不动/越带重定位、时间刻度 nice-number,以及
+//      **纵向缩放**(视野夹取 1×–8× / 锚点守恒 / 复位 / 刻度自适应细分 / 读数后缀);
 //   ② 15 色轨道调色板(web/shared/track-colors.js):镜像表与 tokens.css **逐条对拍**
 //      (漂了当场红)、轨号夹取、node 侧回退;
 //   ③ Tab1 投影纯函数(web/output/tab-master.js):视图态默认与回退、段表→折线、
@@ -18,7 +19,8 @@
 //      `chart-trajectory` 场景开箱即轨迹档;
 //   ⑥ 词条:`chart.*` 三语齐备、非空、占位符一致、05 §5 禁词零命中;
 //   ⑦ 性能与空闲纪律:15 轨全画布的几何路径耗时预算、降采样确实在削点、
-//      两条自持循环在离场时都停(smoke-tab3 ⑨ 的同款不变式)。
+//      两条自持循环在离场时都停(smoke-tab3 ⑨ 的同款不变式);外加纵向缩放的
+//      **接法**不变式(Shift+滚轮分支不脱离横向跟随、折线走 clip、复位按钮接线)。
 //
 // 用法:node web-preview/tests/smoke-t43-chart.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -136,6 +138,136 @@ log("=== ① 轨迹图纯几何(J75 A)===");
         TC.PAN_TICKS.slice(),
         [100, 50, 0, -50, -100],
         "y 轴五刻度(同曲线编辑器)",
+    );
+}
+
+{
+    // 纵向缩放(2026-08-25 用户 preview 反馈追加)。纵向视野 {lo,hi} 与 x 轴共用
+    // 同一套视口几何(pan 折成轴坐标 a = 100 − pan),故这里连夹取带锚点一起验。
+    const FULL = TC.PAN_VIEW_FULL;
+    eq(TC.PAN_ZOOM_MAX, 8, "纵向放大上限 8×");
+    eq(TC.PAN_SPAN_MIN, 25, "上限档的视野跨度 = 全域 / 8");
+    check(TC.isPanViewFull(FULL), "默认视野 = 全域");
+    check(Math.abs(TC.panZoomFactor(FULL) - 1) < 1e-9, "全域 = 1×");
+
+    // 全域那组刻度**逐字不动**:细分只发生在放大之后
+    eq(
+        TC.panTicksIn(FULL),
+        TC.PAN_TICKS.slice(),
+        "全域刻度 ≡ PAN_TICKS(纵向缩放没有偷改默认档的刻度口径)",
+    );
+
+    // 缩放:放大一档跨度按 PAN_ZOOM_STEP 收窄,且锚点 pan 落在同一 y 上
+    const z1 = TC.zoomPanView(FULL, 0, TC.PAN_ZOOM_STEP);
+    check(
+        Math.abs(z1.hi - z1.lo - TC.PAN_SPAN_FULL / TC.PAN_ZOOM_STEP) < 1e-9,
+        `放大一档跨度 = 全域/${TC.PAN_ZOOM_STEP}`,
+    );
+    check(!TC.isPanViewFull(z1), "放大后不再是全域(reset 按钮的显隐判据)");
+    const anchor = 40;
+    const before = TC.panToY(anchor, 200, FULL);
+    const after = TC.panToY(anchor, 200, TC.zoomPanView(FULL, anchor, 2));
+    check(
+        Math.abs(before - after) < 1e-6,
+        `锚点 pan=${anchor} 在缩放前后落在同一 y(${before} vs ${after})`,
+    );
+
+    // clamp:放大到底停在 8×,缩小到底停在全域(两头都不越界)
+    let deep = FULL;
+    for (let i = 0; i < 30; i++) deep = TC.zoomPanView(deep, 0, 2);
+    check(
+        Math.abs(deep.hi - deep.lo - TC.PAN_SPAN_MIN) < 1e-9,
+        `连续放大夹到上限 8×(跨度 ${deep.hi - deep.lo})`,
+    );
+    let wide = deep;
+    for (let i = 0; i < 30; i++) wide = TC.zoomPanView(wide, 0, 0.5);
+    eq(wide, { lo: -100, hi: 100 }, "连续缩小夹回全域,不越出角度域");
+    // 视野贴边后也不越界(在 +100 一侧放大再往上推)
+    const top = TC.panPanView(TC.zoomPanView(FULL, 100, 4), 999);
+    check(top.hi <= 100 + 1e-9 && top.lo >= -100 - 1e-9, "平移到头贴边即停");
+    eq(Math.round(top.hi), 100, "顶到 +100 就停在 +100(不会把视野推出角度域)");
+
+    // 全域档下纵向平移是个空操作 —— 拖拽的纵向分量在没放大时不该动画面
+    eq(TC.panPanView(FULL, 50), { lo: -100, hi: 100 }, "全域纵向平移 = 空操作");
+    // 放大后才拖得动,且方向 = 「视野向 +100 移」
+    const moved = TC.panPanView(TC.zoomPanView(FULL, 0, 4), 10);
+    check(
+        moved.lo > -25 - 1e-9 && moved.hi > 25 - 1e-9,
+        "dPan>0 视野向 +100 移",
+    );
+
+    // 重置:一键回全域(按钮与 "0" 键走的是同一条 setPanView(PAN_VIEW_FULL))
+    check(TC.isPanViewFull(TC.clampPanView(FULL)), "重置目标就是全域");
+    eq(TC.clampPanView(deep).hi - TC.clampPanView(deep).lo, 25, "夹取幂等");
+
+    // 脏输入不炸(倒挂 / NaN / 缺字段)
+    eq(TC.clampPanView({ lo: 50, hi: -50 }), { lo: -50, hi: 50 }, "倒挂即交换");
+    eq(TC.clampPanView({}), { lo: -100, hi: 100 }, "缺字段 → 全域");
+    eq(TC.clampPanView(null), { lo: -100, hi: 100 }, "null → 全域");
+    check(
+        TC.clampPanView({ lo: NaN, hi: NaN }).hi === 100,
+        "NaN 视野回全域(不塌成一条线)",
+    );
+
+    // 刻度自适应:档位越深步长越细,且始终落在候选步长表里
+    const spans = [200, 100, 50, 25];
+    const steps = spans.map((s) => {
+        const v = TC.clampPanView({ lo: -s / 2, hi: s / 2 });
+        const ticks = TC.panTicksIn(v);
+        return ticks.length > 1 ? Math.abs(ticks[0] - ticks[1]) : 0;
+    });
+    check(
+        steps.every((s, i) => i === 0 || s <= steps[i - 1]),
+        `视野越小刻度越细(单调):${steps.join(" → ")}`,
+    );
+    for (const s of steps) {
+        check(TC.PAN_TICK_STEPS.includes(s), `步长 ${s} 落在候选表里`);
+    }
+    for (const s of spans) {
+        const v = TC.clampPanView({ lo: -s / 2, hi: s / 2 });
+        const ticks = TC.panTicksIn(v);
+        check(
+            ticks.length >= TC.PAN_TICK_MIN_COUNT,
+            `跨度 ${s} 的视野至少 ${TC.PAN_TICK_MIN_COUNT} 格(实得 ${ticks.length})`,
+        );
+        check(
+            ticks.every((p) => p <= v.hi + 1e-9 && p >= v.lo - 1e-9),
+            `跨度 ${s} 的刻度不越出视野`,
+        );
+        check(
+            ticks.every((p, i) => i === 0 || p < ticks[i - 1]),
+            `跨度 ${s} 的刻度从上往下降序(与 y 向下一致)`,
+        );
+    }
+
+    // pan → y:两参调用(T43 首版)逐字不变;带视野时按视野线性映射
+    eq(TC.panToY(50, 200), 50, "两参 panToY 与首版同值(全域)");
+    eq(
+        TC.panToY(50, 200, { lo: 0, hi: 100 }),
+        100,
+        "放大到 0..100 时 +50 居中",
+    );
+    eq(TC.panToY(0, 200, { lo: 0, hi: 100 }), 200, "视野下缘落在折线区底");
+    check(
+        TC.panToY(-50, 200, { lo: 0, hi: 100 }) > 200,
+        "视野外的点算得出界外的 y(由画布 clip 裁,不夹到边缘变成假水平线)",
+    );
+    eq(TC.yToPan(0, 200, { lo: 0, hi: 100 }), 100, "y=0 → 视野上缘");
+    eq(TC.yToPan(200, 200, { lo: 0, hi: 100 }), 0, "y=底 → 视野下缘");
+    eq(TC.yToPan(9999, 200, { lo: 0, hi: 100 }), 0, "越界 y 夹到视野内");
+
+    // 刻度数字:负号用 U+2212(与词条里的 −50 同一个字符)
+    eq(TC.panTickText(0), "0", "0 不带符号");
+    eq(TC.panTickText(50), "+50", "正值带 +");
+    eq(TC.panTickText(-50), "−50", "负值用 U+2212 减号,不是 ASCII 连字符");
+
+    // 读数后缀:全域不显示,放大后才多出 Y 档位(aria-live 顺带播报)
+    eq(TC.panZoomLabel(FULL), "", "全域时读数不多出一截");
+    eq(TC.panZoomLabel({ lo: -50, hi: 50 }), " · Y ×2.0", "2× 的读数后缀");
+    eq(
+        TC.panZoomLabel({ lo: -12.5, hi: 12.5 }),
+        " · Y ×8.0",
+        "上限档的读数后缀",
     );
 }
 
@@ -536,10 +668,11 @@ log("=== ⑥ 词条(chart.* 三语)===");
         "chart.modeDistribution",
         "chart.modeTrajectory",
         "chart.trajHint",
-        "chart.trajAxisY",
+        "chart.trajAxisSides",
         "chart.trajCanvasAria",
         "chart.zoomAria",
         "chart.backToPlayhead",
+        "chart.resetPanZoom",
         "chart.trajEmpty",
         "chart.legendAria",
         "chart.legendHint",
@@ -559,14 +692,19 @@ log("=== ⑥ 词条(chart.* 三语)===");
         // 05 §5 占位符判据:fr 不许照抄英文
         check(T.fr[k] !== T.en[k], `fr.${k} 不是英文照抄`);
     }
-    // y 轴刻度词条要能被 data-t-split 拆成 5 格(与曲线编辑器 X 轴同款)
+    // y 轴方位词拆三格(上 / 中 / 下 = +100 / 0 / −100);刻度**数字**是算出来的,
+    // 不进词条 —— 纵向缩放后格数随档位变,写死在词条里的那五格已经不成立。
     for (const lang of ["zh", "en", "fr"]) {
         eq(
-            T[lang]["chart.trajAxisY"].split(" · ").length,
-            5,
-            `${lang} 的 y 轴刻度拆成 5 格`,
+            T[lang]["chart.trajAxisSides"].split(" · ").length,
+            3,
+            `${lang} 的 y 轴方位词拆成 3 格`,
         );
     }
+    check(
+        !("chart.trajAxisY" in T.zh),
+        "写死五格的旧词条已删(留着就会有人以为刻度还是固定五格)",
+    );
     const BANNED = ["写入完成", "推子后", "post-fader", "六条"];
     for (const f of [
         "web/shared/trajectory-chart.js",
@@ -643,6 +781,81 @@ log("=== ⑦ 性能预算与空闲纪律(05 §6.1)===");
             src("web/output/tab-master.js"),
         ),
         "静态层重绘走脏位(播放中不逐帧重画 15 条折线)",
+    );
+}
+
+{
+    // 纵向缩放的源码不变式(光栅与手势归浏览器手测,这里钉住接法)
+    const tj = src("web/shared/trajectory-chart.js");
+    const tm = src("web/output/tab-master.js");
+    const html = src("web/output/index.html");
+
+    check(
+        /if \(e\.shiftKey\) \{[\s\S]{0,240}zoomPanView\(/.test(tj),
+        "Shift+滚轮走纵向缩放分支",
+    );
+    check(
+        /e\.deltaY !== 0 \? e\.deltaY : e\.deltaX/.test(tj),
+        "滚轮增量兼容 Shift+滚轮被改写成横向滚动的浏览器(deltaX 兜底)",
+    );
+    // 纵向缩放**不**脱离横向跟随:shift 分支里不许出现 breakFollow
+    const shiftBranch = /if \(e\.shiftKey\) \{([\s\S]*?)\n {16}\}/.exec(tj);
+    check(!!shiftBranch, "找得到 Shift 分支(下一条断言的前提)");
+    if (shiftBranch) {
+        check(
+            !/breakFollow/.test(shiftBranch[1]),
+            "纵向缩放不脱离横向跟随(两条轴的状态互不牵连)",
+        );
+    }
+    check(
+        /ctx\.save\(\);\s*ctx\.beginPath\(\);\s*ctx\.rect\(0, PAD_TOP, local\.stageW, H\);\s*ctx\.clip\(\);/.test(
+            tj,
+        ),
+        "折线画在 clip 里(纵向放大后出界的线不许糊到时间标签行上)",
+    );
+    check(
+        /ctx\.restore\(\);/.test(tj),
+        "clip 用完即还原(不还原会把后续绘制一起裁掉)",
+    );
+    check(
+        /o\.resetPanBtn\.addEventListener\("click", \(\) =>\s*setPanView\(PAN_VIEW_FULL\),?\s*\);/.test(
+            tj,
+        ),
+        "「纵向复位」按钮回全域",
+    );
+    check(
+        /if \(o\.resetPanBtn\) o\.resetPanBtn\.hidden = isPanViewFull\(v\);/.test(
+            tj,
+        ),
+        "复位按钮只在纵向非全域时露出(不挤占默认态的画面)",
+    );
+    // setPanView 是纵向态的唯一入口,且它不碰 following
+    const setPan = /function setPanView\(next\) \{([\s\S]*?)\n {4}\}/.exec(tj);
+    check(!!setPan, "找得到 setPanView(纵向态的唯一写入口)");
+    if (setPan) {
+        check(
+            !/following|breakFollow/.test(setPan[1]),
+            "setPanView 不改跟随态(横向跟随不受纵向缩放影响)",
+        );
+    }
+    check(
+        /ArrowUp" \|\| e\.key === "ArrowDown"/.test(tj) &&
+            /e\.shiftKey/.test(tj) &&
+            /e\.key === "0"/.test(tj),
+        "键盘等价物齐备(↑↓ 纵向平移 / Shift+↑↓ 纵向缩放 / 0 复位)",
+    );
+    check(
+        /resetPanBtn: el\.trajReset/.test(tm) && /onPanAxis:/.test(tm),
+        "Tab1 把复位按钮与刻度回调接上了",
+    );
+    check(
+        /data-gb="master-trajchart-reset"/.test(html) &&
+            /data-t="chart\.resetPanZoom"/.test(html),
+        "HTML 有复位按钮且文案走词条",
+    );
+    check(
+        !/data-t-split="chart\.trajAxisY"/.test(html),
+        "y 刻度列不再是写死的五格拆格(改由 onPanAxis 逐格建)",
     );
 }
 

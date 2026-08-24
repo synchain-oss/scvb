@@ -40,6 +40,7 @@
 
 import {
     createTrajectoryChart,
+    panTickText,
     runsOfSegments,
 } from "../shared/trajectory-chart.js";
 import { trackColorVar } from "../shared/track-colors.js";
@@ -776,6 +777,10 @@ export function createTabMaster(opts) {
         chartHi: 0, // 图例 hover 高亮的轨号(0 = 无);纯展示
         traj: null, // 轨迹图实例(web/shared/trajectory-chart.js)
         trajSeries: [], // 轨迹图数据面(段表投影;段表事件到达时重算)
+        // y 轴刻度。数据面(pan + y 位)由轨迹图按纵向缩放档推来(onPanAxis),
+        // 文案在这一侧按当前字典拼 —— 那模块不认 i18n(它的「复用契约」)。
+        trajAxisTicks: [],
+        trajAxisKey: "", // 已渲染的刻度列签名(含语言;不变就不重建 DOM)
         // 画布重绘的脏位。render() 走 rAF 合帧、播放中每秒跑十几次,而轨迹图的
         // **静态层**只随段表/视图/尺寸变 —— 不设脏位就会每帧重画 15 条折线。
         trajDirty: true,
@@ -818,8 +823,10 @@ export function createTabMaster(opts) {
         trajCanvas: $("master-trajchart-canvas"),
         trajPlayhead: $("master-trajchart-playhead"),
         trajFollow: $("master-trajchart-follow"),
+        trajReset: $("master-trajchart-reset"),
         trajZoom: $("master-trajchart-zoom"),
         trajEmpty: $("master-trajchart-empty"),
+        trajAxisY: $("master-trajchart-axis-y"),
         transSlider: $("master-transition-slider"),
         transRead: $("master-transition-reading"),
         rampPath: $("master-transition-ramp-path"),
@@ -1396,6 +1403,7 @@ export function createTabMaster(opts) {
                 canvas: el.trajCanvas,
                 playheadEl: el.trajPlayhead,
                 followBtn: el.trajFollow,
+                resetPanBtn: el.trajReset,
                 zoomEl: el.trajZoom,
                 getSeries: () => local.trajSeries,
                 getDurationS: () => chartDurationS(getStore()),
@@ -1406,6 +1414,13 @@ export function createTabMaster(opts) {
                 isVisible: () =>
                     currentChartMode() === "trajectory" && isPanelActive(),
                 onFollowChange: () => onLocalChange(),
+                // 纵向缩放/平移/改尺寸后刻度就变了。轨迹图只推「pan + y 位」,
+                // 方位词与排版在这一侧;推来即渲染,不等下一帧 render(纵向缩放
+                // 常发生在空闲态,那时 render 根本不跑,等它刻度会滞后一整拍)。
+                onPanAxis: (ticks) => {
+                    local.trajAxisTicks = ticks;
+                    renderTrajAxis(getT());
+                },
             });
         }
 
@@ -1906,6 +1921,9 @@ export function createTabMaster(opts) {
             return;
         }
         if (el.trajEmpty) el.trajEmpty.hidden = local.trajSeries.length > 0;
+        // 刻度本身由 onPanAxis 推来时就渲染过了;这里再走一遍是为了**切语言** ——
+        // applyI18n 只刷 data-t,而这一列是拼出来的(签名带语言,没变就是空跑)。
+        renderTrajAxis(t);
         local.traj.setDuration(chartDurationS(st));
         // 切回本页/本视图时按需起帧(离场时 onPlayhead 停过插值循环);幂等且便宜。
         local.traj.resume();
@@ -1913,6 +1931,44 @@ export function createTabMaster(opts) {
             local.trajDirty = false;
             local.traj.invalidate();
         }
+    }
+
+    /**
+     * y 刻度列。轨迹图推来 `{pan, y, side}`,方位词在这里按字典补上 ——
+     * `side` 只会是 `R`/`C`/`L`(即 +100 / 0 / −100 三条锚刻度),纵向放大到看不见
+     * 它们时本列就只剩数字;给别的刻度硬贴方位词等于写一个不成立的读数。
+     */
+    function renderTrajAxis(t) {
+        if (!el.trajAxisY) return;
+        // 签名先算先比:本函数挂在每帧 render 上,刻度与语言都没动时应当一步不走。
+        const sides = (t && t["chart.trajAxisSides"]) || "";
+        const key =
+            sides +
+            "|" +
+            local.trajAxisTicks
+                .map((k) => `${k.pan}@${Math.round(k.y)}`)
+                .join(",");
+        if (key === local.trajAxisKey) return;
+        local.trajAxisKey = key;
+        // 「右 R · 中 C · 左 L」拆三格(与分布图底轴同一个 · 分隔约定)
+        const words = String(sides)
+            .split(" · ")
+            .map((w) => w.trim());
+        const side = {
+            R: words[0] || "",
+            C: words[1] || "",
+            L: words[2] || "",
+        };
+        el.trajAxisY.innerHTML = local.trajAxisTicks
+            .map((k) => {
+                const w = side[k.side] || "";
+                return (
+                    `<span class="traj-axis-y__tick${w ? " is-anchor" : ""}"` +
+                    ` style="top:${k.y.toFixed(2)}px">` +
+                    `${w ? esc(w) + " " : ""}${esc(panTickText(k.pan))}</span>`
+                );
+            })
+            .join("");
     }
 
     /** 图例 = 色点 + 轨号 + 轨名(+ 立体声 ST 角标);hover 高亮由 data-hi 承载。 */
