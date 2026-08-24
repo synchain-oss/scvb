@@ -469,6 +469,10 @@ export function createTour(opts) {
         active = true;
         step = 1;
         overlay.hidden = false;
+        // a11y:蒙版激活期把背景卡其余内容设 inert,避免 Tab 逃出蒙版触发真实桥调用(Enter 误触 setCaptureEnabled 等)。
+        for (const child of card.children) {
+            if (child !== overlay) child.setAttribute("inert", "");
+        }
         if (badge) {
             badge.hidden = false;
             // 提升到蒙版之上:demo badge 是「tour 激活期常显」的例外件,不得被蒙版压暗。
@@ -487,6 +491,10 @@ export function createTour(opts) {
         active = false;
         demoStore = null;
         overlay.hidden = true;
+        // 释放背景 inert。
+        for (const child of card.children) {
+            child.removeAttribute("inert");
+        }
         if (badge) {
             badge.hidden = true;
             badge.style.position = "";

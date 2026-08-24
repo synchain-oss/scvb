@@ -773,8 +773,10 @@ function renderSource() {
     // 本轨 mono/stereo 实测结果(J57,只读,来自 scvb.config.source_channels)
     const sc = store.config ? store.config.source_channels : 0;
     const row = $("input.source");
-    show(row, !!store.config);
-    if (!row || !store.config) return;
+    // source_channels 1=mono 2=stereo;0/undefined = 尚未测量 —— 隐藏本行,等有效值(J63 首帧核实)。
+    const measured = sc === 1 || sc === 2;
+    show(row, !!store.config && measured);
+    if (!row || !store.config || !measured) return;
     const stereo = sc === 2;
     const badge = $("input.source.badge");
     if (badge) badge.textContent = stereo ? "ST" : "MONO";
@@ -832,9 +834,11 @@ function renderRemoteSummary() {
     show($("input.remoteSummary"), showRow);
     if (!showRow || !cfg) return;
 
-    // MONO / STEREO:源类型状态(只读 J57),当前哪种亮哪种。
-    const stereo = (cfg.source_channels || 1) === 2;
-    setLit($("input.remoteSummary.mono"), !stereo);
+    // MONO / STEREO:源类型状态(只读 J57),当前哪种亮哪种;未测量(0/undefined)两者都不亮。
+    const sc = cfg.source_channels || 0;
+    const stereo = sc === 2;
+    const mono = sc === 1;
+    setLit($("input.remoteSummary.mono"), mono);
     setLit($("input.remoteSummary.stereo"), stereo);
     const monoCard = $("input.remoteSummary.mono");
     const stereoCard = $("input.remoteSummary.stereo");

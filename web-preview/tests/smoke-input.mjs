@@ -18,6 +18,7 @@
 
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 
 const ROOT =
     process.argv[2] ||
@@ -272,6 +273,19 @@ await withInput("scenario=connected", async (b) => {
     );
     log(`  connected → ${JSON.stringify(r)}`);
 });
+
+// J63 首帧核实:source_channels 未测量(0/undefined)时不显示 MONO —— 源码级断言。
+{
+    const iapp = readFileSync(join(ROOT, "web/input/app.js"), "utf8");
+    check(
+        iapp.includes("sc === 1 || sc === 2"),
+        "input renderSource 未测量(非 1/2)隐藏 MONO 行",
+    );
+    check(
+        !iapp.includes("(cfg.source_channels || 1) === 2"),
+        "input renderRemoteSummary 不再把未测量默认成 mono",
+    );
+}
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

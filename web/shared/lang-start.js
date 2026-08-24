@@ -116,8 +116,18 @@ export function createLangStart(opts) {
         if (!overlay) return;
         const was = !overlay.hidden;
         overlay.hidden = !shown;
-        // 只在隐藏→显示跳变时聚焦(render 高频跑,重复 focus 会反复抢焦点)。
-        if (shown && !was && panel) panel.focus({ preventScroll: true });
+        if (shown && !was) {
+            // a11y:语言卡激活期把背景卡其余内容设 inert,避免 Tab 逃出卡片触发真实桥调用。
+            for (const child of card.children) {
+                if (child !== overlay) child.setAttribute("inert", "");
+            }
+            if (panel) panel.focus({ preventScroll: true });
+        } else if (!shown && was) {
+            // 释放背景 inert。
+            for (const child of card.children) {
+                child.removeAttribute("inert");
+            }
+        }
     }
 
     function mount() {
