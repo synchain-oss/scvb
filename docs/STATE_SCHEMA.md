@@ -46,8 +46,29 @@ versions[2]:                   # [J59] 4→2;name: string(J05,默认 "V1"/"V2");
 features:                      # 采集特征(ADR-007);编码见 §四
   embedded: bool               # 超 8MB 转 sidecar
   per_channel[]: {hop_ms: 10, kw_mean_square[], peak[], vad_posterior[], coverage_ranges[]}
-ui: {scale, language, active_tab, guide_seen, tour_seen}   # J50/J62
+ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen}   # J50/J62/J75
 ```
+
+### `ui.master_chart_mode`([J75] T43;变更文档 20260825-master-chart-mode)
+
+> 与 T39a(#75)转正回填的 §一 YAML 视图握手:字段已并入上方 `ui` 子树,此处字段定义与
+> 迁移语义以变更文档 `docs/contract-changes/20260825-master-chart-mode.md` 为唯一口径。
+
+| 项 | 定义 |
+|---|---|
+| 路径 | `ui.master_chart_mode` |
+| 类型 | 字符串枚举 `"distribution" \| "trajectory"` |
+| 默认值 | `"distribution"`(05 J75 A 逐字:「默认 `distribution`」) |
+| 语义 | `distribution` = 既有的声像/音量分布图;`trajectory` = 新增的 pan 轨迹图(x = 工程时间线,y = pan 角度域) |
+| 自动化 | 否。不占参数面,不可被 DAW 录制 |
+| 持久化 | 是,随工程走(与 `ui.active_tab` 同族:重开面板恢复上次视图) |
+| 运行时态 | 否(不同于 `print_guard` / `recapture` / `analysis_run` 三件) |
+
+**迁移语义**(abi 不递增):
+- 读到没有该键的旧工程 → 默认 `"distribution"`,不报错、不提示。
+- 读到未知取值 → 回落 `"distribution"`。
+- 不需要写迁移函数:字段是纯增量、有确定性默认值,不改变任何既有字段的编码或含义。
+- 编码落点:CFGS chunk 尾字段(u32,`0`=distribution / `1`=trajectory);旧 chunk 无该 4 字节即默认档。
 
 ## 二、Input state
 

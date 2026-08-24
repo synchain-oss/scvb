@@ -42,7 +42,7 @@ pwsh web-preview/serve.ps1 -SmokeTest   # 起服 → 自发三条请求 → 打�
 | `input.html` | Input 薄壳页 —— 同上,只差 `role` |
 | `shell.js` | **注入引擎**:建 iframe、把 mock 送进 iframe 的 window、工具条与失败诊断(两张壳页共用,见第 4 节) |
 | `serve.ps1` | 一键静态服务器(固定端口 / no-store / `-SmokeTest` 自检 / `-Inject` 兜底) |
-| `mock/juce-bridge-mock.js` | mock 后端:契约全集函数与事件(Output 34/9、Input 7/5),数据一律经 `web/shared/mock-data.js` 生成器 |
+| `mock/juce-bridge-mock.js` | mock 后端:契约全集函数与事件(Output 35/9、Input 7/5),数据一律经 `web/shared/mock-data.js` 生成器 |
 | `mock/state-driver.js` | 场景/fixture 驱动:解析 `?fixture=`/`?scenario=`/`&loop=`,组装初始状态,按契约 §2 频率推周期事件 |
 | `tests/smoke-mock.mjs` | mock 冒烟(node,无 DOM):同形自检 / 六 fixture × 双侧 / 场景化拒绝 / 重分析保护用户段 / 参数夹取 |
 | `tests/smoke-ready-race.mjs` | 首帧竞态回归:定时器早于 `requestInitialState()` 起跑时,「首帧必发」不得被门控期记账抑制 |

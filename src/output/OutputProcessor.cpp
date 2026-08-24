@@ -594,6 +594,8 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.versionActive = static_cast<scvb::u32>(versionActive_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
     s.uiLanguage = uiLanguage_.toStdString();
+    s.masterChartMode = (masterChartMode_ == "trajectory") ? scvb::state::kMasterChartModeTrajectory
+                                                           : scvb::state::kMasterChartModeDistribution;
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
     {
@@ -679,6 +681,8 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     versionActive_ = static_cast<int>(s.versionActive);
     uiScale_ = static_cast<int>(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
+    masterChartMode_ = (s.masterChartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
+                                                                                      : juce::String("distribution");
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
@@ -778,6 +782,13 @@ void ScvbOutputAudioProcessor::setVersionActive(int version)
     {
         rebindVersion();
     }
+}
+
+void ScvbOutputAudioProcessor::setMasterChartMode(const juce::String& mode)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // [J75] T43:仅 "trajectory" 是合法非默认档,其余(含未知值)一律回落默认 "distribution"。
+    masterChartMode_ = (mode == "trajectory") ? juce::String("trajectory") : juce::String("distribution");
 }
 
 juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()

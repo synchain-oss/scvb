@@ -16,6 +16,9 @@
 //   16 u32 uiScale(percent)
 //   20 u32 languageBytes
 //   24.. languageBytes 个 UTF-8 字节
+//   <尾字段> u32 masterChartMode(0=distribution 默认 | 1=trajectory;仅新版编码携带,
+//   旧工程无此 4 字节 → 解码回默认 distribution,不报错;abi 不递增,见变更文档
+//   docs/contract-changes/20260825-master-chart-mode.md)
 //
 // decode 处理不可信字节:长度/范围字段先校验再用于分配或索引(CLAUDE.md §7.3)。
 
@@ -32,6 +35,9 @@ inline constexpr std::uint32_t kOutputDefaultGroupId = 1; // [J66] 默认 1(UI �
 inline constexpr std::uint32_t kOutputVersionMin = 1; // [J59] 1..2
 inline constexpr std::uint32_t kOutputVersionMax = 2;
 inline constexpr std::uint32_t kOutputLanguageMaxBytes = 64;
+// [J75] T43:ui.master_chart_mode 紧凑编码(0/1);未知值解码回落 distribution。
+inline constexpr std::uint32_t kMasterChartModeDistribution = 0; // 默认档
+inline constexpr std::uint32_t kMasterChartModeTrajectory = 1;
 
 struct OutputState
 {
@@ -41,6 +47,7 @@ struct OutputState
     std::uint32_t versionActive = 1; // 活动版本(1..2)
     std::uint32_t uiScale = 100; // percent
     std::string uiLanguage = "en";
+    std::uint32_t masterChartMode = kMasterChartModeDistribution; // [J75] T43(0=distribution | 1=trajectory)
 };
 
 // 编码;语言超长截断(≤kOutputLanguageMaxBytes)。返回 false = 无法分配。

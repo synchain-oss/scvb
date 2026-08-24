@@ -505,6 +505,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(ui, "scale", static_cast<float>(processor_.uiScalePercent()) / 100.0f);
     put(ui, "language", processor_.uiLanguage());
     put(ui, "active_tab", rt.activeTab);
+    put(ui, "master_chart_mode", processor_.masterChartMode());
     put(ui, "guide_seen", rt.guideSeen);
     put(ui, "tour_seen", rt.tourSeen);
     put(o, "ui", ui);
@@ -647,6 +648,7 @@ void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& o
     add(Fn::Redo, &OutputEditor::handleRedo);
     add(Fn::RequestWaveform, &OutputEditor::handleRequestWaveform);
     add(Fn::SetActiveTab, &OutputEditor::handleSetActiveTab);
+    add(Fn::SetMasterChartMode, &OutputEditor::handleSetMasterChartMode);
     add(Fn::SetGuideSeen, &OutputEditor::handleSetGuideSeen);
     add(Fn::SetTourSeen, &OutputEditor::handleSetTourSeen);
     add(Fn::ConfirmPrintGuard, &OutputEditor::handleConfirmPrintGuard);
@@ -1652,6 +1654,18 @@ void OutputEditor::handleSetActiveTab(const ArgList& a, Completion c)
         return;
     }
     processor_.runtime().activeTab = tab;
+    c(okResp());
+}
+
+void OutputEditor::handleSetMasterChartMode(const ArgList& a, Completion c)
+{
+    const juce::String mode = a.size() > 0 ? a[0].toString() : juce::String();
+    if (mode != "distribution" && mode != "trajectory")
+    {
+        c(badArgResp());
+        return;
+    }
+    processor_.setMasterChartMode(mode); // 写 state ui.master_chart_mode(随工程持久化)
     c(okResp());
 }
 

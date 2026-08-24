@@ -149,6 +149,45 @@ TEST_CASE("OutputStateCodec:默认 group_id=1 且 save/load 往返 + 越界拒�
     REQUIRE_FALSE(scvb::state::decodeOutputState(buf.data(), buf.size(), bad));
 }
 
+TEST_CASE("OutputStateCodec:master_chart_mode 往返(默认/两值/未知回退)", "[output][state]")
+{
+    // [J75] T43:默认档 = distribution。
+    scvb::state::OutputState def;
+    REQUIRE(def.masterChartMode == scvb::state::kMasterChartModeDistribution);
+
+    // 两值往返:distribution / trajectory。
+    const std::uint32_t tags[2] = {scvb::state::kMasterChartModeDistribution, scvb::state::kMasterChartModeTrajectory};
+    for (std::uint32_t tag : tags)
+    {
+        scvb::state::OutputState s;
+        s.masterChartMode = tag;
+        std::vector<std::uint8_t> buf;
+        REQUIRE(scvb::state::encodeOutputState(s, buf));
+        scvb::state::OutputState d;
+        REQUIRE(scvb::state::decodeOutputState(buf.data(), buf.size(), d));
+        REQUIRE(d.masterChartMode == tag);
+    }
+
+    // 未知取值(≥2)回落默认 distribution,不拒载。
+    scvb::state::OutputState s;
+    s.masterChartMode = 7;
+    std::vector<std::uint8_t> buf;
+    REQUIRE(scvb::state::encodeOutputState(s, buf));
+    scvb::state::OutputState d;
+    REQUIRE(scvb::state::decodeOutputState(buf.data(), buf.size(), d));
+    REQUIRE(d.masterChartMode == scvb::state::kMasterChartModeDistribution);
+
+    // 旧工程(无尾字段):截掉尾部 4 字节 → 仍可载且回默认 distribution(abi 不递增)。
+    scvb::state::OutputState old;
+    std::vector<std::uint8_t> oldBuf;
+    REQUIRE(scvb::state::encodeOutputState(old, oldBuf));
+    REQUIRE(oldBuf.size() > 4u);
+    oldBuf.resize(oldBuf.size() - 4);
+    scvb::state::OutputState oldDecoded;
+    REQUIRE(scvb::state::decodeOutputState(oldBuf.data(), oldBuf.size(), oldDecoded));
+    REQUIRE(oldDecoded.masterChartMode == scvb::state::kMasterChartModeDistribution);
+}
+
 TEST_CASE("Output state 容器:abi 高于当前 → RejectedNewer + preservedOriginal 原样回写", "[output][state][abi]")
 {
     // PR#53 R1:setStateInformation 经 loadState 做 abi 判读 —— 高 abi 拒载并保留原 blob(getStateInformation

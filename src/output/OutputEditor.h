@@ -85,6 +85,7 @@ private:
     void handleRedo(const ArgList& a, Completion c);
     void handleRequestWaveform(const ArgList& a, Completion c);
     void handleSetActiveTab(const ArgList& a, Completion c);
+    void handleSetMasterChartMode(const ArgList& a, Completion c);
     void handleSetGuideSeen(const ArgList& a, Completion c);
     void handleSetTourSeen(const ArgList& a, Completion c);
     void handleConfirmPrintGuard(const ArgList& a, Completion c);

@@ -10,8 +10,8 @@
 namespace scvb::outputbridge
 {
 
-// JS -> C++ 原生函数名(契约 §1,共 34 个;requestInitialState/setLang/setUiScale/commitUiScale
-// 四个通用函数由 WebViewHost 装配,其余 30 个由 OutputEditor 注册)。
+// JS -> C++ 原生函数名(契约 §1,共 35 个;requestInitialState/setLang/setUiScale/commitUiScale
+// 四个通用函数由 WebViewHost 装配,其余 31 个由 OutputEditor 注册)。
 namespace Fn
 {
 inline constexpr const char* RequestInitialState = "requestInitialState";
@@ -48,6 +48,7 @@ inline constexpr const char* SetActiveTab = "setActiveTab";
 inline constexpr const char* SetGuideSeen = "setGuideSeen";
 inline constexpr const char* SetTourSeen = "setTourSeen";
 inline constexpr const char* ConfirmPrintGuard = "confirmPrintGuard";
+inline constexpr const char* SetMasterChartMode = "setMasterChartMode"; // [J75] T43
 } // namespace Fn
 
 // C++ -> JS 事件名(契约 §2,共 9 个;由 OutputEditor 在 25Hz timer 内经 diff-then-emit 推送)。

@@ -10,6 +10,7 @@ namespace scvb::state
 namespace
 {
 constexpr std::size_t kHeaderBytes = 24; // 6 个 u32
+constexpr std::size_t kChartModeBytes = 4; // [J75] T43 尾字段(u32)
 
 void putU32(std::vector<std::uint8_t>& out, std::uint32_t v)
 {
@@ -37,7 +38,7 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     const std::size_t langBytes = std::min<std::size_t>(s.uiLanguage.size(), kOutputLanguageMaxBytes);
     try
     {
-        out.reserve(kHeaderBytes + langBytes);
+        out.reserve(kHeaderBytes + langBytes + kChartModeBytes);
     }
     catch (...)
     {
@@ -50,6 +51,7 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     putU32(out, s.uiScale);
     putU32(out, static_cast<std::uint32_t>(langBytes));
     out.insert(out.end(), s.uiLanguage.begin(), s.uiLanguage.begin() + static_cast<std::ptrdiff_t>(langBytes));
+    putU32(out, s.masterChartMode); // [J75] T43 尾字段(0=distribution | 1=trajectory)
     return true;
 }
 
@@ -83,9 +85,15 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     {
         return false;
     }
-    if (langBytes > kOutputLanguageMaxBytes || kHeaderBytes + langBytes != size)
+    if (langBytes > kOutputLanguageMaxBytes)
     {
-        return false; // 长度字段与总长不一致 → 拒载(不可信字节)
+        return false;
+    }
+    const std::size_t baseSize = kHeaderBytes + langBytes;
+    // 旧工程(v1 之前)无尾字段 → baseSize;新版带尾字段 → baseSize + 4。其余长度 → 拒载(不可信字节)。
+    if (size != baseSize && size != baseSize + kChartModeBytes)
+    {
+        return false;
     }
     OutputState parsed;
     parsed.groupId = groupId;
@@ -94,6 +102,20 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     parsed.versionActive = versionActive;
     parsed.uiScale = uiScale;
     parsed.uiLanguage.assign(reinterpret_cast<const char*>(data + kHeaderBytes), langBytes);
+    // [J75] T43:缺尾字段(旧工程)与未知取值一律回落默认 distribution;abi 不递增。
+    parsed.masterChartMode = kMasterChartModeDistribution;
+    if (size == baseSize + kChartModeBytes)
+    {
+        std::uint32_t tag = 0;
+        if (!readU32(data + baseSize, kChartModeBytes, tag))
+        {
+            return false;
+        }
+        if (tag == kMasterChartModeTrajectory)
+        {
+            parsed.masterChartMode = kMasterChartModeTrajectory;
+        }
+    }
     out = std::move(parsed);
     return true;
 }
