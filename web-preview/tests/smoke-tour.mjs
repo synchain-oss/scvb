@@ -104,7 +104,11 @@ log("=== ① 步骤清单(全参数导览 43 步)===");
         ],
         "44 锚点(含步 2/35 两个居中卡 null),末步=review",
     );
-    eq(TOUR.TOUR_STEPS[0].anchor, null, "首步 = 欢迎公告(无 spotlight,居中大卡)");
+    eq(
+        TOUR.TOUR_STEPS[0].anchor,
+        null,
+        "首步 = 欢迎公告(无 spotlight,居中大卡)",
+    );
     eq(TOUR.TOUR_STEPS[0].tab, "master", "首步欢迎公告在整体调整页");
     eq(
         TOUR.TOUR_STEPS.map((s) => s.tab),
@@ -347,10 +351,22 @@ log("=== ⑤ 词条:tour.* 三语 ===");
         !/write complete|written to/i.test(T.en["tour.step3.body"]),
         "en step3 不含 write complete / written",
     );
-    // 首步正文含三件套主线 + clickAnywhere 独立词条
+    // 组这一步只讲组的作用(用户实机发现:组选择器在三件套**下方**,原「下方/从左到右」方向表述有误,已删)
     check(
-        /采集 → 分析 → 输出/.test(T.zh["tour.step3.body"]),
-        "zh step3 含三件套主线",
+        !/从左到右|下方三个模块/.test(T.zh["tour.step3.body"]),
+        "zh step3 无「下方/从左到右」方向表述",
+    );
+    check(
+        /组把通道分成 A–H 八个独立工作区/.test(T.zh["tour.step3.body"]),
+        "zh step3 只讲组的作用",
+    );
+    check(
+        !/left to right/i.test(T.en["tour.step3.body"]),
+        "en step3 无 left to right 方向表述",
+    );
+    check(
+        !/gauche à droite/i.test(T.fr["tour.step3.body"]),
+        "fr step3 无 gauche à droite 方向表述",
     );
     check(
         /左键点击任意处/.test(T.zh["tour.clickAnywhere"]),
@@ -559,10 +575,16 @@ log("=== ⑦ 首启语言选择卡(lang-start,独立 overlay)===");
     }
     // 零桥调用(语言切换走 app.js 的 setLang,本文件不触引擎)
     const calls = [...ls.matchAll(/call\("([a-zA-Z]+)"/g)].map((m) => m[1]);
-    check(calls.length === 0, "lang-start.js 零桥调用,实得 " + JSON.stringify(calls));
+    check(
+        calls.length === 0,
+        "lang-start.js 零桥调用,实得 " + JSON.stringify(calls),
+    );
     // a11y:role=dialog + aria-modal + aria-labelledby
     check(ls.includes('"dialog"'), "lang-start role=dialog");
-    check(ls.includes('"true"') && ls.includes("aria-modal"), "lang-start aria-modal");
+    check(
+        ls.includes('"true"') && ls.includes("aria-modal"),
+        "lang-start aria-modal",
+    );
     check(ls.includes("aria-labelledby"), "lang-start aria-labelledby");
 
     // i18n:lang-start.* 三语齐(标题三语常显 + 三按钮各用各自语言)

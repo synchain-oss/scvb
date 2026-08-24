@@ -175,9 +175,9 @@ export const T = {
         "tour.step2.title": "这是 SCVB Output 的主界面",
         "tour.step2.body":
             "顶部有四个页签:整体调整 / 轨道 / 波形 / 设置。这个引导会带你逐页了解。",
-        "tour.step3.title": "组的选择与主要流程",
+        "tour.step3.title": "组与它的作用",
         "tour.step3.body":
-            "组胶囊把通道分为 A–H 组;下方三个模块从左到右是:采集 → 分析 → 输出,也就是本插件的主要流程。",
+            "组把通道分成 A–H 八个独立工作区,每个组各自采集、分析、输出;单组使用保持 A 即可。",
         "tour.step4.title": "第一步:采集",
         "tour.step4.body":
             "打开采集开关并播放当前范围,插件会记录每条轨的响度特征。这一步不会写入任何自动化。",
@@ -832,9 +832,9 @@ export const T = {
         "tour.step2.title": "This is the SCVB Output main window",
         "tour.step2.body":
             "Four tabs at the top: General / Tracks / Waveform / Settings. This tour walks you through each page.",
-        "tour.step3.title": "Groups and the main flow",
+        "tour.step3.title": "Groups and their role",
         "tour.step3.body":
-            "Group capsules assign channels to groups A–H; below, three modules run left to right: capture → analyze → output — the plug-in's main flow.",
+            "Groups split the channels into eight independent workspaces (A–H); each group runs its own capture, analysis, and output. For single-group use, keep A.",
         "tour.step4.title": "Step 1 — Capture",
         "tour.step4.body":
             "Turn on the capture switch and play the current range; the plug-in records the loudness features of every track. Nothing is written to automation in this step.",
@@ -1459,9 +1459,9 @@ export const T = {
         "tour.step2.title": "Voici la fenêtre principale de SCVB Output",
         "tour.step2.body":
             "Quatre onglets en haut : Général / Pistes / Formes d'onde / Réglages. Cette visite vous guide page par page.",
-        "tour.step3.title": "Groupes et flux principal",
+        "tour.step3.title": "Les groupes et leur rôle",
         "tour.step3.body":
-            "Les capsules de groupe assignent les canaux aux groupes A–H ; en dessous, trois modules vont de gauche à droite : capture → analyse → sortie — le flux principal du plug-in.",
+            "Les groupes répartissent les canaux en huit espaces de travail indépendants (A–H) ; chaque groupe gère sa propre capture, son analyse et sa sortie. Pour un usage avec un seul groupe, gardez A.",
         "tour.step4.title": "Étape 1 — Capture",
         "tour.step4.body":
             "Activez l'interrupteur de capture et lisez la plage actuelle ; le plug-in enregistre les caractéristiques de loudness de chaque piste. Rien n'est écrit dans l'automation à cette étape.",
