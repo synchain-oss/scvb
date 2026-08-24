@@ -261,6 +261,7 @@ export function createTour(opts) {
             "  font-size: var(--fs-105); letter-spacing: var(--mono-ls-pill); color: var(--txt-dark-4); }",
             ".tour-callout__workflow { margin-top: var(--sp-12); display: flex; flex-direction: column; gap: var(--sp-8); }",
             ".tour-flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-6); }",
+            ".tour-flow__item { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }",
             ".tour-flow__node { padding: var(--sp-6) var(--sp-10); border-radius: var(--r-pill); background: rgba(var(--wh), 0.12); border: 1px solid rgba(var(--wh), 0.2); font-family: var(--ff-sans); font-size: var(--fs-110); color: var(--txt-dark-2); white-space: nowrap; }",
             ".tour-flow__arrow { color: var(--txt-dark-4); font-family: var(--ff-mono); }",
             ".tour-flow__priority { padding: var(--sp-8) var(--sp-10); border-radius: var(--r-md); background: rgba(var(--wh), 0.08); border: 1px solid rgba(var(--wh), 0.16); font-size: var(--fs-115); color: var(--txt-dark-3); }",
@@ -547,14 +548,16 @@ export function createTour(opts) {
         ];
         const row = el("div", "tour-flow");
         nodes.forEach((key, i) => {
+            const item = el("span", "tour-flow__item");
             if (i > 0) {
                 const arr = el("span", "tour-flow__arrow");
                 arr.textContent = "→";
-                row.appendChild(arr);
+                item.appendChild(arr);
             }
             const node = el("span", "tour-flow__node");
             node.textContent = t[key] || key;
-            row.appendChild(node);
+            item.appendChild(node);
+            row.appendChild(item);
         });
         const prio = el("div", "tour-flow__priority");
         prio.textContent = t["workflow.priority"] || "";

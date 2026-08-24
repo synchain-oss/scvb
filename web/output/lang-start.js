@@ -66,7 +66,7 @@ export function createLangStart(opts) {
             ".lang-start__panel { width: 400px; max-width: calc(100% - 2 * var(--sp-24)); text-align: center; }",
             ".lang-start__title { margin: 0 0 var(--sp-16); }",
             ".lang-start__btns { display: flex; flex-direction: column; gap: var(--sp-10); }",
-            ".lang-start__btn { width: 100%; padding: var(--sp-8) var(--sp-11); font-size: var(--fs-125); }",
+            ".lang-start__btn { width: 100%; padding: var(--sp-8) var(--sp-11); font-size: var(--fs-140); font-weight: 600; color: var(--txt-dark-1); }",
         ].join("\n");
         root.head.appendChild(style);
     }

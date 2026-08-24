@@ -450,6 +450,7 @@ function ensureWorkflowCard() {
     style.id = "scvb-workflow-card-style";
     style.textContent = [
         ".workflow-card__flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-6); margin-top: var(--sp-12); }",
+        ".workflow-card__item { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }",
         ".workflow-card__node { padding: var(--sp-6) var(--sp-10); border-radius: var(--r-pill); background: rgba(var(--wh), 0.12); border: 1px solid rgba(var(--wh), 0.2); font-size: var(--fs-110); color: var(--txt-dark-2); white-space: nowrap; }",
         ".workflow-card__arrow { color: var(--txt-dark-4); }",
         ".workflow-card__priority { margin-top: var(--sp-10); padding: var(--sp-8) var(--sp-10); border-radius: var(--r-md); background: rgba(var(--wh), 0.08); border: 1px solid rgba(var(--wh), 0.16); font-size: var(--fs-115); color: var(--txt-dark-3); }",
@@ -465,7 +466,7 @@ function ensureWorkflowCard() {
 
     const panel = document.createElement("div");
     panel.className = "sc-modal";
-    panel.style.width = "480px";
+    panel.style.width = "560px";
     panel.style.maxWidth = "calc(100% - 2 * var(--sp-24))";
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-modal", "true");
@@ -485,16 +486,19 @@ function ensureWorkflowCard() {
         "workflow.write",
         "workflow.manual",
     ].forEach((key, i) => {
+        const item = document.createElement("span");
+        item.className = "workflow-card__item";
         if (i > 0) {
             const arrow = document.createElement("span");
             arrow.className = "workflow-card__arrow";
             arrow.textContent = "→";
-            flow.appendChild(arrow);
+            item.appendChild(arrow);
         }
         const node = document.createElement("span");
         node.className = "workflow-card__node";
         node.setAttribute("data-t", key);
-        flow.appendChild(node);
+        item.appendChild(node);
+        flow.appendChild(item);
     });
 
     const priority = document.createElement("div");
