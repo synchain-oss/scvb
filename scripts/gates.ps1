@@ -164,6 +164,34 @@ Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
 Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
 
 # ==================================================================
+Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
+# ==================================================================
+# web-preview/tests 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到端 + 源码级
+# 纪律断言),T31–T36 六张卡的回归保护全压在上面。与 .github/workflows/format.yml
+# 的 web-smoke job 同口径。零依赖:不装 npm 包,直接 node(≥22,用到内建 fetch
+# 与全局 WebSocket)跑;每套退出码 0 = 全绿,非 0 会逐条打印 [FAIL]。
+# 不提前 break —— 一次跑完好看全所有红项。
+$smokeDir = Join-Path $RepoRoot 'web-preview\tests'
+$smokeFiles = @(Get-ChildItem -Path $smokeDir -Filter 'smoke-*.mjs' -ErrorAction SilentlyContinue)
+if ($smokeFiles.Count -eq 0) {
+  Write-Host '  未发现 web smoke(web-preview/tests/smoke-*.mjs)' -ForegroundColor Red
+  Set-Gate '3e web smoke' $false
+}
+else {
+  $smokeOk = $true
+  foreach ($f in $smokeFiles) {
+    $out = (& node $f.FullName 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $smokeOk = $false
+      Write-Host ("  {0}:" -f $f.Name) -ForegroundColor Red
+      $out | Select-String -Pattern '\[FAIL\]' | Select-Object -First 20 |
+      ForEach-Object { Write-Host ("  " + $_) }
+    }
+  }
+  Set-Gate ('3e web smoke({0} 套)' -f $smokeFiles.Count) $smokeOk
+}
+
+# ==================================================================
 Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)==='
 # ==================================================================
 # 设计盒常量唯一真源 = web/shared/design-box.js;生成物 src/core/DesignBox.h 必须逐字节一致

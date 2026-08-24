@@ -30,3 +30,33 @@ jobs:
       - name: Check web assets formatting (prettier)
         # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore
         run: npx --yes prettier@3 --check .
+
+  web-smoke:
+    name: web-smoke # required check context
+    runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
+    # 与 clang-format **平行**而非塞进同一 job:纯 web 的 PR 不该被 C++ 门禁的
+    # 排队时间挡住;反过来 C++ 的 PR 也该照跑这套 —— web/ 是被 C++ 侧 WebView
+    # 加载的真源。与 scripts/gates.ps1 的 Gate 3e 同口径。
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 测试用到 node 内建 fetch 与全局 WebSocket;与 web-preview/README
+          # 的「node ≥ 22」口径一致。
+          node-version: "22"
+      - name: Run web smokes
+        # web-preview/tests/*.mjs 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到
+        # 端 + 源码级纪律断言),T31–T36 六张卡的回归保护全压在上面。接入前没有
+        # 任何 workflow 跑它们 —— 纯 web 的 PR 即使把八套全跑红,CI 也是全绿的。
+        # 零依赖:不装 npm 包,直接 node 跑;每套退出码 0 = 全绿,非 0 逐条打印
+        # [FAIL]。不用 `|| exit 1` 提前退出,好让一次 CI 就看全所有红项。
+        run: |
+          shopt -s nullglob
+          files=(web-preview/tests/smoke-*.mjs)
+          test ${#files[@]} -gt 0 || { echo "::error::no web smokes found"; exit 1; }
+          fail=0
+          for f in "${files[@]}"; do
+            echo "--- $f"
+            node "$f" || { echo "::error file=$f::web smoke failed"; fail=1; }
+          done
+          exit $fail
