@@ -155,115 +155,148 @@ export const T = {
         "tour.ask": "要不要花一分钟快速了解界面?",
         "tour.ask.start": "开始引导",
         "tour.ask.later": "暂不,以后可在设置页重看",
-        "tour.clickAnywhere": "左键点击任意处继续;说明框上的按钮除外",
+        "tour.clickAnywhere": "左键点击任意处继续",
         "tour.skip": "跳过",
         "tour.prev": "上一步",
         "tour.next": "下一步",
         "tour.done": "完成",
         "tour.demoBadge": "演示数据",
 
-        // tour 全参数导览 39 步(用户 2026-08-24 preview 反馈:32→39;步号/锚点/文案以 drafts/tour-zh-copy-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
-        "tour.step1.title": "这是 SCVB Output 的主界面",
+        // tour 全参数导览 44 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
+        "tour.step1.title": "语言 / Language / Langue",
         "tour.step1.body":
-            "顶部四个页签:整体调整 / 轨道 / 波形 / 设置;本引导会自动带你逐页看。已注入 15 轨演示数据,结束后还原",
-        "tour.step2.title": "组选择与三件套",
+            "请选择您熟悉的语言 / Choose your language / Choisissez votre langue",
+        "tour.step2.title": "欢迎使用 SCVB",
         "tour.step2.body":
-            "组胶囊把通道分到 A–H 组;下方三件套从左到右:采集 → 分析 → 输出,这是本插件的主流程",
-        "tour.step3.title": "第一步:采集",
+            "SCVB 是 Synchain 的开源多轨人声平衡工具。先花一分钟来了解一下界面吧。已注入 15 轨演示数据,结束后还原。",
+        "tour.step3.title": "这是 SCVB Output 的主界面",
         "tour.step3.body":
-            "打开采集开关并播放本范围,插件记录每条轨的响度特征。这一步不写任何自动化",
-        "tour.step4.title": "第二步:分析",
+            "顶部有四个页签:整体调整 / 轨道 / 波形 / 设置。这个引导会带你逐页了解。",
+        "tour.step4.title": "组的选择与主要流程",
         "tour.step4.body":
-            "离线算出每个乐句的声像/音量方案;点击前有影响预览,手动编辑/锁定段会被保留",
-        "tour.step5.title": "第三步:输出",
+            "组胶囊把通道分为 A–H 组;下方三个模块从左到右是:采集 → 分析 → 输出,也就是本插件的主要流程。",
+        "tour.step5.title": "第一步:采集",
         "tour.step5.body":
-            "切到「引擎驱动」后参数由分析结果驱动;要录成自动化在 DAW 侧开 Latch 或 Write",
-        "tour.step6.title": "Width · 最大角度",
+            "打开采集开关并播放当前范围,插件会记录每条轨的响度特征。这一步不会写入任何自动化。",
+        "tour.step6.title": "第二步:分析",
         "tour.step6.body":
-            "整体宽度:0–150% 对应 ±0–90° 张开角;拖动即写自动化参数",
-        "tour.step7.title": "MS Balance",
-        "tour.step7.body": "总线 M/S 平衡:−100 偏 Mid、+100 偏 Side;双击回 0",
-        "tour.step8.title": "Lead Select",
+            "离线计算每个乐句的声像 / 音量方案;点击前可以先预览采集范围,手动编辑或锁定的段落会被保留。",
+        "tour.step7.title": "第三步:输出",
+        "tour.step7.body":
+            "切到「引擎驱动」后,参数由分析结果自动驱动;要把参数录成自动化,请在 DAW 侧打开 Latch 或 Write。",
+        "tour.step8.title": "声像 / 音量分布",
         "tour.step8.body":
-            "实时强制居中(0=遵循分析,1–15 选轨);与分析期主唱锁是两层",
-        "tour.step9.title": "Range · 范围",
-        "tour.step9.body":
-            "三档:全曲跟随 / 循环区 / 手动;决定采集与输出的作用范围",
-        "tour.step10.title": "过渡时间",
+            "这是全体轨道的声像与音量的实时状态:柱高 = 音量,横位 = 声像;横向细线 = 立体声源的张开度与角度域曲线。",
+        "tour.step9.title": "Width · 最大角度",
+        "tour.step9.body": "整体宽度的上限:最大张开角 0–90°。",
+        "tour.step10.title": "MS Balance",
         "tour.step10.body":
-            "段间 ramp 20–300ms;太短交界会跳,太长声像糊在两处之间",
-        "tour.step11.title": "本页:轨道",
-        "tour.step11.body":
-            "每个通道一行,15 轨矩阵;行内是每轨的微调控件,冻结后才会解锁为手动",
-        "tour.step12.title": "轨道行",
-        "tour.step12.body": "状态灯 / CH+ST / 标签;每轨一行,未连接整行降透明",
-        "tour.step13.title": "pan 旋钮",
+            "总线 M/S 平衡:−100 偏向 Mid,+100 偏向 Side;调整MS音量关系。",
+        "tour.step11.title": "Lead Select",
+        "tour.step11.body": "通过序号选择和实时强制居中Lead轨道,0=遵循分析。",
+        "tour.step12.title": "Range · 范围",
+        "tour.step12.body":
+            "三档选项:全曲跟随 / 循环区 / 手动,决定采集和输出的作用范围。",
+        "tour.step13.title": "过渡时间",
         "tour.step13.body":
-            "声像 −100..+100;冻结后解锁为手动,未冻结由分析曲线驱动",
-        "tour.step14.title": "width 旋钮",
-        "tour.step14.body": "每轨宽度 0–100%(stereo 源);mono 源 v1 无效",
-        "tour.step15.title": "音量 / 电平合成件",
+            "段间过渡:20–300ms;决定区间之间音量和声像过渡的速度。",
+        "tour.step14.title": "本页:轨道",
+        "tour.step14.body":
+            "每个通道占一行,构成 15 轨矩阵;行内是每轨的微调控件,冻结后才会解锁为手动调节。",
+        "tour.step15.title": "轨道行",
         "tour.step15.body":
-            "液柱=实时电平,卡箍=音量推子;拖卡箍改 vol,冻结后解锁为手动",
-        "tour.step16.title": "优先级",
-        "tour.step16.body": "0..10,10=最高优先;决定中心位争抢顺序",
-        "tour.step17.title": "主唱锁",
-        "tour.step17.body": "标记该轨为分析期主唱;多轨锁中会提示",
-        "tour.step18.title": "音量豁免",
+            "状态灯 / CH+ST / 标签;每轨一行,未连接时整行会降低透明度。",
+        "tour.step16.title": "pan 旋钮",
+        "tour.step16.body":
+            "声像 −100..+100;冻结后解锁为手动调节,未冻结时由分析曲线驱动。",
+        "tour.step17.title": "width 旋钮",
+        "tour.step17.body": "立体声轨的宽度 0–100%;对单声道轨无效。",
+        "tour.step18.title": "音量 / 电平合成控件",
         "tour.step18.body":
-            "独立开关:该轨不进音量平衡计算,与主唱锁/Lead Select 不联动",
-        "tour.step19.title": "参与自动声像",
-        "tour.step19.body": "该轨是否进声像重分布;stereo 默认关,仍参与音量平衡",
-        "tour.step20.title": "配对",
-        "tour.step20.body": "两轨配成一对(无/A–G);同组两轨行首同色圆点",
-        "tour.step21.title": "冻结 PAN / VOL",
+            "液柱表示实时电平,卡箍表示音量推子;拖动卡箍可修改轨道音量,冻结后解锁为手动调节。",
+        "tour.step19.title": "优先级",
+        "tour.step19.body":
+            "0..10,10 为最高优先级,优先级更高的轨道在声像上会更靠近中心。",
+        "tour.step20.title": "主唱锁",
+        "tour.step20.body":
+            "把该轨标记为主唱:分析时它作为最高优先级轨道,中心槽策略(主唱独占)会优先居中它;多轨锁定时会给出提示。",
+        "tour.step21.title": "音量豁免",
         "tour.step21.body":
-            "两枚冻结开关把该维度从引擎手里接管过来,旋钮与推子随之解锁为手动",
-        "tour.step22.title": "启用开关",
-        "tour.step22.body": "关闭该轨:整行深度降透明,不参与采集/分析/输出",
-        "tour.step23.title": "本页:波形",
+            "独立开关:该轨不参与音量平衡计算,与主唱锁 / Lead Select 不联动。",
+        "tour.step22.title": "参与自动声像",
+        "tour.step22.body":
+            "该轨是否参与声像重分布;立体声轨默认关闭,但仍参与音量平衡。",
+        "tour.step23.title": "配对",
         "tour.step23.body":
-            "看分析结果、改分段;泳道曲线 + 下方工具条;拖动、框选、缩放都在这页",
-        "tour.step24.title": "泳道区",
-        "tour.step24.body": "每条泳道叠着 pan/vol 阶梯曲线,播放头随走带移动",
-        "tour.step25.title": "选区手柄",
+            "把两条轨配成一对,配对的两轨声像联动、作为一个整体移动;同组两轨行首显示同色圆点。",
+        "tour.step24.title": "冻结 PAN / VOL",
+        "tour.step24.body":
+            "两个冻结开关会 bypass 引擎对该维度的影响,旋钮与推子随之解锁为纯手动调节。",
+        "tour.step25.title": "启用开关",
         "tour.step25.body":
-            "框选泳道建立选区,两端出现手柄;「设为范围」把选区写入 Range",
-        "tour.step26.title": "框选后工具条",
+            "关闭该轨:该轨不参与采集 / 分析 / 输出,不对轨道做任何调整。",
+        "tour.step26.title": "本页:波形",
         "tour.step26.body":
-            "重采集 / 重分析 / 重新识别 / 清除,作用于选中的轨×选区",
-        "tour.step27.title": "段检查器",
-        "tour.step27.body": "选中段后可编辑 pan/vol、查看 origin(E/C)、锁定段",
-        "tour.step28.title": "分段工具条",
+            "查看分析结果、调整分段;上方是泳道曲线,下方是工具条;拖动、框选、缩放都在这页完成。",
+        "tour.step27.title": "下方面板与操作",
+        "tour.step27.body":
+            "框选泳道建立选区;拖拽边界微调分段;用滚轮或底部缩放条缩放 / 平移;双击可分割,选中段可合并。",
+        "tour.step28.title": "泳道区",
         "tour.step28.body":
-            "SENSITIVITY / MIN SEG 分段滑杆;边界可拖拽、双击分割、合并",
-        "tour.step29.title": "VAD 滑杆",
+            "每条泳道叠加着 pan / vol 阶梯曲线,播放头随走带移动。",
+        "tour.step29.title": "选区手柄",
         "tour.step29.body":
-            "THRESHOLD / HOLD 等五枚滑杆;拖动即时预览,松手自动应用",
-        "tour.step30.title": "下方面板与操作",
+            "框选泳道建立选区后,两端会出现手柄;「设为范围」会把选区写入 Range。",
+        "tour.step30.title": "框选后工具条",
         "tour.step30.body":
-            "框选泳道建立选区;拖拽边界微调分段;滚轮或底部缩放条缩放/平移;双击分割、选中段合并",
-        "tour.step31.title": "本页:设置",
+            "重采集 / 重分析 / 重新识别 / 清除,作用于选中的轨道 × 选区。",
+        "tour.step31.title": "段检查器",
         "tour.step31.body":
-            "说明、响度口径、中心槽策略、缩放语言、存储诊断;末步的「重看引导」也在这页",
-        "tour.step32.title": "使用说明",
-        "tour.step32.body": "三步工作流 + 九条红字;「查看全部九条」就地展开",
-        "tour.step33.title": "第二响度指标",
+            "选中段后可编辑 pan / vol、查看 origin(E / C)、锁定该段。",
+        "tour.step32.title": "分段工具条",
+        "tour.step32.body":
+            "SENSITIVITY / MIN SEG 分段滑杆;边界可拖拽,双击可分割,选中相邻两段按 Delete 合并。",
+        "tour.step33.title": "VAD 滑杆",
         "tour.step33.body":
-            "段响度用哪个口径:K 加权段积分 / RMS / 峰值 dBFS;改后需重分析",
-        "tour.step34.title": "中心槽策略",
+            "THRESHOLD / HOLD 等五个滑杆;拖动时即时预览效果,松手自动应用。",
+        "tour.step34.title": "本页:设置",
         "tour.step34.body":
-            "多轨争抢中心位时怎么办:按优先级排队 / 主唱独占 / 均分微偏",
-        "tour.step35.title": "界面缩放",
-        "tour.step35.body": "缩放整个界面(10 秒确认防呆);与 header 缩放联动",
-        "tour.step36.title": "语言",
-        "tour.step36.body": "中文 / English / Français 三语即时切换",
-        "tour.step37.title": "存储状态",
-        "tour.step37.body": "特征数据内嵌于工程或存外部;占用大小在此查看",
-        "tour.step38.title": "诊断",
-        "tour.step38.body": "可复制每轨心跳与失准计数,排查连接问题用",
-        "tour.step39.title": "以后在这里可以再看一次",
-        "tour.step39.body": "引导随时可重看,红字九条也在同一块里展开",
+            "说明、响度口径、中心槽策略、缩放、语言、存储、诊断;末步的「重看引导」也在这页。",
+        "tour.step35.title": "工作流程与优先级",
+        "tour.step35.body":
+            "一次完整的工作流程:采集 → 分析 → 微调/冻结 → 写入自动化 → 手动调自动化。优先级:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎分析曲线。本页的说明块与设置页按钮随时可以回来重看。",
+        "tour.step36.title": "使用说明",
+        "tour.step36.body":
+            "三步工作流 + 九条重要提示;已为你展开九条——请逐条读一遍,违反任何一条都会导致静音或错音。",
+        "tour.step37.title": "第二响度指标",
+        "tour.step37.body":
+            "段响度采用哪个指标:K 加权段积分(接近人耳听感)/ RMS(平均能量)/ 峰值 dBFS(瞬时峰值);修改后需重新分析。",
+        "tour.step38.title": "中心槽策略",
+        "tour.step38.body":
+            "多轨争抢中心位时如何处理:按优先级排队 / 主唱独占 / 均分微偏。",
+        "tour.step39.title": "界面缩放",
+        "tour.step39.body": "缩放整个界面UI大小;与顶部栏(header)缩放联动。",
+        "tour.step40.title": "语言",
+        "tour.step40.body": "中文 / English / Français 三语即时切换。",
+        "tour.step41.title": "存储状态",
+        "tour.step41.body":
+            "特征数据可以内嵌在工程里,也可以存到外部;占用大小可在这里查看。",
+        "tour.step42.title": "诊断",
+        "tour.step42.body": "可复制每轨心跳与失准计数,用于排查连接问题。",
+        "tour.step43.title": "版本号与复制",
+        "tour.step43.body":
+            "右上角是当前版本号,点击即可复制版本信息;遇到问题寻求帮助时,把它一起发给我们。",
+        "tour.step44.title": "以后在这里可以再看一次",
+        "tour.step44.body": "引导随时可以重看,红字九条也在同一块里展开。",
+
+        // 工作流程图(tour 步 35;节点 + 优先级行,三语)。
+        "workflow.capture": "采集",
+        "workflow.analyze": "分析",
+        "workflow.tweak": "微调 / 冻结",
+        "workflow.write": "写入自动化",
+        "workflow.manual": "手动调自动化",
+        "workflow.priority":
+            "优先级:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎分析曲线",
 
         // tour demo 的 15 条轨名(J62)。真值在 web/shared/mock-data.js 的 DEMO_LABELS,
         // key 表在同文件的 DEMO_LABEL_KEYS(mock-data.js 不 import 本文件,依赖方向照 06 §6.2)。
@@ -776,132 +809,154 @@ export const T = {
         "tour.ask": "Want a one-minute tour of the interface?",
         "tour.ask.start": "Start tour",
         "tour.ask.later": "Not now — replay it any time in Settings",
-        "tour.clickAnywhere":
-            "Left-click anywhere to continue (except the buttons in this box)",
+        "tour.clickAnywhere": "Left-click anywhere to continue",
         "tour.skip": "Skip",
         "tour.prev": "Back",
         "tour.next": "Next",
         "tour.done": "Done",
         "tour.demoBadge": "DEMO DATA",
 
-        // tour full-parameter 39 steps (user 2026-08-24 preview: 32→39; EN self-translated, pending review).
-        "tour.step1.title": "This is the SCVB Output main window",
+        // tour full-parameter 44 steps (final copy; EN self-translated, pending U17 review).
+        "tour.step1.title": "语言 / Language / Langue",
         "tour.step1.body":
-            "Four tabs at the top: General / Tracks / Waveform / Settings; this tour walks you through each page. A 15-track demo set is loaded and cleared when the tour ends.",
-        "tour.step2.title": "Group and the three-step flow",
+            "请选择您熟悉的语言 / Choose your language / Choisissez votre langue",
+        "tour.step2.title": "Welcome to SCVB",
         "tour.step2.body":
-            "Group capsules assign channels to groups A–H; below, the three-step flow runs left to right: capture → analyze → output — the main workflow.",
-        "tour.step3.title": "Step 1 — Capture",
+            "SCVB is Synchain's open-source multitrack vocal balancing tool. Take a minute to get to know the interface. A 15-track demo set is loaded and is cleared when the tour ends.",
+        "tour.step3.title": "This is the SCVB Output main window",
         "tour.step3.body":
-            "Turn on the capture switch and play this range; the plug-in records the loudness features of every track. Nothing is written to automation in this step.",
-        "tour.step4.title": "Step 2 — Analyze",
+            "Four tabs at the top: General / Tracks / Waveform / Settings. This tour walks you through each page.",
+        "tour.step4.title": "Groups and the main flow",
         "tour.step4.body":
-            "Computes a pan/level plan for every phrase offline. An impact preview appears before you commit, and edited or locked segments are preserved.",
-        "tour.step5.title": "Step 3 — Output",
+            "Group capsules assign channels to groups A–H; below, three modules run left to right: capture → analyze → output — the plug-in's main flow.",
+        "tour.step5.title": "Step 1 — Capture",
         "tour.step5.body":
-            "Switch to ENGINE DRIVE and the parameters are driven by the analysis result. To record it as automation, arm Latch or Write on the DAW side.",
-        "tour.step6.title": "Width · max angle",
+            "Turn on the capture switch and play the current range; the plug-in records the loudness features of every track. Nothing is written to automation in this step.",
+        "tour.step6.title": "Step 2 — Analyze",
         "tour.step6.body":
-            "Overall width: 0–150% maps to a ±0–90° spread angle; dragging writes the automation parameter.",
-        "tour.step7.title": "MS Balance",
+            "Computes a pan/level plan for every phrase offline. Preview the capture range before you commit; edited or locked segments are preserved.",
+        "tour.step7.title": "Step 3 — Output",
         "tour.step7.body":
-            "Bus M/S balance: −100 toward Mid, +100 toward Side; double-click to reset to 0.",
-        "tour.step8.title": "Lead Select",
+            "Switch to ENGINE DRIVE and the parameters are driven by the analysis result. To record them as automation, arm Latch or Write on the DAW side.",
+        "tour.step8.title": "Pan / level distribution",
         "tour.step8.body":
-            "Forces center in real time (0 = follow analysis, 1–15 = pick a track); separate from the lead lock.",
-        "tour.step9.title": "Range",
-        "tour.step9.body":
-            "Three modes: Follow / Loop / Manual; sets the capture and output scope.",
-        "tour.step10.title": "Transition",
+            "The live pan and level of all tracks: bar height = level, horizontal position = pan; the horizontal line = the stereo source spread and the angle-domain curve.",
+        "tour.step9.title": "Width · max angle",
+        "tour.step9.body": "The overall width limit: max spread angle 0–90°.",
+        "tour.step10.title": "MS Balance",
         "tour.step10.body":
-            "Inter-segment ramp 20–300 ms; too short and the seam clicks, too long and the image smears.",
-        "tour.step11.title": "This page: Tracks",
+            "Bus M/S balance: −100 toward Mid, +100 toward Side; adjust the M/S level relationship.",
+        "tour.step11.title": "Lead Select",
         "tour.step11.body":
-            "One row per channel, a 15-track matrix; the controls in each row tweak that track and only unlock to manual when frozen.",
-        "tour.step12.title": "Track row",
+            "Pick a track by number and force it to center in real time; 0 = follow analysis.",
+        "tour.step12.title": "Range",
         "tour.step12.body":
-            "Status light / CH+ST / label; one row per track, dimmed when not connected.",
-        "tour.step13.title": "Pan knob",
+            "Three modes: Follow / Loop / Manual; sets the capture and output scope.",
+        "tour.step13.title": "Transition",
         "tour.step13.body":
-            "Pan −100..+100; unlocks to manual when frozen, driven by the analysis curve otherwise.",
-        "tour.step14.title": "Width knob",
+            "Inter-segment transition: 20–300 ms; sets how fast level and pan ramp between intervals.",
+        "tour.step14.title": "This page: Tracks",
         "tour.step14.body":
-            "Per-track width 0–100% (stereo source); no-op for mono in v1.",
-        "tour.step15.title": "Level / volume combo",
+            "One row per channel, a 15-track matrix; the controls in each row tweak that track and only unlock to manual when frozen.",
+        "tour.step15.title": "Track row",
         "tour.step15.body":
-            "Liquid = live level, collar = volume fader; drag the collar to change vol, unlocked when frozen.",
-        "tour.step16.title": "Priority",
+            "Status light / CH+ST / label; one row per track, dimmed when not connected.",
+        "tour.step16.title": "Pan knob",
         "tour.step16.body":
-            "0..10, 10 = highest; decides who wins the center slot.",
-        "tour.step17.title": "Lead lock",
+            "Pan −100..+100; unlocks to manual when frozen, driven by the analysis curve otherwise.",
+        "tour.step17.title": "Width knob",
         "tour.step17.body":
-            "Marks this track as the analysis lead; warns if several are locked.",
-        "tour.step18.title": "Vol exempt",
+            "Stereo track width 0–100%; no effect on mono tracks.",
+        "tour.step18.title": "Level / volume combo",
         "tour.step18.body":
-            "Independent switch: excludes this track from level balancing; not linked to lead lock / Lead Select.",
-        "tour.step19.title": "Auto-pan participate",
+            "The liquid shows the live level, the collar is the volume fader; drag the collar to change the track volume, unlocked to manual when frozen.",
+        "tour.step19.title": "Priority",
         "tour.step19.body":
-            "Whether this track joins pan redistribution; stereo off by default, still level-balanced.",
-        "tour.step20.title": "Pair",
+            "0..10, 10 = highest; higher-priority tracks sit closer to the center.",
+        "tour.step20.title": "Lead lock",
         "tour.step20.body":
-            "Pairs two tracks (None / A–G); the same pair shows the same colored dot.",
-        "tour.step21.title": "Freeze PAN / VOL",
+            "Mark this track as the lead: it is the top-priority track during analysis, and the center-slot policy (lead exclusive) centers it first; warns if several are locked.",
+        "tour.step21.title": "Vol exempt",
         "tour.step21.body":
-            "The two freeze switches take that dimension back from the engine; the knob and fader unlock to manual.",
-        "tour.step22.title": "Enable",
+            "Independent switch: this track is excluded from level balancing; not linked to lead lock / Lead Select.",
+        "tour.step22.title": "Auto-pan participate",
         "tour.step22.body":
-            "Turning it off dims the whole row; the track skips capture/analyze/output.",
-        "tour.step23.title": "This page: Waveform",
+            "Whether this track joins pan redistribution; stereo tracks off by default, still level-balanced.",
+        "tour.step23.title": "Pair",
         "tour.step23.body":
-            "Review results and edit segments; lane curves plus the toolbar below; drag, box-select and zoom all happen here.",
-        "tour.step24.title": "Lane area",
+            "Pair two tracks; a pair moves together as one. Same pair shows the same colored dot at the row head.",
+        "tour.step24.title": "Freeze PAN / VOL",
         "tour.step24.body":
-            "Each lane carries the pan/vol step curves; the playhead moves with the transport.",
-        "tour.step25.title": "Selection handles",
+            "The two freeze switches bypass the engine for that dimension; the knob and fader unlock to pure manual control.",
+        "tour.step25.title": "Enable",
         "tour.step25.body":
-            'Drag on a lane to make a selection; handles appear at both ends and "Set as Range" writes it to Range.',
-        "tour.step26.title": "Post-selection toolbar",
+            "Turn it off: the track skips capture / analyze / output — no adjustment is made to that track.",
+        "tour.step26.title": "This page: Waveform",
         "tour.step26.body":
-            "Recapture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
-        "tour.step27.title": "Segment inspector",
+            "Review results and adjust segments; lane curves on top, toolbar below; drag, box-select and zoom all happen here.",
+        "tour.step27.title": "Bottom panel and actions",
         "tour.step27.body":
-            "Edit pan/vol, see origin (E/C) and lock a selected segment.",
-        "tour.step28.title": "Segmentation toolbar",
-        "tour.step28.body":
-            "SENSITIVITY / MIN SEG sliders; drag boundaries, double-click to split, merge.",
-        "tour.step29.title": "VAD sliders",
-        "tour.step29.body":
-            "THRESHOLD / HOLD and three more; drag for a live preview, release to apply.",
-        "tour.step30.title": "Bottom panel and actions",
-        "tour.step30.body":
             "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/pan; double-click to split, merge a selected segment.",
-        "tour.step31.title": "This page: Settings",
+        "tour.step28.title": "Lane area",
+        "tour.step28.body":
+            "Each lane carries the pan/vol step curves; the playhead moves with the transport.",
+        "tour.step29.title": "Selection handles",
+        "tour.step29.body":
+            'After box-selecting lanes, handles appear at both ends; "Set as Range" writes the selection to Range.',
+        "tour.step30.title": "Post-selection toolbar",
+        "tour.step30.body":
+            "Recapture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
+        "tour.step31.title": "Segment inspector",
         "tour.step31.body":
-            'Usage notes, loudness metric, center slot policy, scale & language, storage & diagnostics; the final "Replay tour" is also here.',
-        "tour.step32.title": "Usage notes",
+            "Edit pan/vol, see origin (E/C) and lock a selected segment.",
+        "tour.step32.title": "Segmentation toolbar",
         "tour.step32.body":
-            'Three-step workflow + nine red rules; "Show all nine" expands in place.',
-        "tour.step33.title": "Loudness metric",
+            "SENSITIVITY / MIN SEG sliders; drag boundaries, double-click to split, select two adjacent segments and press Delete to merge.",
+        "tour.step33.title": "VAD sliders",
         "tour.step33.body":
-            "Which metric for segment loudness: K-weighted integral / RMS / peak dBFS; re-analyze after changing.",
-        "tour.step34.title": "Center slot policy",
+            "THRESHOLD / HOLD and three more; drag for a live preview, release to apply.",
+        "tour.step34.title": "This page: Settings",
         "tour.step34.body":
-            "What happens when tracks compete for center: priority queue / lead exclusive / even spread.",
-        "tour.step35.title": "UI scale",
+            'Usage notes, loudness metric, center-slot policy, scale, language, storage, diagnostics; the final "Replay tour" is also here.',
+        "tour.step35.title": "Workflow and priority",
         "tour.step35.body":
-            "Scales the whole UI (10-second confirm); synced with the header scale.",
-        "tour.step36.title": "Language",
+            "A full workflow: capture → analyze → tweak/freeze → write automation → adjust automation manually. Priority: host automation > frozen manual value > manual tweak > engine analysis curve. You can return to the usage notes and settings at any time.",
+        "tour.step36.title": "Usage notes",
         "tour.step36.body":
-            "Switch instantly between 中文 / English / Français.",
-        "tour.step37.title": "Storage status",
+            "Three-step workflow + nine important notes; the nine are expanded for you — please read each one. Breaking any of them causes silence or wrong panning.",
+        "tour.step37.title": "Loudness metric",
         "tour.step37.body":
-            "Features embedded in the project or external; the size used is shown here.",
-        "tour.step38.title": "Diagnostics",
+            "Which metric for segment loudness: K-weighted integral (close to hearing) / RMS (average energy) / peak dBFS (instant peak); re-analyze after changing.",
+        "tour.step38.title": "Center slot policy",
         "tour.step38.body":
-            "Copy per-track heartbeat and misalignment counts to troubleshoot connections.",
-        "tour.step39.title": "You can replay this tour here",
+            "What happens when tracks compete for center: priority queue / lead exclusive / even spread.",
+        "tour.step39.title": "UI scale",
         "tour.step39.body":
-            "The tour can be replayed at any time, and the nine hard rules open in the same block.",
+            "Scales the whole UI; synced with the header scale.",
+        "tour.step40.title": "Language",
+        "tour.step40.body":
+            "Switch instantly between 中文 / English / Français.",
+        "tour.step41.title": "Storage status",
+        "tour.step41.body":
+            "Features can be embedded in the project or stored externally; the size used is shown here.",
+        "tour.step42.title": "Diagnostics",
+        "tour.step42.body":
+            "Copy per-track heartbeat and misalignment counts to troubleshoot connections.",
+        "tour.step43.title": "Version and copy",
+        "tour.step43.body":
+            "The top-right is the current version number; click to copy the version info. Send it to us when you need help.",
+        "tour.step44.title": "You can replay this tour here",
+        "tour.step44.body":
+            "The tour can be replayed at any time, and the nine red rules open in the same block.",
+
+        // Workflow diagram (tour step 35; nodes + priority row).
+        "workflow.capture": "Capture",
+        "workflow.analyze": "Analyze",
+        "workflow.tweak": "Tweak / Freeze",
+        "workflow.write": "Write automation",
+        "workflow.manual": "Adjust automation manually",
+        "workflow.priority":
+            "Priority: host automation > frozen manual value > manual tweak > engine analysis curve",
 
         // tour demo 的 15 条轨名(J62;口径见 zh 侧同组注释)。EN 为 T27 自译,待人工审校。
         "demo.ch1": "Lead Vocal",
@@ -1378,132 +1433,155 @@ export const T = {
         "tour.ask": "Envie d'une visite guidée d'une minute ?",
         "tour.ask.start": "Commencer la visite",
         "tour.ask.later": "Pas maintenant — à revoir dans Réglages",
-        "tour.clickAnywhere":
-            "Cliquez n'importe où pour continuer (sauf les boutons de cette bulle)",
+        "tour.clickAnywhere": "Cliquez n'importe où pour continuer",
         "tour.skip": "Passer",
         "tour.prev": "Précédent",
         "tour.next": "Suivant",
         "tour.done": "Terminé",
         "tour.demoBadge": "DONNÉES DÉMO",
 
-        // Tour complet 39 étapes (décision 2026-08-24 : 32→39 ; FR auto-traduite, à relire).
-        "tour.step1.title": "Voici la fenêtre principale de SCVB Output",
+        // tour complet 44 étapes (copie finale ; FR auto-traduite, à relire).
+        "tour.step1.title": "语言 / Language / Langue",
         "tour.step1.body":
-            "Quatre onglets en haut : Général / Pistes / Formes d'onde / Réglages ; cette visite vous guide page par page. Un jeu de démonstration de 15 pistes est chargé, puis retiré à la fin.",
-        "tour.step2.title": "Groupe et flux en trois étapes",
+            "请选择您熟悉的语言 / Choose your language / Choisissez votre langue",
+        "tour.step2.title": "Bienvenue dans SCVB",
         "tour.step2.body":
-            "Les capsules de groupe assignent les canaux aux groupes A–H ; en dessous, le flux va de gauche à droite : capture → analyse → sortie — le flux principal.",
-        "tour.step3.title": "Étape 1 — Capture",
+            "SCVB est l'outil open-source de Synchain pour équilibrer les voix multipistes. Prenez une minute pour découvrir l'interface. Un jeu de démonstration de 15 pistes est chargé, puis retiré à la fin.",
+        "tour.step3.title": "Voici la fenêtre principale de SCVB Output",
         "tour.step3.body":
-            "Activez l'interrupteur de capture et lisez cette plage ; le plug-in enregistre les caractéristiques de loudness de chaque piste. Rien n'est écrit dans l'automation à cette étape.",
-        "tour.step4.title": "Étape 2 — Analyse",
+            "Quatre onglets en haut : Général / Pistes / Formes d'onde / Réglages. Cette visite vous guide page par page.",
+        "tour.step4.title": "Groupes et flux principal",
         "tour.step4.body":
-            "Calcule hors ligne un plan de panoramique/volume pour chaque phrase. Un aperçu de l'impact s'affiche avant validation, et les segments modifiés ou verrouillés sont préservés.",
-        "tour.step5.title": "Étape 3 — Sortie",
+            "Les capsules de groupe assignent les canaux aux groupes A–H ; en dessous, trois modules vont de gauche à droite : capture → analyse → sortie — le flux principal du plug-in.",
+        "tour.step5.title": "Étape 1 — Capture",
         "tour.step5.body":
-            "Passez en PILOTAGE MOTEUR et les paramètres sont pilotés par le résultat de l'analyse. Pour l'enregistrer en automation, armez Latch ou Write côté DAW.",
-        "tour.step6.title": "Width · angle max",
+            "Activez l'interrupteur de capture et lisez la plage actuelle ; le plug-in enregistre les caractéristiques de loudness de chaque piste. Rien n'est écrit dans l'automation à cette étape.",
+        "tour.step6.title": "Étape 2 — Analyse",
         "tour.step6.body":
-            "Largeur globale : 0–150 % correspond à ±0–90° d'ouverture ; le glisser écrit le paramètre d'automation.",
-        "tour.step7.title": "MS Balance",
+            "Calcule hors ligne un plan pan/volume pour chaque phrase. Prévisualisez la plage avant de valider ; les segments modifiés ou verrouillés sont préservés.",
+        "tour.step7.title": "Étape 3 — Sortie",
         "tour.step7.body":
-            "Balance M/S du bus : −100 vers Mid, +100 vers Side ; double-clic pour revenir à 0.",
-        "tour.step8.title": "Lead Select",
+            "Passez en PILOTAGE MOTEUR et les paramètres sont pilotés par le résultat de l'analyse. Pour les enregistrer en automation, armez Latch ou Write côté DAW.",
+        "tour.step8.title": "Répartition pan / volume",
         "tour.step8.body":
-            "Centre forcé en temps réel (0 = suivre l'analyse, 1–15 = choisir une piste) ; distinct du verrou lead.",
-        "tour.step9.title": "Plage",
+            "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la ligne = l'ouverture de la source stéréo et la courbe angulaire.",
+        "tour.step9.title": "Width · angle max",
         "tour.step9.body":
-            "Trois modes : Suivi / Boucle / Manuel ; définit la portée de la capture et de la sortie.",
-        "tour.step10.title": "Transition",
+            "La limite d'ouverture globale : angle d'ouverture max 0–90°.",
+        "tour.step10.title": "MS Balance",
         "tour.step10.body":
-            "Rampe inter-segments 20–300 ms ; trop courte la jointure « saute », trop longue l'image se brouille.",
-        "tour.step11.title": "Cette page : Pistes",
+            "Balance M/S du bus : −100 vers Mid, +100 vers Side ; ajustez la relation M/S du volume.",
+        "tour.step11.title": "Lead Select",
         "tour.step11.body":
-            "Une ligne par canal, une matrice de 15 pistes ; les commandes de chaque ligne règlent la piste et ne se déverrouillent en manuel qu'une fois gelées.",
-        "tour.step12.title": "Ligne de piste",
+            "Choisissez une piste par numéro et centrez-la en temps réel ; 0 = suivre l'analyse.",
+        "tour.step12.title": "Plage",
         "tour.step12.body":
-            "Voyant / CH+ST / libellé ; une ligne par piste, estompée si non connectée.",
-        "tour.step13.title": "Potentiomètre pan",
+            "Trois modes : Suivi / Boucle / Manuel ; définit la portée de la capture et de la sortie.",
+        "tour.step13.title": "Transition",
         "tour.step13.body":
-            "Pan −100..+100 ; déverrouillé en manuel une fois gelé, piloté par la courbe sinon.",
-        "tour.step14.title": "Potentiomètre width",
+            "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre intervalles.",
+        "tour.step14.title": "Cette page : Pistes",
         "tour.step14.body":
-            "Largeur par piste 0–100 % (source stéréo) ; sans effet en mono en v1.",
-        "tour.step15.title": "Bloc niveau / volume",
+            "Une ligne par canal, une matrice de 15 pistes ; les commandes de chaque ligne règlent la piste et ne se déverrouillent en manuel qu'une fois gelées.",
+        "tour.step15.title": "Ligne de piste",
         "tour.step15.body":
-            "Liquide = niveau temps réel, collier = fader de volume ; glisser le collier change le vol, déverrouillé une fois gelé.",
-        "tour.step16.title": "Priorité",
+            "Voyant / CH+ST / libellé ; une ligne par piste, estompée si non connectée.",
+        "tour.step16.title": "Potentiomètre pan",
         "tour.step16.body":
-            "0..10, 10 = la plus haute ; décide qui obtient le créneau central.",
-        "tour.step17.title": "Verrou lead",
+            "Pan −100..+100 ; déverrouillé en manuel une fois gelé, piloté par la courbe sinon.",
+        "tour.step17.title": "Potentiomètre width",
         "tour.step17.body":
-            "Marque cette piste comme lead d'analyse ; avertit si plusieurs sont verrouillées.",
-        "tour.step18.title": "Exemption volume",
+            "Largeur de piste stéréo 0–100 % ; sans effet sur les pistes mono.",
+        "tour.step18.title": "Bloc niveau / volume",
         "tour.step18.body":
-            "Interrupteur indépendant : exclut la piste de l'équilibrage ; non lié au verrou lead / Lead Select.",
-        "tour.step19.title": "Participation pan auto",
+            "Le liquide montre le niveau temps réel, le collier est le fader de volume ; glissez le collier pour changer le volume, déverrouillé en manuel une fois gelé.",
+        "tour.step19.title": "Priorité",
         "tour.step19.body":
-            "Si la piste entre dans la redistribution ; stéréo désactivé par défaut, équilibrage conservé.",
-        "tour.step20.title": "Paire",
+            "0..10, 10 = la plus haute ; les pistes prioritaires se rapprochent du centre.",
+        "tour.step20.title": "Verrou lead",
         "tour.step20.body":
-            "Appaire deux pistes (Aucune / A–G) ; même paire = même point coloré.",
-        "tour.step21.title": "Gel PAN / VOL",
+            "Marquez cette piste comme lead : elle est prioritaire à l'analyse, et la stratégie de créneau central (exclusivité lead) la centre d'abord ; avertit si plusieurs sont verrouillées.",
+        "tour.step21.title": "Exemption volume",
         "tour.step21.body":
-            "Les deux interrupteurs de gel reprennent cette dimension au moteur ; le potentiomètre et le fader se déverrouillent en manuel.",
-        "tour.step22.title": "Activer",
+            "Interrupteur indépendant : la piste est exclue de l'équilibrage ; non lié au verrou lead / Lead Select.",
+        "tour.step22.title": "Participation pan auto",
         "tour.step22.body":
-            "Le désactiver estompe la ligne ; la piste saute capture/analyse/sortie.",
-        "tour.step23.title": "Cette page : Formes d'onde",
+            "Si la piste entre dans la redistribution ; stéréo désactivé par défaut, équilibrage conservé.",
+        "tour.step23.title": "Paire",
         "tour.step23.body":
-            "Vérifiez les résultats et modifiez les segments ; courbes de pistes + barre d'outils en dessous ; glisser, sélectionner, zoomer se font ici.",
-        "tour.step24.title": "Zone de pistes",
+            "Appaire deux pistes ; une paire se déplace comme un tout. Même paire = même point coloré en tête de ligne.",
+        "tour.step24.title": "Gel PAN / VOL",
         "tour.step24.body":
-            "Chaque piste superpose les courbes en escalier pan/vol ; la tête de lecture suit le transport.",
-        "tour.step25.title": "Poignées de sélection",
+            "Les deux interrupteurs de gel contournent le moteur pour cette dimension ; le potentiomètre et le fader se déverrouillent en pur manuel.",
+        "tour.step25.title": "Activer",
         "tour.step25.body":
-            "Tracez sur une piste pour créer une sélection ; les poignées apparaissent et « Définir comme plage » l'écrit dans Range.",
-        "tour.step26.title": "Barre post-sélection",
+            "Désactivez-le : la piste saute capture / analyse / sortie — aucun ajustement n'est appliqué à cette piste.",
+        "tour.step26.title": "Cette page : Formes d'onde",
         "tour.step26.body":
-            "Ré-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes × sélection choisies.",
-        "tour.step27.title": "Inspecteur de segment",
+            "Vérifiez les résultats et ajustez les segments ; courbes en haut, barre d'outils en bas ; glisser, sélectionner, zoomer se font ici.",
+        "tour.step27.title": "Panneau inférieur et actions",
         "tour.step27.body":
-            "Modifiez pan/vol, voyez l'origine (E/C) et verrouillez un segment sélectionné.",
-        "tour.step28.title": "Barre de segmentation",
-        "tour.step28.body":
-            "Curseurs SENSIBILITÉ / SEG MIN ; glissez les limites, double-clic pour diviser, fusionner.",
-        "tour.step29.title": "Curseurs VAD",
-        "tour.step29.body":
-            "SEUIL / MAINTIEN et trois autres ; glisser pour un aperçu, relâcher pour appliquer.",
-        "tour.step30.title": "Panneau inférieur et actions",
-        "tour.step30.body":
             "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, fusionner un segment sélectionné.",
-        "tour.step31.title": "Cette page : Réglages",
+        "tour.step28.title": "Zone de pistes",
+        "tour.step28.body":
+            "Chaque piste superpose les courbes en escalier pan/vol ; la tête de lecture suit le transport.",
+        "tour.step29.title": "Poignées de sélection",
+        "tour.step29.body":
+            "Après sélection, les poignées apparaissent ; « Définir comme plage » écrit la sélection dans Range.",
+        "tour.step30.title": "Barre post-sélection",
+        "tour.step30.body":
+            "Ré-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes × sélection choisies.",
+        "tour.step31.title": "Inspecteur de segment",
         "tour.step31.body":
-            "Mode d'emploi, indicateur de loudness, stratégie de créneau central, échelle & langue, stockage & diagnostic ; « Revoir le guide » final est aussi ici.",
-        "tour.step32.title": "Mode d'emploi",
+            "Modifiez pan/vol, voyez l'origine (E/C) et verrouillez un segment sélectionné.",
+        "tour.step32.title": "Barre de segmentation",
         "tour.step32.body":
-            "Flux en trois étapes + neuf règles rouges ; « Voir les neuf » se déplie sur place.",
-        "tour.step33.title": "Indicateur de loudness",
+            "Curseurs SENSIBILITÉ / SEG MIN ; glissez les limites, double-clic pour diviser, sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner.",
+        "tour.step33.title": "Curseurs VAD",
         "tour.step33.body":
-            "Quelle mesure pour le loudness de segment : intégrale pondérée K / RMS / crête dBFS ; ré-analyser après changement.",
-        "tour.step34.title": "Stratégie de créneau central",
+            "SEUIL / MAINTIEN et trois autres ; glissez pour un aperçu, relâchez pour appliquer.",
+        "tour.step34.title": "Cette page : Réglages",
         "tour.step34.body":
-            "Que faire quand plusieurs pistes se disputent le centre : file de priorité / exclusivité lead / répartition égale.",
-        "tour.step35.title": "Échelle de l'UI",
+            "Mode d'emploi, indicateur de loudness, stratégie de créneau central, échelle, langue, stockage, diagnostic ; « Revoir le guide » final est aussi ici.",
+        "tour.step35.title": "Flux de travail et priorité",
         "tour.step35.body":
-            "Met à l'échelle toute l'UI (confirmation 10 s) ; synchronisée avec l'échelle de l'en-tête.",
-        "tour.step36.title": "Langue",
+            "Un flux complet : capture → analyse → ajuster/geler → écrire l'automation → ajuster l'automation manuellement. Priorité : automation de l'hôte > valeur manuelle gelée > ajustement manuel > courbe d'analyse du moteur. Vous pouvez revenir au mode d'emploi et aux réglages à tout moment.",
+        "tour.step36.title": "Mode d'emploi",
         "tour.step36.body":
-            "Basculez instantanément entre 中文 / English / Français.",
-        "tour.step37.title": "État du stockage",
+            "Flux en trois étapes + neuf notes importantes ; les neuf sont dépliées pour vous — lisez-les une par une. En enfreindre une seule cause silence ou mauvais panoramique.",
+        "tour.step37.title": "Indicateur de loudness",
         "tour.step37.body":
-            "Caractéristiques intégrées au projet ou externes ; la taille utilisée s'affiche ici.",
-        "tour.step38.title": "Diagnostic",
+            "Quelle mesure pour le loudness de segment : intégrale pondérée K (proche de l'oreille) / RMS (énergie moyenne) / crête dBFS (crête instantanée) ; ré-analyser après changement.",
+        "tour.step38.title": "Stratégie de créneau central",
         "tour.step38.body":
-            "Copiez le heartbeat et les compteurs de désalignement par piste pour diagnostiquer les connexions.",
-        "tour.step39.title": "Vous pourrez revoir cette visite ici",
+            "Que faire quand plusieurs pistes se disputent le centre : file de priorité / exclusivité lead / répartition égale.",
+        "tour.step39.title": "Échelle de l'UI",
         "tour.step39.body":
+            "Met à l'échelle toute l'UI ; synchronisée avec l'échelle de l'en-tête.",
+        "tour.step40.title": "Langue",
+        "tour.step40.body":
+            "Basculez instantanément entre 中文 / English / Français.",
+        "tour.step41.title": "État du stockage",
+        "tour.step41.body":
+            "Les caractéristiques peuvent être intégrées au projet ou stockées à l'extérieur ; la taille utilisée s'affiche ici.",
+        "tour.step42.title": "Diagnostic",
+        "tour.step42.body":
+            "Copiez le heartbeat et les compteurs de désalignement par piste pour diagnostiquer les connexions.",
+        "tour.step43.title": "Version et copie",
+        "tour.step43.body":
+            "En haut à droite se trouve le numéro de version ; cliquez pour copier l'information de version. Envoyez-le-nous quand vous demandez de l'aide.",
+        "tour.step44.title": "Vous pourrez revoir cette visite ici",
+        "tour.step44.body":
             "La visite peut être rejouée à tout moment, et les neuf règles strictes s'ouvrent dans le même bloc.",
+
+        // Diagramme de flux (étape 35 ; nœuds + ligne de priorité).
+        "workflow.capture": "Capture",
+        "workflow.analyze": "Analyser",
+        "workflow.tweak": "Ajuster / Geler",
+        "workflow.write": "Écrire l'automation",
+        "workflow.manual": "Ajuster l'automation manuellement",
+        "workflow.priority":
+            "Priorité : automation de l'hôte > valeur manuelle gelée > ajustement manuel > courbe d'analyse du moteur",
 
         // tour demo 的 15 条轨名(J62;口径见 zh 侧同组注释)。FR 为 T27 自译,待人工审校;
         // L/R/C 照 master.distAxis 的 fr 侧取 G/D/C。

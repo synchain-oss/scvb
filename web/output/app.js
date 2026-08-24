@@ -409,6 +409,24 @@ for (const gb of [
 // ------------------------------------------------------------- tour(T36b)
 // 首启交互式引导;蒙版/spotlight/说明框/步骤机/demo badge 在 tour.js。
 // 询问步(tour-ask)与「重看引导」入口(settings-reopentour)在上/下方接线。
+// tour 步 43:点击版本 chip 复制版本信息(纯 UI 剪贴板动作,不写 state、不经桥)。
+function copyVersionInfo() {
+    const v = store.snapshot && store.snapshot.version;
+    if (!v || typeof v.plugin !== "string") return;
+    const text = "v" + v.plugin + " · abi " + v.abi;
+    try {
+        if (
+            typeof navigator !== "undefined" &&
+            navigator.clipboard &&
+            typeof navigator.clipboard.writeText === "function"
+        ) {
+            navigator.clipboard.writeText(text);
+        }
+    } catch {
+        /* 剪贴板不可用则静默 */
+    }
+}
+
 tour = createTour({
     root: document,
     card,
@@ -417,6 +435,9 @@ tour = createTour({
     activateTab,
     getActiveTab: () => content.getAttribute("data-tab"),
     requestRender: () => requestRender(),
+    setLang: (code) => setLang(code),
+    copyVersion: () => copyVersionInfo(),
+    expandGuide: () => tabSettings.expandNine(),
 });
 tour.mount();
 

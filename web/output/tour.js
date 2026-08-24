@@ -48,45 +48,50 @@ export const SPOT_FEATHER = 12;
  */
 export const TOUR_STEPS = Object.freeze(
     [
-        { anchor: "tab1", tab: "master" }, // 1  主界面总览(spotlight 页签「整体调整」)
-        { anchor: "group", tab: "master" }, // 2  组选择与三件套
-        { anchor: "cap", tab: "master" }, // 3  三件套 01 采集
-        { anchor: "an", tab: "master" }, // 4  三件套 02 分析
-        { anchor: "out", tab: "master" }, // 5  三件套 03 输出
-        { anchor: "width", tab: "master" }, // 6  Width(整体宽度)
-        { anchor: "msbalance", tab: "master" }, // 7  MS Balance
-        { anchor: "leadselect", tab: "master" }, // 8  Lead Select
-        { anchor: "range", tab: "master" }, // 9  Range 段选
-        { anchor: "transition", tab: "master" }, // 10 过渡时间
-        { anchor: "tab2", tab: "tracks" }, // 11 本页:轨道(spotlight 页签)
-        { anchor: "trackrow", tab: "tracks" }, // 12 轨道行总览
-        { anchor: "pan", tab: "tracks" }, // 13 pan 旋钮
-        { anchor: "widthknob", tab: "tracks" }, // 14 width 旋钮
-        { anchor: "vollevel", tab: "tracks" }, // 15 音量/电平合成件
-        { anchor: "prio", tab: "tracks" }, // 16 优先级
-        { anchor: "leadlock", tab: "tracks" }, // 17 主唱锁
-        { anchor: "volexempt", tab: "tracks" }, // 18 音量豁免
-        { anchor: "autopan", tab: "tracks" }, // 19 参与自动声像
-        { anchor: "pair", tab: "tracks" }, // 20 配对
-        { anchor: "freeze", tab: "tracks" }, // 21 冻结 PAN/VOL
-        { anchor: "enable", tab: "tracks" }, // 22 启用开关
-        { anchor: "tab3", tab: "wave" }, // 23 本页:波形(spotlight 页签)
-        { anchor: "lanes", tab: "wave" }, // 24 泳道区
-        { anchor: "selection", tab: "wave" }, // 25 选区手柄/设为范围
-        { anchor: "actions", tab: "wave" }, // 26 框选后工具条
-        { anchor: "inspector", tab: "wave" }, // 27 段检查器
-        { anchor: "segments", tab: "wave" }, // 28 分段工具条
-        { anchor: "vad", tab: "wave" }, // 29 VAD 滑杆
-        { anchor: "wave-panel", tab: "wave" }, // 30 下方面板与操作
-        { anchor: "tab4", tab: "settings" }, // 31 本页:设置(spotlight 页签)
-        { anchor: "guideblock", tab: "settings" }, // 32 使用说明
-        { anchor: "loudnessmode", tab: "settings" }, // 33 响度口径
-        { anchor: "centerslot", tab: "settings" }, // 34 中心槽策略
-        { anchor: "scale", tab: "settings" }, // 35 界面缩放
-        { anchor: "lang", tab: "settings" }, // 36 语言
-        { anchor: "storage", tab: "settings" }, // 37 存储状态
-        { anchor: "diagnostic", tab: "settings" }, // 38 诊断
-        { anchor: "review", tab: "settings" }, // 39 「重看引导」入口(末步固定)
+        { anchor: "langpick", tab: "master", special: "lang" }, // 1
+        { anchor: null, tab: "master" }, // 2
+        { anchor: "tab1", tab: "master" }, // 3
+        { anchor: "group", tab: "master" }, // 4
+        { anchor: "cap", tab: "master" }, // 5
+        { anchor: "an", tab: "master" }, // 6
+        { anchor: "out", tab: "master" }, // 7
+        { anchor: "dist", tab: "master" }, // 8
+        { anchor: "width", tab: "master" }, // 9
+        { anchor: "msbalance", tab: "master" }, // 10
+        { anchor: "leadselect", tab: "master" }, // 11
+        { anchor: "range", tab: "master" }, // 12
+        { anchor: "transition", tab: "master" }, // 13
+        { anchor: "tab2", tab: "tracks" }, // 14
+        { anchor: "trackrow", tab: "tracks" }, // 15
+        { anchor: "pan", tab: "tracks" }, // 16
+        { anchor: "widthknob", tab: "tracks" }, // 17
+        { anchor: "vollevel", tab: "tracks" }, // 18
+        { anchor: "prio", tab: "tracks" }, // 19
+        { anchor: "leadlock", tab: "tracks" }, // 20
+        { anchor: "volexempt", tab: "tracks" }, // 21
+        { anchor: "autopan", tab: "tracks" }, // 22
+        { anchor: "pair", tab: "tracks" }, // 23
+        { anchor: "freeze", tab: "tracks" }, // 24
+        { anchor: "enable", tab: "tracks" }, // 25
+        { anchor: "tab3", tab: "wave" }, // 26
+        { anchor: "wave-panel", tab: "wave" }, // 27
+        { anchor: "lanes", tab: "wave" }, // 28
+        { anchor: "selection", tab: "wave" }, // 29
+        { anchor: "actions", tab: "wave" }, // 30
+        { anchor: "inspector", tab: "wave" }, // 31
+        { anchor: "segments", tab: "wave" }, // 32
+        { anchor: "vad", tab: "wave" }, // 33
+        { anchor: "tab4", tab: "settings" }, // 34
+        { anchor: null, tab: "settings" }, // 35
+        { anchor: "guideblock", tab: "settings", action: "expandGuide" }, // 36
+        { anchor: "loudnessmode", tab: "settings" }, // 37
+        { anchor: "centerslot", tab: "settings" }, // 38
+        { anchor: "scale", tab: "settings" }, // 39
+        { anchor: "lang", tab: "settings" }, // 40
+        { anchor: "storage", tab: "settings" }, // 41
+        { anchor: "diagnostic", tab: "settings" }, // 42
+        { anchor: "version", tab: "settings", special: "version" }, // 43
+        { anchor: "review", tab: "settings" }, // 44
     ].map(Object.freeze),
 );
 
@@ -204,6 +209,9 @@ export function createTour(opts) {
     const activateTab = opts.activateTab || (() => {});
     const getActiveTab = opts.getActiveTab || (() => "master");
     const requestRender = opts.requestRender || (() => {});
+    const setLang = opts.setLang || (() => {}); // 步 1 语言胶囊点击直切(纯 UI 回调)
+    const copyVersion = opts.copyVersion || (() => {}); // 步 43 版本 chip 点击复制(纯 UI 回调)
+    const expandGuide = opts.expandGuide || (() => {}); // 步 36 自动展开「查看全部九条」
 
     async function call(name, ...args) {
         if (!bridge || typeof bridge[name] !== "function") return null;
@@ -248,6 +256,11 @@ export function createTour(opts) {
             "  color: var(--txt-dark-2); text-wrap: pretty; }",
             ".tour-callout__hint { margin-top: var(--sp-8); font-family: var(--ff-mono);",
             "  font-size: var(--fs-105); letter-spacing: var(--mono-ls-pill); color: var(--txt-dark-4); }",
+            ".tour-callout__workflow { margin-top: var(--sp-12); display: flex; flex-direction: column; gap: var(--sp-8); }",
+            ".tour-flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-6); }",
+            ".tour-flow__node { padding: var(--sp-6) var(--sp-10); border-radius: var(--r-pill); background: rgba(var(--wh), 0.12); border: 1px solid rgba(var(--wh), 0.2); font-family: var(--ff-sans); font-size: var(--fs-110); color: var(--txt-dark-2); white-space: nowrap; }",
+            ".tour-flow__arrow { color: var(--txt-dark-4); font-family: var(--ff-mono); }",
+            ".tour-flow__priority { padding: var(--sp-8) var(--sp-10); border-radius: var(--r-md); background: rgba(var(--wh), 0.08); border: 1px solid rgba(var(--wh), 0.16); font-size: var(--fs-115); color: var(--txt-dark-3); }",
             ".tour-callout__foot { display: flex; flex-direction: column; align-items: stretch;",
             "  gap: var(--sp-8); margin-top: var(--sp-12); }",
             ".tour-callout__indicator { display: flex; align-items: center; gap: var(--sp-10); flex: none; }",
@@ -276,6 +289,7 @@ export function createTour(opts) {
     let prevEl = null;
     let nextEl = null;
     let arrowEl = null;
+    let workflowEl = null;
     let badge = null;
 
     function el(tag, cls) {
@@ -307,6 +321,9 @@ export function createTour(opts) {
         hintEl.hidden = true;
         text.append(titleEl, bodyEl, hintEl);
 
+        workflowEl = el("div", "tour-callout__workflow");
+        workflowEl.hidden = true;
+
         const foot = el("div", "tour-callout__foot");
         const indicator = el("div", "tour-callout__indicator");
         indicator.setAttribute("aria-hidden", "true");
@@ -327,7 +344,7 @@ export function createTour(opts) {
         actions.append(skipEl, prevEl, nextEl);
         foot.append(indicator, actions);
 
-        callout.append(arrowEl, text, foot);
+        callout.append(arrowEl, text, workflowEl, foot);
         overlay.append(mask, callout);
         card.appendChild(overlay);
 
@@ -516,6 +533,31 @@ export function createTour(opts) {
         dotsEl.replaceChildren(frag);
     }
 
+    /** 步 35 工作流程图:五个节点箭头相连 + 优先级行(词条 workflow.*,三语)。 */
+    function renderWorkflow(t) {
+        const nodes = [
+            "workflow.capture",
+            "workflow.analyze",
+            "workflow.tweak",
+            "workflow.write",
+            "workflow.manual",
+        ];
+        const row = el("div", "tour-flow");
+        nodes.forEach((key, i) => {
+            if (i > 0) {
+                const arr = el("span", "tour-flow__arrow");
+                arr.textContent = "→";
+                row.appendChild(arr);
+            }
+            const node = el("span", "tour-flow__node");
+            node.textContent = t[key] || key;
+            row.appendChild(node);
+        });
+        const prio = el("div", "tour-flow__priority");
+        prio.textContent = t["workflow.priority"] || "";
+        workflowEl.replaceChildren(row, prio);
+    }
+
     function updateText() {
         const t = getT() || {};
         const titleKey = "tour.step" + step + ".title";
@@ -539,6 +581,14 @@ export function createTour(opts) {
             hintEl.textContent = "";
         }
 
+        // 步 35 工作流程图(节点 + 优先级行;居中大卡)
+        if (step === 35) {
+            workflowEl.hidden = false;
+            renderWorkflow(t);
+        } else {
+            workflowEl.hidden = true;
+        }
+
         skipEl.textContent = t["tour.skip"] || "Skip";
         prevEl.textContent = t["tour.prev"] || "Back";
         nextEl.textContent =
@@ -554,6 +604,8 @@ export function createTour(opts) {
         const cfg = TOUR_STEPS[step - 1];
         // 跨 tab 自动翻页:tour 期间 tab 切换为 UI 本地态,不经 setActiveTab 写 state(§2.6)。
         if (cfg.tab) activateTab(cfg.tab, { push: false });
+        // per-step 动作钩子(如步 36 自动展开九条)
+        if (cfg.action === "expandGuide") expandGuide();
         updateIndicator();
         updateText();
         // 双 rAF:等 tab 切换(display 变化)与 scrollIntoView 后布局落定再量几何。
@@ -628,11 +680,40 @@ export function createTour(opts) {
             (e) => {
                 if (!active) return;
                 if (e.button !== 0) return; // 仅左键推进
-                const btn =
-                    e.target instanceof Element
-                        ? e.target.closest("[data-tour-btn]")
-                        : null;
-                if (btn) return; // 按钮行各自动作
+                const tgt = e.target instanceof Element ? e.target : null;
+                if (tgt && tgt.closest("[data-tour-btn]")) return; // 按钮行各自动作
+                // 蒙版 canvas 在最上拦截指针,目标元素本身收不到事件 → 按坐标命中目标。
+                const hitAt = (sel) => {
+                    const els = root.querySelectorAll(sel);
+                    for (const el of els) {
+                        const r = el.getBoundingClientRect();
+                        if (
+                            e.clientX >= r.left &&
+                            e.clientX <= r.right &&
+                            e.clientY >= r.top &&
+                            e.clientY <= r.bottom
+                        )
+                            return el;
+                    }
+                    return null;
+                };
+                const cfg = TOUR_STEPS[step - 1];
+                // 步 1 语言胶囊:点击直切语言,不推进(正文三语常显)
+                if (cfg.special === "lang") {
+                    const langBtn = hitAt('[data-tour="langpick"] [data-lang]');
+                    if (langBtn) {
+                        setLang(langBtn.getAttribute("data-lang"));
+                        updateText(); // 切语言后说明框随全局 i18n 刷新
+                        return;
+                    }
+                }
+                // 步 43 版本 chip:点击复制版本信息,不推进
+                if (cfg.special === "version") {
+                    if (hitAt('[data-tour="version"]')) {
+                        copyVersion();
+                        return;
+                    }
+                }
                 next();
             },
             true,

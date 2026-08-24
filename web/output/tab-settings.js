@@ -310,6 +310,18 @@ export function createTabSettings(opts) {
         }
     }
 
+    /** 幂等展开「查看全部九条」(tour 步 36 的 per-step 动作钩子;已展开则不动)。 */
+    function expandNine() {
+        if (local.nineOpen) return;
+        local.nineOpen = true;
+        if (el.guideBox) attr(el.guideBox, "data-open", "1");
+        if (el.guideExpand) {
+            const key = "set.guide.collapse";
+            attr(el.guideExpand, "data-t", key);
+            text(el.guideExpand, hasOwn(getT(), key) ? getT()[key] : key);
+        }
+    }
+
     function reopenTour() {
         // [T36b] tour.js 消费 data-tour="review" 锚点并重启交互式引导(tour_seen 已置位也可再开);
         // T35 只落入口,真正重启经 opts.onReopenTour 回 app.js 调 tour.start()。
@@ -526,5 +538,5 @@ export function createTabSettings(opts) {
         }
     }
 
-    return { mount, render, onSegments };
+    return { mount, render, onSegments, expandNine };
 }
