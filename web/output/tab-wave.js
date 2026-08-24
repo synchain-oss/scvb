@@ -1348,6 +1348,38 @@ export function createTabWave(opts) {
         requestRender();
     }
 
+    // ---- tour 视图层增强(T36b 第四轮:步 28/29 可视化)----------------------
+    // 只动渲染/demo 视图:改行高、改视口、写本地工作选区,不写 state、不触桥。
+    // 进入步 28/29 由 tour.js 的 per-step 动作钩子调用;退出该步或 tour 结束
+    // 经 resetWaveView() 还原(恢复缩放 + 清选区)。
+    let tourView = null; // {laneH, vp} 进入增强前的视图态(还原用)
+
+    function zoomLanes() {
+        if (!tourView) {
+            tourView = { laneH: local.laneH, vp: timeline.viewport() };
+        }
+        applyLaneH(LANE_H_MAX); // 放大泳道:看清每条泳道 pan/vol 阶梯曲线的档位
+        clearSelection();
+    }
+
+    function showDemoSelection() {
+        if (!tourView) {
+            tourView = { laneH: local.laneH, vp: timeline.viewport() };
+        }
+        const d = timeline.durationS();
+        // 横向缩到 0..8s:默认全长视口下 2–4s 选区会被压成看不清的缝,必须放大。
+        timeline.set({ startS: 0, endS: Math.min(8, d) });
+        setSelection(2, Math.min(4, d));
+    }
+
+    function resetWaveView() {
+        if (!tourView) return;
+        applyLaneH(tourView.laneH);
+        timeline.set(tourView.vp);
+        clearSelection();
+        tourView = null;
+    }
+
     // ---- 段选中(J67 唯一入口:泳道点选 + 段检查器)---------------------------
     function pickLane(ch, shiftKey) {
         local.lanePick = applyPick(local.lanePick, ch, shiftKey);
@@ -3362,6 +3394,15 @@ export function createTabWave(opts) {
         // 拖动侧不另拼小节值,展开态 = 高亮配色)
         text(els.selReadL, fmtTimeMs(sel.startS));
         text(els.selReadR, fmtTimeMs(sel.endS));
+        // a11y:手柄 role="slider" 需 aria-valuenow/min/max(时间秒;选区几何唯一真源)。
+        // 选区步(tour 28/29 可视化)会让手柄进入可见态,axe 的 aria-required-attr 必查这里。
+        const durS = timeline.durationS();
+        attr(els.selHandleL, "aria-valuemin", 0);
+        attr(els.selHandleR, "aria-valuemin", 0);
+        attr(els.selHandleL, "aria-valuemax", durS);
+        attr(els.selHandleR, "aria-valuemax", durS);
+        attr(els.selHandleL, "aria-valuenow", sel.startS);
+        attr(els.selHandleR, "aria-valuenow", sel.endS);
         setBtnEnabled(els.setrange, !isWriteBlocked());
         const contentH = LANE_COUNT * local.laneH;
         if (els.selband) {
@@ -3998,6 +4039,10 @@ export function createTabWave(opts) {
         onSegments,
         onCaptureProgress,
         onPlayhead,
+        // tour 视图层增强(T36b 第四轮:步 28 放大泳道 / 步 29 示例选区;只动渲染,不写 state)
+        zoomLanes,
+        showDemoSelection,
+        resetWaveView,
         // 布防 badge 三处的共用跳转口径(05 行 300 ①;Tab1/Tab2 badge 经
         // app.js 切到本页后调用,定位选区 + 勾选目标轨)
         locateRecapture,

@@ -76,8 +76,8 @@ export const TOUR_STEPS = Object.freeze(
         { anchor: "enable", tab: "tracks" }, // 25
         { anchor: "tab3", tab: "wave" }, // 26
         { anchor: "wave-panel", tab: "wave" }, // 27
-        { anchor: "lanes", tab: "wave" }, // 28
-        { anchor: "selection", tab: "wave" }, // 29
+        { anchor: "lanes", tab: "wave", action: "zoomLanes" }, // 28
+        { anchor: "selection", tab: "wave", action: "showDemoSelection" }, // 29
         { anchor: "actions", tab: "wave" }, // 30
         { anchor: "inspector", tab: "wave" }, // 31
         { anchor: "segments", tab: "wave" }, // 32
@@ -211,6 +211,9 @@ export function createTour(opts) {
     const getActiveTab = opts.getActiveTab || (() => "master");
     const requestRender = opts.requestRender || (() => {});
     const expandGuide = opts.expandGuide || (() => {}); // 步 36 自动展开「查看全部九条」
+    const zoomLanes = opts.zoomLanes || (() => {}); // 步 28 放大泳道(纯视图层)
+    const showDemoSelection = opts.showDemoSelection || (() => {}); // 步 29 示例选区(纯视图层)
+    const resetWaveView = opts.resetWaveView || (() => {}); // 退出 28/29 或 tour 结束还原
 
     async function call(name, ...args) {
         if (!bridge || typeof bridge[name] !== "function") return null;
@@ -599,12 +602,23 @@ export function createTour(opts) {
     }
 
     function showStep(i) {
+        // 退出 wave 视图增强步(28 放大泳道 / 29 示例选区)时还原(恢复缩放 + 清选区)。
+        const leaving = TOUR_STEPS[step - 1];
+        if (
+            leaving &&
+            (leaving.action === "zoomLanes" ||
+                leaving.action === "showDemoSelection")
+        ) {
+            resetWaveView();
+        }
         step = i;
         const cfg = TOUR_STEPS[step - 1];
         // 跨 tab 自动翻页:tour 期间 tab 切换为 UI 本地态,不经 setActiveTab 写 state(§2.6)。
         if (cfg.tab) activateTab(cfg.tab, { push: false });
-        // per-step 动作钩子(如步 36 自动展开九条)
+        // per-step 动作钩子(步 28 放大泳道 / 步 29 示例选区 / 步 36 自动展开九条)
         if (cfg.action === "expandGuide") expandGuide();
+        else if (cfg.action === "zoomLanes") zoomLanes();
+        else if (cfg.action === "showDemoSelection") showDemoSelection();
         updateIndicator();
         updateText();
         // 双 rAF:等 tab 切换(display 变化)与 scrollIntoView 后布局落定再量几何。
@@ -637,6 +651,7 @@ export function createTour(opts) {
 
     function endTour(completed) {
         if (!active) return;
+        resetWaveView(); // 还原缩放 + 清选区(步 28/29 视图增强)
         // 完成与 Skip 都置位(§2.6:两者都经 setTourSeen(true, true));唯一桥调用。
         call("setTourSeen", true, true);
         active = false;

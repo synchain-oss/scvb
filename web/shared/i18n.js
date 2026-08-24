@@ -249,10 +249,10 @@ export const T = {
             "框选泳道建立选区;拖拽边界微调分段;用滚轮或底部缩放条缩放 / 平移;双击可分割,选中段可合并。",
         "tour.step28.title": "泳道区",
         "tour.step28.body":
-            "每条泳道叠加着 pan / vol 阶梯曲线,播放头随走带移动。",
+            "已为你放大泳道:每条泳道叠着 pan / vol 阶梯曲线,播放头随走带移动;上排 pan(声像)、下排 vol(音量)",
         "tour.step29.title": "选区手柄",
         "tour.step29.body":
-            "框选泳道建立选区后,两端会出现手柄;「设为范围」会把选区写入 Range。",
+            "已为你创建一段示例选区:两端就是手柄,拖动手柄可改范围;『设为范围』会把选区写入 Range",
         "tour.step30.title": "框选后工具条",
         "tour.step30.body":
             "重采集 / 重分析 / 重新识别 / 清除,作用于选中的轨道 × 选区。",
@@ -911,10 +911,10 @@ export const T = {
             "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/pan; double-click to split, merge a selected segment.",
         "tour.step28.title": "Lane area",
         "tour.step28.body":
-            "Each lane carries the pan/vol step curves; the playhead moves with the transport.",
+            "The lanes are zoomed in for you: each lane stacks the pan/vol step curves, and the playhead follows the transport; the top row is pan, the bottom row is vol.",
         "tour.step29.title": "Selection handles",
         "tour.step29.body":
-            'After box-selecting lanes, handles appear at both ends; "Set as Range" writes the selection to Range.',
+            'A sample selection has been created for you: the two ends are the handles — drag them to change the range; "Set as Range" writes the selection to Range.',
         "tour.step30.title": "Post-selection toolbar",
         "tour.step30.body":
             "Recapture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
@@ -1542,10 +1542,10 @@ export const T = {
             "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, fusionner un segment sélectionné.",
         "tour.step28.title": "Zone de pistes",
         "tour.step28.body":
-            "Chaque piste superpose les courbes en escalier pan/vol ; la tête de lecture suit le transport.",
+            "Les pistes sont agrandies pour vous : chaque piste superpose les courbes en escalier pan/vol, la tête de lecture suit le transport ; rangée du haut = pan, du bas = vol.",
         "tour.step29.title": "Poignées de sélection",
         "tour.step29.body":
-            "Après sélection, les poignées apparaissent ; « Définir comme plage » écrit la sélection dans Range.",
+            "Une sélection d'exemple a été créée pour vous : les deux extrémités sont les poignées — faites-les glisser pour changer la plage ; « Définir comme plage » écrit la sélection dans Range.",
         "tour.step30.title": "Barre post-sélection",
         "tour.step30.body":
             "Ré-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes × sélection choisies.",

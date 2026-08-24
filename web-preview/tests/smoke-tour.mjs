@@ -167,6 +167,13 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
         "末步固定 = 设置页「重看引导」入口",
     );
     eq(TOUR.TOUR_STEPS[4].anchor, "an", "第 5 步 = 三件套「02 分析」段");
+    eq(TOUR.TOUR_STEPS[27].action, "zoomLanes", "步 28 泳道区自动放大泳道");
+    eq(
+        TOUR.TOUR_STEPS[28].action,
+        "showDemoSelection",
+        "步 29 选区手柄自动创建示例选区",
+    );
+    eq(TOUR.TOUR_STEPS[35].action, "expandGuide", "步 36 自动展开九条");
     check(TOUR.SPOT_PAD >= 8, "spotlight 内边距 ≥8 设计 px");
 }
 
@@ -382,6 +389,7 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
     const ts = src("web/output/tour.js");
     const html = src("web/output/index.html");
     const tracks = src("web/output/tab-tracks.js");
+    const wave = src("web/output/tab-wave.js");
 
     // 无声音:零 Audio API 调用(§2.6 验收⑦)
     const audio = [
@@ -479,6 +487,18 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
     check(
         tracks.includes('data-tour="freeze"'),
         "tab-tracks.js data-tour=freeze(第 1 行冻结组)",
+    );
+
+    // 步 28/29 视图层增强:tab-wave.js 暴露三个纯视图函数;tour.js 结束/离开还原
+    check(wave.includes("zoomLanes"), "tab-wave.js 暴露 zoomLanes");
+    check(
+        wave.includes("showDemoSelection"),
+        "tab-wave.js 暴露 showDemoSelection",
+    );
+    check(wave.includes("resetWaveView"), "tab-wave.js 暴露 resetWaveView");
+    check(
+        ts.includes("resetWaveView()"),
+        "tour.js 结束/离开调用 resetWaveView 还原",
     );
 
     // demo badge / 询问步 / 重看入口 落点

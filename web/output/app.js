@@ -421,6 +421,9 @@ tour = createTour({
     getActiveTab: () => content.getAttribute("data-tab"),
     requestRender: () => requestRender(),
     expandGuide: () => tabSettings.expandNine(),
+    zoomLanes: () => tabWave.zoomLanes(),
+    showDemoSelection: () => tabWave.showDemoSelection(),
+    resetWaveView: () => tabWave.resetWaveView(),
 });
 tour.mount();
 
