@@ -709,6 +709,24 @@ export function chartDurationS(store) {
 }
 
 /**
+ * 轨迹图的脏位这一帧要不要**兑现**(= 清标志 + 真去重绘)。
+ *
+ * 只有可见时才算数。`invalidate()` 在不可见时早退不画(05 §6.1 空闲零 rAF),
+ * 这一帧清了脏位就等于**把这次重绘诉求丢掉**,切回 Tab1 会看到一张过期的图 ——
+ * 段表变了而线还是旧的,且没有任何后续事件会来补这一笔(脏位只在数据变化时置)。
+ *
+ * 这条路真的走得到:`onSegments` 里有一个 `setTimeout(render, 1650)`,它调的是
+ * **本模块自己的** render,绕开了 app.js 那个「只投影当前激活 tab」的 switch。
+ * 分析完成后 1.65s 内切走(且停在轨迹档),定时器就会在不可见时跑到这里。
+ *
+ * @param {boolean} dirty 脏位
+ * @param {boolean} visible 轨迹图当前是否真的可见
+ */
+export function chartRepaintNow(dirty, visible) {
+    return !!dirty && !!visible;
+}
+
+/**
  * 图例行(两视图共用;行集 = **当前视图真的画了的那些轨**)。
  *
  * 两视图的可见轨集本来就不同 —— 分布图画的是「已连接轨」(空闲轨没有参数值,
@@ -1927,7 +1945,9 @@ export function createTabMaster(opts) {
         local.traj.setDuration(chartDurationS(st));
         // 切回本页/本视图时按需起帧(离场时 onPlayhead 停过插值循环);幂等且便宜。
         local.traj.resume();
-        if (local.trajDirty) {
+        // 脏位只在**真的画得成**的那一帧清掉(判据见 chartRepaintNow 的头注):
+        // 不可见时 invalidate() 早退不画,这时清了就等于把重绘诉求丢了。
+        if (chartRepaintNow(local.trajDirty, isPanelActive())) {
             local.trajDirty = false;
             local.traj.invalidate();
         }

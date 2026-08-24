@@ -1293,6 +1293,15 @@
                 color: var(--txt-4);
                 pointer-events: none;
             }
+            /* 作者层的 display 本来就压得过 UA 表的 `[hidden]{display:none}`(层叠里
+               作者层先于 UA 层胜出),这块空态盖板眼下不露出来,靠的是 Chromium 那条
+               UA 规则**恰好带 !important**(已实测:hidden 时 computed display=none)。
+               那是 UA 表的实现细节,不是规范给的保证 —— HTML 建议渲染里的同一条并不带
+               !important。给它一条自己的兜底:换个 UA 表不带 !important 的引擎
+               (插件 UI 在 macOS 上走 WKWebView),这块盖板也不会盖在有数据的图上。 */
+            .traj-stage__empty[hidden] {
+                display: none;
+            }
             /* ---- ④c 轨道配色图例([J75] B;两视图共用)----------------------
                色点 + 轨名 + 立体声 ST 角标。hover 联动高亮是**纯展示**,不发任何调用。 */
             .chart-legend {

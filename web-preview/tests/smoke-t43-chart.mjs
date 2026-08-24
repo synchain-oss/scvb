@@ -20,7 +20,9 @@
 //   ⑥ 词条:`chart.*` 三语齐备、非空、占位符一致、05 §5 禁词零命中;
 //   ⑦ 性能与空闲纪律:15 轨全画布的几何路径耗时预算、降采样确实在削点、
 //      两条自持循环在离场时都停(smoke-tab3 ⑨ 的同款不变式);外加纵向缩放的
-//      **接法**不变式(Shift+滚轮分支不脱离横向跟随、折线走 clip、复位按钮接线)。
+//      **接法**不变式(Shift+滚轮分支不脱离横向跟随、折线走 clip、复位按钮接线);
+//   ⑧ 空态盖板 hidden 时真的不可见(自带 `[hidden]` 兜底,不靠 UA 表恰好带
+//      !important)+ 脏位只在**画得成**的那一帧兑现(不可见期不清,切回来才画)。
 //
 // 用法:node web-preview/tests/smoke-t43-chart.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -776,8 +778,9 @@ log("=== ⑦ 性能预算与空闲纪律(05 §6.1)===");
         "回到前台由 render 补一次起帧(停帧/起帧配对不变式)",
     );
     // 整页 render 每帧都跑,静态层必须走脏位而不是无脑重画
+    // (脏位**何时清**是另一条不变式,见 ⑧:不可见那一帧不许清)
     check(
-        /if \(local\.trajDirty\) \{\s*local\.trajDirty = false;\s*local\.traj\.invalidate\(\);/.test(
+        /chartRepaintNow\(local\.trajDirty, isPanelActive\(\)\)\) \{\s*local\.trajDirty = false;\s*local\.traj\.invalidate\(\);/.test(
             src("web/output/tab-master.js"),
         ),
         "静态层重绘走脏位(播放中不逐帧重画 15 条折线)",
@@ -856,6 +859,72 @@ log("=== ⑦ 性能预算与空闲纪律(05 §6.1)===");
     check(
         !/data-t-split="chart\.trajAxisY"/.test(html),
         "y 刻度列不再是写死的五格拆格(改由 onPanAxis 逐格建)",
+    );
+}
+
+// =============================================================================
+log("=== ⑧ 空态盖板与脏位兑现(pr-agent 两条 Possible issue)===");
+
+{
+    const html = src("web/output/index.html");
+    const tm = src("web/output/tab-master.js");
+
+    // ---- ① 空态盖板:hidden 时必须真的不可见。
+    // 作者层的 `display:flex` 本来就压得过 UA 的 `[hidden]{display:none}`(层叠里
+    // 作者层先胜),眼下不露出来靠的是 Chromium 那条 UA 规则**恰好带 !important** ——
+    // 那是实现细节不是规范保证,故本条钉住自带的兜底规则。
+    check(
+        /\.traj-stage__empty\[hidden\]\s*\{[^}]*display:\s*none/.test(html),
+        "空态盖板有自带的 [hidden] 兜底(不靠 UA 表恰好带 !important)",
+    );
+    // 反向:盖板确实设了非 none 的 display —— 没设的话上一条就是条废断言,
+    // 将来有人把 display:flex 删了,这条会提醒「兜底规则可以一起删」。
+    check(
+        /\.traj-stage__empty\s*\{[^}]*display:\s*flex/.test(html),
+        "盖板本体确实设了 display:flex(兜底规则有存在的理由)",
+    );
+    // 盖板归 tab-master 按「有没有段」开关,判据不许漂
+    check(
+        /el\.trajEmpty\.hidden = local\.trajSeries\.length > 0/.test(tm),
+        "有分段就藏盖板、没分段才露(开关判据只有一处)",
+    );
+
+    // ---- ② 脏位只在**画得成**的那一帧兑现(真值表;不是源码正则)。
+    eq(TM.chartRepaintNow(true, true), true, "脏 + 可见 ⇒ 这一帧重绘");
+    eq(
+        TM.chartRepaintNow(true, false),
+        false,
+        "脏 + **不可见** ⇒ 不兑现(脏位留着,切回来那一帧才画)",
+    );
+    eq(TM.chartRepaintNow(false, true), false, "不脏 + 可见 ⇒ 不必重绘");
+    eq(TM.chartRepaintNow(false, false), false, "不脏 + 不可见 ⇒ 什么都不做");
+    // 脏位的语义就是「留到画得成为止」:不可见期间连来几次脏,兑现的仍是同一次
+    let dirty = false;
+    const step = (setDirty, visible) => {
+        dirty = dirty || setDirty;
+        if (TM.chartRepaintNow(dirty, visible)) dirty = false;
+        return dirty;
+    };
+    check(step(true, false), "不可见期置脏 ⇒ 脏位**留着**(不被这一帧吃掉)");
+    check(step(false, false), "不可见期再跑一帧 ⇒ 仍然留着");
+    check(step(true, false), "不可见期又来一次段表事件 ⇒ 还是留着");
+    check(!step(false, true), "切回可见的第一帧 ⇒ 兑现并清掉(图不再是过期的)");
+    check(!step(false, true), "兑现之后不再重复重绘(幂等)");
+
+    // 接法:renderChart 里的清标志确实走 chartRepaintNow,且判据是「面板可见」。
+    // 直接 `if (local.trajDirty)` 就是 pr-agent 指的那个形态,回退了当场红。
+    check(
+        /if \(chartRepaintNow\(local\.trajDirty, isPanelActive\(\)\)\) \{\s*local\.trajDirty = false;\s*local\.traj\.invalidate\(\);/.test(
+            tm,
+        ),
+        "renderChart 的脏位兑现走 chartRepaintNow(不是无条件清)",
+    );
+    // 这条路走得到的证据:onSegments 里那个 setTimeout 调的是**本模块的** render,
+    // 绕开了 app.js「只投影当前激活 tab」的 switch(否则本 bug 根本够不着)。
+    check(
+        /setTimeout\(render, 1650\)/.test(tm) &&
+            /local\.trajDirty = true;/.test(tm),
+        "onSegments 置脏 + 自排定时器 render(不可见时跑到清标志那一行的那条路)",
     );
 }
 
