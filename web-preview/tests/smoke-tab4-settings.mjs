@@ -298,6 +298,14 @@ log("=== ④ 词条:T35 新增 set.* key ===");
         "set.diag.colGen",
         "set.diag.colSeq",
         "set.reanalyze",
+        // [J78] 「手动接管与自动化」说明块(05 §2.4);check-i18n.mjs 未接任何
+        // workflow,web-smoke 是这批文案在 CI 上的唯一门禁,漏语言即红。
+        "set.automationGuide.eyebrow",
+        "set.automationGuide.title",
+        "set.automationGuide.line1",
+        "set.automationGuide.line2",
+        "set.automationGuide.line3",
+        "set.automationGuide.line4",
     ];
     for (const k of KEYS) {
         for (const lang of ["zh", "en", "fr"]) {
@@ -411,6 +419,16 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
             /set\.guide\.showAll/.test(html) &&
             /set\.guide\.collapse/.test(ts),
         "「查看全部九条」↔「收起」块内 toggle",
+    );
+
+    // [J78] 「手动接管与自动化」说明块:锚点在,且四行正文 + eyebrow/标题全部
+    // 经 data-t 接上词条(纯静态块,不进 tab-settings.js;整块被删或某行掉线即红)
+    check(
+        /data-gb="settings-automationguide"/.test(html) &&
+            ["eyebrow", "title", "line1", "line2", "line3", "line4"].every(
+                (k) => html.includes(`data-t="set.automationGuide.${k}"`),
+            ),
+        "「手动接管与自动化」说明块锚点 + 六词条 data-t 落点齐全",
     );
 
     // 诊断区可复制
