@@ -2,15 +2,20 @@
 // test_input_bridge_ipc —— T30 桥依赖的 core IPC 只读快照面 L0 单测(SegmentBackendInProcess):
 // InputSession::connSnapshot/occupiedMask/configSeq/remoteAbi/localAbi/groupsOnline +
 // CtrlPlane::isRingFull/changeGroup。跨进程真实行为归 T07b/L1 harness。
+// T37(deepseek 两条 Processor 回归的 core 锚点):换组后 readGlobalInfo 读新组 SR(srMismatch 读对组)、
+// 载入组≠1 state 后命令环 enqueue 落对组(remoteSetPriority 落对组)。
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <vector>
 
 #include "input/InputSession.h"
 #include "ipc/CtrlPlane.h"
 #include "ipc/Registry.h"
 #include "ipc/SegmentBackendInProcess.h"
+#include "state/InputStateCodec.h"
+#include "state/StateCodec.h"
 
 using scvb::InitResult;
 using scvb::kSlotActive;
@@ -417,4 +422,100 @@ TEST_CASE("T30 CtrlPlane:abi 损坏段 open 失败,enqueue 返回 false(PR#54 R1
     CHECK_FALSE(plane.isOpen());
     // 段未打开 → enqueue 写不进去(返回 false),bridgeRemoteSetPriority 据此回 busy,不再回 queued:true。
     CHECK_FALSE(plane.enqueue(3, scvb::CtrlOp::kSetPriority, 5));
+}
+
+// ---------------------------------------------------------------------------
+// T37 E2E 联调(deepseek 两条 Processor 回归的 core/桥级锚点)。
+// 真机路径在 ScvbInputAudioProcessor(依赖 WebView2,不可离线编入单测):
+//   setStateInformation(载入 group≠1 state)→ ctrl_.changeGroup(group_id) →
+//   bridgeRemoteSetPriority → ctrl_.enqueue(ch, kSetPriority, n) / bridgeTickSnapshot → ctrl_.readGlobalInfo()
+// 下面用 InputSession + CtrlPlane + InputStateCodec 逐段复刻该编排;无法离线复刻的 WebView2/宿主
+// 接线面归 DAW 真机执行清单(docs/spikes/E2E-journey.md)。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("T37 Processor 回归(deepseek):载入组≠1 工程 → remoteSetPriority 落对组")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 1) 构造并解码 group=2、channel=3 的 Input state(等价 setStateInformation 读到的 CFGS)。
+    scvb::state::InputState st;
+    st.channelId = 3;
+    st.groupId = 2;
+    st.uiScale = 100;
+    st.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(st, payload));
+    scvb::state::StateChunks chunks;
+    chunks.abi = scvb::state::kCurrentAbi;
+    chunks.set(scvb::state::kFourccCfgs, std::move(payload));
+    std::vector<std::uint8_t> blob;
+    REQUIRE(scvb::state::encodeContainer(chunks, blob));
+
+    scvb::state::StateChunks out;
+    REQUIRE(scvb::state::decodeContainer(blob.data(), blob.size(), out) == scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* cfg = out.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfg != nullptr);
+    scvb::state::InputState loaded;
+    REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
+    REQUIRE(loaded.groupId == 2);
+    REQUIRE(loaded.channelId == 3);
+
+    // 2) session 按 state 对齐(等价 InputProcessor::setStateInformation 的 session_.setChannelId/setGroupId)。
+    InputSession session(backend, 1001);
+    session.setChannelId(loaded.channelId);
+    session.setGroupId(loaded.groupId);
+
+    // 3) ctrl_ 组对齐(等价 setStateInformation 的 changeGroup 分支:channelId≠0 ∧ 组≠当前组)。
+    scvb::CtrlPlane ctrl(backend, 1); // InputProcessor 构造默认组 1
+    REQUIRE(ctrl.group() == 1);
+    REQUIRE(ctrl.changeGroup(loaded.groupId) == InitResult::kOk);
+    CHECK(ctrl.group() == 2);
+
+    // 4) bridgeRemoteSetPriority 的 enqueue(经 ensureCtrlOpen 对齐后;此处组已对齐,直接 enqueue)。
+    REQUIRE(ctrl.enqueue(loaded.channelId, scvb::CtrlOp::kSetPriority, 7));
+
+    // 5) 落对组:g2 环可见,g1 环无残留(换组未串组)。
+    scvb::CtrlPlane reader2(backend, 2);
+    REQUIRE(reader2.open() == InitResult::kOk);
+    scvb::CtrlRecord rec;
+    REQUIRE(reader2.dequeue(loaded.channelId, rec));
+    CHECK(rec.channel.load() == 3u);
+    CHECK(rec.op.load() == static_cast<u32>(scvb::CtrlOp::kSetPriority));
+    CHECK(rec.value.load() == 7u);
+
+    scvb::CtrlPlane reader1(backend, 1);
+    REQUIRE(reader1.open() == InitResult::kOk);
+    scvb::CtrlRecord stale;
+    CHECK_FALSE(reader1.dequeue(loaded.channelId, stale)); // 旧组无记录
+}
+
+TEST_CASE("T37 Processor 回归(deepseek):srMismatch 读对组 —— changeGroup 后 readGlobalInfo 读新组 SR")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // g1 写入 SR=44100(g1 段)。
+    scvb::CtrlPlane out1(backend, 1);
+    REQUIRE(out1.open() == InitResult::kOk);
+    scvb::OutputGlobalInfoSnapshot g1;
+    g1.output_sample_rate = 44100;
+    out1.refreshGlobalInfo(g1);
+
+    // 换组到 g2 并写入 SR=48000(g2 段),等价 setStateInformation 载入组≠1 后 ctrl 对准新组。
+    scvb::CtrlPlane ctrl(backend, 1);
+    REQUIRE(ctrl.open() == InitResult::kOk);
+    REQUIRE(ctrl.changeGroup(2) == InitResult::kOk);
+    scvb::OutputGlobalInfoSnapshot g2;
+    g2.output_sample_rate = 48000;
+    ctrl.refreshGlobalInfo(g2);
+
+    // readGlobalInfo 必须读 g2(48000),不读 g1 残留(44100) —— bridgeTickSnapshot 的 srMismatch
+    // 推导真源(InputBridgeLogic::srMismatch(state, outputSR, localSR))据此拿到正确组的 SR。
+    CHECK(ctrl.readGlobalInfo().output_sample_rate == 48000);
+
+    // g1 段独立保留(跨组互不可见,未串组)。
+    scvb::CtrlPlane probe1(backend, 1);
+    REQUIRE(probe1.open() == InitResult::kOk);
+    CHECK(probe1.readGlobalInfo().output_sample_rate == 44100);
 }
