@@ -10,6 +10,9 @@
 //   • 两段导出(与 tour.js / tab-master.js 同构):纯函数(无 DOM,node 可直接 import 断言)
 //     + createLangStart(opts)(DOM 接线)。模块顶层零副作用、零 document 触碰。
 //   • 文案走 data-t(applyI18n 统一刷):标题三语常显、三按钮各用各自语言(三语值相同)。
+//   • 点击契约:只有三个语言按钮可点(点击 = 切语言 + 关卡 → 红字九条页);卡片其余区域
+//     与背景蒙版**不挂任何点击处理器** —— 点击一律无动作、绝不推进。「点击任意处 = 下一步」
+//     的规则只从 tour 第 1 步(欢迎公告)起效,语言卡阶段不存在该规则(见 tour.js 的 click 接线)。
 // =============================================================================
 
 /** 可选语言(与 i18n.js 的 LANGS 同序;各按钮用各自语言显示)。 */
@@ -88,6 +91,8 @@ export function createLangStart(opts) {
         titleEl.setAttribute("data-t", "lang-start.title");
         panel.setAttribute("aria-labelledby", "lang-start-title");
 
+        // 只有这三个按钮挂 click;overlay(蒙版)与 panel(卡片)均无点击处理器,
+        // 因此点卡外蒙版/卡内非按钮区一律无动作、绝不推进。
         const btns = el("div", "lang-start__btns");
         for (const code of LANG_PICK_CODES) {
             const b = el("button", "sc-btn lang-start__btn");
