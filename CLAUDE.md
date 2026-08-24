@@ -32,7 +32,7 @@
   - fork PR 只跑**无 secrets** 的构建/测试(`build-vst3` / `format` / `branch-gate` / `compliance`),且需维护者批准 workflow run 后才开始跑;
   - 三个 review bot(`claude-review` / `deepseek-review` / `pr-agent`)都带 `head.repo.full_name == base.repo.full_name` 条件,**仅 same-repo PR** 会自动跑,fork PR 一律不自动跑;
   - `external` label 由**维护者手工添加**(fork PR 的 `GITHUB_TOKEN` 只读,workflow 内加不了标签;**不要用 `pull_request_target` 绕**,见 §0 铁律第 4 条);
-  - fork PR 唯一的 AI 审查通道 = 维护者评论 `/review` 显式触发(方案 D,`.github/workflows/review-dispatch.yml`)。
+  - fork PR 的 AI 审查只走 §0 铁律第 4 条允许的两条路:**方案 D**(维护者评论 `/review` 显式触发 —— 本仓的默认实现,`.github/workflows/review-dispatch.yml`)或**方案 C**(workflow_run 两阶段,全程不 checkout PR 代码 —— 本仓未实现,保留为合规替代)。没有第三条路。
 - commit 规范:`type(scope): 中文描述`,type ∈ {fix, feat, docs, chore, refactor, test, ci, style, perf, revert, harden};全部 `git commit -s`(Signed-off-by)。
 
 ## 2. 提 PR 前的本地 Gates
@@ -52,7 +52,7 @@
 - `build-vst3`(job `build-and-validate`)/ `format`(job `clang-format`)/ `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(2026-08-19 用户指令:子 PR 同样跑 CI);`branch-gate`(命名 + DCO + 冻结契约 path guard)仍仅 pull_request→dev。
 - `compliance`(gitleaks + reuse lint):无 secrets,fork PR 同样跑。
 - `claude-review`:所有 base 分支、**仅 same-repo**(J31);`deepseek-review` / `pr-agent` 默认 disable,同样仅 same-repo。
-- `review-dispatch`:维护者评论 `/review` 显式触发,是 **fork PR 唯一的 AI 审查通道**(方案 D)。
+- `review-dispatch`:维护者评论 `/review` 显式触发 —— 这是 §0 铁律第 4 条**方案 D** 的实现,也是本仓目前给 fork PR 做 AI 审查的**默认通道**(铁律允许的另一条是方案 C 的 workflow_run 两阶段,本仓未实现)。
 - `release`:push tags `v*` 触发草稿 Release(tag ↔ CMake VERSION 一致性门禁 + 打包)。
 - 成本纪律:runner 就低不就高;按量计费的 review bot 克制使用,不设为 required。
 

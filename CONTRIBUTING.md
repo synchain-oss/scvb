@@ -50,11 +50,12 @@ git rebase --signoff      # 一段区间
 
 | 项 | fork PR 的行为 |
 | --- | --- |
-| `branch-gate` | **不 exit 1**。只断言 head 分支名不在上述长期分支名集合(防同名伪装晋升),**不强制 `feat/*` 命名** —— 命名规则仅约束 same-repo 分支 |
+| `branch-gate` 的**命名规则** | 对 fork **不 exit 1**。只断言 head 分支名不在上述长期分支名集合(防同名伪装晋升),**不强制 `feat/*` 命名** —— 命名规则仅约束 same-repo 分支 |
+| `branch-gate` 的**另两条断言** | **对 fork 照常生效**:DCO(每个 commit 要有 `Signed-off-by:`)与冻结契约 path guard(见 §8)任一不过,`branch-gate` 同样红。豁免的只有命名规则那一条 |
 | 构建 / 测试 | 只跑**无 secrets** 的 job(`build-vst3` / `format` / `branch-gate` / `compliance`),且需维护者批准 workflow run 后才开始跑 |
 | AI review bot | `claude-review` / `deepseek-review` / `pr-agent` 都带 same-repo 条件,**fork PR 一律不自动跑** |
 | `external` label | 由**维护者手工添加**(fork PR 的 `GITHUB_TOKEN` 只读,workflow 内加不了标签) |
-| fork PR 的 AI 审查 | 唯一通道 = 维护者评论 `/review` 显式触发(`.github/workflows/review-dispatch.yml`) |
+| fork PR 的 AI 审查 | 只走两条合规路:**方案 D** = 维护者评论 `/review` 显式触发(本仓的默认实现,`.github/workflows/review-dispatch.yml`);**方案 C** = workflow_run 两阶段、全程不 checkout PR 代码(本仓未实现,保留为合规替代)。见 [CLAUDE.md](./CLAUDE.md) §0 铁律第 4 条 |
 
 > 本项目**任何 workflow 都不使用 `pull_request_target`**,这是一条不接受个案豁免的安全禁令(J20)。请不要提交「加个 `pull_request_target` 就能给 fork PR 跑 bot 了」的 PR。
 
@@ -106,7 +107,11 @@ npx --yes markdown-link-check -c .markdown-link-check.json -q CONTRIBUTING.md do
 - **不接受在不升 `abi` 的前提下修改 IPC 共享内存布局的 PR。** 布局改动必须 `abi+1` 且段名升到 `v2`,新旧不互认。段名前缀 `SynchainSCVB.v1.` 与各 header 前两字段(magic / abi)永久冻结。
 - **不接受在 `processBlock` 中引入内存分配 / 加锁 / I-O / 日志 / 异常的 PR。** 见 [CLAUDE.md](./CLAUDE.md) §8 的完整禁止与允许清单。
 
-四份冻结文档(`docs/PARAMETERS.md` / `docs/IPC_CONTRACT.md` / `docs/STATE_SCHEMA.md` / `docs/SCVB_CONTRACT.md`)与 `tests/golden/` 由 `branch-gate` 的「冻结契约 path guard」看守:碰了它们而同一个 PR 里没有对应的 `docs/contract-changes/<YYYYMMDD>-<slug>.md` 变更文档(模板见 `docs/contract-changes/TEMPLATE.md`),CI 直接红。`docs/constitution/` 下是宪法原文的**只读副本**,只能随上游同步(`pwsh scripts/check-constitution-sync.ps1` 比对 sha256),不要就地编辑。
+四份冻结文档(`docs/PARAMETERS.md` / `docs/IPC_CONTRACT.md` / `docs/STATE_SCHEMA.md` / `docs/SCVB_CONTRACT.md`)与 `tests/golden/` 由 `branch-gate` 的「冻结契约 path guard」看守:碰了它们而同一个 PR 里没有对应的 `docs/contract-changes/<YYYYMMDD>-<slug>.md` 变更文档(模板见 `docs/contract-changes/TEMPLATE.md`),`branch-gate` 直接红 —— 这条对 same-repo 与 fork PR **一视同仁**,fork 豁免的只有分支命名规则,不豁免本条。
+
+> **这道机器守卫只覆盖 base = `dev` 的 PR**(`branch-gate` 的触发面就是 `pull_request: branches: [dev]`)。base 为 `feature/v1` 的子 PR **不触发 branch-gate**,那一层靠评审与 CODEOWNERS 把关 —— 所以在子 PR 上碰冻结契约同样要自觉补变更文档,别等 CI 提醒你。
+
+`docs/constitution/` 下是宪法原文的**只读副本**,只能随上游同步(`pwsh scripts/check-constitution-sync.ps1` 比对 sha256),不要就地编辑。
 
 ## 9. 发布流程(仅维护者)
 
