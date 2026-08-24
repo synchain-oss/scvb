@@ -6,7 +6,7 @@
 // DOM 侧(蒙版/亮区/说明框定位、点击推进、跨 tab 翻页)归浏览器手测 / Playwright 截图。
 //
 // 跑什么:
-//   ① 步骤清单:全参数导览 43 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
+//   ① 步骤清单:全参数导览 44 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
 //   ② shouldShowTourAsk 四种组合(J50a 镜像);
 //   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
@@ -52,9 +52,9 @@ const eq = (a, b, msg) =>
     );
 
 // =============================================================================
-log("=== ① 步骤清单(全参数导览 43 步)===");
+log("=== ① 步骤清单(全参数导览 44 步)===");
 {
-    eq(TOUR.TOUR_STEPS.length, 43, "步数 == 43");
+    eq(TOUR.TOUR_STEPS.length, 44, "步数 == 44");
     eq(
         TOUR.TOUR_ANCHORS,
         [
@@ -70,6 +70,7 @@ log("=== ① 步骤清单(全参数导览 43 步)===");
             "leadselect",
             "range",
             "transition",
+            "curve",
             "tab2",
             "trackrow",
             "pan",
@@ -102,7 +103,7 @@ log("=== ① 步骤清单(全参数导览 43 步)===");
             "version",
             "review",
         ],
-        "44 锚点(含步 2/35 两个居中卡 null),末步=review",
+        "44 锚点(含步 1/35 两个居中卡 null),末步=review",
     );
     eq(
         TOUR.TOUR_STEPS[0].anchor,
@@ -113,6 +114,7 @@ log("=== ① 步骤清单(全参数导览 43 步)===");
     eq(
         TOUR.TOUR_STEPS.map((s) => s.tab),
         [
+            "master",
             "master",
             "master",
             "master",
@@ -160,7 +162,7 @@ log("=== ① 步骤清单(全参数导览 43 步)===");
         "跨 tab 翻页目标逐条对拍(13 master / 12 tracks / 8 wave / 11 settings)",
     );
     eq(
-        TOUR.TOUR_STEPS[42].anchor,
+        TOUR.TOUR_STEPS[43].anchor,
         "review",
         "末步固定 = 设置页「重看引导」入口",
     );
@@ -327,7 +329,7 @@ log("=== ⑤ 词条:tour.* 三语 ===");
         "done",
         "demoBadge",
     ];
-    for (let i = 1; i <= 43; i++) {
+    for (let i = 1; i <= 44; i++) {
         KEYS.push("step" + i + ".title", "step" + i + ".body");
     }
     for (const k of KEYS) {
@@ -426,11 +428,13 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
         "cap",
         "an",
         "out",
+        "dist",
         "width",
         "msbalance",
         "leadselect",
         "range",
         "transition",
+        "curve",
         "lanes",
         "selection",
         "actions",
@@ -446,6 +450,7 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
         "lang",
         "storage",
         "diagnostic",
+        "version",
     ];
     for (const a of staticAnchors) {
         check(
