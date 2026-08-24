@@ -28,7 +28,7 @@
 3. **REAPER「路由(实时)」** :R-2/R-3/R-4(anticipative FX 开/最大/关)+ R-12(插件 Run as dedicated process)实测通过;基础实时播放并入 Cubase C-5 口径,未在 REAPER 单独重跑。
 4. **REAPER「路由(离线渲染)」** :R-5(File→Render 1× 与 Full-speed Offline 各一次,与 ref_A null)实测通过。
 5. **版本口径** :Studio One 6 为 U9(用户 2026-08-11 决定)的权威版本;S1/S2 的 spike 清单曾把 Studio One 标为「7(可选对照)」且未执行,以 U9 的「6」为准。
-6. **Live / Studio One 的「未验证」原因** :U27(用户 2026-08-14 决定)S1 跳过 Live、Studio One 仅作可选对照;Live 的设备停用问题(L-5)已挂 T24 并在 KNOWN_ISSUES K-5 记录,属发布期矩阵兜底项。
+6. **Live / Studio One 的「未验证」原因** :U27(用户 2026-08-14 决定)S1 跳过 Live、Studio One 仅作可选对照;Live 的设备停用问题(L-5)已挂 T24,属发布期矩阵兜底项。
 
 ## 2. 每 DAW 一节
 
@@ -62,7 +62,7 @@ Cubase 的 Insert 架有**可移动的 pre/post 分隔线**——「最后一格
 #### 离线渲染注意事项
 
 - Export → Audio Mixdown 是正确导出路径(S1 C-3 已验)。
-- Direct Offline Processing / Render in Place 会**静音替换**含 Input 的轨道产物;替换式渲染会覆盖原素材(K-1 ⚠ 用户数据)。请对**总线整体导出**,或先打印自动化再关 Output 输出开关后渲染。
+- Direct Offline Processing / Render in Place 会**静音替换**含 Input 的轨道产物;替换式渲染会覆盖原素材(⚠ 用户数据)。请对**总线整体导出**,或先打印自动化再关 Output 输出开关后渲染。
 
 #### 已知坑
 
@@ -99,14 +99,14 @@ REAPER 的 FX chain 无 pre/post 分隔线概念;「最后一格」= FX chain �
 
 #### 离线渲染注意事项
 
-File → Render 正确;S1 R-5 已验 1× 与 **Full-speed Offline** 两档 null 通过。单轨 Freeze / Render in Place 会得到静音文件(K-1)。
+File → Render 正确;S1 R-5 已验 1× 与 **Full-speed Offline** 两档 null 通过。单轨 Freeze / Render in Place 会得到静音文件。
 
 #### 已知坑
 
 - **RD-04 · 关 GUI 不写自动化**:见上文「录自动化」的宿主端解法。出处:masterPlan 11-risks RD-04、[S2-daw-checklist.md](spikes/S2-daw-checklist.md) R-1..R-4。
 - **anticipative FX**:S1 R-2/R-3/R-4 三档(开/最大/关)均 gapCount 0;render-ahead 实测上限 5000ms 下环有余量。
 - **Run as dedicated process**:R-12 已验跨进程共享内存仍工作。
-- **同机双工程/双 tab 抢 channel**(K-4):v1 明示同机同时只支持一个使用 SCVB 的工程。
+- **同机双工程/双 tab 抢 channel**:v1 明示同机同时只支持一个使用 SCVB 的工程。
 
 ### 2.3 Ableton Live
 
@@ -132,17 +132,17 @@ Live 的 device chain 无 pre/post 分隔线;「最后一格」= 设备链末尾
 
 #### 录自动化
 
-推荐 **Write / Latch**。**128 参数上限(RD-02)**:SCVB 声明 93 + wrapper 合成 bypass = **94 宿主可见,Live 128 上限余 34**(封顶,不得再加自动化参数)。打印过程中 **Re-Enable Automation** 按钮亮起属正常现象,打印完点击它(或重新播放)即可恢复读取。
+推荐 **Write / Latch**。**128 参数上限(RD-02)**:SCVB 声明 123 + wrapper 合成 bypass = **124 宿主可见,Live 128 上限余 4**(封顶,不得再加自动化参数)。打印过程中 **Re-Enable Automation** 按钮亮起属正常现象,打印完点击它(或重新播放)即可恢复读取。
 
 #### 离线渲染注意事项
 
-Export Audio/Video 正确;**Freeze & Flatten** 对含 Input 的轨道会得到静音产物(K-1)。**设备停用**(K-5/J52):Live 设备停用不经 bypass、直接停止调用 processBlock,SCVB 检测到后会通知各 Input 转直通,人声约 **~5.5 秒**内恢复(未经平衡的原始声像);A/B 请用 SCVB 面板轨道开关,不要停用设备。
+Export Audio/Video 正确;**Freeze & Flatten** 对含 Input 的轨道会得到静音产物。**设备停用**(J52):Live 设备停用不经 bypass、直接停止调用 processBlock,SCVB 检测到后会通知各 Input 转直通,人声约 **~5.5 秒**内恢复(未经平衡的原始声像);A/B 请用 SCVB 面板轨道开关,不要停用设备。
 
 #### 已知坑
 
-- **RD-02 · 128 参数上限**(94 口径,余 34)。出处:masterPlan 11-risks RD-02。
+- **RD-02 · 128 参数上限**(124 口径,余 4)。出处:masterPlan 11-risks RD-02。
 - **Re-Enable Automation 频繁亮起**(R4/R9)。出处:masterPlan 03 §4.4。
-- **设备停用 ~5.5s 直通兜底**(L-5/K-5/J52)。出处:[KNOWN_ISSUES.md](KNOWN_ISSUES.md) K-5。
+- **设备停用 ~5.5s 直通兜底**(L-5/J52)。
 - **S1/S2 均未上机**:U27(2026-08-14)决定 S1 跳过 Live,L-5 已挂 T24。
 
 ### 2.4 Studio One 6
@@ -196,9 +196,9 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 
 7. **RD-01 · Cubase 录不进插件自发参数变化**(未修复,宿主侧开放问题):Cubase 12+ 下 setValueNotifyingHost 发起的自动化可能录不进,无公开确定解。**兜底 = 建议表 + CSV 导出(T41)**,并保留「Cubase 降 Tier 2」的取舍选项。出处:masterPlan 11-risks RD-01。
 8. **RD-04 · REAPER 关 GUI 不写自动化**(未修复,宿主端设置兜底):打印期间保持插件窗口打开,或把 Parameter automation notifications 设为 process all notifications。出处:masterPlan 11-risks RD-04。
-9. **RD-02 · Live 128 参数上限**(未修复,预算封顶):93 声明 + bypass = 94 宿主可见,余 34;任何加自动化参数的 PR 必须先改宪法。出处:masterPlan 11-risks RD-02。
-10. **设备停用 / smart disable 停调插件**(未修复,设计内兜底):Live 设备停用 / FL smart disable 不经 bypass 直接停调 processBlock;Output 停摆后人声 ~5.5s 内转直通恢复(未经平衡),FL 用户请对总线关 smart disable。出处:[KNOWN_ISSUES.md](KNOWN_ISSUES.md) K-5。
-11. **同机双工程限制**(未修复,v1 明示限制):registry 段名不带工程标识,同机同时只支持一个使用 SCVB 的工程(双工程/双 DAW 后开者抢 channel)。v2 走 documentToken 隔离。出处:[KNOWN_ISSUES.md](KNOWN_ISSUES.md) K-4。
+9. **RD-02 · Live 128 参数上限**(未修复,预算封顶):123 声明 + bypass = 124 宿主可见,余 4;任何加自动化参数的 PR 必须先改宪法。出处:masterPlan 11-risks RD-02。
+10. **设备停用 / smart disable 停调插件**(未修复,设计内兜底):Live 设备停用 / FL smart disable 不经 bypass 直接停调 processBlock;Output 停摆后人声 ~5.5s 内转直通恢复(未经平衡),FL 用户请对总线关 smart disable。
+11. **同机双工程限制**(未修复,v1 明示限制):registry 段名不带工程标识,同机同时只支持一个使用 SCVB 的工程(双工程/双 DAW 后开者抢 channel)。v2 走 documentToken 隔离。
 
 ### 3.3 环境依赖与通用路由坑
 
@@ -206,7 +206,7 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 13. **采样率切换**(已修复 v2):切换采样率后同 pid 重认领曾致永久静音,v2 已修(心跳跨宿主挂起存活)。语义:SR 不符时该轨禁用(CH_SR_MISMATCH),**v1 不做重采样**。出处:[S1-routing.md](spikes/S1-routing.md) §6.1、masterPlan 01 §4.3-f。
 14. **#68 冻结平直线 write 语义**(已修复 #68):冻结(PAN/VOL)维度在 write 时以**平直线(冻结时的手动静态值)写入自动化**,不再停写该车道;优先级链 = 宿主自动化 > 冻结手动值 > 手动微调 > 引擎曲线。出处:masterPlan 03 §J78、T37 旅程文档 §3.3。
 15. **通用路由坑(12 §3.3 六条)**:①改人声轨路由 → Output 报时间线缺口;②宿主 pan 不居中 → equal-power pan 结果偏移;③依赖 PDC 对齐 → SCVB 不报告额外延迟,不要用 PDC「修正」;④同一 channel id 被两个 Input 抢占(后到者冲突不生效);⑤第二个 Output 实例进只读;⑥采样率不一致 → 该轨禁用。
-16. **单轨 Freeze / 部分 stem 导出得静音文件(⚠ 用户数据)**:替换式渲染会覆盖原素材(K-1);请对总线整体导出。出处:[KNOWN_ISSUES.md](KNOWN_ISSUES.md) K-1。
+16. **单轨 Freeze / 部分 stem 导出得静音文件(⚠ 用户数据)**:替换式渲染会覆盖原素材;请对总线整体导出。
 
 ## 4. README 支持等级表(供 T39b 转贴)
 
@@ -216,7 +216,7 @@ Song → Export Mixdown 正确;**Dropout Protection** 是唯一已知会出现**
 |---|---|---|---|
 | Cubase | 14 / 15 | **Tier 1(主测)** | S1 路由(实时/离线/state)已实测通过;自动化写入待 S2 上机(RD-01 已知风险);自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
 | REAPER | 7(建议装) | **Tier 1(附条件)** | S1 路由(实时/离线)已实测通过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
-| Ableton Live | 12 | **Tier 1(附条件)** | 128 参数上限(94 口径,余 34);Re-Enable Automation 需点击;S1/S2 待上机 |
+| Ableton Live | 12 | **Tier 1(附条件)** | 128 参数上限(124 口径,余 4);Re-Enable Automation 需点击;S1/S2 待上机 |
 | Studio One | 6 | **Tier 1(附条件)** | 自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 异 block size;S1/S2 待上机 |
 
-> **支持等级说明**:v1 首发前「Tier 1(附条件)」中的「附条件」将在 S2 自动化上机回填后收敛为定版(可能降 Tier 2,触发条件 = 11-risks RD-01 的 Cubase 取舍决策);FL Studio(03 §4.7)不在 v1 支持矩阵内,相关行为在 KNOWN_ISSUES K-5 记录。
+> **支持等级说明**:v1 首发前「Tier 1(附条件)」中的「附条件」将在 S2 自动化上机回填后收敛为定版(可能降 Tier 2,触发条件 = 11-risks RD-01 的 Cubase 取舍决策);FL Studio(03 §4.7)不在 v1 支持矩阵内。
