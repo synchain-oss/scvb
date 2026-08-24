@@ -169,7 +169,7 @@ export const T = {
         "lang-start.en": "English",
         "lang-start.fr": "Français",
 
-        // tour 全参数导览 43 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
+        // tour 全参数导览 44 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
         "tour.step1.title": "欢迎使用 SCVB",
         "tour.step1.body":
             "SCVB 是 Synchain 的开源多轨人声平衡工具。先花一分钟来了解一下界面吧。已注入 15 轨演示数据,结束后还原。",
@@ -830,13 +830,13 @@ export const T = {
         "lang-start.en": "English",
         "lang-start.fr": "Français",
 
-        // tour full-parameter 43 steps (final copy; EN self-translated, pending U17 review).
+        // tour full-parameter 44 steps (final copy; EN self-translated, pending U17 review).
         "tour.step1.title": "Welcome to SCVB",
         "tour.step1.body":
             "SCVB is Synchain's open-source multitrack vocal balancing tool. Take a minute to get to know the interface. A 15-track demo set is loaded and is cleared when the tour ends.",
         "tour.step4.title": "This is the SCVB Output main window",
         "tour.step4.body":
-            "Four tabs at the top: General / Tracks / Waveform / Settings. This tour walks you through each page.",
+            "Four tabs at the top: Master / Tracks / Waveform / Settings. This tour walks you through each page.",
         "tour.step8.title": "Groups and their role",
         "tour.step8.body":
             "Groups split the channels into eight independent workspaces (A–H); each group runs its own capture, analysis, and output. For single-group use, keep A.",
@@ -868,7 +868,7 @@ export const T = {
             "Inter-segment transition: 20–300 ms; sets how fast level and pan ramp between intervals.",
         "tour.step15.title": "Angle-domain curve",
         "tour.step15.body":
-            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and select a point to delete. Each point can be bell / shelf / cut (6–24 dB/oct slope); up to 16 points.",
+            "Each pan curve is built from control points: double-click anywhere to add a point, drag to adjust angle and gain, and select a point to delete. Each point can be a bell / shelf / cut node (6–24 dB/oct slope); up to 16 points.",
         "tour.step16.title": "This page: Tracks",
         "tour.step16.body":
             "One row per channel, a 15-track matrix; the controls in each row tweak that track and only unlock to manual when frozen.",
@@ -887,18 +887,18 @@ export const T = {
         "tour.step21.title": "Priority",
         "tour.step21.body":
             "0..10, 10 = highest; higher-priority tracks sit closer to the center.",
-        "tour.step22.title": "Lead lock",
+        "tour.step22.title": "Lead Lock",
         "tour.step22.body":
             "Mark this track as the lead: it is the top-priority track during analysis, and the center-slot policy (lead exclusive) centers it first; warns if several are locked.",
         "tour.step24.title": "Vol exempt",
         "tour.step24.body":
-            "Independent switch: this track is excluded from level balancing; not linked to lead lock / Lead Select.",
-        "tour.step25.title": "Auto-pan participate",
+            "Independent switch: this track is excluded from level balancing; not linked to Lead Lock / Lead Select.",
+        "tour.step25.title": "Auto-Pan Participate",
         "tour.step25.body":
             "Whether this track joins pan redistribution; stereo tracks off by default, still level-balanced.",
         "tour.step23.title": "Pair",
         "tour.step23.body":
-            "Pair two tracks; a pair moves together as one. Same pair shows the same colored dot at the row head.",
+            "Pair two tracks; their pan is linked and the pair moves as one. Same pair shows the same colored dot at the row head.",
         "tour.step26.title": "Freeze PAN / VOL",
         "tour.step26.body":
             "The two freeze switches bypass the engine for that dimension; the knob and fader unlock to pure manual control.",
@@ -910,7 +910,7 @@ export const T = {
             "Review results and adjust segments; lane curves on top, toolbar below; drag, box-select and zoom all happen here.",
         "tour.step34.title": "Bottom panel and actions",
         "tour.step34.body":
-            "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/pan; double-click to split, merge a selected segment.",
+            "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/scroll; double-click to split, select two adjacent segments to merge.",
         "tour.step32.title": "Lane area",
         "tour.step32.body":
             "The lanes are zoomed in for you: each lane stacks the pan/vol step curves, and the playhead follows the transport; the top row is pan, the bottom row is vol.",
@@ -919,7 +919,7 @@ export const T = {
             'A sample selection has been created for you: the two ends are the handles — drag them to change the range; "Set as Range" writes the selection to Range.',
         "tour.step31.title": "Post-selection toolbar",
         "tour.step31.body":
-            "Recapture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
+            "Re-capture / re-analyze / re-identify / clear, applied to the selected tracks × selection.",
         "tour.step35.title": "Segment inspector",
         "tour.step35.body":
             "A segment has been selected for you: in the inspector you can edit its pan/vol, check its origin (E/C), and lock it.",
@@ -931,20 +931,20 @@ export const T = {
             "These five sliders decide what counts as voice versus silence — the basis of segmentation: THRESHOLD is the loudness gate — only louder than it counts as singing; HYSTERESIS closes the gate a step lower than it opens, so flutter near the threshold doesn't chop sentences; HOLD keeps short pauses counting as singing, so word-to-word gaps aren't split; PAD PRE / PAD POST add head and tail padding — so attacks and tails aren't clipped.",
         "tour.step36.title": "This page: Settings",
         "tour.step36.body":
-            'Usage notes, loudness metric, center-slot policy, scale, language, storage, diagnostics; the final "Replay tour" is also here.',
+            'Usage notes, loudness metric, center slot policy, scale, language, storage, diagnostics; the final "Show guide again" is also here.',
         "tour.step2.title": "Workflow and priority",
         "tour.step2.body":
             'A full workflow: capture → analyze → tweak/freeze → write automation → adjust automation manually. Priority: host automation > frozen manual value > manual tweak > engine analysis curve. You can review it anytime via the "View workflow" button in Settings.',
         "tour.step37.title": "Usage notes",
         "tour.step37.body":
             "Three-step workflow + nine important notes; please read each one. Breaking any of them causes silence or wrong panning.",
-        "tour.step38.title": "Loudness metric",
+        "tour.step38.title": "Second loudness metric",
         "tour.step38.body":
             "Which metric for segment loudness: K-weighted integral (close to hearing) / RMS (average energy) / peak dBFS (instant peak); re-analyze after changing.",
         "tour.step39.title": "Center slot policy",
         "tour.step39.body":
             "What happens when tracks compete for center: priority queue / lead exclusive / even spread.",
-        "tour.step40.title": "UI scale",
+        "tour.step40.title": "UI Scale",
         "tour.step40.body":
             "Scales the whole UI; synced with the header scale.",
         "tour.step41.title": "Language",
@@ -961,7 +961,7 @@ export const T = {
             "The top-right is the version area: two balance versions V1 / V2 can be switched anytime; the Copy button copies the current version to the other. The plug-in version number is shown at the bottom-right — send it together with diagnostics when you need help.",
         "tour.step44.title": "You can replay this tour here",
         "tour.step44.body":
-            "The tour can be replayed at any time, and the nine red rules open in the same block.",
+            "The tour can be replayed at any time, and the nine hard rules open in the same block.",
 
         // Workflow diagram (tour step 35; nodes + priority row).
         "workflow.capture": "Capture",
@@ -1448,7 +1448,7 @@ export const T = {
         "tour.ask": "Envie d'une visite guidée d'une minute ?",
         "tour.ask.start": "Commencer la visite",
         "tour.ask.later": "Pas maintenant — à revoir dans Réglages",
-        "tour.clickAnywhere": "Cliquez n'importe où pour continuer",
+        "tour.clickAnywhere": "Clic gauche n'importe où pour continuer",
         "tour.skip": "Passer",
         "tour.prev": "Précédent",
         "tour.next": "Suivant",
@@ -1461,7 +1461,7 @@ export const T = {
         "lang-start.en": "English",
         "lang-start.fr": "Français",
 
-        // tour complet 43 étapes (copie finale ; FR auto-traduite, à relire).
+        // tour complet 44 étapes (copie finale ; FR auto-traduite, à relire).
         "tour.step1.title": "Bienvenue dans SCVB",
         "tour.step1.body":
             "SCVB est l'outil open-source de Synchain pour équilibrer les voix multipistes. Prenez une minute pour découvrir l'interface. Un jeu de démonstration de 15 pistes est chargé, puis retiré à la fin.",
@@ -1476,28 +1476,28 @@ export const T = {
             "Activez l'interrupteur de capture et lisez la plage actuelle ; le plug-in enregistre les caractéristiques de loudness de chaque piste. Rien n'est écrit dans l'automation à cette étape.",
         "tour.step6.title": "Étape 2 — Analyse",
         "tour.step6.body":
-            "Calcule hors ligne un plan pan/volume pour chaque phrase. Prévisualisez la plage avant de valider ; les segments modifiés ou verrouillés sont préservés.",
+            "Calcule hors ligne un plan pan/volume pour chaque phrase. Prévisualisez la plage de capture avant de valider ; les segments modifiés ou verrouillés sont préservés.",
         "tour.step7.title": "Étape 3 — Sortie",
         "tour.step7.body":
             "Passez en PILOTAGE MOTEUR et les paramètres sont pilotés par le résultat de l'analyse. Pour les enregistrer en automation, armez Latch ou Write côté DAW.",
         "tour.step12.title": "Répartition pan / volume",
         "tour.step12.body":
-            "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la ligne = l'ouverture de la source stéréo et la courbe angulaire.",
+            "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la fine ligne horizontale = l'ouverture de la source stéréo et la courbe angulaire.",
         "tour.step9.title": "Width · angle max",
         "tour.step9.body":
-            "La limite d'ouverture globale : angle d'ouverture max 0–90°.",
+            "La limite de largeur globale : angle d'ouverture max 0–90°.",
         "tour.step10.title": "MS Balance",
         "tour.step10.body":
-            "Balance M/S du bus : −100 vers Mid, +100 vers Side ; ajustez la relation M/S du volume.",
+            "Balance M/S du bus : −100 vers Mid, +100 vers Side ; ajustez le rapport de volume M/S.",
         "tour.step11.title": "Lead Select",
         "tour.step11.body":
-            "Choisissez une piste par numéro et centrez-la en temps réel ; 0 = suivre l'analyse.",
+            "Choisissez une piste par numéro et forcez-la au centre en temps réel ; 0 = suivre l'analyse.",
         "tour.step14.title": "Plage",
         "tour.step14.body":
             "Trois modes : Suivi / Boucle / Manuel ; définit la portée de la capture et de la sortie.",
         "tour.step13.title": "Transition",
         "tour.step13.body":
-            "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre intervalles.",
+            "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre les intervalles.",
         "tour.step15.title": "Courbe du domaine angulaire",
         "tour.step15.body":
             "Chaque courbe de panoramique est constituée de points de contrôle : double-cliquez n'importe où pour ajouter un point, faites glisser pour ajuster l'angle et le gain, et sélectionnez un point pour le supprimer. Chaque point peut être cloche / plateau / coupe (pente 6–24 dB/oct), jusqu'à 16 points.",
@@ -1509,7 +1509,7 @@ export const T = {
             "Voyant / CH+ST / libellé ; une ligne par piste, estompée si non connectée.",
         "tour.step18.title": "Potentiomètre pan",
         "tour.step18.body":
-            "Pan −100..+100 ; déverrouillé en manuel une fois gelé, piloté par la courbe sinon.",
+            "Pan −100..+100 ; déverrouillé en manuel une fois gelé, piloté par la courbe d'analyse sinon.",
         "tour.step19.title": "Potentiomètre width",
         "tour.step19.body":
             "Largeur de piste stéréo 0–100 % ; sans effet sur les pistes mono.",
@@ -1518,19 +1518,19 @@ export const T = {
             "Le liquide montre le niveau temps réel, le collier est le fader de volume ; glissez le collier pour changer le volume, déverrouillé en manuel une fois gelé.",
         "tour.step21.title": "Priorité",
         "tour.step21.body":
-            "0..10, 10 = la plus haute ; les pistes prioritaires se rapprochent du centre.",
+            "0..10, 10 = la plus haute ; les pistes de priorité plus élevée se placent plus près du centre.",
         "tour.step22.title": "Verrou lead",
         "tour.step22.body":
-            "Marquez cette piste comme lead : elle est prioritaire à l'analyse, et la stratégie de créneau central (exclusivité lead) la centre d'abord ; avertit si plusieurs sont verrouillées.",
+            "Marquez cette piste comme lead : elle devient la piste de priorité maximale à l'analyse, et la stratégie de créneau central (exclusivité lead) la centre d'abord ; avertit si plusieurs sont verrouillées.",
         "tour.step24.title": "Exemption volume",
         "tour.step24.body":
-            "Interrupteur indépendant : la piste est exclue de l'équilibrage ; non lié au verrou lead / Lead Select.",
+            "Interrupteur indépendant : la piste est exclue de l'équilibrage du volume ; non lié au verrou lead / Lead Select.",
         "tour.step25.title": "Participation pan auto",
         "tour.step25.body":
-            "Si la piste entre dans la redistribution ; stéréo désactivé par défaut, équilibrage conservé.",
+            "Si la piste entre dans la redistribution du pan ; stéréo désactivé par défaut, équilibrage conservé.",
         "tour.step23.title": "Paire",
         "tour.step23.body":
-            "Appaire deux pistes ; une paire se déplace comme un tout. Même paire = même point coloré en tête de ligne.",
+            "Appairez deux pistes ; leur panoramique est lié et la paire se déplace comme un tout. Même paire = même point coloré en tête de ligne.",
         "tour.step26.title": "Gel PAN / VOL",
         "tour.step26.body":
             "Les deux interrupteurs de gel contournent le moteur pour cette dimension ; le potentiomètre et le fader se déverrouillent en pur manuel.",
@@ -1539,44 +1539,44 @@ export const T = {
             "Désactivez-le : la piste saute capture / analyse / sortie — aucun ajustement n'est appliqué à cette piste.",
         "tour.step28.title": "Cette page : Formes d'onde",
         "tour.step28.body":
-            "Vérifiez les résultats et ajustez les segments ; courbes en haut, barre d'outils en bas ; glisser, sélectionner, zoomer se font ici.",
+            "Vérifiez les résultats et ajustez les segments ; courbes des pistes en haut, barre d'outils en bas ; glisser, sélectionner par rectangle, zoomer se font ici.",
         "tour.step34.title": "Panneau inférieur et actions",
         "tour.step34.body":
-            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, fusionner un segment sélectionné.",
+            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, sélectionnez deux segments adjacents pour fusionner.",
         "tour.step32.title": "Zone de pistes",
         "tour.step32.body":
             "Les pistes sont agrandies pour vous : chaque piste superpose les courbes en escalier pan/vol, la tête de lecture suit le transport ; rangée du haut = pan, du bas = vol.",
         "tour.step33.title": "Poignées de sélection",
         "tour.step33.body":
-            "Une sélection d'exemple a été créée pour vous : les deux extrémités sont les poignées — faites-les glisser pour changer la plage ; « Définir comme plage » écrit la sélection dans Range.",
+            "Une sélection d'exemple a été créée pour vous : les deux extrémités sont les poignées — faites-les glisser pour changer la plage ; « Définir comme plage » écrit la sélection dans la plage.",
         "tour.step31.title": "Barre post-sélection",
         "tour.step31.body":
-            "Ré-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes × sélection choisies.",
+            "Re-capturer / ré-analyser / ré-identifier / effacer, appliqués aux pistes sélectionnées × la sélection.",
         "tour.step35.title": "Inspecteur de segment",
         "tour.step35.body":
             "Un segment a été sélectionné pour vous : dans l'inspecteur, modifiez son pan/vol, consultez son origine (E/C) et verrouillez-le.",
         "tour.step30.title": "Barre de segmentation",
         "tour.step30.body":
-            "Curseurs SENSIBILITÉ / SEG MIN ; glissez les limites, double-clic pour diviser, sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner.",
+            "Curseurs SENSITIVITY / MIN SEG ; glissez les limites, double-clic pour diviser, sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner.",
         "tour.step29.title": "Curseurs VAD (détection vocale)",
         "tour.step29.body":
-            "Ces cinq curseurs décident ce qui compte comme voix ou silence — la base de la segmentation : THRESHOLD est le seuil de niveau — seul ce qui est plus fort compte comme chant ; HYSTERESIS ferme la porte un cran plus bas qu'elle ne l'ouvre, pour éviter que le flottement près du seuil ne hache les phrases ; HOLD garde les pauses courtes comme chant, pour ne pas couper entre les mots ; PAD PRE / PAD POST ajoutent du blanc avant/après — pour ne pas tronquer l'attaque ni la chute.",
+            "Ces cinq curseurs décident ce qui compte comme voix ou silence — la base de la segmentation : THRESHOLD est le seuil de niveau — seul ce qui est plus fort compte comme chant ; HYSTERESIS ferme la porte un cran plus bas qu'elle ne l'ouvre, pour éviter que le flottement près du seuil ne hache les phrases ; HOLD garde les pauses courtes comme chant, pour ne pas couper entre les mots ; PAD PRE / PAD POST ajoutent une marge avant/après — pour ne pas tronquer l'attaque ni la chute.",
         "tour.step36.title": "Cette page : Réglages",
         "tour.step36.body":
-            "Mode d'emploi, indicateur de loudness, stratégie de créneau central, échelle, langue, stockage, diagnostic ; « Revoir le guide » final est aussi ici.",
+            "Mode d'emploi, indicateur de loudness, stratégie de créneau central, échelle, langue, stockage, diagnostic ; le bouton « Revoir le guide » de la dernière étape se trouve aussi ici.",
         "tour.step2.title": "Flux de travail et priorité",
         "tour.step2.body":
             "Un flux complet : capture → analyse → ajuster/geler → écrire l'automation → ajuster l'automation manuellement. Priorité : automation de l'hôte > valeur manuelle gelée > ajustement manuel > courbe d'analyse du moteur. Vous pouvez le revoir à tout moment via le bouton « Voir le workflow » dans Réglages.",
         "tour.step37.title": "Mode d'emploi",
         "tour.step37.body":
-            "Flux en trois étapes + neuf notes importantes ; lisez-les une par une. En enfreindre une seule cause silence ou mauvais panoramique.",
-        "tour.step38.title": "Indicateur de loudness",
+            "Flux en trois étapes + neuf notes importantes ; lisez-les une par une. En enfreindre une seule cause silence ou panoramique erroné.",
+        "tour.step38.title": "Second indicateur de loudness",
         "tour.step38.body":
             "Quelle mesure pour le loudness de segment : intégrale pondérée K (proche de l'oreille) / RMS (énergie moyenne) / crête dBFS (crête instantanée) ; ré-analyser après changement.",
         "tour.step39.title": "Stratégie de créneau central",
         "tour.step39.body":
             "Que faire quand plusieurs pistes se disputent le centre : file de priorité / exclusivité lead / répartition égale.",
-        "tour.step40.title": "Échelle de l'UI",
+        "tour.step40.title": "Échelle",
         "tour.step40.body":
             "Met à l'échelle toute l'UI ; synchronisée avec l'échelle de l'en-tête.",
         "tour.step41.title": "Langue",
