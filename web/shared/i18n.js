@@ -274,7 +274,7 @@ export const T = {
             "一次完整的工作流程:采集 → 分析 → 微调/冻结 → 写入自动化 → 手动调自动化。优先级:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎分析曲线。之后随时可在设置页「查看工作流程」里回看。",
         "tour.step36.title": "使用说明",
         "tour.step36.body":
-            "三步工作流 + 九条重要提示;已为你展开九条——请逐条读一遍,违反任何一条都会导致静音或错音。",
+            "三步工作流 + 九条重要提示;请逐条读一遍,违反任何一条都会导致静音或错音。",
         "tour.step37.title": "第二响度指标",
         "tour.step37.body":
             "段响度采用哪个指标:K 加权段积分(接近人耳听感)/ RMS(平均能量)/ 峰值 dBFS(瞬时峰值);修改后需重新分析。",
@@ -937,7 +937,7 @@ export const T = {
             'A full workflow: capture → analyze → tweak/freeze → write automation → adjust automation manually. Priority: host automation > frozen manual value > manual tweak > engine analysis curve. You can review it anytime via the "View workflow" button in Settings.',
         "tour.step36.title": "Usage notes",
         "tour.step36.body":
-            "Three-step workflow + nine important notes; the nine are expanded for you — please read each one. Breaking any of them causes silence or wrong panning.",
+            "Three-step workflow + nine important notes; please read each one. Breaking any of them causes silence or wrong panning.",
         "tour.step37.title": "Loudness metric",
         "tour.step37.body":
             "Which metric for segment loudness: K-weighted integral (close to hearing) / RMS (average energy) / peak dBFS (instant peak); re-analyze after changing.",
@@ -1569,7 +1569,7 @@ export const T = {
             "Un flux complet : capture → analyse → ajuster/geler → écrire l'automation → ajuster l'automation manuellement. Priorité : automation de l'hôte > valeur manuelle gelée > ajustement manuel > courbe d'analyse du moteur. Vous pouvez le revoir à tout moment via le bouton « Voir le workflow » dans Réglages.",
         "tour.step36.title": "Mode d'emploi",
         "tour.step36.body":
-            "Flux en trois étapes + neuf notes importantes ; les neuf sont dépliées pour vous — lisez-les une par une. En enfreindre une seule cause silence ou mauvais panoramique.",
+            "Flux en trois étapes + neuf notes importantes ; lisez-les une par une. En enfreindre une seule cause silence ou mauvais panoramique.",
         "tour.step37.title": "Indicateur de loudness",
         "tour.step37.body":
             "Quelle mesure pour le loudness de segment : intégrale pondérée K (proche de l'oreille) / RMS (énergie moyenne) / crête dBFS (crête instantanée) ; ré-analyser après changement.",
