@@ -236,13 +236,12 @@ void AutomationPrinter::tick()
         Lane& lane = m_lanes[static_cast<std::size_t>(i)];
         const int track = i / 2;
 
-        // 车道不活跃:param/curve 未接线、轨 disabled、维度被 freeze 冻结。
-        const bool active = lane.param != nullptr && lane.curve != nullptr &&
-                            m_trackEnabled[static_cast<std::size_t>(track)] && !laneFrozen(lane);
+        // 车道未接线 / 轨 disabled:闭合 gesture、零写入(§1.8 / §3.2)。
+        const bool wired = lane.param != nullptr && lane.curve != nullptr;
+        const bool enabled = wired && m_trackEnabled[static_cast<std::size_t>(track)];
 
-        if (!active)
+        if (!enabled)
         {
-            // 冻结/disabled 动态生效:闭合该车道 gesture,停写(§1.8 / §3.2)。
             if (lane.gestureOpen)
             {
                 lane.param->endChangeGesture();
@@ -251,14 +250,30 @@ void AutomationPrinter::tick()
             continue;
         }
 
-        // 活跃车道:保证 gesture 打开(幂等;解冻且在区间内 → 重新 begin,§1.8)。
+        // 保证 gesture 打开(幂等;冻结/未冻结车道在区间内都保持打开,§1.8)。
         if (!lane.gestureOpen)
         {
             lane.param->beginChangeGesture();
             lane.gestureOpen = true;
         }
 
-        // —— 真身曲线采样 → 归一化 → deadband 去重 ——
+        // —— 冻结维度(用户 2026-08-24 设计决定):用户已表态,该值以「平直线」写入 ——
+        // 每 tick 以 param 当前值(冻结手动静态值)写恒值;写重复恒值无害,宿主 deadband 合并。
+        if (laneFrozen(lane))
+        {
+            // param 当前值(冻结手动静态值)。AudioParameterFloat::getValue() 为 private,
+            // 走公开的 get()(denorm)+ convertTo0to1 归一到 0..1。
+            const float norm = lane.param->convertTo0to1(lane.param->get());
+            {
+                ScopedSelfWriteFlag guard(*this); // §3.5 层 2:抑制自触发 listener
+                lane.param->setValueNotifyingHost(norm);
+            }
+            lane.lastWrittenNorm = norm;
+            lane.everWritten = true;
+            continue;
+        }
+
+        // —— 未冻结:真身曲线采样 → 归一化 → deadband 去重 ——
         const float v =
             lane.isPan ? static_cast<float>(lane.curve->panAt(tSec)) : static_cast<float>(lane.curve->volAt(tSec));
         const float norm = lane.param->convertTo0to1(v);
