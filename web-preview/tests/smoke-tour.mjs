@@ -6,7 +6,7 @@
 // DOM 侧(蒙版/亮区/说明框定位、点击推进、跨 tab 翻页)归浏览器手测 / Playwright 截图。
 //
 // 跑什么:
-//   ① 步骤清单:全参数导览 44 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
+//   ① 步骤清单:全参数导览 43 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
 //   ② shouldShowTourAsk 四种组合(J50a 镜像);
 //   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
@@ -31,6 +31,7 @@ const src = (p) => readFileSync(join(ROOT, p), "utf8");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const TOUR = await import(u("web/output/tour.js"));
+const LANGSTART = await import(u("web/output/lang-start.js"));
 const { createBridge } = await import(u("web/shared/bridge.js"));
 const { T } = await import(u("web/shared/i18n.js"));
 const { FIFTEEN_TRACKS } = await import(u("web/shared/mock-data.js"));
@@ -51,13 +52,12 @@ const eq = (a, b, msg) =>
     );
 
 // =============================================================================
-log("=== ① 步骤清单(全参数导览 44 步)===");
+log("=== ① 步骤清单(全参数导览 43 步)===");
 {
-    eq(TOUR.TOUR_STEPS.length, 44, "步数 == 44");
+    eq(TOUR.TOUR_STEPS.length, 43, "步数 == 43");
     eq(
         TOUR.TOUR_ANCHORS,
         [
-            "langpick",
             null,
             "tab1",
             "group",
@@ -104,16 +104,11 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
         ],
         "44 锚点(含步 2/35 两个居中卡 null),末步=review",
     );
-    eq(
-        TOUR.TOUR_STEPS[0].anchor,
-        "langpick",
-        "首步 spotlight = 右上角语言胶囊",
-    );
-    eq(TOUR.TOUR_STEPS[0].tab, "master", "首步在整体调整页");
+    eq(TOUR.TOUR_STEPS[0].anchor, null, "首步 = 欢迎公告(无 spotlight,居中大卡)");
+    eq(TOUR.TOUR_STEPS[0].tab, "master", "首步欢迎公告在整体调整页");
     eq(
         TOUR.TOUR_STEPS.map((s) => s.tab),
         [
-            "master",
             "master",
             "master",
             "master",
@@ -161,11 +156,11 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
         "跨 tab 翻页目标逐条对拍(13 master / 12 tracks / 8 wave / 11 settings)",
     );
     eq(
-        TOUR.TOUR_STEPS[43].anchor,
+        TOUR.TOUR_STEPS[42].anchor,
         "review",
         "末步固定 = 设置页「重看引导」入口",
     );
-    eq(TOUR.TOUR_STEPS[5].anchor, "an", "第 6 步 = 三件套「02 分析」段");
+    eq(TOUR.TOUR_STEPS[4].anchor, "an", "第 5 步 = 三件套「02 分析」段");
     check(TOUR.SPOT_PAD >= 8, "spotlight 内边距 ≥8 设计 px");
 }
 
@@ -328,7 +323,7 @@ log("=== ⑤ 词条:tour.* 三语 ===");
         "done",
         "demoBadge",
     ];
-    for (let i = 1; i <= 44; i++) {
+    for (let i = 1; i <= 43; i++) {
         KEYS.push("step" + i + ".title", "step" + i + ".body");
     }
     for (const k of KEYS) {
@@ -345,17 +340,17 @@ log("=== ⑤ 词条:tour.* 三语 ===");
     }
     // 措辞纪律:输出开关一步不得出现「写入完成」(05 §2.6 / J45)
     check(
-        !/写入完成/.test(T.zh["tour.step4.body"]),
-        "zh step4 不含「写入完成」",
+        !/写入完成/.test(T.zh["tour.step3.body"]),
+        "zh step3 不含「写入完成」",
     );
     check(
-        !/write complete|written to/i.test(T.en["tour.step4.body"]),
-        "en step4 不含 write complete / written",
+        !/write complete|written to/i.test(T.en["tour.step3.body"]),
+        "en step3 不含 write complete / written",
     );
     // 首步正文含三件套主线 + clickAnywhere 独立词条
     check(
-        /采集 → 分析 → 输出/.test(T.zh["tour.step4.body"]),
-        "zh step4 含三件套主线",
+        /采集 → 分析 → 输出/.test(T.zh["tour.step3.body"]),
+        "zh step3 含三件套主线",
     );
     check(
         /左键点击任意处/.test(T.zh["tour.clickAnywhere"]),
@@ -474,6 +469,117 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
     check(
         html.includes('data-gb="settings-reopentour"'),
         "「重看引导」入口落点",
+    );
+}
+
+// =============================================================================
+log("=== ⑦ 首启语言选择卡(lang-start,独立 overlay)===");
+{
+    // 纯函数:判据与 shouldShowGuide 同构 + 本会话已选标记
+    eq(
+        LANGSTART.shouldShowLangStart(
+            { ui: { guide_seen: false } },
+            { guide_seen_global: false },
+            false,
+            false,
+        ),
+        true,
+        "guide 未看 ∧ 全局默认未置 ∧ 未选语言 ⇒ 显示语言卡",
+    );
+    eq(
+        LANGSTART.shouldShowLangStart(
+            { ui: { guide_seen: true } },
+            { guide_seen_global: false },
+            false,
+            false,
+        ),
+        false,
+        "guide 已看(重看引导/兜底)⇒ 不显示语言卡",
+    );
+    eq(
+        LANGSTART.shouldShowLangStart(
+            { ui: { guide_seen: false } },
+            { guide_seen_global: true },
+            false,
+            false,
+        ),
+        false,
+        "全局默认已置(不再显示)⇒ 不显示语言卡",
+    );
+    eq(
+        LANGSTART.shouldShowLangStart(
+            { ui: { guide_seen: false } },
+            { guide_seen_global: false },
+            true,
+            false,
+        ),
+        false,
+        "本会话已关过引导页 ⇒ 不显示",
+    );
+    eq(
+        LANGSTART.shouldShowLangStart(
+            { ui: { guide_seen: false } },
+            { guide_seen_global: false },
+            false,
+            true,
+        ),
+        false,
+        "本会话已选过语言 ⇒ 不重复显示",
+    );
+    eq(
+        LANGSTART.shouldShowLangStart(
+            { ui: { guide_seen: false } },
+            null,
+            false,
+            false,
+        ),
+        false,
+        "首帧未到(§0.6 门控)⇒ 不显示",
+    );
+    eq(
+        LANGSTART.LANG_PICK_CODES,
+        ["zh", "en", "fr"],
+        "语言卡三按钮 = zh / en / fr",
+    );
+
+    const html = src("web/output/index.html");
+    const ls = src("web/output/lang-start.js");
+    const audio = [
+        "AudioContext",
+        "webkitAudioContext",
+        "new Audio",
+        "createOscillator",
+        "OscillatorNode",
+        "AudioBuffer",
+        "AudioParam",
+        "createGain",
+    ];
+    for (const a of audio) {
+        check(!ls.includes(a), "lang-start.js 零 Audio API:" + a);
+    }
+    // 零桥调用(语言切换走 app.js 的 setLang,本文件不触引擎)
+    const calls = [...ls.matchAll(/call\("([a-zA-Z]+)"/g)].map((m) => m[1]);
+    check(calls.length === 0, "lang-start.js 零桥调用,实得 " + JSON.stringify(calls));
+    // a11y:role=dialog + aria-modal + aria-labelledby
+    check(ls.includes('"dialog"'), "lang-start role=dialog");
+    check(ls.includes('"true"') && ls.includes("aria-modal"), "lang-start aria-modal");
+    check(ls.includes("aria-labelledby"), "lang-start aria-labelledby");
+
+    // i18n:lang-start.* 三语齐(标题三语常显 + 三按钮各用各自语言)
+    for (const k of ["title", "zh", "en", "fr"]) {
+        const key = "lang-start." + k;
+        for (const lang of ["zh", "en", "fr"]) {
+            check(
+                typeof T[lang][key] === "string" && T[lang][key].length > 0,
+                lang + "." + key + " 非空",
+            );
+        }
+    }
+
+    // index.html:header 语言胶囊不再是 tour 锚点(恢复普通控件)
+    check(
+        !html.includes('data-tour="langpick"'),
+        "header 语言胶囊已移除 data-tour=langpick",
     );
 }
 

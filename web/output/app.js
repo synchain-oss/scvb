@@ -52,6 +52,7 @@ import {
     shouldShowTourAsk,
     shouldAutoShowTourAsk,
 } from "./tour.js";
+import { createLangStart, shouldShowLangStart } from "./lang-start.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -110,6 +111,7 @@ const store = {
         printDoneUntil: 0,
         wasPrinting: false,
         guideClosed: false,
+        langChosen: false, // 首启语言选择卡本会话已选(不入 state chunk,零桥/零契约)
         // C++ 侧 `{rejected:"printing"}` 的**渲染窗口**(§5.6「UI 与 C++ 双保险」的 C++ 半边命中时)。
         // 之所以要一个时间戳而不是就地 setAttribute:renderHeader 每次都按 phase 重算 chip 的
         // data-disabled,就地写会在同一拍被抹回 0(UI 与引擎状态不同步时 phase 恰恰不是 print)。
@@ -124,6 +126,7 @@ const store = {
  * 真实事件始终写 store(期间照常入内存、逐字节不变);只有渲染消费面被临时切到 demo。
  */
 let tour = null;
+let langStart = null;
 
 function viewStore() {
     return tour && tour.isActive() ? tour.demoStore() : store;
@@ -417,10 +420,21 @@ tour = createTour({
     activateTab,
     getActiveTab: () => content.getAttribute("data-tab"),
     requestRender: () => requestRender(),
-    setLang: (code) => setLang(code),
     expandGuide: () => tabSettings.expandNine(),
 });
 tour.mount();
+
+// 首启语言选择卡(T36b 第四轮):独立 overlay,先于红字九条页;选中语言即关闭并露出红字页。
+langStart = createLangStart({
+    root: document,
+    card,
+    onPick: (code) => {
+        store.session.langChosen = true;
+        if (langStart) langStart.setShown(false);
+        setLang(code); // 复用既有语言切换与持久化(契约 §1.30)
+    },
+});
+langStart.mount();
 
 // ------------------------------------------------------------- 缩放档位(footer 下拉 + 设置页,05 §1.2)
 // 档位表单一真源 = web/shared/design-box.js 的 DESIGN.output.presets(05 §1.2「常量真源」栏)。
@@ -911,6 +925,7 @@ function render() {
     renderFooter();
     renderScale();
     renderGuide();
+    renderLangStart();
     syncTourAsk();
     // 只投影当前激活 tab(T33 渲染性能批):四面板同在 DOM,但每个 tab 的
     // render 都是「store + 本地态 → DOM」的幂等纯投影,切回来时 activateTab
@@ -1185,6 +1200,20 @@ function renderGuide() {
         viewStore().state,
         viewStore().ready ? viewStore().snapshot : null,
         viewStore().session.guideClosed,
+    );
+}
+
+// 首启语言选择卡(独立 overlay,先于红字九条页;T36b 第四轮)。
+// 判据与 shouldShowGuide 同构 + 本会话已选标记;guide 已见(重看引导/兜底)不显示。
+function renderLangStart() {
+    if (!langStart) return;
+    langStart.setShown(
+        shouldShowLangStart(
+            viewStore().state,
+            viewStore().ready ? viewStore().snapshot : null,
+            viewStore().session.guideClosed,
+            viewStore().session.langChosen,
+        ),
     );
 }
 

@@ -99,7 +99,7 @@ export const SCENARIO_MAP = Object.freeze({
     // T33 接线:布防态落在健康满配世界上,由 buildWorld 场景覆写改快照初值
     // (state.recapture 按契约 §9.2 形状回读,Tab3 三处 badge 的数据源)
     "recapture-armed": "fifteen-tracks",
-    // T36b 首启交互式引导:guide 已过、tour_seen=false(见 buildWorld 覆写)
+    // T36b 首启交互式引导:完整首启链(语言卡 → 红字九条 → 询问步 → tour 43 步);见 buildWorld 覆写
     "first-run-tour": "fifteen-tracks",
     // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
     "curve-editor": "fifteen-tracks",
@@ -465,9 +465,9 @@ export function buildWorld(opts = {}) {
         };
     }
     if (opts.scenario === "first-run-tour" && outputSnapshot) {
-        // 05 §2.6 首启顺序固定 = 红字九条页 → 询问步 → tour;场景必须复现完整链条,
+        // 05 §2.6 首启顺序固定 = 语言卡 → 红字九条页 → 询问步 → tour;场景必须复现完整链条,
         // 故两级 guide_seen 与 tour_seen 全 false(与 first-run 同款 + 显式 tour 位):
-        // 引导页正常弹出 → 「开始使用」→ 询问步 → 「开始引导」→ 7 步 → 完成落设置页。
+        // 语言卡弹出 → 选语言 → 红字页「开始使用」→ 询问步「开始引导」→ 43 步 → 完成落设置页。
         outputSnapshot = {
             ...outputSnapshot,
             ui: { ...outputSnapshot.ui, guide_seen: false, tour_seen: false },
