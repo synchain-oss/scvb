@@ -16,7 +16,8 @@ enum class LoudnessMode
     PeakDbfs = 2, // 峰值 dBFS(未加权样本峰值,非 true-peak)
 };
 
-// 枚举 → state UTF-8 字符串(03 §6.3)。
+// 枚举 → 桥面真值 UTF-8 字符串(SCVB_CONTRACT §1.21/§9.2;KIntegrated → "kw_integrated")。
+// 注:core 历史拼写 "k_integrated" 仅由 parseLoudnessMode 兼容接受,序列化一律出 "kw_integrated"。
 const char* loudnessModeToString(LoudnessMode mode);
 
 struct LoudnessModeParseResult

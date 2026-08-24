@@ -616,8 +616,11 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(segmentation, "min_segment_ms", rt.segmentationMinSegmentMs);
     put(analysis, "segmentation", segmentation);
     put(analysis, "transition_ramp_ms", rt.transitionRampMs);
-    put(analysis, "loudness_mode", rt.loudnessMode);
-    put(analysis, "center_slot_policy", rt.centerSlotPolicy);
+    // [J69/U24] 持锁快照读(复评重要②):loudnessMode/centerSlotPolicy 由 setAnalysisConfig 持锁写、
+    // getStateInformation 持锁读,emitState 必须同锁读(经 analysisConfigSnapshot)消除剩余竞态。
+    const auto analysisCfg = processor_.analysisConfigSnapshot();
+    put(analysis, "loudness_mode", analysisCfg.first);
+    put(analysis, "center_slot_policy", analysisCfg.second);
     put(o, "analysis", analysis);
 
     juce::var channels = mkArray();
@@ -1597,11 +1600,11 @@ void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
         return;
     }
     const juce::var patch = a[0];
-    auto& rt = processor_.runtime();
 
-    // 阶段1:先校验全部枚举字段到局部量(PR#55 第4轮缺陷2)。
-    juce::String loudnessMode = rt.loudnessMode;
-    juce::String centerSlotPolicy = rt.centerSlotPolicy;
+    // 阶段1:先校验全部枚举字段到局部量(PR#55 第4轮缺陷2)。patch 未含字段时局部量保持空串,
+    // 阶段2 的 setter 依 hasLoudness/hasCenter 忽略之 —— 无需回退读 rt 现值(复评建议②,删死值回退读)。
+    juce::String loudnessMode;
+    juce::String centerSlotPolicy;
     bool hasLoudness = false;
     bool hasCenter = false;
     if (patch.hasProperty("loudness_mode"))
@@ -1626,20 +1629,9 @@ void OutputEditor::handleSetAnalysisConfig(const ArgList& a, Completion c)
         hasCenter = true;
     }
 
-    // 阶段2:全部通过后一次性应用,变化才 bump。
-    bool changed = false;
-    if (hasLoudness)
-    {
-        changed |= loudnessMode != rt.loudnessMode;
-        rt.loudnessMode = loudnessMode;
-    }
-    if (hasCenter)
-    {
-        changed |= centerSlotPolicy != rt.centerSlotPolicy;
-        rt.centerSlotPolicy = centerSlotPolicy;
-    }
-    if (changed)
-        ++rt.configSeq; // PR#55 缺陷4
+    // 阶段2:经 processor 持锁 setter 一次性应用(复评重要①:与 getStateInformation 同锁读,
+    // 消除 juce::String COW 跨线程竞态;变化才 bump configSeq)。
+    (void)processor_.setAnalysisConfig(loudnessMode, centerSlotPolicy, hasLoudness, hasCenter);
     c(okResp());
 }
 

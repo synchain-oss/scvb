@@ -13,7 +13,7 @@
 // 容器(定长头 + TLV 块,little-endian):
 //   偏移  字段
 //   0     u32 magic = 'SCVB' (0x42564353,小端内存序;与 ipc/SegmentLayout.h kScvbMagic 同源)
-//   4     u32 abi   = 1(与 IPC abi 独立计数)
+//   4     u32 abi   = 2(与 IPC abi 独立计数)
 //   8     u32 flags = 0
 //   12    u32 chunkCount
 //   16..  TLV × N:{ u32 fourcc; u32 sizeBytes; u8 payload[sizeBytes](4 字节对齐,padding 置 0) }
@@ -31,7 +31,7 @@
 //    仍返回 Ok —— Output 接线卡必须把「同 abi 但 CRVS minor 更高」按「等同拒载 + preservedOriginal
 //    原样回写 + 提示升级」处理,不得让旧插件抹掉新版曲线数据。
 // 3. docs/STATE_SCHEMA.md 目前是 T39a 占位空壳;本 codec 是 wire-format 先行真源,T39a 回填时以本
-//    头 + tests/golden/state/abi1.bin 为准交叉校验。
+//    头 + tests/golden/state/abi{N}.bin 为准交叉校验(abi=1 为历史迁移基线,abi=2 为当前格式锁)。
 namespace scvb::state
 {
 
@@ -39,7 +39,8 @@ namespace scvb::state
 // magic 与仓内 IPC 已冻结常量同源(ipc/SegmentLayout.h kScvbMagic = makeFourCc('S','C','V','B') =
 // 0x42564353):小端写盘后前 4 字节字面拼出 "SCVB",与 tests/golden/ipc-layout.txt 的 magic 0x42564353 一致。
 inline constexpr std::uint32_t kStateMagic = 0x42564353u; // 'SCVB'(小端内存序,与 SegmentLayout.h 同源)
-inline constexpr std::uint32_t kCurrentAbi = 1u;
+inline constexpr std::uint32_t kCurrentAbi =
+    2u; // abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy(见 StateMigration migrate_1_to_2)
 
 inline constexpr std::uint32_t kFourccPrms = 0x534D5250u; // 'PRMS'
 inline constexpr std::uint32_t kFourccCfgs = 0x53474643u; // 'CFGS'
