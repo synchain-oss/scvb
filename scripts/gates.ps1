@@ -168,9 +168,19 @@ Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)===
 # ==================================================================
 # 设计盒常量唯一真源 = web/shared/design-box.js;生成物 src/core/DesignBox.h 必须逐字节一致
 # (01 §6.1 / 05 §1.2;消除 Bridge 双处硬编码技术债)。--check 重生成并对拍,漂移即红。
-$designBox = (& python scripts\gen-design-box.py --check 2>&1)
-if ($LASTEXITCODE -ne 0) { $designBox | ForEach-Object { Write-Host ("  " + $_) } }
-Set-Gate '3d 设计盒真源' ($LASTEXITCODE -eq 0)
+#
+# ⚠ 先判 python 在不在,理由同 Gate 3e 的 node 守卫(PR#64 评审【建议】):
+# 命令不存在时 PowerShell 抛 CommandNotFoundException 而**不更新 $LASTEXITCODE**,
+# 它保留上一条外部命令的 0 ⇒ 对拍一次没跑却判绿。误报绿比硬失败危险得多。
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+  Write-Host '  python 未找到(gen-design-box.py 需要)' -ForegroundColor Red
+  Set-Gate '3d 设计盒真源' $false
+}
+else {
+  $designBox = (& python scripts\gen-design-box.py --check 2>&1)
+  if ($LASTEXITCODE -ne 0) { $designBox | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3d 设计盒真源' ($LASTEXITCODE -eq 0)
+}
 
 # ==================================================================
 Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
