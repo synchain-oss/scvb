@@ -304,8 +304,9 @@ export const DEMO_STEREO_CHANNELS = Object.freeze(
     DEMO_TRACKS.filter((t) => t.sourceChannels === 2).map((t) => t.ch),
 );
 
-/** tour demo 的时间线长度(秒)。段表 / 覆盖 / 波形三处共用同一条时间线。 */
-export const DEMO_DURATION_S = 180;
+/** tour demo 的时间线长度(秒)。段表 / 覆盖 / 波形三处共用同一条时间线。
+ *  = 5 分钟 ×15 轨(J59;05 §6.3 验收行「预览 mock 注入 5 分钟 ×15 轨假数据」逐字)。 */
+export const DEMO_DURATION_S = 300;
 
 /** tour demo 的在线组位图(设计稿 1261 行 GROUPS_ONLINE = A/B/E → bit0|bit1|bit4)。 */
 export const DEMO_GROUPS_ONLINE = 0b00010011;
@@ -346,7 +347,7 @@ function phrasesOf(ch, durationS = DEMO_DURATION_S) {
  * 某轨的采集覆盖区间(两轮采集:passId 1 / 2,中间留一段没采到的空当)。
  * 契约 §2.7 的 `coverage_ranges` 真身在 C++ 侧;这里造的是同形状的预览值。
  */
-function coverageRangesOf(ch, durationS = DEMO_DURATION_S) {
+export function coverageRangesOf(ch, durationS = DEMO_DURATION_S) {
     const u = unit(0x9201, ch);
     const v = unit(0x9202, ch);
     return [
@@ -359,6 +360,22 @@ function coverageRangesOf(ch, durationS = DEMO_DURATION_S) {
             endS: round(durationS - 3 - v * 5, 2),
         },
     ];
+}
+
+/** 波形 stale 演示轨(T33:琥珀斜条纹 + ⚠ 的稳定验收面;三轨错开取样)。 */
+export const STALE_DEMO_CHANNELS = Object.freeze([2, 7, 12]);
+
+/**
+ * 某轨的 stale 区间(fingerprint watchdog 语义预留,05 §2.3「特征波形」行)。
+ * 只有 STALE_DEMO_CHANNELS 三轨各有一段,落在**第二轮采集**(passId 2)内,
+ * 确定性、与调用顺序无关;其余轨回空(健康数据)。
+ * @returns {{startS:number, endS:number}[]}
+ */
+export function staleRangesOf(ch, durationS = DEMO_DURATION_S) {
+    if (!STALE_DEMO_CHANNELS.includes(ch)) return [];
+    const u = unit(0x9301, ch);
+    const startS = round(durationS * (0.56 + u * 0.05), 2);
+    return [{ startS, endS: round(startS + durationS * 0.08, 2) }];
 }
 
 /**
@@ -452,18 +469,21 @@ export function makeOutputState(overrides = {}) {
             range: { mode: "follow", start_s: 0, end_s: 0 },
         },
         analysis: {
-            // 默认值取 02 §2.1 VadParams / §3.1-§3.2(J23 的 pre/post = 120/200)
+            // 默认值口径(T33 Wave 2 统一):05 §2.3 滑杆值域 + 设计稿默认
+            // (threshold −60..−10 dB、sensitivity 0..1;J23 的 pre/post = 120/200)。
+            // 02 §2.1 旧默认(threshold 30 正值 / sensitivity 50)与 05 的 UI 值域
+            // 相悖,mock 是 UI 消费面 —— 取 05,登记 deviations 供 02 复核。
             vad: {
-                threshold_db: 30,
+                threshold_db: -38,
                 hysteresis_db: 6,
-                hangover_ms: 250,
+                hangover_ms: 180,
                 padding_pre_ms: 120,
                 padding_post_ms: 200,
             },
             segmentation: {
                 mode: "valley",
-                sensitivity: 50,
-                min_segment_ms: 120,
+                sensitivity: 0.62,
+                min_segment_ms: 420,
             },
             transition_ramp_ms: 80,
             loudness_mode: "kw_integrated", // §1.21 默认档
@@ -733,12 +753,14 @@ export function makeSegments(
         const segments = phrases.map((p, i) => {
             const panJitter = unit(0x8101 + version, ch * 149 + i) * 12 - 6;
             const volJitter = unit(0x8102 + version, ch * 151 + i) * 3 - 1.5;
-            // 每 11 段左右出一段用户编辑段(编辑后按 J34/J44 必定 locked)
-            const mark = (ch * 7 + i * 13) % 11;
+            // 每 23 段左右出一段用户编辑段(编辑后按 J34/J44 必定 locked)。
+            // T33 Wave 1 亲验:11 取模下 fifteen-tracks 满屏琥珀「锁定」chip,
+            // 视觉噪音过大 —— 密度减半(角标尺寸维持图例帧规格),登记 deviations。
+            const mark = (ch * 7 + i * 13) % 23;
             const origin =
                 mark === 0
                     ? "user_edited"
-                    : mark === 5 && i > 0
+                    : mark === 11 && i > 0
                       ? "user_created"
                       : "auto";
             const seg = {
@@ -904,7 +926,7 @@ export function makeInputSnapshot(overrides = {}) {
  * 纪律:
  *   - 未覆盖列 `covered=0` 且 `minDb=maxDb=-160`(哨兵),`vad`/`stale`/`passId` 一律 0;
  *   - `passId` 取该列所属采集轮次(本 mock 里 = 覆盖区间下标 +1),不同轮次 UI 底色微差;
- *   - `stale` 默认全 0(健康数据);需要「过期采集」底色的场景由 T28 fixture 覆盖该数组;
+ *   - `stale` 由 `staleRangesOf(ch)` 派生(T33:三轨各一段琥珀斜条纹,其余全 0);
  *   - `valleys` = 升序的能量谷时间点(秒),取乐句之间的间隙中点,供边界拖拽吸附;
  *   - 包络值是**时间的函数**而非列下标的函数 —— 换个 cols/视口再拉同一段,波形长得一样。
  * @param {number} ch 1..15
@@ -923,6 +945,7 @@ export function makeWaveformTile(ch, startS, endS, cols) {
 
     const ranges = coverageRangesOf(ch);
     const phrases = phrasesOf(ch);
+    const staleRanges = staleRangesOf(ch);
     const minDb = [];
     const maxDb = [];
     const vad = [];
@@ -953,7 +976,7 @@ export function makeWaveformTile(ch, startS, endS, cols) {
         minDb.push(round(clamp(hi - depth, -80, 0), 1));
         vad.push(voiced ? 1 : 0);
         covered.push(1);
-        stale.push(0);
+        stale.push(indexOfRange(staleRanges, tMid) >= 0 ? 1 : 0);
         passId.push(rIdx + 1);
     }
 

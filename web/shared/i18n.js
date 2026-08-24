@@ -97,7 +97,8 @@ export const T = {
         takenOver: "已接管",
         printing: "打印中",
         lowSample: "样本不足",
-        autoStop: "播完自动停",
+        // T33 Wave 4 用户 preview 裁定:短语「播完自动停」读不成句,改完整句(key 不变)
+        autoStop: "播放结束自动停止",
         reidentify: "重新识别(含手动段)",
         applyToSegments: "应用到分段",
         setAsRange: "设为范围",
@@ -134,6 +135,11 @@ export const T = {
         "tracks.manualDrivenHint": "该轨仍由手动固定值驱动——重新识别该轨?",
         "in.releaseConfirm": "将释放通道 {n},本轨回到直通",
         "wave.recaptureArmed": "重采集布防中 · 选区 {x}–{y} · {n} 轨",
+        // 无占位符短式(T33 PR#64 评审【重要】1 / 【建议】2):Tab2 行首圆点 badge 的
+        // tooltip 与 Tab3 badge 的静态兜底文案都只拿得到「在布防中」这一个布尔位,
+        // 拿不到 {x}{y}{n} —— 灌长式会把字典原文连占位符一起写进 title / textContent。
+        // 范围与轨数在两处 badge(Tab1 Range / Tab2 图例行)上由 fmt 灌完整串。
+        "wave.recaptureArmedShort": "重采集布防中",
         "footer.recaptureOutputWarn":
             "输出引擎仍按全局范围工作,与本次重采集选区无关",
 
@@ -452,6 +458,113 @@ export const T = {
         "master.printLock.group": "打印中不可切组",
         "master.printLock.version": "打印中不可切换版本,请先停止走带",
         "master.printLock.copy": "打印中不可复制版本",
+
+        // ---- T33 Wave 1 新增(Output Tab3 正式实现;05 §2.3/§2.3a 有语义无 key 的位置,
+        // 图谱 A-17/A-18/A-19 + 各件所需)。EN/FR 为 T33 自译,已入 U17 待人工审校清单。----
+        // 7 滑杆短标:mono 大写微标族,三语同值(A-19 统筹裁定,同 tracks.colCh 纪律;
+        // 顺序 = 05 §2.3 的 setVadParams 五字段 + setSegmentation 两字段,不可重排)
+        "wave.sldThreshold": "THRESHOLD",
+        "wave.sldHysteresis": "HYSTERESIS",
+        // 桥面字段是 `hangover_ms`(契约 §1.18,冻结不动);**显示名取 HOLD** ——
+        // hangover 是 VAD/语音编码域的标准词(G.729B、AMR VAD),而本插件的用户
+        // 是混音师,他们脑内的词是 gate 的 Attack/**Hold**/Release;两者在 02
+        // §2.3 的状态机里功能完全等同(releaseCount ≥ hangoverFrames 才出段)。
+        // 术语链靠 tip 里的括注不断。用户 preview 提出,统筹裁定(deviations)。
+        "wave.sldHangover": "HOLD",
+        "wave.sldPadPre": "PAD PRE",
+        "wave.sldPadPost": "PAD POST",
+        "wave.sldSensitivity": "SENSITIVITY",
+        "wave.sldMinSeg": "MIN SEG",
+        // 七条悬停说明(A-19 同族自造;`{d}` = 02 §0.3 的出厂默认档)。
+        // 七个 mono 微标不看说明猜不出各自管什么 —— 用户 preview 逐个问过来了。
+        "wave.tipThreshold":
+            "有声门限:比它响算「在唱」,比它轻算静音。调高只认响的地方,调低连气声也算进来(默认 {d})",
+        "wave.tipHysteresis":
+            "回滞:开门用门限值,关门要再低这么多才关。防止音量在门限附近抖动、把一句话切成碎片(默认 {d})",
+        "wave.tipHold":
+            "静音保持(VAD hangover):跌破门限后仍当作「在唱」的时长,防止字与字之间的短停顿被判成句子结束(默认 {d})",
+        "wave.tipPadPre":
+            "前留白:有声区往前扩这么多,别把起音的头咬掉(默认 {d})",
+        "wave.tipPadPost":
+            "后留白:有声区往后扩这么多,别把尾音和混响咬掉(默认 {d})",
+        // 02 §3.1/§3.2:谷切分只对**长于 maxSegment(默认 8s)**的段生效 ⇒ 典型
+        // 乐句(1–4s)下拖动本杆看不到变化。已转 native 侧评估,tip 先据实说明。
+        "wave.tipSensitivity":
+            "分段灵敏度:越高越容易在能量谷处切段。仅对长于 8 秒的段生效,短乐句上不会有变化(默认 {d})",
+        // 02 §2.3 后处理 P1 逐字:「core 段长 < minSegmentMs → **丢弃**」,且在
+        // padding 之前判定。**不是**并进邻段(合并是内部常量 mergeGap,不暴露)。
+        "wave.tipMinSeg":
+            "最短段长:短于此的段直接丢弃(在前后留白之前判定)。调大可滤掉杂音,但也会丢掉短促的 ad-lib 与单字和声(默认 {d})",
+        // 泳道空态(05 §2.3 行 318 逐字;A-17)
+        "wave.emptyMain": "尚无采集数据——开启采集开关并播放",
+        "wave.emptyCta": "去 Tab1 打开采集",
+        // 检查器顶部「跟随宿主」提示(05 §2.3a ADR-005 第 3 条逐字;A-18)
+        "wave.followHostNote": "跟随宿主中:编辑已保存,开启输出后生效",
+        // 工具条四钮(05 §2.3 行 300-303 表内名;「重新识别」复用裸词条 reidentify)
+        "wave.btnRecapture": "重采集选区",
+        "wave.btnReanalyze": "重分析选区",
+        "wave.btnClearCoverage": "清除选区采集数据",
+        // 两段式反馈(05 §2.3 行 298 三段式的 ①② 态;diff 首行走 wave.diffKept)
+        "wave.applyCountdown": "300ms 后应用…",
+        "wave.applying": "正在应用…",
+        // 布防行的行内短说明(B-04 裁定:长句移 footer.recaptureOutputWarn,这里留短句)
+        "wave.recaptureInlineNote": "本次布防只门控采集,不改变输出范围",
+        // 段检查器(05 §2.3a;标题 eyebrow + 只读字段名;origin 角标与标题
+        // 同行,角标值 E/C 本身非词条 —— §17②,无独立字段行)
+        "wave.inspectorTitle": "段检查器",
+        // 面板开关 + 空态句(T33 Wave 5 用户裁定④:检查器改「常驻 + 显式开关」,
+        // 覆盖 C-11 的条件渲染;建议 05 §2.3 行 286「可展开」同步改口径)
+        "wave.inspectorToggle": "段检查器",
+        // 标题栏 ✕ 的 aria-label(Wave 5 /code-review minor⑥):它折叠的是常驻面板,
+        // 与工具条那枚开关同一个本地态 —— 不是「取消/放弃刚才的编辑」,
+        // 因此不得复用确认框族的 common.cancel(EN/FR 自译,入 U17 待审校)
+        "wave.inspectorClose": "收起段检查器",
+        "wave.inspectorEmpty": "点选泳道内的段以编辑",
+        "wave.segStart": "起",
+        "wave.segEnd": "止",
+        "wave.segLen": "时长",
+        // 段响度标签正名(契约 §1.21:loudness_mode 默认 kw_integrated;
+        // [J72a] C-12:该字段的旧显示名已废,不得回流)
+        "wave.segLoudness": "K 加权段积分",
+        "wave.volField": "VOL",
+        "wave.lockSegment": "锁定本段",
+        // 泳道内锁定小标(图例帧 778 文字;检查器行走 wave.lockSegment)
+        "wave.lockBadge": "锁定",
+        // 轨头件(B-08 裁定:覆盖率与段数并成一行;曲线可见压成眼睛图标钮)
+        "wave.covSeg": "{p}% · {n} 段",
+        "wave.curveVisible": "曲线可见",
+        "wave.pickTrack": "选择轨 {n}",
+        // 边界手柄 tooltip(A-14 裁定:Alt 关吸附写进 tooltip;双击分割一并说明)。
+        // T33 Wave 4 用户 preview 反馈⑦:原句没说清「这个把手是干嘛的」——补主语
+        // 「分段边界」,并把双击分割 / Delete 合并两条一并写进同一句(反馈⑧)。
+        "wave.boundaryHandleTip":
+            "分段边界:拖动改边界(自动吸附能量谷,按住 Alt 关闭吸附);双击段内=在此分割;选中相邻两段按 Delete=合并",
+        // 吸附命中(金色)态的补充说明(反馈⑦③:金色是「已吸附」而不是别的意思)
+        "wave.boundarySnapTip": "已吸附到能量谷(按住 Alt 关闭吸附)",
+        // 缩放拖拽条两枚(T33 Wave 4 用户新件;05 无此件,J72 口径)
+        "wave.hZoomBar": "横向缩放(拖动改视口跨度,方向键步进)",
+        "wave.vZoomBar": "纵向缩放(拖动改泳道行高,方向键步进)",
+        // 二次确认框两枚(05 §2.3 行 302/303 逐字)
+        "wave.reidentifyConfirm":
+            "将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?",
+        "wave.clearCoverageConfirm": "将删除选中轨×选区的采集特征数据,确定?",
+        // ---- T33 Wave 2 交互反馈件(05 §2.3 行 300-313 / 契约 §5.5;
+        //      EN/FR 入 U17 待审校)----
+        // recaptureArm 拒绝态四值的行内说明(§5.5:出说明、不点亮 badge)
+        "wave.armReason.noTracks": "未勾选目标轨——先在左侧轨头勾选",
+        "wave.armReason.noSelection": "无有效选区——先在时间标尺上拖出选区",
+        "wave.armReason.readOnly": "只读观察态,布防未生效",
+        "wave.armReason.noTimeline": "宿主未提供时间线,无法布防",
+        // merge 的 notAdjacent 拒绝反馈(契约 §1.22)与工具条合并钮(05 行 313)
+        "wave.notAdjacent": "只能合并相邻两段",
+        "wave.btnMerge": "合并选中两段",
+        // 重采集受覆盖提示(05 行 300:「将覆盖 K 段已有数据」)
+        "wave.recaptureOverlap": "将覆盖 {k} 段已有数据",
+        // diff 变更列表条目与增删摘要(A-02;首行走 wave.diffKept)
+        "wave.diffItem": "轨 {ch} · 段 {i}:pan {pf}→{pt} · vol {vf}→{vt}",
+        "wave.diffAddedRemoved": "新增 {a} 段 · 移除 {r} 段",
+        // clearCoverage 回执反馈(契约 §1.24 的 clearedS)
+        "wave.clearedCoverage": "已清除 {s} s 采集数据",
     },
 
     en: {
@@ -524,7 +637,10 @@ export const T = {
         takenOver: "TAKEN OVER",
         printing: "PRINTING",
         lowSample: "LOW SAMPLE",
-        autoStop: "Auto-stop",
+        // 完整句(zh 同处纪律);⚠ 长度受工具条动作行约束 —— 37 字符的
+        // 「Stop automatically when playback ends」实测把 EN 动作行挤成两行
+        // (30px → 48px,可见泳道少一条),修订轮压回 23 字符
+        autoStop: "Stop when playback ends",
         reidentify: "Re-identify (incl. edited)",
         applyToSegments: "Apply",
         setAsRange: "Set as Range",
@@ -565,6 +681,7 @@ export const T = {
         "in.releaseConfirm":
             "Release channel {n} — this track returns to passthrough",
         "wave.recaptureArmed": "RECAPTURE ARMED · {x}–{y} · {n} TRACKS",
+        "wave.recaptureArmedShort": "RECAPTURE ARMED",
         "footer.recaptureOutputWarn":
             "Engine still drives the global range — unaffected by the recapture selection",
 
@@ -881,6 +998,82 @@ export const T = {
         "master.printLock.version":
             "Can't switch version while printing — stop the transport first",
         "master.printLock.copy": "Can't copy a version while printing",
+
+        // ---- T33 Wave 1 新增(EN 为 T33 自译,待 U17 人工审校;
+        // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
+        "wave.sldThreshold": "THRESHOLD",
+        "wave.sldHysteresis": "HYSTERESIS",
+        "wave.sldHangover": "HOLD",
+        "wave.sldPadPre": "PAD PRE",
+        "wave.sldPadPost": "PAD POST",
+        "wave.sldSensitivity": "SENSITIVITY",
+        "wave.sldMinSeg": "MIN SEG",
+        "wave.tipThreshold":
+            "Voicing threshold: louder than this counts as singing, quieter counts as silence. Raise it to catch only loud passages, lower it to include breathy notes (default {d})",
+        "wave.tipHysteresis":
+            "Hysteresis: opens at the threshold but only closes this far below it — stops level jitter near the threshold from shredding a phrase (default {d})",
+        "wave.tipHold":
+            "Hold (VAD hangover): keep treating the signal as voiced for this long after it drops below the threshold, so short gaps between words are not read as the end of a phrase (default {d})",
+        "wave.tipPadPre":
+            "Pre-padding: extend each voiced region backwards by this much so attacks are not clipped (default {d})",
+        "wave.tipPadPost":
+            "Post-padding: extend each voiced region forwards by this much so tails and reverb are not clipped (default {d})",
+        "wave.tipSensitivity":
+            "Segmentation sensitivity: higher splits more readily at energy valleys. Only applies to segments longer than 8 s, so short phrases will not change (default {d})",
+        "wave.tipMinSeg":
+            "Minimum segment length: segments shorter than this are discarded (judged before padding). Raising it filters noise but also drops short ad-libs and one-word harmonies (default {d})",
+        "wave.emptyMain":
+            "No captured data yet — turn on the capture switch and play",
+        "wave.emptyCta": "Open capture in Tab 1",
+        "wave.followHostNote":
+            "Following host: edits are saved and take effect once output is on",
+        "wave.btnRecapture": "Re-capture selection",
+        "wave.btnReanalyze": "Re-analyze selection",
+        "wave.btnClearCoverage": "Clear selection capture data",
+        "wave.applyCountdown": "Applying in 300 ms…",
+        "wave.applying": "Applying…",
+        "wave.recaptureInlineNote":
+            "Arming only gates capture; the output range is unchanged",
+        "wave.inspectorTitle": "Segment inspector",
+        "wave.inspectorToggle": "Inspector",
+        "wave.inspectorClose": "Collapse segment inspector",
+        "wave.inspectorEmpty": "Click a segment in a lane to edit it",
+        "wave.segStart": "Start",
+        "wave.segEnd": "End",
+        "wave.segLen": "Length",
+        "wave.segLoudness": "K-weighted segment integral",
+        "wave.volField": "VOL",
+        "wave.lockSegment": "Lock this segment",
+        "wave.lockBadge": "LOCKED",
+        "wave.covSeg": "{p}% · {n} seg",
+        "wave.curveVisible": "Curves visible",
+        "wave.pickTrack": "Select track {n}",
+        "wave.boundaryHandleTip":
+            "Segment boundary: drag to move it (snaps to energy valleys, hold Alt to disable); double-click inside a segment to split there; select two adjacent segments and press Delete to merge",
+        "wave.boundarySnapTip":
+            "Snapped to an energy valley (hold Alt to disable)",
+        "wave.hZoomBar":
+            "Horizontal zoom (drag to change the viewport span, arrow keys to step)",
+        "wave.vZoomBar":
+            "Vertical zoom (drag to change the lane height, arrow keys to step)",
+        "wave.reidentifyConfirm":
+            "This clears {k} manual edit marks and recomputes; {l} locked segments stay unchanged. Continue?",
+        "wave.clearCoverageConfirm":
+            "This deletes the captured feature data for the selected tracks × selection. Continue?",
+        // ---- T33 Wave 2 interaction feedback (05 §2.3 / contract §5.5; U17 review pending) ----
+        "wave.armReason.noTracks":
+            "No target tracks — check track heads on the left first",
+        "wave.armReason.noSelection":
+            "No valid selection — drag one on the time ruler first",
+        "wave.armReason.readOnly":
+            "Read-only observer — arming did not take effect",
+        "wave.armReason.noTimeline": "Host provides no timeline — cannot arm",
+        "wave.notAdjacent": "Only two adjacent segments can be merged",
+        "wave.btnMerge": "Merge selected pair",
+        "wave.recaptureOverlap": "Will overwrite {k} segments of existing data",
+        "wave.diffItem": "Track {ch} · seg {i}: pan {pf}→{pt} · vol {vf}→{vt}",
+        "wave.diffAddedRemoved": "{a} added · {r} removed",
+        "wave.clearedCoverage": "Cleared {s} s of captured data",
     },
 
     fr: {
@@ -953,7 +1146,8 @@ export const T = {
         takenOver: "PRIS EN CHARGE",
         printing: "IMPRESSION",
         lowSample: "ÉCHANTILLON INSUFFISANT",
-        autoStop: "Arrêt auto",
+        // 同 EN:整句但压短,免得动作行换行(FR 最长态是工具条的宽度基准)
+        autoStop: "Arrêter en fin de lecture",
         reidentify: "Ré-identifier (incl. modifiés)",
         applyToSegments: "Appliquer",
         setAsRange: "Définir comme plage",
@@ -995,6 +1189,7 @@ export const T = {
         "in.releaseConfirm":
             "Libérer le canal {n} — cette piste repasse en direct",
         "wave.recaptureArmed": "RÉ-CAPTURE ARMÉE · {x}–{y} · {n} PISTES",
+        "wave.recaptureArmedShort": "RÉ-CAPTURE ARMÉE",
         "footer.recaptureOutputWarn":
             "Le moteur pilote toujours la plage globale — indépendamment de la sélection de ré-capture",
 
@@ -1321,6 +1516,86 @@ export const T = {
             "Changement de version impossible pendant l'impression — arrêtez d'abord le transport",
         "master.printLock.copy":
             "Copie de version impossible pendant l'impression",
+
+        // ---- T33 Wave 1 新增(FR 为 T33 自译,**发布前必须人工审校**,05 §5 / U17;
+        // 7 滑杆短标 / ORIGIN 为 mono 微标,三语同值)----
+        "wave.sldThreshold": "THRESHOLD",
+        "wave.sldHysteresis": "HYSTERESIS",
+        "wave.sldHangover": "HOLD",
+        "wave.sldPadPre": "PAD PRE",
+        "wave.sldPadPost": "PAD POST",
+        "wave.sldSensitivity": "SENSITIVITY",
+        "wave.sldMinSeg": "MIN SEG",
+        "wave.tipThreshold":
+            "Seuil de voix : au-dessus, on considère qu\u2019il y a chant ; en dessous, du silence. Augmentez pour ne retenir que les passages forts, baissez pour inclure les sons soufflés (défaut {d})",
+        "wave.tipHysteresis":
+            "Hystérésis : ouverture au seuil, fermeture seulement à cette distance en dessous — évite qu\u2019un niveau instable près du seuil ne hache une phrase (défaut {d})",
+        "wave.tipHold":
+            "Maintien (hangover VAD) : durée pendant laquelle le signal reste considéré comme chanté après être passé sous le seuil, pour que les brèves pauses entre les mots ne soient pas prises pour une fin de phrase (défaut {d})",
+        "wave.tipPadPre":
+            "Marge avant : étend chaque zone voisée vers l\u2019amont pour ne pas rogner les attaques (défaut {d})",
+        "wave.tipPadPost":
+            "Marge après : étend chaque zone voisée vers l\u2019aval pour ne pas rogner les queues de son et la réverbération (défaut {d})",
+        "wave.tipSensitivity":
+            "Sensibilité de segmentation : plus elle est haute, plus on coupe aux creux d\u2019énergie. N\u2019agit que sur les segments de plus de 8 s, donc sans effet sur les phrases courtes (défaut {d})",
+        "wave.tipMinSeg":
+            "Longueur minimale de segment : les segments plus courts sont supprimés (jugé avant les marges). Augmenter filtre le bruit mais supprime aussi les ad-libs brefs et les harmonies d\u2019un mot (défaut {d})",
+        "wave.emptyMain":
+            "Aucune donnée capturée — activez l'interrupteur de capture puis lancez la lecture",
+        "wave.emptyCta": "Ouvrir la capture dans l'onglet 1",
+        "wave.followHostNote":
+            "Suivi hôte : les modifications sont enregistrées et prendront effet une fois la sortie activée",
+        "wave.btnRecapture": "Re-capturer la sélection",
+        "wave.btnReanalyze": "Ré-analyser la sélection",
+        "wave.btnClearCoverage":
+            "Effacer les données de capture de la sélection",
+        "wave.applyCountdown": "Application dans 300 ms…",
+        "wave.applying": "Application…",
+        "wave.recaptureInlineNote":
+            "L'armement ne concerne que la capture ; la plage de sortie est inchangée",
+        "wave.inspectorTitle": "Inspecteur de segment",
+        "wave.inspectorToggle": "Inspecteur",
+        "wave.inspectorClose": "Réduire l'inspecteur de segment",
+        "wave.inspectorEmpty":
+            "Cliquez sur un segment dans une piste pour le modifier",
+        "wave.segStart": "Début",
+        "wave.segEnd": "Fin",
+        "wave.segLen": "Durée",
+        "wave.segLoudness": "Intégrale de segment pondérée K",
+        "wave.volField": "VOL",
+        "wave.lockSegment": "Verrouiller ce segment",
+        "wave.lockBadge": "VERROUILLÉ",
+        "wave.covSeg": "{p}% · {n} seg",
+        "wave.curveVisible": "Courbes visibles",
+        "wave.pickTrack": "Sélectionner la piste {n}",
+        "wave.boundaryHandleTip":
+            "Limite de segment : glissez pour la déplacer (aimantée aux creux d'énergie, Alt pour désactiver) ; double-clic dans un segment pour scinder ici ; sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner",
+        "wave.boundarySnapTip":
+            "Aimantée à un creux d'énergie (Alt pour désactiver)",
+        "wave.hZoomBar":
+            "Zoom horizontal (glissez pour changer l'étendue de la vue, flèches pour avancer pas à pas)",
+        "wave.vZoomBar":
+            "Zoom vertical (glissez pour changer la hauteur des pistes, flèches pour avancer pas à pas)",
+        "wave.reidentifyConfirm":
+            "Efface {k} marques d'édition manuelle et recalcule ; {l} segments verrouillés restent inchangés. Continuer ?",
+        "wave.clearCoverageConfirm":
+            "Supprime les données de caractéristiques capturées pour les pistes sélectionnées × la sélection. Continuer ?",
+        // ---- Retours d'interaction T33 Wave 2(05 §2.3 / contrat §5.5;relecture U17 en attente)----
+        "wave.armReason.noTracks":
+            "Aucune piste cible — cochez d'abord les en-têtes de piste à gauche",
+        "wave.armReason.noSelection":
+            "Aucune sélection valide — tracez-en une sur la règle temporelle",
+        "wave.armReason.readOnly":
+            "Observateur en lecture seule — l'armement n'a pas pris effet",
+        "wave.armReason.noTimeline":
+            "L'hôte ne fournit pas de ligne temporelle — armement impossible",
+        "wave.notAdjacent":
+            "Seuls deux segments adjacents peuvent être fusionnés",
+        "wave.btnMerge": "Fusionner la paire sélectionnée",
+        "wave.recaptureOverlap": "Écrasera {k} segments de données existantes",
+        "wave.diffItem": "Piste {ch} · seg {i} : pan {pf}→{pt} · vol {vf}→{vt}",
+        "wave.diffAddedRemoved": "{a} ajoutés · {r} supprimés",
+        "wave.clearedCoverage": "{s} s de données capturées effacées",
     },
 };
 

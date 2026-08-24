@@ -97,21 +97,91 @@ export const HOST_ECHO_FRESH_MS = 600;
  * 违反契约 §0.5「只更新显示」与 §2.2「切版本后 C++ 全量重发」。
  *
  * 规则两条:
- *   ① `full:true`(切版本的全量批次)⇒ **整表作废**(新版本的参数与旧版本毫无关系);
- *   ② 增量批次 ⇒ 本帧提到的 id 逐个作废,**唯独正在拖动中的那个 id 保留**
+ *   ① `full:true`(切版本的全量批次)⇒ **整表作废**(新版本的参数与旧版本毫无关系),
+ *      **唯独正在拖动中的那个 id 保留到松手** —— 指针还按在把手上时被全量广播抢跳,
+ *      与增量分支要防的是同一件事(T33:与 Tab2 `dropParamEcho` 的 full 分支对齐,
+ *      两 tab 此前口径不一致,登记见 t32/deviations §O);
+ *   ② 增量批次 ⇒ 本帧提到的 id 逐个作废,**同样保留拖动中的那个 id**
  *      (松手前让位会与自己的回声打架,产生把手回跳)。
+ *
+ * 空载荷(`null`)不是「一批参数」,按整表作废处理(拖动中的 id 也不例外)。
  *
  * @param {object} echo 现有乐观值表(本函数不改入参)
  * @param {object} payload `scvb.params` 载荷 `{values, hostEcho, full, versionActive}`
  * @param {string|null} gestureId 正在拖动中的 ParamID(无拖动传 null)
  */
 export function nextParamEcho(echo, payload, gestureId) {
-    if (!payload || payload.full) return {};
-    const out = { ...(echo || {}) };
-    for (const id of Object.keys((payload && payload.values) || {})) {
+    if (!payload) return {};
+    const src = echo || {};
+    if (payload.full) {
+        const held =
+            gestureId != null &&
+            Object.prototype.hasOwnProperty.call(src, gestureId);
+        return held ? { [gestureId]: src[gestureId] } : {};
+    }
+    const out = { ...src };
+    for (const id of Object.keys(payload.values || {})) {
         if (id !== gestureId) delete out[id];
     }
     return out;
+}
+
+/**
+ * `scvb.segments` **版本闸**(契约 §2.8 载荷首字段 `version:1..2`)。
+ *
+ * 事件仓只存**当前激活版本**的段表:`store.segments` 是 Tab1 计数 / Tab2 手动常值 /
+ * Tab3 泳道与检查器的共同渲染源,而这三处显示的都是 `global.version_active` 那一版。
+ * 唯一会送来别版本段表的面是 `copyVersion(src, dst)` —— 契约 §1.11 只说「完成后经
+ * `scvb.segments`(`reason:"copyVersion"`)回推段表」,**没有**规定 dst 不是激活版本时
+ * 发不发;web-preview 的 mock 照发(载荷 `version = dst`,只是自己内部不换表)。
+ * 不闸的话「复制到非激活版本」会把 `store.segments` 换成一份看不见的版本的表,
+ * Tab3 段数/边界与版本 chip 当场不一致(PR#64 评审【重要】6)。
+ *
+ * ⚠ **C++ 侧对非激活 dst 到底发不发这个事件,待 native 侧确认**。确认为「不发」后
+ *   本闸退化成恒真的防御层,不必拆 —— 它同时挡住任何别的版本串台。
+ *
+ * `reason:"versionActive"` 例外:该事件自身就是「激活版本刚换成 `version`」的通告,
+ * 而契约没有规定它与携新 `version_active` 的 `scvb.state` 谁先到 —— 按版本闸判会把
+ * 新版本的全量段表整帧误丢。`version` 或 `activeVersion` 任一不是整数时同样放行
+ * (首帧 snapshot 早于 state 落地、老载荷不带 `version` 都归这一支)。
+ *
+ * @param {object|null} seg `scvb.segments` 载荷
+ * @param {number|undefined} activeVersion `state.global.version_active`
+ */
+export function segmentsEventApplies(seg, activeVersion) {
+    if (!seg) return false;
+    if (seg.reason === "versionActive") return true;
+    if (!Number.isInteger(seg.version) || !Number.isInteger(activeVersion)) {
+        return true;
+    }
+    return seg.version === activeVersion;
+}
+
+/**
+ * §2.8:`channels` 只含受影响轨(snapshot / versionActive / copyVersion 时为全部轨),
+ * 段表是该轨的**完整列表**(不做段级增量)—— 所以按 ch 整条替换即可。
+ *
+ * 命名:本函数此前在 app.js 里用的局部名,与契约 §8.2「禁止复活名单」上那个已废弃的
+ * **桥函数**(01 草案的段合并 API,现由 `editSegment(ch,'merge',…)` 取代)逐字撞名。
+ * 名单靠整词扫描落实(scripts/check-bridge-parity.mjs 的 FORBIDDEN 表),留着一个同名
+ * 局部件迟早让机器扫出假阳性 —— 改叫 `applySegmentsEvent`(PR#64 评审【建议】1)。
+ */
+export function applySegmentsEvent(prev, next) {
+    if (!next) return prev;
+    if (
+        !prev ||
+        next.reason === "snapshot" ||
+        next.reason === "versionActive" ||
+        next.reason === "copyVersion"
+    ) {
+        return next;
+    }
+    const byCh = new Map((prev.channels || []).map((c) => [c.ch, c]));
+    for (const c of next.channels || []) byCh.set(c.ch, c);
+    return {
+        ...next,
+        channels: [...byCh.values()].sort((a, b) => a.ch - b.ch),
+    };
 }
 
 /**
@@ -144,6 +214,73 @@ export function format(text, vals) {
 
 export function clamp(lo, hi, v) {
     return v < lo ? lo : v > hi ? hi : v;
+}
+
+// --------------------------------------------------------- §2.9 轨级 error 的键
+/**
+ * `store.errors` 的存储键(T33)。契约 §2.9 字段纪律:`ch` 只在轨级错误
+ * (`srMismatch` / `channelConflict` / `lowSample`)出现;其中 **`lowSample` 是
+ * 会同时命中多轨**的一条(每轨采集后各自判「有效唱段 <1.5s」),按裸 code 存一条时
+ * 后到的轨会把先到的覆盖掉 —— Tab2 状态灯旁与 Tab3 轨头只剩最后一轨挂得上黄标。
+ * 故 `lowSample` 一律存 `lowSample#{ch}` 复合键。
+ *
+ * 其余 code **保持既有行为**(裸 code 一条):横幅 ③⑤⑥ 等是页级落点,同一 code 的
+ * 第二帧本就该覆盖第一帧;`srMismatch` 的横幅文案也只显示一个轨号(05 §2.0)。
+ *
+ * @param {object} e `scvb.error` 载荷 `{code, ch?, detail?, active?}`
+ */
+export function errorStoreKey(e) {
+    const code = e && e.code;
+    if (code !== "lowSample") return code;
+    const ch = Math.trunc(Number(e.ch));
+    return Number.isFinite(ch) && ch > 0 ? code + "#" + ch : code;
+}
+
+/**
+ * `active:false`(条件已解除,契约 §2.9)时**该删哪些键**。
+ *
+ * 存删对称性:`errorStoreKey` 把 `lowSample` 拆成 `lowSample#{ch}` 复合键,而契约
+ * §2.9 只保证「`ch` 仅在轨级错误出现」,**没有**「解除事件必带 `ch`」的正面保证。
+ * 若宿主发 `{code:"lowSample", active:false}`(不带 ch),按键直删只会删掉一个不存在
+ * 的裸键,`lowSample#{ch}` 永远留在 store 里 —— Tab2 行内黄标与 Tab3 轨头黄标
+ * 就此再也熄不掉(对抗校验 minor)。故:**带 ch = 只撤该轨;不带 ch = 撤该 code 的
+ * 全部条目**(裸键 + 全部复合键)。其余 code 是页级落点,键即裸 code,行为不变。
+ *
+ * @param {Map<string, object>|null} errors 当前 `store.errors`
+ * @param {object} e `scvb.error` 载荷 `{code, ch?, active:false}`
+ * @returns {string[]} 待删键(可能为空)
+ */
+export function errorKeysToDrop(errors, e) {
+    const key = errorStoreKey(e);
+    const code = e && e.code;
+    if (code !== "lowSample" || key !== code) return [key];
+    // 裸键 = 解除事件没带 ch ⇒ 连带撤下该 code 的全部轨级条目
+    const out = [key];
+    if (errors && typeof errors.forEach === "function") {
+        errors.forEach((v, k) => {
+            if (String(k).split("#")[0] === code && k !== key) out.push(k);
+        });
+    }
+    return out;
+}
+
+/**
+ * `store.errors` → 命中 `lowSample` 的轨号集合(Tab2 轨行与 Tab3 轨头**消费同一份**)。
+ * 按**值**扫描而非按键取:与 `errorStoreKey` 的键形解耦(裸 `lowSample` 键同样命中),
+ * 消费侧不必知道键怎么拼。
+ * @param {Map<string, object>|null} errors
+ * @returns {Set<number>} 轨号(1..15)集合;无命中时空集
+ */
+export function lowSampleChannels(errors) {
+    const out = new Set();
+    if (!errors || typeof errors.forEach !== "function") return out;
+    errors.forEach((v, k) => {
+        const code = (v && v.code) || String(k).split("#")[0];
+        if (code !== "lowSample") return;
+        const ch = Math.trunc(Number(v && v.ch));
+        if (Number.isFinite(ch) && ch > 0) out.add(ch);
+    });
+    return out;
 }
 
 /** 两位零填充(契约 §1.12 的 `t{t:02d}` 与轨号显示同款)。 */

@@ -39,7 +39,12 @@ import { createMeterRenderer } from "./canvas/meter.js";
 // hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字;
 // format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
 // PR #60 红旗)。
-import { HOST_ECHO_FRESH_MS, format } from "./tab-master.js";
+import {
+    HOST_ECHO_FRESH_MS,
+    format,
+    lowSampleChannels,
+    secondsToTimecode,
+} from "./tab-master.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -439,82 +444,108 @@ export function versionLabel(state, v) {
 }
 
 /**
- * 事件仓 → 15 行模型(**Tab2 的唯一渲染源**)。
- * 字段名沿用 Wave 1 模板的短名(`trackRowHtml` 不动):
- * st=stereo 标 / vol=卡箍行程比 0..1 / lv·pk=液柱与峰线行程比(由 meter.js 逐帧覆写) /
- * ex=lead_vol_exempt / part=participate_in_auto_pan / fp·fv=冻结两位 / low=样本不足。
+ * 一帧内的**跨行公共量**(T33 性能批):版本号 / 配对计数 / 多主唱 / 主唱居中 /
+ * 布防位图 / lowSample 轨集 —— 与 ch 无关,15 行共用一份。
+ *
+ * 为什么单拎出来:`rowOf(ch)` 在拖动期每步进都要读一行的当前值,原先走
+ * `rowsFromStore()[ch-1]` 会把 15 行连同这些公共量整套重算(pairCounts /
+ * leadLockCount 各扫一遍 channels)。拆开后单行路径只算自己那一行,
+ * 整页路径仍只算一次公共量(见 rowsFromStore)。
  */
-export function rowsFromStore(store) {
+export function rowContext(store) {
     const st = store || {};
     const state = st.state || {};
     const chans = state.channels || [];
-    const conn = (st.conn && st.conn.channels) || [];
     const vals = (st.params && st.params.values) || {};
-    const active =
-        (state.global && state.global.version_active) ||
-        (st.params && st.params.versionActive) ||
-        1;
-    const counts = pairCounts(chans);
-    const multiLead = leadLockCount(chans) >= 2 ? 1 : 0;
-    const leadSel = Math.trunc(num(vals.lead_select, 0));
     const rec = state.recapture || null;
-    const recMask = rec && rec.armed ? Math.trunc(num(rec.tracksMask, 0)) : 0;
-    // §2.9 `lowSample` 是轨级 error(载荷带 ch);app.js 的 store.errors 按 code 存一条
-    const lowErr =
-        st.errors && typeof st.errors.get === "function"
-            ? st.errors.get("lowSample")
-            : null;
+    return {
+        chans,
+        conn: (st.conn && st.conn.channels) || [],
+        vals,
+        segments: st.segments,
+        active:
+            (state.global && state.global.version_active) ||
+            (st.params && st.params.versionActive) ||
+            1,
+        counts: pairCounts(chans),
+        multiLead: leadLockCount(chans) >= 2 ? 1 : 0,
+        leadSel: Math.trunc(num(vals.lead_select, 0)),
+        recMask: rec && rec.armed ? Math.trunc(num(rec.tracksMask, 0)) : 0,
+        // §2.9 `lowSample` 是轨级 error(载荷带 ch),且会同时命中多轨 ——
+        // app.js 按 `lowSample#{ch}` 复合键存,这里按值扫成轨号集合(T33)。
+        low: lowSampleChannels(st.errors),
+    };
+}
 
+/**
+ * 事件仓 → **单行**模型(ch ∈ 1..15)。`ctx` 省略时就地算一份(node 侧单行断言方便);
+ * 整页渲染与拖动期增量都从外面传进来复用。字段说明见 rowsFromStore。
+ */
+export function rowFromStore(store, ch, ctx) {
+    const c = ctx || rowContext(store || {});
+    const { vals, active } = c;
+    const cfg = c.chans[ch - 1] || {};
+    const cc = c.conn[ch - 1] || null;
+    const freeze = Math.trunc(num(vals[paramIdOf(active, ch, "freeze")], 0));
+    const bits = freezeBits(freeze);
+    const seg = manualConstantOf(segmentsOfCh(c.segments, ch));
+    // 读回值:该轨曲线是**手动常值段**时一律取该段(05 §2.2「读回值同样取自该段」),
+    // 否则取参数面(引擎打印头 / 宿主回吐)。
+    // **不按 freeze 位分叉**:常值段既是「冻结时手动/host 权威的那个值」,也是
+    // 「未冻结时引擎从曲线上取到的那个值」—— 两条路径的正确答案是同一个数。
+    // 按 freeze 位分叉的写法会让「未冻结轨拖卡箍」(05 明确允许,走一次性确认)
+    // 在下一帧把把手弹回去:`setTrackManual` 写的是曲线真身,不写参数面(§1.16),
+    // 25 Hz 的 `scvb.params` 只在 PRINT 态才有新值。
+    const pan = seg
+        ? num(seg.pan, PAN_RANGE.def)
+        : num(vals[paramIdOf(active, ch, "pan")], PAN_RANGE.def);
+    const volDb = seg
+        ? num(seg.volDb, VOL_RANGE.def)
+        : num(vals[paramIdOf(active, ch, "vol")], VOL_RANGE.def);
+    const pair = Math.trunc(num(cfg.pair_id, 0));
+    return {
+        n: ch,
+        label: typeof cfg.label === "string" ? cfg.label : "",
+        st: cfg.source_channels === 2 ? 1 : 0,
+        status: trackStatusOf(cc),
+        pan,
+        volDb,
+        w: num(vals[paramIdOf(active, ch, "width")], WIDTH_RANGE.def),
+        vol: volPercent(volDb) / 100,
+        lv: 0,
+        pk: 0,
+        prio: clampPriority(num(cfg.priority, 5)),
+        lead: cfg.lead_lock ? 1 : 0,
+        volPart: cfg.lead_vol_exempt ? 0 : 1, // 显示层参与语义(=!exempt)
+        part: cfg.participate_in_auto_pan ? 1 : 0,
+        pair,
+        fp: bits.pan ? 1 : 0,
+        fv: bits.vol ? 1 : 0,
+        on: cfg.enabled === false ? 0 : 1,
+        low: c.low.has(ch) ? 1 : 0,
+        misalign: cc ? Math.trunc(num(cc.misalignCount, 0)) : 0,
+        leadCenter: c.leadSel === ch ? 1 : 0,
+        pairFull: isPairOverflow(c.counts, pair) ? 1 : 0,
+        recapture: c.recMask & (1 << (ch - 1)) ? 1 : 0,
+        multiLead: c.multiLead,
+        manualConst: seg ? 1 : 0,
+    };
+}
+
+/**
+ * 事件仓 → 15 行模型(**Tab2 的唯一渲染源**)。
+ * 字段名沿用 Wave 1 模板的短名(`trackRowHtml` 不动):
+ * st=stereo 标 / vol=卡箍行程比 0..1 / lv·pk=液柱与峰线行程比(由 meter.js 逐帧覆写) /
+ * volPart=音量参与(=!lead_vol_exempt) / part=participate_in_auto_pan /
+ * fp·fv=冻结两位 / low=样本不足。
+ * 公共量只算一次(rowContext),逐行走 rowFromStore —— 行为与 T32 逐字一致。
+ */
+export function rowsFromStore(store) {
+    const st = store || {};
+    const ctx = rowContext(st);
     const rows = [];
     for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
-        const cfg = chans[ch - 1] || {};
-        const cc = conn[ch - 1] || null;
-        const freeze = Math.trunc(
-            num(vals[paramIdOf(active, ch, "freeze")], 0),
-        );
-        const bits = freezeBits(freeze);
-        const seg = manualConstantOf(segmentsOfCh(st.segments, ch));
-        // 读回值:该轨曲线是**手动常值段**时一律取该段(05 §2.2「读回值同样取自该段」),
-        // 否则取参数面(引擎打印头 / 宿主回吐)。
-        // **不按 freeze 位分叉**:常值段既是「冻结时手动/host 权威的那个值」,也是
-        // 「未冻结时引擎从曲线上取到的那个值」—— 两条路径的正确答案是同一个数。
-        // 按 freeze 位分叉的写法会让「未冻结轨拖卡箍」(05 明确允许,走一次性确认)
-        // 在下一帧把把手弹回去:`setTrackManual` 写的是曲线真身,不写参数面(§1.16),
-        // 25 Hz 的 `scvb.params` 只在 PRINT 态才有新值。
-        const pan = seg
-            ? num(seg.pan, PAN_RANGE.def)
-            : num(vals[paramIdOf(active, ch, "pan")], PAN_RANGE.def);
-        const volDb = seg
-            ? num(seg.volDb, VOL_RANGE.def)
-            : num(vals[paramIdOf(active, ch, "vol")], VOL_RANGE.def);
-        const pair = Math.trunc(num(cfg.pair_id, 0));
-        rows.push({
-            n: ch,
-            label: typeof cfg.label === "string" ? cfg.label : "",
-            st: cfg.source_channels === 2 ? 1 : 0,
-            status: trackStatusOf(cc),
-            pan,
-            volDb,
-            w: num(vals[paramIdOf(active, ch, "width")], WIDTH_RANGE.def),
-            vol: volPercent(volDb) / 100,
-            lv: 0,
-            pk: 0,
-            prio: clampPriority(num(cfg.priority, 5)),
-            lead: cfg.lead_lock ? 1 : 0,
-            volPart: cfg.lead_vol_exempt ? 0 : 1, // 显示层参与语义(=!exempt)
-            part: cfg.participate_in_auto_pan ? 1 : 0,
-            pair,
-            fp: bits.pan ? 1 : 0,
-            fv: bits.vol ? 1 : 0,
-            on: cfg.enabled === false ? 0 : 1,
-            low: lowErr && lowErr.ch === ch ? 1 : 0,
-            misalign: cc ? Math.trunc(num(cc.misalignCount, 0)) : 0,
-            leadCenter: leadSel === ch ? 1 : 0,
-            pairFull: isPairOverflow(counts, pair) ? 1 : 0,
-            recapture: recMask & (1 << (ch - 1)) ? 1 : 0,
-            multiLead,
-            manualConst: seg ? 1 : 0,
-        });
+        rows.push(rowFromStore(st, ch, ctx));
     }
     return rows;
 }
@@ -587,6 +618,9 @@ export function trackRowHtml(t) {
     <div class="tracks-row" role="row" data-glow="1" data-gb="tracks-row-${ch}" data-ch="${ch}"
          data-status="${t.status}" data-on="${t.on}" data-lead="${t.lead}" data-dead="${dead}"
          data-confirm="0">
+      <!-- 重采集布防目标轨的行首 badge(05 §2.3 ②,B-05 裁定「行首」:贴行左缘的
+           琥珀点 + tooltip —— 152px label 列里塞不下长句,压成点;T33 Wave 2 迁位) -->
+      <span class="tracks-row__dotmark" data-gb="${gb("recapture-badge")}"${t.recapture ? "" : " hidden"}></span>
       <span class="tracks-row__cell" role="cell" style="width:${W.light}px">
         <span class="sc-dot tracks-row__light" data-tone="${vis.tone}" data-pulse="${vis.pulse ? 1 : 0}" data-gb="${gb("statuslight")}"></span>
       </span>
@@ -605,8 +639,6 @@ export function trackRowHtml(t) {
         <span class="tracks-row__leadmark" data-t="tracks.leadCenter" data-gb="${gb("leadcenter")}"${t.leadCenter ? "" : " hidden"}></span>
         <!-- 采集后有效唱段 <1.5s(05 §2.2 R1):角标保短版,全句「样本不足,结果可能不稳」进 tooltip(统筹裁定 B12) -->
         <span class="sc-badge--amber tracks-row__mark" data-t="lowSample" data-gb="${gb("lowsample")}"${t.low ? "" : " hidden"}></span>
-        <!-- 重采集布防目标轨的行首 badge(05 §2.3 ②):52px 内塞不下长句,压成琥珀点 + tooltip -->
-        <span class="tracks-row__dotmark" data-gb="${gb("recapture-badge")}"${t.recapture ? "" : " hidden"}></span>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.pan}px">
         <!-- 冻结态:垂直拖拽 / 滚轮 ±1 / 双击回 0 → bridge.setTrackManual(${ch}, "pan", v)(契约 §1.16;
@@ -773,6 +805,7 @@ export function createTabTracks(opts) {
     const legend = $("tracks-legend-text");
     const emptyMain = $("tracks-emptystate-main");
     const multiLeadBadge = $("tracks-legend-multilead-badge");
+    const recaptureBadge = $("tracks-legend-recapture-badge");
 
     /**
      * 页面内一次性状态(不属 state chunk,重开面板即重置)。
@@ -799,6 +832,9 @@ export function createTabTracks(opts) {
         // 会把轨 1 那次待提交一起 clearTimeout 掉 —— 乐观值留在 UI 上,引擎里却没写进去。
         manualTimers: new Map(), // "ch:pan" / "ch:vol" → setTimeout 句柄
         rows: new Map(), // ch → 该行的节点缓存(15 行 × 30 Hz 下不许逐帧 querySelector)
+        // T33 性能批:拖动期的**按行增量**队列(见 requestRowRender)。
+        dirtyRows: new Set(), // 待重投影的 ch
+        rowRaf: 0, // 合帧句柄(同一帧内多次请求只跑一次)
     };
 
     /**
@@ -888,7 +924,12 @@ export function createTabTracks(opts) {
         return Object.prototype.hasOwnProperty.call(vals, id) ? vals[id] : dflt;
     }
 
-    function sendParam(id, value) {
+    /**
+     * `rowCh` 给出时走**按行增量**(width 旋钮拖动期:乐观值只改那一行的一个属性,
+     * 不必请求整页);省略时照旧请求整页 render(开关/键盘等一次性写入,T33)。
+     * 回滚分支是异步且罕见的一拍,一律走整页,免得漏掉别处的连带投影。
+     */
+    function sendParam(id, value, rowCh) {
         local.paramEcho.set(id, value); // 乐观本地态:等 25 Hz 回推之前先动起来
         call("setParam", id, value).then((res) => {
             // 写被拒时 25Hz 回推不会点名该 id,乐观值会挂死;与 sendManual
@@ -901,7 +942,8 @@ export function createTabTracks(opts) {
                 requestRender();
             }
         });
-        requestRender();
+        if (rowCh) requestRowRender(rowCh);
+        else requestRender();
     }
 
     /** 三段式的一次性形态(键盘 / 双击 / 开关:begin → set → end 各一次)。 */
@@ -920,8 +962,9 @@ export function createTabTracks(opts) {
         if (!payload || payload.full) {
             // full(切版本/全量重发)整表作废,**唯拖动中的 id 保留到松手**——
             // 否则指针还按着旋钮就被广播抢跳(pr-agent;与增量分支的
-            // gesture 保护同口径。注:Tab1 nextParamEcho 的 full 分支尚为
-            // 全清,口径对齐记 deviations 归 T33 批)
+            // gesture 保护同口径)。Tab1 的 `nextParamEcho` full 分支已在本波
+            // 对齐到同一口径(tab-master.js:保留 gestureId),两 tab 不再有差异
+            // ——旧注里「Tab1 尚为全清、口径对齐记 deviations 归 T33 批」已作废。
             for (const id of [...local.paramEcho.keys()]) {
                 if (id !== local.gesture) local.paramEcho.delete(id);
             }
@@ -1301,7 +1344,7 @@ export function createTabTracks(opts) {
                 manualKey(d.ch, "vol"),
                 quantize(VOL_RANGE, next),
             );
-            requestRender();
+            requestRowRender(d.ch); // 拖动期只更新受影响行,不跑整页(T33)
             return;
         }
         // 旋钮一律**向上为增**(屏幕 y 向下,故取负号)
@@ -1312,7 +1355,7 @@ export function createTabTracks(opts) {
                 manualKey(d.ch, "pan"),
                 quantize(PAN_RANGE, next),
             );
-            requestRender();
+            requestRowRender(d.ch); // 同上
             return;
         }
         const next = quantize(
@@ -1327,7 +1370,7 @@ export function createTabTracks(opts) {
         if (t - d.lastSent < 20) return;
         d.lastSent = t;
         d.lastSentVal = next;
-        sendParam(d.id, next);
+        sendParam(d.id, next, d.ch); // 拖动期按行增量(T33)
     }
 
     function endDrag() {
@@ -1385,8 +1428,13 @@ export function createTabTracks(opts) {
         return readManual(ch, "pan", row ? row.pan : PAN_RANGE.def);
     }
 
+    /**
+     * 单行模型(T33 性能批)。改造前是 `rowsFromStore(getStore())[ch-1]` ——
+     * 拖动/滚轮的**每一步进**都把 15 行连同跨行公共量整套重建一遍;现在
+     * 只算被问到的那一行(公共量走 rowContext,与 ch 无关的部分照样只算一次)。
+     */
     function rowOf(ch) {
-        return rowsFromStore(getStore())[ch - 1] || null;
+        return rowFromStore(getStore(), ch);
     }
 
     // ------------------------------------------------------------- 事件委托
@@ -1714,6 +1762,9 @@ export function createTabTracks(opts) {
         renderLegend(t);
         renderEmpty(t, st);
         renderRows(t, st);
+        // 空闲零 rAF(T33):弹道循环在无可见变化 / 本页不在前台时自停;
+        // 回到前台由这一句重新起帧(start() 在循环已跑时是空操作)。
+        if (isPanelActive()) meters.start();
     }
 
     function renderLegend(t) {
@@ -1736,8 +1787,33 @@ export function createTabTracks(opts) {
             }
         }
         // 多主唱琥珀 badge(05 §2.2 主唱锁行:多轨同时锁中允许,但要显示提示)
-        const chans = (getStore().state || {}).channels || [];
+        const st = getStore();
+        const chans = (st.state || {}).channels || [];
         show(multiLeadBadge, leadLockCount(chans) >= 2);
+        // 布防 badge②(三处之一,05 行 300 ①;点击跳转在 app.js 接的)。
+        // PR#64 评审【建议】3:此前只有 app.js 的点击接线与 CSS,从没有人 show 它,
+        // 而 HTML 里 data-t="wave.recaptureArmed" 又是带 {x}{y}{n} 的长式 ——
+        // 一旦显示就是裸占位符。改为在这里按 §2.1 `recapture` 显隐 + fmt 灌值。
+        if (recaptureBadge) {
+            const rec = (st.state || {}).recapture || null;
+            const armed = !!(rec && rec.armed);
+            show(recaptureBadge, armed);
+            if (armed) {
+                const mask = Math.trunc(num(rec.tracksMask, 0));
+                let cnt = 0;
+                for (let b = 0; b < CHANNEL_COUNT; b++) {
+                    if (mask & (1 << b)) cnt++;
+                }
+                text(
+                    recaptureBadge,
+                    fmt(t["wave.recaptureArmed"], {
+                        x: secondsToTimecode(num(rec.startS, 0)),
+                        y: secondsToTimecode(num(rec.endS, 0)),
+                        n: cnt,
+                    }),
+                );
+            }
+        }
     }
 
     function renderEmpty(t, st) {
@@ -1757,22 +1833,65 @@ export function createTabTracks(opts) {
         );
     }
 
+    /**
+     * 一帧的渲染上下文:跨行公共量(rowContext)+ 写闸 + hostEcho 灰显判定。
+     * 整页 renderRows 与按行增量 flushDirtyRows **共用同一份**,15 行只算一次。
+     */
+    function frameCtx(st) {
+        const model = rowContext(st);
+        return {
+            model,
+            counts: model.counts,
+            active: model.active,
+            blocked: isWriteBlocked(),
+            // hostEcho 灰显按**批次新鲜度**判定(口径与 Tab1 一致:hostEcho 标志停发后不会
+            // 翻回 false,直接用它会让 pan/width/卡箍/冻结永久滞留 55% 透明)。
+            echo:
+                (st.params || {}).hostEcho &&
+                Date.now() - ((st.params || {}).hostEchoAt || 0) <
+                    HOST_ECHO_FRESH_MS
+                    ? "1"
+                    : "0",
+        };
+    }
+
+    /**
+     * 拖动期的**按行增量**(T33 性能批)。改造前:拖一格 pan/vol 就请求一次整页
+     * render(header + 横幅 + footer + Tab1 + 15 轨行),而这一格实际只改了**一行**的
+     * 一个属性。现在拖动路径只把受影响的 ch 排进队列,下一帧只重投影那一行。
+     * 同一帧内多次请求合成一次;rAF 不可用(node / 后台标签)时同步落地。
+     */
+    function requestRowRender(ch) {
+        local.dirtyRows.add(ch);
+        if (local.rowRaf) return;
+        const run = () => {
+            local.rowRaf = 0;
+            flushDirtyRows();
+        };
+        if (typeof requestAnimationFrame === "function") {
+            local.rowRaf = requestAnimationFrame(run);
+        } else {
+            run();
+        }
+    }
+
+    function flushDirtyRows() {
+        if (!local.dirtyRows.size) return;
+        const chs = [...local.dirtyRows];
+        local.dirtyRows.clear();
+        const t = getT() || {};
+        const st = getStore();
+        const ctx = frameCtx(st);
+        for (const ch of chs) syncRow(rowFromStore(st, ch, ctx.model), t, ctx);
+    }
+
     function renderRows(t, st) {
-        const rows = rowsFromStore(st);
-        const chans = (st.state || {}).channels || [];
-        const counts = pairCounts(chans);
-        const active = activeVersion(st);
-        const blocked = isWriteBlocked();
-        // hostEcho 灰显按**批次新鲜度**判定(口径与 Tab1 一致:hostEcho 标志停发后不会
-        // 翻回 false,直接用它会让 pan/width/卡箍/冻结永久滞留 55% 透明)。
-        const echo =
-            (st.params || {}).hostEcho &&
-            Date.now() - ((st.params || {}).hostEchoAt || 0) <
-                HOST_ECHO_FRESH_MS
-                ? "1"
-                : "0";
-        for (const row of rows)
-            syncRow(row, t, { counts, active, blocked, echo });
+        // 整页刚把 15 行全投影一遍,排队中的单行增量随之作废(合帧句柄留着,
+        // 它下一帧只会看到空队列直接返回)。
+        local.dirtyRows.clear();
+        const ctx = frameCtx(st);
+        for (let ch = 1; ch <= CHANNEL_COUNT; ch++)
+            syncRow(rowFromStore(st, ch, ctx.model), t, ctx);
     }
 
     /* eslint-disable-next-line complexity -- 一行 20 余个控件的属性回写,拆开反而更难核对 */
@@ -1819,7 +1938,11 @@ export function createTabTracks(opts) {
         show(n.lowsample, !!row.low);
         setTitle(n.lowsample, t["lowSample.full"]);
         show(n.recaptureBadge, !!row.recapture);
-        setTitle(n.recaptureBadge, t["wave.recaptureArmed"]);
+        // tooltip 走**无占位符**短式:行模型只有布尔 `recapture` 位(rowFromStore
+        // 由 recMask 派生),拿不到 {x}{y}{n} —— 灌 `wave.recaptureArmed` 会把字典
+        // 原文连同占位符一起写进 title(PR#64 评审【重要】1)。范围/轨数的完整串
+        // 在图例行 badge 与 Tab1 Range badge 上,两处都有 fmt 灌值。
+        setTitle(n.recaptureBadge, t["wave.recaptureArmedShort"]);
 
         // ---- pan 旋钮(冻结 = 手动可拖;未冻结 = 只读实时表盘)----
         if (n.pan) n.pan.style.setProperty("--ang", panAngleDeg(pan) + "deg");

@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!--
-  SCVB Output —— 外壳 + Tab1 为 T31 Wave 1 正式实现(设计稿视觉复现);
-  Tab2/Tab3/Tab4 仍是 T27b 结构化灰模,待 T32/T33-T34/T35 按同法替换。
+  SCVB Output —— **四个 tab 均已正式实现**,T27b 灰模已全部替换:
+  外壳 + Tab1(T31)/ Tab1 曲线编辑器(T34)/ Tab2 轨道(T32)/
+  Tab3 波形与分段(T33)/ Tab4 设置(T35)。
 
   真源(不可颠倒):
     • 视觉(布局/形态/密度)= masterPlan/assets/design-v2「SCVB 设计稿.dc.html」,
@@ -1738,8 +1739,7 @@
             }
             .tracks-row__labelcell[data-editing="1"] .tracks-row__label,
             .tracks-row__labelcell[data-editing="1"] .tracks-row__mark,
-            .tracks-row__labelcell[data-editing="1"] .tracks-row__leadmark,
-            .tracks-row__labelcell[data-editing="1"] .tracks-row__dotmark {
+            .tracks-row__labelcell[data-editing="1"] .tracks-row__leadmark {
                 display: none;
             }
             .tracks-row__mark {
@@ -1756,9 +1756,13 @@
                 white-space: nowrap;
                 color: var(--txt-1);
             }
-            /* 长句类行内提示(重采集布防)在 150px 列里塞不下,压成 6px 琥珀点 + tooltip */
+            /* 长句类行内提示(重采集布防)压成 6px 琥珀点 + tooltip;
+               B-05 裁定「目标轨行首」——贴行左缘绝对定位(T33 Wave 2 迁位) */
             .tracks-row__dotmark {
-                flex: none;
+                position: absolute;
+                left: 2px;
+                top: 50%;
+                margin-top: calc(var(--sp-6) / -2);
                 width: var(--sp-6);
                 height: var(--sp-6);
                 border-radius: 50%;
@@ -2087,167 +2091,1371 @@
                 white-space: nowrap;
             }
 
-            /* ---- Tab3 波形(05 §2.3/§2.3a) ---- */
-            .wave-toolbar {
+            /* ---- Tab3 波形(05 §2.3/§2.3a;T33 正式实现)----
+               视觉真源两处(图谱 §0):泳道排布 = 实景帧(805-873),泳道内部画法 =
+               图例帧(706-803)。检查器是 flex 兄弟挤压左栏,不做浮层([J72a] C-11)。 */
+            #content > section[data-tab-panel="wave"] {
+                flex-direction: row; /* 外层两栏(设计稿 651:横向 gap 12) */
+                overflow: hidden;
+            }
+            .wave-main {
+                flex: 1;
+                min-width: 0;
                 display: flex;
-                flex-wrap: wrap;
-                align-items: center;
-                gap: var(--sp-9);
+                flex-direction: column;
+                gap: var(--sp-9); /* 设计稿 652:左主栏纵向 gap 9 */
+            }
+            /* 工具条卡壳(654):四行纵列;padding 取稿内 10/13(≠ --card-pad 的 11/13,
+               差 1px 登记 PR 差异清单) */
+            .wave-toolbar {
                 flex: none;
-                padding: var(--sp-9);
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-9);
+                padding: var(--sp-10) var(--sp-13);
                 border-radius: var(--r-lg);
                 background: var(--card-bg);
                 border: 1px solid var(--card-border);
+                box-shadow: var(--card-inset);
             }
+            /* 7 滑杆一排(655-668):七等分弹性宽,顺序 = §1.18 五字段 + §1.19 两字段 */
+            .wave-toolbar__sliders {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-16);
+            }
+            /* 两个参数组是真实盒(不用 display:contents —— tour spotlight 量不到 0×0 盒);
+               grow 比 = 组内滑杆数(5:2),但纯 grow 会把组内 gap 数差(4:1)也
+               按 5:2 摊掉 → 两组杆宽差一档;flex-basis 先行垫掉各组内 gap 总宽,
+               剩余空间再按杆数分 —— 七杆等宽(图谱 §3「七等分弹性宽」) */
             .wave-toolbar__group {
                 display: flex;
-                flex-wrap: wrap;
                 align-items: center;
-                gap: var(--sp-7);
+                gap: var(--sp-16);
+                min-width: 0;
+            }
+            .wave-toolbar__group--vad {
+                flex: 5 1 calc(4 * var(--sp-16));
+            }
+            .wave-toolbar__group--seg {
+                flex: 2 1 var(--sp-16);
             }
             .wave-slider {
+                flex: 1;
+                min-width: 0;
                 display: flex;
                 flex-direction: column;
-                gap: var(--sp-2);
-                font-size: var(--fs-90);
+                gap: var(--sp-5);
             }
+            .wave-slider__head {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: var(--sp-6);
+            }
+            .wave-slider__name {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-80);
+                letter-spacing: var(--mono-ls);
+                color: var(--txt-3);
+                white-space: nowrap;
+            }
+            .wave-slider__val {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-95);
+                color: var(--txt-1);
+            }
+            /* 滑杆几何(662-664);thumb 投影取 --sh-xs(稿内 0 2px 6px/.22,1px/.03α
+               偏差登记 PR 差异清单);--p = 行程百分数(0..100,JS 写) */
+            .wave-slider__track {
+                position: relative;
+                height: 4px;
+                border-radius: var(--r-pill);
+                background: var(--glass-border);
+            }
+            .wave-slider__fill {
+                position: absolute;
+                left: 0;
+                top: 0;
+                bottom: 0;
+                width: calc(var(--p, 0) * 1%);
+                border-radius: var(--r-pill);
+                background: var(--acc-slider-fill);
+            }
+            .wave-slider__thumb {
+                position: absolute;
+                top: 50%;
+                left: calc(var(--p, 0) * 1%);
+                width: 11px;
+                height: 11px;
+                margin: -5.5px 0 0 -5.5px;
+                border-radius: 50%;
+                background: #fff;
+                box-shadow: var(--sh-xs);
+            }
+            /* 动作行(669-691):05 行 300-303 的四个动作钮 + 播完自动停 + 占位
+               + 段检查器开关。**成员恒定**——里面没有一件是条件显隐的。
+               **Wave 5 /code-review major:一行拆两行 + 条件件全部下放**。
+               稿内 669-691 是一条 flex-wrap 行,装的是「四钮 + 提示/chip + 菊花条」五件;
+               实现侧按 05/A2 又往里塞了播完自动停、应用到分段、合并选中两段、倒计时条、
+               段检查器开关 —— 十件挤在一行,zh 默认视口下行内容右缘已到 1033/可用 1035,
+               余量见底。后果是**任何条件件一显隐就折行**:shift 连选第二个段让
+               「合并选中两段」现身,整行 30px → 69px,泳道窗当场下坠 39px =
+               裁定④要根治的「点段就抖」换了个轴(en 同病,35px)。
+               改法不是缩窄某一件(那只是把翻车推迟到下一句译文),而是**让会折行的那一行
+               不含任何条件件**:恒定成员 ⇒ 折不折行由语言与视口决定、**与交互无关** ⇒
+               每种语言下行高是常量(zh 30 / en 26 / fr 61,fr 本来就两行)。
+               条件件(轨选提示/选区 chip/应用到分段/合并选中两段/倒计时/菊花条)
+               整体下放到 .wave-toolbar__status,那行按最高成员预留高度。 */
             .wave-toolbar__actions {
                 display: flex;
                 flex-wrap: wrap;
                 align-items: center;
-                gap: var(--sp-7);
+                gap: var(--sp-9);
             }
-            .wave-autostop {
+            /* 状态行(动作行的下位行,同属稿内 669-691 那一块):布防 reason 行内说明 /
+               轨选提示 / 选区 chip / 应用到分段 / 合并选中两段 / 倒计时条 / 菊花条。
+               这行里**全部是条件显隐件**——它们的显隐由交互驱动,所以必须与恒定成员
+               分开,并且这行的高度要按最高成员预留死,而不是按当前可见成员算。
+               两枚条件钮(应用到分段 / 合并选中两段)跟着下来,不留在钮簇里:
+               它们本就是上下文动作(前者仅抑制期出现、后者仅选中相邻两段时出现),
+               挨着选区 chip 与反馈条读起来也更顺;05 行 313 只要求「工具条有合并入口」,
+               不规定它排在哪一行。
+               `min-height` **按行内最高的成员预留**,不是按当前可见成员算高:
+               轨选提示 14px(纯文本)/ 选区 chip 25px(4+4 内边距 + 1+1 描边 + 10.5px
+               行盒)/ 倒计时条与菊花条 27px(5+5 + 1+1 + 行盒)/ 两枚条件钮 **30px**
+               (6+6 + 1+1 + 中文 11px 行盒 16;en/fr 拉丁行盒矮一档 = 26)。
+               取 30px = 上确界(含最高的 zh 钮)—— 否则勾一次轨、现一枚钮、闪一次菊花,
+               行高就跳一次,泳道窗又被推下去一截,与本次要根治的是同一件事。
+               代价是工具条恒定占住这 30px(相对「只显提示」态多 16px),换的是
+               泳道窗顶边成为常量:**宁可少一行泳道,不要点一下抖一下**。 */
+            .wave-toolbar__status {
                 display: flex;
+                /* **nowrap 是本行的关键**:动作行折行是「文字不能截、只能换行」的正确
+                   降级(钮文案一截就不知道按下去会发生什么);状态行则相反 —— 它有一件
+                   天生可截的成员(选区轨号串),所以这里选「压缩 + 省略号」而不是折行。
+                   折行 = 行高变 = 泳道窗被推,正是要根治的病;压缩只让轨号串少露两个号。 */
+                flex-wrap: nowrap;
                 align-items: center;
-                gap: var(--sp-4);
-                font-size: var(--fs-95);
+                gap: var(--sp-9);
+                min-height: 30px;
             }
-            .wave-ruler {
+            /* nowrap 下压力要有确定的落点:除选区 chip(行内唯一有可截断内容的件)与
+               弹性占位外,成员一律 `flex: none` —— 钮与反馈条被压窄只会让中文按字断行、
+               把行顶高,那就白拆这一行了。宁可极窄视口下右端溢出,也不改行高。 */
+            .wave-toolbar__status > :not(.wave-selchip):not(.wave-flexspacer) {
                 flex: none;
-                height: 20px;
             }
-            .wave-lanes {
-                flex: 1;
-                min-height: 0;
-                overflow: auto;
+            .wave-btn {
                 position: relative;
-                border-radius: var(--r-lg);
-                border: 1px solid var(--card-border);
+                overflow: hidden;
+                padding: var(--sp-6) var(--sp-12);
+                border-radius: var(--r-pill);
+                white-space: nowrap;
+                font-size: var(--fs-110);
+                background: rgba(var(--wh), 0.18);
+                border: 1px solid rgba(var(--wh), 0.32);
+                color: var(--txt-2);
+                cursor: pointer;
+                /* hover 光晕 90px 是 Tab3 按钮专用档(--glow-row 是 160px 版,不复用) */
+                background-image: radial-gradient(
+                    90px circle at var(--mx, -999px) var(--my, -999px),
+                    rgba(255, 255, 255, 0.2),
+                    transparent 70%
+                );
             }
-            /* 底部缩放/滚动条(05 §2.3 布局末件):轨头 158px 处留同宽空档与泳道对齐。 */
-            .wave-hzoom {
-                flex: none;
-                display: flex;
-                height: 12px;
-                padding-left: 158px;
+            .wave-btn[data-disabled="1"] {
+                /* rgba(82,82,92,.4) = --txt-2 的分量 + .4(rgb 形式无 token,就地) */
+                color: rgba(82, 82, 92, 0.4);
+                opacity: 0.5;
+                cursor: not-allowed;
             }
-            .wave-hzoom__scroll {
-                flex: 1;
-                min-width: 0;
-                border-radius: var(--r-tag);
-                background: var(--card-bg);
-                border: 1px solid var(--card-border);
+            /* 开关型按钮(段检查器面板,裁定④):形制同四个动作钮,但按下态要**看得出
+               现在是开还是关** —— 开 = 薰衣草实底(与轨头选中态 --acc-strong 同族),
+               关 = 与普通按钮同款玻璃底。状态语义走 aria-pressed,不另发明属性。 */
+            .wave-btn--toggle[aria-pressed="true"] {
+                background-color: rgba(var(--acc), 0.5);
+                border-color: rgba(var(--acc), 0.85);
+                /* 字色取 --acc-ink(#241f2e)而不是 --acc-ink-on-glass(#5b5075):
+                   按下态底是 acc .5 叠在工具条玻璃上(合成 ≈ rgb(205,196,220)),
+                   #5b5075 在 11px 正文上只有 ≈4.4:1,贴着 AA 线下沿;#241f2e 同底
+                   ≈10:1。本仓对对比度有先例纪律(--sem-amber-ink 因同类反馈由
+                   #7E6836 加深到 #5e4b21)—— 同族按钮的按下态照此处理。 */
+                color: var(--acc-ink);
             }
-            .wave-lane {
-                display: flex;
-                height: 60px;
-                border-bottom: 1px solid var(--card-border);
-            }
-            .wave-lane__head {
-                flex: none;
-                width: 158px;
+            /* 「播放结束自动停止」勾选(A2⑥;T33 Wave 4 用户反馈②:原生 input 与
+               设计系统不符 → 改自绘勾选框,形制取 Tab3 轨头 .wave-lane__check 同族
+               (方形圆角 + 薰衣草描边;勾选态实心 + 白勾 svg)。
+               **仍是真 input**:只做视觉隐藏,留在 DOM 与 tab 序里,label 包住即关联,
+               :checked / :focus-visible 全走原生状态,不自建 role=checkbox。 */
+            .wave-autostop {
+                position: relative;
                 display: flex;
                 align-items: center;
-                gap: var(--sp-5);
-                padding: 0 var(--sp-6);
-                font-size: var(--fs-90);
+                gap: var(--sp-6);
+                font-size: var(--fs-95);
+                color: var(--txt-2);
+                cursor: pointer;
+                user-select: none;
             }
-            .wave-lane__label {
-                overflow: hidden;
-                text-overflow: ellipsis;
+            .wave-autostop__input {
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                margin: 0;
+                padding: 0;
+                opacity: 0;
+                pointer-events: none;
+            }
+            .wave-autostop__box {
+                position: relative;
+                flex: none;
+                width: 12px;
+                height: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 3px;
+                /* 描边取 --acc-link-on-glass 的 rgb 分量:--acc(181,172,201)与
+                   工具条玻璃底几乎同值,1px 描边在浅底上根本看不见(无头亲验) */
+                border: 1px solid rgba(var(--acc-link-on-glass-rgb), 0.55);
+                background: rgba(var(--wh), 0.55);
+                transition:
+                    background var(--dur-1) var(--ease),
+                    border-color var(--dur-1) var(--ease);
+            }
+            .wave-autostop:hover .wave-autostop__box {
+                border-color: rgba(var(--acc-link-on-glass-rgb), 0.85);
+            }
+            .wave-autostop__box svg {
+                display: none;
+            }
+            /* 勾选实心底取 --acc-link-on-glass(深紫)而不是轨头的 --acc-strong:
+               轨头在深色泳道上,--acc-strong 的浅薰衣草足够跳;工具条是**浅玻璃**面,
+               同一档浅薰衣草上压白勾只有 ~1.9:1,读不出勾。同族形制、深一档底色。 */
+            .wave-autostop__input:checked + .wave-autostop__box {
+                background: var(--acc-link-on-glass);
+                border-color: var(--acc-link-on-glass);
+            }
+            .wave-autostop__input:checked + .wave-autostop__box svg {
+                display: block;
+            }
+            .wave-autostop__input:focus-visible + .wave-autostop__box {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                outline-offset: 2px;
+            }
+            /* RE-06:命中区补到 **≥24×24 物理 px @0.5 档**(= ≥48×48 CSS px)。
+               扩展挂在 **label** 上而不是 12px 的框上:label 本身已是 94(zh)/
+               127(en)/119(fr) CSS px 宽,横轴早就够;缺的只有纵轴(14 CSS px)。
+               若把 ±18px 扩展挂在框上,横向那 18px 会盖住左邻「重采集选区」按钮
+               (行内 gap 只有 9px)—— 靶区不得靠抢邻件的事件来凑。
+               纵向取**非对称** 8/26:向上只到动作行上沿(不侵入滑杆行的 22px
+               命中带),向下落进工具条内边距与下一行的状态行。状态行里唯一带事件的
+               是选区 chip 的 ✕ —— 它在 DOM 里更靠后、同为 z-index:auto 的定位元素,
+               命中顺序在本扩展**之上**,不会被吃掉;其余是纯文本。
+               合计 14 + 8 + 26 = 48 CSS px = 0.5 档 24 物理 px。 */
+            .wave-autostop::after {
+                content: "";
+                position: absolute;
+                left: 0;
+                right: 0;
+                top: -8px;
+                bottom: -26px;
+            }
+            .wave-trackpickhint {
+                font-size: var(--fs-95);
+                color: var(--txt-4);
+            }
+            /* 选区 chip(677-681):词条只含 {n} 轨句(B-02);范围 mono 串另置轨号串前。
+               `min-width: 0` 让它成为状态行里唯一可被压缩的件:轨号串长度**无上界**
+               (15 轨全勾 = 「01 · 02 · … · 15」),不给压缩余地的话它会顶得整行折行,
+               状态行的高度预留就白做了。压力先由轨号串吃(见下,省略号),主句与
+               范围串、✕ 都留着 —— 轨号串是可推断信息(轨头勾选框就在左边),
+               主句「上面四个操作作用于 {n} 轨」不可省。 */
+            .wave-selchip {
+                min-width: 0;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-7);
+                padding: var(--sp-4) var(--sp-5) var(--sp-4) var(--sp-10);
+                border-radius: var(--r-pill);
+                background: rgba(var(--acc), 0.24);
+                border: 1px solid rgba(var(--acc), 0.5);
+                font-size: var(--fs-105);
+                color: var(--acc-ink-on-glass);
+            }
+            .wave-selchip strong {
+                font-weight: 600;
+            }
+            /* 除轨号串外一律不参与压缩:主句是中文,若允许收缩会按字断行,
+               chip 变两行 = 状态行的 27px 预留当场被顶穿 */
+            .wave-selchip > :not(.wave-selchip__list) {
+                flex: none;
                 white-space: nowrap;
             }
-            .wave-lane__stage {
-                flex: 1;
+            /* 轨号串是 chip 里唯一可截断的部分(理由见 .wave-selchip 上的注释) */
+            .wave-selchip__list {
                 min-width: 0;
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+            }
+            .wave-selchip__range,
+            .wave-selchip__list {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls-tag);
+                color: rgba(
+                    91,
+                    80,
+                    117,
+                    0.75
+                ); /* --acc-ink-on-glass 的 .75 档 */
+            }
+            .wave-selchip__clear {
                 position: relative;
-            }
-            .wave-lane__stage canvas {
-                position: absolute;
-                inset: 0;
-                width: 100%;
-                height: 100%;
-            }
-            .wave-lane__boundaries,
-            .wave-lane__coverage {
-                position: absolute;
-                inset: 0;
-                pointer-events: none;
-            }
-            .wave-selection {
-                position: absolute;
-                top: 0;
-                bottom: 0;
-                left: 30%;
-                width: 30%;
-                pointer-events: none;
-            }
-            .wave-selection__handle {
-                position: absolute;
-                top: 0;
-                bottom: 0;
-                width: 9px;
-                cursor: ew-resize;
-                pointer-events: all;
-                border-radius: var(--r-xs);
-                background: var(--w-24);
-            }
-            .wave-selection__handle--left {
-                left: -4px;
-            }
-            .wave-selection__handle--right {
-                right: -4px;
-            }
-            .wave-selection__setrange {
-                position: absolute;
-                top: var(--sp-4);
-                left: 50%;
-                transform: translateX(-50%);
-            }
-            .wave-playhead {
-                position: absolute;
-                top: 0;
-                bottom: 0;
-                left: 12%;
-                width: 1px;
-                background: var(--w-24);
-                pointer-events: none;
-            }
-            .segment-inspector {
+                width: 15px;
+                height: 15px;
                 flex: none;
-                width: 260px;
-                padding: var(--sp-14);
-                display: flex;
-                flex-direction: column;
-                gap: var(--sp-9);
-                position: absolute;
-                right: 0;
-                top: 0;
-                bottom: 0;
-                overflow: auto;
-                z-index: 3;
-            }
-            .inspector-field {
                 display: flex;
                 align-items: center;
-                justify-content: space-between;
+                justify-content: center;
+                border: 0;
+                border-radius: 50%;
+                background: rgba(var(--wh), 0.4);
+                font-size: var(--fs-100);
+                color: var(--acc-ink-on-glass);
+                cursor: pointer;
+            }
+            /* RE-06:15px 视觉靶,0.5 档下命中区补到 ≥24 物理 px(web/shared/hit.js 口径) */
+            .wave-selchip__clear::after {
+                content: "";
+                position: absolute;
+                inset: -17px;
+            }
+            .wave-flexspacer {
+                flex: 1;
+            }
+            /* 「300ms 后应用…」倒计时条(A2①,05 行 298;琥珀确认条族) */
+            .wave-countdown {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+                padding: var(--sp-5) var(--sp-11);
+                border-radius: var(--r-pill);
+                background: rgba(var(--sem-amber), 0.15);
+                border: 1px solid rgba(var(--sem-amber), 0.42);
+                font-size: var(--fs-105);
+                color: var(--sem-amber-ink);
+                white-space: nowrap;
+            }
+            /* 「正在应用…」菊花条(684-689) */
+            .wave-applying {
+                display: flex;
+                align-items: center;
                 gap: var(--sp-7);
+                padding: var(--sp-5) var(--sp-11);
+                border-radius: var(--r-pill);
+                background: rgba(var(--acc), 0.22);
+                border: 1px solid rgba(var(--acc), 0.5);
+                font-size: var(--fs-105);
+                color: var(--acc-ink-on-glass);
+                white-space: nowrap;
+            }
+            .wave-applying__spin {
+                width: 11px;
+                height: 11px;
+                flex: none;
+                border-radius: 50%;
+                border: 1.6px solid rgba(var(--acc-link-on-glass-rgb), 0.9);
+                border-top-color: transparent;
+                animation: spin var(--dur-spin) linear infinite;
+            }
+            /* 「设为范围」一次性提示条(692-697;与 Tab2 手动覆盖确认条同族,圆角 11) */
+            .wave-rangetip {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+                padding: var(--sp-7) var(--sp-11);
+                border-radius: var(--r-banner);
+                background: rgba(var(--sem-amber), 0.15);
+                border: 1px solid rgba(var(--sem-amber), 0.42);
+            }
+            .wave-rangetip__text {
+                flex: 1;
+                font-size: var(--fs-105);
+                color: var(
+                    --sem-amber-ink
+                ); /* 取 token 加深值,不取稿内 #7E6836 */
+            }
+            /* 重采集布防行(698-703):amber pill badge + 行内短说明(B-04:长句移 footer) */
+            .wave-recap {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-8);
+            }
+            .wave-recap__badge {
+                padding: var(--sp-2) var(--sp-8);
+                border-radius: var(--r-pill);
+                background: rgba(var(--sem-amber), 0.18);
+                border: 1px solid rgba(var(--sem-amber), 0.45);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                color: var(--sem-amber-ink);
+                white-space: nowrap;
+                cursor: pointer;
+            }
+            .wave-recap__note {
+                font-size: var(--fs-95);
+                color: var(--sem-amber-ink);
             }
             .wave-diff {
                 display: flex;
                 flex-direction: column;
                 gap: var(--sp-5);
+            }
+            /* ---- 深色泳道窗(806:--dark-window 三停靠逐字;shadow 补图例帧档) ---- */
+            .wave-window {
+                flex: 1;
+                min-height: 0;
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                border-radius: var(--r-lg);
+                overflow: hidden;
+                background: var(--dark-window);
+                border: 1px solid var(--dark-window-border);
+                box-shadow: var(--dark-window-shadow);
+            }
+            /* 时间标尺行(807-814):158px 轨头空档 + 刻度画布(右缘 44px 让位刻度列) */
+            .wave-ruler {
+                flex: none;
+                height: 22px;
+                display: flex;
+                align-items: center;
+                border-bottom: 1px solid var(--dark-rule);
+            }
+            .wave-ruler__head {
+                width: 158px;
+                flex: none;
+            }
+            /* 44px 让位刻度列;泳道区出纵向滚动条时 tab-wave.js 的
+               syncScrollGutter 以行内 margin-right 再加滚动条宽(标尺基准 =
+               窗宽、舞台基准 = 滚动容器 clientWidth,两者差须归零) */
+            .wave-ruler__scale {
+                flex: 1;
+                min-width: 0;
+                position: relative;
+                height: 100%;
+                /* 44 = 右缘双刻度列;运行时由 syncScrollGutter 连同滚动条宽
+                   一起改写(标尺 / 刻度列 / 舞台三者共用舞台坐标系)。
+                   Wave 5:纵向缩放条迁去底部条后,24px 自留槽已撤销 */
+                margin-right: 44px;
+            }
+            .wave-ruler__tick {
+                position: absolute;
+                top: 50%;
+                transform: translateY(-50%);
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-90);
+                letter-spacing: 0.1em; /* 稿内 .1em 无字距档,就地 */
+                color: var(--txt-dark-dim); /* 稿内 .42,取 token .38,登记差异 */
+                white-space: nowrap;
+            }
+            .wave-ruler__tick[data-last="1"] {
+                transform: translate(-100%, -50%); /* 尾刻度防右缘溢出(811) */
+            }
+            /* 泳道滚动区(15 × 34px;空态与泳道互斥,标尺与底部条仍在 —— §15) */
+            .wave-lanes {
+                flex: 1;
+                min-height: 0;
+                position: relative;
+                overflow-y: auto;
+                overflow-x: hidden;
+            }
+            .wave-window[data-empty="1"] .wave-lanes {
+                display: none;
+            }
+            .wave-empty {
+                flex: 1;
+                display: none;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: var(--sp-12);
+            }
+            .wave-window[data-empty="1"] .wave-empty {
+                display: flex;
+            }
+            .wave-empty__main {
+                font-size: var(--fs-125);
+                color: rgba(233, 229, 244, 0.6); /* 831 就地(深底空态主句) */
+            }
+            .wave-empty__cta {
+                padding: var(--sp-7) var(--sp-16);
+                border: 0;
+                border-radius: var(--r-pill);
+                background: var(--acc-cta);
+                font-family: var(--ff-grotesk);
+                font-weight: 600;
+                font-size: var(--fs-115);
+                color: var(--acc-ink);
+                cursor: pointer;
+            }
+            /* 泳道行(840-861):选中 = 淡薰衣草底 + 左缘 3px;idle 整行降透明(A-13 裁定,
+               口径同 Tab2 rowDim(idle)=.5) */
+            .wave-lane {
+                display: flex;
+                align-items: stretch;
+                cursor: pointer;
+                transition: background var(--dur-1) var(--ease);
+            }
+            .wave-lane[data-on="1"] {
+                background: rgba(var(--acc), 0.16);
+                box-shadow: inset 3px 0 0 var(--acc-strong);
+            }
+            .wave-lane[data-status="idle"] {
+                opacity: 0.5;
+            }
+            /* 轨头 158px 装六件(B-08 裁定:曲线可见压成眼睛钮,覆盖率+段数并一行)。
+               Wave 1 亲验:gap 7 + covseg fs-90 下 label 只剩 ~17px(「主…」);
+               Wave 3 亲验:gap 5 + covseg fs-80 仍只剩 33px,「Ad-lib 1/2」两轨同截成
+               「Ad-li…」(EN 更窄到 30px)—— 区分度是轨头的第一职责,故再腾 8px:
+               gap 5→4、padding 10→8;covseg 降 fs-75 并允许收缩,label 保底 38px。
+               (deviations §R 登记) */
+            .wave-lane__head {
+                width: 158px;
+                flex: none;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-4);
+                padding: 0 var(--sp-8);
+                border-right: 1px solid var(--dark-rule);
+                border-bottom: 1px solid var(--dark-rule-weak);
+            }
+            .wave-lane__check {
+                position: relative;
+                width: 11px;
+                height: 11px;
+                flex: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 3px;
+                border: 1px solid rgba(var(--wh), 0.3);
+                background: rgba(var(--wh), 0.14);
+                cursor: pointer;
+            }
+            .wave-lane[data-on="1"] .wave-lane__check {
+                border-color: var(--acc-strong);
+                background: var(--acc-strong);
+            }
+            .wave-lane__check svg {
+                display: none;
+            }
+            .wave-lane[data-on="1"] .wave-lane__check svg {
+                display: block;
+            }
+            .wave-lane__check::after {
+                content: "";
+                position: absolute;
+                inset: -19px; /* RE-06:11px 靶补到 ≥24 物理 px @0.5 档 */
+            }
+            /* 状态灯统一 Tab2 的 8×8(B-06 裁定,先例 .tracks-row__light):
+               base.css 的 .sc-dot 默认 6px,两轴都要覆盖,只写 width 会成椭圆 */
+            .wave-lane__light {
+                width: var(--sp-8);
+                height: var(--sp-8);
+            }
+            .wave-lane__label {
+                flex: 1;
+                /* 保底可读宽:「Ad-lib 1」/「Ad-lib 2」在 zh/en 下都要 37px 才不吃掉
+                   末位区分字符;38px 是「轨名先满足、覆盖率后让位」的分配优先级 */
+                min-width: 38px;
+                font-size: var(--fs-105);
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                color: rgba(233, 229, 244, 0.82);
+            }
+            .wave-lane[data-on="1"] .wave-lane__label {
+                font-weight: 600;
+                color: var(--txt-dark-0);
+            }
+            /* 覆盖率+段数:轨头里的**次要**读数 —— 空间不够时它先让位(收缩 + 省略号,
+               全文走 title),轨名永远优先(fs-80 → fs-75,EN「{p}% · {n} seg」更长) */
+            .wave-lane__covseg {
+                flex: 0 1 auto;
+                min-width: 0;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-75);
+                color: rgba(233, 229, 244, 0.45);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            /* 「样本不足」黄标:158px 内压成琥珀点 + tooltip(同 Tab2 dotmark 手法) */
+            .wave-lane__lowdot {
+                width: 6px;
+                height: 6px;
+                flex: none;
+                border-radius: 50%;
+                background: rgba(var(--sem-amber), 0.9);
+            }
+            /* 「曲线可见」toggle 压成纯眼睛图标钮(B-08;24×14 私有 toggle 不进实现,C-09) */
+            .wave-lane__eye {
+                position: relative;
+                flex: none;
+                width: 14px;
+                height: 14px;
+                padding: 0;
+                border: 0;
+                background: none;
+                color: rgba(233, 229, 244, 0.85);
+                cursor: pointer;
+            }
+            .wave-lane__eye[aria-pressed="false"] {
+                opacity: 0.35;
+            }
+            .wave-lane__eye::after {
+                content: "";
+                position: absolute;
+                inset: -17px; /* RE-06 */
+            }
+            /* 泳道舞台(851):默认 34px;右缘 44px 让位共用刻度列(B-11)。
+               T33 Wave 4 用户新件「纵向缩放条」:行高改成运行时变量 --lane-h
+               (22..88px,tab-wave.js 的 applyLaneH 写在 .wave-lanes 上),
+               canvas/overlay/播放头/角标/选区几何一律跟着 local.laneH 走。 */
+            .wave-lane__stage {
+                flex: 1;
+                min-width: 0;
+                position: relative;
+                height: var(--lane-h, 34px);
+                border-bottom: 1px solid var(--dark-rule-weak);
+                overflow: hidden;
+            }
+            .wave-lane__static {
+                position: absolute;
+                left: 0;
+                top: 0;
+                bottom: 0;
+                right: 44px;
+            }
+            .wave-lane__badges {
+                position: absolute;
+                left: 0;
+                top: 0;
+                right: 44px;
+                bottom: 0;
+                /* 共享动态层(曲线/边界)是 z-index:2 的兄弟,pan 走极端值时曲线
+                   会横穿段角标 —— 身份标压在曲线之上、边界手柄(z-index:4)之下 */
+                z-index: 3;
+                pointer-events: none;
+                /* 角标组是左对齐的实体(renderSegMarks 只按锚点 x 裁剪),末段起点
+                   靠近舞台右端时会压到右缘 44px 双刻度列上 —— 层本身兜住 */
+                overflow: hidden;
+            }
+            /* 段起点角标组(图例帧 774-779):E/C 薰衣草实心 chip + **另挂**琥珀锁形
+               小标 —— 同一段起点的两件排成一行,绝不各自 absolute 叠成一枚大胶囊。
+               图例帧是 ×4 放大稿,其 9px/8.5px 字与 1px 5px 内衬按 34px 实景泳道
+               等比缩回 = 2px 糊块 → 实景档取 fs-75 + 0 3px 内衬,锁标只留 stroke
+               锁形、「锁定」词条移 aria-label(见 deviations §R)。
+               **纵向落点 = 泳道底带**(而非图例帧的段顶角):34px 实景泳道里 pan 曲线
+               走 y=5..19、vol 走 y=15..22,顶带角标必然压住 pan 线 —— 而 E/C 角标恰恰
+               只出现在「被人改过 pan/vol」的段上,那正是 J44 闭环要核对曲线值的段。
+               底带 y=23..31 在 vol 之下、2px 覆盖条(y=32..34)之上,两条曲线全避开。*/
+            .wave-seg-marks {
+                position: absolute;
+                bottom: 2px;
+                display: flex;
+                align-items: center;
+                gap: 2px;
+            }
+            .wave-seg-badge {
+                padding: 0 3px;
+                border-radius: 3px;
+                background: rgba(var(--acc), 0.9);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-75);
+                font-weight: 600;
+                line-height: 8px;
+                color: var(--ink-on-amber);
+            }
+            .wave-seg-lock {
+                display: flex;
+                width: 8px;
+                height: 8px;
+                align-items: center;
+                justify-content: center;
+                border-radius: 2px;
+                background: rgba(var(--sem-amber), 0.24);
+                border: 1px solid rgba(var(--sem-amber), 0.5);
+                color: var(--sem-amber-ink-dark);
+                /* 祖先 .wave-lane__badges 是 pointer-events:none —— 不在这里收回来,
+                   「锁定」词条(title)就永远弹不出 tooltip,只剩屏幕阅读器可达。
+                   指针事件照旧冒泡到 .wave-lanes 的舞台手势,点选/平移不受影响。 */
+                pointer-events: auto;
+            }
+            /* 共享动态层(§6.3:边界/曲线一张覆盖 canvas,随泳道滚动;高度 JS 写) */
+            /* right = 右缘双刻度列 44,与 `.wave-lane__static` / `.wave-lane__badges`
+               **同一个数**(Wave 5 撤销纵向缩放条自留槽后三处归并;此前 overlay 让
+               68 而 badges 只让 44 的不一致是 code-review finding 1 的账)。
+               实际宽由 resizeCanvas 写死 style.width,这里只是同口径的静态兜底 */
+            .wave-overlay {
+                position: absolute;
+                left: 158px;
+                right: 44px;
+                top: 0;
+                z-index: 2;
+                pointer-events: none;
+            }
+            /* 选区带浅琥珀底(837 selBand):画在滚动层内部,随泳道滚动 */
+            .wave-selband {
+                position: absolute;
+                top: 0;
+                z-index: 2;
+                background: rgba(var(--sem-amber), 0.07);
+                pointer-events: none;
+            }
+            /* 重采集布防受覆盖区域(05 行 300):琥珀斜条纹高亮(A-08 同族配方) */
+            .wave-recapband {
+                position: absolute;
+                top: 0;
+                z-index: 2;
+                pointer-events: none;
+            }
+            /* 条纹落在**布防轨**的子块里,不是整条满高带:05 行 300 的高亮面是
+               {布防轨}×{选区} 的交集,画满 15 泳道会读成「全部轨都要重采集」 */
+            .wave-recapband__seg {
+                position: absolute;
+                left: 0;
+                right: 0;
+                background: repeating-linear-gradient(
+                    45deg,
+                    rgba(var(--sem-amber), 0.22) 0 3px,
+                    transparent 3px 8px
+                );
+            }
+            /* 段边界拖拽手柄(图例帧 767-772:9×26 圆角竖条 + 双竖线纹,
+               垂直居中于泳道 B-10;auto=白描边浅底 / 手动=薰衣草白重底+发光
+               两级权重;命中在泳道容器上做,±6px hit.js 口径)。
+               T33 Wave 4 反馈⑦(可发现性):① cursor:ew-resize 落在手柄上;
+               ② pointer-events 由 none 收回 auto —— 祖先 none 会把 title tooltip
+               一并吃掉(先例 .wave-seg-lock 的同款账),指针事件照旧冒泡到
+               .wave-lanes 的舞台手势,拖拽/点选/平移不受影响。
+               ⚠ 本件**不加 RE-06 透明扩展**:命中判定完全在 JS 里按
+               hit.js BOUNDARY_HIT_PX=6 对 .wave-lanes 的指针坐标做(tab-wave.js
+               updateBoundHover / 拖拽起点都不看 e.target),手柄本身也只在已经
+               命中 ±6 时才 hidden→显示 —— 扩展区对有效靶区一寸也加不了,
+               Wave 4 的 `::after{left/right:-8px}` 是纯装饰,修订轮删除。
+               有效靶区 = ±6 CSS px(05 §6.3 行 696 的边界专用口径,不走 RE-06)。 */
+            .wave-bhandle {
+                position: absolute;
+                width: 9px;
+                height: 26px;
+                margin-left: -4.5px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 4px;
+                background: rgba(226, 222, 244, 0.28);
+                border: 1px solid rgba(var(--wh), 0.55);
+                color: rgba(var(--wh), 0.9);
+                z-index: 4;
+                cursor: ew-resize;
+                pointer-events: auto;
+            }
+            .wave-bhandle[data-manual="1"] {
+                background: rgba(240, 236, 255, 0.5);
+                border-color: rgba(var(--wh), 0.85);
+                box-shadow: 0 0 12px rgba(226, 222, 244, 0.5);
+                color: var(--ink-on-amber);
+            }
+            /* 拖拽吸附命中能量谷(A-14:竖线加亮 + 手柄琥珀高亮;Alt 关吸附) */
+            .wave-bhandle[data-snap="1"] {
+                background: rgba(var(--sem-amber-hi), 0.85);
+                border-color: rgba(var(--wh), 0.85);
+                box-shadow: 0 0 12px rgba(var(--sem-amber-hi), 0.7);
+                color: var(--ink-on-amber);
+            }
+            /* 布防拒绝态行内说明(§5.5 四值 reason:出说明、不点亮 badge) */
+            .wave-armnote {
+                color: var(--sem-amber-ink);
+            }
+            /* 布防 badge 三处的点击跳转(05 行 300 ①:点击跳 Tab3 定位选区) */
+            [data-gb="master-range-recapture-badge"],
+            [data-gb="tracks-legend-recapture-badge"] {
+                cursor: pointer;
+            }
+            /* diff 变更列表条目(A-02:mono 数值行,首行 wave.diffKept 已有) */
+            .wave-diff ul {
+                margin: 0;
+                padding: 0;
+                list-style: none;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-2);
+            }
+            .wave-diff li {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-90);
+                color: var(--txt-3);
+            }
+            /* 播放头(838):滚动层内纵贯;采集中的绿色进度点(A-15)是头部子件 */
+            .wave-playhead {
+                position: absolute;
+                top: 0;
+                width: 2px;
+                background: rgba(var(--wh), 0.5);
+                z-index: 3;
+                pointer-events: none;
+            }
+            .wave-playhead__cap {
+                position: absolute;
+                top: 2px;
+                left: 50%;
+                width: 6px;
+                height: 6px;
+                margin-left: -3px;
+                border-radius: 50%;
+                background: rgb(var(--sem-green));
+            }
+            /* Range 只读细线(A-10):泳道区顶部 2px,daw_loop/manual 两档;follow 不画 */
+            .wave-rangeline {
+                position: absolute;
+                top: 22px;
+                height: 2px;
+                z-index: 4;
+                pointer-events: none;
+            }
+            .wave-rangeline[data-mode="daw_loop"] {
+                background: rgba(var(--sem-green), 0.55);
+            }
+            .wave-rangeline[data-mode="manual"] {
+                background: rgba(var(--sem-amber), 0.55);
+            }
+            /* 右缘 44px 双刻度列(786-797):全泳道区共用一列(B-11),窗级覆盖层;
+               right 由 syncScrollGutter 行内同步滚动条宽(不盖滚动条、与 canvas
+               右缘对齐,口径同 .wave-ruler__scale)。
+               bottom = 底部条行高(Wave 6 起 44,见 .wave-hzoom) */
+            .wave-scalecol {
+                position: absolute;
+                right: 0;
+                top: 22px;
+                bottom: 44px;
+                width: 44px;
+                display: flex;
+                border-left: 1px solid var(--dark-rule);
+                pointer-events: none;
+                z-index: 4;
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+            }
+            .wave-scalecol__half {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                align-items: flex-end;
+                padding: 12px 3px 2px;
+                font-size: var(--fs-75);
+            }
+            .wave-scalecol__half--pan {
+                color: rgba(var(--acc), 0.75);
+            }
+            .wave-scalecol__half--db {
+                padding-right: 4px;
+                color: rgba(var(--wh), 0.6);
+            }
+            .wave-scalecol__hdr {
+                position: absolute;
+                right: 0;
+                top: 2px;
+                width: 44px;
+                display: flex;
+                font-size: 7px; /* 全稿最小字号,放大帧专用档就地(--fs-75 之下) */
+                letter-spacing: var(--mono-ls-tag);
+            }
+            .wave-scalecol__hdr span {
+                flex: 1;
+                text-align: right;
+            }
+            .wave-scalecol__hdr span:first-child {
+                padding-right: 3px;
+                color: rgba(var(--acc), 0.75);
+            }
+            .wave-scalecol__hdr span:last-child {
+                padding-right: 4px;
+                color: rgba(var(--wh), 0.6);
+            }
+            /* 工作选区叠加层(816-828):窗级、不随滚动;left/width 由 JS 按
+               「舞台坐标 = 容器宽 − 158 − 44」写([J72a] C-04 修正) */
+            .wave-selection {
+                position: absolute;
+                top: 0;
+                bottom: 44px;
+                z-index: 5;
+                pointer-events: none;
+            }
+            .wave-selection__edge {
+                position: absolute;
+                top: 22px;
+                bottom: 0;
+                width: 3px;
+                background: rgba(var(--sem-amber), 0.7);
+            }
+            .wave-selection__edge--left {
+                left: 0;
+            }
+            .wave-selection__edge--right {
+                right: 0;
+            }
+            .wave-selection__edge[data-drag="1"] {
+                background: rgba(var(--sem-amber-hi), 0.95);
+                box-shadow: 0 0 12px rgba(var(--sem-amber-hi), 0.7);
+            }
+            /* 选区手柄 = 05 行 314 的 9×26 圆角竖条 + 双竖线纹(B-01 裁定:9×26 几何 +
+               稿内琥珀配色;显式验收项,不得退回 18×20),垂直居中(B-10) */
+            .wave-selection__handle {
+                position: absolute;
+                top: 50%;
+                width: 9px;
+                height: 26px;
+                margin-top: -13px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 4px;
+                background: rgba(var(--sem-amber-hi), 0.85);
+                border: 1px solid rgba(var(--wh), 0.5);
+                box-shadow: 0 2px 7px rgba(18, 14, 26, 0.4);
+                cursor: ew-resize;
+                pointer-events: auto;
+            }
+            .wave-selection__handle--left {
+                left: -5px;
+            }
+            .wave-selection__handle--right {
+                right: -5px;
+            }
+            .wave-selection__handle[data-drag="1"] {
+                background: rgba(240, 216, 166, 0.98); /* 2099 拖动高亮就地 */
+            }
+            .wave-selection__handle::after {
+                content: "";
+                position: absolute;
+                left: -20px;
+                right: -20px;
+                top: -11px;
+                bottom: -11px; /* RE-06:9×26 靶补到 ≥24 物理 px @0.5 档 */
+            }
+            /* 双读数(825-826):拖动侧展开「小节.拍.tick · mm:ss.mmm」,另一侧只显位置 */
+            .wave-selection__read {
+                position: absolute;
+                top: 26px;
+                padding: 1px var(--sp-5);
+                border-radius: var(--r-tag);
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-90);
+                letter-spacing: var(--mono-ls-tag);
+                white-space: nowrap;
+                background: var(--dark-chip);
+                color: rgba(233, 229, 244, 0.75);
+            }
+            .wave-selection__read--left {
+                left: 6px;
+            }
+            .wave-selection__read--right {
+                right: 6px;
+            }
+            .wave-selection__read[data-drag="1"] {
+                background: rgba(var(--sem-amber-hi), 0.92);
+                color: var(--ink-on-amber);
+            }
+            /* 「设为范围」按钮(827):拖动中淡出让位双读数(与读数同在 26px 行) */
+            .wave-selection__setrange {
+                position: absolute;
+                left: 50%;
+                top: 26px;
+                transform: translateX(-50%);
+                padding: var(--sp-3) var(--sp-11);
+                border-radius: var(--r-pill);
+                font-size: var(--fs-100);
+                white-space: nowrap;
+                background: rgba(var(--sem-amber-hi), 0.9);
+                border: 1px solid rgba(var(--wh), 0.45);
+                color: var(--ink-on-amber);
+                box-shadow: 0 3px 10px rgba(18, 14, 26, 0.35);
+                cursor: pointer;
+                pointer-events: auto;
+                transition: opacity var(--dur-1) var(--ease);
+            }
+            .wave-selection[data-drag="1"] .wave-selection__setrange {
+                opacity: 0;
+                pointer-events: none;
+            }
+            /* 选区外压暗(05 行 314;A-09:方向修正 —— 压暗选区外,选区内留 .07 琥珀底) */
+            .wave-dim {
+                position: absolute;
+                top: 22px;
+                bottom: 44px;
+                z-index: 4;
+                background: rgba(15, 13, 21, 0.35);
+                pointer-events: none;
+            }
+            /* 底部缩放/滚动条(866-871):148 + 左 padding 10 = 158 与轨头对齐;
+               148px 空档放缩放档位 mono 读数(A-16 裁定)。
+               ---- Wave 6 用户裁定:行高 20 → 44 ----------------------------------
+               用户 preview 第三轮原话:「横向缩放的在横向进度条的右侧(右下角),
+               纵向缩放条在纵向进度条的下方,**纵向放置**,两个缩放条呈 90 度」。
+               Wave 5 把纵向缩放条压成横轨的唯一理由就是「20px 行高放不下竖杆」——
+               既然用户要竖杆,代价就由布局出:底部条加高到 44px(泳道 canvas 让出
+               24px 高,滚动条兜住),竖杆 6×22 + 上下各 10.5px 余量正好落进来。
+               稿内 866 的 20px 固定高**被本裁定覆盖**,deviations 登记。 */
+            .wave-hzoom {
+                flex: none;
+                height: 44px;
+                display: flex;
+                align-items: center;
+                padding: 0 var(--sp-10);
+                border-top: 1px solid var(--dark-rule);
+            }
+            .wave-hzoom__head {
+                width: 148px;
+                flex: none;
+                display: flex;
+                align-items: center;
+            }
+            .wave-hzoom__zoom {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-90);
+                color: var(--txt-dark-dim);
+            }
+            .wave-hzoom__scroll {
+                flex: 1;
+                min-width: 0;
+                position: relative;
+                height: 6px;
+                border-radius: var(--r-pill);
+                background: rgba(var(--wh), 0.08);
+            }
+            .wave-hzoom__thumb {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                border-radius: var(--r-pill);
+                background: rgba(
+                    var(--wh),
+                    0.26
+                ); /* 869 就地(近 --scroll-thumb) */
+                cursor: grab;
+            }
+            /* ---- 横向缩放拖拽条(T33 Wave 4 用户新件;05/设计稿均无此件 →
+               J72 口径:实现 + 附截图供用户 preview)----------------------------
+               与既有底部滚动条(平移)**同排但形制两分**,免得读成同一件:
+                 · 滚动条 = 长轨 + 长条 thumb(占满剩余宽,thumb 宽 = 视口/全长);
+                 · 缩放条 = 短轨(64px)+ 圆点 thumb + 一枚 mono「×N」读数。
+               交互与 Ctrl+滚轮同一 timeline API(以**视口中心**为锚),现有
+               「×1.0 / 300s」总读数保留在左侧 148px 空档里,拖动时实时更新。 */
+            .wave-hzoom__zoomctl {
+                flex: none;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                margin-left: var(--sp-10);
+            }
+            .wave-hzoom__zoomval {
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-80);
+                letter-spacing: var(--mono-ls-tag);
+                color: var(--txt-dark-dim);
+                min-width: 26px;
+                text-align: right;
+            }
+            .wave-hzoom__zoombar {
+                position: relative;
+                width: 64px;
+                height: 6px;
+                border-radius: var(--r-pill);
+                background: rgba(var(--wh), 0.08);
+                border: 1px solid rgba(var(--wh), 0.14);
+                cursor: ew-resize;
+            }
+            /* 命中扩展:6×64 → **30×80 CSS px**。Wave 6 底条加高到 44px 后纵轴不再
+               受 20px 行高卡脖子,顺手把 RE-06「0.5 档 ≥24 物理 px」的旧缺口补上
+               (30 > 24);上限仍是底条自身的 44px —— 再往上扩会压进泳道 canvas 右下角
+               造指针死区,那是 Wave 5 刚修掉的病,不再犯。 */
+            .wave-hzoom__zoombar::after {
+                content: "";
+                position: absolute;
+                inset: -12px -8px;
+            }
+            .wave-hzoom__zoomthumb {
+                position: absolute;
+                top: 50%;
+                width: 11px;
+                height: 11px;
+                margin: -5.5px 0 0 -5.5px;
+                border-radius: 50%;
+                background: rgba(var(--wh), 0.88);
+                box-shadow: 0 2px 6px rgba(18, 14, 26, 0.45);
+                pointer-events: none;
+            }
+            .wave-hzoom__zoombar:focus-visible {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                outline-offset: 3px;
+            }
+            /* ---- 纵向缩放拖拽条(Wave 4 用户新件;**Wave 6 用户裁定:竖回来**)
+               ------------------------------------------------------------------
+               沿革三轮:
+                 Wave 4 = 泳道区右缘一枚 12×62 竖杆,浮在 canvas 上(24×74 指针死区);
+                 Wave 5 = 迁进底部条右端,但 20px 行高放不下竖杆 → 压成 44×6 横轨;
+                 Wave 6 = 用户 preview 第三轮原话「纵向缩放条在纵向进度条的下方,
+                          **纵向放置**,两个缩放条呈 90 度,都在右下角」—— Wave 5 的
+                          横轨与要求相反,竖直形制**恢复**,腾空间的代价由布局承担
+                          (底部条 20 → 44px,见 .wave-hzoom 头注)。
+               现制 = 窗口右下角一枚 6×22 竖轨 + 圆点 thumb,与横向缩放条呈 90°:
+               横的在左(横向滚动条右侧),竖的在最右(纵向滚动条正下方)。
+               ⚠ 「同一列」这次是**真的**:`.wave-hzoom__vzoomslot` 用负 margin 抵掉
+               底部条的 10px 右内边距、贴到窗口右内缘,槽宽取 max(滚动条宽, 16px),
+               竖轨在槽内居中 → 轨心恒在距右内缘 8px 处,与泳道区纵向滚动条(占
+               右起 0..gutter,实测 gutter=9)同列。
+               ⚠ 16px 兜底与 22px 轨长都是**圆角账**,不是随手取的:窗口 `overflow:hidden`
+               + 15px 圆角(内圆角 14)会啃掉右下角 14×14 那块,而 thumb 是 11px 圆点。
+               9px 窄滚动条下若严格按 4.5px 轨心居中,圆点直接探出窗口右内缘被啃圆头
+               (Wave 5 头注里记的正是这一笔)→ 轨心退到距右内缘 8px。纵轴同理:26px 轨
+               (上下各 8.5px 余量)在**最矮档**(thumb 触轨底)实测圆点右下角仍被啃掉一块
+               (见 .shots/w6-corner-min),轨长收到 22 → 上下各 10.5px 余量后,thumb 圆心
+               距内圆角弧心 6.95px、加半径 5.5 = 12.45 < 14,两端极值都干净。
+               ⚠ 残留口径差(**PR 描述照此写**):轨心停在距右内缘 8px、纵向滚动条列是
+               右起 0..9px(轨心 4.5px)—— 两者差 3.5px,6px 宽的轨与 9px 宽的滚动条列
+               有 4px 重叠,读作「同一列」成立,但不是严格同心;要严格同心就得让圆点探进
+               圆角被啃,取舍取前者。
+               `⇕` 读数与横向的 `×N` 一眼两分,不会读成同一件。 */
+            .wave-hzoom__vzoomctl {
+                flex: none;
+                align-self: stretch;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                margin-left: var(--sp-10);
+                /* 抵掉 .wave-hzoom 的右内边距:整组贴到窗口右内缘,槽才能与
+                   泳道区纵向滚动条同列(见上「同一列」账) */
+                margin-right: calc(var(--sp-10) * -1);
+                /* 角落区(用户裁定⑦「两条共用一个角落容器 + 与底部条同族的浅色底」):
+                   竖轨贴着窗口右内缘,没有这层底就是一根孤零零杵在圆角里的针;
+                   一道分隔线 + 3.5% 提亮把「⇕ 34 + 竖轨」圈成一件,与左边的
+                   「×1.0 + 横轨」一眼分组、90° 的关系也才立得住。
+                   宽 = 双刻度列 44 + 滚动条列 —— 这道左分隔线就与 `.wave-scalecol`
+                   的 border-left **连成一条直线**(角落区 = 那两列的正下方),
+                   否则两条竖线错开 5px,一眼就是没对齐。
+                   `flex-end`:槽必须贴右内缘,富余宽一律让给左侧。 */
+                width: calc(44px + var(--wave-gutter, 0px));
+                justify-content: flex-end;
+                padding-left: var(--sp-5);
+                background: rgba(var(--wh), 0.035);
+                border-left: 1px solid var(--dark-rule);
+            }
+            /* 纵向滚动条那一列:宽 = 实测滚动条宽(syncScrollGutter 写
+               `--wave-gutter`),兜底 16px(圆角账,见上) */
+            .wave-hzoom__vzoomslot {
+                flex: none;
+                align-self: stretch;
+                width: max(var(--wave-gutter, 0px), 16px);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .wave-vzoom {
+                position: relative;
+                width: 6px;
+                height: 22px;
+                border-radius: var(--r-pill);
+                background: rgba(var(--wh), 0.08);
+                border: 1px solid rgba(var(--wh), 0.14);
+                /* 竖轨 = 只吃纵向位移(tab-wave.js `vzoomHeightFromEvent` 读 clientY,
+                   向上拖 = 泳道变高),光标随之回到 ns-resize */
+                cursor: ns-resize;
+            }
+            /* 命中扩展:6×22 → **20×42 CSS px**(横轴 20 与横向杆同族;纵轴 42 吃满
+               44px 底条行高,不越界到泳道 canvas 上去造指针死区)。
+               ⚠ 横轴 20 仍差 RE-06 的 24 物理 px 半档 4px —— 再宽就要探出窗口右内缘
+               被圆角啃,缺口登记 deviations(纵轴 42 已达标)。 */
+            .wave-vzoom::after {
+                content: "";
+                position: absolute;
+                inset: -10px -7px;
+            }
+            /* 竖轨的 thumb:横向恒居中(left:50%),纵向走行程(top 由 applyLaneH 写,
+               **上 = 高**,与「向上拖 = 泳道变高」同向) */
+            .wave-vzoom__thumb {
+                position: absolute;
+                left: 50%;
+                width: 11px;
+                height: 11px;
+                margin: -5.5px 0 0 -5.5px;
+                border-radius: 50%;
+                background: rgba(var(--wh), 0.88);
+                box-shadow: 0 2px 6px rgba(18, 14, 26, 0.45);
+                pointer-events: none;
+            }
+            .wave-vzoom:focus-visible {
+                outline: 2px solid rgba(var(--acc), 0.8);
+                /* 贴窗口右内缘,offset 收到 2px 免得描边被圆角啃 */
+                outline-offset: 2px;
+            }
+            /* ---- 段检查器(876-914):262px flex 兄弟,挤压左栏(C-11) ------------
+               **Wave 5 用户裁定④覆盖 C-11 的「条件渲染」半句**:面板改成
+               「常驻 + 显式开关」—— 开着就一直占位(无选中段时出 `.inspector-empty`
+               空态句),关掉就一直不占位。理由是用户原话「不然会导致一直在闪烁」:
+               条件渲染下每点一次段,左栏宽度就跳 274px(262 + gap 12),舞台宽随之
+               变、canvas 全量重建 —— 点段这个最高频动作反而最抖。
+               挤压左栏的 flex 形制(C-11 的另半句,反灰模 absolute 浮层)不变。
+               deviations 登记「覆盖 C-11」并建议 05 §2.3(286)「可展开」同步改口径。 */
+            .segment-inspector {
+                flex: none;
+                width: 262px; /* 稿内 262(灰模 260 → 统一 262,登记差异) */
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-11);
+                padding: var(--sp-12) var(--sp-14);
+                border-radius: var(--r-lg);
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+                box-shadow: var(--card-inset);
+                overflow-y: auto;
+            }
+            /* 空态与实态互斥:没选中段时只留标题行 + 一句指路,其余字段整组不占位
+               (面板宽固定,所以这一切换**不动**左栏宽度 —— 抖动源在面板显隐,
+               不在面板内容) */
+            .segment-inspector[data-empty="1"] .inspector-note,
+            .segment-inspector[data-empty="1"] .inspector-times,
+            .segment-inspector[data-empty="1"] .inspector-field,
+            .segment-inspector[data-empty="1"] .inspector-lockrow,
+            .segment-inspector[data-empty="1"] .sc-hint {
+                display: none;
+            }
+            .segment-inspector:not([data-empty="1"]) .inspector-empty {
+                display: none;
+            }
+            .inspector-empty {
+                margin: var(--sp-16) 0;
+                text-align: center;
+                font-size: var(--fs-105);
+                line-height: 1.5;
+                color: var(--txt-4);
+                text-wrap: pretty;
+            }
+            /* 跟随宿主提示(878-880;05 §2.3a ADR-005 ③:面板首件) */
+            .inspector-note {
+                padding: var(--sp-7) var(--sp-10);
+                border-radius: var(--r-tab);
+                background: rgba(var(--sem-amber), 0.15);
+                border: 1px solid rgba(var(--sem-amber), 0.4);
+                font-size: var(--fs-100);
+                line-height: 1.45;
+                color: var(--sem-amber-ink);
+                text-wrap: pretty;
+            }
+            .inspector-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: var(--sp-7);
+            }
+            /* 面板版 origin 角标(883):描边淡底,与泳道内实心版刻意不同(§17②) */
+            .inspector-origin-chip {
+                padding: 1px 5px;
+                border-radius: var(--r-tag);
+                background: rgba(var(--acc), 0.28);
+                border: 1px solid rgba(var(--acc), 0.5);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-80);
+                color: var(--acc-ink-on-glass);
+            }
+            /* 时间/响度只读组(885-890):主显 mm:ss.mmm,有 tempo 表并列小节值(B-12) */
+            .inspector-times {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-4);
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+                font-size: var(--fs-105);
+                color: var(--txt-2);
+            }
+            .inspector-times > div {
+                display: flex;
+                justify-content: space-between;
+                gap: var(--sp-6);
+            }
+            .inspector-times [data-t] {
+                color: var(--txt-4);
+            }
+            .inspector-field {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+            }
+            .inspector-field__label {
+                flex: none;
+                width: 28px;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                letter-spacing: 0.18em; /* 第三档字距,无 token 就地(§17④) */
+                color: var(--txt-3);
+            }
+            /* 微型旋钮 = .sc-knob 手动态缩小版(894-895):只覆盖盘径与指针高 */
+            .inspector-field .sc-knob {
+                width: 26px;
+                height: 26px;
+            }
+            .inspector-field .sc-knob .sc-knob__needle {
+                height: 9px;
+                margin-top: -9px;
+            }
+            .inspector-input {
+                flex: 1;
+                min-width: 0;
+                padding: var(--sp-4) var(--sp-8);
+                border-radius: var(--r-xs);
+                border: 1px solid rgba(var(--wh), 0.32);
+                background: rgba(var(--wh), 0.18);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-110);
+                color: var(--txt-1);
+                outline: none;
+                text-align: right;
+            }
+            .inspector-input--vol {
+                flex: none;
+                width: 52px;
+            }
+            /* 微型音量滑杆:统一到工具条那套 4px/11px/--acc-slider-fill(B-13 裁定) */
+            .inspector-vslider {
+                position: relative;
+                flex: 1;
+                min-width: 0;
+                height: 4px;
+                border-radius: var(--r-pill);
+                background: var(--glass-border);
+            }
+            .inspector-lockrow {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+                padding-top: var(--sp-9);
+                border-top: 1px solid var(--glass-border);
+            }
+            .inspector-lockrow__label {
+                flex: 1;
+                font-size: var(--fs-110);
+                color: var(--txt-2);
             }
 
             /* ---- Tab4 设置(05 §2.4) ---- */
@@ -4063,10 +5271,10 @@
                                 <span
                                     class="sc-badge--amber"
                                     data-gb="master-range-recapture-badge"
-                                    data-t="wave.recaptureArmed"
+                                    data-t="wave.recaptureArmedShort"
                                     hidden
                                 >
-                                    重采集布防中 · 选区 {x}–{y} · {n} 轨
+                                    重采集布防中
                                 </span>
                                 <!-- [T3x] bridge.setRange(mode, startS, endS) —— 契约 §1.8 -->
                             </div>
@@ -4304,9 +5512,9 @@
                                 class="tracks-legend__badge"
                                 data-gb="tracks-legend-recapture-badge"
                                 hidden
-                                data-t="wave.recaptureArmed"
+                                data-t="wave.recaptureArmedShort"
                             >
-                                重采集布防中 · 选区 {x}–{y} · {n} 轨
+                                重采集布防中
                             </span>
                             <span
                                 class="tracks-legend__note"
@@ -4322,518 +5530,1126 @@
                     <!-- Tab3 波形(Waveform)—— 05 §2.3 / §2.3a                       -->
                     <!-- ========================================================= -->
                     <section data-tab-panel="wave" data-gb="tab-wave">
-                        <!-- 空态 -->
-                        <div class="sc-banner" data-gb="wave-emptystate" hidden>
-                            <!-- 词条待立:Tab3 空态文案「尚无采集数据——开启采集开关并播放」(05 §2.3 末,字典缺) -->
-                            <span data-gb-todo="词条待立">
-                                尚无采集数据——开启采集开关并播放
-                            </span>
+                        <!-- ========================================================= -->
+                        <!-- Tab3 波形(T33 Wave 1:静态结构;交互接线 = Wave 2)          -->
+                        <!-- 外层两栏(设计稿 651):左主栏 .wave-main,右检查器 flex 兄弟 -->
+                        <!-- 泳道 15 行由 tab-wave.js mount() 生成(同 tab-tracks 模式)  -->
+                        <!-- ========================================================= -->
+                        <div class="wave-main">
+                            <!-- 工具条卡(654):四行纵列 ——
+                                 ① 7 滑杆 ② 动作行 ③「设为范围」提示条 ④ 布防行 -->
+                            <div class="wave-toolbar" data-gb="wave-toolbar">
+                                <div class="wave-toolbar__sliders">
+                                    <div
+                                        class="wave-toolbar__group wave-toolbar__group--vad"
+                                        data-gb="wave-vad-group"
+                                    >
+                                        <!-- [Wave 2] 拖动档:pointermove ≤50Hz 节流调
+                                             bridge.setVadParams(五字段整包,契约 §1.18)触发
+                                             非破坏预览;松手档 300ms 防抖在 C++ 侧,UI 只显示
+                                             倒计时条并消费 scvb.segments(brief §0.5) -->
+                                        <div
+                                            class="wave-slider"
+                                            data-gb="wave-vad-threshold"
+                                        >
+                                            <div class="wave-slider__head">
+                                                <span
+                                                    class="wave-slider__name"
+                                                    data-t="wave.sldThreshold"
+                                                    >THRESHOLD</span
+                                                >
+                                                <span
+                                                    class="wave-slider__val"
+                                                    data-gb="wave-vad-threshold-val"
+                                                    >-38 dB</span
+                                                >
+                                            </div>
+                                            <div
+                                                class="wave-slider__track"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-valuemin="-60"
+                                                aria-valuemax="-10"
+                                                aria-valuenow="-38"
+                                                data-t-aria="wave.sldThreshold"
+                                                style="--p: 44"
+                                            >
+                                                <span
+                                                    class="wave-slider__fill"
+                                                ></span>
+                                                <span
+                                                    class="wave-slider__thumb"
+                                                ></span>
+                                            </div>
+                                        </div>
+                                        <div
+                                            class="wave-slider"
+                                            data-gb="wave-vad-hysteresis"
+                                        >
+                                            <div class="wave-slider__head">
+                                                <span
+                                                    class="wave-slider__name"
+                                                    data-t="wave.sldHysteresis"
+                                                    >HYSTERESIS</span
+                                                >
+                                                <span
+                                                    class="wave-slider__val"
+                                                    data-gb="wave-vad-hysteresis-val"
+                                                    >6 dB</span
+                                                >
+                                            </div>
+                                            <div
+                                                class="wave-slider__track"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-valuemin="0"
+                                                aria-valuemax="20"
+                                                aria-valuenow="6"
+                                                data-t-aria="wave.sldHysteresis"
+                                                style="--p: 30"
+                                            >
+                                                <span
+                                                    class="wave-slider__fill"
+                                                ></span>
+                                                <span
+                                                    class="wave-slider__thumb"
+                                                ></span>
+                                            </div>
+                                        </div>
+                                        <div
+                                            class="wave-slider"
+                                            data-gb="wave-vad-hangover"
+                                        >
+                                            <div class="wave-slider__head">
+                                                <span
+                                                    class="wave-slider__name"
+                                                    data-t="wave.sldHangover"
+                                                    >HANGOVER</span
+                                                >
+                                                <span
+                                                    class="wave-slider__val"
+                                                    data-gb="wave-vad-hangover-val"
+                                                    >180 ms</span
+                                                >
+                                            </div>
+                                            <div
+                                                class="wave-slider__track"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-valuemin="0"
+                                                aria-valuemax="500"
+                                                aria-valuenow="180"
+                                                data-t-aria="wave.sldHangover"
+                                                style="--p: 36"
+                                            >
+                                                <span
+                                                    class="wave-slider__fill"
+                                                ></span>
+                                                <span
+                                                    class="wave-slider__thumb"
+                                                ></span>
+                                            </div>
+                                        </div>
+                                        <div
+                                            class="wave-slider"
+                                            data-gb="wave-vad-paddingpre"
+                                        >
+                                            <div class="wave-slider__head">
+                                                <span
+                                                    class="wave-slider__name"
+                                                    data-t="wave.sldPadPre"
+                                                    >PAD PRE</span
+                                                >
+                                                <span
+                                                    class="wave-slider__val"
+                                                    data-gb="wave-vad-paddingpre-val"
+                                                    >120 ms</span
+                                                >
+                                            </div>
+                                            <div
+                                                class="wave-slider__track"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-valuemin="0"
+                                                aria-valuemax="500"
+                                                aria-valuenow="120"
+                                                data-t-aria="wave.sldPadPre"
+                                                style="--p: 24"
+                                            >
+                                                <span
+                                                    class="wave-slider__fill"
+                                                ></span>
+                                                <span
+                                                    class="wave-slider__thumb"
+                                                ></span>
+                                            </div>
+                                        </div>
+                                        <div
+                                            class="wave-slider"
+                                            data-gb="wave-vad-paddingpost"
+                                        >
+                                            <div class="wave-slider__head">
+                                                <span
+                                                    class="wave-slider__name"
+                                                    data-t="wave.sldPadPost"
+                                                    >PAD POST</span
+                                                >
+                                                <span
+                                                    class="wave-slider__val"
+                                                    data-gb="wave-vad-paddingpost-val"
+                                                    >200 ms</span
+                                                >
+                                            </div>
+                                            <div
+                                                class="wave-slider__track"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-valuemin="0"
+                                                aria-valuemax="500"
+                                                aria-valuenow="200"
+                                                data-t-aria="wave.sldPadPost"
+                                                style="--p: 40"
+                                            >
+                                                <span
+                                                    class="wave-slider__fill"
+                                                ></span>
+                                                <span
+                                                    class="wave-slider__thumb"
+                                                ></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div
+                                        class="wave-toolbar__group wave-toolbar__group--seg"
+                                        data-gb="wave-seg-group"
+                                    >
+                                        <!-- [Wave 2] bridge.setSegmentation({mode, sensitivity,
+                                             min_segment_ms} 整包,契约 §1.19;两段式同上 -->
+                                        <div
+                                            class="wave-slider"
+                                            data-gb="wave-seg-sensitivity"
+                                        >
+                                            <div class="wave-slider__head">
+                                                <span
+                                                    class="wave-slider__name"
+                                                    data-t="wave.sldSensitivity"
+                                                    >SENSITIVITY</span
+                                                >
+                                                <span
+                                                    class="wave-slider__val"
+                                                    data-gb="wave-seg-sensitivity-val"
+                                                    >0.62</span
+                                                >
+                                            </div>
+                                            <div
+                                                class="wave-slider__track"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-valuemin="0"
+                                                aria-valuemax="1"
+                                                aria-valuenow="0.62"
+                                                data-t-aria="wave.sldSensitivity"
+                                                style="--p: 62"
+                                            >
+                                                <span
+                                                    class="wave-slider__fill"
+                                                ></span>
+                                                <span
+                                                    class="wave-slider__thumb"
+                                                ></span>
+                                            </div>
+                                        </div>
+                                        <div
+                                            class="wave-slider"
+                                            data-gb="wave-seg-minlen"
+                                        >
+                                            <div class="wave-slider__head">
+                                                <span
+                                                    class="wave-slider__name"
+                                                    data-t="wave.sldMinSeg"
+                                                    >MIN SEG</span
+                                                >
+                                                <span
+                                                    class="wave-slider__val"
+                                                    data-gb="wave-seg-minlen-val"
+                                                    >420 ms</span
+                                                >
+                                            </div>
+                                            <div
+                                                class="wave-slider__track"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-valuemin="0"
+                                                aria-valuemax="1500"
+                                                aria-valuenow="420"
+                                                data-t-aria="wave.sldMinSeg"
+                                                style="--p: 28"
+                                            >
+                                                <span
+                                                    class="wave-slider__fill"
+                                                ></span>
+                                                <span
+                                                    class="wave-slider__thumb"
+                                                ></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 动作行(669-691):四钮判据各异([J72a] C-07,以 05 行
+                                     300-303 为准逐钮判定,Wave 2 接线;Wave 1 按「无选择」
+                                     初始态置灰,重新识别钮由段表投影点亮) -->
+                                <div
+                                    class="wave-toolbar__actions"
+                                    data-gb="wave-actions"
+                                >
+                                    <!-- [Wave 2] bridge.recaptureArm(tracksMask, startS, endS,
+                                         autoStop?) —— 契约 §1.23;以返回值点亮 badge,
+                                         armed:false 按 §5.5 四值 reason 出行内说明 -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-recapture"
+                                        data-t="wave.btnRecapture"
+                                        data-disabled="1"
+                                        aria-disabled="true"
+                                    >
+                                        重采集选区
+                                    </button>
+                                    <!-- A2⑥「播放结束自动停止」(recaptureArm 的 autoStop,
+                                         默认 false)。Wave 4 反馈②:自绘勾选框(轨头
+                                         .wave-lane__check 同族),input 仅视觉隐藏 —— 仍是
+                                         真 checkbox,label 包住即关联,tab 序不变 -->
+                                    <label
+                                        class="wave-autostop"
+                                        data-gb="wave-chk-autostop"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            class="wave-autostop__input"
+                                        />
+                                        <span
+                                            class="wave-autostop__box"
+                                            aria-hidden="true"
+                                        >
+                                            <svg
+                                                width="8"
+                                                height="8"
+                                                viewBox="0 0 8 8"
+                                            >
+                                                <path
+                                                    d="M1.5 4.2 3.2 6 6.5 2"
+                                                    fill="none"
+                                                    stroke="#fff"
+                                                    stroke-width="1.8"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                />
+                                            </svg>
+                                        </span>
+                                        <span data-t="autoStop"
+                                            >播放结束自动停止</span
+                                        >
+                                    </label>
+                                    <!-- [Wave 2] bridge.analyze(scope) —— 契约 §1.6;
+                                         点击前影响预览走 §1.5 previewAnalyze(纯只读 dry-run) -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-reanalyze"
+                                        data-t="wave.btnReanalyze"
+                                        data-disabled="1"
+                                        aria-disabled="true"
+                                    >
+                                        重分析选区
+                                    </button>
+                                    <!-- [Wave 2] bridge.analyze(scope, {clearManual:true}) ——
+                                         契约 §1.6;locked 段免疫;须先过二次确认框 -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-reidentify"
+                                        data-t="reidentify"
+                                        data-disabled="1"
+                                        aria-disabled="true"
+                                    >
+                                        重新识别(含手动段)
+                                    </button>
+                                    <!-- [Wave 2] bridge.clearCoverage(tracksMask, startS, endS)
+                                         —— 契约 §1.24;不入撤销栈,清后须重新 requestWaveform -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-clearcoverage"
+                                        data-t="wave.btnClearCoverage"
+                                        data-disabled="1"
+                                        aria-disabled="true"
+                                    >
+                                        清除选区采集数据
+                                    </button>
+                                    <span
+                                        class="wave-flexspacer"
+                                        aria-hidden="true"
+                                    ></span>
+                                    <!-- 段检查器开关(Wave 5 用户裁定④,**覆盖此前
+                                         C-11「条件渲染」裁定**):用户原话「右侧的编辑窗口
+                                         最好做成可以开关的常驻(要么一直在要么一直不在,
+                                         有个可以点击的开关),不然会导致一直在闪烁」——
+                                         条件渲染下每点一个段整条泳道区宽度就变一次 =
+                                         布局抖动。开着就一直占位(无选中时出空态提示),
+                                         关掉就一直不占位;状态存本地 UI 态(契约无落点,
+                                         不新增桥函数、不写 state,deviations 登记)。
+                                         位置:动作行**最右端**(spacer 之后),与它管的
+                                         右侧面板同一侧;它不是 05 行 300-303 那四个动作
+                                         之一,不混进钮簇里 -->
+                                    <button
+                                        class="wave-btn wave-btn--toggle"
+                                        data-glow="1"
+                                        data-gb="wave-btn-inspector"
+                                        data-t="wave.inspectorToggle"
+                                        aria-pressed="true"
+                                    >
+                                        段检查器
+                                    </button>
+                                </div>
+
+                                <!-- 行②b 状态行(Wave 5 /code-review major:从动作行拆出)。
+                                     只放**文字与反馈**:布防 reason 行内说明 / 轨选提示 /
+                                     选区 chip / 倒计时条 / 菊花条 —— 全是条件显隐件,
+                                     单独成行后怎么换都不再顶到上面那排钮,工具条高度成常量 -->
+                                <div
+                                    class="wave-toolbar__status"
+                                    data-gb="wave-status"
+                                >
+                                    <span
+                                        class="sc-hint wave-armnote"
+                                        data-gb="wave-arm-note"
+                                        hidden
+                                    ></span>
+                                    <div
+                                        class="wave-trackpickhint"
+                                        data-gb="wave-trackpickhint"
+                                        data-t="wave.trackPickHint"
+                                    >
+                                        勾选左侧轨头选择目标轨(可多选,shift
+                                        连选)
+                                    </div>
+                                    <!-- 选区 chip(677-681):词条只含 {n} 轨句(B-02),
+                                         范围 mono 串独立于词条置于轨号串前;轨号串 · 分隔
+                                         (B-03 取稿内);✕ 带 RE-06 透明命中扩展。
+                                         ⚠ 与上一行 .wave-autostop::after 的向下命中扩展
+                                         (-26px)有横纵交叠:两者都是 position:relative /
+                                         z-index:auto,本件在 DOM 里更靠后 → 命中在上,
+                                         ✕ 仍可点;交叠处 chip 其余部分本就无事件 -->
+                                    <div
+                                        class="wave-selchip"
+                                        data-gb="wave-selchip"
+                                        hidden
+                                    >
+                                        <span
+                                            data-gb="wave-selchip-text"
+                                            data-t="wave.selChip"
+                                            >上面四个操作作用于 {n} 轨</span
+                                        >
+                                        <span
+                                            class="wave-selchip__range"
+                                            data-gb="wave-selchip-range"
+                                        ></span>
+                                        <span
+                                            class="wave-selchip__list"
+                                            data-gb="wave-selchip-list"
+                                        ></span>
+                                        <button
+                                            class="wave-selchip__clear"
+                                            data-gb="wave-selchip-clear"
+                                            data-t-aria="common.cancel"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+                                    <!-- A2③「应用到分段」:仅自动应用被抑制时出现,抑制条件
+                                         只有 PRINT 态或分析进行中(J47;brief §0.5) -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-applysegments"
+                                        hidden
+                                        data-t="applyToSegments"
+                                    >
+                                        应用到分段
+                                    </button>
+                                    <!-- 选中相邻两段的工具条合并入口(05 行 313;
+                                         Delete 键同径;merge notAdjacent → 行内反馈) -->
+                                    <button
+                                        class="wave-btn"
+                                        data-glow="1"
+                                        data-gb="wave-btn-mergesegs"
+                                        hidden
+                                        data-t="wave.btnMerge"
+                                    >
+                                        合并选中两段
+                                    </button>
+                                    <span
+                                        class="wave-flexspacer"
+                                        aria-hidden="true"
+                                    ></span>
+                                    <!-- A2①「300ms 后应用…」倒计时条(05 行 298 三段式①;
+                                         防抖在 C++ 侧,UI 不自建定时器去调 analyze) -->
+                                    <div
+                                        class="wave-countdown"
+                                        data-gb="wave-debounce-countdown"
+                                        hidden
+                                    >
+                                        <span data-t="wave.applyCountdown"
+                                            >300ms 后应用…</span
+                                        >
+                                    </div>
+                                    <!-- 「正在应用…」菊花条(684-689):驱动源 =
+                                         scvb.state.analysis_run.running(契约 §2.2);
+                                         diff 首行 wave.diffKept 归 diff 列表,不内嵌于此(C-08) -->
+                                    <div
+                                        class="wave-applying"
+                                        data-gb="wave-applying-spinner"
+                                        hidden
+                                    >
+                                        <span
+                                            class="wave-applying__spin"
+                                            aria-hidden="true"
+                                        ></span>
+                                        <span data-t="wave.applying"
+                                            >正在应用…</span
+                                        >
+                                    </div>
+                                </div>
+
+                                <!-- 行③「设为范围」一次性提示条(692-697;B-04 无涉,§7):
+                                     [Wave 2] 由选区带「设为范围」按钮触发,
+                                     bridge.setRange("manual", startS, endS)(契约 §1.8) -->
+                                <div
+                                    class="wave-rangetip"
+                                    data-gb="wave-selection-setrange-tip"
+                                    hidden
+                                >
+                                    <span
+                                        class="wave-rangetip__text"
+                                        data-t="wave.setRangeTip"
+                                        >作用范围已改为选区 {x}–{y}——Range
+                                        档位已切到「手动」,工作选区本身不变</span
+                                    >
+                                    <button
+                                        class="wave-selchip__clear"
+                                        data-gb="wave-selection-setrange-tip-close"
+                                        data-t-aria="common.cancel"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+
+                                <!-- 行④ 重采集布防(698-703):badge = Tab2 同款琥珀 pill;
+                                     行内说明取短句(B-04:长句词条 footer.recaptureOutputWarn
+                                     移 footer,触发 = 输出开关 ON 或布防期被打开,Wave 2);
+                                     显隐与 {x}{y}{n} 由 scvb.state.recapture 投影
+                                     ([Wave 2] badge 点击定位选区) -->
+                                <div
+                                    class="wave-recap"
+                                    data-gb="wave-recapture-row"
+                                    hidden
+                                >
+                                    <!-- 静态兜底文案走**无占位符**短式 key(词条一律走
+                                         key 纪律;PR#64 评审【建议】2):布防中由
+                                         tab-wave.js render() 用 wave.recaptureArmed
+                                         灌完整的 {x}–{y}·{n} 串覆盖本文本,长式 key 放
+                                         data-t 会在切语言那一拍闪出裸占位符。 -->
+                                    <button
+                                        class="wave-recap__badge"
+                                        data-gb="wave-recapture-badge"
+                                        data-t="wave.recaptureArmedShort"
+                                    >
+                                        重采集布防中
+                                    </button>
+                                    <span
+                                        class="wave-recap__note"
+                                        data-gb="wave-recapture-inline-note"
+                                        data-t="wave.recaptureInlineNote"
+                                        >本次布防只门控采集,不改变输出范围</span
+                                    >
+                                    <!-- 05 行 300:受覆盖提示「将覆盖 K 段已有数据」 -->
+                                    <span
+                                        class="wave-recap__note"
+                                        data-gb="wave-recapture-overlap"
+                                        hidden
+                                    ></span>
+                                </div>
+
+                                <!-- A2⑦ 重分析影响预览行(05 行 301;previewAnalyze 纯只读
+                                     dry-run,句式复用 master.step2.desc,Wave 2 节流刷新) -->
+                                <div
+                                    class="sc-hint"
+                                    data-gb="wave-reanalyze-preview"
+                                    hidden
+                                ></div>
+
+                                <!-- A2② diff 变更列表(一次性反馈,非常驻视图,J67;
+                                     首行 wave.diffKept;数据 = scvb.segments.diff,Wave 2) -->
+                                <div
+                                    class="wave-diff"
+                                    data-gb="wave-diff-list"
+                                    hidden
+                                >
+                                    <p class="sc-hint" data-t="wave.diffKept">
+                                        {k} 处手动编辑/锁定段已保留
+                                    </p>
+                                    <ul data-gb="wave-diff-list-items"></ul>
+                                </div>
+
+                                <!-- A2④「重新识别」二次确认框(05 行 302 逐字) -->
+                                <div
+                                    class="sc-scrim"
+                                    data-gb="wave-confirm-reidentify"
+                                    hidden
+                                >
+                                    <div class="sc-modal">
+                                        <p
+                                            class="sc-modal__body"
+                                            data-t="wave.reidentifyConfirm"
+                                        >
+                                            将清除 {k} 个手动编辑标记并重算;{l}
+                                            个已锁定段保持不变,确定?
+                                        </p>
+                                        <button
+                                            class="sc-btn--dark"
+                                            data-gb="wave-confirm-reidentify-cancel"
+                                            data-t="common.cancel"
+                                        >
+                                            取消
+                                        </button>
+                                        <button
+                                            class="sc-btn--cta"
+                                            data-gb="wave-confirm-reidentify-ok"
+                                            data-t="reidentify"
+                                        >
+                                            重新识别(含手动段)
+                                        </button>
+                                    </div>
+                                </div>
+                                <!-- A2⑤「清除选区采集数据」确认框(05 行 303) -->
+                                <div
+                                    class="sc-scrim"
+                                    data-gb="wave-confirm-clearcoverage"
+                                    hidden
+                                >
+                                    <div class="sc-modal">
+                                        <p
+                                            class="sc-modal__body"
+                                            data-t="wave.clearCoverageConfirm"
+                                        >
+                                            将删除选中轨×选区的采集特征数据,确定?
+                                        </p>
+                                        <button
+                                            class="sc-btn--dark"
+                                            data-gb="wave-confirm-clearcoverage-cancel"
+                                            data-t="common.cancel"
+                                        >
+                                            取消
+                                        </button>
+                                        <button
+                                            class="sc-btn--cta"
+                                            data-gb="wave-confirm-clearcoverage-ok"
+                                            data-t="wave.btnClearCoverage"
+                                        >
+                                            清除选区采集数据
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 深色泳道窗(806):标尺 → 泳道滚动区(或空态)→ 底部
+                                 缩放/滚动条;空态与泳道互斥但标尺/底部条仍渲染(§15) -->
+                            <div
+                                class="wave-window"
+                                data-gb="wave-window"
+                                data-empty="0"
+                            >
+                                <div
+                                    class="wave-ruler"
+                                    data-gb="wave-timeline-ruler"
+                                    aria-hidden="true"
+                                >
+                                    <span class="wave-ruler__head"></span>
+                                    <span
+                                        class="wave-ruler__scale"
+                                        data-gb="wave-ruler-scale"
+                                    ></span>
+                                </div>
+                                <!-- 泳道滚动区:15 行由 tab-wave.js 生成;共享动态层
+                                     (边界/曲线)+ 选区浅琥珀底 + 播放头随内容滚动。
+                                     tabindex=0:可滚动容器需键盘可达(axe) -->
+                                <div
+                                    class="wave-lanes"
+                                    id="wave-lanes"
+                                    data-gb="wave-lanes"
+                                    data-tour="lanes"
+                                    tabindex="0"
+                                >
+                                    <canvas
+                                        class="wave-overlay"
+                                        data-gb="wave-overlay"
+                                    ></canvas>
+                                    <div
+                                        class="wave-selband"
+                                        data-gb="wave-selband"
+                                        hidden
+                                    ></div>
+                                    <!-- 重采集布防受覆盖区域(05 行 300:斜条纹高亮;
+                                         几何由 JS 按 state.recapture 写) -->
+                                    <div
+                                        class="wave-recapband"
+                                        data-gb="wave-recapband"
+                                        hidden
+                                    ></div>
+                                    <!-- 段边界拖拽手柄(图例帧 767-772 的 9×26 两级
+                                         权重;悬停命中 ±6px 时浮现于该边界)。
+                                         纯视觉浮标:命中检测一律在泳道容器上按
+                                         hit.js BOUNDARY_HIT_PX=6 做,本节点
+                                         pointer-events:auto 只为让 title tooltip
+                                         弹得出来(祖先 none 会连 tooltip 一起吃掉),
+                                         指针事件照旧冒泡到 .wave-lanes。
+                                         aria-hidden:手柄不进 tab 序、不进无障碍树,
+                                         语义由 tooltip 承担(见 tab-wave.js
+                                         setBoundHandleTip 头注) -->
+                                    <div
+                                        class="wave-bhandle"
+                                        data-gb="wave-boundary-handle"
+                                        data-manual="0"
+                                        hidden
+                                        aria-hidden="true"
+                                    >
+                                        <svg
+                                            width="5"
+                                            height="10"
+                                            viewBox="0 0 5 10"
+                                        >
+                                            <path
+                                                d="M1.4 1v8M3.6 1v8"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="1.1"
+                                            />
+                                        </svg>
+                                    </div>
+                                    <!-- 播放头(838):rAF 插值(canvas/playhead.js);
+                                         采集中头部追加绿色进度点(A-15) -->
+                                    <div
+                                        class="wave-playhead"
+                                        data-gb="wave-playhead"
+                                        hidden
+                                    >
+                                        <span
+                                            class="wave-playhead__cap"
+                                            data-gb="wave-playhead-cap"
+                                            hidden
+                                        ></span>
+                                    </div>
+                                </div>
+                                <!-- 空态(829-833;05 行 318 逐字):
+                                     [Wave 2] CTA 点击跳 Tab1 并聚焦采集开关 -->
+                                <div
+                                    class="wave-empty"
+                                    data-gb="wave-emptystate"
+                                >
+                                    <div
+                                        class="wave-empty__main"
+                                        data-t="wave.emptyMain"
+                                    >
+                                        尚无采集数据——开启采集开关并播放
+                                    </div>
+                                    <button
+                                        class="wave-empty__cta"
+                                        data-gb="wave-empty-cta"
+                                        data-t="wave.emptyCta"
+                                    >
+                                        去 Tab1 打开采集
+                                    </button>
+                                </div>
+                                <!-- Range 只读细线(A-10):daw_loop/manual 两档着色,
+                                     follow 态不画;几何由 JS 按舞台坐标写 -->
+                                <div
+                                    class="wave-rangeline"
+                                    data-gb="wave-rangeline"
+                                    hidden
+                                ></div>
+                                <!-- 右缘 44px 双刻度列(786-797):全泳道区共用一列(B-11);
+                                     刻度值域 = 契约 §2.8 pan(-100..100)/ volDb(-24..+12) -->
+                                <div
+                                    class="wave-scalecol"
+                                    data-gb="wave-scalecol"
+                                    aria-hidden="true"
+                                >
+                                    <div class="wave-scalecol__hdr">
+                                        <span>PAN</span><span>dB</span>
+                                    </div>
+                                    <div
+                                        class="wave-scalecol__half wave-scalecol__half--pan"
+                                    >
+                                        <span>+100</span><span>0</span
+                                        ><span>-100</span>
+                                    </div>
+                                    <div
+                                        class="wave-scalecol__half wave-scalecol__half--db"
+                                    >
+                                        <span>+12</span><span>0</span
+                                        ><span>-24</span>
+                                    </div>
+                                </div>
+                                <!-- ⚠ 纵向缩放拖拽条已迁至底部条右端(Wave 5 用户裁定②;
+                                     见 `.wave-hzoom__vzoomctl`)—— 泳道区内不再有该件 -->
+                                <!-- 选区外压暗两片(05 行 314;A-09 方向修正) -->
+                                <div
+                                    class="wave-dim"
+                                    data-gb="wave-selection-dim-left"
+                                    hidden
+                                ></div>
+                                <div
+                                    class="wave-dim"
+                                    data-gb="wave-selection-dim-right"
+                                    hidden
+                                ></div>
+                                <!-- 工作选区叠加层(816-828):窗级不随滚动;left/width 由
+                                     JS 按「舞台坐标 = 容器宽 − 158 − 44」写(C-04 修正)。
+                                     手柄 = 9×26 圆角竖条 + 双竖线纹(B-01 显式验收项);
+                                     [Wave 2] 拖拽 + 双读数展开 + 设为范围 -->
+                                <div
+                                    class="wave-selection"
+                                    data-gb="wave-selection-handles"
+                                    hidden
+                                >
+                                    <div
+                                        class="wave-selection__edge wave-selection__edge--left"
+                                        data-gb="wave-selection-edge-left"
+                                    ></div>
+                                    <div
+                                        class="wave-selection__edge wave-selection__edge--right"
+                                        data-gb="wave-selection-edge-right"
+                                    ></div>
+                                    <div
+                                        class="wave-selection__handle wave-selection__handle--left"
+                                        data-gb="wave-selection-handle-left"
+                                        role="slider"
+                                        tabindex="0"
+                                        data-t-aria="selection"
+                                    >
+                                        <svg
+                                            width="7"
+                                            height="11"
+                                            viewBox="0 0 8 12"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                d="M2.6 2v8M5.4 2v8"
+                                                fill="none"
+                                                stroke="#2a2438"
+                                                stroke-width="1.3"
+                                            />
+                                        </svg>
+                                    </div>
+                                    <div
+                                        class="wave-selection__handle wave-selection__handle--right"
+                                        data-gb="wave-selection-handle-right"
+                                        role="slider"
+                                        tabindex="0"
+                                        data-t-aria="selection"
+                                    >
+                                        <svg
+                                            width="7"
+                                            height="11"
+                                            viewBox="0 0 8 12"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                d="M2.6 2v8M5.4 2v8"
+                                                fill="none"
+                                                stroke="#2a2438"
+                                                stroke-width="1.3"
+                                            />
+                                        </svg>
+                                    </div>
+                                    <span
+                                        class="wave-selection__read wave-selection__read--left"
+                                        data-gb="wave-selection-read-left"
+                                    ></span>
+                                    <span
+                                        class="wave-selection__read wave-selection__read--right"
+                                        data-gb="wave-selection-read-right"
+                                    ></span>
+                                    <button
+                                        class="wave-selection__setrange"
+                                        data-gb="wave-selection-setrange"
+                                        data-t="setAsRange"
+                                    >
+                                        设为范围
+                                    </button>
+                                </div>
+                                <!-- 底部缩放/滚动条(866-871):148 + padding 10 = 158 与
+                                     轨头对齐;缩放档位 mono 读数(A-16)。
+                                     [Wave 2] Ctrl+滚轮以光标为中心缩放、拖 thumb/空白平移,
+                                     档位变化触发分块重拉取(05 §6.3;静止 120ms 取新块) -->
+                                <div class="wave-hzoom" data-gb="wave-hzoom">
+                                    <div class="wave-hzoom__head">
+                                        <span
+                                            class="wave-hzoom__zoom"
+                                            data-gb="wave-zoom-readout"
+                                        ></span>
+                                    </div>
+                                    <div
+                                        class="wave-hzoom__scroll"
+                                        data-gb="wave-hscroll"
+                                    >
+                                        <div
+                                            class="wave-hzoom__thumb"
+                                            data-gb="wave-hscroll-thumb"
+                                        ></div>
+                                    </div>
+                                    <!-- 横向缩放拖拽条(T33 Wave 4 用户新件,J72:
+                                         附截图供 preview)。与滚动条同排、形制两分;
+                                         拖动 = 以视口中心为锚改跨度(同 Ctrl+滚轮的
+                                         timeline API);方向键步进,role=slider + aria -->
+                                    <div class="wave-hzoom__zoomctl">
+                                        <span
+                                            class="wave-hzoom__zoomval"
+                                            data-gb="wave-hzoom-value"
+                                        ></span>
+                                        <div
+                                            class="wave-hzoom__zoombar"
+                                            data-gb="wave-hzoom-bar"
+                                            role="slider"
+                                            tabindex="0"
+                                            aria-valuemin="1"
+                                            aria-valuemax="1"
+                                            aria-valuenow="1"
+                                            data-t-aria="wave.hZoomBar"
+                                        >
+                                            <div
+                                                class="wave-hzoom__zoomthumb"
+                                                data-gb="wave-hzoom-thumb"
+                                            ></div>
+                                        </div>
+                                    </div>
+                                    <!-- 纵向缩放拖拽条(Wave 4 新件;Wave 6 用户裁定:
+                                         **竖回来**)。用户 preview 第三轮:「纵向缩放条在
+                                         纵向进度条的下方,纵向放置,两个缩放条呈 90 度,
+                                         都在右下角」→ 本组落在行的**最右端**,槽宽跟着
+                                         滚动条宽走(`--wave-gutter`),6×22 竖轨与泳道区
+                                         纵向滚动条同列、在其轨道正下方;与左边的横向缩放
+                                         条成 90°。读数「⇕ 34」在轨左侧;拖拽读 clientY
+                                         (上=高),方向键上/右加高、下/左减矮 -->
+                                    <div class="wave-hzoom__vzoomctl">
+                                        <span
+                                            class="wave-hzoom__zoomval"
+                                            data-gb="wave-vzoom-value"
+                                        ></span>
+                                        <div class="wave-hzoom__vzoomslot">
+                                            <div
+                                                class="wave-vzoom"
+                                                data-gb="wave-vzoom"
+                                                role="slider"
+                                                tabindex="0"
+                                                aria-orientation="vertical"
+                                                aria-valuemin="22"
+                                                aria-valuemax="88"
+                                                aria-valuenow="34"
+                                                data-t-aria="wave.vZoomBar"
+                                            >
+                                                <div
+                                                    class="wave-vzoom__thumb"
+                                                    data-gb="wave-vzoom-thumb"
+                                                ></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
-                        <!-- 工具条:7 滑杆一排(VAD 5 + 分段 2)+ 动作按钮排 + 轨选提示/选区 chip -->
-                        <div class="wave-toolbar" data-gb="wave-toolbar">
+                        <!-- 段检查器(876-914;J44 闭环,J67:段查看/编辑唯一入口 =
+                             泳道点选 + 本面板):262px flex 兄弟挤压左栏(C-11)。
+                             [Wave 2] 点选段展开;selectedSeg 按每帧 scvb.segments 重绑
+                             (segIdx 每次事件后重新编号,不得跨事件持有,brief §0.7);
+                             Pan/Vol 提交 → editSegment(ch,"set_values",…),锁定 →
+                             editSegment(ch,"set_locked",…)(不改 origin);五 op 全入
+                             撤销栈;只读态 {observer:true};中央写闸 isWriteBlocked() -->
+                        <aside
+                            class="segment-inspector"
+                            data-gb="segment-inspector"
+                            hidden
+                        >
                             <div
-                                class="wave-toolbar__group"
-                                data-gb="wave-vad-group"
-                            >
-                                <span class="sc-eyebrow" data-t="threshold">
-                                    阈值
-                                </span>
-                                <label
-                                    class="wave-slider"
-                                    data-gb="wave-vad-threshold"
-                                >
-                                    <!-- 词条待立:threshold_db 短标(05 §2.3,字典缺;threshold 为泛用词非专属短标) -->
-                                    <span
-                                        class="sc-mono"
-                                        data-gb-todo="词条待立"
-                                        >threshold_db</span
-                                    >
-                                    <input
-                                        type="range"
-                                        min="-60"
-                                        max="0"
-                                        value="-30"
-                                    />
-                                </label>
-                                <label
-                                    class="wave-slider"
-                                    data-gb="wave-vad-hysteresis"
-                                >
-                                    <!-- 词条待立:hysteresis_db 短标(05 §2.3,字典缺) -->
-                                    <span
-                                        class="sc-mono"
-                                        data-gb-todo="词条待立"
-                                        >hysteresis_db</span
-                                    >
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="24"
-                                        value="6"
-                                    />
-                                </label>
-                                <label
-                                    class="wave-slider"
-                                    data-gb="wave-vad-hangover"
-                                >
-                                    <!-- 词条待立:hangover_ms 短标(05 §2.3,字典缺) -->
-                                    <span
-                                        class="sc-mono"
-                                        data-gb-todo="词条待立"
-                                        >hangover_ms</span
-                                    >
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="1000"
-                                        value="250"
-                                    />
-                                </label>
-                                <label
-                                    class="wave-slider"
-                                    data-gb="wave-vad-paddingpre"
-                                >
-                                    <span data-t="paddingPre">前留白</span>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="500"
-                                        value="120"
-                                    />
-                                </label>
-                                <label
-                                    class="wave-slider"
-                                    data-gb="wave-vad-paddingpost"
-                                >
-                                    <span data-t="paddingPost">后留白</span>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="500"
-                                        value="200"
-                                    />
-                                </label>
-                                <!-- [T3x] bridge.setVadParams(p) —— 契约 §1.18(拖动=非破坏预览;松手 300ms 由 C++ 防抖跑完整流水线) -->
-                            </div>
-                            <div class="sc-divider" aria-hidden="true"></div>
-                            <div
-                                class="wave-toolbar__group"
-                                data-gb="wave-seg-group"
-                            >
-                                <span class="sc-eyebrow" data-t="sensitivity">
-                                    灵敏度
-                                </span>
-                                <label
-                                    class="wave-slider"
-                                    data-gb="wave-seg-sensitivity"
-                                >
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="100"
-                                        value="50"
-                                        data-t-aria="sensitivity"
-                                    />
-                                </label>
-                                <label
-                                    class="wave-slider"
-                                    data-gb="wave-seg-minlen"
-                                >
-                                    <!-- 词条待立:min_segment_ms 短标(05 §2.3,字典缺) -->
-                                    <span
-                                        class="sc-mono"
-                                        data-gb-todo="词条待立"
-                                        >min_segment_ms</span
-                                    >
-                                    <input
-                                        type="number"
-                                        min="0"
-                                        value="120"
-                                        class="sc-select"
-                                        style="width: 64px"
-                                    />
-                                </label>
-                                <!-- [T3x] bridge.setSegmentation(p) —— 契约 §1.19(两段式同 setVadParams) -->
-                            </div>
-
-                            <!-- A2① 300ms 后应用倒计时条 -->
-                            <!-- 词条待立:「300ms 后应用…」倒计时文案(A2①,05 §2.3 工具条,字典缺) -->
-                            <div
-                                class="sc-confirm"
-                                data-gb="wave-debounce-countdown"
+                                class="inspector-note"
+                                data-gb="inspector-followhost-note"
                                 hidden
-                                data-gb-todo="词条待立"
+                                data-t="wave.followHostNote"
                             >
-                                300ms 后应用…
+                                跟随宿主中:编辑已保存,开启输出后生效
                             </div>
-                            <!-- 稿内已有一态:正在应用…(菊花条) -->
+                            <!-- 标题行(881-884,§17②):eyebrow + origin 角标
+                                 同行;角标为面板版描边淡底(与泳道内实心版刻意
+                                 不同);auto 无角标 / E / C 三态 -->
                             <div
-                                class="sc-confirm"
-                                data-gb="wave-applying-spinner"
-                                hidden
+                                class="inspector-head"
+                                data-gb="inspector-origin"
                             >
                                 <span
-                                    class="sc-spinner"
-                                    style="--sz: 11px"
-                                ></span>
-                                <!-- 词条待立:「正在应用…」+ 内嵌「N 处手动编辑/锁定段已保留」短句(设计稿已有此态,字典缺;wave.diffKept 为 diff 列表首行长句变体) -->
-                                <span data-gb-todo="词条待立"> 正在应用… </span>
-                            </div>
-
-                            <div
-                                class="wave-toolbar__actions"
-                                data-gb="wave-actions"
-                            >
-                                <!-- 词条待立:「重采集选区」按钮文案(05 §2.3,字典缺) -->
-                                <button
-                                    class="sc-btn"
-                                    data-gb="wave-btn-recapture"
-                                    data-gb-todo="词条待立"
+                                    class="sc-eyebrow"
+                                    data-t="wave.inspectorTitle"
+                                    >段检查器</span
                                 >
-                                    重采集选区
-                                </button>
-                                <label
-                                    class="wave-autostop"
-                                    data-gb="wave-chk-autostop"
-                                >
-                                    <input type="checkbox" />
-                                    <span data-t="autoStop">播完自动停</span>
-                                </label>
-                                <!-- 词条待立:「重分析选区」按钮文案(05 §2.3,字典缺) -->
-                                <button
-                                    class="sc-btn"
-                                    data-gb="wave-btn-reanalyze"
-                                    data-gb-todo="词条待立"
-                                >
-                                    重分析选区
-                                </button>
-                                <button
-                                    class="sc-btn"
-                                    data-gb="wave-btn-reidentify"
-                                    data-t="reidentify"
-                                >
-                                    重新识别(含手动段)
-                                </button>
-                                <button
-                                    class="sc-btn"
-                                    data-gb="wave-btn-clearcoverage"
-                                    data-t="clearCapture"
-                                >
-                                    清除采集数据
-                                </button>
-                                <!-- A2③ 应用到分段(仅抑制期出现:PRINT 态或分析进行中) -->
-                                <button
-                                    class="sc-btn"
-                                    data-gb="wave-btn-applysegments"
+                                <span
+                                    class="inspector-origin-chip"
+                                    data-gb="inspector-origin-value"
                                     hidden
-                                    data-t="applyToSegments"
-                                >
-                                    应用到分段
-                                </button>
-                                <!-- [T3x] bridge.recaptureArm(tracksMask, startS, endS, autoStop?) —— 契约 §1.23 -->
-                                <!-- [T3x] bridge.analyze(scope) —— 契约 §1.6(重分析选区) -->
-                                <!-- [T3x] bridge.analyze(scope, {clearManual:true}) —— 契约 §1.6(重新识别,含手动段) -->
-                                <!-- [T3x] bridge.clearCoverage(tracksMask, startS, endS) —— 契约 §1.24 -->
-                            </div>
-
-                            <div
-                                class="sc-hint"
-                                data-gb="wave-trackpickhint"
-                                data-t="wave.trackPickHint"
-                            >
-                                勾选左侧轨头选择目标轨(可多选,shift 连选)
-                            </div>
-                            <div
-                                class="sc-chip"
-                                data-set="1"
-                                data-gb="wave-selchip"
-                                hidden
-                            >
-                                <span data-t="wave.selChip">
-                                    上面四个操作作用于 {n} 轨
-                                </span>
+                                ></span>
                                 <span
-                                    class="sc-mono"
-                                    data-gb="wave-selchip-list"
-                                >
-                                    03 04 07
-                                </span>
+                                    class="wave-flexspacer"
+                                    aria-hidden="true"
+                                ></span>
+                                <!-- 标题栏关闭钮(裁定④的第二个开关面:与工具条那枚
+                                     同一个本地态,关掉后面板整件不占位)。
+                                     aria 走 wave.inspectorClose 而**不是** common.cancel
+                                     (Wave 5 /code-review minor):它的动作是折叠常驻面板,
+                                     在一个刚提交过 pan/vol 的面板上读成「取消」会被听成
+                                     「撤销刚才的编辑」;common.cancel 是确认框族专用 -->
                                 <button
-                                    aria-label="clear"
-                                    data-gb="wave-selchip-clear"
+                                    class="wave-selchip__clear"
+                                    data-gb="inspector-close"
+                                    data-t-aria="wave.inspectorClose"
                                 >
                                     ✕
                                 </button>
                             </div>
-
-                            <!-- 重采集布防 badge①(05 §2.3「重采集选区」行 ①:Tab3 工具条与 Tab1 Range 控件旁同时显示;
-                                 点击跳 Tab3 并定位选区 —— 本处即 Tab3 侧落点,Tab1 侧为 master-range-recapture-badge,
-                                 Tab2 行首为 tracks-row-{ch}-recapture-badge)。数据源 scvb.state.recapture,显隐留 T31。 -->
-                            <span
-                                class="sc-badge--amber"
-                                data-gb="wave-recapture-badge"
-                                data-t="wave.recaptureArmed"
-                                hidden
+                            <!-- 空态(裁定④):面板常驻,没选中段时给一句指路,
+                                 而不是整件消失造成布局抖动 -->
+                            <p
+                                class="inspector-empty"
+                                data-gb="inspector-empty"
+                                data-t="wave.inspectorEmpty"
                             >
-                                重采集布防中 · 选区 {x}–{y} · {n} 轨
-                            </span>
-
-                            <!-- A2⑦ 重分析选区点击前影响预览行 -->
-                            <!-- 词条待立:重分析选区点击前影响预览行「将影响 N 区段 / M 轨;K 处手动保留」(A2⑦,05 §2.3,字典缺句式) -->
+                                点选泳道内的段以编辑
+                            </p>
+                            <!-- 时间与响度只读组(885-890):主显 mm:ss.mmm,有 tempo 表
+                                 并列小节值(B-12);响度标签用正名词条(C-12) -->
                             <div
-                                class="sc-hint"
-                                data-gb="wave-reanalyze-preview"
-                                data-gb-todo="词条待立"
-                            >
-                                将影响 N 区段 / M 轨;K 处手动保留
-                            </div>
-
-                            <!-- A2② diff 变更列表(重分析/松手自动应用后,一次性反馈,非常驻视图) -->
-                            <div
-                                class="wave-diff"
-                                data-gb="wave-diff-list"
-                                hidden
-                            >
-                                <p class="sc-hint" data-t="wave.diffKept">
-                                    {k} 处手动编辑/锁定段已保留
-                                </p>
-                                <ul data-gb="wave-diff-list-items"></ul>
-                            </div>
-
-                            <!-- A2④ 「重新识别」二次确认框 -->
-                            <div
-                                class="sc-scrim"
-                                data-gb="wave-confirm-reidentify"
-                                hidden
-                            >
-                                <div class="sc-modal">
-                                    <!-- 词条待立:「将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?」(05 §2.3,字典缺) -->
-                                    <p
-                                        class="sc-modal__body"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        将清除 {k} 个手动编辑标记并重算;{l}
-                                        个已锁定段保持不变,确定?
-                                    </p>
-                                    <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
-                                    <button
-                                        class="sc-btn--dark"
-                                        data-gb="wave-confirm-reidentify-cancel"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        取消
-                                    </button>
-                                    <button
-                                        class="sc-btn--cta"
-                                        data-gb="wave-confirm-reidentify-ok"
-                                        data-t="reidentify"
-                                    >
-                                        重新识别(含手动段)
-                                    </button>
-                                </div>
-                            </div>
-                            <!-- A2⑤ 「清除选区采集数据」确认框 -->
-                            <div
-                                class="sc-scrim"
-                                data-gb="wave-confirm-clearcoverage"
-                                hidden
-                            >
-                                <div class="sc-modal">
-                                    <!-- 词条待立:「将删除选中轨×选区的采集特征数据」(05 §2.3,字典缺) -->
-                                    <p
-                                        class="sc-modal__body"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        将删除选中轨×选区的采集特征数据
-                                    </p>
-                                    <!-- 词条待立:取消按钮文案(字典缺通用「取消」key) -->
-                                    <button
-                                        class="sc-btn--dark"
-                                        data-gb="wave-confirm-clearcoverage-cancel"
-                                        data-gb-todo="词条待立"
-                                    >
-                                        取消
-                                    </button>
-                                    <button
-                                        class="sc-btn--cta"
-                                        data-gb="wave-confirm-clearcoverage-ok"
-                                        data-t="clearCapture"
-                                    >
-                                        清除采集数据
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 时间标尺 -->
-                        <div
-                            class="wave-ruler sc-mono"
-                            data-gb="wave-timeline-ruler"
-                            aria-hidden="true"
-                        ></div>
-
-                        <!-- 泳道区(垂直滚动,15 条;左侧轨头 158px) -->
-                        <!-- tabindex="0":可滚动容器需能用键盘滚动(axe scrollable-region-focusable) -->
-                        <div
-                            class="wave-lanes"
-                            id="wave-lanes"
-                            data-gb="wave-lanes"
-                            data-tour="lanes"
-                            tabindex="0"
-                        >
-                            <!-- app.js 用 FIFTEEN_TRACKS 生成 15 条泳道,仅撑开骨架,零绘制逻辑 -->
-
-                            <!-- 选区手柄(工作选区,独立对象,不改 Range;A3 已补稿) -->
-                            <div
-                                class="wave-selection"
-                                data-gb="wave-selection-handles"
-                                hidden
-                            >
-                                <div
-                                    class="wave-selection__handle wave-selection__handle--left"
-                                    data-gb="wave-selection-handle-left"
-                                ></div>
-                                <div
-                                    class="wave-selection__handle wave-selection__handle--right"
-                                    data-gb="wave-selection-handle-right"
-                                ></div>
-                                <button
-                                    class="sc-btn sc-btn--cta wave-selection__setrange"
-                                    data-gb="wave-selection-setrange"
-                                    data-t="setAsRange"
-                                >
-                                    设为范围
-                                </button>
-                                <!-- 一次性提示条(「设为范围」点击后) -->
-                                <div
-                                    class="sc-confirm"
-                                    data-gb="wave-selection-setrange-tip"
-                                    hidden
-                                    data-t="wave.setRangeTip"
-                                >
-                                    作用范围已改为选区 {x}–{y}——Range
-                                    档位已切到「手动」,工作选区本身不变
-                                </div>
-                                <!-- [T3x] bridge.setRange(mode, startS, endS) —— 契约 §1.8(「设为范围」单向写入 manual Range) -->
-                            </div>
-                            <!-- 播放头(共享覆盖层,rAF 插值) -->
-                            <div
-                                class="wave-playhead"
-                                data-gb="wave-playhead"
-                                hidden
-                            ></div>
-                        </div>
-
-                        <!-- 底部缩放/滚动条(05 §2.3 布局链路末件:顶部工具条 → 时间标尺 →
-                             15 条波形泳道 → 底部缩放/滚动条)。交互定义(05 §2.3 末段):
-                             Ctrl+滚轮以光标为中心缩放、拖拽底部滚动条/空白平移;档位变化触发
-                             波形分块重新拉取(05 §6.3)。尺寸:随泳道区等宽、高 12 设计 px,
-                             轨头 158px 处留同宽空档以与泳道对齐。零交互逻辑,T33 实现。 -->
-                        <div class="wave-hzoom" data-gb="wave-hzoom">
-                            <!-- 灰模阶段不带 scrollbar role/ARIA:惰性 div 冒充可操作滚动条会误导
-                                 读屏(PR #37 pr-agent);T33 实现真实交互时连同键盘处理一并补 -->
-                            <div
-                                class="wave-hzoom__scroll"
-                                data-gb="wave-hscroll"
-                            ></div>
-                            <!-- [T3x] bridge.requestWaveform(ch, startS, endS, cols) —— 契约 §1.27(档位变化触发分块重拉,05 §6.3) -->
-                        </div>
-
-                        <!-- 段检查器(J44;选中段 → 右侧面板;J67 结果列表视图已废除) -->
-                        <aside
-                            class="segment-inspector sc-glass"
-                            data-gb="segment-inspector"
-                            hidden
-                        >
-                            <!-- 词条待立:段检查器面板标题(05 §2.3a,字典缺) -->
-                            <div class="sc-eyebrow" data-gb-todo="词条待立">
-                                段检查器
-                            </div>
-                            <div
-                                class="sc-hint"
-                                data-gb="inspector-followhost-note"
-                                hidden
-                                data-t="followHost"
-                            >
-                                跟随宿主
-                            </div>
-                            <div
-                                class="inspector-field"
+                                class="inspector-times"
                                 data-gb="inspector-times"
                             >
-                                <!-- 词条待立:段起止/时长只读字段(05 §2.3a,字典缺字段名) -->
-                                <span class="sc-mono" data-gb-todo="词条待立"
-                                    >00:00.000 – 00:00.000</span
-                                >
+                                <div>
+                                    <span data-t="wave.segStart">起</span>
+                                    <span data-gb="inspector-time-start"
+                                        >--</span
+                                    >
+                                </div>
+                                <div>
+                                    <span data-t="wave.segEnd">止</span>
+                                    <span data-gb="inspector-time-end">--</span>
+                                </div>
+                                <div>
+                                    <span data-t="wave.segLen">时长</span>
+                                    <span data-gb="inspector-time-len">--</span>
+                                </div>
+                                <div data-gb="inspector-loudness">
+                                    <span data-t="wave.segLoudness"
+                                        >K 加权段积分</span
+                                    >
+                                    <span data-gb="inspector-loudness-val"
+                                        >--</span
+                                    >
+                                </div>
                             </div>
+                            <!-- PAN 行(892-898):.sc-knob 手动态缩小版 + 数字输入
+                                 (-100..+100,step 1 / shift 0.1,05 §2.3a) -->
                             <div
                                 class="inspector-field"
                                 data-gb="inspector-pan"
                             >
-                                <span data-t="pan">声像</span>
-                                <input
-                                    type="number"
-                                    min="-100"
-                                    max="100"
-                                    step="1"
-                                    data-t-aria="pan"
-                                />
+                                <span
+                                    class="inspector-field__label"
+                                    data-t="tracks.colPan"
+                                    >PAN</span
+                                >
                                 <span
                                     class="sc-knob"
-                                    style="width: 20px; height: 20px"
-                                    aria-hidden="true"
-                                >
-                                    <span class="sc-knob__needle"></span>
-                                </span>
+                                    data-live="0"
+                                    role="slider"
+                                    tabindex="0"
+                                    aria-valuemin="-100"
+                                    aria-valuemax="100"
+                                    aria-valuenow="0"
+                                    data-t-aria="pan"
+                                    style="--ang: 0deg"
+                                    data-gb="inspector-pan-knob"
+                                    ><span class="sc-knob__needle"></span
+                                ></span>
+                                <input
+                                    class="inspector-input"
+                                    type="text"
+                                    inputmode="decimal"
+                                    data-t-aria="pan"
+                                    data-gb="inspector-pan-input"
+                                />
                             </div>
+                            <!-- VOL 行(899-906):微型滑杆统一工具条那套 4px/11px/
+                                 --acc-slider-fill(B-13);-24..+12 dB,step 0.1 -->
                             <div
                                 class="inspector-field"
                                 data-gb="inspector-vol"
                             >
-                                <!-- 词条待立:Vol 字段名(05 §2.3a,字典缺;vol 无独立词条) -->
-                                <span data-gb-todo="词条待立">Vol</span>
-                                <input
-                                    type="number"
-                                    min="-24"
-                                    max="12"
-                                    step="0.1"
-                                    aria-label="音量"
-                                />
-                                <!-- a11y 占位名,T31 换词条 -->
-                            </div>
-                            <div
-                                class="inspector-field"
-                                data-gb="inspector-origin"
-                            >
-                                <!-- 词条待立:origin 角标字段名(05 §2.3a,字典缺字段标签;E/C 角标本身见 originLegend) -->
-                                <span data-gb-todo="词条待立">origin</span>
                                 <span
-                                    class="sc-chip"
-                                    data-gb="inspector-origin-value"
-                                ></span>
+                                    class="inspector-field__label"
+                                    data-t="wave.volField"
+                                    >VOL</span
+                                >
+                                <span
+                                    class="inspector-vslider"
+                                    role="slider"
+                                    tabindex="0"
+                                    aria-valuemin="-24"
+                                    aria-valuemax="12"
+                                    aria-valuenow="0"
+                                    data-t-aria="wave.volField"
+                                    style="--p: 66.7"
+                                    data-gb="inspector-vol-slider"
+                                >
+                                    <span class="wave-slider__fill"></span>
+                                    <span class="wave-slider__thumb"></span>
+                                </span>
+                                <input
+                                    class="inspector-input inspector-input--vol"
+                                    type="text"
+                                    inputmode="decimal"
+                                    data-t-aria="wave.volField"
+                                    data-gb="inspector-vol-input"
+                                />
                             </div>
+                            <!-- 锁定行(908-911):普通 26×15 toggle + 文字(B-14 裁定;
+                                 锁形 svg 留给泳道内锁定小标) -->
                             <div
-                                class="inspector-field"
+                                class="inspector-lockrow"
                                 data-gb="inspector-locked"
                             >
-                                <span data-t="locked">已锁定</span>
+                                <span
+                                    class="inspector-lockrow__label"
+                                    data-t="wave.lockSegment"
+                                    >锁定本段</span
+                                >
                                 <span
                                     class="sc-toggle"
                                     data-on="0"
                                     role="switch"
                                     aria-checked="false"
-                                    data-t-aria="locked"
+                                    tabindex="0"
+                                    data-t-aria="wave.lockSegment"
+                                    data-gb="inspector-locked-toggle"
                                 ></span>
                             </div>
-                            <div
-                                class="inspector-field"
-                                data-gb="inspector-loudness"
-                            >
-                                <!-- 词条待立:段响度字段名(05 §2.3a,字典缺;单位 LUFS) -->
-                                <span data-gb-todo="词条待立">LUFS</span>
-                                <span class="sc-mono">−12.0</span>
-                            </div>
+                            <!-- 底部常驻说明句(912;词条 wave.originLegend 逐字) -->
                             <p
                                 class="sc-hint"
                                 data-t="wave.originLegend"
@@ -4842,11 +6658,6 @@
                                 origin:E = 手动编辑,C = 手动创建,auto
                                 段无角标。锁定段在重新识别时保持不变。
                             </p>
-                            <!-- [T3x] bridge.editSegment(ch, "move_boundary", {segIdx, edge, tS}) —— 契约 §1.22 -->
-                            <!-- [T3x] bridge.editSegment(ch, "split", {segIdx, tS}) —— 契约 §1.22 -->
-                            <!-- [T3x] bridge.editSegment(ch, "merge", {segIdxA, segIdxB}) —— 契约 §1.22 -->
-                            <!-- [T3x] bridge.editSegment(ch, "set_values", {segIdx, pan?, volDb?}) —— 契约 §1.22 -->
-                            <!-- [T3x] bridge.editSegment(ch, "set_locked", {segIdx, locked}) —— 契约 §1.22 -->
                         </aside>
                     </section>
 
