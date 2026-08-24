@@ -276,6 +276,32 @@ log("=== ③ buildDemoStore(纯 UI 展示层)===");
     check(ds.state.ui.guide_seen === true, "demo 里 guide 已过(引导页不弹)");
     check(ds.state.ui.tour_seen === false, "demo 里 tour 未看(讲解前提)");
     check(Object.isFrozen(snapBefore), "FIFTEEN_TRACKS.snapshot 深冻结");
+
+    // 本地化 demo 轨名(合入后补漏:en/fr 用户可见轨名不再中文)
+    const dsEn = TOUR.buildDemoStore(() => T.en);
+    eq(
+        dsEn.state.channels[0].label,
+        "Lead Vocal 1",
+        "demo 轨名 en 本地化(ch1)",
+    );
+    const dsFr = TOUR.buildDemoStore(() => T.fr);
+    eq(
+        dsFr.state.channels[0].label,
+        "Voix principale 1",
+        "demo 轨名 fr 本地化(ch1)",
+    );
+    eq(ds.state.channels[0].label, "主唱1", "不传 getT 保持 zh 原 label(ch1)");
+    // 三语 + mock 同步:zh demo.chN == mock DEMO_LABELS;en/fr 均已本地化(无 CJK 字符)
+    const labels = FIFTEEN_TRACKS.labels;
+    check(Array.isArray(labels) && labels.length === 15, "demo labels 15 条");
+    let synced = true;
+    const cjk = /[\u4e00-\u9fff]/;
+    for (let n = 1; n <= 15; n++) {
+        const k = "demo.ch" + n;
+        if (T.zh[k] !== labels[n - 1]) synced = false;
+        if (cjk.test(T.en[k]) || cjk.test(T.fr[k])) synced = false;
+    }
+    check(synced, "zh demo.ch* == mock DEMO_LABELS 且 en/fr 无中文");
 }
 
 // =============================================================================

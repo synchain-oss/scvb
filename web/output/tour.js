@@ -141,7 +141,7 @@ export function shouldAutoShowTourAsk(state, snapshot) {
  *   groups, playhead, segments, coverage, errors, unknownCodes, readOnly,
  *   noTimeline, loopMissing, session }
  */
-export function buildDemoStore() {
+export function buildDemoStore(getT) {
     const snap = FIFTEEN_TRACKS.snapshot;
     // 快照专属键(session_guid / version / *_global / conn)不进 state 子树(§1.1 语义行);
     // state 子树由 makeTourDemoSnapshot 产出,深冻结,渲染侧只读、零就地改写。
@@ -151,6 +151,16 @@ export function buildDemoStore() {
     delete stateFields.guide_seen_global;
     delete stateFields.tour_seen_global;
     delete stateFields.conn;
+
+    // 本地化 demo 轨名(§2.6 demo 注入):channels[i] 的 label 走 i18n demo.ch(i+1);
+    // zh 为 DEMO_LABELS 原值,en/fr 为对应翻译。不传 getT(纯函数调用)则保持原 label。
+    const t = (typeof getT === "function" && getT()) || {};
+    if (stateFields.channels && Array.isArray(stateFields.channels)) {
+        stateFields.channels = stateFields.channels.map((c, i) => {
+            const key = "demo.ch" + (i + 1);
+            return t[key] ? { ...c, label: t[key] } : c;
+        });
+    }
 
     const coverage = {};
     for (const c of FIFTEEN_TRACKS.captureProgress.channels) {
@@ -465,7 +475,7 @@ export function createTour(opts) {
     function start() {
         if (active) return;
         preTourTab = getActiveTab();
-        demoStore = buildDemoStore();
+        demoStore = buildDemoStore(getT);
         active = true;
         step = 1;
         overlay.hidden = false;
