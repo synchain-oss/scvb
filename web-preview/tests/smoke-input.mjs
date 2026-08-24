@@ -9,6 +9,7 @@
 //   ② setChannelId 冲突(occupied)→ {conflict:true} + channelConflict error;
 //      释放(n=0)/ 成功(n 空闲)→ {ok:true} 且 claim 随 outputOnline 派生;
 //   ③ setGroupId 冲突(新组同 channel 被占)→ {conflict:true};成功 → {ok:true};
+//   ⑤ sourceKind 口径:source_channels 0/undefined→unmeasured,1→mono,2→stereo。
 //   ④ remoteSetPriority:未分配 → {queued:false,reason:"unassigned"},
 //      Output 离线 → {queued:false,reason:"outputOffline"},在线 → {queued:true}。
 //
@@ -25,6 +26,7 @@ const ROOT =
 const u = (p) => pathToFileURL(join(ROOT, p)).href;
 
 const { createBridge } = await import(u("web/shared/bridge.js"));
+const { sourceKind } = await import(u("web/shared/source-kind.js"));
 const driver = await import(u("web-preview/mock/state-driver.js"));
 const mock = await import(u("web-preview/mock/juce-bridge-mock.js"));
 
@@ -272,6 +274,19 @@ await withInput("scenario=connected", async (b) => {
     );
     log(`  connected → ${JSON.stringify(r)}`);
 });
+
+log("\n=== ⑤ sourceKind 口径(source_channels 1/2/0/undefined)===");
+const SK_CASES = [
+    [1, "mono"],
+    [2, "stereo"],
+    [0, "unmeasured"],
+    [undefined, "unmeasured"],
+];
+for (const [sc, want] of SK_CASES) {
+    const got = sourceKind(sc);
+    check(got === want, `sourceKind(${String(sc)}) 应 ${want},实得 ${got}`);
+    log(`  sourceKind(${String(sc)}) = ${got}`);
+}
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

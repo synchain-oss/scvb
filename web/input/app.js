@@ -15,6 +15,7 @@ import { applyI18n, LANGS, dict } from "../shared/i18n.js";
 import { DESIGN } from "../shared/design-box.js";
 import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
 import { createInputTour, shouldShowInputGuide } from "./tour-in.js";
+import { sourceKind } from "../shared/source-kind.js";
 
 // ------------------------------------------------------------- 单一真源常量
 // 契约 §0.2:g = 1..8,UI 显示 A-H;ch = 1..15(J59)。
@@ -774,10 +775,11 @@ function renderSource() {
     const sc = store.config ? store.config.source_channels : 0;
     const row = $("input.source");
     // source_channels 1=mono 2=stereo;0/undefined = 尚未测量 —— 隐藏本行,等有效值(J63 首帧核实)。
-    const measured = sc === 1 || sc === 2;
+    const kind = sourceKind(sc);
+    const measured = kind !== "unmeasured";
     show(row, !!store.config && measured);
     if (!row || !store.config || !measured) return;
-    const stereo = sc === 2;
+    const stereo = kind === "stereo";
     const badge = $("input.source.badge");
     if (badge) badge.textContent = stereo ? "ST" : "MONO";
     fillKeyed(
@@ -835,9 +837,9 @@ function renderRemoteSummary() {
     if (!showRow || !cfg) return;
 
     // MONO / STEREO:源类型状态(只读 J57),当前哪种亮哪种;未测量(0/undefined)两者都不亮。
-    const sc = cfg.source_channels || 0;
-    const stereo = sc === 2;
-    const mono = sc === 1;
+    const kind = sourceKind(cfg.source_channels || 0);
+    const stereo = kind === "stereo";
+    const mono = kind === "mono";
     setLit($("input.remoteSummary.mono"), mono);
     setLit($("input.remoteSummary.stereo"), stereo);
     const monoCard = $("input.remoteSummary.mono");

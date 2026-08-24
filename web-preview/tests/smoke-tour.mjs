@@ -302,6 +302,25 @@ log("=== ③ buildDemoStore(纯 UI 展示层)===");
         if (cjk.test(T.en[k]) || cjk.test(T.fr[k])) synced = false;
     }
     check(synced, "zh demo.ch* == mock DEMO_LABELS 且 en/fr 无中文");
+
+    // 本地化 demo 版本名(合入后补漏):versions[0](V1「基础平衡」)三语;V2 保持原样
+    eq(ds.state.versions[0].name, "基础平衡", "不传 getT 保持 zh 原版本名(V1)");
+    eq(
+        dsEn.state.versions[0].name,
+        "Base balance",
+        "demo 版本名 en 本地化(V1)",
+    );
+    eq(
+        dsFr.state.versions[0].name,
+        "Équilibre de base",
+        "demo 版本名 fr 本地化(V1)",
+    );
+    check(
+        !cjk.test(dsEn.state.versions[0].name) &&
+            !cjk.test(dsFr.state.versions[0].name),
+        "en/fr 版本名无中文",
+    );
+    eq(dsEn.state.versions[1].name, "V2", "V2 版本名保持原样(不本地化)");
 }
 
 // =============================================================================

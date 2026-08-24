@@ -162,6 +162,19 @@ export function buildDemoStore(getT) {
         });
     }
 
+    // 本地化 demo 版本名(§2.6 demo 注入):versions[0](V1「基础平衡」)走 i18n demo.versionName,
+    // 其余版本(V2 等)保持原样。不传 getT 则保持原 name。
+    if (
+        t["demo.versionName"] &&
+        Array.isArray(stateFields.versions) &&
+        stateFields.versions[0]
+    ) {
+        stateFields.versions = [
+            { ...stateFields.versions[0], name: t["demo.versionName"] },
+            ...stateFields.versions.slice(1),
+        ];
+    }
+
     const coverage = {};
     for (const c of FIFTEEN_TRACKS.captureProgress.channels) {
         coverage[c.ch] = c.coveragePct;
