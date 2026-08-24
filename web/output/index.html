@@ -3557,6 +3557,26 @@
                 color: var(--acc-link-on-glass);
                 text-decoration: underline;
             }
+            /* ---- 「手动接管与自动化」说明块(J78):标题 + 四行正文,排版同「使用说明」块 ---- */
+            .settings-automationguide__title {
+                margin-top: var(--sp-9);
+                font-size: var(--fs-115);
+                color: var(--txt-1);
+            }
+            .settings-automationguide {
+                list-style: none;
+                margin: var(--sp-9) 0 0;
+                padding: 0;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-8);
+            }
+            .settings-automationguide li {
+                font-size: var(--fs-115);
+                line-height: 1.7;
+                color: var(--txt-2);
+                text-wrap: pretty;
+            }
             /* ---- J69 两设置块:标题 + 三段选同排(设计稿 L952-958) ---- */
             .set-block__row {
                 display: flex;
@@ -6770,6 +6790,37 @@
                                     ></a>
                                     <!-- 待定项③:文档入口(纯文案 vs 经 native 打开外部浏览器)未定,先落纯文案链接 -->
                                     <!-- [T36b] 重看引导 = 重启交互式 tour(tour.js 消费 data-tour="review") -->
+                                </div>
+
+                                <!-- 「手动接管与自动化」说明块(J78;05 §2.4)。
+                                     四行静态文案:优先级链 / 冻结=平直线写入 / 段检查器微调 /
+                                     画好自动化后忠实跟随。纯静态,无交互、无桥调用,tab-settings.js 不接线。 -->
+                                <div
+                                    class="sc-card"
+                                    data-gb="settings-automationguide"
+                                >
+                                    <span
+                                        class="sc-eyebrow"
+                                        data-t="set.automationGuide.eyebrow"
+                                    ></span>
+                                    <div
+                                        class="set-block__title settings-automationguide__title"
+                                        data-t="set.automationGuide.title"
+                                    ></div>
+                                    <ol class="settings-automationguide">
+                                        <li
+                                            data-t="set.automationGuide.line1"
+                                        ></li>
+                                        <li
+                                            data-t="set.automationGuide.line2"
+                                        ></li>
+                                        <li
+                                            data-t="set.automationGuide.line3"
+                                        ></li>
+                                        <li
+                                            data-t="set.automationGuide.line4"
+                                        ></li>
+                                    </ol>
                                 </div>
 
                                 <!-- 第二响度指标(J69) -->
