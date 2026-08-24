@@ -1,0 +1,25 @@
+{
+  "ignorePatterns": [
+    {
+      "comment": "仓库自身与兄弟仓在 O07 转 public 之前是 private —— 匿名访问一律 404,不是死链。O07 过闸后可删掉这三条重跑。",
+      "pattern": "^https://github\\.com/synchain-oss/"
+    },
+    {
+      "comment": "GitHub 相对快捷路径(../../actions、../../releases/latest,12 §7.2 badge 模板逐字如此)。它们由 GitHub 在渲染时解析到当前仓库,本地文件系统里没有对应路径。",
+      "pattern": "^\\.\\./\\.\\./"
+    },
+    {
+      "comment": "shields.io badge 端点:响应取决于网络与限流,不构成文档正确性判据。",
+      "pattern": "^https://img\\.shields\\.io/"
+    },
+    {
+      "comment": "官网域名尚未对本仓开放路由(O05 官网衔接卡未落地)。",
+      "pattern": "^https://synchain\\.(ca|cn)"
+    }
+  ],
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "10s",
+  "aliveStatusCodes": [200, 206]
+}

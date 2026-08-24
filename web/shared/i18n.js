@@ -18,7 +18,10 @@
 // 但一律以表内印刷 key 逐字为准——05 §5.2 起多数条目印作 master.* / tracks.* / wave.* / set.*(无 out. 前缀),
 // 本文件照印刷原文收录,不擅自补前缀(见 T27 差异清单)。
 //
-// T27 自译(05 未给三语)的条目:state.* 六条 FR、state.waitingForOutput.group 的 EN/FR、
+// T27 自译(05 未给三语)的条目:state.* 6 条 FR、state.waitingForOutput.group 的 EN/FR、
+// (此处刻意写阿拉伯数字而非中文数词:12 §3.4 有一道零命中机检,专抓把九条红字的标题
+//  误写成中文数词「6」的历史笔误,扫全仓文档面与本文件。本文件正是九条红字的落地面之一,
+//  一个语义无关的中文数词会让那道安全门禁常年假红。)
 // state.groupSuffix 三语、tour.step1..7 的 EN/FR —— 均待人工审校,逐条清单见 T27 差异清单
 // 的「i18n.js」小节(05 §5 要求 fr 发布前人工审校,那份清单就是审校人的入口)。
 // ======================================================================
@@ -143,9 +146,31 @@ export const T = {
             "输出引擎仍按全局范围工作,与本次重采集选区无关",
 
         // 首次启动引导页(05 §5,606-610 行)。
-        // guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入(05 §5 / §0.1,禁止手抄)。
+        // guide.title 与 guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从
+        // docs/USER_GUIDE.zh-CN.md#硬约束 生成写入(05 §5 / §0.1,禁止手抄)。下面这对标记之间
+        // 的内容是**生成物** —— 手改会被下一次 --write 覆盖,并在此之前被 --check 判红。
+        // BEGIN GENERATED hard-rules:zh
         "guide.title":
             "必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、错音或分析失效。",
+        "guide.rule1":
+            "人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。 不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)",
+        "guide.rule2":
+            "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。 位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
+        "guide.rule3":
+            '只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。 这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条哑轨。(ADR-002 / J12 + J32)',
+        "guide.rule4":
+            "人声轨与总线的宿主 pan 必须保持居中。 SCVB 内部用 equal-power pan,与宿主 pan law 无关;宿主 pan 不居中会叠加出错误声像。(ADR-010)",
+        "guide.rule5":
+            '每个 channel id 在同一个组内唯一,而同一条人声轨只能属于一个组。 同组内两个 Input 抢同一个 channel 时,后来者会看到"channel 冲突"警告并且不会生效;不同组的同号 channel 是两条互不相干的通路。(ADR-002 / J66)',
+        "guide.rule6":
+            "同一个组同一时间只能有一个生效的 Output 实例。 同组的第二个实例进入只读观察模式并显示警告;八个组(A–H)各自是独立的总线域,互不影响。(ADR-002 / J66)",
+        "guide.rule7":
+            "stereo 人声轨默认不参与自动声像分配,需要它参与时必须手动打开。 mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),默认保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J60)",
+        "guide.rule8":
+            'SCVB Output 不向 DAW 报告额外延迟。 对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)',
+        "guide.rule9":
+            '看到"时间线缺口 / 重叠"警告时,不要继续导出。 先按 docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。',
+        // END GENERATED hard-rules:zh
         "guide.dontShowAgain": "不再显示",
         "guide.start": "开始使用",
         "set.reopenGuide": "重看引导",
@@ -819,9 +844,30 @@ export const T = {
             "Engine still drives the global range — unaffected by the recapture selection",
 
         // 首次启动引导页(05 §5,606-610 行)。
-        // guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入(05 §5 / §0.1,禁止手抄)。
+        // guide.title 与 guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从
+        // docs/USER_GUIDE.zh-CN.md#硬约束 + docs/hard-rules.i18n.json 生成写入(禁止手抄)。
+        // BEGIN GENERATED hard-rules:en
         "guide.title":
             "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
+        "guide.rule1":
+            "Vocal tracks must keep their original DAW routing, pointing at the bus that hosts SCVB Output. Do not re-route a vocal track straight to the master output, and do not bypass the bus. (ADR-002)",
+        "guide.rule2":
+            "SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus. Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
+        "guide.rule3":
+            'Input mutes its downstream output only while a healthy SCVB Output is detected — this is by design, not a bug. That mute path is what preserves the "vocal tracks first, bus second" ordering in the DAW\'s dependency graph, and it still holds under offline rendering and REAPER\'s anticipative multithreading. When no healthy Output is detected (not installed, not connected, peer has quit), Input falls back to passthrough automatically, over an 80 ms ramp with a 5-second hysteresis debounce (the hysteresis applies only to the "mute → passthrough" direction; "passthrough → mute" ramps over 80 ms as soon as health is confirmed), so installing only one of the two plugins will never leave you with a dead track. (ADR-002 / J12 + J32)',
+        "guide.rule4":
+            "Host pan must stay centred on both the vocal tracks and the bus. SCVB pans internally with an equal-power law, independently of the host's pan law; an off-centre host pan stacks on top of it and produces a wrong stereo image. (ADR-010)",
+        "guide.rule5":
+            'Each channel id is unique within one group, and a given vocal track may belong to only one group. When two Inputs in the same group claim the same channel, the late arrival shows a "channel conflict" warning and stays inactive; the same channel number in a different group is a separate, unrelated path. (ADR-002 / J66)',
+        "guide.rule6":
+            "Only one Output instance can be active in a group at any one time. A second instance in the same group drops into read-only observer mode and shows a warning; the eight groups (A–H) are independent bus domains and do not affect one another. (ADR-002 / J66)",
+        "guide.rule7":
+            "Stereo vocal tracks stay out of automatic pan assignment by default; switch one in by hand when you want it included. Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread) which by default preserves the stereo width you already have, rather than letting automatic assignment overwrite it. (ADR-003 / J57 + J60)",
+        "guide.rule8":
+            'SCVB Output reports no additional latency to the DAW. Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)',
+        "guide.rule9":
+            'Do not carry on exporting while a "timeline gap / overlap" warning is showing. Work through the common-pitfalls list in docs/DAW_COMPATIBILITY.md to check your routing first: for as long as the warning count refuses to fall back to zero, some track\'s audio is not being picked up correctly.',
+        // END GENERATED hard-rules:en
         "guide.dontShowAgain": "Don't show again",
         "guide.start": "Get started",
         "set.reopenGuide": "Show guide again",
@@ -1463,9 +1509,31 @@ export const T = {
             "Le moteur pilote toujours la plage globale — indépendamment de la sélection de ré-capture",
 
         // 首次启动引导页(05 §5,606-610 行)。
-        // guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从 docs/USER_GUIDE.zh-CN.md#硬约束 生成写入(05 §5 / §0.1,禁止手抄)。
+        // guide.title 与 guide.rule1..9 不在此文件手写:由 scripts/gen-hard-rules.mjs 从
+        // docs/USER_GUIDE.zh-CN.md#硬约束 + docs/hard-rules.i18n.json 生成写入(禁止手抄)。
+        // fr 红字发布前必须经人工审校(05 §5),审校状态见 docs/hard-rules.i18n.json 的 frReview。
+        // BEGIN GENERATED hard-rules:fr
         "guide.title":
             "À lire : les neuf règles d'utilisation de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
+        "guide.rule1":
+            "Les pistes de voix doivent conserver leur routage DAW d'origine, vers le bus qui héberge SCVB Output. Ne redirigez pas une piste de voix directement vers la sortie principale et ne contournez pas le bus. (ADR-002)",
+        "guide.rule2":
+            "SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus. Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir docs/DAW_COMPATIBILITY.md. (ADR-002 / J45)",
+        "guide.rule3":
+            "Input ne coupe sa sortie aval que tant qu'un SCVB Output sain est détecté — c'est le comportement voulu, pas un bug. Ce chemin de coupure préserve l'ordre « pistes de voix d'abord, bus ensuite » dans le graphe de dépendances du DAW, et il reste valable en rendu hors ligne comme sous le multithreading anticipatif de REAPER. Si aucun Output sain n'est détecté (non installé, non connecté, pair quitté), Input repasse automatiquement en direct, via une rampe de 80 ms avec anti-rebond à hystérésis de 5 secondes (l'hystérésis ne s'applique qu'au sens « coupure → direct » ; « direct → coupure » suit une rampe de 80 ms dès la santé confirmée) : n'installer qu'un seul des deux plugins ne vous laissera donc jamais une piste muette. (ADR-002 / J12 + J32)",
+        "guide.rule4":
+            "Le panoramique hôte doit rester centré, sur les pistes de voix comme sur le bus. SCVB applique en interne un panoramique à puissance constante, indépendant de la loi de panoramique de l'hôte ; un panoramique hôte décentré s'y ajoute et produit une image stéréo erronée. (ADR-010)",
+        "guide.rule5":
+            "Chaque identifiant de canal est unique au sein d'un groupe, et une même piste de voix ne peut appartenir qu'à un seul groupe. Lorsque deux Input du même groupe réclament le même canal, le second affiche un avertissement « conflit de canal » et reste inactif ; le même numéro de canal dans un autre groupe correspond à un chemin distinct et sans rapport. (ADR-002 / J66)",
+        "guide.rule6":
+            "Un seul Output peut être actif à la fois au sein d'un groupe. Une seconde instance du même groupe passe en mode observation en lecture seule et affiche un avertissement ; les huit groupes (A–H) sont des domaines de bus indépendants, sans influence mutuelle. (ADR-002 / J66)",
+        "guide.rule7":
+            "Les pistes de voix stéréo sont exclues par défaut de la répartition automatique du panoramique ; activez-les manuellement pour les y inclure. Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) qui conserve par défaut la largeur stéréo existante au lieu de la laisser écraser par la répartition automatique. (ADR-003 / J57 + J60)",
+        "guide.rule8":
+            "SCVB Output ne déclare aucune latence supplémentaire au DAW. L'alignement repose sur l'adressage temporel ; n'essayez pas de le « corriger » avec la PDC (compensation du retard des plugins). (ADR-002)",
+        "guide.rule9":
+            "Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché. Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de docs/DAW_COMPATIBILITY.md : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.",
+        // END GENERATED hard-rules:fr
         "guide.dontShowAgain": "Ne plus afficher",
         "guide.start": "Commencer",
         "set.reopenGuide": "Revoir le guide",
