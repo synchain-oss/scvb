@@ -481,6 +481,12 @@ TEST_CASE("IPC-2 单进程 SPSC 时间线寻址(多块长逐样本一致)", "[ip
         REQUIRE(gap == 0);
         REQUIRE(got == expect);
     }
+
+    // 显式解映射:裸 SegmentView 析构不 unmap(退回「进程退出统一回收」),会把 g1.audio.ch1
+    // 保活到整个测试进程结束。若不 unmap,后续 IPC-19 stereo / IPC-20a(group 1)的 peer writer
+    // 会 attach 到这段带陈旧 geometry(channels/write_head)的残留段,而并发 reader 可能在覆盖式
+    // 重置完成前读到陈旧 channels → 哈希断言偶发漂移(CI flaky:1489/1515)。
+    backend.unmap(view);
 }
 
 // ===========================================================================
@@ -606,6 +612,8 @@ TEST_CASE("IPC-5 覆盖判定三边界各自 gapCount+1 且静音", "[ipc][contr
             REQUIRE(v == 0.0f);
         }
     }
+
+    backend.unmap(view); // in-process 裸 SegmentView 不自动 unmap,显式释放避免段陈旧保活
 }
 
 // ===========================================================================
@@ -638,6 +646,8 @@ TEST_CASE("IPC-5b 读后 write_head 复查套圈弃块", "[ipc][contract]")
     {
         REQUIRE(v == 0.0f);
     }
+
+    backend.unmap(view); // in-process 裸 SegmentView 不自动 unmap,显式释放避免段陈旧保活
 }
 
 // ===========================================================================
@@ -679,6 +689,8 @@ TEST_CASE("IPC-5c 负 playhead 跨零点尾段写入且 gapCount 不增", "[ipc]
     REQUIRE(ringReadBlock(hdr, g, 0, 32, out.data(), rst) == 0);
     REQUIRE(ringReadBlock(hdr, g, 32, 64, out.data() + 32, rst) == 0);
     REQUIRE(rst.gapCount == 0);
+
+    backend.unmap(view); // in-process 裸 SegmentView 不自动 unmap,显式释放避免段陈旧保活
 }
 
 // ===========================================================================
@@ -1437,15 +1449,16 @@ TEST_CASE("IPC-19 ring_frames 口径错位可检出", "[ipc][contract]")
                                "--channels=2",
                                "--wrong-units",
                                "--blocks=" + std::to_string(blocks),
-                               "--blocksize=" + std::to_string(bs)};
+                               "--blocksize=" + std::to_string(bs),
+                               "--wait-write-head=" + std::to_string(blocks * bs)};
 
     const RingRun run = runWriterThenReader(w, r);
     REQUIRE(run.readerExit == 0);
     const auto m = parseCsv(run.csv);
-    AudioGeometry g;
-    g.channels = 2;
-    g.ringFrames = scvb::kDefaultRingFrames;
-    REQUIRE(csvU64Hex(m, "hash") != expectedRampHash(g, blocks * bs, bs, TimelineModel{}));
+    // 断言 gap 而非内容哈希:错误口径(ring_frames/2 = 262144)使覆盖判定「写方超过半环」触发 gap。
+    // ramp 周期 1024 恰好整除半环 262144,无 gap 时错位内容哈希与期望相等(内容时序依赖)→ 改用
+    // gap 判据 + 读前等写方静止(--wait-write-head)后确定性可检出,不依赖进程调度时序。
+    REQUIRE(csvLL(m, "gap_count") > 0);
 }
 
 TEST_CASE("IPC-19 mono 与 stereo 环同 registry 并存互不影响", "[ipc][contract]")
