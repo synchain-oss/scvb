@@ -164,16 +164,45 @@ Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
 Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
 
 # ==================================================================
+Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)==='
+# ==================================================================
+# 设计盒常量唯一真源 = web/shared/design-box.js;生成物 src/core/DesignBox.h 必须逐字节一致
+# (01 §6.1 / 05 §1.2;消除 Bridge 双处硬编码技术债)。--check 重生成并对拍,漂移即红。
+$designBox = (& python scripts\gen-design-box.py --check 2>&1)
+if ($LASTEXITCODE -ne 0) { $designBox | ForEach-Object { Write-Host ("  " + $_) } }
+Set-Gate '3d 设计盒真源' ($LASTEXITCODE -eq 0)
+
+# ==================================================================
 Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
 # ==================================================================
 # web-preview/tests 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到端 + 源码级
 # 纪律断言),T31–T36 六张卡的回归保护全压在上面。与 .github/workflows/format.yml
-# 的 web-smoke job 同口径。零依赖:不装 npm 包,直接 node(≥22,用到内建 fetch
-# 与全局 WebSocket)跑;每套退出码 0 = 全绿,非 0 会逐条打印 [FAIL]。
-# 不提前 break —— 一次跑完好看全所有红项。
+# 的 web-smoke job 同口径。零依赖:不装 npm 包直接 node 跑;每套退出码 0 = 全绿,
+# 非 0 会逐条打印 [FAIL]。不提前 break —— 一次跑完好看全所有红项。
+#
+# ⚠ **必须先判 node 在不在**(PR#64 评审【重要】):PowerShell 找不到外部命令时抛
+# CommandNotFoundException,默认 ErrorActionPreference=Continue 下**不更新**
+# $LASTEXITCODE —— 它会保留上一条外部命令(check-spdx)的 0,于是「一套都没跑」
+# 被判成全绿。**误报绿比硬失败危险得多**。口径照 3b/3c(gitleaks/reuse)。
+# CI 侧由 actions/setup-node 钉死版本,无此风险;本守卫只为本地。
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$nodeMajor = 0
+if ($nodeCmd) {
+  $nv = (& node --version 2>&1) -as [string]      # 形如 v22.5.0
+  if ($nv -match '^v(\d+)\.') { $nodeMajor = [int]$Matches[1] }
+}
 $smokeDir = Join-Path $RepoRoot 'web-preview\tests'
 $smokeFiles = @(Get-ChildItem -Path $smokeDir -Filter 'smoke-*.mjs' -ErrorAction SilentlyContinue)
-if ($smokeFiles.Count -eq 0) {
+if (-not $nodeCmd) {
+  # 用到 node 内建 fetch 与全局 WebSocket,故要求 ≥ 22(与 CI 的 node-version 一致)
+  Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
+  Set-Gate '3e web smoke' $false
+}
+elseif ($nodeMajor -lt 22) {
+  Write-Host ("  node 版本过低: {0}(要求 >= 22:内建 fetch / 全局 WebSocket)" -f $nv) -ForegroundColor Red
+  Set-Gate '3e web smoke' $false
+}
+elseif ($smokeFiles.Count -eq 0) {
   Write-Host '  未发现 web smoke(web-preview/tests/smoke-*.mjs)' -ForegroundColor Red
   Set-Gate '3e web smoke' $false
 }
@@ -188,17 +217,8 @@ else {
       ForEach-Object { Write-Host ("  " + $_) }
     }
   }
-  Set-Gate ('3e web smoke({0} 套)' -f $smokeFiles.Count) $smokeOk
+  Set-Gate ('3e web smoke({0} 套,node {1})' -f $smokeFiles.Count, $nv) $smokeOk
 }
-
-# ==================================================================
-Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)==='
-# ==================================================================
-# 设计盒常量唯一真源 = web/shared/design-box.js;生成物 src/core/DesignBox.h 必须逐字节一致
-# (01 §6.1 / 05 §1.2;消除 Bridge 双处硬编码技术债)。--check 重生成并对拍,漂移即红。
-$designBox = (& python scripts\gen-design-box.py --check 2>&1)
-if ($LASTEXITCODE -ne 0) { $designBox | ForEach-Object { Write-Host ("  " + $_) } }
-Set-Gate '3d 设计盒真源' ($LASTEXITCODE -eq 0)
 
 # ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)

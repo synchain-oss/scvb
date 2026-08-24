@@ -1715,8 +1715,10 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
         "在盖得满的块里挑**列宽最接近 1px** 的(最像稳态那一档)",
     );
     check(
-        /if \(!src\) src = ov;/.test(tw),
-        "没有盖得满的块就整幅交给概览(它必然覆盖 ⇒ 运动时不会留白)",
+        /!src &&\s*\n\s*ov &&\s*\n\s*ov\.startS <= vp\.startS \+ EPS &&\s*\n\s*ov\.endS >= vp\.endS - EPS/.test(
+            tw,
+        ),
+        "没有盖得满的块就交给概览,且概览**同样要过盖满校验**(曲长回填那一两帧里它可能盖不住 ⇒ 半幅留白)",
     );
     check(
         /ctx\.clearRect\(0, 0, w, laneH\);[\s\S]{0,200}paintWaveTile\(ctx, src\.tile/.test(
