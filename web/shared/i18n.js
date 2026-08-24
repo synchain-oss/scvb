@@ -262,9 +262,9 @@ export const T = {
         "tour.step32.title": "分段工具条",
         "tour.step32.body":
             "SENSITIVITY / MIN SEG 分段滑杆;边界可拖拽,双击可分割,选中相邻两段按 Delete 合并。",
-        "tour.step33.title": "VAD 滑杆",
+        "tour.step33.title": "VAD 滑杆(语音检测)",
         "tour.step33.body":
-            "THRESHOLD / HOLD 等五个滑杆;拖动时即时预览效果,松手自动应用。",
+            "这五个滑杆决定「哪里算人声、哪里算静音」,是分段的基础:THRESHOLD 响度门限——比它响才算在唱;HYSTERESIS 回滞——关门比开门低一档,防止门限附近抖动把句子切碎;HOLD 静音保持——短暂停顿仍算在唱,避免字与字之间被断句;PAD PRE / PAD POST 前后留白——不咬掉起音与尾音。",
         "tour.step34.title": "本页:设置",
         "tour.step34.body":
             "说明、响度口径、中心槽策略、缩放、语言、存储、诊断;末步的「重看引导」也在这页。",
@@ -924,9 +924,9 @@ export const T = {
         "tour.step32.title": "Segmentation toolbar",
         "tour.step32.body":
             "SENSITIVITY / MIN SEG sliders; drag boundaries, double-click to split, select two adjacent segments and press Delete to merge.",
-        "tour.step33.title": "VAD sliders",
+        "tour.step33.title": "VAD sliders (voice detection)",
         "tour.step33.body":
-            "THRESHOLD / HOLD and three more; drag for a live preview, release to apply.",
+            "These five sliders decide what counts as voice versus silence — the basis of segmentation: THRESHOLD is the loudness gate — only louder than it counts as singing; HYSTERESIS closes the gate a step lower than it opens, so flutter near the threshold doesn't chop sentences; HOLD keeps short pauses counting as singing, so word-to-word gaps aren't split; PAD PRE / PAD POST add head and tail padding — so attacks and tails aren't clipped.",
         "tour.step34.title": "This page: Settings",
         "tour.step34.body":
             'Usage notes, loudness metric, center-slot policy, scale, language, storage, diagnostics; the final "Replay tour" is also here.',
@@ -1555,9 +1555,9 @@ export const T = {
         "tour.step32.title": "Barre de segmentation",
         "tour.step32.body":
             "Curseurs SENSIBILITÉ / SEG MIN ; glissez les limites, double-clic pour diviser, sélectionnez deux segments adjacents et appuyez sur Suppr pour fusionner.",
-        "tour.step33.title": "Curseurs VAD",
+        "tour.step33.title": "Curseurs VAD (détection vocale)",
         "tour.step33.body":
-            "SEUIL / MAINTIEN et trois autres ; glissez pour un aperçu, relâchez pour appliquer.",
+            "Ces cinq curseurs décident ce qui compte comme voix ou silence — la base de la segmentation : THRESHOLD est le seuil de niveau — seul ce qui est plus fort compte comme chant ; HYSTERESIS ferme la porte un cran plus bas qu'elle ne l'ouvre, pour éviter que le flottement près du seuil ne hache les phrases ; HOLD garde les pauses courtes comme chant, pour ne pas couper entre les mots ; PAD PRE / PAD POST ajoutent du blanc avant/après — pour ne pas tronquer l'attaque ni la chute.",
         "tour.step34.title": "Cette page : Réglages",
         "tour.step34.body":
             "Mode d'emploi, indicateur de loudness, stratégie de créneau central, échelle, langue, stockage, diagnostic ; « Revoir le guide » final est aussi ici.",
