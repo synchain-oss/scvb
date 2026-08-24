@@ -339,7 +339,7 @@
                 padding: var(--sp-4) var(--sp-10);
                 border-radius: var(--r-pill);
                 background: rgba(var(--sem-amber), 0.2);
-                border: 1px solid rgba(var(--sem-amber), 0.5);
+                border: 1px solid rgba(var(--sem-amber), 0.25);
                 font-family: var(--ff-mono);
                 font-size: var(--fs-90);
                 letter-spacing: var(--ls-demo-chip);
@@ -2791,7 +2791,7 @@
                 justify-content: center;
                 border-radius: 2px;
                 background: rgba(var(--sem-amber), 0.24);
-                border: 1px solid rgba(var(--sem-amber), 0.5);
+                border: 1px solid rgba(var(--sem-amber), 0.25);
                 color: var(--sem-amber-ink-dark);
                 /* 祖先 .wave-lane__badges 是 pointer-events:none —— 不在这里收回来,
                    「锁定」词条(title)就永远弹不出 tooltip,只剩屏幕阅读器可达。
@@ -4412,6 +4412,7 @@
                             role="tab"
                             aria-selected="true"
                             data-tab-btn="master"
+                            data-tour="tab1"
                             data-gb="tabnav-master"
                             data-t="tab.master"
                         >
@@ -4422,6 +4423,7 @@
                             role="tab"
                             aria-selected="false"
                             data-tab-btn="tracks"
+                            data-tour="tab2"
                             data-gb="tabnav-tracks"
                             data-t="tab.tracks"
                         >
@@ -4432,6 +4434,7 @@
                             role="tab"
                             aria-selected="false"
                             data-tab-btn="wave"
+                            data-tour="tab3"
                             data-gb="tabnav-wave"
                         >
                             <span data-t="tab.wave">波形与分段</span>
@@ -4448,6 +4451,7 @@
                             role="tab"
                             aria-selected="false"
                             data-tab-btn="settings"
+                            data-tour="tab4"
                             data-gb="tabnav-settings"
                             data-t="tab.settings"
                         >
@@ -4783,6 +4787,7 @@
                             <div
                                 class="sc-card"
                                 data-gb="master-group-selector"
+                                data-tour="group"
                                 data-confirm="0"
                             >
                                 <div class="card-head">
@@ -6411,7 +6416,11 @@
                                      轨头对齐;缩放档位 mono 读数(A-16)。
                                      [Wave 2] Ctrl+滚轮以光标为中心缩放、拖 thumb/空白平移,
                                      档位变化触发分块重拉取(05 §6.3;静止 120ms 取新块) -->
-                                <div class="wave-hzoom" data-gb="wave-hzoom">
+                                <div
+                                    class="wave-hzoom"
+                                    data-gb="wave-hzoom"
+                                    data-tour="wave-panel"
+                                >
                                     <div class="wave-hzoom__head">
                                         <span
                                             class="wave-hzoom__zoom"
@@ -6818,7 +6827,7 @@
                                 <div
                                     class="sc-card"
                                     data-gb="settings-scale"
-                                    data-tour="scalelang"
+                                    data-tour="scale"
                                 >
                                     <span
                                         class="sc-eyebrow"
@@ -6833,7 +6842,11 @@
                                     ></select>
                                 </div>
 
-                                <div class="sc-card" data-gb="settings-lang">
+                                <div
+                                    class="sc-card"
+                                    data-gb="settings-lang"
+                                    data-tour="lang"
+                                >
                                     <span
                                         class="sc-eyebrow"
                                         data-t="language"
@@ -6900,6 +6913,7 @@
                                 <div
                                     class="sc-card"
                                     data-gb="settings-diagnostics"
+                                    data-tour="diagnostic"
                                     data-open="1"
                                 >
                                     <div class="settings-diagnostics__head">
@@ -7177,12 +7191,12 @@
                     <div class="sc-modal">
                         <p class="sc-modal__body" data-t="tour.ask"></p>
                         <button
-                            class="sc-btn--cta"
+                            class="sc-btn sc-btn--cta"
                             data-gb="tour-ask-start"
                             data-t="tour.ask.start"
                         ></button>
                         <button
-                            class="sc-btn--dark"
+                            class="sc-btn sc-btn--dark"
                             data-gb="tour-ask-later"
                             data-t="tour.ask.later"
                         ></button>

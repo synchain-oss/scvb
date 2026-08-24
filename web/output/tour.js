@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // 职责边界:
 //   • 本文件只管 tour 本体:深色玻璃蒙版 + spotlight 挖亮 + 说明框 callout +
-//     步骤机(全参数导览 32 步、步号连续)+「演示数据」badge。全部为 Output 页内的 overlay 层。
+//     步骤机(全参数导览 39 步、步号连续)+「演示数据」badge。全部为 Output 页内的 overlay 层。
 //   • 外壳(header / 横幅 / footer / 缩放 / 引导页 / tab 路由 / 询问步)在 web/output/app.js。
 //     本文件不写 state、不触引擎、除 setTourSeen 外不调任何桥函数(§2.6 demo 注入纪律);
 //     期间真实事件照常入内存但不渲染,由 app.js 的 viewStore() 切换消费面。
@@ -17,7 +17,7 @@
 //
 // 真源:
 //   • 交互规则与步骤清单 = masterPlan/plan/05-ui-spec.md §2.6(组件与交互真源;步数经用户
-//     2026-08-23 指令由 7 步基线扩为全参数导览 32 步,05 §2.6 待统筹勘误,deviations 登记);
+//     2026-08-23 指令由 7 步基线扩为全参数导览 39 步,05 §2.6 待统筹勘误,deviations 登记);
 //   • 视觉(蒙版/亮区/说明框)= docs/design/「SCVB 设计稿.dc.html」tour1-tour6 场景 +
 //     tokens.css 的 --r-callout(设计稿 1105/1957 行 tour 卡与 spotlight 挖洞在用)、
 //     --dark-modal / --dark-solid(深色玻璃 #241f2e 底)。
@@ -40,7 +40,7 @@ export const SPOT_PAD = 10;
 export const SPOT_FEATHER = 12;
 
 /**
- * tour 步骤清单(用户 2026-08-23 指令:7 步基线作废,扩为全参数导览 32 步,步号连续 1..N;
+ * tour 步骤清单(用户 2026-08-23 指令:7 步基线作废,扩为全参数导览 39 步,步号连续 1..N;
  * 每参数一步,含 T33 波形页控件;05 §2.6 待统筹勘误,deviations 登记)。
  *   • anchor = spotlight 目标(data-tour 键);null = 无 spotlight(居中说明框)。
  *   • tab    = 该步讲解对象所在的 tab;null = 留在当前 tab。
@@ -48,45 +48,50 @@ export const SPOT_FEATHER = 12;
  */
 export const TOUR_STEPS = Object.freeze(
     [
-        { anchor: null, tab: null }, // 1  主界面总览(无 spotlight,居中)
-        { anchor: "cap", tab: "master" }, // 2  三件套 01 采集
-        { anchor: "an", tab: "master" }, // 3  三件套 02 分析
-        { anchor: "out", tab: "master" }, // 4  三件套 03 输出
-        { anchor: "width", tab: "master" }, // 5  Width(整体宽度)
-        { anchor: "msbalance", tab: "master" }, // 6  MS Balance
-        { anchor: "leadselect", tab: "master" }, // 7  Lead Select
-        { anchor: "range", tab: "master" }, // 8  Range 段选
-        { anchor: "transition", tab: "master" }, // 9  过渡时间
-        { anchor: "trackrow", tab: "tracks" }, // 10 轨道行总览
-        { anchor: "pan", tab: "tracks" }, // 11 pan 旋钮
-        { anchor: "widthknob", tab: "tracks" }, // 12 width 旋钮
-        { anchor: "vollevel", tab: "tracks" }, // 13 音量/电平合成件
-        { anchor: "prio", tab: "tracks" }, // 14 优先级
-        { anchor: "leadlock", tab: "tracks" }, // 15 主唱锁
-        { anchor: "volexempt", tab: "tracks" }, // 16 音量豁免
-        { anchor: "autopan", tab: "tracks" }, // 17 参与自动声像
-        { anchor: "pair", tab: "tracks" }, // 18 配对
-        { anchor: "freeze", tab: "tracks" }, // 19 冻结 PAN/VOL
-        { anchor: "enable", tab: "tracks" }, // 20 启用开关
-        { anchor: "lanes", tab: "wave" }, // 21 泳道区
-        { anchor: "selection", tab: "wave" }, // 22 选区手柄/设为范围
-        { anchor: "actions", tab: "wave" }, // 23 框选后工具条
-        { anchor: "inspector", tab: "wave" }, // 24 段检查器
-        { anchor: "segments", tab: "wave" }, // 25 分段工具条
-        { anchor: "vad", tab: "wave" }, // 26 VAD 滑杆
-        { anchor: "guideblock", tab: "settings" }, // 27 使用说明
-        { anchor: "loudnessmode", tab: "settings" }, // 28 响度口径
-        { anchor: "centerslot", tab: "settings" }, // 29 中心槽策略
-        { anchor: "scalelang", tab: "settings" }, // 30 缩放/语言
-        { anchor: "storage", tab: "settings" }, // 31 存储/诊断
-        { anchor: "review", tab: "settings" }, // 32 「重看引导」入口(末步固定)
+        { anchor: "tab1", tab: "master" }, // 1  主界面总览(spotlight 页签「整体调整」)
+        { anchor: "group", tab: "master" }, // 2  组选择与三件套
+        { anchor: "cap", tab: "master" }, // 3  三件套 01 采集
+        { anchor: "an", tab: "master" }, // 4  三件套 02 分析
+        { anchor: "out", tab: "master" }, // 5  三件套 03 输出
+        { anchor: "width", tab: "master" }, // 6  Width(整体宽度)
+        { anchor: "msbalance", tab: "master" }, // 7  MS Balance
+        { anchor: "leadselect", tab: "master" }, // 8  Lead Select
+        { anchor: "range", tab: "master" }, // 9  Range 段选
+        { anchor: "transition", tab: "master" }, // 10 过渡时间
+        { anchor: "tab2", tab: "tracks" }, // 11 本页:轨道(spotlight 页签)
+        { anchor: "trackrow", tab: "tracks" }, // 12 轨道行总览
+        { anchor: "pan", tab: "tracks" }, // 13 pan 旋钮
+        { anchor: "widthknob", tab: "tracks" }, // 14 width 旋钮
+        { anchor: "vollevel", tab: "tracks" }, // 15 音量/电平合成件
+        { anchor: "prio", tab: "tracks" }, // 16 优先级
+        { anchor: "leadlock", tab: "tracks" }, // 17 主唱锁
+        { anchor: "volexempt", tab: "tracks" }, // 18 音量豁免
+        { anchor: "autopan", tab: "tracks" }, // 19 参与自动声像
+        { anchor: "pair", tab: "tracks" }, // 20 配对
+        { anchor: "freeze", tab: "tracks" }, // 21 冻结 PAN/VOL
+        { anchor: "enable", tab: "tracks" }, // 22 启用开关
+        { anchor: "tab3", tab: "wave" }, // 23 本页:波形(spotlight 页签)
+        { anchor: "lanes", tab: "wave" }, // 24 泳道区
+        { anchor: "selection", tab: "wave" }, // 25 选区手柄/设为范围
+        { anchor: "actions", tab: "wave" }, // 26 框选后工具条
+        { anchor: "inspector", tab: "wave" }, // 27 段检查器
+        { anchor: "segments", tab: "wave" }, // 28 分段工具条
+        { anchor: "vad", tab: "wave" }, // 29 VAD 滑杆
+        { anchor: "wave-panel", tab: "wave" }, // 30 下方面板与操作
+        { anchor: "tab4", tab: "settings" }, // 31 本页:设置(spotlight 页签)
+        { anchor: "guideblock", tab: "settings" }, // 32 使用说明
+        { anchor: "loudnessmode", tab: "settings" }, // 33 响度口径
+        { anchor: "centerslot", tab: "settings" }, // 34 中心槽策略
+        { anchor: "scale", tab: "settings" }, // 35 界面缩放
+        { anchor: "lang", tab: "settings" }, // 36 语言
+        { anchor: "storage", tab: "settings" }, // 37 存储状态
+        { anchor: "diagnostic", tab: "settings" }, // 38 诊断
+        { anchor: "review", tab: "settings" }, // 39 「重看引导」入口(末步固定)
     ].map(Object.freeze),
 );
 
 /** 有 spotlight 的步骤锚点(步 2..N;用于 smoke 断言「末步=review、锚点连续无跳号」)。 */
-export const TOUR_ANCHORS = Object.freeze(
-    TOUR_STEPS.slice(1).map((s) => s.anchor),
-);
+export const TOUR_ANCHORS = Object.freeze(TOUR_STEPS.map((s) => s.anchor));
 
 /**
  * 询问步是否该弹(J62 首启顺序:红字页 → 询问步 → tour;J50a 镜像)。
@@ -232,7 +237,9 @@ export function createTour(opts) {
             ".tour-mask { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }",
             ".tour-callout { position: absolute; z-index: 1; box-sizing: border-box; width: 360px;",
             "  padding: var(--sp-16) var(--sp-18) var(--sp-14); border-radius: var(--r-callout);",
-            "  background-color: var(--dark-solid); background-image: var(--dark-modal);",
+            "  background: linear-gradient(158deg, rgba(34, 31, 44, 0.72), rgba(20, 17, 28, 0.8));",
+            "  -webkit-backdrop-filter: blur(16px) saturate(140%);",
+            "  backdrop-filter: blur(16px) saturate(140%);",
             "  border: 1px solid rgba(var(--wh), 0.16); box-shadow: var(--dark-modal-shadow);",
             "  color: var(--txt-dark-2); outline: none; }",
             ".tour-callout__title { margin: 0 0 var(--sp-6); font-family: var(--ff-grotesk);",

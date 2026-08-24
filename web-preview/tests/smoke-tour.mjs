@@ -6,7 +6,7 @@
 // DOM 侧(蒙版/亮区/说明框定位、点击推进、跨 tab 翻页)归浏览器手测 / Playwright 截图。
 //
 // 跑什么:
-//   ① 步骤清单:全参数导览 32 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
+//   ① 步骤清单:全参数导览 39 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
 //   ② shouldShowTourAsk 四种组合(J50a 镜像);
 //   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
@@ -51,12 +51,14 @@ const eq = (a, b, msg) =>
     );
 
 // =============================================================================
-log("=== ① 步骤清单(全参数导览 32 步)===");
+log("=== ① 步骤清单(全参数导览 39 步)===");
 {
-    eq(TOUR.TOUR_STEPS.length, 32, "步数 == 32");
+    eq(TOUR.TOUR_STEPS.length, 39, "步数 == 39");
     eq(
         TOUR.TOUR_ANCHORS,
         [
+            "tab1",
+            "group",
             "cap",
             "an",
             "out",
@@ -65,6 +67,7 @@ log("=== ① 步骤清单(全参数导览 32 步)===");
             "leadselect",
             "range",
             "transition",
+            "tab2",
             "trackrow",
             "pan",
             "widthknob",
@@ -76,27 +79,35 @@ log("=== ① 步骤清单(全参数导览 32 步)===");
             "pair",
             "freeze",
             "enable",
+            "tab3",
             "lanes",
             "selection",
             "actions",
             "inspector",
             "segments",
             "vad",
+            "wave-panel",
+            "tab4",
             "guideblock",
             "loudnessmode",
             "centerslot",
-            "scalelang",
+            "scale",
+            "lang",
             "storage",
+            "diagnostic",
             "review",
         ],
-        "31 锚点连续无跳号,末步=review",
+        "39 锚点连续无跳号,末步=review",
     );
-    eq(TOUR.TOUR_STEPS[0].anchor, null, "首步无 spotlight(居中说明框)");
-    eq(TOUR.TOUR_STEPS[0].tab, null, "首步留当前 tab");
+    eq(
+        TOUR.TOUR_STEPS[0].anchor,
+        "tab1",
+        "首步 spotlight = tab1 页签(整体调整)",
+    );
+    eq(TOUR.TOUR_STEPS[0].tab, "master", "首步在整体调整页");
     eq(
         TOUR.TOUR_STEPS.map((s) => s.tab),
         [
-            null,
             "master",
             "master",
             "master",
@@ -105,6 +116,9 @@ log("=== ① 步骤清单(全参数导览 32 步)===");
             "master",
             "master",
             "master",
+            "master",
+            "master",
+            "tracks",
             "tracks",
             "tracks",
             "tracks",
@@ -122,6 +136,11 @@ log("=== ① 步骤清单(全参数导览 32 步)===");
             "wave",
             "wave",
             "wave",
+            "wave",
+            "wave",
+            "settings",
+            "settings",
+            "settings",
             "settings",
             "settings",
             "settings",
@@ -129,14 +148,14 @@ log("=== ① 步骤清单(全参数导览 32 步)===");
             "settings",
             "settings",
         ],
-        "跨 tab 翻页目标逐条对拍(8 master / 11 tracks / 6 wave / 6 settings)",
+        "跨 tab 翻页目标逐条对拍(10 master / 12 tracks / 8 wave / 9 settings)",
     );
     eq(
-        TOUR.TOUR_STEPS[31].anchor,
+        TOUR.TOUR_STEPS[38].anchor,
         "review",
         "末步固定 = 设置页「重看引导」入口",
     );
-    eq(TOUR.TOUR_STEPS[2].anchor, "an", "第 3 步 = 三件套「02 分析」段");
+    eq(TOUR.TOUR_STEPS[3].anchor, "an", "第 4 步 = 三件套「02 分析」段");
     check(TOUR.SPOT_PAD >= 8, "spotlight 内边距 ≥8 设计 px");
 }
 
@@ -299,7 +318,7 @@ log("=== ⑤ 词条:tour.* 三语 ===");
         "done",
         "demoBadge",
     ];
-    for (let i = 1; i <= 32; i++) {
+    for (let i = 1; i <= 39; i++) {
         KEYS.push("step" + i + ".title", "step" + i + ".body");
     }
     for (const k of KEYS) {
@@ -325,8 +344,8 @@ log("=== ⑤ 词条:tour.* 三语 ===");
     );
     // 首步正文含三件套主线 + clickAnywhere 独立词条
     check(
-        /采集→分析→输出/.test(T.zh["tour.step1.body"]),
-        "zh step1 含三件套主线",
+        /采集 → 分析 → 输出/.test(T.zh["tour.step2.body"]),
+        "zh step2 含三件套主线",
     );
     check(
         /左键点击任意处/.test(T.zh["tour.clickAnywhere"]),
@@ -378,6 +397,11 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
 
     // data-tour 锚点:index.html 静态锚 + tab-tracks.js 首行动态锚(dt() 助手)
     const staticAnchors = [
+        "tab1",
+        "tab2",
+        "tab3",
+        "tab4",
+        "group",
         "cap",
         "an",
         "out",
@@ -392,12 +416,15 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
         "inspector",
         "segments",
         "vad",
+        "wave-panel",
         "guideblock",
         "review",
         "loudnessmode",
         "centerslot",
-        "scalelang",
+        "scale",
+        "lang",
         "storage",
+        "diagnostic",
     ];
     for (const a of staticAnchors) {
         check(
