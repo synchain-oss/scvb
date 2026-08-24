@@ -1,13 +1,56 @@
-# 冻结契约与基础设施:需 owner 审(12 §1.8 / 06 §3.4 bot prompt 路径 / 11-risks §缓解)
-*                          @DLsnows
-/docs/constitution/        @DLsnows
-/docs/PARAMETERS.md        @DLsnows
-/docs/IPC_CONTRACT.md      @DLsnows
-/docs/STATE_SCHEMA.md      @DLsnows
-/docs/SCVB_CONTRACT.md     @DLsnows
-/tests/golden/             @DLsnows
-/.github/workflows/        @DLsnows
+# CODEOWNERS —— 12 §1.8 / 06 §3.4 bot prompt 路径 / 11-risks §缓解
+#
+# 现阶段所有条目都指向同一个 owner,单列的意义是**把需要 owner 审的面显式记下来**,
+# 将来分权时按行拆即可。注意本仓的分支保护把 required_pull_request_reviews 设为 null,
+# 所以 CODEOWNERS 在这里只有「自动 request review」的装饰作用 ——
+# 真正的机器强制是 branch-gate 的「冻结契约 path guard」(见 CLAUDE.md §5)。
 
-# UI 目录所有权(T27 首个 UI PR 固化;web/ 与 web-preview/ 由 UI 会话交付)
-/web/                      @DLsnows
-/web-preview/              @DLsnows
+*                              @DLsnows
+
+# ── 冻结契约(path guard 逐字看守的四份 + golden 基线)────────────────────
+/docs/PARAMETERS.md            @DLsnows
+/docs/IPC_CONTRACT.md          @DLsnows
+/docs/STATE_SCHEMA.md          @DLsnows
+/docs/SCVB_CONTRACT.md         @DLsnows
+/tests/golden/                 @DLsnows
+
+# 桥契约的 C++ 侧常量表 —— 与 docs/SCVB_CONTRACT.md 由 check-bridge-parity.mjs 对齐,
+# 改一侧不改另一侧会当场破契约(仿 Bridge 仓 BridgeApi.h 的归属口径)
+/src/input/InputBridgeApi.h    @DLsnows
+/src/output/OutputBridgeApi.h  @DLsnows
+
+# 宪法原文只读副本(只能随 masterPlan/constitution/ 同步,不得就地编辑)
+/docs/constitution/            @DLsnows
+
+# 冻结契约的变更文档与模板(path guard 认这个目录里的文件才放行)
+/docs/contract-changes/        @DLsnows
+
+# ── 基础设施 ──────────────────────────────────────────────────────────
+/.github/                      @DLsnows
+/.github/workflows/            @DLsnows
+/scripts/                      @DLsnows
+/CMakeLists.txt                @DLsnows
+
+# 版本单一真源(改这三个文件等于改全仓工具链版本)
+/.juce-version                 @DLsnows
+/.pluginval-version            @DLsnows
+/.gitleaks-version             @DLsnows
+/.gitleaks.toml                @DLsnows
+/.clang-format                 @DLsnows
+
+# ── 法务与合规 ────────────────────────────────────────────────────────
+/LICENSE                       @DLsnows
+/LICENSES/                     @DLsnows
+/REUSE.toml                    @DLsnows
+/THIRD-PARTY-NOTICES.md        @DLsnows
+
+# ── 社区健康与常驻法条 ────────────────────────────────────────────────
+/CLAUDE.md                     @DLsnows
+/CONTRIBUTING.md               @DLsnows
+/CODE_OF_CONDUCT.md            @DLsnows
+/CODE_OF_CONDUCT.zh-CN.md      @DLsnows
+/SECURITY.md                   @DLsnows
+
+# ── UI 目录所有权(T27 首个 UI PR 固化;web/ 是 UI 唯一真源)──────────
+/web/                          @DLsnows
+/web-preview/                  @DLsnows

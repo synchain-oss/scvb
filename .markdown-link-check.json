@@ -1,8 +1,8 @@
 {
   "ignorePatterns": [
     {
-      "comment": "仓库自身与兄弟仓在 O07 转 public 之前是 private —— 匿名访问一律 404,不是死链。O07 过闸后可删掉这三条重跑。",
-      "pattern": "^https://github\\.com/synchain-oss/"
+      "comment": "兄弟仓(synchain-bridge / synchain-cli / .github)在 O07 转 public 之前是 private —— 匿名访问一律 404,不是死链。O07 过闸后可删掉重跑。注意本仓 synchain-oss/scvb 刻意不在此列:自链接写错必须当场查出,而本仓文档对自身一律用相对路径,不会因 private 而误红。",
+      "pattern": "^https://github\\.com/synchain-oss/(synchain-bridge|synchain-cli|\\.github)(/|$)"
     },
     {
       "comment": "GitHub 相对快捷路径(../../actions、../../releases/latest,12 §7.2 badge 模板逐字如此)。它们由 GitHub 在渲染时解析到当前仓库,本地文件系统里没有对应路径。",
