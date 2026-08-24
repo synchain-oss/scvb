@@ -243,6 +243,30 @@
             </li>
         </ul>
 
+        <h2>Tab1 分布图双视图([J75] T43)</h2>
+        <p class="note">
+            分布图卡片头部的两态分段控件「分布 ↔ 轨迹」;视图态 =
+            <code>ui.master_chart_mode</code>(新 state 字段,见
+            <code>docs/contract-changes/20260825-master-chart-mode.md</code>)。
+            下面这条场景**开箱就落在轨迹档**,并在段表里挖了一段跨轨对齐的缺口 ——
+            「无分段覆盖的区间不画线」一眼可见。
+        </p>
+        <ul>
+            <li>
+                <a href="./output.html?scenario=chart-trajectory"
+                    >Output · chart-trajectory</a
+                >
+                —— 轨迹档 +
+                断线缺口;滚轮缩放、拖拽平移,拖过之后右上角出现「回到播放头」
+            </li>
+            <li>
+                <a href="./output.html?fixture=fifteen-tracks"
+                    >Output · fifteen-tracks</a
+                >
+                —— 默认分布档;柱体与 width 横线按轨着色,图例 hover 联动高亮
+            </li>
+        </ul>
+
         <h2>Range 档位速查(J04:三值枚举,无哨兵)</h2>
         <p class="note">
             <code>range.mode</code> 一律取 <code>follow</code> /
@@ -275,7 +299,8 @@
                 <code>sidecar-switched</code> · <code>low-sample</code> ·
                 <code>print-guard</code> · <code>first-run</code> ·
                 <code>recapture-armed</code> · <code>first-run-tour</code> ·
-                <code>group-switch</code>
+                <code>group-switch</code> · <code>curve-editor</code> ·
+                <code>chart-trajectory</code>
             </li>
             <li>
                 Input(05 §3):<code>occupied</code> · <code>no-output</code> ·

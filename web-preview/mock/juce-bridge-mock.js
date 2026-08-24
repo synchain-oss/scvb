@@ -47,7 +47,11 @@
 // 依赖方向:web-preview/ → web/(单向)。**web/ 永不反向依赖本文件**(06 §6.2)。
 // =============================================================================
 
-import { BRIDGE_FUNCTIONS, BRIDGE_EVENTS } from "../../web/shared/bridge.js";
+import {
+    BRIDGE_FUNCTIONS,
+    BRIDGE_EVENTS,
+    PENDING_FUNCS,
+} from "../../web/shared/bridge.js";
 import { DESIGN } from "../../web/shared/design-box.js";
 import {
     CHANNEL_COUNT,
@@ -58,6 +62,7 @@ import {
     makeSegments,
     makeWaveformTile,
     coverageRangesOf,
+    CHART_MODES,
 } from "../../web/shared/mock-data.js";
 
 // -----------------------------------------------------------------------------
@@ -1528,6 +1533,19 @@ function buildOutputBackend(ctx) {
             patchState({ print_guard: { pending: false } });
             return OK();
         },
+
+        // ---- 待转正:setMasterChartMode([J75] T43)-----------------------------
+        // **契约 §7 manifest 里还没有这个名字** —— 它停在 bridge.js 的 PENDING_FUNCS
+        // 里等 native 侧落地(state codec + 桥 setter),见
+        // docs/contract-changes/20260825-master-chart-mode.md。
+        // 形制照 §1.31 setActiveTab:枚举外的值回 badArg,合法值写 state 子树后经
+        // scvb.state 回推 —— 于是预览页里「切换态持久化往返」是真的走了一圈桥,
+        // 而不是 UI 自己记着。转正时本方法原样保留,只是那时它进了名表。
+        setMasterChartMode(mode) {
+            if (!CHART_MODES.includes(mode)) return BAD_ARG();
+            patchState({ ui: { master_chart_mode: mode } });
+            return OK();
+        },
     };
 
     return backend;
@@ -1670,12 +1688,17 @@ function buildInputBackend(ctx) {
  * 结构化自检(契约 §0.7 的运行期兜底,比 createBridge 的校名早一步):
  * 实现集合与 `BRIDGE_FUNCTIONS[role]` **双向**相等 —— 少一个是漏实现,
  * 多一个说明写手自造了契约外的名字(§0.1 第 4 条:不得出现语义重复的双入口)。
+ *
+ * **唯一豁免 = `PENDING_FUNCS`**:走冻结契约变更流程、native 侧尚未落地的名字
+ * (见 bridge.js 里那张表的头注)。豁免只放行「在名单上」的名字 —— 随手自造一个
+ * 契约外的方法仍然当场炸,双向相等这条纪律没有被削弱。
  */
 function assertParity(role, backend) {
     const want = BRIDGE_FUNCTIONS[role];
+    const pending = PENDING_FUNCS[role] || [];
     const have = Object.keys(backend).filter((k) => k !== "addEventListener");
     const missing = want.filter((n) => typeof backend[n] !== "function");
-    const extra = have.filter((n) => !want.includes(n));
+    const extra = have.filter((n) => !want.includes(n) && !pending.includes(n));
     if (missing.length > 0 || extra.length > 0) {
         throw new Error(
             `juce-bridge-mock:${role} 侧与契约 §7 manifest 不等 —— ` +

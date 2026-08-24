@@ -29,7 +29,20 @@
 //
 // 纪律(与 index.html 头注同源):状态一律改 data-* 属性,不拼 class 字符串;
 // 词条一律走 web/shared/i18n.js 的 key,禁止硬写自由文案。
+//
+// [J75] T43 增补 —— 分布图升级为双视图「分布 ↔ 轨迹」:
+//   • 视图态 = state `ui.master_chart_mode`(新字段,变更文档
+//     `docs/contract-changes/20260825-master-chart-mode.md`);
+//   • 轨迹图本体在 `web/shared/trajectory-chart.js`(可复用件,T46 Monitor 直接复用),
+//     本文件只做装配、喂数据、接图例;
+//   • 15 色轨道配色的色值真源 = `web/shared/tokens.css` 第 21 组。
 // =============================================================================
+
+import {
+    createTrajectoryChart,
+    runsOfSegments,
+} from "../shared/trajectory-chart.js";
+import { trackColorVar } from "../shared/track-colors.js";
 
 // =============================================================================
 // 一、纯函数(无 DOM;node 侧断言面)
@@ -565,9 +578,22 @@ export function groupOnline(bitmap, g) {
 
 /** Header 连接 pill 的 N/15:只数 slotState=2 ∧ heartbeatFresh(契约 §2.3 UI 消费行,J01)。 */
 export function connectedCount(conn) {
+    return connectedChannels(conn).length;
+}
+
+/**
+ * 已连接轨号(升序)—— 与 `connectedCount` 同判据的**轨号面**。
+ * 分布图画哪些柱、图例列哪些行都取它:空闲轨无参数值,vol=0 会被 `distGeometry`
+ * 画成居中高的「幽灵柱」(设计稿绘制前就滤掉 idle/srErr 轨)。
+ */
+export function connectedChannels(conn) {
     const chans = (conn && conn.channels) || [];
-    return chans.filter((c) => c && c.slotState === 2 && c.heartbeatFresh)
-        .length;
+    const out = [];
+    for (let i = 0; i < chans.length; i++) {
+        const c = chans[i];
+        if (c && c.slotState === 2 && c.heartbeatFresh) out.push(i + 1);
+    }
+    return out;
 }
 
 /** 失准轨数(横幅① 的 {m};契约 §2.3 `misalignCount`)。 */
@@ -608,6 +634,112 @@ export function distGeometry(pan, volDb, widthPct) {
 }
 
 // =============================================================================
+// 一b、[J75] T43 分布图双视图 —— 纯函数面
+// =============================================================================
+
+/**
+ * 视图两态(state `ui.master_chart_mode`)。
+ * **新 state 字段**,非自动化;定义/默认值/迁移语义/建议桥面见
+ * `docs/contract-changes/20260825-master-chart-mode.md`(仓 CLAUDE.md §5 流程)。
+ */
+export const CHART_MODES = Object.freeze(["distribution", "trajectory"]);
+
+/** 默认档(J75 A 逐字:默认 `distribution`)。 */
+export const CHART_MODE_DEFAULT = "distribution";
+
+/** state → 视图态;缺字段 / 未知值一律回默认档(旧工程读进来就是这一路)。 */
+export function chartModeOf(state) {
+    const v = state && state.ui ? state.ui.master_chart_mode : undefined;
+    return CHART_MODES.includes(v) ? v : CHART_MODE_DEFAULT;
+}
+
+/**
+ * 段表 → 轨迹图数据面(每轨一组折线段)。
+ *
+ * 数据源是 §2.8 段表本身,不是覆盖率事件:段表里有段的地方就是「有分段覆盖」,
+ * 没段的地方就是 J75 A 说的「无分段覆盖的区间」—— 断线判据因此只有一处
+ * (`runsOfSegments`),不需要把 `scvb.captureProgress` 的覆盖区间再叠一层。
+ * 段的 `pan` 已经是**最终打印值**(auto 段与 user_edited 段同在一张表里)。
+ *
+ * @param {object|null} segments 事件仓的 `store.segments`(§2.8 合并后)
+ * @param {Array} channels `state.channels`(取 `source_channels` 判立体声)
+ */
+export function trajectorySeries(segments, channels) {
+    const out = [];
+    for (const c of (segments && segments.channels) || []) {
+        if (!c || !Number.isFinite(c.ch)) continue;
+        const runs = runsOfSegments(c.segments);
+        if (runs.length === 0) continue;
+        const cfg = (channels || [])[c.ch - 1] || {};
+        out.push({
+            ch: c.ch,
+            stereo: cfg.source_channels === 2,
+            runs,
+        });
+    }
+    return out.sort((a, b) => a.ch - b.ch);
+}
+
+/**
+ * 轨迹图的时间线全长(秒)。
+ *
+ * 判据与 Tab3 的 `durationOf`(tab-wave.js)**逐条同款**:range 终点、段表最大 t1S、
+ * 播放头三个证据取大,都拿不到就压在兜底值上;播放头只是「工程至少这么长」的下界,
+ * 不能单独当长度(否则刚起播时视口会塌到 1 秒再慢慢爬回来)。
+ *
+ * 为什么不 `import { durationOf } from "./tab-wave.js"`:tab-wave 反过来 import 本文件
+ * (`format` / `outputPhase` / `lowSampleChannels`),直接引会成模块环。两处口径不许漂 ——
+ * `web-preview/tests/smoke-t43-chart.mjs` 拿同一份 fixture 断言两者同值。
+ */
+export const CHART_FALLBACK_DURATION_S = 300;
+
+export function chartDurationS(store) {
+    const st = store || {};
+    let d = 0;
+    const range = ((st.state || {}).global || {}).range || {};
+    d = Math.max(d, num(range.end_s, 0));
+    for (const c of (st.segments && st.segments.channels) || []) {
+        for (const seg of (c && c.segments) || []) {
+            d = Math.max(d, num(seg && seg.t1S, 0));
+        }
+    }
+    const ph = num(st.playhead && st.playhead.timeS, 0);
+    return Math.max(d > 0 ? d : CHART_FALLBACK_DURATION_S, ph);
+}
+
+/**
+ * 图例行(两视图共用;行集 = **当前视图真的画了的那些轨**)。
+ *
+ * 两视图的可见轨集本来就不同 —— 分布图画的是「已连接轨」(空闲轨没有参数值,
+ * 画出来是居中的幽灵柱),轨迹图画的是「有分段的轨」(没分析过的轨没有线)。
+ * 图例跟着当前视图走,才不会出现「图例里有它、图上找不到它」。
+ *
+ * @param {string} mode `distribution` | `trajectory`
+ * @param {number[]} connected 已连接轨号(分布图口径)
+ * @param {{ch:number, stereo:boolean}[]} series 轨迹图数据面
+ * @param {Array} channels `state.channels`(取 label 与 source_channels)
+ * @returns {{ch:number, label:string, stereo:boolean}[]}
+ */
+export function legendRows(mode, connected, series, channels) {
+    const chans = channels || [];
+    const list =
+        mode === "trajectory"
+            ? (series || []).map((s) => s.ch)
+            : (connected || []).slice();
+    return list
+        .filter((ch) => Number.isFinite(ch) && ch >= 1 && ch <= CHANNEL_COUNT)
+        .sort((a, b) => a - b)
+        .map((ch) => {
+            const cfg = chans[ch - 1] || {};
+            return {
+                ch,
+                label: String(cfg.label || ""),
+                stereo: cfg.source_channels === 2,
+            };
+        });
+}
+
+// =============================================================================
 // 二、DOM 接线
 // =============================================================================
 
@@ -638,6 +770,15 @@ export function createTabMaster(opts) {
         gesture: null, // 拖动中的 ParamID(灰显判定要排除自己)
         paramEcho: {}, // 本地乐观值(gesture 期间先行显示;由 onParams 逐帧失效,见 nextParamEcho)
         rampLocal: null, // 过渡拖动中的本地 ms
+        // [J75] T43:视图态的本地乐观值。null = 以 state 为准;非 null = 点过切换但
+        // state 还没回推(桥函数转正前**永远**是这一路,见 setChartMode 的 TODO)。
+        chartMode: null,
+        chartHi: 0, // 图例 hover 高亮的轨号(0 = 无);纯展示
+        traj: null, // 轨迹图实例(web/shared/trajectory-chart.js)
+        trajSeries: [], // 轨迹图数据面(段表投影;段表事件到达时重算)
+        // 画布重绘的脏位。render() 走 rAF 合帧、播放中每秒跑十几次,而轨迹图的
+        // **静态层**只随段表/视图/尺寸变 —— 不设脏位就会每帧重画 15 条折线。
+        trajDirty: true,
     };
 
     const el = {
@@ -671,6 +812,14 @@ export function createTabMaster(opts) {
         leadPanel: $("master-leadselect-panel"),
         distCard: $("master-distchart"),
         distBars: $("master-distchart-bars"),
+        // [J75] T43 双视图
+        chartSeg: $("master-chart-mode-seg"),
+        chartLegend: $("master-chart-legend"),
+        trajCanvas: $("master-trajchart-canvas"),
+        trajPlayhead: $("master-trajchart-playhead"),
+        trajFollow: $("master-trajchart-follow"),
+        trajZoom: $("master-trajchart-zoom"),
+        trajEmpty: $("master-trajchart-empty"),
         transSlider: $("master-transition-slider"),
         transRead: $("master-transition-reading"),
         rampPath: $("master-transition-ramp-path"),
@@ -703,6 +852,7 @@ export function createTabMaster(opts) {
         wireParamSliders();
         wireTransition();
         wireRange();
+        wireChart();
     }
 
     // ⓪ 八枚 A-H 组胶囊:结构一致,批量出 DOM(状态位在 render 里刷)。
@@ -1215,6 +1365,102 @@ export function createTabMaster(opts) {
         }
     }
 
+    // ---- [J75] T43 分布图双视图 + 轨道配色 --------------------------------
+
+    /** 当前视图态:本地乐观值优先,否则以 state 为准(默认 distribution)。 */
+    function currentChartMode() {
+        return local.chartMode || chartModeOf(getStore().state);
+    }
+
+    /** Tab1 是否为当前激活页(四面板同在 DOM,#content[data-tab] 切换;同 Tab3 口径)。 */
+    function isPanelActive() {
+        const node = el.distCard;
+        if (!node || typeof node.closest !== "function") return true;
+        const host = node.closest("[data-tab]");
+        return !host || host.getAttribute("data-tab") === "master";
+    }
+
+    function wireChart() {
+        if (el.chartSeg) {
+            for (const btn of el.chartSeg.querySelectorAll(
+                "[data-chart-mode]",
+            )) {
+                onActivate(btn, () =>
+                    setChartMode(btn.getAttribute("data-chart-mode")),
+                );
+            }
+        }
+
+        if (el.trajCanvas) {
+            local.traj = createTrajectoryChart({
+                canvas: el.trajCanvas,
+                playheadEl: el.trajPlayhead,
+                followBtn: el.trajFollow,
+                zoomEl: el.trajZoom,
+                getSeries: () => local.trajSeries,
+                getDurationS: () => chartDurationS(getStore()),
+                getUiScale: () =>
+                    num(((getStore().state || {}).ui || {}).scale, 1),
+                // 不画不起 rAF 的两道闸(05 §6.1 空闲零 rAF):视图切到分布档,
+                // 或 Tab1 根本不是当前页(四面板同在 DOM,#content[data-tab] 切换)。
+                isVisible: () =>
+                    currentChartMode() === "trajectory" && isPanelActive(),
+                onFollowChange: () => onLocalChange(),
+            });
+        }
+
+        // 图例 hover 联动(J75 B「纯展示,无写操作」)。事件委托挂容器,不逐行挂 ——
+        // 行是每帧按可见轨集重建的,逐行挂会随重建泄漏(与 Tab2 密排行同一个理由)。
+        if (el.chartLegend) {
+            el.chartLegend.addEventListener("pointerover", (e) =>
+                setChartHighlight(legendChOf(e.target)),
+            );
+            el.chartLegend.addEventListener("pointerleave", () =>
+                setChartHighlight(0),
+            );
+        }
+    }
+
+    /** 事件目标 → 图例行的轨号(不在行上即 0)。 */
+    function legendChOf(target) {
+        if (!target || typeof target.closest !== "function") return 0;
+        const row = target.closest("[data-legend-ch]");
+        return row ? Number(row.getAttribute("data-legend-ch")) || 0 : 0;
+    }
+
+    function setChartHighlight(ch) {
+        const v = Number(ch) || 0;
+        if (local.chartHi === v) return;
+        local.chartHi = v;
+        if (local.traj) local.traj.setHighlight(v);
+        onLocalChange();
+    }
+
+    /**
+     * 视图切换。
+     *
+     * `setMasterChartMode` **尚未进契约 §7 manifest** —— 它停在 bridge.js 的
+     * `PENDING_FUNCS` 里等转正(理由见那里的头注)。于是当下有两种运行形态,都是对的:
+     *   • 预览/mock:mock 后端已按同形制实现 ⇒ 调用落地 → `scvb.state` 回推
+     *     `ui.master_chart_mode` → 下面的 renderChart 把本地乐观值交还给 state,
+     *     「切换态持久化往返」在 mock 下当场可验;
+     *   • 真 JUCE 宿主(native 未落地):桥上根本没挂这个名字,`call()` 直接回 null,
+     *     视图态停在本地乐观值 —— 重开面板回默认档,不写、也不假装写了任何 state。
+     *
+     * TODO(转 DS 侧 · native):state codec 落 `ui.master_chart_mode` + 桥 setter
+     * (形制照 §1.31 `setActiveTab`:`{ok:true}` / `{ok:false, reason:"badArg"}`)。
+     * 落地后把名字从 `PENDING_FUNCS` 挪进 `BRIDGE_FUNCTIONS` 并同批改契约 §7 与
+     * C++ 常量表。字段定义 / 默认值 / 迁移语义:
+     * `docs/contract-changes/20260825-master-chart-mode.md`。
+     */
+    function setChartMode(mode) {
+        if (!CHART_MODES.includes(mode) || currentChartMode() === mode) return;
+        local.chartMode = mode;
+        local.trajDirty = true;
+        call("setMasterChartMode", mode);
+        onLocalChange();
+    }
+
     // ---------------------------------------------------------------- render
     function render() {
         const st = getStore();
@@ -1230,6 +1476,7 @@ export function createTabMaster(opts) {
         renderRange(st, t, g);
         renderCurve(s);
         renderDist(st, s);
+        renderChart(st, s, t);
         renderEmptyState(st);
     }
 
@@ -1586,15 +1833,15 @@ export function createTabMaster(opts) {
         const vals = st.params.values || {};
         const v = (s.global && s.global.version_active) || 1;
         const chans = s.channels || [];
-        const connChans = (st.conn && st.conn.channels) || [];
         const spans = [];
         const bars = [];
-        for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
+        const hi = local.chartHi;
+        // 图例 hover 的联动位:0 = 淡出(与轨迹图 DIM_ALPHA 同档,CSS 侧落地)。
+        const dim = (ch) => (hi && hi !== ch ? "0" : "1");
+        for (const ch of connectedChannels(st.conn)) {
             // 只画已连接轨(slotState=2 ∧ heartbeatFresh,与 pill 同判据)——
             // 空闲轨无参数值,vol=0 会被 distGeometry 画成居中高「幽灵柱」
             // (设计稿绘制前滤掉 idle/srErr 轨;PR #52 bot 抓取)。
-            const cc = connChans[ch - 1];
-            if (!(cc && cc.slotState === 2 && cc.heartbeatFresh)) continue;
             const p = `v${v}_t${tt(ch)}_`;
             const cfg = chans[ch - 1] || {};
             const geo = distGeometry(
@@ -1602,17 +1849,95 @@ export function createTabMaster(opts) {
                 num(vals[p + "vol"], 0),
                 num(vals[p + "width"], 100),
             );
+            // [J75] B:柱体与 width 横线按轨着色。`--tc` 走**变量指向变量**
+            // (`--tc: var(--track-color-7)`),色值本身仍只在 tokens.css 里定义一处。
+            const tc = `--tc:var(${trackColorVar(ch)});`;
             if (cfg.source_channels === 2) {
                 spans.push(
-                    `<div class="dist-span" style="--x0:${(geo.x - geo.half).toFixed(2)}%;--w:${(geo.half * 2).toFixed(2)}%;--y:calc(18px + ${geo.h.toFixed(2)}%)"></div>`,
+                    `<div class="dist-span" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}--x0:${(geo.x - geo.half).toFixed(2)}%;--w:${(geo.half * 2).toFixed(2)}%;--y:calc(18px + ${geo.h.toFixed(2)}%)"></div>`,
                 );
             }
             bars.push(
-                `<div class="dist-bar" data-lead="${cfg.lead_lock ? 1 : 0}" data-ch="${ch}" style="--x:${geo.x.toFixed(2)}%;--h:${geo.h.toFixed(2)}%"></div>`,
+                `<div class="dist-bar" data-lead="${cfg.lead_lock ? 1 : 0}" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}--x:${geo.x.toFixed(2)}%;--h:${geo.h.toFixed(2)}%"></div>`,
             );
         }
         const html = spans.concat(bars).join("");
         if (el.distBars.innerHTML !== html) el.distBars.innerHTML = html;
+    }
+
+    // ④b 双视图:视图态 + 轨迹图驱动 + 图例([J75] A/B)---------------------
+    function renderChart(st, s, t) {
+        // state 回推追上本地乐观值 ⇒ 交回 state 驱动(与 nextParamEcho 同一纪律)。
+        if (local.chartMode && chartModeOf(s) === local.chartMode) {
+            local.chartMode = null;
+        }
+        const mode = currentChartMode();
+        if (el.distCard) {
+            const was = el.distCard.getAttribute("data-chart-mode");
+            if (was !== mode) {
+                el.distCard.setAttribute("data-chart-mode", mode);
+                local.trajDirty = true; // 刚露出来的画布要重量一次舞台
+            }
+        }
+        if (el.chartSeg) {
+            for (const btn of el.chartSeg.querySelectorAll(
+                "[data-chart-mode]",
+            )) {
+                btn.setAttribute(
+                    "aria-pressed",
+                    String(btn.getAttribute("data-chart-mode") === mode),
+                );
+            }
+        }
+
+        renderLegend(
+            legendRows(
+                mode,
+                connectedChannels(st.conn),
+                local.trajSeries,
+                s.channels,
+            ),
+            t,
+        );
+
+        if (!local.traj) return;
+        if (mode !== "trajectory") {
+            local.traj.suspend();
+            return;
+        }
+        if (el.trajEmpty) el.trajEmpty.hidden = local.trajSeries.length > 0;
+        local.traj.setDuration(chartDurationS(st));
+        // 切回本页/本视图时按需起帧(离场时 onPlayhead 停过插值循环);幂等且便宜。
+        local.traj.resume();
+        if (local.trajDirty) {
+            local.trajDirty = false;
+            local.traj.invalidate();
+        }
+    }
+
+    /** 图例 = 色点 + 轨号 + 轨名(+ 立体声 ST 角标);hover 高亮由 data-hi 承载。 */
+    function renderLegend(rows, t) {
+        if (!el.chartLegend) return;
+        const badge = t && t["stereoBadge"] ? t["stereoBadge"] : "ST";
+        const hint = (t && t["chart.legendHint"]) || "";
+        if (el.chartLegend.getAttribute("title") !== hint) {
+            el.chartLegend.setAttribute("title", hint);
+        }
+        // 轨名是**用户数据**,一律转义再拼(与 Tab2/Tab3 同款纪律)。轨号始终在场 ——
+        // 二色觉下非相邻两轨可能同色(tokens.css 第 21 组的实测口径),色点不是唯一线索。
+        const html = rows
+            .map(
+                (r) =>
+                    `<span class="chart-legend__item" role="listitem" data-legend-ch="${r.ch}" data-hi="${local.chartHi === r.ch ? 1 : 0}">` +
+                    `<span class="chart-legend__dot" style="--tc:var(${trackColorVar(r.ch)})" aria-hidden="true"></span>` +
+                    `${tt(r.ch)}${r.label ? " " + esc(r.label) : ""}` +
+                    (r.stereo
+                        ? `<span class="chart-legend__st">${esc(badge)}</span>`
+                        : "") +
+                    `</span>`,
+            )
+            .join("");
+        if (el.chartLegend.innerHTML !== html) el.chartLegend.innerHTML = html;
     }
 
     // A1 空态卡(J72):未连接任何 Input 且无数据 → 显示;任一轨连接后消失 -------
@@ -1651,6 +1976,24 @@ export function createTabMaster(opts) {
         // 段表变了 ⇒ 影响面预览的旧数字作废,下一拍重取
         local.preview = null;
         local.previewKey = "";
+        // [J75] A:轨迹图的数据面就是段表 —— 在这里重投影一次,而不是每帧从 store 现算。
+        // **必须读 store 而不是 payload**:§2.8 的增量帧只带受影响轨,直接拿 payload
+        // 建线会把没变的轨整片抹掉(合并在 app.js 的 applySegmentsEvent 里已经做过了)。
+        local.trajSeries = trajectorySeries(
+            getStore().segments,
+            (getStore().state || {}).channels,
+        );
+        local.trajDirty = true;
+    }
+
+    /**
+     * `scvb.playhead`(30Hz)到达:喂给轨迹图的 rAF 插值层 + 跟随模式推进。
+     *
+     * 与 Tab3 同款分工 —— 竖线**不经** render() 逐帧投影(那是 rAF 合帧的整页渲染,
+     * 30Hz 事件流会把它打满),而是直接进 `canvas/playhead.js` 的插值循环。
+     */
+    function onPlayhead(payload) {
+        if (local.traj) local.traj.onPlayhead(payload);
     }
 
     /**
@@ -1672,12 +2015,34 @@ export function createTabMaster(opts) {
         }, 200);
     }
 
-    return { mount, render, onParams, onSegments, refreshPreview };
+    return {
+        mount,
+        render,
+        onParams,
+        onSegments,
+        onPlayhead,
+        refreshPreview,
+    };
 }
 
 // =============================================================================
 // 三、小工具(DOM 相关,不导出)
 // =============================================================================
+
+/** HTML 文本转义 —— label 是**用户数据**,绝不许拼进 innerHTML 不转义(同 Tab2/Tab3 的 esc)。 */
+function esc(s) {
+    return String(s == null ? "" : s).replace(
+        /[&<>"']/g,
+        (c) =>
+            ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+            })[c],
+    );
+}
 
 function makeCaller(bridge) {
     return async function call(name, ...args) {

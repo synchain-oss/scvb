@@ -1404,6 +1404,9 @@ if (bridge) {
         // Tab3:播放头 rAF 插值层直接吃 30Hz 事件(canvas/playhead.js;
         // render() 只管其余投影,不逐帧驱动播放头)
         tabWave.onPlayhead(p);
+        // Tab1 轨迹图([J75] T43):同款分工 —— 竖线与跟随模式的滚动都在插值层里,
+        // 不经整页 render。视图切走时组件自己不画(isVisible)。
+        tabMaster.onPlayhead(p);
         if (!same) requestRender();
     });
 
