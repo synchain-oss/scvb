@@ -3557,11 +3557,10 @@
                 color: var(--acc-link-on-glass);
                 text-decoration: underline;
             }
-            /* ---- 「手动接管与自动化」说明块(J78):标题 + 四行正文,排版同「使用说明」块 ---- */
+            /* ---- 「手动接管与自动化」说明块(J78):标题 + 四行正文,排版同「使用说明」块 ----
+               字号与字色复用 .set-block__title,此处只补块内上边距 */
             .settings-automationguide__title {
                 margin-top: var(--sp-9);
-                font-size: var(--fs-115);
-                color: var(--txt-1);
             }
             .settings-automationguide {
                 list-style: none;
@@ -6807,7 +6806,9 @@
                                         class="set-block__title settings-automationguide__title"
                                         data-t="set.automationGuide.title"
                                     ></div>
-                                    <ol class="settings-automationguide">
+                                    <!-- ul 而非 ol:四行是并列说明而非有序步骤,且 list-style:none
+                                         下序号本就不可见,用 ol 会让读屏播报视觉上不存在的条目序号 -->
+                                    <ul class="settings-automationguide">
                                         <li
                                             data-t="set.automationGuide.line1"
                                         ></li>
@@ -6820,7 +6821,7 @@
                                         <li
                                             data-t="set.automationGuide.line4"
                                         ></li>
-                                    </ol>
+                                    </ul>
                                 </div>
 
                                 <!-- 第二响度指标(J69) -->
