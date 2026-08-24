@@ -967,7 +967,13 @@ function pump(nowMs) {
 }
 
 function makeCanvasStub(cssW = 600, cssH = 200) {
-    const calls = { setTransform: [], clip: 0, clearRect: 0, stroke: 0 };
+    const calls = {
+        setTransform: [],
+        clip: 0,
+        clearRect: 0,
+        stroke: 0,
+        strokeStyle: [], // 每次赋值都记一笔(取色断言看它)
+    };
     const ctx = new Proxy(
         {
             setTransform: (k) => calls.setTransform.push(k),
@@ -978,7 +984,10 @@ function makeCanvasStub(cssW = 600, cssH = 200) {
         {
             get: (t, p) =>
                 p in t ? t[p] : typeof p === "string" ? () => {} : undefined,
-            set: () => true,
+            set: (t, p, v) => {
+                if (p === "strokeStyle") calls.strokeStyle.push(v);
+                return true;
+            },
         },
     );
     const canvas = {
@@ -1125,6 +1134,205 @@ function makeCanvasStub(cssW = 600, cssH = 200) {
             !/getUiScale[\s\S]{0,200}addEventListener/.test(tj),
         "模块自身不监听 uiScale(它只在绘制时读,信号归调用方给)",
     );
+}
+
+// =============================================================================
+log("=== ⑩ 脏轨号与拆除口(claude-review 第四轮四条)===");
+
+{
+    // ---- ① 取色:轨号越界也必须拿到**合法**色串。
+    // canvas 对非法 strokeStyle **静默忽略赋值** —— 赋了个 `rgba(undefined, .95)`
+    // 不会抛、不会警告,只是这一轨沿用上一轨的颜色。故这里断言「每次赋的都是
+    // 合法色串」,而不是断言「没抛」。
+    const { canvas, calls } = makeCanvasStub();
+    const RUN = [
+        [
+            { tS: 0, pan: 0 },
+            { tS: 10, pan: 0 },
+        ],
+    ];
+    // ch=0 / 负数 / 超界:三种脏轨号都直接喂给绘制路径
+    const series = [
+        { ch: 0, stereo: false, runs: RUN },
+        { ch: -3, stereo: false, runs: RUN },
+        { ch: 16, stereo: false, runs: RUN },
+        { ch: 7, stereo: false, runs: RUN },
+    ];
+    const chart = TC.createTrajectoryChart({
+        canvas,
+        getSeries: () => series,
+        getDurationS: () => 300,
+        isVisible: () => true,
+    });
+    chart.invalidate();
+    pump(16);
+    // 网格线也赋 strokeStyle,且画在折线**之前** —— 只看末尾这四笔(15 条折线的顺序
+    // 就是 series 的顺序,无高亮时不重排)。
+    const lines = calls.strokeStyle.slice(-series.length);
+    check(
+        calls.strokeStyle.length > series.length,
+        "网格线也赋过 strokeStyle(确认取的是末尾那几笔折线色)",
+    );
+    for (const v of lines) {
+        check(
+            /^rgba\(\s*\d{1,3},\s*\d{1,3},\s*\d{1,3},\s*[\d.]+\)$/.test(v),
+            `色串合法(实得 ${JSON.stringify(v)})—— 非法串会被 canvas 静默吃掉`,
+        );
+    }
+    // 越界轨号的落点必须与 trackIndex 的口径逐字一致(不是「随便给个色就行」)
+    const expect = (ch) =>
+        TCOL.rgbaOf(TCOL.FALLBACK_TRACK_COLORS[TCOL.trackIndex(ch) - 1], 0.95);
+    eq(lines[0], expect(0), "ch=0 回落到轨 1 的色(同 trackIndex)");
+    eq(lines[1], expect(-3), "ch=−3 同样回落到轨 1");
+    eq(lines[2], expect(16), "ch=16 按 15 取模回轨 1");
+    eq(lines[3], expect(7), "合法轨号原样取第 7 色");
+    // 反向:四条线里没有两条撞成同一串**因为取不到色而沿用上一笔**的情况 ——
+    // 合法轨 7 与回落轨 1 必须不同色(bug 复现时它们会一模一样)。
+    check(lines[3] !== lines[2], "合法轨与回落轨颜色不同(没有沿用上一笔)");
+    chart.destroy();
+}
+
+{
+    // ---- ② 系列过滤与图例**同口径**:图上有线 ⇔ 图例有行。
+    // 这是本卡自己立的不变式(「不会出现图例里有它、图上找不到它」),脏轨号正是
+    // 它最容易破的地方 —— 两处各写一份闸,靠本断言钉住它们同判据。
+    const run = [{ t0S: 0, t1S: 5, pan: 10 }];
+    const dirty = {
+        channels: [
+            { ch: 0, segments: run }, // 越下界
+            { ch: 1, segments: run }, // 合法
+            { ch: 16, segments: run }, // 越上界
+            { ch: 99, segments: run },
+            { ch: -2, segments: run },
+            { ch: NaN, segments: run },
+            { ch: 1.5, segments: run }, // 非整数但在界内
+            { ch: 15, segments: run }, // 边界合法
+        ],
+    };
+    const chans = MD.FIFTEEN_TRACKS.snapshot.channels;
+    const series = TM.trajectorySeries(dirty, chans);
+    eq(
+        series.map((s) => s.ch),
+        [1, 1.5, 15],
+        "越界轨号(0 / 16 / 99 / −2 / NaN)一律滤掉,只留 1..15",
+    );
+    // 与图例逐字同集合 —— 两处口径若漂,这一条当场红
+    const rows = TM.legendRows("trajectory", [], series, chans);
+    eq(
+        rows.map((r) => r.ch),
+        series.map((s) => s.ch),
+        "轨迹档图例行集 ≡ 折线轨集(图上有线 ⇔ 图例有行)",
+    );
+    // 边界逐个点名(1 与 15 进、0 与 16 出)
+    const chOf = (ch) =>
+        TM.trajectorySeries({ channels: [{ ch, segments: run }] }, chans)
+            .length;
+    eq(chOf(1), 1, "ch=1 在界内");
+    eq(chOf(15), 1, "ch=15 在界内");
+    eq(chOf(0), 0, "ch=0 出界");
+    eq(chOf(16), 0, "ch=16 出界");
+}
+
+{
+    // ---- ③ parity 机检覆盖 PENDING_FUNCS(禁止复活名单不许被待转正表绕过)。
+    const parity = src("scripts/check-bridge-parity.mjs");
+    check(
+        /extractJsNameTable\(src, "PENDING_FUNCS"\)/.test(parity),
+        "parity 脚本会抽 PENDING_FUNCS 表",
+    );
+    check(
+        /checkForbiddenIn\([\s\S]{0,200}bridgeNames\.pending\[side\]/.test(
+            parity,
+        ),
+        "抽出来的待转正名字确实喂进了禁止复活名单机检",
+    );
+    // 反向:它**不该**进与契约的集合比对 —— 进了必然红,那张表就失去了存在的意义
+    check(
+        !/compareSets\([\s\S]{0,200}bridgeNames\.pending/.test(parity),
+        "待转正表**不**进 compareSets(契约还没改,比了必红)",
+    );
+    // 缺表要按空表处理:老版本 bridge.js 没有这个常量,不该因此红
+    check(
+        /extractJsNameTable\(src, "PENDING_FUNCS"\) \|\| \{/.test(parity),
+        "缺 PENDING_FUNCS 时按空表处理(向后兼容,不误红)",
+    );
+    // bridge.js 侧:名字仍在,且头注仍指着转正流程
+    check(
+        /export const PENDING_FUNCS = \{/.test(src("web/shared/bridge.js")),
+        "bridge.js 仍导出 PENDING_FUNCS(转正时才删名字)",
+    );
+}
+
+{
+    // ---- ④ destroy():退掉活得比 canvas 长的三处订阅,且**幂等**。
+    // 本卡单实例用不到,导出是为 T46 Monitor(窗口开合里反复建销毁)。
+    const winCalls = { add: [], remove: [] };
+    const roCalls = { observe: 0, disconnect: 0 };
+    const savedWin = globalThis.window;
+    const savedRO = globalThis.ResizeObserver;
+    globalThis.window = {
+        addEventListener: (t) => winCalls.add.push(t),
+        removeEventListener: (t) => winCalls.remove.push(t),
+    };
+    globalThis.ResizeObserver = class {
+        observe() {
+            roCalls.observe++;
+        }
+        disconnect() {
+            roCalls.disconnect++;
+        }
+    };
+    try {
+        const { canvas } = makeCanvasStub();
+        const chart = TC.createTrajectoryChart({
+            canvas,
+            getSeries: () => [],
+            getDurationS: () => 300,
+            isVisible: () => true,
+        });
+        eq(
+            winCalls.add,
+            ["pointerup"],
+            "构造时在 window 上挂了 pointerup 兜底",
+        );
+        eq(roCalls.observe, 1, "构造时观察了父盒尺寸");
+        eq(winCalls.remove, [], "还没拆,退订记录为空");
+
+        check(typeof chart.destroy === "function", "导出了 destroy()");
+        chart.destroy();
+        eq(winCalls.remove, ["pointerup"], "destroy 退掉 window 上那条兜底");
+        eq(roCalls.disconnect, 1, "destroy 断开 ResizeObserver");
+
+        // 幂等:再调两次,不该抛、也不该重复退订
+        chart.destroy();
+        chart.destroy();
+        eq(winCalls.remove, ["pointerup"], "重复 destroy 不重复退订(幂等)");
+        eq(roCalls.disconnect, 1, "ResizeObserver 也只断开一次");
+
+        // 退订函数抛错不该拦住后面几条(拆到一半更难查)
+        const boom = TC.createTrajectoryChart({
+            canvas: makeCanvasStub().canvas,
+            getSeries: () => [],
+            getDurationS: () => 300,
+            isVisible: () => true,
+        });
+        globalThis.window.removeEventListener = () => {
+            throw new Error("boom");
+        };
+        let threw = false;
+        try {
+            boom.destroy();
+        } catch {
+            threw = true;
+        }
+        check(!threw, "某条退订抛错时 destroy 不外泄异常");
+        eq(roCalls.disconnect, 2, "抛错那条之后的退订照样执行完");
+    } finally {
+        if (savedWin === undefined) delete globalThis.window;
+        else globalThis.window = savedWin;
+        if (savedRO === undefined) delete globalThis.ResizeObserver;
+        else globalThis.ResizeObserver = savedRO;
+    }
 }
 
 // =============================================================================

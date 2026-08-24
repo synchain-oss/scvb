@@ -668,7 +668,12 @@ export function chartModeOf(state) {
 export function trajectorySeries(segments, channels) {
     const out = [];
     for (const c of (segments && segments.channels) || []) {
-        if (!c || !Number.isFinite(c.ch)) continue;
+        // 轨号闸与 legendRows **同一道**(1..CHANNEL_COUNT,契约 §0.2)。
+        // 只判 Number.isFinite 的话,脏数据里的 ch=0 / ch=99 会画出线来而图例
+        // 把它滤掉 —— 正好打破本卡自己立的「图例里有它、图上就找得到它」。
+        if (!c || !Number.isFinite(c.ch) || c.ch < 1 || c.ch > CHANNEL_COUNT) {
+            continue;
+        }
         const runs = runsOfSegments(c.segments);
         if (runs.length === 0) continue;
         const cfg = (channels || [])[c.ch - 1] || {};

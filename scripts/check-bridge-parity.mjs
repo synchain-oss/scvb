@@ -20,6 +20,12 @@
  *         export const BRIDGE_EVENTS    = { output: [ "..." ], input: [ "..." ] };
  *       两张表是 JuceBackend 与 MockBackend 的共同真源(两个后端都按表注册/实现),
  *       因此「mock 与 JuceBackend 导出名一致」由结构保证,parity 只需比对表与契约。
+ *       此外还读**第三张**表(可缺,缺则按空表):
+ *         export const PENDING_FUNCS    = { output: [ "..." ], input: [ "..." ] };
+ *       = 待转正桥函数(契约还没改、native 尚未落地;见 bridge.js 头注)。它**不进**
+ *       与契约的集合比对 —— 进了必然红,而那张表正是为「桥面先跑、契约后改」留的
+ *       不撒谎的落点。但**禁止复活名单照查**:否则往待转正表里写一个 §8.2 的死名字
+ *       就能绕过机检,「待转正」就成了复活通道。
  *
  *   C 侧 · C++ 常量表(T26/DeepSeek native 侧产出)
  *     文件:src/input/InputBridgeApi.h、src/output/OutputBridgeApi.h
@@ -618,10 +624,21 @@ if (!existsSync(BRIDGE_JS_PATH)) {
     } else if (fns.output.length + fns.input.length === 0) {
         fail("bridge.js 的 BRIDGE_FUNCTIONS 名表为空");
     } else {
-        bridgeNames = { functions: fns, events: evts };
+        // `PENDING_FUNCS` = 待转正桥函数(见 bridge.js 的头注)。它**有意**不进
+        // compareSets —— 契约还没改,拿它跟 §7 manifest 比必然红,而那张表正是为了
+        // 让「桥面先跑、契约后改」有个不撒谎的落点。
+        // 但**禁止复活名单必须照查**:否则往 PENDING_FUNCS 里写一个 §8.2 的死名字
+        // 就能绕过机检,「待转正」成了复活通道。缺表按空表处理(该常量是 T43 才引入的,
+        // 老版本 bridge.js 里没有,不该因此红)。
+        const pending = extractJsNameTable(src, "PENDING_FUNCS") || {
+            output: [],
+            input: [],
+        };
+        bridgeNames = { functions: fns, events: evts, pending };
         ok(
             `已抽取:output 函数 ${fns.output.length} / 事件 ${evts.output.length}` +
-                ` · input 函数 ${fns.input.length} / 事件 ${evts.input.length}`,
+                ` · input 函数 ${fns.input.length} / 事件 ${evts.input.length}` +
+                ` · 待转正 ${pending.output.length + pending.input.length}`,
         );
     }
 }
@@ -687,6 +704,8 @@ for (const side of sides) {
         checkForbiddenIn(`bridge.js(${side})`, [
             ...bridgeNames.functions[side],
             ...bridgeNames.events[side],
+            // 待转正表同样过闸(它不进 compareSets,但绝不能成为死名字的复活通道)
+            ...bridgeNames.pending[side],
         ]);
     }
     if (headerNames.functions[side].length || headerNames.events[side].length) {

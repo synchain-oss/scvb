@@ -26,6 +26,9 @@
 // **复用契约(T46 Monitor)**:本模块不认 store、不认契约事件、不认 i18n ——
 // 调用方经 `getSeries()` 喂「已经算好的 15 条折线」,经 `getPalette()` 喂色板,
 // 文案一律由调用方写进 DOM。Monitor 直接复用本文件,零重复实现(07 T46 卡)。
+// 多实例/可销毁也在这份契约里:`destroy()` 退掉活得比 canvas 长的三处订阅
+// (window pointerup 兜底 / 媒体查询 / ResizeObserver)。Tab1 单实例用不到它,
+// Monitor 在窗口开合里反复建销毁**必须**调 —— 不调就是每开一次漏一组订阅。
 //
 // 分层与降级照 05 §6.1:静态层(网格 + 15 条折线)脏标记重绘、播放头走 DOM 竖线
 // 由 `canvas/playhead.js` 的 rAF 插值驱动;空闲零 rAF。超预算的降采样见
@@ -56,7 +59,7 @@ import {
 } from "../output/canvas/hidpi.js";
 import { createLayerStack } from "../output/canvas/layers.js";
 import { createPlayhead } from "../output/canvas/playhead.js";
-import { resolveTrackPalette, rgbaOf } from "./track-colors.js";
+import { resolveTrackPalette, rgbaOf, trackIndex } from "./track-colors.js";
 
 // =============================================================================
 // 一、纯函数(无 DOM,node 可直接 import 断言)
@@ -479,6 +482,9 @@ export function createTrajectoryChart(opts) {
         palette: resolveTrackPalette(canvas),
         styles: readStyles(canvas),
         drag: null, // {pointerId, x0, startS0}
+        // 活得比 canvas 长的订阅的退订函数(window 事件 / 媒体查询 / ResizeObserver)。
+        // 挂在 canvas 与两枚按钮上的那些不进这里 —— 节点一走它们跟着走。
+        teardown: [],
         stageW: 0,
         stageH: 0,
     };
@@ -611,7 +617,11 @@ export function createTrajectoryChart(opts) {
         ctx.clip();
         for (const s of ordered) {
             const on = !hi || s.ch === hi;
-            const rgb = local.palette[(s.ch - 1) % local.palette.length];
+            // 取色**必须**走 trackIndex():它保证恒返回 1..15 的合法下标。
+            // 自己算 `(ch-1) % len` 在 ch < 1 时会得到负下标(ch=0 → −1),
+            // 取出 undefined → `rgba(undefined, .95)` → canvas 对非法 strokeStyle
+            // **静默忽略**赋值,于是这一轨沿用上一轨的颜色 —— 不报错,只是画错。
+            const rgb = local.palette[trackIndex(s.ch) - 1];
             ctx.strokeStyle = rgbaOf(rgb, on ? 0.95 : DIM_ALPHA);
             ctx.lineWidth = hi && s.ch === hi ? LINE_W_HI : LINE_W;
             // 立体声轨 = pan **中心线**(J75 A;width 张开度带 v1 不入本图)——
@@ -828,6 +838,10 @@ export function createTrajectoryChart(opts) {
         canvas.addEventListener("pointercancel", endDrag);
         if (typeof window !== "undefined") {
             window.addEventListener("pointerup", endDrag);
+            // 挂在 window 上 ⇒ 活得比 canvas 长,必须留退订口(见 destroy)
+            local.teardown.push(() =>
+                window.removeEventListener("pointerup", endDrag),
+            );
         }
 
         // 键盘等价物(a11y:画布 role=application + tabindex)。
@@ -891,14 +905,17 @@ export function createTrajectoryChart(opts) {
             o.resetPanBtn.hidden = true;
         }
 
-        observeResolution(() => layers.invalidateStatic());
+        // 媒体查询监听:`observeResolution` 自带取消函数,收进 teardown。
+        local.teardown.push(observeResolution(() => layers.invalidateStatic()));
         if (typeof ResizeObserver === "function" && canvas.parentElement) {
-            new ResizeObserver(() => {
+            const ro = new ResizeObserver(() => {
                 if (measure()) {
                     layers.invalidateStatic();
                     playhead.refresh();
                 }
-            }).observe(canvas.parentElement);
+            });
+            ro.observe(canvas.parentElement);
+            local.teardown.push(() => ro.disconnect());
         }
     }
 
@@ -1000,6 +1017,32 @@ export function createTrajectoryChart(opts) {
             local.staticPending = true;
             if (o.playheadEl && !o.playheadEl.hidden)
                 o.playheadEl.hidden = true;
+        },
+        /**
+         * 彻底拆除(**幂等**:重复调用一步不走)。
+         *
+         * `suspend()` 只是收手,实例还活着、还能 `resume()`;`destroy()` 是**不再用了**:
+         * 停两条循环,并退掉那些**活得比 canvas 长**的订阅 —— window 的 pointerup 兜底、
+         * `observeResolution` 的媒体查询、父盒的 ResizeObserver。挂在 canvas 与两枚按钮
+         * 上的监听不在此列(节点一走它们跟着走)。
+         *
+         * 本卡(Tab1)是单实例、与页面同生命周期,调用面上**用不到**它;导出是为
+         * **T46 Monitor**:那张卡要在窗口开合里反复建/销毁本图,没有拆除口就是每开一次
+         * 漏一组订阅 —— window 上那条尤其致命,它会连着整个闭包(含 15 条折线的数据面)
+         * 一起钉在内存里。复用契约既然写了「Monitor 直接复用本文件」,拆除口就得在。
+         */
+        destroy() {
+            layers.stop();
+            playhead.stop();
+            const fns = local.teardown.splice(0); // 先清空再执行 ⇒ 天然幂等
+            for (const off of fns) {
+                if (typeof off !== "function") continue;
+                try {
+                    off();
+                } catch {
+                    /* 退订失败不该拦住后面几条(拆到一半更难查) */
+                }
+            }
         },
         /** 测试面:允许 node 侧直接驱动视口(不经指针事件)。 */
         timeline,
