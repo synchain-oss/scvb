@@ -11,7 +11,7 @@
 //   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
 //     落工程位与全局位,再取快照往返不丢;
-//   ⑤ 词条:tour.* 三语齐、占位符三语一致、step5 措辞纪律(无「写入完成」);
+//   ⑤ 词条:tour.* 三语齐、占位符三语一致、step8 措辞纪律(无「写入完成」);
 //   ⑥ 源码级:零 Audio API、唯一桥调用=setTourSeen、role=dialog、aria-live、
 //     Esc=Skip、←/→、左键推进;data-tour 全锚点齐、demo badge / 询问步 / 重看入口落点齐。
 //
@@ -62,14 +62,14 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             null,
             "version",
             "tab1",
-            "group",
             "cap",
             "an",
             "out",
-            "dist",
+            "group",
             "width",
             "msbalance",
             "leadselect",
+            "dist",
             "range",
             "transition",
             "curve",
@@ -171,7 +171,7 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
         "review",
         "末步固定 = 设置页「重看引导」入口",
     );
-    eq(TOUR.TOUR_STEPS[6].anchor, "an", "第 7 步 = 三件套「02 分析」段");
+    eq(TOUR.TOUR_STEPS[5].anchor, "an", "第 6 步 = 三件套「02 分析」段");
     eq(TOUR.TOUR_STEPS[31].action, "zoomLanes", "步 32 泳道区自动放大泳道");
     eq(
         TOUR.TOUR_STEPS[32].action,
@@ -363,29 +363,29 @@ log("=== ⑤ 词条:tour.* 三语 ===");
     }
     // 措辞纪律:输出开关一步不得出现「写入完成」(05 §2.6 / J45)
     check(
-        !/写入完成/.test(T.zh["tour.step5.body"]),
-        "zh step5 不含「写入完成」",
+        !/写入完成/.test(T.zh["tour.step8.body"]),
+        "zh step8 不含「写入完成」",
     );
     check(
-        !/write complete|written to/i.test(T.en["tour.step5.body"]),
-        "en step5 不含 write complete / written",
+        !/write complete|written to/i.test(T.en["tour.step8.body"]),
+        "en step8 不含 write complete / written",
     );
     // 组这一步只讲组的作用(用户实机发现:组选择器在三件套**下方**,原「下方/从左到右」方向表述有误,已删)
     check(
-        !/从左到右|下方三个模块/.test(T.zh["tour.step5.body"]),
-        "zh step5 无「下方/从左到右」方向表述",
+        !/从左到右|下方三个模块/.test(T.zh["tour.step8.body"]),
+        "zh step8 无「下方/从左到右」方向表述",
     );
     check(
-        /组把通道分成 A–H 八个独立工作区/.test(T.zh["tour.step5.body"]),
-        "zh step5 只讲组的作用",
+        /组把通道分成 A–H 八个独立工作区/.test(T.zh["tour.step8.body"]),
+        "zh step8 只讲组的作用",
     );
     check(
-        !/left to right/i.test(T.en["tour.step5.body"]),
-        "en step5 无 left to right 方向表述",
+        !/left to right/i.test(T.en["tour.step8.body"]),
+        "en step8 无 left to right 方向表述",
     );
     check(
-        !/gauche à droite/i.test(T.fr["tour.step5.body"]),
-        "fr step5 无 gauche à droite 方向表述",
+        !/gauche à droite/i.test(T.fr["tour.step8.body"]),
+        "fr step8 无 gauche à droite 方向表述",
     );
     check(
         /左键点击任意处/.test(T.zh["tour.clickAnywhere"]),

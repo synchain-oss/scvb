@@ -53,14 +53,14 @@ export const TOUR_STEPS = Object.freeze(
         { anchor: null, tab: "master" }, // 2 工作流程与优先级(居中大卡)
         { anchor: "version", tab: "master" }, // 3 版本与复制(header 版本区,全局件)
         { anchor: "tab1", tab: "master" }, // 4
-        { anchor: "group", tab: "master" }, // 5
-        { anchor: "cap", tab: "master" }, // 6
-        { anchor: "an", tab: "master" }, // 7
-        { anchor: "out", tab: "master" }, // 8
-        { anchor: "dist", tab: "master" }, // 9
-        { anchor: "width", tab: "master" }, // 10
-        { anchor: "msbalance", tab: "master" }, // 11
-        { anchor: "leadselect", tab: "master" }, // 12
+        { anchor: "cap", tab: "master" }, // 5
+        { anchor: "an", tab: "master" }, // 6
+        { anchor: "out", tab: "master" }, // 7
+        { anchor: "group", tab: "master" }, // 8
+        { anchor: "width", tab: "master" }, // 9
+        { anchor: "msbalance", tab: "master" }, // 10
+        { anchor: "leadselect", tab: "master" }, // 11
+        { anchor: "dist", tab: "master" }, // 12
         { anchor: "range", tab: "master" }, // 13
         { anchor: "transition", tab: "master" }, // 14
         { anchor: "curve", tab: "master" }, // 15

@@ -176,28 +176,28 @@ export const T = {
         "tour.step4.title": "这是 SCVB Output 的主界面",
         "tour.step4.body":
             "顶部有四个页签:整体调整 / 轨道 / 波形 / 设置。这个引导会带你逐页了解。",
-        "tour.step5.title": "组与它的作用",
-        "tour.step5.body":
-            "组把通道分成 A–H 八个独立工作区,每个组各自采集、分析、输出;单组使用保持 A 即可。",
-        "tour.step6.title": "第一步:采集",
-        "tour.step6.body":
-            "打开采集开关并播放当前范围,插件会记录每条轨的响度特征。这一步不会写入任何自动化。",
-        "tour.step7.title": "第二步:分析",
-        "tour.step7.body":
-            "离线计算每个乐句的声像 / 音量方案;点击前可以先预览采集范围,手动编辑或锁定的段落会被保留。",
-        "tour.step8.title": "第三步:输出",
+        "tour.step8.title": "组与它的作用",
         "tour.step8.body":
+            "组把通道分成 A–H 八个独立工作区,每个组各自采集、分析、输出;单组使用保持 A 即可。",
+        "tour.step5.title": "第一步:采集",
+        "tour.step5.body":
+            "打开采集开关并播放当前范围,插件会记录每条轨的响度特征。这一步不会写入任何自动化。",
+        "tour.step6.title": "第二步:分析",
+        "tour.step6.body":
+            "离线计算每个乐句的声像 / 音量方案;点击前可以先预览采集范围,手动编辑或锁定的段落会被保留。",
+        "tour.step7.title": "第三步:输出",
+        "tour.step7.body":
             "切到「引擎驱动」后,参数由分析结果自动驱动;要把参数录成自动化,请在 DAW 侧打开 Latch 或 Write。",
-        "tour.step9.title": "声像 / 音量分布",
-        "tour.step9.body":
+        "tour.step12.title": "声像 / 音量分布",
+        "tour.step12.body":
             "这是全体轨道的声像与音量的实时状态:柱高 = 音量,横位 = 声像;横向细线 = 立体声源的张开度与角度域曲线。",
-        "tour.step10.title": "Width · 最大角度",
-        "tour.step10.body": "整体宽度的上限:最大张开角 0–90°。",
-        "tour.step11.title": "MS Balance",
-        "tour.step11.body":
+        "tour.step9.title": "Width · 最大角度",
+        "tour.step9.body": "整体宽度的上限:最大张开角 0–90°。",
+        "tour.step10.title": "MS Balance",
+        "tour.step10.body":
             "总线 M/S 平衡:−100 偏向 Mid,+100 偏向 Side;调整MS音量关系。",
-        "tour.step12.title": "Lead Select",
-        "tour.step12.body": "通过序号选择和实时强制居中Lead轨道,0=遵循分析。",
+        "tour.step11.title": "Lead Select",
+        "tour.step11.body": "通过序号选择和实时强制居中Lead轨道,0=遵循分析。",
         "tour.step13.title": "Range · 范围",
         "tour.step13.body":
             "三档选项:全曲跟随 / 循环区 / 手动,决定采集和输出的作用范围。",
@@ -837,28 +837,28 @@ export const T = {
         "tour.step4.title": "This is the SCVB Output main window",
         "tour.step4.body":
             "Four tabs at the top: General / Tracks / Waveform / Settings. This tour walks you through each page.",
-        "tour.step5.title": "Groups and their role",
-        "tour.step5.body":
-            "Groups split the channels into eight independent workspaces (A–H); each group runs its own capture, analysis, and output. For single-group use, keep A.",
-        "tour.step6.title": "Step 1 — Capture",
-        "tour.step6.body":
-            "Turn on the capture switch and play the current range; the plug-in records the loudness features of every track. Nothing is written to automation in this step.",
-        "tour.step7.title": "Step 2 — Analyze",
-        "tour.step7.body":
-            "Computes a pan/level plan for every phrase offline. Preview the capture range before you commit; edited or locked segments are preserved.",
-        "tour.step8.title": "Step 3 — Output",
+        "tour.step8.title": "Groups and their role",
         "tour.step8.body":
+            "Groups split the channels into eight independent workspaces (A–H); each group runs its own capture, analysis, and output. For single-group use, keep A.",
+        "tour.step5.title": "Step 1 — Capture",
+        "tour.step5.body":
+            "Turn on the capture switch and play the current range; the plug-in records the loudness features of every track. Nothing is written to automation in this step.",
+        "tour.step6.title": "Step 2 — Analyze",
+        "tour.step6.body":
+            "Computes a pan/level plan for every phrase offline. Preview the capture range before you commit; edited or locked segments are preserved.",
+        "tour.step7.title": "Step 3 — Output",
+        "tour.step7.body":
             "Switch to ENGINE DRIVE and the parameters are driven by the analysis result. To record them as automation, arm Latch or Write on the DAW side.",
-        "tour.step9.title": "Pan / level distribution",
-        "tour.step9.body":
-            "The live pan and level of all tracks: bar height = level, horizontal position = pan; the horizontal line = the stereo source spread and the angle-domain curve.",
-        "tour.step10.title": "Width · max angle",
-        "tour.step10.body": "The overall width limit: max spread angle 0–90°.",
-        "tour.step11.title": "MS Balance",
-        "tour.step11.body":
-            "Bus M/S balance: −100 toward Mid, +100 toward Side; adjust the M/S level relationship.",
-        "tour.step12.title": "Lead Select",
+        "tour.step12.title": "Pan / level distribution",
         "tour.step12.body":
+            "The live pan and level of all tracks: bar height = level, horizontal position = pan; the horizontal line = the stereo source spread and the angle-domain curve.",
+        "tour.step9.title": "Width · max angle",
+        "tour.step9.body": "The overall width limit: max spread angle 0–90°.",
+        "tour.step10.title": "MS Balance",
+        "tour.step10.body":
+            "Bus M/S balance: −100 toward Mid, +100 toward Side; adjust the M/S level relationship.",
+        "tour.step11.title": "Lead Select",
+        "tour.step11.body":
             "Pick a track by number and force it to center in real time; 0 = follow analysis.",
         "tour.step13.title": "Range",
         "tour.step13.body":
@@ -1468,29 +1468,29 @@ export const T = {
         "tour.step4.title": "Voici la fenêtre principale de SCVB Output",
         "tour.step4.body":
             "Quatre onglets en haut : Général / Pistes / Formes d'onde / Réglages. Cette visite vous guide page par page.",
-        "tour.step5.title": "Les groupes et leur rôle",
-        "tour.step5.body":
-            "Les groupes répartissent les canaux en huit espaces de travail indépendants (A–H) ; chaque groupe gère sa propre capture, son analyse et sa sortie. Pour un usage avec un seul groupe, gardez A.",
-        "tour.step6.title": "Étape 1 — Capture",
-        "tour.step6.body":
-            "Activez l'interrupteur de capture et lisez la plage actuelle ; le plug-in enregistre les caractéristiques de loudness de chaque piste. Rien n'est écrit dans l'automation à cette étape.",
-        "tour.step7.title": "Étape 2 — Analyse",
-        "tour.step7.body":
-            "Calcule hors ligne un plan pan/volume pour chaque phrase. Prévisualisez la plage avant de valider ; les segments modifiés ou verrouillés sont préservés.",
-        "tour.step8.title": "Étape 3 — Sortie",
+        "tour.step8.title": "Les groupes et leur rôle",
         "tour.step8.body":
+            "Les groupes répartissent les canaux en huit espaces de travail indépendants (A–H) ; chaque groupe gère sa propre capture, son analyse et sa sortie. Pour un usage avec un seul groupe, gardez A.",
+        "tour.step5.title": "Étape 1 — Capture",
+        "tour.step5.body":
+            "Activez l'interrupteur de capture et lisez la plage actuelle ; le plug-in enregistre les caractéristiques de loudness de chaque piste. Rien n'est écrit dans l'automation à cette étape.",
+        "tour.step6.title": "Étape 2 — Analyse",
+        "tour.step6.body":
+            "Calcule hors ligne un plan pan/volume pour chaque phrase. Prévisualisez la plage avant de valider ; les segments modifiés ou verrouillés sont préservés.",
+        "tour.step7.title": "Étape 3 — Sortie",
+        "tour.step7.body":
             "Passez en PILOTAGE MOTEUR et les paramètres sont pilotés par le résultat de l'analyse. Pour les enregistrer en automation, armez Latch ou Write côté DAW.",
-        "tour.step9.title": "Répartition pan / volume",
-        "tour.step9.body":
-            "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la ligne = l'ouverture de la source stéréo et la courbe angulaire.",
-        "tour.step10.title": "Width · angle max",
-        "tour.step10.body":
-            "La limite d'ouverture globale : angle d'ouverture max 0–90°.",
-        "tour.step11.title": "MS Balance",
-        "tour.step11.body":
-            "Balance M/S du bus : −100 vers Mid, +100 vers Side ; ajustez la relation M/S du volume.",
-        "tour.step12.title": "Lead Select",
+        "tour.step12.title": "Répartition pan / volume",
         "tour.step12.body":
+            "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la ligne = l'ouverture de la source stéréo et la courbe angulaire.",
+        "tour.step9.title": "Width · angle max",
+        "tour.step9.body":
+            "La limite d'ouverture globale : angle d'ouverture max 0–90°.",
+        "tour.step10.title": "MS Balance",
+        "tour.step10.body":
+            "Balance M/S du bus : −100 vers Mid, +100 vers Side ; ajustez la relation M/S du volume.",
+        "tour.step11.title": "Lead Select",
+        "tour.step11.body":
             "Choisissez une piste par numéro et centrez-la en temps réel ; 0 = suivre l'analyse.",
         "tour.step13.title": "Plage",
         "tour.step13.body":
