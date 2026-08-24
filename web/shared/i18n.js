@@ -198,11 +198,11 @@ export const T = {
             "总线 M/S 平衡:−100 偏向 Mid,+100 偏向 Side;调整MS音量关系。",
         "tour.step11.title": "Lead Select",
         "tour.step11.body": "通过序号选择和实时强制居中Lead轨道,0=遵循分析。",
-        "tour.step13.title": "Range · 范围",
-        "tour.step13.body":
-            "三档选项:全曲跟随 / 循环区 / 手动,决定采集和输出的作用范围。",
-        "tour.step14.title": "过渡时间",
+        "tour.step14.title": "Range · 范围",
         "tour.step14.body":
+            "三档选项:全曲跟随 / 循环区 / 手动,决定采集和输出的作用范围。",
+        "tour.step13.title": "过渡时间",
+        "tour.step13.body":
             "段间过渡:20–300ms;决定区间之间音量和声像过渡的速度。",
         "tour.step15.title": "角度域曲线",
         "tour.step15.body":
@@ -227,14 +227,14 @@ export const T = {
         "tour.step22.title": "主唱锁",
         "tour.step22.body":
             "把该轨标记为主唱:分析时它作为最高优先级轨道,中心槽策略(主唱独占)会优先居中它;多轨锁定时会给出提示。",
-        "tour.step23.title": "音量豁免",
-        "tour.step23.body":
-            "独立开关:该轨不参与音量平衡计算,与主唱锁 / Lead Select 不联动。",
-        "tour.step24.title": "参与自动声像",
+        "tour.step24.title": "音量豁免",
         "tour.step24.body":
-            "该轨是否参与声像重分布;立体声轨默认关闭,但仍参与音量平衡。",
-        "tour.step25.title": "配对",
+            "独立开关:该轨不参与音量平衡计算,与主唱锁 / Lead Select 不联动。",
+        "tour.step25.title": "参与自动声像",
         "tour.step25.body":
+            "该轨是否参与声像重分布;立体声轨默认关闭,但仍参与音量平衡。",
+        "tour.step23.title": "配对",
+        "tour.step23.body":
             "把两条轨配成一对,配对的两轨声像联动、作为一个整体移动;同组两轨行首显示同色圆点。",
         "tour.step26.title": "冻结 PAN / VOL",
         "tour.step26.body":
@@ -860,11 +860,11 @@ export const T = {
         "tour.step11.title": "Lead Select",
         "tour.step11.body":
             "Pick a track by number and force it to center in real time; 0 = follow analysis.",
-        "tour.step13.title": "Range",
-        "tour.step13.body":
-            "Three modes: Follow / Loop / Manual; sets the capture and output scope.",
-        "tour.step14.title": "Transition",
+        "tour.step14.title": "Range",
         "tour.step14.body":
+            "Three modes: Follow / Loop / Manual; sets the capture and output scope.",
+        "tour.step13.title": "Transition",
+        "tour.step13.body":
             "Inter-segment transition: 20–300 ms; sets how fast level and pan ramp between intervals.",
         "tour.step15.title": "Angle-domain curve",
         "tour.step15.body":
@@ -890,14 +890,14 @@ export const T = {
         "tour.step22.title": "Lead lock",
         "tour.step22.body":
             "Mark this track as the lead: it is the top-priority track during analysis, and the center-slot policy (lead exclusive) centers it first; warns if several are locked.",
-        "tour.step23.title": "Vol exempt",
-        "tour.step23.body":
-            "Independent switch: this track is excluded from level balancing; not linked to lead lock / Lead Select.",
-        "tour.step24.title": "Auto-pan participate",
+        "tour.step24.title": "Vol exempt",
         "tour.step24.body":
-            "Whether this track joins pan redistribution; stereo tracks off by default, still level-balanced.",
-        "tour.step25.title": "Pair",
+            "Independent switch: this track is excluded from level balancing; not linked to lead lock / Lead Select.",
+        "tour.step25.title": "Auto-pan participate",
         "tour.step25.body":
+            "Whether this track joins pan redistribution; stereo tracks off by default, still level-balanced.",
+        "tour.step23.title": "Pair",
+        "tour.step23.body":
             "Pair two tracks; a pair moves together as one. Same pair shows the same colored dot at the row head.",
         "tour.step26.title": "Freeze PAN / VOL",
         "tour.step26.body":
@@ -1492,11 +1492,11 @@ export const T = {
         "tour.step11.title": "Lead Select",
         "tour.step11.body":
             "Choisissez une piste par numéro et centrez-la en temps réel ; 0 = suivre l'analyse.",
-        "tour.step13.title": "Plage",
-        "tour.step13.body":
-            "Trois modes : Suivi / Boucle / Manuel ; définit la portée de la capture et de la sortie.",
-        "tour.step14.title": "Transition",
+        "tour.step14.title": "Plage",
         "tour.step14.body":
+            "Trois modes : Suivi / Boucle / Manuel ; définit la portée de la capture et de la sortie.",
+        "tour.step13.title": "Transition",
+        "tour.step13.body":
             "Transition inter-segments : 20–300 ms ; définit la vitesse de rampe du volume et du pan entre intervalles.",
         "tour.step15.title": "Courbe du domaine angulaire",
         "tour.step15.body":
@@ -1522,14 +1522,14 @@ export const T = {
         "tour.step22.title": "Verrou lead",
         "tour.step22.body":
             "Marquez cette piste comme lead : elle est prioritaire à l'analyse, et la stratégie de créneau central (exclusivité lead) la centre d'abord ; avertit si plusieurs sont verrouillées.",
-        "tour.step23.title": "Exemption volume",
-        "tour.step23.body":
-            "Interrupteur indépendant : la piste est exclue de l'équilibrage ; non lié au verrou lead / Lead Select.",
-        "tour.step24.title": "Participation pan auto",
+        "tour.step24.title": "Exemption volume",
         "tour.step24.body":
-            "Si la piste entre dans la redistribution ; stéréo désactivé par défaut, équilibrage conservé.",
-        "tour.step25.title": "Paire",
+            "Interrupteur indépendant : la piste est exclue de l'équilibrage ; non lié au verrou lead / Lead Select.",
+        "tour.step25.title": "Participation pan auto",
         "tour.step25.body":
+            "Si la piste entre dans la redistribution ; stéréo désactivé par défaut, équilibrage conservé.",
+        "tour.step23.title": "Paire",
+        "tour.step23.body":
             "Appaire deux pistes ; une paire se déplace comme un tout. Même paire = même point coloré en tête de ligne.",
         "tour.step26.title": "Gel PAN / VOL",
         "tour.step26.body":

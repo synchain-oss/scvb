@@ -61,8 +61,8 @@ export const TOUR_STEPS = Object.freeze(
         { anchor: "msbalance", tab: "master" }, // 10
         { anchor: "leadselect", tab: "master" }, // 11
         { anchor: "dist", tab: "master" }, // 12
-        { anchor: "range", tab: "master" }, // 13
-        { anchor: "transition", tab: "master" }, // 14
+        { anchor: "transition", tab: "master" }, // 13
+        { anchor: "range", tab: "master" }, // 14
         { anchor: "curve", tab: "master" }, // 15
         { anchor: "tab2", tab: "tracks" }, // 16
         { anchor: "trackrow", tab: "tracks" }, // 17
@@ -71,9 +71,9 @@ export const TOUR_STEPS = Object.freeze(
         { anchor: "vollevel", tab: "tracks" }, // 20
         { anchor: "prio", tab: "tracks" }, // 21
         { anchor: "leadlock", tab: "tracks" }, // 22
-        { anchor: "volexempt", tab: "tracks" }, // 23
-        { anchor: "autopan", tab: "tracks" }, // 24
-        { anchor: "pair", tab: "tracks" }, // 25
+        { anchor: "pair", tab: "tracks" }, // 23
+        { anchor: "volexempt", tab: "tracks" }, // 24
+        { anchor: "autopan", tab: "tracks" }, // 25
         { anchor: "freeze", tab: "tracks" }, // 26
         { anchor: "enable", tab: "tracks" }, // 27
         { anchor: "tab3", tab: "wave" }, // 28
