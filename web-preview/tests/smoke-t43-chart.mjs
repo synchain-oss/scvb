@@ -21,8 +21,14 @@
 //   ⑦ 性能与空闲纪律:15 轨全画布的几何路径耗时预算、降采样确实在削点、
 //      两条自持循环在离场时都停(smoke-tab3 ⑨ 的同款不变式);外加纵向缩放的
 //      **接法**不变式(Shift+滚轮分支不脱离横向跟随、折线走 clip、复位按钮接线);
-//   ⑧ 空态盖板 hidden 时真的不可见(自带 `[hidden]` 兜底,不靠 UA 表恰好带
-//      !important)+ 脏位只在**画得成**的那一帧兑现(不可见期不清,切回来才画)。
+//   ⑧ 空态盖板 hidden 时真的不可见(靠本页那条全局 `[hidden]{display:none !important}`,
+//      不逐类补兜底)+ 脏位只在**画得成**的那一帧兑现(不可见期不清,切回来才画);
+//   ⑨ **把图真的跑起来**(手搓 canvas 桩 + `layers.tick` 单帧驱动):ui.scale 换档
+//      重建后备存储、离场期欠下的重绘由 `resume()` 还清、已在前台时不无脑重画。
+//
+// 关于 ⑨ 的「无 DOM」:桩不是 DOM 实现,只是把 `resizeCanvas` / `paintStatic` 认的
+// 那几个字段凑齐(width/height/style/getContext + 一个记账 ctx)。layers.js 的头注
+// 本就写着 `tick` 是「导出给 node 侧驱动」的单帧推进口,这里按其声明消费。
 //
 // 用法:node web-preview/tests/smoke-t43-chart.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -870,18 +876,23 @@ log("=== ⑧ 空态盖板与脏位兑现(pr-agent 两条 Possible issue)===");
     const tm = src("web/output/tab-master.js");
 
     // ---- ① 空态盖板:hidden 时必须真的不可见。
-    // 作者层的 `display:flex` 本来就压得过 UA 的 `[hidden]{display:none}`(层叠里
-    // 作者层先胜),眼下不露出来靠的是 Chromium 那条 UA 规则**恰好带 !important** ——
-    // 那是实现细节不是规范保证,故本条钉住自带的兜底规则。
+    // 本页第 223 行有一条**全局** `[hidden]{display:none !important}`(作者层 +
+    // !important),压得过任何类选择器上的 display —— 盖板从来没真的盖过图。
+    // 上一轮我在这里加过一条逐类兜底,理由写的是「靠 UA 表恰好带 !important」,
+    // 那个理由是错的(claude-review 指出);规则已删,改钉这条真正在管事的全局兜底。
     check(
-        /\.traj-stage__empty\[hidden\]\s*\{[^}]*display:\s*none/.test(html),
-        "空态盖板有自带的 [hidden] 兜底(不靠 UA 表恰好带 !important)",
+        /\[hidden\]\s*\{\s*display:\s*none\s*!important/.test(html),
+        "本页有全局 [hidden] 兜底(作者层 + !important:一切默认隐藏节点的总闸)",
     );
-    // 反向:盖板确实设了非 none 的 display —— 没设的话上一条就是条废断言,
-    // 将来有人把 display:flex 删了,这条会提醒「兜底规则可以一起删」。
+    check(
+        !/\.traj-stage__empty\[hidden\]/.test(html),
+        "空态盖板**没有**逐类兜底(全局那条已覆盖,逐类补是冗余)",
+    );
+    // 反向:盖板确实设了非 none 的 display —— 全局兜底不在场时它就会盖住图,
+    // 这条钉住「为什么需要那条全局规则」的理由本身。
     check(
         /\.traj-stage__empty\s*\{[^}]*display:\s*flex/.test(html),
-        "盖板本体确实设了 display:flex(兜底规则有存在的理由)",
+        "盖板本体设了 display:flex(全局 [hidden] 兜底存在的理由)",
     );
     // 盖板归 tab-master 按「有没有段」开关,判据不许漂
     check(
@@ -925,6 +936,194 @@ log("=== ⑧ 空态盖板与脏位兑现(pr-agent 两条 Possible issue)===");
         /setTimeout\(render, 1650\)/.test(tm) &&
             /local\.trajDirty = true;/.test(tm),
         "onSegments 置脏 + 自排定时器 render(不可见时跑到清标志那一行的那条路)",
+    );
+}
+
+// =============================================================================
+log("=== ⑨ 后备存储与离场期欠账(claude-review;stub canvas 行为断言)===");
+
+// 本节把轨迹图**真的跑起来** —— 前面各节是纯函数与源码不变式,而「换缩放档要不要
+// 重建后备存储」「离场期的重绘诉求丢没丢」是**时序**问题,正则钉不住。
+// 仓内零 node_modules,故手搓两件桩:
+//   • **假 rAF**:让分层骨架跑它自己那条真循环(`start` 排帧 / `stop` 撤帧)。
+//     这一件是必需的 —— `suspend()` 丢帧丢的正是「已排队但还没跑的那一帧」,
+//     不把 requestAnimationFrame / cancelAnimationFrame 的语义摆出来就复现不了;
+//   • **canvas 桩**:hidpi.js 的 `resizeCanvas` 只认 width/height/style/getContext,
+//     `observeResolution` 在无 matchMedia 的环境自动 no-op;2D ctx 只把 paintStatic
+//     用到的方法记个账,画得对不对归浏览器截图管(shot.mjs)。
+const rafQ = new Map();
+let rafSeq = 0;
+globalThis.requestAnimationFrame = (cb) => {
+    const id = ++rafSeq;
+    rafQ.set(id, cb);
+    return id;
+};
+globalThis.cancelAnimationFrame = (id) => rafQ.delete(id);
+/** 跑完当前排队的帧;回调里再排的帧留到下一轮(与浏览器同语义)。 */
+function pump(nowMs) {
+    const due = [...rafQ.values()];
+    rafQ.clear();
+    for (const cb of due) cb(nowMs);
+}
+
+function makeCanvasStub(cssW = 600, cssH = 200) {
+    const calls = { setTransform: [], clip: 0, clearRect: 0, stroke: 0 };
+    const ctx = new Proxy(
+        {
+            setTransform: (k) => calls.setTransform.push(k),
+            clip: () => calls.clip++,
+            clearRect: () => calls.clearRect++,
+            stroke: () => calls.stroke++,
+        },
+        {
+            get: (t, p) =>
+                p in t ? t[p] : typeof p === "string" ? () => {} : undefined,
+            set: () => true,
+        },
+    );
+    const canvas = {
+        width: 0,
+        height: 0,
+        style: {},
+        parentElement: { clientWidth: cssW, clientHeight: cssH },
+        getContext: () => ctx,
+        addEventListener: () => {},
+        getBoundingClientRect: () => ({
+            left: 0,
+            top: 0,
+            width: cssW,
+            height: cssH,
+        }),
+    };
+    return { canvas, calls };
+}
+
+{
+    const { canvas, calls } = makeCanvasStub();
+    let visible = true;
+    let uiScale = 1;
+    const chart = TC.createTrajectoryChart({
+        canvas,
+        getSeries: () => [],
+        getDurationS: () => 300,
+        getUiScale: () => uiScale,
+        isVisible: () => visible,
+    });
+    let t = 0;
+    /** 跑掉已排队的帧(没排队就什么都不跑);返回本轮之后的后备存储宽。 */
+    const frame = () => {
+        pump((t += 16));
+        return canvas.width;
+    };
+
+    // 首帧:invalidate 标脏 → 推一帧 → 后备存储按 k = uiScale × dpr(node 无 dpr ⇒ 1)建起来
+    chart.invalidate();
+    eq(frame(), 600, "首帧后备存储 = 600 CSS px × k(1.0 档)");
+    check(
+        calls.clip > 0,
+        "折线画在 clip 里(纵向缩放那一节的源码不变式,这里实跑到)",
+    );
+
+    // ---- ① ui.scale 换档 ⇒ 后备存储必须重建(claude-review 第 1 条)
+    // 真机上 CSS zoom 换档**不动** dpr、也不动父盒 CSS px 尺寸 —— observeResolution
+    // 与 ResizeObserver 都不会响,没有任何既有信号能把这一帧敲出来。
+    uiScale = 1.5;
+    eq(frame(), 600, "只换 uiScale 而不标脏 ⇒ 这一帧什么也没重建(bug 的原貌)");
+    chart.invalidate(); // ← Tab1 的 lastUiScale 账变化时会调它
+    eq(frame(), 900, "标脏后按新档重建后备存储(600 × 1.5)");
+    eq(
+        calls.setTransform[calls.setTransform.length - 1],
+        1.5,
+        "ctx 变换按新 k 重设(05 §6.1 k = uiScale × dpr)",
+    );
+    uiScale = 0.5;
+    chart.invalidate();
+    eq(frame(), 300, "换到更小的档同样重建(不是只涨不落)");
+
+    // ---- ② 离场期欠账:重绘诉求不许丢(claude-review 第 2 条)。三个丢法逐个验。
+    // 丢法 ①:invalidate() 不可见时早退 —— 连脏都没标上。
+    uiScale = 2;
+    visible = false;
+    chart.invalidate();
+    eq(frame(), 300, "不可见期推帧:画不成,后备存储停在旧档");
+    visible = true;
+    chart.resume(); // ← renderChart 每帧都调它;欠账在这里还
+    eq(
+        frame(),
+        1200,
+        "回到可见后补画,后备存储按 2.0 档重建(invalidate 那笔诉求没丢)",
+    );
+
+    // 丢法 ②:脏位**被那一帧吃掉**。setDuration 不看可见性,直接 invalidateStatic ——
+    // 不可见时 tick 先清 staticDirty 再调 drawStatic,画不成,那一笔就没了。
+    // 这条路 invalidate() 根本没参与,故只有 drawStatic 里的记账救得回来。
+    // (真机上够得着:Tab1 不在前台时 onSegments 的 setTimeout(render) 仍会走到
+    //  renderChart 里的 local.traj.setDuration。)
+    uiScale = 3;
+    visible = false;
+    chart.setDuration(600); // ← 标脏,但没经 invalidate()
+    eq(frame(), 1200, "不可见期这一帧把脏位吃掉了(画不成,尺寸不动)");
+    visible = true;
+    chart.resume();
+    eq(frame(), 1800, "被吃掉的那一笔由欠账补回(600 × 3.0)");
+
+    // 上升沿只认**边沿**:已经可见的后续帧不许再无脑重绘(脏位纪律,05 §6.1)
+    const before = calls.clearRect;
+    chart.resume();
+    frame();
+    chart.resume();
+    frame();
+    eq(calls.clearRect, before, "已在前台时 resume() 一步不走(不是每帧重画)");
+
+    // 丢法 ③:suspend() 撤掉**已排队但还没跑**的那一帧,staticDirty 就此没人来跑。
+    // 这条与前两条都不同:脏位还立着,只是循环停了、再没人 start() —— 故意不调
+    // invalidate()(调了就成了丢法 ① 那条路,验不到本条)。
+    uiScale = 4;
+    chart.setDuration(900); // 可见时标脏 ⇒ 排了一帧
+    chart.suspend(); // ← 帧被撤掉;切走(mode ≠ trajectory 时 renderChart 就这么做)
+    visible = false;
+    eq(frame(), 1800, "帧已被 suspend 撤掉,这一轮没有任何帧可跑");
+    visible = true;
+    chart.resume();
+    eq(frame(), 2400, "suspend 撤掉的那一帧由欠账补回(600 × 4.0)");
+}
+
+{
+    // Tab1 侧的 ui.scale 档位账 —— **必须与 Tab3 同一机制**(claude-review 点名:
+    // 「别发明新路」)。两处各留一份账,靠下面这对断言钉住它们不漂。
+    const tm = src("web/output/tab-master.js");
+    const tw = src("web/output/tab-wave.js");
+    const ACCOUNT =
+        /if \(local\.lastUiScale !== uiScale\) \{\s*local\.lastUiScale = uiScale;/;
+    check(ACCOUNT.test(tw), "Tab3 有 lastUiScale 账(本卡照抄的那份真源)");
+    check(
+        ACCOUNT.test(tm),
+        "Tab1 用同一形制的 lastUiScale 账(不是另发明一条路)",
+    );
+    check(
+        /local\.lastUiScale = uiScale;\s*local\.trajDirty = true;/.test(tm),
+        "档位变化 ⇒ 轨迹图标脏(脏位一置,重绘就走既有那条路)",
+    );
+    check(
+        /lastUiScale: NaN/.test(tm) && /lastUiScale: NaN/.test(tw),
+        "两处初值都是 NaN(首帧必然不等 ⇒ 开机第一次一定重建一遍)",
+    );
+    // 为什么非记这一笔不可:k 的两个因子各有各的信号,**只有 uiScale 这条没人管**。
+    const tj = src("web/shared/trajectory-chart.js");
+    check(
+        /observeResolution\(\(\) => layers\.invalidateStatic\(\)\)/.test(tj),
+        "dpr 那条因子有 observeResolution 兜着(换屏/改系统缩放会响)",
+    );
+    check(
+        /backingScale\(num\(getUiScale\(\), 1\), dpr\(\)\)/.test(tj),
+        "k = uiScale × dpr 只在 paintStatic 里算 ⇒ 不重绘就一直用旧 k(bug 的根)",
+    );
+    // uiScale 那条因子:CSS zoom 换档既不动 dpr 也不动父盒 CSS px 尺寸,
+    // 两个 observer 都不响 —— 账不记就真没人来敲门。
+    check(
+        /getUiScale/.test(tj) &&
+            !/getUiScale[\s\S]{0,200}addEventListener/.test(tj),
+        "模块自身不监听 uiScale(它只在绘制时读,信号归调用方给)",
     );
 }
 

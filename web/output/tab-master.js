@@ -802,6 +802,8 @@ export function createTabMaster(opts) {
         // 画布重绘的脏位。render() 走 rAF 合帧、播放中每秒跑十几次,而轨迹图的
         // **静态层**只随段表/视图/尺寸变 —— 不设脏位就会每帧重画 15 条折线。
         trajDirty: true,
+        // ui.scale 档位账(Tab3 的 local.lastUiScale 同款,见 tab-wave.js 的 render)。
+        lastUiScale: NaN,
     };
 
     const el = {
@@ -1939,6 +1941,16 @@ export function createTabMaster(opts) {
             return;
         }
         if (el.trajEmpty) el.trajEmpty.hidden = local.trajSeries.length > 0;
+        // ui.scale 档位变化 = 后备存储 k 变(05 §6.1 `k = uiScale × dpr`)→ 标脏重建。
+        // 与 Tab3 的 render 逐字同款(tab-wave.js 的 local.lastUiScale)。
+        // 这一笔非记不可:CSS zoom 换档**不动** dpr(observeResolution 不响),也不动
+        // 父盒的 CSS px 尺寸(ResizeObserver 不响)—— 没有任何既有信号会来敲门,
+        // 而 backingScale() 只在 paintStatic 里算,不重绘就一直用着旧 k,画面持续糊。
+        const uiScale = num((s.ui || {}).scale, 1);
+        if (local.lastUiScale !== uiScale) {
+            local.lastUiScale = uiScale;
+            local.trajDirty = true;
+        }
         // 刻度本身由 onPanAxis 推来时就渲染过了;这里再走一遍是为了**切语言** ——
         // applyI18n 只刷 data-t,而这一列是拼出来的(签名带语言,没变就是空跑)。
         renderTrajAxis(t);

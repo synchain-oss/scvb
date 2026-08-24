@@ -466,6 +466,15 @@ export function createTrajectoryChart(opts) {
         // 最近一帧 §2.6 事件。不在前台时插值循环要**停掉**(空闲零 rAF,05 §6.1),
         // 而停掉就丢了位置 —— 故自留一份,`invalidate()` 回到前台时按它补一帧。
         playheadEv: null,
+        // 「欠着一次静态层重绘」。离场期间的重绘诉求兑现不了,而它们**丢**在三处:
+        //   ① `invalidate()` 不可见时早退 —— 连脏都没标上;
+        //   ② `layers.tick` 先清 staticDirty 再调 drawStatic,而不可见时画不成 ——
+        //      那一帧的脏位被吃掉了(与 Tab1 侧 trajDirty 同款的坑);
+        //   ③ `suspend()` 停掉 rAF 循环 —— 还没兑现的 staticDirty 就此没人来跑。
+        // 三处同因(不可见时画不成),故记在同一个欠账上,由 `resume()` 统一还:
+        // 回到前台补一次重绘。**不**在不可见时回头调 invalidateStatic —— 那会让
+        // tick 一直返回「还要下一帧」,rAF 在后台空转,违背 05 §6.1「空闲零 rAF」。
+        staticPending: false,
         highlight: 0, // 图例 hover 联动的轨号(0 = 无)
         palette: resolveTrackPalette(canvas),
         styles: readStyles(canvas),
@@ -484,7 +493,16 @@ export function createTrajectoryChart(opts) {
     });
 
     const layers = createLayerStack({
-        drawStatic: (frame) => paintStatic(frame),
+        // `tick()` **先清 staticDirty 再调本回调** —— 不可见时直接不画的话,这一帧
+        // 的重绘诉求就被那次清除吃掉了。记进欠账,回到前台由 resume() 还(见
+        // `local.staticPending` 头注;此处不回头标脏,否则 rAF 在后台空转)。
+        drawStatic: (frame) => {
+            if (!isVisible()) {
+                local.staticPending = true;
+                return;
+            }
+            paintStatic(frame);
+        },
         drawDynamic: () => false, // 播放头走 DOM 竖线;静态层之外无逐帧诉求(空闲零 rAF)
     });
 
@@ -888,9 +906,20 @@ export function createTrajectoryChart(opts) {
         return typeof performance !== "undefined" ? performance.now() : 0;
     }
 
-    /** 前台时按自留的最近一帧把插值循环重新起上(离场时 onPlayhead 停过它)。 */
+    /**
+     * 前台时把两条循环重新起上(离场时 `onPlayhead` / `suspend` 停过它们)。
+     *
+     * 除了按自留的最近一帧补播放头,还负责**还清离场期欠下的那次静态层重绘**
+     * (三个丢法见 `local.staticPending` 的头注)。只在欠着时才画、不是每帧无脑
+     * 重画 —— 脏位纪律(05 §6.1、smoke ⑦「静态层重绘走脏位」)照旧。
+     */
     function resume() {
-        if (!isVisible() || !local.playheadEv) return;
+        if (!isVisible()) return;
+        if (local.staticPending) {
+            local.staticPending = false;
+            layers.invalidateStatic();
+        }
+        if (!local.playheadEv) return;
         playhead.push(local.playheadEv);
     }
 
@@ -906,7 +935,12 @@ export function createTrajectoryChart(opts) {
          * 这里按自留的最近一帧把它重新起上(与 Tab3 的 resumePlayhead 同一配对不变式)。
          */
         invalidate() {
-            if (!isVisible()) return;
+            if (!isVisible()) {
+                // 画不成,但**诉求要留着** —— 直接早退等于把这次重绘丢了,
+                // 切回前台会看到一张过期的图(见 local.staticPending 头注)。
+                local.staticPending = true;
+                return;
+            }
             local.palette = resolveTrackPalette(canvas);
             local.styles = readStyles(canvas);
             measure();
@@ -961,6 +995,9 @@ export function createTrajectoryChart(opts) {
         suspend() {
             layers.stop();
             playhead.stop();
+            // 停循环会把「还没兑现的 staticDirty」一并搁置 —— 记进欠账,
+            // 由 resume() 补画(否则切回来是一张过期的图)。
+            local.staticPending = true;
             if (o.playheadEl && !o.playheadEl.hidden)
                 o.playheadEl.hidden = true;
         },
