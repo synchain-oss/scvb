@@ -61,6 +61,8 @@ const store = {
     // 本会话一次性判定([J80]:不入 state chunk、零桥、零契约)。
     // guideClosed 是首启链的**会话级**闸门:setGuideSeen 若因 native 未落地而落空
     // (见 tour-in.js 头注),这两个标记仍保证本次会话里语言卡与 mini tour 不重弹。
+    // 拦的是**预览 / mock 形态** —— 真宿主里下行也还没有 ui.guide_seen /
+    // guide_seen_global,首启链根本不会自动弹,这两个标记只是空转。
     session: {
         guideClosed: false, // 本会话已走过/跳过 mini tour
         langChosen: false, // 本会话已在首启语言卡上选过语言
