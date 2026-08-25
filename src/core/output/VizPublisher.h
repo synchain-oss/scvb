@@ -21,6 +21,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "../engine/CurveEvaluator.h"
 #include "../engine/PlayheadShot.h"
@@ -44,6 +45,12 @@ struct VizPublishInput
     scvb::engine::PlayheadPod playhead{};
     scvb::u32 crvsRevision = 0; // CRVS 修订号(变化即重算车道)
     double sampleRate = 0.0;
+    // 每轨 width(engineering 0..100,来自参数 raw atomic)。分布图的张开横线要它。
+    std::array<float, scvb::state::kNumTracks> widthPct{};
+    // 每轨轨名(UTF-8;发布器按 UTF-8 边界截断到 kVizLabelBytes-1)。图例要它。
+    std::array<std::string, scvb::state::kNumTracks> label{};
+    // 轨名/宽度不进 crvsRevision,单独给一个修订号驱动「车道块」重写(轨名随车道一起落段)。
+    scvb::u32 metaRevision = 0;
 };
 
 class VizPublisher
@@ -60,7 +67,6 @@ public:
     scvb::InitResult open() { return plane_.open(); }
     scvb::InitResult changeGroup(scvb::u32 group);
     void release();
-    void reapPendingReleases(scvb::u64 nowMs) { plane_.reapPendingReleases(nowMs); }
     bool isOpen() const { return plane_.isOpen(); }
     const scvb::VizPlane& plane() const { return plane_; }
 
@@ -86,6 +92,7 @@ private:
     bool everPublished_ = false;
     bool everBuiltLanes_ = false;
     scvb::u32 lastCrvsRevision_ = 0;
+    scvb::u32 lastMetaRevision_ = 0;
     scvb::u32 lastVersionActive_ = 0;
     scvb::u64 lastSpanSamples_ = 0;
     scvb::u64 publishCount_ = 0;

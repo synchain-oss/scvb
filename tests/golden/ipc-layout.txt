@@ -126,3 +126,15 @@ offset viz_frame 64
 offset viz_colors 192
 offset viz_coverage 256
 offset viz_lanes 2176
+viz_label_words 8
+viz_label_bytes 32
+struct VizTrackState size 128 align 64
+field VizTrackState.panNow offset 0
+field VizTrackState.volDb offset 32
+field VizTrackState.widthPct offset 64
+field VizTrackState._reserved offset 96
+struct VizTrackLabels size 512 align 64
+field VizTrackLabels.utf8 offset 0
+field VizTrackLabels._pad offset 480
+offset viz_track_state 32896
+offset viz_labels 33024

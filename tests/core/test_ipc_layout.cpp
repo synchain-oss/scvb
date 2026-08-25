@@ -116,6 +116,10 @@ std::size_t structSize(const std::string& s)
         return sizeof(scvb::VizCoverage);
     if (s == "VizLanes")
         return sizeof(scvb::VizLanes);
+    if (s == "VizTrackState")
+        return sizeof(scvb::VizTrackState);
+    if (s == "VizTrackLabels")
+        return sizeof(scvb::VizTrackLabels);
     return kNotFound;
 }
 
@@ -151,6 +155,10 @@ std::size_t structAlign(const std::string& s)
         return alignof(scvb::VizCoverage);
     if (s == "VizLanes")
         return alignof(scvb::VizLanes);
+    if (s == "VizTrackState")
+        return alignof(scvb::VizTrackState);
+    if (s == "VizTrackLabels")
+        return alignof(scvb::VizTrackLabels);
     return kNotFound;
 }
 
@@ -382,6 +390,26 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
             return offsetof(scvb::VizLanes, pan);
         return kNotFound;
     }
+    if (s == "VizTrackState")
+    {
+        if (f == "panNow")
+            return offsetof(scvb::VizTrackState, panNow);
+        if (f == "volDb")
+            return offsetof(scvb::VizTrackState, volDb);
+        if (f == "widthPct")
+            return offsetof(scvb::VizTrackState, widthPct);
+        if (f == "_reserved")
+            return offsetof(scvb::VizTrackState, _reserved);
+        return kNotFound;
+    }
+    if (s == "VizTrackLabels")
+    {
+        if (f == "utf8")
+            return offsetof(scvb::VizTrackLabels, utf8);
+        if (f == "_pad")
+            return offsetof(scvb::VizTrackLabels, _pad);
+        return kNotFound;
+    }
     return kNotFound;
 }
 
@@ -398,6 +426,10 @@ std::size_t vizOffset(const std::string& key)
         return scvb::kVizCoverageOffset;
     if (key == "viz_lanes")
         return scvb::kVizLanesOffset;
+    if (key == "viz_track_state")
+        return scvb::kVizTrackStateOffset;
+    if (key == "viz_labels")
+        return scvb::kVizLabelsOffset;
     return kNotFound;
 }
 
@@ -523,6 +555,16 @@ TEST_CASE("IpcLayoutFreeze", "[ipc][layout]")
         {
             REQUIRE(t.size() == 2);
             REQUIRE(scvb::kVizPanScale == std::stol(t[1]));
+        }
+        else if (t[0] == "viz_label_words")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(scvb::kVizLabelWords == static_cast<u32>(std::stoul(t[1])));
+        }
+        else if (t[0] == "viz_label_bytes")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(scvb::kVizLabelBytes == static_cast<u32>(std::stoul(t[1])));
         }
         else if (t[0] == "viz_pan_none")
         {

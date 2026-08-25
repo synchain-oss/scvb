@@ -30,7 +30,6 @@
 #include "ipc/Registry.h"
 #include "ipc/SegmentBackendInProcess.h"
 #include "ipc/SegmentBackendWin32.h"
-#include "ipc/VizPlane.h"
 #include "ipc_contract_harness.h"
 
 using scvb::kMaxChannels;
@@ -1582,78 +1581,4 @@ TEST_CASE("IPC-20b 改组释放-重连", "[ipc][contract]")
     REQUIRE(regG2.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(regG2.claimInput(5, 7002, 48000, 512, scvb::steadyNowMs()) == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(regG2.inputSlot(5)->pid == 7002);
-}
-
-// ===========================================================================
-// [T44/J75] VIZ-1/2/3 viz 段跨进程:布局校验 / 只读 attach / 一致性读
-// ===========================================================================
-TEST_CASE("VIZ-1 viz 段跨进程只读 attach 与一致性读", "[ipc][contract][viz]")
-{
-    PeerGuard pw;
-    PeerGuard pr;
-    int err = 0;
-    pw.pi = spawnPeer({"--role=viz-writer", "--group=1", "--sr=48000", "--linger-ms=2000"}, &err);
-    REQUIRE(err == 0);
-    const std::string csv = tempCsvPath();
-    pr.pi = spawnPeer({"--role=viz-reader", "--group=1", "--out=" + csv}, &err);
-    REQUIRE(err == 0);
-    REQUIRE(waitPeer(pw.pi, 20000) == 0);
-    REQUIRE(waitPeer(pr.pi, 20000) == 0);
-    const auto m = parseCsv(readFile(csv));
-    deleteFile(csv);
-
-    // 只读 attach 成功 + 几何自检通过(段内 column_count/track_count/pan_scale 与编译期常量一致)。
-    REQUIRE(csvLL(m, "attach") == static_cast<long long>(scvb::InitResult::kOk));
-    REQUIRE(csvLL(m, "read_ok") == 1);
-    REQUIRE(csvLL(m, "read_only") == 1);
-    REQUIRE(csvLL(m, "geometry_ok") == 1);
-    REQUIRE(csvLL(m, "columns") == static_cast<long long>(scvb::kVizColumns));
-
-    // 帧头标量逐项一致。
-    REQUIRE(csvLL(m, "window_span") == 48000LL * 120);
-    REQUIRE(csvLL(m, "playhead") == 48000);
-    REQUIRE(csvLL(m, "loop_start") == 96000);
-    REQUIRE(csvLL(m, "loop_end") == 192000);
-    REQUIRE(csvLL(m, "playhead_flags") ==
-            static_cast<long long>(scvb::kVizPlaying | scvb::kVizLooping | scvb::kVizLoopValid));
-    REQUIRE(csvLL(m, "playhead_epoch") == 7);
-    REQUIRE(csvLL(m, "version_active") == 2);
-    REQUIRE(csvLL(m, "online_mask") == 0x7FFF);
-    REQUIRE(csvLL(m, "covered_mask") == 0x0003);
-    REQUIRE(csvLL(m, "stereo_mask") == 0x0002);
-    REQUIRE(csvLL(m, "lane_revision") == 42);
-
-    // 轨色索引 = 轨号(v1 恒等映射)。
-    REQUIRE(csvLL(m, "color1") == 1);
-    REQUIRE(csvLL(m, "color15") == 15);
-
-    // 降采样车道:轨1 沿列线性上升(-100 → +100,定点 ×100)。
-    REQUIRE(csvLL(m, "pan_t1_first") == -10000);
-    REQUIRE(csvLL(m, "pan_t1_last") == 10000);
-    // 轨2 前半有值、后半是哨兵(断线场景)。
-    REQUIRE(csvLL(m, "pan_t2_mid") == 2500);
-    REQUIRE(csvLL(m, "pan_t2_tail") == static_cast<long long>(scvb::kVizPanNone));
-    // 轨3 无数据:整条哨兵。
-    REQUIRE(csvLL(m, "pan_t3_any") == static_cast<long long>(scvb::kVizPanNone));
-
-    // 覆盖位图与断线口径一致。
-    REQUIRE(csvLL(m, "cov_t1_0") == 1);
-    REQUIRE(csvLL(m, "cov_t1_last") == 1);
-    REQUIRE(csvLL(m, "cov_t2_0") == 1);
-    REQUIRE(csvLL(m, "cov_t2_last") == 0);
-    REQUIRE(csvLL(m, "cov_t3_0") == 0);
-}
-
-TEST_CASE("VIZ-2 viz 段不存在时只读方拿到 kFailed(空态,不崩溃)", "[ipc][contract][viz]")
-{
-    // 用一个没有任何写方的组(g7):attach 必须失败而非创建段 —— 只读方绝不建段。
-    scvb::SegmentBackendWin32 backend;
-    scvb::VizPlane reader(backend, 7);
-    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kFailed);
-    REQUIRE_FALSE(reader.isOpen());
-
-    // 再次确认没有被误建:写方此刻 open 应当是「创建者」路径(generation == 1)。
-    scvb::VizPlane writer(backend, 7);
-    REQUIRE(writer.open() == scvb::InitResult::kOk);
-    REQUIRE(writer.generation() == 1);
 }

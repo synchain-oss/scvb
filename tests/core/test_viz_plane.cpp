@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <string>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -65,6 +66,53 @@ TEST_CASE("viz 段布局与定点口径", "[viz][layout]")
     REQUIRE(scvb::vizPanIsNone(scvb::kVizPanNone));
     REQUIRE_FALSE(scvb::vizPanIsNone(-scvb::kVizPanMax));
     REQUIRE(scvb::vizUnpackPan(2500) == 25.0);
+
+    // 通用定点(volDb / widthPct):夹到 int16 且**绝不撞哨兵**(下界留一格给 -32768)。
+    REQUIRE(scvb::vizPackFixed(-6.25) == -625);
+    REQUIRE(scvb::vizPackFixed(0.0) == 0);
+    REQUIRE(scvb::vizPackFixed(100.0) == 10000);
+    REQUIRE(scvb::vizPackFixed(-1e9) == -32767);
+    REQUIRE(scvb::vizPackFixed(-1e9) != scvb::kVizPanNone);
+    REQUIRE(scvb::vizPackFixed(1e9) == 32767);
+    REQUIRE(scvb::vizUnpackFixed(-625) == -6.25);
+
+    // UTF-8 安全截断:绝不切出半个多字节序列。
+    REQUIRE(scvb::vizUtf8TruncateLen("Lead", 31) == 4);
+    const std::string zh = "主唱主唱主唱"; // 6 个汉字 = 18 字节
+    REQUIRE(zh.size() == 18);
+    REQUIRE(scvb::vizUtf8TruncateLen(zh, 31) == 18); // 不超限:原样
+    REQUIRE(scvb::vizUtf8TruncateLen(zh, 4) == 3); // 落在第 2 个汉字中间 → 退到边界
+    REQUIRE(scvb::vizUtf8TruncateLen(zh, 6) == 6); // 正好两个汉字边界
+    REQUIRE(scvb::vizUtf8TruncateLen(zh, 0) == 0);
+}
+
+TEST_CASE("viz 段:超长轨名按 UTF-8 边界截断,读回不乱码", "[viz][label]")
+{
+    scvb::SegmentBackendInProcess backend;
+    scvb::VizPlane writer(backend, 9);
+    REQUIRE(writer.open() == scvb::InitResult::kOk);
+    scvb::VizPlane reader(backend, 9);
+    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+
+    auto in = std::make_unique<scvb::VizSnapshot>();
+    // 11 个汉字 = 33 字节 > 31:必须截到 30 字节(10 个汉字),不能留半个。
+    in->label[0] = "主唱主唱主唱主唱主唱主";
+    REQUIRE(in->label[0].size() == 33);
+    // 恰好 31 字节的 ASCII:满格无截断。
+    in->label[1] = std::string(31, 'x');
+    // 32 字节 ASCII:截到 31(留 NUL)。
+    in->label[2] = std::string(32, 'y');
+    in->laneRevision = 1;
+    writer.publish(*in, /*writeLanes=*/true);
+
+    auto out = std::make_unique<scvb::VizSnapshot>();
+    REQUIRE(reader.read(*out));
+    REQUIRE(out->label[0].size() == 30); // 10 个汉字,不是 31
+    REQUIRE(out->label[0] == in->label[0].substr(0, 30));
+    REQUIRE(out->label[1] == in->label[1]);
+    REQUIRE(out->label[2] == std::string(31, 'y'));
+    // 空轨名读回仍是空串(段内 NUL 补齐,不会读出垃圾)。
+    REQUIRE(out->label[14].empty());
 }
 
 TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
@@ -104,6 +152,11 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     in->pan[0][scvb::kVizColumns - 1] = -777;
     in->setCovered(0, 0);
     in->setCovered(0, scvb::kVizColumns - 1);
+    in->panNow[0] = scvb::vizPackPan(-12.5);
+    in->volDb[0] = scvb::vizPackFixed(-6.25);
+    in->widthPct[0] = scvb::vizPackFixed(80.0);
+    in->label[0] = "Lead";
+    in->label[1] = "主唱"; // 主唱(多字节,验往返不乱码)
 
     writer.publish(*in, /*writeLanes=*/true);
     REQUIRE(reader.read(*out));
@@ -125,6 +178,12 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     REQUIRE(out->covered(0, 0));
     REQUIRE(out->covered(0, scvb::kVizColumns - 1));
     REQUIRE_FALSE(out->covered(0, 1));
+    REQUIRE(out->panNow[0] == scvb::vizPackPan(-12.5));
+    REQUIRE(out->volDb[0] == scvb::vizPackFixed(-6.25));
+    REQUIRE(out->widthPct[0] == scvb::vizPackFixed(80.0));
+    REQUIRE(out->label[0] == "Lead");
+    REQUIRE(out->label[1] == "主唱");
+    REQUIRE(out->panNow[2] == scvb::kVizPanNone); // 未填 = 哨兵
 
     // writeLanes=false:只刷帧头,车道内容原样保留(4Hz 刷 playhead / 车道按需重算的分频口径)。
     in->playheadSamples = 54321;

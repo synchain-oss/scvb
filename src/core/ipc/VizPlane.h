@@ -32,6 +32,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -53,8 +54,19 @@ static_assert(kVizColumns % 32 == 0, "列数须 32 整除,位图才无残位");
 // pan 定点标度:engineering pan ∈ [-100, +100] × 100 → int16 ∈ [-10000, +10000]。
 inline constexpr std::int32_t kVizPanScale = 100;
 inline constexpr std::int16_t kVizPanMax = static_cast<std::int16_t>(100 * kVizPanScale);
-// 车道哨兵:该轨整条无数据(无分段 / 曲线缺失 / 轨未启用)。取 INT16_MIN,不与任何合法值撞。
+// 车道 / 当前值哨兵:该轨无数据(无分段 / 曲线缺失 / 轨未启用)。取 INT16_MIN,不与任何合法值撞。
 inline constexpr std::int16_t kVizPanNone = -32768;
+
+// volDb(−24..+12 dB)与 widthPct(0..100)共用 kVizPanScale 定点标度。
+inline constexpr double kVizVolDbMin = -24.0;
+inline constexpr double kVizVolDbMax = 12.0;
+inline constexpr double kVizWidthMin = 0.0;
+inline constexpr double kVizWidthMax = 100.0;
+
+// 轨名:每轨 32 字节 UTF-8(8 个 u32 字),NUL 补齐;超长按 **UTF-8 字符边界**截断
+// —— 绝不切出半个多字节序列(半个汉字到了 web 侧就是一个替换字符)。
+inline constexpr u32 kVizLabelWords = 8;
+inline constexpr u32 kVizLabelBytes = kVizLabelWords * 4; // 32
 
 // playhead flags(与 scvb::engine::PlayheadFlag 的子集同义,但本段自持定义 —— 段布局不依赖
 // 进程内头文件的枚举值)。
@@ -126,6 +138,25 @@ struct alignas(64) VizLanes
     std::atomic<std::int16_t> pan[kMaxChannels][kVizColumns]; // 15 × 1024 × 2 = 30720
 };
 
+// 每轨**当前值**三件套(分布图数据面;轨迹图用车道)。索引 15 保留,只为让每个数组按 32 字节对齐。
+// 口径提醒:panNow 是**播放头精确时刻**的求值,不是 pan 车道在播放头所在列的采样 ——
+// 后者是列中心点采样,列宽 = span/1024,分布图要的是「此刻」。
+struct alignas(64) VizTrackState
+{
+    std::atomic<std::int16_t> panNow[16]; // 0..32    定点 ×100,−100..+100
+    std::atomic<std::int16_t> volDb[16]; // 32..64   定点 ×100,−24..+12 dB
+    std::atomic<std::int16_t> widthPct[16]; // 64..96   定点 ×100,0..100
+    std::atomic<std::int16_t> _reserved[16]; // 96..128
+};
+
+// 轨名(UTF-8,NUL 补齐)。u32 字数组而非 u8 —— 跨进程字段一律 std::atomic(ipc §0),
+// 按字存取比 480 个 atomic<u8> 干净,字节序 = 主机序(同机同序,读写两侧共用下面的存取器)。
+struct alignas(64) VizTrackLabels
+{
+    std::atomic<u32> utf8[kMaxChannels][kVizLabelWords]; // 15 × 32 = 480
+    u32 _pad[8]; // 480..512
+};
+
 // 段内偏移(全部 64 字节对齐)。
 inline constexpr std::size_t kVizSegmentSize = 65536; // 64 KB(尾部预留给后续增补)
 inline constexpr std::size_t kVizHeaderOffset = 0;
@@ -133,6 +164,8 @@ inline constexpr std::size_t kVizFrameOffset = 64;
 inline constexpr std::size_t kVizColorsOffset = 192;
 inline constexpr std::size_t kVizCoverageOffset = 256;
 inline constexpr std::size_t kVizLanesOffset = 2176;
+inline constexpr std::size_t kVizTrackStateOffset = 32896;
+inline constexpr std::size_t kVizLabelsOffset = 33024;
 
 // ---------------------------------------------------------------------------
 // 主机侧快照(非段内布局;写方填、读方取)
@@ -158,6 +191,12 @@ struct VizSnapshot
     std::array<u32, kMaxChannels> trackColor{};
     std::array<std::array<u32, kVizCoverageWords>, kMaxChannels> coverage{};
     std::array<std::array<std::int16_t, kVizColumns>, kMaxChannels> pan{};
+    // 每轨当前值(分布图);哨兵 kVizPanNone = 无数据。
+    std::array<std::int16_t, kMaxChannels> panNow{};
+    std::array<std::int16_t, kMaxChannels> volDb{};
+    std::array<std::int16_t, kMaxChannels> widthPct{};
+    // 轨名(已按 UTF-8 边界截断到 ≤kVizLabelBytes-1 字节)。
+    std::array<std::string, kMaxChannels> label{};
 
     // 默认态 = 「全轨无数据」:车道全哨兵、覆盖全 0(而非 pan=0 的中央位置 —— 零值是合法 pan,
     // 拿它当空态会让读侧把没数据的轨画成一条居中的直线)。
@@ -172,6 +211,13 @@ struct VizSnapshot
         for (auto& words : coverage)
         {
             words.fill(0u);
+        }
+        panNow.fill(kVizPanNone);
+        volDb.fill(kVizPanNone);
+        widthPct.fill(kVizPanNone);
+        for (auto& s : label)
+        {
+            s.clear();
         }
     }
 
@@ -209,6 +255,43 @@ inline double vizUnpackPan(std::int16_t v) noexcept
     return static_cast<double>(v) / static_cast<double>(kVizPanScale);
 }
 
+// 通用定点(volDb / widthPct 共用 kVizPanScale)。夹到 int16 可表示范围,绝不撞哨兵。
+inline std::int16_t vizPackFixed(double v) noexcept
+{
+    const double scaled = v * static_cast<double>(kVizPanScale);
+    const double rounded = scaled < 0.0 ? scaled - 0.5 : scaled + 0.5;
+    if (rounded <= -32767.0)
+    {
+        return -32767; // 下界留一格给哨兵 -32768
+    }
+    if (rounded >= 32767.0)
+    {
+        return 32767;
+    }
+    return static_cast<std::int16_t>(rounded);
+}
+inline double vizUnpackFixed(std::int16_t v) noexcept
+{
+    return static_cast<double>(v) / static_cast<double>(kVizPanScale);
+}
+
+// UTF-8 安全截断:返回不超过 maxBytes 且不切断多字节序列的前缀长度。
+// 只认续字节的 10xxxxxx 位模式往回退,不需要完整的 UTF-8 校验 —— 输入来自我们自己的
+// juce::String::toStdString(),已是良构 UTF-8。
+inline std::size_t vizUtf8TruncateLen(const std::string& s, std::size_t maxBytes) noexcept
+{
+    if (s.size() <= maxBytes)
+    {
+        return s.size();
+    }
+    std::size_t n = maxBytes;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0u) == 0x80u)
+    {
+        --n; // 落在续字节上:往回退到序列首字节
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // VizPlane —— 段门面
 // ---------------------------------------------------------------------------
@@ -241,10 +324,14 @@ public:
     // 改组(J66):释放本组 viz 段句柄 → 换新组 → 按原角色重新映射。
     InitResult changeGroup(u32 newGroup);
 
-    // 释放句柄(消息线程);租约在途则压入 pendingReleases_ 延迟回收(与 CtrlPlane 同构)。
+    // 释放映射(消息线程):**立即** unmap,不走租约握手与宽限期。
+    // 为什么不像 Registry/CtrlPlane 那样用 SegmentHandle:那套机制存在的唯一理由是
+    // 「音频线程可能仍持有裸指针」。viz 段**没有任何音频线程访问**(RT 零写入/零读取铁律),
+    // 全部存取都在同一条消息线程上,所以租约与宽限期在这里不但没用,还有两个实害:
+    //   ① 读方 release 后仍把段吊住 —— 写方进程都退出了,段却不消失,读方永远等不到「空态」;
+    //   ② 宽限期未满就析构 → SegmentHandle 退回「进程退出统一回收」= 每次换组泄漏一份映射。
+    // 见 tests/ipc/test_ipc_viz.cpp 的 VIZ-3(写方退出 → 读方空态 → 再上线重连)。
     void release();
-    void reapPendingReleases(u64 nowMs);
-    std::size_t pendingReleaseCount() const { return pendingReleases_.size(); }
 
     // 写方:整帧发布(seqlock 临界区)。writeLanes=false 时只刷帧头标量(playhead/掩码/时刻),
     // 车道/位图/轨色保持上一帧内容 —— 4Hz 刷 playhead、车道按需重算的分频发布口径。
@@ -265,13 +352,14 @@ private:
     VizTrackColors* colors() const;
     VizCoverage* coverageBits() const;
     VizLanes* lanes() const;
+    VizTrackState* trackState() const;
+    VizTrackLabels* labels() const;
     void releaseHandle();
 
     ISegmentBackend& backend_;
     u32 group_ = 1;
     bool readOnly_ = false;
-    SegmentHandle handle_;
-    std::vector<SegmentHandle> pendingReleases_;
+    SegmentView view_; // 直接持有映射(无租约、无宽限期;理由见 release() 注释)
     unsigned char* base_ = nullptr;
 
     std::thread::id ownerThread_{}; // open() 的调用线程([M]);publish() 只认这一个
@@ -328,12 +416,24 @@ static_assert(alignof(VizCoverage) == 64);
 static_assert(sizeof(VizLanes) == 30720, "VizLanes 必须 30720 字节(15×1024×2)");
 static_assert(offsetof(VizLanes, pan) == 0);
 static_assert(alignof(VizLanes) == 64);
+static_assert(sizeof(VizTrackState) == 128, "VizTrackState 必须 128 字节");
+static_assert(offsetof(VizTrackState, panNow) == 0);
+static_assert(offsetof(VizTrackState, volDb) == 32);
+static_assert(offsetof(VizTrackState, widthPct) == 64);
+static_assert(offsetof(VizTrackState, _reserved) == 96);
+static_assert(alignof(VizTrackState) == 64);
+static_assert(sizeof(VizTrackLabels) == 512, "VizTrackLabels 必须 512 字节(15×32 + 32 pad)");
+static_assert(offsetof(VizTrackLabels, utf8) == 0);
+static_assert(offsetof(VizTrackLabels, _pad) == 480);
+static_assert(alignof(VizTrackLabels) == 64);
 
 // 段内偏移:全部 64 对齐、顺序紧接、不越预算。
 static_assert(kVizFrameOffset % 64 == 0 && kVizFrameOffset == kVizHeaderOffset + sizeof(VizHeader));
 static_assert(kVizColorsOffset % 64 == 0 && kVizColorsOffset == kVizFrameOffset + sizeof(VizFrame));
 static_assert(kVizCoverageOffset % 64 == 0 && kVizCoverageOffset == kVizColorsOffset + sizeof(VizTrackColors));
 static_assert(kVizLanesOffset % 64 == 0 && kVizLanesOffset == kVizCoverageOffset + sizeof(VizCoverage));
-static_assert(kVizLanesOffset + sizeof(VizLanes) <= kVizSegmentSize, "viz 段必须 ≤ 64 KB");
+static_assert(kVizTrackStateOffset % 64 == 0 && kVizTrackStateOffset == kVizLanesOffset + sizeof(VizLanes));
+static_assert(kVizLabelsOffset % 64 == 0 && kVizLabelsOffset == kVizTrackStateOffset + sizeof(VizTrackState));
+static_assert(kVizLabelsOffset + sizeof(VizTrackLabels) <= kVizSegmentSize, "viz 段必须 ≤ 64 KB");
 
 } // namespace scvb

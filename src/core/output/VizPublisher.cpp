@@ -93,6 +93,8 @@ void VizPublisher::rebuildLanes(const VizPublishInput& in, scvb::u64 spanSamples
     for (scvb::u32 t = 0; t < scvb::kMaxChannels; ++t)
     {
         s.trackColor[t] = t + 1; // v1:调色板槽位恒 = 轨号(web --track-color-{n} 顺序即轨号)
+        // 轨名随车道一起落段(图例需要;metaRevision 变化也会触发本函数)。
+        s.label[t] = (t < scvb::state::kNumTracks) ? in.label[t] : std::string{};
     }
     if (spanSamples == 0 || in.sampleRate <= 0.0)
     {
@@ -161,8 +163,8 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
     const scvb::u64 span = computeWindowSpan(in);
 
     const bool needLanes = !everBuiltLanes_ || in.crvsRevision != lastCrvsRevision_ ||
-                           in.versionActive != lastVersionActive_ || span != lastSpanSamples_ ||
-                           nowMs - lastLaneMs_ >= kLaneRefreshMaxMs;
+                           in.metaRevision != lastMetaRevision_ || in.versionActive != lastVersionActive_ ||
+                           span != lastSpanSamples_ || nowMs - lastLaneMs_ >= kLaneRefreshMaxMs;
 
     s.publishMs = nowMs;
     s.windowStartSamples = 0; // v1:窗口起点恒 = 工程起点
@@ -201,12 +203,46 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
     }
     s.playheadFlags = flags;
 
+    // 每轨当前值(分布图数据面)。**每帧都刷**,不受车道分频影响 —— 它们是「此刻」。
+    // panNow/volDb 走播放头**精确时刻**求值(不是车道在播放头所在列的采样:那是列中心点采样,
+    // 列宽 = span/1024,分布图要的是此刻);widthPct 直接来自参数。
+    {
+        const double headSec =
+            (in.sampleRate > 0.0 && p.timeSamples >= 0) ? static_cast<double>(p.timeSamples) / in.sampleRate : 0.0;
+        const std::size_t vIdx = (in.versionActive >= 1 && in.versionActive <= scvb::state::kNumVersions)
+                                     ? static_cast<std::size_t>(in.versionActive - 1)
+                                     : 0;
+        for (scvb::u32 t = 0; t < scvb::kMaxChannels; ++t)
+        {
+            s.panNow[t] = scvb::kVizPanNone;
+            s.volDb[t] = scvb::kVizPanNone;
+            s.widthPct[t] = scvb::kVizPanNone;
+            if (t >= scvb::state::kNumTracks)
+            {
+                continue;
+            }
+            const bool hasSegments = in.crvs != nullptr && !in.crvs->versions[vIdx].tracks[t].segments.empty();
+            const scvb::CurveEvaluator* curve = in.curves[t];
+            if (hasSegments && curve != nullptr)
+            {
+                s.panNow[t] = scvb::vizPackPan(curve->panAt(headSec));
+                s.volDb[t] = scvb::vizPackFixed(curve->volAt(headSec));
+            }
+            const float w = in.widthPct[t];
+            if (w == w) // 非 NaN
+            {
+                s.widthPct[t] = scvb::vizPackFixed(static_cast<double>(w));
+            }
+        }
+    }
+
     if (needLanes)
     {
         rebuildLanes(in, span);
         s.laneRevision += 1;
         lastLaneMs_ = nowMs;
         lastCrvsRevision_ = in.crvsRevision;
+        lastMetaRevision_ = in.metaRevision;
         lastVersionActive_ = in.versionActive;
         lastSpanSamples_ = span;
         everBuiltLanes_ = true;

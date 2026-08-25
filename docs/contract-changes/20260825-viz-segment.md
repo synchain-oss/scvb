@@ -37,7 +37,9 @@
 | 192 | 64 | `VizTrackColors` | 15 个轨色索引(u32) |
 | 256 | 1920 | `VizCoverage` | 分段 activity 位图,15 轨 × 1024 位 |
 | 2176 | 30720 | `VizLanes` | 降采样 pan 车道,15 轨 × 1024 × int16 |
-| 32896 | 32640 | (预留) | 尾部留白,后续增补不改既有偏移 |
+| 32896 | 128 | `VizTrackState` | 每轨**当前值**:panNow / volDb / widthPct(定点 int16) |
+| 33024 | 512 | `VizTrackLabels` | 每轨 32 字节 UTF-8 轨名 |
+| 33536 | 32000 | (预留) | 尾部留白,后续增补不改既有偏移 |
 
 **`VizHeader`(64 B,cacheline 0)**
 
@@ -76,7 +78,19 @@
 v1 恒等于轨号 —— web 侧 `--track-color-1..15`「顺序即轨号」(T43)。字段先落段,将来若引入 native 侧
 重映射,读写两侧无需改布局。
 
-**`VizCoverage`(1920 B)**:`atomic<u32> bits[15][32]`。每轨 1024 位,LSB 优先(列 i → `bits[i/32]` 的 `bit(i%32)`)。
+**`VizCoverage`(1920 B)**:`atomic<u32> bits[15][32]`。每轨 1024 位,**LSB 优先**(列 i → `bits[i/32]` 的 `bit(i%32)`;
+web 侧 `word = i>>>5, bit = i&31` 同源)。位序写反的失败形态很阴——**图照画**,只是断线位置整体错开 32 的倍数,
+肉眼几乎看不出来,故 L1 用例按 bit 0/31/32 与整字 `0xFFFFFFFF` 逐个钉死。
+
+**`VizTrackState`(128 B)**:`atomic<int16_t> panNow[16] / volDb[16] / widthPct[16]` + 16 保留(索引 15 空置,
+只为让每个数组按 32 字节对齐)。定点标度同 pan(×100):panNow ∈ [−100,100]、volDb ∈ [−24,12] dB、
+widthPct ∈ [0,100]。哨兵 `−32768` = 无数据。
+
+⚠ **口径**:`panNow` 是**播放头精确时刻**的曲线求值,**不是** pan 车道在播放头所在列的采样——
+后者是列中心点采样(列宽 = span/1024)。分布图要的是「此刻」,轨迹图的线才走车道。
+
+**`VizTrackLabels`(512 B)**:`atomic<u32> utf8[15][8]`,即每轨 **32 字节 UTF-8**,NUL 补齐。
+超长按 **UTF-8 字符边界**截断到 ≤31 字节——绝不切出半个多字节序列(半个汉字到了 web 侧就是一个替换字符)。
 
 **`VizLanes`(30720 B)**:`atomic<int16_t> pan[15][1024]`。定点 = `round(clamp(pan, −100, +100) × 100)`,
 即 ±10000;哨兵 **`−32768`(`kVizPanNone`)** = 该轨整条无数据。
@@ -101,9 +115,11 @@ v1 恒等于轨号 —— web 侧 `--track-color-1..15`「顺序即轨号」(T43
 
 ### 发布节拍
 
-- 帧头标量(playhead / 循环区 / 掩码 / 时刻):**250 ms(4 Hz)**,与既有 4 Hz 心跳闸门同款。
+- 帧头标量(playhead / 循环区 / 掩码 / 时刻)与 **`VizTrackState` 每轨当前值**:**250 ms(4 Hz)**,
+  与既有 4 Hz 心跳闸门同款。当前值不受车道分频影响——它们是「此刻」。
 - 车道 + 位图 + 轨色(15×1024 次曲线求值):**按需重算** —— CRVS 修订变化 / 活动版本切换 /
-  窗口跨度变化 / 距上次重算 ≥ 1 s,四者之一触发。稳态下 4 Hz 只写 128 字节帧头。
+  窗口跨度变化 / 轨名或 width 变化(`metaRevision`)/ 距上次重算 ≥ 1 s,五者之一触发。
+  稳态下 4 Hz 只写帧头 + 每轨当前值(共 256 字节)。轨名随车道块一起落段。
 
 ### 一致性机制
 
@@ -119,6 +135,20 @@ v1 恒等于轨号 —— web 侧 `--track-color-1..15`「顺序即轨号」(T43
 3. `attachReadOnly()` 走 `openExistingReadOnly` + `checkHeaderReadOnly`(只读触碰 + 单次 acquire 读),
    **绝不 memset、绝不覆盖式重初始化** —— 覆盖分支仅限创建者角色。
 4. 断言:`tests/core/test_viz_plane.cpp` 的「非 owner 线程 publish 零写入」「只读 attach 方 publish 不写任何字节」两例。
+
+### 映射生命周期:viz **不用** `SegmentHandle` 的租约 + 宽限期
+
+Registry/CtrlPlane/AudioRing 用 `SegmentHandle`(引用计数租约 + 500 ms 宽限期)的**唯一理由**是
+「音频线程可能仍持有裸指针」。viz 段没有任何音频线程访问,全部存取都在同一条消息线程上,
+那套机制在这里不但没用,还有两个实害:
+
+1. **读方 release 后仍把段吊住** —— 写方进程都退出了,段却因为读方的映射还在而不消失,
+   读方永远等不到「空态」(Monitor 会一直显示一份僵尸数据);
+2. **宽限期未满就析构** → `SegmentHandle` 退回「进程退出统一回收」= 每次换组泄漏一份映射。
+
+故 `VizPlane` 直接持有 `SegmentView`,`release()` 立即 `unmap`。这条由
+`tests/ipc/test_ipc_viz.cpp` 的 **VIZ-3**(写方退出 → 读方空态 → 再上线重连)钉死 ——
+本条正是先写出 VIZ-3 才发现的,不是纸面推演。
 
 ## abi 策略:**挂总 abi**,本次**不 +1**
 
@@ -154,7 +184,7 @@ Monitor 掉线、崩溃、或从不存在,对 Output 侧**零影响**(无握手�
 
 ## 变更清单(本 PR 触碰的冻结面)
 
-- `tests/golden/ipc-layout.txt`:追加 44 行(viz 常量 / 段名 g1+g8 / 5 个结构体的 size+align+field offset / 5 个区块偏移)
+- `tests/golden/ipc-layout.txt`:追加 56 行(viz 常量 / 段名 g1+g8 / 5 个结构体的 size+align+field offset / 5 个区块偏移)
 - `src/core/ipc/SegmentLayout.h`:`SegmentKind` 增 `kViz` + 段名分支(既有枚举值顺序不变,既有段名一字未动)
 
 ## 审批

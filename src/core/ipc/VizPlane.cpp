@@ -19,39 +19,22 @@ VizPlane::VizPlane(ISegmentBackend& backend, u32 group) : backend_(backend), gro
 
 VizPlane::~VizPlane()
 {
-    base_ = nullptr;
-    handle_.release(steadyNowMs());
-    // pendingReleases_ 的 SegmentHandle 元素随 vector 析构各自 release(进程退出兜底)。
+    releaseHandle();
 }
 
 void VizPlane::releaseHandle()
 {
     base_ = nullptr;
-    if (handle_.valid() && !handle_.release(steadyNowMs()))
+    if (view_.base != nullptr)
     {
-        // 租约在途/宽限期未满:压入待回收列表,由 [M] reapPendingReleases() 回收(防泄漏)。
-        pendingReleases_.push_back(std::move(handle_));
+        // 立即解映射(仅消息线程):viz 无音频线程访问,不需要租约握手与宽限期。
+        backend_.unmap(view_);
     }
 }
 
 void VizPlane::release()
 {
     releaseHandle();
-}
-
-void VizPlane::reapPendingReleases(u64 nowMs)
-{
-    for (auto it = pendingReleases_.begin(); it != pendingReleases_.end();)
-    {
-        if (it->release(nowMs))
-        {
-            it = pendingReleases_.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
 }
 
 InitResult VizPlane::open()
@@ -81,8 +64,8 @@ InitResult VizPlane::open()
         backend_.unmap(view);
         return ir;
     }
-    handle_ = SegmentHandle(std::move(view), &backend_);
-    base_ = static_cast<unsigned char*>(handle_.base());
+    view_ = std::move(view);
+    base_ = static_cast<unsigned char*>(view_.base);
     ownerThread_ = std::this_thread::get_id(); // 之后只认这个线程写(RT 零写入护栏)
     return InitResult::kOk;
 }
@@ -108,8 +91,8 @@ InitResult VizPlane::attachReadOnly()
         backend_.unmap(view);
         return ir;
     }
-    handle_ = SegmentHandle(std::move(view), &backend_);
-    base_ = static_cast<unsigned char*>(handle_.base());
+    view_ = std::move(view);
+    base_ = static_cast<unsigned char*>(view_.base);
 
     if (!geometryMatches())
     {
@@ -147,6 +130,14 @@ VizCoverage* VizPlane::coverageBits() const
 VizLanes* VizPlane::lanes() const
 {
     return base_ == nullptr ? nullptr : reinterpret_cast<VizLanes*>(base_ + kVizLanesOffset);
+}
+VizTrackState* VizPlane::trackState() const
+{
+    return base_ == nullptr ? nullptr : reinterpret_cast<VizTrackState*>(base_ + kVizTrackStateOffset);
+}
+VizTrackLabels* VizPlane::labels() const
+{
+    return base_ == nullptr ? nullptr : reinterpret_cast<VizTrackLabels*>(base_ + kVizLabelsOffset);
 }
 
 u32 VizPlane::generation() const
@@ -198,11 +189,21 @@ void VizPlane::publish(const VizSnapshot& s, bool writeLanes)
     f->track_stereo_mask.store(s.stereoMask, std::memory_order_relaxed);
     f->lane_revision.store(s.laneRevision, std::memory_order_relaxed);
 
+    // 每轨当前值(分布图数据面):随每帧刷新 —— 它们是「此刻」,不受 writeLanes 分频影响。
+    auto* ts = trackState();
+    for (u32 t = 0; t < kMaxChannels; ++t)
+    {
+        ts->panNow[t].store(s.panNow[t], std::memory_order_relaxed);
+        ts->volDb[t].store(s.volDb[t], std::memory_order_relaxed);
+        ts->widthPct[t].store(s.widthPct[t], std::memory_order_relaxed);
+    }
+
     if (writeLanes)
     {
         auto* c = colors();
         auto* cov = coverageBits();
         auto* ln = lanes();
+        auto* lb = labels();
         for (u32 t = 0; t < kMaxChannels; ++t)
         {
             c->index[t].store(s.trackColor[t], std::memory_order_relaxed);
@@ -213,6 +214,21 @@ void VizPlane::publish(const VizSnapshot& s, bool writeLanes)
             for (u32 i = 0; i < kVizColumns; ++i)
             {
                 ln->pan[t][i].store(s.pan[t][i], std::memory_order_relaxed);
+            }
+
+            // 轨名:UTF-8 边界安全截断 → 打包进 u32 字(主机序),尾部 NUL 补齐。
+            const std::string& name = s.label[t];
+            const std::size_t n = vizUtf8TruncateLen(name, kVizLabelBytes - 1);
+            unsigned char bytes[kVizLabelBytes] = {};
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                bytes[i] = static_cast<unsigned char>(name[i]);
+            }
+            for (u32 w = 0; w < kVizLabelWords; ++w)
+            {
+                u32 word = 0;
+                std::memcpy(&word, bytes + w * 4, 4);
+                lb->utf8[t][w].store(word, std::memory_order_relaxed);
             }
         }
     }
@@ -230,6 +246,8 @@ bool VizPlane::read(VizSnapshot& out) const
     const auto* c = colors();
     const auto* cov = coverageBits();
     const auto* ln = lanes();
+    const auto* ts = trackState();
+    const auto* lb = labels();
 
     for (int attempt = 0; attempt < kVizReadRetries; ++attempt)
     {
@@ -257,6 +275,9 @@ bool VizPlane::read(VizSnapshot& out) const
         for (u32 t = 0; t < kMaxChannels; ++t)
         {
             out.trackColor[t] = c->index[t].load(std::memory_order_relaxed);
+            out.panNow[t] = ts->panNow[t].load(std::memory_order_relaxed);
+            out.volDb[t] = ts->volDb[t].load(std::memory_order_relaxed);
+            out.widthPct[t] = ts->widthPct[t].load(std::memory_order_relaxed);
             for (u32 w = 0; w < kVizCoverageWords; ++w)
             {
                 out.coverage[t][w] = cov->bits[t][w].load(std::memory_order_relaxed);
@@ -265,6 +286,20 @@ bool VizPlane::read(VizSnapshot& out) const
             {
                 out.pan[t][i] = ln->pan[t][i].load(std::memory_order_relaxed);
             }
+
+            // 轨名:u32 字 → 字节 → 到第一个 NUL 为止(段内恒 NUL 补齐,不会漏尾)。
+            unsigned char bytes[kVizLabelBytes] = {};
+            for (u32 w = 0; w < kVizLabelWords; ++w)
+            {
+                const u32 word = lb->utf8[t][w].load(std::memory_order_relaxed);
+                std::memcpy(bytes + w * 4, &word, 4);
+            }
+            std::size_t n = 0;
+            while (n < kVizLabelBytes && bytes[n] != 0)
+            {
+                ++n;
+            }
+            out.label[t].assign(reinterpret_cast<const char*>(bytes), n);
         }
 
         // seqlock 读边界:载荷读取不得越过第二次 seq 读。

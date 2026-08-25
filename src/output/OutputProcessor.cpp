@@ -469,7 +469,6 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // [T44/J75] viz 段发布(内部 4Hz 分频 + 车道按需重算)。
     publishVizFrame(now);
-    vizPublisher_.reapPendingReleases(now);
 }
 
 void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
@@ -487,6 +486,10 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.crvsRevision = crvsRevision_.load(std::memory_order_acquire);
     in.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     in.playhead = playheadSnapshot();
+
+    const int v = juce::jlimit(1, kVersionMax, versionActive_);
+    // 轨名与 width 不进 crvsRevision,给它们自己的修订号驱动「车道块」重写(轨名随车道落段)。
+    std::uint32_t meta = static_cast<std::uint32_t>(v);
     for (int ch = 0; ch < 15; ++ch)
     {
         const auto& c = runtime_.channels[static_cast<std::size_t>(ch)];
@@ -498,7 +501,15 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
         {
             in.stereoMask |= (1u << ch);
         }
+        in.label[static_cast<std::size_t>(ch)] = c.label.toStdString();
+        // 每轨 width:活动版本的参数 raw atomic(engineering 0..100)。句柄未就绪 → NaN → 段内哨兵。
+        const auto* raw = handles_.rawTrkW[v - 1][ch];
+        const float w = raw != nullptr ? raw->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
+        in.widthPct[static_cast<std::size_t>(ch)] = w;
+        meta = meta * 31u + static_cast<std::uint32_t>(c.label.hashCode());
+        meta = meta * 31u + static_cast<std::uint32_t>(w == w ? w * 100.0f : 0.0f);
     }
+    in.metaRevision = meta;
     vizPublisher_.tick(nowMs, in);
 }
 

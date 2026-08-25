@@ -15,6 +15,7 @@
 //   feat-reader  Output 侧增量拉取特征环 → CSV(IPC-14)
 //   viz-writer   [T44] Output [M] 建 viz 段并发布一帧(--linger-ms 持段供读方 attach)
 //   viz-reader   [T44] Monitor 侧只读 attach viz 段 + 一致性读 → CSV(--out)
+//   viz-publisher[T44] 走**真 VizPublisher**(CRVS 分段 + CurveEvaluator 求值)发布,而非手搓快照
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -35,6 +36,7 @@
 #include "ipc/Registry.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
+#include "output/VizPublisher.h"
 #include "ipc_contract_harness.h"
 
 using namespace scvb;
@@ -832,6 +834,16 @@ int runVizWriter(const Args& a)
     snap->coveredMask = 0x0003u;
     snap->stereoMask = 0x0002u;
     snap->laneRevision = 42;
+    // 每轨当前值三件套(分布图数据面);轨3 起保持哨兵 = 无数据。
+    snap->panNow[0] = vizPackPan(-12.5);
+    snap->volDb[0] = vizPackFixed(-6.25);
+    snap->widthPct[0] = vizPackFixed(80.0);
+    snap->panNow[1] = vizPackPan(25.0);
+    snap->volDb[1] = vizPackFixed(0.0);
+    snap->widthPct[1] = vizPackFixed(100.0);
+    // 轨名:ASCII + 多字节 UTF-8(截断必须落在字符边界)。
+    snap->label[0] = "Lead";
+    snap->label[1] = "\xE4\xB8\xBB\xE5\x94\xB1"; // 主唱
     for (u32 t = 0; t < kMaxChannels; ++t)
     {
         snap->trackColor[t] = t + 1;
@@ -849,6 +861,72 @@ int runVizWriter(const Args& a)
     }
     plane.publish(*snap, /*writeLanes=*/true);
     linger(a.lingerMs);
+    return 0;
+}
+
+// 真 VizPublisher 发布(VIZ-4):轨1 [0,30s) pan=-50;轨2 [60,90s) pan=+40;其余轨无分段。
+// 与手搓快照的 viz-writer 互补 —— 这条路把「引擎曲线 → 降采样 → 段」整段接线也验了。
+int runVizPublisher(const Args& a)
+{
+    SegmentBackendWin32 backend;
+    scvb::output::VizPublisher pub(backend, static_cast<u32>(a.group));
+    if (pub.open() != InitResult::kOk)
+    {
+        return 3;
+    }
+    const double sr = static_cast<double>(a.sr);
+
+    auto crvs = std::make_unique<scvb::state::CrvsData>();
+    const auto seg = [sr](double t0Sec, double t1Sec, float pan) {
+        scvb::state::Segment x;
+        x.t0 = static_cast<std::int64_t>(t0Sec * sr);
+        x.t1 = static_cast<std::int64_t>(t1Sec * sr);
+        x.pan = pan;
+        return x;
+    };
+    crvs->versions[0].tracks[0].segments = {seg(0.0, 30.0, -50.0f)};
+    crvs->versions[0].tracks[1].segments = {seg(60.0, 90.0, 40.0f)};
+
+    scvb::CurveEvaluator c0;
+    scvb::CurveEvaluator c1;
+    const auto build = [&](scvb::CurveEvaluator& ev, const std::vector<scvb::state::Segment>& segs) {
+        std::vector<scvb::CurveSegment> cs;
+        for (const auto& x : segs)
+        {
+            scvb::CurveSegment c;
+            c.startSec = static_cast<double>(x.t0) / sr;
+            c.endSec = static_cast<double>(x.t1) / sr;
+            c.pan = x.pan;
+            cs.push_back(c);
+        }
+        ev.build(cs, scvb::TransitionConfig{});
+    };
+    build(c0, crvs->versions[0].tracks[0].segments);
+    build(c1, crvs->versions[0].tracks[1].segments);
+
+    scvb::output::VizPublishInput in;
+    in.crvs = crvs.get();
+    in.curves[0] = &c0;
+    in.curves[1] = &c1;
+    in.versionActive = 1;
+    in.enabledMask = 0x7FFF;
+    in.sampleRate = sr;
+    in.crvsRevision = 1;
+    in.playhead.timeSamples = 0;
+    in.playhead.sampleRate = sr;
+    in.label[0] = "Lead";
+    in.widthPct[0] = 80.0f;
+
+    // 至少发一帧;linger 期间按 4Hz 续发,读方随时 attach 都能拿到一致帧。
+    u64 t = 0;
+    pub.tick(t, in);
+    const u64 deadline = ::GetTickCount64() + static_cast<u64>(a.lingerMs > 0 ? a.lingerMs : 0);
+    while (::GetTickCount64() < deadline)
+    {
+        ::Sleep(50);
+        t += 250;
+        pub.tick(t, in);
+    }
     return 0;
 }
 
@@ -907,11 +985,21 @@ int runVizReader(const Args& a)
     csv += "pan_t2_mid " + std::to_string(static_cast<long long>(snap->pan[1][10])) + "\n";
     csv += "pan_t2_tail " + std::to_string(static_cast<long long>(snap->pan[1][kVizColumns - 1])) + "\n";
     csv += "pan_t3_any " + std::to_string(static_cast<long long>(snap->pan[2][0])) + "\n";
+    csv += "now_pan1 " + std::to_string(static_cast<long long>(snap->panNow[0])) + "\n";
+    csv += "now_vol1 " + std::to_string(static_cast<long long>(snap->volDb[0])) + "\n";
+    csv += "now_width1 " + std::to_string(static_cast<long long>(snap->widthPct[0])) + "\n";
+    csv += "now_pan3 " + std::to_string(static_cast<long long>(snap->panNow[2])) + "\n";
+    csv += "label1 " + snap->label[0] + "\n";
+    csv += "label2 " + snap->label[1] + "\n";
     csv += "cov_t1_0 " + std::to_string(snap->covered(0, 0) ? 1 : 0) + "\n";
     csv += "cov_t1_last " + std::to_string(snap->covered(0, kVizColumns - 1) ? 1 : 0) + "\n";
     csv += "cov_t2_0 " + std::to_string(snap->covered(1, 0) ? 1 : 0) + "\n";
     csv += "cov_t2_last " + std::to_string(snap->covered(1, kVizColumns - 1) ? 1 : 0) + "\n";
     csv += "cov_t3_0 " + std::to_string(snap->covered(2, 0) ? 1 : 0) + "\n";
+    // 位序字边界(LSB 起、每字 32 格):写反了图照画,只是断线整体错开 32 的倍数,肉眼查不出来。
+    csv += "cov_bit31 " + std::to_string(snap->covered(0, 31) ? 1 : 0) + "\n";
+    csv += "cov_bit32 " + std::to_string(snap->covered(0, 32) ? 1 : 0) + "\n";
+    csv += "cov_word0 " + std::to_string(snap->coverage[0][0]) + "\n";
     writeCsv(a.out, csv);
     return 0;
 }
@@ -966,6 +1054,10 @@ int main(int argc, char** argv)
     if (a.role == "viz-reader")
     {
         return runVizReader(a);
+    }
+    if (a.role == "viz-publisher")
+    {
+        return runVizPublisher(a);
     }
     return 99;
 }
