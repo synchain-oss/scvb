@@ -241,7 +241,10 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
             vizState_ = VizState::kOnline;
             break;
         case scvb::InitResult::kAbiMismatch:
-            vizState_ = VizState::kAbiMismatch; // 拒连横幅(J40);不半兼容、不重试成功
+            // 拒连(J40):绝不半兼容读。下一拍仍会重试 —— 对端升级后自愈,而 attach 失败的
+            // 每一拍只是一次 open+unmap,不映射、不读段内容,代价可忽略。
+            vizState_ = VizState::kAbiMismatch;
+            vizFresh_ = false;
             return;
         case scvb::InitResult::kFailed:
         default:
