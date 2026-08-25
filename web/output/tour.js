@@ -209,6 +209,7 @@ export function buildDemoStore(getT) {
         readOnly: false,
         noTimeline: false,
         loopMissing: false,
+        loopStale: false, // demo 里循环区正常,不挂「已失效」提示
         // 本会话一次性判定(不入 state chunk);demo 里引导已关、无打印态。
         session: {
             writeConfirmSeen: true,

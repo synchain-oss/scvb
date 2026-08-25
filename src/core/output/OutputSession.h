@@ -20,7 +20,9 @@
 #include <cstdint>
 #include <vector>
 
+#include "analysis/FrameStore.h"
 #include "ipc/CtrlPlane.h"
+#include "ipc/FeatRing.h"
 #include "ipc/ISegmentBackend.h"
 #include "ipc/Registry.h"
 #include "output/ShmRingMixSource.h"
@@ -128,8 +130,31 @@ public:
     // 本组 RegistryHeader.generation(契约 §2.3 顶层 generation;覆盖式重初始化 +1)。
     u32 registryGeneration() const { return registry_.generation(); }
 
-    // [M] 聚合用([J09] 全局小节 / 看门狗)。
+    // [M] 发布配置广播区(Output→Input 只读镜像,契约 §4.3 / ADR-004)。值变化才调用。
+    void publishConfigBroadcast(const CtrlBroadcastSnapshot& s) { ctrl_.writeBroadcast(s); }
+
+    // [M] 取走某轨经命令环收到的远程优先级(§3.4 remoteSetPriority)。返回 false = 该轨无待应用值;
+    // 返回 true 后该值被清空(取走即消费,不重复应用)。命令在 tick() 的 consumeCommands 里入队。
+    bool takeRemotePriority(u32 channel, u32& valueOut);
+
+    // ---- 特征拉取(04 §3.3;采集覆盖的数据面)----------------------------------------
+    // Input 每块把特征写进本组 feat 段,Output [M] 25Hz 增量拉进 FrameStore —— 这条读侧此前
+    // 完全没接线(FeatPuller/FrameStore 只在 tests/ 里出现),于是 Output 永远拿不到覆盖数据,
+    // 「已分析区域共 0 段」且分析按钮恒置灰(T37 三轮 A 族 L-6)。
+    //
+    // 特征权威存储(04 §3.1):按 channel 独立分页量化存储 + coverage 记账。桥面覆盖率读它。
+    const analysis::FrameStore& frameStore() const noexcept { return frameStore_; }
+    analysis::FrameStore& frameStore() noexcept { return frameStore_; }
+    // 特征 hop 时长(ms):秒 ↔ hop 换算的唯一真源(桥面按它折算范围与覆盖率)。
+    static constexpr u32 featHopMs() noexcept { return kFeatHopMs; }
+
+    // [M] 聚合用([J09] 全局小节 / 看门狗)。gapCount 是**进程寿命累计值**(ctrl 全局小节与诊断用)。
     u32 gapCount(u32 channel) const;
+
+    // [M] 桥面 scvb.conn.misalignCount 的数据面:**本次失准发作**内的缺口数 —— 该轨连续
+    // kMisalignRecoverMs 无新缺口(evaluateChannels 判定 !misaligned)即归零。累计值不适合直接上桥:
+    // 它只增不减,起播抖一次就把「路由失准」横幅永久钉住,恢复健康也撤不下来(T37 三轮 A 族)。
+    u32 misalignCountRecent(u32 channel) const;
     u64 writeHead(u32 channel) const;
     u64 epoch(u32 channel) const;
 
@@ -143,6 +168,8 @@ public:
 private:
     OutputClaimState openAndClaim(u64 nowMs);
     void attachAudioRings();
+    void attachFeatRings(); // 只读 attach 本组 feat 段并绑 FeatPuller(与 attachAudioRings 同构)
+    void pullFeatures(); // [M] 25Hz 增量拉取 → frameStore_(只拉在线轨)
     void releaseSegments();
     void releaseHandle(SegmentHandle& handle);
     void releaseSlot();
@@ -166,6 +193,12 @@ private:
     std::array<SegmentHandle, kMaxChannels> audioHandles_{};
     std::vector<SegmentHandle> pendingSegments_;
 
+    // 特征读侧([M] 独占;音频线程不触):feat 段只读映射 + 增量拉取游标 + 权威存储。
+    std::array<SegmentHandle, kMaxChannels> featHandles_{};
+    std::array<bool, kMaxChannels> featBound_{};
+    FeatPuller featPuller_;
+    analysis::FrameStore frameStore_;
+
     // [A] 只读的注入掩码(bit{N-1} = channel N 可注入混音);[M] 25Hz 写。
     std::atomic<u32> injectMask_{0};
     // [A] fetch_add 的存活计数;[M] 读(停摆看门狗)。
@@ -180,10 +213,18 @@ private:
     std::array<u64, kMaxChannels> onlineSinceMs_{};
     std::array<u64, kMaxChannels> misalignedSinceMs_{};
     std::array<u32, kMaxChannels> lastGapCount_{};
+    // 本次失准发作的起算点:恢复健康(!misaligned)时对齐到当前累计值,于是
+    // misalignCountRecent = gapCount - baseline 归零。
+    std::array<u32, kMaxChannels> misalignBaseline_{};
     std::array<u64, kMaxChannels> lastWriteHead_{};
     std::array<u64, kMaxChannels> lastWriteHeadChangeMs_{};
 
     u64 lastGlobalInfoMs_ = 0;
+
+    // [M] 命令环派发结果:Input 远程改优先级的待应用值(§3.4)。桥层每拍 takeRemotePriority 取走
+    // 并落 Output 的 runtime state —— 配置真源在 Output(ADR-004),session 只做投递,不自己存配置。
+    std::array<u32, kMaxChannels> pendingPriority_{};
+    std::array<bool, kMaxChannels> hasPendingPriority_{};
 };
 
 } // namespace scvb::output

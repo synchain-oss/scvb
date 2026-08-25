@@ -49,6 +49,68 @@ static_assert(offsetof(CtrlHeader, abi) == 4);
 static_assert(offsetof(CtrlHeader, generation) == 8);
 static_assert(alignof(CtrlHeader) == 64);
 
+// ---------------------------------------------------------------------------
+// 广播区(Output→Input 配置只读镜像,契约 §4.3 / ADR-004:配置真源在 Output)。
+// 写方 = 本组主 Output 的 [M];读方 = 各 Input 的 [M]。跨进程 seqlock(奇偶协议),读方撕裂即
+// 沿用上帧、不自旋 —— 与进程内的 engine::PlayheadShot 同款,只是载荷落在共享段里。
+//
+// 本区在 T06 冻结时只留了「偏移 64、9344 字节」的预算,内容留白(注释写「T25/params v2.x 填」),
+// 于是 Input 侧的 label/priority/lead_lock/pair_id/freeze 一直是 InputBridgeLogic 里的硬编码
+// 常量,Output 改什么 Input 都看不见(T37 三轮 C 族「远程只读视图整条断」)。下面的结构就落在
+// 那段预算内,不改任何已冻结字段、不越界。
+// ---------------------------------------------------------------------------
+
+// 每轨配置镜像(32 字节)。字段与 §2.1 scvb.state.channels[] 一一对位。
+struct CtrlChannelConfig
+{
+    u32 priority; // 0   0..10
+    u32 flags; // 4   位定义见下 kCfgFlag*
+    u32 pair_id; // 8   0=无配对,1..7
+    u32 freeze; // 12  bit0=pan 冻结,bit1=vol 冻结(J65 同一参数两位)
+    u32 source_channels; // 16  1|2(Input 实测值,Output 回镜像给全组)
+    u32 _reserved[3]; // 20..32
+};
+static_assert(sizeof(CtrlChannelConfig) == 32, "CtrlChannelConfig 定长 32 字节");
+
+enum CtrlConfigFlag : u32
+{
+    kCfgFlagEnabled = 1u << 0,
+    kCfgFlagLeadLock = 1u << 1,
+    kCfgFlagLeadVolExempt = 1u << 2,
+    kCfgFlagParticipateAutoPan = 1u << 3,
+};
+
+// label 定长字节槽:契约限 ≤24 **字符**,UTF-8 最坏 4 字节/字符 → 96 字节封顶 + 1 位 NUL 余量,
+// 取 100 对齐到 4。写方按字节截断到最后一个完整 UTF-8 序列边界(不产生半个码点)。
+inline constexpr std::size_t kCtrlLabelBytes = 100;
+
+// 广播区总布局:64 字节头(独占 cacheline 0,seq 与载荷分离)+ 15 轨配置 + 15 条 label。
+struct alignas(64) CtrlBroadcast
+{
+    std::atomic<u32> seq; // 0   seqlock:写前 +1(奇)→ 写载荷 → 写后 +1(偶)
+    std::atomic<u32> config_seq; // 4   广播区整体版本号(任一字段变化 +1;Input 据此判「有新配置」)
+    u32 lead_select; // 8   0=无,1..15(全局 lead 选择,§2.1)
+    u32 _pad; // 12
+    u32 _reserved[12]; // 16..64
+    CtrlChannelConfig channels[kMaxChannels]; // 64..544(15×32)
+    char labels[kMaxChannels][kCtrlLabelBytes]; // 544..2044(15×100,UTF-8 NUL 结尾)
+    char _tail[4]; // 2044..2048:显式补齐到 64 的整数倍(与 CtrlHeader/CtrlRing 同惯例)
+};
+static_assert(offsetof(CtrlBroadcast, channels) == 64, "广播区头独占 cacheline 0");
+static_assert(alignof(CtrlBroadcast) == 64);
+// 尺寸写死:alignas(64) 的结构若不是 64 整数倍,编译器会隐式补齐(MSVC /W4 C4324),
+// 而隐式补齐意味着布局取决于编译器 —— 共享内存结构不接受这种不确定性。
+static_assert(sizeof(CtrlBroadcast) == 2048, "CtrlBroadcast 须恰好 32 个 cacheline(无隐式填充)");
+
+// 读写用的普通 POD 快照(无原子,可自由拷贝;与 OutputGlobalInfoSnapshot 同款 API 形状)。
+struct CtrlBroadcastSnapshot
+{
+    u32 config_seq = 0;
+    u32 lead_select = 0;
+    CtrlChannelConfig channels[kMaxChannels] = {};
+    char labels[kMaxChannels][kCtrlLabelBytes] = {};
+};
+
 // 命令环每 slot 容量(2^k;满环丢最旧 + 计数,是安全阀,容量小即可)。
 inline constexpr u32 kCtrlRingCapacity = 16;
 
@@ -72,13 +134,14 @@ static_assert(offsetof(CtrlRing, records) == 64);
 inline constexpr std::size_t kCtrlSegmentSize = 16384;
 inline constexpr std::size_t kCtrlHeaderBytes = sizeof(CtrlHeader); // 64
 inline constexpr std::size_t kCtrlBroadcastOffset = 64; // 广播区起点(cacheline 0 之后)
-inline constexpr std::size_t kCtrlBroadcastBytes = 9344; // 广播区占位(T25/params v2.x 填内容)
+inline constexpr std::size_t kCtrlBroadcastBytes = 9344; // 广播区预算(CtrlBroadcast 落在其内,尚有余量)
 inline constexpr std::size_t kCtrlGlobalInfoOffset = 9408; // 64 对齐(64+9344)
 inline constexpr std::size_t kCtrlRingsOffset = 9664; // 64 对齐(9408+256)
 static_assert(kCtrlGlobalInfoOffset % 64 == 0);
 static_assert(kCtrlRingsOffset % 64 == 0);
 static_assert(kCtrlRingsOffset + kMaxChannels * sizeof(CtrlRing) == kCtrlSegmentSize,
               "ctrl 段 15 命令环须恰好占满预算");
+static_assert(sizeof(CtrlBroadcast) <= kCtrlBroadcastBytes, "CtrlBroadcast 不得越过广播区预算");
 
 // fp_report 载荷打包(J46):value = (u64(tile_idx) << 48) | (hash & 0x0000FFFFFFFFFFFF)。
 // tile_idx 高 16 位(≈18.2 小时时间线上限的截断语义);fingerprint 截断低 48 位。
@@ -192,13 +255,22 @@ public:
     void setConnectedMaskSource(std::function<u32()> source) { connectedMaskSource_ = std::move(source); }
     WatchdogResult tickWatchdog(u64 nowMs);
 
-    // ---- 广播区占位(T25/params v2.x;本卡不发明布局)----
-    void* broadcastBase() const { return base_; }
+    // ---- 广播区(Output→Input 配置只读镜像,契约 §4.3)----
+    // Output [M] 写(seqlock 奇偶);值变化才调用,不必每拍写。未打开则静默不写。
+    void writeBroadcast(const CtrlBroadcastSnapshot& s);
+    // Input [M] 读。返回 false = 段未打开 / 本次读撕裂(调用方沿用上帧,不自旋)。
+    bool readBroadcast(CtrlBroadcastSnapshot& out) const;
+
+    // 广播区首字节(**含 kCtrlBroadcastOffset 偏移**)。原先返回 base_,即段起点 —— 那是
+    // CtrlHeader(magic/abi/generation)的地址,任何按 broadcastBytes() 写入都会砸掉段头
+    // 并越界踩进 OutputGlobalInfo。当时无调用方所以没暴露出来。
+    void* broadcastBase() const { return base_ != nullptr ? base_ + kCtrlBroadcastOffset : nullptr; }
     static constexpr std::size_t broadcastBytes() { return kCtrlBroadcastBytes; }
 
 private:
     CtrlRing* ringAt(u32 channel) const;
     OutputGlobalInfo* globalInfo() const;
+    CtrlBroadcast* broadcast() const;
     bool anyOnlineWriteHeadAdvanced() const;
     void updateWriteHeadBaseline();
     static u32 lowestOnlineChannel(u32 mask);

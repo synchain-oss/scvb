@@ -519,3 +519,82 @@ TEST_CASE("T37 Processor 回归(deepseek):srMismatch 读对组 —— changeGrou
     REQUIRE(probe1.open() == InitResult::kOk);
     CHECK(probe1.readGlobalInfo().output_sample_rate == 44100);
 }
+
+// ---------------------------------------------------------------------------
+// T37 三轮 C 族回归:Output→Input 配置广播链路。
+// 真机症状:「Input 侧优先级恒 0,Output 显示 5;Output 改 5→6,Input 不动;lead 开关也不同步」。
+// 根因有两条,都在本文件覆盖:
+//   ① ctrl 广播区(offset 64,9344B)只有预算没有布局 —— 没人写、没人读,Input 侧 label/
+//      priority/lead_lock/pair_id/freeze 全是 InputBridgeLogic 里的硬编码常量;
+//   ② Input 上行的 remoteSetPriority 进了命令环,而 OutputSession::consumeCommands 的循环体
+//      是空的 —— 记录 dequeue 出来直接丢弃,优先级永远落不到 Output 的 state。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("T37-C 广播区 seqlock 往返:Output 写 → Input 读到同一份配置", "[ctrl][broadcast][t37]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::CtrlPlane writer(backend, 1);
+    REQUIRE(writer.open() == scvb::InitResult::kOk);
+
+    scvb::CtrlBroadcastSnapshot out;
+    out.config_seq = 42;
+    out.lead_select = 3;
+    out.channels[2].priority = 6; // ch3 优先级 6(真机里 Output 显示 5、改成 6)
+    out.channels[2].pair_id = 2;
+    out.channels[2].freeze = 3; // pan + vol 双冻
+    out.channels[2].source_channels = 2;
+    out.channels[2].flags = scvb::kCfgFlagEnabled | scvb::kCfgFlagLeadLock | scvb::kCfgFlagParticipateAutoPan;
+    std::snprintf(out.labels[2], scvb::kCtrlLabelBytes, "%s", "主唱 A");
+    writer.writeBroadcast(out);
+
+    scvb::CtrlPlane reader(backend, 1);
+    REQUIRE(reader.open() == scvb::InitResult::kOk);
+
+    scvb::CtrlBroadcastSnapshot in;
+    REQUIRE(reader.readBroadcast(in));
+    CHECK(in.config_seq == 42);
+    CHECK(in.lead_select == 3);
+    CHECK(in.channels[2].priority == 6);
+    CHECK(in.channels[2].pair_id == 2);
+    CHECK(in.channels[2].freeze == 3);
+    CHECK(in.channels[2].source_channels == 2);
+    CHECK((in.channels[2].flags & scvb::kCfgFlagLeadLock) != 0);
+    CHECK((in.channels[2].flags & scvb::kCfgFlagLeadVolExempt) == 0);
+    CHECK(std::string(in.labels[2]) == "主唱 A");
+
+    // 改一个字段再广播 → 读方看到新值与新 seq(这一步是「Output 改 5→6 Input 不动」的直接回归)。
+    out.config_seq = 43;
+    out.channels[2].priority = 9;
+    writer.writeBroadcast(out);
+    REQUIRE(reader.readBroadcast(in));
+    CHECK(in.config_seq == 43);
+    CHECK(in.channels[2].priority == 9);
+}
+
+TEST_CASE("T37-C 广播区落在预算内且不与段头/全局小节重叠", "[ctrl][broadcast][t37]")
+{
+    // broadcastBase() 曾返回 base_(段起点 = CtrlHeader 地址):按 broadcastBytes() 写入会砸掉
+    // magic/abi/generation 并越界踩进 OutputGlobalInfo。此处钉死偏移与预算。
+    STATIC_REQUIRE(sizeof(scvb::CtrlBroadcast) <= scvb::kCtrlBroadcastBytes);
+    STATIC_REQUIRE(scvb::kCtrlBroadcastOffset == sizeof(scvb::CtrlHeader));
+    STATIC_REQUIRE(scvb::kCtrlBroadcastOffset + scvb::kCtrlBroadcastBytes == scvb::kCtrlGlobalInfoOffset);
+
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+    scvb::CtrlPlane plane(backend, 1);
+    REQUIRE(plane.open() == scvb::InitResult::kOk);
+
+    scvb::CtrlBroadcastSnapshot s;
+    s.config_seq = 7;
+    plane.writeBroadcast(s);
+
+    // 写广播区不得动段头(generation/abi 仍可用),也不得动 OutputGlobalInfo。
+    CHECK(plane.generation() >= 1);
+    scvb::OutputGlobalInfoSnapshot gi;
+    gi.output_sample_rate = 48000;
+    plane.refreshGlobalInfo(gi);
+    plane.writeBroadcast(s);
+    CHECK(plane.readGlobalInfo().output_sample_rate == 48000);
+}

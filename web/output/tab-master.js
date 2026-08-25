@@ -1867,6 +1867,12 @@ export function createTabMaster(opts) {
                 "data-loop-missing",
                 st.loopMissing ? "1" : "0",
             );
+            // 「循环区已失效,沿用上次范围」只在循环区**此刻确实读不到**时出现(§2.6:
+            // scvb.playhead 缺 loopStartS/loopEndS)。循环区完好时这条提示不该在场。
+            el.rangeCard.setAttribute(
+                "data-loop-stale",
+                st.loopStale ? "1" : "0",
+            );
         }
         if (el.rangeSeg) {
             for (const btn of el.rangeSeg.querySelectorAll(

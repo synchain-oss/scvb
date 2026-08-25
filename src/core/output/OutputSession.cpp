@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "output/OutputSession.h"
 
+#include <limits>
+
 namespace scvb::output
 {
 
@@ -9,6 +11,11 @@ namespace
 std::wstring audioFullName(u32 group, u32 channel)
 {
     return L"Local\\" + segmentLogicalName(group, SegmentKind::kAudio, channel);
+}
+
+std::wstring featFullName(u32 group, u32 channel)
+{
+    return L"Local\\" + segmentLogicalName(group, SegmentKind::kFeat, channel);
 }
 
 // 文件级空源:音频线程经 mixSource(非法 channel)访问时,不经过 magic-static 守卫(实时线程禁锁)。
@@ -165,6 +172,74 @@ void OutputSession::attachAudioRings()
     }
 }
 
+void OutputSession::attachFeatRings()
+{
+    // 与 attachAudioRings 同构的只读 attach:openExisting + initHeader(allowOverwrite=false)。
+    // 幂等,失败由 [M] 25Hz 重试。特征段与音频段同生命周期(InputSession 一起建/一起放)。
+    for (u32 ch = 1; ch <= kMaxChannels; ++ch)
+    {
+        const std::size_t idx = static_cast<std::size_t>(ch - 1);
+        if (featBound_[idx] || featHandles_[idx].valid())
+        {
+            continue;
+        }
+        InputSlot* slot = registry_.inputSlot(ch);
+        if (slot == nullptr || slot->state.load(std::memory_order_acquire) != kSlotActive)
+        {
+            continue;
+        }
+
+        SegmentView fv;
+        if (backend_.openExisting(featFullName(groupId_, ch), fv) != InitResult::kOk)
+        {
+            continue;
+        }
+        auto* fh = static_cast<FeatHeader*>(fv.base);
+        const auto ir = backend_.initHeader(fv, &fh->magic, &fh->abi, nullptr, sizeof(FeatHeader),
+                                            /*initData=*/{}, /*allowOverwrite=*/false);
+        if (ir != InitResult::kOk)
+        {
+            backend_.unmap(fv);
+            continue;
+        }
+
+        // 几何快照纪律(04 §3 / FeatRing.h 头注):capacity 在 attach 时读一次进绑定,
+        // 此后只用快照做索引模数,绝不回读段头。
+        const u32 capacity = fh->capacity_hops;
+        if (capacity == 0)
+        {
+            backend_.unmap(fv);
+            continue; // 写方尚未初始化几何:下一拍重试
+        }
+        const FeatFrame* fdata = reinterpret_cast<const FeatFrame*>(fh + 1);
+        featHandles_[idx] = SegmentHandle(std::move(fv), &backend_);
+        featPuller_.bind(ch, fh, fdata, capacity);
+        featBound_[idx] = true;
+    }
+}
+
+void OutputSession::pullFeatures()
+{
+    // ChannelFrames 默认 readOnly=true(写入口静默丢弃、不记账)。采集开关就是那把闸:
+    // 开 → 允许记账;关 → 回只读,已采集的覆盖保留不动(ADR-007 采集 OFF 只读语义)。
+    // 不开闸的话拉取会一路成功却什么都没写进去,覆盖率恒 0。
+    const bool capturing = captureEnabled_.load(std::memory_order_relaxed) != 0;
+    for (u32 ch = 1; ch <= kMaxChannels; ++ch)
+    {
+        frameStore_.channel(ch).setReadOnly(!capturing);
+    }
+    if (!capturing)
+    {
+        return; // 采集 OFF:Input 也不写 feat 段,连拉都省了
+    }
+
+    // timeGate 取全域:范围门控属桥面语义(global.range / 布防选区),由调用方按需改
+    // ChannelFrames::setGate,拉取层不替它决定。selectedMask=0 = 不限轨;
+    // activeMask = 本组 connected_mask,只拉在线轨(04 §3.3)。
+    constexpr analysis::HopRange kAllHops{0, std::numeric_limits<std::uint64_t>::max()};
+    featPuller_.pullTick(frameStore_, kAllHops, /*selectedMask=*/0, registry_.connectedMask());
+}
+
 void OutputSession::evaluateChannels(u64 nowMs)
 {
     u32 inject = 0;
@@ -186,6 +261,12 @@ void OutputSession::evaluateChannels(u64 nowMs)
             lastGapCount_[idx] = gc;
         }
         const bool misaligned = (nowMs - misalignedSinceMs_[idx]) < kMisalignRecoverMs;
+        if (!misaligned)
+        {
+            // 连续 kMisalignRecoverMs 无新缺口 = 本次失准发作结束 → 上桥的 misalignCount 归零,
+            // 「路由失准」横幅与逐行 ⚠ 随之撤下(累计值仍留在 gapCount 供 ctrl 全局小节/诊断)。
+            misalignBaseline_[idx] = gc;
+        }
 
         // CH_SUSPENDED:write_head 完全停滞 ≥0.5s ∧ 心跳新鲜(宿主跳过该轨处理,不计失准)。
         bool suspended = false;
@@ -253,15 +334,48 @@ void OutputSession::refreshGlobalInfo(u64 nowMs)
 
 void OutputSession::consumeCommands(u64 /*nowMs*/)
 {
-    // 消费命令环(排空,防满环丢最旧)。op 派发(kSetPriority/kFpReport → state/analysis)归后续任务,
-    // 本卡只承担「Output [M] 消费」通道职责(§3.2 C6)。
+    // 消费命令环(排空,防满环丢最旧)+ op 派发。
+    // 此前这个循环体是空的 —— 记录被 dequeue 出来就丢掉,于是 Input 侧的 remoteSetPriority
+    // 一路走到这里进 /dev/null,优先级怎么调都不生效(T37 三轮 C 族)。
     CtrlRecord rec;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
+        const std::size_t idx = static_cast<std::size_t>(ch - 1);
         while (ctrl_.dequeue(ch, rec))
         {
+            switch (rec.op)
+            {
+            case CtrlOp::kSetPriority:
+                // 同一拍收到多条只留最后一条(值语义,不是增量);越界钳到 0..10。
+                pendingPriority_[idx] = rec.value > 10u ? 10u : static_cast<u32>(rec.value);
+                hasPendingPriority_[idx] = true;
+                break;
+            case CtrlOp::kFpReport:
+                // 指纹上报归分析管线(04 §3.4),本层不消费,排空即可。
+                break;
+            case CtrlOp::kNone:
+            default:
+                // 未知 op:读方安全忽略(§4.0 前向兼容纪律),不报错不中断排空。
+                break;
+            }
         }
     }
+}
+
+bool OutputSession::takeRemotePriority(u32 channel, u32& valueOut)
+{
+    if (channel < 1 || channel > kMaxChannels)
+    {
+        return false;
+    }
+    const std::size_t idx = static_cast<std::size_t>(channel - 1);
+    if (!hasPendingPriority_[idx])
+    {
+        return false;
+    }
+    valueOut = pendingPriority_[idx];
+    hasPendingPriority_[idx] = false; // 取走即消费
+    return true;
 }
 
 void OutputSession::tick(u64 nowMs)
@@ -291,7 +405,9 @@ void OutputSession::tick(u64 nowMs)
     }
 
     attachAudioRings();
+    attachFeatRings();
     evaluateChannels(nowMs);
+    pullFeatures(); // 在 evaluateChannels 之后:activeMask 用本拍刚算出的 connected_mask
 
     // 停摆看门狗(§4.2 [J52]):自身 blockCounter 停滞 + 在线轨 write_head 推进 → 清 mask。
     const WatchdogResult wr = ctrl_.tickWatchdog(nowMs);
@@ -392,6 +508,18 @@ u32 OutputSession::gapCount(u32 channel) const
     return sources_[static_cast<std::size_t>(channel - 1)].gapCount();
 }
 
+u32 OutputSession::misalignCountRecent(u32 channel) const
+{
+    if (channel < 1 || channel > kMaxChannels)
+    {
+        return 0;
+    }
+    const std::size_t idx = static_cast<std::size_t>(channel - 1);
+    const u32 gc = sources_[idx].gapCount();
+    const u32 base = misalignBaseline_[idx];
+    return gc > base ? gc - base : 0; // baseline 只会落后于 gc;防守式取饱和差
+}
+
 u64 OutputSession::writeHead(u32 channel) const
 {
     if (channel < 1 || channel > kMaxChannels)
@@ -427,7 +555,13 @@ void OutputSession::releaseSegments()
     {
         sources_[i].unbind();
         releaseHandle(audioHandles_[i]);
+        // 特征侧同步解绑:featPuller_ 持的是段内裸指针,句柄一放就不能再拉。
+        featBound_[i] = false;
+        releaseHandle(featHandles_[i]);
     }
+    featPuller_.reset();
+    // frameStore_ 不清:改组/重绑不该丢已采集的特征真身(它是 Output 侧的持久化权威,
+    // 04 §3.1)。真要清由桥面的 clearCoverage 走打洞路径。
 }
 
 void OutputSession::releaseHandle(SegmentHandle& handle)
@@ -449,9 +583,17 @@ void OutputSession::resetChannelTracking() noexcept
     onlinePrev_.fill(false);
     onlineSinceMs_.fill(0);
     misalignedSinceMs_.fill(0);
-    lastGapCount_.fill(0);
     lastWriteHead_.fill(0);
     lastWriteHeadChangeMs_.fill(0);
+    // lastGapCount_/misalignBaseline_ 对齐到**当前**累计值而不是 0:gapCount_ 是 ShmRingMixSource
+    // 的进程寿命计数器,改组/重绑都不清零。填 0 会让下一拍 gc != lastGapCount_ 恒成立,
+    // 把新组第一拍直接判成失准。
+    for (std::size_t i = 0; i < kMaxChannels; ++i)
+    {
+        const u32 gc = sources_[i].gapCount();
+        lastGapCount_[i] = gc;
+        misalignBaseline_[i] = gc;
+    }
 }
 
 void OutputSession::releaseSlot()
