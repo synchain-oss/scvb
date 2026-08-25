@@ -432,6 +432,8 @@ tour = createTour({
     resetWaveView: () => tabWave.resetWaveView(),
     // 结束(完成或 Skip)即刻落「本会话已答」位:setTourSeen 的回执与下一拍 scvb.state
     // 都还没到,syncTourAsk 若只看 state 会在这一帧把询问卡重新弹出来(bug A-2)。
+    // 闭包里的 tourAskUi 在本文件下方才 const 声明 —— 本回调只在用户答复时触发(那时模块
+    // 早已求值完毕),不会撞 TDZ;不要把它改成 mount 期同步调用。
     onEnd: () => {
         store.session.tourAnswered = true;
         if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;

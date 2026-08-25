@@ -100,7 +100,10 @@ target_link_libraries(scvb_params_tests PRIVATE
   juce::juce_audio_processors
 )
 
-target_include_directories(scvb_params_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/output)
+target_include_directories(scvb_params_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/output
+  ${CMAKE_SOURCE_DIR}/src/plugin-common   # BridgeBase.h(UiDefaultsStore 取缩放档位边界)
+)
 target_compile_definitions(scvb_params_tests PRIVATE SCVB_TEST_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 
 if(MSVC)

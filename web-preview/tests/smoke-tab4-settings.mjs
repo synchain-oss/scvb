@@ -521,10 +521,16 @@ log("=== ⑥ native 落点:ui.* 与 conn 的写/读路径(T37 真机回归)===")
         "Output processor 两个 ui setter 有实现",
     );
 
-    // A-3:首启已读位的两级落盘 —— 工程位入 CFGS、系统级全局位入 UiDefaultsStore。
+    // A-3:首启已读位的两级落盘 —— 工程位挂 PRMS 的 ValueTree(不是 CFGS:那是定长枚举式
+    // 解码,追加字段会让旧构建整块拒载、把 group/开关/版本静默打回默认)、系统级全局位入
+    // UiDefaultsStore。
     check(
-        op.includes("uiGuideSeen") && op.includes("uiTourSeen"),
-        "guide_seen / tour_seen 随工程 state 落盘(CFGS)",
+        op.includes("writeUiFlags") && op.includes("readUiFlags"),
+        "guide_seen / tour_seen 随 PRMS 落盘(getState 写 / setState 读)",
+    );
+    check(
+        !src("src/core/state/OutputStateCodec.h").includes("uiGuideSeen"),
+        "CFGS 定长布局未被追加字段(旧构建仍解得动新工程)",
     );
     check(
         oe.includes("uidefaults::guideSeenGlobal()") &&
