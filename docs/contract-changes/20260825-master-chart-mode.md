@@ -10,10 +10,10 @@
 - [x] docs/STATE_SCHEMA.md(state schema)—— Output state 的 `ui` 子树新增一个字段。
 - [ ] tests/golden/(golden 快照)—— **不动**。
 
-> 说明:本 PR 的 diff **不含** `docs/STATE_SCHEMA.md`。该文件当前仍是 T39a 的占位骨架
-> (`## 一、Output state(占位)`),正式内容尚未蒸馏;等 T39a 填充或 native 落地时,
-> 把下面「字段定义」一节原样并入其 `ui` 子树即可。此处先立字据,是为了不让一个新 state 字段
-> 无声地长在 web 里。
+> 说明:本文件是 #77 时点立的字据(彼时本 PR 的 diff **不含** `docs/STATE_SCHEMA.md`,该文件还是
+> T39a 的占位骨架 `## 一、Output state(占位)`)。**现已随 #75(T39a)转正回填为真 schema**,
+> 本 PR(DS 侧 native 落地)的 diff 把下面「字段定义」一节(以 UICF 编码口径)并入转正后的 `ui` 子树 ——
+> 见下方「迁移语义」的「编码落点 = 独立 fourcc 块 `UICF`」。
 
 ## 变更内容
 
