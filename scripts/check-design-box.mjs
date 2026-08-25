@@ -48,6 +48,9 @@ const EXPECT = {
         h: 560,
         presets: [0.33, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3],
     },
+    // [J75] 节 C:Monitor 设计盒「依内容定」,T46 定稿 960×720(高 720 里轨迹图卡占 400+;
+    // 宽 960 < Output 1180 因为它是副窗)。档位与 Output 同七档 —— 同族窗口手感一致。
+    monitor: { w: 960, h: 720, presets: [0.5, 0.65, 0.8, 1, 1.25, 1.5, 2] },
 };
 
 const errors = [];
@@ -145,6 +148,7 @@ function checkBox(name) {
 
 checkBox("output");
 checkBox("input");
+checkBox("monitor");
 
 if (errors.length > 0) {
     console.error("check-design-box 失败(" + errors.length + " 项):");
@@ -168,6 +172,12 @@ console.log(
         DESIGN.input.h +
         "(" +
         DESIGN.input.presets.length +
+        " 档)、monitor " +
+        DESIGN.monitor.w +
+        "x" +
+        DESIGN.monitor.h +
+        "(" +
+        DESIGN.monitor.presets.length +
         " 档)",
 );
 process.exit(0);

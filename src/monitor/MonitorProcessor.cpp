@@ -36,13 +36,16 @@ ScvbMonitorAudioProcessor::~ScvbMonitorAudioProcessor()
     stopTimer();
 }
 
-void ScvbMonitorAudioProcessor::prepareToPlay(double /*sampleRate*/, int /*samplesPerBlock*/)
+void ScvbMonitorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
+    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     // 只读监视器:不分配音频缓冲、不建段、不 claim。attach 交给 [M] 定时器(段可能还没建起来)。
     // 这里只把段指向当前组(setStateInformation 可能已经改过 groupId_)。
     vizPlane_.setGroupReadOnly(static_cast<scvb::u32>(groupId_));
     vizState_ = VizState::kOffline;
     vizFresh_ = false;
+    sawVizFrame_ = false;
+    lastVizChangeMs_ = 0;
     lastAttachTryMs_ = 0;
     startTimerHz(4);
 }
@@ -53,6 +56,7 @@ void ScvbMonitorAudioProcessor::releaseResources()
     vizPlane_.release();
     vizState_ = VizState::kOffline;
     vizFresh_ = false;
+    sawVizFrame_ = false;
 }
 
 bool ScvbMonitorAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -76,6 +80,52 @@ void ScvbMonitorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     // 也绝不在此触碰任何共享段:viz 段的读取一律在 [M] 定时器([J75] RT 零写入/零读取铁律)。
     // 声道数不匹配的情形已被 isBusesLayoutSupported 挡在外面,无需补清尾部声道。
     juce::ignoreUnused(buffer);
+
+    // 唯一的例外动作:把宿主 transport 快照发布给 [M](进程内 SPSC seqlock,**不是共享内存**)。
+    // 零分配、零锁、不碰 buffer —— 逐样本按位相等不受影响(nulltest 用例覆盖)。
+    // 为什么不用 viz 段里的 playhead:那份是 4Hz 的冗余副本,竖线会一顿一顿;
+    // Monitor 与 Output 同处一个宿主,看到的是同一条 transport,直接读最准也最跟手。
+    publishPlayhead();
+}
+
+void ScvbMonitorAudioProcessor::publishPlayhead()
+{
+    scvb::engine::PlayheadPod pod;
+    pod.sampleRate = sampleRate_;
+    if (juce::AudioPlayHead* ph = getPlayHead())
+    {
+        if (const auto p = ph->getPosition(); p.hasValue())
+        {
+            pod.timeSamples = p->getTimeInSamples().hasValue() ? *p->getTimeInSamples() : -1;
+            if (p->getIsPlaying())
+            {
+                pod.flags |= scvb::engine::kPlayheadIsPlaying;
+            }
+            if (p->getIsLooping())
+            {
+                pod.flags |= scvb::engine::kPlayheadIsLooping;
+            }
+            if (const auto bpm = p->getBpm(); bpm.hasValue())
+            {
+                pod.bpm = *bpm;
+                pod.flags |= scvb::engine::kPlayheadTempoValid;
+            }
+            if (const auto loop = p->getLoopPoints(); loop.hasValue())
+            {
+                pod.loopStartPpq = loop->ppqStart;
+                pod.loopEndPpq = loop->ppqEnd;
+                pod.flags |= scvb::engine::kPlayheadCycleValid;
+            }
+        }
+    }
+    playheadShot_.publish(pod);
+}
+
+scvb::engine::PlayheadPod ScvbMonitorAudioProcessor::playheadSnapshot() const
+{
+    scvb::engine::PlayheadPod pod;
+    playheadShot_.read(pod); // 撕裂读返回全零 pod;调用方按 timeSamples < 0 过滤
+    return pod;
 }
 
 void ScvbMonitorAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
@@ -164,7 +214,7 @@ void ScvbMonitorAudioProcessor::setStateInformation(const void* data, int sizeIn
     {
         return; // 范围校验失败 → 拒载
     }
-    setGroupId(static_cast<int>(s.groupId));
+    setObservedGroup(static_cast<int>(s.groupId));
     setUiScalePercent(static_cast<int>(s.uiScale));
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
 }
@@ -173,7 +223,7 @@ void ScvbMonitorAudioProcessor::setStateInformation(const void* data, int sizeIn
 // [M] 桥入口
 // ---------------------------------------------------------------------------
 
-bool ScvbMonitorAudioProcessor::setGroupId(int groupId)
+bool ScvbMonitorAudioProcessor::setObservedGroup(int groupId)
 {
     groupId = juce::jlimit(1, kGroupIdMax, groupId);
     if (groupId == groupId_)
@@ -186,7 +236,9 @@ bool ScvbMonitorAudioProcessor::setGroupId(int groupId)
     vizPlane_.setGroupReadOnly(static_cast<scvb::u32>(groupId));
     vizState_ = VizState::kOffline;
     vizFresh_ = false;
+    sawVizFrame_ = false;
     lastVizPublishMs_ = 0;
+    lastVizChangeMs_ = 0;
     lastAttachTryMs_ = 0;
     *viz_ = scvb::VizSnapshot{}; // 清空上一组的车道,避免换组瞬间画出别人的曲线
     return true;
@@ -222,12 +274,23 @@ void ScvbMonitorAudioProcessor::tickMessageThread(std::uint64_t now)
         groupsOnline_ = scvb::probeGroupsOnline(backend_, static_cast<scvb::u32>(groupId_), now,
                                                 /*includeOwnGroup=*/true);
     }
-
-    vizPlane_.reapPendingReleases(now);
 }
 
 void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
 {
+    // ① 已 attach 但帧陈旧:写方要么只是停摆、要么进程已经没了。**分辨这两者只有一个办法 ——
+    // 松开自己的映射再探一次**。命名段的存活是引用计数的:只要 Monitor 自己还抱着映射,
+    // 段就不会消失,于是「写方进程退出」永远看不出来,UI 会一直显示一份僵尸数据。
+    // 松手后:段真没了 → attach 失败 → 空态;写方还在(只是没发新帧)→ attach 成功 → 维持在线但陈旧。
+    // 注意**不重置** sawVizFrame_/lastVizPublishMs_ —— 重新读到同一个 publish_ms 不算新帧,
+    // 否则每次探测都会把自己「刷新」一遍,永远判不出陈旧。
+    if (vizPlane_.isOpen() && sawVizFrame_ && !vizFresh_ && nowMs - lastStaleProbeMs_ >= kVizStaleMs)
+    {
+        lastStaleProbeMs_ = nowMs;
+        vizPlane_.release();
+        lastAttachTryMs_ = 0; // 同一拍内立刻重试
+    }
+
     if (!vizPlane_.isOpen())
     {
         if (nowMs - lastAttachTryMs_ < kVizPollIntervalMs)
@@ -257,13 +320,16 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
     // 一致性读;撕裂(连续 8 次)则沿用上帧,不清空、不闪烁。
     if (vizPlane_.read(*viz_))
     {
-        if (viz_->publishMs != lastVizPublishMs_)
+        // 首帧必算「有新帧」:publish_ms 完全可以合法地是 0(写方用的是自己的时钟基准),
+        // 光比 publish_ms 会把首帧当成「没动过」,于是永远判陈旧。
+        if (!sawVizFrame_ || viz_->publishMs != lastVizPublishMs_)
         {
+            sawVizFrame_ = true;
             lastVizPublishMs_ = viz_->publishMs;
             lastVizChangeMs_ = nowMs;
         }
     }
-    vizFresh_ = lastVizChangeMs_ != 0 && (nowMs - lastVizChangeMs_) < kVizStaleMs;
+    vizFresh_ = sawVizFrame_ && (nowMs - lastVizChangeMs_) < kVizStaleMs;
 }
 
 // ---------------------------------------------------------------------------

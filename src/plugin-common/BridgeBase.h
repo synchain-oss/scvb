@@ -57,12 +57,22 @@ struct DesignBoxSize
     int height = 0;
 };
 
-// 设计盒常量唯一真源 = DesignBox.h(由 design-box.js 生成);role 取 "input" 或 "output",
-// 其余值回落 Output。纯函数,便于离线单测。
+// 设计盒常量唯一真源 = DesignBox.h(由 design-box.js 生成);role 取 "input" / "output" /
+// "monitor"([J75]),其余值回落 Output。纯函数,便于离线单测。
 inline DesignBoxSize designBoxWindowSize(const juce::String& role, float scale)
 {
-    const int w = role == "input" ? scvb::design::kInputDesignW : scvb::design::kOutputDesignW;
-    const int h = role == "input" ? scvb::design::kInputDesignH : scvb::design::kOutputDesignH;
+    int w = scvb::design::kOutputDesignW;
+    int h = scvb::design::kOutputDesignH;
+    if (role == "input")
+    {
+        w = scvb::design::kInputDesignW;
+        h = scvb::design::kInputDesignH;
+    }
+    else if (role == "monitor")
+    {
+        w = scvb::design::kMonitorDesignW;
+        h = scvb::design::kMonitorDesignH;
+    }
     return {juce::roundToInt(static_cast<float>(w) * scale), juce::roundToInt(static_cast<float>(h) * scale)};
 }
 
