@@ -2398,12 +2398,22 @@
                 height: 26px;
                 border-bottom: 1px solid var(--card-border);
                 background: rgba(var(--wh), 0.35);
+                /* 表头在滚动容器**外**(全宽),数据行在容器的 padding box 内(**不含**
+                   竖滚动条)。竖滚动条 9px 见 base.css 的 `*::-webkit-scrollbar` ——
+                   经典滚动条,占布局宽度。两条 fr 弹性列会把这 9px 摊掉,version_name
+                   之后的列相对表头整体左移;600 行必出滚动条,所以是恒定发生的错位。
+                   补右内边距把两边的可用宽度对齐(同款记账见 tab-tracks.js 的
+                   TRACKS_VIEWPORT_W 推导链)。配对项 = 下面那条 scrollbar-gutter。 */
+                padding-right: calc(var(--sp-13) + 9px);
             }
             .suggest-scroll {
                 flex: 1;
                 min-height: 0;
                 overflow: auto;
                 position: relative;
+                /* 恒定预留滚动条槽:否则行数少到不溢出时反过来错位 9px —— 上面那条
+                   表头右内边距是按「滚动条一直在」算的,这里就得让它一直在。 */
+                scrollbar-gutter: stable;
             }
             /* 虚拟滚动的全部机关就这两条:strut 撑出「总行数 × 行高」的滚动高度,
                可见窗口那几十行各自绝对定位到 top。行是滚动容器的直接子节点 ——
@@ -7274,7 +7284,7 @@
                             <div
                                 class="suggest-table"
                                 data-gb="suggest-table"
-                                role="grid"
+                                role="table"
                                 data-t-aria="suggest.tableAria"
                             >
                                 <!-- 列头由 tab-suggestions.js 按 SUGGEST_COLUMNS 现建

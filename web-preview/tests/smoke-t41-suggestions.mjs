@@ -24,8 +24,9 @@
 //   ⑧c stale:过期采集的轨逐行可辨,且**不混进** CSV(13 列冻结);
 //   ⑨ 词条:`suggest.*` 三语齐备、非空、占位符一致、禁词零命中;
 //   ⑩ 源码不变式:桥面名字停在 PENDING_FUNCS(没有偷偷进 BRIDGE_FUNCTIONS)、变更文档在库、
-//      ARIA grid 树连着、斑马纹按行号取、建议表开着时泳道 rAF 停、
-//      [J67] 的「不得复活列表视图」纪律仍在文件头。
+//      ARIA table 树连着、斑马纹按行号取、行节点走池子复用 + scroll 合帧、
+//      表头与数据行的 9px 滚动条错位两条配对修复都在、桥不可用时状态行常驻说明、
+//      返回泳道还焦、建议表开着时泳道 rAF 停、[J67] 的「不得复活列表视图」纪律仍在文件头。
 //
 // 用法:node web-preview/tests/smoke-t41-suggestions.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -641,6 +642,11 @@ log("=== ⑨ 词条 suggest.* ===");
         check(col.t in T.zh, `列头词条 ${col.t} 存在`);
     }
     check("suggest.staleNote" in T.zh, "过期采集提示词条在");
+    // 词条走 textContent,不过 markdown —— 写了 ** 就会原样显示成星号
+    for (const lang of ["zh", "en", "fr"]) {
+        const md = keys.filter((k) => /\*\*|__/.test(T[lang][k]));
+        eq(md, [], `${lang} 词条里有 markdown 强调标记(会原样显示)`);
+    }
     // 「它是建议,不是执行」——07 T41 强调栏:三语都得把这层意思说出来
     check(
         /不会替你/.test(T.zh["suggest.disclaimer"]),
@@ -710,32 +716,81 @@ log("=== ⑩ 源码不变式 ===");
         "没有把 suggest 当成第五个 tab 送进 setActiveTab",
     );
 
-    // ARIA grid 树必须是连着的:grid → (row 表头 | rowgroup) → row → gridcell。
-    // 中间夹一层 div 就断了,读屏软件念不出行列关系。
+    // ARIA table 树必须是连着的:table → (row 表头 | rowgroup) → row → cell。
+    // 中间夹一层 div 就断了,读屏软件念不出行列关系。取 table 而非 grid:
+    // grid 隐含格级键盘导航,而这里只有整体滚动。
     const html = src("web/output/index.html");
     check(
-        /data-gb="suggest-scroll"[\s\S]{0,120}role="rowgroup"/.test(html),
+        /data-gb="suggest-table"[\s\S]{0,60}role="table"/.test(html),
+        "表容器是 table(不是 grid —— 没有格级键盘导航)",
+    );
+    check(
+        /data-gb="suggest-scroll"[\s\S]{0,140}role="rowgroup"/.test(html),
         "滚动容器是 rowgroup",
     );
     check(
-        /data-gb="suggest-thead"[\s\S]{0,120}aria-rowindex="1"/.test(html),
+        /data-gb="suggest-thead"[\s\S]{0,140}aria-rowindex="1"/.test(html),
         "表头占 aria-rowindex 1",
     );
     check(
-        /el\.scroll\.replaceChildren\(el\.strut, frag\)/.test(js),
-        "数据行是 rowgroup 的**直接**子节点(不再套 spacer/rows 两层)",
+        /el\.scroll\.replaceChildren\(el\.strut, \.\.\.local\.pool/.test(js),
+        "数据行是 rowgroup 的**直接**子节点(不套 spacer/rows 两层)",
     );
     for (const attr of ["aria-rowindex", "aria-colindex", "columnheader"]) {
         check(js.includes(attr), `虚拟滚动补齐了 ${attr}`);
     }
     check(
         /aria-rowcount/.test(js) && /aria-colcount/.test(js),
-        "grid 声明了总行列数(虚拟滚动下 DOM 里只有可见行)",
+        "table 声明了总行列数(虚拟滚动下 DOM 里只有可见行)",
     );
-    // 斑马纹按行号取而不是 :nth-child —— 可见窗口是滚动着换的一批节点
+    // 表头 13 个格也要有列号(数据格有、表头没有 = 读屏软件对不上列)
+    const headBlock = js.slice(
+        js.indexOf("function mountHead()"),
+        js.indexOf("function rowNodeAt("),
+    );
+    check(/aria-colindex/.test(headBlock), "表头格也带 aria-colindex");
+    // 斑马纹按行号取而不是 :nth-child —— 节点是复用的,按子节点序号上色会随滚动翻转
     check(
         !/suggest-row:nth-child/.test(html),
         "斑马纹不按子节点序号(否则滚动时黑白翻转)",
+    );
+
+    // 滚动路径:节点复用 + rAF 合帧(每滚 22px 重建几百个节点是与「每帧重建行集」
+    // 同一类的浪费,只是触发源换成了滚动)
+    check(
+        /function rowNodeAt\(/.test(js) && /local\.pool\[slot\]/.test(js),
+        "行节点走池子复用",
+    );
+    check(
+        /on\(el\.scroll, "scroll", scheduleRows/.test(js),
+        "scroll 只标脏,重排合到下一帧",
+    );
+    check(
+        /cancelAnimationFrame\(local\.scrollRaf\)/.test(js),
+        "destroy() 撤掉在途的那一帧(否则拆完还会再画一次)",
+    );
+
+    // 表头在滚动容器外、数据行在其 padding box 内 —— 9px 竖滚动条(base.css)会把两边
+    // 错开。两条配对修复缺一不可:表头补右内边距 + 滚动槽恒定预留。
+    check(
+        /\.suggest-thead\s*\{[^}]*padding-right:\s*calc\(var\(--sp-13\) \+ 9px\)/.test(
+            html,
+        ),
+        "表头补了 9px 右内边距(与竖滚动条同宽)",
+    );
+    check(
+        /\.suggest-scroll\s*\{[^}]*scrollbar-gutter:\s*stable/.test(html),
+        "滚动槽恒定预留(否则行少不溢出时反过来错 9px)",
+    );
+
+    // 桥不可用时要有**常驻**说明,不能只挂在 title 上(点一枚灰钮零反馈)
+    check(
+        /local\.status \|\|[\s\S]{0,200}suggest\.exportUnavailable/.test(js),
+        "桥上没挂 exportSuggestions 时状态行常驻说明",
+    );
+    check(
+        /el\.entry\.focus\(\)/.test(js),
+        "返回泳道时焦点还给入口钮(不掉回 body)",
     );
 
     // 建议表开着时泳道的 rAF 必须停:`data-tab` 仍是 wave、泳道只是被 CSS 藏了,

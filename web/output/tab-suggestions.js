@@ -389,6 +389,8 @@ export function createTabSuggestions(opts) {
         busy: false,
         status: null, // {key, args} —— 一次性反馈,切视图即清
         src: null, // 行集输入签名(脏检查,见 render)
+        pool: [], // 可复用的行节点(虚拟滚动,见 rowNodeAt)
+        scrollRaf: 0,
     };
 
     function t(key, fallback) {
@@ -432,17 +434,48 @@ export function createTabSuggestions(opts) {
         // 网格列模板同时给表头与数据行,两者才不会各排各的
         const template = SUGGEST_COLUMNS.map((c) => c.w).join(" ");
         if (el.table) el.table.style.setProperty("--suggest-cols", template);
-        for (const col of SUGGEST_COLUMNS) {
+        SUGGEST_COLUMNS.forEach((col, c) => {
             const cell = document.createElement("span");
             cell.className =
                 "suggest-cell suggest-cell--head" +
                 (col.num ? " suggest-cell--num" : "");
             cell.setAttribute("role", "columnheader");
+            cell.setAttribute("aria-colindex", String(c + 1));
             cell.setAttribute("data-t", col.t);
             // title 挂冻结列名:表头是本地化的,而 CSV 里是这一串 —— 悬停即可对上
             cell.setAttribute("title", col.key);
             el.thead.appendChild(cell);
+        });
+    }
+
+    /**
+     * 取一行的 DOM(不够就新建)。虚拟滚动**复用节点**:每滚一行就整窗
+     * `replaceChildren` 掉几百个节点,是与「每帧重建行集」同一类的浪费,只是触发源
+     * 换成了滚动。池子大小 = 一个可见窗口,滚动期只改 textContent 与几个属性。
+     */
+    function rowNodeAt(slot) {
+        let line = local.pool[slot];
+        if (line) return line;
+        line = document.createElement("div");
+        line.className = "suggest-row";
+        line.setAttribute("role", "row");
+        for (let c = 0; c < SUGGEST_COLUMNS.length; c++) {
+            const span = document.createElement("span");
+            span.className =
+                "suggest-cell" +
+                (SUGGEST_COLUMNS[c].num ? " suggest-cell--num" : "");
+            span.setAttribute("role", "cell");
+            span.setAttribute("aria-colindex", String(c + 1));
+            line.appendChild(span);
         }
+        local.pool[slot] = line;
+        return line;
+    }
+
+    /** 三个行级标记只有「有/无」两态,统一走这一个口子避免各处 set/remove 写岔。 */
+    function flag(node, name, on) {
+        if (on) node.setAttribute(name, "1");
+        else node.removeAttribute(name);
     }
 
     // ------------------------------------------------------------- 渲染
@@ -465,36 +498,52 @@ export function createTabSuggestions(opts) {
             w.end === local.rendered.end
         )
             return;
+        const wasCount = local.rendered.end - local.rendered.start;
         local.rendered = { start: w.start, end: w.end };
+        const count = w.end - w.start;
 
-        const frag = document.createDocumentFragment();
-        for (let i = w.start; i < w.end; i++) {
+        // 就地更新复用节点:只改 textContent 与几个属性,不动 DOM 结构
+        for (let slot = 0; slot < count; slot++) {
+            const i = w.start + slot;
             const row = local.rows[i];
-            const line = document.createElement("div");
-            line.className = "suggest-row";
-            line.setAttribute("role", "row");
+            const line = rowNodeAt(slot);
             // 表头占第 1 行,数据行从 2 起(aria-rowcount 在 renderChrome 里同口径)
             line.setAttribute("aria-rowindex", String(i + 2));
-            line.style.top = w.padTop + (i - w.start) * ROW_H + "px";
-            if (i % 2 === 1) line.setAttribute("data-odd", "1");
-            if (row.origin !== "auto") line.setAttribute("data-manual", "1");
+            line.style.top = w.padTop + slot * ROW_H + "px";
+            // 斑马纹按**行号**取,不用 :nth-child —— 复用节点时子节点序号是不动的,
+            // 按序号上色会让整片底色随滚动黑白翻转。
+            flag(line, "data-odd", i % 2 === 1);
+            flag(line, "data-manual", row.origin !== "auto");
             // §2.8 每轨 stale = 该轨有过期采集区间。13 列已冻结不便加列,故落在行属性上:
             // 照着一张过期的表在 DAW 里手工设值是本视图**唯一**能骗到用户的地方。
-            if (row.stale) line.setAttribute("data-stale", "1");
+            flag(line, "data-stale", !!row.stale);
             const cells = rowCells(row);
             for (let c = 0; c < cells.length; c++) {
-                const span = document.createElement("span");
-                span.className =
-                    "suggest-cell" +
-                    (SUGGEST_COLUMNS[c].num ? " suggest-cell--num" : "");
-                span.setAttribute("role", "gridcell");
-                span.setAttribute("aria-colindex", String(c + 1));
-                span.textContent = cells[c];
-                line.appendChild(span);
+                const span = line.children[c];
+                if (span.textContent !== cells[c]) span.textContent = cells[c];
             }
-            frag.appendChild(line);
         }
-        el.scroll.replaceChildren(el.strut, frag);
+
+        // 结构只在「可见行数变了」时动一次(换视口、行集从空变满、滚到末尾那一屏)
+        if (count !== wasCount || el.scroll.childElementCount !== count + 1) {
+            el.scroll.replaceChildren(el.strut, ...local.pool.slice(0, count));
+        }
+    }
+
+    /**
+     * 滚动只标脏,真重排合到下一帧 —— 浏览器一次连续滚动会同步派发一串 scroll,
+     * 每条都进重排的话高频输入设备上会把主线程占满(这是「脏检查治好了播放期,
+     * 滚动期换了个触发源」的那一半)。
+     */
+    function scheduleRows() {
+        if (local.scrollRaf || typeof requestAnimationFrame !== "function") {
+            if (!local.scrollRaf) renderRows(false);
+            return;
+        }
+        local.scrollRaf = requestAnimationFrame(() => {
+            local.scrollRaf = 0;
+            if (local.open) renderRows(false);
+        });
     }
 
     function renderChrome() {
@@ -557,7 +606,13 @@ export function createTabSuggestions(opts) {
             );
         }
         if (el.status) {
-            const s = local.status;
+            // 桥上没挂 exportSuggestions(真 JUCE 宿主,native 未落地)时**常驻**说明:
+            // 只挂在 title 上的话,用户点了一枚灰钮却什么也没发生,零反馈。
+            const s =
+                local.status ||
+                (total > 0 && !exportAvailable()
+                    ? { key: "suggest.exportUnavailable", tone: "warn" }
+                    : null);
             el.status.textContent = s
                 ? fill(t(s.key, s.key), s.args || {})
                 : "";
@@ -601,18 +656,18 @@ export function createTabSuggestions(opts) {
             if (typeof o.applyI18n === "function") o.applyI18n(el.view);
             if (el.close && typeof el.close.focus === "function")
                 el.close.focus();
+        } else if (el.entry && typeof el.entry.focus === "function") {
+            // 还焦到入口钮:不还的话焦点掉回 <body>,键盘用户从头 Tab 一遍才回得来
+            el.entry.focus();
         }
         onViewChange(next);
     }
 
     // ------------------------------------------------------------- 导出
+    // 三条前置都由 renderChrome 反映在钮的 disabled 与状态行上(桥不可用那一档是**常驻**
+    // 说明,不靠点一下才出现),这里只是把它们再挡一道 —— 不在这里另写一套解释文案。
     async function doExport() {
-        if (local.busy || local.rows.length === 0) return;
-        if (!exportAvailable()) {
-            local.status = { key: "suggest.exportUnavailable", tone: "warn" };
-            renderChrome();
-            return;
-        }
+        if (local.busy || local.rows.length === 0 || !exportAvailable()) return;
         local.busy = true;
         local.status = { key: "suggest.exporting", tone: "info" };
         renderChrome();
@@ -677,7 +732,7 @@ export function createTabSuggestions(opts) {
         if (el.exportBtn.getAttribute("data-disabled") === "1") return;
         void doExport();
     });
-    on(el.scroll, "scroll", () => renderRows(false), { passive: true });
+    on(el.scroll, "scroll", scheduleRows, { passive: true });
     on(el.view, "keydown", (e) => {
         if (e.key === "Escape") {
             e.stopPropagation();
@@ -699,6 +754,11 @@ export function createTabSuggestions(opts) {
         destroy() {
             for (const off of offs) off();
             offs.length = 0;
+            if (local.scrollRaf && typeof cancelAnimationFrame === "function") {
+                cancelAnimationFrame(local.scrollRaf);
+            }
+            local.scrollRaf = 0;
+            local.pool.length = 0;
         },
     };
 }

@@ -414,7 +414,7 @@ export const T = {
         "suggest.staleNote":
             "其中 {n} 条轨的采集数据已过期——建议先重新采集再照表设值。",
         "suggest.legend":
-            "宽度只对立体声轨有值,mono 轨留空(0 是「收成 mono」的有效值,与留空不是一回事);来源与锁定的取值与工程里存的逐字相同",
+            "声像与音量是每段一个建议值;宽度是每轨一个当前设置值,所以同一轨每行相同。宽度只对立体声轨有值,mono 轨与取不到值时都留空(0 是「收成 mono」的有效值,与留空不是一回事);来源与锁定的取值与工程里存的逐字相同",
         "suggest.exporting": "正在导出…",
         "suggest.exportOk": "已导出 {n} 行 → {path}",
         "suggest.exportCancelled": "已取消导出",
@@ -1172,7 +1172,7 @@ export const T = {
         "suggest.staleNote":
             "{n} of these tracks have stale capture data — recapture them before transferring these values by hand.",
         "suggest.legend":
-            "Width only has a value on stereo tracks and stays blank on mono ones (0 means collapsed to mono, which is not the same as blank); origin and locked read exactly as stored in the project",
+            "Pan and volume are one suggested value per segment; width is one current setting per track, so it repeats on every row of that track. Width only has a value on stereo tracks and stays blank on mono ones and when it is unknown (0 means collapsed to mono, which is not the same as blank); origin and locked read exactly as stored in the project",
         "suggest.exporting": "Exporting…",
         "suggest.exportOk": "Exported {n} rows → {path}",
         "suggest.exportCancelled": "Export cancelled",
@@ -1898,7 +1898,7 @@ export const T = {
         "suggest.staleNote":
             "{n} de ces pistes ont des données de capture périmées — recapturez-les avant de reporter ces valeurs à la main.",
         "suggest.legend":
-            "La largeur n'a de valeur que sur les pistes stéréo et reste vide sur les pistes mono (0 signifie « repliée en mono », ce qui n'est pas la même chose que vide) ; origine et verrou reprennent exactement les valeurs enregistrées dans le projet",
+            "Le panoramique et le volume sont une valeur suggérée par segment ; la largeur est un réglage courant par piste, elle se répète donc sur chaque ligne de cette piste. La largeur n'a de valeur que sur les pistes stéréo et reste vide sur les pistes mono comme lorsqu'elle est inconnue (0 signifie « repliée en mono », ce qui n'est pas la même chose que vide) ; origine et verrou reprennent exactement les valeurs enregistrées dans le projet",
         "suggest.exporting": "Export en cours…",
         "suggest.exportOk": "{n} lignes exportées → {path}",
         "suggest.exportCancelled": "Export annulé",

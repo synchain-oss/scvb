@@ -114,7 +114,11 @@ segment_index, t0_sec, t1_sec, pan, vol_db, width, origin, locked
    (留在 `PENDING_FUNCS` 里等于让它绕过 parity 门禁,那才是真正的洞);
 4. Output JUCE 层 —— 保存对话框 + 用 `scvb::suggest::buildRows/toCsv` 落盘;
    `ExportInput` 的三样输入(`CrvsData`、每轨 `{label, source_channels}`、每版本每轨 width)
-   都已在 Output 侧手边,不需要新数据面;
+   都已在 Output 侧手边,不需要新数据面。
+   ⚠ **`widthPercent` 必须逐格装满**:未装的格是哨兵 `kWidthUnknown`(负值),该行的
+   `width` 列会**留空**。这是刻意的 —— 零值初始化会让「漏装」静默产出 `0.0`,而 0 在
+   stereo 轨上是「收成 mono」的**有效建议**,等于替用户做了一个语义相反的决定。
+   宁可留空(与 mono 轨同处置),也不写一个用户会照着去 DAW 里设的猜测值;
 5. `docs/SCVB_CONTRACT.md` §9.2 —— 若 native 评审对 `scope` 形状或三个新 reason 有异议,
    按 §9.0 流程改名(冻结前改名零成本)。
 
