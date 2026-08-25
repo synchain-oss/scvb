@@ -198,6 +198,76 @@ export function applySegmentsEvent(prev, next) {
     };
 }
 
+// ---------------------------------------------------------------- 撤销/重做可用性
+// [D1] header 常驻「撤销/重做」两钮的置灰判据。放本文件是因为它是**纯 reducer**
+// (node 侧可直接断言),接线与 DOM 归 app.js —— header 属外壳,不属 Tab1。
+//
+// **契约面事实**:§1.25/§1.26 只给 `{ok:bool}` 回执(`false` = 该向栈为空),
+// §1.1 首帧快照与 §2.1 `scvb.state` 的字段全集里**都没有** canUndo/canRedo 之类的
+// 可用性信号。既然不发明新桥面(零契约变更),可用性只能由两手证据推出:
+//   ① **回执**:点下去拿到 `{ok:false}` —— 这是「该向栈空」的第一手、也是唯一权威证据;
+//   ② **新事务入栈**:§0.9 左列四类入栈操作里,当前 web 侧真正发得出的三类
+//      (`editSegment` / `setTrackManual` / `copyVersion`)都经 §2.8 段表事件带
+//      `reason` 回推,见其 reason 即知撤销栈刚长了一条。
+//
+// **已知缺口(两条,都会让 undo 钮在真实可撤销的操作后误灰)**:
+//   • 第四类入栈操作 `setPanCurve` 眼下 web 侧无调用点(曲线窗只读,
+//     `grep -n 'call("setPanCurve"'` 零命中)。它**不会**进本 reducer:契约 §1.17 写明
+//     「写入后经 `scvb.state` 回推 `versions[active].pan_curve`」,§2.8 的 `reason` 十值里
+//     也没有它的份 —— 本 reducer 喂的是段表事件,pan 曲线根本不走那条线。故接线那一卡
+//     要补的是**另一路证据**(scvb.state 里 `pan_curve` 变化 ⇒ 撤销栈长了一条),
+//     不是把它「同批并进本 reducer」。
+//   • `setVersionName` 在契约 §0.9 里列在**不入栈**那一列,但实现是入栈的:
+//     `src/output/OutputProcessor.cpp:784-787` 拿 `authority_.undoManager()` 提交了一笔
+//     `"Rename V{n}"` 事务(:782 已先做「名字未变则不产生空撤销事务」的短路)。
+//     两边对不上,以哪边为准须裁决;在此之前改名后 undo 钮会误灰(§2.8 也不为它发段表事件)。
+//     **本卡不改契约、不改 native**,只把出入登记在这里。
+//
+// 起手为什么两向都**常亮**而不是灰:UndoManager 挂在处理器上(03 §5.3),编辑器
+// 关了再开、栈照旧非空 —— 首帧没有任何证据说它是空的,此时置灰会挡住真实可用的
+// 动作(真错),而常亮的代价只是白点一下、回执把它置灰(可自愈)。
+
+/** 两向可用性的起手值(见上:无证据 ⇒ 保守常亮)。 */
+export const HISTORY_AVAIL_INIT = Object.freeze({ undo: true, redo: true });
+
+/** §2.8 `reason` 十值里**入撤销栈**的那几个(= §0.9 左列 ∩ 段表回推面)。 */
+const UNDOABLE_REASONS = new Set(["edit", "trackManual", "copyVersion"]);
+
+/**
+ * `undo()` / `redo()` 回执 → 新可用性(证据①)。
+ *
+ * `ok:true` 表示一条事务从本向挪到了**反向**栈:反向必有货 ⇒ 置亮;本向还剩几条
+ * 回执不说,保守留亮(下一次点空了自然拿到 `ok:false`)。
+ * `ok:false` = 本向栈空 ⇒ 只灰本向;反向的可用性与本次调用无关,不动。
+ *
+ * @param {{undo:boolean,redo:boolean}|null|undefined} prev
+ * @param {"undo"|"redo"} kind
+ * @param {boolean} ok 回执的 `ok` 字段
+ */
+export function historyAfterCall(prev, kind, ok) {
+    const cur = prev || HISTORY_AVAIL_INIT;
+    if (kind !== "undo" && kind !== "redo") return cur;
+    const other = kind === "undo" ? "redo" : "undo";
+    return ok ? { ...cur, [other]: true } : { ...cur, [kind]: false };
+}
+
+/**
+ * `scvb.segments` → 新可用性(证据②)。
+ *
+ * 新事务入栈会**清空 redo 栈**(juce::UndoManager 语义,03 §5.3),故 undo 置亮、
+ * redo 置灰。`reason:"undo"`/`"redo"` 是本 reducer 自己动作的回推,必须排除在外
+ * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(analyze/vad/
+ * segmentation/versionActive/snapshot)按 §0.9 右列不入栈,不动两向。
+ *
+ * @param {{undo:boolean,redo:boolean}|null|undefined} prev
+ * @param {object|null} seg `scvb.segments` 载荷
+ */
+export function historyAfterSegments(prev, seg) {
+    const cur = prev || HISTORY_AVAIL_INIT;
+    if (!seg || !UNDOABLE_REASONS.has(seg.reason)) return cur;
+    return { undo: true, redo: false };
+}
+
 /**
  * `scvb.state` 深合并(契约 §2.1 字段纪律:`full:false` = 增量,只含变化子树,UI 做深合并)。
  * 数组整体替换 —— `channels[15]` / `versions[2]` 是定长表,逐元素合并会把「C++ 只发前两轨」

@@ -46,6 +46,7 @@
 
        ---- 预览用 data 属性速查(Wave 1 静态验证:DevTools 里改属性即可看全部状态)----
          [data-gb="header-version"]  data-mode="normal|rename"
+         [data-gb="header-undo|header-redo"] data-disabled="0|1"(栈空 / 只读观察态)
          .ver-chip                   data-active="0|1" data-empty="0|1" data-disabled="0|1"
          #tabbar                     --tab-i:0..3(app.js 写;滑块 left=3+(tab-1)*136)
          [data-gb="master-flow"]     data-cap="off|armed|capturing|outside"
@@ -345,6 +346,18 @@
                 font-size: var(--fs-90);
                 letter-spacing: var(--ls-demo-chip);
                 color: var(--sem-amber-ink);
+            }
+            /* [D1] 撤销/重做(sc-btn 族;两钮同宽,置灰不换布局) */
+            .hdr-history {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-5);
+                flex: none;
+            }
+            .hdr-history__btn {
+                /* 比 sc-btn 默认小一档,与 .hdr-group-badge 同高,不撑高 header 行 */
+                padding: var(--sp-5) var(--sp-11);
+                font-size: var(--fs-100);
             }
             .header__spacer {
                 flex: 1;
@@ -4372,6 +4385,38 @@
                         hidden
                         >演示数据</span
                     >
+
+                    <!-- [D1] 撤销 / 重做(契约 §1.25/§1.26)。落在**左簇末尾**(spacer 之前)
+             而不是 Version 区旁边:右簇 Version+复制+连接 pill+语言胶囊已排满,
+             插在那里会把版本 chip 挤出设计盒宽度。键盘 Ctrl+Z / Ctrl+Shift+Z
+             照旧(app.js 全局钩子),本组只是常驻的显式入口。
+             禁用态:data-disabled + aria-disabled 双写,点击拦截在 app.js -->
+                    <div
+                        class="hdr-history"
+                        role="group"
+                        data-gb="header-history"
+                        data-t-aria="header.history"
+                        aria-label="撤销与重做"
+                    >
+                        <button
+                            class="sc-btn hdr-history__btn"
+                            data-gb="header-undo"
+                            data-t="header.undo"
+                            data-disabled="0"
+                            aria-disabled="false"
+                        >
+                            撤销
+                        </button>
+                        <button
+                            class="sc-btn hdr-history__btn"
+                            data-gb="header-redo"
+                            data-t="header.redo"
+                            data-disabled="0"
+                            aria-disabled="false"
+                        >
+                            重做
+                        </button>
+                    </div>
 
                     <span class="header__spacer" aria-hidden="true"></span>
 
