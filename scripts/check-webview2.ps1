@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS  SCVB WebView2 环境自查 —— 插件窗口打不开时,第一件要跑的东西。
 .DESCRIPTION
   SCVB 的插件界面跑在 Microsoft Edge WebView2 里。窗口打不开时,故障可能在四个地方:
@@ -12,6 +12,13 @@
 
 .EXAMPLE   pwsh scripts/check-webview2.ps1
 .EXAMPLE   powershell -ExecutionPolicy Bypass -File 诊断.ps1
+
+.NOTES
+  本文件必须存成 **UTF-8 with BOM**。这是本仓唯一一个要交到用户手上、由
+  **Windows PowerShell 5.1**(`powershell.exe`,Win11 自带的那个)直接跑的脚本;
+  5.1 在没有 BOM 时按系统 ANSI 代码页读文件,中文注释会被解码成乱码进而整个脚本
+  语法解析失败(报形如「Unexpected token '}'」的假错误)。pwsh 7 无此问题,
+  但不能假设用户装了 pwsh。仓库其它 .ps1 只由 pwsh 跑,不受此约束。
 #>
 
 $ErrorActionPreference = 'Continue'
