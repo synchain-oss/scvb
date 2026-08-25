@@ -2305,6 +2305,173 @@
                 flex-direction: column;
                 gap: var(--sp-9); /* 设计稿 652:左主栏纵向 gap 9 */
             }
+            /* ---------------- [T41] 建议表视图(Tab3 的第二视图)----------------
+               形制照 [J75] T43 给 Tab1 加的双视图:同一个 tab 里换一套子树,而不是
+               加第五个 tab(契约 §1.31 setActiveTab 是四值冻结枚举)。
+               泳道主栏与段检查器整体让位 —— 建议表要的是宽度,留半屏泳道在旁边
+               只会把 13 列挤成折行。视图态由 JS 写 section 的 data-view,纯本地态。
+               写成「除建议表外的直接子元素」而不是点名列出那两个类:Tab3 将来再长出
+               一个直接子元素时这条不用跟着改,也不会在别处的 CSS 里凭空多出一处类名。 */
+            #content
+                > section[data-tab-panel="wave"][data-view="suggest"]
+                > :not(.suggest-view) {
+                display: none;
+            }
+            .suggest-view {
+                flex: 1;
+                min-width: 0;
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-9);
+                min-height: 0; /* 让表体在 flex 列里真的能收缩并滚动 */
+            }
+            .suggest-head {
+                flex: none;
+                display: flex;
+                align-items: center;
+                gap: var(--sp-9);
+                padding: var(--sp-10) var(--sp-13);
+                border-radius: var(--r-lg);
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+                box-shadow: var(--card-inset);
+            }
+            .suggest-head__titles {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-4);
+                min-width: 0;
+            }
+            .suggest-title {
+                font-family: var(--ff-grotesk);
+                font-weight: 600;
+                font-size: var(--fs-135);
+                color: var(--txt-1);
+            }
+            /* 「它是建议,不是执行」——这一句是 07 T41 的强调栏要求,常驻不可关。
+               用琥珀提示色而不是普通说明灰:它要拦住「导出即生效」的误解。 */
+            .suggest-disclaimer {
+                font-size: var(--fs-100);
+                line-height: 1.5;
+                color: var(--sem-amber-ink);
+                text-wrap: pretty;
+            }
+            .suggest-scope {
+                flex: none;
+                font-size: var(--fs-100);
+                color: var(--txt-2);
+                letter-spacing: var(--mono-ls-pill);
+            }
+            .suggest-status {
+                flex: none;
+                font-size: var(--fs-100);
+                line-height: 1.5;
+                color: var(--txt-2);
+                word-break: break-all; /* 导出路径可能很长,不许把行撑出卡外 */
+            }
+            .suggest-status[data-tone="warn"] {
+                color: var(--sem-amber-ink);
+            }
+            .suggest-table {
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+                border-radius: var(--r-lg);
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+                box-shadow: var(--card-inset);
+                overflow: hidden;
+            }
+            /* 列模板由 JS 按 SUGGEST_COLUMNS 写进 --suggest-cols —— 列宽只有一处定义,
+               表头与数据行共用它,不会各排各的。 */
+            .suggest-thead,
+            .suggest-row {
+                display: grid;
+                grid-template-columns: var(--suggest-cols);
+                align-items: center;
+                column-gap: var(--sp-9);
+                padding: 0 var(--sp-13);
+            }
+            .suggest-thead {
+                flex: none;
+                height: 26px;
+                border-bottom: 1px solid var(--card-border);
+                background: rgba(var(--wh), 0.35);
+                /* 表头在滚动容器**外**(全宽),数据行在容器的 padding box 内(**不含**
+                   竖滚动条)。竖滚动条 9px 见 base.css 的 `*::-webkit-scrollbar` ——
+                   经典滚动条,占布局宽度。两条 fr 弹性列会把这 9px 摊掉,version_name
+                   之后的列相对表头整体左移;600 行必出滚动条,所以是恒定发生的错位。
+                   补右内边距把两边的可用宽度对齐(同款记账见 tab-tracks.js 的
+                   TRACKS_VIEWPORT_W 推导链)。配对项 = 下面那条 scrollbar-gutter。 */
+                padding-right: calc(var(--sp-13) + var(--scrollbar-w));
+            }
+            .suggest-scroll {
+                flex: 1;
+                min-height: 0;
+                overflow: auto;
+                position: relative;
+                /* 恒定预留滚动条槽:否则行数少到不溢出时反过来错位 9px —— 上面那条
+                   表头右内边距是按「滚动条一直在」算的,这里就得让它一直在。 */
+                scrollbar-gutter: stable;
+            }
+            /* 虚拟滚动的全部机关就这两条:strut 撑出「总行数 × 行高」的滚动高度,
+               可见窗口那几十行各自绝对定位到 top。行是滚动容器的直接子节点 ——
+               中间夹一层容器会把 ARIA 的 grid→rowgroup→row 树打断。 */
+            .suggest-strut {
+                width: 1px;
+            }
+            .suggest-row {
+                position: absolute;
+                left: 0;
+                right: 0;
+                height: 22px; /* = tab-suggestions.js 的 ROW_H,两处同改 */
+                font-size: var(--fs-100);
+                color: var(--txt-2);
+            }
+            /* 隔行底色按**行号**取,不用 :nth-child —— 可见窗口是滚动着换的一批节点,
+               按子节点序号斑马纹会随滚动来回翻转。 */
+            .suggest-row[data-odd="1"] {
+                background: rgba(var(--wh), 0.22);
+            }
+            /* 用户编辑/创建的段单独标一下:导表时最该核对的就是这些行 */
+            .suggest-row[data-manual="1"] {
+                color: var(--txt-1);
+            }
+            /* 该轨采集数据已过期(§2.8 stale):左侧琥珀条 —— 这些行的值可能已经不作数 */
+            .suggest-row[data-stale="1"] {
+                box-shadow: inset 2px 0 0 rgba(var(--sem-amber), 0.9);
+            }
+            .suggest-stale {
+                flex: none;
+                font-size: var(--fs-90);
+                line-height: 1.5;
+                color: var(--sem-amber-ink);
+                text-wrap: pretty;
+            }
+            .suggest-cell {
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+            }
+            .suggest-cell--num {
+                text-align: right;
+                font-family: var(--ff-mono);
+                font-variant-numeric: tabular-nums;
+            }
+            .suggest-cell--head {
+                font-size: var(--fs-90);
+                color: var(--txt-3);
+                letter-spacing: var(--mono-ls-pill);
+            }
+            .suggest-legend,
+            .suggest-empty {
+                flex: none;
+                font-size: var(--fs-90);
+                line-height: 1.5;
+                color: var(--txt-3);
+                text-wrap: pretty;
+            }
             /* 工具条卡壳(654):四行纵列;padding 取稿内 10/13(≠ --card-pad 的 11/13,
                差 1px 登记 PR 差异清单) */
             .wave-toolbar {
@@ -6260,6 +6427,20 @@
                                         class="wave-flexspacer"
                                         aria-hidden="true"
                                     ></span>
+                                    <!-- [T41] 建议表入口 —— Tab3 的第二视图(不是第五个 tab:
+                                         契约 §1.31 setActiveTab 是四值冻结枚举)。视图态是
+                                         **纯本地 UI 态**,与右侧那枚段检查器开关同款处置:
+                                         不新增 state 字段、不写工程,切走 tab 回默认档。
+                                         接线见 web/output/tab-suggestions.js -->
+                                    <button
+                                        class="wave-btn wave-btn--toggle"
+                                        data-glow="1"
+                                        data-gb="wave-btn-suggest"
+                                        data-t="suggest.entry"
+                                        aria-pressed="false"
+                                    >
+                                        建议表
+                                    </button>
                                     <!-- 段检查器开关(Wave 5 用户裁定④,**覆盖此前
                                          C-11「条件渲染」裁定**):用户原话「右侧的编辑窗口
                                          最好做成可以开关的常驻(要么一直在要么一直不在,
@@ -7034,6 +7215,127 @@
                                 段无角标。锁定段在重新识别时保持不变。
                             </p>
                         </aside>
+
+                        <!-- ===================================================== -->
+                        <!-- [T41] 建议表视图 —— Tab3 的第二视图                     -->
+                        <!-- 泳道与检查器由 section[data-view="suggest"] 整体让位;    -->
+                        <!-- 表体 13 列 = 冻结列定义,列头与行由 tab-suggestions.js  -->
+                        <!-- 生成(唯一真源 = 该文件的 SUGGEST_COLUMNS / rowCells)。 -->
+                        <!-- 1200 行量级走虚拟滚动:只建可见行 ± OVERSCAN。          -->
+                        <!-- ===================================================== -->
+                        <div class="suggest-view" data-gb="suggest-view" hidden>
+                            <div class="suggest-head">
+                                <div class="suggest-head__titles">
+                                    <p
+                                        class="suggest-title"
+                                        data-t="suggest.title"
+                                    >
+                                        建议表
+                                    </p>
+                                    <!-- 「它是建议,不是执行」——07 T41 强调栏要求的常驻文案,
+                                         不许省:省了用户会以为导出即生效 -->
+                                    <p
+                                        class="suggest-disclaimer"
+                                        data-t="suggest.disclaimer"
+                                    >
+                                        这些是建议值——SCVB 不会替你在 DAW
+                                        里应用它们;请照表手工设置。
+                                    </p>
+                                </div>
+                                <span
+                                    class="sc-mono suggest-scope"
+                                    data-gb="suggest-scope"
+                                ></span>
+                                <span
+                                    class="wave-flexspacer"
+                                    aria-hidden="true"
+                                ></span>
+                                <!-- [T41] bridge.exportSuggestions(scope) —— **待转正**桥函数
+                                     (bridge.js PENDING_FUNCS;变更文档
+                                     docs/contract-changes/20260825-export-suggestions.md)。
+                                     桥上没挂这个名字时本钮 disabled 并给出说明,不假装写了文件 -->
+                                <button
+                                    class="wave-btn"
+                                    data-glow="1"
+                                    data-gb="suggest-export"
+                                    data-t="suggest.export"
+                                    data-disabled="1"
+                                    aria-disabled="true"
+                                >
+                                    导出 CSV
+                                </button>
+                                <button
+                                    class="wave-btn"
+                                    data-glow="1"
+                                    data-gb="suggest-close"
+                                    data-t="suggest.backToLanes"
+                                >
+                                    返回泳道
+                                </button>
+                            </div>
+                            <p
+                                class="suggest-status"
+                                data-gb="suggest-status"
+                                data-tone="info"
+                                role="status"
+                                aria-live="polite"
+                                hidden
+                            ></p>
+                            <div
+                                class="suggest-table"
+                                data-gb="suggest-table"
+                                role="table"
+                                data-t-aria="suggest.tableAria"
+                            >
+                                <!-- 列头由 tab-suggestions.js 按 SUGGEST_COLUMNS 现建
+                                     (role="columnheader" + title=冻结列名)。表头恒占
+                                     aria-rowindex 1,数据行从 2 起 -->
+                                <div
+                                    class="suggest-thead"
+                                    data-gb="suggest-thead"
+                                    role="row"
+                                    aria-rowindex="1"
+                                ></div>
+                                <!-- 滚动容器 = rowgroup,数据行是它的**直接**子节点
+                                     (中间夹一层 div 会把 ARIA 的 table→rowgroup→row 树打断);
+                                     strut 只负责撑出总高度,行各自绝对定位。
+                                     它是真正的 scroller,所以键盘可达性必须留在这个元素上;
+                                     而一个拿到 Tab 焦点的无名 rowgroup 读屏只会念「行组」,
+                                     故补 aria-label(rowgroup 支持可访问名)。 -->
+                                <div
+                                    class="suggest-scroll"
+                                    data-gb="suggest-scroll"
+                                    role="rowgroup"
+                                    tabindex="0"
+                                    data-t-aria="suggest.rowsAria"
+                                >
+                                    <div
+                                        class="suggest-strut"
+                                        data-gb="suggest-strut"
+                                        role="presentation"
+                                    ></div>
+                                </div>
+                            </div>
+                            <p
+                                class="suggest-stale"
+                                data-gb="suggest-stale"
+                                role="status"
+                                aria-live="polite"
+                                hidden
+                            ></p>
+                            <p
+                                class="sc-hint suggest-legend"
+                                data-gb="suggest-legend"
+                                data-t="suggest.legend"
+                                hidden
+                            ></p>
+                            <p
+                                class="suggest-empty"
+                                data-gb="suggest-empty"
+                                data-t="suggest.empty"
+                                hidden
+                            ></p>
+                        </div>
                     </section>
 
                     <!-- ========================================================= -->

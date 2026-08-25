@@ -1546,6 +1546,64 @@ function buildOutputBackend(ctx) {
             patchState({ ui: { master_chart_mode: mode } });
             return OK();
         },
+
+        // ---- 待转正:exportSuggestions(scope)(T41)-----------------------------
+        // 同样**不在契约 §7 manifest 里**,停在 PENDING_FUNCS 等 native 落地(保存对话框 +
+        // src/core/export/SuggestionExport 落盘),见
+        // docs/contract-changes/20260825-export-suggestions.md。
+        //
+        // 本方法扮演的是 **C++ 侧**:从自己这份 state 真相(段表 + 版本名)独立数出行数,
+        // 而不是把 UI 算好的数字收回来 —— 于是「UI 那张表的行数」与「导出报回的行数」是
+        // 两条独立算路,冒烟里对上了才说明两侧口径一致(smoke-t41-suggestions.mjs ⑤)。
+        // 真落盘不做(浏览器里没有保存对话框),只回一个可展示的 path;预览页里能打开的
+        // CSV 由 UI 用同一份行集另存(tab-suggestions.js 的 downloadForPreview)。
+        //
+        // scope:{versions?:"active"|"all", tracksMask?:u16, startS?, endS?}
+        //        缺省 = 当前激活版本 + 全 15 轨 + 全时间线。
+        exportSuggestions(scope) {
+            const sc = isPlainObject(scope) ? scope : {};
+            const versions = sc.versions === undefined ? "active" : sc.versions;
+            if (versions !== "active" && versions !== "all") return BAD_ARG();
+
+            const mask = Number.isInteger(sc.tracksMask)
+                ? sc.tracksMask & 0x7fff // bit15 保留 0(契约 §9.2)
+                : 0x7fff;
+            const startS = isFiniteNumber(sc.startS) ? sc.startS : -Infinity;
+            const endS = isFiniteNumber(sc.endS) ? sc.endS : Infinity;
+            if (!(endS > startS)) return BAD_ARG();
+
+            const chList = channelsOfMask(mask);
+            // 与窗口有重叠的段整段计一行(段值不裁剪,与 C++ 侧 inWindow 同口径)
+            const countIn = (segments) =>
+                segments.filter((s) => s.t1S > startS && s.t0S < endS).length;
+
+            let rows = 0;
+            for (const ch of chList) rows += countIn(segmentsOf(ch));
+            if (versions === "all") {
+                // 非激活版本的段表不在 model 里(§2.8 一次只下发一个版本),照
+                // setVersionActive 的同款做法用生成器现取;C++ 侧则直接读 CRVS 真身。
+                for (let v = 1; v <= VERSION_COUNT; v++) {
+                    if (v === model.segVersion) continue;
+                    for (const entry of makeSegments(v, "snapshot", chList)
+                        .channels) {
+                        rows += countIn(entry.segments);
+                    }
+                }
+            }
+            if (rows === 0) return { ok: false, reason: "noData" };
+
+            const active = model.snapshot.global.version_active;
+            const meta = model.snapshot.versions[active - 1] || {};
+            const tag = versions === "all" ? "all" : meta.name || "V" + active;
+            return {
+                ok: true,
+                rows,
+                path:
+                    "C:\\Users\\<preview>\\Documents\\SCVB-suggestions-" +
+                    String(tag).replace(/[\\/:*?"<>|\s]+/g, "_") +
+                    ".csv",
+            };
+        },
     };
 
     return backend;

@@ -151,9 +151,13 @@ for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
  *   • `setMasterChartMode(mode)` —— [J75] T43 的 Tab1 分布图视图态 `ui.master_chart_mode`;
  *     变更文档 `docs/contract-changes/20260825-master-chart-mode.md`,native 侧(state codec +
  *     桥 setter)转 DS 侧执行。
+ *   • `exportSuggestions(scope)` —— T41 建议表的 CSV 导出(11 §4.2.3 通路 B2);变更文档
+ *     `docs/contract-changes/20260825-export-suggestions.md`,native 侧(保存对话框 +
+ *     `src/core/export/SuggestionExport` 落盘)转后续。行集与 CSV 的**纯计算**部分本卡
+ *     已在两侧落地(C++ `scvb::suggest` + web `output/tab-suggestions.js`),缺的只是落盘口。
  */
 export const PENDING_FUNCS = {
-    output: ["setMasterChartMode"],
+    output: ["setMasterChartMode", "exportSuggestions"],
     input: [],
 };
 for (const side of ["output", "input"]) Object.freeze(PENDING_FUNCS[side]);

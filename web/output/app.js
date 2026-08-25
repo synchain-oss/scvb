@@ -45,6 +45,7 @@ import {
 } from "./tab-master.js";
 import { createTabTracks } from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
+import { createTabSuggestions } from "./tab-suggestions.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
 import { createTabSettings } from "./tab-settings.js";
 import {
@@ -374,6 +375,20 @@ const tabWave = createTabWave({
     gotoTab: (name) => activateTab(name),
 });
 tabWave.mount();
+
+// ---------------------------------------------- Tab3 第二视图(tab-suggestions.js)
+// T41:建议表 + CSV 导出。它是 **Tab3 内的视图切换**,不是第五个 tab —— 契约 §1.31
+// setActiveTab 的四值枚举是冻结面。视图态纯本地(不写 state、不新增 state 字段);
+// 打开时泳道主栏与段检查器由 CSS 按 section 的 data-view 整体让位。
+const tabSuggest = createTabSuggestions({
+    root: document.querySelector('section[data-tab-panel="wave"]'),
+    bridge,
+    getStore: () => viewStore(),
+    getT: () => dictNow,
+    // 13 个列头是首次打开时才现建的,那时 applyI18n 早已刷过一轮 —— 补刷这一块
+    applyI18n: (node) => node && applyI18n(node, lang),
+    onViewChange: () => requestRender(),
+});
 
 // ------------------------------------------------------------- Tab4(tab-settings.js)
 // T35:缩放 select 与语言胶囊的接线仍在本文件(scale/语言是外壳级),Tab4 的
@@ -1040,7 +1055,9 @@ function render() {
         case "tracks":
             return tabTracks.render();
         case "wave":
-            return tabWave.render();
+            // T41:Tab3 有两个视图。建议表开着时泳道整块被 CSS 藏起来了,
+            // 再去投影它只是白跑一遍(它自己的脏位也会被清掉)。
+            return tabSuggest.isOpen() ? tabSuggest.render() : tabWave.render();
         case "settings":
             return tabSettings.render();
         default:

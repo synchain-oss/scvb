@@ -854,10 +854,24 @@ export function createTabWave(opts) {
         return trackStatusOf(cc) === "srErr";
     }
 
-    /** Tab3 是否为当前激活页(四面板同在 DOM,#content[data-tab] 切换)。 */
+    /**
+     * 泳道是否在前台。两个条件都要:
+     *   ① Tab3 是当前激活页(四面板同在 DOM,`#content[data-tab]` 切换);
+     *   ② Tab3 内部停在泳道视图 —— [T41] 建议表打开时 `data-tab` **仍是** `wave`,
+     *      泳道只是被 CSS 藏起来。少了这一条,建议表开着时 rAF 插值层照常空转、
+     *      往 0 宽 canvas 上画(画面不会错 —— 切回来 ResizeObserver 会补 —— 纯属白烧帧,
+     *      而且那些帧时喂进 governor 会误触降级序列)。
+     */
     function isPanelActive() {
         const panel = els.panel;
         if (!panel || typeof panel.closest !== "function") return true;
+        const section = panel.closest('[data-tab-panel="wave"]') || panel;
+        if (
+            typeof section.getAttribute === "function" &&
+            section.getAttribute("data-view") === "suggest"
+        ) {
+            return false;
+        }
         const host = panel.closest("[data-tab]");
         return !host || host.getAttribute("data-tab") === "wave";
     }
