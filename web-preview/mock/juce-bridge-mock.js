@@ -1518,8 +1518,11 @@ function buildOutputBackend(ctx) {
         // ---- §1.30(未知 code 回退 zh 并回推实际值)------------------------------
         setLang(code) {
             const next = ENUMS.language.includes(code) ? code : "zh";
+            // 调到这个桥口就等于「用户显式选过语言」——首启语言卡据此不再问(随工程 +
+            // 跨工程各一位,与 guide_seen/guide_seen_global 同构)。web 启动时的语言回填
+            // 走 setLang(..., {push:false}) 不经桥,不会误置位。
             patchState({
-                ui: { language: next },
+                ui: { language: next, lang_chosen: true },
                 // demo 轨名随语言重定位(仅 mock;用户改过的 label 不在 demo 词条内 → 不动)
                 channels: localizeDemoChannels(
                     model.snapshot.channels,
@@ -1527,6 +1530,7 @@ function buildOutputBackend(ctx) {
                     T,
                 ),
             });
+            model.snapshot.lang_chosen_global = true;
             return OK();
         },
 

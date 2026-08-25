@@ -278,8 +278,8 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         auto& dst = result.segments[static_cast<std::size_t>(t)];
         for (const auto& s : src)
         {
-            if (!dst.empty() && dst.back().t1Samples == s.t0Samples &&
-                std::abs(dst.back().pan - s.pan) < 1e-6 && std::abs(dst.back().volDb - s.volDb) < 1e-6)
+            if (!dst.empty() && dst.back().t1Samples == s.t0Samples && std::abs(dst.back().pan - s.pan) < 1e-6 &&
+                std::abs(dst.back().volDb - s.volDb) < 1e-6)
             {
                 dst.back().t1Samples = s.t1Samples;
                 continue;
