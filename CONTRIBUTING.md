@@ -10,10 +10,10 @@ issue 与 PR 都欢迎。开工之前请把本文读完 —— 尤其是 **§8 �
 - issue / PR 可以用**中文或英文**;维护者用你使用的语言回复。维护者内部沟通用中文。
 - **用户可见的硬约束(九条硬约束)以中文版为语义权威**:中英文各一份,两版出现歧义时以中文版为准。理由是 SCVB 的路由约束属于「读错就出静音或错音」的硬约束,而核心用户是中文 DAW 用户 —— 中文版必须是完整镜像,不是摘要。
 - **标题文案统一写「九条」**(实际条目数就是 9 条)。早期草稿里出现过别的数量词,任何非「九条」的写法都是错的 —— **UI 侧**有禁词机检把关(`web-preview/tests/smoke-tab1-interactions.mjs` 扫 `web/shared/i18n.js` 的 zh/en/fr 全部词条值 + 三个 `web/output/` 源文件,数量词写错即红);**markdown 侧目前靠评审时的 grep**,不要指望 CI 替你兜住。
-- **九条硬约束只有一个真源,禁止在任何位置手抄。** 真源 = `docs/USER_GUIDE.zh-CN.md` 的 `#硬约束` 小节;另外 6 处落地面(`docs/USER_GUIDE.md` 的 EN 块、两份 README 的 Quick start 块、`web/shared/i18n.js` 的 `guide.rule1..9` zh/en/fr 三语 key)全部由 `node scripts/gen-hard-rules.mjs` 生成。要改条目文本,**只能改真源再跑生成器**。提交前必须跑:
+- **九条硬约束只有一个真源,禁止在任何位置手抄。** 真源 = `docs/USER_GUIDE.zh-CN.md` 的 `## 硬约束` 小节(译文另存 `docs/hard-rules.i18n.json`);另外 6 处落地面(`docs/USER_GUIDE.md` 的 EN 块、两份 README 的快速上手块、`web/shared/i18n.js` 的 `guide.rule1..9` zh/en/fr 三语 key)全部由 `node scripts/gen-hard-rules.mjs` 生成。要改条目文本,**只能改真源(译文改 i18n json)再跑生成器**。提交前必须跑:
 
   ```powershell
-  node scripts/gen-hard-rules.mjs --check   # 哈希比对 7 处落地面,不一致即非零退出
+  node scripts/gen-hard-rules.mjs --check   # 逐字节比对 6 个落地面与真源,漂移即非零退出
   node scripts/check-i18n.mjs               # zh/en/fr 三语 key 集合全等
   ```
 

@@ -1,8 +1,12 @@
 {
   "ignorePatterns": [
     {
-      "comment": "兄弟仓(synchain-bridge / synchain-cli / .github)在 O07 转 public 之前是 private —— 匿名访问一律 404,不是死链。O07 过闸后可删掉重跑。注意本仓 synchain-oss/scvb 刻意不在此列:自链接写错必须当场查出,而本仓文档对自身一律用相对路径,不会因 private 而误红。",
+      "comment": "兄弟仓(synchain-bridge / synchain-cli / .github)在 O07 转 public 之前是 private —— 匿名访问一律 404,不是死链。O07 过闸后可删掉重跑。",
       "pattern": "^https://github\\.com/synchain-oss/(synchain-bridge|synchain-cli|\\.github)(/|$)"
+    },
+    {
+      "comment": "【O07 过闸后删掉这一条】本仓自身的绝对链接。本想只豁免兄弟仓、让自链接写错当场暴露,但本仓同样是 private:CHANGELOG.md 的 compare/releases 链接实测 404,RELEASE.md 还有一条含 {X.Y.Z} 占位的模板链接 —— 私有期内**任何**自链接都探不活,收窄只会假红,换不来任何检出能力。删掉本条的正确时点是 O07 转 public 之后(那时收窄才真的开始拦自链接笔误);在此之前自链接靠评审看。仓内文档对自身优先用相对路径,相对路径本来就逐条校验。",
+      "pattern": "^https://github\\.com/synchain-oss/scvb(/|$)"
     },
     {
       "comment": "GitHub 相对快捷路径(../../actions、../../releases/latest,12 §7.2 badge 模板逐字如此)。它们由 GitHub 在渲染时解析到当前仓库,本地文件系统里没有对应路径。",
