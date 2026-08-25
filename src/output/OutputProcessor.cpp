@@ -898,20 +898,9 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
         if (scvb::state::segmentLocked(s.flags))
             ++replacedLocked; // 如实统计锁定段(PR#55 建议⑤)
 
-    scvb::state::Segment seg;
-    seg.t0 = 0;
-    seg.t1 = static_cast<std::int64_t>(1) << 40; // 覆盖全时间线近似(真末端由宿主时间线提供)
-    if (isPan)
-    {
-        seg.pan = juce::jlimit(-100.0f, 100.0f, value);
-        seg.volDb = 0.0f;
-    }
-    else
-    {
-        seg.pan = 0.0f;
-        seg.volDb = juce::jlimit(-24.0f, 12.0f, value);
-    }
-    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+    // 写一维必须保留另一维(§1.16 常值段的两个维度各自独立);构造与钳制口径见
+    // makeManualConstantSegment 头注(T37 三轮 D 族回归点,单测直接断言该纯函数)。
+    const scvb::state::Segment seg = scvb::output::makeManualConstantSegment(track.segments, isPan, value);
 
     scvb::output::commitCrvsTransaction(
         authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
