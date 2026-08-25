@@ -6,7 +6,7 @@
 
 # SCVB 用户手册
 
-SCVB 是由 [Synchain](https://synchain.ca) 主导的开源插件项目,源码与文档完全公开,欢迎自由使用、修改与分发。如果它帮你省下了时间,也欢迎去 [synchain.ca](https://synchain.ca) 看看我们的其他产品 —— 用得顺手的话,把 Synchain 推荐给你的朋友和同事,就是对我们最好的支持。
+SCVB 是由 [Synchain](https://synchain.ca) 主导的开源插件项目,源码与文档完全公开,欢迎在 [GPL-3.0-or-later](../LICENSE) 的条款下自由使用、修改与分发。如果它帮你省下了时间,也欢迎去 [synchain.ca](https://synchain.ca) 看看我们的其他产品 —— 用得顺手的话,把 Synchain 推荐给你的朋友和同事,就是对我们最好的支持。
 
 SCVB(Synchain Vocal Balancer)是**一对**配套的 VST3 插件,用来给多人多声部的人声做自动声像与音量平衡:
 
@@ -136,8 +136,8 @@ Input 是单页:channel 选择、组选择、连接状态、电平、直通/静�
 
 要点:
 
-- 引擎只打印 **30 条**(15 轨 × pan/vol)。width / MS Balance / Lead Select 你可以自己自动化,但引擎不会自动创建和调整自动化轨道。
-- 输出开关 **ON** 时,DSP 直接用引擎值(参数只是对外的打印头);**OFF** 时 DSP 用宿主参数值。
+- 引擎只打印 **30 条**(15 轨 × pan/vol)。width / MS Balance / Lead Select 你可以自己自动化,引擎不打印它们,也不会去改写它们 —— **这三条始终以你 DAW 里的值为准**。
+- 输出开关 **ON** 时,那 30 条的 DSP 直接用引擎值(参数只是对外的打印头);**OFF** 时 DSP 用宿主参数值。
 - 切版本、复制版本、改段值、关输出开关,**都不会**产生宿主自动化事件。
 - 重开一个 `output_enabled=ON` 的工程时会有加载守卫横幅:在你点"继续引擎驱动"之前,插件只备而不发,**一个 gesture 都不会写出去**。
 - 逐 DAW 的坑(Cubase 车道位置、REAPER 关 GUI 不写、Pro Tools 循环只录第一遍等)见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md)。

@@ -6,7 +6,7 @@
 
 # SCVB User Guide
 
-SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it freely. If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
+SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it under the terms of the [GPL-3.0-or-later](../LICENSE). If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
 
 SCVB (Synchain Vocal Balancer) is a **pair** of VST3 plugins that automatically balances pan and level across a multi-singer, multi-part vocal arrangement:
 
@@ -138,8 +138,8 @@ There are **2 version slots**, each holding a complete set of curves plus config
 
 Things worth knowing:
 
-- The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself, but the engine will not create or adjust automation lanes on its own.
-- With the output switch **ON**, the DSP uses engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
+- The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself; the engine neither prints them nor overwrites them — **those three always follow the value in your DAW**.
+- With the output switch **ON**, the DSP for those 30 takes engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
 - Switching versions, copying a version, editing segment values, and turning the output switch off **never** produce host automation events.
 - Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "continue engine-driven", the plugin is loaded but silent on the automation side — **not a single gesture goes out**.
 - Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).

@@ -29,7 +29,8 @@ jobs:
           clang-format --dry-run --Werror --style=file $files
       - name: Check web assets formatting (prettier)
         # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore。
-        # 版本必须钉死到补丁号,且两处同步改:`@3` 是浮动 major,本地 gates 与 CI 会在不同
+        # 版本必须钉死到补丁号,且与 gates.ps1 Gate 3、scripts/format.ps1(配对写入器)
+        # **三处同步改**:`@3` 是浮动 major,本地 gates 与 CI 会在不同
         # 时间各自解析出不同的 prettier,于是同一份代码「本地绿、CI 红」而没有任何东西变过。
         run: npx --yes prettier@3.9.6 --check .
 

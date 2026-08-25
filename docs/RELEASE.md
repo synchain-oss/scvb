@@ -54,7 +54,7 @@ semver 语义(音频插件特化):
 6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号。
 7. **核对产物**:zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` 两个完整 bundle 齐全,合规文件组齐全(见下),`.sha256` 独立文件存在。
 8. **填发布说明**:用下面的模板,SHA-256 **直接从 CI job summary 的 `dist/package-summary.md` 复制,不要手抄**。
-9. **发布后**:同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
+9. **发布后**:把**同一份** zip 与 `.sha256` 上传到官网下载页,并逐字核对官网哈希与 Release 正文里的 SHA-256 一致(README 向用户承诺了这一点);同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
 
 ## zip 内必须携带的合规文件组
 
@@ -127,7 +127,7 @@ SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手�
 
 ## 分发渠道
 
-- **主渠道**:GitHub Releases —— 单个 zip(两个 `.vst3` + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256`。
-- **次渠道**:官网下载页。
+- **权威产物来源**:GitHub Releases —— 单个 zip(两个 `.vst3` + `INSTALL.txt` + 合规文件组)+ 独立 `.sha256`。zip 与 SHA-256 都由 CI 产出,**Release 正文里的那个哈希是唯一权威值**。
+- **面向用户的推荐入口**:官网下载页(README 把它排在第一位)。官网必须发布**同一份** zip 与 `.sha256`,并与 Release 正文的哈希逐字一致 —— 这条不成立时,README 里「两处应当一致」的说法就是空头承诺,用户会被引到一条只验传输、不验来源的弱路径上。
 
 **为什么合并成一个 zip**:两个插件本来就配对使用,分开下载最常见的用户故障就是「只装了一个」。
