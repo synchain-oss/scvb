@@ -507,8 +507,10 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(ui, "scale", static_cast<float>(processor_.uiScalePercent()) / 100.0f);
     put(ui, "language", processor_.uiLanguage());
     put(ui, "active_tab", rt.activeTab);
-    put(ui, "guide_seen", rt.guideSeen);
-    put(ui, "tour_seen", rt.tourSeen);
+    // 两位是 atomic(宿主线程的 setStateInformation 会写,本函数在消息线程 25Hz 读):
+    // 陈旧一帧无害,撕裂才有害 —— 故取 atomic 而不是让 25Hz 的 emit 去抢 lifecycleMutex_。
+    put(ui, "guide_seen", rt.guideSeen.load(std::memory_order_relaxed));
+    put(ui, "tour_seen", rt.tourSeen.load(std::memory_order_relaxed));
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
