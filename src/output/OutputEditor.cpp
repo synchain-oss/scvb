@@ -282,6 +282,12 @@ void OutputEditor::emitConn()
     // 的 6 分频),Tab4 诊断区的「每轨 heartbeat 年龄」也要靠这个活数;不为了让 diff 门重新
     // 生效而把 age 排除出比对(那等于把诊断区冻住)。全空闲(无 Input)时载荷回到全哨兵、
     // 门重新拦住,不会有空转下发。
+    //
+    // web 侧后果已核过:app.js 的 scvb.conn 处理器会 requestRender() 整页重投影,于是有
+    // Input 连着时常驻 ~4Hz 整页 render。render 是幂等纯投影,且正在编辑的控件有明确豁免
+    // (tab-tracks.js 的 `if (local.editingCh !== ch)` 跳过该行 label;输入框的 value 只在
+    // beginLabelEdit 里写、render 从不碰),故编辑态不会掉焦点、也不会被抹半截。
+    // 4Hz 也只有 §2.5 meters 那条 30Hz 路径的 1/7.5。
     juce::var payload = buildConnPayload();
     const juce::String json = juce::JSON::toString(payload);
     if (json != lastConnJson_)
