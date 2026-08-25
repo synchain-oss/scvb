@@ -57,6 +57,15 @@ private:
     void emitSegments(const juce::String& reason, std::uint16_t tracksMask);
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
 
+    // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
+    struct AnalyzeScope
+    {
+        std::uint16_t tracksMask = 0; // 0 = 不限轨
+        double startS = 0.0;
+        double endS = 0.0;
+    };
+    AnalyzeScope parseAnalyzeScope(const ArgList& a) const;
+
     // 宿主循环区(秒)。返回 false = 宿主未提供循环区,或提供了但没给 tempo 换算不出秒
     // (JUCE 的 loopPoints 只有 ppq)。true 时 startS/endS 有效且 endS > startS。
     bool hostLoopSeconds(double& startS, double& endS) const;

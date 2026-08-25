@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include "OutputAuthority.h"
@@ -21,6 +22,7 @@
 #include "engine/PlayheadShot.h"
 #include "AutomationPrinter.h"
 #include "ipc/SegmentBackendWin32.h"
+#include "analysis/AnalysisPipeline.h"
 #include "output/BusXfade.h"
 #include "output/MeterShot.h"
 #include "output/OutputSession.h"
@@ -235,6 +237,24 @@ public:
     // 返回实际清除的总时长秒数(各轨相加,供 UI 反馈)。
     double clearCoverage(std::uint16_t tracksMask, double startS, double endS);
 
+    // ---- 分析作业(§1.6/§1.7)------------------------------------------------------
+    // 长耗时分析在**后台线程**跑(契约 §1.6「绝不阻塞消息线程」):startAnalysis 只做取样 +
+    // 起线程并立即返回;进度经 runtime_.analysisProgress 上桥;完成后回到消息线程写 CRVS。
+    struct AnalyzeAccepted
+    {
+        bool ok = false;
+        const char* reason = ""; // "busy" | "noData" | "notPrepared"
+        int intervals = 0; // 影响面预估(受理回执用)
+        int tracks = 0;
+        int manualKept = 0;
+    };
+    // tracksMask=0 表示不限轨;[startS,endS) 为分析范围(follow 档由调用方折算)。
+    AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS);
+    void cancelAnalysis();
+    bool analysisRunning() const { return analysisRunning_.load(std::memory_order_acquire); }
+    // 干跑影响面(§1.5 previewAnalyze):不改任何数据,只数「范围 × 有覆盖的轨」。
+    AnalyzeAccepted previewAnalysis(std::uint16_t tracksMask, double startS, double endS);
+
     // ---- CRVS 写事务(全部持 lifecycleMutex_,与 prepareToPlay/setStateInformation 同锁纪律)----
     scvb::engine::SetNameResult setVersionName(int version, const juce::String& name, juce::String& effectiveOut);
     scvb::engine::CopyVersionResult copyVersion(int src, int dst);
@@ -280,6 +300,11 @@ private:
 
     // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
     bool applyRemotePriorities();
+
+    // 后台分析线程体 + 完成回落(见 startAnalysis)。
+    class AnalysisJob;
+    friend class AnalysisJob;
+    void finishAnalysis(scvb::analysis::PipelineResult result);
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
     void publishConfigBroadcast();
 
@@ -365,6 +390,10 @@ private:
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;
     int timelineInvalidTicks_ = 0;
+    // 分析作业([M] 起/停;线程体只读快照,完成后经 callAsync 回消息线程写 CRVS)。
+    std::unique_ptr<AnalysisJob> analysisJob_;
+    std::atomic<bool> analysisRunning_{false};
+
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;
     // 上次写出的组号。改组后 ctrl 段整个换了一张,旧组的 config_seq 对新组毫无意义 ——

@@ -21,11 +21,13 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "InputBridgeLogic.h"
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
+#include "state/StateCodec.h"
 
 // createEditor 是虚函数,vtable 需要定义。真实定义在 *PluginEntry.cpp —— 那两个 TU 会把
 // WebViewHost/WebView2 拖进来,harness 不编它们(见 OutputPluginEntry.cpp 头注)。
@@ -747,4 +749,114 @@ TEST_CASE("HOST P1-4:手动写回落参数面 + 多轮交替不失效", "[host][
         CHECK(panP->convertFrom0to1(panP->getValue()) == Catch::Approx(pan).margin(0.01));
         CHECK(volP->convertFrom0to1(volP->getValue()) == Catch::Approx(vol).margin(0.01));
     }
+}
+
+// ---------------------------------------------------------------------------
+// v4 实测 P0-1:点「分析」后必须真的跑完并出段表,不能永久停在「分析中」。
+// 原因是 handleAnalyze 是 T29 占位:回 {ok:true} 却从不置 analysis_run.running,
+// 而 web 要等 running 翻真才交回状态面驱动 —— 于是它的在途标志永远挂着。
+// 本例走完整链:采集 → coverage 落账 → 触发分析 → 后台线程跑完 → 段表落 CRVS。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-1:采集 → 分析 → 出段表(全链,不卡死)", "[host][t37][v4][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采集一段**有声有静**的素材:让 VAD 能切出多个段,而不是一整条常响。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 6; ++burst)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 有声
+        r.runBlocks(40, 0.0f, 4, 4); // 静音
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 20.0).coveredS;
+    REQUIRE(coveredS > 0.0); // 前置:确实采到了东西
+
+    // 干跑:影响面应报出「有数据的轨」。
+    const auto preview = r.out.previewAnalysis(0, 0.0, coveredS);
+    CHECK(preview.tracks >= 1);
+
+    // 触发分析:受理必须成功,且**立刻**进入 running(web 就等这一位)。
+    const auto accepted = r.out.startAnalysis(0, 0.0, coveredS);
+    REQUIRE(accepted.ok); // ← 修复前 ok 恒 true 但 running 恒 false
+    CHECK(accepted.tracks >= 1);
+    CHECK(r.out.runtime().analysisRunning);
+
+    // 等后台线程跑完并回落到消息线程(callAsync 需要消息泵)。
+    bool finished = false;
+    for (int waited = 0; waited < 20000 && !finished; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        finished = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+    }
+    REQUIRE(finished); // ← 修复前永远不会变 false:「分析中」卡死
+    CHECK(r.out.runtime().analysisProgress == 1.0f);
+
+    // 出结果:该轨段表非空,且段是分析产物(origin=auto),时间递增不重叠。
+    const auto crvs = r.out.crvsSnapshot();
+    const auto& segs =
+        crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    REQUIRE_FALSE(segs.empty()); // ← 核心断言:真的出段表了
+    for (std::size_t i = 0; i < segs.size(); ++i)
+    {
+        CHECK(segs[i].t1 > segs[i].t0);
+        CHECK(scvb::state::segmentOrigin(segs[i].flags) == scvb::state::SegmentOrigin::Auto);
+        CHECK(segs[i].pan >= -100.0f);
+        CHECK(segs[i].pan <= 100.0f);
+        CHECK(segs[i].volDb >= -24.0f);
+        CHECK(segs[i].volDb <= 12.0f);
+        if (i > 0)
+        {
+            CHECK(segs[i].t0 >= segs[i - 1].t1); // 有序且不重叠
+        }
+    }
+}
+
+TEST_CASE("HOST P0-1:无采集数据时分析被拒,不会挂起", "[host][t37][v4][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(false);
+    r.runBlocks(40);
+
+    const auto accepted = r.out.startAnalysis(0, 0.0, 5.0);
+    CHECK_FALSE(accepted.ok);
+    CHECK(std::string(accepted.reason) == "noData");
+    CHECK_FALSE(r.out.runtime().analysisRunning); // 不置 running → UI 不会转圈
+}
+
+TEST_CASE("HOST P0-1:分析可取消,取消后不改段表", "[host][t37][v4][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(300, 0.5f, 4, 4);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 20.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    const auto before = r.out.crvsSnapshot()
+                            .versions[static_cast<std::size_t>(r.out.versionActive() - 1)]
+                            .tracks[kTestChannel - 1]
+                            .segments.size();
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    r.out.cancelAnalysis();
+    CHECK_FALSE(r.out.analysisRunning());
+    CHECK_FALSE(r.out.runtime().analysisRunning);
+
+    Rig::pumpMessages(300);
+    const auto after = r.out.crvsSnapshot()
+                           .versions[static_cast<std::size_t>(r.out.versionActive() - 1)]
+                           .tracks[kTestChannel - 1]
+                           .segments.size();
+    CHECK(after == before); // 取消 = 结果整份丢弃
 }
