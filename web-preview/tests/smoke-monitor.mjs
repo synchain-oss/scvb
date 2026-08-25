@@ -1678,6 +1678,29 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
         /--box-w/.test(app) && /--box-h/.test(app),
         "app.js 把设计盒写成 --box-w/--box-h",
     );
+    // ---- 设计盒的交接:T45 已把 960×720 落进 `web/shared/design-box.js` 的
+    // `DESIGN.monitor`(连同 gen-design-box.py / check-design-box.mjs / BridgeBase.h)。
+    // 那个改动合入 `feature/v1` 之前,本仓的 design-box.js 里还没有 monitor 键,
+    // 故这条**在场才查**:一出现就断言两处同值,并提醒把 monitor-box.js 改成转发。
+    {
+        const { DESIGN } = await import(u("web/shared/design-box.js"));
+        if (!DESIGN.monitor) {
+            skip(
+                "web/shared/design-box.js 里还没有 DESIGN.monitor(T45 已落,待合入 feature/v1)—— " +
+                    "合入后本条自动生效,届时把 monitor-box.js 改成转发",
+            );
+        } else {
+            eq(
+                DESIGN.monitor,
+                {
+                    w: MBOX.MONITOR_DESIGN.w,
+                    h: MBOX.MONITOR_DESIGN.h,
+                    presets: MBOX.MONITOR_DESIGN.presets,
+                },
+                "DESIGN.monitor 与 monitor-box.js 同值 —— **现在该把后者改成转发了**",
+            );
+        }
+    }
     check(
         MBOX.MONITOR_DESIGN.presets.includes(1),
         "缩放档位含 1x(设计盒原尺寸)",

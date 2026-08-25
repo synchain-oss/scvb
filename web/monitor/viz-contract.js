@@ -115,8 +115,11 @@ export const VIZ_FIELDS = Object.freeze([
     { struct: "VizFrame", name: "track_covered_mask", json: "coveredMask" },
     { struct: "VizFrame", name: "track_stereo_mask", json: "stereoMask" },
     { struct: "VizFrame", name: "lane_revision", json: "laneRevision" },
-    // T45 依 T46 的第二封对表信新增:每轨 lead_lock,分布图的柱顶绿帽
-    // (Tab1 逐柱写 data-lead;J75 C 要求 Monitor「同 Tab1 规格」)。
+    // T44 依 T46 的第二封对表信新增(offset 84,`_reserved` 因此从 [11] 缩到 [10]、
+    // 起点 84 → 88):每轨 lead_lock,分布图的柱顶绿帽。Tab1 逐柱写 data-lead,
+    // J75 C 要求 Monitor「同 Tab1 规格」—— 少了它就不是同规格。
+    // 本表只记**名字与顺序**,不记偏移,故那次挪动对镜像是无感的;golden 侧的
+    // `_reserved offset 88` 是预期变化,不是漂移。
     { struct: "VizFrame", name: "track_lead_mask", json: "leadMask" },
     { struct: "VizFrame", name: "_reserved", json: null },
     // ---- VizTrackColors(64 B)

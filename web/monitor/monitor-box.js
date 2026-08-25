@@ -7,17 +7,21 @@
 // 键就必须同批重生成那个头文件,而本卡的纪律是**不碰 src/**(native 侧 Monitor 壳
 // 归 T45)。故尺寸暂存本文件,由 Monitor 页面与 `web-preview/shell.js` 共用一份。
 //
-// **集成待办 —— T44/T45 侧已认领**(2026-08-25 对表回信),四处由他们一并做:
+// **状态:T45 已把这四处全落完**(`feat/T45-monitor-shell`),只等它合入 `feature/v1`:
 //   ① `web/shared/design-box.js` 加 `DESIGN.monitor = {w:960, h:720, presets:<下表>}`
 //   ② 重跑 `python scripts/gen-design-box.py` 生成 `src/core/DesignBox.h`
 //   ③ `scripts/check-design-box.mjs` 的 `EXPECT` 加 monitor 条目
 //      —— 那份 hardcode 就是 gate 3d 本身,不同批改会红
 //   ④ `BridgeBase.h` 的 `designBoxWindowSize` 加 monitor 分支
 //      (现在非 "input" 一律回落 Output 的 1180×780)
-// **他们落地之后,本文件改成转发**:`export const MONITOR_DESIGN = DESIGN.monitor;`
+// **合入之后,本文件改成转发**:`export const MONITOR_DESIGN = DESIGN.monitor;`
 // (或直接删掉,页面与 `web-preview/shell.js` 改引 `web/shared/design-box.js` 真源)。
-// 在那之前本文件是**唯一**一处写着 960/720 的地方 —— 与「设计盒数字不得二次硬编码」
-// 同一条纪律,只是真源暂时落在这里。
+// 现在还不能改 —— `feature/v1` 上的 `design-box.js` 里暂时没有 `monitor` 键,
+// 转发过去就是 `undefined`,页面当场坏。
+//
+// **不靠人记着**:`smoke-monitor.mjs` ⑦ 节有一条「在场才查」的断言 —— `DESIGN.monitor`
+// 一出现就断言它与下面的字面量同值,并在断言语里直说「现在该把本文件改成转发了」。
+// 值漂了当场红,没漂则是一条 [SKIP] 摆在那里提醒还欠这一步。
 //
 // 尺寸依据(J75 C「依内容定」):
 //   • 高 720 = header 40 + 分布图卡 ~196 + 轨迹图卡 ~400(**占主体**,J75 C 逐字)
