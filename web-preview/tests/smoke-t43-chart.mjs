@@ -643,13 +643,19 @@ log("=== ⑤ mock 端到端:视图态往返 ===");
         role: "output",
         params: "?fixture=fifteen-tracks",
     });
-    const { createBridge, PENDING_FUNCS } = await import(
+    const { createBridge, PENDING_FUNCS, BRIDGE_FUNCTIONS } = await import(
         u("web/shared/bridge.js")
     );
-    eq(
-        PENDING_FUNCS.output.slice(),
-        ["setMasterChartMode"],
-        "待转正名表只有本卡这一项(转正后从表里删掉)",
+    // 本卡只对**自己那一项**负责:待转正名表是共享的(T41 的 exportSuggestions 也停在
+    // 这里),钉死整张表会让每张新卡都来改这一行。要守的是这两条 —— 名字还在待转正表里、
+    // 且还没混进冻结名表;转正时把它们一起反过来写。
+    check(
+        PENDING_FUNCS.output.includes("setMasterChartMode"),
+        "setMasterChartMode 仍在待转正名表(转正后从表里删掉)",
+    );
+    check(
+        !BRIDGE_FUNCTIONS.output.includes("setMasterChartMode"),
+        "setMasterChartMode **不在**冻结名表(契约 §7 还没收它)",
     );
     const bridge = createBridge({ role: "output", mockBackend: s.mock });
     check(

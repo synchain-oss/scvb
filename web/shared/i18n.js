@@ -401,6 +401,39 @@ export const T = {
         "chart.legendAria": "轨道配色图例",
         "chart.legendHint": "色点对应轨号;悬停高亮该轨",
 
+        // T41:Tab3「建议表」视图 + CSV 导出(11 §4.2.3 通路 B1/B2;U12 已答复进 v1 主线)。
+        // 列头词条对应冻结列名(悬停列头可见原列名),EN/FR 为本卡自译、**待 U17 人工审校**。
+        "suggest.entry": "建议表",
+        "suggest.title": "建议表",
+        "suggest.disclaimer":
+            "这些是建议值——SCVB 不会替你在 DAW 里应用它们;请照表手工设置。",
+        "suggest.backToLanes": "返回泳道",
+        "suggest.export": "导出 CSV",
+        "suggest.scope": "{v} · {t} 轨 · {n} 行",
+        "suggest.empty": "尚无分段结果——分析之后这里列出每轨每段的建议值",
+        "suggest.legend":
+            "宽度只对立体声轨有值,mono 轨留空(0 是「收成 mono」的有效值,与留空不是一回事);来源与锁定的取值与工程里存的逐字相同",
+        "suggest.exporting": "正在导出…",
+        "suggest.exportOk": "已导出 {n} 行 → {path}",
+        "suggest.exportCancelled": "已取消导出",
+        "suggest.exportFail": "导出失败:{reason}",
+        "suggest.exportUnavailable":
+            "本版本尚未接通导出——保存对话框待 native 侧落地",
+        "suggest.tableAria": "建议表:每轨每段的声像 / 音量 / 宽度建议值",
+        "suggest.col.trackIndex": "轨",
+        "suggest.col.trackLabel": "轨名",
+        "suggest.col.sourceChannels": "声道",
+        "suggest.col.version": "版本",
+        "suggest.col.versionName": "版本名",
+        "suggest.col.segmentIndex": "段",
+        "suggest.col.t0Sec": "起(秒)",
+        "suggest.col.t1Sec": "止(秒)",
+        "suggest.col.pan": "声像",
+        "suggest.col.volDb": "音量 dB",
+        "suggest.col.width": "宽度 %",
+        "suggest.col.origin": "来源",
+        "suggest.col.locked": "锁定",
+
         "master.transitionHint": "段与段之间参数切换的过渡时间",
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
@@ -1124,6 +1157,40 @@ export const T = {
         "chart.legendHint":
             "The colour dot matches the track number; hover to highlight that track",
 
+        // T41 —— 自译,**待 U17 人工审校**。
+        "suggest.entry": "Suggestions",
+        "suggest.title": "Suggestion table",
+        "suggest.disclaimer":
+            "These are suggested values — SCVB does not apply them in your DAW for you; set them by hand from this table.",
+        "suggest.backToLanes": "Back to lanes",
+        "suggest.export": "Export CSV",
+        "suggest.scope": "{v} · {t} tracks · {n} rows",
+        "suggest.empty":
+            "No segments yet — the per-track, per-segment suggestions appear here after analysis",
+        "suggest.legend":
+            "Width only has a value on stereo tracks and stays blank on mono ones (0 means collapsed to mono, which is not the same as blank); origin and locked read exactly as stored in the project",
+        "suggest.exporting": "Exporting…",
+        "suggest.exportOk": "Exported {n} rows → {path}",
+        "suggest.exportCancelled": "Export cancelled",
+        "suggest.exportFail": "Export failed: {reason}",
+        "suggest.exportUnavailable":
+            "Export is not wired up in this build yet — the save dialog is pending on the native side",
+        "suggest.tableAria":
+            "Suggestion table: pan / volume / width suggestions per track and segment",
+        "suggest.col.trackIndex": "Trk",
+        "suggest.col.trackLabel": "Track name",
+        "suggest.col.sourceChannels": "Ch",
+        "suggest.col.version": "Ver",
+        "suggest.col.versionName": "Version name",
+        "suggest.col.segmentIndex": "Seg",
+        "suggest.col.t0Sec": "Start (s)",
+        "suggest.col.t1Sec": "End (s)",
+        "suggest.col.pan": "Pan",
+        "suggest.col.volDb": "Vol dB",
+        "suggest.col.width": "Width %",
+        "suggest.col.origin": "Origin",
+        "suggest.col.locked": "Locked",
+
         "master.transitionHint":
             "How fast parameters transition between segments.",
         "master.copyConfirmWarn":
@@ -1813,6 +1880,40 @@ export const T = {
         "chart.legendAria": "Légende des couleurs de piste",
         "chart.legendHint":
             "La pastille de couleur correspond au numéro de piste ; survolez pour mettre la piste en évidence",
+
+        // T41 —— 自译,**待 U17 人工审校**。
+        "suggest.entry": "Suggestions",
+        "suggest.title": "Tableau de suggestions",
+        "suggest.disclaimer":
+            "Ce sont des valeurs suggérées — SCVB ne les applique pas à votre place dans le DAW ; reportez-les à la main depuis ce tableau.",
+        "suggest.backToLanes": "Retour aux couloirs",
+        "suggest.export": "Exporter en CSV",
+        "suggest.scope": "{v} · {t} pistes · {n} lignes",
+        "suggest.empty":
+            "Aucun segment pour l'instant — les suggestions par piste et par segment apparaissent ici après l'analyse",
+        "suggest.legend":
+            "La largeur n'a de valeur que sur les pistes stéréo et reste vide sur les pistes mono (0 signifie « repliée en mono », ce qui n'est pas la même chose que vide) ; origine et verrou reprennent exactement les valeurs enregistrées dans le projet",
+        "suggest.exporting": "Export en cours…",
+        "suggest.exportOk": "{n} lignes exportées → {path}",
+        "suggest.exportCancelled": "Export annulé",
+        "suggest.exportFail": "Échec de l'export : {reason}",
+        "suggest.exportUnavailable":
+            "L'export n'est pas encore raccordé dans cette version — la boîte de dialogue d'enregistrement est en attente côté natif",
+        "suggest.tableAria":
+            "Tableau de suggestions : suggestions de panoramique / volume / largeur par piste et par segment",
+        "suggest.col.trackIndex": "Pst",
+        "suggest.col.trackLabel": "Nom de piste",
+        "suggest.col.sourceChannels": "Can",
+        "suggest.col.version": "Ver",
+        "suggest.col.versionName": "Nom de version",
+        "suggest.col.segmentIndex": "Seg",
+        "suggest.col.t0Sec": "Début (s)",
+        "suggest.col.t1Sec": "Fin (s)",
+        "suggest.col.pan": "Pan",
+        "suggest.col.volDb": "Vol dB",
+        "suggest.col.width": "Largeur %",
+        "suggest.col.origin": "Origine",
+        "suggest.col.locked": "Verrou",
 
         "master.transitionHint":
             "Durée de transition des paramètres entre segments.",
