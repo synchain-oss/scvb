@@ -33,4 +33,17 @@ juce::WebBrowserComponent::Options PlatformWebView::makeWebViewOptions(juce::Web
     return options;
 }
 
+const char* PlatformWebView::runtimeDownloadUrl()
+{
+    return "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+}
+
+int PlatformWebView::majorVersionOf(const juce::String& version)
+{
+    const auto head = version.trim().upToFirstOccurrenceOf(".", false, false).trim();
+    if (head.isEmpty() || !head.containsOnly("0123456789"))
+        return -1;
+    return head.getIntValue();
+}
+
 } // namespace scvb::webview

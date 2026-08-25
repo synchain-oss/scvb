@@ -899,6 +899,19 @@ wirePriority();
 refreshI18n();
 
 (async function boot() {
+    try {
+        await bootInner();
+    } catch (e) {
+        // 首帧链路炸掉 = 界面起不来。显式上报,免得 native 侧只能等看门狗超时,
+        // 且兜底面板还写着「加载太慢」这种误导文案(守卫装在 index.html 的 <head>)。
+        if (typeof window.__scvbReportBootError === "function") {
+            window.__scvbReportBootError("input-boot", (e && e.stack) || e);
+        }
+        throw e;
+    }
+})();
+
+async function bootInner() {
     if (!bridge) {
         render();
         return;
@@ -916,4 +929,4 @@ refreshI18n();
         syncUiFromState();
     }
     render();
-})();
+}
