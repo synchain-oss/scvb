@@ -39,6 +39,9 @@ import {
     errorKeysToDrop,
     segmentsEventApplies,
     applySegmentsEvent,
+    HISTORY_AVAIL_INIT,
+    historyAfterCall,
+    historyAfterSegments,
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
@@ -118,6 +121,9 @@ const store = {
         rejectedPrintingUntil: 0,
         // B-04:布防期内输出开关 ON 过的粘滞位(footer 琥珀警告的「或被打开」半边)
         recapOutputOpened: false,
+        // [D1] header 撤销/重做两钮的可用性(契约无 canUndo/canRedo 信号 ⇒ 回执驱动;
+        // 判据与两条不变式见 tab-master.js 的 historyAfterCall / historyAfterSegments)
+        history: HISTORY_AVAIL_INIT,
     },
 };
 
@@ -953,8 +959,39 @@ if (tourAskUi.later) {
 }
 
 // ============================================================================
-// 键盘(05 §1.3 撤销/重做;契约 §1.25/§1.26)
+// 撤销 / 重做(05 §1.3;契约 §1.25/§1.26)—— 键盘 + [D1] header 两钮
+// ----------------------------------------------------------------------------
+// 两条入口打**同一个** runHistory():键盘那条的行为逐字不变(同样的拦截判据、
+// 同样的 preventDefault、同样的桥函数),只是把回执接住,好让两钮的置灰跟着走 ——
+// 否则一路 Ctrl+Z 按到栈空,按钮还亮着,而按钮亮不亮本就该是同一个栈的同一件事。
 // ============================================================================
+const historyUi = { undo: $("header-undo"), redo: $("header-redo") };
+
+/** 调 §1.25/§1.26 并把 `{ok:bool}` 回执喂给可用性 reducer。 */
+async function runHistory(kind) {
+    const res = await call(kind);
+    // call() 在「桥没接上 / 调用抛错」时回 null —— 那是**没有证据**,不是栈空,
+    // 保持原样(置灰会把一次通信故障变成一个永久灰掉的按钮)。
+    if (!res || typeof res.ok !== "boolean") return;
+    store.session.history = historyAfterCall(
+        store.session.history,
+        kind,
+        res.ok,
+    );
+    requestRender();
+}
+
+for (const kind of ["undo", "redo"]) {
+    const btn = historyUi[kind];
+    if (!btn) continue;
+    btn.addEventListener("click", () => {
+        // 置灰只写 data-disabled(sc-btn 族的置灰是 opacity + cursor,不吃事件),
+        // 拦截照 header 版本 chip / 复制钮的先例做在这里。
+        if (btn.getAttribute("data-disabled") === "1") return;
+        runHistory(kind);
+    });
+}
+
 document.addEventListener(
     "keydown",
     (e) => {
@@ -970,7 +1007,7 @@ document.addEventListener(
             return;
         }
         e.preventDefault(); // 防止冒泡到宿主撤销栈
-        call(e.shiftKey ? "redo" : "undo");
+        runHistory(e.shiftKey ? "redo" : "undo");
     },
     true,
 );
@@ -1048,10 +1085,46 @@ function render() {
     }
 }
 
+/**
+ * 只读观察态判据(契约 §1.x 拒绝态列「只读观察态下全 UI 写控件 disabled」)。
+ * 单独成函数是因为它有**两个**消费点且渲染顺序不同:renderBanners 里算完写
+ * `vs.readOnly` 供其后的各 tab 用,而 renderHeader 排在 renderBanners **之前**,
+ * 读那个字段会晚一帧 —— header 两钮宁可当帧算一遍。
+ */
+function isReadOnly(vs) {
+    return (
+        !!vs.errors.get("secondOutput") ||
+        !!(vs.conn && vs.conn.outputReadOnly === true)
+    );
+}
+
 function renderHeader() {
     const s = viewStore().state;
     const g = s.global || {};
     const phase = outputPhase(s, viewStore().playhead);
+
+    // [D1] 撤销/重做两钮:可用 = 回执驱动的本地位 ∧ 非只读观察态。
+    // tour demo 期间 viewStore() 换成 demo 仓(它的 session 里没有 history)—— 回落
+    // 起手值即可,demo 是纯展示层,不会有真回执。
+    const hist = viewStore().session.history || HISTORY_AVAIL_INIT;
+    const roNow = isReadOnly(viewStore());
+    for (const kind of ["undo", "redo"]) {
+        const btn = historyUi[kind];
+        if (!btn) continue;
+        const on = hist[kind] && !roNow;
+        btn.setAttribute("data-disabled", on ? "0" : "1");
+        btn.setAttribute("aria-disabled", String(!on));
+        // tooltip 只解释「栈空」这一种灰:只读观察态已有横幅②整屏说明,
+        // 每个控件再挂一遍同一句话是噪音。
+        setTitle(
+            btn,
+            !on && !roNow
+                ? dictNow[
+                      kind === "undo" ? "header.undoEmpty" : "header.redoEmpty"
+                  ]
+                : "",
+        );
+    }
 
     // 连接摘要 pill:N/15 只统计 slotState=2 ∧ heartbeatFresh(契约 §2.3,J01)
     const n = connectedCount(viewStore().conn);
@@ -1138,7 +1211,7 @@ function renderBanners() {
 
     // ② 组内只读观察 → 全 UI 写控件 disabled
     const second = err.get("secondOutput");
-    const readOnly = !!second || !!(vs.conn && vs.conn.outputReadOnly === true);
+    const readOnly = isReadOnly(vs);
     vs.readOnly = readOnly;
     show($("banner-secondOutput"), readOnly);
     if (readOnly) {
@@ -1424,6 +1497,11 @@ if (bridge) {
             return;
         }
         store.segments = applySegmentsEvent(store.segments, seg);
+        // [D1] 新事务入栈的第二手证据(reason ∈ edit/trackManual/copyVersion)
+        store.session.history = historyAfterSegments(
+            store.session.history,
+            seg,
+        );
         tabMaster.onSegments(seg);
         // Tab2:手动常值的乐观显示让位给回推的段表(§1.16 的写入结果经本事件回来)
         tabTracks.onSegments(seg);

@@ -368,6 +368,15 @@ export const T = {
         "banner.secondOutput": "组 {X} 已有主 Output,本实例只读观察",
         "group.oneInstanceNote": "本实例只属于一个组",
 
+        // [D1] Header 常驻撤销 / 重做(契约 §1.25/§1.26;Ctrl+Z 之外的显式入口)。
+        // EN/FR 为本卡自译,**待 U17 人工审校**。置灰 tooltip 不写「不可用」这类
+        // 状态词,直说栈空的事实(05 §5 状态词规范:每态唯一用词,不自由造泛化说法)。
+        "header.history": "撤销与重做",
+        "header.undo": "撤销",
+        "header.redo": "重做",
+        "header.undoEmpty": "没有可撤销的操作",
+        "header.redoEmpty": "没有可重做的操作",
+
         // 设计定稿回流新增词条(05 §5.2,639-658 行;design-v1/v2 定稿文案,C4 批量入表)。
         "range.followShort": "全曲",
         "master.rangeFollowHint":
@@ -1092,6 +1101,13 @@ export const T = {
             "Group {X} already has a primary Output — this instance is read-only",
         "group.oneInstanceNote": "This instance belongs to one group only",
 
+        // [D1] Header undo / redo (contract §1.25/§1.26; self-translated, U17 review pending).
+        "header.history": "Undo and redo",
+        "header.undo": "Undo",
+        "header.redo": "Redo",
+        "header.undoEmpty": "Nothing left to undo",
+        "header.redoEmpty": "Nothing left to redo",
+
         // 设计定稿回流新增词条(05 §5.2,639-658 行;design-v1/v2 定稿文案,C4 批量入表)。
         "range.followShort": "Follow",
         "master.rangeFollowHint":
@@ -1781,6 +1797,14 @@ export const T = {
             "Le groupe {X} a déjà un Output principal — cette instance est en lecture seule",
         "group.oneInstanceNote":
             "Cette instance n'appartient qu'à un seul groupe",
+
+        // [D1] Annuler / Rétablir dans l'en-tête (contrat §1.25/§1.26 ;
+        // auto-traduit, relecture U17 en attente).
+        "header.history": "Annuler et rétablir",
+        "header.undo": "Annuler",
+        "header.redo": "Rétablir",
+        "header.undoEmpty": "Plus rien à annuler",
+        "header.redoEmpty": "Plus rien à rétablir",
 
         // 设计定稿回流新增词条(05 §5.2,639-658 行;design-v1/v2 定稿文案,C4 批量入表)。
         "range.followShort": "Suivi",
