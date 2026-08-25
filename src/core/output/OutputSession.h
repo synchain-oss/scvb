@@ -148,6 +148,12 @@ public:
     // 特征 hop 时长(ms):秒 ↔ hop 换算的唯一真源(桥面按它折算范围与覆盖率)。
     static constexpr u32 featHopMs() noexcept { return kFeatHopMs; }
 
+    // [M] 布防的**时间维**(契约 §1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
+    // 落到 ChannelFrames::setGate —— 写入口按 hop ∈ gate 判,范围外静默丢弃、不记账。
+    // 不设这道门的话特征按整条时间线累计,内嵌特征的 8MB 预算会先于功能问题暴露。
+    // follow 档传全域即可(follow 的语义就是不限范围)。
+    void setFeatureGate(analysis::HopRange gate) noexcept { featureGate_ = gate; }
+
     // [M] 聚合用([J09] 全局小节 / 看门狗)。gapCount 是**进程寿命累计值**(ctrl 全局小节与诊断用)。
     u32 gapCount(u32 channel) const;
 
@@ -198,6 +204,8 @@ private:
     std::array<bool, kMaxChannels> featBound_{};
     FeatPuller featPuller_;
     analysis::FrameStore frameStore_;
+    // 布防时间维(§1 setCaptureEnabled);默认全域 = 不门控。
+    analysis::HopRange featureGate_{0, std::numeric_limits<u64>::max()};
 
     // [A] 只读的注入掩码(bit{N-1} = channel N 可注入混音);[M] 25Hz 写。
     std::atomic<u32> injectMask_{0};

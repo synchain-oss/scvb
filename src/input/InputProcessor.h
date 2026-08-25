@@ -127,8 +127,15 @@ private:
     scvb::CtrlPlane ctrl_;
     // 广播区上一帧成功读到的配置([M] 独占,持 lifecycleMutex_)。seqlock 撕裂时沿用它,
     // 免得 UI 闪一帧默认值(见 bridgeTickSnapshot)。
+    // ctrl 段懒开的退避时刻(见 ensureCtrlOpen:open() 最坏含 500ms sleep,不能每 25Hz 重试)。
+    scvb::u64 ctrlOpenRetryAtMs_ = 0;
+    static constexpr scvb::u64 kCtrlOpenRetryMs = 1000;
+
     scvb::CtrlBroadcastSnapshot lastBroadcast_{};
     bool lastBroadcastValid_ = false;
+    // 缓存所属的组号。改组/释放后旧组的 label/priority/lead 必须立刻作废,否则 Input 会长期
+    // 显示**上一组**的配置。存组号而不是在五处 changeGroup/release 调用点手工复位。
+    int lastBroadcastGroup_ = 0;
 
     // 输出级仲裁(J12/J32)。
     scvb::input::StageSwitchStateMachine stageMachine_;

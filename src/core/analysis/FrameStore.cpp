@@ -164,6 +164,14 @@ const ChannelFrames& FrameStore::channel(uint32_t ch) const
     return invalidChannel_;
 }
 
+void FrameStore::reset()
+{
+    for (auto& c : channels_)
+    {
+        c.reset();
+    }
+}
+
 std::size_t FrameStore::totalPageCount() const noexcept
 {
     std::size_t n = 0;

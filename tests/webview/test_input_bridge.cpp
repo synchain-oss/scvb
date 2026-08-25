@@ -253,7 +253,9 @@ TEST_CASE("T37-C buildConfigPayload:读到广播区时逐字段取 Output 实况
     CHECK(c->getProperty("label").toString() == "Lead Vox");
     CHECK(static_cast<int>(c->getProperty("priority")) == 6); // ← 修复前恒 0
     CHECK(static_cast<bool>(c->getProperty("lead_lock")) == true);
-    CHECK(static_cast<bool>(c->getProperty("lead_vol_exempt")) == false);
+    // §4.3 的载荷是逐字冻结的九键,**不含** lead_vol_exempt —— 它属于 Output 侧的
+    // scvb.state.channels[](§2.1/§4.1),Input 页没有消费面。这里反向钉住:别再漏进来。
+    CHECK_FALSE(c->hasProperty("lead_vol_exempt"));
     CHECK(static_cast<int>(c->getProperty("pair_id")) == 2);
     CHECK(static_cast<int>(c->getProperty("freeze")) == 3);
     CHECK(static_cast<bool>(c->getProperty("participate_in_auto_pan")) == true);

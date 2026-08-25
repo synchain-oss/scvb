@@ -49,6 +49,15 @@ public:
     // 拉取/记账门控(04 §1.1/§4.2):写入口检查 hop ∈ gate。默认全范围(不门控);
     // 布防期由 Output 换读「工作选区」。
     void setGate(HopRange r) noexcept { gate_ = r; }
+
+    // 整轨作废:清页 + 清覆盖记账。用于 Output **改组**(J66)—— frameStore 按 channel 索引存、
+    // 没有 group 维度,不清的话新组的 ch3 会继承旧组 ch3 的 CoverageMap,并把两组的特征并进
+    // 同一张表。注意与 invalidate(打洞)不同:那是按区间清覆盖、页留着待覆写。
+    void reset()
+    {
+        pages_.clear();
+        coverage_.clear();
+    }
     HopRange gate() const noexcept { return gate_; }
 
     const CoverageMap& coverage() const noexcept { return coverage_; }
@@ -95,6 +104,9 @@ public:
     ChannelFrames& channel(uint32_t ch);
     const ChannelFrames& channel(uint32_t ch) const;
     uint32_t maxChannels() const noexcept { return static_cast<uint32_t>(channels_.size()); }
+
+    // 全轨作废(改组路径;逐轨 ChannelFrames::reset)。
+    void reset();
 
     std::size_t totalPageCount() const noexcept;
     std::size_t totalAllocatedBytes() const noexcept;

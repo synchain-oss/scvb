@@ -226,18 +226,20 @@ void OutputSession::pullFeatures()
     const bool capturing = captureEnabled_.load(std::memory_order_relaxed) != 0;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
-        frameStore_.channel(ch).setReadOnly(!capturing);
+        auto& frames = frameStore_.channel(ch);
+        frames.setReadOnly(!capturing);
+        // 布防时间维(§1 setCaptureEnabled):范围外的 hop 静默丢弃、不记账。
+        frames.setGate(featureGate_);
     }
     if (!capturing)
     {
         return; // 采集 OFF:Input 也不写 feat 段,连拉都省了
     }
 
-    // timeGate 取全域:范围门控属桥面语义(global.range / 布防选区),由调用方按需改
-    // ChannelFrames::setGate,拉取层不替它决定。selectedMask=0 = 不限轨;
-    // activeMask = 本组 connected_mask,只拉在线轨(04 §3.3)。
-    constexpr analysis::HopRange kAllHops{0, std::numeric_limits<std::uint64_t>::max()};
-    featPuller_.pullTick(frameStore_, kAllHops, /*selectedMask=*/0, registry_.connectedMask());
+    // timeGate 与写入口的 gate 同一个范围(pullIncremental 也据它裁剪);selectedMask=0 = 不限轨
+    // (轨维在 Input 侧按广播区的 enabled 位布防,不重复门控);activeMask = 本组 connected_mask,
+    // 只拉在线轨(04 §3.3)。
+    featPuller_.pullTick(frameStore_, featureGate_, /*selectedMask=*/0, registry_.connectedMask());
 }
 
 void OutputSession::evaluateChannels(u64 nowMs)
@@ -432,6 +434,10 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     releaseSlot();
     releaseSegments();
     resetChannelTracking(); // PR#53 第5轮:释放旧组后重置 per-channel 跟踪(旧组时序不得污染新组判定)
+    // 特征真身按 channel 索引存、**没有 group 维度**:不清的话新组的 ch3 会继承旧组 ch3 的
+    // CoverageMap,pullFeatures 再把新组特征并进同一张表(覆盖率与「已分析区域」都会算错)。
+    // 只在**改组**清;release(同组 releaseResources/重新 prepare)不清 —— 那不该丢已采集的数据。
+    frameStore_.reset();
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
 

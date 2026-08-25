@@ -226,6 +226,9 @@ endif()
 #   · 那两个 TU 里的 createEditor() 会把 WebViewHost/WebView2 拖进来(harness 不需要 GUI);
 #   · createPluginFilter() 在两侧同名,同进程托管两个插件会撞符号。
 # 见 src/output/OutputPluginEntry.cpp 头注。
+# 守卫与紧邻的 scvb_ipc_tests 对齐:本目标跑**真实命名共享内存段**(Win32 CreateFileMapping),
+# 属重量级进程外资源测试,不该在非 Windows 上进默认 ctest 集合。
+if(WIN32)
 add_executable(scvb_host_tests
   host/test_host_harness.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
@@ -262,3 +265,4 @@ else()
 endif()
 
 add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
+endif()
