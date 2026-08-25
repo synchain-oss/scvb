@@ -70,6 +70,12 @@ juce::var MonitorEditor::buildSnapshot()
 {
     // 与 Input/Output 同款:每次 requestInitialState(含 WebView 重载)都清 diff 基线,
     // 下一个 emitTick 重发各事件首帧。
+    //
+    // **本函数可重入、无副作用** —— 这是对消费侧的一条承诺,别往里加带副作用的东西:
+    // 页面把「已 online 却持续拿不到车道」的自愈路建在重复调用它上面(重拉一次必带车道的首帧),
+    // 而 WebView 每刷新一次也会走这条路。净效果只有「下一个 tick 四个事件各重发一次首帧」:
+    // 不建段、不碰共享内存(只读进程内的 vizSnapshot() 副本)、不改 state、不触发 claim;
+    // 基类那侧的 bridgeReady_ = true 也是幂等赋值。
     lastStateJson_.clear();
     lastGroupsJson_.clear();
     lastVizJson_.clear();
