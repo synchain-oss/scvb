@@ -92,7 +92,7 @@ const DESIGN_BOX = {
 };
 
 /** 契约 §2/§4 的事件条数,仅用于工具条上「已接线 n/N」的自检显示。 */
-const EXPECTED_EVENT_COUNT = { output: 9, input: 5, monitor: 3 };
+const EXPECTED_EVENT_COUNT = { output: 9, input: 5, monitor: 4 };
 
 /** 泵的硬上限:超时即判失败,免得某天真源改成同步脚本时壳页无声空转。 */
 const PUMP_DEADLINE_MS = 15000;

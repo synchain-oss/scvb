@@ -35,7 +35,7 @@ import {
 } from "../shared/trajectory-chart.js";
 import { MONITOR_DESIGN } from "./monitor-box.js";
 import { createMonitorBridge } from "./monitor-bridge.js";
-import { VIZ_ABI, VIZ_STALE_MS } from "./viz-contract.js";
+import { GROUPS_JSON_KEY, VIZ_ABI } from "./viz-contract.js";
 import {
     CHANNEL_COUNT,
     GROUP_LETTERS,
@@ -44,6 +44,7 @@ import {
     vizAccepts,
     vizDistRows,
     vizDurationS,
+    vizHasLanes,
     vizIsEmptyState,
     vizLegendRows,
     vizPlayheadEvent,
@@ -73,15 +74,19 @@ try {
 // ------------------------------------------------------------- 事件仓(单向渲染源)
 const store = {
     ready: false,
-    // 最近一帧 **合并后**的 viz(帧头 + 沿用/新收的车道三件,见 mergeVizFrame)
-    viz: null,
+    // 最近一帧**合并后**的 viz(帧头 + 沿用/新收的车道块,见 mergeVizFrame)。
+    // **accept 失败也不清空** —— 它同时是 mergeVizFrame 的缓存,而且 `scvb.state`
+    // 迟到时要靠它重算一遍投影(见 applyProjection 的头注)。
+    frame: null,
     accepts: { ok: false, reason: "shape", abi: 0 }, // vizAccepts(viz) 的结果
     groups: 0, // scvb.groups 位图(事件缺失 = 0 ⇒ 绿点全灭,零报错)
     observed: 1, // 当前观察的组(1..8);本地乐观值,由 viz.groupId 回推校正
     scale: 1,
     version: "",
-    stalled: false,
-    lastPublishMs: null, // 写方停摆判据(VizFrame.publish_ms;见 VIZ_STALE_MS 注)
+    // `scvb.state` 的 viz 面:三态 + 独立的 fresh。**停摆判据归 native** ——
+    // 只有它能松开映射再探一次,分得出「Output 进程真没了」与「还在但不发帧了」;
+    // UI 侧靠「多久没收到事件」猜,永远会把 4Hz 的正常间隔与停摆混起来。
+    vizStatus: { viz: "offline", fresh: true },
     series: [], // vizSeries 的缓存(轨迹图每次重绘都读它,不能每帧重算)
 };
 
@@ -187,12 +192,9 @@ function observeGroup(g) {
     if (!Number.isInteger(g) || g < 1 || g > GROUP_LETTERS.length) return;
     if (store.observed === g) return;
     store.observed = g;
-    store.viz = null;
-    store.accepts = { ok: false, reason: "shape", abi: 0 };
+    store.frame = null;
+    store.accepts = { ok: false, reason: "shape" };
     store.series = [];
-    store.lastPublishMs = null;
-    store.stalled = false;
-    armStaleTimer();
     call("setObservedGroup", g);
     render();
 }
@@ -213,7 +215,7 @@ const traj = trajCanvas
           resetPanBtn: $("monitor-traj-reset"),
           zoomEl: $("monitor-traj-zoom"),
           getSeries: () => store.series,
-          getDurationS: () => vizDurationS(store.viz),
+          getDurationS: () => vizDurationS(visibleFrame()),
           getUiScale: () => store.scale,
           // 组不在线时两张卡整体 display:none —— 画布量不到舞台,也不该起 rAF
           // (05 §6.1「空闲零 rAF」)。这是本页唯一的可见性闸:Monitor 没有 tab。
@@ -356,9 +358,8 @@ async function previewScale(f) {
     if (!scaleTimer) scalePrev = store.scale;
     const res = await call("setUiScale", f);
     if (res && res.ok === false) return; // 拒绝态:不在档位表 → badArg
-    // Monitor 没有 `scvb.state` 回推通路(它只订 viz/groups/playhead),故档位由
-    // 本地就地应用 —— 与 Output/Input「等 state 回推再 zoom」是同一效果的两条路,
-    // 差别只在这边少一跳。落盘仍归 commitUiScale()。
+    // `scvb.state` 里虽然有 `uiScale`,但它 1Hz 变化才发 —— 缩放要**当场**跟手,
+    // 等一秒才动是坏体验。故档位就地应用,state 回推只当校正。落盘仍归 commitUiScale()。
     applyScale(f);
     scaleLeft = 10;
     if (scaleUi.confirm) scaleUi.confirm.hidden = false;
@@ -392,26 +393,46 @@ function applyScale(f) {
     if (traj) traj.invalidate();
 }
 
-// ------------------------------------------------------------- 停摆判定
-let staleTimer = 0;
-/** 是否收到过 30Hz 的 `scvb.playhead`(收到之后就不再用 4Hz 帧头里的播放头种子)。 */
+/**
+ * 是否收到过 `scvb.playhead`(收到之后就不再用 viz 帧里那份低频的播放头种子)。
+ *
+ * 那一路是 **25Hz**(T45:WebViewHost 定时器的上限,Output 侧也一样),数据源是
+ * Monitor **自己的 AudioPlayHead** —— 与 viz 段无关。故 Output 停摆时竖线照常走,
+ * 本页不为「viz 陈旧」特判播放头。
+ */
 let playheadSeen = false;
 
-function armStaleTimer() {
-    clearTimeout(staleTimer);
-    staleTimer = setTimeout(() => {
-        // 只有「本该有数据」时才算停摆:组不在线走的是空态,不是停摆。
-        if (!store.accepts.ok) return;
-        store.stalled = true;
-        render();
-    }, VIZ_STALE_MS);
+/**
+ * 当前该画的那一帧(不可读时是 null)。
+ *
+ * `store.frame` **永远保留最近一帧**,哪怕这一帧判下来不可读 —— 它同时是
+ * `mergeVizFrame` 的车道缓存,清掉会让下一帧的稳态合并失去依据。
+ * 「能不能画」是 `store.accepts.ok` 说了算,不是靠把帧清成 null 来表达。
+ */
+function visibleFrame() {
+    return store.accepts.ok ? store.frame : null;
+}
+
+/**
+ * 重跑投影:判这一帧能不能读 + 重算 15 轨折线。
+ *
+ * **两个入口都要调**:viz 帧到达、以及 `scvb.state` 到达(段级三态与 fresh 变了,
+ * 同一帧的结论会跟着变)。只在其中一处调过一次的后果,真机截图抓到过:
+ * `scvb.state` 比首帧 viz 晚到时,首帧被按「未知状态」判成不可读,而之后的稳态帧
+ * 不带车道 —— 于是分布图有 15 根柱、轨迹图却永远是空的。
+ */
+function applyProjection() {
+    const a = vizAccepts(store.frame, store.vizStatus);
+    store.accepts = a;
+    // **陈旧不清帧**:`reason === "stale"` 时 `ok` 仍为 true,图继续显示上一份真数据。
+    store.series = a.ok ? vizSeries(store.frame) : [];
 }
 
 // ============================================================================
 // 渲染(store → DOM 的幂等纯投影)
 // ============================================================================
 function render() {
-    const viz = store.viz;
+    const viz = visibleFrame();
     const a = store.accepts;
     const online = a.ok;
 
@@ -433,7 +454,7 @@ function render() {
     //   • `window`/`shape`/首帧未到 ⇒ 收起标题,正文换成「尚无分段结果…」;
     //   • 拒连 ⇒ 标题与正文都收起 —— Output 明明在跑,挂「Output 未运行」是错的,
     //     而「尚无分段结果」也不对(不是没有分段,是我们拒绝去读)。话全由红横幅说。
-    const offline = a.reason === "failed";
+    const offline = a.reason === "offline";
     const titleEl = $("monitor-empty-title");
     if (titleEl) titleEl.hidden = !offline;
     const emptyEl = $("monitor-empty-text");
@@ -451,11 +472,15 @@ function render() {
     if (refused) {
         fill($("monitor-banner-abi-text"), "monitor.abiMismatch", {
             a: VIZ_ABI,
-            b: a.reason === "geometry" ? VIZ_ABI : a.abi,
+            b: a.reason === "geometry" ? "?" : VIZ_ABI + 1,
         });
     }
+    // 「在线但陈旧」:Output 还在跑、只是不再发帧(T45 修僵尸数据时引入的那一档,
+    // 由 native 侧松开映射再探一次判定 —— UI 侧靠「多久没收到事件」猜不出来)。
+    // **图仍然显示**:数据还是上一份真数据,挡掉反而更糟(用户会看到一张突然
+    // 变空的图,而 Output 其实还在)。只挂一条琥珀横幅说明它不再更新。
     const stalledBanner = $("monitor-banner-stalled");
-    if (stalledBanner) stalledBanner.hidden = !(online && store.stalled);
+    if (stalledBanner) stalledBanner.hidden = a.reason !== "stale";
 
     // footer 版本号(§1.1 同款:快照到了才写)。**必须排在空态早退之前** ——
     // 版本号是本实例自己的身份,与被观察的组在不在线无关;放在早退之后,空态下
@@ -492,8 +517,21 @@ function render() {
 
     // ---- 下:轨迹图。数据面在 onViz 里算好存进 store.series(每帧重算 15 轨
     // 的折线是纯浪费:载荷没变时结果逐字相同)。
+    //
+    // 空态**两句话**,分得清才不骗人:
+    //   • 桥根本没送车道块(T45 待落 LANE_TRANSPORT)⇒「监视数据未接通」;
+    //   • 送了、但一条线都没有(工程真没分析过)⇒「尚无分段结果」。
+    // 画面一样、原因完全不同 —— 说错了会让用户去 DAW 里白找一遍。
     const empty = $("monitor-traj-empty");
-    if (empty) empty.hidden = store.series.length > 0;
+    if (empty) {
+        const hasLanes = vizHasLanes(viz);
+        empty.hidden = hasLanes && store.series.length > 0;
+        const key = hasLanes ? "chart.trajEmpty" : "monitor.noLanes";
+        if (empty.getAttribute("data-t") !== key) {
+            empty.setAttribute("data-t", key);
+        }
+        fill(empty, key, {});
+    }
     if (traj) {
         traj.setDuration(vizDurationS(viz));
         traj.resume(); // 与 suspend 配对的按需起帧;幂等且便宜
@@ -506,20 +544,43 @@ function writeHtml(node, html) {
 }
 
 // ============================================================================
-// 事件订阅(三个;名字逐字照 ./monitor-bridge.js 的 MONITOR_EVENTS)
+// 事件订阅(四个;名字逐字照 ./monitor-bridge.js 的 MONITOR_EVENTS)
 // ============================================================================
 if (bridge) {
-    bridge.on("scvb.viz", onViz);
-
-    // 组胶囊绿点:事件缺失时全灭、零报错(§2.4 同款容错)
-    bridge.on("scvb.groups", (g) => {
-        store.groups = (g && g.groups_online) || 0;
+    // `scvb.state`:组回显 + viz 三态 + fresh。**段级状态的唯一真源**。
+    // 命名段是引用计数存活的:只要 Monitor 自己不松手,「Output 进程退出」就永远看不
+    // 出来(段还在、读也成功)。T45 的做法是帧陈旧时**松开映射再探一次** —— 这件事
+    // UI 侧做不了,故状态从事件里来,不按「多久没收到事件」自己猜。
+    // 组回显也走这里:viz 帧里不带 groupId。
+    bridge.on("scvb.state", (st) => {
+        if (!st || typeof st !== "object") return;
+        store.vizStatus = {
+            viz: typeof st.viz === "string" ? st.viz : "offline",
+            fresh: st.fresh !== false,
+        };
+        if (Number.isInteger(st.groupId)) store.observed = st.groupId;
+        // 状态变了要**重跑一遍投影** —— 不只是重判。`scvb.state` 可能比首帧 viz 晚到
+        // (壳页里 driver 的 onReady 排在页面 requestInitialState 之后),那时首帧已经
+        // 被按「未知状态」判过一次;不重算的话,那一帧的折线就永远补不回来了。
+        // 真机截图抓到的:停摆场景下分布图有 15 根柱、轨迹图却是空的。
+        applyProjection();
+        if (traj) traj.invalidate();
         render();
     });
 
-    // §2.6 原样复用:30Hz 扁平标量集,直接喂轨迹图的插值层。
+    bridge.on("scvb.viz", onViz);
+
+    // 组胶囊绿点:事件缺失时全灭、零报错(§2.4 同款容错)。
+    // ⚠ 键名是 `online`,**不是** Output 侧的 `groups_online`(T45 的载荷;常量在
+    // viz-contract.js)。读错的后果是绿点永远不亮而页面一切正常 —— 故走常量,不写字面量。
+    bridge.on("scvb.groups", (g) => {
+        store.groups = (g && g[GROUPS_JSON_KEY]) || 0;
+        render();
+    });
+
+    // §2.6 原样复用:25Hz 扁平标量集,直接喂轨迹图的插值层。
     // **不排整页 render** —— 竖线与跟随滚动都在插值层里,整页投影与它无关
-    // (与 Tab1/Tab3 的同款分工;30Hz 触发整页渲染是纯烧 CPU)。
+    // (与 Tab1/Tab3 的同款分工;逐帧触发整页渲染是纯烧 CPU)。
     bridge.on("scvb.playhead", (p) => {
         playheadSeen = true;
         if (traj) traj.onPlayhead(p);
@@ -529,44 +590,22 @@ if (bridge) {
 /**
  * viz 帧到达。
  *
- * 三道闸,顺序不能换:
- *   ① `vizAccepts` —— magic/abi/online 的总闸(拒读的理由要能显示成横幅);
- *   ② **组号回显校正** —— 切组请求与 viz 帧之间有一拍在途,期间到达的是**上一组**
- *      的帧。原样吃下去会让「切过去了但画的是上一组」这一拍变成正确显示的假象,
- *      而这正是切组最容易被漏测的地方。groupId 与请求值不符即整帧忽略;
- *   ③ 折线重算 —— 只在这里算一次(render 是每帧跑的,不能在里面算 15 轨折线)。
+ * **没有「组号回显校正」这一步** —— T45 的 `scvb.viz` 载荷里不带 `groupId`(组回显走
+ * `scvb.state`),在途帧因此分不出来。换组时 T45 会**立刻**推一帧带车道的新组数据,
+ * 中间那一拍最多显示旧组 250ms。真要防得请 T45 在 viz 里带上 groupId —— 已在对表信里
+ * 提了;拿到之前这里**不假装能校正**,而不是写一段其实不生效的判断。
  */
 function onViz(raw) {
-    // ---- ② 组号回显校正(**必须排在合并之前**):在途帧带的是上一组的 groupId,
-    // 让它进 mergeVizFrame 会把上一组的车道存成缓存,下一帧再沿用 —— 那就把
-    // 「切过去了但画的是上一组」从一拍变成一直。
-    if (
-        raw &&
-        Number.isInteger(raw.groupId) &&
-        raw.groupId !== store.observed
-    ) {
-        return;
-    }
+    // ---- ① 车道按需重发:稳态帧不带车道,与缓存拼成完整的一帧(判据见 mergeVizFrame)
+    store.frame = mergeVizFrame(store.frame, raw);
+    // ---- ② 投影(含折线重算)。只在这里与 `scvb.state` 到达时算,**不在 render 里** ——
+    // render 每帧都跑,不能在里面算 15 轨折线。
+    applyProjection();
+    const a = store.accepts;
 
-    // ---- ③ 车道三件按需重发:稳态帧不带车道,与缓存拼成完整的一帧(判据见 mergeVizFrame)
-    const viz = mergeVizFrame(store.viz, raw);
-    const a = vizAccepts(viz);
-    store.viz = a.ok ? viz : null;
-    store.accepts = a;
-    store.series = a.ok ? vizSeries(viz) : [];
-
-    // ---- ④ 停摆判定看 `publish_ms`(段内注释:「读方据此判断写方是否停摆」)。
-    // 低频发布下「有没有收到事件」不是判据 —— 4Hz 的正常间隔会被误判成停摆。
-    const pub = raw && Number.isFinite(raw.publishMs) ? raw.publishMs : null;
-    if (pub !== store.lastPublishMs) {
-        store.lastPublishMs = pub;
-        store.stalled = false;
-        armStaleTimer();
-    }
-
-    // ---- ⑤ 首帧的播放头种子。30Hz 的 `scvb.playhead` 要等下一拍才到,而快照自带的
-    // viz 帧里就有 `playhead_samples` —— 用它先把竖线摆上,首帧出图时位置就是对的。
-    // 只在还没收到过 30Hz 事件时做:之后那一路更准(插值),不该被 4Hz 的帧头覆盖。
+    // ---- ④ 首帧的播放头种子。`scvb.playhead` 要等下一拍才到,而快照自带的 viz 帧里
+    // 就有播放头位置 —— 用它先把竖线摆上,首帧出图时位置就是对的。只在还没收到过
+    // playhead 事件时做:之后那一路更准(25Hz + 插值),不该被 4Hz 的帧覆盖。
     if (traj && a.ok && !playheadSeen) {
         const ev = vizPlayheadEvent(viz);
         if (ev) traj.onPlayhead(ev);
@@ -599,6 +638,19 @@ refreshI18n();
             setLang(ui.language, { push: false });
         }
         if (Number.isFinite(ui.scale)) applyScale(ui.scale);
+        // 快照自带首帧 viz(T45 按对表信照做)。它是完整帧、必带车道 —— 页面因此
+        // 不必空等一个 4Hz 周期才出图。
+        //
+        // **不在这里瞎猜状态**:`scvb.state` 通常在 `requestInitialState()` 里就已经
+        // 推过一遍(T45 的 onReady 与 mock 同款),那才是真值。只有一个都没收到时才从
+        // 帧自身兜一个 —— 而且是**推导**不是假设:帧说 `online:true` 就只可能是
+        // 「在线且新鲜」(桥把两者与在了一起)。
+        // 早先这里无条件写 `{viz:"online", fresh:true}`,把已经收到的真状态覆盖掉了 ——
+        // 停摆场景因此被显示成掉线。真机截图抓到的,node 侧看不出来(那边不跑 boot)。
+        // **不从帧里推状态**:帧的 `online` 是「段在线 **且** 帧新鲜」两者与过之后的
+        // 结果,`false` 分不出「掉线」还是「在线但陈旧」。真状态只在 `scvb.state` 里,
+        // 而它可能比这一帧晚到 —— 晚到时上面的处理器会 `applyProjection()` 补算一遍,
+        // 所以这里只管把帧收下,不猜。
         if (snap.viz) onViz(snap.viz);
     }
     render();
@@ -625,14 +677,15 @@ window.__SCVB_MONITOR__ = {
         emptyState: vizIsEmptyState(store.accepts.reason),
         observed: store.observed,
         groups: store.groups,
-        stalled: store.stalled,
-        laneRevision: store.viz ? store.viz.laneRevision : null,
-        generation: store.viz ? store.viz.generation : null,
-        durationS: vizDurationS(store.viz),
+        stalled: store.accepts.reason === "stale",
+        laneRevision: store.frame ? store.frame.laneRevision : null,
+        generation: store.frame ? store.frame.generation : null,
+        durationS: vizDurationS(visibleFrame()),
+        hasLanes: vizHasLanes(visibleFrame()),
         seriesTracks: store.series.map((s) => s.ch),
         // 每轨的折线段数 —— 断线是本页最核心的语义,截图之外还要有个数字面
         seriesRuns: store.series.map((s) => s.runs.length),
-        distTracks: vizDistRows(store.viz).map((r) => r.ch),
-        legendTracks: vizLegendRows(store.viz).map((r) => r.ch),
+        distTracks: vizDistRows(visibleFrame()).map((r) => r.ch),
+        legendTracks: vizLegendRows(visibleFrame()).map((r) => r.ch),
     }),
 };

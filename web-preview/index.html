@@ -330,6 +330,16 @@
                 —— 填 0 会画出一排居中等高的幽灵柱,那是假数据
             </li>
             <li>
+                <a href="./monitor.html?scenario=monitor-no-lanes"
+                    >Monitor · 车道未接通(<strong>T45 当前真实形态</strong>)</a
+                >
+                —— 桥只送了每轨摘要、没送 15×1024 的降采样车道 ⇒
+                <strong>轨迹图走专门的空态</strong>「监视数据未接通」,而不是
+                「尚无分段结果」(后者是骗人:段是有的,只是没送过来)。编码已定,见
+                <code>web/monitor/viz-contract.js</code> 的
+                <code>LANE_TRANSPORT</code>
+            </li>
+            <li>
                 <a href="./monitor.html?scenario=monitor-no-lead"
                     >Monitor · 缺 lead 掩码</a
                 >

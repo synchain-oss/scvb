@@ -115,6 +115,9 @@ export const VIZ_FIELDS = Object.freeze([
     { struct: "VizFrame", name: "track_covered_mask", json: "coveredMask" },
     { struct: "VizFrame", name: "track_stereo_mask", json: "stereoMask" },
     { struct: "VizFrame", name: "lane_revision", json: "laneRevision" },
+    // T45 依 T46 的第二封对表信新增:每轨 lead_lock,分布图的柱顶绿帽
+    // (Tab1 逐柱写 data-lead;J75 C 要求 Monitor「同 Tab1 规格」)。
+    { struct: "VizFrame", name: "track_lead_mask", json: "leadMask" },
     { struct: "VizFrame", name: "_reserved", json: null },
     // ---- VizTrackColors(64 B)
     { struct: "VizTrackColors", name: "index", json: "colorIndex" },
@@ -128,9 +131,11 @@ export const VIZ_FIELDS = Object.freeze([
     { struct: "VizTrackState", name: "panNow", json: "trackPanNow" },
     { struct: "VizTrackState", name: "volDb", json: "trackVolDb" },
     { struct: "VizTrackState", name: "widthPct", json: "trackWidthPct" },
+    { struct: "VizTrackState", name: "_reserved", json: null },
     // ---- VizTrackLabels(512 B):`utf8[15][8]` u32 = 每轨 32 字节 UTF-8,NUL 补齐,
     // 超长按 UTF-8 边界截断。桥解码成字符串投影(字符串没法定点)。
     { struct: "VizTrackLabels", name: "utf8", json: "trackLabels" },
+    { struct: "VizTrackLabels", name: "_pad", json: null },
 ]);
 
 /**
@@ -163,8 +168,9 @@ export const SAMPLES_TO_SECONDS_NOTE = Object.freeze({
 /**
  * `VizTrackState` 三个标量的**工程量纲**(段内是 int16 定点 ×`VIZ_PAN_SCALE`)。
  *
- * 三条共用同一个标度与同一个哨兵 —— 解码因此只有一处(`fixedToUnit`),
- * 而不是三处各写一份 `/100` 再各自夹取。夹取范围逐条不同,列在这里:
+ * **段内**是 int16 定点 ×`VIZ_PAN_SCALE`;**桥送到 UI 时已经解码成工程量、哨兵已折成
+ * `null`**(T45 `buildVizPayload`)。故 JS 侧只做夹取,不再除 100 —— 定点解码在 JS 侧
+ * 只剩 base64 车道块一个用途。夹取范围逐条不同,列在这里:
  *   • `panNow`   角度域 −100..+100(与车道同域,故与 `panOfFixed` 同值域);
  *   • `volDb`    −24..+12 dB(params-v0 的 vol 值域;定点后 −2400..+1200);
  *   • `widthPct` 0..100(定点后 0..10000)。
@@ -193,33 +199,48 @@ export const PAN_NOW_PRIORITY = Object.freeze([
 ]);
 
 /**
- * **仍待 T44 确认的字段** —— 见 PR #90 描述与发给 T44 的第二封对表信。
- *
- * `volDb` / `widthPct` / `label` 三条 T44 已答应落段(`VizTrackState` +
- * `VizTrackLabels`,见上面的 `VIZ_FIELDS`);**只剩 `leadMask` 一条还没确认**:
- *
- *   • `track_lead_mask`(u32,bit{ch−1} = 该轨 `lead_lock`)—— 分布图的**柱顶绿帽**。
- *     Tab1 的 `renderDist` 逐柱写 `data-lead`,CSS `.dist-bar[data-lead="1"]::after`
- *     画那顶 2px 绿帽;J75 C 要求 Monitor 的分布图「**同 Tab1 规格**」,少了它就不是同规格。
- *     落法几乎零成本:`VizFrame._reserved[11]` 里取一个 u32,与既有三张掩码
- *     (online/covered/stereo)同族同序,**不动任何偏移、不触发 abi+1**。
- *
- * **拿不到时的行为**(已由 smoke 锁死):所有柱一律不戴绿帽,其余照常 ——
- * 不猜、不拿别的字段凑。少一顶帽子是「少了个信息」,猜错则是「标错了主唱」。
+ * **仍待 native 侧落地的字段 —— 现在是空的**:两轮对表提的每一条 T44/T45 都已实现
+ * (`5be8eb9` / `4eced7a`)。留着这张表是为了**下一次**:再发现缺口时往里加一条,
+ * parity 会同时断言「golden/桥里还没有它」(见 smoke ② 的反向断言),
+ * 落地后那条反向断言会红,提醒我把它移出去并改成正向断言。
  */
-export const VIZ_PENDING_FIELDS = Object.freeze(["leadMask"]);
+export const VIZ_PENDING_FIELDS = Object.freeze([]);
 
 /**
- * **T44 已答应、但尚未合入 `feature/v1` 的字段**(2026-08-25 对表信的承诺)。
- * 段里有了、golden 里就会有,parity 自动开始查;在那之前这三条在 mock 里已按
- * 承诺的名字与单位造数,页面这一半因此现在就可验收、可截图、可对着 05 J75 C 把关。
+ * **T44/T45 依两轮对表新增、但尚未合入 `feature/v1` 的字段**(`5be8eb9` / `4eced7a` 已推)。
+ * 它们在那两个分支的 golden 与 .cpp 里都有了;`feature/v1` 上还没有,故 parity 对这几条
+ * 打 [SKIP] 并点名在等谁 —— 两卡一合并、本分支一 rebase,自动转成全量对拍。
  */
 export const VIZ_PROMISED_FIELDS = Object.freeze([
     "trackPanNow",
     "trackVolDb",
     "trackWidthPct",
     "trackLabels",
+    "leadMask",
 ]);
+
+/** `scvb.state.viz` 的三态(T45 `vizStateName`)。 */
+export const VIZ_STATE = Object.freeze(["online", "offline", "abiMismatch"]);
+
+/**
+ * `scvb.state` 的字段(T45 `buildStatePayload`)。
+ * **`viz` 与 `fresh` 是两个独立的量** —— 「在线但陈旧」(Output 还在、只是不再发帧)
+ * 是 T45 修僵尸数据时引入的一档真实状态,值得一个专门的视觉。
+ */
+export const STATE_JSON_FIELDS = Object.freeze([
+    "groupId",
+    "uiScale",
+    "language",
+    "viz",
+    "fresh",
+]);
+
+/**
+ * `scvb.groups` 的载荷键 —— T45 用的是 **`online`**,不是 Output 侧的 `groups_online`。
+ * 记成常量而不是散在消费点上:读错这个键的后果是「八枚组胶囊的绿点永远不亮」,
+ * 而页面一切正常、零报错 —— 肉眼极难联想到是键名写错了。
+ */
+export const GROUPS_JSON_KEY = "online";
 
 /**
  * 分布图这一半**整块缺失**时的行为(已由 smoke 锁死,不是「碰运气不崩」)。

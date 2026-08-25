@@ -18,29 +18,28 @@
 // =============================================================================
 //   {
 //     magic:"SCVB", abi:1, generation, columnCount:1024, trackCount:15, panScale:100,
-//     attach:"ok"|"failed"|"abiMismatch",   // attachReadOnly() 的返回码(非段内字段)
-//     groupId:1..8,                         // 回显「你现在看的是哪个组」
+//     online:bool,                          // = 段在线 **且** 帧新鲜(桥把两者与在了一起)
+//     // 组回显与段级三态走 `scvb.state`:{groupId, uiScale, language, viz, fresh}
 //     seq, laneRevision, publishMs, playheadEpoch, versionActive, sampleRate,
 //     windowStartS, windowSpanS,            // 窗口(秒);windowSpanS === 0 ⇒ 无有效窗口
 //     playheadS|null, playheadFlags, loopStartS|null, loopEndS|null,
 //     onlineMask, coveredMask, stereoMask, leadMask,          // bit{ch−1}
 //     colorIndex:[15], coverage:[15][32], lanes:[15][1024],   // ← 见下「按需重发」
-//     trackPanNow:[15], trackVolDb:[15], trackWidthPct:[15],  // VizTrackState,int16 定点
+//     trackPanNow:[15], trackVolDb:[15], trackWidthPct:[15],  // **已解码的工程量**,null = 无
 //     trackLabels:[15]                                        // VizTrackLabels,桥已解码
 //   }
 //
 // **每一块都是定长 15、下标即轨号**(与段内布局逐条对应),不是「带 ch 字段的对象数组」——
 // 段本来就是定长表,投影成对象数组会凭空多出一道「ch 合不合法」的闸。
-// `leadMask` 仍待 T44 确认(viz-contract.js 的 `VIZ_PENDING_FIELDS`);拿不到 = 不戴绿帽。
+// `leadMask` T45 已落地(`VizFrame.track_lead_mask`);拿不到时一律不戴绿帽。
 //
 // **车道三件按需重发**:`lane_revision` 的段内注释逐字写着「读方可据此跳过重解析」。
 // 稳态下 4Hz 只写 128 B 帧头、车道不重算,故桥也只在 `laneRevision` 变化的那一帧带上
 // `colorIndex`/`coverage`/`lanes`,其余帧省略。缓存与合并由 `mergeVizFrame()` 做,
 // 调用方持有那份缓存 —— 本文件其余部分只处理「已经合并好的一帧」。
 //
-// `trackVolDb` 为什么可能整块缺:旧版 Output 的段里没有 `VizTrackState`(T44 是在
-// 2026-08-25 对表后才加的),桥也可能还没投影。缺了就**画空**,不猜、不填 0 ——
-// 填 0 会画出一排居中等高的幽灵柱,那是假数据,比空白有害得多。见 `DIST_REQUIRES`。
+// `trackVolDb` 为什么可能整块缺:旧版 Output 的段里没有 `VizTrackState`。缺了就**画空**,
+// 不猜、不填 0 —— 填 0 会画出一排居中等高的幽灵柱,那是假数据。见 `DIST_REQUIRES`。
 // =============================================================================
 
 import { PAN_MAX, PAN_MIN } from "../shared/trajectory-chart.js";
@@ -146,15 +145,22 @@ export function panOfFixed(v) {
 }
 
 /**
- * 取 `VizTrackState` 的某条标量并解码(`jsonKey` = trackPanNow|trackVolDb|trackWidthPct)。
- * 整块缺失、轨号越界、或该轨是哨兵 ⇒ null。
+ * 取每轨的某条标量(`jsonKey` = trackPanNow|trackVolDb|trackWidthPct)。
+ *
+ * **桥送来的已经是工程量,哨兵已折成 `null`**(T45 `buildVizPayload`:
+ * `vizPanIsNone(x) ? juce::var() : vizUnpackPan(x)`),故这里**不再解定点**,
+ * 只做值域夹取。定点解码在 JS 侧只剩车道一个用途(那是段里的原始 int16)。
+ *
+ * 整块缺失、轨号越界、或该轨是 null ⇒ null。**不能判 `!== 0`** ——
+ * 0 在三条里分别是「居中 / 0 dB / 宽度 0」,每一个都是合法值。
  */
 export function trackScalar(viz, jsonKey, ch) {
     const arr = viz && viz[jsonKey];
     const r = VIZ_TRACK_STATE_RANGE[jsonKey];
     if (!Array.isArray(arr) || !r) return null;
     if (!Number.isInteger(ch) || ch < 1 || ch > VIZ_TRACKS) return null;
-    return fixedToUnit(arr[ch - 1], r.lo, r.hi);
+    const v = arr[ch - 1];
+    return Number.isFinite(v) ? clamp(r.lo, r.hi, v) : null;
 }
 
 /** 取某轨的轨名(`VizTrackLabels` 解码后的串);缺失 ⇒ 空串,不是 undefined。 */
@@ -166,20 +172,30 @@ export function trackLabel(viz, ch) {
 }
 
 /**
- * 这一帧 viz 能不能读。
+ * 这一帧 viz 能不能读,以及为什么不能。
  *
+ * **段级三态(在线/离线/版本不匹配)不在这里判** —— 那是 `scvb.state` 的 `viz` + `fresh`
+ * 说了算,由 native 做:命名段是引用计数存活的,只要 Monitor 自己不松手,「Output 进程
+ * 退出」就永远看不出来(段还在、read 还成功)。T45 的做法是帧陈旧时**松开映射再探一次** ——
+ * 这件事 UI 侧做不了,故状态从事件里来,不自己猜。
+ *
+ * @param {object|null} viz 最近一帧(已合并)
+ * @param {{viz?:string, fresh?:boolean}} [status] 最近一帧 `scvb.state` 的 viz 面
  * @returns {{ok:boolean, reason:string, abi:number}} `reason`:
- *   `""`          —— 可读;
- *   `"shape"`     —— 不是对象 / 缺关键数组(桥抖动、首帧未到)⇒ 静默忽略;
- *   `"magic"`     —— 段头对不上 ⇒ 整帧丢弃(读错段比读不到段危险得多);
- *   `"abi"`       —— 段比本机新 ⇒ **停止读取** + 红横幅(J40:拒连,绝不半兼容);
- *   `"geometry"`  —— 列数/轨数/标度与本机常量不符 ⇒ 同 abi 处理(T44 的几何自检);
- *   `"failed"`    —— attach 不上 = 该组没有 Output ⇒ **空态**,不是错误;
- *   `"window"`    —— 窗口跨度为 0(未 prepare / 无有效窗口)⇒ 空态。
+ *   `""`         —— 可读;
+ *   `"shape"`    —— 帧还没到 ⇒ 静默忽略(**缺车道不算** —— 那只影响轨迹图那一半);
+ *   `"magic"`    —— 段头对不上 ⇒ 整帧丢弃(读错段比读不到段危险得多);
+ *   `"abi"`      —— 段比本机新 / state 报 abiMismatch ⇒ **停止读取** + 红横幅(J40);
+ *   `"geometry"` —— 列数/轨数/标度与本机常量不符 ⇒ 同 abi 处理(T44 几何自检的 UI 兜底);
+ *   `"offline"`  —— 该组没有 Output ⇒ **空态**,不是错误;
+ *   `"stale"`    —— Output 还在、但帧不再更新 ⇒ **在线但陈旧**(琥珀横幅,**图仍显示**);
+ *   `"window"`   —— 窗口跨度为 0(未 prepare)⇒ 空态。
  *
- * `failed` 与 `abi` 必须可区分 —— 那是 T44 显式设计的两条降级路径(空态 vs 拒连横幅)。
+ * `offline` 与 `abi` 必须可区分 —— T44 显式设计的两条降级路径(空态 vs 拒连横幅)。
  */
-export function vizAccepts(viz) {
+export function vizAccepts(viz, status) {
+    const st = status || {};
+    if (st.viz === "abiMismatch") return { ok: false, reason: "abi", abi: 0 };
     if (!viz || typeof viz !== "object") {
         return { ok: false, reason: "shape", abi: 0 };
     }
@@ -188,8 +204,8 @@ export function vizAccepts(viz) {
     }
     const abi = num(viz.abi, 0);
     if (abi > VIZ_ABI) return { ok: false, reason: "abi", abi };
-    // 几何自检:T44 在 attachReadOnly() 里已经查过一遍,UI 侧再兜一层 —— 桥投影出来的
-    // 数组长度若与常量不符,后面的逐列循环会静默少画/多画,而不是报错。
+    // 几何自检:T44 在 attachReadOnly() 里查过一遍,UI 侧再兜一层 —— 桥送来的几何若与
+    // 本机常量不符,后面的逐列循环会静默少画/多画,而不是报错。
     if (
         viz.columnCount !== undefined &&
         (viz.columnCount !== VIZ_COLUMNS ||
@@ -198,25 +214,47 @@ export function vizAccepts(viz) {
     ) {
         return { ok: false, reason: "geometry", abi };
     }
-    if (viz.attach && viz.attach !== "ok") {
-        return {
-            ok: false,
-            reason: viz.attach === "abiMismatch" ? "abi" : "failed",
-            abi,
-        };
+    // 这一帧的数据本身能不能用。**判据只有窗口,不含车道** —— 车道只是轨迹图那一半的
+    // 数据面,缺了应当只让轨迹图走「未接通」空态(见 `vizHasLanes`),不该把整页
+    // (含分布图与图例)一起拖进空态面板。
+    const usable = num(viz.windowSpanS, 0) > 0;
+
+    // ⚠ **陈旧必须排在「离线」之前**。T45 的 `buildVizPayload` 写的是
+    // `online = (vizState==online) && vizFresh()` —— 两件事被与在了一起,于是
+    // 「在线但陈旧」在帧里长得和「离线」一模一样(都是 `online:false`)。
+    // 只看帧就会把它判成掉线、把图清空,而 Output 其实还在跑。
+    // `scvb.state` 里那两个量是分开的,以它为准。
+    // **陈旧不挡出图**:数据还是上一份真数据,清掉反而更糟。
+    if (st.viz === "online" && st.fresh === false && usable) {
+        return { ok: true, reason: "stale", abi };
     }
-    if (!Array.isArray(viz.lanes) || !Array.isArray(viz.coverage)) {
-        return { ok: false, reason: "shape", abi };
+    // ⚠ **离线判据必须排在「缺车道」之前**:段 attach 不上时桥送的就是一帧没有车道、
+    // 没有窗口的空帧。先判 shape 会把「该组没有 Output」报成「帧还没到」——
+    // 前者要显示空态面板并说清是哪个组,后者是静默忽略。
+    if (st.viz === "offline" || viz.online === false) {
+        return { ok: false, reason: "offline", abi };
     }
-    if (!(num(viz.windowSpanS, 0) > 0)) {
-        return { ok: false, reason: "window", abi };
-    }
+    if (!usable) return { ok: false, reason: "window", abi };
     return { ok: true, reason: "", abi };
+}
+
+/**
+ * 这一帧带没带车道(轨迹图的全部数据面)。
+ *
+ * 三种「没有线」在画面上一模一样,但**该说的话完全不同**,故必须分得开:
+ *   ① 桥没送车道(旧版 Output / 桥回归)⇒ 「监视数据未接通」;
+ *   ② 送了车道、但位图全 0(工程真没分析过)⇒ 「尚无分段结果」;
+ *   ③ 整个组不在线 ⇒ 空态面板。
+ * 本函数只回答 ①;② 由 `vizSeries().length` 回答,③ 由 `vizAccepts()` 回答。
+ * 说错了会让用户去 DAW 里白找一遍。
+ */
+export function vizHasLanes(viz) {
+    return !!viz && Array.isArray(viz.lanes) && Array.isArray(viz.coverage);
 }
 
 /** 拒读理由是不是「该显示成空态」(而不是红横幅)。 */
 export function vizIsEmptyState(reason) {
-    return reason === "failed" || reason === "window" || reason === "shape";
+    return reason === "offline" || reason === "window" || reason === "shape";
 }
 
 /** 时间线全长(秒)= 窗口末端;拿不到证据就压在兜底值上,不塌到 0。 */

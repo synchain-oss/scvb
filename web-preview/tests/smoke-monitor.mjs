@@ -295,6 +295,49 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
         );
     }
 
+    // ---- 第二个比对面:**桥面 JSON**(T45 `MonitorEditor.cpp` 的 `setProperty("X"`)。
+    // golden 管段布局,这一条管桥投影出来的字段名 —— 两者会各自漂,必须各查各的。
+    // 文件不在树上(T45 未合入)就 [SKIP],同 golden 那一路的容错口径。
+    {
+        const cppPath = join(ROOT, "src", "monitor", "MonitorEditor.cpp");
+        if (!existsSync(cppPath)) {
+            skip(
+                "src/monitor/MonitorEditor.cpp 不在树上(T45/PR #92 未合入 feature/v1)—— " +
+                    "桥面 JSON parity 待 rebase 后自动生效",
+            );
+        } else {
+            const cpp = readFileSync(cppPath, "utf8");
+            const props = new Set();
+            const pre = /setProperty\("([^"]+)"/g;
+            let mm;
+            while ((mm = pre.exec(cpp)) !== null) props.add(mm[1]);
+            check(props.size > 0, "抽得到 setProperty 名(抽不到 = 格式漂移)");
+            // 镜像表 json 列里每个非 null 的名字,桥都得真的送
+            for (const f of VC.VIZ_FIELDS) {
+                if (!f.json) continue;
+                check(
+                    props.has(f.json),
+                    `桥送出 ${f.json}(段 ${f.struct}.${f.name})`,
+                );
+            }
+            for (const k of VC.STATE_JSON_FIELDS) {
+                check(props.has(k), `桥送出 scvb.state 的 ${k}`);
+            }
+            check(
+                props.has(VC.GROUPS_JSON_KEY),
+                `桥送出 scvb.groups 的 ${VC.GROUPS_JSON_KEY}`,
+            );
+            // 仍待落地的字段:**在树上就该断言它还没有** —— 有了就该把它移出
+            // VIZ_PENDING_FIELDS 并改成正向断言,这条红了正是在提醒我去做
+            for (const k of VC.VIZ_PENDING_FIELDS) {
+                check(
+                    !props.has(k),
+                    `${k} 已经在桥里了 —— 请把它移出 VIZ_PENDING_FIELDS 并改成正向断言`,
+                );
+            }
+        }
+    }
+
     // ---- 与 native 无关、但必须成立的镜像自洽:JS 侧两处常量不许各写一份
     eq(VIZ.VIZ_COLUMNS, VC.VIZ_COLUMNS, "viz.js 的列数 = 契约镜像(再导出)");
     eq(VIZ.VIZ_PAN_SCALE, VC.VIZ_PAN_SCALE, "定点标度同源");
@@ -307,13 +350,34 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
     );
     eq(
         VC.VIZ_PROMISED_FIELDS.slice(),
-        ["trackPanNow", "trackVolDb", "trackWidthPct", "trackLabels"],
-        "T44 已答应落段的四条,按承诺的 json 名记着",
+        [
+            "trackPanNow",
+            "trackVolDb",
+            "trackWidthPct",
+            "trackLabels",
+            "leadMask",
+        ],
+        "T44/T45 依两轮对表新增、尚未合入 feature/v1 的五条",
     );
     eq(
         VC.VIZ_PENDING_FIELDS.slice(),
-        ["leadMask"],
-        "仍待 T44 确认的只剩 leadMask(有名有姓,不是散在注释里)",
+        [],
+        "**已经没有待确认的字段了** —— 两轮提的每一条 native 侧都实现了",
+    );
+    eq(
+        VC.VIZ_STATE.slice(),
+        ["online", "offline", "abiMismatch"],
+        "scvb.state.viz 三态(T45 vizStateName)",
+    );
+    eq(
+        VC.STATE_JSON_FIELDS.slice(),
+        ["groupId", "uiScale", "language", "viz", "fresh"],
+        "scvb.state 的字段(T45 buildStatePayload)",
+    );
+    eq(
+        VC.GROUPS_JSON_KEY,
+        "online",
+        "scvb.groups 的键是 online(**不是** Output 侧的 groups_online)",
     );
     eq(VC.DIST_REQUIRES, "trackVolDb", "分布图整块降级的判据字段");
     // 三条标量的量纲逐条钉住 —— 定点解码用的就是它们,写错一个就是整排柱高错
@@ -424,73 +488,113 @@ log("=== ③ viz 投影纯函数 ===");
     eq(MMOCK.windowSpanS(300, 42), 300, "300s 工程正好是边界值");
 
     // ---- 拒读理由(六种,`failed` 与 `abi` 必须可区分)
+    const ONLINE = { viz: "online", fresh: true };
     const okFrame = {
         magic: VC.VIZ_MAGIC,
         abi: VC.VIZ_ABI,
         columnCount: VC.VIZ_COLUMNS,
         trackCount: VC.VIZ_TRACKS,
         panScale: VC.VIZ_PAN_SCALE,
-        attach: "ok",
+        online: true,
         windowSpanS: 300,
         lanes: [],
         coverage: [],
     };
-    eq(VIZ.vizAccepts(okFrame).reason, "", "合法帧:无拒读理由");
-    check(VIZ.vizAccepts(okFrame).ok, "合法帧 ok");
-    eq(VIZ.vizAccepts(null).reason, "shape", "null ⇒ shape");
+    eq(VIZ.vizAccepts(okFrame, ONLINE).reason, "", "合法帧:无拒读理由");
+    check(VIZ.vizAccepts(okFrame, ONLINE).ok, "合法帧 ok");
+    eq(VIZ.vizAccepts(null, ONLINE).reason, "shape", "null ⇒ shape");
+    // **缺车道不算不可读** —— 那只影响轨迹图那一半,分布图与图例照常。
+    // 早先这里判 shape,后果是整页(含分布图)一起掉进空态面板。真机截图抓到的。
     eq(
-        VIZ.vizAccepts({ ...okFrame, lanes: undefined }).reason,
-        "shape",
-        "缺 lanes ⇒ shape",
+        VIZ.vizAccepts({ ...okFrame, lanes: undefined }, ONLINE).reason,
+        "",
+        "缺 lanes 仍然可读(只让 vizHasLanes 去管轨迹图那一半)",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, magic: "XXXX" }).reason,
+        VIZ.vizAccepts({ ...okFrame, magic: "XXXX" }, ONLINE).reason,
         "magic",
         "magic 对不上 ⇒ 整帧丢弃",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, abi: VC.VIZ_ABI + 1 }).reason,
+        VIZ.vizAccepts({ ...okFrame, abi: VC.VIZ_ABI + 1 }, ONLINE).reason,
         "abi",
         "段比本机新 ⇒ 停止读取",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, abi: VC.VIZ_ABI + 1 }).abi,
+        VIZ.vizAccepts({ ...okFrame, abi: VC.VIZ_ABI + 1 }, ONLINE).abi,
         VC.VIZ_ABI + 1,
         "拒读时把对端 abi 带出来(横幅要显示)",
     );
     check(
-        VIZ.vizAccepts({ ...okFrame, abi: 0 }).ok,
+        VIZ.vizAccepts({ ...okFrame, abi: 0 }, ONLINE).ok,
         "段比本机旧 ⇒ 照读(只拒高不拒低)",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, columnCount: 512 }).reason,
+        VIZ.vizAccepts({ ...okFrame, columnCount: 512 }, ONLINE).reason,
         "geometry",
         "列数不符 ⇒ 几何自检拒读(T44 的 kAbiMismatch 口径)",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, panScale: 10 }).reason,
+        VIZ.vizAccepts({ ...okFrame, panScale: 10 }, ONLINE).reason,
         "geometry",
         "定点标度不符 ⇒ 几何自检拒读",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, attach: "failed" }).reason,
-        "failed",
-        "attach 不上 ⇒ 空态,不是错误",
+        VIZ.vizAccepts(okFrame, { viz: "offline" }).reason,
+        "offline",
+        "state 报 offline ⇒ 空态,不是错误",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, attach: "abiMismatch" }).reason,
+        VIZ.vizAccepts(okFrame, { viz: "abiMismatch" }).reason,
         "abi",
-        "attach 报 abiMismatch ⇒ 拒连",
+        "state 报 abiMismatch ⇒ 拒连",
     );
     eq(
-        VIZ.vizAccepts({ ...okFrame, windowSpanS: 0 }).reason,
+        VIZ.vizAccepts({ ...okFrame, online: false }, ONLINE).reason,
+        "offline",
+        "帧自己说 online:false ⇒ 同样落空态",
+    );
+    // **陈旧不挡出图**:数据还是上一份真数据,清掉会让用户看到一张突然变空的图
+    const staleRes = VIZ.vizAccepts(okFrame, { viz: "online", fresh: false });
+    eq(staleRes.reason, "stale", "在线但不新鲜 ⇒ stale");
+    check(staleRes.ok, "stale 仍然 ok(图继续显示,只加一条琥珀横幅)");
+    // ⚠ T45 的帧把 online 与 fresh **与在了一起**,故陈旧时帧里也是 online:false。
+    // 若判据顺序写反(先看帧),陈旧会被误判成掉线、图被清空 —— 这条钉住顺序。
+    eq(
+        VIZ.vizAccepts(
+            { ...okFrame, online: false },
+            {
+                viz: "online",
+                fresh: false,
+            },
+        ).reason,
+        "stale",
+        "帧里 online:false + state 说在线不新鲜 ⇒ **stale**,不是 offline",
+    );
+    eq(
+        VIZ.vizAccepts({ ...okFrame, online: false }, { viz: "abiMismatch" })
+            .reason,
+        "abi",
+        "abiMismatch 压过帧里的 online(拒连是更强的结论)",
+    );
+    eq(
+        VIZ.vizAccepts({ ...okFrame, windowSpanS: 0 }, ONLINE).reason,
         "window",
         "窗口跨度 0(未 prepare)⇒ 空态",
     );
-    check(VIZ.vizIsEmptyState("failed"), "failed 归空态");
+    check(VIZ.vizIsEmptyState("offline"), "offline 归空态");
     check(VIZ.vizIsEmptyState("window"), "window 归空态");
     check(!VIZ.vizIsEmptyState("abi"), "abi **不**归空态(要红横幅)");
     check(!VIZ.vizIsEmptyState("geometry"), "geometry 不归空态");
+    check(!VIZ.vizIsEmptyState("stale"), "stale 不归空态(图还在)");
+
+    // ---- 车道有无:三种「没有线」必须分得开(桥没送 / 真没分段 / 组不在线)
+    check(VIZ.vizHasLanes(okFrame), "带 lanes+coverage ⇒ hasLanes");
+    check(
+        !VIZ.vizHasLanes({ ...okFrame, lanes: undefined }),
+        "桥没送车道 ⇒ !hasLanes(轨迹图走「未接通」而不是「尚无分段」)",
+    );
+    check(!VIZ.vizHasLanes(null), "空帧 ⇒ !hasLanes");
 
     // ---- playhead flags 与 §2.6 形状归一
     eq(
@@ -624,8 +728,7 @@ function makeFrame(over = {}) {
         columnCount: VC.VIZ_COLUMNS,
         trackCount: VC.VIZ_TRACKS,
         panScale: VC.VIZ_PAN_SCALE,
-        attach: "ok",
-        groupId: 1,
+        online: true,
         seq: 2,
         laneRevision: 1,
         publishMs: 1000,
@@ -763,10 +866,11 @@ function paint(frame, ch, from, to, pan) {
 {
     // ---- 分布图:数据源 = VizTrackState 三条定点标量 + VizTrackLabels + 三张掩码。
     // 段里每一块都是**定长 15、下标即轨号**,故这里也按下标填。
-    const none = VC.VIZ_PAN_NONE;
+    // 三条标量**桥已经解码成工程量、哨兵已折成 null**(T45 buildVizPayload),
+    // 故这里直接填原值 —— 不是定点。
     const fill15 = (pairs) => {
-        const a = new Array(VC.VIZ_TRACKS).fill(none);
-        for (const [ch, v] of pairs) a[ch - 1] = MMOCK.fixedOf(v);
+        const a = new Array(VC.VIZ_TRACKS).fill(null);
+        for (const [ch, v] of pairs) a[ch - 1] = v;
         return a;
     };
     const f = makeFrame({ playheadS: 7.5 });
@@ -797,18 +901,18 @@ function paint(frame, ch, from, to, pan) {
     // 分布图要「此刻」⇒ 标量优先。写反了在放大档下柱与播放头对不上,而且看起来正常。
     eq(rows[0].pan, -25, "横位取 trackPanNow(−25),**不是**车道第 7 列的 −30");
     eq(rows[1].pan, 55, "轨 2 同理:标量 55 而非车道 60");
-    eq(rows[0].volDb, -6, "柱高来自 trackVolDb(定点解码)");
+    eq(rows[0].volDb, -6, "柱高来自 trackVolDb");
     eq(rows[1].widthPct, 82, "张开线来自 trackWidthPct");
     eq(rows[0].lead, true, "柱顶绿帽来自 leadMask");
     eq(rows[1].lead, false, "非 lead 轨不戴帽");
     eq(rows[1].stereo, true, "立体声位来自 stereoMask");
 
-    // 标量是哨兵 ⇒ 回落到播放头所在列的车道点采样
-    const sentinelPan = { ...f, trackPanNow: fill15([[2, 55]]) }; // 轨 1 = 哨兵
+    // 标量缺席 ⇒ 回落到播放头所在列的车道点采样
+    const sentinelPan = { ...f, trackPanNow: fill15([[2, 55]]) }; // 轨 1 缺席
     eq(
         VIZ.vizDistRows(sentinelPan)[0].pan,
         -30,
-        "trackPanNow 是哨兵 ⇒ 回落车道第 7 列(−30)",
+        "trackPanNow 缺席 ⇒ 回落车道第 7 列(−30)",
     );
     // 标量哨兵 + 播放头在窗口外 ⇒ 才落到 0
     eq(
@@ -859,19 +963,19 @@ function paint(frame, ch, from, to, pan) {
         "拼串里没有一个 data-lead=1",
     );
 
-    // ---- 单轨的 volDb 是哨兵 ⇒ 那一轨不画(与 Tab1「空闲轨不画幽灵柱」同一纪律)
-    const partial = { ...f, trackVolDb: fill15([[2, -12]]) }; // 轨 1 = 哨兵
+    // ---- 单轨的 volDb 缺席 ⇒ 那一轨不画(与 Tab1「空闲轨不画幽灵柱」同一纪律)
+    const partial = { ...f, trackVolDb: fill15([[2, -12]]) }; // 轨 1 缺席
     eq(
         VIZ.vizDistRows(partial).map((r) => r.ch),
         [2],
-        "volDb 是哨兵的那一轨不画柱",
+        "volDb 缺席的那一轨不画柱",
     );
     // 0 dB **不是**哨兵 —— 0 是合法音量,不许被当成「没有数据」
     const zeroDb = { ...f, trackVolDb: fill15([[1, 0]]) };
     eq(
         VIZ.vizDistRows(zeroDb).map((r) => [r.ch, r.volDb]),
         [[1, 0]],
-        "volDb = 0 dB 是合法值,照画(哨兵才是没有数据)",
+        "volDb = 0 dB 是合法值,照画(缺席才是没有数据)",
     );
     // width = 0 同理:0 是合法宽度,回落 100 只在**哨兵**时发生
     const zeroWidth = {
@@ -892,7 +996,11 @@ function paint(frame, ch, from, to, pan) {
     );
 
     // ---- 定点解码的边界
-    eq(VIZ.trackScalar(f, "trackVolDb", 1), -6, "trackScalar 解码 dB");
+    eq(
+        VIZ.trackScalar(f, "trackVolDb", 1),
+        -6,
+        "trackScalar 取 dB(桥已解码,这里只夹取)",
+    );
     eq(VIZ.trackScalar(f, "trackVolDb", 99), null, "轨号越界 ⇒ null");
     eq(VIZ.trackScalar(f, "nope", 1), null, "未知字段 ⇒ null");
     eq(VIZ.trackScalar({}, "trackVolDb", 1), null, "整块缺 ⇒ null");
@@ -901,7 +1009,7 @@ function paint(frame, ch, from, to, pan) {
     eq(VIZ.fixedToUnit(1200, -24, 12), 12, "定点 1200 = +12 dB");
     eq(VIZ.fixedToUnit(-2400, -24, 12), -24, "定点 −2400 = −24 dB");
     eq(VIZ.fixedToUnit(99999, -24, 12), 12, "越界定点夹到上限");
-    eq(VIZ.fixedToUnit(none, -24, 12), null, "哨兵 ⇒ null,不是 0");
+    eq(VIZ.fixedToUnit(VC.VIZ_PAN_NONE, -24, 12), null, "哨兵 ⇒ null,不是 0");
     eq(VIZ.fixedToUnit(0, -24, 12), 0, "0 是合法值,不是 null");
 
     // ---- 图例 = 两图并集(两图同屏,跟着任一张都会出现「有它却找不到」)
@@ -963,8 +1071,8 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     );
     eq(
         MBRIDGE.MONITOR_EVENTS.slice(),
-        ["scvb.viz", "scvb.groups", "scvb.playhead"],
-        "Monitor 侧事件名表",
+        ["scvb.state", "scvb.groups", "scvb.viz", "scvb.playhead"],
+        "Monitor 侧事件名表(逐字对齐 T45 的 MonitorBridgeApi.h)",
     );
     const WRITE_NAMES = [
         "setGroupId",
@@ -994,12 +1102,16 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     eq(bridge.role, "monitor", "role = monitor");
 
     let lastViz = null;
+    let lastState = null;
     bridge.on("scvb.viz", (v) => {
         lastViz = v;
     });
+    bridge.on("scvb.state", (v) => {
+        lastState = v;
+    });
     let threw = false;
     try {
-        bridge.on("scvb.state", () => {});
+        bridge.on("scvb.meters", () => {});
     } catch {
         threw = true;
     }
@@ -1011,8 +1123,16 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     eq(snap.groups_online, 0b00010011, "在线组位图 = A/B/E");
 
     const v = snap.viz;
-    eq(VIZ.vizAccepts(v).reason, "", "快照自带首帧 viz 且可读");
-    eq(v.attach, "ok", "attach = ok");
+    const ST = s.ctl.statePayload();
+    eq(VIZ.vizAccepts(v, ST).reason, "", "快照自带首帧 viz 且可读");
+    eq(v.online, true, "帧里 online = 段在线 且 帧新鲜(桥把两者与在一起)");
+    eq(ST.viz, "online", "scvb.state 报 online");
+    eq(ST.fresh, true, "且新鲜");
+    eq(
+        s.ctl.groupsPayload(),
+        { online: 0b00010011 },
+        "scvb.groups 的键是 online(不是 groups_online)",
+    );
     eq(v.columnCount, VC.VIZ_COLUMNS, "几何:列数");
     eq(v.trackCount, VC.VIZ_TRACKS, "几何:轨数");
     eq(v.panScale, VC.VIZ_PAN_SCALE, "几何:定点标度");
@@ -1112,7 +1232,8 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     // ---- 组切换往返(数值级:轨号集合逐项)
     const ok = await bridge.setObservedGroup(2);
     eq(ok, { ok: true }, "切到组 B 受理");
-    eq(lastViz.groupId, 2, "切组后立刻回推一帧 B 的 viz");
+    // 组回显走 `scvb.state`(viz 帧里不带 groupId)
+    check(!!lastState && lastState.groupId === 2, "scvb.state 回显新组号");
     check(Array.isArray(lastViz.lanes), "切组那一帧**必带车道**(换组 = 换段)");
     eq(
         VIZ.vizSeries(lastViz).map((x) => x.ch),
@@ -1172,11 +1293,12 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
     const snap = await bridge.requestInitialState();
     eq(snap.groupId, 3, "monitor-offline 场景观察组 C");
-    const a = VIZ.vizAccepts(snap.viz);
+    eq(s.ctl.statePayload().viz, "offline", "scvb.state 报 offline");
+    const a = VIZ.vizAccepts(snap.viz, s.ctl.statePayload());
     check(!a.ok, "不在线 ⇒ 不可读");
-    eq(a.reason, "failed", "理由是 failed(空态,不是错误)");
+    eq(a.reason, "offline", "理由是 offline(空态,不是错误)");
     check(VIZ.vizIsEmptyState(a.reason), "归空态,不挂红横幅");
-    eq(snap.viz.attach, "failed", "**仍然发了一帧**且说清了原因");
+    eq(snap.viz.online, false, "**仍然发了一帧**且说清了原因");
     eq(snap.viz.windowSpanS, 0, "attach 不上时窗口为 0");
     eq(snap.viz.onlineMask, 0, "掩码全 0");
     eq(VIZ.vizSeries(snap.viz).length, 0, "空态无折线");
@@ -1189,14 +1311,13 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     const s = MMOCK.createPreviewSession({ params: "?scenario=monitor-abi" });
     const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
     const snap = await bridge.requestInitialState();
-    const a = VIZ.vizAccepts(snap.viz);
-    eq(a.reason, "abi", "abi 高于本机 ⇒ 拒读");
-    eq(a.abi, VC.VIZ_ABI + 1, "把对端 abi 带出来给横幅");
+    eq(s.ctl.statePayload().viz, "abiMismatch", "scvb.state 报 abiMismatch");
+    const a = VIZ.vizAccepts(snap.viz, s.ctl.statePayload());
+    eq(a.reason, "abi", "⇒ 拒读");
     check(
         !VIZ.vizIsEmptyState(a.reason),
         "**不**归空态 —— 这是拒连,不是没数据",
     );
-    eq(snap.viz.attach, "abiMismatch", "attach 报 abiMismatch");
     s.stop();
 }
 
@@ -1212,8 +1333,8 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     });
     const snap = await bridge.requestInitialState();
     eq(
-        VIZ.vizAccepts(snap.viz).reason,
-        "failed",
+        VIZ.vizAccepts(snap.viz, s.ctl.statePayload()).reason,
+        "offline",
         "开箱:Output 还没起来 ⇒ 空态",
     );
     const gen0 = snap.viz.generation;
@@ -1221,8 +1342,9 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     // driver 的 3 秒定时器在 node 侧不跑(没 start),直接调 ctl 的等价入口
     s.ctl.bringOutputUp();
     check(!!last, "Output 上线时立刻推了一帧");
-    eq(VIZ.vizAccepts(last).reason, "", "重连后可读");
-    eq(last.attach, "ok", "attach 变 ok");
+    eq(s.ctl.statePayload().viz, "online", "state 翻成 online");
+    eq(VIZ.vizAccepts(last, s.ctl.statePayload()).reason, "", "重连后可读");
+    eq(last.online, true, "帧里也翻成 online");
     check(Array.isArray(last.lanes), "重连帧**必带车道**(段是新建的)");
     check(
         last.generation > gen0,
@@ -1243,11 +1365,18 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     });
     const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
     const snap = await bridge.requestInitialState();
-    eq(VIZ.vizAccepts(snap.viz).reason, "", "停摆场景的数据本身是可读的");
-    const pub = snap.viz.publishMs;
-    const again = s.ctl.vizFrame(s.ctl.state.observed, s.ctl.state.tS);
-    eq(again.publishMs, pub, "publishMs 冻住不动(UI 据此 3 秒后挂琥珀横幅)");
-    check(s.ctl.state.frozen === true, "场景确实开了冻结位");
+    const st = s.ctl.statePayload();
+    eq(st.viz, "online", "段仍在线");
+    eq(st.fresh, false, "但帧不新鲜(native 侧松开映射再探一次判出来的)");
+    const a = VIZ.vizAccepts(snap.viz, st);
+    eq(a.reason, "stale", "⇒ stale");
+    check(
+        a.ok,
+        "**仍然 ok** —— 图继续显示上一份真数据,只加一条琥珀横幅(挡掉会让用户看到一张突然变空的图)",
+    );
+    // T45 的帧把 online 与 fresh 与在了一起 ⇒ 陈旧时帧里也是 online:false。
+    // 判据顺序若写反,这里会得到 offline,图被清空。
+    eq(snap.viz.online, false, "帧里 online 也是 false(两者被与在了一起)");
     s.stop();
 }
 
@@ -1289,7 +1418,10 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     });
     const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
     const snap = await bridge.requestInitialState();
-    eq(snap.viz.leadMask, 0, "leadMask 为 0(模拟段里还没有这个字段)");
+    check(
+        snap.viz.leadMask === undefined,
+        "**没有 leadMask 这个键**(不是 0)—— 0 会与「有这个字段、但没有 lead 轨」混起来",
+    );
     eq(VIZ.vizDistRows(snap.viz).length, 15, "15 根柱照画");
     check(
         VIZ.vizDistRows(snap.viz).every((r) => r.lead === false),
@@ -1575,17 +1707,42 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
 
     // ---- 数据面接线的四条不变式
     check(
-        /raw\.groupId !== store\.observed/.test(app),
-        "onViz 丢弃组号不符的在途帧",
+        /bridge\.on\("scvb\.state"/.test(app),
+        "订了 scvb.state(段级三态 + fresh 的唯一真源)",
     );
     check(
-        app.indexOf("raw.groupId !== store.observed") <
-            app.indexOf("mergeVizFrame(store.viz, raw)"),
-        "组号校正**排在合并之前**(否则上一组的车道会被存成缓存)",
+        /store\.vizStatus/.test(app),
+        "状态存进 store.vizStatus 并参与 vizAccepts",
     );
     check(
-        /store\.viz = null;[\s\S]{0,220}store\.series = \[\];/.test(app),
-        "observeGroup 清掉上一组的数据面",
+        /g\[GROUPS_JSON_KEY\]/.test(app),
+        "组位图走 GROUPS_JSON_KEY 常量(T45 用 online,不是 groups_online)",
+    );
+    // `groups_online` 只在 **requestInitialState 的快照**里出现(T45 那一处确实用它);
+    // **周期事件** `scvb.groups` 用的是 `online`。两个键名不同,这条钉住事件那一路
+    // 不许写死 —— 读错的后果是绿点永远不亮而页面一切正常、零报错。
+    const groupsHandler = new RegExp(
+        'bridge\\.on\\("scvb\\.groups", \\(g\\) => \\{([\\s\\S]*?)\\n {4}\\}\\);',
+    ).exec(app);
+    check(!!groupsHandler, "找得到 scvb.groups 订阅");
+    if (groupsHandler) {
+        check(
+            !/groups_online/.test(groupsHandler[1]),
+            "scvb.groups 的处理里没有写死的 groups_online",
+        );
+    }
+    check(
+        /vizHasLanes\(viz\)/.test(app),
+        "轨迹图按有没有车道选空态文案(「未接通」vs「尚无分段」)",
+    );
+    check(
+        /store\.frame = null;[\s\S]{0,240}store\.series = \[\];/.test(app),
+        "observeGroup 清掉上一组的数据面(含车道缓存)",
+    );
+    check(
+        /function applyProjection\(\)/.test(app) &&
+            (app.match(/applyProjection\(\);/g) || []).length >= 2,
+        "投影在 viz 帧与 scvb.state **两个入口**都重跑(只跑一处会让迟到的 state 补不回折线)",
     );
     const phHandler =
         /bridge\.on\("scvb\.playhead", \(p\) => \{([\s\S]*?)\n {4}\}\);/.exec(
@@ -1604,8 +1761,8 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
         "可见性闸 = viz 可读",
     );
     check(
-        /store\.lastPublishMs/.test(app) && !/store\.lastSeq/.test(app),
-        "停摆判据是 publishMs(段内注释指定的那一个),不是 seq",
+        !/store\.lastPublishMs/.test(app) && !/VIZ_STALE_MS/.test(app),
+        "停摆判据交给 native 的 fresh,UI 不再自己按事件间隔猜",
     );
 }
 

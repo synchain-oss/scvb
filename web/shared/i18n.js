@@ -480,6 +480,9 @@ export const T = {
         "monitor.offline":
             "组 {X} 当前没有 Output 在线——在该组打开 SCVB Output 后这里会自动出图",
         "monitor.stalled": "数据已停更——被观察的 Output 可能已关闭",
+        // 轨迹图的第二种空态:桥没送车道数据(与「尚无分段结果」是两回事 ——
+        // 那句说的是工程没分析过,这句说的是数据没接过来)。
+        "monitor.noLanes": "监视数据未接通——轨迹需要 Output 侧发送降采样数据",
         "monitor.abiMismatch":
             "监视数据版本不匹配,已停止读取(本机 {a} / 数据 {b})——请把两个插件升到同一版本",
         "monitor.footerHint": "只读窗口:这里改不了任何设置,也不写回工程",
@@ -1280,6 +1283,8 @@ export const T = {
             "No Output is online in group {X} — open SCVB Output there and the charts appear automatically",
         "monitor.stalled":
             "Data has stopped updating — the Output being watched may have been closed",
+        "monitor.noLanes":
+            "Trajectory data not connected — the Output side needs to send the downsampled lanes",
         "monitor.abiMismatch":
             "Monitor data version mismatch, reading stopped (local {a} / data {b}) — please bring both plugins to the same version",
         "monitor.footerHint":
@@ -2053,6 +2058,8 @@ export const T = {
             "Aucun Output en ligne dans le groupe {X} — ouvrez-y SCVB Output et les graphiques apparaîtront automatiquement",
         "monitor.stalled":
             "Les données ne se mettent plus à jour — l'Output observé a peut-être été fermé",
+        "monitor.noLanes":
+            "Données de trajectoire non connectées — l'Output doit envoyer les courbes sous-échantillonnées",
         "monitor.abiMismatch":
             "Version des données de supervision incompatible, lecture arrêtée (local {a} / données {b}) — mettez les deux plugins à la même version",
         "monitor.footerHint":

@@ -49,16 +49,26 @@ export const MONITOR_FUNCTIONS = [
 ];
 
 /**
- * Monitor 侧事件名表(**临时**)。
+ * Monitor 侧事件名表 —— 逐字对齐 T45 的 `src/monitor/MonitorBridgeApi.h`。
  *
- *   scvb.viz       viz 段快照(低频;载荷形状见 app.js 顶部的「viz 事件形状」注)
+ *   scvb.state     组回显 + 缩放/语言 + **viz 三态与 fresh**(段级状态的唯一真源)
  *   scvb.groups    §2.4 原样复用:`{groups_online}` 位图,组胶囊绿点
- *   scvb.playhead  §2.6 原样复用:30Hz 扁平标量集,喂 trajectory-chart 的插值层
+ *   scvb.viz       4Hz viz 帧(每轨摘要 + 按需重发的车道块;形状见 viz.js 头注)
+ *   scvb.playhead  §2.6 原样复用:**25Hz**(WebViewHost 定时器上限)扁平标量集
  *
  * 后两个**逐字复用 Output 侧的既有载荷形状**,不另立一套 —— 轨迹图的
  * `onPlayhead(ev)` 与组胶囊的消费代码因此一行不改。
+ *
+ * `scvb.state` 的 viz 面为什么必须由 native 给:「Output 进程真没了」与「还在但不再
+ * 发帧」在 UI 侧长得一模一样(命名段是引用计数存活的,只要 Monitor 自己不松手,段
+ * 就一直在、读也一直成功)。T45 的做法是帧陈旧时松开映射再探一次 —— 这件事 UI 做不了。
  */
-export const MONITOR_EVENTS = ["scvb.viz", "scvb.groups", "scvb.playhead"];
+export const MONITOR_EVENTS = [
+    "scvb.state",
+    "scvb.groups",
+    "scvb.viz",
+    "scvb.playhead",
+];
 
 Object.freeze(MONITOR_FUNCTIONS);
 Object.freeze(MONITOR_EVENTS);

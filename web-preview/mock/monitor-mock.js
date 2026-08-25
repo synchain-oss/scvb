@@ -46,9 +46,9 @@ import {
     CHANNEL_COUNT,
     DEMO_DURATION_S,
     DEMO_GROUPS_ONLINE,
-    makeGroups,
 } from "../../web/shared/mock-data.js";
 import {
+    GROUPS_JSON_KEY,
     VIZ_ABI,
     VIZ_COLUMNS,
     VIZ_COVERAGE_WORDS,
@@ -83,8 +83,12 @@ const VIZ_FRAME_PERIOD_MS = 250;
 /** 车道兜底重算周期(ms):照 T44「距上次重算 ≥ 1s」四触发之一。 */
 const LANE_RECALC_MS = 1000;
 
-/** 播放头频率(§2.6 原样 30Hz)。 */
-const PLAYHEAD_PERIOD_MS = 33;
+/**
+ * 播放头频率:**25Hz**(T45 说明:WebViewHost 定时器给到的上限就是这个,Output 侧也一样)。
+ * 数据源是 Monitor **自己的 AudioPlayHead** —— 与 viz 段无关,故 Output 停摆时竖线照常走,
+ * 消费侧不必为「viz 陈旧」特判播放头。
+ */
+const PLAYHEAD_PERIOD_MS = 40;
 
 /** groups 位图频率(§2.4 原样 1Hz,变化才发)。 */
 const GROUPS_PERIOD_MS = 1000;
@@ -118,11 +122,12 @@ export const MONITOR_SCENARIOS = Object.freeze([
     "monitor-online", // 满配:组 A,15 轨全画
     "monitor-offline", // 空态:观察的组没有 Output(attach = failed)
     "monitor-groups", // 组切换:开箱停在组 B(6 轨),可点到 A(15 轨)/ E(9 轨)
-    "monitor-stalled", // 停摆:publishMs 冻住 ⇒ 琥珀横幅
-    "monitor-abi", // 拒连:段 abi 高于本机 ⇒ 红横幅 + 停止读取
-    "monitor-reconnect", // 重连:开箱 attach 失败,3 秒后 Output 上线 ⇒ 自动出图
-    "monitor-no-tracks", // 降级:段里没有 VizTrackState/Labels ⇒ 分布图画空、轨迹图照常
-    "monitor-no-lead", // 降级:没有 track_lead_mask(待 T44 确认)⇒ 柱照画、无绿帽
+    "monitor-stalled", // 在线但陈旧:state 的 fresh=false ⇒ 琥珀横幅,**图仍显示**
+    "monitor-abi", // 拒连:state 报 abiMismatch ⇒ 红横幅 + 停止读取
+    "monitor-reconnect", // 重连:开箱 offline,3 秒后 Output 上线 ⇒ 自动出图
+    "monitor-no-lanes", // 降级:桥没送车道 ⇒ 轨迹图走「未接通」的专门空态
+    "monitor-no-tracks", // 降级:没有每轨三条标量 ⇒ 分布图画空、轨迹图照常
+    "monitor-no-lead", // 降级:没有 leadMask ⇒ 柱照画、无绿帽
 ]);
 
 function toSearchParams(params) {
@@ -395,17 +400,24 @@ function createMonitorBackend(parsed) {
         generation: 1,
         laneRevision: 1,
         publishMs: 1000,
-        // `monitor-stalled`:publishMs 冻住不动 ⇒ 消费侧 3 秒后挂琥珀横幅
-        frozen: parsed.scenario === "monitor-stalled",
-        // `monitor-abi`:段 abi 高于本机 ⇒ 拒连横幅
-        abi: parsed.scenario === "monitor-abi" ? VIZ_ABI + 1 : VIZ_ABI,
-        // `monitor-reconnect`:先 attach 不上,由 driver 在 3 秒后翻成 true
+        // `scvb.state` 的 viz 面:三态 + **独立的** fresh(T45 `buildStatePayload`)。
+        // 「在线但陈旧」是真实存在的一档 —— Output 还在跑、只是不再发帧。
+        vizState:
+            parsed.scenario === "monitor-abi"
+                ? "abiMismatch"
+                : parsed.scenario === "monitor-offline" ||
+                    parsed.scenario === "monitor-reconnect"
+                  ? "offline"
+                  : "online",
+        fresh: parsed.scenario !== "monitor-stalled",
+        abi: VIZ_ABI,
+        // `monitor-reconnect`:先起不来,由 driver 在 3 秒后翻成 true
         outputUp: parsed.scenario !== "monitor-reconnect",
-        // `monitor-no-tracks`:段里没有 VizTrackState / VizTrackLabels
-        // (= T44 对表前的 v1 形态,也是旧版 Output 的形态)⇒ 分布图画空
+        // `monitor-no-lanes`:桥不送车道两件 ⇒ 轨迹图走「未接通」的专门空态
+        withLanes: parsed.scenario !== "monitor-no-lanes",
+        // `monitor-no-tracks`:桥没送每轨三条标量(旧版 Output 的形态)⇒ 分布图画空
         withTracks: parsed.scenario !== "monitor-no-tracks",
-        // `monitor-no-lead`:有三条标量但没有 `track_lead_mask`(仍待 T44 确认)
-        // ⇒ 柱照画、一律不戴绿帽
+        // `monitor-no-lead`:有三条标量但没有 leadMask ⇒ 柱照画、一律不戴绿帽
         withLead: parsed.scenario !== "monitor-no-lead",
         scale: 1,
         language: "zh",
@@ -416,10 +428,22 @@ function createMonitorBackend(parsed) {
 
     const listeners = new Map();
     let ready = false;
+    let lastStateJson = "";
     const onReadyQueue = [];
 
     function emit(name, payload) {
         for (const cb of listeners.get(name) || []) cb(payload);
+    }
+
+    /** `scvb.state`(T45 `buildStatePayload`):组 / 缩放 / 语言 / viz 三态 / fresh。 */
+    function statePayload() {
+        return {
+            groupId: state.observed,
+            uiScale: state.scale,
+            language: state.language,
+            viz: state.vizState,
+            fresh: state.fresh,
+        };
     }
 
     /**
@@ -432,10 +456,9 @@ function createMonitorBackend(parsed) {
     function vizFrame(groupId, tS, withLanes) {
         const g = state.outputUp ? groupOf(groupId) : null;
 
-        // ---- attach:段不存在 ⇒ failed(空态);abi 对不上 ⇒ abiMismatch(拒连横幅)。
-        // 两者必须可区分 —— T44 显式设计的两条降级路径。
-        const attach =
-            state.abi > VIZ_ABI ? "abiMismatch" : g ? "ok" : "failed";
+        // 帧里的 `online` = 段在线 **且** 帧新鲜 —— T45 `buildVizPayload` 把两者与在了
+        // 一起,故「在线但陈旧」在帧里长得和「离线」一样。两者的区分只能靠 `scvb.state`。
+        const online = state.vizState === "online" && !!g && state.fresh;
 
         const base = {
             magic: VIZ_MAGIC,
@@ -444,8 +467,7 @@ function createMonitorBackend(parsed) {
             columnCount: VIZ_COLUMNS,
             trackCount: VIZ_TRACKS,
             panScale: VIZ_PAN_SCALE,
-            attach,
-            groupId,
+            online,
             seq: state.seq,
             publishMs: state.publishMs,
             playheadEpoch: 1,
@@ -453,9 +475,9 @@ function createMonitorBackend(parsed) {
             sampleRate: SAMPLE_RATE,
         };
 
-        if (attach !== "ok") {
-            // attach 不上时段里读不到任何东西 —— 窗口/掩码/车道一律为空,
-            // 而**事件照发**:「没有事件」在 UI 侧分不清是离线还是桥断了。
+        if (!g) {
+            // 段读不到 —— 窗口/掩码/车道一律为空,而**事件照发**:
+            // 「没有事件」在 UI 侧分不清是离线还是桥断了。
             return {
                 ...base,
                 windowStartS: 0,
@@ -497,7 +519,7 @@ function createMonitorBackend(parsed) {
             // `track_lead_mask` 仍待 T44 确认(viz-contract.js 的 VIZ_PENDING_FIELDS)。
             // `monitor-no-lead` 之外的场景先按「已经有了」造,好让柱顶绿帽在 preview
             // 里可验收;没有它时的行为由 `monitor-no-tracks` 之外的那条断言管。
-            leadMask: state.withLead ? g.leadMask : 0,
+            leadMask: state.withLead ? g.leadMask : undefined,
             laneRevision: state.laneRevision,
         };
 
@@ -505,7 +527,7 @@ function createMonitorBackend(parsed) {
             withLanes === undefined
                 ? state.lastSentLaneRevision.get(groupId) !== state.laneRevision
                 : !!withLanes;
-        if (need) {
+        if (need && state.withLanes) {
             state.lastSentLaneRevision.set(groupId, state.laneRevision);
             frame.colorIndex = g.colorIndex;
             frame.coverage = g.coverage;
@@ -527,18 +549,17 @@ function createMonitorBackend(parsed) {
             for (let ch = 1; ch <= VIZ_TRACKS; ch++) {
                 const meta = g.trackMeta.find((m) => m.ch === ch);
                 if (!meta) {
-                    // 未启用的轨:三条都是哨兵(段里就是这么填的)
-                    panNow.push(VIZ_PAN_NONE);
-                    volDb.push(VIZ_PAN_NONE);
-                    widthPct.push(VIZ_PAN_NONE);
+                    // 未启用的轨:段里是哨兵,**桥把哨兵折成 null**(T45 逐条照做)——
+                    // 不是 0:0 在三条里分别是「居中 / 0 dB / 宽度 0」,都是合法值。
+                    panNow.push(null);
+                    volDb.push(null);
+                    widthPct.push(null);
                     continue;
                 }
                 const seg = segmentAt(meta.segs, tS);
-                panNow.push(seg ? panToFixed(seg.pan) : VIZ_PAN_NONE);
-                volDb.push(seg ? fixedOf(seg.volDb) : VIZ_PAN_NONE);
-                widthPct.push(
-                    fixedOf(meta.cfg.source_channels === 2 ? 82 : 100),
-                );
+                panNow.push(seg ? seg.pan : null);
+                volDb.push(seg ? seg.volDb : null);
+                widthPct.push(meta.cfg.source_channels === 2 ? 82 : 100);
             }
             frame.trackPanNow = panNow;
             frame.trackVolDb = volDb;
@@ -578,6 +599,7 @@ function createMonitorBackend(parsed) {
             }
             state.observed = g;
             state.seq += 2; // 偶数保持偶数(奇数 = 写入中,不该被读方看到)
+            emit("scvb.state", statePayload()); // 组回显走 state(viz 帧里不带 groupId)
             // 换组 = 换段 = 另一份车道,故这一帧**必带**车道三件。
             emit("scvb.viz", vizFrame(g, state.tS, true));
             return { ok: true };
@@ -614,7 +636,18 @@ function createMonitorBackend(parsed) {
         groupOf,
         isReady: () => ready,
         onReady: (fn) => (ready ? fn() : onReadyQueue.push(fn)),
-        groupsPayload: () => makeGroups(groupsOnline),
+        // ⚠ T45 的 `scvb.groups` 用 **`online`** 这个键,不是 Output 侧的 `groups_online`
+        // (真源 = MonitorEditor.cpp;常量在 viz-contract.js 的 GROUPS_JSON_KEY)。
+        // 读错的后果是绿点永远不亮、而页面一切正常零报错 —— 故两侧都从那个常量取。
+        groupsPayload: () => ({ [GROUPS_JSON_KEY]: groupsOnline }),
+        statePayload,
+        /** `scvb.state` 变化才发(§0.4「值未变不发」同款)。 */
+        emitIfStateChanged() {
+            const json = JSON.stringify(statePayload());
+            if (json === lastStateJson) return;
+            lastStateJson = json;
+            emit("scvb.state", statePayload());
+        },
         setGroupsOnline(bitmap) {
             groupsOnline = bitmap;
         },
@@ -622,9 +655,12 @@ function createMonitorBackend(parsed) {
         bringOutputUp() {
             if (state.outputUp) return;
             state.outputUp = true;
+            state.vizState = "online";
+            state.fresh = true;
             state.generation += 1; // 覆盖式重初始化 +1(段被重建)
-            state.laneRevision += 1;
+            state.laneRevision += 1; // 新段 = 新车道,读方必须重解析
             state.seq += 2;
+            emit("scvb.state", statePayload());
             emit("scvb.viz", ctl.vizFrame(state.observed, state.tS, true));
         },
     };
@@ -677,10 +713,11 @@ function makeDriver(ctl) {
             running = true;
 
             ctl.onReady(() => {
+                ctl.emit("scvb.state", ctl.statePayload());
                 ctl.emit("scvb.groups", ctl.groupsPayload());
             });
 
-            // 30Hz:播放头(§2.6 载荷原样,与 Output 侧同形)
+            // 25Hz:播放头(§2.6 载荷原样,与 Output 侧同形)
             startFrameLoop(PLAYHEAD_PERIOD_MS, () => {
                 const s = ctl.state;
                 if (s.isPlaying) {
@@ -699,15 +736,10 @@ function makeDriver(ctl) {
             timers.push(
                 setInterval(() => {
                     const s = ctl.state;
-                    if (!s.frozen) {
-                        s.publishMs += VIZ_FRAME_PERIOD_MS;
-                        s.seq += 2;
-                    }
+                    s.publishMs += VIZ_FRAME_PERIOD_MS;
+                    s.seq += 2;
                     // 车道兜底重算(T44 四触发之一:距上次 ≥1s)
-                    if (
-                        !s.frozen &&
-                        s.publishMs - s.lastLaneRecalcMs >= LANE_RECALC_MS
-                    ) {
+                    if (s.publishMs - s.lastLaneRecalcMs >= LANE_RECALC_MS) {
                         s.lastLaneRecalcMs = s.publishMs;
                         // 本 mock 的段表是静态的,内容没变 ⇒ **lane_revision 不 +1**。
                         // T44 的语义是「只在重算车道时 +1」,而重算出同样的内容也不该
@@ -717,10 +749,11 @@ function makeDriver(ctl) {
                 }, VIZ_FRAME_PERIOD_MS),
             );
 
-            // 1Hz:组在线位图
+            // 1Hz:组在线位图 + scvb.state(都是变化才发)
             timers.push(
                 setInterval(() => {
                     ctl.emit("scvb.groups", ctl.groupsPayload());
+                    ctl.emitIfStateChanged();
                 }, GROUPS_PERIOD_MS),
             );
 
