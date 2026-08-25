@@ -126,6 +126,11 @@ export const VIZ_FIELDS = Object.freeze([
     { struct: "VizFrame", name: "_reserved", json: null },
     // ---- VizTrackColors(64 B)
     { struct: "VizTrackColors", name: "index", json: "colorIndex" },
+    // 15 × u32 = 60 B,补到 64 的那 4 字节(`VizPlane.h`:`u32 _pad; // 60..64`)。
+    // 本表的规矩是**段里每个字段都要显式表过态**(json:null = 不投影),漏了它当初
+    // 没被发现,是因为 parity 那时对着未合入的分支打 [SKIP];T44 一合入 `feature/v1`、
+    // 本分支一 rebase,机检当场点名 —— 这正是那两个比对面存在的理由。
+    { struct: "VizTrackColors", name: "_pad", json: null },
     // ---- VizCoverage(1920 B):15 × 32 u32,LSB 优先
     { struct: "VizCoverage", name: "bits", json: "coverage" },
     // ---- VizLanes(30720 B):15 × 1024 int16 定点

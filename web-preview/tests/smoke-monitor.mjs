@@ -302,8 +302,8 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
         const cppPath = join(ROOT, "src", "monitor", "MonitorEditor.cpp");
         if (!existsSync(cppPath)) {
             skip(
-                "src/monitor/MonitorEditor.cpp 不在树上(T45/PR #92 未合入 feature/v1)—— " +
-                    "桥面 JSON parity 待 rebase 后自动生效",
+                "src/monitor/MonitorEditor.cpp 不在树上(T45 = PR **#94**,取代已关闭的 #92;尚未合入 feature/v1)—— " +
+                    "桥面 JSON parity 待它合入后自动生效;已对着其分支头临时嫁接验证过全绿",
             );
         } else {
             const cpp = readFileSync(cppPath, "utf8");
@@ -1838,8 +1838,9 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
         const { DESIGN } = await import(u("web/shared/design-box.js"));
         if (!DESIGN.monitor) {
             skip(
-                "web/shared/design-box.js 里还没有 DESIGN.monitor(T45 已落,待合入 feature/v1)—— " +
-                    "合入后本条自动生效,届时把 monitor-box.js 改成转发",
+                "web/shared/design-box.js 里还没有 DESIGN.monitor(T45 = PR **#94**,已落在其分支上、" +
+                    "尚未合入 feature/v1)—— 合入后本条自动生效,届时把 monitor-box.js 改成转发。" +
+                    "**在那之前不能改**:转发过去是 undefined,页面当场坏",
             );
         } else {
             eq(

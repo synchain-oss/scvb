@@ -301,8 +301,11 @@ function isPlainObject(v) {
 
 // 占位符求值 —— [T46] 定义已挪到 `web/shared/i18n.js`(Monitor 页面同样要用,
 // 与其抄第三份不如放在词典本体旁边)。此处原样再导出,既有 import 点一字不改。
-// (必须**先 import 再 export**:`export { x } from "…"` 是纯转发,不把绑定引入
-//  本模块作用域,而本文件自己的 fill() 就在用它。)
+// (必须**先 import 再 export**:再导出语法是纯转发,不把绑定引入本模块作用域,
+//  而本文件自己的 fill() 就在用它。⚠ 这条注释刻意**不写出**那句语法的字面形式 ——
+//  `smoke-embedded-resources.mjs` 的引用扫描是纯文本、不剥注释,注释里只要出现
+//  import 语句的字面样子,那个模块名就会被当成真引用,报「打包集合里没有这个
+//  basename」。写注释时避开带引号的模块说明符。)
 export { format };
 
 export function clamp(lo, hi, v) {
