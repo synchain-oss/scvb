@@ -511,6 +511,13 @@ export function createTrajectoryChart(opts) {
         teardown: [],
         stageW: 0,
         stageH: 0,
+        // 已拆除。**拆完之后一切写入口一律早退** —— 否则一次迟到的 `invalidate()`
+        // (Monitor 在 pagehide 里拆图,而事件回调可能已经在队列上了)会重新
+        // `layers.invalidateStatic()`,把 rAF 循环重新起来:实例复活、闭包连着 15 条
+        // 折线的数据面一起钉在内存里,destroy() 想防的正是这个。
+        // 由 T46(destroy 的首个消费者)的冒烟抓到并钉住:
+        // `smoke-monitor.mjs` ⑧「destroy 之后 invalidate 也不再画」。
+        destroyed: false,
     };
 
     const timeline = createTimeline({
@@ -997,7 +1004,7 @@ export function createTrajectoryChart(opts) {
      * 重画 —— 脏位纪律(05 §6.1、smoke ⑦「静态层重绘走脏位」)照旧。
      */
     function resume() {
-        if (!isVisible()) return;
+        if (local.destroyed || !isVisible()) return;
         if (local.staticPending) {
             local.staticPending = false;
             layers.invalidateStatic();
@@ -1018,6 +1025,9 @@ export function createTrajectoryChart(opts) {
          * 这里按自留的最近一帧把它重新起上(与 Tab3 的 resumePlayhead 同一配对不变式)。
          */
         invalidate() {
+            // 拆完之后一律不干活(理由见 local.destroyed 的头注)。**连脏位都不留** ——
+            // 留了也没人来还,而它连着的是一个已经不该存在的实例。
+            if (local.destroyed) return;
             if (!isVisible()) {
                 // 画不成,但**诉求要留着** —— 直接早退等于把这次重绘丢了,
                 // 切回前台会看到一张过期的图(见 local.staticPending 头注)。
@@ -1040,6 +1050,7 @@ export function createTrajectoryChart(opts) {
         resume,
         /** 工程时长变化(段表/播放头把时间线推长了)。 */
         setDuration(d) {
+            if (local.destroyed) return;
             if (Math.abs(timeline.durationS() - num(d, 0)) < 1e-6) return;
             timeline.setDuration(d);
             layers.invalidateStatic();
@@ -1053,6 +1064,7 @@ export function createTrajectoryChart(opts) {
          * 写 left —— 这正是 Tab3 收尾时抓到的那一类空转(smoke-tab3 ⑨ 同款不变式)。
          */
         onPlayhead(ev) {
+            if (local.destroyed) return;
             local.playheadEv = ev || null;
             if (!isVisible()) {
                 playhead.stop();
@@ -1063,6 +1075,7 @@ export function createTrajectoryChart(opts) {
         },
         /** 图例 hover 联动(0 = 取消高亮)。纯展示,无写操作(J75 B)。 */
         setHighlight(ch) {
+            if (local.destroyed) return;
             const v = Number(ch) || 0;
             if (local.highlight === v) return;
             local.highlight = v;
@@ -1098,6 +1111,7 @@ export function createTrajectoryChart(opts) {
          * 一起钉在内存里。复用契约既然写了「Monitor 直接复用本文件」,拆除口就得在。
          */
         destroy() {
+            local.destroyed = true; // 先置位:此后一切写入口早退,不会有人再起 rAF
             layers.stop();
             playhead.stop();
             const fns = local.teardown.splice(0); // 先清空再执行 ⇒ 天然幂等

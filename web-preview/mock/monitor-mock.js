@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // =============================================================================
-// SCVB web-preview —— Monitor 侧 mock 后端(T46;**待与 T44/T45 接口说明对表**)
+// SCVB web-preview —— Monitor 侧 mock 后端(T46;**已按 T44 段规格对表**)
 // =============================================================================
 // 与 `./state-driver.js` 同一份契约,壳页照旧只认这一个入口:
 //
@@ -9,17 +9,34 @@
 //   targetWindow.__SCVB_MOCK__ = session.mock;   // 必须早于真源页面的 app.js 求值
 //   session.start();
 //
-// **为什么另起一份而不是往 state-driver.js 里加一个 role**:那份 driver 的每一条
-// 周期事件、每一个 fixture 分支都按 Output/Input 两侧的契约写死(§2 九事件 / §4 五事件);
-// 加第三侧要在十几处 `if (role === …)` 上分叉,而 Monitor 的数据面(viz 段)与那两侧
-// **没有一个字段重合**。分成两份,既有两侧一行不动(smoke-mock / smoke-input 是证据),
-// 将来 viz 段定稿要改的也只有本文件。
-// **数据仍同源**:世界经 `state-driver.js` 的 `buildWorld()` 造 —— 段表、轨名、
-// 立体声轨、时间线长度全部来自 `web/shared/mock-data.js` 的同一批生成器,Monitor 看到的
-// 和 Output 看到的是同一个工程,不是另编的一套假数据。
+// **为什么另起一份而不是往 state-driver.js 里加一个 role**:那份 driver 的每一条周期事件、
+// 每一个 fixture 分支都按 Output/Input 两侧的契约写死(§2 九事件 / §4 五事件);加第三侧要在
+// 十几处 `if (role === …)` 上分叉,而 Monitor 的数据面(viz 段)与那两侧**没有一个字段重合**。
+// 分成两份,既有两侧一行不动(smoke-mock / smoke-input 是证据),将来段改也只改本文件。
+// **数据仍同源**:世界经 `state-driver.js` 的 `buildWorld()` 造 —— 段表、轨名、立体声轨、
+// 时间线全部来自 `web/shared/mock-data.js` 的同一批生成器,Monitor 看到的和 Output 看到的
+// 是同一个工程,不是另编的一套假数据。
 //
-// **viz 事件形状**的定义与「对表时要向 T44 要到的三条」写在 `web/monitor/viz.js` 的
-// 文件头(消费侧),本文件只按那份说明造数,不在两处各写一份说明。
+// =============================================================================
+// 本文件是 T44 viz 段的**行为替身**,不是自拟形状
+// =============================================================================
+// 段规格真源 = `docs/contract-changes/20260825-viz-segment.md` + `src/core/ipc/VizPlane.h`
+// (T44,PR #89);JS 侧镜像 = `web/monitor/viz-contract.js`。本文件按那份规格逐条造数,
+// 包括这些**容易两边写反**的地方 —— 每一条 smoke 里都有对应断言:
+//   • 车道 = 列**中心时刻点采样**(不是列内均值);
+//   • 覆盖位图 = 列区间与任一分段**有交集**即置 1(**保守口径**,短于一列的分段不消失)——
+//     注意与车道的判据**不同**:车道是点采样、位图是区间求交,两者刻意不一致;
+//   • 位图位序 LSB 优先、每字 32 列;
+//   • 车道定点 `round(clamp(pan,−100,100) × 100)`,整轨无数据 ⇒ 全 `kVizPanNone`;
+//   • **断线以位图为准**:曲线求值会填补空隙,故本文件在没有分段的列上**照样填车道值**
+//     (hold 上一段的 pan)—— 只有位图是 0。消费侧若误把车道当覆盖判据,断线会整个消失,
+//     这正是 smoke 要抓的那个错;
+//   • 窗口跨度 = `max(最大分段末端, playhead+1, 60s)` 向上取整到 **30s** 边界,上限 24h;
+//   • 帧头 4Hz;车道 / 位图 / 轨色**按需重算**(`lane_revision` 变化时才随事件带上)。
+//
+// **样本 ↔ 秒**:段里是样本,而契约 §0.2「UI 永不见样本、只收秒」—— 换算发生在 T45 的
+// C++ 桥。本文件模拟的是**桥之后**的那一层,故对外发秒;但内部仍按样本算一遍再除,
+// 把换算式也跑到(见 `SAMPLES_TO_SECONDS_NOTE`)。
 //
 // 依赖方向:web-preview/ → web/(单向,06 §6.2)。本文件不碰 DOM、不复制任何 UI 代码。
 // =============================================================================
@@ -30,9 +47,17 @@ import {
     DEMO_DURATION_S,
     DEMO_GROUPS_ONLINE,
     makeGroups,
-    makePlayhead,
 } from "../../web/shared/mock-data.js";
-import { VIZ_ABI, VIZ_MAGIC } from "../../web/monitor/viz.js";
+import {
+    VIZ_ABI,
+    VIZ_COLUMNS,
+    VIZ_COVERAGE_WORDS,
+    VIZ_FLAG_PLAYING,
+    VIZ_MAGIC,
+    VIZ_PAN_NONE,
+    VIZ_PAN_SCALE,
+    VIZ_TRACKS,
+} from "../../web/monitor/viz-contract.js";
 
 // -----------------------------------------------------------------------------
 // 0. 常量
@@ -41,15 +66,19 @@ import { VIZ_ABI, VIZ_MAGIC } from "../../web/monitor/viz.js";
 /** 组数(契约 §0.2:g = 1..8)。 */
 const GROUP_COUNT = 8;
 
-/**
- * 降采样格数。600 格 × 5 分钟 = 每格 0.5s —— 比最细的分段(min_segment_ms 420ms)
- * 略粗一档:再细就是把段表原样搬进段里(那样降采样就没意义了),再粗则短句会整个
- * 落进一格、断线看不出来。真值由 T44 定,此处的口径供对表时对齐量级。
- */
-const SLOT_COUNT = 600;
+/** 采样率(段的 `sample_rate`;换算式跑得到就行,值本身随便取一个常见的)。 */
+const SAMPLE_RATE = 48000;
 
-/** viz 发布频率(低频;J75 C「Output **消息线程**低频发布」)。 */
-const VIZ_PERIOD_MS = 250;
+/** 窗口跨度量化边界(秒)与下限、上限 —— 逐条照 T44 变更文档「窗口跨度」。 */
+const WINDOW_QUANTUM_S = 30;
+const WINDOW_MIN_S = 60;
+const WINDOW_MAX_S = 24 * 3600;
+
+/** 帧头发布周期(ms):4Hz,照 T44「帧头标量 250ms」。 */
+const VIZ_FRAME_PERIOD_MS = 250;
+
+/** 车道兜底重算周期(ms):照 T44「距上次重算 ≥ 1s」四触发之一。 */
+const LANE_RECALC_MS = 1000;
 
 /** 播放头频率(§2.6 原样 30Hz)。 */
 const PLAYHEAD_PERIOD_MS = 33;
@@ -60,9 +89,8 @@ const GROUPS_PERIOD_MS = 1000;
 /**
  * 各组的轨集(演示用)。
  *
- * 三个在线组(A/B/E = `DEMO_GROUPS_ONLINE`)刻意给**不同的轨数**:切组时画面必须
- * 肉眼可辨地变一次,否则「切组」这条验收路径看起来永远是通过的 —— 画面没变化时,
- * 「切过去了」和「切失败了、还在看上一组」长得一模一样。
+ * 三个在线组(A/B/E = `DEMO_GROUPS_ONLINE`)刻意给**不同的轨数**:切组时画面必须肉眼可辨
+ * 地变一次,否则「切过去了」和「切失败了、还在看上一组」长得一模一样。
  */
 const GROUP_TRACKS = Object.freeze({
     1: Object.freeze(range1(CHANNEL_COUNT)), // A:满配 15 轨
@@ -74,21 +102,24 @@ function range1(n) {
     return Array.from({ length: n }, (_, i) => i + 1);
 }
 
+function clamp(lo, hi, v) {
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
 // -----------------------------------------------------------------------------
 // 1. 查询参数
 // -----------------------------------------------------------------------------
 
-/** Monitor 侧的演示场景名(壳页白名单 `SCENARIO_NAMES.monitor` 与本表必须同改)。 */
+/** Monitor 侧的演示场景名(壳页白名单 `SCENARIO_NAMES.monitor` 引用本表,不抄第二份)。 */
 export const MONITOR_SCENARIOS = Object.freeze([
     "monitor-online", // 满配:组 A,15 轨全画
-    "monitor-offline", // 空态:观察的组没有 Output 在线
+    "monitor-offline", // 空态:观察的组没有 Output(attach = failed)
     "monitor-groups", // 组切换:开箱停在组 B(6 轨),可点到 A(15 轨)/ E(9 轨)
-    "monitor-stalled", // 停更:viz 的 seq 冻住 ⇒ 琥珀横幅
+    "monitor-stalled", // 停摆:publishMs 冻住 ⇒ 琥珀横幅
+    "monitor-abi", // 拒连:段 abi 高于本机 ⇒ 红横幅 + 停止读取
+    "monitor-reconnect", // 重连:开箱 attach 失败,3 秒后 Output 上线 ⇒ 自动出图
+    "monitor-no-tracks", // **待 T44 补字段**的降级态:段里没有 tracks ⇒ 分布图画空
 ]);
-
-function hasOwn(obj, key) {
-    return Object.prototype.hasOwnProperty.call(obj, key);
-}
 
 function toSearchParams(params) {
     if (params instanceof URLSearchParams) return params;
@@ -113,10 +144,11 @@ export function parseMonitorQuery(params) {
     let scenario = "monitor-online";
     if (raw) {
         if (MONITOR_SCENARIOS.includes(raw)) scenario = raw;
-        else
+        else {
             warnings.push(
                 `场景 ${raw} 不在 Monitor 场景表内,已回落 ${scenario}`,
             );
+        }
     }
 
     const rawGroup = Number(q.get("group"));
@@ -141,96 +173,166 @@ export function parseMonitorQuery(params) {
 }
 
 // -----------------------------------------------------------------------------
-// 2. 世界 —— 把 Output 的段表栅格化成 viz 段的形状
+// 2. 段的栅格化(本文件的核心;逐条照 T44 的降采样口径)
 // -----------------------------------------------------------------------------
 
 /**
- * 段表 → 一轨的 `{pan, activity}`。
- *
- * 逐格取**格中心**落在哪一段里:段覆盖住格中心 ⇒ 该格 activity 位置 1、pan 取段值;
- * 没有任何段覆盖 ⇒ 位留 0(消费侧据此断线,J75 A)。取格中心而不是「与格有交集」,
- * 是因为后者会把每个段的两端各多染一格 —— 两段之间不足一格的缝隙会被抹平,
- * 断线跟着消失,而断线正是这张图要看的东西。
- *
- * activity 是 **u32 位图**(LSB 起、每字 32 格),与 `web/monitor/viz.js` 的
- * `slotActive()` 逐字同序。
+ * 窗口跨度(秒)。
+ * `max(最大分段末端, playhead+1, 60s)` 向上取整到 30s 边界,上限 24h。
+ * 量化是为了让跨度在播放推进中保持稳定 —— 否则车道每帧都要重算。
  */
-export function rasterizeChannel(segments, slotCount, slotS) {
-    const pan = new Array(slotCount).fill(0);
-    const activity = new Array(Math.ceil(slotCount / 32)).fill(0);
+export function windowSpanS(maxSegEndS, playheadS) {
+    const raw = Math.max(
+        Number(maxSegEndS) || 0,
+        (Number(playheadS) || 0) + 1,
+        WINDOW_MIN_S,
+    );
+    const q = Math.ceil(raw / WINDOW_QUANTUM_S) * WINDOW_QUANTUM_S;
+    return Math.min(q, WINDOW_MAX_S);
+}
+
+/** pan → 段内定点 int16(`round(clamp(pan,−100,100) × 100)`)。 */
+export function panToFixed(pan) {
+    if (!Number.isFinite(pan)) return VIZ_PAN_NONE;
+    return Math.round(clamp(-100, 100, pan) * VIZ_PAN_SCALE);
+}
+
+/**
+ * 单轨段表 → `{lane: int16[1024], words: u32[32]}`。
+ *
+ * **两条判据刻意不同**(照 T44):
+ *   • `lane[i]` = 列**中心时刻**的曲线求值。曲线会 hold —— 没有分段的列**照样有值**
+ *     (取最近一段的 pan),整轨无分段时才全哨兵;
+ *   • `words` 的第 i 位 = 列区间 `[i·colS, (i+1)·colS)` 与任一分段**有交集**即 1
+ *     (保守口径:短于一列的分段不会消失)。
+ *
+ * 于是「车道有值 ≠ 有覆盖」——**断线只能看位图**。消费侧若拿车道当覆盖判据,断线会整个
+ * 消失而图看起来完全正常,这正是 smoke ③ 要抓的那个错。
+ */
+export function rasterizeTrack(segments, spanS, startS = 0) {
+    const lane = new Array(VIZ_COLUMNS).fill(VIZ_PAN_NONE);
+    const words = new Array(VIZ_COVERAGE_WORDS).fill(0);
     const segs = (segments || [])
         .filter((s) => s && Number.isFinite(s.t0S) && s.t1S > s.t0S)
         .slice()
         .sort((a, b) => a.t0S - b.t0S);
-    let si = 0;
-    for (let i = 0; i < slotCount; i++) {
-        const t = (i + 0.5) * slotS;
-        while (si < segs.length && segs[si].t1S <= t) si++;
-        const seg = segs[si];
-        if (!seg || seg.t0S > t) continue;
-        pan[i] = seg.pan;
-        // `|= 1 << bit` 在 bit === 31 时得到负数(JS 位运算走 int32)。>>> 0 折回
-        // 无符号 —— 载荷里出现一个负数「u32」会让 C++ 侧对表时白查半天。
-        activity[i >>> 5] = (activity[i >>> 5] | (1 << (i & 31))) >>> 0;
+    if (segs.length === 0 || !(spanS > 0)) return { lane, words };
+
+    const colS = spanS / VIZ_COLUMNS;
+    for (let i = 0; i < VIZ_COLUMNS; i++) {
+        const c0 = startS + i * colS;
+        const c1 = c0 + colS;
+        // ---- 位图:与任一分段有交集(半开区间求交,端点相接不算交集)
+        for (const s of segs) {
+            if (s.t0S < c1 && s.t1S > c0) {
+                words[i >>> 5] = (words[i >>> 5] | (1 << (i & 31))) >>> 0;
+                break;
+            }
+        }
+        // ---- 车道:列中心点采样 + hold(CurveEvaluator 的填补语义)
+        const mid = c0 + colS / 2;
+        let hold = null;
+        for (const s of segs) {
+            if (s.t0S > mid) break;
+            hold = s; // 最后一个起点 ≤ mid 的段
+        }
+        if (hold) lane[i] = panToFixed(hold.pan);
     }
-    return { pan, activity };
+    return { lane, words };
 }
 
-/** 段表里覆盖住 `tS` 的那一段(分布图的「实时」值取它;没有就返回 null)。 */
-function segmentAt(segments, tS) {
-    for (const s of segments || []) {
-        if (s && s.t0S <= tS && tS < s.t1S) return s;
+/** 掩码:把轨号数组折成 `bit{ch−1}` 的 u32。 */
+export function maskOf(channels) {
+    let m = 0;
+    for (const ch of channels || []) {
+        if (Number.isInteger(ch) && ch >= 1 && ch <= VIZ_TRACKS) {
+            m = (m | (1 << (ch - 1))) >>> 0;
+        }
     }
-    return null;
+    return m;
 }
 
 /**
- * 造一个组的世界:轨集 + 每轨的栅格 + 画像。
- * 栅格只算一次(15 轨 × 600 格),之后每一帧 viz 只是把它和当前播放头拼起来。
+ * 造一个组的车道/位图/掩码(只算一次,之后每帧只拼帧头)。
+ * @returns {null|object} 组不在线 ⇒ null(attach 会得 failed)
  */
 function buildGroup(world, groupId) {
     const tracks = GROUP_TRACKS[groupId] || null;
-    if (!tracks) return { online: false, channels: [] };
-    const durationS = world.durationS || DEMO_DURATION_S;
-    const slotS = durationS / SLOT_COUNT;
+    if (!tracks) return null;
+
     const segChannels = (world.output.segments || {}).channels || [];
     const cfgChannels = (world.output.snapshot || {}).channels || [];
 
-    const channels = tracks.map((ch) => {
+    let maxEnd = 0;
+    for (const ch of tracks) {
         const entry = segChannels.find((c) => c.ch === ch);
-        const cfg = cfgChannels[ch - 1] || {};
+        for (const s of (entry && entry.segments) || []) {
+            if (s && s.t1S > maxEnd) maxEnd = s.t1S;
+        }
+    }
+    const spanS = windowSpanS(maxEnd, 0);
+
+    // 段里的三张表恒为**满 15 轨**(定长数组),未启用的轨是全哨兵 + 位图全 0 ——
+    // 这正是段布局的形状,mock 不许偷偷只给 N 轨。
+    const lanes = [];
+    const coverage = [];
+    const colorIndex = [];
+    const stereo = [];
+    const covered = [];
+    const trackMeta = [];
+    for (let ch = 1; ch <= VIZ_TRACKS; ch++) {
+        colorIndex.push(ch); // v1 恒 = 轨号(T44 段内注释)
+        if (!tracks.includes(ch)) {
+            lanes.push(new Array(VIZ_COLUMNS).fill(VIZ_PAN_NONE));
+            coverage.push(new Array(VIZ_COVERAGE_WORDS).fill(0));
+            continue;
+        }
+        const entry = segChannels.find((c) => c.ch === ch);
         const segs = (entry && entry.segments) || [];
-        const grid = rasterizeChannel(segs, SLOT_COUNT, slotS);
-        return {
-            ch,
-            label: String(cfg.label || ""),
-            stereo: cfg.source_channels === 2,
-            // 轨色索引默认 = 轨号(J75 C 的「轨色索引」字段;独立成字段的理由见 viz.js)
-            colorIndex: ch,
-            lead: !!cfg.lead_lock,
-            segs,
-            grid,
-        };
-    });
-    return { online: true, channels, slotS, durationS };
+        const { lane, words } = rasterizeTrack(segs, spanS, 0);
+        lanes.push(lane);
+        coverage.push(words);
+        if (words.some((w) => w !== 0)) covered.push(ch);
+        const cfg = cfgChannels[ch - 1] || {};
+        if (cfg.source_channels === 2) stereo.push(ch);
+        trackMeta.push({ ch, cfg, segs });
+    }
+
+    return {
+        tracks,
+        spanS,
+        lanes,
+        coverage,
+        colorIndex,
+        onlineMask: maskOf(tracks),
+        coveredMask: maskOf(covered),
+        stereoMask: maskOf(stereo),
+        trackMeta,
+    };
+}
+
+/** 段表里覆盖住 `tS` 的那一段;没有就取最近一段(引擎在段间 hold)。 */
+function segmentAt(segs, tS) {
+    let hold = null;
+    for (const s of segs || []) {
+        if (s.t0S <= tS && tS < s.t1S) return s;
+        if (s.t1S <= tS && (!hold || s.t1S > hold.t1S)) hold = s;
+    }
+    return hold;
 }
 
 // -----------------------------------------------------------------------------
 // 3. mock 后端
 // -----------------------------------------------------------------------------
 
-/**
- * @param {{scenario:string, group:number|null, play:boolean}} parsed
- */
 function createMonitorBackend(parsed) {
     const world = buildWorld({ role: "output", fixture: "fifteen-tracks" });
-    const durationS = world.durationS || DEMO_DURATION_S;
 
-    // 场景 → 初始观察组与在线位图
     let groupsOnline = DEMO_GROUPS_ONLINE; // A/B/E
     let observed = 1;
     if (parsed.scenario === "monitor-groups") observed = 2; // 开箱停在 B(6 轨)
     if (parsed.scenario === "monitor-offline") observed = 3; // C:没有 Output
+    if (parsed.scenario === "monitor-reconnect") observed = 1; // A,但先假装还没起来
     if (parsed.group) observed = parsed.group;
 
     const groupCache = new Map();
@@ -243,12 +345,23 @@ function createMonitorBackend(parsed) {
         observed,
         tS: 42,
         isPlaying: parsed.play,
-        seq: 0,
-        // `monitor-stalled` 场景:seq 冻在这里不动 ⇒ 消费侧 3 秒后挂琥珀横幅
+        seq: 2, // 段里 seq 偶 = 稳定;桥只在稳定帧上投影,故对外恒为偶数
+        generation: 1,
+        laneRevision: 1,
+        publishMs: 1000,
+        // `monitor-stalled`:publishMs 冻住不动 ⇒ 消费侧 3 秒后挂琥珀横幅
         frozen: parsed.scenario === "monitor-stalled",
+        // `monitor-abi`:段 abi 高于本机 ⇒ 拒连横幅
+        abi: parsed.scenario === "monitor-abi" ? VIZ_ABI + 1 : VIZ_ABI,
+        // `monitor-reconnect`:先 attach 不上,由 driver 在 3 秒后翻成 true
+        outputUp: parsed.scenario !== "monitor-reconnect",
+        // `monitor-no-tracks`:段里没有 tracks(= T44 v1 的真实形态)
+        withTracks: parsed.scenario !== "monitor-no-tracks",
         scale: 1,
         language: "zh",
         committedScale: 1,
+        lastLaneRecalcMs: 0,
+        lastSentLaneRevision: new Map(), // groupId → 已随事件发过的 laneRevision
     };
 
     const listeners = new Map();
@@ -262,51 +375,105 @@ function createMonitorBackend(parsed) {
     /**
      * 造一帧 viz。
      *
-     * 组不在线时**仍然发一帧**(`online:false`)—— 「没有事件」与「有事件说没在线」
-     * 在 UI 侧是两回事:前者分不清是离线还是桥断了,后者能当场落到空态。
+     * @param {boolean} [withLanes] 是否带车道三件。缺省按 `lane_revision` 决定:
+     *   只有「这一组的这个 revision 还没发过」时才带 —— 稳态下 4Hz 只发 128 B 帧头,
+     *   与 T44 的「稳态下只写帧头」逐条对应。
      */
-    function vizFrame(groupId, tS) {
-        const g = groupOf(groupId);
+    function vizFrame(groupId, tS, withLanes) {
+        const g = state.outputUp ? groupOf(groupId) : null;
+
+        // ---- attach:段不存在 ⇒ failed(空态);abi 对不上 ⇒ abiMismatch(拒连横幅)。
+        // 两者必须可区分 —— T44 显式设计的两条降级路径。
+        const attach =
+            state.abi > VIZ_ABI ? "abiMismatch" : g ? "ok" : "failed";
+
         const base = {
             magic: VIZ_MAGIC,
-            abi: VIZ_ABI,
-            seq: state.seq,
+            abi: state.abi,
+            generation: state.generation,
+            columnCount: VIZ_COLUMNS,
+            trackCount: VIZ_TRACKS,
+            panScale: VIZ_PAN_SCALE,
+            attach,
             groupId,
-            durationS,
-            slotCount: SLOT_COUNT,
-            slotS: durationS / SLOT_COUNT,
-            playheadS: Math.round(tS * 1000) / 1000,
+            seq: state.seq,
+            publishMs: state.publishMs,
+            playheadEpoch: 1,
+            versionActive: 1,
+            sampleRate: SAMPLE_RATE,
         };
-        if (!g.online) return { ...base, online: false, channels: [] };
-        return {
-            ...base,
-            online: true,
-            channels: g.channels.map((c) => {
-                // 分布图的「实时」三值取**播放头所在那一段**的打印值;播放头落在段间
-                // 空当时保留最近一次的段值(引擎在段间走 ramp,不会瞬间归零)。
-                const seg = segmentAt(c.segs, tS) || lastSegBefore(c.segs, tS);
-                return {
-                    ch: c.ch,
-                    label: c.label,
-                    stereo: c.stereo,
-                    colorIndex: c.colorIndex,
-                    lead: c.lead,
-                    panNow: seg ? seg.pan : 0,
-                    volDb: seg ? seg.volDb : -24,
-                    widthPct: c.stereo ? 82 : 100,
-                    pan: c.grid.pan,
-                    activity: c.grid.activity,
-                };
-            }),
-        };
-    }
 
-    function lastSegBefore(segs, tS) {
-        let best = null;
-        for (const s of segs || []) {
-            if (s.t1S <= tS && (!best || s.t1S > best.t1S)) best = s;
+        if (attach !== "ok") {
+            // attach 不上时段里读不到任何东西 —— 窗口/掩码/车道一律为空,
+            // 而**事件照发**:「没有事件」在 UI 侧分不清是离线还是桥断了。
+            return {
+                ...base,
+                windowStartS: 0,
+                windowSpanS: 0,
+                playheadS: null,
+                playheadFlags: 0,
+                loopStartS: null,
+                loopEndS: null,
+                onlineMask: 0,
+                coveredMask: 0,
+                stereoMask: 0,
+                laneRevision: state.laneRevision,
+            };
         }
-        return best;
+
+        // ---- 样本 → 秒:段里是样本,桥换算成秒(契约 §0.2)。这里按样本算一遍再除,
+        // 把换算式真的跑到(`sample_rate === 0` 的除零分支由 windowSpanS>0 保证不进)。
+        const windowStartSamples = 0;
+        const windowSpanSamples = Math.round(g.spanS * SAMPLE_RATE);
+        const playheadSamples = Math.round(tS * SAMPLE_RATE);
+
+        // 本 mock 只演 playing 这一位。`kVizLooping` / `kVizLoopValid` 与两个 loop 端点
+        // 段里有、但**两张图都不消费**(轨迹图不画循环区)—— 造一份没人读的数据只会让
+        // 「对表时以为已经验过」。等哪张图真要用它了再补,那时才有可断言的行为。
+        const flags = state.isPlaying ? VIZ_FLAG_PLAYING : 0;
+
+        const frame = {
+            ...base,
+            windowStartS: windowStartSamples / SAMPLE_RATE,
+            windowSpanS: windowSpanSamples / SAMPLE_RATE,
+            playheadS: playheadSamples / SAMPLE_RATE,
+            playheadFlags: flags,
+            loopStartS: null,
+            loopEndS: null,
+            onlineMask: g.onlineMask,
+            coveredMask: g.coveredMask,
+            stereoMask: g.stereoMask,
+            laneRevision: state.laneRevision,
+        };
+
+        const need =
+            withLanes === undefined
+                ? state.lastSentLaneRevision.get(groupId) !== state.laneRevision
+                : !!withLanes;
+        if (need) {
+            state.lastSentLaneRevision.set(groupId, state.laneRevision);
+            frame.colorIndex = g.colorIndex;
+            frame.coverage = g.coverage;
+            frame.lanes = g.lanes;
+        }
+
+        // ---- **待 T44 补的三条**(vol / width / 轨名)。v1 段里没有它们,
+        // `monitor-no-tracks` 场景就是那个真实形态;其余场景带上,好让分布图这一半
+        // 在 preview 里可验收、可截图、可对着 05 J75 C 把关。
+        if (state.withTracks) {
+            frame.tracks = g.trackMeta.map(({ ch, cfg, segs }) => {
+                const seg = segmentAt(segs, tS);
+                return {
+                    ch,
+                    label: String(cfg.label || ""),
+                    volDb: seg ? seg.volDb : -24,
+                    widthPct: cfg.source_channels === 2 ? 82 : 100,
+                    lead: !!cfg.lead_lock,
+                    panNow: seg ? seg.pan : 0,
+                };
+            });
+        }
+        return frame;
     }
 
     const backend = {
@@ -319,14 +486,14 @@ function createMonitorBackend(parsed) {
         async requestInitialState() {
             ready = true;
             const snap = {
-                abi: VIZ_ABI,
+                abi: state.abi,
                 version: "0.1.0",
                 groupId: state.observed,
                 groups_online: groupsOnline,
                 ui: { scale: state.scale, language: state.language },
-                // 首帧 viz 随快照一起给 —— 与契约 §0.4「状态类各必发一次」同精神:
-                // 没有它,页面要空等一整个发布周期才出图。
-                viz: vizFrame(state.observed, state.tS),
+                // 首帧 viz 随快照给(**必带车道**)—— 与契约 §0.4「状态类各必发一次」同精神:
+                // 没有它,页面要空等一整个 4Hz 周期才出图。
+                viz: vizFrame(state.observed, state.tS, true),
             };
             for (const fn of onReadyQueue.splice(0)) fn();
             return snap;
@@ -338,8 +505,9 @@ function createMonitorBackend(parsed) {
                 return { ok: false, reason: "badArg" };
             }
             state.observed = g;
-            state.seq += 1;
-            emit("scvb.viz", vizFrame(g, state.tS));
+            state.seq += 2; // 偶数保持偶数(奇数 = 写入中,不该被读方看到)
+            // 换组 = 换段 = 另一份车道,故这一帧**必带**车道三件。
+            emit("scvb.viz", vizFrame(g, state.tS, true));
             return { ok: true };
         },
 
@@ -378,6 +546,15 @@ function createMonitorBackend(parsed) {
         setGroupsOnline(bitmap) {
             groupsOnline = bitmap;
         },
+        /** 测试面:让 Output「上线」(重连场景;driver 也用它)。 */
+        bringOutputUp() {
+            if (state.outputUp) return;
+            state.outputUp = true;
+            state.generation += 1; // 覆盖式重初始化 +1(段被重建)
+            state.laneRevision += 1;
+            state.seq += 2;
+            emit("scvb.viz", ctl.vizFrame(state.observed, state.tS, true));
+        },
     };
 
     return { backend, ctl };
@@ -394,9 +571,9 @@ function makeDriver(ctl) {
     let autoReqId = null;
 
     /**
-     * 30Hz 档专用的帧循环 —— 理由同 state-driver.js:Windows 的定时器分辨率
-     * ~15.6ms 会把 `setInterval(33)` 抬到 ~46ms(实测 21.4Hz),达不到 §2.6 的 30Hz。
-     * 浏览器用 rAF + 时间累加器;node 无 rAF 时回落 setInterval。
+     * 30Hz 档专用的帧循环 —— 理由同 state-driver.js:Windows 的定时器分辨率 ~15.6ms 会把
+     * `setInterval(33)` 抬到 ~46ms(实测 21.4Hz),达不到 §2.6 的 30Hz。浏览器用
+     * rAF + 时间累加器;node 无 rAF 时回落 setInterval。
      */
     function startFrameLoop(periodMs, fn) {
         if (typeof requestAnimationFrame === "function") {
@@ -429,34 +606,43 @@ function makeDriver(ctl) {
 
             ctl.onReady(() => {
                 ctl.emit("scvb.groups", ctl.groupsPayload());
-                ctl.emit(
-                    "scvb.viz",
-                    ctl.vizFrame(ctl.state.observed, ctl.state.tS),
-                );
             });
 
-            // 30Hz:播放头(§2.6 载荷原样)
+            // 30Hz:播放头(§2.6 载荷原样,与 Output 侧同形)
             startFrameLoop(PLAYHEAD_PERIOD_MS, () => {
                 const s = ctl.state;
                 if (s.isPlaying) {
                     s.tS += PLAYHEAD_PERIOD_MS / 1000;
-                    if (s.tS >= ctl.world.durationS)
-                        s.tS -= ctl.world.durationS;
+                    if (s.tS >= DEMO_DURATION_S) s.tS -= DEMO_DURATION_S;
                 }
-                ctl.emit(
-                    "scvb.playhead",
-                    makePlayhead(s.tS, { isPlaying: s.isPlaying }),
-                );
+                ctl.emit("scvb.playhead", {
+                    timeS: Math.round(s.tS * 1000) / 1000,
+                    isPlaying: s.isPlaying,
+                    inRange: true,
+                });
             });
 
-            // 4Hz:viz 低频快照(J75 C)。`monitor-stalled` 场景下 seq 不前进,
-            // 消费侧据此在 3 秒后挂琥珀横幅 —— 事件照发,冻住的是序号。
+            // 4Hz:viz 帧头(T44「帧头标量 250ms」)。
+            // `monitor-stalled` 下 publishMs 冻住 —— 事件照发,停摆的是时刻。
             timers.push(
                 setInterval(() => {
                     const s = ctl.state;
-                    if (!s.frozen) s.seq += 1;
+                    if (!s.frozen) {
+                        s.publishMs += VIZ_FRAME_PERIOD_MS;
+                        s.seq += 2;
+                    }
+                    // 车道兜底重算(T44 四触发之一:距上次 ≥1s)
+                    if (
+                        !s.frozen &&
+                        s.publishMs - s.lastLaneRecalcMs >= LANE_RECALC_MS
+                    ) {
+                        s.lastLaneRecalcMs = s.publishMs;
+                        // 本 mock 的段表是静态的,内容没变 ⇒ **lane_revision 不 +1**。
+                        // T44 的语义是「只在重算车道时 +1」,而重算出同样的内容也不该
+                        // 让读方白重解析一次 15×1024 —— 这条正是稳态省流的来源。
+                    }
                     ctl.emit("scvb.viz", ctl.vizFrame(s.observed, s.tS));
-                }, VIZ_PERIOD_MS),
+                }, VIZ_FRAME_PERIOD_MS),
             );
 
             // 1Hz:组在线位图
@@ -465,6 +651,11 @@ function makeDriver(ctl) {
                     ctl.emit("scvb.groups", ctl.groupsPayload());
                 }, GROUPS_PERIOD_MS),
             );
+
+            // 重连场景:3 秒后 Output 上线(段被创建,generation +1)
+            if (!ctl.state.outputUp) {
+                timers.push(setTimeout(() => ctl.bringOutputUp(), 3000));
+            }
 
             // 兜底代调 requestInitialState()(与 state-driver 同款:页面若没调,
             // 契约门控会让事件流永不开始,预览页静默停在空态)
@@ -512,10 +703,11 @@ export function createPreviewSession(opts = {}) {
     if (opts.scenario) {
         if (MONITOR_SCENARIOS.includes(opts.scenario)) {
             parsed.scenario = opts.scenario;
-        } else
+        } else {
             warnings.push(
                 `场景 ${opts.scenario} 不存在,已按 ${parsed.scenario}`,
             );
+        }
     }
     if (Number.isInteger(opts.group)) parsed.group = opts.group;
 

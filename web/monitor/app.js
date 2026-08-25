@@ -35,14 +35,18 @@ import {
 } from "../shared/trajectory-chart.js";
 import { MONITOR_DESIGN } from "./monitor-box.js";
 import { createMonitorBridge } from "./monitor-bridge.js";
+import { VIZ_ABI, VIZ_STALE_MS } from "./viz-contract.js";
 import {
     CHANNEL_COUNT,
     GROUP_LETTERS,
     groupOnline,
+    mergeVizFrame,
     vizAccepts,
     vizDistRows,
     vizDurationS,
+    vizIsEmptyState,
     vizLegendRows,
+    vizPlayheadEvent,
     vizSeries,
 } from "./viz.js";
 
@@ -66,26 +70,18 @@ try {
     }
 }
 
-/**
- * viz 停更多久算「停更」(ms)。
- * 判据取 `seq` 不再前进 —— 段是低频发布,单看「有没有事件」会把正常的发布间隔
- * 误判成停更;而 Output 一旦关掉,发布器整个没了,seq 自然冻住。
- * 3 秒 ≈ 低频档(4Hz)的十几拍,不会被一次调度抖动打红。
- */
-const VIZ_STALE_MS = 3000;
-
 // ------------------------------------------------------------- 事件仓(单向渲染源)
 const store = {
     ready: false,
-    viz: null, // 最近一帧 scvb.viz 载荷
+    // 最近一帧 **合并后**的 viz(帧头 + 沿用/新收的车道三件,见 mergeVizFrame)
+    viz: null,
     accepts: { ok: false, reason: "shape", abi: 0 }, // vizAccepts(viz) 的结果
     groups: 0, // scvb.groups 位图(事件缺失 = 0 ⇒ 绿点全灭,零报错)
-    playhead: null, // scvb.playhead(§2.6 原样)
     observed: 1, // 当前观察的组(1..8);本地乐观值,由 viz.groupId 回推校正
     scale: 1,
     version: "",
     stalled: false,
-    lastSeq: null,
+    lastPublishMs: null, // 写方停摆判据(VizFrame.publish_ms;见 VIZ_STALE_MS 注)
     series: [], // vizSeries 的缓存(轨迹图每次重绘都读它,不能每帧重算)
 };
 
@@ -194,7 +190,7 @@ function observeGroup(g) {
     store.viz = null;
     store.accepts = { ok: false, reason: "shape", abi: 0 };
     store.series = [];
-    store.lastSeq = null;
+    store.lastPublishMs = null;
     store.stalled = false;
     armStaleTimer();
     call("setObservedGroup", g);
@@ -396,12 +392,15 @@ function applyScale(f) {
     if (traj) traj.invalidate();
 }
 
-// ------------------------------------------------------------- 停更判定
+// ------------------------------------------------------------- 停摆判定
 let staleTimer = 0;
+/** 是否收到过 30Hz 的 `scvb.playhead`(收到之后就不再用 4Hz 帧头里的播放头种子)。 */
+let playheadSeen = false;
+
 function armStaleTimer() {
     clearTimeout(staleTimer);
     staleTimer = setTimeout(() => {
-        // 只有「本该有数据」时才算停更:组不在线走的是空态,不是停更。
+        // 只有「本该有数据」时才算停摆:组不在线走的是空态,不是停摆。
         if (!store.accepts.ok) return;
         store.stalled = true;
         render();
@@ -425,18 +424,34 @@ function render() {
 
     // 两张图与空态的总闸(J75 C「组不在线显示空态」)
     card.setAttribute("data-online", online ? "1" : "0");
-    fill($("monitor-empty-text"), "monitor.offline", {
-        X: GROUP_LETTERS[store.observed - 1] || "A",
-    });
+    // 拒读 = abi 或几何自检不符 —— T44 的 `attachReadOnly()` 把几何漂移也按
+    // `kAbiMismatch` 处理(同 abi 下理论不该发生,按拒连而非半兼容),UI 侧照同一口径。
+    const refused = a.reason === "abi" || a.reason === "geometry";
 
-    // 横幅:abi 拒读(红)/ 停更(琥珀)。两者都只在「本该有数据」时才有意义。
-    const abiBad = a.reason === "abi";
+    // 空态面板三态(判据只此一处,理由见 index.html 那块的注释):
+    //   • `failed` ⇒ 标题「Output 未运行」+ 正文「组 {X} …」;
+    //   • `window`/`shape`/首帧未到 ⇒ 收起标题,正文换成「尚无分段结果…」;
+    //   • 拒连 ⇒ 标题与正文都收起 —— Output 明明在跑,挂「Output 未运行」是错的,
+    //     而「尚无分段结果」也不对(不是没有分段,是我们拒绝去读)。话全由红横幅说。
+    const offline = a.reason === "failed";
+    const titleEl = $("monitor-empty-title");
+    if (titleEl) titleEl.hidden = !offline;
+    const emptyEl = $("monitor-empty-text");
+    if (emptyEl) {
+        emptyEl.hidden = refused;
+        const key = offline ? "monitor.offline" : "chart.trajEmpty";
+        if (emptyEl.getAttribute("data-t") !== key) {
+            emptyEl.setAttribute("data-t", key);
+        }
+        fill(emptyEl, key, { X: GROUP_LETTERS[store.observed - 1] || "A" });
+    }
+
     const abiBanner = $("monitor-banner-abi");
-    if (abiBanner) abiBanner.hidden = !abiBad;
-    if (abiBad) {
+    if (abiBanner) abiBanner.hidden = !refused;
+    if (refused) {
         fill($("monitor-banner-abi-text"), "monitor.abiMismatch", {
-            a: 1,
-            b: a.abi,
+            a: VIZ_ABI,
+            b: a.reason === "geometry" ? VIZ_ABI : a.abi,
         });
     }
     const stalledBanner = $("monitor-banner-stalled");
@@ -506,7 +521,7 @@ if (bridge) {
     // **不排整页 render** —— 竖线与跟随滚动都在插值层里,整页投影与它无关
     // (与 Tab1/Tab3 的同款分工;30Hz 触发整页渲染是纯烧 CPU)。
     bridge.on("scvb.playhead", (p) => {
-        store.playhead = p;
+        playheadSeen = true;
         if (traj) traj.onPlayhead(p);
     });
 }
@@ -521,25 +536,40 @@ if (bridge) {
  *      而这正是切组最容易被漏测的地方。groupId 与请求值不符即整帧忽略;
  *   ③ 折线重算 —— 只在这里算一次(render 是每帧跑的,不能在里面算 15 轨折线)。
  */
-function onViz(viz) {
-    const a = vizAccepts(viz);
+function onViz(raw) {
+    // ---- ② 组号回显校正(**必须排在合并之前**):在途帧带的是上一组的 groupId,
+    // 让它进 mergeVizFrame 会把上一组的车道存成缓存,下一帧再沿用 —— 那就把
+    // 「切过去了但画的是上一组」从一拍变成一直。
     if (
-        a.ok &&
-        Number.isInteger(viz.groupId) &&
-        viz.groupId !== store.observed
+        raw &&
+        Number.isInteger(raw.groupId) &&
+        raw.groupId !== store.observed
     ) {
-        return; // 上一组的在途帧,丢掉
+        return;
     }
+
+    // ---- ③ 车道三件按需重发:稳态帧不带车道,与缓存拼成完整的一帧(判据见 mergeVizFrame)
+    const viz = mergeVizFrame(store.viz, raw);
+    const a = vizAccepts(viz);
     store.viz = a.ok ? viz : null;
     store.accepts = a;
     store.series = a.ok ? vizSeries(viz) : [];
 
-    // 停更判定看 seq(低频发布下「有没有事件」不是判据,见 VIZ_STALE_MS 注)
-    const seq = viz && Number.isFinite(viz.seq) ? viz.seq : null;
-    if (seq !== store.lastSeq) {
-        store.lastSeq = seq;
+    // ---- ④ 停摆判定看 `publish_ms`(段内注释:「读方据此判断写方是否停摆」)。
+    // 低频发布下「有没有收到事件」不是判据 —— 4Hz 的正常间隔会被误判成停摆。
+    const pub = raw && Number.isFinite(raw.publishMs) ? raw.publishMs : null;
+    if (pub !== store.lastPublishMs) {
+        store.lastPublishMs = pub;
         store.stalled = false;
         armStaleTimer();
+    }
+
+    // ---- ⑤ 首帧的播放头种子。30Hz 的 `scvb.playhead` 要等下一拍才到,而快照自带的
+    // viz 帧里就有 `playhead_samples` —— 用它先把竖线摆上,首帧出图时位置就是对的。
+    // 只在还没收到过 30Hz 事件时做:之后那一路更准(插值),不该被 4Hz 的帧头覆盖。
+    if (traj && a.ok && !playheadSeen) {
+        const ev = vizPlayheadEvent(viz);
+        if (ev) traj.onPlayhead(ev);
     }
 
     if (traj) traj.invalidate(); // 数据面变了 ⇒ 请求一次静态层重绘(幂等)
@@ -592,10 +622,16 @@ window.__SCVB_MONITOR__ = {
     snapshot: () => ({
         online: store.accepts.ok,
         reason: store.accepts.reason,
+        emptyState: vizIsEmptyState(store.accepts.reason),
         observed: store.observed,
         groups: store.groups,
         stalled: store.stalled,
+        laneRevision: store.viz ? store.viz.laneRevision : null,
+        generation: store.viz ? store.viz.generation : null,
+        durationS: vizDurationS(store.viz),
         seriesTracks: store.series.map((s) => s.ch),
+        // 每轨的折线段数 —— 断线是本页最核心的语义,截图之外还要有个数字面
+        seriesRuns: store.series.map((s) => s.runs.length),
         distTracks: vizDistRows(store.viz).map((r) => r.ch),
         legendTracks: vizLegendRows(store.viz).map((r) => r.ch),
     }),

@@ -300,9 +300,33 @@
             </li>
             <li>
                 <a href="./monitor.html?scenario=monitor-stalled"
-                    >Monitor · 数据停更</a
+                    >Monitor · 数据停摆</a
                 >
-                —— viz 的 <code>seq</code> 冻住 3 秒 ⇒ 琥珀横幅「数据已停更」
+                —— viz 的 <code>publish_ms</code> 冻住 3 秒 ⇒
+                琥珀横幅「数据已停更」
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-reconnect"
+                    >Monitor · 重连</a
+                >
+                —— 开箱 attach 失败(Output 还没起),3 秒后段被创建 ⇒
+                <strong>自动出图,不需要点任何东西</strong>
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-abi"
+                    >Monitor · 版本不匹配</a
+                >
+                —— 段 abi 高于本机 ⇒ 红横幅 +
+                停止读取。与「空态」是<strong>两条不同的降级路径</strong>(J40:拒连,绝不半兼容)
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-no-tracks"
+                    >Monitor · 缺 vol/width/轨名(T44 v1 的真实形态)</a
+                >
+                —— viz 段里没有分布图要的三条字段 ⇒
+                <strong>分布图画空、轨迹图照常</strong>;补齐前的既定降级态,见
+                <code>web/monitor/viz-contract.js</code> 的
+                <code>VIZ_PENDING_TRACK_FIELDS</code>
             </li>
             <li>
                 <a href="./monitor.html?scenario=monitor-online&amp;play=0"

@@ -901,9 +901,19 @@
                     role="list"
                 ></div>
 
-                <!-- 组不在线的空态(两张图整体退出布局,见样式注) -->
+                <!-- 不出图时的空态面板(两张图整体退出布局,见样式注)。
+                     三种不出图的原因,面板长得**不一样**:
+                       • 该组没有 Output(attach=failed)⇒ 标题 +「组 {X} …」正文;
+                       • Output 在场但还没有有效窗口 ⇒ 只留「尚无分段结果…」正文;
+                       • 版本/几何拒连 ⇒ 标题与正文**都收起**,话全由红横幅说 ——
+                         此时 Output 明明在跑,挂一句「Output 未运行」是错的。
+                     由 app.js 按 accepts.reason 切,判据只此一处。 -->
                 <div class="mon-empty" data-gb="monitor-empty">
-                    <p class="mon-empty__title" data-t="state.outputOffline">
+                    <p
+                        class="mon-empty__title"
+                        data-gb="monitor-empty-title"
+                        data-t="state.outputOffline"
+                    >
                         Output 未运行
                     </p>
                     <p
