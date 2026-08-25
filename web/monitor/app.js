@@ -12,7 +12,7 @@
 // 桥面(真源 = src/monitor/MonitorBridgeApi.h):
 //   函数 setObservedGroup(1..8) —— Monitor 唯一的写入口(只读换段,不 claim;
 //   刻意不叫 setGroupId:契约 §1.4 的那个是 Output 的改组,语义完全不同)
-//   事件 scvb.state / scvb.groups / scvb.viz
+//   事件 scvb.state / scvb.groups / scvb.viz / scvb.playhead
 
 const GROUP_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
@@ -32,10 +32,8 @@ function onEvent(name, cb) {
     juce.backend.addEventListener(name, cb);
 }
 
-function fmtSamples(n, sr) {
-    if (!Number.isFinite(n) || n < 0 || !Number.isFinite(sr) || sr <= 0)
-        return "—";
-    const s = n / sr;
+function fmtSeconds(s) {
+    if (!Number.isFinite(s) || s < 0) return "—";
     const m = Math.floor(s / 60);
     return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
 }
@@ -56,24 +54,40 @@ function renderGroups(container, current, onlineMask, setObservedGroup) {
     });
 }
 
-function renderTracks(container, tracks) {
+function renderTracks(container, viz) {
     container.replaceChildren();
-    for (const t of tracks || []) {
+    if (!viz) return;
+    // 每轨数据是**定长 15 的平行数组、下标即轨号**(与段内定长表同形)。
+    // 标量为 null = 无数据 —— 显示为「—」,绝不显示 0(0 是合法 pan / 合法 dB)。
+    const n = Number(viz.trackCount) || 15;
+    for (let t = 0; t < n; t++) {
+        const ch = t + 1;
+        const covered = ((Number(viz.coveredMask) || 0) >>> t) & 1;
+        const lead = ((Number(viz.leadMask) || 0) >>> t) & 1;
+        const enabled = ((Number(viz.onlineMask) || 0) >>> t) & 1;
+
         const row = document.createElement("div");
         row.className = "mon-track";
-        row.dataset.covered = String(Boolean(t.hasSegments));
+        row.dataset.covered = String(Boolean(covered));
+        if (lead) row.dataset.lead = "1";
 
         const dot = document.createElement("span");
         dot.className = "mon-dot";
-        dot.style.background = `rgb(var(--track-color-${t.color || t.ch}))`;
+        const color = (viz.colorIndex && viz.colorIndex[t]) || ch;
+        dot.style.background = `rgb(var(--track-color-${color}))`;
         row.append(dot);
 
-        const pan = Number.isFinite(t.pan) ? t.pan.toFixed(1) : "—";
-        row.append(
-            document.createTextNode(
-                `${String(t.ch).padStart(2, "0")} ${t.enabled ? "" : "(off)"} pan ${pan}`,
-            ),
-        );
+        const label = (viz.trackLabels && viz.trackLabels[t]) || "";
+        const pan = viz.trackPanNow && viz.trackPanNow[t];
+        const vol = viz.trackVolDb && viz.trackVolDb[t];
+        const txt =
+            `${String(ch).padStart(2, "0")}` +
+            `${label ? " " + label : ""}` +
+            `${enabled ? "" : " (off)"}` +
+            `${lead ? " ★" : ""}` +
+            ` pan ${Number.isFinite(pan) ? pan.toFixed(1) : "—"}` +
+            ` vol ${Number.isFinite(vol) ? vol.toFixed(1) : "—"}`;
+        row.append(document.createTextNode(txt));
         container.append(row);
     }
 }
@@ -107,15 +121,34 @@ async function main() {
         renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
     });
 
+    // 车道只在 laneRevision 变化时随事件带 —— 稳态帧只有标量。缓存住,别拿旧车道配新帧头。
+    let lanes = null;
+    let lanesRevision = -1;
+    let lanesGroup = -1;
+
     onEvent("scvb.viz", (p) => {
-        const sr = Number(p.sampleRate) || 0;
+        if (Array.isArray(p.lanes)) {
+            lanes = p.lanes;
+            lanesRevision = Number(p.laneRevision);
+            lanesGroup = groupId;
+        } else if (
+            Number(p.laneRevision) !== lanesRevision ||
+            lanesGroup !== groupId
+        ) {
+            // revision 或组对不上 ⇒ **宁可当作没有车道**,也不拿旧车道配新帧头
+            // (那是一张「时间轴新、线旧」而看起来完全正常的图)。
+            lanes = null;
+        }
+
+        // 时间量已经是秒(契约 §0.2 第 3 条:UI 永不见样本);playheadS 为 null = 无时间线。
         winLine.textContent = p.online
-            ? `window: 0 – ${fmtSamples(p.windowSpan, sr)} (${p.columns} cols, v${p.versionActive})`
+            ? `window: 0 – ${fmtSeconds(p.windowSpanS)} (${p.columnCount} cols, v${p.versionActive}, rev ${p.laneRevision}${lanes ? "" : ", no lanes"})`
             : "window: —";
+        const playing = (Number(p.playheadFlags) || 0) & 1;
         headLine.textContent = p.online
-            ? `playhead: ${fmtSamples(p.playhead, sr)}${p.playing ? " ▶" : ""}${p.looping ? " ↻" : ""}`
+            ? `playhead: ${p.playheadS == null ? "—" : fmtSeconds(p.playheadS)}${playing ? " ▶" : ""}`
             : "playhead: —";
-        renderTracks(tracksBox, p.tracks);
+        renderTracks(tracksBox, p.online ? p : null);
     });
 
     renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
@@ -125,9 +158,19 @@ async function main() {
     if (requestInitialState) {
         const snap = await requestInitialState();
         if (snap && Number.isFinite(snap.groupId)) groupId = snap.groupId;
-        if (snap && Number.isFinite(snap.groupsOnline))
-            onlineMask = snap.groupsOnline;
-        if (snap && snap.viz) vizLine.textContent = `viz: ${snap.viz}`;
+        if (snap && Number.isFinite(snap.groups_online))
+            onlineMask = snap.groups_online;
+        if (snap && snap.ui && snap.ui.language)
+            document.documentElement.lang = snap.ui.language;
+        if (snap && snap.viz) {
+            // 首帧 viz 必带车道(桥保证),直接吃下去当基线。
+            if (Array.isArray(snap.viz.lanes)) {
+                lanes = snap.viz.lanes;
+                lanesRevision = Number(snap.viz.laneRevision);
+                lanesGroup = groupId;
+            }
+            renderTracks(tracksBox, snap.viz.online ? snap.viz : null);
+        }
         renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
     }
 }
