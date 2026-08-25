@@ -58,7 +58,11 @@ class VizPublisher
 {
 public:
     static constexpr scvb::u64 kPublishIntervalMs = 250; // 4 Hz 帧头
-    static constexpr scvb::u64 kLaneRefreshMaxMs = 1000; // 车道最长 1s 强制重算
+    // 车道重算的**兜底**间隔。车道只依赖 CRVS 修订 / 活动版本 / 窗口跨度 / 轨名(metaRevision),
+    // 四者全部显式跟踪 —— 兜底只为 metaRevision 的 FNV-1a 64 位哈希碰撞留一条后路,
+    // 而那个概率可以忽略。所以放到 30s:重算一次要 15360 次曲线求值,1s 兜底等于把它变成常态开销
+    // (I4);真出碰撞最多迟 30s 生效一次轨名,不影响任何数据正确性。
+    static constexpr scvb::u64 kLaneRefreshMaxMs = 30000;
     static constexpr double kMinWindowSec = 60.0; // 空工程也给一条 60s 的轴
     static constexpr double kWindowQuantumSec = 30.0; // 跨度量化步长
     static constexpr double kMaxWindowSec = 24.0 * 3600.0; // 跨度上限(防哨兵/脏数据炸轴)
@@ -66,10 +70,16 @@ public:
     VizPublisher(scvb::ISegmentBackend& backend, scvb::u32 group);
 
     scvb::InitResult open() { return plane_.open(); }
+    // 只换段指向,不建段(建/释放由调用方按 claim 态裁决 —— [J66] 同组只有 kActive 那个 Output 写)。
+    void setGroup(scvb::u32 group);
     scvb::InitResult changeGroup(scvb::u32 group);
     void release();
     bool isOpen() const { return plane_.isOpen(); }
     const scvb::VizPlane& plane() const { return plane_; }
+
+    // 本拍是否到发布闸门。调用方据此**跳过输入采集**(采 15 个轨名 = 15 次堆分配),
+    // 而不是采完再被 tick() 丢掉 —— 定时器 25Hz、发布 4Hz,差六倍。
+    bool due(scvb::u64 nowMs) const { return !everPublished_ || nowMs - lastPublishMs_ >= kPublishIntervalMs; }
 
     // [M] 每 tick 调用(25Hz 亦可,内部按 250ms 闸门分频)。返回 true = 本次真的发布了一帧。
     bool tick(scvb::u64 nowMs, const VizPublishInput& in);

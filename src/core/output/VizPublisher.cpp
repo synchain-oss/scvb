@@ -31,6 +31,16 @@ VizPublisher::VizPublisher(scvb::ISegmentBackend& backend, scvb::u32 group)
 {
 }
 
+void VizPublisher::setGroup(scvb::u32 group)
+{
+    // 只换指向 + 丢弃增量基线;建段与否由调用方按 claim 态决定(见 OutputProcessor::syncVizSegment)。
+    plane_.release();
+    plane_.setGroupWriter(group);
+    everBuiltLanes_ = false;
+    everPublished_ = false;
+    lastSpanSamples_ = 0;
+}
+
 scvb::InitResult VizPublisher::changeGroup(scvb::u32 group)
 {
     // 换组 = 换段:上一组的车道内容对新组无意义,强制下一帧全量重发。
@@ -204,7 +214,22 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
     }
     s.playheadFlags = flags;
 
+    if (needLanes)
+    {
+        rebuildLanes(in, span);
+        s.laneRevision += 1;
+        lastLaneMs_ = nowMs;
+        lastCrvsRevision_ = in.crvsRevision;
+        lastMetaRevision_ = in.metaRevision;
+        lastVersionActive_ = in.versionActive;
+        lastSpanSamples_ = span;
+        everBuiltLanes_ = true;
+        ++laneRebuildCount_;
+    }
+
     // 每轨当前值(分布图数据面)。**每帧都刷**,不受车道分频影响 —— 它们是「此刻」。
+    // 位置在 rebuildLanes **之后**:clearLanes() 现在已不碰这三个值(名副其实了),
+    // 但顺序上仍排后面当第二道保险 —— R2 就是「先算后清」栽的。
     // panNow/volDb 走播放头**精确时刻**求值(不是车道在播放头所在列的采样:那是列中心点采样,
     // 列宽 = span/1024,分布图要的是此刻);widthPct 直接来自参数。
     {
@@ -227,27 +252,14 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
             if (hasSegments && curve != nullptr)
             {
                 s.panNow[t] = scvb::vizPackPan(curve->panAt(headSec));
-                s.volDb[t] = scvb::vizPackFixed(curve->volAt(headSec));
+                s.volDb[t] = scvb::vizPackFixed(curve->volAt(headSec), scvb::kVizVolDbMin, scvb::kVizVolDbMax);
             }
             const float w = in.widthPct[t];
             if (w == w) // 非 NaN
             {
-                s.widthPct[t] = scvb::vizPackFixed(static_cast<double>(w));
+                s.widthPct[t] = scvb::vizPackFixed(static_cast<double>(w), scvb::kVizWidthMin, scvb::kVizWidthMax);
             }
         }
-    }
-
-    if (needLanes)
-    {
-        rebuildLanes(in, span);
-        s.laneRevision += 1;
-        lastLaneMs_ = nowMs;
-        lastCrvsRevision_ = in.crvsRevision;
-        lastMetaRevision_ = in.metaRevision;
-        lastVersionActive_ = in.versionActive;
-        lastSpanSamples_ = span;
-        everBuiltLanes_ = true;
-        ++laneRebuildCount_;
     }
 
     plane_.publish(s, needLanes);

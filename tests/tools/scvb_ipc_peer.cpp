@@ -373,7 +373,7 @@ int runReader(const Args& a)
             {
                 break;
             }
-            ::Sleep(0);
+            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
         }
     }
 
@@ -399,7 +399,8 @@ int runReader(const Args& a)
                 timedOut = true;
                 break;
             }
-            ::Sleep(0); // 让出时间片给写方进程(跨进程比 SwitchToThread 更可靠)
+            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让) //
+                        // 让出时间片给写方进程(跨进程比 SwitchToThread 更可靠)
         }
         if (timedOut)
         {
@@ -545,7 +546,7 @@ int runCtrlReader(const Args& a)
         {
             break;
         }
-        ::Sleep(0);
+        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     while (got)
@@ -612,7 +613,7 @@ int runGlobalInfoReader(const Args& a)
         {
             break;
         }
-        ::Sleep(0);
+        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     std::string csv;
@@ -760,7 +761,7 @@ int runFeatReader(const Args& a)
             {
                 break;
             }
-            ::Sleep(0);
+            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
         }
     }
 
@@ -837,11 +838,11 @@ int runVizWriter(const Args& a)
     snap->laneRevision = 42;
     // 每轨当前值三件套(分布图数据面);轨3 起保持哨兵 = 无数据。
     snap->panNow[0] = vizPackPan(-12.5);
-    snap->volDb[0] = vizPackFixed(-6.25);
-    snap->widthPct[0] = vizPackFixed(80.0);
+    snap->volDb[0] = vizPackFixed(-6.25, kVizVolDbMin, kVizVolDbMax);
+    snap->widthPct[0] = vizPackFixed(80.0, kVizWidthMin, kVizWidthMax);
     snap->panNow[1] = vizPackPan(25.0);
-    snap->volDb[1] = vizPackFixed(0.0);
-    snap->widthPct[1] = vizPackFixed(100.0);
+    snap->volDb[1] = vizPackFixed(0.0, kVizVolDbMin, kVizVolDbMax);
+    snap->widthPct[1] = vizPackFixed(100.0, kVizWidthMin, kVizWidthMax);
     // 轨名:ASCII + 多字节 UTF-8(截断必须落在字符边界)。
     snap->label[0] = "Lead";
     snap->label[1] = "\xE4\xB8\xBB\xE5\x94\xB1"; // 主唱
@@ -960,7 +961,7 @@ int runVizReader(const Args& a)
         {
             break;
         }
-        ::Sleep(0);
+        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     std::string csv;
@@ -980,6 +981,8 @@ int runVizReader(const Args& a)
     csv += "covered_mask " + std::to_string(snap->coveredMask) + "\n";
     csv += "stereo_mask " + std::to_string(snap->stereoMask) + "\n";
     csv += "lead_mask " + std::to_string(snap->leadMask) + "\n";
+    csv += "seq " + std::to_string(snap->seq) + "\n";
+    csv += "generation " + std::to_string(snap->generation) + "\n";
     csv += "lane_revision " + std::to_string(snap->laneRevision) + "\n";
     csv += "color1 " + std::to_string(snap->trackColor[0]) + "\n";
     csv += "color15 " + std::to_string(snap->trackColor[14]) + "\n";

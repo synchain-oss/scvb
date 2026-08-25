@@ -200,6 +200,9 @@ private:
     // [A] 从 playhead 构造 C8 快照并发布(§5.2 / C8)。
     void publishPlayhead(const juce::AudioPlayHead::PositionInfo& pos, bool haveTime, bool playing);
 
+    // [M] 按 claim 态裁决 viz 段的建/释放:唯一写方 = 本组 claim 到 OutputSlot 的那一个
+    // ([J66] 同组内只读观察)。**每拍都做** —— claim 态会在接管/让位/改组时翻转。
+    void syncVizSegment();
     // [M] 组装 viz 发布输入并交给 vizPublisher_(内部 4Hz 分频)。调用方须已持 lifecycleMutex_。
     void publishVizFrame(std::uint64_t nowMs);
 

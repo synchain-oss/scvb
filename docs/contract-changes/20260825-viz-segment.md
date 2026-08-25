@@ -119,8 +119,12 @@ widthPct ∈ [0,100]。哨兵 `−32768` = 无数据。
 - 帧头标量(playhead / 循环区 / 掩码 / 时刻)与 **`VizTrackState` 每轨当前值**:**250 ms(4 Hz)**,
   与既有 4 Hz 心跳闸门同款。当前值不受车道分频影响——它们是「此刻」。
 - 车道 + 位图 + 轨色(15×1024 次曲线求值):**按需重算** —— CRVS 修订变化 / 活动版本切换 /
-  窗口跨度变化 / 轨名或 width 变化(`metaRevision`)/ 距上次重算 ≥ 1 s,五者之一触发。
+  窗口跨度变化 / **轨名**变化(`metaRevision`,FNV-1a 64 位)四者之一触发,外加 **30 s 兜底**。
   稳态下 4 Hz 只写帧头 + 每轨当前值(共 256 字节)。轨名随车道块一起落段。
+
+  兜底是给 `metaRevision` 哈希碰撞留的后路,不是常态开销——一次重算是 15 360 次曲线求值,
+  早期设成 1 s 等于把它变成每秒都做。**width 不进 `metaRevision`**:它走帧头段、每帧都刷,
+  与车道块无关;掺进去会让「width 被自动化」变成每秒 15 360 次求值。
 
 ### 一致性机制
 
@@ -165,12 +169,21 @@ Registry/CtrlPlane/AudioRing 用 `SegmentHandle`(引用计数租约 + 500 ms 宽
 
 ## 读写方约定
 
-| | Output([M]) | Monitor([M]) | 任何音频线程 [A] |
-|---|---|---|---|
-| 建段 | ✅ `open()`(create-or-open,owner) | ❌ 绝不创建 | ❌ |
-| 写 | ✅ 仅 `publish()`,仅 owner 线程 | ❌ no-op | ❌ 零写入 |
-| 读 | (自读不需要) | ✅ `read()` seqlock 一致性读 | ❌ |
-| 生命周期 | `prepareToPlay` 建 / `releaseResources` 释放 / `setGroupId` 换组 | attach 失败即空态,由 [M] 周期重试 | — |
+**唯一写方 = 本组 claim 到 OutputSlot 的那一个 Output**(`OutputClaimState::kActive`)。
+同组第二个 Output 是 `kObserver`([J66]「同组内只读观察」),它**既不建段也不发布** ——
+否则两个写方会同时推同一个 seqlock,读方拿到的帧可以是两次发布的拼接(`seq` 是偶数、内容却撕裂),
+而且**看起来完全正常**。claim 态在接管/让位/改组时会翻转,故这条判定由 Output 的 [M] **每拍**重做:
+成为 `kActive` 即建段,失去 `kActive` 立刻释放。
+
+| | Output([M],**仅 kActive**) | Output([M],kObserver) | Monitor([M]) | 任何音频线程 [A] |
+|---|---|---|---|---|
+| 建段 | ✅ `open()`(create-or-open,owner) | ❌ 绝不创建 | ❌ 绝不创建 | ❌ |
+| 写 | ✅ 仅 `publish()`,仅 owner 线程 | ❌ 不发布 | ❌ no-op | ❌ 零写入 |
+| 读 | (自读不需要) | — | ✅ `read()` seqlock 一致性读 | ❌ |
+| 生命周期 | 按 claim 态每拍裁决建/释放 | 失去 kActive 即释放 | attach 失败即空态,由 [M] 周期重试 | — |
+
+> owner 线程在**首次 `publish()`** 时绑定,不是 `open()` 时 —— JUCE/VST3 不保证 `prepareToPlay`
+> 与 `timerCallback` 同线程,绑错会让此后每次发布都被护栏静默挡掉、段永远全零。
 
 Monitor 掉线、崩溃、或从不存在,对 Output 侧**零影响**(无握手、无引用计数、无等待)。
 反之 Output 不在线时 Monitor `attachReadOnly()` 得 `kFailed`,显示空态,不崩溃、不重试风暴。

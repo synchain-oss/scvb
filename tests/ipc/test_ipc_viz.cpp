@@ -94,6 +94,11 @@ TEST_CASE("VIZ-1 viz 段跨进程只读 attach 与一致性读", "[ipc][viz]")
     REQUIRE(csvLL(m, "covered_mask") == 0x0003);
     REQUIRE(csvLL(m, "stereo_mask") == 0x0002);
     REQUIRE(csvLL(m, "lead_mask") == 0x0004); // 轨3 主唱锁定(分布图柱顶绿帽)
+    // 帧身份:一致性读拿到的 seq 必是**偶数**(奇数 = 写方在临界区,那种帧根本不该被返回);
+    // generation ≥ 1(段已初始化)。注释说「读方可据此去重」,那就得有人验它真的能用。
+    REQUIRE(csvLL(m, "seq") % 2 == 0);
+    REQUIRE(csvLL(m, "seq") > 0);
+    REQUIRE(csvLL(m, "generation") >= 1);
     REQUIRE(csvLL(m, "lane_revision") == 42);
 
     // 轨色索引 = 轨号(v1 恒等映射)。
@@ -102,8 +107,8 @@ TEST_CASE("VIZ-1 viz 段跨进程只读 attach 与一致性读", "[ipc][viz]")
 
     // 每轨当前值三件套(分布图数据面)。
     REQUIRE(csvLL(m, "now_pan1") == scvb::vizPackPan(-12.5));
-    REQUIRE(csvLL(m, "now_vol1") == scvb::vizPackFixed(-6.25));
-    REQUIRE(csvLL(m, "now_width1") == scvb::vizPackFixed(80.0));
+    REQUIRE(csvLL(m, "now_vol1") == scvb::vizPackFixed(-6.25, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    REQUIRE(csvLL(m, "now_width1") == scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
     REQUIRE(csvLL(m, "now_pan3") == static_cast<long long>(scvb::kVizPanNone)); // 无数据轨:哨兵
 
     // 轨名(UTF-8,含多字节 —— 截断必须落在字符边界)。
@@ -222,4 +227,20 @@ TEST_CASE("VIZ-4 真 VizPublisher 发布 → 读侧看到降采样数据与断�
     REQUIRE(csvLL(m, "cov_t3_0") == 0);
     // 发布器至少发过一帧车道。
     REQUIRE(csvLL(m, "lane_revision") >= 1);
+
+    // [N2] **每轨当前值走真发布器的覆盖** —— 这几条是 R2 两轮全绿没被拦住的原因:
+    // 之前只有 VIZ-1(手搓快照)断言当前值,而 R2 的 bug 在发布器的语句顺序里。
+    // viz-reader 卡在 laneRevision != 0 才收帧,必然读到 needLanes==true 的那一帧;
+    // R2 未修时这三条会直接读到哨兵 −32768。
+    REQUIRE(csvLL(m, "now_pan1") == scvb::vizPackPan(-50.0)); // 播放头 0s,轨1 段内 pan=-50
+    REQUIRE(csvLL(m, "now_vol1") == scvb::vizPackFixed(0.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    REQUIRE(csvLL(m, "now_width1") == scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
+    REQUIRE(csvLL(m, "now_pan1") != static_cast<long long>(scvb::kVizPanNone));
+    // 无分段轨:当前值仍是哨兵(不是 0 —— 0 是合法 pan)。
+    REQUIRE(csvLL(m, "now_pan3") == static_cast<long long>(scvb::kVizPanNone));
+    // lead_mask 经**发布器**落段(VIZ-1 验的是手搓快照那条路)。
+    REQUIRE(csvLL(m, "lead_mask") == 0x0001);
+    // 轨名同理走发布器。
+    REQUIRE(scvb::ipctest::peer::csvStr(m, "label1") == "Lead");
+    REQUIRE(csvLL(m, "seq") % 2 == 0);
 }

@@ -67,13 +67,21 @@ TEST_CASE("viz 段布局与定点口径", "[viz][layout]")
     REQUIRE_FALSE(scvb::vizPanIsNone(-scvb::kVizPanMax));
     REQUIRE(scvb::vizUnpackPan(2500) == 25.0);
 
-    // 通用定点(volDb / widthPct):夹到 int16 且**绝不撞哨兵**(下界留一格给 -32768)。
-    REQUIRE(scvb::vizPackFixed(-6.25) == -625);
-    REQUIRE(scvb::vizPackFixed(0.0) == 0);
-    REQUIRE(scvb::vizPackFixed(100.0) == 10000);
-    REQUIRE(scvb::vizPackFixed(-1e9) == -32767);
-    REQUIRE(scvb::vizPackFixed(-1e9) != scvb::kVizPanNone);
-    REQUIRE(scvb::vizPackFixed(1e9) == 32767);
+    // 通用定点:**先按工程量纲夹取再定点**,且绝不撞哨兵。
+    const double vLo = scvb::kVizVolDbMin, vHi = scvb::kVizVolDbMax;
+    const double wLo = scvb::kVizWidthMin, wHi = scvb::kVizWidthMax;
+    REQUIRE(scvb::vizPackFixed(-6.25, vLo, vHi) == -625);
+    REQUIRE(scvb::vizPackFixed(0.0, vLo, vHi) == 0);
+    REQUIRE(scvb::vizPackFixed(100.0, wLo, wHi) == 10000);
+    // 越界按**声明的域**夹,不是按 int16 上限 —— 这正是那四个常量存在的意义。
+    REQUIRE(scvb::vizPackFixed(-1e9, vLo, vHi) == -2400); // −24 dB
+    REQUIRE(scvb::vizPackFixed(1e9, vLo, vHi) == 1200); // +12 dB
+    REQUIRE(scvb::vizPackFixed(-1e9, wLo, wHi) == 0); // width 下界
+    REQUIRE(scvb::vizPackFixed(1e9, wLo, wHi) == 10000); // width 上界
+    REQUIRE(scvb::vizPackFixed(-1e9, vLo, vHi) != scvb::kVizPanNone);
+    // 极宽的域仍夹到 int16 且不撞哨兵(下界留一格给 -32768)。
+    REQUIRE(scvb::vizPackFixed(-1e9, -1e9, 1e9) == -32767);
+    REQUIRE(scvb::vizPackFixed(1e9, -1e9, 1e9) == 32767);
     REQUIRE(scvb::vizUnpackFixed(-625) == -6.25);
 
     // UTF-8 安全截断:绝不切出半个多字节序列。
@@ -154,8 +162,8 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     in->setCovered(0, 0);
     in->setCovered(0, scvb::kVizColumns - 1);
     in->panNow[0] = scvb::vizPackPan(-12.5);
-    in->volDb[0] = scvb::vizPackFixed(-6.25);
-    in->widthPct[0] = scvb::vizPackFixed(80.0);
+    in->volDb[0] = scvb::vizPackFixed(-6.25, scvb::kVizVolDbMin, scvb::kVizVolDbMax);
+    in->widthPct[0] = scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
     in->label[0] = "Lead";
     in->label[1] = "主唱"; // 主唱(多字节,验往返不乱码)
 
@@ -181,8 +189,8 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     REQUIRE(out->covered(0, scvb::kVizColumns - 1));
     REQUIRE_FALSE(out->covered(0, 1));
     REQUIRE(out->panNow[0] == scvb::vizPackPan(-12.5));
-    REQUIRE(out->volDb[0] == scvb::vizPackFixed(-6.25));
-    REQUIRE(out->widthPct[0] == scvb::vizPackFixed(80.0));
+    REQUIRE(out->volDb[0] == scvb::vizPackFixed(-6.25, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    REQUIRE(out->widthPct[0] == scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
     REQUIRE(out->label[0] == "Lead");
     REQUIRE(out->label[1] == "主唱");
     REQUIRE(out->panNow[2] == scvb::kVizPanNone); // 未填 = 哨兵
@@ -225,16 +233,40 @@ TEST_CASE("viz 段:只读 attach 方 publish 不写任何字节", "[viz][ipc][re
     REQUIRE(after->laneRevision == before->laneRevision);
 }
 
+TEST_CASE("viz 段:owner 线程绑在首次 publish,不是 open()", "[viz][ipc][rt]")
+{
+    // [I2] JUCE/VST3 **不保证** prepareToPlay(→ open())与 timerCallback(→ publish())
+    // 在同一条线程上。护栏若绑在 open() 的线程,一旦两者不同,此后每一次 publish 都被挡掉,
+    // viz 段静默保持全零 —— 没有任何报错。所以要绑在首次 publish。
+    scvb::SegmentBackendInProcess backend;
+    scvb::VizPlane w2(backend, 12);
+    std::thread opener([&] { REQUIRE(w2.open() == scvb::InitResult::kOk); }); // 在**别的**线程 open
+    opener.join();
+
+    auto f = std::make_unique<scvb::VizSnapshot>();
+    f->laneRevision = 9;
+    f->playheadSamples = 4242;
+    w2.publish(*f, true); // 本线程首发 → 本线程成为 owner
+    REQUIRE(w2.foreignThreadWrites() == 0);
+
+    scvb::VizPlane r2(backend, 12);
+    REQUIRE(r2.attachReadOnly() == scvb::InitResult::kOk);
+    auto got = std::make_unique<scvb::VizSnapshot>();
+    REQUIRE(r2.read(*got));
+    REQUIRE(got->laneRevision == 9); // 真的写进去了,而不是被护栏静默挡掉
+    REQUIRE(got->playheadSamples == 4242);
+}
+
 TEST_CASE("viz 段:非 owner 线程 publish 零写入(RT 铁律护栏)", "[viz][ipc][rt]")
 {
     scvb::SegmentBackendInProcess backend;
-    scvb::VizPlane writer(backend, 5); // open() 在本线程 → 本线程即 owner([M])
+    scvb::VizPlane writer(backend, 5);
     REQUIRE(writer.open() == scvb::InitResult::kOk);
 
     auto in = std::make_unique<scvb::VizSnapshot>();
     in->playheadSamples = 7;
     in->laneRevision = 1;
-    writer.publish(*in, true);
+    writer.publish(*in, true); // 首发在本线程 → 本线程成为 owner
 
     scvb::VizPlane reader(backend, 5);
     REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
@@ -254,6 +286,33 @@ TEST_CASE("viz 段:非 owner 线程 publish 零写入(RT 铁律护栏)", "[viz][
     REQUIRE(reader.read(*after));
     REQUIRE(after->playheadSamples == before->playheadSamples);
     REQUIRE(after->laneRevision == before->laneRevision);
+}
+
+TEST_CASE("viz 段:read() 返回 false 时 out 一个字节不改(沿用上帧真的做得到)", "[viz][ipc][read]")
+{
+    // [I3] 早期版本直接读进 out,撕裂时把调用方的上一帧覆盖成半新半旧的拼接,
+    // 而 API 却承诺「沿用上帧」—— 调用方根本没法沿用。
+    scvb::SegmentBackendInProcess backend;
+    scvb::VizPlane writer(backend, 13);
+    REQUIRE(writer.open() == scvb::InitResult::kOk);
+    auto f = std::make_unique<scvb::VizSnapshot>();
+    f->laneRevision = 5;
+    f->playheadSamples = 111;
+    f->label[0] = "Keep";
+    writer.publish(*f, true);
+
+    scvb::VizPlane reader(backend, 13);
+    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+    auto held = std::make_unique<scvb::VizSnapshot>();
+    REQUIRE(reader.read(*held));
+    REQUIRE(held->laneRevision == 5);
+
+    // 段未打开的读方:必然返回 false —— 此时 out 必须一个字节都没动。
+    scvb::VizPlane closed(backend, 14);
+    REQUIRE_FALSE(closed.read(*held));
+    REQUIRE(held->laneRevision == 5); // 上一帧原封不动
+    REQUIRE(held->playheadSamples == 111);
+    REQUIRE(held->label[0] == "Keep");
 }
 
 TEST_CASE("VizPublisher:发布 → 读侧看到降采样数据与断线", "[viz][publisher]")
@@ -361,9 +420,24 @@ TEST_CASE("VizPublisher:4Hz 分频与车道按需重算", "[viz][publisher][cade
     REQUIRE(pub.tick(500, in));
     REQUIRE(pub.laneRebuildCount() == 2);
 
-    // 距上次重算 ≥1s → 兜底重算。
+    // 兜底间隔内(1.5s < kLaneRefreshMaxMs)**不该**重算 —— 车道的四个依赖(CRVS 修订 /
+    // 活动版本 / 窗口跨度 / metaRevision)都没变。兜底只为哈希碰撞留后路,不是常态开销。
     REQUIRE(pub.tick(1500, in));
+    REQUIRE(pub.laneRebuildCount() == 2);
+
+    // 越过兜底间隔 → 重算一次(用常量而不是字面量,改了阈值这条不会悄悄失效)。
+    const auto past = 1500 + scvb::output::VizPublisher::kLaneRefreshMaxMs;
+    REQUIRE(pub.tick(past, in));
     REQUIRE(pub.laneRebuildCount() == 3);
+
+    // metaRevision(轨名)变化 → 立刻重算,不必等兜底。
+    in.metaRevision = 77;
+    REQUIRE(pub.tick(past + 250, in));
+    REQUIRE(pub.laneRebuildCount() == 4);
+
+    // due():发布闸门的对外查询与实际发布行为一致(调用方据此跳过输入采集)。
+    REQUIRE_FALSE(pub.due(past + 300));
+    REQUIRE(pub.due(past + 250 + scvb::output::VizPublisher::kPublishIntervalMs));
 }
 
 TEST_CASE("VizPublisher:无末端分段哨兵不炸窗口跨度", "[viz][publisher][window]")

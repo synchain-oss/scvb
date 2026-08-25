@@ -144,10 +144,12 @@ struct alignas(64) VizLanes
 // 后者是列中心点采样,列宽 = span/1024,分布图要的是「此刻」。
 struct alignas(64) VizTrackState
 {
-    std::atomic<std::int16_t> panNow[16]; // 0..32    定点 ×100,−100..+100
-    std::atomic<std::int16_t> volDb[16]; // 32..64   定点 ×100,−24..+12 dB
-    std::atomic<std::int16_t> widthPct[16]; // 64..96   定点 ×100,0..100
-    std::atomic<std::int16_t> _reserved[16]; // 96..128
+    // 槽位数 = kMaxChannels + 1:多出来的**索引 15 是填充**,只为让每个数组占满 32 字节。
+    // 它恒为 0 —— 而 0 是**合法** pan / dB / width,不是哨兵。读写两侧都只取 t < track_count。
+    std::atomic<std::int16_t> panNow[kMaxChannels + 1]; // 0..32    定点 ×100,−100..+100
+    std::atomic<std::int16_t> volDb[kMaxChannels + 1]; // 32..64   定点 ×100,−24..+12 dB
+    std::atomic<std::int16_t> widthPct[kMaxChannels + 1]; // 64..96   定点 ×100,0..100
+    std::atomic<std::int16_t> _reserved[kMaxChannels + 1]; // 96..128
 };
 
 // 轨名(UTF-8,NUL 补齐)。u32 字数组而非 u8 —— 跨进程字段一律 std::atomic(ipc §0),
@@ -204,8 +206,15 @@ struct VizSnapshot
 
     // 默认态 = 「全轨无数据」:车道全哨兵、覆盖全 0(而非 pan=0 的中央位置 —— 零值是合法 pan,
     // 拿它当空态会让读侧把没数据的轨画成一条居中的直线)。
-    VizSnapshot() { clearLanes(); }
+    VizSnapshot()
+    {
+        clearLanes();
+        clearTrackState();
+    }
 
+    // **只清车道块**(车道 + 覆盖位图 + 轨名)—— 名副其实。
+    // 它曾经连 panNow/volDb/widthPct 一起抹,而那三个是「此刻」、每帧都刷、不属于车道块:
+    // 于是重算车道的那一帧当前值被抹成哨兵后没人补回,分布图每秒闪一次空态(R2)。
     void clearLanes() noexcept
     {
         for (auto& lane : pan)
@@ -216,13 +225,18 @@ struct VizSnapshot
         {
             words.fill(0u);
         }
-        panNow.fill(kVizPanNone);
-        volDb.fill(kVizPanNone);
-        widthPct.fill(kVizPanNone);
         for (auto& s : label)
         {
             s.clear();
         }
+    }
+
+    // 只清每轨当前值(与车道块相互独立)。
+    void clearTrackState() noexcept
+    {
+        panNow.fill(kVizPanNone);
+        volDb.fill(kVizPanNone);
+        widthPct.fill(kVizPanNone);
     }
 
     // 位图取位(列越界返回 false)。
@@ -259,10 +273,13 @@ inline double vizUnpackPan(std::int16_t v) noexcept
     return static_cast<double>(v) / static_cast<double>(kVizPanScale);
 }
 
-// 通用定点(volDb / widthPct 共用 kVizPanScale)。夹到 int16 可表示范围,绝不撞哨兵。
-inline std::int16_t vizPackFixed(double v) noexcept
+// 通用定点(volDb / widthPct 共用 kVizPanScale)。**先按工程量纲夹取再定点** ——
+// lo/hi 就是 kVizVolDbMin/Max 与 kVizWidthMin/Max;不这么用的话那几个常量只是摆设,
+// 而读者会以为段内值已被夹到文档声明的域。最后再夹到 int16 可表示范围,绝不撞哨兵。
+inline std::int16_t vizPackFixed(double v, double lo, double hi) noexcept
 {
-    const double scaled = v * static_cast<double>(kVizPanScale);
+    const double clamped = v < lo ? lo : (v > hi ? hi : v);
+    const double scaled = clamped * static_cast<double>(kVizPanScale);
     const double rounded = scaled < 0.0 ? scaled - 0.5 : scaled + 0.5;
     if (rounded <= -32767.0)
     {
@@ -328,6 +345,10 @@ public:
     // 改组(J66):释放本组 viz 段句柄 → 换新组 → 按原角色重新映射。
     InitResult changeGroup(u32 newGroup);
 
+    // 写方改组:只换指向,**不建段** —— 建与否由调用方按 claim 态裁决([J66] 同组只有
+    // kActive 的那个 Output 是写方)。与 changeGroup() 的区别:后者立刻 open()。
+    void setGroupWriter(u32 newGroup);
+
     // 释放映射(消息线程):**立即** unmap,不走租约握手与宽限期。
     // 为什么不像 Registry/CtrlPlane 那样用 SegmentHandle:那套机制存在的唯一理由是
     // 「音频线程可能仍持有裸指针」。viz 段**没有任何音频线程访问**(RT 零写入/零读取铁律),
@@ -342,7 +363,10 @@ public:
     // 仅消息线程调用;只读 attach 状态下为 no-op(防误写)。
     void publish(const VizSnapshot& s, bool writeLanes);
 
-    // 读方:一致性读。返回 false = 段未打开 / seqlock 连续撕裂 kVizReadRetries 次(沿用上帧)。
+    // 读方:一致性读。返回 false = 段未打开 / seqlock 连续撕裂 kVizReadRetries 次。
+    // **返回 false 时 out 一个字节都不改** —— 「沿用上帧」因此在调用方真的做得到:
+    // 先读进内部 scratch,只有整帧一致才拷给 out(多一次 memcpy,4Hz 下可忽略)。
+    // 早期版本直接读进 out,撕裂时把调用方的上一帧覆盖成半新半旧的拼接,而 API 却承诺沿用上帧。
     bool read(VizSnapshot& out) const;
 
     // 「RT 线程零写入」的运行期护栏(不只是注释):open() 记下调用线程 = 段的 owner 线程([M]);
@@ -363,6 +387,9 @@ private:
     ISegmentBackend& backend_;
     u32 group_ = 1;
     bool readOnly_ = false;
+    // I3:read() 的落地缓冲 —— 只有整帧一致才拷给调用方的 out(见 read() 注释)。
+    mutable VizSnapshot scratch_;
+
     SegmentView view_; // 直接持有映射(无租约、无宽限期;理由见 release() 注释)
     unsigned char* base_ = nullptr;
 

@@ -66,7 +66,9 @@ InitResult VizPlane::open()
     }
     view_ = std::move(view);
     base_ = static_cast<unsigned char*>(view_.base);
-    ownerThread_ = std::this_thread::get_id(); // 之后只认这个线程写(RT 零写入护栏)
+    // I2:**不在这里绑 owner 线程**。open() 由 prepareToPlay 触发,而 JUCE/VST3 不保证
+    // prepareToPlay 与 timerCallback 在同一条线程上 —— 绑错的后果是此后每一次 publish() 都被
+    // 护栏挡掉,viz 段静默保持全零而没有任何报错。改为**首次 publish() 时绑定**(见 publish)。
     return InitResult::kOk;
 }
 
@@ -101,6 +103,13 @@ InitResult VizPlane::attachReadOnly()
         return InitResult::kAbiMismatch;
     }
     return InitResult::kOk;
+}
+
+void VizPlane::setGroupWriter(u32 newGroup)
+{
+    releaseHandle();
+    readOnly_ = false;
+    group_ = newGroup;
 }
 
 InitResult VizPlane::changeGroup(u32 newGroup)
@@ -163,6 +172,12 @@ void VizPlane::publish(const VizSnapshot& s, bool writeLanes)
     {
         return; // 只读 attach 状态下绝不写(防误写;Monitor 侧的零写入铁律由此在类型外再兜一层)
     }
+    if (ownerThread_ == std::thread::id{})
+    {
+        // 首次发布即认定 owner 线程(生产路径 = Output 的 [M] 定时器)。绑在这里而不是 open(),
+        // 见 open() 里 I2 的说明。
+        ownerThread_ = std::this_thread::get_id();
+    }
     if (std::this_thread::get_id() != ownerThread_)
     {
         // 非 owner 线程(典型误接线 = 从 processBlock 调进来):一个字节都不写,只计数。
@@ -172,7 +187,11 @@ void VizPlane::publish(const VizSnapshot& s, bool writeLanes)
     auto* f = frame();
 
     // seqlock 写:seq 先 +1 变奇(进入临界区)→ 写载荷 → 再 +1 变偶(发布完成)。
-    f->seq.fetch_add(1, std::memory_order_release);
+    // I1:第一次递增用 **relaxed + release 栅栏**,不能用 release。
+    // release 是「之前的写不越到之后」的单向栅栏 —— 它挡不住**后续**的 relaxed 载荷写被提升到
+    // seq 变奇之前,而那恰恰是读方要靠奇数看见的「正在写」窗口。栅栏才是挡后续写的那一侧。
+    f->seq.fetch_add(1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
 
     f->publish_ms.store(s.publishMs, std::memory_order_relaxed);
     f->window_start_samples.store(s.windowStartSamples, std::memory_order_relaxed);
@@ -250,6 +269,9 @@ bool VizPlane::read(VizSnapshot& out) const
     const auto* ts = trackState();
     const auto* lb = labels();
 
+    // I3:先读进 scratch_,整帧一致才拷给 out —— 撕裂时 out 一个字节都不动,
+    // 「沿用上帧」因此在调用方真的做得到(早期版本直接读进 out,撕裂即把上一帧覆盖成拼接)。
+    VizSnapshot& out2 = scratch_;
     for (int attempt = 0; attempt < kVizReadRetries; ++attempt)
     {
         const u32 before = f->seq.load(std::memory_order_acquire);
@@ -258,37 +280,37 @@ bool VizPlane::read(VizSnapshot& out) const
             continue; // 写方在临界区内
         }
 
-        out.publishMs = f->publish_ms.load(std::memory_order_relaxed);
-        out.windowStartSamples = f->window_start_samples.load(std::memory_order_relaxed);
-        out.windowSpanSamples = f->window_span_samples.load(std::memory_order_relaxed);
-        out.playheadSamples = f->playhead_samples.load(std::memory_order_relaxed);
-        out.loopStartSamples = f->loop_start_samples.load(std::memory_order_relaxed);
-        out.loopEndSamples = f->loop_end_samples.load(std::memory_order_relaxed);
-        out.sampleRate = f->sample_rate.load(std::memory_order_relaxed);
-        out.versionActive = f->version_active.load(std::memory_order_relaxed);
-        out.playheadFlags = f->playhead_flags.load(std::memory_order_relaxed);
-        out.playheadEpoch = f->playhead_epoch.load(std::memory_order_relaxed);
-        out.onlineMask = f->track_online_mask.load(std::memory_order_relaxed);
-        out.coveredMask = f->track_covered_mask.load(std::memory_order_relaxed);
-        out.stereoMask = f->track_stereo_mask.load(std::memory_order_relaxed);
-        out.laneRevision = f->lane_revision.load(std::memory_order_relaxed);
-        out.leadMask = f->track_lead_mask.load(std::memory_order_relaxed);
-        out.seq = before;
-        out.generation = header()->generation.load(std::memory_order_relaxed);
+        out2.publishMs = f->publish_ms.load(std::memory_order_relaxed);
+        out2.windowStartSamples = f->window_start_samples.load(std::memory_order_relaxed);
+        out2.windowSpanSamples = f->window_span_samples.load(std::memory_order_relaxed);
+        out2.playheadSamples = f->playhead_samples.load(std::memory_order_relaxed);
+        out2.loopStartSamples = f->loop_start_samples.load(std::memory_order_relaxed);
+        out2.loopEndSamples = f->loop_end_samples.load(std::memory_order_relaxed);
+        out2.sampleRate = f->sample_rate.load(std::memory_order_relaxed);
+        out2.versionActive = f->version_active.load(std::memory_order_relaxed);
+        out2.playheadFlags = f->playhead_flags.load(std::memory_order_relaxed);
+        out2.playheadEpoch = f->playhead_epoch.load(std::memory_order_relaxed);
+        out2.onlineMask = f->track_online_mask.load(std::memory_order_relaxed);
+        out2.coveredMask = f->track_covered_mask.load(std::memory_order_relaxed);
+        out2.stereoMask = f->track_stereo_mask.load(std::memory_order_relaxed);
+        out2.laneRevision = f->lane_revision.load(std::memory_order_relaxed);
+        out2.leadMask = f->track_lead_mask.load(std::memory_order_relaxed);
+        out2.seq = before;
+        out2.generation = header()->generation.load(std::memory_order_acquire); // 与 generation() 同口径
 
         for (u32 t = 0; t < kMaxChannels; ++t)
         {
-            out.trackColor[t] = c->index[t].load(std::memory_order_relaxed);
-            out.panNow[t] = ts->panNow[t].load(std::memory_order_relaxed);
-            out.volDb[t] = ts->volDb[t].load(std::memory_order_relaxed);
-            out.widthPct[t] = ts->widthPct[t].load(std::memory_order_relaxed);
+            out2.trackColor[t] = c->index[t].load(std::memory_order_relaxed);
+            out2.panNow[t] = ts->panNow[t].load(std::memory_order_relaxed);
+            out2.volDb[t] = ts->volDb[t].load(std::memory_order_relaxed);
+            out2.widthPct[t] = ts->widthPct[t].load(std::memory_order_relaxed);
             for (u32 w = 0; w < kVizCoverageWords; ++w)
             {
-                out.coverage[t][w] = cov->bits[t][w].load(std::memory_order_relaxed);
+                out2.coverage[t][w] = cov->bits[t][w].load(std::memory_order_relaxed);
             }
             for (u32 i = 0; i < kVizColumns; ++i)
             {
-                out.pan[t][i] = ln->pan[t][i].load(std::memory_order_relaxed);
+                out2.pan[t][i] = ln->pan[t][i].load(std::memory_order_relaxed);
             }
 
             // 轨名:u32 字 → 字节 → 到第一个 NUL 为止(段内恒 NUL 补齐,不会漏尾)。
@@ -303,13 +325,14 @@ bool VizPlane::read(VizSnapshot& out) const
             {
                 ++n;
             }
-            out.label[t].assign(reinterpret_cast<const char*>(bytes), n);
+            out2.label[t].assign(reinterpret_cast<const char*>(bytes), n);
         }
 
         // seqlock 读边界:载荷读取不得越过第二次 seq 读。
         std::atomic_thread_fence(std::memory_order_acquire);
         if (f->seq.load(std::memory_order_relaxed) == before)
         {
+            out = out2; // 整帧一致:此刻才交给调用方
             return true;
         }
     }
