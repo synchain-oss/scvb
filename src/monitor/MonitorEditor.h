@@ -32,11 +32,12 @@ protected:
 
 private:
     void registerNativeFunctions(juce::WebBrowserComponent::Options& options);
-    void handleSetGroupId(const juce::Array<juce::var>& args,
-                          juce::WebBrowserComponent::NativeFunctionCompletion complete);
+    void handleSetObservedGroup(const juce::Array<juce::var>& args,
+                                juce::WebBrowserComponent::NativeFunctionCompletion complete);
 
     juce::var buildStatePayload() const;
     juce::var buildVizPayload() const;
+    juce::var buildPlayheadPayload() const;
 
     // JSON 串比对后按需 emit(与 Input/Output 同款 diff-then-emit;隐藏期不推进缓存)。
     bool emitIfChanged(const char* name, const juce::var& payload, juce::String& lastJson);
@@ -47,6 +48,7 @@ private:
     juce::String lastStateJson_;
     juce::String lastGroupsJson_;
     juce::String lastVizJson_;
+    juce::String lastPlayheadJson_;
     juce::uint64 lastGroupsMs_ = 0; // 1Hz 折半
     juce::uint64 lastVizMs_ = 0; // 4Hz 折半(与发布器同频)
 

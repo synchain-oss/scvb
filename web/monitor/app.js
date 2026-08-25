@@ -10,7 +10,8 @@
 //   T46 立项时:契约加 manifest.monitor → bridge.js 加名表 → 本页改用 createBridge("monitor")。
 //
 // 桥面(真源 = src/monitor/MonitorBridgeApi.h):
-//   函数 setGroupId(1..8) —— Monitor 唯一的写入口(只读换段,不 claim)
+//   函数 setObservedGroup(1..8) —— Monitor 唯一的写入口(只读换段,不 claim;
+//   刻意不叫 setGroupId:契约 §1.4 的那个是 Output 的改组,语义完全不同)
 //   事件 scvb.state / scvb.groups / scvb.viz
 
 const GROUP_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H"];
@@ -39,7 +40,7 @@ function fmtSamples(n, sr) {
     return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
 }
 
-function renderGroups(container, current, onlineMask, setGroupId) {
+function renderGroups(container, current, onlineMask, setObservedGroup) {
     container.replaceChildren();
     GROUP_LABELS.forEach((label, i) => {
         const g = i + 1;
@@ -50,7 +51,7 @@ function renderGroups(container, current, onlineMask, setGroupId) {
         b.setAttribute("aria-pressed", String(g === current));
         // 组是否在线只影响提示,不禁用按钮 —— 用户有权切到一个还没上线的组并等它上线。
         b.title = (onlineMask >> i) & 1 ? "online" : "offline";
-        b.addEventListener("click", () => setGroupId(g));
+        b.addEventListener("click", () => setObservedGroup(g));
         container.append(b);
     });
 }
@@ -87,23 +88,23 @@ async function main() {
     let groupId = 1;
     let onlineMask = 0;
 
-    const setGroupIdFn = await nativeFunction("setGroupId");
-    const setGroupId = async (g) => {
-        if (!setGroupIdFn) return;
-        const r = await setGroupIdFn(g);
+    const setObservedGroupFn = await nativeFunction("setObservedGroup");
+    const setObservedGroup = async (g) => {
+        if (!setObservedGroupFn) return;
+        const r = await setObservedGroupFn(g);
         if (r && Number.isFinite(r.groupId)) groupId = r.groupId;
-        renderGroups(groupsBox, groupId, onlineMask, setGroupId);
+        renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
     };
 
     onEvent("scvb.state", (p) => {
         if (Number.isFinite(p.groupId)) groupId = p.groupId;
         vizLine.textContent = `viz: ${p.viz}${p.viz === "online" && !p.fresh ? " (stalled)" : ""}`;
-        renderGroups(groupsBox, groupId, onlineMask, setGroupId);
+        renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
     });
 
     onEvent("scvb.groups", (p) => {
         onlineMask = Number(p.online) || 0;
-        renderGroups(groupsBox, groupId, onlineMask, setGroupId);
+        renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
     });
 
     onEvent("scvb.viz", (p) => {
@@ -117,7 +118,7 @@ async function main() {
         renderTracks(tracksBox, p.tracks);
     });
 
-    renderGroups(groupsBox, groupId, onlineMask, setGroupId);
+    renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
 
     // §0.6:mBridgeReady 门控由页面掌握 —— 首次装载(与编辑器重建后)各调一次。
     const requestInitialState = await nativeFunction("requestInitialState");
@@ -127,7 +128,7 @@ async function main() {
         if (snap && Number.isFinite(snap.groupsOnline))
             onlineMask = snap.groupsOnline;
         if (snap && snap.viz) vizLine.textContent = `viz: ${snap.viz}`;
-        renderGroups(groupsBox, groupId, onlineMask, setGroupId);
+        renderGroups(groupsBox, groupId, onlineMask, setObservedGroup);
     }
 }
 

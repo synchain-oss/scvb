@@ -78,3 +78,9 @@ if(MSVC)
 else()
   target_compile_options(pan_curve_vectors PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# [T45] Monitor 全数据链 harness 用 scvb_ipc_peer 当对端进程,运行期按路径查找 exe ——
+# 在此挂构建依赖(顶层 add_subdirectory 顺序:tests 在前、tests/tools 在后,故不能写在 tests/ 里)。
+if(TARGET scvb_monitor_tests AND TARGET scvb_ipc_peer)
+  add_dependencies(scvb_monitor_tests scvb_ipc_peer)
+endif()

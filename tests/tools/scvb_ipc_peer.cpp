@@ -920,15 +920,15 @@ int runVizPublisher(const Args& a)
     in.leadMask = 0x0001;
     in.widthPct[0] = 80.0f;
 
-    // 至少发一帧;linger 期间按 4Hz 续发,读方随时 attach 都能拿到一致帧。
-    u64 t = 0;
-    pub.tick(t, in);
+    // 至少发一帧;linger 期间按真实 4Hz 续发,读方随时 attach 都能拿到一致帧。
+    // 时钟用 steadyNowMs()(与生产路径 OutputProcessor::timerCallback 同源)——
+    // 用从 0 起的假时钟会让 publish_ms 落在读方的「没动过」判据上。
+    pub.tick(scvb::steadyNowMs(), in);
     const u64 deadline = ::GetTickCount64() + static_cast<u64>(a.lingerMs > 0 ? a.lingerMs : 0);
     while (::GetTickCount64() < deadline)
     {
         ::Sleep(50);
-        t += 250;
-        pub.tick(t, in);
+        pub.tick(scvb::steadyNowMs(), in);
     }
     return 0;
 }

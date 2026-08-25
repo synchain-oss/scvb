@@ -141,7 +141,7 @@ TEST_CASE("Monitor:对共享段零写入 + 只读读到 viz 数据", "[monitor][
     // ---- ① Monitor 在段不存在时:空态,不崩、不建段 ----
     {
         ScvbMonitorAudioProcessor p;
-        REQUIRE(p.setGroupId(static_cast<int>(kGroup)));
+        REQUIRE(p.setObservedGroup(static_cast<int>(kGroup)));
         p.prepareToPlay(48000.0, 256);
         for (int i = 0; i < 8; ++i)
         {
@@ -199,7 +199,7 @@ TEST_CASE("Monitor:对共享段零写入 + 只读读到 viz 数据", "[monitor][
     // ---- ③ Monitor 只读 attach、读到数据、且一个字节都不写 ----
     {
         ScvbMonitorAudioProcessor p;
-        REQUIRE(p.setGroupId(static_cast<int>(kGroup)));
+        REQUIRE(p.setObservedGroup(static_cast<int>(kGroup)));
         p.prepareToPlay(48000.0, 256);
 
         // 音频线程照跑 —— processBlock 期间对共享段零读零写。
@@ -268,7 +268,7 @@ TEST_CASE("Monitor:组切换只读换段,不 claim、不残留上一组车道", 
     writerA.publish(*f, true);
 
     ScvbMonitorAudioProcessor p;
-    REQUIRE(p.setGroupId(static_cast<int>(kGroupA)));
+    REQUIRE(p.setObservedGroup(static_cast<int>(kGroupA)));
     p.prepareToPlay(48000.0, 256);
     for (int i = 0; i < 8; ++i)
     {
@@ -278,7 +278,7 @@ TEST_CASE("Monitor:组切换只读换段,不 claim、不残留上一组车道", 
     REQUIRE(p.vizSnapshot().pan[0][0] == scvb::vizPackPan(77.0));
 
     // 切到一个没有 Output 在线的组:立刻空态,且**不能**残留 A 组的车道。
-    REQUIRE(p.setGroupId(static_cast<int>(kGroupB)));
+    REQUIRE(p.setObservedGroup(static_cast<int>(kGroupB)));
     REQUIRE(p.vizSnapshot().pan[0][0] == scvb::kVizPanNone); // 换组即清,不画别人的曲线
     for (int i = 0; i < 8; ++i)
     {
@@ -288,7 +288,7 @@ TEST_CASE("Monitor:组切换只读换段,不 claim、不残留上一组车道", 
     REQUIRE_FALSE(p.vizFresh());
 
     // 切回 A 组:重新 attach 成功,数据回来。
-    REQUIRE(p.setGroupId(static_cast<int>(kGroupA)));
+    REQUIRE(p.setObservedGroup(static_cast<int>(kGroupA)));
     for (int i = 0; i < 8; ++i)
     {
         p.tickMessageThread(6000 + static_cast<std::uint64_t>(i) * 250);
@@ -297,9 +297,9 @@ TEST_CASE("Monitor:组切换只读换段,不 claim、不残留上一组车道", 
     REQUIRE(p.vizSnapshot().pan[0][0] == scvb::vizPackPan(77.0));
 
     // 组号越界一律夹取到 1..8(不越界即不换组)。
-    REQUIRE(p.setGroupId(99));
+    REQUIRE(p.setObservedGroup(99));
     REQUIRE(p.groupId() == 8);
-    REQUIRE(p.setGroupId(-1));
+    REQUIRE(p.setObservedGroup(-1));
     REQUIRE(p.groupId() == 1);
 
     p.releaseResources();
@@ -308,7 +308,7 @@ TEST_CASE("Monitor:组切换只读换段,不 claim、不残留上一组车道", 
 TEST_CASE("Monitor:state 往返(组/缩放/语言;不可信字节拒载)", "[monitor][state]")
 {
     ScvbMonitorAudioProcessor a;
-    a.setGroupId(7);
+    a.setObservedGroup(7);
     a.setUiScalePercent(150);
     a.setUiLanguage("fr");
 

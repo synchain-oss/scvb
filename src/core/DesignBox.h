@@ -18,7 +18,13 @@ inline constexpr int kInputDesignW = 460;
 inline constexpr int kInputDesignH = 560;
 inline constexpr std::array<double, 10> kInputPresets = {0.33, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3};
 
+// Monitor 设计盒(1x,[J75] 节 C):960×720,7 档缩放。
+inline constexpr int kMonitorDesignW = 960;
+inline constexpr int kMonitorDesignH = 720;
+inline constexpr std::array<double, 7> kMonitorPresets = {0.5, 0.65, 0.8, 1, 1.25, 1.5, 2};
+
 // 缩放档位计数(与 design-box.js 数组长度一致)。
 inline constexpr int kOutputPresetCount = 7;
 inline constexpr int kInputPresetCount = 10;
+inline constexpr int kMonitorPresetCount = 7;
 } // namespace scvb::design

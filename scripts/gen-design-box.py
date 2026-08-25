@@ -151,7 +151,7 @@ def _as_int(design, box, key):
 
 
 def _validate(design):
-    for box in ("output", "input"):
+    for box in ("output", "input", "monitor"):
         if box not in design:
             raise ValueError("DESIGN 缺少 %r 块" % (box,))
         box_data = design[box]
@@ -176,12 +176,16 @@ def _validate(design):
 def render(design):
     out = design["output"]
     inp = design["input"]
+    mon = design["monitor"]
     out_w, out_h = _as_int(design, "output", "w"), _as_int(design, "output", "h")
     in_w, in_h = _as_int(design, "input", "w"), _as_int(design, "input", "h")
+    mon_w, mon_h = _as_int(design, "monitor", "w"), _as_int(design, "monitor", "h")
     out_p = out["presets"]
     in_p = inp["presets"]
+    mon_p = mon["presets"]
     out_p_line = ", ".join(out_p)
     in_p_line = ", ".join(in_p)
+    mon_p_line = ", ".join(mon_p)
 
     return (
 # REUSE-IgnoreStart —— 下方字符串是生成文件(C++ 头)的 SPDX 头模板,
@@ -207,9 +211,15 @@ def render(design):
         + "inline constexpr int kInputDesignH = %d;\n" % in_h
         + "inline constexpr std::array<double, %d> kInputPresets = {%s};\n" % (len(in_p), in_p_line)
         + "\n"
+        + "// Monitor 设计盒(1x,[J75] 节 C):%d×%d,%d 档缩放。\n" % (mon_w, mon_h, len(mon_p))
+        + "inline constexpr int kMonitorDesignW = %d;\n" % mon_w
+        + "inline constexpr int kMonitorDesignH = %d;\n" % mon_h
+        + "inline constexpr std::array<double, %d> kMonitorPresets = {%s};\n" % (len(mon_p), mon_p_line)
+        + "\n"
         + "// 缩放档位计数(与 design-box.js 数组长度一致)。\n"
         + "inline constexpr int kOutputPresetCount = %d;\n" % len(out_p)
         + "inline constexpr int kInputPresetCount = %d;\n" % len(in_p)
+        + "inline constexpr int kMonitorPresetCount = %d;\n" % len(mon_p)
         + "} // namespace scvb::design\n"
     )
 

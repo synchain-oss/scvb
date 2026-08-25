@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "engine/PlayheadShot.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
 
@@ -66,7 +67,9 @@ public:
 
     int groupId() const { return groupId_; }
     // 组选择 A-H(1..8):只读换段,不 claim、不写。返回是否真的换了组。
-    bool setGroupId(int groupId);
+    // **不叫 setGroupId** —— 契约 §1.4 的那个是 Output 的改组(断连本组全部、要弹确认条),
+    // 与「换一个组来看」是两件事,共用名字迟早有人照 §1.4 的语义去实现它(T46 提出,采纳)。
+    bool setObservedGroup(int groupId);
 
     int uiScalePercent() const { return uiScalePercent_; }
     void setUiScalePercent(int percent);
@@ -85,6 +88,11 @@ public:
     };
     VizState vizState() const { return vizState_; }
 
+    // 播放头快照([M] 读):Monitor 与 Output 在同一个宿主里,看到的是**同一条 transport**,
+    // 所以播放头直接读自己的 AudioPlayHead 就行 —— 不用等 viz 段那 4Hz 的冗余副本,
+    // 竖线才能跟手,而且 Output 停摆时播放头照样走(不假装冻结)。
+    scvb::engine::PlayheadPod playheadSnapshot() const;
+
     // 最近一次一致性读到的 viz 帧(消息线程独占;撕裂时沿用上帧)。
     const scvb::VizSnapshot& vizSnapshot() const { return *viz_; }
     // 帧是否新鲜(写方停摆 ≥kVizStaleMs 判陈旧;UI 显示为「Output 停摆」而非假装在线)。
@@ -98,9 +106,15 @@ public:
 private:
     void timerCallback() override;
     void refreshViz(std::uint64_t nowMs);
+    // [A] 每块把宿主 transport 发布给 [M](零分配零锁;不碰 buffer)。
+    void publishPlayhead();
 
     // viz 帧陈旧阈值:发布器 4Hz,连续 8 拍(2s)没新帧即判写方停摆。
     static constexpr std::uint64_t kVizStaleMs = 2000;
+
+    // [A] → [M] 播放头快照(SPSC seqlock,进程内非 IPC;与 Output 的 C8 同款)。
+    scvb::engine::PlayheadShot playheadShot_;
+    double sampleRate_ = 48000.0; // prepareToPlay 写,[A] 只读
 
     scvb::SegmentBackendWin32 backend_;
     scvb::VizPlane vizPlane_; // 只读 attach;绝不 open()
@@ -112,9 +126,12 @@ private:
 
     VizState vizState_ = VizState::kOffline;
     bool vizFresh_ = false;
+    bool sawVizFrame_ = false; // 是否已成功读到过一帧 —— publish_ms 可能合法地为 0,
+                               // 光靠 lastVizPublishMs_ != 0 判不出「读到过」(踩过)
     std::uint64_t lastVizPublishMs_ = 0; // 段内 publish_ms 的上一次取值(判新帧)
     std::uint64_t lastVizChangeMs_ = 0; // 本地观察到新帧的时刻(判陈旧)
     std::uint64_t lastAttachTryMs_ = 0; // 上次尝试 attach 的时刻(离线时 4Hz 重试,不刷屏)
+    std::uint64_t lastStaleProbeMs_ = 0; // 上次「松手重探」的时刻(陈旧时每 kVizStaleMs 探一次)
     std::uint8_t groupsOnline_ = 0;
     std::uint64_t lastGroupsProbeMs_ = 0; // 1Hz 跨组探测折半
 
