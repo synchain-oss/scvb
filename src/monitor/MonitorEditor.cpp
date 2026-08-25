@@ -124,7 +124,17 @@ juce::var MonitorEditor::buildVizPayload(bool includeLanes) const
     obj->setProperty("trackCount", static_cast<int>(scvb::kMaxChannels));
     obj->setProperty("panScale", static_cast<int>(scvb::kVizPanScale));
 
-    obj->setProperty("online", online && processor_.vizFresh());
+    // `online` = **段已 attach 且可读**;`fresh` = **帧还在更新**。这是两件事,分别给。
+    // 曾经把它们与在一起 —— 于是「写方停摆」在载荷上与「真掉线」完全同形,消费侧只能靠
+    // 「先看哪个字段」的判据顺序把它们分开,而顺序写反是「看起来完全正常」的错(T46 实测踩到:
+    // Output 明明还在跑,页面把整张图清空了)。现在两个字段各说各的事实,不需要任何顺序约定:
+    //   online=true,  fresh=true  ⇒ 在线且在更新
+    //   online=true,  fresh=false ⇒ **在线但停更**(Output 还在,只是不发帧)⇒ 横幅,**别清图**
+    //   online=false              ⇒ 掉线 / 未接通 ⇒ 空态
+    obj->setProperty("online", online);
+    obj->setProperty("fresh", processor_.vizFresh());
+    // 帧自带组号:换组后若有在途帧,消费侧可据此丢弃 —— 不必依赖「事件一定按序到达」这条假设。
+    obj->setProperty("groupId", processor_.groupId());
     obj->setProperty("seq", static_cast<int>(v.seq));
     obj->setProperty("publishMs", static_cast<juce::int64>(v.publishMs));
     obj->setProperty("sampleRate", static_cast<int>(v.sampleRate));
