@@ -128,6 +128,7 @@ private:
     void handleBootError(const juce::var& payload); // 前端 boot 失败上报(非契约面,见 .cpp)
 
     void beginLoadAttempt(); // 起算看门狗(构造 / retry 共用)
+    void releaseReadyBridge(); // 把本实例从「活着的桥」计数里摘掉(retry / 析构)
     juce::String buildDiagnostics() const; // 兜底面板诊断行 + 日志行的同一份文本
     void logDiag(const juce::String& line) const; // 既有日志通道(juce::Logger)
 
@@ -144,8 +145,9 @@ private:
     juce::String navDetail_; // 最后一次导航错误信息(networkError 时非空)
     juce::String bootError_; // 前端上报的 boot 失败摘要(BootError 分支用)
     PlatformWebView::RuntimeInfo runtime_; // 本次加载尝试开始时的运行时探测结果(诊断用)
-    juce::File userDataFolder_; // 本实例的 WebView2 user-data 目录(名字带 PID,跨进程唯一)
+    juce::File userDataFolder_; // 本插件的 WebView2 user-data 目录(per-plugin 固定,进程组据此复用)
     juce::String userDataFolderIssue_; // 构造期可写性探针结果;空 = 没问题
+    bool countedAsReady_ = false; // 本实例是否已计入 readyBridgeCount(防重复加减)
 
     std::unique_ptr<HostWebView> webView_;
     std::unique_ptr<FallbackPanel> fallback_;

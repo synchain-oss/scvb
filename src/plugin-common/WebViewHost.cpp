@@ -65,12 +65,17 @@ juce::String bootErrorMessage()
            "Click Retry; if it keeps failing, report the diagnostics line below.";
 }
 
-// 进程内是否已成功起过一次桥。WebView2 的浏览器进程组一旦拉起就常驻本进程,后续编辑器
-// 只是新建 WebView —— 冷启动预算只该给第一次,之后用热预算,免得真失败也要干等 15s。
-std::atomic<bool>& bridgeEverReady()
+// **当前**桥已就绪的编辑器数量(进程内)。热预算的判据只能是「此刻确有一个活着的桥」,
+// 不能是「历史上曾经起来过」:
+//   • WebView2 的浏览器进程组按 user-data 目录共享(见 PlatformWebView::makeUserDataFolder),
+//     只要还有一个实例活着,进程组就在,新开的编辑器只是往里加一个 WebView,5s 绰绰有余;
+//   • 可一旦所有编辑器都关掉,浏览器进程组会退出,再开就是**完整冷启动** —— 此时若因
+//     「曾经起来过」而只给 5s,等于亲手造出「关窗再开必超时」这个新故障。
+// 故用计数而非 bool:>0 才算热。
+std::atomic<int>& readyBridgeCount()
 {
-    static std::atomic<bool> flag{false};
-    return flag;
+    static std::atomic<int> count{0};
+    return count;
 }
 } // namespace
 
@@ -130,6 +135,7 @@ WebViewHost::WebViewHost(juce::AudioProcessor& processor, Config config)
 // 「没装」「太旧」两条都不进看门狗 —— 用户动作是装/升级 Runtime,干等一个预算窗口毫无意义。
 void WebViewHost::beginLoadAttempt()
 {
+    releaseReadyBridge(); // 重试时本实例的旧桥不再算数(计数只统计活着的桥)
     bridgeReady_ = false;
     navState_ = NavState::notStarted;
     navDetail_ = {};
@@ -152,7 +158,12 @@ void WebViewHost::beginLoadAttempt()
     }
 
     // 冷/热预算见 WebViewHost.h 的三个常量注释;导航事件到达后再按 kAfterNavBudgetMs 顺延。
-    deadlineMs_ = startMs_ + static_cast<juce::uint32>(bridgeEverReady() ? kWarmLoadBudgetMs : kColdLoadBudgetMs);
+    // 热的判据 = 此刻另有一个桥活着(⇒ 共享的浏览器进程组必然在跑),不是「曾经起来过」。
+    const bool warm = readyBridgeCount().load() > 0;
+    deadlineMs_ = startMs_ + static_cast<juce::uint32>(warm ? kWarmLoadBudgetMs : kColdLoadBudgetMs);
+    logDiag(juce::String(warm ? "warm" : "cold") + " start, budget " +
+            juce::String(warm ? kWarmLoadBudgetMs : kColdLoadBudgetMs) + " ms, udf " +
+            userDataFolder_.getFullPathName());
 
     // 必须在任何 emit 之前完成首个 goToURL(前端脚本随后加载并注册监听)。
     webView_->setVisible(true);
@@ -164,6 +175,18 @@ void WebViewHost::beginLoadAttempt()
 WebViewHost::~WebViewHost()
 {
     stopTimer();
+    releaseReadyBridge(); // 编辑器关闭 -> 本实例不再为「热启动」判定背书
+}
+
+// 计数只统计**活着**的桥:重试与析构都要还回去,否则关掉全部编辑器后计数仍 >0,
+// 下一次开窗会按热预算跑一次真冷启动 —— 那正是 bot 指出的「关窗再开必超时」。
+void WebViewHost::releaseReadyBridge()
+{
+    if (countedAsReady_)
+    {
+        countedAsReady_ = false;
+        readyBridgeCount().fetch_sub(1);
+    }
 }
 
 juce::WebBrowserComponent& WebViewHost::webView()
@@ -243,7 +266,8 @@ juce::String WebViewHost::buildDiagnostics() const
     if (navDetail_.isNotEmpty())
         d << " (" << navDetail_ << ")";
     d << "  |  WebView2 " << (runtime_.version.isNotEmpty() ? runtime_.version : juce::String("not found"));
-    d << "  |  host " << juce::File::getSpecialLocation(juce::File::hostApplicationPath).getFileName();
+    d << "  |  host " << juce::File::getSpecialLocation(juce::File::hostApplicationPath).getFileName() << " pid "
+      << juce::String(PlatformWebView::processId());
     // UDF 是「环境没起来」这一路的头号嫌疑,必须原样显示:用户把这一行发回来,就能直接看出
     // 目录在哪、写不写得进、以及(名字里的 PID)是不是被另一个宿主进程占着。
     d << "\n" << "udf " << userDataFolder_.getFullPathName();
@@ -378,10 +402,20 @@ void WebViewHost::onNavigationError(const juce::String& errorInfo)
     navDetail_ = errorInfo.substring(0, 200);
     logDiag("navigation error: " + navDetail_);
 
-    // 资源全部由本进程的 resource provider 供给,网络错误只可能是装配出错(资源没嵌 /
-    // 后端选错),再等到超时也不会变好,直接给兜底面板。
-    if (!bridgeReady_ && fallback_ == nullptr)
-        showFallback(FallbackReason::LoadTimeout);
+    // **这里刻意不切兜底面板**,由看门狗统一裁决。
+    //
+    // 原因是「重试自锁」:点 Retry -> retryWebView 先 reset 掉面板、再 goToURL,而这个
+    // goToURL 会**中止**上一次仍在飞的导航;被中止的那次随后异步回调过来报错,此时
+    // fallback_ 恰好是 nullptr、bridgeReady_ 也还是 false —— 于是上一次的错误把刚开始的
+    // 这一次就地判死,面板瞬间又贴回来。用户看到的就是「点重试没反应」。
+    //
+    // 不用「按错误码放行」来修:JUCE 只帮忙过滤了 OPERATION_CANCELED
+    // (juce_WebBrowserComponent_windows.cpp 里把它当成功、走 pageFinishedLoading),
+    // CONNECTION_ABORTED(错误码 9)照样漏下来 —— JUCE 自己的注释都写着「code 9 往往可以
+    // 安全忽略」。与其维护一张「哪些码不算数」的名单,不如根本不让任何单次导航错误拥有
+    // 直接判死的权力:真失败会在预算耗尽时照常进兜底面板,诊断行里带着这里记下的错误码;
+    // 而中止、瞬时错误则被后续的 navigationStarted / finished 自然覆盖掉。
+    // 代价只是「必然失败的情形要多等一个预算窗口」,换来的是重试真的能用。
 }
 
 // 前端 boot 失败上报(机制 3 补强)。
@@ -455,8 +489,13 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
 void WebViewHost::handleRequestInitialState(const juce::Array<juce::var>&, WBC::NativeFunctionCompletion complete)
 {
     bridgeReady_ = true; // 前端确认就绪 -> 此后 timer 才允许 emit(机制 8)
-    // 本进程的 WebView2 进程组已确认可用 -> 后续编辑器按热预算起看门狗(见 kWarmLoadBudgetMs)。
-    bridgeEverReady() = true;
+    // 本实例的桥活着 -> 共享的 WebView2 进程组必在跑 -> 其它编辑器可按热预算起看门狗。
+    // requestInitialState 可能被同一页面多次调用(页面重载后要重来一次),故用标志防重复计数。
+    if (!countedAsReady_)
+    {
+        countedAsReady_ = true;
+        readyBridgeCount().fetch_add(1);
+    }
     logDiag("bridge ready after " + juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) +
             " ms");
     complete(buildSnapshot());
