@@ -807,7 +807,6 @@ int runFeatReader(const Args& a)
 
 } // namespace
 
-
 // ---- [T44/J75] viz 段(VIZ-1/2/3)----
 
 int runVizWriter(const Args& a)
