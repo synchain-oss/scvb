@@ -282,6 +282,11 @@ void OutputEditor::emitParams(bool forceFull)
 
 void OutputEditor::emitConn()
 {
+    // 注:heartbeatAgeMs 自 T37 起是**活数**(每拍都变),故下面这道 diff 门在有 Input 连着
+    // 时恒真 —— scvb.conn 变成稳定的 ~4Hz 全量下发。这正是 §2.3 给本事件定的频率(emitTick
+    // 的 6 分频),Tab4 诊断区的「每轨 heartbeat 年龄」也要靠这个活数;不为了让 diff 门重新
+    // 生效而把 age 排除出比对(那等于把诊断区冻住)。全空闲(无 Input)时载荷回到全哨兵、
+    // 门重新拦住,不会有空转下发。
     juce::var payload = buildConnPayload();
     const juce::String json = juce::JSON::toString(payload);
     if (json != lastConnJson_)
@@ -556,7 +561,9 @@ juce::var OutputEditor::buildConnPayload() const
     juce::var o = obj();
     put(o, "channels", channels);
     put(o, "outputReadOnly", snap.readOnly);
-    put(o, "generation", static_cast<int>(snap.generation));
+    // generation 是 u32,和 heartbeatAgeMs 同样用 int64 承载:int 在 >2^31 时会翻负,
+    // 而这是个只增不减的重初始化计数器。
+    put(o, "generation", static_cast<juce::int64>(snap.generation));
     return o;
 }
 
@@ -1697,14 +1704,15 @@ void OutputEditor::handleSetGuideSeen(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    processor_.runtime().guideSeen = seen;
     // §1.32 alsoGlobal(缺省 true):勾了「不再显示」才写系统级全局默认,承诺跨工程成立。
+    // **两个参数都校验完才落任何值** —— badArg 回执与已生效的副作用不能并存。
     bool alsoGlobal = true;
     if (a.size() >= 2 && !strictBool(a[1], alsoGlobal))
     {
         c(badArgResp());
         return;
     }
+    processor_.bridgeSetGuideSeen(seen); // 持 lifecycleMutex_(与 getStateInformation 同锁)
     if (alsoGlobal)
     {
         uidefaults::setGuideSeenGlobal(seen);
@@ -1720,14 +1728,15 @@ void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    processor_.runtime().tourSeen = seen;
     // §1.33 alsoGlobal(缺省 true):完成与「暂不」都置全局位 → 新工程不再自动询问。
+    // 校验先于落值,理由同 handleSetGuideSeen。
     bool alsoGlobal = true;
     if (a.size() >= 2 && !strictBool(a[1], alsoGlobal))
     {
         c(badArgResp());
         return;
     }
+    processor_.bridgeSetTourSeen(seen); // 持 lifecycleMutex_(与 getStateInformation 同锁)
     if (alsoGlobal)
     {
         uidefaults::setTourSeenGlobal(seen);

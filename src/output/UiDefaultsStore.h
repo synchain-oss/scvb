@@ -12,10 +12,15 @@
 // WebViewHost::persistUiScaleAsDefault 是**空实现** —— 「不再显示」的跨工程承诺从未兑现
 // (T37 真机 bug A-3)。工程内的 guide_seen / tour_seen 归 CFGS chunk,与本存储互补。
 //
+// 落盘位置:`%APPDATA%\Synchain\SCVB\ui-defaults.settings`(app data 根逐字照
+// STATE_SCHEMA §4.3,与 sidecar 同根;不另起第二棵目录树)。
+//
 // 实现纪律:不驻留任何进程内状态 —— 每次读写现开一份 juce::PropertiesFile,读完/写完即析构。
 // 同一宿主里两个 Output 实例(或 Output 与将来的其它角色)因此永远看到磁盘上的同一份真值,
 // 无需跨实例广播;调用点稀疏(编辑器开窗一次 / 用户点「不再显示」「保持」各一次),开销可忽略。
 // 只在消息线程调用(桥 native function 与 buildSnapshot 均在消息线程)。
+
+#include <juce_core/juce_core.h>
 
 namespace scvb::output::uidefaults
 {
@@ -29,5 +34,9 @@ void setTourSeenGlobal(bool seen);
 // 0 = 未设置过(调用方沿用自己的默认 100)。
 int uiScalePercent();
 void setUiScalePercent(int percent);
+
+// **仅供测试**:把落盘目录改到临时目录,避免单测写真实用户设置(崩溃即残留、并行
+// worktree 互相串扰)。传空 File 恢复默认位置。生产代码不得调用。
+void setStorageDirForTesting(const juce::File& dir);
 
 } // namespace scvb::output::uidefaults

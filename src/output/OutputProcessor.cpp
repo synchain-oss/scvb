@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <cmath>
 
+#include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
 #include "OutputEditor.h"
+#include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
 #include "ipc/RegistryProbe.h"
@@ -30,6 +32,8 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
 
     // 缩放的系统级全局默认(§1.29「保持」落盘的那一档);工程 state 若带 CFGS 会在
     // setStateInformation 里覆盖它 —— 工程 > 全局默认。0 = 从未「保持」过,沿用 100。
+    // 构造期读一次本地小文件(几百字节 XML)是刻意的:此值必须在宿主取首个编辑器尺寸
+    // 之前就位,而构造发生在宿主的加载线程、不在音频线程,毛刺风险已评估为可接受。
     if (const int defaultScale = scvb::output::uidefaults::uiScalePercent(); defaultScale > 0)
     {
         uiScale_ = defaultScale;
@@ -587,8 +591,12 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     scvb::state::StateChunks chunks = loadedChunks_;
     chunks.abi = scvb::state::kCurrentAbi;
 
-    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)。
-    const auto state = apvts.copyState();
+    // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
+    // 两位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— CFGS 是定长枚举式解码,追加字段会让
+    // 旧构建整块拒载并静默把 group/开关/版本打回默认;ValueTree 两个方向都容忍字段增删。
+    // 见 OutputUiState.h 头注(STATE_SCHEMA §三 的 ui 组本就登记在 PRMS 名下)。
+    auto state = apvts.copyState();
+    scvb::output::writeUiFlags(state, {runtime_.guideSeen, runtime_.tourSeen});
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
     copyXmlToBinary(*xml, paramsBlock);
@@ -603,9 +611,6 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.versionActive = static_cast<scvb::u32>(versionActive_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
     s.uiLanguage = uiLanguage_.toStdString();
-    // 首启已读位随工程走(STATE_SCHEMA §一 ui 组):不落盘则重开工程红字页/tour 每次重放(T37 A-3)。
-    s.uiGuideSeen = runtime_.guideSeen ? 1u : 0u;
-    s.uiTourSeen = runtime_.tourSeen ? 1u : 0u;
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
     {
@@ -679,7 +684,13 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             getXmlFromBinary(prms->payload.data(), static_cast<int>(prms->payload.size())));
         if (xml != nullptr)
         {
-            apvts.replaceState(juce::ValueTree::fromXml(*xml));
+            const juce::ValueTree loaded = juce::ValueTree::fromXml(*xml);
+            // 首启已读位与参数同在 PRMS(见 OutputUiState.h);属性缺失 = 老工程 ⇒ 两位 false,
+            // 用户会再走一遍首启,之后即落盘不再重放。
+            const auto flags = scvb::output::readUiFlags(loaded);
+            runtime_.guideSeen = flags.guideSeen;
+            runtime_.tourSeen = flags.tourSeen;
+            apvts.replaceState(loaded);
             handles_ = scvb::params::collectParamHandles(apvts);
         }
     }
@@ -711,10 +722,6 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
                                                                               : juce::String("distribution");
 
-    // 首启已读位是**工程位**;跨工程的「不再显示」由快照的 *_global 单独承载(§1.32/§1.33),
-    // 两者不在此合流 —— 合流会把全局位写进从没看过引导的工程的 state。
-    runtime_.guideSeen = s.uiGuideSeen != 0;
-    runtime_.tourSeen = s.uiTourSeen != 0;
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
@@ -846,7 +853,21 @@ void ScvbOutputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
 void ScvbOutputAudioProcessor::bridgeSetUiScalePercent(int percent)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    uiScale_ = juce::jlimit(33, 300, percent); // 0.33..3.0 × 100(params-v0 §二 uiScale)
+    // 边界真源 = scvb::bridge::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
+    uiScale_ = juce::jlimit(juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f),
+                            juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f), percent);
+}
+
+void ScvbOutputAudioProcessor::bridgeSetGuideSeen(bool seen)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    runtime_.guideSeen = seen;
+}
+
+void ScvbOutputAudioProcessor::bridgeSetTourSeen(bool seen)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    runtime_.tourSeen = seen;
 }
 
 juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()

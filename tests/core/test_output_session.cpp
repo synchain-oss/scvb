@@ -198,47 +198,6 @@ TEST_CASE("OutputStateCodec:CFGS 长度 = baseSize+1/+8 尾部必须拒载(§7.3
         REQUIRE_FALSE(scvb::state::decodeOutputState(bad.data(), bad.size(), out));
     }
 }
-
-TEST_CASE("OutputStateCodec:ui 首启已读位往返 + 老工程(无尾部)兼容", "[output][state][t37]")
-{
-    // T37 真机 bug A-3:guide_seen / tour_seen 此前只活在 OutputRuntimeState,从不入 state chunk,
-    // 重开工程即回到「首启」——红字九条页与 tour 每次重放。两位必须与语言同样往返。
-    scvb::state::OutputState s;
-    REQUIRE(s.uiGuideSeen == 0); // 新工程默认「没看过」
-    REQUIRE(s.uiTourSeen == 0);
-
-    s.uiLanguage = "zh";
-    s.uiGuideSeen = 1;
-    s.uiTourSeen = 1;
-
-    std::vector<std::uint8_t> buf;
-    REQUIRE(scvb::state::encodeOutputState(s, buf));
-
-    scvb::state::OutputState d;
-    REQUIRE(scvb::state::decodeOutputState(buf.data(), buf.size(), d));
-    REQUIRE(d.uiLanguage == "zh");
-    REQUIRE(d.uiGuideSeen == 1);
-    REQUIRE(d.uiTourSeen == 1);
-
-    // 老工程 payload(24 + langBytes,无尾部两位)仍解得动,两位取默认 0。
-    std::vector<std::uint8_t> legacy(buf.begin(), buf.end() - 8);
-    scvb::state::OutputState l;
-    REQUIRE(scvb::state::decodeOutputState(legacy.data(), legacy.size(), l));
-    REQUIRE(l.uiLanguage == "zh");
-    REQUIRE(l.uiGuideSeen == 0);
-    REQUIRE(l.uiTourSeen == 0);
-
-    // 尾部布尔越界 / 半截尾部 → 拒载(CLAUDE.md §7.3 不可信字节)。
-    std::vector<std::uint8_t> tampered = buf;
-    tampered[tampered.size() - 8] = 2;
-    scvb::state::OutputState t;
-    REQUIRE_FALSE(scvb::state::decodeOutputState(tampered.data(), tampered.size(), t));
-
-    std::vector<std::uint8_t> halfTrailer(buf.begin(), buf.end() - 4);
-    scvb::state::OutputState h;
-    REQUIRE_FALSE(scvb::state::decodeOutputState(halfTrailer.data(), halfTrailer.size(), h));
-}
-
 TEST_CASE("heartbeatAgeMsOf:哨兵 / 时钟倒退 / 溢出钳位", "[output][conn][t37]")
 {
     using scvb::output::heartbeatAgeMsOf;

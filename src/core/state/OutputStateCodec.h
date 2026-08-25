@@ -16,12 +16,13 @@
 //   16 u32 uiScale(percent)
 //   20 u32 languageBytes
 //   24.. languageBytes 个 UTF-8 字节
-//   [尾部可选,T37 追加] u32 uiGuideSeen(0|1);u32 uiTourSeen(0|1)
 //
-// 尾部两位是**向后兼容的追加段**:老工程(24+langBytes 字节)照旧解码,两位取默认 0;
-// 新工程写满 24+langBytes+8。STATE_SCHEMA §一 的 ui 组自此完整落盘(scale/language/
-// guide_seen/tour_seen)——此前 guide_seen/tour_seen 只活在 OutputRuntimeState,
-// 重开工程即回到「首启」,红字页与 tour 每次重放(T37 真机 bug A-3)。
+// **本布局是定长枚举式解码(总长必须逐字等于 24+langBytes),因此不可就地追加字段** ——
+// 追加会让任何旧构建的 decode 整块拒载,而 OutputProcessor 的拒载路径是一句裸 return,
+// 结果是 group_id / 采集 / 输出 / 活动版本全部静默回默认(违反 STATE_SCHEMA §三 与
+// CLAUDE.md §7.3「不得静默丢数据」)。要加字段:① 升容器 abi 走迁移链,或
+// ② 放 PRMS 的 ValueTree(天生容忍字段增删,STATE_SCHEMA §三 的 ui 组即登记在 PRMS 名下)。
+// T37 的 guide_seen / tour_seen 走的是 ②,见 src/output/OutputUiState.h。
 //
 // [J75] T43:ui.master_chart_mode **不属**本 CFGS payload —— 它由独立 chunk 'UICF'
 // (kFourccUiConfig,定长 4 字节 u32)承载,见 encodeUiConfig / decodeUiConfig。旧版本读新工程时,
@@ -57,8 +58,6 @@ struct OutputState
     std::uint32_t uiScale = 100; // percent
     std::string uiLanguage = "en";
     // masterChartMode 不属 CFGS:由独立 UICF chunk(kFourccUiConfig)承载,见 encodeUiConfig/decodeUiConfig。
-    std::uint32_t uiGuideSeen = 0; // 首启红字九条页已读(§1.32;0|1)
-    std::uint32_t uiTourSeen = 0; // 交互式导览已完成/已婉拒(§1.33;0|1)
 };
 
 // 编码;语言超长截断(≤kOutputLanguageMaxBytes)。返回 false = 无法分配。
