@@ -560,6 +560,12 @@ export function createTabSuggestions(opts) {
         if (node && node.textContent !== next) node.textContent = next;
     }
 
+    /** 同上,属性侧。renderChrome 每帧都跑,属性写入同样是每帧的真实 DOM 变更。 */
+    function setAttr(node, name, next) {
+        const v = String(next);
+        if (node && node.getAttribute(name) !== v) node.setAttribute(name, v);
+    }
+
     function renderChrome() {
         const total = local.rows.length;
         // 版本名从 state 读而不是从行里读:空表时也要说清「你看的是哪个版本的建议」
@@ -580,11 +586,8 @@ export function createTabSuggestions(opts) {
         // 图例讲的是那几列怎么读 —— 表都不在了就别挂着它占位
         if (el.legend) el.legend.hidden = total === 0;
         if (el.table) {
-            el.table.setAttribute("aria-rowcount", String(total + 1)); // +1 = 表头行
-            el.table.setAttribute(
-                "aria-colcount",
-                String(SUGGEST_COLUMNS.length),
-            );
+            setAttr(el.table, "aria-rowcount", total + 1); // +1 = 表头行
+            setAttr(el.table, "aria-colcount", SUGGEST_COLUMNS.length);
         }
 
         // 过期采集提示:照着一张过期的表在 DAW 里设值,是本视图唯一会误导用户的场景。
@@ -607,9 +610,10 @@ export function createTabSuggestions(opts) {
 
         if (el.exportBtn) {
             const off = total === 0 || local.busy || !exportAvailable();
-            el.exportBtn.setAttribute("data-disabled", off ? "1" : "0");
-            el.exportBtn.setAttribute("aria-disabled", off ? "true" : "false");
-            el.exportBtn.setAttribute(
+            setAttr(el.exportBtn, "data-disabled", off ? "1" : "0");
+            setAttr(el.exportBtn, "aria-disabled", off ? "true" : "false");
+            setAttr(
+                el.exportBtn,
                 "title",
                 exportAvailable()
                     ? ""
@@ -629,7 +633,7 @@ export function createTabSuggestions(opts) {
                     : null);
             setText(el.status, s ? fill(t(s.key, s.key), s.args || {}) : "");
             el.status.hidden = !s;
-            el.status.setAttribute("data-tone", (s && s.tone) || "info");
+            setAttr(el.status, "data-tone", (s && s.tone) || "info");
         }
     }
 

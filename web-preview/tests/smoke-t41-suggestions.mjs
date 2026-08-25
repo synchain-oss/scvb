@@ -815,6 +815,10 @@ log("=== ⑩ 源码不变式 ===");
         "renderChrome 里没有 O(行数) 全表扫描(计数挪进了脏块)",
     );
     check(
+        !/\.setAttribute\(/.test(chrome),
+        "renderChrome 里没有裸 setAttribute(属性写入同样每帧,全走 setAttr)",
+    );
+    check(
         /data-gb="suggest-scroll"[\s\S]{0,200}data-t-aria="suggest\.rowsAria"/.test(
             html,
         ),
