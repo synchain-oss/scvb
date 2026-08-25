@@ -82,13 +82,27 @@ function referencesIn(file) {
 
 /**
  * 插件里的服务 URL 归一 —— 复刻真机行为:
- *   • 根 = https://juce.backend/,index.html 服务在根;
- *   • 相对路径按标准 URL 解析,`../` 到根为止会被**钳制**(这正是 ../shared/x.js
- *     能落到 /shared/x.js 的原因);
- *   • ResourceProvider 只看最后一段 basename。
+ *   • origin = https://juce.backend;**入口 = /<role>/index.html**,与 C++ 侧
+ *     WebViewHost::entryUrl() 同口径(真源在那里,本文件下面会对拍)。入口带上角色目录,
+ *     服务 URL 空间才与 web/ 的磁盘布局逐段对齐;
+ *   • 相对路径按标准 URL 解析;
+ *   • ResourceProvider 只看最后一段 basename,所以**同一个文件在多个 URL 下都取得到** ——
+ *     正因如此 URL 必须唯一,否则 ES module 会按 URL 各实例化一份(见 ③)。
  */
 const ORIGIN = "https://juce.backend";
 const servedUrl = (fromUrl, ref) => new URL(ref, ORIGIN + fromUrl).pathname;
+
+/**
+ * 持有模块级状态的 canvas 绘制模块。被实例化两份时,两个 tab 各拿一份,状态各走各的
+ * (实证:Tab1 轨迹图与 Tab3 波形页的播放头对不上)。单列一条命名断言,让回归时的失败
+ * 信息直指「这几个模块不是单例了」,而不是淹在通用的 URL 去重报错里。
+ */
+const STATEFUL_CANVAS_MODULES = [
+    "timeline.js",
+    "hidpi.js",
+    "layers.js",
+    "playhead.js",
+];
 
 function checkRole(role) {
     console.log(`\n--- ${role} ---`);
@@ -104,12 +118,13 @@ function checkRole(role) {
     }
     console.log(`  打包 ${files.length} 个文件,basename 唯一`);
 
-    // ②③ 从 index.html 出发遍历引用图
+    // ②③ 从 index.html 出发遍历引用图。入口 URL 与 C++ 的 entryUrl() 同口径。
     const entry = `web/${role}/index.html`;
+    const entryUrl = `/${role}/index.html`;
     const seenUrls = new Map(); // servedUrl -> 实际文件
     const urlsPerFile = new Map(); // 文件 -> 取到它的 servedUrl 集合
-    const queue = [[entry, "/"]];
-    const visited = new Set(["/"]);
+    const queue = [[entry, entryUrl]];
+    const visited = new Set([entryUrl]);
 
     while (queue.length > 0) {
         const [file, url] = queue.shift();
@@ -139,6 +154,43 @@ function checkRole(role) {
             );
     }
     console.log(`  从 index.html 可达 ${visited.size} 个 URL,引用全部命中`);
+
+    // ③b canvas 模块单例(命名断言,防回归)。
+    // 通用的「一个文件不许被两个 URL 取到」已经覆盖它,但那条报错太泛;这几个模块持有
+    // 播放头/图层状态,分裂后的症状是「两个 tab 显示不一致」而非报错,值得单独点名。
+    for (const name of STATEFUL_CANVAS_MODULES) {
+        const file = byBase.get(name);
+        if (!file) continue; // 该侧没打包这个模块(Input 不含 canvas)
+        const urls = urlsPerFile.get(file);
+        if (!urls || urls.size === 0) continue; // 打包了但没被引用,不算问题
+        if (urls.size > 1)
+            bad(
+                `${role}:canvas 模块 ${name} 不是单例 —— 被 ${urls.size} 个 URL 取到` +
+                    `(${[...urls].join(" / ")});两个 tab 会各持一份播放头/图层状态`,
+            );
+    }
+    const canvasChecked = STATEFUL_CANVAS_MODULES.filter((n) =>
+        byBase.has(n),
+    ).length;
+    if (canvasChecked > 0)
+        console.log(
+            `  canvas 模块单例:${canvasChecked} 个受检模块各只有一个 URL`,
+        );
+
+    // ③c 入口 URL 与 C++ 的 entryUrl() 同口径 —— 两边漂了,这套模拟的就不是真机行为。
+    const hostCpp = readFileSync(
+        join(ROOT, "src/plugin-common/WebViewHost.cpp"),
+        "utf8",
+    );
+    if (
+        !/getResourceProviderRoot\(\)\s*\+\s*config_\.role\s*\+\s*"\/index\.html"/.test(
+            hostCpp,
+        )
+    )
+        bad(
+            "WebViewHost::entryUrl() 不再是 <root>/<role>/index.html —— " +
+                "本套的 URL 模型已与真机不符,请同批更新",
+        );
 
     // ④ boot 守卫在场且事件名与 C++ 真源一致
     const header = readFileSync(

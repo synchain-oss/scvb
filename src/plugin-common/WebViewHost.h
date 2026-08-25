@@ -127,6 +127,11 @@ private:
     void onNavigationError(const juce::String& errorInfo);
     void handleBootError(const juce::var& payload); // 前端 boot 失败上报(非契约面,见 .cpp)
 
+    // 首页 URL = <provider root>/<role>/index.html。让服务 URL 空间与 web/ 的磁盘布局
+    // 逐段对齐,从而保证 ES module 身份唯一(同一文件不会被两个 URL 各实例化一份)。
+    // 完整理由见 .cpp 实现处 —— 这条是 Tab1/Tab3 播放头状态分裂那个 bug 的根子。
+    juce::String entryUrl() const;
+
     void beginLoadAttempt(); // 起算看门狗(构造 / retry 共用)
     void releaseReadyBridge(); // 把本实例从「活着的桥」计数里摘掉(retry / 析构)
     juce::String buildDiagnostics() const; // 兜底面板诊断行 + 日志行的同一份文本

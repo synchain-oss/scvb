@@ -167,9 +167,30 @@ void WebViewHost::beginLoadAttempt()
 
     // 必须在任何 emit 之前完成首个 goToURL(前端脚本随后加载并注册监听)。
     webView_->setVisible(true);
-    webView_->goToURL(WBC::getResourceProviderRoot());
+    webView_->goToURL(entryUrl());
     if (!isTimerRunning())
         startTimerHz(25);
+}
+
+// 首页 URL = <provider root>/<role>/index.html,**不是**裸的 provider root。
+//
+// 这一条不是风格问题,它决定 ES module 的身份。浏览器按**URL**认模块:同一个文件被两个
+// 不同 URL 取到,就会被实例化两次,两份各持一套模块级状态。而 ResourceProvider 按
+// basename 扁平反查,同一个文件在多个 URL 下都取得到 —— 于是「服务路径」与「磁盘路径」
+// 一旦不一致,就会凭空多出模块副本。
+//
+// 从根目录进入时正是不一致的:index.html 在 /,于是 web/output/tab-wave.js 的
+// `./canvas/timeline.js` 落在 /canvas/timeline.js;而 web/shared/trajectory-chart.js
+// 在 /shared/,它按磁盘写的 `../output/canvas/timeline.js` 落在 /output/canvas/timeline.js。
+// 同一个 timeline.js,两个 URL,两份 playhead 状态 —— Tab1 与 Tab3 的播放头因此对不上
+// (fieldfix-r3 实证)。
+//
+// 改从 /<role>/index.html 进入后,服务 URL 空间与 web/ 的磁盘布局逐段对齐:每个相对
+// 引用解析出的路径都与浏览器预览(按真实目录服务)完全相同,模块身份天然唯一。
+// 这也让「预览里能跑 = 插件里能跑」重新成立 —— 之前那条差异正是本类故障的温床。
+juce::String WebViewHost::entryUrl() const
+{
+    return WBC::getResourceProviderRoot() + config_.role + "/index.html";
 }
 
 WebViewHost::~WebViewHost()
