@@ -112,6 +112,10 @@ const store = {
         wasPrinting: false,
         guideClosed: false,
         langChosen: false, // 首启语言选择卡本会话已选(不入 state chunk,零桥/零契约)
+        // 询问步本会话已答(开始 / 暂不 / tour 已结束)。**必须与 setTourSeen 的回执解耦**:
+        // 桥回执 + 下一拍 scvb.state 之前,syncTourAsk 会照旧判「该弹」,询问卡在 tour 结束
+        // 的那一帧当场重弹、tour 被重放(T37 真机 bug A-2)。判定见 tour.js shouldAutoShowTourAsk。
+        tourAnswered: false,
         // C++ 侧 `{rejected:"printing"}` 的**渲染窗口**(§5.6「UI 与 C++ 双保险」的 C++ 半边命中时)。
         // 之所以要一个时间戳而不是就地 setAttribute:renderHeader 每次都按 phase 重算 chip 的
         // data-disabled,就地写会在同一拍被抹回 0(UI 与引擎状态不同步时 phase 恰恰不是 print)。
@@ -426,6 +430,12 @@ tour = createTour({
     showDemoSelection: () => tabWave.showDemoSelection(),
     showDemoSegment: () => tabWave.showDemoSegment(),
     resetWaveView: () => tabWave.resetWaveView(),
+    // 结束(完成或 Skip)即刻落「本会话已答」位:setTourSeen 的回执与下一拍 scvb.state
+    // 都还没到,syncTourAsk 若只看 state 会在这一帧把询问卡重新弹出来(bug A-2)。
+    onEnd: () => {
+        store.session.tourAnswered = true;
+        if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
+    },
 });
 tour.mount();
 
@@ -940,6 +950,7 @@ const tourAskUi = {
 
 if (tourAskUi.start) {
     tourAskUi.start.addEventListener("click", () => {
+        store.session.tourAnswered = true;
         if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
         if (tour) tour.start();
     });
@@ -947,6 +958,7 @@ if (tourAskUi.start) {
 if (tourAskUi.later) {
     tourAskUi.later.addEventListener("click", () => {
         // 暂不 = 婉拒 tour,同样置位(§2.6:完成与暂不都 setTourSeen(true, true))。
+        store.session.tourAnswered = true;
         call("setTourSeen", true, true);
         if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
     });
@@ -1328,7 +1340,13 @@ function renderLangStart() {
 function syncTourAsk() {
     if (!tourAskUi.overlay) return;
     if (tour && tour.isActive()) return;
-    if (shouldAutoShowTourAsk(store.state, store.snapshot)) {
+    if (
+        shouldAutoShowTourAsk(
+            store.state,
+            store.snapshot,
+            store.session.tourAnswered,
+        )
+    ) {
         tourAskUi.overlay.hidden = false;
     }
 }
