@@ -276,6 +276,48 @@ else {
 }
 
 # ==================================================================
+Write-Host '=== Gate 3g: IPC 契约文档对拍(IPC_CONTRACT.md <-> ipc-layout golden)==='
+# ==================================================================
+# #75(T39a)把 docs/IPC_CONTRACT.md 转正时,文档里的结构体偏移/大小与实现漂移,
+# 靠人审来回修了三轮才收口 —— 人眼数不住 offset,「16..76」错成「16..80」评审
+# 100% 看不出来。真源链是 代码 →(tests/core/test_ipc_layout.cpp 的编译期断言)→
+# tests/golden/ipc-layout.txt → docs/IPC_CONTRACT.md;最后一环此前全靠人肉维护,
+# 本 gate 就是把它机检起来(方向不可颠倒:以 golden 为真,文档是被检侧)。
+# 顺带补 golden 的完备性洞:C++ 测试只查「golden 每行都对得上代码」,查不出
+# 「代码新增字段而 golden 漏冻」,故脚本另读头文件比对字段集合与顺序。
+#
+# node 守卫同 Gate 3e/3f:找不到 node 时 $LASTEXITCODE 会保留上一条外部命令的 0,
+# 「一条都没跑」会被判成全绿。误报绿比硬失败危险得多。
+if (-not $nodeCmd) {
+  Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
+  Set-Gate '3g IPC 契约文档对拍' $false
+}
+else {
+  # 脚本要求三侧文件齐备(缺一侧自己会硬失败),这里再做一次存在性守卫,
+  # 好在文件被挪走时给出比 node 栈更直白的提示。
+  $ipcParityInputs = @(
+    'docs\IPC_CONTRACT.md',
+    'tests\golden\ipc-layout.txt',
+    'src\core\ipc\SegmentLayout.h',
+    'src\core\ipc\CtrlPlane.h'
+  )
+  $ipcMissing = @($ipcParityInputs | Where-Object { -not (Test-Path (Join-Path $RepoRoot $_)) })
+  if ($ipcMissing.Count -gt 0) {
+    Write-Host ('  对拍输入缺失: {0}' -f ($ipcMissing -join ', ')) -ForegroundColor Red
+    Set-Gate '3g IPC 契约文档对拍' $false
+  }
+  else {
+    $ipcOut = (& node scripts\check-ipc-doc-parity.mjs 2>&1)
+    $ipcOk = ($LASTEXITCODE -eq 0)
+    # 非零才打全量;绿时也把 [WARN](文档未标注、无法机检的项)透出来,
+    # 免得「机检覆盖不到的洞」悄悄扩大 —— 补齐后可给脚本加 --strict 收紧。
+    if (-not $ipcOk) { $ipcOut | ForEach-Object { Write-Host ("  " + $_) } }
+    else { $ipcOut | Select-String -Pattern '\[WARN\]' | ForEach-Object { Write-Host ("  " + $_) } }
+    Set-Gate '3g IPC 契约文档对拍' $ipcOk
+  }
+}
+
+# ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)
 # ==================================================================
 $cfg = (& cmake -S . -B $BuildDir "-DCMAKE_BUILD_TYPE=$Config" "-DSCVB_BUILD_TESTS=ON" "-DJUCE_PATH=$JucePath" 2>&1)

@@ -86,6 +86,16 @@ jobs:
       - name: Bilingual doc structure parity
         shell: pwsh
         run: ./scripts/check-readme-parity.ps1
+      - name: IPC contract doc parity (doc <-> golden <-> headers)
+        # 与 scripts/gates.ps1 的 Gate 3g **同一条命令**。docs/IPC_CONTRACT.md 是冻结契约,
+        # 而它写的 offset / size / align / 常量 / 段名 / 落点算术此前只有人眼在看 —— #75
+        # 那轮就是靠人审来回三次才收口,而「16..76」错成「16..80」评审 100% 看不出来。
+        # 与 gen-hard-rules 同档放进 docs-truth:两者都是「文档 ↔ 真源」的逐字节对拍,
+        # 只挂在本地 gates 上等于没有执行者。零依赖(仓内脚本 + 本 job 已有的 node),
+        # 无 secrets ⇒ fork PR 也跑得动。
+        # 不加 --strict:文档「未标注」按 WARN 走(判级理由见脚本头注),等契约 §5
+        # 补齐标注后再把它收紧成红线。
+        run: node scripts/check-ipc-doc-parity.mjs
       - name: Dead link check (markdown-link-check)
         # .markdown-link-check.json 此前是一份**没有执行者**的配置:全仓没有 workflow
         # 也没有 gates 档位跑它,死链照样能进绿 CI,而下一个改文档的人不会知道要手工跑。
