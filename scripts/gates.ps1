@@ -335,6 +335,31 @@ else {
 }
 
 # ==================================================================
+# ---- gate 4/5/6 前置守卫:cmake / ctest 必须真实可执行 ----
+# 不设守卫的后果不是「报错」,是**假绿**:外部命令不存在时 PowerShell 抛
+# command-not-found,但 $LASTEXITCODE 保留上一条命令的旧值(通常 0),
+# 于是 Set-Gate ($LASTEXITCODE -eq 0) 判 PASS —— 构建与测试一次没跑却全绿。
+# 同族教训见 node(Gate 3e)/ gitleaks(Gate 3b)的 Get-Command 守卫。
+$cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
+$ctestCmd = Get-Command ctest -ErrorAction SilentlyContinue
+$buildToolsOk = $true
+if (-not $cmakeCmd) {
+  Write-Host '  cmake 不在 PATH —— gate 4/5/6 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  $buildToolsOk = $false
+}
+if (-not $ctestCmd) {
+  Write-Host '  ctest 不在 PATH —— gate 6 无法执行(同上)' -ForegroundColor Red
+  $buildToolsOk = $false
+}
+if (-not $buildToolsOk) {
+  Write-Host '  提示:仓库自带 cmake 在 ..\tools\cmake-*-windows-x86_64\bin,加进 PATH 后重跑。' -ForegroundColor Yellow
+  Set-Gate '4 配置' $false
+  Set-Gate '5 构建' $false
+  Set-Gate '6 ctest' $false
+}
+else {
+
+# ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)
 # ==================================================================
 $cfg = (& cmake -S . -B $BuildDir "-DCMAKE_BUILD_TYPE=$Config" "-DSCVB_BUILD_TESTS=ON" "-DJUCE_PATH=$JucePath" 2>&1)
@@ -368,6 +393,8 @@ Write-Host '=== Gate 6: ctest ==='
 $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error 2>&1)
 if ($LASTEXITCODE -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
 Set-Gate '6 ctest' ($LASTEXITCODE -eq 0)
+
+} # end gate 4/5/6 守卫 else
 
 # ==================================================================
 # Gate 7: pluginval 非 GUI(与 CI 等价,06 §3.1)
