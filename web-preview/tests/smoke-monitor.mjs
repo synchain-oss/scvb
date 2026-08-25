@@ -258,7 +258,28 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
         );
         const mirrorKey = (f) => `${f.struct}.${f.name}`;
         const gset = goldenFields.map(mirrorKey);
-        const mset = VC.VIZ_FIELDS.map(mirrorKey);
+
+        // **已承诺但尚未落段的字段**(T44 2026-08-25 对表信答应加的 `VizTrackState` /
+        // `VizTrackLabels`)。golden 里还没有它们时**不算镜像多写** —— 那是 native 侧
+        // 还没推,不是这边写错了;打 [SKIP] 说明白在等谁。它们一落段,下面的分支就
+        // 自动切到全量对拍,不需要谁回来改这个脚本。
+        const promised = new Set(VC.VIZ_PROMISED_FIELDS);
+        const isPromised = (f) => promised.has(f.json);
+        const landedMirror = VC.VIZ_FIELDS.filter((f) => !isPromised(f));
+        const promisedMirror = VC.VIZ_FIELDS.filter(isPromised);
+        const goldenHasPromised = promisedMirror.some((f) =>
+            gset.includes(mirrorKey(f)),
+        );
+        const expectMirror = goldenHasPromised ? VC.VIZ_FIELDS : landedMirror;
+        if (!goldenHasPromised) {
+            skip(
+                `golden 里还没有 T44 已答应的 ${promisedMirror.length} 个字段` +
+                    `(${promisedMirror.map((f) => f.json).join(" / ")})—— ` +
+                    "等 T44 推段字段扩充;其余字段照常全量对拍",
+            );
+        }
+        const mset = expectMirror.map(mirrorKey);
+
         for (const k of gset) {
             check(mset.includes(k), `golden 的字段 ${k} 在 JS 镜像表里`);
         }
@@ -285,10 +306,50 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
         "attach 三态(failed 与 abiMismatch 必须可区分)",
     );
     eq(
-        VC.VIZ_PENDING_TRACK_FIELDS.slice(),
-        ["volDb", "widthPct", "label"],
-        "待 T44 补的三条字段有名有姓地记着(不是散在注释里)",
+        VC.VIZ_PROMISED_FIELDS.slice(),
+        ["trackPanNow", "trackVolDb", "trackWidthPct", "trackLabels"],
+        "T44 已答应落段的四条,按承诺的 json 名记着",
     );
+    eq(
+        VC.VIZ_PENDING_FIELDS.slice(),
+        ["leadMask"],
+        "仍待 T44 确认的只剩 leadMask(有名有姓,不是散在注释里)",
+    );
+    eq(VC.DIST_REQUIRES, "trackVolDb", "分布图整块降级的判据字段");
+    // 三条标量的量纲逐条钉住 —— 定点解码用的就是它们,写错一个就是整排柱高错
+    eq(
+        VC.VIZ_TRACK_STATE_RANGE.trackPanNow,
+        { lo: -100, hi: 100 },
+        "panNow 值域 = 角度域",
+    );
+    eq(
+        VC.VIZ_TRACK_STATE_RANGE.trackVolDb,
+        { lo: -24, hi: 12 },
+        "volDb 值域 = params-v0 的 vol 行程",
+    );
+    eq(
+        VC.VIZ_TRACK_STATE_RANGE.trackWidthPct,
+        { lo: 0, hi: 100 },
+        "widthPct 值域",
+    );
+    eq(
+        VC.PAN_NOW_PRIORITY.slice(),
+        ["trackPanNow", "lanes[headColumn]", "0"],
+        "panNow 取值优先级:**标量优先**(T44 对表信定的口径,不是车道优先)",
+    );
+    // 三条标量都必须落在 int16 里(定点 ×100 之后)
+    for (const [k, r] of Object.entries(VC.VIZ_TRACK_STATE_RANGE)) {
+        for (const v of [r.lo, r.hi]) {
+            check(
+                Math.abs(v * VC.VIZ_PAN_SCALE) <= 32767,
+                `${k} 的端点 ${v} 定点后落在 int16 内`,
+            );
+            check(
+                v * VC.VIZ_PAN_SCALE !== VC.VIZ_PAN_NONE,
+                `${k} 的端点 ${v} 定点后不与哨兵相撞`,
+            );
+        }
+    }
 }
 
 // =============================================================================
@@ -700,89 +761,156 @@ function paint(frame, ch, from, to, pan) {
 }
 
 {
-    // ---- 分布图:横位取**播放头所在列的车道值**(与轨迹图同源,两图横位天然对齐)
+    // ---- 分布图:数据源 = VizTrackState 三条定点标量 + VizTrackLabels + 三张掩码。
+    // 段里每一块都是**定长 15、下标即轨号**,故这里也按下标填。
+    const none = VC.VIZ_PAN_NONE;
+    const fill15 = (pairs) => {
+        const a = new Array(VC.VIZ_TRACKS).fill(none);
+        for (const [ch, v] of pairs) a[ch - 1] = MMOCK.fixedOf(v);
+        return a;
+    };
     const f = makeFrame({ playheadS: 7.5 });
     paint(f, 1, 0, 20, -30);
     paint(f, 2, 0, 20, 60);
-    f.tracks = [
-        {
-            ch: 1,
-            label: "主唱",
-            volDb: -6,
-            widthPct: 100,
-            lead: true,
-            panNow: 0,
-        },
-        {
-            ch: 2,
-            label: "和声",
-            volDb: -12,
-            widthPct: 82,
-            lead: false,
-            panNow: 0,
-        },
-    ];
+    f.trackVolDb = fill15([
+        [1, -6],
+        [2, -12],
+    ]);
+    f.trackWidthPct = fill15([
+        [1, 100],
+        [2, 82],
+    ]);
+    // panNow **刻意与车道不同值**:才验得出「标量优先、不是车道优先」
+    f.trackPanNow = fill15([
+        [1, -25],
+        [2, 55],
+    ]);
+    f.trackLabels = ["主唱", "和声"].concat(
+        new Array(VC.VIZ_TRACKS - 2).fill(""),
+    );
     f.stereoMask = MMOCK.maskOf([2]);
+    f.leadMask = MMOCK.maskOf([1]);
 
     const rows = VIZ.vizDistRows(f);
     eq(rows.length, 2, "两轨都画柱");
-    eq(rows[0].pan, -30, "轨 1 的横位取第 7 列的车道值(−30),不是 panNow");
-    eq(rows[1].pan, 60, "轨 2 同理");
-    eq(rows[0].volDb, -6, "柱高来自 volDb");
-    eq(rows[1].widthPct, 82, "张开线来自 widthPct");
-    eq(rows[0].lead, true, "lead 位透传(柱顶绿帽)");
-    eq(rows[1].stereo, true, "立体声位来自 stereoMask,不是 tracks 里的字段");
+    // T44 对表信定的口径:panNow 是**播放头精确时刻**的求值,车道是列中心点采样。
+    // 分布图要「此刻」⇒ 标量优先。写反了在放大档下柱与播放头对不上,而且看起来正常。
+    eq(rows[0].pan, -25, "横位取 trackPanNow(−25),**不是**车道第 7 列的 −30");
+    eq(rows[1].pan, 55, "轨 2 同理:标量 55 而非车道 60");
+    eq(rows[0].volDb, -6, "柱高来自 trackVolDb(定点解码)");
+    eq(rows[1].widthPct, 82, "张开线来自 trackWidthPct");
+    eq(rows[0].lead, true, "柱顶绿帽来自 leadMask");
+    eq(rows[1].lead, false, "非 lead 轨不戴帽");
+    eq(rows[1].stereo, true, "立体声位来自 stereoMask");
 
-    // 播放头在窗口外 ⇒ 回落 panNow
-    const out = VIZ.vizDistRows({ ...f, playheadS: 9999 });
-    eq(out[0].pan, 0, "播放头在窗口外 ⇒ 回落到桥给的 panNow");
-
-    // ---- **待 T44 补字段**的降级:tracks 缺失 ⇒ 分布图画空,不猜、不填 0
-    const noTracks = { ...f, tracks: undefined };
+    // 标量是哨兵 ⇒ 回落到播放头所在列的车道点采样
+    const sentinelPan = { ...f, trackPanNow: fill15([[2, 55]]) }; // 轨 1 = 哨兵
     eq(
-        VIZ.vizDistRows(noTracks),
+        VIZ.vizDistRows(sentinelPan)[0].pan,
+        -30,
+        "trackPanNow 是哨兵 ⇒ 回落车道第 7 列(−30)",
+    );
+    // 标量哨兵 + 播放头在窗口外 ⇒ 才落到 0
+    eq(
+        VIZ.vizDistRows({ ...sentinelPan, playheadS: 9999 })[0].pan,
+        0,
+        "两条都拿不到 ⇒ 0(居中,不撒谎的默认)",
+    );
+
+    // ---- 整块降级:trackVolDb 缺失 ⇒ 分布图画空,不猜、不填 0
+    const noState = { ...f, trackVolDb: undefined };
+    eq(
+        VIZ.vizDistRows(noState),
         [],
-        "缺 tracks ⇒ 分布图 rows 为空(不造幽灵柱)",
+        "缺 trackVolDb ⇒ 分布图 rows 为空(不造幽灵柱)",
     );
     eq(
-        DC.distBarsHtml(VIZ.vizDistRows(noTracks), 0),
+        DC.distBarsHtml(VIZ.vizDistRows(noState), 0),
         "",
         "拼串也是空(页面上是一张空图,不是一排居中的假柱)",
     );
     eq(
-        VIZ.vizSeries(noTracks).map((s) => s.ch),
+        VIZ.vizSeries(noState).map((s) => s.ch),
         [1, 2],
         "轨迹图**不受影响**照常画(降级只砍分布图这一半)",
     );
     eq(
-        VIZ.vizLegendRows(noTracks).map((r) => r.ch),
+        VIZ.vizLegendRows(noState).map((r) => r.ch),
         [1, 2],
         "图例仍列轨迹图画了的轨",
     );
+    const noLabels = { ...noState, trackLabels: undefined };
     eq(
-        VIZ.vizLegendRows(noTracks).map((r) => r.label),
+        VIZ.vizLegendRows(noLabels).map((r) => r.label),
         ["", ""],
-        "缺 label ⇒ 空串(图例只显示两位轨号,不显示 undefined)",
+        "缺 trackLabels ⇒ 空串(图例只显示两位轨号,不显示 undefined)",
     );
 
-    // ---- volDb 缺失的单轨不画(与 Tab1「空闲轨不画幽灵柱」同一条纪律)
-    const partial = {
-        ...f,
-        tracks: [
-            { ch: 1, label: "主唱", widthPct: 100 }, // 无 volDb
-            { ch: 2, label: "和声", volDb: -12, widthPct: 82 },
-        ],
-    };
+    // ---- leadMask 缺失(仍待 T44 确认)⇒ 柱照画、一律不戴绿帽
+    const noLead = { ...f, leadMask: undefined };
+    eq(
+        VIZ.vizDistRows(noLead).map((r) => r.lead),
+        [false, false],
+        "缺 leadMask ⇒ 一律不戴绿帽(少个信息 好过 标错主唱)",
+    );
+    eq(VIZ.vizDistRows(noLead).length, 2, "缺 leadMask 不影响柱本身");
+    check(
+        !DC.distBarsHtml(VIZ.vizDistRows(noLead), 0).includes('data-lead="1"'),
+        "拼串里没有一个 data-lead=1",
+    );
+
+    // ---- 单轨的 volDb 是哨兵 ⇒ 那一轨不画(与 Tab1「空闲轨不画幽灵柱」同一纪律)
+    const partial = { ...f, trackVolDb: fill15([[2, -12]]) }; // 轨 1 = 哨兵
     eq(
         VIZ.vizDistRows(partial).map((r) => r.ch),
         [2],
-        "没有 volDb 的那一轨不画柱",
+        "volDb 是哨兵的那一轨不画柱",
     );
+    // 0 dB **不是**哨兵 —— 0 是合法音量,不许被当成「没有数据」
+    const zeroDb = { ...f, trackVolDb: fill15([[1, 0]]) };
+    eq(
+        VIZ.vizDistRows(zeroDb).map((r) => [r.ch, r.volDb]),
+        [[1, 0]],
+        "volDb = 0 dB 是合法值,照画(哨兵才是没有数据)",
+    );
+    // width = 0 同理:0 是合法宽度,回落 100 只在**哨兵**时发生
+    const zeroWidth = {
+        ...f,
+        trackVolDb: fill15([[1, -6]]),
+        trackWidthPct: fill15([[1, 0]]),
+    };
+    eq(VIZ.vizDistRows(zeroWidth)[0].widthPct, 0, "width = 0 照用,不回落 100");
+    const noWidth = {
+        ...f,
+        trackVolDb: fill15([[1, -6]]),
+        trackWidthPct: undefined,
+    };
+    eq(
+        VIZ.vizDistRows(noWidth)[0].widthPct,
+        100,
+        "width 整块缺 ⇒ 回落 100(不张开)",
+    );
+
+    // ---- 定点解码的边界
+    eq(VIZ.trackScalar(f, "trackVolDb", 1), -6, "trackScalar 解码 dB");
+    eq(VIZ.trackScalar(f, "trackVolDb", 99), null, "轨号越界 ⇒ null");
+    eq(VIZ.trackScalar(f, "nope", 1), null, "未知字段 ⇒ null");
+    eq(VIZ.trackScalar({}, "trackVolDb", 1), null, "整块缺 ⇒ null");
+    eq(VIZ.trackLabel(f, 1), "主唱", "轨名解码");
+    eq(VIZ.trackLabel({}, 1), "", "缺轨名表 ⇒ 空串,不是 undefined");
+    eq(VIZ.fixedToUnit(1200, -24, 12), 12, "定点 1200 = +12 dB");
+    eq(VIZ.fixedToUnit(-2400, -24, 12), -24, "定点 −2400 = −24 dB");
+    eq(VIZ.fixedToUnit(99999, -24, 12), 12, "越界定点夹到上限");
+    eq(VIZ.fixedToUnit(none, -24, 12), null, "哨兵 ⇒ null,不是 0");
+    eq(VIZ.fixedToUnit(0, -24, 12), 0, "0 是合法值,不是 null");
 
     // ---- 图例 = 两图并集(两图同屏,跟着任一张都会出现「有它却找不到」)
     const union = makeFrame({ playheadS: 1 });
     paint(union, 1, 0, 5, 0); // 只有轨迹
-    union.tracks = [{ ch: 4, label: "只有柱", volDb: -9, widthPct: 100 }];
+    union.trackVolDb = fill15([[4, -9]]);
+    union.trackWidthPct = fill15([[4, 100]]);
+    union.trackLabels = new Array(VC.VIZ_TRACKS).fill("");
+    union.trackLabels[3] = "只有柱";
     union.onlineMask = (union.onlineMask | (1 << 3)) >>> 0;
     eq(
         VIZ.vizSeries(union).map((s) => s.ch),
@@ -1124,15 +1252,15 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
 }
 
 {
-    // ---- **待 T44 补字段**的真实形态:段里没有 tracks
+    // ---- 降级 ①:段里没有 VizTrackState / VizTrackLabels(旧版 Output 的形态)
     const s = MMOCK.createPreviewSession({
         params: "?scenario=monitor-no-tracks",
     });
     const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
     const snap = await bridge.requestInitialState();
     check(
-        snap.viz.tracks === undefined,
-        "段里没有 tracks(= T44 v1 的真实形态)",
+        snap.viz.trackVolDb === undefined && snap.viz.trackLabels === undefined,
+        "段里没有 VizTrackState / VizTrackLabels",
     );
     eq(VIZ.vizAccepts(snap.viz).reason, "", "帧本身仍然可读");
     eq(
@@ -1149,9 +1277,61 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     eq(
         VIZ.vizLegendRows(snap.viz).every((r) => r.label === ""),
         true,
-        "缺 label ⇒ 图例只剩两位轨号",
+        "缺轨名 ⇒ 图例只剩两位轨号",
     );
     s.stop();
+}
+
+{
+    // ---- 降级 ②:有三条标量、但没有 track_lead_mask(仍待 T44 确认)
+    const s = MMOCK.createPreviewSession({
+        params: "?scenario=monitor-no-lead",
+    });
+    const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
+    const snap = await bridge.requestInitialState();
+    eq(snap.viz.leadMask, 0, "leadMask 为 0(模拟段里还没有这个字段)");
+    eq(VIZ.vizDistRows(snap.viz).length, 15, "15 根柱照画");
+    check(
+        VIZ.vizDistRows(snap.viz).every((r) => r.lead === false),
+        "一律不戴绿帽",
+    );
+    check(
+        !DC.distBarsHtml(VIZ.vizDistRows(snap.viz), 0).includes(
+            'data-lead="1"',
+        ),
+        "拼串里没有一个 data-lead=1",
+    );
+    s.stop();
+}
+
+{
+    // ---- 轨名的 UTF-8 定长槽(T44:每轨 32 B,按 UTF-8 边界截断,不切半个汉字)
+    eq(MMOCK.truncateUtf8("主唱", 32), "主唱", "短名原样");
+    // 中文一字 3 字节 ⇒ 32 B 装得下 10 个字
+    eq(
+        MMOCK.truncateUtf8("一二三四五六七八九十百千", 32).length,
+        10,
+        "10 个汉字后截断",
+    );
+    check(
+        new TextEncoder().encode(
+            MMOCK.truncateUtf8("一二三四五六七八九十百千", 32),
+        ).length <= 32,
+        "截断后不超 32 字节",
+    );
+    // 关键:**不切出半个字符**(切了的话 JS 侧会看到替换字符 U+FFFD)
+    check(
+        !MMOCK.truncateUtf8("一二三四五六七八九十百千", 32).includes("�"),
+        "不切出半个汉字",
+    );
+    // 增补平面(emoji,4 字节)同样不切成半个代理对
+    const emo = MMOCK.truncateUtf8("🎤🎤🎤🎤🎤🎤🎤🎤🎤", 32);
+    check(!emo.includes("�"), "增补平面字符不切成半个代理对");
+    check(
+        new TextEncoder().encode(emo).length <= 32,
+        "emoji 截断后也不超 32 字节",
+    );
+    eq([...emo].length, 8, "32 B / 4 B 每个 = 8 个 emoji");
 }
 
 {

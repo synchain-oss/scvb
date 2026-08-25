@@ -7,12 +7,17 @@
 // 键就必须同批重生成那个头文件,而本卡的纪律是**不碰 src/**(native 侧 Monitor 壳
 // 归 T45)。故尺寸暂存本文件,由 Monitor 页面与 `web-preview/shell.js` 共用一份。
 //
-// **集成待办(写进 PR 描述,交 T45 执行)**:Monitor 插件壳要 `setSize()` 就需要 C++
-// 侧拿到同一组数字 —— 届时把下面的字面量原样搬进 `web/shared/design-box.js` 的
-// `DESIGN.monitor`、重跑 `python scripts/gen-design-box.py`,并把本文件改成
-// `export { DESIGN } from "../shared/design-box.js"` 的转发(或直接删掉、改引真源)。
-// 在那之前本文件是**唯一**一处写着 960/720 的地方(页面与预览壳都 import 它,
-// 与「设计盒数字不得二次硬编码」同一条纪律,只是真源暂时落在这里)。
+// **集成待办 —— T44/T45 侧已认领**(2026-08-25 对表回信),四处由他们一并做:
+//   ① `web/shared/design-box.js` 加 `DESIGN.monitor = {w:960, h:720, presets:<下表>}`
+//   ② 重跑 `python scripts/gen-design-box.py` 生成 `src/core/DesignBox.h`
+//   ③ `scripts/check-design-box.mjs` 的 `EXPECT` 加 monitor 条目
+//      —— 那份 hardcode 就是 gate 3d 本身,不同批改会红
+//   ④ `BridgeBase.h` 的 `designBoxWindowSize` 加 monitor 分支
+//      (现在非 "input" 一律回落 Output 的 1180×780)
+// **他们落地之后,本文件改成转发**:`export const MONITOR_DESIGN = DESIGN.monitor;`
+// (或直接删掉,页面与 `web-preview/shell.js` 改引 `web/shared/design-box.js` 真源)。
+// 在那之前本文件是**唯一**一处写着 960/720 的地方 —— 与「设计盒数字不得二次硬编码」
+// 同一条纪律,只是真源暂时落在这里。
 //
 // 尺寸依据(J75 C「依内容定」):
 //   • 高 720 = header 40 + 分布图卡 ~196 + 轨迹图卡 ~400(**占主体**,J75 C 逐字)
@@ -20,7 +25,9 @@
 //   • 宽 960 = y 刻度列 62 + 时间线舞台 ~830 + 左右内边距 36。比 Output 的 1180 窄:
 //     Monitor 是**副窗**,用户多半把它摆在 DAW 边上长期开着,不该抢主窗的横向空间;
 //     而它只有两张图、没有 Tab2 那种 14 列控件,窄一点仍读得清。
-//   • 缩放档位与 Output 同表(七档)—— 同族窗口的缩放手感必须一致(05 §1.2)。
+//   • 缩放档位与 Output 同表(七档)—— 同族窗口的缩放手感必须一致(05 §1.2);
+//     取同一组档位还有个副作用是好的:native 侧 `parseUiScaleArg` 的既有回落分支
+//     不用改也已经对了。
 // 缩放档位是设计值不是可用值:运行时仍要按屏幕可用区过滤(见 app.js scaleOverflows)。
 // =============================================================================
 

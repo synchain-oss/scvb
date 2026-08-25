@@ -321,12 +321,22 @@
             </li>
             <li>
                 <a href="./monitor.html?scenario=monitor-no-tracks"
-                    >Monitor · 缺 vol/width/轨名(T44 v1 的真实形态)</a
+                    >Monitor · 缺 vol/width/轨名(旧版 Output 的形态)</a
                 >
-                —— viz 段里没有分布图要的三条字段 ⇒
-                <strong>分布图画空、轨迹图照常</strong>;补齐前的既定降级态,见
+                —— 段里没有 <code>VizTrackState</code> /
+                <code>VizTrackLabels</code> ⇒
+                <strong>分布图画空、轨迹图与图例照常</strong
+                >(图例只剩两位轨号)。<strong>不猜、不填 0</strong>
+                —— 填 0 会画出一排居中等高的幽灵柱,那是假数据
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-no-lead"
+                    >Monitor · 缺 lead 掩码</a
+                >
+                —— 段里没有 <code>track_lead_mask</code>(**仍待 T44 确认**,见
                 <code>web/monitor/viz-contract.js</code> 的
-                <code>VIZ_PENDING_TRACK_FIELDS</code>
+                <code>VIZ_PENDING_FIELDS</code>)⇒
+                柱照画、一律不戴柱顶绿帽。少一个信息 好过 标错主唱
             </li>
             <li>
                 <a href="./monitor.html?scenario=monitor-online&amp;play=0"

@@ -69,6 +69,9 @@ const GROUP_COUNT = 8;
 /** 采样率(段的 `sample_rate`;换算式跑得到就行,值本身随便取一个常见的)。 */
 const SAMPLE_RATE = 48000;
 
+/** `VizTrackLabels` 的每轨定长槽(字节;T44:`utf8[15][8]` u32 = 32 B/轨)。 */
+const VIZ_LABEL_BYTES = 32;
+
 /** 窗口跨度量化边界(秒)与下限、上限 —— 逐条照 T44 变更文档「窗口跨度」。 */
 const WINDOW_QUANTUM_S = 30;
 const WINDOW_MIN_S = 60;
@@ -118,7 +121,8 @@ export const MONITOR_SCENARIOS = Object.freeze([
     "monitor-stalled", // 停摆:publishMs 冻住 ⇒ 琥珀横幅
     "monitor-abi", // 拒连:段 abi 高于本机 ⇒ 红横幅 + 停止读取
     "monitor-reconnect", // 重连:开箱 attach 失败,3 秒后 Output 上线 ⇒ 自动出图
-    "monitor-no-tracks", // **待 T44 补字段**的降级态:段里没有 tracks ⇒ 分布图画空
+    "monitor-no-tracks", // 降级:段里没有 VizTrackState/Labels ⇒ 分布图画空、轨迹图照常
+    "monitor-no-lead", // 降级:没有 track_lead_mask(待 T44 确认)⇒ 柱照画、无绿帽
 ]);
 
 function toSearchParams(params) {
@@ -191,10 +195,20 @@ export function windowSpanS(maxSegEndS, playheadS) {
     return Math.min(q, WINDOW_MAX_S);
 }
 
-/** pan → 段内定点 int16(`round(clamp(pan,−100,100) × 100)`)。 */
+/**
+ * 工程量 → 段内定点 int16(`round(v × 100)`)。
+ * 三条 `VizTrackState` 标量与车道共用同一个标度,故编码也只此一处。
+ * 非数 ⇒ 哨兵(该轨无数据)。
+ */
+export function fixedOf(v) {
+    if (!Number.isFinite(v)) return VIZ_PAN_NONE;
+    return Math.round(v * VIZ_PAN_SCALE);
+}
+
+/** pan → 段内定点 int16(先夹到角度域再定点)。 */
 export function panToFixed(pan) {
     if (!Number.isFinite(pan)) return VIZ_PAN_NONE;
-    return Math.round(clamp(-100, 100, pan) * VIZ_PAN_SCALE);
+    return fixedOf(clamp(-100, 100, pan));
 }
 
 /**
@@ -279,6 +293,7 @@ function buildGroup(world, groupId) {
     const colorIndex = [];
     const stereo = [];
     const covered = [];
+    const lead = [];
     const trackMeta = [];
     for (let ch = 1; ch <= VIZ_TRACKS; ch++) {
         colorIndex.push(ch); // v1 恒 = 轨号(T44 段内注释)
@@ -295,7 +310,17 @@ function buildGroup(world, groupId) {
         if (words.some((w) => w !== 0)) covered.push(ch);
         const cfg = cfgChannels[ch - 1] || {};
         if (cfg.source_channels === 2) stereo.push(ch);
+        if (cfg.lead_lock) lead.push(ch);
         trackMeta.push({ ch, cfg, segs });
+    }
+
+    // `VizTrackLabels`:每轨 32 字节 UTF-8 定长槽,超长按 UTF-8 边界截断
+    // (T44 承诺「不会切出半个汉字」)。这里按同一条规则截,好让 preview 里
+    // 的长轨名与真段一致 —— 中文一字 3 字节,32 字节 ≈ 10 个汉字。
+    const labels = [];
+    for (let ch = 1; ch <= VIZ_TRACKS; ch++) {
+        const cfg = cfgChannels[ch - 1] || {};
+        labels.push(truncateUtf8(String(cfg.label || ""), VIZ_LABEL_BYTES));
     }
 
     return {
@@ -304,11 +329,32 @@ function buildGroup(world, groupId) {
         lanes,
         coverage,
         colorIndex,
+        labels,
         onlineMask: maskOf(tracks),
         coveredMask: maskOf(covered),
         stereoMask: maskOf(stereo),
+        leadMask: maskOf(lead),
         trackMeta,
     };
+}
+
+/**
+ * 按 UTF-8 字节数截断,**不切出半个字符**。
+ * `TextEncoder` 在 node ≥ 11 与所有浏览器里都是全局的;逐字符累加字节数,
+ * 超了就停 —— 比先编码再按字节切回来简单,也天然不会产生半个代理对。
+ */
+export function truncateUtf8(s, maxBytes) {
+    const enc = new TextEncoder();
+    if (enc.encode(s).length <= maxBytes) return s;
+    let out = "";
+    let n = 0;
+    for (const chpt of s) {
+        const w = enc.encode(chpt).length;
+        if (n + w > maxBytes) break;
+        out += chpt;
+        n += w;
+    }
+    return out;
 }
 
 /** 段表里覆盖住 `tS` 的那一段;没有就取最近一段(引擎在段间 hold)。 */
@@ -355,8 +401,12 @@ function createMonitorBackend(parsed) {
         abi: parsed.scenario === "monitor-abi" ? VIZ_ABI + 1 : VIZ_ABI,
         // `monitor-reconnect`:先 attach 不上,由 driver 在 3 秒后翻成 true
         outputUp: parsed.scenario !== "monitor-reconnect",
-        // `monitor-no-tracks`:段里没有 tracks(= T44 v1 的真实形态)
+        // `monitor-no-tracks`:段里没有 VizTrackState / VizTrackLabels
+        // (= T44 对表前的 v1 形态,也是旧版 Output 的形态)⇒ 分布图画空
         withTracks: parsed.scenario !== "monitor-no-tracks",
+        // `monitor-no-lead`:有三条标量但没有 `track_lead_mask`(仍待 T44 确认)
+        // ⇒ 柱照画、一律不戴绿帽
+        withLead: parsed.scenario !== "monitor-no-lead",
         scale: 1,
         language: "zh",
         committedScale: 1,
@@ -417,6 +467,7 @@ function createMonitorBackend(parsed) {
                 onlineMask: 0,
                 coveredMask: 0,
                 stereoMask: 0,
+                leadMask: 0,
                 laneRevision: state.laneRevision,
             };
         }
@@ -443,6 +494,10 @@ function createMonitorBackend(parsed) {
             onlineMask: g.onlineMask,
             coveredMask: g.coveredMask,
             stereoMask: g.stereoMask,
+            // `track_lead_mask` 仍待 T44 确认(viz-contract.js 的 VIZ_PENDING_FIELDS)。
+            // `monitor-no-lead` 之外的场景先按「已经有了」造,好让柱顶绿帽在 preview
+            // 里可验收;没有它时的行为由 `monitor-no-tracks` 之外的那条断言管。
+            leadMask: state.withLead ? g.leadMask : 0,
             laneRevision: state.laneRevision,
         };
 
@@ -457,21 +512,38 @@ function createMonitorBackend(parsed) {
             frame.lanes = g.lanes;
         }
 
-        // ---- **待 T44 补的三条**(vol / width / 轨名)。v1 段里没有它们,
-        // `monitor-no-tracks` 场景就是那个真实形态;其余场景带上,好让分布图这一半
-        // 在 preview 里可验收、可截图、可对着 05 J75 C 把关。
+        // ---- `VizTrackState`(三条定点标量)+ `VizTrackLabels`。
+        // **每帧都发**:它们是「当前值」,随播放头逐帧变,不进 `lane_revision` 的
+        // 按需重发(那条管的是 15×1024 的车道)。三条各 15 项 = 45 个数,便宜。
+        //
+        // `panNow` 按 **T44 对表信定的口径**:播放头**所在时刻**的曲线求值,
+        // **不是** lane 在播放头列的采样(列中心,差半列)。mock 这里用「覆盖住 tS
+        // 的那一段的 pan」当作精确时刻求值 —— 段内 pan 恒定,与引擎 CurveEvaluator
+        // 在段内的取值一致。
         if (state.withTracks) {
-            frame.tracks = g.trackMeta.map(({ ch, cfg, segs }) => {
-                const seg = segmentAt(segs, tS);
-                return {
-                    ch,
-                    label: String(cfg.label || ""),
-                    volDb: seg ? seg.volDb : -24,
-                    widthPct: cfg.source_channels === 2 ? 82 : 100,
-                    lead: !!cfg.lead_lock,
-                    panNow: seg ? seg.pan : 0,
-                };
-            });
+            const panNow = [];
+            const volDb = [];
+            const widthPct = [];
+            for (let ch = 1; ch <= VIZ_TRACKS; ch++) {
+                const meta = g.trackMeta.find((m) => m.ch === ch);
+                if (!meta) {
+                    // 未启用的轨:三条都是哨兵(段里就是这么填的)
+                    panNow.push(VIZ_PAN_NONE);
+                    volDb.push(VIZ_PAN_NONE);
+                    widthPct.push(VIZ_PAN_NONE);
+                    continue;
+                }
+                const seg = segmentAt(meta.segs, tS);
+                panNow.push(seg ? panToFixed(seg.pan) : VIZ_PAN_NONE);
+                volDb.push(seg ? fixedOf(seg.volDb) : VIZ_PAN_NONE);
+                widthPct.push(
+                    fixedOf(meta.cfg.source_channels === 2 ? 82 : 100),
+                );
+            }
+            frame.trackPanNow = panNow;
+            frame.trackVolDb = volDb;
+            frame.trackWidthPct = widthPct;
+            frame.trackLabels = g.labels;
         }
         return frame;
     }

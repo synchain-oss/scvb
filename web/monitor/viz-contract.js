@@ -122,6 +122,15 @@ export const VIZ_FIELDS = Object.freeze([
     { struct: "VizCoverage", name: "bits", json: "coverage" },
     // ---- VizLanes(30720 B):15 × 1024 int16 定点
     { struct: "VizLanes", name: "pan", json: "lanes" },
+    // ---- VizTrackState(128 B;T44 2026-08-25 对表后新增):每轨三个**当前值**标量,
+    // int16 定点 ×100,哨兵 `VIZ_PAN_NONE` = 无数据。段内是 `[16]` 槽(补齐 128 B),
+    // **桥只投影前 `track_count`(15)项** —— 多出来的那一槽是填充,不该出现在 UI 侧。
+    { struct: "VizTrackState", name: "panNow", json: "trackPanNow" },
+    { struct: "VizTrackState", name: "volDb", json: "trackVolDb" },
+    { struct: "VizTrackState", name: "widthPct", json: "trackWidthPct" },
+    // ---- VizTrackLabels(512 B):`utf8[15][8]` u32 = 每轨 32 字节 UTF-8,NUL 补齐,
+    // 超长按 UTF-8 边界截断。桥解码成字符串投影(字符串没法定点)。
+    { struct: "VizTrackLabels", name: "utf8", json: "trackLabels" },
 ]);
 
 /**
@@ -152,28 +161,72 @@ export const SAMPLES_TO_SECONDS_NOTE = Object.freeze({
 });
 
 /**
- * **待 T44 补的字段(分布图的数据源)** —— 见 PR #90 描述与发给 T44 的对表信。
+ * `VizTrackState` 三个标量的**工程量纲**(段内是 int16 定点 ×`VIZ_PAN_SCALE`)。
  *
- * J75 C 要求 Monitor 的上半张图是「声像 / 音量分布图(实时,**同 Tab1 规格**含配色)」。
- * Tab1 的那三个值来自 `scvb.params`,而 **Monitor 没有 params 通路**;T44 v1 段里
- * 也没有它们(有 `track_stereo_mask` 与 `VizTrackColors`,没有 vol / width / 轨名):
- *
- *   • `volDb`    每轨当前音量(−24..+12 dB)—— 柱高;
- *   • `widthPct` 每轨当前 width(0..100)   —— 立体声张开横线;
- *   • `label`    每轨轨名                  —— 图例(否则 15 条线只剩两位轨号)。
- *
- * **建议的落段方式(不动任何既有偏移)**:段尾还有 32640 B 预留,新增一个
- * `VizTrackScalars` 区块(15 × int16 vol 定点 + 15 × int16 width 定点 = 60 B)放在
- * `kVizLanesOffset + 30720 = 32896`,轨名另开 15 × 32 B UTF-8 定长槽 = 480 B。
- * 两者都落在预留区,既有五个区块的 offset 一字不动 —— 正是 T44 自己写的
- * 「尾部留白,后续增补不改既有偏移」的用法,也不触发 abi+1。
- *
- * **在补齐之前本页的行为**(已由 smoke 锁死,不是「碰运气不崩」):
- * `tracks` 缺失 ⇒ 分布图**画空**、图例只列轨迹图画了的轨、轨迹图与其余一切照常。
- * 不猜、不填 0(填 0 会画出一排居中的「幽灵柱」,那是**假数据**)。
+ * 三条共用同一个标度与同一个哨兵 —— 解码因此只有一处(`fixedToUnit`),
+ * 而不是三处各写一份 `/100` 再各自夹取。夹取范围逐条不同,列在这里:
+ *   • `panNow`   角度域 −100..+100(与车道同域,故与 `panOfFixed` 同值域);
+ *   • `volDb`    −24..+12 dB(params-v0 的 vol 值域;定点后 −2400..+1200);
+ *   • `widthPct` 0..100(定点后 0..10000)。
  */
-export const VIZ_PENDING_TRACK_FIELDS = Object.freeze([
-    "volDb",
-    "widthPct",
-    "label",
+export const VIZ_TRACK_STATE_RANGE = Object.freeze({
+    trackPanNow: Object.freeze({ lo: -100, hi: 100 }),
+    trackVolDb: Object.freeze({ lo: -24, hi: 12 }),
+    trackWidthPct: Object.freeze({ lo: 0, hi: 100 }),
+});
+
+/**
+ * **`panNow` 的取值优先级**(T44 2026-08-25 对表信明确的一条口径)。
+ *
+ * `VizTrackState.panNow` 是**播放头所在时刻**的曲线求值(精确时刻);
+ * `VizLanes.pan[t][headCol]` 是**列中心**的点采样。两者在列内会差一点
+ * (列宽 = 窗口跨度 / 1024,300s 工程下约 0.29s)。
+ *
+ * 分布图要的是「此刻」⇒ **标量优先**;标量是哨兵或整块缺失时才回落到车道列。
+ * 反过来写(车道优先)在放大档下会让分布图的柱与轨迹图的播放头位置对不上,
+ * 而这是「看起来完全正常」的那类错。
+ */
+export const PAN_NOW_PRIORITY = Object.freeze([
+    "trackPanNow", // ① 段里的精确时刻标量
+    "lanes[headColumn]", // ② 回落:播放头所在列的车道点采样
+    "0", // ③ 都拿不到:居中(不撒谎的默认)
 ]);
+
+/**
+ * **仍待 T44 确认的字段** —— 见 PR #90 描述与发给 T44 的第二封对表信。
+ *
+ * `volDb` / `widthPct` / `label` 三条 T44 已答应落段(`VizTrackState` +
+ * `VizTrackLabels`,见上面的 `VIZ_FIELDS`);**只剩 `leadMask` 一条还没确认**:
+ *
+ *   • `track_lead_mask`(u32,bit{ch−1} = 该轨 `lead_lock`)—— 分布图的**柱顶绿帽**。
+ *     Tab1 的 `renderDist` 逐柱写 `data-lead`,CSS `.dist-bar[data-lead="1"]::after`
+ *     画那顶 2px 绿帽;J75 C 要求 Monitor 的分布图「**同 Tab1 规格**」,少了它就不是同规格。
+ *     落法几乎零成本:`VizFrame._reserved[11]` 里取一个 u32,与既有三张掩码
+ *     (online/covered/stereo)同族同序,**不动任何偏移、不触发 abi+1**。
+ *
+ * **拿不到时的行为**(已由 smoke 锁死):所有柱一律不戴绿帽,其余照常 ——
+ * 不猜、不拿别的字段凑。少一顶帽子是「少了个信息」,猜错则是「标错了主唱」。
+ */
+export const VIZ_PENDING_FIELDS = Object.freeze(["leadMask"]);
+
+/**
+ * **T44 已答应、但尚未合入 `feature/v1` 的字段**(2026-08-25 对表信的承诺)。
+ * 段里有了、golden 里就会有,parity 自动开始查;在那之前这三条在 mock 里已按
+ * 承诺的名字与单位造数,页面这一半因此现在就可验收、可截图、可对着 05 J75 C 把关。
+ */
+export const VIZ_PROMISED_FIELDS = Object.freeze([
+    "trackPanNow",
+    "trackVolDb",
+    "trackWidthPct",
+    "trackLabels",
+]);
+
+/**
+ * 分布图这一半**整块缺失**时的行为(已由 smoke 锁死,不是「碰运气不崩」)。
+ *
+ * `trackVolDb` 整块拿不到(旧 Output / 尚未合入的 T44 / 桥没投影)⇒ 分布图**画空**,
+ * 图例只列轨迹图画了的轨,轨迹图与其余一切照常。**不猜、不填 0** —— 填 0 会画出
+ * 一排居中等高的「幽灵柱」,那是假数据,比空白有害得多。
+ * 预览场景:`?scenario=monitor-no-tracks`。
+ */
+export const DIST_REQUIRES = "trackVolDb";

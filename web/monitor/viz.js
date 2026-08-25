@@ -23,19 +23,24 @@
 //     seq, laneRevision, publishMs, playheadEpoch, versionActive, sampleRate,
 //     windowStartS, windowSpanS,            // 窗口(秒);windowSpanS === 0 ⇒ 无有效窗口
 //     playheadS|null, playheadFlags, loopStartS|null, loopEndS|null,
-//     onlineMask, coveredMask, stereoMask,  // bit{ch−1}
+//     onlineMask, coveredMask, stereoMask, leadMask,          // bit{ch−1}
 //     colorIndex:[15], coverage:[15][32], lanes:[15][1024],   // ← 见下「按需重发」
-//     tracks:[{ch,label,volDb,widthPct,lead}]|undefined       // ← **待 T44 补**
+//     trackPanNow:[15], trackVolDb:[15], trackWidthPct:[15],  // VizTrackState,int16 定点
+//     trackLabels:[15]                                        // VizTrackLabels,桥已解码
 //   }
+//
+// **每一块都是定长 15、下标即轨号**(与段内布局逐条对应),不是「带 ch 字段的对象数组」——
+// 段本来就是定长表,投影成对象数组会凭空多出一道「ch 合不合法」的闸。
+// `leadMask` 仍待 T44 确认(viz-contract.js 的 `VIZ_PENDING_FIELDS`);拿不到 = 不戴绿帽。
 //
 // **车道三件按需重发**:`lane_revision` 的段内注释逐字写着「读方可据此跳过重解析」。
 // 稳态下 4Hz 只写 128 B 帧头、车道不重算,故桥也只在 `laneRevision` 变化的那一帧带上
 // `colorIndex`/`coverage`/`lanes`,其余帧省略。缓存与合并由 `mergeVizFrame()` 做,
 // 调用方持有那份缓存 —— 本文件其余部分只处理「已经合并好的一帧」。
 //
-// `tracks` 为什么可能缺:见 `./viz-contract.js` 的 `VIZ_PENDING_TRACK_FIELDS`(v1 段里
-// 没有 vol/width/轨名)。缺了就**画空**,不猜、不填 0 —— 填 0 会画出一排居中等高的
-// 幽灵柱,那是假数据,比空白有害得多。
+// `trackVolDb` 为什么可能整块缺:旧版 Output 的段里没有 `VizTrackState`(T44 是在
+// 2026-08-25 对表后才加的),桥也可能还没投影。缺了就**画空**,不猜、不填 0 ——
+// 填 0 会画出一排居中等高的幽灵柱,那是假数据,比空白有害得多。见 `DIST_REQUIRES`。
 // =============================================================================
 
 import { PAN_MAX, PAN_MIN } from "../shared/trajectory-chart.js";
@@ -50,6 +55,7 @@ import {
     VIZ_MAGIC,
     VIZ_PAN_NONE,
     VIZ_PAN_SCALE,
+    VIZ_TRACK_STATE_RANGE,
     VIZ_TRACKS,
 } from "./viz-contract.js";
 
@@ -121,10 +127,42 @@ export function columnCovered(words, i) {
     return ((w >>> (i & 31)) & 1) === 1;
 }
 
-/** 定点 int16 → 角度域 pan;哨兵与非数一律回 null(调用方据此不画)。 */
-export function panOfFixed(v) {
+/**
+ * 定点 int16 → 工程量(通用解码)。哨兵与非数一律回 **null**,不是 0 ——
+ * 0 在三条标量里分别是「居中 / 0 dB / 宽度 0」,每一个都是有意义的合法值,
+ * 拿它当「没有数据」会让缺数据的轨画成一根**合法的**柱。
+ *
+ * `VizTrackState` 的三条标量与 `VizLanes` 的车道共用同一个标度与同一个哨兵,
+ * 故解码只此一处 —— 不是三处各写一份 `/100` 再各自夹取。
+ */
+export function fixedToUnit(v, lo, hi) {
     if (!Number.isFinite(v) || v === VIZ_PAN_NONE) return null;
-    return clamp(PAN_MIN, PAN_MAX, v / VIZ_PAN_SCALE);
+    return clamp(lo, hi, v / VIZ_PAN_SCALE);
+}
+
+/** 定点 int16 → 角度域 pan(车道与 `trackPanNow` 共用)。 */
+export function panOfFixed(v) {
+    return fixedToUnit(v, PAN_MIN, PAN_MAX);
+}
+
+/**
+ * 取 `VizTrackState` 的某条标量并解码(`jsonKey` = trackPanNow|trackVolDb|trackWidthPct)。
+ * 整块缺失、轨号越界、或该轨是哨兵 ⇒ null。
+ */
+export function trackScalar(viz, jsonKey, ch) {
+    const arr = viz && viz[jsonKey];
+    const r = VIZ_TRACK_STATE_RANGE[jsonKey];
+    if (!Array.isArray(arr) || !r) return null;
+    if (!Number.isInteger(ch) || ch < 1 || ch > VIZ_TRACKS) return null;
+    return fixedToUnit(arr[ch - 1], r.lo, r.hi);
+}
+
+/** 取某轨的轨名(`VizTrackLabels` 解码后的串);缺失 ⇒ 空串,不是 undefined。 */
+export function trackLabel(viz, ch) {
+    const arr = (viz && viz.trackLabels) || null;
+    if (!Array.isArray(arr)) return "";
+    const s = arr[ch - 1];
+    return typeof s === "string" ? s : "";
 }
 
 /**
@@ -217,10 +255,9 @@ export function vizPlayheadEvent(viz) {
     return { timeS: t, isPlaying: vizFlags(viz).isPlaying, inRange: true };
 }
 
-/** 轨号闸:1..15 之外一律不要(画出来的线在图例里找不到对应行)。 */
-function validCh(ch) {
-    return Number.isFinite(ch) && ch >= 1 && ch <= VIZ_TRACKS;
-}
+// 轨号闸不再需要单列一个函数:段里的每一块都是**定长 15**、下标即轨号,
+// 越界的轨号根本没有落点(不像最初那版自拟的 `tracks[{ch,…}]` 对象数组 ——
+// 那种形状里 ch 是载荷字段,才需要一道闸)。掩码侧的闸在 `maskHas` 里。
 
 /**
  * 轨色索引 → 传给两张图的「轨号」。
@@ -314,35 +351,44 @@ export function vizSeries(viz) {
 /**
  * viz → 分布图的 rows(喂 `distBarsHtml`)。
  *
- * 数据源是 `viz.tracks[]` —— **v1 段里没有这一块**(见 viz-contract.js 的
- * `VIZ_PENDING_TRACK_FIELDS`)。缺了就返回空数组:分布图画空,不猜、不填 0。
+ * 数据源 = `VizTrackState` 的三条定点标量(`trackPanNow` / `trackVolDb` /
+ * `trackWidthPct`)+ `VizTrackLabels` + 三张掩码。`trackVolDb` **整块**拿不到
+ * (旧 Output / 桥没投影)⇒ 返回空数组:分布图画空,不猜、不填 0
+ * (见 viz-contract.js 的 `DIST_REQUIRES`)。
  *
- * 逐轨闸:轨号合法 ∧ 在 `onlineMask` 里 ∧ `volDb` 是有限数。三条缺一不画 ——
+ * 逐轨闸:在 `onlineMask` 里 ∧ `trackVolDb` 该轨不是哨兵。两条缺一不画 ——
  * 与 Tab1「空闲轨无参数值,vol=0 会被画成幽灵柱」是同一条纪律的不同判据面。
  *
- * 横位取**播放头所在列的车道值**(车道就是最终打印 pan,与轨迹图同源,故两张图的横位
- * 天然对齐);播放头不在窗口内或该列是哨兵时,回落到桥给的 `panNow`,再不行才 0。
+ * **横位的取值优先级**照 `PAN_NOW_PRIORITY`:`trackPanNow`(播放头**精确时刻**的曲线
+ * 求值)优先,它是哨兵时才回落到播放头所在**列**的车道点采样(列中心,与精确时刻差
+ * 半列),都拿不到才 0。反过来写会让分布图的柱与轨迹图的播放头在放大档下对不上,
+ * 而那是「看起来完全正常」的那类错。
  */
 export function vizDistRows(viz) {
-    const list = (viz && viz.tracks) || null;
-    if (!Array.isArray(list)) return [];
+    if (!Array.isArray(viz && viz.trackVolDb)) return [];
     const at = playheadColumn(viz);
     const out = [];
-    for (const t of list) {
-        if (!t || !validCh(t.ch)) continue;
-        if (viz.onlineMask !== undefined && !maskHas(viz.onlineMask, t.ch)) {
+    for (let ch = 1; ch <= VIZ_TRACKS; ch++) {
+        if (viz.onlineMask !== undefined && !maskHas(viz.onlineMask, ch)) {
             continue;
         }
-        if (!Number.isFinite(t.volDb)) continue;
-        const lane = ((viz.lanes || [])[t.ch - 1] || [])[at];
-        const fromLane = at >= 0 ? panOfFixed(lane) : null;
+        const volDb = trackScalar(viz, "trackVolDb", ch);
+        if (volDb === null) continue;
+        const scalarPan = trackScalar(viz, "trackPanNow", ch);
+        const fromLane =
+            at >= 0 ? panOfFixed(((viz.lanes || [])[ch - 1] || [])[at]) : null;
+        const width = trackScalar(viz, "trackWidthPct", ch);
         out.push({
-            ch: colorChOf(viz, t.ch),
-            pan: fromLane !== null ? fromLane : num(t.panNow, 0),
-            volDb: t.volDb,
-            widthPct: num(t.widthPct, 100),
-            stereo: maskHas(viz.stereoMask, t.ch),
-            lead: t.lead === true,
+            ch: colorChOf(viz, ch),
+            pan: scalarPan !== null ? scalarPan : num(fromLane, 0),
+            volDb,
+            // width 缺失回落 100(= 不张开)。mono 轨本来就是 100,而 stereo 轨
+            // 缺 width 时画一条零宽横线比画一条瞎猜宽度的横线诚实。
+            widthPct: width !== null ? width : 100,
+            stereo: maskHas(viz.stereoMask, ch),
+            // `leadMask` 仍待 T44 确认(viz-contract.js 的 VIZ_PENDING_FIELDS)。
+            // 拿不到就一律不戴绿帽 —— 少一顶帽子是「少了个信息」,猜错是「标错了主唱」。
+            lead: maskHas(viz.leadMask, ch),
         });
     }
     return out.sort((a, b) => a.ch - b.ch);
@@ -355,23 +401,19 @@ export function vizDistRows(viz) {
  * (两视图二选一);Monitor 两张图**同屏**,跟着其中一张就必然出现「图例里有它、
  * 另一张图上找不到它」或反之。取并集才让「图例里有它 ⇒ 屏幕上找得到它」成立。
  *
- * `label` 同属**待 T44 补**的三条 —— 缺了就只显示两位轨号(`legendItemsHtml` 对空 label
- * 的既有处理),而不是显示 `undefined`。
+ * `trackLabels` 整块拿不到时只显示两位轨号(`legendItemsHtml` 对空 label 的既有处理),
+ * 而不是显示 `undefined`。
  */
 export function vizLegendRows(viz) {
     const drawn = new Set(vizSeries(viz).map((s) => s.ch));
     for (const r of vizDistRows(viz)) drawn.add(r.ch);
-    const labels = new Map();
-    for (const t of (viz && viz.tracks) || []) {
-        if (t && validCh(t.ch)) labels.set(colorChOf(viz, t.ch), t.label);
-    }
     const out = [];
     for (let ch = 1; ch <= VIZ_TRACKS; ch++) {
         const cch = colorChOf(viz, ch);
         if (!drawn.has(cch)) continue;
         out.push({
             ch: cch,
-            label: String(labels.get(cch) || ""),
+            label: trackLabel(viz, ch),
             stereo: maskHas(viz && viz.stereoMask, ch),
         });
     }
