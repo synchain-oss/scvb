@@ -5,7 +5,7 @@
 
 #include <memory>
 
-#include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源)
+#include "DesignBox.h" // kOutputPresets(缩放档位表的单一真源)
 
 namespace scvb::output::uidefaults
 {
@@ -21,11 +21,21 @@ constexpr const char* kKeyTourSeen = "tour_seen_global";
 // 两个 *_seen_global 是 Output 专属(Input 没有引导页/导览),无需分键。
 constexpr const char* kKeyUiScale = "ui_scale_percent_output";
 
-// 档位边界真源 = scvb::bridge::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码)。
+// 落盘值必须**在 Output 自己的档位表里**(真源 = scvb::design::kOutputPresets,
+// 由 web/shared/design-box.js 生成;§1.28「C++ 不得二次硬编码档位」)。
+// 不用 plugin::Min/MaxUiScale —— 那是两插件档位表的**并集**(0.33–3.0),而本值一落盘
+// 就直接决定下次开窗的尺寸:放行 300 会让 Output 开成 3540×2340(300 根本不在它的七档里)。
+// §7.3 的不可信字节纪律正冲这种「写进磁盘、下次直接生效」的位置。
 bool inRange(int percent)
 {
-    return percent >= juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f) &&
-           percent <= juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f);
+    for (const double f : scvb::design::kOutputPresets)
+    {
+        if (percent == juce::roundToInt(f * 100.0))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 // 测试注入的落盘目录(空 = 用默认位置)。只由 setStorageDirForTesting 写,消息线程/单测线程。
