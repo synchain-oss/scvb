@@ -4,10 +4,13 @@
 add_executable(scvb_ipc_tests
   test_ipc_contract.cpp
   test_registry_probe.cpp
+  # [T44/J75] viz 段 L1:**独立文件**,不并进 test_ipc_contract.cpp —— 那份正被 IPC-16 flake
+  # 修复一路系统性改动,合并冲突面必须归零(spawn helper 走 tests/support/peer_spawn.h)。
+  test_ipc_viz.cpp
 )
 
 target_link_libraries(scvb_ipc_tests PRIVATE scvb_core Catch2::Catch2WithMain)
-target_include_directories(scvb_ipc_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+target_include_directories(scvb_ipc_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/tests)
 # 对端进程路径不再编译期烘焙 $<TARGET_FILE>(VS 生成器渲染反斜杠路径会触发 MSVC C4129 或
 # 损坏转义,PR#46 复审);改由 test_ipc_contract.cpp 运行期 GetModuleFileNameW 推导(Ninja 单配置
 # 与 VS 多配置两态都探测),见其 peerExe()。

@@ -23,6 +23,7 @@
 #include "ipc/SegmentBackendWin32.h"
 #include "output/BusXfade.h"
 #include "output/OutputSession.h"
+#include "output/VizPublisher.h"
 #include "state/OutputStateCodec.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -199,6 +200,12 @@ private:
     // [A] 从 playhead 构造 C8 快照并发布(§5.2 / C8)。
     void publishPlayhead(const juce::AudioPlayHead::PositionInfo& pos, bool haveTime, bool playing);
 
+    // [M] 按 claim 态裁决 viz 段的建/释放:唯一写方 = 本组 claim 到 OutputSlot 的那一个
+    // ([J66] 同组内只读观察)。**每拍都做** —— claim 态会在接管/让位/改组时翻转。
+    void syncVizSegment();
+    // [M] 组装 viz 发布输入并交给 vizPublisher_(内部 4Hz 分频)。调用方须已持 lifecycleMutex_。
+    void publishVizFrame(std::uint64_t nowMs);
+
     // [A] 读全局三件 raw(host 恒权威,不参与仲裁)。
     float readGlobalWidth() const noexcept;
     float readMsBalance() const noexcept;
@@ -218,6 +225,8 @@ private:
     // IPC(段操作持 lifecycleMutex_ 于非实时线程;音频线程只经 session_ 拿裸指针做原子读写)。
     scvb::SegmentBackendWin32 backend_;
     scvb::output::OutputSession session_;
+    // [T44/J75] viz 段发布器(Monitor 只读数据面)。只在 [M] 触碰;processBlock 对 viz 段零写入。
+    scvb::output::VizPublisher vizPublisher_;
 
     // 取值仲裁 + 平滑(T16/DspArbiter + T18 版本层)。
     scvb::output::OutputAuthority authority_;

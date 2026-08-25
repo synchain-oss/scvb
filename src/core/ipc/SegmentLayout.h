@@ -198,12 +198,14 @@ enum class SegmentKind
     kRegistry,
     kAudio,
     kFeat,
-    kCtrl
+    kCtrl,
+    kViz // [T44/J75] 可视化只读数据面(Output [M] 低频发布,Monitor 只读 attach);布局见 VizPlane.h
 };
 
-// 逻辑段名(不带 OS 前缀):"SynchainSCVB.v1.g{G}.{registry|audio.ch{N}|feat.ch{N}|ctrl}"。
+// 逻辑段名(不带 OS 前缀):"SynchainSCVB.v1.g{G}.{registry|audio.ch{N}|feat.ch{N}|ctrl|viz}"。
 // G ∈ 1..8;N ∈ 1..15(仅 audio/feat 用 channel)。mac 长度复核:最长
-// "/SynchainSCVB.v1.g8.audio.ch15" = 30 字符 ≤ 31(PSHMNAMLEN)。不允许存在无组号的段名常量。
+// "/SynchainSCVB.v1.g8.audio.ch15" = 30 字符 ≤ 31(PSHMNAMLEN);viz 段
+// "/SynchainSCVB.v1.g8.viz" = 23 字符,余量充足。不允许存在无组号的段名常量。
 inline std::wstring segmentLogicalName(u32 group, SegmentKind kind, u32 channel = 0)
 {
     std::wstring name = L"SynchainSCVB.v1.g" + std::to_wstring(group) + L".";
@@ -220,6 +222,9 @@ inline std::wstring segmentLogicalName(u32 group, SegmentKind kind, u32 channel 
         break;
     case SegmentKind::kCtrl:
         name += L"ctrl";
+        break;
+    case SegmentKind::kViz:
+        name += L"viz";
         break;
     }
     return name;

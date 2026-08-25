@@ -13,6 +13,9 @@
 //   globalinfo-writer / globalinfo-reader  ctrl 全局小节(IPC-16)
 //   feat-writer  Input 侧写特征环 run 协议(IPC-14)
 //   feat-reader  Output 侧增量拉取特征环 → CSV(IPC-14)
+//   viz-writer   [T44] Output [M] 建 viz 段并发布一帧(--linger-ms 持段供读方 attach)
+//   viz-reader   [T44] Monitor 侧只读 attach viz 段 + 一致性读 → CSV(--out)
+//   viz-publisher[T44] 走**真 VizPublisher**(CRVS 分段 + CurveEvaluator 求值)发布,而非手搓快照
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -23,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +35,8 @@
 #include "ipc/FeatRing.h"
 #include "ipc/Registry.h"
 #include "ipc/SegmentBackendWin32.h"
+#include "ipc/VizPlane.h"
+#include "output/VizPublisher.h"
 #include "ipc_contract_harness.h"
 
 using namespace scvb;
@@ -367,7 +373,7 @@ int runReader(const Args& a)
             {
                 break;
             }
-            ::Sleep(0);
+            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
         }
     }
 
@@ -393,7 +399,8 @@ int runReader(const Args& a)
                 timedOut = true;
                 break;
             }
-            ::Sleep(0); // 让出时间片给写方进程(跨进程比 SwitchToThread 更可靠)
+            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让) //
+                        // 让出时间片给写方进程(跨进程比 SwitchToThread 更可靠)
         }
         if (timedOut)
         {
@@ -539,7 +546,7 @@ int runCtrlReader(const Args& a)
         {
             break;
         }
-        ::Sleep(0);
+        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     while (got)
@@ -606,7 +613,7 @@ int runGlobalInfoReader(const Args& a)
         {
             break;
         }
-        ::Sleep(0);
+        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
     }
 
     std::string csv;
@@ -754,7 +761,7 @@ int runFeatReader(const Args& a)
             {
                 break;
             }
-            ::Sleep(0);
+            ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
         }
     }
 
@@ -803,6 +810,206 @@ int runFeatReader(const Args& a)
 
 } // namespace
 
+// ---- [T44/J75] viz 段(VIZ-1/2/3)----
+
+int runVizWriter(const Args& a)
+{
+    SegmentBackendWin32 backend;
+    VizPlane plane(backend, static_cast<u32>(a.group));
+    if (plane.open() != InitResult::kOk)
+    {
+        return 3;
+    }
+    auto snap = std::make_unique<VizSnapshot>();
+    snap->publishMs = 123456;
+    snap->windowStartSamples = 0;
+    snap->windowSpanSamples = static_cast<u64>(a.sr) * 120u; // 120s 窗口
+    snap->playheadSamples = 48000;
+    snap->loopStartSamples = 96000;
+    snap->loopEndSamples = 192000;
+    snap->sampleRate = static_cast<u32>(a.sr);
+    snap->versionActive = 2;
+    snap->playheadFlags = kVizPlaying | kVizLooping | kVizLoopValid;
+    snap->playheadEpoch = 7;
+    snap->onlineMask = 0x7FFFu;
+    snap->coveredMask = 0x0003u;
+    snap->stereoMask = 0x0002u;
+    snap->leadMask = 0x0004u; // 轨3 = lead_lock
+    snap->laneRevision = 42;
+    // 每轨当前值三件套(分布图数据面);轨3 起保持哨兵 = 无数据。
+    snap->panNow[0] = vizPackPan(-12.5);
+    snap->volDb[0] = vizPackFixed(-6.25, kVizVolDbMin, kVizVolDbMax);
+    snap->widthPct[0] = vizPackFixed(80.0, kVizWidthMin, kVizWidthMax);
+    snap->panNow[1] = vizPackPan(25.0);
+    snap->volDb[1] = vizPackFixed(0.0, kVizVolDbMin, kVizVolDbMax);
+    snap->widthPct[1] = vizPackFixed(100.0, kVizWidthMin, kVizWidthMax);
+    // 轨名:ASCII + 多字节 UTF-8(截断必须落在字符边界)。
+    snap->label[0] = "Lead";
+    snap->label[1] = "\xE4\xB8\xBB\xE5\x94\xB1"; // 主唱
+    for (u32 t = 0; t < kMaxChannels; ++t)
+    {
+        snap->trackColor[t] = t + 1;
+    }
+    // 轨1:全覆盖、pan 沿列线性上升;轨2:只覆盖前半段(断线场景);其余轨保持哨兵。
+    for (u32 i = 0; i < kVizColumns; ++i)
+    {
+        snap->pan[0][i] = vizPackPan(-100.0 + 200.0 * static_cast<double>(i) / static_cast<double>(kVizColumns - 1));
+        snap->setCovered(0, i);
+        if (i < kVizColumns / 2)
+        {
+            snap->pan[1][i] = vizPackPan(25.0);
+            snap->setCovered(1, i);
+        }
+    }
+    plane.publish(*snap, /*writeLanes=*/true);
+    linger(a.lingerMs);
+    return 0;
+}
+
+// 真 VizPublisher 发布(VIZ-4):轨1 [0,30s) pan=-50;轨2 [60,90s) pan=+40;其余轨无分段。
+// 与手搓快照的 viz-writer 互补 —— 这条路把「引擎曲线 → 降采样 → 段」整段接线也验了。
+int runVizPublisher(const Args& a)
+{
+    SegmentBackendWin32 backend;
+    scvb::output::VizPublisher pub(backend, static_cast<u32>(a.group));
+    if (pub.open() != InitResult::kOk)
+    {
+        return 3;
+    }
+    const double sr = static_cast<double>(a.sr);
+
+    auto crvs = std::make_unique<scvb::state::CrvsData>();
+    const auto seg = [sr](double t0Sec, double t1Sec, float pan) {
+        scvb::state::Segment x;
+        x.t0 = static_cast<std::int64_t>(t0Sec * sr);
+        x.t1 = static_cast<std::int64_t>(t1Sec * sr);
+        x.pan = pan;
+        return x;
+    };
+    crvs->versions[0].tracks[0].segments = {seg(0.0, 30.0, -50.0f)};
+    crvs->versions[0].tracks[1].segments = {seg(60.0, 90.0, 40.0f)};
+
+    scvb::CurveEvaluator c0;
+    scvb::CurveEvaluator c1;
+    const auto build = [&](scvb::CurveEvaluator& ev, const std::vector<scvb::state::Segment>& segs) {
+        std::vector<scvb::CurveSegment> cs;
+        for (const auto& x : segs)
+        {
+            scvb::CurveSegment c;
+            c.startSec = static_cast<double>(x.t0) / sr;
+            c.endSec = static_cast<double>(x.t1) / sr;
+            c.pan = x.pan;
+            cs.push_back(c);
+        }
+        ev.build(cs, scvb::TransitionConfig{});
+    };
+    build(c0, crvs->versions[0].tracks[0].segments);
+    build(c1, crvs->versions[0].tracks[1].segments);
+
+    scvb::output::VizPublishInput in;
+    in.crvs = crvs.get();
+    in.curves[0] = &c0;
+    in.curves[1] = &c1;
+    in.versionActive = 1;
+    in.enabledMask = 0x7FFF;
+    in.sampleRate = sr;
+    in.crvsRevision = 1;
+    in.playhead.timeSamples = 0;
+    in.playhead.sampleRate = sr;
+    in.label[0] = "Lead";
+    in.leadMask = 0x0001;
+    in.widthPct[0] = 80.0f;
+
+    // 至少发一帧;linger 期间按 4Hz 续发,读方随时 attach 都能拿到一致帧。
+    u64 t = 0;
+    pub.tick(t, in);
+    const u64 deadline = ::GetTickCount64() + static_cast<u64>(a.lingerMs > 0 ? a.lingerMs : 0);
+    while (::GetTickCount64() < deadline)
+    {
+        ::Sleep(50);
+        t += 250;
+        pub.tick(t, in);
+    }
+    return 0;
+}
+
+int runVizReader(const Args& a)
+{
+    SegmentBackendWin32 backend;
+    VizPlane plane(backend, static_cast<u32>(a.group));
+    // 握手:writer 可能尚未建段/发布,带超时轮询到 attach 成功且 lane_revision 非零。
+    const u64 deadline = ::GetTickCount64() + 10000;
+    auto snap = std::make_unique<VizSnapshot>();
+    InitResult ir = InitResult::kFailed;
+    bool got = false;
+    for (;;)
+    {
+        if (!plane.isOpen())
+        {
+            ir = plane.attachReadOnly();
+        }
+        else
+        {
+            ir = InitResult::kOk;
+        }
+        if (ir == InitResult::kOk && plane.read(*snap) && snap->laneRevision != 0)
+        {
+            got = true;
+            break;
+        }
+        if (::GetTickCount64() >= deadline)
+        {
+            break;
+        }
+        ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
+    }
+
+    std::string csv;
+    csv += "attach " + std::to_string(static_cast<int>(ir)) + "\n";
+    csv += "read_ok " + std::to_string(got ? 1 : 0) + "\n";
+    csv += "read_only " + std::to_string(plane.isReadOnly() ? 1 : 0) + "\n";
+    csv += "geometry_ok " + std::to_string(plane.geometryMatches() ? 1 : 0) + "\n";
+    csv += "columns " + std::to_string(kVizColumns) + "\n";
+    csv += "window_span " + std::to_string(snap->windowSpanSamples) + "\n";
+    csv += "playhead " + std::to_string(snap->playheadSamples) + "\n";
+    csv += "loop_start " + std::to_string(snap->loopStartSamples) + "\n";
+    csv += "loop_end " + std::to_string(snap->loopEndSamples) + "\n";
+    csv += "playhead_flags " + std::to_string(snap->playheadFlags) + "\n";
+    csv += "playhead_epoch " + std::to_string(snap->playheadEpoch) + "\n";
+    csv += "version_active " + std::to_string(snap->versionActive) + "\n";
+    csv += "online_mask " + std::to_string(snap->onlineMask) + "\n";
+    csv += "covered_mask " + std::to_string(snap->coveredMask) + "\n";
+    csv += "stereo_mask " + std::to_string(snap->stereoMask) + "\n";
+    csv += "lead_mask " + std::to_string(snap->leadMask) + "\n";
+    csv += "seq " + std::to_string(snap->seq) + "\n";
+    csv += "generation " + std::to_string(snap->generation) + "\n";
+    csv += "lane_revision " + std::to_string(snap->laneRevision) + "\n";
+    csv += "color1 " + std::to_string(snap->trackColor[0]) + "\n";
+    csv += "color15 " + std::to_string(snap->trackColor[14]) + "\n";
+    csv += "pan_t1_first " + std::to_string(static_cast<long long>(snap->pan[0][0])) + "\n";
+    csv += "pan_t1_last " + std::to_string(static_cast<long long>(snap->pan[0][kVizColumns - 1])) + "\n";
+    csv += "pan_t2_mid " + std::to_string(static_cast<long long>(snap->pan[1][10])) + "\n";
+    csv += "pan_t2_tail " + std::to_string(static_cast<long long>(snap->pan[1][kVizColumns - 1])) + "\n";
+    csv += "pan_t3_any " + std::to_string(static_cast<long long>(snap->pan[2][0])) + "\n";
+    csv += "now_pan1 " + std::to_string(static_cast<long long>(snap->panNow[0])) + "\n";
+    csv += "now_vol1 " + std::to_string(static_cast<long long>(snap->volDb[0])) + "\n";
+    csv += "now_width1 " + std::to_string(static_cast<long long>(snap->widthPct[0])) + "\n";
+    csv += "now_pan3 " + std::to_string(static_cast<long long>(snap->panNow[2])) + "\n";
+    csv += "label1 " + snap->label[0] + "\n";
+    csv += "label2 " + snap->label[1] + "\n";
+    csv += "cov_t1_0 " + std::to_string(snap->covered(0, 0) ? 1 : 0) + "\n";
+    csv += "cov_t1_last " + std::to_string(snap->covered(0, kVizColumns - 1) ? 1 : 0) + "\n";
+    csv += "cov_t2_0 " + std::to_string(snap->covered(1, 0) ? 1 : 0) + "\n";
+    csv += "cov_t2_last " + std::to_string(snap->covered(1, kVizColumns - 1) ? 1 : 0) + "\n";
+    csv += "cov_t3_0 " + std::to_string(snap->covered(2, 0) ? 1 : 0) + "\n";
+    // 位序字边界(LSB 起、每字 32 格):写反了图照画,只是断线整体错开 32 的倍数,肉眼查不出来。
+    csv += "cov_bit31 " + std::to_string(snap->covered(0, 31) ? 1 : 0) + "\n";
+    csv += "cov_bit32 " + std::to_string(snap->covered(0, 32) ? 1 : 0) + "\n";
+    csv += "cov_word0 " + std::to_string(snap->coverage[0][0]) + "\n";
+    writeCsv(a.out, csv);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     const Args a = parse(argc, argv);
@@ -845,6 +1052,18 @@ int main(int argc, char** argv)
     if (a.role == "feat-reader")
     {
         return runFeatReader(a);
+    }
+    if (a.role == "viz-writer")
+    {
+        return runVizWriter(a);
+    }
+    if (a.role == "viz-reader")
+    {
+        return runVizReader(a);
+    }
+    if (a.role == "viz-publisher")
+    {
+        return runVizPublisher(a);
     }
     return 99;
 }

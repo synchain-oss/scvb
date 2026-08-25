@@ -15,6 +15,7 @@
 
 #include "ipc/CtrlPlane.h"
 #include "ipc/SegmentLayout.h"
+#include "ipc/VizPlane.h"
 
 #ifdef WIN32
 #include "ipc/SegmentBackendWin32.h"
@@ -105,6 +106,20 @@ std::size_t structSize(const std::string& s)
         return sizeof(scvb::CtrlHeader);
     if (s == "CtrlRing")
         return sizeof(scvb::CtrlRing);
+    if (s == "VizHeader")
+        return sizeof(scvb::VizHeader);
+    if (s == "VizFrame")
+        return sizeof(scvb::VizFrame);
+    if (s == "VizTrackColors")
+        return sizeof(scvb::VizTrackColors);
+    if (s == "VizCoverage")
+        return sizeof(scvb::VizCoverage);
+    if (s == "VizLanes")
+        return sizeof(scvb::VizLanes);
+    if (s == "VizTrackState")
+        return sizeof(scvb::VizTrackState);
+    if (s == "VizTrackLabels")
+        return sizeof(scvb::VizTrackLabels);
     return kNotFound;
 }
 
@@ -130,6 +145,20 @@ std::size_t structAlign(const std::string& s)
         return alignof(scvb::CtrlHeader);
     if (s == "CtrlRing")
         return alignof(scvb::CtrlRing);
+    if (s == "VizHeader")
+        return alignof(scvb::VizHeader);
+    if (s == "VizFrame")
+        return alignof(scvb::VizFrame);
+    if (s == "VizTrackColors")
+        return alignof(scvb::VizTrackColors);
+    if (s == "VizCoverage")
+        return alignof(scvb::VizCoverage);
+    if (s == "VizLanes")
+        return alignof(scvb::VizLanes);
+    if (s == "VizTrackState")
+        return alignof(scvb::VizTrackState);
+    if (s == "VizTrackLabels")
+        return alignof(scvb::VizTrackLabels);
     return kNotFound;
 }
 
@@ -289,6 +318,122 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
             return offsetof(scvb::CtrlRing, records);
         return kNotFound;
     }
+    if (s == "VizHeader")
+    {
+        if (f == "magic")
+            return offsetof(scvb::VizHeader, magic);
+        if (f == "abi")
+            return offsetof(scvb::VizHeader, abi);
+        if (f == "generation")
+            return offsetof(scvb::VizHeader, generation);
+        if (f == "column_count")
+            return offsetof(scvb::VizHeader, column_count);
+        if (f == "track_count")
+            return offsetof(scvb::VizHeader, track_count);
+        if (f == "pan_scale")
+            return offsetof(scvb::VizHeader, pan_scale);
+        if (f == "_reserved")
+            return offsetof(scvb::VizHeader, _reserved);
+        return kNotFound;
+    }
+    if (s == "VizFrame")
+    {
+        if (f == "seq")
+            return offsetof(scvb::VizFrame, seq);
+        if (f == "playhead_flags")
+            return offsetof(scvb::VizFrame, playhead_flags);
+        if (f == "publish_ms")
+            return offsetof(scvb::VizFrame, publish_ms);
+        if (f == "window_start_samples")
+            return offsetof(scvb::VizFrame, window_start_samples);
+        if (f == "window_span_samples")
+            return offsetof(scvb::VizFrame, window_span_samples);
+        if (f == "playhead_samples")
+            return offsetof(scvb::VizFrame, playhead_samples);
+        if (f == "loop_start_samples")
+            return offsetof(scvb::VizFrame, loop_start_samples);
+        if (f == "loop_end_samples")
+            return offsetof(scvb::VizFrame, loop_end_samples);
+        if (f == "sample_rate")
+            return offsetof(scvb::VizFrame, sample_rate);
+        if (f == "version_active")
+            return offsetof(scvb::VizFrame, version_active);
+        if (f == "playhead_epoch")
+            return offsetof(scvb::VizFrame, playhead_epoch);
+        if (f == "track_online_mask")
+            return offsetof(scvb::VizFrame, track_online_mask);
+        if (f == "track_covered_mask")
+            return offsetof(scvb::VizFrame, track_covered_mask);
+        if (f == "track_stereo_mask")
+            return offsetof(scvb::VizFrame, track_stereo_mask);
+        if (f == "lane_revision")
+            return offsetof(scvb::VizFrame, lane_revision);
+        if (f == "track_lead_mask")
+            return offsetof(scvb::VizFrame, track_lead_mask);
+        if (f == "_reserved")
+            return offsetof(scvb::VizFrame, _reserved);
+        return kNotFound;
+    }
+    if (s == "VizTrackColors")
+    {
+        if (f == "index")
+            return offsetof(scvb::VizTrackColors, index);
+        if (f == "_pad")
+            return offsetof(scvb::VizTrackColors, _pad);
+        return kNotFound;
+    }
+    if (s == "VizCoverage")
+    {
+        if (f == "bits")
+            return offsetof(scvb::VizCoverage, bits);
+        return kNotFound;
+    }
+    if (s == "VizLanes")
+    {
+        if (f == "pan")
+            return offsetof(scvb::VizLanes, pan);
+        return kNotFound;
+    }
+    if (s == "VizTrackState")
+    {
+        if (f == "panNow")
+            return offsetof(scvb::VizTrackState, panNow);
+        if (f == "volDb")
+            return offsetof(scvb::VizTrackState, volDb);
+        if (f == "widthPct")
+            return offsetof(scvb::VizTrackState, widthPct);
+        if (f == "_reserved")
+            return offsetof(scvb::VizTrackState, _reserved);
+        return kNotFound;
+    }
+    if (s == "VizTrackLabels")
+    {
+        if (f == "utf8")
+            return offsetof(scvb::VizTrackLabels, utf8);
+        if (f == "_pad")
+            return offsetof(scvb::VizTrackLabels, _pad);
+        return kNotFound;
+    }
+    return kNotFound;
+}
+
+// [T44] viz 段内区块偏移(golden 的 "offset <key> <n>" 行)。
+std::size_t vizOffset(const std::string& key)
+{
+    if (key == "viz_header")
+        return scvb::kVizHeaderOffset;
+    if (key == "viz_frame")
+        return scvb::kVizFrameOffset;
+    if (key == "viz_colors")
+        return scvb::kVizColorsOffset;
+    if (key == "viz_coverage")
+        return scvb::kVizCoverageOffset;
+    if (key == "viz_lanes")
+        return scvb::kVizLanesOffset;
+    if (key == "viz_track_state")
+        return scvb::kVizTrackStateOffset;
+    if (key == "viz_labels")
+        return scvb::kVizLabelsOffset;
     return kNotFound;
 }
 
@@ -317,6 +462,10 @@ void checkNameLine(const std::vector<std::string>& t)
     if (kindTok == "registry")
     {
         kind = scvb::SegmentKind::kRegistry;
+    }
+    else if (kindTok == "viz")
+    {
+        kind = scvb::SegmentKind::kViz;
     }
     else if (kindTok == "ctrl")
     {
@@ -395,6 +544,51 @@ TEST_CASE("IpcLayoutFreeze", "[ipc][layout]")
             REQUIRE(t.size() == 2);
             const std::size_t budget = static_cast<std::size_t>(std::stoull(t[1]));
             REQUIRE(sizeof(scvb::OutputGlobalInfo) <= budget);
+        }
+        else if (t[0] == "viz_columns")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(scvb::kVizColumns == static_cast<u32>(std::stoul(t[1])));
+        }
+        else if (t[0] == "viz_coverage_words")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(scvb::kVizCoverageWords == static_cast<u32>(std::stoul(t[1])));
+        }
+        else if (t[0] == "viz_pan_scale")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(scvb::kVizPanScale == std::stol(t[1]));
+        }
+        else if (t[0] == "viz_label_words")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(scvb::kVizLabelWords == static_cast<u32>(std::stoul(t[1])));
+        }
+        else if (t[0] == "viz_label_bytes")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(scvb::kVizLabelBytes == static_cast<u32>(std::stoul(t[1])));
+        }
+        else if (t[0] == "viz_pan_none")
+        {
+            REQUIRE(t.size() == 2);
+            REQUIRE(static_cast<long>(scvb::kVizPanNone) == std::stol(t[1]));
+        }
+        else if (t[0] == "budget_viz_bytes")
+        {
+            REQUIRE(t.size() == 2);
+            const std::size_t budget = static_cast<std::size_t>(std::stoull(t[1]));
+            REQUIRE(scvb::kVizSegmentSize == budget);
+            REQUIRE(scvb::kVizLanesOffset + sizeof(scvb::VizLanes) <= budget);
+        }
+        else if (t[0] == "offset")
+        {
+            REQUIRE(t.size() == 3);
+            const std::size_t off = vizOffset(t[1]);
+            INFO("offset key: " << t[1]);
+            REQUIRE(off != kNotFound);
+            REQUIRE(off == static_cast<std::size_t>(std::stoull(t[2])));
         }
         else if (t[0] == "name")
         {

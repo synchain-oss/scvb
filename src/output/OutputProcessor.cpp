@@ -22,6 +22,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
                                .withInput("Input", juce::AudioChannelSet::stereo(), true)
                                .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId())),
+      vizPublisher_(backend_, 1u), // [T44] 组号随 setGroupId/prepareToPlay 校正
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
     setLatencySamples(0); // ADR-002:Output 不报额外 latency(对齐靠时间线,不靠 PDC)
@@ -85,6 +86,13 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     lastT0Out_ = std::numeric_limits<int64_t>::lowest();
     expectedNextOut_ = std::numeric_limits<int64_t>::lowest();
     prepared_ = true;
+
+    // [T44/J75] viz 段**不在这里建**。建/释放一律交给 [M] 每拍按 claim 态裁决(syncVizSegment)——
+    // 理由见 R1:同组第二个 Output 是 kObserver([J66]「同组内只读观察」),它若也建段并 4Hz 写,
+    // 两个写方会同时推同一个 seqlock,读方拿到的帧可以是两次发布的拼接(seq 偶数、内容却撕裂),
+    // 而且**看起来完全正常**。此处只把段指向当前组。
+    vizPublisher_.setGroup(static_cast<scvb::u32>(groupId_));
+
     startTimerHz(25);
 }
 
@@ -92,6 +100,7 @@ void ScvbOutputAudioProcessor::releaseResources()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     session_.release(scvb::steadyNowMs());
+    vizPublisher_.release(); // [T44] viz 段与主链路同生命周期
     printer_.endAllGestures();
     prepared_ = false;
     sampleRate_.store(
@@ -460,6 +469,88 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // 打印器模式:输出开关 ON → 引擎权威;OFF → follow host。T24 无分析曲线,Armed 与 Print 等效。
     printer_.setMode(outputEnabled_ ? scvb::engine::AuthorityMode::Armed : scvb::engine::AuthorityMode::Follow);
+
+    // [T44/J75] viz 段:先按 claim 态裁决建/释放(唯一写方 = kActive 的那个 Output),再发布。
+    syncVizSegment();
+    publishVizFrame(now);
+}
+
+void ScvbOutputAudioProcessor::syncVizSegment()
+{
+    // viz 段的唯一写方 = **本组 claim 到 OutputSlot 的那一个** Output([J66] 同组内只读观察)。
+    // claim 态会在运行中翻转(接管 / 让位 / 改组 / 段不可用),所以这条判定必须**每拍**做,
+    // 不能只在 prepareToPlay 做一次 —— 否则「启动时是 observer、后来接管成功」的实例永远不发布,
+    // 而「启动时 active、后来让位」的实例会与新主实例一起写同一个 seqlock。
+    const bool shouldWrite = prepared_ && session_.state() == scvb::output::OutputClaimState::kActive;
+    if (shouldWrite && !vizPublisher_.isOpen())
+    {
+        vizPublisher_.open(); // 失败(权限/内存)不影响主链路 —— Monitor 看到空态即可,下拍再试
+    }
+    else if (!shouldWrite && vizPublisher_.isOpen())
+    {
+        vizPublisher_.release(); // 让位 / 改组 / 未 prepare:立刻松手,不留第二个写方
+    }
+}
+
+void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
+{
+    // 调用方已持 lifecycleMutex_(timerCallback):可直接读 crvsData_,免去 crvsSnapshot() 的深拷贝。
+    // 双保险:syncVizSegment 已按 claim 态裁决过,这里再判一次。
+    if (!vizPublisher_.isOpen())
+    {
+        return;
+    }
+    // 4Hz 闸门**前置**:下面要采 15 个轨名(每个一次 toStdString 堆分配)+ 曲线指针,
+    // 而 tick() 只在 250ms 边界真的用得上 —— 25Hz 全采是白烧消息线程。
+    if (!vizPublisher_.due(nowMs))
+    {
+        return;
+    }
+
+    scvb::output::VizPublishInput in;
+    in.crvs = &crvsData_;
+    in.curves = authority_.activeCurves();
+    in.versionActive = static_cast<scvb::u32>(versionActive_);
+    in.crvsRevision = crvsRevision_.load(std::memory_order_acquire);
+    in.sampleRate = sampleRate_.load(std::memory_order_relaxed);
+    in.playhead = playheadSnapshot();
+
+    const int v = juce::jlimit(1, kVersionMax, versionActive_);
+    // [N1] metaRevision **只哈希轨名**。width 走帧头段、每帧都刷,与 writeLanes 无关 ——
+    // 把它掺进来会让「width 被自动化」变成 needLanes 恒真,每秒 15360 次曲线求值。
+    // FNV-1a 64 位:碰撞概率可忽略,不再靠时间兜底兜住碰撞(见 kLaneRefreshMaxMs)。
+    std::uint64_t meta = 1469598103934665603ull ^ static_cast<std::uint64_t>(v);
+    const auto fnv = [&meta](unsigned char byte) { meta = (meta ^ byte) * 1099511628211ull; };
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        const auto& c = runtime_.channels[static_cast<std::size_t>(ch)];
+        if (c.enabled)
+        {
+            in.enabledMask |= (1u << ch);
+        }
+        if (c.sourceChannels == 2)
+        {
+            in.stereoMask |= (1u << ch);
+        }
+        if (c.leadLock)
+        {
+            in.leadMask |= (1u << ch);
+        }
+        auto& label = in.label[static_cast<std::size_t>(ch)];
+        label = c.label.toStdString();
+        // 每轨 width:活动版本的参数 raw atomic(engineering 0..100)。句柄未就绪 → NaN → 段内哨兵。
+        const auto* raw = handles_.rawTrkW[v - 1][ch];
+        in.widthPct[static_cast<std::size_t>(ch)] =
+            raw != nullptr ? raw->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
+        for (const char byte : label)
+        {
+            fnv(static_cast<unsigned char>(byte));
+        }
+        fnv(0); // 分隔符:防「AB|C」与「A|BC」哈希相同
+    }
+    // 64 位哈希折成 32 位存进 metaRevision(只用于相等比较,折叠不降低碰撞抗性到可担忧的程度)。
+    in.metaRevision = static_cast<scvb::u32>(meta ^ (meta >> 32));
+    vizPublisher_.tick(nowMs, in);
 }
 
 void ScvbOutputAudioProcessor::setCurrentProgram(int /*index*/) {}
@@ -658,6 +749,9 @@ void ScvbOutputAudioProcessor::setGroupId(int groupId)
         session_.changeGroup(static_cast<scvb::u32>(groupId),
                              static_cast<scvb::u32>(sampleRate_.load(std::memory_order_relaxed)),
                              static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
+        // [T44] viz 段随组切换:**只换指向,不建段** —— 新组里本实例可能是 kObserver,
+        // 建不建由下一拍的 syncVizSegment() 按 claim 态裁决([J66])。
+        vizPublisher_.setGroup(static_cast<scvb::u32>(groupId));
     }
 }
 
