@@ -133,6 +133,32 @@ for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
     Object.freeze(table);
 }
 
+/**
+ * **待转正**桥函数 —— 走冻结契约变更流程(仓 CLAUDE.md §5 / 契约 §9.0)、native 侧尚未落地的名字。
+ *
+ * 为什么单立一张表,而不是直接往 `BRIDGE_FUNCTIONS` 里加一行:那张表是
+ * `scripts/check-bridge-parity.mjs` 的 B 侧比对面,与契约 §7 manifest **逐字全等**是硬门禁
+ * (含 34/9/7/5 四个计数断言)。契约还没改就往里加名字,门禁必红 —— 而门禁红了是对的,
+ * 它正在说「你改了桥面却没改契约」。所以待转正的名字停在本表:
+ *
+ *   • **能力探测后才挂**:mock 后端实现了就挂得上(预览页当场可用、往返可验),
+ *     真 JUCE 宿主要等它把名字登记进 `__juce__functions` 才挂 —— 没登记就**不挂**,
+ *     调用方拿到的是 `undefined`,与「桥函数不存在」逐字同一形态,不会有半通不通的中间态;
+ *   • 转正时:契约 §7 manifest + 正文 + C++ 常量表 + 本文件 `BRIDGE_FUNCTIONS` 同批加名,
+ *     并把该名字从本表**删掉**(留着会让它绕过 parity 门禁,那才是真正的洞)。
+ *
+ * 现存条目:
+ *   • `setMasterChartMode(mode)` —— [J75] T43 的 Tab1 分布图视图态 `ui.master_chart_mode`;
+ *     变更文档 `docs/contract-changes/20260825-master-chart-mode.md`,native 侧(state codec +
+ *     桥 setter)转 DS 侧执行。
+ */
+export const PENDING_FUNCS = {
+    output: ["setMasterChartMode"],
+    input: [],
+};
+for (const side of ["output", "input"]) Object.freeze(PENDING_FUNCS[side]);
+Object.freeze(PENDING_FUNCS);
+
 /** 合法角色 —— 契约只有 Output / Input 两侧。 */
 const ROLES = ["output", "input"];
 
@@ -200,7 +226,7 @@ function makeOn(role, em) {
  * 组装返回对象:{ role, isPreview, on, ...每函数方法 }。
  * call(name) 交由各后端提供;方法一律 async,参数原样透传(校验归 C++,§0.8)。
  */
-function assemble(role, isPreview, em, call) {
+function assemble(role, isPreview, em, call, hasPending) {
     const api = { role, isPreview, on: makeOn(role, em) };
     for (const name of BRIDGE_FUNCTIONS[role]) {
         if (RESERVED_KEYS.has(name)) {
@@ -209,6 +235,13 @@ function assemble(role, isPreview, em, call) {
             );
         }
         api[name] = call(name);
+    }
+    // 待转正名字:后端**确实实现了**才挂(见 PENDING_FUNCS 头注)。挂不上时调用方
+    // 读到 undefined,与「这个桥函数还不存在」是同一形态 —— 页面侧本来就得容错。
+    const probe = typeof hasPending === "function" ? hasPending : () => false;
+    for (const name of PENDING_FUNCS[role]) {
+        if (RESERVED_KEYS.has(name) || name in api) continue;
+        if (probe(name)) api[name] = call(name);
     }
     return api;
 }
@@ -247,7 +280,12 @@ function makeJuceBackend(role) {
             return getNativeFunction(name)(...args);
         };
 
-    return assemble(role, false, em, call);
+    // 待转正名字的能力探测:真宿主把每个 registered native function 登记在
+    // `initialisationData.__juce__functions`(见 isJuceHost 头注),照它判即可。
+    const registered = new Set(
+        (window.__JUCE__.initialisationData || {}).__juce__functions || [],
+    );
+    return assemble(role, false, em, call, (name) => registered.has(name));
 }
 
 /**
@@ -277,7 +315,13 @@ function makeMockBridge(role, mock) {
         async (...args) =>
             mock[name](...args);
 
-    return assemble(role, true, em, call);
+    return assemble(
+        role,
+        true,
+        em,
+        call,
+        (name) => typeof mock[name] === "function",
+    );
 }
 
 /**

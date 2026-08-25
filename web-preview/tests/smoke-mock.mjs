@@ -25,9 +25,8 @@ const ROOT =
     resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const u = (p) => pathToFileURL(join(ROOT, p)).href;
 
-const { createBridge, BRIDGE_FUNCTIONS, BRIDGE_EVENTS } = await import(
-    u("web/shared/bridge.js")
-);
+const { createBridge, BRIDGE_FUNCTIONS, BRIDGE_EVENTS, PENDING_FUNCS } =
+    await import(u("web/shared/bridge.js"));
 const driver = await import(u("web-preview/mock/state-driver.js"));
 
 const FIXTURES = driver.FIXTURES;
@@ -65,8 +64,16 @@ for (const role of ["output", "input"]) {
             wired++;
         }
         // backend 键集 = 契约函数 + addEventListener(同形断言)
+        // + PENDING_FUNCS[role]:走冻结变更流程、native 未落地的待转正名字
+        // (见 bridge.js 那张表的头注)。它**必须**留在断言里而不是被过滤掉 ——
+        // 名字转正后从 PENDING_FUNCS 挪进 BRIDGE_FUNCTIONS,本行自动跟着改判,
+        // 而随手自造的契约外方法照旧会把这条断言打红。
         const keys = Object.keys(s.mock).sort();
-        const want = [...BRIDGE_FUNCTIONS[role], "addEventListener"].sort();
+        const want = [
+            ...BRIDGE_FUNCTIONS[role],
+            ...PENDING_FUNCS[role],
+            "addEventListener",
+        ].sort();
         check(
             JSON.stringify(keys) === JSON.stringify(want),
             `${role} backend 键集与契约不等:多 [${keys.filter((k) => !want.includes(k))}] 缺 [${want.filter((k) => !keys.includes(k))}]`,

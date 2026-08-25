@@ -377,6 +377,30 @@ export const T = {
         "master.msHint": "−100 偏 Mid / +100 偏 Side",
         "master.distHint": "柱高 = 音量,横位 = 声像;横线 = 立体声源张开度",
         "master.distAxis": "左 L · −50 · 中 C · +50 · 右 R",
+
+        // T43 / [J75] A+B:分布图双视图(分布 ↔ 轨迹)+ 15 色轨道配色。
+        // EN/FR 为本卡自译,与 tour.step* 同批**待 U17 人工审校**。
+        "chart.modeGroup": "分布图视图",
+        "chart.modeDistribution": "分布",
+        "chart.modeTrajectory": "轨迹",
+        "chart.trajHint":
+            "每轨一条线 = 该轨最终打印的声像;没有分段的区间不画线",
+        // y 轴的三个方位词(上 / 中 / 下 = +100 / 0 / −100)。刻度**数字**由
+        // trajectory-chart.js 按当前纵向缩放档算,方位词只贴在这三条锚刻度上。
+        // **三条各自成 key,不合成一串按语序拆** —— 合成串的话,U17 审校时调一下
+        // 词序就会把左右标反,而那是一眼看不出来的错(图照画,只是左右颠倒)。
+        "chart.panSideR": "右 R",
+        "chart.panSideC": "中 C",
+        "chart.panSideL": "左 L",
+        "chart.trajCanvasAria":
+            "声像轨迹图:滚轮左右平移,Ctrl+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键",
+        "chart.zoomAria": "时间轴缩放档位",
+        "chart.backToPlayhead": "回到播放头",
+        "chart.resetPanZoom": "纵向复位",
+        "chart.trajEmpty": "尚无分段结果——分析之后这里显示每轨的声像轨迹",
+        "chart.legendAria": "轨道配色图例",
+        "chart.legendHint": "色点对应轨号;悬停高亮该轨",
+
         "master.transitionHint": "段与段之间参数切换的过渡时间",
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
@@ -1079,6 +1103,27 @@ export const T = {
         "master.distHint":
             "Bar height = level, horizontal position = pan; the line = stereo source width",
         "master.distAxis": "L · −50 · C · +50 · R",
+
+        // T43 / [J75] A+B —— 自译,**待 U17 人工审校**。
+        "chart.modeGroup": "Distribution chart view",
+        "chart.modeDistribution": "Distribution",
+        "chart.modeTrajectory": "Trajectory",
+        "chart.trajHint":
+            "One line per track = that track's final printed pan; no line where there are no segments",
+        "chart.panSideR": "R",
+        "chart.panSideC": "C",
+        "chart.panSideL": "L",
+        "chart.trajCanvasAria":
+            "Pan trajectory chart: scroll to move sideways, Ctrl+scroll to zoom horizontally, Shift+scroll to move up and down, Alt+scroll to zoom vertically; drag or arrow keys also work",
+        "chart.zoomAria": "Timeline zoom level",
+        "chart.backToPlayhead": "Back to playhead",
+        "chart.resetPanZoom": "Reset Y zoom",
+        "chart.trajEmpty":
+            "No segments yet — each track's pan trajectory appears here after analysis",
+        "chart.legendAria": "Track colour legend",
+        "chart.legendHint":
+            "The colour dot matches the track number; hover to highlight that track",
+
         "master.transitionHint":
             "How fast parameters transition between segments.",
         "master.copyConfirmWarn":
@@ -1748,6 +1793,27 @@ export const T = {
         "master.distHint":
             "Hauteur = volume, position horizontale = panoramique ; le trait = largeur de la source stéréo",
         "master.distAxis": "G · −50 · C · +50 · D",
+
+        // T43 / [J75] A+B —— 自译,**待 U17 人工审校**。
+        "chart.modeGroup": "Vue du graphique de répartition",
+        "chart.modeDistribution": "Répartition",
+        "chart.modeTrajectory": "Trajectoire",
+        "chart.trajHint":
+            "Une ligne par piste = le panoramique final imprimé de cette piste ; aucune ligne là où il n'y a pas de segment",
+        "chart.panSideR": "D",
+        "chart.panSideC": "C",
+        "chart.panSideL": "G",
+        "chart.trajCanvasAria":
+            "Graphique de trajectoire du panoramique : molette pour défiler latéralement, Ctrl+molette pour zoomer horizontalement, Maj+molette pour défiler verticalement, Alt+molette pour zoomer verticalement ; le glisser et les flèches fonctionnent aussi",
+        "chart.zoomAria": "Niveau de zoom de la timeline",
+        "chart.backToPlayhead": "Revenir à la tête de lecture",
+        "chart.resetPanZoom": "Réinit. zoom Y",
+        "chart.trajEmpty":
+            "Aucun segment pour l'instant — la trajectoire de panoramique de chaque piste apparaît ici après l'analyse",
+        "chart.legendAria": "Légende des couleurs de piste",
+        "chart.legendHint":
+            "La pastille de couleur correspond au numéro de piste ; survolez pour mettre la piste en évidence",
+
         "master.transitionHint":
             "Durée de transition des paramètres entre segments.",
         "master.copyConfirmWarn":

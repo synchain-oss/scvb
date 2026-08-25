@@ -201,7 +201,8 @@
                     180deg,
                     rgba(181, 172, 201, 0.95),
                     rgba(150, 140, 192, 0.6)
-                ); /* 设计稿 L2049 原值 */
+                ); /* 设计稿 L2049 原值;[J75] T43 起柱体按轨着色(tokens.css 第 21 组),
+                      本条**保留为设计稿原值存档**、不再有消费者(同 tokens.css --wave-env 的处理) */
                 --dist-bar-lead: linear-gradient(
                     180deg,
                     rgba(120, 176, 142, 0.95),
@@ -1044,10 +1045,19 @@
                 padding: var(--sp-10) var(--sp-14) var(--sp-8); /* 设计稿 L536 原值 */
                 gap: var(--sp-6);
             }
+            /* [J75] T43:头部多了两态分段控件,基线对齐会把胶囊拽歪 —— 改居中,
+               说明小字独占剩余宽并按视图切换(两条 hint 同挂 .dist-head__hint)。 */
             .dist-head {
                 display: flex;
-                align-items: baseline;
+                align-items: center;
                 gap: var(--sp-12);
+            }
+            .dist-head__hint {
+                flex: 1;
+                min-width: 0;
+            }
+            .chart-modeseg {
+                flex: none;
             }
             .dist-plot {
                 position: relative;
@@ -1094,6 +1104,10 @@
                 height: 1px;
                 background: var(--w-35);
             }
+            /* [J75] B:柱体与 width 横线**按轨着色**。`--tc` 由 tab-master.js 逐柱写成
+               `var(--track-color-N)`(N = 轨号,tokens.css 第 21 组);嵌套 var 是文本替换,
+               `rgba(var(--tc), .95)` 会一路展开到分量值。--dist-bar-fill 的渐变配方保留在
+               这里的两档 alpha 上(.95 → .55),换的只是色相。 */
             .dist-bar {
                 position: absolute;
                 bottom: 15px;
@@ -1102,11 +1116,31 @@
                 margin-left: -3.5px;
                 height: var(--h, 30%);
                 border-radius: 3px 3px 1px 1px;
-                background: var(--dist-bar-fill);
+                background: linear-gradient(
+                    180deg,
+                    rgba(var(--tc), 0.95),
+                    rgba(var(--tc), 0.55)
+                );
                 transition: all var(--dur-1) var(--ease);
             }
-            .dist-bar[data-lead="1"] {
+            /* lead 轨原本整根染绿(--dist-bar-lead);轨色进来之后那条通道被占用,
+               绿色语义改挂**柱顶 2px 帽**——身份色(轨)与语义色(lead)各占一处,
+               不再互相覆盖。--dist-bar-lead 的绿渐变原样复用为帽色。 */
+            .dist-bar[data-lead="1"]::after {
+                content: "";
+                position: absolute;
+                left: -1px;
+                right: -1px;
+                top: -3px;
+                height: 2px;
+                border-radius: 1px;
                 background: var(--dist-bar-lead);
+            }
+            /* 图例 hover 联动:非高亮轨淡出(纯展示,无写操作)。淡出档与轨迹图的
+               DIM_ALPHA(trajectory-chart.js)同值,两张图看起来是同一次高亮。 */
+            .dist-bar[data-hi="0"],
+            .dist-span[data-hi="0"] {
+                opacity: 0.16;
             }
             .dist-span {
                 position: absolute;
@@ -1115,7 +1149,7 @@
                 width: var(--w, 10%);
                 height: 1.5px;
                 border-radius: var(--r-pill);
-                background: rgba(var(--acc), 0.55);
+                background: rgba(var(--tc), 0.8);
                 transition: all var(--dur-1) var(--ease);
             }
             /* 底轴五刻度(设计稿 L552-554:左 L / −50 / 中 C / +50 / 右 R) */
@@ -1134,6 +1168,172 @@
             }
             .dist-axis > span:nth-child(odd) {
                 color: var(--txt-2);
+            }
+
+            /* ---- ④b 轨迹图([J75] A;T43 新增)------------------------------
+               视图切换是**纯 CSS**:卡片上的 data-chart-mode 决定哪块 plot 与哪条 hint 在场。
+               用 display:none 而不是 hidden 属性,是因为两块 plot 都要参与 .sc-card 的
+               flex 纵向分配 —— 藏起来的那块必须彻底退出布局,否则另一块拿不到 flex:1 的高。 */
+            [data-chart-mode="distribution"] .traj-plot,
+            [data-chart-mode="trajectory"] .dist-plot,
+            [data-chart-mode="distribution"]
+                .dist-head__hint[data-hint-for="trajectory"],
+            [data-chart-mode="trajectory"]
+                .dist-head__hint[data-hint-for="distribution"] {
+                display: none;
+            }
+            .traj-plot {
+                display: flex;
+                flex: 1;
+                min-height: 0;
+                gap: var(--sp-6);
+            }
+            /* y 刻度列(−100..+100,与曲线编辑器同刻度)。刻度**逐格绝对定位** ——
+               纵向缩放后格数与格距都随档位变,`space-between` 的等分排法对不上网格线;
+               每格的 y 由 trajectory-chart.js 用画折线那一套换算算好推过来(onPanAxis),
+               两边不会各算一份而漂开。
+               透明 1px 边框是为了让本列的定位原点与 .traj-stage 的**内**框对齐:
+               画布走 inset:0,落在 stage 的 1px 边框以内,不补这一层全列会整体高 1px。 */
+            .traj-axis-y {
+                flex: none;
+                position: relative;
+                width: 62px;
+                border: 1px solid transparent;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                line-height: 11px;
+                color: var(--txt-4);
+            }
+            .traj-axis-y__tick {
+                position: absolute;
+                right: 0;
+                transform: translateY(-50%);
+                white-space: nowrap;
+            }
+            /* ±100 / 0 三条锚刻度(带 L/C/R 方位词的那三格)提亮。纵向放大到看不见
+               它们时本列就只剩数字 —— 方位词只挂在真正的 ±100/0 上,别的刻度挂了是骗人。 */
+            .traj-axis-y__tick.is-anchor {
+                color: var(--txt-2);
+            }
+            .traj-stage {
+                position: relative;
+                flex: 1;
+                min-width: 0;
+                overflow: hidden;
+                border-radius: var(--r-xs);
+                background: var(--w-10);
+                border: 1px solid var(--w-20);
+            }
+            .traj-stage__canvas {
+                position: absolute;
+                inset: 0;
+                cursor: grab;
+                /* 指针拖拽平移:不交给浏览器做滚动/缩放手势,否则拖到一半会被抢走 */
+                touch-action: none;
+            }
+            .traj-stage__canvas:focus-visible {
+                outline: 2px solid var(--acc-slider);
+                outline-offset: -2px;
+            }
+            .traj-stage__playhead {
+                position: absolute;
+                top: 4px;
+                bottom: 14px;
+                width: 1px;
+                background: var(--acc-strong);
+                pointer-events: none;
+            }
+            .traj-stage__zoom {
+                position: absolute;
+                left: var(--sp-8);
+                top: var(--sp-5);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                letter-spacing: var(--mono-ls-ui);
+                color: var(--txt-4);
+                pointer-events: none;
+            }
+            /* 两枚浮标按钮(纵向复位 / 回到播放头)排一行,右上角对齐。
+               两枚都可能单独隐藏,故靠 flex 收拢而不是各自 absolute ——
+               「回到播放头」在右,位置与只有它时逐像素一致;「纵向复位」出现时向左长。
+               浮在画布上,不占卡片版面。 */
+            .traj-stage__actions {
+                position: absolute;
+                right: var(--sp-8);
+                top: var(--sp-5);
+                display: flex;
+                gap: var(--sp-4);
+            }
+            .traj-stage__reset,
+            .traj-stage__follow {
+                padding: var(--sp-3) var(--sp-9);
+                border-radius: var(--r-pill);
+                border: 1px solid var(--w-42);
+                background: rgba(var(--wh), 0.72);
+                color: var(--txt-1);
+                font-family: var(--ff-sans);
+                font-size: var(--fs-100);
+                cursor: pointer;
+                box-shadow: var(--sh-sm);
+                transition: background var(--dur-1) var(--ease);
+            }
+            .traj-stage__reset:hover,
+            .traj-stage__follow:hover {
+                background: rgba(var(--wh), 0.9);
+            }
+            .traj-stage__empty {
+                position: absolute;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0 var(--sp-16);
+                text-align: center;
+                font-size: var(--fs-115);
+                color: var(--txt-4);
+                pointer-events: none;
+            }
+            /* 盖板的 hidden 归本页第 223 行那条全局 `[hidden]{display:none !important}`
+               管(作者层 + !important,恒胜任何类选择器上的 display),此处不逐类补兜底。 */
+            /* ---- ④c 轨道配色图例([J75] B;两视图共用)----------------------
+               色点 + 轨名 + 立体声 ST 角标。hover 联动高亮是**纯展示**,不发任何调用。 */
+            .chart-legend {
+                display: flex;
+                flex-wrap: wrap;
+                gap: var(--sp-3) var(--sp-10);
+                flex: none;
+            }
+            .chart-legend__item {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-4);
+                font-size: var(--fs-95);
+                color: var(--txt-3);
+                cursor: default;
+                transition: color var(--dur-1) var(--ease);
+            }
+            .chart-legend__item[data-hi="1"] {
+                color: var(--txt-1);
+            }
+            .chart-legend__dot {
+                width: 8px;
+                height: 8px;
+                flex: none;
+                border-radius: var(--r-pill);
+                background: rgba(var(--tc), 0.95);
+            }
+            .chart-legend__st {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-75);
+                letter-spacing: var(--mono-ls-tag);
+                padding: 0 var(--sp-2);
+                border-radius: var(--r-tag);
+                background: rgba(var(--wh), 0.28);
+                color: var(--txt-3);
+            }
+            .chart-legend__empty {
+                font-size: var(--fs-95);
+                color: var(--txt-4);
             }
 
             /* ---- ④ 过渡时间卡 + 斜坡 SVG(设计稿 L422-441) ---- */
@@ -5013,11 +5213,16 @@
                                 <!-- [T3x] bridge.beginParamGesture("lead_select") / setParam("lead_select", v) / endParamGesture("lead_select") —— 契约 §1.12-1.14 -->
                             </div>
 
-                            <!-- ④ 声像 / 音量分布图(设计稿 L536-556;col1-2 row2-3,纯 DOM + CSS 绝对定位) -->
+                            <!-- ④ 声像 / 音量分布图(设计稿 L536-556;col1-2 row2-3,纯 DOM + CSS 绝对定位)
+                 [J75] T43:升级双视图「分布 ↔ 轨迹」。视图态 = 卡片上的 data-chart-mode
+                 (distribution|trajectory,单一状态源),两块 plot 与两条 hint 由 CSS 按它显隐;
+                 值来自 state ui.master_chart_mode(新 state 字段,变更文档
+                 docs/contract-changes/20260825-master-chart-mode.md)。 -->
                             <div
                                 class="sc-card"
                                 data-gb="master-distchart"
                                 data-tour="dist"
+                                data-chart-mode="distribution"
                             >
                                 <div class="dist-head">
                                     <span
@@ -5025,11 +5230,47 @@
                                         data-t="master.distEyebrow"
                                         >声像 / 音量分布</span
                                     >
+                                    <!-- 两态分段控件(J75 A);胶囊族同 base.css .sc-seg--sm,
+                         选中态照本页约定用 aria-pressed(见页首「胶囊选中态」注)。 -->
+                                    <div
+                                        class="sc-seg sc-seg--sm chart-modeseg"
+                                        role="group"
+                                        data-t-aria="chart.modeGroup"
+                                        aria-label="分布图视图"
+                                        data-gb="master-chart-mode-seg"
+                                    >
+                                        <button
+                                            class="sc-seg__item"
+                                            aria-pressed="true"
+                                            data-chart-mode="distribution"
+                                            data-gb="master-chart-mode-distribution"
+                                            data-t="chart.modeDistribution"
+                                        >
+                                            分布
+                                        </button>
+                                        <button
+                                            class="sc-seg__item"
+                                            aria-pressed="false"
+                                            data-chart-mode="trajectory"
+                                            data-gb="master-chart-mode-trajectory"
+                                            data-t="chart.modeTrajectory"
+                                        >
+                                            轨迹
+                                        </button>
+                                    </div>
                                     <span
-                                        class="sc-hint"
+                                        class="sc-hint dist-head__hint"
+                                        data-hint-for="distribution"
                                         data-t="master.distHint"
                                         >柱高 = 音量,横位 = 声像;横线 =
                                         立体声源张开度</span
+                                    >
+                                    <span
+                                        class="sc-hint dist-head__hint"
+                                        data-hint-for="trajectory"
+                                        data-t="chart.trajHint"
+                                        >每轨一条线 =
+                                        该轨最终打印的声像;没有分段的区间不画线</span
                                     >
                                 </div>
                                 <div
@@ -5077,6 +5318,87 @@
                                         data-t-split="master.distAxis"
                                     ></div>
                                 </div>
+                                <!-- [J75] A 轨迹图:x = 工程时间线(复用 T33 的 canvas/timeline.js 视口模型),
+                     y = pan 角度域 −100..100(与曲线编辑器同刻度,可纵向缩放)。绘制在
+                     web/shared/trajectory-chart.js;本页只提供骨架与几个写入面
+                     (画布 / 播放头竖线 / 缩放读数 / 两枚浮标按钮 / y 刻度列)。 -->
+                                <div
+                                    class="traj-plot"
+                                    data-gb="master-trajchart-plot"
+                                >
+                                    <!-- 刻度格由 tab-master.js 按 onPanAxis 推来的 y 逐格建
+                             (纵向缩放后格数与格距都随档位变,拆不出固定的五格)。 -->
+                                    <div
+                                        class="traj-axis-y"
+                                        data-gb="master-trajchart-axis-y"
+                                        aria-hidden="true"
+                                    ></div>
+                                    <div
+                                        class="traj-stage"
+                                        data-gb="master-trajchart-stage"
+                                    >
+                                        <canvas
+                                            class="traj-stage__canvas"
+                                            data-gb="master-trajchart-canvas"
+                                            role="application"
+                                            tabindex="0"
+                                            data-t-aria="chart.trajCanvasAria"
+                                            aria-label="声像轨迹图:滚轮左右平移,Ctrl+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键"
+                                        ></canvas>
+                                        <div
+                                            class="traj-stage__playhead"
+                                            data-gb="master-trajchart-playhead"
+                                            hidden
+                                            aria-hidden="true"
+                                        ></div>
+                                        <!-- 空态:段表为空时盖在画布上(不是 hidden 画布 ——
+                             画布仍要占位,否则 ResizeObserver 量不到舞台) -->
+                                        <p
+                                            class="traj-stage__empty"
+                                            data-gb="master-trajchart-empty"
+                                            data-t="chart.trajEmpty"
+                                            hidden
+                                        >
+                                            尚无分段结果——分析之后这里显示每轨的声像轨迹
+                                        </p>
+                                        <div class="traj-stage__actions">
+                                            <!-- 纵向缩放非全域时才出现;只回 y 轴,横向视口与跟随态不动 -->
+                                            <button
+                                                class="traj-stage__reset"
+                                                data-gb="master-trajchart-reset"
+                                                data-t="chart.resetPanZoom"
+                                                hidden
+                                            >
+                                                纵向复位
+                                            </button>
+                                            <!-- 跟随模式脱离后才出现(J75 A);点击即回到跟随 -->
+                                            <button
+                                                class="traj-stage__follow"
+                                                data-gb="master-trajchart-follow"
+                                                data-t="chart.backToPlayhead"
+                                                hidden
+                                            >
+                                                回到播放头
+                                            </button>
+                                        </div>
+                                        <span
+                                            class="traj-stage__zoom"
+                                            data-gb="master-trajchart-zoom"
+                                            data-t-aria="chart.zoomAria"
+                                            aria-label="时间轴缩放档位"
+                                            aria-live="polite"
+                                        ></span>
+                                    </div>
+                                </div>
+                                <!-- [J75] B 图例 = 色点 + 轨名(hover 联动高亮对应柱/线;纯展示,无写操作)。
+                     两视图共用;行由 tab-master.js 按**当前视图的可见轨集**生成。 -->
+                                <div
+                                    class="chart-legend"
+                                    data-gb="master-chart-legend"
+                                    data-t-aria="chart.legendAria"
+                                    aria-label="轨道配色图例"
+                                    role="list"
+                                ></div>
                             </div>
 
                             <!-- ④ 过渡时间卡 + 斜坡 SVG(设计稿 L422-441;col3 row2) -->

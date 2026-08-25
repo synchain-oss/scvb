@@ -59,6 +59,16 @@ export const WAVEFORM_UNCOVERED_DB = -160;
 /** `heartbeatAgeMs` 的「无数据」哨兵(契约 §2.3:slotState=0/从未心跳 → 0xFFFFFFFF)。 */
 export const HEARTBEAT_AGE_NONE = 0xffffffff;
 
+/**
+ * Tab1 分布图视图两态([J75] T43 的 state `ui.master_chart_mode`)。
+ *
+ * **刻意不进 `ENUMS`**:那个对象的头注写着「契约 §5 / §7 manifest 的枚举镜像」,
+ * 而本枚举还没进契约 —— 它随 `docs/contract-changes/20260825-master-chart-mode.md`
+ * 走冻结变更流程,转正后再并入 ENUMS。UI 侧(`web/output/tab-master.js`)另有一份
+ * 同值常量,理由同 `CHANNEL_COUNT` 那条:正式页面不为一个常量把整份 demo 数据拖进包里。
+ */
+export const CHART_MODES = Object.freeze(["distribution", "trajectory"]);
+
 /** 契约 §5 / §7 manifest 的枚举镜像。只读,供生成器取值与调用方自检。 */
 export const ENUMS = Object.freeze({
     rangeMode: Object.freeze(["follow", "daw_loop", "manual"]),
@@ -366,6 +376,22 @@ export function coverageRangesOf(ch, durationS = DEMO_DURATION_S) {
 export const STALE_DEMO_CHANNELS = Object.freeze([2, 7, 12]);
 
 /**
+ * [J75] T43 轨迹图「断线」的**确定性**验收缺口(秒)。
+ *
+ * `coverageRangesOf` 本来就在两轮采集之间留了一段空当(≈126–150s),乐句之间也
+ * 处处是短间隙 —— 断线在基线 fixture 上本就画得出来。但那些缺口的位置随轨号抖动,
+ * 做不了「断在这儿」的定点断言,也不好截图。故另立一个**跨轨对齐、宽到一眼可见**
+ * 的窗口:落在第二轮采集的正中,几条轨在同一处齐刷刷断开。
+ *
+ * 只有 `makeSegments(..., {trajectoryGap:true})` 才会挖它 —— 基线 fixture 的段表
+ * **逐字节不变**(既有 T31/T33 冒烟的数字全部照旧)。
+ */
+export const TRAJECTORY_GAP = Object.freeze({ startS: 168, endS: 204 });
+
+/** 上述缺口作用的轨(挑 5 条错开:两条 mono 主唱族 + 一条 stereo + 两条陪衬)。 */
+export const TRAJECTORY_GAP_CHANNELS = Object.freeze([1, 4, 8, 10, 14]);
+
+/**
  * 某轨的 stale 区间(fingerprint watchdog 语义预留,05 §2.3「特征波形」行)。
  * 只有 STALE_DEMO_CHANNELS 三轨各有一段,落在**第二轮采集**(passId 2)内,
  * 确定性、与调用顺序无关;其余轨回空(健康数据)。
@@ -502,6 +528,9 @@ export function makeOutputState(overrides = {}) {
             active_tab: "master",
             guide_seen: false,
             tour_seen: false,
+            // [J75] T43:Tab1 分布图视图态。新字段、默认 distribution ——
+            // 旧工程读进来没有这一键,UI 侧 chartModeOf() 一律回默认档。
+            master_chart_mode: CHART_MODES[0],
         },
         // 运行时态三件(不入 state chunk、不随工程持久化,§2.1 字段纪律)
         print_guard: { pending: false },
@@ -725,11 +754,15 @@ export function makeCaptureProgress(tS = 0, channels = allChannels()) {
  * @param {number} version 1..2
  * @param {string} reason §2.8 十值枚举之一
  * @param {number[]} channels 受影响轨(`snapshot`/`versionActive` 语义上必须是全部轨)
+ * @param {{trajectoryGap?: boolean}} [opts] `trajectoryGap` = 在 `TRAJECTORY_GAP` 窗口内
+ *   把 `TRAJECTORY_GAP_CHANNELS` 几条轨的段整段挖掉([J75] T43 轨迹图断线的定点验收面)。
+ *   **缺省 false** —— 不传就与本参数引入前逐字节相同。
  */
 export function makeSegments(
     version = 1,
     reason = "snapshot",
     channels = allChannels(),
+    opts = {},
 ) {
     assertInt("version", version, 1, VERSION_COUNT);
     assertEnum("reason", reason, ENUMS.segmentsReason);
@@ -746,9 +779,18 @@ export function makeSegments(
         const track = DEMO_TRACKS[ch - 1];
         const ranges = coverageRangesOf(ch);
         // 只有采到的地方才会有分析产物:乐句 ∩ 覆盖
-        const phrases = phrasesOf(ch).filter(
+        let phrases = phrasesOf(ch).filter(
             (p) => indexOfRange(ranges, (p.t0S + p.t1S) / 2) >= 0,
         );
+        // [J75] T43:定点缺口 —— 与窗口有**任何**重叠的段整段拿掉,窗口两侧才是干净的断口
+        // (只切掉重叠部分会留下半截段,断线位置就跟着乐句边界抖,断言不住)。
+        if (opts.trajectoryGap && TRAJECTORY_GAP_CHANNELS.includes(ch)) {
+            phrases = phrases.filter(
+                (p) =>
+                    p.t1S <= TRAJECTORY_GAP.startS ||
+                    p.t0S >= TRAJECTORY_GAP.endS,
+            );
+        }
 
         const segments = phrases.map((p, i) => {
             const panJitter = unit(0x8101 + version, ch * 149 + i) * 12 - 6;
@@ -1066,6 +1108,8 @@ export function makeTourDemoSnapshot(overrides = {}) {
             active_tab: "master",
             guide_seen: true,
             tour_seen: false, // tour 还没走完 —— 这是 demo 的前提
+            // tour 的分布图步讲的是柱体/横位,固定停在分布档(J75 A 默认档)
+            master_chart_mode: CHART_MODES[0],
         },
         guide_seen_global: true,
         tour_seen_global: false,
@@ -1075,8 +1119,8 @@ export function makeTourDemoSnapshot(overrides = {}) {
 }
 
 /** J62 tour 的 demo 段表(§2.8;首帧口径 = 全部轨全量段表)。 */
-export function makeTourDemoSegments(version = 1, reason = "snapshot") {
-    return makeSegments(version, reason, allChannels());
+export function makeTourDemoSegments(version = 1, reason = "snapshot", opts) {
+    return makeSegments(version, reason, allChannels(), opts);
 }
 
 /** demo 的 §2.7 首帧覆盖(把两段覆盖当作首帧「新增」一次性给出)。 */

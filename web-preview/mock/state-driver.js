@@ -32,6 +32,7 @@ import {
 } from "./juce-bridge-mock.js";
 import {
     CHANNEL_COUNT,
+    CHART_MODES,
     DEMO_DURATION_S,
     DEMO_GROUPS_ONLINE,
     DEMO_LABELS,
@@ -103,6 +104,9 @@ export const SCENARIO_MAP = Object.freeze({
     "first-run-tour": "fifteen-tracks",
     // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
     "curve-editor": "fifteen-tracks",
+    // T43([J75] A)轨迹图演示:开箱就落在轨迹档,且段表带一段跨轨对齐的缺口 ——
+    // 「无分段覆盖的区间不画线」在这个场景里一眼可见、可截图、可断言。
+    "chart-trajectory": "fifteen-tracks",
 });
 
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
@@ -481,6 +485,18 @@ export function buildWorld(opts = {}) {
             ...outputParams,
             values: { ...outputParams.values, ms_balance: 42 },
         };
+    }
+    if (opts.scenario === "chart-trajectory" && outputSnapshot) {
+        // T43([J75] A):快照直接带轨迹档(= 用户上一拍切过视图,重开面板靠
+        // state.ui.master_chart_mode 恢复 —— 这正是「切换态持久化」的回读半边);
+        // 段表挖 TRAJECTORY_GAP 窗口,几条轨在同一处齐断,断线肉眼可查。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, master_chart_mode: CHART_MODES[1] },
+        };
+        outputSegments = makeTourDemoSegments(1, "snapshot", {
+            trajectoryGap: true,
+        });
     }
 
     // ---- Input 七态场景覆写(T36;只改 Input 快照初值,不动周期事件与函数语义)----
