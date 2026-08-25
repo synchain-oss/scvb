@@ -82,8 +82,13 @@ const WAIT_MS = Number(opt("wait", 1500));
 const SETTLE_MS = Number(opt("settle", 600));
 const TAB = opt("tab", "");
 // 三个壳页各一侧;表外取值回落 output(拼错参数不该白屏)。
+// ⚠ 两次 `opt()` 的默认值**必须一致**:曾经第二次写的是 `opt("role", "")` ——
+// 不传 `--role` 时判定拿到的是 "output"(在表内 ⇒ 走 then 分支),取值却拿到空串,
+// URL 因此拼成 `web-preview/.html` 而 404 白屏。回落逻辑看着还在,实际从没生效过。
 const ROLES = ["output", "input", "monitor"];
-const ROLE = ROLES.includes(opt("role", "output")) ? opt("role", "") : "output";
+const ROLE = ROLES.includes(opt("role", "output"))
+    ? opt("role", "output")
+    : "output";
 
 function buildUrl() {
     if (args.has("url")) return args.get("url");

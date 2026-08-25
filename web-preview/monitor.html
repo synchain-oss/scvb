@@ -9,9 +9,11 @@
   06 §6.2 硬约束 1:web/ 是唯一真源,本文件里**没有一行复制来的 UI 代码**。
 
   URL 参数(由 mock/monitor-mock.js 解析,壳页只透传 location.search):
-    ?scenario=monitor-online|monitor-offline|monitor-groups|monitor-stalled
+    ?scenario=…    —— 全表见 mock/monitor-mock.js 的 MONITOR_SCENARIOS(导航页有直达链接)
     &group=1..8    —— 直接指定开箱观察的组(覆盖场景默认)
     &play=0        —— 走带停住(播放头不动;看静态构图用)
+    &playhead=off  —— 宿主整个不推 scvb.playhead(25Hz 那一路不起)⇒ 竖线只能靠
+                      viz 帧自带的低频种子;演「宿主拿不到 AudioPlayHead」的降级
   `?target=monitor` 亦可挂在任一壳页上(shell.js 的通用参数),效果等同本页。
 
   必须经 serve.ps1(http://127.0.0.1:8823)打开;file:// 下 iframe 变跨源,注入不成立。

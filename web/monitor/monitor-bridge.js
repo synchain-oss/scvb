@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // =============================================================================
-// SCVB Monitor · 前端桥(T46;**临时形制,待与 T44/T45 接口说明对表**)
+// SCVB Monitor · 前端桥(T46;**临时形制,待随 ipc v1.6 修宪转正进契约 §7**)
 // -----------------------------------------------------------------------------
+// 【对表状态】函数名表与事件名表已与 T45 的实交付逐字对齐(#92 `decae38` 的
+//   `MonitorBridgeApi.h` / `MonitorEditor.cpp`),载荷形状三轮对表已收敛。
+//
+// 【⚠ 这些名字与形状现在由谁保证】**在 T44/T45 合入 `feature/v1` 之前,只有 mock 兜着。**
+//   本分支上跑的是 `web-preview/mock/monitor-mock.js`,它按对表结论造数,smoke 断言的
+//   也是它。真桥是否照办由两个 parity 比对面查(段 golden + `MonitorEditor.cpp` 的
+//   `setProperty` 名集,见 `./viz-contract.js` 文件头);而那两面因为两个文件还不在
+//   `feature/v1` 的树上,现在打的是 `[SKIP]` —— **rebase 之后才真正生效**。
+//   已对着他们的分支头临时嫁接验证过:全绿零 SKIP。本页对桥侧的逐条要求列在
+//   `./viz.js` 文件头「本页对桥侧的要求」那一节。
+//
 // 【为什么不直接用 `web/shared/bridge.js`】
 //   那份文件只认 `output` / `input` 两侧,两张名表是 `scripts/check-bridge-parity.mjs`
 //   的 B 侧比对面,与**冻结契约** docs/SCVB_CONTRACT.md §7 manifest 逐字全等(含

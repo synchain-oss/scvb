@@ -125,6 +125,12 @@ export const MONITOR_SCENARIOS = Object.freeze([
     "monitor-stalled", // 在线但陈旧:state 的 fresh=false ⇒ 琥珀横幅,**图仍显示**
     "monitor-abi", // 拒连:state 报 abiMismatch ⇒ 红横幅 + 停止读取
     "monitor-reconnect", // 重连:开箱 offline,3 秒后 Output 上线 ⇒ 自动出图
+    // 先停更、再退出 —— **T45 检测掉线的真实路径**(帧陈旧 ⇒ 松开映射再探一次 ⇒ 探不到)。
+    // 关键在于第二段只推 `scvb.state`,viz 事件流**停在停更那一帧**上(宿主侧的
+    // `emitEventIfBrowserIsVisible` 本来就可能让它停)。于是页面手里留着一帧
+    // `online:true, fresh:false` 的旧帧 —— 留存帧若压过 native 的段级事实,画面就会
+    // **永久停在琥珀横幅**上,而正确画面是空态。这条曾经真的错着。
+    "monitor-stall-then-gone",
     "monitor-no-lanes", // 降级:桥没送车道 ⇒ 轨迹图走「未接通」的专门空态
     "monitor-no-tracks", // 降级:没有每轨三条标量 ⇒ 分布图画空、轨迹图照常
     "monitor-no-lead", // 降级:没有 leadMask ⇒ 柱照画、无绿帽
@@ -178,7 +184,15 @@ export function parseMonitorQuery(params) {
     const play =
         rawPlay === null ? true : rawPlay !== "0" && rawPlay !== "false";
 
-    return { scenario, group, play, warnings };
+    // `?playhead=off`:**宿主不推 `scvb.playhead`**(25Hz 那一路整个不起)。
+    // 这不是测试专用开关,而是一种真实的降级:宿主拿不到 AudioPlayHead 时那一路就没有,
+    // 页面必须回落到 viz 帧自带的播放头种子(4Hz、低频,但位置是对的)。
+    // 顺带它让「首帧种子」那一支**确定地**被走到 —— 有 25Hz 在跑时那一支撞不撞得上
+    // 取决于两个事件谁先到,而靠撞上的覆盖等于没有覆盖。
+    const rawPh = q.get("playhead");
+    const playhead = rawPh === null ? true : rawPh !== "off" && rawPh !== "0";
+
+    return { scenario, group, play, playhead, warnings };
 }
 
 // -----------------------------------------------------------------------------
@@ -393,9 +407,11 @@ function createMonitorBackend(parsed) {
     };
 
     const state = {
+        scenario: parsed.scenario, // driver 按它排一次性的状态迁移(重连 / 停更后退出)
         observed,
         tS: 42,
         isPlaying: parsed.play,
+        playheadOn: parsed.playhead, // `?playhead=off` ⇒ 25Hz 那一路整个不起
         seq: 2, // 段里 seq 偶 = 稳定;桥只在稳定帧上投影,故对外恒为偶数
         generation: 1,
         laneRevision: 1,
@@ -409,7 +425,14 @@ function createMonitorBackend(parsed) {
                     parsed.scenario === "monitor-reconnect"
                   ? "offline"
                   : "online",
-        fresh: parsed.scenario !== "monitor-stalled",
+        // `monitor-stall-then-gone` 与 `monitor-stalled` 一样开箱就停更;
+        // 区别是前者 2 秒后段真的没了(见 driver)。
+        fresh:
+            parsed.scenario !== "monitor-stalled" &&
+            parsed.scenario !== "monitor-stall-then-gone",
+        // 置位后 4Hz 的 viz 事件**停发**(模拟宿主侧事件被可见性门控挡掉 / 写方进程已退出),
+        // 页面手里因此只剩留存的那一帧。`scvb.state` 照常发 —— 段级事实只走这一路。
+        vizFrozen: false,
         abi: VIZ_ABI,
         // `monitor-reconnect`:先起不来,由 driver 在 3 秒后翻成 true
         outputUp: parsed.scenario !== "monitor-reconnect",
@@ -522,7 +545,7 @@ function createMonitorBackend(parsed) {
             onlineMask: g.onlineMask,
             coveredMask: g.coveredMask,
             stereoMask: g.stereoMask,
-            // `track_lead_mask` 仍待 T44 确认(viz-contract.js 的 VIZ_PENDING_FIELDS)。
+            // `track_lead_mask` T44 已落地(offset 84);本场景演的是它缺席时的降级。
             // `monitor-no-lead` 之外的场景先按「已经有了」造,好让柱顶绿帽在 preview
             // 里可验收;没有它时的行为由 `monitor-no-tracks` 之外的那条断言管。
             leadMask: state.withLead ? g.leadMask : undefined,
@@ -658,6 +681,21 @@ function createMonitorBackend(parsed) {
         setGroupsOnline(bitmap) {
             groupsOnline = bitmap;
         },
+        /**
+         * 测试面:段没了(**先停更、再退出**这条路径的第二段)。
+         *
+         * 只推 `scvb.state` —— 段级存活是 native 独有的事实,而 viz 事件流此刻**停发**
+         * (`vizFrozen`)。页面手里于是只剩上一帧 `online:true, fresh:false` 的留存帧:
+         * 若它压过 state 的 `offline`,画面永久停在琥珀横幅上。
+         */
+        takeOutputDown() {
+            if (!state.outputUp) return;
+            state.outputUp = false;
+            state.vizState = "offline";
+            state.fresh = false;
+            state.vizFrozen = true;
+            emit("scvb.state", statePayload());
+        },
         /** 测试面:让 Output「上线」(重连场景;driver 也用它)。 */
         bringOutputUp() {
             if (state.outputUp) return;
@@ -724,19 +762,22 @@ function makeDriver(ctl) {
                 ctl.emit("scvb.groups", ctl.groupsPayload());
             });
 
-            // 25Hz:播放头(§2.6 载荷原样,与 Output 侧同形)
-            startFrameLoop(PLAYHEAD_PERIOD_MS, () => {
-                const s = ctl.state;
-                if (s.isPlaying) {
-                    s.tS += PLAYHEAD_PERIOD_MS / 1000;
-                    if (s.tS >= DEMO_DURATION_S) s.tS -= DEMO_DURATION_S;
-                }
-                ctl.emit("scvb.playhead", {
-                    timeS: Math.round(s.tS * 1000) / 1000,
-                    isPlaying: s.isPlaying,
-                    inRange: true,
+            // 25Hz:播放头(§2.6 载荷原样,与 Output 侧同形)。
+            // `?playhead=off` 时整路不起 —— 演「宿主拿不到 AudioPlayHead」的降级:
+            // 页面只能靠 viz 帧自带的播放头种子摆竖线。
+            if (ctl.state.playheadOn)
+                startFrameLoop(PLAYHEAD_PERIOD_MS, () => {
+                    const s = ctl.state;
+                    if (s.isPlaying) {
+                        s.tS += PLAYHEAD_PERIOD_MS / 1000;
+                        if (s.tS >= DEMO_DURATION_S) s.tS -= DEMO_DURATION_S;
+                    }
+                    ctl.emit("scvb.playhead", {
+                        timeS: Math.round(s.tS * 1000) / 1000,
+                        isPlaying: s.isPlaying,
+                        inRange: true,
+                    });
                 });
-            });
 
             // 4Hz:viz 帧头(T44「帧头标量 250ms」)。
             // `monitor-stalled` 下 publishMs 冻住 —— 事件照发,停摆的是时刻。
@@ -752,6 +793,9 @@ function makeDriver(ctl) {
                         // T44 的语义是「只在重算车道时 +1」,而重算出同样的内容也不该
                         // 让读方白重解析一次 15×1024 —— 这条正是稳态省流的来源。
                     }
+                    // `vizFrozen`:事件流停发(写方进程已退出 / 宿主侧可见性门控挡掉)。
+                    // `scvb.state` 那一路照常 —— 段级事实只走它,这正是本场景要造的形态。
+                    if (s.vizFrozen) return;
                     ctl.emit("scvb.viz", ctl.vizFrame(s.observed, s.tS));
                 }, VIZ_FRAME_PERIOD_MS),
             );
@@ -767,6 +811,10 @@ function makeDriver(ctl) {
             // 重连场景:3 秒后 Output 上线(段被创建,generation +1)
             if (!ctl.state.outputUp) {
                 timers.push(setTimeout(() => ctl.bringOutputUp(), 3000));
+            }
+            // 「先停更、再退出」场景:2 秒后段真的没了,且此后 viz 事件流停发
+            if (ctl.state.scenario === "monitor-stall-then-gone") {
+                timers.push(setTimeout(() => ctl.takeOutputDown(), 2000));
             }
 
             // 兜底代调 requestInitialState()(与 state-driver 同款:页面若没调,

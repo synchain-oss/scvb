@@ -221,17 +221,34 @@ elseif ($smokeFiles.Count -eq 0) {
   Set-Gate '3e web smoke' $false
 }
 else {
+  # 退出码约定(T46 起):0 = 全绿;1 = 有断言失败;**2 = 缺可选外部依赖,本机跑不了**。
+  # 目前只有 smoke-monitor-page.mjs 会回 2(它要一个无头 Chrome/Edge)。为什么单列一档:
+  # 把「本机没装浏览器」和「页面真的坏了」都判成红,等于逼每个只改 C++ 的人装浏览器,
+  # 或者反过来诱导谁把这套从门禁里摘掉 —— 两条都比一条 SKIP 差。**但绝不静默**:
+  # 打印 SKIP 行并计数,总结里带上,免得「一套没跑」看起来和「跑过了」一样。
   $smokeOk = $true
+  $smokeSkipped = 0
   foreach ($f in $smokeFiles) {
     $out = (& node $f.FullName 2>&1)
-    if ($LASTEXITCODE -ne 0) {
+    $rc = $LASTEXITCODE
+    if ($rc -eq 2) {
+      $smokeSkipped++
+      Write-Host ("  [SKIP] {0}:缺可选外部依赖(见该脚本文件头)" -f $f.Name) -ForegroundColor Yellow
+      $out | Select-String -Pattern '^❌' | Select-Object -First 2 |
+      ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+    }
+    elseif ($rc -ne 0) {
       $smokeOk = $false
       Write-Host ("  {0}:" -f $f.Name) -ForegroundColor Red
       $out | Select-String -Pattern '\[FAIL\]' | Select-Object -First 20 |
       ForEach-Object { Write-Host ("  " + $_) }
     }
   }
-  Set-Gate ('3e web smoke({0} 套,node {1})' -f $smokeFiles.Count, $nv) $smokeOk
+  $smokeLabel = '3e web smoke({0} 套,node {1})' -f $smokeFiles.Count, $nv
+  if ($smokeSkipped -gt 0) {
+    $smokeLabel = '3e web smoke({0} 套 −{1} SKIP,node {2})' -f $smokeFiles.Count, $smokeSkipped, $nv
+  }
+  Set-Gate $smokeLabel $smokeOk
 }
 
 # ==================================================================

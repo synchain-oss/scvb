@@ -667,6 +667,24 @@ log("=== ③ viz 投影纯函数 ===");
         "stale",
         "④ 帧 online:false + state 说在线不新鲜 ⇒ **stale**,不是 offline",
     );
+    // ⑤ **留存帧不许压过 native 的段级事实**。`store.frame` 永不清空(它同时是车道缓存),
+    // 于是「先停更、再退出」这条 T45 的真实检测路径会在页面手里留下一帧
+    // `online:true, fresh:false`:段都没了,它却让 `frameStale` 继续成立 ⇒ 页面**永久**
+    // 停在琥珀横幅上,而正确画面是空态。段级存活只有 native 分得出,故 state 的 offline
+    // 是更强的事实,一票压过留存帧。场景 `?scenario=monitor-stall-then-gone` 在页面级复现。
+    eq(
+        VIZ.vizAccepts(
+            { ...okFrame, online: true, fresh: false },
+            { viz: "offline", fresh: false },
+        ).reason,
+        "offline",
+        "⑤ 留存的停更帧 + state 报 offline ⇒ **offline**(不是停在停更横幅上)",
+    );
+    eq(
+        VIZ.vizAccepts({ ...okFrame, online: true, fresh: false }, {}).reason,
+        "stale",
+        "⑤ 反面:state 还没说话时同一帧仍是 stale(闸只对 offline 开,别开大)",
+    );
     eq(
         VIZ.vizAccepts({ ...okFrame, online: false }, { viz: "abiMismatch" })
             .reason,
@@ -1046,7 +1064,7 @@ function paint(frame, ch, from, to, pan) {
         "缺 trackLabels ⇒ 空串(图例只显示两位轨号,不显示 undefined)",
     );
 
-    // ---- leadMask 缺失(仍待 T44 确认)⇒ 柱照画、一律不戴绿帽
+    // ---- leadMask 缺失(T44 已落地;此处测的是它缺席时的降级)⇒ 柱照画、不戴绿帽
     const noLead = { ...f, leadMask: undefined };
     eq(
         VIZ.vizDistRows(noLead).map((r) => r.lead),
@@ -1525,7 +1543,7 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
 }
 
 {
-    // ---- 降级 ②:有三条标量、但没有 track_lead_mask(仍待 T44 确认)
+    // ---- 降级 ②:有三条标量、但没有 track_lead_mask(T44 已落地,此处测缺席时的降级)
     const s = MMOCK.createPreviewSession({
         params: "?scenario=monitor-no-lead",
     });

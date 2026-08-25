@@ -171,21 +171,33 @@ function cdpConnect(wsUrl) {
     };
 }
 
+/** 缺浏览器 ⇒ 退出码 2(与「断言失败」的 1 分开;口径见文件头与 CLAUDE.md §6)。 */
+function noBrowser(msg) {
+    console.error(
+        `❌ ${msg}\n` +
+            "   页面级冒烟无法运行(退出码 2)。这**不是**通过:装一个 Chrome/Edge," +
+            "或用 --chrome=<路径> 指定。",
+    );
+    try {
+        server.close();
+    } catch {}
+    process.exit(2);
+}
+
 function chromePath() {
-    if (argv.has("chrome")) return argv.get("chrome");
+    // `--chrome` 给了就**只认它**,但要先确认存在 —— 直接丢给 spawn 会炸成
+    // 「Unhandled 'error' event」那种看不懂的栈,而它本质上就是「没有浏览器」。
+    if (argv.has("chrome")) {
+        const p = argv.get("chrome");
+        if (!existsSync(p)) noBrowser(`--chrome 指定的路径不存在:${p}`);
+        return p;
+    }
     for (const p of CHROME_CANDIDATES) if (existsSync(p)) return p;
-    return null;
+    noBrowser("本机找不到 Chrome/Edge");
+    return null; // 到不了(noBrowser 已退出),写着让读的人不必回头找
 }
 
 const exe = chromePath();
-if (!exe) {
-    console.error(
-        "❌ 本机找不到 Chrome/Edge —— 页面级冒烟无法运行(退出码 2)。\n" +
-            "   这**不是**通过:CI/别的机器上仍应装浏览器再跑,或用 --chrome=<路径> 指定。",
-    );
-    server.close();
-    process.exit(2);
-}
 
 // CDP 端口随机取:`shot.mjs` 固定用 9333,而本机同时跑两个 agent 的门禁并不罕见 ——
 // 固定端口一撞,失败形态是「Chrome 起不来」这种看不懂的超时。HTTP 那一路已经用了
@@ -216,6 +228,10 @@ const chrome = spawn(
     ],
     { stdio: "ignore" },
 );
+// 起不来(权限 / 镜像里其实没这个可执行 / 沙箱拒绝)也归「缺依赖」那一档 ——
+// 不挂这个监听器的话,node 会把它变成 Unhandled 'error' event 直接崩,
+// 退出码与「断言失败」混成一个,门禁那边就分不出该不该判红。
+chrome.on("error", (e) => noBrowser(`浏览器启动失败:${e.message}`));
 
 let cdp = null;
 let crashed = null;
@@ -323,16 +339,13 @@ const clickIn = (sel) =>
         ),
     );
 
-// 「首帧播放头种子」那一支在整轮里跑到过没有 —— 见下面 ⑧ 末尾那条覆盖断言。
-let seedSeen = false;
-
 /** 打开一个场景,等到投影稳定;返回 `{snap, probe}`。 */
-async function open(scenario, readyExpr) {
+async function open(scenario, readyExpr, extraQuery = "") {
     await cdp.send("Page.navigate", { url: "about:blank" });
     await sleep(120);
-    newBucket(scenario);
+    newBucket(scenario + (extraQuery ? ` ${extraQuery}` : ""));
     await cdp.send("Page.navigate", {
-        url: `${base}/web-preview/monitor.html?scenario=${scenario}`,
+        url: `${base}/web-preview/monitor.html?scenario=${scenario}${extraQuery}`,
     });
     // 先等页面把测试面挂出来,再等本场景自己的稳定判据
     const up = await waitFor(IN(`return !!M;`));
@@ -341,9 +354,7 @@ async function open(scenario, readyExpr) {
         const ok = await waitFor(readyExpr);
         check(ok, `${scenario}:等到了本场景的稳定态`);
     }
-    const snap = await evaluate(SNAP);
-    if (snap && snap.seededFromFrame) seedSeen = true;
-    return { snap, probe: await evaluate(PROBE) };
+    return { snap: await evaluate(SNAP), probe: await evaluate(PROBE) };
 }
 
 /** 本场景内页面必须**零未捕获异常、零 console.error**。 */
@@ -464,6 +475,36 @@ try {
         eq(probe.emptyPanelDisplay, "none", "**不进空态面板**");
         eq(probe.distBars, 15, "DOM 里柱子没被清掉");
         assertClean("monitor-stalled");
+    }
+
+    // =========================================================================
+    log("=== ②b 先停更、再退出:必须从琥珀横幅切到空态,不能停在横幅上 ===");
+    {
+        // T45 检测掉线的真实路径:帧陈旧 ⇒ 松开映射再探一次 ⇒ 探不到 ⇒ offline。
+        // 关键形态:第二段只推 `scvb.state`,viz 事件流**停发**,页面手里只剩一帧
+        // `online:true, fresh:false` 的**留存帧**(`store.frame` 永不清空,它同时是
+        // 车道缓存)。留存帧若压过 native 的段级事实,画面就**永久**停在停更横幅上,
+        // 而 Output 其实已经没了 —— 这条曾经真的错着。
+        const { snap, probe } = await open(
+            "monitor-stall-then-gone",
+            IN(`return M && M.snapshot().stalled === true;`),
+        );
+        eq(snap.reason, "stale", "第一段:停更 ⇒ 琥珀横幅");
+        eq(probe.stalledBanner, true, "横幅在");
+        eq(snap.seriesTracks.length, 15, "图还在(停更不清图)");
+
+        // 2 秒后段没了;只有 scvb.state 会说话
+        const gone = await waitFor(
+            IN(`return M.snapshot().reason === "offline";`),
+            8000,
+        );
+        check(gone, "第二段:段没了 ⇒ **切到 offline**(不是停在停更横幅上)");
+        const p2 = await evaluate(PROBE);
+        eq(p2.stalledBanner, false, "琥珀横幅撤掉");
+        eq(p2.cardOnline, "0", "卡片总闸 data-online=0");
+        eq(p2.emptyTitle, true, "空态标题出现");
+        eq(p2.distBars, 0, "柱子清干净(不是留着上一帧的 15 根)");
+        assertClean("monitor-stall-then-gone");
     }
 
     // =========================================================================
@@ -680,15 +721,45 @@ try {
             "destroy 之后继续来事件仍然零抛错",
         );
         assertClean("交互(语言/缩放/pagehide)");
+    }
 
-        // ---- 覆盖率兜底:上面所有场景加起来,「首帧播放头种子」那一支必须至少跑到过一次。
-        // 它一次装载最多命中一拍(条件是「本帧可读且 25Hz 那一路还没来过」),而命中与否
-        // 取决于两个事件谁先到 —— 那一支里曾经藏着一个 ReferenceError,靠场景时序恰好撞上
-        // 才被抓到。**靠撞上的覆盖等于没有覆盖**,故显式断言它确实被走到了。
-        check(
-            seedSeen,
-            "首帧播放头种子那一支至少被走到过一次(否则它是一段没人验过的代码)",
+    // =========================================================================
+    log("=== ⑧b 宿主不推 playhead:回落到 viz 帧自带的种子 ===");
+    {
+        // 「首帧播放头种子」那一支的条件是「本帧可读 **且** 25Hz 那一路还没来过」——
+        // 一次装载最多命中一拍,而命中与否取决于两个事件谁先到。那一支里曾经藏着一个
+        // ReferenceError,当初是靠某个场景的时序**恰好撞上**才暴露的。
+        // **靠撞上的覆盖等于没有覆盖**,故这里用 `?playhead=off`(宿主拿不到
+        // AudioPlayHead 的真实降级)把 25Hz 整路关掉,让那一支**确定**被走到。
+        const { snap, probe } = await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+            "&playhead=off",
         );
+        eq(
+            snap.playheadSeen,
+            false,
+            "`?playhead=off` 真的把 25Hz 那一路关掉了(下一条断言的前提)",
+        );
+        // 种子那一支挂在 **viz 帧到达**这条路径上,而 `online` 翻绿可能是
+        // `scvb.state` 先到那一拍造成的 —— 两者之间隔着最多一个 4Hz 周期。
+        // 故这里**等条件**,不是采一次样(采样会把「还没轮到」读成「没跑到」)。
+        const seeded = await waitFor(
+            IN(`return M.snapshot().seededFromFrame === true;`),
+            4000,
+        );
+        check(
+            seeded,
+            "没有 25Hz 那一路时,**确定**走到首帧播放头种子(不是碰运气撞上)",
+        );
+        eq(
+            (await evaluate(SNAP)).playheadSeen,
+            false,
+            "并且全程没有一个 playhead 事件顶替它(竖线只能靠这条种子)",
+        );
+        eq(snap.seriesTracks.length, 15, "图照常出(播放头缺席不影响两图)");
+        eq(probe.emptyPanelDisplay, "none", "不进空态");
+        assertClean("monitor-online&playhead=off");
     }
 
     // =========================================================================

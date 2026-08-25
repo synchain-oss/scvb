@@ -42,6 +42,26 @@
 //
 // `trackVolDb` 为什么可能整块缺:旧版 Output 的段里没有 `VizTrackState`。缺了就**画空**,
 // 不猜、不填 0 —— 填 0 会画出一排居中等高的幽灵柱,那是假数据。见 `DIST_REQUIRES`。
+//
+// =============================================================================
+// 本页对**桥侧**的要求,以及每条现在由谁兜着
+// =============================================================================
+// 下面这些不是「桥碰巧这么做」,是本页的**投影正确性依赖它们成立**。列出来是因为
+// **在 T44/T45 合入 `feature/v1` 之前,它们在本分支上只由 mock 兜着** ——
+// `web-preview/mock/monitor-mock.js` 按这些口径造数,smoke 逐条断言的也是 mock。
+// 真桥是否照办,由两个 parity 比对面查(`viz-contract.js` 文件头);而那两面在
+// `feature/v1` 上因为文件不在树上,现在打的是 `[SKIP]`。**rebase 之后才真正生效。**
+//
+//   ① 每轨数据一律**定长 15、下标即轨号**(不是 `[{ch,…}]` 对象数组);
+//   ② 时间量**一律秒**,样本换算在 C++ 桥完成(契约 §0.2「UI 永不见样本」);
+//   ③ 哨兵折成 **`null`**,不是 0 —— 0 在三条标量里都是合法值;
+//   ④ **缺数据的字段整块不写**(而不是写 0 / 空数组),故本页用 `Number.isFinite`
+//      / `Array.isArray` 判在场,不判真假;
+//   ⑤ `coverage` 的 u32 可能以负数或 >2³¹ 的形式到达(JUCE 的 JSON 走 int64)——
+//      故 `columnCovered` 用 `>>>`(自带 ToUint32);
+//   ⑥ 车道三件按 `laneRevision` **按需重发**,且 `requestInitialState` 的首帧**必带**;
+//   ⑦ `online` / `fresh` 是**两个独立字段**(T45 `decae38`),`groupId` 随帧带上;
+//   ⑧ `scvb.groups` 的键是 `online`(**不是** Output 侧的 `groups_online`)。
 // =============================================================================
 
 import { PAN_MAX, PAN_MIN } from "../shared/trajectory-chart.js";
@@ -233,8 +253,17 @@ export function vizAccepts(viz, status) {
     // 两个信源都收:`scvb.state` 与帧里那两个字段是同一组事实的两次投影,谁先到都能顶上
     // (首帧 viz 可能早于 `scvb.state`,反之亦然)。`stateStale` 那一路同时兼容拆分**之前**
     // 的桥:那时停摆帧里也是 `online:false`,只有 state 分得出来。
+    //
+    // ⚠ `frameStale` 必须让位于 `scvb.state` 的 `offline`。原因是**帧是留存的**:
+    // `store.frame` 永不清空(它同时是车道缓存),于是「Output 先停更、再退出」这条
+    // T45 的真实检测路径会留下一帧 `online:true, fresh:false` 的旧帧 —— 段都没了,
+    // 它却让 `frameStale` 一直成立,把下面的 offline 早退跳过去,页面**永久停在**
+    // 「在线但停更」的琥珀横幅上,而正确画面是空态。段级存活只有 native 分得出
+    // (命名段是引用计数存活的),所以 `st.viz === "offline"` 是**更强的事实**,
+    // 一票压过留存帧里那两个字段。
     const stateStale = st.viz === "online" && st.fresh === false;
-    const frameStale = viz.fresh === false && viz.online !== false;
+    const frameStale =
+        st.viz !== "offline" && viz.fresh === false && viz.online !== false;
     const stale = stateStale || frameStale;
     // ⚠ **离线判据必须排在「缺车道」之前**:段 attach 不上时桥送的就是一帧没有车道、
     // 没有窗口的空帧。先判 shape 会把「该组没有 Output」报成「帧还没到」——
@@ -434,7 +463,8 @@ export function vizDistRows(viz) {
             // 缺 width 时画一条零宽横线比画一条瞎猜宽度的横线诚实。
             widthPct: width !== null ? width : 100,
             stereo: maskHas(viz.stereoMask, ch),
-            // `leadMask` 仍待 T44 确认(viz-contract.js 的 VIZ_PENDING_FIELDS)。
+            // `leadMask` T44 已落地(`VizFrame.track_lead_mask`,offset 84)。
+            // 桥没送时(旧段 / 降级)一律不戴绿帽 ——
             // 拿不到就一律不戴绿帽 —— 少一顶帽子是「少了个信息」,猜错是「标错了主唱」。
             lead: maskHas(viz.leadMask, ch),
         });

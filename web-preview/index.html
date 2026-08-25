@@ -273,11 +273,12 @@
             轨迹图(占主体),顶部组选择 A–H 为<strong>只读 attach</strong
             >(点击换观察对象,不
             claim、不影响被观察的组)。整页<strong>没有一个写控件</strong>。数据来自
-            <code>web-preview/mock/monitor-mock.js</code> 自拟的 viz 快照事件 ——
-            <strong
-                >真段规格待 T44 定稿(ipc v1.6),形状与字段清单见
-                <code>web/monitor/viz.js</code> 文件头</strong
-            >。
+            <code>web-preview/mock/monitor-mock.js</code> ——
+            <strong>它是 T44 viz 段 + T45 桥的行为替身,不是自拟形状</strong
+            >:字段名、量纲、样本→秒换算、按需重发车道都对着实交付校过(段布局真源
+            <code>src/core/ipc/VizPlane.h</code> 与
+            <code>tests/golden/ipc-layout.txt</code>;JS 侧镜像与两个 parity
+            比对面见 <code>web/monitor/viz-contract.js</code>)。
         </p>
         <ul>
             <li>
@@ -331,21 +332,31 @@
             </li>
             <li>
                 <a href="./monitor.html?scenario=monitor-no-lanes"
-                    >Monitor · 车道未接通(<strong>T45 当前真实形态</strong>)</a
+                    >Monitor · 车道未接通(旧版 Output / 桥回归)</a
                 >
                 —— 桥只送了每轨摘要、没送 15×1024 的降采样车道 ⇒
                 <strong>轨迹图走专门的空态</strong>「监视数据未接通」,而不是
-                「尚无分段结果」(后者是骗人:段是有的,只是没送过来)。编码已定,见
-                <code>web/monitor/viz-contract.js</code> 的
-                <code>LANE_TRANSPORT</code>
+                「尚无分段结果」(后者是骗人:段是有的,只是没送过来)。 车道本身
+                T45 已按
+                <code>lane_revision</code> 落地,本场景演的是它缺席时的降级
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-stall-then-gone"
+                    >Monitor · 先停更、再退出</a
+                >
+                —— <strong>T45 检测掉线的真实路径</strong>:先 2
+                秒琥珀横幅(图仍在), 随后段真的没了、<code>scvb.viz</code>
+                事件流停发,只剩 <code>scvb.state</code> 报 offline ⇒
+                必须切到空态。 页面手里那帧留存的停更帧<strong
+                    >不许压过 native 的段级事实</strong
+                >, 否则永久停在横幅上
             </li>
             <li>
                 <a href="./monitor.html?scenario=monitor-no-lead"
                     >Monitor · 缺 lead 掩码</a
                 >
-                —— 段里没有 <code>track_lead_mask</code>(**仍待 T44 确认**,见
-                <code>web/monitor/viz-contract.js</code> 的
-                <code>VIZ_PENDING_FIELDS</code>)⇒
+                —— 段里没有 <code>track_lead_mask</code>(T44 已在 offset 84
+                落地; 本场景演的是它缺席时的降级)⇒
                 柱照画、一律不戴柱顶绿帽。少一个信息 好过 标错主唱
             </li>
             <li>

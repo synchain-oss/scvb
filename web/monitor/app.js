@@ -534,7 +534,7 @@ function render() {
     // 的折线是纯浪费:载荷没变时结果逐字相同)。
     //
     // 空态**两句话**,分得清才不骗人:
-    //   • 桥根本没送车道块(T45 待落 LANE_TRANSPORT)⇒「监视数据未接通」;
+    //   • 桥根本没送车道块(旧版 Output / 桥回归)⇒「监视数据未接通」;
     //   • 送了、但一条线都没有(工程真没分析过)⇒「尚无分段结果」。
     // 画面一样、原因完全不同 —— 说错了会让用户去 DAW 里白找一遍。
     const empty = $("monitor-traj-empty");
@@ -711,8 +711,11 @@ window.__SCVB_MONITOR__ = {
         observed: store.observed,
         groups: store.groups,
         stalled: store.accepts.reason === "stale",
-        // 首帧种子那一支跑到过没有(浏览器级 smoke 用它确认那条路径真被覆盖了)
+        // 首帧种子那一支跑到过没有(浏览器级 smoke 用它确认那条路径真被覆盖了);
+        // `playheadSeen` 一并给出 —— 两者是同一个条件的两半,断言红了能一眼分清
+        // 是「种子那一支没跑」还是「25Hz 那一路已经先到了」。
         seededFromFrame,
+        playheadSeen,
         laneRevision: store.frame ? store.frame.laneRevision : null,
         generation: store.frame ? store.frame.generation : null,
         durationS: vizDurationS(visibleFrame()),
