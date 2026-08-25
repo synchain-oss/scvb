@@ -1487,7 +1487,7 @@
             }
             [data-gb="master-range"][data-range="follow"]
                 .range-pane[data-pane="follow"],
-            [data-gb="master-range"][data-range="loop"]:not(
+            [data-gb="master-range"][data-range="loop"][data-loop-stale="1"]:not(
                     [data-loop-missing="1"]
                 )
                 .range-pane[data-pane="loop"],
@@ -3919,6 +3919,11 @@
                 gap: var(--sp-14);
                 overflow: auto;
             }
+            /* 红色说明块 = 红色圆角半透明卡片。形状取自 .sc-card(圆角 --r-lg + --card-pad +
+               真 border-style),红色调取自 .sc-banner--red(15% 红底 + 42% 红描边)。
+               **不能**改挂 .sc-banner:它带 align-items:center,会把标题/<ol>/foot 压成收缩宽度。
+               此前只挂了 modifier 没挂基类,border-color 没有 border-style 撑着 —— 渲染成方角、
+               零内距、无描边的一片红底(v4 实测 P2-7)。 */
             .settings-guideblock-rules {
                 margin-top: var(--sp-9);
                 display: flex;
@@ -3989,11 +3994,10 @@
                 color: var(--sem-red-icon);
                 text-decoration: underline;
             }
+            /* 外观全部交给 .sc-btn(圆角/玻璃底/描边/字号),本类只留布局。
+               原先是带下划线的裸链接(v4 实测 P2-7)。 */
             .settings-guideblock__docs {
                 align-self: flex-start;
-                font-size: var(--fs-105);
-                color: var(--acc-link-on-glass);
-                text-decoration: underline;
             }
             /* ---- 「手动接管与自动化」说明块(J78):标题 + 四行正文,排版同「使用说明」块 ----
                字号与字色复用 .set-block__title,此处只补块内上边距 */
@@ -7481,7 +7485,7 @@
                                         data-t="set.usage.workflow"
                                     ></p>
                                     <div
-                                        class="sc-banner--red settings-guideblock-rules"
+                                        class="sc-card sc-banner--red settings-guideblock-rules"
                                         data-gb="settings-guideblock-rules"
                                         data-open="0"
                                     >
@@ -7525,13 +7529,15 @@
                                             ></button>
                                         </div>
                                     </div>
-                                    <a
-                                        href="#"
-                                        class="settings-guideblock__docs"
+                                    <button
+                                        type="button"
+                                        class="sc-btn settings-guideblock__docs"
                                         data-gb="settings-docs"
                                         data-t="set.usage.docs"
-                                    ></a>
-                                    <!-- 待定项③:文档入口(纯文案 vs 经 native 打开外部浏览器)未定,先落纯文案链接 -->
+                                    ></button>
+                                    <!-- 待定项③:文档入口(纯文案 vs 经 native 打开外部浏览器)未定。
+                                         外观已按 sc-btn 族统一(v4 实测 P2-7);点击行为仍待定,
+                                         故不挂 handler —— 契约函数表里也还没有「打开外部 URL」这一项。 -->
                                     <!-- [T36b] 重看引导 = 重启交互式 tour(tour.js 消费 data-tour="review") -->
                                 </div>
 

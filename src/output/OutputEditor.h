@@ -4,8 +4,10 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <array>
 #include <cstdint>
 #include <map>
+#include <vector>
 
 #include "OutputBridgeApi.h"
 #include "OutputProcessor.h"
@@ -31,6 +33,14 @@ protected:
     // 25Hz diff-then-emit(仅 mBridgeReady 后由基类调用)。
     void emitTick() override;
 
+    // setLang:归一化后同时落 Output state(uiLanguage,params-v0 §二;§1.30)。
+    // 基类只写 editor 局部 lang_,而 §2.1 的 ui.language 取自 processor —— 不落 processor
+    // 就会在下一次 state emit 把旧语言回推给 UI(T37 真机 bug A-1)。
+    void handleSetLang(const juce::Array<juce::var>& args,
+                       juce::WebBrowserComponent::NativeFunctionCompletion complete) override;
+    // commitUiScale 防呆确认后落 Output state + 系统级全局默认(§1.29)。
+    void persistUiScaleAsDefault() override;
+
 private:
     using Completion = juce::WebBrowserComponent::NativeFunctionCompletion;
     using ArgList = juce::Array<juce::var>;
@@ -46,6 +56,21 @@ private:
     // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
     void emitSegments(const juce::String& reason, std::uint16_t tracksMask);
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
+
+    // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
+    struct AnalyzeScope
+    {
+        std::uint16_t tracksMask = 0; // 0 = 不限轨
+        double startS = 0.0;
+        double endS = 0.0;
+    };
+    AnalyzeScope parseAnalyzeScope(const ArgList& a) const;
+
+    // 宿主循环区(秒)。返回 false = 宿主未提供循环区,或提供了但没给 tempo 换算不出秒
+    // (JUCE 的 loopPoints 只有 ppq)。true 时 startS/endS 有效且 endS > startS。
+    bool hostLoopSeconds(double& startS, double& endS) const;
+    // mode=daw_loop 时把 runtime 的 range 跟到宿主循环区上;返回 true = 本拍值有变化。
+    bool syncDawLoopRange();
 
     // 契约 §2.1 的 state 子树(快照与 scvb.state 共用,防两处漂移)。
     juce::var buildStateSubtree(bool full) const;
@@ -111,7 +136,12 @@ private:
     std::array<float, 15> lastMeterPeak_{};
     float lastBusL_ = -1000.0f;
     float lastBusR_ = -1000.0f;
+    float lastBusLPeak_ = -1000.0f;
+    float lastBusRPeak_ = -1000.0f;
     bool metersEverSent_ = false;
+    // §2.7 captureProgress 的增量基线:上一帧已报过的覆盖区间与覆盖率(index = ch-1)。
+    std::array<std::vector<scvb::analysis::HopRange>, 15> lastCoverageRanges_{};
+    std::array<float, 15> lastCoveragePct_{};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OutputEditor)
 };

@@ -122,10 +122,18 @@ export function shouldShowTourAsk(state, snapshot) {
  * 但若某会话已过红字页(ui.guide_seen=true)却没答询问步(tour 未置位),红字页不会再弹、
  * 「开始使用」无处可点,询问步就永远没有入口 —— 故渲染层在 guide 已见 + tour 未置位时
  * **直接显示询问步**,与「开始使用」处理器共用 shouldShowTourAsk 同一判定。
+ *
+ * `answeredThisSession` 是**本会话已答**的一次性判定(与 guideClosed / langChosen 同族)。
+ * 少了它就有一条真机可复现的竞态(T37 bug A-2):tour 走完 → endTour 发出 setTourSeen 后
+ * **立刻** requestRender,而 `ui.tour_seen` 要等桥回执 + 下一拍 25Hz scvb.state 才为 true;
+ * 这一帧本函数仍判「该弹」,询问卡当场重新弹出、用户再点「开始」就把 tour 重放一遍。
+ * 一次性门控绝不能只依赖异步回执 —— 用户一答完就在本地置位,state 回推只是最终一致的确认。
  * @param {object} state    工程 state 子树(含 ui.guide_seen / ui.tour_seen)
  * @param {object} snapshot §1.1 快照(含 tour_seen_global)
+ * @param {boolean} answeredThisSession 本会话是否已答过询问步(开始 / 暂不 / tour 已结束)
  */
-export function shouldAutoShowTourAsk(state, snapshot) {
+export function shouldAutoShowTourAsk(state, snapshot, answeredThisSession) {
+    if (answeredThisSession) return false;
     const ui = (state && state.ui) || {};
     return ui.guide_seen === true && shouldShowTourAsk(state, snapshot);
 }
@@ -201,6 +209,7 @@ export function buildDemoStore(getT) {
         readOnly: false,
         noTimeline: false,
         loopMissing: false,
+        loopStale: false, // demo 里循环区正常,不挂「已失效」提示
         // 本会话一次性判定(不入 state chunk);demo 里引导已关、无打印态。
         session: {
             writeConfirmSeen: true,
@@ -240,6 +249,9 @@ export function createTour(opts) {
     const showDemoSelection = opts.showDemoSelection || (() => {}); // 步 33 示例选区(纯视图层)
     const showDemoSegment = opts.showDemoSegment || (() => {}); // 步 35 段检查器示例选中(纯视图层)
     const resetWaveView = opts.resetWaveView || (() => {}); // 退出 32/33/35 或 tour 结束还原
+    // tour 结束(完成或 Skip)即刻通知外壳落「本会话已答」位 —— 不能等 setTourSeen 的
+    // 异步回执与下一拍 scvb.state,否则询问卡会在结束的那一帧重新弹出(bug A-2)。
+    const onEnd = opts.onEnd || (() => {});
 
     async function call(name, ...args) {
         if (!bridge || typeof bridge[name] !== "function") return null;
@@ -511,6 +523,7 @@ export function createTour(opts) {
         resetWaveView(); // 还原缩放 + 清选区/段选中(步 30/31/33 视图增强)
         // 完成与 Skip 都置位(§2.6:两者都经 setTourSeen(true, true));唯一桥调用。
         call("setTourSeen", true, true);
+        onEnd(); // 本地一次性位:与桥回执解耦(见 shouldAutoShowTourAsk 头注)
         active = false;
         demoStore = null;
         overlay.hidden = true;

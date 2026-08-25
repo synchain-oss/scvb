@@ -10,6 +10,7 @@
 
 #include "BridgeArgs.h"
 #include "SegmentEditService.h"
+#include "UiDefaultsStore.h"
 #include "engine/CurveEvaluator.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -168,8 +169,11 @@ juce::var OutputEditor::buildSnapshot()
     put(version, "plugin", "0.1.0");
     put(version, "abi", static_cast<int>(scvb::kScvbAbi));
     put(o, "version", version);
-    put(o, "guide_seen_global", false); // 系统级全局默认(T31 落盘)
-    put(o, "tour_seen_global", false);
+    // 系统级全局默认(跨工程,UiDefaultsStore 落盘;硬编码 false 时「不再显示」永不生效 —— T37 A-3)
+    put(o, "guide_seen_global", uidefaults::guideSeenGlobal());
+    put(o, "tour_seen_global", uidefaults::tourSeenGlobal());
+    // §1.1 附加位:用户显式选过语言的系统级全局默认(新工程不再重复问语言)。
+    put(o, "lang_chosen_global", uidefaults::langChosenGlobal());
     put(o, "conn", buildConnPayload());
     return o;
 }
@@ -184,6 +188,7 @@ void OutputEditor::emitTick()
     if (first)
         firstFrame_ = false;
 
+    syncDawLoopRange(); // daw_loop 档:先把 range 跟到宿主循环区,再让 emitState 下发
     emitState(first);
     emitParams(first);
     if (first || (tickCount_ % 6 == 0))
@@ -192,21 +197,26 @@ void OutputEditor::emitTick()
         emitGroups(); // 1Hz(25Hz 25 分频)
     emitMeters(); // 25Hz + 0.3dB 阈值
     emitPlayhead(); // 25Hz + diff
+    if (tickCount_ % 12 == 0)
+        emitCaptureProgress(); // ~2Hz(25Hz 12 分频);内部再判「仅播放中发」(§2.7)
 
     // 段表快照:首帧必发;sample rate 变化(含宿主 prepareToPlay 前后)或 CRVS 修订号变化(加载工程/
     // 预设后 setStateInformation 替换段真身)必重发 —— 否则旧时间/旧段表残留到下一次段编辑/undo/切版本
     // (PR#55 第7轮缺陷1 / 第8轮缺陷1)。
     const double srNow = processor_.sampleRate();
     const std::uint32_t crvsRev = processor_.crvsRevision();
-    if (first || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)) ||
+    // 分析刚完成时 reason 必须是 "analyze" 而不是 "snapshot"(§2.8):web 有两处认它 ——
+    // Tab4 的「参数已改、结果陈旧」基线同步,与 Tab3 的分析 diff 摘要条 + 倒计时撤条。
+    // 落成 snapshot 会让这两处静默失效(分析完了标记还挂着、摘要条不出)。
+    const bool analyzed = processor_.takeAnalysisDone();
+    if (first || analyzed || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)) ||
         crvsRev != lastCrvsRevision_)
     {
         lastSegmentsSampleRate_ = srNow;
         lastCrvsRevision_ = crvsRev;
-        emitSegments("snapshot", kAllTracksMask);
+        emitSegments(analyzed ? "analyze" : "snapshot", kAllTracksMask);
     }
 
-    // scvb.captureProgress:仅播放中 2Hz;T29 无采集覆盖数据源,非播放不发(§2.7)。
     // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
 }
 
@@ -280,6 +290,17 @@ void OutputEditor::emitParams(bool forceFull)
 
 void OutputEditor::emitConn()
 {
+    // 注:heartbeatAgeMs 自 T37 起是**活数**(每拍都变),故下面这道 diff 门在有 Input 连着
+    // 时恒真 —— scvb.conn 变成稳定的 ~4Hz 全量下发。这正是 §2.3 给本事件定的频率(emitTick
+    // 的 6 分频),Tab4 诊断区的「每轨 heartbeat 年龄」也要靠这个活数;不为了让 diff 门重新
+    // 生效而把 age 排除出比对(那等于把诊断区冻住)。全空闲(无 Input)时载荷回到全哨兵、
+    // 门重新拦住,不会有空转下发。
+    //
+    // web 侧后果已核过:app.js 的 scvb.conn 处理器会 requestRender() 整页重投影,于是有
+    // Input 连着时常驻 ~4Hz 整页 render。render 是幂等纯投影,且正在编辑的控件有明确豁免
+    // (tab-tracks.js 的 `if (local.editingCh !== ch)` 跳过该行 label;输入框的 value 只在
+    // beginLabelEdit 里写、render 从不碰),故编辑态不会掉焦点、也不会被抹半截。
+    // 4Hz 也只有 §2.5 meters 那条 30Hz 路径的 1/7.5。
     juce::var payload = buildConnPayload();
     const juce::String json = juce::JSON::toString(payload);
     if (json != lastConnJson_)
@@ -304,17 +325,33 @@ void OutputEditor::emitGroups()
 
 void OutputEditor::emitMeters()
 {
-    // T29: no live meter source (post-gain levels wired in T32), all tracks sit at the -60 dB floor.
-    // 0.3 dB threshold (contract 0.4-2): emit only when any track/bus moved >= threshold, first frame always.
+    // 数据面 = 音频线程发布的 MeterShot 线性快照(post-gain/pre-pan 轨道电平 + 替换后的总线)。
+    // dB 换算刻意留在这里:[A] 只做乘加,25Hz 的 [M] 才做 32 次 log10。
+    // 0.3 dB 阈值(契约 §0.4-2):任一轨/总线变化 ≥ 阈值才发,首帧必发。
     constexpr float kFloorDb = -60.0f;
     constexpr float kMeterThresholdDb = 0.3f;
 
+    // 线性幅度 → dBFS,并钳到地板。0(静音/无数据)→ 地板,不产生 -inf。
+    const auto toDb = [kFloorDb](float lin) {
+        if (!(lin > 0.0f))
+            return kFloorDb;
+        const float db = 20.0f * std::log10(lin);
+        return db < kFloorDb ? kFloorDb : db;
+    };
+
+    const scvb::output::MeterPod pod = processor_.meterSnapshot();
+
     std::array<float, 15> db;
     std::array<float, 15> peak;
-    db.fill(kFloorDb);
-    peak.fill(kFloorDb);
-    const float busL = kFloorDb;
-    const float busR = kFloorDb;
+    for (int t = 0; t < 15; ++t)
+    {
+        db[static_cast<std::size_t>(t)] = toDb(pod.trackRms[t]);
+        peak[static_cast<std::size_t>(t)] = toDb(pod.trackPeak[t]);
+    }
+    const float busL = toDb(pod.busRms[0]);
+    const float busR = toDb(pod.busRms[1]);
+    const float busLPeak = toDb(pod.busPeak[0]);
+    const float busRPeak = toDb(pod.busPeak[1]);
 
     bool changed = !metersEverSent_;
     for (int t = 0; t < 15 && !changed; ++t)
@@ -323,7 +360,10 @@ void OutputEditor::emitMeters()
                   std::fabs(peak[static_cast<std::size_t>(t)] - lastMeterPeak_[static_cast<std::size_t>(t)]) >=
                       kMeterThresholdDb;
     if (!changed)
-        changed = std::fabs(busL - lastBusL_) >= kMeterThresholdDb || std::fabs(busR - lastBusR_) >= kMeterThresholdDb;
+        changed = std::fabs(busL - lastBusL_) >= kMeterThresholdDb ||
+                  std::fabs(busR - lastBusR_) >= kMeterThresholdDb ||
+                  std::fabs(busLPeak - lastBusLPeak_) >= kMeterThresholdDb ||
+                  std::fabs(busRPeak - lastBusRPeak_) >= kMeterThresholdDb;
 
     if (!changed)
         return;
@@ -333,6 +373,8 @@ void OutputEditor::emitMeters()
     lastMeterPeak_ = peak;
     lastBusL_ = busL;
     lastBusR_ = busR;
+    lastBusLPeak_ = busLPeak;
+    lastBusRPeak_ = busRPeak;
 
     juce::var tracks = mkArray();
     for (int t = 0; t < 15; ++t)
@@ -345,10 +387,10 @@ void OutputEditor::emitMeters()
     juce::var bus = obj();
     juce::var l = obj();
     put(l, "db", static_cast<double>(busL));
-    put(l, "peakDb", static_cast<double>(busL));
+    put(l, "peakDb", static_cast<double>(busLPeak));
     juce::var r = obj();
     put(r, "db", static_cast<double>(busR));
-    put(r, "peakDb", static_cast<double>(busR));
+    put(r, "peakDb", static_cast<double>(busRPeak));
     put(bus, "l", l);
     put(bus, "r", r);
 
@@ -356,6 +398,50 @@ void OutputEditor::emitMeters()
     put(payload, "tracks", tracks);
     put(payload, "bus", bus);
     webView().emitEventIfBrowserIsVisible(Event::Meters, payload);
+}
+
+bool OutputEditor::hostLoopSeconds(double& startS, double& endS) const
+{
+    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
+    // JUCE 的 AudioPlayHead::LoopPoints 只有 ppqStart/ppqEnd —— 换算成秒必须有 tempo。
+    // 宿主给了 cycle 却没给 bpm(或 bpm<=0)时不猜:按「无循环区」处理,UI 走 loopMissing 档。
+    if ((pod.flags & scvb::engine::kPlayheadCycleValid) == 0)
+        return false;
+    if ((pod.flags & scvb::engine::kPlayheadTempoValid) == 0 || pod.bpm <= 0.0)
+        return false;
+
+    const double secPerBeat = 60.0 / pod.bpm;
+    const double s = pod.loopStartPpq * secPerBeat;
+    const double e = pod.loopEndPpq * secPerBeat;
+    if (!(e > s) || !std::isfinite(s) || !std::isfinite(e))
+        return false; // 空/倒置循环区不算有效
+
+    startS = s;
+    endS = e;
+    return true;
+}
+
+bool OutputEditor::syncDawLoopRange()
+{
+    auto& rt = processor_.runtime();
+    if (rt.rangeMode != 1) // 仅 daw_loop 档跟随
+        return false;
+
+    double s = 0.0;
+    double e = 0.0;
+    if (!hostLoopSeconds(s, e))
+        return false; // 循环区暂时读不到 → 沿用上次范围(UI 据 playhead 缺字段显示「已失效」)
+
+    if (juce::approximatelyEqual(rt.rangeStartS, s) && juce::approximatelyEqual(rt.rangeEndS, e))
+        return false;
+
+    rt.rangeStartS = s;
+    rt.rangeEndS = e;
+    // **不** bump config_seq:§4.3 定义的是「**广播区**任一字段变化 +1」,而 range 不在广播区里。
+    // 这里是 25Hz 的自动跟随路径 —— daw_loop 档遇上 tempo 自动化时 range 每拍都在变,bump 会让
+    // 广播区 25Hz 空转重写 2KB、scvb.config 也跟着 25Hz 空转下发。range 本身经 scvb.state 下推,
+    // 那条链有自己的 JSON diff 门,不依赖 config_seq。
+    return true;
 }
 
 void OutputEditor::emitPlayhead()
@@ -375,7 +461,15 @@ void OutputEditor::emitPlayhead()
     put(payload, "timeS", timeS);
     put(payload, "isPlaying", playing);
     put(payload, "inRange", inRange);
-    // loopStartS/loopEndS:仅宿主提供且 kCycleValid 时出现;T29 未接 loop 换算,缺失即不出现。
+    // loopStartS/loopEndS(§2.6):仅宿主提供且 kCycleValid + 可换算时出现;缺失即字段不存在
+    // (不发哨兵值)。UI 靠「daw_loop 档 ∧ 本事件无这两字段」判定循环区已失效。
+    double loopStartS = 0.0;
+    double loopEndS = 0.0;
+    if (hostLoopSeconds(loopStartS, loopEndS))
+    {
+        put(payload, "loopStartS", loopStartS);
+        put(payload, "loopEndS", loopEndS);
+    }
 
     const juce::String json = juce::JSON::toString(payload);
     if (json != lastPlayheadJson_)
@@ -387,7 +481,83 @@ void OutputEditor::emitPlayhead()
 
 void OutputEditor::emitCaptureProgress()
 {
-    // §2.7:非播放不发;T29 无覆盖增量数据源,不实现(占位,避免遗漏事件名)。
+    // §2.7:播放中 2Hz;非播放不发。数据源 = FrameStore 的 coverage 记账
+    // (Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
+    // 只读观察实例(O3)覆盖率恒 0 且**这是有意的**:OutputSession::tick 对 observer 早退,
+    // 不 attach feat 段也不 pullFeatures —— 采集与分析的真源归本组那个 kActive 的主 Output,
+    // 观察实例不该另存一份特征真身,也不该跟主实例抢着拉同一批 hop。
+    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
+    if ((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0)
+    {
+        return;
+    }
+
+    // 覆盖率的分母(§2.7 字段纪律):global.range;follow 档取「全时间线已分析域」——
+    // 用当前播放位置作为已知时间线末端,否则分母是无穷大、覆盖率恒 0。
+    const auto& rt = processor_.runtime();
+    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
+    double startS = 0.0;
+    double endS = timeS;
+    if (rt.rangeMode != 0)
+    {
+        startS = rt.rangeStartS;
+        endS = rt.rangeEndS;
+    }
+    if (!(endS > startS))
+    {
+        return; // 时间线还没走出一个 hop:没有可报的覆盖
+    }
+
+    juce::var channels = mkArray();
+    bool any = false;
+    for (int t = 0; t < 15; ++t)
+    {
+        const int ch = t + 1;
+        const auto info = processor_.coverageOf(ch, startS, endS);
+        const std::size_t idx = static_cast<std::size_t>(t);
+
+        // addedRanges = 本帧相对上一帧**新增**的覆盖区间(§2.7「增量」)。用 CoverageMap 自己的
+        // add/punch 做差集:全量并进去,再把上一帧已报过的打洞打掉,剩下的就是新增。
+        scvb::analysis::CoverageMap added;
+        for (const auto& r : info.ranges)
+            added.add(r);
+        for (const auto& r : lastCoverageRanges_[idx])
+            added.punch(r);
+
+        const bool pctChanged = !juce::approximatelyEqual(info.pct, lastCoveragePct_[idx]);
+        if (added.empty() && !pctChanged)
+        {
+            continue; // §2.7:仅包含本帧有变化的轨
+        }
+        lastCoverageRanges_[idx] = info.ranges;
+        lastCoveragePct_[idx] = info.pct;
+
+        const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+        juce::var addedArr = mkArray();
+        for (const auto& r : added.ranges())
+        {
+            juce::var seg = obj();
+            put(seg, "startS", static_cast<double>(r.begin) * hopS);
+            put(seg, "endS", static_cast<double>(r.end) * hopS);
+            push(addedArr, seg);
+        }
+
+        juce::var c = obj();
+        put(c, "ch", ch);
+        put(c, "addedRanges", addedArr);
+        put(c, "coveragePct", static_cast<double>(info.pct));
+        push(channels, c);
+        any = true;
+    }
+
+    if (!any)
+    {
+        return; // 无变化不发(§0.4 值未变不发)
+    }
+
+    juce::var payload = obj();
+    put(payload, "channels", channels);
+    webView().emitEventIfBrowserIsVisible(Event::CaptureProgress, payload);
 }
 
 void OutputEditor::emitSegments(const juce::String& reason, std::uint16_t tracksMask)
@@ -415,6 +585,9 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     const scvb::state::CrvsData crvs = processor_.crvsSnapshot(); // 持锁快照(PR#55 重要1)
 
     juce::var o = obj();
+    // 注:本字段(scvb.state.config_seq,0 起)与 ctrl 广播区的 config_seq(1 起)差一个固定偏移 ——
+    // 广播区把 0 留给「本组没有 Output 在广播」这一态(见 publishConfigBroadcast)。两者都是
+    // 单调计数器、只用于「变没变」的比较,不参与跨端相等判定,故不强行统一,只在此注明。
     put(o, "config_seq", static_cast<int>(rt.configSeq));
     put(o, "group_id", processor_.groupId());
 
@@ -506,8 +679,12 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(ui, "language", processor_.uiLanguage());
     put(ui, "active_tab", rt.activeTab);
     put(ui, "master_chart_mode", processor_.masterChartMode());
-    put(ui, "guide_seen", rt.guideSeen);
-    put(ui, "tour_seen", rt.tourSeen);
+    // 两位是 atomic(宿主线程的 setStateInformation 会写,本函数在消息线程 25Hz 读):
+    // 陈旧一帧无害,撕裂才有害 —— 故取 atomic 而不是让 25Hz 的 emit 去抢 lifecycleMutex_。
+    put(ui, "guide_seen", rt.guideSeen.load(std::memory_order_relaxed));
+    put(ui, "tour_seen", rt.tourSeen.load(std::memory_order_relaxed));
+    // 首启语言卡的抑制位(§1.30 setLang 被显式调用过即为真;随 PRMS 持久化)。
+    put(ui, "lang_chosen", rt.langChosen.load(std::memory_order_relaxed));
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
@@ -525,7 +702,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     juce::var analysisRun = obj();
     put(analysisRun, "running", rt.analysisRunning);
     if (rt.analysisHasProgress)
-        put(analysisRun, "progress", rt.analysisProgress);
+        put(analysisRun, "progress", rt.analysisProgress.load(std::memory_order_relaxed));
     put(o, "analysis_run", analysisRun);
 
     return o;
@@ -533,28 +710,31 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
 
 juce::var OutputEditor::buildConnPayload() const
 {
-    const bool readOnly = processor_.isReadOnly();
+    // 数据源 = 本组 registry 的 15 条 InputSlot 实况(§2.3 字段纪律逐条对位)。
+    const auto snap = processor_.connSnapshot();
 
     juce::var channels = mkArray();
     for (int t = 0; t < 15; ++t)
     {
+        const auto& info = snap.channels[static_cast<std::size_t>(t)];
         juce::var ch = obj();
-        // T29:per-channel slotState/heartbeat 真身归 T30/T32(读本组 registry InputSlot);
-        // 此处以 session 视角的最小面填充:空闲 0 / 活跃 2(仅当本实例为 active)。
-        const int slotState = (!readOnly) ? 2 : 0;
-        put(ch, "slotState", slotState);
-        put(ch, "heartbeatAgeMs", static_cast<juce::int64>(0xFFFFFFFFu)); // 哨兵「无数据」
-        put(ch, "heartbeatFresh", false); // heartbeatAgeMs=0xFFFFFFFF 哨兵 → fresh=false(§2.3 派生一致)
-        put(ch, "capturing", false);
-        put(ch, "misalignCount", static_cast<int>(processor_.gapCount(t + 1)));
-        put(ch, "srMismatch", false);
+        put(ch, "slotState", static_cast<int>(info.slotState));
+        put(ch, "heartbeatAgeMs", static_cast<juce::int64>(info.heartbeatAgeMs));
+        // §2.3:heartbeatFresh 是 heartbeatAgeMs ≤ 2000 的派生布尔(哨兵 0xFFFFFFFF 自然为 false)。
+        put(ch, "heartbeatFresh", info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs));
+        put(ch, "capturing", info.capturing);
+        // 本次失准发作内的缺口数(非进程累计):恢复健康 1s 后归零,横幅/行内 ⚠ 随之撤下。
+        put(ch, "misalignCount", static_cast<int>(processor_.misalignCount(t + 1)));
+        put(ch, "srMismatch", info.srMismatch);
         push(channels, ch);
     }
 
     juce::var o = obj();
     put(o, "channels", channels);
-    put(o, "outputReadOnly", readOnly);
-    put(o, "generation", 0);
+    put(o, "outputReadOnly", snap.readOnly);
+    // generation 是 u32,和 heartbeatAgeMs 同样用 int64 承载:int 在 >2^31 时会翻负,
+    // 而这是个只增不减的重初始化计数器。
+    put(o, "generation", static_cast<juce::int64>(snap.generation));
     return o;
 }
 
@@ -655,6 +835,26 @@ void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& o
 }
 
 // ============================================================================
+// 通用函数覆写(基类只维护 editor 局部值;Output 桥面下发的 ui.* 真源在 processor)
+// ============================================================================
+void OutputEditor::handleSetLang(const juce::Array<juce::var>& args,
+                                 juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执 {ok:true}
+    processor_.bridgeSetUiLanguage(lang()); // §1.30:落 Output state(实际生效值经 scvb.state 回推)
+    // 显式选过语言 → 同时写系统级全局默认,新工程也不再问(与 guide/tour 的 alsoGlobal 同口径)。
+    uidefaults::setLangChosenGlobal(true);
+}
+
+void OutputEditor::persistUiScaleAsDefault()
+{
+    // §1.29「保持」= 落工程 state + 系统级全局默认(新工程沿用;05 §1.2)。
+    const int percent = juce::roundToInt(uiScale() * 100.0f);
+    processor_.bridgeSetUiScalePercent(percent);
+    uidefaults::setUiScalePercent(percent);
+}
+
+// ============================================================================
 // 只读态
 // ============================================================================
 bool OutputEditor::isReadOnly() const
@@ -717,33 +917,104 @@ void OutputEditor::handleSetGroupId(const ArgList& a, Completion c)
     c(okResp());
 }
 
-void OutputEditor::handlePreviewAnalyze(const ArgList& /*a*/, Completion c)
+// analyze/previewAnalyze 的作用域参数(§1.5/§1.6):"all" = 全时间线全轨;
+// 对象形 {tracksMask,startS,endS} = 指定轨 × 指定范围(web 的 analyzeScope 产出)。
+// follow 档取「已知时间线末端」= 当前播放位置,与 emitCaptureProgress 的分母同口径。
+OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) const
 {
-    // 纯只读 dry-run:范围∩覆盖 ∩ origin≠auto 段相交;T29 无覆盖/分析管线 → 空集合。
+    AnalyzeScope s;
+    const auto& rt = processor_.runtime();
+    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
+    const double nowS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
+
+    if (a.size() > 0 && a[0].isObject())
+    {
+        s.tracksMask = static_cast<std::uint16_t>(static_cast<int>(a[0].getProperty("tracksMask", 0)) & 0x7FFF);
+        s.startS = static_cast<double>(a[0].getProperty("startS", 0.0));
+        s.endS = static_cast<double>(a[0].getProperty("endS", 0.0));
+        return s;
+    }
+
+    // "all" 或缺参:按当前 range 档决定。
+    s.tracksMask = 0; // 0 = 不限轨
+    if (rt.rangeMode != 0 && rt.rangeEndS > rt.rangeStartS)
+    {
+        s.startS = rt.rangeStartS;
+        s.endS = rt.rangeEndS;
+    }
+    else
+    {
+        s.startS = 0.0;
+        s.endS = nowS;
+    }
+    return s;
+}
+
+void OutputEditor::handlePreviewAnalyze(const ArgList& a, Completion c)
+{
+    // 纯只读 dry-run(§1.5):范围 ∩ 覆盖的轨数 + 会被保留的用户段数,不改任何数据。
+    const AnalyzeScope sc = parseAnalyzeScope(a);
+    const auto info = processor_.previewAnalysis(sc.tracksMask, sc.startS, sc.endS);
     juce::var o = obj();
-    put(o, "intervals", 0);
-    put(o, "tracks", 0);
-    put(o, "manualKept", 0);
+    put(o, "intervals", info.intervals);
+    put(o, "tracks", info.tracks);
+    put(o, "manualKept", info.manualKept);
     c(o);
 }
 
-void OutputEditor::handleAnalyze(const ArgList& /*a*/, Completion c)
+void OutputEditor::handleAnalyze(const ArgList& a, Completion c)
 {
-    // §1.6:受理回执 + 影响面,立即 resolve(长耗时分析绝不阻塞消息线程)。
-    // T29:分析管线(FeatureExtractor/Segmentation/Reanalysis)未接线 → affected {0,0,0},不置 running。
-    auto& rt = processor_.runtime();
-    if (rt.analysisRunning)
+    // §1.6:受理回执 + 影响面,立即 resolve —— 真正的分析在**后台线程**跑,
+    // 进度经 scvb.state.analysis_run 回推,结果经 scvb.segments 回推。
+    //
+    // 此前这里是 T29 占位:回 {ok:true, affected:{0,0,0}} 却**从不置 analysis_run.running**。
+    // 而 web 拿到 ok 之后要等 running 翻真才把状态交回 state 驱动,于是它的在途标志永远挂着,
+    // 「分析中」转到天荒地老也不出结果(v4 实测 P0-1)。
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
+    const AnalyzeScope sc = parseAnalyzeScope(a);
+    // §1.6 的第二参 opts:{clearManual:bool}。此前 a[1] 从没被读过 —— 而 web 有两个调用点
+    // 专门传它(Tab3「重新识别(含手动段)」带二次确认、Tab2 单轨重新识别),用户点完确认
+    // 得到的行为与普通分析逐字节相同,且无任何反馈。
+    bool clearManual = false;
+    if (a.size() > 1 && a[1].isObject())
+    {
+        strictBool(a[1].getProperty("clearManual", false), clearManual);
+    }
+
+    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS, clearManual);
+
+    if (!accepted.ok)
     {
         juce::var o = obj();
         put(o, "ok", false);
-        put(o, "reason", "busy");
+        if (accepted.busy)
+        {
+            // §5.6 八值闭集 + §7 manifest:analyze 只登记了 "busy" 这一个 reason。
+            put(o, "reason", "busy");
+        }
+        else
+        {
+            // §1.6 拒绝态行:range ∩ coverage = ∅ → {ok:false, affected:{0,0,0}},**不带 reason**。
+            juce::var affected = obj();
+            put(affected, "intervals", 0);
+            put(affected, "tracks", 0);
+            put(affected, "manualKept", 0);
+            put(o, "affected", affected);
+        }
         c(o);
         return;
     }
+
+    lastStateJson_.clear(); // analysis_run.running 立刻回推,别等下一次 diff
     juce::var affected = obj();
-    put(affected, "intervals", 0);
-    put(affected, "tracks", 0);
-    put(affected, "manualKept", 0);
+    put(affected, "intervals", accepted.intervals);
+    put(affected, "tracks", accepted.tracks);
+    put(affected, "manualKept", accepted.manualKept);
     juce::var o = obj();
     put(o, "ok", true);
     put(o, "affected", affected);
@@ -752,9 +1023,15 @@ void OutputEditor::handleAnalyze(const ArgList& /*a*/, Completion c)
 
 void OutputEditor::handleCancelAnalyze(const ArgList& /*a*/, Completion c)
 {
-    // T29:无进行中的分析。
+    // §1.7:进行中才可取消;取消后结果整份丢弃,不碰 CRVS。
+    const bool wasRunning = processor_.analysisRunning();
+    if (wasRunning)
+    {
+        processor_.cancelAnalysis();
+        lastStateJson_.clear(); // running 立刻回推 false
+    }
     juce::var o = obj();
-    put(o, "ok", false);
+    put(o, "ok", wasRunning);
     c(o);
 }
 
@@ -766,8 +1043,9 @@ void OutputEditor::handleSetRange(const ArgList& a, Completion c)
         return;
     }
     const juce::String mode = a.size() > 0 ? a[0].toString() : juce::String("follow");
-    const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
-    const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
+    // 非 const:daw_loop 档的范围真源是宿主循环区,下面会用实测值覆盖调用方传的值。
+    double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
+    double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
 
     int modeInt = 0;
     if (mode == "daw_loop")
@@ -786,7 +1064,26 @@ void OutputEditor::handleSetRange(const ArgList& a, Completion c)
         return;
     }
 
+    // daw_loop 档要求宿主此刻确实提供了可换算的循环区;没有就明确拒绝,UI 据此把该档
+    // 置灰并显示「宿主未提供循环区」,而不是切过去之后拿着一个空范围假装成功(§1.8)。
+    double loopStartS = 0.0;
+    double loopEndS = 0.0;
+    if (modeInt == 1 && !hostLoopSeconds(loopStartS, loopEndS))
+    {
+        juce::var o = obj();
+        put(o, "ok", false);
+        put(o, "reason", "noLoop");
+        c(o);
+        return;
+    }
+
     auto& rt = processor_.runtime();
+    // daw_loop 的范围真源是宿主循环区,不采信调用方传的 startS/endS。
+    if (modeInt == 1)
+    {
+        startS = loopStartS;
+        endS = loopEndS;
+    }
     // 值变化才 config_seq+1(PR#55 缺陷4)。
     const bool changed =
         rt.rangeMode != modeInt || (modeInt != 0 && (rt.rangeStartS != startS || rt.rangeEndS != endS));
@@ -1566,10 +1863,17 @@ void OutputEditor::handleClearCoverage(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
-    // T29 无采集特征数据源(FrameStore 接线归 T21/T33)→ clearedS=0。
+    // 打洞 FrameStore 的 coverage(§1.24);clearedS = 实际清掉的总时长,供 UI 反馈。
+    const double clearedS = processor_.clearCoverage(static_cast<std::uint16_t>(tracksMask & 0x7FFF), startS, endS);
+    // 覆盖变了就重置 captureProgress 的增量基线,否则下一帧的差集会把「已被清掉的区间」
+    // 当成仍然存在,覆盖条撤不下去。
+    for (auto& r : lastCoverageRanges_)
+        r.clear();
+    lastCoveragePct_.fill(-1.0f); // 哨兵:与任何真实百分比都不等 → 下一帧必报
+
     juce::var o = obj();
     put(o, "ok", true);
-    put(o, "clearedS", 0.0);
+    put(o, "clearedS", clearedS);
     c(o);
 }
 
@@ -1677,8 +1981,19 @@ void OutputEditor::handleSetGuideSeen(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    processor_.runtime().guideSeen = seen;
-    // alsoGlobal 落盘全局默认归 T31(commitUiScale 通道)。
+    // §1.32 alsoGlobal(缺省 true):勾了「不再显示」才写系统级全局默认,承诺跨工程成立。
+    // **两个参数都校验完才落任何值** —— badArg 回执与已生效的副作用不能并存。
+    bool alsoGlobal = true;
+    if (a.size() >= 2 && !strictBool(a[1], alsoGlobal))
+    {
+        c(badArgResp());
+        return;
+    }
+    processor_.bridgeSetGuideSeen(seen); // 持 lifecycleMutex_(与 getStateInformation 同锁)
+    if (alsoGlobal)
+    {
+        uidefaults::setGuideSeenGlobal(seen);
+    }
     c(okResp());
 }
 
@@ -1690,7 +2005,19 @@ void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    processor_.runtime().tourSeen = seen;
+    // §1.33 alsoGlobal(缺省 true):完成与「暂不」都置全局位 → 新工程不再自动询问。
+    // 校验先于落值,理由同 handleSetGuideSeen。
+    bool alsoGlobal = true;
+    if (a.size() >= 2 && !strictBool(a[1], alsoGlobal))
+    {
+        c(badArgResp());
+        return;
+    }
+    processor_.bridgeSetTourSeen(seen); // 持 lifecycleMutex_(与 getStateInformation 同锁)
+    if (alsoGlobal)
+    {
+        uidefaults::setTourSeenGlobal(seen);
+    }
     c(okResp());
 }
 

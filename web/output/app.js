@@ -109,6 +109,10 @@ const store = {
     readOnly: false, // secondOutput / conn.outputReadOnly
     noTimeline: false, // §5.1 noTimeline
     loopMissing: false, // §1.8 的 noLoop 拒绝态(档位 disabled 但不隐藏)
+    // 此刻宿主给不出可用循环区(§2.6 的 loopStartS/loopEndS 缺字段)。daw_loop 档下据此显示
+    // 「循环区已失效,沿用上次范围」。**必须是活判定而不是常真**:这条提示原先只挂在
+    // 「档位 == loop」上、无任何谓词,于是循环区完好时也一直挂着(T37 三轮 A 族 L-5)。
+    loopStale: false,
     session: {
         // 本工程会话内的一次性判定(不入 state chunk)
         writeConfirmSeen: false,
@@ -116,6 +120,10 @@ const store = {
         wasPrinting: false,
         guideClosed: false,
         langChosen: false, // 首启语言选择卡本会话已选(不入 state chunk,零桥/零契约)
+        // 询问步本会话已答(开始 / 暂不 / tour 已结束)。**必须与 setTourSeen 的回执解耦**:
+        // 桥回执 + 下一拍 scvb.state 之前,syncTourAsk 会照旧判「该弹」,询问卡在 tour 结束
+        // 的那一帧当场重弹、tour 被重放(T37 真机 bug A-2)。判定见 tour.js shouldAutoShowTourAsk。
+        tourAnswered: false,
         // C++ 侧 `{rejected:"printing"}` 的**渲染窗口**(§5.6「UI 与 C++ 双保险」的 C++ 半边命中时)。
         // 之所以要一个时间戳而不是就地 setAttribute:renderHeader 每次都按 phase 重算 chip 的
         // data-disabled,就地写会在同一拍被抹回 0(UI 与引擎状态不同步时 phase 恰恰不是 print)。
@@ -447,6 +455,14 @@ tour = createTour({
     showDemoSelection: () => tabWave.showDemoSelection(),
     showDemoSegment: () => tabWave.showDemoSegment(),
     resetWaveView: () => tabWave.resetWaveView(),
+    // 结束(完成或 Skip)即刻落「本会话已答」位:setTourSeen 的回执与下一拍 scvb.state
+    // 都还没到,syncTourAsk 若只看 state 会在这一帧把询问卡重新弹出来(bug A-2)。
+    // 闭包里的 tourAskUi 在本文件下方才 const 声明 —— 本回调只在用户答复时触发(那时模块
+    // 早已求值完毕),不会撞 TDZ;不要把它改成 mount 期同步调用。
+    onEnd: () => {
+        store.session.tourAnswered = true;
+        if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
+    },
 });
 tour.mount();
 
@@ -961,6 +977,7 @@ const tourAskUi = {
 
 if (tourAskUi.start) {
     tourAskUi.start.addEventListener("click", () => {
+        store.session.tourAnswered = true;
         if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
         if (tour) tour.start();
     });
@@ -968,6 +985,7 @@ if (tourAskUi.start) {
 if (tourAskUi.later) {
     tourAskUi.later.addEventListener("click", () => {
         // 暂不 = 婉拒 tour,同样置位(§2.6:完成与暂不都 setTourSeen(true, true))。
+        store.session.tourAnswered = true;
         call("setTourSeen", true, true);
         if (tourAskUi.overlay) tourAskUi.overlay.hidden = true;
     });
@@ -1423,7 +1441,13 @@ function renderLangStart() {
 function syncTourAsk() {
     if (!tourAskUi.overlay) return;
     if (tour && tour.isActive()) return;
-    if (shouldAutoShowTourAsk(store.state, store.snapshot)) {
+    if (
+        shouldAutoShowTourAsk(
+            store.state,
+            store.snapshot,
+            store.session.tourAnswered,
+        )
+    ) {
         tourAskUi.overlay.hidden = false;
     }
 }
@@ -1496,6 +1520,12 @@ if (bridge) {
         // 空转整页渲染削成 0。
         const same = samePlayhead(store.playhead, p);
         store.playhead = p;
+        // §2.6:循环区经 loopStartS/loopEndS 出现,缺字段 = 此刻没有可用循环区。
+        // 循环区一旦回来,同时解除 setRange 的 noLoop 置灰 —— 否则档位会一直卡在不可选。
+        const hasLoop =
+            !!p && Number.isFinite(p.loopStartS) && Number.isFinite(p.loopEndS);
+        store.loopStale = !hasLoop;
+        if (hasLoop) store.loopMissing = false;
         // Tab3:播放头 rAF 插值层直接吃 30Hz 事件(canvas/playhead.js;
         // render() 只管其余投影,不逐帧驱动播放头)
         tabWave.onPlayhead(p);

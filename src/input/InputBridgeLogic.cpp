@@ -158,20 +158,48 @@ juce::var buildConnPayload(const InputConnSnapshot& s)
 juce::var buildConfigPayload(const ConfigSnapshot& s)
 {
     auto* o = new juce::DynamicObject();
-    // 广播区占位回退默认值(见头注释);source_channels 为本机实测([J57]),participate 默认值
-    // 推导 = mono 参与/stereo 不参与(J60/T32 同口径),config_seq 为唯一变化检测真源。
-    o->setProperty("label", juce::String());
-    o->setProperty("priority", 0);
-    o->setProperty("lead_lock", false);
-    o->setProperty("pair_id", 0);
-    o->setProperty("freeze", 0);
+
+    // 本轨配置取自 ctrl 广播区(§4.3 全部只读,真源在 Output/ADR-004)。读不到广播区、或本实例
+    // 尚未分配 channel 时退回默认值 —— 那是**降级**而非常态:UI 侧靠 outputOnline 决定是否显示
+    // 远程只读摘要行,不会把默认值当实况展示。
+    // 判据用 **config_seq != 0** 而不是 broadcastValid:Input 自己就是 ctrl 段的创建者
+    // (ensureCtrlOpen 里 ctrl_.open()),本组没有 Output 时段照样存在、广播区全零、seq=0 是偶数,
+    // 于是 readBroadcast 会返回 true —— 拿全零当实况会把 mono 轨的 participate_in_auto_pan 报成
+    // false(J60 默认应为 true)。广播区的 config_seq 从 1 起算,0 就是「本组没有 Output 在广播」。
+    const bool haveBroadcast = s.broadcastValid && s.broadcast.config_seq != 0;
+    const bool haveOwn = haveBroadcast && s.channelId >= 1 && s.channelId <= static_cast<int>(kMaxChannels);
+
+    if (haveOwn)
+    {
+        const std::size_t idx = static_cast<std::size_t>(s.channelId - 1);
+        const auto& c = s.broadcast.channels[idx];
+        o->setProperty("label", juce::String::fromUTF8(s.broadcast.labels[idx]));
+        o->setProperty("priority", static_cast<int>(c.priority));
+        o->setProperty("lead_lock", (c.flags & kCfgFlagLeadLock) != 0);
+        o->setProperty("pair_id", static_cast<int>(c.pair_id));
+        o->setProperty("freeze", static_cast<int>(c.freeze));
+        o->setProperty("participate_in_auto_pan", (c.flags & kCfgFlagParticipateAutoPan) != 0);
+    }
+    else
+    {
+        // participate 默认值推导 = mono 参与 / stereo 不参与(J60/T32 同口径)。
+        o->setProperty("label", juce::String());
+        o->setProperty("priority", 0);
+        o->setProperty("lead_lock", false);
+        o->setProperty("pair_id", 0);
+        o->setProperty("freeze", 0);
+        o->setProperty("participate_in_auto_pan", s.sourceChannels == 1);
+    }
+
+    // source_channels 恒本机实测([J57]):它是 Input 报上去的检测值,不吃广播区回镜像。
     o->setProperty("source_channels", s.sourceChannels);
-    o->setProperty("participate_in_auto_pan", s.sourceChannels == 1);
     o->setProperty("config_seq", static_cast<int>(s.configSeq));
+
+    // channelLabels(A-32):全组 15 轨 label 只读镜像,供 channel 轮带上其余卡显示。
     juce::Array<juce::var> labels;
     for (u32 i = 0; i < kMaxChannels; ++i)
     {
-        labels.add(juce::var(juce::String())); // 15 张卡 label 全空(A-32;广播区未填)
+        labels.add(juce::var(haveBroadcast ? juce::String::fromUTF8(s.broadcast.labels[i]) : juce::String()));
     }
     o->setProperty("channelLabels", labels);
     return juce::var(o);

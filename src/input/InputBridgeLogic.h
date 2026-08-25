@@ -9,6 +9,7 @@
 #include <juce_core/juce_core.h>
 
 #include "input/InputSession.h"
+#include "ipc/CtrlPlane.h" // CtrlBroadcastSnapshot(§4.3 配置广播区)
 
 namespace scvb::input::bridge
 {
@@ -79,13 +80,20 @@ juce::var buildStatePayload(int channelId, int groupId, const juce::String& clai
 // §4.2 scvb.conn:{outputOnline, maskBit, capturing, passthrough, passthroughPending, occupiedMask}。
 juce::var buildConnPayload(const InputConnSnapshot& s);
 
-// §4.3 scvb.config 快照。广播区布局仍是占位(CtrlPlane kCtrlBroadcastBytes「T25/params v2.x 填内容」):
-// label/priority/lead_lock/pair_id/freeze/channelLabels 一律回退默认值,只回本机实测 source_channels
-// 与 OutputSlot.config_seq —— 不自行发明广播布局(那是 params 契约面)。
+// §4.3 scvb.config 快照。数据源 = ctrl 广播区(CtrlBroadcast,Output [M] 写 / Input [M] 读):
+// label/priority/lead_lock/pair_id/freeze/channelLabels 全部来自本组主 Output 的实况。
+// **不含 lead_vol_exempt**:§4.3 的载荷是逐字冻结的九键,该字段属于 Output 侧的
+// scvb.state.channels[](§2.1/§4.1),Input 页没有消费面 —— 与 A-32 否决「其余通道 priority/
+// lead/pair 下推」是同一条理由。广播区里仍镜像着它的 flag 位,只是不上 Input 的桥。
+// 广播区读不到(Output 离线 / seqlock 撕裂 / 段未打开)时 broadcastValid=false,调用方沿用上帧,
+// 载荷退回默认值 —— 此前这些字段是**恒定硬编码**,Output 改什么 Input 都看不见(T37 三轮 C 族)。
 struct ConfigSnapshot
 {
-    int sourceChannels = 1; // Input 实测 1|2([J57])
-    u32 configSeq = 0; // 本组 OutputSlot.config_seq(变化检测真源)
+    int sourceChannels = 1; // Input 实测 1|2([J57]);恒本机真源,不吃广播区
+    u32 configSeq = 0; // 广播区 config_seq(变化检测真源)
+    bool broadcastValid = false; // 本次是否读到有效广播区
+    int channelId = 0; // 本实例 channel(1..15;0=未分配 → 无「本轨」配置可取)
+    CtrlBroadcastSnapshot broadcast{}; // 全组 15 轨配置镜像 + label 表
 };
 juce::var buildConfigPayload(const ConfigSnapshot& s);
 

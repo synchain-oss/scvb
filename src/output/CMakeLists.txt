@@ -19,6 +19,7 @@ juce_add_plugin(SCVBOutput
 target_sources(SCVBOutput PRIVATE
   OutputProcessor.h
   OutputProcessor.cpp
+  OutputPluginEntry.cpp   # createEditor/createPluginFilter(抽出以便 host harness 免链 WebView2)
   OutputParams.h
   OutputParams.cpp
   OutputAuthority.h
@@ -29,6 +30,9 @@ target_sources(SCVBOutput PRIVATE
   OutputEditor.cpp
   OutputBridgeApi.h
   SegmentEditService.h
+  UiDefaultsStore.h
+  UiDefaultsStore.cpp
+  OutputUiState.h
 )
 
 target_include_directories(SCVBOutput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

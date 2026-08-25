@@ -6,6 +6,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdio>
 #include <limits>
 
 #include <juce_core/juce_core.h>
@@ -231,7 +232,53 @@ TEST_CASE("T30 buildConnPayload 六字段(§4.2)")
     CHECK(static_cast<int>(c->getProperty("occupiedMask")) == 0b101001);
 }
 
-TEST_CASE("T30 buildConfigPayload:广播区占位回退默认值 + 本机实测 source_channels(§4.3)")
+TEST_CASE("T37-C buildConfigPayload:读到广播区时逐字段取 Output 实况(§4.3)", "[input][config][t37]")
+{
+    // T37 三轮 C 族回归:Input 侧 label/priority/lead_lock/pair_id/freeze 曾是硬编码常量
+    // (priority 恒 0,而 Output 侧默认 5),Output 改什么 Input 都看不见。
+    ConfigSnapshot s;
+    s.sourceChannels = 1;
+    s.configSeq = 7;
+    s.broadcastValid = true;
+    s.channelId = 3; // 本实例是 ch3 → 取 channels[2]
+    s.broadcast.config_seq = 7;
+    s.broadcast.channels[2].priority = 6; // 真机场景:Output 把优先级从 5 改成 6
+    s.broadcast.channels[2].pair_id = 2;
+    s.broadcast.channels[2].freeze = 3; // pan + vol 双冻
+    s.broadcast.channels[2].flags = scvb::kCfgFlagEnabled | scvb::kCfgFlagLeadLock | scvb::kCfgFlagParticipateAutoPan;
+    std::snprintf(s.broadcast.labels[2], scvb::kCtrlLabelBytes, "%s", "Lead Vox");
+    std::snprintf(s.broadcast.labels[0], scvb::kCtrlLabelBytes, "%s", "Ch1");
+
+    const auto c = obj(buildConfigPayload(s));
+    CHECK(c->getProperty("label").toString() == "Lead Vox");
+    CHECK(static_cast<int>(c->getProperty("priority")) == 6); // ← 修复前恒 0
+    CHECK(static_cast<bool>(c->getProperty("lead_lock")) == true);
+    // §4.3 的载荷是逐字冻结的九键,**不含** lead_vol_exempt —— 它属于 Output 侧的
+    // scvb.state.channels[](§2.1/§4.1),Input 页没有消费面。这里反向钉住:别再漏进来。
+    CHECK_FALSE(c->hasProperty("lead_vol_exempt"));
+    CHECK(static_cast<int>(c->getProperty("pair_id")) == 2);
+    CHECK(static_cast<int>(c->getProperty("freeze")) == 3);
+    CHECK(static_cast<bool>(c->getProperty("participate_in_auto_pan")) == true);
+    CHECK(static_cast<int>(c->getProperty("config_seq")) == 7);
+    // source_channels 恒本机实测,不吃广播区回镜像。
+    CHECK(static_cast<int>(c->getProperty("source_channels")) == 1);
+    // A-32:15 张卡 label 镜像全组。
+    const auto labels = c->getProperty("channelLabels").getArray();
+    REQUIRE(labels != nullptr);
+    REQUIRE(labels->size() == 15);
+    CHECK(labels->getReference(0).toString() == "Ch1");
+    CHECK(labels->getReference(2).toString() == "Lead Vox");
+
+    // channel 未分配(channel_id=0)→ 没有「本轨」配置可取,回退默认值但 label 表仍镜像全组。
+    ConfigSnapshot unassigned = s;
+    unassigned.channelId = 0;
+    const auto u = obj(buildConfigPayload(unassigned));
+    CHECK(static_cast<int>(u->getProperty("priority")) == 0);
+    CHECK(u->getProperty("label").toString().isEmpty());
+    CHECK(u->getProperty("channelLabels").getArray()->getReference(2).toString() == "Lead Vox");
+}
+
+TEST_CASE("T30 buildConfigPayload:广播区读不到时回退默认值 + 本机实测 source_channels(§4.3)")
 {
     ConfigSnapshot mono;
     mono.sourceChannels = 1;

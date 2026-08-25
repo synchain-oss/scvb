@@ -106,6 +106,10 @@ std::size_t structSize(const std::string& s)
         return sizeof(scvb::CtrlHeader);
     if (s == "CtrlRing")
         return sizeof(scvb::CtrlRing);
+    if (s == "CtrlChannelConfig")
+        return sizeof(scvb::CtrlChannelConfig);
+    if (s == "CtrlBroadcast")
+        return sizeof(scvb::CtrlBroadcast);
     if (s == "VizHeader")
         return sizeof(scvb::VizHeader);
     if (s == "VizFrame")
@@ -145,6 +149,10 @@ std::size_t structAlign(const std::string& s)
         return alignof(scvb::CtrlHeader);
     if (s == "CtrlRing")
         return alignof(scvb::CtrlRing);
+    if (s == "CtrlChannelConfig")
+        return alignof(scvb::CtrlChannelConfig);
+    if (s == "CtrlBroadcast")
+        return alignof(scvb::CtrlBroadcast);
     if (s == "VizHeader")
         return alignof(scvb::VizHeader);
     if (s == "VizFrame")
@@ -316,6 +324,42 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
             return offsetof(scvb::CtrlRing, _reserved);
         if (f == "records")
             return offsetof(scvb::CtrlRing, records);
+        return kNotFound;
+    }
+    if (s == "CtrlChannelConfig")
+    {
+        if (f == "priority")
+            return offsetof(scvb::CtrlChannelConfig, priority);
+        if (f == "flags")
+            return offsetof(scvb::CtrlChannelConfig, flags);
+        if (f == "pair_id")
+            return offsetof(scvb::CtrlChannelConfig, pair_id);
+        if (f == "freeze")
+            return offsetof(scvb::CtrlChannelConfig, freeze);
+        if (f == "source_channels")
+            return offsetof(scvb::CtrlChannelConfig, source_channels);
+        if (f == "_reserved")
+            return offsetof(scvb::CtrlChannelConfig, _reserved);
+        return kNotFound;
+    }
+    if (s == "CtrlBroadcast")
+    {
+        if (f == "seq")
+            return offsetof(scvb::CtrlBroadcast, seq);
+        if (f == "config_seq")
+            return offsetof(scvb::CtrlBroadcast, config_seq);
+        if (f == "lead_select")
+            return offsetof(scvb::CtrlBroadcast, lead_select);
+        if (f == "_pad")
+            return offsetof(scvb::CtrlBroadcast, _pad);
+        if (f == "_reserved")
+            return offsetof(scvb::CtrlBroadcast, _reserved);
+        if (f == "channels")
+            return offsetof(scvb::CtrlBroadcast, channels);
+        if (f == "labels")
+            return offsetof(scvb::CtrlBroadcast, labels);
+        if (f == "_tail")
+            return offsetof(scvb::CtrlBroadcast, _tail);
         return kNotFound;
     }
     if (s == "VizHeader")

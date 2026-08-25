@@ -20,7 +20,9 @@
 #include <cstdint>
 #include <vector>
 
+#include "analysis/FrameStore.h"
 #include "ipc/CtrlPlane.h"
+#include "ipc/FeatRing.h"
 #include "ipc/ISegmentBackend.h"
 #include "ipc/Registry.h"
 #include "output/ShmRingMixSource.h"
@@ -36,6 +38,34 @@ inline constexpr u64 kInjectDelayMs = 200;
 inline constexpr u64 kMisalignRecoverMs = 1000;
 // [01 §4.2] write_head 停滞判定(CH_SUSPENDED 软启发式)。
 inline constexpr u64 kSuspendStallMs = 500;
+
+// 心跳年龄「无数据」哨兵(契约 §2.3 heartbeatAgeMs:slotState=0 / 从未心跳时发此值)。
+inline constexpr u32 kHeartbeatAgeUnknown = 0xFFFFFFFFu;
+
+// per-channel 连接实况(契约 §2.3 scvb.conn 的数据面;[M] 只读本组 registry 的 InputSlot)。
+struct ChannelConnInfo
+{
+    u32 slotState = 0; // 逐字照 ipc §1:0=空闲 1=已声明 2=活跃
+    u32 heartbeatAgeMs = kHeartbeatAgeUnknown; // 哨兵 = 无数据
+    bool capturing = false; // InputSlot.flags bit0(kFlagCapturing)
+    bool srMismatch = false; // 该轨 Input 采样率 ≠ 本 Output 采样率(ipc §5,该轨禁用)
+};
+
+// 心跳年龄换算(纯函数,可离线断言):空闲槽 / 从未心跳 → 哨兵;时钟倒退 → 0;
+// 溢出钳到「哨兵-1」,免得真实的超长年龄被误读成「无数据」。
+inline u32 heartbeatAgeMsOf(u32 slotState, u64 heartbeatMs, u64 nowMs) noexcept
+{
+    if (slotState == kSlotFree || heartbeatMs == 0)
+    {
+        return kHeartbeatAgeUnknown;
+    }
+    if (nowMs <= heartbeatMs)
+    {
+        return 0;
+    }
+    const u64 age = nowMs - heartbeatMs;
+    return age >= static_cast<u64>(kHeartbeatAgeUnknown) ? (kHeartbeatAgeUnknown - 1u) : static_cast<u32>(age);
+}
 
 // Output 实例的 claim 态(01 §4.2)。
 enum class OutputClaimState
@@ -92,8 +122,45 @@ public:
     u32 sampleRate() const noexcept { return sampleRate_; }
     OutputClaimState state() const noexcept { return state_.load(std::memory_order_acquire); }
 
-    // [M] 聚合用([J09] 全局小节 / 看门狗)。
+    // [M] 桥面 scvb.conn 数据面(契约 §2.3):直接读本组 registry 的 InputSlot 实况。
+    // 与 evaluateChannels 的在线判定同源(同一 InputSlot 字段),但**不做**失准/停摆折算 ——
+    // 那两项 UI 侧另有 misalignCount 与自己的口径,conn 只报「槽/心跳/采集/采样率」四件事。
+    // channel ∈ [1,15];非法或 registry 未映射 → 全默认(slotState=0 + 哨兵年龄)。
+    ChannelConnInfo channelConn(u32 channel, u64 nowMs) const;
+    // 本组 RegistryHeader.generation(契约 §2.3 顶层 generation;覆盖式重初始化 +1)。
+    u32 registryGeneration() const { return registry_.generation(); }
+
+    // [M] 发布配置广播区(Output→Input 只读镜像,契约 §4.3 / ADR-004)。值变化才调用。
+    void publishConfigBroadcast(const CtrlBroadcastSnapshot& s) { ctrl_.writeBroadcast(s); }
+
+    // [M] 取走某轨经命令环收到的远程优先级(§3.4 remoteSetPriority)。返回 false = 该轨无待应用值;
+    // 返回 true 后该值被清空(取走即消费,不重复应用)。命令在 tick() 的 consumeCommands 里入队。
+    bool takeRemotePriority(u32 channel, u32& valueOut);
+
+    // ---- 特征拉取(04 §3.3;采集覆盖的数据面)----------------------------------------
+    // Input 每块把特征写进本组 feat 段,Output [M] 25Hz 增量拉进 FrameStore —— 这条读侧此前
+    // 完全没接线(FeatPuller/FrameStore 只在 tests/ 里出现),于是 Output 永远拿不到覆盖数据,
+    // 「已分析区域共 0 段」且分析按钮恒置灰(T37 三轮 A 族 L-6)。
+    //
+    // 特征权威存储(04 §3.1):按 channel 独立分页量化存储 + coverage 记账。桥面覆盖率读它。
+    const analysis::FrameStore& frameStore() const noexcept { return frameStore_; }
+    analysis::FrameStore& frameStore() noexcept { return frameStore_; }
+    // 特征 hop 时长(ms):秒 ↔ hop 换算的唯一真源(桥面按它折算范围与覆盖率)。
+    static constexpr u32 featHopMs() noexcept { return kFeatHopMs; }
+
+    // [M] 布防的**时间维**(契约 §1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
+    // 落到 ChannelFrames::setGate —— 写入口按 hop ∈ gate 判,范围外静默丢弃、不记账。
+    // 不设这道门的话特征按整条时间线累计,内嵌特征的 8MB 预算会先于功能问题暴露。
+    // follow 档传全域即可(follow 的语义就是不限范围)。
+    void setFeatureGate(analysis::HopRange gate) noexcept { featureGate_ = gate; }
+
+    // [M] 聚合用([J09] 全局小节 / 看门狗)。gapCount 是**进程寿命累计值**(ctrl 全局小节与诊断用)。
     u32 gapCount(u32 channel) const;
+
+    // [M] 桥面 scvb.conn.misalignCount 的数据面:**本次失准发作**内的缺口数 —— 该轨连续
+    // kMisalignRecoverMs 无新缺口(evaluateChannels 判定 !misaligned)即归零。累计值不适合直接上桥:
+    // 它只增不减,起播抖一次就把「路由失准」横幅永久钉住,恢复健康也撤不下来(T37 三轮 A 族)。
+    u32 misalignCountRecent(u32 channel) const;
     u64 writeHead(u32 channel) const;
     u64 epoch(u32 channel) const;
 
@@ -107,6 +174,8 @@ public:
 private:
     OutputClaimState openAndClaim(u64 nowMs);
     void attachAudioRings();
+    void attachFeatRings(); // 只读 attach 本组 feat 段并绑 FeatPuller(与 attachAudioRings 同构)
+    void pullFeatures(); // [M] 25Hz 增量拉取 → frameStore_(只拉在线轨)
     void releaseSegments();
     void releaseHandle(SegmentHandle& handle);
     void releaseSlot();
@@ -130,6 +199,14 @@ private:
     std::array<SegmentHandle, kMaxChannels> audioHandles_{};
     std::vector<SegmentHandle> pendingSegments_;
 
+    // 特征读侧([M] 独占;音频线程不触):feat 段只读映射 + 增量拉取游标 + 权威存储。
+    std::array<SegmentHandle, kMaxChannels> featHandles_{};
+    std::array<bool, kMaxChannels> featBound_{};
+    FeatPuller featPuller_;
+    analysis::FrameStore frameStore_;
+    // 布防时间维(§1 setCaptureEnabled);默认全域 = 不门控。
+    analysis::HopRange featureGate_{0, std::numeric_limits<u64>::max()};
+
     // [A] 只读的注入掩码(bit{N-1} = channel N 可注入混音);[M] 25Hz 写。
     std::atomic<u32> injectMask_{0};
     // [A] fetch_add 的存活计数;[M] 读(停摆看门狗)。
@@ -144,10 +221,18 @@ private:
     std::array<u64, kMaxChannels> onlineSinceMs_{};
     std::array<u64, kMaxChannels> misalignedSinceMs_{};
     std::array<u32, kMaxChannels> lastGapCount_{};
+    // 本次失准发作的起算点:恢复健康(!misaligned)时对齐到当前累计值,于是
+    // misalignCountRecent = gapCount - baseline 归零。
+    std::array<u32, kMaxChannels> misalignBaseline_{};
     std::array<u64, kMaxChannels> lastWriteHead_{};
     std::array<u64, kMaxChannels> lastWriteHeadChangeMs_{};
 
     u64 lastGlobalInfoMs_ = 0;
+
+    // [M] 命令环派发结果:Input 远程改优先级的待应用值(§3.4)。桥层每拍 takeRemotePriority 取走
+    // 并落 Output 的 runtime state —— 配置真源在 Output(ADR-004),session 只做投递,不自己存配置。
+    std::array<u32, kMaxChannels> pendingPriority_{};
+    std::array<bool, kMaxChannels> hasPendingPriority_{};
 };
 
 } // namespace scvb::output

@@ -198,6 +198,80 @@ TEST_CASE("OutputStateCodec:CFGS 长度 = baseSize+1/+8 尾部必须拒载(§7.3
         REQUIRE_FALSE(scvb::state::decodeOutputState(bad.data(), bad.size(), out));
     }
 }
+TEST_CASE("heartbeatAgeMsOf:哨兵 / 时钟倒退 / 溢出钳位", "[output][conn][t37]")
+{
+    using scvb::output::heartbeatAgeMsOf;
+    using scvb::output::kHeartbeatAgeUnknown;
+
+    // 契约 §2.3:slotState=0 或从未心跳 → 0xFFFFFFFF 哨兵(UI 据此判 heartbeatFresh=false)。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotFree, 12345, 20000) == kHeartbeatAgeUnknown);
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 0, 20000) == kHeartbeatAgeUnknown);
+    // 正常年龄。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 19800, 20000) == 200);
+    // 时钟倒退(steady clock 不该发生,但跨实例读值不做信任假设)→ 0,不出负数回绕。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 21000, 20000) == 0);
+    // 溢出钳到「哨兵-1」:真实的超长年龄绝不能被误读成「无数据」。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 1, 0x1'0000'0000ull) == kHeartbeatAgeUnknown - 1u);
+}
+
+TEST_CASE("channelConn:桥面 conn 数据面来自 registry 实况(T37 bug B)", "[output][conn][t37]")
+{
+    // T37 真机 bug B:Input 侧显示已连接、音频也通(Input 静音、总线出处理后的声音),
+    // 但 Output 轨道页永远是「组 X 尚无输入」—— 因为 OutputEditor::buildConnPayload 是 T29 占位:
+    // 全轨 slotState 由 claim 态推导、heartbeatFresh 恒 false,而 UI 的连接数口径是
+    // 「slotState=2 ∧ heartbeatFresh」(契约 §2.3 / J01),恒为 0。断点在数据面,不在音频环。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+
+    // 已认领的 ch3:活跃 + 心跳新鲜(年龄 ≤ 2000 ⇒ UI 的 heartbeatFresh 为真)。
+    const auto ch3 = out.channelConn(3, 1300);
+    REQUIRE(ch3.slotState == kSlotActive);
+    REQUIRE(ch3.heartbeatAgeMs == 200);
+    REQUIRE(ch3.heartbeatAgeMs <= static_cast<u32>(scvb::kStaleDisplayMs)); // = UI 侧 heartbeatFresh
+    REQUIRE_FALSE(ch3.srMismatch);
+
+    // 未认领的轨:空闲 + 哨兵年龄(UI 显示未连接,而不是「活跃但不新鲜」)。
+    const auto ch1 = out.channelConn(1, 1300);
+    REQUIRE(ch1.slotState == kSlotFree);
+    REQUIRE(ch1.heartbeatAgeMs == scvb::output::kHeartbeatAgeUnknown);
+
+    // 心跳停发 > 2000ms → 年龄越过显示阈值(UI 转「失联」,J10 双阈值的显示半边)。
+    const auto stale = out.channelConn(3, 1100 + scvb::kStaleDisplayMs + 500);
+    REQUIRE(stale.slotState == kSlotActive);
+    REQUIRE(stale.heartbeatAgeMs > static_cast<u32>(scvb::kStaleDisplayMs));
+
+    // 非法 channel 一律回默认(不越界读 registry)。
+    REQUIRE(out.channelConn(0, 1300).slotState == kSlotFree);
+    REQUIRE(out.channelConn(16, 1300).heartbeatAgeMs == scvb::output::kHeartbeatAgeUnknown);
+}
+
+TEST_CASE("channelConn:采样率不一致 → srMismatch(§2.3 该轨禁用)", "[output][conn][t37]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(5);
+    REQUIRE(in.prepare(44100, 512, 1, 1000) == InputClaimState::kActive); // Input 44.1k
+    in.heartbeat(1100);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive); // Output 48k
+
+    const auto ch5 = out.channelConn(5, 1300);
+    REQUIRE(ch5.slotState == kSlotActive);
+    REQUIRE(ch5.srMismatch);
+    // 空闲槽不报采样率不一致(sample_rate=0 是「未知」,不是「不同」)。
+    REQUIRE_FALSE(out.channelConn(6, 1300).srMismatch);
+}
 
 TEST_CASE("Output state 容器:abi 高于当前 → RejectedNewer + preservedOriginal 原样回写", "[output][state][abi]")
 {
@@ -379,4 +453,158 @@ TEST_CASE("[J66] changeGroup 后新组同 idx 轨重新过 200ms 注入延迟(�
 
     out.tick(2200); // 1900+300ms ≥200ms → 注入
     REQUIRE((out.injectMask() & (1u << 2)) != 0);
+}
+
+// ---------------------------------------------------------------------------
+// T37 三轮 A 族回归:失准计数必须能自行撤下。
+// 真机症状:「误 bypass 一个 Input → Output 正确报失准;重开 Input、音频链路恢复正常,
+// 但 Output 的失准警告一直不消失」。根因是上桥的 misalignCount 直接用了进程寿命累计的
+// gapCount —— 只增不减,恢复健康也撤不下横幅。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("misalignCountRecent:失准发作后恢复健康 → 归零(T37 三轮 A 族)", "[output][session][t37]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+
+    float buf[32] = {};
+    scvb::AudioRing::write(in.audioRing().acquire(), 0, buf, 32); // write_head = 32
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    out.tick(1300);
+
+    auto& src = out.mixSource(3);
+    REQUIRE(src.bound());
+
+    // ① 先成功读一次(primed);冷启动追赶期不计失准,故此前计数必须是 0。
+    std::vector<float> dst(32, 0.0f);
+    REQUIRE(src.read(0, dst.data(), 16));
+    REQUIRE(out.gapCount(3) == 0);
+
+    // ② 制造真缺口:读位置越过写头(等价于 Input 被 bypass、不再推进 write_head)。
+    REQUIRE_FALSE(src.read(32, dst.data(), 16));
+    REQUIRE(out.gapCount(3) == 1);
+
+    // ③ 失准发作中:上桥的 misalignCount 报 1(横幅亮起)。
+    out.tick(1400);
+    CHECK(out.misalignCountRecent(3) == 1);
+
+    // ④ **只是心跳还在、缺口不再增长,不算恢复**(v4 实测 P0-2 的假恢复):
+    //    Input 被 bypass 后本轨会转 suspended 退出注入集,read() 不再被调用,缺口自然停止增长 ——
+    //    此时若判恢复,横幅会在实际仍无声时撤下。写头没动,警告必须保持。
+    in.heartbeat(2600);
+    out.tick(2600);
+    CHECK(out.misalignCountRecent(3) == 1);
+
+    // ⑤ 数据真的恢复推进(写头前移 + 成功读到)→ 这才是恢复,归零;
+    //    而进程累计值仍保留在 gapCount 供 ctrl 全局小节/诊断。
+    scvb::AudioRing::write(in.audioRing().acquire(), 32, buf, 32); // write_head = 64
+    in.heartbeat(2700);
+    out.tick(2700); // 本拍记下写头前移
+    in.heartbeat(2800);
+    out.tick(2800); // 距上次缺口已 >1s 且数据在推进 → 撤警
+    CHECK(out.misalignCountRecent(3) == 0);
+    CHECK(out.gapCount(3) == 1);
+
+    // ⑥ 再次失准 → 重新报数(不是一次性静音)。
+    REQUIRE_FALSE(src.read(128, dst.data(), 16));
+    in.heartbeat(2900);
+    out.tick(2900);
+    CHECK(out.misalignCountRecent(3) == 1);
+}
+
+TEST_CASE("T37-C 命令环 kSetPriority 派发到 Output(不再静默丢弃)", "[output][session][ctrl][t37]")
+{
+    // 真机症状:Input 拖优先级滑杆 → remoteSetPriority → 命令环 → Output 排空丢弃 → 值永不生效。
+    // consumeCommands 此前的循环体是空的;本例断言记录确实被派发出来。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+
+    // Input 侧生产一条 kSetPriority(与 InputProcessor::bridgeRemoteSetPriority 同款调用)。
+    scvb::CtrlPlane input(backend, 1);
+    REQUIRE(input.open() == scvb::InitResult::kOk);
+    REQUIRE(input.enqueue(4, scvb::CtrlOp::kSetPriority, 7));
+
+    scvb::u32 value = 0;
+    CHECK_FALSE(out.takeRemotePriority(4, value)); // tick 之前没有待应用值
+
+    out.tick(1100); // consumeCommands 在 tick 内
+    REQUIRE(out.takeRemotePriority(4, value));
+    CHECK(value == 7);
+
+    // 取走即消费:不重复应用。
+    CHECK_FALSE(out.takeRemotePriority(4, value));
+
+    // 越界值钳到 0..10(Input 侧已 clamp,这里是读方自保)。
+    REQUIRE(input.enqueue(4, scvb::CtrlOp::kSetPriority, 999));
+    out.tick(1200);
+    REQUIRE(out.takeRemotePriority(4, value));
+    CHECK(value == 10);
+
+    // 同一拍多条只留最后一条(值语义,不是增量)。
+    REQUIRE(input.enqueue(9, scvb::CtrlOp::kSetPriority, 2));
+    REQUIRE(input.enqueue(9, scvb::CtrlOp::kSetPriority, 5));
+    out.tick(1300);
+    REQUIRE(out.takeRemotePriority(9, value));
+    CHECK(value == 5);
+
+    // 未知 op 不得中断排空,也不得产生待应用值。
+    REQUIRE(input.enqueue(6, static_cast<scvb::CtrlOp>(0xFE), 3));
+    out.tick(1400);
+    CHECK_FALSE(out.takeRemotePriority(6, value));
+}
+
+TEST_CASE("T37-A 特征拉取端到端:Input 写 feat 段 → Output FrameStore 记账覆盖", "[output][session][feat][t37]")
+{
+    // 真机症状 L-6:采集开着、播放一段后,分析区显示「当前范围内无采集数据」「已分析区域共 0 段」,
+    // 分析按钮点不了。根因是 Output 侧完全没接 feat 读侧 —— FeatPuller/FrameStore 只在 tests/ 里
+    // 出现过,Input 兢兢业业写了一路特征,对面没人开那个段。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(2);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+    REQUIRE(in.featRing().bound());
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    out.setCaptureEnabled(true); // 采集闸:ChannelFrames 默认 readOnly,不开闸拉了也不记账
+
+    // 让该轨过 [J32] 注入延迟并进 connected_mask —— pullTick 的 activeMask 只拉在线轨。
+    float audio[64] = {};
+    scvb::AudioRing::write(in.audioRing().acquire(), 0, audio, 64);
+    out.tick(1300);
+    out.tick(1600);
+
+    // Input 侧产特征:startRun 定位时间线原点,再喂满若干 hop(10ms @48k = 480 样本/hop)。
+    in.featRing().setCapturing(true);
+    in.featRing().startRun(0);
+    std::vector<float> mono(480 * 20, 0.25f); // 20 hop 的非静音信号
+    const float* planar[1] = {mono.data()};
+    const int wrote = in.featRing().processBlock(planar, static_cast<int>(mono.size()));
+    REQUIRE(wrote > 0);
+
+    // Output 拉取(在 tick 内)。
+    out.tick(1700);
+
+    const auto& frames = out.frameStore().channel(2);
+    const std::uint64_t covered = frames.coveredHops(scvb::analysis::HopRange{0, static_cast<std::uint64_t>(wrote)});
+    CHECK(covered == static_cast<std::uint64_t>(wrote)); // ← 修复前恒为 0
+    CHECK(frames.coversFully(scvb::analysis::HopRange{0, 1}));
+
+    // 采集关 → 回只读,已记的覆盖不丢(ADR-007)。
+    out.setCaptureEnabled(false);
+    out.tick(1800);
+    CHECK(frames.coveredHops(scvb::analysis::HopRange{0, static_cast<std::uint64_t>(wrote)}) == covered);
 }

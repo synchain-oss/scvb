@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "output/BusXfade.h"
+#include "output/MeterShot.h"
 #include "output/MixMath.h"
 #include "output/ShmRingMixSource.h"
 
@@ -91,22 +92,52 @@ TEST_CASE("ShmRingMixSource stereo interleaved 读取(covered)", "[mix][ring]")
     CHECK(src.gapCount() == 0);
 }
 
-TEST_CASE("ShmRingMixSource 缺口(write_head 落后)→ 失准计数", "[mix][ring]")
+TEST_CASE("ShmRingMixSource 冷启动(写方尚未追上)不计失准", "[mix][ring]")
 {
+    // T37 三轮 A 族回归:刚 attach 的空环 / 起播瞬间 / 宿主先渲染 Output 再渲染 Input,
+    // 都表现为「write_head 还没覆盖本块」。这不是失准,是**尚未上线** —— 若计数,所有
+    // 注入轨会在同一块同时 +1,UI 立刻报「5 轨检测到时间线缺口」(真机症状 L-6)。
     RingFixture f;
-    f.header.write_head_samples.store(4, std::memory_order_release); // 只写了 4 帧
+    f.header.write_head_samples.store(0, std::memory_order_release); // 写方一帧未写
 
     ShmRingMixSource src;
     src.bind(&f.header, f.data.data());
     REQUIRE(src.bound());
 
     std::vector<float> out(8 * 2, 1.0f);
-    REQUIRE_FALSE(src.read(0, out.data(), 8)); // 需要 8 帧,只覆盖 4 帧 → 缺口
+    for (int i = 0; i < 10; ++i)
+    {
+        REQUIRE_FALSE(src.read(0, out.data(), 8)); // 该块静音直通
+    }
+    CHECK(src.gapCount() == 0); // 一次都不计
+
+    // 写方追上 → 首次成功读(primed),此后才进入失准判定。
+    f.header.write_head_samples.store(8, std::memory_order_release);
+    REQUIRE(src.read(0, out.data(), 8));
+    CHECK(src.gapCount() == 0);
+}
+
+TEST_CASE("ShmRingMixSource 缺口(primed 后 write_head 落后)→ 失准计数", "[mix][ring]")
+{
+    RingFixture f;
+    f.header.write_head_samples.store(8, std::memory_order_release);
+
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    REQUIRE(src.bound());
+
+    // 先成功读一次:本代确有可读数据,此后 covered 失败才是真缺口。
+    std::vector<float> out(8 * 2, 1.0f);
+    REQUIRE(src.read(0, out.data(), 8));
+    CHECK(src.gapCount() == 0);
+
+    // 写头停滞而读位置前移 → 真缺口(Input 掉出总线 / 停止推进)。
+    REQUIRE_FALSE(src.read(8, out.data(), 8));
     CHECK(src.gapCount() == 1);
 
     // 写头推进覆盖后恢复。
-    f.header.write_head_samples.store(8, std::memory_order_release);
-    REQUIRE(src.read(0, out.data(), 8));
+    f.header.write_head_samples.store(16, std::memory_order_release);
+    REQUIRE(src.read(8, out.data(), 8));
     CHECK(src.gapCount() == 1); // 恢复读取不再增计数
 }
 
@@ -287,4 +318,52 @@ TEST_CASE("BusXfade 直通⇄混音等功率交叉(无别名/无 +3dB 泵感)", 
         prev = v;
     }
     REQUIRE(out[0] == Catch::Approx(0.0f).margin(1e-4f)); // 首样本≈mix=0,与上一块稳态混音连续(无阶跃)
+}
+
+// ---------------------------------------------------------------------------
+// T37 三轮 B 族回归:电平快照通道(scvb.meters 的数据面)。
+// 真机症状 L-2/L-3:识别出了轨道数,但玻璃管液柱一直最低、电平表不跳、无峰值条。
+// 根因是 emitMeters 把 15 轨与总线全部硬编码在 -60dB 地板(T29 占位),叠加 0.3dB 阈值门
+// 后该事件首帧发一次就再不发。web 侧一直是好的,缺的是这条从音频线程上来的数据。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("MeterShot:seqlock 往返 + 静音发布回地板(T37 三轮 B 族)", "[meters][t37]")
+{
+    scvb::output::MeterShot shot;
+
+    // 未发布过:读到全零 = 静音。emitMeters 的 toDb(0) 落 -60dB 地板,液柱在底部。
+    scvb::output::MeterPod pod{};
+    REQUIRE(shot.read(pod));
+    CHECK(pod.trackRms[0] == 0.0f);
+    CHECK(pod.busPeak[1] == 0.0f);
+
+    // 发布一帧真实电平(线性幅度;dB 换算刻意留在消息线程)。
+    scvb::output::MeterPod tx{};
+    tx.trackRms[0] = 0.5f;
+    tx.trackPeak[0] = 0.75f;
+    tx.trackRms[14] = 0.125f;
+    tx.busRms[0] = 0.25f;
+    tx.busPeak[1] = 1.0f;
+    shot.publish(tx);
+
+    scvb::output::MeterPod rx{};
+    REQUIRE(shot.read(rx));
+    CHECK(rx.trackRms[0] == 0.5f);
+    CHECK(rx.trackPeak[0] == 0.75f);
+    CHECK(rx.trackRms[14] == 0.125f);
+    CHECK(rx.busRms[0] == 0.25f);
+    CHECK(rx.busPeak[1] == 1.0f);
+
+    // publishSilentMeters 的语义:发全零 → 电平表落回地板,而不是冻在上一块的值。
+    shot.publish(scvb::output::MeterPod{});
+    REQUIRE(shot.read(rx));
+    CHECK(rx.trackRms[0] == 0.0f);
+    CHECK(rx.trackPeak[0] == 0.0f);
+    CHECK(rx.busPeak[1] == 0.0f);
+
+    // 写者在临界区内(seq 为奇)时读方必须报撕裂,由调用方沿用上帧而不是拿到半新半旧的值。
+    shot.seq.fetch_add(1, std::memory_order_release);
+    CHECK_FALSE(shot.read(rx));
+    shot.seq.fetch_add(1, std::memory_order_release);
+    CHECK(shot.read(rx));
 }

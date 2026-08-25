@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "InputProcessor.h"
 
+#include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
 #include "InputBridgeLogic.h"
-#include "InputEditor.h"
 
 #include <algorithm>
 #include <cmath>
@@ -267,6 +267,27 @@ void ScvbInputAudioProcessor::timerCallback()
     // 精确的「ramp 完成」时点由 [A] 经 RampSwitcher 判定;此处 [M] 以目标档近似,
     // 80ms ramp 窗口被 Output 侧 ≥200ms 注入延迟覆盖(J32)。
     session_.setMuted(target == scvb::input::OutputStageMode::kSilence);
+
+    // 采集布防(ADR-007 / 契约 §1 setCaptureEnabled:ON = 对 **{enabled 轨} × {global.range}** 布防)。
+    // 真源是 Output 的采集开关,经 ctrl 段 OutputGlobalInfo.capture_enabled 广播下来;
+    // captureArmed_ 此前**只有读点没有写点** —— processBlock 每块读它决定要不要写特征段,而没有
+    // 任何地方赋过值,于是恒 0:Input 从来没写过一帧特征(T37 三轮 A 族 L-6 链上的第二处断点)。
+    //
+    // 轨维在这里收:用户在 Output 里关掉的轨不该继续写特征段(白占带宽与 8MB 内嵌预算)。
+    // 时间维(global.range)在 Output 侧收 —— 见 OutputSession::setFeatureGate。
+    ensureCtrlOpen();
+    bool armed = ctrl_.readGlobalInfo().capture_enabled != 0;
+    if (armed && channelId_ >= 1 && channelId_ <= kChannelIdMax)
+    {
+        scvb::CtrlBroadcastSnapshot bc;
+        // 读不到广播区(本组还没有 Output 在广播)时不拿默认值当「已禁用」:保持布防,
+        // 由 Output 的采集开关单独决定 —— 否则 Output 刚上线的那几拍会白白丢掉特征。
+        if (ctrl_.readBroadcast(bc) && bc.config_seq != 0)
+        {
+            armed = (bc.channels[static_cast<std::size_t>(channelId_ - 1)].flags & scvb::kCfgFlagEnabled) != 0;
+        }
+    }
+    captureArmed_.store(armed ? 1u : 0u, std::memory_order_relaxed);
 }
 
 void ScvbInputAudioProcessor::setCurrentProgram(int /*index*/) {}
@@ -437,10 +458,8 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     return session_.state(); // T30 桥:{conflict:true} ⇔ 新组同 channel 被占(I2)
 }
 
-juce::AudioProcessorEditor* ScvbInputAudioProcessor::createEditor()
-{
-    return new scvb::input::InputEditor(*this);
-}
+// createEditor() 与 createPluginFilter() 见 InputPluginEntry.cpp:抽出去之后本 TU 不再引用
+// InputEditor,免 DAW 的宿主 harness 才能只编 Processor 而不链接 WebView2。
 
 // ---------------------------------------------------------------------------
 // T30 Input 桥接入面([M] 编辑器线程;除注明外持 lifecycleMutex_)
@@ -460,9 +479,24 @@ void ScvbInputAudioProcessor::ensureCtrlOpen()
         ctrl_.changeGroup(static_cast<scvb::u32>(groupId_));
     }
     // Input 是本组 ctrl 段的合法创建/覆盖者(CtrlPlane::open 注释)。
+    // 退避:open() 的 owner-attach 分支在残段(magic==0)场景下最坏会 sleep 50ms × 10,而本函数
+    // 自 T37 起进了 25Hz Timer 的常驻路径(采集布防要读 ctrl)。失败就每拍重试的话,[M] 会被
+    // 反复卡住 500ms,连带把 4Hz 心跳推迟到 ~750ms。音频线程不受影响(processBlock 不持
+    // lifecycleMutex_),但没有理由把带 sleep 的初始化放进周期回调里空转。
     if (!ctrl_.isOpen())
     {
-        ctrl_.open();
+        const auto now = scvb::steadyNowMs();
+        if (ctrlOpenRetryAtMs_ == 0 || now >= ctrlOpenRetryAtMs_)
+        {
+            if (ctrl_.open() != scvb::InitResult::kOk)
+            {
+                ctrlOpenRetryAtMs_ = now + kCtrlOpenRetryMs;
+            }
+            else
+            {
+                ctrlOpenRetryAtMs_ = 0;
+            }
+        }
     }
 }
 
@@ -481,7 +515,27 @@ ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickS
     s.sourceChannels = srcChannels_;
     ensureCtrlOpen();
     s.globalInfo = ctrl_.readGlobalInfo();
-    s.configSeq = session_.configSeq();
+
+    // 广播区(§4.3)。seqlock 撕裂时**沿用上帧**而不是回落默认值:回落会让 UI 闪一帧
+    // 「优先级 0 / 无 lead / label 全空」,比陈旧一帧难看得多。段从未打开(本组无 Output)
+    // 时 lastBroadcastValid_ 恒 false,载荷才真正走默认值分支。
+    // 换组/释放后旧组缓存立即作废:沿用上帧的前提是「还在同一组」。
+    if (groupId_ != lastBroadcastGroup_)
+    {
+        lastBroadcastGroup_ = groupId_;
+        lastBroadcastValid_ = false;
+        lastBroadcast_ = scvb::CtrlBroadcastSnapshot{};
+    }
+    if (ctrl_.readBroadcast(lastBroadcast_))
+    {
+        lastBroadcastValid_ = true;
+    }
+    s.broadcast = lastBroadcast_;
+    s.broadcastValid = lastBroadcastValid_;
+    // 广播区的 config_seq 从 1 起算(见 OutputProcessor::publishConfigBroadcast),0 保留给
+    // 「本组还没有 Output 在广播」——否则 Output 首次上线时 seq 恰为 0,与「无广播」撞值,
+    // scvb.config 的变化门会把首帧真配置吞掉。
+    s.configSeq = s.broadcastValid ? s.broadcast.config_seq : 0u;
     s.localAbi = session_.localAbi();
     s.remoteAbi = session_.remoteAbi();
     return s;
@@ -546,7 +600,9 @@ void ScvbInputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
 void ScvbInputAudioProcessor::bridgeSetUiScalePercent(int percent)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    uiScale_ = juce::jlimit(33, 300, percent); // 0.33..3.0 × 100(params-v0 §三 uiScale)
+    // 边界真源 = scvb::bridge::plugin::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
+    uiScale_ = juce::jlimit(juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f),
+                            juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f), percent);
 }
 
 int ScvbInputAudioProcessor::bridgeUiScalePercent() const
@@ -559,10 +615,4 @@ juce::String ScvbInputAudioProcessor::bridgeUiLanguage() const
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     return uiLanguage_;
-}
-
-// juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
-{
-    return new ScvbInputAudioProcessor();
 }
