@@ -596,7 +596,8 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 旧构建整块拒载并静默把 group/开关/版本打回默认;ValueTree 两个方向都容忍字段增删。
     // 见 OutputUiState.h 头注(STATE_SCHEMA §三 的 ui 组本就登记在 PRMS 名下)。
     auto state = apvts.copyState();
-    scvb::output::writeUiFlags(state, {runtime_.guideSeen, runtime_.tourSeen});
+    scvb::output::writeUiFlags(
+        state, {runtime_.guideSeen.load(std::memory_order_relaxed), runtime_.tourSeen.load(std::memory_order_relaxed)});
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
     copyXmlToBinary(*xml, paramsBlock);
@@ -688,8 +689,8 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             // 首启已读位与参数同在 PRMS(见 OutputUiState.h);属性缺失 = 老工程 ⇒ 两位 false,
             // 用户会再走一遍首启,之后即落盘不再重放。
             const auto flags = scvb::output::readUiFlags(loaded);
-            runtime_.guideSeen = flags.guideSeen;
-            runtime_.tourSeen = flags.tourSeen;
+            runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);
+            runtime_.tourSeen.store(flags.tourSeen, std::memory_order_relaxed);
             apvts.replaceState(loaded);
             handles_ = scvb::params::collectParamHandles(apvts);
         }
@@ -860,14 +861,14 @@ void ScvbOutputAudioProcessor::bridgeSetUiScalePercent(int percent)
 
 void ScvbOutputAudioProcessor::bridgeSetGuideSeen(bool seen)
 {
-    const juce::ScopedLock lock(lifecycleMutex_);
-    runtime_.guideSeen = seen;
+    const juce::ScopedLock lock(lifecycleMutex_); // 与 get/setStateInformation 的持久化路径串行
+    runtime_.guideSeen.store(seen, std::memory_order_relaxed);
 }
 
 void ScvbOutputAudioProcessor::bridgeSetTourSeen(bool seen)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    runtime_.tourSeen = seen;
+    runtime_.tourSeen.store(seen, std::memory_order_relaxed);
 }
 
 juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
