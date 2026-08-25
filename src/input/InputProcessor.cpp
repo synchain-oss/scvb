@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "InputProcessor.h"
 
+#include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
 #include "InputBridgeLogic.h"
 #include "InputEditor.h"
 
@@ -546,7 +547,9 @@ void ScvbInputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
 void ScvbInputAudioProcessor::bridgeSetUiScalePercent(int percent)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    uiScale_ = juce::jlimit(33, 300, percent); // 0.33..3.0 × 100(params-v0 §三 uiScale)
+    // 边界真源 = scvb::bridge::plugin::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
+    uiScale_ = juce::jlimit(juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f),
+                            juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f), percent);
 }
 
 int ScvbInputAudioProcessor::bridgeUiScalePercent() const

@@ -32,7 +32,8 @@ namespace scvb::output
 class OutputEditor; // 桥编辑器(T29),createEditor 实例化。
 }
 
-// Output 桥面的运行时 state(T29;消息线程独占 —— [M] 写 / OutputEditor::emitTick 读)。
+// Output 桥面的运行时 state(T29;除下面标注的两个首启已读位外,**消息线程独占** ——
+// [M] 写 / OutputEditor::emitTick 读)。
 // 与 CFGS(OutputStateCodec)承载的持久化子集互补:此处字段是「桥面可写、未必持久化」的运行时态,
 // 持久化扩展归后续任务;CRVS 段真身单独以 crvsData_ 承载(段/pan_curve/版本名)。
 struct OutputRuntimeState
@@ -72,8 +73,12 @@ struct OutputRuntimeState
 
     // ui(active_tab/guide_seen/tour_seen;scale/language 由 Processor 成员承载)
     juce::String activeTab = "master";
-    bool guideSeen = false;
-    bool tourSeen = false;
+    // 首启已读位是本结构里**唯一跨线程**的两个字段:自 T37 起它们随 PRMS 持久化,
+    // 于是宿主线程的 setStateInformation 会写、消息线程 25Hz 的 buildStateSubtree 会读。
+    // 用 atomic 而不是让读方去抢 lifecycleMutex_ —— 25Hz 的 emit 路径不该为两个 bool
+    // 跟宿主的 prepare/setState 抢锁。写方仍走 bridgeSetGuideSeen/bridgeSetTourSeen。
+    std::atomic<bool> guideSeen{false};
+    std::atomic<bool> tourSeen{false};
 
     // 运行时态(不入 state chunk、不随工程持久化)
     bool printGuardPending = false;
