@@ -51,8 +51,15 @@ jobs:
         # web-preview/tests/*.mjs 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到
         # 端 + 源码级纪律断言),T31–T36 六张卡的回归保护全压在上面。接入前没有
         # 任何 workflow 跑它们 —— 纯 web 的 PR 即使把八套全跑红,CI 也是全绿的。
-        # 零依赖:不装 npm 包,直接 node 跑;每套退出码 0 = 全绿,非 0 逐条打印
-        # [FAIL]。不用 `|| exit 1` 提前退出,好让一次 CI 就看全所有红项。
+        # 零 npm 依赖:不装包,直接 node 跑。不用 `|| exit 1` 提前退出,好让一次 CI
+        # 就看全所有红项。
+        #
+        # 退出码约定(T46 起,与 scripts/gates.ps1 的 Gate 3e 同口径):
+        #   0 = 全绿;1 = 有断言失败;**2 = 缺可选外部依赖**
+        #   (目前只有 smoke-monitor-page.mjs 会回 2 —— 它要一个无头 Chrome/Edge)。
+        # 2 记 ::warning:: 而**不**判红:这是 required check,一旦 runner 镜像哪天不再
+        # 预装 Chrome,判红会把仓库里**每一个** PR 卡住,而它本来只是少跑一套。
+        # 也绝不静默 —— warning 进 checks 摘要,长期没跑看得见。
         run: |
           shopt -s nullglob
           files=(web-preview/tests/smoke-*.mjs)
@@ -60,7 +67,12 @@ jobs:
           fail=0
           for f in "${files[@]}"; do
             echo "--- $f"
-            node "$f" || { echo "::error file=$f::web smoke failed"; fail=1; }
+            node "$f"; rc=$?
+            if [ $rc -eq 2 ]; then
+              echo "::warning file=$f::skipped — 缺可选外部依赖(无头浏览器),本套未跑"
+            elif [ $rc -ne 0 ]; then
+              echo "::error file=$f::web smoke failed"; fail=1
+            fi
           done
           exit $fail
 

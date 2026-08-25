@@ -267,6 +267,106 @@
             </li>
         </ul>
 
+        <h2>SCVB Monitor([J75] C · T46)</h2>
+        <p class="note">
+            第三个 VST3 target 的界面:上 = 声像/音量分布图,下 =
+            轨迹图(占主体),顶部组选择 A–H 为<strong>只读 attach</strong
+            >(点击换观察对象,不
+            claim、不影响被观察的组)。整页<strong>没有一个写控件</strong>。数据来自
+            <code>web-preview/mock/monitor-mock.js</code> ——
+            <strong>它是 T44 viz 段 + T45 桥的行为替身,不是自拟形状</strong
+            >:字段名、量纲、样本→秒换算、按需重发车道都对着实交付校过(段布局真源
+            <code>src/core/ipc/VizPlane.h</code> 与
+            <code>tests/golden/ipc-layout.txt</code>;JS 侧镜像与两个 parity
+            比对面见 <code>web/monitor/viz-contract.js</code>)。
+        </p>
+        <ul>
+            <li>
+                <a href="./monitor.html?scenario=monitor-online"
+                    >Monitor · 在线(组 A · 15 轨)</a
+                >
+                —— 满配:两图齐画、15 色配色、图例 hover 联动
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-offline"
+                    >Monitor · 空态(组 C 无 Output)</a
+                >
+                —— 观察的组不在线:两张图退出布局,只剩空态说明
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-groups"
+                    >Monitor · 组切换(开箱停在 B)</a
+                >
+                —— A/B/E 三组在线且轨数不同(15 / 6 / 9),点胶囊即可看出切换生效
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-stalled"
+                    >Monitor · 数据停摆</a
+                >
+                —— viz 的 <code>publish_ms</code> 冻住 3 秒 ⇒
+                琥珀横幅「数据已停更」
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-reconnect"
+                    >Monitor · 重连</a
+                >
+                —— 开箱 attach 失败(Output 还没起),3 秒后段被创建 ⇒
+                <strong>自动出图,不需要点任何东西</strong>
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-abi"
+                    >Monitor · 版本不匹配</a
+                >
+                —— 段 abi 高于本机 ⇒ 红横幅 +
+                停止读取。与「空态」是<strong>两条不同的降级路径</strong>(J40:拒连,绝不半兼容)
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-no-tracks"
+                    >Monitor · 缺 vol/width/轨名(旧版 Output 的形态)</a
+                >
+                —— 段里没有 <code>VizTrackState</code> /
+                <code>VizTrackLabels</code> ⇒
+                <strong>分布图画空、轨迹图与图例照常</strong
+                >(图例只剩两位轨号)。<strong>不猜、不填 0</strong>
+                —— 填 0 会画出一排居中等高的幽灵柱,那是假数据
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-no-lanes"
+                    >Monitor · 车道未接通(旧版 Output / 桥回归)</a
+                >
+                —— 桥只送了每轨摘要、没送 15×1024 的降采样车道 ⇒
+                <strong>轨迹图走专门的空态</strong>「监视数据未接通」,而不是
+                「尚无分段结果」(后者是骗人:段是有的,只是没送过来)。 车道本身
+                T45 已按
+                <code>lane_revision</code> 落地,本场景演的是它缺席时的降级
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-stall-then-gone"
+                    >Monitor · 先停更、再退出</a
+                >
+                —— <strong>T45 检测掉线的真实路径</strong>:先 2
+                秒琥珀横幅(图仍在), 随后段真的没了、<code>scvb.viz</code>
+                事件流停发,只剩 <code>scvb.state</code> 报 offline ⇒
+                必须切到空态。 页面手里那帧留存的停更帧<strong
+                    >不许压过 native 的段级事实</strong
+                >, 否则永久停在横幅上
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-no-lead"
+                    >Monitor · 缺 lead 掩码</a
+                >
+                —— 段里没有 <code>track_lead_mask</code>(T44 已在 offset 84
+                落地; 本场景演的是它缺席时的降级)⇒
+                柱照画、一律不戴柱顶绿帽。少一个信息 好过 标错主唱
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-online&amp;play=0"
+                    >Monitor · 走带停住</a
+                >
+                —— 播放头不动,便于看静态构图与截图对拍
+            </li>
+        </ul>
+
         <h2>Range 档位速查(J04:三值枚举,无哨兵)</h2>
         <p class="note">
             <code>range.mode</code> 一律取 <code>follow</code> /
@@ -326,7 +426,8 @@
             不经壳页直接打开真源,可用来确认「灰模在无后端时也不炸」(app.js 会
             catch 住 createBridge 失败并在 footer 落一行提示,零 console error):
             <a href="../web/output/index.html">web/output/index.html</a> ·
-            <a href="../web/input/index.html">web/input/index.html</a>
+            <a href="../web/input/index.html">web/input/index.html</a> ·
+            <a href="../web/monitor/index.html">web/monitor/index.html</a>
         </p>
     </body>
 </html>

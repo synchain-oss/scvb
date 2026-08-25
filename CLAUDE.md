@@ -65,6 +65,7 @@
 ## 6. 环境与依赖
 
 - JUCE(版本见 `.juce-version`)、CMake ≥3.22、MSVC 2022(静态 CRT `/MT`)、WebView2 SDK(NuGet,版本常量在 `CMakeLists.txt` 的 `WEBVIEW2_VERSION`)+ WebView2 Evergreen Runtime、pluginval(版本见 `.pluginval-version`)、Catch2(仅测试目标,由 `tests/CMakeLists.txt` 的 FetchContent 钉版拉取)、clang-format 18.1.8(J38 钉死)、gitleaks(版本见 `.gitleaks-version`)、`reuse`(pipx)。
+- **可选依赖:无头 Chrome / Edge**(T46 起)。只有 `web-preview/tests/smoke-monitor-page.mjs`(Monitor 页面级冒烟,经 CDP 驱动真页面)用得到,**没装不算失败** —— 该套回退出码 **2**,`scripts/gates.ps1` 的 Gate 3e 与 CI 的 web-smoke job 都把 2 记成 SKIP / `::warning::` 而不判红(理由写在那两处的注释里:web-smoke 是 required check,为一个可选依赖判红会卡住仓库里每一个 PR)。装了才跑得到「页面真的执行起来」那一层断言 —— node 侧的其余各套都不执行页面 JS,建议装。
 - **版本单一真源纪律**:`.juce-version` / `.pluginval-version` / `.gitleaks-version` 三个文件是各自版本的唯一真源,workflow 与 `scripts/*.ps1` **一律从文件读**,不得写版本号字面量。
 - 构建流水线不需要任何 secret(06 §3.1);review bot 用 org secrets(`CLAUDE_CODE_OAUTH_TOKEN` / `DEEPSEEK_KEY`)。
 

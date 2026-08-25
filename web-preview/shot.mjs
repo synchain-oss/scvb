@@ -53,7 +53,7 @@ if (args.has("help")) {
         [
             "用法:node web-preview/shot.mjs [选项]",
             "  --url=<完整 URL>        直接指定;不给则按 role/fixture/scenario 拼",
-            "  --role=output|input     默认 output",
+            "  --role=output|input|monitor  默认 output",
             "  --fixture=<名>          empty|fifteen-tracks|misaligned|channel-conflict|second-output|stereo-mixed",
             "  --scenario=<名>         见 05 §2.5(printing / recapture-armed / print-guard / first-run …)",
             "  --lang=zh|en|fr         经 UI 切语言(不改 state 默认)",
@@ -81,12 +81,21 @@ const SCALE = Number(opt("scale", 1)) || 1;
 const WAIT_MS = Number(opt("wait", 1500));
 const SETTLE_MS = Number(opt("settle", 600));
 const TAB = opt("tab", "");
-const ROLE = opt("role", "output") === "input" ? "input" : "output";
+// 三个壳页各一侧;表外取值回落 output(拼错参数不该白屏)。
+// ⚠ 两次 `opt()` 的默认值**必须一致**:曾经第二次写的是 `opt("role", "")` ——
+// 不传 `--role` 时判定拿到的是 "output"(在表内 ⇒ 走 then 分支),取值却拿到空串,
+// URL 因此拼成 `web-preview/.html` 而 404 白屏。回落逻辑看着还在,实际从没生效过。
+const ROLES = ["output", "input", "monitor"];
+const ROLE = ROLES.includes(opt("role", "output"))
+    ? opt("role", "output")
+    : "output";
 
 function buildUrl() {
     if (args.has("url")) return args.get("url");
     const qs = new URLSearchParams();
-    for (const k of ["fixture", "scenario", "loop", "role"]) {
+    // `group` / `play` 是 Monitor 壳页的参数(mock/monitor-mock.js 解析),
+    // 与 Output 侧的 fixture/loop 同样只是原样透传。
+    for (const k of ["fixture", "scenario", "loop", "role", "group", "play"]) {
         if (args.has(k)) qs.set(k, args.get(k));
     }
     const q = qs.toString();
