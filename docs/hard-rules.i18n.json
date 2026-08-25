@@ -12,7 +12,7 @@
   "frReview": {
     "status": "pending",
     "reviewer": "U17 待用户指派",
-    "note": "05 §5 / 12 §1.2:fr 红字必须经人工审校后方可发布,机翻安全警告发到公开产品是明确禁止项。本轮 fr 由 T39b 起草(非机翻,逐条对照 zh 真源撰写),审校人归属与 U17 同批交用户确认;状态转 reviewed 前不得发版。"
+    "note": "rule3 的 zh 于 2026-08-24 因中文风格统一(「哑轨」→「没有声音的轨道」)重算 zhSha256,语义未变,en/fr 经复核无需改动。05 §5 / 12 §1.2:fr 红字必须经人工审校后方可发布,机翻安全警告发到公开产品是明确禁止项。本轮 fr 由 T39b 起草(非机翻,逐条对照 zh 真源撰写),审校人归属与 U17 同批交用户确认;状态转 reviewed 前不得发版。"
   },
   "title": {
     "en": "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
@@ -36,7 +36,7 @@
       "n": 3,
       "en": "**Input mutes its downstream output only while a healthy SCVB Output is detected — this is by design, not a bug.** That mute path is what preserves the \"vocal tracks first, bus second\" ordering in the DAW's dependency graph, and it still holds under offline rendering and REAPER's anticipative multithreading. **When no healthy Output is detected (not installed, not connected, peer has quit), Input falls back to passthrough automatically**, over an 80 ms ramp with a 5-second hysteresis debounce (the hysteresis applies only to the \"mute → passthrough\" direction; \"passthrough → mute\" ramps over 80 ms as soon as health is confirmed), so installing only one of the two plugins will never leave you with a dead track. (ADR-002 / J12 + J32)",
       "fr": "**Input ne coupe sa sortie aval que tant qu'un SCVB Output sain est détecté — c'est le comportement voulu, pas un bug.** Ce chemin de coupure préserve l'ordre « pistes de voix d'abord, bus ensuite » dans le graphe de dépendances du DAW, et il reste valable en rendu hors ligne comme sous le multithreading anticipatif de REAPER. **Si aucun Output sain n'est détecté (non installé, non connecté, pair quitté), Input repasse automatiquement en direct**, via une rampe de 80 ms avec anti-rebond à hystérésis de 5 secondes (l'hystérésis ne s'applique qu'au sens « coupure → direct » ; « direct → coupure » suit une rampe de 80 ms dès la santé confirmée) : n'installer qu'un seul des deux plugins ne vous laissera donc jamais une piste muette. (ADR-002 / J12 + J32)",
-      "zhSha256": "095dcf99df8b3ed67d0fee7db8563da13794265fb86afeb41a3b39cea7848781"
+      "zhSha256": "2b4537e2882a751a7286eef4346ce1fc5332361aa1d78a25acde515fa0040d04"
     },
     {
       "n": 4,

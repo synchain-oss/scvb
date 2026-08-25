@@ -6,12 +6,14 @@
 
 # SCVB User Guide
 
+SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it freely. If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
+
 SCVB (Synchain Vocal Balancer) is a **pair** of VST3 plugins that automatically balances pan and level across a multi-singer, multi-part vocal arrangement:
 
 - **SCVB Input** sits on every vocal track and captures it;
 - **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and writes the result back as DAW automation.
 
-Both plugins must be **installed together and used as a pair**. Installing only one will not leave you with a dead track (see hard rule 3), but it will not give you any balancing either.
+Both plugins must be **installed together and used as a pair**. Installing only one will not leave you with a track that has no sound (see hard rule 3), but it will not give you any balancing either.
 
 > **How to change the nine hard rules**: the `## 硬约束` section of `docs/USER_GUIDE.zh-CN.md` is the **single source of truth** for all nine. They also appear in this file, in both READMEs' Quick start, and in the plugin UI's three language dictionaries — 7 places in total. **None of them may be transcribed by hand.** To change the wording, edit that section only (translations live in `docs/hard-rules.i18n.json`), then run `node scripts/gen-hard-rules.mjs`; the other 6 places follow the generator. `node scripts/gen-hard-rules.mjs --check` is the gate.
 
@@ -45,7 +47,7 @@ Put one SCVB Input in the **last slot** of **every** vocal track's plugin chain,
 
 ### Assign channels and groups
 
-Open each Input and give it a channel id. Channel ids may not repeat within one group (hard rule 5). The group selector is eight capsules, A–H, defaulting to A; a single song project will normally never need a second group — groups exist for "one DAW project containing several unrelated vocal buses". On the Output side, pick the same group in Tab 1.
+Open each Input and give it a channel id. Channel ids may not repeat within one group (hard rule 5). The group selector is eight capsules, A–H, defaulting to A; a single song project will not normally need a second group — groups exist for "one DAW project containing several unrelated vocal buses". On the Output side, pick the same group in Tab 1.
 
 ### Capture
 
@@ -53,7 +55,7 @@ Turn on **Capture** in the Output, then play back as usual. Capture writes only 
 
 ### Analyse
 
-Once capture covers the whole song, press **Analyse**. Analysis runs voice detection (VAD), splits the material into segments, measures segment loudness, and produces a pan / vol curve per track. Thresholds and segmentation sensitivity can be changed at any time with live preview, **without recapturing** — what is stored is continuous features, not decisions.
+Once capture covers the whole song, press **Analyse**. Analysis runs voice detection (VAD), splits the material into segments, measures segment loudness, and produces a pan / vol curve per track. Thresholds and segmentation sensitivity can be changed at any time with live preview, **without recapturing**, because what capture stores is features rather than audio or decisions.
 
 ### Output
 
@@ -61,7 +63,7 @@ Turn on the **Output** switch. What you now hear on the bus is the balanced resu
 
 ### Write automation
 
-Set the DAW's automation mode to **Write** or **Latch** and play through once more. SCVB Output prints the current version's curves as host automation at the playback position (15 tracks x pan/vol, 30 lanes in total). When it is done, switch automation back to Read and the plugin follows your DAW automation faithfully — draw whatever you like by hand, and nothing will overwrite it until you write again.
+Set the DAW's automation mode to **Write** or **Latch** and play through once more. SCVB Output prints the current version's curves as host automation at the playback position (15 tracks x pan/vol, 30 lanes in total). When it is done, switch automation back to Read and the plugin follows your DAW automation faithfully. From then on you can fine-tune the automation by hand in the DAW, and nothing will be overwritten by the plugin unless you write again. The plugin reproduces what is on the automation lanes, faithfully.
 
 ## Interface tour
 
@@ -90,12 +92,12 @@ The first time you open an Output you get, in order: the language card, then the
 
 - **When it writes**: capture switch ON **and** transport rolling. Stop the transport and writing stops.
 - **Replay semantics**: data is merged by timeline address, so replaying a range overwrites it with the new data. To redo a section, just play that section again.
-- **Features, not audio**: one frame every 10 ms holding K-weighted mean-square + peak + the continuous VAD posterior. Project size stays manageable and thresholds can be re-tuned offline as often as you like.
-- **Coverage**: ranges that were never captured show as uncaptured on the waveform page — they are never faked as silence. If you see a hole, play that part again.
+- **Features, not audio**: one frame every 10 ms holding K-weighted mean-square + peak + the continuous VAD posterior. Project size stays manageable and thresholds can be adjusted offline as freely as you like.
+- **Coverage**: ranges that were never captured show as uncaptured on the waveform page — they are never faked as silence. If you need to, just record that section again.
 
 ## Analysis
 
-- **VAD**: dual-threshold energy detection with hysteresis, hangover, and padding either side; the default errs on the generous side. Thresholds and sensitivity can be dragged with live preview.
+- **VAD**: dual-threshold energy detection with hysteresis, hangover, and padding either side; the default configuration is on the conservative side. Thresholds and sensitivity can be dragged with live preview.
 - **Segmentation**: energy-valley detection plus a minimum segment length and a breath tolerance.
 - **Segment loudness basis**: Settings offers **K-weighted segment integration (default) / RMS / peak dBFS**; changing it requires a re-analysis.
 - **Centre-slot policy**: the fallback rule for when several tracks compete for the centre position — **priority queue (default) / lead exclusive / evenly nudged apart**, also a "re-analyse after changing" setting.
@@ -136,7 +138,7 @@ There are **2 version slots**, each holding a complete set of curves plus config
 
 Things worth knowing:
 
-- The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself, but the engine does not print them — **the host is always authoritative** for those.
+- The engine prints **30 lanes only** (15 tracks x pan/vol). You may automate width / MS Balance / Lead Select yourself, but the engine will not create or adjust automation lanes on its own.
 - With the output switch **ON**, the DSP uses engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
 - Switching versions, copying a version, editing segment values, and turning the output switch off **never** produce host automation events.
 - Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "continue engine-driven", the plugin is loaded but silent on the automation side — **not a single gesture goes out**.
@@ -144,7 +146,7 @@ Things worth knowing:
 
 ## Pan curve editor
 
-The x axis is pan angle [-100, +100] and the y axis is gain in dB. There are three point types — **bell / shelf / cut** — each with a Q, and interpolation works the same way as an EQ curve. It describes "the gain correction applied at a given pan position", and pairs with automatic assignment to suppress or lift particular angular regions.
+The x axis is pan angle [-100, +100] and the y axis is gain in dB. There are three point types — **bell / shelf / cut** — each with a Q, and interpolation works the same way as an EQ curve. It describes "the gain correction applied at a given pan position", and pairs with automatic assignment to suppress or lift particular angular regions. Think of it as an EQ whose horizontal axis is angle rather than frequency.
 
 ## Target width
 
@@ -168,7 +170,7 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 | **Red pill at the top plus a red "version mismatch" banner** | Only one of the two plugins was updated | SCVB refuses half-compatible connections. Bring Input and Output up to the same version together |
 | **The vocals suddenly revert to their raw, unbalanced image** | The host stopped calling the Output (Live device deactivated / FL smart disable) | SCVB has already fallen back to passthrough and recovers in about 5.5 s. **FL Studio users: turn smart disable off for the bus that hosts SCVB Output** — FL suspends plugins based on "input is silent", and the SCVB bus input is silent by design, which makes it unusually easy to suspend by mistake. Host-by-host wording is in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **One vocal track is silent** | That track's Input is connected to a healthy Output, but the Output never received its data (no channel selected / wrong group / channel conflict) | Check that Input's channel and group; check whether the track shows as online on the Output's Tracks page |
-| **Installing Input killed the whole track** | Should not happen | With no healthy Output detected, Input falls back to passthrough automatically (hard rule 3). If a track really is dead, collect the output of "Copy diagnostics" in Settings and open an issue |
+| **Installing Input left the whole track with no sound** | Should not happen | With no healthy Output detected, Input falls back to passthrough automatically (hard rule 3). If that track really has no sound, collect the output of "Copy diagnostics" in Settings and open an issue |
 | **"Channel conflict" warning** | Two Inputs in the same group claim the same channel | Change the channel id on one of them, or move it to another group |
 | **"Group X already has a primary Output; this instance is read-only"** | The group already has an active Output | A group may only have one active Output (hard rule 6). Remove the extra one, or move it to another group |
 | **The "timeline gap / overlap" warning count is climbing** | Vocal track routing was changed / some track is not being picked up | **Do not export yet** (hard rule 9). Work through the common-pitfalls list in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
@@ -181,13 +183,13 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 
 **Can I install only the Output?** No. Without Inputs there is no track data at all.
 
-**What happens if I install only an Input?** That track stays in passthrough and will not go silent (hard rule 3), but you get no balancing either.
+**What happens if I install only an Input?** That track stays in passthrough and will not lose its sound (hard rule 3), but you get no balancing either.
 
 **Why can't more parameters be added?** The automation parameter surface is frozen at **123** (124 as the host sees it). Ableton Live's ceiling of 128 leaves only 4 spare, and Logic identifies parameters by index — adding or removing one would scramble the automation in every existing project. New requirements go into state instead.
 
 **Can I go beyond 15 tracks?** Not in v1; 15 tracks per group. If you genuinely need more, use a second group (an independent bus domain), but the two groups are not balanced jointly.
 
-**Is macOS supported?** v1 is Windows x64 / VST3 only.
+**Is macOS supported?** v1 is Windows x64 / VST3 only. A macOS build is something we will look at later on.
 
 **Can I edit the analysis result if I don't like it?** Yes, see "Manual touch-ups"; automatic re-analysis will not overwrite what you edited.
 

@@ -157,7 +157,7 @@ export const T = {
         "guide.rule2":
             "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
         "guide.rule3":
-            '只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条哑轨。(ADR-002 / J12 + J32)',
+            '只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条没有声音的轨道。(ADR-002 / J12 + J32)',
         "guide.rule4":
             "人声轨与总线的宿主 pan 必须保持居中。SCVB 内部用 equal-power pan,与宿主 pan law 无关;宿主 pan 不居中会叠加出错误声像。(ADR-010)",
         "guide.rule5":
