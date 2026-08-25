@@ -30,10 +30,33 @@ juce::String tooOldRuntimeMessage()
            "Update to the Evergreen runtime, then reopen this plugin window.";
 }
 
-juce::String loadTimeoutMessage()
+// 超时兜底按「最后一次导航走到哪一步」分三态给文案。这是本面板最重要的信息:
+// 同一句「加载太慢」在三种完全不同的故障上都会出现,而这三种的下一步动作互不相同。
+//   notStarted —— 导航事件一次都没来 ⇒ WebView2 **环境/控制器根本没建起来**。
+//                 JUCE 把环境创建与控制器创建的 HRESULT 都吞了(回调里 HRESULT 形参无名,
+//                 juce_WebBrowserComponent_windows.cpp),所以「没有事件」是我们唯一能拿到的
+//                 信号 —— 也正因如此它很可靠:环境起来了就必然有 NavigationStarting。
+//                 常见成因:user-data 目录不可写 / 被别的进程占着(宿主的插件扫描 sandbox
+//                 进程与音频进程同时活着)/ 宿主策略挡掉 msedgewebview2.exe 子进程。
+//   started    —— 导航开始但没走完 ⇒ 资源供给或渲染进程卡住。
+//   finished   —— 页面加载完了桥仍没起来 ⇒ 前端脚本没跑到 requestInitialState。
+juce::String envNotStartedMessage()
 {
-    return "The WebView is taking too long to load (possibly a first-time cold start).\n"
+    return "The WebView2 environment did not start (no navigation ever began).\n"
+           "This is usually the user-data folder being unwritable or already in use by another\n"
+           "process, or the host blocking the msedgewebview2.exe child process.";
+}
+
+juce::String navStalledMessage()
+{
+    return "The page started loading but never finished.\n"
            "Click Retry, or close and reopen this plugin window.";
+}
+
+juce::String bridgeStalledMessage()
+{
+    return "The page loaded, but the plugin UI never finished starting up.\n"
+           "Click Retry; if it keeps failing, report the diagnostics line below.";
 }
 
 juce::String bootErrorMessage()
@@ -85,6 +108,13 @@ WebViewHost::WebViewHost(juce::AudioProcessor& processor, Config config)
     : juce::AudioProcessorEditor(&processor), config_(std::move(config)), provider_(config_.resourceSource),
       uiScale_(bridge::clampUiScale(config_.uiScale)), lang_(config_.lang)
 {
+    // UDF 必须在装 Options 之前定好,并当场探一次可写性:WebView2 自己碰这个目录时的失败被
+    // JUCE 吞掉(环境创建回调的 HRESULT 形参无名),等到那时候就只剩「超时」两个字了。
+    userDataFolder_ = PlatformWebView::makeUserDataFolder(config_.userDataFolderName);
+    userDataFolderIssue_ = PlatformWebView::probeUserDataFolder(userDataFolder_);
+    if (userDataFolderIssue_.isNotEmpty())
+        logDiag("user-data folder problem: " + userDataFolderIssue_);
+
     webView_ = std::make_unique<HostWebView>(*this, makeOptions());
     addAndMakeVisible(*webView_);
 
@@ -213,6 +243,12 @@ juce::String WebViewHost::buildDiagnostics() const
     if (navDetail_.isNotEmpty())
         d << " (" << navDetail_ << ")";
     d << "  |  WebView2 " << (runtime_.version.isNotEmpty() ? runtime_.version : juce::String("not found"));
+    d << "  |  host " << juce::File::getSpecialLocation(juce::File::hostApplicationPath).getFileName();
+    // UDF 是「环境没起来」这一路的头号嫌疑,必须原样显示:用户把这一行发回来,就能直接看出
+    // 目录在哪、写不写得进、以及(名字里的 PID)是不是被另一个宿主进程占着。
+    d << "\n" << "udf " << userDataFolder_.getFullPathName();
+    if (userDataFolderIssue_.isNotEmpty())
+        d << "  [" << userDataFolderIssue_ << "]";
     if (bootError_.isNotEmpty())
         d << "\n" << bootError_;
     return d;
@@ -252,9 +288,21 @@ void WebViewHost::showFallback(FallbackReason reason)
         message = bootErrorMessage();
         tag = "bootError";
     }
+    else if (navState_ == NavState::notStarted)
+    {
+        // 导航一次都没开始 = WebView2 环境/控制器没建起来(见文件头三态注释)。
+        message = envNotStartedMessage();
+        tag = "envNotStarted";
+    }
+    else if (navState_ == NavState::finished)
+    {
+        message = bridgeStalledMessage();
+        tag = "bridgeStalled";
+    }
     else
     {
-        message = loadTimeoutMessage();
+        message = navStalledMessage();
+        tag = "navStalled";
     }
 
     const auto details = buildDiagnostics();
@@ -361,7 +409,7 @@ void WebViewHost::handleBootError(const juce::var& payload)
 // -----------------------------------------------------------------------------
 juce::WebBrowserComponent::Options WebViewHost::makeOptions()
 {
-    auto options = PlatformWebView::makeWebViewOptions(WBC::Options{}, config_.userDataFolderName);
+    auto options = PlatformWebView::makeWebViewOptions(WBC::Options{}, userDataFolder_);
 
     options = options.withNativeIntegrationEnabled().withResourceProvider(
         [this](const juce::String& url) { return provider_.provide(url); },

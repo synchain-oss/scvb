@@ -284,18 +284,41 @@ TEST_CASE("buildUiSeedPairs/buildUiSnapshot share Init keys (state pushback §1.
 TEST_CASE("makeWebViewOptions selects WebView2 backend + unique userDataFolder (§9/#5)")
 {
     using WBC = juce::WebBrowserComponent;
-#if JUCE_WINDOWS
-    const auto o1 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
-    CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
-    const auto f1 = o1.getWinWebView2BackendOptions().getUserDataFolder();
-    CHECK(f1.getFileName().startsWith("SCVBInputWV2_")); // 机制 2:临时目录 + 每实例后缀
+    using scvb::webview::PlatformWebView;
 
-    const auto o2 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
-    const auto f2 = o2.getWinWebView2BackendOptions().getUserDataFolder();
-    CHECK_FALSE(f1.getFileName() == f2.getFileName()); // 多实例同名 folder 抢占防护
+    const auto f1 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+    const auto f2 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+
+#if JUCE_WINDOWS
+    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, f1);
+    CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
+    CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == f1);
+    CHECK(f1.getFileName().startsWith("SCVBInputWV2_p")); // 机制 2:名字带 PID
+    CHECK_FALSE(f1.getFileName() == f2.getFileName()); // 同进程内多实例互不抢占
+
+    // 跨进程唯一:名字里必须含真 PID。只测「同一进程两次取到同一个 PID 段」+ 段非空,
+    // 真正的跨进程冲突测不了(要起第二个进程),但把 PID 编进名字这件事必须锁住 ——
+    // 原实现只有进程内自增,不同进程都拿 "_0",正是宿主扫描进程 + 音频进程互撞的成因。
+    const auto pidTag =
+        f1.getFileName().fromFirstOccurrenceOf("_p", false, false).upToFirstOccurrenceOf("_", false, false);
+    CHECK(pidTag.isNotEmpty());
+    CHECK(pidTag.containsOnly("0123456789"));
+    CHECK(f2.getFileName().contains("_p" + pidTag + "_"));
+
+    // 必须落在 **Local** AppData:%TEMP% 会被磁盘清理扫掉;Roaming
+    // (juce 的 userApplicationDataDirectory)会让浏览器缓存跟着漫游配置文件同步。
+    CHECK(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::windowsLocalAppData)));
+    CHECK_FALSE(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)));
+    CHECK_FALSE(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::tempDirectory)));
+
+    // 可写性探针:刚取到的目录应当可建可写;探针文件不留痕。
+    CHECK(PlatformWebView::probeUserDataFolder(f1).isEmpty());
+    CHECK_FALSE(f1.getChildFile(".scvb-write-probe").existsAsFile());
+    f1.deleteRecursively();
 #else
-    const auto o1 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
+    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, f1);
     CHECK(o1.getBackend() == WBC::Options::Backend::defaultBackend); // 非 Windows 走系统默认
+    CHECK_FALSE(f1.getFileName() == f2.getFileName());
 #endif
 }
 

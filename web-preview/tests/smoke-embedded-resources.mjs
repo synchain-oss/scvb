@@ -157,6 +157,32 @@ function checkRole(role) {
                 `${role}:index.html 的 boot 守卫事件名与 C++ 的 ${m[1]} 不一致`,
             );
         else console.log(`  boot 守卫在场,事件名 ${m[1]} 与 C++ 真源一致`);
+
+        // ⑤ boot 守卫本身必须是 ES5 —— 它是「前端炸了」时唯一还活着的东西,
+        // 自己用了新语法就会跟着一起被解析期 SyntaxError 带走,那就完全失去意义了。
+        // 它也必须是**非 module 的 <script>**:module 的解析失败同样发生在执行之前。
+        const guard = (html.match(/<script>([\s\S]*?)<\/script>/) || [, ""])[1];
+        if (!guard.includes("__scvbReportBootError")) {
+            bad(
+                `${role}:boot 守卫不在第一个普通 <script> 块里(module 里接不住解析期错误)`,
+            );
+        }
+        const es6 = [
+            [/=>/, "箭头函数"],
+            [/\bconst\b|\blet\b/, "const / let"],
+            [/`/, "模板字符串"],
+            [/\?\?|\?\./, "?? / ?."],
+            [/\.\.\./, "展开运算符"],
+            [/\bclass\b/, "class"],
+        ];
+        const offenders = es6
+            .filter(([re]) => re.test(guard))
+            .map(([, n]) => n);
+        if (offenders.length > 0)
+            bad(
+                `${role}:boot 守卫用了非 ES5 语法(${offenders.join(", ")}),旧引擎上会跟着一起炸`,
+            );
+        else console.log("  boot 守卫是 ES5、且在非 module 的 <script> 里");
     }
 }
 

@@ -144,6 +144,8 @@ private:
     juce::String navDetail_; // 最后一次导航错误信息(networkError 时非空)
     juce::String bootError_; // 前端上报的 boot 失败摘要(BootError 分支用)
     PlatformWebView::RuntimeInfo runtime_; // 本次加载尝试开始时的运行时探测结果(诊断用)
+    juce::File userDataFolder_; // 本实例的 WebView2 user-data 目录(名字带 PID,跨进程唯一)
+    juce::String userDataFolderIssue_; // 构造期可写性探针结果;空 = 没问题
 
     std::unique_ptr<HostWebView> webView_;
     std::unique_ptr<FallbackPanel> fallback_;
