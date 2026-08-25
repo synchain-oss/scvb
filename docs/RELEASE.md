@@ -1,7 +1,7 @@
 # RELEASE —— SCVB 发布流程与发布说明模板
 
 > 状态:演进中
-> 最后更新:2026-08-24
+> 最后更新:2026-08-25
 > 真源:12 §4.1–§4.5(版本号 / tag / CHANGELOG / release note / 分发渠道)
 
 本文件是**维护者**发版时照着走的清单,以及发布说明的模板。用户侧的安装说明在 [README](../README.zh-CN.md),使用说明在[用户手册](USER_GUIDE.zh-CN.md)。
@@ -46,12 +46,21 @@ semver 语义(音频插件特化):
 
 ## 发版清单
 
+> **⚠️ 现状:这份清单还走不通,两处硬阻塞都归 T40。** 下面逐条写的是发版**应当**怎么走;在 T40 落地前照着走会在第 6 步之后连撞两次:
+>
+> | # | 阻塞 | 现状 | 后果 |
+> |---|---|---|---|
+> | 1 | `scripts/package.ps1` **不存在** | `release.yml` 的 Package 步与 `.sha256` 生成都依赖它(文件里的注释写明「由 T40 补齐」) | 第 7 步没有产物可核对;Release 只会拿到空的 `files:` glob |
+> | 2 | **Verify version matches tag 解析错行** | 该步用 `Select-String -Pattern 'VERSION' \| Select-Object -First 1` 取 `CMakeLists.txt` 的第一条 VERSION,而第 1 行是 `cmake_minimum_required(VERSION 3.22)` —— 实测解析出 `3.22`,不是 `project(SCVB VERSION)` 的 `0.1.0` | 任何真实 tag 都会被误判为版本不匹配,workflow 首步即 fail。**这与 #71 在 `scripts/build.ps1` 修掉的是同一个 bug**,`release.yml` 里的那一份当时没跟着改 |
+>
+> 另外 `release.yml` 目前**只有** Verify + Package + 上传三步,没有复用 `build-vst3` 的构建 / ctest / pluginval —— 也就是说它不产出 `.vst3`。T40 的范围包含这三件事。在此之前本文件按「目标态」维护,不要把它当成已通链路。
+
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经人工审校不得发版**(05 §5:机翻安全警告发到公开产品是明确禁止项)。
-6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号。
+6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号(该步当前解析错行,见上方现状表第 2 条)。
 7. **核对产物**:zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` 两个完整 bundle 齐全,合规文件组齐全(见下),`.sha256` 独立文件存在。
 8. **填发布说明**:用下面的模板,SHA-256 **直接从 CI job summary 的 `dist/package-summary.md` 复制,不要手抄**。
 9. **发布后**:把**同一份** zip 与 `.sha256` 上传到官网下载页,并逐字核对官网哈希与 Release 正文里的 SHA-256 一致(README 向用户承诺了这一点);同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。
@@ -97,7 +106,7 @@ SCVB-vX.Y.Z-win64.zip
 | 资产 | 说明 |
 |---|---|
 | `SCVB-v{X.Y.Z}-win64.zip` | 含 `SCVB Input.vst3` 与 `SCVB Output.vst3`(完整 bundle 目录),解压后把整个 `.vst3` 文件夹复制到 `C:\Program Files\Common Files\VST3\`;zip 根目录另含 `LICENSE.txt`、`THIRD-PARTY-NOTICES.md`、`LICENSES/OFL-1.1.txt`、(若 U2 采纳)`LICENSE-EXCEPTION.md`、`INSTALL.txt` |
-| `SCVB-v{X.Y.Z}-win64.zip.sha256` | 独立校验文件(由 `scripts/package.ps1` 生成) |
+| `SCVB-v{X.Y.Z}-win64.zip.sha256` | 独立校验文件(由 `scripts/package.ps1` 生成 —— 该脚本尚未落地,见发版清单开头的现状说明) |
 
 SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手抄):
 
