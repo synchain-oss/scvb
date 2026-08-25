@@ -83,6 +83,45 @@ function parseOpenTags(s) {
 
 const tags = parseOpenTags(stripNonMarkup(html));
 
+/**
+ * 从 `head` 起把一整个调用表达式原样切出来(括号配平)。
+ * 用来把 app.js 里那段 keydown 监听整块取出:③ 拿去真跑,④ 拿去做源码级断言。
+ * 为什么不 import app.js:它模块顶层就摸 document(getElementById),node 侧起不来 ——
+ * 全仓的 smoke 都是这个前提。配平时要跳过字符串与行注释:注释里的中文全角括号不参与
+ * 配平,但 ASCII 括号会。
+ */
+function sliceCall(s, head) {
+    const start = s.indexOf(head);
+    if (start < 0) return null;
+    let i = s.indexOf("(", start); // 实参表的开括号
+    if (i < 0) return null;
+    let depth = 0;
+    while (i < s.length) {
+        const c = s[i];
+        if (c === "/" && s[i + 1] === "/") {
+            while (i < s.length && s[i] !== "\n") i++;
+            continue;
+        }
+        if (c === '"' || c === "'" || c === "`") {
+            const q = c;
+            i++;
+            while (i < s.length && s[i] !== q) {
+                if (s[i] === "\\") i++;
+                i++;
+            }
+            i++;
+            continue;
+        }
+        if (c === "(") depth++;
+        else if (c === ")") {
+            depth--;
+            if (depth === 0) return s.slice(start, i + 1) + ";";
+        }
+        i++;
+    }
+    return null;
+}
+
 // TAB_ORDER 的真源在 app.js —— 这里读回来,免得两处各写一份四值枚举
 // (契约 §1.31 setActiveTab 是四值冻结枚举,顺序即 tab 条从左到右的视觉顺序)。
 const orderM = app.match(/const TAB_ORDER\s*=\s*\[([^\]]*)\]/);
@@ -211,42 +250,6 @@ log("=== ② 静态 roving tabindex(首帧落点)===");
 // =============================================================================
 log("=== ③ 真执行:键盘切换处理器(←/→ 循环 + Home/End + 焦点跟随)===");
 {
-    // 把 app.js 里那段监听原样切出来跑。为什么不 import app.js:它模块顶层就摸
-    // document(getElementById),node 侧起不来 —— 全仓的 smoke 都是这个前提。
-    // 切法 = 从 `tabbar.addEventListener(` 起做括号配平,跳过字符串与行注释
-    // (注释里的中文全角括号不参与配平,但 ASCII 括号会,所以必须跳)。
-    function sliceCall(s, head) {
-        const start = s.indexOf(head);
-        if (start < 0) return null;
-        let i = s.indexOf("(", start); // 实参表的开括号
-        if (i < 0) return null;
-        let depth = 0;
-        while (i < s.length) {
-            const c = s[i];
-            if (c === "/" && s[i + 1] === "/") {
-                while (i < s.length && s[i] !== "\n") i++;
-                continue;
-            }
-            if (c === '"' || c === "'" || c === "`") {
-                const q = c;
-                i++;
-                while (i < s.length && s[i] !== q) {
-                    if (s[i] === "\\") i++;
-                    i++;
-                }
-                i++;
-                continue;
-            }
-            if (c === "(") depth++;
-            else if (c === ")") {
-                depth--;
-                if (depth === 0) return s.slice(start, i + 1) + ";";
-            }
-            i++;
-        }
-        return null;
-    }
-
     const keysDecl = (app.match(/const TAB_KEYS\s*=\s*\[[^\]]*\];/) || [])[0];
     const listener = sliceCall(app, 'tabbar.addEventListener("keydown",');
     check(!!keysDecl, "app.js 有 TAB_KEYS 白名单");
@@ -388,17 +391,13 @@ log("=== ④ 源码级:roving tabindex 由 activateTab 统一维护 ===");
         );
     }
     // 键盘路径不许自造第二套切页分支:它必须落在 activateTab 上
-    const listener = app.slice(
-        app.indexOf('tabbar.addEventListener("keydown"'),
-    );
+    const listener = sliceCall(app, 'tabbar.addEventListener("keydown",') || "";
     check(
         /activateTab\(TAB_ORDER\[/.test(listener),
         "键盘切换走 activateTab(与点击同一条路径,行为必然一致)",
     );
     check(
-        !/call\(\s*"setActiveTab"/.test(
-            listener.slice(0, listener.indexOf("\n});") + 4),
-        ),
+        !/call\(\s*"setActiveTab"/.test(listener),
         "键盘处理器不自行调 setActiveTab(避免与 activateTab 各写一次上行)",
     );
 }
