@@ -135,6 +135,9 @@ void InputEditor::emitTick()
         bridge::ConfigSnapshot cfg;
         cfg.sourceChannels = snap.sourceChannels;
         cfg.configSeq = snap.configSeq;
+        cfg.broadcastValid = snap.broadcastValid; // §4.3 数据源:ctrl 广播区实况
+        cfg.channelId = snap.channelId;
+        cfg.broadcast = snap.broadcast;
         // 基线仅在事件实际发出(可见)后推进:否则隐藏时事件被丢弃但 seq 已推进,恢复可见后
         // configSeq 不再变化 → config 长期陈旧(PR#54 R7,与 R4/R5 口径一致)。
         bridge::advanceConfigSeq(snap.configSeq,
