@@ -28,9 +28,15 @@ target_sources(SCVBInput PRIVATE
 
 target_include_directories(SCVBInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# web/input + web/shared + web/js/juce + web/fonts -> ScvbInputWebData(BinaryData)。
+# 这是 resource provider 的唯一供给面;没有它 WebView 取不到 index.html,窗口空白到看门狗
+# 超时(详见 cmake/ScvbWebAssets.cmake 头注)。
+scvb_add_web_assets(TARGET SCVBInputWebAssets NAMESPACE ScvbInputWebData ROLE_DIR input)
+
 target_link_libraries(SCVBInput PRIVATE
   scvb_core
   scvb_plugin_common            # WebViewHost 装配层(INTERFACE,源编入本 target)
+  SCVBInputWebAssets            # ScvbInputWebData::*(嵌入的 web UI 资源)
 )
 
 if(MSVC)

@@ -27,6 +27,64 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>SCVB Output</title>
+        <!--
+          boot 守卫 —— 前端起不来时主动告诉 native,别让宿主干等看门狗超时。
+          必须是 <head> 里的**普通 script**(非 module)且排在所有资源之前:module 自身
+          解析/加载失败时,module 内的 try/catch 一行都跑不到,只有先注册的全局监听接得住。
+          通道 = JUCE 内建的 window.__JUCE__.postMessage(JUCE 在文档创建前注入,不经
+          bridge.js、不占契约 §7 名表);事件名真源 = src/plugin-common/WebViewHost.h 的
+          kBootErrorEventId。浏览器预览下没有 __JUCE__,report 静默返回。
+        -->
+        <script>
+            (function () {
+                var sent = false;
+                function report(stage, detail) {
+                    if (sent) return; // 只报第一条:后面多半是同一次失败的连锁反应
+                    sent = true;
+                    try {
+                        var juce = window.__JUCE__;
+                        if (!juce || typeof juce.postMessage !== "function")
+                            return;
+                        juce.postMessage(
+                            JSON.stringify({
+                                eventId: "__scvb__bootError",
+                                payload: {
+                                    stage: stage,
+                                    detail: String(detail).slice(0, 300),
+                                },
+                            }),
+                        );
+                    } catch (e) {
+                        // 上报本身失败就沉默 —— 此时还能兜底的只剩 native 看门狗
+                    }
+                }
+                // capture 相:资源级失败(script/link 取不到、MIME 不对)不冒泡,只有捕获阶段收得到。
+                // 只认 SCRIPT/LINK —— 图片之类的失败不该把整个界面换成兜底面板。
+                window.addEventListener(
+                    "error",
+                    function (e) {
+                        var t = e && e.target;
+                        if (t && t !== window && (t.src || t.href)) {
+                            if (t.tagName === "SCRIPT" || t.tagName === "LINK")
+                                report("resource", t.src || t.href);
+                            return;
+                        }
+                        report("script", (e && e.message) || "unknown error");
+                    },
+                    true,
+                );
+                window.addEventListener("unhandledrejection", function (e) {
+                    var r = e && e.reason;
+                    report(
+                        "promise",
+                        (r && (r.stack || r.message)) ||
+                            r ||
+                            "unhandled rejection",
+                    );
+                });
+                window.__scvbReportBootError = report;
+            })();
+        </script>
         <link rel="stylesheet" href="../shared/tokens.css" />
         <link rel="stylesheet" href="../shared/base.css" />
         <style>

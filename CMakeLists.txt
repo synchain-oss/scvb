@@ -65,6 +65,8 @@ option(SCVB_TESTS_WITH_EBUR128 "Build [reference] K-weighting tests against libe
 # 目标(ADR-001/012:scvb_core + 两个插件 + 测试)
 # ------------------------------------------------------------------
 include(CTest)               # enable_testing() 于顶层,让根 CTestTestfile.cmake 生成并 subdirs() 进 tests/
+# web/ 的 UI 资源 -> BinaryData:resource provider 的唯一供给面,缺了就是空白窗口 + 看门狗超时
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ScvbWebAssets.cmake)
 add_subdirectory(src/core)     # scvb_core
 # T26:两插件共用的 WebView2 装配层(WebViewHost/PlatformWebView/ResourceProvider/FallbackPanel/BridgeBase)
 add_subdirectory(src/plugin-common)  # scvb_plugin_common(INTERFACE,源编入各插件)
