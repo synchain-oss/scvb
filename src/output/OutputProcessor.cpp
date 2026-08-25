@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
 #include "OutputEditor.h"
@@ -169,6 +170,154 @@ void ScvbOutputAudioProcessor::publishPlayhead(const juce::AudioPlayHead::Positi
     playheadShot_.publish(pod);
 }
 
+void ScvbOutputAudioProcessor::publishSilentMeters() noexcept
+{
+    // 直通/观察/无注入轨:没有「本轨电平」这回事 —— 发全零,液柱落回地板。
+    // 不发的话 seqlock 会停在上一块的值,电平表冻在最后一次有声的高度。
+    meterShot_.publish(scvb::output::MeterPod{});
+}
+
+void ScvbOutputAudioProcessor::publishMeters(const std::array<bool, 15>& hasData, const std::array<scvb::u32, 15>& nch,
+                                             const std::array<float, 15>& trackGain, const float* busL,
+                                             const float* busR, int n) noexcept
+{
+    // [A] 零分配零锁:pod 是栈上 POD,只做乘加/取绝对值/一次 sqrt,不碰 log10(留给 [M])。
+    scvb::output::MeterPod pod;
+
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        const std::size_t idx = static_cast<std::size_t>(ch);
+        if (!hasData[idx])
+        {
+            continue; // 该轨本块无可读数据 → 保持 0(地板)
+        }
+        const float* buf = trackBuf_[idx].data();
+        const int stride = nch[idx] == 2 ? 2 : 1;
+        const int count = n * stride;
+
+        float peak = 0.0f;
+        float sumSq = 0.0f;
+        for (int i = 0; i < count; ++i)
+        {
+            const float s = buf[i];
+            const float a = std::fabs(s);
+            if (a > peak)
+            {
+                peak = a;
+            }
+            sumSq += s * s;
+        }
+
+        const float g = trackGain[idx];
+        pod.trackPeak[idx] = peak * g;
+        pod.trackRms[idx] = std::sqrt(sumSq / static_cast<float>(count)) * g;
+    }
+
+    if (busL != nullptr && busR != nullptr)
+    {
+        const float* bus[2] = {busL, busR};
+        for (int c = 0; c < 2; ++c)
+        {
+            float peak = 0.0f;
+            float sumSq = 0.0f;
+            for (int i = 0; i < n; ++i)
+            {
+                const float s = bus[c][i];
+                const float a = std::fabs(s);
+                if (a > peak)
+                {
+                    peak = a;
+                }
+                sumSq += s * s;
+            }
+            pod.busPeak[c] = peak;
+            pod.busRms[c] = std::sqrt(sumSq / static_cast<float>(n));
+        }
+    }
+
+    meterShot_.publish(pod);
+}
+
+double ScvbOutputAudioProcessor::featHopSeconds()
+{
+    return static_cast<double>(scvb::output::OutputSession::featHopMs()) / 1000.0;
+}
+
+ScvbOutputAudioProcessor::CoverageInfo ScvbOutputAudioProcessor::coverageOf(int channel, double startS, double endS)
+{
+    CoverageInfo info;
+    if (channel < 1 || channel > 15 || !(endS > startS))
+    {
+        return info;
+    }
+
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    // 秒 → hop:hop 时长是 feat 段的几何常量(kFeatHopMs=10ms),不是采样率派生量。
+    const double hopS = featHopSeconds();
+    const auto toHop = [hopS](double s) {
+        const double h = s / hopS;
+        return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
+    };
+    const scvb::analysis::HopRange range{toHop(startS), toHop(endS)};
+    if (range.end <= range.begin)
+    {
+        return info;
+    }
+
+    const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(channel));
+    const std::uint64_t covered = frames.coveredHops(range);
+    const std::uint64_t total = range.end - range.begin;
+
+    info.pct = static_cast<float>(100.0 * static_cast<double>(covered) / static_cast<double>(total));
+    info.coveredS = static_cast<double>(covered) * hopS;
+    info.ranges = frames.coverage().intersect(range);
+    return info;
+}
+
+double ScvbOutputAudioProcessor::clearCoverage(std::uint16_t tracksMask, double startS, double endS)
+{
+    if (tracksMask == 0 || !(endS > startS))
+    {
+        return 0.0;
+    }
+
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    const double hopS = featHopSeconds();
+    const auto toHop = [hopS](double s) {
+        const double h = s / hopS;
+        return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
+    };
+    const scvb::analysis::HopRange range{toHop(startS), toHop(endS)};
+    if (range.end <= range.begin)
+    {
+        return 0.0;
+    }
+
+    double clearedS = 0.0;
+    for (int t = 0; t < 15; ++t)
+    {
+        if ((tracksMask & (1u << t)) == 0)
+        {
+            continue;
+        }
+        auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
+        // 先量出实际会被清掉的量,再打洞 —— 打完就问不出来了。
+        clearedS += static_cast<double>(frames.coveredHops(range)) * hopS;
+        frames.invalidate(range);
+    }
+    return clearedS;
+}
+
+scvb::output::MeterPod ScvbOutputAudioProcessor::meterSnapshot() const
+{
+    scvb::output::MeterPod pod{};
+    // 撕裂读返回全零 pod(= 静音一帧),下一 25Hz tick 重读自愈 —— 与 playheadSnapshot 同口径。
+    meterShot_.read(pod);
+    return pod;
+}
+
 void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
 {
     const juce::ScopedNoDenormals noDenormals;
@@ -235,6 +384,7 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         float* const* out = buffer.getArrayOfWritePointers();
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
+        publishSilentMeters();
         return;
     }
 
@@ -249,12 +399,21 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         float* const* out = buffer.getArrayOfWritePointers();
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
         busXfade_.render(out, in, lastMix, n, /*targetMix=*/false);
+        publishSilentMeters();
         return;
     }
 
     // 仲裁 + arm 平滑(整 block 用同一份快照;engineAuthority = output_enabled)。
     const double tSec = static_cast<double>(t0) / sampleRate_.load(std::memory_order_relaxed); // 原子读(PR#55 第9轮)
-    authority_.processBlock(session_.outputEnabled(), tSec);
+    const auto blockTargets = authority_.processBlock(session_.outputEnabled(), tSec);
+
+    // 电平表用的每轨线性增益:取本块起点的仲裁目标(逐样本平滑的差异在电平表上不可见)。
+    std::array<float, 15> meterGain{};
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        meterGain[static_cast<std::size_t>(ch)] =
+            scvb::output::dbToLinear(blockTargets[static_cast<std::size_t>(ch)].volDb);
+    }
 
     // 读注入 channel 的环(covered/换代/套圈判定在 ShmRingMixSource::read)。
     std::array<bool, 15> hasData{};
@@ -329,6 +488,9 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     float* const* out = buffer.getArrayOfWritePointers();
     const float* mix[2] = {accumL_.data(), accumR_.data()};
     busXfade_.render(out, in, mix, n, /*targetMix=*/true);
+
+    // 电平发布(§2.5):轨道取 post-gain/pre-pan,总线取求和后的 accum。
+    publishMeters(hasData, nch, meterGain, accumL_.data(), accumR_.data(), n);
 }
 
 void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buffer, int n, int64_t t0)
@@ -473,6 +635,107 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // 打印器模式:输出开关 ON → 引擎权威;OFF → follow host。T24 无分析曲线,Armed 与 Print 等效。
     printer_.setMode(outputEnabled_ ? scvb::engine::AuthorityMode::Armed : scvb::engine::AuthorityMode::Follow);
+
+    // Input 远程改的优先级先落 state(§3.4),再把整个配置镜像推给广播区(§4.3)。
+    // 顺序不能倒:倒过来这一拍的远程改动要等下一拍才广播出去,Input 的乐观值会先回滚再跳回。
+    if (applyRemotePriorities())
+    {
+        ++runtime_.configSeq;
+    }
+    publishConfigBroadcast();
+}
+
+bool ScvbOutputAudioProcessor::applyRemotePriorities()
+{
+    bool changed = false;
+    for (int ch = 1; ch <= 15; ++ch)
+    {
+        scvb::u32 value = 0;
+        if (!session_.takeRemotePriority(static_cast<scvb::u32>(ch), value))
+        {
+            continue;
+        }
+        auto& channel = runtime_.channels[static_cast<std::size_t>(ch - 1)];
+        const int next = juce::jlimit(0, 10, static_cast<int>(value));
+        if (channel.priority != next)
+        {
+            channel.priority = next;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+void ScvbOutputAudioProcessor::publishConfigBroadcast()
+{
+    // 只读观察实例不得写广播区:本组真源是那个 kActive 的 Output,两个实例抢写会让 Input
+    // 在两份配置之间抖动。
+    if (session_.state() != scvb::output::OutputClaimState::kActive)
+    {
+        return;
+    }
+    if (runtime_.configSeq == lastBroadcastConfigSeq_)
+    {
+        return; // 配置未变:不写(广播区是低频面,不做每拍空转)
+    }
+    lastBroadcastConfigSeq_ = runtime_.configSeq;
+
+    scvb::CtrlBroadcastSnapshot s;
+    // +1:广播区的 0 保留给「本组没有 Output 在广播」。不偏移的话 Output 首次上线时 seq 恰为 0,
+    // 与「无广播」撞值,Input 的 config_seq 变化门会把首帧真配置吞掉。
+    s.config_seq = runtime_.configSeq + 1u;
+    s.lead_select = handles_.rawLeadSelect != nullptr
+                        ? static_cast<scvb::u32>(juce::jlimit(
+                              0, 15, juce::roundToInt(handles_.rawLeadSelect->load(std::memory_order_relaxed))))
+                        : 0u;
+
+    for (int t = 0; t < 15; ++t)
+    {
+        const auto& c = runtime_.channels[static_cast<std::size_t>(t)];
+        auto& dst = s.channels[t];
+        dst.priority = static_cast<scvb::u32>(juce::jlimit(0, 10, c.priority));
+        dst.pair_id = static_cast<scvb::u32>(juce::jlimit(0, 7, c.pairId));
+        dst.source_channels = static_cast<scvb::u32>(c.sourceChannels);
+
+        // J60:未显式设置时按 mono=true / stereo=false 推导(与 buildStateSubtree 同口径)。
+        const bool participate = c.participateAutoPanSet ? c.participateAutoPan : (c.sourceChannels == 1);
+        scvb::u32 flags = 0;
+        if (c.enabled)
+            flags |= scvb::kCfgFlagEnabled;
+        if (c.leadLock)
+            flags |= scvb::kCfgFlagLeadLock;
+        if (c.leadVolExempt)
+            flags |= scvb::kCfgFlagLeadVolExempt;
+        if (participate)
+            flags |= scvb::kCfgFlagParticipateAutoPan;
+        dst.flags = flags;
+
+        // freeze 是当前激活版本的自动化参数(J65 同一参数承载 pan/vol 两位)。
+        const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
+        dst.freeze =
+            frz != nullptr
+                ? static_cast<scvb::u32>(juce::jlimit(0, 3, juce::roundToInt(frz->load(std::memory_order_relaxed))))
+                : 0u;
+
+        // label:UTF-8 按字节截断到最后一个完整序列边界,绝不切出半个码点(Input 侧直接当
+        // C 字符串显示,半个码点会渲染成乱码方块)。
+        const juce::String label = c.label;
+        const char* utf8 = label.toRawUTF8();
+        std::size_t len = std::strlen(utf8);
+        if (len >= scvb::kCtrlLabelBytes)
+        {
+            len = scvb::kCtrlLabelBytes - 1;
+            // 回退到序列头:UTF-8 后续字节形如 10xxxxxx。
+            while (len > 0 && (static_cast<unsigned char>(utf8[len]) & 0xC0u) == 0x80u)
+            {
+                --len;
+            }
+        }
+        std::memcpy(s.labels[t], utf8, len);
+        s.labels[t][len] = '\0';
+    }
+
+    session_.publishConfigBroadcast(s);
 }
 
 void ScvbOutputAudioProcessor::setCurrentProgram(int /*index*/) {}

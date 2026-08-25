@@ -22,6 +22,7 @@
 #include "AutomationPrinter.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "output/BusXfade.h"
+#include "output/MeterShot.h"
 #include "output/OutputSession.h"
 #include "state/OutputStateCodec.h"
 #include "state/SegmentEdit.h"
@@ -167,8 +168,11 @@ public:
     bool isPrepared() const { return sampleRate_.load(std::memory_order_relaxed) > 0.0; }
     // CRVS 修订号:setStateInformation 替换 crvsData_ 后 +1;editor 据此重发 scvb.segments(PR#55 第8轮缺陷1)。
     std::uint32_t crvsRevision() const { return crvsRevision_.load(std::memory_order_acquire); }
-    // [M] 该轨累计失准计数(gapCount;scvb.conn.channels[].misalignCount 数据源)。
+    // [M] 该轨累计失准计数(gapCount;ctrl 全局小节 + Tab4 诊断,进程寿命只增)。
     scvb::u32 gapCount(int channel) const { return session_.gapCount(static_cast<scvb::u32>(channel)); }
+    // [M] 该轨**本次失准发作**的缺口数(scvb.conn.channels[].misalignCount 数据源)。恢复健康
+    // 满 1s 即归零 —— 累计值上桥会把「路由失准」横幅永久钉死(T37 三轮 A 族)。
+    scvb::u32 misalignCount(int channel) const { return session_.misalignCountRecent(static_cast<scvb::u32>(channel)); }
 
     // scvb.conn(契约 §2.3)的整帧数据面快照。T29 桥曾以「claim 态推导」的占位值充数
     // (全轨 slotState=2、heartbeatFresh 恒 false),UI 的 `slotState=2 ∧ heartbeatFresh`
@@ -206,6 +210,25 @@ public:
     // 音频线程 playhead 快照(SPSC,供 scvb.playhead;避免消息线程直读宿主 AudioPlayHead)。
     scvb::engine::PlayheadPod playheadSnapshot() const;
 
+    // 音频线程电平快照(SPSC,供 scvb.meters;线性幅度,dB 换算在 emitMeters)。
+    scvb::output::MeterPod meterSnapshot() const;
+
+    // [M] 某轨在 [startS,endS) 内的采集覆盖(§2.7 scvb.captureProgress 数据面)。
+    // 数据源 = OutputSession 的 FrameStore(Input 写 feat 段 → Output 25Hz 增量拉取)。
+    // 持 lifecycleMutex_:FrameStore 由 timerCallback 的 session_.tick 写,与本读点串行。
+    struct CoverageInfo
+    {
+        float pct = 0.0f; // 0..100(契约 §2.7 coveragePct 就是百分数,不是 0..1)
+        double coveredS = 0.0;
+        std::vector<scvb::analysis::HopRange> ranges; // 覆盖区间(hop 域;秒换算用 featHopSeconds)
+    };
+    CoverageInfo coverageOf(int channel, double startS, double endS);
+    // hop → 秒的换算系数(feat 段几何常量,不是采样率派生量)。
+    static double featHopSeconds();
+    // [M] 清除选中轨 × 区间的采集覆盖(§1.24 clearCoverage:打洞,页数据留待后续覆盖)。
+    // 返回实际清除的总时长秒数(各轨相加,供 UI 反馈)。
+    double clearCoverage(std::uint16_t tracksMask, double startS, double endS);
+
     // ---- CRVS 写事务(全部持 lifecycleMutex_,与 prepareToPlay/setStateInformation 同锁纪律)----
     scvb::engine::SetNameResult setVersionName(int version, const juce::String& name, juce::String& effectiveOut);
     scvb::engine::CopyVersionResult copyVersion(int src, int dst);
@@ -233,8 +256,20 @@ private:
     // [A] 按时间线读 15 环做 unity 求和(§5.4 bypass 语义)。
     void renderBypassedUnity(juce::AudioBuffer<float>& buffer, int n, int64_t t0);
 
+    // [A] 本块电平测量并发布(§2.5 数据面)。hasData/nch 为本块读环结果,trackGain 为本块
+    // 起点仲裁目标导出的线性增益;busL/busR = 求和后的总线缓冲(nullptr = 本块未混音)。
+    void publishMeters(const std::array<bool, 15>& hasData, const std::array<scvb::u32, 15>& nch,
+                       const std::array<float, 15>& trackGain, const float* busL, const float* busR, int n) noexcept;
+    // [A] 全部归零发布(直通/观察/无注入轨路径:电平表落回地板,不冻在上一块的值)。
+    void publishSilentMeters() noexcept;
+
     // [M] 版本切换/接线:authority 重绑活动版本 + 打印器重绑车道(曲线真身)。
     void rebindVersion();
+
+    // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
+    bool applyRemotePriorities();
+    // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
+    void publishConfigBroadcast();
 
     // 由 CRVS 段真身重建全部 30 轨 CurveEvaluator 并注入 authority + 打印器重取活动版本曲线。
     // 不可变契约(ADR-005);非锁定 —— 调用方须已持 lifecycleMutex_(rebindVersion 与 CRVS 写事务)。
@@ -255,6 +290,8 @@ private:
 
     // C8 playhead 快照(音频线程写 / 打印器消息线程读)。
     scvb::engine::PlayheadShot playheadShot_;
+    // 电平快照(音频线程写 / 桥 emitMeters 消息线程读)。
+    scvb::output::MeterShot meterShot_;
 
     juce::AudioProcessorValueTreeState apvts;
     scvb::params::ParamHandles handles_;
@@ -305,6 +342,8 @@ private:
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;
     int timelineInvalidTicks_ = 0;
+    // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
+    std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScvbOutputAudioProcessor)
 };

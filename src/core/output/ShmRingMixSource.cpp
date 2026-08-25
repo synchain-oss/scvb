@@ -88,6 +88,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
         lastBinding_ = b;
         lastEpoch_ = 0;
         validFrom_ = 0;
+        primed_ = false;
     }
 
     const u64 e1 = b->header->epoch.load(std::memory_order_acquire);
@@ -97,6 +98,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
         // epoch 跳变:本代有效数据从此刻起算(§5.2)。
         lastEpoch_ = e1;
         validFrom_ = t0;
+        primed_ = false; // 新一代要重新等写方追上,追赶期同样不算失准
     }
 
     // covered 判定(§5.2):区间在有效代内、写头覆盖整块、且未超环距(过旧数据已被覆盖)。
@@ -104,7 +106,12 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
     const bool covered = (t0 >= validFrom_) && (w >= t0u + static_cast<u64>(n)) && (w - t0u <= b->geo.ringFrames);
     if (!covered)
     {
-        gapCount_.fetch_add(1, std::memory_order_relaxed); // 缺口→该轨该块静音+失准计数(ADR-002)
+        // 本代还没读到过任何数据 → 写方尚未追到本位置(空环 / 起播瞬间 / 宿主先渲染 Output),
+        // 是「尚未上线」,静音直通但**不计失准**;primed 之后再断才是真缺口(ADR-002)。
+        if (primed_)
+        {
+            gapCount_.fetch_add(1, std::memory_order_relaxed); // 缺口→该轨该块静音+失准计数
+        }
         return false;
     }
 
@@ -126,9 +133,13 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
     const u64 w2 = b->header->write_head_samples.load(std::memory_order_acquire);
     if (e2 != e1 || w2 > t0u + b->geo.ringFrames)
     {
-        gapCount_.fetch_add(1, std::memory_order_relaxed);
+        if (primed_)
+        {
+            gapCount_.fetch_add(1, std::memory_order_relaxed);
+        }
         return false;
     }
+    primed_ = true; // 本代已确有可读数据,此后 covered 失败即真缺口
     return true;
 }
 

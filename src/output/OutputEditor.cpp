@@ -181,6 +181,7 @@ void OutputEditor::emitTick()
     if (first)
         firstFrame_ = false;
 
+    syncDawLoopRange(); // daw_loop 档:先把 range 跟到宿主循环区,再让 emitState 下发
     emitState(first);
     emitParams(first);
     if (first || (tickCount_ % 6 == 0))
@@ -189,6 +190,8 @@ void OutputEditor::emitTick()
         emitGroups(); // 1Hz(25Hz 25 分频)
     emitMeters(); // 25Hz + 0.3dB 阈值
     emitPlayhead(); // 25Hz + diff
+    if (tickCount_ % 12 == 0)
+        emitCaptureProgress(); // ~2Hz(25Hz 12 分频);内部再判「仅播放中发」(§2.7)
 
     // 段表快照:首帧必发;sample rate 变化(含宿主 prepareToPlay 前后)或 CRVS 修订号变化(加载工程/
     // 预设后 setStateInformation 替换段真身)必重发 —— 否则旧时间/旧段表残留到下一次段编辑/undo/切版本
@@ -203,7 +206,6 @@ void OutputEditor::emitTick()
         emitSegments("snapshot", kAllTracksMask);
     }
 
-    // scvb.captureProgress:仅播放中 2Hz;T29 无采集覆盖数据源,非播放不发(§2.7)。
     // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
 }
 
@@ -312,17 +314,33 @@ void OutputEditor::emitGroups()
 
 void OutputEditor::emitMeters()
 {
-    // T29: no live meter source (post-gain levels wired in T32), all tracks sit at the -60 dB floor.
-    // 0.3 dB threshold (contract 0.4-2): emit only when any track/bus moved >= threshold, first frame always.
+    // 数据面 = 音频线程发布的 MeterShot 线性快照(post-gain/pre-pan 轨道电平 + 替换后的总线)。
+    // dB 换算刻意留在这里:[A] 只做乘加,25Hz 的 [M] 才做 32 次 log10。
+    // 0.3 dB 阈值(契约 §0.4-2):任一轨/总线变化 ≥ 阈值才发,首帧必发。
     constexpr float kFloorDb = -60.0f;
     constexpr float kMeterThresholdDb = 0.3f;
 
+    // 线性幅度 → dBFS,并钳到地板。0(静音/无数据)→ 地板,不产生 -inf。
+    const auto toDb = [kFloorDb](float lin) {
+        if (!(lin > 0.0f))
+            return kFloorDb;
+        const float db = 20.0f * std::log10(lin);
+        return db < kFloorDb ? kFloorDb : db;
+    };
+
+    const scvb::output::MeterPod pod = processor_.meterSnapshot();
+
     std::array<float, 15> db;
     std::array<float, 15> peak;
-    db.fill(kFloorDb);
-    peak.fill(kFloorDb);
-    const float busL = kFloorDb;
-    const float busR = kFloorDb;
+    for (int t = 0; t < 15; ++t)
+    {
+        db[static_cast<std::size_t>(t)] = toDb(pod.trackRms[t]);
+        peak[static_cast<std::size_t>(t)] = toDb(pod.trackPeak[t]);
+    }
+    const float busL = toDb(pod.busRms[0]);
+    const float busR = toDb(pod.busRms[1]);
+    const float busLPeak = toDb(pod.busPeak[0]);
+    const float busRPeak = toDb(pod.busPeak[1]);
 
     bool changed = !metersEverSent_;
     for (int t = 0; t < 15 && !changed; ++t)
@@ -353,10 +371,10 @@ void OutputEditor::emitMeters()
     juce::var bus = obj();
     juce::var l = obj();
     put(l, "db", static_cast<double>(busL));
-    put(l, "peakDb", static_cast<double>(busL));
+    put(l, "peakDb", static_cast<double>(busLPeak));
     juce::var r = obj();
     put(r, "db", static_cast<double>(busR));
-    put(r, "peakDb", static_cast<double>(busR));
+    put(r, "peakDb", static_cast<double>(busRPeak));
     put(bus, "l", l);
     put(bus, "r", r);
 
@@ -364,6 +382,47 @@ void OutputEditor::emitMeters()
     put(payload, "tracks", tracks);
     put(payload, "bus", bus);
     webView().emitEventIfBrowserIsVisible(Event::Meters, payload);
+}
+
+bool OutputEditor::hostLoopSeconds(double& startS, double& endS) const
+{
+    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
+    // JUCE 的 AudioPlayHead::LoopPoints 只有 ppqStart/ppqEnd —— 换算成秒必须有 tempo。
+    // 宿主给了 cycle 却没给 bpm(或 bpm<=0)时不猜:按「无循环区」处理,UI 走 loopMissing 档。
+    if ((pod.flags & scvb::engine::kPlayheadCycleValid) == 0)
+        return false;
+    if ((pod.flags & scvb::engine::kPlayheadTempoValid) == 0 || pod.bpm <= 0.0)
+        return false;
+
+    const double secPerBeat = 60.0 / pod.bpm;
+    const double s = pod.loopStartPpq * secPerBeat;
+    const double e = pod.loopEndPpq * secPerBeat;
+    if (!(e > s) || !std::isfinite(s) || !std::isfinite(e))
+        return false; // 空/倒置循环区不算有效
+
+    startS = s;
+    endS = e;
+    return true;
+}
+
+bool OutputEditor::syncDawLoopRange()
+{
+    auto& rt = processor_.runtime();
+    if (rt.rangeMode != 1) // 仅 daw_loop 档跟随
+        return false;
+
+    double s = 0.0;
+    double e = 0.0;
+    if (!hostLoopSeconds(s, e))
+        return false; // 循环区暂时读不到 → 沿用上次范围(UI 据 playhead 缺字段显示「已失效」)
+
+    if (juce::approximatelyEqual(rt.rangeStartS, s) && juce::approximatelyEqual(rt.rangeEndS, e))
+        return false;
+
+    rt.rangeStartS = s;
+    rt.rangeEndS = e;
+    ++rt.configSeq; // 广播区整体版本号:range 也在其中
+    return true;
 }
 
 void OutputEditor::emitPlayhead()
@@ -383,7 +442,15 @@ void OutputEditor::emitPlayhead()
     put(payload, "timeS", timeS);
     put(payload, "isPlaying", playing);
     put(payload, "inRange", inRange);
-    // loopStartS/loopEndS:仅宿主提供且 kCycleValid 时出现;T29 未接 loop 换算,缺失即不出现。
+    // loopStartS/loopEndS(§2.6):仅宿主提供且 kCycleValid + 可换算时出现;缺失即字段不存在
+    // (不发哨兵值)。UI 靠「daw_loop 档 ∧ 本事件无这两字段」判定循环区已失效。
+    double loopStartS = 0.0;
+    double loopEndS = 0.0;
+    if (hostLoopSeconds(loopStartS, loopEndS))
+    {
+        put(payload, "loopStartS", loopStartS);
+        put(payload, "loopEndS", loopEndS);
+    }
 
     const juce::String json = juce::JSON::toString(payload);
     if (json != lastPlayheadJson_)
@@ -395,7 +462,80 @@ void OutputEditor::emitPlayhead()
 
 void OutputEditor::emitCaptureProgress()
 {
-    // §2.7:非播放不发;T29 无覆盖增量数据源,不实现(占位,避免遗漏事件名)。
+    // §2.7:播放中 2Hz;非播放不发。数据源 = FrameStore 的 coverage 记账
+    // (Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
+    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
+    if ((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0)
+    {
+        return;
+    }
+
+    // 覆盖率的分母(§2.7 字段纪律):global.range;follow 档取「全时间线已分析域」——
+    // 用当前播放位置作为已知时间线末端,否则分母是无穷大、覆盖率恒 0。
+    const auto& rt = processor_.runtime();
+    const double timeS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
+    double startS = 0.0;
+    double endS = timeS;
+    if (rt.rangeMode != 0)
+    {
+        startS = rt.rangeStartS;
+        endS = rt.rangeEndS;
+    }
+    if (!(endS > startS))
+    {
+        return; // 时间线还没走出一个 hop:没有可报的覆盖
+    }
+
+    juce::var channels = mkArray();
+    bool any = false;
+    for (int t = 0; t < 15; ++t)
+    {
+        const int ch = t + 1;
+        const auto info = processor_.coverageOf(ch, startS, endS);
+        const std::size_t idx = static_cast<std::size_t>(t);
+
+        // addedRanges = 本帧相对上一帧**新增**的覆盖区间(§2.7「增量」)。用 CoverageMap 自己的
+        // add/punch 做差集:全量并进去,再把上一帧已报过的打洞打掉,剩下的就是新增。
+        scvb::analysis::CoverageMap added;
+        for (const auto& r : info.ranges)
+            added.add(r);
+        for (const auto& r : lastCoverageRanges_[idx])
+            added.punch(r);
+
+        const bool pctChanged = !juce::approximatelyEqual(info.pct, lastCoveragePct_[idx]);
+        if (added.empty() && !pctChanged)
+        {
+            continue; // §2.7:仅包含本帧有变化的轨
+        }
+        lastCoverageRanges_[idx] = info.ranges;
+        lastCoveragePct_[idx] = info.pct;
+
+        const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+        juce::var addedArr = mkArray();
+        for (const auto& r : added.ranges())
+        {
+            juce::var seg = obj();
+            put(seg, "startS", static_cast<double>(r.begin) * hopS);
+            put(seg, "endS", static_cast<double>(r.end) * hopS);
+            push(addedArr, seg);
+        }
+
+        juce::var c = obj();
+        put(c, "ch", ch);
+        put(c, "addedRanges", addedArr);
+        put(c, "coveragePct", static_cast<double>(info.pct));
+        push(channels, c);
+        any = true;
+    }
+
+    if (!any)
+    {
+        return; // 无变化不发(§0.4 值未变不发)
+    }
+
+    juce::var payload = obj();
+    put(payload, "channels", channels);
+    webView().emitEventIfBrowserIsVisible(Event::CaptureProgress, payload);
 }
 
 void OutputEditor::emitSegments(const juce::String& reason, std::uint16_t tracksMask)
@@ -555,7 +695,8 @@ juce::var OutputEditor::buildConnPayload() const
         // §2.3:heartbeatFresh 是 heartbeatAgeMs ≤ 2000 的派生布尔(哨兵 0xFFFFFFFF 自然为 false)。
         put(ch, "heartbeatFresh", info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs));
         put(ch, "capturing", info.capturing);
-        put(ch, "misalignCount", static_cast<int>(processor_.gapCount(t + 1)));
+        // 本次失准发作内的缺口数(非进程累计):恢复健康 1s 后归零,横幅/行内 ⚠ 随之撤下。
+        put(ch, "misalignCount", static_cast<int>(processor_.misalignCount(t + 1)));
         put(ch, "srMismatch", info.srMismatch);
         push(channels, ch);
     }
@@ -794,8 +935,9 @@ void OutputEditor::handleSetRange(const ArgList& a, Completion c)
         return;
     }
     const juce::String mode = a.size() > 0 ? a[0].toString() : juce::String("follow");
-    const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
-    const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
+    // 非 const:daw_loop 档的范围真源是宿主循环区,下面会用实测值覆盖调用方传的值。
+    double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
+    double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
 
     int modeInt = 0;
     if (mode == "daw_loop")
@@ -814,7 +956,26 @@ void OutputEditor::handleSetRange(const ArgList& a, Completion c)
         return;
     }
 
+    // daw_loop 档要求宿主此刻确实提供了可换算的循环区;没有就明确拒绝,UI 据此把该档
+    // 置灰并显示「宿主未提供循环区」,而不是切过去之后拿着一个空范围假装成功(§1.8)。
+    double loopStartS = 0.0;
+    double loopEndS = 0.0;
+    if (modeInt == 1 && !hostLoopSeconds(loopStartS, loopEndS))
+    {
+        juce::var o = obj();
+        put(o, "ok", false);
+        put(o, "reason", "noLoop");
+        c(o);
+        return;
+    }
+
     auto& rt = processor_.runtime();
+    // daw_loop 的范围真源是宿主循环区,不采信调用方传的 startS/endS。
+    if (modeInt == 1)
+    {
+        startS = loopStartS;
+        endS = loopEndS;
+    }
     // 值变化才 config_seq+1(PR#55 缺陷4)。
     const bool changed =
         rt.rangeMode != modeInt || (modeInt != 0 && (rt.rangeStartS != startS || rt.rangeEndS != endS));
@@ -1594,10 +1755,17 @@ void OutputEditor::handleClearCoverage(const ArgList& a, Completion c)
         c(observerResp());
         return;
     }
-    // T29 无采集特征数据源(FrameStore 接线归 T21/T33)→ clearedS=0。
+    // 打洞 FrameStore 的 coverage(§1.24);clearedS = 实际清掉的总时长,供 UI 反馈。
+    const double clearedS = processor_.clearCoverage(static_cast<std::uint16_t>(tracksMask & 0x7FFF), startS, endS);
+    // 覆盖变了就重置 captureProgress 的增量基线,否则下一帧的差集会把「已被清掉的区间」
+    // 当成仍然存在,覆盖条撤不下去。
+    for (auto& r : lastCoverageRanges_)
+        r.clear();
+    lastCoveragePct_.fill(-1.0f); // 哨兵:与任何真实百分比都不等 → 下一帧必报
+
     juce::var o = obj();
     put(o, "ok", true);
-    put(o, "clearedS", 0.0);
+    put(o, "clearedS", clearedS);
     c(o);
 }
 

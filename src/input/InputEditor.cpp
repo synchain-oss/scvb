@@ -86,6 +86,9 @@ juce::var InputEditor::buildSnapshot()
     bridge::ConfigSnapshot cfg;
     cfg.sourceChannels = snap.sourceChannels;
     cfg.configSeq = snap.configSeq;
+    cfg.broadcastValid = snap.broadcastValid; // §4.3 数据源:ctrl 广播区实况
+    cfg.channelId = snap.channelId;
+    cfg.broadcast = snap.broadcast;
 
     return bridge::buildInputSnapshot(snap.channelId, snap.groupId, conn, cfg, uiScale(), lang(), pluginVersion_,
                                       snap.localAbi);

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "CtrlPlane.h"
 
+#include <cstring>
+
 namespace scvb
 {
 
@@ -136,6 +138,67 @@ OutputGlobalInfo* CtrlPlane::globalInfo() const
         return nullptr;
     }
     return reinterpret_cast<OutputGlobalInfo*>(base_ + kCtrlGlobalInfoOffset);
+}
+
+CtrlBroadcast* CtrlPlane::broadcast() const
+{
+    if (base_ == nullptr)
+    {
+        return nullptr;
+    }
+    return reinterpret_cast<CtrlBroadcast*>(base_ + kCtrlBroadcastOffset);
+}
+
+void CtrlPlane::writeBroadcast(const CtrlBroadcastSnapshot& s)
+{
+    CtrlBroadcast* b = broadcast();
+    if (b == nullptr)
+    {
+        return; // 段未打开:静默不写(Output 尚未 claim / 已释放)
+    }
+
+    // seqlock 写侧:奇数进临界区 → 写载荷 → 偶数发布完成。读方看到奇数或前后不等即重读。
+    b->seq.fetch_add(1, std::memory_order_release);
+
+    b->lead_select = s.lead_select;
+    for (u32 i = 0; i < kMaxChannels; ++i)
+    {
+        b->channels[i] = s.channels[i];
+        std::memcpy(b->labels[i], s.labels[i], kCtrlLabelBytes);
+        b->labels[i][kCtrlLabelBytes - 1] = '\0'; // 防漏 NUL 让读方越界扫描
+    }
+    // config_seq 最后写:读方即便在 seqlock 之外瞄一眼它,也不会看到「新版本号 + 旧载荷」。
+    b->config_seq.store(s.config_seq, std::memory_order_release);
+
+    b->seq.fetch_add(1, std::memory_order_release);
+}
+
+bool CtrlPlane::readBroadcast(CtrlBroadcastSnapshot& out) const
+{
+    const CtrlBroadcast* b = broadcast();
+    if (b == nullptr)
+    {
+        return false;
+    }
+
+    const u32 before = b->seq.load(std::memory_order_acquire);
+    if ((before & 1u) != 0u)
+    {
+        return false; // 写者正在写
+    }
+
+    out.config_seq = b->config_seq.load(std::memory_order_acquire);
+    out.lead_select = b->lead_select;
+    for (u32 i = 0; i < kMaxChannels; ++i)
+    {
+        out.channels[i] = b->channels[i];
+        std::memcpy(out.labels[i], b->labels[i], kCtrlLabelBytes);
+        out.labels[i][kCtrlLabelBytes - 1] = '\0'; // 对端可能是旧版本/被截断的字节,读方自保
+    }
+
+    // 载荷读取不得越过第二次 seq 读(seqlock 读边界)。
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return b->seq.load(std::memory_order_relaxed) == before;
 }
 
 void CtrlPlane::refreshGlobalInfo(const OutputGlobalInfoSnapshot& s)

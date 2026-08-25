@@ -105,6 +105,10 @@ const store = {
     readOnly: false, // secondOutput / conn.outputReadOnly
     noTimeline: false, // §5.1 noTimeline
     loopMissing: false, // §1.8 的 noLoop 拒绝态(档位 disabled 但不隐藏)
+    // 此刻宿主给不出可用循环区(§2.6 的 loopStartS/loopEndS 缺字段)。daw_loop 档下据此显示
+    // 「循环区已失效,沿用上次范围」。**必须是活判定而不是常真**:这条提示原先只挂在
+    // 「档位 == loop」上、无任何谓词,于是循环区完好时也一直挂着(T37 三轮 A 族 L-5)。
+    loopStale: false,
     session: {
         // 本工程会话内的一次性判定(不入 state chunk)
         writeConfirmSeen: false,
@@ -1421,6 +1425,12 @@ if (bridge) {
         // 空转整页渲染削成 0。
         const same = samePlayhead(store.playhead, p);
         store.playhead = p;
+        // §2.6:循环区经 loopStartS/loopEndS 出现,缺字段 = 此刻没有可用循环区。
+        // 循环区一旦回来,同时解除 setRange 的 noLoop 置灰 —— 否则档位会一直卡在不可选。
+        const hasLoop =
+            !!p && Number.isFinite(p.loopStartS) && Number.isFinite(p.loopEndS);
+        store.loopStale = !hasLoop;
+        if (hasLoop) store.loopMissing = false;
         // Tab3:播放头 rAF 插值层直接吃 30Hz 事件(canvas/playhead.js;
         // render() 只管其余投影,不逐帧驱动播放头)
         tabWave.onPlayhead(p);

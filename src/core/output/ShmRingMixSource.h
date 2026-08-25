@@ -57,6 +57,10 @@ private:
     const AudioRingBinding* lastBinding_ = nullptr; // 上次块所用绑定(变指针 → 重置代际状态)
     u64 lastEpoch_ = 0;
     int64_t validFrom_ = 0; // 本代有效数据起点(epoch 跳变后 = 当前块起点,§5.2)
+    // 本代是否已成功读到过数据。未 primed 的 covered 失败 = 写方还没追到本位置(刚 attach 的空环 /
+    // 起播瞬间 / 宿主先渲染 Output 再渲染 Input),是「尚未上线」而非「失准」,不得计数 ——
+    // 否则所有注入轨会在同一块同时 +1(T37 三轮 A 族「五轨几乎同时报失准」)。
+    bool primed_ = false;
 
     std::atomic<u32> gapCount_{0};
 };

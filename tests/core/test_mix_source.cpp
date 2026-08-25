@@ -91,22 +91,52 @@ TEST_CASE("ShmRingMixSource stereo interleaved 读取(covered)", "[mix][ring]")
     CHECK(src.gapCount() == 0);
 }
 
-TEST_CASE("ShmRingMixSource 缺口(write_head 落后)→ 失准计数", "[mix][ring]")
+TEST_CASE("ShmRingMixSource 冷启动(写方尚未追上)不计失准", "[mix][ring]")
 {
+    // T37 三轮 A 族回归:刚 attach 的空环 / 起播瞬间 / 宿主先渲染 Output 再渲染 Input,
+    // 都表现为「write_head 还没覆盖本块」。这不是失准,是**尚未上线** —— 若计数,所有
+    // 注入轨会在同一块同时 +1,UI 立刻报「5 轨检测到时间线缺口」(真机症状 L-6)。
     RingFixture f;
-    f.header.write_head_samples.store(4, std::memory_order_release); // 只写了 4 帧
+    f.header.write_head_samples.store(0, std::memory_order_release); // 写方一帧未写
 
     ShmRingMixSource src;
     src.bind(&f.header, f.data.data());
     REQUIRE(src.bound());
 
     std::vector<float> out(8 * 2, 1.0f);
-    REQUIRE_FALSE(src.read(0, out.data(), 8)); // 需要 8 帧,只覆盖 4 帧 → 缺口
+    for (int i = 0; i < 10; ++i)
+    {
+        REQUIRE_FALSE(src.read(0, out.data(), 8)); // 该块静音直通
+    }
+    CHECK(src.gapCount() == 0); // 一次都不计
+
+    // 写方追上 → 首次成功读(primed),此后才进入失准判定。
+    f.header.write_head_samples.store(8, std::memory_order_release);
+    REQUIRE(src.read(0, out.data(), 8));
+    CHECK(src.gapCount() == 0);
+}
+
+TEST_CASE("ShmRingMixSource 缺口(primed 后 write_head 落后)→ 失准计数", "[mix][ring]")
+{
+    RingFixture f;
+    f.header.write_head_samples.store(8, std::memory_order_release);
+
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    REQUIRE(src.bound());
+
+    // 先成功读一次:本代确有可读数据,此后 covered 失败才是真缺口。
+    std::vector<float> out(8 * 2, 1.0f);
+    REQUIRE(src.read(0, out.data(), 8));
+    CHECK(src.gapCount() == 0);
+
+    // 写头停滞而读位置前移 → 真缺口(Input 掉出总线 / 停止推进)。
+    REQUIRE_FALSE(src.read(8, out.data(), 8));
     CHECK(src.gapCount() == 1);
 
     // 写头推进覆盖后恢复。
-    f.header.write_head_samples.store(8, std::memory_order_release);
-    REQUIRE(src.read(0, out.data(), 8));
+    f.header.write_head_samples.store(16, std::memory_order_release);
+    REQUIRE(src.read(8, out.data(), 8));
     CHECK(src.gapCount() == 1); // 恢复读取不再增计数
 }
 

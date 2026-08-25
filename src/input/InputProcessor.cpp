@@ -482,7 +482,20 @@ ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickS
     s.sourceChannels = srcChannels_;
     ensureCtrlOpen();
     s.globalInfo = ctrl_.readGlobalInfo();
-    s.configSeq = session_.configSeq();
+
+    // 广播区(§4.3)。seqlock 撕裂时**沿用上帧**而不是回落默认值:回落会让 UI 闪一帧
+    // 「优先级 0 / 无 lead / label 全空」,比陈旧一帧难看得多。段从未打开(本组无 Output)
+    // 时 lastBroadcastValid_ 恒 false,载荷才真正走默认值分支。
+    if (ctrl_.readBroadcast(lastBroadcast_))
+    {
+        lastBroadcastValid_ = true;
+    }
+    s.broadcast = lastBroadcast_;
+    s.broadcastValid = lastBroadcastValid_;
+    // 广播区的 config_seq 从 1 起算(见 OutputProcessor::publishConfigBroadcast),0 保留给
+    // 「本组还没有 Output 在广播」——否则 Output 首次上线时 seq 恰为 0,与「无广播」撞值,
+    // scvb.config 的变化门会把首帧真配置吞掉。
+    s.configSeq = s.broadcastValid ? s.broadcast.config_seq : 0u;
     s.localAbi = session_.localAbi();
     s.remoteAbi = session_.remoteAbi();
     return s;
