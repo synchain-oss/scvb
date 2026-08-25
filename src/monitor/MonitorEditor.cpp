@@ -57,7 +57,7 @@ MonitorEditor::MonitorEditor(ScvbMonitorAudioProcessor& processor)
 
 void MonitorEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& options)
 {
-    // Monitor 只注册**一个**专属函数:组选择。名字不是 `setObservedGroup` —— 契约 §1.4 的那个是
+    // Monitor 只注册**一个**专属函数:组选择。名字不是 `setGroupId` —— 契约 §1.4 的那个是
     // Output 的改组(断连本组全部、要弹确认条),与「换一个组来看」是两件事(T46 提出,采纳)。
     options = options.withNativeFunction(juce::Identifier(bridge::kFnSetObservedGroup),
                                          [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
@@ -73,6 +73,8 @@ juce::var MonitorEditor::buildSnapshot()
     lastGroupsJson_.clear();
     lastVizJson_.clear();
     lastPlayheadJson_.clear();
+    sentLanes_ = false; // 快照已带车道,但基线复位让下一 tick 也必带一次(WebView 重载安全)
+    lastSentLaneRevision_ = 0;
     lastGroupsMs_ = 0;
     lastVizMs_ = 0;
 
@@ -88,7 +90,8 @@ juce::var MonitorEditor::buildSnapshot()
     obj->setProperty("groupId", processor_.groupId());
     obj->setProperty("groups_online", static_cast<int>(processor_.groupsOnline()));
     obj->setProperty("ui", juce::var(ui));
-    obj->setProperty("viz", buildVizPayload());
+    // 首帧 viz **必带车道** —— 否则页面要空等一整个 4Hz 周期才出图。
+    obj->setProperty("viz", buildVizPayload(/*includeLanes=*/true));
     return juce::var(obj);
 }
 
@@ -103,77 +106,104 @@ juce::var MonitorEditor::buildStatePayload() const
     return juce::var(obj);
 }
 
-juce::var MonitorEditor::buildVizPayload() const
+juce::var MonitorEditor::buildVizPayload(bool includeLanes) const
 {
+    // 载荷形状 = T46 的 `web/monitor/viz-contract.js` 镜像表(`VIZ_FIELDS` 的 json 列)。
+    // 两条硬口径:
+    //   ① **UI 永不见样本**(契约 §0.2 第 3 条)—— 时间量在这里就换成秒;
+    //   ② 每轨数据一律**定长 15 的平行数组、下标即轨号**,与段内定长表同形。
+    //      不用 [{ch,…}] 对象数组:段本来就是定长表,包成对象反而凭空造出「ch 合不合法」的问题。
     const auto& v = processor_.vizSnapshot();
     const bool online = processor_.vizState() == ScvbMonitorAudioProcessor::VizState::kOnline;
 
     auto* obj = new juce::DynamicObject();
+    obj->setProperty("magic", "SCVB");
+    obj->setProperty("abi", static_cast<int>(scvb::kScvbAbi));
+    obj->setProperty("generation", static_cast<int>(v.generation));
+    obj->setProperty("columnCount", static_cast<int>(scvb::kVizColumns));
+    obj->setProperty("trackCount", static_cast<int>(scvb::kMaxChannels));
+    obj->setProperty("panScale", static_cast<int>(scvb::kVizPanScale));
+
     obj->setProperty("online", online && processor_.vizFresh());
+    obj->setProperty("seq", static_cast<int>(v.seq));
+    obj->setProperty("publishMs", static_cast<juce::int64>(v.publishMs));
     obj->setProperty("sampleRate", static_cast<int>(v.sampleRate));
-    obj->setProperty("windowStart", static_cast<juce::int64>(v.windowStartSamples));
-    obj->setProperty("windowSpan", static_cast<juce::int64>(v.windowSpanSamples));
-    obj->setProperty("playhead", static_cast<juce::int64>(v.playheadSamples));
-    obj->setProperty("playing", (v.playheadFlags & scvb::kVizPlaying) != 0u);
-    obj->setProperty("looping", (v.playheadFlags & scvb::kVizLooping) != 0u);
-    if ((v.playheadFlags & scvb::kVizLoopValid) != 0u)
-    {
-        obj->setProperty("loopStart", static_cast<juce::int64>(v.loopStartSamples));
-        obj->setProperty("loopEnd", static_cast<juce::int64>(v.loopEndSamples));
-    }
     obj->setProperty("versionActive", static_cast<int>(v.versionActive));
+    obj->setProperty("playheadEpoch", static_cast<int>(v.playheadEpoch));
+    obj->setProperty("playheadFlags", static_cast<int>(v.playheadFlags));
+    obj->setProperty("onlineMask", static_cast<int>(v.onlineMask));
+    obj->setProperty("coveredMask", static_cast<int>(v.coveredMask));
+    obj->setProperty("stereoMask", static_cast<int>(v.stereoMask));
+    obj->setProperty("leadMask", static_cast<int>(v.leadMask));
     obj->setProperty("laneRevision", static_cast<int>(v.laneRevision));
-    obj->setProperty("columns", static_cast<int>(scvb::kVizColumns));
 
-    // T45 壳层只送**每轨摘要**(轨号 / 色位 / 在线 / 有分段 / 立体声 / 播放头处的 pan)。
-    // 15×1024 车道的全量传输口径归 T46 —— 逐帧丢 15360 个数走 juce::var 会在 4Hz 上白烧
-    // 消息线程;T46 按需求定(建议 base64 定长块 + laneRevision 变化才重传,见 PR 说明)。
-    const bool haveWindow = v.windowSpanSamples > 0;
-    const double colSamples =
-        haveWindow ? static_cast<double>(v.windowSpanSamples) / static_cast<double>(scvb::kVizColumns) : 0.0;
-    scvb::u32 headCol = 0;
-    if (haveWindow && v.playheadSamples > 0)
-    {
-        const double c =
-            (static_cast<double>(v.playheadSamples) - static_cast<double>(v.windowStartSamples)) / colSamples;
-        headCol = c <= 0.0 ? 0u
-                           : (c >= static_cast<double>(scvb::kVizColumns - 1) ? scvb::kVizColumns - 1
-                                                                              : static_cast<scvb::u32>(c));
-    }
+    // samples → 秒。`sample_rate == 0`(未 prepare)时**一律给 null/0,绝不做除法** ——
+    // 除零得 NaN,而 NaN 在画布上是「什么都不画」,与「没有数据」长得一模一样,查起来极痛苦。
+    const double sr = static_cast<double>(v.sampleRate);
+    const bool haveSr = sr > 0.0;
+    obj->setProperty("windowStartS", haveSr ? static_cast<double>(v.windowStartSamples) / sr : 0.0);
+    obj->setProperty("windowSpanS", haveSr ? static_cast<double>(v.windowSpanSamples) / sr : 0.0);
+    // playhead_samples < 0 = 无时间线 ⇒ **null 而不是 0**:给 0 会把竖线钉在开头,
+    // 看着像「停在 0 秒」,和「没有时间线」是两件完全不同的事。
+    obj->setProperty("playheadS", (haveSr && v.playheadSamples >= 0)
+                                      ? juce::var(static_cast<double>(v.playheadSamples) / sr)
+                                      : juce::var());
+    const bool loopValid =
+        (v.playheadFlags & scvb::kVizLoopValid) != 0u && haveSr && v.loopStartSamples >= 0 && v.loopEndSamples >= 0;
+    obj->setProperty("loopStartS", loopValid ? juce::var(static_cast<double>(v.loopStartSamples) / sr) : juce::var());
+    obj->setProperty("loopEndS", loopValid ? juce::var(static_cast<double>(v.loopEndSamples) / sr) : juce::var());
 
-    juce::Array<juce::var> tracks;
+    // 每轨标量:定长 15,下标即轨号。哨兵 → **null**(不是 0)——
+    // 0 在三条里分别是「居中 / 0 dB / 宽度 0」,每一个都是合法值,拿它当「没数据」会画出合法的假柱。
+    juce::Array<juce::var> colorIndex;
+    juce::Array<juce::var> panNow;
+    juce::Array<juce::var> volDb;
+    juce::Array<juce::var> widthPct;
+    juce::Array<juce::var> labels;
     for (scvb::u32 t = 0; t < scvb::kMaxChannels; ++t)
     {
-        auto* tr = new juce::DynamicObject();
-        tr->setProperty("ch", static_cast<int>(t + 1));
-        tr->setProperty("color", static_cast<int>(v.trackColor[t]));
-        tr->setProperty("enabled", (v.onlineMask & (1u << t)) != 0u);
-        tr->setProperty("hasSegments", (v.coveredMask & (1u << t)) != 0u);
-        tr->setProperty("stereo", (v.stereoMask & (1u << t)) != 0u);
-        tr->setProperty("label", juce::String::fromUTF8(v.label[t].c_str(), static_cast<int>(v.label[t].size())));
-        // 每轨当前值(分布图三件套)。哨兵 → **不带该字段**(§4.1 字段纪律:拿不到就不写,
-        // 不发明 0 —— 0 是合法 pan / 合法 dB,拿它当「没有」会让图画出一条居中的假线)。
-        if (!scvb::vizPanIsNone(v.panNow[t]))
-        {
-            tr->setProperty("panNow", scvb::vizUnpackPan(v.panNow[t]));
-        }
-        if (!scvb::vizPanIsNone(v.volDb[t]))
-        {
-            tr->setProperty("volDb", scvb::vizUnpackFixed(v.volDb[t]));
-        }
-        if (!scvb::vizPanIsNone(v.widthPct[t]))
-        {
-            tr->setProperty("widthPct", scvb::vizUnpackFixed(v.widthPct[t]));
-        }
-        const auto raw = v.pan[t][headCol];
-        // 播放头所在列的车道采样(与 panNow 的区别:这是列中心点采样,列宽 = span/1024)。
-        if (!scvb::vizPanIsNone(raw) && v.covered(t, headCol))
-        {
-            tr->setProperty("pan", scvb::vizUnpackPan(raw));
-        }
-        tracks.add(juce::var(tr));
+        colorIndex.add(static_cast<int>(v.trackColor[t]));
+        panNow.add(scvb::vizPanIsNone(v.panNow[t]) ? juce::var() : juce::var(scvb::vizUnpackPan(v.panNow[t])));
+        volDb.add(scvb::vizPanIsNone(v.volDb[t]) ? juce::var() : juce::var(scvb::vizUnpackFixed(v.volDb[t])));
+        widthPct.add(scvb::vizPanIsNone(v.widthPct[t]) ? juce::var() : juce::var(scvb::vizUnpackFixed(v.widthPct[t])));
+        labels.add(juce::String::fromUTF8(v.label[t].c_str(), static_cast<int>(v.label[t].size())));
     }
-    obj->setProperty("tracks", tracks);
+    obj->setProperty("colorIndex", colorIndex);
+    obj->setProperty("trackPanNow", panNow);
+    obj->setProperty("trackVolDb", volDb);
+    obj->setProperty("trackWidthPct", widthPct);
+    obj->setProperty("trackLabels", labels);
+
+    // 车道 + 位图:只在 lane_revision 变化(或首帧/换组)时带。稳态帧只有上面那些标量 ——
+    // 15×1024 个数逐帧走 juce::var 会在 4Hz 上白烧消息线程。
+    // 读方约定(T46 已实现):revision 或 groupId 对不上时**宁可当作没有车道**,
+    // 也不拿旧车道配新帧头 —— 那会得到一张「时间轴新、线旧」而看起来完全正常的图。
+    if (includeLanes)
+    {
+        juce::Array<juce::var> lanes;
+        juce::Array<juce::var> coverage;
+        for (scvb::u32 t = 0; t < scvb::kMaxChannels; ++t)
+        {
+            juce::Array<juce::var> lane;
+            lane.ensureStorageAllocated(static_cast<int>(scvb::kVizColumns));
+            for (scvb::u32 i = 0; i < scvb::kVizColumns; ++i)
+            {
+                lane.add(static_cast<int>(v.pan[t][i])); // 原始 int16 定点(含哨兵),解码归读侧
+            }
+            lanes.add(lane);
+
+            juce::Array<juce::var> words;
+            words.ensureStorageAllocated(static_cast<int>(scvb::kVizCoverageWords));
+            for (scvb::u32 w = 0; w < scvb::kVizCoverageWords; ++w)
+            {
+                // 位序 LSB 优先(列 i → words[i>>>5] 的 bit(i&31));JS 侧务必 `>>> 0` 折回无符号。
+                words.add(static_cast<juce::int64>(v.coverage[t][w]));
+            }
+            coverage.add(words);
+        }
+        obj->setProperty("lanes", lanes);
+        obj->setProperty("coverage", coverage);
+    }
     return juce::var(obj);
 }
 
@@ -224,7 +254,16 @@ void MonitorEditor::emitTick()
     if (now - lastVizMs_ >= kVizEmitIntervalMs)
     {
         lastVizMs_ = now;
-        emitIfChanged(bridge::kEvViz, buildVizPayload(), lastVizJson_);
+        // 车道只在 revision 变化(或从未送过)时带 —— 稳态帧就是一小把标量。
+        const auto rev = processor_.vizSnapshot().laneRevision;
+        const bool needLanes = !sentLanes_ || rev != lastSentLaneRevision_;
+        if (emitIfChanged(bridge::kEvViz, buildVizPayload(needLanes), lastVizJson_) && needLanes)
+        {
+            // 只在**事件真的发出去**之后才推进基线:编辑器隐藏时事件被丢弃,
+            // 若此时推进,恢复可见后就再也不会补发车道了(PR#54 R4 同款教训)。
+            sentLanes_ = true;
+            lastSentLaneRevision_ = rev;
+        }
     }
 }
 

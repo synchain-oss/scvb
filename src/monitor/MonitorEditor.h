@@ -13,6 +13,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <cstdint>
+
 class ScvbMonitorAudioProcessor;
 
 namespace scvb::monitor
@@ -36,7 +38,8 @@ private:
                                 juce::WebBrowserComponent::NativeFunctionCompletion complete);
 
     juce::var buildStatePayload() const;
-    juce::var buildVizPayload() const;
+    // includeLanes=false 时只带标量帧头(稳态);车道/位图只在 lane_revision 变化时带。
+    juce::var buildVizPayload(bool includeLanes) const;
     juce::var buildPlayheadPayload() const;
 
     // JSON 串比对后按需 emit(与 Input/Output 同款 diff-then-emit;隐藏期不推进缓存)。
@@ -48,6 +51,8 @@ private:
     juce::String lastStateJson_;
     juce::String lastGroupsJson_;
     juce::String lastVizJson_;
+    std::uint32_t lastSentLaneRevision_ = 0; // 已随事件送出过车道的 revision
+    bool sentLanes_ = false; // 是否送出过任何一帧车道(首帧必带)
     juce::String lastPlayheadJson_;
     juce::uint64 lastGroupsMs_ = 0; // 1Hz 折半
     juce::uint64 lastVizMs_ = 0; // 4Hz 折半(与发布器同频)
