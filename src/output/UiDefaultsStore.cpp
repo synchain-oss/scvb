@@ -5,6 +5,8 @@
 
 #include <memory>
 
+#include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源)
+
 namespace scvb::output::uidefaults
 {
 
@@ -15,13 +17,37 @@ constexpr const char* kKeyGuideSeen = "guide_seen_global";
 constexpr const char* kKeyTourSeen = "tour_seen_global";
 constexpr const char* kKeyUiScale = "ui_scale_percent";
 
-// Windows:%APPDATA%\SCVB\ui-defaults.settings。文件缺失/不可写一律降级为「全默认」——
-// 全局默认丢失只会让引导页多弹一次,绝不能让开窗失败(§5.1 降级纪律)。
+// 档位边界真源 = scvb::bridge::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码)。
+bool inRange(int percent)
+{
+    return percent >= juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f) &&
+           percent <= juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f);
+}
+
+// 测试注入的落盘目录(空 = 用默认位置)。只由 setStorageDirForTesting 写,消息线程/单测线程。
+juce::File& testDirRef()
+{
+    static juce::File dir;
+    return dir;
+}
+
+// Windows:%APPDATA%\Synchain\SCVB\ui-defaults.settings(app data 根照 STATE_SCHEMA §4.3)。
+// 文件缺失/不可写一律降级为「全默认」—— 全局默认丢失只会让引导页多弹一次,
+// 绝不能让开窗失败(§5.1 降级纪律)。
 std::unique_ptr<juce::PropertiesFile> openFile()
 {
+    const juce::File& testDir = testDirRef();
+    if (testDir != juce::File())
+    {
+        juce::PropertiesFile::Options options;
+        options.storageFormat = juce::PropertiesFile::storeAsXML;
+        options.millisecondsBeforeSaving = 0;
+        return std::make_unique<juce::PropertiesFile>(testDir.getChildFile("ui-defaults.settings"), options);
+    }
+
     juce::PropertiesFile::Options options;
     options.applicationName = "ui-defaults";
-    options.folderName = "SCVB";
+    options.folderName = "Synchain/SCVB"; // = %APPDATA%\Synchain\SCVB(STATE_SCHEMA §4.3 同根)
     options.filenameSuffix = "settings";
     options.osxLibrarySubFolder = "Application Support";
     options.commonToAllUsers = false;
@@ -75,18 +101,23 @@ int uiScalePercent()
     if (f == nullptr)
         return 0;
     const int percent = f->getIntValue(kKeyUiScale, 0);
-    return (percent >= 33 && percent <= 300) ? percent : 0; // 范围外视为未设置(不可信字节)
+    return inRange(percent) ? percent : 0; // 范围外视为未设置(不可信字节)
 }
 
 void setUiScalePercent(int percent)
 {
-    if (percent < 33 || percent > 300)
+    if (!inRange(percent))
         return;
     const auto f = openFile();
     if (f == nullptr)
         return;
     f->setValue(kKeyUiScale, percent);
     f->saveIfNeeded();
+}
+
+void setStorageDirForTesting(const juce::File& dir)
+{
+    testDirRef() = dir;
 }
 
 } // namespace scvb::output::uidefaults

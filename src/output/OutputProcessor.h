@@ -150,7 +150,12 @@ public:
     // 局部值,而 §2.1 的 ui.language / ui.scale 取自这里 —— 不落 processor,下一次 state emit
     // 会把旧值回推给 UI(T37 真机 bug A-1:选中文后切 tab 变回英文)。
     void bridgeSetUiLanguage(const juce::String& lang); // 已由桥层 normalize({zh,en,fr})
-    void bridgeSetUiScalePercent(int percent); // clamp 33..300
+    void bridgeSetUiScalePercent(int percent); // clamp [MinUiScale, MaxUiScale] × 100
+    // 首启已读位(§1.32/§1.33)。**必须走这两个口而不是直接写 runtime()**:两位自 T37 起
+    // 随 PRMS 持久化,读方 getStateInformation 持 lifecycleMutex_ 且可能不在消息线程 ——
+    // 写方不持同一把锁就等于没有锁。runtime_ 的其余字段仍是消息线程独占,不受此约束。
+    void bridgeSetGuideSeen(bool seen);
+    void bridgeSetTourSeen(bool seen);
     // 只读观察态(O3:同组已有主 Output);写函数据此回 {observer:true}。
     bool isReadOnly() const { return session_.state() == scvb::output::OutputClaimState::kObserver; }
     // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。
