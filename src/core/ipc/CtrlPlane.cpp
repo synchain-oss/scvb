@@ -158,7 +158,11 @@ void CtrlPlane::writeBroadcast(const CtrlBroadcastSnapshot& s)
     }
 
     // seqlock 写侧:奇数进临界区 → 写载荷 → 偶数发布完成。读方看到奇数或前后不等即重读。
-    b->seq.fetch_add(1, std::memory_order_release);
+    // 奇数增量取 relaxed + 紧跟一道 release fence:release **store** 只挡「之前的写下沉」,
+    // 挡不住「其后的载荷写上浮到奇数 seq 之前」—— 那正是这里要防的方向。载荷 2KB、跨进程、
+    // 读写双方分别编译,窗口比进程内的 PlayheadShot 宽两个量级,不能照抄它的写法。
+    b->seq.fetch_add(1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
 
     b->lead_select = s.lead_select;
     for (u32 i = 0; i < kMaxChannels; ++i)

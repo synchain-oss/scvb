@@ -332,6 +332,10 @@ private:
     std::vector<float> accumL_;
     std::vector<float> accumR_;
     std::array<std::vector<float>, 15> trackBuf_; // stereo 容量(2 × preparedMaxBlock)
+    // [A] bypass 路径的本块读环结果(renderBypassedUnity 写 / processBlockBypassed 读):
+    // bypass 期间同样要报电平,否则液柱冻在 bypass 前那一刻(I5)。音频线程独占,不跨线程。
+    std::array<bool, 15> bypassHasData_{};
+    std::array<scvb::u32, 15> bypassChannels_{};
 
     // 平滑器([A] 独占):ms_balance g_M/g_S(10ms)、全局 width(10ms)、per-channel 注入 fade(80ms)。
     scvb::dsp::LinearSmoother gMSmoother_{1.0f};
@@ -344,6 +348,10 @@ private:
     int timelineInvalidTicks_ = 0;
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;
+    // 上次写出的组号。改组后 ctrl 段整个换了一张,旧组的 config_seq 对新组毫无意义 ——
+    // 只比 config_seq 会让「换组后新组广播区永不写」(C 族症状在换组路径原样复现)。
+    // 存组号而不是在每个 changeGroup 调用点手工复位:调用点会增加,这道判据不会漏。
+    int lastBroadcastGroup_ = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScvbOutputAudioProcessor)
 };

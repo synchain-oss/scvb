@@ -22,6 +22,7 @@
 #include <cmath>
 #include <vector>
 
+#include "InputBridgeLogic.h"
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
 
@@ -116,6 +117,10 @@ struct Rig
 
     // 推 n 个音频块:Input 先于 Output(常见宿主顺序:源轨先算,总线后算)。
     // 每块之间穿插消息泵,让 [M] 侧有机会推进(与真实宿主的两线程并行等价)。
+    // 宿主渲染顺序。默认 Input 先(源轨先算、总线后算);outputFirst_ 反过来 ——
+    // 「宿主先渲染 Output 再渲染 Input」正是 A-3 primed 门的两大动机场景之一(N2)。
+    bool outputFirst_ = false;
+
     void runBlocks(int blocks, float amplitude = 0.25f, int pumpEveryN = 4, int pumpMs = 8)
     {
         for (int b = 0; b < blocks; ++b)
@@ -123,8 +128,16 @@ struct Rig
             fillSine(inBuf, amplitude, ph.timeSamples);
             outBuf.clear();
 
-            in.processBlock(inBuf, midi);
-            out.processBlock(outBuf, midi);
+            if (outputFirst_)
+            {
+                out.processBlock(outBuf, midi);
+                in.processBlock(inBuf, midi);
+            }
+            else
+            {
+                in.processBlock(inBuf, midi);
+                out.processBlock(outBuf, midi);
+            }
 
             if (ph.playing)
             {
@@ -439,4 +452,176 @@ TEST_CASE("HOST 时间线跳变(定位)不误报失准", "[host][t37][L6]")
         }
     }
     CHECK(r.out.misalignCount(kTestChannel) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// N2:宿主先渲染 Output 再渲染 Input。
+// 这是 A-3 primed 门的两大动机场景之一(另一条是空环冷启动),默认顺序覆盖不到 ——
+// Output 读 t0 时 Input 本块还没写,covered 判据必然不成立。primed 门必须对它免疫。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST N2:Output-first 渲染顺序不误报失准", "[host][t37][L6][N2]")
+{
+    Rig r;
+    r.outputFirst_ = true;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(80);
+
+    for (int ch = 1; ch <= 15; ++ch)
+    {
+        CHECK(r.out.misalignCount(ch) == 0);
+    }
+    // 顺序反转不影响电平链:Output 读到的是上一块的数据,依然是真实音频。
+    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] >= 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// I1–I4 换组边界:改组 → 下一拍 → 四条数据面各自复位/重发。
+// changeGroup 是这四条新数据面共同的失效边界:广播区短路门、Input 缓存、participate 推导、
+// 采集覆盖,四处都可能把**上一组**的状态带进新组。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST I1/I2 换组:新组广播区被重写,Input 不再显示上一组配置", "[host][t37][changegroup]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    Rig::pumpMessages(300);
+
+    // 旧组:写一份可辨认的配置。
+    auto& cfgA = r.out.runtime().channels[kTestChannel - 1];
+    cfgA.priority = 6;
+    cfgA.label = "GroupA";
+    ++r.out.runtime().configSeq;
+    Rig::pumpMessages(300);
+    REQUIRE(r.in.bridgeTickSnapshot().broadcast.channels[kTestChannel - 1].priority == 6);
+
+    // 两侧一起改到新组(用户在 UI 上改组的等效动作)。
+    constexpr int kOtherGroup = 6;
+    r.out.setGroupId(kOtherGroup);
+    r.in.setGroupId(kOtherGroup);
+    Rig::pumpMessages(200);
+    r.runBlocks(20, 0.25f, 1, 20);
+
+    // I1:新组 ctrl 段是全新的一张,广播区必须被重写 —— 短路门只比 config_seq 会让它永不写。
+    // 注意 runtime_.configSeq 没变(改组不是配置变更),所以这条正是 I1 的判据。
+    for (int waited = 0; waited < 3000; waited += 40)
+    {
+        r.runBlocks(2, 0.25f, 1, 20);
+        const auto sn = r.in.bridgeTickSnapshot();
+        if (sn.broadcastValid && sn.broadcast.config_seq != 0)
+        {
+            break;
+        }
+    }
+    const auto after = r.in.bridgeTickSnapshot();
+    CHECK(after.broadcastValid);
+    CHECK(after.broadcast.config_seq != 0); // ← I1:新组广播区确实被写过
+    CHECK(after.broadcast.channels[kTestChannel - 1].priority == 6); // 新组读到的是 Output 当前实况
+    CHECK(juce::String::fromUTF8(after.broadcast.labels[kTestChannel - 1]) == "GroupA");
+
+    // I2:改回旧组后,Input 的缓存不得把新组那份当成旧组的(缓存按组作废)。
+    r.out.setGroupId(kTestGroup);
+    r.in.setGroupId(kTestGroup);
+    Rig::pumpMessages(200);
+    r.runBlocks(20, 0.25f, 1, 20);
+    CHECK(r.in.bridgeTickSnapshot().broadcastValid == true);
+}
+
+TEST_CASE("HOST I3:本组无 Output 广播时,mono 轨 participate 不被误报成 false", "[host][t37][changegroup]")
+{
+    // Input 自己就是 ctrl 段的创建者:本组没有 Output 时段照样存在、广播区全零、seq=0 是偶数,
+    // readBroadcast 会返回 true。若拿全零当实况,mono 轨的 participate_in_auto_pan 会被发成
+    // false —— J60 默认应为 true。判据必须是 config_seq != 0 而不是 broadcastValid。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    ScvbInputAudioProcessor lone;
+    lone.setGroupId(5); // 一个确定没有 Output 的组
+    lone.setChannelId(2);
+    lone.prepareToPlay(kSr, kBlock);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(300);
+
+    const auto snap = lone.bridgeTickSnapshot();
+    // 段被 Input 自己创建出来了,所以「读到了」——但 config_seq=0 说明没有 Output 在广播。
+    CHECK(snap.configSeq == 0);
+
+    scvb::input::bridge::ConfigSnapshot cfg;
+    cfg.sourceChannels = 1; // mono
+    cfg.configSeq = snap.configSeq;
+    cfg.broadcastValid = snap.broadcastValid;
+    cfg.channelId = 2;
+    cfg.broadcast = snap.broadcast;
+
+    const juce::var payload = scvb::input::bridge::buildConfigPayload(cfg);
+    auto* o = payload.getDynamicObject();
+    REQUIRE(o != nullptr);
+    CHECK(static_cast<bool>(o->getProperty("participate_in_auto_pan")) == true); // ← 修复前会是 false
+    CHECK(static_cast<int>(o->getProperty("priority")) == 0); // 无广播 → 默认值,不是「真的 0」
+
+    lone.releaseResources();
+}
+
+TEST_CASE("HOST I4:换组后不继承上一组的采集覆盖", "[host][t37][changegroup]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 旧组:采集出一段真实覆盖。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(400, 0.5f, 4, 6);
+    Rig::pumpMessages(300);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 4.0).coveredS > 0.0);
+
+    // 改组:frameStore 按 channel 索引存、没有 group 维度 —— 不清的话新组 ch3 会继承旧组 ch3 的
+    // CoverageMap,并把两组特征并进同一张表。
+    r.out.setGroupId(6);
+    Rig::pumpMessages(200);
+    CHECK(r.out.coverageOf(kTestChannel, 0.0, 4.0).coveredS == 0.0); // ← 修复前继承旧组覆盖
+}
+
+// ---------------------------------------------------------------------------
+// N1 布防两个维度(契约 §1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST N1:range 外不落账(布防时间维)", "[host][t37][arming]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 把范围限定在 [2s, 4s):时间线从 0 起跑,前 2 秒不该记账。
+    r.out.runtime().rangeMode = 2; // manual
+    r.out.runtime().rangeStartS = 2.0;
+    r.out.runtime().rangeEndS = 4.0;
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+
+    // 只跑到 ~1.5s(< 2s),全程在 range 外。
+    r.runBlocks(140, 0.5f, 4, 6);
+    Rig::pumpMessages(300);
+    CHECK(r.out.coverageOf(kTestChannel, 0.0, 2.0).coveredS == 0.0); // ← 修复前整条时间线都记
+}
+
+TEST_CASE("HOST N1:Output 关掉的轨不写特征(布防轨维)", "[host][t37][arming]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // Output 侧把本轨关掉并广播下去。
+    r.out.runtime().channels[kTestChannel - 1].enabled = false;
+    ++r.out.runtime().configSeq;
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(500); // 等广播区写出 + Input 读到并据此撤防
+
+    r.runBlocks(400, 0.5f, 4, 6);
+    Rig::pumpMessages(300);
+    CHECK(r.out.coverageOf(kTestChannel, 0.0, 4.0).coveredS == 0.0); // ← 修复前照写不误
+
+    // 重新启用 → 恢复布防,能采到。
+    r.out.runtime().channels[kTestChannel - 1].enabled = true;
+    ++r.out.runtime().configSeq;
+    Rig::pumpMessages(500);
+    r.runBlocks(400, 0.5f, 4, 6);
+    Rig::pumpMessages(300);
+    CHECK(r.out.coverageOf(kTestChannel, 0.0, 8.0).coveredS > 0.0);
 }

@@ -504,8 +504,11 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     }
 
     // 第一遍:读注入源到 trackBuf_,只判定「是否有可读数据」,不触碰 accum。
-    std::array<bool, 15> hasData{};
-    std::array<scvb::u32, 15> srcCh{};
+    // hasData/srcCh 落成员:processBlockBypassed 收尾时要拿它们上报电平(I5)。
+    std::array<bool, 15>& hasData = bypassHasData_;
+    std::array<scvb::u32, 15>& srcCh = bypassChannels_;
+    hasData.fill(false);
+    srcCh.fill(0);
     bool anyData = false;
     for (int ch = 1; ch <= 15; ++ch)
     {
@@ -596,9 +599,15 @@ void ScvbOutputAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& bu
     }
     if (!haveT0)
     {
+        publishSilentMeters(); // 与 processBlock 三条早退同口径:不发就冻在最后一次有声的高度
         return; // 无时间线:直通(不替换)
     }
     renderBypassedUnity(buffer, n, t0);
+    // 宿主 bypass 期间同样要更新电平表 —— 否则液柱冻在 bypass 前那一刻。
+    // renderBypassedUnity 是 unity 求和(不 gain/pan/width),故每轨增益按 1.0 报。
+    std::array<float, 15> unityGain{};
+    unityGain.fill(1.0f);
+    publishMeters(bypassHasData_, bypassChannels_, unityGain, accumL_.data(), accumR_.data(), n);
 }
 
 void ScvbOutputAudioProcessor::timerCallback()
@@ -634,6 +643,22 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // 打印器模式:输出开关 ON → 引擎权威;OFF → follow host。T24 无分析曲线,Armed 与 Print 等效。
     printer_.setMode(outputEnabled_ ? scvb::engine::AuthorityMode::Armed : scvb::engine::AuthorityMode::Follow);
+
+    // 布防时间维(§1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
+    // follow 档 = 不限范围(全域);manual/daw_loop 档按 range 折成 hop 门,范围外不记账。
+    {
+        scvb::analysis::HopRange gate{0, std::numeric_limits<std::uint64_t>::max()};
+        if (runtime_.rangeMode != 0 && runtime_.rangeEndS > runtime_.rangeStartS)
+        {
+            const double hopS = featHopSeconds();
+            const auto toHop = [hopS](double sec) {
+                const double h = sec / hopS;
+                return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
+            };
+            gate = scvb::analysis::HopRange{toHop(runtime_.rangeStartS), toHop(runtime_.rangeEndS)};
+        }
+        session_.setFeatureGate(gate);
+    }
 
     // Input 远程改的优先级先落 state(§3.4),再把整个配置镜像推给广播区(§4.3)。
     // 顺序不能倒:倒过来这一拍的远程改动要等下一拍才广播出去,Input 的乐观值会先回滚再跳回。
@@ -673,11 +698,13 @@ void ScvbOutputAudioProcessor::publishConfigBroadcast()
     {
         return;
     }
-    if (runtime_.configSeq == lastBroadcastConfigSeq_)
+    // 换组后必写一次:ctrl 段换了一张,新组广播区是全零,旧组的 config_seq 不能用来短路。
+    if (runtime_.configSeq == lastBroadcastConfigSeq_ && groupId_ == lastBroadcastGroup_)
     {
-        return; // 配置未变:不写(广播区是低频面,不做每拍空转)
+        return; // 配置未变且同组:不写(广播区是低频面,不做每拍空转)
     }
     lastBroadcastConfigSeq_ = runtime_.configSeq;
+    lastBroadcastGroup_ = groupId_;
 
     scvb::CtrlBroadcastSnapshot s;
     // +1:广播区的 0 保留给「本组没有 Output 在广播」。不偏移的话 Output 首次上线时 seq 恰为 0,

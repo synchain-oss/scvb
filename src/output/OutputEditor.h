@@ -126,6 +126,8 @@ private:
     std::array<float, 15> lastMeterPeak_{};
     float lastBusL_ = -1000.0f;
     float lastBusR_ = -1000.0f;
+    float lastBusLPeak_ = -1000.0f;
+    float lastBusRPeak_ = -1000.0f;
     bool metersEverSent_ = false;
     // §2.7 captureProgress 的增量基线:上一帧已报过的覆盖区间与覆盖率(index = ch-1)。
     std::array<std::vector<scvb::analysis::HopRange>, 15> lastCoverageRanges_{};
