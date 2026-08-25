@@ -342,6 +342,9 @@ Write-Host '=== Gate 3h: 字体子集覆盖(文案字符 <-> web/fonts/*.woff2 �
 # 主线带着几百个无字形字符(含「卡箍」这种正经词条)一路合入,八道门禁没有一道看得见。
 # 人审 PR diff 永远发现不了「这个新汉字字体里没有」—— 只有逐字比对字符集与 cmap 查得出。
 #
+# CI 侧跑**同一条命令**:.github/workflows/format.yml 的 docs-truth job(与 3f/3g 同档)。
+# 那边由 setup-python 钉版本 + pip 锁 fontTools/Brotli 补丁号;本地用开发机现装的。
+#
 # python 守卫同 Gate 3d:命令不存在时 PowerShell 抛 CommandNotFoundException 而**不更新**
 # $LASTEXITCODE,它会保留上一条外部命令的 0,于是「一次没跑」被判成绿。
 # 脚本自身也不静默:缺 fontTools/brotli 会以非零退出并打安装命令,不会假绿跳过。

@@ -83,13 +83,20 @@ jobs:
     # markdown ×4 + i18n ×3 共 7 处(12 §3.4)。手抄必漂,而条目数 == 9 / grep「六条」/
     # check-i18n 的 key 全等这三道既有机检只查得出数量与标题,查不出条目**文本**漂移 ——
     # 逐字节比对生成物是唯一查得出的那道,所以它必须在 CI 里,不能只靠本地 gates。
-    # 无 secrets ⇒ fork PR 也跑得动。前三步与 scripts/gates.ps1 的 Gate 3f 同口径;
-    # 第四步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
+    # 无 secrets ⇒ fork PR 也跑得动。前三步与 scripts/gates.ps1 的 Gate 3f 同口径,
+    # 其后 IPC 对拍 = Gate 3g、字体覆盖 = Gate 3h,各与本地同一条命令;
+    # 末步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        # 只为最后那步字体覆盖对拍。不用 runner 自带的 python3(compliance.yml 那种用法):
+        # 自带版本随镜像漂,而本 job 是 required check —— 镜像换代时「同一份代码昨天绿今天红」
+        # 的排查成本远高于多这一步。版本钉到次版本号,与 pip 锁版本一起构成可复现输入。
+        with:
+          python-version: "3.13"
       - name: Hard rules generator (--check)
         run: node scripts/gen-hard-rules.mjs --check
       - name: i18n dictionary (zh/en/fr key parity + guide.rule1..9)
@@ -108,6 +115,19 @@ jobs:
         # 不加 --strict:文档「未标注」按 WARN 走(判级理由见脚本头注),等契约 §5
         # 补齐标注后再把它收紧成红线。
         run: node scripts/check-ipc-doc-parity.mjs
+      - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
+        # 与 scripts/gates.ps1 的 Gate 3h **同一条命令**。web/fonts/README.md 自己写着
+        # 「不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」—— 那句话在 2026-08 被兑现:
+        # 子集自 #32 后没重跑,242 个所需字符没有字形(含「卡箍」这种正经词条用字)一路合进
+        # feature/v1,八道门禁一道都没看见,因为当时根本没有一道门禁在看字体。
+        # 与 gen-hard-rules / IPC 对拍同档放进 docs-truth:三者都是「生成物 ↔ 真源」的逐字对拍,
+        # 只挂在本地 gates 上等于没有执行者(#75 与本卡各证明了一次)。
+        # 不联网(只读仓内 woff2 与 web/ 源码)、无 secrets ⇒ fork PR 也跑得动。
+        # pip 锁到补丁号:fontTools 的子集/cmap 行为随版本变,浮动版本会让「同一份字体
+        # 昨天绿今天红」而中间什么都没改 —— 与 prettier@3.9.6 钉死是同一条纪律。
+        run: |
+          python -m pip install --disable-pip-version-check fonttools==4.60.1 Brotli==1.2.0
+          python scripts/check-font-coverage.py
       - name: Dead link check (markdown-link-check)
         # .markdown-link-check.json 此前是一份**没有执行者**的配置:全仓没有 workflow
         # 也没有 gates 档位跑它,死链照样能进绿 CI,而下一个改文档的人不会知道要手工跑。
