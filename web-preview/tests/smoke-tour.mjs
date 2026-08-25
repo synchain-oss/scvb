@@ -276,6 +276,70 @@ log("=== ③ buildDemoStore(纯 UI 展示层)===");
     check(ds.state.ui.guide_seen === true, "demo 里 guide 已过(引导页不弹)");
     check(ds.state.ui.tour_seen === false, "demo 里 tour 未看(讲解前提)");
     check(Object.isFrozen(snapBefore), "FIFTEEN_TRACKS.snapshot 深冻结");
+
+    // 本地化 demo 轨名(合入后补漏:en/fr 用户可见轨名不再中文)
+    const dsEn = TOUR.buildDemoStore(() => T.en);
+    eq(
+        dsEn.state.channels[0].label,
+        "Lead Vocal 1",
+        "demo 轨名 en 本地化(ch1)",
+    );
+    const dsFr = TOUR.buildDemoStore(() => T.fr);
+    eq(
+        dsFr.state.channels[0].label,
+        "Voix principale 1",
+        "demo 轨名 fr 本地化(ch1)",
+    );
+    eq(ds.state.channels[0].label, "主唱1", "不传 getT 保持 zh 原 label(ch1)");
+    // 三语 + mock 同步:zh demo.chN == mock DEMO_LABELS;en/fr 均已本地化(无 CJK 字符)
+    const labels = FIFTEEN_TRACKS.labels;
+    check(Array.isArray(labels) && labels.length === 15, "demo labels 15 条");
+    let synced = true;
+    const cjk = /[\u4e00-\u9fff]/;
+    for (let n = 1; n <= 15; n++) {
+        const k = "demo.ch" + n;
+        if (T.zh[k] !== labels[n - 1]) synced = false;
+        if (cjk.test(T.en[k]) || cjk.test(T.fr[k])) synced = false;
+    }
+    check(synced, "zh demo.ch* == mock DEMO_LABELS 且 en/fr 无中文");
+
+    // 三语长度齐备 + en/fr 两两互异(合入后补漏:撞名会让用户分不清谁是谁)
+    const enNames = [];
+    const frNames = [];
+    let complete = true;
+    for (let n = 1; n <= 15; n++) {
+        const k = "demo.ch" + n;
+        if (typeof T.zh[k] !== "string" || T.zh[k].length === 0)
+            complete = false;
+        if (typeof T.en[k] !== "string" || T.en[k].length === 0)
+            complete = false;
+        if (typeof T.fr[k] !== "string" || T.fr[k].length === 0)
+            complete = false;
+        enNames.push(T.en[k]);
+        frNames.push(T.fr[k]);
+    }
+    check(complete, "三语 demo.ch1..15 词条长度齐备(均非空字符串)");
+    check(new Set(enNames).size === 15, "en demo.ch1..15 两两互异(无撞名)");
+    check(new Set(frNames).size === 15, "fr demo.ch1..15 两两互异(无撞名)");
+
+    // 本地化 demo 版本名(合入后补漏):versions[0](V1「基础平衡」)三语;V2 保持原样
+    eq(ds.state.versions[0].name, "基础平衡", "不传 getT 保持 zh 原版本名(V1)");
+    eq(
+        dsEn.state.versions[0].name,
+        "Base balance",
+        "demo 版本名 en 本地化(V1)",
+    );
+    eq(
+        dsFr.state.versions[0].name,
+        "Équilibre de base",
+        "demo 版本名 fr 本地化(V1)",
+    );
+    check(
+        !cjk.test(dsEn.state.versions[0].name) &&
+            !cjk.test(dsFr.state.versions[0].name),
+        "en/fr 版本名无中文",
+    );
+    eq(dsEn.state.versions[1].name, "V2", "V2 版本名保持原样(不本地化)");
 }
 
 // =============================================================================

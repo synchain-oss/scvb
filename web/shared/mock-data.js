@@ -257,8 +257,8 @@ function tt(ch) {
 
 const DEMO_TRACKS = [
     // ch 由下标推得;列序:label, stereo, pan, width, vol(行程), lv, prio, lead, volEx, pair, freeze
-    ["主唱", 0, -4, 100, 0.62, 0.74, 5, 1, 0, 1, 0],
-    ["主唱双", 0, 12, 100, 0.55, 0.61, 4, 0, 0, 1, 0],
+    ["主唱1", 0, -4, 100, 0.62, 0.74, 5, 1, 0, 1, 0],
+    ["主唱2", 0, 12, 100, 0.55, 0.61, 4, 0, 0, 1, 0],
     ["和声 L", 1, -58, 82, 0.44, 0.48, 3, 0, 0, 2, 0],
     ["和声 R", 1, 58, 82, 0.44, 0.46, 3, 0, 0, 2, 0],
     ["和声 C", 0, 0, 100, 0.4, 0.4, 3, 0, 0, 0, 0],
@@ -266,12 +266,12 @@ const DEMO_TRACKS = [
     ["Ad-lib 2", 0, 34, 100, 0.38, 0.29, 2, 0, 0, 0, 0],
     ["低八度", 0, -18, 100, 0.34, 0.28, 2, 0, 1, 0, 0],
     ["高八度", 0, 18, 100, 0.34, 0.26, 2, 0, 0, 0, 0],
-    ["群唱 L", 1, -76, 64, 0.3, 0.22, 1, 0, 0, 3, 0],
-    ["群唱 R", 1, 76, 64, 0.3, 0.21, 1, 0, 0, 3, 0],
-    ["呼吸轨", 0, 0, 100, 0.25, 0.16, 1, 0, 0, 0, 0],
+    ["和唱 L", 1, -76, 64, 0.3, 0.22, 1, 0, 0, 3, 0],
+    ["和唱 R", 1, 76, 64, 0.3, 0.21, 1, 0, 0, 3, 0],
+    ["音效轨", 0, 0, 100, 0.25, 0.16, 1, 0, 0, 0, 0],
     ["念白", 0, 26, 100, 0.42, 0.18, 1, 0, 0, 0, 2],
-    ["群唱 C", 0, 6, 100, 0.32, 0.24, 1, 0, 0, 0, 0],
-    ["尾音", 0, -12, 100, 0.28, 0.19, 1, 0, 0, 0, 0],
+    ["和唱 C", 0, 6, 100, 0.32, 0.24, 1, 0, 0, 0, 0],
+    ["outro", 0, -12, 100, 0.28, 0.19, 1, 0, 0, 0, 0],
 ].map((row, i) => ({
     ch: i + 1,
     label: row[0],
@@ -308,6 +308,37 @@ export const DEMO_LABEL_KEYS = Object.freeze(
 /** tour demo 的 V1 版本名词条 key(zh 值 = 下方快照里的「基础平衡」,同改纪律同上;
  *  PR #32 deepseek-review 建议 5:版本名同为我方 demo 内容,切语言应可跟随)。 */
 export const DEMO_VERSION_NAME_KEY = "demo.versionName";
+
+/**
+ * demo 轨名本地化(仅 web-preview mock 在**构建 demo store/fixture** 时调用;
+ * 真实插件数据永不经过 mock 构建 → 零误伤 —— 与 tour.js buildDemoStore 同一落点)。
+ *
+ * 把 demo 快照的 channels[].label 换成目标语言的 demo.ch* 词条;**仅当某轨 label 仍是
+ * demo 词条(zh/en/fr 任一语言的 demo.ch* 原值)才换**,用户改过的 label(非 demo 词条)
+ * 原样保留 —— 这样四消费面(轨列表 / wave 泳道轨头 / Lead Select / 改名框)读到的
+ * 是同一份已本地化的 label,不再渲染层各打补丁。
+ *
+ * @param {object[]} channels demo 快照的 channels(15 条,label 为 demo 词条)
+ * @param {string} lang       目标语言 "zh"|"en"|"fr"
+ * @param {object} T          三语字典 { zh, en, fr }(调用方 import 传入;
+ *                            本文件不 import i18n.js,依赖方向不变)
+ * @returns {object[]} 新的 channels(不改写入参;非 demo label 的轨原样保留)
+ */
+export function localizeDemoChannels(channels, lang, T) {
+    if (!Array.isArray(channels) || !T) return channels;
+    const t = T[lang] || {};
+    return channels.map((c, i) => {
+        const key = "demo.ch" + (i + 1);
+        const demo = new Set([DEMO_LABELS[i]]);
+        for (const l of ["zh", "en", "fr"]) {
+            const v = T[l] && T[l][key];
+            if (v) demo.add(v);
+        }
+        if (!demo.has(c.label)) return c;
+        const next = t[key];
+        return next ? { ...c, label: next } : c;
+    });
+}
 
 /** tour demo 的 stereo 轨号(source_channels=2;J60 → participate_in_auto_pan 默认 false)。 */
 export const DEMO_STEREO_CHANNELS = Object.freeze(

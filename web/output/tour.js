@@ -141,7 +141,7 @@ export function shouldAutoShowTourAsk(state, snapshot) {
  *   groups, playhead, segments, coverage, errors, unknownCodes, readOnly,
  *   noTimeline, loopMissing, session }
  */
-export function buildDemoStore() {
+export function buildDemoStore(getT) {
     const snap = FIFTEEN_TRACKS.snapshot;
     // 快照专属键(session_guid / version / *_global / conn)不进 state 子树(§1.1 语义行);
     // state 子树由 makeTourDemoSnapshot 产出,深冻结,渲染侧只读、零就地改写。
@@ -151,6 +151,29 @@ export function buildDemoStore() {
     delete stateFields.guide_seen_global;
     delete stateFields.tour_seen_global;
     delete stateFields.conn;
+
+    // 本地化 demo 轨名(§2.6 demo 注入):channels[i] 的 label 走 i18n demo.ch(i+1);
+    // zh 为 DEMO_LABELS 原值,en/fr 为对应翻译。不传 getT(纯函数调用)则保持原 label。
+    const t = (typeof getT === "function" && getT()) || {};
+    if (stateFields.channels && Array.isArray(stateFields.channels)) {
+        stateFields.channels = stateFields.channels.map((c, i) => {
+            const key = "demo.ch" + (i + 1);
+            return t[key] ? { ...c, label: t[key] } : c;
+        });
+    }
+
+    // 本地化 demo 版本名(§2.6 demo 注入):versions[0](V1「基础平衡」)走 i18n demo.versionName,
+    // 其余版本(V2 等)保持原样。不传 getT 则保持原 name。
+    if (
+        t["demo.versionName"] &&
+        Array.isArray(stateFields.versions) &&
+        stateFields.versions[0]
+    ) {
+        stateFields.versions = [
+            { ...stateFields.versions[0], name: t["demo.versionName"] },
+            ...stateFields.versions.slice(1),
+        ];
+    }
 
     const coverage = {};
     for (const c of FIFTEEN_TRACKS.captureProgress.channels) {
@@ -465,10 +488,14 @@ export function createTour(opts) {
     function start() {
         if (active) return;
         preTourTab = getActiveTab();
-        demoStore = buildDemoStore();
+        demoStore = buildDemoStore(getT);
         active = true;
         step = 1;
         overlay.hidden = false;
+        // a11y:蒙版激活期把背景卡其余内容设 inert,避免 Tab 逃出蒙版触发真实桥调用(Enter 误触 setCaptureEnabled 等)。
+        for (const child of card.children) {
+            if (child !== overlay) child.setAttribute("inert", "");
+        }
         if (badge) {
             badge.hidden = false;
             // 提升到蒙版之上:demo badge 是「tour 激活期常显」的例外件,不得被蒙版压暗。
@@ -487,6 +514,10 @@ export function createTour(opts) {
         active = false;
         demoStore = null;
         overlay.hidden = true;
+        // 释放背景 inert。
+        for (const child of card.children) {
+            child.removeAttribute("inert");
+        }
         if (badge) {
             badge.hidden = true;
             badge.style.position = "";

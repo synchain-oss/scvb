@@ -1931,6 +1931,8 @@ export function createTabTracks(opts) {
         show(n.stereo, !!row.st);
         if (local.editingCh !== ch) {
             attr(n.labelcell, "data-editing", "0");
+            // label 直接读 store(channels[].label 已在 demo 构建层本地化;
+            // 真实插件路径 = DAW 轨名,不经 mock → 零误伤)。
             text(n.label, row.label || labelPlaceholder(ch, t));
             attr(n.label, "data-placeholder", row.label ? 0 : 1);
         }

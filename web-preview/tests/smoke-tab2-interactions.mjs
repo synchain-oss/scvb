@@ -42,6 +42,9 @@ const TM = await import(u("web/output/tab-master.js"));
 const MT = await import(u("web/output/canvas/meter.js"));
 const { createBridge } = await import(u("web/shared/bridge.js"));
 const { T } = await import(u("web/shared/i18n.js"));
+const { DEMO_LABELS, localizeDemoChannels } = await import(
+    u("web/shared/mock-data.js")
+);
 
 let fail = 0;
 const log = (...a) => console.log(...a);
@@ -1146,6 +1149,48 @@ log("\n=== ⑨ 渲染调度:rAF 合帧 + 按行增量(T33 性能批)===");
             globalThis.cancelAnimationFrame = realCaf;
         }
     }
+}
+
+// =============================================================================
+log("=== ⑩ 主列表 demo 轨名本地化(store 层;三语 + 非 demo 不改写)===");
+{
+    const cjk = /[\u4e00-\u9fff]/;
+    eq(DEMO_LABELS.length, 15, "demo 轨名 15 条");
+    // demo 快照 channels 形状(label = zh demo 原值;其余字段随它)
+    const demoChannels = DEMO_LABELS.map((label, i) => ({ ch: i + 1, label }));
+    for (const lang of ["en", "fr"]) {
+        const names = localizeDemoChannels(demoChannels, lang, T).map(
+            (c) => c.label,
+        );
+        check(names.length === 15, `${lang} 主列表 15 轨名齐备`);
+        check(
+            !names.some((n) => cjk.test(n)),
+            `${lang} 主列表 15 轨名无 CJK(实得 ${names.join(" / ")})`,
+        );
+        check(new Set(names).size === 15, `${lang} 主列表 15 轨名两两互异`);
+    }
+    // zh 原值不变。
+    eq(
+        localizeDemoChannels(demoChannels, "zh", T).map((c) => c.label),
+        DEMO_LABELS,
+        "zh 主列表轨名保持原值",
+    );
+    // 真实/用户轨名(非 demo 词条)永不改写:撞名误伤的回归门禁。
+    const edited = [
+        { ...demoChannels[0], label: "My Vocal" },
+        ...demoChannels.slice(1),
+    ];
+    eq(
+        localizeDemoChannels(edited, "en", T)[0].label,
+        "My Vocal",
+        "用户改过的 label 不被本地化覆盖",
+    );
+    // 无字典不本地化(仍返回 zh 原值)。
+    eq(
+        localizeDemoChannels(demoChannels, "en", null).map((c) => c.label),
+        DEMO_LABELS,
+        "不传字典保持原 label",
+    );
 }
 
 // =============================================================================
