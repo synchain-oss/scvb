@@ -28,8 +28,10 @@ jobs:
           test -n "$files" || { echo "::error::no C++ sources found"; exit 1; }
           clang-format --dry-run --Werror --style=file $files
       - name: Check web assets formatting (prettier)
-        # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore
-        run: npx --yes prettier@3 --check .
+        # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore。
+        # 版本必须钉死到补丁号,且两处同步改:`@3` 是浮动 major,本地 gates 与 CI 会在不同
+        # 时间各自解析出不同的 prettier,于是同一份代码「本地绿、CI 红」而没有任何东西变过。
+        run: npx --yes prettier@3.9.6 --check .
 
   web-smoke:
     name: web-smoke # required check context
@@ -68,7 +70,8 @@ jobs:
     # markdown ×4 + i18n ×3 共 7 处(12 §3.4)。手抄必漂,而条目数 == 9 / grep「六条」/
     # check-i18n 的 key 全等这三道既有机检只查得出数量与标题,查不出条目**文本**漂移 ——
     # 逐字节比对生成物是唯一查得出的那道,所以它必须在 CI 里,不能只靠本地 gates。
-    # 无 secrets ⇒ fork PR 也跑得动。与 scripts/gates.ps1 的 Gate 3f 同口径。
+    # 无 secrets ⇒ fork PR 也跑得动。前三步与 scripts/gates.ps1 的 Gate 3f 同口径;
+    # 第四步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -94,4 +97,4 @@ jobs:
             | grep -v '^docs/design/' \
             | grep -v '^third_party/')
           test -n "$files" || { echo "::error::no markdown files found"; exit 1; }
-          npx --yes markdown-link-check@3 --config .markdown-link-check.json -q $files
+          npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q $files

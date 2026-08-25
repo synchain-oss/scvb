@@ -20,7 +20,7 @@ SCVB 的版本号真源是顶层 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.
 
 - 格式 **`vX.Y.Z`**,纯 semver 无前缀;预发布 `vX.Y.Z-rc.N`(GitHub Release 勾 pre-release)。
 - tag 只由维护者在 `dev`(或将来的 release 分支)上打,**不在 feature 分支打 tag**。
-- CI 的 `version-check` 在 tag push 时比对 tag 与 `CMakeLists.txt` 的 VERSION,不一致即 fail。
+- tag push 时,`.github/workflows/release.yml` 的 **Verify version matches tag** 步会比对 tag 与 `CMakeLists.txt` 的 VERSION,不一致即 fail。
 
 semver 语义(音频插件特化):
 
@@ -51,7 +51,7 @@ semver 语义(音频插件特化):
 3. **改版本号**:改 `CMakeLists.txt` 的 `project(SCVB VERSION X.Y.Z)`。这是唯一一处。
 4. **跑全量门禁**:`pwsh scripts/gates.ps1`(含真机 GUI pluginval),必须全绿。
 5. **红字真源自检**:`node scripts/gen-hard-rules.mjs --check` 退出码 0;`docs/hard-rules.i18n.json` 的 `frReview.status` 必须是 `reviewed` —— **fr 红字未经人工审校不得发版**(05 §5:机翻安全警告发到公开产品是明确禁止项)。
-6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`version-check` 与 release workflow 随之触发。
+6. **打 tag 并推送**:`git tag vX.Y.Z && git push origin vX.Y.Z`。`release.yml` 随之触发,其首步 **Verify version matches tag** 会先卡版本号。
 7. **核对产物**:zip 里 `SCVB Input.vst3` / `SCVB Output.vst3` 两个完整 bundle 齐全,合规文件组齐全(见下),`.sha256` 独立文件存在。
 8. **填发布说明**:用下面的模板,SHA-256 **直接从 CI job summary 的 `dist/package-summary.md` 复制,不要手抄**。
 9. **发布后**:同步官网下载页常量;若本次含契约变更,确认 KNOWN_ISSUES 与 DAW_COMPATIBILITY 的相关条目已同步。

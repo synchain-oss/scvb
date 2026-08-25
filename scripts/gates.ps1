@@ -121,7 +121,10 @@ Set-Gate '2 clang-format' $cf
 # ==================================================================
 Write-Host '=== Gate 3: prettier (--check .) ==='
 # ==================================================================
-$pp = (npx --yes prettier@3 --check . 2>&1)
+# 版本钉死到补丁号,且与 .github/workflows/format.yml 的 prettier 步同步改:`@3` 是浮动
+# major,本地与 CI 会在不同时间各自解析出不同的 prettier —— 同一份代码「本地绿、CI 红」,
+# 而中间没有任何东西变过。
+$pp = (npx --yes prettier@3.9.6 --check . 2>&1)
 Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
 
 # ==================================================================

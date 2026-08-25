@@ -10,20 +10,20 @@
 
 ### 新增
 
-- 仓库骨架与构建脚手架(CMake 5 目标 / CI / 本地 gates,#T01)
-- 用户文档组:双语 README、[用户手册](docs/USER_GUIDE.zh-CN.md)(中英)、[发布流程与发布说明模板](docs/RELEASE.md)(#T39b)
-- 九条硬约束红字的唯一生成器 `scripts/gen-hard-rules.mjs`:真源 = `docs/USER_GUIDE.zh-CN.md` 的 `## 硬约束` 小节,译文 = `docs/hard-rules.i18n.json`,机器生成其余 6 处落地面(USER_GUIDE EN、两份 README 快速上手、`web/shared/i18n.js` 的 zh/en/fr);`--check` 逐字节比对,任何位置手抄即红(#T39b)
-- 双语文档结构对等检查 `scripts/check-doc-parity.ps1`,覆盖 README 与 USER_GUIDE 两对(#T39b)
+- 仓库骨架与构建脚手架(CMake 5 目标 / CI / 本地 gates,#4、#5)
+- 用户文档组:双语 README、[用户手册](docs/USER_GUIDE.zh-CN.md)(中英)、[发布流程与发布说明模板](docs/RELEASE.md)(#74)
+- 九条硬约束红字的唯一生成器 `scripts/gen-hard-rules.mjs`:真源 = `docs/USER_GUIDE.zh-CN.md` 的 `## 硬约束` 小节,译文 = `docs/hard-rules.i18n.json`,机器生成其余 6 处落地面(USER_GUIDE EN、两份 README 快速上手、`web/shared/i18n.js` 的 zh/en/fr);`--check` 逐字节比对,任何位置手抄即红(#74)
+- 双语文档结构对等检查 `scripts/check-doc-parity.ps1`,覆盖 README 与 USER_GUIDE 两对(#74)
 
 ### 变更
 
-- `web/shared/i18n.js` 的 `guide.title` 与 `guide.rule1..9` 改为生成区,不再手写(#T39b)
+- `web/shared/i18n.js` 的 `guide.title` 与 `guide.rule1..9` 改为生成区,不再手写(#74)
 
 ## [0.1.0] - 2026-08-13
 
 ### 新增
 
-- 首 commit:SCVB 仓库骨架(ADR-012 目录 + 开源必备八件套 + 空壳可构建双插件)。
+- 首 commit:SCVB 仓库骨架(ADR-012 目录 + 开源必备八件套 + 空壳可构建双插件)。直接提交,无 PR:[`ae61f5f`](https://github.com/synchain-oss/scvb/commit/ae61f5f)
 
 [Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/synchain-oss/scvb/releases/tag/v0.1.0
