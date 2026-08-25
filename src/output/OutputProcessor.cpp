@@ -51,6 +51,16 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
 ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor()
 {
     stopTimer();
+    // 顺序不可倒:先 cancelAnalysis() 把工作线程 signal + join 掉 —— join 返回即保证 run() 已经
+    // 结束,此后不会再有人调 triggerAsyncUpdate();再 cancelPendingUpdate() 撤掉可能已经入队的
+    // 那一次派发。两步做完,消息队列里不可能再有指向本对象的回调。
+    //
+    // 反例(修复前):run() 末尾裸 callAsync 捕获 &owner_,而析构不取消分析 —— 用户在分析跑着时
+    // 把插件从轨上删掉,消息一旦入队就一定会被派发,于是 finishAnalysis 打在已析构对象上
+    // (里面还要取 lifecycleMutex_、写 crvsData_)= 宿主崩溃。
+    cancelAnalysis();
+    cancelPendingUpdate();
+
     const juce::ScopedLock lock(lifecycleMutex_);
     session_.release(scvb::steadyNowMs());
 }
@@ -1361,7 +1371,13 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
         if (auto* p = apvts.getParameter(id))
         {
             const float applied = isPan ? seg.pan : seg.volDb;
+            // **必须包 gesture**:裸 setValueNotifyingHost 在宿主看来是一次没有起止的孤立写入 ——
+            // Cubase 这类宿主要么把它记成一个孤立自动化点、要么在自动化 Read 档下当场把值顶回去
+            // (那样这条修复根本不生效)。begin/end 把它标成一次完整的用户编辑,宿主才会接受。
+            // 这一点与 §1.16「零 gesture」的字面冲突,已在变更文档里作为裁定②登记。
+            p->beginChangeGesture();
             p->setValueNotifyingHost(p->convertTo0to1(applied)); // 工程值 → 归一化(§1.13 同款)
+            p->endChangeGesture();
         }
     }
     return true;
@@ -1412,15 +1428,18 @@ class ScvbOutputAudioProcessor::AnalysisJob final : public juce::Thread
 {
 public:
     AnalysisJob(ScvbOutputAudioProcessor& owner, std::array<scvb::analysis::PipelineTrackFeatures, 15> features,
-                scvb::analysis::PipelineConfig config)
-        : juce::Thread("scvb-analysis"), owner_(owner), features_(std::move(features)), config_(config)
+                scvb::analysis::PipelineConfig config, std::uint32_t generation)
+        : juce::Thread("scvb-analysis"), owner_(owner), features_(std::move(features)), config_(config),
+          generation_(generation)
     {
     }
 
     void run() override
     {
         auto result = scvb::analysis::runAnalysisPipeline(
-            features_, config_, [this](float p) { owner_.runtime_.analysisProgress = p; },
+            features_, config_,
+            // 进度是 atomic:本回调在 [W],读点在 [M] 的 25Hz emit。
+            [this](float p) { owner_.runtime_.analysisProgress.store(p, std::memory_order_relaxed); },
             [this] { return threadShouldExit(); });
 
         if (threadShouldExit())
@@ -1428,16 +1447,48 @@ public:
             return; // 取消:结果整份丢弃,不碰 CRVS
         }
 
-        // 回消息线程落盘:CRVS 与 runtime state 都是 [M] 的地盘。
-        juce::MessageManager::callAsync(
-            [owner = &owner_, r = std::move(result)]() mutable { owner->finishAnalysis(std::move(r)); });
+        // 交接给 [M]:结果放进槽 + 触发 AsyncUpdater。**不用裸 callAsync 捕获 owner 指针** ——
+        // 那条路在「分析在途时删插件」下会把回调打在已析构对象上(见析构函数头注)。
+        // AsyncUpdater 归 processor 自己所有,析构里 join + cancelPendingUpdate 能把它彻底堵死。
+        {
+            const juce::ScopedLock lock(owner_.pendingMutex_);
+            owner_.pendingAnalysis_.result = std::move(result);
+            owner_.pendingAnalysis_.rangeStartSample = config_.rangeStartSample;
+            owner_.pendingAnalysis_.rangeEndSample = config_.rangeEndSample;
+            owner_.pendingAnalysis_.generation = generation_;
+            owner_.pendingAnalysis_.clearManual = owner_.analysisClearManual_;
+            owner_.pendingAnalysis_.valid = true;
+        }
+        owner_.triggerAsyncUpdate();
     }
 
 private:
     ScvbOutputAudioProcessor& owner_;
     std::array<scvb::analysis::PipelineTrackFeatures, 15> features_;
     scvb::analysis::PipelineConfig config_;
+    std::uint32_t generation_ = 0;
 };
+
+void ScvbOutputAudioProcessor::handleAsyncUpdate()
+{
+    PendingAnalysis pending;
+    {
+        const juce::ScopedLock lock(pendingMutex_);
+        if (!pendingAnalysis_.valid)
+        {
+            return;
+        }
+        pending = std::move(pendingAnalysis_);
+        pendingAnalysis_ = PendingAnalysis{};
+    }
+
+    // 代号不符 = 这份结果所属的作业已经被取消(或已被新作业顶替)→ 整份丢弃,不碰 CRVS。
+    if (pending.generation != analysisGeneration_.load(std::memory_order_acquire))
+    {
+        return;
+    }
+    finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.clearManual);
+}
 
 ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnalysis(std::uint16_t tracksMask,
                                                                                     double startS, double endS)
@@ -1445,8 +1496,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
     AnalyzeAccepted a;
     if (!(endS > startS))
     {
-        a.reason = "noData";
-        return a;
+        return a; // ok=false + affected 全 0(§1.6 拒绝态行,不带 reason)
     }
     const juce::ScopedLock lock(lifecycleMutex_);
     const double hopS = featHopSeconds();
@@ -1454,7 +1504,6 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
                                          static_cast<std::uint64_t>(std::max(0.0, endS) / hopS)};
     if (range.end <= range.begin)
     {
-        a.reason = "noData";
         return a;
     }
 
@@ -1486,26 +1535,21 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
         }
     }
     a.ok = a.tracks > 0;
-    if (!a.ok)
-    {
-        a.reason = "noData";
-    }
     return a;
 }
 
-ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask,
-                                                                                  double startS, double endS)
+ScvbOutputAudioProcessor::AnalyzeAccepted
+ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual)
 {
     AnalyzeAccepted a;
     if (analysisRunning_.load(std::memory_order_acquire))
     {
-        a.reason = "busy";
+        a.busy = true; // §1.6/§7 manifest:analyze 唯一登记的 reason
         return a;
     }
     if (!isPrepared())
     {
-        a.reason = "notPrepared";
-        return a;
+        return a; // 未 prepare:按「无可分析数据」回 {ok:false, affected:{0,0,0}}
     }
 
     const juce::ScopedLock lock(lifecycleMutex_);
@@ -1515,7 +1559,6 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     const std::int64_t hopSamples = static_cast<std::int64_t>(std::llround(hopS * sr));
     if (hopSamples <= 0 || !(endS > startS))
     {
-        a.reason = "noData";
         return a;
     }
 
@@ -1523,7 +1566,6 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     const std::uint64_t lastHop = static_cast<std::uint64_t>(std::max(0.0, endS) / hopS);
     if (lastHop <= firstHop)
     {
-        a.reason = "noData";
         return a;
     }
     const std::size_t numHops = static_cast<std::size_t>(lastHop - firstHop);
@@ -1570,8 +1612,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
 
     if (a.tracks == 0)
     {
-        a.reason = "noData";
-        return a;
+        return a; // 范围 ∩ 覆盖 = ∅
     }
 
     // 配置:VAD/分段参数取 runtime state(桥面 setVadParams/setSegmentation 写的那份)。
@@ -1597,6 +1638,13 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     cfg.segmentation.minSegmentMs = static_cast<double>(runtime_.segmentationMinSegmentMs);
     cfg.segmentation.sensitivity = static_cast<double>(runtime_.segmentationSensitivity);
     cfg.balance.panCurve = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)].panCurve;
+    // J69/02 §5.6:中心槽策略取 state(Tab4 那一档此前零消费方,拧了不生效)。
+    if (runtime_.centerSlotPolicy == "lead_exclusive")
+        cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::LeadExclusive;
+    else if (runtime_.centerSlotPolicy == "even_spread")
+        cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::EvenOffset;
+    else
+        cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::PriorityQueue;
     for (int t = 0; t < 15; ++t)
     {
         const auto& c = runtime_.channels[static_cast<std::size_t>(t)];
@@ -1615,12 +1663,23 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         tc.currentPan = rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0;
     }
 
+    // 旧作业对象在**这里**回收,而不是在它自己的完成回调里 —— 在 run() 尚未返回时销毁
+    // juce::Thread,debug 构建会撞 ~Thread 的 jassert(!isThreadRunning())。
+    if (analysisJob_ != nullptr)
+    {
+        analysisJob_->signalThreadShouldExit();
+        analysisJob_->stopThread(2000);
+        analysisJob_.reset();
+    }
+
     runtime_.analysisRunning = true;
     runtime_.analysisHasProgress = true;
-    runtime_.analysisProgress = 0.0f;
+    runtime_.analysisProgress.store(0.0f, std::memory_order_relaxed);
     analysisRunning_.store(true, std::memory_order_release);
 
-    analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg);
+    const std::uint32_t gen = analysisGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    analysisClearManual_ = clearManual;
+    analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen);
     analysisJob_->startThread();
 
     a.ok = true;
@@ -1630,19 +1689,28 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
 
 void ScvbOutputAudioProcessor::cancelAnalysis()
 {
+    // 先 bump 代号:即便 run() 已经把结果放进槽并触发了 AsyncUpdater,那份结果的代号也已过期,
+    // handleAsyncUpdate 会整份丢弃 —— 与「取消 = 结果整份丢弃,不碰 CRVS」的承诺对齐。
+    analysisGeneration_.fetch_add(1, std::memory_order_acq_rel);
+
     if (analysisJob_ != nullptr)
     {
         analysisJob_->signalThreadShouldExit();
         analysisJob_->stopThread(2000);
         analysisJob_.reset();
     }
+    {
+        const juce::ScopedLock lock(pendingMutex_);
+        pendingAnalysis_ = PendingAnalysis{};
+    }
     const juce::ScopedLock lock(lifecycleMutex_);
     runtime_.analysisRunning = false;
-    runtime_.analysisProgress = 0.0f;
+    runtime_.analysisProgress.store(0.0f, std::memory_order_relaxed);
     analysisRunning_.store(false, std::memory_order_release);
 }
 
-void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult result)
+void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
+                                              std::int64_t rangeEndSample, bool clearManual)
 {
     {
         const juce::ScopedLock lock(lifecycleMutex_);
@@ -1651,68 +1719,80 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
         {
             auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
 
-            scvb::output::commitCrvsTransaction(
-                authority_.undoManager(), crvsData_, "Analyze",
-                [&] {
-                    for (int t = 0; t < 15; ++t)
+            for (int t = 0; t < 15; ++t)
+            {
+                const auto& src = result.segments[static_cast<std::size_t>(t)];
+                if (src.empty())
+                {
+                    continue; // 无产出的轨保持原样(不清空既有段)
+                }
+                auto& dst = version.tracks[static_cast<std::size_t>(t)].segments;
+
+                // 保留两类既有段:
+                //   ① 用户段(user_edited / user_created / locked)—— ADR-008「重分析不覆盖」;
+                //   ② **完全落在本次分析范围之外**的 auto 段 —— 局部重分析只对
+                //      (轨道 × 时间区间)失效,绝不能触碰其他区间的已有结果(ADR-008 / §4.4)。
+                // 修复前这里是「本次产出 + 用户段」整表替换,于是「划了循环区 → 点分析」
+                // 会把循环区**之外**先前分析出来的段全部静默抹掉,UI 上毫无提示。
+                // 与范围**相交**的 auto 段(含跨边界者)由本次产出取代 —— 那正是被重分析的区间。
+                std::vector<scvb::state::Segment> kept;
+                for (const auto& sg : dst)
+                {
+                    // clearManual(§1.6 opts「重新识别(含手动段)」)= 连用户段一并重算:
+                    // 用户读了二次确认文案、点了确认,就该真的清掉手动段 —— 此前 opts 整个被丢弃,
+                    // 行为与普通分析逐字节相同,是「按钮亮着、点了没用」。范围外的段仍然保留。
+                    const bool isUser =
+                        !clearManual && (scvb::state::segmentOrigin(sg.flags) != scvb::state::SegmentOrigin::Auto ||
+                                         scvb::state::segmentLocked(sg.flags));
+                    const bool outsideRange = sg.t1 <= rangeStartSample || sg.t0 >= rangeEndSample;
+                    if (isUser || outsideRange)
                     {
-                        const auto& src = result.segments[static_cast<std::size_t>(t)];
-                        if (src.empty())
-                        {
-                            continue; // 无产出的轨保持原样(不清空既有段)
-                        }
-                        auto& dst = version.tracks[static_cast<std::size_t>(t)].segments;
-
-                        // ADR-008:重分析不覆盖用户段(user_edited / user_created / locked)。
-                        std::vector<scvb::state::Segment> kept;
-                        for (const auto& s : dst)
-                        {
-                            if (scvb::state::segmentOrigin(s.flags) != scvb::state::SegmentOrigin::Auto ||
-                                scvb::state::segmentLocked(s.flags))
-                            {
-                                kept.push_back(s);
-                            }
-                        }
-
-                        std::vector<scvb::state::Segment> next;
-                        next.reserve(src.size() + kept.size());
-                        for (const auto& as : src)
-                        {
-                            scvb::state::Segment seg;
-                            seg.t0 = as.t0Samples;
-                            seg.t1 = as.t1Samples;
-                            seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
-                            seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
-                            seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
-                            // 与保留的用户段重叠则让位(用户段优先)。
-                            bool clash = false;
-                            for (const auto& k : kept)
-                            {
-                                if (seg.t0 < k.t1 && k.t0 < seg.t1)
-                                {
-                                    clash = true;
-                                    break;
-                                }
-                            }
-                            if (!clash)
-                            {
-                                next.push_back(seg);
-                            }
-                        }
-                        next.insert(next.end(), kept.begin(), kept.end());
-                        std::sort(
-                            next.begin(), next.end(),
-                            [](const scvb::state::Segment& x, const scvb::state::Segment& y) { return x.t0 < y.t0; });
-                        dst = std::move(next);
+                        kept.push_back(sg);
                     }
-                },
-                [this] { rebuildAllCurves(); });
+                }
+
+                std::vector<scvb::state::Segment> next;
+                next.reserve(src.size() + kept.size());
+                for (const auto& as : src)
+                {
+                    scvb::state::Segment seg;
+                    seg.t0 = as.t0Samples;
+                    seg.t1 = as.t1Samples;
+                    seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
+                    seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
+                    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+                    // 与保留段重叠则让位(用户段优先;范围外 auto 段本就不该与范围内产出重叠)。
+                    bool clash = false;
+                    for (const auto& k : kept)
+                    {
+                        if (seg.t0 < k.t1 && k.t0 < seg.t1)
+                        {
+                            clash = true;
+                            break;
+                        }
+                    }
+                    if (!clash)
+                    {
+                        next.push_back(seg);
+                    }
+                }
+                next.insert(next.end(), kept.begin(), kept.end());
+                std::sort(next.begin(), next.end(),
+                          [](const scvb::state::Segment& x, const scvb::state::Segment& y) { return x.t0 < y.t0; });
+                dst = std::move(next);
+            }
+
+            // §1.6 撤销行逐字「否(分析产物变更不入撤销栈)」——**不走 commitCrvsTransaction**
+            // (它内部 beginNewTransaction + perform,会把分析产物压进 undo)。直接写 + 重建曲线。
+            // 顺带:入栈还会让 Ctrl+Z 以 reason:"undo" 重发段表,和分析完成的 reason:"analyze"
+            // 打架,UI 的分析态更难对齐。
+            rebuildAllCurves();
         }
 
         runtime_.analysisRunning = false;
-        runtime_.analysisProgress = result.cancelled ? 0.0f : 1.0f;
-        crvsRevision_.fetch_add(1, std::memory_order_release); // 让 editor 重发全量段表
+        runtime_.analysisProgress.store(result.cancelled ? 0.0f : 1.0f, std::memory_order_relaxed);
+        analysisDone_ = !result.cancelled; // editor 据此以 reason:"analyze" 重发段表(§2.8)
+        crvsRevision_.fetch_add(1, std::memory_order_release);
     }
     analysisRunning_.store(false, std::memory_order_release);
-    analysisJob_.reset();
 }

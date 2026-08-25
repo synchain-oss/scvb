@@ -21,6 +21,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -826,7 +827,10 @@ TEST_CASE("HOST P0-1:无采集数据时分析被拒,不会挂起", "[host][t37][
 
     const auto accepted = r.out.startAnalysis(0, 0.0, 5.0);
     CHECK_FALSE(accepted.ok);
-    CHECK(std::string(accepted.reason) == "noData");
+    // §1.6 拒绝态:range ∩ coverage = ∅ → {ok:false, affected:{0,0,0}},**不带 reason**
+    // (§5.6 的 reason 是八值闭集,analyze 只登记了 "busy")。
+    CHECK_FALSE(accepted.busy);
+    CHECK(accepted.tracks == 0);
     CHECK_FALSE(r.out.runtime().analysisRunning); // 不置 running → UI 不会转圈
 }
 
@@ -859,4 +863,186 @@ TEST_CASE("HOST P0-1:分析可取消,取消后不改段表", "[host][t37][v4][an
                            .tracks[kTestChannel - 1]
                            .segments.size();
     CHECK(after == before); // 取消 = 结果整份丢弃
+}
+
+// ---------------------------------------------------------------------------
+// 复审 R6:局部分析不得删掉分析范围**之外**的既有 auto 段(ADR-008 / §4.4)。
+// 触发路径不是边角:parseAnalyzeScope 在 daw_loop / manual 档会把 "all" 也收成
+// [range.start_s, range.end_s) —— 「划了循环区 → 点分析」就会走到这里。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST R6:范围 A 分析 → 范围 B 分析 → A 的段仍在", "[host][t37][analyze][r6]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采一段足够长的素材(有声/静音交替,保证前后两段范围里都切得出段)。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 10; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 4.0);
+
+    const auto segsOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        return crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    };
+    const auto runAnalysis = [&r](double a, double b) {
+        REQUIRE(r.out.startAnalysis(0, a, b).ok);
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return;
+            }
+        }
+        FAIL("analysis did not finish");
+    };
+
+    // ① 只分析后半段 [half, covered)。
+    const double half = coveredS * 0.5;
+    runAnalysis(half, coveredS);
+    const auto afterB = segsOf();
+    REQUIRE_FALSE(afterB.empty());
+    // 阈值必须落在**同一个 hop 栅格**上:startAnalysis 会把 startS 截断到 hop 边界
+    // (firstHop = startS/hopS 向下取整),范围真正的起点是 firstHop*hopSamples,
+    // 可能略早于 half*kSr。直接拿原始值比会把边界那一段误判成「范围外」。
+    const std::int64_t hopSamplesT = static_cast<std::int64_t>(0.01 * kSr);
+    const std::int64_t halfSample = static_cast<std::int64_t>(half / 0.01) * hopSamplesT;
+    int inB = 0;
+    for (const auto& sg : afterB)
+    {
+        if (sg.t0 >= halfSample)
+        {
+            ++inB;
+        }
+    }
+    REQUIRE(inB > 0); // 后半段确实产出了
+
+    // ② 再只分析前半段 [0, half)。后半段那些 auto 段**必须**还在。
+    runAnalysis(0.0, half);
+    const auto afterA = segsOf();
+
+    int stillInB = 0;
+    int inA = 0;
+    for (const auto& sg : afterA)
+    {
+        if (sg.t0 >= halfSample)
+        {
+            ++stillInB;
+        }
+        else
+        {
+            ++inA;
+        }
+    }
+    CHECK(inA > 0); // 前半段有了新产出
+    CHECK(stillInB == inB); // ← 修复前:整表替换,后半段的 auto 段被静默抹掉(这里会是 0)
+}
+
+// ---------------------------------------------------------------------------
+// 复审 R5:分析在途时销毁 processor 不得崩溃(裸 callAsync 捕获 owner 指针 = use-after-free)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST R5:分析在途销毁 processor 不崩溃", "[host][t37][analyze][r5]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    for (int round = 0; round < 3; ++round)
+    {
+        auto rig = std::make_unique<Rig>();
+        rig->ph.playing = true;
+        REQUIRE(rig->waitUntilInjected());
+
+        rig->out.setCaptureEnabled(true);
+        Rig::pumpMessages(300);
+        for (int burst = 0; burst < 8; ++burst)
+        {
+            rig->runBlocks(50, 0.5f, 4, 4);
+            rig->runBlocks(30, 0.0f, 4, 4);
+        }
+        Rig::pumpMessages(300);
+
+        const double coveredS = rig->out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+        REQUIRE(coveredS > 0.0);
+        REQUIRE(rig->out.startAnalysis(0, 0.0, coveredS).ok);
+
+        // **不等分析跑完**,直接销毁(= 用户在分析跑着时把插件从轨上删掉)。
+        // 析构里 cancelAnalysis() 先 join、再 cancelPendingUpdate() 撤掉已入队的派发。
+        rig.reset();
+
+        // 再泵一轮消息:修复前这里会把 finishAnalysis 打在已析构对象上。
+        Rig::pumpMessages(300);
+    }
+    SUCCEED("分析在途销毁 + 消息泵未崩溃");
+}
+
+// ---------------------------------------------------------------------------
+// 复审【重要】1:opts.clearManual 必须真的生效(此前 a[1] 从没被读过)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST clearManual:true 时连用户段一并重算", "[host][t37][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    // 先手动写回:段表变成单段 user_edited 常值。
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, locked));
+
+    const auto segsOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        return crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    };
+    const auto waitDone = [&r]() {
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return;
+            }
+        }
+        FAIL("analysis did not finish");
+    };
+
+    const auto hasUserSeg = [&segsOf]() {
+        for (const auto& sg : segsOf())
+        {
+            if (scvb::state::segmentOrigin(sg.flags) != scvb::state::SegmentOrigin::Auto)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    REQUIRE(hasUserSeg());
+
+    // ① 普通分析:ADR-008 —— 用户段必须保留。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/false).ok);
+    waitDone();
+    CHECK(hasUserSeg());
+
+    // ② clearManual=true:用户读了二次确认、点了确认 —— 手动段该被真的清掉。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/true).ok);
+    waitDone();
+    CHECK_FALSE(hasUserSeg()); // ← 修复前 opts 整个被丢弃,这里仍为 true
 }

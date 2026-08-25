@@ -205,12 +205,16 @@ void OutputEditor::emitTick()
     // (PR#55 第7轮缺陷1 / 第8轮缺陷1)。
     const double srNow = processor_.sampleRate();
     const std::uint32_t crvsRev = processor_.crvsRevision();
-    if (first || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)) ||
+    // 分析刚完成时 reason 必须是 "analyze" 而不是 "snapshot"(§2.8):web 有两处认它 ——
+    // Tab4 的「参数已改、结果陈旧」基线同步,与 Tab3 的分析 diff 摘要条 + 倒计时撤条。
+    // 落成 snapshot 会让这两处静默失效(分析完了标记还挂着、摘要条不出)。
+    const bool analyzed = processor_.takeAnalysisDone();
+    if (first || analyzed || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)) ||
         crvsRev != lastCrvsRevision_)
     {
         lastSegmentsSampleRate_ = srNow;
         lastCrvsRevision_ = crvsRev;
-        emitSegments("snapshot", kAllTracksMask);
+        emitSegments(analyzed ? "analyze" : "snapshot", kAllTracksMask);
     }
 
     // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
@@ -698,7 +702,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     juce::var analysisRun = obj();
     put(analysisRun, "running", rt.analysisRunning);
     if (rt.analysisHasProgress)
-        put(analysisRun, "progress", rt.analysisProgress);
+        put(analysisRun, "progress", rt.analysisProgress.load(std::memory_order_relaxed));
     put(o, "analysis_run", analysisRun);
 
     return o;
@@ -973,13 +977,35 @@ void OutputEditor::handleAnalyze(const ArgList& a, Completion c)
     }
 
     const AnalyzeScope sc = parseAnalyzeScope(a);
-    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS);
+    // §1.6 的第二参 opts:{clearManual:bool}。此前 a[1] 从没被读过 —— 而 web 有两个调用点
+    // 专门传它(Tab3「重新识别(含手动段)」带二次确认、Tab2 单轨重新识别),用户点完确认
+    // 得到的行为与普通分析逐字节相同,且无任何反馈。
+    bool clearManual = false;
+    if (a.size() > 1 && a[1].isObject())
+    {
+        strictBool(a[1].getProperty("clearManual", false), clearManual);
+    }
+
+    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS, clearManual);
 
     if (!accepted.ok)
     {
         juce::var o = obj();
         put(o, "ok", false);
-        put(o, "reason", accepted.reason);
+        if (accepted.busy)
+        {
+            // §5.6 八值闭集 + §7 manifest:analyze 只登记了 "busy" 这一个 reason。
+            put(o, "reason", "busy");
+        }
+        else
+        {
+            // §1.6 拒绝态行:range ∩ coverage = ∅ → {ok:false, affected:{0,0,0}},**不带 reason**。
+            juce::var affected = obj();
+            put(affected, "intervals", 0);
+            put(affected, "tracks", 0);
+            put(affected, "manualKept", 0);
+            put(o, "affected", affected);
+        }
         c(o);
         return;
     }

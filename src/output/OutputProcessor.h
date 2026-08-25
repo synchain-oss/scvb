@@ -95,7 +95,9 @@ struct OutputRuntimeState
     bool recaptureAutoStop = false;
     bool analysisRunning = false;
     bool analysisHasProgress = false;
-    float analysisProgress = 0.0f;
+    // [W] 分析线程写 / [M] 25Hz emit 读 —— runtime_ 其余字段都由 lifecycleMutex_ 串行,
+    // 只有这一条是跨线程的,必须 atomic(裸 float 在严格内存模型下是 UB)。
+    std::atomic<float> analysisProgress{0.0f};
 
     // config_seq(§2.1 顶层;ctrl 广播区整体版本号,任一字段变化 +1)
     std::uint32_t configSeq = 0;
@@ -106,7 +108,7 @@ struct OutputRuntimeState
 // DspArbiter)→ gain/pan(mono equal-power / stereo dual-pan+width,[J57])→ 求和 → ms_balance
 // ([J58] 总线 M/S)→ busXfade 替换总线([J32] 200ms 注入延迟 + 80ms per-channel 淡入)。
 // T29:持有 CRVS 段真身(crvsData_)+ OutputRuntimeState,提供桥编辑器(OutputEditor)入口。
-class ScvbOutputAudioProcessor final : public juce::AudioProcessor, private juce::Timer
+class ScvbOutputAudioProcessor final : public juce::AudioProcessor, private juce::Timer, private juce::AsyncUpdater
 {
 public:
     ScvbOutputAudioProcessor();
@@ -243,15 +245,27 @@ public:
     struct AnalyzeAccepted
     {
         bool ok = false;
-        const char* reason = ""; // "busy" | "noData" | "notPrepared"
+        // 桥面只允许 §5.6 八值闭集里的 reason,而 §7 manifest 给 analyze 只登记了 "busy"。
+        // 「范围∩覆盖=∅」按 §1.6 拒绝态行回 {ok:false, affected:{0,0,0}}(**不带 reason**),
+        // 所以这里不再自造 "noData"/"notPrepared" 字符串,只留一个 busy 布尔。
+        bool busy = false;
         int intervals = 0; // 影响面预估(受理回执用)
         int tracks = 0;
         int manualKept = 0;
     };
     // tracksMask=0 表示不限轨;[startS,endS) 为分析范围(follow 档由调用方折算)。
-    AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS);
+    // clearManual(§1.6 opts):true = 「重新识别(含手动段)」,连用户段一并重算;
+    // false(默认)= ADR-008 语义,用户段一律保留。
+    AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual = false);
     void cancelAnalysis();
     bool analysisRunning() const { return analysisRunning_.load(std::memory_order_acquire); }
+    // [M] 取走「分析刚完成」标记(取走即清)。editor 据此把段表以 reason:"analyze" 发出。
+    bool takeAnalysisDone()
+    {
+        const bool v = analysisDone_;
+        analysisDone_ = false;
+        return v;
+    }
     // 干跑影响面(§1.5 previewAnalyze):不改任何数据,只数「范围 × 有覆盖的轨」。
     AnalyzeAccepted previewAnalysis(std::uint16_t tracksMask, double startS, double endS);
 
@@ -304,7 +318,10 @@ private:
     // 后台分析线程体 + 完成回落(见 startAnalysis)。
     class AnalysisJob;
     friend class AnalysisJob;
-    void finishAnalysis(scvb::analysis::PipelineResult result);
+    void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
+                        std::int64_t rangeEndSample, bool clearManual);
+    // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
+    void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
     void publishConfigBroadcast();
 
@@ -390,9 +407,32 @@ private:
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;
     int timelineInvalidTicks_ = 0;
-    // 分析作业([M] 起/停;线程体只读快照,完成后经 callAsync 回消息线程写 CRVS)。
+    // 分析作业([M] 起/停;线程体只读快照,完成后经 AsyncUpdater 回消息线程写 CRVS)。
     std::unique_ptr<AnalysisJob> analysisJob_;
     std::atomic<bool> analysisRunning_{false};
+    // 作业代号:每次 start/cancel 都 +1。线程把自己的代号连同结果放进 pendingResult_,
+    // [M] 取件时比对 —— 不匹配即整份丢弃。这道门同时挡住两件事:
+    //   ① 「已投递完成消息 → 用户随后取消」的竞态(旧口径会照写 CRVS,与「取消 = 结果整份丢弃」相左);
+    //   ② 取消后紧接着重启的新作业,不会被上一份迟到的结果污染。
+    std::atomic<std::uint32_t> analysisGeneration_{0};
+    // 结果交接槽([W] 写 / [M] 取,pendingMutex_ 串行)。
+    juce::CriticalSection pendingMutex_;
+    struct PendingAnalysis
+    {
+        scvb::analysis::PipelineResult result;
+        std::int64_t rangeStartSample = 0;
+        std::int64_t rangeEndSample = 0;
+        std::uint32_t generation = 0;
+        bool clearManual = false;
+        bool valid = false;
+    };
+    PendingAnalysis pendingAnalysis_;
+    // 分析刚完成([M] 置位 / editor 取走)。§2.8 的 reason 要落 "analyze" —— web 有两处认它:
+    // Tab4 的「参数已改、结果陈旧」基线同步,与 Tab3 的分析 diff 摘要条。只 bump crvsRevision_
+    // 会让段表以 "snapshot" 发出,那两处静默失效。
+    bool analysisDone_ = false;
+    // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
+    bool analysisClearManual_ = false;
 
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;

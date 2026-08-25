@@ -439,3 +439,39 @@ TEST_CASE("J69-4: 改 mode 触发全局 stale 标志", "[loudness][mode]")
     s.markApplied();
     REQUIRE(!s.stale());
 }
+
+TEST_CASE("VAD-abs 非零 firstHop:结果段落在绝对 hop 域内", "[vad][t37]")
+{
+    // 契约(runEnergyVad 头注):「结果段以**绝对** hop 序号表达,截断到选区边界」。
+    // 此前状态机用相对下标建段、只有 padding 一步按绝对 selStart 去钳 —— firstHop≠0 时
+    // 每个段都被钳成倒置区间,调用方一律丢弃,表现为「局部分析恒零段」。
+    // 既有 12 处用例全传 firstHop=0,这条路从没被走过。
+    std::vector<float> kw;
+    for (int round = 0; round < 4; ++round)
+    {
+        for (int i = 0; i < 80; ++i)
+            kw.push_back(0.05f); // 有声
+        for (int i = 0; i < 60; ++i)
+            kw.push_back(1e-9f); // 静音
+    }
+
+    scvb::analysis::VadParams p;
+    const std::int64_t firstHop = 4000;
+
+    const auto atZero = scvb::analysis::runEnergyVad(kw.data(), kw.size(), 0, p);
+    const auto atOffset = scvb::analysis::runEnergyVad(kw.data(), kw.size(), firstHop, p);
+
+    REQUIRE_FALSE(atZero.segments.empty());
+    REQUIRE(atOffset.segments.size() == atZero.segments.size()); // 段数与偏移无关
+
+    for (std::size_t i = 0; i < atOffset.segments.size(); ++i)
+    {
+        const auto& a = atOffset.segments[i];
+        CHECK(a.endHop > a.startHop); // 不得倒置
+        CHECK(a.startHop >= firstHop); // 落在绝对域
+        CHECK(a.endHop <= firstHop + static_cast<std::int64_t>(kw.size()));
+        // 与 firstHop=0 的结果整体平移 firstHop。
+        CHECK(a.startHop == atZero.segments[i].startHop + firstHop);
+        CHECK(a.endHop == atZero.segments[i].endHop + firstHop);
+    }
+}

@@ -150,3 +150,32 @@ TEST_CASE("PIPE-4 取消:立即返回且标记 cancelled", "[analysis][pipeline]
     const auto res = runAnalysisPipeline(features, cfg, {}, [] { return true; });
     CHECK(res.cancelled);
 }
+
+TEST_CASE("PIPE-5 非零起点范围(局部分析)照样出段", "[analysis][pipeline][t37]")
+{
+    // 局部分析(range 不从 0 开始)是最常见的路径之一:划了循环区再点分析。
+    // hop 域的绝对/相对下标在这里最容易搞反 —— 搞反的表现就是「分析跑完但零段」。
+    std::array<PipelineTrackFeatures, kPipelineTracks> features;
+    features[0] = makeAlternating(6, 80, 60, 0.05f);
+    const std::size_t n = features[0].kwMs.size();
+
+    auto cfg = makeConfig(n, 1);
+    // 关键:把范围整体后移 —— 特征切片仍是 features[0](调用方按范围抠出来的那一段),
+    // 但 rangeStartSample 非零,于是 firstHop != 0。
+    const std::int64_t hopSamples = static_cast<std::int64_t>(kHopMs * kSr / 1000.0);
+    const std::int64_t offsetHops = 4000;
+    cfg.rangeStartSample = offsetHops * hopSamples;
+    cfg.rangeEndSample = (offsetHops + static_cast<std::int64_t>(n)) * hopSamples;
+
+    const auto res = runAnalysisPipeline(features, cfg);
+
+    CHECK(res.intervals > 0);
+    REQUIRE_FALSE(res.segments[0].empty()); // ← 下标搞反时这里是空的
+
+    // 产出的段必须落在给定范围内(而不是从 0 开始)。
+    for (const auto& sg : res.segments[0])
+    {
+        CHECK(sg.t0Samples >= cfg.rangeStartSample);
+        CHECK(sg.t1Samples <= cfg.rangeEndSample);
+    }
+}

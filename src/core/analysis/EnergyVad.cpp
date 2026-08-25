@@ -199,7 +199,12 @@ VadResult runEnergyVad(const float* kwMs, std::size_t n, int64_t firstHop, const
                 ++releaseCount;
                 if (releaseCount >= hangoverFrames)
                 {
-                    cores.push_back({coreStart, static_cast<int64_t>(k) - releaseCount + 1});
+                    // +firstHop:本函数的契约是「结果段以**绝对** hop 序号表达」(见头注),而状态机
+                    // 用的是选区内相对下标 k。此前只有下面的 padding 一步按绝对 selStart 去钳,
+                    // 于是 firstHop≠0 时每个段都被钳成 startHop=firstHop > endHop(相对值)的
+                    // 倒置区间,调用方按 end<=start 一律丢弃 → **局部分析恒零段**。
+                    // 既有单测 12 处全部传 firstHop=0,这条路从来没被走过。
+                    cores.push_back({coreStart + firstHop, static_cast<int64_t>(k) - releaseCount + 1 + firstHop});
                     speech = false;
                     onsetCount = 0;
                 }
@@ -211,7 +216,7 @@ VadResult runEnergyVad(const float* kwMs, std::size_t n, int64_t firstHop, const
         }
     }
     if (speech)
-        cores.push_back({coreStart, static_cast<int64_t>(n)}); // 截断到选区尾
+        cores.push_back({coreStart + firstHop, static_cast<int64_t>(n) + firstHop}); // 截断到选区尾(绝对域)
 
     // 后处理顺序固定(02 §2.3,顺序即语义):
     // P1 丢短(先于 padding!)。
