@@ -32,6 +32,9 @@
 // padding 里)测试仍然全绿。所以本脚本额外读头文件,只做**字段集合与顺序**的
 // 完备性比对(不从头文件读 offset:头文件里的 offset 也只是注释,不是真值;
 // offset 的真值在 C++ 测试那边)。三侧字段表必须逐项相等。
+// 同理,**新增一整个结构体**却不冻 golden 也是全绿的(golden 里没有它,只走
+// 「golden → 头文件」方向的循环压根碰不到它),故完备性比对**双向**走:头文件里
+// 不在 golden 的结构体,必须在脚本的 NON_LAYOUT_STRUCTS 白名单里登记为「不进段」。
 //
 // ----------------------------------------------------------------------
 // 三、检查项
@@ -363,6 +366,28 @@ function eq(label, docValue, goldenValue, goldenLabel) {
     return true;
 }
 
+/**
+ * 取头文件常量,抠不到即**硬失败**。
+ * 「has() 抠不到就静默跳过」是本脚本自己在头注里点名的假绿来源:常量改了名、
+ * 换了写法(宏 / enum / 带表达式的初值)或整块挪走,正则一失手,对拍就悄悄少跑一项
+ * 而 gates 照样绿 —— 恰好是这张脚本存在的理由的反面。
+ * @returns {boolean} true = 常量在表里,调用方可继续 eq
+ */
+function requireConst(name, label) {
+    if (headerConsts.has(name)) return true;
+    fail(
+        "头文件(" +
+            HEADERS.join(" / ") +
+            ")里抠不到常量 " +
+            name +
+            "(" +
+            label +
+            " 无从对拍)。若它确实改了名或改了写法,请同步本脚本的常量正则/名字," +
+            "不要让这一项静默跳过",
+    );
+    return false;
+}
+
 // ---------------------------------------------------------- A/B/C/D/E 结构体对拍
 {
     const goldenNames = [...golden.structs.keys()];
@@ -543,7 +568,51 @@ function eq(label, docValue, goldenValue, goldenLabel) {
 }
 
 // ------------------------------------------- ①→② 完备性:头文件字段表 == golden
+//
+// 两个方向都要走:
+//   golden → 头文件  golden 冻结的每个结构体在头文件里都找得到,且字段表逐项相等;
+//   头文件 → golden  头文件里**新增**的结构体,要么进了 golden,要么在下表里登记。
+// 只走前一个方向的话,往头文件里新加一个段内结构体、忘了冻 golden —— 三侧对拍一句话
+// 都不会说(golden 里没有它,循环压根不会碰到它),而那正是 C7 要防的漂移。
 {
+    // 头文件里**不进共享内存**、故不该被 golden 冻结的结构体。
+    // 名字写死在这里而不是靠 alignas 之类的启发式判据:新加一个结构体时,要么它进 golden,
+    // 要么作者得来这一行写明它为什么不进 —— 不留第三条静默通过的路。
+    const NON_LAYOUT_STRUCTS = new Map([
+        [
+            "OutputGlobalInfoSnapshot",
+            "OutputGlobalInfo 的宿主侧只读快照(带默认初值的普通结构体,不落段)",
+        ],
+        ["WatchdogResult", "停摆看门狗的动作返回值(纯宿主侧,01 §4.2 [R3/J52])"],
+    ]);
+
+    for (const [name, h] of headerStructs) {
+        if (golden.structs.has(name)) continue;
+        if (NON_LAYOUT_STRUCTS.has(name)) {
+            pass(
+                name +
+                    " 头文件独有,已登记为非段内结构体(" +
+                    NON_LAYOUT_STRUCTS.get(name) +
+                    ")",
+            );
+            continue;
+        }
+        fail(
+            h.source +
+                ":" +
+                h.line +
+                " 结构体 " +
+                name +
+                " 既没有被 " +
+                GOLDEN +
+                " 冻结布局,也不在本脚本的「非段内结构体」白名单里。二选一:" +
+                "若它进共享内存,补进 golden(布局须由 tests/core/test_ipc_layout.cpp 的" +
+                "编译期真值钉死)并写进 " +
+                DOC +
+                ";若它只活在宿主侧,在 NON_LAYOUT_STRUCTS 里登记并写明理由",
+        );
+    }
+
     for (const [name, g] of golden.structs) {
         const h = headerStructs.get(name);
         if (!h) {
@@ -663,7 +732,7 @@ function eq(label, docValue, goldenValue, goldenLabel) {
             "同行字节数",
         );
         eq("budget_ctrl_bytes", cb[1], BUDGET_CTRL);
-        if (headerConsts.has("kCtrlSegmentSize")) {
+        if (requireConst("kCtrlSegmentSize", "§4 ctrl 段预算")) {
             eq(
                 "kCtrlSegmentSize",
                 cb[1],
@@ -673,13 +742,15 @@ function eq(label, docValue, goldenValue, goldenLabel) {
         }
     }
 
-    // 头文件里有、golden 没冻的两个常量:直接与头文件对
+    // 头文件里有、golden 没冻的两个常量:直接与头文件对。
+    // 这两项的头文件侧是**唯一**机检面(golden 没冻它们),所以常量抠不到不能跳过 ——
+    // 一跳就等于这两个数从此没有任何一侧在看着(下面 requireConst 硬失败的理由)。
     const hop = probe("kFeatHopMs(N)", /kFeatHopMs\((\d+)\)/, 1);
-    if (hop && headerConsts.has("kFeatHopMs")) {
+    if (hop && requireConst("kFeatHopMs", "§3 特征跳距")) {
         eq("kFeatHopMs", hop[0], headerConsts.get("kFeatHopMs"), HEADERS[0]);
     }
     const cap = probe("kCtrlRingCapacity = N", /kCtrlRingCapacity = (\d+)/, 1);
-    if (cap && headerConsts.has("kCtrlRingCapacity")) {
+    if (cap && requireConst("kCtrlRingCapacity", "§4 CtrlRing 容量")) {
         eq(
             "kCtrlRingCapacity",
             cap[0],
@@ -856,10 +927,7 @@ function eq(label, docValue, goldenValue, goldenLabel) {
             ["kCtrlRingsOffset", rings[1], "§4 CtrlRing 阵列起点"],
         ];
         for (const [k, v, label] of hc) {
-            if (!headerConsts.has(k)) {
-                fail("头文件里找不到常量 " + k + "(§4 落点无从对拍)");
-                continue;
-            }
+            if (!requireConst(k, label)) continue;
             eq(label + " = " + k, v, headerConsts.get(k), HEADERS[1]);
         }
     }
