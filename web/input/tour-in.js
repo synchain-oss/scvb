@@ -17,8 +17,10 @@
 //   • 不写 state、不触引擎;**唯一桥调用 = setGuideSeen**(首启链的完成与 Skip 都置位,
 //     J50a 镜像;header「?」**重看**走 start({replay:true}),结束时不调用它)。
 //     该名字当前停在 bridge.js 的 PENDING_FUNCS.input(契约 §3 尚无此函数),变更说明见
-//     docs/contract-changes/20260825-input-guide-seen.md;native 未落地时桥上不挂,
-//     调用直接落空 —— 本会话内靠 app.js 的会话标记不重弹,**不假装写了** state。
+//     docs/contract-changes/20260825-input-guide-seen.md;native 未落地时桥上不挂,调用
+//     直接落空 —— **不假装写了** state。注意下行也还没有 `ui.guide_seen` /
+//     `guide_seen_global`,故真宿主里首启链根本不会自动弹(唯一入口 = header「?」重看),
+//     app.js 的会话标记拦的是预览 / mock 形态下的重弹。
 //   • **无声音,仅视觉 + 文字**(05 §2.6)。
 //   • 两段导出(与 output/tour.js 同构):纯函数(无 DOM,node 可直接 import 断言)
 //     + createInputTour(opts)(DOM 接线)。模块顶层零副作用、零 document 触碰。
