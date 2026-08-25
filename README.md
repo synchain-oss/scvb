@@ -57,10 +57,12 @@ SCVB has no tagged release yet. Once it does, installing is:
 1. **Recommended**: get `SCVB-vX.Y.Z-win64.zip` from the download page at **[synchain.ca](https://synchain.ca)**. You will find the install notes, update announcements, and the rest of our tools there too — have a wander, there may be something else that helps.
    You can also download it from this repository's Releases page.
 2. verify the downloaded zip against the accompanying `.sha256`. **The authoritative checksum is the SHA-256 in the GitHub Release notes** (produced by CI at build time); the two should match — **if they do not, do not install it, and tell us**;
-3. unzip, and copy both `SCVB Input.vst3` and `SCVB Output.vst3` — the whole bundle folder in each case — into `C:\Program Files\Common Files\VST3\`;
+3. unzip, and copy `SCVB Input.vst3`, `SCVB Output.vst3`, and `SCVB Monitor.vst3` — the whole bundle folder in each case — into `C:\Program Files\Common Files\VST3\`;
 4. rescan plugins in your DAW.
 
-**Install both.** The two plugins are a pair and share one version number; a mismatched pair refuses to connect, on purpose.
+**Install both Input and Output.** Those two are a pair and share one version number; a mismatched pair refuses to connect, on purpose.
+
+**SCVB Monitor is optional.** It is a read-only side window for watching pan movement and distribution across a whole group. It passes audio through untouched, exposes **no automation parameters at all**, and only ever reads the shared data — it never claims a slot and never writes to any shared segment, so adding or removing it cannot change what Input and Output do.
 
 Until there is a release, build from source (below).
 

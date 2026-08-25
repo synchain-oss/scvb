@@ -62,7 +62,7 @@ option(SCVB_BUILD_TOOLS "Build validation console tools (tests/tools: scvb_nullt
 option(SCVB_TESTS_WITH_EBUR128 "Build [reference] K-weighting tests against libebur128 (needs network)" OFF)
 
 # ------------------------------------------------------------------
-# 目标(ADR-001/012:scvb_core + 两个插件 + 测试)
+# 目标(ADR-001/012:scvb_core + 三个插件 + 测试;第三主目标 SCVBMonitor 由 [J75] 授权)
 # ------------------------------------------------------------------
 include(CTest)               # enable_testing() 于顶层,让根 CTestTestfile.cmake 生成并 subdirs() 进 tests/
 add_subdirectory(src/core)     # scvb_core
@@ -71,6 +71,8 @@ add_subdirectory(src/plugin-common)  # scvb_plugin_common(INTERFACE,源编入各
 # T01:src/input + src/output 正式插件(T06 的 PR 恢复;S1 spike 核心已移植回 src/core/ipc/)
 add_subdirectory(src/input)    # SCVBInput
 add_subdirectory(src/output)   # SCVBOutput
+# T45 [J75]:第三主目标 —— 只读监视器(0 自动化参数 / 音频直通 / 只读 attach viz 段)
+add_subdirectory(src/monitor)  # SCVBMonitor
 
 if(SCVB_BUILD_TESTS)
   add_subdirectory(tests)      # scvb_tests + scvb_ipc_tests
