@@ -36,6 +36,24 @@ void fillTricky(juce::AudioBuffer<float>& buf, unsigned seed)
     }
 }
 
+// 当前存在哪些组的 registry 段(位图)。用于断言「Monitor 没有**新建**任何一个」——
+// 而不是断言「一个都不存在」,后者会被同机的其它 SCVB 进程打红。
+scvb::u32 registrySnapshot(scvb::ISegmentBackend& backend)
+{
+    scvb::u32 mask = 0;
+    for (scvb::u32 g = 1; g <= scvb::kMaxGroups; ++g)
+    {
+        scvb::SegmentView view;
+        if (backend.openExistingReadOnly(L"Local\\" + scvb::segmentLogicalName(g, scvb::SegmentKind::kRegistry),
+                                         view) == scvb::InitResult::kOk)
+        {
+            mask |= (1u << (g - 1));
+            backend.unmap(view);
+        }
+    }
+    return mask;
+}
+
 bool bitwiseEqual(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
 {
     if (a.getNumChannels() != b.getNumChannels() || a.getNumSamples() != b.getNumSamples())
@@ -140,6 +158,7 @@ TEST_CASE("Monitor:对共享段零写入 + 只读读到 viz 数据", "[monitor][
 
     // ---- ① Monitor 在段不存在时:空态,不崩、不建段 ----
     {
+        const scvb::u32 registryBefore = registrySnapshot(backend);
         ScvbMonitorAudioProcessor p;
         REQUIRE(p.setObservedGroup(static_cast<int>(kGroup)));
         p.prepareToPlay(48000.0, 256);
@@ -156,14 +175,11 @@ TEST_CASE("Monitor:对共享段零写入 + 只读读到 viz 数据", "[monitor][
         REQUIRE(probe.attachReadOnly() == scvb::InitResult::kFailed);
 
         // registry 段同理:Monitor 的 1Hz 跨组探测只走 openExistingReadOnly,不 claim、不建段。
-        // 全部 8 组都查一遍 —— 只要 Monitor 曾误建任何一组的 registry,这里就会 attach 成功。
-        for (scvb::u32 g = 1; g <= scvb::kMaxGroups; ++g)
-        {
-            scvb::SegmentView view;
-            INFO("group " << g);
-            REQUIRE(backend.openExistingReadOnly(L"Local\\" + scvb::segmentLogicalName(g, scvb::SegmentKind::kRegistry),
-                                                 view) == scvb::InitResult::kFailed);
-        }
+        // 断言的是**增量**而不是「一个都不存在」:命名段是机器全局的,同机跑着的另一个测试
+        // 二进制、残留的 peer 进程、甚至真装了 SCVB 的 DAW,都可能正持着某组 registry ——
+        // 拿「全不存在」当判据,测的就成了机器状态而不是 Monitor 的行为(第一版就是这么写的,
+        // 一个上一轮残留的 scvb_ipc_peer 就把它打红了)。
+        REQUIRE(registrySnapshot(backend) == registryBefore);
     }
 
     // ---- ② 写方建段 + 发布一帧 ----

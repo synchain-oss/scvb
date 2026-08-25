@@ -68,14 +68,20 @@ void MonitorEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& 
 
 juce::var MonitorEditor::buildSnapshot()
 {
+    // 整体持生命周期锁:下面读 processor_ 的 viz 快照与组号,而宿主可以在别的线程上
+    // prepareToPlay / releaseResources / setStateInformation,[M] 定时器也在 refreshViz 里改写同一份数据。
+    const juce::ScopedLock lock(processor_.lifecycleLock());
     // 与 Input/Output 同款:每次 requestInitialState(含 WebView 重载)都清 diff 基线,
     // 下一个 emitTick 重发各事件首帧。
     //
     // **本函数可重入、无副作用** —— 这是对消费侧的一条承诺,别往里加带副作用的东西:
     // 页面把「已 online 却持续拿不到车道」的自愈路建在重复调用它上面(重拉一次必带车道的首帧),
     // 而 WebView 每刷新一次也会走这条路。净效果只有「下一个 tick 四个事件各重发一次首帧」:
-    // 不建段、不碰共享内存(只读进程内的 vizSnapshot() 副本)、不改 state、不触发 claim;
-    // 基类那侧的 bridgeReady_ = true 也是幂等赋值。
+    // 不建段、**不碰共享内存**(读的是 [M] 已落进 processor_ 的那一帧,不是段本身)、
+    // 不改 state、不触发 claim;基类那侧的 bridgeReady_ = true 也是幂等赋值。
+    //
+    // 注:`vizSnapshot()` 返回的是**成员的 const 引用,不是副本** —— 早先这行注释写成「副本」,
+    // 那是错的,而且这个错误前提被写进了给消费侧的承诺里。真正让它安全的是上面那把锁。
     lastStateJson_.clear();
     lastGroupsJson_.clear();
     lastVizJson_.clear();
@@ -257,6 +263,9 @@ juce::var MonitorEditor::buildPlayheadPayload() const
 
 void MonitorEditor::emitTick()
 {
+    // 整体持锁,理由同 buildSnapshot()。四个事件的载荷都从 processor_ 读,必须在同一把锁下
+    // 取到自洽的一帧 —— 否则 scvb.state 的 group_id 与 scvb.viz 的车道可能来自换组前后两侧。
+    const juce::ScopedLock lock(processor_.lifecycleLock());
     // 隐藏(关闭/最小化)时事件一律被丢弃 —— **早退**,别先把 15×1024 车道构造成 juce::var
     // 再序列化成约 100KB 字符串然后整个扔掉。基线不推进这条判断本身是对的(恢复可见后要补发),
     // 只是构造代价得被同一个判据挡住,不能只挡在 emitIfChanged 的末尾。
@@ -344,7 +353,8 @@ void MonitorEditor::handleSetObservedGroup(const juce::Array<juce::var>& args, W
     processor_.setObservedGroup(requested);
     auto* ok = new juce::DynamicObject();
     ok->setProperty("ok", true);
-    ok->setProperty("groupId", processor_.groupId()); // 实际生效值经回执 + scvb.state 双回推
+    // 键名与同文件其余三处一致(§0.2 规则① / A-30 的 snake_case)。实际生效值经回执 + scvb.state 双回推。
+    ok->setProperty("group_id", processor_.groupId());
     complete(juce::var(ok));
 }
 
