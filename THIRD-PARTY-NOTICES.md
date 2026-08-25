@@ -17,7 +17,7 @@ Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT
 | Space Grotesk(子集 `web/fonts/SpaceGrotesk.woff2`) | 2.000(`text=` 子集) | OFL-1.1 | https://github.com/floriankarsten/space-grotesk |
 | IBM Plex Sans(子集 `web/fonts/IBMPlexSans.woff2`) | 3.201(`text=` 子集) | OFL-1.1 | https://github.com/IBM/plex |
 | IBM Plex Mono(子集 `web/fonts/IBMPlexMono.woff2`) | 2.3(`text=` 子集) | OFL-1.1 | https://github.com/IBM/plex |
-| Noto Sans SC(子集 `web/fonts/NotoSansSC.woff2`) | 2.004(`text=` 子集) | OFL-1.1 | https://github.com/notofonts/noto-cjk |
+| Noto Sans SC(子集 `web/fonts/NotoSansSC.woff2`) | 2.004-H2(上游全量可变字体本地子集) | OFL-1.1 | https://github.com/google/fonts/tree/main/ofl/notosanssc |
 
 ## 仅构建 / 测试 / CI 使用(不链接进 `.vst3`,不随产物分发)
 
@@ -40,8 +40,11 @@ Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT
   特例块声明 AGPL-3.0-or-later;`.gitattributes` 另标 `linguist-vendored`。
 - **字体是被 `juce_add_binary_data` 编进 `.vst3` 分发的**,不是仓库里躺着的素材,所以 OFL-1.1 的
   随附义务在本仓成立:`LICENSES/OFL-1.1.txt` 存全文,本表存各家族版权行与来源,发布 zip 内同样携带。
-- **字体子集化 = 对字体的修改**(OFL-1.1 §3),四款子集由 `scripts/fetch_fonts.py` 从 Google Fonts
-  `text=` 接口生成。Reserved Font Name(RFN)逐家族核验:
+- **字体子集化 = 对字体的修改**(OFL-1.1 §3),四款子集都由 `scripts/fetch_fonts.py` 生成,但取源
+  分两路:拉丁三款走 Google Fonts CSS2 `text=` 接口(Google 侧子集化),`Noto Sans SC` 下载
+  google/fonts 上游全量可变字体后**本地 `fontTools` 子集化**(CJK 字符数已超出 `text=` 的 GET URL
+  上限,理由与实测数据见 `web/fonts/README.md`)。两路都保留 name 表的版权与许可条目
+  (`--name-IDs='*'`),OFL-1.1 §4 的署名随产物分发。Reserved Font Name(RFN)逐家族核验:
   - **Space Grotesk**:无 RFN,子集命名不受限。
   - **IBM Plex Sans / IBM Plex Mono**:RFN 为 **"Plex"**。当前子集仍以 `IBMPlexSans.woff2` /
     `IBMPlexMono.woff2` 及 `@font-face` family `'IBM Plex Sans'` / `'IBM Plex Mono'` 分发,用到了 RFN。
