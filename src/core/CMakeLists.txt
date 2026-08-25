@@ -37,6 +37,7 @@ add_library(scvb_core STATIC
   analysis/Reanalysis.h
   analysis/Hungarian.cpp
   analysis/Hungarian.h
+  analysis/AnalysisPipeline.cpp
   analysis/AutoAssign.cpp
   analysis/AutoAssign.h
   ipc/SegmentLayout.h
