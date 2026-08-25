@@ -41,8 +41,10 @@ Output state `ui` 子树新增 **`master_chart_mode`**:Tab1「声像 / 音量分
 - **不需要写迁移函数**:字段是纯增量、有确定性默认值,不改变任何既有字段的编码或含义,
   故 `abi` **不必递增**。若 native 侧选择在同一批里做别的 schema 改动而递增了 `abi`,
   本字段随那次迁移一并带上即可(「读到低版本 → 迁移函数升格」时把本键补成默认值)。
-- 反向兼容(**新工程被旧版本读到**):旧版本的 `setStateInformation` 不认识这个键,按其既有
-  的「忽略未知键」路径丢弃 —— 用户看到的是视图回到分布档,无其它影响。
+- **编码落点 = 独立 fourcc 块 `UICF`**(`kFourccUiConfig`,定长 4 字节 u32:`0`=distribution / `1`=trajectory),
+  **非** CFGS 尾字段。反向兼容(**新工程被旧版本读到**)因此是**零丢失**:旧版本不认识的 `UICF` 块
+  按容器「未知 fourcc 原样保留、save 原样回写」机制保真回写,只是不显示该偏好(视图停在分布档),
+  **不会**与 CFGS/CRVS 的解析纠缠、更不会丢段数据。
 
 ### 建议的桥写入口(最小增量)
 
@@ -68,7 +70,7 @@ Output state `ui` 子树新增 **`master_chart_mode`**:Tab1「声像 / 音量分
 3. `web/shared/bridge.js` —— 把名字从 `PENDING_FUNCS` **挪进** `BRIDGE_FUNCTIONS.output`
    (留在 `PENDING_FUNCS` 里等于让它绕过 parity 门禁,那才是真正的洞);
 4. `docs/STATE_SCHEMA.md` —— 并入上面的「字段定义」;
-5. **宪法 `params-v0.md` 的 Output state `ui` 组枚举行** —— 即
+5. **(延后 + 本 PR 披露)** **宪法 `params-v0.md` 的 Output state `ui` 组枚举行** —— 即
    `ui: {scale, language, active_tab, guide_seen, tour_seen}   # J50/J62`
    (`docs/constitution/params-v0.md` 第 65 行)加上 `master_chart_mode`。
    **先例就在这一行**:`active_tab` / `guide_seen` / `tour_seen` 三个同类 UI 偏好
@@ -81,6 +83,10 @@ Output state `ui` 子树新增 **`master_chart_mode`**:Tab1「声像 / 音量分
    只改 repo 副本 = 门禁当场红。正确做法:走**宪法升版**流程改
    `masterPlan/constitution/params-v0.md` 原件,再同步副本 —— 这比契约变更更重,
    须在转正 PR 里单独说明并取得批准。
+
+   **本 PR(DS 侧 native 落地)将此第 5 处延后走修宪流程**(统筹 C10 / J75 卡:
+   masterPlan 原件改动 → 副本同步),并在 PR 描述显式披露 —— **本 PR 合并即用户
+   知情批准该延后**。
 
 ### 本 PR 的 web 侧落地(不碰冻结面)
 
@@ -100,7 +106,8 @@ Output state `ui` 子树新增 **`master_chart_mode`**:Tab1「声像 / 音量分
 
 - **既有工程**:无影响。旧 chunk 没有该键 → 默认档 → 与本次改动之前的界面行为逐字相同。
 - **既有 DAW 自动化**:无影响。参数面 123 个一字未动,本字段不可自动化、不进参数通道。
-- **新旧版本互通**:无破坏。新版写的工程被旧版读到只是丢一个显示偏好;旧版工程被新版读到走默认档。
+- **新旧版本互通**:无破坏。新版写的工程被旧版读到,`UICF` 块按容器「未知 fourcc 原样保留回写」机制
+  **零丢失**保真(只是视图停在分布档);旧版工程被新版读到走默认档。
 - **abi**:按上文,本字段自身**不要求** `abi+1`。
 - **实时线程**:无影响。`[M]` 消息线程写入,`processBlock` 不读不写。
 

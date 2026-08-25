@@ -65,10 +65,15 @@ ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen}   # 
 | 运行时态 | 否(不同于 `print_guard` / `recapture` / `analysis_run` 三件) |
 
 **迁移语义**(abi 不递增):
-- 读到没有该键的旧工程 → 默认 `"distribution"`,不报错、不提示。
-- 读到未知取值 → 回落 `"distribution"`。
+- 读到没有 `UICF` 块的旧工程 → 默认 `"distribution"`,不报错、不提示。
+- 读到未知取值(块内 u32 ≥2)→ 回落 `"distribution"`。
+- 长度非法(≠4 字节)→ 按 §7.3 拒载该块并回落默认(不可信字节路径先校验后使用)。
 - 不需要写迁移函数:字段是纯增量、有确定性默认值,不改变任何既有字段的编码或含义。
-- 编码落点:CFGS chunk 尾字段(u32,`0`=distribution / `1`=trajectory);旧 chunk 无该 4 字节即默认档。
+- 编码落点:**独立 fourcc 块 `UICF`**(`kFourccUiConfig`,定长 4 字节 u32:`0`=distribution / `1`=trajectory)。
+
+**双向兼容**:
+- 新版写 → 旧版读:旧版不认识的 `UICF` 块按容器「未知 fourcc 原样保留、save 原样回写」机制**零丢失**保真,只是不显示该偏好(视图停在分布档)。
+- 旧版写(无 `UICF`)→ 新版读:无该块 → 默认 `distribution`。
 
 ## 二、Input state
 
@@ -100,6 +105,7 @@ ui: {scale, language}
 | `CFGS` | group_id / global / analysis(vad / segmentation / transition_ramp_ms / loudness_mode / center_slot_policy)/ channels[15] —— 含 source_channels / participate_in_auto_pan / print 设置 | ValueTree 二进制 |
 | `CRVS` | versions[2] 曲线真身 + pan_curve + versionMeta(含 name)+ 每轨 excluded_ranges | 自定义紧凑二进制(u16 minor 版本;segment = {i64 t0, i64 t1, f32 pan, f32 vol_db, u32 flags}) |
 | `FEAT` | 特征流(per-channel kw_ms/peak/vad_posterior/coverage);embedded 标志与 sidecar 引用 | zlib(RFC 1950,miniz),节内编码见 §四 |
+| `UICF` | ui.master_chart_mode([J75] T43;`0`=distribution / `1`=trajectory) | 自定义紧凑二进制(定长 4 字节 u32) |
 
 - **未知 fourcc 的块在 load 时原样保留、save 时原样回写**(前向小版本兼容);不设独立 SDCR chunk——sidecar 引用是 FEAT 节内 embedded=0 分支。
 - **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + UI 横幅提示升级;`preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据);③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
