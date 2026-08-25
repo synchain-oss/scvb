@@ -42,8 +42,9 @@ const TM = await import(u("web/output/tab-master.js"));
 const MT = await import(u("web/output/canvas/meter.js"));
 const { createBridge } = await import(u("web/shared/bridge.js"));
 const { T } = await import(u("web/shared/i18n.js"));
-const { demoChannelLabel } = await import(u("web/shared/demo-track.js"));
-const { DEMO_LABELS } = await import(u("web/shared/mock-data.js"));
+const { DEMO_LABELS, localizeDemoChannels } = await import(
+    u("web/shared/mock-data.js")
+);
 
 let fail = 0;
 const log = (...a) => console.log(...a);
@@ -1151,14 +1152,15 @@ log("\n=== ⑨ 渲染调度:rAF 合帧 + 按行增量(T33 性能批)===");
 }
 
 // =============================================================================
-log("=== ⑩ 主列表 demo 轨名本地化(EN/FR 无 CJK + 两两互异)===");
+log("=== ⑩ 主列表 demo 轨名本地化(store 层;三语 + 非 demo 不改写)===");
 {
     const cjk = /[\u4e00-\u9fff]/;
-    // demo 原值(zh)= mock-data DEMO_LABELS —— demo 模式下主列表 15 轨显示的就是这 15 条。
     eq(DEMO_LABELS.length, 15, "demo 轨名 15 条");
+    // demo 快照 channels 形状(label = zh demo 原值;其余字段随它)
+    const demoChannels = DEMO_LABELS.map((label, i) => ({ ch: i + 1, label }));
     for (const lang of ["en", "fr"]) {
-        const names = DEMO_LABELS.map((label, i) =>
-            demoChannelLabel(i + 1, label, T[lang]),
+        const names = localizeDemoChannels(demoChannels, lang, T).map(
+            (c) => c.label,
         );
         check(names.length === 15, `${lang} 主列表 15 轨名齐备`);
         check(
@@ -1166,23 +1168,27 @@ log("=== ⑩ 主列表 demo 轨名本地化(EN/FR 无 CJK + 两两互异)===");
             `${lang} 主列表 15 轨名无 CJK(实得 ${names.join(" / ")})`,
         );
         check(new Set(names).size === 15, `${lang} 主列表 15 轨名两两互异`);
-        // 真实 DAW 轨名(kChannelUIDKey)永不改写:非 demo 原值原样返回。
-        eq(
-            demoChannelLabel(1, "My Vocal Track", T[lang]),
-            "My Vocal Track",
-            `${lang} 真实轨名不被改写`,
-        );
     }
-    // zh 原值不变:demo 轨名在 zh 下仍是 DEMO_LABELS 原值。
+    // zh 原值不变。
     eq(
-        DEMO_LABELS.map((label, i) => demoChannelLabel(i + 1, label, T.zh)),
+        localizeDemoChannels(demoChannels, "zh", T).map((c) => c.label),
         DEMO_LABELS,
         "zh 主列表轨名保持原值",
     );
-    // 无字典(纯函数调用)不本地化。
+    // 真实/用户轨名(非 demo 词条)永不改写:撞名误伤的回归门禁。
+    const edited = [
+        { ...demoChannels[0], label: "My Vocal" },
+        ...demoChannels.slice(1),
+    ];
     eq(
-        demoChannelLabel(1, DEMO_LABELS[0], null),
-        DEMO_LABELS[0],
+        localizeDemoChannels(edited, "en", T)[0].label,
+        "My Vocal",
+        "用户改过的 label 不被本地化覆盖",
+    );
+    // 无字典不本地化(仍返回 zh 原值)。
+    eq(
+        localizeDemoChannels(demoChannels, "en", null).map((c) => c.label),
+        DEMO_LABELS,
         "不传字典保持原 label",
     );
 }

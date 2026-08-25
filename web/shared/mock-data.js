@@ -309,6 +309,37 @@ export const DEMO_LABEL_KEYS = Object.freeze(
  *  PR #32 deepseek-review 建议 5:版本名同为我方 demo 内容,切语言应可跟随)。 */
 export const DEMO_VERSION_NAME_KEY = "demo.versionName";
 
+/**
+ * demo 轨名本地化(仅 web-preview mock 在**构建 demo store/fixture** 时调用;
+ * 真实插件数据永不经过 mock 构建 → 零误伤 —— 与 tour.js buildDemoStore 同一落点)。
+ *
+ * 把 demo 快照的 channels[].label 换成目标语言的 demo.ch* 词条;**仅当某轨 label 仍是
+ * demo 词条(zh/en/fr 任一语言的 demo.ch* 原值)才换**,用户改过的 label(非 demo 词条)
+ * 原样保留 —— 这样四消费面(轨列表 / wave 泳道轨头 / Lead Select / 改名框)读到的
+ * 是同一份已本地化的 label,不再渲染层各打补丁。
+ *
+ * @param {object[]} channels demo 快照的 channels(15 条,label 为 demo 词条)
+ * @param {string} lang       目标语言 "zh"|"en"|"fr"
+ * @param {object} T          三语字典 { zh, en, fr }(调用方 import 传入;
+ *                            本文件不 import i18n.js,依赖方向不变)
+ * @returns {object[]} 新的 channels(不改写入参;非 demo label 的轨原样保留)
+ */
+export function localizeDemoChannels(channels, lang, T) {
+    if (!Array.isArray(channels) || !T) return channels;
+    const t = T[lang] || {};
+    return channels.map((c, i) => {
+        const key = "demo.ch" + (i + 1);
+        const demo = new Set([DEMO_LABELS[i]]);
+        for (const l of ["zh", "en", "fr"]) {
+            const v = T[l] && T[l][key];
+            if (v) demo.add(v);
+        }
+        if (!demo.has(c.label)) return c;
+        const next = t[key];
+        return next ? { ...c, label: next } : c;
+    });
+}
+
 /** tour demo 的 stereo 轨号(source_channels=2;J60 → participate_in_auto_pan 默认 false)。 */
 export const DEMO_STEREO_CHANNELS = Object.freeze(
     DEMO_TRACKS.filter((t) => t.sourceChannels === 2).map((t) => t.ch),

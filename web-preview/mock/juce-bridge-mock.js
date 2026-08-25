@@ -53,6 +53,7 @@ import {
     PENDING_FUNCS,
 } from "../../web/shared/bridge.js";
 import { DESIGN } from "../../web/shared/design-box.js";
+import { T } from "../../web/shared/i18n.js";
 import {
     CHANNEL_COUNT,
     VERSION_COUNT,
@@ -63,6 +64,7 @@ import {
     makeWaveformTile,
     coverageRangesOf,
     CHART_MODES,
+    localizeDemoChannels,
 } from "../../web/shared/mock-data.js";
 
 // -----------------------------------------------------------------------------
@@ -264,6 +266,17 @@ function makeContext(role, world) {
     const snapshot = clone(
         role === "output" ? world.output.snapshot : world.input.snapshot,
     );
+
+    // demo 轨名本地化(仅 mock 构建层;真实插件数据不经过这里 → 零误伤):
+    // 把 demo 快照 channels[].label 换成当前语言的 demo.ch* 词条,四消费面
+    // (轨列表 / wave 泳道轨头 / Lead Select / 改名框)读同一份,渲染层直接读 label。
+    if (role === "output" && Array.isArray(snapshot.channels)) {
+        snapshot.channels = localizeDemoChannels(
+            snapshot.channels,
+            (snapshot.ui && snapshot.ui.language) || "zh",
+            T,
+        );
+    }
 
     const model = {
         role,
@@ -1505,7 +1518,15 @@ function buildOutputBackend(ctx) {
         // ---- §1.30(未知 code 回退 zh 并回推实际值)------------------------------
         setLang(code) {
             const next = ENUMS.language.includes(code) ? code : "zh";
-            patchState({ ui: { language: next } });
+            patchState({
+                ui: { language: next },
+                // demo 轨名随语言重定位(仅 mock;用户改过的 label 不在 demo 词条内 → 不动)
+                channels: localizeDemoChannels(
+                    model.snapshot.channels,
+                    next,
+                    T,
+                ),
+            });
             return OK();
         },
 
