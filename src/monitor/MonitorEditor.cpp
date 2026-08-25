@@ -36,15 +36,16 @@ MonitorEditor::MonitorEditor(ScvbMonitorAudioProcessor& processor)
     : WebViewHost(processor,
                   [&processor, this]() {
                       scvb::webview::WebViewHost::Config c;
-                      // role 取 "monitor":designBoxWindowSize / parseUiScaleArg 对非 "input" 一律
-                      // 回落 Output 档位(1180×780,7 档)—— Monitor 自己的设计盒尺寸依内容定,归 T46
-                      // (05 J75 节 C),本卡先借 Output 盒,机制同款。
+                      // role 取 "monitor":设计盒 **960×720 / 七档**,真源 =
+                      // web/shared/design-box.js 的 DESIGN.monitor → gen-design-box.py 生成
+                      // src/core/DesignBox.h 的 kMonitorDesignW/H + kMonitorPresets,
+                      // designBoxWindowSize 与 parseUiScaleArg 都有 monitor 分支(05 J75 节 C,尺寸由 T46 定稿)。
                       c.role = "monitor";
                       c.userDataFolderName = "SCVBMonitorWV2"; // 与 Input/Output 各自独立(UDF per-plugin)
                       c.version = JucePlugin_VersionString;
                       c.lang = processor.uiLanguage();
                       c.uiScale = static_cast<float>(processor.uiScalePercent()) / 100.0f;
-                      c.channelLimit = 15;
+                      c.channelLimit = static_cast<int>(scvb::kMaxChannels);
                       c.resourceSource = {}; // web/monitor 资源嵌入归 T46(与 Input/Output 现状同口径)
                       c.augmentOptions = [this](juce::WebBrowserComponent::Options& options) {
                           registerNativeFunctions(options);
@@ -75,11 +76,14 @@ juce::var MonitorEditor::buildSnapshot()
     lastPlayheadJson_.clear();
     sentLanes_ = false; // 快照已带车道,但基线复位让下一 tick 也必带一次(WebView 重载安全)
     lastSentLaneRevision_ = 0;
+    lastSentLaneGroup_ = -1;
     lastGroupsMs_ = 0;
     lastVizMs_ = 0;
 
-    // 形状按消费侧(T46)要的来:{abi, version, groupId, groups_online, ui:{scale,language}, viz:<首帧>}。
+    // 形状:{abi, version, group_id, groups_online, ui:{scale,language}, viz:<首帧,必带车道>}。
     // 首帧带上 viz —— 否则页面要空等一整个低频发布周期(250ms)才出图。
+    // 键名拼写照契约 §0.2 规则①与裁定 A-30:镜像宪法 state 字段的键**逐字 snake_case**
+    // (`group_id` / `ui:{scale, language}` / `groups_online`);camelCase 在 §8.3 明记为旧文。
     auto* ui = new juce::DynamicObject();
     ui->setProperty("scale", uiScale());
     ui->setProperty("language", lang());
@@ -87,7 +91,7 @@ juce::var MonitorEditor::buildSnapshot()
     auto* obj = new juce::DynamicObject();
     obj->setProperty("abi", static_cast<int>(scvb::kScvbAbi));
     obj->setProperty("version", pluginVersion_);
-    obj->setProperty("groupId", processor_.groupId());
+    obj->setProperty("group_id", processor_.groupId());
     obj->setProperty("groups_online", static_cast<int>(processor_.groupsOnline()));
     obj->setProperty("ui", juce::var(ui));
     // 首帧 viz **必带车道** —— 否则页面要空等一整个 4Hz 周期才出图。
@@ -97,10 +101,15 @@ juce::var MonitorEditor::buildSnapshot()
 
 juce::var MonitorEditor::buildStatePayload() const
 {
+    // 拼写同上:`group_id` + 嵌套 `ui:{scale, language}`,与快照回执**同一种键名**
+    // (A-30:同一 state 字段全契约只有一种拼写)。
+    auto* ui = new juce::DynamicObject();
+    ui->setProperty("scale", uiScale());
+    ui->setProperty("language", lang());
+
     auto* obj = new juce::DynamicObject();
-    obj->setProperty("groupId", processor_.groupId());
-    obj->setProperty("uiScale", uiScale());
-    obj->setProperty("language", lang());
+    obj->setProperty("group_id", processor_.groupId());
+    obj->setProperty("ui", juce::var(ui));
     obj->setProperty("viz", vizStateName(processor_.vizState()));
     obj->setProperty("fresh", processor_.vizFresh());
     return juce::var(obj);
@@ -134,7 +143,7 @@ juce::var MonitorEditor::buildVizPayload(bool includeLanes) const
     obj->setProperty("online", online);
     obj->setProperty("fresh", processor_.vizFresh());
     // 帧自带组号:换组后若有在途帧,消费侧可据此丢弃 —— 不必依赖「事件一定按序到达」这条假设。
-    obj->setProperty("groupId", processor_.groupId());
+    obj->setProperty("group_id", processor_.groupId());
     obj->setProperty("seq", static_cast<int>(v.seq));
     obj->setProperty("publishMs", static_cast<juce::int64>(v.publishMs));
     obj->setProperty("sampleRate", static_cast<int>(v.sampleRate));
@@ -242,6 +251,13 @@ juce::var MonitorEditor::buildPlayheadPayload() const
 
 void MonitorEditor::emitTick()
 {
+    // 隐藏(关闭/最小化)时事件一律被丢弃 —— **早退**,别先把 15×1024 车道构造成 juce::var
+    // 再序列化成约 100KB 字符串然后整个扔掉。基线不推进这条判断本身是对的(恢复可见后要补发),
+    // 只是构造代价得被同一个判据挡住,不能只挡在 emitIfChanged 的末尾。
+    if (!webView().isVisible())
+    {
+        return;
+    }
     const auto now = scvb::steadyNowMs();
 
     // scvb.playhead:每 tick(WebViewHost 定时器 25Hz —— 宿主给到的上限就是这个)。
@@ -256,7 +272,9 @@ void MonitorEditor::emitTick()
     {
         lastGroupsMs_ = now;
         auto* obj = new juce::DynamicObject();
-        obj->setProperty("online", static_cast<int>(processor_.groupsOnline()));
+        // 契约 §2.4 逐字:`{ groups_online: u8 }`。曾经发的是 `{ online }` —— 与 Output 侧不一致,
+        // 消费侧读不到就是「八枚组胶囊的绿点永远不亮,而页面一切正常、零报错」。
+        obj->setProperty("groups_online", static_cast<int>(processor_.groupsOnline()));
         emitIfChanged(bridge::kEvGroups, juce::var(obj), lastGroupsJson_);
     }
 
@@ -266,13 +284,16 @@ void MonitorEditor::emitTick()
         lastVizMs_ = now;
         // 车道只在 revision 变化(或从未送过)时带 —— 稳态帧就是一小把标量。
         const auto rev = processor_.vizSnapshot().laneRevision;
-        const bool needLanes = !sentLanes_ || rev != lastSentLaneRevision_;
+        const int grp = processor_.groupId();
+        // 组号进基线:lane_revision 每组各自从 0 起递增,只比 revision 会在撞值时永久漏发。
+        const bool needLanes = !sentLanes_ || rev != lastSentLaneRevision_ || grp != lastSentLaneGroup_;
         if (emitIfChanged(bridge::kEvViz, buildVizPayload(needLanes), lastVizJson_) && needLanes)
         {
             // 只在**事件真的发出去**之后才推进基线:编辑器隐藏时事件被丢弃,
             // 若此时推进,恢复可见后就再也不会补发车道了(PR#54 R4 同款教训)。
             sentLanes_ = true;
             lastSentLaneRevision_ = rev;
+            lastSentLaneGroup_ = grp;
         }
     }
 }

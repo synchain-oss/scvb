@@ -109,7 +109,7 @@ TEST_CASE("MON-CHAIN 全数据链:发布→读到→组切换→退出空态→�
         REQUIRE_FALSE(v.covered(2, 0));
         // 每轨当前值与轨名(T46 的分布图/图例数据面)。
         REQUIRE(v.panNow[0] == scvb::vizPackPan(-50.0)); // 播放头在 0s,轨1 段内 pan=-50
-        REQUIRE(v.widthPct[0] == scvb::vizPackFixed(80.0));
+        REQUIRE(v.widthPct[0] == scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
         REQUIRE(v.label[0] == "Lead");
         REQUIRE(v.trackColor[14] == 15);
     }

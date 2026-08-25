@@ -83,7 +83,7 @@ public:
     enum class VizState
     {
         kOffline, // 段不存在 / 未 attach —— Output 未在该组上线:空态
-        kOnline, // attach 成功且读到过一帧
+        kOnline, // 段已 attach 且可读(**不含**「帧还在更新」—— 那是 vizFresh() 的事)
         kAbiMismatch // magic 相符 abi/几何不符 —— 拒连横幅(J40),不半兼容
     };
     VizState vizState() const { return vizState_; }
@@ -111,6 +111,14 @@ private:
 
     // viz 帧陈旧阈值:发布器 4Hz,连续 8 拍(2s)没新帧即判写方停摆。
     static constexpr std::uint64_t kVizStaleMs = 2000;
+
+    // 串行化「段生命周期」与「[M] 读段」——与 Input/Output 两个先例同款
+    // (`docs/SCVB_CONTRACT.md` §0.3 第 5 条逐字要求)。宿主可以从任意线程调
+    // prepareToPlay / releaseResources / setStateInformation,而 [M] 定时器同时在
+    // refreshViz() 里读同一份映射:无锁的话失败模式是**宿主访问违例**(解映射与读并发),
+    // 不是数据轻微不一致。锁只在 [M] 与宿主生命周期回调上,**进不了 processBlock**
+    // (CLAUDE.md §8:RT 路径无锁),直通那条路一个字节都没动。
+    juce::CriticalSection lifecycleMutex_;
 
     // [A] → [M] 播放头快照(SPSC seqlock,进程内非 IPC;与 Output 的 C8 同款)。
     scvb::engine::PlayheadShot playheadShot_;
