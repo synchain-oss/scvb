@@ -16,16 +16,20 @@ namespace
 constexpr const char* kKeyGuideSeen = "guide_seen_global";
 constexpr const char* kKeyTourSeen = "tour_seen_global";
 // 缩放档位**按角色分键**:两插件的档位表不同(Output {0.5…2} / Input {0.33…3}),
-// 共用一个键会在 Input 也实现 §3.6 落盘后互相污染(Input 存 300 → Output 构造读回 300,
-// 而 300 不在 Output 档位里)。inRange 用的是并集边界,拦不住这种污染。
+// 共用一个键会在 Input 也实现 §3.6 落盘后互相污染 —— Input 存 300、Output 构造读回 300,
+// 而 300 根本不在 Output 的七档里。分键 + 下面 inRange 的精确档位表校验,两道一起才闭合。
 // 两个 *_seen_global 是 Output 专属(Input 没有引导页/导览),无需分键。
 constexpr const char* kKeyUiScale = "ui_scale_percent_output";
 
-// 落盘值必须**在 Output 自己的档位表里**(真源 = scvb::design::kOutputPresets,
-// 由 web/shared/design-box.js 生成;§1.28「C++ 不得二次硬编码档位」)。
-// 不用 plugin::Min/MaxUiScale —— 那是两插件档位表的**并集**(0.33–3.0),而本值一落盘
-// 就直接决定下次开窗的尺寸:放行 300 会让 Output 开成 3540×2340(300 根本不在它的七档里)。
-// §7.3 的不可信字节纪律正冲这种「写进磁盘、下次直接生效」的位置。
+// 落盘值必须**逐值命中 Output 自己的档位表**(真源 = scvb::design::kOutputPresets,
+// 由 web/shared/design-box.js 生成;§1.28「C++ 不得二次硬编码档位」),而不是
+// plugin::Min/MaxUiScale 那个两插件并集区间(0.33–3.0)。
+//
+// 这道校验挡的**不是**桥面写入口 —— handleSetUiScale 走 bridge::parseUiScaleArg,
+// 那里已经按 role 查过档位表,越档在桥层就是 badArg,进不到这里。它挡的是 §7.3 的
+// 不可信字节:磁盘文件被手改、或将来某个写者绕过桥面写进越档值。而本值一读回来就直接
+// 决定下次开窗尺寸(300 会让 Output 开成 3540×2340),是本文件里唯一「写进磁盘、
+// 下次开窗直接生效」的数值,正是该按不可信字节对待的位置。
 bool inRange(int percent)
 {
     for (const double f : scvb::design::kOutputPresets)

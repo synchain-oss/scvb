@@ -58,10 +58,27 @@ TEST_CASE("UiDefaultsStore:全局默认写一次、换实例读得回(T37 A-3)",
     REQUIRE_FALSE(ud::guideSeenGlobal());
     REQUIRE(ud::tourSeenGlobal()); // 两位互不干扰
 
+    // 档位表内(kOutputPresets 的 1.25)⇒ 写入 + 读回。
     ud::setUiScalePercent(125);
     REQUIRE(ud::uiScalePercent() == 125);
+    // 两端也要放行(顺带守 double→int 的往返:0.5×100 / 2×100 不能算出 49 或 199)。
+    ud::setUiScalePercent(50);
+    REQUIRE(ud::uiScalePercent() == 50);
+    ud::setUiScalePercent(200);
+    REQUIRE(ud::uiScalePercent() == 200);
+    ud::setUiScalePercent(125); // 复位到中间档,后面的拒绝用例好断言
 
-    // 档位越界 = 不可信值:既不写入,也不当作「已设置」读出。
+    // 越档 = 不可信值:既不写入,也不当作「已设置」读出。
+    // **关键用例是 300 与 90**:它们落在两插件档位表的并集区间 [33,300] 内,却不在
+    // Output 自己的七档里 —— 只有精确档位表校验才拦得住,原先的并集边界会放行。
+    // 300 正是分键注释里点名的污染值(Input 的最大档)。
+    ud::setUiScalePercent(300);
+    REQUIRE(ud::uiScalePercent() == 125);
+    ud::setUiScalePercent(90);
+    REQUIRE(ud::uiScalePercent() == 125);
+    ud::setUiScalePercent(110);
+    REQUIRE(ud::uiScalePercent() == 125);
+    // 并集区间之外的极端值同样拒绝。
     ud::setUiScalePercent(5000);
     REQUIRE(ud::uiScalePercent() == 125);
     ud::setUiScalePercent(1);
