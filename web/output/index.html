@@ -2404,7 +2404,7 @@
                    之后的列相对表头整体左移;600 行必出滚动条,所以是恒定发生的错位。
                    补右内边距把两边的可用宽度对齐(同款记账见 tab-tracks.js 的
                    TRACKS_VIEWPORT_W 推导链)。配对项 = 下面那条 scrollbar-gutter。 */
-                padding-right: calc(var(--sp-13) + 9px);
+                padding-right: calc(var(--sp-13) + var(--scrollbar-w));
             }
             .suggest-scroll {
                 flex: 1;
@@ -7297,13 +7297,17 @@
                                     aria-rowindex="1"
                                 ></div>
                                 <!-- 滚动容器 = rowgroup,数据行是它的**直接**子节点
-                                     (中间夹一层 div 会把 ARIA 的 grid→rowgroup→row 树打断);
-                                     strut 只负责撑出总高度,行各自绝对定位 -->
+                                     (中间夹一层 div 会把 ARIA 的 table→rowgroup→row 树打断);
+                                     strut 只负责撑出总高度,行各自绝对定位。
+                                     它是真正的 scroller,所以键盘可达性必须留在这个元素上;
+                                     而一个拿到 Tab 焦点的无名 rowgroup 读屏只会念「行组」,
+                                     故补 aria-label(rowgroup 支持可访问名)。 -->
                                 <div
                                     class="suggest-scroll"
                                     data-gb="suggest-scroll"
                                     role="rowgroup"
                                     tabindex="0"
+                                    data-t-aria="suggest.rowsAria"
                                 >
                                     <div
                                         class="suggest-strut"

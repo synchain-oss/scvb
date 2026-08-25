@@ -422,6 +422,7 @@ export const T = {
         "suggest.exportUnavailable":
             "本版本尚未接通导出——保存对话框待 native 侧落地",
         "suggest.tableAria": "建议表:每轨每段的声像 / 音量 / 宽度建议值",
+        "suggest.rowsAria": "建议表数据区,方向键滚动",
         "suggest.col.trackIndex": "轨",
         "suggest.col.trackLabel": "轨名",
         "suggest.col.sourceChannels": "声道",
@@ -1181,6 +1182,7 @@ export const T = {
             "Export is not wired up in this build yet — the save dialog is pending on the native side",
         "suggest.tableAria":
             "Suggestion table: pan / volume / width suggestions per track and segment",
+        "suggest.rowsAria": "Suggestion rows, arrow keys to scroll",
         "suggest.col.trackIndex": "Trk",
         "suggest.col.trackLabel": "Track name",
         "suggest.col.sourceChannels": "Ch",
@@ -1907,6 +1909,7 @@ export const T = {
             "L'export n'est pas encore raccordé dans cette version — la boîte de dialogue d'enregistrement est en attente côté natif",
         "suggest.tableAria":
             "Tableau de suggestions : suggestions de panoramique / volume / largeur par piste et par segment",
+        "suggest.rowsAria": "Lignes de suggestions, flèches pour faire défiler",
         "suggest.col.trackIndex": "Pst",
         "suggest.col.trackLabel": "Nom de piste",
         "suggest.col.sourceChannels": "Can",

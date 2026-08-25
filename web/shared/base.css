@@ -63,9 +63,12 @@ input::placeholder {
     background: var(--selection-bg);
 }
 
+/* 宽度真源 = tokens.css 的 --scrollbar-w:它是**布局量**,「滚动容器内 vs 容器外」
+   要对齐的排布都得减掉它(tab-tracks.js 的 TRACKS_VIEWPORT_W、[T41] 建议表表头)。
+   写死在这里的话,改宽度就得靠人记得去改另外几处。 */
 *::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
+    width: var(--scrollbar-w);
+    height: var(--scrollbar-w);
 }
 
 *::-webkit-scrollbar-track,

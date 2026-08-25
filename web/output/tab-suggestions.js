@@ -391,6 +391,8 @@ export function createTabSuggestions(opts) {
         src: null, // 行集输入签名(脏检查,见 render)
         pool: [], // 可复用的行节点(虚拟滚动,见 rowNodeAt)
         scrollRaf: 0,
+        trackCount: 0, // 行集里出现过的轨数(随行集算一次,renderChrome 只读)
+        staleTracks: 0, // 其中采集数据过期的轨数(§2.8 stale)
     };
 
     function t(key, fallback) {
@@ -546,20 +548,31 @@ export function createTabSuggestions(opts) {
         });
     }
 
+    /**
+     * 只在真变了时写 `textContent`。
+     * **不是微优化**:`.suggest-status` 与 `.suggest-stale` 都是 `role="status"
+     * aria-live="polite"`,而 textContent 的 setter 一律新建文本节点 —— 即使字串逐字
+     * 相同也是一次真实 DOM 变更,atomic live region 会照播。renderChrome() 每帧都跑
+     * (它读 local.busy / local.status / exportAvailable(),这三样不在脏检查签名里),
+     * 于是播放期读屏软件会被同一句话每秒轰 30 次。`renderRows` 里的单元格已经这么写了。
+     */
+    function setText(node, next) {
+        if (node && node.textContent !== next) node.textContent = next;
+    }
+
     function renderChrome() {
         const total = local.rows.length;
-        const tracks = new Set(local.rows.map((r) => r.trackIndex)).size;
         // 版本名从 state 读而不是从行里读:空表时也要说清「你看的是哪个版本的建议」
         const { versionName } = activeVersionOf(getStore());
 
         if (el.scope) {
-            el.scope.textContent = fill(
-                t("suggest.scope", "{v} · {t} 轨 · {n} 行"),
-                {
+            setText(
+                el.scope,
+                fill(t("suggest.scope", "{v} · {t} 轨 · {n} 行"), {
                     v: versionName,
-                    t: tracks,
+                    t: local.trackCount,
                     n: total,
-                },
+                }),
             );
         }
         if (el.empty) el.empty.hidden = total > 0;
@@ -574,19 +587,20 @@ export function createTabSuggestions(opts) {
             );
         }
 
-        // 过期采集提示:照着一张过期的表在 DAW 里设值,是本视图唯一会误导用户的场景
-        const staleTracks = new Set(
-            local.rows.filter((r) => r.stale).map((r) => r.trackIndex),
-        ).size;
+        // 过期采集提示:照着一张过期的表在 DAW 里设值,是本视图唯一会误导用户的场景。
+        // 计数在 render() 的脏块里算(两趟 O(行数) 扫描 + 两个 Set,600 行时不该每帧跑)。
         if (el.stale) {
-            el.stale.hidden = staleTracks === 0;
-            if (staleTracks > 0) {
-                el.stale.textContent = fill(
-                    t(
-                        "suggest.staleNote",
-                        "其中 {n} 条轨的采集数据已过期——建议先重新采集再照表设值。",
+            el.stale.hidden = local.staleTracks === 0;
+            if (local.staleTracks > 0) {
+                setText(
+                    el.stale,
+                    fill(
+                        t(
+                            "suggest.staleNote",
+                            "其中 {n} 条轨的采集数据已过期——建议先重新采集再照表设值。",
+                        ),
+                        { n: local.staleTracks },
                     ),
-                    { n: staleTracks },
                 );
             }
         }
@@ -613,9 +627,7 @@ export function createTabSuggestions(opts) {
                 (total > 0 && !exportAvailable()
                     ? { key: "suggest.exportUnavailable", tone: "warn" }
                     : null);
-            el.status.textContent = s
-                ? fill(t(s.key, s.key), s.args || {})
-                : "";
+            setText(el.status, s ? fill(t(s.key, s.key), s.args || {}) : "");
             el.status.hidden = !s;
             el.status.setAttribute("data-tone", (s && s.tone) || "info");
         }
@@ -633,6 +645,17 @@ export function createTabSuggestions(opts) {
             local.src = suggestionsSignature(st);
             local.rows = buildSuggestionRows(st);
             local.rendered = { start: -1, end: -1 }; // 行集换了,可见行必须重建
+            // 两个计数只随行集变 —— 放这里算,renderChrome 只读。
+            // (renderChrome 本身不能整块被 dirty 挡掉:local.busy / local.status /
+            //  exportAvailable() 都不在签名里,它们变了也得重画。)
+            const seen = new Set();
+            const staleSeen = new Set();
+            for (const r of local.rows) {
+                seen.add(r.trackIndex);
+                if (r.stale) staleSeen.add(r.trackIndex);
+            }
+            local.trackCount = seen.size;
+            local.staleTracks = staleSeen.size;
         }
         renderChrome();
         renderRows(dirty);
@@ -758,6 +781,8 @@ export function createTabSuggestions(opts) {
                 cancelAnimationFrame(local.scrollRaf);
             }
             local.scrollRaf = 0;
+            // 清池子的同时把节点从 DOM 摘掉 —— 只清数组的话上一屏还挂在滚动容器里
+            if (el.scroll) el.scroll.replaceChildren(el.strut || "");
             local.pool.length = 0;
         },
     };

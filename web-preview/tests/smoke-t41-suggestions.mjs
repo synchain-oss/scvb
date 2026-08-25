@@ -773,14 +773,56 @@ log("=== ⑩ 源码不变式 ===");
     // 表头在滚动容器外、数据行在其 padding box 内 —— 9px 竖滚动条(base.css)会把两边
     // 错开。两条配对修复缺一不可:表头补右内边距 + 滚动槽恒定预留。
     check(
-        /\.suggest-thead\s*\{[^}]*padding-right:\s*calc\(var\(--sp-13\) \+ 9px\)/.test(
+        /\.suggest-thead\s*\{[^}]*padding-right:\s*calc\(var\(--sp-13\) \+ var\(--scrollbar-w\)\)/.test(
             html,
         ),
-        "表头补了 9px 右内边距(与竖滚动条同宽)",
+        "表头补了一个滚动条宽的右内边距",
     );
     check(
         /\.suggest-scroll\s*\{[^}]*scrollbar-gutter:\s*stable/.test(html),
-        "滚动槽恒定预留(否则行少不溢出时反过来错 9px)",
+        "滚动槽恒定预留(否则行少不溢出时反过来错一个滚动条宽)",
+    );
+    // 滚动条宽度是**布局量**,三处消费同一个 token,改一处不必人记着改另两处
+    const tokens = src("web/shared/tokens.css");
+    const base = src("web/shared/base.css");
+    check(
+        /--scrollbar-w:\s*9px/.test(tokens),
+        "tokens.css 立了 --scrollbar-w 真源",
+    );
+    check(
+        /-webkit-scrollbar\s*\{[^}]*width:\s*var\(--scrollbar-w\)/.test(base),
+        "base.css 消费 --scrollbar-w(不再写死 9px)",
+    );
+
+    // renderChrome 每帧都跑(local.busy / status / exportAvailable 不在脏检查签名里),
+    // 而 .suggest-status / .suggest-stale 是 aria-live 区 —— textContent 的 setter
+    // 一律新建文本节点,写同一句话也会让读屏重播。
+    check(
+        /function setText\(node, next\)/.test(js) &&
+            /node\.textContent !== next/.test(js),
+        "文案走 setText(值没变就不写 DOM)",
+    );
+    const chrome = js.slice(
+        js.indexOf("function renderChrome()"),
+        js.indexOf("function render()"),
+    );
+    check(
+        !/\.textContent =/.test(chrome),
+        "renderChrome 里没有裸 textContent 赋值(全走 setText)",
+    );
+    check(
+        !/new Set\(/.test(chrome),
+        "renderChrome 里没有 O(行数) 全表扫描(计数挪进了脏块)",
+    );
+    check(
+        /data-gb="suggest-scroll"[\s\S]{0,200}data-t-aria="suggest\.rowsAria"/.test(
+            html,
+        ),
+        "可聚焦的 rowgroup 有可访问名(否则读屏只念「行组」)",
+    );
+    check(
+        /el\.scroll\.replaceChildren\(el\.strut \|\| ""\)/.test(js),
+        "destroy() 把行节点从 DOM 摘掉(不只是清数组)",
     );
 
     // 桥不可用时要有**常驻**说明,不能只挂在 title 上(点一枚灰钮零反馈)
