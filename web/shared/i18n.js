@@ -1151,11 +1151,11 @@ export const T = {
         "demo.ch7": "Ad-lib 2",
         "demo.ch8": "Octave Down",
         "demo.ch9": "Octave Up",
-        "demo.ch10": "Harmony L",
-        "demo.ch11": "Harmony R",
+        "demo.ch10": "Chorus L",
+        "demo.ch11": "Chorus R",
         "demo.ch12": "FX",
         "demo.ch13": "Spoken",
-        "demo.ch14": "Harmony C",
+        "demo.ch14": "Chorus C",
         "demo.ch15": "Outro",
         "demo.versionName": "Base balance", // T27 自译,待人工审校
 
@@ -1902,11 +1902,11 @@ export const T = {
         "demo.ch7": "Ad-lib 2",
         "demo.ch8": "Octave inférieure",
         "demo.ch9": "Octave supérieure",
-        "demo.ch10": "Harmonie G",
-        "demo.ch11": "Harmonie D",
+        "demo.ch10": "Chœur G",
+        "demo.ch11": "Chœur D",
         "demo.ch12": "Effets",
         "demo.ch13": "Parlé",
-        "demo.ch14": "Harmonie C",
+        "demo.ch14": "Chœur C",
         "demo.ch15": "Outro",
         "demo.versionName": "Équilibre de base", // T27 自译,待人工审校
 

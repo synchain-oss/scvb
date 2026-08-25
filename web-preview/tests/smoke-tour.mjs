@@ -303,6 +303,25 @@ log("=== ③ buildDemoStore(纯 UI 展示层)===");
     }
     check(synced, "zh demo.ch* == mock DEMO_LABELS 且 en/fr 无中文");
 
+    // 三语长度齐备 + en/fr 两两互异(合入后补漏:撞名会让用户分不清谁是谁)
+    const enNames = [];
+    const frNames = [];
+    let complete = true;
+    for (let n = 1; n <= 15; n++) {
+        const k = "demo.ch" + n;
+        if (typeof T.zh[k] !== "string" || T.zh[k].length === 0)
+            complete = false;
+        if (typeof T.en[k] !== "string" || T.en[k].length === 0)
+            complete = false;
+        if (typeof T.fr[k] !== "string" || T.fr[k].length === 0)
+            complete = false;
+        enNames.push(T.en[k]);
+        frNames.push(T.fr[k]);
+    }
+    check(complete, "三语 demo.ch1..15 词条长度齐备(均非空字符串)");
+    check(new Set(enNames).size === 15, "en demo.ch1..15 两两互异(无撞名)");
+    check(new Set(frNames).size === 15, "fr demo.ch1..15 两两互异(无撞名)");
+
     // 本地化 demo 版本名(合入后补漏):versions[0](V1「基础平衡」)三语;V2 保持原样
     eq(ds.state.versions[0].name, "基础平衡", "不传 getT 保持 zh 原版本名(V1)");
     eq(
