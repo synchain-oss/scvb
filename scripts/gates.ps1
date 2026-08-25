@@ -121,7 +121,11 @@ Set-Gate '2 clang-format' $cf
 # ==================================================================
 Write-Host '=== Gate 3: prettier (--check .) ==='
 # ==================================================================
-$pp = (npx --yes prettier@3 --check . 2>&1)
+# 版本钉死到补丁号,且与 .github/workflows/format.yml 的 prettier 步、scripts/format.ps1 的
+# prettier --write **三处同步改**(后者是本 gate 的配对写入器):`@3` 是浮动
+# major,本地与 CI 会在不同时间各自解析出不同的 prettier —— 同一份代码「本地绿、CI 红」,
+# 而中间没有任何东西变过。
+$pp = (npx --yes prettier@3.9.6 --check . 2>&1)
 Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
 
 # ==================================================================
@@ -228,6 +232,47 @@ else {
     }
   }
   Set-Gate ('3e web smoke({0} 套,node {1})' -f $smokeFiles.Count, $nv) $smokeOk
+}
+
+# ==================================================================
+Write-Host '=== Gate 3f: 文档真源(九条红字生成物 + 双语结构对等)==='
+# ==================================================================
+# 12 §3.4 第 5 条把 gen-hard-rules --check 挂在「与 check-i18n.mjs 同一 gates 档」。
+# 九条红字要落到 7 处(markdown ×4 + i18n ×3),手抄必漂,而条目数 == 9、grep「六条」、
+# check-i18n 的 key 全等这三道既有机检只查得出**数量与标题**,查不出条目**文本**漂移
+# —— 逐字节比对生成物是唯一查得出的那道。
+# node 守卫同 Gate 3e:找不到 node 时 $LASTEXITCODE 会保留上一条外部命令的 0,
+# 「一条都没跑」会被判成全绿,而误报绿比硬失败危险得多。
+if (-not $nodeCmd) {
+  Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
+  Set-Gate '3f 文档真源' $false
+}
+else {
+  $docsOk = $true
+
+  $genOut = (& node scripts\gen-hard-rules.mjs --check 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $docsOk = $false
+    Write-Host '  gen-hard-rules --check:' -ForegroundColor Red
+    $genOut | ForEach-Object { Write-Host ("  " + $_) }
+  }
+
+  # guide.rule1..9 已由 gen-hard-rules 落地,不再需要 --skip-guide-rules 过渡开关(12 §3.4)。
+  $i18nOut = (& node scripts\check-i18n.mjs 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $docsOk = $false
+    Write-Host '  check-i18n:' -ForegroundColor Red
+    $i18nOut | ForEach-Object { Write-Host ("  " + $_) }
+  }
+
+  $parityOut = (& pwsh -NoProfile -File scripts\check-readme-parity.ps1 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $docsOk = $false
+    Write-Host '  check-readme-parity:' -ForegroundColor Red
+    $parityOut | ForEach-Object { Write-Host ("  " + $_) }
+  }
+
+  Set-Gate '3f 文档真源' $docsOk
 }
 
 # ==================================================================

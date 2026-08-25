@@ -1,0 +1,78 @@
+{
+  "_readme": [
+    "九条硬约束红字的 en/fr 译文之家(12 §3.4 / 05 §5 / 07 T39b)。",
+    "zh 真源 = docs/USER_GUIDE.zh-CN.md 的 `## 硬约束` 小节,不在本文件重复。",
+    "每条的 zhSha256 = 对应 zh 条目正文(markdown 原文,不含 `> N. ` 前缀)的 sha256。",
+    "zh 改了而译文没跟上时,scripts/gen-hard-rules.mjs 会指名道姓报「译文已过期」并非零退出 ——",
+    "这就是防止一条旧英文安全警告被静默发到用户手册的那道闸。",
+    "改译文的流程:改 en/fr → 把 zhSha256 更新为脚本报出的「实际」值 → 重跑 gen-hard-rules.mjs →",
+    "fr 重新交人工审校并更新 frReview。译文里的 **加重** 与 `反引号` 与 zh 对齐:markdown 落地面原样保留,",
+    "i18n 落地面由生成器剥除(UI 的加重靠样式做)。"
+  ],
+  "frReview": {
+    "status": "pending",
+    "reviewer": "U17 待用户指派",
+    "note": "rule3 的 zh 于 2026-08-24 因中文风格统一(「哑轨」→「没有声音的轨道」)重算 zhSha256,语义未变,en/fr 经复核无需改动。05 §5 / 12 §1.2:fr 红字必须经人工审校后方可发布,机翻安全警告发到公开产品是明确禁止项。本轮 fr 由 T39b 起草(非机翻,逐条对照 zh 真源撰写),审校人归属与 U17 同批交用户确认;状态转 reviewed 前不得发版。"
+  },
+  "title": {
+    "en": "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
+    "fr": "À lire : les neuf règles d'utilisation de SCVB. En enfreindre une seule entraîne silence, panoramique erroné ou analyse échouée.",
+    "zhSha256": "0fa6700a86364afa724e4fe1c4d7c7de33a38e958e7d4f8c0ff43d87847a3474"
+  },
+  "rules": [
+    {
+      "n": 1,
+      "en": "**Vocal tracks must keep their original DAW routing, pointing at the bus that hosts SCVB Output.** Do not re-route a vocal track straight to the master output, and do not bypass the bus. (ADR-002)",
+      "fr": "**Les pistes de voix doivent conserver leur routage DAW d'origine, vers le bus qui héberge SCVB Output.** Ne redirigez pas une piste de voix directement vers la sortie principale et ne contournez pas le bus. (ADR-002)",
+      "zhSha256": "98c3325d5f7a9cb7bb4882a37f5b4a8dd98eb29c56d77cd09c77a3c3fe54918a"
+    },
+    {
+      "n": 2,
+      "en": "**SCVB Input must sit in the last slot of the vocal track's plugin chain; SCVB Output must sit in the first slot of the bus.** Any other position breaks the processing-order assumption SCVB relies on; for what each host calls that slot, see `docs/DAW_COMPATIBILITY.md`. (ADR-002 / J45)",
+      "fr": "**SCVB Input doit occuper la dernière case de la chaîne d'effets de la piste de voix ; SCVB Output doit occuper la première case du bus.** Toute autre position casse l'hypothèse d'ordre de traitement sur laquelle SCVB repose ; pour le nom de cette case dans chaque hôte, voir `docs/DAW_COMPATIBILITY.md`. (ADR-002 / J45)",
+      "zhSha256": "379639e96550c2d65fedbb531565b4677ba28a6b85174b5304aefa98381ba71c"
+    },
+    {
+      "n": 3,
+      "en": "**Input mutes its downstream output only while a healthy SCVB Output is detected — this is by design, not a bug.** That mute path is what preserves the \"vocal tracks first, bus second\" ordering in the DAW's dependency graph, and it still holds under offline rendering and REAPER's anticipative multithreading. **When no healthy Output is detected (not installed, not connected, peer has quit), Input falls back to passthrough automatically**, over an 80 ms ramp with a 5-second hysteresis debounce (the hysteresis applies only to the \"mute → passthrough\" direction; \"passthrough → mute\" ramps over 80 ms as soon as health is confirmed), so installing only one of the two plugins will never leave you with a dead track. (ADR-002 / J12 + J32)",
+      "fr": "**Input ne coupe sa sortie aval que tant qu'un SCVB Output sain est détecté — c'est le comportement voulu, pas un bug.** Ce chemin de coupure préserve l'ordre « pistes de voix d'abord, bus ensuite » dans le graphe de dépendances du DAW, et il reste valable en rendu hors ligne comme sous le multithreading anticipatif de REAPER. **Si aucun Output sain n'est détecté (non installé, non connecté, pair quitté), Input repasse automatiquement en direct**, via une rampe de 80 ms avec anti-rebond à hystérésis de 5 secondes (l'hystérésis ne s'applique qu'au sens « coupure → direct » ; « direct → coupure » suit une rampe de 80 ms dès la santé confirmée) : n'installer qu'un seul des deux plugins ne vous laissera donc jamais une piste muette. (ADR-002 / J12 + J32)",
+      "zhSha256": "2b4537e2882a751a7286eef4346ce1fc5332361aa1d78a25acde515fa0040d04"
+    },
+    {
+      "n": 4,
+      "en": "**Host pan must stay centred on both the vocal tracks and the bus.** SCVB pans internally with an equal-power law, independently of the host's pan law; an off-centre host pan stacks on top of it and produces a wrong stereo image. (ADR-010)",
+      "fr": "**Le panoramique hôte doit rester centré, sur les pistes de voix comme sur le bus.** SCVB applique en interne un panoramique à puissance constante, indépendant de la loi de panoramique de l'hôte ; un panoramique hôte décentré s'y ajoute et produit une image stéréo erronée. (ADR-010)",
+      "zhSha256": "23f3e8fc3789c0c3e84fe85369eaa419b35ccdc52607a69499944abf4d2de157"
+    },
+    {
+      "n": 5,
+      "en": "**Each channel id is unique within one group, and a given vocal track may belong to only one group.** When two Inputs in the same group claim the same channel, the late arrival shows a \"channel conflict\" warning and stays inactive; the same channel number in a different group is a separate, unrelated path. (ADR-002 / J66)",
+      "fr": "**Chaque identifiant de canal est unique au sein d'un groupe, et une même piste de voix ne peut appartenir qu'à un seul groupe.** Lorsque deux Input du même groupe réclament le même canal, le second affiche un avertissement « conflit de canal » et reste inactif ; le même numéro de canal dans un autre groupe correspond à un chemin distinct et sans rapport. (ADR-002 / J66)",
+      "zhSha256": "bf0921f35dc253f2b96483d7c935a56eb297f5410dd18ba49acccf545b3323df"
+    },
+    {
+      "n": 6,
+      "en": "**Only one Output instance can be active in a group at any one time.** A second instance in the same group drops into read-only observer mode and shows a warning; the eight groups (A–H) are independent bus domains and do not affect one another. (ADR-002 / J66)",
+      "fr": "**Un seul Output peut être actif à la fois au sein d'un groupe.** Une seconde instance du même groupe passe en mode observation en lecture seule et affiche un avertissement ; les huit groupes (A–H) sont des domaines de bus indépendants, sans influence mutuelle. (ADR-002 / J66)",
+      "zhSha256": "b04a5a67849d7287703996b3008d8e6443c23bcccbb3406d2cb031b0d19b2eff"
+    },
+    {
+      "n": 7,
+      "en": "**Stereo vocal tracks stay out of automatic pan assignment by default; switch one in by hand when you want it included.** Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread) which by default preserves the stereo width you already have, rather than letting automatic assignment overwrite it. (ADR-003 / J57 + J60)",
+      "fr": "**Les pistes de voix stéréo sont exclues par défaut de la répartition automatique du panoramique ; activez-les manuellement pour les y inclure.** Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) qui conserve par défaut la largeur stéréo existante au lieu de la laisser écraser par la répartition automatique. (ADR-003 / J57 + J60)",
+      "zhSha256": "f2ba39983b1dda432a75dd6c699cf52ecf2d9ca6fea4c398167dd7f4ef6dfa0a"
+    },
+    {
+      "n": 8,
+      "en": "**SCVB Output reports no additional latency to the DAW.** Alignment is done by timeline addressing; do not try to \"correct\" it with PDC (plugin delay compensation). (ADR-002)",
+      "fr": "**SCVB Output ne déclare aucune latence supplémentaire au DAW.** L'alignement repose sur l'adressage temporel ; n'essayez pas de le « corriger » avec la PDC (compensation du retard des plugins). (ADR-002)",
+      "zhSha256": "ff8e34d191f599f218cfff552d94a2aa5cfb6df90f982958809052205083e785"
+    },
+    {
+      "n": 9,
+      "en": "**Do not carry on exporting while a \"timeline gap / overlap\" warning is showing.** Work through the common-pitfalls list in `docs/DAW_COMPATIBILITY.md` to check your routing first: for as long as the warning count refuses to fall back to zero, some track's audio is not being picked up correctly.",
+      "fr": "**Ne poursuivez pas l'export tant qu'un avertissement « trou / chevauchement de timeline » est affiché.** Vérifiez d'abord votre routage à l'aide de la liste des pièges courants de `docs/DAW_COMPATIBILITY.md` : tant que le compteur d'avertissements ne retombe pas à zéro, l'audio d'une piste n'est pas correctement pris en charge.",
+      "zhSha256": "659dd04911d46198ee73e2ea423ff326d008367027bffddab47560e449c19095"
+    }
+  ]
+}

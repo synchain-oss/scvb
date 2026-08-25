@@ -1,0 +1,34 @@
+{
+  "ignorePatterns": [
+    {
+      "comment": "仓库自身与兄弟仓在 O07 转 public 之前是 private —— 匿名访问一律 404,不是死链。O07 过闸后可删掉这三条重跑。",
+      "pattern": "^https://github\\.com/synchain-oss/"
+    },
+    {
+      "comment": "GitHub 相对快捷路径(../../actions、../../releases/latest,12 §7.2 badge 模板逐字如此)。它们由 GitHub 在渲染时解析到当前仓库,本地文件系统里没有对应路径。",
+      "pattern": "^\\.\\./\\.\\./"
+    },
+    {
+      "comment": "shields.io badge 端点:响应取决于网络与限流,不构成文档正确性判据。",
+      "pattern": "^https://img\\.shields\\.io/"
+    },
+    {
+      "comment": "官网域名尚未对本仓开放路由(O05 官网衔接卡未落地)。",
+      "pattern": "^https://synchain\\.(ca|cn)"
+    },
+    {
+      "comment": "mailto: 无法用 HTTP 探活(检查器实际会拿到 400)。而且 markdown 里形如 `67.65ms@2.25MB` 的性能数字会被自动链接器误判成邮箱地址 —— docs/spikes/S4-state.md 就有一处,那不是链接。",
+      "pattern": "^mailto:"
+    },
+    {
+      "comment": "本地开发服务器地址(web-preview/README.md 的 127.0.0.1:8823),按设计在 CI 上不可达。",
+      "pattern": "^https?://(localhost|127\\.0\\.0\\.1)"
+    }
+  ],
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "10s",
+  "_aliveStatusCodes_note": "默认只认 200。一旦显式给白名单,就必须把重定向与 HEAD-403 一并算作活链:301/302/308 是外链改版后的常态,而不少站点对 HEAD 请求返回 403(GitHub、部分 CDN)。只写 [200, 206] 会在文档本身没问题时假红。",
+  "aliveStatusCodes": [200, 206, 301, 302, 308, 403]
+}

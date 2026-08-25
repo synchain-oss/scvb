@@ -17,7 +17,7 @@ jobs:
     name: clang-format # required check context
     runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pinned clang-format
         # 用 pip 版而非 apt 版:apt 的版本随 runner 镜像漂移,同一份代码在本地/CI 会格式化出不同结果。
         # 版本号必须与 scripts/gates.ps1 和 .clang-format 头注释里写的一致。
@@ -28,8 +28,11 @@ jobs:
           test -n "$files" || { echo "::error::no C++ sources found"; exit 1; }
           clang-format --dry-run --Werror --style=file $files
       - name: Check web assets formatting (prettier)
-        # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore
-        run: npx --yes prettier@3 --check .
+        # 与 scripts/gates.ps1 gate 3 **逐字相同**的一条命令;范围收敛全部交给 .prettierignore。
+        # 版本必须钉死到补丁号,且与 gates.ps1 Gate 3、scripts/format.ps1(配对写入器)
+        # **三处同步改**:`@3` 是浮动 major,本地 gates 与 CI 会在不同
+        # 时间各自解析出不同的 prettier,于是同一份代码「本地绿、CI 红」而没有任何东西变过。
+        run: npx --yes prettier@3.9.6 --check .
 
   web-smoke:
     name: web-smoke # required check context
@@ -38,8 +41,8 @@ jobs:
     # 排队时间挡住;反过来 C++ 的 PR 也该照跑这套 —— web/ 是被 C++ 侧 WebView
     # 加载的真源。与 scripts/gates.ps1 的 Gate 3e 同口径。
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # 测试用到 node 内建 fetch 与全局 WebSocket;与 web-preview/README
           # 的「node ≥ 22」口径一致。
@@ -60,3 +63,39 @@ jobs:
             node "$f" || { echo "::error file=$f::web smoke failed"; fail=1; }
           done
           exit $fail
+
+  docs-truth:
+    name: docs-truth # required check context
+    runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
+    # 九条硬约束红字的唯一真源 = docs/USER_GUIDE.zh-CN.md 的 `## 硬约束` 小节,它要落到
+    # markdown ×4 + i18n ×3 共 7 处(12 §3.4)。手抄必漂,而条目数 == 9 / grep「六条」/
+    # check-i18n 的 key 全等这三道既有机检只查得出数量与标题,查不出条目**文本**漂移 ——
+    # 逐字节比对生成物是唯一查得出的那道,所以它必须在 CI 里,不能只靠本地 gates。
+    # 无 secrets ⇒ fork PR 也跑得动。前三步与 scripts/gates.ps1 的 Gate 3f 同口径;
+    # 第四步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Hard rules generator (--check)
+        run: node scripts/gen-hard-rules.mjs --check
+      - name: i18n dictionary (zh/en/fr key parity + guide.rule1..9)
+        # guide.rule1..9 已由 gen-hard-rules 落地,过渡开关 --skip-guide-rules 到此为止(12 §3.4)。
+        run: node scripts/check-i18n.mjs
+      - name: Bilingual doc structure parity
+        shell: pwsh
+        run: ./scripts/check-readme-parity.ps1
+      - name: Dead link check (markdown-link-check)
+        # .markdown-link-check.json 此前是一份**没有执行者**的配置:全仓没有 workflow
+        # 也没有 gates 档位跑它,死链照样能进绿 CI,而下一个改文档的人不会知道要手工跑。
+        # 排除项:docs/constitution 与 docs/design 是字节级只读归档(改一个字节就破坏
+        # sha256 同步/设计稿比对),third_party 是 vendored 上游。
+        run: |
+          set -o pipefail
+          files=$(git ls-files '*.md' \
+            | grep -v '^docs/constitution/' \
+            | grep -v '^docs/design/' \
+            | grep -v '^third_party/')
+          test -n "$files" || { echo "::error::no markdown files found"; exit 1; }
+          npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q $files

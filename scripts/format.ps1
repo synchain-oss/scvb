@@ -19,5 +19,9 @@ else {
 }
 
 Write-Host '== prettier --write =='
-npx --yes prettier@3 --write .
+# 版本与 scripts/gates.ps1 Gate 3、.github/workflows/format.yml 的 prettier 步**三处同步**:
+# 这是 gate 3 的配对写入器。写入器浮动而检查器钉死,一旦 npm 上出了 >3.9.6 的 3.x,
+# 「跑 format.ps1 重排 → 跑 gates 判红 → 再跑 format.ps1 还是红」会形成没有出路的死循环,
+# 与 clang-format 侧「18.1.8 单一版本贯穿检查与修复」的纪律一致。
+npx --yes prettier@3.9.6 --write .
 Write-Host '格式化完成。'
