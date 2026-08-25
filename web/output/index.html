@@ -2403,28 +2403,41 @@
                 flex: 1;
                 min-height: 0;
                 overflow: auto;
-            }
-            /* spacer 撑出 总行数 × 行高 的滚动高度;rows 只装可见窗口那几十行,
-               靠 translateY 落到正确位置(虚拟滚动的全部机关就这两条)。 */
-            .suggest-spacer {
                 position: relative;
             }
-            .suggest-rows {
-                position: absolute;
-                inset: 0 0 auto 0;
-                will-change: transform;
+            /* 虚拟滚动的全部机关就这两条:strut 撑出「总行数 × 行高」的滚动高度,
+               可见窗口那几十行各自绝对定位到 top。行是滚动容器的直接子节点 ——
+               中间夹一层容器会把 ARIA 的 grid→rowgroup→row 树打断。 */
+            .suggest-strut {
+                width: 1px;
             }
             .suggest-row {
+                position: absolute;
+                left: 0;
+                right: 0;
                 height: 22px; /* = tab-suggestions.js 的 ROW_H,两处同改 */
                 font-size: var(--fs-100);
                 color: var(--txt-2);
             }
-            .suggest-row:nth-child(2n) {
+            /* 隔行底色按**行号**取,不用 :nth-child —— 可见窗口是滚动着换的一批节点,
+               按子节点序号斑马纹会随滚动来回翻转。 */
+            .suggest-row[data-odd="1"] {
                 background: rgba(var(--wh), 0.22);
             }
             /* 用户编辑/创建的段单独标一下:导表时最该核对的就是这些行 */
             .suggest-row[data-manual="1"] {
                 color: var(--txt-1);
+            }
+            /* 该轨采集数据已过期(§2.8 stale):左侧琥珀条 —— 这些行的值可能已经不作数 */
+            .suggest-row[data-stale="1"] {
+                box-shadow: inset 2px 0 0 rgba(var(--sem-amber), 0.9);
+            }
+            .suggest-stale {
+                flex: none;
+                font-size: var(--fs-90);
+                line-height: 1.5;
+                color: var(--sem-amber-ink);
+                text-wrap: pretty;
             }
             .suggest-cell {
                 overflow: hidden;
@@ -7264,27 +7277,38 @@
                                 role="grid"
                                 data-t-aria="suggest.tableAria"
                             >
+                                <!-- 列头由 tab-suggestions.js 按 SUGGEST_COLUMNS 现建
+                                     (role="columnheader" + title=冻结列名)。表头恒占
+                                     aria-rowindex 1,数据行从 2 起 -->
                                 <div
                                     class="suggest-thead"
                                     data-gb="suggest-thead"
                                     role="row"
+                                    aria-rowindex="1"
                                 ></div>
+                                <!-- 滚动容器 = rowgroup,数据行是它的**直接**子节点
+                                     (中间夹一层 div 会把 ARIA 的 grid→rowgroup→row 树打断);
+                                     strut 只负责撑出总高度,行各自绝对定位 -->
                                 <div
                                     class="suggest-scroll"
                                     data-gb="suggest-scroll"
+                                    role="rowgroup"
                                     tabindex="0"
                                 >
                                     <div
-                                        class="suggest-spacer"
-                                        data-gb="suggest-spacer"
-                                    >
-                                        <div
-                                            class="suggest-rows"
-                                            data-gb="suggest-rows"
-                                        ></div>
-                                    </div>
+                                        class="suggest-strut"
+                                        data-gb="suggest-strut"
+                                        role="presentation"
+                                    ></div>
                                 </div>
                             </div>
+                            <p
+                                class="suggest-stale"
+                                data-gb="suggest-stale"
+                                role="status"
+                                aria-live="polite"
+                                hidden
+                            ></p>
                             <p
                                 class="sc-hint suggest-legend"
                                 data-gb="suggest-legend"

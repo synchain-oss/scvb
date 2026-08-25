@@ -116,6 +116,13 @@ export const DECIMALS = Object.freeze({ sec: 3, pan: 1, vol: 1, width: 1 });
 export const ROW_H = 22;
 export const OVERSCAN = 6;
 
+/** 轨数与版本数([J59]:15 轨 / 2 版本;与 C++ 侧 `state::kNumTracks` / `kNumVersions` 同值)。 */
+export const TRACK_COUNT = 15;
+export const VERSION_COUNT = 2;
+
+/** 全轨掩码:bit0=轨1 … bit14=轨15,**bit15 保留 0**(契约 §9.2)。 */
+export const ALL_TRACKS_MASK = (1 << TRACK_COUNT) - 1;
+
 function num(v, dflt = 0) {
     return typeof v === "number" && Number.isFinite(v) ? v : dflt;
 }
@@ -153,7 +160,7 @@ export function originOf(raw) {
 export function activeVersionOf(store) {
     const st = (store && store.state) || {};
     const version = Math.min(
-        2,
+        VERSION_COUNT,
         Math.max(1, num((st.global || {}).version_active, 1) | 0),
     );
     const vmeta =
@@ -185,7 +192,7 @@ export function buildSuggestionRows(store) {
     }
 
     const rows = [];
-    for (let ch = 1; ch <= 15; ch++) {
+    for (let ch = 1; ch <= TRACK_COUNT; ch++) {
         const entry = byCh.get(ch);
         const segs = (entry && entry.segments) || [];
         if (segs.length === 0) continue;
@@ -195,8 +202,14 @@ export function buildSuggestionRows(store) {
         const label = typeof cfg.label === "string" ? cfg.label : "";
         // mono 轨的 width 参数是 v1 no-op 占位(params v2.0):列留空,**不写 0** ——
         // 0 在 stereo 轨上是「收成 mono」的有效建议([J57]),两者不可混。
-        const widthId =
-            "v" + version + "_t" + String(ch).padStart(2, "0") + "_width";
+        // 参数还没到(首帧 scvb.params 之前)时**同样留空**,不拿默认值 100 顶上:
+        // 猜一个数写进建议表,用户会照着它在 DAW 里设值。与 C++ 侧的 kWidthUnknown 同口径。
+        const rawWidth =
+            params[
+                "v" + version + "_t" + String(ch).padStart(2, "0") + "_width"
+            ];
+        const hasWidth =
+            stereo && typeof rawWidth === "number" && Number.isFinite(rawWidth);
 
         for (let i = 0; i < segs.length; i++) {
             const seg = segs[i] || {};
@@ -211,14 +224,48 @@ export function buildSuggestionRows(store) {
                 t1Sec: num(seg.t1S, 0),
                 pan: num(seg.pan, 0),
                 volDb: num(seg.volDb, 0),
-                hasWidth: stereo,
-                width: stereo ? num(params[widthId], 100) : 0,
+                hasWidth,
+                width: hasWidth ? rawWidth : 0,
                 origin: originOf(seg.origin),
                 locked: !!seg.locked,
+                // 13 列已冻结,过期标记只能落在行属性上(见 §2.8 每轨 stale)
+                stale: !!(entry && entry.stale),
             });
         }
     }
     return rows;
+}
+
+/**
+ * 行集的输入签名 —— 只取本视图真读的那几样:
+ *   state / segments 是**换对象**语义(app.js 深合并后整体替换),引用即签名;
+ *   params 每帧换对象但内容常没动,故只把当前版本那 15 个 width 参数拼成一串。
+ * 15 次查表远比重建 600 个行对象便宜,这就是脏检查划算的地方。
+ */
+export function suggestionsSignature(store) {
+    const st = store || {};
+    const { version } = activeVersionOf(st);
+    const values = (st.params || {}).values || {};
+    let widths = "";
+    for (let ch = 1; ch <= TRACK_COUNT; ch++) {
+        const v =
+            values[
+                "v" + version + "_t" + String(ch).padStart(2, "0") + "_width"
+            ];
+        widths += (typeof v === "number" ? v : "") + ",";
+    }
+    return { state: st.state, segments: st.segments, widths };
+}
+
+/** 签名比对;`prev` 缺失(首次)一律算脏。 */
+export function suggestionsDirty(store, prev) {
+    if (!prev) return true;
+    const next = suggestionsSignature(store);
+    return (
+        next.state !== prev.state ||
+        next.segments !== prev.segments ||
+        next.widths !== prev.widths
+    );
 }
 
 /**
@@ -293,7 +340,7 @@ export function suggestFileName(versionName, when) {
 
 /** 桥面 scope(契约变更文档 §「参数」):v1 UI 只导当前版本 + 全部 15 轨。 */
 export function currentScope() {
-    return { versions: "active", tracksMask: 0x7fff };
+    return { versions: "active", tracksMask: ALL_TRACKS_MASK };
 }
 
 // =============================================================================
@@ -328,8 +375,8 @@ export function createTabSuggestions(opts) {
         status: $("suggest-status"),
         thead: $("suggest-thead"),
         scroll: $("suggest-scroll"),
-        spacer: $("suggest-spacer"),
-        rowsBox: $("suggest-rows"),
+        strut: $("suggest-strut"),
+        stale: $("suggest-stale"),
         empty: $("suggest-empty"),
         table: $("suggest-table"),
         legend: $("suggest-legend"),
@@ -341,6 +388,7 @@ export function createTabSuggestions(opts) {
         rendered: { start: -1, end: -1 },
         busy: false,
         status: null, // {key, args} —— 一次性反馈,切视图即清
+        src: null, // 行集输入签名(脏检查,见 render)
     };
 
     function t(key, fallback) {
@@ -389,6 +437,7 @@ export function createTabSuggestions(opts) {
             cell.className =
                 "suggest-cell suggest-cell--head" +
                 (col.num ? " suggest-cell--num" : "");
+            cell.setAttribute("role", "columnheader");
             cell.setAttribute("data-t", col.t);
             // title 挂冻结列名:表头是本地化的,而 CSV 里是这一串 —— 悬停即可对上
             cell.setAttribute("title", col.key);
@@ -397,10 +446,13 @@ export function createTabSuggestions(opts) {
     }
 
     // ------------------------------------------------------------- 渲染
+    // 虚拟滚动:strut 撑出「总行数 × 行高」的滚动高度,可见窗口那几十行**绝对定位**到各自
+    // 的 top。行是 rowgroup(滚动容器)的直接子节点 —— 中间不夹容器,ARIA 的 grid→rowgroup→row
+    // 这条树才是连着的(夹一层 div 就断了,读屏软件会念不出行列关系)。
     function renderRows(force) {
-        if (!el.scroll || !el.rowsBox || !el.spacer) return;
+        if (!el.scroll || !el.strut) return;
         const total = local.rows.length;
-        el.spacer.style.height = total * ROW_H + "px";
+        el.strut.style.height = total * ROW_H + "px";
 
         const w = visibleWindow(
             el.scroll.scrollTop,
@@ -421,7 +473,14 @@ export function createTabSuggestions(opts) {
             const line = document.createElement("div");
             line.className = "suggest-row";
             line.setAttribute("role", "row");
+            // 表头占第 1 行,数据行从 2 起(aria-rowcount 在 renderChrome 里同口径)
+            line.setAttribute("aria-rowindex", String(i + 2));
+            line.style.top = w.padTop + (i - w.start) * ROW_H + "px";
+            if (i % 2 === 1) line.setAttribute("data-odd", "1");
             if (row.origin !== "auto") line.setAttribute("data-manual", "1");
+            // §2.8 每轨 stale = 该轨有过期采集区间。13 列已冻结不便加列,故落在行属性上:
+            // 照着一张过期的表在 DAW 里手工设值是本视图**唯一**能骗到用户的地方。
+            if (row.stale) line.setAttribute("data-stale", "1");
             const cells = rowCells(row);
             for (let c = 0; c < cells.length; c++) {
                 const span = document.createElement("span");
@@ -429,13 +488,13 @@ export function createTabSuggestions(opts) {
                     "suggest-cell" +
                     (SUGGEST_COLUMNS[c].num ? " suggest-cell--num" : "");
                 span.setAttribute("role", "gridcell");
+                span.setAttribute("aria-colindex", String(c + 1));
                 span.textContent = cells[c];
                 line.appendChild(span);
             }
             frag.appendChild(line);
         }
-        el.rowsBox.replaceChildren(frag);
-        el.rowsBox.style.transform = "translateY(" + w.padTop + "px)";
+        el.scroll.replaceChildren(el.strut, frag);
     }
 
     function renderChrome() {
@@ -458,6 +517,30 @@ export function createTabSuggestions(opts) {
         if (el.table) el.table.hidden = total === 0;
         // 图例讲的是那几列怎么读 —— 表都不在了就别挂着它占位
         if (el.legend) el.legend.hidden = total === 0;
+        if (el.table) {
+            el.table.setAttribute("aria-rowcount", String(total + 1)); // +1 = 表头行
+            el.table.setAttribute(
+                "aria-colcount",
+                String(SUGGEST_COLUMNS.length),
+            );
+        }
+
+        // 过期采集提示:照着一张过期的表在 DAW 里设值,是本视图唯一会误导用户的场景
+        const staleTracks = new Set(
+            local.rows.filter((r) => r.stale).map((r) => r.trackIndex),
+        ).size;
+        if (el.stale) {
+            el.stale.hidden = staleTracks === 0;
+            if (staleTracks > 0) {
+                el.stale.textContent = fill(
+                    t(
+                        "suggest.staleNote",
+                        "其中 {n} 条轨的采集数据已过期——建议先重新采集再照表设值。",
+                    ),
+                    { n: staleTracks },
+                );
+            }
+        }
 
         if (el.exportBtn) {
             const off = total === 0 || local.busy || !exportAvailable();
@@ -485,9 +568,19 @@ export function createTabSuggestions(opts) {
 
     function render() {
         if (!local.open) return;
-        local.rows = buildSuggestionRows(getStore());
+        // 脏检查:render() 由外壳的每帧合帧驱动,而播放中 30Hz playhead / 25Hz params 都会
+        // 排 render —— 无条件重建 600 个行对象 + 几百个节点是白烧帧(与 T33 的按需投影同一纪律)。
+        // 三个输入里 state/segments 是**换对象**语义(app.js 深合并后整体替换),引用比对即可;
+        // params 每帧换对象但内容常常没动,故只对本视图真正读的那 15 个 width 参数取签名。
+        const st = getStore() || {};
+        const dirty = suggestionsDirty(st, local.src);
+        if (dirty) {
+            local.src = suggestionsSignature(st);
+            local.rows = buildSuggestionRows(st);
+            local.rendered = { start: -1, end: -1 }; // 行集换了,可见行必须重建
+        }
         renderChrome();
-        renderRows(true);
+        renderRows(dirty);
     }
 
     // ------------------------------------------------------------- 视图切换

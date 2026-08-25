@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -265,6 +266,31 @@ TEST_CASE("SUGGEST-WIDTH-1 width:stereo 有值,mono 留空(不是 0)", "[suggest
     REQUIRE(stereo[10] == "0.0"); // ← stereo 的 0 是有效值,必须写出来
 }
 
+TEST_CASE("SUGGEST-WIDTH-2 调用方没装 width 的那一格 → 留空,不落 0", "[suggest]")
+{
+    // 这是本层最危险的默认值:零值初始化会让「native 忘了装」静默产出 0.0 = 「收成 mono」,
+    // 而那是一个语义与真相相反的建议。故 ExportInput 的 width 表默认是 kWidthUnknown 哨兵。
+    ExportInput fresh;
+    REQUIRE(fresh.widthPercent[0][0] == scvb::suggest::kWidthUnknown);
+    REQUIRE(scvb::suggest::kWidthUnknown < 0.0f); // 必须在 0..100 之外
+
+    CrvsData curves;
+    curves.versions[0].meta.name = "V1";
+    curves.versions[0].tracks[0].segments.push_back(seg(0, 48000, 5.0f, 0.0f, SegmentOrigin::Auto, false));
+
+    ExportInput in; // ← width 表整张不装
+    in.curves = &curves;
+    in.sampleRate = kSr;
+    in.tracks[0].sourceChannels = 2; // stereo,但 width 未知
+
+    Scope s;
+    s.tracksMask = 0x0001;
+    const auto rows = buildRows(in, s);
+    REQUIRE(rows.size() == 1);
+    REQUIRE_FALSE(rows[0].hasWidth);
+    REQUIRE(splitComma(splitCrLf(toCsv(rows))[1])[10].empty());
+}
+
 TEST_CASE("SUGGEST-SCOPE-1 scope:轨掩码 / 版本 / 时间窗", "[suggest]")
 {
     auto f = makeFixture(10); // 每段 1 秒,共 10 秒
@@ -336,4 +362,94 @@ TEST_CASE("SUGGEST-NUM-1 数值格式:小数位固定,负零归一", "[suggest]"
     REQUIRE(cols[7] == "0.118"); // 5678 / 48000
     REQUIRE(cols[8] == "0.0"); // -0.001 → -0.0 → 归一
     REQUIRE(cols[9] == "1.5");
+}
+
+// -----------------------------------------------------------------------------
+// 跨语言格式化黄金表 —— 本块由 web-preview/tests/smoke-t41-suggestions.mjs **读源码**
+// 解析出来,拿 JS 的 fmtFixed 跑一遍对同一批期望串。本卡的卖点是「两侧同一口径」,
+// 而两侧的底座不同(C++ `printf %.*f` 就近偶数 / JS `toFixed` 平局取大),光对拍表头
+// 与小数位常量还盖不住数值这一层,所以立一张两边都认的表。
+//
+// 表里**刻意不放二进制精确平局**(如 pan=12.25):那种值上两侧确实会分叉,而它在本卡
+// 不可达 —— 秒值是 样本数/采样率、pan/vol/width 是 0.1 步进的 f32,落不到精确的
+// 十进制半点上。真要放宽这条前提(比如将来允许任意精度手输),得先在两侧统一舍入方向。
+// 格式:{ 值, 小数位, 期望串 } —— 每行一条,冒烟按这个形状正则解析。
+struct FmtGolden
+{
+    double v;
+    int d;
+    const char* s;
+};
+
+// clang-format off
+static const FmtGolden kFmtGolden[] = {
+    { 0.0, 1, "0.0" },
+    { -0.0, 1, "0.0" },
+    { -0.04, 1, "0.0" },
+    { 2.0, 3, "2.000" },
+    { 1.5, 1, "1.5" },
+    { -12.34, 1, "-12.3" },
+    { 100.0, 1, "100.0" },
+    { 0.0257083333333333, 3, "0.026" },
+    { 0.1182916666666667, 3, "0.118" },
+    { -62.7, 1, "-62.7" },
+    { 99.96, 1, "100.0" },
+    { -0.049, 1, "0.0" },
+    { 3.14159265358979, 3, "3.142" },
+};
+// clang-format on
+
+TEST_CASE("SUGGEST-NUM-2 跨语言格式化黄金表(与 JS 侧同一批期望串)", "[suggest]")
+{
+    for (const FmtGolden& g : kFmtGolden)
+    {
+        INFO("v=" << g.v << " d=" << g.d);
+        REQUIRE(scvb::suggest::fmtFixed(g.v, g.d) == std::string(g.s));
+    }
+}
+
+TEST_CASE("SUGGEST-ESC-2 version_name 与 track_label 同样按 RFC 4180 转义", "[suggest]")
+{
+    // 版本名也是用户可改文本([J05] `setVersionName`),「V1, 备份」这种名字很常见 ——
+    // 它与轨名共用 csvField,但只有轨名有端到端用例的话,哪天有人给版本名走了别的路就没人拦。
+    CrvsData curves;
+    curves.versions[0].meta.name = "V1, \"备份\"";
+    curves.versions[0].tracks[0].segments.push_back(seg(0, 48000, 0.0f, 0.0f, SegmentOrigin::Auto, false));
+
+    ExportInput in;
+    in.curves = &curves;
+    in.sampleRate = kSr;
+    in.tracks[0].label = "Lead";
+
+    Scope s;
+    s.tracksMask = 0x0001;
+    const auto line = splitCrLf(toCsv(buildRows(in, s)))[1];
+    REQUIRE(line.find("\"V1, \"\"备份\"\"\"") != std::string::npos);
+}
+
+TEST_CASE("SUGGEST-EDGE-2 段里带 NaN/inf → 整条链路不产出非数字字面量", "[suggest]")
+{
+    // 上游真出了 NaN(除零 / 未初始化 buffer),CSV 里写出 "nan" 会把下游表格软件与
+    // 脚本一起毒化;fmtFixed 层已经兜了,这里验它在完整 buildRows→toCsv 链路上仍然成立。
+    CrvsData curves;
+    curves.versions[0].meta.name = "V1";
+    curves.versions[0].tracks[0].segments.push_back(seg(0, 48000, std::numeric_limits<float>::quiet_NaN(),
+                                                        std::numeric_limits<float>::infinity(), SegmentOrigin::Auto,
+                                                        false));
+    ExportInput in;
+    in.curves = &curves;
+    in.sampleRate = kSr;
+    in.tracks[0].sourceChannels = 2;
+    in.widthPercent[0][0] = -std::numeric_limits<float>::infinity(); // 负 inf 落在哨兵一侧 ⇒ 留空
+
+    Scope s;
+    s.tracksMask = 0x0001;
+    const auto csv = toCsv(buildRows(in, s));
+    REQUIRE(csv.find("nan") == std::string::npos);
+    REQUIRE(csv.find("inf") == std::string::npos);
+    const auto cols = splitComma(splitCrLf(csv)[1]);
+    REQUIRE(cols.size() == 13);
+    REQUIRE(cols[8] == "0.0");
+    REQUIRE(cols[9] == "0.0");
+    REQUIRE(cols[10].empty());
 }

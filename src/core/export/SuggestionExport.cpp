@@ -9,10 +9,10 @@ namespace scvb::suggest
 namespace
 {
 
-// 轨号 1..15 → tracksMask 位;bit15 保留 0(契约 §9.2),故 track 16 恒不命中。
+// 轨号 1..kNumTracks → tracksMask 位;bit15 保留 0(契约 §9.2),故第 16 位恒不命中。
 bool trackSelected(std::uint16_t mask, int track1Based) noexcept
 {
-    if (track1Based < 1 || track1Based > 15)
+    if (track1Based < 1 || track1Based > static_cast<int>(state::kNumTracks))
         return false;
     return (mask & static_cast<std::uint16_t>(1u << (track1Based - 1))) != 0;
 }
@@ -146,8 +146,10 @@ std::vector<Row> buildRows(const ExportInput& input, const Scope& scope)
                 row.volDb = static_cast<double>(seg.volDb);
                 // mono 轨的 width 参数是 v1 no-op 占位(params v2.0)——列留空,不写 0:
                 // 0 在 stereo 轨上是「收成 mono」的有效建议([J57]),两者不可混。
-                row.hasWidth = stereo;
-                row.width = stereo ? static_cast<double>(input.widthPercent[static_cast<std::size_t>(v - 1)][ti]) : 0.0;
+                // 调用方没装这一格(哨兵)时同样留空:「不知道」比「不知道所以写 0」诚实。
+                const float rawWidth = input.widthPercent[static_cast<std::size_t>(v - 1)][ti];
+                row.hasWidth = stereo && rawWidth >= 0.0f;
+                row.width = row.hasWidth ? static_cast<double>(rawWidth) : 0.0;
                 row.origin = state::segmentOrigin(seg.flags);
                 row.locked = state::segmentLocked(seg.flags);
                 rows.push_back(std::move(row));

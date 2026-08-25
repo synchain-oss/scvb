@@ -411,6 +411,8 @@ export const T = {
         "suggest.export": "导出 CSV",
         "suggest.scope": "{v} · {t} 轨 · {n} 行",
         "suggest.empty": "尚无分段结果——分析之后这里列出每轨每段的建议值",
+        "suggest.staleNote":
+            "其中 {n} 条轨的采集数据已过期——建议先重新采集再照表设值。",
         "suggest.legend":
             "宽度只对立体声轨有值,mono 轨留空(0 是「收成 mono」的有效值,与留空不是一回事);来源与锁定的取值与工程里存的逐字相同",
         "suggest.exporting": "正在导出…",
@@ -1167,6 +1169,8 @@ export const T = {
         "suggest.scope": "{v} · {t} tracks · {n} rows",
         "suggest.empty":
             "No segments yet — the per-track, per-segment suggestions appear here after analysis",
+        "suggest.staleNote":
+            "{n} of these tracks have stale capture data — recapture them before transferring these values by hand.",
         "suggest.legend":
             "Width only has a value on stereo tracks and stays blank on mono ones (0 means collapsed to mono, which is not the same as blank); origin and locked read exactly as stored in the project",
         "suggest.exporting": "Exporting…",
@@ -1891,6 +1895,8 @@ export const T = {
         "suggest.scope": "{v} · {t} pistes · {n} lignes",
         "suggest.empty":
             "Aucun segment pour l'instant — les suggestions par piste et par segment apparaissent ici après l'analyse",
+        "suggest.staleNote":
+            "{n} de ces pistes ont des données de capture périmées — recapturez-les avant de reporter ces valeurs à la main.",
         "suggest.legend":
             "La largeur n'a de valeur que sur les pistes stéréo et reste vide sur les pistes mono (0 signifie « repliée en mono », ce qui n'est pas la même chose que vide) ; origine et verrou reprennent exactement les valeurs enregistrées dans le projet",
         "suggest.exporting": "Export en cours…",

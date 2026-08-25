@@ -6,21 +6,26 @@
 // 滚动手感归浏览器手测(shot.mjs 截图 + 真机 preview)。
 //
 // 跑什么(逐条对着 07 T41 的验收行):
-//   ① 列定义冻结:13 列、顺序逐字,且 **web 侧 CSV_HEADER 与 C++ 侧 kCsvHeader 逐字相等**
-//      (读 src/core/export/SuggestionExport.h 的源码对拍 —— 两侧漂了当场红);
+//   ① 列定义冻结:13 列、顺序逐字;**web 的 CSV_HEADER 与 C++ 的 kCsvHeader 逐字相等**、
+//      四个小数位常量同档、**跨语言格式化黄金表**(真源在 C++ 测试里,这里读源码跑 JS)——
+//      两侧的舍入底座不同(printf 就近偶数 / toFixed 平局取大),光对拍表头盖不住数值这一层;
 //   ② 文件形制:UTF-8 BOM + CRLF(含末行)+ 表头行;
 //   ③ RFC 4180:轨名含逗号 / 引号 / 换行时该行仍是 13 个字段;
 //   ④ 规模:15 轨 × 2 版本 × 每轨 40 段的 fixture 下,行数 == 段总数(单版本 600,
 //      两版本合计 1200),且 `origin`/`locked` 取值与 T19 state 编码逐字一致;
-//   ⑤ width:stereo 有值、mono **留空**(不是 0 —— 0 是「收成 mono」的有效值,[J57]);
+//   ⑤ width:stereo 有值、mono **留空**、参数未到也**留空**(都不写 0/100 ——
+//      0 是「收成 mono」的有效值 [J57],猜一个数用户会照着它去 DAW 里设);
 //   ⑥ 表格与 CSV **同源**:CSV 的每个字段就是 rowCells() 那 13 个显示串(转义后),
 //      这条就是「数值与 UI 显示值逐行相等,不是各算一遍」的机器化;
 //   ⑦ mock 端到端:`exportSuggestions` 往返 —— mock **自己**从 state 数行数,
 //      与 web 从事件仓算出的行数对上;badArg / noData / versions:"all" 三条拒绝与分支;
-//   ⑧ 虚拟滚动窗口的边界(空表 / 顶部 / 底部 / 超长滚动);
+//   ⑧ 虚拟滚动窗口的边界(空表 / 顶部 / 底部 / 超长滚动)+ 行高常量与 CSS 同值;
+//   ⑧b 脏检查:同一份输入不重建行集;state/segments 换对象与 width 真改才算脏;
+//   ⑧c stale:过期采集的轨逐行可辨,且**不混进** CSV(13 列冻结);
 //   ⑨ 词条:`suggest.*` 三语齐备、非空、占位符一致、禁词零命中;
-//   ⑩ 源码不变式:桥面名字停在 PENDING_FUNCS(没有偷偷进 BRIDGE_FUNCTIONS)、
-//      变更文档在库、行高常量两处同值、[J67] 的「不得复活列表视图」纪律仍在文件头。
+//   ⑩ 源码不变式:桥面名字停在 PENDING_FUNCS(没有偷偷进 BRIDGE_FUNCTIONS)、变更文档在库、
+//      ARIA grid 树连着、斑马纹按行号取、建议表开着时泳道 rAF 停、
+//      [J67] 的「不得复活列表视图」纪律仍在文件头。
 //
 // 用法:node web-preview/tests/smoke-t41-suggestions.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -180,6 +185,34 @@ log("=== ① 列定义冻结 + 两侧表头逐字对拍 ===");
     ]) {
         const mm = h.match(new RegExp(k + "\\s*=\\s*(\\d+)"));
         check(!!mm && Number(mm[1]) === v, `${k} 两侧同为 ${v}`);
+    }
+    // 轨数/版本数两侧同值(JS 侧是自己的常量,不能悄悄跟宪法分家)
+    check(
+        TS.TRACK_COUNT === 15 && TS.VERSION_COUNT === 2,
+        "15 轨 / 2 版本([J59])",
+    );
+    check(TS.ALL_TRACKS_MASK === 0x7fff, "全轨掩码 = 0x7FFF(bit15 保留 0)");
+
+    // **跨语言格式化黄金表**:两侧的底座不同(C++ printf 就近偶数 / JS toFixed 平局取大),
+    // 光对拍表头与小数位常量盖不住数值这一层。表的真源在 C++ 测试里,这里读源码解析出来跑 JS。
+    const cpp = src("tests/core/test_suggestion_export.cpp");
+    const block = cpp.slice(
+        cpp.indexOf("kFmtGolden[] = {"),
+        cpp.indexOf("// clang-format on"),
+    );
+    const golden = [
+        ...block.matchAll(/\{\s*(-?[\d.]+),\s*(\d+),\s*"([^"]*)"\s*\}/g),
+    ].map((m) => [Number(m[1]), Number(m[2]), m[3]]);
+    check(
+        golden.length >= 10,
+        `黄金表解析出 ${golden.length} 条(C++ 侧是真源)`,
+    );
+    for (const [v, d, want] of golden) {
+        const got = TS.fmtFixed(v, d);
+        check(
+            got === want,
+            `fmtFixed(${v}, ${d}) = "${got}",C++ 侧写的是 "${want}"`,
+        );
     }
 }
 
@@ -343,6 +376,21 @@ log("=== ⑤ width:stereo 有值,mono 留空(不是 0)===");
     const z = TS.buildSuggestionRows(store).find((r) => r.trackIndex === 2);
     eq(TS.rowCells(z)[10], "0.0", "stereo 的 0 照写(与 mono 的空是两回事)");
 
+    // 参数还没到(首帧 scvb.params 之前):**留空**,不拿默认值 100 顶上 ——
+    // 猜一个数写进建议表,用户会照着它在 DAW 里设值。与 C++ 侧 kWidthUnknown 同口径。
+    const noParams = makeStore(1, 1);
+    noParams.params = { values: {} };
+    const u = TS.buildSuggestionRows(noParams).find((r) => r.trackIndex === 2);
+    check(!u.hasWidth, "width 参数未到 ⇒ stereo 行也不声称有 width");
+    eq(TS.rowCells(u)[10], "", "未知 width 留空,不写 100");
+    // C++ 侧的同款哨兵必须在 0..100 之外(落进值域就成了一个「有效建议」)
+    const hh = src("src/core/export/SuggestionExport.h");
+    const sent = hh.match(/kWidthUnknown\s*=\s*(-?[\d.]+)f/);
+    check(
+        !!sent && Number(sent[1]) < 0,
+        "C++ kWidthUnknown 是 0..100 之外的负值",
+    );
+
     // 数值格式:定点 + 负零归一
     eq(TS.fmtFixed(1 / 3, 3), "0.333", "3 位小数");
     eq(TS.fmtFixed(-0, 1), "0.0", "负零归一");
@@ -492,10 +540,76 @@ log("=== ⑧ 虚拟滚动窗口 ===");
     eq(bot.end, 1200, "滚过头也不越界");
     check(bot.start <= 1200, "start 被夹在总行数内");
 
-    // 行高常量必须与 CSS 同值,否则 padTop 与实际排布错位
+    // 行高常量必须与 CSS 同值,否则行的 top 与实际排布错位
     const css = src("web/output/index.html");
     const m = css.match(/\.suggest-row\s*\{[^}]*height:\s*(\d+)px/);
     check(!!m && Number(m[1]) === H, `CSS .suggest-row 行高 = ROW_H(${H}px)`);
+}
+
+// =============================================================================
+log("=== ⑧b 脏检查:同一份输入不该反复重建 600 个行对象 ===");
+
+{
+    // render() 由外壳的每帧合帧驱动,播放中 30Hz playhead / 25Hz params 都会排 render。
+    // 三个输入没变时必须整帧跳过(与 T33 的按需投影同一纪律)。
+    const store = makeStore(1, 40);
+    const sig = TS.suggestionsSignature(store);
+
+    check(TS.suggestionsDirty(store, null), "首次(无上一版签名)算脏");
+    check(!TS.suggestionsDirty(store, sig), "同一份输入 ⇒ 不脏");
+
+    // state / segments 是换对象语义(app.js 深合并后整体替换)
+    check(
+        TS.suggestionsDirty({ ...store, state: { ...store.state } }, sig),
+        "state 换对象 ⇒ 脏",
+    );
+    check(
+        TS.suggestionsDirty({ ...store, segments: { ...store.segments } }, sig),
+        "segments 换对象 ⇒ 脏",
+    );
+
+    // params 每帧换对象但内容常没动 —— 只认本视图真读的那 15 个 width 参数
+    const sameValues = { ...store, params: { values: store.params.values } };
+    check(
+        !TS.suggestionsDirty(sameValues, sig),
+        "params 换了容器但 width 没动 ⇒ 不脏(这条是省帧的关键)",
+    );
+    const movedWidth = {
+        ...store,
+        params: { values: { ...store.params.values, v1_t02_width: 42 } },
+    };
+    check(TS.suggestionsDirty(movedWidth, sig), "width 真改了 ⇒ 脏");
+
+    // 无关参数(pan/vol 走曲线真身,不进本表)不该把整份行集顶脏
+    const otherParam = {
+        ...store,
+        params: { values: { ...store.params.values, v1_t02_pan: 33 } },
+    };
+    check(!TS.suggestionsDirty(otherParam, sig), "非 width 参数变化不触发重建");
+}
+
+// =============================================================================
+log("=== ⑧c stale:过期采集的轨要能被认出来 ===");
+
+{
+    // §2.8 每轨 stale = 该轨有过期采集区间。13 列已冻结不便加列,故落在行属性上 ——
+    // 照着一张过期的表在 DAW 里手工设值,是本视图唯一能骗到用户的地方。
+    const store = makeStore(1, 3);
+    store.segments.channels[2].stale = true; // 轨 3
+    const rows = TS.buildSuggestionRows(store);
+    const stale = rows.filter((r) => r.stale);
+    eq(new Set(stale.map((r) => r.trackIndex)).size, 1, "只有轨 3 被标过期");
+    eq(stale.length, 3, "该轨的每一行都带上标记");
+    check(
+        rows.filter((r) => r.trackIndex !== 3).every((r) => !r.stale),
+        "其余轨不受影响",
+    );
+    // stale 只是行属性,**不进 CSV**(13 列冻结)
+    eq(TS.rowCells(stale[0]).length, 13, "CSV 仍是 13 列");
+    check(
+        !TS.toCsv(rows).includes("stale"),
+        "stale 没有偷偷混进 CSV(列定义是冻结的)",
+    );
 }
 
 // =============================================================================
@@ -526,6 +640,7 @@ log("=== ⑨ 词条 suggest.* ===");
     for (const col of TS.SUGGEST_COLUMNS) {
         check(col.t in T.zh, `列头词条 ${col.t} 存在`);
     }
+    check("suggest.staleNote" in T.zh, "过期采集提示词条在");
     // 「它是建议,不是执行」——07 T41 强调栏:三语都得把这层意思说出来
     check(
         /不会替你/.test(T.zh["suggest.disclaimer"]),
@@ -593,6 +708,46 @@ log("=== ⑩ 源码不变式 ===");
     check(
         !/setActiveTab\(\s*["']suggest/.test(js),
         "没有把 suggest 当成第五个 tab 送进 setActiveTab",
+    );
+
+    // ARIA grid 树必须是连着的:grid → (row 表头 | rowgroup) → row → gridcell。
+    // 中间夹一层 div 就断了,读屏软件念不出行列关系。
+    const html = src("web/output/index.html");
+    check(
+        /data-gb="suggest-scroll"[\s\S]{0,120}role="rowgroup"/.test(html),
+        "滚动容器是 rowgroup",
+    );
+    check(
+        /data-gb="suggest-thead"[\s\S]{0,120}aria-rowindex="1"/.test(html),
+        "表头占 aria-rowindex 1",
+    );
+    check(
+        /el\.scroll\.replaceChildren\(el\.strut, frag\)/.test(js),
+        "数据行是 rowgroup 的**直接**子节点(不再套 spacer/rows 两层)",
+    );
+    for (const attr of ["aria-rowindex", "aria-colindex", "columnheader"]) {
+        check(js.includes(attr), `虚拟滚动补齐了 ${attr}`);
+    }
+    check(
+        /aria-rowcount/.test(js) && /aria-colcount/.test(js),
+        "grid 声明了总行列数(虚拟滚动下 DOM 里只有可见行)",
+    );
+    // 斑马纹按行号取而不是 :nth-child —— 可见窗口是滚动着换的一批节点
+    check(
+        !/suggest-row:nth-child/.test(html),
+        "斑马纹不按子节点序号(否则滚动时黑白翻转)",
+    );
+
+    // 建议表开着时泳道的 rAF 必须停:`data-tab` 仍是 wave、泳道只是被 CSS 藏了,
+    // 只看 data-tab 的话插值层会往 0 宽 canvas 上空转,帧时还会喂进 governor 误触降级。
+    const tw = src("web/output/tab-wave.js");
+    const active = tw.slice(
+        tw.indexOf("function isPanelActive()"),
+        tw.indexOf("function isPanelActive()") + 700,
+    );
+    check(
+        /data-view/.test(active) && /"suggest"/.test(active),
+        "isPanelActive() 同时看 data-tab 与 data-view",
     );
 
     // web/ 不许反向依赖 web-preview/(06 §6.2 单向依赖)

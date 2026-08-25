@@ -59,13 +59,30 @@ struct TrackMeta
     int sourceChannels = 1; // 1 | 2;非法值按 1 处理
 };
 
-// 行集输入。widthPercent[v-1][t-1] = 参数 v{v}_t{tt}_width 的当前值(0..100 %)。
-// mono 轨该参数是 v1 no-op 占位(params v2.0),故 mono 轨的 width 列一律留空(见 buildRows)。
+// 每版本每轨的 width 值表(参数 v{v}_t{tt}_width,0..100 %)。
+using WidthTable = std::array<std::array<float, state::kNumTracks>, state::kNumVersions>;
+
+// 「不知道这一格的 width」哨兵。取 0..100 之外的负值,**不能**沿用零值初始化:
+// 0 在 stereo 轨上是「收成 mono」的**有效建议**([J57]),把「调用方没装这一格」写成 0,
+// 等于替用户做了一个语义相反的决定。哨兵格 ⇒ width 列留空(与 mono 轨同处置)。
+inline constexpr float kWidthUnknown = -1.0f;
+
+inline WidthTable unknownWidths()
+{
+    WidthTable table{};
+    for (auto& perVersion : table)
+        for (auto& w : perVersion)
+            w = kWidthUnknown;
+    return table;
+}
+
+// 行集输入。mono 轨的 width 参数是 v1 no-op 占位(params v2.0),故 mono 轨的 width 列
+// 一律留空;stereo 轨则取 widthPercent 对应格,该格是哨兵时同样留空(见 buildRows)。
 struct ExportInput
 {
     const state::CrvsData* curves = nullptr;
     std::array<TrackMeta, state::kNumTracks> tracks{};
-    std::array<std::array<float, state::kNumTracks>, state::kNumVersions> widthPercent{};
+    WidthTable widthPercent = unknownWidths();
     double sampleRate = 48000.0; // 样本→秒换算;≤0 视为非法,buildRows 返回空行集
 };
 
@@ -94,7 +111,7 @@ struct Row
     double t1Sec = 0.0;
     double pan = 0.0;
     double volDb = 0.0;
-    bool hasWidth = false; // false ⇒ width 列留空(mono 轨)
+    bool hasWidth = false; // false ⇒ width 列留空(mono 轨,或该格未装填)
     double width = 0.0;
     state::SegmentOrigin origin = state::SegmentOrigin::Auto;
     bool locked = false;
