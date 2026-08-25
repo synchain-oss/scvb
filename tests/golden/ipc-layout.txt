@@ -75,6 +75,22 @@ field CtrlHeader.abi offset 4
 field CtrlHeader.generation offset 8
 field CtrlHeader._pad offset 12
 field CtrlHeader._reserved offset 16
+struct CtrlChannelConfig size 32 align 4
+field CtrlChannelConfig.priority offset 0
+field CtrlChannelConfig.flags offset 4
+field CtrlChannelConfig.pair_id offset 8
+field CtrlChannelConfig.freeze offset 12
+field CtrlChannelConfig.source_channels offset 16
+field CtrlChannelConfig._reserved offset 20
+struct CtrlBroadcast size 2048 align 64
+field CtrlBroadcast.seq offset 0
+field CtrlBroadcast.config_seq offset 4
+field CtrlBroadcast.lead_select offset 8
+field CtrlBroadcast._pad offset 12
+field CtrlBroadcast._reserved offset 16
+field CtrlBroadcast.channels offset 64
+field CtrlBroadcast.labels offset 544
+field CtrlBroadcast._tail offset 2044
 struct CtrlRing size 448 align 64
 field CtrlRing.write_pos offset 0
 field CtrlRing.read_pos offset 4

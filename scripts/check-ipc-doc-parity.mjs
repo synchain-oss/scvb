@@ -678,6 +678,11 @@ function requireConst(name, label) {
             "OutputGlobalInfo 的宿主侧只读快照(带默认初值的普通结构体,不落段)",
         ],
         ["WatchdogResult", "停摆看门狗的动作返回值(纯宿主侧,01 §4.2 [R3/J52])"],
+        [
+            "CtrlBroadcastSnapshot",
+            "ctrl 广播区的**宿主侧**普通 POD 快照(无原子、可自由拷贝;读写两侧各持一份)——" +
+                "段内布局是 CtrlBroadcast + CtrlChannelConfig 两个,已冻进 golden",
+        ],
     ]);
 
     for (const [name, h] of headerStructs) {
