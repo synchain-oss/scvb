@@ -199,6 +199,121 @@ TEST_CASE("OutputStateCodec:CFGS 长度 = baseSize+1/+8 尾部必须拒载(§7.3
     }
 }
 
+TEST_CASE("OutputStateCodec:ui 首启已读位往返 + 老工程(无尾部)兼容", "[output][state][t37]")
+{
+    // T37 真机 bug A-3:guide_seen / tour_seen 此前只活在 OutputRuntimeState,从不入 state chunk,
+    // 重开工程即回到「首启」——红字九条页与 tour 每次重放。两位必须与语言同样往返。
+    scvb::state::OutputState s;
+    REQUIRE(s.uiGuideSeen == 0); // 新工程默认「没看过」
+    REQUIRE(s.uiTourSeen == 0);
+
+    s.uiLanguage = "zh";
+    s.uiGuideSeen = 1;
+    s.uiTourSeen = 1;
+
+    std::vector<std::uint8_t> buf;
+    REQUIRE(scvb::state::encodeOutputState(s, buf));
+
+    scvb::state::OutputState d;
+    REQUIRE(scvb::state::decodeOutputState(buf.data(), buf.size(), d));
+    REQUIRE(d.uiLanguage == "zh");
+    REQUIRE(d.uiGuideSeen == 1);
+    REQUIRE(d.uiTourSeen == 1);
+
+    // 老工程 payload(24 + langBytes,无尾部两位)仍解得动,两位取默认 0。
+    std::vector<std::uint8_t> legacy(buf.begin(), buf.end() - 8);
+    scvb::state::OutputState l;
+    REQUIRE(scvb::state::decodeOutputState(legacy.data(), legacy.size(), l));
+    REQUIRE(l.uiLanguage == "zh");
+    REQUIRE(l.uiGuideSeen == 0);
+    REQUIRE(l.uiTourSeen == 0);
+
+    // 尾部布尔越界 / 半截尾部 → 拒载(CLAUDE.md §7.3 不可信字节)。
+    std::vector<std::uint8_t> tampered = buf;
+    tampered[tampered.size() - 8] = 2;
+    scvb::state::OutputState t;
+    REQUIRE_FALSE(scvb::state::decodeOutputState(tampered.data(), tampered.size(), t));
+
+    std::vector<std::uint8_t> halfTrailer(buf.begin(), buf.end() - 4);
+    scvb::state::OutputState h;
+    REQUIRE_FALSE(scvb::state::decodeOutputState(halfTrailer.data(), halfTrailer.size(), h));
+}
+
+TEST_CASE("heartbeatAgeMsOf:哨兵 / 时钟倒退 / 溢出钳位", "[output][conn][t37]")
+{
+    using scvb::output::heartbeatAgeMsOf;
+    using scvb::output::kHeartbeatAgeUnknown;
+
+    // 契约 §2.3:slotState=0 或从未心跳 → 0xFFFFFFFF 哨兵(UI 据此判 heartbeatFresh=false)。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotFree, 12345, 20000) == kHeartbeatAgeUnknown);
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 0, 20000) == kHeartbeatAgeUnknown);
+    // 正常年龄。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 19800, 20000) == 200);
+    // 时钟倒退(steady clock 不该发生,但跨实例读值不做信任假设)→ 0,不出负数回绕。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 21000, 20000) == 0);
+    // 溢出钳到「哨兵-1」:真实的超长年龄绝不能被误读成「无数据」。
+    REQUIRE(heartbeatAgeMsOf(scvb::kSlotActive, 1, 0x1'0000'0000ull) == kHeartbeatAgeUnknown - 1u);
+}
+
+TEST_CASE("channelConn:桥面 conn 数据面来自 registry 实况(T37 bug B)", "[output][conn][t37]")
+{
+    // T37 真机 bug B:Input 侧显示已连接、音频也通(Input 静音、总线出处理后的声音),
+    // 但 Output 轨道页永远是「组 X 尚无输入」—— 因为 OutputEditor::buildConnPayload 是 T29 占位:
+    // 全轨 slotState 由 claim 态推导、heartbeatFresh 恒 false,而 UI 的连接数口径是
+    // 「slotState=2 ∧ heartbeatFresh」(契约 §2.3 / J01),恒为 0。断点在数据面,不在音频环。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+
+    // 已认领的 ch3:活跃 + 心跳新鲜(年龄 ≤ 2000 ⇒ UI 的 heartbeatFresh 为真)。
+    const auto ch3 = out.channelConn(3, 1300);
+    REQUIRE(ch3.slotState == kSlotActive);
+    REQUIRE(ch3.heartbeatAgeMs == 200);
+    REQUIRE(ch3.heartbeatAgeMs <= static_cast<u32>(scvb::kStaleDisplayMs)); // = UI 侧 heartbeatFresh
+    REQUIRE_FALSE(ch3.srMismatch);
+
+    // 未认领的轨:空闲 + 哨兵年龄(UI 显示未连接,而不是「活跃但不新鲜」)。
+    const auto ch1 = out.channelConn(1, 1300);
+    REQUIRE(ch1.slotState == kSlotFree);
+    REQUIRE(ch1.heartbeatAgeMs == scvb::output::kHeartbeatAgeUnknown);
+
+    // 心跳停发 > 2000ms → 年龄越过显示阈值(UI 转「失联」,J10 双阈值的显示半边)。
+    const auto stale = out.channelConn(3, 1100 + scvb::kStaleDisplayMs + 500);
+    REQUIRE(stale.slotState == kSlotActive);
+    REQUIRE(stale.heartbeatAgeMs > static_cast<u32>(scvb::kStaleDisplayMs));
+
+    // 非法 channel 一律回默认(不越界读 registry)。
+    REQUIRE(out.channelConn(0, 1300).slotState == kSlotFree);
+    REQUIRE(out.channelConn(16, 1300).heartbeatAgeMs == scvb::output::kHeartbeatAgeUnknown);
+}
+
+TEST_CASE("channelConn:采样率不一致 → srMismatch(§2.3 该轨禁用)", "[output][conn][t37]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(5);
+    REQUIRE(in.prepare(44100, 512, 1, 1000) == InputClaimState::kActive); // Input 44.1k
+    in.heartbeat(1100);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive); // Output 48k
+
+    const auto ch5 = out.channelConn(5, 1300);
+    REQUIRE(ch5.slotState == kSlotActive);
+    REQUIRE(ch5.srMismatch);
+    // 空闲槽不报采样率不一致(sample_rate=0 是「未知」,不是「不同」)。
+    REQUIRE_FALSE(out.channelConn(6, 1300).srMismatch);
+}
+
 TEST_CASE("Output state 容器:abi 高于当前 → RejectedNewer + preservedOriginal 原样回写", "[output][state][abi]")
 {
     // PR#53 R1:setStateInformation 经 loadState 做 abi 判读 —— 高 abi 拒载并保留原 blob(getStateInformation

@@ -10,6 +10,7 @@
 
 #include "BridgeArgs.h"
 #include "SegmentEditService.h"
+#include "UiDefaultsStore.h"
 #include "engine/CurveEvaluator.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -168,8 +169,9 @@ juce::var OutputEditor::buildSnapshot()
     put(version, "plugin", "0.1.0");
     put(version, "abi", static_cast<int>(scvb::kScvbAbi));
     put(o, "version", version);
-    put(o, "guide_seen_global", false); // 系统级全局默认(T31 落盘)
-    put(o, "tour_seen_global", false);
+    // 系统级全局默认(跨工程,UiDefaultsStore 落盘;硬编码 false 时「不再显示」永不生效 —— T37 A-3)
+    put(o, "guide_seen_global", uidefaults::guideSeenGlobal());
+    put(o, "tour_seen_global", uidefaults::tourSeenGlobal());
     put(o, "conn", buildConnPayload());
     return o;
 }
@@ -533,28 +535,28 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
 
 juce::var OutputEditor::buildConnPayload() const
 {
-    const bool readOnly = processor_.isReadOnly();
+    // 数据源 = 本组 registry 的 15 条 InputSlot 实况(§2.3 字段纪律逐条对位)。
+    const auto snap = processor_.connSnapshot();
 
     juce::var channels = mkArray();
     for (int t = 0; t < 15; ++t)
     {
+        const auto& info = snap.channels[static_cast<std::size_t>(t)];
         juce::var ch = obj();
-        // T29:per-channel slotState/heartbeat 真身归 T30/T32(读本组 registry InputSlot);
-        // 此处以 session 视角的最小面填充:空闲 0 / 活跃 2(仅当本实例为 active)。
-        const int slotState = (!readOnly) ? 2 : 0;
-        put(ch, "slotState", slotState);
-        put(ch, "heartbeatAgeMs", static_cast<juce::int64>(0xFFFFFFFFu)); // 哨兵「无数据」
-        put(ch, "heartbeatFresh", false); // heartbeatAgeMs=0xFFFFFFFF 哨兵 → fresh=false(§2.3 派生一致)
-        put(ch, "capturing", false);
+        put(ch, "slotState", static_cast<int>(info.slotState));
+        put(ch, "heartbeatAgeMs", static_cast<juce::int64>(info.heartbeatAgeMs));
+        // §2.3:heartbeatFresh 是 heartbeatAgeMs ≤ 2000 的派生布尔(哨兵 0xFFFFFFFF 自然为 false)。
+        put(ch, "heartbeatFresh", info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs));
+        put(ch, "capturing", info.capturing);
         put(ch, "misalignCount", static_cast<int>(processor_.gapCount(t + 1)));
-        put(ch, "srMismatch", false);
+        put(ch, "srMismatch", info.srMismatch);
         push(channels, ch);
     }
 
     juce::var o = obj();
     put(o, "channels", channels);
-    put(o, "outputReadOnly", readOnly);
-    put(o, "generation", 0);
+    put(o, "outputReadOnly", snap.readOnly);
+    put(o, "generation", static_cast<int>(snap.generation));
     return o;
 }
 
@@ -652,6 +654,24 @@ void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& o
     add(Fn::SetGuideSeen, &OutputEditor::handleSetGuideSeen);
     add(Fn::SetTourSeen, &OutputEditor::handleSetTourSeen);
     add(Fn::ConfirmPrintGuard, &OutputEditor::handleConfirmPrintGuard);
+}
+
+// ============================================================================
+// 通用函数覆写(基类只维护 editor 局部值;Output 桥面下发的 ui.* 真源在 processor)
+// ============================================================================
+void OutputEditor::handleSetLang(const juce::Array<juce::var>& args,
+                                 juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执 {ok:true}
+    processor_.bridgeSetUiLanguage(lang()); // §1.30:落 Output state(实际生效值经 scvb.state 回推)
+}
+
+void OutputEditor::persistUiScaleAsDefault()
+{
+    // §1.29「保持」= 落工程 state + 系统级全局默认(新工程沿用;05 §1.2)。
+    const int percent = juce::roundToInt(uiScale() * 100.0f);
+    processor_.bridgeSetUiScalePercent(percent);
+    uidefaults::setUiScalePercent(percent);
 }
 
 // ============================================================================
@@ -1678,7 +1698,17 @@ void OutputEditor::handleSetGuideSeen(const ArgList& a, Completion c)
         return;
     }
     processor_.runtime().guideSeen = seen;
-    // alsoGlobal 落盘全局默认归 T31(commitUiScale 通道)。
+    // §1.32 alsoGlobal(缺省 true):勾了「不再显示」才写系统级全局默认,承诺跨工程成立。
+    bool alsoGlobal = true;
+    if (a.size() >= 2 && !strictBool(a[1], alsoGlobal))
+    {
+        c(badArgResp());
+        return;
+    }
+    if (alsoGlobal)
+    {
+        uidefaults::setGuideSeenGlobal(seen);
+    }
     c(okResp());
 }
 
@@ -1691,6 +1721,17 @@ void OutputEditor::handleSetTourSeen(const ArgList& a, Completion c)
         return;
     }
     processor_.runtime().tourSeen = seen;
+    // §1.33 alsoGlobal(缺省 true):完成与「暂不」都置全局位 → 新工程不再自动询问。
+    bool alsoGlobal = true;
+    if (a.size() >= 2 && !strictBool(a[1], alsoGlobal))
+    {
+        c(badArgResp());
+        return;
+    }
+    if (alsoGlobal)
+    {
+        uidefaults::setTourSeenGlobal(seen);
+    }
     c(okResp());
 }
 

@@ -150,6 +150,11 @@ public:
     // [J75] T43:写 state ui.master_chart_mode(随工程持久化);"trajectory" 以外一律回落 "distribution"。
     void setMasterChartMode(const juce::String& mode);
     juce::String masterChartMode() const { return masterChartMode_; }
+    // 桥面 ui 落 state(§1.30 setLang / §1.29 commitUiScale)。基类 WebViewHost 只维护 editor
+    // 局部值,而 §2.1 的 ui.language / ui.scale 取自这里 —— 不落 processor,下一次 state emit
+    // 会把旧值回推给 UI(T37 真机 bug A-1:选中文后切 tab 变回英文)。
+    void bridgeSetUiLanguage(const juce::String& lang); // 已由桥层 normalize({zh,en,fr})
+    void bridgeSetUiScalePercent(int percent); // clamp 33..300
     // 只读观察态(O3:同组已有主 Output);写函数据此回 {observer:true}。
     bool isReadOnly() const { return session_.state() == scvb::output::OutputClaimState::kObserver; }
     // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。
@@ -158,6 +163,18 @@ public:
     std::uint32_t crvsRevision() const { return crvsRevision_.load(std::memory_order_acquire); }
     // [M] 该轨累计失准计数(gapCount;scvb.conn.channels[].misalignCount 数据源)。
     scvb::u32 gapCount(int channel) const { return session_.gapCount(static_cast<scvb::u32>(channel)); }
+
+    // scvb.conn(契约 §2.3)的整帧数据面快照。T29 桥曾以「claim 态推导」的占位值充数
+    // (全轨 slotState=2、heartbeatFresh 恒 false),UI 的 `slotState=2 ∧ heartbeatFresh`
+    // 口径下连接数恒为 0 —— 音频照常出声但 Tab2 永远显示「组 X 尚无输入」(T37 真机 bug B)。
+    // 持 lifecycleMutex_:registry 段的映射/解映射走 prepareToPlay/changeGroup,不能与之竞争。
+    struct ConnSnapshot
+    {
+        std::array<scvb::output::ChannelConnInfo, 15> channels{};
+        std::uint32_t generation = 0;
+        bool readOnly = false;
+    };
+    ConnSnapshot connSnapshot();
 
     // PR#53 R1:setStateInformation 读到 abi > kCurrentAbi → 拒载并置位(冻结契约 §7.3:高版本拒载
     // + 提示升级,绝不静默降级;原 blob 由宿主工程保有)。消息线程读写(setStateInformation 持
