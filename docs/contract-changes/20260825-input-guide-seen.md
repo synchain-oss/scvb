@@ -137,10 +137,15 @@ Input 侧照抄结构即可,不必重新设计:
   - **预览 / mock**:mock 后端(`web-preview/mock/juce-bridge-mock.js` 的 Input 后端)已按上表形制
     实现 `setGuideSeen`,调用落地 → `scvb.state` 回推 → 再取快照往返不丢。
     `web-preview/tests/smoke-input-tour.mjs` ③ 断言了这一往返与「seen 后不再弹」。
-  - **真 JUCE 宿主(native 未落地)**:桥上根本不挂这个名字,调用直接返回 `null` ——
-    **本会话**内由页内会话标记(`store.session.guideClosed` / `langChosen`,不入 state chunk)
-    保证不重弹;**跨会话会再弹一次**。这是「没写成」的如实表现,**不是**静默假装写成了。
-    该表现会随本变更的 native 落地一并消失。
+  - **真 JUCE 宿主(native 未落地)**:上下行**都**还没有这件东西。下行 ——
+    `src/input/InputBridgeLogic.cpp` 的 `buildInputSnapshot` / `buildStatePayload` 当前只发
+    `ui:{scale, language}`,顶层也没有 `guide_seen_global`;按上一条的判据
+    (`undefined !== false`),首启链在真宿主里**一次都不会自动弹**,自然也谈不上「跨会话重弹」,
+    此刻唯一能看到 mini tour 的入口是 header 的「?」重看。上行 —— 桥上根本不挂
+    `setGuideSeen`,调用直接返回 `null`。页内会话标记(`store.session.guideClosed` /
+    `langChosen`,不入 state chunk)拦的是**预览 / mock 形态**下的重弹,真宿主里只是空转。
+    这是「没写成」的如实表现,**不是**静默假装写成了 —— 首启链要真跑起来,须等本变更的
+    native 落地(两个键下行 + `setGuideSeen` 上行),届时本条描述一并作废。
 - 代码里的 TODO 锚点:`web/input/tour-in.js` 头注、`web/shared/bridge.js` 的 `PENDING_FUNCS`
   头注,两处都指回本文件。
 

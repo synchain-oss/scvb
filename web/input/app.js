@@ -537,8 +537,10 @@ const langStart = createLangStart({
 langStart.mount();
 
 // header「?」= 重看引导(Input 无设置页,这是唯一重看入口;guide_seen 已置位也可再开)。
+// replay:true —— 重看结束时不写已读位(setGuideSeen 只是首启的写入口,见契约变更说明 §四)。
 const helpBtn = $("input.header.help");
-if (helpBtn) helpBtn.addEventListener("click", () => tour.start());
+if (helpBtn)
+    helpBtn.addEventListener("click", () => tour.start({ replay: true }));
 
 /**
  * 首启链的渲染侧闸门(每帧跑,判据 = 纯函数):

@@ -144,11 +144,17 @@ export function spotRectOf(root, anchor, mask) {
     // 避免卡片若有 1px 描边时 border-box 与 padding-box 差 2px 导致亮区偏移。
     const cr = mask.getBoundingClientRect();
     const tr = target.getBoundingClientRect();
+    // 缩放档(两页的 shell 都走 CSS `zoom`)下包围盒量的是**视觉 px**,而 drawMask 与
+    // placeCallout 全程按 clientWidth/clientHeight 的**布局 px** 作画 —— 不换算的话非 1.0 档的
+    // 亮区会整体偏移放大,大档直接跑出卡外(spotlight 框空)。mask 铺满卡、与画布同源,
+    // 故用它两种量法之比求有效缩放,把视觉 px 除回布局 px;SPOT_PAD 本就是设计 px,除完再外扩。
+    const k = mask.clientWidth > 0 ? cr.width / mask.clientWidth : 1;
+    const s = Number.isFinite(k) && k > 0 ? k : 1;
     return {
-        x: tr.left - cr.left - SPOT_PAD,
-        y: tr.top - cr.top - SPOT_PAD,
-        w: tr.width + SPOT_PAD * 2,
-        h: tr.height + SPOT_PAD * 2,
+        x: (tr.left - cr.left) / s - SPOT_PAD,
+        y: (tr.top - cr.top) / s - SPOT_PAD,
+        w: tr.width / s + SPOT_PAD * 2,
+        h: tr.height / s + SPOT_PAD * 2,
     };
 }
 

@@ -14,7 +14,8 @@
 //     本文件的步骤机 = 5 步、无 tab、无 demo 注入(轻量的本义:讲的是**真实**界面)。
 //
 // 职责边界(硬):
-//   • 不写 state、不触引擎;**唯一桥调用 = setGuideSeen**(完成与 Skip 都置位,J50a 镜像)。
+//   • 不写 state、不触引擎;**唯一桥调用 = setGuideSeen**(首启链的完成与 Skip 都置位,
+//     J50a 镜像;header「?」**重看**走 start({replay:true}),结束时不调用它)。
 //     该名字当前停在 bridge.js 的 PENDING_FUNCS.input(契约 §3 尚无此函数),变更说明见
 //     docs/contract-changes/20260825-input-guide-seen.md;native 未落地时桥上不挂,
 //     调用直接落空 —— 本会话内靠 app.js 的会话标记不重弹,**不假装写了** state。
@@ -114,6 +115,7 @@ export function createInputTour(opts) {
     const N = TOUR_IN_STEPS.length;
     let active = false;
     let step = 1; // 1..N
+    let persistOnEnd = true; // 本次是否首启链(= 结束时写已读位);重看置 false
 
     // ---------------------------------------------------------------- 组件样式
     // 全部走共用画法的规则表(零页内专有规则:Input 的 mini tour 没有工作流程大卡这类特殊形态步)。
@@ -258,9 +260,15 @@ export function createInputTour(opts) {
     }
 
     // ---------------------------------------------------------------- 生命周期
-    function start() {
+    /**
+     * @param {{replay?:boolean}} [o] `replay:true` = header「?」重看,结束时**不**写已读位
+     *   (契约变更说明 20260825-input-guide-seen §四:本函数只是首启的写入口)。
+     *   起步条件与首启完全一样 —— 重看不看 `guide_seen`,已置位也能再开。
+     */
+    function start(o) {
         if (active) return;
         active = true;
+        persistOnEnd = !(o && o.replay);
         step = 1;
         overlay.hidden = false;
         if (callout) callout.focus({ preventScroll: true });
@@ -269,8 +277,9 @@ export function createInputTour(opts) {
 
     function endTour(completed) {
         if (!active) return;
-        // 完成与 Skip 都置位(J50a 镜像:同步写系统级全局默认位);唯一桥调用。
-        call("setGuideSeen", true, true);
+        // 首启链里完成与 Skip 都置位(J50a 镜像:同步写系统级全局默认位);唯一桥调用。
+        // 重看路径不置位 —— 已读位由首启那一次负责,重看只是再看一遍。
+        if (persistOnEnd) call("setGuideSeen", true, true);
         active = false;
         overlay.hidden = true;
         onEnd(!!completed);

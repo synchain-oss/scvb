@@ -287,6 +287,16 @@ log("=== ⑤ 源码级:零 Audio / 唯一桥调用 / a11y / 锚点 / 复用共�
         ts.includes('call("setGuideSeen", true, true)'),
         "完成与 Skip 都经 setGuideSeen(true, true) 置位(J50a 镜像)",
     );
+    // 重看**不**写已读位:置位受 persistOnEnd 闸,该闸由 start({replay}) 翻
+    // (契约变更说明 20260825-input-guide-seen §四「header「?」重看引导不调用本函数」)
+    check(
+        /if \(persistOnEnd\) call\("setGuideSeen", true, true\);/.test(ts),
+        "setGuideSeen 置位受 persistOnEnd 闸门管辖",
+    );
+    check(
+        /persistOnEnd = !\(o && o\.replay\);/.test(ts),
+        "persistOnEnd 由 start({replay}) 决定 —— 重看路径不置位",
+    );
     // 完成与 Skip 共用同一个出口 endTour —— 置位不会只覆盖其中一条路径
     check(
         /function skip\(\)\s*\{\s*endTour\(false\);/.test(ts),
@@ -325,11 +335,13 @@ log("=== ⑤ 源码级:零 Audio / 唯一桥调用 / a11y / 锚点 / 复用共�
 
     // 重看:「?」接线,且 start() 无 seen 判据(guide_seen 已置位也可再开)
     check(
-        /input\.header\.help[\s\S]{0,200}tour\.start\(\)/.test(app),
-        "app.js 把「?」接到 tour.start()",
+        /input\.header\.help[\s\S]{0,300}tour\.start\(\{\s*replay:\s*true\s*\}\)/.test(
+            app,
+        ),
+        "app.js 把「?」接到 tour.start({replay:true})",
     );
     check(
-        !/function start\(\)[\s\S]*?guide_seen/.test(ts),
+        !/function start\([\s\S]*?guide_seen/.test(ts),
         "start() 不看 guide_seen —— 重看随时可再入",
     );
 
