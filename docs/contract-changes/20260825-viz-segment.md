@@ -72,7 +72,8 @@
 | 72 | `atomic<u32>` | `track_covered_mask` | bit{N−1} = 该轨有分段 |
 | 76 | `atomic<u32>` | `track_stereo_mask` | bit{N−1} = 该轨立体声源 |
 | 80 | `atomic<u32>` | `lane_revision` | 车道/位图内容版本;只在重算车道时 +1 |
-| 84 | `u32[11]` | `_reserved` | |
+| 84 | `atomic<u32>` | `track_lead_mask` | bit{N−1} = 该轨 `lead_lock`(分布图柱顶绿帽,同 Tab1 规格) |
+| 88 | `u32[10]` | `_reserved` | |
 
 **`VizTrackColors`(64 B)**:`atomic<u32> index[15]` + 4 B pad。值 = 调色板槽位(1..15;0 = 未指定)。
 v1 恒等于轨号 —— web 侧 `--track-color-1..15`「顺序即轨号」(T43)。字段先落段,将来若引入 native 侧
