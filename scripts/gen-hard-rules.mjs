@@ -173,7 +173,22 @@ function parseSource(text) {
 // markdown → UI 纯文本:UI 侧的加重靠样式做(05 §7b 条 38),不靠 markdown 记号;
 // 把 ** 与反引号原样送进 i18n 值,用户会在插件里看到一串星号。
 function toPlain(md) {
-    return md.replace(/\*\*(.+?)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
+    return (
+        md
+            .replace(/\*\*(.+?)\*\*/g, "$1")
+            .replace(/`([^`]+)`/g, "$1")
+            // 剥掉 ** 之后,markdown 里用来分隔「加重块」与后文的那个半角空格会留在中文
+            // 句号后面(`……总线。** 不要把……` → `……总线。 不要把……`)。中文排版里
+            // 句号后不跟空格,而九条红字在首启引导页是逐条全文显示的 —— 九条里有八条都
+            // 带这个尾巴。
+            //
+            // 标点必须逐个写成**全角码点**,不能图省事写 `[。,、;:!?]` —— 那串里的
+            // `,;:!?` 是 ASCII,会连法文的 `À lire : les neuf…` 一起吃掉那个空格,
+            // 变成 `À lire :les neuf…`(法文排版里冒号前后本来就该有空格)。en/fr 用的
+            // 全是 ASCII 标点,收窄到全角之后它们一律不受影响。
+            //   U+3002 。 / U+FF0C , / U+3001 、 / U+FF1B ; / U+FF1A : / U+FF01 ! / U+FF1F ?
+            .replace(/([。，、；：！？])[ \t]+/g, "$1")
+    );
 }
 
 // ---------------------------------------------------------------- 载入译文
@@ -213,6 +228,30 @@ function loadTranslations(source) {
         }
     };
     check("title", source.title, json.title);
+
+    // 译文这一侧的自校验,与 parseSource 对 zh 真源的严格程度对称。只做正向 byN 查找
+    // 是查不出这三种病的:重复的 n 会被 Map 静默取最后一条(前一条译文永远用不到);
+    // 多余的条目(n=10,或 zh 删到 8 条后残留的第 9 条)根本不被访问,--check 照样绿;
+    // n 缺失或非数字只会表现成「缺少 ruleN 条目」,指不到真正的病灶。
+    // 这个文件是九条红字唯一的译文之家,它自己漂了就是六个落地面一起漂。
+    const ns = (json.rules || []).map((r) => r && r.n);
+    if (
+        ns.length !== RULE_COUNT ||
+        new Set(ns).size !== ns.length ||
+        ns.some((n, i) => n !== i + 1)
+    ) {
+        fail(
+            TRANSLATIONS +
+                " 的 rules 必须恰好 " +
+                RULE_COUNT +
+                " 条、n 从 1 连续到 " +
+                RULE_COUNT +
+                " 且不重复,实际 n = [" +
+                ns.join(", ") +
+                "]",
+        );
+    }
+
     const byN = new Map((json.rules || []).map((r) => [r.n, r]));
     for (const rule of source.rules)
         check("rule" + rule.n, rule.md, byN.get(rule.n));

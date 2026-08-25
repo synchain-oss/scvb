@@ -39,7 +39,7 @@ SCVB(Synchain Vocal Balancer)是**一对**配套的 VST3 插件,用来给多人�
 
 ### 装两个插件
 
-在**每条**人声轨的插件链**最后一格**放一个 SCVB Input;在总线的**第一格**放一个 SCVB Output(硬约束 2)。逐宿主的具体操作见 `docs/DAW_COMPATIBILITY.md`。
+在**每条**人声轨的插件链**最后一格**放一个 SCVB Input;在总线的**第一格**放一个 SCVB Output(硬约束 2)。逐宿主的具体操作见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md)。
 
 ### 分配 channel 与组
 
@@ -138,7 +138,7 @@ Input 是单页:channel 选择、组选择、连接状态、电平、直通/静�
 - 输出开关 **ON** 时,DSP 直接用引擎值(参数只是对外的打印头);**OFF** 时 DSP 用宿主参数值。
 - 切版本、复制版本、改段值、关输出开关,**都不会**产生宿主自动化事件。
 - 重开一个 `output_enabled=ON` 的工程时会有加载守卫横幅:在你点"继续引擎驱动"之前,插件只备而不发,**一个 gesture 都不会写出去**。
-- 逐 DAW 的坑(Cubase 车道位置、REAPER 关 GUI 不写、Pro Tools 循环只录第一遍等)见 `docs/DAW_COMPATIBILITY.md`。
+- 逐 DAW 的坑(Cubase 车道位置、REAPER 关 GUI 不写、Pro Tools 循环只录第一遍等)见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md)。
 
 ## Pan 曲线编辑器
 
@@ -164,15 +164,15 @@ Width 是**几何角度缩放** —— 把分配到的角度乘以一个系数,�
 | 现象 | 可能原因 | 怎么办 |
 |---|---|---|
 | **顶部红 pill + 红横幅"版本不匹配"** | 只更新了两个插件中的一个 | SCVB 拒绝半兼容连接。把 Input 与 Output 一起升到同一版本 |
-| **人声突然变成未平衡的原始声像** | 宿主停调了 Output(Live 设备停用 / FL smart disable) | SCVB 已自动转直通兜底,~5.5s 恢复。**FL Studio 用户:请对 SCVB Output 所在的总线关闭 smart disable** —— FL 依"输入静音"判定挂起插件,而 SCVB 总线输入恒为静音,特别容易被误挂起。逐宿主说法见 `docs/DAW_COMPATIBILITY.md` |
+| **人声突然变成未平衡的原始声像** | 宿主停调了 Output(Live 设备停用 / FL smart disable) | SCVB 已自动转直通兜底,~5.5s 恢复。**FL Studio 用户:请对 SCVB Output 所在的总线关闭 smart disable** —— FL 依"输入静音"判定挂起插件,而 SCVB 总线输入恒为静音,特别容易被误挂起。逐宿主说法见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **某条人声轨没声音** | 该轨 Input 连上了健康 Output,但 Output 侧没拿到它的数据(channel 没选 / 组选错 / channel 冲突) | 检查该 Input 的 channel 与组;看 Output 轨道页该轨是否在线 |
 | **装了 Input 就整轨哑** | 不应该发生 | 检测不到健康 Output 时 Input 自动直通(硬约束 3)。若确实哑轨,收集设置页"复制诊断信息"的输出并提 issue |
 | **"channel 冲突"警告** | 同组内两个 Input 抢同一个 channel | 改其中一个的 channel id,或把它换到别的组 |
 | **"组 X 已有主 Output,本实例只读观察"** | 同组已经有一个生效的 Output | 一个组只能有一个生效 Output(硬约束 6)。删掉多余的那个,或把它换到别的组 |
-| **"时间线缺口 / 重叠"警告计数上涨** | 人声轨路由被改过 / 有轨没被接管 | **先别导出**(硬约束 9)。按 `docs/DAW_COMPATIBILITY.md` 的通用坑清单排查路由 |
+| **"时间线缺口 / 重叠"警告计数上涨** | 人声轨路由被改过 / 有轨没被接管 | **先别导出**(硬约束 9)。按 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) 的通用坑清单排查路由 |
 | **声像整体偏了** | 人声轨或总线的宿主 pan 没居中 | 把宿主 pan 全部回中(硬约束 4) |
 | **导出的音频和实时听到的不一样** | 离线渲染下的路由/顺序问题 | 时间线寻址在离线渲染下同样成立;若仍不一致,记下 DAW 与版本提 issue |
-| **write 没录上** | 自动化模式不对 / 该 DAW 的已知坑 | 确认 Write 或 Latch;REAPER 注意别关插件 GUI;见 `docs/DAW_COMPATIBILITY.md` |
+| **write 没录上** | 自动化模式不对 / 该 DAW 的已知坑 | 确认 Write 或 Latch;REAPER 注意别关插件 GUI;见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **某轨被禁用,提示采样率不一致** | 该轨采样率与 Output 不同 | 统一工程采样率 |
 
 ## FAQ

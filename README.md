@@ -30,10 +30,21 @@ Screenshots ship with the first tagged release. Until then, the interface is des
 - A VST3 host
 - WebView2 Evergreen Runtime, for the editor UI (usually already present on Windows)
 
-<!-- T38 占位:DAW 支持等级表在此插入(交付卡 = T38 · DAW 兼容矩阵与支持等级表,07 §2)。
-     总矩阵与每 DAW 一节归 docs/DAW_COMPATIBILITY.md;本处只放摘要级的支持等级表。
-     T38 落地前请勿在此手写等级 —— README 与 DAW_COMPATIBILITY 两处手写必漂(12 §3.3)。
-     README.zh-CN.md 的同一位置有对等占位,两处必须同时填写。 -->
+## Supported DAWs
+
+<!-- 本表转贴自 docs/DAW_COMPATIBILITY.md §4(该节标题即「README 支持等级表(供 T39b 转贴)」)。
+     真源在那一节:改等级只改那里,再同步回本表与 README.zh-CN.md 的对等表。 -->
+
+Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, which stays the source of truth for this table. Tier 1 = fully supported, Tier 2 = supported with limitations, Tier 3 = not supported.
+
+| DAW | Version | Support tier | Status and known limits |
+|---|---|---|---|
+| Cubase | 14 / 15 | **Tier 1 (primary test host)** | S1 routing (realtime / offline / state) verified; automation write pending S2 on real hardware (known risk RD-01); automation hides in the Ins hidden lane; Input must sit in the last slot of the pre-fader section |
+| REAPER | 7 (recommended) | **Tier 1 (conditional)** | S1 routing (realtime / offline) verified; may not write automation with the GUI closed (needs "process all notifications"); one project per machine |
+| Ableton Live | 12 | **Tier 1 (conditional)** | 128-parameter ceiling (124 as counted here, 4 spare); Re-Enable Automation has to be clicked; S1/S2 pending |
+| Studio One | 6 | **Tier 1 (conditional)** | Automation mode must be set to Write/Latch inside the plugin window; Dropout Protection changes the block size; S1/S2 pending |
+
+> The "conditional" attached to Tier 1 will be resolved into a final tier once S2 automation testing runs on real hardware; some rows may drop to Tier 2. FL Studio is not in the v1 support matrix.
 
 ## Install
 
@@ -83,7 +94,7 @@ See [CLAUDE.md](CLAUDE.md) §6 for the full toolchain list, and run `pwsh script
 - [Known issues](docs/KNOWN_ISSUES.md) — accepted v1 limitations
 - [Release process](docs/RELEASE.md) — versioning, tags, release notes
 - Contracts and architecture live in `docs/`: `PARAMETERS.md`, `IPC_CONTRACT.md`, `STATE_SCHEMA.md`, `SCVB_CONTRACT.md`
-- Host-by-host notes live in `docs/DAW_COMPATIBILITY.md`
+- Host-by-host notes live in [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md)
 - Read-only copies of the constitution documents are in `docs/constitution/`
 
 ## Contributing

@@ -41,7 +41,7 @@ Create a stereo bus in your DAW (group / bus / submix, the name varies by host) 
 
 ### Install both plugins
 
-Put one SCVB Input in the **last slot** of **every** vocal track's plugin chain, and one SCVB Output in the **first slot** of the bus (hard rule 2). Host-by-host instructions are in `docs/DAW_COMPATIBILITY.md`.
+Put one SCVB Input in the **last slot** of **every** vocal track's plugin chain, and one SCVB Output in the **first slot** of the bus (hard rule 2). Host-by-host instructions are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
 
 ### Assign channels and groups
 
@@ -140,7 +140,7 @@ Things worth knowing:
 - With the output switch **ON**, the DSP uses engine values (the parameters are just the outward-facing print head); with it **OFF**, the DSP uses the host parameter values.
 - Switching versions, copying a version, editing segment values, and turning the output switch off **never** produce host automation events.
 - Reopening a project saved with `output_enabled=ON` shows a load-guard banner: until you press "continue engine-driven", the plugin is loaded but silent on the automation side — **not a single gesture goes out**.
-- Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in `docs/DAW_COMPATIBILITY.md`.
+- Host-specific pitfalls (Cubase lane placement, REAPER not writing with the GUI closed, Pro Tools recording only the first loop pass, and so on) are in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md).
 
 ## Pan curve editor
 
@@ -166,15 +166,15 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | **Red pill at the top plus a red "version mismatch" banner** | Only one of the two plugins was updated | SCVB refuses half-compatible connections. Bring Input and Output up to the same version together |
-| **The vocals suddenly revert to their raw, unbalanced image** | The host stopped calling the Output (Live device deactivated / FL smart disable) | SCVB has already fallen back to passthrough and recovers in about 5.5 s. **FL Studio users: turn smart disable off for the bus that hosts SCVB Output** — FL suspends plugins based on "input is silent", and the SCVB bus input is silent by design, which makes it unusually easy to suspend by mistake. Host-by-host wording is in `docs/DAW_COMPATIBILITY.md` |
+| **The vocals suddenly revert to their raw, unbalanced image** | The host stopped calling the Output (Live device deactivated / FL smart disable) | SCVB has already fallen back to passthrough and recovers in about 5.5 s. **FL Studio users: turn smart disable off for the bus that hosts SCVB Output** — FL suspends plugins based on "input is silent", and the SCVB bus input is silent by design, which makes it unusually easy to suspend by mistake. Host-by-host wording is in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **One vocal track is silent** | That track's Input is connected to a healthy Output, but the Output never received its data (no channel selected / wrong group / channel conflict) | Check that Input's channel and group; check whether the track shows as online on the Output's Tracks page |
 | **Installing Input killed the whole track** | Should not happen | With no healthy Output detected, Input falls back to passthrough automatically (hard rule 3). If a track really is dead, collect the output of "Copy diagnostics" in Settings and open an issue |
 | **"Channel conflict" warning** | Two Inputs in the same group claim the same channel | Change the channel id on one of them, or move it to another group |
 | **"Group X already has a primary Output; this instance is read-only"** | The group already has an active Output | A group may only have one active Output (hard rule 6). Remove the extra one, or move it to another group |
-| **The "timeline gap / overlap" warning count is climbing** | Vocal track routing was changed / some track is not being picked up | **Do not export yet** (hard rule 9). Work through the common-pitfalls list in `docs/DAW_COMPATIBILITY.md` |
+| **The "timeline gap / overlap" warning count is climbing** | Vocal track routing was changed / some track is not being picked up | **Do not export yet** (hard rule 9). Work through the common-pitfalls list in [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **The whole image is skewed to one side** | Host pan on a vocal track or on the bus is not centred | Return every host pan to centre (hard rule 4) |
 | **The exported audio differs from what you heard live** | A routing or ordering problem under offline rendering | Timeline addressing holds under offline rendering too; if it still differs, note your DAW and version and open an issue |
-| **The write pass recorded nothing** | Wrong automation mode / a known pitfall in that DAW | Confirm Write or Latch; in REAPER, do not close the plugin GUI; see `docs/DAW_COMPATIBILITY.md` |
+| **The write pass recorded nothing** | Wrong automation mode / a known pitfall in that DAW | Confirm Write or Latch; in REAPER, do not close the plugin GUI; see [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md) |
 | **A track is disabled with a sample-rate mismatch notice** | That track's sample rate differs from the Output's | Use one sample rate throughout the project |
 
 ## FAQ

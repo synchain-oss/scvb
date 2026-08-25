@@ -109,19 +109,21 @@ SHA-256(直接从 CI 的 job summary `dist/package-summary.md` 复制,不要手�
 > 首次运行 Windows SmartScreen 可能提示「未知发布者」,点「更多信息 → 仍要运行」。本项目当前未做代码签名,你可以自行从源码构建校验(见 CONTRIBUTOR_ONBOARDING.md)。
 
 ## 首次使用?
-先读 **[九条硬约束](docs/USER_GUIDE.zh-CN.md#硬约束)** —— 路由摆错会直接出静音。
+先读 **[九条使用规则](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/USER_GUIDE.zh-CN.md#硬约束)** —— 路由摆错会直接出静音。
 
 ## 验证
 - pluginval strictness 5(CI,`--skip-gui-tests`):✅
 - pluginval strictness 5 全量含 GUI(本地 Windows 11):✅
 - Catch2 单测:{N} passed
-- DAW 实测矩阵:见 [DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md)
+- DAW 实测矩阵:见 [DAW_COMPATIBILITY.md](https://github.com/synchain-oss/scvb/blob/v{X.Y.Z}/docs/DAW_COMPATIBILITY.md)
 
 ## 完整变更
 **Full Changelog**: https://github.com/synchain-oss/scvb/compare/v{上一版}...v{X.Y.Z}
 ```
 
-> 模板里的链接文案统一写「**九条**硬约束」。这是唯一一处会同时出现在插件 UI、README、发布说明与官网的文案,写错一次就是四个面一起错。
+> 模板里的链接文案统一写「**九条**」。这是唯一一处会同时出现在插件 UI、README、发布说明与官网的文案,写错一次就是四个面一起错。
+
+> **模板里的链接必须是 pin 到 tag 的绝对 URL,别用仓库相对路径。** 这段文本的落地面是 **GitHub Release 正文**,那里没有「当前文件所在目录」这个上下文,`docs/USER_GUIDE.zh-CN.md#硬约束` 之类的相对链接不会解析到仓内文件;而且它们落在 ```markdown 围栏里,`markdown-link-check` 不提取围栏内的链接,**没有任何机检会替你发现**。即便相对链接能解析,它指的也是 HEAD 而不是这次发的 tag —— 用户下了 `v1.2.0` 却读到 dev 上已经改过的手册,是这套「唯一真源」链条里最后一处会漂的地方。`{X.Y.Z}` 本来就是模板里已有的占位符,填的时候顺手带上即可。这与第 8 步「SHA-256 不要手抄」是同一类要求:模板里就该填对。
 
 ## 分发渠道
 

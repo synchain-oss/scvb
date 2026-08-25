@@ -30,10 +30,21 @@
 - 任一 VST3 宿主
 - WebView2 Evergreen Runtime,用于编辑器 UI(Windows 通常已预装)
 
-<!-- T38 占位:DAW 支持等级表在此插入(交付卡 = T38 · DAW 兼容矩阵与支持等级表,07 §2)。
-     总矩阵与每 DAW 一节归 docs/DAW_COMPATIBILITY.md;本处只放摘要级的支持等级表。
-     T38 落地前请勿在此手写等级 —— README 与 DAW_COMPATIBILITY 两处手写必漂(12 §3.3)。
-     README.md 的同一位置有对等占位,两处必须同时填写。 -->
+## 支持的 DAW
+
+<!-- 本表转贴自 docs/DAW_COMPATIBILITY.md §4(该节标题即「README 支持等级表(供 T39b 转贴)」)。
+     真源在那一节:改等级只改那里,再同步回本表与 README.md 的对等表。 -->
+
+转贴自 [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4,该节始终是本表的真源。Tier 1 = 完全支持 / Tier 2 = 有限制 / Tier 3 = 不支持。
+
+| DAW | 版本 | 支持等级 | 状态与已知限制 |
+|---|---|---|---|
+| Cubase | 14 / 15 | **Tier 1(主测)** | S1 路由(实时/离线/state)已实测通过;自动化写入待 S2 上机(RD-01 已知风险);自动化藏 Ins 隐藏车道;Input 须在 pre-fader 区最后一格 |
+| REAPER | 7(建议装) | **Tier 1(附条件)** | S1 路由(实时/离线)已实测通过;关 GUI 可能不写自动化(需 process all notifications);同机单工程限制 |
+| Ableton Live | 12 | **Tier 1(附条件)** | 128 参数上限(124 口径,余 4);Re-Enable Automation 需点击;S1/S2 待上机 |
+| Studio One | 6 | **Tier 1(附条件)** | 自动化模式须在插件窗口内设 Write/Latch;Dropout Protection 异 block size;S1/S2 待上机 |
+
+> **支持等级说明**:v1 首发前「Tier 1(附条件)」中的「附条件」将在 S2 自动化上机回填后收敛为定版(可能降 Tier 2);FL Studio 不在 v1 支持矩阵内。
 
 ## 安装
 
@@ -83,7 +94,7 @@ pwsh scripts/build.ps1 -JucePath C:\path\to\JUCE
 - [已知限制](docs/KNOWN_ISSUES.md) —— v1 已裁定接受的限制
 - [发布流程](docs/RELEASE.md) —— 版本号、tag、发布说明
 - 契约与架构在 `docs/` 下:`PARAMETERS.md`、`IPC_CONTRACT.md`、`STATE_SCHEMA.md`、`SCVB_CONTRACT.md`
-- 逐宿主的说明在 `docs/DAW_COMPATIBILITY.md`
+- 逐宿主的说明在 [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md)
 - 宪法文档的只读副本在 `docs/constitution/`
 
 ## 贡献

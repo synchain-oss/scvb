@@ -82,3 +82,16 @@ jobs:
       - name: Bilingual doc structure parity
         shell: pwsh
         run: ./scripts/check-readme-parity.ps1
+      - name: Dead link check (markdown-link-check)
+        # .markdown-link-check.json 此前是一份**没有执行者**的配置:全仓没有 workflow
+        # 也没有 gates 档位跑它,死链照样能进绿 CI,而下一个改文档的人不会知道要手工跑。
+        # 排除项:docs/constitution 与 docs/design 是字节级只读归档(改一个字节就破坏
+        # sha256 同步/设计稿比对),third_party 是 vendored 上游。
+        run: |
+          set -o pipefail
+          files=$(git ls-files '*.md' \
+            | grep -v '^docs/constitution/' \
+            | grep -v '^docs/design/' \
+            | grep -v '^third_party/')
+          test -n "$files" || { echo "::error::no markdown files found"; exit 1; }
+          npx --yes markdown-link-check@3 --config .markdown-link-check.json -q $files

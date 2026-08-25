@@ -153,23 +153,23 @@ export const T = {
         "guide.title":
             "必读:SCVB 的九条使用规则,违反其中任何一条都会导致静音、错音或分析失效。",
         "guide.rule1":
-            "人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。 不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)",
+            "人声轨必须保持 DAW 原有路由,指向 SCVB Output 所在的总线。不要把人声轨改成直接送主输出,也不要绕开总线。(ADR-002)",
         "guide.rule2":
-            "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。 位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
+            "SCVB Input 必须插在人声轨插件链的最后一格;SCVB Output 必须插在总线的第一格。位置不对会破坏 DAW 的处理顺序假设;各宿主对这一格的具体叫法见 docs/DAW_COMPATIBILITY.md。(ADR-002 / J45)",
         "guide.rule3":
-            '只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。 这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条哑轨。(ADR-002 / J12 + J32)',
+            '只有在检测到健康的 SCVB Output 时,Input 才会向下游输出静音——这是设计行为,不是 bug。这条静音通路保住了 DAW 依赖图里"先人声轨、后总线"的排序,离线渲染与 REAPER 的预测性多线程下依然成立。检测不到健康 Output 时(未装、未连上、对端已退出),Input 自动切回直通,80ms ramp 过渡、5 秒滞回防抖(滞回只作用于"静音 → 直通"方向;"直通 → 静音"在确认健康后立即 80ms ramp),所以你不会因为只装了一个插件就得到一条哑轨。(ADR-002 / J12 + J32)',
         "guide.rule4":
-            "人声轨与总线的宿主 pan 必须保持居中。 SCVB 内部用 equal-power pan,与宿主 pan law 无关;宿主 pan 不居中会叠加出错误声像。(ADR-010)",
+            "人声轨与总线的宿主 pan 必须保持居中。SCVB 内部用 equal-power pan,与宿主 pan law 无关;宿主 pan 不居中会叠加出错误声像。(ADR-010)",
         "guide.rule5":
-            '每个 channel id 在同一个组内唯一,而同一条人声轨只能属于一个组。 同组内两个 Input 抢同一个 channel 时,后来者会看到"channel 冲突"警告并且不会生效;不同组的同号 channel 是两条互不相干的通路。(ADR-002 / J66)',
+            '每个 channel id 在同一个组内唯一,而同一条人声轨只能属于一个组。同组内两个 Input 抢同一个 channel 时,后来者会看到"channel 冲突"警告并且不会生效;不同组的同号 channel 是两条互不相干的通路。(ADR-002 / J66)',
         "guide.rule6":
-            "同一个组同一时间只能有一个生效的 Output 实例。 同组的第二个实例进入只读观察模式并显示警告;八个组(A–H)各自是独立的总线域,互不影响。(ADR-002 / J66)",
+            "同一个组同一时间只能有一个生效的 Output 实例。同组的第二个实例进入只读观察模式并显示警告;八个组(A–H)各自是独立的总线域,互不影响。(ADR-002 / J66)",
         "guide.rule7":
-            "stereo 人声轨默认不参与自动声像分配,需要它参与时必须手动打开。 mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),默认保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J60)",
+            "stereo 人声轨默认不参与自动声像分配,需要它参与时必须手动打开。mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),默认保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J60)",
         "guide.rule8":
-            'SCVB Output 不向 DAW 报告额外延迟。 对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)',
+            'SCVB Output 不向 DAW 报告额外延迟。对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)',
         "guide.rule9":
-            '看到"时间线缺口 / 重叠"警告时,不要继续导出。 先按 docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。',
+            '看到"时间线缺口 / 重叠"警告时,不要继续导出。先按 docs/DAW_COMPATIBILITY.md 的通用坑清单排查路由,警告计数不归零就说明有轨的音频没被正确接管。',
         // END GENERATED hard-rules:zh
         "guide.dontShowAgain": "不再显示",
         "guide.start": "开始使用",

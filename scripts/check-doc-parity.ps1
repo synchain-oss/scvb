@@ -23,7 +23,10 @@ $ErrorActionPreference = 'Stop'
 
 function Get-HeadingSeq([string]$path) {
   if (-not (Test-Path -LiteralPath $path)) {
-    Write-Error "找不到文件:$path"
+    # 用 Write-Host 而非 Write-Error:$ErrorActionPreference = 'Stop' 会把 Write-Error
+    # 变成终止性错误,下一行的 exit 1 根本执行不到 —— 退出码仍非零,但走的是异常路径,
+    # 打出来的是一段 .NET 堆栈而不是这句人话。
+    Write-Host "找不到文件:$path" -ForegroundColor Red
     exit 1
   }
   $inFence = $false
@@ -48,8 +51,15 @@ $n = [Math]::Max($sa.Count, $sb.Count)
 for ($i = 0; $i -lt $n; $i++) {
   $hasA = $i -lt $sa.Count
   $hasB = $i -lt $sb.Count
-  $la = if ($hasA) { $sa[$i].Level } else { '(缺)' }
-  $lb = if ($hasB) { $sb[$i].Level } else { '(缺)' }
+  # 两侧一律转成字符串再比:某一侧「缺」时占位符是字符串,另一侧是 [int] 层级号。
+  # PowerShell 会把右操作数强制成左操作数的类型,而 `-ne` 这类相等运算在转换失败时
+  # **返回「不相等」而不是抛错**(只有 `-gt` 这类序运算才会抛 Cannot convert)——
+  # 所以原写法在 pwsh 7.6.5 实测两个方向都正常打印诊断并 exit 1(见 PR 记录)。
+  # 但这份「不抛」依赖的是相等运算特有的宽松语义:哪天有人把判据改成序比较,
+  # 或者 Level 改成别的类型,失效方式会是当场抛错而不是漏判。统一成字符串比较后,
+  # 两侧类型恒定,判据与运算符的选择解耦。
+  $la = if ($hasA) { [string]$sa[$i].Level } else { '(缺)' }
+  $lb = if ($hasB) { [string]$sb[$i].Level } else { '(缺)' }
   if ($la -ne $lb) {
     $whereA = if ($hasA) { "行 $($sa[$i].Line):$($sa[$i].Text)" } else { '(没有第 {0} 个标题)' -f ($i + 1) }
     $whereB = if ($hasB) { "行 $($sb[$i].Line):$($sb[$i].Text)" } else { '(没有第 {0} 个标题)' -f ($i + 1) }
