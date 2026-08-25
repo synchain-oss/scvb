@@ -155,10 +155,15 @@ for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
  *     `docs/contract-changes/20260825-export-suggestions.md`,native 侧(保存对话框 +
  *     `src/core/export/SuggestionExport` 落盘)转后续。行集与 CSV 的**纯计算**部分本卡
  *     已在两侧落地(C++ `scvb::suggest` + web `output/tab-suggestions.js`),缺的只是落盘口。
+ *   • **Input 侧** `setGuideSeen(seen, alsoGlobal)` —— [J80] T48 的 Input 首启轻量引导
+ *     `ui.guide_seen`;变更文档 `docs/contract-changes/20260825-input-guide-seen.md`。
+ *     名字与签名逐字照 Output 侧 §1.32(同名同签名项由契约 §7 按侧各自登记),但 **Input 的
+ *     §3 函数表当前只有 7 个、不含它** —— 故停在本表等 native 落地。未落地时 Input 首启链
+ *     靠页内会话标记不重弹,跨会话会再弹一次:那是「没写成」的**如实**表现,不是静默假装。
  */
 export const PENDING_FUNCS = {
     output: ["setMasterChartMode", "exportSuggestions"],
-    input: [],
+    input: ["setGuideSeen"],
 };
 for (const side of ["output", "input"]) Object.freeze(PENDING_FUNCS[side]);
 Object.freeze(PENDING_FUNCS);

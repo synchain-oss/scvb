@@ -13,6 +13,8 @@
 import { createBridge } from "../shared/bridge.js";
 import { applyI18n, LANGS, dict } from "../shared/i18n.js";
 import { DESIGN } from "../shared/design-box.js";
+import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
+import { createInputTour, shouldShowInputGuide } from "./tour-in.js";
 
 // ------------------------------------------------------------- 单一真源常量
 // 契约 §0.2:g = 1..8,UI 显示 A-H;ch = 1..15(J59)。
@@ -55,6 +57,13 @@ const store = {
         pendingRelease: false, // 释放确认条展开
         priorityLocal: null, // 优先级本地乐观值(等 scvb.config 回执让位)
         toastTimer: 0,
+    },
+    // 本会话一次性判定([J80]:不入 state chunk、零桥、零契约)。
+    // guideClosed 是首启链的**会话级**闸门:setGuideSeen 若因 native 未落地而落空
+    // (见 tour-in.js 头注),这两个标记仍保证本次会话里语言卡与 mini tour 不重弹。
+    session: {
+        guideClosed: false, // 本会话已走过/跳过 mini tour
+        langChosen: false, // 本会话已在首启语言卡上选过语言
     },
 };
 
@@ -498,8 +507,68 @@ if (scaleUi.keep) {
 if (scaleUi.revert) scaleUi.revert.addEventListener("click", revertScale);
 addEventListener("pagehide", stopScaleCountdown);
 
+// ------------------------------------------------------------- 首启轻量引导([J80] T48)
+// 链条:独立语言卡(web/shared/lang-start.js,与 Output 同一件)→ 5 步 mini tour
+// (web/input/tour-in.js)。Output 那条链中间还有红字九条页与询问步 —— Input 侧 J80 定的
+// 是「轻量」:语言卡之后直接进第 1 步(欢迎居中卡),那张卡自带 Skip,不再单设询问步。
+const tour = createInputTour({
+    root: document,
+    card: shell,
+    bridge,
+    getT: () => dictNow,
+    onEnd: () => {
+        // 完成与 Skip 同样落会话标记(桥侧的置位在 tour-in.js 的 endTour 里,J50a 镜像)
+        store.session.guideClosed = true;
+        render();
+    },
+});
+tour.mount();
+
+const langStart = createLangStart({
+    root: document,
+    card: shell,
+    onPick: (code) => {
+        store.session.langChosen = true;
+        langStart.setShown(false);
+        setLang(code); // 复用既有语言切换与持久化(契约 §3.7 setLang)
+        tour.start(); // 选完语言直接进 mini tour 首步
+    },
+});
+langStart.mount();
+
+// header「?」= 重看引导(Input 无设置页,这是唯一重看入口;guide_seen 已置位也可再开)。
+const helpBtn = $("input.header.help");
+if (helpBtn) helpBtn.addEventListener("click", () => tour.start());
+
+/**
+ * 首启链的渲染侧闸门(每帧跑,判据 = 纯函数):
+ *   • 语言卡:guide 未见 ∧ 全局位未置 ∧ 本会话未选过语言 ∧ 本会话未走完引导;
+ *   • mini tour:语言卡已让位(选过语言)后由 onPick 直接拉起;此处只兜底
+ *     「快照到达时语言卡已被跳过但引导仍未见」的边角(例:用户切了 header 语言胶囊)。
+ */
+function renderGuide() {
+    const snap = store.ready ? store.snapshot : null;
+    langStart.setShown(
+        shouldShowLangStart(
+            store.state,
+            snap,
+            store.session.guideClosed,
+            store.session.langChosen,
+        ),
+    );
+    if (
+        !langStart.isShown() &&
+        !tour.isActive() &&
+        store.session.langChosen &&
+        shouldShowInputGuide(store.state, snap, store.session.guideClosed)
+    ) {
+        tour.start();
+    }
+}
+
 // ------------------------------------------------------------- 渲染
 function render() {
+    renderGuide();
     renderHeader();
     renderBanners();
     renderGroup();

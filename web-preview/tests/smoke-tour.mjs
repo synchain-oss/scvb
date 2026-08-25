@@ -31,7 +31,7 @@ const src = (p) => readFileSync(join(ROOT, p), "utf8");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const TOUR = await import(u("web/output/tour.js"));
-const LANGSTART = await import(u("web/output/lang-start.js"));
+const LANGSTART = await import(u("web/shared/lang-start.js"));
 const { createBridge } = await import(u("web/shared/bridge.js"));
 const { T } = await import(u("web/shared/i18n.js"));
 const { FIFTEEN_TRACKS } = await import(u("web/shared/mock-data.js"));
@@ -595,7 +595,7 @@ log("=== ⑦ 首启语言选择卡(lang-start,独立 overlay)===");
     );
 
     const html = src("web/output/index.html");
-    const ls = src("web/output/lang-start.js");
+    const ls = src("web/shared/lang-start.js");
     const audio = [
         "AudioContext",
         "webkitAudioContext",
