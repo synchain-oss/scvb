@@ -15,8 +15,9 @@
 //   ② 静态 roving tabindex:恰好一个 tab 是 tabindex=0,且它就是 aria-selected=true
 //      的那个(首帧落点必须与 app.js 的 activateTab("master") 一致);
 //   ③ **真执行**键盘处理器:把 app.js 里那段 keydown 监听按括号配平原样切出来,
-//      喂给 new Function + 桩 tabbar 跑真代码,断言 ←/→ 循环、Home/End、
-//      焦点跟随、以及三条不接管(tour 已消费 / 修饰键 / 焦点不在 tab 上);
+//      喂给 new Function + 桩 tabbar / 桩 Element / 桩 tour 跑真代码,断言 ←/→ 循环、
+//      Home/End、焦点跟随、焦点落在 tab 子元素上也照常切,以及四类不接管
+//      (上游已 preventDefault / tour 活着 / 带修饰键 / 焦点不在 tab 上);
 //   ④ 源码级:roving tabindex 由 activateTab 统一维护,键盘走的是与点击同一条
 //      activateTab 路径(不许出现第二套切页分支)。
 //
@@ -152,6 +153,14 @@ log("=== ① tab ↔ 面板的 aria 配对(双射 + 引用可解析)===");
     const tabs = tags.filter((t) => t.attrs.role === "tab");
     const panels = tags.filter((t) => t.attrs.role === "tabpanel");
     eq(tablists.length, 1, "恰好一个 role=tablist");
+    if (tablists.length === 1) {
+        // tablist 也要有可及名 —— 否则 SR 只报「标签页列表」,不知道是哪一组
+        const t = tablists[0].attrs;
+        check(
+            !!(t["aria-label"] || t["aria-labelledby"]),
+            "tablist 有可及名(aria-label / aria-labelledby)",
+        );
+    }
     eq(tabs.length, 4, "恰好四个 role=tab");
     eq(panels.length, 4, "恰好四个 role=tabpanel");
     eq(
@@ -254,17 +263,41 @@ log("=== ③ 真执行:键盘切换处理器(←/→ 循环 + Home/End + 焦点�
     const listener = sliceCall(app, 'tabbar.addEventListener("keydown",');
     check(!!keysDecl, "app.js 有 TAB_KEYS 白名单");
     check(!!listener, "app.js 有 tabbar 上的 keydown 监听(切得出来)");
+    // 白名单同样读回来用,不在这里再抄一份键名
+    const TAB_KEYS = keysDecl
+        ? JSON.parse((keysDecl.match(/\[[\s\S]*\]/) || ["[]"])[0])
+        : [];
+    eq(TAB_KEYS, ["ArrowLeft", "ArrowRight", "Home", "End"], "接管的四个键");
 
     if (keysDecl && listener) {
         const activated = [];
         const focused = [];
-        const btns = {};
-        for (const name of TAB_ORDER) {
-            btns[name] = {
-                getAttribute: (k) => (k === "data-tab-btn" ? name : null),
-                focus: () => focused.push(name),
-            };
+        // 桩 Element:处理器认 `e.target instanceof Element` + `closest()`,所以桩必须
+        // 是同一个类的实例。`Element` 与 `tabbar` 一样当参数注进去 —— node 里没有这个
+        // 全局,不注就是 ReferenceError。
+        class Element {
+            constructor(owner) {
+                this.owner = owner; // 所属 tab 名;null = 条内的非 tab 元素
+            }
+            getAttribute(k) {
+                return k === "data-tab-btn" ? this.owner : null;
+            }
+            closest(sel) {
+                return /\[data-tab-btn\]/.test(sel) && this.owner ? this : null;
+            }
+            focus() {
+                if (this.owner) focused.push(this.owner);
+            }
         }
+        const btns = {};
+        for (const name of TAB_ORDER) btns[name] = new Element(name);
+        // tab 按钮里的子元素(Tab3 的 <span>):closest 应当找回它所属的 tab
+        const childOf = (name) => {
+            const child = new Element(null);
+            child.closest = (sel) =>
+                /\[data-tab-btn\]/.test(sel) ? btns[name] : null;
+            return child;
+        };
         let handler = null;
         const tabbar = {
             addEventListener: (type, cb) => {
@@ -275,13 +308,24 @@ log("=== ③ 真执行:键盘切换处理器(←/→ 循环 + Home/End + 焦点�
                 return m ? btns[m[1]] || null : null;
             },
         };
+        // tour:默认「不在导览中」;个别用例把它换成活跃态。
+        let tourActive = false;
+        const tour = { isActive: () => tourActive };
         const fn = new Function(
             "tabbar",
             "TAB_ORDER",
             "activateTab",
+            "Element",
+            "tour",
             keysDecl + "\n" + listener,
         );
-        fn(tabbar, TAB_ORDER.slice(), (name) => activated.push(name));
+        fn(
+            tabbar,
+            TAB_ORDER.slice(),
+            (name) => activated.push(name),
+            Element,
+            tour,
+        );
         check(!!handler, "监听确实挂在 keydown 上");
 
         function press(key, from, extra) {
@@ -289,8 +333,13 @@ log("=== ③ 真执行:键盘切换处理器(←/→ 循环 + Home/End + 焦点�
             focused.length = 0;
             const e = {
                 key,
+                // from:tab 名 / null(条内非 tab 元素)/ 直接给一个桩元素
                 target:
-                    from === null ? { getAttribute: () => null } : btns[from],
+                    from === null
+                        ? new Element(null)
+                        : typeof from === "string"
+                          ? btns[from]
+                          : from,
                 altKey: false,
                 ctrlKey: false,
                 metaKey: false,
@@ -335,14 +384,40 @@ log("=== ③ 真执行:键盘切换处理器(←/→ 循环 + Home/End + 焦点�
                 );
             }
 
-            // 三条「不接管」—— 每条都对应一个真实的回归风险
+            // 焦点落在 tab 的**子元素**上(Tab3 按钮里嵌着 <span>):closest 应当
+            // 找回所属 tab 照常切页。认死 e.target 的写法在这一条上会静默失效。
+            {
+                const r = press("ArrowRight", childOf("master"));
+                eq(r.to, "tracks", "焦点在 tab 的子元素上时,→ 照常切页");
+            }
+
+            // 「不接管」的四类 —— 每条都对应一个真实的回归风险
             const tourEaten = press("ArrowRight", "master", {
                 defaultPrevented: true,
             });
             eq(
                 tourEaten.to,
                 null,
-                "tour 已消费该键(defaultPrevented)⇒ 不再切 tab",
+                "上游已消费该键(defaultPrevented)⇒ 不再切 tab",
+            );
+            // tour 活着就整体让位:defaultPrevented 只盖得住 tour 认识的 ←/→,
+            // Home/End 它不消费 —— 少了 isActive 这条守卫,导览期间 Home/End 会把页
+            // 切走而步进机原地不动,spotlight 指向已 display:none 的锚点。
+            tourActive = true;
+            for (const key of TAB_KEYS) {
+                eq(
+                    press(key, "master").to,
+                    null,
+                    "tour 激活期间不接管 " +
+                        key +
+                        "(含 tour 自己不消费的 Home/End)",
+                );
+            }
+            tourActive = false;
+            eq(
+                press("ArrowRight", "master").to,
+                "tracks",
+                "tour 结束后键盘切换恢复",
             );
             for (const mod of ["altKey", "ctrlKey", "metaKey"]) {
                 const r = press("ArrowRight", "master", { [mod]: true });

@@ -297,18 +297,21 @@ tabbar.querySelectorAll("[data-tab-btn]").forEach((btn) => {
 const TAB_KEYS = ["ArrowLeft", "ArrowRight", "Home", "End"];
 
 tabbar.addEventListener("keydown", (e) => {
-    // tour 期间不抢键:tour 的 keydown 挂在 document **捕获**阶段(root: document),
-    // ←/→ 在那里已 preventDefault 掉当上一步/下一步,但它不 stopPropagation,
-    // 事件照样冒泡到这里。认 defaultPrevented 就够了 —— 任何在上游消费掉本次按键的
-    // 组件都自动免疫,不必在这里逐个点名。
+    // 上游已消费掉这次按键就放行 —— 任何先按下 preventDefault 的组件都自动免疫,
+    // 不必在这里逐个点名(tour 的 ←/→ 就走这条:它的 keydown 挂在 document
+    // **捕获**阶段且不 stopPropagation,事件照样冒泡到这里)。
     if (e.defaultPrevented) return;
+    // 但 defaultPrevented 只盖得住 tour **认识**的那几个键;Home/End 它不消费,
+    // 于是导览期间焦点若落在 tab 按钮上,Home/End 会把页切走而 tour 的步进机原地不动,
+    // spotlight 指向一个已 display:none 的锚点。tour 活着就整体让位,这条缝才是关死的。
+    if (tour && tour.isActive()) return;
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     if (TAB_KEYS.indexOf(e.key) < 0) return;
-    const el = e.target;
-    const cur =
-        el && typeof el.getAttribute === "function"
-            ? TAB_ORDER.indexOf(el.getAttribute("data-tab-btn"))
-            : -1;
+    // 认 closest 而不是 e.target 本身:Tab3 的按钮里就嵌着 <span>,今天它们不可聚焦,
+    // 但哪天条内多一个可聚焦子元素,认死 e.target 会让 ←/→ **静默**失效。
+    const el =
+        e.target instanceof Element ? e.target.closest("[data-tab-btn]") : null;
+    const cur = el ? TAB_ORDER.indexOf(el.getAttribute("data-tab-btn")) : -1;
     if (cur < 0) return; // 焦点不在四个 tab 上(如条内滑块)—— 不接管
     const n = TAB_ORDER.length;
     let next = cur;
