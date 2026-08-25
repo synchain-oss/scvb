@@ -48,11 +48,25 @@ bool parseUiScaleArg(const juce::Array<juce::var>& args, const juce::String& rol
     const double f = static_cast<double>(v);
     // §1.28 拒绝态:f 不在档位表 → badArg。档位唯一真源 = DesignBox.h,double 比较避免精度误判。
     // kInputPresets(10 档)与 kOutputPresets(7 档)是不同类型(std::array 长度不同),须分分支。
-    const bool inTable = (role == "input")
-                             ? std::find(scvb::design::kInputPresets.begin(), scvb::design::kInputPresets.end(), f) !=
-                                   scvb::design::kInputPresets.end()
-                             : std::find(scvb::design::kOutputPresets.begin(), scvb::design::kOutputPresets.end(), f) !=
-                                   scvb::design::kOutputPresets.end();
+    // 三张档位表分属三个 std::array 类型(长度不同),故分分支。**monitor 必须接自己那张** ——
+    // 今天它与 Output 逐值相同所以没有行为差异,但那是巧合:T46 一调 Monitor 档位,
+    // 就会变成「所有 gate 全绿,而 setUiScale(新档位) 判 badArg」。
+    bool inTable = false;
+    if (role == "input")
+    {
+        inTable = std::find(scvb::design::kInputPresets.begin(), scvb::design::kInputPresets.end(), f) !=
+                  scvb::design::kInputPresets.end();
+    }
+    else if (role == "monitor")
+    {
+        inTable = std::find(scvb::design::kMonitorPresets.begin(), scvb::design::kMonitorPresets.end(), f) !=
+                  scvb::design::kMonitorPresets.end();
+    }
+    else
+    {
+        inTable = std::find(scvb::design::kOutputPresets.begin(), scvb::design::kOutputPresets.end(), f) !=
+                  scvb::design::kOutputPresets.end();
+    }
     if (!inTable)
         return false;
 

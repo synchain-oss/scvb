@@ -342,12 +342,18 @@ public:
     // attach 成功后调用;不一致 = 同 abi 下的几何漂移(理论不应发生),读方按拒连处理。
     bool geometryMatches() const;
 
-    // 改组(J66):释放本组 viz 段句柄 → 换新组 → 按原角色重新映射。
+    // 改组(J66)—— **写方专用**:释放本组 viz 段句柄 → 换新组 → 重新 open(create-or-open)。
+    // 只读方绝不能走这条路 —— 一个从未 attach 过的读方调它,会把「新组还没有写方」变成
+    // 「我来建一个空段」,直接破坏零写入铁律。读方一律用 setGroupReadOnly()。
     InitResult changeGroup(u32 newGroup);
 
     // 写方改组:只换指向,**不建段** —— 建与否由调用方按 claim 态裁决([J66] 同组只有
     // kActive 的那个 Output 是写方)。与 changeGroup() 的区别:后者立刻 open()。
     void setGroupWriter(u32 newGroup);
+
+    // 只读方改组:释放旧映射 + 换组,**不立刻 attach** —— 新组的 Output 可能还没上线,
+    // attach 交给调用方的 [M] 周期重试(失败即空态)。绝不创建段。
+    void setGroupReadOnly(u32 newGroup);
 
     // 释放映射(消息线程):**立即** unmap,不走租约握手与宽限期。
     // 为什么不像 Registry/CtrlPlane 那样用 SegmentHandle:那套机制存在的唯一理由是

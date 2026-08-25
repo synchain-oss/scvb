@@ -6,7 +6,9 @@
 #>
 param(
   [ValidateSet('Release','Debug','RelWithDebInfo')][string]$Config = 'Release',
-  [ValidateSet('All','Input','Output','Core','Tests')][string]$Target = 'All',
+  # 注:$Target 目前是**装饰参数** —— 下面一律全量 cmake --build(见 §构建)。
+  # 加 'Monitor' 只为让命令行不因未知值报错;真要按 target 构建请直接用 cmake --build --target。
+  [ValidateSet('All','Input','Output','Monitor','Core','Tests')][string]$Target = 'All',
   [string]$JucePath = $env:JUCE_PATH,
   [string]$BuildDir = 'build',
   [switch]$Install,
@@ -82,7 +84,7 @@ if (-not $SkipTests) {
   }
 }
 
-# ---- 定位两个 .vst3 ----
+# ---- 定位三个 .vst3([J75] 增 SCVB Monitor) ----
 $bundles = Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Sort-Object Name
 $sw.Stop()
 

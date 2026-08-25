@@ -111,6 +111,37 @@ endif()
 
 add_test(NAME scvb_params_tests COMMAND scvb_params_tests)
 
+# scvb_monitor_tests:T45 Monitor 三铁律的 L0 断言(0 参数 / 直通按位相等 / 共享段零写入)。
+# 只编 MonitorProcessor.cpp,并定义 SCVB_MONITOR_HEADLESS —— MonitorEditor 依赖 WebViewHost 的
+# 真 WebView2 实例化,与 InputEditor/OutputEditor 同款留给 gate 8 的真机 GUI pluginval。
+add_executable(scvb_monitor_tests
+  core/test_monitor_processor.cpp
+  # [统筹加码] 全数据链双进程 harness:真 VizPublisher 对端进程 + 真 MonitorProcessor,
+  # 覆盖 发布→读到→组切换→退出空态→重连,以及写方停摆判陈旧。
+  core/test_monitor_harness.cpp
+  ${CMAKE_SOURCE_DIR}/src/monitor/MonitorProcessor.cpp
+)
+
+target_link_libraries(scvb_monitor_tests PRIVATE
+  scvb_core
+  Catch2::Catch2WithMain
+  juce::juce_audio_processors
+)
+
+target_include_directories(scvb_monitor_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/monitor ${CMAKE_SOURCE_DIR}/tests)
+target_compile_definitions(scvb_monitor_tests PRIVATE SCVB_MONITOR_HEADLESS=1)
+
+if(MSVC)
+  target_compile_options(scvb_monitor_tests PRIVATE /W4 /utf-8 /EHsc)
+else()
+  target_compile_options(scvb_monitor_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME scvb_monitor_tests COMMAND scvb_monitor_tests)
+# harness 拉真进程(scvb_ipc_peer),给足超时。对端的构建依赖在 tests/tools/CMakeLists.txt 里挂 ——
+# 顶层是先 add_subdirectory(tests) 再 add_subdirectory(tests/tools),此处 scvb_ipc_peer 还不存在。
+set_tests_properties(scvb_monitor_tests PROPERTIES TIMEOUT 600)
+
 # scvb_plugin_common_tests:T26 WebView 装配层 L0 单测(链接 juce_gui_extra,离线 Catch2)。
 # 只编可离线单测的 TU:ResourceProvider/BridgeBase/FallbackPanel/PlatformWebView。
 # PlatformWebView.cpp 只含 makeWebViewOptions(纯 Options 装配);runtimeAvailable 已拆到

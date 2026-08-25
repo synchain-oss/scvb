@@ -97,12 +97,12 @@ jobs:
           Invoke-WebRequest "https://github.com/Tracktion/pluginval/releases/download/$env:PLUGINVAL_TAG/pluginval_Windows.zip" -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval
 
-      - name: Validate both VST3 bundles
+      - name: Validate all VST3 bundles
         shell: pwsh
         run: |
           $bundles = Get-ChildItem -Path build -Recurse -Filter "*.vst3" -Directory
-          if ($bundles.Count -ne 2) {
-            Write-Error "Expected exactly 2 .vst3 bundles (SCVB Input / SCVB Output), found $($bundles.Count)."
+          if ($bundles.Count -ne 3) {
+            Write-Error "Expected exactly 3 .vst3 bundles (SCVB Input / SCVB Output / SCVB Monitor), found $($bundles.Count)."
             exit 1
           }
           foreach ($b in $bundles) {
