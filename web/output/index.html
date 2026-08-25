@@ -4900,6 +4900,12 @@
      滑块位置 = 3px + (tab-1)×136px,由 app.js 写 --tab-i(见页内 #tabs-slate 规则)。 -->
                 <!-- 外层 nav 供 landmark(axe region);role=tablist 会顶掉 nav 的
                      landmark 角色,所以 tablist 落在内层 div 上,nav 自身不参与布局。 -->
+                <!-- WAI-ARIA tabs 模式的四件套必须齐:role=tab/tablist(此处)+ tab 的
+                     aria-controls → 面板 id + 面板的 role=tabpanel/aria-labelledby 回指
+                     tab id(见下方 #content 四个 section)+ roving tabindex(激活项 0、
+                     其余 -1,由 app.js 的 activateTab 维护;此处的静态值 = 首帧 master
+                     激活态,与 activateTab("master") 的落点一致)。缺任何一件,屏幕阅读器
+                     都关联不上 tab 与面板 —— 而 axe 的自动规则测不出这种缺失。 -->
                 <nav
                     class="sc-tabs-wrap"
                     aria-label="标签页"
@@ -4920,8 +4926,11 @@
                         ></div>
                         <button
                             class="sc-tabs__item"
+                            id="tab-master"
                             role="tab"
                             aria-selected="true"
+                            aria-controls="tabpanel-master"
+                            tabindex="0"
                             data-tab-btn="master"
                             data-tour="tab1"
                             data-gb="tabnav-master"
@@ -4931,8 +4940,11 @@
                         </button>
                         <button
                             class="sc-tabs__item"
+                            id="tab-tracks"
                             role="tab"
                             aria-selected="false"
+                            aria-controls="tabpanel-tracks"
+                            tabindex="-1"
                             data-tab-btn="tracks"
                             data-tour="tab2"
                             data-gb="tabnav-tracks"
@@ -4942,8 +4954,11 @@
                         </button>
                         <button
                             class="sc-tabs__item"
+                            id="tab-wave"
                             role="tab"
                             aria-selected="false"
+                            aria-controls="tabpanel-wave"
+                            tabindex="-1"
                             data-tab-btn="wave"
                             data-tour="tab3"
                             data-gb="tabnav-wave"
@@ -4959,8 +4974,11 @@
                         </button>
                         <button
                             class="sc-tabs__item"
+                            id="tab-settings"
                             role="tab"
                             aria-selected="false"
+                            aria-controls="tabpanel-settings"
+                            tabindex="-1"
                             data-tab-btn="settings"
                             data-tour="tab4"
                             data-gb="tabnav-settings"
@@ -4977,7 +4995,13 @@
                     <!-- ========================================================= -->
                     <!-- Tab1 整体(Master)—— 05 §2.1                                -->
                     <!-- ========================================================= -->
-                    <section data-tab-panel="master" data-gb="tab-master">
+                    <section
+                        data-tab-panel="master"
+                        data-gb="tab-master"
+                        id="tabpanel-master"
+                        role="tabpanel"
+                        aria-labelledby="tab-master"
+                    >
                         <!-- 空态(A1,J72 发挥件:设计稿无依据,依 05 §2.1 末段文字实现;显隐逻辑 Wave 2) -->
                         <div
                             class="sc-banner"
@@ -6089,6 +6113,9 @@
                         data-tab-panel="tracks"
                         data-gb="tab-tracks"
                         data-empty="0"
+                        id="tabpanel-tracks"
+                        role="tabpanel"
+                        aria-labelledby="tab-tracks"
                     >
                         <!-- 0 轨空态引导(设计定稿:居中两行文案,取代旧横幅写法)。
                              与表格**互斥** —— 显隐全由 section 上的 data-empty 一个属性驱动,
@@ -6186,7 +6213,13 @@
                     <!-- ========================================================= -->
                     <!-- Tab3 波形(Waveform)—— 05 §2.3 / §2.3a                       -->
                     <!-- ========================================================= -->
-                    <section data-tab-panel="wave" data-gb="tab-wave">
+                    <section
+                        data-tab-panel="wave"
+                        data-gb="tab-wave"
+                        id="tabpanel-wave"
+                        role="tabpanel"
+                        aria-labelledby="tab-wave"
+                    >
                         <!-- ========================================================= -->
                         <!-- Tab3 波形(T33 Wave 1:静态结构;交互接线 = Wave 2)          -->
                         <!-- 外层两栏(设计稿 651):左主栏 .wave-main,右检查器 flex 兄弟 -->
@@ -7466,7 +7499,13 @@
                     <!-- ========================================================= -->
                     <!-- Tab4 设置(Settings)—— 05 §2.4                              -->
                     <!-- ========================================================= -->
-                    <section data-tab-panel="settings" data-gb="tab-settings">
+                    <section
+                        data-tab-panel="settings"
+                        data-gb="tab-settings"
+                        id="tabpanel-settings"
+                        role="tabpanel"
+                        aria-labelledby="tab-settings"
+                    >
                         <div class="settings-grid" data-gb="settings-grid">
                             <div class="settings-main" data-gb="settings-main">
                                 <!-- 说明块(eyebrow 逐字「使用说明」,J71⑥/回流④;05 §2.4 全部行) -->

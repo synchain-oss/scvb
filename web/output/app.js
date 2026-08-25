@@ -270,10 +270,12 @@ function activateTab(name, { push = true } = {}) {
     tabbar.style.setProperty("--tab-i", String(idx));
     if (slate) slate.style.left = slateLeftPx(idx) + "px";
     tabbar.querySelectorAll("[data-tab-btn]").forEach((btn) => {
-        btn.setAttribute(
-            "aria-selected",
-            String(btn.getAttribute("data-tab-btn") === name),
-        );
+        const on = btn.getAttribute("data-tab-btn") === name;
+        btn.setAttribute("aria-selected", String(on));
+        // roving tabindex(WAI-ARIA tabs 模式):tablist 整体只占**一个** Tab 停靠位,
+        // 停在激活项上;组内移动归 ←/→ / Home / End(见下方 keydown)。少了这一半,
+        // 键盘用户要按四次 Tab 才穿过 tab 条,且 Tab 落点与视觉选中项对不上。
+        btn.setAttribute("tabindex", on ? "0" : "-1");
     });
     // 契约 §1.31:写 state ui.active_tab(重开面板恢复上次 tab);
     // tour 期间的跨 tab 翻页是纯 UI 本地态,不经此口(§2.6)—— 故 push 可关。
@@ -284,6 +286,45 @@ tabbar.querySelectorAll("[data-tab-btn]").forEach((btn) => {
     btn.addEventListener("click", () =>
         activateTab(btn.getAttribute("data-tab-btn")),
     );
+});
+
+// WAI-ARIA tabs 模式的键盘约定(APG「Tabs with Automatic Activation」):
+// ←/→ 在组内循环移动,Home/End 跳首/末;**选中即激活**,走的是与点击完全同一条
+// activateTab 路径 —— 所以凡是挂在 activateTab 上的行为(切页补 render、写
+// state ui.active_tab、石板滑块)键盘与鼠标必然一致,不存在第二套分支要维护。
+// Enter/Space 不接管:button 原生就会派发 click,已被上面那条接住。
+// ↑/↓ 也不接管:本 tablist 是横排(aria-orientation 默认 horizontal),竖直键留给页面。
+const TAB_KEYS = ["ArrowLeft", "ArrowRight", "Home", "End"];
+
+tabbar.addEventListener("keydown", (e) => {
+    // tour 期间不抢键:tour 的 keydown 挂在 document **捕获**阶段(root: document),
+    // ←/→ 在那里已 preventDefault 掉当上一步/下一步,但它不 stopPropagation,
+    // 事件照样冒泡到这里。认 defaultPrevented 就够了 —— 任何在上游消费掉本次按键的
+    // 组件都自动免疫,不必在这里逐个点名。
+    if (e.defaultPrevented) return;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (TAB_KEYS.indexOf(e.key) < 0) return;
+    const el = e.target;
+    const cur =
+        el && typeof el.getAttribute === "function"
+            ? TAB_ORDER.indexOf(el.getAttribute("data-tab-btn"))
+            : -1;
+    if (cur < 0) return; // 焦点不在四个 tab 上(如条内滑块)—— 不接管
+    const n = TAB_ORDER.length;
+    let next = cur;
+    if (e.key === "ArrowLeft")
+        next = (cur - 1 + n) % n; // 循环:最左再按 → 回最右
+    else if (e.key === "ArrowRight") next = (cur + 1) % n;
+    else if (e.key === "Home") next = 0;
+    else next = n - 1; // End
+    e.preventDefault(); // Home/End 否则会把内容区滚到头/尾
+    activateTab(TAB_ORDER[next]);
+    // 焦点跟着走:roving tabindex 已把新激活项改成 tabindex=0、旧的改成 -1,
+    // 不显式移焦的话焦点会留在一个 tabindex=-1 的元素上,再按 Tab 会跳回页首。
+    const btn = tabbar.querySelector(
+        '[data-tab-btn="' + TAB_ORDER[next] + '"]',
+    );
+    if (btn && typeof btn.focus === "function") btn.focus();
 });
 
 activateTab("master", { push: false });
