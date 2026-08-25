@@ -685,7 +685,11 @@ log("=== ⑩ 源码不变式 ===");
         !BR.BRIDGE_FUNCTIONS.output.includes("exportSuggestions"),
         "exportSuggestions **不在** BRIDGE_FUNCTIONS(契约 §7 还没收它)",
     );
-    eq(BR.BRIDGE_FUNCTIONS.output.length, 34, "冻结名表仍是 34 个,一个没多");
+    eq(
+        BR.BRIDGE_FUNCTIONS.output.length,
+        35,
+        "冻结名表 35 个(#80 setMasterChartMode 转正 +1;本卡 exportSuggestions 一个没多)",
+    );
 
     // 变更文档在库(仓 CLAUDE.md §5:桥面新增必须有它)
     check(

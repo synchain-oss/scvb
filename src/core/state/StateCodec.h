@@ -18,7 +18,7 @@
 //   12    u32 chunkCount
 //   16..  TLV × N:{ u32 fourcc; u32 sizeBytes; u8 payload[sizeBytes](4 字节对齐,padding 置 0) }
 //
-// 四个已知 fourcc:PRMS / CFGS / CRVS / FEAT。PRMS/CFGS 是 JUCE ValueTree 二进制、
+// 五个已知 fourcc:PRMS / CFGS / CRVS / FEAT / UICF。PRMS/CFGS 是 JUCE ValueTree 二进制、
 // FEAT 是 gzip(04 §5.2,归 T21)——三者在 scvb_core(无 JUCE)层面都是**不透明 payload**,
 // 本层只负责容器承载与未知块回写(03 §6.1)。CRVS 是自定义紧凑二进制,本层负责其编解码。
 // 未知 fourcc 的块在 load 时原样保留、save 时原样回写(前向小版本兼容)。
@@ -45,6 +45,7 @@ inline constexpr std::uint32_t kFourccPrms = 0x534D5250u; // 'PRMS'
 inline constexpr std::uint32_t kFourccCfgs = 0x53474643u; // 'CFGS'
 inline constexpr std::uint32_t kFourccCrvs = 0x53565243u; // 'CRVS'
 inline constexpr std::uint32_t kFourccFeat = 0x54414546u; // 'FEAT'
+inline constexpr std::uint32_t kFourccUiConfig = 0x46434955u; // 'UICF'([J75] T43 ui.master_chart_mode)
 
 // ---- 校验上限(不可信字节:长度/范围字段先校验再分配/索引,CLAUDE.md §7.3)----
 inline constexpr std::uint32_t kMaxChunkCount = 256u;

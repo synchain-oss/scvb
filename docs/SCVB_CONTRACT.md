@@ -76,7 +76,7 @@
 
 | 入撤销栈(插件自有 UndoManager,03 §5.3) | 不入撤销栈 |
 |---|---|
-| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`、`copyVersion` | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setVersionName`、`setChannelConfig`、`setVadParams`、`setSegmentation`、`setTransitionRamp`、`setAnalysisConfig`、`analyze`/`previewAnalyze`/`cancelAnalyze`、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`) |
+| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`、`copyVersion` | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setVersionName`、`setChannelConfig`、`setVadParams`、`setSegmentation`、`setTransitionRamp`、`setAnalysisConfig`、`analyze`/`previewAnalyze`/`cancelAnalyze`、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
 
 UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()` 并 `preventDefault`(防止冒泡到宿主撤销);焦点在文本输入框时不拦截(05 §1.3)。
 
@@ -84,14 +84,14 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 ## 1. Output —— native functions(UI → C++)
 
-共 **34** 个。全部在 [M] 处理(§0.3)。
+共 **35** 个。全部在 [M] 处理(§0.3)。
 
 ### 1.1 `requestInitialState()`
 
 | 项 | 定义 |
 |---|---|
 | 参数 | 无 |
-| 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, guide_seen:bool, tour_seen:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
+| 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, master_chart_mode:"distribution"\|"trajectory", guide_seen:bool, tour_seen:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
 | 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(Tab4 存储状态显示,04 §5.4/ADR-007);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
@@ -455,6 +455,18 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 线程/频率 | [M];横幅⑦按钮触发,每工程会话至多一次有效 |
 | 真源 | 04 §5.3 / 05 §2.0 横幅⑦ / §2.5 `print-guard` 验收(语义已定、函数缺位);**函数名为 T25 授权增量(统筹裁定 A-29),待 DeepSeek 评审 + 用户批准;若否决,回退方案 = 复用 `setOutputEnabled(true)` 作确认信号并回改本节** |
 
+### 1.35 `setMasterChartMode(mode)`([J75] T43)
+
+| 项 | 定义 |
+|---|---|
+| 参数 | `mode: "distribution" \| "trajectory"` |
+| 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
+| 语义 | 写 state `ui.master_chart_mode`(Tab1「声像 / 音量分布」卡片的视图态;随工程持久化,重开面板恢复上次视图)。`distribution` = 既有声像/音量分布图;`trajectory` = 新增 pan 轨迹图(x = 工程时间线,y = pan 角度域)。**不触发**任何分析/打印/参数写入;经 `scvb.state` 回推。 |
+| 拒绝态 | 未知值 → `{ok:false, reason:"badArg"}` |
+| 撤销 | 否(与 `setActiveTab` 同 —— UI 偏好不进 undo 栈) |
+| 线程/频率 | [M];用户点一次调一次 |
+| 真源 | 05 J75 A(T43 双视图);变更文档 `docs/contract-changes/20260825-master-chart-mode.md` |
+
 ---
 
 ## 2. Output —— events(C++ → UI)
@@ -466,7 +478,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 频率 | **变化时**(diff-then-emit;`mBridgeReady` 后首帧必发一次全量) |
-| 载荷 | `{ full:bool, config_seq:u32, group_id:1..8,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode:"follow"\|"daw_loop"\|"manual", start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}, segmentation:{mode, sensitivity, min_segment_ms}, transition_ramp_ms:f32, loudness_mode, center_slot_policy},`<br>`  channels:[15 × {enabled, label, source_channels:1\|2, participate_in_auto_pan, priority, lead_lock, lead_vol_exempt, pair_id}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape, q:f32, side}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale, language, active_tab, guide_seen, tour_seen},`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32} }` |
+| 载荷 | `{ full:bool, config_seq:u32, group_id:1..8,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode:"follow"\|"daw_loop"\|"manual", start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}, segmentation:{mode, sensitivity, min_segment_ms}, transition_ramp_ms:f32, loudness_mode, center_slot_policy},`<br>`  channels:[15 × {enabled, label, source_channels:1\|2, participate_in_auto_pan, priority, lead_lock, lead_vol_exempt, pair_id}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape, q:f32, side}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale, language, active_tab, master_chart_mode, guide_seen, tour_seen},`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32} }` |
 | 字段纪律 | `full:true` = 全量快照;`full:false` = 增量(只含变化子树,UI 做深合并)。**`print_guard` 与 `recapture` 为运行时态**:不入 state chunk、不随工程持久化(04 §4.2/§5.3)。`ui.guide_seen`/`ui.tour_seen` 为持久化字段(params-v0 v1.2 [J50] / v2.0 [J62];编码落点 03 §6.1 PRMS)。`analysis_run` 为运行时态(01 §6.4「进度经 `scvb.state` 下行」的落点,**T25 定名**,§9.2)。**段表(`versions[].curves_per_track[].segments[]`)与逐帧特征不进本事件**(前者走 `scvb.segments`,后者走 `requestWaveform`);**但 `versions[].pan_curve` 进本事件**——它是整表提交的小结构(≤16 点,params-v0 J07),是 05 §6.2 pan 曲线编辑器渲染既有点集的唯一下行落点(**T25 定名的下行落点**,§9.2),`setPanCurve`/`setVersionActive`/`copyVersion`/`undo`/`redo` 后一律经本事件回推。本事件的字段集与 §1.1 快照的 state 子树**必须一致**(§1.1 语义行)。 |
 | UI 消费 | 全 UI 的单向渲染源;`print_guard.pending` → 05 §2.0 横幅⑦;`recapture.armed` → 三处布防 badge;`analysis_run.running` → 分析按钮菊花 / 「正在应用…」态 / J47 抑制判定 |
 | 真源 | 05 §1.4;字段集 params-v0 §二 |
@@ -766,7 +778,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 
 ## 7. 机器可读清单(manifest)
 
-以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对四个计数(Output 34/9、Input 7/5)与跨侧同名函数的 `params` 一致性做硬断言。
+以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对四个计数(Output 35/9、Input 7/5)与跨侧同名函数的 `params` 一致性做硬断言。
 **`returns` 登记口径**:按 §0.8 第 5 条写**完整并集**(成功形状 + 全部拒绝态形状,`A | B` 分隔),与正文「返回」行逐字对应;`{ok:false, reason:"…"}` 简写为 `{ok:false,reason:"…"}`。
 
 ```json
@@ -807,7 +819,8 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "setActiveTab", "params": ["tab"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "setGuideSeen", "params": ["seen", "alsoGlobal"], "returns": "{ok}"},
       {"name": "setTourSeen", "params": ["seen", "alsoGlobal"], "returns": "{ok}"},
-      {"name": "confirmPrintGuard", "params": [], "returns": "{ok}"}
+      {"name": "confirmPrintGuard", "params": [], "returns": "{ok}"},
+      {"name": "setMasterChartMode", "params": ["mode"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"}
     ],
     "events": [
       "scvb.state",
@@ -852,7 +865,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 }
 ```
 
-**计数自检**:Output 函数 **34** / 事件 **9**;Input 函数 **7** / 事件 **5**。
+**计数自检**:Output 函数 **35** / 事件 **9**;Input 函数 **7** / 事件 **5**。
 
 ---
 
@@ -906,15 +919,16 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 | 01 §6.2 Input 快照 `channelId`/`groupId`/`uiScale`/`lang`(camelCase) | 统一取宪法拼写 `channel_id`/`group_id`/`ui:{scale, language}`(**A-30**;§0.2 规则①)——同一 state 字段全契约一种键名,mock 与 JuceBackend 不再各实现两套键 |
 | 01 §4.3-i「用 `slot.pid` 反查进程名提示『被 <进程名> 中的另一工程占用』」 | **v1 不实现**:冲突反馈 = `ch.occupied` 词条(05 §5.1,J71② 定稿);`channelConflict` 的 `detail` 仅 `{groupId}`。将来需要时按 §0.1 第 3 条增**可选**字段,零破坏(**A-31**) |
 
-### 8.4 相对 05 §1.4 的授权增量(共 **3** 项)
+### 8.4 相对 05 §1.4 的授权增量(共 **4** 项)
 
-T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本契约的函数/事件**名字集合**相对 05 §1.4 只有以下三项增量,除此之外零差异(逐项比对由 `check-bridge-parity.mjs` 的 `EXPECTED` 冻结期望表机器断言):
+T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本契约的函数/事件**名字集合**相对 05 §1.4 只有以下四项增量,除此之外零差异(逐项比对由 `check-bridge-parity.mjs` 的 `EXPECTED` 冻结期望表机器断言):
 
 | 增量项 | 授权来源 | 说明 |
 |---|---|---|
 | Output 函数 `setAnalysisConfig(patch)` | **05 §2.4**(J69 两设置块的数据来源列逐字写有 `setAnalysisConfig({loudness_mode})`,括注「由 01/03 细化时定名并进 T25 冻结契约」) | 函数名有 05 字面出处,只是不在 §1.4 的函数表内;T25 补白 `patch` 形状与两组枚举值(§1.21/§9.2) |
 | Input 事件 `scvb.error` | **01 §6.2**(Input 事件列有 `scvb.error`)+ 裁定记录 **A-8**;需求面 05 §3(`ch.occupied` 冲突反馈、`srMismatch` 红 pill 需即时错误通道) | 05 §1.4 的 Input events 表未列;载荷形状统一取 05 的 `{code, ch?, detail}`(§4.5/§8.3) |
 | Output 函数 `confirmPrintGuard()` | **04 §5.3 / 05 §2.0 横幅⑦**(语义与 §2.5 验收已定,05 §1.4 函数表缺位);统筹裁定 **A-29**,成例 = R4 `setGuideSeen` | **T25 新增名**(不同于前两项,05 全文无字面出处);对 05 §1.4 的回写要求列入 PR 描述 |
+| Output 函数 `setMasterChartMode(mode)` | **05 J75 A**(T43 Tab1 分布图双视图的视图态);变更文档 `docs/contract-changes/20260825-master-chart-mode.md` | 纯 UI 偏好 state 写入口(照 §1.31 `setActiveTab`);取值 `"distribution"`/`"trajectory"`,默认 `"distribution"`,未知值 `badArg`;不占参数面、不进 undo 栈 |
 
 ---
 

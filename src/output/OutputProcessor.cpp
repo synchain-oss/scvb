@@ -601,6 +601,16 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     }
     chunks.set(scvb::state::kFourccCfgs, std::move(cfg));
 
+    // [J75] T43:ui.master_chart_mode 独立 UICF chunk(恒写 4 字节 u32,0=distribution | 1=trajectory)。
+    std::vector<std::uint8_t> uicf;
+    const std::uint32_t chartMode = (masterChartMode_ == "trajectory") ? scvb::state::kMasterChartModeTrajectory
+                                                                       : scvb::state::kMasterChartModeDistribution;
+    if (!scvb::state::encodeUiConfig(chartMode, uicf))
+    {
+        return;
+    }
+    chunks.set(scvb::state::kFourccUiConfig, std::move(uicf));
+
     // CRVS:段真身(版本名/段表/pan_curve)从 live crvsData_ 编码(T29;覆盖 loadedChunks_ 的旧 CRVS)。
     std::vector<std::uint8_t> crvs;
     if (scvb::state::encodeCrvs(crvsData_, crvs))
@@ -679,6 +689,16 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     versionActive_ = static_cast<int>(s.versionActive);
     uiScale_ = static_cast<int>(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
+
+    // [J75] T43:ui.master_chart_mode 从独立 UICF chunk 读;缺失/长度非法/未知值均回落默认(§7.3)。
+    std::uint32_t chartMode = scvb::state::kMasterChartModeDistribution;
+    if (const scvb::state::Chunk* uicf = chunks.find(scvb::state::kFourccUiConfig); uicf != nullptr)
+    {
+        (void)scvb::state::decodeUiConfig(uicf->payload.data(), uicf->payload.size(), chartMode);
+    }
+    masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
+                                                                              : juce::String("distribution");
+
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
@@ -778,6 +798,13 @@ void ScvbOutputAudioProcessor::setVersionActive(int version)
     {
         rebindVersion();
     }
+}
+
+void ScvbOutputAudioProcessor::setMasterChartMode(const juce::String& mode)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // [J75] T43:仅 "trajectory" 是合法非默认档,其余(含未知值)一律回落默认 "distribution"。
+    masterChartMode_ = (mode == "trajectory") ? juce::String("trajectory") : juce::String("distribution");
 }
 
 juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()

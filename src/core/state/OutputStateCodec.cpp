@@ -85,7 +85,7 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     }
     if (langBytes > kOutputLanguageMaxBytes || kHeaderBytes + langBytes != size)
     {
-        return false; // 长度字段与总长不一致 → 拒载(不可信字节)
+        return false; // 长度字段与总长不一致 → 拒载(不可信字节,§7.3;CFGS 无尾字段,严格 baseSize)
     }
     OutputState parsed;
     parsed.groupId = groupId;
@@ -95,6 +95,37 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     parsed.uiScale = uiScale;
     parsed.uiLanguage.assign(reinterpret_cast<const char*>(data + kHeaderBytes), langBytes);
     out = std::move(parsed);
+    return true;
+}
+
+bool encodeUiConfig(std::uint32_t masterChartMode, std::vector<std::uint8_t>& out)
+{
+    out.clear();
+    try
+    {
+        out.reserve(kUiConfigBytes);
+    }
+    catch (...)
+    {
+        return false;
+    }
+    putU32(out, masterChartMode); // [J75] T43 恒写 4 字节(0=distribution | 1=trajectory)
+    return true;
+}
+
+bool decodeUiConfig(const std::uint8_t* data, std::size_t size, std::uint32_t& out)
+{
+    out = kMasterChartModeDistribution; // 缺失/非法长度/未知值一律回落默认 distribution
+    if (data == nullptr || size != kUiConfigBytes)
+    {
+        return false; // 长度非法 → 拒载该 chunk(§7.3);调用方回落默认
+    }
+    std::uint32_t tag = 0;
+    if (!readU32(data, size, tag))
+    {
+        return false;
+    }
+    out = (tag == kMasterChartModeTrajectory) ? kMasterChartModeTrajectory : kMasterChartModeDistribution;
     return true;
 }
 

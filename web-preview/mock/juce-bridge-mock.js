@@ -750,7 +750,7 @@ function makeContext(role, world) {
 }
 
 // -----------------------------------------------------------------------------
-// 3. Output 后端 —— 契约 §1 的 34 个函数(顺序照 §7 manifest)
+// 3. Output 后端 —— 契约 §1 的 35 个函数(顺序照 §7 manifest)
 // -----------------------------------------------------------------------------
 
 function buildOutputBackend(ctx) {
@@ -1555,13 +1555,10 @@ function buildOutputBackend(ctx) {
             return OK();
         },
 
-        // ---- 待转正:setMasterChartMode([J75] T43)-----------------------------
-        // **契约 §7 manifest 里还没有这个名字** —— 它停在 bridge.js 的 PENDING_FUNCS
-        // 里等 native 侧落地(state codec + 桥 setter),见
-        // docs/contract-changes/20260825-master-chart-mode.md。
+        // ---- §1.35([J75] T43)------------------------------------------------
         // 形制照 §1.31 setActiveTab:枚举外的值回 badArg,合法值写 state 子树后经
-        // scvb.state 回推 —— 于是预览页里「切换态持久化往返」是真的走了一圈桥,
-        // 而不是 UI 自己记着。转正时本方法原样保留,只是那时它进了名表。
+        // scvb.state 回推。字段定义/默认值/迁移语义见
+        // docs/contract-changes/20260825-master-chart-mode.md。
         setMasterChartMode(mode) {
             if (!CHART_MODES.includes(mode)) return BAD_ARG();
             patchState({ ui: { master_chart_mode: mode } });

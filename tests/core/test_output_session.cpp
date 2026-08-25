@@ -149,6 +149,56 @@ TEST_CASE("OutputStateCodec:默认 group_id=1 且 save/load 往返 + 越界拒�
     REQUIRE_FALSE(scvb::state::decodeOutputState(buf.data(), buf.size(), bad));
 }
 
+TEST_CASE("UiConfig(UICF) roundtrip:默认/两值/未知回退/非法长度拒载", "[output][state]")
+{
+    // [J75] T43:两值往返(0=distribution | 1=trajectory),payload 定长 4 字节。
+    const std::uint32_t tags[2] = {scvb::state::kMasterChartModeDistribution, scvb::state::kMasterChartModeTrajectory};
+    for (std::uint32_t tag : tags)
+    {
+        std::vector<std::uint8_t> buf;
+        REQUIRE(scvb::state::encodeUiConfig(tag, buf));
+        REQUIRE(buf.size() == scvb::state::kUiConfigBytes);
+        std::uint32_t d = 99;
+        REQUIRE(scvb::state::decodeUiConfig(buf.data(), buf.size(), d));
+        REQUIRE(d == tag);
+    }
+
+    // 未知取值(≥2)回落默认 distribution,不拒载。
+    {
+        std::vector<std::uint8_t> buf;
+        REQUIRE(scvb::state::encodeUiConfig(7, buf));
+        std::uint32_t d = 99;
+        REQUIRE(scvb::state::decodeUiConfig(buf.data(), buf.size(), d));
+        REQUIRE(d == scvb::state::kMasterChartModeDistribution);
+    }
+
+    // 非法长度(1 / 5 / 8 / 12 字节,均非 4)→ 拒载并回落默认(§7.3 钉死)。
+    for (std::size_t badLen : {std::size_t(1), std::size_t(5), std::size_t(8), std::size_t(12)})
+    {
+        std::vector<std::uint8_t> bad(badLen, 0xFF);
+        std::uint32_t d = 99;
+        REQUIRE_FALSE(scvb::state::decodeUiConfig(bad.data(), bad.size(), d));
+        REQUIRE(d == scvb::state::kMasterChartModeDistribution);
+    }
+}
+
+TEST_CASE("OutputStateCodec:CFGS 长度 = baseSize+1/+8 尾部必须拒载(§7.3 严格 baseSize)", "[output][state]")
+{
+    scvb::state::OutputState s;
+    s.uiLanguage = "en"; // langBytes = 2 → baseSize = 24 + 2 = 26
+    std::vector<std::uint8_t> buf;
+    REQUIRE(scvb::state::encodeOutputState(s, buf));
+
+    // CFGS 无尾字段:baseSize+1 / baseSize+8 均非法,必须拒载(不可信字节)。
+    for (std::size_t extra : {std::size_t(1), std::size_t(8)})
+    {
+        std::vector<std::uint8_t> bad = buf;
+        bad.insert(bad.end(), extra, 0xFF);
+        scvb::state::OutputState out;
+        REQUIRE_FALSE(scvb::state::decodeOutputState(bad.data(), bad.size(), out));
+    }
+}
+
 TEST_CASE("Output state 容器:abi 高于当前 → RejectedNewer + preservedOriginal 原样回写", "[output][state][abi]")
 {
     // PR#53 R1:setStateInformation 经 loadState 做 abi 判读 —— 高 abi 拒载并保留原 blob(getStateInformation

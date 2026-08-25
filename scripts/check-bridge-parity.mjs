@@ -53,7 +53,7 @@
  *       ① manifest 可解析;
  *       ② 名字合法(lowerCamelCase / scvb.*)且侧内无重复;
  *       ③ **完备性**:与 05 §1.4 对齐的冻结期望表 EXPECTED 逐项零差异 + 四个计数断言
- *          (Output 34 函数 / 9 事件,Input 7 函数 / 5 事件)——防「契约被误删/误改名而脚本仍绿」;
+ *          (Output 35 函数 / 9 事件,Input 7 函数 / 5 事件)——防「契约被误删/误改名而脚本仍绿」;
  *       ④ **跨侧同名函数签名一致**(params 顺序敏感);
  *       ⑤ 无禁止复活名单命中,且每个禁止名都在契约 §8.2 名单行内以反引号整词列明
  *          (只在 §8.2 段落内匹配:`curves` / `misalign` 等子串会被 `curves_per_track`、
@@ -113,10 +113,12 @@ const FORBIDDEN = [
 /**
  * 冻结期望表 —— 「对 05 §1.4 的函数/事件全集零差异」的可执行断言(T25 卡验收原文)。
  * 与 docs/SCVB_CONTRACT.md §7 manifest 同源,**改动必须两处同步**(同 FORBIDDEN 口径)。
- * 相对 05 §1.4 的授权增量共 3 项(契约 §8.4),已在下表就地标注:
+ * 相对 05 §1.4 的授权增量共 4 项(契约 §8.4),已在下表就地标注:
  *   - output.functions 的 `setAnalysisConfig`  —— 授权来源 05 §2.4(J69,函数名有 05 字面出处)
  *   - input.events   的 `scvb.error`          —— 授权来源 01 §6.2 + 裁定记录 A-8
  *   - output.functions 的 `confirmPrintGuard` —— 授权来源 04 §5.3 / 05 §2.0 横幅⑦ + 统筹裁定 A-29
+ *   - output.functions 的 `setMasterChartMode` —— 授权来源 05 J75 A(T43 双视图);变更文档
+ *     docs/contract-changes/20260825-master-chart-mode.md
  * 其余每一项都能在 05 §1.4 的表内逐字找到。
  */
 const EXPECTED = {
@@ -156,6 +158,7 @@ const EXPECTED = {
             "setGuideSeen",
             "setTourSeen",
             "confirmPrintGuard", // ← 授权增量③(04 §5.3 / 05 §2.0 横幅⑦;统筹裁定 A-29)
+            "setMasterChartMode", // ← 授权增量④(05 J75 A / T43 双视图;变更文档 20260825-master-chart-mode)
         ],
         events: [
             "scvb.state",
@@ -190,7 +193,7 @@ const EXPECTED = {
 };
 /** 计数自检 —— 与契约 §7 文末「计数自检」行同源。 */
 const EXPECTED_COUNTS = {
-    output: { functions: 34, events: 9 },
+    output: { functions: 35, events: 9 },
     input: { functions: 7, events: 5 },
 };
 
@@ -424,7 +427,7 @@ for (const side of sides) {
 }
 if (completenessOk) {
     ok(
-        "完备性:manifest 与 05 §1.4 全集零差异(含 §8.4 的 3 项授权增量),四个计数 34/9/7/5 一致",
+        "完备性:manifest 与 05 §1.4 全集零差异(含 §8.4 的 4 项授权增量),四个计数 35/9/7/5 一致",
     );
 }
 

@@ -147,6 +147,9 @@ public:
     double sampleRate() const { return sampleRate_.load(std::memory_order_relaxed); } // 原子读(PR#55 第9轮)
     int uiScalePercent() const { return uiScale_; }
     juce::String uiLanguage() const { return uiLanguage_; }
+    // [J75] T43:写 state ui.master_chart_mode(随工程持久化);"trajectory" 以外一律回落 "distribution"。
+    void setMasterChartMode(const juce::String& mode);
+    juce::String masterChartMode() const { return masterChartMode_; }
     // 只读观察态(O3:同组已有主 Output);写函数据此回 {observer:true}。
     bool isReadOnly() const { return session_.state() == scvb::output::OutputClaimState::kObserver; }
     // 是否已 prepare(sampleRate_>0);触 rebuild 的写入口据此回 badArg(PR#55 第7轮缺陷2)。
@@ -248,6 +251,7 @@ private:
     int versionActive_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
+    juce::String masterChartMode_ = "distribution"; // [J75] T43(ui.master_chart_mode)
 
     // T29:桥面运行时 state + CRVS 段真身(消息线程独占)。
     OutputRuntimeState runtime_;

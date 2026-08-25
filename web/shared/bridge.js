@@ -33,7 +33,7 @@
 //   • 枚举取值、载荷形状、秒↔样本换算一概不出现在本文件 —— 想知道某个名字收什么、回什么,读契约。
 //
 // 【parity】下面两张名表是 scripts/check-bridge-parity.mjs 的 B 侧比对面(脚本按正则读数组字面量,
-//   不执行本文件),必须与契约 §7 manifest 逐字全等:output 34 函数 / 9 事件,input 7 函数 / 5 事件。
+//   不执行本文件),必须与契约 §7 manifest 逐字全等:output 35 函数 / 9 事件,input 7 函数 / 5 事件。
 //   改名表 = 改契约,须走 §9「只增不改」流程并同批更新 C++ 常量表与 parity 脚本。
 //
 // 【mock 后端形状(T28 实现;§0.7 parity 纪律)】opts.mockBackend 必须是 window.__JUCE__.backend
@@ -47,7 +47,7 @@
  * 顺序也照 manifest(顺序对 parity 无影响,照抄是为了人工比对时一眼可对)。
  */
 export const BRIDGE_FUNCTIONS = {
-    // Output —— 34 个(契约 §1)
+    // Output —— 35 个(契约 §1)
     output: [
         "requestInitialState",
         "setCaptureEnabled",
@@ -83,6 +83,7 @@ export const BRIDGE_FUNCTIONS = {
         "setGuideSeen",
         "setTourSeen",
         "confirmPrintGuard",
+        "setMasterChartMode",
     ],
     // Input —— 7 个(契约 §3)。与 Output 同名的 requestInitialState / setGroupId / setUiScale /
     // commitUiScale / setLang 是契约认可的同名同签名项(§7),名字只在各自侧内查重、不跨侧查重。
@@ -138,7 +139,7 @@ for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
  *
  * 为什么单立一张表,而不是直接往 `BRIDGE_FUNCTIONS` 里加一行:那张表是
  * `scripts/check-bridge-parity.mjs` 的 B 侧比对面,与契约 §7 manifest **逐字全等**是硬门禁
- * (含 34/9/7/5 四个计数断言)。契约还没改就往里加名字,门禁必红 —— 而门禁红了是对的,
+ * (含 35/9/7/5 四个计数断言)。契约还没改就往里加名字,门禁必红 —— 而门禁红了是对的,
  * 它正在说「你改了桥面却没改契约」。所以待转正的名字停在本表:
  *
  *   • **能力探测后才挂**:mock 后端实现了就挂得上(预览页当场可用、往返可验),
@@ -148,9 +149,6 @@ for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
  *     并把该名字从本表**删掉**(留着会让它绕过 parity 门禁,那才是真正的洞)。
  *
  * 现存条目:
- *   • `setMasterChartMode(mode)` —— [J75] T43 的 Tab1 分布图视图态 `ui.master_chart_mode`;
- *     变更文档 `docs/contract-changes/20260825-master-chart-mode.md`,native 侧(state codec +
- *     桥 setter)转 DS 侧执行。
  *   • `exportSuggestions(scope)` —— T41 建议表的 CSV 导出(11 §4.2.3 通路 B2);变更文档
  *     `docs/contract-changes/20260825-export-suggestions.md`,native 侧(保存对话框 +
  *     `src/core/export/SuggestionExport` 落盘)转后续。行集与 CSV 的**纯计算**部分本卡
@@ -166,7 +164,7 @@ for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
  *     下的重弹,真宿主里只是空转。这是「没写成」的**如实**表现,不是静默假装写成了。
  */
 export const PENDING_FUNCS = {
-    output: ["setMasterChartMode", "exportSuggestions"],
+    output: ["exportSuggestions"],
     input: ["setGuideSeen"],
 };
 for (const side of ["output", "input"]) Object.freeze(PENDING_FUNCS[side]);

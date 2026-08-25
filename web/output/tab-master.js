@@ -1550,19 +1550,12 @@ export function createTabMaster(opts) {
     /**
      * 视图切换。
      *
-     * `setMasterChartMode` **尚未进契约 §7 manifest** —— 它停在 bridge.js 的
-     * `PENDING_FUNCS` 里等转正(理由见那里的头注)。于是当下有两种运行形态,都是对的:
-     *   • 预览/mock:mock 后端已按同形制实现 ⇒ 调用落地 → `scvb.state` 回推
-     *     `ui.master_chart_mode` → 下面的 renderChart 把本地乐观值交还给 state,
-     *     「切换态持久化往返」在 mock 下当场可验;
-     *   • 真 JUCE 宿主(native 未落地):桥上根本没挂这个名字,`call()` 直接回 null,
-     *     视图态停在本地乐观值 —— 重开面板回默认档,不写、也不假装写了任何 state。
-     *
-     * TODO(转 DS 侧 · native):state codec 落 `ui.master_chart_mode` + 桥 setter
-     * (形制照 §1.31 `setActiveTab`:`{ok:true}` / `{ok:false, reason:"badArg"}`)。
-     * 落地后把名字从 `PENDING_FUNCS` 挪进 `BRIDGE_FUNCTIONS` 并同批改契约 §7 与
-     * C++ 常量表。字段定义 / 默认值 / 迁移语义:
-     * `docs/contract-changes/20260825-master-chart-mode.md`。
+     * `setMasterChartMode` 已进契约 §7 manifest(§1.35,[J75] T43),桥上按
+     * `BRIDGE_FUNCTIONS` 直接挂载:native 侧 state codec 落 `ui.master_chart_mode`
+     * + 桥 setter(形制照 §1.31 `setActiveTab`:`{ok:true}` / `{ok:false, reason:"badArg"}`),
+     * 调用落地 → `scvb.state` 回推 `ui.master_chart_mode` → 下面的 renderChart 把本地
+     * 乐观值交还给 state,「切换态持久化往返」在 mock 与真宿主下都成立。字段定义 /
+     * 默认值 / 迁移语义:`docs/contract-changes/20260825-master-chart-mode.md`。
      */
     function setChartMode(mode) {
         if (!CHART_MODES.includes(mode) || currentChartMode() === mode) return;
