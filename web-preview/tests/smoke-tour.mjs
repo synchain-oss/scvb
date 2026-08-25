@@ -7,7 +7,7 @@
 //
 // 跑什么:
 //   ① 步骤清单:全参数导览 44 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
-//   ② shouldShowTourAsk 四种组合(J50a 镜像);
+//   ② shouldShowTourAsk 四种组合(J50a 镜像)+ 兜底直弹的「本会话已答」闸(T37 bug A-2);
 //   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
 //     落工程位与全局位,再取快照往返不丢;
@@ -261,6 +261,28 @@ log("=== ② shouldShowTourAsk(J50a 镜像)===");
         false,
         "首帧未到 ⇒ 不兜底直弹",
     );
+
+    // T37 真机 bug A-2 回归:tour 走完 → endTour 发出 setTourSeen 后立刻 requestRender,
+    // 这一帧 ui.tour_seen 还是 false(桥回执 + 下一拍 25Hz scvb.state 都没到)。
+    // 「本会话已答」位必须当场拦住兜底直弹,否则询问卡重弹、用户再点「开始」就重放整个 tour。
+    eq(
+        TOUR.shouldAutoShowTourAsk(
+            { ui: { guide_seen: true, tour_seen: false } }, // 回执未到,state 仍是旧值
+            { tour_seen_global: false },
+            true, // 本会话已答(开始 / 暂不 / tour 已结束)
+        ),
+        false,
+        "本会话已答 ⇒ 回执未到也不重弹(tour 不重放)",
+    );
+    eq(
+        TOUR.shouldAutoShowTourAsk(
+            { ui: { guide_seen: true, tour_seen: false } },
+            { tour_seen_global: false },
+            false,
+        ),
+        true,
+        "本会话未答 ⇒ 兜底直弹照旧",
+    );
 }
 
 // =============================================================================
@@ -435,6 +457,21 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
     // 左键点击任意处 = 下一步(右键/滚轮不推进)
     check(ts.includes("e.button !== 0"), "仅左键推进(button===0)");
     check(ts.includes('closest("[data-tour-btn]")'), "说明框按钮例外");
+
+    // T37 bug A-2 接线:一次性门控不得只依赖 setTourSeen 的异步回执 ——
+    // endTour 必须同步通知外壳落「本会话已答」位,外壳三处答复点都要置位并把它喂给判定。
+    const app = src("web/output/app.js");
+    check(ts.includes("onEnd()"), "endTour 同步通知外壳(onEnd)");
+    check(
+        (app.match(/session\.tourAnswered = true/g) || []).length >= 3,
+        "外壳三处答复点(开始 / 暂不 / tour 结束)都落本会话已答位",
+    );
+    check(
+        /shouldAutoShowTourAsk\(\s*store\.state,\s*store\.snapshot,\s*store\.session\.tourAnswered/.test(
+            app,
+        ),
+        "syncTourAsk 把本会话已答位喂进判定",
+    );
 
     // data-tour 锚点:index.html 静态锚 + tab-tracks.js 首行动态锚(dt() 助手)
     const staticAnchors = [
