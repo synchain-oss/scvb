@@ -46,14 +46,15 @@ semver 语义(音频插件特化):
 
 ## 发版清单
 
-> **⚠️ 现状:这份清单还走不通,两处硬阻塞都归 T40。** 下面逐条写的是发版**应当**怎么走;在 T40 落地前照着走会在第 6 步之后连撞两次:
+> **⚠️ 现状:这份清单还走不通,三处硬阻塞都归 T40。** 下面逐条写的是发版**应当**怎么走;在 T40 落地前照着走会在第 6 步之后连撞:
 >
 > | # | 阻塞 | 现状 | 后果 |
 > |---|---|---|---|
 > | 1 | `scripts/package.ps1` **不存在** | `release.yml` 的 Package 步与 `.sha256` 生成都依赖它(文件里的注释写明「由 T40 补齐」) | 第 7 步没有产物可核对;Release 只会拿到空的 `files:` glob |
 > | 2 | **Verify version matches tag 解析错行** | 该步用 `Select-String -Pattern 'VERSION' \| Select-Object -First 1` 取 `CMakeLists.txt` 的第一条 VERSION,而第 1 行是 `cmake_minimum_required(VERSION 3.22)` —— 实测解析出 `3.22`,不是 `project(SCVB VERSION)` 的 `0.1.0` | 任何真实 tag 都会被误判为版本不匹配,workflow 首步即 fail。**这与 #71 在 `scripts/build.ps1` 修掉的是同一个 bug**,`release.yml` 里的那一份当时没跟着改 |
+> | 3 | **`release.yml` 不产出 `.vst3`** | 该 workflow 目前**只有** Verify + Package + 上传三步,没有复用 `build-vst3` 的构建 / ctest / pluginval(文件里的注释写明「完整 build/ctest/pluginval 复用与 `scripts/package.ps1` 由 T40 补齐」) | 即使前两条修好,打包步也没有 `.vst3` 可打 —— 发版链路缺的是**产物本身**,不只是打包脚本 |
 >
-> 另外 `release.yml` 目前**只有** Verify + Package + 上传三步,没有复用 `build-vst3` 的构建 / ctest / pluginval —— 也就是说它不产出 `.vst3`。T40 的范围包含这三件事。在此之前本文件按「目标态」维护,不要把它当成已通链路。
+> 三条都在 T40 的范围内。在此之前本文件按「目标态」维护,不要把它当成已通链路。
 
 1. **确认 CHANGELOG**:`## [Unreleased]` 的内容完整(每条带 PR 号),契约变更条目齐全且各自有 `docs/contract-changes/` 文档。
 2. **下移版本节**:把 Unreleased 内容改写成 `## [X.Y.Z] - YYYY-MM-DD`,补底部对比链接,留一个空的 Unreleased。
