@@ -24,7 +24,11 @@
 //   ⑧ 空态盖板 hidden 时真的不可见(靠本页那条全局 `[hidden]{display:none !important}`,
 //      不逐类补兜底)+ 脏位只在**画得成**的那一帧兑现(不可见期不清,切回来才画);
 //   ⑨ **把图真的跑起来**(手搓 canvas 桩 + `layers.tick` 单帧驱动):ui.scale 换档
-//      重建后备存储、离场期欠下的重绘由 `resume()` 还清、已在前台时不无脑重画。
+//      重建后备存储、离场期欠下的重绘由 `resume()` 还清、已在前台时不无脑重画;
+//   ⑩ 脏轨号(取色回落 / 系列与图例同口径)+ `destroy()` 退订与幂等;
+//   ⑪ **滚轮四路映射**(滚轮=横向平移 / Ctrl=横向缩放 / Shift=纵向平移 /
+//      Alt=纵向缩放):把事件真发进桩去验落点、锚点、平移比例、跟随脱离与
+//      四路 preventDefault ——「哪个修饰键走哪条」是源码正则钉不住的。
 //
 // 关于 ⑨ 的「无 DOM」:桩不是 DOM 实现,只是把 `resizeCanvas` / `paintStatic` 认的
 // 那几个字段凑齐(width/height/style/getContext + 一个记账 ctx)。layers.js 的头注
@@ -878,21 +882,30 @@ log("=== ⑦ 性能预算与空闲纪律(05 §6.1)===");
     const html = src("web/output/index.html");
 
     check(
-        /if \(e\.shiftKey\) \{[\s\S]{0,240}zoomPanView\(/.test(tj),
-        "Shift+滚轮走纵向缩放分支",
+        /Math\.abs\(e\.deltaX\) > Math\.abs\(e\.deltaY\) \? e\.deltaX : e\.deltaY/.test(
+            tj,
+        ),
+        "滚轮增量取主轴(触控板横向 deltaX / Shift+滚轮被改写成横向滚动,同一路认)",
     );
     check(
-        /e\.deltaY !== 0 \? e\.deltaY : e\.deltaX/.test(tj),
-        "滚轮增量兼容 Shift+滚轮被改写成横向滚动的浏览器(deltaX 兜底)",
+        /e\.deltaMode === 1/.test(tj) && /e\.deltaMode === 2/.test(tj),
+        "deltaMode 行/页折成 px(不折的话跨浏览器跨度差两个数量级)",
     );
-    // 纵向缩放**不**脱离横向跟随:shift 分支里不许出现 breakFollow
-    const shiftBranch = /if \(e\.shiftKey\) \{([\s\S]*?)\n {16}\}/.exec(tj);
-    check(!!shiftBranch, "找得到 Shift 分支(下一条断言的前提)");
-    if (shiftBranch) {
-        check(
-            !/breakFollow/.test(shiftBranch[1]),
-            "纵向缩放不脱离横向跟随(两条轴的状态互不牵连)",
-        );
+    // 纵向两路**不**脱离横向跟随:altKey / shiftKey 分支里不许出现 breakFollow
+    for (const [name, key] of [
+        ["Alt(纵向缩放)", "altKey"],
+        ["Shift(纵向平移)", "shiftKey"],
+    ]) {
+        const br = new RegExp(
+            `if \\(e\\.${key}\\) \\{([\\s\\S]*?)\\n {16}\\}`,
+        ).exec(tj);
+        check(!!br, `找得到 ${name} 分支(下一条断言的前提)`);
+        if (br) {
+            check(
+                !/breakFollow/.test(br[1]),
+                `${name} 不脱离横向跟随(两条轴的状态互不牵连)`,
+            );
+        }
     }
     check(
         /ctx\.save\(\);\s*ctx\.beginPath\(\);\s*ctx\.rect\(0, PAD_TOP, local\.stageW, H\);\s*ctx\.clip\(\);/.test(
@@ -1068,13 +1081,19 @@ function makeCanvasStub(cssW = 600, cssH = 200) {
             },
         },
     );
+    // 监听器登记表 —— 滚轮四路映射要**真的把事件发进去**才验得到:
+    // 「哪个修饰键走哪条」是源码正则钉不住的。
+    const handlers = new Map();
     const canvas = {
         width: 0,
         height: 0,
         style: {},
         parentElement: { clientWidth: cssW, clientHeight: cssH },
         getContext: () => ctx,
-        addEventListener: () => {},
+        addEventListener: (type, fn) => {
+            if (!handlers.has(type)) handlers.set(type, []);
+            handlers.get(type).push(fn);
+        },
         getBoundingClientRect: () => ({
             left: 0,
             top: 0,
@@ -1082,7 +1101,27 @@ function makeCanvasStub(cssW = 600, cssH = 200) {
             height: cssH,
         }),
     };
-    return { canvas, calls };
+    /** 造一个滚轮事件发进去;返回 preventDefault 有没有被调。 */
+    const wheel = (init) => {
+        let prevented = false;
+        const ev = {
+            deltaX: 0,
+            deltaY: 0,
+            deltaMode: 0,
+            ctrlKey: false,
+            shiftKey: false,
+            altKey: false,
+            clientX: cssW / 2,
+            clientY: cssH / 2,
+            ...init,
+            preventDefault: () => {
+                prevented = true;
+            },
+        };
+        for (const fn of handlers.get("wheel") || []) fn(ev);
+        return prevented;
+    };
+    return { canvas, calls, handlers, wheel };
 }
 
 {
@@ -1411,6 +1450,182 @@ log("=== ⑩ 脏轨号与拆除口(claude-review 第四轮四条)===");
         if (savedRO === undefined) delete globalThis.ResizeObserver;
         else globalThis.ResizeObserver = savedRO;
     }
+}
+
+// =============================================================================
+log("=== ⑪ 滚轮四路映射(2026-08-25 用户 preview 后定稿)===");
+
+// 滚轮  = 横向平移      Ctrl+滚轮  = 横向缩放(锚 x)
+// Shift = 纵向平移      Alt+滚轮   = 纵向缩放(锚 y)
+// 四路都**真的把事件发进去**验落点 —— 「哪个修饰键走哪条」正则钉不住。
+{
+    const { canvas, wheel } = makeCanvasStub(600, 200);
+    const chart = TC.createTrajectoryChart({
+        canvas,
+        getSeries: () => [],
+        getDurationS: () => 300,
+        isVisible: () => true,
+    });
+    const vp = () => chart.viewport();
+    const pv = () => chart.panView();
+    /** 每条断言前把两轴都摆回已知起点(横向留出左右余量,纵向回全域)。 */
+    const reset = () => {
+        chart.resetPanView();
+        chart.timeline.set({ startS: 100, endS: 200 });
+    };
+
+    // ---- ① 裸滚轮 = 横向平移
+    reset();
+    const t0 = vp().startS;
+    wheel({ deltaY: 100 });
+    check(vp().startS > t0, "裸滚轮向下 ⇒ 视口向后(时间变大)");
+    eq(Math.round(spanOfVp(vp())), 100, "裸滚轮**不改跨度**(是平移不是缩放)");
+    const t1 = vp().startS;
+    wheel({ deltaY: -100 });
+    check(vp().startS < t1, "裸滚轮向上 ⇒ 视口向前");
+    // 触控板横向 deltaX 走同一路(与无修饰滚轮一致)
+    reset();
+    const t2 = vp().startS;
+    wheel({ deltaX: 100 });
+    check(vp().startS > t2, "触控板横向 deltaX ⇒ 同样横向平移");
+    eq(Math.round(spanOfVp(vp())), 100, "deltaX 也不改跨度");
+    // 平移的**量**按 px→秒 实比例(100px / 6px每秒 ≈ 16.7s)
+    reset();
+    wheel({ deltaY: 60 });
+    eq(
+        Math.round(vp().startS - 100),
+        10,
+        "60px / (600px÷100s) = 10s(按实比例平移,不是固定档位)",
+    );
+    // 裸滚轮**脱离跟随**(动的是横向视口)
+    check(!chart.following(), "裸滚轮平移 ⇒ 脱离跟随");
+
+    // ---- ② Ctrl+滚轮 = 横向缩放
+    reset();
+    const span0 = spanOfVp(vp());
+    wheel({ deltaY: -100, ctrlKey: true });
+    check(spanOfVp(vp()) < span0, "Ctrl+滚轮向上 ⇒ 横向放大(跨度变小)");
+    wheel({ deltaY: 100, ctrlKey: true });
+    check(
+        Math.abs(spanOfVp(vp()) - span0) < 1e-6,
+        "Ctrl+滚轮向下一格回到原跨度(同一档位倍率)",
+    );
+    // 锚点跟光标 x:光标压在视口左缘时,左缘时刻缩放前后不动
+    reset();
+    const leftBefore = vp().startS;
+    wheel({ deltaY: -100, ctrlKey: true, clientX: 0 });
+    check(
+        Math.abs(vp().startS - leftBefore) < 1e-6,
+        "锚点跟光标 x(压左缘缩放,左缘时刻不动)",
+    );
+    check(!chart.following(), "Ctrl+滚轮缩放 ⇒ 脱离跟随");
+
+    // ---- ③ Shift+滚轮 = 纵向平移
+    reset();
+    chart.timeline.set({ startS: 100, endS: 200 });
+    // 先纵向放大,否则全域档下平移被夹取成空操作(那本身也是对的,见 ① 节)
+    wheel({ deltaY: -100, altKey: true });
+    wheel({ deltaY: -100, altKey: true });
+    const pvBefore = { ...pv() };
+    wheel({ deltaY: 100, shiftKey: true });
+    check(pv().hi < pvBefore.hi, "Shift+滚轮向下 ⇒ 视野向 −100 走");
+    eq(
+        Math.round((pv().hi - pv().lo) * 1e6) / 1e6,
+        Math.round((pvBefore.hi - pvBefore.lo) * 1e6) / 1e6,
+        "Shift+滚轮**不改跨度**(是平移不是缩放)",
+    );
+    wheel({ deltaY: -200, shiftKey: true });
+    check(pv().hi > pvBefore.hi, "Shift+滚轮向上 ⇒ 视野向 +100 走");
+    // Chromium 系把 Shift+滚轮改写成横向滚动(值落 deltaX)—— 同样要认
+    const pvX = { ...pv() };
+    wheel({ deltaX: 100, deltaY: 0, shiftKey: true });
+    check(
+        pv().hi < pvX.hi,
+        "Shift+滚轮值落在 deltaX 上时同样纵向平移(Chromium 改写)",
+    );
+    // 全域档下是空操作(夹取自然兜住)
+    chart.resetPanView();
+    const full = { ...pv() };
+    wheel({ deltaY: 100, shiftKey: true });
+    eq(pv(), full, "全域档下 Shift+滚轮 = 空操作(没放大就没得平移)");
+
+    // ---- ④ Alt+滚轮 = 纵向缩放
+    chart.resetPanView();
+    const panSpan0 = pv().hi - pv().lo;
+    wheel({ deltaY: -100, altKey: true });
+    check(pv().hi - pv().lo < panSpan0, "Alt+滚轮向上 ⇒ 纵向放大");
+    wheel({ deltaY: 100, altKey: true });
+    check(
+        Math.abs(pv().hi - pv().lo - panSpan0) < 1e-6,
+        "Alt+滚轮向下一格回到全域",
+    );
+    // 锚点跟光标 y:压在折线区顶时,视野上缘缩放前后不动
+    chart.resetPanView();
+    const hiBefore = pv().hi;
+    wheel({ deltaY: -100, altKey: true, clientY: 6 }); // 6 = PAD_TOP,折线区顶
+    check(
+        Math.abs(pv().hi - hiBefore) < 1e-6,
+        "锚点跟光标 y(压折线区顶缩放,视野上缘不动)",
+    );
+
+    // ---- preventDefault:四路一律拦
+    for (const [name, init] of [
+        ["裸滚轮(否则连带滚动祖先容器)", { deltaY: 100 }],
+        ["Ctrl+滚轮(否则触发浏览器页面缩放)", { deltaY: 100, ctrlKey: true }],
+        ["Shift+滚轮", { deltaY: 100, shiftKey: true }],
+        [
+            "Alt+滚轮(部分平台有历史前进/后退默认)",
+            { deltaY: 100, altKey: true },
+        ],
+    ]) {
+        check(wheel(init) === true, `${name} 调了 preventDefault`);
+    }
+    // 监听器必须是 { passive: false },否则 preventDefault 无效
+    check(
+        /"wheel",[\s\S]*?\{ passive: false \}/.test(
+            src("web/shared/trajectory-chart.js"),
+        ),
+        "wheel 监听器登记为 passive:false(否则上面四条 preventDefault 全是白调)",
+    );
+
+    chart.destroy();
+}
+
+{
+    // ---- 跟随:横向两路脱离、纵向两路**不**脱离。
+    // 各用一个**全新实例**(跟随默认开),否则拿一个已经脱离的实例验「不脱离」
+    // 就是 false === false,什么也没证明。
+    const fresh = () => {
+        const { canvas, wheel } = makeCanvasStub(600, 200);
+        const chart = TC.createTrajectoryChart({
+            canvas,
+            getSeries: () => [],
+            getDurationS: () => 300,
+            isVisible: () => true,
+        });
+        chart.timeline.set({ startS: 100, endS: 200 });
+        return { chart, wheel };
+    };
+    for (const [name, init, stillFollowing] of [
+        ["裸滚轮(横向平移)", { deltaY: 100 }, false],
+        ["Ctrl+滚轮(横向缩放)", { deltaY: -100, ctrlKey: true }, false],
+        ["Shift+滚轮(纵向平移)", { deltaY: 100, shiftKey: true }, true],
+        ["Alt+滚轮(纵向缩放)", { deltaY: -100, altKey: true }, true],
+    ]) {
+        const { chart, wheel } = fresh();
+        check(chart.following(), `${name}:起点跟随开着(前提)`);
+        wheel(init);
+        eq(
+            chart.following(),
+            stillFollowing,
+            `${name} ⇒ 跟随${stillFollowing ? "**不**脱离" : "脱离"}`,
+        );
+        chart.destroy();
+    }
+}
+
+function spanOfVp(v) {
+    return v.endS - v.startS;
 }
 
 // =============================================================================

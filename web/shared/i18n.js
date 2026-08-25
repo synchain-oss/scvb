@@ -368,7 +368,7 @@ export const T = {
         "chart.panSideC": "中 C",
         "chart.panSideL": "左 L",
         "chart.trajCanvasAria":
-            "声像轨迹图:滚轮横向缩放,Shift+滚轮纵向缩放,拖拽或方向键平移",
+            "声像轨迹图:滚轮左右平移,Ctrl+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键",
         "chart.zoomAria": "时间轴缩放档位",
         "chart.backToPlayhead": "回到播放头",
         "chart.resetPanZoom": "纵向复位",
@@ -1052,7 +1052,7 @@ export const T = {
         "chart.panSideC": "C",
         "chart.panSideL": "L",
         "chart.trajCanvasAria":
-            "Pan trajectory chart: scroll to zoom horizontally, Shift+scroll to zoom vertically, drag or arrow keys to scroll",
+            "Pan trajectory chart: scroll to move sideways, Ctrl+scroll to zoom horizontally, Shift+scroll to move up and down, Alt+scroll to zoom vertically; drag or arrow keys also work",
         "chart.zoomAria": "Timeline zoom level",
         "chart.backToPlayhead": "Back to playhead",
         "chart.resetPanZoom": "Reset Y zoom",
@@ -1706,7 +1706,7 @@ export const T = {
         "chart.panSideC": "C",
         "chart.panSideL": "G",
         "chart.trajCanvasAria":
-            "Graphique de trajectoire du panoramique : molette pour zoomer horizontalement, Maj+molette pour zoomer verticalement, glisser ou flèches pour défiler",
+            "Graphique de trajectoire du panoramique : molette pour défiler latéralement, Ctrl+molette pour zoomer horizontalement, Maj+molette pour défiler verticalement, Alt+molette pour zoomer verticalement ; le glisser et les flèches fonctionnent aussi",
         "chart.zoomAria": "Niveau de zoom de la timeline",
         "chart.backToPlayhead": "Revenir à la tête de lecture",
         "chart.resetPanZoom": "Réinit. zoom Y",

@@ -14,7 +14,13 @@
 //   • **无分段覆盖的区间不画线** —— 段与段之间只要有间隙就断线,间隙是乐句之间的
 //     静默还是整段没采到的空当,在这里是同一件事(数据源 = 段表本身的 activity);
 //   • 立体声轨画 pan 中心线(width 张开度带 v1 不入本图,见 J75 A 的「后续增强」注);
-//   • 播放头竖线 + 跟随模式(默认开;手动**横向**缩放/拖拽即脱离,「回到播放头」恢复)。
+//   • 播放头竖线 + 跟随模式(默认开;手动动**横向**视口即脱离 —— 滚轮平移 /
+//     Ctrl+滚轮缩放 / 拖拽 / ←→ / ±;「回到播放头」恢复。纵向那四路不脱离)。
+//
+// **滚轮四路映射**(2026-08-25 用户 preview 后定稿):
+//   滚轮 = 横向平移 · Ctrl+滚轮 = 横向缩放 · Shift+滚轮 = 纵向平移 · Alt+滚轮 = 纵向缩放。
+//   最常用的动作(左右滑动看时间线)放在不按键的那一档。**本图的滚轮语义自此与
+//   Tab3 泳道分叉**(那边裸滚轮仍是缩放,05 行 319)—— 是否统一留用户裁量,本卡不动 Tab3。
 //
 // **纵向缩放**(2026-08-25 用户 preview 反馈追加):y 轴不再恒等于全角度域 ——
 // 视野 `{lo, hi} ⊆ −100..100` 也是一个视口,且与 x 轴**共用同一套视口几何**:
@@ -104,6 +110,12 @@ export const PAN_VIEW_FULL = Object.freeze({ lo: PAN_MIN, hi: PAN_MAX });
 
 /** 单步纵向缩放倍率 —— 与时间轴同一手感(两轴共用 ZOOM_STEP)。 */
 export const PAN_ZOOM_STEP = ZOOM_STEP;
+
+/**
+ * `deltaMode === 1`(按行)时一行折算多少 CSS px。取 16 —— 与本页正文行高同量级;
+ * 精确值无所谓,要紧的是别把「按行」当「按像素」直接用(那样一格滚轮只挪 3px)。
+ */
+export const WHEEL_LINE_PX = 16;
 
 /** y 轴刻度的候选步长(粗 → 细);缩放档越深取越细的那一档。 */
 export const PAN_TICK_STEPS = Object.freeze([50, 25, 20, 10, 5, 2, 1]);
@@ -746,19 +758,38 @@ export function createTrajectoryChart(opts) {
     }
 
     /**
-     * 滚轮的有效增量。Shift+滚轮在部分浏览器(Chromium 系)会被**改写成横向滚动**,
-     * 值落到 `deltaX` 上、`deltaY` 归零;Firefox 则仍走 `deltaY`。两边都要认,
-     * 否则纵向缩放在半数浏览器上是死的。
+     * 滚轮增量 → **CSS px**(一个数,正 = 向下/向右)。
+     *
+     * 两件必须归一化的事:
+     *   • **轴**:取绝对值大的那一路。鼠标滚轮给 `deltaY`;触控板横向双指给 `deltaX`
+     *     (本图里横向滑动就是横向平移,天然对上);而 Shift+滚轮在 Chromium 系会被
+     *     **改写成横向滚动** —— 值落到 `deltaX`、`deltaY` 归零,Firefox 则仍走 `deltaY`。
+     *     取主轴对三种来源都成立,不必逐浏览器分支。
+     *   • **单位**:`deltaMode` 可能是行(1)或页(2)。不折成 px 的话,同一次滚动在
+     *     不同浏览器/设备上跨度差两个数量级 —— 平移会从「挪一点」变成「跳一屏」。
      */
     function wheelDelta(e) {
-        return e.deltaY !== 0 ? e.deltaY : e.deltaX;
+        const raw =
+            Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        if (e.deltaMode === 1) return raw * WHEEL_LINE_PX;
+        if (e.deltaMode === 2) return raw * Math.max(local.stageW, 1);
+        return raw;
     }
 
     function wire() {
         if (!canvas) return;
-        // 缩放 = 时间轴滚轮(J75 A 逐字)。Tab3 的手势是 **Ctrl+滚轮**(05 行 319),
-        // 两者在此并存:落在画布上的裸滚轮与 Ctrl+滚轮都缩放,且都 preventDefault ——
-        // 本图嵌在 Tab1 网格里,裸滚轮若不拦会连带滚动祖先容器/触发页面缩放。
+        // 滚轮四路映射(2026-08-25 用户 preview 后定稿):
+        //
+        //   滚轮        横向平移(左右滑动)        Ctrl+滚轮   横向缩放(中心跟光标 x)
+        //   Shift+滚轮  纵向平移(上下滑动)        Alt+滚轮    纵向缩放(中心跟光标 y)
+        //
+        // 「裸滚轮 = 平移、Ctrl+滚轮 = 缩放」把最常用的动作放在不按键的那一档;
+        // 代价是**本图的滚轮语义自此与 Tab3 泳道分叉**(那边裸滚轮仍是缩放,05 行 319)。
+        // 是否统一留用户后续裁量 —— 本卡不擅自改 Tab3。
+        //
+        // 四路**一律 preventDefault**:裸滚轮不拦会连带滚动祖先容器;Ctrl+滚轮不拦
+        // 会触发浏览器页面缩放(WebView 里同理);Alt+滚轮在部分平台有默认的历史
+        // 前进/后退语义。故监听器必须 `{ passive: false }`,否则 preventDefault 无效。
         canvas.addEventListener(
             "wheel",
             (e) => {
@@ -766,10 +797,23 @@ export function createTrajectoryChart(opts) {
                 if (!(local.stageW > 0)) return;
                 const d = wheelDelta(e);
                 if (d === 0) return;
-                // **Shift+滚轮 = 纵向缩放**(2026-08-25 用户反馈)。挑 Shift 是因为
-                // 裸滚轮与 Ctrl+滚轮这两个位置都已被时间轴占着(见上),而 Shift+滚轮
-                // 在本图里本来无义。不 breakFollow:纵向缩放与横向跟随互不牵连。
-                if (e.shiftKey) {
+
+                // ---- Ctrl+滚轮 = 横向缩放(以光标 x 为锚)
+                if (e.ctrlKey) {
+                    const vp = timeline.viewport();
+                    const anchorT = xToTime(
+                        vp,
+                        local.stageW,
+                        clamp(0, local.stageW, stageX(e.clientX)),
+                    );
+                    breakFollow();
+                    timeline.zoom(anchorT, d < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+                    return;
+                }
+
+                // ---- Alt+滚轮 = 纵向缩放(以光标 y 为锚)
+                // 不 breakFollow:纵向的事不动横向跟随(两条轴的状态互不牵连)。
+                if (e.altKey) {
                     setPanView(
                         zoomPanView(
                             local.panView,
@@ -779,14 +823,24 @@ export function createTrajectoryChart(opts) {
                     );
                     return;
                 }
+
+                // ---- Shift+滚轮 = 纵向平移。按 px→pan 的实比例走(不是固定档位),
+                // 触控板与鼠标滚轮因此手感一致。向下滚 ⇒ 视野向 −100 走。
+                if (e.shiftKey) {
+                    const H = plotH();
+                    if (!(H > 0)) return;
+                    const pv = local.panView;
+                    setPanView(panPanView(pv, -(d / H) * (pv.hi - pv.lo)));
+                    return;
+                }
+
+                // ---- 裸滚轮 = 横向平移。同样按 px→秒 的实比例走;触控板横向 deltaX
+                // 已在 wheelDelta 里归到同一路,横向滑动与滚轮走的是同一条。
                 const vp = timeline.viewport();
-                const anchorT = xToTime(
-                    vp,
-                    local.stageW,
-                    clamp(0, local.stageW, stageX(e.clientX)),
-                );
+                const per = pxPerSec(vp, local.stageW);
+                if (!(per > 0)) return;
                 breakFollow();
-                timeline.zoom(anchorT, d < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+                timeline.pan(d / per);
             },
             { passive: false },
         );
