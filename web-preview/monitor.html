@@ -1,0 +1,42 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  web-preview/monitor.html —— Monitor 侧**薄壳页**(T46;与 output.html / input.html 同款)。
+
+  它自己**没有任何 UI**:画面 100% 来自真源 web/monitor/index.html(经同源 iframe 引用),
+  壳页只干两件事 —— ①把 web-preview 的 mock 后端注入 iframe 的 window.__SCVB_MOCK__,
+  ②在顶部挂一条预览工具条。注入机制与失败回退全部写在 web-preview/shell.js 的文件头。
+
+  06 §6.2 硬约束 1:web/ 是唯一真源,本文件里**没有一行复制来的 UI 代码**。
+
+  URL 参数(由 mock/monitor-mock.js 解析,壳页只透传 location.search):
+    ?scenario=monitor-online|monitor-offline|monitor-groups|monitor-stalled
+    &group=1..8    —— 直接指定开箱观察的组(覆盖场景默认)
+    &play=0        —— 走带停住(播放头不动;看静态构图用)
+  `?target=monitor` 亦可挂在任一壳页上(shell.js 的通用参数),效果等同本页。
+
+  必须经 serve.ps1(http://127.0.0.1:8823)打开;file:// 下 iframe 变跨源,注入不成立。
+-->
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SCVB Monitor · web-preview</title>
+    </head>
+    <body>
+        <header class="pv-bar">
+            <a href="./index.html">← 预览导航</a>
+            <strong>SCVB Monitor</strong>
+            <span class="pv-meta"></span>
+            <span class="pv-status" data-ok="wait" role="status">初始化…</span>
+            <span class="pv-warn"></span>
+            <button type="button" class="pv-reload">重载</button>
+        </header>
+        <!-- iframe 由 shell.js 建并按 monitor-box.js 的设计盒给最小尺寸,故此处只留舞台容器 -->
+        <main class="pv-stage"></main>
+        <script type="module">
+            import { mountPreview } from "./shell.js";
+            mountPreview({ role: "monitor" });
+        </script>
+    </body>
+</html>

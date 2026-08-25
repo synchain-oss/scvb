@@ -43,7 +43,17 @@ import {
     panTickText,
     runsOfSegments,
 } from "../shared/trajectory-chart.js";
-import { trackColorVar } from "../shared/track-colors.js";
+// [T46] 分布图的几何与两处拼串已提取到 `web/shared/distribution-chart.js`(Monitor
+// 要画同一张图)。**产物逐字节不变** —— 本文件只负责把 store 凑成 rows,
+// 拼串归那一件;`distGeometry` 在此原样再导出,既有 import 点一字不改。
+import {
+    distBarsHtml,
+    legendChOf as legendChOfRow,
+    legendItemsHtml,
+} from "../shared/distribution-chart.js";
+import { format } from "../shared/i18n.js";
+
+export { distGeometry } from "../shared/distribution-chart.js";
 
 // =============================================================================
 // 一、纯函数(无 DOM;node 侧断言面)
@@ -289,12 +299,11 @@ function isPlainObject(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** 占位符求值 —— 词条里的 {n}/{x}/{name} 由调用方填,i18n.js 只发字典(不做模板求值)。 */
-export function format(text, vals) {
-    return String(text).replace(/\{(\w+)\}/g, (m, k) =>
-        Object.prototype.hasOwnProperty.call(vals, k) ? String(vals[k]) : m,
-    );
-}
+// 占位符求值 —— [T46] 定义已挪到 `web/shared/i18n.js`(Monitor 页面同样要用,
+// 与其抄第三份不如放在词典本体旁边)。此处原样再导出,既有 import 点一字不改。
+// (必须**先 import 再 export**:`export { x } from "…"` 是纯转发,不把绑定引入
+//  本模块作用域,而本文件自己的 fill() 就在用它。)
+export { format };
 
 export function clamp(lo, hi, v) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -692,17 +701,8 @@ export function panCurvePath(points) {
     return segs.join(" ");
 }
 
-/**
- * 分布图一根柱/一条张开线的几何(设计稿 L2037-2056)。
- * 横位 x =(pan+100)/200;柱高 ∝ 音量行程(−24..+12 dB 归一后 /0.70 拉满卡片高);
- * 张开半宽 =(轨 width%/100)×16,并被 x 与 100−x 夹住不出框。
- */
-export function distGeometry(pan, volDb, widthPct) {
-    const x = ((clamp(-100, 100, pan) + 100) / 200) * 100;
-    const h = clamp(8, 88, ((clamp(-24, 12, volDb) + 24) / 36 / 0.7) * 100);
-    const half = Math.min((clamp(0, 100, widthPct) / 100) * 16, x, 100 - x);
-    return { x: round2(x), h: round2(h), half: round2(half) };
-}
+// `distGeometry` 的定义已移到 `web/shared/distribution-chart.js`(见文件头 [T46] 注),
+// 本文件顶部原样再导出 —— 既有 import 点(smoke-tab1 / smoke-t43)一字不改。
 
 // =============================================================================
 // 一b、[J75] T43 分布图双视图 —— 纯函数面
@@ -1531,11 +1531,9 @@ export function createTabMaster(opts) {
         }
     }
 
-    /** 事件目标 → 图例行的轨号(不在行上即 0)。 */
+    /** 事件目标 → 图例行的轨号(判据在共享件里,与 Monitor 同一处)。 */
     function legendChOf(target) {
-        if (!target || typeof target.closest !== "function") return 0;
-        const row = target.closest("[data-legend-ch]");
-        return row ? Number(row.getAttribute("data-legend-ch")) || 0 : 0;
+        return legendChOfRow(target);
     }
 
     function setChartHighlight(ch) {
@@ -1943,35 +1941,24 @@ export function createTabMaster(opts) {
         const vals = st.params.values || {};
         const v = (s.global && s.global.version_active) || 1;
         const chans = s.channels || [];
-        const spans = [];
-        const bars = [];
-        const hi = local.chartHi;
-        // 图例 hover 的联动位:0 = 淡出(与轨迹图 DIM_ALPHA 同档,CSS 侧落地)。
-        const dim = (ch) => (hi && hi !== ch ? "0" : "1");
-        for (const ch of connectedChannels(st.conn)) {
-            // 只画已连接轨(slotState=2 ∧ heartbeatFresh,与 pill 同判据)——
-            // 空闲轨无参数值,vol=0 会被 distGeometry 画成居中高「幽灵柱」
-            // (设计稿绘制前滤掉 idle/srErr 轨;PR #52 bot 抓取)。
+        // 只画已连接轨(slotState=2 ∧ heartbeatFresh,与 pill 同判据)——
+        // 空闲轨无参数值,vol=0 会被 distGeometry 画成居中高「幽灵柱」
+        // (设计稿绘制前滤掉 idle/srErr 轨;PR #52 bot 抓取)。
+        const rows = connectedChannels(st.conn).map((ch) => {
             const p = `v${v}_t${tt(ch)}_`;
             const cfg = chans[ch - 1] || {};
-            const geo = distGeometry(
-                num(vals[p + "pan"], 0),
-                num(vals[p + "vol"], 0),
-                num(vals[p + "width"], 100),
-            );
-            // [J75] B:柱体与 width 横线按轨着色。`--tc` 走**变量指向变量**
-            // (`--tc: var(--track-color-7)`),色值本身仍只在 tokens.css 里定义一处。
-            const tc = `--tc:var(${trackColorVar(ch)});`;
-            if (cfg.source_channels === 2) {
-                spans.push(
-                    `<div class="dist-span" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}--x0:${(geo.x - geo.half).toFixed(2)}%;--w:${(geo.half * 2).toFixed(2)}%;--y:calc(18px + ${geo.h.toFixed(2)}%)"></div>`,
-                );
-            }
-            bars.push(
-                `<div class="dist-bar" data-lead="${cfg.lead_lock ? 1 : 0}" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}--x:${geo.x.toFixed(2)}%;--h:${geo.h.toFixed(2)}%"></div>`,
-            );
-        }
-        const html = spans.concat(bars).join("");
+            return {
+                ch,
+                pan: num(vals[p + "pan"], 0),
+                volDb: num(vals[p + "vol"], 0),
+                widthPct: num(vals[p + "width"], 100),
+                stereo: cfg.source_channels === 2,
+                lead: !!cfg.lead_lock,
+            };
+        });
+        // 几何 + 拼串归 web/shared/distribution-chart.js(Monitor 复用同一件);
+        // 产物与提取前逐字节相同,冒烟 ① 节按同一批入参对拍。
+        const html = distBarsHtml(rows, local.chartHi);
         if (el.distBars.innerHTML !== html) el.distBars.innerHTML = html;
     }
 
@@ -2085,20 +2072,11 @@ export function createTabMaster(opts) {
         if (el.chartLegend.getAttribute("title") !== hint) {
             el.chartLegend.setAttribute("title", hint);
         }
-        // 轨名是**用户数据**,一律转义再拼(与 Tab2/Tab3 同款纪律)。轨号始终在场 ——
-        // 二色觉下非相邻两轨可能同色(tokens.css 第 21 组的实测口径),色点不是唯一线索。
-        const html = rows
-            .map(
-                (r) =>
-                    `<span class="chart-legend__item" role="listitem" data-legend-ch="${r.ch}" data-hi="${local.chartHi === r.ch ? 1 : 0}">` +
-                    `<span class="chart-legend__dot" style="--tc:var(${trackColorVar(r.ch)})" aria-hidden="true"></span>` +
-                    `${tt(r.ch)}${r.label ? " " + esc(r.label) : ""}` +
-                    (r.stereo
-                        ? `<span class="chart-legend__st">${esc(badge)}</span>`
-                        : "") +
-                    `</span>`,
-            )
-            .join("");
+        // 轨名转义、轨号始终在场的理由都在共享件里(Monitor 复用同一份图例)。
+        const html = legendItemsHtml(rows, {
+            badge,
+            highlightCh: local.chartHi,
+        });
         if (el.chartLegend.innerHTML !== html) el.chartLegend.innerHTML = html;
     }
 

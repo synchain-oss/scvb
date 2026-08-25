@@ -267,6 +267,51 @@
             </li>
         </ul>
 
+        <h2>SCVB Monitor([J75] C · T46)</h2>
+        <p class="note">
+            第三个 VST3 target 的界面:上 = 声像/音量分布图,下 =
+            轨迹图(占主体),顶部组选择 A–H 为<strong>只读 attach</strong
+            >(点击换观察对象,不
+            claim、不影响被观察的组)。整页<strong>没有一个写控件</strong>。数据来自
+            <code>web-preview/mock/monitor-mock.js</code> 自拟的 viz 快照事件 ——
+            <strong
+                >真段规格待 T44 定稿(ipc v1.6),形状与字段清单见
+                <code>web/monitor/viz.js</code> 文件头</strong
+            >。
+        </p>
+        <ul>
+            <li>
+                <a href="./monitor.html?scenario=monitor-online"
+                    >Monitor · 在线(组 A · 15 轨)</a
+                >
+                —— 满配:两图齐画、15 色配色、图例 hover 联动
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-offline"
+                    >Monitor · 空态(组 C 无 Output)</a
+                >
+                —— 观察的组不在线:两张图退出布局,只剩空态说明
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-groups"
+                    >Monitor · 组切换(开箱停在 B)</a
+                >
+                —— A/B/E 三组在线且轨数不同(15 / 6 / 9),点胶囊即可看出切换生效
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-stalled"
+                    >Monitor · 数据停更</a
+                >
+                —— viz 的 <code>seq</code> 冻住 3 秒 ⇒ 琥珀横幅「数据已停更」
+            </li>
+            <li>
+                <a href="./monitor.html?scenario=monitor-online&amp;play=0"
+                    >Monitor · 走带停住</a
+                >
+                —— 播放头不动,便于看静态构图与截图对拍
+            </li>
+        </ul>
+
         <h2>Range 档位速查(J04:三值枚举,无哨兵)</h2>
         <p class="note">
             <code>range.mode</code> 一律取 <code>follow</code> /
@@ -326,7 +371,8 @@
             不经壳页直接打开真源,可用来确认「灰模在无后端时也不炸」(app.js 会
             catch 住 createBridge 失败并在 footer 落一行提示,零 console error):
             <a href="../web/output/index.html">web/output/index.html</a> ·
-            <a href="../web/input/index.html">web/input/index.html</a>
+            <a href="../web/input/index.html">web/input/index.html</a> ·
+            <a href="../web/monitor/index.html">web/monitor/index.html</a>
         </p>
     </body>
 </html>

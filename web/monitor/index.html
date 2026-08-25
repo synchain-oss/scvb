@@ -1,0 +1,975 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  SCVB Monitor —— 第三个 VST3 target 的界面(T46;裁决 [J75] C,规格 05 文末「J75 增补规格」节 C)。
+
+  它是什么:**纯只读监视窗**。用户在 DAW 里另开一个副窗,实时看全组 15 轨的
+  声像运动趋势与分布。音频直通、0 自动化参数、对任何共享段零写入 —— 页面上因此
+  **没有一个写控件**:没有开关、没有滑杆、没有旋钮、没有确认条。可点的只有
+  「看哪个组 / 用哪种语言 / 窗口多大」这三件本实例自己的事。
+
+  真源(不可颠倒):
+    • 交互语义与词条 = masterPlan/plan/05-ui-spec.md 文末「J75 增补规格」节 C
+      (上=分布图 / 下=轨迹图占主体 / 顶部组选择 A-H 只读 attach)+ 节 A/B(两图规格);
+    • 视觉 = 复用 Output 页同族组件(web/shared/base.css + tokens.css),
+      本页**没有自己的设计稿** —— 按 J72 口径依 05 文字 + 稿内同族组件实现,
+      PR 附截图供用户 preview 把关;
+    • 两张图的几何与拼串 = web/shared/distribution-chart.js + web/shared/trajectory-chart.js
+      (T43 交付的可复用件,**零重复实现**,07 T46 卡逐字);
+    • 设计盒尺寸 = web/monitor/monitor-box.js(暂存真源,待 T45 升入 shared,见该文件头注),
+      由 app.js 写 --box-w/--box-h;本文件零硬编码尺寸。
+
+  纪律(与 Output 页同源):
+    • 状态一律 data-* 属性 + CSS 选择器,不拼 class 字符串;
+    • 词条一律走 data-t / data-t-aria 的 key,禁止硬写自由文案;
+    • 零裸 hex —— 颜色一律 var(--x) / rgba(var(--分量), a)。
+
+  预览:pwsh web-preview/serve.ps1 → http://127.0.0.1:8823/web-preview/monitor.html
+  (裸开本文件不会炸:createMonitorBridge 失败只 warn 一句并在 footer 落一行提示。)
+-->
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SCVB Monitor</title>
+        <link rel="stylesheet" href="../shared/tokens.css" />
+        <link rel="stylesheet" href="../shared/base.css" />
+        <style>
+            /* =================================================================
+               本页样式。分成三块:
+                 ① 外壳与 header —— Monitor 自己的版面(比 Output 简单得多);
+                 ② 两张图 —— 类名与 Output 侧**逐字相同**(.dist-* / .traj-* /
+                    .chart-legend__*),因为标记由共享件
+                    `web/shared/distribution-chart.js` 与 `trajectory-chart.js` 拼出,
+                    类名是那两件的对外契约。样式本身各页自持:两页的版面不同
+                    (那边是四列网格里的一张卡,这边是上下两块),硬合成一份 CSS
+                    只会让两边互相牵制。**能漂的只有观感,不是行为** —— 轨色接法
+                    `rgba(var(--tc), a)` 由共享件拼出,漂不了;
+                    smoke-monitor ② 节另按类名逐条对拍两页,防「改了一边忘另一边」。
+                 ③ 本页局部 token —— tokens.css 里没有、而 Output 页写在自己
+                    :root 里的那几条(设计稿原值)。**两处必须同改**,
+                    smoke-monitor ② 节逐条比对 web/output/index.html 的声明文本。
+               ================================================================= */
+
+            :root {
+                /* ---- ③ 局部 token:与 web/output/index.html 的 :root 同值同注 ---- */
+                --w-35: rgba(
+                    255,
+                    255,
+                    255,
+                    0.35
+                ); /* 设计稿 L320/L434 原值:竖分隔线/参考线 */
+                --w-45: rgba(
+                    255,
+                    255,
+                    255,
+                    0.45
+                ); /* 设计稿 L436/L542 原值:虚线标记/分布图中线 */
+                --w-82: rgba(
+                    255,
+                    255,
+                    255,
+                    0.82
+                ); /* 设计稿 L1896 原值:选中组胶囊底 */
+                --w-85: rgba(
+                    255,
+                    255,
+                    255,
+                    0.85
+                ); /* 设计稿 L271 原值:选中语言胶囊底 */
+                --w-90: rgba(
+                    255,
+                    255,
+                    255,
+                    0.9
+                ); /* 设计稿 L1897 原值:选中组胶囊描边 */
+                --dist-bar-lead: linear-gradient(
+                    180deg,
+                    rgba(120, 176, 142, 0.95),
+                    rgba(120, 176, 142, 0.55)
+                ); /* 设计稿 L2049 原值 */
+            }
+
+            /* 一切默认隐藏节点的总闸(作者层 + !important;与 Output 页同款)。
+               [hidden] 的默认样式来自 UA 表,任何类选择器上的 display 都压得过它 ——
+               不补这一条,凡是设了 display 的节点(空态盖板、横幅)hidden 都不生效。 */
+            [hidden] {
+                display: none !important;
+            }
+
+            html,
+            body {
+                height: 100%;
+                overflow: hidden;
+            }
+            body {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            #vst-root {
+                display: flex;
+            }
+
+            /* ---- ① 外壳。--box-w/--box-h 由 app.js 从 monitor-box.js 写入
+               (页面不写第二份数字,grep 断言)。 */
+            #card {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                width: var(--box-w);
+                height: var(--box-h);
+                padding: var(--sp-16) var(--sp-18) var(--sp-12);
+                gap: var(--sp-10);
+            }
+
+            /* 胶囊选中态:base.css 把 .sc-seg__item 的选中态挂在 [aria-selected]，
+               而普通 <button> 用 aria-selected 违反 ARIA(axe aria-allowed-attr),
+               故本页胶囊一律 aria-pressed —— 这里把同一套值原样补挂,不引入新视觉。 */
+            .sc-seg__item[aria-pressed="true"] {
+                background: var(--seg-on-bg);
+                color: var(--acc-ink);
+            }
+            .sc-seg--sm .sc-seg__item[aria-pressed="true"] {
+                background: var(--w-85);
+                color: var(--txt-1);
+            }
+
+            #header {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-12);
+                flex: none;
+            }
+            /* header 是一条**单行**版面,而三语的串长差得远(法语最长)。品牌块是
+               这一行里唯一「少看几个字也不影响使用」的部分,故让它成为**唯一可压缩**
+               的一段:min-width:0 + 副标 ellipsis。组胶囊、语言胶囊、只读标都是
+               flex:none —— 它们宁可把品牌副标挤成省略号,也不许自己被裁掉。 */
+            .brand {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-10);
+                flex: 0 1 auto;
+                min-width: 0;
+            }
+            .brand__icon {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 34px;
+                height: 34px;
+                flex: none;
+                border-radius: var(--r-banner);
+                background: rgba(var(--wh), 0.22);
+                border: 1px solid var(--w-42);
+                box-shadow: var(--hl-inset-strong), var(--sh-md);
+            }
+            .brand__logo {
+                width: 26px;
+                height: 26px;
+                /* logo 源图为白底黑线稿:multiply 让白底融入玻璃,线稿保持深色 */
+                mix-blend-mode: multiply;
+                border-radius: var(--r-tag);
+            }
+            .brand__text {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-2);
+                min-width: 0;
+            }
+            /* h1:axe page-has-heading-one;视觉全由本类承担 */
+            .brand__title {
+                margin: 0;
+                font-family: var(--ff-grotesk);
+                font-weight: 600;
+                font-size: var(--fs-150);
+                line-height: 1.1;
+                color: var(--txt-1);
+            }
+            .brand__subtitle {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-75);
+                letter-spacing: var(--eyebrow-ls);
+                color: var(--txt-4);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .header__spacer {
+                flex: 1;
+                min-width: 0;
+            }
+
+            /* 组选择:与 Output ⓪ 卡同款胶囊,但塞进 header 一行,故内边距收窄 */
+            .mon-group {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-8);
+                flex: none;
+            }
+            .group-pills {
+                display: flex;
+                gap: var(--sp-2);
+                padding: var(--sp-3);
+                border-radius: var(--r-pill);
+                background: var(--w-10);
+                border: 1px solid var(--glass-border);
+            }
+            .group-pill {
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: var(--sp-3);
+                padding: var(--sp-4) var(--sp-8);
+                border-radius: var(--r-pill);
+                cursor: pointer;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-105);
+                font-weight: 500;
+                letter-spacing: var(--mono-ls-tag);
+                background: transparent;
+                border: 1px solid transparent;
+                color: var(--txt-3);
+                transition: background var(--dur-1) var(--ease);
+            }
+            .group-pill[aria-pressed="true"] {
+                background: var(--w-82);
+                border-color: var(--w-90);
+                color: var(--txt-1);
+                box-shadow: 0 3px 9px rgba(var(--ink), 0.14);
+            }
+            .group-pill__dot {
+                width: 4px;
+                height: 4px;
+                border-radius: 50%;
+                flex: none;
+                background: rgb(var(--sem-green));
+            }
+            .group-pill[data-online="0"] .group-pill__dot {
+                visibility: hidden;
+            }
+
+            /* 横幅区(只有两条,且都是「读不到数据」类,不是操作提示) */
+            .mon-banners {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-6);
+                flex: none;
+            }
+            .mon-banners:empty {
+                display: none;
+            }
+
+            /* ---- ② 两张图 ---------------------------------------------------
+               上 = 分布图(固定高,同 Tab1 规格),下 = 轨迹图(flex:1,**占主体**,
+               J75 C 逐字)。组不在线时两张卡整体退出布局,由空态面板顶上。 */
+            .mon-chart {
+                display: flex;
+                flex-direction: column;
+                gap: var(--sp-6);
+                padding: var(--sp-10) var(--sp-14) var(--sp-8);
+                min-height: 0;
+            }
+            .mon-chart--dist {
+                flex: none;
+                height: 196px;
+            }
+            .mon-chart--traj {
+                flex: 1;
+                min-height: 0;
+            }
+            .dist-head {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-12);
+            }
+            .dist-head__hint {
+                flex: 1;
+                min-width: 0;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .dist-plot {
+                position: relative;
+                flex: 1;
+                min-height: 0;
+                overflow: hidden;
+                border-radius: var(--r-xs);
+                background: var(--w-10);
+                border: 1px solid var(--w-20);
+            }
+            .dist-plot__mid {
+                position: absolute;
+                left: 50%;
+                top: 4px;
+                bottom: 14px;
+                width: 1px;
+                background: var(--w-45);
+            }
+            .dist-plot__q {
+                position: absolute;
+                top: 9px;
+                bottom: 14px;
+                width: 1px;
+                background: var(--w-20);
+            }
+            .dist-plot__q--l {
+                left: 25%;
+            }
+            .dist-plot__q--r {
+                left: 75%;
+            }
+            .dist-plot__base {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: 14px;
+                height: 1px;
+                background: var(--w-35);
+            }
+            /* [J75] B:柱体与 width 横线按轨着色。`--tc` 由 distribution-chart.js 逐柱写成
+               `var(--track-color-N)`(N = 轨号,tokens.css 第 21 组);嵌套 var 是文本替换,
+               `rgba(var(--tc), .95)` 会一路展开到分量值。 */
+            .dist-bar {
+                position: absolute;
+                bottom: 15px;
+                left: var(--x, 50%);
+                width: 7px;
+                margin-left: -3.5px;
+                height: var(--h, 30%);
+                border-radius: 3px 3px 1px 1px;
+                background: linear-gradient(
+                    180deg,
+                    rgba(var(--tc), 0.95),
+                    rgba(var(--tc), 0.55)
+                );
+                transition: all var(--dur-1) var(--ease);
+            }
+            /* lead 轨的绿色语义挂**柱顶 2px 帽**(身份色=轨、语义色=lead,各占一处)。 */
+            .dist-bar[data-lead="1"]::after {
+                content: "";
+                position: absolute;
+                left: -1px;
+                right: -1px;
+                top: -3px;
+                height: 2px;
+                border-radius: 1px;
+                background: var(--dist-bar-lead);
+            }
+            /* 图例 hover 联动:非高亮轨淡出。档位与 trajectory-chart.js 的 DIM_ALPHA
+               同值,两张图看起来是同一次高亮。 */
+            .dist-bar[data-hi="0"],
+            .dist-span[data-hi="0"] {
+                opacity: 0.16;
+            }
+            .dist-span {
+                position: absolute;
+                bottom: var(--y, 40%);
+                left: var(--x0, 45%);
+                width: var(--w, 10%);
+                height: 1.5px;
+                border-radius: var(--r-pill);
+                background: rgba(var(--tc), 0.8);
+                transition: all var(--dur-1) var(--ease);
+            }
+            .dist-axis {
+                position: absolute;
+                left: var(--sp-8);
+                right: var(--sp-8);
+                bottom: 0;
+                height: 13px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                color: var(--txt-4);
+            }
+            .dist-axis > span:nth-child(odd) {
+                color: var(--txt-2);
+            }
+
+            /* 轨迹图(J75 A 规格;绘制全在 web/shared/trajectory-chart.js) */
+            .traj-plot {
+                display: flex;
+                flex: 1;
+                min-height: 0;
+                gap: var(--sp-6);
+            }
+            /* y 刻度列逐格绝对定位:纵向缩放后格数与格距都随档位变,等分排法对不上网格线;
+               每格的 y 由 trajectory-chart.js 用画折线那一套换算算好推过来(onPanAxis)。
+               透明 1px 边框让本列的定位原点与 .traj-stage 的**内**框对齐(画布走 inset:0,
+               落在 stage 的 1px 边框以内)。 */
+            .traj-axis-y {
+                flex: none;
+                position: relative;
+                width: 62px;
+                border: 1px solid transparent;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                line-height: 11px;
+                color: var(--txt-4);
+            }
+            .traj-axis-y__tick {
+                position: absolute;
+                right: 0;
+                transform: translateY(-50%);
+                white-space: nowrap;
+            }
+            .traj-axis-y__tick.is-anchor {
+                color: var(--txt-2);
+            }
+            .traj-stage {
+                position: relative;
+                flex: 1;
+                min-width: 0;
+                overflow: hidden;
+                border-radius: var(--r-xs);
+                background: var(--w-10);
+                border: 1px solid var(--w-20);
+            }
+            .traj-stage__canvas {
+                position: absolute;
+                inset: 0;
+                cursor: grab;
+                /* 指针拖拽平移:不交给浏览器做滚动/缩放手势,否则拖到一半会被抢走 */
+                touch-action: none;
+            }
+            .traj-stage__canvas:focus-visible {
+                outline: 2px solid var(--acc-slider);
+                outline-offset: -2px;
+            }
+            .traj-stage__playhead {
+                position: absolute;
+                top: 4px;
+                bottom: 14px;
+                width: 1px;
+                background: var(--acc-strong);
+                pointer-events: none;
+            }
+            .traj-stage__zoom {
+                position: absolute;
+                left: var(--sp-8);
+                top: var(--sp-5);
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                letter-spacing: var(--mono-ls-ui);
+                color: var(--txt-4);
+                pointer-events: none;
+            }
+            .traj-stage__actions {
+                position: absolute;
+                right: var(--sp-8);
+                top: var(--sp-5);
+                display: flex;
+                gap: var(--sp-4);
+            }
+            .traj-stage__reset,
+            .traj-stage__follow {
+                padding: var(--sp-3) var(--sp-9);
+                border-radius: var(--r-pill);
+                border: 1px solid var(--w-42);
+                background: rgba(var(--wh), 0.72);
+                color: var(--txt-1);
+                font-family: var(--ff-sans);
+                font-size: var(--fs-100);
+                cursor: pointer;
+                box-shadow: var(--sh-sm);
+                transition: background var(--dur-1) var(--ease);
+            }
+            .traj-stage__reset:hover,
+            .traj-stage__follow:hover {
+                background: rgba(var(--wh), 0.9);
+            }
+            .traj-stage__empty {
+                position: absolute;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0 var(--sp-16);
+                text-align: center;
+                font-size: var(--fs-115);
+                color: var(--txt-4);
+                pointer-events: none;
+            }
+
+            /* 图例(两图共用;纯展示,无写操作) */
+            .chart-legend {
+                display: flex;
+                flex-wrap: wrap;
+                gap: var(--sp-3) var(--sp-10);
+                flex: none;
+            }
+            .chart-legend__item {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--sp-4);
+                font-size: var(--fs-95);
+                color: var(--txt-3);
+                cursor: default;
+                transition: color var(--dur-1) var(--ease);
+            }
+            .chart-legend__item[data-hi="1"] {
+                color: var(--txt-1);
+            }
+            .chart-legend__dot {
+                width: 8px;
+                height: 8px;
+                flex: none;
+                border-radius: var(--r-pill);
+                background: rgba(var(--tc), 0.95);
+            }
+            .chart-legend__st {
+                font-family: var(--ff-mono);
+                font-size: var(--fs-75);
+                letter-spacing: var(--mono-ls-tag);
+                padding: 0 var(--sp-2);
+                border-radius: var(--r-tag);
+                background: rgba(var(--wh), 0.28);
+                color: var(--txt-3);
+            }
+
+            /* 组不在线的空态(J75 C「组不在线显示空态」)。
+               两张图与图例整体 display:none 退出布局 —— 留着占位会让空态面板拿不到
+               flex:1 的高,画面变成「上面两个空框 + 中间一行小字」。 */
+            #card[data-online="1"] .mon-empty,
+            #card[data-online="0"] .mon-chart,
+            #card[data-online="0"] .chart-legend {
+                display: none;
+            }
+            .mon-empty {
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: var(--sp-10);
+                padding: var(--sp-24);
+                text-align: center;
+            }
+            .mon-empty__title {
+                font-family: var(--ff-grotesk);
+                font-weight: 600;
+                font-size: var(--fs-170);
+                color: var(--txt-2);
+            }
+            .mon-empty__body {
+                max-width: 44ch;
+                font-size: var(--fs-125);
+                line-height: 1.6;
+                color: var(--txt-4);
+                text-wrap: pretty;
+            }
+
+            /* Footer */
+            .mon-footer {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-12);
+                flex: none;
+            }
+            .mon-footer__hint {
+                flex: 1;
+                min-width: 0;
+            }
+            .mon-footer__version {
+                font-size: var(--fs-85);
+                letter-spacing: var(--ls-footer-ver, 0.12em);
+                color: var(--txt-4);
+            }
+            .mon-scale__actions {
+                display: flex;
+                justify-content: flex-end;
+                gap: var(--sp-10);
+                margin-top: var(--sp-16);
+            }
+        </style>
+    </head>
+    <body>
+        <div id="vst-root">
+            <div id="card" class="sc-shell" data-gb="card" data-online="1">
+                <div
+                    class="sc-halo sc-halo--1"
+                    style="top: -60px; left: -40px"
+                    aria-hidden="true"
+                ></div>
+                <div
+                    class="sc-halo sc-halo--2"
+                    style="bottom: -70px; right: -50px"
+                    aria-hidden="true"
+                ></div>
+
+                <!-- ===================== Header:品牌 / 只读标 / 组选择 / 语言 ===================== -->
+                <header id="header" data-gb="monitor-header">
+                    <div class="brand" data-gb="monitor-brand">
+                        <span class="brand__icon" aria-hidden="true">
+                            <img
+                                class="brand__logo"
+                                src="../shared/logo.png"
+                                alt=""
+                            />
+                        </span>
+                        <div class="brand__text">
+                            <h1 class="brand__title">SCVB Monitor</h1>
+                            <div
+                                class="brand__subtitle"
+                                data-t="monitor.brandSub"
+                            >
+                                SYNCHAIN · 只读监视 · VST3
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 只读标:整个窗口的身份说明,常显、不可关。 -->
+                    <span
+                        class="sc-pill"
+                        data-gb="monitor-readonly-pill"
+                        data-tone="gray"
+                    >
+                        <span class="sc-pill__dot" aria-hidden="true"></span>
+                        <span data-t="monitor.readOnlyPill">只读观察</span>
+                    </span>
+
+                    <span class="header__spacer" aria-hidden="true"></span>
+
+                    <!-- 组选择 A-H(J75 C:**只读 attach,不 claim**)。
+                         点击 = 换观察对象,对被观察的那一组毫无副作用,故**没有确认条**
+                         —— 与 Output ⓪ 卡的改组是两件事(见 monitor-bridge.js 头注)。
+                         每枚:aria-pressed(当前观察)/ data-online(该组有 Output 在线的绿点)。 -->
+                    <div class="mon-group" data-gb="monitor-group">
+                        <span
+                            class="sc-eyebrow"
+                            data-t="monitor.groupEyebrow"
+                            id="monitor-group-label"
+                            >观察组 · WATCH</span
+                        >
+                        <div
+                            class="group-pills"
+                            role="group"
+                            data-t-aria="monitor.groupAria"
+                            aria-label="选择要观察的组(只读,不占用该组)"
+                            data-gb="monitor-group-seg"
+                        >
+                            <!-- 八枚 A–H 胶囊由 app.js 生成(GROUP_LETTERS 单一来源) -->
+                        </div>
+                    </div>
+
+                    <div
+                        class="sc-seg sc-seg--sm"
+                        data-gb="monitor-lang"
+                        role="group"
+                        data-t-aria="language"
+                        aria-label="语言"
+                    >
+                        <button
+                            type="button"
+                            class="sc-seg__item"
+                            data-gb="monitor-lang-zh"
+                            data-lang="zh"
+                            aria-pressed="true"
+                        >
+                            中
+                        </button>
+                        <button
+                            type="button"
+                            class="sc-seg__item"
+                            data-gb="monitor-lang-en"
+                            data-lang="en"
+                            aria-pressed="false"
+                        >
+                            EN
+                        </button>
+                        <button
+                            type="button"
+                            class="sc-seg__item"
+                            data-gb="monitor-lang-fr"
+                            data-lang="fr"
+                            aria-pressed="false"
+                        >
+                            FR
+                        </button>
+                    </div>
+                </header>
+
+                <!-- ===================== 横幅区(两条,都是「读不到数据」类) ===================== -->
+                <div class="mon-banners" data-gb="monitor-banners">
+                    <!-- viz 段 abi 高于本机 ⇒ 停止读取(与 §5.1 newerState 同族的拒读语义) -->
+                    <div
+                        class="sc-banner sc-banner--red"
+                        data-gb="monitor-banner-abi"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="16"
+                            height="16"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            aria-hidden="true"
+                        >
+                            <circle cx="8" cy="8" r="6.4" stroke-width="1.6" />
+                            <line
+                                x1="8"
+                                y1="4.4"
+                                x2="8"
+                                y2="8.8"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                            <circle
+                                cx="8"
+                                cy="11.4"
+                                r="0.9"
+                                fill="currentColor"
+                            />
+                        </svg>
+                        <span
+                            data-gb="monitor-banner-abi-text"
+                            data-t="monitor.abiMismatch"
+                        ></span>
+                    </div>
+                    <!-- viz 事件停更(seq 不再前进)⇒ 被观察的 Output 可能已关 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="monitor-banner-stalled"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="16"
+                            height="16"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            aria-hidden="true"
+                        >
+                            <circle cx="8" cy="8" r="6.4" stroke-width="1.6" />
+                            <path
+                                d="M8 4.6V8l2.4 1.6"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            />
+                        </svg>
+                        <span data-t="monitor.stalled"
+                            >数据已停更——被观察的 Output 可能已关闭</span
+                        >
+                    </div>
+                </div>
+
+                <!-- ===================== 上:声像 / 音量分布图(J75 C;同 Tab1 规格含配色) ===================== -->
+                <section
+                    class="sc-card mon-chart mon-chart--dist"
+                    data-gb="monitor-dist"
+                    aria-labelledby="monitor-dist-title"
+                >
+                    <div class="dist-head">
+                        <span
+                            class="sc-eyebrow"
+                            id="monitor-dist-title"
+                            data-t="master.distEyebrow"
+                            >声像 / 音量分布</span
+                        >
+                        <span
+                            class="sc-hint dist-head__hint"
+                            data-t="master.distHint"
+                            >柱高 = 音量,横位 = 声像;横线 = 立体声源张开度</span
+                        >
+                    </div>
+                    <div class="dist-plot" data-gb="monitor-dist-plot">
+                        <!-- 参考线:中线 50% / ±25% 竖线 / 底部基线 -->
+                        <div class="dist-plot__mid" aria-hidden="true"></div>
+                        <div
+                            class="dist-plot__q dist-plot__q--l"
+                            aria-hidden="true"
+                        ></div>
+                        <div
+                            class="dist-plot__q dist-plot__q--r"
+                            aria-hidden="true"
+                        ></div>
+                        <div class="dist-plot__base" aria-hidden="true"></div>
+                        <!-- 柱体 + 立体声张开横线由 app.js 经 distribution-chart.js 生成 -->
+                        <div
+                            class="dist-bars"
+                            data-gb="monitor-dist-bars"
+                            aria-hidden="true"
+                        ></div>
+                        <!-- 底轴五刻度:文本 = master.distAxis 单条词条,由 app.js 按 " · " 拆成五格
+                             (不新增词条、不硬写自由文案)。data-t-split 是页面约定的「拆格」钩子,
+                             不是 applyI18n 的契约 —— 写 data-t 会被整串覆盖。 -->
+                        <div
+                            class="dist-axis"
+                            data-gb="monitor-dist-axis"
+                            data-t-split="master.distAxis"
+                        ></div>
+                    </div>
+                </section>
+
+                <!-- ===================== 下:声像轨迹图(J75 C「占主体」;组件 = web/shared/trajectory-chart.js) ===================== -->
+                <section
+                    class="sc-card mon-chart mon-chart--traj"
+                    data-gb="monitor-traj"
+                    aria-labelledby="monitor-traj-title"
+                >
+                    <div class="dist-head">
+                        <span
+                            class="sc-eyebrow"
+                            id="monitor-traj-title"
+                            data-t="monitor.trajEyebrow"
+                            >声像轨迹 · TRAJECTORY</span
+                        >
+                        <span
+                            class="sc-hint dist-head__hint"
+                            data-t="chart.trajHint"
+                            >每轨一条线 =
+                            该轨最终打印的声像;没有分段的区间不画线</span
+                        >
+                    </div>
+                    <div class="traj-plot" data-gb="monitor-traj-plot">
+                        <!-- 刻度格由 app.js 按 onPanAxis 推来的 y 逐格建 -->
+                        <div
+                            class="traj-axis-y"
+                            data-gb="monitor-traj-axis-y"
+                            aria-hidden="true"
+                        ></div>
+                        <div class="traj-stage" data-gb="monitor-traj-stage">
+                            <canvas
+                                class="traj-stage__canvas"
+                                data-gb="monitor-traj-canvas"
+                                role="application"
+                                tabindex="0"
+                                data-t-aria="chart.trajCanvasAria"
+                                aria-label="声像轨迹图:滚轮左右平移,Ctrl+滚轮横向缩放,Shift+滚轮上下平移,Alt+滚轮纵向缩放;也可拖拽或用方向键"
+                            ></canvas>
+                            <div
+                                class="traj-stage__playhead"
+                                data-gb="monitor-traj-playhead"
+                                hidden
+                                aria-hidden="true"
+                            ></div>
+                            <!-- 空态:段表为空时盖在画布上(不是 hidden 画布 —— 画布仍要占位,
+                                 否则 ResizeObserver 量不到舞台)。词条与 Tab1 共用一条。 -->
+                            <p
+                                class="traj-stage__empty"
+                                data-gb="monitor-traj-empty"
+                                data-t="chart.trajEmpty"
+                                hidden
+                            >
+                                尚无分段结果——分析之后这里显示每轨的声像轨迹
+                            </p>
+                            <div class="traj-stage__actions">
+                                <button
+                                    type="button"
+                                    class="traj-stage__reset"
+                                    data-gb="monitor-traj-reset"
+                                    data-t="chart.resetPanZoom"
+                                    hidden
+                                >
+                                    纵向复位
+                                </button>
+                                <button
+                                    type="button"
+                                    class="traj-stage__follow"
+                                    data-gb="monitor-traj-follow"
+                                    data-t="chart.backToPlayhead"
+                                    hidden
+                                >
+                                    回到播放头
+                                </button>
+                            </div>
+                            <span
+                                class="traj-stage__zoom"
+                                data-gb="monitor-traj-zoom"
+                                data-t-aria="chart.zoomAria"
+                                aria-label="时间轴缩放档位"
+                                aria-live="polite"
+                            ></span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 图例 = 色点 + 轨名(hover 联动高亮对应柱/线;纯展示,无写操作)。
+                     两图共用;行由 app.js 按当前可见轨集生成。 -->
+                <div
+                    class="chart-legend"
+                    data-gb="monitor-legend"
+                    data-t-aria="chart.legendAria"
+                    aria-label="轨道配色图例"
+                    role="list"
+                ></div>
+
+                <!-- 组不在线的空态(两张图整体退出布局,见样式注) -->
+                <div class="mon-empty" data-gb="monitor-empty">
+                    <p class="mon-empty__title" data-t="state.outputOffline">
+                        Output 未运行
+                    </p>
+                    <p
+                        class="mon-empty__body"
+                        data-gb="monitor-empty-text"
+                        data-t="monitor.offline"
+                    ></p>
+                </div>
+
+                <!-- ===================== Footer ===================== -->
+                <footer class="mon-footer" data-gb="monitor-footer">
+                    <span
+                        class="sc-hint mon-footer__hint"
+                        data-gb="monitor-footer-hint"
+                        data-t="monitor.footerHint"
+                        >只读窗口:这里改不了任何设置,也不写回工程</span
+                    >
+                    <select
+                        class="sc-select"
+                        data-gb="monitor-scale"
+                        data-t-aria="scale"
+                    ></select>
+                    <span
+                        class="mon-footer__version sc-mono"
+                        data-gb="monitor-version"
+                        >v0.0.0</span
+                    >
+                </footer>
+
+                <!-- 缩放 10 秒防呆确认框(05 §1.2;复用 Output/Input 同族 .sc-scrim/.sc-modal)。
+                     它写的是**本实例自己的 UI 偏好**,不是被观察组的状态 —— 不违反只读。 -->
+                <div class="sc-scrim" data-gb="monitor-scale-confirm" hidden>
+                    <div
+                        class="sc-modal"
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-label="UI Scale"
+                    >
+                        <div class="sc-modal__body">
+                            <span data-gb="monitor-scale-confirm-pre"></span>
+                            <span
+                                class="sc-num"
+                                data-gb="monitor-scale-confirm-countdown"
+                                >10</span
+                            >
+                            <span data-gb="monitor-scale-confirm-post"></span>
+                        </div>
+                        <div class="mon-scale__actions">
+                            <button
+                                type="button"
+                                class="sc-btn sc-btn--dark"
+                                data-gb="monitor-scale-confirm-revert"
+                                data-t="common.cancel"
+                            ></button>
+                            <button
+                                type="button"
+                                class="sc-btn sc-btn--cta"
+                                data-gb="monitor-scale-confirm-keep"
+                                data-t="scale.keep"
+                            ></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script type="module" src="./app.js"></script>
+    </body>
+</html>

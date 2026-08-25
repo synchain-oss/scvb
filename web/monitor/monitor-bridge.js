@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// =============================================================================
+// SCVB Monitor · 前端桥(T46;**临时形制,待与 T44/T45 接口说明对表**)
+// -----------------------------------------------------------------------------
+// 【为什么不直接用 `web/shared/bridge.js`】
+//   那份文件只认 `output` / `input` 两侧,两张名表是 `scripts/check-bridge-parity.mjs`
+//   的 B 侧比对面,与**冻结契约** docs/SCVB_CONTRACT.md §7 manifest 逐字全等(含
+//   34/9/7/5 四个计数断言)。Monitor 是第三个 target,它的函数与事件**还没进契约**
+//   —— 往那张表里加一行,parity 门禁必红,而门禁红了是对的:它正在说「你改了桥面
+//   却没改契约」。所以 Monitor 侧的名表停在本文件,等 T44(viz 段修宪,ipc v1.6)与
+//   T45(Monitor 壳)定稿后,按契约 §9.0 + 仓 CLAUDE.md §5 的冻结变更流程一次性
+//   转正 —— 届时本文件退化成 `createBridge({role:"monitor"})` 的一层薄封装或直接删掉。
+//   (同一条思路的既有先例:bridge.js 的 `PENDING_FUNCS`。那张表挂在 output 侧、
+//    靠能力探测决定挂不挂;Monitor 整个 role 都还不存在,故只能自带一份。)
+//
+// 【本文件与 bridge.js 逐条对齐的地方】(将来合并时不必重想)
+//   • **真 JUCE 宿主判据**照抄 `isJuceHost()`:`__JUCE__.backend` 存在 **且**
+//     `initialisationData.__juce__functions` 是非空数组。只判 `window.__JUCE__` 会被
+//     `web/js/juce/check_native_interop.js` 造的**占位对象**骗过去,失败形态是白屏零报错;
+//   • **显式注入优先**:占位对象 + 已注入 mockBackend ⇒ 走 mock 并 warn 一句;
+//   • JUCE helper **惰性 import**(它在模块顶层就碰 window);
+//   • 只做传输:不校验参数、不夹取、不代调 requestInitialState、不缓存快照;
+//   • 事件名不在表内即抛错(拼错事件名比收不到事件更难查)。
+//
+// 【只读纪律】Monitor 是纯观察器:**本表里没有任何一个写引擎状态的函数**。
+//   `setObservedGroup` 有意**不叫** `setGroupId` —— 契约 §1.4 的 `setGroupId` 是
+//   Output 的**改组**(会断开本组全部连接、要弹确认条),而这里只是「换一个组的 viz 段
+//   来看」,不 claim、不写 registry、对被观察的那一组毫无副作用(J75 C「只读 attach,
+//   不 claim」)。两件事共用一个名字迟早会有人照 §1.4 的语义去实现它。
+//   `setUiScale` / `commitUiScale` / `setLang` 写的是**本实例自己的 UI 偏好**,
+//   不属于被观察组的状态,故不违反只读。
+// =============================================================================
+
+/**
+ * Monitor 侧函数名表(**临时**;转正前不进 check-bridge-parity 的比对面)。
+ *
+ *   requestInitialState()  §0.6 门控:返回首帧快照(见 app.js 的消费点)
+ *   setObservedGroup(g)    g = 1..8;换观察对象,只读语义(见文件头)
+ *   setUiScale(f)          10 秒防呆的预览档(与 §1.28 同形制)
+ *   commitUiScale()        「保持」落盘系统级全局默认(§1.29 同形制)
+ *   setLang(code)          zh|en|fr(§1.30 同形制)
+ */
+export const MONITOR_FUNCTIONS = [
+    "requestInitialState",
+    "setObservedGroup",
+    "setUiScale",
+    "commitUiScale",
+    "setLang",
+];
+
+/**
+ * Monitor 侧事件名表(**临时**)。
+ *
+ *   scvb.viz       viz 段快照(低频;载荷形状见 app.js 顶部的「viz 事件形状」注)
+ *   scvb.groups    §2.4 原样复用:`{groups_online}` 位图,组胶囊绿点
+ *   scvb.playhead  §2.6 原样复用:30Hz 扁平标量集,喂 trajectory-chart 的插值层
+ *
+ * 后两个**逐字复用 Output 侧的既有载荷形状**,不另立一套 —— 轨迹图的
+ * `onPlayhead(ev)` 与组胶囊的消费代码因此一行不改。
+ */
+export const MONITOR_EVENTS = ["scvb.viz", "scvb.groups", "scvb.playhead"];
+
+Object.freeze(MONITOR_FUNCTIONS);
+Object.freeze(MONITOR_EVENTS);
+
+/** 返回对象上的保留键(与 bridge.js 的 RESERVED_KEYS 同一条约定)。 */
+const RESERVED_KEYS = new Set(["role", "isPreview", "on"]);
+
+/** 极简事件分发器(照 bridge.js 的 makeEmitter,派发前取快照以允许回调内退订)。 */
+function makeEmitter() {
+    const map = new Map();
+    return {
+        on(evt, cb) {
+            if (typeof cb !== "function") {
+                throw new TypeError("bridge.on(evt, cb):cb 必须是函数");
+            }
+            let list = map.get(evt);
+            if (!list) {
+                list = [];
+                map.set(evt, list);
+            }
+            list.push(cb);
+            return function off() {
+                const i = list.indexOf(cb);
+                if (i >= 0) list.splice(i, 1);
+            };
+        },
+        emit(evt, payload) {
+            const list = map.get(evt);
+            if (!list) return;
+            for (const cb of list.slice()) cb(payload);
+        },
+    };
+}
+
+function wireEvents(backend, em) {
+    for (const name of MONITOR_EVENTS) {
+        backend.addEventListener(name, (payload) => em.emit(name, payload));
+    }
+}
+
+function makeOn(em) {
+    const allowed = new Set(MONITOR_EVENTS);
+    return function on(evt, cb) {
+        if (!allowed.has(evt)) {
+            throw new RangeError(
+                `bridge.on:事件名 ${JSON.stringify(evt)} 不在 monitor 侧名表内;` +
+                    `可用事件:${MONITOR_EVENTS.join(", ")}`,
+            );
+        }
+        return em.on(evt, cb);
+    };
+}
+
+function assemble(isPreview, em, call) {
+    const api = { role: "monitor", isPreview, on: makeOn(em) };
+    for (const name of MONITOR_FUNCTIONS) {
+        if (RESERVED_KEYS.has(name)) {
+            throw new Error(
+                `monitor-bridge:函数名 ${name} 与返回对象保留键冲突,须先改 RESERVED_KEYS 约定`,
+            );
+        }
+        api[name] = call(name);
+    }
+    return api;
+}
+
+/**
+ * 是否为**真 JUCE 宿主**(判据与理由逐字同 `web/shared/bridge.js` 的 `isJuceHost`)。
+ * 占位对象把 `__juce__functions` 初始化成空数组;真宿主该表为空时根本不开 native
+ * integration —— 「空表」等价于「桥不可能通」,不存在把真宿主误判成占位的空间。
+ */
+function isJuceHost(juce) {
+    if (!juce || !juce.backend) return false;
+    const data = juce.initialisationData;
+    const fns = data ? data.__juce__functions : undefined;
+    return Array.isArray(fns) && fns.length > 0;
+}
+
+/**
+ * Monitor 桥工厂 —— 页面只调这一个。
+ *
+ * @param {{mockBackend?: object}} opts `mockBackend` 由 web-preview 注入(壳页时序见
+ *   `web-preview/shell.js` 文件头);真 JUCE 宿主下忽略。
+ * @returns {{role:"monitor", isPreview:boolean, on:Function}} 另含本侧全部函数(均 async)。
+ */
+export function createMonitorBridge(opts = {}) {
+    const mock = opts.mockBackend;
+    const juce = typeof window !== "undefined" ? window.__JUCE__ : undefined;
+
+    if (isJuceHost(juce)) {
+        const em = makeEmitter();
+        wireEvents(window.__JUCE__.backend, em);
+        const nativePromise = import("../js/juce/index.js");
+        const call =
+            (name) =>
+            async (...args) => {
+                const { getNativeFunction } = await nativePromise;
+                return getNativeFunction(name)(...args);
+            };
+        return assemble(false, em, call);
+    }
+
+    if (mock) {
+        if (juce) {
+            console.warn(
+                "createMonitorBridge:检测到 JUCE helper 占位对象(window.__JUCE__ 存在但未登记" +
+                    "任何 native 函数),已按注入的 opts.mockBackend 运行。",
+            );
+        }
+        if (typeof mock.addEventListener !== "function") {
+            throw new TypeError(
+                "createMonitorBridge:opts.mockBackend 缺少 addEventListener(evtName, cb) —— " +
+                    "mock 后端须与 window.__JUCE__.backend 同形",
+            );
+        }
+        const missing = MONITOR_FUNCTIONS.filter(
+            (name) => typeof mock[name] !== "function",
+        );
+        if (missing.length > 0) {
+            throw new TypeError(
+                `createMonitorBridge:opts.mockBackend 缺少 ${missing.length} 个函数` +
+                    `(须逐一实现全集):${missing.join(", ")}`,
+            );
+        }
+        const em = makeEmitter();
+        wireEvents(mock, em);
+        const call =
+            (name) =>
+            async (...args) =>
+                mock[name](...args);
+        return assemble(true, em, call);
+    }
+
+    throw new Error(
+        "createMonitorBridge:未检测到真 JUCE 宿主" +
+            (juce
+                ? "(window.__JUCE__ 只是 check_native_interop.js 造的占位对象)"
+                : "") +
+            ",且未注入 opts.mockBackend。" +
+            "浏览器预览请经 web-preview/monitor.html 加载 mock 后端;本文件不含任何假数据实现。",
+    );
+}

@@ -468,6 +468,22 @@ export const T = {
         "suggest.col.origin": "来源",
         "suggest.col.locked": "锁定",
 
+        // T46 / [J75] C:SCVB Monitor(第三个 target,纯只读监视窗)。
+        // EN/FR 为本卡自译,与 chart.* 同批**待 U17 人工审校**。
+        // 分布图标题复用 master.distEyebrow、轨迹空态复用 chart.trajEmpty ——
+        // 同一块内容不立第二条词条(否则改文案时只会改一半)。
+        "monitor.brandSub": "SYNCHAIN · 只读监视 · VST3",
+        "monitor.readOnlyPill": "只读观察",
+        "monitor.groupEyebrow": "观察组 · WATCH",
+        "monitor.groupAria": "选择要观察的组(只读,不占用该组)",
+        "monitor.trajEyebrow": "声像轨迹 · TRAJECTORY",
+        "monitor.offline":
+            "组 {X} 当前没有 Output 在线——在该组打开 SCVB Output 后这里会自动出图",
+        "monitor.stalled": "数据已停更——被观察的 Output 可能已关闭",
+        "monitor.abiMismatch":
+            "监视数据版本不匹配,已停止读取(本机 {a} / 数据 {b})——请把两个插件升到同一版本",
+        "monitor.footerHint": "只读窗口:这里改不了任何设置,也不写回工程",
+
         "master.transitionHint": "段与段之间参数切换的过渡时间",
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
@@ -1253,6 +1269,22 @@ export const T = {
         "suggest.col.origin": "Origin",
         "suggest.col.locked": "Locked",
 
+        // T46 / [J75] C —— 自译,**待 U17 人工审校**。
+        "monitor.brandSub": "SYNCHAIN · READ-ONLY MONITOR · VST3",
+        "monitor.readOnlyPill": "READ-ONLY",
+        "monitor.groupEyebrow": "WATCHING · GROUP",
+        "monitor.groupAria":
+            "Choose which group to watch (read-only, no claim)",
+        "monitor.trajEyebrow": "PAN TRAJECTORY",
+        "monitor.offline":
+            "No Output is online in group {X} — open SCVB Output there and the charts appear automatically",
+        "monitor.stalled":
+            "Data has stopped updating — the Output being watched may have been closed",
+        "monitor.abiMismatch":
+            "Monitor data version mismatch, reading stopped (local {a} / data {b}) — please bring both plugins to the same version",
+        "monitor.footerHint":
+            "Read-only window: nothing here changes settings or is written back to the project",
+
         "master.transitionHint":
             "How fast parameters transition between segments.",
         "master.copyConfirmWarn":
@@ -2006,6 +2038,26 @@ export const T = {
         "suggest.col.origin": "Origine",
         "suggest.col.locked": "Verrou",
 
+        // T46 / [J75] C —— 自译,**待 U17 人工审校**。
+        // brandSub 与 groupEyebrow 刻意取短:三语共用同一条 header 单行版面,而
+        // 法语最长 —— 「MONITEUR LECTURE SEULE」+「GROUPE OBSERVÉ」合起来会把语言
+        // 胶囊挤出右内边距(960 设计盒下实测溢出)。完整语义由 groupAria 那句承担,
+        // 眉标只留最短的那个词。
+        "monitor.brandSub": "SYNCHAIN · LECTURE SEULE · VST3",
+        "monitor.readOnlyPill": "LECTURE SEULE",
+        "monitor.groupEyebrow": "GROUPE",
+        "monitor.groupAria":
+            "Choisissez le groupe à observer (lecture seule, sans réservation)",
+        "monitor.trajEyebrow": "TRAJECTOIRE DU PANORAMIQUE",
+        "monitor.offline":
+            "Aucun Output en ligne dans le groupe {X} — ouvrez-y SCVB Output et les graphiques apparaîtront automatiquement",
+        "monitor.stalled":
+            "Les données ne se mettent plus à jour — l'Output observé a peut-être été fermé",
+        "monitor.abiMismatch":
+            "Version des données de supervision incompatible, lecture arrêtée (local {a} / données {b}) — mettez les deux plugins à la même version",
+        "monitor.footerHint":
+            "Fenêtre en lecture seule : rien ici ne modifie les réglages ni n'est réécrit dans le projet",
+
         "master.transitionHint":
             "Durée de transition des paramètres entre segments.",
         "master.copyConfirmWarn":
@@ -2343,6 +2395,24 @@ function normLang(lang) {
 /** 取某语言字典,未知语言回落中文(05 §5)。 */
 export function dict(lang) {
     return T[normLang(lang)];
+}
+
+/**
+ * 占位符填充 —— `{n}` / `{X}` / `{name}` 一律按**键名**取,取不到就原样留着。
+ *
+ * 原样留着而不是填空串:词条里出现一个 `{x}` 是「调用方少传了一个值」的可见证据,
+ * 填空串会让它变成一句读起来通顺、内容却缺了一块的话(比如「{X} 组不在线」变成
+ * 「 组不在线」),没人会注意到。
+ *
+ * [T46] 本函数原先在 `web/output/tab-master.js` 里(Tab1 侧的 `format`),Monitor
+ * 页面同样要用 —— 与其抄第三份,不如把它挪到词典本体旁边(它本来就是词条的事)。
+ * tab-master.js 原样再导出,既有 import 点一字不改。
+ */
+export function format(text, vals) {
+    const v = vals || {};
+    return String(text).replace(/\{(\w+)\}/g, (m, k) =>
+        Object.prototype.hasOwnProperty.call(v, k) ? String(v[k]) : m,
+    );
 }
 
 /**

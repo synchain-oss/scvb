@@ -61,15 +61,38 @@
 // =============================================================================
 
 import { DESIGN } from "../web/shared/design-box.js";
+// [T46] Monitor 的设计盒暂存在页面侧(理由与升入 shared 的待办见该文件头注)。
+import { MONITOR_DESIGN } from "../web/monitor/monitor-box.js";
+import { MONITOR_SCENARIOS } from "./mock/monitor-mock.js";
 
 /** 真源页面路径 —— web-preview 对 web/ 的**唯一**依赖形式:引用,不复制。 */
 const TARGET_PAGE = {
     output: "../web/output/index.html",
     input: "../web/input/index.html",
+    monitor: "../web/monitor/index.html",
+};
+
+/**
+ * 各侧的 mock 模块。Output/Input 共用 state-driver;**Monitor 另起一份** ——
+ * 它的数据面(viz 段)与那两侧没有一个字段重合,塞进同一个 driver 要在十几处
+ * 分叉(理由详见 `./mock/monitor-mock.js` 头注)。两者导出同一个
+ * `createPreviewSession({role, params})`,故下面的装载逻辑一份通用。
+ */
+const MOCK_MODULE = {
+    output: "./mock/state-driver.js",
+    input: "./mock/state-driver.js",
+    monitor: "./mock/monitor-mock.js",
+};
+
+/** 各侧设计盒(iframe 的最小尺寸;真源见各自文件,壳页不写死数字)。 */
+const DESIGN_BOX = {
+    output: DESIGN.output,
+    input: DESIGN.input,
+    monitor: MONITOR_DESIGN,
 };
 
 /** 契约 §2/§4 的事件条数,仅用于工具条上「已接线 n/N」的自检显示。 */
-const EXPECTED_EVENT_COUNT = { output: 9, input: 5 };
+const EXPECTED_EVENT_COUNT = { output: 9, input: 5, monitor: 3 };
 
 /** 泵的硬上限:超时即判失败,免得某天真源改成同步脚本时壳页无声空转。 */
 const PUMP_DEADLINE_MS = 15000;
@@ -123,6 +146,9 @@ const SCENARIO_NAMES = {
         // 05 §3 文末 J80 节引入:T48 Input 首启轻量引导(语言卡 → 5 步 mini tour)
         "input-first-run",
     ],
+    // [T46] Monitor 侧的演示场景;名单真源 = ./mock/monitor-mock.js 的
+    // MONITOR_SCENARIOS(此处引用而不是抄一份,免得两处漂开)。
+    monitor: MONITOR_SCENARIOS,
 };
 
 // URL 上只接受 `loop=none`;driver 会把「宿主提供循环区」的常态归一成 `host` 回在
@@ -421,12 +447,20 @@ export function injectAndMount({
  * 壳页入口 —— output.html / input.html 各自只写 `mountPreview({ role: "…" })`。
  * 负责:注样式 → 建工具条与 iframe → 起 driver session → 调注入引擎。
  */
-export async function mountPreview({ role }) {
+export async function mountPreview({ role: pageRole }) {
     const style = document.createElement("style");
     style.textContent = SHELL_CSS;
     document.head.appendChild(style);
 
     const params = new URLSearchParams(location.search);
+
+    // `?target=` —— 允许一个壳页装载另一侧的真源(简报里点名的 `?target=monitor`)。
+    // 默认仍是页面自己声明的那一侧,故既有链接一个不变;表外取值一律忽略
+    // (拼错参数就该落回默认档,而不是白屏)。
+    const target = params.get("target");
+    const role = Object.prototype.hasOwnProperty.call(TARGET_PAGE, target)
+        ? target
+        : pageRole;
 
     const statusEl = document.querySelector(".pv-status");
     const warnEl = document.querySelector(".pv-warn");
@@ -446,11 +480,11 @@ export async function mountPreview({ role }) {
     // 伪装成「注入失败」,排查成本翻倍)。
     let session;
     try {
-        const mod = await import("./mock/state-driver.js");
+        const mod = await import(MOCK_MODULE[role]);
         const factory = mod.createPreviewSession ?? mod.default;
         if (typeof factory !== "function") {
             throw new TypeError(
-                "mock/state-driver.js 未导出 createPreviewSession({role, params})(也无 default 导出)",
+                `${MOCK_MODULE[role]} 未导出 createPreviewSession({role, params})(也无 default 导出)`,
             );
         }
         session = factory({ role, params });
@@ -489,7 +523,7 @@ export async function mountPreview({ role }) {
     // 真源页面自己 overflow:hidden 且把卡片居中,iframe 小于设计盒就会裁切;
     // 故 iframe 至少给到设计盒尺寸(真源 web/shared/design-box.js,不写死数字),
     // 视口不够时由 .pv-stage 滚动,不改真源的任何布局。
-    const box = DESIGN[role];
+    const box = DESIGN_BOX[role];
     const frame = document.createElement("iframe");
     frame.title = `SCVB ${role} 灰模预览(真源 web/${role}/index.html)`;
     frame.style.width = "100%";
