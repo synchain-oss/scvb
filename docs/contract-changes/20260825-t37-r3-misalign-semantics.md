@@ -66,6 +66,42 @@ native 侧两个口径各有独立入口,互不覆盖:
   - `tests/core/test_output_session.cpp` —— 失准发作 → 恢复健康归零 → 再次失准重新报数;
   - `tests/host/test_host_harness.cpp` `HOST L-6b` —— 端到端:bypass 断流报警 → 恢复后自行清除。
 
+---
+
+# 追加变更 —— `ui.lang_chosen` / `lang_chosen_global`(v4 实测 P1-6)
+
+## 变更内容
+
+`scvb.state.ui` 新增**可选**布尔 `lang_chosen`;`requestInitialState()` 快照新增**可选**布尔
+`lang_chosen_global`。二者语义与既有的 `guide_seen` / `guide_seen_global` 完全同构:
+前者随工程走(PRMS),后者是系统级全局默认(UiDefaultsStore),用于判定「首启语言选择卡
+是否还要弹」。
+
+**不新增桥函数**:置位点选在既有的 §1.30 `setLang` 桥入口 —— web 启动时的语言回填走
+`setLang(..., {push:false})` 不经桥,所以「桥的 setLang 被调用过」正好等价于「用户显式选过语言」。
+
+## 为什么必须加
+
+首启语言卡的抑制条件此前**只有** web 侧 `store.session.langChosen` —— 会话内标志,随 WebView
+一起销毁;而卡片的显示门读的是 `ui.guide_seen` / `guide_seen_global`(**完全没有看语言**)。
+于是只要用户没走完红字页,每次开窗都会重新问一遍语言(v4 实测 P1-6:用户要求「选过就记住」)。
+
+`ui.language` 本身不能兼任这个标记:它默认 `"en"`,「从没选过」与「用户就是选了英文」不可区分;
+而 CFGS 是定长解码,追加字段会让旧构建整块拒载(见 `OutputUiState.h` 头注),所以新位必须
+落 PRMS 的 ValueTree —— 那里增删字段零成本、老工程读不到即 false。
+
+## 兼容性影响
+
+- 按 §0.1 规则 3,这是**加法**(既有 payload 新增可选字段),非破坏性,`contractVersion` 不升主版本;
+- 旧 web 不读该字段 → 行为不变(仍每次问);旧工程无该属性 → 读回 false → 走一次首启,选完即持久;
+- 参数面 / IPC ABI / state chunk 布局均未动。
+
+## 同 PR 已完成
+
+- [x] `docs/SCVB_CONTRACT.md` §1.1 快照表补 `lang_chosen_global?`、§1.1/§2.1 的 `ui` 字段表补 `lang_chosen?`
+- [x] `web-preview/mock/juce-bridge-mock.js` 的 `setLang` 同步置两位;`web/shared/mock-data.js` 默认 state/快照补字段
+      (mock 与真桥须同契约,CLAUDE.md §10)
+
 ## 审批
 
 - [ ] **用户批准:待批准**(PR #87 已挂 `status/frozen-contract` 标签;本条不合入直到用户确认)

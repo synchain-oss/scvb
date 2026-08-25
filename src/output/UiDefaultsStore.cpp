@@ -15,6 +15,7 @@ namespace
 
 constexpr const char* kKeyGuideSeen = "guide_seen_global";
 constexpr const char* kKeyTourSeen = "tour_seen_global";
+constexpr const char* kKeyLangChosen = "lang_chosen"; // 用户显式选过语言(跨工程)
 // 缩放档位**按角色分键**:两插件的档位表不同(Output {0.5…2} / Input {0.33…3}),
 // 共用一个键会在 Input 也实现 §3.6 落盘后互相污染(Input 存 300 → Output 构造读回 300,
 // 而 300 不在 Output 档位里)。inRange 用的是并集边界,拦不住这种污染。
@@ -97,6 +98,16 @@ bool tourSeenGlobal()
 void setTourSeenGlobal(bool seen)
 {
     writeBool(kKeyTourSeen, seen);
+}
+
+bool langChosenGlobal()
+{
+    return readBool(kKeyLangChosen);
+}
+
+void setLangChosenGlobal(bool chosen)
+{
+    writeBool(kKeyLangChosen, chosen);
 }
 
 int uiScalePercent()

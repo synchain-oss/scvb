@@ -263,15 +263,11 @@ void OutputSession::evaluateChannels(u64 nowMs)
             lastGapCount_[idx] = gc;
         }
         const bool misaligned = (nowMs - misalignedSinceMs_[idx]) < kMisalignRecoverMs;
-        if (!misaligned)
-        {
-            // 连续 kMisalignRecoverMs 无新缺口 = 本次失准发作结束 → 上桥的 misalignCount 归零,
-            // 「路由失准」横幅与逐行 ⚠ 随之撤下(累计值仍留在 gapCount 供 ctrl 全局小节/诊断)。
-            misalignBaseline_[idx] = gc;
-        }
 
         // CH_SUSPENDED:write_head 完全停滞 ≥0.5s ∧ 心跳新鲜(宿主跳过该轨处理,不计失准)。
+        // dataAdvancing:该轨最近确有新帧写入 —— 恢复判定要用它,见下。
         bool suspended = false;
+        bool dataAdvancing = false;
         if (hbFresh && bound)
         {
             const u64 wh = sources_[idx].writeHead();
@@ -284,6 +280,20 @@ void OutputSession::evaluateChannels(u64 nowMs)
             {
                 suspended = true;
             }
+            dataAdvancing = (nowMs - lastWriteHeadChangeMs_[idx]) < kSuspendStallMs;
+        }
+
+        // 恢复判定:必须「该轨数据真的在推进」,**不能只看「不再产生新缺口」**。
+        // 反例(v4 实测 B3 假恢复):把 Input bypass 掉 → write_head 停滞 → 本轨转 suspended →
+        // online=false → 退出 injectMask → processBlock 根本不再调 read() → 缺口自然不再增长。
+        // 只看「无新缺口」会把这种**持续断流的静默**判成恢复,横幅在实际仍无声时撤下。
+        // 所以恢复要同时满足:槽活跃 + 心跳新鲜 + 采样率一致 + 已绑定 + 未挂起 + 有新帧写入。
+        const bool dataHealthy = slotActive && hbFresh && srMatch && bound && !suspended && dataAdvancing;
+        if (!misaligned && dataHealthy)
+        {
+            // 本次失准发作结束 → 上桥的 misalignCount 归零,「路由失准」横幅与逐行 ⚠ 随之撤下
+            // (进程累计值仍留在 gapCount 供 ctrl 全局小节/诊断)。
+            misalignBaseline_[idx] = gc;
         }
 
         const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended;

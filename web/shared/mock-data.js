@@ -528,6 +528,8 @@ export function makeOutputState(overrides = {}) {
             active_tab: "master",
             guide_seen: false,
             tour_seen: false,
+            // 用户显式选过语言(§1.30 setLang 被调用过);首启语言卡的抑制位。
+            lang_chosen: false,
             // [J75] T43:Tab1 分布图视图态。新字段、默认 distribution ——
             // 旧工程读进来没有这一键,UI 侧 chartModeOf() 一律回默认档。
             master_chart_mode: CHART_MODES[0],
@@ -569,6 +571,7 @@ export function makeOutputSnapshot(overrides = {}) {
         // J50a:系统级全局默认判定位,只读、不属工程 state
         guide_seen_global: false,
         tour_seen_global: false,
+        lang_chosen_global: false,
         print_guard: state.print_guard,
         recapture: state.recapture,
         analysis_run: state.analysis_run,

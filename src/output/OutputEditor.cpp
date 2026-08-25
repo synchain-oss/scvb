@@ -172,6 +172,8 @@ juce::var OutputEditor::buildSnapshot()
     // 系统级全局默认(跨工程,UiDefaultsStore 落盘;硬编码 false 时「不再显示」永不生效 —— T37 A-3)
     put(o, "guide_seen_global", uidefaults::guideSeenGlobal());
     put(o, "tour_seen_global", uidefaults::tourSeenGlobal());
+    // §1.1 附加位:用户显式选过语言的系统级全局默认(新工程不再重复问语言)。
+    put(o, "lang_chosen_global", uidefaults::langChosenGlobal());
     put(o, "conn", buildConnPayload());
     return o;
 }
@@ -676,6 +678,8 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     // 陈旧一帧无害,撕裂才有害 —— 故取 atomic 而不是让 25Hz 的 emit 去抢 lifecycleMutex_。
     put(ui, "guide_seen", rt.guideSeen.load(std::memory_order_relaxed));
     put(ui, "tour_seen", rt.tourSeen.load(std::memory_order_relaxed));
+    // 首启语言卡的抑制位(§1.30 setLang 被显式调用过即为真;随 PRMS 持久化)。
+    put(ui, "lang_chosen", rt.langChosen.load(std::memory_order_relaxed));
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
@@ -832,6 +836,8 @@ void OutputEditor::handleSetLang(const juce::Array<juce::var>& args,
 {
     WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执 {ok:true}
     processor_.bridgeSetUiLanguage(lang()); // §1.30:落 Output state(实际生效值经 scvb.state 回推)
+    // 显式选过语言 → 同时写系统级全局默认,新工程也不再问(与 guide/tour 的 alsoGlobal 同口径)。
+    uidefaults::setLangChosenGlobal(true);
 }
 
 void OutputEditor::persistUiScaleAsDefault()
@@ -905,33 +911,82 @@ void OutputEditor::handleSetGroupId(const ArgList& a, Completion c)
     c(okResp());
 }
 
-void OutputEditor::handlePreviewAnalyze(const ArgList& /*a*/, Completion c)
+// analyze/previewAnalyze 的作用域参数(§1.5/§1.6):"all" = 全时间线全轨;
+// 对象形 {tracksMask,startS,endS} = 指定轨 × 指定范围(web 的 analyzeScope 产出)。
+// follow 档取「已知时间线末端」= 当前播放位置,与 emitCaptureProgress 的分母同口径。
+OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) const
 {
-    // 纯只读 dry-run:范围∩覆盖 ∩ origin≠auto 段相交;T29 无覆盖/分析管线 → 空集合。
+    AnalyzeScope s;
+    const auto& rt = processor_.runtime();
+    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
+    const double nowS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
+
+    if (a.size() > 0 && a[0].isObject())
+    {
+        s.tracksMask = static_cast<std::uint16_t>(static_cast<int>(a[0].getProperty("tracksMask", 0)) & 0x7FFF);
+        s.startS = static_cast<double>(a[0].getProperty("startS", 0.0));
+        s.endS = static_cast<double>(a[0].getProperty("endS", 0.0));
+        return s;
+    }
+
+    // "all" 或缺参:按当前 range 档决定。
+    s.tracksMask = 0; // 0 = 不限轨
+    if (rt.rangeMode != 0 && rt.rangeEndS > rt.rangeStartS)
+    {
+        s.startS = rt.rangeStartS;
+        s.endS = rt.rangeEndS;
+    }
+    else
+    {
+        s.startS = 0.0;
+        s.endS = nowS;
+    }
+    return s;
+}
+
+void OutputEditor::handlePreviewAnalyze(const ArgList& a, Completion c)
+{
+    // 纯只读 dry-run(§1.5):范围 ∩ 覆盖的轨数 + 会被保留的用户段数,不改任何数据。
+    const AnalyzeScope sc = parseAnalyzeScope(a);
+    const auto info = processor_.previewAnalysis(sc.tracksMask, sc.startS, sc.endS);
     juce::var o = obj();
-    put(o, "intervals", 0);
-    put(o, "tracks", 0);
-    put(o, "manualKept", 0);
+    put(o, "intervals", info.intervals);
+    put(o, "tracks", info.tracks);
+    put(o, "manualKept", info.manualKept);
     c(o);
 }
 
-void OutputEditor::handleAnalyze(const ArgList& /*a*/, Completion c)
+void OutputEditor::handleAnalyze(const ArgList& a, Completion c)
 {
-    // §1.6:受理回执 + 影响面,立即 resolve(长耗时分析绝不阻塞消息线程)。
-    // T29:分析管线(FeatureExtractor/Segmentation/Reanalysis)未接线 → affected {0,0,0},不置 running。
-    auto& rt = processor_.runtime();
-    if (rt.analysisRunning)
+    // §1.6:受理回执 + 影响面,立即 resolve —— 真正的分析在**后台线程**跑,
+    // 进度经 scvb.state.analysis_run 回推,结果经 scvb.segments 回推。
+    //
+    // 此前这里是 T29 占位:回 {ok:true, affected:{0,0,0}} 却**从不置 analysis_run.running**。
+    // 而 web 拿到 ok 之后要等 running 翻真才把状态交回 state 驱动,于是它的在途标志永远挂着,
+    // 「分析中」转到天荒地老也不出结果(v4 实测 P0-1)。
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
+    const AnalyzeScope sc = parseAnalyzeScope(a);
+    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS);
+
+    if (!accepted.ok)
     {
         juce::var o = obj();
         put(o, "ok", false);
-        put(o, "reason", "busy");
+        put(o, "reason", accepted.reason);
         c(o);
         return;
     }
+
+    lastStateJson_.clear(); // analysis_run.running 立刻回推,别等下一次 diff
     juce::var affected = obj();
-    put(affected, "intervals", 0);
-    put(affected, "tracks", 0);
-    put(affected, "manualKept", 0);
+    put(affected, "intervals", accepted.intervals);
+    put(affected, "tracks", accepted.tracks);
+    put(affected, "manualKept", accepted.manualKept);
     juce::var o = obj();
     put(o, "ok", true);
     put(o, "affected", affected);
@@ -940,9 +995,15 @@ void OutputEditor::handleAnalyze(const ArgList& /*a*/, Completion c)
 
 void OutputEditor::handleCancelAnalyze(const ArgList& /*a*/, Completion c)
 {
-    // T29:无进行中的分析。
+    // §1.7:进行中才可取消;取消后结果整份丢弃,不碰 CRVS。
+    const bool wasRunning = processor_.analysisRunning();
+    if (wasRunning)
+    {
+        processor_.cancelAnalysis();
+        lastStateJson_.clear(); // running 立刻回推 false
+    }
     juce::var o = obj();
-    put(o, "ok", false);
+    put(o, "ok", wasRunning);
     c(o);
 }
 

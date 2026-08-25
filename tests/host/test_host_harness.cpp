@@ -15,16 +15,19 @@
 // 组号纪律:一律用测试专用组(kTestGroup),避开开发机上可能正在跑的 DAW 活实例(g1/g2),
 // 与 scvb_stress 的 v10 约定同口径。段随进程退出销毁。
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "InputBridgeLogic.h"
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
+#include "state/StateCodec.h"
 
 // createEditor 是虚函数,vtable 需要定义。真实定义在 *PluginEntry.cpp —— 那两个 TU 会把
 // WebViewHost/WebView2 拖进来,harness 不编它们(见 OutputPluginEntry.cpp 头注)。
@@ -624,4 +627,236 @@ TEST_CASE("HOST N1:Output 关掉的轨不写特征(布防轨维)", "[host][t37][
     r.runBlocks(400, 0.5f, 4, 6);
     Rig::pumpMessages(300);
     CHECK(r.out.coverageOf(kTestChannel, 0.0, 8.0).coveredS > 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// v4 实测 P0-2:持续 bypass 下「路由失准」不得自行清除。
+// 上一轮把清除条件写成「连续 1s 无新缺口」,而 Input 被 bypass 后本轨会转 suspended、
+// 退出注入集 → read() 不再被调用 → 缺口自然不再增长 → 警告在实际仍无声时撤下(假恢复)。
+// 清除条件必须是「该轨数据真的在推进」。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37][v4][L6]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(40);
+    REQUIRE(r.out.misalignCount(kTestChannel) == 0);
+
+    // Input 被 bypass:不再 processBlock(写头停滞),Output 照常推进。
+    const auto runOutputOnly = [&r](int blocks) {
+        for (int b = 0; b < blocks; ++b)
+        {
+            r.outBuf.clear();
+            r.out.processBlock(r.outBuf, r.midi);
+            r.ph.timeSamples += kBlock;
+            if ((b % 4) == 3)
+            {
+                Rig::pumpMessages(8);
+            }
+        }
+    };
+
+    runOutputOnly(40);
+    REQUIRE(r.out.misalignCount(kTestChannel) > 0); // 报警亮起(这是对的)
+
+    // 继续 bypass 远超恢复窗(1s)——此时缺口已不再增长(本轨退出注入集,read 不再被调),
+    // 但数据依然没有推进。警告**必须**保持。
+    for (int round = 0; round < 6; ++round)
+    {
+        runOutputOnly(20);
+        Rig::pumpMessages(200);
+    }
+    CHECK(r.out.misalignCount(kTestChannel) > 0); // ← 修复前这里会被判成「已恢复」归零
+
+    // 真正重开 Input:两侧一起推进 → 数据恢复 → 警告才该撤下。
+    bool cleared = false;
+    for (int waited = 0; waited < 5000 && !cleared; waited += 40)
+    {
+        r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        cleared = (r.out.misalignCount(kTestChannel) == 0);
+    }
+    CHECK(cleared);
+}
+
+// ---------------------------------------------------------------------------
+// v4 实测 P1-5:轨「启用」开关必须真的影响音频。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P1-5:关掉的轨不进混音", "[host][t37][v4][enabled]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true);
+    r.runBlocks(60, 0.5f);
+
+    // 启用时:总线有声。
+    CHECK(r.out.meterSnapshot().busPeak[0] > 0.0f);
+
+    // 关掉该轨 → 整轨不注入 → 总线电平回零(本组只有这一条 Input)。
+    r.out.runtime().channels[kTestChannel - 1].enabled = false;
+    ++r.out.runtime().configSeq;
+    Rig::pumpMessages(200); // 等 timerCallback 把位图推下去
+    r.runBlocks(60, 0.5f);
+    const auto off = r.out.meterSnapshot();
+    CHECK(off.trackPeak[kTestChannel - 1] == 0.0f); // ← 修复前照混不误
+    CHECK(off.busPeak[0] == 0.0f);
+
+    // 重新启用 → 恢复出声。
+    r.out.runtime().channels[kTestChannel - 1].enabled = true;
+    ++r.out.runtime().configSeq;
+    Rig::pumpMessages(200);
+    r.runBlocks(60, 0.5f);
+    CHECK(r.out.meterSnapshot().busPeak[0] > 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// v4 实测 P1-4:手动写回反复多轮都必须生效,且必须落到冻结维度真正读的参数面。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P1-4:手动写回落参数面 + 多轮交替不失效", "[host][t37][v4][manual]")
+{
+    Rig r;
+    r.ph.playing = true;
+    r.runBlocks(4);
+
+    auto& apvts = r.out.getAPVTS();
+    const int v = r.out.versionActive();
+    auto* panP = apvts.getParameter(scvb::params::panId(v, kTestChannel));
+    auto* volP = apvts.getParameter(scvb::params::volId(v, kTestChannel));
+    REQUIRE(panP != nullptr);
+    REQUIRE(volP != nullptr);
+
+    int replaced = 0;
+    int locked = 0;
+
+    // 十轮交替写回:每轮两维都必须同时在**段表**与**参数面**上生效。
+    for (int round = 1; round <= 10; ++round)
+    {
+        const float pan = static_cast<float>(round * 7 % 100) - 50.0f;
+        const float vol = static_cast<float>(round % 12) - 6.0f;
+
+        REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, vol, replaced, locked));
+        REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, pan, replaced, locked));
+        r.runBlocks(2);
+
+        const auto crvs = r.out.crvsSnapshot();
+        const auto& segs = crvs.versions[static_cast<std::size_t>(v - 1)].tracks[kTestChannel - 1].segments;
+        REQUIRE(segs.size() == 1);
+        CHECK(segs.front().pan == pan);
+        CHECK(segs.front().volDb == vol); // 两维互不冲掉(D 族)
+
+        // 参数面同步:冻结维度上引擎只读这里,不同步就等于「改了没反应」。
+        CHECK(panP->convertFrom0to1(panP->getValue()) == Catch::Approx(pan).margin(0.01));
+        CHECK(volP->convertFrom0to1(volP->getValue()) == Catch::Approx(vol).margin(0.01));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v4 实测 P0-1:点「分析」后必须真的跑完并出段表,不能永久停在「分析中」。
+// 原因是 handleAnalyze 是 T29 占位:回 {ok:true} 却从不置 analysis_run.running,
+// 而 web 要等 running 翻真才交回状态面驱动 —— 于是它的在途标志永远挂着。
+// 本例走完整链:采集 → coverage 落账 → 触发分析 → 后台线程跑完 → 段表落 CRVS。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-1:采集 → 分析 → 出段表(全链,不卡死)", "[host][t37][v4][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采集一段**有声有静**的素材:让 VAD 能切出多个段,而不是一整条常响。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 6; ++burst)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 有声
+        r.runBlocks(40, 0.0f, 4, 4); // 静音
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 20.0).coveredS;
+    REQUIRE(coveredS > 0.0); // 前置:确实采到了东西
+
+    // 干跑:影响面应报出「有数据的轨」。
+    const auto preview = r.out.previewAnalysis(0, 0.0, coveredS);
+    CHECK(preview.tracks >= 1);
+
+    // 触发分析:受理必须成功,且**立刻**进入 running(web 就等这一位)。
+    const auto accepted = r.out.startAnalysis(0, 0.0, coveredS);
+    REQUIRE(accepted.ok); // ← 修复前 ok 恒 true 但 running 恒 false
+    CHECK(accepted.tracks >= 1);
+    CHECK(r.out.runtime().analysisRunning);
+
+    // 等后台线程跑完并回落到消息线程(callAsync 需要消息泵)。
+    bool finished = false;
+    for (int waited = 0; waited < 20000 && !finished; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        finished = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+    }
+    REQUIRE(finished); // ← 修复前永远不会变 false:「分析中」卡死
+    CHECK(r.out.runtime().analysisProgress == 1.0f);
+
+    // 出结果:该轨段表非空,且段是分析产物(origin=auto),时间递增不重叠。
+    const auto crvs = r.out.crvsSnapshot();
+    const auto& segs =
+        crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    REQUIRE_FALSE(segs.empty()); // ← 核心断言:真的出段表了
+    for (std::size_t i = 0; i < segs.size(); ++i)
+    {
+        CHECK(segs[i].t1 > segs[i].t0);
+        CHECK(scvb::state::segmentOrigin(segs[i].flags) == scvb::state::SegmentOrigin::Auto);
+        CHECK(segs[i].pan >= -100.0f);
+        CHECK(segs[i].pan <= 100.0f);
+        CHECK(segs[i].volDb >= -24.0f);
+        CHECK(segs[i].volDb <= 12.0f);
+        if (i > 0)
+        {
+            CHECK(segs[i].t0 >= segs[i - 1].t1); // 有序且不重叠
+        }
+    }
+}
+
+TEST_CASE("HOST P0-1:无采集数据时分析被拒,不会挂起", "[host][t37][v4][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(false);
+    r.runBlocks(40);
+
+    const auto accepted = r.out.startAnalysis(0, 0.0, 5.0);
+    CHECK_FALSE(accepted.ok);
+    CHECK(std::string(accepted.reason) == "noData");
+    CHECK_FALSE(r.out.runtime().analysisRunning); // 不置 running → UI 不会转圈
+}
+
+TEST_CASE("HOST P0-1:分析可取消,取消后不改段表", "[host][t37][v4][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(300, 0.5f, 4, 4);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 20.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    const auto before = r.out.crvsSnapshot()
+                            .versions[static_cast<std::size_t>(r.out.versionActive() - 1)]
+                            .tracks[kTestChannel - 1]
+                            .segments.size();
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    r.out.cancelAnalysis();
+    CHECK_FALSE(r.out.analysisRunning());
+    CHECK_FALSE(r.out.runtime().analysisRunning);
+
+    Rig::pumpMessages(300);
+    const auto after = r.out.crvsSnapshot()
+                           .versions[static_cast<std::size_t>(r.out.versionActive() - 1)]
+                           .tracks[kTestChannel - 1]
+                           .segments.size();
+    CHECK(after == before); // 取消 = 结果整份丢弃
 }

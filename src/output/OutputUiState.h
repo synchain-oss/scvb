@@ -24,11 +24,15 @@ namespace scvb::output
 // 根节点属性面归本模块与将来的 ui.* 使用)。
 inline const juce::Identifier kUiGuideSeenProp{"ui_guide_seen"};
 inline const juce::Identifier kUiTourSeenProp{"ui_tour_seen"};
+// 「用户显式选过语言」位:首启语言选择卡的唯一抑制条件。此前它只活在 web 的
+// store.session 里(随 WebView 一起销毁),于是每次开窗都重新问一遍(v4 实测 P1-6)。
+inline const juce::Identifier kUiLangChosenProp{"ui_lang_chosen"};
 
 struct OutputUiFlags
 {
     bool guideSeen = false;
     bool tourSeen = false;
+    bool langChosen = false;
 };
 
 // 写入 APVTS 快照树的根节点(getStateInformation:copyState() 之后、序列化之前)。
@@ -40,6 +44,7 @@ inline void writeUiFlags(juce::ValueTree& apvtsState, const OutputUiFlags& flags
     }
     apvtsState.setProperty(kUiGuideSeenProp, flags.guideSeen, nullptr);
     apvtsState.setProperty(kUiTourSeenProp, flags.tourSeen, nullptr);
+    apvtsState.setProperty(kUiLangChosenProp, flags.langChosen, nullptr);
 }
 
 // 从工程里解出的 APVTS 树读回(setStateInformation:replaceState 之前/之后皆可)。
@@ -53,6 +58,7 @@ inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
     }
     flags.guideSeen = static_cast<bool>(apvtsState.getProperty(kUiGuideSeenProp, false));
     flags.tourSeen = static_cast<bool>(apvtsState.getProperty(kUiTourSeenProp, false));
+    flags.langChosen = static_cast<bool>(apvtsState.getProperty(kUiLangChosenProp, false));
     return flags;
 }
 
