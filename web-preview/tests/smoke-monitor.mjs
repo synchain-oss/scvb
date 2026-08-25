@@ -312,16 +312,66 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
             let mm;
             while ((mm = pre.exec(cpp)) !== null) props.add(mm[1]);
             check(props.size > 0, "抽得到 setProperty 名(抽不到 = 格式漂移)");
-            // 镜像表 json 列里每个非 null 的名字,桥都得真的送
+
+            // **按函数切开再比**,不是整文件一个大集合:整文件比对只能证明「这个名字在
+            // 某处出现过」—— `groupId` 在 `buildStatePayload` 与 `handleSetObservedGroup`
+            // 里都有,于是「viz 帧里到底带没带 groupId」这件事整文件比对根本答不上来,
+            // 而那正是「换组后在途帧被当成本组数据画上去」这条闸的前提。
+            const bodies = new Map();
+            const fre = /MonitorEditor::(\w+)[^\n]*\n\{([\s\S]*?)\n\}/g;
+            let fm;
+            while ((fm = fre.exec(cpp)) !== null) bodies.set(fm[1], fm[2]);
+            const namesIn = (fn) => {
+                const body = bodies.get(fn) || "";
+                const out = new Set();
+                const r = /setProperty\("([^"]+)"/g;
+                let m2;
+                while ((m2 = r.exec(body)) !== null) out.add(m2[1]);
+                return out;
+            };
+            const vizProps = namesIn("buildVizPayload");
+            const stateProps = namesIn("buildStatePayload");
+            check(vizProps.size > 0, "切得出 buildVizPayload 的字段集");
+            check(stateProps.size > 0, "切得出 buildStatePayload 的字段集");
+
+            // ---- 正向:镜像表 json 列里每个非 null 的名字,**viz 帧**里都得真的有
             for (const f of VC.VIZ_FIELDS) {
                 if (!f.json) continue;
                 check(
-                    props.has(f.json),
-                    `桥送出 ${f.json}(段 ${f.struct}.${f.name})`,
+                    vizProps.has(f.json),
+                    `viz 帧里有 ${f.json}(段 ${f.struct}.${f.name})`,
+                );
+            }
+            // 桥自己算的三条(段里没有对应字段,故不在 VIZ_FIELDS 里)——
+            // 漏送任何一条,页面都会把「在线/停更/掉线」判错或把在途帧当本组数据画上去。
+            for (const f of VC.VIZ_DERIVED_FIELDS) {
+                check(
+                    vizProps.has(f.json),
+                    `viz 帧里有派生字段 ${f.json}(${f.from})`,
+                );
+            }
+            // ---- **反向**:桥送出、而镜像表里没有的字段 = 接口加了东西而这边不知道。
+            // 这一轮 T45 加 `fresh`/`groupId` 时就是这个形态(且 `online` 的**语义**也变了,
+            // 机检查不出语义,只能靠他们明说)—— 反向断言至少让「加了字段」当场可见,
+            // 不必等页面上出现莫名其妙的行为再回头找。
+            const known = new Set([
+                ...VC.VIZ_FIELDS.filter((f) => f.json).map((f) => f.json),
+                ...VC.VIZ_DERIVED_FIELDS.map((f) => f.json),
+            ]);
+            for (const k of vizProps) {
+                check(
+                    known.has(k),
+                    `viz 帧的字段 ${k} 在 JS 镜像表里(桥加了字段?对表补一条)`,
                 );
             }
             for (const k of VC.STATE_JSON_FIELDS) {
-                check(props.has(k), `桥送出 scvb.state 的 ${k}`);
+                check(stateProps.has(k), `scvb.state 里有 ${k}`);
+            }
+            for (const k of stateProps) {
+                check(
+                    VC.STATE_JSON_FIELDS.includes(k),
+                    `scvb.state 的字段 ${k} 在 STATE_JSON_FIELDS 里`,
+                );
             }
             check(
                 props.has(VC.GROUPS_JSON_KEY),
@@ -374,6 +424,19 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
         ["groupId", "uiScale", "language", "viz", "fresh"],
         "scvb.state 的字段(T45 buildStatePayload)",
     );
+    eq(
+        VC.VIZ_DERIVED_FIELDS.map((f) => f.json),
+        ["online", "fresh", "groupId"],
+        "帧里桥自己算的三条:online / fresh **各是一件事**(T45 decae38 拆开)+ 帧自带组号",
+    );
+    // 派生字段与段内字段**不许重名**:重了的话「golden 里有它吗」这条断言会两头指着
+    // 同一个名字,漂移就被掩盖掉
+    for (const f of VC.VIZ_DERIVED_FIELDS) {
+        check(
+            !VC.VIZ_FIELDS.some((g) => g.json === f.json),
+            `派生字段 ${f.json} 不与段内字段的 json 名相撞`,
+        );
+    }
     eq(
         VC.GROUPS_JSON_KEY,
         "online",
@@ -554,12 +617,45 @@ log("=== ③ viz 投影纯函数 ===");
         "offline",
         "帧自己说 online:false ⇒ 同样落空态",
     );
+    // ---- 「停更」与「掉线」必须分得开(本页最贵的一条语义:判错 = Output 还在跑、
+    // 页面却把整张图清空,而且零报错)。T45 `decae38` 把 `online` / `fresh` 拆成两个
+    // 字段之后,**两个信源各测一遍 + 两者的四种组合各测一遍**,不留「靠判据顺序才对」的角。
+    //
     // **陈旧不挡出图**:数据还是上一份真数据,清掉会让用户看到一张突然变空的图
     const staleRes = VIZ.vizAccepts(okFrame, { viz: "online", fresh: false });
-    eq(staleRes.reason, "stale", "在线但不新鲜 ⇒ stale");
+    eq(staleRes.reason, "stale", "① 只有 state 说停更 ⇒ stale");
     check(staleRes.ok, "stale 仍然 ok(图继续显示,只加一条琥珀横幅)");
-    // ⚠ T45 的帧把 online 与 fresh **与在了一起**,故陈旧时帧里也是 online:false。
-    // 若判据顺序写反(先看帧),陈旧会被误判成掉线、图被清空 —— 这条钉住顺序。
+    // ② **只看帧也要判得出来** —— 拆开后 `fresh` 就在帧里,不该再依赖 state 先到。
+    // 传 `{}` 当 status(= `scvb.state` 还没到达的那一拍)。
+    eq(
+        VIZ.vizAccepts({ ...okFrame, fresh: false }, {}).reason,
+        "stale",
+        "② 只有帧说 fresh:false(state 还没到)⇒ 照样 stale",
+    );
+    eq(
+        VIZ.vizAccepts({ ...okFrame, fresh: true }, {}).reason,
+        "",
+        "② 反面:帧说 online+fresh(state 还没到)⇒ 正常出图,不是 offline",
+    );
+    // ③ 四种组合(帧与 state 同步)—— 拆开之后每一格都有确定结论,与 T45 的口径表逐格对应
+    for (const [online, fresh, want, why] of [
+        [true, true, "", "在线且在更新"],
+        [true, false, "stale", "**在线但停更** ⇒ 横幅,别清图"],
+        [false, false, "offline", "掉线(段没 attach)⇒ 空态"],
+        [false, true, "offline", "掉线优先于 fresh(段都没了,新鲜与否无意义)"],
+    ]) {
+        eq(
+            VIZ.vizAccepts(
+                { ...okFrame, online, fresh },
+                { viz: online ? "online" : "offline", fresh },
+            ).reason,
+            want,
+            `③ online=${online} fresh=${fresh} ⇒ ${want || "可读"}(${why})`,
+        );
+    }
+    // ④ 两个事件谁先到没有保证:state 已报「在线但停更」、帧还停在上一拍的 `online:false`
+    // 时,该显示的是横幅 + 图,不是把图清空。(这一路同时兼容**拆分之前**的桥 ——
+    // 那时停摆帧里也是 `online:false`,只有 `scvb.state` 分得出来。)
     eq(
         VIZ.vizAccepts(
             { ...okFrame, online: false },
@@ -569,7 +665,7 @@ log("=== ③ viz 投影纯函数 ===");
             },
         ).reason,
         "stale",
-        "帧里 online:false + state 说在线不新鲜 ⇒ **stale**,不是 offline",
+        "④ 帧 online:false + state 说在线不新鲜 ⇒ **stale**,不是 offline",
     );
     eq(
         VIZ.vizAccepts({ ...okFrame, online: false }, { viz: "abiMismatch" })
@@ -1125,9 +1221,15 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     const v = snap.viz;
     const ST = s.ctl.statePayload();
     eq(VIZ.vizAccepts(v, ST).reason, "", "快照自带首帧 viz 且可读");
-    eq(v.online, true, "帧里 online = 段在线 且 帧新鲜(桥把两者与在一起)");
+    eq(v.online, true, "帧里 online = 段已 attach 且可读");
+    eq(v.fresh, true, "帧里 fresh = 帧还在更新(与 online 各是一件事)");
+    eq(v.groupId, 1, "帧自带组号(换组时用来丢在途帧)");
     eq(ST.viz, "online", "scvb.state 报 online");
     eq(ST.fresh, true, "且新鲜");
+    // 帧与 state 是同一组事实的两次投影 —— 同一拍里必须同值,不然消费侧两个信源打架
+    eq(v.online, ST.viz === "online", "帧的 online 与 state 的三态同步");
+    eq(v.fresh, ST.fresh, "帧的 fresh 与 state 的 fresh 同步");
+    eq(v.groupId, ST.groupId, "帧的组号与 state 的组回显同步");
     eq(
         s.ctl.groupsPayload(),
         { online: 0b00010011 },
@@ -1232,8 +1334,9 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     // ---- 组切换往返(数值级:轨号集合逐项)
     const ok = await bridge.setObservedGroup(2);
     eq(ok, { ok: true }, "切到组 B 受理");
-    // 组回显走 `scvb.state`(viz 帧里不带 groupId)
+    // 组回显走 `scvb.state`;帧里的 `groupId` 是另一件事(丢在途帧的判据)
     check(!!lastState && lastState.groupId === 2, "scvb.state 回显新组号");
+    eq(lastViz.groupId, 2, "新组的帧自带新组号");
     check(Array.isArray(lastViz.lanes), "切组那一帧**必带车道**(换组 = 换段)");
     eq(
         VIZ.vizSeries(lastViz).map((x) => x.ch),
@@ -1374,9 +1477,19 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
         a.ok,
         "**仍然 ok** —— 图继续显示上一份真数据,只加一条琥珀横幅(挡掉会让用户看到一张突然变空的图)",
     );
-    // T45 的帧把 online 与 fresh 与在了一起 ⇒ 陈旧时帧里也是 online:false。
-    // 判据顺序若写反,这里会得到 offline,图被清空。
-    eq(snap.viz.online, false, "帧里 online 也是 false(两者被与在了一起)");
+    // 载荷形状:停摆帧与掉线帧**必须长得不一样**。拆开之前两者都是 `online:false`,
+    // 完全同形 —— 那时能不能画对,全押在消费侧的判据顺序上。现在形状本身就分得开。
+    eq(
+        snap.viz.online,
+        true,
+        "帧里 online **仍是 true**(段还在、只是不发帧了)",
+    );
+    eq(snap.viz.fresh, false, "分开的那一位:fresh = false");
+    eq(
+        VIZ.vizAccepts(snap.viz, {}).reason,
+        "stale",
+        "**不看 state、只看帧**也判得出 stale(拆开之后不再依赖事件先后)",
+    );
     s.stop();
 }
 
@@ -1737,6 +1850,13 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
         /store\.vizStatus/.test(app),
         "状态存进 store.vizStatus 并参与 vizAccepts",
     );
+    // 在途帧闸:**建立在字段真的存在之上**。载荷里没有 `groupId` 时它永远不命中,
+    // 留一段不生效的判断比没有更糟(读代码的人以为已经防住了)—— 故这条断言与
+    // 「桥真的送 groupId」那条(② 的派生字段)是一对,少一半都不成立。
+    check(
+        /raw\.groupId !== store\.observed/.test(app),
+        "viz 帧按组号丢在途帧(换组后 A 的尾帧不会被当成 B 的数据画上去)",
+    );
     check(
         /g\[GROUPS_JSON_KEY\]/.test(app),
         "组位图走 GROUPS_JSON_KEY 常量(T45 用 online,不是 groups_online)",
@@ -1990,9 +2110,18 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
         ),
         "pagehide 时 destroy() 轨迹图",
     );
+    // ⚠ 这里**曾经**有一条 `/clearTimeout\(staleTimer\)/` 的源码正则,当「不留孤儿 timer」
+    // 的证据。而 `staleTimer` 那个变量在判据改归 native 之后早就没了 —— 于是关窗时
+    // 处理器**必抛 ReferenceError,同一个处理器里的 traj.destroy() 一次都没跑过**。
+    // 断言全绿,而 destroy 契约的第一个消费者一直在漏订阅。
+    // 教训:**源文本断言只能证明「字符在」,证明不了「代码跑得通」**。要证明后者,
+    // 得真的把页面跑起来 —— 那是 `smoke-monitor-page.mjs`(无头 Chrome)在做的事,
+    // 那边显式派发 pagehide 并断言零未捕获异常。
+    // 只查**代码**:文件里那段讲这个坑的注释提到这个名字是应该的,不该把它算成回归。
+    const appCode = app.replace(/^\s*\/\/.*$/gm, "");
     check(
-        /clearTimeout\(staleTimer\)/.test(app),
-        "pagehide 时把停摆定时器也清掉(不留孤儿 timer)",
+        !/staleTimer/.test(appCode),
+        "pagehide 里没有对不存在的 staleTimer 的引用(那会让 traj.destroy() 永远跑不到)",
     );
     check(
         /addEventListener\("pagehide", stopScaleCountdown\)/.test(app),

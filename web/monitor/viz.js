@@ -18,8 +18,10 @@
 // =============================================================================
 //   {
 //     magic:"SCVB", abi:1, generation, columnCount:1024, trackCount:15, panScale:100,
-//     online:bool,                          // = 段在线 **且** 帧新鲜(桥把两者与在了一起)
-//     // 组回显与段级三态走 `scvb.state`:{groupId, uiScale, language, viz, fresh}
+//     online:bool,                          // 段已 attach 且可读
+//     fresh:bool,                           // 帧还在更新(与 online **两件事**,见 vizAccepts)
+//     groupId:1..8,                         // 这一帧属于哪个组(用于丢在途帧,不当组回显)
+//     // 段级三态与组回显走 `scvb.state`:{groupId, uiScale, language, viz, fresh}
 //     seq, laneRevision, publishMs, playheadEpoch, versionActive, sampleRate,
 //     windowStartS, windowSpanS,            // 窗口(秒);windowSpanS === 0 ⇒ 无有效窗口
 //     playheadS|null, playheadFlags, loopStartS|null, loopEndS|null,
@@ -174,10 +176,11 @@ export function trackLabel(viz, ch) {
 /**
  * 这一帧 viz 能不能读,以及为什么不能。
  *
- * **段级三态(在线/离线/版本不匹配)不在这里判** —— 那是 `scvb.state` 的 `viz` + `fresh`
- * 说了算,由 native 做:命名段是引用计数存活的,只要 Monitor 自己不松手,「Output 进程
+ * **段级三态(在线/离线/版本不匹配)本函数不自己算** —— 它由 native 判定后从载荷里来
+ * (`scvb.state` 的 `viz`+`fresh`,以及帧自带的 `online`/`fresh` 两个同源字段)。
+ * 为什么必须由 native 判:命名段是引用计数存活的,只要 Monitor 自己不松手,「Output 进程
  * 退出」就永远看不出来(段还在、read 还成功)。T45 的做法是帧陈旧时**松开映射再探一次** ——
- * 这件事 UI 侧做不了,故状态从事件里来,不自己猜。
+ * 这件事 UI 侧做不了,故状态从事件里来,不按「多久没收到帧」自己猜。
  *
  * @param {object|null} viz 最近一帧(已合并)
  * @param {{viz?:string, fresh?:boolean}} [status] 最近一帧 `scvb.state` 的 viz 面
@@ -219,22 +222,29 @@ export function vizAccepts(viz, status) {
     // (含分布图与图例)一起拖进空态面板。
     const usable = num(viz.windowSpanS, 0) > 0;
 
-    // ⚠ **陈旧必须排在「离线」之前**。T45 的 `buildVizPayload` 写的是
-    // `online = (vizState==online) && vizFresh()` —— 两件事被与在了一起,于是
-    // 「在线但陈旧」在帧里长得和「离线」一模一样(都是 `online:false`)。
-    // 只看帧就会把它判成掉线、把图清空,而 Output 其实还在跑。
-    // `scvb.state` 里那两个量是分开的,以它为准。
-    // **陈旧不挡出图**:数据还是上一份真数据,清掉反而更糟。
-    if (st.viz === "online" && st.fresh === false && usable) {
-        return { ok: true, reason: "stale", abi };
-    }
+    // ---- 「停更」与「掉线」:两条**互斥**的结论,先各自算清楚,再按结论分派。
+    //
+    // 曾经桥送的是 `online = (段在线 && 帧新鲜)` —— 两件事与在一起之后,「写方停摆」
+    // 与「真掉线」在载荷上**完全同形**,消费侧只能靠「先看哪个字段」的判据顺序把它们
+    // 分开;而写反是那种「看起来完全正常」的错(Output 明明在跑、整张图被清空,零报错)。
+    // T45 `decae38` 把字段拆开了,顺序约定因此不再需要 —— 下面**不写成一串带先后的 if**,
+    // 就是不想再把正确性押在阅读顺序上:两个布尔各自成立与否是独立的事实。
+    //
+    // 两个信源都收:`scvb.state` 与帧里那两个字段是同一组事实的两次投影,谁先到都能顶上
+    // (首帧 viz 可能早于 `scvb.state`,反之亦然)。`stateStale` 那一路同时兼容拆分**之前**
+    // 的桥:那时停摆帧里也是 `online:false`,只有 state 分得出来。
+    const stateStale = st.viz === "online" && st.fresh === false;
+    const frameStale = viz.fresh === false && viz.online !== false;
+    const stale = stateStale || frameStale;
     // ⚠ **离线判据必须排在「缺车道」之前**:段 attach 不上时桥送的就是一帧没有车道、
     // 没有窗口的空帧。先判 shape 会把「该组没有 Output」报成「帧还没到」——
     // 前者要显示空态面板并说清是哪个组,后者是静默忽略。
-    if (st.viz === "offline" || viz.online === false) {
+    if (!stale && (st.viz === "offline" || viz.online === false)) {
         return { ok: false, reason: "offline", abi };
     }
     if (!usable) return { ok: false, reason: "window", abi };
+    // **停更不挡出图**:画面上是上一份真数据,清掉反而更糟 —— 只挂一条琥珀横幅。
+    if (stale) return { ok: true, reason: "stale", abi };
     return { ok: true, reason: "", abi };
 }
 

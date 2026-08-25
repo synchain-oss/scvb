@@ -65,7 +65,11 @@ try {
     console.warn("SCVB Monitor:createMonitorBridge 未接上后端 —— " + e.message);
     const hint = document.querySelector('[data-gb="monitor-footer-hint"]');
     if (hint) {
-        // dev 兜底(仅无后端直开浏览器可见):不入词条,用英文避免硬编码中文
+        // dev 兜底(仅无后端直开浏览器可见):不入词条,用英文避免硬编码中文。
+        // **必须先摘掉 data-t**:本文件末尾的 `refreshI18n()` 晚于这里执行,而
+        // `applyI18n` 认 data-t 写整串 textContent —— 不摘的话这句提示写完就被词条盖掉,
+        // 裸开浏览器时永远看不见(浏览器级 smoke ⑨ 抓到的:实得的是那条只读词条)。
+        hint.removeAttribute("data-t");
         hint.textContent =
             "No backend attached — open via web-preview/monitor.html";
     }
@@ -403,6 +407,17 @@ function applyScale(f) {
 let playheadSeen = false;
 
 /**
+ * 首帧的播放头种子那一支**跑到过没有**(只读诊断,供浏览器级 smoke 断言覆盖到)。
+ *
+ * 为什么值得单开一个量:那一支的条件是「本帧可读 **且** 25Hz 那一路还没来过」——
+ * 一次装载里最多命中一拍,而且命中与否取决于两个事件谁先到。它曾经藏着一个
+ * ReferenceError(`viz` 是 render() 的局部量),正因为「命中一次就再也不进」而在
+ * 画面上完全看不出来。没有这个量的话,机检只能靠场景的时序恰好撞上才抓得到 ——
+ * 而「靠撞上」的覆盖等于没有覆盖。
+ */
+let seededFromFrame = false;
+
+/**
  * 当前该画的那一帧(不可读时是 null)。
  *
  * `store.frame` **永远保留最近一帧**,哪怕这一帧判下来不可读 —— 它同时是
@@ -551,7 +566,8 @@ if (bridge) {
     // 命名段是引用计数存活的:只要 Monitor 自己不松手,「Output 进程退出」就永远看不
     // 出来(段还在、读也成功)。T45 的做法是帧陈旧时**松开映射再探一次** —— 这件事
     // UI 侧做不了,故状态从事件里来,不按「多久没收到事件」自己猜。
-    // 组回显也走这里:viz 帧里不带 groupId。
+    // 组回显也走这里(viz 帧里那个 `groupId` 只用来丢在途帧,不当回显 —— 回显要的是
+    // 「native 现在观察哪个组」这一个事实的**单一**来源,两处各写一份迟早对不上)。
     bridge.on("scvb.state", (st) => {
         if (!st || typeof st !== "object") return;
         store.vizStatus = {
@@ -590,12 +606,21 @@ if (bridge) {
 /**
  * viz 帧到达。
  *
- * **没有「组号回显校正」这一步** —— T45 的 `scvb.viz` 载荷里不带 `groupId`(组回显走
- * `scvb.state`),在途帧因此分不出来。换组时 T45 会**立刻**推一帧带车道的新组数据,
- * 中间那一拍最多显示旧组 250ms。真要防得请 T45 在 viz 里带上 groupId —— 已在对表信里
- * 提了;拿到之前这里**不假装能校正**,而不是写一段其实不生效的判断。
+ * ⓪ **在途帧按组号丢弃**。T45 依对表信在 viz 帧里补了 `groupId`(head `decae38`),
+ * 于是「刚点了 B、A 的最后一帧还在路上」这一拍认得出来了 —— 认不出来时它会被当成 B 组
+ * 的数据画上去(轨集、轨名、时间线全是 A 的),而画面看着完全正常。
+ * 这条闸**必须建立在字段真的存在之上**:之前载荷里没有 `groupId`,写了也永远不命中,
+ * 那种「留着不生效的判断」比没有更糟(读代码的人以为已经防住了),故当时删掉了。
+ * 现在字段有了才加回来。缺字段的旧桥 ⇒ `Number.isInteger` 判 false ⇒ 照旧全收。
  */
 function onViz(raw) {
+    if (
+        raw &&
+        Number.isInteger(raw.groupId) &&
+        raw.groupId !== store.observed
+    ) {
+        return;
+    }
     // ---- ① 车道按需重发:稳态帧不带车道,与缓存拼成完整的一帧(判据见 mergeVizFrame)
     store.frame = mergeVizFrame(store.frame, raw);
     // ---- ② 投影(含折线重算)。只在这里与 `scvb.state` 到达时算,**不在 render 里** ——
@@ -607,7 +632,13 @@ function onViz(raw) {
     // 就有播放头位置 —— 用它先把竖线摆上,首帧出图时位置就是对的。只在还没收到过
     // playhead 事件时做:之后那一路更准(25Hz + 插值),不该被 4Hz 的帧覆盖。
     if (traj && a.ok && !playheadSeen) {
-        const ev = vizPlayheadEvent(viz);
+        // ⚠ 种子取自 `store.frame`(**合并后**的那一帧),不是 render() 里那个同名局部量 ——
+        // 那是另一个作用域的 `const viz`,在这里引用它是 ReferenceError:首帧恰好又是
+        // 「`a.ok` 且还没收到 playhead」的唯一一拍,于是**每次装载必炸一次**,
+        // 而后续 25Hz 的 playhead 事件一到就再也不进这个分支,页面看着完全正常。
+        // node 侧的 smoke 不跑 app.js,是浏览器级 smoke(smoke-monitor-page.mjs)抓到的。
+        const ev = vizPlayheadEvent(store.frame);
+        seededFromFrame = true;
         if (ev) traj.onPlayhead(ev);
     }
 
@@ -642,15 +673,12 @@ refreshI18n();
         // 不必空等一个 4Hz 周期才出图。
         //
         // **不在这里瞎猜状态**:`scvb.state` 通常在 `requestInitialState()` 里就已经
-        // 推过一遍(T45 的 onReady 与 mock 同款),那才是真值。只有一个都没收到时才从
-        // 帧自身兜一个 —— 而且是**推导**不是假设:帧说 `online:true` 就只可能是
-        // 「在线且新鲜」(桥把两者与在了一起)。
-        // 早先这里无条件写 `{viz:"online", fresh:true}`,把已经收到的真状态覆盖掉了 ——
-        // 停摆场景因此被显示成掉线。真机截图抓到的,node 侧看不出来(那边不跑 boot)。
-        // **不从帧里推状态**:帧的 `online` 是「段在线 **且** 帧新鲜」两者与过之后的
-        // 结果,`false` 分不出「掉线」还是「在线但陈旧」。真状态只在 `scvb.state` 里,
-        // 而它可能比这一帧晚到 —— 晚到时上面的处理器会 `applyProjection()` 补算一遍,
-        // 所以这里只管把帧收下,不猜。
+        // 推过一遍(T45 的 onReady 与 mock 同款),那才是真值。早先这里无条件写
+        // `{viz:"online", fresh:true}`,把已经收到的真状态覆盖掉了 —— 停摆场景因此被
+        // 显示成掉线。真机截图抓到的,node 侧看不出来(那边不跑 boot)。
+        // 现在帧里 `online` 与 `fresh` 是分开的两件事实(T45 `decae38`),`vizAccepts()`
+        // 能只凭帧就分出「掉线」与「在线但停更」;`scvb.state` 晚到时上面的处理器还会
+        // `applyProjection()` 补算一遍。两条路都通,这里仍然只管把帧收下,不猜。
         if (snap.viz) onViz(snap.viz);
     }
     render();
@@ -661,8 +689,13 @@ refreshI18n();
 // (见该文件 destroy() 的头注)。Monitor 的编辑器会在插件窗口开合里反复建销毁,
 // 不拆就是每开一次漏一组订阅 —— window 上那条尤其致命,它连着整个闭包
 // (含 15 条折线的数据面)一起钉在内存里。destroy() 是幂等的,重复调用一步不走。
+// (曾经这里还有一句 `clearTimeout(staleTimer)` —— 那是「按 publishMs 自己猜停摆」那版
+// 留下的残句,判据改归 `scvb.state` 之后定时器早就没了,变量也不存在:关窗时
+// **必抛 ReferenceError,于是同一个处理器里的 traj.destroy() 一次都没跑过** ——
+// 也就是说 destroy 契约的第一个消费者其实一直在漏订阅。node 侧那条
+// `/clearTimeout\(staleTimer\)/` 源码正则还把它当成「不留孤儿 timer」的证据钉着,
+// 正是「按源文本断言」这种做法的反例:它证明的是字符在,不是代码跑得通。)
 addEventListener("pagehide", () => {
-    clearTimeout(staleTimer);
     if (traj) traj.destroy();
 });
 
@@ -678,6 +711,8 @@ window.__SCVB_MONITOR__ = {
         observed: store.observed,
         groups: store.groups,
         stalled: store.accepts.reason === "stale",
+        // 首帧种子那一支跑到过没有(浏览器级 smoke 用它确认那条路径真被覆盖了)
+        seededFromFrame,
         laneRevision: store.frame ? store.frame.laneRevision : null,
         generation: store.frame ? store.frame.generation : null,
         durationS: vizDurationS(visibleFrame()),

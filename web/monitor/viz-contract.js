@@ -64,7 +64,9 @@ export const VIZ_FLAG_LOOPING = 1 << 1;
 export const VIZ_FLAG_LOOP_VALID = 1 << 2;
 
 /**
- * 写方停摆判据(ms)。
+ * 写方停摆判据(ms)—— **native 侧的判据,镜像在此只为存档**。
+ * UI 侧一行都不用它:停更与否由载荷里的 `fresh` 说了算(smoke ⑦ 有一条反向断言,
+ * `app.js` 里再出现 `VIZ_STALE_MS` 就红)。理由见 `VIZ_DERIVED_FIELDS`。
  *
  * 判据是 **`publishMs` 不再前进**,不是「有没有收到事件」—— 段是 4Hz 低频发布,
  * 单看事件到没到会把正常的发布间隔误判成停摆;而 `VizFrame.publish_ms` 的注释逐字写着
@@ -139,6 +141,34 @@ export const VIZ_FIELDS = Object.freeze([
     // 超长按 UTF-8 边界截断。桥解码成字符串投影(字符串没法定点)。
     { struct: "VizTrackLabels", name: "utf8", json: "trackLabels" },
     { struct: "VizTrackLabels", name: "_pad", json: null },
+]);
+
+/**
+ * **桥自己算出来、段里没有对应字段的三条**(T45 `buildVizPayload`)。
+ *
+ * 它们不进 `VIZ_FIELDS`(那张表与 golden 的 `field <Struct>.<name>` 行逐条对拍,
+ * 混进没有段内出身的名字会让「golden 里有它吗」这条断言无从谈起),但**桥面 parity
+ * 照样要查**:漏送任何一条都会让页面把状态判错。故单列一张表,`MonitorEditor.cpp`
+ * 扫到的 `setProperty` 名集必须全包含它们。
+ *
+ * `online` / `fresh` 为什么是两条而不是一条:曾经桥送的是
+ * `online = (段在线 && 帧新鲜)` —— 两件事与在一起之后,「写方停摆」与「真掉线」在载荷上
+ * **完全同形**,消费侧只能靠判据顺序把它们分开,而写反是「看起来完全正常」的错
+ * (Output 还在跑,页面把整张图清空,零报错)。T45 `decae38` 拆开了:
+ *   `online=true,  fresh=true`  ⇒ 在线且在更新;
+ *   `online=true,  fresh=false` ⇒ **在线但停更** ⇒ 琥珀横幅、**别清图**;
+ *   `online=false`              ⇒ 掉线 / 未接通 ⇒ 空态。
+ */
+export const VIZ_DERIVED_FIELDS = Object.freeze([
+    Object.freeze({
+        json: "online",
+        from: "vizState() == kOnline(段已 attach 且可读)",
+    }),
+    Object.freeze({ json: "fresh", from: "vizFresh()(帧还在更新)" }),
+    Object.freeze({
+        json: "groupId",
+        from: "processor_.groupId()(帧属于哪个组;换组时用来丢在途帧)",
+    }),
 ]);
 
 /**

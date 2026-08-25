@@ -456,9 +456,12 @@ function createMonitorBackend(parsed) {
     function vizFrame(groupId, tS, withLanes) {
         const g = state.outputUp ? groupOf(groupId) : null;
 
-        // 帧里的 `online` = 段在线 **且** 帧新鲜 —— T45 `buildVizPayload` 把两者与在了
-        // 一起,故「在线但陈旧」在帧里长得和「离线」一样。两者的区分只能靠 `scvb.state`。
-        const online = state.vizState === "online" && !!g && state.fresh;
+        // 帧里的 `online` 与 `fresh` 是**两件事、各说各的**(T45 `decae38` 把它们拆开了):
+        //   `online` = 段已 attach 且可读;`fresh` = 帧还在更新。
+        // 拆开之前是一个与在一起的布尔 —— 于是「写方停摆」与「真掉线」在载荷上完全同形,
+        // 消费侧只能靠判据顺序分开。mock 必须跟着拆:形状不同形,这边测出来的是另一个
+        // 接口的行为,而 DAW 里才发现的那种错正是这么来的。
+        const online = state.vizState === "online" && !!g;
 
         const base = {
             magic: VIZ_MAGIC,
@@ -468,6 +471,9 @@ function createMonitorBackend(parsed) {
             trackCount: VIZ_TRACKS,
             panScale: VIZ_PAN_SCALE,
             online,
+            fresh: state.fresh,
+            // 帧自带组号:换组后消费侧据此丢在途帧,不必依赖「事件一定按序到达」。
+            groupId,
             seq: state.seq,
             publishMs: state.publishMs,
             playheadEpoch: 1,
@@ -599,7 +605,8 @@ function createMonitorBackend(parsed) {
             }
             state.observed = g;
             state.seq += 2; // 偶数保持偶数(奇数 = 写入中,不该被读方看到)
-            emit("scvb.state", statePayload()); // 组回显走 state(viz 帧里不带 groupId)
+            // 组回显走 `scvb.state`(帧里那个 `groupId` 只用于丢在途帧,不当回显)
+            emit("scvb.state", statePayload());
             // 换组 = 换段 = 另一份车道,故这一帧**必带**车道三件。
             emit("scvb.viz", vizFrame(g, state.tS, true));
             return { ok: true };
