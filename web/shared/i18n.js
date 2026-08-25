@@ -424,6 +424,22 @@ export const T = {
         "set.usage.workflow":
             "采集 → 分析 → 输出。开启采集并播放,插件记录每条轨的响度特征;分析在离线状态下算出每个乐句的声像/音量方案;输出切到「引擎驱动」后由插件驱动参数,在 DAW 侧开启 Latch 或 Write 模式以录制为自动化轨道。",
         "set.usage.docs": "文档",
+
+        // ---- [J78] 「手动接管与自动化」说明块(05 §2.4;Tab4「使用说明」块之后)----
+        // zh 逐字取 masterPlan plan/settings-automation-guide-2026-08-24.md,不得转述;
+        // 优先级链的措辞与 workflow.priority(tour 步 35 流程图)同源同字。
+        // EN/FR 为自译,已入 U17 人工审校清单。
+        "set.automationGuide.eyebrow": "手动 / 自动化",
+        "set.automationGuide.title": "手动接管与自动化,谁说了算?",
+        "set.automationGuide.line1":
+            "优先级从高到低:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎分析曲线。",
+        "set.automationGuide.line2":
+            "冻结 PAN 或 VOL = 手动接管该维度;write 时会以一条平直线写入自动化,之后你可以在 DAW 里自由手绘。",
+        "set.automationGuide.line3":
+            "段检查器里的手动微调改的是引擎曲线本身,会随 write 一起写入(该维度已冻结时除外)。",
+        "set.automationGuide.line4":
+            "画好自动化后,插件会忠实跟随宿主,不再被引擎覆盖;只有重新 write 才会再次覆盖。",
+
         "set.loudnessMode.eyebrow": "第二响度指标",
         "set.loudnessMode.opt.kw_integrated": "K 加权段积分",
         "set.loudnessMode.opt.rms": "RMS",
@@ -1080,6 +1096,20 @@ export const T = {
         "set.usage.workflow":
             "Capture → Analyze → Output. Turn on capture and play; the plug-in records each track's loudness features. Analysis computes a pan/level plan for every phrase offline. Switch Output to ENGINE DRIVE and the plug-in drives the parameters; enable Latch or Write mode in your DAW to record them as an automation track.",
         "set.usage.docs": "Docs",
+
+        // ---- [J78] 手动接管与自动化说明块(EN 自译,待人工审校;口径见 zh 侧同组注释)----
+        "set.automationGuide.eyebrow": "MANUAL / AUTOMATION",
+        "set.automationGuide.title":
+            "Manual takeover and automation — who has the final say?",
+        "set.automationGuide.line1":
+            "Priority, highest to lowest: host automation > frozen manual value > manual tweak > engine analysis curve.",
+        "set.automationGuide.line2":
+            "Freezing PAN or VOL means you take that dimension over by hand; on write the plug-in prints a flat line into the automation lane, and you are then free to draw it yourself in the DAW.",
+        "set.automationGuide.line3":
+            "A manual tweak in the segment inspector edits the engine curve itself and goes out with the write (unless that dimension is already frozen).",
+        "set.automationGuide.line4":
+            "Once the automation is drawn, the plug-in follows the host faithfully and the engine no longer overrides it; only another write overwrites it again.",
+
         "set.loudnessMode.eyebrow": "SECOND LOUDNESS METRIC",
         "set.loudnessMode.opt.kw_integrated": "K-weighted integral",
         "set.loudnessMode.opt.rms": "RMS",
@@ -1716,6 +1746,20 @@ export const T = {
         "set.usage.workflow":
             "Capture → Analyser → Sortie. Activez la capture et lancez la lecture ; le plug-in enregistre les caractéristiques de loudness de chaque piste. L'analyse calcule un plan pan/volume pour chaque phrase hors ligne. Passez la sortie en PILOTAGE MOTEUR pour que le plug-in pilote les paramètres ; activez le mode Latch ou Write dans votre DAW pour les enregistrer comme piste d'automation.",
         "set.usage.docs": "Documentation",
+
+        // ---- [J78] 手动接管与自动化说明块(FR 自译,待人工审校;口径见 zh 侧同组注释)----
+        "set.automationGuide.eyebrow": "MANUEL / AUTOMATION",
+        "set.automationGuide.title":
+            "Reprise manuelle et automation : qui décide ?",
+        "set.automationGuide.line1":
+            "Priorité, de la plus forte à la plus faible : automation de l'hôte > valeur manuelle gelée > ajustement manuel > courbe d'analyse du moteur.",
+        "set.automationGuide.line2":
+            "Geler PAN ou VOL revient à reprendre cette dimension à la main ; au write, le plug-in inscrit une ligne plate dans l'automation, que vous pouvez ensuite dessiner librement dans la DAW.",
+        "set.automationGuide.line3":
+            "Un ajustement manuel dans l'inspecteur de segment modifie la courbe du moteur elle-même et part avec le write (sauf si cette dimension est déjà gelée).",
+        "set.automationGuide.line4":
+            "Une fois l'automation dessinée, le plug-in suit fidèlement l'hôte et le moteur ne l'écrase plus ; seul un nouveau write la réécrit.",
+
         "set.loudnessMode.eyebrow": "SECOND INDICATEUR DE LOUDNESS",
         "set.loudnessMode.opt.kw_integrated": "Intégrale pondérée K",
         "set.loudnessMode.opt.rms": "RMS",
