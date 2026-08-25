@@ -367,10 +367,19 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
             for (const k of VC.STATE_JSON_FIELDS) {
                 check(stateProps.has(k), `scvb.state 里有 ${k}`);
             }
+            // `ui` 是子树:它那两个键在同一个函数体里 set 在另一个 DynamicObject 上,
+            // 函数级扫描区分不了两层,故把子树键并进期望集(正向也各查一条)。
+            for (const k of VC.STATE_UI_FIELDS) {
+                check(stateProps.has(k), `scvb.state 的 ui 子树里有 ${k}`);
+            }
+            const stateKnown = new Set([
+                ...VC.STATE_JSON_FIELDS,
+                ...VC.STATE_UI_FIELDS,
+            ]);
             for (const k of stateProps) {
                 check(
-                    VC.STATE_JSON_FIELDS.includes(k),
-                    `scvb.state 的字段 ${k} 在 STATE_JSON_FIELDS 里`,
+                    stateKnown.has(k),
+                    `scvb.state 的字段 ${k} 在 STATE_JSON_FIELDS / STATE_UI_FIELDS 里`,
                 );
             }
             check(
@@ -421,13 +430,13 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
     );
     eq(
         VC.STATE_JSON_FIELDS.slice(),
-        ["groupId", "uiScale", "language", "viz", "fresh"],
-        "scvb.state 的字段(T45 buildStatePayload)",
+        ["group_id", "ui", "viz", "fresh"],
+        "scvb.state 的字段:**镜像宪法 state 字段的键一律 snake_case + ui 子树**(契约 §0.2 规则① / 裁定 A-30)",
     );
     eq(
         VC.VIZ_DERIVED_FIELDS.map((f) => f.json),
-        ["online", "fresh", "groupId"],
-        "帧里桥自己算的三条:online / fresh **各是一件事**(T45 decae38 拆开)+ 帧自带组号",
+        ["online", "fresh", "group_id"],
+        "帧里桥自己算的三条:online / fresh **各是一件事** + 帧自带组号(`group_id`,snake_case)",
     );
     // 派生字段与段内字段**不许重名**:重了的话「golden 里有它吗」这条断言会两头指着
     // 同一个名字,漂移就被掩盖掉
@@ -439,9 +448,21 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
     }
     eq(
         VC.GROUPS_JSON_KEY,
-        "online",
-        "scvb.groups 的键是 online(**不是** Output 侧的 groups_online)",
+        "groups_online",
+        "scvb.groups 的键 = 契约 §2.4 逐字的 groups_online(与 Output 侧同名同载荷)",
     );
+    eq(
+        VC.STATE_UI_FIELDS.slice(),
+        ["scale", "language"],
+        "scvb.state 的 ui 子树键",
+    );
+    // 拼写纪律本身也钉一条:镜像宪法 state 字段的键不许出现 camelCase
+    for (const k of [...VC.STATE_JSON_FIELDS, VC.GROUPS_JSON_KEY]) {
+        check(
+            !/[a-z][A-Z]/.test(k),
+            `state / groups 的键 ${k} 不是 camelCase(契约 §0.2 规则①;camelCase 在 §8.3 是旧文)`,
+        );
+    }
     eq(VC.DIST_REQUIRES, "trackVolDb", "分布图整块降级的判据字段");
     // 三条标量的量纲逐条钉住 —— 定点解码用的就是它们,写错一个就是整排柱高错
     eq(
@@ -783,21 +804,21 @@ log("=== ③ viz 投影纯函数 ===");
 {
     // ---- 车道三件的按需重发合并(lane_revision 语义)
     const full = {
-        groupId: 1,
+        group_id: 1,
         laneRevision: 5,
         lanes: [[1, 2]],
         coverage: [[3]],
         colorIndex: [1],
         seq: 2,
     };
-    const headOnly = { groupId: 1, laneRevision: 5, seq: 4 };
+    const headOnly = { group_id: 1, laneRevision: 5, seq: 4 };
     const merged = VIZ.mergeVizFrame(full, headOnly);
     eq(merged.lanes, full.lanes, "revision 一致 ⇒ 沿用缓存车道");
     eq(merged.seq, 4, "帧头取新的");
     eq(merged.colorIndex, full.colorIndex, "轨色也沿用");
 
     const bumped = VIZ.mergeVizFrame(full, {
-        groupId: 1,
+        group_id: 1,
         laneRevision: 6,
         seq: 6,
     });
@@ -806,7 +827,7 @@ log("=== ③ viz 投影纯函数 ===");
         "revision 变了却没带车道 ⇒ **不拿旧车道配新帧头**(宁可空)",
     );
     const other = VIZ.mergeVizFrame(full, {
-        groupId: 2,
+        group_id: 2,
         laneRevision: 5,
         seq: 6,
     });
@@ -814,7 +835,7 @@ log("=== ③ viz 投影纯函数 ===");
     const fresh = VIZ.mergeVizFrame(null, headOnly);
     check(fresh.lanes === undefined, "没缓存 ⇒ 原样返回(落空态等重算)");
     const carry = VIZ.mergeVizFrame(full, {
-        groupId: 1,
+        group_id: 1,
         laneRevision: 6,
         seq: 8,
         lanes: [[9]],
@@ -1233,7 +1254,7 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
 
     const snap = await bridge.requestInitialState();
     check(!!snap, "首帧快照拿得到");
-    eq(snap.groupId, 1, "monitor-online 场景开箱观察组 A");
+    eq(snap.group_id, 1, "monitor-online 场景开箱观察组 A");
     eq(snap.groups_online, 0b00010011, "在线组位图 = A/B/E");
 
     const v = snap.viz;
@@ -1241,17 +1262,17 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     eq(VIZ.vizAccepts(v, ST).reason, "", "快照自带首帧 viz 且可读");
     eq(v.online, true, "帧里 online = 段已 attach 且可读");
     eq(v.fresh, true, "帧里 fresh = 帧还在更新(与 online 各是一件事)");
-    eq(v.groupId, 1, "帧自带组号(换组时用来丢在途帧)");
+    eq(v.group_id, 1, "帧自带组号(换组时用来丢在途帧)");
     eq(ST.viz, "online", "scvb.state 报 online");
     eq(ST.fresh, true, "且新鲜");
     // 帧与 state 是同一组事实的两次投影 —— 同一拍里必须同值,不然消费侧两个信源打架
     eq(v.online, ST.viz === "online", "帧的 online 与 state 的三态同步");
     eq(v.fresh, ST.fresh, "帧的 fresh 与 state 的 fresh 同步");
-    eq(v.groupId, ST.groupId, "帧的组号与 state 的组回显同步");
+    eq(v.group_id, ST.group_id, "帧的组号与 state 的组回显同步");
     eq(
         s.ctl.groupsPayload(),
-        { online: 0b00010011 },
-        "scvb.groups 的键是 online(不是 groups_online)",
+        { groups_online: 0b00010011 },
+        "scvb.groups 载荷 = 契约 §2.4 逐字的 `{ groups_online: u8 }`",
     );
     eq(v.columnCount, VC.VIZ_COLUMNS, "几何:列数");
     eq(v.trackCount, VC.VIZ_TRACKS, "几何:轨数");
@@ -1352,9 +1373,9 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     // ---- 组切换往返(数值级:轨号集合逐项)
     const ok = await bridge.setObservedGroup(2);
     eq(ok, { ok: true }, "切到组 B 受理");
-    // 组回显走 `scvb.state`;帧里的 `groupId` 是另一件事(丢在途帧的判据)
-    check(!!lastState && lastState.groupId === 2, "scvb.state 回显新组号");
-    eq(lastViz.groupId, 2, "新组的帧自带新组号");
+    // 组回显走 `scvb.state`;帧里的 `group_id` 是另一件事(丢在途帧的判据)
+    check(!!lastState && lastState.group_id === 2, "scvb.state 回显新组号");
+    eq(lastViz.group_id, 2, "新组的帧自带新组号");
     check(Array.isArray(lastViz.lanes), "切组那一帧**必带车道**(换组 = 换段)");
     eq(
         VIZ.vizSeries(lastViz).map((x) => x.ch),
@@ -1413,7 +1434,7 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     });
     const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
     const snap = await bridge.requestInitialState();
-    eq(snap.groupId, 3, "monitor-offline 场景观察组 C");
+    eq(snap.group_id, 3, "monitor-offline 场景观察组 C");
     eq(s.ctl.statePayload().viz, "offline", "scvb.state 报 offline");
     const a = VIZ.vizAccepts(snap.viz, s.ctl.statePayload());
     check(!a.ok, "不在线 ⇒ 不可读");
@@ -1872,7 +1893,7 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
     // 留一段不生效的判断比没有更糟(读代码的人以为已经防住了)—— 故这条断言与
     // 「桥真的送 groupId」那条(② 的派生字段)是一对,少一半都不成立。
     check(
-        /raw\.groupId !== store\.observed/.test(app),
+        /raw\.group_id !== store\.observed/.test(app),
         "viz 帧按组号丢在途帧(换组后 A 的尾帧不会被当成 B 的数据画上去)",
     );
     check(

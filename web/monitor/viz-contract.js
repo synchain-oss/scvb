@@ -166,7 +166,8 @@ export const VIZ_DERIVED_FIELDS = Object.freeze([
     }),
     Object.freeze({ json: "fresh", from: "vizFresh()(帧还在更新)" }),
     Object.freeze({
-        json: "groupId",
+        json: "group_id",
+        // 拼写照契约 §0.2 规则①(宪法 state 字段的镜像一律 snake_case),不是 camelCase
         from: "processor_.groupId()(帧属于哪个组;换组时用来丢在途帧)",
     }),
 ]);
@@ -257,23 +258,39 @@ export const VIZ_STATE = Object.freeze(["online", "offline", "abiMismatch"]);
 
 /**
  * `scvb.state` 的字段(T45 `buildStatePayload`)。
- * **`viz` 与 `fresh` 是两个独立的量** —— 「在线但陈旧」(Output 还在、只是不再发帧)
- * 是 T45 修僵尸数据时引入的一档真实状态,值得一个专门的视觉。
+ *
+ * **拼写归契约,不归实现**:`group_id` 与 `ui:{scale, language}` 是**镜像宪法 state 字段**
+ * 的键,契约 §0.2 规则① 要求逐字沿用宪法拼写(snake_case,例子里就点了 `group_id`),
+ * 裁定 A-30 又把快照那一侧统一过来、并把 camelCase 记进 §8.3 的「旧文」。
+ * 曾经这边跟着桥的第一版写成 `groupId` / `uiScale` / `language` 平铺 —— 那是桥偏离了契约,
+ * 不是契约留了两种写法。
+ *
+ * **`viz` 与 `fresh`** 是两个独立的量(「在线但停更」是一档真实状态,值得专门的视觉);
+ * 它们不是宪法 state 字段的镜像,故不受 snake_case 那条约束。
  */
 export const STATE_JSON_FIELDS = Object.freeze([
-    "groupId",
-    "uiScale",
-    "language",
+    "group_id",
+    "ui",
     "viz",
     "fresh",
 ]);
 
+/** `scvb.state.ui` 子树的键(与 Output / Input 两侧同形)。 */
+export const STATE_UI_FIELDS = Object.freeze(["scale", "language"]);
+
 /**
- * `scvb.groups` 的载荷键 —— T45 用的是 **`online`**,不是 Output 侧的 `groups_online`。
+ * `scvb.groups` 的载荷键 —— 契约 §2.4 逐字:`{ groups_online: u8 }`。
+ *
  * 记成常量而不是散在消费点上:读错这个键的后果是「八枚组胶囊的绿点永远不亮」,
  * 而页面一切正常、零报错 —— 肉眼极难联想到是键名写错了。
+ *
+ * ⚠ 这个常量一度是 `"online"`:T45 的桥第一版发的是 `{ online }`,我按**实交付**落了值,
+ * 对方也回信确认过「两个名字都是有意的」。**两边都错了** —— §2.4 与 §0.2 规则① 写得很清楚,
+ * 而它是冻结文档,本来就该压过任何一方的实现与口头确认。
+ * 教训:**对表对的是「实现符不符合契约」,不是「两边实现一不一致」** ——
+ * 两边一致地偏离契约时,shape parity 照样全绿。
  */
-export const GROUPS_JSON_KEY = "online";
+export const GROUPS_JSON_KEY = "groups_online";
 
 /**
  * 分布图这一半**整块缺失**时的行为(已由 smoke 锁死,不是「碰运气不崩」)。

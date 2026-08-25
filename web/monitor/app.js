@@ -84,7 +84,7 @@ const store = {
     frame: null,
     accepts: { ok: false, reason: "shape", abi: 0 }, // vizAccepts(viz) 的结果
     groups: 0, // scvb.groups 位图(事件缺失 = 0 ⇒ 绿点全灭,零报错)
-    observed: 1, // 当前观察的组(1..8);本地乐观值,由 viz.groupId 回推校正
+    observed: 1, // 当前观察的组(1..8);本地乐观值,由 scvb.state 的 group_id 回推校正
     scale: 1,
     version: "",
     // `scvb.state` 的 viz 面:三态 + 独立的 fresh。**停摆判据归 native** ——
@@ -190,7 +190,7 @@ if (groupSeg) {
  *
  * 本地先行(乐观)+ 清掉上一组的数据面:两组的轨集、轨名、时间线覆盖都不同,
  * 留着旧图等新帧到达会让用户看到「切过去了但画的还是上一组」——**比空白更误导**。
- * `viz.groupId` 回推后由 render 把本地值交还给它(与 Tab1 的 paramEcho 同一纪律)。
+ * `scvb.state` 的 `group_id` 回推后由 render 把本地值交还给它(与 Tab1 的 paramEcho 同一纪律)。
  */
 function observeGroup(g) {
     if (!Number.isInteger(g) || g < 1 || g > GROUP_LETTERS.length) return;
@@ -566,7 +566,7 @@ if (bridge) {
     // 命名段是引用计数存活的:只要 Monitor 自己不松手,「Output 进程退出」就永远看不
     // 出来(段还在、读也成功)。T45 的做法是帧陈旧时**松开映射再探一次** —— 这件事
     // UI 侧做不了,故状态从事件里来,不按「多久没收到事件」自己猜。
-    // 组回显也走这里(viz 帧里那个 `groupId` 只用来丢在途帧,不当回显 —— 回显要的是
+    // 组回显也走这里(viz 帧里那个 `group_id` 只用来丢在途帧,不当回显 —— 回显要的是
     // 「native 现在观察哪个组」这一个事实的**单一**来源,两处各写一份迟早对不上)。
     bridge.on("scvb.state", (st) => {
         if (!st || typeof st !== "object") return;
@@ -574,7 +574,7 @@ if (bridge) {
             viz: typeof st.viz === "string" ? st.viz : "offline",
             fresh: st.fresh !== false,
         };
-        if (Number.isInteger(st.groupId)) store.observed = st.groupId;
+        if (Number.isInteger(st.group_id)) store.observed = st.group_id;
         // 状态变了要**重跑一遍投影** —— 不只是重判。`scvb.state` 可能比首帧 viz 晚到
         // (壳页里 driver 的 onReady 排在页面 requestInitialState 之后),那时首帧已经
         // 被按「未知状态」判过一次;不重算的话,那一帧的折线就永远补不回来了。
@@ -587,8 +587,10 @@ if (bridge) {
     bridge.on("scvb.viz", onViz);
 
     // 组胶囊绿点:事件缺失时全灭、零报错(§2.4 同款容错)。
-    // ⚠ 键名是 `online`,**不是** Output 侧的 `groups_online`(T45 的载荷;常量在
-    // viz-contract.js)。读错的后果是绿点永远不亮而页面一切正常 —— 故走常量,不写字面量。
+    // ⚠ 键名照**契约 §2.4 逐字**:`groups_online`(与 Output / Input 两侧同名同载荷;
+    // 常量在 viz-contract.js)。读错的后果是**绿点永远不亮、而页面一切正常零报错** ——
+    // 故走常量,不写字面量。它一度被写成 `online`:桥与本页一起偏离了契约,两边
+    // 「一致地错」,shape parity 照样全绿 —— 见 GROUPS_JSON_KEY 的注释。
     bridge.on("scvb.groups", (g) => {
         store.groups = (g && g[GROUPS_JSON_KEY]) || 0;
         render();
@@ -606,18 +608,18 @@ if (bridge) {
 /**
  * viz 帧到达。
  *
- * ⓪ **在途帧按组号丢弃**。T45 依对表信在 viz 帧里补了 `groupId`(head `decae38`),
+ * ⓪ **在途帧按组号丢弃**。T45 依对表信在 viz 帧里补了 `group_id`,
  * 于是「刚点了 B、A 的最后一帧还在路上」这一拍认得出来了 —— 认不出来时它会被当成 B 组
  * 的数据画上去(轨集、轨名、时间线全是 A 的),而画面看着完全正常。
- * 这条闸**必须建立在字段真的存在之上**:之前载荷里没有 `groupId`,写了也永远不命中,
+ * 这条闸**必须建立在字段真的存在之上**:之前载荷里没有这个字段,写了也永远不命中,
  * 那种「留着不生效的判断」比没有更糟(读代码的人以为已经防住了),故当时删掉了。
  * 现在字段有了才加回来。缺字段的旧桥 ⇒ `Number.isInteger` 判 false ⇒ 照旧全收。
  */
 function onViz(raw) {
     if (
         raw &&
-        Number.isInteger(raw.groupId) &&
-        raw.groupId !== store.observed
+        Number.isInteger(raw.group_id) &&
+        raw.group_id !== store.observed
     ) {
         return;
     }
@@ -660,7 +662,7 @@ refreshI18n();
     const snap = await call("requestInitialState");
     if (snap) {
         store.ready = true;
-        if (Number.isInteger(snap.groupId)) store.observed = snap.groupId;
+        if (Number.isInteger(snap.group_id)) store.observed = snap.group_id;
         if (snap.version) store.version = String(snap.version);
         if (Number.isFinite(snap.groups_online))
             store.groups = snap.groups_online;

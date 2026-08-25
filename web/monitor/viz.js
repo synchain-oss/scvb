@@ -20,8 +20,8 @@
 //     magic:"SCVB", abi:1, generation, columnCount:1024, trackCount:15, panScale:100,
 //     online:bool,                          // 段已 attach 且可读
 //     fresh:bool,                           // 帧还在更新(与 online **两件事**,见 vizAccepts)
-//     groupId:1..8,                         // 这一帧属于哪个组(用于丢在途帧,不当组回显)
-//     // 段级三态与组回显走 `scvb.state`:{groupId, uiScale, language, viz, fresh}
+//     group_id:1..8,                        // 这一帧属于哪个组(用于丢在途帧,不当组回显)
+//     // 段级三态与组回显走 `scvb.state`:{group_id, ui:{scale,language}, viz, fresh}
 //     seq, laneRevision, publishMs, playheadEpoch, versionActive, sampleRate,
 //     windowStartS, windowSpanS,            // 窗口(秒);windowSpanS === 0 ⇒ 无有效窗口
 //     playheadS|null, playheadFlags, loopStartS|null, loopEndS|null,
@@ -60,7 +60,9 @@
 //   ⑤ `coverage` 的 u32 可能以负数或 >2³¹ 的形式到达(JUCE 的 JSON 走 int64)——
 //      故 `columnCovered` 用 `>>>`(自带 ToUint32);
 //   ⑥ 车道三件按 `laneRevision` **按需重发**,且 `requestInitialState` 的首帧**必带**;
-//   ⑦ `online` / `fresh` 是**两个独立字段**(T45 `decae38`),`groupId` 随帧带上;
+//   ⑦ `online` / `fresh` 是**两个独立字段**,`group_id` 随帧带上;
+//   ⑨ **镜像宪法 state 字段的键一律 snake_case**(契约 §0.2 规则① / 裁定 A-30):
+//      `group_id` / `groups_online` / `ui:{scale,language}` —— 不是 camelCase;
 //   ⑧ `scvb.groups` 的键是 `online`(**不是** Output 侧的 `groups_online`)。
 // =============================================================================
 
@@ -508,9 +510,9 @@ export function vizLegendRows(viz) {
  *   ① 新帧自带车道 ⇒ 原样用(并由调用方存成新缓存);
  *   ② 没缓存 ⇒ 原样返回(消费侧会因缺 lanes 落到 `shape` 空态,等下一次重算);
  *   ③ 有缓存且 `laneRevision` 一致 ⇒ 沿用缓存(稳态,最常见);
- *   ④ 有缓存但 `laneRevision` 或 `groupId` **不一致** ⇒ 车道已经换了内容而桥没发过来,
+ *   ④ 有缓存但 `laneRevision` 或 `group_id` **不一致** ⇒ 车道已经换了内容而桥没发过来,
  *      **宁可当作没有车道**也不拿旧车道配新帧头 —— 那会画出一张「时间轴是新的、线是旧的」
- *      的图,而它看起来完全正常。换组同理:groupId 变了就是另一个数据面。
+ *      的图,而它看起来完全正常。换组同理:`group_id` 变了就是另一个数据面。
  *
  * @param {object|null} prev 上一份完整帧(缓存)
  * @param {object} next 新到达的帧
@@ -521,7 +523,7 @@ export function mergeVizFrame(prev, next) {
     if (Array.isArray(next.lanes) && Array.isArray(next.coverage)) return next;
     if (!prev || !Array.isArray(prev.lanes)) return next;
     if (prev.laneRevision !== next.laneRevision) return next;
-    if (prev.groupId !== next.groupId) return next;
+    if (prev.group_id !== next.group_id) return next;
     return {
         ...next,
         colorIndex: prev.colorIndex,

@@ -446,7 +446,7 @@ function createMonitorBackend(parsed) {
         language: "zh",
         committedScale: 1,
         lastLaneRecalcMs: 0,
-        lastSentLaneRevision: new Map(), // groupId → 已随事件发过的 laneRevision
+        lastSentLaneRevision: new Map(), // 组号 → 已随事件发过的 laneRevision
     };
 
     const listeners = new Map();
@@ -458,12 +458,18 @@ function createMonitorBackend(parsed) {
         for (const cb of listeners.get(name) || []) cb(payload);
     }
 
-    /** `scvb.state`(T45 `buildStatePayload`):组 / 缩放 / 语言 / viz 三态 / fresh。 */
+    /**
+     * `scvb.state`(T45 `buildStatePayload`):组 / UI 偏好 / viz 三态 / fresh。
+     *
+     * **键的拼写归契约**:`group_id` 与 `ui:{scale, language}` 是镜像宪法 state 字段的键,
+     * 契约 §0.2 规则① 要求 snake_case + `ui` 子树(裁定 A-30 把快照那侧也统一了过来)。
+     * 这里曾经跟着桥的第一版写成 `groupId`/`uiScale`/`language` 平铺 —— 桥偏离了契约,
+     * mock 跟着偏,于是两边「一致地错」,shape parity 照样全绿。
+     */
     function statePayload() {
         return {
-            groupId: state.observed,
-            uiScale: state.scale,
-            language: state.language,
+            group_id: state.observed,
+            ui: { scale: state.scale, language: state.language },
             viz: state.vizState,
             fresh: state.fresh,
         };
@@ -496,7 +502,8 @@ function createMonitorBackend(parsed) {
             online,
             fresh: state.fresh,
             // 帧自带组号:换组后消费侧据此丢在途帧,不必依赖「事件一定按序到达」。
-            groupId,
+            // 拼写 `group_id`:它是宪法 state 字段的镜像(契约 §0.2 规则①)。
+            group_id: groupId,
             seq: state.seq,
             publishMs: state.publishMs,
             playheadEpoch: 1,
@@ -610,7 +617,7 @@ function createMonitorBackend(parsed) {
             const snap = {
                 abi: state.abi,
                 version: "0.1.0",
-                groupId: state.observed,
+                group_id: state.observed,
                 groups_online: groupsOnline,
                 ui: { scale: state.scale, language: state.language },
                 // 首帧 viz 随快照给(**必带车道**)—— 与契约 §0.4「状态类各必发一次」同精神:
@@ -628,7 +635,7 @@ function createMonitorBackend(parsed) {
             }
             state.observed = g;
             state.seq += 2; // 偶数保持偶数(奇数 = 写入中,不该被读方看到)
-            // 组回显走 `scvb.state`(帧里那个 `groupId` 只用于丢在途帧,不当回显)
+            // 组回显走 `scvb.state`(帧里那个 `group_id` 只用于丢在途帧,不当回显)
             emit("scvb.state", statePayload());
             // 换组 = 换段 = 另一份车道,故这一帧**必带**车道三件。
             emit("scvb.viz", vizFrame(g, state.tS, true));
@@ -666,9 +673,9 @@ function createMonitorBackend(parsed) {
         groupOf,
         isReady: () => ready,
         onReady: (fn) => (ready ? fn() : onReadyQueue.push(fn)),
-        // ⚠ T45 的 `scvb.groups` 用 **`online`** 这个键,不是 Output 侧的 `groups_online`
-        // (真源 = MonitorEditor.cpp;常量在 viz-contract.js 的 GROUPS_JSON_KEY)。
-        // 读错的后果是绿点永远不亮、而页面一切正常零报错 —— 故两侧都从那个常量取。
+        // 契约 §2.4 逐字:`{ groups_online: u8 }`(与 Output 侧同名同载荷同频率)。
+        // 读错这个键的后果是绿点永远不亮、而页面一切正常零报错 —— 故两侧都从
+        // viz-contract.js 的 GROUPS_JSON_KEY 取,不写字面量。
         groupsPayload: () => ({ [GROUPS_JSON_KEY]: groupsOnline }),
         statePayload,
         /** `scvb.state` 变化才发(§0.4「值未变不发」同款)。 */
