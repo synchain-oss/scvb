@@ -2,13 +2,28 @@
 # -*- coding: utf-8 -*-  (编码声明必须在前两行内,故 SPDX 头占第 1 行、它占第 2 行)
 """生成 web/fonts/ 下的离线子集 WOFF2(SCVB 版,移植自 Bridge scripts/fetch_fonts.py)。
 
-用 Google Fonts CSS2 `text=` 接口:Google 直接返回按传入字符子集好的 WOFF2,
-无需本地安装 fonttools/brotli。**只有本脚本联网**——运行期的 web/ 一律离线 @font-face,
+**只有本脚本联网**——运行期的 web/ 一律离线 @font-face,
 全仓禁止 Google Fonts 域名引用(tokens.css 文件头纪律,CI 用 grep 断言零命中)。
 
-与 Bridge 原脚本的唯一实质差异:字符集不再手写常量,而是**扫描 web/shared/i18n.js**
-(三语字典的全部字符串字面量)自动求并集。SCVB 三语文案上千条,手抄汉字常量必然漏字;
+两条取字体路线,按家族分工(不是历史包袱,是被 URL 长度上限逼出来的):
+  · 拉丁三款:Google Fonts CSS2 `text=` 接口,Google 直接返回子集好的 WOFF2。
+    拉丁字符集有上界(ASCII + 法语重音 + 几个符号,约 150),URL 恒在 1KB 内,永不触顶。
+    另一个好处:`text=` 返回的是**请求字重的静态实例**,拿到手即所需字重,无默认实例陷阱。
+  · Noto Sans SC:下载 google/fonts 上游**全量可变字体**,本地用 fontTools 子集化。
+    CJK 子集已 768 字且随词条只增不减,而 `text=` 走 GET —— 实测 URL 约 7.1KB 尚可、
+    7.5KB 时 Google **静默忽略 `text=`**,改返回 101 段 unicode-range 分片 CSS;
+    老脚本正则只取第一段 `src:`,于是下载到一个 12 字形的碎片当成完整子集写进仓库,
+    全程退出码 0。这类「静默给错东西」比报错危险得多,故 CJK 侧彻底不走 `text=`。
+    (上游全量字体的 fvar 默认实例同为 Thin(100),与旧产物一致 —— tokens.css 那条
+    `font-weight: 300 700` 描述符仍是中文不发丝细的唯一依靠,见 web/fonts/README.md。)
+
+因此本脚本需要 `fontTools` + `brotli`(仅 Noto 子集化与 woff2 压缩用);
+`--print-charset` / `--help` 不碰这两个包。
+
+与 Bridge 原脚本的唯一实质差异:字符集不再手写常量,而是**扫描 web/ 下全部 .js 与 .html**
+的字符串字面量/可见文本自动求并集。SCVB 三语文案上千条,手抄汉字常量必然漏字;
 改文案 → 重跑本脚本即可,不必再同步维护一份汉字表。
+覆盖是否真的够,由 scripts/check-font-coverage.py(gates 3h)拿 fontTools 逐字对着产物断言。
 
 用法:
     python scripts/fetch_fonts.py [输出目录]      # 默认输出 <仓库根>/web/fonts
@@ -18,7 +33,7 @@
 字形有增改时重跑本脚本,再确认 web/shared/tokens.css 的 @font-face 文件名一致即可。
 网络不通时的回退口径见 web/fonts/README.md「离线回退」一节。
 """
-import os, sys, re, urllib.parse, urllib.request, urllib.error
+import io, os, sys, re, urllib.parse, urllib.request, urllib.error
 
 # Windows 控制台默认 cp936,打印字符集样本与中文报错时可能编码失败,先放宽两个流
 for _stream in (sys.stdout, sys.stderr):
@@ -35,9 +50,13 @@ UA = (
 )
 
 # ---- 扫描源 ----------------------------------------------------------------
-# i18n.js 是全部界面文案的唯一真源(词条真源再往上是 05-ui-spec.md §5);
-# T28 静态页落地后,页面里若有不走 data-t 的字面文本,把 .html 一并扫进来(下方 html_text)。
+# i18n.js 是界面文案的唯一真源(词条真源再往上是 05-ui-spec.md §5),但**不是唯一上屏源**:
+# 各页 app.js / tab-*.js / viz.js 里有直接拼进 DOM 的字面量(单位、分隔符、兜底文案、
+# monitor 侧未走 i18n 的标签)。只扫 i18n.js 就会漏掉它们,漏的字运行期是方块,
+# 而既有门禁一条都查不出 —— 故扫描面按 F12 原案扩到 web/ 下**全部 .js**,外加全部 .html。
+# web/js/juce/** 是 vendored JUCE 前端库,实测纯 ASCII,扫进来对子集零影响,不为它单开例外。
 I18N_JS = os.path.join(WEB, "shared", "i18n.js")
+JS_GLOB_DIRS = [WEB]
 HTML_GLOB_DIRS = [WEB, os.path.join(ROOT, "web-preview")]
 
 # ---- 兜底字符集(扫描结果之外必须保底存在的字形)-------------------------------
@@ -66,16 +85,42 @@ def is_cjk(ch):
     )
 
 
+# 正则字面量判定:`/` 前的最后一个有效字符若属于这一集(或它在行首/文件首),`/` 开的是
+# 正则而非除号。JS 无法只靠字符判除号/正则,必须看上文;这是通行的最小启发式。
+REGEX_PREV = set("(,=:[!&|?{};+-*%~^<>") | {"\n"}
+REGEX_PREV_WORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "case", "do", "else", "yield", "await"}
+
+
+def _regex_allowed(src, i):
+    """src[i] == '/' 时,判断它是不是正则字面量的开头。"""
+    j = i - 1
+    while j >= 0 and src[j] in " \t\r":
+        j -= 1
+    if j < 0 or src[j] in REGEX_PREV:
+        return True
+    if src[j].isalnum() or src[j] == "_":  # 标识符/数字结尾 → 只可能是除号,除非是关键字
+        k = j
+        while k >= 0 and (src[k].isalnum() or src[k] == "_"):
+            k -= 1
+        return src[k + 1 : j + 1] in REGEX_PREV_WORDS
+    return False
+
+
 def js_strings(src):
-    """从 JS 源码里取出全部字符串字面量的内容(跳过 // 与 /* */ 注释)。
+    """从 JS 源码里取出全部字符串字面量的内容(跳过 // 与 /* */ 注释与正则字面量)。
 
     手写小状态机而非正则:注释里有大量中文说明(真源引文、纪律条款),那些字不是界面文案,
     混进子集会白白撑大 woff2;而 `https://` 这类内容又不能被「见到 // 就当注释」误伤。
-    前提:i18n.js 是纯字典 + 两个函数,不含正则字面量(含了会把 / 误判成除号,无副作用但需留意)。
+
+    [F12] 扫描面从 i18n.js(纯字典,无正则字面量)扩到 web/ 全部 .js 后,**正则字面量必须
+    单列一档**:`/https:\\/\\//` 这种里的 `\\/` 后面紧跟 `/`,当成「见到 // 即行注释」会把
+    该行余下的字面量整段吞掉 —— 那是**漏字**,正是本脚本要防的那类线上方块。
+    (反过来,把除号误判成正则至多多收几个字符,子集略大而已 —— 两侧不对称,故宁可多判正则。)
     """
     out, buf = [], []
     i, n = 0, len(src)
-    state = None  # None / "line" / "block" / 引号字符
+    state = None  # None / "line" / "block" / "regex" / 引号字符
+    in_class = False  # 正则字符类 [...] 内,`/` 不终止正则
     while i < n:
         c = src[i]
         if state is None:
@@ -85,7 +130,9 @@ def js_strings(src):
             if c == "/" and i + 1 < n and src[i + 1] == "*":
                 state, i = "block", i + 2
                 continue
-            if c in "\"'`":
+            if c == "/" and _regex_allowed(src, i):
+                state, in_class = "regex", False
+            elif c in "\"'`":
                 state, buf = c, []
         elif state == "line":
             if c == "\n":
@@ -94,12 +141,29 @@ def js_strings(src):
             if c == "*" and i + 1 < n and src[i + 1] == "/":
                 state, i = None, i + 2
                 continue
+        elif state == "regex":
+            if c == "\\":
+                i += 2
+                continue
+            if c == "[":
+                in_class = True
+            elif c == "]":
+                in_class = False
+            elif c == "/" and not in_class:
+                state = None
+            elif c == "\n":  # 判错了(其实是除号):行尾收手,别把整个文件吞掉
+                state = None
         else:  # 字符串内
             if c == "\\" and i + 1 < n:
                 buf.append(src[i : i + 2])
                 i += 2
                 continue
-            if c == state:
+            if c == "\n" and state != "`":
+                # 只有模板串能跨行。走到这里说明引号是被误判开的(如判错的正则里含 '),
+                # 行尾就收手 —— 否则会一路吞到下一个同名引号,把中间真正的字面量吃掉。
+                out.append("".join(buf))
+                state, buf = None, []
+            elif c == state:
                 out.append("".join(buf))
                 state, buf = None, []
             else:
@@ -153,11 +217,21 @@ def scan_sources():
         sys.exit("!! 找不到 %s;i18n.js 是文案真源,必须先有它才能定字符集" % I18N_JS)
     chars, detail = set(), []
 
-    with open(I18N_JS, "r", encoding="utf-8") as f:
-        lits = js_strings(f.read())
-    text = "".join(unescape(s) for s in lits)
-    chars |= set(text)
-    detail.append((os.path.relpath(I18N_JS, ROOT), len(lits), len(set(text))))
+    # [F12] 全部 .js,不再只有 i18n.js。明细按相对路径排序,保证不同机器上重跑输出稳定。
+    js_paths = []
+    for base in JS_GLOB_DIRS:
+        for dirpath, _dirs, files in os.walk(base):
+            for fn in files:
+                if fn.endswith(".js"):
+                    js_paths.append(os.path.join(dirpath, fn))
+    if not js_paths:
+        sys.exit("!! %s 下一个 .js 都没扫到;扫描面坏了,不能拿这个结果去子集化" % WEB)
+    for p in sorted(js_paths, key=lambda q: os.path.relpath(q, ROOT).replace("\\", "/")):
+        with open(p, "r", encoding="utf-8") as f:
+            lits = js_strings(f.read())
+        text = "".join(unescape(s) for s in lits)
+        chars |= set(text)
+        detail.append((os.path.relpath(p, ROOT), len(lits), len(set(text))))
 
     for base in HTML_GLOB_DIRS:
         for dirpath, _dirs, files in os.walk(base):
@@ -181,12 +255,13 @@ def build_charsets():
     return "".join(latin), "".join(cjk), detail
 
 
-def fetch(url, tries=3):
+def fetch(url, tries=3, timeout=180):
+    # 超时给到 180s:Noto 上游全量字体 17MB 左右,30s 在慢网上会假性失败
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     last = None
     for k in range(tries):
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
         except (urllib.error.URLError, OSError) as e:  # 含超时/DNS/被墙
             last = e
@@ -196,6 +271,113 @@ def fetch(url, tries=3):
         "   回退口径见 web/fonts/README.md「离线回退」:先放 Bridge 的占位子集,"
         "网络恢复后必须重跑本脚本。" % last
     )
+
+
+# Noto Sans SC 上游全量可变字体(google/fonts 是 Google Fonts 自己的发布仓,与 gstatic 同源同版本;
+# 版本号写在 name ID 5,取回后打印,便于与 THIRD-PARTY-NOTICES.md 的版本格对账)。
+NOTO_TTF_URL = (
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
+)
+
+# CSS2 `text=` 的 URL 安全上限。实测 7078 字节可用、7561 字节起 Google 静默改返回分片 CSS,
+# 故阈值取 7000 并且**硬失败**:拉丁集有上界(约 150 字符 ≈ 600 字节),真撞上说明扫描面出了错,
+# 那种时候继续跑只会把错东西写进仓库。
+CSS2_URL_LIMIT = 7000
+
+
+def fetch_css2_subset(family, text):
+    """走 CSS2 `text=` 取一款子集 WOFF2 的字节。任何「不是我要的东西」一律硬失败。"""
+    q = {"family": family, "display": "swap", "text": text}
+    url = "https://fonts.googleapis.com/css2?" + urllib.parse.urlencode(
+        q, quote_via=urllib.parse.quote
+    )
+    if len(url) > CSS2_URL_LIMIT:
+        sys.exit(
+            "!! %s 的 text= URL 长 %d 字节,超过安全上限 %d。\n"
+            "   Google 不会报 414,而是**静默忽略 text=** 改返回 unicode-range 分片 CSS,\n"
+            "   取第一段就得到一个几十字形的碎片。该家族需改走本地子集化(见 Noto 的做法)。"
+            % (family, len(url), CSS2_URL_LIMIT)
+        )
+    css = fetch(url).decode("utf-8")
+    # `text=` 生效时 Google 只回**一个** @font-face;被忽略时回的是按 unicode-range 切开的
+    # 上百段分片(注意:两种情况都带 unicode-range,所以只有段数可用来判)。
+    # 这一句是「静默给错东西」的第一道信号 —— 2026-08 那次 12 字形碎片进仓,
+    # 缺的就是它(下载成功、退出码 0、文件也写了,只是内容是错的)。
+    n_faces = css.count("@font-face")
+    if n_faces != 1:
+        sys.exit(
+            "!! %s:Google 未按 text= 子集化(回了 %d 段 @font-face 的分片 CSS)。\n"
+            "   多半是 URL 过长被忽略;分片里的任何一段都不是完整子集,不能写进仓库。"
+            % (family, n_faces)
+        )
+    m = re.search(r"src:\s*url\((https://[^)]+)\)", css)
+    if not m:
+        sys.exit("!! CSS 里没找到 woff2 url:%s\n%s" % (family, css[:800]))
+    data = fetch(m.group(1))
+    assert_covers(data, family, text)
+    return data
+
+
+# 拿到的字体至少要覆盖所请求字符的这个比例。够不够是 gates 3h 逐字判的,这里只拦「明显不是
+# 我要的那份东西」:分片碎片的覆盖率是个位数百分比,而正常子集只会漏掉该家族本身没有的
+# 那几个符号(如 ⚠ ① ② 不在拉丁三款里),覆盖率 97% 以上。
+MIN_COVERAGE = 0.90
+
+
+def assert_covers(font_bytes, family, text):
+    """拿 fontTools 读回刚下载的字体,断言它确实覆盖了绝大部分所请求字符。"""
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        sys.exit("!! 需要 fontTools 与 brotli:pip install fonttools brotli")
+    with TTFont(io.BytesIO(font_bytes), lazy=True) as f:
+        cmap = f.getBestCmap()
+    want = set(text)
+    got = {c for c in want if ord(c) in cmap}
+    ratio = len(got) / len(want) if want else 1.0
+    if ratio < MIN_COVERAGE:
+        sys.exit(
+            "!! %s:取回的字体只覆盖了 %d/%d(%.0f%%)个请求字符,不是完整子集,拒绝写入。"
+            % (family, len(got), len(want), ratio * 100)
+        )
+    lack = sorted(want - got)
+    if lack:
+        # 不判负:该家族本身没有的字形由字体栈逐字回退到 Noto(tokens.css 的三条栈都以它兜底)
+        print("   %-26s 该家族无字形 %d 个,交由字体栈回退:%s" % (family, len(lack), "".join(lack)))
+
+
+def subset_local(ttf_bytes, text):
+    """用 fontTools 把上游全量可变字体子集成 WOFF2 字节。
+
+    延迟 import:`--print-charset` / `--help` 不该因为没装 fontTools 就跑不了。
+    保留 fvar/gvar/HVAR(可变轴)与全部 layout feature —— CJK 字重要跟随元素,
+    子集掉 wght 轴会让 tokens.css 的 `font-weight: 300 700` 失效,中文变发丝细体。
+    """
+    try:
+        from fontTools import subset
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        sys.exit("!! Noto 侧需要 fontTools 与 brotli:pip install fonttools brotli")
+
+    src = io.BytesIO(ttf_bytes)
+    ver = TTFont(src, lazy=True)["name"].getDebugName(5)
+    src.seek(0)
+    print("   Noto 上游全量:%d bytes,%s" % (len(ttf_bytes), ver))
+
+    opts = subset.Options()
+    opts.flavor = "woff2"
+    opts.layout_features = ["*"]
+    opts.name_IDs = ["*"]  # 保留版权/许可名条目:OFL-1.1 §4 的署名随产物分发
+    opts.name_legacy = True
+    opts.name_languages = ["*"]
+    opts.notdef_outline = True  # 缺字画方框而不是画空白:上屏方块是能看见的 bug,空白不是
+    font = subset.load_font(src, opts)
+    subsetter = subset.Subsetter(options=opts)
+    subsetter.populate(text=text)
+    subsetter.subset(font)
+    buf = io.BytesIO()
+    subset.save_font(font, buf, opts)
+    return buf.getvalue()
 
 
 USAGE = """用法: python scripts/fetch_fonts.py [输出目录] [--print-charset] [--help]
@@ -226,7 +408,7 @@ def main():
     latin, cjk, detail = build_charsets()
     print("扫描来源:")
     for rel, nlit, nchar in detail:
-        print("   %-28s 字面量 %4d 条,去重字符 %4d" % (rel, nlit, nchar))
+        print("   %-40s 字面量 %5d 条,去重字符 %4d" % (rel, nlit, nchar))
     print("拉丁子集 %d 字符;CJK 子集 %d 字符" % (len(latin), len(cjk)))
     if "--print-charset" in flags:
         # 两个子集都打印:法语重音有没有真的扫进来,只能从拉丁集看出来
@@ -234,37 +416,29 @@ def main():
         print("CJK:", cjk)
         return
 
-    fonts = [
-        # (输出文件名, Google 家族+字重, 子集字符)
+    latin_fonts = [
+        # (输出文件名, Google 家族+字重)
         # 字重按 tokens.css 三分工取单一档:Grotesk 只用于标题/数值/CTA(600),
         # Sans/Mono 正文与标签(400)。@font-face 声明的 font-weight 区间比这宽,
         # 是给字体栈回退留口子——配 body 的 font-synthesis:none,缺字重时宁可回退不合成伪粗。
-        ("SpaceGrotesk.woff2", "Space Grotesk:wght@600", latin),
-        ("IBMPlexSans.woff2", "IBM Plex Sans:wght@400", latin),
-        ("IBMPlexMono.woff2", "IBM Plex Mono:wght@400", latin),
-        # 可变字重 400..700:CJK 字重跟随元素(小标签 400,标题/CTA 600),单文件覆盖全区间
-        ("NotoSansSC.woff2", "Noto Sans SC:wght@400..700", cjk + latin),
+        ("SpaceGrotesk.woff2", "Space Grotesk:wght@600"),
+        ("IBMPlexSans.woff2", "IBM Plex Sans:wght@400"),
+        ("IBMPlexMono.woff2", "IBM Plex Mono:wght@400"),
     ]
 
     os.makedirs(out, exist_ok=True)
-    for fname, family, text in fonts:
-        q = {"family": family, "display": "swap", "text": text}
-        url = "https://fonts.googleapis.com/css2?" + urllib.parse.urlencode(
-            q, quote_via=urllib.parse.quote
-        )
-        if len(url) > 7500:
-            # text= 走 GET,URL 过长会被 Google 以 414 拒掉;真到这一步就得改子集策略
-            print("!! URL 长 %d 字节,可能超服务端上限" % len(url))
-        css = fetch(url).decode("utf-8")
-        m = re.search(r"src:\s*url\((https://[^)]+)\)", css)
-        if not m:
-            print("!! CSS 里没找到 woff2 url:", family)
-            print(css[:800])
-            sys.exit(2)
-        data = fetch(m.group(1))
+    for fname, family in latin_fonts:
+        data = fetch_css2_subset(family, latin)
         with open(os.path.join(out, fname), "wb") as f:
             f.write(data)
-        print("OK %-20s %7d bytes" % (fname, len(data)))
+        print("OK %-20s %7d bytes  (CSS2 text=)" % (fname, len(data)))
+
+    # Noto 的字符集是 CJK + 全部拉丁:三条字体栈都以 'Noto Sans SC' 为最后一道内嵌回退,
+    # 拉丁三款没有的字形(如 ⚠ ① ②)全靠它兜住,所以它必须是四款里字符集最全的一款。
+    noto = subset_local(fetch(NOTO_TTF_URL), cjk + latin)
+    with open(os.path.join(out, "NotoSansSC.woff2"), "wb") as f:
+        f.write(noto)
+    print("OK %-20s %7d bytes  (上游全量 + 本地 fontTools 子集)" % ("NotoSansSC.woff2", len(noto)))
     print("-> ", out)
 
 

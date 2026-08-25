@@ -335,6 +335,34 @@ else {
 }
 
 # ==================================================================
+Write-Host '=== Gate 3h: 字体子集覆盖(文案字符 <-> web/fonts/*.woff2 逐字对拍)==='
+# ==================================================================
+# [F12] web/fonts/README.md 早就写着「新增文案不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」。
+# 那句话在 2026-08-17 → 08-25 之间被兑现:i18n.js 连改四批词条、子集一次没重跑,feature/v1
+# 主线带着几百个无字形字符(含「卡箍」这种正经词条)一路合入,八道门禁没有一道看得见。
+# 人审 PR diff 永远发现不了「这个新汉字字体里没有」—— 只有逐字比对字符集与 cmap 查得出。
+#
+# CI 侧跑**同一条命令**:.github/workflows/format.yml 的 docs-truth job(与 3f/3g 同档)。
+# 那边由 setup-python 钉版本 + pip 锁 fontTools/Brotli 补丁号;本地用开发机现装的。
+#
+# python 守卫同 Gate 3d:命令不存在时 PowerShell 抛 CommandNotFoundException 而**不更新**
+# $LASTEXITCODE,它会保留上一条外部命令的 0,于是「一次没跑」被判成绿。
+# 脚本自身也不静默:缺 fontTools/brotli 会以非零退出并打安装命令,不会假绿跳过。
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+  Write-Host '  python 未找到(check-font-coverage.py 需要,另需 fontTools + brotli)' -ForegroundColor Red
+  Set-Gate '3h 字体子集覆盖' $false
+}
+else {
+  $fontOut = (& python scripts\check-font-coverage.py 2>&1)
+  $fontOk = ($LASTEXITCODE -eq 0)
+  # 绿时也透出 [INFO](按设计走字体栈回退、以及上游家族本身没有的字形),
+  # 免得那张白名单悄悄变长而无人过问;红时打全量,缺字逐个带码位。
+  if (-not $fontOk) { $fontOut | ForEach-Object { Write-Host ("  " + $_) } }
+  else { $fontOut | Select-String -Pattern '\[INFO\]|—' | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3h 字体子集覆盖' $fontOk
+}
+
+# ==================================================================
 # ---- gate 4/5/6 前置守卫:cmake / ctest 必须真实可执行 ----
 # 不设守卫的后果不是「报错」,是**假绿**:外部命令不存在时 PowerShell 抛
 # command-not-found,但 $LASTEXITCODE 保留上一条命令的旧值(通常 0),
