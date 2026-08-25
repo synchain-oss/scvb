@@ -37,6 +37,34 @@ inline constexpr u64 kMisalignRecoverMs = 1000;
 // [01 §4.2] write_head 停滞判定(CH_SUSPENDED 软启发式)。
 inline constexpr u64 kSuspendStallMs = 500;
 
+// 心跳年龄「无数据」哨兵(契约 §2.3 heartbeatAgeMs:slotState=0 / 从未心跳时发此值)。
+inline constexpr u32 kHeartbeatAgeUnknown = 0xFFFFFFFFu;
+
+// per-channel 连接实况(契约 §2.3 scvb.conn 的数据面;[M] 只读本组 registry 的 InputSlot)。
+struct ChannelConnInfo
+{
+    u32 slotState = 0; // 逐字照 ipc §1:0=空闲 1=已声明 2=活跃
+    u32 heartbeatAgeMs = kHeartbeatAgeUnknown; // 哨兵 = 无数据
+    bool capturing = false; // InputSlot.flags bit0(kFlagCapturing)
+    bool srMismatch = false; // 该轨 Input 采样率 ≠ 本 Output 采样率(ipc §5,该轨禁用)
+};
+
+// 心跳年龄换算(纯函数,可离线断言):空闲槽 / 从未心跳 → 哨兵;时钟倒退 → 0;
+// 溢出钳到「哨兵-1」,免得真实的超长年龄被误读成「无数据」。
+inline u32 heartbeatAgeMsOf(u32 slotState, u64 heartbeatMs, u64 nowMs) noexcept
+{
+    if (slotState == kSlotFree || heartbeatMs == 0)
+    {
+        return kHeartbeatAgeUnknown;
+    }
+    if (nowMs <= heartbeatMs)
+    {
+        return 0;
+    }
+    const u64 age = nowMs - heartbeatMs;
+    return age >= static_cast<u64>(kHeartbeatAgeUnknown) ? (kHeartbeatAgeUnknown - 1u) : static_cast<u32>(age);
+}
+
 // Output 实例的 claim 态(01 §4.2)。
 enum class OutputClaimState
 {
@@ -91,6 +119,14 @@ public:
     u32 pid() const noexcept { return pid_; }
     u32 sampleRate() const noexcept { return sampleRate_; }
     OutputClaimState state() const noexcept { return state_.load(std::memory_order_acquire); }
+
+    // [M] 桥面 scvb.conn 数据面(契约 §2.3):直接读本组 registry 的 InputSlot 实况。
+    // 与 evaluateChannels 的在线判定同源(同一 InputSlot 字段),但**不做**失准/停摆折算 ——
+    // 那两项 UI 侧另有 misalignCount 与自己的口径,conn 只报「槽/心跳/采集/采样率」四件事。
+    // channel ∈ [1,15];非法或 registry 未映射 → 全默认(slotState=0 + 哨兵年龄)。
+    ChannelConnInfo channelConn(u32 channel, u64 nowMs) const;
+    // 本组 RegistryHeader.generation(契约 §2.3 顶层 generation;覆盖式重初始化 +1)。
+    u32 registryGeneration() const { return registry_.generation(); }
 
     // [M] 聚合用([J09] 全局小节 / 看门狗)。
     u32 gapCount(u32 channel) const;

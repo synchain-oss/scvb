@@ -31,6 +31,14 @@ protected:
     // 25Hz diff-then-emit(仅 mBridgeReady 后由基类调用)。
     void emitTick() override;
 
+    // setLang:归一化后同时落 Output state(uiLanguage,params-v0 §二;§1.30)。
+    // 基类只写 editor 局部 lang_,而 §2.1 的 ui.language 取自 processor —— 不落 processor
+    // 就会在下一次 state emit 把旧语言回推给 UI(T37 真机 bug A-1)。
+    void handleSetLang(const juce::Array<juce::var>& args,
+                       juce::WebBrowserComponent::NativeFunctionCompletion complete) override;
+    // commitUiScale 防呆确认后落 Output state + 系统级全局默认(§1.29)。
+    void persistUiScaleAsDefault() override;
+
 private:
     using Completion = juce::WebBrowserComponent::NativeFunctionCompletion;
     using ArgList = juce::Array<juce::var>;

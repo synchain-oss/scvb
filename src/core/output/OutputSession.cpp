@@ -366,6 +366,23 @@ const ShmRingMixSource& OutputSession::mixSource(u32 channel) const
                                                      : gEmptyMixSource;
 }
 
+ChannelConnInfo OutputSession::channelConn(u32 channel, u64 nowMs) const
+{
+    ChannelConnInfo info;
+    const InputSlot* slot = registry_.inputSlot(channel);
+    if (slot == nullptr)
+    {
+        return info; // registry 未映射 / channel 非法 → 空闲 + 无数据哨兵
+    }
+    info.slotState = slot->state.load(std::memory_order_acquire);
+    info.heartbeatAgeMs = heartbeatAgeMsOf(info.slotState, slot->heartbeat_ms.load(std::memory_order_acquire), nowMs);
+    info.capturing = (slot->flags.load(std::memory_order_acquire) & kFlagCapturing) != 0;
+    // 采样率只在槽活跃且两端都已 prepare 时才有可比性(0 = 未知,不报不一致)。
+    const u32 slotSr = slot->sample_rate;
+    info.srMismatch = info.slotState == kSlotActive && slotSr != 0 && sampleRate_ != 0 && slotSr != sampleRate_;
+    return info;
+}
+
 u32 OutputSession::gapCount(u32 channel) const
 {
     if (channel < 1 || channel > kMaxChannels)

@@ -13,7 +13,9 @@
 //   ③ mock 端到端:setAnalysisConfig 写入 + badArg(含 02/03 拼写不互认)+ save/load 往返不丢;
 //   ④ 词条:T35 新增 set.* key 三语齐、占位符三语一致、05 §5 禁词零命中;
 //   ⑤ 源码级:改 loudness_mode → 置「改后需重分析」stale(center_slot_policy 不弹);九条 = 读取 guide.rule* 生成物零手抄;
-//     「查看全部九条」= 块内展开;J45 措辞零命中。
+//     「查看全部九条」= 块内展开;J45 措辞零命中;
+//   ⑥ native 落点(T37 真机回归):setLang/commitUiScale 落 processor、首启已读位两级落盘、
+//     scvb.conn 读 registry 实况 —— 这三件 mock 天然自洽,只能在源码级拦。
 //
 // 用法:node web-preview/tests/smoke-tab4-settings.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
@@ -480,6 +482,71 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
         html.includes(".settings-version__value") &&
             html.includes("font-family: var(--ff-sans)"),
         "版本号排印改干净 sans(--ff-sans,非 sc-mono)",
+    );
+}
+
+// =============================================================================
+log("=== ⑥ native 落点:ui.* 与 conn 的写/读路径(T37 真机回归)===");
+{
+    // 为什么这几条断言在 web 冒烟里:mock 后端的 setLang 是 patchState({ui:{language}}),
+    // 天然自洽,web-preview 永远复现不出 native 的写路径缺失。T37 真机四条 bug 里有三条
+    // 断在「native 有下发、没有回写/没有持久化」这一层,这里补上对应的源码级闸。
+    const oe = src("src/output/OutputEditor.cpp");
+    const op = src("src/output/OutputProcessor.cpp");
+    const ie = src("src/input/InputEditor.cpp");
+
+    // A-1:§2.1 的 ui.language / ui.scale 是从 **processor** 取的,而 WebViewHost 的通用
+    // handleSetLang / setUiScale 只改 editor 自己的 lang_ / uiScale_。子类不把值落到 processor,
+    // 下一拍 state emit 就把旧值原样回推,syncUiFromState 当场把页面切回旧语言 ——
+    // 真机表现:选完中文,一切 tab / 一点「开始使用」就变回英文。
+    for (const [name, code] of [
+        ["Output", oe],
+        ["Input", ie],
+    ]) {
+        check(
+            /void\s+\w+Editor::handleSetLang/.test(code) &&
+                code.includes("bridgeSetUiLanguage"),
+            name +
+                "Editor 覆写 handleSetLang 并落 processor(bridgeSetUiLanguage)",
+        );
+        check(
+            /void\s+\w+Editor::persistUiScaleAsDefault/.test(code) &&
+                code.includes("bridgeSetUiScalePercent"),
+            name + "Editor 覆写 persistUiScaleAsDefault 并落 processor",
+        );
+    }
+    check(
+        op.includes("ScvbOutputAudioProcessor::bridgeSetUiLanguage") &&
+            op.includes("ScvbOutputAudioProcessor::bridgeSetUiScalePercent"),
+        "Output processor 两个 ui setter 有实现",
+    );
+
+    // A-3:首启已读位的两级落盘 —— 工程位入 CFGS、系统级全局位入 UiDefaultsStore。
+    check(
+        op.includes("uiGuideSeen") && op.includes("uiTourSeen"),
+        "guide_seen / tour_seen 随工程 state 落盘(CFGS)",
+    );
+    check(
+        oe.includes("uidefaults::guideSeenGlobal()") &&
+            oe.includes("uidefaults::tourSeenGlobal()"),
+        "快照的 *_global 取自 UiDefaultsStore(不再硬编码 false)",
+    );
+    check(
+        oe.includes("uidefaults::setGuideSeenGlobal") &&
+            oe.includes("uidefaults::setTourSeenGlobal"),
+        "setGuideSeen / setTourSeen 的 alsoGlobal 真的落盘",
+    );
+
+    // B:桥面 conn 必须来自 registry 实况,不得再有 T29 的占位常量。UI 的连接数口径是
+    // 「slotState=2 ∧ heartbeatFresh」,heartbeatFresh 恒 false 则连接数恒 0 ——
+    // 真机表现:音频通、Input 显示已连接,Output 轨道页却永远「组 X 尚无输入」。
+    check(
+        oe.includes("processor_.connSnapshot()"),
+        "buildConnPayload 读 registry 实况快照",
+    );
+    check(
+        !/put\(ch, "heartbeatFresh", false\)/.test(oe),
+        "heartbeatFresh 不再硬编码 false(否则连接数恒 0)",
     );
 }
 

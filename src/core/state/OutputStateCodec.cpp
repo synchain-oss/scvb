@@ -10,6 +10,7 @@ namespace scvb::state
 namespace
 {
 constexpr std::size_t kHeaderBytes = 24; // 6 个 u32
+constexpr std::size_t kTrailerBytes = 8; // 尾部追加段:uiGuideSeen + uiTourSeen(T37)
 
 void putU32(std::vector<std::uint8_t>& out, std::uint32_t v)
 {
@@ -37,7 +38,7 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     const std::size_t langBytes = std::min<std::size_t>(s.uiLanguage.size(), kOutputLanguageMaxBytes);
     try
     {
-        out.reserve(kHeaderBytes + langBytes);
+        out.reserve(kHeaderBytes + langBytes + kTrailerBytes);
     }
     catch (...)
     {
@@ -50,6 +51,8 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     putU32(out, s.uiScale);
     putU32(out, static_cast<std::uint32_t>(langBytes));
     out.insert(out.end(), s.uiLanguage.begin(), s.uiLanguage.begin() + static_cast<std::ptrdiff_t>(langBytes));
+    putU32(out, s.uiGuideSeen != 0 ? 1u : 0u);
+    putU32(out, s.uiTourSeen != 0 ? 1u : 0u);
     return true;
 }
 
@@ -83,9 +86,26 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     {
         return false;
     }
-    if (langBytes > kOutputLanguageMaxBytes || kHeaderBytes + langBytes != size)
+    // 两种合法总长:老布局(无尾部)与新布局(带 uiGuideSeen/uiTourSeen)。其余一律拒载。
+    const bool hasTrailer =
+        (langBytes <= kOutputLanguageMaxBytes) && (kHeaderBytes + langBytes + kTrailerBytes == size);
+    if (langBytes > kOutputLanguageMaxBytes || (kHeaderBytes + langBytes != size && !hasTrailer))
     {
         return false; // 长度字段与总长不一致 → 拒载(不可信字节)
+    }
+    std::uint32_t guideSeen = 0;
+    std::uint32_t tourSeen = 0;
+    if (hasTrailer)
+    {
+        const std::size_t off = kHeaderBytes + langBytes;
+        if (!readU32(data + off, size - off, guideSeen) || !readU32(data + off + 4, size - off - 4, tourSeen))
+        {
+            return false;
+        }
+        if (guideSeen > 1 || tourSeen > 1)
+        {
+            return false; // 布尔位越界 → 不可信字节
+        }
     }
     OutputState parsed;
     parsed.groupId = groupId;
@@ -94,6 +114,8 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     parsed.versionActive = versionActive;
     parsed.uiScale = uiScale;
     parsed.uiLanguage.assign(reinterpret_cast<const char*>(data + kHeaderBytes), langBytes);
+    parsed.uiGuideSeen = guideSeen;
+    parsed.uiTourSeen = tourSeen;
     out = std::move(parsed);
     return true;
 }

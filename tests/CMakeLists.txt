@@ -87,9 +87,11 @@ add_executable(scvb_params_tests
   core/test_version_params.cpp
   core/test_segment_edit_service.cpp
   core/test_bridge_args.cpp
+  core/test_ui_defaults_store.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
   ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/UiDefaultsStore.cpp
 )
 
 target_link_libraries(scvb_params_tests PRIVATE
