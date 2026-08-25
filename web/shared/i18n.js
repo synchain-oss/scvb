@@ -362,7 +362,11 @@ export const T = {
             "每轨一条线 = 该轨最终打印的声像;没有分段的区间不画线",
         // y 轴的三个方位词(上 / 中 / 下 = +100 / 0 / −100)。刻度**数字**由
         // trajectory-chart.js 按当前纵向缩放档算,方位词只贴在这三条锚刻度上。
-        "chart.trajAxisSides": "右 R · 中 C · 左 L",
+        // **三条各自成 key,不合成一串按语序拆** —— 合成串的话,U17 审校时调一下
+        // 词序就会把左右标反,而那是一眼看不出来的错(图照画,只是左右颠倒)。
+        "chart.panSideR": "右 R",
+        "chart.panSideC": "中 C",
+        "chart.panSideL": "左 L",
         "chart.trajCanvasAria":
             "声像轨迹图:滚轮横向缩放,Shift+滚轮纵向缩放,拖拽或方向键平移",
         "chart.zoomAria": "时间轴缩放档位",
@@ -1044,7 +1048,9 @@ export const T = {
         "chart.modeTrajectory": "Trajectory",
         "chart.trajHint":
             "One line per track = that track's final printed pan; no line where there are no segments",
-        "chart.trajAxisSides": "R · C · L",
+        "chart.panSideR": "R",
+        "chart.panSideC": "C",
+        "chart.panSideL": "L",
         "chart.trajCanvasAria":
             "Pan trajectory chart: scroll to zoom horizontally, Shift+scroll to zoom vertically, drag or arrow keys to scroll",
         "chart.zoomAria": "Timeline zoom level",
@@ -1696,7 +1702,9 @@ export const T = {
         "chart.modeTrajectory": "Trajectoire",
         "chart.trajHint":
             "Une ligne par piste = le panoramique final imprimé de cette piste ; aucune ligne là où il n'y a pas de segment",
-        "chart.trajAxisSides": "D · C · G",
+        "chart.panSideR": "D",
+        "chart.panSideC": "C",
+        "chart.panSideL": "G",
         "chart.trajCanvasAria":
             "Graphique de trajectoire du panoramique : molette pour zoomer horizontalement, Maj+molette pour zoomer verticalement, glisser ou flèches pour défiler",
         "chart.zoomAria": "Niveau de zoom de la timeline",

@@ -1974,11 +1974,19 @@ export function createTabMaster(opts) {
      * y 刻度列。轨迹图推来 `{pan, y, side}`,方位词在这里按字典补上 ——
      * `side` 只会是 `R`/`C`/`L`(即 +100 / 0 / −100 三条锚刻度),纵向放大到看不见
      * 它们时本列就只剩数字;给别的刻度硬贴方位词等于写一个不成立的读数。
+     *
+     * 方位词**按 key 取**(`chart.panSideR/C/L`),不是拆一串按位置认。语序在
+     * 三语里本就不同,再经 U17 审校一改,按位置取就会把左右标反 —— 而那是一眼
+     * 看不出来的错:图照画,只是左右颠倒。key 取词条则怎么改都错不到别人头上。
      */
+    function sideWord(t, side) {
+        return (t && t["chart.panSide" + side]) || "";
+    }
+
     function renderTrajAxis(t) {
         if (!el.trajAxisY) return;
         // 签名先算先比:本函数挂在每帧 render 上,刻度与语言都没动时应当一步不走。
-        const sides = (t && t["chart.trajAxisSides"]) || "";
+        const sides = ["R", "C", "L"].map((s) => sideWord(t, s)).join(" ");
         const key =
             sides +
             "|" +
@@ -1987,18 +1995,9 @@ export function createTabMaster(opts) {
                 .join(",");
         if (key === local.trajAxisKey) return;
         local.trajAxisKey = key;
-        // 「右 R · 中 C · 左 L」拆三格(与分布图底轴同一个 · 分隔约定)
-        const words = String(sides)
-            .split(" · ")
-            .map((w) => w.trim());
-        const side = {
-            R: words[0] || "",
-            C: words[1] || "",
-            L: words[2] || "",
-        };
         el.trajAxisY.innerHTML = local.trajAxisTicks
             .map((k) => {
-                const w = side[k.side] || "";
+                const w = sideWord(t, k.side);
                 return (
                     `<span class="traj-axis-y__tick${w ? " is-anchor" : ""}"` +
                     ` style="top:${k.y.toFixed(2)}px">` +

@@ -117,6 +117,62 @@ log("=== ① 轨迹图纯几何(J75 A)===");
         "20ms 缝隙超容差 ⇒ 断线",
     );
 
+    // 重叠段(§2.8 的段互不重叠,但脏数据里时间会倒流)。夹取语义 =
+    // 「先到的段占住那段时间,交接发生在它的末尾」;折线因此恒为时间单调递增。
+    {
+        const overlap = TC.runsOfSegments([
+            { t0S: 0, t1S: 5, pan: -30 },
+            { t0S: 3, t1S: 9, pan: 20 }, // 与前段重叠 2s
+        ]);
+        eq(overlap.length, 1, "重叠 ⇒ 仍是一条折线(重叠不是间隙)");
+        eq(
+            overlap[0],
+            [
+                { tS: 0, pan: -30 },
+                { tS: 5, pan: -30 },
+                { tS: 5, pan: 20 },
+                { tS: 9, pan: 20 },
+            ],
+            "重叠段夹到前段末尾(交接在 5s,不是画一段从 3s 往回走的负宽台阶)",
+        );
+        // 完全被吞:没有自己的时间 ⇒ 整段跳过,且**不该**因此断线
+        const swallowed = TC.runsOfSegments([
+            { t0S: 0, t1S: 10, pan: 0 },
+            { t0S: 2, t1S: 6, pan: 50 }, // 完全落在前段内
+            { t0S: 10, t1S: 14, pan: -40 },
+        ]);
+        eq(swallowed.length, 1, "被吞的段不产生断口(它压根没占住时间)");
+        eq(
+            swallowed[0],
+            [
+                { tS: 0, pan: 0 },
+                { tS: 10, pan: 0 },
+                { tS: 10, pan: -40 },
+                { tS: 14, pan: -40 },
+            ],
+            "被吞的段整段跳过,后面的段照常接上",
+        );
+        // 所有折线的时间**恒单调不减** —— 这条是重叠夹取要守住的总不变式
+        const messy = TC.runsOfSegments([
+            { t0S: 0, t1S: 8, pan: 10 },
+            { t0S: 1, t1S: 3, pan: 20 },
+            { t0S: 5, t1S: 12, pan: 30 },
+            { t0S: 11, t1S: 11.5, pan: 40 },
+            { t0S: 30, t1S: 35, pan: 50 }, // 真间隙 ⇒ 断线
+        ]);
+        for (const r of messy) {
+            check(
+                r.every((p, i) => i === 0 || p.tS >= r[i - 1].tS),
+                `折线时间单调不减(实得 ${JSON.stringify(r.map((p) => p.tS))})`,
+            );
+        }
+        eq(
+            messy.length,
+            2,
+            "脏数据里的**真**间隙仍然断线(夹取没把断线判据吃掉)",
+        );
+    }
+
     // 乱序/脏数据不炸
     eq(TC.runsOfSegments(null).length, 0, "null 段表 → 空折线组");
     eq(
@@ -676,7 +732,9 @@ log("=== ⑥ 词条(chart.* 三语)===");
         "chart.modeDistribution",
         "chart.modeTrajectory",
         "chart.trajHint",
-        "chart.trajAxisSides",
+        "chart.panSideR",
+        "chart.panSideC",
+        "chart.panSideL",
         "chart.trajCanvasAria",
         "chart.zoomAria",
         "chart.backToPlayhead",
@@ -697,22 +755,42 @@ log("=== ⑥ 词条(chart.* 三语)===");
             ph(T.zh[k]) === ph(T.en[k]) && ph(T.zh[k]) === ph(T.fr[k]),
             `${k} 三语占位符一致`,
         );
-        // 05 §5 占位符判据:fr 不许照抄英文
-        check(T.fr[k] !== T.en[k], `fr.${k} 不是英文照抄`);
+        // 05 §5 占位符判据:fr 不许照抄英文。
+        // 例外:`chart.panSideC` —— 方位词是单字母缩写,英 Centre / 法 Centre 同为
+        // 「C」,本来就该一样。这不是漏译,故显式豁免而不是放宽整条判据。
+        if (k !== "chart.panSideC") {
+            check(T.fr[k] !== T.en[k], `fr.${k} 不是英文照抄`);
+        }
     }
-    // y 轴方位词拆三格(上 / 中 / 下 = +100 / 0 / −100);刻度**数字**是算出来的,
-    // 不进词条 —— 纵向缩放后格数随档位变,写死在词条里的那五格已经不成立。
-    for (const lang of ["zh", "en", "fr"]) {
-        eq(
-            T[lang]["chart.trajAxisSides"].split(" · ").length,
-            3,
-            `${lang} 的 y 轴方位词拆成 3 格`,
-        );
-    }
+    eq(
+        [T.en["chart.panSideR"], T.en["chart.panSideL"]],
+        ["R", "L"],
+        "en 左右方位词(照抄豁免只给 C 那一条,左右仍逐字对拍)",
+    );
+    eq(
+        [T.fr["chart.panSideR"], T.fr["chart.panSideL"]],
+        ["D", "G"],
+        "fr 左右方位词 = Droite / Gauche(确实译过,不是照抄英文)",
+    );
+    // 方位词**三条各自成 key**,不再合成一串按语序拆 —— 合成串的话,U17 审校
+    // 调一下词序就会把左右标反,而那是一眼看不出来的错(图照画,只是左右颠倒)。
+    check(
+        !("chart.trajAxisSides" in T.zh),
+        "合成串词条已删(按语序取词的隐患随它一起没了)",
+    );
     check(
         !("chart.trajAxisY" in T.zh),
         "写死五格的旧词条已删(留着就会有人以为刻度还是固定五格)",
     );
+    // 消费侧必须**按 key 取**:出现 split(" · ") 就是又退回按位置认了
+    {
+        const tm = src("web/output/tab-master.js");
+        check(
+            /t\["chart\.panSide" \+ side\]/.test(tm),
+            "方位词按 key 取(`chart.panSide` + R/C/L)",
+        );
+        check(!/chart\.trajAxisSides/.test(tm), "消费侧不再引用合成串词条");
+    }
     const BANNED = ["写入完成", "推子后", "post-fader", "六条"];
     for (const f of [
         "web/shared/trajectory-chart.js",

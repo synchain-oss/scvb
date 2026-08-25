@@ -250,6 +250,10 @@ export function panZoomLabel(view) {
  * 台阶而不是斜线 —— 画斜线会在放到最大时变成一条**假的**渐变轨迹);中间只要有
  * 间隙就**另起一段**,即 J75 A 的「无分段覆盖的区间不画线」。
  *
+ * 输入按 `t0S` 升序整理,并对**重叠段**夹取(§2.8 的段互不重叠,但脏数据里时间会
+ * 倒流):重叠部分归先到的那一段,被完全吞掉的段整段跳过 —— 折线因此**恒为时间
+ * 单调递增**,不会出现往回走的负宽台阶。
+ *
  * @param {{t0S:number, t1S:number, pan:number}[]} segments 单轨段表(§2.8)
  * @returns {{tS:number, pan:number}[][]} 折线段组;每组 ≥2 点,组间断开
  */
@@ -269,11 +273,19 @@ export function runsOfSegments(segments) {
     let prevEnd = 0;
     for (const s of segs) {
         const pan = clamp(PAN_MIN, PAN_MAX, num(s.pan, 0));
-        if (!cur || s.t0S - prevEnd > CONTIGUOUS_EPS_S) {
+        // **重叠段夹到前一段的末尾**(段表已按 t0S 升序)。§2.8 的段互不重叠,
+        // 但脏数据里时间会倒流:t0S < prevEnd 时若原样入点,折线就会往回走一段 ——
+        // 画出负宽的台阶,且后面的 decimateRun 按「同一像素列」判据也跟着乱。
+        // 语义取「先到的段占住那段时间,交接发生在它的末尾」。
+        const t0 = Math.max(s.t0S, prevEnd);
+        // 完全被前一段吞掉(t1S ≤ prevEnd):没有任何自己的时间,整段跳过。
+        // 注意**不能**因此断线 —— 它压根没占住时间,不该在图上留下一个缺口。
+        if (s.t1S <= t0) continue;
+        if (!cur || t0 - prevEnd > CONTIGUOUS_EPS_S) {
             cur = [];
             runs.push(cur);
         }
-        cur.push({ tS: s.t0S, pan }, { tS: s.t1S, pan });
+        cur.push({ tS: t0, pan }, { tS: s.t1S, pan });
         prevEnd = s.t1S;
     }
     return runs;

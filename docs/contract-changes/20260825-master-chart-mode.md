@@ -60,14 +60,27 @@ Output state `ui` 子树新增 **`master_chart_mode`**:Tab1「声像 / 音量分
 | 撤销 | 否(与 `setActiveTab` 同 —— UI 偏好不进 undo 栈) |
 | 线程/频率 | `[M]`;用户点一次调一次 |
 
-转正时要同批改的四处(缺一处 `scripts/check-bridge-parity.mjs` 就会红,这是好事):
+转正时要同批改的**五处**(缺一处 `scripts/check-bridge-parity.mjs` 就会红,这是好事):
 
 1. `docs/SCVB_CONTRACT.md` —— §1 正文新增条目 + §7 manifest 的 `output.functions` 加名
    (计数断言 **34 → 35**,`scripts/check-bridge-parity.mjs` 的 `EXPECTED` 表同改);
 2. `src/output/OutputBridgeApi.h` —— 加 `kFnSetMasterChartMode` 常量;
 3. `web/shared/bridge.js` —— 把名字从 `PENDING_FUNCS` **挪进** `BRIDGE_FUNCTIONS.output`
    (留在 `PENDING_FUNCS` 里等于让它绕过 parity 门禁,那才是真正的洞);
-4. `docs/STATE_SCHEMA.md` —— 并入上面的「字段定义」。
+4. `docs/STATE_SCHEMA.md` —— 并入上面的「字段定义」;
+5. **宪法 `params-v0.md` 的 Output state `ui` 组枚举行** —— 即
+   `ui: {scale, language, active_tab, guide_seen, tour_seen}   # J50/J62`
+   (`docs/constitution/params-v0.md` 第 65 行)加上 `master_chart_mode`。
+   **先例就在这一行**:`active_tab` / `guide_seen` / `tour_seen` 三个同类 UI 偏好
+   当初随 J50 / J62 进来时都是在这里登记的;宪法侧的 state 形状不跟着改,这一行
+   就会与 `STATE_SCHEMA.md` 讲两个故事。
+
+   ⚠️ **改的是原件,不是 repo 里这份**:`docs/constitution/*` 是
+   `masterPlan/constitution/*` 的**只读副本**(除文件头一行只读注记外逐字节相同,
+   `scripts/check-constitution-sync.ps1` 按 sha256 盯着,是 gates 第 1 关的一部分)。
+   只改 repo 副本 = 门禁当场红。正确做法:走**宪法升版**流程改
+   `masterPlan/constitution/params-v0.md` 原件,再同步副本 —— 这比契约变更更重,
+   须在转正 PR 里单独说明并取得批准。
 
 ### 本 PR 的 web 侧落地(不碰冻结面)
 
