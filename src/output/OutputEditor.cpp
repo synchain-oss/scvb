@@ -167,6 +167,8 @@ juce::var OutputEditor::buildSnapshot()
     // 系统级全局默认(跨工程,UiDefaultsStore 落盘;硬编码 false 时「不再显示」永不生效 —— T37 A-3)
     put(o, "guide_seen_global", uidefaults::guideSeenGlobal());
     put(o, "tour_seen_global", uidefaults::tourSeenGlobal());
+    // §1.1 附加位:用户显式选过语言的系统级全局默认(新工程不再重复问语言)。
+    put(o, "lang_chosen_global", uidefaults::langChosenGlobal());
     put(o, "conn", buildConnPayload());
     return o;
 }
@@ -671,6 +673,8 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     // 陈旧一帧无害,撕裂才有害 —— 故取 atomic 而不是让 25Hz 的 emit 去抢 lifecycleMutex_。
     put(ui, "guide_seen", rt.guideSeen.load(std::memory_order_relaxed));
     put(ui, "tour_seen", rt.tourSeen.load(std::memory_order_relaxed));
+    // 首启语言卡的抑制位(§1.30 setLang 被显式调用过即为真;随 PRMS 持久化)。
+    put(ui, "lang_chosen", rt.langChosen.load(std::memory_order_relaxed));
     put(o, "ui", ui);
 
     juce::var printGuard = obj();
@@ -827,6 +831,8 @@ void OutputEditor::handleSetLang(const juce::Array<juce::var>& args,
 {
     WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执 {ok:true}
     processor_.bridgeSetUiLanguage(lang()); // §1.30:落 Output state(实际生效值经 scvb.state 回推)
+    // 显式选过语言 → 同时写系统级全局默认,新工程也不再问(与 guide/tour 的 alsoGlobal 同口径)。
+    uidefaults::setLangChosenGlobal(true);
 }
 
 void OutputEditor::persistUiScaleAsDefault()

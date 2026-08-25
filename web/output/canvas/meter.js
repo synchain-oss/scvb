@@ -253,12 +253,14 @@ export function createMeterRenderer(opts) {
                 tracks[i] = restState();
             } else {
                 const m = latest ? latest[i] : null;
-                tracks[i] = advance(
-                    prev,
-                    m ? m.db : METER_FLOOR_DB,
-                    dt,
-                    m ? m.peakDb : undefined,
-                );
+                // **刻意不喂 `m.peakDb`**:液柱吃的是每块 RMS,而载荷里的 `peakDb` 是每块
+                // 真峰值 —— 两者是不同的物理量,同一条 60dB 行程上正弦差 3dB、人声差 10-14dB,
+                // 于是白色峰线会**稳态地**浮在液柱头顶十几到几十像素(v4 实测 P1-3)。
+                // 契约 §2.5 把弹道定义为「peak-hold 2200ms 后 20dB/s」——那是**对液柱这个量**
+                // 的保持,不是另一路独立峰值检测。省略本参数即退化为 advance 自算峰值(口径③),
+                // 峰线稳态贴着液柱头、只在瞬态时抬起,正是设计意图。
+                // `peakDb` 仍按契约由 native 发送(诊断/未来用),UI 只是不拿它当独立检测器。
+                tracks[i] = advance(prev, m ? m.db : METER_FLOOR_DB, dt);
             }
             if (!sameState(prev, tracks[i])) moved = true;
             writeRow(i, tracks[i]);

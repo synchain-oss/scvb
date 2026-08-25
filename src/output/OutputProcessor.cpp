@@ -390,10 +390,12 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     timelineInvalidBlocks_.store(0, std::memory_order_relaxed);
     timelineValid_.store(1, std::memory_order_relaxed);
 
-    const scvb::u32 inject = session_.injectMask();
+    // 与轨启用位求交:关掉的轨整轨不进混音(§1.15;DAW_COMPATIBILITY §「设备停用」把面板轨道
+    // 开关定为 A/B 的推荐手段 —— 那就必须真的听得出来)。
+    const scvb::u32 inject = session_.injectMask() & enabledMask_.load(std::memory_order_acquire);
     if (inject == 0)
     {
-        // 无注入轨(全部离线/注入延迟中):总线直通,经同一 busXfade 状态机(无硬切)。
+        // 无注入轨(全部离线/注入延迟中/全被关掉):总线直通,经同一 busXfade 状态机(无硬切)。
         const float* const* in = buffer.getArrayOfReadPointers();
         float* const* out = buffer.getArrayOfWritePointers();
         const float* lastMix[2] = {accumL_.data(), accumR_.data()};
@@ -497,10 +499,11 @@ void ScvbOutputAudioProcessor::renderBypassedUnity(juce::AudioBuffer<float>& buf
     // §5.4:按时间线读 15 环做 unity 求和(mono 居中复制到 L/R、stereo L→L/R→R;不 gain/pan/width)。
     // PR#53 I1:无注入轨或无可读源 → 直通(不改 buffer),绝不把总线替换成静音。
     // PR#53 复审:早退发生在清零之前 —— 无数据时不清 accum,保留 lastMix 供后续「混音→直通」等功率交叉。
-    const scvb::u32 inject = session_.injectMask();
+    const scvb::u32 inject = session_.injectMask() & enabledMask_.load(std::memory_order_acquire);
     if (inject == 0)
     {
-        return; // 总线上只挂 Output / 尚无 Input:直通
+        bypassHasData_.fill(false); // 早退也要清:否则收尾的 publishMeters 会拿上一块的 hasData
+        return; // 总线上只挂 Output / 尚无 Input / 全被关掉:直通
     }
 
     // 第一遍:读注入源到 trackBuf_,只判定「是否有可读数据」,不触碰 accum。
@@ -643,6 +646,23 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // 打印器模式:输出开关 ON → 引擎权威;OFF → follow host。T24 无分析曲线,Armed 与 Print 等效。
     printer_.setMode(outputEnabled_ ? scvb::engine::AuthorityMode::Armed : scvb::engine::AuthorityMode::Follow);
+
+    // 轨启用位(§1.15):推给打印器的车道闸(enabled=false 整轨不 begin、不写,03 §3.2),
+    // 并落成 [A] 每块读的位图(混音时整轨不注入)。此前两处都没接 —— setTrackEnabled 实现完整
+    // 且有单测,却**没有任何生产调用点**,于是开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。
+    {
+        std::uint32_t mask = 0;
+        for (int t = 0; t < 15; ++t)
+        {
+            const bool on = runtime_.channels[static_cast<std::size_t>(t)].enabled;
+            printer_.setTrackEnabled(t, on);
+            if (on)
+            {
+                mask |= (1u << t);
+            }
+        }
+        enabledMask_.store(mask, std::memory_order_release);
+    }
 
     // 布防时间维(§1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
     // follow 档 = 不限范围(全域);manual/daw_loop 档按 range 折成 hop 门,范围外不记账。
@@ -794,8 +814,9 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // 旧构建整块拒载并静默把 group/开关/版本打回默认;ValueTree 两个方向都容忍字段增删。
     // 见 OutputUiState.h 头注(STATE_SCHEMA §三 的 ui 组本就登记在 PRMS 名下)。
     auto state = apvts.copyState();
-    scvb::output::writeUiFlags(
-        state, {runtime_.guideSeen.load(std::memory_order_relaxed), runtime_.tourSeen.load(std::memory_order_relaxed)});
+    scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),
+                                       runtime_.tourSeen.load(std::memory_order_relaxed),
+                                       runtime_.langChosen.load(std::memory_order_relaxed)});
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
     copyXmlToBinary(*xml, paramsBlock);
@@ -879,6 +900,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             const auto flags = scvb::output::readUiFlags(loaded);
             runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);
             runtime_.tourSeen.store(flags.tourSeen, std::memory_order_relaxed);
+            runtime_.langChosen.store(flags.langChosen, std::memory_order_relaxed);
             apvts.replaceState(loaded);
             handles_ = scvb::params::collectParamHandles(apvts);
         }
@@ -1015,8 +1037,12 @@ ScvbOutputAudioProcessor::ConnSnapshot ScvbOutputAudioProcessor::connSnapshot()
 
 void ScvbOutputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
 {
-    const juce::ScopedLock lock(lifecycleMutex_);
+    const juce::ScopedLock lock(lifecycleMutex_); // 与 get/setStateInformation 的持久化路径串行
     uiLanguage_ = lang; // 已由桥层 normalize({zh,en,fr});getStateInformation 持久化
+    // setLang 只在用户显式操作时才被调(首启语言卡的选择、设置页的语言按钮);web 启动时
+    // 的语言回填走 setLang(..., {push:false}),不经桥。所以「桥的 setLang 被调过」就等价于
+    // 「用户显式选过语言」—— 据此置位,首启语言卡此后不再问(v4 实测 P1-6)。
+    runtime_.langChosen.store(true, std::memory_order_relaxed);
 }
 
 void ScvbOutputAudioProcessor::bridgeSetUiScalePercent(int percent)
@@ -1192,6 +1218,31 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
     scvb::output::commitCrvsTransaction(
         authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
         [&] { track.segments.assign(1, seg); }, [this] { rebuildAllCurves(); });
+
+    // 手动值还必须落到**参数面**,否则冻结维度上它根本驱动不了声音。
+    //
+    // 取值仲裁(DspArbiter §2.3)对冻结维度读的是 rawPan/rawVol(host 参数),不读曲线;
+    // 打印器对冻结车道也只是把参数自己的当前值重写成平直线(#68),不采样曲线。而 UI 在
+    // 「手动写回成功」之后会**自动把该维度的 freeze 位置 1**(tab-tracks.js「拖动 = 接管手动」)。
+    // 于是:第一次手动改能生效(此时 freeze 还是 0,曲线权威),UI 随即置 1,**之后每一次手动改
+    // 都只写进曲线、对声音毫无作用** —— 而旋钮照样跟手,因为读回值取自段表。这正是 v4 实测
+    // P1-4「先测有效、稍后再调完全无效」。
+    //
+    // 契约 §1.16 把本函数定义为「**冻结(freeze 对应位=1)时的手动静态值**」,PARAMETERS §freeze
+    // 定义冻结维度为「引擎不驱动、host/**手动**权威」—— 手动值要当权威,就得落在冻结维度真正
+    // 读的那个平面上。§1.16 的「零 gesture」照旧遵守:不 begin/endChangeGesture,只设值。
+    const int v = versionActive_;
+    if (auto* raw = isPan ? handles_.rawPan[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(ch - 1)]
+                          : handles_.rawVol[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(ch - 1)];
+        raw != nullptr)
+    {
+        const juce::String id = isPan ? scvb::params::panId(v, ch) : scvb::params::volId(v, ch);
+        if (auto* p = apvts.getParameter(id))
+        {
+            const float applied = isPan ? seg.pan : seg.volDb;
+            p->setValueNotifyingHost(p->convertTo0to1(applied)); // 工程值 → 归一化(§1.13 同款)
+        }
+    }
     return true;
 }
 

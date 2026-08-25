@@ -80,6 +80,8 @@ struct OutputRuntimeState
     // 跟宿主的 prepare/setState 抢锁。写方仍走 bridgeSetGuideSeen/bridgeSetTourSeen。
     std::atomic<bool> guideSeen{false};
     std::atomic<bool> tourSeen{false};
+    // 用户显式选过语言(§1.30 setLang 被调用过)。与上面两位同机制随 PRMS 持久化。
+    std::atomic<bool> langChosen{false};
 
     // 运行时态(不入 state chunk、不随工程持久化)
     bool printGuardPending = false;
@@ -327,6 +329,10 @@ private:
     std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数 / [M] 健康前置
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
     std::atomic<uint32_t> crvsRevision_{0}; // CRVS 替换修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
+    // 轨启用位图(bit{N-1} = ch N 的 channels[].enabled)。[M] 25Hz 写 / [A] 每块 acquire 读。
+    // §1.15 的 enabled 此前**全 Output 侧零消费**:混音不看它、打印器的车道闸(setTrackEnabled,
+    // 已实现且有单测)没有任何生产调用点 —— 开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。
+    std::atomic<std::uint32_t> enabledMask_{0x7FFFu};
 
     // 音频线程零分配缓冲(prepareToPlay 分配)。
     std::vector<float> accumL_;
