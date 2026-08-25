@@ -7,6 +7,8 @@
 
 #include "BridgeBase.h"
 
+#include <ScvbInputWebData.h> // juce_add_binary_data 生成:嵌入的 web/input UI 资源
+
 #include <utility>
 
 namespace scvb::input
@@ -26,7 +28,10 @@ InputEditor::InputEditor(ScvbInputAudioProcessor& processor)
                       c.lang = processor.bridgeUiLanguage();
                       c.uiScale = static_cast<float>(processor.bridgeUiScalePercent()) / 100.0f;
                       c.channelLimit = 15;
-                      c.resourceSource = {}; // web/input 资源由 T36 嵌入;T30 桥不嵌资源
+                      // 嵌入的 web/input UI 资源(cmake/ScvbWebAssets.cmake -> SCVBInputWebAssets)。
+                      // 传空 Source 会让 resource provider 恒 nullopt = 空白窗口 + 看门狗超时。
+                      c.resourceSource = {ScvbInputWebData::namedResourceListSize, ScvbInputWebData::originalFilenames,
+                                          ScvbInputWebData::namedResourceList, &ScvbInputWebData::getNamedResource};
                       c.augmentOptions = [this](juce::WebBrowserComponent::Options& options) {
                           registerNativeFunctions(options);
                       };

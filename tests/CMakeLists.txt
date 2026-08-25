@@ -130,6 +130,7 @@ add_executable(scvb_plugin_common_tests
 target_link_libraries(scvb_plugin_common_tests PRIVATE
   Catch2::Catch2WithMain
   juce::juce_gui_extra
+  juce::juce_audio_processors   # 只为 WebViewHost.h 的 include 面(取其 constexpr 常量,不编 .cpp)
 )
 
 target_include_directories(scvb_plugin_common_tests PRIVATE

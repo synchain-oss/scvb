@@ -7,6 +7,7 @@
 #include <FallbackPanel.h>
 #include <PlatformWebView.h>
 #include <ResourceProvider.h>
+#include <WebViewHost.h> // 只取看门狗预算/事件名常量(全是 constexpr,不需要编 WebViewHost.cpp)
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -117,7 +118,12 @@ TEST_CASE("FallbackPanel missing-runtime variant shows install + retry and fires
     options.onRetry = [&] { retryFired = true; };
 
     scvb::webview::FallbackPanel panel(std::move(options));
-    CHECK(panel.getNumChildComponents() == 4); // title + message + install + retry
+    CHECK(panel.getNumChildComponents() == 5); // title + message + details + install + retry
+
+    // 没给 details -> 组件建了但不可见(不占版面,也不留一条空行)
+    auto* details = panel.findChildWithID("fallback.details");
+    REQUIRE(details != nullptr);
+    CHECK_FALSE(details->isVisible());
 
     // triggerClick() 走 postCommandMessage(异步,需消息循环);此处直接调 onClick 验证接线。
     auto* installBtn = dynamic_cast<juce::TextButton*>(panel.findChildWithID("fallback.install"));
@@ -140,9 +146,56 @@ TEST_CASE("FallbackPanel load-timeout variant hides install")
     options.showInstall = false;
 
     scvb::webview::FallbackPanel panel(std::move(options));
-    CHECK(panel.getNumChildComponents() == 3); // title + message + retry
+    CHECK(panel.getNumChildComponents() == 4); // title + message + details + retry
     CHECK(panel.findChildWithID("fallback.install") == nullptr);
     CHECK(panel.findChildWithID("fallback.retry") != nullptr);
+}
+
+TEST_CASE("FallbackPanel shows the diagnostics line when one is supplied")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    scvb::webview::FallbackPanel::Options options;
+    options.title = "SCVB Output";
+    options.message = "timed out";
+    options.details = "waited 15003 ms  |  nav finished  |  WebView2 137.0.3296.83";
+
+    scvb::webview::FallbackPanel panel(std::move(options));
+    panel.setSize(1180, 780);
+
+    auto* details = dynamic_cast<juce::Label*>(panel.findChildWithID("fallback.details"));
+    REQUIRE(details != nullptr);
+    CHECK(details->isVisible());
+    CHECK(details->getText().contains("WebView2 137.0.3296.83"));
+    // 诊断行占了版面,重试按钮仍要在面板内 —— 它是用户唯一能按的东西。
+    CHECK(panel.getLocalBounds().contains(panel.findChildWithID("fallback.retry")->getBounds()));
+}
+
+TEST_CASE("majorVersionOf parses the WebView2 runtime version string")
+{
+    using scvb::webview::PlatformWebView;
+    CHECK(PlatformWebView::majorVersionOf("137.0.3296.83") == 137);
+    CHECK(PlatformWebView::majorVersionOf("86.0.616.0") == 86);
+    CHECK(PlatformWebView::majorVersionOf(" 91.0.864.41 ") == 91);
+    // 解析不出 -> -1,调用方据此**放行**而非判 tooOld(见 PlatformWebViewRuntime.cpp 注释:
+    // 宁可让看门狗按超时兜底,也不要把一台能用的机器挡在「请升级」面板后面)。
+    CHECK(PlatformWebView::majorVersionOf("") == -1);
+    CHECK(PlatformWebView::majorVersionOf("dev") == -1);
+    CHECK(PlatformWebView::majorVersionOf("v137.0") == -1);
+    // 下限本身:低于 86 的运行时缺 JUCE 8.0.8 硬依赖的首发 GA 接口,必须走「需升级」分支。
+    CHECK(PlatformWebView::kMinRuntimeMajor == 86);
+    CHECK(PlatformWebView::majorVersionOf("85.0.564.68") < PlatformWebView::kMinRuntimeMajor);
+}
+
+TEST_CASE("Watchdog budgets give cold start more room than a warm reopen")
+{
+    using scvb::webview::WebViewHost;
+    // 冷启动要覆盖 msedgewebview2.exe 进程组拉起 + user-data 目录首建;热启动只是新建一个
+    // WebView。两者相等就说明有人把常量改回了单一预算,冷启动误报会立刻回来。
+    CHECK(WebViewHost::kColdLoadBudgetMs > WebViewHost::kWarmLoadBudgetMs);
+    CHECK(WebViewHost::kColdLoadBudgetMs >= 15000);
+    CHECK(WebViewHost::kAfterNavBudgetMs >= 5000);
+    // 事件名是 web 侧 index.html boot 守卫的逐字引用面(smoke-embedded-resources.mjs 对拍)。
+    CHECK(juce::String(WebViewHost::kBootErrorEventId) == "__scvb__bootError");
 }
 TEST_CASE("normalizeLang accepts {zh,en,fr} and falls back to zh (§1.30)")
 {
@@ -231,18 +284,41 @@ TEST_CASE("buildUiSeedPairs/buildUiSnapshot share Init keys (state pushback §1.
 TEST_CASE("makeWebViewOptions selects WebView2 backend + unique userDataFolder (§9/#5)")
 {
     using WBC = juce::WebBrowserComponent;
-#if JUCE_WINDOWS
-    const auto o1 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
-    CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
-    const auto f1 = o1.getWinWebView2BackendOptions().getUserDataFolder();
-    CHECK(f1.getFileName().startsWith("SCVBInputWV2_")); // 机制 2:临时目录 + 每实例后缀
+    using scvb::webview::PlatformWebView;
 
-    const auto o2 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
-    const auto f2 = o2.getWinWebView2BackendOptions().getUserDataFolder();
-    CHECK_FALSE(f1.getFileName() == f2.getFileName()); // 多实例同名 folder 抢占防护
+    const auto f1 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+    const auto f2 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+
+#if JUCE_WINDOWS
+    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, f1);
+    CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
+    CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == f1);
+    CHECK(f1.getFileName().startsWith("SCVBInputWV2_p")); // 机制 2:名字带 PID
+    CHECK_FALSE(f1.getFileName() == f2.getFileName()); // 同进程内多实例互不抢占
+
+    // 跨进程唯一:名字里必须含真 PID。只测「同一进程两次取到同一个 PID 段」+ 段非空,
+    // 真正的跨进程冲突测不了(要起第二个进程),但把 PID 编进名字这件事必须锁住 ——
+    // 原实现只有进程内自增,不同进程都拿 "_0",正是宿主扫描进程 + 音频进程互撞的成因。
+    const auto pidTag =
+        f1.getFileName().fromFirstOccurrenceOf("_p", false, false).upToFirstOccurrenceOf("_", false, false);
+    CHECK(pidTag.isNotEmpty());
+    CHECK(pidTag.containsOnly("0123456789"));
+    CHECK(f2.getFileName().contains("_p" + pidTag + "_"));
+
+    // 必须落在 **Local** AppData:%TEMP% 会被磁盘清理扫掉;Roaming
+    // (juce 的 userApplicationDataDirectory)会让浏览器缓存跟着漫游配置文件同步。
+    CHECK(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::windowsLocalAppData)));
+    CHECK_FALSE(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)));
+    CHECK_FALSE(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::tempDirectory)));
+
+    // 可写性探针:刚取到的目录应当可建可写;探针文件不留痕。
+    CHECK(PlatformWebView::probeUserDataFolder(f1).isEmpty());
+    CHECK_FALSE(f1.getChildFile(".scvb-write-probe").existsAsFile());
+    f1.deleteRecursively();
 #else
-    const auto o1 = scvb::webview::PlatformWebView::makeWebViewOptions(WBC::Options{}, "SCVBInputWV2");
+    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, f1);
     CHECK(o1.getBackend() == WBC::Options::Backend::defaultBackend); // 非 Windows 走系统默认
+    CHECK_FALSE(f1.getFileName() == f2.getFileName());
 #endif
 }
 

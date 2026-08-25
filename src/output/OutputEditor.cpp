@@ -6,6 +6,8 @@
 #include <functional>
 #include <string>
 
+#include <ScvbOutputWebData.h> // juce_add_binary_data 生成:嵌入的 web/output UI 资源
+
 #include "BridgeArgs.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
@@ -132,21 +134,24 @@ const char* sideName(scvb::PanCurveSide s)
 // 构造
 // ============================================================================
 OutputEditor::OutputEditor(ScvbOutputAudioProcessor& processor)
-    : scvb::webview::WebViewHost(processor,
-                                 [&] {
-                                     scvb::webview::WebViewHost::Config config;
-                                     config.role = "output";
-                                     config.userDataFolderName = "scvb-output-webview";
-                                     config.version = "0.1.0"; // 项目版本(CMake project VERSION)
-                                     config.lang = processor.uiLanguage().toStdString();
-                                     config.uiScale = static_cast<float>(processor.uiScalePercent()) / 100.0f;
-                                     config.channelLimit = 15;
-                                     config.resourceSource = {}; // 空 Source(web 资源嵌入归 T27b/T28)
-                                     config.augmentOptions = [this](juce::WebBrowserComponent::Options& o) {
-                                         registerNativeFunctions(o);
-                                     };
-                                     return config;
-                                 }()),
+    : scvb::webview::WebViewHost(
+          processor,
+          [&] {
+              scvb::webview::WebViewHost::Config config;
+              config.role = "output";
+              config.userDataFolderName = "scvb-output-webview";
+              config.version = "0.1.0"; // 项目版本(CMake project VERSION)
+              config.lang = processor.uiLanguage().toStdString();
+              config.uiScale = static_cast<float>(processor.uiScalePercent()) / 100.0f;
+              config.channelLimit = 15;
+              // 嵌入的 web/output UI 资源(cmake/ScvbWebAssets.cmake ->
+              // SCVBOutputWebAssets)。传空 Source 会让 resource provider
+              // 恒 nullopt = 空白窗口 + 看门狗超时。
+              config.resourceSource = {ScvbOutputWebData::namedResourceListSize, ScvbOutputWebData::originalFilenames,
+                                       ScvbOutputWebData::namedResourceList, &ScvbOutputWebData::getNamedResource};
+              config.augmentOptions = [this](juce::WebBrowserComponent::Options& o) { registerNativeFunctions(o); };
+              return config;
+          }()),
       processor_(processor)
 {
 }

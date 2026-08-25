@@ -21,6 +21,18 @@ FallbackPanel::FallbackPanel(Options options) : options_(std::move(options))
     message_.setColour(juce::Label::textColourId, juce::Colour(0xffb8b8c4));
     addAndMakeVisible(message_);
 
+    details_.setComponentID("fallback.details");
+    details_.setText(options_.details, juce::dontSendNotification);
+    details_.setJustificationType(juce::Justification::centredTop);
+    // 11px:诊断行里含完整的 user-data 路径,Input 的 460px 窄盒要折 3-4 行才放得下。
+    details_.setFont(
+        juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain)));
+    details_.setColour(juce::Label::textColourId, juce::Colour(0xff7a7a86));
+    // 1.0 = 不许横向压扁,长诊断串按行宽自动折行(Label::paint 走 drawFittedText 多行)。
+    details_.setMinimumHorizontalScale(1.0f);
+    addChildComponent(details_);
+    details_.setVisible(options_.details.isNotEmpty());
+
     if (options_.showInstall)
     {
         install_.setComponentID("fallback.install");
@@ -53,6 +65,11 @@ void FallbackPanel::resized()
     auto b = getLocalBounds().reduced(24);
     title_.setBounds(b.removeFromTop(34));
     message_.setBounds(b.removeFromTop(76));
+    if (details_.isVisible())
+    {
+        details_.setBounds(b.removeFromTop(84)); // ~7 行 11px 等宽,够放折行后的完整 udf 路径
+        b.removeFromTop(4);
+    }
     b.removeFromTop(10);
     if (options_.showInstall)
     {
