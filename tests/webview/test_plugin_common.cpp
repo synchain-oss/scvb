@@ -281,44 +281,46 @@ TEST_CASE("buildUiSeedPairs/buildUiSnapshot share Init keys (state pushback §1.
     CHECK(obj->getProperty(scvb::bridge::Init::Version).toString() == "0.1.0");
 }
 
-TEST_CASE("makeWebViewOptions selects WebView2 backend + unique userDataFolder (§9/#5)")
+TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFolder (§9/#5)")
 {
     using WBC = juce::WebBrowserComponent;
     using scvb::webview::PlatformWebView;
 
-    const auto f1 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
-    const auto f2 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+    const auto in1 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+    const auto in2 = PlatformWebView::makeUserDataFolder("SCVBInputWV2");
+    const auto out1 = PlatformWebView::makeUserDataFolder("SCVBOutputWV2");
+
+    // **同插件的多个实例必须拿到同一个目录**:WebView2 的浏览器进程组按 user-data 目录共享,
+    // 每实例一个目录会让进程组永不复用 —— 于是「热启动」判定形同虚设(第二次开窗其实还是
+    // 完整冷启动却按 5s 热预算计时),而且每开一个编辑器就多一整套 msedgewebview2 进程。
+    CHECK(in1 == in2);
+    // 两个插件之间仍然分开(各自的会话/缓存互不干扰)。
+    CHECK_FALSE(in1 == out1);
 
 #if JUCE_WINDOWS
-    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, f1);
+    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, in1);
     CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
-    CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == f1);
-    CHECK(f1.getFileName().startsWith("SCVBInputWV2_p")); // 机制 2:名字带 PID
-    CHECK_FALSE(f1.getFileName() == f2.getFileName()); // 同进程内多实例互不抢占
+    CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == in1);
+    CHECK(in1.getFileName() == "SCVBInputWV2");
 
-    // 跨进程唯一:名字里必须含真 PID。只测「同一进程两次取到同一个 PID 段」+ 段非空,
-    // 真正的跨进程冲突测不了(要起第二个进程),但把 PID 编进名字这件事必须锁住 ——
-    // 原实现只有进程内自增,不同进程都拿 "_0",正是宿主扫描进程 + 音频进程互撞的成因。
-    const auto pidTag =
-        f1.getFileName().fromFirstOccurrenceOf("_p", false, false).upToFirstOccurrenceOf("_", false, false);
-    CHECK(pidTag.isNotEmpty());
-    CHECK(pidTag.containsOnly("0123456789"));
-    CHECK(f2.getFileName().contains("_p" + pidTag + "_"));
+    // 目录名里不许再出现 PID / 实例序号:那正是「每实例一个目录」的残留特征。
+    CHECK_FALSE(in1.getFileName().contains("_p"));
 
     // 必须落在 **Local** AppData:%TEMP% 会被磁盘清理扫掉;Roaming
     // (juce 的 userApplicationDataDirectory)会让浏览器缓存跟着漫游配置文件同步。
-    CHECK(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::windowsLocalAppData)));
-    CHECK_FALSE(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)));
-    CHECK_FALSE(f1.isAChildOf(juce::File::getSpecialLocation(juce::File::tempDirectory)));
+    CHECK(in1.isAChildOf(juce::File::getSpecialLocation(juce::File::windowsLocalAppData)));
+    CHECK_FALSE(in1.isAChildOf(juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)));
+    CHECK_FALSE(in1.isAChildOf(juce::File::getSpecialLocation(juce::File::tempDirectory)));
 
-    // 可写性探针:刚取到的目录应当可建可写;探针文件不留痕。
-    CHECK(PlatformWebView::probeUserDataFolder(f1).isEmpty());
-    CHECK_FALSE(f1.getChildFile(".scvb-write-probe").existsAsFile());
-    f1.deleteRecursively();
+    // PID 仍要拿得到 —— 它进诊断行(与任务管理器对照),只是不再进目录名。
+    CHECK(PlatformWebView::processId() > 0);
+
+    // 可写性探针:目录应当可建可写;探针文件不留痕。
+    CHECK(PlatformWebView::probeUserDataFolder(in1).isEmpty());
+    CHECK_FALSE(in1.getChildFile(".scvb-write-probe").existsAsFile());
 #else
-    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, f1);
+    const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, in1);
     CHECK(o1.getBackend() == WBC::Options::Backend::defaultBackend); // 非 Windows 走系统默认
-    CHECK_FALSE(f1.getFileName() == f2.getFileName());
 #endif
 }
 

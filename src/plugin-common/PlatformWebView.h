@@ -23,10 +23,13 @@ public:
     // user-data 目录的父目录(Windows = %LOCALAPPDATA%\Synchain\SCVB\WebView2)。
     static juce::File userDataFolderRoot();
 
-    // 本实例专属的 user-data 目录:名字带 **PID** + 进程内序号。跨进程唯一是硬要求 ——
-    // 宿主的插件扫描 sandbox 进程与音频进程会同时活着,共用一个 UDF 会让 WebView2 环境创建
-    // 失败,而 JUCE 把那个 HRESULT 吞掉,症状正是「空白窗口 + 超时 + 重试无效」。
+    // 本插件(**不是本实例**)的 user-data 目录 = userDataFolderRoot()/userDataFolderName。
+    // WebView2 的浏览器进程组按 UDF 共享 —— 固定目录才能复用进程组,这也是「热启动」判定
+    // 得以成立的前提。完整理由见 .cpp 实现处。
     static juce::File makeUserDataFolder(const juce::String& userDataFolderName);
+
+    // 本进程 PID(只进诊断行,便于与任务管理器对照)。非 Windows 返回 0。
+    static int processId();
 
     // 建目录 + 写一个探针文件再删。返回空串 = 可写;否则是可直接进诊断面板的人话原因。
     // WebView2 自己碰这个目录时的失败被 JUCE 吞掉,所以必须我们先测一次。

@@ -16,17 +16,8 @@ using WBC = juce::WebBrowserComponent;
 
 namespace
 {
-// 每实例唯一后缀(进程内递增)。多个 Input 插件实例在同一宿主进程内共享进程;若都沿用同一
-// 固定 user-data 目录名,WebView2 初始化会因同名 folder 抢占而失败,故给每个实例追加唯一后缀。
-std::atomic<int>& instanceCounter()
-{
-    static std::atomic<int> counter{0};
-    return counter;
-}
-
-// 本进程的标识,用于 user-data 目录名。Windows 上取真 PID —— 用户在诊断行里看到的数字
-// 能直接和任务管理器对上,这是排查「另一个宿主进程占着同一个 UDF」的关键;其它平台不涉
-// WebView2,给 0 即可。
+// 本进程 PID。**只进诊断行,不再进目录名**(理由见 makeUserDataFolder)。用户在诊断行里
+// 看到的数字能直接和任务管理器对上,排查「谁占着 WebView2」时有用。
 int currentProcessId()
 {
 #if JUCE_WINDOWS
@@ -36,6 +27,11 @@ int currentProcessId()
 #endif
 }
 } // namespace
+
+int PlatformWebView::processId()
+{
+    return currentProcessId();
+}
 
 juce::File PlatformWebView::userDataFolderRoot()
 {
@@ -61,19 +57,25 @@ juce::File PlatformWebView::userDataFolderRoot()
 
 juce::File PlatformWebView::makeUserDataFolder(const juce::String& userDataFolderName)
 {
-    // 唯一性必须**跨进程**成立,不能只靠进程内计数器。
+    // **每个插件一个固定目录(Input 一个 / Output 一个),不再每实例一个。**
     //
-    // 原实现只加了进程内自增后缀,于是同一台机器上不同进程拿到的是同一个名字(都是 "_0")——
-    // 而宿主远不止一个进程:Cubase / Live 等把插件扫描放在独立的 sandbox 进程里,音频进程与
-    // 扫描进程会同时活着;用户还可能同时开两个 DAW。WebView2 不支持两个进程共用一个 user-data
-    // 目录,第二个会拿到 HRESULT_FROM_WIN32(ERROR_INVALID_STATE) 之类的失败 —— 而 JUCE 把这个
-    // HRESULT 整个吞掉(juce_WebBrowserComponent_windows.cpp 的环境创建回调 HRESULT 形参无名),
-    // 失败形态就是「窗口空白 + 看门狗超时 + 重试无效」,与本卡症状完全一致。
-    // 故名字里带上 PID。
-    const auto pid = currentProcessId();
-    const juce::String uniqueName =
-        userDataFolderName + "_p" + juce::String(pid) + "_" + juce::String(instanceCounter().fetch_add(1));
-    return userDataFolderRoot().getChildFile(uniqueName);
+    // WebView2 的浏览器进程组是**按 user-data 目录**共享的:同一个目录 ⇒ 复用同一组
+    // msedgewebview2.exe(浏览器 + 渲染 + GPU);不同目录 ⇒ 各起一整套。之前那版给每个
+    // 实例都拼一个唯一后缀,后果有两条,都很实在:
+    //   ① **进程组永不复用**,于是「本进程已经起过桥所以这次算热启动」的判定形同虚设 ——
+    //      第二次开窗其实还是完整冷启动,却按热预算(5s)计时,反而更容易误判超时。
+    //      (本机实测曾看到 19 个 msedgewebview2.exe 同时在跑,就是这个后果。)
+    //   ② 每开一个编辑器就多一整套浏览器进程,内存与句柄线性膨胀。
+    //
+    // 共用一个目录是 WebView2 的正常用法:同进程内多个 WebView2 实例共用 UDF 受支持;
+    // 跨进程共用也受支持,**前提是环境选项一致** —— 失败条件是选项不一致
+    // (HRESULT_FROM_WIN32(ERROR_INVALID_STATE):「与共享浏览器进程中正在运行的 WebView
+    // 选项不匹配」),而不是「来自另一个进程」。本插件的环境选项是常量(JUCE 默认 + 固定
+    // UDF),两个宿主进程拿到的完全一致,故可安全共享。
+    //
+    // 万一仍然创建失败(企业策略、目录被锁等),现在不会再表现成一句「加载太慢」:构造期的
+    // 可写性探针 + 「导航事件从未到达 ⇒ 环境没起来」三态面板会把它如实说出来。
+    return userDataFolderRoot().getChildFile(userDataFolderName);
 }
 
 juce::String PlatformWebView::probeUserDataFolder(const juce::File& folder)
