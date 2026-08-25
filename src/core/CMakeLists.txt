@@ -55,6 +55,8 @@ add_library(scvb_core STATIC
   ipc/SegmentBackendInProcess.h
   ipc/AudioRing.cpp
   ipc/AudioRing.h
+  ipc/VizPlane.cpp
+  ipc/VizPlane.h
   input/InputSession.cpp
   input/InputSession.h
   input/OutputStage.cpp
@@ -67,6 +69,8 @@ add_library(scvb_core STATIC
   output/BusXfade.h
   output/OutputSession.cpp
   output/OutputSession.h
+  output/VizPublisher.cpp
+  output/VizPublisher.h
   state/StateCodec.cpp
   state/StateCodec.h
   state/StateMigration.cpp

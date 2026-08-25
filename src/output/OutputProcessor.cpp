@@ -22,6 +22,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
                                .withInput("Input", juce::AudioChannelSet::stereo(), true)
                                .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       session_(backend_, static_cast<scvb::u32>(::GetCurrentProcessId())),
+      vizPublisher_(backend_, 1u), // [T44] 组号随 setGroupId/prepareToPlay 校正
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
     setLatencySamples(0); // ADR-002:Output 不报额外 latency(对齐靠时间线,不靠 PDC)
@@ -85,6 +86,10 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     lastT0Out_ = std::numeric_limits<int64_t>::lowest();
     expectedNextOut_ = std::numeric_limits<int64_t>::lowest();
     prepared_ = true;
+
+    // [T44/J75] viz 段:建段(owner)。失败(如权限/内存)不影响主链路 —— Monitor 侧看到空态即可。
+    vizPublisher_.changeGroup(static_cast<scvb::u32>(groupId_));
+
     startTimerHz(25);
 }
 
@@ -92,6 +97,7 @@ void ScvbOutputAudioProcessor::releaseResources()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     session_.release(scvb::steadyNowMs());
+    vizPublisher_.release(); // [T44] viz 段与主链路同生命周期
     printer_.endAllGestures();
     prepared_ = false;
     sampleRate_.store(
@@ -460,6 +466,40 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // 打印器模式:输出开关 ON → 引擎权威;OFF → follow host。T24 无分析曲线,Armed 与 Print 等效。
     printer_.setMode(outputEnabled_ ? scvb::engine::AuthorityMode::Armed : scvb::engine::AuthorityMode::Follow);
+
+    // [T44/J75] viz 段发布(内部 4Hz 分频 + 车道按需重算)。
+    publishVizFrame(now);
+    vizPublisher_.reapPendingReleases(now);
+}
+
+void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
+{
+    // 调用方已持 lifecycleMutex_(timerCallback):可直接读 crvsData_,免去 crvsSnapshot() 的深拷贝。
+    if (!vizPublisher_.isOpen())
+    {
+        return;
+    }
+
+    scvb::output::VizPublishInput in;
+    in.crvs = &crvsData_;
+    in.curves = authority_.activeCurves();
+    in.versionActive = static_cast<scvb::u32>(versionActive_);
+    in.crvsRevision = crvsRevision_.load(std::memory_order_acquire);
+    in.sampleRate = sampleRate_.load(std::memory_order_relaxed);
+    in.playhead = playheadSnapshot();
+    for (int ch = 0; ch < 15; ++ch)
+    {
+        const auto& c = runtime_.channels[static_cast<std::size_t>(ch)];
+        if (c.enabled)
+        {
+            in.enabledMask |= (1u << ch);
+        }
+        if (c.sourceChannels == 2)
+        {
+            in.stereoMask |= (1u << ch);
+        }
+    }
+    vizPublisher_.tick(nowMs, in);
 }
 
 void ScvbOutputAudioProcessor::setCurrentProgram(int /*index*/) {}
@@ -658,6 +698,7 @@ void ScvbOutputAudioProcessor::setGroupId(int groupId)
         session_.changeGroup(static_cast<scvb::u32>(groupId),
                              static_cast<scvb::u32>(sampleRate_.load(std::memory_order_relaxed)),
                              static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
+        vizPublisher_.changeGroup(static_cast<scvb::u32>(groupId)); // [T44] viz 段随组切换
     }
 }
 

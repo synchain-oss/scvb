@@ -82,3 +82,47 @@ field CtrlRing.overflow_count offset 8
 field CtrlRing._pad offset 12
 field CtrlRing._reserved offset 16
 field CtrlRing.records offset 64
+# [T44/J75] viz 段(SynchainSCVB.v1.g{G}.viz):Output [M] 4Hz 只写、Monitor 只读。挂总 abi(不 +1:新增段不改任何既有段布局)。
+viz_columns 1024
+viz_coverage_words 32
+viz_pan_scale 100
+viz_pan_none -32768
+budget_viz_bytes 65536
+name g1 viz SynchainSCVB.v1.g1.viz
+name g8 viz SynchainSCVB.v1.g8.viz
+struct VizHeader size 64 align 64
+field VizHeader.magic offset 0
+field VizHeader.abi offset 4
+field VizHeader.generation offset 8
+field VizHeader.column_count offset 12
+field VizHeader.track_count offset 16
+field VizHeader.pan_scale offset 20
+field VizHeader._reserved offset 24
+struct VizFrame size 128 align 64
+field VizFrame.seq offset 0
+field VizFrame.playhead_flags offset 4
+field VizFrame.publish_ms offset 8
+field VizFrame.window_start_samples offset 16
+field VizFrame.window_span_samples offset 24
+field VizFrame.playhead_samples offset 32
+field VizFrame.loop_start_samples offset 40
+field VizFrame.loop_end_samples offset 48
+field VizFrame.sample_rate offset 56
+field VizFrame.version_active offset 60
+field VizFrame.playhead_epoch offset 64
+field VizFrame.track_online_mask offset 68
+field VizFrame.track_covered_mask offset 72
+field VizFrame.track_stereo_mask offset 76
+field VizFrame.lane_revision offset 80
+field VizFrame._reserved offset 84
+struct VizTrackColors size 64 align 64
+field VizTrackColors.index offset 0
+struct VizCoverage size 1920 align 64
+field VizCoverage.bits offset 0
+struct VizLanes size 30720 align 64
+field VizLanes.pan offset 0
+offset viz_header 0
+offset viz_frame 64
+offset viz_colors 192
+offset viz_coverage 256
+offset viz_lanes 2176

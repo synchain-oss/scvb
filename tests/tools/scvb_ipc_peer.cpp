@@ -13,6 +13,8 @@
 //   globalinfo-writer / globalinfo-reader  ctrl 全局小节(IPC-16)
 //   feat-writer  Input 侧写特征环 run 协议(IPC-14)
 //   feat-reader  Output 侧增量拉取特征环 → CSV(IPC-14)
+//   viz-writer   [T44] Output [M] 建 viz 段并发布一帧(--linger-ms 持段供读方 attach)
+//   viz-reader   [T44] Monitor 侧只读 attach viz 段 + 一致性读 → CSV(--out)
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -23,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +34,7 @@
 #include "ipc/FeatRing.h"
 #include "ipc/Registry.h"
 #include "ipc/SegmentBackendWin32.h"
+#include "ipc/VizPlane.h"
 #include "ipc_contract_harness.h"
 
 using namespace scvb;
@@ -803,6 +807,116 @@ int runFeatReader(const Args& a)
 
 } // namespace
 
+
+// ---- [T44/J75] viz 段(VIZ-1/2/3)----
+
+int runVizWriter(const Args& a)
+{
+    SegmentBackendWin32 backend;
+    VizPlane plane(backend, static_cast<u32>(a.group));
+    if (plane.open() != InitResult::kOk)
+    {
+        return 3;
+    }
+    auto snap = std::make_unique<VizSnapshot>();
+    snap->publishMs = 123456;
+    snap->windowStartSamples = 0;
+    snap->windowSpanSamples = static_cast<u64>(a.sr) * 120u; // 120s 窗口
+    snap->playheadSamples = 48000;
+    snap->loopStartSamples = 96000;
+    snap->loopEndSamples = 192000;
+    snap->sampleRate = static_cast<u32>(a.sr);
+    snap->versionActive = 2;
+    snap->playheadFlags = kVizPlaying | kVizLooping | kVizLoopValid;
+    snap->playheadEpoch = 7;
+    snap->onlineMask = 0x7FFFu;
+    snap->coveredMask = 0x0003u;
+    snap->stereoMask = 0x0002u;
+    snap->laneRevision = 42;
+    for (u32 t = 0; t < kMaxChannels; ++t)
+    {
+        snap->trackColor[t] = t + 1;
+    }
+    // 轨1:全覆盖、pan 沿列线性上升;轨2:只覆盖前半段(断线场景);其余轨保持哨兵。
+    for (u32 i = 0; i < kVizColumns; ++i)
+    {
+        snap->pan[0][i] = vizPackPan(-100.0 + 200.0 * static_cast<double>(i) / static_cast<double>(kVizColumns - 1));
+        snap->setCovered(0, i);
+        if (i < kVizColumns / 2)
+        {
+            snap->pan[1][i] = vizPackPan(25.0);
+            snap->setCovered(1, i);
+        }
+    }
+    plane.publish(*snap, /*writeLanes=*/true);
+    linger(a.lingerMs);
+    return 0;
+}
+
+int runVizReader(const Args& a)
+{
+    SegmentBackendWin32 backend;
+    VizPlane plane(backend, static_cast<u32>(a.group));
+    // 握手:writer 可能尚未建段/发布,带超时轮询到 attach 成功且 lane_revision 非零。
+    const u64 deadline = ::GetTickCount64() + 10000;
+    auto snap = std::make_unique<VizSnapshot>();
+    InitResult ir = InitResult::kFailed;
+    bool got = false;
+    for (;;)
+    {
+        if (!plane.isOpen())
+        {
+            ir = plane.attachReadOnly();
+        }
+        else
+        {
+            ir = InitResult::kOk;
+        }
+        if (ir == InitResult::kOk && plane.read(*snap) && snap->laneRevision != 0)
+        {
+            got = true;
+            break;
+        }
+        if (::GetTickCount64() >= deadline)
+        {
+            break;
+        }
+        ::Sleep(0);
+    }
+
+    std::string csv;
+    csv += "attach " + std::to_string(static_cast<int>(ir)) + "\n";
+    csv += "read_ok " + std::to_string(got ? 1 : 0) + "\n";
+    csv += "read_only " + std::to_string(plane.isReadOnly() ? 1 : 0) + "\n";
+    csv += "geometry_ok " + std::to_string(plane.geometryMatches() ? 1 : 0) + "\n";
+    csv += "columns " + std::to_string(kVizColumns) + "\n";
+    csv += "window_span " + std::to_string(snap->windowSpanSamples) + "\n";
+    csv += "playhead " + std::to_string(snap->playheadSamples) + "\n";
+    csv += "loop_start " + std::to_string(snap->loopStartSamples) + "\n";
+    csv += "loop_end " + std::to_string(snap->loopEndSamples) + "\n";
+    csv += "playhead_flags " + std::to_string(snap->playheadFlags) + "\n";
+    csv += "playhead_epoch " + std::to_string(snap->playheadEpoch) + "\n";
+    csv += "version_active " + std::to_string(snap->versionActive) + "\n";
+    csv += "online_mask " + std::to_string(snap->onlineMask) + "\n";
+    csv += "covered_mask " + std::to_string(snap->coveredMask) + "\n";
+    csv += "stereo_mask " + std::to_string(snap->stereoMask) + "\n";
+    csv += "lane_revision " + std::to_string(snap->laneRevision) + "\n";
+    csv += "color1 " + std::to_string(snap->trackColor[0]) + "\n";
+    csv += "color15 " + std::to_string(snap->trackColor[14]) + "\n";
+    csv += "pan_t1_first " + std::to_string(static_cast<long long>(snap->pan[0][0])) + "\n";
+    csv += "pan_t1_last " + std::to_string(static_cast<long long>(snap->pan[0][kVizColumns - 1])) + "\n";
+    csv += "pan_t2_mid " + std::to_string(static_cast<long long>(snap->pan[1][10])) + "\n";
+    csv += "pan_t2_tail " + std::to_string(static_cast<long long>(snap->pan[1][kVizColumns - 1])) + "\n";
+    csv += "pan_t3_any " + std::to_string(static_cast<long long>(snap->pan[2][0])) + "\n";
+    csv += "cov_t1_0 " + std::to_string(snap->covered(0, 0) ? 1 : 0) + "\n";
+    csv += "cov_t1_last " + std::to_string(snap->covered(0, kVizColumns - 1) ? 1 : 0) + "\n";
+    csv += "cov_t2_0 " + std::to_string(snap->covered(1, 0) ? 1 : 0) + "\n";
+    csv += "cov_t2_last " + std::to_string(snap->covered(1, kVizColumns - 1) ? 1 : 0) + "\n";
+    csv += "cov_t3_0 " + std::to_string(snap->covered(2, 0) ? 1 : 0) + "\n";
+    writeCsv(a.out, csv);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     const Args a = parse(argc, argv);
@@ -845,6 +959,14 @@ int main(int argc, char** argv)
     if (a.role == "feat-reader")
     {
         return runFeatReader(a);
+    }
+    if (a.role == "viz-writer")
+    {
+        return runVizWriter(a);
+    }
+    if (a.role == "viz-reader")
+    {
+        return runVizReader(a);
     }
     return 99;
 }
