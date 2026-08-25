@@ -6,6 +6,7 @@
 
 #include "OutputEditor.h"
 #include "SegmentEditService.h"
+#include "UiDefaultsStore.h"
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
 #include "state/StateMigration.h"
@@ -25,6 +26,14 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
     setLatencySamples(0); // ADR-002:Output 不报额外 latency(对齐靠时间线,不靠 PDC)
+
+    // 缩放的系统级全局默认(§1.29「保持」落盘的那一档);工程 state 若带 CFGS 会在
+    // setStateInformation 里覆盖它 —— 工程 > 全局默认。0 = 从未「保持」过,沿用 100。
+    if (const int defaultScale = scvb::output::uidefaults::uiScalePercent(); defaultScale > 0)
+    {
+        uiScale_ = defaultScale;
+    }
+
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);
     printer_.installHostEchoShield(apvts);
@@ -503,6 +512,9 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.versionActive = static_cast<scvb::u32>(versionActive_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
     s.uiLanguage = uiLanguage_.toStdString();
+    // 首启已读位随工程走(STATE_SCHEMA §一 ui 组):不落盘则重开工程红字页/tour 每次重放(T37 A-3)。
+    s.uiGuideSeen = runtime_.guideSeen ? 1u : 0u;
+    s.uiTourSeen = runtime_.tourSeen ? 1u : 0u;
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
     {
@@ -588,6 +600,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     versionActive_ = static_cast<int>(s.versionActive);
     uiScale_ = static_cast<int>(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
+    // 首启已读位是**工程位**;跨工程的「不再显示」由快照的 *_global 单独承载(§1.32/§1.33),
+    // 两者不在此合流 —— 合流会把全局位写进从没看过引导的工程的 state。
+    runtime_.guideSeen = s.uiGuideSeen != 0;
+    runtime_.tourSeen = s.uiTourSeen != 0;
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
@@ -684,6 +700,32 @@ void ScvbOutputAudioProcessor::setVersionActive(int version)
     {
         rebindVersion();
     }
+}
+
+ScvbOutputAudioProcessor::ConnSnapshot ScvbOutputAudioProcessor::connSnapshot()
+{
+    const auto now = scvb::steadyNowMs(); // 取锁前采样,与 timerCallback 同一时钟口径
+    const juce::ScopedLock lock(lifecycleMutex_);
+    ConnSnapshot out;
+    for (int t = 0; t < 15; ++t)
+    {
+        out.channels[static_cast<std::size_t>(t)] = session_.channelConn(static_cast<scvb::u32>(t + 1), now);
+    }
+    out.generation = session_.registryGeneration();
+    out.readOnly = session_.state() == scvb::output::OutputClaimState::kObserver;
+    return out;
+}
+
+void ScvbOutputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiLanguage_ = lang; // 已由桥层 normalize({zh,en,fr});getStateInformation 持久化
+}
+
+void ScvbOutputAudioProcessor::bridgeSetUiScalePercent(int percent)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiScale_ = juce::jlimit(33, 300, percent); // 0.33..3.0 × 100(params-v0 §二 uiScale)
 }
 
 juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
