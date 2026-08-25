@@ -349,7 +349,10 @@ void OutputEditor::emitMeters()
                   std::fabs(peak[static_cast<std::size_t>(t)] - lastMeterPeak_[static_cast<std::size_t>(t)]) >=
                       kMeterThresholdDb;
     if (!changed)
-        changed = std::fabs(busL - lastBusL_) >= kMeterThresholdDb || std::fabs(busR - lastBusR_) >= kMeterThresholdDb;
+        changed = std::fabs(busL - lastBusL_) >= kMeterThresholdDb ||
+                  std::fabs(busR - lastBusR_) >= kMeterThresholdDb ||
+                  std::fabs(busLPeak - lastBusLPeak_) >= kMeterThresholdDb ||
+                  std::fabs(busRPeak - lastBusRPeak_) >= kMeterThresholdDb;
 
     if (!changed)
         return;
@@ -359,6 +362,8 @@ void OutputEditor::emitMeters()
     lastMeterPeak_ = peak;
     lastBusL_ = busL;
     lastBusR_ = busR;
+    lastBusLPeak_ = busLPeak;
+    lastBusRPeak_ = busRPeak;
 
     juce::var tracks = mkArray();
     for (int t = 0; t < 15; ++t)
@@ -421,7 +426,10 @@ bool OutputEditor::syncDawLoopRange()
 
     rt.rangeStartS = s;
     rt.rangeEndS = e;
-    ++rt.configSeq; // 广播区整体版本号:range 也在其中
+    // **不** bump config_seq:§4.3 定义的是「**广播区**任一字段变化 +1」,而 range 不在广播区里。
+    // 这里是 25Hz 的自动跟随路径 —— daw_loop 档遇上 tempo 自动化时 range 每拍都在变,bump 会让
+    // 广播区 25Hz 空转重写 2KB、scvb.config 也跟着 25Hz 空转下发。range 本身经 scvb.state 下推,
+    // 那条链有自己的 JSON diff 门,不依赖 config_seq。
     return true;
 }
 
@@ -464,6 +472,9 @@ void OutputEditor::emitCaptureProgress()
 {
     // §2.7:播放中 2Hz;非播放不发。数据源 = FrameStore 的 coverage 记账
     // (Input 写 feat 段 → OutputSession 25Hz 增量拉取 → CoverageMap)。
+    // 只读观察实例(O3)覆盖率恒 0 且**这是有意的**:OutputSession::tick 对 observer 早退,
+    // 不 attach feat 段也不 pullFeatures —— 采集与分析的真源归本组那个 kActive 的主 Output,
+    // 观察实例不该另存一份特征真身,也不该跟主实例抢着拉同一批 hop。
     const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
     if ((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0)
     {
@@ -563,6 +574,9 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     const scvb::state::CrvsData crvs = processor_.crvsSnapshot(); // 持锁快照(PR#55 重要1)
 
     juce::var o = obj();
+    // 注:本字段(scvb.state.config_seq,0 起)与 ctrl 广播区的 config_seq(1 起)差一个固定偏移 ——
+    // 广播区把 0 留给「本组没有 Output 在广播」这一态(见 publishConfigBroadcast)。两者都是
+    // 单调计数器、只用于「变没变」的比较,不参与跨端相等判定,故不强行统一,只在此注明。
     put(o, "config_seq", static_cast<int>(rt.configSeq));
     put(o, "group_id", processor_.groupId());
 

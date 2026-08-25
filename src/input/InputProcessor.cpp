@@ -268,12 +268,26 @@ void ScvbInputAudioProcessor::timerCallback()
     // 80ms ramp 窗口被 Output 侧 ≥200ms 注入延迟覆盖(J32)。
     session_.setMuted(target == scvb::input::OutputStageMode::kSilence);
 
-    // 采集布防(ADR-007):真源是 Output 的采集开关,经 ctrl 段 OutputGlobalInfo.capture_enabled
-    // 广播下来。captureArmed_ 此前**只有读点没有写点** —— processBlock 每块读它决定要不要写特征段,
-    // 而没有任何地方赋过值,于是恒 0:Input 从来没写过一帧特征,Output 那侧就算接好了读侧也永远
-    // 拉不到东西(T37 三轮 A 族 L-6 链上的第二处断点)。
+    // 采集布防(ADR-007 / 契约 §1 setCaptureEnabled:ON = 对 **{enabled 轨} × {global.range}** 布防)。
+    // 真源是 Output 的采集开关,经 ctrl 段 OutputGlobalInfo.capture_enabled 广播下来;
+    // captureArmed_ 此前**只有读点没有写点** —— processBlock 每块读它决定要不要写特征段,而没有
+    // 任何地方赋过值,于是恒 0:Input 从来没写过一帧特征(T37 三轮 A 族 L-6 链上的第二处断点)。
+    //
+    // 轨维在这里收:用户在 Output 里关掉的轨不该继续写特征段(白占带宽与 8MB 内嵌预算)。
+    // 时间维(global.range)在 Output 侧收 —— 见 OutputSession::setFeatureGate。
     ensureCtrlOpen();
-    captureArmed_.store(ctrl_.readGlobalInfo().capture_enabled != 0 ? 1u : 0u, std::memory_order_relaxed);
+    bool armed = ctrl_.readGlobalInfo().capture_enabled != 0;
+    if (armed && channelId_ >= 1 && channelId_ <= kChannelIdMax)
+    {
+        scvb::CtrlBroadcastSnapshot bc;
+        // 读不到广播区(本组还没有 Output 在广播)时不拿默认值当「已禁用」:保持布防,
+        // 由 Output 的采集开关单独决定 —— 否则 Output 刚上线的那几拍会白白丢掉特征。
+        if (ctrl_.readBroadcast(bc) && bc.config_seq != 0)
+        {
+            armed = (bc.channels[static_cast<std::size_t>(channelId_ - 1)].flags & scvb::kCfgFlagEnabled) != 0;
+        }
+    }
+    captureArmed_.store(armed ? 1u : 0u, std::memory_order_relaxed);
 }
 
 void ScvbInputAudioProcessor::setCurrentProgram(int /*index*/) {}
@@ -465,9 +479,24 @@ void ScvbInputAudioProcessor::ensureCtrlOpen()
         ctrl_.changeGroup(static_cast<scvb::u32>(groupId_));
     }
     // Input 是本组 ctrl 段的合法创建/覆盖者(CtrlPlane::open 注释)。
+    // 退避:open() 的 owner-attach 分支在残段(magic==0)场景下最坏会 sleep 50ms × 10,而本函数
+    // 自 T37 起进了 25Hz Timer 的常驻路径(采集布防要读 ctrl)。失败就每拍重试的话,[M] 会被
+    // 反复卡住 500ms,连带把 4Hz 心跳推迟到 ~750ms。音频线程不受影响(processBlock 不持
+    // lifecycleMutex_),但没有理由把带 sleep 的初始化放进周期回调里空转。
     if (!ctrl_.isOpen())
     {
-        ctrl_.open();
+        const auto now = scvb::steadyNowMs();
+        if (ctrlOpenRetryAtMs_ == 0 || now >= ctrlOpenRetryAtMs_)
+        {
+            if (ctrl_.open() != scvb::InitResult::kOk)
+            {
+                ctrlOpenRetryAtMs_ = now + kCtrlOpenRetryMs;
+            }
+            else
+            {
+                ctrlOpenRetryAtMs_ = 0;
+            }
+        }
     }
 }
 
@@ -490,6 +519,13 @@ ScvbInputAudioProcessor::BridgeTickSnapshot ScvbInputAudioProcessor::bridgeTickS
     // 广播区(§4.3)。seqlock 撕裂时**沿用上帧**而不是回落默认值:回落会让 UI 闪一帧
     // 「优先级 0 / 无 lead / label 全空」,比陈旧一帧难看得多。段从未打开(本组无 Output)
     // 时 lastBroadcastValid_ 恒 false,载荷才真正走默认值分支。
+    // 换组/释放后旧组缓存立即作废:沿用上帧的前提是「还在同一组」。
+    if (groupId_ != lastBroadcastGroup_)
+    {
+        lastBroadcastGroup_ = groupId_;
+        lastBroadcastValid_ = false;
+        lastBroadcast_ = scvb::CtrlBroadcastSnapshot{};
+    }
     if (ctrl_.readBroadcast(lastBroadcast_))
     {
         lastBroadcastValid_ = true;
