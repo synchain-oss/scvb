@@ -19,6 +19,7 @@ juce_add_plugin(SCVBOutput
 target_sources(SCVBOutput PRIVATE
   OutputProcessor.h
   OutputProcessor.cpp
+  OutputPluginEntry.cpp   # createEditor/createPluginFilter(抽出以便 host harness 免链 WebView2)
   OutputParams.h
   OutputParams.cpp
   OutputAuthority.h

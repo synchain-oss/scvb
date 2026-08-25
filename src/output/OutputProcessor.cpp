@@ -6,7 +6,6 @@
 #include <cstring>
 
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
-#include "OutputEditor.h"
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
@@ -1134,10 +1133,8 @@ void ScvbOutputAudioProcessor::bridgeSetTourSeen(bool seen)
     runtime_.tourSeen.store(seen, std::memory_order_relaxed);
 }
 
-juce::AudioProcessorEditor* ScvbOutputAudioProcessor::createEditor()
-{
-    return new scvb::output::OutputEditor(*this);
-}
+// createEditor() 与 createPluginFilter() 见 OutputPluginEntry.cpp:抽出去之后本 TU 不再引用
+// OutputEditor,免 DAW 的宿主 harness 才能只编 Processor 而不链接 WebView2(见该文件头注)。
 
 void ScvbOutputAudioProcessor::rebuildAllCurves()
 {
@@ -1325,10 +1322,4 @@ bool ScvbOutputAudioProcessor::redo()
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     return authority_.undoManager().redo();
-}
-
-// juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
-{
-    return new ScvbOutputAudioProcessor();
 }

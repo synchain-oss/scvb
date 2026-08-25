@@ -19,6 +19,7 @@ juce_add_plugin(SCVBInput
 target_sources(SCVBInput PRIVATE
   InputProcessor.h
   InputProcessor.cpp
+  InputPluginEntry.cpp   # createEditor/createPluginFilter(抽出以便 host harness 免链 WebView2)
   InputBridgeApi.h       # T30:桥名常量表(parity C 侧真源)
   InputBridgeLogic.h     # T30:纯载荷/判定逻辑(离线可测)
   InputBridgeLogic.cpp
