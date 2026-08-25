@@ -3,7 +3,6 @@
 
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
 #include "InputBridgeLogic.h"
-#include "InputEditor.h"
 
 #include <algorithm>
 #include <cmath>
@@ -268,6 +267,13 @@ void ScvbInputAudioProcessor::timerCallback()
     // 精确的「ramp 完成」时点由 [A] 经 RampSwitcher 判定;此处 [M] 以目标档近似,
     // 80ms ramp 窗口被 Output 侧 ≥200ms 注入延迟覆盖(J32)。
     session_.setMuted(target == scvb::input::OutputStageMode::kSilence);
+
+    // 采集布防(ADR-007):真源是 Output 的采集开关,经 ctrl 段 OutputGlobalInfo.capture_enabled
+    // 广播下来。captureArmed_ 此前**只有读点没有写点** —— processBlock 每块读它决定要不要写特征段,
+    // 而没有任何地方赋过值,于是恒 0:Input 从来没写过一帧特征,Output 那侧就算接好了读侧也永远
+    // 拉不到东西(T37 三轮 A 族 L-6 链上的第二处断点)。
+    ensureCtrlOpen();
+    captureArmed_.store(ctrl_.readGlobalInfo().capture_enabled != 0 ? 1u : 0u, std::memory_order_relaxed);
 }
 
 void ScvbInputAudioProcessor::setCurrentProgram(int /*index*/) {}
@@ -438,10 +444,8 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)
     return session_.state(); // T30 桥:{conflict:true} ⇔ 新组同 channel 被占(I2)
 }
 
-juce::AudioProcessorEditor* ScvbInputAudioProcessor::createEditor()
-{
-    return new scvb::input::InputEditor(*this);
-}
+// createEditor() 与 createPluginFilter() 见 InputPluginEntry.cpp:抽出去之后本 TU 不再引用
+// InputEditor,免 DAW 的宿主 harness 才能只编 Processor 而不链接 WebView2。
 
 // ---------------------------------------------------------------------------
 // T30 Input 桥接入面([M] 编辑器线程;除注明外持 lifecycleMutex_)
@@ -575,10 +579,4 @@ juce::String ScvbInputAudioProcessor::bridgeUiLanguage() const
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     return uiLanguage_;
-}
-
-// juce_add_plugin 的 VST3/AU wrapper 从这里实例化插件。
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
-{
-    return new ScvbInputAudioProcessor();
 }
