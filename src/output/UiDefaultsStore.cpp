@@ -15,7 +15,11 @@ namespace
 
 constexpr const char* kKeyGuideSeen = "guide_seen_global";
 constexpr const char* kKeyTourSeen = "tour_seen_global";
-constexpr const char* kKeyUiScale = "ui_scale_percent";
+// 缩放档位**按角色分键**:两插件的档位表不同(Output {0.5…2} / Input {0.33…3}),
+// 共用一个键会在 Input 也实现 §3.6 落盘后互相污染(Input 存 300 → Output 构造读回 300,
+// 而 300 不在 Output 档位里)。inRange 用的是并集边界,拦不住这种污染。
+// 两个 *_seen_global 是 Output 专属(Input 没有引导页/导览),无需分键。
+constexpr const char* kKeyUiScale = "ui_scale_percent_output";
 
 // 档位边界真源 = scvb::bridge::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码)。
 bool inRange(int percent)
