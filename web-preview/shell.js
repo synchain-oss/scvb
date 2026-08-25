@@ -120,6 +120,8 @@ const SCENARIO_NAMES = {
         "abi-mismatch",
         "sr-mismatch",
         "group-mismatch",
+        // 05 §3 文末 J80 节引入:T48 Input 首启轻量引导(语言卡 → 5 步 mini tour)
+        "input-first-run",
     ],
 };
 

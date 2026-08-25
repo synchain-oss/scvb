@@ -897,7 +897,11 @@ export function makeInputState(overrides = {}) {
             group_id: 1,
             claim: "unassigned", // §5.2 六态
             abi: LOCAL_ABI,
-            ui: { scale: 1, language: "zh" },
+            // guide_seen = [J80] T48 的 Input 首启轻量引导已读位(契约变更文档
+            // docs/contract-changes/20260825-input-guide-seen.md;native 未落地)。
+            // 默认 false = 真实首装值 —— 预览里除 input-first-run 外一律由 state-driver
+            // 覆写为 true,免得每个场景都被语言卡挡住(与 Output 侧 first-run 同款处置)。
+            ui: { scale: 1, language: "zh", guide_seen: false },
         },
         overrides,
     );
@@ -953,6 +957,8 @@ export function makeInputSnapshot(overrides = {}) {
             conn: makeInputConn(),
             config: makeInputConfig(),
             ui: state.ui,
+            // J50a 系统级全局默认判定位,只读、不属工程 state([J80] Input 侧同款镜像)
+            guide_seen_global: false,
             version: { plugin: PLUGIN_VERSION, abi: LOCAL_ABI },
         },
         overrides,

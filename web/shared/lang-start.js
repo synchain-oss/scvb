@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // =============================================================================
-// SCVB Output · 首启语言选择卡(T36b 第四轮)
+// SCVB · 首启语言选择卡(T36b 第四轮;[J80] T48 由 web/output/ 提到 shared,Output 侧零行为变化)
 // -----------------------------------------------------------------------------
 // 职责边界:
-//   • 首启链最前:guide overlay(红字九条页)会显示时(ui.guide_seen=false)先显示本卡,
-//     用户选中语言后关闭本卡 → 露出红字九条页(已在选中语言下渲染)。
+//   • 首启链最前:guide overlay(Output = 红字九条页 / Input = 5 步 mini tour)会显示时
+//     (ui.guide_seen=false)先显示本卡,用户选中语言后关闭本卡 → 露出各自的下一环。
+//   • **两侧共用一件**而不是各写一份:判据字段名(工程 `ui.guide_seen` + 快照
+//     `guide_seen_global`)两侧逐字相同(契约 §1.1 / §3.1),视觉与文案(`lang-start.*`)
+//     也是同一份;差异只在「选完之后露出谁」,那一段在各自 app.js 的 onPick 里。
 //   • 不属于 tour 步骤机:不写 state、不触引擎、不调任何桥函数;语言切换由 app.js 的
-//     setLang 机制承担(契约 §1.30 setLang,沿用既有语言持久化,零新 state 键)。
+//     setLang 机制承担(契约 §1.30 / §3.7 setLang,沿用既有语言持久化,零新 state 键)。
 //   • 两段导出(与 tour.js / tab-master.js 同构):纯函数(无 DOM,node 可直接 import 断言)
 //     + createLangStart(opts)(DOM 接线)。模块顶层零副作用、零 document 触碰。
 //   • 文案走 data-t(applyI18n 统一刷):标题三语常显、三按钮各用各自语言(三语值相同)。

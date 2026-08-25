@@ -56,7 +56,7 @@ import {
     shouldShowTourAsk,
     shouldAutoShowTourAsk,
 } from "./tour.js";
-import { createLangStart, shouldShowLangStart } from "./lang-start.js";
+import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字

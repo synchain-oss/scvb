@@ -25,19 +25,21 @@
 // =============================================================================
 
 import { FIFTEEN_TRACKS } from "../shared/mock-data.js";
+import {
+    TOUR_BASE_CSS,
+    drawMask as paintMask,
+    spotRectOf,
+    placeCallout as paintCallout,
+} from "../shared/tour-paint.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
 // =============================================================================
 
-/** spotlight 洞的圆角(与说明框同款浮层卡圆角,05 §4 --r-callout)。 */
-export const SPOT_RADIUS = 16;
-
-/** spotlight 洞内边距(设计 px):≥8(05 §2.6「内边距 ≥8 设计 px」)。 */
-export const SPOT_PAD = 10;
-
-/** 羽化半径(设计 px):spotlight 边缘柔化。 */
-export const SPOT_FEATHER = 12;
+// 蒙版/亮区/说明框的几何常量与画法在 web/shared/tour-paint.js([J80] T48 提取)——
+// Output 44 步与 Input 5 步共用同一份画法,免得羽化/内边距/避让间距两处漂移。
+// 三个常量原样再导出:它们是 05 §2.6 对本页的规格断言面(smoke-tour ② 读 SPOT_PAD)。
+export { SPOT_RADIUS, SPOT_PAD, SPOT_FEATHER } from "../shared/tour-paint.js";
 
 /**
  * tour 步骤清单(用户 2026-08-23 指令:7 步基线作废,扩为全参数导览 44 步,步号连续 1..N;
@@ -244,38 +246,15 @@ export function createTour(opts) {
         const style = document.createElement("style");
         style.id = STYLE_ID;
         style.textContent = [
-            ".tour-overlay { position: absolute; inset: 0; z-index: 1000; pointer-events: auto; }",
-            ".tour-mask { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }",
-            ".tour-callout { position: absolute; z-index: 1; box-sizing: border-box; width: 360px;",
-            "  padding: var(--sp-16) var(--sp-18) var(--sp-14); border-radius: var(--r-callout);",
-            "  background: linear-gradient(158deg, rgba(34, 31, 44, 0.72), rgba(20, 17, 28, 0.8));",
-            "  -webkit-backdrop-filter: blur(16px) saturate(140%);",
-            "  backdrop-filter: blur(16px) saturate(140%);",
-            "  border: 1px solid rgba(var(--wh), 0.16); box-shadow: var(--dark-modal-shadow);",
-            "  color: var(--txt-dark-2); outline: none; }",
-            ".tour-callout__title { margin: 0 0 var(--sp-6); font-family: var(--ff-grotesk);",
-            "  font-weight: 600; font-size: var(--fs-160); color: var(--txt-dark-1); }",
-            ".tour-callout__body { font-size: var(--fs-125); line-height: 1.55;",
-            "  color: var(--txt-dark-2); text-wrap: pretty; }",
-            ".tour-callout__hint { margin-top: var(--sp-8); font-family: var(--ff-mono);",
-            "  font-size: var(--fs-105); letter-spacing: var(--mono-ls-pill); color: var(--txt-dark-4); }",
+            // 蒙版/说明框/步骤指示/按钮行/箭头 = 共用画法(web/shared/tour-paint.js)
+            ...TOUR_BASE_CSS,
+            // 以下为 Output 专有:步 2 的工作流程大卡(五节点 + 优先级行)
             ".tour-callout__workflow { margin-top: var(--sp-12); display: flex; flex-direction: column; gap: var(--sp-8); }",
             ".tour-flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-6); }",
             ".tour-flow__item { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }",
             ".tour-flow__node { padding: var(--sp-6) var(--sp-10); border-radius: var(--r-pill); background: rgba(var(--wh), 0.12); border: 1px solid rgba(var(--wh), 0.2); font-family: var(--ff-sans); font-size: var(--fs-110); color: var(--txt-dark-2); white-space: nowrap; }",
             ".tour-flow__arrow { color: var(--txt-dark-4); font-family: var(--ff-mono); }",
             ".tour-flow__priority { padding: var(--sp-8) var(--sp-10); border-radius: var(--r-md); background: rgba(var(--wh), 0.08); border: 1px solid rgba(var(--wh), 0.16); font-size: var(--fs-115); color: var(--txt-dark-3); }",
-            ".tour-callout__foot { display: flex; flex-direction: column; align-items: stretch;",
-            "  gap: var(--sp-8); margin-top: var(--sp-12); }",
-            ".tour-callout__indicator { display: flex; align-items: center; gap: var(--sp-10); flex: none; }",
-            ".tour-callout__step { font-family: var(--ff-mono); font-size: var(--fs-105);",
-            "  letter-spacing: var(--mono-ls); color: var(--txt-dark-3); font-variant-numeric: tabular-nums; }",
-            ".tour-callout__dots { display: inline-flex; gap: 3px; }",
-            ".tour-callout__dot { width: 4px; height: 4px; border-radius: 50%; background: rgba(var(--wh), 0.22); }",
-            '.tour-callout__dot[data-current="1"] { background: var(--acc-cta); }',
-            ".tour-callout__actions { display: flex; justify-content: flex-end; gap: var(--sp-8); flex: none; }",
-            ".tour-callout__arrow { position: absolute; width: 12px; height: 12px;",
-            "  background: var(--dark-solid); transform: rotate(45deg); pointer-events: none; }",
         ].join("\n");
         root.head.appendChild(style);
     }
@@ -355,174 +334,19 @@ export function createTour(opts) {
         badge = root.querySelector('[data-gb="header-demo-chip"]');
     }
 
-    // ---------------------------------------------------------------- 蒙版绘制
-    // canvas destination-out 挖洞 + shadowBlur 羽化(05 §2.6「实现建议 SVG mask 或
-    // canvas 挖洞」);mask 填充色读 --void token,零硬编码颜色。
-    function maskFill() {
-        let v = "14,10,22";
-        try {
-            const c = getComputedStyle(card).getPropertyValue("--void");
-            if (c && c.trim()) v = c.trim();
-        } catch {
-            /* 兜底 = --void 默认值 */
-        }
-        return "rgba(" + v + ", 0.72)";
-    }
-
-    function roundRectPath(ctx, x, y, w, h, r) {
-        const rr = Math.min(r, w / 2, h / 2);
-        ctx.beginPath();
-        ctx.moveTo(x + rr, y);
-        ctx.arcTo(x + w, y, x + w, y + h, rr);
-        ctx.arcTo(x + w, y + h, x, y + h, rr);
-        ctx.arcTo(x, y + h, x, y, rr);
-        ctx.arcTo(x, y, x + w, y, rr);
-        ctx.closePath();
-    }
-
+    // ---------------------------------------------------------------- 蒙版与定位
+    // 画法(canvas 挖洞 + 羽化、亮区量取、说明框四向避让)= web/shared/tour-paint.js。
+    // 本页只负责「哪一步高亮哪个锚点」,几何与绘制与 Input 侧共用同一份实现。
     function drawMask(spotLocal) {
-        const dpr =
-            (typeof window !== "undefined" && window.devicePixelRatio) || 1;
-        const w = card.clientWidth;
-        const h = card.clientHeight;
-        mask.width = Math.round(w * dpr);
-        mask.height = Math.round(h * dpr);
-        const ctx = mask.getContext("2d");
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, w, h);
-
-        ctx.fillStyle = maskFill();
-        ctx.fillRect(0, 0, w, h);
-
-        if (spotLocal && spotLocal.w > 0 && spotLocal.h > 0) {
-            ctx.save();
-            ctx.globalCompositeOperation = "destination-out";
-            ctx.shadowColor = "rgba(0, 0, 0, 1)";
-            ctx.shadowBlur = SPOT_FEATHER;
-            ctx.beginPath();
-            roundRectPath(
-                ctx,
-                spotLocal.x,
-                spotLocal.y,
-                spotLocal.w,
-                spotLocal.h,
-                SPOT_RADIUS,
-            );
-            ctx.fill();
-            ctx.fill(); // 二画增强洞心全透,羽化只留在边缘
-            ctx.restore();
-        }
+        paintMask(mask, card, spotLocal);
     }
 
-    // ---------------------------------------------------------------- spotlight
     function computeSpot() {
-        const cfg = TOUR_STEPS[step - 1];
-        if (!cfg.anchor) return null;
-        const target = root.querySelector('[data-tour="' + cfg.anchor + '"]');
-        if (!target) return null;
-        // 目标在滚动区不可见先滚动到可见(05 §2.6);block/inline=nearest 只做最小滚动。
-        try {
-            target.scrollIntoView({ block: "nearest", inline: "nearest" });
-        } catch {
-            /* 部分 WebView 不支持 options 参数,忽略即可 */
-        }
-        // 以蒙版 canvas 自身的包围盒为坐标基准(与 drawMask 的 clientWidth 同源),
-        // 避免 #card 若有 1px 描边时 border-box 与 padding-box 差 2px 导致亮区偏移。
-        const cr = mask.getBoundingClientRect();
-        const tr = target.getBoundingClientRect();
-        return {
-            x: tr.left - cr.left - SPOT_PAD,
-            y: tr.top - cr.top - SPOT_PAD,
-            w: tr.width + SPOT_PAD * 2,
-            h: tr.height + SPOT_PAD * 2,
-        };
+        return spotRectOf(root, TOUR_STEPS[step - 1].anchor, mask);
     }
 
-    function clamp(v, lo, hi) {
-        return v < lo ? lo : v > hi ? hi : v;
-    }
-
-    /** 说明框四向避让亮区、clamp 设计盒内;返回 callout 左上角与箭头方位。 */
     function placeCallout(spotLocal) {
-        const cw = callout.offsetWidth;
-        const ch = callout.offsetHeight;
-        const W = card.clientWidth;
-        const H = card.clientHeight;
-        const margin = 12;
-        const gap = 14;
-
-        let x;
-        let y;
-        let edge = "none";
-        let off = 0; // 箭头沿边缘的偏移(距 callout 左上角)
-
-        if (!spotLocal) {
-            x = (W - cw) / 2;
-            y = (H - ch) / 2;
-        } else {
-            const sx = spotLocal.x;
-            const sy = spotLocal.y;
-            const sw = spotLocal.w;
-            const sh = spotLocal.h;
-            const cx = sx + sw / 2;
-            const cy = sy + sh / 2;
-
-            const fitsBelow = sy + sh + gap + ch <= H - margin;
-            const fitsAbove = sy - gap - ch >= margin;
-            const fitsRight = sx + sw + gap + cw <= W - margin;
-            const fitsLeft = sx - gap - cw >= margin;
-
-            if (fitsBelow) {
-                edge = "top";
-                x = clamp(cx - cw / 2, margin, W - margin - cw);
-                y = sy + sh + gap;
-                off = clamp(cx - x, 18, cw - 18);
-            } else if (fitsAbove) {
-                edge = "bottom";
-                x = clamp(cx - cw / 2, margin, W - margin - cw);
-                y = sy - gap - ch;
-                off = clamp(cx - x, 18, cw - 18);
-            } else if (fitsRight) {
-                edge = "left";
-                y = clamp(cy - ch / 2, margin, H - margin - ch);
-                x = sx + sw + gap;
-                off = clamp(cy - y, 18, ch - 18);
-            } else if (fitsLeft) {
-                edge = "right";
-                y = clamp(cy - ch / 2, margin, H - margin - ch);
-                x = sx - gap - cw;
-                off = clamp(cy - y, 18, ch - 18);
-            } else {
-                // 四向都放不下(极小视口):贴目标右下,箭头朝上
-                edge = "top";
-                x = clamp(sx + sw + gap, margin, W - margin - cw);
-                y = clamp(sy + sh + gap, margin, H - margin - ch);
-                off = 18;
-            }
-        }
-
-        callout.style.left = Math.round(x) + "px";
-        callout.style.top = Math.round(y) + "px";
-
-        const AW = 12;
-        if (edge === "none") {
-            arrowEl.hidden = true;
-        } else {
-            arrowEl.hidden = false;
-            if (edge === "top") {
-                arrowEl.style.left = Math.round(off - AW / 2) + "px";
-                arrowEl.style.top = Math.round(-AW / 2) + "px";
-            } else if (edge === "bottom") {
-                arrowEl.style.left = Math.round(off - AW / 2) + "px";
-                arrowEl.style.top = Math.round(ch - AW / 2) + "px";
-            } else if (edge === "left") {
-                arrowEl.style.left = Math.round(-AW / 2) + "px";
-                arrowEl.style.top = Math.round(off - AW / 2) + "px";
-            } else {
-                arrowEl.style.left = Math.round(cw - AW / 2) + "px";
-                arrowEl.style.top = Math.round(off - AW / 2) + "px";
-            }
-        }
+        paintCallout(callout, arrowEl, card, spotLocal);
     }
 
     // ---------------------------------------------------------------- 步骤机

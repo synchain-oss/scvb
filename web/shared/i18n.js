@@ -193,6 +193,28 @@ export const T = {
         "lang-start.en": "English",
         "lang-start.fr": "Français",
 
+        // Input 首启轻量引导 mini tour(**[J80] / 07 T48**;5 步基线,词条 tour-in.*)。
+        // 按钮行/交互提示复用 tour.* 同一份(措辞相同,不另立第二套)。
+        // 第 4 步 = 九条硬约束第 3 条的场景化改写:用词与 12 §3.4 / guide.rule3 同源
+        //(「设计行为,不是 bug」「检测不到健康 Output 时(未装、未连上、对端已退出)自动切回直通」
+        // 「不会因为只装了一个插件就得到一条没有声音的轨道」),禁「永久静音 / 哑轨」类旧表述。
+        "tour-in.help": "重看引导",
+        "tour-in.step1.title": "欢迎使用 SCVB Input",
+        "tour-in.step1.body":
+            "这是 SCVB 的采集端：每条人声轨的最后一格插一个，负责把这条轨送给总线上的 SCVB Output。花二十秒认一下这几件东西。",
+        "tour-in.step2.title": "组：A–H",
+        "tour-in.step2.body":
+            "组是一整套独立的工作区。本轨要和总线上接管它的那个 SCVB Output 选同一个组；只用一套时保持 A 即可。",
+        "tour-in.step3.title": "通道号",
+        "tour-in.step3.body":
+            "同组内每条人声轨占一个号（01–15），号在组内唯一。点一张卡即认领；右上角标了「占用」的号，已经被同组别的轨占着。",
+        "tour-in.step4.title": "连接状态",
+        "tour-in.step4.body":
+            "连接成功后，本轨会向下游输出静音、由总线上的 SCVB Output 接管发声——这是设计行为，不是 bug。检测不到健康的 Output 时（未装、未连上、对端已退出），本轨自动切回直通，所以你不会因为只装了一个插件就得到一条没有声音的轨道。",
+        "tour-in.step5.title": "完整控制在 Output",
+        "tour-in.step5.body":
+            "分析、平衡、写自动化这些完整控制都在总线上的 SCVB Output 里；Input 这一页只管认领通道和看状态。想再看一遍这段引导，随时点这个「？」。",
+
         // tour 全参数导览 44 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
         "tour.step1.title": "欢迎使用 SCVB",
         "tour.step1.body":
@@ -959,6 +981,24 @@ export const T = {
         "lang-start.en": "English",
         "lang-start.fr": "Français",
 
+        // Input first-run mini tour ([J80] / T48). EN/FR 自译,入 U17 审校清单。
+        "tour-in.help": "Show guide again",
+        "tour-in.step1.title": "Welcome to SCVB Input",
+        "tour-in.step1.body":
+            "This is SCVB's capture end: one instance in the last slot of every vocal track, feeding that track to the SCVB Output on the bus. Take twenty seconds to meet the pieces.",
+        "tour-in.step2.title": "Group A–H",
+        "tour-in.step2.body":
+            "A group is a self-contained workspace. This track has to sit in the same group as the SCVB Output that takes it over; with a single setup, just leave it on A.",
+        "tour-in.step3.title": "Channel number",
+        "tour-in.step3.body":
+            "Each vocal track in a group takes one number (01–15), unique within that group. Click a card to claim it; a card marked “occupied” is already held by another track in this group.",
+        "tour-in.step4.title": "Connection status",
+        "tour-in.step4.body":
+            "Once connected, this track outputs silence downstream and the SCVB Output on the bus takes over — this is by design, not a bug. When no healthy Output is detected (not installed, not connected, peer has quit), this track falls back to passthrough automatically, so installing only one of the two plugins will never leave you with a track that has no sound.",
+        "tour-in.step5.title": "Full control lives in Output",
+        "tour-in.step5.body":
+            "Analysis, balancing and automation writing all live in the SCVB Output on the bus; this page only claims a channel and shows status. To walk through this again, click this “?” any time.",
+
         // tour full-parameter 44 steps (final copy; EN self-translated, pending U17 review).
         "tour.step1.title": "Welcome to SCVB",
         "tour.step1.body":
@@ -1689,6 +1729,24 @@ export const T = {
         "lang-start.zh": "中文",
         "lang-start.en": "English",
         "lang-start.fr": "Français",
+
+        // Guide léger de premier lancement côté Input ([J80] / T48). EN/FR 自译,入 U17 审校清单。
+        "tour-in.help": "Revoir le guide",
+        "tour-in.step1.title": "Bienvenue dans SCVB Input",
+        "tour-in.step1.body":
+            "Voici l’extrémité de capture de SCVB : une instance dans le dernier emplacement de chaque piste de voix, qui alimente le SCVB Output placé sur le bus. Prenez vingt secondes pour faire connaissance.",
+        "tour-in.step2.title": "Groupe A–H",
+        "tour-in.step2.body":
+            "Un groupe est un espace de travail autonome. Cette piste doit se trouver dans le même groupe que le SCVB Output qui la prend en charge ; avec une seule configuration, laissez simplement A.",
+        "tour-in.step3.title": "Numéro de canal",
+        "tour-in.step3.body":
+            "Chaque piste de voix d’un groupe occupe un numéro (01–15), unique au sein de ce groupe. Cliquez sur une carte pour la revendiquer ; une carte marquée « occupé » est déjà tenue par une autre piste du groupe.",
+        "tour-in.step4.title": "État de la connexion",
+        "tour-in.step4.body":
+            "Une fois connectée, cette piste envoie du silence en aval et le SCVB Output du bus prend le relais — c’est le comportement voulu, pas un bug. Si aucun Output sain n’est détecté (non installé, non connecté, pair quitté), cette piste repasse automatiquement en direct : n’installer qu’un seul des deux plugins ne vous laissera donc jamais une piste sans aucun son.",
+        "tour-in.step5.title": "Le contrôle complet est dans Output",
+        "tour-in.step5.body":
+            "L’analyse, l’équilibrage et l’écriture d’automation se trouvent tous dans le SCVB Output du bus ; cette page ne sert qu’à revendiquer un canal et à afficher l’état. Pour revoir ce guide, cliquez sur ce « ? » à tout moment.",
 
         // tour complet 44 étapes (copie finale ; FR auto-traduite, à relire).
         "tour.step1.title": "Bienvenue dans SCVB",

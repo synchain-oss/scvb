@@ -102,6 +102,9 @@ export const SCENARIO_MAP = Object.freeze({
     "recapture-armed": "fifteen-tracks",
     // T36b 首启交互式引导:完整首启链(语言卡 → 红字九条 → 询问步 → tour 43 步);见 buildWorld 覆写
     "first-run-tour": "fifteen-tracks",
+    // T48([J80])Input 首启轻量引导:语言卡 → 5 步 mini tour。落在健康满配世界上,
+    // 于是 group / channel / pill 三个锚点都有真内容可讲(第 ④ 步讲的正是「已接管」这一态)。
+    "input-first-run": "fifteen-tracks",
     // T34 曲线编辑器演示:非零 ms_balance,让 J68 叠加线(g_eq)在截图里可见
     "curve-editor": "fifteen-tracks",
     // T43([J75] A)轨迹图演示:开箱就落在轨迹档,且段表带一段跨轨对齐的缺口 ——
@@ -585,6 +588,19 @@ export function buildWorld(opts = {}) {
         inputClaim = "idle";
         groupsOnline = 0b00000001; // 只有组 A 在线(异组),本组 B 无 Output
         caps.occupiedMask = 0; // 本组(B)无其它 Input
+    }
+
+    // ---- Input 首启链的开箱位([J80] T48)---------------------------------------
+    // 与 Output 侧 first-run / first-run-tour 同款处置:**只有** input-first-run 场景
+    // 把两级 guide_seen 摆成 false(语言卡 + mini tour 开箱即弹);其余场景一律按「已看过」
+    // 渲染 —— 否则每个 Input 预览档一开就被语言卡挡住,七态一个都验不了。
+    if (inputSnapshot) {
+        const inputFirstRun = opts.scenario === "input-first-run";
+        inputSnapshot = {
+            ...inputSnapshot,
+            ui: { ...inputSnapshot.ui, guide_seen: !inputFirstRun },
+            guide_seen_global: !inputFirstRun,
+        };
     }
 
     // ---- 查询参数覆写 ----------------------------------------------------------

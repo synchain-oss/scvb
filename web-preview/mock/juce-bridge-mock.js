@@ -1733,6 +1733,18 @@ function buildInputBackend(ctx) {
             patchState({ ui: { language: next } });
             return OK();
         },
+
+        // ---- 待转正:setGuideSeen([J80] T48 Input 首启轻量引导)------------------
+        // **契约 §3 里还没有这个名字**(Input 函数表当前 7 个)—— 它停在 bridge.js 的
+        // PENDING_FUNCS.input 等 native 落地,见
+        // docs/contract-changes/20260825-input-guide-seen.md。
+        // 形制逐字照 Output 侧 §1.32:工程位写 state.ui.guide_seen 并经 scvb.state 回推;
+        // alsoGlobal 只写系统级全局默认位(**不回写 state**,故不进 patchState)。
+        setGuideSeen(seen, alsoGlobal = true) {
+            patchState({ ui: { guide_seen: !!seen } });
+            if (alsoGlobal !== false) model.snapshot.guide_seen_global = !!seen;
+            return OK();
+        },
     };
 
     return backend;

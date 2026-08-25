@@ -101,6 +101,34 @@
                 text-align: right;
                 color: var(--txt-2);
             }
+            /* 连接状态整块(pill + 音频路径副文案):[J80] mini tour 第 ④ 步的 spotlight 目标 ——
+               只框 pill 会把「直通中 / 已接管」这句正文关在亮区外,而那句正是该步要讲的东西 */
+            .ipt-header__conn {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-end;
+                gap: var(--sp-5);
+            }
+            /* header 工具行:语言胶囊 + 「?」重看引导([J80];Input 无设置页,重看入口只能落 header) */
+            .ipt-header__tools {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-6);
+            }
+            .ipt-help {
+                flex: none;
+                width: 22px;
+                height: 22px;
+                padding: 0;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 50%;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-105);
+                line-height: 1;
+                color: var(--txt-2);
+            }
             /* 组 badge(J71③:独立「组 {X}」badge,不是 pill 后缀;空/未连接态同样常显) */
             .ipt-group-badge {
                 display: inline-flex;
@@ -463,55 +491,74 @@
                         <span data-gb="input.header.groupBadgeLetter">A</span>
                     </span>
                     <div
-                        class="sc-pill"
-                        data-gb="input.header.pill"
-                        data-tone="gray"
+                        class="ipt-header__conn"
+                        data-gb="input.header.conn"
+                        data-tour="pill"
                     >
-                        <span class="sc-pill__dot"></span>
-                        <span
-                            data-gb="input.header.pillText"
-                            data-t="state.noChannel"
-                        ></span>
+                        <div
+                            class="sc-pill"
+                            data-gb="input.header.pill"
+                            data-tone="gray"
+                        >
+                            <span class="sc-pill__dot"></span>
+                            <span
+                                data-gb="input.header.pillText"
+                                data-t="state.noChannel"
+                            ></span>
+                        </div>
+                        <div
+                            class="ipt-header__pillsub sc-hint"
+                            data-gb="input.header.pillSub"
+                        ></div>
                     </div>
-                    <div
-                        class="ipt-header__pillsub sc-hint"
-                        data-gb="input.header.pillSub"
-                    ></div>
-                    <div
-                        class="sc-seg sc-seg--sm"
-                        data-gb="input.header.lang"
-                        role="tablist"
-                        data-t-aria="language"
-                    >
+                    <div class="ipt-header__tools">
+                        <div
+                            class="sc-seg sc-seg--sm"
+                            data-gb="input.header.lang"
+                            role="tablist"
+                            data-t-aria="language"
+                        >
+                            <button
+                                type="button"
+                                class="sc-seg__item"
+                                data-gb="input.header.lang.zh"
+                                data-lang="zh"
+                                role="tab"
+                                aria-selected="true"
+                            >
+                                中
+                            </button>
+                            <button
+                                type="button"
+                                class="sc-seg__item"
+                                data-gb="input.header.lang.en"
+                                data-lang="en"
+                                role="tab"
+                                aria-selected="false"
+                            >
+                                EN
+                            </button>
+                            <button
+                                type="button"
+                                class="sc-seg__item"
+                                data-gb="input.header.lang.fr"
+                                data-lang="fr"
+                                role="tab"
+                                aria-selected="false"
+                            >
+                                FR
+                            </button>
+                        </div>
+                        <!-- 重看引导([J80]:Input 无设置页,「?」= 唯一重看入口;
+                             mini tour 末步 spotlight 高亮的就是本按钮,J62 同款自指) -->
                         <button
                             type="button"
-                            class="sc-seg__item"
-                            data-gb="input.header.lang.zh"
-                            data-lang="zh"
-                            role="tab"
-                            aria-selected="true"
+                            class="sc-btn ipt-help"
+                            data-gb="input.header.help"
+                            data-tour="help"
+                            data-t-aria="tour-in.help"
                         >
-                            中
-                        </button>
-                        <button
-                            type="button"
-                            class="sc-seg__item"
-                            data-gb="input.header.lang.en"
-                            data-lang="en"
-                            role="tab"
-                            aria-selected="false"
-                        >
-                            EN
-                        </button>
-                        <button
-                            type="button"
-                            class="sc-seg__item"
-                            data-gb="input.header.lang.fr"
-                            data-lang="fr"
-                            role="tab"
-                            aria-selected="false"
-                        >
-                            FR
+                            ?
                         </button>
                     </div>
                 </div>
@@ -578,7 +625,7 @@
                     class="ipt-panel sc-glass"
                     data-gb="input.channelPanel"
                 >
-                    <div data-gb="input.group">
+                    <div data-gb="input.group" data-tour="group">
                         <div class="ipt-group__head">
                             <span
                                 class="sc-eyebrow"
@@ -624,7 +671,7 @@
 
                     <div class="sc-divider ipt-hr" aria-hidden="true"></div>
 
-                    <div data-gb="input.channels">
+                    <div data-gb="input.channels" data-tour="channel">
                         <span
                             class="sc-eyebrow"
                             data-gb="input.channels.eyebrow"
