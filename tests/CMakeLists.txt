@@ -182,3 +182,50 @@ add_test(NAME scvb_input_bridge_tests COMMAND scvb_input_bridge_tests)
 if(SCVB_BUILD_IPC_TESTS AND WIN32)
   add_subdirectory(ipc)
 endif()
+
+# ---------------------------------------------------------------------------
+# scvb_host_tests:免 DAW 宿主 harness(T37 三轮验收升级)。
+# 一个进程里同时托管 Output 与 Input 两个 Processor + 一个 FakePlayHead,经**真实**共享内存段
+# (registry / audio 环 / feat 段 / ctrl 段)通信,手工推 processBlock 并跑 JUCE 消息循环让
+# 25Hz Timer 真实触发。四族数据面的回归从此有机器守门,不再靠真机人肉发现。
+#
+# 只编 *Processor.cpp 与其依赖,**不编** *PluginEntry.cpp:
+#   · 那两个 TU 里的 createEditor() 会把 WebViewHost/WebView2 拖进来(harness 不需要 GUI);
+#   · createPluginFilter() 在两侧同名,同进程托管两个插件会撞符号。
+# 见 src/output/OutputPluginEntry.cpp 头注。
+add_executable(scvb_host_tests
+  host/test_host_harness.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/OutputProcessor.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp
+  ${CMAKE_SOURCE_DIR}/src/output/UiDefaultsStore.cpp
+  ${CMAKE_SOURCE_DIR}/src/input/InputProcessor.cpp
+  ${CMAKE_SOURCE_DIR}/src/input/InputBridgeLogic.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/BridgeBase.cpp
+)
+
+target_link_libraries(scvb_host_tests PRIVATE
+  scvb_core
+  Catch2::Catch2WithMain
+  juce::juce_audio_processors
+)
+
+target_include_directories(scvb_host_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/core
+  ${CMAKE_SOURCE_DIR}/src/output
+  ${CMAKE_SOURCE_DIR}/src/input
+  ${CMAKE_SOURCE_DIR}/src/plugin-common
+)
+
+# harness 要扮演宿主的消息线程:runDispatchLoopUntil 让两侧的 25Hz Timer 真实触发。
+# 该 API 在 JUCE 里由 JUCE_MODAL_LOOPS_PERMITTED 守卫,**只对本测试目标开**,插件产物不受影响。
+target_compile_definitions(scvb_host_tests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+
+if(MSVC)
+  target_compile_options(scvb_host_tests PRIVATE /W4 /utf-8 /EHsc)
+else()
+  target_compile_options(scvb_host_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
