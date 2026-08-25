@@ -33,7 +33,7 @@
 | 偏移 | 大小 | 区块 | 说明 |
 |---|---|---|---|
 | 0 | 64 | `VizHeader` | magic/abi 先行 + generation + 几何字段 |
-| 64 | 128 | `VizFrame` | seqlock 帧头:序号 + playhead + 循环区 + 窗口 + 掩码 |
+| 64 | 128 | `VizFrame` | seqlock 帧头:序号 + playhead + 循环区 + 窗口 + **四张掩码**(online / covered / stereo / lead)+ 车道版本号 |
 | 192 | 64 | `VizTrackColors` | 15 个轨色索引(u32) |
 | 256 | 1920 | `VizCoverage` | 分段 activity 位图,15 轨 × 1024 位 |
 | 2176 | 30720 | `VizLanes` | 降采样 pan 车道,15 轨 × 1024 × int16 |
@@ -134,12 +134,18 @@ widthPct ∈ [0,100]。哨兵 `−32768` = 无数据。
 
 ### 零写入的落实方式(不只是注释)
 
-1. `VizPlane::open()` 记下调用线程为 owner([M]);`publish()` 若发现自己跑在别的线程上,
-   **一个字节都不写**,只累加 `foreignThreadWrites()`。误从 `processBlock` 接线时计数会非零。
+1. **owner 线程在首次 `publish()` 时绑定**(不是 `open()` 时);此后 `publish()` 若发现自己跑在
+   别的线程上,**一个字节都不写**,只累加 `foreignThreadWrites()`。误从 `processBlock` 接线时计数会非零。
+
+   为什么不绑在 `open()`:`open()` 由 `prepareToPlay` 触发,而 `publish()` 在 `timerCallback`,
+   **JUCE/VST3 不保证这两者在同一条线程上**。绑错的后果是此后每一次发布都被护栏挡掉、
+   段静默保持全零而没有任何报错 —— 比不设护栏更难查。
 2. 只读 attach(`attachReadOnly()`)状态下 `publish()` 是彻底 no-op —— Monitor 侧的零写入在类型外再兜一层。
 3. `attachReadOnly()` 走 `openExistingReadOnly` + `checkHeaderReadOnly`(只读触碰 + 单次 acquire 读),
    **绝不 memset、绝不覆盖式重初始化** —— 覆盖分支仅限创建者角色。
-4. 断言:`tests/core/test_viz_plane.cpp` 的「非 owner 线程 publish 零写入」「只读 attach 方 publish 不写任何字节」两例。
+4. 断言(`tests/core/test_viz_plane.cpp`):「非 owner 线程 publish 零写入」「只读 attach 方 publish
+   不写任何字节」「owner 线程绑在首次 publish,不是 open()」——最后一条在**别的线程** `open()`、
+   本线程首发,断言数据真的写进去了(绑错时它会红)。
 
 ### 映射生命周期:viz **不用** `SegmentHandle` 的租约 + 宽限期
 

@@ -118,6 +118,7 @@ field VizFrame.track_lead_mask offset 84
 field VizFrame._reserved offset 88
 struct VizTrackColors size 64 align 64
 field VizTrackColors.index offset 0
+field VizTrackColors._pad offset 60
 struct VizCoverage size 1920 align 64
 field VizCoverage.bits offset 0
 struct VizLanes size 30720 align 64

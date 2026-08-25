@@ -378,6 +378,8 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
     {
         if (f == "index")
             return offsetof(scvb::VizTrackColors, index);
+        if (f == "_pad")
+            return offsetof(scvb::VizTrackColors, _pad);
         return kNotFound;
     }
     if (s == "VizCoverage")
