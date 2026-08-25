@@ -42,6 +42,8 @@ const TM = await import(u("web/output/tab-master.js"));
 const MT = await import(u("web/output/canvas/meter.js"));
 const { createBridge } = await import(u("web/shared/bridge.js"));
 const { T } = await import(u("web/shared/i18n.js"));
+const { demoChannelLabel } = await import(u("web/shared/demo-track.js"));
+const { DEMO_LABELS } = await import(u("web/shared/mock-data.js"));
 
 let fail = 0;
 const log = (...a) => console.log(...a);
@@ -1146,6 +1148,43 @@ log("\n=== ⑨ 渲染调度:rAF 合帧 + 按行增量(T33 性能批)===");
             globalThis.cancelAnimationFrame = realCaf;
         }
     }
+}
+
+// =============================================================================
+log("=== ⑩ 主列表 demo 轨名本地化(EN/FR 无 CJK + 两两互异)===");
+{
+    const cjk = /[\u4e00-\u9fff]/;
+    // demo 原值(zh)= mock-data DEMO_LABELS —— demo 模式下主列表 15 轨显示的就是这 15 条。
+    eq(DEMO_LABELS.length, 15, "demo 轨名 15 条");
+    for (const lang of ["en", "fr"]) {
+        const names = DEMO_LABELS.map((label, i) =>
+            demoChannelLabel(i + 1, label, T[lang]),
+        );
+        check(names.length === 15, `${lang} 主列表 15 轨名齐备`);
+        check(
+            !names.some((n) => cjk.test(n)),
+            `${lang} 主列表 15 轨名无 CJK(实得 ${names.join(" / ")})`,
+        );
+        check(new Set(names).size === 15, `${lang} 主列表 15 轨名两两互异`);
+        // 真实 DAW 轨名(kChannelUIDKey)永不改写:非 demo 原值原样返回。
+        eq(
+            demoChannelLabel(1, "My Vocal Track", T[lang]),
+            "My Vocal Track",
+            `${lang} 真实轨名不被改写`,
+        );
+    }
+    // zh 原值不变:demo 轨名在 zh 下仍是 DEMO_LABELS 原值。
+    eq(
+        DEMO_LABELS.map((label, i) => demoChannelLabel(i + 1, label, T.zh)),
+        DEMO_LABELS,
+        "zh 主列表轨名保持原值",
+    );
+    // 无字典(纯函数调用)不本地化。
+    eq(
+        demoChannelLabel(1, DEMO_LABELS[0], null),
+        DEMO_LABELS[0],
+        "不传字典保持原 label",
+    );
 }
 
 // =============================================================================

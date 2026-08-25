@@ -45,6 +45,7 @@ import {
     lowSampleChannels,
     secondsToTimecode,
 } from "./tab-master.js";
+import { demoChannelLabel } from "../shared/demo-track.js";
 
 // =============================================================================
 // 一、纯函数与常量(无 DOM;node 侧断言面)
@@ -1931,7 +1932,12 @@ export function createTabTracks(opts) {
         show(n.stereo, !!row.st);
         if (local.editingCh !== ch) {
             attr(n.labelcell, "data-editing", "0");
-            text(n.label, row.label || labelPlaceholder(ch, t));
+            // demo 轨名本地化(合入后补漏):demo 原值(zh)在 EN/FR 下换词条,
+            // 真实 DAW 轨名(kChannelUIDKey)不匹配 DEMO_LABELS,原样返回不受影响。
+            text(
+                n.label,
+                demoChannelLabel(ch, row.label, t) || labelPlaceholder(ch, t),
+            );
             attr(n.label, "data-placeholder", row.label ? 0 : 1);
         }
         setTitle(n.labelInput, t["tracks.labelEdit"]);
