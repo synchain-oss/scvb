@@ -119,6 +119,10 @@ const FORBIDDEN = [
  *   - output.functions 的 `confirmPrintGuard` —— 授权来源 04 §5.3 / 05 §2.0 横幅⑦ + 统筹裁定 A-29
  *   - output.functions 的 `setMasterChartMode` —— 授权来源 05 J75 A(T43 双视图);变更文档
  *     docs/contract-changes/20260825-master-chart-mode.md
+ *   - output.functions 的 `exportSuggestions` —— 授权来源 07 T41 / 11 §4.2.3 通路 B2 / U12;变更文档
+ *     docs/contract-changes/20260825-export-suggestions.md([J81] 转正)
+ *   - input.functions  的 `setGuideSeen`      —— 授权来源 05 §3 文末 J80 节 / T48;变更文档
+ *     docs/contract-changes/20260825-input-guide-seen.md([J81] 转正)
  * 其余每一项都能在 05 §1.4 的表内逐字找到。
  */
 const EXPECTED = {
@@ -159,6 +163,7 @@ const EXPECTED = {
             "setTourSeen",
             "confirmPrintGuard", // ← 授权增量③(04 §5.3 / 05 §2.0 横幅⑦;统筹裁定 A-29)
             "setMasterChartMode", // ← 授权增量④(05 J75 A / T43 双视图;变更文档 20260825-master-chart-mode)
+            "exportSuggestions", // ← 授权增量⑤(07 T41 / 11 §4.2.3 通路 B2;U12「进 v1 主线」;变更文档 20260825-export-suggestions,[J81] 转正)
         ],
         events: [
             "scvb.state",
@@ -181,6 +186,7 @@ const EXPECTED = {
             "setUiScale",
             "commitUiScale",
             "setLang",
+            "setGuideSeen", // ← 授权增量⑥(05 §3 文末 J80 节 / T48;变更文档 20260825-input-guide-seen,[J81] 转正)
         ],
         events: [
             "scvb.state",
@@ -193,8 +199,8 @@ const EXPECTED = {
 };
 /** 计数自检 —— 与契约 §7 文末「计数自检」行同源。 */
 const EXPECTED_COUNTS = {
-    output: { functions: 35, events: 9 },
-    input: { functions: 7, events: 5 },
+    output: { functions: 36, events: 9 },
+    input: { functions: 8, events: 5 },
 };
 
 /** 枚举期望值 —— 与 docs/SCVB_CONTRACT.md §5 / §7 同源。 */
@@ -322,9 +328,21 @@ ok(
 const bodyText = contractText.replace(block, "");
 
 const sides = ["output", "input"];
-const contractFns = { output: [], input: [] };
-const contractEvts = { output: [], input: [] };
-const contractParams = { output: new Map(), input: new Map() };
+// monitor 不进 sides(其 4 个通用函数由 WebViewHost 基类注册、正文在 §10),但 manifest 要取出来
+// 供下面的 [M] Monitor 专块比对 —— 见该块头注。
+const contractFns = { output: [], input: [], monitor: [] };
+const contractEvts = { output: [], input: [], monitor: [] };
+const contractParams = {
+    output: new Map(),
+    input: new Map(),
+    monitor: new Map(),
+};
+if (manifest.monitor && typeof manifest.monitor === "object") {
+    for (const f of manifest.monitor.functions || [])
+        if (f && typeof f.name === "string") contractFns.monitor.push(f.name);
+    for (const e of manifest.monitor.events || [])
+        if (typeof e === "string") contractEvts.monitor.push(e);
+}
 
 for (const side of sides) {
     const node = manifest[side];
@@ -683,6 +701,109 @@ for (const side of sides) {
 // 三方比对
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// [M] Monitor 侧([J81] manifest.monitor 转正;契约 §10)
+//
+// 为什么单立一块而不折进上面的 sides 主循环:
+//   ① Monitor 的 5 个函数里只有 setObservedGroup 由 MonitorBridgeApi.h 声明,
+//      requestInitialState / setUiScale / commitUiScale / setLang 四个由 WebViewHost
+//      **基类**注册 —— 折进主循环会让 C++ 侧比对报 4 项「缺少」,而那是设计如此;
+//   ② Monitor 正文在契约 §10,不在主循环双向解析的 §1-§4 区段内。
+// 故这里做三件事:manifest ↔ bridge.js 零差异、计数 5/4、C++ 头是 manifest 的子集
+// 且补集恰为那四个基类函数(写死在 MONITOR_BASE_FNS,少一个多一个都会红)。
+const MONITOR_BASE_FNS = [
+    "requestInitialState",
+    "setUiScale",
+    "commitUiScale",
+    "setLang",
+];
+const MONITOR_COUNTS = { functions: 5, events: 4 };
+const MONITOR_HEADER = "src/monitor/MonitorBridgeApi.h";
+
+log("");
+log("[M] Monitor 侧 —— 契约 §10 / " + MONITOR_HEADER);
+{
+    const mFns = contractFns.monitor || [];
+    const mEvts = contractEvts.monitor || [];
+    if (mFns.length === 0 && mEvts.length === 0) {
+        fail("契约 §7 manifest 缺 monitor 块([J81] 已转正,不应缺失)");
+    } else {
+        if (mFns.length !== MONITOR_COUNTS.functions)
+            fail(
+                `monitor 函数计数不符:期望 ${MONITOR_COUNTS.functions},实得 ${mFns.length}(契约 §7 计数自检行同源)`,
+            );
+        if (mEvts.length !== MONITOR_COUNTS.events)
+            fail(
+                `monitor 事件计数不符:期望 ${MONITOR_COUNTS.events},实得 ${mEvts.length}(契约 §7 计数自检行同源)`,
+            );
+
+        if (bridgeNames) {
+            compareSets(
+                "monitor functions",
+                "contract",
+                mFns,
+                "bridge.js",
+                bridgeNames.functions.monitor || [],
+            );
+            compareSets(
+                "monitor events",
+                "contract",
+                mEvts,
+                "bridge.js",
+                bridgeNames.events.monitor || [],
+            );
+            checkForbiddenIn("bridge.js(monitor)", [
+                ...(bridgeNames.functions.monitor || []),
+                ...(bridgeNames.events.monitor || []),
+            ]);
+        }
+
+        const mhPath = join(REPO_ROOT, MONITOR_HEADER);
+        if (existsSync(mhPath)) {
+            const mh = extractCppNames(readFileSync(mhPath, "utf8"));
+            const extra = mh.functions.filter((f) => !mFns.includes(f));
+            if (extra.length)
+                fail(
+                    `monitor functions: C++ header 多出 ${extra.length} 项(manifest 无而 header 有): ${extra.join(", ")}`,
+                );
+            const missing = mFns.filter((f) => !mh.functions.includes(f));
+            const unexpected = missing.filter(
+                (f) => !MONITOR_BASE_FNS.includes(f),
+            );
+            const absentBase = MONITOR_BASE_FNS.filter(
+                (f) => !missing.includes(f),
+            );
+            if (unexpected.length)
+                fail(
+                    `monitor functions: C++ header 缺少非基类项 ${unexpected.join(", ")}(只有 ${MONITOR_BASE_FNS.join("/")} 允许由 WebViewHost 基类注册)`,
+                );
+            if (absentBase.length)
+                fail(
+                    `monitor functions: ${absentBase.join(", ")} 记为基类注册却出现在 C++ header —— 两处注册即双落点(§0.1 第 4 条)`,
+                );
+            compareSets(
+                "monitor events",
+                "contract",
+                mEvts,
+                "C++ header",
+                mh.events,
+            );
+            checkForbiddenIn("C++ header(monitor)", [
+                ...mh.functions,
+                ...mh.events,
+            ]);
+            if (!unexpected.length && !absentBase.length && !extra.length)
+                ok(
+                    `monitor functions: C++ header 声明 ${mh.functions.length} 项 + 基类 ${MONITOR_BASE_FNS.length} 项 = manifest ${mFns.length} 项`,
+                );
+        } else {
+            fail(
+                `找不到 ${MONITOR_HEADER}(monitor 已转正进契约 §7,C++ 真源必须在)`,
+            );
+        }
+    }
+}
+
 log("");
 log("[=] 名字集合比对");
 
@@ -840,8 +961,8 @@ function extractJsNameTable(src, tableName) {
     const m = re.exec(src);
     if (!m) return null;
     const body = m[1];
-    const out = { output: [], input: [] };
-    for (const side of ["output", "input"]) {
+    const out = { output: [], input: [], monitor: [] };
+    for (const side of ["output", "input", "monitor"]) {
         const sideRe = new RegExp(`${side}\\s*:\\s*\\[([\\s\\S]*?)\\]`);
         const sm = sideRe.exec(body);
         if (!sm) continue;
@@ -859,14 +980,32 @@ function extractJsNameTable(src, tableName) {
 function extractCppNames(src) {
     const functions = [];
     const events = [];
+    // 按**逻辑语句**聚合而不是逐行:clang-format 会把过长的声明折成
+    //   inline constexpr const char* kEvPlayhead =
+    //       "scvb.playhead"; // ...
+    // 逐行匹配会因为「constexpr 与字面量不在同一行」而**静默漏抽**这个名字 ——
+    // 漏抽的后果是 C++ 里明明声明了、parity 却看不见,比报错更难查
+    // (本条由 [J81] 转正时新增的 Monitor 比对块当场逮到:kEvPlayhead 就是这么丢的)。
+    const statements = [];
+    let buf = "";
     for (const rawLine of src.split(/\r?\n/)) {
         const line = rawLine.trim();
         if (
             line.startsWith("//") ||
             line.startsWith("*") ||
             line.includes("parity-ignore")
-        )
+        ) {
+            buf = "";
             continue;
+        }
+        buf = buf ? buf + " " + line : line;
+        if (line.includes(";")) {
+            statements.push(buf);
+            buf = "";
+        }
+    }
+    if (buf) statements.push(buf);
+    for (const line of statements) {
         if (!/constexpr/.test(line)) continue;
         for (const m of line.matchAll(/"([^"]+)"/g)) {
             const v = m[1];

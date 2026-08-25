@@ -1,14 +1,16 @@
 # PARAMETERS —— SCVB 自动化参数表(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-08-24(转正回填;内容依据 `docs/constitution/params-v0.md` v2.2)
+> 最后更新: 2026-08-25(J81 修宪转正;内容依据 `docs/constitution/params-v0.md` **v2.3**——**123 参数表逐字未改**)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` 蒸馏转正)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
 
 仲裁规则:`docs/constitution/` 只读副本是**修订源**(改动须走修宪流程);本文件是**实现/审查基准**(06 §3.4 review bot 比对对象)。两者分歧时,以已冻结实现代码与 `tests/golden/` 快照为准。
 
-本文件是自动化参数冻结契约的仓内转正文档(06 §3.4 review bot prompt 明文要读的比对基准之一)。内容蒸馏自 `docs/constitution/params-v0.md`(v2.2,J57-J66 修宪:2 版本 × 15 轨 × 4 参数)。ParamID / index / 顺序 / skew 永久冻结(冻结点 = 首个公开 rc)。
+本文件是自动化参数冻结契约的仓内转正文档(06 §3.4 review bot prompt 明文要读的比对基准之一)。内容蒸馏自 `docs/constitution/params-v0.md`(**v2.3**,J57-J66 修宪:2 版本 × 15 轨 × 4 参数;J81 修宪对本表零变动)。ParamID / index / 顺序 / skew 永久冻结(冻结点 = 首个公开 rc)。
+
+> **[J81] SCVB Monitor = 0 自动化参数。** 第三个 VST3 主目标(ADR-001 v2.1)**没有** `AudioProcessorValueTreeState`,`getParameters()` 恒为空,`getBypassParameter()` 为 `nullptr`;宿主自带 bypass 由 JUCE wrapper 提供,**不占自动化位**。故下方 123 参数表对 Monitor 完全不适用,本次修宪对该表**逐字未改**。铁律见 ADR-001a;断言见 `tests/core/test_monitor_processor.cpp`。
 
 ## 一、Output 插件:自动化参数(共 **123** 个,全部 versionHint=1)[J59/J65]
 

@@ -76,7 +76,8 @@
 // 用法:
 //   node scripts/check-ipc-doc-parity.mjs             # 对拍,漂移即 exit 1
 //   node scripts/check-ipc-doc-parity.mjs --verbose   # 附带逐项通过明细
-//   node scripts/check-ipc-doc-parity.mjs --strict     # WARN 也算失败
+//   node scripts/check-ipc-doc-parity.mjs --strict-missing  # 只把「文档缺标注」提成失败(gates 用这档)
+//   node scripts/check-ipc-doc-parity.mjs --strict          # 两类 WARN 都提成失败(v1 冻结后再用)
 //   node scripts/check-ipc-doc-parity.mjs --help
 //
 // 零依赖(Node >= 18,ESM),与 check-i18n.mjs / check-bridge-parity.mjs 同规格。
@@ -97,19 +98,24 @@ const HEADERS = [
 ];
 
 const USAGE = [
-    "用法: node scripts/check-ipc-doc-parity.mjs [--verbose] [--strict] [--help]",
+    "用法: node scripts/check-ipc-doc-parity.mjs [--verbose] [--strict-missing] [--strict] [--help]",
     "  IPC 冻结契约文档 ↔ golden ↔ 头文件 的机器对拍。",
     "  真源方向:代码 → tests/golden/ipc-layout.txt → docs/IPC_CONTRACT.md。",
     "  --verbose  打印逐项通过明细(默认只打印失败与警告)。",
-    "  --strict   把「文档未标注」类警告提升为失败。",
+    "  --strict-missing  只把**原则一**(文档缺标注)的警告提升为失败;**原则二**(修宪在途,",
+    "                    有变更文档担保)的 WARN 通道保留 —— 那是 CONTRIBUTING §8 规定的正常状态。",
+    "  --strict   两类警告都提升为失败。会连带关掉「修宪在途」通道,新增段的 PR 将无法在",
+    "             「变更文档 + 用户批准 → 之后转正」的正常流程中变绿,故 gates 默认不用这档。",
     "  --help     打印本说明并退出 0。",
 ].join("\n");
 
 let verbose = false;
 let strict = false;
+let strictMissing = false;
 for (const a of process.argv.slice(2)) {
     if (a === "--verbose" || a === "-v") verbose = true;
     else if (a === "--strict") strict = true;
+    else if (a === "--strict-missing") strictMissing = true;
     else if (a === "--help" || a === "-h") {
         console.log(USAGE);
         process.exit(0);
@@ -122,9 +128,18 @@ for (const a of process.argv.slice(2)) {
 
 const errors = [];
 const warnings = [];
+// 判级分桶([J81]/C9):原则一 = 文档缺标注(本脚本可以要求补,gates 收紧这一档);
+// 原则二 = 修宪在途(有 docs/contract-changes/ 变更文档担保,**必须**保留 WARN 通道)。
+const warnMissingList = [];
+const warnPendingList = [];
 const passes = [];
 const fail = (msg) => errors.push(msg);
-const warn = (msg) => warnings.push(msg);
+const warn = (msg) => {
+    warnings.push(msg);
+    // 「修宪在途」类的措辞由 isPendingRatification() 分支产出,统一带「变更文档」字样。
+    if (msg.includes("变更文档")) warnPendingList.push(msg);
+    else warnMissingList.push(msg);
+};
 const pass = (msg) => passes.push(msg);
 
 function readOrDie(rel) {
@@ -1049,16 +1064,29 @@ function requireConst(name, label) {
 if (verbose) {
     for (const p of passes) console.log("  [OK] " + p);
 }
-for (const w of warnings) console.log("  [WARN] " + w);
+for (const w of warnings)
+    console.log(
+        "  [WARN]" +
+            (warnPendingList.includes(w) ? "[pending] " : "[missing] ") +
+            w,
+    );
 
-const warnFatal = strict && warnings.length > 0;
+const warnFatal =
+    (strict && warnings.length > 0) ||
+    (strictMissing && warnMissingList.length > 0);
 if (errors.length > 0 || warnFatal) {
     console.error("");
     console.error(
         "check-ipc-doc-parity 失败(" +
             errors.length +
             " 项不一致" +
-            (warnFatal ? " + " + warnings.length + " 项未标注[--strict]" : "") +
+            (warnFatal
+                ? " + " +
+                  (strict ? warnings.length : warnMissingList.length) +
+                  " 项未标注[" +
+                  (strict ? "--strict" : "--strict-missing") +
+                  "]"
+                : "") +
             "):",
     );
     for (const e of errors) console.error("  [FAIL] " + e);

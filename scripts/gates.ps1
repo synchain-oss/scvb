@@ -324,7 +324,7 @@ else {
     Set-Gate '3g IPC 契约文档对拍' $false
   }
   else {
-    $ipcOut = (& node scripts\check-ipc-doc-parity.mjs 2>&1)
+    $ipcOut = (& node scripts\check-ipc-doc-parity.mjs --strict-missing 2>&1)
     $ipcOk = ($LASTEXITCODE -eq 0)
     # 非零才打全量;绿时也把 [WARN](文档未标注、无法机检的项)透出来,
     # 免得「机检覆盖不到的洞」悄悄扩大 —— 补齐后可给脚本加 --strict 收紧。

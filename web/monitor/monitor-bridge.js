@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // =============================================================================
-// SCVB Monitor · 前端桥(T46;**临时形制,待随 ipc v1.6 修宪转正进契约 §7**)
+// SCVB Monitor · 前端桥(T46;**已随 [J81]/ipc v1.6 修宪转正进契约 §7 + §10**)
 // -----------------------------------------------------------------------------
-// 【对表状态】函数名表与事件名表已与 T45 的实交付逐字对齐(#92 `decae38` 的
-//   `MonitorBridgeApi.h` / `MonitorEditor.cpp`),载荷形状三轮对表已收敛。
+// 【对表状态】函数名表与事件名表已与 T45 的实交付逐字对齐(**#94 `649c99f`** 的
+//   `MonitorBridgeApi.h` / `MonitorEditor.cpp`;#92 已被 #94 取代,名表内容一致),
+//   载荷形状三轮对表已收敛。
+//
+// 【⚠ 本表已转正,以 bridge.js 为准】[J81] 修宪后,契约 §7 manifest 有了 `monitor` 块、
+//   `web/shared/bridge.js` 有了 `BRIDGE_FUNCTIONS.monitor` / `BRIDGE_EVENTS.monitor`,
+//   `scripts/check-bridge-parity.mjs` 的 [M] 块按那两张表做三向比对(manifest ↔ bridge.js ↔
+//   `src/monitor/MonitorBridgeApi.h`)。**本文件的两张表不再是比对面** —— 两份表并存期间
+//   一律以 `bridge.js` 为准;本文件按文件头自陈应退化成 `createBridge({role:"monitor"})`
+//   的薄封装或直接删除,列 T46 后续小项。
 //
 // 【⚠ 这些名字与形状现在由谁保证】**在 T44/T45 合入 `feature/v1` 之前,只有 mock 兜着。**
 //   本分支上跑的是 `web-preview/mock/monitor-mock.js`,它按对表结论造数,smoke 断言的
@@ -16,7 +24,8 @@
 // 【为什么不直接用 `web/shared/bridge.js`】
 //   那份文件只认 `output` / `input` 两侧,两张名表是 `scripts/check-bridge-parity.mjs`
 //   的 B 侧比对面,与**冻结契约** docs/SCVB_CONTRACT.md §7 manifest 逐字全等(含
-//   34/9/7/5 四个计数断言)。Monitor 是第三个 target,它的函数与事件**还没进契约**
+//   36/9/8/5/5/4 六个计数断言)。**本段描述的是 [J81] 转正之前的状态**,留作溯源:
+//   当时 Monitor 是第三个 target,它的函数与事件**还没进契约**
 //   —— 往那张表里加一行,parity 门禁必红,而门禁红了是对的:它正在说「你改了桥面
 //   却没改契约」。所以 Monitor 侧的名表停在本文件,等 T44(viz 段修宪,ipc v1.6)与
 //   T45(Monitor 壳)定稿后,按契约 §9.0 + 仓 CLAUDE.md §5 的冻结变更流程一次性

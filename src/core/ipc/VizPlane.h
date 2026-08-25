@@ -375,7 +375,10 @@ public:
     // 早期版本直接读进 out,撕裂时把调用方的上一帧覆盖成半新半旧的拼接,而 API 却承诺沿用上帧。
     bool read(VizSnapshot& out) const;
 
-    // 「RT 线程零写入」的运行期护栏(不只是注释):open() 记下调用线程 = 段的 owner 线程([M]);
+    // 「RT 线程零写入」的运行期护栏(不只是注释):**首次 publish() 记下调用线程 = 段的 owner
+    // 线程([M])**,不是 open() —— JUCE/VST3 不保证 prepareToPlay(open 的触发点)与
+    // timerCallback(publish 的触发点)在同一条线程上,绑在 open() 会让此后每次发布都被护栏
+    // 静默挡掉、段永远全零,比不设护栏更难查;
     // publish() 若发现自己跑在别的线程上,**一个字节都不写**并计数。processBlock 误接线时
     // 计数会非零,由 tests/core/test_viz_plane.cpp 的零写入用例钉死。
     u64 foreignThreadWrites() const { return foreignThreadWrites_.load(std::memory_order_relaxed); }
@@ -399,7 +402,7 @@ private:
     SegmentView view_; // 直接持有映射(无租约、无宽限期;理由见 release() 注释)
     unsigned char* base_ = nullptr;
 
-    std::thread::id ownerThread_{}; // open() 的调用线程([M]);publish() 只认这一个
+    std::thread::id ownerThread_{}; // **首次 publish()** 的调用线程([M]);publish() 只认这一个
     std::atomic<u64> foreignThreadWrites_{0};
 };
 

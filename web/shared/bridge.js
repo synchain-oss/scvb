@@ -47,7 +47,7 @@
  * 顺序也照 manifest(顺序对 parity 无影响,照抄是为了人工比对时一眼可对)。
  */
 export const BRIDGE_FUNCTIONS = {
-    // Output —— 35 个(契约 §1)
+    // Output —— 36 个(契约 §1)
     output: [
         "requestInitialState",
         "setCaptureEnabled",
@@ -84,14 +84,26 @@ export const BRIDGE_FUNCTIONS = {
         "setTourSeen",
         "confirmPrintGuard",
         "setMasterChartMode",
+        "exportSuggestions",
     ],
-    // Input —— 7 个(契约 §3)。与 Output 同名的 requestInitialState / setGroupId / setUiScale /
+    // Input —— 8 个(契约 §3)。与 Output 同名的 requestInitialState / setGroupId / setUiScale /
     // commitUiScale / setLang 是契约认可的同名同签名项(§7),名字只在各自侧内查重、不跨侧查重。
     input: [
         "requestInitialState",
         "setChannelId",
         "setGroupId",
         "remoteSetPriority",
+        "setUiScale",
+        "commitUiScale",
+        "setLang",
+        "setGuideSeen",
+    ],
+    // Monitor —— 5 个(契约 §10;[J81] 转正)。除 setObservedGroup 外四个由 WebViewHost 基类注册。
+    // setObservedGroup 刻意不叫 setGroupId:§1.4 的 setGroupId 是 Output 的改组(断开本组全部
+    // 连接、要弹确认条),这里只是「换一个组的 viz 段来看」,不 claim、对被观察组零副作用。
+    monitor: [
+        "requestInitialState",
+        "setObservedGroup",
         "setUiScale",
         "commitUiScale",
         "setLang",
@@ -123,6 +135,9 @@ export const BRIDGE_EVENTS = {
         "scvb.groups",
         "scvb.error",
     ],
+    // Monitor —— 4 个(契约 §10;[J81] 转正)。scvb.groups 与 scvb.playhead 逐字复用 Output 侧
+    // §2.4/§2.6 的既有载荷形状,不另立一套 —— 轨迹图与组胶囊的消费代码因此一行不改。
+    monitor: ["scvb.state", "scvb.groups", "scvb.viz", "scvb.playhead"],
 };
 
 // 名表冻结,防止调用方就地改写(T28 的 mock 若靠 push 补名,parity 脚本静态扫不出来)。
@@ -131,6 +146,7 @@ export const BRIDGE_EVENTS = {
 for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
     Object.freeze(table.output);
     Object.freeze(table.input);
+    Object.freeze(table.monitor);
     Object.freeze(table);
 }
 
@@ -148,30 +164,21 @@ for (const table of [BRIDGE_FUNCTIONS, BRIDGE_EVENTS]) {
  *   • 转正时:契约 §7 manifest + 正文 + C++ 常量表 + 本文件 `BRIDGE_FUNCTIONS` 同批加名,
  *     并把该名字从本表**删掉**(留着会让它绕过 parity 门禁,那才是真正的洞)。
  *
- * 现存条目:
- *   • `exportSuggestions(scope)` —— T41 建议表的 CSV 导出(11 §4.2.3 通路 B2);变更文档
- *     `docs/contract-changes/20260825-export-suggestions.md`,native 侧(保存对话框 +
- *     `src/core/export/SuggestionExport` 落盘)转后续。行集与 CSV 的**纯计算**部分本卡
- *     已在两侧落地(C++ `scvb::suggest` + web `output/tab-suggestions.js`),缺的只是落盘口。
- *   • **Input 侧** `setGuideSeen(seen, alsoGlobal)` —— [J80] T48 的 Input 首启轻量引导
- *     `ui.guide_seen`;变更文档 `docs/contract-changes/20260825-input-guide-seen.md`。
- *     名字与签名逐字照 Output 侧 §1.32(同名同签名项由契约 §7 按侧各自登记),但 **Input 的
- *     §3 函数表当前只有 7 个、不含它** —— 故停在本表等 native 落地。native 未落地时**上下行
- *     都还没有这件东西**:下行 `InputBridgeLogic.cpp` 的快照与 `scvb.state` 只发
- *     `ui:{scale, language}`、顶层无 `guide_seen_global`,两个闸门键都是 `undefined`
- *     (判据要求 `=== false`)⇒ Input 首启链在真宿主里**一次都不会自动弹**,唯一入口是
- *     header 的「?」重看;上行本名字不挂,调用落空。页内会话标记拦的是**预览 / mock 形态**
- *     下的重弹,真宿主里只是空转。这是「没写成」的**如实**表现,不是静默假装写成了。
+ * **现存条目:无。** `exportSuggestions`(Output)与 `setGuideSeen`(Input)已随 [J81] 修宪
+ * 转正进 `BRIDGE_FUNCTIONS`(契约 §1.36 / §3.8 + §7 manifest),按本注第二条从本表**删除** ——
+ * 留着会让它们绕过 parity 门禁,那才是真正的洞。本表保留空壳供下一个待转正名字使用。
  */
 export const PENDING_FUNCS = {
-    output: ["exportSuggestions"],
-    input: ["setGuideSeen"],
+    output: [],
+    input: [],
+    monitor: [],
 };
-for (const side of ["output", "input"]) Object.freeze(PENDING_FUNCS[side]);
+for (const side of ["output", "input", "monitor"])
+    Object.freeze(PENDING_FUNCS[side]);
 Object.freeze(PENDING_FUNCS);
 
-/** 合法角色 —— 契约只有 Output / Input 两侧。 */
-const ROLES = ["output", "input"];
+/** 合法角色 —— 契约的 Output / Input / Monitor 三侧(Monitor 由 [J81] 随 ipc v1.6 修宪转正,契约 §10)。 */
+const ROLES = ["output", "input", "monitor"];
 
 /**
  * 返回对象上的保留键。契约冻结后函数名只增不改,万一将来新增的名字撞上这三个键,
@@ -239,20 +246,37 @@ function makeOn(role, em) {
  */
 function assemble(role, isPreview, em, call, hasPending) {
     const api = { role, isPreview, on: makeOn(role, em) };
+    // 能力探测:真宿主传入按 `__juce__functions` 判的谓词,mock 不传(mock 已在
+    // makeMockBridge 里断言实现了 BRIDGE_FUNCTIONS 全集,契约 §0.7)。
+    const probe = typeof hasPending === "function" ? hasPending : null;
+    const absent = [];
     for (const name of BRIDGE_FUNCTIONS[role]) {
         if (RESERVED_KEYS.has(name)) {
             throw new Error(
                 `bridge:函数名 ${name} 与返回对象保留键冲突,须先改 bridge.js 的 RESERVED_KEYS 约定`,
             );
         }
+        // **契约已收、native 尚未实现**的名字不挂 —— 挂了会让页面的
+        // `typeof bridge.X === "function"` 特性探测判成「能用」,于是按钮点亮却什么也不做,
+        // 那比「桥上没这个名字」更坏:它在假装写成了。契约与实现的时间差由此如实暴露。
+        if (probe && !probe(name)) {
+            absent.push(name);
+            continue;
+        }
         api[name] = call(name);
+    }
+    if (absent.length > 0) {
+        console.warn(
+            `[bridge] ${role}:契约 §7 有而宿主未登记的函数 ${absent.length} 个 —— ` +
+                `${absent.join(", ")}。这些名字不会挂到桥上(调用方读到 undefined),` +
+                `属「契约已转正、native 待落地」的正常中间态;native 接线后本条自动消失。`,
+        );
     }
     // 待转正名字:后端**确实实现了**才挂(见 PENDING_FUNCS 头注)。挂不上时调用方
     // 读到 undefined,与「这个桥函数还不存在」是同一形态 —— 页面侧本来就得容错。
-    const probe = typeof hasPending === "function" ? hasPending : () => false;
     for (const name of PENDING_FUNCS[role]) {
         if (RESERVED_KEYS.has(name) || name in api) continue;
-        if (probe(name)) api[name] = call(name);
+        if (probe ? probe(name) : false) api[name] = call(name);
     }
     return api;
 }

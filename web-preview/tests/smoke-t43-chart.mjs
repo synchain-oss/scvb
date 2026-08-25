@@ -656,8 +656,8 @@ log("=== ⑤ mock 端到端:视图态往返 ===");
     );
     eq(
         PENDING_FUNCS.output.slice(),
-        ["exportSuggestions"],
-        "待转正名表只剩 T41 的 exportSuggestions",
+        [],
+        "待转正名表已清空([J81] 修宪:exportSuggestions 也转正了,契约 §1.36 + §7)",
     );
     const bridge = createBridge({ role: "output", mockBackend: s.mock });
     check(

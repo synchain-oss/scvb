@@ -1,17 +1,30 @@
 > 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 架构决策记录(ADR)——P1 宪法,起草文档不得与之矛盾
 
-状态:**v2.0**(2026-08-11,J57-J62 用户变更修宪,正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。
+状态:**v2.1**(2026-08-25,J81 修宪:ADR-001 两插件 → 三插件,新增只读监视目标 SCVB Monitor;正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。
 
 依据:masterPlan/decisions.md(D1-D8)+ research/01~10 报告。
 
 ---
 
-## ADR-001 插件形态:两个插件目标 + 共享核心库
-一个仓库,CMake 三个目标:`scvb_core`(静态库:DSP/分析/IPC/状态/版本引擎,可离线单测)、`SCVB Input`(VST3)、`SCVB Output`(VST3)。JUCE 一个 target 一个插件,不做单插件双模式(用户会同时开十几个实例,双模式易误操作)。
-- PLUGIN_CODE:Input=`Scvi`,Output=`Scvo`(Snb1 已被 Bridge 占用;厂商码统一 `Snch`)
-- BUNDLE_ID:`com.synchain.scvb.input` / `com.synchain.scvb.output`
-- PRODUCT_NAME:"SCVB Input" / "SCVB Output"(显示名带 Synchain 由厂商列免)…最终名在 05/UI 文档定,插件码/bundle id 冻结
+## ADR-001 插件形态:三个插件目标 + 共享核心库(CMake 四主目标)(v2.1/J81 改写)
+一个仓库,CMake **四个主目标**:`scvb_core`(静态库:DSP/分析/IPC/状态/版本引擎,可离线单测)、`SCVB Input`(VST3)、`SCVB Output`(VST3)、**`SCVB Monitor`(VST3,[J75]/J81 新增:纯只读监视器)**。JUCE 一个 target 一个插件,不做单插件双模式(用户会同时开十几个实例,双模式易误操作)。
+- PLUGIN_CODE:Input=`Scvi`,Output=`Scvo`,**Monitor=`Scvm`**(Snb1 已被 Bridge 占用;厂商码统一 `Snch`)
+- BUNDLE_ID:`com.synchain.scvb.{input,output,monitor}`
+- PRODUCT_NAME:"SCVB Input" / "SCVB Output" / **"SCVB Monitor"**(显示名带 Synchain 由厂商列免)…最终名在 05/UI 文档定,插件码/bundle id 冻结
+- 打包产物由 2 个 `.vst3` 变 **3 个**(`build.ps1 -Target` / `gates.ps1` gate 7/8 的 bundle 允许表与计数 / `build-vst3.yml` 计数同步 2 → 3)
+
+### ADR-001a Monitor 三铁律(v2.1/J81 入宪正文)
+
+**SCVB Monitor 是纯只读监视器**,以下三条为**宪法级**约束,实施不得以任何理由偏离;违反即回退。
+
+| 铁律 | 落实 | 断言 |
+|---|---|---|
+| **0 自动化参数** | 无 `AudioProcessorValueTreeState`,不调 `createParameterLayout`;宿主自带 bypass 由 JUCE wrapper 提供,不占自动化位 | `getParameters().isEmpty()` + `getBypassParameter()==nullptr` |
+| **音频直通(逐样本按位相等)** | `processBlock` 对 buffer **什么都不做**;`isBusesLayoutSupported` 只接受进出一致的 mono/stereo,故无需补清尾声道 | `memcmp` **按位**比对(非近似):mono/stereo × {1,64,512} 块长 × 含 0/−0/非规格化/极值的样本,外加连续 200 块无累积 |
+| **对任何共享段零写入** | registry 只经 `openExistingReadOnly` 探测;viz 只经 `VizPlane::attachReadOnly()`;**不 claim InputSlot/OutputSlot、不碰 ctrl 段** | 段不存在时 Monitor 跑完一轮**段仍不存在**(只读方绝不建段);写方发布一帧后 Monitor 跑 50 块音频 + 12 拍 [M],段内容 `memcmp` 一字未变,写方 `foreignThreadWrites()` 恒 0 |
+
+推论(不另立条款,但实施须知):Monitor **不注册 InputSlot/OutputSlot、不 claim 任何组**,对既有注册表/心跳/接管/看门狗机制**零改动**;其 state 与 Input state **完全同形**(`group_id` / `ui.scale` / `ui.language`,`channel_id` 恒 0 且不参与语义),复用既有 `InputState` 的 CFGS payload 布局,**无新 chunk、无新字段、无新 abi**。组切换走**只读专用**路径(释放旧句柄 + 换组,**不 attach、不创建**)—— 复用写方的 `changeGroup()` 会让「新组还没有写方」变成「我来建一个空段」,正好破坏第三条铁律。
 
 ## ADR-002 路由架构(=D5,细则)
 - Input 插在人声轨最后一个推子后插槽:捕获 → 写共享内存 → 向下游输出**静音**(保住 DAW 依赖图排序)
@@ -157,3 +170,11 @@ scvb/
 - **[J58→新增语义]** `lead_select` 全局自动化参数(0=遵循分析,1-15=强制该轨实时居中,其余轨不重分布);与分析期 `lead_lock`(逐段)双层;`lead_vol_exempt` 为**独立**每轨选项,不与任何 lead 机制强制关联(用户澄清)。
 - **[J60→ADR-010 补充]** 自动分配:每轨 `participate_in_auto_pan` 开关(stereo 默认 false/mono 默认 true);参与的 stereo 轨以**中心点**入槽位分配(不区间化);全部轨参与 L/R 音量平衡(stereo 按实际双通道能量)。
 - **[J61]** 连锁修订:ipc 升 v1.4(15 slots/stereo 环);01/02/03/04/05/07/10/11+HANDOFF 按 J57-J60 修订。
+
+# v2.1 修订(2026-08-25,J81 修宪并批)
+
+- **[J81h→ADR-001 改写]** 主目标 2 插件 → **3 插件**:新增 `SCVB Monitor`(VST3,`PLUGIN_CODE=Scvm`,`com.synchain.scvb.monitor`),纯只读监视器。授权来源已齐备(J75 用户裁决「新增同仓第三 VST3 target SCVB Monitor」+ 01 文末 J75 注记 + 05 文末 J75 节 C),缺的只是落到 ADR 本体 —— **J22 的豁免管不到它**:J22 只把 `juce_add_binary_data` 资源目标与 `scvb_tests` 等**辅助**目标排除在外,第三个 `.vst3` 是**主**目标。标题措辞取「三个插件目标 + 共享核心库(CMake 四主目标)」以保 J22「三目标 = 三主目标」的原语义不被推翻。来源:PR #94 `docs/contract-changes/20260825-monitor-target.md`。
+- **[J81i→ADR-001a 新立]** Monitor **三铁律**(0 自动化参数 / 音频直通逐样本按位相等 / 对任何共享段零写入)入 ADR 正文,连同各自的落实方式与断言口径。理由:三条都是「一旦破了就再也发现不了」的性质(直通用近似比对会漏掉非规格化差异;零写入用注释承诺等于没有承诺),写进宪法才有回退依据。
+- **[J81 连带]** ADR-004 的「参数布局:自动化参数全部在 Output」**不受影响** —— Monitor 0 参数,123 参数面逐字不动(params-v0 v2.3 §一 有显式零变动声明);ADR-002 的注册表/心跳/接管语义**不受影响** —— Monitor 不参与其中任何一项。
+- **[J81 连带]** ADR-011 的质量门:pluginval strictness 5 与 CI 构建计数由 2 目标扩到 3 目标;`build.ps1 -Target` 增 `Monitor`。
+- **[J81 记录]** 本次修宪同批升 `ipc-contract-v0.md` v1.5 → **v1.6**(ctrl 广播区正式布局 + viz 段)与 `params-v0.md` v2.2 → **v2.3**(state ui/analysis 组增补 + state 容器 abi 1→2 + 123 零变动声明)。三件同一个 commit、同一个 J 编号,依「修宪流程」第 4 条落地清单五项执行。`setVersionName` 的撤销归属另立 **J82**。

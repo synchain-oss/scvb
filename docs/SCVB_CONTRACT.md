@@ -2,7 +2,7 @@
 
 > **版本**:1.0(已冻结)
 > **状态**:已冻结(2026-08-16;DeepSeek native 可实现性评审通过 + 用户批准);此后任何改动按 §9 走「只增不改」变更流程
-> **真源**:函数名/签名形态/事件名 = `masterPlan/plan/05-ui-spec.md` §1.4(含 §2.3a payload、§2.0/§2.1/§2.3/§2.4/§3 组件表、§6.2/§6.3 数据面);载荷字段语义与线程/节流/防回环细则 = `masterPlan/plan/01-architecture.md` §6.1/§6.4(ctrl 段 §4.4、跨组探测 §4.5);参数面/state 字段 = `docs/constitution/params-v0.md`(v2.2);IPC 段与枚举 = `docs/constitution/ipc-contract-v0.md`(v1.5);裁定规则 = `masterPlan/plan/07-execution-plan.md` T25
+> **真源**:函数名/签名形态/事件名 = `masterPlan/plan/05-ui-spec.md` §1.4(含 §2.3a payload、§2.0/§2.1/§2.3/§2.4/§3 组件表、§6.2/§6.3 数据面);载荷字段语义与线程/节流/防回环细则 = `masterPlan/plan/01-architecture.md` §6.1/§6.4(ctrl 段 §4.4、跨组探测 §4.5);参数面/state 字段 = `docs/constitution/params-v0.md`(**v2.3**);IPC 段与枚举 = `docs/constitution/ipc-contract-v0.md`(**v1.6**);裁定规则 = `masterPlan/plan/07-execution-plan.md` T25
 
 ---
 
@@ -76,7 +76,7 @@
 
 | 入撤销栈(插件自有 UndoManager,03 §5.3) | 不入撤销栈 |
 |---|---|
-| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`、`copyVersion` | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setVersionName`、`setChannelConfig`、`setVadParams`、`setSegmentation`、`setTransitionRamp`、`setAnalysisConfig`、`analyze`/`previewAnalyze`/`cancelAnalyze`、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
+| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`、`copyVersion`、**`setVersionName`**([J82]) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setChannelConfig`、`setVadParams`、`setSegmentation`、`setTransitionRamp`、`setAnalysisConfig`、`analyze`/`previewAnalyze`/`cancelAnalyze`、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
 
 UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()` 并 `preventDefault`(防止冒泡到宿主撤销);焦点在文本输入框时不拦截(05 §1.3)。
 
@@ -84,7 +84,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 ## 1. Output —— native functions(UI → C++)
 
-共 **35** 个。全部在 [M] 处理(§0.3)。
+共 **36** 个。全部在 [M] 处理(§0.3)。
 
 ### 1.1 `requestInitialState()`
 
@@ -92,7 +92,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | 无 |
 | 返回 | 全量快照对象(键为 state 镜像,拼写照 params-v0):<br>`{ session_guid:string, group_id:1..8, config_seq:u32,`<br>`  global:{capture_enabled:bool, output_enabled:bool, version_active:1..2, range:{mode, start_s:f64, end_s:f64}},`<br>`  analysis:{vad:{threshold_db:f32, hysteresis_db:f32, hangover_ms:int, padding_pre_ms:int, padding_post_ms:int}, segmentation:{mode:string, sensitivity:f32, min_segment_ms:int}, transition_ramp_ms:f32, loudness_mode, center_slot_policy},`<br>`  channels:[15 × {enabled:bool, label:string, source_channels:1\|2, participate_in_auto_pan:bool, priority:0..10, lead_lock:bool, lead_vol_exempt:bool, pair_id:0\|1..7}],`<br>`  versions:[2 × {name:string, empty:bool, pan_curve:{points:[{angle:f32, gain_db:f32, shape:"bell"\|"shelf"\|"cut", q:f32, side:"out"\|"left"\|"right"}]}}],`<br>`  features:{embedded:bool, bytes:u64},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", active_tab, master_chart_mode:"distribution"\|"trajectory", guide_seen:bool, tour_seen:bool, lang_chosen?:bool},`<br>`  guide_seen_global:bool, tour_seen_global:bool, lang_chosen_global?:bool,`<br>`  print_guard:{pending:bool},`<br>`  recapture:{armed:bool, tracksMask:u16, startS:f64, endS:f64, autoStop:bool},`<br>`  analysis_run:{running:bool, progress?:f32},`<br>`  version:{plugin:string, abi:u32},`<br>`  conn:<同 §2.3 scvb.conn 载荷> }` |
-| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(Tab4 存储状态显示,04 §5.4/ADR-007);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。 |
+| 语义 | 首帧全量快照,并置 `mBridgeReady=true`(§0.6)。**本返回的 state 子树字段集 = §2.1 `scvb.state`(`full:true`)的字段集 + 快照专属的 `session_guid` / `version` / `guide_seen_global` / `tour_seen_global` / `lang_chosen_global` / `conn`,两者不得各自漂移**(含 `print_guard`/`recapture`/`analysis_run` 三个运行时态:重开编辑器时 UI 靠本返回即可恢复守卫/布防/分析显示,不必等首帧事件)。**本机 abi 的唯一落点是 `version.abi`**(无顶层 `abi` 键,消除同一语义两个落点;**取值 = ipc 段布局 abi(`RegistryHeader.abi` 同源);state chunk abi 只经 `scvb.error.newerState.detail.{localAbi,projectAbi}` 暴露,不落本字段**)。**段表与曲线真身(`versions[].curves_per_track`)不在本快照内**——见 §2.8 契约边界(唯一来源 = `mBridgeReady` 后首帧 `scvb.segments`);`versions[].pan_curve` 因是**整表提交的小结构**(≤16 点)随本快照与 `scvb.state` 下推,不进 `scvb.segments`。`channels` 定长 15,下标 0 对应 ch1。`versions[v].empty=true` 表示该版本无曲线数据(05 §2.1 ③ 空版本 chip 角标)。`features.bytes` = 特征数据字节数(Tab4 存储状态显示,04 §5.4/ADR-007);**逐帧特征本体不下推**,波形一律走 `requestWaveform`。`guide_seen_global`/`tour_seen_global` 为系统级全局默认判定位(J50a),只读、不属工程 state。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步;每个编辑器生命周期至少调用一次 |
@@ -202,7 +202,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true, name:string}`(回显实际落盘名,供 UI 显示截断/回落结果) |
 | 语义 | 写 state `versions[v].name`(J05)。**`copyVersion` 不复制 name**(§1.11)。 |
 | 拒绝态 | 无 C++ 侧拒绝码;PRINT 态由 UI 侧 chip(含双击重命名)整组 disabled |
-| 撤销 | 否 |
+| 撤销 | **是**([J82]:07 §T18「`juce::UndoManager` 接入(重命名可撤销)」为准;改名进插件 UndoManager 事务,与 `copyVersion` 同族) |
 | 线程/频率 | [M];用户提交(Enter/失焦)触发 |
 | 真源 | 05 §1.4 / §2.1 ③ |
 
@@ -230,7 +230,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `id: string` = ParamID;`value`(仅 `setParam`)= **参数真实工程值**(与 params-v0「范围」列同单位,**非归一化**;C++ 侧负责 normalize) |
 | 可驱动 ParamID 全集 | 全局三件:`width`(0..150 %,默认 100)、`ms_balance`(-100..+100,默认 0)、`lead_select`(int 0..15,step 1,默认 0)<br>每轨(**当前激活版本** `v = global.version_active`):`v{v}_t{t:02d}_width`(0..100 %,默认 100)、`v{v}_t{t:02d}_freeze`(int **0..3**,step 1,bit0=pan / bit1=vol,默认 0)<br>`t` = `01`..`15`(两位零填充) |
-| **不在**本通道 | 轨 `pan` / `vol` 手动值 —— 走 `setTrackManual`(§1.16)的曲线真身写入,**不经参数通道**;`v{v}_t{t:02d}_pan` / `v{v}_t{t:02d}_vol` 由引擎打印头驱动,UI 不直写 |
+| **不在**本通道 | 轨 `pan` / `vol` 手动值 —— 走 `setTrackManual`(§1.16)的曲线真身写入;`v{v}_t{t:02d}_pan` / `v{v}_t{t:02d}_vol` 由引擎打印头驱动,**UI 不直写**(UI 从不对这两个 ParamID 调 `setParam`,§0.5 防回环纪律原样成立)。**注**:native 侧处理 `setTrackManual` 时**会**落一次这两个参数(带 gesture,见 §1.16 与变更文档 `20260825-t37-r3-track-manual-param-plane.md`)—— 变的是 native 写入面,UI 侧纪律不变 |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}`(`id` 不在上表时,**不得静默忽略**) |
 | 语义 | 三段式转发到 [M] gesture(ADR-006):`beginParamGesture` → 若干次 `setParam` → `endParamGesture`;可被 DAW 录制。写入的一律是**当前激活版本**对应参数。`freeze` 的两枚 UI 开关**写同一参数**的两个位(J65);mock 后端须有对应参数状态(§0.7)。 |
 | 拒绝态 | 无(PRINT/ARMED 下照常允许——这是宿主可录的用户操作面) |
@@ -257,9 +257,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `ch: 1..15`;`panOrVol: "pan" \| "vol"`;`value: f32`(pan:-100..+100;vol:-24..+12 dB) |
 | 返回 | `{ok:true, replacedSegments:int, replacedLocked:int}` 或 `{observer:true}` |
-| 语义 | 冻结(freeze 对应位=1)时的手动静态值。**写入后经 `scvb.segments`(`reason:"trackManual"`)回推该轨新段表**(§2.8)。**编码 = 04 §1.5 方案 A**:向**当前激活版本**该轨曲线写入**覆盖全时间线的单段常值**,段标 `origin=user_edited`(J34),**不新增任何 state 字段**。因此它与段编辑同属**曲线真身操作**:零 gesture、入撤销栈;重分析按 ADR-008 v1.1 不覆盖它;版本切换会换出另一版本的手动值。返回的 `replacedSegments`/`replacedLocked` 供 UI 一次性确认条显示计数(「含 {l} 个锁定段」)。**`setTrackManual` 会连 `locked` 段一并替换**——J34 的 locked 保护只约束重分析。 |
+| 语义 | 冻结(freeze 对应位=1)时的手动静态值。**写入后经 `scvb.segments`(`reason:"trackManual"`)回推该轨新段表**(§2.8)。**编码 = 04 §1.5 方案 A**:向**当前激活版本**该轨曲线写入**覆盖全时间线的单段常值**,段标 `origin=user_edited`(J34),**不新增任何 state 字段**。写入常值段之后**追加**把同一个值写进**当前激活版本**对应的 `v{v}_t{t:02d}_pan` / `_vol` 参数,并用 `beginChangeGesture()` / `endChangeGesture()` **包住**(变更文档 `20260825-t37-r3-track-manual-param-plane.md`,PR #87)。**为什么必须落参数面**:`DspArbiter` 对**冻结**维度读的是 host 参数而**不读曲线**,打印器对冻结车道也只把参数当前值重写成平直线(#68/J78);而 UI 在手动写回成功后会自动把该维度 freeze 位置 1 —— 于是第一次手动改生效、之后每次都只写进一个没人读的地方(现象:看起来改了、听起来没改)。**为什么必须包 gesture**:裸 `setValueNotifyingHost` 在宿主看来是一次没有起止的孤立写入,Cubase 这类宿主要么记成孤立自动化点、要么在 Read 档下当场把值顶回去(那样这条修复根本不生效)。原文「零 gesture」以本条为准作废 —— 其原意「不要为手动值制造一串连续写入」仍然满足:UI 侧松手才发一次(`MANUAL_COMMIT_MS` 300ms 防抖),一次编辑 = 一对 begin/end。它仍**入撤销栈**;重分析按 ADR-008 v1.1 不覆盖它;版本切换会换出另一版本的手动值。返回的 `replacedSegments`/`replacedLocked` 供 UI 一次性确认条显示计数(「含 {l} 个锁定段」)。**`setTrackManual` 会连 `locked` 段一并替换**——J34 的 locked 保护只约束重分析。 |
 | 拒绝态 | 只读观察态 → `{observer:true}` |
-| 撤销 | **是** |
+| 撤销 | **是**(仅回滚曲线真身)。⚠ 撤销事务(`commitCrvsTransaction`)只快照/还原 CRVS 段表,**参数面不回滚** → 冻结维度上撤销在听感上无效(要等下一次分析或手动改才会变)。这是有意的:参数面是宿主的自动化面,插件自己的 UndoManager 去回滚它会与宿主撤销栈打架(§0.9 已明确「自动化参数不入插件 UndoManager」)。代价记在此处,不静默;若将来要让撤销也回滚参数,应走宿主 gesture 而非插件 undo |
 | 线程/频率 | [M];每轨首次调用前 UI 须弹一次性行内确认(**无 `origin=auto` 前置条件**,每轨每会话一次;05 §2.2 R3) |
 | 真源 | 05 §1.4 / §2.2;编码 04 §1.5 |
 
@@ -401,7 +401,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `code: "zh" \| "en" \| "fr"` |
 | 返回 | `{ok:true}` |
-| 语义 | 写 state `ui.language`;UI 侧同步 `document.documentElement.lang` 与全部 `aria-label`。未知 code 由 C++ 回退 `"zh"` 并在 `scvb.state` 回推实际值(05 §5 `dict(lang)` 未知回退 zh)。 |
+| 语义 | 写 state `ui.language`;UI 侧同步 `document.documentElement.lang` 与全部 `aria-label`。未知 code 由 C++ 回退 `"zh"` 并在 `scvb.state` 回推实际值(05 §5 `dict(lang)` 未知回退 zh)。**副作用([J81],变更文档 `20260825-t37-r3-misalign-semantics.md` 追加节)**:同时置 `ui.lang_chosen = true` 与系统级全局默认位 `lang_chosen_global`(**不回写 state**),二者语义与 `guide_seen`/`guide_seen_global` 完全同构,用于判定首启语言选择卡是否还要弹。**不新增桥函数** —— web 启动时的语言回填走 `setLang(..., {push:false})` **不经桥**,所以「桥的 `setLang` 被调用过」正好等价于「用户显式选过语言」。`ui.language` 本身不能兼任该标记:它默认 `"en"`,「从没选过」与「用户就是选了英文」不可区分。 |
 | 拒绝态 | 无(回退) |
 | 撤销 | 否 |
 | 线程/频率 | [M] |
@@ -466,6 +466,23 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 撤销 | 否(与 `setActiveTab` 同 —— UI 偏好不进 undo 栈) |
 | 线程/频率 | [M];用户点一次调一次 |
 | 真源 | 05 J75 A(T43 双视图);变更文档 `docs/contract-changes/20260825-master-chart-mode.md` |
+
+### 1.36 `exportSuggestions(scope)`([J81] T41;变更文档 `20260825-export-suggestions.md`)
+
+| 项 | 定义 |
+|---|---|
+| 参数 | `scope`:`{versions?: "active" \| "all", tracksMask?: u16, startS?: f64, endS?: f64}`;**整体可省**(= 全默认) |
+| 默认 | `versions:"active"`(当前激活版本)、`tracksMask:0x7FFF`(全 15 轨,**bit15 保留 0**,§9.2)、时间窗不限 |
+| 返回 | `{ok:true, rows:int, path:string}` 或 `{ok:false, reason:"badArg"\|"cancelled"\|"noData"\|"ioError"}` |
+| 语义 | 从 **CRVS 曲线真身**取段表 → 按冻结 13 列定义生成行集 → 序列化 CSV → **弹系统保存对话框**由用户选路径 → 落盘。**不写 state、不发 gesture、不动参数、不入撤销栈**。**为什么必须是 native**:① JUCE WebView 里 `<a download>` 与 `Blob` 保存都不通,只有 C++ 侧能弹系统保存对话框;② 跨版本导出(`versions:"all"`)UI 拿不到 —— §2.8 `scvb.segments` 一次只下发一个版本、§2.2 `scvb.params` 只带激活版本的 60 个参数,**全版本的真相只在 C++ 的 CRVS 里**。纯计算层 = `src/core/export/SuggestionExport.{h,cpp}`(`scvb::suggest::buildRows/toCsv`,不链接 JUCE、离线可单测) |
+| 冻结列(13,顺序不可改、不可增删) | `track_index, track_label, source_channels, version, version_name, segment_index, t0_sec, t1_sec, pan, vol_db, width, origin, locked` |
+| 文件形制 | UTF-8 **带 BOM**(否则 Excel 打开中文轨名乱码)、换行 **CRLF**(含最后一行)、含表头行、字段按 RFC 4180 转义(含 `,` `"` CR LF 的字段整体加双引号、内部双引号翻倍)。负零一律归一成正零 |
+| 列口径要点 | `width` 列 stereo 轨有值、**mono 轨留空**——不是 0,0 是「收成 mono」的有效值([J57]),语义冲突;`t0_sec`/`t1_sec` 3 位小数;`pan`/`vol_db` 1 位小数;`origin`/`locked` 与 T19 state 编码逐字一致。⚠ native 装 `ExportInput` 时 `widthPercent` **必须逐格装满**:未装的格是哨兵 `kWidthUnknown`(负值)→ 该行 `width` 留空;零值初始化会让「漏装」静默产出 `0.0`,而 0 在 stereo 轨上是有效建议,等于替用户做了一个语义相反的决定 |
+| 时间窗语义 | `startS`/`endS` 只做**筛选**,命中的段 `t0_sec`/`t1_sec` **不裁剪** —— 截半段会给出一个没人建议过的区间 |
+| 拒绝态 | `badArg`(versions 不在两值内 / `endS ≤ startS`)、`cancelled`(用户关掉保存对话框)、`noData`(scope 内零段)、`ioError`(写盘失败) |
+| 撤销 | 否(只读导出) |
+| 线程/频率 | `[M]`;用户点一次调一次。`processBlock` 与本函数无关 |
+| 真源 | 07 T41 卡 / 11 §4.2.3 通路 B(B1 数值表 / B2 CSV 导出);U12「进 v1 主线」;变更文档 `docs/contract-changes/20260825-export-suggestions.md`(PR #91) |
 
 ---
 
@@ -570,15 +587,15 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 ## 3. Input —— native functions(UI → C++)
 
-共 **7** 个。全部在 [M] 处理。
+共 **8** 个。全部在 [M] 处理。
 
 ### 3.1 `requestInitialState()`
 
 | 项 | 定义 |
 |---|---|
 | 参数 | 无 |
-| 返回 | `{ channel_id:0..15, group_id:1..8, role:"input",`<br>`  conn:{outputOnline:bool, maskBit:bool, capturing:bool, passthrough:bool, passthroughPending:bool, occupiedMask:u16},`<br>`  config:{label:string, priority:0..10, lead_lock:bool, pair_id:0\|1..7, freeze:0..3, source_channels:1\|2, participate_in_auto_pan:bool, config_seq:u32, channelLabels:[15 × string]},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr"}, version:{plugin:string, abi:u32} }` |
-| 语义 | 首帧全量快照并置 `mBridgeReady=true`。`channel_id=0` = **未分配**(不 claim 任何 slot,J01);Output 侧完全不可见该实例,不计入 `N/15` 计数,**不是错误态**。`config` 为本组 ctrl 广播区中本 channel 的只读快照(Output 离线时字段可为默认值,UI 侧隐藏远程摘要行)。`config.channelLabels` 供 4×4 通道网格首帧渲染(15 张卡的 Output 侧 label,A-32,见 §4.3)。`conn.occupiedMask` 见 §4.2 —— 供 4×4 通道网格在点击前标出已被占用的卡(05 §3)。**键名拼写与 §4.1 `scvb.state` 逐字一致**(A-30,§0.2 规则①)。 |
+| 返回 | `{ channel_id:0..15, group_id:1..8, role:"input",`<br>`  conn:{outputOnline:bool, maskBit:bool, capturing:bool, passthrough:bool, passthroughPending:bool, occupiedMask:u16},`<br>`  config:{label:string, priority:0..10, lead_lock:bool, pair_id:0\|1..7, freeze:0..3, source_channels:1\|2, participate_in_auto_pan:bool, config_seq:u32, channelLabels:[15 × string]},`<br>`  ui:{scale:f32, language:"zh"\|"en"\|"fr", guide_seen:bool},`<br>`  guide_seen_global:bool, version:{plugin:string, abi:u32} }` |
+| 语义 | 首帧全量快照并置 `mBridgeReady=true`。`channel_id=0` = **未分配**(不 claim 任何 slot,J01);Output 侧完全不可见该实例,不计入 `N/15` 计数,**不是错误态**。`config` 为本组 ctrl 广播区中本 channel 的只读快照(Output 离线时字段可为默认值,UI 侧隐藏远程摘要行)。`config.channelLabels` 供 4×4 通道网格首帧渲染(15 张卡的 Output 侧 label,A-32,见 §4.3)。`conn.occupiedMask` 见 §4.2 —— 供 4×4 通道网格在点击前标出已被占用的卡(05 §3)。**键名拼写与 §4.1 `scvb.state` 逐字一致**(A-30,§0.2 规则①)。**`ui.guide_seen`**([J81]/J80/T48)= Input 首启轻量引导已读位,随工程持久化;**`guide_seen_global`** = 系统级全局默认判定位(J50a),**只读、不属工程 state**。首启判据两侧同构:**工程 `ui.guide_seen === false` 且 全局 `guide_seen_global === false`** 才弹。**Input 与 Output 的全局位各存一份**(`input.*` / `output.*` 分键,`UiDefaultsStore` 命名空间本就按侧分)——两侧引导讲的是两个界面、两套内容,共用一个位会让先装 Output 的用户永远看不到 Input 的引导,而那正是 J80 立 T48 的全部理由。 |
 | 拒绝态 | 无 |
 | 撤销 | 否 |
 | 线程/频率 | [M] 同步 |
@@ -629,6 +646,20 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 语义 | 同 Output 侧(10 秒防呆确认、全局默认落盘、未知 lang 回退 zh) |
 | 真源 | 05 §1.2 / §1.4 / §3 |
 
+### 3.8 `setGuideSeen(seen, alsoGlobal = true)`([J81] J80/T48;变更文档 `20260825-input-guide-seen.md`)
+
+签名与语义**逐字照 Output 侧 §1.32**(契约 §7 的同名同签名项按侧各自登记,`requestInitialState` / `setGroupId` / `setUiScale` / `commitUiScale` / `setLang` 已有先例)。
+
+| 项 | 定义 |
+|---|---|
+| 参数 | `seen: bool`;`alsoGlobal: bool`(**默认 true**) |
+| 返回 | `{ok:true}` |
+| 语义 | Input 首启引导已读的**唯一写入口**:写 state `ui.guide_seen`;`alsoGlobal=true` 时同步写系统级全局默认位(**不回写 state**)。**mini tour 完成与 Skip 都置位**(J50a 镜像,与 Output 侧 `setTourSeen` 同款);header「?」重看引导**不调用本函数**(`guide_seen` 已置位也可重看,与 §1.33 语义行同款)。拼写逐字沿用宪法的 `guide_seen`,**不新造 `input_guide_seen`** —— 同一语义两个落点是 §0.1 第 4 条要禁的,两侧拼写一致才能让判据代码共用(`web/shared/lang-start.js` 的 `shouldShowLangStart` 两侧共用一件) |
+| 拒绝态 | 无 |
+| 撤销 | 否(UI 偏好不进 undo 栈) |
+| 线程/频率 | `[M]`;用户走完/跳过引导时各一次 |
+| 真源 | 05 §3 文末 J80 节;裁决 J80;变更文档 `docs/contract-changes/20260825-input-guide-seen.md`(PR #84) |
+
 ---
 
 ## 4. Input —— events(C++ → UI)
@@ -642,8 +673,8 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 项 | 定义 |
 |---|---|
 | 频率 | 变化时(diff-then-emit;首帧必发) |
-| 载荷 | `{ channel_id:0..15, group_id:1..8, claim:"unassigned"\|"idle"\|"active"\|"conflict"\|"abiMismatch"\|"srMismatch", abi:u32, abi_remote?:u32, ui:{scale:f32, language:"zh"\|"en"\|"fr"} }` |
-| 字段纪律 | `claim` 六态定义见 §5.2。`abi` = 本机 abi(**T25 定名**,§9.2;**取值 = ipc 段布局 abi,`RegistryHeader.abi` 同源;state chunk abi 不落本字段,只经 `scvb.error.newerState.detail` 暴露**),`abi_remote` = 探测到的对端 abi(**T25 定名**,§9.2)——05 §3 明文「两端 abi 占位符取 `scvb.state`」,供 `banner.abiMismatch`「(Output abi {a} / Input abi {b})」渲染;探测不到时 `abi_remote` 字段不存在。`ui:{scale, language}` 为 `setUiScale`/`setLang` 写入后的回推路径(**T25 定名**,§9.2;与 §3.1 快照同拼写,A-30 统一)。**`capturing` 不在本事件**——本实例 `InputSlot.flags` bit0 的唯一桥面落点是 §4.2 `scvb.conn.capturing`(逐字照 05 §1.4 Input events 表;消除同一位的双载,§0.1 第 4 条)。05 §3「采集指示」行的数据来源列写作 `scvb.state`,属 05 内部偏差,记 §8.3。 |
+| 载荷 | `{ channel_id:0..15, group_id:1..8, claim:"unassigned"\|"idle"\|"active"\|"conflict"\|"abiMismatch"\|"srMismatch", abi:u32, abi_remote?:u32, ui:{scale:f32, language:"zh"\|"en"\|"fr", guide_seen:bool} }` |
+| 字段纪律 | `claim` 六态定义见 §5.2。`abi` = 本机 abi(**T25 定名**,§9.2;**取值 = ipc 段布局 abi,`RegistryHeader.abi` 同源;state chunk abi 不落本字段,只经 `scvb.error.newerState.detail` 暴露**),`abi_remote` = 探测到的对端 abi(**T25 定名**,§9.2)——05 §3 明文「两端 abi 占位符取 `scvb.state`」,供 `banner.abiMismatch`「(Output abi {a} / Input abi {b})」渲染;探测不到时 `abi_remote` 字段不存在。`ui:{scale, language, guide_seen}` 为 `setUiScale`/`setLang`/`setGuideSeen` 写入后的回推路径(**T25 定名**,§9.2;与 §3.1 快照同拼写,A-30 统一)。**§3.1 快照的 state 子树字段集与本事件的字段集不得各自漂移**(与 Output 侧 §1.1 语义行同纪律)。**`capturing` 不在本事件**——本实例 `InputSlot.flags` bit0 的唯一桥面落点是 §4.2 `scvb.conn.capturing`(逐字照 05 §1.4 Input events 表;消除同一位的双载,§0.1 第 4 条)。05 §3「采集指示」行的数据来源列写作 `scvb.state`,属 05 内部偏差,记 §8.3。 |
 | UI 消费 | 组胶囊/通道卡选中态、claim 错误态红 pill 与卡内横幅、`banner.abiMismatch` 两端 abi 数字 |
 | 真源 | 05 §1.4 / §3;01 §6.2;与 §3.1 快照同拼写(A-30 统一) |
 
@@ -750,7 +781,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | `{conflict:true}` | Input `setChannelId`、Input `setGroupId` | claim 冲突:目标 slot 被心跳新鲜的实例占用 |
 | `{observer:true}` | Output `setGroupId`(新组已有主 Output);只读观察态下的一切写函数 | 本实例进/处于只读观察模式,写入未生效 |
 
-其余失败一律 `{ok:false, reason:<string>}`,`reason` 取值**八值闭集**:`badArg` / `busy` / `noTimeline` / `noLoop` / `notAdjacent` / `ringFull` / `outputOffline` / `unassigned`。**本集合由 T25 按逐函数拒绝态汇总收敛**;其中 `busy`(05 §1.4 `analyze` 已有分析在跑)/ `noLoop`(05 §2.1 ②、04 §2.2 条 4)/ `notAdjacent`(05 §2.3a `merge` 要求相邻)三个字符串为 T25 定名,已登记 §9.2;`ringFull`/`outputOffline`/`unassigned` 随 `remoteSetPriority` 回执一并登记。每个函数条目的「返回」行按 §0.8 第 5 条写明本函数实际可能出现的取值,不得使用本表以外的 `reason`。
+其余失败一律 `{ok:false, reason:<string>}`,`reason` 取值**十一值闭集**:`badArg` / `busy` / `noTimeline` / `noLoop` / `notAdjacent` / `ringFull` / `outputOffline` / `unassigned` / **`cancelled`** / **`noData`** / **`ioError`**。后三个由 §1.36 `exportSuggestions` 带入([J81],纯新增,不改既有八值语义)——`cancelled` 是本契约第一个**用户可取消的阻塞式操作**(文件对话框),此前八值里没有「用户取消了一个对话框」这件事。**本集合由 T25 按逐函数拒绝态汇总收敛**;其中 `busy`(05 §1.4 `analyze` 已有分析在跑)/ `noLoop`(05 §2.1 ②、04 §2.2 条 4)/ `notAdjacent`(05 §2.3a `merge` 要求相邻)三个字符串为 T25 定名,已登记 §9.2;`ringFull`/`outputOffline`/`unassigned` 随 `remoteSetPriority` 回执一并登记。每个函数条目的「返回」行按 §0.8 第 5 条写明本函数实际可能出现的取值,不得使用本表以外的 `reason`。
 
 ---
 
@@ -778,7 +809,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 
 ## 7. 机器可读清单(manifest)
 
-以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对四个计数(Output 35/9、Input 7/5)与跨侧同名函数的 `params` 一致性做硬断言。
+以下 JSON 块由 `scripts/check-bridge-parity.mjs` 解析,**必须与 §1-§6 正文逐项一致**(名字、参数名与顺序、枚举值集合)。脚本对本块做**双向**断言:manifest 每一项必须在**对应侧**正文有条目,正文每个函数/事件条目也必须被 manifest 收录;并对六个计数(Output **36**/9、Input **8**/5、**Monitor 5/4**)与跨侧同名函数的 `params` 一致性做硬断言。
 **`returns` 登记口径**:按 §0.8 第 5 条写**完整并集**(成功形状 + 全部拒绝态形状,`A | B` 分隔),与正文「返回」行逐字对应;`{ok:false, reason:"…"}` 简写为 `{ok:false,reason:"…"}`。
 
 ```json
@@ -820,7 +851,8 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "setGuideSeen", "params": ["seen", "alsoGlobal"], "returns": "{ok}"},
       {"name": "setTourSeen", "params": ["seen", "alsoGlobal"], "returns": "{ok}"},
       {"name": "confirmPrintGuard", "params": [], "returns": "{ok}"},
-      {"name": "setMasterChartMode", "params": ["mode"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"}
+      {"name": "setMasterChartMode", "params": ["mode"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
+      {"name": "exportSuggestions", "params": ["scope"], "returns": "{ok,rows,path} | {ok:false,reason:\"badArg\"} | {ok:false,reason:\"cancelled\"} | {ok:false,reason:\"noData\"} | {ok:false,reason:\"ioError\"}"}
     ],
     "events": [
       "scvb.state",
@@ -842,7 +874,8 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "remoteSetPriority", "params": ["n"], "returns": "{queued,reason?}"},
       {"name": "setUiScale", "params": ["f"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "commitUiScale", "params": [], "returns": "{ok}"},
-      {"name": "setLang", "params": ["code"], "returns": "{ok}"}
+      {"name": "setLang", "params": ["code"], "returns": "{ok}"},
+      {"name": "setGuideSeen", "params": ["seen", "alsoGlobal"], "returns": "{ok}"}
     ],
     "events": [
       "scvb.state",
@@ -850,6 +883,21 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       "scvb.config",
       "scvb.groups",
       "scvb.error"
+    ]
+  },
+  "monitor": {
+    "functions": [
+      {"name": "requestInitialState", "params": [], "returns": "MonitorSnapshot"},
+      {"name": "setObservedGroup", "params": ["g"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
+      {"name": "setUiScale", "params": ["f"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
+      {"name": "commitUiScale", "params": [], "returns": "{ok}"},
+      {"name": "setLang", "params": ["code"], "returns": "{ok}"}
+    ],
+    "events": [
+      "scvb.state",
+      "scvb.groups",
+      "scvb.viz",
+      "scvb.playhead"
     ]
   },
   "enums": {
@@ -865,7 +913,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
 }
 ```
 
-**计数自检**:Output 函数 **35** / 事件 **9**;Input 函数 **7** / 事件 **5**。
+**计数自检**:Output 函数 **36** / 事件 **9**;Input 函数 **7→8** / 事件 **5**;**Monitor 函数 5 / 事件 4**([J81] 转正,见 §10)。
 
 ---
 
@@ -1000,3 +1048,46 @@ T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本�
 - [x] §9.1 五项已由统筹会话裁定并回填(**A-28~A-32**,2026-08-16);DeepSeek 评审可按 §9.0 重开
 - [x] `node scripts/check-bridge-parity.mjs` 退出码 0(2026-08-16 实测;当前 B/C 两侧 SKIP,三方比对待 T28/T29)
 - [x] 用户批准(**2026-08-16**):状态行已改「已冻结」;变更记录 `docs/contract-changes/20260816-scvb-contract-v1-initial.md` 随本 PR 入库;PR 挂 `status/frozen-contract` 标签
+
+---
+
+## 10. Monitor —— native functions / events([J81] 转正;T45 #94 + T46 #90)
+
+> **转正来历**:Monitor 桥面由 T45(#94,插件壳 + `src/monitor/MonitorBridgeApi.h`)与 T46(#90,真 UI + `web/monitor/monitor-bridge.js`)分两卡交付。#94 当时把 `manifest.monitor` 明确延后到 T46;T46 已合入且其 `monitor-bridge.js` 文件头逐字写着「**临时形制,待随 ipc v1.6 修宪转正进契约 §7**」—— 延后条件已满足,故随 J81 一并转正。名表**逐字**取自 `web/monitor/monitor-bridge.js` 的 `MONITOR_FUNCTIONS` / `MONITOR_EVENTS`,C++ 侧真源 `src/monitor/MonitorBridgeApi.h`。
+
+**Monitor 是纯只读监视器**(ADR-001a 三铁律:0 自动化参数 / 音频直通逐样本按位相等 / 对任何共享段零写入)。**本表里没有任何一个写引擎状态的函数** —— `setUiScale` / `commitUiScale` / `setLang` 写的是**本实例自己的 UI 偏好**,不属于被观察组的状态,不违反只读。
+
+### 10.1 native functions —— 共 **5** 个
+
+除 `setObservedGroup` 外的四个由 `WebViewHost` 基类注册(故 `MonitorBridgeApi.h` 只声明 `kFnSetObservedGroup` 一个常量;parity 脚本按此口径,不得据「头文件里没有 `kFnRequestInitialState`」判缺名)。
+
+| 名字 | 参数 | 返回 | 语义 |
+|---|---|---|---|
+| `requestInitialState()` | 无 | `MonitorSnapshot` | 首帧全量快照并置 `mBridgeReady=true`(§0.6)。载荷 = 组回显 + `ui:{scale, language}` + viz 三态与 fresh |
+| `setObservedGroup(g)` | `g: 1..8` | `{ok:true}` 或 `{ok:false, reason:"badArg"}` | **换观察对象**,只读语义:释放旧句柄 → 换组 → 只读 attach,**不 claim、不建段、对被观察组零副作用**。⚠ **刻意不叫 `setGroupId`** —— §1.4 的 `setGroupId` 是 Output 的**改组**(断开本组全部连接、要弹确认条),与「换一个组的 viz 段来看」是两件事;共用名字迟早有人照 §1.4 的语义去实现它。组切换走**只读专用**路径,复用写方的 `changeGroup()` 会把「新组还没有写方」变成「我来建一个空段」,正好破坏第三条铁律 |
+| `setUiScale(f)` | `f: f32` | `{ok:true}` 或 `{ok:false, reason:"badArg"}` | 10 秒防呆的预览档,形制同 §1.28 |
+| `commitUiScale()` | 无 | `{ok:true}` | 「保持」落盘系统级全局默认,形制同 §1.29 |
+| `setLang(code)` | `code: "zh"\|"en"\|"fr"` | `{ok:true}` | 形制同 §1.30 |
+
+全部在 `[M]` 处理;全部**不入撤销栈**(Monitor 无 UndoManager)。
+
+### 10.2 events —— 共 **4** 个
+
+| 事件 | 频率 | 载荷 |
+|---|---|---|
+| `scvb.state` | 变化时 | 组 / 缩放 / 语言 / **viz 三态与 fresh**(段级状态的唯一真源) |
+| `scvb.groups` | **1 Hz** | **逐字复用** §2.4 的既有形状:`{groups_online}` 位图,组胶囊绿点 |
+| `scvb.viz` | **4 Hz** | viz 帧:每轨当前值每帧刷;降采样车道按 `lane_revision` 变化才带(形状见 `web/monitor/viz.js` 头注;数据面 = ipc §6) |
+| `scvb.playhead` | **25 Hz** | **逐字复用** §2.6 的既有载荷形状(WebViewHost 定时器上限) |
+
+后两个之所以逐字复用 Output 侧的形状而不另立一套:轨迹图的 `onPlayhead(ev)` 与组胶囊的消费代码因此**一行不改**。
+
+**`scvb.state` 的 viz 面为什么必须由 native 给**:「Output 进程真没了」与「还在但不再发帧」在 UI 侧长得一模一样 —— 命名段是引用计数存活的,只要 Monitor 自己不松手,段就一直在、读也一直成功。T45 的做法是帧陈旧时松开映射再探一次,这件事 UI 做不了。
+
+### 10.3 键名拼写
+
+照 §0.2 规则① 与裁定 A-30:镜像宪法 state 字段的键一律 **snake_case** —— `group_id`、`ui:{scale, language}`、`groups_online`(camelCase 在 §8.3 明记为旧文)。
+
+### 10.4 转正后的收尾(不阻塞本次)
+
+`web/monitor/monitor-bridge.js` 按其文件头自陈,应退化成 `createBridge({role:"monitor"})` 的一层薄封装或直接删除 —— **列 T46 后续小项**,不在本 PR。在它退化之前,`bridge.js` 的 `BRIDGE_FUNCTIONS.monitor` / `BRIDGE_EVENTS.monitor` 是 parity 的**唯一比对面**,`monitor-bridge.js` 内的两张表已加注「以 `bridge.js` 为准」。
