@@ -5,8 +5,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
+#include "analysis/LoudnessMode.h"
 #include "input/InputSession.h"
 #include "ipc/SegmentBackendInProcess.h"
 #include "ipc/Registry.h"
@@ -182,20 +184,43 @@ TEST_CASE("UiConfig(UICF) roundtrip:默认/两值/未知回退/非法长度拒�
     }
 }
 
-TEST_CASE("OutputStateCodec:CFGS 长度 = baseSize+1/+8 尾部必须拒载(§7.3 严格 baseSize)", "[output][state]")
+TEST_CASE("OutputStateCodec:[J69/U24] loudness_mode/center_slot_policy 默认与两值逐字节往返", "[output][state]")
 {
-    scvb::state::OutputState s;
-    s.uiLanguage = "en"; // langBytes = 2 → baseSize = 24 + 2 = 26
-    std::vector<std::uint8_t> buf;
-    REQUIRE(scvb::state::encodeOutputState(s, buf));
-
-    // CFGS 无尾字段:baseSize+1 / baseSize+8 均非法,必须拒载(不可信字节)。
-    for (std::size_t extra : {std::size_t(1), std::size_t(8)})
+    // 默认档:kw_integrated / priority_queue。
     {
-        std::vector<std::uint8_t> bad = buf;
-        bad.insert(bad.end(), extra, 0xFF);
-        scvb::state::OutputState out;
-        REQUIRE_FALSE(scvb::state::decodeOutputState(bad.data(), bad.size(), out));
+        scvb::state::OutputState s;
+        REQUIRE(s.loudnessMode == "kw_integrated");
+        REQUIRE(s.centerSlotPolicy == "priority_queue");
+        std::vector<std::uint8_t> b1;
+        REQUIRE(scvb::state::encodeOutputState(s, b1));
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b1.data(), b1.size(), d, &r));
+        REQUIRE(d.loudnessMode == "kw_integrated");
+        REQUIRE(d.centerSlotPolicy == "priority_queue");
+        REQUIRE(r.loudnessModeFallbacks == 0);
+        REQUIRE(r.centerSlotPolicyFallbacks == 0);
+        std::vector<std::uint8_t> b2;
+        REQUIRE(scvb::state::encodeOutputState(d, b2));
+        REQUIRE(b1 == b2); // save→load→save 逐字节一致
+    }
+    // 两值:loudness=rms/peak_dbfs,center=lead_exclusive/even_spread。
+    const std::string lm[2] = {"rms", "peak_dbfs"};
+    const std::string cp[2] = {"lead_exclusive", "even_spread"};
+    for (int i = 0; i < 2; ++i)
+    {
+        scvb::state::OutputState s;
+        s.loudnessMode = lm[i];
+        s.centerSlotPolicy = cp[i];
+        std::vector<std::uint8_t> b1;
+        REQUIRE(scvb::state::encodeOutputState(s, b1));
+        scvb::state::OutputState d;
+        REQUIRE(scvb::state::decodeOutputState(b1.data(), b1.size(), d));
+        REQUIRE(d.loudnessMode == lm[i]);
+        REQUIRE(d.centerSlotPolicy == cp[i]);
+        std::vector<std::uint8_t> b2;
+        REQUIRE(scvb::state::encodeOutputState(d, b2));
+        REQUIRE(b1 == b2);
     }
 }
 TEST_CASE("heartbeatAgeMsOf:哨兵 / 时钟倒退 / 溢出钳位", "[output][conn][t37]")
@@ -273,22 +298,129 @@ TEST_CASE("channelConn:采样率不一致 → srMismatch(§2.3 该轨禁用)", "
     REQUIRE_FALSE(out.channelConn(6, 1300).srMismatch);
 }
 
-TEST_CASE("Output state 容器:abi 高于当前 → RejectedNewer + preservedOriginal 原样回写", "[output][state][abi]")
+TEST_CASE("OutputStateCodec:[J69/U24] 未知序号回落默认并计数", "[output][state]")
 {
-    // PR#53 R1:setStateInformation 经 loadState 做 abi 判读 —— 高 abi 拒载并保留原 blob(getStateInformation
-    // 原样回写,绝不静默降级;CLAUDE.md §7.3 / STATE_SCHEMA)。
+    scvb::state::OutputState s;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    REQUIRE(b.size() == 34u); // 24 头 + "en" 2 + 2×u32
+    auto put = [&](std::size_t off, std::uint32_t v) {
+        b[off] = static_cast<std::uint8_t>(v & 0xFF);
+        b[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+        b[off + 2] = static_cast<std::uint8_t>((v >> 16) & 0xFF);
+        b[off + 3] = static_cast<std::uint8_t>((v >> 24) & 0xFF);
+    };
+    put(26, 99); // loudness 越界
+    put(30, 7); // center 越界
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.loudnessMode == "kw_integrated"); // 回落默认
+    REQUIRE(d.centerSlotPolicy == "priority_queue");
+    REQUIRE(r.loudnessModeFallbacks == 1);
+    REQUIRE(r.centerSlotPolicyFallbacks == 1);
+}
+
+TEST_CASE("OutputStateCodec:旧版 payload(无枚举字段)回落默认且不计数", "[output][state]")
+{
+    scvb::state::OutputState s;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    b.resize(b.size() - 8); // 去掉末尾 2 个枚举 u32 → 旧版 24+langBytes
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.loudnessMode == "kw_integrated");
+    REQUIRE(d.centerSlotPolicy == "priority_queue");
+    REQUIRE(r.loudnessModeFallbacks == 0);
+    REQUIRE(r.centerSlotPolicyFallbacks == 0);
+}
+
+TEST_CASE("OutputStateCodec:kw_integrated roundtrip → parseLoudnessMode 解析成功", "[output][state]")
+{
+    // 复评重要①:落盘/契约桥面真值是 kw_integrated(SCVB_CONTRACT §1.21/§9.2),analysis 层
+    // parseLoudnessMode 必须认它,否则解析不了 state 层写回的默认档(k_integrated 保留兼容)。
+    scvb::state::OutputState s; // 默认 loudnessMode = "kw_integrated"
+    REQUIRE(s.loudnessMode == "kw_integrated");
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b)); // 落盘
+    scvb::state::OutputState d;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d)); // 读回
+    REQUIRE(d.loudnessMode == "kw_integrated");
+    const auto parsed = scvb::analysis::parseLoudnessMode(d.loudnessMode.c_str()); // 解析
+    REQUIRE(!parsed.fellBack);
+    REQUIRE(parsed.mode == scvb::analysis::LoudnessMode::KIntegrated);
+}
+
+TEST_CASE("OutputStateCodec:枚举字段截断(0<remaining<8)→ 拒载", "[output][state]")
+{
+    scvb::state::OutputState s;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b)); // 34 字节 = 24 头 + "en" 2 + 2×u32
+    b.pop_back(); // 砍掉 1 字节 → remaining = 7,落在 (0,8) → 拒载
+    scvb::state::OutputState d;
+    REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+}
+
+TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[output][state]")
+{
+    scvb::state::OutputState s;
+    s.loudnessMode = "rms";
+    s.centerSlotPolicy = "lead_exclusive";
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    // 模拟未来小版本追加:已知字段之后追加 4 字节未知尾部。
+    b.push_back(0xDE);
+    b.push_back(0xAD);
+    b.push_back(0xBE);
+    b.push_back(0xEF);
+    scvb::state::OutputState d;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+    REQUIRE(d.loudnessMode == "rms");
+    REQUIRE(d.centerSlotPolicy == "lead_exclusive");
+    REQUIRE(d.unknownTail.size() == 4u); // 未知尾部保留
+    std::vector<std::uint8_t> b2;
+    REQUIRE(scvb::state::encodeOutputState(d, b2));
+    REQUIRE(b == b2); // 逐字节回写
+}
+
+TEST_CASE("OutputStateCodec:非 en 的 uiLanguage 偏移(base=24+langBytes)推导", "[output][state]")
+{
+    scvb::state::OutputState s;
+    s.uiLanguage = "zh-CN"; // 5 字节(非默认 "en" 2 字节),验证 base=24+langBytes 推导
+    s.loudnessMode = "rms";
+    s.centerSlotPolicy = "lead_exclusive";
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    REQUIRE(b.size() == 24u + 5u + 8u); // 24 头 + 5 语言 + 2×u32
+    scvb::state::OutputState d;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+    REQUIRE(d.uiLanguage == "zh-CN");
+    REQUIRE(d.loudnessMode == "rms");
+    REQUIRE(d.centerSlotPolicy == "lead_exclusive");
+    std::vector<std::uint8_t> b2;
+    REQUIRE(scvb::state::encodeOutputState(d, b2));
+    REQUIRE(b == b2); // 逐字节一致
+}
+
+TEST_CASE("Output state 容器:旧版读新 CFGS(高 abi)→ RejectedNewer + 原样回写", "[output][state][abi]")
+{
+    // 复评重要②:旧版(abi=1)读到含 loudness_mode/center_slot_policy 的新(abi=2)blob → RejectedNewer
+    // + preservedOriginal 原样回写,绝不把用户 CFGS 覆盖成默认(CLAUDE.md §7.3 / STATE_SCHEMA)。
+    // 模拟「旧版读新」:当前 kCurrentAbi=2,把容器 abi 抬到 kCurrentAbi+1 代表未来/更高版本。
     scvb::state::OutputState s;
     s.groupId = 5;
+    s.loudnessMode = "peak_dbfs";
+    s.centerSlotPolicy = "even_spread";
     std::vector<std::uint8_t> cfg;
     REQUIRE(scvb::state::encodeOutputState(s, cfg));
 
     scvb::state::StateChunks chunks;
-    chunks.abi = scvb::state::kCurrentAbi;
+    chunks.abi = scvb::state::kCurrentAbi + 1; // 未来 abi(旧版读新)
     chunks.set(scvb::state::kFourccCfgs, cfg);
     std::vector<std::uint8_t> enc;
     REQUIRE(scvb::state::encodeContainer(chunks, enc));
 
-    enc[4] = 2; // abi 1 → 2(高版本)
     scvb::state::StateChunks out;
     scvb::state::StateLoadResult res = scvb::state::loadState(enc.data(), enc.size(), out);
     REQUIRE(res.status == scvb::state::StateLoadStatus::RejectedNewer);

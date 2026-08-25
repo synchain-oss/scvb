@@ -932,6 +932,10 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.versionActive = static_cast<scvb::u32>(versionActive_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
     s.uiLanguage = uiLanguage_.toStdString();
+    // [J69/U24] analysis 配置落盘(T35 #62 评审遗留):loudness_mode / center_slot_policy。
+    s.loudnessMode = runtime_.loudnessMode.toStdString();
+    s.centerSlotPolicy = runtime_.centerSlotPolicy.toStdString();
+    s.unknownTail = preservedCfgsTail_; // 未来小版本追加字段原样回写(防静默丢字段)
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
     {
@@ -1023,10 +1027,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         return;
     }
     scvb::state::OutputState s;
-    if (!scvb::state::decodeOutputState(cfg->payload.data(), cfg->payload.size(), s))
+    scvb::state::OutputDecodeReport report;
+    if (!scvb::state::decodeOutputState(cfg->payload.data(), cfg->payload.size(), s, &report))
     {
         return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
     }
+    preservedCfgsTail_ = std::move(s.unknownTail); // 未来小版本追加字段保留,getStateInformation 原样回写
 
     groupId_ = static_cast<int>(s.groupId);
     captureEnabled_ = s.captureEnabled != 0;
@@ -1034,6 +1040,15 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     versionActive_ = static_cast<int>(s.versionActive);
     uiScale_ = static_cast<int>(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
+    // [J69/U24] analysis 配置落盘(T35 #62 评审遗留):未知枚举序号已由 codec 回落默认并计数。
+    runtime_.loudnessMode = juce::String::fromUTF8(s.loudnessMode.c_str(), static_cast<int>(s.loudnessMode.size()));
+    runtime_.centerSlotPolicy =
+        juce::String::fromUTF8(s.centerSlotPolicy.c_str(), static_cast<int>(s.centerSlotPolicy.size()));
+    if (report.loudnessModeFallbacks > 0 || report.centerSlotPolicyFallbacks > 0)
+    {
+        DBG("SCVB Output: analysis 枚举未知值回落默认(loudness_mode="
+            << report.loudnessModeFallbacks << ", center_slot_policy=" << report.centerSlotPolicyFallbacks << ")");
+    }
 
     // [J75] T43:ui.master_chart_mode 从独立 UICF chunk 读;缺失/长度非法/未知值均回落默认(§7.3)。
     std::uint32_t chartMode = scvb::state::kMasterChartModeDistribution;
@@ -1043,7 +1058,6 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     }
     masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
                                                                               : juce::String("distribution");
-
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
@@ -1267,6 +1281,14 @@ scvb::state::CrvsData ScvbOutputAudioProcessor::crvsSnapshot()
     return crvsData_;
 }
 
+std::pair<juce::String, juce::String> ScvbOutputAudioProcessor::analysisConfigSnapshot()
+{
+    // 复评重要②:loudnessMode/centerSlotPolicy 的读写锁协议 —— setAnalysisConfig(写)、
+    // getStateInformation(读)、本快照(读)三方均持 lifecycleMutex_,emitState 经此读,消除剩余竞态。
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return {runtime_.loudnessMode, runtime_.centerSlotPolicy};
+}
+
 scvb::engine::PlayheadPod ScvbOutputAudioProcessor::playheadSnapshot() const
 {
     scvb::engine::PlayheadPod pod{};
@@ -1404,6 +1426,28 @@ bool ScvbOutputAudioProcessor::setTransitionRamp(float ms)
     runtime_.transitionRampMs = clamped;
     rebuildAllCurves(); // 新 ramp 立即烘焙进 CurveEvaluator 并重新发布(PR#55 第5轮缺陷2)
     return true;
+}
+
+bool ScvbOutputAudioProcessor::setAnalysisConfig(const juce::String& loudnessMode, const juce::String& centerSlotPolicy,
+                                                 bool hasLoudness, bool hasCenter)
+{
+    // 复评重要①:持 lifecycleMutex_ 写 runtime_.loudnessMode/centerSlotPolicy,与 getStateInformation
+    // (同锁读)串行化,消除 juce::String COW 跨线程竞态。传入值已由桥层白名单校验。
+    const juce::ScopedLock lock(lifecycleMutex_);
+    bool changed = false;
+    if (hasLoudness)
+    {
+        changed |= loudnessMode != runtime_.loudnessMode;
+        runtime_.loudnessMode = loudnessMode;
+    }
+    if (hasCenter)
+    {
+        changed |= centerSlotPolicy != runtime_.centerSlotPolicy;
+        runtime_.centerSlotPolicy = centerSlotPolicy;
+    }
+    if (changed)
+        ++runtime_.configSeq; // PR#55 缺陷4:变化才 bump
+    return changed;
 }
 
 bool ScvbOutputAudioProcessor::undo()

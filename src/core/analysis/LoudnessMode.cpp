@@ -20,13 +20,13 @@ const char* loudnessModeToString(LoudnessMode mode)
     switch (mode)
     {
     case LoudnessMode::KIntegrated:
-        return "k_integrated";
+        return "kw_integrated"; // 桥面真值(SCVB_CONTRACT §1.21/§9.2),与 state 落盘口径一致(复评建议④)
     case LoudnessMode::Rms:
         return "rms";
     case LoudnessMode::PeakDbfs:
         return "peak_dbfs";
     }
-    return "k_integrated";
+    return "kw_integrated";
 }
 
 LoudnessModeParseResult parseLoudnessMode(const char* value)
@@ -35,10 +35,13 @@ LoudnessModeParseResult parseLoudnessMode(const char* value)
     if (value == nullptr || value[0] == '\0')
     {
         r.fellBack = true;
-        r.warning = "analysis.loudness_mode: 空值回落默认 k_integrated";
+        r.warning = "analysis.loudness_mode: 空值回落默认 kw_integrated";
         return r;
     }
-    if (std::strcmp(value, "k_integrated") == 0)
+    // 桥面真值(kw_integrated,SCVB_CONTRACT §1.21/§9.2 冻结)与 core 内部拼写(k_integrated)同义,
+    // 均映射 KIntegrated。解析器必须认桥面真值,否则解析不了 state 层写回的默认档(复评重要①);
+    // k_integrated 保留兼容。
+    if (std::strcmp(value, "kw_integrated") == 0 || std::strcmp(value, "k_integrated") == 0)
         return r;
     if (std::strcmp(value, "rms") == 0)
     {
@@ -51,7 +54,7 @@ LoudnessModeParseResult parseLoudnessMode(const char* value)
         return r;
     }
     r.fellBack = true;
-    r.warning = "analysis.loudness_mode: 未知值回落默认 k_integrated";
+    r.warning = "analysis.loudness_mode: 未知值回落默认 kw_integrated";
     return r;
 }
 
@@ -70,7 +73,7 @@ LoudnessModeParseResult parseLoudnessMode(int ordinal)
         return r;
     default:
         r.fellBack = true;
-        r.warning = "analysis.loudness_mode: 越界序号回落默认 k_integrated";
+        r.warning = "analysis.loudness_mode: 越界序号回落默认 kw_integrated";
         return r;
     }
 }

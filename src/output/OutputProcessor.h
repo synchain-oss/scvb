@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "OutputAuthority.h"
@@ -210,7 +211,13 @@ public:
     // prepareToPlay/setStateInformation 的 CRVS 写竞争 —— PR#55 重要1)。
     scvb::state::CrvsData crvsSnapshot();
 
+    // [J69/U24] analysis.loudness_mode/center_slot_policy 快照(持 lifecycleMutex_;与 setAnalysisConfig /
+    // getStateInformation 同锁读,消除 emitState 无锁读 runtime_ 的剩余竞态 —— 复评重要②)。
+    std::pair<juce::String, juce::String> analysisConfigSnapshot();
+
     // 运行时 state(消息线程独占;仅桥 native function 写 / emitTick 读,宿主不触,无需锁)。
+    // 例外:loudnessMode/centerSlotPolicy 由 setAnalysisConfig 持锁写、getStateInformation 持锁读,
+    // emitState 必须经 analysisConfigSnapshot() 持锁读 —— 其余字段仍消息线程独占。
     OutputRuntimeState& runtime() { return runtime_; }
     const OutputRuntimeState& runtime() const { return runtime_; }
 
@@ -279,6 +286,11 @@ public:
     // 设置过渡 ramp(ms):值变化才重建全部曲线并重新发布(transitionRampSec 烘焙进 CurveEvaluator)。
     // 返回 true = 值已变化并重建(PR#55 第5轮缺陷2)。
     bool setTransitionRamp(float ms);
+    // [J69/U24] 设置 analysis.loudness_mode / center_slot_policy(持 lifecycleMutex_,与 getStateInformation
+    // 同锁读,消除 juce::String COW 跨线程竞态 —— 复评重要①)。hasLoudness/hasCenter = patch 是否含该字段;
+    // 传入值已由桥层白名单校验。变化才 bump configSeq,返回是否变化。
+    bool setAnalysisConfig(const juce::String& loudnessMode, const juce::String& centerSlotPolicy, bool hasLoudness,
+                           bool hasCenter);
     bool undo();
     bool redo();
 
@@ -370,6 +382,8 @@ private:
     scvb::u32 stateAbiSeen_ = 0;
     std::vector<std::uint8_t> preservedStateBlob_; // 拒载更高 abi 后保留的宿主原始字节(getStateInformation 原样回写)
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
+    std::vector<std::uint8_t>
+        preservedCfgsTail_; // CFGS 已知字段之后的未知尾部(未来小版本追加;save 原样回写,防静默丢字段)
 
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。

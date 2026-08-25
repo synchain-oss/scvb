@@ -79,9 +79,9 @@ StateChunks makeGoldenChunks()
     return c;
 }
 
-std::string goldenPath()
+std::string goldenPath(const char* name)
 {
-    return std::string(SCVB_TEST_GOLDEN_DIR) + "/state/abi1.bin";
+    return std::string(SCVB_TEST_GOLDEN_DIR) + "/state/" + name;
 }
 
 // ---- 最小合法 CRVS(2 版本 × 15 轨全空、无 pan 曲线);供不可信字节校验夹具改字段用 ----
@@ -222,11 +222,11 @@ TEST_CASE("STATE-VALIDATE-4 chunkCount 超上限 → Corrupt", "[state][validate
 // abi 判读与迁移
 // ============================================================================
 
-TEST_CASE("STATE-ABI-1 abi=2 拒载 + preservedOriginal 原样保留", "[state][abi]")
+TEST_CASE("STATE-ABI-1 abi>当前 拒载 + preservedOriginal 原样保留", "[state][abi]")
 {
     std::vector<std::uint8_t> enc;
     REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), enc));
-    enc[4] = 2; // abi 在 offset 4(原 1 → 2)
+    enc[4] = static_cast<std::uint8_t>(scvb::state::kCurrentAbi + 1); // abi 在 offset 4(当前 2 → 3)
     StateChunks out;
     StateLoadResult res = scvb::state::loadState(enc.data(), enc.size(), out);
     REQUIRE(res.status == StateLoadStatus::RejectedNewer);
@@ -244,10 +244,10 @@ TEST_CASE("STATE-ABI-2 abi=0 走迁移不丢字段(Migrated)", "[state][abi]")
     REQUIRE(res.status == StateLoadStatus::Migrated);
     REQUIRE(migrated.abi == scvb::state::kCurrentAbi);
 
-    // 与 abi=1 解码结果逐 chunk 一致(迁移链不丢字段)。
+    // 与 abi=1(经 no-op migrate_1_to_2)解码结果逐 chunk 一致(迁移链不丢字段)。
     StateChunks baseline;
     enc[4] = 1;
-    REQUIRE(scvb::state::loadState(enc.data(), enc.size(), baseline).status == StateLoadStatus::Ok);
+    REQUIRE(scvb::state::loadState(enc.data(), enc.size(), baseline).status == StateLoadStatus::Migrated);
     REQUIRE(migrated.chunks.size() == baseline.chunks.size());
     for (std::size_t i = 0; i < baseline.chunks.size(); ++i)
     {
@@ -395,31 +395,47 @@ TEST_CASE("STATE-CRVS-VALIDATE-4 nameBytes 超上限 → 拒解", "[state][crvs]
 // golden:abi1.bin 兼容 + 格式锁
 // ============================================================================
 
-TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1.bin 可载且字段语义正确 + 格式锁", "[state][golden]")
+TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1.bin 迁移 + abi2.bin 格式锁", "[state][golden]")
 {
-    std::ifstream in(goldenPath(), std::ios::binary);
-    REQUIRE(in.good());
-    std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    REQUIRE_FALSE(fileBytes.empty());
+    // abi1.bin:历史 abi=1,经 no-op migrate_1_to_2 迁移后字段语义正确(CRVS 不丢字段)。
+    {
+        std::ifstream in(goldenPath("abi1.bin"), std::ios::binary);
+        REQUIRE(in.good());
+        std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        REQUIRE_FALSE(fileBytes.empty());
 
-    StateChunks chunks;
-    StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
-    REQUIRE(res.status == StateLoadStatus::Ok);
-    REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
+        StateChunks chunks;
+        StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=1 → 2
+        REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
 
-    const Chunk* crvs = chunks.find(scvb::state::kFourccCrvs);
-    REQUIRE(crvs != nullptr);
-    CrvsData data;
-    REQUIRE(scvb::state::decodeCrvs(crvs->payload.data(), crvs->payload.size(), data));
-    REQUIRE(data.versions[0].meta.name == "V1");
-    REQUIRE(data.versions[0].tracks[0].segments.size() == 2u);
-    REQUIRE(data.versions[0].tracks[0].segments[0].t0 == 0);
-    REQUIRE(scvb::state::segmentOrigin(data.versions[0].tracks[0].segments[1].flags) == SegmentOrigin::UserEdited);
-    REQUIRE(scvb::state::segmentLocked(data.versions[0].tracks[0].segments[1].flags));
-    REQUIRE(data.versions[1].tracks[5].excludedRanges.size() == 2u);
+        const Chunk* crvs = chunks.find(scvb::state::kFourccCrvs);
+        REQUIRE(crvs != nullptr);
+        CrvsData data;
+        REQUIRE(scvb::state::decodeCrvs(crvs->payload.data(), crvs->payload.size(), data));
+        REQUIRE(data.versions[0].meta.name == "V1");
+        REQUIRE(data.versions[0].tracks[0].segments.size() == 2u);
+        REQUIRE(data.versions[0].tracks[0].segments[0].t0 == 0);
+        REQUIRE(scvb::state::segmentOrigin(data.versions[0].tracks[0].segments[1].flags) == SegmentOrigin::UserEdited);
+        REQUIRE(scvb::state::segmentLocked(data.versions[0].tracks[0].segments[1].flags));
+        REQUIRE(data.versions[1].tracks[5].excludedRanges.size() == 2u);
+    }
 
-    // 格式锁:当前 codec 重编码同一夹具必须与提交的 golden 逐字节一致(改 wire 格式即红)。
-    std::vector<std::uint8_t> reencoded;
-    REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), reencoded));
-    REQUIRE(reencoded == fileBytes);
+    // abi2.bin:当前 abi=2 格式锁。
+    {
+        std::ifstream in(goldenPath("abi2.bin"), std::ios::binary);
+        REQUIRE(in.good());
+        std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        REQUIRE_FALSE(fileBytes.empty());
+
+        StateChunks chunks;
+        StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
+        REQUIRE(res.status == StateLoadStatus::Ok);
+        REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
+
+        // 格式锁:当前 codec 重编码同一夹具必须与提交的 abi2.bin 逐字节一致(改 wire 格式即红)。
+        std::vector<std::uint8_t> reencoded;
+        REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), reencoded));
+        REQUIRE(reencoded == fileBytes);
+    }
 }

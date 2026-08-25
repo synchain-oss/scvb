@@ -1,7 +1,7 @@
 # STATE_SCHEMA —— SCVB state schema 与 abi 兼容规则(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-08-24(转正回填;依据 `params-v0.md` v2.2 §二/§三 + `ipc-contract-v0.md` §3 + 计划 04 §5)
+> 最后更新: 2026-08-25(abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy,详见 `docs/contract-changes/20260825-cfgs-persistence.md`)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` + 计划 04 §5 蒸馏转正)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
@@ -15,7 +15,7 @@
 分组与字段(YAML 视图,实际为版本化二进制/JSON chunk,编码见 §三):
 
 ```yaml
-abi: 1
+abi: 2                          # 当前 abi(kCurrentAbi=2);migrate_1_to_2(no-op)承接 abi=1
 session_guid: <自生成>
 group_id: 1..8               # [J66] 本 Output 所属组(默认 1,UI 显示 A-H);组=独立总线域
 global:
@@ -78,7 +78,7 @@ ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen}   # 
 ## 二、Input state
 
 ```yaml
-abi: 1
+abi: 2                          # 当前 abi(kCurrentAbi=2);Input 与 Output 共用容器 abi
 group_id: 1..8               # [J66] 本轨所属组(默认 1);同一人声轨只能属一组
 channel_id: 0..15             # 本轨绑定的 channel;0=未分配(J01);[J59] 上限 15
 ui: {scale, language}
@@ -93,7 +93,7 @@ ui: {scale, language}
 ```text
 偏移  字段
 0     u32 magic = 'SCVB' (0x42564353,小端内存序;写盘后前 4 字节字面拼出 "SCVB")
-4     u32 abi   = 1                       # 与 IPC abi 独立计数
+4     u32 abi   = 2                       # 与 IPC abi 独立计数(abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy)
 8     u32 flags = 0
 12    u32 chunkCount
 16..  TLV 块 × N: { u32 fourcc; u32 sizeBytes; u8 payload[size]   # 4 字节对齐 }
@@ -102,15 +102,16 @@ ui: {scale, language}
 | fourcc | 内容 | 编码 |
 |---|---|---|
 | `PRMS` | APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen} | ValueTree 二进制 |
-| `CFGS` | group_id / global / analysis(vad / segmentation / transition_ramp_ms / loudness_mode / center_slot_policy)/ channels[15] —— 含 source_channels / participate_in_auto_pan / print 设置 | ValueTree 二进制 |
+| `CFGS` | **当前已落盘**: group_id / capture_enabled / output_enabled / version_active / ui{scale, language} / analysis{loudness_mode, center_slot_policy}。<br>**挂账未落盘**(后续任务扩展): analysis{vad, segmentation, transition_ramp_ms} / channels[15]{source_channels, participate_in_auto_pan} / print 设置 | 紧凑二进制(6×u32 头 + uiLanguage 变长 + loudness_mode/center_slot_policy 两 u32 枚举序号;已知字段后未知尾部原样回写) |
 | `CRVS` | versions[2] 曲线真身 + pan_curve + versionMeta(含 name)+ 每轨 excluded_ranges | 自定义紧凑二进制(u16 minor 版本;segment = {i64 t0, i64 t1, f32 pan, f32 vol_db, u32 flags}) |
 | `FEAT` | 特征流(per-channel kw_ms/peak/vad_posterior/coverage);embedded 标志与 sidecar 引用 | zlib(RFC 1950,miniz),节内编码见 §四 |
 | `UICF` | ui.master_chart_mode([J75] T43;`0`=distribution / `1`=trajectory) | 自定义紧凑二进制(定长 4 字节 u32) |
 
 - **未知 fourcc 的块在 load 时原样保留、save 时原样回写**(前向小版本兼容);不设独立 SDCR chunk——sidecar 引用是 FEAT 节内 embedded=0 分支。
 - **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + UI 横幅提示升级;`preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据);③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
+- **当前迁移链**:`kMigrators = [migrate_1_to_2]`(abi 1→2)。`migrate_1_to_2` 为 **no-op** —— abi=1 的 CFGS 无 loudness_mode/center_slot_policy 两个尾字段,`OutputStateCodec::decodeOutputState` 按「长度回退」把缺失尾字段回落默认(kw_integrated / priority_queue),故无需重写 payload;旧版(abi=1)读新(abi=2)blob 走 RejectedNewer → `preservedOriginal` 原样回写(绝不静默降级)。详见 `docs/contract-changes/20260825-cfgs-persistence.md`。
 - **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 提示升级」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。
-- **Input 插件 state 同用此容器**(abi 独立演进),只含 `PRMS`(无参数,仅 ui)+ `CFGS`(group_id + channel_id)。
+- **Input 插件 state 同用此容器**(与 Output 共用同一容器 abi,kCurrentAbi=2),只含 `PRMS`(无参数,仅 ui)+ `CFGS`(group_id + channel_id)。
 
 ## 四、FEAT 节编码与 sidecar 契约(转正项)
 
