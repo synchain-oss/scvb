@@ -39,6 +39,11 @@ export function shouldShowLangStart(
     if (closedThisSession || langChosen) return false;
     if (!snapshot) return false;
     const ui = (state && state.ui) || {};
+    // 「选过就不再问」的**持久化**判据(v4 实测 P1-6:此前只有 langChosen 这个会话内标志,
+    // 随 WebView 一起销毁,于是每次开窗都重新问)。ui.lang_chosen 随工程走、
+    // lang_chosen_global 跨工程走,任一为真即不再出卡。
+    if (ui.lang_chosen === true || snapshot.lang_chosen_global === true)
+        return false;
     return ui.guide_seen === false && snapshot.guide_seen_global === false;
 }
 

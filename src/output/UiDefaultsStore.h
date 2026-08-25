@@ -29,6 +29,10 @@ bool guideSeenGlobal();
 void setGuideSeenGlobal(bool seen);
 
 bool tourSeenGlobal();
+
+// 「用户显式选过语言」的系统级全局默认(跨工程):新工程不再重复问语言(v4 实测 P1-6)。
+bool langChosenGlobal();
+void setLangChosenGlobal(bool chosen);
 void setTourSeenGlobal(bool seen);
 
 // 0 = 未设置过(调用方沿用自己的默认 100)。

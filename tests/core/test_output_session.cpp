@@ -495,17 +495,27 @@ TEST_CASE("misalignCountRecent:失准发作后恢复健康 → 归零(T37 三轮
     out.tick(1400);
     CHECK(out.misalignCountRecent(3) == 1);
 
-    // ④ 恢复健康:kMisalignRecoverMs(1s)内无新缺口 → 归零(横幅撤下),
-    //    而进程累计值仍保留在 gapCount 供 ctrl 全局小节/诊断。
+    // ④ **只是心跳还在、缺口不再增长,不算恢复**(v4 实测 P0-2 的假恢复):
+    //    Input 被 bypass 后本轨会转 suspended 退出注入集,read() 不再被调用,缺口自然停止增长 ——
+    //    此时若判恢复,横幅会在实际仍无声时撤下。写头没动,警告必须保持。
     in.heartbeat(2600);
     out.tick(2600);
+    CHECK(out.misalignCountRecent(3) == 1);
+
+    // ⑤ 数据真的恢复推进(写头前移 + 成功读到)→ 这才是恢复,归零;
+    //    而进程累计值仍保留在 gapCount 供 ctrl 全局小节/诊断。
+    scvb::AudioRing::write(in.audioRing().acquire(), 32, buf, 32); // write_head = 64
+    in.heartbeat(2700);
+    out.tick(2700); // 本拍记下写头前移
+    in.heartbeat(2800);
+    out.tick(2800); // 距上次缺口已 >1s 且数据在推进 → 撤警
     CHECK(out.misalignCountRecent(3) == 0);
     CHECK(out.gapCount(3) == 1);
 
-    // ⑤ 再次失准 → 重新报数(不是一次性静音)。
-    REQUIRE_FALSE(src.read(64, dst.data(), 16));
-    in.heartbeat(2700);
-    out.tick(2700);
+    // ⑥ 再次失准 → 重新报数(不是一次性静音)。
+    REQUIRE_FALSE(src.read(128, dst.data(), 16));
+    in.heartbeat(2900);
+    out.tick(2900);
     CHECK(out.misalignCountRecent(3) == 1);
 }
 
