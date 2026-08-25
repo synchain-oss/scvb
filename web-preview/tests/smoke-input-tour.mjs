@@ -163,7 +163,7 @@ log("=== ③ mock 端到端:input-first-run + setGuideSeen 往返 ===");
         // 完成 / Skip 的唯一写入口(J50a:alsoGlobal=true 同步写全局默认位)
         check(
             typeof b.setGuideSeen === "function",
-            "setGuideSeen 已挂到 Input 桥(PENDING_FUNCS 能力探测)",
+            "setGuideSeen 已挂到 Input 桥(已转正:BRIDGE_FUNCTIONS.input)",
         );
         const res = await b.setGuideSeen(true, true);
         eq(res, { ok: true }, "setGuideSeen 返回 {ok:true}");
@@ -193,8 +193,8 @@ log("=== ③ mock 端到端:input-first-run + setGuideSeen 往返 ===");
 
     eq(
         PENDING_FUNCS.input,
-        ["setGuideSeen"],
-        "Input 侧待转正名表 = [setGuideSeen](契约 §3 仍是 7 个函数)",
+        [],
+        "Input 侧待转正名表已清空([J81] 修宪:setGuideSeen 转正进契约 §3.8,§3 计数 7→8)",
     );
 }
 

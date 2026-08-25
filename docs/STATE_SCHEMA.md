@@ -2,7 +2,7 @@
 
 > 状态: 冻结
 > 最后更新: 2026-08-25(abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy,详见 `docs/contract-changes/20260825-cfgs-persistence.md`)
-> 真源: 本文件(由 `docs/constitution/params-v0.md` + 计划 04 §5 蒸馏转正)
+> 真源: 本文件(由 `docs/constitution/params-v0.md` **v2.3** + 计划 04 §5 蒸馏转正;J81 修宪转正:`ui.lang_chosen` / Input `ui.guide_seen`)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
 
@@ -46,7 +46,7 @@ versions[2]:                   # [J59] 4→2;name: string(J05,默认 "V1"/"V2");
 features:                      # 采集特征(ADR-007);编码见 §四
   embedded: bool               # 超 8MB 转 sidecar
   per_channel[]: {hop_ms: 10, kw_mean_square[], peak[], vad_posterior[], coverage_ranges[]}
-ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen}   # J50/J62/J75
+ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang_chosen}   # J50/J62/J75/J81
 ```
 
 ### `ui.master_chart_mode`([J75] T43;变更文档 20260825-master-chart-mode)
@@ -81,10 +81,43 @@ ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen}   # 
 abi: 2                          # 当前 abi(kCurrentAbi=2);Input 与 Output 共用容器 abi
 group_id: 1..8               # [J66] 本轨所属组(默认 1);同一人声轨只能属一组
 channel_id: 0..15             # 本轨绑定的 channel;0=未分配(J01);[J59] 上限 15
-ui: {scale, language}
+ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
 ```
 
 其余一切配置从 Output 经控制面 IPC 读写(Input UI 只是远程视图)。
+
+### `ui.guide_seen`(Input;[J80] T48;变更文档 20260825-input-guide-seen)
+
+| 项 | 定义 |
+|---|---|
+| 路径 | `ui.guide_seen`(**Input** state) |
+| 类型 | bool |
+| 默认值 | **`false`**(首装 = 没看过) |
+| 语义 | Input 首启轻量引导([J80]:独立语言卡 + 5 步 mini tour)的**已读位**。置位后首启链不再自动弹;header「?」重看入口**不看本位**,已置位也能再开 |
+| 自动化 | 否。不占参数面 |
+| 持久化 | 是,随工程走 |
+
+- **编码落点**:`InputStateCodec` 的 `InputState`(当前 = `channelId` / `groupId` / `uiScale` / `uiLanguage`)**尾部追加 `u32 uiGuideSeen`** —— 向后兼容的**追加段**:老工程按旧长度解码、该位取默认 0。
+- **全局默认位** `guide_seen_global`(§3.1 快照顶层,只读、不属工程 state):**Input 与 Output 各存一份**(`UiDefaultsStore` 命名空间本就按侧分)。两侧引导讲的是两个界面、两套内容,共用一个位会让先装 Output 的用户永远看不到 Input 的引导。
+- **迁移语义**:读到没有该键的旧工程 → 默认 `false`(引导弹一次,弹完置位),不丢数据;若用户此前已在别的工程看过,全局默认位会替他挡住。**不需要迁移函数**,`abi` 不因它递增。
+- **反向兼容**:新工程被旧版本读到 → 旧版按「忽略未知键」丢弃 → 引导多弹一次,无其它影响。
+
+### `ui.lang_chosen`(Output;[J81];变更文档 20260825-t37-r3-misalign-semantics 追加节)
+
+| 项 | 定义 |
+|---|---|
+| 路径 | `ui.lang_chosen` |
+| 类型 | bool(**可选**) |
+| 默认值 | **`false`**(缺失即 false) |
+| 语义 | 首启**语言选择卡**的抑制位。与 `guide_seen` / `guide_seen_global` 完全同构:前者随工程走,后者是系统级全局默认 |
+| 自动化 | 否 |
+| 持久化 | 是,随工程走 |
+
+- **`ui.language` 为什么不能兼任**:它默认 `"en"`,「从没选过」与「用户就是选了英文」不可区分。
+- **编码落点 = `PRMS` 的 ValueTree**(与 `guide_seen`/`tour_seen`/`active_tab` 同处)。**不落 CFGS** —— CFGS 是定长解码,追加字段会让旧构建整块拒载;ValueTree 增删字段零成本、老工程读不到即 false。
+- **不新增桥函数**:置位点在既有 §1.30 `setLang` 桥入口 —— web 启动时的语言回填走 `setLang(..., {push:false})` **不经桥**,所以「桥的 `setLang` 被调用过」正好等价于「用户显式选过语言」。
+- **全局镜像位** `lang_chosen_global`(§1.1 快照顶层,只读、不属工程 state,落 `UiDefaultsStore`)。
+- **兼容**:按 §0.1 规则 3 这是**加法**(既有 payload 新增可选字段),非破坏性,`contractVersion` 不升主版本;旧 web 不读该字段 → 行为不变;旧工程无该属性 → 读回 false → 走一次首启,选完即持久。`abi` **不递增**。
 
 ## 三、编码与兼容(state chunk 容器)
 
@@ -101,7 +134,7 @@ ui: {scale, language}
 
 | fourcc | 内容 | 编码 |
 |---|---|---|
-| `PRMS` | APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen} | ValueTree 二进制 |
+| `PRMS` | APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen, **lang_chosen**([J81])} | ValueTree 二进制 |
 | `CFGS` | **当前已落盘**: group_id / capture_enabled / output_enabled / version_active / ui{scale, language} / analysis{loudness_mode, center_slot_policy}。<br>**挂账未落盘**(后续任务扩展): analysis{vad, segmentation, transition_ramp_ms} / channels[15]{source_channels, participate_in_auto_pan} / print 设置 | 紧凑二进制(6×u32 头 + uiLanguage 变长 + loudness_mode/center_slot_policy 两 u32 枚举序号;已知字段后未知尾部原样回写) |
 | `CRVS` | versions[2] 曲线真身 + pan_curve + versionMeta(含 name)+ 每轨 excluded_ranges | 自定义紧凑二进制(u16 minor 版本;segment = {i64 t0, i64 t1, f32 pan, f32 vol_db, u32 flags}) |
 | `FEAT` | 特征流(per-channel kw_ms/peak/vad_posterior/coverage);embedded 标志与 sidecar 引用 | zlib(RFC 1950,miniz),节内编码见 §四 |
@@ -111,7 +144,7 @@ ui: {scale, language}
 - **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + UI 横幅提示升级;`preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据);③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
 - **当前迁移链**:`kMigrators = [migrate_1_to_2]`(abi 1→2)。`migrate_1_to_2` 为 **no-op** —— abi=1 的 CFGS 无 loudness_mode/center_slot_policy 两个尾字段,`OutputStateCodec::decodeOutputState` 按「长度回退」把缺失尾字段回落默认(kw_integrated / priority_queue),故无需重写 payload;旧版(abi=1)读新(abi=2)blob 走 RejectedNewer → `preservedOriginal` 原样回写(绝不静默降级)。详见 `docs/contract-changes/20260825-cfgs-persistence.md`。
 - **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 提示升级」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。
-- **Input 插件 state 同用此容器**(与 Output 共用同一容器 abi,kCurrentAbi=2),只含 `PRMS`(无参数,仅 ui)+ `CFGS`(group_id + channel_id)。
+- **Input 插件 state 同用此容器**(与 Output 共用同一容器 abi,kCurrentAbi=2),只含 `PRMS`(无参数,仅 ui)+ `CFGS`(group_id + channel_id + **`uiGuideSeen` 尾扩**,[J81]/J80)。
 
 ## 四、FEAT 节编码与 sidecar 契约(转正项)
 

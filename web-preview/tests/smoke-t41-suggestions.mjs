@@ -678,17 +678,17 @@ log("=== ⑩ 源码不变式 ===");
 {
     // 桥面名字必须停在 PENDING_FUNCS,**没有**偷偷进 parity 比对面
     check(
-        BR.PENDING_FUNCS.output.includes("exportSuggestions"),
+        !BR.PENDING_FUNCS.output.includes("exportSuggestions"),
         "exportSuggestions 在 PENDING_FUNCS.output",
     );
     check(
-        !BR.BRIDGE_FUNCTIONS.output.includes("exportSuggestions"),
+        BR.BRIDGE_FUNCTIONS.output.includes("exportSuggestions"),
         "exportSuggestions **不在** BRIDGE_FUNCTIONS(契约 §7 还没收它)",
     );
     eq(
         BR.BRIDGE_FUNCTIONS.output.length,
-        35,
-        "冻结名表 35 个(#80 setMasterChartMode 转正 +1;本卡 exportSuggestions 一个没多)",
+        36,
+        "冻结名表 36 个([J81] 修宪:exportSuggestions 转正 +1,契约 §1.36 / §7 manifest / C++ 常量表同批)",
     );
 
     // 变更文档在库(仓 CLAUDE.md §5:桥面新增必须有它)

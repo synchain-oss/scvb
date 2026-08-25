@@ -16,6 +16,7 @@ inline constexpr const char* kFnRemoteSetPriority = "remoteSetPriority";
 inline constexpr const char* kFnSetUiScale = "setUiScale";
 inline constexpr const char* kFnCommitUiScale = "commitUiScale";
 inline constexpr const char* kFnSetLang = "setLang";
+inline constexpr const char* kFnSetGuideSeen = "setGuideSeen"; // [J81] J80/T48 Input 首启引导已读位
 
 // ---- events(契约 §4)----
 inline constexpr const char* kEvState = "scvb.state";
