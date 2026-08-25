@@ -61,8 +61,6 @@
 // =============================================================================
 
 import { DESIGN } from "../web/shared/design-box.js";
-// [T46] Monitor 的设计盒暂存在页面侧(理由与升入 shared 的待办见该文件头注)。
-import { MONITOR_DESIGN } from "../web/monitor/monitor-box.js";
 import { MONITOR_SCENARIOS } from "./mock/monitor-mock.js";
 
 /** 真源页面路径 —— web-preview 对 web/ 的**唯一**依赖形式:引用,不复制。 */
@@ -84,11 +82,14 @@ const MOCK_MODULE = {
     monitor: "./mock/monitor-mock.js",
 };
 
-/** 各侧设计盒(iframe 的最小尺寸;真源见各自文件,壳页不写死数字)。 */
+/** 各侧设计盒(iframe 的最小尺寸;唯一真源 `web/shared/design-box.js`,壳页不写死数字)。 */
+// [T46] Monitor 那一条曾经取自页面侧的 `monitor-box.js`(当时 shared 里还没有 monitor 键,
+// 加键要同批动 gen-design-box.py / check-design-box.mjs / BridgeBase.h,而那四处属 T45)。
+// T45(PR #94)合入后三侧同源,这里不再多引一个模块。
 const DESIGN_BOX = {
     output: DESIGN.output,
     input: DESIGN.input,
-    monitor: MONITOR_DESIGN,
+    monitor: DESIGN.monitor,
 };
 
 /** 契约 §2/§4 的事件条数,仅用于工具条上「已接线 n/N」的自检显示。 */

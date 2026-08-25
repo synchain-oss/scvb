@@ -52,7 +52,8 @@ import {
 } from "./viz.js";
 
 // ------------------------------------------------------------- 设计盒(05 §1.2)
-// 真源 = ./monitor-box.js;index.html 里不写第二份数字(页面零硬编码,grep 断言)。
+// 真源 = `web/shared/design-box.js` 的 DESIGN.monitor(./monitor-box.js 只是一层转发);
+// index.html 里不写第二份数字(页面零硬编码,grep 断言)。
 const card = document.getElementById("card");
 card.style.setProperty("--box-w", MONITOR_DESIGN.w + "px");
 card.style.setProperty("--box-h", MONITOR_DESIGN.h + "px");

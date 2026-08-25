@@ -1830,29 +1830,30 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
         /--box-w/.test(app) && /--box-h/.test(app),
         "app.js 把设计盒写成 --box-w/--box-h",
     );
-    // ---- 设计盒的交接:T45 已把 960×720 落进 `web/shared/design-box.js` 的
-    // `DESIGN.monitor`(连同 gen-design-box.py / check-design-box.mjs / BridgeBase.h)。
-    // 那个改动合入 `feature/v1` 之前,本仓的 design-box.js 里还没有 monitor 键,
-    // 故这条**在场才查**:一出现就断言两处同值,并提醒把 monitor-box.js 改成转发。
+    // ---- 设计盒的交接:**已完成**(T45 = PR #94 合入 `feature/v1` 的 `649c99f`)。
+    // 960×720 现在的唯一真源是 `web/shared/design-box.js` 的 `DESIGN.monitor`,它同时是
+    // `gen-design-box.py` 的输入(→ `src/core/DesignBox.h`,gate 3d 逐字节对拍)。
+    // 这条断言从「在场才查同值」升级成**转发身份**:两处必须是**同一个对象**,不是同值副本。
+    // 为什么要判到 `===`:同值断言只能挡住「一处改了另一处没改」,挡不住「有人把转发
+    // 又抄回一份字面量」—— 抄回去的那天两边仍然同值,断言全绿,而真源纪律已经破了。
     {
         const { DESIGN } = await import(u("web/shared/design-box.js"));
-        if (!DESIGN.monitor) {
-            skip(
-                "web/shared/design-box.js 里还没有 DESIGN.monitor(T45 = PR **#94**,已落在其分支上、" +
-                    "尚未合入 feature/v1)—— 合入后本条自动生效,届时把 monitor-box.js 改成转发。" +
-                    "**在那之前不能改**:转发过去是 undefined,页面当场坏",
-            );
-        } else {
-            eq(
-                DESIGN.monitor,
-                {
-                    w: MBOX.MONITOR_DESIGN.w,
-                    h: MBOX.MONITOR_DESIGN.h,
-                    presets: MBOX.MONITOR_DESIGN.presets,
-                },
-                "DESIGN.monitor 与 monitor-box.js 同值 —— **现在该把后者改成转发了**",
-            );
-        }
+        check(!!DESIGN.monitor, "web/shared/design-box.js 里有 DESIGN.monitor");
+        check(
+            MBOX.MONITOR_DESIGN === DESIGN.monitor,
+            "monitor-box.js 是**转发**(同一个对象),不是第二份字面量",
+        );
+        eq(
+            MBOX.MONITOR_DESIGN,
+            { w: 960, h: 720, presets: [0.5, 0.65, 0.8, 1, 1.25, 1.5, 2] },
+            "转发过来的值 = J75 C 定稿的 960×720 与七档",
+        );
+        // 页面侧不许再出现第二份字面量(转发之后本文件应当只剩一行 export)
+        const box = src("web/monitor/monitor-box.js");
+        check(
+            !/\bw:\s*\d|\bh:\s*\d|presets:\s*\[/.test(box),
+            "monitor-box.js 里没有第二份设计盒字面量",
+        );
     }
     check(
         MBOX.MONITOR_DESIGN.presets.includes(1),
