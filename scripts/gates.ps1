@@ -268,7 +268,7 @@ else {
     $parityOut | ForEach-Object { Write-Host ("  " + $_) }
   }
 
-  Set-Gate '3f 文档真源(红字生成物 + i18n 三语 + 双语结构对等)' $docsOk
+  Set-Gate '3f 文档真源' $docsOk
 }
 
 # ==================================================================
