@@ -133,20 +133,24 @@ async function main() {
             lanesGroup = groupId;
         } else if (
             Number(p.laneRevision) !== lanesRevision ||
-            lanesGroup !== groupId
+            lanesGroup !== groupId ||
+            Number(p.groupId) !== groupId
         ) {
             // revision 或组对不上 ⇒ **宁可当作没有车道**,也不拿旧车道配新帧头
             // (那是一张「时间轴新、线旧」而看起来完全正常的图)。
             lanes = null;
         }
 
+        // online(段已 attach)与 fresh(帧还在更新)是**两件事** ——
+        // 停更时不清图:数据还是上一份真数据,清掉会让用户看到一张突然变空的图。
+        const stalled = p.online && !p.fresh;
         // 时间量已经是秒(契约 §0.2 第 3 条:UI 永不见样本);playheadS 为 null = 无时间线。
         winLine.textContent = p.online
             ? `window: 0 – ${fmtSeconds(p.windowSpanS)} (${p.columnCount} cols, v${p.versionActive}, rev ${p.laneRevision}${lanes ? "" : ", no lanes"})`
             : "window: —";
         const playing = (Number(p.playheadFlags) || 0) & 1;
         headLine.textContent = p.online
-            ? `playhead: ${p.playheadS == null ? "—" : fmtSeconds(p.playheadS)}${playing ? " ▶" : ""}`
+            ? `playhead: ${p.playheadS == null ? "—" : fmtSeconds(p.playheadS)}${playing ? " ▶" : ""}${stalled ? " (stalled)" : ""}`
             : "playhead: —";
         renderTracks(tracksBox, p.online ? p : null);
     });
