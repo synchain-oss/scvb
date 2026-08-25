@@ -98,6 +98,13 @@ public:
     // 帧是否新鲜(写方停摆 ≥kVizStaleMs 判陈旧;UI 显示为「Output 停摆」而非假装在线)。
     bool vizFresh() const { return vizFresh_; }
 
+    // 生命周期锁的外借:编辑器读 `vizSnapshot()` / `groupsOnline()` / `groupId()` 时必须持它 ——
+    // 那些访问器返回的是**成员的引用/取值,不是副本**,而 `refreshViz()` 与宿主的生命周期回调
+    // 会在别的线程上改写同一份数据(`*viz_` 整体赋值、`vizPlane_` 解映射)。
+    // 与 Output 侧 `crvsSnapshot()` 持锁同口径,只是那边返回深拷贝、这边外借锁让调用方整体持有
+    // (viz 快照 ≈34KB,4Hz 逐帧深拷贝不值得)。
+    const juce::CriticalSection& lifecycleLock() const noexcept { return lifecycleMutex_; }
+
     // [M] 一次轮询:viz attach/读 + 1Hz 跨组探测 + 延迟释放回收。
     // 生产路径由 4Hz 定时器驱动;做成公开入口是为了让单测能在没有 MessageManager 的
     // 离线环境里直接驱动一拍(否则「零写入」只能靠真机跑 —— 那就不叫断言了)。
