@@ -13,6 +13,8 @@
 - [ ] docs/PARAMETERS.md(自动化参数)—— **本体不动**;Monitor 的「0 参数」只在此文件与 README 备注
 - [ ] docs/IPC_CONTRACT.md(共享内存段名/布局)—— 不动(viz 段是 T44 的事,见 `20260825-viz-segment.md`)
 - [ ] docs/STATE_SCHEMA.md(state schema)—— **零新增**,理由见下
+- [ ] docs/SCVB_CONTRACT.md(桥契约)—— **本体不动**;Monitor 桥面(1 专属函数 + 4 事件)
+      尚未进 §7 `manifest.monitor`,随 T46 与 ipc v1.6 修宪同批转正(理由见下「桥面」节)
 - [ ] tests/golden/ —— 不动
 - [x] **ADR-001「插件形态:两个插件目标 + 共享核心库」** —— 主目标数 2 → 3
 
@@ -67,14 +69,40 @@ Monitor 的 state 只有三项 —— `group_id`(看哪一组)、`ui.scale`、`u
 
 ### 桥面:T45 只落壳,契约 §7 manifest.monitor 归 T46
 
-`src/monitor/MonitorBridgeApi.h` 列了 T45 壳层的最小桥面(函数 `setGroupId`;事件
-`scvb.state` / `scvb.groups` / `scvb.viz`),但**尚未**进 `docs/SCVB_CONTRACT.md §7 manifest`,
-也不在 `scripts/check-bridge-parity.mjs` 的抽取路径(该脚本只扫 `src/input` 与 `src/output` 两个显式路径)。
-同理 `web/shared/bridge.js` 的冻结名表 **一个字节未动**,占位页自己走最小 `__JUCE__` 接线。
+`src/monitor/MonitorBridgeApi.h` 列的是 T45 壳层的最小桥面:
+
+- **函数 1 个(专属)**:`setObservedGroup(1..8)` —— 组选择。**刻意不叫 `setGroupId`**:
+  契约 §1.4 的 `setGroupId` 是 Output 的改组(断开本组全部连接、要弹确认条),
+  与「换一个组的 viz 段来看、不 claim、对被观察组零副作用」是两件事;共用名字迟早有人照 §1.4 去实现它。
+  通用四函数(`requestInitialState` / `setUiScale` / `commitUiScale` / `setLang`)由 `WebViewHost` 基类注册。
+- **事件 4 个**:`scvb.state`(组 / 缩放 / 语言 / viz 三态 / fresh)、`scvb.groups`(1Hz 跨组在线位图)、
+  `scvb.viz`(4Hz 帧:降采样车道按 `lane_revision` 带、每轨当前值每帧刷)、
+  `scvb.playhead`(25Hz,载荷形状逐字复用 Output 侧 §2.6)。
+
+**键名拼写照契约 §0.2 规则① 与裁定 A-30**:镜像宪法 state 字段的键一律 snake_case ——
+`group_id`、`ui:{scale, language}`、`groups_online`(camelCase 在 §8.3 明记为旧文)。
+
+这套桥面**尚未**进 `docs/SCVB_CONTRACT.md §7 manifest`,也不在 `scripts/check-bridge-parity.mjs`
+的抽取路径(该脚本只扫 `src/input` 与 `src/output` 两个显式路径);`web/shared/bridge.js` 的冻结名表
+**一个字节未动**。
 
 **T46 立项时一并办**:契约 §7 加 `manifest.monitor` → `bridge.js` 加名表 → parity 脚本加抽取路径 →
-占位页改用 `createBridge("monitor")`。理由:05 J75 节 C 把 Monitor 的真 UI 与完整桥面归 T46,
+T46 的页面改用 `createBridge("monitor")`。理由:05 J75 节 C 把 Monitor 的真 UI 与完整桥面归 T46,
 T45 若先把一个半成品桥面写进冻结契约,T46 就得走「只增不改」的弯路。
+
+### 本卡**不带页面**
+
+`web/monitor/` 只有一份 `README.md`(目录约定 + 设计盒真源 + native 接口真源指路)。
+早期版本带过一个占位页,T46 的真实现(#90)落地后它只剩制造合并冲突的作用,已删除。
+`MonitorEditor` 传 `resourceSource = {}` —— 与 `web/input`、`web/output` 的**现状同口径**
+(仓内还没有 `juce_add_binary_data` 接线,三个插件的 web 资源都尚未编进二进制)。
+
+### 设计盒 960×720 / 七档
+
+真源 = `web/shared/design-box.js` 的 `DESIGN.monitor` → `scripts/gen-design-box.py` 生成
+`src/core/DesignBox.h` 的 `kMonitorDesignW/H` + `kMonitorPresets`;`scripts/check-design-box.mjs`
+(gate 3d)逐值对拍;`BridgeBase.h` 的 `designBoxWindowSize` 与 `BridgeBase.cpp` 的
+`parseUiScaleArg` **各自都有 monitor 分支**。尺寸依据由 T46 依内容定稿(05 J75 节 C)。
 
 ## 三条铁律与其落实方式
 

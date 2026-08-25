@@ -27,14 +27,16 @@ T45 早期在这里放过一个占位页(`index.html` + `app.js`),用途是开�
 
 | 面 | 真源 |
 |---|---|
-| 桥函数 / 事件名 | `src/monitor/MonitorBridgeApi.h` |
+| 桥函数 / 事件名 | `src/monitor/MonitorBridgeApi.h`(1 专属函数 `setObservedGroup` + 4 事件) |
 | `scvb.viz` / `scvb.state` 载荷字段 | `src/monitor/MonitorEditor.cpp` 的 `buildVizPayload` / `buildStatePayload` |
 | viz 段布局与降采样口径 | `src/core/ipc/VizPlane.h` + `docs/contract-changes/20260825-viz-segment.md` |
 | 段布局逐行冻结 | `tests/golden/ipc-layout.txt` |
 
-**两侧不是靠信件同步**:T46 的 `web/monitor/viz-contract.js` 是段契约的 JS 侧镜像,
-`web-preview/tests/smoke-monitor.mjs` 把它同时对拍上表的 golden(段字段名 + 偏移升序)
-与 `MonitorEditor.cpp` 的 `setProperty` 名(按函数切开比,并有反向断言:桥送出而镜像表没有的字段当场红)。
+**两侧不是靠信件同步**(⚠ 下面这套机检**随 #90 落地** —— 本仓 `web-preview/tests/` 目前还没有
+`smoke-monitor.mjs`,这一段是对 #90 的转述,本 PR 单独合入时它指向的文件尚不存在):
+T46 的 `web/monitor/viz-contract.js` 是段契约的 JS 侧镜像,`web-preview/tests/smoke-monitor.mjs`
+把它同时对拍上表的 golden(段字段名 + 偏移升序)与 `MonitorEditor.cpp` 的 `setProperty` 名
+(按函数切开比,并有反向断言:桥送出而镜像表没有的字段当场红)。
 **改名字会在对方的机检上立刻现形;但改语义不会** —— 同一个字段名换含义两面都是绿的,那种改动必须在信里明说。
 
 ## 桥面尚未进冻结契约

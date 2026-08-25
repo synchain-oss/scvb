@@ -38,6 +38,7 @@ ScvbMonitorAudioProcessor::~ScvbMonitorAudioProcessor()
 
 void ScvbMonitorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
+    const juce::ScopedLock lock(lifecycleMutex_);
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     // 只读监视器:不分配音频缓冲、不建段、不 claim。attach 交给 [M] 定时器(段可能还没建起来)。
     // 这里只把段指向当前组(setStateInformation 可能已经改过 groupId_)。
@@ -52,7 +53,8 @@ void ScvbMonitorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPe
 
 void ScvbMonitorAudioProcessor::releaseResources()
 {
-    stopTimer();
+    stopTimer(); // 先停表:此后不再有 [M] 读,锁内只剩解映射
+    const juce::ScopedLock lock(lifecycleMutex_);
     vizPlane_.release();
     vizState_ = VizState::kOffline;
     vizFresh_ = false;
@@ -158,6 +160,7 @@ void ScvbMonitorAudioProcessor::changeProgramName(int /*index*/, const juce::Str
 
 void ScvbMonitorAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
+    const juce::ScopedLock lock(lifecycleMutex_);
     // 复用 scvb::state::InputState 的 payload 布局(channel_id / group_id / ui{scale,language})——
     // Monitor 不认领任何 channel,channelId 恒 0 且不参与语义。这样既不新增 state schema,
     // 也不触碰 docs/STATE_SCHEMA.md 本体(见 docs/contract-changes/20260825-monitor-target.md)。
@@ -195,6 +198,8 @@ void ScvbMonitorAudioProcessor::setStateInformation(const void* data, int sizeIn
     {
         return; // 不可信字节:解码失败 → 拒载(不崩溃、不半填充)
     }
+    // 宿主可从任意线程恢复 state;下面写 groupId_/uiScale/uiLanguage_,而 [M] 同时在读它们。
+    const juce::ScopedLock lock(lifecycleMutex_);
     // 高版本 abi:拒载(CLAUDE.md §7.3)。Monitor 是只读观察器,state 只影响「看哪一组」,
     // 无需 preservedOriginal 回写 —— 丢的只是一个视图偏好,不是用户数据。
     if (scvb::state::decideInputStateAbi(chunks.abi) == scvb::state::InputStateAbiDecision::RejectNewer)
@@ -214,9 +219,12 @@ void ScvbMonitorAudioProcessor::setStateInformation(const void* data, int sizeIn
     {
         return; // 范围校验失败 → 拒载
     }
+    // setObservedGroup 自己取锁(juce::CriticalSection 可重入,与 Output 同款)。
     setObservedGroup(static_cast<int>(s.groupId));
     setUiScalePercent(static_cast<int>(s.uiScale));
-    uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
+    // 归一化到 {zh,en,fr}(§1.30):codec 只限长度不限取值 —— 工程里塞了别的串会原样进
+    // WebView 首帧 seed。与 setUiLanguage() 同一条路,免得两个入口口径不同。
+    setUiLanguage(juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size())));
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +234,7 @@ void ScvbMonitorAudioProcessor::setStateInformation(const void* data, int sizeIn
 bool ScvbMonitorAudioProcessor::setObservedGroup(int groupId)
 {
     groupId = juce::jlimit(1, kGroupIdMax, groupId);
+    const juce::ScopedLock lock(lifecycleMutex_);
     if (groupId == groupId_)
     {
         return false;
@@ -251,7 +260,11 @@ void ScvbMonitorAudioProcessor::setUiScalePercent(int percent)
 
 void ScvbMonitorAudioProcessor::setUiLanguage(const juce::String& lang)
 {
-    uiLanguage_ = lang; // 已由桥层 normalize({zh,en,fr})
+    // 自己归一化,不假设调用方做过(§1.30:未知 code 回退 zh)。桥入口已经 normalize 过一次,
+    // 但 setStateInformation 那条路的字节来自工程文件 —— 不可信。
+    // 这里不调 scvb::bridge::normalizeLang:那会把 plugin-common 拖进离线单测目标
+    // (scvb_monitor_tests 刻意只编 MonitorProcessor.cpp),口径三行写死更省。
+    uiLanguage_ = (lang == "en" || lang == "fr") ? lang : juce::String("zh");
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +278,7 @@ void ScvbMonitorAudioProcessor::timerCallback()
 
 void ScvbMonitorAudioProcessor::tickMessageThread(std::uint64_t now)
 {
+    const juce::ScopedLock lock(lifecycleMutex_);
     refreshViz(now);
 
     if (now - lastGroupsProbeMs_ >= kGroupsProbeIntervalMs)

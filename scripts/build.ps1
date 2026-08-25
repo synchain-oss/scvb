@@ -6,6 +6,8 @@
 #>
 param(
   [ValidateSet('Release','Debug','RelWithDebInfo')][string]$Config = 'Release',
+  # 注:$Target 目前是**装饰参数** —— 下面一律全量 cmake --build(见 §构建)。
+  # 加 'Monitor' 只为让命令行不因未知值报错;真要按 target 构建请直接用 cmake --build --target。
   [ValidateSet('All','Input','Output','Monitor','Core','Tests')][string]$Target = 'All',
   [string]$JucePath = $env:JUCE_PATH,
   [string]$BuildDir = 'build',

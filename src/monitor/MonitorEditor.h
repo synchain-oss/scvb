@@ -5,10 +5,11 @@
 // (含 PlatformWebView 的 per-plugin + per-instance UserDataFolder 隔离 —— Monitor 拿自己的
 // 目录名,不与 Input/Output 抢)。
 //
-// 本卡只交壳:一个最小占位页 + 「组选择 / 在线态 / viz 帧摘要」三个事件,够跑通
-// Output → viz 段 → Monitor → web 的整条链路。**真 UI(上分布图 / 下轨迹图)归 T46**,
-// 资源目录约定已留好:`web/monitor/`(见该目录 README —— 页面实现归 T46/#90,
-// T45 早期的占位页已删除,免得两个 PR 各带一份同名文件在合并时互撞)。
+// 本卡只交壳:**四个事件**(`scvb.state` / `scvb.groups` / `scvb.viz` / `scvb.playhead`)
+// + 一个专属函数(`setObservedGroup`),够跑通 Output → viz 段 → Monitor → web 整条链路。
+// **真 UI(上分布图 / 下轨迹图)与页面本身归 T46(#90)**;本卡不带页面 ——
+// 早期的占位页已删除,免得两个 PR 各带一份同名文件在合并时互撞。
+// 资源目录约定见 `web/monitor/README.md`。
 
 #include "WebViewHost.h"
 
@@ -52,7 +53,11 @@ private:
     juce::String lastStateJson_;
     juce::String lastGroupsJson_;
     juce::String lastVizJson_;
-    std::uint32_t lastSentLaneRevision_ = 0; // 已随事件送出过车道的 revision
+    // 车道增量基线。**必须带组号**:lane_revision 是每组各自从 0 起 +1 的,
+    // A 组与 B 组撞上同一个值时,只比 revision 会判成「车道没变」而再也不发 ——
+    // 表现是「切到 B 后永远 no lanes」,且看起来完全正常。与消费侧的 lanesGroup 判据对称。
+    std::uint32_t lastSentLaneRevision_ = 0;
+    int lastSentLaneGroup_ = -1;
     bool sentLanes_ = false; // 是否送出过任何一帧车道(首帧必带)
     juce::String lastPlayheadJson_;
     juce::uint64 lastGroupsMs_ = 0; // 1Hz 折半

@@ -24,5 +24,6 @@ inline constexpr const char* kFnSetObservedGroup = "setObservedGroup"; // 组选
 inline constexpr const char* kEvState = "scvb.state"; // 组/缩放/语言/viz 在线态
 inline constexpr const char* kEvGroups = "scvb.groups"; // 1Hz 跨组在线位图(J70 只读探测)
 inline constexpr const char* kEvViz = "scvb.viz"; // 4Hz viz 帧(降采样车道 + 每轨当前值)
-inline constexpr const char* kEvPlayhead = "scvb.playhead"; // 30Hz 播放头(载荷形状复用 Output 侧)
+inline constexpr const char* kEvPlayhead =
+    "scvb.playhead"; // 25Hz 播放头(WebViewHost 定时器上限;载荷形状复用 Output 侧)
 } // namespace scvb::monitor::bridge
