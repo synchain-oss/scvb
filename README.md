@@ -10,13 +10,17 @@
 
 > Automatic pan and level balancing across a multi-singer vocal arrangement, as a pair of VST3 plugins.
 
+SCVB is an open-source plugin project led by [Synchain](https://synchain.ca) — source and documentation are fully public, and you are welcome to use, modify, and redistribute it freely. If it saves you some time, come have a look at what else we make at [synchain.ca](https://synchain.ca); and if you like working with it, telling a friend or a colleague about Synchain is the best support we could ask for.
+
 ## What it does
 
-- **Balances a whole vocal section, not one track.** SCVB captures every vocal track, analyses them together, and gives each one a pan position and a level curve, so the parts sit apart from one another instead of competing for the same spot.
-- **Two plugins, one system.** **SCVB Input** sits on each vocal track and captures it; **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and replaces the bus input.
-- **The result goes back into the DAW as automation.** 30 lanes (15 tracks x pan/vol) printed on a Write or Latch pass, after which the host stays authoritative — draw over it by hand and the engine will not take it back.
-- **Analysis is re-tunable without recapturing.** What is stored is one feature frame per 10 ms, not decisions, so VAD thresholds and segmentation can be dragged with live preview at any time.
-- **Hand edits survive.** Segments you edited or locked are never overwritten by automatic re-analysis, and freezing a dimension hands it to you for good.
+Mixing engineers routinely spend hours drawing volume and pan automation across dozens of tracks of lead and backing vocals from different singers: keeping the voices from crowding the same spot in the stereo image, or making sure passages from different singers sit at a consistent perceived loudness. It is time-consuming and demanding work, mostly tedious and highly repetitive — and a meaningful way to aggravate your RSI.
+
+SCVB exists to solve exactly that and give you those hours back: it captures every vocal track, analyses them together, and gives each one a pan curve and a level curve, so the parts sit apart from one another instead of competing for the same spot, and so loudness stays close to consistent from passage to passage.
+
+**Two plugins, one system.** **SCVB Input** sits on each vocal track and captures it; **SCVB Output** sits on the vocal bus, where it analyses, balances, sums, and replaces the bus input.
+
+Not sold on what the engine came up with, or want it arranged differently? No problem. Much like the way Vocal Rider works, you can use the automation-write feature to print the engine's analysis into your host as automation, then fine-tune from there by hand — starting from a finished pass rather than a blank one should still save you a lot of time.
 
 Up to 15 vocal tracks per group, 8 independent groups (A–H), 2 version slots. The automation parameter surface is frozen at 123 declared (124 host-visible); everything else lives in state.
 
@@ -50,9 +54,11 @@ Transcribed from [docs/DAW_COMPATIBILITY.md](docs/DAW_COMPATIBILITY.md) §4, whi
 
 SCVB has no tagged release yet. Once it does, installing is:
 
-1. download `SCVB-vX.Y.Z-win64.zip` from the Releases page and check it against the accompanying `.sha256`;
-2. unzip, and copy both `SCVB Input.vst3` and `SCVB Output.vst3` — the whole bundle folder in each case — into `C:\Program Files\Common Files\VST3\`;
-3. rescan plugins in your DAW.
+1. **Recommended**: get `SCVB-vX.Y.Z-win64.zip` from the download page at **[synchain.ca](https://synchain.ca)**. You will find the install notes, update announcements, and the rest of our tools there too — have a wander, there may be something else that helps.
+   You can also download it from this repository's Releases page — it is the same package with the same checksum, so take whichever is more convenient.
+2. verify the downloaded zip against the accompanying `.sha256`;
+3. unzip, and copy both `SCVB Input.vst3` and `SCVB Output.vst3` — the whole bundle folder in each case — into `C:\Program Files\Common Files\VST3\`;
+4. rescan plugins in your DAW.
 
 **Install both.** The two plugins are a pair and share one version number; a mismatched pair refuses to connect, on purpose.
 
