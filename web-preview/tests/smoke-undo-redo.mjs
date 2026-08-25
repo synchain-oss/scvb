@@ -274,10 +274,18 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
 
     // ---- 接线:两条入口打同一个 runHistory,且它调的就是桥上那两个名字 ----
     check(
-        /async function runHistory\(kind\) \{[\s\S]{0,200}await call\(kind\)/.test(
+        /async function runHistory\(kind\) \{[\s\S]{0,600}await call\(kind\)/.test(
             appJs,
         ),
         "runHistory(kind) 直调桥函数 call(kind)(kind ∈ undo/redo)",
+    );
+    // 只读观察态:点击那条已被 data-disabled 拦住,键盘那条根本不看按钮属性 ——
+    // 判据必须落在两个入口共用的 runHistory 里,否则 Ctrl+Z 能干成鼠标干不成的写操作。
+    check(
+        /async function runHistory\(kind\) \{[\s\S]{0,600}?if \(isReadOnly\(store\)\) return;[\s\S]{0,40}?const res = await call\(kind\);/.test(
+            appJs,
+        ),
+        "只读观察态在 runHistory 开头直接返回 —— 键盘路径(Ctrl+Z)同样不发写调用",
     );
     check(
         /addEventListener\("click", \(\) => \{[\s\S]{0,300}runHistory\(kind\)/.test(
@@ -297,6 +305,20 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
         ),
         "scvb.segments 喂进 reducer(新事务入栈的第二手证据)",
     );
+    // ---- 顺序:入栈证据必须排在版本闸**之前** ----
+    // 撤销栈挂在处理器上、整个工程一条(03 §5.3),不分版本;而 copyVersion 的段表
+    // 事件带的是**目标**版本号,与 version_active 必然不等 —— 证据若排在闸后,
+    // 「复制到非激活版本」这类真实可撤销的操作就永远看不见,undo 钮误灰。
+    {
+        const h = appJs.slice(appJs.indexOf('bridge.on("scvb.segments"'));
+        const iHist = h.indexOf("historyAfterSegments(");
+        const iGate = h.indexOf("segmentsEventApplies(");
+        check(
+            iHist >= 0 && iGate >= 0 && iHist < iGate,
+            "scvb.segments:入栈证据(historyAfterSegments)排在版本闸(segmentsEventApplies)之前" +
+                `,实得 hist@${iHist} / gate@${iGate}`,
+        );
+    }
 
     // ---- 键盘行为不动(本卡只加显式入口)----
     check(

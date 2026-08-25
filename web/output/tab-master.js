@@ -209,8 +209,19 @@ export function applySegmentsEvent(prev, next) {
 //   ② **新事务入栈**:§0.9 左列四类入栈操作里,当前 web 侧真正发得出的三类
 //      (`editSegment` / `setTrackManual` / `copyVersion`)都经 §2.8 段表事件带
 //      `reason` 回推,见其 reason 即知撤销栈刚长了一条。
-//      (第四类 `setPanCurve` 眼下 web 侧无调用点 —— 曲线窗只读,`grep -n 'call("setPanCurve"'`
-//      零命中;接线那一卡须把它同批并进本 reducer,否则「只改过曲线」时 undo 会误灰。)
+//
+// **已知缺口(两条,都会让 undo 钮在真实可撤销的操作后误灰)**:
+//   • 第四类入栈操作 `setPanCurve` 眼下 web 侧无调用点(曲线窗只读,
+//     `grep -n 'call("setPanCurve"'` 零命中)。它**不会**进本 reducer:契约 §1.17 写明
+//     「写入后经 `scvb.state` 回推 `versions[active].pan_curve`」,§2.8 的 `reason` 十值里
+//     也没有它的份 —— 本 reducer 喂的是段表事件,pan 曲线根本不走那条线。故接线那一卡
+//     要补的是**另一路证据**(scvb.state 里 `pan_curve` 变化 ⇒ 撤销栈长了一条),
+//     不是把它「同批并进本 reducer」。
+//   • `setVersionName` 在契约 §0.9 里列在**不入栈**那一列,但实现是入栈的:
+//     `src/output/OutputProcessor.cpp:784-787` 拿 `authority_.undoManager()` 提交了一笔
+//     `"Rename V{n}"` 事务(:782 已先做「名字未变则不产生空撤销事务」的短路)。
+//     两边对不上,以哪边为准须裁决;在此之前改名后 undo 钮会误灰(§2.8 也不为它发段表事件)。
+//     **本卡不改契约、不改 native**,只把出入登记在这里。
 //
 // 起手为什么两向都**常亮**而不是灰:UndoManager 挂在处理器上(03 §5.3),编辑器
 // 关了再开、栈照旧非空 —— 首帧没有任何证据说它是空的,此时置灰会挡住真实可用的

@@ -969,6 +969,11 @@ const historyUi = { undo: $("header-undo"), redo: $("header-redo") };
 
 /** 调 §1.25/§1.26 并把 `{ok:bool}` 回执喂给可用性 reducer。 */
 async function runHistory(kind) {
+    // 只读观察态下不发(契约 §1.x 拒绝态列「只读观察态下全 UI 写控件 disabled」)。
+    // 判据放在这里而不是各入口:点击那条已被 `data-disabled` 拦住(renderHeader 里
+    // 按 `!roNow` 写),但 Ctrl/Cmd+Z 那条根本不看按钮属性 —— 键盘能干成鼠标干不成的
+    // 写操作。两个入口共用的这一层是唯一堵得住的地方。
+    if (isReadOnly(store)) return;
     const res = await call(kind);
     // call() 在「桥没接上 / 调用抛错」时回 null —— 那是**没有证据**,不是栈空,
     // 保持原样(置灰会把一次通信故障变成一个永久灰掉的按钮)。
@@ -1484,6 +1489,15 @@ if (bridge) {
     });
 
     bridge.on("scvb.segments", (seg) => {
+        // [D1] 新事务入栈的第二手证据(reason ∈ edit/trackManual/copyVersion)。
+        // **必须排在下面的版本闸之前**:撤销栈挂在处理器上、是整个工程一条(03 §5.3),
+        // 不分版本;而 `copyVersion` 的段表事件带的正是**目标**版本号,拿去和
+        // `version_active` 比必然不等 —— 放在闸后就等于「复制到非激活版本」这一类
+        // 入栈操作永远看不见,undo 钮误灰在一次真实可撤销的操作上。
+        store.session.history = historyAfterSegments(
+            store.session.history,
+            seg,
+        );
         // 版本闸(§2.8 载荷 `version`):非当前激活版本的段表整帧丢弃 —— 既不进
         // store,也不转发给三个 tab(转发同样有害:tabWave.onSegments 会按它撤
         // 倒计时条、弹 diff、作废检查器乐观值与进行中的边界拖拽)。判据与理由
@@ -1494,14 +1508,10 @@ if (bridge) {
                 (store.state.global || {}).version_active,
             )
         ) {
+            requestRender(); // 上面刚可能翻了 undo 位,得让 header 跟上
             return;
         }
         store.segments = applySegmentsEvent(store.segments, seg);
-        // [D1] 新事务入栈的第二手证据(reason ∈ edit/trackManual/copyVersion)
-        store.session.history = historyAfterSegments(
-            store.session.history,
-            seg,
-        );
         tabMaster.onSegments(seg);
         // Tab2:手动常值的乐观显示让位给回推的段表(§1.16 的写入结果经本事件回来)
         tabTracks.onSegments(seg);
