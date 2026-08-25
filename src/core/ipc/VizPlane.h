@@ -115,7 +115,8 @@ struct alignas(64) VizFrame
     std::atomic<u32> track_covered_mask; // 72  bit{N-1} = 该轨有分段(车道非全哨兵)
     std::atomic<u32> track_stereo_mask; // 76  bit{N-1} = 该轨立体声源
     std::atomic<u32> lane_revision; // 80  车道/位图内容版本(仅重算车道时 +1;读方可据此跳过重解析)
-    u32 _reserved[11]; // 84..128
+    std::atomic<u32> track_lead_mask; // 84  bit{N-1} = 该轨 lead_lock(分布图柱顶绿帽,同 Tab1 规格)
+    u32 _reserved[10]; // 88..128
 };
 
 // 轨色索引:调色板槽位(1..15;0 = 未指定)。v1 恒 = 轨号(web 侧 --track-color-{n} 顺序即轨号),
@@ -187,7 +188,10 @@ struct VizSnapshot
     u32 onlineMask = 0;
     u32 coveredMask = 0;
     u32 stereoMask = 0;
+    u32 leadMask = 0; // bit{N-1} = 该轨 lead_lock(分布图柱顶绿帽)
     u32 laneRevision = 0;
+    u32 seq = 0; // 读到本帧时的 seqlock 序号(帧身份;读方可据此去重)
+    u32 generation = 0; // 段的 generation(覆盖式重初始化 +1)
     std::array<u32, kMaxChannels> trackColor{};
     std::array<std::array<u32, kVizCoverageWords>, kMaxChannels> coverage{};
     std::array<std::array<std::int16_t, kVizColumns>, kMaxChannels> pan{};
@@ -403,7 +407,8 @@ static_assert(offsetof(VizFrame, track_online_mask) == 68);
 static_assert(offsetof(VizFrame, track_covered_mask) == 72);
 static_assert(offsetof(VizFrame, track_stereo_mask) == 76);
 static_assert(offsetof(VizFrame, lane_revision) == 80);
-static_assert(offsetof(VizFrame, _reserved) == 84);
+static_assert(offsetof(VizFrame, track_lead_mask) == 84);
+static_assert(offsetof(VizFrame, _reserved) == 88);
 static_assert(alignof(VizFrame) == 64);
 
 // VizTrackColors / VizCoverage / VizLanes

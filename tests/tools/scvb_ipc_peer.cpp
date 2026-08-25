@@ -833,6 +833,7 @@ int runVizWriter(const Args& a)
     snap->onlineMask = 0x7FFFu;
     snap->coveredMask = 0x0003u;
     snap->stereoMask = 0x0002u;
+    snap->leadMask = 0x0004u; // 轨3 = lead_lock
     snap->laneRevision = 42;
     // 每轨当前值三件套(分布图数据面);轨3 起保持哨兵 = 无数据。
     snap->panNow[0] = vizPackPan(-12.5);
@@ -915,6 +916,7 @@ int runVizPublisher(const Args& a)
     in.playhead.timeSamples = 0;
     in.playhead.sampleRate = sr;
     in.label[0] = "Lead";
+    in.leadMask = 0x0001;
     in.widthPct[0] = 80.0f;
 
     // 至少发一帧;linger 期间按 4Hz 续发,读方随时 attach 都能拿到一致帧。
@@ -977,6 +979,7 @@ int runVizReader(const Args& a)
     csv += "online_mask " + std::to_string(snap->onlineMask) + "\n";
     csv += "covered_mask " + std::to_string(snap->coveredMask) + "\n";
     csv += "stereo_mask " + std::to_string(snap->stereoMask) + "\n";
+    csv += "lead_mask " + std::to_string(snap->leadMask) + "\n";
     csv += "lane_revision " + std::to_string(snap->laneRevision) + "\n";
     csv += "color1 " + std::to_string(snap->trackColor[0]) + "\n";
     csv += "color15 " + std::to_string(snap->trackColor[14]) + "\n";

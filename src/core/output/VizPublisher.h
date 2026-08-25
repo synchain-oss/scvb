@@ -42,6 +42,7 @@ struct VizPublishInput
     scvb::u32 versionActive = 1; // 1|2
     scvb::u32 enabledMask = 0; // bit{N-1} = 该轨启用
     scvb::u32 stereoMask = 0; // bit{N-1} = 该轨立体声源
+    scvb::u32 leadMask = 0; // bit{N-1} = 该轨 lead_lock(分布图柱顶绿帽,同 Tab1 规格)
     scvb::engine::PlayheadPod playhead{};
     scvb::u32 crvsRevision = 0; // CRVS 修订号(变化即重算车道)
     double sampleRate = 0.0;

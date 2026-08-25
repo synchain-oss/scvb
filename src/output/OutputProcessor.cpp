@@ -501,6 +501,10 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
         {
             in.stereoMask |= (1u << ch);
         }
+        if (c.leadLock)
+        {
+            in.leadMask |= (1u << ch);
+        }
         in.label[static_cast<std::size_t>(ch)] = c.label.toStdString();
         // 每轨 width:活动版本的参数 raw atomic(engineering 0..100)。句柄未就绪 → NaN → 段内哨兵。
         const auto* raw = handles_.rawTrkW[v - 1][ch];

@@ -143,6 +143,7 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     in->onlineMask = 0x1234;
     in->coveredMask = 0x0001;
     in->stereoMask = 0x0010;
+    in->leadMask = 0x0020;
     in->laneRevision = 3;
     for (u32 t = 0; t < scvb::kMaxChannels; ++t)
     {
@@ -171,6 +172,7 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     REQUIRE(out->playheadEpoch == 5);
     REQUIRE(out->onlineMask == 0x1234);
     REQUIRE(out->stereoMask == 0x0010);
+    REQUIRE(out->leadMask == 0x0020);
     REQUIRE(out->laneRevision == 3);
     REQUIRE(out->trackColor[14] == 15);
     REQUIRE(out->pan[0][0] == 777);

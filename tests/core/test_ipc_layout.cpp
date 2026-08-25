@@ -368,6 +368,8 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
             return offsetof(scvb::VizFrame, track_stereo_mask);
         if (f == "lane_revision")
             return offsetof(scvb::VizFrame, lane_revision);
+        if (f == "track_lead_mask")
+            return offsetof(scvb::VizFrame, track_lead_mask);
         if (f == "_reserved")
             return offsetof(scvb::VizFrame, _reserved);
         return kNotFound;

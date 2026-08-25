@@ -93,6 +93,7 @@ TEST_CASE("VIZ-1 viz 段跨进程只读 attach 与一致性读", "[ipc][viz]")
     REQUIRE(csvLL(m, "online_mask") == 0x7FFF);
     REQUIRE(csvLL(m, "covered_mask") == 0x0003);
     REQUIRE(csvLL(m, "stereo_mask") == 0x0002);
+    REQUIRE(csvLL(m, "lead_mask") == 0x0004); // 轨3 主唱锁定(分布图柱顶绿帽)
     REQUIRE(csvLL(m, "lane_revision") == 42);
 
     // 轨色索引 = 轨号(v1 恒等映射)。

@@ -188,6 +188,7 @@ void VizPlane::publish(const VizSnapshot& s, bool writeLanes)
     f->track_covered_mask.store(s.coveredMask, std::memory_order_relaxed);
     f->track_stereo_mask.store(s.stereoMask, std::memory_order_relaxed);
     f->lane_revision.store(s.laneRevision, std::memory_order_relaxed);
+    f->track_lead_mask.store(s.leadMask, std::memory_order_relaxed);
 
     // 每轨当前值(分布图数据面):随每帧刷新 —— 它们是「此刻」,不受 writeLanes 分频影响。
     auto* ts = trackState();
@@ -271,6 +272,9 @@ bool VizPlane::read(VizSnapshot& out) const
         out.coveredMask = f->track_covered_mask.load(std::memory_order_relaxed);
         out.stereoMask = f->track_stereo_mask.load(std::memory_order_relaxed);
         out.laneRevision = f->lane_revision.load(std::memory_order_relaxed);
+        out.leadMask = f->track_lead_mask.load(std::memory_order_relaxed);
+        out.seq = before;
+        out.generation = header()->generation.load(std::memory_order_relaxed);
 
         for (u32 t = 0; t < kMaxChannels; ++t)
         {

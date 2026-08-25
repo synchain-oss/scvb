@@ -114,7 +114,8 @@ field VizFrame.track_online_mask offset 68
 field VizFrame.track_covered_mask offset 72
 field VizFrame.track_stereo_mask offset 76
 field VizFrame.lane_revision offset 80
-field VizFrame._reserved offset 84
+field VizFrame.track_lead_mask offset 84
+field VizFrame._reserved offset 88
 struct VizTrackColors size 64 align 64
 field VizTrackColors.index offset 0
 struct VizCoverage size 1920 align 64

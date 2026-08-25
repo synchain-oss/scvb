@@ -173,6 +173,7 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
     s.versionActive = in.versionActive;
     s.onlineMask = in.enabledMask;
     s.stereoMask = in.stereoMask;
+    s.leadMask = in.leadMask;
 
     // playhead / 循环区。
     const auto& p = in.playhead;
