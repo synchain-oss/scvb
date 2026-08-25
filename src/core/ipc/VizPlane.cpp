@@ -120,6 +120,13 @@ InitResult VizPlane::changeGroup(u32 newGroup)
     return wasReadOnly ? attachReadOnly() : open();
 }
 
+void VizPlane::setGroupReadOnly(u32 newGroup)
+{
+    releaseHandle();
+    readOnly_ = true; // 一旦声明只读角色就不再回退 —— 之后 publish() 恒 no-op
+    group_ = newGroup;
+}
+
 VizHeader* VizPlane::header() const
 {
     return base_ == nullptr ? nullptr : reinterpret_cast<VizHeader*>(base_ + kVizHeaderOffset);

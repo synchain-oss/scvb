@@ -367,12 +367,12 @@ else {
   else {
     $logDir = Join-Path $BuildDir 'pluginval-logs'
     New-Item -ItemType Directory -Force $logDir | Out-Null
-    # [issue #24] 只统计正式插件的两个 bundle;其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
-    # [issue #24] 再按路径收窄到 src/input、src/output(生产插件目录,同名 bundle 不重复计数)。
-    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output)[\\/]' })
+    # [issue #24] 只统计正式插件的三个 bundle([J75] 增 Monitor);其它 spike(s2/s3)共享构建目录的产物不再干扰计数。
+    # [issue #24] 再按路径收窄到 src/input、src/output、src/monitor(生产插件目录,同名 bundle 不重复计数)。
+    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3', 'SCVB Monitor.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output|monitor)[\\/]' })
     $pv = $true
-    if ($bundles.Count -ne 2) {
-      Write-Host ("  期望 2 个 .vst3 bundle(SCVB Input / SCVB Output),实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
+    if ($bundles.Count -ne 3) {
+      Write-Host ("  期望 3 个 .vst3 bundle(SCVB Input / SCVB Output / SCVB Monitor),实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
       $pv = $false
     }
     else {
@@ -410,10 +410,10 @@ else {
     try {
       $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
       New-Item -ItemType Directory -Force $logDir | Out-Null
-      # [issue #24] 再按路径收窄到 src/input、src/output(生产插件目录,同名 bundle 不重复计数)。
-    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output)[\\/]' })
-      if ($bundles.Count -ne 2) {
-        Write-Host ("  期望 2 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
+      # [issue #24] 再按路径收窄到 src/input、src/output、src/monitor(生产插件目录,同名 bundle 不重复计数)。
+    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3', 'SCVB Monitor.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output|monitor)[\\/]' })
+      if ($bundles.Count -ne 3) {
+        Write-Host ("  期望 3 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
         $pv = $false
       }
       else {

@@ -6,7 +6,7 @@
 #>
 param(
   [ValidateSet('Release','Debug','RelWithDebInfo')][string]$Config = 'Release',
-  [ValidateSet('All','Input','Output','Core','Tests')][string]$Target = 'All',
+  [ValidateSet('All','Input','Output','Monitor','Core','Tests')][string]$Target = 'All',
   [string]$JucePath = $env:JUCE_PATH,
   [string]$BuildDir = 'build',
   [switch]$Install,
@@ -82,7 +82,7 @@ if (-not $SkipTests) {
   }
 }
 
-# ---- 定位两个 .vst3 ----
+# ---- 定位三个 .vst3([J75] 增 SCVB Monitor) ----
 $bundles = Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Sort-Object Name
 $sw.Stop()
 
