@@ -208,6 +208,9 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
             const auto& f = features[static_cast<std::size_t>(t)];
 
             TrackMeta m;
+            // ε 平局扰动与 pair「低序取左」都拿 channelIndex 定序(02 §5.3)。不填 → 15 轨全是 0,
+            // 平局退化成「按 metas 出现次序」,同一素材换个活跃轨集合就换一套解。
+            m.channelIndex = t;
             m.priority = tc.priority;
             m.pairId = tc.pairId;
             m.leadLock = tc.leadLock;

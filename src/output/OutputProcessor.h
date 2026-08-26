@@ -66,13 +66,21 @@ struct OutputRuntimeState
     {
         bool enabled = true;
         juce::String label;
-        int sourceChannels = 0; // 只读;0=未检测(Input 实测落点,T30/T32 接线)
+        int sourceChannels = 0; // 只读;0=未检测(每拍由 refreshSourceChannels 从音频环段头回填)
         bool participateAutoPanSet = false; // false=未显式设置,emit 时按 J60 推导(mono=true/stereo=false)
         bool participateAutoPan = false;
         int priority = 5;
         bool leadLock = false;
         bool leadVolExempt = false;
         int pairId = 0; // 0=无配对,1..7=配对组
+
+        // [J60] 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
+        // 未显式设置时按源声道推导:**只有检测到 stereo 才默认不参与**。写成 `== 1` 会把
+        // 「尚未检测」(0)也判成不参与,那是 v5 实测 P0-1「分析结果全居中」的直接成因。
+        bool participatesInAutoPan() const
+        {
+            return participateAutoPanSet ? participateAutoPan : (sourceChannels != 2);
+        }
     };
     std::array<Channel, 15> channels;
 
@@ -327,6 +335,10 @@ private:
     // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
     bool applyRemotePriorities();
 
+    // [M] 音频环段头 channels(Input 的 prepareToPlay 写定,[J57])→ runtime.channels[].sourceChannels。
+    // 有变化返回 true(调用方 bump config_seq,让广播区/UI 一起跟上)。
+    bool refreshSourceChannels();
+
     // 后台分析线程体 + 完成回落(见 startAnalysis)。
     class AnalysisJob;
     friend class AnalysisJob;
@@ -353,6 +365,11 @@ private:
     scvb::output::OutputAuthority authority_;
     // 打印器(T17;本卡接线 setShot/setCurves/bindVersion/startPrinting/hostEchoShield)。
     scvb::output::AutomationPrinter printer_;
+    // 打印区间缓存([M] 独占):段表(crvsRevision)变了才重算,不在 25Hz 里逐拍扫 15 轨段表。
+    std::uint32_t lastPrintRangeRevision_ = 0xFFFFFFFFu; // 首拍必算
+    bool printRangeValid_ = false;
+    double printRangeStartS_ = 0.0;
+    double printRangeEndS_ = 0.0;
     // 总线交叉淡变 + per-channel 淡入(§5.2 过渡语义 R2)。
     scvb::output::BusXfade busXfade_;
 
