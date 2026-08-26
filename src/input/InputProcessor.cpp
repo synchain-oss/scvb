@@ -3,7 +3,7 @@
 
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
 #include "InputBridgeLogic.h"
-#include "UiDefaultsStore.h" // 系统级 UI 全局默认(语言;实现物理位置在 src/output/)
+#include "UiDefaultsStore.h" // 系统级 UI 全局默认(语言;归 plugin-common,两插件共用)
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +26,7 @@ ScvbInputAudioProcessor::ScvbInputAudioProcessor()
     // 语言的系统级全局默认(与 Output 共用一个键)。工程 state 优先:带 CFGS 的工程会在
     // setStateInformation 里覆盖回去。没有这一行,新加载的 Input 恒从出厂的 "en" 起步 ——
     // 用户在别处选过中文也没用(v5 实测 P1-6)。
-    if (const juce::String defaultLang = scvb::output::uidefaults::langGlobal(); defaultLang.isNotEmpty())
+    if (const juce::String defaultLang = scvb::uidefaults::langGlobal(); defaultLang.isNotEmpty())
     {
         uiLanguage_ = defaultLang;
     }

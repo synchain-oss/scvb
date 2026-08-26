@@ -7,7 +7,7 @@
 
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源)
 
-namespace scvb::output::uidefaults
+namespace scvb::uidefaults
 {
 
 namespace
@@ -22,6 +22,14 @@ constexpr const char* kKeyLang = "lang_global"; // 选中的语言值本身(跨�
 // 而 300 不在 Output 档位里)。inRange 用的是并集边界,拦不住这种污染。
 // 两个 *_seen_global 是 Output 专属(Input 没有引导页/导览),无需分键。
 constexpr const char* kKeyUiScale = "ui_scale_percent_output";
+
+// UI 语言白名单。真源 = §1.30 的归一集(scvb::bridge::normalizeLang 只吐 {zh,en,fr}),
+// 本处**只做落盘侧的复核**,不新增第二套语言表 —— 加语言时两处必须一起改,故写成一个函数,
+// 读写共用,不给「只改了写侧」留缝。
+bool isSupportedLang(const juce::String& lang)
+{
+    return lang == "zh" || lang == "en" || lang == "fr";
+}
 
 // 档位边界真源 = scvb::bridge::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码)。
 bool inRange(int percent)
@@ -117,13 +125,16 @@ juce::String langGlobal()
     if (f == nullptr)
         return {};
     const juce::String v = f->getValue(kKeyLang, juce::String());
-    // 白名单同 §1.30:磁盘上是用户可编辑的 XML,来路不明的值不许进 UI 语言位。
-    return (v == "zh" || v == "en") ? v : juce::String();
+    // 白名单**逐字同 §1.30 的归一集** {zh,en,fr}(scvb::bridge::normalizeLang)。磁盘上是
+    // 用户可编辑的 XML,来路不明的值不许进 UI 语言位;但白名单漏一种语言比不做白名单更坏 ——
+    // 漏掉 fr 时法文用户的 setLangGlobal 会静默 return,而「选过语言」那个布尔照写不误:
+    // 移除插件重加载后语言回落 en,语言起始卡又被 lang_chosen_global 挡住 —— P1-6 在 fr 上原样复现。
+    return isSupportedLang(v) ? v : juce::String();
 }
 
 void setLangGlobal(const juce::String& lang)
 {
-    if (lang != "zh" && lang != "en")
+    if (!isSupportedLang(lang))
         return;
     const auto f = openFile();
     if (f == nullptr)
@@ -157,4 +168,4 @@ void setStorageDirForTesting(const juce::File& dir)
     testDirRef() = dir;
 }
 
-} // namespace scvb::output::uidefaults
+} // namespace scvb::uidefaults

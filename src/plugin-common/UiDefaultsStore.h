@@ -22,7 +22,7 @@
 
 #include <juce_core/juce_core.h>
 
-namespace scvb::output::uidefaults
+namespace scvb::uidefaults
 {
 
 bool guideSeenGlobal();
@@ -48,4 +48,4 @@ void setUiScalePercent(int percent);
 // worktree 互相串扰)。传空 File 恢复默认位置。生产代码不得调用。
 void setStorageDirForTesting(const juce::File& dir);
 
-} // namespace scvb::output::uidefaults
+} // namespace scvb::uidefaults

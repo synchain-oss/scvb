@@ -94,7 +94,7 @@ add_executable(scvb_params_tests
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
   ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp
-  ${CMAKE_SOURCE_DIR}/src/output/UiDefaultsStore.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/UiDefaultsStore.cpp
 )
 
 target_link_libraries(scvb_params_tests PRIVATE
@@ -236,7 +236,7 @@ add_executable(scvb_host_tests
   ${CMAKE_SOURCE_DIR}/src/output/OutputParams.cpp
   ${CMAKE_SOURCE_DIR}/src/output/OutputAuthority.cpp
   ${CMAKE_SOURCE_DIR}/src/output/AutomationPrinter.cpp
-  ${CMAKE_SOURCE_DIR}/src/output/UiDefaultsStore.cpp
+  ${CMAKE_SOURCE_DIR}/src/plugin-common/UiDefaultsStore.cpp
   ${CMAKE_SOURCE_DIR}/src/input/InputProcessor.cpp
   ${CMAKE_SOURCE_DIR}/src/input/InputBridgeLogic.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin-common/BridgeBase.cpp

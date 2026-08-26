@@ -34,14 +34,14 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     // setStateInformation 里覆盖它 —— 工程 > 全局默认。0 = 从未「保持」过,沿用 100。
     // 构造期读一次本地小文件(几百字节 XML)是刻意的:此值必须在宿主取首个编辑器尺寸
     // 之前就位,而构造发生在宿主的加载线程、不在音频线程,毛刺风险已评估为可接受。
-    if (const int defaultScale = scvb::output::uidefaults::uiScalePercent(); defaultScale > 0)
+    if (const int defaultScale = scvb::uidefaults::uiScalePercent(); defaultScale > 0)
     {
         uiScale_ = defaultScale;
     }
     // 语言的系统级全局默认(§1.30 setLang 落盘的那一个);同样是「工程 > 全局默认」——
     // 带 CFGS 的工程会在 setStateInformation 里覆盖回去。新加载的实例靠这一行拿回用户选过的
     // 语言,否则「选过」的全局位只会把语言卡挡掉、界面照样是英文(v5 实测 P1-6)。
-    if (const juce::String defaultLang = scvb::output::uidefaults::langGlobal(); defaultLang.isNotEmpty())
+    if (const juce::String defaultLang = scvb::uidefaults::langGlobal(); defaultLang.isNotEmpty())
     {
         uiLanguage_ = defaultLang;
     }
@@ -757,7 +757,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     {
         // 已分析区间 = 活动版本里所有段的时间跨度并集的外包络(§4.1「未设置区间 → 零打印」)。
         // 段表变了才重算:crvsRevision 是 CRVS 的唯一修订号。
-        const std::uint32_t rev = crvsRevision_.load(std::memory_order_acquire);
+        const std::uint32_t rev = curvesRevision_.load(std::memory_order_acquire);
         if (rev != lastPrintRangeRevision_)
         {
             lastPrintRangeRevision_ = rev;
@@ -887,7 +887,8 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.crvs = &crvsData_;
     in.curves = authority_.activeCurves();
     in.versionActive = static_cast<scvb::u32>(versionActive_);
-    in.crvsRevision = crvsRevision_.load(std::memory_order_acquire);
+    // 车道重算的判据取**求值曲线**修订号:段编辑不换整表、不动 crvsRevision_,但车道确实变了。
+    in.crvsRevision = curvesRevision_.load(std::memory_order_acquire);
     in.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     in.playhead = playheadSnapshot();
 
@@ -1392,6 +1393,13 @@ void ScvbOutputAudioProcessor::rebuildAllCurves()
     const double sr = sampleRate_.load(std::memory_order_relaxed); // 原子读(PR#55 第9轮)
     if (sr <= 0.0)
         return; // 未 prepare → 不构建不发布(防 NaN/inf CurveSegment,PR#55 第7轮缺陷2)
+
+    // 曲线要变了 —— 在这里 +1 就覆盖了**全部**改曲线的路径(段编辑 / 手动写回 / 复制版本 /
+    // 撤销重做 / 换版本 / 改 ramp / 分析回落 / 加载工程),不必逐个事务回调各记一笔、也不会漏。
+    // 两个消费方:① 打印区间缓存(不刷新的话手动拖出旧包络之后,打印区间停在旧范围,
+    // 播放头一走出去就回落 ARMED —— 自动化面与你听到的东西脱节);② viz 车道
+    // (VizPublisher 的 needLanes,不刷新的话 Monitor 的车道停在编辑前的样子)。
+    curvesRevision_.fetch_add(1, std::memory_order_release);
 
     for (int v = 1; v <= scvb::state::kNumVersions; ++v)
     {

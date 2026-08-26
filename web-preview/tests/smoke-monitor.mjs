@@ -2209,6 +2209,30 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
         "P0-2 终止钮在模板里且用 common.gotIt 词条",
     );
 
+    // ---- §9 分层:任一插件目录都不得直接编译 / include 另一插件的源码。
+    //      共用件的正确归属是 plugin-common(core ← plugin-common ← 插件,方向不能倒)。
+    //      #100 复审【重要】1:UiDefaultsStore 曾以 `../output/…` 被编进 Input target。
+    {
+        for (const role of ["input", "output", "monitor"]) {
+            const cm = src(`src/${role}/CMakeLists.txt`);
+            const others = ["input", "output", "monitor"].filter(
+                (o) => o !== role,
+            );
+            for (const other of others) {
+                check(
+                    !cm.includes(`../${other}/`),
+                    `§9 src/${role}/CMakeLists.txt 不引用 ../${other}/ 的源码或头文件目录`,
+                );
+            }
+        }
+        check(
+            src("src/plugin-common/CMakeLists.txt").includes(
+                "UiDefaultsStore.cpp",
+            ),
+            "§9 UiDefaultsStore 归 plugin-common(两插件共用,依赖只指向本层)",
+        );
+    }
+
     // ---- P0-4:泳道波形。数据面(OutputProcessor::waveformOf)由 host harness 断言;
     //      这里守的是**桥接线**那一跳 —— handleRequestWaveform 曾是写死「全未覆盖」的桩,
     //      回包形状合法、能过 isTileShape,于是泳道照常画斜纹与栅格却一根包络都没有。

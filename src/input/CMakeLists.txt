@@ -25,16 +25,9 @@ target_sources(SCVBInput PRIVATE
   InputBridgeLogic.cpp
   InputEditor.h          # T30:WebView 编辑器 + diff-then-emit
   InputEditor.cpp
-
-  # 系统级 UI 全局默认(跨工程、跨插件的 %APPDATA% 小文件)。物理位置在 src/output/ 是
-  # 历史落点(Output 先实现),内容本身是角色无关的:缩放键已按角色分开,语言键**共用**
-  # —— 用户选的界面语言本就该在两个插件之间一致。Input 需要它才能在「移除插件再加载」后
-  # 拿回中文(v5 实测 P1-6);不接的话 Input 每次都从出厂的 en 起步。
-  ../output/UiDefaultsStore.h
-  ../output/UiDefaultsStore.cpp
 )
 
-target_include_directories(SCVBInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../output)
+target_include_directories(SCVBInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # web/input + web/shared + web/js/juce + web/fonts -> ScvbInputWebData(BinaryData)。
 # 这是 resource provider 的唯一供给面;没有它 WebView 取不到 index.html,窗口空白到看门狗

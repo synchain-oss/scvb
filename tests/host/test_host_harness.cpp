@@ -1495,3 +1495,78 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
 
     out.releaseResources();
 }
+
+// ---------------------------------------------------------------------------
+// #100 复审【重要】3:打印区间必须跟着**段编辑**走。
+// 打印区间此前挂在 crvsRevision_ 上,而那个号只在「段表整体被替换」时才 +1
+// (加载工程 / 分析回落)。手动拖一条段的边界拖出旧包络之后,打印区间仍停在旧范围 ——
+// 播放头一走出去,打印器就回落 ARMED、自动化面停写,而用户听到的曲线已经变了。
+// 改判据为 curvesRevision_(每次 rebuildAllCurves 都 +1,涵盖全部改曲线路径)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 编辑段把包络拖长 → 打印区间跟随(自动化不在新区间停写)", "[host][t37][v5][print]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    // 找一条分析结果非居中的轨(打印器只对有值可写的轨有可观察行为)。
+    int ch = 0;
+    for (int t = 1; t <= MonoMultiRig::kCount && ch == 0; ++t)
+    {
+        if (std::abs(r.firstPan(t)) > 1.0)
+        {
+            ch = t;
+        }
+    }
+    REQUIRE(ch != 0);
+
+    // 旧包络的右端 = 全轨段表里最大的 t1。
+    const auto endOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        std::int64_t hi = 0;
+        for (const auto& track : crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks)
+        {
+            for (const auto& sg : track.segments)
+            {
+                hi = std::max(hi, sg.t1);
+            }
+        }
+        return hi;
+    };
+    const std::int64_t beforeEnd = endOf();
+    REQUIRE(beforeEnd > 0);
+
+    // 把该轨最后一段的 t1 往后拖 4 秒 —— 造出「新曲线比已分析区间长」的局面。
+    const double sr = r.out.sampleRate();
+    const std::int64_t grownEnd = beforeEnd + static_cast<std::int64_t>(4.0 * sr);
+    {
+        const auto crvs = r.out.crvsSnapshot();
+        const auto& segs = crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)]
+                               .tracks[static_cast<std::size_t>(ch - 1)]
+                               .segments;
+        REQUIRE_FALSE(segs.empty());
+        scvb::state::SegmentEditArgs args;
+        args.op = scvb::state::SegmentEditOp::MoveBoundary;
+        args.segIdx = static_cast<int>(segs.size()) - 1;
+        args.edgeIsT0 = false; // 移 t1 边
+        args.tSamples = grownEnd;
+        REQUIRE(r.out.editSegment(ch, args) == scvb::state::SegmentEditResult::Ok);
+    }
+    REQUIRE(endOf() == grownEnd); // 前置:段真的拖长了
+
+    // 走带开到**旧包络之外、新包络之内**的位置,并开输出。
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = beforeEnd + static_cast<std::int64_t>(1.0 * sr);
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+
+    // 打印区间若没跟着段编辑走,这里播放头落在旧区间之外 → 打印器回落 ARMED → 零写入,
+    // 该轨 pan 参数会停在 0(harness 里从没有人写过它)。
+    const auto* raw = r.out.getAPVTS().getRawParameterValue(scvb::params::panId(r.out.versionActive(), ch));
+    REQUIRE(raw != nullptr);
+    CHECK(std::abs(raw->load()) > 1.0f); // ← 判据挂回 crvsRevision_ 即红:停在 0.0f
+}

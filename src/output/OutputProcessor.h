@@ -427,7 +427,17 @@ private:
     uint32_t podEpoch_ = 0;
     std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数 / [M] 健康前置
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
-    std::atomic<uint32_t> crvsRevision_{0}; // CRVS 替换修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
+    std::atomic<uint32_t> crvsRevision_{0}; // CRVS **整体替换**修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
+    // 求值曲线修订号:**每次 rebuildAllCurves 都 +1**,涵盖所有段编辑路径(editSegment /
+    // setTrackManual / copyVersion / undo·redo / 换版本 / 改 ramp / 分析回落 / 加载工程)。
+    //
+    // 为什么不复用 crvsRevision_:那一个是「段表被整体换掉了,桥要重发一次 §2.8」的信号,
+    // OutputEditor 拿它触发 reason:"snapshot" 全量下发。段编辑路径**已经各自**发过带具体
+    // reason 的 §2.8(edit / trackManual / undo / …),再让 crvsRevision_ 跟着动会紧随其后
+    // 多发一次 "snapshot" —— 而 web 侧按 reason 分叉:非 trackManual 的回推被当成「失效性回推」,
+    // 会连同**排队中的**手动值一起作废(tab-tracks.js onSegments)。那等于把刚修好的
+    // 「手动写回不丢」又拆一遍。故分成两个号:替换给桥,求值给引擎侧的两个消费方。
+    std::atomic<uint32_t> curvesRevision_{0};
     // 轨启用位图(bit{N-1} = ch N 的 channels[].enabled)。[M] 25Hz 写 / [A] 每块 acquire 读。
     // §1.15 的 enabled 此前**全 Output 侧零消费**:混音不看它、打印器的车道闸(setTrackEnabled,
     // 已实现且有单测)没有任何生产调用点 —— 开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。
