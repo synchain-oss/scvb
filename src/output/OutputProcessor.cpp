@@ -981,7 +981,9 @@ bool ScvbOutputAudioProcessor::refreshSourceChannels()
     // 推导写的是 `sourceChannels == 1`(mono 才参与自动 pan)—— 0 落进 else 分支,**全 15 轨
     // 一律 participate=false**。指派层把不参与的轨按「保持现值」处理(AutoAssign.cpp:241),
     // 现值即参数面的 0,于是分析跑完每轨 pan 都是 0:段照出、轨照数、声像分布图与泳道全居中
-    // (v5 实测 P0-1)。这里把检测值接上,并把未检测的回落改成 mono 侧(见下面三处推导)。
+    // (v5 实测 P0-1)。这里把检测值接上;而按声道推导默认档这件事本身已在 [J83] 废止 ——
+    // 现在检测值只服务 ST 角标 / 张开线 / viz stereoMask,不再决定 participate
+    // (participatesInAutoPan() 未显式设置一律 true)。
     bool changed = false;
     for (int t = 0; t < 15; ++t)
     {

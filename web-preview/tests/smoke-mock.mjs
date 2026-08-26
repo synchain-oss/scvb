@@ -579,5 +579,73 @@ log("\n=== ⑥ 查询参数回落 ===");
     }
 }
 
+// -----------------------------------------------------------------------------
+// ⑦ [J83] participate_in_auto_pan 默认档 —— 未显式设置一律 true
+// -----------------------------------------------------------------------------
+//
+// source_channels 来自 `getMainBusNumInputChannels()`,是**轨道总线布局**不是素材声道数
+// (单声道人声放在立体声轨上就报 2)。按它推导默认档,真机上绝大多数人声轨会被判成
+// 「不参与自动声像」→ AutoAssign 按「保持现值」处理 → pan 全 0 烘焙进段表(v5.1 实测 P0-B)。
+// 改回 `sourceChannels === 1` 时,下面 source_channels=2 与「不给该键」两档即红。
+// 变更文档:docs/contract-changes/20260826-j83-participate-default.md。
+
+log("\n=== ⑦ [J83] participate_in_auto_pan 默认档 ===");
+{
+    const MD = await import(u("web/shared/mock-data.js"));
+
+    // 空快照:15 轨 mono、谁都没设过 → 全部参与。
+    const base = MD.makeOutputSnapshot();
+    check(
+        base.channels.length === 15 &&
+            base.channels.every(
+                (c) =>
+                    c.source_channels === 1 &&
+                    c.participate_in_auto_pan === true,
+            ),
+        "空快照 15 轨(mono)应全部默认参与",
+    );
+    log("  makeOutputSnapshot:15 轨 mono 默认 participate=true");
+
+    // tour demo:四条 stereo 轨(DEMO_STEREO_CHANNELS)**不给** participate 键,
+    // 走的正是 makeChannelConfig 的默认档 —— 改回 `source_channels === 1` 推导即红。
+    const demo = MD.makeTourDemoSnapshot();
+    const stereo = MD.DEMO_STEREO_CHANNELS;
+    check(stereo.length > 0, "tour demo 应有 stereo 轨,否则本组断言形同虚设");
+    for (const ch of stereo) {
+        const c = demo.channels[ch - 1];
+        check(
+            c.source_channels === 2 && c.participate_in_auto_pan === true,
+            `tour demo ch${ch}(stereo)应默认参与,实得 participate=${c.participate_in_auto_pan}`,
+        );
+    }
+    check(
+        demo.channels.every((c) => c.participate_in_auto_pan === true),
+        "tour demo 15 轨应全部默认参与",
+    );
+    log(
+        `  tour demo:15 轨全部 participate=true(含 stereo 轨 ${stereo.join("/")})`,
+    );
+
+    // 显式设置仍然说了算 —— 默认档变了不等于用户关不掉(stereo-mixed fixture 就靠这条)。
+    const off = MD.makeTourDemoSnapshot({
+        channels: demo.channels.map((c, i) =>
+            i === stereo[0] - 1 ? { ...c, participate_in_auto_pan: false } : c,
+        ),
+    });
+    check(
+        off.channels[stereo[0] - 1].participate_in_auto_pan === false,
+        "显式 participate_in_auto_pan=false 必须压过默认档",
+    );
+    log("  显式 false 压过默认档");
+
+    // Input 侧 §4.3 只读快照的默认档同口径(C++ 侧 buildConfigPayload 的降级路径)。
+    check(
+        MD.makeInputConfig().participate_in_auto_pan === true &&
+            MD.makeInputSnapshot().config.participate_in_auto_pan === true,
+        "Input §4.3 config 默认应参与",
+    );
+    log("  makeInputConfig / makeInputSnapshot 默认 participate=true");
+}
+
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

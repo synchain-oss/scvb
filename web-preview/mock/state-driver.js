@@ -405,7 +405,7 @@ export function buildWorld(opts = {}) {
         );
     } else if (fixture === "stereo-mixed") {
         // mono+stereo 混存:四条 stereo 轨(生成器口径 DEMO_STEREO_CHANNELS)带 ST 标、
-        // participate_in_auto_pan 默认 false、每轨 width 旋钮可用;range 取 manual
+        // 每轨 width 旋钮可用;range 取 manual
         // (与 empty/fifteen-tracks 的 follow、second-output 的 daw_loop 一起凑满三值枚举)。
         outputSnapshot = makeTourDemoSnapshot({
             global: {
@@ -421,7 +421,9 @@ export function buildWorld(opts = {}) {
         const stereoCh = DEMO_STEREO_CHANNELS[0];
         inputSnapshot = connectedInputSnapshot(stereoCh, {
             source_channels: 2,
-            participate_in_auto_pan: false, // J60:stereo 默认不参与自动声像
+            // **显式**关掉([J83] 起默认是 true)—— 本 fixture 要的是「用户手动把某轨排除」
+            // 那一面的渲染(远程只读摘要行的关闭态),不是默认档。
+            participate_in_auto_pan: false,
         });
     } else {
         // fifteen-tracks:15 轨全连、4 stereo、覆盖/段表齐全;**range.mode=follow 默认档代表**。

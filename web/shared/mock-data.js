@@ -340,7 +340,8 @@ export function localizeDemoChannels(channels, lang, T) {
     });
 }
 
-/** tour demo 的 stereo 轨号(source_channels=2;J60 → participate_in_auto_pan 默认 false)。 */
+/** tour demo 的 stereo 轨号(source_channels=2)。只喂 ST 角标 / 张开线 / viz stereoMask ——
+ *  [J83] 起它**不再**决定 participate_in_auto_pan(默认一律 true)。 */
 export const DEMO_STEREO_CHANNELS = Object.freeze(
     DEMO_TRACKS.filter((t) => t.sourceChannels === 2).map((t) => t.ch),
 );
@@ -492,8 +493,9 @@ function makeChannelConfig(patch = {}) {
             enabled: true,
             label: "",
             source_channels: sourceChannels,
-            // J60:stereo 默认 false / mono 默认 true(契约 §1.15 语义行)
-            participate_in_auto_pan: sourceChannels === 1,
+            // [J83] 未显式设置一律 true(契约 §1.15 语义行)。旧口径 `sourceChannels === 1`
+            // 按源声道推导,而 source_channels 是**轨道总线布局**不是素材声道数 —— 已废。
+            participate_in_auto_pan: true,
             priority: 5,
             lead_lock: false,
             lead_vol_exempt: false,
@@ -1075,7 +1077,7 @@ export function makeWaveformTile(ch, startS, endS, cols) {
 // 9. tour demo —— 健康满配 15 轨(J62 / 05 §2.6)
 // -----------------------------------------------------------------------------
 //
-// 口径:15 轨全连接(slotState=2 ∧ 心跳新鲜)、四条 stereo(J60 → participate=false)、
+// 口径:15 轨全连接(slotState=2 ∧ 心跳新鲜)、四条 stereo([J83] 起同样 participate=true)、
 //   V1 有非空 pan 曲线与全轨段表、两段采集覆盖、采集开关 ON、输出开关 OFF(FOLLOW)。
 //   选 FOLLOW 而不是 PRINT:tour 要逐个高亮控件讲解,PRINT 态会把版本 chip 等大片控件
 //   置灰/硬拒绝(§1.9/§5.6),demo 里不该出现「点不动」的东西。
@@ -1128,8 +1130,8 @@ export function makeTourDemoSnapshot(overrides = {}) {
                 enabled: true,
                 label: t.label,
                 source_channels: t.sourceChannels,
-                // J60 默认:stereo false / mono true —— demo 不覆盖这条默认
-                participate_in_auto_pan: t.sourceChannels === 1,
+                // participate_in_auto_pan **有意不给** —— demo 就是要走 makeChannelConfig 的
+                // 默认档([J83]:未显式设置一律 true,含 stereo 轨)。
                 priority: t.priority,
                 lead_lock: t.leadLock,
                 lead_vol_exempt: t.leadVolExempt,

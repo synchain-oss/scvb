@@ -41,7 +41,7 @@ struct TrackMeta
     bool leadLock = false; // 集合 C(分析期主唱锁):恒 P=0、不占槽(02 §5.2)。
     bool leadVolExempt = false; // J58 独立、零联动(本卡只透传)。
     int freeze = 0; // J65:0=全自动;1=冻结 pan;2=冻结 vol;3=全冻结(pan 维冻结 = bit0)。
-    bool participateInAutoPan = true; // J60:mono 默认 true、stereo 默认 false(默认值归 state 层)。
+    bool participateInAutoPan = true; // [J83] 未显式设置一律 true(默认档归 state 层,不按源声道推导)。
     SourceChannels source = SourceChannels::Mono; // 透传(参与/默认值由 participate 布尔承载)。
     double currentPan = 0.0; // 现值(manual / nonpart 轨保持此值,不被改写)。
     double width = 0.0; // 每轨张开度(stereo 源;点语义 → 不进代价函数,只透传)。

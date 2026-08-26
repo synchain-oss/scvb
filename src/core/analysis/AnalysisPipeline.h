@@ -40,7 +40,7 @@ struct PipelineTrackConfig
     bool leadLock = false; // 分析期主唱锁:恒居中、不占槽
     bool leadVolExempt = false; // 透传
     int freeze = 0; // bit0 = pan 冻结,bit1 = vol 冻结
-    bool participateInAutoPan = true; // J60
+    bool participateInAutoPan = true; // [J83] 未显式设置一律 true
     SourceChannels source = SourceChannels::Mono;
     double currentPan = 0.0; // 现值(manual / nonpart 轨保持它)
 };

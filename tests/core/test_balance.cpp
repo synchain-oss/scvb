@@ -320,13 +320,13 @@ TEST_CASE("BAL-9: stereo 闭式解(J57/J60)—— 双通道能量正确入 L/R",
     REQUIRE(r.converged);
 }
 
-TEST_CASE("BAL-9(J60): participate=false 的 stereo 轨 L 强 R 弱 计入 z_L/z_R", "[balance]")
+TEST_CASE("BAL-9: participate=false 的 stereo 轨 L 强 R 弱 计入 z_L/z_R", "[balance]")
 {
     // t0 stereo:P=0、w=100、zL=3、zR=1(L 强 R 弱);t1 mono:P=0、z=1。
     std::vector<TrackMeta> tracks(2);
     tracks[0] = makeTrack(0, 5.0, 4.0);
     tracks[0].source = SourceChannels::Stereo;
-    tracks[0].participateInAutoPan = false; // J60:stereo 默认 false
+    tracks[0].participateInAutoPan = false; // 显式关闭:不参与 pan 指派的轨照样进 L/R 音量平衡
     tracks[0].currentPan = 0.0;
     tracks[0].width = 100.0;
     tracks[0].zL = 3.0;

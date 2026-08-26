@@ -67,7 +67,7 @@ struct OutputRuntimeState
         bool enabled = true;
         juce::String label;
         int sourceChannels = 0; // 只读;0=未检测(每拍由 refreshSourceChannels 从音频环段头回填)
-        bool participateAutoPanSet = false; // false=未显式设置,emit 时按 J60 推导(mono=true/stereo=false)
+        bool participateAutoPanSet = false; // false=未显式设置 → participatesInAutoPan() 一律 true([J83])
         bool participateAutoPan = false;
         int priority = 5;
         bool leadLock = false;
