@@ -1641,3 +1641,111 @@ TEST_CASE("HOST P1-F:采集后把播放头送回 0,分析仍可受理", "[host][
     CHECK(accepted.ok);
     r.out.cancelAnalysis();
 }
+
+// ---------------------------------------------------------------------------
+// v5.1 实测 P1-D:「自动化 write 没开时,怎么调音量都没变化;write 打开才有效」。
+//
+// 用户的这句话把嫌疑指向**消费端**:若音频通路的 vol 目标恒取自参数面,而参数面只有
+// 打印器在 PRINT 态才写,那么关掉 write 就等于切断了唯一的写入源 —— 现象与之完全吻合。
+// 但那是推测。这一组把全链**三跳**拆开逐跳定谳,不猜:
+//   ① 参数 → DSP:直接 setValue 参数,断言下一块总线增益真的变(FOLLOW 档,host 权威);
+//   ② 冻结维度 → DSP:引擎权威 + 冻结 vol,参数仍须是权威(§2.3 / J65);
+//   ③ 引擎曲线 → DSP:引擎权威 + 未冻结,曲线说了算,改参数**不该**有效。
+// 三条都用**总线电平**做判据(单轨工程,vol 改动直接反映在总线上),不看中间量。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 跑几块并回报总线峰值(取几块里的最大,避开平滑器的爬坡)。
+float busPeakAfter(Rig& r, int blocks)
+{
+    float peak = 0.0f;
+    for (int i = 0; i < blocks; ++i)
+    {
+        r.runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/4);
+        peak = std::max(peak, r.out.meterSnapshot().busPeak[0]);
+    }
+    return peak;
+}
+} // namespace
+
+TEST_CASE("HOST P1-D:参数 → DSP 这一跳(FOLLOW 档,host 参数是权威)", "[host][t37][v51][pld]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(false); // FOLLOW:§2.3 规定 host 参数是权威
+    r.runBlocks(60, 0.5f);
+
+    const float loud = busPeakAfter(r, 12);
+    REQUIRE(loud > 0.0f); // 前置:确实有声
+
+    // 直接把该轨 vol 压到 −24 dB(不经 UI、不经打印器 —— 只验最后一跳)。
+    auto& apvts = r.out.getAPVTS();
+    auto* vol = apvts.getParameter(scvb::params::volId(r.out.versionActive(), kTestChannel));
+    REQUIRE(vol != nullptr);
+    vol->beginChangeGesture();
+    vol->setValueNotifyingHost(vol->convertTo0to1(-24.0f));
+    vol->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float quiet = busPeakAfter(r, 20);
+    // −24 dB ≈ ×0.063;留足平滑与余量,断言「显著变小」而不是精确值。
+    CHECK(quiet < loud * 0.5f);
+}
+
+TEST_CASE("HOST P1-D:冻结维度 → DSP(引擎权威下参数面仍是权威,J65)", "[host][t37][v51][pld]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true); // 引擎权威(ARMED/PRINT)
+    r.runBlocks(60, 0.5f);
+
+    auto& apvts = r.out.getAPVTS();
+    const int v = r.out.versionActive();
+    // 冻结 vol 维(bit1)。
+    auto* frz = apvts.getParameter(scvb::params::freezeId(v, kTestChannel));
+    REQUIRE(frz != nullptr);
+    frz->beginChangeGesture();
+    frz->setValueNotifyingHost(frz->convertTo0to1(2.0f));
+    frz->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float loud = busPeakAfter(r, 12);
+    REQUIRE(loud > 0.0f);
+
+    auto* vol = apvts.getParameter(scvb::params::volId(v, kTestChannel));
+    REQUIRE(vol != nullptr);
+    vol->beginChangeGesture();
+    vol->setValueNotifyingHost(vol->convertTo0to1(-24.0f));
+    vol->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float quiet = busPeakAfter(r, 20);
+    CHECK(quiet < loud * 0.5f); // 冻结维度必须听得见参数面的改动
+}
+
+TEST_CASE("HOST P1-D:未冻结 + 引擎权威 → 曲线说了算,改参数无效", "[host][t37][v51][pld]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true);
+    r.runBlocks(60, 0.5f);
+
+    const float base = busPeakAfter(r, 12);
+    REQUIRE(base > 0.0f);
+
+    // 未冻结:§2.3 规定引擎权威读曲线。此时改 host 参数**不该**影响听感 ——
+    // 这一条是前两条的对照组:它保证前两条不是「凑巧总是读参数」。
+    auto& apvts = r.out.getAPVTS();
+    auto* vol = apvts.getParameter(scvb::params::volId(r.out.versionActive(), kTestChannel));
+    REQUIRE(vol != nullptr);
+    vol->beginChangeGesture();
+    vol->setValueNotifyingHost(vol->convertTo0to1(-24.0f));
+    vol->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float after = busPeakAfter(r, 20);
+    CHECK(after > base * 0.7f); // 基本不变(无曲线时曲线求值回 0 dB)
+}
