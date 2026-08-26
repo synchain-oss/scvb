@@ -293,6 +293,76 @@ ScvbOutputAudioProcessor::CoverageInfo ScvbOutputAudioProcessor::coverageOf(int 
     return info;
 }
 
+ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int channel, double startS, double endS,
+                                                                            int cols)
+{
+    WaveformTile tile;
+    if (cols < 1)
+    {
+        return tile;
+    }
+    // 先按「整列未覆盖」铺满哨兵:任何提前返回都得是一张形状合法的瓦片,
+    // 否则 §1.27 的回包过不了 JS 侧 isTileShape,泳道会整块 clearRect 成纯黑。
+    tile.minDb.assign(static_cast<std::size_t>(cols), -160.0);
+    tile.maxDb.assign(static_cast<std::size_t>(cols), -160.0);
+    tile.vad.assign(static_cast<std::size_t>(cols), 0);
+    tile.covered.assign(static_cast<std::size_t>(cols), 0);
+    if (channel < 1 || channel > 15 || !(endS > startS))
+    {
+        return tile;
+    }
+
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    const double hopS = featHopSeconds();
+    const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(channel));
+    const double colS = (endS - startS) / static_cast<double>(cols);
+
+    for (int i = 0; i < cols; ++i)
+    {
+        const double c0 = startS + colS * static_cast<double>(i);
+        const double c1 = c0 + colS;
+        const auto toHop = [hopS](double s) {
+            const double h = s / hopS;
+            return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
+        };
+        std::uint64_t h0 = toHop(c0);
+        // 列窄于一个 hop(放大到 10ms 以下)时 h1==h0,整列会判成空 —— 至少取一个 hop,
+        // 否则越放大波形越消失。
+        std::uint64_t h1 = std::max(toHop(c1), h0 + 1);
+
+        double mx = -160.0;
+        double mn = 160.0;
+        bool any = false;
+        bool voiced = false;
+        for (std::uint64_t h = h0; h < h1; ++h)
+        {
+            if (!frames.hasHop(h))
+            {
+                continue;
+            }
+            any = true;
+            mx = std::max(mx, static_cast<double>(frames.peakDbq(h)) / 100.0);
+            mn = std::min(mn, static_cast<double>(frames.kwDbq(h)) / 100.0);
+            if (frames.vadP(h) > 127)
+            {
+                voiced = true;
+            }
+        }
+        if (!any)
+        {
+            continue; // 保持 covered=0 + 哨兵:泳道画斜纹
+        }
+        const auto k = static_cast<std::size_t>(i);
+        tile.covered[k] = 1;
+        tile.maxDb[k] = mx;
+        // 包络下沿不得高过上沿(全静音列两者都会压在地板上)。
+        tile.minDb[k] = std::min(mn, mx);
+        tile.vad[k] = voiced ? 1 : 0;
+    }
+    return tile;
+}
+
 double ScvbOutputAudioProcessor::clearCoverage(std::uint16_t tracksMask, double startS, double endS)
 {
     if (tracksMask == 0 || !(endS > startS))

@@ -223,18 +223,32 @@ void OutputEditor::emitTick()
 // ============================================================================
 // 事件发射
 // ============================================================================
+bool OutputEditor::emitIfChanged(const char* eventName, const juce::var& payload, juce::String& lastJson)
+{
+    const juce::String json = juce::JSON::toString(payload);
+    if (json == lastJson)
+    {
+        return false;
+    }
+    // 不可见时 emitEventIfBrowserIsVisible 会把载荷丢掉 —— 此时**不推进基线**,否则这一份变化
+    // 被永久吞掉:恢复可见后 json 仍等于陈旧的 lastJson,除非底层值再变一次,事件不会重发。
+    // 停走带时 scvb.playhead 的载荷逐字节稳定,于是「关一次面板」= 播放头竖线再也不出现。
+    if (!webView().isVisible())
+    {
+        return false;
+    }
+    lastJson = json;
+    webView().emitEventIfBrowserIsVisible(eventName, payload);
+    return true;
+}
+
 void OutputEditor::emitState(bool forceFull)
 {
     (void)forceFull; // T29 增量子树未实现:一律 full:true 全量下发(UI 全量替换)。
     juce::var payload = buildStateSubtree(true);
     put(payload, "full", true);
 
-    const juce::String json = juce::JSON::toString(payload);
-    if (json != lastStateJson_)
-    {
-        lastStateJson_ = json;
-        webView().emitEventIfBrowserIsVisible(Event::State, payload);
-    }
+    emitIfChanged(Event::State, payload, lastStateJson_);
 }
 
 void OutputEditor::emitParams(bool forceFull)
@@ -280,12 +294,7 @@ void OutputEditor::emitParams(bool forceFull)
     put(payload, "full", forceFull);
     put(payload, "versionActive", v);
 
-    const juce::String json = juce::JSON::toString(payload);
-    if (json != lastParamsJson_)
-    {
-        lastParamsJson_ = json;
-        webView().emitEventIfBrowserIsVisible(Event::Params, payload);
-    }
+    emitIfChanged(Event::Params, payload, lastParamsJson_);
 }
 
 void OutputEditor::emitConn()
@@ -302,12 +311,7 @@ void OutputEditor::emitConn()
     // beginLabelEdit 里写、render 从不碰),故编辑态不会掉焦点、也不会被抹半截。
     // 4Hz 也只有 §2.5 meters 那条 30Hz 路径的 1/7.5。
     juce::var payload = buildConnPayload();
-    const juce::String json = juce::JSON::toString(payload);
-    if (json != lastConnJson_)
-    {
-        lastConnJson_ = json;
-        webView().emitEventIfBrowserIsVisible(Event::Conn, payload);
-    }
+    emitIfChanged(Event::Conn, payload, lastConnJson_);
 }
 
 void OutputEditor::emitGroups()
@@ -471,12 +475,7 @@ void OutputEditor::emitPlayhead()
         put(payload, "loopEndS", loopEndS);
     }
 
-    const juce::String json = juce::JSON::toString(payload);
-    if (json != lastPlayheadJson_)
-    {
-        lastPlayheadJson_ = json;
-        webView().emitEventIfBrowserIsVisible(Event::Playhead, payload);
-    }
+    emitIfChanged(Event::Playhead, payload, lastPlayheadJson_);
 }
 
 void OutputEditor::emitCaptureProgress()
@@ -1912,7 +1911,11 @@ void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
     }
 
     // §1.27:拉取式 request/response,一次调用一次 resolve(绝不进事件流)。
-    // T29 无特征数据源(FrameStore/feat 环接线归 T21/T33)→ 未覆盖列:covered=0,minDb=maxDb=-160 哨兵。
+    // 数据源 = FrameStore(Input 写 feat 段 → Output 25Hz 增量拉取),与 §2.7 覆盖率同一份账。
+    // T29 落卡时这里是**写死的全未覆盖桩**:回包形状合法、能过 isTileShape,于是泳道照常画
+    // 斜纹与栅格,但每一列 covered=0 → 包络层整体 `continue` 跳过 —— 真机上就是「有斜纹、
+    // 没波形」的纯黑泳道(v5 实测 P0-4)。桩的形状太像真回包,所以三个版本都没被发现。
+    const auto tile = processor_.waveformOf(ch, startS, endS, cols);
     juce::var minDb = mkArray();
     juce::var maxDb = mkArray();
     juce::var vad = mkArray();

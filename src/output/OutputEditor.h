@@ -120,6 +120,14 @@ private:
 
     ScvbOutputAudioProcessor& processor_;
 
+    // diff-then-emit 的统一出口:**不可见时不推进缓存**。裸写法(先 lastJson=json 再
+    // emitEventIfBrowserIsVisible)会把隐藏期的那一份变化吞掉 —— 载荷被丢,基线却已前移,
+    // 恢复可见后 json==lastJson 于是永不重发。停走带时 scvb.playhead 载荷逐字节不变,
+    // 这一吞就是永久的:playhead.js 内部 ev 恒 null,竖线维持 HTML 初始 hidden,泳道上
+    // **既没有播放头也没有帧驱动**(v5 实测 P0-4 的后半)。Input(advanceEmitCache,PR#54 R4)
+    // 与 Monitor(emitIfChanged)早已这样做,只有 Output 四处漏了。
+    bool emitIfChanged(const char* eventName, const juce::var& payload, juce::String& lastJson);
+
     // ---- diff-then-emit 状态(消息线程独占)----
     bool firstFrame_ = true; // mBridgeReady 后首帧必发各事件(§0.4)
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)

@@ -250,6 +250,19 @@ public:
     CoverageInfo coverageOf(int channel, double startS, double endS);
     // hop → 秒的换算系数(feat 段几何常量,不是采样率派生量)。
     static double featHopSeconds();
+
+    // [M] 某轨在 [startS,endS) 内的**波形瓦片**(§1.27 requestWaveform 的数据面)。
+    // 每列聚合该列覆盖到的所有 hop:maxDb 取 peak 的最大值、minDb 取 K 加权的最小值、
+    // vad 取该列是否有 vadP>127 的 hop。未覆盖列 covered=0 且 min/max 留 -160 哨兵
+    // (泳道据此画斜纹)。持 lifecycleMutex_:与写 FrameStore 的 timerCallback 串行。
+    struct WaveformTile
+    {
+        std::vector<double> minDb;
+        std::vector<double> maxDb;
+        std::vector<int> vad;
+        std::vector<int> covered;
+    };
+    WaveformTile waveformOf(int channel, double startS, double endS, int cols);
     // [M] 清除选中轨 × 区间的采集覆盖(§1.24 clearCoverage:打洞,页数据留待后续覆盖)。
     // 返回实际清除的总时长秒数(各轨相加,供 UI 反馈)。
     double clearCoverage(std::uint16_t tracksMask, double startS, double endS);
