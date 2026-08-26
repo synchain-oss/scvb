@@ -1,0 +1,432 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// =============================================================================
+// SCVB web-preview —— Output「采集数据已过期」提示的**页面级**冒烟(SL-177)
+// =============================================================================
+// 为什么要页面级:04 §4.5 的提示面是三处 DOM(横幅 ⑧ / tab 导航琥珀点 / 泳道 ⚠),
+// 它们的显隐由 `renderBanners()` 与 tab-wave 的 `render()` 在真事件里翻 —— node 侧
+// 的纯函数断言只能证明「reducer 会算」,证明不了「算出来的东西真的进了 DOM」。
+// 本仓已经栽过三次「三层机检全绿、窗口是白的」,所以这条提示的启用分支必须真渲染一次。
+//
+// 跑什么:
+//   ① `?scenario=stale`(fingerprint watchdog 摆开三条轨)⇒ 横幅 ⑧ 可见且写着 3 轨、
+//      tab 导航琥珀点亮、泳道 2/5/11 的 ⚠ 可见且带整句 tooltip、其余 12 轨的 ⚠ 收起;
+//   ② **反向** `?scenario=connected`(素材没变)⇒ 三处提示全部收起;
+//   ③ 两个场景都要零未捕获异常、零 console.error;
+//   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
+//      分析按钮一个都不许被 disable。
+//
+// 用法:node web-preview/tests/smoke-output-stale-page.mjs [仓库根绝对路径]
+//   --chrome=<路径>  显式指定浏览器
+// 退出码:0 = 全绿;1 = 有断言失败;**2 = 环境里没有 Chrome/Edge**(口径同
+//   smoke-monitor-page.mjs 与 CLAUDE.md §6:可选依赖缺席不判红,但也绝不算通过)。
+//
+// CDP 连接那 30 行与 smoke-monitor-page.mjs 同源(node 内置 fetch + WebSocket,
+// 零依赖 —— 仓库红线是不引 puppeteer)。同样没有抽公共模块:那份断的是 Monitor 的
+// 投影面,本份断的是 Output 的提示面,合并只会让两边被对方的参数面绑住。
+// =============================================================================
+
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import {
+    existsSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, extname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT =
+    process.argv[2] && !process.argv[2].startsWith("--")
+        ? process.argv[2]
+        : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+const argv = new Map(
+    process.argv
+        .slice(2)
+        .filter((a) => a.startsWith("--"))
+        .map((a) => {
+            const i = a.indexOf("=");
+            return i < 0 ? [a.slice(2), "1"] : [a.slice(2, i), a.slice(i + 1)];
+        }),
+);
+
+const CHROME_CANDIDATES = [
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    `${process.env.LOCALAPPDATA || ""}\\Google\\Chrome\\Application\\chrome.exe`,
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+];
+
+const STALE_CHANNELS = [2, 5, 11];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let fail = 0;
+const log = (s) => console.log(s);
+function check(cond, msg) {
+    if (cond) return true;
+    fail++;
+    console.log(`  [FAIL] ${msg}`);
+    return false;
+}
+function eq(got, want, msg) {
+    const a = JSON.stringify(got);
+    const b = JSON.stringify(want);
+    if (a === b) return true;
+    fail++;
+    console.log(`  [FAIL] ${msg}\n         实得 ${a}\n         应为 ${b}`);
+    return false;
+}
+
+// ---------------------------------------------------------------- 静态服务
+const MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".woff2": "font/woff2",
+};
+const server = createServer((req, res) => {
+    let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
+    if (p.endsWith("/")) p += "index.html";
+    const abs = resolve(join(ROOT, p));
+    if (!abs.startsWith(resolve(ROOT))) {
+        res.writeHead(403).end("nope");
+        return;
+    }
+    if (!existsSync(abs) || !statSync(abs).isFile()) {
+        res.writeHead(404).end("not found");
+        return;
+    }
+    res.writeHead(200, {
+        "Content-Type":
+            MIME[extname(abs).toLowerCase()] || "application/octet-stream",
+        "Cache-Control": "no-store",
+    });
+    res.end(readFileSync(abs));
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const base = `http://127.0.0.1:${server.address().port}`;
+
+// ---------------------------------------------------------------- CDP 小客户端
+function cdpConnect(wsUrl) {
+    const ws = new WebSocket(wsUrl);
+    const pending = new Map();
+    const listeners = [];
+    let id = 0;
+    ws.addEventListener("message", (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.id && pending.has(msg.id)) {
+            const { resolve: ok, reject: no } = pending.get(msg.id);
+            pending.delete(msg.id);
+            msg.error ? no(new Error(msg.error.message)) : ok(msg.result);
+        } else if (msg.method) {
+            for (const fn of listeners) fn(msg);
+        }
+    });
+    const ready = new Promise((ok, no) => {
+        ws.addEventListener("open", ok, { once: true });
+        ws.addEventListener("error", () => no(new Error("CDP 连接失败")), {
+            once: true,
+        });
+    });
+    return {
+        ready,
+        on: (fn) => listeners.push(fn),
+        send(method, params) {
+            const mid = ++id;
+            return new Promise((ok, no) => {
+                pending.set(mid, { resolve: ok, reject: no });
+                ws.send(
+                    JSON.stringify({ id: mid, method, params: params || {} }),
+                );
+            });
+        },
+        close: () => ws.close(),
+    };
+}
+
+function noBrowser(msg) {
+    console.error(
+        `❌ ${msg}\n` +
+            "   页面级冒烟无法运行(退出码 2)。这**不是**通过:装一个 Chrome/Edge," +
+            "或用 --chrome=<路径> 指定。",
+    );
+    try {
+        server.close();
+    } catch {}
+    process.exit(2);
+}
+
+function chromePath() {
+    if (argv.has("chrome")) {
+        const p = argv.get("chrome");
+        if (!existsSync(p)) noBrowser(`--chrome 指定的路径不存在:${p}`);
+        return p;
+    }
+    for (const p of CHROME_CANDIDATES) if (existsSync(p)) return p;
+    noBrowser("本机找不到 Chrome/Edge");
+    return null;
+}
+
+const exe = chromePath();
+const CDP_PORT = Number(
+    argv.get("cdp") || 9400 + Math.floor(Math.random() * 400),
+);
+const userDataDir = mkdtempSync(join(tmpdir(), "scvb-output-stale-"));
+const chrome = spawn(
+    exe,
+    [
+        "--headless=new",
+        `--remote-debugging-port=${CDP_PORT}`,
+        `--user-data-dir=${userDataDir}`,
+        "--window-size=1400,1000",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--force-device-scale-factor=1",
+        ...(process.env.CI ? ["--no-sandbox"] : []),
+        "about:blank",
+    ],
+    { stdio: "ignore" },
+);
+chrome.on("error", (e) => noBrowser(`浏览器启动失败:${e.message}`));
+
+let cdp = null;
+let bucket = { label: "启动", errors: [], exceptions: [] };
+const newBucket = (label) => {
+    bucket = { label, errors: [], exceptions: [] };
+};
+
+async function evaluate(expression) {
+    const r = await cdp.send("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+    });
+    if (r.exceptionDetails) {
+        throw new Error(
+            "页内求值抛错:" +
+                (r.exceptionDetails.exception?.description ||
+                    r.exceptionDetails.text),
+        );
+    }
+    return r.result?.value;
+}
+
+async function waitFor(expr, ms = 15000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+        let v = null;
+        try {
+            v = await evaluate(expr);
+        } catch {
+            v = null;
+        }
+        if (v) return true;
+        await sleep(120);
+    }
+    return false;
+}
+
+// 真源文档在 iframe 里(壳页只有工具条);一切选择器走它。
+const IN = (js) => `(() => {
+    const f = document.querySelector("iframe");
+    const w = f && f.contentWindow;
+    const d = f && f.contentDocument;
+    if (!w || !d) return null;
+    const q = (s) => d.querySelector(s);
+    const gb = (n) => q('[data-gb="' + n + '"]');
+    ${js}
+})()`;
+
+// 页面已经吃到首帧 §2.8(段表落地)的判据:泳道轨名被填过。
+const READY = IN(`
+    const lane = gb("wave-lane-2-label");
+    return !!(lane && lane.textContent && lane.textContent.length > 0);
+`);
+
+const PROBE = IN(`
+    const vis = (el) => !!el && !el.hidden;
+    const lanes = [];
+    for (let ch = 1; ch <= 15; ch++) {
+        const n = gb("wave-lane-" + ch + "-stale");
+        lanes.push({ ch: ch, present: !!n, shown: vis(n), title: n ? (n.getAttribute("title") || "") : null });
+    }
+    const banner = gb("banner-staleCapture");
+    const text = gb("banner-staleCapture-text");
+    const disabled = (name) => { const el = gb(name); return !!el && !!el.disabled; };
+    return {
+        banner: vis(banner),
+        bannerDisplay: banner ? w.getComputedStyle(banner).display : "(缺节点)",
+        bannerText: text ? text.textContent.trim() : null,
+        tabDot: vis(gb("tabnav-wave-stale-dot")),
+        lanesShown: lanes.filter((l) => l.shown).map((l) => l.ch),
+        lanesPresent: lanes.every((l) => l.present),
+        laneTitle: (lanes.find((l) => l.shown) || {}).title || "",
+        captureToggleDisabled: disabled("master-capture-toggle"),
+        outputToggleDisabled: disabled("master-output-toggle"),
+    };
+`);
+
+async function open(scenario) {
+    newBucket(scenario);
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=${scenario}`,
+    });
+    const ok = await waitFor(READY);
+    check(ok, `${scenario}:页面装载并吃到首帧段表`);
+    // 切到「波形与分段」页 —— 泳道 ⚠ 的显隐由 tab-wave 的 render 翻,得让它真渲染一次。
+    await evaluate(
+        IN(`const b = gb("tabnav-wave"); if (b) b.click(); return true;`),
+    );
+    await sleep(400);
+    return await evaluate(PROBE);
+}
+
+function assertClean(label) {
+    check(
+        bucket.exceptions.length === 0,
+        `${label}:零未捕获异常(实得 ${bucket.exceptions.length} 条:${bucket.exceptions.join(" | ").slice(0, 400)})`,
+    );
+    check(
+        bucket.errors.length === 0,
+        `${label}:零 console.error(实得 ${bucket.errors.length} 条:${bucket.errors.join(" | ").slice(0, 400)})`,
+    );
+}
+
+const CDP_WAIT_TRIES = 300;
+const CDP_WAIT_STEP_MS = 200;
+
+try {
+    let targets = null;
+    for (let i = 0; i < CDP_WAIT_TRIES && !targets; i++) {
+        try {
+            const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
+            const list = await res.json();
+            targets = list.find((t) => t.type === "page") ? list : null;
+        } catch {
+            await sleep(CDP_WAIT_STEP_MS);
+        }
+    }
+    if (!targets) {
+        noBrowser(
+            `Chrome 未在 ${Math.round((CDP_WAIT_TRIES * CDP_WAIT_STEP_MS) / 1000)}s 内开出 CDP 端口`,
+        );
+    }
+    cdp = cdpConnect(
+        targets.find((t) => t.type === "page").webSocketDebuggerUrl,
+    );
+    await cdp.ready;
+    await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    cdp.on((m) => {
+        if (m.method === "Runtime.exceptionThrown") {
+            const d = m.params.exceptionDetails;
+            bucket.exceptions.push(
+                (d.exception?.description || d.text || "").split("\n")[0],
+            );
+        } else if (
+            m.method === "Runtime.consoleAPICalled" &&
+            m.params.type === "error"
+        ) {
+            bucket.errors.push(
+                (m.params.args || [])
+                    .map((a) => a.value ?? a.description ?? "")
+                    .join(" "),
+            );
+        }
+    });
+    log(`(站点根 ${ROOT} → ${base};CDP ${CDP_PORT})`);
+
+    // =========================================================================
+    log("=== ① scenario=stale:三处提示真的进了 DOM(04 §4.5)===");
+    {
+        const p = await open("stale");
+        check(p !== null, "取到页内 DOM 快照");
+        check(p.lanesPresent, "15 条泳道都有 ⚠ 角标节点(模板真的加了这一件)");
+        check(p.banner, "横幅 ⑧「采集数据已过期」可见");
+        check(
+            p.bannerDisplay !== "none",
+            `横幅 ⑧ 的 computed display 不是 none(实得 ${p.bannerDisplay})`,
+        );
+        check(
+            /\b3\b/.test(p.bannerText || ""),
+            `横幅文案填进了轨数 3(实得「${p.bannerText}」)`,
+        );
+        check(
+            !/\{m\}/.test(p.bannerText || ""),
+            "横幅占位符 {m} 已被替换(不是把模板原样显示出来)",
+        );
+        check(p.tabDot, "tab 导航「波形与分段」的琥珀点亮起");
+        eq(
+            p.lanesShown,
+            STALE_CHANNELS,
+            "只有 2/5/11 三条泳道挂 ⚠(其余 12 条收起)",
+        );
+        check(
+            (p.laneTitle || "").length > 0,
+            `泳道 ⚠ 带整句 tooltip(实得「${p.laneTitle}」)`,
+        );
+        check(
+            /重新采集|re-capture|recapture/i.test(p.laneTitle || ""),
+            `tooltip 说的是「建议重新采集」(实得「${p.laneTitle}」)`,
+        );
+        // 04 §4.5:只提示,不自动失效、不阻断任何操作。
+        check(
+            !p.captureToggleDisabled,
+            "stale 不 disable 采集开关(只提示,不阻断)",
+        );
+        check(
+            !p.outputToggleDisabled,
+            "stale 不 disable 输出开关(只提示,不阻断)",
+        );
+        assertClean("scenario=stale");
+    }
+
+    // =========================================================================
+    log("=== ② 反向 scenario=connected:素材没变 ⇒ 三处提示全部收起 ===");
+    {
+        const p = await open("connected");
+        check(p !== null, "取到页内 DOM 快照");
+        check(!p.banner, "横幅 ⑧ 收起");
+        check(!p.tabDot, "tab 导航琥珀点熄灭");
+        eq(p.lanesShown, [], "没有任何泳道挂 ⚠");
+        assertClean("scenario=connected");
+    }
+} catch (e) {
+    fail++;
+    console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
+} finally {
+    try {
+        if (cdp) cdp.close();
+    } catch {}
+    try {
+        chrome.kill();
+    } catch {}
+    try {
+        server.close();
+    } catch {}
+    try {
+        rmSync(userDataDir, { recursive: true, force: true });
+    } catch {}
+}
+
+if (fail > 0) {
+    console.log(`\n❌ ${fail} 条断言失败`);
+    process.exit(1);
+}
+console.log("\n✅ Output stale 提示页面级冒烟全绿");
+process.exit(0);

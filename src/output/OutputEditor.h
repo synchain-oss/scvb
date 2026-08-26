@@ -133,6 +133,9 @@ private:
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)
+    // 15 轨 stale 位图(bit{N-1});翻位即重发段表 —— fingerprint watchdog(04 §4.5)的判定不跟
+    // 任何段编辑同步发生,不在这里检测的话「数据可能过期」要等到下一次段编辑/切版本才出得来。
+    std::uint16_t lastStaleMask_ = 0;
     juce::String lastStateJson_;
     juce::String lastParamsJson_;
     juce::String lastConnJson_;

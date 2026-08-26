@@ -409,6 +409,20 @@ export function segmentsOfCh(segments, ch) {
 }
 
 /**
+ * §2.8 里 `stale` 为真的轨数(04 §4.5 fingerprint watchdog:该轨上游音频与已采集特征
+ * 不一致,建议重新采集)。横幅 ⑧ 与 tab 导航琥珀点共用它。
+ *
+ * **必须读合并后的段表视图,不能读单个事件的 `channels`** —— §2.8 的 `channels` 只含
+ * 受影响轨(一次段编辑只带一轨),拿事件当全量算会把其余轨的 stale 一起抹掉。
+ */
+export function staleTrackCount(segments) {
+    const list = (segments && segments.channels) || [];
+    let n = 0;
+    for (const c of list) if (c && c.stale) n += 1;
+    return n;
+}
+
+/**
  * 「单段全时限 `user_edited` 常值」判定 —— `setTrackManual` 的产物特征
  * (契约 §1.16 编码 = 04 §1.5 方案 A)。两处用它:
  *   ① 冻结维度的**读回值**(05 §2.2「读回值同样取自该段」);

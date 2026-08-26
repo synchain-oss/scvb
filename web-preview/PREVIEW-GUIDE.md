@@ -125,7 +125,7 @@ node web-preview/shot.mjs --tab=wave --full
 | 参数 | 取值 | 说明 |
 |---|---|---|
 | `fixture` | `empty` / `fifteen-tracks`(默认) / `misaligned` / `channel-conflict` / `second-output` / `stereo-mixed` | 世界初始状态;表外值回落默认并 warn |
-| `scenario` | `empty` `connected` `misaligned` `conflict` `occupied` `group-switch` `no-output` `print-guard` `first-run` `recapture-armed` `first-run-tour` `input-first-run` | 场景 → fixture 的映射 + 快照覆写;表外值回落 `fifteen-tracks` 并 warn「待接线」 |
+| `scenario` | `empty` `connected` `misaligned` `conflict` `occupied` `group-switch` `no-output` `print-guard` `first-run` `recapture-armed` `first-run-tour` `input-first-run` `stale` | 场景 → fixture 的映射 + 快照覆写;表外值回落 `fifteen-tracks` 并 warn「待接线」 |
 | `loop` | `host`(默认) / `none` | 宿主是否提供循环区(`daw_loop` 档可用性) |
 | `--tab`(shot.mjs) | `master` `tracks` `wave` `settings` | 对应 整体调整 / 轨道 / 波形与分段 / 设置 |
 | `--lang`(shot.mjs) | `zh` `en` `fr` | 走 UI 语言胶囊切换 |

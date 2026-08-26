@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include "ipc/CtrlPlane.h"
+
 namespace scvb
 {
 
@@ -70,14 +72,98 @@ void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& bet
     const int64_t firstFullSample = static_cast<int64_t>(h0) * hopSamples;
     s->pendingSkip = (firstFullSample > timelineSample) ? (firstFullSample - timelineSample) : 0;
     s->nextHop = h0;
+
+    // fingerprint 侧同样按 run 边界重置(04 §4.5):run 切换后滤波态已 reset,跨 run 拼出来的
+    // tile 不是同一段音频,必须丢弃重起。fpTileOpen=false ⇒ 只有走到 tile 起点(hop%100==0)
+    // 才会开始累加,run 中途接上的半个 tile 永不上报。
+    s->fpHop = h0;
+    s->fpTile.reset();
+    s->fpTileIdx = 0;
+    s->fpTileCount = 0;
+    s->fpTileOpen = false;
+}
+
+void FeatRing::pushFpReport(u64 value) noexcept
+{
+    // [A] 单生产者:只读自己的 write,acquire-load 消费者的 read。满 → 丢最新 + 计数
+    // (绝不覆盖未读记录:未读的是更早、更该先给用户看的那一秒)。
+    const u32 w = fpWrite_.load(std::memory_order_relaxed);
+    const u32 r = fpRead_.load(std::memory_order_acquire);
+    if (w - r >= kFpQueueCapacity)
+    {
+        fpDrop_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    fpSlots_[w % kFpQueueCapacity] = value;
+    fpWrite_.store(w + 1, std::memory_order_release);
+}
+
+uint32_t FeatRing::drainFpReports(u64* out, uint32_t max) noexcept
+{
+    if (out == nullptr || max == 0)
+    {
+        return 0;
+    }
+    const u32 w = fpWrite_.load(std::memory_order_acquire);
+    u32 r = fpRead_.load(std::memory_order_relaxed);
+    uint32_t n = 0;
+    while (r != w && n < max)
+    {
+        out[n++] = fpSlots_[r % kFpQueueCapacity];
+        ++r;
+    }
+    fpRead_.store(r, std::memory_order_release);
+    return n;
+}
+
+void FeatRing::accumulateFp(FeatRunState& s, float kwMs, bool capturing) noexcept
+{
+    const uint64_t hop = s.fpHop;
+    ++s.fpHop;
+
+    if (hop % analysis::kFpTileHops == 0)
+    {
+        // tile 起点:开一个新 tile(此前若有未收尾的半个 tile,连同它一起丢弃)。
+        s.fpTile.reset();
+        // u64 除法直接留在 u64 里:先窄化到 u32 再比上限,会让超长时间线的 tile 号回绕成
+        // 一个合法的小号,把一条 18 小时之外的记录错报到某个真实 tile 上。
+        s.fpTileIdx = hop / analysis::kFpTileHops;
+        s.fpTileCount = 0;
+        s.fpTileOpen = true;
+    }
+    if (!s.fpTileOpen)
+    {
+        return;
+    }
+
+    // 量化到 FrameStore 的 dBq 单位后入 FNV-1a —— 与 Output 侧基线**同一个入口**(见
+    // FeatureFingerprint.h 头注「两端逐位一致的前提」)。
+    s.fpTile.pushKwDbq(analysis::quantizeKwDbq(kwMs));
+    if (++s.fpTileCount < analysis::kFpTileHops)
+    {
+        return;
+    }
+
+    s.fpTileOpen = false;
+    // 采集 ON 时不上报:此刻这一秒的特征正在被写成**新基线**,拿它跟自己比毫无意义
+    // (04 §4.5「采集 OFF 期间 Input 播放时……每秒上报一条 fp_report」)。
+    // tile_idx 超 16 位(≈18.2 小时)不上报(04 §4.5 截断语义),避免钳制后错报到 tile 65535。
+    if (capturing || s.fpTileIdx > analysis::kFpMaxTileIdx)
+    {
+        return;
+    }
+    pushFpReport(packFpReport(static_cast<u32>(s.fpTileIdx), s.fpTile.value()));
 }
 
 int FeatRing::processBlock(const float* const* channels, int numSamples)
 {
-    if (!capturing_.load(std::memory_order_relaxed) || numSamples <= 0)
+    if (numSamples <= 0)
     {
-        return 0; // 采集 OFF 或空块:静默丢弃(release 不写段、不推进 write_hop)
+        return 0;
     }
+    // 采集开关只门控**写段**,不门控 K 加权提取(04 §4.5:采集 OFF 期间照跑同一条代码路径,
+    // 产出的 kw 喂 fingerprint watchdog)。段的「仅采集 ON 写」冻结语义由下面的 if (capturing) 保住。
+    const bool capturing = capturing_.load(std::memory_order_relaxed);
     FeatRunState* s = state_.load(std::memory_order_acquire);
     const FeatRingBinding* b = binding_.load(std::memory_order_acquire);
     if (s == nullptr || b == nullptr || !b->bound)
@@ -116,13 +202,17 @@ int FeatRing::processBlock(const float* const* channels, int numSamples)
             const int nFrames = std::min(got, static_cast<int>(s->out.size()));
             for (int i = 0; i < nFrames; ++i)
             {
-                const uint64_t hop = s->nextHop;
-                b->ring[hop % b->capacity] =
-                    FeatFrame{s->out[static_cast<std::size_t>(i)].kw_ms, s->out[static_cast<std::size_t>(i)].peak};
-                ++s->nextHop;
-                b->header->write_hop.store(s->nextHop, std::memory_order_release); // 稳态:写帧后推进 write_hop
+                const analysis::FeatFrame& f = s->out[static_cast<std::size_t>(i)];
+                if (capturing)
+                {
+                    const uint64_t hop = s->nextHop;
+                    b->ring[hop % b->capacity] = FeatFrame{f.kw_ms, f.peak};
+                    ++s->nextHop;
+                    b->header->write_hop.store(s->nextHop, std::memory_order_release); // 稳态:写帧后推进 write_hop
+                    ++written;
+                }
+                accumulateFp(*s, f.kw_ms, capturing);
             }
-            written += nFrames;
             consumed += chunk;
             remaining -= chunk;
         }

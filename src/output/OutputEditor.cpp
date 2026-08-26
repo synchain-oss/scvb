@@ -211,11 +211,20 @@ void OutputEditor::emitTick()
     // Tab4 的「参数已改、结果陈旧」基线同步,与 Tab3 的分析 diff 摘要条 + 倒计时撤条。
     // 落成 snapshot 会让这两处静默失效(分析完了标记还挂着、摘要条不出)。
     const bool analyzed = processor_.takeAnalysisDone();
+    // stale 位翻转同样要重发(04 §4.5):fingerprint watchdog 的判定由播放驱动、与段编辑无关,
+    // 不在这里检测的话「该轨数据可能已过期」会一直等到下一次段编辑/切版本才上桥。
+    std::uint16_t staleMask = 0;
+    for (int t = 0; t < 15; ++t)
+    {
+        if (processor_.captureStale(t + 1))
+            staleMask = static_cast<std::uint16_t>(staleMask | (1u << t));
+    }
     if (first || analyzed || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)) ||
-        crvsRev != lastCrvsRevision_)
+        crvsRev != lastCrvsRevision_ || staleMask != lastStaleMask_)
     {
         lastSegmentsSampleRate_ = srNow;
         lastCrvsRevision_ = crvsRev;
+        lastStaleMask_ = staleMask;
         emitSegments(analyzed ? "analyze" : "snapshot", kAllTracksMask);
     }
 
@@ -805,7 +814,10 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             push(segArr, seg);
         }
         put(ch, "segments", segArr);
-        put(ch, "stale", false);
+        // §2.8 stale = 该轨「上游音频与已采集特征不一致,建议重新采集」(04 §4.5 fingerprint
+        // watchdog)。此前是硬编码 false —— 契约字段在、前端消费点(J69 tab 琥珀点)也在,
+        // 就是没有值,于是用户在 Input 前面插了 EQ 一路无声无息(SL-177 实测)。
+        put(ch, "stale", processor_.captureStale(t + 1));
         push(channels, ch);
     }
 

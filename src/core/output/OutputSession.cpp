@@ -391,7 +391,10 @@ void OutputSession::consumeCommands(u64 /*nowMs*/)
                 hasPendingPriority_[idx] = true;
                 break;
             case CtrlOp::kFpReport:
-                // 指纹上报归分析管线(04 §3.4),本层不消费,排空即可。
+                // 上游改动的过期检测(04 §4.5):拿本轨已存特征重算该 tile 的基线指纹,与上报值比对。
+                // 此前这里只排空不消费 —— 于是「用户在 Input 前面插了 EQ 并改了参数」这件事,
+                // Output 侧一个字都看不见(SL-177 用户实测)。滞回与比例门槛全在 FingerprintWatch。
+                fpWatch_.onReport(ch, rec.value, frameStore_.channel(ch));
                 break;
             case CtrlOp::kNone:
             default:
@@ -476,6 +479,7 @@ OutputClaimState OutputSession::changeGroup(u32 newGroup, u32 sampleRate, u32 ma
     // CoverageMap,pullFeatures 再把新组特征并进同一张表(覆盖率与「已分析区域」都会算错)。
     // 只在**改组**清;release(同组 releaseResources/重新 prepare)不清 —— 那不该丢已采集的数据。
     frameStore_.reset();
+    fpWatch_.reset(); // 基线随特征一起作废,失配定谳不得跨组留存(04 §4.5)
     injectMask_.store(0, std::memory_order_release);
     state_.store(OutputClaimState::kUnavailable, std::memory_order_release);
 

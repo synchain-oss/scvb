@@ -112,6 +112,12 @@ private:
     // (写命令环 + 读 OutputGlobalInfo;CtrlPlane::open 注释同口径)。
     void ensureCtrlOpen();
 
+    // [M] 25Hz:把 [A] 攒下的 fingerprint 上报转投本 slot 的 ctrl 命令环(04 §4.5)。
+    // 调用方已持 lifecycleMutex_ 且已 ensureCtrlOpen()。
+    void drainFpReports();
+    // 每拍排水上限:稳态 1 条/秒/轨,25Hz 下留足余量(宿主卡顿后一次补投也够)。
+    static constexpr std::uint32_t kFpDrainMax = 16;
+
     // 捕获:interleaved capBuf 打包([J57] 不下混、不互换)。
     static void captureFrames(const float* const* src, int srcCh, float* dst, int n);
     // 跨零点块:写 t0>=0 尾段(R3,01 §5.1 步骤 2)。b = 本块 acquireBlock() 的音频环绑定快照。

@@ -108,6 +108,8 @@
   (见 docs/contract-changes/20260825-input-guide-seen.md)(pending #84)
 - 总览页「分布 ↔ 轨迹」视图选择随工程保存(pending #80)
 - IPC 契约文档与 golden 布局的机器对拍,接入本地门禁 gate 3g(pending #85)
+- 上游改动的过期提示:在 Input 前面改了 EQ/压缩之后,Output 侧会指出「该轨上游音频与已采集
+  特征不一致,建议重新采集」(横幅 + 波形页泳道 ⚠)。只提示,不阻断任何操作(pending #SL177)
 
 变更
 - 响度口径与中心槽策略两项设置现在随工程保存,重开工程不再回到默认档(pending #81)

@@ -46,7 +46,7 @@ import {
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
 } from "./tab-master.js";
-import { createTabTracks } from "./tab-tracks.js";
+import { createTabTracks, staleTrackCount } from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
 import { createTabSuggestions } from "./tab-suggestions.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
@@ -1336,6 +1336,15 @@ function renderBanners() {
     // ⑦ 加载守卫(数据源 scvb.state.print_guard,不是 error code)
     show($("banner-printGuard"), !!(s.print_guard && s.print_guard.pending));
 
+    // ⑧ 上游改动 → 采集数据过期(04 §4.5 fingerprint watchdog;数据源 = §2.8
+    //    segments.channels[].stale,不是 error code)。只提示,不 disable 任何控件。
+    const staleTracks = staleTrackCount(vs.segments);
+    show($("banner-staleCapture"), staleTracks > 0);
+    if (staleTracks > 0)
+        fill($("banner-staleCapture-text"), "banner.staleCapture", {
+            m: staleTracks,
+        });
+
     // toast:一次性提示(§5.1 降级纪律②:可关闭)
     show($("toast-projectCopy"), err.has("projectCopy"));
     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
@@ -1610,11 +1619,10 @@ if (bridge) {
         tabWave.onSegments(seg);
         // Tab4:全量分析完成 → 清「改后需重分析」标志(03 §6.3 applied.* 同步)
         tabSettings.onSegments(seg);
-        // J69 stale:任一轨 stale → tab 导航「波形与分段」挂琥珀点
-        const stale = (seg && seg.channels ? seg.channels : []).some(
-            (c) => c && c.stale,
-        );
-        show($("tabnav-wave-stale-dot"), stale);
+        // J69 stale:任一轨 stale → tab 导航「波形与分段」挂琥珀点。
+        // 读 **store.segments**(合并后的全量视图)而不是本次事件的 channels —— §2.8 的
+        // channels 只含受影响轨,一次单轨段编辑会把其余轨的 stale 一起当成「不存在」(04 §4.5)。
+        show($("tabnav-wave-stale-dot"), staleTrackCount(store.segments) > 0);
         requestRender();
     });
 

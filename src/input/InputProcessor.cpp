@@ -297,6 +297,34 @@ void ScvbInputAudioProcessor::timerCallback()
         }
     }
     captureArmed_.store(armed ? 1u : 0u, std::memory_order_relaxed);
+
+    drainFpReports();
+}
+
+void ScvbInputAudioProcessor::drainFpReports()
+{
+    // 04 §4.5:fp hash 在 [A] 只写本实例进程内 SPSC,由 **[M] 25Hz 排水**后写入本 slot 专属的
+    // ctrl 命令环([A] 绝不直接写跨进程环)。稳态 1 条/秒/轨,25Hz 排水下每拍最多 1 条。
+    //
+    // 只有本 channel 的持有者(I4 ACTIVE)才可以投递:非活跃实例向共享环 enqueue 会造成双生产者
+    // 竞写 write_pos —— 与 bridgeRemoteSetPriority 的 SPSC 纪律同一条(PR#54 R3)。
+    const scvb::u32 ch = static_cast<scvb::u32>(channelId_);
+    if (ch < 1 || ch > scvb::kMaxChannels || session_.state() != scvb::input::InputClaimState::kActive)
+    {
+        // 未持有 slot:把队列排空丢弃,免得攒到满环后一次性倒进去一串陈旧 tile。
+        scvb::u64 discard[kFpDrainMax];
+        session_.featRing().drainFpReports(discard, kFpDrainMax);
+        return;
+    }
+
+    scvb::u64 values[kFpDrainMax];
+    const auto n = session_.featRing().drainFpReports(values, kFpDrainMax);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        // 满环由 CtrlPlane 自己丢最旧 + 计数(§4.4-c);fp 是提示类信号,丢了不影响任何数据面,
+        // 故不做 isRingFull 预检、不回报 UI。
+        ctrl_.enqueue(ch, scvb::CtrlOp::kFpReport, values[i]);
+    }
 }
 
 void ScvbInputAudioProcessor::setCurrentProgram(int /*index*/) {}
