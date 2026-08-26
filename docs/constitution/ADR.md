@@ -168,7 +168,7 @@ scvb/
 - **[J57→ADR-003 改写]** v1 **支持立体声源**:Input 检测 stereo 轨→捕获/转发双通道(IPC 环 channels=1|2);Output 对 stereo 源用 **dual-pan+width** 模型(L/R 各自 equal-power pan,pan 参数=弧中心,每轨 width 参数=张开度,width=0 收成 mono;**不用 M/S 拉宽**,避极性反转);特征提取按 BS.1770 多通道求和。「真立体声延后 v2」的原限制作废。
 - **[J59→ADR-004 改写]** 参数布局 v2.0:**2 版本 × 15 轨 × (Pan/Vol/Width) + 全局 width/ms_balance/lead_select = 93 声明/94 宿主可见**(Live 余 34);versions 4→2(ADR-005 的曲线真身/打印头/复制语义不变,仅版本数减半);轨道数 10→15(IPC registry 15 slots、UI、槽位算法同步)。
 - **[J58→新增语义]** `lead_select` 全局自动化参数(0=遵循分析,1-15=强制该轨实时居中,其余轨不重分布);与分析期 `lead_lock`(逐段)双层;`lead_vol_exempt` 为**独立**每轨选项,不与任何 lead 机制强制关联(用户澄清)。
-- **[J60→ADR-010 补充]** 自动分配:每轨 `participate_in_auto_pan` 开关(stereo 默认 false/mono 默认 true);参与的 stereo 轨以**中心点**入槽位分配(不区间化);全部轨参与 L/R 音量平衡(stereo 按实际双通道能量)。
+- **[J60→ADR-010 补充]** 自动分配:每轨 `participate_in_auto_pan` 开关(stereo 默认 false/mono 默认 true);参与的 stereo 轨以**中心点**入槽位分配(不区间化);全部轨参与 L/R 音量平衡(stereo 按实际双通道能量)。**[J83 修订,2026-08-26]** 默认档改「未显式设置一律参与」:检测值 source_channels 来自宿主总线布局而非素材声道(mono 素材放 stereo 轨即报 2),J60 前提不成立;是否排除由用户逐轨显式开关决定。
 - **[J61]** 连锁修订:ipc 升 v1.4(15 slots/stereo 环);01/02/03/04/05/07/10/11+HANDOFF 按 J57-J60 修订。
 
 # v2.1 修订(2026-08-25,J81 修宪并批)
