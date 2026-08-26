@@ -290,7 +290,7 @@ TEST_CASE("T30 buildConfigPayload:广播区读不到时回退默认值 + 本机�
     CHECK(static_cast<int>(m->getProperty("pair_id")) == 0);
     CHECK(static_cast<int>(m->getProperty("freeze")) == 0);
     CHECK(static_cast<int>(m->getProperty("source_channels")) == 1);
-    CHECK(static_cast<bool>(m->getProperty("participate_in_auto_pan")) == true); // J60:mono 默认参与
+    CHECK(static_cast<bool>(m->getProperty("participate_in_auto_pan")) == true); // [J83] 默认参与
     CHECK(static_cast<int>(m->getProperty("config_seq")) == 42);
     const auto labels = m->getProperty("channelLabels").getArray();
     REQUIRE(labels != nullptr);
@@ -300,10 +300,20 @@ TEST_CASE("T30 buildConfigPayload:广播区读不到时回退默认值 + 本机�
         CHECK(labels->getReference(i).toString().isEmpty());
     }
 
-    ConfigSnapshot stereo;
-    stereo.sourceChannels = 2;
-    CHECK(static_cast<bool>(obj(buildConfigPayload(stereo))->getProperty("participate_in_auto_pan")) ==
-          false); // stereo 默认不参与
+    // [J83]:**三种检测态一律默认参与**。source_channels 来自轨道总线布局而非素材声道数
+    // (单声道人声放在立体声轨上就报 2),按它推导会让降级路径把绝大多数人声轨报成「不参与」,
+    // 与 Output 侧 participatesInAutoPan() 的实况相反。改回 `s.sourceChannels == 1` 时
+    // stereo/未检测两档即红。
+    for (const int detected : {0, 1, 2})
+    {
+        ConfigSnapshot cs;
+        cs.sourceChannels = detected;
+        const auto p = obj(buildConfigPayload(cs));
+        INFO("source_channels = " << detected);
+        CHECK(static_cast<bool>(p->getProperty("participate_in_auto_pan")) == true);
+        // 检测值本身照旧原样上报(它继续服务 ST 角标 / 张开线 / viz stereoMask)。
+        CHECK(static_cast<int>(p->getProperty("source_channels")) == detected);
+    }
 }
 
 TEST_CASE("T30 buildGroupsPayload(§4.4)")

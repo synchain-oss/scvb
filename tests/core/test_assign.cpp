@@ -187,7 +187,9 @@ TEST_CASE("ASSIGN-8: 2 pair + 2 单轨 → 枚举分支法最小分支总代价 
     REQUIRE(r.totalCost == Approx(0.7).margin(1e-9));
 }
 
-TEST_CASE("ASSIGN-9: 15 轨 4 stereo 的 participate 门控(J60)", "[assign]")
+// participate 门控本身([J60] 定的行为)不变;变的只是**默认档**([J83]:未显式设置一律 true,
+// 见 docs/contract-changes/20260826-j83-participate-default.md)。本例逐轨显式赋值,不依赖默认档。
+TEST_CASE("ASSIGN-9: 15 轨 4 stereo 的 participate 门控", "[assign]")
 {
     const AutoAssignConfig cfg;
     std::vector<TrackMeta> tracks(15);
@@ -199,7 +201,7 @@ TEST_CASE("ASSIGN-9: 15 轨 4 stereo 的 participate 门控(J60)", "[assign]")
         tracks[static_cast<std::size_t>(i)] = makeTrack(i, monoPrio[i]);
         tracks[static_cast<std::size_t>(i)].source = SourceChannels::Mono;
     }
-    // 4 条 stereo:默认 participate=false;低优先级(参与时落最内)。
+    // 4 条 stereo:**显式**设 participate=false;低优先级(参与时落最内)。
     const double stereoPan[4] = {20.0, -20.0, 40.0, -40.0};
     for (int i = 0; i < 4; ++i)
     {
@@ -208,12 +210,12 @@ TEST_CASE("ASSIGN-9: 15 轨 4 stereo 的 participate 门控(J60)", "[assign]")
         t.channelIndex = idx;
         t.priority = 0.5 - 0.1 * static_cast<double>(i); // 0.5/0.4/0.3/0.2,低于 mono。
         t.source = SourceChannels::Stereo;
-        t.participateInAutoPan = false; // J60:stereo 默认 false。
+        t.participateInAutoPan = false; // 显式关闭(用户在轨道页关掉这四条)。
         t.currentPan = stereoPan[i];
         t.width = 80.0;
     }
 
-    // ① 默认全不参与 → 槽位只按 11 条 mono 生成,4 条 stereo pan 保持源值。
+    // ① 四条全不参与 → 槽位只按 11 条 mono 生成,4 条 stereo pan 保持源值。
     const AssignResult r1 = assignInterval(tracks, cfg);
     REQUIRE(r1.slots.size() == 11);
     for (int i = 0; i < 4; ++i)
@@ -376,7 +378,7 @@ TEST_CASE("退化9: freeze pan 维 → 不占槽,P 保持现值", "[assign][dege
     REQUIRE(r.pans[2] == 60.0);
 }
 
-TEST_CASE("退化10: participate=false 的轨(stereo 默认)→ 不占槽,保持现值", "[assign][degenerate]")
+TEST_CASE("退化10: participate=false 的轨(显式关闭)→ 不占槽,保持现值", "[assign][degenerate]")
 {
     std::vector<TrackMeta> tracks(3);
     tracks[0] = makeTrack(0, 9.0);

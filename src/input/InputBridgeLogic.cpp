@@ -164,8 +164,8 @@ juce::var buildConfigPayload(const ConfigSnapshot& s)
     // 远程只读摘要行,不会把默认值当实况展示。
     // 判据用 **config_seq != 0** 而不是 broadcastValid:Input 自己就是 ctrl 段的创建者
     // (ensureCtrlOpen 里 ctrl_.open()),本组没有 Output 时段照样存在、广播区全零、seq=0 是偶数,
-    // 于是 readBroadcast 会返回 true —— 拿全零当实况会把 mono 轨的 participate_in_auto_pan 报成
-    // false(J60 默认应为 true)。广播区的 config_seq 从 1 起算,0 就是「本组没有 Output 在广播」。
+    // 于是 readBroadcast 会返回 true —— 拿全零当实况会把 participate_in_auto_pan 报成
+    // false([J83] 默认应为 true)。广播区的 config_seq 从 1 起算,0 就是「本组没有 Output 在广播」。
     const bool haveBroadcast = s.broadcastValid && s.broadcast.config_seq != 0;
     const bool haveOwn = haveBroadcast && s.channelId >= 1 && s.channelId <= static_cast<int>(kMaxChannels);
 
@@ -182,13 +182,18 @@ juce::var buildConfigPayload(const ConfigSnapshot& s)
     }
     else
     {
-        // participate 默认值推导 = mono 参与 / stereo 不参与(J60/T32 同口径)。
+        // participate 默认值 = **未显式设置一律 true**([J83] 取代 [J60] 的按源声道推导;
+        // 与 Output 侧 `OutputRuntimeState::Channel::participatesInAutoPan()` 同口径,
+        // 变更文档 docs/contract-changes/20260826-j83-participate-default.md)。
+        // 不能再写 `s.sourceChannels == 1`:该值来自 `getMainBusNumInputChannels()`,是**轨道
+        // 总线布局**而不是素材声道数 —— 单声道人声放在立体声轨上就报 2,于是这条降级路径会把
+        // 绝大多数人声轨的远程只读摘要行显示成「不参与自动声像」,与 Output 的实况相反。
         o->setProperty("label", juce::String());
         o->setProperty("priority", 0);
         o->setProperty("lead_lock", false);
         o->setProperty("pair_id", 0);
         o->setProperty("freeze", 0);
-        o->setProperty("participate_in_auto_pan", s.sourceChannels == 1);
+        o->setProperty("participate_in_auto_pan", true);
     }
 
     // source_channels 恒本机实测([J57]):它是 Input 报上去的检测值,不吃广播区回镜像。

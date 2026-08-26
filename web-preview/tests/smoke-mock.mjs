@@ -10,7 +10,10 @@
 //   ③ 场景化拒绝(只读观察态 / 无宿主循环区 / 通道占用冲突)与参数面 badArg;
 //   ④ **重分析保护用户段**(§1.6/§2.8,J34):用户段与锁定段不被重算结果覆盖,
 //      `clearManual:true` 时 locked 段仍免疫,`diff.kept` 计数与实际保留数一致;
-//   ⑤ **params-v0 范围夹取**(§0.8 第 2 条):越界值夹取后回推,非有限值回 badArg。
+//   ⑤ **params-v0 范围夹取**(§0.8 第 2 条):越界值夹取后回推,非有限值回 badArg;
+//   ⑥ `?scenario=` / `?fixture=` 的回落与 warning;
+//   ⑦ **[J83] `participate_in_auto_pan` 默认档**:未显式设置一律 true(含 stereo 轨),
+//      显式设置经 `setChannelConfig` 仍然说了算,且 §4.3 Input 只读镜像与 Output 真源同值。
 //
 // 用法:node web-preview/tests/smoke-mock.mjs [仓库根绝对路径]
 //   不给参数就按本脚本位置推仓库根(<repo>/web-preview/tests/ → <repo>)。
@@ -577,6 +580,116 @@ log("\n=== ⑥ 查询参数回落 ===");
         log(`  ?${params.padEnd(30)} → fixture=${s.info.fixture}`);
         s.stop();
     }
+}
+
+// -----------------------------------------------------------------------------
+// ⑦ [J83] participate_in_auto_pan 默认档 —— 未显式设置一律 true
+// -----------------------------------------------------------------------------
+//
+// source_channels 来自 `getMainBusNumInputChannels()`,是**轨道总线布局**不是素材声道数
+// (单声道人声放在立体声轨上就报 2)。按它推导默认档,真机上绝大多数人声轨会被判成
+// 「不参与自动声像」→ AutoAssign 按「保持现值」处理 → pan 全 0 烘焙进段表(v5.1 实测 P0-B)。
+// 改回 `sourceChannels === 1` 时,下面 source_channels=2 与「不给该键」两档即红。
+// 变更文档:docs/contract-changes/20260826-j83-participate-default.md。
+
+log("\n=== ⑦ [J83] participate_in_auto_pan 默认档 ===");
+{
+    const MD = await import(u("web/shared/mock-data.js"));
+
+    // 空快照:15 轨 mono、谁都没设过 → 全部参与。
+    const base = MD.makeOutputSnapshot();
+    check(
+        base.channels.length === 15 &&
+            base.channels.every(
+                (c) =>
+                    c.source_channels === 1 &&
+                    c.participate_in_auto_pan === true,
+            ),
+        "空快照 15 轨(mono)应全部默认参与",
+    );
+    log("  makeOutputSnapshot:15 轨 mono 默认 participate=true");
+
+    // tour demo:四条 stereo 轨(DEMO_STEREO_CHANNELS)**不给** participate 键,
+    // 走的正是 makeChannelConfig 的默认档 —— 改回 `source_channels === 1` 推导即红。
+    const demo = MD.makeTourDemoSnapshot();
+    const stereo = MD.DEMO_STEREO_CHANNELS;
+    check(stereo.length > 0, "tour demo 应有 stereo 轨,否则本组断言形同虚设");
+    for (const ch of stereo) {
+        const c = demo.channels[ch - 1];
+        check(
+            c.source_channels === 2 && c.participate_in_auto_pan === true,
+            `tour demo ch${ch}(stereo)应默认参与,实得 participate=${c.participate_in_auto_pan}`,
+        );
+    }
+    check(
+        demo.channels.every((c) => c.participate_in_auto_pan === true),
+        "tour demo 15 轨应全部默认参与",
+    );
+    log(
+        `  tour demo:15 轨全部 participate=true(含 stereo 轨 ${stereo.join("/")})`,
+    );
+
+    // Input 侧 §4.3 只读快照的默认档同口径(C++ 侧 buildConfigPayload 的降级路径)。
+    check(
+        MD.makeInputConfig().participate_in_auto_pan === true &&
+            MD.makeInputSnapshot().config.participate_in_auto_pan === true,
+        "Input §4.3 config 默认应参与",
+    );
+    log("  makeInputConfig / makeInputSnapshot 默认 participate=true");
+}
+
+// 显式设置仍然说了算 —— 默认档变了不等于用户关不掉。
+// **走 mock 桥的 setChannelConfig**(§1.15 配置唯一写入点)而不是直接给生成器塞 patch:
+// `mergeDeep` 对数组是**整体替换**,给 `makeTourDemoSnapshot({channels:[...]})` 传一份改好的
+// 数组时 `makeChannelConfig` 一次都不会被调用 —— 那样的断言只验证「传进去的东西还在」,
+// 把默认值改成任何常量它都照绿(PR #105 claude-review 建议 2)。
+{
+    const MD = await import(u("web/shared/mock-data.js"));
+    // 轨号从 demo 数据推,不写死:写死的话 demo 轨画像一改,这条就会静默地去测一条 mono 轨
+    // 而照样全绿(pr-agent 建议)。写前先确认它真是 stereo —— 本组要守的正是「stereo 轨也默认参与」。
+    const ch = MD.DEMO_STEREO_CHANNELS[0];
+    await withSession("output", "fixture=fifteen-tracks", async (b) => {
+        const before = await b.requestInitialState();
+        check(
+            before.channels[ch - 1].source_channels === 2 &&
+                before.channels[ch - 1].participate_in_auto_pan === true,
+            `写之前 ch${ch}(stereo)应是默认参与`,
+        );
+        const r = await b.setChannelConfig(ch, {
+            participate_in_auto_pan: false,
+        });
+        check(r.ok === true, `setChannelConfig 应成功:${JSON.stringify(r)}`);
+        const after = await b.requestInitialState();
+        check(
+            after.channels[ch - 1].participate_in_auto_pan === false,
+            "显式 false 必须压过默认档并回推",
+        );
+        check(
+            after.channels.filter((c) => c.participate_in_auto_pan === false)
+                .length === 1,
+            "显式关闭只影响被写的那一轨",
+        );
+        log(
+            `  经 setChannelConfig 显式关闭 ch${ch} → 只有该轨 false,其余仍 true`,
+        );
+    });
+
+    // stereo-mixed fixture:Output 真源与 Input §4.3 只读镜像必须同值。
+    // 只改一侧会造出真机上不可能出现的组合(见 state-driver.js 该分支的注释)。
+    const outSnap = await withSession("output", "fixture=stereo-mixed", (b) =>
+        b.requestInitialState(),
+    );
+    const inSnap = await withSession("input", "fixture=stereo-mixed", (b) =>
+        b.requestInitialState(),
+    );
+    const mirrorCh = inSnap.channel_id;
+    check(
+        outSnap.channels[mirrorCh - 1].participate_in_auto_pan === false &&
+            inSnap.config.participate_in_auto_pan === false,
+        `stereo-mixed 两侧不同值:Output=${outSnap.channels[mirrorCh - 1].participate_in_auto_pan} ` +
+            `Input=${inSnap.config.participate_in_auto_pan}`,
+    );
+    log(`  stereo-mixed:ch${mirrorCh} 两侧同为 false(§4.3 只读镜像自洽)`);
 }
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);

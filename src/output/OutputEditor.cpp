@@ -636,7 +636,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
         put(ch, "enabled", c.enabled);
         put(ch, "label", c.label);
         put(ch, "source_channels", c.sourceChannels);
-        // J60:未显式设置时按 mono=true / stereo=false 推导。
+        // [J83]:未显式设置一律 true(真源 = participatesInAutoPan();不在这里二次推导)。
         const bool participate = c.participatesInAutoPan();
         put(ch, "participate_in_auto_pan", participate);
         put(ch, "priority", c.priority);
