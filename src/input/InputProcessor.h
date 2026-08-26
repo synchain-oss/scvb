@@ -174,6 +174,9 @@ private:
     // 时间线定位(§5.1 步骤 3)。
     int64_t lastT0_ = std::numeric_limits<int64_t>::lowest();
     int64_t expectedNext_ = std::numeric_limits<int64_t>::lowest();
+    // 上一块看到的特征段绑定状态([A] 独占)。绑定边沿要补一次 startRun —— 走带已在跑时
+    // 才插上 Output(或改组重建段),否则 nextHop/fpHop 停在 0 而时间线已经走远(见 processBlock)。
+    bool featBoundPrev_ = false;
     uint64_t lastHeartbeatMs_ = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScvbInputAudioProcessor)

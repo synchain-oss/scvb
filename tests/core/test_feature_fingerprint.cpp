@@ -139,10 +139,12 @@ TEST_CASE("Input 上报指纹 == Output 基线重算(同一段音频)", "[finger
     {
         scvb::pullIncremental(cap.header, cap.ring.data(), scvb::kFeatCapacityHops, pull, frames, all);
     }
-    REQUIRE(frames.coversFully(HopRange{0, kFpTileHops}));
+    // 比对落在 **tile 1**:h0=0 落在整秒上,tile 0 带 run 边界的预热差、按纪律不上报
+    // (见「run 起点落在整秒上时…」用例),拿它比会拿不到上报值。
+    REQUIRE(frames.coversFully(HopRange{kFpTileHops, 2 * kFpTileHops}));
 
     std::uint64_t baseline = 0;
-    REQUIRE(scvb::analysis::baselineTileFingerprint(frames, 0, baseline));
+    REQUIRE(scvb::analysis::baselineTileFingerprint(frames, 1, baseline));
 
     // --- Input 侧上报:采集 OFF,同一段音频 ---
     FeatFixture off;
@@ -160,7 +162,7 @@ TEST_CASE("Input 上报指纹 == Output 基线重算(同一段音频)", "[finger
     const auto n = reporter.drainFpReports(got, 8);
     REQUIRE(n >= 1);
     REQUIRE(reporter.fpDropCount() == 0);
-    REQUIRE(scvb::unpackFpReportTileIdx(got[0]) == 0);
+    REQUIRE(scvb::unpackFpReportTileIdx(got[0]) == 1);
     REQUIRE(scvb::unpackFpReportHash(got[0]) == (baseline & scvb::kFpReportHashMask));
 
     // --- 反向:上游改了(增益变化)⇒ 指纹必须对不上 ---
@@ -175,7 +177,7 @@ TEST_CASE("Input 上报指纹 == Output 基线重算(同一段音频)", "[finger
 
     scvb::u64 got2[8] = {};
     REQUIRE(changed.drainFpReports(got2, 8) >= 1);
-    REQUIRE(scvb::unpackFpReportTileIdx(got2[0]) == 0);
+    REQUIRE(scvb::unpackFpReportTileIdx(got2[0]) == 1);
     REQUIRE(scvb::unpackFpReportHash(got2[0]) != (baseline & scvb::kFpReportHashMask));
 }
 
@@ -244,6 +246,32 @@ TEST_CASE("run 中途接上的半个 tile 不上报", "[fingerprint][ipc]")
     {
         REQUIRE(scvb::unpackFpReportTileIdx(got[i]) != 0); // tile 0 永不出现
     }
+}
+
+TEST_CASE("run 起点落在整秒上时,带预热差的首个 tile 同样不上报", "[fingerprint][ipc]")
+{
+    // 「半个 tile 不上报」只挡住了 h0 不落在 tile 起点的那一支。h0 落在整秒上(从 0 起播、
+    // 120BPM 的整小节循环点 = 2.000s)时,run 的第一个 tile 恰好从 h0 开起,而 h0 这一 hop
+    // 带 extractor->startRun() 的预热差 —— 不丢的话,整秒处的短循环每圈都报同一个带预热差的
+    // tile,滞回三条一凑就定谳,素材没改却弹「建议重新采集」。
+    const std::vector<float> sig = makeSignal(48000 * 3, 1.0f);
+
+    FeatFixture f;
+    scvb::FeatRing fr;
+    fr.bind(&f.header, f.ring.data(), scvb::kFeatCapacityHops);
+    fr.prepare(48000.0, 1, 512);
+    fr.setCapturing(false);
+    fr.startRun(800 * 480); // hop 800 = 第 8.00 秒,正好是 tile 8 的起点
+    feed(fr, sig);
+
+    scvb::u64 got[8] = {};
+    const auto n = fr.drainFpReports(got, 8);
+    REQUIRE(n >= 1);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        CHECK(scvb::unpackFpReportTileIdx(got[i]) != 8); // ← 带 run 边界的那个 tile 永不出现
+    }
+    CHECK(scvb::unpackFpReportTileIdx(got[0]) == 9); // 下一个 tile 照常上报(没把整条 run 废掉)
 }
 
 // ---------------------------------------------------------------------------

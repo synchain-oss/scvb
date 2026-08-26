@@ -39,7 +39,7 @@ inline constexpr std::uint32_t kFpMaxTileIdx = 0xFFFFu;
 inline constexpr std::uint32_t kFpHysteresisTiles = 3;
 
 // 判 stale 的比例门槛(04 §4.5「>10% tile 不匹配」)。用整数比较避免浮点:
-// mismatched * 10 > checked。
+// mismatched * 100 > checked * kFpStalePercent。
 inline constexpr std::uint32_t kFpStalePercent = 10;
 
 // FNV-1a 64 常量。

@@ -80,6 +80,9 @@ struct FeatRunState
     uint64_t fpTileIdx = 0; // 当前 tile 序号(= fpHop / kFpTileHops;u64,超 16 位上限的不上报)
     uint32_t fpTileCount = 0; // 当前 tile 已累计的 hop 数
     bool fpTileOpen = false; // 是否正在累加一个**完整**的 tile(run 中途接上的半个 tile 不报)
+    // run 起点恰好落在 tile 起点(h0 % 100 == 0)时,本 run 的第一个 tile 带 extractor 预热差,
+    // 整个丢掉不报(见 startRun 的说明:不丢的话整秒处的短循环会稳定误报)。
+    bool fpSkipFirstTile = false;
 };
 
 // 特征段写侧(Input):run 协议 + 首 hop 预热。

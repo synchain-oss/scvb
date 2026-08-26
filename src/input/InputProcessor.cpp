@@ -198,14 +198,26 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     }
 
     // 3) epoch 跳变检测(契约 §2;停走带静止重写不算跳变)。
+    bool startedRun = false;
     if (t0 != expectedNext_)
     {
         if (playing || t0 != lastT0_)
         {
             scvb::AudioRing::bumpEpoch(block.audio);
             session_.featRing().startRun(t0); // run 切换:biquad 预热(T08/04 §3.2)
+            startedRun = true;
         }
     }
+    // 特征段的**绑定边沿**同样要起一个 run:startRun 在未绑定时早退(FeatRing.cpp),而这里
+    // 只在 t0 跳变时调它、不重试 —— 走带已经在跑、用户此时才插上 Output(或改组后重建段),
+    // 段一绑好 nextHop/fpHop 还停在 0,后续的帧与指纹全部按错位的 hop 号记账。表现在本卡上
+    // 就是「基线整体错位 ⇒ 关采集重播同一段素材整轨失配 ⇒ 整轨误报」。
+    const bool featBound = session_.featRing().bound();
+    if (featBound && !featBoundPrev_ && !startedRun)
+    {
+        session_.featRing().startRun(t0);
+    }
+    featBoundPrev_ = featBound;
     lastT0_ = t0;
     expectedNext_ = t0 + nRender;
 

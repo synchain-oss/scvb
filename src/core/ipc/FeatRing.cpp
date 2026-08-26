@@ -81,6 +81,13 @@ void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& bet
     s->fpTileIdx = 0;
     s->fpTileCount = 0;
     s->fpTileOpen = false;
+    // 【带 run 边界的那个 tile 一律不上报】上面那句只在 h0 **不**落在整秒上时才顺带做到 ——
+    // h0 落在整秒上(从 0 起播、120BPM 的整小节循环点 = 2.000s,都不是小概率)时,run 的第一个
+    // tile 恰好从 h0 开起,而 h0 这一 hop 带着 extractor->startRun() 的预热差(它的滤波态是
+    // 「自己从零态过一遍」,与连贯采集那一遍不同)。不堵这一支的话:在整秒处设一个短循环反复
+    // 试听,每圈都报同一个 tile、每圈都带同一个预热差,滞回三条一凑就定谳 —— 素材一个字节
+    // 没改却弹「建议重新采集」。与「半个 tile 不上报」是同一条纪律,这里补上对齐的那一支。
+    s->fpSkipFirstTile = (h0 % analysis::kFpTileHops == 0);
 }
 
 void FeatRing::pushFpReport(u64 value) noexcept
@@ -129,7 +136,10 @@ void FeatRing::accumulateFp(FeatRunState& s, float kwMs, bool capturing) noexcep
         // 一个合法的小号,把一条 18 小时之外的记录错报到某个真实 tile 上。
         s.fpTileIdx = hop / analysis::kFpTileHops;
         s.fpTileCount = 0;
-        s.fpTileOpen = true;
+        // run 起点恰好落在 tile 起点时,本 tile 头一 hop 带 extractor 预热差 —— 整个丢掉
+        // (见 startRun 里 fpSkipFirstTile 的说明);只丢这一个,下一个 tile 照常。
+        s.fpTileOpen = !s.fpSkipFirstTile;
+        s.fpSkipFirstTile = false;
     }
     if (!s.fpTileOpen)
     {
