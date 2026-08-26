@@ -929,8 +929,6 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
 {
     AnalyzeScope s;
     const auto& rt = processor_.runtime();
-    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
-    const double nowS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
 
     if (a.size() > 0 && a[0].isObject())
     {
@@ -946,11 +944,20 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
     {
         s.startS = rt.rangeStartS;
         s.endS = rt.rangeEndS;
+        return s;
     }
-    else
+    // follow 档没有显式范围 → **整条已采集时间线**,与播放头无关。
+    // 原先这里取 [0, 当前播放头]:那就是用户看到的「播放头必须在已采集范围内」——
+    // 而且在 Cubase「播完回开头」的设置下播放头会回到 0,于是 endS≈0、范围恒空,
+    // 分析**永远受理不了**,按钮点了毫无反应(v5.1 实测 P1-F;v5 的 P2-9 只拆掉了
+    // 按钮的置灰条件,没拆掉这条真正的前置,所以现象照旧)。
+    s.startS = 0.0;
+    s.endS = processor_.capturedExtentSeconds();
+    if (!(s.endS > s.startS))
     {
-        s.startS = 0.0;
-        s.endS = nowS;
+        // 一帧都没采到:仍回一个空范围,由 §1.6 的拒绝态 + UI 空态提示作答
+        // (而不是拿播放头兜底 —— 那会把「没采集」误报成「采到了播放头这里」)。
+        s.endS = 0.0;
     }
     return s;
 }

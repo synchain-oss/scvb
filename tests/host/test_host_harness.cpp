@@ -1605,3 +1605,35 @@ TEST_CASE("HOST 编辑段把包络拖长 → 打印区间跟随(自动化不在�
     REQUIRE(raw != nullptr);
     CHECK(std::abs(raw->load()) > 1.0f); // ← 判据挂回 crvsRevision_ 即红:停在 0.0f
 }
+
+// ---------------------------------------------------------------------------
+// v5.1 实测 P1-F:follow 档「分析全部」的范围**与播放头无关**。
+// 老实现取 [0, 当前播放头];Cubase「播完回开头」会把播放头送回 0,于是范围恒空、
+// 分析永远受理不了 —— 用户看到的就是「分析键点了没反应」。
+// v5 的 P2-9 只拆掉了按钮的置灰条件,这条真正的前置留在了 C++ 侧,所以现象照旧。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P1-F:采集后把播放头送回 0,分析仍可受理", "[host][t37][v51][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double extent = r.out.capturedExtentSeconds();
+    REQUIRE(extent > 0.0); // 前置:确实采到了东西
+
+    // 模拟「播完回开头」:播放头回 0(采集数据仍在)。
+    r.ph.timeSamples = 0;
+    r.runBlocks(4, 0.0f);
+    Rig::pumpMessages(120);
+
+    // 已采集范围与播放头无关,仍是那一段。
+    CHECK(r.out.capturedExtentSeconds() == Catch::Approx(extent));
+    // 按该范围发起分析:必须受理(老实现在这里 endS≈0 → 恒拒)。
+    const auto accepted = r.out.startAnalysis(0, 0.0, r.out.capturedExtentSeconds());
+    CHECK(accepted.ok);
+    r.out.cancelAnalysis();
+}

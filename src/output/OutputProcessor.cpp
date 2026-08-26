@@ -370,6 +370,22 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
     return tile;
 }
 
+double ScvbOutputAudioProcessor::capturedExtentSeconds()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    const double hopS = featHopSeconds();
+    std::uint64_t lastHop = 0;
+    for (int t = 0; t < 15; ++t)
+    {
+        const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
+        for (const auto& r : frames.coverage().ranges())
+        {
+            lastHop = std::max(lastHop, r.end);
+        }
+    }
+    return static_cast<double>(lastHop) * hopS;
+}
+
 double ScvbOutputAudioProcessor::clearCoverage(std::uint16_t tracksMask, double startS, double endS)
 {
     if (tracksMask == 0 || !(endS > startS))

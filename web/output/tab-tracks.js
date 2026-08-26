@@ -663,8 +663,8 @@ export function trackRowHtml(t) {
       <span class="tracks-row__cell tracks-row__voltube" role="cell" style="width:${W.vol}px" data-gb="${gb("voltube")}">
         <span class="sc-tube" data-gb="${gb("vol-tube")}"${dt("vollevel")}>
           <span class="sc-tube__slot">
-            <span class="sc-tube__liquid" style="--lv:${t.lv * 100}%"></span>
-            <span class="sc-tube__peak" style="--pk:${t.pk * 100}%" data-alert="${t.pk > PEAK_ALERT_RATIO ? 1 : 0}"${t.pk ? "" : " hidden"}></span>
+            <span class="sc-tube__liquid" style="--lv:${(t.lv * 100).toFixed(1)}%"></span>
+            <span class="sc-tube__peak" style="--pk:${(t.pk * 100).toFixed(1)}%" data-alert="${t.pk > PEAK_ALERT_RATIO ? 1 : 0}"${t.pk ? "" : " hidden"}></span>
           </span>
           <span class="sc-tube__gloss"></span>
           <!-- 卡箍 = 音量推子把手,层序在液柱之上(满幅电平仍可辨,T32 验收硬要求②);

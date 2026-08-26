@@ -2259,17 +2259,29 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
         const block = css.slice(css.indexOf("." + cls + " {"));
         check(
             /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(
-                block.slice(0, 400),
+                block.slice(0, 900),
             ),
             `P1-8 .${cls} 的 left 回让一个线宽(外沿贴柱顶)`,
         );
         check(
             /transition: left var\(--dur-meter\) linear/.test(
-                block.slice(0, 400),
+                block.slice(0, 900),
             ),
             `P1-8 .${cls} 的位移与液柱同步插值(瞬态不再裂开一道缝)`,
         );
+        // v5.1 P1-G:2px 宽的盒子套胶囊圆角会被画成一颗收圆的点,视觉重心离开外沿 ——
+        // 几何对齐了仍看着高半个线宽。峰线是刻线,要齐头齐尾。
+        check(
+            /border-radius: 0;/.test(block.slice(0, 700)),
+            `P1-G .${cls} 不用胶囊圆角(2px 刻线要齐头齐尾)`,
+        );
     }
+    // 首帧与弹道帧用同一套取整,免得首帧偏半个像素(meter.js 两处都是 toFixed(1))。
+    check(
+        /--lv:\$\{\(t\.lv \* 100\)\.toFixed\(1\)\}%/.test(tt) &&
+            /--pk:\$\{\(t\.pk \* 100\)\.toFixed\(1\)\}%/.test(tt),
+        "P1-G 首帧 --lv/--pk 与弹道帧同精度",
+    );
 
     // ---- P2-9:分析键不再拿「有没有覆盖数据」当前置。
     check(

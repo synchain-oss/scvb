@@ -129,7 +129,11 @@ public:
     void setTimeOffsetMs(int ms) noexcept { m_timeOffsetMs = juce::jlimit(-200, 200, ms); } // §3.4 -200..+200
 
     // 50Hz Timer 启停(仅 Processor 调用;Editor 绝不持有本类)。
-    void startPrinting() { startTimerHz(50); }
+    // 打印节拍 25Hz。原为 50Hz —— 那是「宿主自动化分辨率」的直觉取值,但打印是
+    // **前瞻 + deadband** 的:20ms 前瞻下 25Hz 的时间粒度(40ms)仍远细于任何听感门槛,
+    // 而每一拍最多 30 次同步宿主往返,拍数减半就是消息线程负载减半。
+    // 与 v5.1「快速切 tab 整体卡死」的负载假设配套(见 tick() 里冻结车道那段头注)。
+    void startPrinting() { startTimerHz(25); }
     void stopPrinting() { stopTimer(); }
 
     // §3.5 防回环:setValueNotifyingHost 自触发抑制查询。

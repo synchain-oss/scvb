@@ -918,7 +918,10 @@ input[type="range"] {
     bottom: 0;
     left: calc(var(--pk, 0%) - var(--meter-peak-w));
     width: var(--meter-peak-w);
-    border-radius: var(--r-pill);
+    /* **不用胶囊圆角**:2px 宽的盒子套 999px 半径会被画成一颗两端收圆的点,视觉重心
+       落在盒子中线附近而不是外沿,于是即使几何对齐,看上去仍比柱顶高出半个线宽
+       (v5.1 实测 P1-G 的残余)。峰线是一条刻线,要的就是齐头齐尾。 */
+    border-radius: 0;
     background: var(--meter-peak);
     transition: left var(--dur-meter) linear;
 }
@@ -979,7 +982,10 @@ input[type="range"] {
     bottom: 0;
     left: calc(var(--pk, 0%) - var(--meter-peak-w));
     width: var(--meter-peak-w);
-    border-radius: var(--r-pill);
+    /* **不用胶囊圆角**:2px 宽的盒子套 999px 半径会被画成一颗两端收圆的点,视觉重心
+       落在盒子中线附近而不是外沿,于是即使几何对齐,看上去仍比柱顶高出半个线宽
+       (v5.1 实测 P1-G 的残余)。峰线是一条刻线,要的就是齐头齐尾。 */
+    border-radius: 0;
     background: var(--meter-peak);
     transition: left var(--dur-meter) linear;
 }

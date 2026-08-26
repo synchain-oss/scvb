@@ -271,6 +271,10 @@ public:
         std::vector<int> covered;
     };
     WaveformTile waveformOf(int channel, double startS, double endS, int cols);
+
+    // [M] 已采集内容的时间线右端(秒)= 全轨 coverage 的最大终点;无采集数据回 0。
+    // follow 档下「分析全部」的终点取它,而不是当前播放头 —— 见 parseAnalyzeScope 的头注。
+    double capturedExtentSeconds();
     // [M] 清除选中轨 × 区间的采集覆盖(§1.24 clearCoverage:打洞,页数据留待后续覆盖)。
     // 返回实际清除的总时长秒数(各轨相加,供 UI 反馈)。
     double clearCoverage(std::uint16_t tracksMask, double startS, double endS);
