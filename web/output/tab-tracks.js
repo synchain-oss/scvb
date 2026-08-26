@@ -425,6 +425,27 @@ export function manualConstantOf(segChannel) {
 }
 
 /**
+ * 手动首写确认条要不要弹(纯函数,node 侧可直接断言)。
+ *
+ * **[J85] 用户裁定 2026-08-27(方案 A):冻结通道不弹。** 确认条正文
+ * (`tracks.manualOverwriteConfirm`)说的是「将以固定值**替换该轨的全部分段结果**,可撤销」——
+ * 冻结通道两句都不成立:它不替换任何段(`replacedSegments` 恒 0)、也不入撤销栈(无 CRVS 事务)。
+ * 拿一条关于「替换全部、可撤销」的警告去拦一次「只改了个旋钮值」的操作,是在吓唬用户。
+ * 05 §2.2 R3 的「**无条件**」原指「删掉 `origin=auto` 前置条件」(纯 user_edited 轨同样要弹),
+ * 不是「连不会替换段的通道也要弹」—— 本裁定不与之冲突。
+ *
+ * 未冻结的手动接管通道**照旧弹**:那一路确实会把整条分析曲线整表压成常值段,是真正
+ * 需要用户点头的破坏性操作。
+ *
+ * `freeze` = 该轨 freeze 参数当前值(0-3);`dim` = "pan" | "vol";`confirmed` = 该轨本会话是否已确认过。
+ */
+export function needsManualConfirm(freeze, dim, confirmed) {
+    if (confirmed) return false; // 每轨每会话一次
+    const bits = freezeBits(freeze);
+    return !(dim === "vol" ? bits.vol : bits.pan); // 冻结维度不弹
+}
+
+/**
  * 解冻提示的**位账**(纯函数,node 侧可直接断言;05 §2.2 R2)。
  * `cur` = 该轨已记下的触发位(bit0=pan / bit1=vol),`prev`→`next` = 本次 freeze 变化。
  * 某位 **1→0** 记上(触发提示),某位 **0→1** 抹掉(触发条件已不成立);返回 0 = 撤下提示。
@@ -1006,13 +1027,16 @@ export function createTabTracks(opts) {
     }
 
     /**
-     * 手动常值写入的**唯一入口**。首次(每轨每会话)先弹行内确认,确认后才落。
+     * 手动常值写入的**唯一入口**。**未冻结**维度首次(每轨每会话)先弹行内确认,确认后才落;
+     * **冻结**维度直接落([J85] 用户裁定 2026-08-27 方案 A,判定见 `needsManualConfirm` 头注:
+     * 冻结通道不替换任何段、也不入撤销栈,确认条正文的两句话都不成立)。
      * `defer=true` 时走延迟提交(滚轮档 / 键盘连按:回声即时、提交防抖),见 `queueManual`。
      * 返回 true = 已下发或已排程;false = 已改为弹确认条(值挂在 local.confirm 上待提交)。
      */
     function requestManual(ch, dim, value, defer) {
         if (isWriteBlocked() || isRowDead(ch)) return false;
-        if (!local.manualConfirmed.has(ch)) {
+        const freeze = readParam(paramIdOf(activeVersion(), ch, "freeze"), 0);
+        if (needsManualConfirm(freeze, dim, local.manualConfirmed.has(ch))) {
             openConfirm(ch, "manual", dim, value);
             return false;
         }

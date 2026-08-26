@@ -240,6 +240,48 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         /tracks\.manualOverwriteConfirm\.locked/.test(s),
         "locked 变体词条已接线",
     );
+
+    // [J85] 用户裁定 2026-08-27(方案 A):**冻结通道不弹确认条**,未冻结通道照旧弹。
+    // 两向都断:只断一边的话,「永远不弹」和「永远弹」各有一半能蒙混过去。
+    // freeze 位:bit0=pan / bit1=vol。
+    eq(
+        TT.needsManualConfirm(0, "vol", false),
+        true,
+        "[J85] 未冻结 + 未确认过 ⇒ 弹(整表压成常值段是破坏性操作,要用户点头)",
+    );
+    eq(
+        TT.needsManualConfirm(0, "pan", false),
+        true,
+        "[J85] 未冻结 pan + 未确认过 ⇒ 弹",
+    );
+    eq(
+        TT.needsManualConfirm(2, "vol", false),
+        false,
+        "[J85] 冻结 vol ⇒ 不弹(不替换任何段、不入撤销栈,确认条正文两句都不成立)",
+    );
+    eq(TT.needsManualConfirm(1, "pan", false), false, "[J85] 冻结 pan ⇒ 不弹");
+    // **逐维**而非整行:冻 pan 不该让 vol 那一维也免弹(vol 仍会整表压曲线)。
+    eq(
+        TT.needsManualConfirm(1, "vol", false),
+        true,
+        "[J85] 只冻 pan 时拖 vol ⇒ 仍要弹(逐维判定)",
+    );
+    eq(
+        TT.needsManualConfirm(2, "pan", false),
+        true,
+        "[J85] 只冻 vol 时拖 pan ⇒ 仍要弹(逐维判定)",
+    );
+    // 「每轨每会话一次」优先级最高:确认过之后两条通道都不再弹。
+    eq(
+        TT.needsManualConfirm(0, "vol", true),
+        false,
+        "已确认过 ⇒ 不再弹(每轨每会话一次)",
+    );
+    // 源码级:requestManual 必须走这个判定,不许退回裸 manualConfirmed.has(ch)
+    check(
+        /function requestManual[\s\S]{0,400}?needsManualConfirm\(/.test(s),
+        "requestManual 走 needsManualConfirm(不是裸 manualConfirmed.has)",
+    );
 }
 
 // =============================================================================
