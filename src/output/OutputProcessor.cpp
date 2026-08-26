@@ -1926,8 +1926,16 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         {
             tc.freeze = 0; // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值
         }
+        // 「现值」= 不参与 / 冻结轨在指派层被原样保留的那个数(AutoAssign 的 manual/nonpart 分支)。
+        // **优先取该轨既有段表的值**,参数面只作回落:pan 参数在从未打印过的工程里恒是 0,
+        // 直接拿它当现值,等于把每一条不参与的轨都按到正中并烘焙进段表(v5.1 实测 P0-B 的放大器)。
+        const auto& existing = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)]
+                                   .tracks[static_cast<std::size_t>(t)]
+                                   .segments;
         const auto* rawPan = handles_.rawPan[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
-        tc.currentPan = rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0;
+        tc.currentPan = !existing.empty()
+                            ? static_cast<double>(existing.front().pan)
+                            : (rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0);
     }
 
     // 旧作业对象在**这里**回收,而不是在它自己的完成回调里 —— 在 run() 尚未返回时销毁

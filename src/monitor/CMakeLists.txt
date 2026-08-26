@@ -26,9 +26,17 @@ target_sources(SCVBMonitor PRIVATE
 
 target_include_directories(SCVBMonitor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# web/monitor + web/shared + web/js/juce + web/fonts -> ScvbMonitorWebData(BinaryData)。
+# 缺这一句时 Monitor 根本没有嵌入资源:ResourceProvider 对**每一个**请求都回 nullopt,
+# WebView2 于是把 https://juce.backend/monitor/index.html 当成真网址去解析 —— 真机上就是
+# 「找不到 juce.backend 的服务器 IP」(v5.1 实测 P0-C)。Input/Output 在 #82 就接了这一句,
+# Monitor 立项时(#88)漏掉,而它不影响构建、也不影响 pluginval(那条路不开窗)。
+scvb_add_web_assets(TARGET SCVBMonitorWebAssets NAMESPACE ScvbMonitorWebData ROLE_DIR monitor)
+
 target_link_libraries(SCVBMonitor PRIVATE
   scvb_core
   scvb_plugin_common            # WebViewHost 装配层(INTERFACE,源编入本 target)
+  SCVBMonitorWebAssets          # ScvbMonitorWebData::*(嵌入的 web UI 资源)
 )
 
 if(MSVC)

@@ -1284,8 +1284,43 @@ TEST_CASE("HOST P0-1:mono Input 被检测成单声道并默认参与自动声像
     {
         const auto& c = r.out.runtime().channels[static_cast<std::size_t>(ch - 1)];
         CHECK(c.sourceChannels == 1);
-        CHECK(c.participatesInAutoPan()); // [J60] mono 默认参与
+        CHECK(c.participatesInAutoPan());
     }
+}
+
+// ---------------------------------------------------------------------------
+// v5.1 实测 P0-B:**stereo 轨也必须默认参与自动声像**。
+// 检测值来自轨道总线布局,不是素材本身 —— Cubase 里单声道人声放在立体声轨上就报 2。
+// 按 [J60] 原默认把它们判成「不参与」,AutoAssign 会给它们「保持现值」;而现值取自从未被
+// 打印过的 pan 参数 = 0,分析再把 0 烘焙进段表:真机上「大部分轨回到中间、只剩两条在左边」。
+//
+// 这一条**只断言取值口径本身**(纯函数,不经共享内存):它就是回归点,而端到端的
+// 「多轨分析后 pan 非全零」由 MonoMultiRig 那条用例守着。走 IPC 反而会把断言绑到
+// harness 里 Input 总线布局的解析结果上 —— 那个在单独跑与全量跑之间并不稳定,
+// 是「测试自己的噪声」,不是被测行为。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-B:stereo 检测值不得把轨挤出自动声像", "[host][t37][v51][analyze]")
+{
+    OutputRuntimeState::Channel c;
+
+    // 未显式设置:三种检测态(未检测 / mono / stereo)一律参与。
+    REQUIRE_FALSE(c.participateAutoPanSet);
+    for (const int detected : {0, 1, 2})
+    {
+        c.sourceChannels = detected;
+        CHECK(c.participatesInAutoPan()); // ← 改回 `sourceChannels != 2` 时 detected=2 即红
+    }
+
+    // 显式设置仍然说了算(该由用户决定的那一档没有被写死)。
+    c.participateAutoPanSet = true;
+    c.participateAutoPan = false;
+    for (const int detected : {0, 1, 2})
+    {
+        c.sourceChannels = detected;
+        CHECK_FALSE(c.participatesInAutoPan());
+    }
+    c.participateAutoPan = true;
+    CHECK(c.participatesInAutoPan());
 }
 
 // ---------------------------------------------------------------------------

@@ -74,13 +74,21 @@ struct OutputRuntimeState
         bool leadVolExempt = false;
         int pairId = 0; // 0=无配对,1..7=配对组
 
-        // [J60] 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
-        // 未显式设置时按源声道推导:**只有检测到 stereo 才默认不参与**。写成 `== 1` 会把
-        // 「尚未检测」(0)也判成不参与,那是 v5 实测 P0-1「分析结果全居中」的直接成因。
-        bool participatesInAutoPan() const
-        {
-            return participateAutoPanSet ? participateAutoPan : (sourceChannels != 2);
-        }
+        // 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
+        //
+        // **未显式设置时一律参与**,不再按源声道推导。[J60] 原本写的是「mono 默认参与 /
+        // stereo 默认不参与」,理由是「立体声源自带声像,自动 pan 会把它压塌」。但检测值来自
+        // `getMainBusNumInputChannels()`,那是**轨道总线布局**,不是素材本身是不是立体声 ——
+        // Cubase 里一条单声道人声放在立体声轨上就报 2。于是接上检测之后,真机上 15 条人声轨
+        // 里绝大多数被判成「不参与」,而 AutoAssign 对不参与的轨按「保持现值」处理,现值 = 从未
+        // 被写过的 pan 参数 = 0 —— 分析把 0 烘焙进段表,打印器再把 0 写进自动化:
+        // 「大部分轨回到中间、只剩两条(恰好是 mono 轨)在左边」(v5.1 实测 P0-B)。
+        // 这比 v5 的「全居中」更隐蔽:它一半有效,看起来像分配算法本身不平衡。
+        //
+        // 真正该由用户决定的是「这条轨要不要参与」,轨道页每轨都有那个开关;检测值继续服务
+        // 它该服务的地方(分布图的 ST 角标与张开线、viz 的 stereoMask、dual-pan 解码)。
+        // ⚠ 本行偏离 [J60] 的默认档,需统筹补一条裁决转正。
+        bool participatesInAutoPan() const { return participateAutoPanSet ? participateAutoPan : true; }
     };
     std::array<Channel, 15> channels;
 
