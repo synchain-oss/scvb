@@ -701,6 +701,17 @@ input[type="range"] {
     stroke: var(--sem-red-icon);
 }
 
+/* 薰衣草紫面(v5 P2-13)。与 --red 同结构、只换三个 token:底是渐变、字色独立。 */
+.sc-banner--violet {
+    background: var(--sem-violet-surface);
+    border-color: var(--sem-violet-border);
+    color: var(--sem-violet-ink);
+}
+
+.sc-banner--violet .sc-banner__icon {
+    stroke: var(--sem-violet-icon);
+}
+
 /* 行内确认条:与 banner 同色系,但圆角更小、按钮贴右,表示「此处需要一个决定」。 */
 .sc-confirm {
     display: flex;
