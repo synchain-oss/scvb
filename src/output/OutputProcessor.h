@@ -87,7 +87,8 @@ struct OutputRuntimeState
         //
         // 真正该由用户决定的是「这条轨要不要参与」,轨道页每轨都有那个开关;检测值继续服务
         // 它该服务的地方(分布图的 ST 角标与张开线、viz 的 stereoMask、dual-pan 解码)。
-        // ⚠ 本行偏离 [J60] 的默认档,需统筹补一条裁决转正。
+        // 本行的默认档由 **[J83]** 裁决(取代 [J60] 的按源声道推导);变更文档见
+        // docs/contract-changes/20260826-j83-participate-default.md。
         bool participatesInAutoPan() const { return participateAutoPanSet ? participateAutoPan : true; }
     };
     std::array<Channel, 15> channels;

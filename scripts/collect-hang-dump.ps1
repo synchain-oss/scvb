@@ -11,11 +11,14 @@
 
   纯读取:除了写出那个 .dmp 文件之外,不改目标进程、不改系统任何设置。
 
-.EXAMPLE   powershell -ExecutionPolicy Bypass -File .\采集转储.ps1
+.EXAMPLE   powershell -ExecutionPolicy Bypass -File .\collect-hang-dump.ps1
            # 列出候选宿主进程,选一个抓
 
-.EXAMPLE   powershell -ExecutionPolicy Bypass -File .\采集转储.ps1 -ProcessId 12345
+.EXAMPLE   powershell -ExecutionPolicy Bypass -File .\collect-hang-dump.ps1 -ProcessId 12345
            # 直接抓指定 PID
+
+           注:交付给用户的测试包里本文件改名为 **采集转储.ps1**(中文名对非开发用户更好认),
+           内容不变 —— INSTALL.txt 与终验清单里写的都是那个名字。
 
 .NOTES
   · 必须存成 **UTF-8 with BOM**(理由同 诊断.ps1:Windows PowerShell 5.1 无 BOM 时

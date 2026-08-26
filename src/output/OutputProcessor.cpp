@@ -109,7 +109,7 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
         f.reset(sr, 0.080);
     }
 
-    // 打印器接线(C8 setShot 已在构造完成;此处重绑车道 + 启 50Hz)。
+    // 打印器接线(C8 setShot 已在构造完成;此处重绑车道 + 启打印 Timer,见 startPrinting)。
     rebindVersion();
     printer_.startPrinting();
 
@@ -1942,16 +1942,55 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         {
             tc.freeze = 0; // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值
         }
-        // 「现值」= 不参与 / 冻结轨在指派层被原样保留的那个数(AutoAssign 的 manual/nonpart 分支)。
-        // **优先取该轨既有段表的值**,参数面只作回落:pan 参数在从未打印过的工程里恒是 0,
-        // 直接拿它当现值,等于把每一条不参与的轨都按到正中并烘焙进段表(v5.1 实测 P0-B 的放大器)。
-        const auto& existing = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)]
-                                   .tracks[static_cast<std::size_t>(t)]
-                                   .segments;
+        // 「现值」在 AutoAssign 里服务**两个分支**(AutoAssign.cpp:235-244),两者的权威面不同,
+        // 必须**分开取源** —— 一视同仁会把另一个分支的权威顶掉:
+        //   · freeze&1(冻结 pan)→ 权威是**参数面**。DspArbiter 对冻结维度读的就是 rawPan
+        //     (setTrackManual 头注已裁定这一点)。用户在宿主里拧冻结 pan 是该维度上唯一有效的
+        //     路径,若这里改取段表旧值,一点分析就把用户刚拧的值改写回去 —— 那正是清单上挂着的
+        //     P1-D 那一族现象,不能在这轮再给它加一条新成因。
+        //   · !participate(不参与)→ 权威是**段表**。这条轨压根不进指派,它该保持自己原来的
+        //     声像;而参数面在从未打印过的工程里恒是 0,拿它当现值等于把每条不参与的轨按到
+        //     正中再烘焙进段表(v5.1 实测 P0-B 的放大器)。
+        //
+        // 段表一侧取**与本次分析范围起点相交(否则最近)**的那一段,而不是整轨第一段:
+        // 轨内 pan 随时间变化时,首段的值与范围所在处可能毫无关系。
         const auto* rawPan = handles_.rawPan[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
-        tc.currentPan = !existing.empty()
-                            ? static_cast<double>(existing.front().pan)
-                            : (rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0);
+        const double rawPanValue =
+            rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0;
+        if ((tc.freeze & 1) != 0)
+        {
+            tc.currentPan = rawPanValue; // 冻结维度:参数面是权威
+        }
+        else
+        {
+            const auto& existing = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)]
+                                       .tracks[static_cast<std::size_t>(t)]
+                                       .segments;
+            tc.currentPan = rawPanValue;
+            const std::int64_t rangeT0 = cfg.rangeStartSample;
+            const scvb::state::Segment* best = nullptr;
+            for (const auto& sg : existing)
+            {
+                if (sg.t0 <= rangeT0 && rangeT0 < sg.t1)
+                {
+                    best = &sg; // 命中范围起点所在段:直接用它
+                    break;
+                }
+                if (sg.t1 <= rangeT0)
+                {
+                    best = &sg; // 起点之前最近的一段(段表按 t0 升序,越后越近)
+                }
+                else if (best == nullptr)
+                {
+                    best = &sg; // 范围整体落在首段之前:退而取首段
+                    break;
+                }
+            }
+            if (best != nullptr)
+            {
+                tc.currentPan = static_cast<double>(best->pan);
+            }
+        }
     }
 
     // 旧作业对象在**这里**回收,而不是在它自己的完成回调里 —— 在 run() 尚未返回时销毁

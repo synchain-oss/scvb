@@ -11,7 +11,7 @@
 #include "engine/CurveEvaluator.h"
 #include "engine/PlayheadShot.h"
 
-// AutomationPrinter:50Hz 消息线程打印器(03 §3.2 / §3.3)。把引擎曲线真身打印到宿主自动化参数。
+// AutomationPrinter:25Hz 消息线程打印器(03 §3.2 / §3.3)。把引擎曲线真身打印到宿主自动化参数。
 // 挂在 Processor 上(不是 Editor!GUI 关闭也要打印,§4.2 REAPER 对策①)。
 // 关键纪律(CLAUDE.md §8 / R6):setValueNotifyingHost / beginChangeGesture 只在消息线程 Timer
 // 回调内调用,音频线程只发布 PlayheadShot(SPSC),绝不触碰宿主参数。
@@ -128,7 +128,7 @@ public:
     void setLookaheadMs(int ms) noexcept { m_lookaheadMs = ms; }
     void setTimeOffsetMs(int ms) noexcept { m_timeOffsetMs = juce::jlimit(-200, 200, ms); } // §3.4 -200..+200
 
-    // 50Hz Timer 启停(仅 Processor 调用;Editor 绝不持有本类)。
+    // 打印 Timer 启停(仅 Processor 调用;Editor 绝不持有本类)。
     // 打印节拍 25Hz。原为 50Hz —— 那是「宿主自动化分辨率」的直觉取值,但打印是
     // **前瞻 + deadband** 的:20ms 前瞻下 25Hz 的时间粒度(40ms)仍远细于任何听感门槛,
     // 而每一拍最多 30 次同步宿主往返,拍数减半就是消息线程负载减半。
@@ -161,7 +161,7 @@ public:
     scvb::engine::AuthorityMode mode() const noexcept { return m_mode.load(std::memory_order_relaxed); }
     const std::array<Lane, kNumLanes>& lanes() const noexcept { return m_lanes; }
 
-    // 直接推进一帧打印(等价一次 50Hz timerCallback)。供测试驱动,消息线程调用。
+    // 直接推进一帧打印(等价一次打印 timerCallback)。供测试驱动,消息线程调用。
     void tick();
 
 private:

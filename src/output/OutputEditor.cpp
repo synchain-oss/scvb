@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "OutputEditor.h"
 
+#include "AnalyzeScopeMath.h"
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -929,7 +931,8 @@ void OutputEditor::handleSetGroupId(const ArgList& a, Completion c)
 
 // analyze/previewAnalyze 的作用域参数(§1.5/§1.6):"all" = 全时间线全轨;
 // 对象形 {tracksMask,startS,endS} = 指定轨 × 指定范围(web 的 analyzeScope 产出)。
-// follow 档取「已知时间线末端」= 当前播放位置,与 emitCaptureProgress 的分母同口径。
+// follow 档取**整条已采集时间线**(capturedExtentSeconds),与播放头无关 —— v5.1 P1-F:
+// 原先取「当前播放位置」,用户 Cubase 设了「播完回开头」时播放头回 0,范围恒空、分析永远受理不了。
 OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) const
 {
     AnalyzeScope s;
@@ -943,27 +946,14 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
         return s;
     }
 
-    // "all" 或缺参:按当前 range 档决定。
+    // "all" 或缺参:范围推导是纯函数(AnalyzeScopeMath.h),这里只负责取参数。
+    // 抽出去的理由见那个头文件:它是 P1-F 的唯一修复点,埋在私有成员里 harness 够不着,
+    // 回归用例只能绕开它 —— 改回旧写法照样绿(评审 I1)。
     s.tracksMask = 0; // 0 = 不限轨
-    if (rt.rangeMode != 0 && rt.rangeEndS > rt.rangeStartS)
-    {
-        s.startS = rt.rangeStartS;
-        s.endS = rt.rangeEndS;
-        return s;
-    }
-    // follow 档没有显式范围 → **整条已采集时间线**,与播放头无关。
-    // 原先这里取 [0, 当前播放头]:那就是用户看到的「播放头必须在已采集范围内」——
-    // 而且在 Cubase「播完回开头」的设置下播放头会回到 0,于是 endS≈0、范围恒空,
-    // 分析**永远受理不了**,按钮点了毫无反应(v5.1 实测 P1-F;v5 的 P2-9 只拆掉了
-    // 按钮的置灰条件,没拆掉这条真正的前置,所以现象照旧)。
-    s.startS = 0.0;
-    s.endS = processor_.capturedExtentSeconds();
-    if (!(s.endS > s.startS))
-    {
-        // 一帧都没采到:仍回一个空范围,由 §1.6 的拒绝态 + UI 空态提示作答
-        // (而不是拿播放头兜底 —— 那会把「没采集」误报成「采到了播放头这里」)。
-        s.endS = 0.0;
-    }
+    const AnalyzeRange r =
+        analyzeAllRange(rt.rangeMode, rt.rangeStartS, rt.rangeEndS, processor_.capturedExtentSeconds());
+    s.startS = r.startS;
+    s.endS = r.endS;
     return s;
 }
 

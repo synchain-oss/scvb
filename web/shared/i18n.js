@@ -167,7 +167,7 @@ export const T = {
         "guide.rule6":
             "同一个组同一时间只能有一个生效的 Output 实例。同组的第二个实例进入只读观察模式并显示警告;八个组(A–H)各自是独立的总线域,互不影响。(ADR-002 / J66)",
         "guide.rule7":
-            "stereo 人声轨默认不参与自动声像分配,需要它参与时必须手动打开。mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),默认保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J60)",
+            "所有轨默认参与自动声像;立体声轨如需保留原有声像宽度与位置,请在轨道页关闭该轨的「参与自动声像」。mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),关闭参与后保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J83)",
         "guide.rule8":
             'SCVB Output 不向 DAW 报告额外延迟。对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)',
         "guide.rule9":
@@ -978,7 +978,7 @@ export const T = {
         "guide.rule6":
             "Only one Output instance can be active in a group at any one time. A second instance in the same group drops into read-only observer mode and shows a warning; the eight groups (A–H) are independent bus domains and do not affect one another. (ADR-002 / J66)",
         "guide.rule7":
-            "Stereo vocal tracks stay out of automatic pan assignment by default; switch one in by hand when you want it included. Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread) which by default preserves the stereo width you already have, rather than letting automatic assignment overwrite it. (ADR-003 / J57 + J60)",
+            'Every track takes part in automatic pan by default; if a stereo track should keep its existing stereo width and position, switch off "participate in auto pan" for that track on the Tracks page. Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread), and once participation is switched off the stereo width you already have is preserved rather than overwritten by automatic assignment. (ADR-003 / J57 + J83)',
         "guide.rule8":
             'SCVB Output reports no additional latency to the DAW. Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)',
         "guide.rule9":
@@ -1749,7 +1749,7 @@ export const T = {
         "guide.rule6":
             "Un seul Output peut être actif à la fois au sein d'un groupe. Une seconde instance du même groupe passe en mode observation en lecture seule et affiche un avertissement ; les huit groupes (A–H) sont des domaines de bus indépendants, sans influence mutuelle. (ADR-002 / J66)",
         "guide.rule7":
-            "Les pistes de voix stéréo sont exclues par défaut de la répartition automatique du panoramique ; activez-les manuellement pour les y inclure. Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) qui conserve par défaut la largeur stéréo existante au lieu de la laisser écraser par la répartition automatique. (ADR-003 / J57 + J60)",
+            "Toutes les pistes participent par défaut au panoramique automatique ; si une piste stéréo doit conserver sa largeur et sa position stéréo existantes, désactivez « participer au panoramique automatique » pour cette piste dans la page Pistes. Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) et, une fois la participation désactivée, la largeur stéréo existante est conservée au lieu d'être écrasée par la répartition automatique. (ADR-003 / J57 + J83)",
         "guide.rule8":
             "SCVB Output ne déclare aucune latence supplémentaire au DAW. L'alignement repose sur l'adressage temporel ; n'essayez pas de le « corriger » avec la PDC (compensation du retard des plugins). (ADR-002)",
         "guide.rule9":

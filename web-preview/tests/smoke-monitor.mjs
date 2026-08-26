@@ -2231,6 +2231,32 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
             ),
             "§9 UiDefaultsStore 归 plugin-common(两插件共用,依赖只指向本层)",
         );
+
+        // P0-C 的门禁缺口(评审【建议】):Monitor 漏 scvb_add_web_assets 既不影响构建
+        // 也不影响 pluginval(那条路不开窗),`resourceSource = {}` 还是个合法值 ——
+        // 三个 target 都必须**既生成各自的 WebAssets、又把它链进去、还要真的把 source 填上**,
+        // 少任何一环都会在真机上变成「WebView 去公网找 juce.backend」。
+        for (const [role, editor, ns] of [
+            ["input", "src/input/InputEditor.cpp", "ScvbInputWebData"],
+            ["output", "src/output/OutputEditor.cpp", "ScvbOutputWebData"],
+            ["monitor", "src/monitor/MonitorEditor.cpp", "ScvbMonitorWebData"],
+        ]) {
+            const cm = src(`src/${role}/CMakeLists.txt`);
+            check(
+                cm.includes("scvb_add_web_assets") &&
+                    cm.includes(`NAMESPACE ${ns}`),
+                `P0-C src/${role} 生成 ${ns} 嵌入资源`,
+            );
+            check(
+                /target_link_libraries[\s\S]*WebAssets/.test(cm),
+                `P0-C src/${role} 把 WebAssets 链进插件 target`,
+            );
+            const ed = src(editor).replace(/\s+/g, " ");
+            check(
+                ed.includes(`resourceSource = {${ns}::`),
+                `P0-C ${role} 的 resourceSource 真的填了 ${ns}(不是空 {})`,
+            );
+        }
     }
 
     // ---- P0-4:泳道波形。数据面(OutputProcessor::waveformOf)由 host harness 断言;
@@ -2256,23 +2282,22 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
     // ---- P1-8:峰线 left 定位的是内侧边,线体再向外长一个线宽 → 恒高出柱顶。
     //      往回让一个线宽,外沿与柱顶重合。
     for (const cls of ["sc-tube__peak", "sc-meter__peak"]) {
-        const block = css.slice(css.indexOf("." + cls + " {"));
+        // 截到**本规则的第一个 `}`** 为止。原先用固定 slice(0,900) 窗口:注释一长就溢到
+        // 后续规则里,后面任一规则出现 `border-radius: 0;` 都会假绿(评审【建议】)。
+        const from = css.indexOf("." + cls + " {");
+        const block = css.slice(from, css.indexOf("}", from) + 1);
         check(
-            /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(
-                block.slice(0, 900),
-            ),
+            /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(block),
             `P1-8 .${cls} 的 left 回让一个线宽(外沿贴柱顶)`,
         );
         check(
-            /transition: left var\(--dur-meter\) linear/.test(
-                block.slice(0, 900),
-            ),
+            /transition: left var\(--dur-meter\) linear/.test(block),
             `P1-8 .${cls} 的位移与液柱同步插值(瞬态不再裂开一道缝)`,
         );
         // v5.1 P1-G:2px 宽的盒子套胶囊圆角会被画成一颗收圆的点,视觉重心离开外沿 ——
         // 几何对齐了仍看着高半个线宽。峰线是刻线,要齐头齐尾。
         check(
-            /border-radius: 0;/.test(block.slice(0, 700)),
+            /border-radius: 0;/.test(block),
             `P1-G .${cls} 不用胶囊圆角(2px 刻线要齐头齐尾)`,
         );
     }

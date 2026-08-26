@@ -244,7 +244,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `ch: 1..15`;`patch`(**全部字段可选,只写给出的字段**):<br>`{ enabled?:bool, label?:string(≤24 字符), priority?:0..10(int), lead_lock?:bool, lead_vol_exempt?:bool, participate_in_auto_pan?:bool, pair_id?:0\|1..7 }` |
 | 返回 | `{ok:true}` 或 `{observer:true}` 或 `{ok:false, reason:"badArg"}` |
-| 语义 | 写 `channels[ch]` state —— **配置类唯一真源写入点**(ADR-004)。`participate_in_auto_pan` 默认值:stereo 轨 false / mono 轨 true(J60)。`pair_id=0` = 无配对,1..7 = 配对组(15 轨最多 7 对,J59)。写入后 `config_seq+1` 并经 `scvb.state` 回推 + ctrl 广播区刷新(Input 远程视图经 `scvb.config` 看到)。**`config_seq` 是 ctrl 广播区的整体版本号、不是本函数的调用计数**——广播区任一字段变化都会 bump,口径见 §4.3 字段纪律。 |
+| 语义 | 写 `channels[ch]` state —— **配置类唯一真源写入点**(ADR-004)。`participate_in_auto_pan` 默认值:**未显式设置一律 true**(J83 取代 J60 的按源声道推导 —— `source_channels` 来自轨道总线布局而非素材声道数,mono 素材放在 stereo 轨上就报 2;排除权在轨道页每轨的开关)。`pair_id=0` = 无配对,1..7 = 配对组(15 轨最多 7 对,J59)。写入后 `config_seq+1` 并经 `scvb.state` 回推 + ctrl 广播区刷新(Input 远程视图经 `scvb.config` 看到)。**`config_seq` 是 ctrl 广播区的整体版本号、不是本函数的调用计数**——广播区任一字段变化都会 bump,口径见 §4.3 字段纪律。 |
 | **不可写字段** | `source_channels`(1\|2)为 **Input 实测检测值**,只读、经 `scvb.state.channels[].source_channels` 下推;**`auto_pan`/`auto_vol` 已删除**(J65,改由每轨 `freeze` 自动化参数承载)。patch 含上述键 → `{ok:false, reason:"badArg"}` |
 | 拒绝态 | 只读观察态(`outputReadOnly=true`)下全 UI 写控件 disabled;C++ 侧收到写入返回 `{observer:true}` 且不改 state |
 | 撤销 | 否 |

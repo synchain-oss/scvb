@@ -108,6 +108,14 @@ void AutomationPrinter::endAllGestures()
             lane.param->endChangeGesture();
             lane.gestureOpen = false;
         }
+        // **去重缓存随 gesture 一起作废**:下一次重开 gesture 必须先写一个首点。
+        //
+        // 少了这一行,「值没动就不写」会在循环回跳 / 停止再播 / 播放头拖出再拖回之后咬到自己:
+        // gesture 重新 begin,但 lastWrittenNorm 还等于当前值 → 整整一圈一次
+        // setValueNotifyingHost 都不发 → 宿主自动化里这一圈**没有任何落点**,冻结维度那条
+        // 平直线就断了。旧实现每拍无条件重写恰好盖住了这个缺口,所以减负必须连它一起补。
+        // 代价是每次重开 gesture 多 15 次写入(每圈一次),不是每秒 750 次 —— 减负目标不受影响。
+        lane.everWritten = false;
     }
 }
 
@@ -179,7 +187,7 @@ bool AutomationPrinter::nearSegmentBoundary(const scvb::CurveEvaluator* curve, d
 
 void AutomationPrinter::tick()
 {
-    // —— §3.1:读 playhead 快照(50Hz 消息线程;撕裂沿用上帧,不自旋)——
+    // —— §3.1:读 playhead 快照(打印 Timer / 消息线程;撕裂沿用上帧,不自旋)——
     scvb::engine::PlayheadPod pod;
     if (m_shot != nullptr)
     {
