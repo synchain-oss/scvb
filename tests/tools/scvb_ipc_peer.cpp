@@ -10,7 +10,7 @@
 //   holder       claim Input(--kind=input)或 Output(--kind=output)+ 250ms 心跳,持住直到被杀
 //   ctrl-writer  Input [M] 向命令环 enqueue(IPC-13/13b)
 //   ctrl-reader  Output [M] 从命令环 dequeue(IPC-13/13b)
-//   globalinfo-writer / globalinfo-reader  ctrl 全局小节(IPC-16)
+//   globalinfo-writer / globalinfo-reader  ctrl 全局小节(IPC-16;reader 握手超时退出码 5)
 //   feat-writer  Input 侧写特征环 run 协议(IPC-14)
 //   feat-reader  Output 侧增量拉取特征环 → CSV(IPC-14)
 //   viz-writer   [T44] Output [M] 建 viz 段并发布一帧(--linger-ms 持段供读方 attach)
@@ -614,6 +614,13 @@ int runGlobalInfoReader(const Args& a)
             break;
         }
         ::Sleep(1); // 让出时间片而不是忙等(::Sleep(0) 只在同优先级就绪队列非空时才让)
+    }
+
+    // 握手超时(capture_enabled 仍 0)→ 不写 CSV,返回独立退出码 5:writer 未在 10s 内发布快照
+    // (被抢占/段异常/被截杀)。父进程 REQUIRE(waitPeer(pr.pi, 15000) == 0) 据此判失败,而非读全零 CSV。
+    if (s.capture_enabled == 0)
+    {
+        return 5;
     }
 
     std::string csv;
