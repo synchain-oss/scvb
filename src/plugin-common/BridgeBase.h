@@ -35,7 +35,7 @@ namespace Init
 inline constexpr const char* Version = "version";
 inline constexpr const char* Lang = "lang";
 inline constexpr const char* UiScale = "uiScale";
-inline constexpr const char* Role = "role"; // "input" | "output"
+inline constexpr const char* Role = "role"; // "input" | "output" | "monitor"([J75])
 inline constexpr const char* ChannelLimit = "channelLimit"; // [J59] 15
 } // namespace Init
 
@@ -79,7 +79,7 @@ inline DesignBoxSize designBoxWindowSize(const juce::String& role, float scale)
 // --- 首帧 seed(机制 5)与 scvb.state 快照共用的 UI 基础信息 ----------------------------
 struct UiSeed
 {
-    juce::String role; // "input" | "output"
+    juce::String role; // "input" | "output" | "monitor"([J75])
     juce::String version;
     juce::String lang; // 归一化后的 {zh,en,fr}
     float uiScale = 1.0f;
