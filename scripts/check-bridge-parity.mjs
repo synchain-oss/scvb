@@ -862,6 +862,8 @@ if (compared === 0) {
     );
 }
 
+checkEventPayloadFields();
+
 finish();
 
 // ---------------------------------------------------------------------------
@@ -1014,4 +1016,109 @@ function extractCppNames(src) {
         }
     }
     return { functions: [...new Set(functions)], events: [...new Set(events)] };
+}
+
+// ---------------------------------------------------------------------------
+// 四、事件**载荷字段**对拍(v5.3 R5 新增)
+// ---------------------------------------------------------------------------
+// 为什么补这一节:上面三方比对的是**名字集合**(函数名 / 事件名),它**看不见载荷字段**。
+// 于是「给 scvb.conn 加一个 suspended、给 scvb.segments 加一个 openEnded」这类改动,
+// 三方全绿而契约文档一个字没动 —— 契约 §7.4 要求载荷新增走 §9,却没有任何机器在查。
+// 这条挂了六轮评审才被人眼抓到;补上之后第七轮不可能存在。
+//
+// 口径:从契约的「载荷」行抽出字段名集合,与 OutputEditor.cpp 里**实际 put 出去**的
+// 字段名集合对拍。两侧都用最保守的抽取(只认字面量键名);抽不到就报**警告**而不是假绿 ——
+// 一个「悄悄跳过」的门禁比没有门禁更坏。
+function checkEventPayloadFields() {
+    log("");
+    log("=== 四、事件载荷字段对拍(契约「载荷」行 vs 实发 put) ===");
+
+    const editorPath = join(REPO_ROOT, "src", "output", "OutputEditor.cpp");
+    if (!existsSync(editorPath)) {
+        warns.push("载荷字段对拍:读不到 OutputEditor.cpp,跳过");
+        return;
+    }
+    const editor = readFileSync(editorPath, "utf8");
+    const contract = readFileSync(CONTRACT_PATH, "utf8");
+
+    // 每条:事件名 / 契约「载荷」行的定位锚 / C++ 侧装配该条目的 juce::var 变量名 /
+    // 该事件里不属于这一层对象的键(顶层或别层,列出来免得误判成缺失)。
+    const CASES = [
+        {
+            event: "scvb.conn",
+            anchor: "slotState",
+            fn: "OutputEditor::buildConnPayload",
+            varName: "ch",
+            otherLevels: ["channels", "outputReadOnly", "generation"],
+        },
+        {
+            event: "scvb.segments",
+            anchor: "segIdx",
+            fn: "OutputEditor::buildSegmentsPayload",
+            varName: "seg",
+            otherLevels: [
+                "version",
+                "reason",
+                "channels",
+                "diff",
+                "ch",
+                "segments",
+                "stale",
+            ],
+        },
+    ];
+
+    for (const c of CASES) {
+        const line = contract
+            .split(/\r?\n/)
+            .find((l) => l.includes("| 载荷 |") && l.includes(c.anchor));
+        if (!line) {
+            warns.push(
+                `载荷字段对拍:契约里找不到 ${c.event} 的载荷行(锚点 ${c.anchor}),跳过`,
+            );
+            continue;
+        }
+        const docFields = new Set(
+            [...line.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:/g)].map(
+                (m) => m[1],
+            ),
+        );
+
+        // **必须限定在装配该事件的那个函数体内**:`ch` / `seg` 这类变量名在别处的 payload
+        // 装配里也用(比如 scvb.state 的逐通道配置也叫 `ch`),全文件扫会把别处的字段算进来
+        // —— 那是**假红**,而假红会让人把门禁关掉,比没门禁更坏。
+        const fnStart = editor.indexOf(c.fn);
+        if (fnStart < 0) {
+            warns.push(`载荷字段对拍:找不到 ${c.fn},跳过`);
+            continue;
+        }
+        const NL = String.fromCharCode(10);
+        const fnEnd = editor.indexOf(NL + "}" + NL, fnStart);
+        const body = editor.slice(fnStart, fnEnd > 0 ? fnEnd : editor.length);
+        const re = new RegExp(
+            `put\\(\\s*${c.varName}\\s*,\\s*"([A-Za-z_][A-Za-z0-9_]*)"`,
+            "g",
+        );
+        const codeFields = new Set([...body.matchAll(re)].map((m) => m[1]));
+        if (codeFields.size === 0) {
+            warns.push(
+                `载荷字段对拍:${c.event} 在实现里抽不到 put(${c.varName}, …),跳过`,
+            );
+            continue;
+        }
+
+        const missingInDoc = [...codeFields].filter(
+            (f) => !docFields.has(f) && !c.otherLevels.includes(f),
+        );
+        if (missingInDoc.length > 0) {
+            errors.push(
+                `${c.event} 实发了契约未登记的载荷字段:${missingInDoc.join(", ")}` +
+                    " —— 契约 §7.4:载荷新增须走 §9(补契约载荷行 + 变更文档)",
+            );
+        } else {
+            log(
+                `  [OK]   ${c.event}:${codeFields.size} 个实发字段均已在契约载荷行登记`,
+            );
+        }
+    }
 }

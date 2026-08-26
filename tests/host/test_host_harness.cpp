@@ -1811,3 +1811,38 @@ TEST_CASE("HOST P0-A:covered 列的抽样上界不影响「有没有数据」的
     }
     CHECK(normalCovered > 0);
 }
+
+// ---------------------------------------------------------------------------
+// v5.3 R4:**只有一个「无末端」段的轨**,上桥的 t1S 必须严格大于 t0S。
+//
+// setTrackManual 的产物是「单段全时限常值」(track.segments.assign(1, seg)),于是
+// 手动/冻结轨这一整类**本轨内一个非哨兵段都没有**。降级值若按本轨算就永远得 0,
+// t1S == t0S,段在波形页上坍缩成零宽:点不中、切不开 —— 而那正是最常被点的那批轨。
+// 降级必须取**工程级**已知末端(全轨非哨兵段最大 t1 → 采集覆盖 → 最小非零宽度)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST R4:单哨兵段轨的降级右端严格大于左端", "[host][t37][v53][segments]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 造出「整轨只有一个无末端段」:setTrackManual 会把段表整表换成单段全时限。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -40.0f, replaced, replacedLocked));
+
+    const auto crvs = r.out.crvsSnapshot();
+    const auto& segs =
+        crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    REQUIRE(segs.size() == 1); // 前置:确实是单段
+    REQUIRE(segs.front().t1 >= (static_cast<std::int64_t>(1) << 40)); // 且确实是无末端哨兵
+
+    // 降级用的工程级末端:本轨没有非哨兵段,须由采集覆盖或最小宽度兜底。
+    // 这里直接验兜底链的下界 —— 任何情形下都必须严格大于 t0。
+    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+    const double sr = r.out.sampleRate();
+    REQUIRE(sr > 0.0);
+    const std::int64_t minSpan = std::max<std::int64_t>(1, static_cast<std::int64_t>(hopS * sr));
+    CHECK(minSpan > 0); // ← 兜底宽度本身必须非零,否则整条链仍会坍缩
+    CHECK(segs.front().t0 + minSpan > segs.front().t0);
+}

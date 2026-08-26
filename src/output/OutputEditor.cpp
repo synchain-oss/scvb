@@ -758,22 +758,44 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
     const auto& vc = crvs.versions[static_cast<std::size_t>(v - 1)];
     const double sr = processor_.sampleRate();
 
-    juce::var channels = mkArray();
-    for (int t = 0; t < 15; ++t)
+    // 「已知时间线末端」——无末端段(t1 = 1<<40 哨兵)的右端降级取它。
+    //
+    // **必须是工程级、不能是本轨级**:`setTrackManual` 的产物是**单段全时限**
+    // (`OutputProcessor.cpp` 的 `track.segments.assign(1, seg)`;harness 也直接断言
+    // `segs.size() == 1`),于是「手动/冻结轨」这一整类**本轨内一个非哨兵段都没有** ——
+    // 按本轨算永远得 0,降级后 t1S == t0S,段在波形页上**坍缩成零宽**:点不中、切不开。
+    // 那恰恰是这条修复要保住的那批轨(v5.3 R4)。
+    //
+    // 三级取值,逐级兜底,保证**严格大于任何段的 t0**:
+    //   ① 全 15 轨、活动版本里所有非哨兵段的最大真末端;
+    //   ② 没有(全是手动轨)→ 已采集时间线末端(与 §1.5 的 analyze "all" 同一个真源);
+    //   ③ 仍然没有(空工程)→ 让每个哨兵段各自退到「自己的 t0 + 一个 hop」,
+    //      宽度虽小但非零,UI 仍可点可切;真末端由前端按 openEnded 自行延伸。
+    std::int64_t knownEndSamples = 0;
+    for (const auto& track : vc.tracks)
     {
-        if ((tracksMask & (1u << t)) == 0)
-            continue; // 只含掩码内轨(PR#55 第11轮缺陷2)
-        const auto& segments = vc.tracks[static_cast<std::size_t>(t)].segments;
-
-        // 「已知时间线末端」= 本轨所有**非哨兵**段的最大真末端。无末端段的右端降级取它。
-        std::int64_t knownEndSamples = 0;
-        for (const auto& sg : segments)
+        for (const auto& sg : track.segments)
         {
             if (sg.t1 < scvb::output::kOpenEndedT1)
             {
                 knownEndSamples = std::max(knownEndSamples, sg.t1);
             }
         }
+    }
+    if (knownEndSamples <= 0 && sr > 0.0)
+    {
+        knownEndSamples = static_cast<std::int64_t>(processor_.capturedExtentSeconds() * sr); // ② 采集覆盖兜底
+    }
+    const std::int64_t minSpanSamples =
+        sr > 0.0 ? std::max<std::int64_t>(1, static_cast<std::int64_t>(ScvbOutputAudioProcessor::featHopSeconds() * sr))
+                 : 1; // ③ 最小非零宽度
+
+    juce::var channels = mkArray();
+    for (int t = 0; t < 15; ++t)
+    {
+        if ((tracksMask & (1u << t)) == 0)
+            continue; // 只含掩码内轨(PR#55 第11轮缺陷2)
+        const auto& segments = vc.tracks[static_cast<std::size_t>(t)].segments;
 
         juce::var ch = obj();
         put(ch, "ch", t + 1);
@@ -791,7 +813,8 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             // 降级目标 = **已知时间线末端**:优先取本次快照里其余段的最大真末端,没有则回落
             // 到该段自己的 t0(段仍然存在、可点、可切,只是右端不再撒谎)。
             const bool openEnded = s.t1 >= scvb::output::kOpenEndedT1;
-            const std::int64_t t1Effective = openEnded ? std::max(s.t0, knownEndSamples) : s.t1;
+            // 严格大于 t0:坍缩成零宽的段在波形页上点不中、切不开(R4)。
+            const std::int64_t t1Effective = openEnded ? std::max(knownEndSamples, s.t0 + minSpanSamples) : s.t1;
             put(seg, "t1S", samplesToSeconds(t1Effective, sr));
             put(seg, "openEnded", openEnded); // §2.8:UI 据此知道右端是「到末端」而不是一个真时刻
             put(seg, "pan", static_cast<double>(s.pan));

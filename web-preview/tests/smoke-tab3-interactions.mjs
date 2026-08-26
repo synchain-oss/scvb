@@ -601,6 +601,46 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         300,
         "全是 openEnded 段 → 回落 5 分钟,不取哨兵值",
     );
+    // v5.3 R4:openEnded 段的**有效右端是 +Infinity**,不是 C++ 给的那个保守下界。
+    // 手动/冻结轨的段是「单段全时限」,C++ 侧只能给出「已知时间线末端」作为下界;
+    // 前端若拿它当真末端,播放头走过之后就判成「不在任何段内」—— 点不中、切不开。
+    eq(
+        TW.segEndS({ t0S: 0, t1S: 12, openEnded: true }),
+        Infinity,
+        "openEnded 段右端 = +Infinity",
+    );
+    eq(TW.segEndS({ t0S: 0, t1S: 12 }), 12, "普通段右端 = t1S");
+    eq(TW.segEndS(null), 0, "空段 → 0(不炸)");
+    // 命中判定:openEnded 段在其 t0 之后的**任意**时刻都应命中,即使远超 t1S。
+    // **调用点**断言(不只测 segEndS 本身)——否则把三处调用点改回 `s.t1S` 用例照样绿,
+    // 那就又是一次「测了工具、没测被改的那行」。
+    {
+        const openSeg = { t0S: 0, t1S: 12, openEnded: true, locked: false };
+        const segments = { channels: [{ ch: 1, segments: [openSeg] }] };
+        // ① countsInScope:选区落在 t1S **之后**,openEnded 段仍应算作相交。
+        eq(
+            TW.countsInScope(segments, 0b1, 100, 200).overlap,
+            1,
+            "countsInScope:openEnded 段与 t1S 之后的选区相交",
+        );
+        // 对照:普通段在同一选区应不相交(证明上面那条不是恒真)。
+        eq(
+            TW.countsInScope(
+                { channels: [{ ch: 1, segments: [{ t0S: 0, t1S: 12 }] }] },
+                0b1,
+                100,
+                200,
+            ).overlap,
+            0,
+            "countsInScope:普通段不与其右端之后的选区相交",
+        );
+        // ② rebindSegKeys:锚点中点落在 t1S 之后,openEnded 段仍应被重新认领。
+        eq(
+            TW.rebindSegKeys([{ idx: 0, t0S: 100, t1S: 200 }], [openSeg]),
+            [{ idx: 0, t0S: 0, t1S: 12 }],
+            "rebindSegKeys:openEnded 段认领 t1S 之后的锚点",
+        );
+    }
     // 泳道模型投影(§2.7 覆盖率 / §2.8 段数 / §2.9 lowSample)
     const lanes = TW.laneModelFromStore({
         state: { channels: [{ label: "主唱" }] },

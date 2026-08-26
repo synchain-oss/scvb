@@ -304,6 +304,20 @@ export function fmtTimeMs(s) {
  * 工程至少这么长」的**下界证据**,不是长度本身 —— 故:有别的长度证据时它
  * 只参与取大;没有时下限压在 FALLBACK 上(播放头越过 5 分钟仍能把估计抬上去)。
  */
+/**
+ * 段的**有效右端**(秒)。`openEnded` 段(§2.8:`setTrackManual` 的单段全时限常值,
+ * CRVS 里 t1 = 1<<40 哨兵)表达的是「一直到时间线末端」,不是一个真时刻 —— 对它取
+ * `+Infinity` 才能让「包含 / 相交 / 重叠」这些判断得到正确答案。
+ *
+ * 为什么必须在前端也处理:C++ 侧把 `t1S` 降级成了「已知时间线末端」,那是个**保守下界**
+ * (保证段不坍缩、可点可切),不是真末端。若前端拿它当真末端用,播放头走过那个点之后
+ * 就会判成「不在任何段内」—— 手动/冻结轨恰恰是最常被点的那批(v5.3 R4)。
+ */
+export function segEndS(seg) {
+    if (seg && seg.openEnded === true) return Infinity;
+    return num(seg && seg.t1S, 0);
+}
+
 export function durationOf(store) {
     const st = store || {};
     let d = 0;
@@ -315,7 +329,7 @@ export function durationOf(store) {
             // 它表达的是「一直到时间线末端」,拿它当长度证据是循环论证。C++ 侧已把 t1S
             // 降级成已知末端,这里再挡一道:两侧都按语义处理,不靠数值大小猜。
             if (seg && seg.openEnded === true) continue;
-            d = Math.max(d, num(seg && seg.t1S, 0));
+            d = Math.max(d, segEndS(seg));
         }
     }
     const ph = num(st.playhead && st.playhead.timeS, 0);
@@ -600,11 +614,12 @@ export function rebindSegKeys(keys, segs) {
         for (let i = 0; i < list.length; i++) {
             const s = list[i];
             if (!s) continue;
-            if (mid >= s.t0S && mid < s.t1S) {
+            if (mid >= s.t0S && mid < segEndS(s)) {
                 best = i;
                 break;
             }
-            const ov = Math.min(s.t1S, k.t1S) - Math.max(s.t0S, k.t0S);
+            const ov =
+                Math.min(segEndS(s), segEndS(k)) - Math.max(s.t0S, k.t0S);
             if (ov > bestOv) {
                 bestOv = ov;
                 best = i;
@@ -653,7 +668,7 @@ export function countsInScope(segments, mask, startS, endS) {
     for (const c of (segments && segments.channels) || []) {
         if (!c || !((mask >>> (c.ch - 1)) & 1)) continue;
         for (const s of c.segments || []) {
-            if (!s || !(s.t1S > s0 && s.t0S < s1)) continue;
+            if (!s || !(segEndS(s) > s0 && s.t0S < s1)) continue;
             overlap++;
             if (s.locked) locked++;
             else if (s.origin && s.origin !== "auto") marks++;
@@ -2173,7 +2188,7 @@ export function createTabWave(opts) {
             const t = xToTime(vp, stageW, p.x);
             const segCh = segmentsOfCh(getStore().segments, p.ch);
             const segs = (segCh && segCh.segments) || [];
-            const idx = segs.findIndex((s) => t >= s.t0S && t < s.t1S);
+            const idx = segs.findIndex((s) => t >= s.t0S && t < segEndS(s));
             if (idx < 0) return;
             const s = segs[idx];
             if (!(t > s.t0S + 0.05 && t < s.t1S - 0.05)) return;
