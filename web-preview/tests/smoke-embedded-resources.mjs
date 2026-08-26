@@ -35,14 +35,23 @@ const bad = (msg) => {
     console.error(`  [FAIL] ${msg}`);
 };
 
-/** 递归列目录下匹配后缀的文件(相对仓库根的 POSIX 路径)。 */
-function listFiles(dir, exts) {
+/**
+ * 列目录下匹配后缀的文件(相对仓库根的 POSIX 路径)。
+ *
+ * `recursive` 必须逐条对上 cmake 那边用的是 `GLOB` 还是 `GLOB_RECURSE` —— 见 packagedFiles()。
+ * 这个参数原先不存在(一律递归),于是 `web/shared` 这一条与 cmake 的**非递归** `GLOB` 是
+ * 漂的。今天没出事只因为 `web/shared/` 底下还没有子目录;可一旦有人往里加一层
+ * (计划中的 `web/shared/canvas/` 就是),本套会**照样全绿而文件根本没进包** ——
+ * 正是本文件头注警告的那种「两边漂了就白守了」。
+ */
+function listFiles(dir, exts, recursive = false) {
     const out = [];
     const walk = (d) => {
         for (const name of readdirSync(d)) {
             const p = join(d, name);
-            if (statSync(p).isDirectory()) walk(p);
-            else if (exts.some((e) => name.endsWith(e)))
+            if (statSync(p).isDirectory()) {
+                if (recursive) walk(p);
+            } else if (exts.some((e) => name.endsWith(e)))
                 out.push(relative(ROOT, p).split("\\").join("/"));
         }
     };
@@ -51,15 +60,34 @@ function listFiles(dir, exts) {
 }
 
 /**
- * 打包集合 —— 必须与 cmake/ScvbWebAssets.cmake 的 glob 逐条同口径。
+ * 角色 -> `scvb_add_web_assets` 的 `EXTRA_DIRS`(相对 web/ 的目录名,非递归)。
+ *
+ * **登记制,与 src/<role>/CMakeLists.txt 逐字对应**;smoke-monitor.mjs §9 会断言那边不许
+ * 出现未登记的跨角色目录。现状只有一条:`web/shared/trajectory-chart.js` 反过来 import
+ * `../output/canvas/{timeline,hidpi,layers,playhead}.js`,四个文件不在 monitor 的四个目录里。
+ * 终局是把 canvas/ 提到 `web/shared/canvas/`;**搬的时候注意**:`web/shared` 那条是**非递归**
+ * glob,搬过去仍然不进包,必须同时把 cmake 那条改成 GLOB_RECURSE(或显式加子目录),
+ * 否则这里和 cmake 一起绿、真机一起黑。
+ */
+const EXTRA_DIRS = {
+    monitor: ["output/canvas"],
+};
+
+/**
+ * 打包集合 —— 必须与 cmake/ScvbWebAssets.cmake 的 glob 逐条同口径,**包括递归与否**。
  * 两边漂了这套就白守了,故此处只有一份注释指路,没有第二份「聪明」的推导。
  */
 function packagedFiles(role) {
     return [
-        ...listFiles(`web/${role}`, [".html", ".js", ".css"]),
+        // role_files 是 GLOB_RECURSE(output/canvas/ 就靠这一条进 Output 的包)
+        ...listFiles(`web/${role}`, [".html", ".js", ".css"], true),
+        // 以下四条 cmake 用的都是非递归 GLOB
         ...listFiles("web/shared", [".js", ".css", ".png"]),
         ...listFiles("web/js/juce", [".js"]),
         ...listFiles("web/fonts", [".woff2"]),
+        ...(EXTRA_DIRS[role] ?? []).flatMap((d) =>
+            listFiles(`web/${d}`, [".js", ".css", ".png"]),
+        ),
     ];
 }
 
@@ -240,6 +268,18 @@ function checkRole(role) {
 
 checkRole("output");
 checkRole("input");
+// ⚠ `checkRole("monitor")` 还差一步才能开:见下面的 TODO。
+//
+// 本套 #82 引入时只写了 output / input —— Monitor 页那会儿还在 #90 上没合入,第三个 target
+// 漏了。本套的闭包逻辑本来就够,少的只是那一行:补上它**当场**报出 v5.2 那四个缺失模块
+// (`web/shared/trajectory-chart.js` -> `../output/canvas/{timeline,hidpi,layers,playhead}.js`)。
+//
+// TODO(monitor):开这一行需要**两个**修复同时在树上,少任何一个都会红:
+//   ① 打包侧 —— 本 PR 的 `EXTRA_DIRS output/canvas`(已在,上面的 EXTRA_DIRS 表已同步);
+//   ② 页面侧 —— `web/monitor/index.html` 的 `__scvbReportBootError` boot 守卫(T46 的 #103,
+//      同样是「第三个 target 漏了」:#82 给 Output/Input 加守卫时 Monitor 页没合入)。
+// 本地实测:只有 ① 时红的是三条**守卫**断言,闭包那部分已全绿(33 个打包文件、24 个可达
+// URL 全命中)。故这一行归**后落地的那个 PR** 开,由它同时验到两半。
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);
