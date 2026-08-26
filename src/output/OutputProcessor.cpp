@@ -1256,6 +1256,13 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         {
             session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_.load(std::memory_order_relaxed)),
                                  static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
+            // [T44] viz 段随组切换 —— 与 setGroupId() 同口径:**只换指向,不建段**,建不建
+            // 由下一拍的 syncVizSegment() 按 claim 态裁决。
+            // 漏掉这一行时:宿主先 prepareToPlay(publisher 指向默认组 1)、再灌工程 chunk
+            // (session 换到工程组 N),Output 于是把 viz 段发布在 g1,而 Monitor 在 gN 上等 ——
+            // 永远 attach 不上,正是 v5 实测 P0-5「同工程 Output 在线却显示未连接」。
+            // 离线测试恒是「先 setState 再 prepare」,这条路径从没被走到。
+            vizPublisher_.setGroup(newGroup);
         }
         else
         {
