@@ -18,7 +18,8 @@
 
 function(scvb_add_web_assets)
   set(one_value_args TARGET NAMESPACE ROLE_DIR)
-  cmake_parse_arguments(ARG "" "${one_value_args}" "" ${ARGN})
+  set(multi_value_args EXTRA_DIRS)
+  cmake_parse_arguments(ARG "" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
   if(NOT ARG_TARGET OR NOT ARG_NAMESPACE OR NOT ARG_ROLE_DIR)
     message(FATAL_ERROR "scvb_add_web_assets: TARGET / NAMESPACE / ROLE_DIR 三者都必填")
@@ -44,7 +45,24 @@ function(scvb_add_web_assets)
   # 字体(base.css 的 @font-face 经 ../fonts/*.woff2 引用)。
   file(GLOB font_files CONFIGURE_DEPENDS "${web_root}/fonts/*.woff2")
 
-  set(all_files ${role_files} ${shared_files} ${juce_helper_files} ${font_files})
+  # EXTRA_DIRS:本角色的 import 闭包越出 role/shared/js/fonts 四个目录时补进来(相对 web/ 的目录名)。
+  # 现状只有一个用例:web/shared/trajectory-chart.js 反过来 import 了 ../output/canvas/{timeline,
+  # hidpi,layers,playhead}.js —— 一个 shared 模块依赖某个 role 目录,分层本身是欠债(Output 侧
+  # 因 role glob 是 GLOB_RECURSE 而恰好盖住,Monitor 侧就漏了)。在把 canvas/ 提到 shared/ 之前,
+  # 由调用方显式补目录;真正兜底的是 test_web_assets_embedded 的 import 闭包断言。
+  set(extra_files)
+  foreach(d IN LISTS ARG_EXTRA_DIRS)
+    file(GLOB d_files CONFIGURE_DEPENDS
+      "${web_root}/${d}/*.js"
+      "${web_root}/${d}/*.css"
+      "${web_root}/${d}/*.png")
+    if(NOT d_files)
+      message(FATAL_ERROR "scvb_add_web_assets: EXTRA_DIRS 里的 'web/${d}' 下没扫到任何资源(路径写错?)")
+    endif()
+    list(APPEND extra_files ${d_files})
+  endforeach()
+
+  set(all_files ${role_files} ${shared_files} ${juce_helper_files} ${font_files} ${extra_files})
 
   if(NOT all_files)
     message(FATAL_ERROR "scvb_add_web_assets: web/${ARG_ROLE_DIR} 下没扫到任何资源")
