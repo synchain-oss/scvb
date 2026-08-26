@@ -31,7 +31,16 @@ target_include_directories(SCVBMonitor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # WebView2 于是把 https://juce.backend/monitor/index.html 当成真网址去解析 —— 真机上就是
 # 「找不到 juce.backend 的服务器 IP」(v5.1 实测 P0-C)。Input/Output 在 #82 就接了这一句,
 # Monitor 立项时(#88)漏掉,而它不影响构建、也不影响 pluginval(那条路不开窗)。
-scvb_add_web_assets(TARGET SCVBMonitorWebAssets NAMESPACE ScvbMonitorWebData ROLE_DIR monitor)
+#
+# EXTRA_DIRS output/canvas:app.js -> ../shared/trajectory-chart.js -> ../output/canvas/{timeline,
+# hidpi,layers,playhead}.js。四个文件都不在 monitor/shared/js/fonts 里,于是 v5.2(P0-C 修好、
+# index.html 已进包)上仍然是:HTML/CSS 先画出来 → `<script type="module" src="./app.js">` 的
+# 模块图在这四个 404 上整体加载失败 → app.js 的 boot() 一行没跑 → requestInitialState() 没调 →
+# `bridgeReady_` 恒 false → 约 1.5s 后看门狗盖上兜底面板,Retry 重来一遍还是这样。
+# 真机三个症状(闪一下被盖 / 缩放没生效 / 没有播放头竖线)都出在这里:后两个是 boot 没跑的连带
+# ——applyScale() 没执行、playhead.js 本身就是缺的那四个之一。
+scvb_add_web_assets(TARGET SCVBMonitorWebAssets NAMESPACE ScvbMonitorWebData ROLE_DIR monitor
+                    EXTRA_DIRS output/canvas)
 
 target_link_libraries(SCVBMonitor PRIVATE
   scvb_core

@@ -155,6 +155,7 @@ set_tests_properties(scvb_monitor_tests PROPERTIES TIMEOUT 600)
 # 留待 T29/T30 接编辑器后真机验证,不编入本测试。
 add_executable(scvb_plugin_common_tests
   webview/test_plugin_common.cpp
+  webview/test_web_assets_embedded.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin-common/ResourceProvider.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin-common/BridgeBase.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin-common/FallbackPanel.cpp
@@ -165,6 +166,11 @@ target_link_libraries(scvb_plugin_common_tests PRIVATE
   Catch2::Catch2WithMain
   juce::juce_gui_extra
   juce::juce_audio_processors   # 只为 WebViewHost.h 的 include 面(取其 constexpr 常量,不编 .cpp)
+  # 三个插件真实生成的 BinaryData —— test_web_assets_embedded 拿它们喂真 ResourceProvider。
+  # 链接的是**产物**而不是复刻一份 glob 规则:cmake 那边改了范围,这里立刻跟着变。
+  SCVBInputWebAssets
+  SCVBOutputWebAssets
+  SCVBMonitorWebAssets
 )
 
 target_include_directories(scvb_plugin_common_tests PRIVATE
@@ -174,6 +180,8 @@ target_include_directories(scvb_plugin_common_tests PRIVATE
 
 target_compile_definitions(scvb_plugin_common_tests PRIVATE
   JUCE_WEB_BROWSER=1
+  # test_web_assets_embedded 从 web/<role>/index.html 现算 import 闭包(不维护手写清单)。
+  SCVB_WEB_ROOT="${CMAKE_SOURCE_DIR}/web"
 )
 
 if(MSVC)
