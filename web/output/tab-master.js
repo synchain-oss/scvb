@@ -1826,13 +1826,20 @@ export function createTabMaster(opts) {
             Date.now() - (st.params.hostEchoAt || 0) < HOST_ECHO_FRESH_MS
                 ? "1"
                 : "0";
+        // 灰显之外还要**说清楚为什么** —— 光变淡用户只会当成又一个「调了没反应」。
+        // 契约的优先级表(宿主自动化 > 冻结手动值 > 手动微调 > 引擎曲线)是设计,
+        // 缺的一直是「让用户看见自己在跟谁抢方向盘」(v5.1 实测 P1-D)。
+        const echoTip = echo === "1" ? t["master.hostEchoHint"] || "" : "";
         for (const node of [
             el.widthCard,
             el.msCard,
             el.leadCard,
             el.distCard,
         ]) {
-            if (node) node.setAttribute("data-host-echo", echo);
+            if (!node) continue;
+            node.setAttribute("data-host-echo", echo);
+            if (echoTip) node.setAttribute("title", echoTip);
+            else node.removeAttribute("title");
         }
     }
 

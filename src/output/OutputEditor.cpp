@@ -292,7 +292,11 @@ void OutputEditor::emitParams(bool forceFull)
 
     juce::var payload = obj();
     put(payload, "values", values);
-    put(payload, "hostEcho", false); // host echo 屏蔽→灰显归 T31/T32;桥面先恒 false
+    // §2.2 hostEcho:此刻车道是否正被**宿主自动化**驱动(打印器的 layer-1b listener 记的时刻)。
+    // 此前恒 false —— 于是「宿主在 Read 档回写参数、把用户的手动改动盖掉」这件事在 UI 上
+    // 完全不可见,用户只看到「调了没反应」(v5.1 实测 P1-D)。优先级本身是设计(J78 的
+    // 优先级表),要修的是**看不见**。
+    put(payload, "hostEcho", processor_.getPrinter().hostEchoActive());
     put(payload, "full", forceFull);
     put(payload, "versionActive", v);
 

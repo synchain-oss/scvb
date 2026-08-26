@@ -136,6 +136,9 @@ int AutomationPrinter::numGesturesOpen() const
 void AutomationPrinter::recordHostEcho(float value) noexcept
 {
     m_hostEchoCount.fetch_add(1, std::memory_order_relaxed);
+    // 记下**时刻**,而不只是计数:UI 要回答的是「此刻是不是还被宿主驱动着」,
+    // 单调计数答不了这个问题(它只会越来越大)。listener 可能来自音频线程,故用原子。
+    m_hostEchoAtMs.store(juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
     m_lastHostEchoValue.store(value, std::memory_order_relaxed);
 }
 

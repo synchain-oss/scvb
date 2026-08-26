@@ -146,6 +146,26 @@ public:
     // §3.5 层 1b:把 host echo 记入计数/值(供测试断言「宿主回吐被屏蔽」;uiEcho 载荷归 T24/05)。
     void recordHostEcho(float value) noexcept;
     int hostEchoCount() const noexcept { return m_hostEchoCount.load(std::memory_order_relaxed); }
+
+    // 「此刻这些车道正被**宿主自动化**驱动」。§2.2 的 `hostEcho` 数据源。
+    //
+    // 为什么要它:契约 §「优先级从高到低:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎曲线」——
+    // 宿主在 Read 档且车道有数据时每块回写参数,插件侧的手动写入随即被盖掉。这**是设计**,
+    // 但从 v5.1 起(打印器第一次真正进 PRINT、车道被填上)用户才第一次撞见它,而 UI 上
+    // 一点提示都没有,看起来就是「调了没反应」(v5.1 实测 P1-D)。把这一位如实上桥,
+    // UI 才能说清「你在跟宿主抢方向盘」。
+    // 新鲜度窗口取 600ms:打印期 §2.2 是 25Hz,宿主回写只要还在持续就落不出这个窗。
+    static constexpr std::uint32_t kHostEchoFreshMs = 600;
+    bool hostEchoActive() const noexcept
+    {
+        const std::uint32_t at = m_hostEchoAtMs.load(std::memory_order_relaxed);
+        if (at == 0)
+        {
+            return false;
+        }
+        const std::uint32_t now = juce::Time::getMillisecondCounter();
+        return (now - at) < kHostEchoFreshMs; // u32 回绕下差值仍然正确
+    }
     float lastHostEchoValue() const noexcept { return m_lastHostEchoValue.load(std::memory_order_relaxed); }
 
     // 把 HostEchoListener 挂/卸到 APVTS 全部 123 参数(接线归 T24 的 Processor)。
@@ -193,6 +213,7 @@ private:
 
     std::atomic<bool> m_selfWrite{false}; // ScopedSelfWriteFlag 置位;listener 跨线程读(接线时红线)
     std::atomic<int> m_hostEchoCount{0}; // 层 1b 记录的 host echo 计数
+    std::atomic<std::uint32_t> m_hostEchoAtMs{0}; // 最近一次 host echo 的时刻(见 hostEchoActive)
     std::atomic<float> m_lastHostEchoValue{0.0f};
 
     HostEchoListener m_hostEchoListener{*this};
