@@ -1,3 +1,4 @@
+> 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 架构决策记录(ADR)——P1 宪法,起草文档不得与之矛盾
 
 状态:**v2.1**(2026-08-25,J81 修宪:ADR-001 两插件 → 三插件,新增只读监视目标 SCVB Monitor;正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。

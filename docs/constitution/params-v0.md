@@ -1,3 +1,4 @@
+> 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 参数表——P1 宪法(自动化参数的 ID/顺序/命名冻结,冻结点=首个公开 rc)
 
 状态:**v2.3**(2026-08-25,J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
