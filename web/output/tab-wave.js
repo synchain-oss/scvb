@@ -181,6 +181,15 @@ export const VZOOM_H = 22;
 
 /** 无任何时长线索时的兜底工程时长(秒;mock 假数据同为 5 分钟,J59)。 */
 export const FALLBACK_DURATION_S = 300;
+/**
+ * 工程时长的**合理上限**(秒,24h)。
+ *
+ * 存在的理由不是「工程不会更长」,而是**一个坏字段不该污染整个视口模型**。
+ * P0-A 那次的具体坏字段(无末端哨兵)现在已经在两处按**语义**处理掉了 —— C++ 侧
+ * emitSegments 降级右端 + 上面 durationOf 跳过 openEnded 段 —— 本上限是最后一道
+ * 兜底,防的是「以后又冒出别的坏字段」,不再是当前已知问题的主要防线。
+ */
+export const MAX_DURATION_S = 24 * 60 * 60;
 
 /**
  * 7 滑杆定义(顺序不可重排 —— 05 §2.3 行 298-299 的 §1.18 五字段 + §1.19 两字段)。
@@ -295,6 +304,20 @@ export function fmtTimeMs(s) {
  * 工程至少这么长」的**下界证据**,不是长度本身 —— 故:有别的长度证据时它
  * 只参与取大;没有时下限压在 FALLBACK 上(播放头越过 5 分钟仍能把估计抬上去)。
  */
+/**
+ * 段的**有效右端**(秒)。`openEnded` 段(§2.8:`setTrackManual` 的单段全时限常值,
+ * CRVS 里 t1 = 1<<40 哨兵)表达的是「一直到时间线末端」,不是一个真时刻 —— 对它取
+ * `+Infinity` 才能让「包含 / 相交 / 重叠」这些判断得到正确答案。
+ *
+ * 为什么必须在前端也处理:C++ 侧把 `t1S` 降级成了「已知时间线末端」,那是个**保守下界**
+ * (保证段不坍缩、可点可切),不是真末端。若前端拿它当真末端用,播放头走过那个点之后
+ * 就会判成「不在任何段内」—— 手动/冻结轨恰恰是最常被点的那批(v5.3 R4)。
+ */
+export function segEndS(seg) {
+    if (seg && seg.openEnded === true) return Infinity;
+    return num(seg && seg.t1S, 0);
+}
+
 export function durationOf(store) {
     const st = store || {};
     let d = 0;
@@ -302,11 +325,19 @@ export function durationOf(store) {
     d = Math.max(d, num(range.end_s, 0));
     for (const c of (st.segments && st.segments.channels) || []) {
         for (const seg of (c && c.segments) || []) {
-            d = Math.max(d, num(seg && seg.t1S, 0));
+            // 「无末端」段(§2.8 `openEnded`)的右端不是真时刻,**不参与工程时长推定** ——
+            // 它表达的是「一直到时间线末端」,拿它当长度证据是循环论证。C++ 侧已把 t1S
+            // 降级成已知末端,这里再挡一道:两侧都按语义处理,不靠数值大小猜。
+            if (seg && seg.openEnded === true) continue;
+            d = Math.max(d, segEndS(seg));
         }
     }
     const ph = num(st.playhead && st.playhead.timeS, 0);
-    return Math.max(d > 0 ? d : FALLBACK_DURATION_S, ph);
+    // 夹上限:单个坏字段(无末端哨兵)不得污染整个视口模型,见 MAX_DURATION_S。
+    return Math.min(
+        Math.max(d > 0 ? d : FALLBACK_DURATION_S, ph),
+        MAX_DURATION_S,
+    );
 }
 
 /**
@@ -583,11 +614,12 @@ export function rebindSegKeys(keys, segs) {
         for (let i = 0; i < list.length; i++) {
             const s = list[i];
             if (!s) continue;
-            if (mid >= s.t0S && mid < s.t1S) {
+            if (mid >= s.t0S && mid < segEndS(s)) {
                 best = i;
                 break;
             }
-            const ov = Math.min(s.t1S, k.t1S) - Math.max(s.t0S, k.t0S);
+            const ov =
+                Math.min(segEndS(s), segEndS(k)) - Math.max(s.t0S, k.t0S);
             if (ov > bestOv) {
                 bestOv = ov;
                 best = i;
@@ -636,7 +668,7 @@ export function countsInScope(segments, mask, startS, endS) {
     for (const c of (segments && segments.channels) || []) {
         if (!c || !((mask >>> (c.ch - 1)) & 1)) continue;
         for (const s of c.segments || []) {
-            if (!s || !(s.t1S > s0 && s.t0S < s1)) continue;
+            if (!s || !(segEndS(s) > s0 && s.t0S < s1)) continue;
             overlap++;
             if (s.locked) locked++;
             else if (s.origin && s.origin !== "auto") marks++;
@@ -2051,13 +2083,17 @@ export function createTabWave(opts) {
                 // (PR#64 评审【重要】5)。窗不成立就**不建 boundDrag**,让这一按
                 // 落到②的点选/平移路径 —— 这类段只能用分割/合并处理。
                 const minS = j < 0 ? 0 : num(segs[j] && segs[j].t0S, 0) + 0.05;
+                // 右限走 segEndS:split 保留哨兵(SegmentEdit.cpp 的 b.t1 原样继承),
+                // 尾段 openEnded 时 t1S 只是保守下界 —— 在已知末端之外分割后,裸 t1S
+                // 会把窗翻到边界左边(手柄一按左跳且推不回,松手照发 move_boundary)。
+                // openEnded(+Infinity)/缺段(0)都回落时间线末端。
+                const nextEnd = j < 0 ? 0 : segEndS(segs[j + 1]);
                 const maxS =
                     j < 0
                         ? 0
-                        : num(
-                              segs[j + 1] && segs[j + 1].t1S,
-                              timeline.durationS(),
-                          ) - 0.05;
+                        : (Number.isFinite(nextEnd) && nextEnd > 0
+                              ? nextEnd
+                              : timeline.durationS()) - 0.05;
                 if (j >= 0 && minS < maxS) {
                     e.preventDefault();
                     capturePointer(els.lanes, e);
@@ -2156,10 +2192,10 @@ export function createTabWave(opts) {
             const t = xToTime(vp, stageW, p.x);
             const segCh = segmentsOfCh(getStore().segments, p.ch);
             const segs = (segCh && segCh.segments) || [];
-            const idx = segs.findIndex((s) => t >= s.t0S && t < s.t1S);
+            const idx = segs.findIndex((s) => t >= s.t0S && t < segEndS(s));
             if (idx < 0) return;
             const s = segs[idx];
-            if (!(t > s.t0S + 0.05 && t < s.t1S - 0.05)) return;
+            if (!(t > s.t0S + 0.05 && t < segEndS(s) - 0.05)) return;
             sendEdit(p.ch, "split", {
                 segIdx: idx,
                 tS: Math.round(t * 1000) / 1000,
@@ -2210,7 +2246,7 @@ export function createTabWave(opts) {
         const t = xToTime(vp, stageW, x);
         const segCh = segmentsOfCh(getStore().segments, ch);
         const segs = (segCh && segCh.segments) || [];
-        const idx = segs.findIndex((s) => t >= s.t0S && t < s.t1S);
+        const idx = segs.findIndex((s) => t >= s.t0S && t < segEndS(s));
         if (idx >= 0) {
             selectSegment(ch, idx, e.ctrlKey || e.metaKey || e.shiftKey);
             // 点选段附带勾选该轨(只增不减 —— 再点段不该把轨取消勾选)
@@ -3494,8 +3530,16 @@ export function createTabWave(opts) {
             show(els.inspOrigin, false);
         }
         text(els.inspStart, fmtTimeMs(seg.t0S));
-        text(els.inspEnd, fmtTimeMs(seg.t1S));
-        text(els.inspLen, `${(num(seg.t1S, 0) - num(seg.t0S, 0)).toFixed(2)}s`);
+        // openEnded 段:t1S 是保守下界不是真末端,显示词条而不是一个会误导的时间值
+        text(
+            els.inspEnd,
+            seg.openEnded ? fmtKey("wave.segOpenEnd") : fmtTimeMs(seg.t1S),
+        );
+        // openEnded 时长只知下界,前缀 ≥(纯符号,不进词典)
+        text(
+            els.inspLen,
+            `${seg.openEnded ? "≥" : ""}${(num(seg.t1S, 0) - num(seg.t0S, 0)).toFixed(2)}s`,
+        );
         text(
             els.inspLoud,
             Number.isFinite(seg.loudnessLufs)
@@ -3837,7 +3881,12 @@ export function createTabWave(opts) {
                     const s = segs[k.idx];
                     if (!s) continue;
                     const sx0 = timeToX(vp, w, num(s.t0S, 0));
-                    const sx1 = timeToX(vp, w, num(s.t1S, 0));
+                    const sSegE = segEndS(s);
+                    const sx1 = timeToX(
+                        vp,
+                        w,
+                        Number.isFinite(sSegE) ? sSegE : vp.t1,
+                    );
                     if (sx1 < 0 || sx0 > w) continue;
                     const cx0 = Math.max(sx0, 0);
                     const cw = Math.min(sx1, w) - cx0;
@@ -3927,7 +3976,9 @@ export function createTabWave(opts) {
             if (!seg) continue;
             const manual = seg.origin && seg.origin !== "auto";
             const x0 = timeToX(vp, w, num(seg.t0S, 0));
-            const x1 = timeToX(vp, w, num(seg.t1S, 0));
+            // openEnded 段:t1S 只是保守下界,画到视口末端而不是下界处截断
+            const segE = segEndS(seg);
+            const x1 = timeToX(vp, w, Number.isFinite(segE) ? segE : vp.t1);
             if (x1 < 0 || x0 > w) continue;
             const y = yOf(seg);
             const half = rampPx / 2;

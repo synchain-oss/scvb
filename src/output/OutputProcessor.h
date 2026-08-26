@@ -74,13 +74,22 @@ struct OutputRuntimeState
         bool leadVolExempt = false;
         int pairId = 0; // 0=无配对,1..7=配对组
 
-        // [J60] 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
-        // 未显式设置时按源声道推导:**只有检测到 stereo 才默认不参与**。写成 `== 1` 会把
-        // 「尚未检测」(0)也判成不参与,那是 v5 实测 P0-1「分析结果全居中」的直接成因。
-        bool participatesInAutoPan() const
-        {
-            return participateAutoPanSet ? participateAutoPan : (sourceChannels != 2);
-        }
+        // 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
+        //
+        // **未显式设置时一律参与**,不再按源声道推导。[J60] 原本写的是「mono 默认参与 /
+        // stereo 默认不参与」,理由是「立体声源自带声像,自动 pan 会把它压塌」。但检测值来自
+        // `getMainBusNumInputChannels()`,那是**轨道总线布局**,不是素材本身是不是立体声 ——
+        // Cubase 里一条单声道人声放在立体声轨上就报 2。于是接上检测之后,真机上 15 条人声轨
+        // 里绝大多数被判成「不参与」,而 AutoAssign 对不参与的轨按「保持现值」处理,现值 = 从未
+        // 被写过的 pan 参数 = 0 —— 分析把 0 烘焙进段表,打印器再把 0 写进自动化:
+        // 「大部分轨回到中间、只剩两条(恰好是 mono 轨)在左边」(v5.1 实测 P0-B)。
+        // 这比 v5 的「全居中」更隐蔽:它一半有效,看起来像分配算法本身不平衡。
+        //
+        // 真正该由用户决定的是「这条轨要不要参与」,轨道页每轨都有那个开关;检测值继续服务
+        // 它该服务的地方(分布图的 ST 角标与张开线、viz 的 stereoMask、dual-pan 解码)。
+        // 本行的默认档由 **[J83]** 裁决(取代 [J60] 的按源声道推导);变更文档见
+        // docs/contract-changes/20260826-j83-participate-default.md。
+        bool participatesInAutoPan() const { return participateAutoPanSet ? participateAutoPan : true; }
     };
     std::array<Channel, 15> channels;
 
@@ -255,6 +264,13 @@ public:
     // 每列聚合该列覆盖到的所有 hop:maxDb 取 peak 的最大值、minDb 取 K 加权的最小值、
     // vad 取该列是否有 vadP>127 的 hop。未覆盖列 covered=0 且 min/max 留 -160 哨兵
     // (泳道据此画斜纹)。持 lifecycleMutex_:与写 FrameStore 的 timerCallback 串行。
+    // 单列最多采样多少个 hop。概览块(512 列跨全曲)是缩略图,抽样对观感无损;
+    // 有了它,waveformOf 的代价与 cols 同阶,而不是与「请求跨度」同阶(P0-A 活锁的止血点)。
+    static constexpr std::uint64_t kMaxHopsPerCol = 4096;
+    // 单次 requestWaveform 允许的最大时间跨度(秒)。24h 远超任何真实工程,
+    // 只用来挡住被污染的时长(真机上出现过 2^40 采样 ÷ 48k ≈ 265 天)。
+    static constexpr double kMaxRequestSpanS = 24.0 * 60.0 * 60.0;
+
     struct WaveformTile
     {
         std::vector<double> minDb;
@@ -263,6 +279,10 @@ public:
         std::vector<int> covered;
     };
     WaveformTile waveformOf(int channel, double startS, double endS, int cols);
+
+    // [M] 已采集内容的时间线右端(秒)= 全轨 coverage 的最大终点;无采集数据回 0。
+    // follow 档下「分析全部」的终点取它,而不是当前播放头 —— 见 parseAnalyzeScope 的头注。
+    double capturedExtentSeconds();
     // [M] 清除选中轨 × 区间的采集覆盖(§1.24 clearCoverage:打洞,页数据留待后续覆盖)。
     // 返回实际清除的总时长秒数(各轨相加,供 UI 反馈)。
     double clearCoverage(std::uint16_t tracksMask, double startS, double endS);
@@ -347,6 +367,11 @@ private:
 
     // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
     bool applyRemotePriorities();
+
+    // [M] 非阻塞回收退休的分析作业(每拍一次;线程还在跑就留到下一拍)。
+    void reapRetiredJobs();
+    // [M] **阻塞**回收:只在析构调用 —— 见析构里的行注(R5 的不变式全靠它)。
+    void joinRetiredJobs();
 
     // [M] 音频环段头 channels(Input 的 prepareToPlay 写定,[J57])→ runtime.channels[].sourceChannels。
     // 有变化返回 true(调用方 bump config_seq,让广播区/UI 一起跟上)。
@@ -463,6 +488,15 @@ private:
     int timelineInvalidTicks_ = 0;
     // 分析作业([M] 起/停;线程体只读快照,完成后经 AsyncUpdater 回消息线程写 CRVS)。
     std::unique_ptr<AnalysisJob> analysisJob_;
+    // 已退休、但线程可能还没跑完的作业([M] 独占)。
+    //
+    // 取消/重启分析原先在**消息线程**上 stopThread(2000) 等 join —— 最多把消息泵堵 2 秒,
+    // 而它可由 web 的 cancelAnalyze 直接触发。这与 P0-A(消息线程上做可长时间阻塞的事)
+    // 同属一类,一并改掉:这里只 signal 不 join,把作业挪进退休区,由 25Hz 的
+    // reapRetiredJobs() **非阻塞**地回收(isThreadRunning() 为假才析构)。
+    // 代号(analysisGeneration_)已保证退休作业即便跑完也不会碰 CRVS。
+    // 析构时仍然 join —— 那是拆机时刻,阻塞是对的,也必须等线程真的停了才放对象。
+    std::vector<std::unique_ptr<AnalysisJob>> retiredJobs_;
     std::atomic<bool> analysisRunning_{false};
     // 作业代号:每次 start/cancel 都 +1。线程把自己的代号连同结果放进 pendingResult_,
     // [M] 取件时比对 —— 不匹配即整份丢弃。这道门同时挡住两件事:

@@ -6,6 +6,8 @@
 
 #include "BridgeBase.h"
 
+#include <ScvbMonitorWebData.h> // juce_add_binary_data 生成:嵌入的 web/monitor UI 资源
+
 #include <utility>
 
 namespace scvb::monitor
@@ -46,7 +48,11 @@ MonitorEditor::MonitorEditor(ScvbMonitorAudioProcessor& processor)
                       c.lang = processor.uiLanguage();
                       c.uiScale = static_cast<float>(processor.uiScalePercent()) / 100.0f;
                       c.channelLimit = static_cast<int>(scvb::kMaxChannels);
-                      c.resourceSource = {}; // web/monitor 资源嵌入归 T46(与 Input/Output 现状同口径)
+                      // 嵌入资源供给面。空 source ⇒ ResourceProvider 对每个请求回 nullopt ⇒
+                      // WebView2 转去真网络取 https://juce.backend/... ⇒「找不到服务器 IP」(P0-C)。
+                      c.resourceSource = {ScvbMonitorWebData::namedResourceListSize,
+                                          ScvbMonitorWebData::originalFilenames, ScvbMonitorWebData::namedResourceList,
+                                          &ScvbMonitorWebData::getNamedResource};
                       c.augmentOptions = [this](juce::WebBrowserComponent::Options& options) {
                           registerNativeFunctions(options);
                       };

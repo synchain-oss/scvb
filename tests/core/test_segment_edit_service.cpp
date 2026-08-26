@@ -8,6 +8,7 @@
 
 #include <juce_data_structures/juce_data_structures.h>
 
+#include "AnalyzeScopeMath.h"
 #include "SegmentEditService.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -189,4 +190,40 @@ TEST_CASE("SERVICE-8 makeManualConstantSegment:交替写两维互不干扰(真�
     segs.assign(1, scvb::output::makeManualConstantSegment(segs, /*isPan=*/false, 2.0f));
     REQUIRE(segs[0].volDb == 2.0f);
     REQUIRE(segs[0].pan == 55.0f); // pan 没被音量冲掉
+}
+
+// ---------------------------------------------------------------------------
+// v5.1 P1-F:analyze "all" 的范围推导(纯函数;原先埋在 OutputEditor 私有成员里,
+// 免 DAW harness 够不着,回归只能绕开被修的那一行 —— 评审 I1)。
+// ---------------------------------------------------------------------------
+TEST_CASE("analyzeAllRange:follow 档取已采集时间线,与播放头无关", "[output][analyze][v51]")
+{
+    using scvb::output::analyzeAllRange;
+
+    // follow 档(rangeMode=0):取 [0, 已采集末端]。
+    // ← 改回「取当前播放头」即红:用户 Cubase「播完回开头」时播放头是 0,范围恒空。
+    const auto follow = analyzeAllRange(0, 0.0, 0.0, 12.5);
+    CHECK(follow.startS == 0.0);
+    CHECK(follow.endS == 12.5);
+    CHECK(follow.valid());
+
+    // follow 档 + 一帧都没采到:回空范围,由 §1.6 拒绝态作答;**不拿播放头兜底**。
+    const auto empty = analyzeAllRange(0, 0.0, 0.0, 0.0);
+    CHECK_FALSE(empty.valid());
+    CHECK(empty.endS == 0.0);
+
+    // follow 档下 range 字段即使有残值也不参与(档位说了算)。
+    const auto stale = analyzeAllRange(0, 3.0, 9.0, 12.5);
+    CHECK(stale.startS == 0.0);
+    CHECK(stale.endS == 12.5);
+
+    // 显式范围档(daw_loop / manual):照用 range,不看已采集末端。
+    const auto manual = analyzeAllRange(2, 3.0, 9.0, 12.5);
+    CHECK(manual.startS == 3.0);
+    CHECK(manual.endS == 9.0);
+
+    // 显式档但范围非法(startS >= endS)→ 回落到已采集时间线,而不是产出一个倒置区间。
+    const auto bad = analyzeAllRange(2, 9.0, 3.0, 12.5);
+    CHECK(bad.startS == 0.0);
+    CHECK(bad.endS == 12.5);
 }

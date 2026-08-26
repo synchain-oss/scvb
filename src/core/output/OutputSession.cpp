@@ -257,7 +257,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
 
         // CH_SUSPENDED:write_head 完全停滞 ≥0.5s ∧ 心跳新鲜(宿主跳过该轨处理)。
         // dataAdvancing:该轨最近确有新帧写入 —— 恢复判定要用它,见下。
-        // **判定必须排在失准判定之前**:停流现在是失准发作的来源之一(见下面的 stallCount_)。
+        // **判定必须排在失准判定之前**:停流要先定下来,它自己就是一条上桥的状态(suspended)。
         bool suspended = false;
         bool dataAdvancing = false;
         if (hbFresh && bound)
@@ -298,18 +298,9 @@ void OutputSession::evaluateChannels(u64 nowMs)
         }
         else if (starvingSeen_[idx])
         {
-            if (!stallEpisode_[idx])
-            {
-                ++stallCount_[idx]; // 一次发作只记一笔,不按块累加
-            }
-            stallEpisode_[idx] = true;
+            stallEpisode_[idx] = true; // 坐实挂起:上桥成 ChannelConnInfo::suspended
         }
-        if (stallEpisode_[idx])
-        {
-            // 发作期间每拍刷新:退出注入集后 read() 不再被调,只看「无新缺口/无新饿读」
-            // 会把持续断流判成恢复。
-            misalignedSinceMs_[idx] = nowMs;
-        }
+        // 注意这里**不再**去刷 misalignedSinceMs_:停流有了自己的位,不必再借失准的灯来亮。
 
         // 失准判定:gapCount 增长 → 记失准时刻(近 1s 内视为 CH_MISALIGNED)。
         const u32 gc = sources_[idx].gapCount();
@@ -331,7 +322,6 @@ void OutputSession::evaluateChannels(u64 nowMs)
             // 本次失准发作结束 → 上桥的 misalignCount 归零,「路由失准」横幅与逐行 ⚠ 随之撤下
             // (进程累计值仍留在 gapCount 供 ctrl 全局小节/诊断)。
             misalignBaseline_[idx] = gc;
-            stallBaseline_[idx] = stallCount_[idx];
         }
 
         const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended;
@@ -550,6 +540,8 @@ ChannelConnInfo OutputSession::channelConn(u32 channel, u64 nowMs) const
     // 采样率只在槽活跃且两端都已 prepare 时才有可比性(0 = 未知,不报不一致)。
     const u32 slotSr = slot->sample_rate;
     info.srMismatch = info.slotState == kSlotActive && slotSr != 0 && sampleRate_ != 0 && slotSr != sampleRate_;
+    // 停流态直接取发作标志(evaluateChannels 每拍维护):写方停着 = 挂起,不是失准。
+    info.suspended = stallEpisode_[static_cast<std::size_t>(channel - 1)];
     return info;
 }
 
@@ -571,10 +563,19 @@ u32 OutputSession::misalignCountRecent(u32 channel) const
     const std::size_t idx = static_cast<std::size_t>(channel - 1);
     const u32 gc = sources_[idx].gapCount();
     const u32 base = misalignBaseline_[idx];
-    const u32 gaps = gc > base ? gc - base : 0; // baseline 只会落后于 gc;防守式取饱和差
-    // 停流笔数并进同一个数:UI 只有这一个「这条轨没在出数据」的计数位,两类故障共用它。
-    const u32 stalls = stallCount_[idx] > stallBaseline_[idx] ? stallCount_[idx] - stallBaseline_[idx] : 0;
-    return gaps + stalls;
+    // **只数真失准**(走带在推进、时间线上真的缺了数据 = 写方套圈)。
+    //
+    // 停流(写头停着)已由 ChannelConnInfo::suspended 独立承载,不再并进这个数 ——
+    // 「宿主在无信号段挂起 Input」与「用户 bypass 了 Input」在 Output 侧的**每一个可观察量
+    // 上完全相同**(心跳都在、写头都冻、都有饿读),没有任何信号能把它们分开;而它们与
+    // 「读方跟丢了」是**性质不同**的两件事。前两版把三者塞进同一个位,于是每换一次口径就
+    // 顾此失彼:v4 修「bypass 期间不得假恢复」→ v5 静音段闪失准 → v5 修短停 → v5.1 长静音仍报。
+    // 一个位表达不了两件事(统筹裁定:丙案)。分开之后:
+    //   · suspended  → UI 中性提示(「乐句间隙 / 挂起中」,灰蓝系,不是 ⚠);
+    //   · misalignCount → 真失准的红色警报。
+    // 「不得假恢复」这条保证不受影响:它的落点一直是 injectMask(数据没在推进的轨不进总线),
+    // 而 suspended 现在把这件事**明确说出来**,比从前靠一个失准计数暗示要准确。
+    return gc > base ? gc - base : 0; // baseline 只会落后于 gc;防守式取饱和差
 }
 
 u64 OutputSession::writeHead(u32 channel) const
@@ -650,7 +651,6 @@ void OutputSession::resetChannelTracking() noexcept
         const u32 gc = sources_[i].gapCount();
         lastGapCount_[i] = gc;
         misalignBaseline_[i] = gc;
-        stallBaseline_[i] = stallCount_[i];
         lastStallFail_[i] = sources_[i].stallFailCount();
     }
     stallEpisode_.fill(false);

@@ -49,6 +49,9 @@ struct ChannelConnInfo
     u32 heartbeatAgeMs = kHeartbeatAgeUnknown; // 哨兵 = 无数据
     bool capturing = false; // InputSlot.flags bit0(kFlagCapturing)
     bool srMismatch = false; // 该轨 Input 采样率 ≠ 本 Output 采样率(ipc §5,该轨禁用)
+    // CH_SUSPENDED:写方停在那儿(宿主在无信号段挂起 Input / 用户 bypass / 轨未激活)。
+    // 与 misalign **是两件事**,必须分开呈现 —— 见 misalignCountRecent 的头注。
+    bool suspended = false;
 };
 
 // 心跳年龄换算(纯函数,可离线断言):空闲槽 / 从未心跳 → 哨兵;时钟倒退 → 0;
@@ -229,13 +232,11 @@ private:
     std::array<u32, kMaxChannels> misalignBaseline_{};
     std::array<u64, kMaxChannels> lastWriteHead_{};
     std::array<u64, kMaxChannels> lastWriteHeadChangeMs_{};
-    // 停流(CH_SUSPENDED)独立记账:**每次挂起只记一笔**,不按块累加。
+    // 停流(CH_SUSPENDED)独立成一条上桥状态(ChannelConnInfo::suspended),**不并进失准计数**。
     // 写头冻结不再由 ShmRingMixSource 计缺口(那会让静音段的 500ms 判定窗每块都记一笔,
     // 就是 v5 实测 P1-7 的「偶发短暂失准」);但持续停流仍必须对用户可见 —— scvb.conn 里
     // 除 misalignCount 外没有第二个「这条轨没在出数据」的位。于是改成:短停(<500ms)零信号,
     // 一旦坐实挂起就记一笔并在挂起期间持续刷新发作时刻,警告不会因「不再有新缺口」自行到期。
-    std::array<u32, kMaxChannels> stallCount_{};
-    std::array<u32, kMaxChannels> stallBaseline_{};
     // 上一拍看到的「写头停滞造成的失败读」笔数。停流要记账,除写头冻结外还必须**确有失败读** ——
     // 否则走带一停(所有轨的写头都冻住,而 Output 照常读到已写区、一次都不失败)就会
     // 全 15 轨同时报停流。

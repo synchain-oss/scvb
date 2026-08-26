@@ -346,3 +346,123 @@ TEST_CASE("Monitor:state 往返(组/缩放/语言;不可信字节拒载)", "[mon
     c.setStateInformation(nullptr, 0);
     REQUIRE(c.groupId() == 1);
 }
+
+// ---------------------------------------------------------------------------
+// 播放头:Monitor **自己的** AudioPlayHead → PlayheadShot → playheadSnapshot()。
+//
+// 这条链此前零覆盖。文件里原有的三处 playhead 断言全是 **viz 段里** 的
+// `playheadSamples` / `playheadFlags` 字段(那是 Output 发布的,Monitor 只读),
+// 与本链无关 —— 而轨迹图上那条竖线走的是 25Hz 的 `scvb.playhead`,数据源正是这里
+// (见 web/monitor/app.js 的 playheadSeen 头注:Output 停摆时竖线照常走)。
+// 也就是说:哪怕 viz 段一切正常,这条链断了竖线照样不出,而且没有任何测试会红。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 假宿主播放头。JUCE 的 PositionInfo 全是 Optional,DAW 之间给不给差别很大 ——
+// 故意做成「哪些字段有值」可配置,好把「没给」与「给了 0」分开测。
+class FakePlayHead final : public juce::AudioPlayHead
+{
+public:
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        if (!hasPosition)
+            return juce::nullopt;
+        return info;
+    }
+
+    bool hasPosition = true;
+    PositionInfo info;
+};
+
+// 灌一块音频把 processBlock 跑一遍(publishPlayhead 挂在那条路上)。
+void pumpOneBlock(ScvbMonitorAudioProcessor& p, int samples = 256)
+{
+    juce::AudioBuffer<float> buf(2, samples);
+    buf.clear();
+    juce::MidiBuffer midi;
+    p.processBlock(buf, midi);
+}
+} // namespace
+
+TEST_CASE("Monitor:自己的 AudioPlayHead 经 processBlock 落进 playheadSnapshot", "[monitor][playhead]")
+{
+    ScvbMonitorAudioProcessor p;
+    p.prepareToPlay(48000.0, 256);
+
+    SECTION("宿主不给播放头 ⇒ timeSamples 保持 -1(调用方据此过滤,不是当成 0 秒)")
+    {
+        p.setPlayHead(nullptr);
+        pumpOneBlock(p);
+
+        const auto pod = p.playheadSnapshot();
+        REQUIRE(pod.timeSamples == -1);
+        REQUIRE(pod.flags == 0u);
+        REQUIRE(pod.sampleRate == 48000.0); // 采样率仍来自 prepareToPlay,与播放头无关
+    }
+
+    SECTION("宿主给了播放头但 getPosition() 无值 ⇒ 同样是 -1")
+    {
+        FakePlayHead ph;
+        ph.hasPosition = false;
+        p.setPlayHead(&ph);
+        pumpOneBlock(p);
+
+        REQUIRE(p.playheadSnapshot().timeSamples == -1);
+        p.setPlayHead(nullptr); // 别让处理器持有出栈的假对象
+    }
+
+    SECTION("播放中 + 循环 + 有速度 ⇒ 四个字段与四个 flag 位逐个到位")
+    {
+        FakePlayHead ph;
+        ph.info.setTimeInSamples(123456);
+        ph.info.setIsPlaying(true);
+        ph.info.setIsLooping(true);
+        ph.info.setBpm(128.5);
+        ph.info.setLoopPoints(juce::AudioPlayHead::LoopPoints{4.0, 20.0});
+        p.setPlayHead(&ph);
+        pumpOneBlock(p);
+
+        const auto pod = p.playheadSnapshot();
+        REQUIRE(pod.timeSamples == 123456);
+        REQUIRE(pod.bpm == 128.5);
+        REQUIRE(pod.loopStartPpq == 4.0);
+        REQUIRE(pod.loopEndPpq == 20.0);
+        REQUIRE((pod.flags & scvb::engine::kPlayheadIsPlaying) != 0u);
+        REQUIRE((pod.flags & scvb::engine::kPlayheadIsLooping) != 0u);
+        REQUIRE((pod.flags & scvb::engine::kPlayheadTempoValid) != 0u);
+        REQUIRE((pod.flags & scvb::engine::kPlayheadCycleValid) != 0u);
+        p.setPlayHead(nullptr);
+    }
+
+    SECTION("停止 + 无速度 + 无循环点 ⇒ 位置照收,三个 flag 位都不置")
+    {
+        FakePlayHead ph;
+        ph.info.setTimeInSamples(9600);
+        ph.info.setIsPlaying(false);
+        p.setPlayHead(&ph);
+        pumpOneBlock(p);
+
+        const auto pod = p.playheadSnapshot();
+        REQUIRE(pod.timeSamples == 9600); // 停着也要给位置,否则竖线会跳回原点
+        REQUIRE((pod.flags & scvb::engine::kPlayheadIsPlaying) == 0u);
+        REQUIRE((pod.flags & scvb::engine::kPlayheadTempoValid) == 0u);
+        REQUIRE((pod.flags & scvb::engine::kPlayheadCycleValid) == 0u);
+        REQUIRE(pod.bpm == 0.0); // 宿主没给就别编一个出来
+        p.setPlayHead(nullptr);
+    }
+
+    SECTION("每块都重发:位置前进后快照跟着走(竖线是靠这个动的)")
+    {
+        FakePlayHead ph;
+        ph.info.setIsPlaying(true);
+        p.setPlayHead(&ph);
+
+        for (const juce::int64 at : {0LL, 256LL, 512LL, 768LL})
+        {
+            ph.info.setTimeInSamples(at);
+            pumpOneBlock(p);
+            REQUIRE(p.playheadSnapshot().timeSamples == at);
+        }
+        p.setPlayHead(nullptr);
+    }
+}

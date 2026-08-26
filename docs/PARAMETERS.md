@@ -59,7 +59,7 @@ channels[15]:                  # 配置唯一真源在 Output(ADR-004);[J59] 10�
   enabled: bool
   label: string                # UI 显示名
   source_channels: 1|2         # [J57] 自动检测:mono/stereo 源
-  participate_in_auto_pan: bool # [J60] stereo 默认 false,mono 默认 true;参与时以中心点入槽位分配
+  participate_in_auto_pan: bool # [J83] 未显式设置一律 true(取代 J60 的按源声道推导);参与时以中心点入槽位分配
   priority: 0..10              # 宽度优先级,高→角度大
   lead_lock: bool              # 分析期主唱配置(逐段可变;与 lead_select 参数为两层,J58)
   lead_vol_exempt: bool        # 音量豁免——独立选项,不与任何 lead 机制强制关联(J58 用户澄清)

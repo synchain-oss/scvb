@@ -35,14 +35,23 @@ const bad = (msg) => {
     console.error(`  [FAIL] ${msg}`);
 };
 
-/** 递归列目录下匹配后缀的文件(相对仓库根的 POSIX 路径)。 */
-function listFiles(dir, exts) {
+/**
+ * 列目录下匹配后缀的文件(相对仓库根的 POSIX 路径)。
+ *
+ * `recursive` 必须逐条对上 cmake 那边用的是 `GLOB` 还是 `GLOB_RECURSE` —— 见 packagedFiles()。
+ * 这个参数原先不存在(一律递归),于是 `web/shared` 这一条与 cmake 的**非递归** `GLOB` 是
+ * 漂的。今天没出事只因为 `web/shared/` 底下还没有子目录;可一旦有人往里加一层
+ * (计划中的 `web/shared/canvas/` 就是),本套会**照样全绿而文件根本没进包** ——
+ * 正是本文件头注警告的那种「两边漂了就白守了」。
+ */
+function listFiles(dir, exts, recursive = false) {
     const out = [];
     const walk = (d) => {
         for (const name of readdirSync(d)) {
             const p = join(d, name);
-            if (statSync(p).isDirectory()) walk(p);
-            else if (exts.some((e) => name.endsWith(e)))
+            if (statSync(p).isDirectory()) {
+                if (recursive) walk(p);
+            } else if (exts.some((e) => name.endsWith(e)))
                 out.push(relative(ROOT, p).split("\\").join("/"));
         }
     };
@@ -51,15 +60,34 @@ function listFiles(dir, exts) {
 }
 
 /**
- * 打包集合 —— 必须与 cmake/ScvbWebAssets.cmake 的 glob 逐条同口径。
+ * 角色 -> `scvb_add_web_assets` 的 `EXTRA_DIRS`(相对 web/ 的目录名,非递归)。
+ *
+ * **登记制,与 src/<role>/CMakeLists.txt 逐字对应**;smoke-monitor.mjs §9 会断言那边不许
+ * 出现未登记的跨角色目录。现状只有一条:`web/shared/trajectory-chart.js` 反过来 import
+ * `../output/canvas/{timeline,hidpi,layers,playhead}.js`,四个文件不在 monitor 的四个目录里。
+ * 终局是把 canvas/ 提到 `web/shared/canvas/`;**搬的时候注意**:`web/shared` 那条是**非递归**
+ * glob,搬过去仍然不进包,必须同时把 cmake 那条改成 GLOB_RECURSE(或显式加子目录),
+ * 否则这里和 cmake 一起绿、真机一起黑。
+ */
+const EXTRA_DIRS = {
+    monitor: ["output/canvas"],
+};
+
+/**
+ * 打包集合 —— 必须与 cmake/ScvbWebAssets.cmake 的 glob 逐条同口径,**包括递归与否**。
  * 两边漂了这套就白守了,故此处只有一份注释指路,没有第二份「聪明」的推导。
  */
 function packagedFiles(role) {
     return [
-        ...listFiles(`web/${role}`, [".html", ".js", ".css"]),
+        // role_files 是 GLOB_RECURSE(output/canvas/ 就靠这一条进 Output 的包)
+        ...listFiles(`web/${role}`, [".html", ".js", ".css"], true),
+        // 以下四条 cmake 用的都是非递归 GLOB
         ...listFiles("web/shared", [".js", ".css", ".png"]),
         ...listFiles("web/js/juce", [".js"]),
         ...listFiles("web/fonts", [".woff2"]),
+        ...(EXTRA_DIRS[role] ?? []).flatMap((d) =>
+            listFiles(`web/${d}`, [".js", ".css", ".png"]),
+        ),
     ];
 }
 
@@ -103,6 +131,21 @@ const STATEFUL_CANVAS_MODULES = [
     "layers.js",
     "playhead.js",
 ];
+
+/**
+ * 暂缓 boot 守卫断言的角色 —— **自我删除式豁免**。
+ *
+ * `checkRole` 里其实是两组互不相干的断言:①②③ 打包/闭包/单例,④⑤ index.html 的 boot 守卫。
+ * 它们分属两个不同的修复,绑在一起就会死锁:Monitor 的打包修复(EXTRA_DIRS,#102)让 ①②③
+ * 绿而 ④⑤ 仍红;Monitor 的守卫修复(#103)反过来。于是**两个 PR 谁都不能单方面开
+ * `checkRole("monitor")`**,而「断言与修复同批落地」这条原则要求各自带上各自的断言。
+ * 拆开之后各走各的:#102 开 ①②③,#103 删掉这里的 "monitor" 顺带开 ④⑤。
+ *
+ * **豁免会自己消失**:下面 checkRole 会验证「豁免仍然必要」—— 一旦 Monitor 页真加上了守卫,
+ * 这条豁免立刻变成失败项并要求删除。所以它不可能被忘在这里长期挂着(这是一条**惰性**豁免
+ * 最常见的失败形态:加了 TODO,然后没人再看)。
+ */
+const BOOT_GUARD_PENDING = new Set(["monitor"]);
 
 function checkRole(role) {
     console.log(`\n--- ${role} ---`);
@@ -192,6 +235,29 @@ function checkRole(role) {
                 "本套的 URL 模型已与真机不符,请同批更新",
         );
 
+    // ④⑤ boot 守卫 —— 与①②③是**两组独立的断言**,故拆成单独函数按角色分别开关。
+    // 拆的理由见 BOOT_GUARD_PENDING 的注释:两组分属两个不同的修复,绑在一起会造成
+    // 「两个 PR 谁都不能单方面开这一行」的死锁。
+    if (!BOOT_GUARD_PENDING.has(role)) {
+        checkBootGuard(role, entry);
+    } else if (
+        readFileSync(join(ROOT, entry), "utf8").includes(
+            "__scvbReportBootError",
+        )
+    ) {
+        // 豁免的自我删除条件:守卫已经在场了,豁免就是错的,必须删掉否则白豁免一场。
+        bad(
+            `${role}:index.html 已经有 boot 守卫了 —— ` +
+                `请把 "${role}" 从 BOOT_GUARD_PENDING 里删掉,让 ④⑤ 两组断言真正开起来`,
+        );
+    } else {
+        console.log(
+            `  boot 守卫断言暂缓(BOOT_GUARD_PENDING:等 ${role} 页补上守卫的那个 PR 删掉本条)`,
+        );
+    }
+}
+
+function checkBootGuard(role, entry) {
     // ④ boot 守卫在场且事件名与 C++ 真源一致
     const header = readFileSync(
         join(ROOT, "src/plugin-common/WebViewHost.h"),
@@ -240,6 +306,11 @@ function checkRole(role) {
 
 checkRole("output");
 checkRole("input");
+// monitor 这一行原先不在 —— #82 引入本套时 Monitor 页还在 #90 上没合入,第三个 target 漏了。
+// 本套的闭包逻辑本来就够,少的只是这一行:它当场报出 v5.2 那四个缺失模块
+// (`web/shared/trajectory-chart.js` -> `../output/canvas/{timeline,hidpi,layers,playhead}.js`)。
+// ④⑤ 那组守卫断言按 BOOT_GUARD_PENDING 暂缓,理由与自我删除条件见那里。
+checkRole("monitor");
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

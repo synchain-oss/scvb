@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "OutputEditor.h"
 
+#include "AnalyzeScopeMath.h"
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -290,7 +292,11 @@ void OutputEditor::emitParams(bool forceFull)
 
     juce::var payload = obj();
     put(payload, "values", values);
-    put(payload, "hostEcho", false); // host echo 屏蔽→灰显归 T31/T32;桥面先恒 false
+    // §2.2 hostEcho:此刻车道是否正被**宿主自动化**驱动(打印器的 layer-1b listener 记的时刻)。
+    // 此前恒 false —— 于是「宿主在 Read 档回写参数、把用户的手动改动盖掉」这件事在 UI 上
+    // 完全不可见,用户只看到「调了没反应」(v5.1 实测 P1-D)。优先级本身是设计(J78 的
+    // 优先级表),要修的是**看不见**。
+    put(payload, "hostEcho", processor_.getPrinter().hostEchoActive());
     put(payload, "full", forceFull);
     put(payload, "versionActive", v);
 
@@ -726,8 +732,13 @@ juce::var OutputEditor::buildConnPayload() const
         put(ch, "heartbeatFresh", info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs));
         put(ch, "capturing", info.capturing);
         // 本次失准发作内的缺口数(非进程累计):恢复健康 1s 后归零,横幅/行内 ⚠ 随之撤下。
+        // **只数真失准**(走带推进中的时间线缺口);写方停着走 suspended,见下。
         put(ch, "misalignCount", static_cast<int>(processor_.misalignCount(t + 1)));
         put(ch, "srMismatch", info.srMismatch);
+        // 该轨的写方停着(宿主在无信号段挂起 Input / 用户 bypass / 轨未激活)。
+        // 与 misalignCount 是**两件事**:这条是中性状态,UI 用灰蓝提示而不是红色 ⚠ ——
+        // 乐句间隙里宿主挂起 Input 属于正常现象,用户自己 bypass 的更不需要警报。
+        put(ch, "suspended", info.suspended);
         push(channels, ch);
     }
 
@@ -747,6 +758,15 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
     const auto& vc = crvs.versions[static_cast<std::size_t>(v - 1)];
     const double sr = processor_.sampleRate();
 
+    // 「已知时间线末端」——无末端段(t1 = 1<<40 哨兵)的右端降级取它。
+    // 三级取值(①全轨非哨兵最大末端 → ②采集覆盖 → ③t0+最小非零宽度)的实现在
+    // `BridgeArgs.h` 的降级链三函数里 —— 与 harness 的 HOST R4 用例共用同一份代码,
+    // 用例断的就是这里真实上桥的值(v5.3 R4)。
+    const std::int64_t knownEndSamples =
+        scvb::output::knownTimelineEndSamples(vc, processor_.capturedExtentSeconds(), sr);
+    const std::int64_t minSpanSamples =
+        scvb::output::minOpenEndedSpanSamples(ScvbOutputAudioProcessor::featHopSeconds(), sr);
+
     juce::var channels = mkArray();
     for (int t = 0; t < 15; ++t)
     {
@@ -763,7 +783,20 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             juce::var seg = obj();
             put(seg, "segIdx", static_cast<int>(i));
             put(seg, "t0S", samplesToSeconds(s.t0, sr)); // 安全换算(PR#55 第6轮缺陷1)
-            put(seg, "t1S", samplesToSeconds(s.t1, sr));
+            // 「无末端」段(setTrackManual 的常值段:t1 = 1<<40 哨兵,真末端由宿主时间线提供)
+            // **在这里按语义降级**,而不是让哨兵以「2290 万秒」的伪装流到前端 —— 那个数曾被
+            // durationOf 当成工程时长选中,再当作 requestWaveform 的 endS 发回来,把消息线程
+            // 跑死(P0-A)。#89 在 viz 侧已按同一口径处理过(无末端只取 t0)。
+            // 降级目标 = **已知时间线末端**:优先取本次快照里其余段的最大真末端,没有则回落
+            // 到该段自己的 t0(段仍然存在、可点、可切,只是右端不再撒谎)。
+            const bool openEnded = s.t1 >= scvb::output::kOpenEndedT1;
+            // ⚠ HOST R4 用例守的是降级链三函数本身,守不到「这里还在调它」这一跳
+            // (harness 编不进本 TU)—— 改动下面这一行(绕开 effectiveT1Samples 或
+            // 换回裸 s.t1)必须同步 tests/host 的 HOST R4 用例,否则测试照绿而 bug 回归。
+            const std::int64_t t1Effective =
+                scvb::output::effectiveT1Samples(s.t0, s.t1, knownEndSamples, minSpanSamples);
+            put(seg, "t1S", samplesToSeconds(t1Effective, sr));
+            put(seg, "openEnded", openEnded); // §2.8:UI 据此知道右端是「到末端」而不是一个真时刻
             put(seg, "pan", static_cast<double>(s.pan));
             put(seg, "volDb", static_cast<double>(s.volDb));
             put(seg, "origin", originName(scvb::state::segmentOrigin(s.flags)));
@@ -924,13 +957,12 @@ void OutputEditor::handleSetGroupId(const ArgList& a, Completion c)
 
 // analyze/previewAnalyze 的作用域参数(§1.5/§1.6):"all" = 全时间线全轨;
 // 对象形 {tracksMask,startS,endS} = 指定轨 × 指定范围(web 的 analyzeScope 产出)。
-// follow 档取「已知时间线末端」= 当前播放位置,与 emitCaptureProgress 的分母同口径。
+// follow 档取**整条已采集时间线**(capturedExtentSeconds),与播放头无关 —— v5.1 P1-F:
+// 原先取「当前播放位置」,用户 Cubase 设了「播完回开头」时播放头回 0,范围恒空、分析永远受理不了。
 OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) const
 {
     AnalyzeScope s;
     const auto& rt = processor_.runtime();
-    const scvb::engine::PlayheadPod pod = processor_.playheadSnapshot();
-    const double nowS = pod.timeSamples >= 0 ? samplesToSeconds(pod.timeSamples, processor_.sampleRate()) : 0.0;
 
     if (a.size() > 0 && a[0].isObject())
     {
@@ -940,18 +972,14 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
         return s;
     }
 
-    // "all" 或缺参:按当前 range 档决定。
+    // "all" 或缺参:范围推导是纯函数(AnalyzeScopeMath.h),这里只负责取参数。
+    // 抽出去的理由见那个头文件:它是 P1-F 的唯一修复点,埋在私有成员里 harness 够不着,
+    // 回归用例只能绕开它 —— 改回旧写法照样绿(评审 I1)。
     s.tracksMask = 0; // 0 = 不限轨
-    if (rt.rangeMode != 0 && rt.rangeEndS > rt.rangeStartS)
-    {
-        s.startS = rt.rangeStartS;
-        s.endS = rt.rangeEndS;
-    }
-    else
-    {
-        s.startS = 0.0;
-        s.endS = nowS;
-    }
+    const AnalyzeRange r =
+        analyzeAllRange(rt.rangeMode, rt.rangeStartS, rt.rangeEndS, processor_.capturedExtentSeconds());
+    s.startS = r.startS;
+    s.endS = r.endS;
     return s;
 }
 
@@ -1918,6 +1946,14 @@ void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
     // T29 落卡时这里是**写死的全未覆盖桩**:回包形状合法、能过 isTileShape,于是泳道照常画
     // 斜纹与栅格,但每一列 covered=0 → 包络层整体 `continue` 跳过 —— 真机上就是「有斜纹、
     // 没波形」的纯黑泳道(v5 实测 P0-4)。桩的形状太像真回包,所以三个版本都没被发现。
+    // 跨度上界(P0-A):内层代价虽已与覆盖同阶,但**病态请求本身**不该被受理 ——
+    // 纵深防御的第二道。上界取「已采集范围」与常数的较大者留出余量,超了直接 badArg,
+    // 让前端的坏时长在这里就停住,而不是变成一次几十秒的持锁计算。
+    if (endS - startS > ScvbOutputAudioProcessor::kMaxRequestSpanS)
+    {
+        c(badArgResp());
+        return;
+    }
     const auto tile = processor_.waveformOf(ch, startS, endS, cols);
     juce::var minDb = mkArray();
     juce::var maxDb = mkArray();

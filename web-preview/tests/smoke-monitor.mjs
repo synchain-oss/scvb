@@ -2212,9 +2212,18 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
     // ---- §9 分层:任一插件目录都不得直接编译 / include 另一插件的源码。
     //      共用件的正确归属是 plugin-common(core ← plugin-common ← 插件,方向不能倒)。
     //      #100 复审【重要】1:UiDefaultsStore 曾以 `../output/…` 被编进 Input target。
+    //      判据只看**生效的构建语句**,注释先剥掉:这条断言原先是对整份文件做子串扫描,
+    //      于是一句**描述**模块图的注释(`… -> ../output/canvas/timeline.js`)就能把它打红,
+    //      而真正的跨角色引用反而可以写成不带 `../` 的形式溜过去 —— 两头都不对。
     {
+        const effectiveLines = (text) =>
+            text
+                .split("\n")
+                .map((l) => l.replace(/#.*$/, ""))
+                .join("\n");
+
         for (const role of ["input", "output", "monitor"]) {
-            const cm = src(`src/${role}/CMakeLists.txt`);
+            const cm = effectiveLines(src(`src/${role}/CMakeLists.txt`));
             const others = ["input", "output", "monitor"].filter(
                 (o) => o !== role,
             );
@@ -2223,7 +2232,37 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
                     !cm.includes(`../${other}/`),
                     `§9 src/${role}/CMakeLists.txt 不引用 ../${other}/ 的源码或头文件目录`,
                 );
+                // 跨角色引用还有第二种写法:scvb_add_web_assets 的 EXTRA_DIRS(相对 web/,不带 ../)。
+                // 那一层跨的是 **web 资源**不是 C++ 源码,§9 允许 —— 但只允许**已登记**的那一条,
+                // 免得这个口子被当成绕开分层的后门。新增一条就要来这里改,顺带解释为什么。
+                const webXref = new RegExp(
+                    `EXTRA_DIRS[^)]*\\b${other}/([\\w./-]+)`,
+                    "g",
+                );
+                for (const m of cm.matchAll(webXref)) {
+                    check(
+                        role === "monitor" &&
+                            other === "output" &&
+                            m[1] === "canvas",
+                        `§9 src/${role}/CMakeLists.txt 的 EXTRA_DIRS 跨到 ${other}/${m[1]} —— ` +
+                            `web 资源跨角色只登记了 monitor -> output/canvas 这一条(欠债:` +
+                            `web/shared/trajectory-chart.js 反向 import 了 role 目录,终局是把 canvas/ 提到 shared/)`,
+                    );
+                }
             }
+        }
+        // C++ 面的正向断言:Monitor 的编译单元里不许出现另外两个插件的源码。
+        // 上面那条禁的是 `../output/` 这种写法,这条禁的是「换个写法照样编进来」。
+        {
+            const mon = effectiveLines(src("src/monitor/CMakeLists.txt"));
+            const sources = mon.slice(
+                mon.indexOf("target_sources"),
+                mon.indexOf("target_include_directories"),
+            );
+            check(
+                !/\b(input|output)\//.test(sources),
+                "§9 src/monitor/CMakeLists.txt 的 target_sources 不含另外两个插件的目录",
+            );
         }
         check(
             src("src/plugin-common/CMakeLists.txt").includes(
@@ -2231,6 +2270,32 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
             ),
             "§9 UiDefaultsStore 归 plugin-common(两插件共用,依赖只指向本层)",
         );
+
+        // P0-C 的门禁缺口(评审【建议】):Monitor 漏 scvb_add_web_assets 既不影响构建
+        // 也不影响 pluginval(那条路不开窗),`resourceSource = {}` 还是个合法值 ——
+        // 三个 target 都必须**既生成各自的 WebAssets、又把它链进去、还要真的把 source 填上**,
+        // 少任何一环都会在真机上变成「WebView 去公网找 juce.backend」。
+        for (const [role, editor, ns] of [
+            ["input", "src/input/InputEditor.cpp", "ScvbInputWebData"],
+            ["output", "src/output/OutputEditor.cpp", "ScvbOutputWebData"],
+            ["monitor", "src/monitor/MonitorEditor.cpp", "ScvbMonitorWebData"],
+        ]) {
+            const cm = src(`src/${role}/CMakeLists.txt`);
+            check(
+                cm.includes("scvb_add_web_assets") &&
+                    cm.includes(`NAMESPACE ${ns}`),
+                `P0-C src/${role} 生成 ${ns} 嵌入资源`,
+            );
+            check(
+                /target_link_libraries[\s\S]*WebAssets/.test(cm),
+                `P0-C src/${role} 把 WebAssets 链进插件 target`,
+            );
+            const ed = src(editor).replace(/\s+/g, " ");
+            check(
+                ed.includes(`resourceSource = {${ns}::`),
+                `P0-C ${role} 的 resourceSource 真的填了 ${ns}(不是空 {})`,
+            );
+        }
     }
 
     // ---- P0-4:泳道波形。数据面(OutputProcessor::waveformOf)由 host harness 断言;
@@ -2256,20 +2321,31 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
     // ---- P1-8:峰线 left 定位的是内侧边,线体再向外长一个线宽 → 恒高出柱顶。
     //      往回让一个线宽,外沿与柱顶重合。
     for (const cls of ["sc-tube__peak", "sc-meter__peak"]) {
-        const block = css.slice(css.indexOf("." + cls + " {"));
+        // 截到**本规则的第一个 `}`** 为止。原先用固定 slice(0,900) 窗口:注释一长就溢到
+        // 后续规则里,后面任一规则出现 `border-radius: 0;` 都会假绿(评审【建议】)。
+        const from = css.indexOf("." + cls + " {");
+        const block = css.slice(from, css.indexOf("}", from) + 1);
         check(
-            /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(
-                block.slice(0, 400),
-            ),
+            /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(block),
             `P1-8 .${cls} 的 left 回让一个线宽(外沿贴柱顶)`,
         );
         check(
-            /transition: left var\(--dur-meter\) linear/.test(
-                block.slice(0, 400),
-            ),
+            /transition: left var\(--dur-meter\) linear/.test(block),
             `P1-8 .${cls} 的位移与液柱同步插值(瞬态不再裂开一道缝)`,
         );
+        // v5.1 P1-G:2px 宽的盒子套胶囊圆角会被画成一颗收圆的点,视觉重心离开外沿 ——
+        // 几何对齐了仍看着高半个线宽。峰线是刻线,要齐头齐尾。
+        check(
+            /border-radius: 0;/.test(block),
+            `P1-G .${cls} 不用胶囊圆角(2px 刻线要齐头齐尾)`,
+        );
     }
+    // 首帧与弹道帧用同一套取整,免得首帧偏半个像素(meter.js 两处都是 toFixed(1))。
+    check(
+        /--lv:\$\{\(t\.lv \* 100\)\.toFixed\(1\)\}%/.test(tt) &&
+            /--pk:\$\{\(t\.pk \* 100\)\.toFixed\(1\)\}%/.test(tt),
+        "P1-G 首帧 --lv/--pk 与弹道帧同精度",
+    );
 
     // ---- P2-9:分析键不再拿「有没有覆盖数据」当前置。
     check(

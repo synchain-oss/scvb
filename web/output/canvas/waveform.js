@@ -157,6 +157,14 @@ export const OVERVIEW_COLS = 512;
 
 /** 概览块重取节流(ms);只在视口静止时触发,采集中不至于每 500ms 重拉一次。 */
 export const OVERVIEW_REFRESH_MS = 3000;
+/**
+ * 视口几何变化(spanChanged)时的**最小重取间隔**(ms)。
+ *
+ * 它不是「节流」而是「防雪崩」:切 tab / 缩放会让所有可见泳道在同一帧同时判定
+ * spanChanged,若直接穿透节流,14 发 requestWaveform 会被 WebView2 在一次窗口过程里
+ * 背靠背排干(P0-A)。取值远小于 OVERVIEW_REFRESH_MS —— 几何还是要尽快跟上的。
+ */
+const OVERVIEW_SPAN_MIN_MS = 120;
 
 function num(v, dflt) {
     return Number.isFinite(v) ? v : dflt;
@@ -380,8 +388,14 @@ export function createWaveformSource(opts) {
         }
         const now = Date.now();
         const due = rec.dirty && now - rec.at >= OVERVIEW_REFRESH_MS;
-        // 曲长/列数变了要立刻重取(旧那份的几何已经对不上了),其余情况按节流走
-        if (rec.inflight || !(spanChanged || due)) {
+        // 曲长/列数变了要尽快重取(旧那份的几何已经对不上了),但**不能整个绕过节流**:
+        // 切 tab 会一次性改变视口 → 14 条可见泳道同时 spanChanged → 同一帧穿透节流各发一发
+        // requestWaveform,而 WebView2 的 ReadAllAvailableMessages 会把整个积压在**一次窗口
+        // 过程内**排干 —— 14 发背靠背跑完,消息泵就是不返回(P0-A 的放大器)。
+        // 故 spanChanged 也要过一道**最小间隔**闸:比常规节流短得多(几何要跟上),
+        // 但足以把「一帧 14 发」摊成几帧。
+        const gate = spanChanged ? OVERVIEW_SPAN_MIN_MS : OVERVIEW_REFRESH_MS;
+        if (rec.inflight || !rec.dirty || now - rec.at < gate) {
             return rec.have;
         }
         rec.at = now;
