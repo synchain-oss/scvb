@@ -1057,7 +1057,7 @@ void ScvbOutputAudioProcessor::publishConfigBroadcast()
         dst.pair_id = static_cast<scvb::u32>(juce::jlimit(0, 7, c.pairId));
         dst.source_channels = static_cast<scvb::u32>(c.sourceChannels);
 
-        // J60:未显式设置时按 mono=true / stereo=false 推导(与 buildStateSubtree 同口径)。
+        // [J83]:未显式设置一律 true(与 buildStateSubtree 同口径,真源 = participatesInAutoPan())。
         const bool participate = c.participatesInAutoPan();
         scvb::u32 flags = 0;
         if (c.enabled)

@@ -418,11 +418,17 @@ export function buildWorld(opts = {}) {
         });
         outputParams = makeParams({ versionActive: 1 });
         outputSegments = makeTourDemoSegments(1, "snapshot");
+        // 该轨**显式**关掉参与([J83] 起默认是 true)—— 本 fixture 要的是「用户手动把某轨
+        // 排除」那一面的渲染(轨道页开关的关闭态 + Input 远程只读摘要行的关闭态),不是默认档。
+        //
+        // 两侧必须一起写:契约 §4.3 说 Input 的 `scvb.config` 是**本组 ctrl 广播区中本 channel
+        // 的只读快照**,真源在 Output(ADR-004)。只改 Input 那一侧,预览里就会出现真机上
+        // 不可能出现的组合(Output 说参与、Input 镜像说不参与),而这正是靠预览截图核对
+        // 两页一致性的人最容易被骗的地方。
         const stereoCh = DEMO_STEREO_CHANNELS[0];
+        outputSnapshot.channels[stereoCh - 1].participate_in_auto_pan = false;
         inputSnapshot = connectedInputSnapshot(stereoCh, {
             source_channels: 2,
-            // **显式**关掉([J83] 起默认是 true)—— 本 fixture 要的是「用户手动把某轨排除」
-            // 那一面的渲染(远程只读摘要行的关闭态),不是默认档。
             participate_in_auto_pan: false,
         });
     } else {

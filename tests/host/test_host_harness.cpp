@@ -1118,9 +1118,10 @@ namespace
 
 // 多轨机台:一台 Output + n 个 **mono** Input(各占一条 channel)。
 //
-// 为什么必须 mono:[J60] 的默认口径是「mono 参与自动 pan / stereo 不参与」,而
-// Rig 的 Input 走默认 stereo 布局。要验「分析真的把轨分到不同声像上」,得先让这些轨
-// 是**会参与**的轨 —— 这也正是真机上一条 mono 人声/贝斯轨的样子。
+// 为什么取 mono:立这台机器时按 [J60] 的默认口径(「mono 参与自动 pan / stereo 不参与」),
+// 而 Rig 的 Input 走默认 stereo 布局 —— 不改成 mono 这些轨就不参与,验不了「分析真的把轨
+// 分到不同声像上」。[J83] 之后**三种检测态一律参与**,本 rig 已不再依赖这一点;保留 mono
+// 是因为它就是真机上一条人声/贝斯轨的样子,顺带让 source_channels 有个确定值。
 struct MonoMultiRig
 {
     static constexpr int kGroup = 9;
