@@ -191,6 +191,10 @@ export function statusVisual(status) {
             return { tone: "amber", pulse: false, key: "state.staleLink" };
         case "warn":
             return { tone: "amber", pulse: false, key: "tracks.misaligned" };
+        // 中性:灰蓝、不脉冲。与 amber/red 刻意拉开 —— 它描述的是「这会儿没在出数据」,
+        // 不是「出问题了」。
+        case "suspended":
+            return { tone: "slate", pulse: false, key: "tracks.suspended" };
         case "srErr":
             return { tone: "red", pulse: false, key: "tracks.srErr" };
         default:
@@ -357,6 +361,10 @@ export function trackStatusOf(c) {
     if (c.slotState !== 2) return "idle";
     if (!c.heartbeatFresh) return "lost";
     if (num(c.misalignCount, 0) > 0) return "warn";
+    // 写方停着(宿主在无信号段挂起 Input / 用户 bypass)。**排在 warn 之后**:真失准比
+    // 挂起更要紧,两者同时成立时先说失准。这是**中性态**,不是告警 —— 乐句间隙里宿主挂起
+    // Input 属于正常现象,用户自己 bypass 的更不需要红灯(统筹裁定:丙案)。
+    if (c.suspended === true) return "suspended";
     return "active";
 }
 
@@ -663,8 +671,8 @@ export function trackRowHtml(t) {
       <span class="tracks-row__cell tracks-row__voltube" role="cell" style="width:${W.vol}px" data-gb="${gb("voltube")}">
         <span class="sc-tube" data-gb="${gb("vol-tube")}"${dt("vollevel")}>
           <span class="sc-tube__slot">
-            <span class="sc-tube__liquid" style="--lv:${t.lv * 100}%"></span>
-            <span class="sc-tube__peak" style="--pk:${t.pk * 100}%" data-alert="${t.pk > PEAK_ALERT_RATIO ? 1 : 0}"${t.pk ? "" : " hidden"}></span>
+            <span class="sc-tube__liquid" style="--lv:${(t.lv * 100).toFixed(1)}%"></span>
+            <span class="sc-tube__peak" style="--pk:${(t.pk * 100).toFixed(1)}%" data-alert="${t.pk > PEAK_ALERT_RATIO ? 1 : 0}"${t.pk ? "" : " hidden"}></span>
           </span>
           <span class="sc-tube__gloss"></span>
           <!-- 卡箍 = 音量推子把手,层序在液柱之上(满幅电平仍可辨,T32 验收硬要求②);

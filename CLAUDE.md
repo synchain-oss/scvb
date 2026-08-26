@@ -78,7 +78,7 @@
 
 ## 8. 实时线程规则
 
-`processBlock` / 音频回调内禁止:堆分配/释放、任何锁、文件/网络/日志 I-O、抛/捕获异常、调用 MessageManager / beginChangeGesture 系列、任何阻塞等待。允许:预分配缓冲上的定长运算、`juce::ScopedNoDenormals`、无锁 SPSC 环(acquire/release)、`std::atomic`(必须 `is_always_lock_free`)。gesture 三段式只在消息线程(50Hz Timer);音频线程只发布 playhead 快照(SPSC)。段间过渡走 ramp(默认 80ms,ADR-010);失准语义:缺口→该轨该块静音+警告计数,绝不静默出错。
+`processBlock` / 音频回调内禁止:堆分配/释放、任何锁、文件/网络/日志 I-O、抛/捕获异常、调用 MessageManager / beginChangeGesture 系列、任何阻塞等待。允许:预分配缓冲上的定长运算、`juce::ScopedNoDenormals`、无锁 SPSC 环(acquire/release)、`std::atomic`(必须 `is_always_lock_free`)。gesture 三段式只在消息线程(25Hz Timer);音频线程只发布 playhead 快照(SPSC)。段间过渡走 ramp(默认 80ms,ADR-010);失准语义:缺口→该轨该块静音+警告计数,绝不静默出错。
 
 ## 9. 双 target 共享代码规范
 

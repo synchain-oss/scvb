@@ -564,6 +564,124 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         240,
         "Range 终点参与时长推定",
     );
+    // v5.3 R2:「无末端」段(§2.8 openEnded)不参与时长推定 —— 它表达的是「一直到时间线
+    // 末端」,拿它当长度证据是循环论证。真机上这条曾把 22,906,492 秒(1<<40 采样)选成
+    // 工程时长,再当作 requestWaveform 的 endS 发回来,把宿主消息线程跑死(P0-A)。
+    eq(
+        TW.durationOf({
+            segments: {
+                channels: [
+                    { ch: 1, segments: [{ t0S: 0, t1S: 90 }] },
+                    {
+                        ch: 2,
+                        segments: [
+                            { t0S: 0, t1S: 22906492.245333, openEnded: true },
+                        ],
+                    },
+                ],
+            },
+        }),
+        90,
+        "openEnded 段不参与时长推定(取其余段的真末端)",
+    );
+    // 只有无末端段时:不许回落成那个哨兵秒数,走 5 分钟兜底。
+    eq(
+        TW.durationOf({
+            segments: {
+                channels: [
+                    {
+                        ch: 1,
+                        segments: [
+                            { t0S: 0, t1S: 22906492.245333, openEnded: true },
+                        ],
+                    },
+                ],
+            },
+        }),
+        300,
+        "全是 openEnded 段 → 回落 5 分钟,不取哨兵值",
+    );
+    // v5.3 R4:openEnded 段的**有效右端是 +Infinity**,不是 C++ 给的那个保守下界。
+    // 手动/冻结轨的段是「单段全时限」,C++ 侧只能给出「已知时间线末端」作为下界;
+    // 前端若拿它当真末端,播放头走过之后就判成「不在任何段内」—— 点不中、切不开。
+    eq(
+        TW.segEndS({ t0S: 0, t1S: 12, openEnded: true }),
+        Infinity,
+        "openEnded 段右端 = +Infinity",
+    );
+    eq(TW.segEndS({ t0S: 0, t1S: 12 }), 12, "普通段右端 = t1S");
+    eq(TW.segEndS(null), 0, "空段 → 0(不炸)");
+    // 命中判定:openEnded 段在其 t0 之后的**任意**时刻都应命中,即使远超 t1S。
+    // **调用点**断言(不只测 segEndS 本身)——否则把三处调用点改回 `s.t1S` 用例照样绿,
+    // 那就又是一次「测了工具、没测被改的那行」。
+    {
+        const openSeg = { t0S: 0, t1S: 12, openEnded: true, locked: false };
+        const segments = { channels: [{ ch: 1, segments: [openSeg] }] };
+        // ① countsInScope:选区落在 t1S **之后**,openEnded 段仍应算作相交。
+        eq(
+            TW.countsInScope(segments, 0b1, 100, 200).overlap,
+            1,
+            "countsInScope:openEnded 段与 t1S 之后的选区相交",
+        );
+        // 对照:普通段在同一选区应不相交(证明上面那条不是恒真)。
+        eq(
+            TW.countsInScope(
+                { channels: [{ ch: 1, segments: [{ t0S: 0, t1S: 12 }] }] },
+                0b1,
+                100,
+                200,
+            ).overlap,
+            0,
+            "countsInScope:普通段不与其右端之后的选区相交",
+        );
+        // ② rebindSegKeys:锚点中点落在 t1S 之后,openEnded 段仍应被重新认领。
+        eq(
+            TW.rebindSegKeys([{ idx: 0, t0S: 100, t1S: 200 }], [openSeg]),
+            [{ idx: 0, t0S: 0, t1S: 12 }],
+            "rebindSegKeys:openEnded 段认领 t1S 之后的锚点",
+        );
+        // ③ 交互/绘制调用点(R4 补完批,复审「前端四处裸 s.t1S」):事件处理器与画布
+        // 绘制不是导出纯函数,这里以源码钉子锁定四处都接上了 segEndS,防止改回裸 t1S。
+        const twSrc = src("web/output/tab-wave.js");
+        const hitPattern =
+            /findIndex\(\(s\) => t >= s\.t0S && t < segEndS\(s\)\)/g;
+        eq(
+            (twSrc.match(hitPattern) || []).length,
+            2,
+            "单击命中与双击命中两处 findIndex 都走 segEndS(不再裸比 s.t1S)",
+        );
+        check(
+            /t < segEndS\(s\) - 0\.05/.test(twSrc),
+            "双击 split 的第二道闸走 segEndS(openEnded 段 t1S 之后仍可切)",
+        );
+        check(
+            /Number\.isFinite\(segE\) \? segE : vp\.t1/.test(twSrc) &&
+                /Number\.isFinite\(sSegE\) \? sSegE : vp\.t1/.test(twSrc),
+            "阶梯绘制与选中高亮的右端:openEnded(+Infinity)clamp 到视口末端 vp.t1",
+        );
+        check(
+            /seg\.openEnded \? fmtKey\("wave\.segOpenEnd"\) : fmtTimeMs\(seg\.t1S\)/.test(
+                twSrc,
+            ),
+            "检查器结束时间:openEnded 段显示 wave.segOpenEnd 词条而不是保守下界",
+        );
+        // 第五处(82f7eef 复审揪出):边界拖拽窗右限。split 保留哨兵 ⇒ 尾段仍
+        // openEnded;在已知末端之外分割后,裸 t1S 会把窗翻到边界左边(手柄左跳
+        // 且推不回,松手照发 move_boundary)。右限须走 segEndS 并回落时间线末端。
+        check(
+            /const nextEnd = j < 0 \? 0 : segEndS\(segs\[j \+ 1\]\)/.test(
+                twSrc,
+            ) &&
+                /Number\.isFinite\(nextEnd\) && nextEnd > 0[\s\S]{0,80}timeline\.durationS\(\)/.test(
+                    twSrc,
+                ),
+            "边界拖拽窗右限走 segEndS(openEnded/缺段回落 timeline.durationS)",
+        );
+        check(
+            !/segs\[j \+ 1\] && segs\[j \+ 1\]\.t1S/.test(twSrc),
+            "旧写法 segs[j+1].t1S 已不存在(防止改回裸 t1S)",
+        );
+    }
     // 泳道模型投影(§2.7 覆盖率 / §2.8 段数 / §2.9 lowSample)
     const lanes = TW.laneModelFromStore({
         state: { channels: [{ label: "主唱" }] },
@@ -2162,7 +2280,8 @@ log("=== ⑫ Wave 5 用户 preview 第二轮四条(绿罩/缩放条位/选中态
     );
     {
         const i = tw.indexOf("local.selectedCh === ch && local.selectedSegs");
-        const win = tw.slice(i, i + 1200);
+        // 1200→1600:R4 之后 sx1 取 segEndS 的 finite-clamp(openEnded 段画到视口末端)多出数行
+        const win = tw.slice(i, i + 1600);
         check(
             /ctx\.fillStyle = SEG_SEL_FILL;[\s\S]{0,120}ctx\.fillRect\(cx0, y0, cw, laneH\)/.test(
                 win,

@@ -15,7 +15,13 @@ namespace
 {
 juce::String fallbackTitle(const juce::String& role)
 {
-    return role == "input" ? juce::String("SCVB Input") : juce::String("SCVB Output");
+    // 三角色各自成句。漏掉 monitor 时它的降级面板会自称「SCVB Output」——
+    // 用户开不了窗时看到的正是这张面板,标题指错插件会把排查引到另一个插件上去。
+    if (role == "input")
+        return "SCVB Input";
+    if (role == "monitor")
+        return "SCVB Monitor";
+    return "SCVB Output";
 }
 
 juce::String missingRuntimeMessage()

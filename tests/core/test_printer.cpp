@@ -345,7 +345,10 @@ TEST_CASE("PRINTER-FREEZE-1 freeze 冻结维度保持 gesture 打开并写恒值
     f.printer.tick();
     REQUIRE(panL.gestureEnds == 0); // 冻结不再闭合 pan gesture
     REQUIRE(volL.gestureEnds == 0);
-    REQUIRE(panL.valueChanges == 2); // pan 仍写(恒值平直线)
+    // 值没动 ⇒ **不重复下发**(v5.1 消息线程减负:冻结车道恒 15 条,原先每拍无条件重写)。
+    // 「平直线」的语义由「参数值保持在冻结静态值上」承载,不是由「每拍都写一次」承载。
+    REQUIRE(panL.valueChanges == 1);
+    REQUIRE(f.handles.rawPan[0][0]->load() == Catch::Approx(30.0f)); // 仍停在那条平直线上
     REQUIRE(f.printer.lanes()[0].gestureOpen); // pan lane 仍开
     REQUIRE(f.printer.lanes()[1].gestureOpen); // vol lane 仍开
 
@@ -383,10 +386,13 @@ TEST_CASE("PRINTER-FREEZE-2 冻结 pan 输出平直线(恒值不随曲线),未�
         f.printer.tick();
     }
 
-    // pan:每次 tick 写恒值 0.25(平直线),不随曲线 0→+6 波动;gesture 单次 begin 且从不闭合。
+    // pan:恒值 0.25(平直线),不随曲线 0→+6 波动;gesture 单次 begin 且从不闭合。
     for (const float v : panRec.values)
         REQUIRE(v == Catch::Approx(0.25f));
-    REQUIRE(panRec.values.size() == 7); // 1 次宿主置值 + 6 次 tick 平直线写
+    // 写的**次数**不再是断言面:值没动就不下发(v5.1 减负),故这里只断言
+    // 「确有写入」+「每一次写的都是那个恒值」+「最终参数停在恒值上」——
+    // 平直线是值的性质,不是调用次数的性质。
+    REQUIRE_FALSE(panRec.values.empty());
     REQUIRE(panRec.gestureBegins == 1);
     REQUIRE(panRec.gestureEnds == 0);
     REQUIRE(f.handles.pan[0][0]->convertTo0to1(f.handles.pan[0][0]->get()) == Catch::Approx(0.25f));

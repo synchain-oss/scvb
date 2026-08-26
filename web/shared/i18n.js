@@ -167,7 +167,7 @@ export const T = {
         "guide.rule6":
             "同一个组同一时间只能有一个生效的 Output 实例。同组的第二个实例进入只读观察模式并显示警告;八个组(A–H)各自是独立的总线域,互不影响。(ADR-002 / J66)",
         "guide.rule7":
-            "stereo 人声轨默认不参与自动声像分配,需要它参与时必须手动打开。mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),默认保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J60)",
+            "所有轨默认参与自动声像;立体声轨如需保留原有声像宽度与位置,请在轨道页关闭该轨的「参与自动声像」。mono 源经 equal-power pan 摆位;stereo 源走 dual-pan + width 模型(pan = 弧中心,width = 张开度),关闭参与后保留你已有的声像宽度,不会被自动分配改写。(ADR-003 / J57 + J83)",
         "guide.rule8":
             'SCVB Output 不向 DAW 报告额外延迟。对齐靠时间线寻址完成,不要试图用 PDC(延迟补偿)去"修正"它。(ADR-002)',
         "guide.rule9":
@@ -625,6 +625,11 @@ export const T = {
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "取消",
         "common.gotIt": "知道了",
+        // 宿主自动化正在驱动这些参数时的解释(v5.1 P1-D:优先级是设计,缺的是「看得见」)。
+        "master.hostEchoHint":
+            "该参数正由宿主自动化驱动;要手动改,请把该轨的自动化 Read 关闭,或切到 Write。",
+        // 中性态:写方停着(乐句间隙宿主挂起 Input / 用户 bypass),不是故障。
+        "tracks.suspended": "暂无数据(挂起)",
         "tab.master": "整体调整",
         "tab.tracks": "轨道",
         "tab.wave": "波形与分段",
@@ -789,6 +794,8 @@ export const T = {
         // 因此不得复用确认框族的 common.cancel(EN/FR 自译,入 U17 待审校)
         "wave.inspectorClose": "收起",
         "wave.inspectorEmpty": "点选泳道内的段以编辑",
+        // openEnded 段(尾界未定,t1S 仅是保守下界)在检查器里的结束时间显示
+        "wave.segOpenEnd": "至末端",
         "wave.segStart": "开始",
         "wave.segEnd": "结束",
         "wave.segLen": "时长",
@@ -976,7 +983,7 @@ export const T = {
         "guide.rule6":
             "Only one Output instance can be active in a group at any one time. A second instance in the same group drops into read-only observer mode and shows a warning; the eight groups (A–H) are independent bus domains and do not affect one another. (ADR-002 / J66)",
         "guide.rule7":
-            "Stereo vocal tracks stay out of automatic pan assignment by default; switch one in by hand when you want it included. Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread) which by default preserves the stereo width you already have, rather than letting automatic assignment overwrite it. (ADR-003 / J57 + J60)",
+            'Every track takes part in automatic pan by default; if a stereo track should keep its existing stereo width and position, switch off "participate in auto pan" for that track on the Tracks page. Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread), and once participation is switched off the stereo width you already have is preserved rather than overwritten by automatic assignment. (ADR-003 / J57 + J83)',
         "guide.rule8":
             'SCVB Output reports no additional latency to the DAW. Alignment is done by timeline addressing; do not try to "correct" it with PDC (plugin delay compensation). (ADR-002)',
         "guide.rule9":
@@ -1425,6 +1432,9 @@ export const T = {
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "Cancel",
         "common.gotIt": "Got it",
+        "master.hostEchoHint":
+            "This parameter is being driven by host automation. To change it by hand, turn off Read on that track's automation, or switch it to Write.",
+        "tracks.suspended": "No data (suspended)",
         "tab.master": "Master",
         "tab.tracks": "Tracks",
         "tab.wave": "Waveform & Segments",
@@ -1567,6 +1577,7 @@ export const T = {
         "wave.inspectorToggle": "Segment details & editing",
         "wave.inspectorClose": "Collapse",
         "wave.inspectorEmpty": "Click a segment in a lane to edit it",
+        "wave.segOpenEnd": "To end",
         "wave.segStart": "Start",
         "wave.segEnd": "End",
         "wave.segLen": "Length",
@@ -1746,7 +1757,7 @@ export const T = {
         "guide.rule6":
             "Un seul Output peut être actif à la fois au sein d'un groupe. Une seconde instance du même groupe passe en mode observation en lecture seule et affiche un avertissement ; les huit groupes (A–H) sont des domaines de bus indépendants, sans influence mutuelle. (ADR-002 / J66)",
         "guide.rule7":
-            "Les pistes de voix stéréo sont exclues par défaut de la répartition automatique du panoramique ; activez-les manuellement pour les y inclure. Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) qui conserve par défaut la largeur stéréo existante au lieu de la laisser écraser par la répartition automatique. (ADR-003 / J57 + J60)",
+            "Toutes les pistes participent par défaut au panoramique automatique ; si une piste stéréo doit conserver sa largeur et sa position stéréo existantes, désactivez « participer au panoramique automatique » pour cette piste dans la page Pistes. Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) et, une fois la participation désactivée, la largeur stéréo existante est conservée au lieu d'être écrasée par la répartition automatique. (ADR-003 / J57 + J83)",
         "guide.rule8":
             "SCVB Output ne déclare aucune latence supplémentaire au DAW. L'alignement repose sur l'adressage temporel ; n'essayez pas de le « corriger » avec la PDC (compensation du retard des plugins). (ADR-002)",
         "guide.rule9":
@@ -2207,6 +2218,9 @@ export const T = {
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "Annuler",
         "common.gotIt": "Compris",
+        "master.hostEchoHint":
+            "Ce paramètre est piloté par l'automation de l'hôte. Pour le modifier à la main, désactivez Read sur l'automation de cette piste, ou passez-la en Write.",
+        "tracks.suspended": "Aucune donnée (suspendu)",
         "tab.master": "Général",
         "tab.tracks": "Pistes",
         "tab.wave": "Ondes & segments",
@@ -2356,6 +2370,7 @@ export const T = {
         "wave.inspectorClose": "Réduire",
         "wave.inspectorEmpty":
             "Cliquez sur un segment dans une piste pour le modifier",
+        "wave.segOpenEnd": "Jusqu'à la fin",
         "wave.segStart": "Début",
         "wave.segEnd": "Fin",
         "wave.segLen": "Durée",

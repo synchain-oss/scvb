@@ -108,6 +108,14 @@ void AutomationPrinter::endAllGestures()
             lane.param->endChangeGesture();
             lane.gestureOpen = false;
         }
+        // **去重缓存随 gesture 一起作废**:下一次重开 gesture 必须先写一个首点。
+        //
+        // 少了这一行,「值没动就不写」会在循环回跳 / 停止再播 / 播放头拖出再拖回之后咬到自己:
+        // gesture 重新 begin,但 lastWrittenNorm 还等于当前值 → 整整一圈一次
+        // setValueNotifyingHost 都不发 → 宿主自动化里这一圈**没有任何落点**,冻结维度那条
+        // 平直线就断了。旧实现每拍无条件重写恰好盖住了这个缺口,所以减负必须连它一起补。
+        // 代价是每次重开 gesture 多 15 次写入(每圈一次),不是每秒 750 次 —— 减负目标不受影响。
+        lane.everWritten = false;
     }
 }
 
@@ -128,6 +136,9 @@ int AutomationPrinter::numGesturesOpen() const
 void AutomationPrinter::recordHostEcho(float value) noexcept
 {
     m_hostEchoCount.fetch_add(1, std::memory_order_relaxed);
+    // 记下**时刻**,而不只是计数:UI 要回答的是「此刻是不是还被宿主驱动着」,
+    // 单调计数答不了这个问题(它只会越来越大)。listener 可能来自音频线程,故用原子。
+    m_hostEchoAtMs.store(juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
     m_lastHostEchoValue.store(value, std::memory_order_relaxed);
 }
 
@@ -179,7 +190,7 @@ bool AutomationPrinter::nearSegmentBoundary(const scvb::CurveEvaluator* curve, d
 
 void AutomationPrinter::tick()
 {
-    // —— §3.1:读 playhead 快照(50Hz 消息线程;撕裂沿用上帧,不自旋)——
+    // —— §3.1:读 playhead 快照(打印 Timer / 消息线程;撕裂沿用上帧,不自旋)——
     scvb::engine::PlayheadPod pod;
     if (m_shot != nullptr)
     {
@@ -258,18 +269,27 @@ void AutomationPrinter::tick()
         }
 
         // —— 冻结维度(用户 2026-08-24 设计决定):用户已表态,该值以「平直线」写入 ——
-        // 每 tick 以 param 当前值(冻结手动静态值)写恒值;写重复恒值无害,宿主 deadband 合并。
+        // 以 param 当前值(冻结手动静态值)写恒值。
+        //
+        // **值没动就不写**。原注释「写重复恒值无害,宿主 deadband 合并」在真机上不成立:
+        // setValueNotifyingHost 在 Cubase 里是一次同步的宿主往返,合不合并是宿主写完之后的事,
+        // 调用本身的代价已经付掉了。冻结车道恒有 15 条(每轨一维),50Hz 无条件重写 =
+        // 750 次/秒纯冗余的宿主调用,全部压在消息线程上 —— 而消息线程同时还要跑 UI、桥事件、
+        // 25Hz 的 timerCallback。这是 v5.1「快速切 tab 整体卡死」最强的一条负载假设
+        // (根因待真机 dump 定谳,本改动只是去掉这笔本就不该付的开销,不改任何语义)。
+        // 平直线的语义不受影响:值不变时宿主自动化里本来就该是同一条平线。
         if (laneFrozen(lane))
         {
             // param 当前值(冻结手动静态值)。AudioParameterFloat::getValue() 为 private,
             // 走公开的 get()(denorm)+ convertTo0to1 归一到 0..1。
             const float norm = lane.param->convertTo0to1(lane.param->get());
+            if (!lane.everWritten || !juce::approximatelyEqual(norm, lane.lastWrittenNorm))
             {
                 ScopedSelfWriteFlag guard(*this); // §3.5 层 2:抑制自触发 listener
                 lane.param->setValueNotifyingHost(norm);
+                lane.lastWrittenNorm = norm;
+                lane.everWritten = true;
             }
-            lane.lastWrittenNorm = norm;
-            lane.everWritten = true;
             continue;
         }
 

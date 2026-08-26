@@ -22,7 +22,7 @@ class WebViewHost : public juce::AudioProcessorEditor, private juce::Timer
 public:
     struct Config
     {
-        juce::String role; // Init::Role:"input" | "output"
+        juce::String role; // Init::Role:"input" | "output" | "monitor"([J75])
         juce::String userDataFolderName; // WebView2 user-data 目录名(Input/Output 各一)
         juce::String version = "0.1.0"; // 首帧 version seed(插件侧传 JucePlugin_VersionString)
         juce::String lang = "zh";

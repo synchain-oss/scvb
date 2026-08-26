@@ -12,7 +12,7 @@
   "frReview": {
     "status": "pending",
     "reviewer": "U17 待用户指派",
-    "note": "rule3 的 zh 于 2026-08-24 因中文风格统一(「哑轨」→「没有声音的轨道」)重算 zhSha256,语义未变,en/fr 经复核无需改动。05 §5 / 12 §1.2:fr 红字必须经人工审校后方可发布,机翻安全警告发到公开产品是明确禁止项。本轮 fr 由 T39b 起草(非机翻,逐条对照 zh 真源撰写),审校人归属与 U17 同批交用户确认;状态转 reviewed 前不得发版。"
+    "note": "rule7 的 zh 真源 2026-08-26 随 J83 改写(立体声轨默认参与,排除权移到轨道页开关),en/fr 已同步重译并更新 zhSha256,**fr 未经人工审校**。05 §5 / 12 §1.2:fr 红字必须经人工审校后方可发布,不得随安全类文案发布;审校人归属 U17,状态转 reviewed 前保留本警告。(前一条 note 关于 rule3 的记录已并入本轮:两条都待同一次审校。)"
   },
   "title": {
     "en": "Must read: SCVB's nine usage rules. Breaking any one of them causes silence, wrong panning, or failed analysis.",
@@ -58,9 +58,9 @@
     },
     {
       "n": 7,
-      "en": "**Stereo vocal tracks stay out of automatic pan assignment by default; switch one in by hand when you want it included.** Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread) which by default preserves the stereo width you already have, rather than letting automatic assignment overwrite it. (ADR-003 / J57 + J60)",
-      "fr": "**Les pistes de voix stéréo sont exclues par défaut de la répartition automatique du panoramique ; activez-les manuellement pour les y inclure.** Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) qui conserve par défaut la largeur stéréo existante au lieu de la laisser écraser par la répartition automatique. (ADR-003 / J57 + J60)",
-      "zhSha256": "f2ba39983b1dda432a75dd6c699cf52ecf2d9ca6fea4c398167dd7f4ef6dfa0a"
+      "en": "**Every track takes part in automatic pan by default; if a stereo track should keep its existing stereo width and position, switch off \"participate in auto pan\" for that track on the Tracks page.** Mono sources are placed with equal-power pan; stereo sources use a dual-pan + width model (pan = centre of the arc, width = spread), and once participation is switched off the stereo width you already have is preserved rather than overwritten by automatic assignment. (ADR-003 / J57 + J83)",
+      "fr": "**Toutes les pistes participent par défaut au panoramique automatique ; si une piste stéréo doit conserver sa largeur et sa position stéréo existantes, désactivez « participer au panoramique automatique » pour cette piste dans la page Pistes.** Les sources mono sont placées par panoramique à puissance constante ; les sources stéréo suivent un modèle dual-pan + largeur (pan = centre de l'arc, largeur = ouverture) et, une fois la participation désactivée, la largeur stéréo existante est conservée au lieu d'être écrasée par la répartition automatique. (ADR-003 / J57 + J83)",
+      "zhSha256": "ae90017344e86a3a322da1a5c0af1b18f11261233fb726ffebed89e105594797"
     },
     {
       "n": 8,

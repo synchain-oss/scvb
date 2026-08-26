@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "BridgeArgs.h"
 #include "InputBridgeLogic.h"
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
@@ -285,8 +286,10 @@ TEST_CASE("HOST L-6b:bypass 断流 → 失准报警;恢复 → 警告自行清�
     REQUIRE(r.out.misalignCount(kTestChannel) == 0);
 
     // 模拟「误 bypass 一个 Input」:Input 不再 processBlock(写头停滞),Output 照常读。
-    // 报警不再是**瞬时**的:写头冻结要坐实 kSuspendStallMs(500ms)才算停流(v5 P1-7 ——
-    // 短于这个窗的停顿是宿主在静音段挂起 Input,不是故障)。所以这里等,而不是跑固定块数。
+    // 断言面 = **suspended**(统筹裁定丙案):写方停着是「挂起」,不是「失准」。
+    // 两者是性质不同的两件事,§2.3 起各有各的位 —— 见 misalignCountRecent 头注。
+    // 坐实还需要 kSuspendStallMs(500ms),所以这里等,而不是跑固定块数。
+    const auto suspendedNow = [&r] { return r.out.connSnapshot().channels[kTestChannel - 1].suspended; };
     bool raised = false;
     for (int waited = 0; waited < 3000 && !raised; waited += 80)
     {
@@ -297,20 +300,20 @@ TEST_CASE("HOST L-6b:bypass 断流 → 失准报警;恢复 → 警告自行清�
             r.ph.timeSamples += kBlock;
         }
         Rig::pumpMessages(80);
-        raised = (r.out.misalignCount(kTestChannel) > 0);
+        raised = suspendedNow();
     }
-    CHECK(raised); // 报警亮起(这是对的)
+    CHECK(raised); // 挂起态亮起(这是对的)
+    CHECK(r.out.misalignCount(kTestChannel) == 0); // 而且**不是**失准 —— 用户自己 bypass 的,不该红灯
 
-    // 重开 Input:两侧恢复正常推进,连续 >kMisalignRecoverMs(1s)无新缺口后计数归零。
-    for (int waited = 0; waited < 4000; waited += 40)
+    // 重开 Input:两侧恢复正常推进 → 挂起态撤下。
+    bool cleared = false;
+    for (int waited = 0; waited < 4000 && !cleared; waited += 40)
     {
         r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
-        if (r.out.misalignCount(kTestChannel) == 0)
-        {
-            break;
-        }
+        cleared = !suspendedNow();
     }
-    CHECK(r.out.misalignCount(kTestChannel) == 0); // ← 修复前永远撤不下来
+    CHECK(cleared); // ← 修复前永远撤不下来
+    CHECK(r.out.misalignCount(kTestChannel) == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -667,36 +670,38 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
         }
     };
 
-    // 信号来源说明(v5 P1-7 之后):写头冻结不再逐块记缺口,改由 CH_SUSPENDED 坐实后
-    // 记一笔停流(OutputSession 的 stallCount_),两者并进同一个 misalignCount 上桥。
-    // 于是短停(<500ms,宿主在静音段挂起 Input)零信号,持续停流照报 —— 这条用例要的
-    // 正是后者,断言面不变。
+    // 信号来源(统筹裁定丙案):写头停着 = **挂起**(ChannelConnInfo::suspended),不是失准。
+    // 这条用例守的「不得假恢复」保证与从前完全一致,只是换到了正确的那个位上:
+    // 持续断流期间 suspended 必须一直亮,且该轨必须一直在注入集之外。
+    const auto suspendedNow = [&r] { return r.out.connSnapshot().channels[kTestChannel - 1].suspended; };
     bool raised = false;
     for (int waited = 0; waited < 3000 && !raised; waited += 100)
     {
         runOutputOnly(10);
         Rig::pumpMessages(100);
-        raised = (r.out.misalignCount(kTestChannel) > 0);
+        raised = suspendedNow();
     }
-    REQUIRE(raised); // 报警亮起(这是对的)
+    REQUIRE(raised); // 挂起态亮起(这是对的)
 
     // 继续 bypass 远超恢复窗(1s)——此时缺口已不再增长(本轨退出注入集,read 不再被调),
-    // 但数据依然没有推进。警告**必须**保持。
+    // 但数据依然没有推进。**绝不能**因此被判成「已恢复」。
     for (int round = 0; round < 6; ++round)
     {
         runOutputOnly(20);
         Rig::pumpMessages(200);
+        CHECK(suspendedNow()); // ← 修复前这里会被判成「已恢复」
+        // 同时该轨必须已退出注入集:状态在、还照混旧数据,是更坏的假恢复。
+        CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
     }
-    CHECK(r.out.misalignCount(kTestChannel) > 0); // ← 修复前这里会被判成「已恢复」归零
-    // 同时该轨必须已退出注入集:警告在、还照混旧数据,是更坏的假恢复。
-    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
+    // 全程都不是「失准」:用户自己 bypass 的,不该出红色警报。
+    CHECK(r.out.misalignCount(kTestChannel) == 0);
 
-    // 真正重开 Input:两侧一起推进 → 数据恢复 → 警告才该撤下。
+    // 真正重开 Input:两侧一起推进 → 数据恢复 → 挂起态才该撤下。
     bool cleared = false;
     for (int waited = 0; waited < 5000 && !cleared; waited += 40)
     {
-        r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
-        cleared = (r.out.misalignCount(kTestChannel) == 0);
+        r.runBlocks(2, 0.5f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        cleared = !suspendedNow();
     }
     CHECK(cleared);
 }
@@ -1284,8 +1289,43 @@ TEST_CASE("HOST P0-1:mono Input 被检测成单声道并默认参与自动声像
     {
         const auto& c = r.out.runtime().channels[static_cast<std::size_t>(ch - 1)];
         CHECK(c.sourceChannels == 1);
-        CHECK(c.participatesInAutoPan()); // [J60] mono 默认参与
+        CHECK(c.participatesInAutoPan());
     }
+}
+
+// ---------------------------------------------------------------------------
+// v5.1 实测 P0-B:**stereo 轨也必须默认参与自动声像**。
+// 检测值来自轨道总线布局,不是素材本身 —— Cubase 里单声道人声放在立体声轨上就报 2。
+// 按 [J60] 原默认把它们判成「不参与」,AutoAssign 会给它们「保持现值」;而现值取自从未被
+// 打印过的 pan 参数 = 0,分析再把 0 烘焙进段表:真机上「大部分轨回到中间、只剩两条在左边」。
+//
+// 这一条**只断言取值口径本身**(纯函数,不经共享内存):它就是回归点,而端到端的
+// 「多轨分析后 pan 非全零」由 MonoMultiRig 那条用例守着。走 IPC 反而会把断言绑到
+// harness 里 Input 总线布局的解析结果上 —— 那个在单独跑与全量跑之间并不稳定,
+// 是「测试自己的噪声」,不是被测行为。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-B:stereo 检测值不得把轨挤出自动声像", "[host][t37][v51][analyze]")
+{
+    OutputRuntimeState::Channel c;
+
+    // 未显式设置:三种检测态(未检测 / mono / stereo)一律参与。
+    REQUIRE_FALSE(c.participateAutoPanSet);
+    for (const int detected : {0, 1, 2})
+    {
+        c.sourceChannels = detected;
+        CHECK(c.participatesInAutoPan()); // ← 改回 `sourceChannels != 2` 时 detected=2 即红
+    }
+
+    // 显式设置仍然说了算(该由用户决定的那一档没有被写死)。
+    c.participateAutoPanSet = true;
+    c.participateAutoPan = false;
+    for (const int detected : {0, 1, 2})
+    {
+        c.sourceChannels = detected;
+        CHECK_FALSE(c.participatesInAutoPan());
+    }
+    c.participateAutoPan = true;
+    CHECK(c.participatesInAutoPan());
 }
 
 // ---------------------------------------------------------------------------
@@ -1569,4 +1609,249 @@ TEST_CASE("HOST 编辑段把包络拖长 → 打印区间跟随(自动化不在�
     const auto* raw = r.out.getAPVTS().getRawParameterValue(scvb::params::panId(r.out.versionActive(), ch));
     REQUIRE(raw != nullptr);
     CHECK(std::abs(raw->load()) > 1.0f); // ← 判据挂回 crvsRevision_ 即红:停在 0.0f
+}
+
+// ---------------------------------------------------------------------------
+// v5.1 实测 P1-F:follow 档「分析全部」的范围**与播放头无关**。
+// 老实现取 [0, 当前播放头];Cubase「播完回开头」会把播放头送回 0,于是范围恒空、
+// 分析永远受理不了 —— 用户看到的就是「分析键点了没反应」。
+// v5 的 P2-9 只拆掉了按钮的置灰条件,这条真正的前置留在了 C++ 侧,所以现象照旧。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P1-F:采集后把播放头送回 0,分析仍可受理", "[host][t37][v51][analyze]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double extent = r.out.capturedExtentSeconds();
+    REQUIRE(extent > 0.0); // 前置:确实采到了东西
+
+    // 模拟「播完回开头」:播放头回 0(采集数据仍在)。
+    r.ph.timeSamples = 0;
+    r.runBlocks(4, 0.0f);
+    Rig::pumpMessages(120);
+
+    // 已采集范围与播放头无关,仍是那一段。
+    CHECK(r.out.capturedExtentSeconds() == Catch::Approx(extent));
+    // 按该范围发起分析:必须受理(老实现在这里 endS≈0 → 恒拒)。
+    const auto accepted = r.out.startAnalysis(0, 0.0, r.out.capturedExtentSeconds());
+    CHECK(accepted.ok);
+    r.out.cancelAnalysis();
+}
+
+// ---------------------------------------------------------------------------
+// v5.1 实测 P1-D:「自动化 write 没开时,怎么调音量都没变化;write 打开才有效」。
+//
+// 用户的这句话把嫌疑指向**消费端**:若音频通路的 vol 目标恒取自参数面,而参数面只有
+// 打印器在 PRINT 态才写,那么关掉 write 就等于切断了唯一的写入源 —— 现象与之完全吻合。
+// 但那是推测。这一组把全链**三跳**拆开逐跳定谳,不猜:
+//   ① 参数 → DSP:直接 setValue 参数,断言下一块总线增益真的变(FOLLOW 档,host 权威);
+//   ② 冻结维度 → DSP:引擎权威 + 冻结 vol,参数仍须是权威(§2.3 / J65);
+//   ③ 引擎曲线 → DSP:引擎权威 + 未冻结,曲线说了算,改参数**不该**有效。
+// 三条都用**总线电平**做判据(单轨工程,vol 改动直接反映在总线上),不看中间量。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 跑几块并回报总线峰值(取几块里的最大,避开平滑器的爬坡)。
+float busPeakAfter(Rig& r, int blocks)
+{
+    float peak = 0.0f;
+    for (int i = 0; i < blocks; ++i)
+    {
+        r.runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/4);
+        peak = std::max(peak, r.out.meterSnapshot().busPeak[0]);
+    }
+    return peak;
+}
+} // namespace
+
+TEST_CASE("HOST P1-D:参数 → DSP 这一跳(FOLLOW 档,host 参数是权威)", "[host][t37][v51][pld]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(false); // FOLLOW:§2.3 规定 host 参数是权威
+    r.runBlocks(60, 0.5f);
+
+    const float loud = busPeakAfter(r, 12);
+    REQUIRE(loud > 0.0f); // 前置:确实有声
+
+    // 直接把该轨 vol 压到 −24 dB(不经 UI、不经打印器 —— 只验最后一跳)。
+    auto& apvts = r.out.getAPVTS();
+    auto* vol = apvts.getParameter(scvb::params::volId(r.out.versionActive(), kTestChannel));
+    REQUIRE(vol != nullptr);
+    vol->beginChangeGesture();
+    vol->setValueNotifyingHost(vol->convertTo0to1(-24.0f));
+    vol->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float quiet = busPeakAfter(r, 20);
+    // −24 dB ≈ ×0.063;留足平滑与余量,断言「显著变小」而不是精确值。
+    CHECK(quiet < loud * 0.5f);
+}
+
+TEST_CASE("HOST P1-D:冻结维度 → DSP(引擎权威下参数面仍是权威,J65)", "[host][t37][v51][pld]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true); // 引擎权威(ARMED/PRINT)
+    r.runBlocks(60, 0.5f);
+
+    auto& apvts = r.out.getAPVTS();
+    const int v = r.out.versionActive();
+    // 冻结 vol 维(bit1)。
+    auto* frz = apvts.getParameter(scvb::params::freezeId(v, kTestChannel));
+    REQUIRE(frz != nullptr);
+    frz->beginChangeGesture();
+    frz->setValueNotifyingHost(frz->convertTo0to1(2.0f));
+    frz->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float loud = busPeakAfter(r, 12);
+    REQUIRE(loud > 0.0f);
+
+    auto* vol = apvts.getParameter(scvb::params::volId(v, kTestChannel));
+    REQUIRE(vol != nullptr);
+    vol->beginChangeGesture();
+    vol->setValueNotifyingHost(vol->convertTo0to1(-24.0f));
+    vol->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float quiet = busPeakAfter(r, 20);
+    CHECK(quiet < loud * 0.5f); // 冻结维度必须听得见参数面的改动
+}
+
+TEST_CASE("HOST P1-D:未冻结 + 引擎权威 → 曲线说了算,改参数无效", "[host][t37][v51][pld]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true);
+    r.runBlocks(60, 0.5f);
+
+    const float base = busPeakAfter(r, 12);
+    REQUIRE(base > 0.0f);
+
+    // 未冻结:§2.3 规定引擎权威读曲线。此时改 host 参数**不该**影响听感 ——
+    // 这一条是前两条的对照组:它保证前两条不是「凑巧总是读参数」。
+    auto& apvts = r.out.getAPVTS();
+    auto* vol = apvts.getParameter(scvb::params::volId(r.out.versionActive(), kTestChannel));
+    REQUIRE(vol != nullptr);
+    vol->beginChangeGesture();
+    vol->setValueNotifyingHost(vol->convertTo0to1(-24.0f));
+    vol->endChangeGesture();
+    Rig::pumpMessages(120);
+
+    const float after = busPeakAfter(r, 20);
+    CHECK(after > base * 0.7f); // 基本不变(无曲线时曲线求值回 0 dB)
+}
+
+// ---------------------------------------------------------------------------
+// v5.2 实测 P0-A(活锁,dump 定谳):waveformOf 的代价必须与**覆盖**同阶,不与请求跨度同阶。
+//
+// 真机现场:前端把被污染的工程时长(2^40 采样 ÷ 48k = 22,906,492 s)当 endS 发进来,
+// 内层循环按「跨度 ÷ 10ms hop」空转 22.9 亿次、全程持 lifecycleMutex_ 且跑在 WebView2 的
+// web-message 回调里 —— 宿主消息泵被占住,UI 整体冻死。那次现场真正有数据的只有 2475 个 hop。
+// 这一组用**时间预算**做判据:病态跨度下必须仍然毫秒级返回。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-A:病态跨度的 waveformOf 仍在时间预算内返回", "[host][t37][v52][hang]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f); // 只采几秒:覆盖极稀疏,正是真机现场的形状
+    Rig::pumpMessages(400);
+
+    const double covered = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(covered > 0.0);
+
+    // 转储里的那个数,逐字:2^40 采样 ÷ 48000。
+    constexpr double kPoisonedEndS = 1099511627776.0 / 48000.0;
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    const auto tile = r.out.waveformOf(kTestChannel, 0.0, kPoisonedEndS, 512);
+    const double elapsedMs = juce::Time::getMillisecondCounterHiRes() - t0;
+
+    // 修复前:内层要跑 22.9 亿次,单次调用 9–23 秒。预算给到 2000ms 仍有两个数量级余量,
+    // 既不会因构建机器慢而假红,也绝不可能被旧实现蒙混过关。
+    CHECK(elapsedMs < 2000.0);
+    REQUIRE(tile.covered.size() == 512);
+    // 形状仍然合法(否则 JS 侧 isTileShape 不过,泳道整块变黑)。
+    for (std::size_t i = 0; i < tile.covered.size(); ++i)
+    {
+        CHECK(tile.minDb[i] <= tile.maxDb[i]);
+    }
+}
+
+TEST_CASE("HOST P0-A:covered 列的抽样上界不影响「有没有数据」的判定", "[host][t37][v52][hang]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double covered = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(covered > 0.0);
+
+    // 抽样只影响「取到哪些 hop」,不影响「这一列有没有数据」——
+    // 正常跨度与病态跨度下,已覆盖区间对应的列都必须仍然是 covered。
+    const auto normal = r.out.waveformOf(kTestChannel, 0.0, covered, 64);
+    int normalCovered = 0;
+    for (const int c : normal.covered)
+    {
+        normalCovered += c;
+    }
+    CHECK(normalCovered > 0);
+}
+
+// ---------------------------------------------------------------------------
+// v5.3 R4:**只有一个「无末端」段的轨**,上桥的 t1S 必须严格大于 t0S。
+//
+// setTrackManual 的产物是「单段全时限常值」(track.segments.assign(1, seg)),于是
+// 手动/冻结轨这一整类**本轨内一个非哨兵段都没有**。降级值若按本轨算就永远得 0,
+// t1S == t0S,段在波形页上坍缩成零宽:点不中、切不开 —— 而那正是最常被点的那批轨。
+// 降级必须取**工程级**已知末端(全轨非哨兵段最大 t1 → 采集覆盖 → 最小非零宽度)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST R4:单哨兵段轨的降级右端严格大于左端", "[host][t37][v53][segments]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 造出「整轨只有一个无末端段」:setTrackManual 会把段表整表换成单段全时限。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -40.0f, replaced, replacedLocked));
+
+    const auto crvs = r.out.crvsSnapshot();
+    const auto& vc = crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)];
+    const auto& segs = vc.tracks[kTestChannel - 1].segments;
+    REQUIRE(segs.size() == 1); // 前置:确实是单段
+    REQUIRE(segs.front().t1 >= scvb::output::kOpenEndedT1); // 且确实是无末端哨兵
+
+    // 上桥值走真实降级链(BridgeArgs.h 三函数 —— buildSegmentsPayload 用的就是这一份实现),
+    // 输入全部取自真实快照/处理器,不用局部常量重演:revert 降级链的任何一级这里都会红。
+    const double sr = r.out.sampleRate();
+    REQUIRE(sr > 0.0);
+    const std::int64_t knownEnd = scvb::output::knownTimelineEndSamples(vc, r.out.capturedExtentSeconds(), sr);
+    const std::int64_t minSpan = scvb::output::minOpenEndedSpanSamples(ScvbOutputAudioProcessor::featHopSeconds(), sr);
+    const std::int64_t t1Effective =
+        scvb::output::effectiveT1Samples(segs.front().t0, segs.front().t1, knownEnd, minSpan);
+
+    // 核心断言:哨兵不再以「2^40 采样」伪装上桥,且**严格大于 t0**(零宽段点不中、切不开)。
+    CHECK(t1Effective < scvb::output::kOpenEndedT1);
+    CHECK(t1Effective > segs.front().t0);
+    // 秒域同款(§2.8 载荷字段就是这两个数的换算):t1S 必须严格大于 t0S。
+    const double t0S = scvb::output::samplesToSeconds(segs.front().t0, sr);
+    const double t1S = scvb::output::samplesToSeconds(t1Effective, sr);
+    CHECK(t1S > t0S);
 }

@@ -32,7 +32,7 @@ Input 插在人声轨插件链**最后一格**(J45),捕获后向下游输出静�
 1. **音频链**:Input 捕获 → 音频环段 → Output 按 [t0,t1) 读 → gain/pan → 求和 → 替换总线输入(ADR-002)。
 2. **特征链**:Input 每 10ms hop 算 K-weighted mean-square + peak → 特征段 → Output 分析时快照入 state(ADR-007;VAD 后验由 Output 离线从 kw_ms 计算,ADR-008)。
 3. **控制链**:Output state(唯一真源)→ ctrl 广播区 → Input UI 显示;Input 改动 → 命令环 → Output 消息线程落 state(ADR-004)。
-4. **自动化链**:引擎曲线 →(50Hz Timer,gesture 三段式)→ 123 个参数 → DAW write 录制(ADR-005/006)。
+4. **自动化链**:引擎曲线 →(25Hz Timer,gesture 三段式)→ 123 个参数 → DAW write 录制(ADR-005/006)。
 
 ## 4. 为什么是「总线集中处理」而不是「就地处理」
 
@@ -62,7 +62,7 @@ D5 的三条理由(ADR-002 细则):
 | 线程 | 允许做什么 | 禁止做什么 |
 |---|---|---|
 | **音频线程 [A]**(processBlock) | 预分配缓冲上的定长运算、`juce::ScopedNoDenormals`、无锁 SPSC 环(acquire/release)、`std::atomic`、发布 playhead 快照(SPSC) | 堆分配/释放、任何锁、文件/网络/日志 I/O、抛/捕获异常、MessageManager / beginChangeGesture 系列、阻塞等待 |
-| **消息线程 [M]**(50Hz Timer) | gesture 三段式(beginChangeGesture/setValueNotifyingHost/endChangeGesture)、落 state、消费命令环 | — |
+| **消息线程 [M]**(25Hz Timer) | gesture 三段式(beginChangeGesture/setValueNotifyingHost/endChangeGesture)、落 state、消费命令环 | — |
 | **UI(WebView)** | 轮询 ctrl 广播区(25Hz)显示、写操作经命令环发回 | 直接写音频数据 |
 
 依据:ADR-006(gesture 只在消息线程)、ADR-011(跨线程原子 + lock-free)、CLAUDE.md §8。

@@ -11,7 +11,7 @@
 #include "engine/CurveEvaluator.h"
 #include "engine/PlayheadShot.h"
 
-// AutomationPrinter:50Hz 消息线程打印器(03 §3.2 / §3.3)。把引擎曲线真身打印到宿主自动化参数。
+// AutomationPrinter:25Hz 消息线程打印器(03 §3.2 / §3.3)。把引擎曲线真身打印到宿主自动化参数。
 // 挂在 Processor 上(不是 Editor!GUI 关闭也要打印,§4.2 REAPER 对策①)。
 // 关键纪律(CLAUDE.md §8 / R6):setValueNotifyingHost / beginChangeGesture 只在消息线程 Timer
 // 回调内调用,音频线程只发布 PlayheadShot(SPSC),绝不触碰宿主参数。
@@ -128,8 +128,12 @@ public:
     void setLookaheadMs(int ms) noexcept { m_lookaheadMs = ms; }
     void setTimeOffsetMs(int ms) noexcept { m_timeOffsetMs = juce::jlimit(-200, 200, ms); } // §3.4 -200..+200
 
-    // 50Hz Timer 启停(仅 Processor 调用;Editor 绝不持有本类)。
-    void startPrinting() { startTimerHz(50); }
+    // 打印 Timer 启停(仅 Processor 调用;Editor 绝不持有本类)。
+    // 打印节拍 25Hz。原为 50Hz —— 那是「宿主自动化分辨率」的直觉取值,但打印是
+    // **前瞻 + deadband** 的:20ms 前瞻下 25Hz 的时间粒度(40ms)仍远细于任何听感门槛,
+    // 而每一拍最多 30 次同步宿主往返,拍数减半就是消息线程负载减半。
+    // 与 v5.1「快速切 tab 整体卡死」的负载假设配套(见 tick() 里冻结车道那段头注)。
+    void startPrinting() { startTimerHz(25); }
     void stopPrinting() { stopTimer(); }
 
     // §3.5 防回环:setValueNotifyingHost 自触发抑制查询。
@@ -142,6 +146,26 @@ public:
     // §3.5 层 1b:把 host echo 记入计数/值(供测试断言「宿主回吐被屏蔽」;uiEcho 载荷归 T24/05)。
     void recordHostEcho(float value) noexcept;
     int hostEchoCount() const noexcept { return m_hostEchoCount.load(std::memory_order_relaxed); }
+
+    // 「此刻这些车道正被**宿主自动化**驱动」。§2.2 的 `hostEcho` 数据源。
+    //
+    // 为什么要它:契约 §「优先级从高到低:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎曲线」——
+    // 宿主在 Read 档且车道有数据时每块回写参数,插件侧的手动写入随即被盖掉。这**是设计**,
+    // 但从 v5.1 起(打印器第一次真正进 PRINT、车道被填上)用户才第一次撞见它,而 UI 上
+    // 一点提示都没有,看起来就是「调了没反应」(v5.1 实测 P1-D)。把这一位如实上桥,
+    // UI 才能说清「你在跟宿主抢方向盘」。
+    // 新鲜度窗口取 600ms:打印期 §2.2 是 25Hz,宿主回写只要还在持续就落不出这个窗。
+    static constexpr std::uint32_t kHostEchoFreshMs = 600;
+    bool hostEchoActive() const noexcept
+    {
+        const std::uint32_t at = m_hostEchoAtMs.load(std::memory_order_relaxed);
+        if (at == 0)
+        {
+            return false;
+        }
+        const std::uint32_t now = juce::Time::getMillisecondCounter();
+        return (now - at) < kHostEchoFreshMs; // u32 回绕下差值仍然正确
+    }
     float lastHostEchoValue() const noexcept { return m_lastHostEchoValue.load(std::memory_order_relaxed); }
 
     // 把 HostEchoListener 挂/卸到 APVTS 全部 123 参数(接线归 T24 的 Processor)。
@@ -157,7 +181,7 @@ public:
     scvb::engine::AuthorityMode mode() const noexcept { return m_mode.load(std::memory_order_relaxed); }
     const std::array<Lane, kNumLanes>& lanes() const noexcept { return m_lanes; }
 
-    // 直接推进一帧打印(等价一次 50Hz timerCallback)。供测试驱动,消息线程调用。
+    // 直接推进一帧打印(等价一次打印 timerCallback)。供测试驱动,消息线程调用。
     void tick();
 
 private:
@@ -189,6 +213,7 @@ private:
 
     std::atomic<bool> m_selfWrite{false}; // ScopedSelfWriteFlag 置位;listener 跨线程读(接线时红线)
     std::atomic<int> m_hostEchoCount{0}; // 层 1b 记录的 host echo 计数
+    std::atomic<std::uint32_t> m_hostEchoAtMs{0}; // 最近一次 host echo 的时刻(见 hostEchoActive)
     std::atomic<float> m_lastHostEchoValue{0.0f};
 
     HostEchoListener m_hostEchoListener{*this};

@@ -594,7 +594,7 @@ TEST_CASE("[J66] changeGroup 后新组同 idx 轨重新过 200ms 注入延迟(�
 // gapCount —— 只增不减,恢复健康也撤不下横幅。
 // ---------------------------------------------------------------------------
 
-TEST_CASE("misalignCountRecent:失准发作后恢复健康 → 归零(T37 三轮 A 族)", "[output][session][t37]")
+TEST_CASE("挂起(suspended)与失准分开呈现:bypass 走挂起,不走失准", "[output][session][t37]")
 {
     scvb::SegmentBackendInProcess::resetAll();
     scvb::SegmentBackendInProcess backend;
@@ -632,36 +632,37 @@ TEST_CASE("misalignCountRecent:失准发作后恢复健康 → 归零(T37 三轮
     out.tick(1400);
     CHECK(out.misalignCountRecent(3) == 0);
 
-    // ④ 停滞坐实(写头自 1300 起没动过,已 >500ms)→ 记一笔停流,横幅亮起。
+    // ④ 停滞坐实(写头自 1300 起没动过,已 >500ms)→ **挂起**态亮起,而不是失准
+    //    (统筹裁定丙案:写方停着与读方跟丢是两件事,各有各的位)。
     in.heartbeat(1900);
     out.tick(1900);
-    CHECK(out.misalignCountRecent(3) == 1);
+    CHECK(out.channelConn(3, 9999).suspended);
+    CHECK(out.misalignCountRecent(3) == 0); // 全程都不是失准
 
     // ⑤ **只是心跳还在、不再产生新的缺口/饿读,不算恢复**(v4 实测 P0-2 的假恢复):
     //    Input 被 bypass 后本轨转 suspended 退出注入集,read() 不再被调用,痕迹自然停止增长 ——
-    //    此时若判恢复,横幅会在实际仍无声时撤下。写头没动,警告必须保持。
+    //    此时若判恢复,状态会在实际仍无声时撤下。写头没动,挂起必须保持。
     in.heartbeat(3200);
     out.tick(3200);
-    CHECK(out.misalignCountRecent(3) == 1);
+    CHECK(out.channelConn(3, 9999).suspended);
 
-    // ⑥ 数据真的恢复推进(写头前移)→ 发作结束。撤警还要再满足两条:距上次发作 >1s
-    //    (kMisalignRecoverMs)且**此刻**数据仍在推进(dataAdvancing,<500ms 内有新帧)——
-    //    所以这里再写一次,而不是干等。
+    // ⑥ 数据真的恢复推进(写头前移)→ 挂起立刻撤下(它描述的是「此刻在不在出数据」,
+    //    没有恢复窗要等 —— 那是失准才需要的迟滞)。
     scvb::AudioRing::write(in.audioRing().acquire(), 32, buf, 32); // write_head = 64
     in.heartbeat(3300);
-    out.tick(3300); // 本拍记下写头前移 → 发作结束
-    CHECK(out.misalignCountRecent(3) == 1); // 恢复窗未过,警告仍在(不抢跑)
-
-    scvb::AudioRing::write(in.audioRing().acquire(), 64, buf, 32); // write_head = 96
-    in.heartbeat(4300);
-    out.tick(4300); // 距上次发作 1.1s > 1s,且数据正在推进 → 撤警
+    out.tick(3300);
+    CHECK_FALSE(out.channelConn(3, 9999).suspended);
     CHECK(out.misalignCountRecent(3) == 0);
 
-    // ⑦ 再次停流 → 重新报数(不是一次性静音)。
+    // ⑦ 再次停流 → 重新亮起(不是一次性)。
+    //    **要两次失败读**:写方是否在推进得比较两次采样才判得出。第一次失败之后写头没再动,
+    //    第二次才能定性成「写方停着」(只有一次的话按「写方在推进、读方跑过头」算真失准 ——
+    //    那是另一件事,见 ShmRingMixSource 的成因分流)。
+    REQUIRE_FALSE(src.read(128, dst.data(), 16));
     REQUIRE_FALSE(src.read(128, dst.data(), 16));
     in.heartbeat(4900);
-    out.tick(4900); // 写头自 4300 起没动过,已 >500ms → 第二次发作
-    CHECK(out.misalignCountRecent(3) == 1);
+    out.tick(4900); // 写头自 3300 起没动过,已 >500ms → 第二次挂起
+    CHECK(out.channelConn(3, 9999).suspended);
 }
 
 TEST_CASE("T37-C 命令环 kSetPriority 派发到 Output(不再静默丢弃)", "[output][session][ctrl][t37]")
