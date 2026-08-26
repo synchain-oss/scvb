@@ -112,6 +112,9 @@ public:
     u32 injectMask() const noexcept { return injectMask_.load(std::memory_order_acquire); }
 
     // 状态访问。
+    // 走带是否在跑([M] 每拍由 OutputProcessor 从 playhead 快照喂进来)。
+    // 只用于停流判定:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
+    void setTransportPlaying(bool on) noexcept { transportPlaying_ = on; }
     void setCaptureEnabled(bool on) noexcept { captureEnabled_.store(on ? 1u : 0u, std::memory_order_relaxed); }
     void setOutputEnabled(bool on) noexcept { outputEnabled_.store(on ? 1u : 0u, std::memory_order_relaxed); }
     bool captureEnabled() const noexcept { return captureEnabled_.load(std::memory_order_relaxed) != 0; }
@@ -226,6 +229,24 @@ private:
     std::array<u32, kMaxChannels> misalignBaseline_{};
     std::array<u64, kMaxChannels> lastWriteHead_{};
     std::array<u64, kMaxChannels> lastWriteHeadChangeMs_{};
+    // 停流(CH_SUSPENDED)独立记账:**每次挂起只记一笔**,不按块累加。
+    // 写头冻结不再由 ShmRingMixSource 计缺口(那会让静音段的 500ms 判定窗每块都记一笔,
+    // 就是 v5 实测 P1-7 的「偶发短暂失准」);但持续停流仍必须对用户可见 —— scvb.conn 里
+    // 除 misalignCount 外没有第二个「这条轨没在出数据」的位。于是改成:短停(<500ms)零信号,
+    // 一旦坐实挂起就记一笔并在挂起期间持续刷新发作时刻,警告不会因「不再有新缺口」自行到期。
+    std::array<u32, kMaxChannels> stallCount_{};
+    std::array<u32, kMaxChannels> stallBaseline_{};
+    // 上一拍看到的「写头停滞造成的失败读」笔数。停流要记账,除写头冻结外还必须**确有失败读** ——
+    // 否则走带一停(所有轨的写头都冻住,而 Output 照常读到已写区、一次都不失败)就会
+    // 全 15 轨同时报停流。
+    std::array<u32, kMaxChannels> lastStallFail_{};
+    // 本段写头停滞期内是否出现过饿读(写头一推进即作废)。见 .cpp 里的跨拍留存说明。
+    std::array<bool, kMaxChannels> starvingSeen_{};
+    // 停流发作是否已开场。开场要「写头冻结 + 确有饿读」两个条件同时成立;**维持**只要写头
+    // 还冻着即可 —— 一旦本轨因停流退出注入集,read() 就不再被调用,饿读自然停止增长,
+    // 再要求它就等于让警告在故障持续期间自己到期(v4 实测 P0-2 的假恢复正是这个形状)。
+    std::array<bool, kMaxChannels> stallEpisode_{};
+    bool transportPlaying_ = false;
 
     u64 lastGlobalInfoMs_ = 0;
 

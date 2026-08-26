@@ -117,7 +117,7 @@ TEST_CASE("ShmRingMixSource 冷启动(写方尚未追上)不计失准", "[mix][r
     CHECK(src.gapCount() == 0);
 }
 
-TEST_CASE("ShmRingMixSource 缺口(primed 后 write_head 落后)→ 失准计数", "[mix][ring]")
+TEST_CASE("ShmRingMixSource 写头停滞 → 记饿读,不记失准(v5 P1-7)", "[mix][ring]")
 {
     RingFixture f;
     f.header.write_head_samples.store(8, std::memory_order_release);
@@ -126,19 +126,48 @@ TEST_CASE("ShmRingMixSource 缺口(primed 后 write_head 落后)→ 失准计数
     src.bind(&f.header, f.data.data());
     REQUIRE(src.bound());
 
-    // 先成功读一次:本代确有可读数据,此后 covered 失败才是真缺口。
+    // 先成功读一次:本代确有可读数据,此后 covered 失败才需要分类。
     std::vector<float> out(8 * 2, 1.0f);
     REQUIRE(src.read(0, out.data(), 8));
     CHECK(src.gapCount() == 0);
+    CHECK(src.stallFailCount() == 0);
 
-    // 写头停滞而读位置前移 → 真缺口(Input 掉出总线 / 停止推进)。
+    // 写头停滞而读位置前移 = **写方没在写**(bypass / 宿主在静音段跳过该轨)。
+    // 这归 OutputSession 的 CH_SUSPENDED 判定管,**不是失准** —— 老实现在这里记缺口,
+    // 于是每个静音边界都闪一次「失准」再自愈(v5 实测 P1-7)。
     REQUIRE_FALSE(src.read(8, out.data(), 8));
-    CHECK(src.gapCount() == 1);
+    CHECK(src.gapCount() == 0);
+    CHECK(src.stallFailCount() == 1);
+
+    // 停滞持续:饿读继续留痕,失准仍然为 0。
+    REQUIRE_FALSE(src.read(16, out.data(), 8));
+    CHECK(src.gapCount() == 0);
+    CHECK(src.stallFailCount() == 2);
 
     // 写头推进覆盖后恢复。
-    f.header.write_head_samples.store(16, std::memory_order_release);
+    f.header.write_head_samples.store(24, std::memory_order_release);
     REQUIRE(src.read(8, out.data(), 8));
-    CHECK(src.gapCount() == 1); // 恢复读取不再增计数
+    CHECK(src.gapCount() == 0);
+}
+
+TEST_CASE("ShmRingMixSource 写方套圈 → 真失准计数", "[mix][ring]")
+{
+    RingFixture f;
+    f.header.write_head_samples.store(8, std::memory_order_release);
+
+    ShmRingMixSource src;
+    src.bind(&f.header, f.data.data());
+    REQUIRE(src.bound());
+
+    std::vector<float> out(8 * 2, 1.0f);
+    REQUIRE(src.read(0, out.data(), 8));
+    REQUIRE(src.gapCount() == 0);
+
+    // 写头远远越过读位置(超一整个环距)= 要读的数据已被覆盖 —— 这才是真失准,照计。
+    // 与上一条用例的对照点:两者 covered 都失败,但物理成因相反,不能混判。
+    f.header.write_head_samples.store(static_cast<scvb::u64>(f.header.ring_frames) * 4 + 8, std::memory_order_release);
+    REQUIRE_FALSE(src.read(8, out.data(), 8));
+    CHECK(src.gapCount() == 1);
 }
 
 TEST_CASE("ShmRingMixSource epoch 跳变 → 本代数据从此刻起算", "[mix][ring]")

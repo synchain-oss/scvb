@@ -619,35 +619,48 @@ TEST_CASE("misalignCountRecent:失准发作后恢复健康 → 归零(T37 三轮
     REQUIRE(src.read(0, dst.data(), 16));
     REQUIRE(out.gapCount(3) == 0);
 
-    // ② 制造真缺口:读位置越过写头(等价于 Input 被 bypass、不再推进 write_head)。
+    // 走带在跑:停流判定的前提(走带停住时写头本来就该冻着,那不是故障)。
+    out.setTransportPlaying(true);
+
+    // ② 读位置越过写头(等价于 Input 被 bypass、不再推进 write_head)。
+    //    这是**写方停滞**,不是失准 —— gapCount 不动,只留饿读痕迹。
     REQUIRE_FALSE(src.read(32, dst.data(), 16));
-    REQUIRE(out.gapCount(3) == 1);
+    REQUIRE(out.gapCount(3) == 0);
 
-    // ③ 失准发作中:上桥的 misalignCount 报 1(横幅亮起)。
+    // ③ 短停(<kSuspendStallMs = 500ms)零信号:宿主在 -inf 段挂起 Input 又很快恢复,
+    //    不该闪一次「失准」再自愈(v5 实测 P1-7)。
     out.tick(1400);
-    CHECK(out.misalignCountRecent(3) == 1);
-
-    // ④ **只是心跳还在、缺口不再增长,不算恢复**(v4 实测 P0-2 的假恢复):
-    //    Input 被 bypass 后本轨会转 suspended 退出注入集,read() 不再被调用,缺口自然停止增长 ——
-    //    此时若判恢复,横幅会在实际仍无声时撤下。写头没动,警告必须保持。
-    in.heartbeat(2600);
-    out.tick(2600);
-    CHECK(out.misalignCountRecent(3) == 1);
-
-    // ⑤ 数据真的恢复推进(写头前移 + 成功读到)→ 这才是恢复,归零;
-    //    而进程累计值仍保留在 gapCount 供 ctrl 全局小节/诊断。
-    scvb::AudioRing::write(in.audioRing().acquire(), 32, buf, 32); // write_head = 64
-    in.heartbeat(2700);
-    out.tick(2700); // 本拍记下写头前移
-    in.heartbeat(2800);
-    out.tick(2800); // 距上次缺口已 >1s 且数据在推进 → 撤警
     CHECK(out.misalignCountRecent(3) == 0);
-    CHECK(out.gapCount(3) == 1);
 
-    // ⑥ 再次失准 → 重新报数(不是一次性静音)。
+    // ④ 停滞坐实(写头自 1300 起没动过,已 >500ms)→ 记一笔停流,横幅亮起。
+    in.heartbeat(1900);
+    out.tick(1900);
+    CHECK(out.misalignCountRecent(3) == 1);
+
+    // ⑤ **只是心跳还在、不再产生新的缺口/饿读,不算恢复**(v4 实测 P0-2 的假恢复):
+    //    Input 被 bypass 后本轨转 suspended 退出注入集,read() 不再被调用,痕迹自然停止增长 ——
+    //    此时若判恢复,横幅会在实际仍无声时撤下。写头没动,警告必须保持。
+    in.heartbeat(3200);
+    out.tick(3200);
+    CHECK(out.misalignCountRecent(3) == 1);
+
+    // ⑥ 数据真的恢复推进(写头前移)→ 发作结束。撤警还要再满足两条:距上次发作 >1s
+    //    (kMisalignRecoverMs)且**此刻**数据仍在推进(dataAdvancing,<500ms 内有新帧)——
+    //    所以这里再写一次,而不是干等。
+    scvb::AudioRing::write(in.audioRing().acquire(), 32, buf, 32); // write_head = 64
+    in.heartbeat(3300);
+    out.tick(3300); // 本拍记下写头前移 → 发作结束
+    CHECK(out.misalignCountRecent(3) == 1); // 恢复窗未过,警告仍在(不抢跑)
+
+    scvb::AudioRing::write(in.audioRing().acquire(), 64, buf, 32); // write_head = 96
+    in.heartbeat(4300);
+    out.tick(4300); // 距上次发作 1.1s > 1s,且数据正在推进 → 撤警
+    CHECK(out.misalignCountRecent(3) == 0);
+
+    // ⑦ 再次停流 → 重新报数(不是一次性静音)。
     REQUIRE_FALSE(src.read(128, dst.data(), 16));
-    in.heartbeat(2900);
-    out.tick(2900);
+    in.heartbeat(4900);
+    out.tick(4900); // 写头自 4300 起没动过,已 >500ms → 第二次发作
     CHECK(out.misalignCountRecent(3) == 1);
 }
 

@@ -721,6 +721,8 @@ void ScvbOutputAudioProcessor::timerCallback()
         session_.heartbeat(now);
     }
 
+    // 停流判定要知道走带在不在跑:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
+    session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
     session_.tick(now);
 
     // 时间线健康前置(§4.2 [J51]):连续无时间线 ≥0.5s → 清 mask(Inputs 走 J12 直通)。

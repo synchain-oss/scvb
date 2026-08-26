@@ -42,6 +42,8 @@ public:
     // IMixSource
     bool bound() const noexcept override;
     u32 channels() const noexcept override;
+    // 见 stallFailCount_ 头注。[M] 读,[A] 写(relaxed)。
+    u32 stallFailCount() const noexcept { return stallFailCount_.load(std::memory_order_relaxed); }
     u32 sampleRate() const noexcept override;
     u32 ringFrames() const noexcept override;
     bool read(int64_t t0, float* dst, int n) noexcept override;
@@ -61,8 +63,22 @@ private:
     // 起播瞬间 / 宿主先渲染 Output 再渲染 Input),是「尚未上线」而非「失准」,不得计数 ——
     // 否则所有注入轨会在同一块同时 +1(T37 三轮 A 族「五轨几乎同时报失准」)。
     bool primed_ = false;
+    // covered 失败的**写头停滞**判别(P1-7)。covered 会因两个物理上相反的原因失败:
+    //   ① 写头还没推到本块(w < t0+n)—— 写方压根没在写(宿主在静音段挂起了 Input 的
+    //      processBlock、bypass、轨道未激活),这归 OutputSession 的 CH_SUSPENDED 管;
+    //   ② 写方套圈(w-t0 > ringFrames)—— 数据已被覆盖,这才是真失准。
+    // 老写法两者都 +1,于是「音频在但 −inf」的段落里,宿主一挂起 Input,失准就在
+    // CH_SUSPENDED 的 500ms 判定期内被误报出来,500ms 后自愈(v5 实测 P1-7)。
+    // 判别办法:连续失败期间写头一动不动 = ①,写头仍在推进 = 读方真的跟丢了。
+    u64 lastFailWriteHead_ = 0;
+    bool sawFail_ = false;
 
     std::atomic<u32> gapCount_{0};
+    // 被「写头停滞」判据挡下来的失败读:不是失准,但也不是无事发生 —— 它精确表示
+    // 「Output 要 t0 处的数据,而写方压根没推到那里」。OutputSession 拿它给 CH_SUSPENDED
+    // 加第二个条件,以便把「Input 被 bypass / 宿主跳过该轨」与「走带停了,大家都没动」分开:
+    // 后者读得到数据(t0 冻在已写区),一次失败都不会有。
+    std::atomic<u32> stallFailCount_{0};
 };
 
 } // namespace scvb::output
