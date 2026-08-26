@@ -1777,6 +1777,43 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::EvenOffset;
     else
         cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::PriorityQueue;
+
+    // §1.6「重新识别(含手动段)」= clearManual:除了不再保留用户段(见 finishAnalysis),还必须
+    // **把 freeze 位清零**。此前只清段不清位,于是:
+    //   ① 指派层看见 freeze&1 仍为 1,把该轨当 manual 处理 → pan 直接取 currentPan(参数面上那个
+    //      手动值)→ 新产出的 auto 段把手动值**原样烘焙**进去;
+    //   ② DspArbiter 对冻结维度读的仍是 rawPan/rawVol,曲线怎么换都不影响声音。
+    // 两条合起来就是 v5 实测 P0-3「点了重新识别、再分析或关冻结,pan 还是那个手动值」——
+    // 关冻结之所以也没用,是因为曲线里已经是同一个数了。
+    // 只对**本次真会被分析的轨**(在 scope 内、启用、范围内有覆盖)动手:范围内无数据的轨清了位
+    // 就会掉进一条空曲线,那是把「保持现状」改成了静默丢值。
+    if (clearManual)
+    {
+        for (int t = 0; t < 15; ++t)
+        {
+            if (!features[static_cast<std::size_t>(t)].anyCovered)
+            {
+                continue;
+            }
+            const auto* frzRaw =
+                handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
+            if (frzRaw == nullptr || juce::roundToInt(frzRaw->load(std::memory_order_relaxed)) == 0)
+            {
+                continue; // 本就未冻结:不发多余的 gesture(宿主自动化里会多出一个空写入点)
+            }
+            auto* p = apvts.getParameter(scvb::params::freezeId(versionActive_, t + 1));
+            if (p == nullptr)
+            {
+                continue;
+            }
+            // gesture 三段式与 setTrackManual 的参数面写入同口径:宿主要看见一次完整的用户编辑,
+            // 否则 Read 档下会把值当场顶回去。
+            p->beginChangeGesture();
+            p->setValueNotifyingHost(p->convertTo0to1(0.0f));
+            p->endChangeGesture();
+        }
+    }
+
     for (int t = 0; t < 15; ++t)
     {
         const auto& c = runtime_.channels[static_cast<std::size_t>(t)];
@@ -1786,11 +1823,15 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         tc.pairId = c.pairId;
         tc.leadLock = c.leadLock;
         tc.leadVolExempt = c.leadVolExempt;
-        tc.participateInAutoPan = c.participateAutoPanSet ? c.participateAutoPan : (c.sourceChannels == 1);
+        tc.participateInAutoPan = c.participatesInAutoPan();
         tc.source =
             c.sourceChannels == 2 ? scvb::analysis::SourceChannels::Stereo : scvb::analysis::SourceChannels::Mono;
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
         tc.freeze = frz != nullptr ? juce::jlimit(0, 3, juce::roundToInt(frz->load(std::memory_order_relaxed))) : 0;
+        if (clearManual && features[static_cast<std::size_t>(t)].anyCovered)
+        {
+            tc.freeze = 0; // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值
+        }
         const auto* rawPan = handles_.rawPan[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
         tc.currentPan = rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0;
     }
