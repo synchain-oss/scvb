@@ -335,18 +335,60 @@ TEST_CASE("滞回:连续 2 秒失配不计数,第 3 秒才定谳", "[fingerprint
     REQUIRE(three.tilesMismatched(1) == 3);
 }
 
-TEST_CASE("滞回:不相邻的失配不连成一段", "[fingerprint][watch]")
+TEST_CASE("滞回:一条匹配上报即断段(暖机误报的形状)", "[fingerprint][watch]")
 {
     ChannelFrames frames;
     fillBaseline(frames, 20);
     FingerprintWatch w;
-    // 失配 tile 之间夹着匹配 tile → 连续段长度永远是 1,永不定谳。
+    // 失配上报之间夹着匹配上报 → 连续段长度永远是 1,永不定谳。
     for (std::uint32_t t = 0; t < 20; ++t)
     {
         w.onReport(1, (t % 2 == 0) ? mismatchingValue(frames, t) : matchingValue(frames, t), frames);
     }
     REQUIRE(w.tilesMismatched(1) == 0);
     REQUIRE_FALSE(w.stale(1));
+}
+
+TEST_CASE("短循环试听:2 秒循环区照样能定谳(滞回按上报数而非 tile 号连号)", "[fingerprint][watch]")
+{
+    // 本功能的主场景:用户改完 EQ,圈一段 2 秒循环区反复听。循环回卷会触发 startRun,
+    // tile 号回到循环起点 —— 上报序列是 T, T+1, T, T+1, ...。滞回若按「tile 号相邻」判,
+    // runLen 顶到 2 就被打回 1,**全是失配却一条都定不了谳**,提示永远出不来。
+    ChannelFrames frames;
+    fillBaseline(frames, 20);
+    FingerprintWatch w;
+    for (int lap = 0; lap < 4; ++lap)
+    {
+        w.onReport(1, mismatchingValue(frames, 8), frames);
+        w.onReport(1, mismatchingValue(frames, 9), frames);
+    }
+    CHECK(w.tilesChecked(1) == 2); // 只比对过循环区里那两个 tile(去重)
+    CHECK(w.tilesMismatched(1) == 2);
+    CHECK(w.stale(1)); // ← 按 tile 号连号判时这里恒为 false
+
+    // 反向:循环区里素材没变 ⇒ 一圈圈听下去也不该冒提示。
+    FingerprintWatch clean;
+    for (int lap = 0; lap < 4; ++lap)
+    {
+        clean.onReport(1, matchingValue(frames, 8), frames);
+        clean.onReport(1, matchingValue(frames, 9), frames);
+    }
+    CHECK(clean.tilesMismatched(1) == 0);
+    CHECK_FALSE(clean.stale(1));
+}
+
+TEST_CASE("无基线上报打断滞回连续段(覆盖有洞时保守不提示)", "[fingerprint][watch]")
+{
+    ChannelFrames frames;
+    fillBaseline(frames, 3); // 只有 tile 0/1/2 有基线
+    FingerprintWatch w;
+    w.onReport(1, mismatchingValue(frames, 0), frames);
+    w.onReport(1, mismatchingValue(frames, 1), frames);
+    w.onReport(1, scvb::packFpReport(7, 0xBEEF), frames); // 洞:无基线 → 断段
+    w.onReport(1, mismatchingValue(frames, 2), frames);
+    CHECK(w.tilesChecked(1) == 3); // 洞不计入分母
+    CHECK(w.tilesMismatched(1) == 0); // 断段后只攒到 1,够不着门槛
+    CHECK_FALSE(w.stale(1));
 }
 
 TEST_CASE("10% 门槛:严格大于才 stale(边界两侧)", "[fingerprint][watch]")

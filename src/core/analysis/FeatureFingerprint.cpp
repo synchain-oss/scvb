@@ -100,9 +100,10 @@ void FingerprintWatch::onReport(std::uint32_t channel, std::uint64_t packedValue
     std::uint64_t baseline = 0;
     if (!baselineTileFingerprint(frames, tile, baseline))
     {
-        // 无基线:不比对、不计入分母、也不定谳。滞回连续段**会**在这里断开 —— 判据是
-        // 「连续 3 秒不匹配」,中间隔着一个没采过的秒就不是连续的三秒。这是保守的一侧:
-        // 覆盖有洞时宁可不提示,也不要靠拼接出来的「连续」去下一个可能错的结论。
+        // 无基线:不比对、不计入分母、也不定谳,并且**打断滞回连续段** —— 判据是「连续
+        // 3 秒不匹配」,中间隔着一个没采过的秒就不是连续的三秒。这是保守的一侧:覆盖有洞时
+        // 宁可不提示,也不要靠拼接出来的「连续」去下一个可能错的结论。
+        c->runLen = 0;
         return;
     }
 
@@ -115,8 +116,7 @@ void FingerprintWatch::onReport(std::uint32_t channel, std::uint64_t packedValue
     const bool match = (baseline & kFpReportHashMask) == reported;
     if (match)
     {
-        c->runLen = 0;
-        c->hasRun = false;
+        c->runLen = 0; // 一条匹配就断段 —— 暖机误报正是「一条失配后面紧跟匹配」的形状
         // 重采集或用户把上游改回去了:该 tile 的失配定谳撤销(只提示、可自愈)。
         if (ChannelState::clear(c->mismatched, tile))
         {
@@ -125,20 +125,17 @@ void FingerprintWatch::onReport(std::uint32_t channel, std::uint64_t packedValue
         return;
     }
 
-    // 相邻 tile 才算「连续」;跳播/换段/覆盖有洞都重新起算。
-    c->runLen = (c->hasRun && tile == c->lastMismatchTile + 1) ? (c->runLen + 1) : 1;
-    c->lastMismatchTile = tile;
-    c->hasRun = true;
+    // 连续段推进:记下本条的 tile 号(环形覆写,只留最近 kFpHysteresisTiles 条)。
+    c->pending[c->runLen % kFpHysteresisTiles] = tile;
+    ++c->runLen;
 
     if (c->runLen >= kFpHysteresisTiles)
     {
-        // 达到滞回门槛的那一拍把整段(含此前挂起的 kFpHysteresisTiles-1 个)一并定谳;
-        // 之后每多一个 tile 只补它自己(前面的已置位,set 幂等)。
-        const std::uint32_t back = kFpHysteresisTiles - 1;
-        const std::uint32_t first = tile >= back ? (tile - back) : 0;
-        for (std::uint32_t t = first; t <= tile; ++t)
+        // 达到门槛的那一拍把整段(含此前挂起的 kFpHysteresisTiles-1 条)一并定谳;
+        // 之后每多一条只有环里最新那格是新的,其余早已置位(set 幂等)。
+        for (std::uint32_t i = 0; i < kFpHysteresisTiles; ++i)
         {
-            if (ChannelState::set(c->mismatched, t))
+            if (ChannelState::set(c->mismatched, c->pending[i]))
             {
                 ++c->mismatchedCount;
             }

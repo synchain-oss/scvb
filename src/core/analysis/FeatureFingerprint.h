@@ -81,8 +81,8 @@ bool baselineTileFingerprint(const ChannelFrames& frames, std::uint32_t tileIdx,
 // FingerprintWatch —— Output [M] 侧的比对与判定(消费 kFpReport)。
 //
 // 判据(04 §4.5):
-//   ① 无基线(tile 未被完整覆盖)→ 不比对、不计入分母;
-//   ② 连续 3 个相邻 tile 不匹配才把它们计入「失配集合」(滞回);
+//   ① 无基线(tile 未被完整覆盖)→ 不比对、不计入分母、并打断滞回连续段;
+//   ② 连续 3 **条**失配上报才把它们计入「失配集合」(滞回;一条匹配上报即断段);
 //   ③ 失配 tile 数 > 已比对 tile 数的 10% → 该轨 stale。
 //
 // 【v1 口径收窄(实现边界,写进 PR)】设计写的是「某 coverage 区间 >10% tile 不匹配 →
@@ -125,9 +125,16 @@ private:
         TileBitmap mismatched; // 已定谳失配的 tile(分子)
         std::uint32_t checkedCount = 0;
         std::uint32_t mismatchedCount = 0;
-        std::uint32_t runLen = 0; // 当前连续失配 tile 的长度(滞回②)
-        std::uint32_t lastMismatchTile = 0; // 连续性判定用(相邻 tile 才算「连续」)
-        bool hasRun = false;
+        // 滞回②的连续段:计的是**连续几条失配上报**,不是「tile 号连不连号」。
+        // 曾按 tile 号邻接判连续,结果在本功能的主场景上失灵 —— 用户改完 EQ 圈一段 2 秒
+        // 循环区反复试听:循环回卷触发 startRun、tile 号回到起点,于是永远只在 T、T+1 之间
+        // 交替,runLen 顶到 2 就被「不相邻」打回 1,提示永远出不来(全是失配却一条都不定谳)。
+        // 改判「连续上报」后:任何一条匹配上报清零(暖机误报仍被挡住,它后面紧跟的就是匹配),
+        // 无基线上报也清零(保守:覆盖有洞时不靠拼接得结论)。
+        std::uint32_t runLen = 0;
+        // 当前连续段里最近 kFpHysteresisTiles 条失配上报的 tile 号(环形覆写)。
+        // 达到门槛的那一拍要把整段一并定谳,而这些 tile 号在循环试听下并不连号,存不下就补不回。
+        std::uint32_t pending[kFpHysteresisTiles] = {};
 
         static bool test(const TileBitmap& b, std::uint32_t tile);
         // 置位/清位;返回「本次真的改变了」以维护计数。
