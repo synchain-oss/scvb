@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "engine/DspArbiter.h"
 
+#include "engine/FreezeBits.h"
+
 #include <algorithm>
 
 namespace scvb::engine
@@ -52,7 +54,9 @@ float DspArbiter::readRawDefault(const std::atomic<float>* p, float def) const
 
 int DspArbiter::readFrz(const TrackSources& src) const
 {
-    return static_cast<int>(readRaw(src.rawFrz));
+    // 解码口径与消息线程侧(setTrackManual / ctrl 广播 / 分析入参)共用同一份 —— 见 FreezeBits.h
+    // 头注:两边分叉就会出现「一边按未冻结去写曲线、另一边按已冻结去读参数面」的错位。
+    return freezeBitsOf(readRaw(src.rawFrz));
 }
 
 int DspArbiter::readLeadSelect(const std::atomic<float>* rawLead) const

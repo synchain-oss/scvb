@@ -771,11 +771,26 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
     );
 
     // [J85] 冻结通道:再写一次 vol,段表**一个字节都不许变**,值只落参数面。
-    const paramFrames = [];
-    bridge.on("scvb.params", (p) => paramFrames.push(p));
-    await bridge.setParam(TT.paramIdOf(1, 2, "freeze"), 2); // 冻 vol 维
+    // 事件时序也一并记下来:冻结通道的新值只在 `scvb.params` 里,它必须**不晚于**
+    // trackManual 段表帧到达 —— 晚一拍 UI 就会先丢乐观值再读到旧参数面,旋钮回弹(重要3)。
+    const frames = [];
+    bridge.on("scvb.params", (p) => frames.push({ kind: "params", p }));
+    bridge.on("scvb.segments", (s) => frames.push({ kind: "segments", s }));
+    // 冻结位走**与 toggleFreeze 同款的 gesture 三段式**(契约 §1.12-§1.14):UI 里没有裸
+    // setParam 这条路,冒烟也不许走 —— 否则测的是一条真机上不存在的写入路径(建议⑨)。
+    const frzId = TT.paramIdOf(1, 2, "freeze");
+    eq(
+        [
+            await bridge.beginParamGesture(frzId),
+            await bridge.setParam(frzId, 2), // 冻 vol 维
+            await bridge.endParamGesture(frzId),
+        ],
+        [{ ok: true }, { ok: true }, { ok: true }],
+        "freeze 在 §1.12 gesture 白名单里,三段式逐段回 ok",
+    );
     const beforeFrozen = JSON.stringify(TT.segmentsOfCh(tm, 2));
     seen.segments.length = 0;
+    frames.length = 0;
     const frozenWrite = await bridge.setTrackManual(2, "vol", -12);
     eq(
         frozenWrite.replacedSegments,
@@ -790,9 +805,17 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
         beforeFrozen,
         "[J85] 冻结中调整:段表逐字节不变(解冻即回引擎曲线)",
     );
+    const paramIdx = frames.findIndex(
+        (f) =>
+            f.kind === "params" && f.p.values && f.p.values.v1_t02_vol === -12,
+    );
+    const segIdx = frames.findIndex(
+        (f) => f.kind === "segments" && f.s.reason === "trackManual",
+    );
+    check(paramIdx >= 0, "[J85] 冻结中调整:值落参数面并经 scvb.params 回推");
     check(
-        paramFrames.some((p) => p.values && p.values.v1_t02_vol === -12),
-        "[J85] 冻结中调整:值落参数面并经 scvb.params 回推",
+        segIdx >= 0 && paramIdx < segIdx,
+        "[J85] 参数面帧不晚于 trackManual 段表帧(真桥 emitParams 排在 emitSegments 之前;晚一拍 = 旋钮回弹)",
     );
 
     // §1.6 单轨重新识别:analyze({tracksMask}, {clearManual:true})

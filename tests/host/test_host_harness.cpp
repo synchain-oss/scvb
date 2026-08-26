@@ -1981,6 +1981,18 @@ TEST_CASE("HOST J85:冻结中调整只落参数面,段表逐字节不变", "[hos
     // 冻结通道不建段,值域钳制也得照 §1.16 的 value 域执行(不能靠建段函数顺手夹)。
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 999.0f, replaced, replacedLocked));
     CHECK(paramValueOf(r.out, scvb::params::panId(v, kTestChannel)) == Catch::Approx(100.0f).margin(0.01));
+
+    // 非有限值绝不许穿进参数面(#106 复审重要4):冻结维度上它就是 DspArbiter 的音频目标值,
+    // NaN 进去等于整条总线出 NaN。桥面另有 badArg 拒绝,这里断的是 native 兜底那一层。
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, nan, replaced, replacedLocked));
+    const float panAfterNan = paramValueOf(r.out, scvb::params::panId(v, kTestChannel));
+    CHECK(std::isfinite(panAfterNan));
+    CHECK(panAfterNan == Catch::Approx(0.0f).margin(0.01)); // 回中性值(pan 居中)
+    r.runBlocks(20, 0.5f);
+    const auto meters = r.out.meterSnapshot();
+    CHECK(std::isfinite(meters.busPeak[0])); // 总线没被污染
+    CHECK(std::isfinite(meters.busPeak[1]));
 }
 
 // ---------------------------------------------------------------------------
@@ -2049,6 +2061,23 @@ TEST_CASE("HOST J85:解冻回引擎曲线,输出随时间运动(不残留常值�
     const float frozenLate = balanceAt(8.0);
     CHECK(frozenEarly == Catch::Approx(1.0f).margin(0.15)); // 冻结值居中 → 两声道等量
     CHECK(frozenLate == Catch::Approx(1.0f).margin(0.15)); // 且**与时间无关**(冻结 = 平直线)
+
+    // 居中值单独一条断不出「参数面被按什么值域读」:pan=0 归一化后是 0.5,若 DspArbiter 误把
+    // 归一化值当工程值读,0.5 仍然≈居中,断言照样绿(#106 复审建议)。所以再取两个**非居中**
+    // 的冻结值走完整 DSP 链,按 equal-power + dual-pan 解析值对拍:
+    //   stereo 源、width=100 → 子声像 = clamp(pan∓100);两路子声像增益叠加后
+    //   pan=+70 → L/R ≈ 0.8526/1.5225 ≈ 0.56;pan=−70 → 镜像 ≈ 1.79。
+    // 若参数被当成归一化值读(+70 → 0.85),L/R 会是 ≈0.99 —— 与 0.56 差着一个数量级的判据。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 70.0f, replaced, replacedLocked));
+    const float frozenRight = balanceAt(2.0);
+    CHECK(frozenRight < 0.75f); // 明显偏右(解析值 0.56)
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+    const float frozenLeft = balanceAt(2.0);
+    CHECK(frozenLeft > 1.33f); // 明显偏左(解析值 1.79)
+    CHECK(frozenLeft > frozenRight * 2.0f); // 两个冻结静态值真的推动了声像,不是同一个数
+
+    // 回到居中,免得下一段解冻断言把「冻结值恰好也偏左」当成曲线在动。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 0.0f, replaced, replacedLocked));
 
     // —— ③ 解冻:立刻回到曲线采样值,并随时间运动 ——
     setFreezeBits(r.out, kTestChannel, 0);

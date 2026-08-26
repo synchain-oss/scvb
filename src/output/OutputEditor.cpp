@@ -1428,7 +1428,11 @@ void OutputEditor::handleSetTrackManual(const ArgList& a, Completion c)
     const int ch = a.size() > 0 ? static_cast<int>(a[0]) : 0;
     const juce::String panOrVol = a.size() > 1 ? a[1].toString() : juce::String();
     const float value = a.size() > 2 ? static_cast<float>(a[2]) : 0.0f;
-    if (ch < 1 || ch > 15 || (panOrVol != "pan" && panOrVol != "vol"))
+    // 非有限值一律 badArg,**不得静默夹取**(#106 复审重要4):冻结维度上这个数就是音频目标值
+    // (DspArbiter 冻结分支直读 rawPan/rawVol),NaN 进去等于整条总线出 NaN。夹取到 0 会让
+    // 「JS 侧算出了 NaN」这件事无声无息 —— 桥面该做的是把畸形入参打回去,§0.8 第 2 条的
+    // 「夹取或拒绝」在这里没有可夹取的语义。native 侧另有 clampManualValue 兜底(非唯一调用方)。
+    if (ch < 1 || ch > 15 || (panOrVol != "pan" && panOrVol != "vol") || !std::isfinite(value))
     {
         c(badArgResp());
         return;
@@ -1453,6 +1457,13 @@ void OutputEditor::handleSetTrackManual(const ArgList& a, Completion c)
         return;
     }
 
+    // 参数面帧必须**与段表帧同拍**发([J85] / #106 复审重要3)。
+    // `emitSegments` 是同步的,而 `scvb.params` 平时挂在 25Hz 的 emitTick 上 —— 冻结通道的新值
+    // 只落参数面,于是:UI 收到 trackManual 段表帧 → 按约定丢掉本地乐观值 → 这一帧读参数面时
+    // store 里还是**旧值** → 旋钮先弹回旧值,最多 40ms 后才跳到新值。未冻结通道没这问题
+    // (段表与事件同一笔、同步到达),所以这是 [J85] 分叉读回值之后新暴露出来的一拍。
+    // emitParams 自带 diff 门(值没变就不发),下一次 25Hz tick 不会重复发。
+    emitParams(/*forceFull=*/false);
     emitSegments("trackManual", static_cast<std::uint16_t>(1u << (ch - 1))); // 仅该轨(PR#55 第11轮缺陷2)
     juce::var o = obj();
     put(o, "ok", true);

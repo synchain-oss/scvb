@@ -9,6 +9,7 @@
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
+#include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
 #include "state/StateMigration.h"
@@ -1070,10 +1071,9 @@ void ScvbOutputAudioProcessor::publishConfigBroadcast()
 
         // freeze 是当前激活版本的自动化参数(J65 同一参数承载 pan/vol 两位)。
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
-        dst.freeze =
-            frz != nullptr
-                ? static_cast<scvb::u32>(juce::jlimit(0, 3, juce::roundToInt(frz->load(std::memory_order_relaxed))))
-                : 0u;
+        dst.freeze = frz != nullptr
+                         ? static_cast<scvb::u32>(scvb::engine::freezeBitsOf(frz->load(std::memory_order_relaxed)))
+                         : 0u;
 
         // label:UTF-8 按字节截断到最后一个完整序列边界,绝不切出半个码点(Input 侧直接当
         // C 字符串显示,半个码点会渲染成乱码方块)。
@@ -1597,10 +1597,12 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
     // 而再分析按 ADR-008 不覆盖 origin=user 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到
     // 引擎分析曲线上(v5.3 A2 实测:解冻后 pan 永远停在冻结时的值,重新分析也不动)。
     // 冻结本就该是可逆的临时接管,「解冻即回引擎曲线继续运动」是它的定义,不是附加要求。
+    //
+    // 位解码走 FreezeBits.h 的共用口径:走哪条通道必须与 DspArbiter 读哪个面**同一个判定**,
+    // 两份口径分叉就是「这边按未冻结写曲线、那边按已冻结读参数面」的错位(#106 复审建议⑥)。
     const auto* frzRaw = handles_.rawFrz[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(ch - 1)];
-    const int frz =
-        frzRaw != nullptr ? juce::jlimit(0, 3, juce::roundToInt(frzRaw->load(std::memory_order_relaxed))) : 0;
-    const bool dimFrozen = isPan ? (frz & 1) != 0 : (frz & 2) != 0;
+    const int frz = frzRaw != nullptr ? scvb::engine::freezeBitsOf(frzRaw->load(std::memory_order_relaxed)) : 0;
+    const bool dimFrozen = scvb::engine::freezeHasDim(frz, isPan);
 
     // 冻结通道不替换任何段,`replaced*` 如实回 0(UI 的一次性确认条据此显示计数,
     // 报一个没发生的替换数就是骗用户;PR#55 建议⑤的「如实统计」同口径)。
@@ -2017,7 +2019,7 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         tc.source =
             c.sourceChannels == 2 ? scvb::analysis::SourceChannels::Stereo : scvb::analysis::SourceChannels::Mono;
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
-        tc.freeze = frz != nullptr ? juce::jlimit(0, 3, juce::roundToInt(frz->load(std::memory_order_relaxed))) : 0;
+        tc.freeze = frz != nullptr ? scvb::engine::freezeBitsOf(frz->load(std::memory_order_relaxed)) : 0;
         if (clearManual && features[static_cast<std::size_t>(t)].anyCovered)
         {
             tc.freeze = 0; // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值

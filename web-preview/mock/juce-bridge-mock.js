@@ -1165,6 +1165,12 @@ function buildOutputBackend(ctx) {
                     ? clamp(round(value, 1), -100, 100)
                     : clamp(round(value, 1), -24, 12);
             // 落一次参数面 —— 冻结维度的取值仲裁与打印器读的都是那里(真桥 #87 起同款)。
+            //
+            // **发送时序与真桥逐拍对齐**([J85] / #106 复审重要3):真桥的
+            // `handleSetTrackManual` 在 `emitSegments` **之前**同步补一次 `emitParams(false)`,
+            // 让参数面帧与段表帧同拍到达 —— 否则 UI 收到段表帧就丢乐观值,而冻结维度的新值
+            // 还挂在 25Hz tick 上没发,旋钮会先弹回旧值。mock 这里同样是「先 params、后 segments、
+            // 都在同一拍」。**改任何一侧都必须同改另一侧**,否则这类顺序 bug 会被 mock 盖住。
             const setParamPlane = () => {
                 const id = prefix + panOrVol;
                 if (model.params.values[id] === applied) return;

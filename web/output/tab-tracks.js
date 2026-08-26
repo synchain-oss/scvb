@@ -410,9 +410,10 @@ export function segmentsOfCh(segments, ch) {
 }
 
 /**
- * 「单段全时限 `user_edited` 常值」判定 —— `setTrackManual` 的产物特征
+ * 「单段全时限 `user_edited` 常值」判定 —— `setTrackManual` **手动接管通道**的产物特征
  * (契约 §1.16 编码 = 04 §1.5 方案 A)。两处用它:
- *   ① 冻结维度的**读回值**(05 §2.2「读回值同样取自该段」);
+ *   ① **未冻结**维度的读回值(05 §2.2「读回值同样取自该段」)—— [J85] 之后冻结维度改读
+ *      参数面,因为冻结通道根本不写曲线,段表里那条常值段只可能是**冻结前**留下的旧值;
  *   ② 解冻提示(该位 1→0 且该轨仍由手动常值驱动)。
  * 命中返回该段本身(调用方要读 pan/volDb),否则 null。
  */
@@ -1067,7 +1068,9 @@ export function createTabTracks(opts) {
             local.manualTimers.delete(manualKey(ch, dim));
         }
         local.manualEcho.set(manualKey(ch, dim), v);
-        // 契约 §1.16:入撤销栈(Ctrl+Z 由 app.js 的全局键盘钩子映射到 undo())。
+        // 契约 §1.16 撤销:**只有未冻结的手动接管通道入撤销栈**(Ctrl+Z 由 app.js 的全局键盘
+        // 钩子映射到 undo())。[J85] 之后冻结通道不产生 CRVS 事务,压根不入栈 —— 那一路的写入
+        // 落在宿主自动化面上,回滚归宿主的撤销栈管,插件 UndoManager 不碰自动化参数(§0.9)。
         const echoKey = manualKey(ch, dim);
         // 请求前捕获:冻结参数 id **连同版本上下文**一起定格(在途切版本时,
         // 回调若重算 activeVersion 会把置位落到新版本的参数上——整笔判定
