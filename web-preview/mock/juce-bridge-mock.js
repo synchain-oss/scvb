@@ -1154,9 +1154,11 @@ function buildOutputBackend(ctx) {
                 (panOrVol !== "pan" && panOrVol !== "vol") ||
                 !isFiniteNumber(value)
             ) {
-                // 「返回」行未登记 badArg ⇒ 非法入参按 §0.8 第 2 条夹取:
-                // 这里没有可夹取的语义(轨号/字段名不存在),按不改 state 的空写入处理。
-                return { ok: true, replacedSegments: 0, replacedLocked: 0 };
+                // 契约 §1.16「返回」行**已登记 badArg**([J85] 起):`ch`/`panOrVol` 非法,
+                // 或 `value` 非有限(NaN/±Inf),一律拒绝而不是静默夹取 —— 冻结维度上这个数
+                // 就是音频目标值,夹取会把「JS 侧算出了 NaN」这件事藏起来。真桥
+                // `OutputEditor::handleSetTrackManual` 同款(两侧同改,CLAUDE.md §10)。
+                return BAD_ARG();
             }
             const v = model.snapshot.global.version_active;
             const prefix = `v${v}_t${String(ch).padStart(2, "0")}_`;

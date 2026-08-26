@@ -739,6 +739,27 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
         res && res.ok === true && Number.isInteger(res.replacedSegments),
         "setTrackManual 回 {ok, replacedSegments, replacedLocked}",
     );
+    // 契约 §1.16「返回」行([J85]):非有限 value 一律 badArg,**不静默夹取** ——
+    // 冻结维度上这个数就是 DSP 的音频目标值,夹到 0 会把「JS 侧算出了 NaN」藏起来。
+    // 真桥 handleSetTrackManual 与 mock 两侧同款(CLAUDE.md §10)。
+    for (const bad of [NaN, Infinity, -Infinity]) {
+        eq(
+            await bridge.setTrackManual(2, "vol", bad),
+            { ok: false, reason: "badArg" },
+            `[J85] 非有限 value(${bad})⇒ badArg`,
+        );
+    }
+    // 轨号 / 维度名非法同属 badArg 这一档(与真桥同一个 if)。
+    eq(
+        await bridge.setTrackManual(99, "vol", 0),
+        { ok: false, reason: "badArg" },
+        "轨号越界 ⇒ badArg",
+    );
+    eq(
+        await bridge.setTrackManual(2, "width", 0),
+        { ok: false, reason: "badArg" },
+        "维度名非法 ⇒ badArg",
+    );
     await sleep(30);
     const tm = seen.segments.find((s) => s.reason === "trackManual");
     check(!!tm, "§2.8 回推 reason=trackManual");
