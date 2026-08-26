@@ -6,6 +6,7 @@
 #include "InputProcessor.h"
 
 #include "BridgeBase.h"
+#include "UiDefaultsStore.h" // 系统级 UI 全局默认(语言;实现物理位置在 src/output/)
 
 #include <ScvbInputWebData.h> // juce_add_binary_data 生成:嵌入的 web/input UI 资源
 
@@ -179,6 +180,10 @@ void InputEditor::handleSetLang(const juce::Array<juce::var>& args, WBC::NativeF
 {
     WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执 {ok:true}
     processor_.bridgeSetUiLanguage(lang()); // §3.5:落 Input state(实际生效值经 scvb.state 回推)
+    // 与 Output 同一份系统级全局默认:选过的语言跨工程、跨插件生效。Input 此前完全没接这套,
+    // 于是移除插件再加载恒回英文(v5 实测 P1-6)。
+    scvb::output::uidefaults::setLangChosenGlobal(true);
+    scvb::output::uidefaults::setLangGlobal(lang());
 }
 
 void InputEditor::persistUiScaleAsDefault()

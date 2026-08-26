@@ -33,6 +33,11 @@ bool tourSeenGlobal();
 // 「用户显式选过语言」的系统级全局默认(跨工程):新工程不再重复问语言(v4 实测 P1-6)。
 bool langChosenGlobal();
 void setLangChosenGlobal(bool chosen);
+// 选中的**语言值本身**(跨工程)。只记「选过」不记「选的是哪个」时,移除插件再加载会得到
+// 「不再问 + 回英文」—— 比不修更糟:语言起始卡被全局位挡住,用户连改回来的入口都没了
+// (v5 实测 P1-6)。空串 = 未设置过,调用方沿用自己的默认。取值口径同 §1.30 setLang。
+juce::String langGlobal();
+void setLangGlobal(const juce::String& lang);
 void setTourSeenGlobal(bool seen);
 
 // 0 = 未设置过(调用方沿用自己的默认 100)。

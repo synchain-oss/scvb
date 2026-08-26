@@ -631,7 +631,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
         put(ch, "label", c.label);
         put(ch, "source_channels", c.sourceChannels);
         // J60:未显式设置时按 mono=true / stereo=false 推导。
-        const bool participate = c.participateAutoPanSet ? c.participateAutoPan : (c.sourceChannels == 1);
+        const bool participate = c.participatesInAutoPan();
         put(ch, "participate_in_auto_pan", participate);
         put(ch, "priority", c.priority);
         put(ch, "lead_lock", c.leadLock);
@@ -845,7 +845,10 @@ void OutputEditor::handleSetLang(const juce::Array<juce::var>& args,
     WebViewHost::handleSetLang(args, std::move(complete)); // 归一化 {zh,en,fr} + 回执 {ok:true}
     processor_.bridgeSetUiLanguage(lang()); // §1.30:落 Output state(实际生效值经 scvb.state 回推)
     // 显式选过语言 → 同时写系统级全局默认,新工程也不再问(与 guide/tour 的 alsoGlobal 同口径)。
+    // **两件都要写**:只写「选过」而不写「选的是哪个」,移除插件再加载时全局位挡住了语言
+    // 起始卡、语言却回落到出厂的 en —— 用户既回不到中文也没有再选一次的入口(v5 实测 P1-6)。
     uidefaults::setLangChosenGlobal(true);
+    uidefaults::setLangGlobal(lang());
 }
 
 void OutputEditor::persistUiScaleAsDefault()
@@ -1924,10 +1927,12 @@ void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
     juce::var passId = mkArray();
     for (int i = 0; i < cols; ++i)
     {
-        push(minDb, -160.0);
-        push(maxDb, -160.0);
-        push(vad, 0);
-        push(covered, 0);
+        const auto k = static_cast<std::size_t>(i);
+        push(minDb, tile.minDb[k]);
+        push(maxDb, tile.maxDb[k]);
+        push(vad, tile.vad[k]);
+        push(covered, tile.covered[k]);
+        // stale/passId:重分析代际标记归 T33 的段表面,波形瓦片本身不带代际(恒 0)。
         push(stale, 0);
         push(passId, 0);
     }

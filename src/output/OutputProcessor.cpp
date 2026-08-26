@@ -38,6 +38,13 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     {
         uiScale_ = defaultScale;
     }
+    // 语言的系统级全局默认(§1.30 setLang 落盘的那一个);同样是「工程 > 全局默认」——
+    // 带 CFGS 的工程会在 setStateInformation 里覆盖回去。新加载的实例靠这一行拿回用户选过的
+    // 语言,否则「选过」的全局位只会把语言卡挡掉、界面照样是英文(v5 实测 P1-6)。
+    if (const juce::String defaultLang = scvb::output::uidefaults::langGlobal(); defaultLang.isNotEmpty())
+    {
+        uiLanguage_ = defaultLang;
+    }
 
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);
