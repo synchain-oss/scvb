@@ -1213,6 +1213,17 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     preservedStateBlob_.clear();
     loadedChunks_ = chunks; // 保真 FEAT/CRVS/未知 fourcc 供 save 原样回写(T19 未知 fourcc 回写纪律)
 
+    // [J75] T43 / #96:ui.master_chart_mode 是独立 UICF chunk,读侧必须与 CFGS 解耦 —— 放在 CFGS
+    // 的早退点(cfg==nullptr / decodeOutputState 失败)之前。否则 CFGS 缺失/损坏时 masterChartMode_
+    // 会停在上一个工程的值,下次保存写陈旧值。
+    std::uint32_t chartMode = scvb::state::kMasterChartModeDistribution;
+    if (const scvb::state::Chunk* uicf = chunks.find(scvb::state::kFourccUiConfig); uicf != nullptr)
+    {
+        (void)scvb::state::decodeUiConfig(uicf->payload.data(), uicf->payload.size(), chartMode);
+    }
+    masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
+                                                                              : juce::String("distribution");
+
     // PRMS:123 参数(宿主自动化面)。
     if (const scvb::state::Chunk* prms = chunks.find(scvb::state::kFourccPrms); prms != nullptr)
     {
@@ -1261,14 +1272,6 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             << report.loudnessModeFallbacks << ", center_slot_policy=" << report.centerSlotPolicyFallbacks << ")");
     }
 
-    // [J75] T43:ui.master_chart_mode 从独立 UICF chunk 读;缺失/长度非法/未知值均回落默认(§7.3)。
-    std::uint32_t chartMode = scvb::state::kMasterChartModeDistribution;
-    if (const scvb::state::Chunk* uicf = chunks.find(scvb::state::kFourccUiConfig); uicf != nullptr)
-    {
-        (void)scvb::state::decodeUiConfig(uicf->payload.data(), uicf->payload.size(), chartMode);
-    }
-    masterChartMode_ = (chartMode == scvb::state::kMasterChartModeTrajectory) ? juce::String("trajectory")
-                                                                              : juce::String("distribution");
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
@@ -1379,9 +1382,23 @@ void ScvbOutputAudioProcessor::setVersionActive(int version)
 
 void ScvbOutputAudioProcessor::setMasterChartMode(const juce::String& mode)
 {
-    const juce::ScopedLock lock(lifecycleMutex_);
     // [J75] T43:仅 "trajectory" 是合法非默认档,其余(含未知值)一律回落默认 "distribution"。
-    masterChartMode_ = (mode == "trajectory") ? juce::String("trajectory") : juce::String("distribution");
+    const juce::String normalized = (mode == "trajectory") ? juce::String("trajectory") : juce::String("distribution");
+    bool changed = false;
+    {
+        const juce::ScopedLock lock(lifecycleMutex_);
+        if (masterChartMode_ != normalized)
+        {
+            masterChartMode_ = normalized;
+            changed = true;
+        }
+    }
+    // #96:非参数 state 写入后通知宿主工程 dirty(OutputAuthority.cpp 同款口径;REAPER 有时忽略,仅尽力)。
+    // 值未变时不通知,避免无谓标脏。
+    if (changed)
+    {
+        updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withNonParameterStateChanged(true));
+    }
 }
 
 ScvbOutputAudioProcessor::ConnSnapshot ScvbOutputAudioProcessor::connSnapshot()

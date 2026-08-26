@@ -31,6 +31,7 @@
 #include "OutputProcessor.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
+#include "state/OutputStateCodec.h"
 #include "state/StateCodec.h"
 
 #include <algorithm>
@@ -1534,6 +1535,54 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
     CHECK(attached); // ← 修复前:publisher 仍指着 kFromGroup,新组的段永远不存在
 
     out.releaseResources();
+}
+
+// ---------------------------------------------------------------------------
+// #96:UICF 读取必须在 CFGS 早退点之前 —— CFGS 缺失/损坏时 master_chart_mode 也要按新
+// 工程的 UICF 值生效,不能停在上一个工程的值(否则下次保存写陈旧值)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST UICF:CFGS 缺失/损坏时 master_chart_mode 仍按 UICF 生效(不残留旧值)", "[host][uicf]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    ScvbOutputAudioProcessor out;
+
+    // 场景 1:CFGS 缺失(只有 UICF=distribution)。旧值 trajectory 必须被覆盖成 distribution。
+    out.setMasterChartMode("trajectory");
+    REQUIRE(out.masterChartMode() == "trajectory");
+    {
+        scvb::state::StateChunks chunks;
+        chunks.abi = scvb::state::kCurrentAbi;
+        std::vector<std::uint8_t> uicf;
+        REQUIRE(scvb::state::encodeUiConfig(scvb::state::kMasterChartModeDistribution, uicf));
+        chunks.set(scvb::state::kFourccUiConfig, std::move(uicf));
+        std::vector<std::uint8_t> blob;
+        REQUIRE(scvb::state::encodeContainer(chunks, blob));
+        out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+        CHECK(out.masterChartMode() == "distribution"); // 修复前:停在 trajectory(陈旧值)
+    }
+
+    // 场景 2:CFGS 损坏(UICF=trajectory + 4 字节坏 CFGS)。UICF 仍须生效为 trajectory。
+    out.setMasterChartMode("distribution");
+    REQUIRE(out.masterChartMode() == "distribution");
+    {
+        scvb::state::StateChunks chunks;
+        chunks.abi = scvb::state::kCurrentAbi;
+        std::vector<std::uint8_t> uicf;
+        REQUIRE(scvb::state::encodeUiConfig(scvb::state::kMasterChartModeTrajectory, uicf));
+        chunks.set(scvb::state::kFourccUiConfig, std::move(uicf));
+        chunks.set(scvb::state::kFourccCfgs, std::vector<std::uint8_t>(4, 0xFF)); // 不足 CFGS 头 → decode 失败
+        std::vector<std::uint8_t> blob;
+        REQUIRE(scvb::state::encodeContainer(chunks, blob));
+        out.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+        CHECK(out.masterChartMode() == "trajectory"); // 修复前:停在 distribution(旧值)
+
+        // 往返:#96 原始症状是「下次保存写陈旧值」—— 保存(getStateInformation)再载回
+        // (setStateInformation)必须仍是 trajectory,证明保存时没有把上一个工程的值写进去。
+        juce::MemoryBlock saved;
+        out.getStateInformation(saved);
+        out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        CHECK(out.masterChartMode() == "trajectory");
+    }
 }
 
 // ---------------------------------------------------------------------------
