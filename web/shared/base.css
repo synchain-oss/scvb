@@ -405,6 +405,12 @@ input::placeholder {
     background: rgba(var(--sem-red), 0.95);
 }
 
+/* 中性态(挂起 / 乐句间隙):灰蓝,刻意与 amber、red 拉开 —— 它说的是「这会儿没在出数据」,
+   不是「出问题了」。取的是既有的 --sem-gray 系,不引新色。 */
+.sc-dot[data-tone="slate"] {
+    background: rgba(var(--sem-gray), 0.85);
+}
+
 /* 活跃(心跳新鲜)才脉冲;其余状态静态,避免密排下满屏闪。 */
 .sc-pill[data-pulse="1"] .sc-pill__dot,
 .sc-dot[data-pulse="1"] {

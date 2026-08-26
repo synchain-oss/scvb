@@ -2273,14 +2273,16 @@
                 padding: var(--sp-10) var(--sp-13);
                 font-size: var(--fs-110);
                 line-height: 1.5;
-                /* 行内浮层叠在下一行内容上:不透明兜底 + 琥珀色相盖层,
-                   否则 .15 玻璃会与底行文字打架(统筹亲验 2026-08-20) */
-                background-color: var(--light-solid);
-                background-image: linear-gradient(
-                    rgba(var(--sem-amber), 0.15),
-                    rgba(var(--sem-amber), 0.15)
-                );
-                box-shadow: var(--zoom-panel-shadow);
+                /* 用户认可的那款(v5.1 UI-H③):**深色玻璃**,与缩放防呆确认、tour 询问
+                   同一件配方(.sc-modal)。改掉琥珀盖层的理由有两条 ——
+                   ① 一致性:全界面「需要一个决定」的浮层从此只有一种长相;
+                   ② 可读性:行内浮层叠在下一行**内容**之上,深色不透明兜底比浅色盖层压得住底文。
+                   不透明兜底仍然保留(纯 .15 玻璃会透出底行文字打架,统筹亲验 2026-08-20)。 */
+                background-color: var(--dark-solid);
+                background-image: var(--dark-modal);
+                border: 1px solid rgba(var(--wh), 0.16);
+                box-shadow: var(--dark-modal-shadow);
+                color: var(--txt-dark-2);
             }
             .tracks-row__confirm-text {
                 flex: 1;
@@ -4005,7 +4007,7 @@
                 background: transparent;
                 border: 0;
                 font-size: var(--fs-105);
-                color: var(--sem-red-icon);
+                color: var(--sem-violet-icon);
                 text-decoration: underline;
             }
             /* 外观全部交给 .sc-btn(圆角/玻璃底/描边/字号),本类只留布局。

@@ -726,8 +726,13 @@ juce::var OutputEditor::buildConnPayload() const
         put(ch, "heartbeatFresh", info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs));
         put(ch, "capturing", info.capturing);
         // 本次失准发作内的缺口数(非进程累计):恢复健康 1s 后归零,横幅/行内 ⚠ 随之撤下。
+        // **只数真失准**(走带推进中的时间线缺口);写方停着走 suspended,见下。
         put(ch, "misalignCount", static_cast<int>(processor_.misalignCount(t + 1)));
         put(ch, "srMismatch", info.srMismatch);
+        // 该轨的写方停着(宿主在无信号段挂起 Input / 用户 bypass / 轨未激活)。
+        // 与 misalignCount 是**两件事**:这条是中性状态,UI 用灰蓝提示而不是红色 ⚠ ——
+        // 乐句间隙里宿主挂起 Input 属于正常现象,用户自己 bypass 的更不需要警报。
+        put(ch, "suspended", info.suspended);
         push(channels, ch);
     }
 

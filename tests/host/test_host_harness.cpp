@@ -285,8 +285,10 @@ TEST_CASE("HOST L-6b:bypass 断流 → 失准报警;恢复 → 警告自行清�
     REQUIRE(r.out.misalignCount(kTestChannel) == 0);
 
     // 模拟「误 bypass 一个 Input」:Input 不再 processBlock(写头停滞),Output 照常读。
-    // 报警不再是**瞬时**的:写头冻结要坐实 kSuspendStallMs(500ms)才算停流(v5 P1-7 ——
-    // 短于这个窗的停顿是宿主在静音段挂起 Input,不是故障)。所以这里等,而不是跑固定块数。
+    // 断言面 = **suspended**(统筹裁定丙案):写方停着是「挂起」,不是「失准」。
+    // 两者是性质不同的两件事,§2.3 起各有各的位 —— 见 misalignCountRecent 头注。
+    // 坐实还需要 kSuspendStallMs(500ms),所以这里等,而不是跑固定块数。
+    const auto suspendedNow = [&r] { return r.out.connSnapshot().channels[kTestChannel - 1].suspended; };
     bool raised = false;
     for (int waited = 0; waited < 3000 && !raised; waited += 80)
     {
@@ -297,20 +299,20 @@ TEST_CASE("HOST L-6b:bypass 断流 → 失准报警;恢复 → 警告自行清�
             r.ph.timeSamples += kBlock;
         }
         Rig::pumpMessages(80);
-        raised = (r.out.misalignCount(kTestChannel) > 0);
+        raised = suspendedNow();
     }
-    CHECK(raised); // 报警亮起(这是对的)
+    CHECK(raised); // 挂起态亮起(这是对的)
+    CHECK(r.out.misalignCount(kTestChannel) == 0); // 而且**不是**失准 —— 用户自己 bypass 的,不该红灯
 
-    // 重开 Input:两侧恢复正常推进,连续 >kMisalignRecoverMs(1s)无新缺口后计数归零。
-    for (int waited = 0; waited < 4000; waited += 40)
+    // 重开 Input:两侧恢复正常推进 → 挂起态撤下。
+    bool cleared = false;
+    for (int waited = 0; waited < 4000 && !cleared; waited += 40)
     {
         r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
-        if (r.out.misalignCount(kTestChannel) == 0)
-        {
-            break;
-        }
+        cleared = !suspendedNow();
     }
-    CHECK(r.out.misalignCount(kTestChannel) == 0); // ← 修复前永远撤不下来
+    CHECK(cleared); // ← 修复前永远撤不下来
+    CHECK(r.out.misalignCount(kTestChannel) == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -667,36 +669,38 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
         }
     };
 
-    // 信号来源说明(v5 P1-7 之后):写头冻结不再逐块记缺口,改由 CH_SUSPENDED 坐实后
-    // 记一笔停流(OutputSession 的 stallCount_),两者并进同一个 misalignCount 上桥。
-    // 于是短停(<500ms,宿主在静音段挂起 Input)零信号,持续停流照报 —— 这条用例要的
-    // 正是后者,断言面不变。
+    // 信号来源(统筹裁定丙案):写头停着 = **挂起**(ChannelConnInfo::suspended),不是失准。
+    // 这条用例守的「不得假恢复」保证与从前完全一致,只是换到了正确的那个位上:
+    // 持续断流期间 suspended 必须一直亮,且该轨必须一直在注入集之外。
+    const auto suspendedNow = [&r] { return r.out.connSnapshot().channels[kTestChannel - 1].suspended; };
     bool raised = false;
     for (int waited = 0; waited < 3000 && !raised; waited += 100)
     {
         runOutputOnly(10);
         Rig::pumpMessages(100);
-        raised = (r.out.misalignCount(kTestChannel) > 0);
+        raised = suspendedNow();
     }
-    REQUIRE(raised); // 报警亮起(这是对的)
+    REQUIRE(raised); // 挂起态亮起(这是对的)
 
     // 继续 bypass 远超恢复窗(1s)——此时缺口已不再增长(本轨退出注入集,read 不再被调),
-    // 但数据依然没有推进。警告**必须**保持。
+    // 但数据依然没有推进。**绝不能**因此被判成「已恢复」。
     for (int round = 0; round < 6; ++round)
     {
         runOutputOnly(20);
         Rig::pumpMessages(200);
+        CHECK(suspendedNow()); // ← 修复前这里会被判成「已恢复」
+        // 同时该轨必须已退出注入集:状态在、还照混旧数据,是更坏的假恢复。
+        CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
     }
-    CHECK(r.out.misalignCount(kTestChannel) > 0); // ← 修复前这里会被判成「已恢复」归零
-    // 同时该轨必须已退出注入集:警告在、还照混旧数据,是更坏的假恢复。
-    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
+    // 全程都不是「失准」:用户自己 bypass 的,不该出红色警报。
+    CHECK(r.out.misalignCount(kTestChannel) == 0);
 
-    // 真正重开 Input:两侧一起推进 → 数据恢复 → 警告才该撤下。
+    // 真正重开 Input:两侧一起推进 → 数据恢复 → 挂起态才该撤下。
     bool cleared = false;
     for (int waited = 0; waited < 5000 && !cleared; waited += 40)
     {
-        r.runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
-        cleared = (r.out.misalignCount(kTestChannel) == 0);
+        r.runBlocks(2, 0.5f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+        cleared = !suspendedNow();
     }
     CHECK(cleared);
 }
