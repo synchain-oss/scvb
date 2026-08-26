@@ -145,7 +145,8 @@ const STATEFUL_CANVAS_MODULES = [
  * 这条豁免立刻变成失败项并要求删除。所以它不可能被忘在这里长期挂着(这是一条**惰性**豁免
  * 最常见的失败形态:加了 TODO,然后没人再看)。
  */
-const BOOT_GUARD_PENDING = new Set(["monitor"]);
+// #103 给 Monitor 页补上守卫后按自我删除条件清空;空集合保留,供未来新 role 暂缓用。
+const BOOT_GUARD_PENDING = new Set([]);
 
 function checkRole(role) {
     console.log(`\n--- ${role} ---`);

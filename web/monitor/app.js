@@ -667,7 +667,22 @@ function onViz(raw) {
 buildScaleOptions();
 refreshI18n();
 
+// 与 Output/Input 两页同构:boot 链路炸掉 = 界面起不来,**显式上报**并带上角色化的
+// stage 标签。守卫的 `unhandledrejection` 本来也接得住这条 async IIFE 的 rejection,
+// 但那样 stage 会降级成通用的 `promise` —— 三页的诊断面就不对称了,而排查时第一眼看的
+// 就是 stage(「哪一页、哪一段」)。理由与 Output/Input 那两处逐字同源。
 (async function boot() {
+    try {
+        await bootInner();
+    } catch (e) {
+        if (typeof window.__scvbReportBootError === "function") {
+            window.__scvbReportBootError("monitor-boot", (e && e.stack) || e);
+        }
+        throw e;
+    }
+})();
+
+async function bootInner() {
     if (!bridge) {
         render();
         return;
@@ -697,7 +712,7 @@ refreshI18n();
         if (snap.viz) onViz(snap.viz);
     }
     render();
-})();
+}
 
 // 窗口收起 ⇒ 拆掉轨迹图。**这一步非做不可**:trajectory-chart 在 window 上挂了
 // pointerup 兜底、订了媒体查询与父盒的 ResizeObserver,三者都活得比 canvas 长

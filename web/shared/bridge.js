@@ -362,8 +362,8 @@ function makeMockBridge(role, mock) {
 /**
  * 工厂 —— UI 只调这一个。
  *
- * @param {{role: "output"|"input", mockBackend?: object}} opts
- *   role       必填;非法即 throw(两个 target 的页面各自传死值,不做自动嗅探)。
+ * @param {{role: "output"|"input"|"monitor", mockBackend?: object}} opts
+ *   role       必填;非法即 throw(每个 target 的页面各自传死值,不做自动嗅探)。
  *   mockBackend 仅在**非真 JUCE 宿主**时使用(含 __JUCE__ 是 helper 占位对象的情形),
  *              由 web-preview 入口注入(T28)。
  * @returns {{role: string, isPreview: boolean, on: Function}} 另含本侧全部桥函数(均为 async)。
@@ -372,7 +372,7 @@ export function createBridge(opts = {}) {
     const { role, mockBackend } = opts;
     if (!ROLES.includes(role)) {
         throw new TypeError(
-            `createBridge:opts.role 必须是 "output" 或 "input",实得 ${JSON.stringify(role)}`,
+            `createBridge:opts.role 必须是 ${ROLES.map((r) => JSON.stringify(r)).join(" / ")} 之一,实得 ${JSON.stringify(role)}`,
         );
     }
     const juce = typeof window !== "undefined" ? window.__JUCE__ : undefined;
