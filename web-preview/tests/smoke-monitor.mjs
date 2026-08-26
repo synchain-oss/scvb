@@ -2212,9 +2212,18 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
     // ---- §9 分层:任一插件目录都不得直接编译 / include 另一插件的源码。
     //      共用件的正确归属是 plugin-common(core ← plugin-common ← 插件,方向不能倒)。
     //      #100 复审【重要】1:UiDefaultsStore 曾以 `../output/…` 被编进 Input target。
+    //      判据只看**生效的构建语句**,注释先剥掉:这条断言原先是对整份文件做子串扫描,
+    //      于是一句**描述**模块图的注释(`… -> ../output/canvas/timeline.js`)就能把它打红,
+    //      而真正的跨角色引用反而可以写成不带 `../` 的形式溜过去 —— 两头都不对。
     {
+        const effectiveLines = (text) =>
+            text
+                .split("\n")
+                .map((l) => l.replace(/#.*$/, ""))
+                .join("\n");
+
         for (const role of ["input", "output", "monitor"]) {
-            const cm = src(`src/${role}/CMakeLists.txt`);
+            const cm = effectiveLines(src(`src/${role}/CMakeLists.txt`));
             const others = ["input", "output", "monitor"].filter(
                 (o) => o !== role,
             );
@@ -2223,7 +2232,37 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
                     !cm.includes(`../${other}/`),
                     `§9 src/${role}/CMakeLists.txt 不引用 ../${other}/ 的源码或头文件目录`,
                 );
+                // 跨角色引用还有第二种写法:scvb_add_web_assets 的 EXTRA_DIRS(相对 web/,不带 ../)。
+                // 那一层跨的是 **web 资源**不是 C++ 源码,§9 允许 —— 但只允许**已登记**的那一条,
+                // 免得这个口子被当成绕开分层的后门。新增一条就要来这里改,顺带解释为什么。
+                const webXref = new RegExp(
+                    `EXTRA_DIRS[^)]*\\b${other}/([\\w./-]+)`,
+                    "g",
+                );
+                for (const m of cm.matchAll(webXref)) {
+                    check(
+                        role === "monitor" &&
+                            other === "output" &&
+                            m[1] === "canvas",
+                        `§9 src/${role}/CMakeLists.txt 的 EXTRA_DIRS 跨到 ${other}/${m[1]} —— ` +
+                            `web 资源跨角色只登记了 monitor -> output/canvas 这一条(欠债:` +
+                            `web/shared/trajectory-chart.js 反向 import 了 role 目录,终局是把 canvas/ 提到 shared/)`,
+                    );
+                }
             }
+        }
+        // C++ 面的正向断言:Monitor 的编译单元里不许出现另外两个插件的源码。
+        // 上面那条禁的是 `../output/` 这种写法,这条禁的是「换个写法照样编进来」。
+        {
+            const mon = effectiveLines(src("src/monitor/CMakeLists.txt"));
+            const sources = mon.slice(
+                mon.indexOf("target_sources"),
+                mon.indexOf("target_include_directories"),
+            );
+            check(
+                !/\b(input|output)\//.test(sources),
+                "§9 src/monitor/CMakeLists.txt 的 target_sources 不含另外两个插件的目录",
+            );
         }
         check(
             src("src/plugin-common/CMakeLists.txt").includes(
