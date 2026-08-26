@@ -181,6 +181,15 @@ export const VZOOM_H = 22;
 
 /** 无任何时长线索时的兜底工程时长(秒;mock 假数据同为 5 分钟,J59)。 */
 export const FALLBACK_DURATION_S = 300;
+/**
+ * 工程时长的**合理上限**(秒,24h)。与 C++ 侧 `kMaxTimelineSeconds` 同一口径。
+ *
+ * 存在的理由不是「工程不会更长」,而是**一个坏字段不该污染整个视口模型**:真机上
+ * 段表里出现过 t1 = 2^40 采样(÷48k ≈ 265 天)的无末端哨兵,`durationOf` 的 Math.max
+ * 把它选中当工程时长,泳道再拿它当 `requestWaveform` 的 endS —— 单次调用把宿主消息线程
+ * 跑死几十秒(P0-A)。夹一次上限,坏值最多让视口错,不会让宿主冻住。
+ */
+export const MAX_DURATION_S = 24 * 60 * 60;
 
 /**
  * 7 滑杆定义(顺序不可重排 —— 05 §2.3 行 298-299 的 §1.18 五字段 + §1.19 两字段)。
@@ -306,7 +315,11 @@ export function durationOf(store) {
         }
     }
     const ph = num(st.playhead && st.playhead.timeS, 0);
-    return Math.max(d > 0 ? d : FALLBACK_DURATION_S, ph);
+    // 夹上限:单个坏字段(无末端哨兵)不得污染整个视口模型,见 MAX_DURATION_S。
+    return Math.min(
+        Math.max(d > 0 ? d : FALLBACK_DURATION_S, ph),
+        MAX_DURATION_S,
+    );
 }
 
 /**

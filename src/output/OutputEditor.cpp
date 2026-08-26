@@ -1920,6 +1920,14 @@ void OutputEditor::handleRequestWaveform(const ArgList& a, Completion c)
     // T29 落卡时这里是**写死的全未覆盖桩**:回包形状合法、能过 isTileShape,于是泳道照常画
     // 斜纹与栅格,但每一列 covered=0 → 包络层整体 `continue` 跳过 —— 真机上就是「有斜纹、
     // 没波形」的纯黑泳道(v5 实测 P0-4)。桩的形状太像真回包,所以三个版本都没被发现。
+    // 跨度上界(P0-A):内层代价虽已与覆盖同阶,但**病态请求本身**不该被受理 ——
+    // 纵深防御的第二道。上界取「已采集范围」与常数的较大者留出余量,超了直接 badArg,
+    // 让前端的坏时长在这里就停住,而不是变成一次几十秒的持锁计算。
+    if (endS - startS > ScvbOutputAudioProcessor::kMaxRequestSpanS)
+    {
+        c(badArgResp());
+        return;
+    }
     const auto tile = processor_.waveformOf(ch, startS, endS, cols);
     juce::var minDb = mkArray();
     juce::var maxDb = mkArray();

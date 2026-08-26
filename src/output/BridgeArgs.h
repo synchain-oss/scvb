@@ -59,10 +59,24 @@ inline bool isSegmentationMode(const juce::String& mode)
     return mode == "vad_only" || mode == "valley";
 }
 
+// 单条时间线的合理上界(秒)。24h 远超任何真实工程,只用来挡住**明显非法**的采样数 ——
+// 真机上出现过 t1 = 2^40 采样(÷48k ≈ 265 天)这种「无末端哨兵」被当成真值换算成秒,
+// 一路喂到前端的 durationOf,再被当作 requestWaveform 的 endS 发回来,把消息线程跑死
+// (P0-A)。哨兵语义应当在**产生它的地方**处理掉,而不是让它以「一个很大的秒数」的伪装
+// 穿过整条链路 —— #89 在 viz 侧就是这么做的(无末端只取 t0),本处补齐同一口径。
+inline constexpr double kMaxTimelineSeconds = 24.0 * 60.0 * 60.0;
+
 // 样本→秒安全换算:sampleRate<=0 返回 0.0 哨兵,绝不把 NaN/inf 进 JSON(PR#55 第6轮缺陷1)。
+// 采样数超出合理上界(或为负)同样回 0.0 哨兵 —— 宁可让 UI 看到「没有这个时间点」,
+// 也不要给它一个 265 天的假时长。
 inline double samplesToSeconds(std::int64_t samples, double sampleRate)
 {
-    return sampleRate > 0.0 ? static_cast<double>(samples) / sampleRate : 0.0;
+    if (!(sampleRate > 0.0) || samples < 0)
+    {
+        return 0.0;
+    }
+    const double seconds = static_cast<double>(samples) / sampleRate;
+    return seconds <= kMaxTimelineSeconds ? seconds : 0.0;
 }
 
 } // namespace scvb::output

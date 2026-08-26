@@ -264,6 +264,13 @@ public:
     // 每列聚合该列覆盖到的所有 hop:maxDb 取 peak 的最大值、minDb 取 K 加权的最小值、
     // vad 取该列是否有 vadP>127 的 hop。未覆盖列 covered=0 且 min/max 留 -160 哨兵
     // (泳道据此画斜纹)。持 lifecycleMutex_:与写 FrameStore 的 timerCallback 串行。
+    // 单列最多采样多少个 hop。概览块(512 列跨全曲)是缩略图,抽样对观感无损;
+    // 有了它,waveformOf 的代价与 cols 同阶,而不是与「请求跨度」同阶(P0-A 活锁的止血点)。
+    static constexpr std::uint64_t kMaxHopsPerCol = 4096;
+    // 单次 requestWaveform 允许的最大时间跨度(秒)。24h 远超任何真实工程,
+    // 只用来挡住被污染的时长(真机上出现过 2^40 采样 ÷ 48k ≈ 265 天)。
+    static constexpr double kMaxRequestSpanS = 24.0 * 60.0 * 60.0;
+
     struct WaveformTile
     {
         std::vector<double> minDb;
@@ -360,6 +367,11 @@ private:
 
     // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
     bool applyRemotePriorities();
+
+    // [M] 非阻塞回收退休的分析作业(每拍一次;线程还在跑就留到下一拍)。
+    void reapRetiredJobs();
+    // [M] **阻塞**回收:只在析构调用 —— 见析构里的行注(R5 的不变式全靠它)。
+    void joinRetiredJobs();
 
     // [M] 音频环段头 channels(Input 的 prepareToPlay 写定,[J57])→ runtime.channels[].sourceChannels。
     // 有变化返回 true(调用方 bump config_seq,让广播区/UI 一起跟上)。
@@ -476,6 +488,15 @@ private:
     int timelineInvalidTicks_ = 0;
     // 分析作业([M] 起/停;线程体只读快照,完成后经 AsyncUpdater 回消息线程写 CRVS)。
     std::unique_ptr<AnalysisJob> analysisJob_;
+    // 已退休、但线程可能还没跑完的作业([M] 独占)。
+    //
+    // 取消/重启分析原先在**消息线程**上 stopThread(2000) 等 join —— 最多把消息泵堵 2 秒,
+    // 而它可由 web 的 cancelAnalyze 直接触发。这与 P0-A(消息线程上做可长时间阻塞的事)
+    // 同属一类,一并改掉:这里只 signal 不 join,把作业挪进退休区,由 25Hz 的
+    // reapRetiredJobs() **非阻塞**地回收(isThreadRunning() 为假才析构)。
+    // 代号(analysisGeneration_)已保证退休作业即便跑完也不会碰 CRVS。
+    // 析构时仍然 join —— 那是拆机时刻,阻塞是对的,也必须等线程真的停了才放对象。
+    std::vector<std::unique_ptr<AnalysisJob>> retiredJobs_;
     std::atomic<bool> analysisRunning_{false};
     // 作业代号:每次 start/cancel 都 +1。线程把自己的代号连同结果放进 pendingResult_,
     // [M] 取件时比对 —— 不匹配即整份丢弃。这道门同时挡住两件事:

@@ -66,6 +66,11 @@ ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor()
     // 把插件从轨上删掉,消息一旦入队就一定会被派发,于是 finishAnalysis 打在已析构对象上
     // (里面还要取 lifecycleMutex_、写 crvsData_)= 宿主崩溃。
     cancelAnalysis();
+    // cancelAnalysis() 自 v5.3 起**只 signal 不 join**(消息线程不能被 join 堵住,见
+    // retiredJobs_ 头注)。析构是唯一必须真的等到线程停的地方 —— 上面那段「join 返回即保证
+    // run() 已结束」的推理**全靠这一步**,少了它就退回 R5 那个 use-after-free。
+    // 这里阻塞是对的:拆机时刻,而且 run() 看到 threadShouldExit 会很快返回。
+    joinRetiredJobs();
     cancelPendingUpdate();
 
     const juce::ScopedLock lock(lifecycleMutex_);
@@ -342,18 +347,39 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
         double mn = 160.0;
         bool any = false;
         bool voiced = false;
-        for (std::uint64_t h = h0; h < h1; ++h)
+
+        // **先与覆盖区求交,再对残余限步长** —— 这两道是 P0-A 卡死的止血点。
+        //
+        // 原写法是 `for (h = h0; h < h1; ++h) if (!hasHop(h)) continue;`:内外两层加起来的
+        // 迭代总数恒等于 **(endS−startS)/hop,与 cols 无关**。真机转储里前端把一个被污染的
+        // 工程时长(2^40 采样 ÷ 48k = 22,906,492 秒)当 endS 发进来,单次调用要空转
+        // **22.9 亿次**、每次还调一趟 coversFully 做 lower_bound,而全程持 lifecycleMutex_
+        // 且跑在 WebView2 的 web-message 回调里 —— 宿主消息泵被占住,UI 整体冻死。
+        // 那次现场里真正有数据的只有 2475 个 hop,**99.99989% 的迭代是纯空转**。
+        //
+        // 求交之后代价与「实际有多少数据」同阶;再按 kMaxHopsPerCol 限步长,单列代价封顶。
+        // 概览块(512 列跨全曲)本来就是缩略图,抽样对观感无损。
+        const auto covered = frames.coverage().intersect(scvb::analysis::HopRange{h0, h1});
+        std::uint64_t coveredHops = 0;
+        for (const auto& cr : covered)
         {
-            if (!frames.hasHop(h))
+            coveredHops += cr.end - cr.begin;
+        }
+        const std::uint64_t stride =
+            coveredHops > kMaxHopsPerCol ? (coveredHops + kMaxHopsPerCol - 1) / kMaxHopsPerCol : 1;
+        for (const auto& cr : covered)
+        {
+            // 求交的产物按定义就是「有数据的 hop」,不必再 hasHop 一次(那正是原实现里
+            // 每次空转都要付的那笔 lower_bound)。
+            for (std::uint64_t h = cr.begin; h < cr.end; h += stride)
             {
-                continue;
-            }
-            any = true;
-            mx = std::max(mx, static_cast<double>(frames.peakDbq(h)) / 100.0);
-            mn = std::min(mn, static_cast<double>(frames.kwDbq(h)) / 100.0);
-            if (frames.vadP(h) > 127)
-            {
-                voiced = true;
+                any = true;
+                mx = std::max(mx, static_cast<double>(frames.peakDbq(h)) / 100.0);
+                mn = std::min(mn, static_cast<double>(frames.kwDbq(h)) / 100.0);
+                if (frames.vadP(h) > 127)
+                {
+                    voiced = true;
+                }
             }
         }
         if (!any)
@@ -740,6 +766,7 @@ void ScvbOutputAudioProcessor::timerCallback()
     // 停流判定要知道走带在不在跑:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
     session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
     session_.tick(now);
+    reapRetiredJobs(); // 退休分析作业的非阻塞回收(见 retiredJobs_ 头注)
 
     // 时间线健康前置(§4.2 [J51]):连续无时间线 ≥0.5s → 清 mask(Inputs 走 J12 直通)。
     if (timelineValid_.load(std::memory_order_relaxed) == 0)
@@ -1711,6 +1738,33 @@ private:
     std::uint32_t generation_ = 0;
 };
 
+// 退休作业的回收(定义必须在 AnalysisJob 类之后:unique_ptr 析构与 stopThread 都要完整类型)。
+void ScvbOutputAudioProcessor::reapRetiredJobs()
+{
+    // 非阻塞:线程还在跑就留到下一拍。juce::Thread 的析构要求线程已停,故只析构停了的。
+    for (auto it = retiredJobs_.begin(); it != retiredJobs_.end();)
+    {
+        if ((*it) != nullptr && (*it)->isThreadRunning())
+        {
+            ++it;
+            continue;
+        }
+        it = retiredJobs_.erase(it);
+    }
+}
+
+void ScvbOutputAudioProcessor::joinRetiredJobs()
+{
+    for (auto& job : retiredJobs_)
+    {
+        if (job != nullptr)
+        {
+            job->stopThread(2000);
+        }
+    }
+    retiredJobs_.clear();
+}
+
 void ScvbOutputAudioProcessor::handleAsyncUpdate()
 {
     PendingAnalysis pending;
@@ -1997,9 +2051,9 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
     // juce::Thread,debug 构建会撞 ~Thread 的 jassert(!isThreadRunning())。
     if (analysisJob_ != nullptr)
     {
+        // 只 signal 不 join:join 在消息线程上最多堵 2 秒。退休区 + 每拍非阻塞回收。
         analysisJob_->signalThreadShouldExit();
-        analysisJob_->stopThread(2000);
-        analysisJob_.reset();
+        retiredJobs_.push_back(std::move(analysisJob_));
     }
 
     runtime_.analysisRunning = true;
@@ -2025,9 +2079,9 @@ void ScvbOutputAudioProcessor::cancelAnalysis()
 
     if (analysisJob_ != nullptr)
     {
+        // 同 startAnalysis:消息线程不 join(cancelAnalyze 是 web 直达的入口,堵它就是堵 UI)。
         analysisJob_->signalThreadShouldExit();
-        analysisJob_->stopThread(2000);
-        analysisJob_.reset();
+        retiredJobs_.push_back(std::move(analysisJob_));
     }
     {
         const juce::ScopedLock lock(pendingMutex_);

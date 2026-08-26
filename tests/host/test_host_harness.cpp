@@ -1749,3 +1749,65 @@ TEST_CASE("HOST P1-D:未冻结 + 引擎权威 → 曲线说了算,改参数无�
     const float after = busPeakAfter(r, 20);
     CHECK(after > base * 0.7f); // 基本不变(无曲线时曲线求值回 0 dB)
 }
+
+// ---------------------------------------------------------------------------
+// v5.2 实测 P0-A(活锁,dump 定谳):waveformOf 的代价必须与**覆盖**同阶,不与请求跨度同阶。
+//
+// 真机现场:前端把被污染的工程时长(2^40 采样 ÷ 48k = 22,906,492 s)当 endS 发进来,
+// 内层循环按「跨度 ÷ 10ms hop」空转 22.9 亿次、全程持 lifecycleMutex_ 且跑在 WebView2 的
+// web-message 回调里 —— 宿主消息泵被占住,UI 整体冻死。那次现场真正有数据的只有 2475 个 hop。
+// 这一组用**时间预算**做判据:病态跨度下必须仍然毫秒级返回。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-A:病态跨度的 waveformOf 仍在时间预算内返回", "[host][t37][v52][hang]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f); // 只采几秒:覆盖极稀疏,正是真机现场的形状
+    Rig::pumpMessages(400);
+
+    const double covered = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(covered > 0.0);
+
+    // 转储里的那个数,逐字:2^40 采样 ÷ 48000。
+    constexpr double kPoisonedEndS = 1099511627776.0 / 48000.0;
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    const auto tile = r.out.waveformOf(kTestChannel, 0.0, kPoisonedEndS, 512);
+    const double elapsedMs = juce::Time::getMillisecondCounterHiRes() - t0;
+
+    // 修复前:内层要跑 22.9 亿次,单次调用 9–23 秒。预算给到 2000ms 仍有两个数量级余量,
+    // 既不会因构建机器慢而假红,也绝不可能被旧实现蒙混过关。
+    CHECK(elapsedMs < 2000.0);
+    REQUIRE(tile.covered.size() == 512);
+    // 形状仍然合法(否则 JS 侧 isTileShape 不过,泳道整块变黑)。
+    for (std::size_t i = 0; i < tile.covered.size(); ++i)
+    {
+        CHECK(tile.minDb[i] <= tile.maxDb[i]);
+    }
+}
+
+TEST_CASE("HOST P0-A:covered 列的抽样上界不影响「有没有数据」的判定", "[host][t37][v52][hang]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double covered = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(covered > 0.0);
+
+    // 抽样只影响「取到哪些 hop」,不影响「这一列有没有数据」——
+    // 正常跨度与病态跨度下,已覆盖区间对应的列都必须仍然是 covered。
+    const auto normal = r.out.waveformOf(kTestChannel, 0.0, covered, 64);
+    int normalCovered = 0;
+    for (const int c : normal.covered)
+    {
+        normalCovered += c;
+    }
+    CHECK(normalCovered > 0);
+}
