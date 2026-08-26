@@ -644,12 +644,16 @@ log("\n=== ⑦ [J83] participate_in_auto_pan 默认档 ===");
 // 数组时 `makeChannelConfig` 一次都不会被调用 —— 那样的断言只验证「传进去的东西还在」,
 // 把默认值改成任何常量它都照绿(PR #105 claude-review 建议 2)。
 {
-    const ch = 3; // DEMO_STEREO_CHANNELS[0]:stereo 轨,新默认下它也参与
+    const MD = await import(u("web/shared/mock-data.js"));
+    // 轨号从 demo 数据推,不写死:写死的话 demo 轨画像一改,这条就会静默地去测一条 mono 轨
+    // 而照样全绿(pr-agent 建议)。写前先确认它真是 stereo —— 本组要守的正是「stereo 轨也默认参与」。
+    const ch = MD.DEMO_STEREO_CHANNELS[0];
     await withSession("output", "fixture=fifteen-tracks", async (b) => {
         const before = await b.requestInitialState();
         check(
-            before.channels[ch - 1].participate_in_auto_pan === true,
-            `写之前 ch${ch} 应是默认参与`,
+            before.channels[ch - 1].source_channels === 2 &&
+                before.channels[ch - 1].participate_in_auto_pan === true,
+            `写之前 ch${ch}(stereo)应是默认参与`,
         );
         const r = await b.setChannelConfig(ch, {
             participate_in_auto_pan: false,
