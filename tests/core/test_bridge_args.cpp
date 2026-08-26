@@ -143,5 +143,15 @@ TEST_CASE("BRIDGEARGS-S2S-1 样本→秒安全换算(PR#55 第6轮缺陷1)", "[b
     REQUIRE(scvb::output::samplesToSeconds(48000, 48000.0) == Approx(1.0));
     REQUIRE(scvb::output::samplesToSeconds(0, 48000.0) == Approx(0.0));
     REQUIRE(scvb::output::samplesToSeconds(48000, 0.0) == Approx(0.0)); // 零除守卫 → 0.0 哨兵
+
+    // 「无末端」哨兵(1<<40)在这里**照常换算,不做裁剪**。
+    //
+    // 曾经试过在本函数按值域把超大采样数夹成 0.0 来挡 P0-A —— 那会连带把哨兵夹成 0,
+    // 于是手动/冻结段的 t1S=0 < t0S,段在波形页上直接消失、点不中、切不开。
+    // 哨兵是**语义**问题,归产生它的 emitSegments 按语义降级(见那里的行注);
+    // 本函数只保证「不产 NaN/inf」这一条,不越权替上层做语义判断。
+    REQUIRE(scvb::output::samplesToSeconds(scvb::output::kOpenEndedT1, 48000.0) ==
+            Approx(22906492.245333).epsilon(1e-9));
+    REQUIRE(scvb::output::kOpenEndedT1 == (static_cast<std::int64_t>(1) << 40));
     REQUIRE(scvb::output::samplesToSeconds(48000, -1.0) == Approx(0.0));
 }

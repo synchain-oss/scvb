@@ -182,12 +182,12 @@ export const VZOOM_H = 22;
 /** 无任何时长线索时的兜底工程时长(秒;mock 假数据同为 5 分钟,J59)。 */
 export const FALLBACK_DURATION_S = 300;
 /**
- * 工程时长的**合理上限**(秒,24h)。与 C++ 侧 `kMaxTimelineSeconds` 同一口径。
+ * 工程时长的**合理上限**(秒,24h)。
  *
- * 存在的理由不是「工程不会更长」,而是**一个坏字段不该污染整个视口模型**:真机上
- * 段表里出现过 t1 = 2^40 采样(÷48k ≈ 265 天)的无末端哨兵,`durationOf` 的 Math.max
- * 把它选中当工程时长,泳道再拿它当 `requestWaveform` 的 endS —— 单次调用把宿主消息线程
- * 跑死几十秒(P0-A)。夹一次上限,坏值最多让视口错,不会让宿主冻住。
+ * 存在的理由不是「工程不会更长」,而是**一个坏字段不该污染整个视口模型**。
+ * P0-A 那次的具体坏字段(无末端哨兵)现在已经在两处按**语义**处理掉了 —— C++ 侧
+ * emitSegments 降级右端 + 上面 durationOf 跳过 openEnded 段 —— 本上限是最后一道
+ * 兜底,防的是「以后又冒出别的坏字段」,不再是当前已知问题的主要防线。
  */
 export const MAX_DURATION_S = 24 * 60 * 60;
 
@@ -311,6 +311,10 @@ export function durationOf(store) {
     d = Math.max(d, num(range.end_s, 0));
     for (const c of (st.segments && st.segments.channels) || []) {
         for (const seg of (c && c.segments) || []) {
+            // 「无末端」段(§2.8 `openEnded`)的右端不是真时刻,**不参与工程时长推定** ——
+            // 它表达的是「一直到时间线末端」,拿它当长度证据是循环论证。C++ 侧已把 t1S
+            // 降级成已知末端,这里再挡一道:两侧都按语义处理,不靠数值大小猜。
+            if (seg && seg.openEnded === true) continue;
             d = Math.max(d, num(seg && seg.t1S, 0));
         }
     }

@@ -765,6 +765,16 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             continue; // 只含掩码内轨(PR#55 第11轮缺陷2)
         const auto& segments = vc.tracks[static_cast<std::size_t>(t)].segments;
 
+        // 「已知时间线末端」= 本轨所有**非哨兵**段的最大真末端。无末端段的右端降级取它。
+        std::int64_t knownEndSamples = 0;
+        for (const auto& sg : segments)
+        {
+            if (sg.t1 < scvb::output::kOpenEndedT1)
+            {
+                knownEndSamples = std::max(knownEndSamples, sg.t1);
+            }
+        }
+
         juce::var ch = obj();
         put(ch, "ch", t + 1);
         juce::var segArr = mkArray();
@@ -774,7 +784,16 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             juce::var seg = obj();
             put(seg, "segIdx", static_cast<int>(i));
             put(seg, "t0S", samplesToSeconds(s.t0, sr)); // 安全换算(PR#55 第6轮缺陷1)
-            put(seg, "t1S", samplesToSeconds(s.t1, sr));
+            // 「无末端」段(setTrackManual 的常值段:t1 = 1<<40 哨兵,真末端由宿主时间线提供)
+            // **在这里按语义降级**,而不是让哨兵以「2290 万秒」的伪装流到前端 —— 那个数曾被
+            // durationOf 当成工程时长选中,再当作 requestWaveform 的 endS 发回来,把消息线程
+            // 跑死(P0-A)。#89 在 viz 侧已按同一口径处理过(无末端只取 t0)。
+            // 降级目标 = **已知时间线末端**:优先取本次快照里其余段的最大真末端,没有则回落
+            // 到该段自己的 t0(段仍然存在、可点、可切,只是右端不再撒谎)。
+            const bool openEnded = s.t1 >= scvb::output::kOpenEndedT1;
+            const std::int64_t t1Effective = openEnded ? std::max(s.t0, knownEndSamples) : s.t1;
+            put(seg, "t1S", samplesToSeconds(t1Effective, sr));
+            put(seg, "openEnded", openEnded); // §2.8:UI 据此知道右端是「到末端」而不是一个真时刻
             put(seg, "pan", static_cast<double>(s.pan));
             put(seg, "volDb", static_cast<double>(s.volDb));
             put(seg, "origin", originName(scvb::state::segmentOrigin(s.flags)));

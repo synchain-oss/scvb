@@ -564,6 +564,43 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
         240,
         "Range 终点参与时长推定",
     );
+    // v5.3 R2:「无末端」段(§2.8 openEnded)不参与时长推定 —— 它表达的是「一直到时间线
+    // 末端」,拿它当长度证据是循环论证。真机上这条曾把 22,906,492 秒(1<<40 采样)选成
+    // 工程时长,再当作 requestWaveform 的 endS 发回来,把宿主消息线程跑死(P0-A)。
+    eq(
+        TW.durationOf({
+            segments: {
+                channels: [
+                    { ch: 1, segments: [{ t0S: 0, t1S: 90 }] },
+                    {
+                        ch: 2,
+                        segments: [
+                            { t0S: 0, t1S: 22906492.245333, openEnded: true },
+                        ],
+                    },
+                ],
+            },
+        }),
+        90,
+        "openEnded 段不参与时长推定(取其余段的真末端)",
+    );
+    // 只有无末端段时:不许回落成那个哨兵秒数,走 5 分钟兜底。
+    eq(
+        TW.durationOf({
+            segments: {
+                channels: [
+                    {
+                        ch: 1,
+                        segments: [
+                            { t0S: 0, t1S: 22906492.245333, openEnded: true },
+                        ],
+                    },
+                ],
+            },
+        }),
+        300,
+        "全是 openEnded 段 → 回落 5 分钟,不取哨兵值",
+    );
     // 泳道模型投影(§2.7 覆盖率 / §2.8 段数 / §2.9 lowSample)
     const lanes = TW.laneModelFromStore({
         state: { channels: [{ label: "主唱" }] },
