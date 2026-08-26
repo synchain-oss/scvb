@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "BridgeArgs.h"
 #include "InputBridgeLogic.h"
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
@@ -1832,17 +1833,25 @@ TEST_CASE("HOST R4:单哨兵段轨的降级右端严格大于左端", "[host][t3
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -40.0f, replaced, replacedLocked));
 
     const auto crvs = r.out.crvsSnapshot();
-    const auto& segs =
-        crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    const auto& vc = crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)];
+    const auto& segs = vc.tracks[kTestChannel - 1].segments;
     REQUIRE(segs.size() == 1); // 前置:确实是单段
-    REQUIRE(segs.front().t1 >= (static_cast<std::int64_t>(1) << 40)); // 且确实是无末端哨兵
+    REQUIRE(segs.front().t1 >= scvb::output::kOpenEndedT1); // 且确实是无末端哨兵
 
-    // 降级用的工程级末端:本轨没有非哨兵段,须由采集覆盖或最小宽度兜底。
-    // 这里直接验兜底链的下界 —— 任何情形下都必须严格大于 t0。
-    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+    // 上桥值走真实降级链(BridgeArgs.h 三函数 —— buildSegmentsPayload 用的就是这一份实现),
+    // 输入全部取自真实快照/处理器,不用局部常量重演:revert 降级链的任何一级这里都会红。
     const double sr = r.out.sampleRate();
     REQUIRE(sr > 0.0);
-    const std::int64_t minSpan = std::max<std::int64_t>(1, static_cast<std::int64_t>(hopS * sr));
-    CHECK(minSpan > 0); // ← 兜底宽度本身必须非零,否则整条链仍会坍缩
-    CHECK(segs.front().t0 + minSpan > segs.front().t0);
+    const std::int64_t knownEnd = scvb::output::knownTimelineEndSamples(vc, r.out.capturedExtentSeconds(), sr);
+    const std::int64_t minSpan = scvb::output::minOpenEndedSpanSamples(ScvbOutputAudioProcessor::featHopSeconds(), sr);
+    const std::int64_t t1Effective =
+        scvb::output::effectiveT1Samples(segs.front().t0, segs.front().t1, knownEnd, minSpan);
+
+    // 核心断言:哨兵不再以「2^40 采样」伪装上桥,且**严格大于 t0**(零宽段点不中、切不开)。
+    CHECK(t1Effective < scvb::output::kOpenEndedT1);
+    CHECK(t1Effective > segs.front().t0);
+    // 秒域同款(§2.8 载荷字段就是这两个数的换算):t1S 必须严格大于 t0S。
+    const double t0S = scvb::output::samplesToSeconds(segs.front().t0, sr);
+    const double t1S = scvb::output::samplesToSeconds(t1Effective, sr);
+    CHECK(t1S > t0S);
 }

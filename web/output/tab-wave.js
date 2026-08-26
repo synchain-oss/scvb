@@ -2191,7 +2191,7 @@ export function createTabWave(opts) {
             const idx = segs.findIndex((s) => t >= s.t0S && t < segEndS(s));
             if (idx < 0) return;
             const s = segs[idx];
-            if (!(t > s.t0S + 0.05 && t < s.t1S - 0.05)) return;
+            if (!(t > s.t0S + 0.05 && t < segEndS(s) - 0.05)) return;
             sendEdit(p.ch, "split", {
                 segIdx: idx,
                 tS: Math.round(t * 1000) / 1000,
@@ -2242,7 +2242,7 @@ export function createTabWave(opts) {
         const t = xToTime(vp, stageW, x);
         const segCh = segmentsOfCh(getStore().segments, ch);
         const segs = (segCh && segCh.segments) || [];
-        const idx = segs.findIndex((s) => t >= s.t0S && t < s.t1S);
+        const idx = segs.findIndex((s) => t >= s.t0S && t < segEndS(s));
         if (idx >= 0) {
             selectSegment(ch, idx, e.ctrlKey || e.metaKey || e.shiftKey);
             // 点选段附带勾选该轨(只增不减 —— 再点段不该把轨取消勾选)
@@ -3526,8 +3526,16 @@ export function createTabWave(opts) {
             show(els.inspOrigin, false);
         }
         text(els.inspStart, fmtTimeMs(seg.t0S));
-        text(els.inspEnd, fmtTimeMs(seg.t1S));
-        text(els.inspLen, `${(num(seg.t1S, 0) - num(seg.t0S, 0)).toFixed(2)}s`);
+        // openEnded 段:t1S 是保守下界不是真末端,显示词条而不是一个会误导的时间值
+        text(
+            els.inspEnd,
+            seg.openEnded ? fmtKey("wave.segOpenEnd") : fmtTimeMs(seg.t1S),
+        );
+        // openEnded 时长只知下界,前缀 ≥(纯符号,不进词典)
+        text(
+            els.inspLen,
+            `${seg.openEnded ? "≥" : ""}${(num(seg.t1S, 0) - num(seg.t0S, 0)).toFixed(2)}s`,
+        );
         text(
             els.inspLoud,
             Number.isFinite(seg.loudnessLufs)
@@ -3869,7 +3877,12 @@ export function createTabWave(opts) {
                     const s = segs[k.idx];
                     if (!s) continue;
                     const sx0 = timeToX(vp, w, num(s.t0S, 0));
-                    const sx1 = timeToX(vp, w, num(s.t1S, 0));
+                    const sSegE = segEndS(s);
+                    const sx1 = timeToX(
+                        vp,
+                        w,
+                        Number.isFinite(sSegE) ? sSegE : vp.t1,
+                    );
                     if (sx1 < 0 || sx0 > w) continue;
                     const cx0 = Math.max(sx0, 0);
                     const cw = Math.min(sx1, w) - cx0;
@@ -3959,7 +3972,9 @@ export function createTabWave(opts) {
             if (!seg) continue;
             const manual = seg.origin && seg.origin !== "auto";
             const x0 = timeToX(vp, w, num(seg.t0S, 0));
-            const x1 = timeToX(vp, w, num(seg.t1S, 0));
+            // openEnded 段:t1S 只是保守下界,画到视口末端而不是下界处截断
+            const segE = segEndS(seg);
+            const x1 = timeToX(vp, w, Number.isFinite(segE) ? segE : vp.t1);
             if (x1 < 0 || x0 > w) continue;
             const y = yOf(seg);
             const half = rampPx / 2;

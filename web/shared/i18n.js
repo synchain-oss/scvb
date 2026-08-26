@@ -794,6 +794,8 @@ export const T = {
         // 因此不得复用确认框族的 common.cancel(EN/FR 自译,入 U17 待审校)
         "wave.inspectorClose": "收起",
         "wave.inspectorEmpty": "点选泳道内的段以编辑",
+        // openEnded 段(尾界未定,t1S 仅是保守下界)在检查器里的结束时间显示
+        "wave.segOpenEnd": "至末端",
         "wave.segStart": "开始",
         "wave.segEnd": "结束",
         "wave.segLen": "时长",
@@ -1575,6 +1577,7 @@ export const T = {
         "wave.inspectorToggle": "Segment details & editing",
         "wave.inspectorClose": "Collapse",
         "wave.inspectorEmpty": "Click a segment in a lane to edit it",
+        "wave.segOpenEnd": "To end",
         "wave.segStart": "Start",
         "wave.segEnd": "End",
         "wave.segLen": "Length",
@@ -2367,6 +2370,7 @@ export const T = {
         "wave.inspectorClose": "Réduire",
         "wave.inspectorEmpty":
             "Cliquez sur un segment dans une piste pour le modifier",
+        "wave.segOpenEnd": "Jusqu'à la fin",
         "wave.segStart": "Début",
         "wave.segEnd": "Fin",
         "wave.segLen": "Durée",

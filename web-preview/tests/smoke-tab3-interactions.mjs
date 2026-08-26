@@ -640,6 +640,31 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             [{ idx: 0, t0S: 0, t1S: 12 }],
             "rebindSegKeys:openEnded 段认领 t1S 之后的锚点",
         );
+        // ③ 交互/绘制调用点(R4 补完批,复审「前端四处裸 s.t1S」):事件处理器与画布
+        // 绘制不是导出纯函数,这里以源码钉子锁定四处都接上了 segEndS,防止改回裸 t1S。
+        const twSrc = src("web/output/tab-wave.js");
+        const hitPattern =
+            /findIndex\(\(s\) => t >= s\.t0S && t < segEndS\(s\)\)/g;
+        eq(
+            (twSrc.match(hitPattern) || []).length,
+            2,
+            "单击命中与双击命中两处 findIndex 都走 segEndS(不再裸比 s.t1S)",
+        );
+        check(
+            /t < segEndS\(s\) - 0\.05/.test(twSrc),
+            "双击 split 的第二道闸走 segEndS(openEnded 段 t1S 之后仍可切)",
+        );
+        check(
+            /Number\.isFinite\(segE\) \? segE : vp\.t1/.test(twSrc) &&
+                /Number\.isFinite\(sSegE\) \? sSegE : vp\.t1/.test(twSrc),
+            "阶梯绘制与选中高亮的右端:openEnded(+Infinity)clamp 到视口末端 vp.t1",
+        );
+        check(
+            /seg\.openEnded \? fmtKey\("wave\.segOpenEnd"\) : fmtTimeMs\(seg\.t1S\)/.test(
+                twSrc,
+            ),
+            "检查器结束时间:openEnded 段显示 wave.segOpenEnd 词条而不是保守下界",
+        );
     }
     // 泳道模型投影(§2.7 覆盖率 / §2.8 段数 / §2.9 lowSample)
     const lanes = TW.laneModelFromStore({
@@ -2239,7 +2264,8 @@ log("=== ⑫ Wave 5 用户 preview 第二轮四条(绿罩/缩放条位/选中态
     );
     {
         const i = tw.indexOf("local.selectedCh === ch && local.selectedSegs");
-        const win = tw.slice(i, i + 1200);
+        // 1200→1600:R4 之后 sx1 取 segEndS 的 finite-clamp(openEnded 段画到视口末端)多出数行
+        const win = tw.slice(i, i + 1600);
         check(
             /ctx\.fillStyle = SEG_SEL_FILL;[\s\S]{0,120}ctx\.fillRect\(cx0, y0, cw, laneH\)/.test(
                 win,
