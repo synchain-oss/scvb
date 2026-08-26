@@ -1,4 +1,3 @@
-> 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 参数表——P1 宪法(自动化参数的 ID/顺序/命名冻结,冻结点=首个公开 rc)
 
 状态:**v2.3**(2026-08-25,J81 修宪:state 侧 ui/analysis 组增补 + state 容器 abi 1→2,**自动化参数面 123 个零变动**;v0/v1/v2 历史见文末修订节)。03-params-automation.md 负责细化语义/默认值论证,但**不得**增删自动化参数、改 ID、改顺序。
@@ -57,7 +56,7 @@ channels[15]:                  # 配置唯一真源在 Output(ADR-004);[J59] 10�
   enabled: bool
   label: string                # UI 显示名
   source_channels: 1|2         # [J57] 自动检测:mono/stereo 源
-  participate_in_auto_pan: bool # [J60] stereo 默认 false,mono 默认 true;参与时以中心点入槽位分配
+  participate_in_auto_pan: bool # [J83 修订 J60] 未显式设置一律默认 true(参与);排除权=轨道页逐轨开关(J60 的检测前提=总线布局非素材声道,不成立);参与时以中心点入槽位分配
   priority: 0..10              # 宽度优先级,高→角度大
   lead_lock: bool              # 分析期主唱配置(逐段可变;与 lead_select 参数为两层,J58)
   lead_vol_exempt: bool        # 音量豁免——独立选项,不与任何 lead 机制强制关联(J58 用户澄清)
@@ -137,7 +136,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false;全局�
 - **[J59]** 自动化参数全表重排:81→**93**(2 版本×15 轨×Pan/Vol/Width + 全局 width/ms_balance/lead_select);versions[] 4→2;channels[] 10→15;旧 v1 表作废(rc 前重排合法,J21)。
 - **[J57]** channels[] 增 `source_channels`(mono/stereo 检测);每轨 Width 参数承载 stereo 源宽度(dual-pan 模型)。
 - **[J58]** 增全局 `lead_select` 自动化参数(实时覆盖层);`lead_lock`(分析期)与 `lead_vol_exempt`(独立豁免)保持 state,三者语义解耦。
-- **[J60]** channels[] 增 `participate_in_auto_pan`(stereo 默认 false / mono 默认 true)。
+- **[J60]** channels[] 增 `participate_in_auto_pan`(stereo 默认 false / mono 默认 true)。**[J83,2026-08-26 修订]** 默认档改「未显式设置一律 true」——J60 的前提(检测值=素材声道)实测不成立(source_channels 取自总线布局,Cubase mono 素材置 stereo 轨即报 2),保护意图由轨道页逐轨开关承载;v5.1 实测 P0-B 定谳,仓内变更文档 20260826-j83-participate-default.md。
 - **[J62]** ui 组增 `tour_seen: bool`(默认 false;首启交互式引导已完成标记,独立于 guide_seen;J50a 全局镜像同适用)。即 `ui: {scale, language, active_tab, guide_seen, tour_seen}`。
 
 ## v2.1 修订(2026-08-11,J65 每轨冻结开关;**追述节,2026-08-25/J81 补立**)

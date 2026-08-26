@@ -1,4 +1,3 @@
-> 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB IPC 契约 v0(共享内存)——P1 宪法
 
 状态:**v1.6**(2026-08-25,J81 修宪:ctrl 广播区正式布局 + 新增 viz 段;正文已就地改写;历史见修订节;裁决依据 plan/adjudications.md)。01-architecture.md 负责细化(错误处理/生命周期时序图),04 负责特征面语义;段名/布局字段/对齐规则不得改,如需改在「对宪法的异议」提出。

@@ -1,4 +1,3 @@
-> 本文件是 masterPlan/constitution 的仓内只读副本，改动须走修宪流程（sha256 同步由 scripts/check-constitution-sync.ps1 断言）。
 # SCVB 架构决策记录(ADR)——P1 宪法,起草文档不得与之矛盾
 
 状态:**v2.1**(2026-08-25,J81 修宪:ADR-001 两插件 → 三插件,新增只读监视目标 SCVB Monitor;正文已就地改写;历史修订节见文末;裁决依据 plan/adjudications.md)。起草 agent 如认为某条有误,在自己文档末尾「对宪法的异议」一节提出,**不得**silently 偏离。GitHub org = `synchain-oss`。
@@ -55,7 +54,7 @@
 - DSP 取值仲裁:输出开关 ON → 引擎值直接进 DSP(参数只是对外打印);OFF → host 参数值进 DSP
 
 ## ADR-006 自动化写入
-- gesture 三段式(beginChangeGesture/setValueNotifyingHost/endChangeGesture),**只在消息线程**(50Hz Timer);音频线程只发布 playhead 快照(SPSC)
+- gesture 三段式(beginChangeGesture/setValueNotifyingHost/endChangeGesture),**只在消息线程**(**25Hz** Timer——2026-08-26 由 50Hz 减负:冻结车道去冗余重写+值未变不写,宿主同步往返减 ~90%,P0-A 卡死缓解;gesture 重开必写首点保平直线落点);音频线程只发布 playhead 快照(SPSC)
 - 推荐用户用 DAW 的 Write/Latch;文档标注各 DAW 已知坑(Cubase 车道位置、REAPER 关 GUI 不写、Pro Tools 循环只录第一遍等,见 research/08)
 - host echo 防回环:写入期间忽略参数回调对引擎的影响(引擎为源);写入结束后参数回归 follow 语义
 
