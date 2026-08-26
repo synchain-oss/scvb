@@ -239,7 +239,19 @@ void OutputSession::pullFeatures()
     // timeGate 与写入口的 gate 同一个范围(pullIncremental 也据它裁剪);selectedMask=0 = 不限轨
     // (轨维在 Input 侧按广播区的 enabled 位布防,不重复门控);activeMask = 本组 connected_mask,
     // 只拉在线轨(04 §3.3)。
-    featPuller_.pullTick(frameStore_, featureGate_, /*selectedMask=*/0, registry_.connectedMask());
+    const u32 refreshed =
+        featPuller_.pullTick(frameStore_, featureGate_, /*selectedMask=*/0, registry_.connectedMask());
+
+    // 04 §4.5:哪条轨拉到了新特征,哪条轨的旧失配定谳就作废 —— 基线正在被改写,拿它得出的
+    // 结论不再成立。这是「⚠ 提示 → 用户重采集 → 提示撤下」闭环里唯一走得通的一跳:重采集
+    // 期间采集是 ON 的,而采集 ON 期间 Input 一条 fp_report 都不发,自愈路径此时是断的。
+    for (u32 ch = 1; ch <= kMaxChannels; ++ch)
+    {
+        if ((refreshed & (1u << (ch - 1))) != 0)
+        {
+            fpWatch_.resetChannel(ch);
+        }
+    }
 }
 
 void OutputSession::evaluateChannels(u64 nowMs)

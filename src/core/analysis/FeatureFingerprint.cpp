@@ -26,6 +26,48 @@ bool baselineTileFingerprint(const ChannelFrames& frames, std::uint32_t tileIdx,
     return true;
 }
 
+bool FingerprintWatch::ChannelState::test(const TileBitmap& b, std::uint32_t tile)
+{
+    const std::size_t w = tile / 64u;
+    return w < b.size() && (b[w] & (1ull << (tile % 64u))) != 0;
+}
+
+bool FingerprintWatch::ChannelState::set(TileBitmap& b, std::uint32_t tile)
+{
+    if (b.empty())
+    {
+        b.assign(kTileBitmapWords, 0ull); // 惰性分配:第一次真用到才占那 8KB
+    }
+    const std::size_t w = tile / 64u;
+    if (w >= b.size())
+    {
+        return false; // tile 越 16 位上限:打包侧本就不会发,读侧再兜一道
+    }
+    const std::uint64_t bit = 1ull << (tile % 64u);
+    if ((b[w] & bit) != 0)
+    {
+        return false;
+    }
+    b[w] |= bit;
+    return true;
+}
+
+bool FingerprintWatch::ChannelState::clear(TileBitmap& b, std::uint32_t tile)
+{
+    const std::size_t w = tile / 64u;
+    if (w >= b.size())
+    {
+        return false;
+    }
+    const std::uint64_t bit = 1ull << (tile % 64u);
+    if ((b[w] & bit) == 0)
+    {
+        return false;
+    }
+    b[w] &= ~bit;
+    return true;
+}
+
 FingerprintWatch::ChannelState* FingerprintWatch::stateOf(std::uint32_t channel)
 {
     if (channel < 1 || channel > channels_.size())
@@ -58,12 +100,16 @@ void FingerprintWatch::onReport(std::uint32_t channel, std::uint64_t packedValue
     std::uint64_t baseline = 0;
     if (!baselineTileFingerprint(frames, tile, baseline))
     {
-        // 无基线:不比对、不计入分母。**也不打断滞回连续段** —— 采集覆盖本来就可能有洞,
-        // 一个没采过的秒不该把「连续 3 秒失配」的判定清零。
+        // 无基线:不比对、不计入分母、也不定谳。滞回连续段**会**在这里断开 —— 判据是
+        // 「连续 3 秒不匹配」,中间隔着一个没采过的秒就不是连续的三秒。这是保守的一侧:
+        // 覆盖有洞时宁可不提示,也不要靠拼接出来的「连续」去下一个可能错的结论。
         return;
     }
 
-    c->checked.insert(tile);
+    if (ChannelState::set(c->checked, tile))
+    {
+        ++c->checkedCount;
+    }
 
     // 比对同样截断到低 48 位:上报侧丢掉的高 16 位基线侧也必须丢,否则恒不相等。
     const bool match = (baseline & kFpReportHashMask) == reported;
@@ -72,11 +118,14 @@ void FingerprintWatch::onReport(std::uint32_t channel, std::uint64_t packedValue
         c->runLen = 0;
         c->hasRun = false;
         // 重采集或用户把上游改回去了:该 tile 的失配定谳撤销(只提示、可自愈)。
-        c->mismatched.erase(tile);
+        if (ChannelState::clear(c->mismatched, tile))
+        {
+            --c->mismatchedCount;
+        }
         return;
     }
 
-    // 相邻 tile 才算「连续」;跳播/换段重新起算。
+    // 相邻 tile 才算「连续」;跳播/换段/覆盖有洞都重新起算。
     c->runLen = (c->hasRun && tile == c->lastMismatchTile + 1) ? (c->runLen + 1) : 1;
     c->lastMismatchTile = tile;
     c->hasRun = true;
@@ -84,12 +133,15 @@ void FingerprintWatch::onReport(std::uint32_t channel, std::uint64_t packedValue
     if (c->runLen >= kFpHysteresisTiles)
     {
         // 达到滞回门槛的那一拍把整段(含此前挂起的 kFpHysteresisTiles-1 个)一并定谳;
-        // 之后每多一个 tile 只补它自己(前面的已在集合里,insert 幂等)。
+        // 之后每多一个 tile 只补它自己(前面的已置位,set 幂等)。
         const std::uint32_t back = kFpHysteresisTiles - 1;
         const std::uint32_t first = tile >= back ? (tile - back) : 0;
         for (std::uint32_t t = first; t <= tile; ++t)
         {
-            c->mismatched.insert(t);
+            if (ChannelState::set(c->mismatched, t))
+            {
+                ++c->mismatchedCount;
+            }
         }
     }
 }
@@ -97,24 +149,25 @@ void FingerprintWatch::onReport(std::uint32_t channel, std::uint64_t packedValue
 bool FingerprintWatch::stale(std::uint32_t channel) const
 {
     const ChannelState* c = stateOf(channel);
-    if (c == nullptr || c->checked.empty())
+    if (c == nullptr || c->checkedCount == 0)
     {
         return false;
     }
-    // >10%(严格大于),整数比较。
-    return c->mismatched.size() * 100u > c->checked.size() * kFpStalePercent;
+    // >10%(严格大于),整数比较(u64 相乘,分子最大 65536 也不会溢出)。
+    return static_cast<std::uint64_t>(c->mismatchedCount) * 100u >
+           static_cast<std::uint64_t>(c->checkedCount) * kFpStalePercent;
 }
 
 std::uint32_t FingerprintWatch::tilesChecked(std::uint32_t channel) const
 {
     const ChannelState* c = stateOf(channel);
-    return c != nullptr ? static_cast<std::uint32_t>(c->checked.size()) : 0u;
+    return c != nullptr ? c->checkedCount : 0u;
 }
 
 std::uint32_t FingerprintWatch::tilesMismatched(std::uint32_t channel) const
 {
     const ChannelState* c = stateOf(channel);
-    return c != nullptr ? static_cast<std::uint32_t>(c->mismatched.size()) : 0u;
+    return c != nullptr ? c->mismatchedCount : 0u;
 }
 
 void FingerprintWatch::resetChannel(std::uint32_t channel)

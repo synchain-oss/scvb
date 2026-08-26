@@ -194,6 +194,39 @@ TEST_CASE("采集 ON 不上报 fp(此刻正在写新基线)", "[fingerprint][ipc
     REQUIRE(fr.drainFpReports(got, 8) == 0); // 但一条 fp 都不上报
 }
 
+TEST_CASE("采集 OFF→ON(无 run 切换)重锚 hop:特征不再写到错误的时间线位置", "[fingerprint][ipc][featring]")
+{
+    // 既有缺陷,被 fingerprint watchdog 放大成用户可见的误报:采集开关在播放中途翻回 ON 时,
+    // nextHop 还停在上次停采的位置,于是「第 30 秒的音频」被按「第 10 秒」记账,Output 的基线
+    // 整体错位 —— 之后关采集重播同一段素材会**整轨失配**,滞回与 10% 两道门都拦不住。
+    FeatFixture f;
+    scvb::FeatRing fr;
+    fr.bind(&f.header, f.ring.data(), scvb::kFeatCapacityHops);
+    fr.prepare(48000.0, 1, 512);
+    fr.startRun(0);
+
+    // ① 采集 ON,录 1 秒。
+    fr.setCapturing(true);
+    feed(fr, makeSignal(48000, 1.0f));
+    const std::uint64_t w1 = f.header.write_hop.load();
+    REQUIRE(w1 > 0);
+    REQUIRE(f.header.base_hop.load() == 0);
+
+    // ② 采集 OFF,继续播 2 秒(= 200 hop)。段一个字节都不推进。
+    fr.setCapturing(false);
+    feed(fr, makeSignal(48000 * 2, 1.0f));
+    REQUIRE(f.header.write_hop.load() == w1);
+
+    // ③ 采集重新 ON(**没有** run 切换):重锚到当前时间线位置,而不是从 w1 续写。
+    fr.setCapturing(true);
+    feed(fr, makeSignal(48000, 1.0f));
+    const std::uint64_t base = f.header.base_hop.load();
+    CHECK(base > w1); // ← 修复前恒为 0,新帧被按旧 hop 号记账
+    CHECK(base >= w1 + 198); // OFF 期约 200 hop(±2 容边界 hop)
+    CHECK(base <= w1 + 202);
+    CHECK(f.header.write_hop.load() > base); // 重锚后照常写
+}
+
 TEST_CASE("run 中途接上的半个 tile 不上报", "[fingerprint][ipc]")
 {
     FeatFixture f;

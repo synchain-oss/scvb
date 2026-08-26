@@ -19,8 +19,6 @@
 // 0.5dB 的二次量化是余量:即使两端浮点路径有末位差,也落在同一桶里。
 
 #include <cstdint>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace scvb::analysis
@@ -115,13 +113,26 @@ public:
     void reset();
 
 private:
+    // tile 号只有 16 位(J46 打包上限),所以「已比对」「已失配」两个集合各自是一张定长位图:
+    // 65536 位 = 8KB/张,15 轨两张共 240KB 封顶。**不用 unordered_set** —— 那是按元素分配的,
+    // 一场 18 小时的连续试听能把它撑到几十 MB,而这两张表只是布尔集合,位图既有上界又更快。
+    static constexpr std::uint32_t kTileBitmapWords = (kFpMaxTileIdx + 1u) / 64u; // 1024
+    using TileBitmap = std::vector<std::uint64_t>; // 惰性分配:没用过的轨不占内存
+
     struct ChannelState
     {
-        std::unordered_set<std::uint32_t> checked; // 已比对过的 tile(去重后的分母)
-        std::unordered_set<std::uint32_t> mismatched; // 已定谳失配的 tile(分子)
+        TileBitmap checked; // 已比对过的 tile(去重后的分母)
+        TileBitmap mismatched; // 已定谳失配的 tile(分子)
+        std::uint32_t checkedCount = 0;
+        std::uint32_t mismatchedCount = 0;
         std::uint32_t runLen = 0; // 当前连续失配 tile 的长度(滞回②)
         std::uint32_t lastMismatchTile = 0; // 连续性判定用(相邻 tile 才算「连续」)
         bool hasRun = false;
+
+        static bool test(const TileBitmap& b, std::uint32_t tile);
+        // 置位/清位;返回「本次真的改变了」以维护计数。
+        static bool set(TileBitmap& b, std::uint32_t tile);
+        static bool clear(TileBitmap& b, std::uint32_t tile);
     };
 
     ChannelState* stateOf(std::uint32_t channel);

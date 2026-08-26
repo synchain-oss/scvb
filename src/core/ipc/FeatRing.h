@@ -178,11 +178,18 @@ private:
     std::atomic<FeatRunState*> state_{nullptr}; // 消息线程写 / 音频线程读写(经快照)
     std::vector<std::unique_ptr<FeatRunState>> ownedState_; // 旧运行态保活(进程寿命,防 UAF)
     std::atomic<bool> capturing_{false};
+    // 上一块看到的采集开关([A] 独占,不跨线程;放 FeatRing 而不是 FeatRunState —— 它要跨过
+    // re-prepare 存活,否则播放中换 preset 会伪造出一次 OFF→ON 边沿)。用于 run 中途
+    // OFF→ON 的 hop 重锚,见 processBlock。
+    bool lastCapturing_ = false;
 
     std::array<u64, kFpQueueCapacity> fpSlots_{}; // 载荷槽(索引原子,槽本身单写单读)
     std::atomic<u32> fpWrite_{0}; // [A] 写(单调递增)
     std::atomic<u32> fpRead_{0}; // [M] 读(单调递增)
     std::atomic<u32> fpDrop_{0}; // [A] 满环丢弃计数
+    // 进程内 SPSC 的索引:跨线程原子必须 lock-free(§8 实时线程纪律 —— 非 lock-free 的
+    // atomic 会退化成内部锁,那是音频线程上的阻塞等待)。
+    static_assert(std::atomic<u32>::is_always_lock_free, "fp SPSC 索引必须 lock-free(§8)");
 };
 
 // §3.3 读侧:单 channel 一次 seqlock 增量拉取。返回本拍写入 FrameStore 的 hop 数。
@@ -198,7 +205,10 @@ class FeatPuller
 public:
     // mappedCapacity = 实际映射的 FeatFrame 槽数;attach 时快照 header->capacity_hops,见文件头纪律。
     void bind(u32 channel, const FeatHeader* header, const FeatFrame* ring, u32 mappedCapacity);
-    void pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask);
+    // 返回本拍**真的拉到新 hop** 的轨位图(bit{N-1})。调用方据此知道哪些轨的基线正在被
+    // 改写 —— fingerprint watchdog(04 §4.5)要在那些轨上清掉旧的失配定谳,否则用户照着
+    // ⚠ 去重采集之后提示还挂着(采集 ON 期间一条 fp_report 都不发,自愈路径走不到)。
+    u32 pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask);
 
     FeatPullState& state(u32 channel);
     void reset();

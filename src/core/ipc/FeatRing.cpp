@@ -171,6 +171,23 @@ int FeatRing::processBlock(const float* const* channels, int numSamples)
         return 0; // 未就绪/未绑定:静默不写、不推进 write_hop
     }
 
+    // 采集开关在 run 中途翻 OFF→ON:nextHop 还停在上次停采的位置,而时间线已经走远了。
+    // 不重锚的话接下来写进段的帧会被按**旧 hop 号**记账,Output 把「第 90 秒的音频」存到
+    // 「第 30 秒」的格子里 —— 覆盖率、分析、以及本卡的指纹基线全部错位(基线一错位,
+    // 关采集重播同一段音频就会整轨失配,滞回与 10% 两道门都拦不住,变成整轨误报)。
+    // 重锚 = startRun 的 base/write 双 store(J33 顺序不可倒),但**不 reset 提取器** ——
+    // 音频是连续的,滤波态没有断点,重置反而会在第一帧引入暖机差。
+    if (capturing && !lastCapturing_)
+    {
+        if (s->nextHop != s->fpHop)
+        {
+            b->header->base_hop.store(s->fpHop, std::memory_order_release);
+            b->header->write_hop.store(s->fpHop, std::memory_order_release);
+            s->nextHop = s->fpHop;
+        }
+    }
+    lastCapturing_ = capturing;
+
     int consumed = 0;
     bool tailDropped = false;
     if (s->pendingSkip > 0)
@@ -295,8 +312,9 @@ void FeatPuller::bind(u32 channel, const FeatHeader* header, const FeatFrame* ri
     b.bound = (magicOk && abiOk && ring != nullptr && declared != 0 && mappedCapacity >= declared);
 }
 
-void FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask)
+u32 FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask)
 {
+    u32 refreshed = 0;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         const u32 bit = 1u << (ch - 1);
@@ -313,8 +331,12 @@ void FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGa
         {
             continue;
         }
-        pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), timeGate);
+        if (pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), timeGate) > 0)
+        {
+            refreshed |= 1u << (ch - 1);
+        }
     }
+    return refreshed;
 }
 
 FeatPullState& FeatPuller::state(u32 channel)
