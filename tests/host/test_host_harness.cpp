@@ -28,7 +28,12 @@
 #include "InputBridgeLogic.h"
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
+#include "ipc/SegmentBackendWin32.h"
+#include "ipc/VizPlane.h"
 #include "state/StateCodec.h"
+
+#include <algorithm>
+#include <limits>
 
 // createEditor 是虚函数,vtable 需要定义。真实定义在 *PluginEntry.cpp —— 那两个 TU 会把
 // WebViewHost/WebView2 拖进来,harness 不编它们(见 OutputPluginEntry.cpp 头注)。
@@ -280,17 +285,21 @@ TEST_CASE("HOST L-6b:bypass 断流 → 失准报警;恢复 → 警告自行清�
     REQUIRE(r.out.misalignCount(kTestChannel) == 0);
 
     // 模拟「误 bypass 一个 Input」:Input 不再 processBlock(写头停滞),Output 照常读。
-    for (int b = 0; b < 40; ++b)
+    // 报警不再是**瞬时**的:写头冻结要坐实 kSuspendStallMs(500ms)才算停流(v5 P1-7 ——
+    // 短于这个窗的停顿是宿主在静音段挂起 Input,不是故障)。所以这里等,而不是跑固定块数。
+    bool raised = false;
+    for (int waited = 0; waited < 3000 && !raised; waited += 80)
     {
-        r.outBuf.clear();
-        r.out.processBlock(r.outBuf, r.midi);
-        r.ph.timeSamples += kBlock;
-        if ((b % 4) == 3)
+        for (int b = 0; b < 8; ++b)
         {
-            Rig::pumpMessages(8);
+            r.outBuf.clear();
+            r.out.processBlock(r.outBuf, r.midi);
+            r.ph.timeSamples += kBlock;
         }
+        Rig::pumpMessages(80);
+        raised = (r.out.misalignCount(kTestChannel) > 0);
     }
-    CHECK(r.out.misalignCount(kTestChannel) > 0); // 报警亮起(这是对的)
+    CHECK(raised); // 报警亮起(这是对的)
 
     // 重开 Input:两侧恢复正常推进,连续 >kMisalignRecoverMs(1s)无新缺口后计数归零。
     for (int waited = 0; waited < 4000; waited += 40)
@@ -658,8 +667,18 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
         }
     };
 
-    runOutputOnly(40);
-    REQUIRE(r.out.misalignCount(kTestChannel) > 0); // 报警亮起(这是对的)
+    // 信号来源说明(v5 P1-7 之后):写头冻结不再逐块记缺口,改由 CH_SUSPENDED 坐实后
+    // 记一笔停流(OutputSession 的 stallCount_),两者并进同一个 misalignCount 上桥。
+    // 于是短停(<500ms,宿主在静音段挂起 Input)零信号,持续停流照报 —— 这条用例要的
+    // 正是后者,断言面不变。
+    bool raised = false;
+    for (int waited = 0; waited < 3000 && !raised; waited += 100)
+    {
+        runOutputOnly(10);
+        Rig::pumpMessages(100);
+        raised = (r.out.misalignCount(kTestChannel) > 0);
+    }
+    REQUIRE(raised); // 报警亮起(这是对的)
 
     // 继续 bypass 远超恢复窗(1s)——此时缺口已不再增长(本轨退出注入集,read 不再被调),
     // 但数据依然没有推进。警告**必须**保持。
@@ -669,6 +688,8 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
         Rig::pumpMessages(200);
     }
     CHECK(r.out.misalignCount(kTestChannel) > 0); // ← 修复前这里会被判成「已恢复」归零
+    // 同时该轨必须已退出注入集:警告在、还照混旧数据,是更坏的假恢复。
+    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f);
 
     // 真正重开 Input:两侧一起推进 → 数据恢复 → 警告才该撤下。
     bool cleared = false;
@@ -678,6 +699,42 @@ TEST_CASE("HOST P0-2:持续 bypass 期间失准警告不得清除", "[host][t37]
         cleared = (r.out.misalignCount(kTestChannel) == 0);
     }
     CHECK(cleared);
+}
+
+// ---------------------------------------------------------------------------
+// v5 实测 P1-7:静音段里宿主挂起 Input(write_head 停滞)不得报失准。
+// Cubase/Nuendo 的「无信号时挂起 VST3 处理」会在 -inf 段停调 Input 的 processBlock;
+// 写头一冻,covered 判据在 CH_SUSPENDED 的 500ms 判定窗里连续失败 —— 老实现把这段
+// 全记成缺口,于是每个静音边界都闪一次「失准」,1s 恢复窗过后自愈。用户看到的正是
+// 「偶发短暂失准后自愈」。真失准(写方套圈)不在此列,仍照计。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P1-7:宿主在静音段挂起 Input,短暂停流不报失准", "[host][t37][v5][misalign]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(40);
+    REQUIRE(r.out.misalignCount(kTestChannel) == 0);
+
+    // 只跑 Output:模拟宿主在静音段跳过 Input 的处理。停 12 块 ≈ 128ms,
+    // 远短于 kSuspendStallMs(500ms)——这正是「判定窗内」那段。
+    for (int b = 0; b < 12; ++b)
+    {
+        r.outBuf.clear();
+        r.out.processBlock(r.outBuf, r.midi);
+        r.ph.timeSamples += kBlock;
+        if ((b % 4) == 3)
+        {
+            Rig::pumpMessages(8);
+        }
+    }
+    Rig::pumpMessages(60);
+    // ← 修复前:12 块里每一块 covered 都失败,gapCount 加满 12,失准当场亮起
+    CHECK(r.out.misalignCount(kTestChannel) == 0);
+
+    // 恢复供数后继续跑,依然干净(不是「先报了再自愈」,是根本没报过)。
+    r.runBlocks(40);
+    CHECK(r.out.misalignCount(kTestChannel) == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,4 +1102,471 @@ TEST_CASE("HOST clearManual:true 时连用户段一并重算", "[host][t37][anal
     REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/true).ok);
     waitDone();
     CHECK_FALSE(hasUserSeg()); // ← 修复前 opts 整个被丢弃,这里仍为 true
+}
+
+// ===========================================================================
+// v5 实测 —— 多轨分析(P0-1)/ 重新识别清手动(P0-3)/ 波形瓦片(P0-4)/ 换组发布(P0-5)
+// ===========================================================================
+
+namespace
+{
+
+// 多轨机台:一台 Output + n 个 **mono** Input(各占一条 channel)。
+//
+// 为什么必须 mono:[J60] 的默认口径是「mono 参与自动 pan / stereo 不参与」,而
+// Rig 的 Input 走默认 stereo 布局。要验「分析真的把轨分到不同声像上」,得先让这些轨
+// 是**会参与**的轨 —— 这也正是真机上一条 mono 人声/贝斯轨的样子。
+struct MonoMultiRig
+{
+    static constexpr int kGroup = 9;
+    static constexpr int kCount = 3;
+
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    ScvbOutputAudioProcessor out;
+    std::vector<std::unique_ptr<ScvbInputAudioProcessor>> ins;
+    FakePlayHead ph;
+    juce::AudioBuffer<float> outBuf{2, kBlock};
+    juce::AudioBuffer<float> inBuf{1, kBlock};
+    juce::MidiBuffer midi;
+
+    MonoMultiRig()
+    {
+        out.setGroupId(kGroup);
+        out.setPlayHead(&ph);
+        out.prepareToPlay(kSr, kBlock);
+        for (int i = 0; i < kCount; ++i)
+        {
+            auto p = std::make_unique<ScvbInputAudioProcessor>();
+            juce::AudioProcessor::BusesLayout mono;
+            mono.inputBuses.add(juce::AudioChannelSet::mono());
+            mono.outputBuses.add(juce::AudioChannelSet::mono());
+            p->setBusesLayout(mono);
+            p->setGroupId(kGroup);
+            p->setChannelId(i + 1);
+            p->setPlayHead(&ph);
+            p->prepareToPlay(kSr, kBlock);
+            ins.push_back(std::move(p));
+        }
+    }
+
+    ~MonoMultiRig()
+    {
+        out.releaseResources();
+        for (auto& p : ins)
+        {
+            p->releaseResources();
+        }
+    }
+
+    static void pump(int ms) { juce::MessageManager::getInstance()->runDispatchLoopUntil(ms); }
+
+    // 每轨给**不同幅度**的素材:平衡层要有可分的能量差,否则三轨完全对称,
+    // 「全是 0」与「解本身就是 0」分不开。
+    void runBlocks(int blocks, float amplitude, int pumpEveryN = 4, int pumpMs = 8)
+    {
+        for (int b = 0; b < blocks; ++b)
+        {
+            outBuf.clear();
+            for (int i = 0; i < kCount; ++i)
+            {
+                Rig::fillSine(inBuf, amplitude * (0.4f + 0.3f * static_cast<float>(i)), ph.timeSamples);
+                ins[static_cast<std::size_t>(i)]->processBlock(inBuf, midi);
+            }
+            out.processBlock(outBuf, midi);
+            if (ph.playing)
+            {
+                ph.timeSamples += kBlock;
+            }
+            if (pumpEveryN > 0 && (b % pumpEveryN) == pumpEveryN - 1)
+            {
+                pump(pumpMs);
+            }
+        }
+    }
+
+    bool waitUntilInjected(int maxMs = 4000)
+    {
+        for (int waited = 0; waited < maxMs; waited += 40)
+        {
+            runBlocks(2, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/20);
+            const auto snap = out.connSnapshot();
+            int live = 0;
+            for (int i = 0; i < kCount; ++i)
+            {
+                const auto& c = snap.channels[static_cast<std::size_t>(i)];
+                if (c.slotState == scvb::kSlotActive && c.heartbeatAgeMs <= 2000)
+                {
+                    ++live;
+                }
+            }
+            if (live == kCount)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 采一段有声有静的素材,返回覆盖到的秒数。
+    double capture()
+    {
+        out.setCaptureEnabled(true);
+        pump(400);
+        for (int burst = 0; burst < 6; ++burst)
+        {
+            runBlocks(60, 0.5f);
+            runBlocks(40, 0.0f);
+        }
+        pump(400);
+        return out.coverageOf(1, 0.0, 30.0).coveredS;
+    }
+
+    bool runAnalysisToCompletion(double endS, bool clearManual)
+    {
+        const auto accepted = out.startAnalysis(0, 0.0, endS, clearManual);
+        if (!accepted.ok)
+        {
+            return false;
+        }
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            pump(50);
+            if (!out.analysisRunning() && !out.runtime().analysisRunning)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 该轨段表里第一个段的 pan(无段回 NaN)。
+    double firstPan(int ch)
+    {
+        const auto crvs = out.crvsSnapshot();
+        const auto& segs = crvs.versions[static_cast<std::size_t>(out.versionActive() - 1)]
+                               .tracks[static_cast<std::size_t>(ch - 1)]
+                               .segments;
+        return segs.empty() ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(segs.front().pan);
+    }
+};
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// P0-1 ①:source_channels 检测值必须真的落进 runtime state。
+// 这一格此前**没有任何生产写入方**(恒 0「未检测」),而 [J60] 的默认推导写的是
+// `sourceChannels == 1`,0 落进 else 分支 → 全 15 轨 participate=false → 指派层按
+// 「非参与 = 保持现值」处理 → 分析出来的 pan 全是参数面的 0 = 全居中。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-1:音频环段头的 source_channels 回填进 runtime state", "[host][t37][v5][analyze]")
+{
+    Rig r; // 默认 stereo 布局的 Input
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(20);
+    Rig::pumpMessages(200); // 等 timerCallback 跑一次 refreshSourceChannels
+
+    // ← 修复前恒 0
+    CHECK(r.out.runtime().channels[kTestChannel - 1].sourceChannels == 2);
+    // 未连接的轨保持「未检测」,不许瞎猜。
+    CHECK(r.out.runtime().channels[0].sourceChannels == 0);
+}
+
+TEST_CASE("HOST P0-1:mono Input 被检测成单声道并默认参与自动声像", "[host][t37][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.runBlocks(20, 0.25f);
+    MonoMultiRig::pump(200);
+
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const auto& c = r.out.runtime().channels[static_cast<std::size_t>(ch - 1)];
+        CHECK(c.sourceChannels == 1);
+        CHECK(c.participatesInAutoPan()); // [J60] mono 默认参与
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P0-1 ②(核心端到端):多轨分析后段表 pan **不得全零**。
+// 真机现象:回执报「影响 10 区段 / 9 轨」,分布图与泳道却全在中线,自动化零写入。
+// 单轨情形本就该居中(§5「独唱段居中」),所以这条必须用多轨。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-1:多轨分析后段表 pan 非全零且轨间有差异", "[host][t37][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    std::vector<double> pans;
+    for (int ch = 1; ch <= MonoMultiRig::kCount; ++ch)
+    {
+        const double p = r.firstPan(ch);
+        REQUIRE(std::isfinite(p)); // 每轨都得出段(前置:分析真的跑过这些轨)
+        pans.push_back(p);
+    }
+
+    // ← 核心断言:修复前这里三个数全是 0.0
+    const bool anyNonZero = std::any_of(pans.begin(), pans.end(), [](double p) { return std::abs(p) > 1.0; });
+    CHECK(anyNonZero);
+
+    // 而且不是「三轨被推到同一个非零点」:槽位分配本就该把它们分开。
+    const double lo = *std::min_element(pans.begin(), pans.end());
+    const double hi = *std::max_element(pans.begin(), pans.end());
+    CHECK(hi - lo > 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// P0-1 ③(消费链):段表 pan → CRVS → 打印器 → 宿主参数。
+// 用户报的另一半是「自动化零写入」。段表有值而参数不动 = 消费链断在打印这一跳。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-1:分析产物经打印器写进宿主参数(自动化非零写入)", "[host][t37][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    // 找一条分析结果非居中的轨。
+    int pannedCh = 0;
+    for (int ch = 1; ch <= MonoMultiRig::kCount && pannedCh == 0; ++ch)
+    {
+        if (std::abs(r.firstPan(ch)) > 1.0)
+        {
+            pannedCh = ch;
+        }
+    }
+    REQUIRE(pannedCh != 0);
+
+    // 引擎权威 + 走带回到已分析区域 → 打印器按曲线真身写参数(03 §3.2)。
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+
+    const auto* raw = r.out.getAPVTS().getRawParameterValue(scvb::params::panId(r.out.versionActive(), pannedCh));
+    REQUIRE(raw != nullptr);
+    CHECK(std::abs(raw->load()) > 1.0f); // ← 段表有值、参数还停在 0 就说明消费链断了
+}
+
+// ---------------------------------------------------------------------------
+// P0-3:「重新识别(含手动段)」必须连**冻结位**一起清。
+// 只清段不清位时:指派层看见 freeze&1=1 仍把该轨当 manual,pan 取参数面的手动值 →
+// 新产出的 auto 段把手动值原样烘焙进去;DspArbiter 对冻结维度读的也仍是参数面。
+// 于是「点重新识别 → 再分析 / 关冻结,pan 还是那个手动值」。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-3:clearManual 清冻结位,pan 不再被手动值钉住", "[host][t37][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    // 造出真机上的起点:轨 1 手动固定到 −80 且 pan 维冻结(UI 的「拖动 = 接管手动」)。
+    constexpr int kCh = 1;
+    constexpr float kManualPan = -80.0f;
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, kManualPan, replaced, replacedLocked));
+    auto& apvts = r.out.getAPVTS();
+    const juce::String frzId = scvb::params::freezeId(r.out.versionActive(), kCh);
+    auto* frz = apvts.getParameter(frzId);
+    REQUIRE(frz != nullptr);
+    frz->beginChangeGesture();
+    frz->setValueNotifyingHost(frz->convertTo0to1(1.0f)); // bit0 = pan 维冻结
+    frz->endChangeGesture();
+    MonoMultiRig::pump(100);
+    REQUIRE(juce::roundToInt(apvts.getRawParameterValue(frzId)->load()) == 1);
+    REQUIRE(r.firstPan(kCh) == Catch::Approx(kManualPan));
+
+    // 重新识别(含手动段)。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/true));
+
+    // ① 冻结位被清 → 引擎重新驾驶该维度(关冻结这条出口也就真的通了)。
+    CHECK(juce::roundToInt(apvts.getRawParameterValue(frzId)->load()) == 0);
+    // ② 段表不再是那个手动值 —— 修复前这里恒等于 −80(手动值被烘焙进新的 auto 段)。
+    const double after = r.firstPan(kCh);
+    REQUIRE(std::isfinite(after));
+    CHECK(std::abs(after - static_cast<double>(kManualPan)) > 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// P0-4:requestWaveform 的数据面(此前是写死「全未覆盖」的桩)。
+// 桩的形状合法,能过 JS 侧的 isTileShape,于是泳道照常画斜纹与栅格 —— 但每列
+// covered=0,包络层整体跳过,真机上就是「有斜纹、没波形」的纯黑泳道。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-4:已采集区间的波形瓦片带真实包络", "[host][t37][v5][waveform]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f);
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 64);
+    REQUIRE(tile.covered.size() == 64);
+    REQUIRE(tile.maxDb.size() == 64);
+
+    int coveredCols = 0;
+    int loudCols = 0;
+    for (std::size_t i = 0; i < tile.covered.size(); ++i)
+    {
+        if (tile.covered[i] != 0)
+        {
+            ++coveredCols;
+            CHECK(tile.maxDb[i] > -160.0); // 哨兵没被当成真数据留下
+            CHECK(tile.minDb[i] <= tile.maxDb[i]); // 包络下沿不高过上沿
+            if (tile.maxDb[i] > -60.0)
+            {
+                ++loudCols;
+            }
+        }
+    }
+    CHECK(coveredCols > 0); // ← 修复前恒 0:整条泳道判成未采集
+    CHECK(loudCols > 0); // 有声素材必须画得出包络,不是一排地板
+
+    // 完全没采过的远端区间仍如实回「未覆盖」(斜纹是对的,不能假装有数据)。
+    const auto empty = r.out.waveformOf(kTestChannel, 600.0, 610.0, 16);
+    for (const int c : empty.covered)
+    {
+        CHECK(c == 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P0-5:prepareToPlay **之后**才灌工程 chunk 时,viz 段必须跟着换组。
+// 宿主(Cubase)的真实次序就是「先激活组件、再推工程/预设 chunk」;离线测试恒是
+// 「先 setState 再 prepare」,于是这条路径从没被走到 —— Output 把 viz 段发布在旧组、
+// Monitor 在工程组上等,永远显示未连接。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[host][t37][v5][viz]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    constexpr scvb::u32 kFromGroup = 5;
+    constexpr scvb::u32 kToGroup = 6;
+
+    ScvbOutputAudioProcessor out;
+    FakePlayHead ph;
+    out.setPlayHead(&ph);
+    out.setGroupId(static_cast<int>(kFromGroup));
+    out.prepareToPlay(kSr, kBlock); // ← 宿主先激活
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(300);
+
+    // 先确认起点:旧组的 viz 段确实开着(否则下面的断言证明不了什么)。
+    {
+        scvb::SegmentBackendWin32 backend;
+        scvb::VizPlane probe(backend, kFromGroup);
+        REQUIRE(probe.attachReadOnly() == scvb::InitResult::kOk);
+    }
+
+    // 宿主再灌工程 chunk:组号换到 kToGroup。
+    juce::MemoryBlock blob;
+    {
+        ScvbOutputAudioProcessor donor;
+        donor.setGroupId(static_cast<int>(kToGroup));
+        donor.getStateInformation(blob);
+    }
+    out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+
+    bool attached = false;
+    for (int waited = 0; waited < 3000 && !attached; waited += 100)
+    {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+        scvb::SegmentBackendWin32 backend;
+        scvb::VizPlane probe(backend, kToGroup);
+        attached = (probe.attachReadOnly() == scvb::InitResult::kOk);
+    }
+    CHECK(attached); // ← 修复前:publisher 仍指着 kFromGroup,新组的段永远不存在
+
+    out.releaseResources();
+}
+
+// ---------------------------------------------------------------------------
+// #100 复审【重要】3:打印区间必须跟着**段编辑**走。
+// 打印区间此前挂在 crvsRevision_ 上,而那个号只在「段表整体被替换」时才 +1
+// (加载工程 / 分析回落)。手动拖一条段的边界拖出旧包络之后,打印区间仍停在旧范围 ——
+// 播放头一走出去,打印器就回落 ARMED、自动化面停写,而用户听到的曲线已经变了。
+// 改判据为 curvesRevision_(每次 rebuildAllCurves 都 +1,涵盖全部改曲线路径)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST 编辑段把包络拖长 → 打印区间跟随(自动化不在新区间停写)", "[host][t37][v5][print]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    // 找一条分析结果非居中的轨(打印器只对有值可写的轨有可观察行为)。
+    int ch = 0;
+    for (int t = 1; t <= MonoMultiRig::kCount && ch == 0; ++t)
+    {
+        if (std::abs(r.firstPan(t)) > 1.0)
+        {
+            ch = t;
+        }
+    }
+    REQUIRE(ch != 0);
+
+    // 旧包络的右端 = 全轨段表里最大的 t1。
+    const auto endOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        std::int64_t hi = 0;
+        for (const auto& track : crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks)
+        {
+            for (const auto& sg : track.segments)
+            {
+                hi = std::max(hi, sg.t1);
+            }
+        }
+        return hi;
+    };
+    const std::int64_t beforeEnd = endOf();
+    REQUIRE(beforeEnd > 0);
+
+    // 把该轨最后一段的 t1 往后拖 4 秒 —— 造出「新曲线比已分析区间长」的局面。
+    const double sr = r.out.sampleRate();
+    const std::int64_t grownEnd = beforeEnd + static_cast<std::int64_t>(4.0 * sr);
+    {
+        const auto crvs = r.out.crvsSnapshot();
+        const auto& segs = crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)]
+                               .tracks[static_cast<std::size_t>(ch - 1)]
+                               .segments;
+        REQUIRE_FALSE(segs.empty());
+        scvb::state::SegmentEditArgs args;
+        args.op = scvb::state::SegmentEditOp::MoveBoundary;
+        args.segIdx = static_cast<int>(segs.size()) - 1;
+        args.edgeIsT0 = false; // 移 t1 边
+        args.tSamples = grownEnd;
+        REQUIRE(r.out.editSegment(ch, args) == scvb::state::SegmentEditResult::Ok);
+    }
+    REQUIRE(endOf() == grownEnd); // 前置:段真的拖长了
+
+    // 走带开到**旧包络之外、新包络之内**的位置,并开输出。
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = beforeEnd + static_cast<std::int64_t>(1.0 * sr);
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+
+    // 打印区间若没跟着段编辑走,这里播放头落在旧区间之外 → 打印器回落 ARMED → 零写入,
+    // 该轨 pan 参数会停在 0(harness 里从没有人写过它)。
+    const auto* raw = r.out.getAPVTS().getRawParameterValue(scvb::params::panId(r.out.versionActive(), ch));
+    REQUIRE(raw != nullptr);
+    CHECK(std::abs(raw->load()) > 1.0f); // ← 判据挂回 crvsRevision_ 即红:停在 0.0f
 }

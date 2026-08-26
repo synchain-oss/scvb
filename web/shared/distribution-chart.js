@@ -64,11 +64,20 @@ export function esc(s) {
 
 /**
  * 分布图一根柱/一条张开线的几何(设计稿 L2037-2056)。
- * 横位 x =(pan+100)/200;柱高 ∝ 音量行程(−24..+12 dB 归一后 /0.70 拉满卡片高);
+ * 横位 x =(有效 pan+100)/200;柱高 ∝ 音量行程(−24..+12 dB 归一后 /0.70 拉满卡片高);
  * 张开半宽 =(轨 width%/100)×16,并被 x 与 100−x 夹住不出框。
+ *
+ * **有效 pan = 名义 pan × 全局 width/100**(PanMath::scaleByGlobalWidth,DSP 逐样本同式)。
+ * 段表与参数面存的是**名义** pan,真正听到的位置要经全局「最大角度」几何缩放 —— 图上不缩放
+ * 就等于画了一张听不到的图,而且拧「最大角度」时分布图纹丝不动(用户裁定 v5 P2-10)。
+ * 立体声张开线同理:两个子声像一起被缩放,半宽跟着乘同一个系数。
+ *
+ * @param {number} [globalWidthPct=100] 全局 width(0..150);缺省 100 = 不缩放,
+ *        供数据面不含该值的调用方(Monitor 的 viz 段只带每轨 width)沿用原几何。
  */
-export function distGeometry(pan, volDb, widthPct) {
-    const x = ((clamp(-100, 100, pan) + 100) / 200) * 100;
+export function distGeometry(pan, volDb, widthPct, globalWidthPct = 100) {
+    const g = clamp(0, 150, Number(globalWidthPct) || 0) / 100;
+    const x = ((clamp(-100, 100, clamp(-100, 100, pan) * g) + 100) / 200) * 100;
     const h = clamp(
         8,
         88,
@@ -77,7 +86,7 @@ export function distGeometry(pan, volDb, widthPct) {
             0.7) *
             100,
     );
-    const half = Math.min((clamp(0, 100, widthPct) / 100) * 16, x, 100 - x);
+    const half = Math.min((clamp(0, 100, widthPct) / 100) * 16 * g, x, 100 - x);
     return { x: round2(x), h: round2(h), half: round2(half) };
 }
 
@@ -94,9 +103,10 @@ export function distGeometry(pan, volDb, widthPct) {
  * @param {{ch:number, pan:number, volDb:number, widthPct:number,
  *          stereo?:boolean, lead?:boolean}[]} rows 要画的轨(调用方已滤过)
  * @param {number} [highlightCh] 图例 hover 联动的轨号(0 = 无);非高亮轨 data-hi="0"
+ * @param {number} [globalWidthPct=100] 全局「最大角度」;见 distGeometry
  * @returns {string}
  */
-export function distBarsHtml(rows, highlightCh) {
+export function distBarsHtml(rows, highlightCh, globalWidthPct) {
     const hi = Number(highlightCh) || 0;
     // 图例 hover 的联动位:0 = 淡出(与轨迹图 DIM_ALPHA 同档,CSS 侧落地)。
     const dim = (ch) => (hi && hi !== ch ? "0" : "1");
@@ -105,7 +115,7 @@ export function distBarsHtml(rows, highlightCh) {
     for (const r of rows || []) {
         const ch = Number(r && r.ch);
         if (!Number.isFinite(ch)) continue;
-        const geo = distGeometry(r.pan, r.volDb, r.widthPct);
+        const geo = distGeometry(r.pan, r.volDb, r.widthPct, globalWidthPct);
         // [J75] B:柱体与 width 横线按轨着色。`--tc` 走**变量指向变量**
         // (`--tc: var(--track-color-7)`),色值本身仍只在 tokens.css 里定义一处。
         const tc = `--tc:var(${trackColorVar(ch)});`;

@@ -701,6 +701,17 @@ input[type="range"] {
     stroke: var(--sem-red-icon);
 }
 
+/* 薰衣草紫面(v5 P2-13)。与 --red 同结构、只换三个 token:底是渐变、字色独立。 */
+.sc-banner--violet {
+    background: var(--sem-violet-surface);
+    border-color: var(--sem-violet-border);
+    color: var(--sem-violet-ink);
+}
+
+.sc-banner--violet .sc-banner__icon {
+    stroke: var(--sem-violet-icon);
+}
+
 /* 行内确认条:与 banner 同色系,但圆角更小、按钮贴右,表示「此处需要一个决定」。 */
 .sc-confirm {
     display: flex;
@@ -900,14 +911,16 @@ input[type="range"] {
     transition: clip-path var(--dur-meter) linear;
 }
 
+/* 与 .sc-tube__peak 同一处偏移:left 定位内侧边,线体外沿才是「峰值到过这里」。 */
 .sc-meter__peak {
     position: absolute;
     top: 0;
     bottom: 0;
-    left: var(--pk, 0%);
+    left: calc(var(--pk, 0%) - var(--meter-peak-w));
     width: var(--meter-peak-w);
     border-radius: var(--r-pill);
     background: var(--meter-peak);
+    transition: left var(--dur-meter) linear;
 }
 
 .sc-meter__peak[data-alert="1"] {
@@ -954,15 +967,21 @@ input[type="range"] {
     transition: width var(--dur-meter) linear;
 }
 
+/* 峰线的 left 定位的是**内侧边**,线体从那里再向外长 --meter-peak-w —— 于是 pk==lv 时
+   整条白线整个落在液柱**之外**,视觉上恒高出柱顶一个线宽(v5 实测 P1-8 的残余量)。
+   往回让一个线宽:线体占 [pk−w, pk),外沿正好与柱顶重合,读成骑在柱顶的盖帽。
+   顺带治好满幅:老写法 pk=100% 时线体整根落在 slot 的 overflow:hidden 之外,0dBFS 反而没有峰线。
+   transition 也要与液柱同步 —— 峰值瞬时跟顶、液柱插值 180ms,不同步的话每个瞬态都会先裂开一道缝。 */
 .sc-tube__peak {
     position: absolute;
     z-index: 2;
     top: 0;
     bottom: 0;
-    left: var(--pk, 0%);
+    left: calc(var(--pk, 0%) - var(--meter-peak-w));
     width: var(--meter-peak-w);
     border-radius: var(--r-pill);
     background: var(--meter-peak);
+    transition: left var(--dur-meter) linear;
 }
 
 /* peak > .86 转警戒红 —— 单色化之后唯一保留的色警戒信号,由 JS 打 data-alert。 */

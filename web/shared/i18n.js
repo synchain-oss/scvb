@@ -135,6 +135,8 @@ export const T = {
         "in.pill.abiMismatch": "版本不匹配",
         "in.pill.srMismatch": "采样率不一致",
         "tracks.manualDrivenHint": "该轨仍由手动固定值驱动,是否重新识别该轨?",
+        // 「链接即执行」之后这条提示就是那次确认,免疫说明必须并进正文(v5 P0-2)。
+        "tracks.manualDrivenHint.locked": "已锁定段保持不变。",
         "in.releaseConfirm": "将释放通道 {n},不再对本轨做任何处理",
         "wave.recaptureArmed": "重采集已就绪 · 选区 {x}–{y} · {n} 轨",
         // 无占位符短式(T33 PR#64 评审【重要】1 / 【建议】2):Tab2 行首圆点 badge 的
@@ -622,6 +624,7 @@ export const T = {
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "取消",
+        "common.gotIt": "知道了",
         "tab.master": "整体调整",
         "tab.tracks": "轨道",
         "tab.wave": "波形与分段",
@@ -946,6 +949,7 @@ export const T = {
         "in.pill.srMismatch": "SR MISMATCH",
         "tracks.manualDrivenHint":
             "Track still driven by a manual fixed value — re-identify it?",
+        "tracks.manualDrivenHint.locked": "Locked segments stay unchanged.",
         "in.releaseConfirm":
             "Release channel {n} — no further processing on this track",
         "wave.recaptureArmed": "RECAPTURE READY · {x}–{y} · {n} TRACKS",
@@ -1420,6 +1424,7 @@ export const T = {
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "Cancel",
+        "common.gotIt": "Got it",
         "tab.master": "Master",
         "tab.tracks": "Tracks",
         "tab.wave": "Waveform & Segments",
@@ -1712,6 +1717,8 @@ export const T = {
         "in.pill.srMismatch": "FRÉQ. INCOHÉRENTE",
         "tracks.manualDrivenHint":
             "Piste encore pilotée par une valeur fixe manuelle — la ré-identifier ?",
+        "tracks.manualDrivenHint.locked":
+            "Les segments verrouillés restent inchangés.",
         "in.releaseConfirm":
             "Libérer le canal {n} — plus aucun traitement sur cette piste",
         "wave.recaptureArmed": "RÉ-CAPTURE PRÊTE · {x}–{y} · {n} PISTES",
@@ -2199,6 +2206,7 @@ export const T = {
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "Annuler",
+        "common.gotIt": "Compris",
         "tab.master": "Général",
         "tab.tracks": "Pistes",
         "tab.wave": "Ondes & segments",

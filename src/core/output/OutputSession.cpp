@@ -255,17 +255,9 @@ void OutputSession::evaluateChannels(u64 nowMs)
         const bool srMatch = slot != nullptr && slot->sample_rate == sampleRate_;
         const bool bound = sources_[idx].bound();
 
-        // 失准判定:gapCount 增长 → 记失准时刻(近 1s 内视为 CH_MISALIGNED)。
-        const u32 gc = sources_[idx].gapCount();
-        if (gc != lastGapCount_[idx])
-        {
-            misalignedSinceMs_[idx] = nowMs;
-            lastGapCount_[idx] = gc;
-        }
-        const bool misaligned = (nowMs - misalignedSinceMs_[idx]) < kMisalignRecoverMs;
-
-        // CH_SUSPENDED:write_head 完全停滞 ≥0.5s ∧ 心跳新鲜(宿主跳过该轨处理,不计失准)。
+        // CH_SUSPENDED:write_head 完全停滞 ≥0.5s ∧ 心跳新鲜(宿主跳过该轨处理)。
         // dataAdvancing:该轨最近确有新帧写入 —— 恢复判定要用它,见下。
+        // **判定必须排在失准判定之前**:停流现在是失准发作的来源之一(见下面的 stallCount_)。
         bool suspended = false;
         bool dataAdvancing = false;
         if (hbFresh && bound)
@@ -275,6 +267,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
             {
                 lastWriteHead_[idx] = wh;
                 lastWriteHeadChangeMs_[idx] = nowMs;
+                starvingSeen_[idx] = false; // 写头一动,上一段停滞期的饿读证据作废
             }
             else if (nowMs - lastWriteHeadChangeMs_[idx] >= kSuspendStallMs)
             {
@@ -282,6 +275,50 @@ void OutputSession::evaluateChannels(u64 nowMs)
             }
             dataAdvancing = (nowMs - lastWriteHeadChangeMs_[idx]) < kSuspendStallMs;
         }
+
+        // 停流记账:坐实挂起才记,且**一次挂起只记一笔**。
+        // 短停(宿主在 -inf 段挂起 Input 又很快恢复)整个落在 500ms 判定窗内,永远走不到这里 ——
+        // 那正是 P1-7 要消掉的误报。持续挂起则每拍刷新发作时刻:本轨退出注入集后 read() 不再被
+        // 调用、缺口自然停止增长,只看「无新缺口」会把持续断流判成恢复(v4 实测 P0-2 假恢复)。
+        // 开场条件之二:本拍确实有「写头没推到」的饿读。走带停止 / 宿主没在给块时写头同样
+        // 冻结,但那时要么读得到数据、要么根本没在读 —— 一笔饿读都不会有,不该报。
+        const u32 sf = sources_[idx].stallFailCount();
+        if (sf != lastStallFail_[idx])
+        {
+            starvingSeen_[idx] = true;
+        }
+        lastStallFail_[idx] = sf;
+        // 证据要**跨拍留存**,不能只看「本拍有没有饿读」:挂起坐实的同一拍本轨就退出注入集、
+        // read() 随即停调,而 25Hz 的拍与音频块并不对齐 —— 只看本拍的话,挂起恰好落在
+        // 「本拍没跑到块」的那一拍上就永远开不了场(实测约一半概率)。
+
+        if (!suspended || !transportPlaying_)
+        {
+            stallEpisode_[idx] = false; // 写头恢复推进 / 走带停了 → 发作结束
+        }
+        else if (starvingSeen_[idx])
+        {
+            if (!stallEpisode_[idx])
+            {
+                ++stallCount_[idx]; // 一次发作只记一笔,不按块累加
+            }
+            stallEpisode_[idx] = true;
+        }
+        if (stallEpisode_[idx])
+        {
+            // 发作期间每拍刷新:退出注入集后 read() 不再被调,只看「无新缺口/无新饿读」
+            // 会把持续断流判成恢复。
+            misalignedSinceMs_[idx] = nowMs;
+        }
+
+        // 失准判定:gapCount 增长 → 记失准时刻(近 1s 内视为 CH_MISALIGNED)。
+        const u32 gc = sources_[idx].gapCount();
+        if (gc != lastGapCount_[idx])
+        {
+            misalignedSinceMs_[idx] = nowMs;
+            lastGapCount_[idx] = gc;
+        }
+        const bool misaligned = (nowMs - misalignedSinceMs_[idx]) < kMisalignRecoverMs;
 
         // 恢复判定:必须「该轨数据真的在推进」,**不能只看「不再产生新缺口」**。
         // 反例(v4 实测 B3 假恢复):把 Input bypass 掉 → write_head 停滞 → 本轨转 suspended →
@@ -294,6 +331,7 @@ void OutputSession::evaluateChannels(u64 nowMs)
             // 本次失准发作结束 → 上桥的 misalignCount 归零,「路由失准」横幅与逐行 ⚠ 随之撤下
             // (进程累计值仍留在 gapCount 供 ctrl 全局小节/诊断)。
             misalignBaseline_[idx] = gc;
+            stallBaseline_[idx] = stallCount_[idx];
         }
 
         const bool online = slotActive && hbFresh && srMatch && bound && !misaligned && !suspended;
@@ -533,7 +571,10 @@ u32 OutputSession::misalignCountRecent(u32 channel) const
     const std::size_t idx = static_cast<std::size_t>(channel - 1);
     const u32 gc = sources_[idx].gapCount();
     const u32 base = misalignBaseline_[idx];
-    return gc > base ? gc - base : 0; // baseline 只会落后于 gc;防守式取饱和差
+    const u32 gaps = gc > base ? gc - base : 0; // baseline 只会落后于 gc;防守式取饱和差
+    // 停流笔数并进同一个数:UI 只有这一个「这条轨没在出数据」的计数位,两类故障共用它。
+    const u32 stalls = stallCount_[idx] > stallBaseline_[idx] ? stallCount_[idx] - stallBaseline_[idx] : 0;
+    return gaps + stalls;
 }
 
 u64 OutputSession::writeHead(u32 channel) const
@@ -609,7 +650,11 @@ void OutputSession::resetChannelTracking() noexcept
         const u32 gc = sources_[i].gapCount();
         lastGapCount_[i] = gc;
         misalignBaseline_[i] = gc;
+        stallBaseline_[i] = stallCount_[i];
+        lastStallFail_[i] = sources_[i].stallFailCount();
     }
+    stallEpisode_.fill(false);
+    starvingSeen_.fill(false);
 }
 
 void OutputSession::releaseSlot()

@@ -760,10 +760,14 @@ export function trackRowHtml(t) {
       <!-- R2 语义保留(05 §2.2 冻结行):解冻(该位 1→0)且该轨当前版本曲线为「单段全时限
            user_edited 常值」时,行内提示 + 单轨重新识别入口。中性玻璃底 + 下划线链接
            (设计稿 641-643;与上面的琥珀确认条刻意区分:提示 ≠ 需要一个决定)。
-           链接 → 二次确认 → bridge.analyze({tracksMask:1<<${ch - 1}}, {clearManual:true})(契约 §1.6)。 -->
+           链接 → 直接 bridge.analyze({tracksMask:1<<${ch - 1}}, {clearManual:true})(契约 §1.6)。
+           **单链一次确认**:本条自身就是那次确认(正文含「已锁定段保持不变」),链接不再另开
+           第二道确认条 —— 老写法「提示 → 确认条 → 取消 → 提示又回来」两件互为对方的出口,
+           成了一个关不掉的环(v5 实测 P0-2)。「知道了」是这条链唯一的终止出口。 -->
       <div class="tracks-row__hint" data-gb="${gb("manualdriven-hint")}" hidden>
         <span data-t="tracks.manualDrivenHint"></span>
         <button type="button" class="tracks-row__relink" data-gb="${gb("manualdriven-reidentify")}"></button>
+        <button type="button" class="tracks-row__relink" data-gb="${gb("manualdriven-dismiss")}" data-t="common.gotIt"></button>
       </div>
     </div>`;
 }
@@ -821,12 +825,13 @@ export function createTabTracks(opts) {
      */
     const local = {
         manualConfirmed: new Set(),
-        confirm: null, // {ch, kind:"manual"|"reidentify", dim, value, locked}
+        confirm: null, // {ch, kind:"manual", dim, value, locked}(重新识别不再走确认条,见 P0-2)
         manualEcho: new Map(), // "ch:pan" / "ch:vol" → 本地乐观值
         paramEcho: new Map(), // ParamID → 本地乐观值
         gesture: null, // 拖动中的 ParamID(灰显/让位判定要排除自己)
         drag: null, // {ch, kind, id, startX, startY, start, moved, node}
         unfreezeHint: new Map(), // ch → 触发提示的 freeze 位(1..3)
+        reidentifying: new Set(), // 单轨重新识别在途:期间不接受新的解冻提示挂起(P0-2)
         pairOpen: 0, // 配对面板展开中的轨(0 = 无;单例,同一时刻只开一个)
         editingCh: 0, // label 行内编辑中的轨(渲染不得覆写该行的输入框)
         freezePrev: new Map(), // ParamID → 上一次见到的 freeze 值(检测 1→0)
@@ -1115,11 +1120,12 @@ export function createTabTracks(opts) {
         requestRender();
     }
 
+    /** 确认条只剩「手动首写」一种(重新识别已改为提示条自带执行,见 P0-2)。 */
     function acceptConfirm() {
         const c = local.confirm;
         if (!c) return;
         local.confirm = null;
-        if (c.kind === "manual") {
+        {
             // 每轨每会话一次:确认过之后同轨的后续拖动直接落
             local.manualConfirmed.add(c.ch);
             // 值未变(拖动发起的确认只带**抓握值**)⇒ 只标记不写入——
@@ -1133,9 +1139,7 @@ export function createTabTracks(opts) {
             } else {
                 requestRender();
             }
-            return;
         }
-        doReidentify(c.ch);
     }
 
     /** 单轨重新识别(契约 §1.6:`analyze(scope, {clearManual:true})`;locked 段仍免疫)。 */
@@ -1143,14 +1147,26 @@ export function createTabTracks(opts) {
         // 与 patchConfig/toggleFreeze 同口径双守卫:解冻提示条按钮不受整行
         // disabled 约束,srErr 轨挂着提示时点「重新识别」也不得发写面调用
         if (isWriteBlocked() || isRowDead(ch)) return;
-        const res = await call(
-            "analyze",
-            { tracksMask: 1 << (ch - 1) },
-            { clearManual: true },
-        );
-        // 只有真发起了重析才清提示;桥异常(res=null)什么都没发生,提示要留着
-        if (res && res.ok === true) local.unfreezeHint.delete(ch);
+        // 提示**先撤**,再发请求。老写法「只有 res.ok===true 才撤」看着稳妥,实际是这个环的
+        // 另一半:analyze 被拒(无覆盖 / busy / 桥异常)时提示原样回来,用户除了再点一次没有
+        // 别的动作可做,而再点一次照样被拒 —— 于是永远出不去(v5 实测 P0-2)。
+        // 用户已经在这条提示上做过一次决定,不该因为引擎拒绝而被反复追问;失败的原因由
+        // §2.2 的分析态与工具条反馈承载,不靠这条提示重播。
+        local.unfreezeHint.delete(ch);
+        // 在途期间挡住重新挂起:clearManual 会把 freeze 位清零,那个 1→0 转换经 scvb.params
+        // 回来时正好命中 noteFreezeTransition —— 不挡的话修复本身会把提示重新点亮。
+        local.reidentifying.add(ch);
         requestRender();
+        try {
+            await call(
+                "analyze",
+                { tracksMask: 1 << (ch - 1) },
+                { clearManual: true },
+            );
+        } finally {
+            local.reidentifying.delete(ch);
+            requestRender();
+        }
     }
 
     // ------------------------------------------------------ setChannelConfig
@@ -1203,6 +1219,8 @@ export function createTabTracks(opts) {
      * 清零即撤提示 —— 只在「双位全冻」时才撤的写法会让单维度轨留下陈旧提示。
      */
     function noteFreezeTransition(ch, prev, next) {
+        // 重新识别在途:这一轮 1→0 是修复动作自己造成的,不是用户解冻,不挂提示。
+        if (local.reidentifying.has(ch)) return;
         const bits = unfreezeHintBits(local.unfreezeHint.get(ch), prev, next);
         if (bits) local.unfreezeHint.set(ch, bits);
         else local.unfreezeHint.delete(ch);
@@ -1469,11 +1487,16 @@ export function createTabTracks(opts) {
         // 确认条/提示行的按钮**不受整行 disabled 约束**(它们是撤下确认的出口)
         if (part === "manual-overwrite-cancel") return closeConfirm();
         if (part === "manual-overwrite-ok") return acceptConfirm();
+        if (part === "manualdriven-dismiss") {
+            // 这条链的终止出口:撤下提示,不发任何写面调用。
+            local.unfreezeHint.delete(ch);
+            return requestRender();
+        }
         if (part === "manualdriven-reidentify") {
             // 只读观察/无时间线不得发起重析(analyze 是写面;持久评审)
             if (isWriteBlocked()) return;
-            // 05 §2.2:单轨重新识别走二次确认(同 §2.3「重新识别(含手动段)」)
-            return openConfirm(ch, "reidentify", "", 0);
+            // 提示正文本身即二次确认(见模板注释),这里直接发起 —— 不再开第二道确认条。
+            return doReidentify(ch);
         }
         if (isRowDead(ch) || isWriteBlocked()) return;
         if (Object.prototype.hasOwnProperty.call(CONFIG_TOGGLES, part)) {
@@ -1730,6 +1753,7 @@ export function createTabTracks(opts) {
             "manual-overwrite-ok",
             "manualdriven-hint",
             "manualdriven-reidentify",
+            "manualdriven-dismiss",
         ];
         for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
             const row = body.querySelector(`[data-gb="tracks-row-${ch}"]`);
@@ -2063,33 +2087,25 @@ export function createTabTracks(opts) {
     }
 
     /**
-     * 行内确认条(R3 防误伤)与解冻提示(R2)。两者共用行下方那一格,
-     * 同一时刻只出一件 —— 确认条是「需要一个决定」,提示是「一条建议」。
+     * 行内确认条(R3 防误伤:手动首写)与解冻提示(R2)。两者共用行下方那一格,
+     * 同一时刻只出一件 —— 确认条是「需要一个决定」,提示是「一条建议 + 它自己的出口」。
+     * 单轨重新识别**不再**经确认条(P0-2:两件互为出口会成环),提示条自带执行与终止两个钮。
      */
     function syncConfirm(n, row, t, ch) {
         const c =
             local.confirm && local.confirm.ch === ch ? local.confirm : null;
         show(n.manualOverwriteConfirm, !!c);
         if (c) {
-            if (c.kind === "manual") {
-                text(n.confirmText, t["tracks.manualOverwriteConfirm"] || "");
-                // 存在 locked 段时追加「(含 {l} 个锁定段)」——§1.16 会连 locked 一并替换
-                show(n.manualOverwriteConfirmLocked, c.locked > 0);
-                text(
-                    n.manualOverwriteConfirmLocked,
-                    fmt(t["tracks.manualOverwriteConfirm.locked"], {
-                        l: c.locked,
-                    }),
-                );
-                text(n.manualOverwriteOk, t["common.continue"] || "");
-            } else {
-                text(
-                    n.confirmText,
-                    fmt(t["tracks.reidentifyConfirm"], { n: tt(ch) }),
-                );
-                show(n.manualOverwriteConfirmLocked, false);
-                text(n.manualOverwriteOk, t.reidentify || "");
-            }
+            text(n.confirmText, t["tracks.manualOverwriteConfirm"] || "");
+            // 存在 locked 段时追加「(含 {l} 个锁定段)」——§1.16 会连 locked 一并替换
+            show(n.manualOverwriteConfirmLocked, c.locked > 0);
+            text(
+                n.manualOverwriteConfirmLocked,
+                fmt(t["tracks.manualOverwriteConfirm.locked"], {
+                    l: c.locked,
+                }),
+            );
+            text(n.manualOverwriteOk, t["common.continue"] || "");
             text(n.manualOverwriteCancel, t["common.cancel"] || "");
         }
         // 解冻提示:该位 1→0 且该轨当前版本曲线仍是单段全时限 user_edited 常值
@@ -2097,11 +2113,19 @@ export function createTabTracks(opts) {
         show(n.manualdrivenHint, hint);
         attr(n.row, "data-confirm", c || hint ? 1 : 0);
         if (!hint) return;
-        text(n.hintText, t["tracks.manualDrivenHint"] || "");
+        // 正文 = 提问 + 「已锁定段保持不变」——「链接即执行」之后,这条就是用户看到的
+        // **唯一**一次告知,原先第二道确认条上的免疫说明不能跟着一起消失。
+        text(
+            n.hintText,
+            (t["tracks.manualDrivenHint"] || "") +
+                " " +
+                (t["tracks.manualDrivenHint.locked"] || ""),
+        );
         text(
             n.manualdrivenReidentify,
             fmt(t["tracks.reidentifyOne"], { n: tt(ch) }),
         );
+        text(n.manualdrivenDismiss, t["common.gotIt"] || "");
     }
 
     // ------------------------------------------------- 事件入口(app.js 转发)

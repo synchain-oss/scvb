@@ -804,15 +804,19 @@
             .master-flow:not([data-analyze="running"]) .an-btn .sc-spinner {
                 display: none;
             }
-            /* 影响预览行两态:disabled 走「无采集数据」原因句,其余走影响预览。
-               原因句只属 data-analyze-reason="nodata";写权限缺失(只读/无时间线,
-               reason="blocked")时整行不亮——真实原因由横幅②/⑥承载,避免张冠李戴。 */
+            /* 影响预览行两态:无采集数据走「无采集数据」原因句,其余走影响预览。
+               驱动位是 data-analyze-nodata,**不再是** data-analyze="disabled" —— 用户裁定
+               (v5 P2-9):分析键不再拿「有没有覆盖数据」当前置,任何时候都可点,点了没数据
+               就由这条原因句作答。按钮的 disabled 从此只表示「写权限缺失」。
+               原因句仍不属 reason="blocked":写权限缺失(只读/无时间线)的真实原因由
+               横幅②/⑥承载,避免张冠李戴。 */
+            .master-flow[data-analyze-nodata="1"] .an-preview[data-when="ok"],
             .master-flow[data-analyze="disabled"] .an-preview[data-when="ok"],
-            .master-flow:not([data-analyze="disabled"])
+            .master-flow:not([data-analyze-nodata="1"])
                 .an-preview[data-when="nodata"],
             .master-flow[data-analyze-reason="blocked"]
                 .an-preview[data-when="nodata"],
-            .master-flow[data-analyze="disabled"] .an-coverage {
+            .master-flow[data-analyze-nodata="1"] .an-coverage {
                 display: none;
             }
 
@@ -1659,11 +1663,14 @@
             .curve-xaxis > span:nth-child(odd) {
                 color: var(--txt-dark-3);
             }
+            /* 空态提示上抬一行高:曲线为空时 G≡0 正好是一条水平中线,居中放置的提示文字
+               会**压在这条线上**,两者都读不清(用户裁定 v5 P2-11)。抬 18px = 提示底边
+               离中线约半行,线仍完整可见。 */
             .curve-empty {
                 position: absolute;
                 left: 50%;
                 top: 50%;
-                transform: translate(-50%, -50%);
+                transform: translate(-50%, calc(-50% - 18px));
                 font-size: var(--fs-115);
                 color: var(--txt-dark-4);
             }
@@ -3938,12 +3945,14 @@
                 color: var(--txt-2);
                 text-wrap: pretty;
             }
+            /* 标题走**独立**字色 token(v5 P2-13「字色分离」):不再跟着卡片底色走,
+               换底色时不必连带重挑字色,渐变两端也各自达标。 */
             .settings-guideblock-rules__title {
                 margin: 0;
                 font-size: var(--fs-115);
                 font-weight: 600;
                 line-height: 1.6;
-                color: var(--sem-red-ink);
+                color: var(--sem-violet-title);
             }
             .settings-guideblock-rules ol {
                 list-style: none;
@@ -3953,12 +3962,14 @@
                 flex-direction: column;
                 gap: var(--sp-8);
             }
+            /* 条目正文同样走独立字色 token(v5 P2-13):卡片改紫渐变后,这里若留着
+               --sem-red-ink 就成了紫底红字。 */
             .settings-guideblock-rules li {
                 display: flex;
                 gap: var(--sp-8);
                 font-size: var(--fs-105);
                 line-height: 1.6;
-                color: var(--sem-red-ink);
+                color: var(--sem-violet-ink);
                 text-wrap: pretty;
             }
             /* 展开后的第 4-9 条降一档色重(05 §2.4「降一档色重」) */
@@ -3974,11 +3985,14 @@
                 flex: none;
                 font-family: var(--ff-mono);
                 font-size: var(--fs-100);
-                color: var(--sem-red-icon);
+                color: var(--sem-violet-icon);
             }
+            /* 三个「去别处看一眼」的入口同排(v5 P2-12 把「文档」并了进来);
+               窄宽度下换行而不是把按钮压扁。 */
             .settings-guideblock-rules__foot {
                 display: flex;
                 align-items: center;
+                flex-wrap: wrap;
                 gap: var(--sp-10);
                 padding-top: var(--sp-2);
             }
@@ -3996,9 +4010,6 @@
             }
             /* 外观全部交给 .sc-btn(圆角/玻璃底/描边/字号),本类只留布局。
                原先是带下划线的裸链接(v4 实测 P2-7)。 */
-            .settings-guideblock__docs {
-                align-self: flex-start;
-            }
             /* ---- 「手动接管与自动化」说明块(J78):标题 + 四行正文,排版同「使用说明」块 ----
                字号与字色复用 .set-block__title,此处只补块内上边距 */
             .settings-automationguide__title {
@@ -7485,7 +7496,7 @@
                                         data-t="set.usage.workflow"
                                     ></p>
                                     <div
-                                        class="sc-card sc-banner--red settings-guideblock-rules"
+                                        class="sc-card sc-banner--violet settings-guideblock-rules"
                                         data-gb="settings-guideblock-rules"
                                         data-open="0"
                                     >
@@ -7527,17 +7538,20 @@
                                                 data-gb="settings-viewworkflow"
                                                 data-t="set.viewWorkflow"
                                             ></button>
+                                            <!-- 用户裁定 v5 P2-12:「文档」并到「重看引导」旁边 ——
+                                                 三个都是「去别处再看一眼」的同类入口,原先它单独
+                                                 落在卡外、左对齐,读起来像另一件事。
+                                                 待定项③:点击行为(纯文案 vs 经 native 开外部浏览器)
+                                                 仍未定,故不挂 handler —— 契约函数表里也还没有
+                                                 「打开外部 URL」这一项。 -->
+                                            <button
+                                                type="button"
+                                                class="sc-btn"
+                                                data-gb="settings-docs"
+                                                data-t="set.usage.docs"
+                                            ></button>
                                         </div>
                                     </div>
-                                    <button
-                                        type="button"
-                                        class="sc-btn settings-guideblock__docs"
-                                        data-gb="settings-docs"
-                                        data-t="set.usage.docs"
-                                    ></button>
-                                    <!-- 待定项③:文档入口(纯文案 vs 经 native 打开外部浏览器)未定。
-                                         外观已按 sc-btn 族统一(v4 实测 P2-7);点击行为仍待定,
-                                         故不挂 handler —— 契约函数表里也还没有「打开外部 URL」这一项。 -->
                                     <!-- [T36b] 重看引导 = 重启交互式 tour(tour.js 消费 data-tour="review") -->
                                 </div>
 

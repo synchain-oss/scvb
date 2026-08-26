@@ -89,6 +89,8 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
         lastEpoch_ = 0;
         validFrom_ = 0;
         primed_ = false;
+        sawFail_ = false;
+        lastFailWriteHead_ = 0;
     }
 
     const u64 e1 = b->header->epoch.load(std::memory_order_acquire);
@@ -99,6 +101,8 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
         lastEpoch_ = e1;
         validFrom_ = t0;
         primed_ = false; // 新一代要重新等写方追上,追赶期同样不算失准
+        sawFail_ = false;
+        lastFailWriteHead_ = 0;
     }
 
     // covered 判定(§5.2):区间在有效代内、写头覆盖整块、且未超环距(过旧数据已被覆盖)。
@@ -106,11 +110,29 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
     const bool covered = (t0 >= validFrom_) && (w >= t0u + static_cast<u64>(n)) && (w - t0u <= b->geo.ringFrames);
     if (!covered)
     {
+        // 写方套圈:要读的数据已被覆盖 —— 这是真失准,无条件计数。
+        const bool lapped = (w > t0u) && ((w - t0u) > b->geo.ringFrames);
+        // 写头停滞 = 写方根本没在写(宿主在静音段挂起 Input / bypass / 轨未激活)。
+        // 这归 OutputSession 的 CH_SUSPENDED 判定管(靠 write_head 冻结 500ms 认定),
+        // 不是读方跟丢,不得计失准 —— 否则挂起后的 500ms 判定窗里必然误报一串(P1-7)。
+        // **本轮第一次失败不表态**:只有一个写头采样,判不出写方是在推进还是冻着。
+        // 先记下来,等下一块再比 —— 老写法在这里乐观地算「在推进」,于是宿主挂起 Input 的
+        // 第一块照样记了一个缺口,失准照样亮起(P1-7 的残余)。真失准(套圈)由 lapped
+        // 独立判定,不受这一块延迟影响。
+        const bool producerAdvancing = sawFail_ && (w != lastFailWriteHead_);
+        lastFailWriteHead_ = w;
+        sawFail_ = true;
         // 本代还没读到过任何数据 → 写方尚未追到本位置(空环 / 起播瞬间 / 宿主先渲染 Output),
         // 是「尚未上线」,静音直通但**不计失准**;primed 之后再断才是真缺口(ADR-002)。
-        if (primed_)
+        if (primed_ && (lapped || producerAdvancing))
         {
             gapCount_.fetch_add(1, std::memory_order_relaxed); // 缺口→该轨该块静音+失准计数
+        }
+        else if (primed_)
+        {
+            // 写头停滞造成的失败读:不计失准,但如实留痕 —— CH_SUSPENDED 靠它区分
+            // 「写方停了」与「走带停了」(后者读得到数据,一次都不会走到这儿)。
+            stallFailCount_.fetch_add(1, std::memory_order_relaxed);
         }
         return false;
     }
@@ -140,6 +162,7 @@ bool ShmRingMixSource::read(int64_t t0, float* dst, int n) noexcept
         return false;
     }
     primed_ = true; // 本代已确有可读数据,此后 covered 失败即真缺口
+    sawFail_ = false; // 成功一块即清停滞账:下一次失败重新从「写头是否在动」问起
     return true;
 }
 

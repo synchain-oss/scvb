@@ -30,8 +30,6 @@ target_sources(SCVBOutput PRIVATE
   OutputEditor.cpp
   OutputBridgeApi.h
   SegmentEditService.h
-  UiDefaultsStore.h
-  UiDefaultsStore.cpp
   OutputUiState.h
 )
 

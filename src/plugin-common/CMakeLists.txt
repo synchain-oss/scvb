@@ -18,6 +18,12 @@ target_sources(scvb_plugin_common INTERFACE
   FallbackPanel.cpp
   BridgeBase.h
   BridgeBase.cpp
+  # 系统级 UI 全局默认(%APPDATA% 小文件:引导页/导览已读位、语言、缩放档)。
+  # 归在本层而不是任一插件目录:Input 与 Output **都**要读写同一份,而它唯一的依赖
+  # (BridgeBase.h 的缩放档位边界)就在本层。放 src/core/ 会让核心库反过来依赖
+  # plugin-common —— §9 的分层是 core ← plugin-common ← 插件,不能倒。
+  UiDefaultsStore.h
+  UiDefaultsStore.cpp
 )
 
 target_include_directories(scvb_plugin_common INTERFACE

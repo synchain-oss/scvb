@@ -15,7 +15,7 @@
 #include "OutputUiState.h"
 #include "UiDefaultsStore.h"
 
-namespace ud = scvb::output::uidefaults;
+namespace ud = scvb::uidefaults;
 
 namespace
 {
@@ -66,6 +66,37 @@ TEST_CASE("UiDefaultsStore:全局默认写一次、换实例读得回(T37 A-3)",
     REQUIRE(ud::uiScalePercent() == 125);
     ud::setUiScalePercent(1);
     REQUIRE(ud::uiScalePercent() == 125);
+}
+
+TEST_CASE("UiDefaultsStore:语言值全局镜像覆盖 §1.30 归一集 {zh,en,fr}", "[output][uidefaults][v5]")
+{
+    TempStore store;
+
+    // 干净起点:从没选过 ⇒ 布尔 false、语言空串(= 未设置,调用方沿用自己的默认)。
+    REQUIRE_FALSE(ud::langChosenGlobal());
+    REQUIRE(ud::langGlobal().isEmpty());
+
+    // **三种语言逐一往返**。fr 这一条是必须的:白名单漏掉它时,法文用户的写入会静默
+    // return,而 setLangChosenGlobal(true) 照写不误 —— 移除插件重加载后语言回落 en,
+    // 语言起始卡又被 lang_chosen_global 挡住,P1-6 在 fr 上原样复现。
+    for (const juce::String lang : {juce::String("zh"), juce::String("en"), juce::String("fr")})
+    {
+        ud::setLangGlobal(lang);
+        REQUIRE(ud::langGlobal() == lang); // 每次调用现开一份 PropertiesFile → 真的过了磁盘
+    }
+
+    // 归一集之外的值:既不写入,也不覆盖上一次的有效值(磁盘上的 XML 用户可编辑)。
+    ud::setLangGlobal("de");
+    REQUIRE(ud::langGlobal() == "fr");
+    ud::setLangGlobal("");
+    REQUIRE(ud::langGlobal() == "fr");
+    ud::setLangGlobal("ZH"); // 大小写不做兜底:归一化是 §1.30 桥层的职责,本层只复核
+    REQUIRE(ud::langGlobal() == "fr");
+
+    // 布尔与语言值是两件事,互不代替(只写布尔不写值 = 卡被挡住却回英文,正是 v5 P1-6)。
+    ud::setLangChosenGlobal(true);
+    REQUIRE(ud::langChosenGlobal());
+    REQUIRE(ud::langGlobal() == "fr");
 }
 
 TEST_CASE("PRMS ui 首启已读位:往返 + 新旧构建双向兼容(T37 A-3)", "[output][state][t37]")

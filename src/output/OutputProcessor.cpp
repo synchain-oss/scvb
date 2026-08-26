@@ -34,9 +34,16 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     // setStateInformation 里覆盖它 —— 工程 > 全局默认。0 = 从未「保持」过,沿用 100。
     // 构造期读一次本地小文件(几百字节 XML)是刻意的:此值必须在宿主取首个编辑器尺寸
     // 之前就位,而构造发生在宿主的加载线程、不在音频线程,毛刺风险已评估为可接受。
-    if (const int defaultScale = scvb::output::uidefaults::uiScalePercent(); defaultScale > 0)
+    if (const int defaultScale = scvb::uidefaults::uiScalePercent(); defaultScale > 0)
     {
         uiScale_ = defaultScale;
+    }
+    // 语言的系统级全局默认(§1.30 setLang 落盘的那一个);同样是「工程 > 全局默认」——
+    // 带 CFGS 的工程会在 setStateInformation 里覆盖回去。新加载的实例靠这一行拿回用户选过的
+    // 语言,否则「选过」的全局位只会把语言卡挡掉、界面照样是英文(v5 实测 P1-6)。
+    if (const juce::String defaultLang = scvb::uidefaults::langGlobal(); defaultLang.isNotEmpty())
+    {
+        uiLanguage_ = defaultLang;
     }
 
     handles_ = scvb::params::collectParamHandles(apvts);
@@ -291,6 +298,76 @@ ScvbOutputAudioProcessor::CoverageInfo ScvbOutputAudioProcessor::coverageOf(int 
     info.coveredS = static_cast<double>(covered) * hopS;
     info.ranges = frames.coverage().intersect(range);
     return info;
+}
+
+ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int channel, double startS, double endS,
+                                                                            int cols)
+{
+    WaveformTile tile;
+    if (cols < 1)
+    {
+        return tile;
+    }
+    // 先按「整列未覆盖」铺满哨兵:任何提前返回都得是一张形状合法的瓦片,
+    // 否则 §1.27 的回包过不了 JS 侧 isTileShape,泳道会整块 clearRect 成纯黑。
+    tile.minDb.assign(static_cast<std::size_t>(cols), -160.0);
+    tile.maxDb.assign(static_cast<std::size_t>(cols), -160.0);
+    tile.vad.assign(static_cast<std::size_t>(cols), 0);
+    tile.covered.assign(static_cast<std::size_t>(cols), 0);
+    if (channel < 1 || channel > 15 || !(endS > startS))
+    {
+        return tile;
+    }
+
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    const double hopS = featHopSeconds();
+    const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(channel));
+    const double colS = (endS - startS) / static_cast<double>(cols);
+
+    for (int i = 0; i < cols; ++i)
+    {
+        const double c0 = startS + colS * static_cast<double>(i);
+        const double c1 = c0 + colS;
+        const auto toHop = [hopS](double s) {
+            const double h = s / hopS;
+            return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
+        };
+        std::uint64_t h0 = toHop(c0);
+        // 列窄于一个 hop(放大到 10ms 以下)时 h1==h0,整列会判成空 —— 至少取一个 hop,
+        // 否则越放大波形越消失。
+        std::uint64_t h1 = std::max(toHop(c1), h0 + 1);
+
+        double mx = -160.0;
+        double mn = 160.0;
+        bool any = false;
+        bool voiced = false;
+        for (std::uint64_t h = h0; h < h1; ++h)
+        {
+            if (!frames.hasHop(h))
+            {
+                continue;
+            }
+            any = true;
+            mx = std::max(mx, static_cast<double>(frames.peakDbq(h)) / 100.0);
+            mn = std::min(mn, static_cast<double>(frames.kwDbq(h)) / 100.0);
+            if (frames.vadP(h) > 127)
+            {
+                voiced = true;
+            }
+        }
+        if (!any)
+        {
+            continue; // 保持 covered=0 + 哨兵:泳道画斜纹
+        }
+        const auto k = static_cast<std::size_t>(i);
+        tile.covered[k] = 1;
+        tile.maxDb[k] = mx;
+        // 包络下沿不得高过上沿(全静音列两者都会压在地板上)。
+        tile.minDb[k] = std::min(mn, mx);
+        tile.vad[k] = voiced ? 1 : 0;
+    }
+    return tile;
 }
 
 double ScvbOutputAudioProcessor::clearCoverage(std::uint16_t tracksMask, double startS, double endS)
@@ -644,6 +721,8 @@ void ScvbOutputAudioProcessor::timerCallback()
         session_.heartbeat(now);
     }
 
+    // 停流判定要知道走带在不在跑:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
+    session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
     session_.tick(now);
 
     // 时间线健康前置(§4.2 [J51]):连续无时间线 ≥0.5s → 清 mask(Inputs 走 J12 直通)。
@@ -663,8 +742,65 @@ void ScvbOutputAudioProcessor::timerCallback()
         timelineInvalidTicks_ = 0;
     }
 
-    // 打印器模式:输出开关 ON → 引擎权威;OFF → follow host。T24 无分析曲线,Armed 与 Print 等效。
-    printer_.setMode(outputEnabled_ ? scvb::engine::AuthorityMode::Armed : scvb::engine::AuthorityMode::Follow);
+    // 打印器模式(03 §2.2 三态)。此前这里写死 Armed —— 当时的行注「T24 无分析曲线,
+    // Armed 与 Print 等效」在**有**分析曲线之后就不成立了:AutomationPrinter 只在 **Print**
+    // 态写宿主参数(非 Print 一律 endAllGestures + return),而且还要求 m_hasRange。
+    // 两个前提在生产代码里**一个都没有人满足过**:setAnalyzedRange 与 stepAuthority 的
+    // 调用方数都是 0。于是分析出多好的曲线,自动化面都恒零写入 —— 这正是 v5 实测 P0-1
+    // 的另一半「自动化零写入」。
+    //
+    // 这里按 §2.2 的三个条件直接求值(而不是引 10 行事件状态机):
+    //   FOLLOW —— 输出开关 OFF,宿主参数是权威;
+    //   ARMED  —— 引擎权威,但 transport 停 / 播放头在已分析区间外 → 零 gesture 零写入;
+    //   PRINT  —— 引擎权威 ∧ 正在播 ∧ 播放头在区间内 → 打印。
+    // 离开 PRINT 的所有路径由 setMode 内部统一 endAllGestures(§3.3),故三态直接切是安全的。
+    {
+        // 已分析区间 = 活动版本里所有段的时间跨度并集的外包络(§4.1「未设置区间 → 零打印」)。
+        // 段表变了才重算:crvsRevision 是 CRVS 的唯一修订号。
+        const std::uint32_t rev = curvesRevision_.load(std::memory_order_acquire);
+        if (rev != lastPrintRangeRevision_)
+        {
+            lastPrintRangeRevision_ = rev;
+            const double sr = sampleRate_.load(std::memory_order_relaxed);
+            double lo = 0.0;
+            double hi = 0.0;
+            bool any = false;
+            if (sr > 0.0)
+            {
+                const auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
+                for (const auto& track : version.tracks)
+                {
+                    for (const auto& sg : track.segments)
+                    {
+                        const double t0 = static_cast<double>(sg.t0) / sr;
+                        const double t1 = static_cast<double>(sg.t1) / sr;
+                        lo = any ? std::min(lo, t0) : t0;
+                        hi = any ? std::max(hi, t1) : t1;
+                        any = true;
+                    }
+                }
+            }
+            printRangeValid_ = any && hi > lo;
+            printRangeStartS_ = lo;
+            printRangeEndS_ = hi;
+            if (printRangeValid_)
+            {
+                printer_.setAnalyzedRange(lo, hi);
+            }
+        }
+
+        const auto shot = playheadSnapshot();
+        const bool playing = (shot.flags & scvb::engine::kPlayheadIsPlaying) != 0;
+        const double tSec = shot.sampleRate > 0.0 ? static_cast<double>(shot.timeSamples) / shot.sampleRate : -1.0;
+        const bool inRange = printRangeValid_ && tSec >= printRangeStartS_ && tSec <= printRangeEndS_;
+
+        scvb::engine::AuthorityMode mode = scvb::engine::AuthorityMode::Follow;
+        if (outputEnabled_)
+        {
+            mode = (playing && inRange) ? scvb::engine::AuthorityMode::Print : scvb::engine::AuthorityMode::Armed;
+        }
+        printer_.setMode(mode);
+    }
 
     // 轨启用位(§1.15):推给打印器的车道闸(enabled=false 整轨不 begin、不写,03 §3.2),
     // 并落成 [A] 每块读的位图(混音时整轨不注入)。此前两处都没接 —— setTrackEnabled 实现完整
@@ -701,7 +837,10 @@ void ScvbOutputAudioProcessor::timerCallback()
 
     // Input 远程改的优先级先落 state(§3.4),再把整个配置镜像推给广播区(§4.3)。
     // 顺序不能倒:倒过来这一拍的远程改动要等下一拍才广播出去,Input 的乐观值会先回滚再跳回。
-    if (applyRemotePriorities())
+    // 两个都要跑(不能靠 || 短路):优先级与检测值各自独立地弄脏配置。
+    const bool prioChanged = applyRemotePriorities();
+    const bool srcChanged = refreshSourceChannels();
+    if (prioChanged || srcChanged)
     {
         ++runtime_.configSeq;
     }
@@ -748,7 +887,8 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.crvs = &crvsData_;
     in.curves = authority_.activeCurves();
     in.versionActive = static_cast<scvb::u32>(versionActive_);
-    in.crvsRevision = crvsRevision_.load(std::memory_order_acquire);
+    // 车道重算的判据取**求值曲线**修订号:段编辑不换整表、不动 crvsRevision_,但车道确实变了。
+    in.crvsRevision = curvesRevision_.load(std::memory_order_acquire);
     in.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     in.playhead = playheadSnapshot();
 
@@ -788,6 +928,34 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     // 64 位哈希折成 32 位存进 metaRevision(只用于相等比较,折叠不降低碰撞抗性到可担忧的程度)。
     in.metaRevision = static_cast<scvb::u32>(meta ^ (meta >> 32));
     vizPublisher_.tick(nowMs, in);
+}
+
+bool ScvbOutputAudioProcessor::refreshSourceChannels()
+{
+    // §1.15 的 source_channels 是**检测值**,真源在 Input:它在 prepareToPlay 把 1|2 写进音频环
+    // 段头([J57] AudioRingHeader.channels),Output 绑定时已把它快照进 ShmRingMixSource。
+    // 此前没有任何生产代码把它搬进 runtime state,于是这一格恒为 0「未检测」,而 J60 的默认
+    // 推导写的是 `sourceChannels == 1`(mono 才参与自动 pan)—— 0 落进 else 分支,**全 15 轨
+    // 一律 participate=false**。指派层把不参与的轨按「保持现值」处理(AutoAssign.cpp:241),
+    // 现值即参数面的 0,于是分析跑完每轨 pan 都是 0:段照出、轨照数、声像分布图与泳道全居中
+    // (v5 实测 P0-1)。这里把检测值接上,并把未检测的回落改成 mono 侧(见下面三处推导)。
+    bool changed = false;
+    for (int t = 0; t < 15; ++t)
+    {
+        const auto detected = session_.mixSource(static_cast<scvb::u32>(t + 1)).channels();
+        if (detected != 1u && detected != 2u)
+        {
+            continue; // 未绑定 / 段头非法:保留上一次的检测值,不把已知信息退回「未检测」
+        }
+        auto& channel = runtime_.channels[static_cast<std::size_t>(t)];
+        const int next = static_cast<int>(detected);
+        if (channel.sourceChannels != next)
+        {
+            channel.sourceChannels = next;
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 bool ScvbOutputAudioProcessor::applyRemotePriorities()
@@ -845,7 +1013,7 @@ void ScvbOutputAudioProcessor::publishConfigBroadcast()
         dst.source_channels = static_cast<scvb::u32>(c.sourceChannels);
 
         // J60:未显式设置时按 mono=true / stereo=false 推导(与 buildStateSubtree 同口径)。
-        const bool participate = c.participateAutoPanSet ? c.participateAutoPan : (c.sourceChannels == 1);
+        const bool participate = c.participatesInAutoPan();
         scvb::u32 flags = 0;
         if (c.enabled)
             flags |= scvb::kCfgFlagEnabled;
@@ -1098,6 +1266,13 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         {
             session_.changeGroup(newGroup, static_cast<scvb::u32>(sampleRate_.load(std::memory_order_relaxed)),
                                  static_cast<scvb::u32>(preparedMaxBlock_), scvb::steadyNowMs());
+            // [T44] viz 段随组切换 —— 与 setGroupId() 同口径:**只换指向,不建段**,建不建
+            // 由下一拍的 syncVizSegment() 按 claim 态裁决。
+            // 漏掉这一行时:宿主先 prepareToPlay(publisher 指向默认组 1)、再灌工程 chunk
+            // (session 换到工程组 N),Output 于是把 viz 段发布在 g1,而 Monitor 在 gN 上等 ——
+            // 永远 attach 不上,正是 v5 实测 P0-5「同工程 Output 在线却显示未连接」。
+            // 离线测试恒是「先 setState 再 prepare」,这条路径从没被走到。
+            vizPublisher_.setGroup(newGroup);
         }
         else
         {
@@ -1218,6 +1393,13 @@ void ScvbOutputAudioProcessor::rebuildAllCurves()
     const double sr = sampleRate_.load(std::memory_order_relaxed); // 原子读(PR#55 第9轮)
     if (sr <= 0.0)
         return; // 未 prepare → 不构建不发布(防 NaN/inf CurveSegment,PR#55 第7轮缺陷2)
+
+    // 曲线要变了 —— 在这里 +1 就覆盖了**全部**改曲线的路径(段编辑 / 手动写回 / 复制版本 /
+    // 撤销重做 / 换版本 / 改 ramp / 分析回落 / 加载工程),不必逐个事务回调各记一笔、也不会漏。
+    // 两个消费方:① 打印区间缓存(不刷新的话手动拖出旧包络之后,打印区间停在旧范围,
+    // 播放头一走出去就回落 ARMED —— 自动化面与你听到的东西脱节);② viz 车道
+    // (VizPublisher 的 needLanes,不刷新的话 Monitor 的车道停在编辑前的样子)。
+    curvesRevision_.fetch_add(1, std::memory_order_release);
 
     for (int v = 1; v <= scvb::state::kNumVersions; ++v)
     {
@@ -1689,6 +1871,43 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::EvenOffset;
     else
         cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::PriorityQueue;
+
+    // §1.6「重新识别(含手动段)」= clearManual:除了不再保留用户段(见 finishAnalysis),还必须
+    // **把 freeze 位清零**。此前只清段不清位,于是:
+    //   ① 指派层看见 freeze&1 仍为 1,把该轨当 manual 处理 → pan 直接取 currentPan(参数面上那个
+    //      手动值)→ 新产出的 auto 段把手动值**原样烘焙**进去;
+    //   ② DspArbiter 对冻结维度读的仍是 rawPan/rawVol,曲线怎么换都不影响声音。
+    // 两条合起来就是 v5 实测 P0-3「点了重新识别、再分析或关冻结,pan 还是那个手动值」——
+    // 关冻结之所以也没用,是因为曲线里已经是同一个数了。
+    // 只对**本次真会被分析的轨**(在 scope 内、启用、范围内有覆盖)动手:范围内无数据的轨清了位
+    // 就会掉进一条空曲线,那是把「保持现状」改成了静默丢值。
+    if (clearManual)
+    {
+        for (int t = 0; t < 15; ++t)
+        {
+            if (!features[static_cast<std::size_t>(t)].anyCovered)
+            {
+                continue;
+            }
+            const auto* frzRaw =
+                handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
+            if (frzRaw == nullptr || juce::roundToInt(frzRaw->load(std::memory_order_relaxed)) == 0)
+            {
+                continue; // 本就未冻结:不发多余的 gesture(宿主自动化里会多出一个空写入点)
+            }
+            auto* p = apvts.getParameter(scvb::params::freezeId(versionActive_, t + 1));
+            if (p == nullptr)
+            {
+                continue;
+            }
+            // gesture 三段式与 setTrackManual 的参数面写入同口径:宿主要看见一次完整的用户编辑,
+            // 否则 Read 档下会把值当场顶回去。
+            p->beginChangeGesture();
+            p->setValueNotifyingHost(p->convertTo0to1(0.0f));
+            p->endChangeGesture();
+        }
+    }
+
     for (int t = 0; t < 15; ++t)
     {
         const auto& c = runtime_.channels[static_cast<std::size_t>(t)];
@@ -1698,11 +1917,15 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         tc.pairId = c.pairId;
         tc.leadLock = c.leadLock;
         tc.leadVolExempt = c.leadVolExempt;
-        tc.participateInAutoPan = c.participateAutoPanSet ? c.participateAutoPan : (c.sourceChannels == 1);
+        tc.participateInAutoPan = c.participatesInAutoPan();
         tc.source =
             c.sourceChannels == 2 ? scvb::analysis::SourceChannels::Stereo : scvb::analysis::SourceChannels::Mono;
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
         tc.freeze = frz != nullptr ? juce::jlimit(0, 3, juce::roundToInt(frz->load(std::memory_order_relaxed))) : 0;
+        if (clearManual && features[static_cast<std::size_t>(t)].anyCovered)
+        {
+            tc.freeze = 0; // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值
+        }
         const auto* rawPan = handles_.rawPan[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
         tc.currentPan = rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0;
     }

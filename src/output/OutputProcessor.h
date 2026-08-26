@@ -66,13 +66,21 @@ struct OutputRuntimeState
     {
         bool enabled = true;
         juce::String label;
-        int sourceChannels = 0; // 只读;0=未检测(Input 实测落点,T30/T32 接线)
+        int sourceChannels = 0; // 只读;0=未检测(每拍由 refreshSourceChannels 从音频环段头回填)
         bool participateAutoPanSet = false; // false=未显式设置,emit 时按 J60 推导(mono=true/stereo=false)
         bool participateAutoPan = false;
         int priority = 5;
         bool leadLock = false;
         bool leadVolExempt = false;
         int pairId = 0; // 0=无配对,1..7=配对组
+
+        // [J60] 参与自动 pan 的取值口径(三处消费方 —— 广播区 / §2.1 快照 / 分析流水线 —— 同源)。
+        // 未显式设置时按源声道推导:**只有检测到 stereo 才默认不参与**。写成 `== 1` 会把
+        // 「尚未检测」(0)也判成不参与,那是 v5 实测 P0-1「分析结果全居中」的直接成因。
+        bool participatesInAutoPan() const
+        {
+            return participateAutoPanSet ? participateAutoPan : (sourceChannels != 2);
+        }
     };
     std::array<Channel, 15> channels;
 
@@ -242,6 +250,19 @@ public:
     CoverageInfo coverageOf(int channel, double startS, double endS);
     // hop → 秒的换算系数(feat 段几何常量,不是采样率派生量)。
     static double featHopSeconds();
+
+    // [M] 某轨在 [startS,endS) 内的**波形瓦片**(§1.27 requestWaveform 的数据面)。
+    // 每列聚合该列覆盖到的所有 hop:maxDb 取 peak 的最大值、minDb 取 K 加权的最小值、
+    // vad 取该列是否有 vadP>127 的 hop。未覆盖列 covered=0 且 min/max 留 -160 哨兵
+    // (泳道据此画斜纹)。持 lifecycleMutex_:与写 FrameStore 的 timerCallback 串行。
+    struct WaveformTile
+    {
+        std::vector<double> minDb;
+        std::vector<double> maxDb;
+        std::vector<int> vad;
+        std::vector<int> covered;
+    };
+    WaveformTile waveformOf(int channel, double startS, double endS, int cols);
     // [M] 清除选中轨 × 区间的采集覆盖(§1.24 clearCoverage:打洞,页数据留待后续覆盖)。
     // 返回实际清除的总时长秒数(各轨相加,供 UI 反馈)。
     double clearCoverage(std::uint16_t tracksMask, double startS, double endS);
@@ -327,6 +348,10 @@ private:
     // [M] 命令环收到的远程优先级落 runtime state(§3.4);有变化返回 true(调用方 bump config_seq)。
     bool applyRemotePriorities();
 
+    // [M] 音频环段头 channels(Input 的 prepareToPlay 写定,[J57])→ runtime.channels[].sourceChannels。
+    // 有变化返回 true(调用方 bump config_seq,让广播区/UI 一起跟上)。
+    bool refreshSourceChannels();
+
     // 后台分析线程体 + 完成回落(见 startAnalysis)。
     class AnalysisJob;
     friend class AnalysisJob;
@@ -353,6 +378,11 @@ private:
     scvb::output::OutputAuthority authority_;
     // 打印器(T17;本卡接线 setShot/setCurves/bindVersion/startPrinting/hostEchoShield)。
     scvb::output::AutomationPrinter printer_;
+    // 打印区间缓存([M] 独占):段表(crvsRevision)变了才重算,不在 25Hz 里逐拍扫 15 轨段表。
+    std::uint32_t lastPrintRangeRevision_ = 0xFFFFFFFFu; // 首拍必算
+    bool printRangeValid_ = false;
+    double printRangeStartS_ = 0.0;
+    double printRangeEndS_ = 0.0;
     // 总线交叉淡变 + per-channel 淡入(§5.2 过渡语义 R2)。
     scvb::output::BusXfade busXfade_;
 
@@ -397,7 +427,17 @@ private:
     uint32_t podEpoch_ = 0;
     std::atomic<uint64_t> timelineInvalidBlocks_{0}; // [A] 无时间线计数 / [M] 健康前置
     std::atomic<uint32_t> timelineValid_{1}; // [A] 本块时间线有效标志(负 t0 视为有效,[J51])
-    std::atomic<uint32_t> crvsRevision_{0}; // CRVS 替换修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
+    std::atomic<uint32_t> crvsRevision_{0}; // CRVS **整体替换**修订号([M] 写 / emitTick 读;PR#55 第8轮缺陷1)
+    // 求值曲线修订号:**每次 rebuildAllCurves 都 +1**,涵盖所有段编辑路径(editSegment /
+    // setTrackManual / copyVersion / undo·redo / 换版本 / 改 ramp / 分析回落 / 加载工程)。
+    //
+    // 为什么不复用 crvsRevision_:那一个是「段表被整体换掉了,桥要重发一次 §2.8」的信号,
+    // OutputEditor 拿它触发 reason:"snapshot" 全量下发。段编辑路径**已经各自**发过带具体
+    // reason 的 §2.8(edit / trackManual / undo / …),再让 crvsRevision_ 跟着动会紧随其后
+    // 多发一次 "snapshot" —— 而 web 侧按 reason 分叉:非 trackManual 的回推被当成「失效性回推」,
+    // 会连同**排队中的**手动值一起作废(tab-tracks.js onSegments)。那等于把刚修好的
+    // 「手动写回不丢」又拆一遍。故分成两个号:替换给桥,求值给引擎侧的两个消费方。
+    std::atomic<uint32_t> curvesRevision_{0};
     // 轨启用位图(bit{N-1} = ch N 的 channels[].enabled)。[M] 25Hz 写 / [A] 每块 acquire 读。
     // §1.15 的 enabled 此前**全 Output 侧零消费**:混音不看它、打印器的车道闸(setTrackEnabled,
     // 已实现且有单测)没有任何生产调用点 —— 开关一拧,音频与自动化都毫无反应(v4 实测 P1-5)。

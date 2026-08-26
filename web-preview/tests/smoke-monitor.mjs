@@ -190,8 +190,8 @@ log("=== ① 提取件不回归(Output 侧零行为变化)===");
 
     const tm = src("web/output/tab-master.js");
     check(
-        /distBarsHtml\(rows, local\.chartHi\)/.test(tm),
-        "renderDist 走 distBarsHtml",
+        /distBarsHtml\(rows, local\.chartHi, readParam\("width"\)\)/.test(tm),
+        "renderDist 走 distBarsHtml(并把全局最大角度喂进几何,v5 P2-10)",
     );
     check(
         /legendItemsHtml\(rows, \{/.test(tm),
@@ -2168,6 +2168,219 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
         /addEventListener\("pagehide", stopScaleCountdown\)/.test(app),
         "pagehide 时缩放倒计时也停(关窗回退,不污染新实例)",
     );
+}
+
+// =============================================================================
+// v5 实测回归(web 侧)—— P0-2 单链一次确认 / P1-8 峰线对位 / P2-9..P2-13 产品项
+// 仓内零 node_modules(无 jsdom),故这一组走「源码级字面断言 + 词条断言」:
+// 断的都是**唯一能造成该现象的那一处写法**,改回旧写法当场红。
+// =============================================================================
+{
+    const tt = src("web/output/tab-tracks.js");
+    const html = src("web/output/index.html");
+    const css = src("web/shared/base.css");
+    const tokens = src("web/shared/tokens.css");
+    const master = src("web/output/tab-master.js");
+
+    // ---- P0-2:「该轨仍由手动固定值驱动」提示条与「将清除…继续?」确认条互为出口 → 死循环。
+    //      修法是单链:提示条自身即确认,链接直接执行,另给一个终止出口。
+    check(
+        /part === "manualdriven-reidentify"[\s\S]{0,400}?return doReidentify\(ch\)/.test(
+            tt,
+        ),
+        "P0-2 解冻提示的「重新识别」直接执行,不再开第二道确认条",
+    );
+    check(
+        !/openConfirm\(\s*ch\s*,\s*"reidentify"/.test(tt),
+        "P0-2 不存在 kind=reidentify 的确认条(那一环已拆掉)",
+    );
+    check(
+        /part === "manualdriven-dismiss"/.test(tt) &&
+            /local\.unfreezeHint\.delete\(ch\)/.test(tt),
+        "P0-2 提示条带终止出口(「知道了」撤下提示,不发写面调用)",
+    );
+    check(
+        /local\.reidentifying\.add\(ch\)/.test(tt) &&
+            /if \(local\.reidentifying\.has\(ch\)\) return;/.test(tt),
+        "P0-2 重新识别在途时不接受新的解冻提示挂起(clearManual 清冻结位造成的 1→0 不该重新点亮提示)",
+    );
+    check(
+        /manualdriven-dismiss/.test(tt) && /common\.gotIt/.test(tt),
+        "P0-2 终止钮在模板里且用 common.gotIt 词条",
+    );
+
+    // ---- §9 分层:任一插件目录都不得直接编译 / include 另一插件的源码。
+    //      共用件的正确归属是 plugin-common(core ← plugin-common ← 插件,方向不能倒)。
+    //      #100 复审【重要】1:UiDefaultsStore 曾以 `../output/…` 被编进 Input target。
+    {
+        for (const role of ["input", "output", "monitor"]) {
+            const cm = src(`src/${role}/CMakeLists.txt`);
+            const others = ["input", "output", "monitor"].filter(
+                (o) => o !== role,
+            );
+            for (const other of others) {
+                check(
+                    !cm.includes(`../${other}/`),
+                    `§9 src/${role}/CMakeLists.txt 不引用 ../${other}/ 的源码或头文件目录`,
+                );
+            }
+        }
+        check(
+            src("src/plugin-common/CMakeLists.txt").includes(
+                "UiDefaultsStore.cpp",
+            ),
+            "§9 UiDefaultsStore 归 plugin-common(两插件共用,依赖只指向本层)",
+        );
+    }
+
+    // ---- P0-4:泳道波形。数据面(OutputProcessor::waveformOf)由 host harness 断言;
+    //      这里守的是**桥接线**那一跳 —— handleRequestWaveform 曾是写死「全未覆盖」的桩,
+    //      回包形状合法、能过 isTileShape,于是泳道照常画斜纹与栅格却一根包络都没有。
+    //      桩与真回包形状相同,只有「有没有真去问处理器」能把两者分开。
+    {
+        const oe = src("src/output/OutputEditor.cpp");
+        const body = oe.slice(
+            oe.indexOf("void OutputEditor::handleRequestWaveform"),
+            oe.indexOf("void OutputEditor::handleSetActiveTab"),
+        );
+        check(
+            /processor_\.waveformOf\(ch, startS, endS, cols\)/.test(body),
+            "P0-4 requestWaveform 向处理器取真实瓦片",
+        );
+        check(
+            !/push\(covered, 0\);/.test(body),
+            "P0-4 回包里不存在写死的 covered=0(那是 T29 的桩)",
+        );
+    }
+
+    // ---- P1-8:峰线 left 定位的是内侧边,线体再向外长一个线宽 → 恒高出柱顶。
+    //      往回让一个线宽,外沿与柱顶重合。
+    for (const cls of ["sc-tube__peak", "sc-meter__peak"]) {
+        const block = css.slice(css.indexOf("." + cls + " {"));
+        check(
+            /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(
+                block.slice(0, 400),
+            ),
+            `P1-8 .${cls} 的 left 回让一个线宽(外沿贴柱顶)`,
+        );
+        check(
+            /transition: left var\(--dur-meter\) linear/.test(
+                block.slice(0, 400),
+            ),
+            `P1-8 .${cls} 的位移与液柱同步插值(瞬态不再裂开一道缝)`,
+        );
+    }
+
+    // ---- P2-9:分析键不再拿「有没有覆盖数据」当前置。
+    check(
+        /else if \(isWriteBlocked\(\)\) an = "disabled";/.test(master),
+        "P2-9 disabled 只表示写权限缺失",
+    );
+    check(
+        /"data-analyze-nodata",\s*\n?\s*analyzeNoData\(p, totals\.n\) \? "1" : "0",/.test(
+            master,
+        ),
+        "P2-9 无数据改由独立属性承载(空态原因句照旧出)",
+    );
+    check(
+        /\.master-flow\[data-analyze-nodata="1"\] \.an-preview\[data-when="ok"\]/.test(
+            html,
+        ) &&
+            /\.master-flow:not\(\[data-analyze-nodata="1"\]\)\s*\n?\s*\.an-preview\[data-when="nodata"\]/.test(
+                html,
+            ),
+        "P2-9 空态原因句由 data-analyze-nodata 驱动",
+    );
+
+    // ---- P2-10:分布图跟随全局「最大角度」。这一条有**真几何断言**,不只看写法。
+    {
+        const at100 = DC.distGeometry(60, 0, 100, 100);
+        const at50 = DC.distGeometry(60, 0, 100, 50);
+        const at0 = DC.distGeometry(60, 0, 100, 0);
+        check(
+            at100.x > at50.x && at50.x > at0.x,
+            `P2-10 最大角度越小,柱位越靠中(100%→${at100.x} / 50%→${at50.x} / 0%→${at0.x})`,
+        );
+        eq(at0.x, 50, "P2-10 最大角度 0 → 全部收到正中");
+        // 名义 pan 60 × 0.5 = 30 → x =(30+100)/200 = 65%
+        eq(at50.x, 65, "P2-10 缩放口径与 PanMath::scaleByGlobalWidth 同式");
+        // 缺省参数保持老几何(Monitor 的 viz 段不带全局 width,得原样沿用)
+        eq(
+            DC.distGeometry(60, 0, 100).x,
+            at100.x,
+            "P2-10 不传全局 width 时几何与从前逐字节一致",
+        );
+        // 立体声张开线同样被缩放(两个子声像一起被缩)
+        check(
+            DC.distGeometry(0, 0, 100, 50).half <
+                DC.distGeometry(0, 0, 100, 100).half,
+            "P2-10 立体声张开半宽随最大角度收窄",
+        );
+    }
+
+    // ---- P2-11:空态提示压在曲线中线上。
+    check(
+        /transform: translate\(-50%, calc\(-50% - 18px\)\);/.test(
+            html.slice(html.indexOf(".curve-empty {")),
+        ),
+        "P2-11「双击添加控制点」上移,不压中线",
+    );
+
+    // ---- P2-12:文档钮并到「重看引导」旁(同一 foot 行)。
+    {
+        const foot = html.slice(
+            html.indexOf('data-gb="settings-reopentour"'),
+            html.indexOf('data-gb="settings-reopentour"') + 1400,
+        );
+        check(
+            foot.includes('data-gb="settings-docs"'),
+            "P2-12「文档」与「重看引导」同排",
+        );
+        check(
+            !/settings-guideblock__docs/.test(html),
+            "P2-12 旧的卡外左对齐样式已移除",
+        );
+    }
+
+    // ---- P2-13:红卡改紫渐变,且**字色与底色分离**。
+    check(
+        /class="sc-card sc-banner--violet settings-guideblock-rules"/.test(
+            html,
+        ),
+        "P2-13 使用须知卡改紫面",
+    );
+    check(
+        /--sem-violet-surface: linear-gradient\(/.test(tokens) &&
+            /--sem-violet-ink:/.test(tokens) &&
+            /--sem-violet-title:/.test(tokens),
+        "P2-13 紫面 token 齐备(底=渐变,正文/标题各自独立字色)",
+    );
+    {
+        const rules = html.slice(
+            html.indexOf(".settings-guideblock-rules__title {"),
+        );
+        check(
+            /color: var\(--sem-violet-title\)/.test(rules.slice(0, 300)),
+            "P2-13 标题走独立字色 token",
+        );
+    }
+    {
+        // 只看真正生效的声明,不看注释里提到的旧 token 名。
+        const block = html.slice(
+            html.indexOf(".settings-guideblock-rules {"),
+            html.indexOf(".settings-guideblock-rules__spacer"),
+        );
+        const reds = block
+            .split(/\r?\n/)
+            .filter((l) =>
+                /^\s*(color|background|stroke)\s*:.*--sem-red/.test(l),
+            );
+        eq(
+            reds.length,
+            0,
+            `P2-13 该卡内不再有生效的红色声明(紫底红字);实得 ${reds.join(" | ")}`,
+        );
+    }
 }
 
 // =============================================================================

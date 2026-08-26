@@ -1610,10 +1610,14 @@ export function createTabMaster(opts) {
         if (p !== null) fill(el.coverage, t, "master.step2.coverage", { p });
 
         // 分析按钮四态(单一状态源 = data-analyze)。
-        // disabled 判「无数据」取覆盖与段表的**并集**:只看 totals.n(已分析段数)会鸡生蛋——
-        // 首次采集完还没分析过,段表恒空,分析键永远点不开(PR #52 bot 建议);
-        // 只看覆盖率又会误伤重开工程——§2.7 captureProgress 非播放不发,覆盖帧
-        // 未到但段表有货的工程本可再分析。两者都空才是真没数据。
+        // **disabled 只表示写权限缺失**(只读观察 / 无时间线)。用户裁定(v5 P2-9):
+        // 「无采集数据」不再作为前置把键锁死 —— 覆盖率要靠 §2.7 captureProgress 播出来,
+        // 于是「必须先把播放头开进已采集范围,分析键才亮」成了一道谁也猜不到的门。
+        // 现在键恒可点,没数据时由影响预览行的空态原因句作答(analyze 本身也会以
+        // {ok:false} 拒绝,双保险)。
+        // 无数据的判据仍取覆盖与段表的**并集**:只看 totals.n(已分析段数)会鸡生蛋——
+        // 首次采集完还没分析过,段表恒空;只看覆盖率又会误伤重开工程——§2.7 非播放不发,
+        // 覆盖帧未到但段表有货的工程本可再分析。两者都空才是真没数据。
         let an = "ready";
         if (s.analysis_run && s.analysis_run.running) {
             local.analyzePending = false; // 状态面已确认,交回 state 驱动
@@ -1621,9 +1625,12 @@ export function createTabMaster(opts) {
         } else if (now() < local.analyzeFlashUntil) an = "done";
         else if (local.analyzePending)
             an = "running"; // 受理回执前的在途窗口
-        else if (isWriteBlocked() || analyzeNoData(p, totals.n))
-            an = "disabled";
+        else if (isWriteBlocked()) an = "disabled";
         el.flow.setAttribute("data-analyze", an);
+        el.flow.setAttribute(
+            "data-analyze-nodata",
+            analyzeNoData(p, totals.n) ? "1" : "0",
+        );
         // disabled 的原因面分离(PR #52 bot 建议 4):写权限缺失(只读/无时间线)时
         // 不能亮「当前范围内无采集数据」——真实原因由横幅②/⑥承载,原因句只留给 nodata。
         el.flow.setAttribute(
@@ -1959,8 +1966,11 @@ export function createTabMaster(opts) {
             };
         });
         // 几何 + 拼串归 web/shared/distribution-chart.js(Monitor 复用同一件);
-        // 产物与提取前逐字节相同,冒烟 ① 节按同一批入参对拍。
-        const html = distBarsHtml(rows, local.chartHi);
+        // 冒烟 ① 节按同一批入参对拍两处产物。
+        // 全局「最大角度」进几何:名义 pan 要经 ×width/100 才是听到的位置(PanMath 同式),
+        // 于是拧滑杆时分布图实时收拢/张开(用户裁定 v5 P2-10)。readParam 带乐观回声,
+        // 拖动中就跟手,不必等 25Hz 的 scvb.params 回推。
+        const html = distBarsHtml(rows, local.chartHi, readParam("width"));
         if (el.distBars.innerHTML !== html) el.distBars.innerHTML = html;
     }
 
