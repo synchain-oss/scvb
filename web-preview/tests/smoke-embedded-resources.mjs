@@ -132,6 +132,21 @@ const STATEFUL_CANVAS_MODULES = [
     "playhead.js",
 ];
 
+/**
+ * 暂缓 boot 守卫断言的角色 —— **自我删除式豁免**。
+ *
+ * `checkRole` 里其实是两组互不相干的断言:①②③ 打包/闭包/单例,④⑤ index.html 的 boot 守卫。
+ * 它们分属两个不同的修复,绑在一起就会死锁:Monitor 的打包修复(EXTRA_DIRS,#102)让 ①②③
+ * 绿而 ④⑤ 仍红;Monitor 的守卫修复(#103)反过来。于是**两个 PR 谁都不能单方面开
+ * `checkRole("monitor")`**,而「断言与修复同批落地」这条原则要求各自带上各自的断言。
+ * 拆开之后各走各的:#102 开 ①②③,#103 删掉这里的 "monitor" 顺带开 ④⑤。
+ *
+ * **豁免会自己消失**:下面 checkRole 会验证「豁免仍然必要」—— 一旦 Monitor 页真加上了守卫,
+ * 这条豁免立刻变成失败项并要求删除。所以它不可能被忘在这里长期挂着(这是一条**惰性**豁免
+ * 最常见的失败形态:加了 TODO,然后没人再看)。
+ */
+const BOOT_GUARD_PENDING = new Set(["monitor"]);
+
 function checkRole(role) {
     console.log(`\n--- ${role} ---`);
     const files = packagedFiles(role);
@@ -220,6 +235,29 @@ function checkRole(role) {
                 "本套的 URL 模型已与真机不符,请同批更新",
         );
 
+    // ④⑤ boot 守卫 —— 与①②③是**两组独立的断言**,故拆成单独函数按角色分别开关。
+    // 拆的理由见 BOOT_GUARD_PENDING 的注释:两组分属两个不同的修复,绑在一起会造成
+    // 「两个 PR 谁都不能单方面开这一行」的死锁。
+    if (!BOOT_GUARD_PENDING.has(role)) {
+        checkBootGuard(role, entry);
+    } else if (
+        readFileSync(join(ROOT, entry), "utf8").includes(
+            "__scvbReportBootError",
+        )
+    ) {
+        // 豁免的自我删除条件:守卫已经在场了,豁免就是错的,必须删掉否则白豁免一场。
+        bad(
+            `${role}:index.html 已经有 boot 守卫了 —— ` +
+                `请把 "${role}" 从 BOOT_GUARD_PENDING 里删掉,让 ④⑤ 两组断言真正开起来`,
+        );
+    } else {
+        console.log(
+            `  boot 守卫断言暂缓(BOOT_GUARD_PENDING:等 ${role} 页补上守卫的那个 PR 删掉本条)`,
+        );
+    }
+}
+
+function checkBootGuard(role, entry) {
     // ④ boot 守卫在场且事件名与 C++ 真源一致
     const header = readFileSync(
         join(ROOT, "src/plugin-common/WebViewHost.h"),
@@ -268,18 +306,11 @@ function checkRole(role) {
 
 checkRole("output");
 checkRole("input");
-// ⚠ `checkRole("monitor")` 还差一步才能开:见下面的 TODO。
-//
-// 本套 #82 引入时只写了 output / input —— Monitor 页那会儿还在 #90 上没合入,第三个 target
-// 漏了。本套的闭包逻辑本来就够,少的只是那一行:补上它**当场**报出 v5.2 那四个缺失模块
+// monitor 这一行原先不在 —— #82 引入本套时 Monitor 页还在 #90 上没合入,第三个 target 漏了。
+// 本套的闭包逻辑本来就够,少的只是这一行:它当场报出 v5.2 那四个缺失模块
 // (`web/shared/trajectory-chart.js` -> `../output/canvas/{timeline,hidpi,layers,playhead}.js`)。
-//
-// TODO(monitor):开这一行需要**两个**修复同时在树上,少任何一个都会红:
-//   ① 打包侧 —— 本 PR 的 `EXTRA_DIRS output/canvas`(已在,上面的 EXTRA_DIRS 表已同步);
-//   ② 页面侧 —— `web/monitor/index.html` 的 `__scvbReportBootError` boot 守卫(T46 的 #103,
-//      同样是「第三个 target 漏了」:#82 给 Output/Input 加守卫时 Monitor 页没合入)。
-// 本地实测:只有 ① 时红的是三条**守卫**断言,闭包那部分已全绿(33 个打包文件、24 个可达
-// URL 全命中)。故这一行归**后落地的那个 PR** 开,由它同时验到两半。
+// ④⑤ 那组守卫断言按 BOOT_GUARD_PENDING 暂缓,理由与自我删除条件见那里。
+checkRole("monitor");
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);
