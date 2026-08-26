@@ -120,6 +120,8 @@
   停在占位实现上从未接线(pending #87)
 - 演示数据的轨道名未随界面语言本地化;导览蒙版下键盘 Tab 可以逃到背景并触发真实操作;
   Input 首帧在未测量声道数时误显示「已连接」与「MONO」(pending #79)
+- 图表档位不再残留上一个工程的值 —— CFGS 缺失/损坏时仍按独立 UICF 块读取 master_chart_mode(pending #108)
+- 切换图表视图后工程被正确标脏 —— setMasterChartMode 写入后补通知宿主(pending #108)
 
 尚未开 PR 的在途卡(合并时按上面格式补条目)
 - T41 建议表 + CSV 导出
