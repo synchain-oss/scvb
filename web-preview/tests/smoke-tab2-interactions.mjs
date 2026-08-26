@@ -12,7 +12,8 @@
 //   ② freeze 四态双向映射(契约 §1.12-§1.14:int 0-3,bit0=pan / bit1=vol);
 //   ③ 首次确认的**三形态**(05 §2.2 R3 无条件触发):纯 auto 轨 / 纯 user_edited 轨 /
 //      含 locked 段的轨 —— 三者都必须弹,第三形态还要带 {l} 计数;
-//   ④ store → 15 行模型:状态灯五态、冻结维度读常值段、配对「(满)」后缀与超员标、
+//   ④ store → 15 行模型:状态灯五态、读回值逐维按 freeze 位分叉([J85]:冻结读参数面 /
+//      未冻结优先读常值段)、配对「(满)」后缀与超员标、
 //      多主唱计数、mono 轨 width no-op;
 //   ⑤ 列头 key 与列序(05 §2.2 列序代码块)+ 卡箍/toggle/PRIO 命中区的源码级断言(RE-06);
 //   ⑥ mock 端到端:setChannelConfig / setTrackManual / gesture 三段式 /
@@ -331,7 +332,7 @@ log("=== ④ store → 15 行模型 ===");
         "多主唱计数",
     );
 
-    // 行模型:冻结维度读常值段,未冻结读参数面
+    // 行模型([J85]):冻结维度读**参数面**(冻结通道只写参数面),未冻结维度优先读常值段
     const store = {
         state: {
             group_id: 1,
@@ -360,7 +361,7 @@ log("=== ④ store → 15 行模型 ===");
             values: {
                 lead_select: 3,
                 v1_t01_freeze: 3, // 轨 1 两维度都冻结
-                v1_t01_pan: 55, // 参数面的值 —— 冻结时**不该**被读到
+                v1_t01_pan: 55, // 冻结维度的静态值只存这里([J85]),读回就该读到它
                 v1_t01_vol: 6,
                 v1_t02_pan: -40,
                 v1_t02_vol: -6,
@@ -390,12 +391,14 @@ log("=== ④ store → 15 行模型 ===");
     };
     const rows = TT.rowsFromStore(store);
     eq(rows.length, 15, "15 行");
-    eq(rows[0].pan, -20, "轨 1 pan 冻结 ⇒ 读常值段(不是参数面的 55)");
-    eq(rows[0].volDb, -3, "轨 1 vol 冻结 ⇒ 读常值段");
+    // [J85] 冻结维度读参数面:段表里那条常值段可能是**冻结前**接管手动时留下的旧值,
+    // 而冻结中的调整只落参数面 —— 读段表就会「看着没改、听着改了」。
+    eq(rows[0].pan, 55, "[J85] 轨 1 pan 冻结 ⇒ 读参数面(不是陈旧常值段的 -20)");
+    eq(rows[0].volDb, 6, "[J85] 轨 1 vol 冻结 ⇒ 读参数面");
     eq([rows[0].fp, rows[0].fv], [1, 1], "轨 1 冻结两位");
     eq(rows[1].pan, -40, "轨 2 无常值段 ⇒ 读参数面");
-    // 读回值不按 freeze 位分叉:未冻结但曲线是常值段的轨同样读该段 —— 否则「未冻结轨
-    // 拖卡箍」(05 允许,走一次性确认)会在下一帧被 25 Hz 的旧参数值弹回去。
+    // 未冻结维度仍优先读常值段:「未冻结轨拖卡箍」(05 允许,走一次性确认)写的是曲线真身,
+    // 改读参数面会在下一帧被 25 Hz 的旧参数值弹回去。
     {
         const unfrozen = TT.rowsFromStore({
             state: { global: { version_active: 1 }, channels: [] },
@@ -742,16 +745,55 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
     const constSeg = TT.manualConstantOf(TT.segmentsOfCh(tm, 2));
     check(!!constSeg, "回推的是单段全时限 user_edited 常值(04 §1.5 方案 A)");
     eq(constSeg.volDb, -6, "常值段 volDb = 写入值");
-    // 读回路径:冻结 vol 后行模型必须读到 -6 而不是参数面的值
-    const rows = TT.rowsFromStore({
-        state: { global: { version_active: 1 }, channels: [] },
-        params: {
-            values: { v1_t02_freeze: 2, v1_t02_vol: 0 },
-            versionActive: 1,
-        },
-        segments: tm,
-    });
-    eq(rows[1].volDb, -6, "冻结 vol ⇒ 行模型读常值段");
+    // 读回路径([J85] 逐维按 freeze 位分叉):
+    //   • 未冻结维度 → 读常值段(手动接管通道写的就是曲线真身);
+    //   • 冻结维度   → 读**参数面**(冻结通道只写参数面,段表里那条常值段可能是旧的 ——
+    //     读它就会把把手弹回旧值,而耳朵听到的是参数面上的新值)。
+    const rowsOf = (freeze, volParam) =>
+        TT.rowsFromStore({
+            state: { global: { version_active: 1 }, channels: [] },
+            params: {
+                values: { v1_t02_freeze: freeze, v1_t02_vol: volParam },
+                versionActive: 1,
+            },
+            segments: tm,
+        });
+    eq(rowsOf(0, 0)[1].volDb, -6, "未冻结 vol ⇒ 行模型读常值段");
+    eq(
+        rowsOf(2, -3)[1].volDb,
+        -3,
+        "[J85] 冻结 vol ⇒ 行模型读参数面(不读陈旧常值段)",
+    );
+    eq(
+        rowsOf(1, -3)[1].volDb,
+        -6,
+        "只冻 pan 时 vol 仍读常值段(逐维分叉,不是整行分叉)",
+    );
+
+    // [J85] 冻结通道:再写一次 vol,段表**一个字节都不许变**,值只落参数面。
+    const paramFrames = [];
+    bridge.on("scvb.params", (p) => paramFrames.push(p));
+    await bridge.setParam(TT.paramIdOf(1, 2, "freeze"), 2); // 冻 vol 维
+    const beforeFrozen = JSON.stringify(TT.segmentsOfCh(tm, 2));
+    seen.segments.length = 0;
+    const frozenWrite = await bridge.setTrackManual(2, "vol", -12);
+    eq(
+        frozenWrite.replacedSegments,
+        0,
+        "[J85] 冻结通道不替换任何段 ⇒ replacedSegments=0",
+    );
+    await sleep(30);
+    const tm2 = seen.segments.find((s) => s.reason === "trackManual");
+    check(!!tm2, "冻结通道仍按 §2.8 回推 reason=trackManual");
+    eq(
+        JSON.stringify(TT.segmentsOfCh(tm2, 2)),
+        beforeFrozen,
+        "[J85] 冻结中调整:段表逐字节不变(解冻即回引擎曲线)",
+    );
+    check(
+        paramFrames.some((p) => p.values && p.values.v1_t02_vol === -12),
+        "[J85] 冻结中调整:值落参数面并经 scvb.params 回推",
+    );
 
     // §1.6 单轨重新识别:analyze({tracksMask}, {clearManual:true})
     seen.segments.length = 0;

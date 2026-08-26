@@ -28,7 +28,8 @@
 //       `scvb.conn`           → 状态灯五态 / 失准计数 / 采样率错整行 disabled / 0 轨空态;
 //       `scvb.params`         → 每轨 pan/vol/width/freeze 跟随 + hostEcho 灰显;
 //       `scvb.meters`(30 Hz) → canvas/meter.js 的 rAF 弹道写 15 管液柱与峰线;
-//       `scvb.segments`       → 冻结维度的读回值(常值段)与解冻提示判定。
+//       `scvb.segments`       → **未冻结**维度的读回值(手动常值段)与解冻提示判定
+//                               ([J85] 冻结维度的读回值改取参数面,见 rowFromStore)。
 //     上行:`setChannelConfig`(§1.15)/ `setTrackManual`(§1.16,含每轨首次无条件确认)/
 //     gesture 三段式(§1.12-§1.14,width 与 freeze)/ `analyze(scope,{clearManual:true})`
 //     (§1.6,单轨重新识别)。**不新增任何桥函数。**
@@ -497,18 +498,21 @@ export function rowFromStore(store, ch, ctx) {
     const freeze = Math.trunc(num(vals[paramIdOf(active, ch, "freeze")], 0));
     const bits = freezeBits(freeze);
     const seg = manualConstantOf(segmentsOfCh(c.segments, ch));
-    // 读回值:该轨曲线是**手动常值段**时一律取该段(05 §2.2「读回值同样取自该段」),
-    // 否则取参数面(引擎打印头 / 宿主回吐)。
-    // **不按 freeze 位分叉**:常值段既是「冻结时手动/host 权威的那个值」,也是
-    // 「未冻结时引擎从曲线上取到的那个值」—— 两条路径的正确答案是同一个数。
-    // 按 freeze 位分叉的写法会让「未冻结轨拖卡箍」(05 明确允许,走一次性确认)
-    // 在下一帧把把手弹回去:`setTrackManual` 写的是曲线真身,不写参数面(§1.16),
-    // 25 Hz 的 `scvb.params` 只在 PRINT 态才有新值。
-    const pan = seg
-        ? num(seg.pan, PAN_RANGE.def)
+    // 读回值,**逐维按 freeze 位分叉**([J85]):
+    //   • 冻结维度 → **参数面**。冻结的静态值只存参数面 + 冻结位,曲线真身不再被烘焙成
+    //     常值段(`setTrackManual` 的冻结通道不写曲线)。此时段表里若还留着一条**旧的**
+    //     常值段(先在未冻结态接管过手动、UI 随即置位冻结),读段表就会把把手弹回那个旧值,
+    //     而耳朵听到的是参数面上的新值 —— 「看着没改、听着改了」。
+    //   • 未冻结维度 → 有手动常值段就取该段(05 §2.2「读回值同样取自该段」),否则取参数面。
+    //     这一支**必须**先读段表:未冻结轨拖卡箍(05 明确允许,走一次性确认)写的是曲线真身,
+    //     25 Hz 的 `scvb.params` 在非 PRINT 态没有新值,改读参数面会让把手在下一帧弹回去。
+    const panSeg = bits.pan ? null : seg;
+    const volSeg = bits.vol ? null : seg;
+    const pan = panSeg
+        ? num(panSeg.pan, PAN_RANGE.def)
         : num(vals[paramIdOf(active, ch, "pan")], PAN_RANGE.def);
-    const volDb = seg
-        ? num(seg.volDb, VOL_RANGE.def)
+    const volDb = volSeg
+        ? num(volSeg.volDb, VOL_RANGE.def)
         : num(vals[paramIdOf(active, ch, "vol")], VOL_RANGE.def);
     const pair = Math.trunc(num(cfg.pair_id, 0));
     return {

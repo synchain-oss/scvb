@@ -73,6 +73,15 @@ inline void commitCrvsTransaction(juce::UndoManager& undo, scvb::state::CrvsData
 //
 // existing = 该轨替换前的段表:非空则从首段继承另一维;空表(从未编辑/分析过)才落各自默认。
 // 纯函数,可离线断言。
+
+// 手动值的值域钳制(pan −100..+100 / vol −24..+12 dB,契约 §1.16 的 `value` 域)。
+// [J85] 冻结通道**不写曲线**,于是「钳制」不能再只藏在建段函数里 —— 参数面那一路也要用同一
+// 把尺子,否则两条通道对同一个越界输入会给出两个不同的落地值。
+inline float clampManualValue(bool isPan, float value)
+{
+    return isPan ? std::clamp(value, -100.0f, 100.0f) : std::clamp(value, -24.0f, 12.0f);
+}
+
 inline scvb::state::Segment makeManualConstantSegment(const std::vector<scvb::state::Segment>& existing, bool isPan,
                                                       float value)
 {
@@ -87,8 +96,8 @@ inline scvb::state::Segment makeManualConstantSegment(const std::vector<scvb::st
     scvb::state::Segment seg;
     seg.t0 = 0;
     seg.t1 = static_cast<std::int64_t>(1) << 40; // 覆盖全时间线近似(真末端由宿主时间线提供)
-    seg.pan = isPan ? std::clamp(value, -100.0f, 100.0f) : keepPan;
-    seg.volDb = isPan ? keepVolDb : std::clamp(value, -24.0f, 12.0f);
+    seg.pan = isPan ? clampManualValue(true, value) : keepPan;
+    seg.volDb = isPan ? keepVolDb : clampManualValue(false, value);
     seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
     return seg;
 }

@@ -1158,10 +1158,41 @@ function buildOutputBackend(ctx) {
                 // 这里没有可夹取的语义(轨号/字段名不存在),按不改 state 的空写入处理。
                 return { ok: true, replacedSegments: 0, replacedLocked: 0 };
             }
+            const v = model.snapshot.global.version_active;
+            const prefix = `v${v}_t${String(ch).padStart(2, "0")}_`;
+            const applied =
+                panOrVol === "pan"
+                    ? clamp(round(value, 1), -100, 100)
+                    : clamp(round(value, 1), -24, 12);
+            // 落一次参数面 —— 冻结维度的取值仲裁与打印器读的都是那里(真桥 #87 起同款)。
+            const setParamPlane = () => {
+                const id = prefix + panOrVol;
+                if (model.params.values[id] === applied) return;
+                model.params.values[id] = applied;
+                emit("scvb.params", {
+                    values: { [id]: applied },
+                    hostEcho: false,
+                    full: false,
+                    versionActive: v,
+                });
+            };
+            // [J85] 冻结通道与手动接管通道分家(真桥 OutputProcessor::setTrackManual 同款):
+            // 该维度**已冻结** → 静态值只落参数面,曲线真身一个字节不动(解冻即回引擎曲线,
+            // 不留常值段);**未冻结** → 用户主动接管,照旧写全时限常值段(04 §1.5 方案 A)。
+            const dimFrozen =
+                (Math.trunc(model.params.values[`${prefix}freeze`] || 0) &
+                    (panOrVol === "pan" ? 1 : 2)) !==
+                0;
+            if (dimFrozen) {
+                setParamPlane();
+                // 段表没变,§2.8 仍按契约回推该轨(reason 枚举闭合;UI 据此清乐观值)。
+                pushSegments("trackManual", [ch]);
+                return { ok: true, replacedSegments: 0, replacedLocked: 0 };
+            }
+
             const old = segmentsOf(ch);
             const replacedSegments = old.length;
             const replacedLocked = old.filter((s) => s.locked).length;
-            // 04 §1.5 方案 A:向当前激活版本该轨写入**覆盖全时间线的单段常值**。
             // 段对象形状取生成器产物为原型(不自造字段),只改该改的几个键。
             const seed =
                 old[0] ||
@@ -1176,10 +1207,10 @@ function buildOutputBackend(ctx) {
             proto.t1S = model.durationS;
             proto.origin = "user_edited";
             proto.locked = true;
-            if (panOrVol === "pan")
-                proto.pan = clamp(round(value, 1), -100, 100);
-            else proto.volDb = clamp(round(value, 1), -24, 12);
+            if (panOrVol === "pan") proto.pan = applied;
+            else proto.volDb = applied;
             model.segByCh.set(ch, { ch, segments: [proto], stale: false });
+            setParamPlane();
             pushSegments("trackManual", [ch]);
             return { ok: true, replacedSegments, replacedLocked };
         },
