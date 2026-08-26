@@ -790,6 +790,9 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             // 降级目标 = **已知时间线末端**:优先取本次快照里其余段的最大真末端,没有则回落
             // 到该段自己的 t0(段仍然存在、可点、可切,只是右端不再撒谎)。
             const bool openEnded = s.t1 >= scvb::output::kOpenEndedT1;
+            // ⚠ HOST R4 用例守的是降级链三函数本身,守不到「这里还在调它」这一跳
+            // (harness 编不进本 TU)—— 改动下面这一行(绕开 effectiveT1Samples 或
+            // 换回裸 s.t1)必须同步 tests/host 的 HOST R4 用例,否则测试照绿而 bug 回归。
             const std::int64_t t1Effective =
                 scvb::output::effectiveT1Samples(s.t0, s.t1, knownEndSamples, minSpanSamples);
             put(seg, "t1S", samplesToSeconds(t1Effective, sr));

@@ -2083,13 +2083,17 @@ export function createTabWave(opts) {
                 // (PR#64 评审【重要】5)。窗不成立就**不建 boundDrag**,让这一按
                 // 落到②的点选/平移路径 —— 这类段只能用分割/合并处理。
                 const minS = j < 0 ? 0 : num(segs[j] && segs[j].t0S, 0) + 0.05;
+                // 右限走 segEndS:split 保留哨兵(SegmentEdit.cpp 的 b.t1 原样继承),
+                // 尾段 openEnded 时 t1S 只是保守下界 —— 在已知末端之外分割后,裸 t1S
+                // 会把窗翻到边界左边(手柄一按左跳且推不回,松手照发 move_boundary)。
+                // openEnded(+Infinity)/缺段(0)都回落时间线末端。
+                const nextEnd = j < 0 ? 0 : segEndS(segs[j + 1]);
                 const maxS =
                     j < 0
                         ? 0
-                        : num(
-                              segs[j + 1] && segs[j + 1].t1S,
-                              timeline.durationS(),
-                          ) - 0.05;
+                        : (Number.isFinite(nextEnd) && nextEnd > 0
+                              ? nextEnd
+                              : timeline.durationS()) - 0.05;
                 if (j >= 0 && minS < maxS) {
                     e.preventDefault();
                     capturePointer(els.lanes, e);

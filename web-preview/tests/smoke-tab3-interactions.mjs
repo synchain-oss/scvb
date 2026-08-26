@@ -665,6 +665,22 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             ),
             "检查器结束时间:openEnded 段显示 wave.segOpenEnd 词条而不是保守下界",
         );
+        // 第五处(82f7eef 复审揪出):边界拖拽窗右限。split 保留哨兵 ⇒ 尾段仍
+        // openEnded;在已知末端之外分割后,裸 t1S 会把窗翻到边界左边(手柄左跳
+        // 且推不回,松手照发 move_boundary)。右限须走 segEndS 并回落时间线末端。
+        check(
+            /const nextEnd = j < 0 \? 0 : segEndS\(segs\[j \+ 1\]\)/.test(
+                twSrc,
+            ) &&
+                /Number\.isFinite\(nextEnd\) && nextEnd > 0[\s\S]{0,80}timeline\.durationS\(\)/.test(
+                    twSrc,
+                ),
+            "边界拖拽窗右限走 segEndS(openEnded/缺段回落 timeline.durationS)",
+        );
+        check(
+            !/segs\[j \+ 1\] && segs\[j \+ 1\]\.t1S/.test(twSrc),
+            "旧写法 segs[j+1].t1S 已不存在(防止改回裸 t1S)",
+        );
     }
     // 泳道模型投影(§2.7 覆盖率 / §2.8 段数 / §2.9 lowSample)
     const lanes = TW.laneModelFromStore({
