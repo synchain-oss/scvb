@@ -375,8 +375,12 @@
      色标位置逐字取 Bridge vst-plugin/web/index.html:335 的 METER_GRADIENT(四停靠:0–52%
      纯绿平台,78% 才到琥珀)—— 05 §4 电平表段明文「与 Bridge/主站 peak-hold.ts 完全一致」,
      同一台机器上 Bridge 表与 SCVB 总线表会并排出现,色标必须同款,不得自定拐点。
-     弹道常数(CSS 承载不了,写在此处备查,实现在 JS rAF,与 Bridge/主站 peak-hold.ts 完全一致):
-       地板 -60dB · fast-follow 回落 120 dB/s · peak-hold 2200ms 后 20 dB/s · 峰线白 2px。
+     弹道常数(CSS 承载不了,写在此处备查,实现在 JS rAF —— 真源 = web/output/canvas/meter.js):
+       地板 -60dB · fast-follow 回落 120 dB/s · peak-hold 800ms 后 20 dB/s · 峰线白 2px。
+     【SL-191 用户裁定 2026-08-27】峰线语义改为「最近最高 true peak」(吃 §2.5 的 peakDb),
+     保持时长 2200→800ms 作补偿。**这两项自此与 Bridge/主站 peak-hold.ts 有意不同** ——
+     色标(上面那四停靠)仍必须与 Bridge 同款,并排出现时不得看出两套表;有意分叉的只有
+     峰线这两个数。
      ========================================================================= */
     --meter-green: #76c28c;
     --meter-amber: #d6c078;

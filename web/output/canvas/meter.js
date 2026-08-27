@@ -15,8 +15,17 @@
 // 弹道口径(四条,缺一条都会和 Bridge 表对不上):
 //   ① 地板 -60 dB —— 低于地板一律按地板画(未连接/静音轨发的就是地板值);
 //   ② 上行**瞬时跟随**(不做 attack 平滑),下行 fast-follow **120 dB/s**;
-//   ③ 峰值保持 **2200 ms**,到点后按 **20 dB/s** 衰减;
+//   ③ 峰值保持 **800 ms**(SL-191 用户裁定 2026-08-27,原 2200),到点后按 **20 dB/s** 衰减;
 //   ④ 停止态(scvb.playhead.isPlaying === false)复位归零,不留残影。
+//
+// 【SL-191 语义变更,用户 v5.4 实测拍板 2026-08-27】白色峰线 = **最近最高 true peak**。
+// 弹道读的峰值通道由「液柱(块 RMS)自算峰值」改回 native 的 `tracks[].peakDb`(块真峰值)。
+// 这**不是** v4 实测 P1-3(a79611f)那次回退的回归,而是**有意换语义**:当年判定「白线稳态
+// 浮在液柱头顶十几到几十像素」是量纲错配的 bug,用户 v5.4 实测后重新裁定 —— 白线本就该是
+// true peak 指示器,RMS 与 true peak 之间那段差值是**物理事实**而非渲染错位。为补偿 true peak
+// 天然更靠右、白线离柱头更远,同批把保持时长 2200→800 ms(见 PEAK_HOLD_MS)。
+// 契约 docs/SCVB_CONTRACT.md §2.5 行内那句「peak-hold 2200ms」是本次裁定之前的记述,数值面
+// 已由本裁定取代;该行属冻结文档,需走 CLAUDE.md §5 变更流程另行更正(本卡不动冻结契约)。
 // CSS 侧 `.sc-tube__liquid` 的 `transition: width var(--dur-meter) linear`(.18s)保留,
 // 作用是 30 Hz 事件之间的**帧间平滑**,与本弹道叠加不冲突(两者一个管取值、一个管补间)。
 //
@@ -31,10 +40,17 @@ export const METER_FLOOR_DB = -60;
 /** 回落速度:fast-follow 120 dB/s(上行不平滑,瞬时跟随)。 */
 export const FALL_DB_PER_S = 120;
 
-/** 峰值保持时长(ms)。 */
-export const PEAK_HOLD_MS = 2200;
+/**
+ * 峰值保持时长(ms)。
+ *
+ * **SL-191 用户裁定 2026-08-27:2200 → 800。** 同批把峰线语义换成「最近最高 true peak」
+ * (见 tick() 的 targetPeakDb 喂法),true peak 在同一条 60 dB 行程上恒比块 RMS 更靠右,
+ * 白线离柱头更远;用户的真实诉求是**白线贴柱头**,故缩短保持时长作补偿 —— 抬起来得快、
+ * 落回去也得快。衰减速度不变(20 dB/s),只动保持这一段。
+ */
+export const PEAK_HOLD_MS = 800;
 
-/** 峰值保持到点后的衰减速度(dB/s)。 */
+/** 峰值保持到点后的衰减速度(dB/s)。SL-191 未改,与裁定前一致。 */
 export const PEAK_DECAY_DB_PER_S = 20;
 
 /** 峰线转警戒红的阈值(比例,05 §2.2:peak > .86)。 */
@@ -72,8 +88,9 @@ function floorDb(v) {
  * @param {{db:number, peakDb:number, peakHeldMs:number}} prev 上一帧状态
  * @param {number} targetDb 本帧事件值(dB;契约 §2.5 `tracks[].db`)
  * @param {number} dtMs 距上一帧的毫秒数
- * @param {number} [targetPeakDb] 本帧事件峰值(契约 §2.5 `tracks[].peakDb`);
+ * @param {number} [targetPeakDb] 本帧事件峰值(契约 §2.5 `tracks[].peakDb` = 块 true peak);
  *        省略时退化为「用液柱值自算峰值」——两种喂法弹道一致(**可选参数,只增不改**)。
+ *        **生产恒喂**(SL-191 裁定 2026-08-27,见 tick());省略档只留给纯函数单测。
  * @returns {{db:number, peakDb:number, peakHeldMs:number}}
  */
 export function advance(prev, targetDb, dtMs, targetPeakDb) {
@@ -253,14 +270,18 @@ export function createMeterRenderer(opts) {
                 tracks[i] = restState();
             } else {
                 const m = latest ? latest[i] : null;
-                // **刻意不喂 `m.peakDb`**:液柱吃的是每块 RMS,而载荷里的 `peakDb` 是每块
-                // 真峰值 —— 两者是不同的物理量,同一条 60dB 行程上正弦差 3dB、人声差 10-14dB,
-                // 于是白色峰线会**稳态地**浮在液柱头顶十几到几十像素(v4 实测 P1-3)。
-                // 契约 §2.5 把弹道定义为「peak-hold 2200ms 后 20dB/s」——那是**对液柱这个量**
-                // 的保持,不是另一路独立峰值检测。省略本参数即退化为 advance 自算峰值(口径③),
-                // 峰线稳态贴着液柱头、只在瞬态时抬起,正是设计意图。
-                // `peakDb` 仍按契约由 native 发送(诊断/未来用),UI 只是不拿它当独立检测器。
-                tracks[i] = advance(prev, m ? m.db : METER_FLOOR_DB, dt);
+                // **喂 `m.peakDb`**(SL-191,用户 v5.4 实测拍板 2026-08-27):白线语义 =
+                // 「最近最高 true peak」,所以峰值通道必须是 native 那一路块真峰值,而不是
+                // 由液柱(块 RMS)自算。两者确实是不同的物理量(正弦差 3 dB、人声差 10-14 dB),
+                // v4 实测 P1-3 曾据此把这个参数摘掉(a79611f);本次是**有意换语义**——那段差值
+                // 是 true peak 相对 RMS 的物理事实,不是渲染错位。RMS 自算那一档由 advance()
+                // 省略 targetPeakDb 时保留(口径③的退化路径,纯函数面仍可用),生产不再走它。
+                tracks[i] = advance(
+                    prev,
+                    m ? m.db : METER_FLOOR_DB,
+                    dt,
+                    m ? m.peakDb : undefined,
+                );
             }
             if (!sameState(prev, tracks[i])) moved = true;
             writeRow(i, tracks[i]);

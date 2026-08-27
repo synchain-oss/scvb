@@ -8,7 +8,10 @@
 //
 // 跑什么:
 //   ① 弹道纯函数(契约 §2.5 / 05 §2.2):-60 dB 地板、上行瞬时、下行 120 dB/s、
-//      peak-hold 2200 ms 后 20 dB/s 衰减、停止态归零、>.86 转警戒红;
+//      peak-hold 800 ms 后 20 dB/s 衰减、停止态归零、>.86 转警戒红;
+//      并含 **SL-191**(用户 v5.4 实测拍板 2026-08-27)两条新语义断言:白线吃 native
+//      true peak 通道、保持时长 800 ms —— 两条都是**行为断言**,改回 RMS 自算或改回
+//      2200 ms 立刻判红(见该段内的反向验证注释);
 //   ② freeze 四态双向映射(契约 §1.12-§1.14:int 0-3,bit0=pan / bit1=vol);
 //   ③ 首次确认的**三形态**(05 §2.2 R3 无条件触发):纯 auto 轨 / 纯 user_edited 轨 /
 //      含 locked 段的轨 —— 三者都必须弹,第三形态还要带 {l} 计数;
@@ -70,7 +73,9 @@ log("=== ① 电平弹道(契约 §2.5 + 05 §2.2 弹道常数)===");
 {
     eq(MT.METER_FLOOR_DB, -60, "地板 -60 dB");
     eq(MT.FALL_DB_PER_S, 120, "fast-follow 120 dB/s");
-    eq(MT.PEAK_HOLD_MS, 2200, "peak-hold 2200 ms");
+    // SL-191(用户裁定 2026-08-27):2200 → 800。字面断言 + 下面的行为断言双保险 ——
+    // 只有字面断言的话,常数改回去而弹道行为不动的假绿是拦不住的。
+    eq(MT.PEAK_HOLD_MS, 800, "peak-hold 800 ms(SL-191 裁定,原 2200)");
     eq(MT.PEAK_DECAY_DB_PER_S, 20, "peak 衰减 20 dB/s");
     eq(MT.PEAK_ALERT_RATIO, 0.86, "峰线警戒阈 .86");
 
@@ -91,14 +96,17 @@ log("=== ① 电平弹道(契约 §2.5 + 05 §2.2 弹道常数)===");
     s = MT.advance({ db: -12, peakDb: -12, peakHeldMs: 0 }, -60, 10000);
     eq(s.db, -60, "下行不穿地板");
 
-    // peak-hold:保持期内不动
+    // peak-hold:保持期内不动。660ms 落在 800 之内。
+    // **反向验证**:把 PEAK_HOLD_MS 改回 2200,本条仍绿(660 < 2200 也算保持期内),
+    // 但下一条「到点后衰减」会因为 960ms 还没到 2200 而一步不衰减 → 判红。两条合起来
+    // 才把 800 这个值锁死:上界由本条守(超了就该衰减)、下界由下一条守。
     s = { db: -30, peakDb: -3, peakHeldMs: 0 };
-    for (let i = 0; i < 60; i++) s = MT.advance(s, -30, 33, -30); // 1980ms
-    near(s.peakDb, -3, 1e-9, "保持期(<2200ms)内峰值不动");
+    for (let i = 0; i < 20; i++) s = MT.advance(s, -30, 33, -30); // 660ms
+    near(s.peakDb, -3, 1e-9, "保持期(<800ms)内峰值不动");
 
     // 保持到点后按 20 dB/s 衰减(只算超出保持期的那段时间)
-    s = MT.advance(s, -30, 300, -30); // 2280ms:超出 80ms
-    near(s.peakDb, -3 - 20 * 0.08, 1e-9, "到点后按 20 dB/s 衰减");
+    s = MT.advance(s, -30, 300, -30); // 960ms:超出 160ms
+    near(s.peakDb, -3 - 20 * 0.16, 1e-9, "到点(800ms)后按 20 dB/s 衰减");
 
     // 峰值被超越 ⇒ 顶到新值并清零保持计时
     s = MT.advance(s, -30, 33, -1);
@@ -120,6 +128,16 @@ log("=== ① 电平弹道(契约 §2.5 + 05 §2.2 弹道常数)===");
     r.tick(0);
     r.tick(33);
     near(r.stateOf(1).db, -6, 1e-9, "renderer 推进第 1 轨");
+    // 【SL-191 核心行为断言】白线 = 最近最高 true peak ⇒ 生产循环必须把载荷的 `peakDb`
+    // 喂进 advance()。事件里 db=-6(块 RMS)、peakDb=-3(块 true peak)是**两个不同的量**,
+    // 正是当年 v4 P1-3 摘掉这个参数的理由;用户 v5.4 实测后改判「这就是要的」。
+    // **反向验证**:把 tick() 改回 RMS 自算通道(不传第 4 参),峰值只会顶到 -6 → 本条判红。
+    near(
+        r.stateOf(1).peakDb,
+        -3,
+        1e-9,
+        "SL-191 峰线吃 native true peak 通道(peakDb=-3,不是液柱的 -6)",
+    );
     r.stop();
     eq(r.stateOf(1), MT.restState(), "stop() 归零");
 
@@ -1267,7 +1285,10 @@ log("\n=== ⑨ 渲染调度:rAF 合帧 + 按行增量(T33 性能批)===");
             //    start() 把 lastMs 置 null ⇒ 起帧首帧恒为 dt=0,而 advance() 在
             //    dt=0 时只做上行瞬时跟随、下行一步不走;首帧若参与自停判据,
             //    「push → dt=0 → 不动 → 自停」会死循环,液柱永远卡在瞬态电平。
-            m.push(ev(-8, -8));
+            //    瞬态刻意让 db 与 peakDb **不同**(-8 的块 RMS / -4 的块 true peak):
+            //    SL-191 之后白线读的是后者,于是这一段同时是「rAF 端到端也走 true peak
+            //    通道」的反向验证 —— tick() 改回 RMS 自算,峰线只会停在 -8 → 判红。
+            m.push(ev(-8, -4));
             frame();
             frame();
             eq(m.stateOf(1).db, -8, "瞬态:上行瞬时跟随(口径②上行档)");
@@ -1281,9 +1302,11 @@ log("\n=== ⑨ 渲染调度:rAF 合帧 + 按行增量(T33 性能批)===");
                 st.db <= -50,
                 `回落 20 个事件后液柱跟到底(口径② fast-follow;实得 ${st.db}）`,
             );
+            // 峰值置顶后累计保持 ≈651ms(39 帧 × 16.7ms),仍在 800ms 期内(余量 ~149ms)——
+            // 若日后改动帧数或 PEAK_HOLD_MS,这条会先红,提醒重算窗口而不是默默失效。
             check(
-                st.peakDb === -8 && st.peakHeldMs > 0,
-                "峰线仍按 peak-hold 保持在 -8(口径③保持期计时在走)",
+                st.peakDb === -4 && st.peakHeldMs > 0,
+                `峰线按 peak-hold 保持在 native true peak -4(口径③计时在走;实得 ${st.peakDb}/${st.peakHeldMs}ms)`,
             );
             // ③ 停止态归零(口径④)——自停不得把复位那一帧也吃掉
             store.playhead = { isPlaying: false, timeS: 0 };
