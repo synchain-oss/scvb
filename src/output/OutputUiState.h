@@ -68,8 +68,12 @@ inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
 
 // [SL-215] 会话 GUID —— sidecar 文件名隔离的根基(<basename>-<GUID前8>.scvbfeat,04 §5.x)。
 // 它此前**根本没有生产落点**:桥面快照里写死一串全零字面量(OutputEditor 的 `session_guid`),
-// 设置页于是恒显示 session 00000000-0000-0000-0000-000000000000。generateSessionGuid() 与
-// SidecarStore 侧的校验/CoW 全都实现好且有单测,只是没人调用。
+// 设置页于是恒显示 session 00000000-0000-0000-0000-000000000000。
+//
+// **生成点只有一处**:`ScvbOutputAudioProcessor` 构造期的 `juce::Uuid().toDashedString()`,
+// 口径见 STATE_SCHEMA §4.3(该节点名的就是 juce::Uuid)。注意 `SidecarStore` 里另有一个
+// `generateSessionGuid()` —— 它产出的也是合法 dashed v4 UUID,但**不是**本 GUID 的生成点,
+// 目前只在 SidecarStore 内部(CoW 换新 GUID)被用到;别把两者当成同一个入口。
 //
 // 落在 PRMS 根节点属性面上,理由与上面三个 ui_ 位逐字相同:CFGS 是定长枚举式解码,尾部追加
 // 字段会让旧构建整块拒载并静默把配置打回默认;ValueTree 增删字段两个方向都容忍,无需升 abi、
