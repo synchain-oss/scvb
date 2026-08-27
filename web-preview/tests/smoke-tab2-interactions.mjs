@@ -305,6 +305,69 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         false,
         "已确认过 ⇒ 不再弹(每轨每会话一次)",
     );
+    // ------------------------------------------------------------------
+    // [SL-199] native 侧 scvb.params / scvb.segments 的**调用点钉子**。
+    //
+    // 为什么一颗 C++ 钉子会落在 web 冒烟里:`OutputEditor.cpp` 编不进任何 C++ 测试目标
+    // (它依赖 WebViewHost/WebView2,harness 也因此给 createEditor 一个空实现),
+    // 于是 `BRIDGEARGS-SL199-*` 只守得住那几个纯函数本身,守不到「emitTick 还在调它们」
+    // 这一跳 —— 退化改法(换回裸 `emitParams(first)`、或置了闩锁却不 settle 就清位)
+    // 在 C++ 单测里全绿而 bug 原样回归。手法与 tab-wave.js 的 segEndS 调用点钉子同款,
+    // 不新增门禁面(gate 3e 本来就跑这一套)。
+    //
+    // ⚠ 负向钉一律带 `^\s+…$` 的**行形态**约束:`src()` 读的是整个文件、不区分代码与注释,
+    // 而 OutputEditor.cpp 的注释里就逐字写着退化改法的样子(「把下面这行换回 emitParams(first)」)。
+    // 不约束行形态的话,哪天有人把注释补上一个分号,这颗钉就会在**没有任何行为退化**的情况下
+    // 判红,而失败信息说的是「不再有裸 emitParams(first)」—— 排查的人得先怀疑代码再怀疑注释。
+    {
+        const oe = src("src/output/OutputEditor.cpp");
+        check(
+            /scvb::output::raiseResendLatch\(visibleNow, wasVisible_, pendingParamsFull_\);/.test(
+                oe,
+            ) &&
+                /scvb::output::raiseResendLatch\(visibleNow, wasSegVisible_, pendingSegmentsFull_\);/.test(
+                    oe,
+                ),
+            "[SL-199] emitTick 为 params/segments 两条路各置一次闩锁",
+        );
+        check(
+            /settleResendLatch\(emitParams\(first \|\| pendingParamsFull_\), pendingParamsFull_\);/.test(
+                oe,
+            ),
+            "[SL-199] params 闩锁按「这一帧真的发出去了」清位(不是无条件清)",
+        );
+        check(
+            /scvb::output::selectParamForEmit\(lastParamsValues_, id, value, forceFull\)/.test(
+                oe,
+            ),
+            "[SL-199] emitParams 循环体走 selectParamForEmit(选择与基线推进同源)",
+        );
+        check(
+            /scvb::output::segmentsResendNeeded\(first, pendingSegmentsFull_, pendingAnalyzed_,/.test(
+                oe,
+            ),
+            "[SL-199] scvb.segments 的重发判定走 segmentsResendNeeded 且带闩锁位",
+        );
+        check(
+            /settleResendLatch\(sent, pendingSegmentsFull_\);/.test(oe) &&
+                /settleResendLatch\(sent, pendingAnalyzed_\);/.test(oe),
+            "[SL-199] segments 与 analyzed 两个闩锁都按实际下发清位",
+        );
+        check(
+            /pendingAnalyzed_ = pendingAnalyzed_ \|\| analyzed;/.test(oe),
+            "[SL-199] analyzed 闩住(takeAnalysisDone 取走即清,隐藏期完成的分析不能丢 reason)",
+        );
+        // 反面钉(带行形态约束,见上面的注释):旧写法不得残留。
+        check(
+            !/^\s+emitParams\(first\);\s*$/m.test(oe),
+            "[SL-199] 不再有裸 emitParams(first)",
+        );
+        check(
+            !/^\s+if \(first \|\| analyzed \|\|/m.test(oe),
+            "[SL-199] 不再有手写的 segments 重发条件(已收进 segmentsResendNeeded)",
+        );
+    }
+
     // 源码级:requestManual 必须走这个判定,不许退回裸 manualConfirmed.has(ch)
     check(
         /function requestManual[\s\S]{0,400}?needsManualConfirm\(/.test(s),

@@ -47,14 +47,14 @@ private:
 
     // ---- 事件发射 ----
     void emitState(bool forceFull);
-    void emitParams(bool forceFull);
+    bool emitParams(bool forceFull); // 返回:C++ 侧观察到这一帧已下发(SL-199 闩锁清位判据)
     void emitConn();
     void emitGroups();
     void emitMeters();
     void emitPlayhead();
     void emitCaptureProgress();
     // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
-    void emitSegments(const juce::String& reason, std::uint16_t tracksMask);
+    bool emitSegments(const juce::String& reason, std::uint16_t tracksMask); // 同上
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
 
     // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
@@ -130,6 +130,18 @@ private:
 
     // ---- diff-then-emit 状态(消息线程独占)----
     bool firstFrame_ = true; // mBridgeReady 后首帧必发各事件(§0.4)
+    // [SL-199] 上一拍 webview 是否可见:false→true 的边沿上补发 **scvb.params 全量 +
+    // scvb.segments 全量快照** —— 两者的第二层基线(lastParamsValues_ / lastSegments* 三件)
+    // 都在「发之前」就推进了,隐藏期被 emitEventIfBrowserIsVisible 丢掉的那一帧因此永不重发。
+    // 初值 false:首帧本来就走全量,边沿不会多发一帧。
+    bool wasVisible_ = false;
+    bool wasSegVisible_ = false; // 同上,segments 一路独立记账(两条路的 settle 时机不同)
+    bool pendingParamsFull_ = false; // 闩锁:置位后每拍强制全量,直到确认发出去才清
+    bool pendingSegmentsFull_ = false; // 同上(scvb.segments 的 reason:"snapshot" 全量)
+    // analyzed 闩锁位:takeAnalysisDone() 取走即清,隐藏期分析完成的话这一位会被消费掉,
+    // 恢复可见只补 snapshot —— Tab4 陈旧基线同步与 Tab3 diff 摘要条只认 reason="analyze",
+    // 会静默失效。发出去了才清(#119 复审顺带记账)。
+    bool pendingAnalyzed_ = false;
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)

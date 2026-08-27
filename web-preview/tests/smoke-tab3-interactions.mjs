@@ -2924,6 +2924,38 @@ log("\n=== ⑭ PR #64 评审处置(重要 6 条 + 建议若干)===");
             "snapshot",
             "重要6:全量 reason 整表替换",
         );
+
+        // [SL-199] 恢复可见时 native 会补一帧 reason:"snapshot" 全量段表。这里确认 **UI 侧
+        // 既有处理路径对「会话中途到达的 snapshot」真走一次** —— 不是只有首帧才认:
+        //   ① 版本闸放行(snapshot 带的就是当前激活版本);
+        //   ② applySegmentsEvent 整表替换,把隐藏期积累的陈旧表换掉。
+        {
+            // 会话已经吃过增量:store 里是「ch2 有 1 段」的旧视图。
+            const stale = TM.applySegmentsEvent(prev, inc);
+            eq(stale.channels[1].segments.length, 1, "[SL-199] 前置:旧视图");
+            // 隐藏期段表被改过,恢复可见补来的全量快照(ch2 现在是 3 段)。
+            const restored = {
+                version: 1,
+                reason: "snapshot",
+                channels: [
+                    { ch: 1, segments: [] },
+                    {
+                        ch: 2,
+                        segments: [{ segIdx: 0 }, { segIdx: 1 }, { segIdx: 2 }],
+                    },
+                ],
+            };
+            check(
+                TM.segmentsEventApplies(restored, 1),
+                "[SL-199] 版本闸放行会话中途的 snapshot 帧",
+            );
+            const after = TM.applySegmentsEvent(stale, restored);
+            eq(
+                after.channels[1].segments.length,
+                3,
+                "[SL-199] 中途 snapshot 整表替换,陈旧段表被换新",
+            );
+        }
         // 接线面:丢弃是整帧丢弃(不转发给三个 tab)
         const sIdx = ap.indexOf('bridge.on("scvb.segments"');
         const sWin = ap.slice(
