@@ -978,9 +978,26 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
 
     if (a.size() > 0 && a[0].isObject())
     {
-        s.tracksMask = static_cast<std::uint16_t>(static_cast<int>(a[0].getProperty("tracksMask", 0)) & 0x7FFF);
-        s.startS = static_cast<double>(a[0].getProperty("startS", 0.0));
-        s.endS = static_cast<double>(a[0].getProperty("endS", 0.0));
+        const juce::var& o = a[0];
+        s.tracksMask = static_cast<std::uint16_t>(static_cast<int>(o.getProperty("tracksMask", 0)) & 0x7FFF);
+
+        // ★ SL-190 的修复点就是下面这三行:startS/endS 是 §1.6 的**可选**字段,
+        // 「缺省」必须与「显式 0.0」区分开 —— 无条件 getProperty(..., 0.0) 会让「只给
+        // tracksMask」的调用者(Tab2 解冻提示条的单轨重新识别)拿到空范围、分析当场被拒。
+        // **不要改回 `s.startS = o.getProperty("startS", 0.0)`**:那一改所有现有用例仍然
+        // 全绿(本函数是私有成员、构造要 WebView,harness 够不着),bug 会静默回来。
+        // 判「给没给」用的是「属性在且是数**值**」:显式 null 的 hasProperty 也回 true,
+        // 跟着 static_cast<double> 会得 0,那就把「没给」误判成「显式空范围」了。
+        const auto givenNumber = [&o](const char* key) {
+            const juce::var value = o.getProperty(key, juce::var());
+            return value.isDouble() || value.isInt() || value.isInt64();
+        };
+        const AnalyzeRange r =
+            analyzeScopeRange(s.tracksMask, givenNumber("startS"), static_cast<double>(o.getProperty("startS", 0.0)),
+                              givenNumber("endS"), static_cast<double>(o.getProperty("endS", 0.0)), rt.rangeMode,
+                              rt.rangeStartS, rt.rangeEndS, processor_.capturedExtentSeconds());
+        s.startS = r.startS;
+        s.endS = r.endS;
         return s;
     }
 

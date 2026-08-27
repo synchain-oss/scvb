@@ -810,6 +810,16 @@ function buildOutputBackend(ctx) {
         let intervals = 0;
         let manualKept = 0;
         let tracks = 0;
+        // ⚠ 与真桥的**已知**口径差(PR #112 评审建议②,登记在案、本卡不动):
+        // 真桥对缺省 startS/endS 走 `analyzeAllRange`(rangeMode 显式档跟 global.range,
+        // follow 档取 [0, 已采集末端]);这里取 ±∞ 且完全不看 range 档位。有覆盖时两侧
+        // 受理结果一致,「一帧都没采到」与「manual 档窄范围」两种情形会分叉。
+        // 要消掉它得连 `"all"` 字符串形一起按 range 档位重推,牵动多套冒烟,另开卡。
+        //
+        // 同一族的另一条(**先于** SL-190 就在,不是这次引入):`{tracksMask:0, startS, endS}`
+        // 在真桥是「不限轨 + 显式范围」照单全收,在这里 `channelsOfMask(0)` 得空轨 → {ok:false}。
+        // 而 `{tracksMask:0}`(连范围也不给)两侧现在**是对齐的** —— 真桥由 analyzeScopeRange
+        // 的 tracksMask 守卫判空,这里由空轨判空。
         const startS = isFiniteNumber(scope?.startS) ? scope.startS : -Infinity;
         const endS = isFiniteNumber(scope?.endS) ? scope.endS : Infinity;
         for (const ch of chList) {

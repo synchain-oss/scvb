@@ -2204,3 +2204,142 @@ TEST_CASE("HOST J85:冻结→调整→解冻后,再分析可更新该轨曲线",
     // 修复前:段表恒等于那个手动值(user 段被 ADR-008 保留下来),这里永远是 −80。
     CHECK(std::abs(after - static_cast<double>(kFrozenPan)) > 1.0);
 }
+
+// ===========================================================================
+// v5.4 实测 SL-189 定谳组:「引擎驱动」档到底有没有无视宿主自动化。
+//
+// 用户现场:「选择跟随引擎模式后,所有声音依旧完全依照自动化来走,而不是根据冻结的数值
+// 或者引擎的变化(在手动调整偏离引擎之后)」。
+//
+// 嫌疑面是「输出开关 → processBlock 的 engineAuthority 实参」这条线断了(恒 false / 被覆盖 /
+// 根本没接)。本组不猜,把**同一份宿主自动化**灌进四种配置里对拍 —— 输入逐字节相同,只有
+// 档位 / 冻结位不同,所以任何一条的结果都不可能是「凑巧总是读同一个面」:
+//   ① 引擎驱动 + 未冻结 → 总线跟**曲线**(自动化写的是曲线的镜像值,跟错了立刻看得出来);
+//   ①b 同上,但最后几块**不泵消息循环** —— 打印器的 25Hz Timer 一次都不触发,参数面上
+//      就只剩自动化那个值(用例当场读回来对拍),总线仍须偏左 ⇒ 排除「其实是打印器把
+//      曲线值又写回参数、DSP 读的还是参数面」这条替代解释;
+//   ② 引擎驱动 + 冻结 pan → 总线跟**参数面**(= 宿主自动化。J78 优先级链:宿主自动化 >
+//      冻结手动值;打印器对冻结车道只把参数自己的当前值重写成平直线,不采样曲线 —— #68);
+//   ③ 跟随宿主(输出开关 OFF)+ 未冻结 → 总线跟**参数面**;
+//   ④ 再切回引擎驱动 → 回到曲线(权威能来回切,不是一次性的)。
+// ②③ 同时也是 ① 的反向验证:把 engineAuthority 实参改成恒 false,①①b④ 立刻红;改成恒 true,
+// ③ 立刻红;把仲裁里的 freeze 分支删掉,② 立刻红。没有哪一个恒定实参能让四条同时绿。
+//
+// 判据一律取**总线 L/R 峰值比**(真实音频,不看中间量):>1 偏左,<1 偏右。
+// 曲线取「全时限常值」而不是分段曲线:本组要断的是「读哪个面」,时间维已由 J85 那组
+// 覆盖;不设时间分界就不必跳播放头 —— 大跨度跳播放头会让该轨短暂掉出注入集,量到的静音
+// 与「权威读错了」在判据上长得一模一样。
+// ===========================================================================
+TEST_CASE("HOST SL-189:引擎驱动档下未冻结维度无视宿主自动化,冻结维度让位给它", "[host][t37][v54][SL189]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true); // 引擎驱动(ARMED/PRINT)
+
+    // waitUntilInjected 只保证 claim + 心跳新鲜;[J32] 的 200ms 注入延迟与首块环数据还要再等。
+    // 每次改开关 / 冻结位都要在消息线程 runDispatchLoopUntil,那段时间一个音频块都不跑,该轨
+    // 会短暂掉出注入集 —— 掉出去时总线是直通静音,和「权威读错了」在电平判据上无法区分。
+    // 所以每次状态变更后都先等它真的回来。不等的话整组在**进程里第一个跑**时必红、跟在别的
+    // 用例后面又必绿,假绿假红都不要。
+    const auto settle = [&r] {
+        for (int i = 0; i < 60 && r.out.meterSnapshot().busPeak[0] <= 0.0f; ++i)
+        {
+            r.runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/8);
+        }
+        REQUIRE(r.out.meterSnapshot().busPeak[0] > 0.0f);
+    };
+    settle();
+
+    const int v = r.out.versionActive();
+    int replaced = 0;
+    int replacedLocked = 0;
+
+    // 曲线真身 = 全时限常值(手动接管通道,J85 ⑤:未冻结的 setTrackManual 照旧写曲线)。
+    // 它同时把参数面也写成同一个值 —— 下面的「自动化」再把参数顶成镜像值,两个面就彻底岔开了。
+    // 取 ∓70 而不是 ∓100:硬左会让右声道恒 0,L/R 比就成了除零,判据反而不成立。
+    // stereo 源 + width=100 → 子声像 = clamp(pan∓100),解析比:pan=−70 → L/R≈1.79,+70 → ≈0.56。
+    constexpr float kCurvePan = -70.0f; // 曲线:偏左
+    constexpr float kAutomatedPan = 70.0f; // 宿主已录自动化:偏右,与曲线镜像
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, kCurvePan, replaced, replacedLocked));
+    REQUIRE(segmentsOfTrack(r.out, kTestChannel).size() == 1);
+    CHECK(segmentsOfTrack(r.out, kTestChannel).front().pan == kCurvePan);
+
+    auto* panParam = r.out.getAPVTS().getParameter(scvb::params::panId(v, kTestChannel));
+    REQUIRE(panParam != nullptr);
+
+    // 模拟宿主自动化 Read 档把已录值顶进参数。包 gesture 的理由同 setTrackManual 头注:
+    // 裸写在 Read 档宿主上会被当场顶回去。
+    const auto writeAutomation = [panParam, kAutomatedPan] {
+        panParam->beginChangeGesture();
+        panParam->setValueNotifyingHost(panParam->convertTo0to1(kAutomatedPan));
+        panParam->endChangeGesture();
+    };
+
+    // 量一段总线 L/R 峰值比。pumpMessages=false 的那档**全程不泵消息循环** —— 打印器的 25Hz
+    // Timer 在那几十块里一次都不会触发,参数面上就只剩自动化写进去的值。
+    const auto balanceUnderAutomation = [&r, &writeAutomation](bool pumpMessages) {
+        writeAutomation();
+        if (pumpMessages)
+        {
+            r.runBlocks(40, 0.5f); // 走过 30ms 切换斜坡 + 10ms 常规斜坡
+        }
+        else
+        {
+            r.runBlocks(16, 0.5f, /*pumpEveryN=*/0);
+        }
+
+        float l = 0.0f;
+        float rr = 0.0f;
+        for (int i = 0; i < 12; ++i)
+        {
+            if (pumpMessages)
+            {
+                writeAutomation();
+                r.runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/4);
+            }
+            else
+            {
+                r.runBlocks(4, 0.5f, /*pumpEveryN=*/0);
+            }
+            const auto m = r.out.meterSnapshot();
+            l = std::max(l, m.busPeak[0]);
+            rr = std::max(rr, m.busPeak[1]);
+        }
+        REQUIRE(l > 0.0f);
+        REQUIRE(rr > 0.0f);
+        return l / rr;
+    };
+
+    // —— ① 引擎驱动 + 未冻结:自动化说偏右,曲线说偏左,总线必须偏左 ——
+    const float engine = balanceUnderAutomation(/*pumpMessages=*/true);
+    CHECK(engine > 1.33f); // 用户现场的现象若成立,这一条就是红的(解析值 1.79)
+
+    // —— ①b 排除「打印器把曲线值写回了参数、DSP 读的还是参数面」——
+    const float engineNoPump = balanceUnderAutomation(/*pumpMessages=*/false);
+    // 这几十块里没有任何 [M] 侧代码跑过,参数面就是自动化那个值 —— 当场读回来钉住。
+    CHECK(paramValueOf(r.out, scvb::params::panId(v, kTestChannel)) == Catch::Approx(kAutomatedPan).margin(0.01));
+    CHECK(engineNoPump > 1.33f); // 参数偏右、总线偏左 ⇒ 未冻结维度读的确实不是参数面
+
+    // —— ② 引擎驱动 + 冻结 pan:同一份自动化,现在必须**跟得上**(J78 优先级链)——
+    setFreezeBits(r.out, kTestChannel, 1); // bit0 = pan
+    settle();
+    const float frozen = balanceUnderAutomation(/*pumpMessages=*/true);
+    CHECK(frozen < 0.75f); // 曲线仍是偏左,总线却偏右 ⇒ 冻结维度读的是参数面(解析值 0.56)
+    CHECK(frozen < engine * 0.5f); // 输入一样、只有 freeze 位不同 ⇒ 双源分叉是真的在分叉
+
+    // —— ③ 跟随宿主(输出开关 OFF)+ 未冻结:回到参数面权威 ——
+    setFreezeBits(r.out, kTestChannel, 0);
+    r.out.setOutputEnabled(false);
+    settle();
+    const float follow = balanceUnderAutomation(/*pumpMessages=*/true);
+    CHECK(follow < 0.75f); // 曲线仍是偏左,总线偏右 ⇒ 开关真的切换了权威
+    CHECK(follow < engine * 0.5f);
+
+    // —— ④ 再切回引擎驱动:同一实例、同一份自动化,权威必须能切回去 ——
+    r.out.setOutputEnabled(true);
+    settle();
+    const float backToEngine = balanceUnderAutomation(/*pumpMessages=*/true);
+    CHECK(backToEngine > 1.33f);
+    CHECK(backToEngine > follow * 2.0f);
+}
