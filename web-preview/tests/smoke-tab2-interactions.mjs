@@ -486,6 +486,39 @@ log("=== ④ store → 15 行模型 ===");
     eq(rows[0].volDb, 6, "[J85] 轨 1 vol 冻结 ⇒ 读参数面");
     eq([rows[0].fp, rows[0].fv], [1, 1], "轨 1 冻结两位");
     eq(rows[1].pan, -40, "轨 2 无常值段 ⇒ 读参数面");
+    // [SL-188] `rowFromStore` 必须把 freeze **原值**交给 `freezeBits`,不许自己先 Math.trunc:
+    // 1.9 截断成 1 = 只冻 pan,而 native `freezeBitsOf` 与 mock 都进位成 2 = 只冻 vol,
+    // 同一个值在三侧给出两种答案(今天 freeze 是 AudioParameterInt 不可达,但这是本批
+    // 「三侧同一个答案」不变量在仓里的唯一反例)。
+    {
+        const rowOfFreeze = (f) =>
+            TT.rowFromStore(
+                {
+                    state: { global: { version_active: 1 }, channels: [] },
+                    params: { values: { v1_t01_freeze: f }, versionActive: 1 },
+                },
+                1,
+            );
+        eq(
+            [rowOfFreeze(1.9).fp, rowOfFreeze(1.9).fv],
+            [0, 1],
+            "[SL-188] freeze=1.9 ⇒ 行模型进位成 2(只冻 vol),与 freezeBitsOf 同答案",
+        );
+        eq(
+            [rowOfFreeze(4).fp, rowOfFreeze(4).fv],
+            [1, 1],
+            "[SL-188] freeze=4 ⇒ 行模型钳成 3(两维都冻),不按位截成 0",
+        );
+        // 与纯函数逐值对拍:rowFromStore 这一跳不得再引入第二种口径
+        for (const f of [0, 0.4, 1, 1.9, 2, 2.5, 3, 4, 99, -1]) {
+            const b = TT.freezeBits(f);
+            eq(
+                [rowOfFreeze(f).fp, rowOfFreeze(f).fv],
+                [b.pan ? 1 : 0, b.vol ? 1 : 0],
+                `[SL-188] rowFromStore(freeze=${f}) 与 freezeBits 逐值一致`,
+            );
+        }
+    }
     // 未冻结维度仍优先读常值段:「未冻结轨拖卡箍」(05 允许,走一次性确认)写的是曲线真身,
     // 改读参数面会在下一帧被 25 Hz 的旧参数值弹回去。
     {

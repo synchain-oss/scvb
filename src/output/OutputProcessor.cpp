@@ -1695,7 +1695,17 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
             // (那样这条修复根本不生效)。begin/end 把它标成一次完整的用户编辑,宿主才会接受。
             // 这一点与 §1.16「零 gesture」的字面冲突,已在变更文档里作为裁定②登记。
             p->beginChangeGesture();
-            p->setValueNotifyingHost(p->convertTo0to1(applied)); // 工程值 → 归一化(§1.13 同款)
+            {
+                // [SL-187] **必须包自写标记**(§3.5 层 2,与打印器自己的写入同款)。
+                // `v{v}_t{t:02d}_pan/_vol` 是打印车道参数,HostEchoListener 挂在 APVTS 上:
+                // 不置这一位,我们**自己**这次写入会走到层 1b,在引擎权威(ARMED/PRINT)下被
+                // 当成「宿主自动化正在回写」记进 host echo → `hostEchoActive()` 真 600ms →
+                // `emitParams` 带 `hostEcho:true` → UI 把用户**刚拖完**的那个旋钮灰显掉,
+                // 提示语还写着「宿主在驱动这条车道」。两条通道每一次拖拽都命中。
+                // 作用域只裹 setValueNotifyingHost:begin/endChangeGesture 不触发 listener。
+                const scvb::output::AutomationPrinter::ScopedSelfWriteFlag selfWrite(printer_);
+                p->setValueNotifyingHost(p->convertTo0to1(applied)); // 工程值 → 归一化(§1.13 同款)
+            }
             p->endChangeGesture();
         }
     }

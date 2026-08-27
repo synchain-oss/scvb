@@ -113,6 +113,8 @@ Select a segment on the waveform page and edit its pan / vol in the segment insp
 
 **Freezing** a dimension on the Tracks page declares "I am taking this dimension over by hand": on write, that dimension is printed into automation as a flat line, and whatever you draw in the DAW afterwards will never be overridden by the engine. The priority chain is: **host automation > frozen manual value > manual touch-up > engine analysis curve**.
 
+Freezing is a **reversible, temporary takeover**: values you adjust while frozen live on the parameter plane only, and the analysis curve is left untouched -- **unfreeze and the dimension immediately returns to the engine's analysis curve**, which re-analysis keeps updating as usual. Because that path never edits the curve, **adjustments made while frozen do not enter the plug-in's undo stack**: pressing Ctrl+Z then undoes some earlier segment edit, not the knob you just moved. To roll back an adjustment made while frozen, use your host's own undo -- those values land in the DAW as automation writes, so they belong to the host's undo history.
+
 ## Partial recapture / re-analysis
 
 The unit of invalidation and recomputation is **(track x time range)**, and it **never touches results that already exist in other ranges**. Drag out a selection on the waveform page, then:

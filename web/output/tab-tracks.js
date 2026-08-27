@@ -544,7 +544,11 @@ export function rowFromStore(store, ch, ctx) {
     const { vals, active } = c;
     const cfg = c.chans[ch - 1] || {};
     const cc = c.conn[ch - 1] || null;
-    const freeze = Math.trunc(num(vals[paramIdOf(active, ch, "freeze")], 0));
+    // 原值直接交给 `freezeBits` —— 它内部已做 `num()` 兜底、四舍五入、钳到 [0,3]、非有限回 0。
+    // 这里**不许再先 `Math.trunc`**:那会把 1.9 截成 1(只冻 pan),而 native `freezeBitsOf`
+    // 与 mock 都进位成 2(只冻 vol),同一个值在三侧给出两种答案。本文件其余调用点
+    // (`requestManual` / `beginVolDrag`)传的都是原值,`rowFromStore` 曾是唯一的例外(SL-188)。
+    const freeze = num(vals[paramIdOf(active, ch, "freeze")], 0);
     const bits = freezeBits(freeze);
     const seg = manualConstantOf(segmentsOfCh(c.segments, ch));
     // 读回值,**逐维按 freeze 位分叉**([J85]):
