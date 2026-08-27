@@ -452,6 +452,35 @@ export function manualConstantOf(segChannel) {
 }
 
 /**
+ * 曲线在某一时刻所处的段(**未冻结维度的读回真源**;SL-211,用户 v5.4 实测拍板 2026-08-27)。
+ *
+ * 为什么需要它:未冻结维度此前的回落是**参数面**。可参数面在非 PRINT 态装的是**宿主**
+ * 那一份值 —— 刚复制完版本、切进去还没播放时,那就是出厂默认(pan 居中)。于是用户看到
+ * 「全轨声像都在中间」,一播放又全对了(引擎开始驱动参数面)。用户裁定:**切进去就该
+ * 显示曲线的起始值**。
+ *
+ * 口径与 J78 优先级链一致 —— 显示的是**该维度的权威**:
+ *   · 冻结维度 → 参数面(宿主自动化 / 冻结手动值当家),不走本函数;
+ *   · 未冻结维度 → 引擎分析曲线,即本函数;曲线还不存在(没分析过)才回落参数面。
+ *
+ * 找覆盖 `tS` 的段;`tS` 落在段间空隙或时间线之外时取**第一段** —— 「切进版本还没播放」
+ * 正是这一档,用户要看的是曲线起点,不是出厂默认。段表为空返回 null(调用方回落参数面)。
+ */
+export function curveSegmentAt(segChannel, tS) {
+    const segs = (segChannel && segChannel.segments) || [];
+    if (!segs.length) return null;
+    const t = num(tS, 0);
+    for (const s of segs) {
+        if (!s) continue;
+        const t0 = num(s.t0S, 0);
+        const t1 = num(s.t1S, 0);
+        // t1 <= t0 = 开放尾段(哨兵/缺值):从 t0 起一直算到底
+        if (t >= t0 && (t < t1 || !(t1 > t0))) return s;
+    }
+    return segs[0];
+}
+
+/**
  * 手动首写确认条要不要弹(纯函数,node 侧可直接断言)。
  *
  * **[J85] 用户裁定 2026-08-27(方案 A):冻结通道不弹。** 确认条正文
@@ -521,6 +550,9 @@ export function rowContext(store) {
         conn: (st.conn && st.conn.channels) || [],
         vals,
         segments: st.segments,
+        // [SL-211] 未冻结维度按**播放头所在的曲线段**读回;没有播放头就是 0 = 曲线起点,
+        // 正是「刚切进一个版本、还没播放」那一档。
+        timeS: num((st.playhead || {}).timeS, 0),
         active:
             (state.global && state.global.version_active) ||
             (st.params && st.params.versionActive) ||
@@ -559,8 +591,13 @@ export function rowFromStore(store, ch, ctx) {
     //   • 未冻结维度 → 有手动常值段就取该段(05 §2.2「读回值同样取自该段」),否则取参数面。
     //     这一支**必须**先读段表:未冻结轨拖卡箍(05 明确允许,走一次性确认)写的是曲线真身,
     //     25 Hz 的 `scvb.params` 在非 PRINT 态没有新值,改读参数面会让把手在下一帧弹回去。
-    const panSeg = bits.pan ? null : seg;
-    const volSeg = bits.vol ? null : seg;
+    //   [SL-211] 未冻结那一支的回落再往前推一步:没有手动常值段时,不再直接掉到参数面,
+    //   而是先读**播放头所处的曲线段**(curveSegmentAt)。参数面在非 PRINT 态装的是宿主
+    //   那份值 —— 刚复制完版本切进去还没播放时那就是出厂默认,15 轨声像齐刷刷居中,
+    //   一播放又全对(引擎开始驱动参数面)。只有段表整个为空(还没分析过)才回落参数面。
+    const curve = curveSegmentAt(segmentsOfCh(c.segments, ch), c.timeS);
+    const panSeg = bits.pan ? null : seg || curve;
+    const volSeg = bits.vol ? null : seg || curve;
     const pan = panSeg
         ? num(panSeg.pan, PAN_RANGE.def)
         : num(vals[paramIdOf(active, ch, "pan")], PAN_RANGE.def);

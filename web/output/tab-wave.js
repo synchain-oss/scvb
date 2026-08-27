@@ -2417,6 +2417,35 @@ export function createTabWave(opts) {
         // 只拦截、不缩放(用户显然不是想缩放浏览器)。
         // 另外三路则**只在泳道窗内**接管并 preventDefault —— 窗外(检查器、参数
         // 区)的普通滚轮必须照旧交给浏览器,否则那些地方就滚不动了。
+        // [SL-205 增补,用户实测 2026-08-27]「需要点一下,shift 滚轮和纯滚轮才有作用」。
+        //
+        // **页面层查下来没有任何焦点前置条件**:CDP 可信事件实测(切到本页之后**不曾在
+        // 泳道里点过一下**)四路全部生效 —— 见 web-preview/tests/wheel-route-probe.mjs。
+        // 也就是说这一条不在 web 这一层,在**宿主 / WebView2 的窗口焦点**那一层:
+        // WebViewHost 至今没有任何焦点处理(`grep -n "KeyboardFocus\|focus" 那个文件` 零命中),
+        // WebView2 子窗口要等用户点一下才拿到焦点,在那之前滚轮消息不一定路由过来。
+        //
+        // 能在 web 侧做的就这一件:**指针进入泳道窗时把焦点收进来**。三道闸防止它变成
+        // 抢焦点:①只在泳道窗上挂(不是整页);②本文档已经有焦点就不动;③焦点正停在
+        // 可编辑控件上时一律不动(别把人正在打的字打断)。
+        // ⚠ **本条只能在真 DAW 里验**:无头浏览器里页面恒有焦点,这段代码根本不会执行。
+        if (els.window) {
+            els.window.addEventListener("pointerenter", () => {
+                if (typeof document === "undefined") return;
+                if (document.hasFocus && document.hasFocus()) return;
+                const ae = document.activeElement;
+                if (
+                    ae &&
+                    ae.closest &&
+                    ae.closest("input, textarea, select, [contenteditable]")
+                ) {
+                    return;
+                }
+                if (typeof window !== "undefined" && window.focus)
+                    window.focus();
+            });
+        }
+
         const wheelHost = els.panel || els.window || els.lanes;
         wheelHost.addEventListener(
             "wheel",

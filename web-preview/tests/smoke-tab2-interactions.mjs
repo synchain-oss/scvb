@@ -1532,5 +1532,72 @@ log("=== ⑩ 主列表 demo 轨名本地化(store 层;三语 + 非 demo 不改�
 }
 
 // =============================================================================
+log(
+    "=== ⑪ SL-211②:切进版本还没播放时,未冻结维度读**曲线起始值**而非出厂默认 ===",
+);
+{
+    // 用户实测:复制版本并切进去后,播放前 15 轨声像全在中间;一播放又全对了。
+    // 定谳:未冻结维度的读回值原先回落到**参数面**,而参数面在非 PRINT 态装的是宿主
+    // 那一份 —— 刚切版本时就是出厂默认(pan 居中)。引擎开始驱动参数面之后才对上。
+    const segCh = {
+        segments: [
+            { segIdx: 0, t0S: 0, t1S: 10, pan: -60, volDb: -3, origin: "auto" },
+            { segIdx: 1, t0S: 10, t1S: 20, pan: 40, volDb: 2, origin: "auto" },
+        ],
+    };
+    eq(TT.curveSegmentAt(segCh, 0).pan, -60, "(a1)t=0 取曲线起点");
+    eq(TT.curveSegmentAt(segCh, 5).pan, -60, "(a2)t 落在首段内");
+    eq(TT.curveSegmentAt(segCh, 15).pan, 40, "(a3)t 落在次段内");
+    eq(
+        TT.curveSegmentAt(segCh, 999).pan,
+        -60,
+        "(a4)t 在时间线之外 ⇒ 回落首段(「还没播放」正是这一档)",
+    );
+    eq(
+        TT.curveSegmentAt({ segments: [] }, 0),
+        null,
+        "(a5)段表为空 ⇒ null,调用方回落参数面(还没分析过,曲线本就不存在)",
+    );
+    eq(
+        TT.curveSegmentAt({ segments: [{ t0S: 0, t1S: 0, pan: 7 }] }, 123).pan,
+        7,
+        "(a6)开放尾段(t1 缺值/哨兵)从 t0 一直算到底",
+    );
+
+    // 端到端:未冻结 + 有曲线 ⇒ 读曲线;冻结 ⇒ 仍读参数面(J85 不变)
+    const store = (freeze) => ({
+        state: {
+            channels: [{ ch: 1, label: "A" }],
+            global: { version_active: 1 },
+        },
+        params: {
+            values: {
+                [TT.paramIdOf(1, 1, "pan")]: 0, // 参数面 = 出厂默认居中
+                [TT.paramIdOf(1, 1, "freeze")]: freeze,
+            },
+            versionActive: 1,
+        },
+        segments: { channels: [{ ch: 1, segments: segCh.segments }] },
+        playhead: { timeS: 0, isPlaying: false },
+    });
+    eq(
+        TT.rowFromStore(store(0), 1).pan,
+        -60,
+        "(b1)未冻结 + 未播放 ⇒ 显示曲线起始值 −60(不是参数面的 0)",
+    );
+    eq(
+        TT.rowFromStore(store(1), 1).pan,
+        0,
+        "(b2)pan 冻结 ⇒ 仍读参数面(J85:冻结维度的权威在参数面)",
+    );
+    const playing = store(0);
+    playing.playhead = { timeS: 15, isPlaying: true };
+    eq(TT.rowFromStore(playing, 1).pan, 40, "(b3)播放头进次段 ⇒ 读该段的值");
+    const noSeg = store(0);
+    noSeg.segments = { channels: [{ ch: 1, segments: [] }] };
+    eq(TT.rowFromStore(noSeg, 1).pan, 0, "(b4)还没分析过 ⇒ 回落参数面");
+}
+
+// =============================================================================
 log(fail === 0 ? "\n全部通过 ✅" : `\n失败 ${fail} 条 ❌`);
 process.exit(fail === 0 ? 0 : 1);

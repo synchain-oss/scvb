@@ -4479,6 +4479,27 @@
                 z-index: 9;
             }
 
+            /* ---- 版本复制确认(SL-211;卡片层单例)----
+               `.sc-modal` 本身**不带宽度**,完全靠内容撑 —— 一段长警告文案要么把框撑到
+               贴边,要么(移出来之前)被 210px 的祖先挤扁并截断。这里给一个明确的定宽
+               + 上限,与工作流程大卡(app.js 的 560px / calc(100% - 2*--sp-24))同一档,
+               不再让文案长度决定框有多宽。 */
+            [data-gb="header-version-copy-confirm"] {
+                z-index: 9;
+            }
+            .sc-modal--copyconfirm {
+                width: 460px;
+                max-width: calc(100% - 2 * var(--sp-24));
+            }
+            /* 两枚钮排右下:取消在左、主行动在右(与工作流程卡 SL-213 同一手势记忆)。
+               改前两枚裸按钮直接躺在正文后面,既没有行容器、也没有与正文的间距。 */
+            .sc-modal__foot {
+                display: flex;
+                justify-content: flex-end;
+                gap: var(--sp-9);
+                margin-top: var(--sp-16);
+            }
+
             /* ---- PRINT 态 / 只读观察态:组胶囊整组不可操作(05 §2.1 ⓪;契约 §1.4)---- */
             [data-gb="master-group-selector"][data-disabled="1"] .group-pills {
                 opacity: 0.45;
@@ -4697,36 +4718,11 @@
                         <!-- [T3x] bridge.setVersionName(v, name) —— 契约 §1.10 -->
                         <!-- [T3x] bridge.copyVersion(src, dst) —— 契约 §1.11 -->
 
-                        <!-- 复制确认框(深色玻璃,同缩放确认族;设计稿 L1131-1152) -->
-                        <div
-                            class="sc-scrim"
-                            data-gb="header-version-copy-confirm"
-                            hidden
-                        >
-                            <div class="sc-modal">
-                                <p
-                                    class="sc-modal__body"
-                                    data-t="master.copyConfirmWarn"
-                                >
-                                    目标已有数据将被覆盖——{name} 的 15 轨 pan /
-                                    vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。
-                                </p>
-                                <button
-                                    class="sc-btn sc-btn--dark"
-                                    data-gb="header-version-copy-cancel"
-                                    data-t="common.cancel"
-                                >
-                                    取消
-                                </button>
-                                <button
-                                    class="sc-btn sc-btn--cta"
-                                    data-gb="header-version-copy-ok"
-                                    data-t="master.copyConfirmPrimary"
-                                >
-                                    覆盖并复制
-                                </button>
-                            </div>
-                        </div>
+                        <!-- 复制确认框已移到**卡片层**(见文件末 data-gb="header-version-copy-confirm")。
+                             [SL-211] 它原先就放在这里 —— 而 .sc-scrim 是 absolute+inset:0,
+                             盖住的是**最近的定位祖先**,在这儿就是 210px 宽的 header-version:
+                             模态被挤成 210px,长正文当场截断(用户实测「显示不完整」)。
+                             缩放确认/引导/tour 三个能正常铺开的 scrim 都在卡片层,本框归队。 -->
                         <!-- ARMED 轻确认(05 §2.1③:FOLLOW 直接切 / ARMED 弹本条 / PRINT chip 全 disabled)。
                              词条 master.versionArmedConfirm + common.cancel / common.continue(T31 Wave 2 新增)。 -->
                         <div
@@ -8131,6 +8127,44 @@
                         >
                             ✕
                         </button>
+                    </div>
+                </div>
+
+                <!-- ====================== 版本复制确认(卡片层单例;SL-211)======================
+                     [SL-211 用户实测 2026-08-27] 本框原先嵌在 header-version 里。.sc-scrim 是
+                     `position:absolute; inset:0`,盖住的是**最近的定位祖先** —— 在那儿是 210px 宽的
+                     版本 chip 容器,于是模态被挤成 210px 宽,长正文被截断。移到卡片层后与
+                     scale-confirm / guide-overlay / tour-ask 同一档:定位祖先 = #card(1180px)。
+                     接线不受影响:tab-master.js 一律按 data-gb 从 document 上取。 -->
+                <div
+                    class="sc-scrim"
+                    data-gb="header-version-copy-confirm"
+                    hidden
+                >
+                    <div class="sc-modal sc-modal--copyconfirm">
+                        <p
+                            class="sc-modal__body"
+                            data-t="master.copyConfirmWarn"
+                        >
+                            目标已有数据将被覆盖——{name} 的 15 轨 pan /
+                            vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。
+                        </p>
+                        <div class="sc-modal__foot">
+                            <button
+                                class="sc-btn sc-btn--dark"
+                                data-gb="header-version-copy-cancel"
+                                data-t="common.cancel"
+                            >
+                                取消
+                            </button>
+                            <button
+                                class="sc-btn sc-btn--cta"
+                                data-gb="header-version-copy-ok"
+                                data-t="master.copyConfirmPrimary"
+                            >
+                                覆盖并复制
+                            </button>
+                        </div>
                     </div>
                 </div>
 

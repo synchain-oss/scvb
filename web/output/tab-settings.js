@@ -197,6 +197,7 @@ export function createTabSettings(opts) {
         guideExpand: $("settings-guideblock-expand"),
         reopenTour: $("settings-reopentour"),
         viewWorkflow: $("settings-viewworkflow"),
+        docs: $("settings-docs"), // [SL-214] 此前**从未接线**(见 index.html 那段行注)
         versionValue: $("settings-version-value"),
         storageValue: $("settings-storage-value"),
         storageGuid: $("settings-storage-guid"),
@@ -335,6 +336,14 @@ export function createTabSettings(opts) {
         if (typeof opts.onViewWorkflow === "function") opts.onViewWorkflow();
     }
 
+    function openDocs() {
+        // [SL-214 用户实测 2026-08-27] 这颗钮此前**根本没有 handler** —— index.html 里
+        // 那段行注写着「点击行为仍未定,故不挂 handler」,于是点它什么都不发生。
+        // 现在定了:走系统浏览器(见 app.js 的 openDocsInBrowser)。用回调而不是在这里
+        // 直接开,是因为语言在 app.js 手里,且外链是整页级行为、不该由某个 tab 私自发起。
+        if (typeof opts.onOpenDocs === "function") opts.onOpenDocs();
+    }
+
     function toggleDiag() {
         local.diagOpen = !local.diagOpen;
         if (el.diagBox)
@@ -397,6 +406,7 @@ export function createTabSettings(opts) {
         if (el.reopenTour) el.reopenTour.addEventListener("click", reopenTour);
         if (el.viewWorkflow)
             el.viewWorkflow.addEventListener("click", viewWorkflow);
+        if (el.docs) el.docs.addEventListener("click", openDocs);
         if (el.diagChevron)
             el.diagChevron.addEventListener("click", toggleDiag);
         if (el.diagCopy) el.diagCopy.addEventListener("click", copyDiag);
