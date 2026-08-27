@@ -325,9 +325,19 @@ Registry::ClaimResult Registry::claimOutput(u32 pid, u64 nowMs)
             continue;
         }
 
-        // 同 pid 重认领(采样率切换 / 同进程新实例):只刷新 pid/心跳,【不清】 connected_mask。
+        // 同 pid 重认领(采样率切换 / 宿主重开 prepare):只刷新 pid/心跳,【不清】 connected_mask。
         // 清 mask 会把 Output 自己的 Input 拓扑判定打掉 → Input 健康判定跟掉 → 总线静音(P0)。
-        if (cur == kSlotActive && s.pid == pid)
+        //
+        // [SL-210] `ownsOutput_` 这一条不能省:同一个 DAW 里的两个 Output 实例**共享 pid**
+        // (pid 来自 GetCurrentProcessId),只比 pid 的话第二个实例会走进这条分支拿到 kClaimed,
+        // 于是同组同 bus 出现两个 kActive 主实例 —— 两边都替换总线、都写 viz seqlock、都写配置
+        // 广播、都打印自动化。用户实测的表现是总线塌成单声道:后挂的那个是全新实例,15 轨 pan
+        // 全在默认居中位,它的求和 L==R 覆盖掉前一个实例按用户 pan 值铺开的立体声像
+        // (删掉第二个立即恢复,正是因为前一个的替换重新成了最后一手)。
+        // ownsOutput_ 是**每个 Registry 实例自己**的持有位,所以它恰好把「同一实例重新 prepare」
+        // (真该续期)与「同进程另一个实例」(该退观察者)分开。非属主实例落到下面异 pid 分支:
+        // 主实例心跳新鲜 → 非 stale → kConflict → OutputSession 置 kObserver。
+        if (cur == kSlotActive && s.pid == pid && ownsOutput_)
         {
             s.pid = pid;
             s.heartbeat_ms.store(nowMs, std::memory_order_relaxed);
@@ -398,7 +408,9 @@ void Registry::releaseOutput(u32 pid)
     }
     OutputSlot& s = *slot;
     u32 expected = kSlotActive;
-    if (s.pid == pid &&
+    // [SL-210] 防御性属主校验(与 heartbeatOutput 同口径):只比 pid 不够 —— 同一 DAW 里的两个
+    // Output 实例共享 pid,非属主的那个若走到这里会把主实例的 slot 直接释放掉。
+    if (ownsOutput_ && s.pid == pid &&
         s.state.compare_exchange_strong(expected, kSlotFree, std::memory_order_acq_rel, std::memory_order_acquire))
     {
         // 释放成功。
