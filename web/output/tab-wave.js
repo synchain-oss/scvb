@@ -55,6 +55,7 @@ import {
     OVERVIEW_COLS,
 } from "./canvas/waveform.js";
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
+import { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX } from "../shared/wheel.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
 import {
     CHANNEL_COUNT,
@@ -128,12 +129,31 @@ export function laneHFromPercent(p) {
 // 后果不只是「没功能」:没被 preventDefault 的滚轮会**漏给浏览器默认动作** ——
 // 页面级实测,裸滚轮把泳道列竖着滚跑了 121px(用户看到视图突变,自然以为缩放坏了)。
 
-/** deltaMode=1 一行的像素当量(Chrome 桌面档约 16px/行)。 */
-export const WHEEL_LINE_PX = 16;
-/** deltaMode=2 一页的像素当量。 */
-export const WHEEL_PAGE_PX = 400;
 /** Alt 纵向缩放:每格行高步进(22..88 共 66px,4px/格 ≈ 17 档)。 */
 export const LANE_H_WHEEL_STEP = 4;
+
+/**
+ * 微拖之后多久内不接受「双击边界 = 合并」(ms;复审【重要】)。
+ *
+ * 边界拖拽是**按下-微移-释放**,连着做两次会被浏览器判成一次 dblclick —— 于是
+ * 「我在细调这条边界」被读成「我要删掉这条边界」,左右两段当场合并。代价还特别大:
+ * 前两笔 move_boundary 已按契约 §5.4 把命中段变成 origin=user_edited + locked=true,
+ * 而 analyze(…,{clearManual:true}) 对 locked 段免疫(须先逐段解锁)。
+ * 故 commitBoundDrag **真发**了 move_boundary 之后的这一小段时间里,双击的边界分支
+ * 整个让路(既不合并、也不落到分割去 —— 落过去等于又加一条边界,同样不是用户要的)。
+ */
+export const BOUND_DRAG_MERGE_GUARD_MS = 400;
+
+/**
+ * 「刚提交过边界拖拽,这次双击不算合并」判定(纯函数,node 侧可断言)。
+ * `lastCommitMs` 为 0 / 非数 = 本会话还没提交过拖拽 ⇒ 不拦。
+ */
+export function mergeGuardedByDrag(nowMs, lastCommitMs) {
+    const t = num(lastCommitMs, 0);
+    if (!(t > 0)) return false;
+    const dt = num(nowMs, 0) - t;
+    return dt >= 0 && dt < BOUND_DRAG_MERGE_GUARD_MS;
+}
 
 /**
  * 滚轮该走哪一路(纯函数,node 侧可断言)。
@@ -152,24 +172,9 @@ export function wheelRoute(e) {
     return "hpan";
 }
 
-/**
- * 滚轮位移归一到**像素**(带符号,正 = 向下/向右)。
- *
- * 两件都必须做,少一件就有整路失灵:
- *   ① `deltaMode` 分档:0=像素 / 1=行 / 2=页。只读 delta 数值不乘当量的话,
- *      行模式(部分鼠标驱动与宿主 WebView 会发)一格只挪 3px,平移形同没动。
- *   ② **取 |deltaX| 与 |deltaY| 中较大的那个**:Chrome 把 Shift+滚轮改写成
- *      **deltaX**(deltaY 归零)。只读 deltaY 的话「Shift 纵向平移」这一路
- *      永远拿到 0 —— 正是用户报的②。
- */
-export function wheelPx(e) {
-    const ev = e || {};
-    const mode = ev.deltaMode;
-    const k = mode === 1 ? WHEEL_LINE_PX : mode === 2 ? WHEEL_PAGE_PX : 1;
-    const dy = num(ev.deltaY, 0) * k;
-    const dx = num(ev.deltaX, 0) * k;
-    return Math.abs(dx) > Math.abs(dy) ? dx : dy;
-}
+// 位移归一(deltaMode 分档 + 主轴取大)走 shared/wheel.js —— 与总览轨迹图**同一份**;
+// 两处曾各写一份逐字同义的实现,抽走免得下次只修一边(复审建议③)。
+export { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX };
 
 /** 段检查器宽(稿内 877;灰模 260 → 统一 262,登记差异)。 */
 export const INSPECTOR_W = 262;
@@ -981,6 +986,7 @@ export function createTabWave(opts) {
         inspectorOpen: true,
         reidentifyCounts: null, // {k,l}:重新识别确认框正文的定格计数(切语言补填用)
         boundDrag: null, // {ch, segIdx, tS, snapped, minS, maxS}
+        boundCommitAt: 0, // 上次**真发** move_boundary 的时刻(双击合并的让路判据)
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
         autostopUser: false, // 「播放结束自动停止」是用户手勾的(撤防不复位它)
         sliderKeyTimer: 0, // 键盘档「视为松手」计时
@@ -2382,6 +2388,10 @@ export function createTabWave(opts) {
             );
             const j = nearestHit(p.x, xs, BOUNDARY_HIT_PX);
             if (j >= 0 && segs[j] && segs[j + 1]) {
+                // 刚提交过边界拖拽 ⇒ 这一下多半是「连着微调两次」被判成的 dblclick,
+                // 不是要删边界。**整个让路**:既不合并,也不落到下面的分割去 ——
+                // 落过去等于又加一条边界,同样不是用户要的(复审【重要】)。
+                if (mergeGuardedByDrag(Date.now(), local.boundCommitAt)) return;
                 // 走既有 merge 桥函数与既有口径:editSegment(§1.16)本就进撤销栈,
                 // 与工具条「合并选中两段」逐字同一条路,不另加确认框 —— 误删一条
                 // 边界的代价是一次 Ctrl+Z,弹框反而挡住连续修边界的手感。
@@ -2468,11 +2478,12 @@ export function createTabWave(opts) {
                         Math.min(Math.max(x, 0), stageW),
                     );
                     // 取向按**归一后**的位移定,不再直接看 deltaY:行模式与
-                    // Shift 改写都可能让 deltaY 是 0(见 wheelPx)
-                    timeline.zoom(
-                        anchorT,
-                        wheelPx(e) < 0 ? ZOOM_STEP : 1 / ZOOM_STEP,
-                    );
+                    // Shift 改写都可能让 deltaY 是 0(见 shared/wheel.js)。
+                    // **零位移早退**(复审建议①):与下面三路同一口径 —— 归一后为 0
+                    // 说明这一发根本没位移,再往下走会按 `< 0 ? 放大 : 缩小` 白缩一格。
+                    const dz = wheelPx(e);
+                    if (!dz) return;
+                    timeline.zoom(anchorT, dz < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
                     return;
                 }
                 if (!inWindow) return;
@@ -2652,6 +2663,10 @@ export function createTabWave(opts) {
         // (ms 量化后)比原位,子毫秒抖动同样算零位移。
         const tS = Math.round(d.tS * 1000) / 1000;
         if (tS === Math.round(d.origT * 1000) / 1000) return;
+        // 时间戳**只在真发了 move_boundary 时**打(上面那条零位移早退不算):双击的
+        // 边界分支据此让路,免得「连着微调两次同一条边界」被浏览器判成 dblclick,
+        // 把这条边界删掉(复审【重要】;判据见 mergeGuardedByDrag)。
+        local.boundCommitAt = Date.now();
         sendEdit(d.ch, "move_boundary", {
             segIdx: d.segIdx,
             edge: "t0",

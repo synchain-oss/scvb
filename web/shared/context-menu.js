@@ -18,14 +18,41 @@
 // =============================================================================
 
 /**
+ * 放行选择器 —— 只挑**真的能编辑文本**的那些(复审建议②)。
+ *
+ * 裸 `input` 不分 type 是错的:`<input type="range">` 是滑杆(本仓 Tab3 的参数条就是),
+ * `checkbox` / `radio` / `button` / `color` 同理 —— 这些控件上的右键菜单没有任何
+ * 「粘贴」可言,放行它们等于在插件里露出浏览器菜单,正是本卡要治的那件事。
+ * 故改成**白名单**:只放文本族的 input,加 textarea 与 select
+ * (select 的右键菜单归宿主系统,拦了反而怪)。
+ */
+const EDITABLE_SELECTOR = [
+    'input[type="text"]',
+    'input[type="search"]',
+    'input[type="url"]',
+    'input[type="tel"]',
+    'input[type="email"]',
+    'input[type="password"]',
+    'input[type="number"]',
+    "input:not([type])", // 缺省 type 即 text
+    "textarea",
+    "select",
+    '[contenteditable=""]',
+    '[contenteditable="true"]',
+    '[contenteditable="plaintext-only"]',
+].join(", ");
+
+/**
  * 目标是不是可编辑控件(右键要放行的那一类)。
  *
  * 用 closest() 而不是只看 target 自己:contenteditable 容器里的行内元素
  * (`<b>` / `<span>`)才是真正的事件目标,只比对 tagName 会漏。
+ * `contenteditable="false"` **不放行**(复审建议②):那是显式声明「这块不可编辑」,
+ * 而裸 `[contenteditable]` 属性选择器会把它一起放过去。
  */
 export function isEditableTarget(el) {
     if (!el || typeof el.closest !== "function") return false;
-    return !!el.closest("input, textarea, select, [contenteditable]");
+    return !!el.closest(EDITABLE_SELECTOR);
 }
 
 /**

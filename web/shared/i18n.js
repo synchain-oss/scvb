@@ -295,7 +295,7 @@ export const T = {
             "查看分析结果、调整分段;上方是泳道曲线,下方是工具条;拖动、框选、缩放都在这页完成。",
         "tour.step34.title": "下方面板与操作",
         "tour.step34.body":
-            "框选泳道建立选区;拖拽边界微调分段;用滚轮或底部缩放条缩放 / 平移;双击可分割,选中段可合并。",
+            "框选泳道建立选区;拖拽边界微调分段。滚轮:裸滚=左右平移,Shift=上下平移,Ctrl=横向缩放,Alt=改泳道高度(底部缩放条同效)。双击段内=在此分割,双击段与段之间的分界线=删掉它、把左右两段并成一段;选中相邻两段也可合并。",
         "tour.step32.title": "泳道区",
         "tour.step32.body":
             "已为你放大泳道:每条泳道叠着 pan / vol 阶梯曲线,播放头随走带移动;上排 pan(声像)、下排 vol(音量)",
@@ -1126,7 +1126,7 @@ export const T = {
             "Review results and adjust segments; lane curves on top, toolbar below; drag, box-select and zoom all happen here.",
         "tour.step34.title": "Bottom panel and actions",
         "tour.step34.body":
-            "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/scroll; double-click to split, select two adjacent segments to merge.",
+            "Box-select lanes to make a selection; drag boundaries to fine-tune segments. Wheel: plain = pan left/right, Shift = pan up/down, Ctrl = zoom horizontally, Alt = change lane height (the bottom zoom bars do the same). Double-click inside a segment to split it there; double-click the divider between two segments to delete it and merge them; selecting two adjacent segments also merges.",
         "tour.step32.title": "Lane area",
         "tour.step32.body":
             "The lanes are zoomed in for you: each lane stacks the pan/vol step curves, and the playhead follows the transport; the top row is pan, the bottom row is vol.",
@@ -1912,7 +1912,7 @@ export const T = {
             "Vérifiez les résultats et ajustez les segments ; courbes des pistes en haut, barre d'outils en bas ; glisser, sélectionner par rectangle, zoomer se font ici.",
         "tour.step34.title": "Panneau inférieur et actions",
         "tour.step34.body":
-            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, sélectionnez deux segments adjacents pour fusionner.",
+            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments. Molette : seule = défilement horizontal, Maj = défilement vertical, Ctrl = zoom horizontal, Alt = hauteur des pistes (les barres de zoom font de même). Double-clic dans un segment pour le diviser ; double-clic sur la limite entre deux segments pour la supprimer et les fusionner ; sélectionner deux segments adjacents fusionne aussi.",
         "tour.step32.title": "Zone de pistes",
         "tour.step32.body":
             "Les pistes sont agrandies pour vous : chaque piste superpose les courbes en escalier pan/vol, la tête de lecture suit le transport ; rangée du haut = pan, du bas = vol.",

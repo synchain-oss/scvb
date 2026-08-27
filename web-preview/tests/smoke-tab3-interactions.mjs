@@ -49,6 +49,7 @@ const HIT = await import(u("web/shared/hit.js"));
 const MD = await import(u("web/shared/mock-data.js"));
 const { T } = await import(u("web/shared/i18n.js"));
 const TWCM = await import(u("web/shared/context-menu.js"));
+const WHEEL = await import(u("web/shared/wheel.js"));
 
 let fail = 0;
 const log = (...a) => console.log(...a);
@@ -1760,7 +1761,7 @@ log("\n=== ⑩ Wave 3 视觉修的口径钉子(对抗校验修订批)===");
     // (a) 边界拖拽:点一下不拖 ⇒ 零位移不发 move_boundary(契约 §5.4 的后置会把
     //     该段变成 user_edited + locked,且 analyze(clearManual) 对 locked 免疫)
     check(
-        /function commitBoundDrag\(\)[\s\S]{0,900}if \(tS === Math\.round\(d\.origT \* 1000\) \/ 1000\) return;[\s\S]{0,200}sendEdit\(d\.ch, "move_boundary"/.test(
+        /function commitBoundDrag\(\)[\s\S]{0,900}if \(tS === Math\.round\(d\.origT \* 1000\) \/ 1000\) return;[\s\S]{0,600}sendEdit\(d\.ch, "move_boundary"/.test(
             tw,
         ),
         "commitBoundDrag 有零位移短路(误点不再把 auto 段钉死成 locked)",
@@ -3607,8 +3608,8 @@ log("=== ⑪ SL-205 滚轮四路映射 + SL-207 右键/双击(用户 v5.4 实测
             "(d1)抑制走 contextmenu 监听(JUCE 8 没暴露 WebView2 的对应设置)",
         );
         check(
-            /input, textarea, select, \[contenteditable\]/.test(cm),
-            "(d2)可编辑控件放行 —— 否则输入框里连粘贴都没了",
+            /EDITABLE_SELECTOR/.test(cm) && /input\[type="text"\]/.test(cm),
+            "(d2)可编辑控件走白名单放行 —— 否则输入框里连粘贴都没了",
         );
         for (const f of ["web/output/app.js", "web/input/app.js"]) {
             const s = src(f);
@@ -3624,17 +3625,14 @@ log("=== ⑪ SL-205 滚轮四路映射 + SL-207 右键/双击(用户 v5.4 实测
                 `(d4)${f} 的抑制排在 boot 之前(兜底面板也管得住)`,
             );
         }
-        // 纯函数面:可编辑判定
-        const el = (sel) => ({ closest: (q) => (q === sel ? {} : null) });
-        check(
-            TWCM.isEditableTarget(
-                el("input, textarea, select, [contenteditable]"),
-            ),
-            "(d5)可编辑目标判 true",
-        );
+        // 纯函数面:可编辑判定。这里只验「命中即放行 / 不命中即拦」两档 ——
+        // 具体哪些选择器算可编辑(range 不放行、contenteditable=false 不放行等)
+        // 归 ⑫ 组的 (e1)-(e7),那边用的是按选择器逐条匹配的桩。
+        const el = (hit) => ({ closest: () => (hit ? {} : null) });
+        check(TWCM.isEditableTarget(el(true)), "(d5)可编辑目标判 true");
         check(!TWCM.isEditableTarget(null), "(d6)空目标不炸");
         check(
-            !TWCM.isEditableTarget({ closest: () => null }),
+            !TWCM.isEditableTarget(el(false)),
             "(d7)普通目标判 false(会被拦)",
         );
     }
@@ -3664,6 +3662,198 @@ log("=== ⑪ SL-205 滚轮四路映射 + SL-207 右键/双击(用户 v5.4 实测
             /segs\[j\] && segs\[j \+ 1\]/.test(body),
             "(e5)合并前确认左右两段都在(段表与边界表不同步时不发越界下标)",
         );
+    }
+}
+
+// =============================================================================
+log("=== ⑫ 复审收口:微拖×2 不得被判成「双击删边界」+ 四项建议 ===");
+{
+    const tw = src("web/output/tab-wave.js");
+
+    // ---- 【重要】边界微拖 × 2 会被浏览器判成 dblclick ------------------------
+    // 手势是「按下-微移-释放」,连着做两次浏览器就发一个 dblclick;若边界分支照常
+    // 合并,用户「细调这条边界」的动作就变成「删掉这条边界」。代价还特别大:前两笔
+    // move_boundary 已按契约 §5.4 把命中段变成 origin=user_edited + locked=true,
+    // 而 analyze(…,{clearManual:true}) 对 locked 段免疫(须先逐段解锁)。
+    {
+        const G = TW.mergeGuardedByDrag;
+        const W = TW.BOUND_DRAG_MERGE_GUARD_MS;
+        eq(W, 400, "(a1)让路窗 400ms");
+        // 正向:刚提交过拖拽 ⇒ 让路
+        check(G(1000, 1000), "(a2)同一时刻 ⇒ 让路");
+        check(G(1000 + W - 1, 1000), "(a3)窗内(399ms)⇒ 让路");
+        // 反向:窗外 / 从没拖过 ⇒ 正常合并
+        check(
+            !G(1000 + W, 1000),
+            "(a4)恰好到窗口边界(400ms)⇒ 不再让路,正常合并",
+        );
+        check(!G(9999, 1000), "(a5)早就过了 ⇒ 正常合并");
+        check(!G(1000, 0), "(a6)本会话没提交过拖拽 ⇒ 不拦(普通双击照常合并)");
+        check(!G(1000, undefined), "(a7)时间戳缺值 ⇒ 不拦");
+        // 时钟倒流(改系统时间/跨机器)不得把守卫永久点亮
+        check(
+            !G(500, 1000),
+            "(a8)now 早于时间戳 ⇒ 不拦(时钟倒流不永久锁死合并)",
+        );
+    }
+    // 接线:时间戳只在**真发** move_boundary 时打(零位移那条早退不算);
+    // 双击边界分支在 sendEdit 之前先问守卫,且守卫命中时**整个 return**
+    // —— 不能落到下面的分割去,那等于又加一条边界。
+    {
+        const iZero = tw.indexOf(
+            "if (tS === Math.round(d.origT * 1000) / 1000) return;",
+        );
+        const iStamp = tw.indexOf("local.boundCommitAt = Date.now();");
+        const iSend = tw.indexOf('sendEdit(d.ch, "move_boundary"');
+        check(
+            iZero > 0 && iStamp > iZero && iSend > iStamp,
+            "(b1)时间戳打在零位移早退之后、move_boundary 之前(点一下不拖不该武装守卫)",
+        );
+        const dbl = tw.slice(
+            tw.indexOf('els.lanes.addEventListener("dblclick"'),
+            tw.indexOf('els.lanes.addEventListener("dblclick"') + 2600,
+        );
+        const iGuard = dbl.indexOf(
+            "mergeGuardedByDrag(Date.now(), local.boundCommitAt)",
+        );
+        const iMerge = dbl.indexOf('"merge"');
+        const iSplit = dbl.indexOf('"split"');
+        check(iGuard > 0 && iGuard < iMerge, "(b2)守卫问在合并之前");
+        check(
+            dbl.slice(iGuard, iMerge).includes("return;"),
+            "(b3)守卫命中即 return —— 不落到分割去(落过去等于又加一条边界)",
+        );
+        check(
+            iMerge < iSplit,
+            "(b4)边界分支仍排在分割之前(SL-207 的顺序不能被破坏)",
+        );
+    }
+
+    // ---- 建议①:hzoom 零位移早退(与另外三路同口径)----
+    {
+        const i = tw.indexOf("const dz = wheelPx(e);");
+        check(i > 0, "(c1)hzoom 走归一后的位移");
+        check(
+            tw.slice(i, i + 120).includes("if (!dz) return;"),
+            "(c2)hzoom 零位移早退(否则会按 `<0?放大:缩小` 白缩一格)",
+        );
+    }
+
+    // ---- 建议③:wheelPx / WHEEL_LINE_PX 抽到 shared,两处共用 ----
+    {
+        const wheel = src("web/shared/wheel.js");
+        const traj = src("web/shared/trajectory-chart.js");
+        check(
+            /export function wheelPx/.test(wheel),
+            "(d1)shared/wheel.js 提供 wheelPx",
+        );
+        check(
+            /from "\.\.\/shared\/wheel\.js"/.test(tw),
+            "(d2)tab-wave 从 shared 引",
+        );
+        check(
+            /from "\.\/wheel\.js"/.test(traj),
+            "(d3)trajectory-chart 从 shared 引",
+        );
+        check(
+            !/function wheelDelta\(e\) \{[\s\S]{0,200}deltaMode === 1/.test(
+                traj,
+            ),
+            "(d4)trajectory-chart 不再自带一份同义实现",
+        );
+        // 作废注释:Tab3 已经统一,那句「本卡不擅自改 Tab3」不能留着
+        check(
+            !/本卡不擅自改 Tab3/.test(traj),
+            "(d5)「与 Tab3 分叉、留后续裁量」的作废注释已改写",
+        );
+        // 两处对同一个事件必须给出同一个数(页档除外 —— 那一档本就按各自的一屏折算)
+        for (const ev of [
+            { deltaY: 120, deltaMode: 0 },
+            { deltaX: 120, deltaY: 0, deltaMode: 0 },
+            { deltaY: 3, deltaMode: 1 },
+            { deltaX: 10, deltaY: -120, deltaMode: 0 },
+        ]) {
+            eq(
+                TW.wheelPx(ev),
+                WHEEL.wheelPx(ev),
+                `(d6)tab-wave 与 shared 对 ${JSON.stringify(ev)} 同值`,
+            );
+        }
+        eq(
+            WHEEL.wheelPx({ deltaY: 1, deltaMode: 2 }, 900),
+            900,
+            "(d7)页档按调用方给的一屏折算(轨迹图传自己的舞台宽)",
+        );
+        eq(
+            WHEEL.wheelPx({ deltaY: 1, deltaMode: 2 }),
+            WHEEL.WHEEL_PAGE_PX,
+            "(d8)没给一屏宽就回落常量档",
+        );
+    }
+
+    // ---- 建议②:右键放行选择器收窄 ----
+    {
+        // 用真实 DOM 语义的桩:closest 按选择器逐条匹配自己
+        const el = (tag, attrs) => ({
+            closest: (sel) =>
+                sel.split(", ").some((one) => {
+                    const m =
+                        /^(\w+)?(?:\[(\w+)="?([^"\]]*)"?\])?(?::not\(\[(\w+)\]\))?$/.exec(
+                            one.trim(),
+                        );
+                    if (!m) return false;
+                    const [, t, ak, av, notAttr] = m;
+                    if (t && t !== tag) return false;
+                    if (ak && String(attrs[ak]) !== av) return false;
+                    if (notAttr && attrs[notAttr] !== undefined) return false;
+                    return true;
+                })
+                    ? {}
+                    : null,
+        });
+        check(
+            TWCM.isEditableTarget(el("input", { type: "text" })),
+            "(e1)文本框放行",
+        );
+        check(TWCM.isEditableTarget(el("textarea", {})), "(e2)textarea 放行");
+        check(
+            TWCM.isEditableTarget(el("input", {})),
+            "(e3)缺省 type 的 input(即 text)放行",
+        );
+        check(
+            !TWCM.isEditableTarget(el("input", { type: "range" })),
+            "(e4)range 滑杆**不放行**(那上面没有粘贴可言,放行=露出浏览器菜单)",
+        );
+        check(
+            !TWCM.isEditableTarget(el("input", { type: "checkbox" })),
+            "(e5)checkbox 不放行",
+        );
+        check(
+            TWCM.isEditableTarget(el("div", { contenteditable: "true" })),
+            "(e6)contenteditable=true 放行",
+        );
+        check(
+            !TWCM.isEditableTarget(el("div", { contenteditable: "false" })),
+            "(e7)contenteditable=false **不放行**(显式声明不可编辑)",
+        );
+    }
+
+    // ---- 建议④:tour 词条把两个「无可见入口」的手势说出来 ----
+    {
+        for (const lang of ["zh", "en", "fr"]) {
+            const body = String(T[lang]["tour.step34.body"]);
+            for (const [tag, re] of [
+                ["Shift", /Shift|Maj/],
+                ["Ctrl", /Ctrl/],
+                ["Alt", /Alt/],
+            ]) {
+                check(re.test(body), `(f1)${lang}.step34 提到 ${tag} 滚轮档`);
+            }
+            check(
+                /分界线|divider|limite entre/.test(body),
+                `(f2)${lang}.step34 写了「双击分界线 = 合并」(手势无可见入口,引导词是唯一发现路径)`,
+            );
+        }
     }
 }
 
