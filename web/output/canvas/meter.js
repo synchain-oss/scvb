@@ -17,8 +17,16 @@
 //   ② 上行**瞬时跟随**(不做 attack 平滑),下行 fast-follow **120 dB/s**;
 //   ③ 峰值保持 **2200 ms**,到点后按 **20 dB/s** 衰减;
 //   ④ 停止态(scvb.playhead.isPlaying === false)复位归零,不留残影。
-// CSS 侧 `.sc-tube__liquid` 的 `transition: width var(--dur-meter) linear`(.18s)保留,
-// 作用是 30 Hz 事件之间的**帧间平滑**,与本弹道叠加不冲突(两者一个管取值、一个管补间)。
+//
+// 【SL-191 用户裁定 2026-08-27】CSS 侧 `.sc-tube__liquid` / `.sc-tube__peak` 的
+// `transition: … var(--dur-meter) linear`(.18s)**已去掉**,渲染逐帧等于本模型。
+// 原先留着它的理由写的是「30 Hz 事件之间的帧间平滑,与本弹道叠加不冲突」—— 这条站不住:
+// .18s 是事件间隔(33ms)的 5.4 倍,它不是补间,是**叠在本弹道之上的第二条更慢的弹道**,
+// 而且专压上行那一侧 —— 口径②明写「上行瞬时跟随、不做 attack 平滑」,它把这条抹掉了。
+// 后果就是用户实测的「柱头从来碰不到白线」:模型上新极大值那一帧恒有 lv == pk(见
+// advance:上行两者取同一个 target),可液柱要爬 180ms 才到位,33ms 后新事件又把它拽走。
+// 实测数据与反向验证见 base.css `.sc-tube__liquid` 上方的行注。
+// 帧间平滑本来就归本文件管:rAF 60fps 逐帧按 dt 推进,下行 fast-follow 天然连续。
 //
 // 渲染面:Tab2 的液柱/峰线是 DOM(玻璃管四层,base.css `.sc-tube*`),不是 canvas ——
 // 本文件放在 canvas/ 目录下是因为它与 T33 的波形 canvas 同属「rAF 驱动的绘制层」,

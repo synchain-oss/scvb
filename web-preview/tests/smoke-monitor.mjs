@@ -2329,15 +2329,51 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
             /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(block),
             `P1-8 .${cls} 的 left 回让一个线宽(外沿贴柱顶)`,
         );
-        check(
-            /transition: left var\(--dur-meter\) linear/.test(block),
-            `P1-8 .${cls} 的位移与液柱同步插值(瞬态不再裂开一道缝)`,
-        );
+        // [SL-191 用户裁定 2026-08-27] 这里原先断言 `transition: left var(--dur-meter)
+        // linear` **存在**,理由写的是「与液柱同步插值,瞬态不再裂开一道缝」。裁定推翻了
+        // 它:同步的是**时长**、不是**到达时刻** —— linear transition 在固定 180ms 内走完
+        // 各自的距离,液柱要跑几十上百 px 而白线常常一步不动,两者恒不同时到位。这正是
+        // 用户报的「柱头从来碰不到白线」。Tab2 玻璃管两件已一并去掉 transition;
+        // .sc-meter*(总线表)在 web 侧尚无驱动、不盲改,故仍保留 —— 断言按件分叉。
+        if (cls === "sc-meter__peak") {
+            check(
+                /transition: left var\(--dur-meter\) linear/.test(block),
+                `P1-8 .${cls} 暂留 transition(总线表无驱动;接线时按 SL-191 重测再定)`,
+            );
+        } else {
+            check(
+                !/transition/.test(block),
+                `SL-191 .${cls} 不带 transition(渲染逐帧等于弹道模型)`,
+            );
+        }
         // v5.1 P1-G:2px 宽的盒子套胶囊圆角会被画成一颗收圆的点,视觉重心离开外沿 ——
         // 几何对齐了仍看着高半个线宽。峰线是刻线,要齐头齐尾。
         check(
             /border-radius: 0;/.test(block),
             `P1-G .${cls} 不用胶囊圆角(2px 刻线要齐头齐尾)`,
+        );
+    }
+    // [SL-191] **成对**断言:液柱与峰线要么都带 transition、要么都不带。
+    // 只去掉一边实测会得到反向病 —— 只去液柱 ⇒ 柱头反冲到白线外侧(最多 −16.2px),
+    // 因为白线换向时轮到它滞后 180ms。这条就是拦「只改一边」的。
+    {
+        const blockOf = (cls) => {
+            const from = css.indexOf("." + cls + " {");
+            return css.slice(from, css.indexOf("}", from) + 1);
+        };
+        const liq = blockOf("sc-tube__liquid");
+        const pk = blockOf("sc-tube__peak");
+        check(
+            liq.length > 0 && pk.length > 0,
+            "SL-191 玻璃管液柱/峰线两条规则都在",
+        );
+        check(
+            /transition/.test(liq) === /transition/.test(pk),
+            "SL-191 液柱与峰线的 transition 必须成对(只改一边会得到反向错位)",
+        );
+        check(
+            !/transition/.test(liq),
+            "SL-191 液柱不带 transition(.18s = 事件间隔的 5.4 倍,会压掉口径②的上行瞬时跟随)",
         );
     }
     // 首帧与弹道帧用同一套取整,免得首帧偏半个像素(meter.js 两处都是 toFixed(1))。

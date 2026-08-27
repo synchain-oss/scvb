@@ -303,6 +303,10 @@
     --dur-shake: 0.45s; /* claim 冲突抖动(设计稿 1633 行 shakeX .45s) */
     --dur-2: 0.5s; /* 面板进出 */
     --dur-3: 0.85s; /* 自动旋钮指针追随 */
+    /* [SL-191 2026-08-27] 消费方现在只剩 .sc-meter*(总线表,web 侧尚无驱动)。
+       Tab2 玻璃管的液柱与峰线已按裁定去掉 transition —— 「弹道由 JS 负责」这句本就写在
+       这行里,而 .18s 恰恰是又叠了一条比 JS 弹道慢 5.4 倍的第二弹道,把口径②的
+       「上行瞬时跟随」压没了,柱头因此永远够不着白线。详见 base.css .sc-tube__liquid。 */
     --dur-meter: 0.18s; /* 电平液柱(linear,不用 --ease,弹道由 JS 负责) */
     --pulse-dur: 2.4s;
     --dur-spin: 1s; /* 加载转圈(设计稿 21 行 spin,linear infinite;非态变,不受 0.3–0.85s 带约束) */
