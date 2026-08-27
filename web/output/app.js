@@ -1755,3 +1755,11 @@ async function bootInner() {
     }
     render();
 }
+
+// 测试面:web-preview 的页面级冒烟要能在页内读到分布图补间的诊断值(不经私有闭包)。
+// **只读快照,不暴露任何写入口** —— 与 Monitor 侧 `__SCVB_MONITOR__` 同一口径。
+// 为什么需要它:补间是不是 rAF 驱动的,只能从「循环跑了几帧」看出来 ——
+// 事件驱动的实现里那个数恒为 0。靠采样撞动画中段的覆盖等于没有覆盖(SL-192 教训)。
+window.__SCVB_OUTPUT__ = {
+    distMotion: () => tabMaster.distDiag(),
+};

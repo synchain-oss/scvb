@@ -997,6 +997,61 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
 }
 
 // =============================================================================
+log("=== ⑥ 分布图 rAF 补间(SL-203)===");
+
+// 用户实测:Monitor 上了补间之后观感反超 Output。本卡把同一件(web/shared/dist-motion.js)
+// 接到 Output 侧。补间器自身的行为断言已在 smoke-monitor ⑨ 节覆盖(同一件,不重复),
+// 这里只守 Output 侧的**接线**与两条容易回头踩的纪律。
+{
+    const tm = readFileSync(join(ROOT, "web/output/tab-master.js"), "utf8");
+    const html = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+
+    check(
+        /createDistMotion\(/.test(tm) &&
+            /distMotion\.push\(rows, local\.chartHi\)/.test(tm),
+        "renderDist 走补间器(不再每次重拼 innerHTML)",
+    );
+    check(!/distBarsHtml/.test(tm), "tab-master.js 里不再直接拼柱体");
+    // 空闲零 rAF(05 §6.1):可见性两道闸必须与轨迹图**对称** —— 视图切到轨迹档、
+    // 或 Tab1 不是当前页时不起 rAF。Output 的 scvb.params 仍以 25Hz 推着 render,
+    // 少一道闸就是对着没人看的画面烧一条 60fps 循环。
+    check(
+        /currentChartMode\(\) === "distribution" && isPanelActive\(\)/.test(tm),
+        "补间器的可见性闸 = 分布档 ∧ Tab1 在前台(与轨迹图对称)",
+    );
+    check(
+        /getGlobalWidthPct:\s*\(\)\s*=>\s*readParam\("width"\)/.test(tm),
+        "全局最大角度仍进几何(v5 P2-10:拧滑杆时分布图实时收拢/张开)",
+    );
+
+    // 几何**不许**进 CSS 过渡集 —— SL-192 在 Monitor 侧实测过:节点常驻之后
+    // `transition: all` 会活过来,在补间下游再叠一层 ~300ms 低通,屏幕上的柱子追不上
+    // 写入值(实测滞后 2.89 个百分点)。断言前先剥 CSS 注释:上面那段讲这个坑的
+    // 注释里逐字写着 `transition: all`,不剥会把自己的注释当成回归。
+    {
+        const ruleOf = (sel) => {
+            const i = html.indexOf(sel + " {");
+            if (i < 0) return "";
+            return html
+                .slice(i, html.indexOf("}", i))
+                .replace(/\/\*[\s\S]*?\*\//g, "");
+        };
+        for (const sel of [".dist-bar", ".dist-span"]) {
+            const rule = ruleOf(sel);
+            check(rule.length > 0, `找得到 ${sel} 的规则`);
+            check(
+                !/transition:\s*all/.test(rule),
+                `${sel} 不用 transition: all(几何进过渡集会把 rAF 补间叠成 300ms 低通)`,
+            );
+            check(
+                /transition:\s*opacity/.test(rule),
+                `${sel} 只过渡 opacity(hover 淡出仍要动画)`,
+            );
+        }
+    }
+}
+
+// =============================================================================
 if (fail > 0) {
     console.error(`\nsmoke-tab1-interactions 失败(${fail} 项)`);
     process.exit(1);

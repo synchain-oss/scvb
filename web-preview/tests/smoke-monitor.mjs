@@ -190,9 +190,23 @@ log("=== ① 提取件不回归(Output 侧零行为变化)===");
     eq(DC.legendChOf(null), 0, "空目标 → 0(不炸)");
 
     const tm = src("web/output/tab-master.js");
+    // [SL-203] Output 侧的写入面也改走 rAF 补间了(与 Monitor 同一件),不再直接拼柱体。
+    // 这条断言原本钉的是 `distBarsHtml(rows, local.chartHi, readParam("width"))`;
+    // 它真正要守的是**两件事实**,与走不走补间器无关,故按新形态原样守住:
+    //   ① renderDist 把算好的 rows 交出去(而不是自己拼第二份模板);
+    //   ② 全局「最大角度」进几何 —— 名义 pan 要 ×width/100 才是听到的位置,
+    //      不喂它,拧滑杆时分布图纹丝不动(v5 P2-10 用户裁定)。
     check(
-        /distBarsHtml\(rows, local\.chartHi, readParam\("width"\)\)/.test(tm),
-        "renderDist 走 distBarsHtml(并把全局最大角度喂进几何,v5 P2-10)",
+        /distMotion\.push\(rows, local\.chartHi\)/.test(tm),
+        "renderDist 把 rows 交给补间器(不自己拼第二份柱体模板)",
+    );
+    check(
+        /getGlobalWidthPct:\s*\(\)\s*=>\s*readParam\("width"\)/.test(tm),
+        "全局最大角度仍进几何(v5 P2-10:拧滑杆时分布图实时收拢/张开)",
+    );
+    check(
+        !/distBarsHtml/.test(tm),
+        "tab-master.js 里不再直接拼柱体(拼串归补间器,免得两条路各写一份)",
     );
     check(
         /legendItemsHtml\(rows, \{/.test(tm),
