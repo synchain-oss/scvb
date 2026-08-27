@@ -47,10 +47,14 @@ import {
 // 要画同一张图)。**产物逐字节不变** —— 本文件只负责把 store 凑成 rows,
 // 拼串归那一件;`distGeometry` 在此原样再导出,既有 import 点一字不改。
 import {
-    distBarsHtml,
     legendChOf as legendChOfRow,
     legendItemsHtml,
 } from "../shared/distribution-chart.js";
+// [SL-203] 分布图的写入面改走 rAF 补间(与 Monitor 同一件)。SL-192 在 Monitor 侧证过:
+// 「收到事件就重拼 innerHTML」在 25Hz 下一步 40ms,看着还算连续,但每次重拼都把节点换成
+// 新的 —— CSS 过渡从不生效、运动全靠事件节拍。用户实测 Monitor 上完补间之后观感反超
+// Output,这一卡把同一件接过来。
+import { createDistMotion } from "../shared/dist-motion.js";
 import { format } from "../shared/i18n.js";
 
 export { distGeometry } from "../shared/distribution-chart.js";
@@ -857,6 +861,9 @@ export function createTabMaster(opts) {
     const call = makeCaller(bridge);
 
     // ---- 页面内一次性状态(不属 state chunk,重开面板即重置)----------------
+    // [SL-203] 分布图补间器(在 wireChart 里建;renderDist 每次把算好的 rows 喂给它)。
+    let distMotion = null;
+
     const local = {
         pendingGroup: 0, // 改组确认条的预选组(0 = 未弹)
         analyzeFlashUntil: 0, // data-analyze="done" 闪绿的截止时刻
@@ -1486,6 +1493,21 @@ export function createTabMaster(opts) {
     }
 
     function wireChart() {
+        // [SL-203] 分布图补间器。可见性两道闸与轨迹图**对称**(05 §6.1 空闲零 rAF):
+        // 视图切到轨迹档、或 Tab1 根本不是当前页时,不起 rAF、不写 DOM ——
+        // `scvb.params` 仍以 25Hz 推着 render,照常补间就是对着没人看的画面烧循环。
+        //
+        // 与 Monitor 侧的**两处不同**,都源自数据面不同(Output 读本地 state,不走 viz 段):
+        //   ① 没有 stale / 组切换语义 —— 那两条是 viz 段特有的(写方停摆、跨组数据面),
+        //      Output 的 rows 直接来自本进程的 params/state,不存在「陈旧但仍显示」这一档;
+        //   ② 多一个全局「最大角度」入几何(Monitor 的 viz 段不带这个值,恒 100)。
+        distMotion = createDistMotion({
+            container: el.distBars,
+            isVisible: () =>
+                currentChartMode() === "distribution" && isPanelActive(),
+            getGlobalWidthPct: () => readParam("width"),
+        });
+
         if (el.chartSeg) {
             for (const btn of el.chartSeg.querySelectorAll(
                 "[data-chart-mode]",
@@ -1956,7 +1978,7 @@ export function createTabMaster(opts) {
 
     // ④ 声像 / 音量分布图(scvb.params + scvb.state.channels)-----------------
     function renderDist(st, s) {
-        if (!el.distBars) return;
+        if (!el.distBars || !distMotion) return;
         const vals = st.params.values || {};
         const v = (s.global && s.global.version_active) || 1;
         const chans = s.channels || [];
@@ -1976,12 +1998,16 @@ export function createTabMaster(opts) {
             };
         });
         // 几何 + 拼串归 web/shared/distribution-chart.js(Monitor 复用同一件);
-        // 冒烟 ① 节按同一批入参对拍两处产物。
+        // 「什么时候重拼、两帧之间怎么走」归 web/shared/dist-motion.js 的 rAF 补间
+        // (SL-203)。结构(轨集/立体声/lead/高亮)变了才重拼 innerHTML,三条连续量
+        // 逐帧插值只写 CSS 变量 —— 产物几何与 Monitor 侧逐字节同款(共用
+        // distBarVars/distSpanVars)。
+        //
         // 全局「最大角度」进几何:名义 pan 要经 ×width/100 才是听到的位置(PanMath 同式),
-        // 于是拧滑杆时分布图实时收拢/张开(用户裁定 v5 P2-10)。readParam 带乐观回声,
-        // 拖动中就跟手,不必等 25Hz 的 scvb.params 回推。
-        const html = distBarsHtml(rows, local.chartHi, readParam("width"));
-        if (el.distBars.innerHTML !== html) el.distBars.innerHTML = html;
+        // 于是拧滑杆时分布图实时收拢/张开(用户裁定 v5 P2-10)。它由补间器经
+        // `getGlobalWidthPct` 每帧读、**且变了就立刻补一帧**(不进补间:直接操纵要跟手)。
+        // readParam 带乐观回声,拖动中就跟手,不必等 25Hz 的 scvb.params 回推。
+        distMotion.push(rows, local.chartHi);
     }
 
     // ④b 双视图:视图态 + 轨迹图驱动 + 图例([J75] A/B)---------------------
@@ -2184,6 +2210,11 @@ export function createTabMaster(opts) {
         onSegments,
         onPlayhead,
         refreshPreview,
+        // [SL-203] 分布图补间的**只读**诊断面(页面级冒烟用;不暴露任何写入口)。
+        // `frames` 是 rAF 循环的帧计数 —— 事件驱动的实现里它恒为 0,这是「rAF 驱动
+        // vs 收到事件才画」最干脆的分界,页面级断言据此判,不必去赌某次采样恰好
+        // 落在动画中段(方法学同 SL-192 的 __SCVB_MONITOR__)。
+        distDiag: () => (distMotion ? distMotion.diag() : null),
     };
 }
 
