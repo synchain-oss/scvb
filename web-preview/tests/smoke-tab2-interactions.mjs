@@ -108,6 +108,34 @@ log("=== ① 电平弹道(契约 §2.5 + 05 §2.2 弹道常数)===");
     s = MT.advance({ db: -60, peakDb: -60, peakHeldMs: 0 }, -6, 33, -60);
     eq(s.peakDb, -6, "峰值不低于液柱");
 
+    // 【SL-191 用户裁定 2026-08-27】柱头必须够得着白线 —— 模型这一半:
+    // 只要本帧电平**超过**当前保持的峰值,液柱与峰线就取同一个 target(口径②上行瞬时
+    // 跟随 + 口径③峰值被超越即顶到新值),于是 db 与 peakDb **逐位相等**。
+    // 用户实测「柱头从来没到过白线」查下来不在这一层(这里一直是对的),而在渲染层的
+    // CSS transition —— 那一半由 smoke-monitor 的 SL-191 组守(液柱/峰线都不带
+    // transition ⇒ 渲染逐帧等于本模型)。两条合起来才是「柱头真能触线」的完整保证。
+    for (const [prevDb, prevPeak, target] of [
+        [-30, -8, -6], // 从低位一跃超过旧峰
+        [-12, -12, -12], // 持平旧峰(>= 也算超越,同样归零计时)
+        [-60, -60, 0], // 一路顶到 0 dBFS 满幅
+    ]) {
+        const st = MT.advance(
+            { db: prevDb, peakDb: prevPeak, peakHeldMs: 900 },
+            target,
+            16.7,
+        );
+        eq(
+            [st.db, st.peakDb, st.peakHeldMs],
+            [target, target, 0],
+            `SL-191 新极大值那一帧 db==peakDb(prev ${prevDb}/${prevPeak} → ${target})`,
+        );
+        eq(
+            MT.dbToRatio(st.db),
+            MT.dbToRatio(st.peakDb),
+            `SL-191 该帧行程比也逐位相等(--lv 与 --pk 写出同一个数)`,
+        );
+    }
+
     // 停止态归零 = restState()
     eq(MT.restState(), { db: -60, peakDb: -60, peakHeldMs: 0 }, "停止态复位值");
 
