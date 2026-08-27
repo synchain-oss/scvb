@@ -1471,8 +1471,17 @@ function buildOutputBackend(ctx) {
             const e = isFiniteNumber(endS) ? endS : 0;
             const echo = { tracksMask: mask, startS: s, endS: e };
             const disarm = () => {
+                // state 里一律归零(与真桥 `disarmRecaptureLocked` 同款:runtime 的
+                // recaptureTracksMask 置 0)。**回执**另说 —— 拒绝态要把用户传进来的三个值
+                // 原样回显,那是 §1.23 的回执形状,不是 state。
                 const patch = {
-                    recapture: { armed: false, ...echo, autoStop: false },
+                    recapture: {
+                        armed: false,
+                        tracksMask: 0,
+                        startS: 0,
+                        endS: 0,
+                        autoStop: false,
+                    },
                 };
                 // 恢复布防前的采集态:只有我们开的才关回去,且现在得还开着
                 // (布防期间用户自己关过 = 他接管了,不再替他动)。
@@ -1490,14 +1499,19 @@ function buildOutputBackend(ctx) {
                 disarm();
                 return { armed: false, ...echo };
             }
-            if (readOnly())
-                return { armed: false, ...echo, reason: "readOnly" };
-            if (model.caps.noTimeline)
-                return { armed: false, ...echo, reason: "noTimeline" };
-            if (mask === 0)
-                return { armed: false, ...echo, reason: "noTracks" };
-            if (!(s < e))
-                return { armed: false, ...echo, reason: "noSelection" };
+            // 拒绝态也走 disarm():真桥的 handleRecaptureArm 在 reason 分支上调的是
+            // `processor_.disarmRecapture()`,两侧必须同款。只把 armed 抹成 false 的话,
+            // 上一次布防若是我们替用户开的采集,这一发被拒之后采集会一直开着、
+            // `recaptureAutoEnabledCapture` 也留成 true —— mock 内部状态自相矛盾,而且
+            // 这就是「同一份清位逻辑留了第二份」的经典起点(PR #131 评审重要-1)。
+            const reject = (reason) => {
+                disarm();
+                return { armed: false, ...echo, reason };
+            };
+            if (readOnly()) return reject("readOnly");
+            if (model.caps.noTimeline) return reject("noTimeline");
+            if (mask === 0) return reject("noTracks");
+            if (!(s < e)) return reject("noSelection");
             // 只在 false→true 那一跳记「是不是我们开的」:中途改选区会再发一次布防
             // (04 §4.2 ②),那时重记就会把「布防前」的账冲掉,撤防后再也关不回去。
             const patch = {

@@ -179,6 +179,13 @@ public:
     void setFeatureTrackMask(u32 mask) noexcept { featureTrackMask_ = mask & 0x7FFFu; }
     u32 featureTrackMask() const noexcept { return featureTrackMask_; }
 
+    // [M] 立刻按**当前**门控补拉一次(不等下一拍 25Hz tick)。
+    // 唯一用途:布防生效**之前**把积压清干净(见 armRecapture)。未选中轨在布防期走 drainOnly,
+    // 游标直接跳到写头 —— 若布防那一刻读方本来就落后(离线快速渲染会),那段**布防前**就该
+    // 记账的积压会被一起丢掉,而它属于「选区外既有特征」,不该少(PR #131 评审 pr-agent)。
+    // 先按旧门控补拉、再换门控,这条缝就没了。
+    void flushFeaturePull() { pullFeatures(); }
+
     // [M] 聚合用([J09] 全局小节 / 看门狗)。gapCount 是**进程寿命累计值**(ctrl 全局小节与诊断用)。
     u32 gapCount(u32 channel) const;
 

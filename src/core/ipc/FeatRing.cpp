@@ -287,7 +287,6 @@ uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 ca
         state.lastPulled = (w > capacity) ? (w - capacity) : b1;
     }
 
-    const uint64_t start = std::max(state.lastPulled, b1);
     if (drainOnly)
     {
         // 排空:一帧不写,游标直接推到写头。**不能**套 kMaxBurstHops —— 那个上限是为「写入
@@ -296,6 +295,8 @@ uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 ca
         state.lastPulled = w;
         return 0;
     }
+
+    const uint64_t start = std::max(state.lastPulled, b1);
     const uint64_t wCap = std::min(w, start + kMaxBurstHops);
 
     uint32_t pulled = 0;

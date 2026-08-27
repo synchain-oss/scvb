@@ -1288,11 +1288,16 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
-    // [J87] 布防是**纯运行时**态(04 §4.2 ③「工作选区不落 state,关闭工程只保存 global.range」),
-    // 换工程/重载 state 必须复位。此前不复位无害 —— 那五个字段在引擎侧没有消费方;现在它们
-    // 直接决定记账门控与采集开关,残留的陈旧布防会让新工程一开就按上一个工程的选区收窄采集,
-    // 甚至在越界那一拍把用户刚从 state 恢复出来的 capture_enabled 关掉(PR #124 评审重要①)。
-    // 复位后立刻套一次门控,不等下一拍 tick。
+    // [J87] 记账门控读的两组字段**都是纯运行时态**,换工程/重载 state 必须一起复位,否则新工程
+    // 一开就按上一个工程的口径收窄采集。此前不复位无害 —— 布防那组在引擎侧没有消费方;现在
+    // 它们直接决定门控与采集开关(PR #124 评审重要①、PR #131 统筹补充)。
+    //
+    //   · 布防七字段 —— 04 §4.2 ③「工作选区不落 state」,本就该每次载入归零;残留的陈旧布防
+    //     还会在越界那一拍把用户刚从 state 恢复出来的 capture_enabled 关掉;
+    //   · range 三字段 —— CFGS(OutputStateCodec)里**没有** range,所以它同样不随工程走。
+    //     不复位的话上一个工程的 manual 区间会继续给新工程当采集门,而 UI 那边读到的是
+    //     默认 follow 档 —— 屏幕说「全时间线」、引擎按旧区间挡,是两张皮。
+    //     归零到 §1.8 的默认档(follow / 0 / 0),与构造时的初值同口径。
     runtime_.recaptureArmed = false;
     runtime_.recaptureTracksMask = 0;
     runtime_.recaptureStartS = 0.0;
@@ -1300,7 +1305,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     runtime_.recaptureAutoStop = false;
     runtime_.recaptureAutoEnabledCapture = false;
     runtime_.recapturePrevPlayheadS = -1.0;
-    applyFeatureGates();
+    runtime_.rangeMode = 0;
+    runtime_.rangeStartS = 0.0;
+    runtime_.rangeEndS = 0.0;
+    applyFeatureGates(); // 复位后立刻套一次门控,不等下一拍 tick
 
     // CRVS:段真身解码(版本名/段表/pan_curve)。
     //
@@ -1515,6 +1523,12 @@ void ScvbOutputAudioProcessor::setCaptureEnabled(bool on)
 void ScvbOutputAudioProcessor::armRecapture(std::uint16_t tracksMask, double startS, double endS, bool autoStop)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
+
+    // 换门控**之前**先按旧门控补拉一次:未选中轨在布防期走 drainOnly(游标直接跳到写头),
+    // 若布防那一刻读方本来就落后(离线快速渲染会落后),那段**布防前**就该记账的积压会跟着
+    // 被丢掉 —— 那是「选区外既有特征」的一部分,不该少(PR #131 评审 pr-agent)。
+    // 采集 OFF 时 pullFeatures 自己早退,这一发是空操作(那时 Input 也根本没在写)。
+    session_.flushFeaturePull();
 
     // [J87] 裁定①「布防即自动打开 01 采集」。只在 false→true 那一跳记「是不是我们开的」——
     // 中途改选区/改轨勾选会再次走到这里(04 §4.2 ②「立即以新值为布防范围」),那时若重记,

@@ -3235,11 +3235,95 @@ TEST_CASE("HOST J87:工程恢复复位布防运行时态", "[host][t37][j87]")
     CHECK(r.out.runtime().recaptureEndS == 0.0);
     CHECK_FALSE(r.out.runtime().recaptureAutoStop);
     CHECK(r.out.captureEnabled()); // state 里的采集态照常恢复,没被布防残留顺手关掉
+}
 
-    // 复位之后播过原来的右边界也不该再触发任何自动撤防副作用(布防已经不在了)。
+// 上一条断的是「字段有没有复位」;这一条断的是**那个复位到底挡住了什么**。
+// 构造必须同时满足三件事,少一件就测不出来(PR #131 评审重要-2①指出原构造三件全缺):
+//   ① 布防**前**采集是 OFF —— 这样 `recaptureAutoEnabledCapture` 才会是 true,
+//      也才存在「撤防会去关采集」这个动作;
+//   ② 载入的 state 里采集是 **ON** —— 这样「被误关」才有可观测的落差;
+//   ③ 播放头必须**真的越过**旧的 endS —— 边沿判定要求上一拍在左、这一拍在右。
+// 不复位的实现在这里:载回 state 之后 armed 仍是 true、autoEnabled 仍是 true,
+// 播过旧右边界那一拍就把刚恢复出来的 capture_enabled 关掉了。
+TEST_CASE("HOST J87:工程恢复后,陈旧布防不得把恢复出来的采集关掉", "[host][t37][j87]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+    constexpr double kOldEndS = 2.0;
+
+    // 先做一份「采集 ON」的工程存档(② 的来源)。
+    r.out.setCaptureEnabled(true);
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+
+    // ① 布防前采集 OFF → 布防替用户开(autoEnabled = true),且勾了自动停。
+    r.out.setCaptureEnabled(false);
+    r.out.armRecapture(kMask, 1.0, kOldEndS, /*autoStop=*/true);
+    REQUIRE(r.out.captureEnabled());
+    REQUIRE(r.out.runtime().recaptureAutoEnabledCapture);
+
+    // ② 载回「采集 ON」的工程。复位这一步若缺席,布防与 autoEnabled 位都会活下来。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    REQUIRE(r.out.captureEnabled()); // state 里的采集态确实恢复出来了
+
+    // ③ 从旧选区左侧一路播过旧的 endS —— 每拍推进 512/48000≈10.7ms,这里给足 4 秒。
     r.ph.timeSamples = static_cast<std::int64_t>(0.5 * kSr);
-    r.runBlocks(120, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    for (int i = 0; i < 24; ++i)
+    {
+        r.runBlocks(16, 0.5f, /*pumpEveryN=*/4, /*pumpMs=*/10);
+    }
+    REQUIRE(static_cast<double>(r.ph.timeSamples) / kSr > kOldEndS + 1.0); // 前置:真的越过去了
+
+    // ★ 采集必须还开着 —— 不复位的实现在这里红:陈旧布防在越界那一拍把它关了。
     CHECK(r.out.captureEnabled());
+    CHECK_FALSE(r.out.runtime().recaptureArmed);
+}
+
+// [J87] 排空必须**不受 kMaxBurstHops 限速**(PR #131 修 ②;评审重要-2② 指出原用例测不出来)。
+//
+// J87②b 的积压只有 ≈2.56s ≈ 256 hop,恰好等于一拍的 burst 上限 —— 空 gate 与 drainOnly
+// 在那里表现一致,两种写法都能过。要把二者分开,得让**单拍积压远大于 256 hop**:
+// 这里用「跑一大段块但一次都不泵消息循环」制造离线快渲染的形状(不泵 = 25Hz tick 不触发 =
+// 读方不拉),写头一口气推出 ~32 秒 ≈ 3200 hop。随后只给几拍的泵:
+//   · 受限速的空 gate —— 每拍最多追 256 hop,几拍下来还剩两千多 hop 没排掉,
+//     撤防后被补拉进来,未选轨凭空多出十几秒覆盖;
+//   · drainOnly —— 一拍就把游标推到写头,撤防后干干净净。
+TEST_CASE("HOST J87:排空不受每拍 burst 上限约束(单拍积压远超 256 hop)", "[host][t37][j87]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    REQUIRE(r.capture() > 4.0); // 采集留在 ON:撤防后要靠它把积压补进来才看得见差别
+    REQUIRE(r.out.captureEnabled());
+    const double t0 = static_cast<double>(r.ph.timeSamples) / kSr;
+
+    // 只对第 2 轨布防一小段;第 1/3 轨在整个布防期都该是空白。
+    r.out.armRecapture(/*tracksMask=*/1u << 1, t0 + 0.5, t0 + 1.5, /*autoStop=*/false);
+    MonoMultiRig::pump(200);
+
+    // 关键:**一次都不泵**。3000 块 × 512 / 48000 ≈ 32s ≈ 3200 hop 全压成一拍的积压。
+    r.runBlocks(3000, 0.3f, /*pumpEveryN=*/0);
+    const double t1 = static_cast<double>(r.ph.timeSamples) / kSr;
+    REQUIRE(t1 - t0 > 25.0); // 前置:积压确实远超 256 hop(2.56s)
+
+    // 只给几拍 —— 受限速的写法在这几拍里追不完 3200 hop。
+    MonoMultiRig::pump(200);
+    r.out.disarmRecapture();
+    MonoMultiRig::pump(600);
+    r.runBlocks(40, 0.0f);
+    MonoMultiRig::pump(600);
+
+    // ★ 未选轨在整个布防期一片空白。空 gate + burst 限速的写法在这里红:
+    //   残留的两千多 hop 会在撤防后被补拉进来,变成十几秒凭空多出的覆盖。
+    CHECK(r.out.coverageOf(1, t0 + 0.05, t1 - 0.5).coveredS < 0.5);
+    CHECK(r.out.coverageOf(3, t0 + 0.05, t1 - 0.5).coveredS < 0.5);
+    // 对照组:选中轨在选区内确实采到了(否则上面两条是「什么都没发生」的假绿)。
+    CHECK(r.out.coverageOf(2, t0 + 0.5, t0 + 1.5).coveredS > 0.3);
 }
 
 TEST_CASE("HOST J87:tracksMask 只点保留位不得退化成「不限轨」", "[host][t37][j87]")
