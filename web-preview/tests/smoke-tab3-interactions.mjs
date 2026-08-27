@@ -973,6 +973,17 @@ log("=== ③ 词条(T33 新增 key 三语 + 占位符 + 禁词)===");
         "wave.btnRecapture",
         "wave.btnReanalyze",
         "wave.btnClearCoverage",
+        // [SL-193] 重采集开关五态(第五态 armed 复用裸词条 armedWaiting)
+        "wave.recaptureOff",
+        "wave.recapturing",
+        "wave.recaptureOutside",
+        "wave.recaptureNeedCapture",
+        // 两件的 disabled tooltip 复用的既有 key —— 一并钉住三语齐,免得别处把它们
+        // 删了/改了之后,灰按钮又退回「说不出理由」那一档
+        "wave.armReason.noTracks",
+        "wave.armReason.noSelection",
+        "wave.armReason.readOnly",
+        "master.step2.desc.noData",
         "wave.applyCountdown",
         "wave.applying",
         "wave.recaptureInlineNote",
@@ -3159,6 +3170,299 @@ log("\n=== ⑭ PR #64 评审处置(重要 6 条 + 建议若干)===");
             "建议9:从未被读的 pendingDown.moved 已删",
         );
         check(/vpIdleTimer: 0,/.test(tw), "建议9:真正在用的静止计时账保留");
+    }
+}
+
+// =============================================================================
+log(
+    "=== ⑩ SL-193:重采集开关可见性 + 重分析选区恒灰(用户 v5.4 实测拍板 2026-08-27)===",
+);
+{
+    const tw = src("web/output/tab-wave.js");
+    const html = src("web/output/index.html");
+
+    // ---- (a) 重采集:按钮 → 开关 -------------------------------------------
+    // 用户原话:「最好不要做成按钮,而是做成『01 采集 OFF』那样的开关,现在用户
+    // 根本不知道是否有正确开始采集,看不出来一点」。
+    {
+        // 形制:与 Tab1 同款 .sc-toggle + role="switch",不再是 .wave-btn 按钮。
+        // **反向验证**:改回 `<button class="wave-btn" data-gb="wave-btn-recapture">`
+        // 这三条一起红。
+        const box = html.slice(
+            html.indexOf('data-gb="wave-recapture-toggle"'),
+            html.indexOf('data-gb="wave-chk-autostop"'),
+        );
+        check(
+            box.length > 0,
+            "重采集开关外壳存在(data-gb=wave-recapture-toggle)",
+        );
+        check(
+            /class="sc-toggle"/.test(box),
+            "(a1)开关用 base.css 的 .sc-toggle(与 Tab1「01 采集」同一组件)",
+        );
+        check(
+            /role="switch"/.test(box) && /aria-checked="false"/.test(box),
+            "(a2)role=switch + aria-checked 初始态(不是 button)",
+        );
+        check(
+            /tabindex="0"/.test(box),
+            "(a3)tabindex 可聚焦(自绘开关不给 tabindex 就按不到)",
+        );
+        check(
+            !/data-gb="wave-btn-recapture"[\s\S]{0,200}class="wave-btn"/.test(
+                html,
+            ) && !/<button[^>]*data-gb="wave-btn-recapture"/.test(html),
+            "(a4)旧的 .wave-btn 按钮形制已不复存在",
+        );
+        // 五态标签俱在,且各自挂对了词条 key
+        for (const [state, key] of [
+            ["off", "wave.recaptureOff"],
+            ["armed", "armedWaiting"],
+            ["capturing", "wave.recapturing"],
+            ["outside", "wave.recaptureOutside"],
+            ["needcap", "wave.recaptureNeedCapture"],
+        ]) {
+            check(
+                new RegExp(
+                    `data-recap-label="${state}"\\s+data-t="${key.replace(".", "\\.")}"`,
+                ).test(box),
+                `(a5)态 ${state} 的标签挂 ${key}`,
+            );
+        }
+        // 键盘可达:role=switch 拿不到原生的「空格/回车 = 点击」,必须自己接。
+        check(
+            /els\.btnRecapture\.addEventListener\("keydown"/.test(tw) &&
+                /toggleRecapture\(\)/.test(tw),
+            "(a6)开关接了 keydown(空格/回车)—— 否则聚焦得到、按不动",
+        );
+    }
+
+    // ---- (b) 五态派生是纯函数,且吃的是真事件 ------------------------------
+    // 这是「状态来源接真事件不是本地乐观值」的行为断言面。
+    {
+        const armedState = (extra) => ({
+            recapture: { armed: true, startS: 10, endS: 20 },
+            global: { capture_enabled: true },
+            ...(extra || {}),
+        });
+        eq(TW.recaptureVisual({}, null), "off", "(b1)无 recapture ⇒ off");
+        eq(
+            TW.recaptureVisual({ recapture: { armed: false } }, null),
+            "off",
+            "(b2)armed=false ⇒ off",
+        );
+        // needcap:布防了但 01 采集是关的 —— 引擎侧一个 hop 都不会写。
+        // **这一档是用户「看不出来一点」的正解**:旧 UI 在这里什么都不说。
+        eq(
+            TW.recaptureVisual(
+                {
+                    recapture: { armed: true, startS: 10, endS: 20 },
+                    global: { capture_enabled: false },
+                },
+                { isPlaying: true, inRange: true, timeS: 15 },
+            ),
+            "needcap",
+            "(b3)布防但采集 OFF ⇒ needcap(不谎报「等待播放」)",
+        );
+        eq(
+            TW.recaptureVisual(armedState(), { isPlaying: false }),
+            "armed",
+            "(b4)布防 + 采集 ON + 未播放 ⇒ armed",
+        );
+        eq(
+            TW.recaptureVisual(armedState(), {
+                isPlaying: true,
+                inRange: true,
+                timeS: 15,
+            }),
+            "capturing",
+            "(b5)播放头在布防区间内 ⇒ capturing",
+        );
+        eq(
+            TW.recaptureVisual(armedState(), {
+                isPlaying: true,
+                inRange: true,
+                timeS: 25,
+            }),
+            "outside",
+            "(b6)播放头在布防区间外 ⇒ outside",
+        );
+        eq(
+            TW.recaptureVisual(armedState(), {
+                isPlaying: true,
+                inRange: false,
+                timeS: 15,
+            }),
+            "outside",
+            "(b7)离开 global.range(§2.6 inRange=false)⇒ outside,不报 capturing",
+        );
+        // 边界:endS 是开区间(播到 20.0 整已经出去了)
+        eq(
+            TW.recaptureVisual(armedState(), {
+                isPlaying: true,
+                inRange: true,
+                timeS: 20,
+            }),
+            "outside",
+            "(b8)[startS, endS) 半开:endS 那一刻已在区间外",
+        );
+    }
+
+    // ---- (c) 零乐观值:开关态只由 render 从 store 派生 ----------------------
+    {
+        const fn = tw.slice(
+            tw.indexOf("async function toggleRecapture()"),
+            tw.indexOf("function openReidentifyConfirm()"),
+        );
+        check(fn.length > 0, "toggleRecapture 存在");
+        check(
+            !/data-on/.test(fn) && !/aria-checked/.test(fn),
+            "(c1)点击处理器不写 data-on / aria-checked(§1.23 不乐观点亮)",
+        );
+        check(
+            /recaptureArm", 0, 0, 0/.test(fn),
+            "(c2)关 = recaptureArm(0,0,0)(§1.23 撤防,不新增桥函数)",
+        );
+        check(
+            /const recArmed = !!\(\(store\.state \|\| \{\}\)\.recapture \|\| \{\}\)\.armed;/.test(
+                tw,
+            ),
+            "(c3)开关的 ON/OFF 唯一来源 = store.state.recapture.armed",
+        );
+        // 撤防不吃 scope:选区被清掉之后开关必须还关得掉。
+        check(
+            /if \(s\.blocked\) return "wave\.armReason\.readOnly";\s*\n\s*if \(s\.armed\) return null;/.test(
+                tw,
+            ),
+            "(c4)armed 恒可用(否则开关会永久卡在 ON)",
+        );
+    }
+
+    // ---- (d) 【定谳】重分析选区恒灰 ---------------------------------------
+    // 根因两条(详见 tab-wave.js `reanalyzeBlockReason` 与 OutputProcessor.cpp
+    // `previewAnalysis` 的头注):
+    //   ① web 判据接错了量:§1.6 的拒绝态是「range ∩ coverage = ∅」,承载它的是
+    //      dry-run 的 `tracks`,不是 `intervals`(会被重画的已有段数);
+    //   ② native 的 previewAnalysis 压根没给 `intervals` 赋过值,恒 0。
+    // 合起来 = 真机上有选区有数据时也必然灰,且没有原因可看。
+    {
+        const R = TW.reanalyzeBlockReason;
+        const ok = {
+            blocked: false,
+            picked: true,
+            hasSel: true,
+            hasData: true,
+            previewTracks: 3,
+        };
+        eq(R(ok), null, "(d1)条件齐 ⇒ 可点(null)");
+        // 逐条不满足 ⇒ 各自的原因 key(灰 + 原因可见,不让用户干瞪灰按钮)
+        eq(
+            R({ ...ok, blocked: true }),
+            "wave.armReason.readOnly",
+            "(d2)只读观察态 ⇒ 有原因",
+        );
+        eq(
+            R({ ...ok, picked: false }),
+            "wave.armReason.noTracks",
+            "(d3)没勾轨 ⇒ 有原因",
+        );
+        eq(
+            R({ ...ok, hasSel: false }),
+            "wave.armReason.noSelection",
+            "(d4)没选区 ⇒ 有原因",
+        );
+        eq(
+            R({ ...ok, hasData: false }),
+            "master.step2.desc.noData",
+            "(d5)全局空态 ⇒ 有原因",
+        );
+        eq(
+            R({ ...ok, previewTracks: 0 }),
+            "master.step2.desc.noData",
+            "(d6)选区与覆盖无交集 ⇒ 有原因",
+        );
+        // dry-run 回包在途(null)先放行,别在等回包的那几百毫秒里闪一下灰
+        eq(
+            R({ ...ok, previewTracks: null }),
+            null,
+            "(d7)dry-run 在途 ⇒ 先放行",
+        );
+        // **核心回归**:刚采完、还一个段都没有(intervals=0)但覆盖满满 ⇒ **必须可点**。
+        // 这就是「一直是灰色的」的那一档;同一个鸡生蛋 Tab1 早绕开了,Tab3 踩了。
+        // **反向验证**:把 intervals 重新接回判据(哪怕只加一条 `if (!s.intervals)
+        // return ...`),本条即红。
+        eq(
+            R({ ...ok, previewTracks: 2, intervals: 0 }),
+            null,
+            "(d8)首采未析(intervals=0、有覆盖)⇒ 可点,判据不看 intervals",
+        );
+        // 判据与 tooltip 同一真源:render 里两件都是「!why 决定灰、t[why] 决定 title」
+        check(
+            /setBtnEnabled\(els\.btnReanalyze, !reanWhy\);/.test(tw) &&
+                /setTitle\(els\.btnReanalyze, reanWhy \? t\[reanWhy\] \|\| "" : ""\);/.test(
+                    tw,
+                ),
+            "(d9)灰与 tooltip 出自同一个 reason(不会分叉成「灰着没理由」)",
+        );
+        check(
+            /setBtnEnabled\(els\.btnRecapture, !recapWhy\);/.test(tw) &&
+                /setTitle\(els\.btnRecapture, recapWhy \? t\[recapWhy\] \|\| "" : ""\);/.test(
+                    tw,
+                ),
+            "(d10)重采集开关同口径",
+        );
+        // 旧判据的**代码**痕迹清干净。先剥注释再查 —— 定谳写在
+        // reanalyzeBlockReason 的头注里,把旧判据那两行原样引了下来(不引的话
+        // 后人根本看不懂改了什么),拿光秃秃的 /previewHit/ 扫全文会把这段说明
+        // 自己判红:典型的「正则扫源码」假阳性。
+        const code = tw.replace(/\/\*[\s\S]*?\*\//g, "");
+        check(
+            !/previewHit/.test(code),
+            "(d11)旧的 previewHit 判据变量在代码里已不复存在",
+        );
+        {
+            const body = tw.slice(
+                tw.indexOf("export function reanalyzeBlockReason(o) {"),
+                tw.indexOf("/** 「重新识别」判据"),
+            );
+            check(
+                body.length > 0 && !/intervals/.test(body),
+                "(d12)判据函数体内不出现 intervals(承载拒绝态的是 tracks)",
+            );
+        }
+    }
+
+    // ---- (e) native / mock 对拍:§1.5 的 tracks 与 intervals 是两个量 -------
+    // mock 此前把 tracks 绑在 hit.length 上(段一个都没有 ⇒ tracks 也 0),
+    // 于是这个鸡生蛋在 web-preview 里同样复现不出来。native 侧的行为回归在
+    // tests/host/test_host_harness.cpp 的「HOST P0-1」用例里(intervals >= 1)。
+    {
+        const mock = src("web-preview/mock/juce-bridge-mock.js");
+        check(
+            /if \(!overlapsRanges\(cov, startS, endS\)\) continue;\s*\n\s*tracks\+\+;/.test(
+                mock,
+            ),
+            "(e1)mock 的 tracks 只看覆盖,与段表无关(与 native 同口径)",
+        );
+        check(
+            /if \(a\.tracks === 0\) return \{ ok: false, affected \};/.test(
+                mock,
+            ),
+            "(e2)mock 的 analyze 拒绝态按 tracks 判(§1.6),不按 intervals",
+        );
+        const cpp = src("src/output/OutputProcessor.cpp");
+        const body = cpp.slice(
+            cpp.indexOf("::previewAnalysis(std::uint16_t tracksMask"),
+            cpp.indexOf("::startAnalysis(std::uint16_t tracksMask"),
+        );
+        check(
+            /\+\+a\.intervals;/.test(body),
+            "(e3)native 的 previewAnalysis 真的给 intervals 赋值了(定谳②的修复点)",
+        );
+        check(
+            /s\.t1 > rangeS0 && s\.t0 < rangeS1/.test(body),
+            "(e4)native 的段计数按范围过滤(manualKept 不再整轨全收)",
+        );
     }
 }
 
