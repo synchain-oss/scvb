@@ -979,8 +979,16 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
     if (a.size() > 0 && a[0].isObject())
     {
         s.tracksMask = static_cast<std::uint16_t>(static_cast<int>(a[0].getProperty("tracksMask", 0)) & 0x7FFF);
-        s.startS = static_cast<double>(a[0].getProperty("startS", 0.0));
-        s.endS = static_cast<double>(a[0].getProperty("endS", 0.0));
+        // startS/endS 是 §1.6 的**可选**字段:缺省 = 未指定,走 "all" 的同一条推导。
+        // 兜底成 0.0 会让「只给 tracksMask」的调用者拿到空范围、分析当场被拒(SL-190),
+        // 推导与两向回归都在 analyzeScopeRange(纯函数,harness 够得着)。
+        const juce::var o = a[0];
+        const AnalyzeRange r =
+            analyzeScopeRange(o.hasProperty("startS"), static_cast<double>(o.getProperty("startS", 0.0)),
+                              o.hasProperty("endS"), static_cast<double>(o.getProperty("endS", 0.0)), rt.rangeMode,
+                              rt.rangeStartS, rt.rangeEndS, processor_.capturedExtentSeconds());
+        s.startS = r.startS;
+        s.endS = r.endS;
         return s;
     }
 

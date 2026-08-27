@@ -905,12 +905,37 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
     );
 
     // §1.6 单轨重新识别:analyze({tracksMask}, {clearManual:true})
+    //
+    // ⚠ SL-190 的要害就在这个形状上:§1.6 的 `startS?` / `endS?` 是**可选**字段,解冻提示条
+    // 的「重新识别(含手动段)」只给 tracksMask。真桥 parseAnalyzeScope 此前把两者都兜底成
+    // 0.0 —— 范围 [0,0]、`startAnalysis` 在 `!(endS > startS)` 处当场回 {ok:false},一段都不
+    // 重算(用户实测「点了没什么作用」)。mock 一直把缺省取成 ±∞,所以这条冒烟从来没红过。
+    // 修复把真桥对齐到「缺省 = 未指定 = 走 "all" 那条推导」(纯函数与两向回归见 C++ 侧
+    // `analyzeScopeRange` / test_segment_edit_service.cpp)。这里把 mock 侧的两向也钉住,
+    // 免得哪天有人把 mock 改成 [0,0] 兜底、两侧又悄悄分叉回去。
+    //
+    // 先发**显式空范围**:它必须被拒 —— 「缺省」和「显式 [0,0]」不是一回事。
+    // 顺序不能反:analyze 受理后会置 analysis_run.running,紧跟着的第二发会回 reason:"busy",
+    // 那样这条断言就会因为错误的理由变绿。
+    const emptyRange = await bridge.analyze(
+        { tracksMask: 1 << 1, startS: 0, endS: 0 },
+        { clearManual: true },
+    );
+    check(
+        !!emptyRange && emptyRange.ok === false && !emptyRange.reason,
+        `显式 [0,0] 范围 ⇒ 拒绝(§1.6 拒绝态不带 reason);实得 ${JSON.stringify(emptyRange)}`,
+    );
+
     seen.segments.length = 0;
     const ar = await bridge.analyze(
         { tracksMask: 1 << 1 },
         { clearManual: true },
     );
     check(!!ar && "ok" in ar && !!ar.affected, "analyze 回受理回执 + 影响面");
+    check(
+        ar.ok === true,
+        `缺省 startS/endS ⇒ 按整条时间线受理(不是空范围);实得 ${JSON.stringify(ar)}`,
+    );
     // 契约 §1.6:native function 只回受理回执,**结果一律经 scvb.segments 回推**
     // (mock 的 [W] 流水线退化成 4 拍进度 + 800ms 后一次段表重算)。
     await sleep(1000);
@@ -920,6 +945,35 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
     );
 
     session.stop();
+}
+
+// =============================================================================
+log("=== ⑥b 单轨重新识别的请求形状(SL-190)===");
+{
+    const s = src("web/output/tab-tracks.js");
+    // 契约 §1.6:scope 对象形 = {tracksMask, startS?, endS?}。Tab2 解冻提示条只给轨掩码,
+    // 范围交给 native 按「未指定」推导(= "all" 同款)。这条断言钉的是**请求形状**本身 ——
+    // 真桥那侧的缺省口径由 C++ 的 analyzeScopeRange 保证,两边合起来才是完整的回归。
+    // 若有人在这里补上 startS:0/endS:0「显式化」,native 会照单全收 → 空范围 → 又回到
+    // 「点了没反应」。所以这里必须红。
+    const call = s.match(
+        /await call\(\s*"analyze",\s*\{[^}]*\},\s*\{[^}]*\},?\s*\)/,
+    );
+    check(!!call, "tab-tracks.js 里能定位到单轨重新识别的 analyze 调用");
+    if (call) {
+        check(
+            /tracksMask:\s*1\s*<<\s*\(ch\s*-\s*1\)/.test(call[0]),
+            "scope 只给 tracksMask(按轨掩码)",
+        );
+        check(
+            !/startS|endS/.test(call[0]),
+            "scope **不带** startS/endS —— 缺省即整条时间线,显式 [0,0] 会被 native 判成空范围",
+        );
+        check(
+            /clearManual:\s*true/.test(call[0]),
+            "opts 带 clearManual:true(§1.6「重新识别(含手动段)」)",
+        );
+    }
 }
 
 // =============================================================================
