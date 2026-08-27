@@ -2343,3 +2343,143 @@ TEST_CASE("HOST SL-189:引擎驱动档下未冻结维度无视宿主自动化,�
     CHECK(backToEngine > 1.33f);
     CHECK(backToEngine > follow * 2.0f);
 }
+
+// ===========================================================================
+// [SL-187] setTrackManual 的参数面写入必须带**自写标记**(§3.5 层 2)。
+//
+// `v{v}_t{t:02d}_pan/_vol` 是打印车道参数,HostEchoListener 挂在 APVTS 上。不置自写位,
+// 我们自己这次写入会走到层 1b —— 在引擎权威(ARMED/PRINT)下被当成「宿主自动化正在回写」
+// 记进 host echo,`hostEchoActive()` 随即真 600ms,`emitParams` 带 `hostEcho:true`,
+// UI 把用户**刚拖完**的那个旋钮灰显掉,提示语还写着「宿主在驱动这条车道」。
+// 冻结通道与手动接管通道每一次拖拽都命中(用户 v5.5 必遇)。
+//
+// 三段断言缺一不可:两条通道各自不得被记 + **对照组**(真正的宿主写入仍然要被记)——
+// 少了对照组,把整个 host echo shield 拆掉也能让前两条绿。
+// ===========================================================================
+TEST_CASE("HOST SL-187:setTrackManual 的自写不得被记成 hostEcho", "[host][t37][v55][SL187]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true); // 引擎权威:层 1b 才是活的(Follow 档不记 host echo)
+    r.runBlocks(40, 0.5f);
+    Rig::pumpMessages(120); // 等 timerCallback 把 mode 推给打印器
+
+    auto& printer = r.out.getPrinter();
+    const int v = r.out.versionActive();
+    int replaced = 0;
+    int replacedLocked = 0;
+
+    // 前置:此刻没有 host echo(否则下面断言的「没被记」证明不了什么)。
+    REQUIRE_FALSE(printer.hostEchoActive());
+    const int baseline = printer.hostEchoCount();
+
+    // —— 通道①:冻结中调整 ——
+    setFreezeBits(r.out, kTestChannel, 1);
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 55.0f, replaced, replacedLocked));
+    CHECK(printer.hostEchoCount() == baseline); // ★ 自写不进 host echo 计数
+    CHECK_FALSE(printer.hostEchoActive()); // ★ UI 灰显的直接判据
+    // 值确实落到参数面了(别让「没记 hostEcho」是因为压根没写成)。
+    CHECK(paramValueOf(r.out, scvb::params::panId(v, kTestChannel)) == Catch::Approx(55.0f).margin(0.01));
+
+    // —— 通道②:未冻结的手动接管 ——
+    setFreezeBits(r.out, kTestChannel, 0);
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -6.0f, replaced, replacedLocked));
+    CHECK(printer.hostEchoCount() == baseline);
+    CHECK_FALSE(printer.hostEchoActive());
+    CHECK(paramValueOf(r.out, scvb::params::volId(v, kTestChannel)) == Catch::Approx(-6.0f).margin(0.01));
+
+    // —— 对照组:**真正的**宿主写入(不带自写标记)必须照常被记 ——
+    // 这一条保证上面两条不是「shield 整个坏了」换来的绿。
+    auto* volP = r.out.getAPVTS().getParameter(scvb::params::volId(v, kTestChannel));
+    REQUIRE(volP != nullptr);
+    volP->setValueNotifyingHost(volP->convertTo0to1(-12.0f));
+    Rig::pumpMessages(20);
+    CHECK(printer.hostEchoCount() > baseline);
+    CHECK(printer.hostEchoActive());
+}
+
+// ===========================================================================
+// [SL-188] PR #111 复审【重要】:J85 的「解冻即回引擎分析曲线」在**跨维度**这条路上不成立。
+//
+// 手动接管通道走 `track.segments.assign(1, seg)` —— **整表**换成一段常值,另一维的值只从
+// 首段继承。于是「分析出 N 段 → 冻 pan 调值 → 拖 vol(未冻结,接管)」之后,pan 那一维的
+// 分析曲线连带被拍平,解冻 pan 读到的仍是常值段,普通再分析按 ADR-008 不覆盖 user 段。
+// 症状与 v5.3 A2 现场逐字相同,只是入口从 pan 换成了 vol。
+//
+// 这是 04 §1.5 方案 A(每轨一张段表、两维同段)的**既有设计**,确认条正文也确实写着
+// 「替换该轨的**全部**分段结果」,J85 ⑤ 又明令手动接管通道逐字不动 —— 所以本用例**不主张
+// 它该被保住**,而是把「当前行为就是会被压平」钉死:哪天有人改了方案 A,这条会红,
+// 提醒他同步改掉 PR #106 描述里登记的那条已知残留(而不是默默把语义换掉)。
+//
+// 已有的 `HOST J85:冻结中调整只落参数面` 那条跨维断言是从**已经被压平**的单段表出发的,
+// 恰好盖住了这个洞 —— 本用例从**多段 auto 表**出发,补上那一半。
+// ===========================================================================
+TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 会连带压平 pan(方案 A 现行语义)", "[host][t37][v55][SL188]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采一段足够长的有声/静音交替素材,再**分两个范围各分析一次** —— 这是本 harness 里
+    // 拿到「多段 auto 表」的可靠办法(单次全范围分析通常只产出一段;R6 用例同款手法)。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 10; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 4.0);
+
+    const auto runAnalysis = [&r](double a, double b, bool clearManual) {
+        REQUIRE(r.out.startAnalysis(0, a, b, clearManual).ok);
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return;
+            }
+        }
+        FAIL("analysis did not finish");
+    };
+
+    const double half = coveredS * 0.5;
+    runAnalysis(half, coveredS, /*clearManual=*/false);
+    runAnalysis(0.0, half, /*clearManual=*/false);
+
+    const auto before = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(before.size() >= 2); // 前置:确实是**多段** auto 曲线,不是单段
+    REQUIRE(allAutoSegments(r.out, kTestChannel));
+
+    // 冻 pan 并调值 —— [J85] 这一步不碰曲线(已由 J85 用例守住,这里只做前置)。
+    setFreezeBits(r.out, kTestChannel, 1);
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -80.0f, replaced, replacedLocked));
+    REQUIRE(sameSegments(segmentsOfTrack(r.out, kTestChannel), before));
+
+    // 拖 **vol**(该维未冻结 → 走手动接管通道)。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -6.0f, replaced, replacedLocked));
+
+    // ★ 钉死现行语义:整表被换成单段常值,**pan 那一维的分析曲线一并没了**。
+    const auto after = segmentsOfTrack(r.out, kTestChannel);
+    CHECK(after.size() == 1);
+    CHECK(scvb::state::segmentOrigin(after.front().flags) == scvb::state::SegmentOrigin::UserEdited);
+    CHECK(after.front().volDb == -6.0f);
+    CHECK(replaced == static_cast<int>(before.size())); // 如实回报替换掉了多少段
+    // pan 维:继承自**首段**,而不是原来那条随时间变化的曲线。
+    CHECK(after.front().pan == before.front().pan);
+
+    // 于是解冻 pan 之后,曲线上再也取不出时间变化 —— 这正是「入口换成 vol 的同一个环」。
+    setFreezeBits(r.out, kTestChannel, 0);
+    CHECK(segmentsOfTrack(r.out, kTestChannel).size() == 1);
+
+    // 出口仍在:重新识别(含手动段)能把它清掉,段表回到 auto(与 HOST P0-3 同一条链路)。
+    runAnalysis(0.0, coveredS, /*clearManual=*/true);
+    CHECK(allAutoSegments(r.out, kTestChannel));
+}
