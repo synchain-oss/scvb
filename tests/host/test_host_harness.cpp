@@ -2483,3 +2483,147 @@ TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 会连带压平 pan(�
     runAnalysis(0.0, coveredS, /*clearManual=*/true);
     CHECK(allAutoSegments(r.out, kTestChannel));
 }
+
+namespace
+{
+// 该轨当前的活动曲线指针(空 = DspArbiter 会给正中 0)。撤销/重做要连曲线一起回退。
+const scvb::CurveEvaluator* activeCurveOf(ScvbOutputAudioProcessor& out, int ch)
+{
+    return out.authority().activeCurves()[static_cast<std::size_t>(ch - 1)];
+}
+} // namespace
+
+// ===========================================================================
+// [SL-209] 分析结果可撤销(用户新需求)。
+//
+// 分析回落整轮包成**一次** CRVS 事务压进既有 UndoManager(与段编辑同栈):
+// Ctrl+Z 恢复分析前的段表,Ctrl+Y 重放分析结果。
+//
+// 「与『分析不覆盖 user 段』共存」这条是自动成立的:事务快照的是**整个 CrvsData**,
+// undo 还原的是「分析前的那一刻」—— 那一刻本来就含着这一轮会被保留的用户段与范围外
+// auto 段,不需要另算「实际被替换面」。下面第二例就是拿一条用户段把这一点钉死。
+//
+// ⚠ 契约 §1.6「撤销」行现在写的是「否(分析产物变更不入撤销栈)」,与本卡冲突,
+// 需按 §5 走变更文档 + 用户批准(20260827-sl209-analyze-undoable.md,**未批准前不动契约本体**)。
+// ===========================================================================
+TEST_CASE("HOST SL-209:分析可撤销 —— 撤销回分析前,重做回分析结果", "[host][t37][v55][SL209]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    constexpr int kCh = 1;
+    const auto beforeAnalyze = segmentsOfTrack(r.out, kCh); // 分析前(通常是空表)
+
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    const auto afterAnalyze = segmentsOfTrack(r.out, kCh);
+    REQUIRE_FALSE(afterAnalyze.empty()); // 前置:确实分析出东西了
+    REQUIRE_FALSE(sameSegments(afterAnalyze, beforeAnalyze));
+
+    // ★ 撤销:回到分析前的段表(一次分析 = 一条撤销步)。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeAnalyze));
+    // 曲线也跟着回退(撤销走的是 commitCrvsTransaction 的 rebuild 回调)。
+    // 分析前是空表 → 曲线指针应为空;非空表则应有曲线。
+    CHECK((activeCurveOf(r.out, kCh) != nullptr) == !beforeAnalyze.empty());
+
+    // ★ 重做:重放分析结果(逐字节相同)。
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), afterAnalyze));
+    CHECK(activeCurveOf(r.out, kCh) != nullptr);
+
+    // 一次分析只压**一条**步:再撤一次应当又回到分析前,而不是停在中间态。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeAnalyze));
+}
+
+TEST_CASE("HOST SL-209:撤销与「分析不覆盖 user 段」共存", "[host][t37][v55][SL209]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    constexpr int kCh = 2;
+    // 先造一条用户段(未冻结 → 手动接管通道写曲线真身,origin=user_edited)。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, -55.0f, replaced, replacedLocked));
+    const auto withUserSeg = segmentsOfTrack(r.out, kCh);
+    REQUIRE(withUserSeg.size() == 1);
+    REQUIRE(scvb::state::segmentOrigin(withUserSeg.front().flags) == scvb::state::SegmentOrigin::UserEdited);
+
+    // 普通分析(不带 clearManual):ADR-008 —— 用户段必须原样保留。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    {
+        bool stillHasUser = false;
+        for (const auto& sg : segmentsOfTrack(r.out, kCh))
+        {
+            if (scvb::state::segmentOrigin(sg.flags) == scvb::state::SegmentOrigin::UserEdited)
+            {
+                stillHasUser = true;
+            }
+        }
+        CHECK(stillHasUser); // 前置:共存语义本身没坏
+    }
+    const auto afterAnalyze = segmentsOfTrack(r.out, kCh);
+
+    // ★ 撤销:回到**分析前那一刻** —— 那一刻的表里就有这条用户段,所以它当然还在。
+    //    这正是「整表快照」口径的好处:不需要另算「这一轮实际替换了哪几段」。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), withUserSeg));
+
+    // ★ 重做:回到分析结果(用户段仍在其中)。
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), afterAnalyze));
+}
+
+TEST_CASE("HOST SL-209:局部(选区)分析同样可撤销,且不碰范围外的段", "[host][t37][v55][SL209]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 10; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 4.0);
+
+    const auto runAnalysis = [&r](double a, double b) {
+        REQUIRE(r.out.startAnalysis(0, a, b).ok);
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return;
+            }
+        }
+        FAIL("analysis did not finish");
+    };
+
+    runAnalysis(0.0, coveredS); // 打底:全范围
+    const auto base = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE_FALSE(base.empty());
+
+    runAnalysis(coveredS * 0.5, coveredS); // 只重分析后半段
+    const auto afterPartial = segmentsOfTrack(r.out, kTestChannel);
+
+    // ★ 撤销局部分析:整表回到打底那一轮的样子(范围外的段本来就没动,撤销后当然一致)。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), base));
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), afterPartial));
+}
