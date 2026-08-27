@@ -885,21 +885,7 @@ void ScvbOutputAudioProcessor::timerCallback()
         enabledMask_.store(mask, std::memory_order_release);
     }
 
-    // 布防时间维(§1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
-    // follow 档 = 不限范围(全域);manual/daw_loop 档按 range 折成 hop 门,范围外不记账。
-    {
-        scvb::analysis::HopRange gate{0, std::numeric_limits<std::uint64_t>::max()};
-        if (runtime_.rangeMode != 0 && runtime_.rangeEndS > runtime_.rangeStartS)
-        {
-            const double hopS = featHopSeconds();
-            const auto toHop = [hopS](double sec) {
-                const double h = sec / hopS;
-                return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
-            };
-            gate = scvb::analysis::HopRange{toHop(runtime_.rangeStartS), toHop(runtime_.rangeEndS)};
-        }
-        session_.setFeatureGate(gate);
-    }
+    tickRecapture();
 
     // Input 远程改的优先级先落 state(§3.4),再把整个配置镜像推给广播区(§4.3)。
     // 顺序不能倒:倒过来这一拍的远程改动要等下一拍才广播出去,Input 的乐观值会先回滚再跳回。
@@ -1382,11 +1368,163 @@ void ScvbOutputAudioProcessor::setGroupId(int groupId)
     }
 }
 
+void ScvbOutputAudioProcessor::applyFeatureGates()
+{
+    // 调用方须已持 lifecycleMutex_。
+    //
+    // 记账门控的两维([J87] 04 §1.1/§4.2):
+    //   · 常态 —— 时间维 = global.range(follow 档 = 全域);轨维不限(0),轨维由 Input 侧按
+    //     广播区 enabled 位布防,不重复门控;
+    //   · 局部重采集布防期 —— 时间维换读**工作选区**、轨维换成**选中轨掩码**,`global.range`
+    //     一个字节不动(04 §4.2 ①:两维同为硬约束,落在选区外或未勾选轨的 hop 一律丢弃不记账)。
+    // 「范围外不覆盖既有特征」是 04 §4.1 的立卡原则:门控只挡**写入**,既有覆盖原样保留。
+    const double hopS = featHopSeconds();
+    const auto toHop = [hopS](double sec) {
+        const double h = sec / hopS;
+        return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
+    };
+
+    scvb::analysis::HopRange gate{0, std::numeric_limits<std::uint64_t>::max()};
+    std::uint32_t trackMask = 0;
+
+    if (runtime_.recaptureArmed && runtime_.recaptureEndS > runtime_.recaptureStartS)
+    {
+        gate = scvb::analysis::HopRange{toHop(runtime_.recaptureStartS), toHop(runtime_.recaptureEndS)};
+        trackMask = runtime_.recaptureTracksMask;
+    }
+    else if (runtime_.rangeMode != 0 && runtime_.rangeEndS > runtime_.rangeStartS)
+    {
+        gate = scvb::analysis::HopRange{toHop(runtime_.rangeStartS), toHop(runtime_.rangeEndS)};
+    }
+
+    session_.setFeatureGate(gate);
+    session_.setFeatureTrackMask(trackMask);
+}
+
+void ScvbOutputAudioProcessor::tickRecapture()
+{
+    // 调用方 = timerCallback,已持 lifecycleMutex_。
+    applyFeatureGates();
+
+    if (!runtime_.recaptureArmed)
+    {
+        return;
+    }
+
+    // [J87] 裁定③ / 04 §4.2 步骤 3:勾了「播放结束自动停止」时,播放头**越过**选区右边界
+    // → 自动撤防 + 把采集恢复成布防前的值。
+    //
+    // 判据是**边沿**(上一拍还在边界左侧、这一拍到了边界或更右)而不是电平(此刻在右侧)。
+    // 电平判定有两个当场翻车的场景:①布防时播放头本来就停在选区右边,一按播放就自撤防;
+    // ②循环回跳后播放头再次冲过边界 —— 那也是一次真实的越界,边沿判定照样认。
+    // 只在**播放中**判:走带停着时播放头不动,那不是「越过」。
+    const auto shot = playheadSnapshot();
+    const bool playing = (shot.flags & scvb::engine::kPlayheadIsPlaying) != 0;
+    if (!playing)
+    {
+        runtime_.recapturePrevPlayheadS = -1.0; // 停下即重新起算,避免拿停播前的位置凑出假边沿
+        return;
+    }
+
+    const double sr = sampleRate_.load(std::memory_order_relaxed);
+    if (!(sr > 0.0) || shot.timeSamples < 0)
+    {
+        return;
+    }
+    const double timeS = static_cast<double>(shot.timeSamples) / sr;
+    const double prevS = runtime_.recapturePrevPlayheadS;
+    runtime_.recapturePrevPlayheadS = timeS;
+
+    if (!runtime_.recaptureAutoStop)
+    {
+        return; // 没勾「播放结束自动停止」:越界只是不再记账(门控已经挡住),不自动撤防
+    }
+    if (prevS < 0.0)
+    {
+        return; // 布防后的第一拍:还没有上一拍位置,构不成边沿
+    }
+    if (prevS < runtime_.recaptureEndS && timeS >= runtime_.recaptureEndS)
+    {
+        disarmRecaptureLocked(); // 与桥面撤防**同一段代码**:两条路分头写,迟早只改一边
+    }
+}
+
+void ScvbOutputAudioProcessor::applyCaptureEnabled(bool on)
+{
+    // 调用方须已持 lifecycleMutex_(见头文件声明处的行注)。
+    captureEnabled_ = on;
+    session_.setCaptureEnabled(on);
+}
+
 void ScvbOutputAudioProcessor::setCaptureEnabled(bool on)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    captureEnabled_ = on;
-    session_.setCaptureEnabled(on);
+    // [J87] 用户在布防期间**显式**拧过采集开关 = 这把闸他自己接管了:撤防时不再替他动
+    // (裁定③恢复的是「布防前的原值」,不是「盖掉用户中途的决定」)。唯一的调用方是桥面
+    // §1.2 setCaptureEnabled —— 工程恢复那一路直接写 captureEnabled_ + session_,不经过这里。
+    runtime_.recaptureAutoEnabledCapture = false;
+    applyCaptureEnabled(on);
+}
+
+void ScvbOutputAudioProcessor::armRecapture(std::uint16_t tracksMask, double startS, double endS, bool autoStop)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    // [J87] 裁定①「布防即自动打开 01 采集」。只在 false→true 那一跳记「是不是我们开的」——
+    // 中途改选区/改轨勾选会再次走到这里(04 §4.2 ②「立即以新值为布防范围」),那时若重记,
+    // 记下的就是**已经被我们改成 true** 的值,撤防后再也关不回去了。
+    if (!runtime_.recaptureArmed)
+    {
+        runtime_.recaptureAutoEnabledCapture = !captureEnabled_;
+        runtime_.recapturePrevPlayheadS = -1.0; // 越界边沿判定重新起算
+    }
+
+    runtime_.recaptureArmed = true;
+    runtime_.recaptureTracksMask = static_cast<std::uint16_t>(tracksMask & 0x7FFF);
+    runtime_.recaptureStartS = startS;
+    runtime_.recaptureEndS = endS;
+    runtime_.recaptureAutoStop = autoStop;
+
+    // 先套门控再开采集,顺序不能倒:桥面调用与 25Hz tick 不同拍,先开闸后设门的话中间那一小段
+    // 会按 global.range 记账 —— 选区外的既有特征当场被盖,正是本卡要守住的那条性质。
+    applyFeatureGates();
+
+    if (!captureEnabled_)
+    {
+        applyCaptureEnabled(true);
+    }
+}
+
+void ScvbOutputAudioProcessor::disarmRecapture()
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    disarmRecaptureLocked();
+}
+
+void ScvbOutputAudioProcessor::disarmRecaptureLocked()
+{
+    // 调用方须已持 lifecycleMutex_。
+    if (!runtime_.recaptureArmed)
+    {
+        // 幂等:没布防时撤防是空操作。**尤其不能**在这里关采集 —— 桥面的撤防调用
+        // (recaptureArm(0,0,0))在 UI 侧是「开关关掉」的常规路径,会重复发。
+        runtime_.recaptureTracksMask = 0;
+        return;
+    }
+
+    runtime_.recaptureArmed = false;
+    runtime_.recaptureTracksMask = 0;
+    runtime_.recapturePrevPlayheadS = -1.0;
+
+    // [J87] 裁定③「恢复布防前的 capture_enabled 原值」。只有**我们替用户开的**才关回去:
+    // 布防前本来就开着的,撤防后必须保持开。而且要求现在确实还开着 —— 布防期间用户手动
+    // 关掉过采集的话,那是他自己的决定,撤防不该再去动它(此时值本就已经是要恢复的那个)。
+    if (runtime_.recaptureAutoEnabledCapture && captureEnabled_)
+    {
+        applyCaptureEnabled(false);
+    }
+    runtime_.recaptureAutoEnabledCapture = false;
+    applyFeatureGates(); // 门控当拍回落到 global.range
 }
 
 void ScvbOutputAudioProcessor::setOutputEnabled(bool on)

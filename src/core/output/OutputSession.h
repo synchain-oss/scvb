@@ -171,6 +171,14 @@ public:
     // follow 档传全域即可(follow 的语义就是不限范围)。
     void setFeatureGate(analysis::HopRange gate) noexcept { featureGate_ = gate; }
 
+    // [M] 布防的**轨维**([J87] 04 §4.2 ①「落在选区外或未勾选轨的 hop 一律丢弃不记账,
+    // 时间维与轨维同为硬约束」)。0 = 不限轨(常态:轨维在 Input 侧按广播区 enabled 位布防);
+    // 非 0 = 局部重采集布防期的选中轨掩码,只有这些轨会被拉取记账。
+    // 未选中轨**不是**跳过不动:pullTick 会拿空 gate 把它们的读游标推到写头(排空但不写),
+    // 否则撤防后那段积压会被补拉进来,把选区外的既有特征覆盖掉 —— 正是本卡要守住的性质。
+    void setFeatureTrackMask(u32 mask) noexcept { featureTrackMask_ = mask & 0x7FFFu; }
+    u32 featureTrackMask() const noexcept { return featureTrackMask_; }
+
     // [M] 聚合用([J09] 全局小节 / 看门狗)。gapCount 是**进程寿命累计值**(ctrl 全局小节与诊断用)。
     u32 gapCount(u32 channel) const;
 
@@ -225,6 +233,8 @@ private:
     analysis::FingerprintWatch fpWatch_{kMaxChannels};
     // 布防时间维(§1 setCaptureEnabled);默认全域 = 不门控。
     analysis::HopRange featureGate_{0, std::numeric_limits<u64>::max()};
+    // 布防轨维([J87] 04 §4.2);默认 0 = 不限轨。
+    u32 featureTrackMask_ = 0;
 
     // [A] 只读的注入掩码(bit{N-1} = channel N 可注入混音);[M] 25Hz 写。
     std::atomic<u32> injectMask_{0};
