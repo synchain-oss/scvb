@@ -110,7 +110,15 @@ export const SCENARIO_MAP = Object.freeze({
     // T43([J75] A)轨迹图演示:开箱就落在轨迹档,且段表带一段跨轨对齐的缺口 ——
     // 「无分段覆盖的区间不画线」在这个场景里一眼可见、可截图、可断言。
     "chart-trajectory": "fifteen-tracks",
+    // SL-177(04 §4.5 fingerprint watchdog):几条轨的上游音频与已采集特征对不上
+    // (典型 = 用户在 Input 前面插了 EQ 并改了参数)。落在健康满配世界上,由 buildWorld
+    // 的场景覆写把 §2.8 的 stale 位摆开 —— 横幅 ⑧ / tab 导航琥珀点 / 泳道 ⚠ 三处提示
+    // 在浏览器里才可达、可截图、可断言(此前 shell.js 白名单里有名字,SCENARIO_MAP 里没接线)。
+    stale: "fifteen-tracks",
 });
+
+/** `stale` 场景里「数据已过期」的轨(取三条:够验证「只影响该轨、不牵连别的轨」)。 */
+const STALE_DEMO_CHANNELS = Object.freeze([2, 5, 11]);
 
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
 const HOST_LOOP = Object.freeze({ startS: 24, endS: 96 });
@@ -508,6 +516,19 @@ export function buildWorld(opts = {}) {
         outputSegments = makeTourDemoSegments(1, "snapshot", {
             trajectoryGap: true,
         });
+    }
+    if (opts.scenario === "stale" && outputSegments) {
+        // SL-177 / 04 §4.5:把 §2.8 的 stale 位摆到三条轨上。**只改 stale**,段表其余
+        // 一律不动 —— 提示是「素材变了」,不是「段没了」,fingerprint watchdog 明文
+        // 「只提示,不自动失效、不阻断任何操作」。
+        outputSegments = {
+            ...outputSegments,
+            channels: outputSegments.channels.map((entry) =>
+                STALE_DEMO_CHANNELS.includes(entry.ch)
+                    ? { ...entry, stale: true }
+                    : entry,
+            ),
+        };
     }
 
     // ---- Input 七态场景覆写(T36;只改 Input 快照初值,不动周期事件与函数语义)----

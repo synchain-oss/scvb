@@ -699,6 +699,12 @@ export const T = {
         "banner.srMismatch": "轨 {n} 采样率不一致,已禁用",
         "banner.sidecarMissing": "采集数据缺失/过期,请重新采集",
         "banner.noTimeline": "宿主未提供时间线",
+        // 上游改动的过期检测(04 §4.5 fingerprint watchdog,SL-177):该轨上游音频与已采集
+        // 特征对不上 —— 典型场景是在 Input 前面插了 EQ/压缩并改了参数。
+        // **只提示,不自动失效、不阻断任何操作**(04 §4.5 UI 条)。
+        "banner.staleCapture":
+            "{m} 轨的上游音频与已采集特征不一致,建议重新采集",
+        "wave.staleTrack": "该轨上游音频与已采集特征不一致,建议重新采集",
         // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
         "master.versionArmedConfirm": "引擎输出将平滑切至新版本,是否继续?",
         // Tab1 空态卡(A1;用户裁定 2026-08-18:五步制,前三步红字,
@@ -1510,6 +1516,10 @@ export const T = {
         "banner.sidecarMissing":
             "Capture data missing or outdated — please re-capture",
         "banner.noTimeline": "Host provides no timeline",
+        "banner.staleCapture":
+            "Upstream audio no longer matches the captured features on {m} track(s) — re-capture recommended",
+        "wave.staleTrack":
+            "Upstream audio no longer matches the captured features on this track — re-capture recommended",
         "master.versionArmedConfirm":
             "Engine output will fade smoothly to the new version. Continue?",
         "master.empty.step1":
@@ -2299,6 +2309,10 @@ export const T = {
         "banner.sidecarMissing":
             "Données de capture manquantes ou périmées — veuillez recapturer",
         "banner.noTimeline": "L'hôte ne fournit aucune timeline",
+        "banner.staleCapture":
+            "L'audio en amont ne correspond plus aux caractéristiques capturées sur {m} piste(s) — recapture recommandée",
+        "wave.staleTrack":
+            "L'audio en amont ne correspond plus aux caractéristiques capturées sur cette piste — recapture recommandée",
         "master.versionArmedConfirm":
             "La sortie du moteur passera progressivement à la nouvelle version. Continuer ?",
         "master.empty.step1":

@@ -39,6 +39,7 @@ const u = (p) => pathToFileURL(join(ROOT, p)).href;
 const src = (p) => readFileSync(join(ROOT, p), "utf8");
 
 const TW = await import(u("web/output/tab-wave.js"));
+const TT = await import(u("web/output/tab-tracks.js"));
 const TL = await import(u("web/output/canvas/timeline.js"));
 const HD = await import(u("web/output/canvas/hidpi.js"));
 const LY = await import(u("web/output/canvas/layers.js"));
@@ -746,6 +747,91 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             "裸 lowSample 键同样命中(消费侧与键形解耦)",
         );
     }
+    // ---- SL-177 / 04 §4.5:「采集数据已过期」提示的**数据面**与**接线面**。
+    //      DOM 侧(横幅 ⑧ / tab 琥珀点 / 泳道 ⚠ 真的显出来)由
+    //      smoke-output-stale-page.mjs 在无头 Chrome 里真渲染一次断;
+    //      这里只断 node 断得到的那半边。
+    {
+        const seg = {
+            channels: [
+                { ch: 2, stale: true, segments: [] },
+                { ch: 5, stale: true, segments: [] },
+                { ch: 7, stale: false, segments: [] },
+            ],
+        };
+        eq(TT.staleTrackCount(seg), 2, "staleTrackCount:数的是 stale 为真的轨");
+        eq(TT.staleTrackCount(null), 0, "staleTrackCount:空段表 ⇒ 0(反向)");
+        eq(
+            TT.staleTrackCount({ channels: [] }),
+            0,
+            "staleTrackCount:一轨都没有 ⇒ 0(反向)",
+        );
+        eq(
+            TW.laneModelFromStore({ segments: seg })
+                .filter((l) => l.stale)
+                .map((l) => l.n),
+            [2, 5],
+            "泳道模型:只有 stale 轨挂标(不牵连别的轨)",
+        );
+        // 接线面(源码级):模板有这一件、render 真按 lane.stale 翻显隐、
+        // tab 导航琥珀点读的是**合并后的段表**而不是单个事件的 channels。
+        const twSrc = src("web/output/tab-wave.js");
+        check(
+            /wave-lane__staledot/.test(twSrc) &&
+                /stale: gb\("stale"\)/.test(twSrc),
+            "泳道模板加了 ⚠ 角标件并绑进节点表",
+        );
+        check(
+            /show\(n\.stale,\s*!!lane\.stale\)/.test(twSrc),
+            "render 按 lane.stale 翻 ⚠ 显隐(不是常量,也不是只挂了个节点)",
+        );
+        check(
+            /setTitle\(n\.stale,[\s\S]{0,80}wave\.staleTrack/.test(twSrc),
+            "⚠ 的整句 tooltip 走词条 wave.staleTrack",
+        );
+        const appSrc = src("web/output/app.js");
+        check(
+            /staleTrackCount\(store\.segments\)/.test(appSrc),
+            "tab 导航琥珀点读合并后的 store.segments(§2.8 的 channels 只含受影响轨)",
+        );
+        check(
+            /banner-staleCapture/.test(appSrc) &&
+                /banner\.staleCapture/.test(appSrc),
+            "横幅 ⑧ 接了线(节点 + 词条)",
+        );
+        // 04 §4.5「只提示,不自动失效、不阻断任何操作」:横幅分支里不许 disable 任何东西。
+        const at = appSrc.indexOf("const staleTracks = staleTrackCount(");
+        check(at > 0, "找得到横幅 ⑧ 的接线块");
+        check(
+            at > 0 && !/disabled|readOnly\s*=/.test(appSrc.slice(at, at + 400)),
+            "stale 横幅分支不 disable 任何控件(04 §4.5:只提示,不阻断)",
+        );
+        // 三语齐 + 占位符一致 + 语义落在「建议重新采集」。
+        for (const key of ["banner.staleCapture", "wave.staleTrack"]) {
+            for (const lang of ["zh", "en", "fr"]) {
+                check(
+                    typeof T[lang][key] === "string" && T[lang][key].length > 0,
+                    `${lang} 有词条 ${key}`,
+                );
+            }
+            const holders = (lang) =>
+                ((T[lang][key] || "").match(/\{[a-zA-Z]+\}/g) || [])
+                    .sort()
+                    .join(",");
+            eq(
+                [holders("en"), holders("fr")],
+                [holders("zh"), holders("zh")],
+                `${key} 三语占位符一致`,
+            );
+        }
+        check(
+            /重新采集/.test(T.zh["wave.staleTrack"]) &&
+                /re-?capture/i.test(T.en["wave.staleTrack"]) &&
+                /recapture/i.test(T.fr["wave.staleTrack"]),
+            "三语提示都落在「建议重新采集」上",
+        );
+    }
+
     // 边界与角标(05 行 310/313:相邻任一段非 auto → 实线;锁定标独立)
     const segCh = {
         ch: 1,

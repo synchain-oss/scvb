@@ -711,6 +711,10 @@ function esc(s) {
  * 舞台两层:静态位图 canvas(waveform.js 画)+ 角标 DOM 层(段 E/C/锁定)。
  * 曲线与边界画在 .wave-lanes 级的共享动态层(§6.3),不逐泳道建 canvas。
  */
+// 注:本函数返回的是**模板字符串**,里面的 HTML 注释同样进 fetch_fonts.py 的字符扫描
+// (js_strings 取的是字面量,分不清哪段是注释)—— 模板里的说明要短,长说明写在函数外的
+// JS 注释里。SL-177 的 ⚠ 角标语义:该轨上游音频与已采集特征不一致,建议重新采集
+// (04 §4.5 fingerprint watchdog);只提示,不自动失效、不阻断任何操作。
 export function waveLaneHtml(ch) {
     const gb = (suffix) => `wave-lane-${ch}${suffix ? "-" + suffix : ""}`;
     return `
@@ -731,6 +735,8 @@ export function waveLaneHtml(ch) {
         <span class="wave-lane__label" data-gb="${gb("label")}"></span>
         <!-- 「样本不足」黄标:158px 内压成琥珀点 + tooltip(05 行 309;C-05 补件) -->
         <span class="wave-lane__lowdot" data-gb="${gb("lowsample")}" hidden></span>
+        <!-- 「数据可能已过期」⚠ 角标(04 §4.5;整句 tooltip 走 wave.staleTrack) -->
+        <span class="wave-lane__staledot" data-gb="${gb("stale")}" hidden>⚠</span>
         <span class="wave-lane__covseg" data-gb="${gb("covseg")}"></span>
         <!-- [Wave 2] 曲线可见 toggle(B-08:压成眼睛图标钮;防遮挡,05 行 309) -->
         <button class="wave-lane__eye" type="button" aria-pressed="true"
@@ -1785,6 +1791,7 @@ export function createTabWave(opts) {
                 light: gb("light"),
                 label: gb("label"),
                 low: gb("lowsample"),
+                stale: gb("stale"),
                 covseg: gb("covseg"),
                 check: gb("checkbox"),
                 eye: gb("curvevisible"),
@@ -3052,6 +3059,10 @@ export function createTabWave(opts) {
             setTitle(n.covseg, covSeg);
             show(n.low, !!lane.low);
             setTitle(n.low, lane.low ? t["lowSample.full"] || "" : "");
+            // 04 §4.5:该轨上游音频与已采集特征不一致 → ⚠ 角标 + 整句 tooltip。
+            // 数据来自 §2.8 segments.channels[].stale(laneModelFromStore 已投影)。
+            show(n.stale, !!lane.stale);
+            setTitle(n.stale, lane.stale ? t["wave.staleTrack"] || "" : "");
             if (n.check) {
                 n.check.setAttribute(
                     "aria-label",

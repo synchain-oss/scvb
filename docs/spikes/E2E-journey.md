@@ -51,7 +51,7 @@ fingerprint 过期」——步 3(电平与失准计数)、6/7(真实 coverage �
 | 13 | **write 落盘**:总线轨自动化设 **Latch(推荐)或 Write;不用 Touch**;输出 ON,播放 range | PRINT 进入不弹窗(覆盖确认已在步 10 完成);打印中圆点 + footer「引擎驱动 V2 · 33–49 小节」;播放中参数被 DAW 录制(稀疏节点);离开 range 自动闭合 gesture | 🖥️ **待用户上机**(write 模式必须 DAW)。→ §3 清单 L-13 / 六类验收「宿主矩阵」 |
 | 14 | 写完停止;检查 DAW 自动化;**输出开关 OFF** | 停止(PRINT→ARMED)footer 短提示「本次打印覆盖…建议切回跟随宿主试听核对」;OFF 后 DSP 跟随 DAW 自动化回放,听感与试听一致(S2 验收) | 🖥️ **待用户上机**。→ §3 清单 L-14 |
 | 15 | 局部重做:勾第 3 轨、拖工作选区 →「重采集选区」→ 播放 → 重分析 | §4.2/4.3 流程(布防用工作选区,全局 Range 不变);完成后 diff「已更新 3 个区间;其余区间与其他版本未改动」 | ✅ 离线(视觉):`recapture-armed` 场景(工作选区布防态)截图 `t37-output-wave-recapture.png`;重分析逐字节不变性 core 断言 = `analysis_reanalysis_test.cpp`。🖥️ 真机补:真实重采集覆盖写入 + 其余 14 轨逐字节不变(§8 局部重做)→ §3 清单 L-15 |
-| 16 | 后续某天改了某轨 EQ | 播放时 fingerprint 不匹配 → 该轨该区间 ⚠ 斜纹「数据可能过期」→ 回到步 15 | 🖥️ **待用户上机**(需真实上游改动 + 播放)。fingerprint 打包(u64 tile_idx/hash)的 core 断言已具备(`test_ipc_lifecycle.cpp` fp 打包往返)。→ §3 清单 L-16 |
+| 16 | 后续某天改了某轨 EQ | 播放时 fingerprint 不匹配 → 该轨该区间 ⚠ 斜纹「数据可能过期」→ 回到步 15 | 🖥️ **待用户上机**(需真实上游改动 + 播放)。SL-177 起整条通路已实装并有离线断言:fingerprint 打包往返(`test_ipc_lifecycle.cpp`)、两端指纹一致性与滞回/10% 判定(`test_feature_fingerprint.cpp`)、Input 命令环 → Output `stale` 端到端(`test_output_session.cpp`「SL-177 端到端」)、三处提示真渲染(`web-preview/tests/smoke-output-stale-page.mjs`)。真机剩下的是「真实 EQ 改动 + 播放」这一跳。→ §3 清单 L-16 |
 
 ---
 
@@ -91,7 +91,7 @@ fingerprint 过期」——步 3(电平与失准计数)、6/7(真实 coverage �
 - [ ] **L-13** write 落盘:Latch(推荐)或 Write(**不用 Touch**);PRINT 进入不弹窗;footer「引擎驱动 V2 · 33–49 小节」(follow 档走 follow 变体);参数被 DAW 录制(稀疏节点);离开 range 自动闭合 gesture
 - [ ] **L-14** 写完停止:PRINT→ARMED footer 短提示;输出 OFF 后 DSP 跟随 DAW 自动化回放,听感与试听一致(S2 验收)
 - [ ] **L-15** 局部重做:勾第 3 轨 + 工作选区 → 重采集 → 重分析;diff「已更新 3 个区间;其余区间与其他版本未改动」;其余 14 轨与第 3 轨选区外曲线逐字节不变(§8 局部重做)
-- [ ] **L-16** 改某轨 EQ → 播放 fingerprint 不匹配 → 该轨该区间 ⚠ 斜纹「数据可能过期」
+- [ ] **L-16** 改某轨 EQ → 播放 fingerprint 不匹配 → 该轨 ⚠「数据可能过期,建议重新采集」(SL-177 已实装:轨级提示 = 横幅 ⑧ + tab 导航琥珀点 + 泳道 ⚠;区间级斜纹待 `requestWaveform.stale[]` 接线)
 
 ### 3.2 04 §8 六类验收(真机部分;其余已由 Catch2 覆盖)
 

@@ -198,14 +198,26 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     }
 
     // 3) epoch 跳变检测(契约 §2;停走带静止重写不算跳变)。
+    bool startedRun = false;
     if (t0 != expectedNext_)
     {
         if (playing || t0 != lastT0_)
         {
             scvb::AudioRing::bumpEpoch(block.audio);
             session_.featRing().startRun(t0); // run 切换:biquad 预热(T08/04 §3.2)
+            startedRun = true;
         }
     }
+    // 特征段的**绑定边沿**同样要起一个 run:startRun 在未绑定时早退(FeatRing.cpp),而这里
+    // 只在 t0 跳变时调它、不重试 —— 走带已经在跑、用户此时才插上 Output(或改组后重建段),
+    // 段一绑好 nextHop/fpHop 还停在 0,后续的帧与指纹全部按错位的 hop 号记账。表现在本卡上
+    // 就是「基线整体错位 ⇒ 关采集重播同一段素材整轨失配 ⇒ 整轨误报」。
+    const bool featBound = session_.featRing().bound();
+    if (featBound && !featBoundPrev_ && !startedRun)
+    {
+        session_.featRing().startRun(t0);
+    }
+    featBoundPrev_ = featBound;
     lastT0_ = t0;
     expectedNext_ = t0 + nRender;
 
@@ -297,6 +309,34 @@ void ScvbInputAudioProcessor::timerCallback()
         }
     }
     captureArmed_.store(armed ? 1u : 0u, std::memory_order_relaxed);
+
+    drainFpReports();
+}
+
+void ScvbInputAudioProcessor::drainFpReports()
+{
+    // 04 §4.5:fp hash 在 [A] 只写本实例进程内 SPSC,由 **[M] 25Hz 排水**后写入本 slot 专属的
+    // ctrl 命令环([A] 绝不直接写跨进程环)。稳态 1 条/秒/轨,25Hz 排水下每拍最多 1 条。
+    //
+    // 只有本 channel 的持有者(I4 ACTIVE)才可以投递:非活跃实例向共享环 enqueue 会造成双生产者
+    // 竞写 write_pos —— 与 bridgeRemoteSetPriority 的 SPSC 纪律同一条(PR#54 R3)。
+    const scvb::u32 ch = static_cast<scvb::u32>(channelId_);
+    if (ch < 1 || ch > scvb::kMaxChannels || session_.state() != scvb::input::InputClaimState::kActive)
+    {
+        // 未持有 slot:把队列排空丢弃,免得攒到满环后一次性倒进去一串陈旧 tile。
+        scvb::u64 discard[kFpDrainMax];
+        session_.featRing().drainFpReports(discard, kFpDrainMax);
+        return;
+    }
+
+    scvb::u64 values[kFpDrainMax];
+    const auto n = session_.featRing().drainFpReports(values, kFpDrainMax);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        // 满环由 CtrlPlane 自己丢最旧 + 计数(§4.4-c);fp 是提示类信号,丢了不影响任何数据面,
+        // 故不做 isRingFull 预检、不回报 UI。
+        ctrl_.enqueue(ch, scvb::CtrlOp::kFpReport, values[i]);
+    }
 }
 
 void ScvbInputAudioProcessor::setCurrentProgram(int /*index*/) {}

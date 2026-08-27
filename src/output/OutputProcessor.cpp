@@ -443,6 +443,10 @@ double ScvbOutputAudioProcessor::clearCoverage(std::uint16_t tracksMask, double 
         // 先量出实际会被清掉的量,再打洞 —— 打完就问不出来了。
         clearedS += static_cast<double>(frames.coveredHops(range)) * hopS;
         frames.invalidate(range);
+        // 打洞即作废基线(04 §4.5):被清掉的那些 tile 从此没有基线可比,而**已定谳的失配**
+        // 也不该活过一次「用户主动清除并准备重采」的动作 —— 否则重采完了 ⚠ 还挂着,
+        // 用户只能靠重开工程把它甩掉。
+        session_.resetChannelStale(static_cast<scvb::u32>(t + 1));
     }
     return clearedS;
 }
