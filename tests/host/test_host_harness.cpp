@@ -2483,3 +2483,276 @@ TEST_CASE("HOST SL-188:多段 auto 表上拖未冻结 vol 会连带压平 pan(�
     runAnalysis(0.0, coveredS, /*clearManual=*/true);
     CHECK(allAutoSegments(r.out, kTestChannel));
 }
+
+// ===========================================================================
+// [SL-202] v5.5 实测 P1 回归:冻结一轨 pan → 调整 → 解冻,pan 落**正中**,而且**其他轨也有落正中的**;
+// 选中该轨「重新分析选区」无效,只有全量分析才恢复。
+//
+// 「正中」这个词是本卡最硬的线索:它不是指派算法会给出的值,而是 `DspArbiter` 在
+// **曲线指针为空**时的默认(`DspArbiter.cpp` 引擎权威分支:`src.curve != nullptr ? panAt(t) : 0.0f`)。
+// 而曲线指针只在一个地方被置空 —— `rebuildAllCurves()` 里 `src.empty() → setCurve(v, t, nullptr)`。
+// 所以「pan 正中」等价于「**该轨段表被清空了**」,判据不该看音频(三轨混音的 L/R 比读不准),
+// 要直接看 `authority().activeCurves()[t]` 是不是 nullptr —— 那是这条因果链的正下方。
+//
+// 下面按用户的真实路径逐步复现,每一步都对**全部三轨**的段表与曲线指针拍照对拍,
+// 谁在哪一步把段表清掉就当场落到那一步的断言上。
+// ===========================================================================
+namespace
+{
+// 该轨当前的活动曲线指针(空 = DspArbiter 会给正中 0)。
+const scvb::CurveEvaluator* activeCurveOf(ScvbOutputAudioProcessor& out, int ch)
+{
+    return out.authority().activeCurves()[static_cast<std::size_t>(ch - 1)];
+}
+
+// 全部三轨的「段数 + 曲线在不在」快照,便于一次性对拍。
+struct TrackShot
+{
+    std::size_t segCount = 0;
+    bool hasCurve = false;
+};
+
+std::array<TrackShot, 3> shotOf(ScvbOutputAudioProcessor& out)
+{
+    std::array<TrackShot, 3> s{};
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        s[static_cast<std::size_t>(ch - 1)].segCount = segmentsOfTrack(out, ch).size();
+        s[static_cast<std::size_t>(ch - 1)].hasCurve = activeCurveOf(out, ch) != nullptr;
+    }
+    return s;
+}
+} // namespace
+
+TEST_CASE("HOST SL-202:冻结→调整→解冻,本轨与他轨曲线都不得被清空", "[host][t37][v55][SL202]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCh = 1;
+
+    // 前置:三轨都有分析产物,曲线都在。
+    const auto before = shotOf(r.out);
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        INFO("track " << ch);
+        REQUIRE(before[static_cast<std::size_t>(ch - 1)].segCount > 0);
+        REQUIRE(before[static_cast<std::size_t>(ch - 1)].hasCurve);
+    }
+    const auto beforeSegs = segmentsOfTrack(r.out, kCh);
+    const double analysedPan = r.firstPan(kCh);
+    REQUIRE(std::isfinite(analysedPan));
+
+    // ① 冻结该轨 pan。冻结本身**不得**触碰任何轨的段表(嫌疑 b:冻结按钮链路里有清段动作)。
+    setFreezeBits(r.out, kCh, 1);
+    MonoMultiRig::pump(120);
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeSegs));
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        INFO("freeze step, track " << ch);
+        CHECK(activeCurveOf(r.out, ch) != nullptr);
+    }
+
+    // ② 冻结态调整(J85:只落参数面)。同样不得触碰段表。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, -80.0f, replaced, replacedLocked));
+    MonoMultiRig::pump(120);
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeSegs));
+
+    // ③ 解冻。曲线本来就没被动过,这一步不需要任何恢复动作(J85 ③)。
+    setFreezeBits(r.out, kCh, 0);
+    MonoMultiRig::pump(200);
+
+    // ★ 核心断言组:解冻后 —— 本轨曲线仍在、段表逐字节不变、pan 回到分析值(不是正中 0)。
+    {
+        const auto* curve = activeCurveOf(r.out, kCh);
+        REQUIRE(curve != nullptr); // ← 空曲线正是「正中」的来源
+        CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeSegs));
+        CHECK(r.firstPan(kCh) == Catch::Approx(analysedPan));
+        // 曲线在该段中点采样应等于分析值,而不是 0(正中)。
+        const double sr = r.out.sampleRate();
+        REQUIRE(sr > 0.0);
+        const double midSec =
+            (static_cast<double>(beforeSegs.front().t0) + static_cast<double>(beforeSegs.front().t1)) / (2.0 * sr);
+        CHECK(curve->panAt(midSec) == Catch::Approx(analysedPan).margin(0.5));
+    }
+
+    // ★ 他轨(嫌疑 ②:多轨曲线被清)。
+    const auto after = shotOf(r.out);
+    for (int ch = 2; ch <= 3; ++ch)
+    {
+        INFO("after unfreeze, other track " << ch);
+        CHECK(after[static_cast<std::size_t>(ch - 1)].hasCurve);
+        CHECK(after[static_cast<std::size_t>(ch - 1)].segCount == before[static_cast<std::size_t>(ch - 1)].segCount);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-202] 嫌疑 a:#112 让「单轨重新识别」真的发得出去之后,
+// analyze({tracksMask}, {clearManual:true}) 会不会波及**他轨**或**范围外**的段?
+// 这是解冻提示条那颗按钮的真实调用(tab-tracks.js:1230),用户解冻后最可能点的就是它。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-202:单轨 clearManual 重新识别不得动他轨段表", "[host][t37][v55][SL202]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCh = 1;
+    const auto beforeCh2 = segmentsOfTrack(r.out, 2);
+    const auto beforeCh3 = segmentsOfTrack(r.out, 3);
+    REQUIRE(beforeCh2.size() > 0);
+    REQUIRE(beforeCh3.size() > 0);
+
+    // 冻结 + 调整 + 解冻,再走一次「单轨重新识别」(mask 只含该轨,clearManual=true)。
+    setFreezeBits(r.out, kCh, 1);
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, -80.0f, replaced, replacedLocked));
+    setFreezeBits(r.out, kCh, 0);
+    MonoMultiRig::pump(120);
+
+    const auto accepted = r.out.startAnalysis(static_cast<std::uint16_t>(1u << (kCh - 1)), 0.0, coveredS,
+                                              /*clearManual=*/true);
+    REQUIRE(accepted.ok); // #112 之后单轨重新识别必须受理得了
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        MonoMultiRig::pump(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    // ★ 他轨:段表与曲线一个字节都不许动(局部重分析只对「轨 × 区间」失效,ADR-008 / §4.4)。
+    CHECK(sameSegments(segmentsOfTrack(r.out, 2), beforeCh2));
+    CHECK(sameSegments(segmentsOfTrack(r.out, 3), beforeCh3));
+    CHECK(activeCurveOf(r.out, 2) != nullptr);
+    CHECK(activeCurveOf(r.out, 3) != nullptr);
+    // 本轨:重算出了 auto 段,曲线在,不是空表。
+    CHECK(activeCurveOf(r.out, kCh) != nullptr);
+    CHECK(allAutoSegments(r.out, kCh));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-202] 嫌疑 c:「重新分析选区」在真机上无效,而全量分析能恢复。
+// 这里用**子范围**跑一次单轨分析,断言它确实改到了该轨在该范围内的段。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-202:选区重分析对该轨生效(不是只有全量才行)", "[host][t37][v55][SL202]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 2.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCh = 1;
+    const auto before = segmentsOfTrack(r.out, kCh);
+    REQUIRE_FALSE(before.empty());
+
+    // 选区 = 后半段;单轨 mask。
+    const double half = coveredS * 0.5;
+    const auto accepted =
+        r.out.startAnalysis(static_cast<std::uint16_t>(1u << (kCh - 1)), half, coveredS, /*clearManual=*/false);
+    REQUIRE(accepted.ok); // 受理得了(#112 修的是「不给范围」那一路,这里显式给了范围)
+    CHECK(accepted.tracks >= 1); // ★ 影响面里必须有这条轨,否则「选了等于没选」
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        MonoMultiRig::pump(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    // ★ 该轨曲线仍在(选区重分析不得把整轨清空 —— 那正是「变正中」的形态)。
+    CHECK(activeCurveOf(r.out, kCh) != nullptr);
+    CHECK_FALSE(segmentsOfTrack(r.out, kCh).empty());
+    // 范围外的段仍在(局部重分析不碰其他区间)。
+    const std::int64_t halfSample = static_cast<std::int64_t>(half * r.out.sampleRate());
+    bool keptOutside = false;
+    for (const auto& sg : before)
+    {
+        if (sg.t1 <= halfSample)
+        {
+            keptOutside = true;
+            break;
+        }
+    }
+    if (keptOutside)
+    {
+        bool stillThere = false;
+        for (const auto& sg : segmentsOfTrack(r.out, kCh))
+        {
+            if (sg.t1 <= halfSample)
+            {
+                stillThere = true;
+                break;
+            }
+        }
+        CHECK(stillThere);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-202] 唯一能**一次清空全部轨**的代码路径:`setStateInformation` 在「没有 CRVS chunk 或
+// 解码失败」时会把 `crvsData_` 整个重置成默认(两个版本 × 15 轨全空段表)。
+// 段表一空 → `rebuildAllCurves` 给 `setCurve(v,t,nullptr)` → `DspArbiter` 引擎权威分支拿不到曲线
+// → 恒 0 = **正中**。用户报的「其他轨也有落正中的」只有这条路径解释得通(finishAnalysis 结构上
+// 清不空:`src.empty()` 直接 continue,非空时 dst = src + kept)。
+//
+// 所以这条链必须有回归守卫:存档往返一旦丢 CRVS,现象与 SL-202 逐字相同。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-202:state 往返必须保住段表(丢 CRVS = 全部轨落正中)", "[host][t37][v55][SL202]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    // 造一个「有冻结位 + 有手动接管段 + 有分析段」的真实工程态,再往返。
+    setFreezeBits(r.out, 1, 1);
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -80.0f, replaced, replacedLocked));
+    REQUIRE(r.out.setTrackManual(2, /*isPan=*/false, -6.0f, replaced, replacedLocked)); // 未冻结 → 接管通道写曲线
+
+    std::array<std::vector<scvb::state::Segment>, 3> before;
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        before[static_cast<std::size_t>(ch - 1)] = segmentsOfTrack(r.out, ch);
+        REQUIRE_FALSE(before[static_cast<std::size_t>(ch - 1)].empty());
+    }
+
+    // 宿主保存 → 重新灌回(工程重开 / 预设切换 / 插件重建都走这一对)。
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    MonoMultiRig::pump(200);
+
+    // ★ 三轨段表逐字节还在,曲线指针也重建了(不是 nullptr = 不落正中)。
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        INFO("round-trip track " << ch);
+        CHECK(sameSegments(segmentsOfTrack(r.out, ch), before[static_cast<std::size_t>(ch - 1)]));
+        CHECK(activeCurveOf(r.out, ch) != nullptr);
+    }
+}
