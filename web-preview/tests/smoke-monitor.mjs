@@ -2198,14 +2198,15 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
     eq(DM.frameProgress(100, 0), 1, "p:时长为 0 ⇒ 直接到位,不出 Infinity");
     eq(DM.frameProgress(NaN, 250), 1, "p:非有限 elapsed ⇒ 到位,不出 NaN");
 
-    // ---- 补间时长是**定值** = 发布周期,不是「实测帧间隔」。
-    // 实测那种写法量的是「数据多久变一次」(ramp 之间可以好几秒没动静),拿它当时长会把
-    // 一次孤立的段边界跳变抹成几秒的爬行 —— 编出来的运动。而「新值发生在最近一个发布周期
-    // 之内」是我们唯一握有的事实,那个窗口就是唯一有依据的重建长度。
+    // ---- 补间时长是**定值** = 页面实得的到达周期,不是「实测帧间隔」、也不是段侧发布周期。
+    // 链路:发布器 30Hz → [M] 60Hz → 桥面 25Hz(WebViewHost 基准 tick,既有 50→25 裁定)。
+    // 最慢的一级才是页面实得的速率 ⇒ 40ms。
+    // 为什么不取实测间隔:那量的是「数据多久变一次」(ramp 之间可以好几秒没动静),
+    // 拿它当时长会把一次孤立的段边界跳变抹成几秒的爬行 —— 编出来的运动。
     eq(
         DM.DIST_SPAN_MS,
-        250,
-        "补间时长 = viz 发布周期 250ms(与发布器的 kPublishIntervalMs 同一个数)",
+        40,
+        "补间时长 = 页面实得到达周期 40ms(= 桥面 25Hz;不是段侧的 33ms,更不是升频前的 250ms)",
     );
 
     // ---- 纯函数:逐行插值
@@ -2271,17 +2272,17 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         );
         eq(m.diag().animating, false, "首帧不起 rAF");
 
-        m.push([row(1, 50, 6, 100)], 0, 1250);
-        m.tick(1250);
+        m.push([row(1, 50, 6, 100)], 0, 1040);
+        m.tick(1040);
         eq(m.rows()[0].pan, -50, "补间起点 = **当前显示值**,不是上一帧的目标");
-        m.tick(1375);
+        m.tick(1060);
         eq(
             [m.rows()[0].pan, m.rows()[0].volDb],
             [0, 0],
             "半程:横位与柱高都走到一半(4Hz 的一步被铺成连续运动)",
         );
-        check(m.tick(1490), "到位前 tick 报「还要续帧」");
-        eq(m.tick(1500), false, "到位那一帧报「可以自停」(空闲零 rAF)");
+        check(m.tick(1079), "到位前 tick 报「还要续帧」");
+        eq(m.tick(1080), false, "到位那一帧报「可以自停」(空闲零 rAF)");
         eq(m.rows()[0].pan, 50, "整程:精确落到目标");
 
         // 写方停摆:帧流断在这里,此后无论过多久都不许再动一丝一毫。
@@ -2297,13 +2298,13 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
     {
         const m = DM.createDistMotion({});
         m.push([row(1, 10, -3, 100)], 0, 1000);
-        m.push([row(1, 10, -3, 100)], 0, 1250);
+        m.push([row(1, 10, -3, 100)], 0, 1040);
         eq(m.diag().pushes, 0, "重复值 ⇒ 一次补间都不起(空闲零 rAF)");
         // 与数据面无关的 render(`scvb.groups` 1Hz 那一路)夹在两帧之间时,
         // 补间仍须走满一个发布周期 —— 早先那版拿「上次 push 到现在」当时长,
         // 这一下会把时长压成 50ms,画面上就是运动时快时慢。
-        m.push([row(1, 20, -3, 100)], 0, 1450); // ← 无关事件,值又变了
-        m.tick(1575);
+        m.push([row(1, 20, -3, 100)], 0, 1200); // ← 无关事件,值又变了
+        m.tick(1220);
         eq(
             m.rows()[0].pan,
             15,
@@ -2315,8 +2316,8 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
     {
         const m = DM.createDistMotion({});
         m.push([row(1, -80, -6, 100), row(2, 80, -6, 100)], 0, 1000);
-        m.push([row(2, 80, -6, 100)], 0, 1250); // 轨 1 下线,轨 2 挪到下标 0
-        m.tick(1300);
+        m.push([row(2, 80, -6, 100)], 0, 1040); // 轨 1 下线,轨 2 挪到下标 0
+        m.tick(1060);
         eq(
             m.rows().map((r) => [r.ch, r.pan]),
             [[2, 80]],
@@ -2330,7 +2331,7 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         m.push([row(1, -90, -20, 100)], 0, 1000);
         m.reset();
         eq(m.rows(), [], "reset 清空显示值");
-        m.push([row(1, 90, 10, 100)], 0, 1250);
+        m.push([row(1, 90, 10, 100)], 0, 1040);
         eq(
             m.rows().map((r) => [r.pan, r.volDb]),
             [[90, 10]],
@@ -2343,7 +2344,7 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         const m = DM.createDistMotion({});
         m.push([row(1, 0, 0, 100)], 0, 1000);
         m.destroy();
-        m.push([row(1, 100, 12, 100)], 0, 1250);
+        m.push([row(1, 100, 12, 100)], 0, 1040);
         eq(m.rows()[0].pan, 0, "destroy 之后 push 一步不走");
     }
 
@@ -2395,18 +2396,39 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         );
     }
 
-    // ---- native 侧的采样链(SL-192 的另一半:「速度比那边慢」)
-    // 发布器 4Hz 之后还串着两级读方采样,任何一级与发布器同频异相都会周期性整帧跳过。
+    // ---- 整条频率链(SL-192 两段合并后的口径)
+    // 发布器 30Hz → [M] 轮询 60Hz → 桥面 25Hz。**每一级都必须 ≥ 上一级,或是它的整数倍**:
+    // 同频异相的两级会周期性整帧跳过,这一卡在读方栽了两次、在写方差点栽第三次。
+    // 数值断言归 C++(test_viz_plane.cpp 的 [rate] 按逻辑钟数帧);这里守住常量本身不被改回去。
     {
         const proc = src("src/monitor/MonitorProcessor.cpp");
         const edit = src("src/monitor/MonitorEditor.cpp");
+        const vp = src("src/core/output/VizPublisher.h");
+
+        // ① 发布端:33ms ≈ 30Hz(冻结契约变更,docs/contract-changes/20260827-viz-30hz.md)
+        check(
+            /kPublishIntervalMs\s*=\s*25;/.test(vp),
+            "发布闸门 25ms —— 夹在 60Hz 驱动的一拍(16.7)与两拍(33.3)之间,实得 30Hz",
+        );
+        // ② 驱动它的定时器必须 ≥2× 闸门 —— 同频异相会周期性丢帧
+        check(
+            /kPublishTimerHz\s*=\s*60;/.test(vp),
+            "发布驱动 60Hz:两拍 = 33.3ms = 30Hz,且闸门两头都有余量(抗抖动)",
+        );
+        check(
+            /vizTimer_->startTimerHz\(scvb::output::VizPublisher::kPublishTimerHz\)/.test(
+                src("src/output/OutputProcessor.cpp"),
+            ),
+            "发布走**独立**定时器,不搭主 25Hz tick(25Hz 驱动不出 30Hz)",
+        );
+        // ③ 读方轮询 60Hz = 2× 发布率
         check(
             /startTimerHz\(kVizPollHz\)/.test(proc) &&
-                /constexpr int kVizPollHz = 20;/.test(proc),
-            "[M] 轮询 20Hz(≥5× 发布周期:不会与 4Hz 发布器同频异相地跳过整帧)",
+                /constexpr int kVizPollHz = 60;/.test(proc),
+            "[M] 轮询 60Hz = 2× 发布率(不会与 30Hz 发布器同频异相地跳过整帧)",
         );
-        // 只查**代码**:文件里那段讲这个坑的注释提到旧常量名是应该的(与 ⑧ 节
-        // `staleTimer` 那条同一手法),不该把它算成回归。
+        // ④ 桥面:没有闸,变化即发。只查**代码** —— 文件里讲这个坑的注释提到旧常量名是
+        // 应该的(与 ⑧ 节 `staleTimer` 那条同一手法),不该算成回归。
         const editCode = edit.replace(/^\s*\/\/.*$/gm, "");
         check(
             !/kVizEmitIntervalMs/.test(editCode),
@@ -2414,14 +2436,7 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         );
         check(
             /emitIfChanged\(bridge::kEvViz/.test(edit),
-            "scvb.viz 仍走 emitIfChanged:值未变不发,实得频率仍是数据自身的 4Hz",
-        );
-        // 发布器那一侧一个字节都不许动 —— 它是冻结契约口径。
-        check(
-            /kPublishIntervalMs\s*=\s*250/.test(
-                src("src/core/output/VizPublisher.h"),
-            ),
-            "发布器仍是 4Hz(冻结契约口径未动)",
+            "scvb.viz 仍走 emitIfChanged:值未变不发,桥面实得 ≤25Hz(基准 tick 上限)",
         );
     }
 }

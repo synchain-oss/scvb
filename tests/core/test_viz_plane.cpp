@@ -383,7 +383,7 @@ TEST_CASE("VizPublisher:发布 → 读侧看到降采样数据与断线", "[viz]
     REQUIRE(out->trackColor[14] == 15);
 }
 
-TEST_CASE("VizPublisher:4Hz 分频与车道按需重算", "[viz][publisher][cadence]")
+TEST_CASE("VizPublisher:发布分频与车道按需重算", "[viz][publisher][cadence]")
 {
     scvb::SegmentBackendInProcess backend;
     scvb::output::VizPublisher pub(backend, 2);
@@ -405,67 +405,69 @@ TEST_CASE("VizPublisher:4Hz 分频与车道按需重算", "[viz][publisher][cade
     REQUIRE(pub.publishCount() == 1);
     REQUIRE(pub.laneRebuildCount() == 1);
 
-    // 未到 250ms 闸门:不发。
-    REQUIRE_FALSE(pub.tick(100, in));
-    REQUIRE_FALSE(pub.tick(249, in));
+    // 未到闸门:不发。**全部按常量表达** —— 这里曾经写的是 100/249/250 三个字面量,
+    // SL-192 把闸门从 250ms 改成 33ms 之后它们全体失效(249 反而跨了好几个周期)。
+    // 按常量写,以后再改频率这条也不会悄悄变成另一个意思。
+    constexpr auto kGate = scvb::output::VizPublisher::kPublishIntervalMs;
+    REQUIRE_FALSE(pub.tick(1, in));
+    REQUIRE_FALSE(pub.tick(kGate - 1, in));
     REQUIRE(pub.publishCount() == 1);
 
-    // 到闸门:发帧头,但 CRVS 未变、窗口未变、距上次重算 <1s → 不重算车道。
-    REQUIRE(pub.tick(250, in));
+    // 到闸门:发帧头,但 CRVS 未变、窗口未变、未到兜底 → 不重算车道。
+    REQUIRE(pub.tick(kGate, in));
     REQUIRE(pub.publishCount() == 2);
     REQUIRE(pub.laneRebuildCount() == 1);
 
     // CRVS 修订变化 → 立刻重算车道。
     in.crvsRevision = 2;
-    REQUIRE(pub.tick(500, in));
+    REQUIRE(pub.tick(2 * kGate, in));
     REQUIRE(pub.laneRebuildCount() == 2);
 
-    // 兜底间隔内(1.5s < kLaneRefreshMaxMs)**不该**重算 —— 车道的四个依赖(CRVS 修订 /
-    // 活动版本 / 窗口跨度 / metaRevision)都没变。兜底只为哈希碰撞留后路,不是常态开销。
-    REQUIRE(pub.tick(1500, in));
+    // 兜底间隔内**不该**重算 —— 车道的四个依赖(CRVS 修订 / 活动版本 / 窗口跨度 /
+    // metaRevision)都没变。兜底只为哈希碰撞留后路,不是常态开销。
+    const auto midway = scvb::output::VizPublisher::kLaneRefreshMaxMs / 2;
+    REQUIRE(pub.tick(midway, in));
     REQUIRE(pub.laneRebuildCount() == 2);
 
     // 越过兜底间隔 → 重算一次(用常量而不是字面量,改了阈值这条不会悄悄失效)。
-    const auto past = 1500 + scvb::output::VizPublisher::kLaneRefreshMaxMs;
+    const auto past = midway + scvb::output::VizPublisher::kLaneRefreshMaxMs;
     REQUIRE(pub.tick(past, in));
     REQUIRE(pub.laneRebuildCount() == 3);
 
     // metaRevision(轨名)变化 → 立刻重算,不必等兜底。
     in.metaRevision = 77;
-    REQUIRE(pub.tick(past + 250, in));
+    REQUIRE(pub.tick(past + kGate, in));
     REQUIRE(pub.laneRebuildCount() == 4);
 
     // due():发布闸门的对外查询与实际发布行为一致(调用方据此跳过输入采集)。
-    REQUIRE_FALSE(pub.due(past + 300));
-    REQUIRE(pub.due(past + 250 + scvb::output::VizPublisher::kPublishIntervalMs));
+    REQUIRE_FALSE(pub.due(past + kGate + 1));
+    REQUIRE(pub.due(past + kGate + scvb::output::VizPublisher::kPublishIntervalMs));
 }
 
-TEST_CASE("VizPublisher:无末端分段哨兵不炸窗口跨度", "[viz][publisher][window]")
+// [SL-192] 发布频率的**数值**断言。用户拍板的是「好歹每秒保证 30Hz」,而频率正是这一卡
+// 唯一真正被要求的东西 —— 它必须有一条看得见的闸,不能只靠常量改对了就算数。
+//
+// **不看墙钟**:按注入的逻辑时刻推一秒,数真的发出去几帧。于是它可以进门禁而不会变成
+// CI 抖动源(单帧耗时那种必然要看墙钟的测量归隐藏用例,见 test_viz_publish_cost.cpp)。
+namespace
+{
+// 驱动发布器一个逻辑秒,返回真的发出去几帧。
+//
+// `jitterMs` 模拟定时器抖动:第 i 拍落在 `round(i * 1000 / hz) + (i % 3) * jitterMs`。
+// 这不是装饰 —— **没有抖动就测不出「驱动与闸门同频」的危害**:理想时钟下 30Hz 驱动
+// 33ms 闸门每拍都恰好够着,数出来是漂亮的 30 帧,而真机上它会周期性丢帧。
+// (本用例第一版就是无抖动的,于是「驱动退回 30Hz」这条反向验证**没能变红** ——
+// 一条测不出自己要防的东西的断言,等于没有。)
+scvb::u64 publishedInOneSecond(int driverHz, int jitterMs)
 {
     scvb::SegmentBackendInProcess backend;
-    scvb::output::VizPublisher pub(backend, 8);
+    scvb::output::VizPublisher pub(backend, 6);
     REQUIRE(pub.open() == scvb::InitResult::kOk);
-    scvb::VizPlane reader(backend, 8);
-    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
 
-    // setTrackManual 的「覆盖到时间线末端」哨兵 t1 = 1<<40。
     auto crvs = std::make_unique<scvb::state::CrvsData>();
-    scvb::state::Segment openEnded;
-    openEnded.t0 = static_cast<std::int64_t>(10.0 * kSr);
-    openEnded.t1 = scvb::output::kVizOpenEndedT1;
-    openEnded.pan = 20.0f;
-    crvs->versions[0].tracks[0].segments = {openEnded};
-
+    crvs->versions[0].tracks[0].segments = {makeSeg(0.0, 10.0, 0.0f)};
     scvb::CurveEvaluator c0;
-    {
-        std::vector<scvb::CurveSegment> cs;
-        scvb::CurveSegment c;
-        c.startSec = 10.0;
-        c.endSec = 1e9; // 引擎侧的开区间由 CurveEvaluator 自行外推
-        c.pan = 20.0;
-        cs.push_back(c);
-        c0.build(cs, scvb::TransitionConfig{});
-    }
+    buildCurve(c0, crvs->versions[0].tracks[0].segments);
 
     scvb::output::VizPublishInput in;
     in.crvs = crvs.get();
@@ -473,48 +475,61 @@ TEST_CASE("VizPublisher:无末端分段哨兵不炸窗口跨度", "[viz][publish
     in.versionActive = 1;
     in.sampleRate = kSr;
     in.crvsRevision = 1;
-    REQUIRE(pub.tick(0, in));
 
-    auto out = std::make_unique<scvb::VizSnapshot>();
-    REQUIRE(reader.read(*out));
-    // 哨兵只以 t0(10s)参与跨度 → 落到最小跨度 60s,而不是 1<<40 样本。
-    REQUIRE(out->windowSpanSamples == static_cast<u64>(60.0 * kSr));
-    // 开区间分段在位图上一路覆盖到窗口末端。
-    REQUIRE(out->covered(0, scvb::kVizColumns - 1));
-    REQUIRE_FALSE(out->covered(0, 0)); // 10s 之前无覆盖
+    scvb::u64 published = 0;
+    for (int i = 1; i <= driverHz; ++i)
+    {
+        const auto nominal = static_cast<scvb::u64>(static_cast<double>(i) * 1000.0 / driverHz);
+        const auto nowMs = nominal + static_cast<scvb::u64>((i % 3) * jitterMs);
+        if (pub.tick(nowMs, in))
+        {
+            ++published;
+        }
+    }
+    return published;
+}
+} // namespace
+
+TEST_CASE("VizPublisher:单位时间发布帧数 >= 28(SL-192 升频)", "[viz][publisher][rate]")
+{
+    // 生产配置:驱动 = OutputProcessor 的独立 kPublishTimerHz(60Hz)定时器。
+    const int driver = scvb::output::VizPublisher::kPublishTimerHz;
+
+    // 无抖动的理想时钟:阈值 ≥28 留余量,上界 ≤34 防「闸门被误改成 0 / 被绕过」
+    // (那会让发布跑到驱动频率上去 —— 白烧一倍 CPU,也是错,不能当绿)。
+    const auto clean = publishedInOneSecond(driver, 0);
+    INFO("clean clock: published = " << clean << " (gate = " << scvb::output::VizPublisher::kPublishIntervalMs
+                                     << "ms, driver = " << driver << "Hz)");
+    REQUIRE(clean >= 28);
+    REQUIRE(clean <= 34);
+
+    // **带抖动**:生产配置必须扛得住。60Hz 驱动 33ms 闸门 = 每两拍一帧,±2ms 抖动
+    // 吃不掉那一整拍的余量。
+    const auto jittered = publishedInOneSecond(driver, 2);
+    INFO("jittered clock: published = " << jittered);
+    REQUIRE(jittered >= 28);
 }
 
-TEST_CASE("VizPublisher:空工程也给一条最小窗口,不产生退化轴", "[viz][publisher][window]")
+// 这一条断言的是一个**我们不采用**的配置会坏 —— 把「闸门必须夹在两个可达节拍之间、
+// 两头都留余量」这条规则本身钉住(见 VizPublisher.h 的 kPublishIntervalMs 头注)。
+//
+// SL-192 在读方栽过两次同频异相(MonitorProcessor.cpp / MonitorEditor.cpp 的头注),
+// 写方这边差点栽第三次:最初把闸门写成 33ms(= 目标周期本身),两拍 33.33ms 只比它多
+// 0.33ms,理想时钟下数出来是漂亮的 30 帧,**一有抖动就塌到 20Hz**。
+// 上面那条 >=28 在理想时钟下照样绿 —— 只有带抖动的本条会红。
+TEST_CASE("VizPublisher:驱动周期 == 闸门时,抖动会周期性丢帧(故闸门夹在两拍之间)", "[viz][publisher][rate]")
 {
-    scvb::SegmentBackendInProcess backend;
-    scvb::output::VizPublisher pub(backend, 1);
-    REQUIRE(pub.open() == scvb::InitResult::kOk);
-    scvb::VizPlane reader(backend, 1);
-    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+    // 「驱动周期恰好等于闸门」的那个频率 —— 危险配置。
+    const int gateHz = 1000 / static_cast<int>(scvb::output::VizPublisher::kPublishIntervalMs);
+    const int shipped = scvb::output::VizPublisher::kPublishTimerHz;
 
-    auto crvs = std::make_unique<scvb::state::CrvsData>();
-    scvb::output::VizPublishInput in;
-    in.crvs = crvs.get();
-    in.versionActive = 1;
-    in.sampleRate = kSr;
-    REQUIRE(pub.tick(0, in));
+    // 危险配置:理想时钟下看着很美(每拍都恰好够着闸门)……
+    REQUIRE(publishedInOneSecond(gateHz, 0) >= 28);
+    // ……一旦有 ±2ms 抖动就周期性丢帧,掉到阈值以下。
+    const auto sameFreq = publishedInOneSecond(gateHz, 2);
+    INFO("same-frequency driver with jitter: published = " << sameFreq);
+    REQUIRE(sameFreq < 28);
 
-    auto out = std::make_unique<scvb::VizSnapshot>();
-    REQUIRE(reader.read(*out));
-    REQUIRE(out->windowSpanSamples == static_cast<u64>(60.0 * kSr));
-    REQUIRE(out->coveredMask == 0);
-    for (u32 t = 0; t < scvb::kMaxChannels; ++t)
-    {
-        REQUIRE(out->pan[t][0] == scvb::kVizPanNone);
-    }
-
-    // 未 prepare(sampleRate=0):跨度 0,不除零、不崩。
-    scvb::output::VizPublisher pub2(backend, 1);
-    REQUIRE(pub2.open() == scvb::InitResult::kOk);
-    scvb::output::VizPublishInput noSr;
-    noSr.crvs = crvs.get();
-    noSr.sampleRate = 0.0;
-    REQUIRE(pub2.tick(0, noSr));
-    REQUIRE(reader.read(*out));
-    REQUIRE(out->windowSpanSamples == 0);
+    // 出厂配置(60Hz 驱动 + 夹在一拍与两拍之间的闸门)在同样的抖动下毫发无伤。
+    REQUIRE(publishedInOneSecond(shipped, 2) >= 28);
 }

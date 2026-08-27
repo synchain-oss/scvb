@@ -106,7 +106,7 @@ public:
     const juce::CriticalSection& lifecycleLock() const noexcept { return lifecycleMutex_; }
 
     // [M] 一次轮询:viz attach/读 + 1Hz 跨组探测 + 延迟释放回收。
-    // 生产路径由 [M] 定时器驱动(SL-192 起 20Hz;发布器仍 4Hz);做成公开入口是为了让单测能在没有 MessageManager 的
+    // 生产路径由 [M] 定时器驱动(SL-192 起 60Hz = 2× 发布率);做成公开入口是为了让单测能在没有 MessageManager 的
     // 离线环境里直接驱动一拍(否则「零写入」只能靠真机跑 —— 那就不叫断言了)。
     void tickMessageThread(std::uint64_t nowMs);
 
@@ -116,7 +116,7 @@ private:
     // [A] 每块把宿主 transport 发布给 [M](零分配零锁;不碰 buffer)。
     void publishPlayhead();
 
-    // viz 帧陈旧阈值:发布器 4Hz,连续 2s 没新帧即判写方停摆(与轮询频率无关,按毫秒计)。
+    // viz 帧陈旧阈值:连续 2s 没新帧即判写方停摆(与发布/轮询频率都无关,按毫秒计)。
     static constexpr std::uint64_t kVizStaleMs = 2000;
 
     // 串行化「段生命周期」与「[M] 读段」——与 Input/Output 两个先例同款

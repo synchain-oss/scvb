@@ -401,6 +401,18 @@ private:
     scvb::output::OutputSession session_;
     // [T44/J75] viz 段发布器(Monitor 只读数据面)。只在 [M] 触碰;processBlock 对 viz 段零写入。
     scvb::output::VizPublisher vizPublisher_;
+    // [SL-192] viz 发布的**独立定时器**,与主 25Hz [M] tick 分开。
+    //
+    // 为什么不把主 tick 提到 30Hz:那条 tick 上挂着心跳、session tick、看门狗、配置广播、
+    // 打印区间等一整串东西,提频等于给它们全体加 20% 的调用次数 —— 本卡只需要 viz 一件更快。
+    // 为什么不把 viz 留在主 tick 上:25Hz < 30Hz,发布率会被 tick 直接卡死在 25Hz。
+    //
+    // 频率取 **60Hz 而不是 30Hz**:发布闸门是 `kPublishIntervalMs`(33ms),驱动若也是 30Hz,
+    // 两者同频不同相 —— 定时器抖动让某拍差 1ms 没够着闸门,那一帧就整个丢掉,实得频率掉到
+    // 30Hz 以下还发抖。**这正是本卡在读方那两级栽过的同一个坑**(见 MonitorProcessor.cpp
+    // 的 kVizPollHz 注释),不能在写方这边再犯一次。60Hz 驱动 33ms 闸门 = 稳定每两拍一帧 = 30.0Hz。
+    // 未到闸门的那一拍在 `publishVizFrame` 的 `due()` 处早退:不采输入、不构造任何东西。
+    std::unique_ptr<juce::TimedCallback> vizTimer_;
 
     // 取值仲裁 + 平滑(T16/DspArbiter + T18 版本层)。
     scvb::output::OutputAuthority authority_;

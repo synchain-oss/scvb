@@ -20,17 +20,15 @@ constexpr std::uint64_t kGroupsProbeIntervalMs = 1000; // 1Hz 跨组探测(J70)
 // 段**不存在**时的 attach 重试节流。这一条与读帧无关(读帧由定时器每拍做),
 // 它挡的是「Output 还没起来」时每拍一次 open+unmap —— 4Hz 重试足够,自愈延迟无人感知。
 constexpr std::uint64_t kVizAttachRetryMs = 250;
-// [M] 轮询频率(SL-192)。**发布器仍是 4Hz(冻结契约口径,一个字节没动)**,改的是读方
-// 的采样率。曾经这里也是 4Hz,注释写着「与发布器同频,不多不少」—— 那句话漏了一件事:
-// 两个 4Hz 时钟**互不同步**。同频异相的采样会周期性地把某一帧整个跳过(读到的还是上一帧),
-// 于是 UI 实得的更新率并不是 4Hz,而是 4Hz 上下漂、偶尔隔 500ms 才动一次;叠上编辑器侧
-// 那一层同款的 250ms 闸(见 MonitorEditor.cpp),用户看到的就是「一秒钟刷新一两次」。
+// [M] 轮询频率(SL-192)。发布器升到 **30Hz**(kPublishIntervalMs = 33ms)之后,
+// 读方采样率跟着走。曾经这里与发布器同为 4Hz,注释写着「与发布器同频,不多不少」——
+// 那句话漏了一件事:两个同频时钟**互不同步**。同频异相的采样会周期性地把某一帧整个跳过
+// (读到的还是上一帧),于是 UI 实得的更新率并不是发布率,而是在它上下漂。
 //
-// 20Hz(50ms)= 发布周期的 1/5:任何一帧最迟 50ms 内被读到,再不会整帧跳过,检测延迟
-// 从 ≤250ms 降到 ≤50ms。代价是 `VizPlane::read()` 从 4Hz 提到 20Hz —— 那是一次 ~16k 次
-// relaxed 原子读的定长循环(15 轨 × 1024 车道),几十微秒量级,跑在 [M] 上;
-// 相对「图慢半拍」这个真实体感,这点开销买得值。
-constexpr int kVizPollHz = 20;
+// **60Hz = 2× 发布率**:任何一帧最迟 16.7ms 内被读到,再不会整帧跳过。
+// 代价是 `VizPlane::read()` 跑到 60Hz —— 实测 p50 **3.80 µs**/次
+// (`tests/core/test_viz_publish_cost.cpp`),即 **0.023% 一颗核**,跑在 [M] 上,买得值。
+constexpr int kVizPollHz = 60;
 } // namespace
 
 ScvbMonitorAudioProcessor::ScvbMonitorAudioProcessor()
@@ -98,7 +96,7 @@ void ScvbMonitorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     // 唯一的例外动作:把宿主 transport 快照发布给 [M](进程内 SPSC seqlock,**不是共享内存**)。
     // 零分配、零锁、不碰 buffer —— 逐样本按位相等不受影响(nulltest 用例覆盖)。
-    // 为什么不用 viz 段里的 playhead:那份是 4Hz 的冗余副本,竖线会一顿一顿;
+    // 为什么不用 viz 段里的 playhead:那份跟着发布节拍走,而竖线要的是本地时钟外推;
     // Monitor 与 Output 同处一个宿主,看到的是同一条 transport,直接读最准也最跟手。
     publishPlayhead();
 }
@@ -281,7 +279,7 @@ void ScvbMonitorAudioProcessor::setUiLanguage(const juce::String& lang)
 }
 
 // ---------------------------------------------------------------------------
-// [M] 20Hz 定时器(SL-192;发布器仍 4Hz):viz attach/读 + 1Hz 跨组探测
+// [M] 60Hz 定时器(SL-192;发布器 30Hz):viz attach/读 + 1Hz 跨组探测
 // ---------------------------------------------------------------------------
 
 void ScvbMonitorAudioProcessor::timerCallback()
