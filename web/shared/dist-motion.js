@@ -200,6 +200,10 @@ export function createDistMotion(opts) {
     let bars = [];
     let spans = [];
     let raf = 0;
+    // 循环是否在跑。**不能用 `raf !== 0` 代替**:`loop()` 一进回调就把 `raf` 置 0,
+    // 于是「正在补间」的那一刻从外面读到的是 false —— 诊断面骗人,排查时会看反。
+    // (PR #115 审查提的第二条。)
+    let running = false;
     let destroyed = false;
     // 只读诊断(页面级冒烟据此判「渲染循环是 rAF 驱动还是事件驱动」——
     // 事件驱动的话 `frames` 恒为 0,这是两者最干脆的分界)。
@@ -260,7 +264,9 @@ export function createDistMotion(opts) {
             // 空闲零 rAF:`tick` 报「还没到位」才续帧;到位那一帧写完就让出主线程,
             // 下一次起帧由 `push()` 里「值真的变了」那一支负责。
             if (tick(ts)) raf = requestAnimationFrame(loop);
+            else running = false;
         };
+        running = true;
         raf = requestAnimationFrame(loop);
     }
 
@@ -269,6 +275,7 @@ export function createDistMotion(opts) {
             cancelAnimationFrame(raf);
         }
         raf = 0;
+        running = false;
     }
 
     /**
@@ -374,7 +381,7 @@ export function createDistMotion(opts) {
         diag: () => ({
             frames,
             pushes,
-            animating: raf !== 0,
+            animating: running,
             spanMs: DIST_SPAN_MS,
             shown: shown.map(copyRow),
             target: target.map(copyRow),

@@ -858,6 +858,57 @@ try {
             distinctX > distinctTarget,
             `DOM 里的柱位取到了目标值之外的中间档(--x ${distinctX} 档 > 目标 ${distinctTarget} 档)`,
         );
+        // ---- **渲染面**:插出来的中间值必须真的落到柱子的位置上,而不是被 CSS 过渡糊住。
+        //
+        // 上面几条读的都是 inline 的 `--x`(= `paint()` 刚写进去的值),它证明不了屏幕上
+        // 的柱子在哪 —— 这正是 PR 审查抓到的盲区:`.dist-bar` 原本带 `transition: all .3s`,
+        // 而补间改成「给既有节点逐帧写 CSS 变量」之后,`left`/`height` 这些几何属性**落进了
+        // 过渡集**,于是浏览器在 40ms 补间之上又叠了一层 ~300ms 低通 —— 补间逻辑全绿,
+        // 屏幕上却仍旧慢半拍,正是用户抱怨的那一半被悄悄还原。
+        //
+        // 故这里量「写进去的百分比」与「渲染出来的百分比」的偏差:
+        // 柱宽 7px 配 margin-left:-3.5px ⇒ 柱心恰好落在 `--x` 上,可直接比。
+        const drift = await evaluate(
+            IN(`
+            return new Promise((res) => {
+                const out = [];
+                const t0 = performance.now();
+                const step = () => {
+                    const cont = q(".dist-bars");
+                    const bars = all(".dist-bar");
+                    if (cont && bars.length) {
+                        const cr = cont.getBoundingClientRect();
+                        for (const b of bars) {
+                            const written = parseFloat(
+                                b.style.getPropertyValue("--x"),
+                            );
+                            const r = b.getBoundingClientRect();
+                            const rendered =
+                                ((r.left + r.width / 2 - cr.left) / cr.width) *
+                                100;
+                            if (Number.isFinite(written) && cr.width > 0) {
+                                out.push(Math.abs(rendered - written));
+                            }
+                        }
+                    }
+                    if (performance.now() - t0 >= 3000) {
+                        res({
+                            n: out.length,
+                            max: out.length ? Math.max(...out) : -1,
+                        });
+                    } else setTimeout(step, 25);
+                };
+                step();
+            });
+        `),
+        );
+        check(drift.n > 100, `渲染面采样够多(实得 ${drift.n}）`);
+        // 阈值 1.5 个百分点:亚像素误差 + 取整远小于它;而 300ms 过渡下的滞后是**几个到
+        // 十几个**百分点(几何属性一旦进过渡集,写入与渲染在整段运动里都追不上)。
+        check(
+            drift.max >= 0 && drift.max < 1.5,
+            `柱子渲染位置紧跟写入值,没有被 CSS 过渡拖住(最大偏差 ${drift.max.toFixed(2)} 个百分点,阈值 1.5)`,
+        );
         assertClean("monitor-online 补间");
     }
 

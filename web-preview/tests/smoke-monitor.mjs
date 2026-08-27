@@ -2394,6 +2394,38 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
                 /cancelAnimationFrame/.test(motion),
             "补间由 rAF 驱动,且有配对的 cancel",
         );
+
+        // ---- 几何**不许**进 CSS 过渡集(PR 115 审查抓到的那条)
+        // 老写法每帧重拼 innerHTML,节点是新建的 ⇒ `transition: all` 从不生效;
+        // 改成「给既有节点逐帧写变量」之后它**开始生效**,于是 left/height 被叠上一层
+        // 300ms 低通 —— 补间逻辑全绿而屏幕上照样慢半拍(实测滞后 2.89 个百分点)。
+        // 行为面的守卫在 smoke-monitor-page ⑧c(量渲染位置);这里再钉一道源码面,
+        // 让「顺手把 transition 改回 all」在 node 侧就红,不必等页面级跑起来。
+        {
+            const html = src("web/monitor/index.html");
+            // 只查**生效的声明**,先把 CSS 注释剥掉 —— 上面那段讲这个坑的注释里逐字写着
+            // `transition: all`,不剥就会把自己的注释当成回归(与 ⑧ 节 `staleTimer`
+            // 那条同一手法:源文本断言必须先划清「代码」与「讲代码的话」)。
+            const ruleOf = (sel) => {
+                const i = html.indexOf(sel + " {");
+                if (i < 0) return "";
+                return html
+                    .slice(i, html.indexOf("}", i))
+                    .replace(/\/\*[\s\S]*?\*\//g, "");
+            };
+            for (const sel of [".dist-bar", ".dist-span"]) {
+                const rule = ruleOf(sel);
+                check(rule.length > 0, `找得到 ${sel} 的规则`);
+                check(
+                    !/transition:\s*all/.test(rule),
+                    `${sel} 不用 transition: all —— 几何进过渡集会把 rAF 补间叠成 300ms 低通`,
+                );
+                check(
+                    /transition:\s*opacity/.test(rule),
+                    `${sel} 只过渡 opacity(hover 淡出仍要动画)`,
+                );
+            }
+        }
     }
 
     // ---- 整条频率链(SL-192 两段合并后的口径)
