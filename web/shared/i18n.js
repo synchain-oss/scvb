@@ -780,9 +780,18 @@ export const T = {
         // 检查器顶部「跟随宿主」提示(05 §2.3a ADR-005 第 3 条逐字;A-18)
         "wave.followHostNote": "跟随宿主中:编辑已保存,开启输出后生效",
         // 工具条四钮(05 §2.3 行 300-303 表内名;「重新识别」复用裸词条 reidentify)
+        // [SL-193] wave.btnRecapture 自此是**开关**的可访问名(role="switch" 的
+        // aria-label),不再是钮面文字;开关的当前态由下面四条 + 复用的 armedWaiting 出。
         "wave.btnRecapture": "重采集选区",
         "wave.btnReanalyze": "重分析选区",
         "wave.btnClearCoverage": "清除选区采集数据",
+        // [SL-193] 重采集开关五态(第五态 armed 复用裸词条 armedWaiting)。
+        // needcap 那条是要害:布防只标记「哪块要重录」,真正让特征落盘的闸是 01 采集,
+        // 没开就一个 hop 都不会写 —— 不明说的话用户会一直等一个永远不来的「重采集中」。
+        "wave.recaptureOff": "重采集 OFF",
+        "wave.recapturing": "重采集中",
+        "wave.recaptureOutside": "已离开重采集区",
+        "wave.recaptureNeedCapture": "需先打开 01 采集",
         // 两段式反馈(05 §2.3 行 298 三段式的 ①② 态;diff 首行走 wave.diffKept)
         "wave.applyCountdown": "300ms 后应用…",
         "wave.applying": "正在应用…",
@@ -1579,6 +1588,12 @@ export const T = {
         "wave.btnRecapture": "Re-capture selection",
         "wave.btnReanalyze": "Re-analyze selection",
         "wave.btnClearCoverage": "Clear selection capture data",
+        // [SL-193] 五态标签取与 master.captureOff / capturing / outOfRange 同族的
+        // 全大写微标风格(它们并排出现在同一族开关上,大小写混着看会像两套控件)。
+        "wave.recaptureOff": "RE-CAPTURE OFF",
+        "wave.recapturing": "RE-CAPTURING",
+        "wave.recaptureOutside": "OUTSIDE RE-CAPTURE ZONE",
+        "wave.recaptureNeedCapture": "TURN ON 01 CAPTURE FIRST",
         "wave.applyCountdown": "Applying in 300 ms…",
         "wave.applying": "Applying…",
         "wave.recaptureInlineNote":
@@ -2375,6 +2390,11 @@ export const T = {
         "wave.btnReanalyze": "Ré-analyser la sélection",
         "wave.btnClearCoverage":
             "Effacer les données de capture de la sélection",
+        // [SL-193] 五态标签,与 master.captureOff / capturing / outOfRange 同族全大写。
+        "wave.recaptureOff": "RÉ-CAPTURE DÉSACTIVÉE",
+        "wave.recapturing": "RÉ-CAPTURE EN COURS",
+        "wave.recaptureOutside": "HORS ZONE DE RÉ-CAPTURE",
+        "wave.recaptureNeedCapture": "ACTIVEZ D'ABORD 01 CAPTURE",
         "wave.applyCountdown": "Application dans 300 ms…",
         "wave.applying": "Application…",
         "wave.recaptureInlineNote":
