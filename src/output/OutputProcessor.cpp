@@ -1302,11 +1302,33 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
-    // CRVS:段真身解码(版本名/段表/pan_curve)。成功 → 替换;无 chunk 或解码失败 → 重置全新默认
-    // (不残留旧编辑写回,PR#55 第10轮缺陷2)。无论结果都 +修订号刷新段表(PR#55 第8轮缺陷1)。
+    // CRVS:段真身解码(版本名/段表/pan_curve)。
+    //
+    // [SL-217] **缺 chunk / 解码失败一律不得清空段表**(§7.3「不得静默丢数据」)。
+    //
+    // 原实现在这两种情况下把 `crvsData_` 整个重置成默认 —— 两个版本 × 15 轨的段表**一次全清**,
+    // 且悄无声息。后果不是「少了点东西」:段表一空,`rebuildAllCurves` 就给 `setCurve(v,t,nullptr)`,
+    // `DspArbiter` 引擎权威分支拿不到曲线 → 恒 0 → **每一条轨的声像都跳到正中**,而 UI 上没有任何
+    // 提示(这正是 SL-202 现场「多轨落正中、只有全量分析才恢复」的形态)。
+    //
+    // 为什么「没有 CRVS chunk」不等于「把段表删掉」:一份不含 CRVS 的 blob 对段表**什么都没说**。
+    // 宿主给出这种 blob 的正当场合不止一种 —— 轨道预设/参数预设只带 PRMS、别的实例的部分状态、
+    // 旧版本或被裁剪过的工程数据。把「没有信息」读成「删除全部」是把沉默当命令。
+    // 同函数的 Corrupt 分支(容器本身解不开)已经是「原样返回、什么都不改」;缺 CRVS 比容器损坏
+    // 更轻,处置只应更保守,不该更激进 —— 那是本卡之前的倒挂。
+    //
+    // 为什么不按 Corrupt 同款整体拒载:PRMS/CFGS 这一轮**解码成功了**,拒载会把用户真正要恢复的
+    // 参数与配置一并丢掉,等于用一个更大的静默丢失去换一个更小的。保留段表 + 应用其余 chunk,
+    // 才是「一个字节都不丢」的那条路。
+    //
+    // 保留 = 段表、pan_curve、版本名统统不动。代价记在这里,不静默:若宿主**确实**想把工程切到
+    // 一份没有段表的状态,用户会看到旧段表还在 —— 但那是可撤销、可重分析、看得见的;而清空是
+    // 不可逆、看不见的。两害相权取其轻。
     bool crvsLoaded = false;
+    bool crvsChunkPresent = false;
     if (const scvb::state::Chunk* crvs = chunks.find(scvb::state::kFourccCrvs); crvs != nullptr)
     {
+        crvsChunkPresent = true;
         scvb::state::CrvsData decoded;
         if (scvb::state::decodeCrvs(crvs->payload.data(), crvs->payload.size(), decoded))
         {
@@ -1314,11 +1336,21 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             crvsLoaded = true;
         }
     }
+    // 本次加载没能恢复段表 —— 置位供诊断/上桥(不清数据)。
+    crvsNotRestored_ = !crvsLoaded;
     if (!crvsLoaded)
     {
-        crvsData_ = scvb::state::CrvsData{};
-        crvsData_.versions[0].meta.name = "V1"; // 默认版本名([J05])
-        crvsData_.versions[1].meta.name = "V2";
+        DBG("SCVB Output: [SL-217] 本次 state 未恢复段真身("
+            << (crvsChunkPresent ? "CRVS chunk 解码失败" : "无 CRVS chunk") << "),**保留**既有段表不清空");
+        // 版本名兜底:全新实例(从未加载过、名字为空)才补默认名,已有名字一律不动。
+        for (int v = 0; v < scvb::state::kNumVersions; ++v)
+        {
+            auto& meta = crvsData_.versions[static_cast<std::size_t>(v)].meta;
+            if (meta.name.empty())
+            {
+                meta.name = (v == 0) ? "V1" : "V2"; // 默认版本名([J05])
+            }
+        }
     }
     crvsRevision_.fetch_add(1, std::memory_order_release);
 
