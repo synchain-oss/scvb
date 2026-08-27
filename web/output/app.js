@@ -779,6 +779,63 @@ if (scaleUi.keep) {
 if (scaleUi.revert) scaleUi.revert.addEventListener("click", revertScale);
 addEventListener("pagehide", stopScaleCountdown); // 关窗回退,不污染新实例
 
+// [SL-208] Ctrl +/-/0 走**插件自己的**档位系统。
+// 不接的话这三个键会落到 WebView2 自带的浏览器缩放上:那层缩放插件既收不到也存不了
+// (它不经 setUiScale,不进 §1.29「保持」,窗口尺寸也不跟着变),用户于是看到
+// 「手动缩放能用、但重开永远记不住」—— 实测清单 #4 的来由。
+// 档位仍取 DESIGN.output.presets(不新增连续缩放),仍走 previewScale → 10 秒防呆 →
+// 「保持」才落盘,与下拉/设置页逐字同一条路径;窗口不可自由拉伸是设计
+// (01 §6.1:固定设计盒 + setResizable(false,false)),这里只补进入档位系统的入口。
+document.addEventListener(
+    "keydown",
+    (e) => {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+        // 焦点在文本输入框时不拦(与 Ctrl+Z 同口径,05 §1.3)。
+        const a = document.activeElement;
+        if (
+            a &&
+            (a.tagName === "INPUT" ||
+                a.tagName === "TEXTAREA" ||
+                a.isContentEditable)
+        ) {
+            return;
+        }
+        // e.key 在主键盘与小键盘、以及 shift 与否下形态不一("+"/"="/"Add"…),
+        // 一并认下来;"0" 复位到 100%。
+        const k = e.key;
+        const isIn = k === "+" || k === "=" || k === "Add";
+        const isOut = k === "-" || k === "_" || k === "Subtract";
+        const isReset = k === "0";
+        if (!isIn && !isOut && !isReset) return;
+
+        e.preventDefault(); // 关键:不 preventDefault 就会被 WebView2 的浏览器缩放同时吃掉
+
+        const presets = DESIGN.output.presets;
+        // 目标档:复位取 1×;进/退取当前档在档位表里的相邻一档。
+        // 当前档可能不在表里(工程存过别的值),用「最接近的一档」作为起点。
+        let target = 1;
+        if (!isReset) {
+            const cur = currentScale();
+            let nearest = 0;
+            for (let i = 1; i < presets.length; i += 1) {
+                if (
+                    Math.abs(presets[i] - cur) <
+                    Math.abs(presets[nearest] - cur)
+                ) {
+                    nearest = i;
+                }
+            }
+            const next = nearest + (isIn ? 1 : -1);
+            if (next < 0 || next >= presets.length) return; // 已在两端:不动,也不弹确认框
+            target = presets[next];
+        }
+        if (scaleOverflows(target)) return; // 超屏档位与下拉里同样不生效
+        if (target === currentScale()) return;
+        previewScale(target);
+    },
+    true,
+);
+
 // ============================================================================
 // Header 版本区(契约 §1.9/§1.10/§1.11;05 §2.1 ③)
 // ============================================================================
