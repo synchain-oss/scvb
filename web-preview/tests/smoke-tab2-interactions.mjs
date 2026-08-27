@@ -282,6 +282,25 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         /function requestManual[\s\S]{0,400}?needsManualConfirm\(/.test(s),
         "requestManual 走 needsManualConfirm(不是裸 manualConfirmed.has)",
     );
+    // **两个拖拽入口也必须走同一个判定**:拖拽落地走 endDrag → sendManual,**不经
+    // requestManual**,所以它们各自持一份闸口。上一轮只钉了 requestManual,这两处就留着
+    // 裸判定绿着漏过来了 —— pan 只在冻结态可拖,于是「必然已冻结」的 pan 首拖照弹一条
+    // 按裁定不该弹的确认条,还把「每轨每会话一次」的额度(按轨记)烧掉,使得真该弹的
+    // 未冻结 vol 首拖反而不弹(#106 终轮复审重要①)。
+    for (const fn of ["beginVolDrag", "beginPanDrag"]) {
+        check(
+            new RegExp(
+                `function ${fn}[\\s\\S]{0,700}?needsManualConfirm\\(`,
+            ).test(s),
+            `${fn} 走 needsManualConfirm(拖拽入口不经 requestManual,必须自己接上)`,
+        );
+        check(
+            !new RegExp(
+                `function ${fn}[\\s\\S]{0,700}?if \\(!local\\.manualConfirmed\\.has\\(ch\\)\\)`,
+            ).test(s),
+            `${fn} 不再留裸 manualConfirmed.has 闸口`,
+        );
+    }
 }
 
 // =============================================================================
@@ -868,6 +887,10 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
         beforeFrozen,
         "[J85] 冻结中调整:段表逐字节不变(解冻即回引擎曲线)",
     );
+    // ⚠ 本条断言有个**前提**:`setParamPlane` 带去重门(值没变就不发 `scvb.params`),
+    // 与真桥 `emitParams` 的 diff 门同款。所以这一次写入的值必须**与上一次不同** ——
+    // 上面写的是 −6、这里写 −12,故参数面帧一定会发。若把 −12 改成 −6,params 帧会被
+    // 去重门吞掉、`paramIdx` 恒为 −1,断言变成「永远红」而不是「测出了时序问题」。
     const paramIdx = frames.findIndex(
         (f) =>
             f.kind === "params" && f.p.values && f.p.values.v1_t02_vol === -12,

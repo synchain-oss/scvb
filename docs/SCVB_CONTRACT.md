@@ -832,7 +832,7 @@ struct CtrlRecord { u32 seq; u32 channel; CtrlOp op; u64 value; };
       {"name": "setParam", "params": ["id", "value"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "endParamGesture", "params": ["id"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "setChannelConfig", "params": ["ch", "patch"], "returns": "{ok} | {observer:true} | {ok:false,reason:\"badArg\"}"},
-      {"name": "setTrackManual", "params": ["ch", "panOrVol", "value"], "returns": "{ok,replacedSegments,replacedLocked} | {observer:true}"},
+      {"name": "setTrackManual", "params": ["ch", "panOrVol", "value"], "returns": "{ok,replacedSegments,replacedLocked} | {observer:true} | {ok:false,reason:\"badArg\"}"},
       {"name": "setPanCurve", "params": ["points"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "setVadParams", "params": ["p"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},
       {"name": "setSegmentation", "params": ["p"], "returns": "{ok} | {ok:false,reason:\"badArg\"}"},

@@ -125,7 +125,15 @@ i18n 三语 key 不受影响。变的是 `setTrackManual` **写到哪个面**这
 - [x] **用户批准:已批准(2026-08-27,用户)** —— 原话「我觉得六行可以」(指本文件登记的
       `docs/SCVB_CONTRACT.md` 六行改写)。PR #106 已挂 `status/frozen-contract`。
       批准后按用户同批裁定(方案 A「冻结通道不弹确认条」,见裁定②)把 §1.16「线程/频率」行里的
-      「待裁定」注记改写为裁定结论 —— **该行本来就是这六行之一,行数没有增加**
-      (`git diff --numstat docs/SCVB_CONTRACT.md` 实测 6 增 6 删)。
+      「待裁定」注记改写为裁定结论 —— **该行本来就是这六行之一,行数没有增加**。
+- [x] **批准后追加第 7 行:§7 manifest 的 `setTrackManual` `returns`**(`docs/SCVB_CONTRACT.md` 第 835 行)
+      —— `"{ok,replacedSegments,replacedLocked} | {observer:true}"` → 末尾并上
+      `| {ok:false,reason:\"badArg\"}`。**不扩大语义批准面**:§7 开篇纪律要求 `returns` 按 §0.8 第 5 条
+      写「完整并集」且与正文「返回」行**逐字对应**,而「返回行新增 badArg」这件事已在本文件正文与
+      §1.16 里获批 —— manifest 只是同一件事的**机器可读副本**,漏改会让契约自己和自己不一致
+      (同一份 manifest 里 `setChannelConfig`/`editSegment`/`setPanCurve` 等能回 badArg 的都登记了,
+      `setTrackManual` 是唯一的例外)。机器抓不到:`check-bridge-parity.mjs` 只比对名字集合 / `params` /
+      枚举值,`returns` 字符串显式豁免跨侧比对。**契约改动量因此为 7 行**(6 行已批 + 本行同步),
+      记在此处不静默(PR #106 终轮复审重要②)。
 - [x] 复审依据:PR #106 两个 review bot 一致判「代码本体无异议,但契约变更必须与改动同 PR(§5)」——
       红旗即为此;本文件与 §1.16/§1.13/§2.8 的改写同批进入 PR #106。

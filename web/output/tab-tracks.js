@@ -62,8 +62,10 @@ export const KNOB_DRAG_PX = 150;
 
 /**
  * 手动常值的**延迟提交**窗口(ms)。滚轮一格一格、方向键按住不放(OS 自动重复 ~30 Hz)
- * 都会连出一串值,而 `setTrackManual` 入撤销栈(契约 §0.9),逐次发会把宿主 UndoManager
- * 灌满 —— 故「回声即时、提交防抖」:停手 300 ms 才落一次。拖拽走的是松手提交,不用它。
+ * 都会连出一串值,而 `setTrackManual` 的**手动接管通道**入撤销栈(契约 §0.9;[J85] 冻结通道
+ * 不产生 CRVS 事务、不入栈),逐次发会把宿主 UndoManager 灌满 —— 故「回声即时、提交防抖」:
+ * 停手 300 ms 才落一次。防抖对两条通道一视同仁(冻结通道逐帧发同样是白费的宿主往返)。
+ * 拖拽走的是松手提交,不用它。
  */
 export const MANUAL_COMMIT_MS = 300;
 
@@ -220,9 +222,20 @@ export function pairIdOf(letter) {
 /**
  * 每轨 freeze 参数 `v{active}_t{ch:02d}_freeze`(契约 §1.12-§1.14:int 0-3,
  * bit0=pan / bit1=vol,两枚开关各改一位)。
+ *
+ * **解码口径与 native 侧 `scvb::engine::freezeBitsOf`(`src/core/engine/FreezeBits.h`)逐条对齐**:
+ * 四舍五入 → 钳到 [0,3];非有限值(NaN)回 0 = 未冻结。旧写法是 `Math.trunc(x) & 3`,
+ * 与 native 在两处分叉:小数 1.9 截断成 1(native 进位成 2)、越界 4 被按位截成 0
+ * =「两维都没冻」(native 钳成 3 =「两维都冻」,保守的那一边)。freeze 当前是
+ * `AudioParameterInt`、值恒为精确整数,所以现在不会真分叉;但「谁被冻结」这件事在
+ * native / UI / mock 三侧都要同一个答案,否则 UI 会按未冻结去画一条 native 认为已冻结的轨
+ * (#106 终轮复审建议)。**改这里必须同改 `FreezeBits.h` 与 mock 的同名解码**。
  */
 export function freezeBits(freeze) {
-    const f = Math.trunc(num(freeze, 0)) & 3;
+    const raw = num(freeze, 0);
+    const f = Number.isFinite(raw)
+        ? Math.min(3, Math.max(0, Math.round(raw)))
+        : 0;
     return { pan: (f & 1) === 1, vol: (f & 2) === 2 };
 }
 
@@ -852,7 +865,8 @@ export function createTabTracks(opts) {
      *   • `manualConfirmed` —— 已弹过 `setTrackManual` 确认的轨(契约 §1.16 线程/频率行:
      *     **每轨每会话一次,无条件** —— 纯 user_edited 轨同样弹);
      *   • `manualEcho` —— 拖动/键盘期间的本地乐观值(松手才发一次 `setTrackManual`:
-     *     它入撤销栈,逐帧发会把撤销栈灌满,口径同 §1.22「边界拖拽释放才发」);
+     *     手动接管通道入撤销栈,逐帧发会把撤销栈灌满,口径同 §1.22「边界拖拽释放才发」;
+     *     [J85] 冻结通道虽不入栈,松手才发这一条同样适用 —— 逐帧写参数面是白费的宿主往返);
      *   • `paramEcho` —— width/freeze 的 gesture 乐观值(由 `scvb.params` 逐帧失效);
      *   • `unfreezeHint` —— 解冻(freeze 某位 1→0)且仍由手动常值驱动的轨(05 §2.2 R2);
      *     存的是**触发位**(bit0=pan / bit1=vol),该位重新冻回 0→1 时逐位撤销。
@@ -1305,7 +1319,17 @@ export function createTabTracks(opts) {
         const slotW =
             row && row.tube ? row.tube.getBoundingClientRect().width : TUBE_W;
         const startDb = currentVolDb(ch);
-        if (!local.manualConfirmed.has(ch)) {
+        // 确认闸口与 `requestManual` 共用**同一个判定**([J85] 方案 A)。拖拽的落地走
+        // `endDrag → sendManual`,**不经 `requestManual`**,所以这里必须自己接上 ——
+        // 各留一份裸 `manualConfirmed.has(ch)` 就等于裁定在拖拽这条主路径上没落地
+        // (#106 终轮复审重要①)。
+        if (
+            needsManualConfirm(
+                readParam(paramIdOf(activeVersion(), ch, "freeze"), 0),
+                "vol",
+                local.manualConfirmed.has(ch),
+            )
+        ) {
             openConfirm(ch, "manual", "vol", startDb);
             return;
         }
@@ -1327,7 +1351,19 @@ export function createTabTracks(opts) {
         );
         if (!bits.pan) return; // 自动态:交互禁用(tooltip 已说明由分析曲线驱动)
         const startPan = currentPan(ch);
-        if (!local.manualConfirmed.has(ch)) {
+        // 同 beginVolDrag:共用 `needsManualConfirm`。**本函数尤其要紧** —— 上一行刚保证
+        // 「未冻结不可拖」,于是能走到这里的 pan 拖拽**必定已冻结**,按方案 A 一条确认条都
+        // 不该弹。留裸判定的后果不只是多弹一条:accept 走 `manualConfirmed.add(ch)` 是**按轨**
+        // 记额度,误弹一次被点掉之后,该轨真正需要确认的「未冻结 vol 首拖」(那一路才会把整条
+        // 分析曲线整表压成常值段)反而不弹了 —— 等于把确认条从该弹的地方挪到了不该弹的地方。
+        // freeze 值复用上面已读出的 bits,不再读一次参数(同一笔判定绑同一个快照)。
+        if (
+            needsManualConfirm(
+                freezeValue(bits.pan, bits.vol),
+                "pan",
+                local.manualConfirmed.has(ch),
+            )
+        ) {
             openConfirm(ch, "manual", "pan", startPan);
             return;
         }
@@ -1444,7 +1480,8 @@ export function createTabTracks(opts) {
             call("endParamGesture", d.id);
             return;
         }
-        // pan / vol:**松手才发一次** setTrackManual(它入撤销栈,逐帧发会灌满撤销栈;
+        // pan / vol:**松手才发一次** setTrackManual(手动接管通道入撤销栈,逐帧发会灌满撤销栈;
+        // [J85] 冻结通道不入栈,但逐帧写参数面同样是白费的宿主往返,一并适用;
         // 口径同契约 §1.22 段边界「拖拽释放才发」)。
         // **零位移不发**:manualEcho 有意留到 §2.8 回推才清,原地单击会把留存的乐观值
         // 原样再写一遍 —— 同值重写段表 + 撤销栈白多一步。

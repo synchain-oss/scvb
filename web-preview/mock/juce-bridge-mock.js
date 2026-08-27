@@ -1187,10 +1187,16 @@ function buildOutputBackend(ctx) {
             // [J85] 冻结通道与手动接管通道分家(真桥 OutputProcessor::setTrackManual 同款):
             // 该维度**已冻结** → 静态值只落参数面,曲线真身一个字节不动(解冻即回引擎曲线,
             // 不留常值段);**未冻结** → 用户主动接管,照旧写全时限常值段(04 §1.5 方案 A)。
-            const dimFrozen =
-                (Math.trunc(model.params.values[`${prefix}freeze`] || 0) &
-                    (panOrVol === "pan" ? 1 : 2)) !==
-                0;
+            // 解码口径与 native 的 `scvb::engine::freezeBitsOf`(`src/core/engine/FreezeBits.h`)
+            // 及 UI 的 `freezeBits`(`web/output/tab-tracks.js`)**三侧逐条一致**:
+            // 四舍五入 → 钳到 [0,3];非有限值回 0 = 未冻结。旧写法 `Math.trunc(x) & bit` 在
+            // 小数与越界上与 native 分叉(1.9 截成 1 而 native 进位成 2;4 按位截成 0 =「都没冻」
+            // 而 native 钳成 3 =「都冻」)。**改一侧必须同改另两侧**(#106 终轮复审建议)。
+            const frzRaw = Number(model.params.values[`${prefix}freeze`]) || 0;
+            const frzBits = Number.isFinite(frzRaw)
+                ? Math.min(3, Math.max(0, Math.round(frzRaw)))
+                : 0;
+            const dimFrozen = (frzBits & (panOrVol === "pan" ? 1 : 2)) !== 0;
             if (dimFrozen) {
                 setParamPlane();
                 // 段表没变,§2.8 仍按契约回推该轨(reason 枚举闭合;UI 据此清乐观值)。
