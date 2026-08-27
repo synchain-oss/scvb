@@ -3718,14 +3718,27 @@ log("=== ⑫ 复审收口:微拖×2 不得被判成「双击删边界」+ 四项
         );
         const iMerge = dbl.indexOf('"merge"');
         const iSplit = dbl.indexOf('"split"');
-        check(iGuard > 0 && iGuard < iMerge, "(b2)守卫问在合并之前");
+        const iFirstStmt = dbl.indexOf("const p = lanesPoint(e);");
+        // [复审终轮①] 守卫必须在**处理器开头**,不是只挡边界分支:
+        // 原先 `j < 0` 那一档会漏出去 —— 把边界拖走之后落点常常已经出了 ±6px,
+        // 那一下就照发**分割**,用户想细调却多出一条边界。
         check(
-            dbl.slice(iGuard, iMerge).includes("return;"),
-            "(b3)守卫命中即 return —— 不落到分割去(落过去等于又加一条边界)",
+            iGuard > 0 && iGuard < iFirstStmt,
+            "(b2)守卫在处理器开头(排在第一条语句之前),不是只挡边界分支",
+        );
+        check(
+            dbl.slice(iGuard, iFirstStmt).includes("return;"),
+            "(b3)守卫命中即 return —— 分割、合并两条路一起让开",
         );
         check(
             iMerge < iSplit,
             "(b4)边界分支仍排在分割之前(SL-207 的顺序不能被破坏)",
+        );
+        // 守卫只问一次:挪到开头后,边界分支里那份必须撤掉,否则又是两处同义判定
+        eq(
+            (dbl.match(/mergeGuardedByDrag\(/g) || []).length,
+            1,
+            "(b5)守卫只在开头问一次(边界分支里那份已撤)",
         );
     }
 

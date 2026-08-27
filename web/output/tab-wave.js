@@ -56,6 +56,7 @@ import {
 } from "./canvas/waveform.js";
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 import { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX } from "../shared/wheel.js";
+import { isEditableTarget } from "../shared/context-menu.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
 import {
     CHANNEL_COUNT,
@@ -2372,6 +2373,12 @@ export function createTabWave(opts) {
         // 命中口径与拖拽边界**逐字复用同一套**(boundariesOf → timeToX → nearestHit
         // ±BOUNDARY_HIT_PX):手柄摸得到的地方,双击就删得掉,不另立第二套判定。
         els.lanes.addEventListener("dblclick", (e) => {
+            // 刚提交过边界拖拽 ⇒ 这一下多半是「连着微调同一条边界两次」被浏览器判成的
+            // dblclick,不是任何一种双击意图。**整个处理器让路**(复审终轮①):
+            // 原先只在边界分支里挡,`j < 0` 那一档会漏出去 —— 把边界拖走之后落点常常
+            // 已经出了 ±6px,于是那一下照发**分割**,等于用户想细调却多出一条边界。
+            // 放到开头既堵死这一档,也比「每个分支各挡一次」简单。
+            if (mergeGuardedByDrag(Date.now(), local.boundCommitAt)) return;
             const p = lanesPoint(e);
             if (!p || p.ch < 1 || p.ch > LANE_COUNT) return;
             const stageW = stageWidth();
@@ -2388,10 +2395,6 @@ export function createTabWave(opts) {
             );
             const j = nearestHit(p.x, xs, BOUNDARY_HIT_PX);
             if (j >= 0 && segs[j] && segs[j + 1]) {
-                // 刚提交过边界拖拽 ⇒ 这一下多半是「连着微调两次」被判成的 dblclick,
-                // 不是要删边界。**整个让路**:既不合并,也不落到下面的分割去 ——
-                // 落过去等于又加一条边界,同样不是用户要的(复审【重要】)。
-                if (mergeGuardedByDrag(Date.now(), local.boundCommitAt)) return;
                 // 走既有 merge 桥函数与既有口径:editSegment(§1.16)本就进撤销栈,
                 // 与工具条「合并选中两段」逐字同一条路,不另加确认框 —— 误删一条
                 // 边界的代价是一次 Ctrl+Z,弹框反而挡住连续修边界的手感。
@@ -2443,14 +2446,10 @@ export function createTabWave(opts) {
             els.window.addEventListener("pointerenter", () => {
                 if (typeof document === "undefined") return;
                 if (document.hasFocus && document.hasFocus()) return;
-                const ae = document.activeElement;
-                if (
-                    ae &&
-                    ae.closest &&
-                    ae.closest("input, textarea, select, [contenteditable]")
-                ) {
-                    return;
-                }
+                // 复用 context-menu.js 的白名单判定(复审终轮②):这里原先是全仓
+                // **第三份**可编辑判定,而且是收窄之前的裸 `input` 版 —— 会把
+                // `type=range`(Tab3 参数条就是滑杆)也当成「正在编辑」而放弃收拢焦点。
+                if (isEditableTarget(document.activeElement)) return;
                 if (typeof window !== "undefined" && window.focus)
                     window.focus();
             });

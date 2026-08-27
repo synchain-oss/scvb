@@ -574,6 +574,12 @@ log(
         eq(T[lang].engineDrive, want, `J88 ${lang}.engineDrive 已改名`);
     }
     eq(T.zh.followHost, "跟随宿主", "J88 OFF 档不动");
+    // [复审终轮④] 静态兜底文案也得改:applyI18n 会覆盖它,但**字典未注入 / 首帧未刷**
+    // 时露出来的就是 HTML 里这一份。
+    check(
+        !/引擎驱动/.test(html),
+        "J88 index.html 的静态兜底文案(含注释)无旧档位名残留",
+    );
     // 旧名不得残留在**任何**词条值里(footer / 加载守卫横幅 / tour / 工作流程卡都引用了它)。
     // 唯一豁免:tracks.colLegend 的「不再被引擎驱动」是动词用法,不是档位名。
     for (const lang of ["zh", "en", "fr"]) {
@@ -672,9 +678,16 @@ log(
             /document\.hasFocus\(\)\) return;/.test(body),
             "SL-205 本文档已有焦点就不动(不抢焦点)",
         );
+        // [复审终轮②] 第三道闸改成复用 context-menu 的 isEditableTarget ——
+        // 这里原先是全仓**第三份**可编辑判定,且是收窄之前的裸 input 版
+        // (会把 type=range 滑杆也当成「正在编辑」)。
         check(
-            /input, textarea, select, \[contenteditable\]/.test(body),
-            "SL-205 焦点停在可编辑控件上时一律不动(别打断正在打的字)",
+            /isEditableTarget\(document\.activeElement\)/.test(body),
+            "SL-205 第三道闸复用 isEditableTarget(不再自带第三份判定)",
+        );
+        check(
+            /from "\.\.\/shared\/context-menu\.js"/.test(tw),
+            "SL-205 tab-wave 从 shared 引 isEditableTarget",
         );
     }
 }

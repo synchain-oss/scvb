@@ -1545,14 +1545,35 @@ log(
             { segIdx: 1, t0S: 10, t1S: 20, pan: 40, volDb: 2, origin: "auto" },
         ],
     };
+    // 钳位口径逐条对齐 CurveEvaluator::valueAt(复审终轮③b)——
+    // src/core/engine 那份是 DSP 真身,显示层跟它走才叫「显示权威」。
     eq(TT.curveSegmentAt(segCh, 0).pan, -60, "(a1)t=0 取曲线起点");
     eq(TT.curveSegmentAt(segCh, 5).pan, -60, "(a2)t 落在首段内");
     eq(TT.curveSegmentAt(segCh, 15).pan, 40, "(a3)t 落在次段内");
     eq(
         TT.curveSegmentAt(segCh, 999).pan,
-        -60,
-        "(a4)t 在时间线之外 ⇒ 回落首段(「还没播放」正是这一档)",
+        40,
+        "(a4)**末段之后取末段**(不是首段;引擎那边就是「末段之后保持末段值」)",
     );
+    {
+        // 「曲线前」与「曲线后」必须分成两档 —— 原先混成一档都回落 segs[0],
+        // 播放头停在曲线尾端时会显示曲线开头的值,和耳朵对不上。
+        const gapped = {
+            segments: [
+                { t0S: 10, t1S: 20, pan: -60 },
+                { t0S: 30, t1S: 40, pan: 5 },
+                { t0S: 50, t1S: 60, pan: 80 },
+            ],
+        };
+        eq(TT.curveSegmentAt(gapped, 0).pan, -60, "(a4a)首段之前 ⇒ 首段");
+        eq(TT.curveSegmentAt(gapped, 99).pan, 80, "(a4b)末段之后 ⇒ 末段");
+        eq(
+            TT.curveSegmentAt(gapped, 25).pan,
+            -60,
+            "(a4c)段间空隙 ⇒ **前一段**(引擎:ramp 之前保持前段值)",
+        );
+        eq(TT.curveSegmentAt(gapped, 45).pan, 5, "(a4d)第二个空隙同理取前一段");
+    }
     eq(
         TT.curveSegmentAt({ segments: [] }, 0),
         null,
@@ -1565,10 +1586,10 @@ log(
     );
 
     // 端到端:未冻结 + 有曲线 ⇒ 读曲线;冻结 ⇒ 仍读参数面(J85 不变)
-    const store = (freeze) => ({
+    const store = (freeze, outputOn = true) => ({
         state: {
             channels: [{ ch: 1, label: "A" }],
-            global: { version_active: 1 },
+            global: { version_active: 1, output_enabled: outputOn },
         },
         params: {
             values: {
@@ -1596,6 +1617,29 @@ log(
     const noSeg = store(0);
     noSeg.segments = { channels: [{ ch: 1, segments: [] }] };
     eq(TT.rowFromStore(noSeg, 1).pan, 0, "(b4)还没分析过 ⇒ 回落参数面");
+
+    // [复审终轮③a 裁定] 未冻结那一支**按输出档分叉** —— 显示的永远是该档的权威:
+    //   ON(写入自动化)= 引擎按曲线驱动 ⇒ 显示曲线;
+    //   OFF(跟随宿主)= 引擎不驱动、声音跟宿主参数面 ⇒ 显示参数面。
+    //   只在 ON 档对上还不够:OFF 档显示曲线就成了「看着曲线、听着宿主」。
+    eq(
+        TT.rowFromStore(store(0, true), 1).pan,
+        -60,
+        "(b5)输出 ON ⇒ 显示曲线(引擎按曲线驱动)",
+    );
+    eq(
+        TT.rowFromStore(store(0, false), 1).pan,
+        0,
+        "(b6)输出 OFF ⇒ 显示参数面(该档权威 = 宿主,与 DSP 一致)",
+    );
+    // 冻结维度不受输出档影响:两档都读参数面(J85)
+    for (const on of [true, false]) {
+        eq(
+            TT.rowFromStore(store(1, on), 1).pan,
+            0,
+            `(b7)pan 冻结 + 输出 ${on ? "ON" : "OFF"} ⇒ 都读参数面`,
+        );
+    }
 }
 
 // =============================================================================

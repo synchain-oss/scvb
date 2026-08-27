@@ -463,21 +463,36 @@ export function manualConstantOf(segChannel) {
  *   · 冻结维度 → 参数面(宿主自动化 / 冻结手动值当家),不走本函数;
  *   · 未冻结维度 → 引擎分析曲线,即本函数;曲线还不存在(没分析过)才回落参数面。
  *
- * 找覆盖 `tS` 的段;`tS` 落在段间空隙或时间线之外时取**第一段** —— 「切进版本还没播放」
- * 正是这一档,用户要看的是曲线起点,不是出厂默认。段表为空返回 null(调用方回落参数面)。
+ * **钳位口径逐条对齐 `CurveEvaluator::valueAt`**(复审终轮③b;src/core/engine 那份是
+ * DSP 真身,显示层跟它走才叫「显示权威」):
+ *   · 首段之前   → **首段**值(「切进版本还没播放」,t=0 常常就落在这一档);
+ *   · 末段之后   → **末段**值(不是首段 —— 原先把「曲线前」与「曲线后」混成一档回落
+ *                  segs[0],播放头停在曲线尾端时会显示曲线开头的值,和耳朵对不上);
+ *   · 段间空隙   → **前一段**值(引擎那边是「ramp 之前保持前段值」;显示层没有 ramp
+ *                  模型,取前段即那一刻的稳态值);
+ *   · 段表为空   → null(调用方回落参数面:还没分析过,曲线本就不存在)。
  */
 export function curveSegmentAt(segChannel, tS) {
-    const segs = (segChannel && segChannel.segments) || [];
+    const segs = ((segChannel && segChannel.segments) || []).filter(Boolean);
     if (!segs.length) return null;
     const t = num(tS, 0);
+    const first = segs[0];
+    const last = segs[segs.length - 1];
+    // 首段之前
+    if (t < num(first.t0S, 0)) return first;
+    // 末段之后(t1 <= t0 = 开放尾段,那就没有「之后」)
+    const lastT0 = num(last.t0S, 0);
+    const lastT1 = num(last.t1S, 0);
+    if (lastT1 > lastT0 && t >= lastT1) return last;
+    // 段内 / 段间空隙:落在第 i 段内取第 i 段;落在 i 与 i+1 之间的空隙取第 i 段
+    let hit = first;
     for (const s of segs) {
-        if (!s) continue;
         const t0 = num(s.t0S, 0);
         const t1 = num(s.t1S, 0);
-        // t1 <= t0 = 开放尾段(哨兵/缺值):从 t0 起一直算到底
-        if (t >= t0 && (t < t1 || !(t1 > t0))) return s;
+        if (t >= t0 && (t < t1 || !(t1 > t0))) return s; // 段内(含开放尾段)
+        if (t >= t0) hit = s; // 已越过本段 ⇒ 暂记为「前一段」
     }
-    return segs[0];
+    return hit;
 }
 
 /**
@@ -553,6 +568,12 @@ export function rowContext(store) {
         // [SL-211] 未冻结维度按**播放头所在的曲线段**读回;没有播放头就是 0 = 曲线起点,
         // 正是「刚切进一个版本、还没播放」那一档。
         timeS: num((st.playhead || {}).timeS, 0),
+        // [SL-211 复审终轮③a 裁定] 输出档决定未冻结维度的**权威在哪一边**:
+        //   OFF(跟随宿主)= 引擎不驱动,声音跟的就是宿主参数面 ⇒ 显示参数面;
+        //   ON(写入自动化)= 引擎按曲线驱动 ⇒ 显示曲线。
+        // 这才是 J78「显示权威」的完整形态:显示与 DSP 在**两个档上都**一致,
+        // 而不是只在 ON 档对上。
+        outputOn: (state.global || {}).output_enabled === true,
         active:
             (state.global && state.global.version_active) ||
             (st.params && st.params.versionActive) ||
@@ -591,11 +612,16 @@ export function rowFromStore(store, ch, ctx) {
     //   • 未冻结维度 → 有手动常值段就取该段(05 §2.2「读回值同样取自该段」),否则取参数面。
     //     这一支**必须**先读段表:未冻结轨拖卡箍(05 明确允许,走一次性确认)写的是曲线真身,
     //     25 Hz 的 `scvb.params` 在非 PRINT 态没有新值,改读参数面会让把手在下一帧弹回去。
-    //   [SL-211] 未冻结那一支的回落再往前推一步:没有手动常值段时,不再直接掉到参数面,
-    //   而是先读**播放头所处的曲线段**(curveSegmentAt)。参数面在非 PRINT 态装的是宿主
-    //   那份值 —— 刚复制完版本切进去还没播放时那就是出厂默认,15 轨声像齐刷刷居中,
-    //   一播放又全对(引擎开始驱动参数面)。只有段表整个为空(还没分析过)才回落参数面。
-    const curve = curveSegmentAt(segmentsOfCh(c.segments, ch), c.timeS);
+    //   [SL-211] 未冻结那一支的回落**按输出档分叉**(复审终轮③a 裁定):
+    //     · 输出 ON(写入自动化)= 引擎按曲线驱动 ⇒ 读**播放头所处的曲线段**。
+    //       否则会出现用户实测的那一幕:刚复制完版本切进去还没播放,参数面装的是宿主
+    //       的出厂默认,15 轨声像齐刷刷居中;一播放又全对(引擎开始驱动参数面)。
+    //     · 输出 OFF(跟随宿主)= 引擎根本不驱动,声音跟的就是宿主参数面 ⇒ 读参数面。
+    //       这一档若也显示曲线,就成了「看着曲线、听着宿主」——显示与 DSP 反而分了家。
+    //   只有段表整个为空(还没分析过)才无条件回落参数面。
+    const curve = c.outputOn
+        ? curveSegmentAt(segmentsOfCh(c.segments, ch), c.timeS)
+        : null;
     const panSeg = bits.pan ? null : seg || curve;
     const volSeg = bits.vol ? null : seg || curve;
     const pan = panSeg

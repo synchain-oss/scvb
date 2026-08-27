@@ -578,7 +578,7 @@
 
             /* ================================ 警告横幅区(设计稿 L277-285) ================================ */
             /* 两色系全部来自 base.css 的 .sc-banner / .sc-banner--red;此处只补正文占宽,
-       让可选操作钮(banner⑦「继续引擎驱动」)贴右。 */
+       让可选操作钮(banner⑦「继续写入自动化」)贴右。 */
             #banner-region {
                 display: flex;
                 flex-direction: column;
@@ -4969,7 +4969,7 @@
                             轨的上游音频与已采集特征不一致,建议重新采集</span
                         >
                     </div>
-                    <!-- ⑦ 加载守卫:引擎驱动状态随工程恢复 -->
+                    <!-- ⑦ 加载守卫:写入自动化状态随工程恢复 -->
                     <div class="sc-banner" data-gb="banner-printGuard" hidden>
                         <svg
                             class="sc-banner__icon"
@@ -4985,14 +4985,14 @@
                             />
                         </svg>
                         <span data-t="banner.printGuard"
-                            >输出开关处于引擎驱动状态(随工程恢复)</span
+                            >输出开关处于写入自动化状态(随工程恢复)</span
                         >
                         <button
                             class="sc-btn sc-btn--cta"
                             data-gb="banner-printGuard-confirm"
                             data-t="banner.printGuard.confirm"
                         >
-                            继续引擎驱动
+                            继续写入自动化
                         </button>
                         <!-- [T3x] bridge.confirmPrintGuard() —— 契约 §1.34 -->
                     </div>
@@ -5336,7 +5336,7 @@
                                             class="out-label"
                                             data-out-label="on"
                                             data-t="engineDrive"
-                                            >引擎驱动</span
+                                            >写入自动化</span
                                         >
                                     </span>
                                     <span
@@ -5395,8 +5395,8 @@
                                 class="master-write-confirm__text"
                                 data-t="out.master.writeConfirm"
                                 data-gb="master-write-confirm-text"
-                                >引擎驱动 {v} · 范围 {x}–{y} · 30 条车道;若 DAW
-                                侧已 arm
+                                >写入自动化 {v} · 范围 {x}–{y} · 30 条车道;若
+                                DAW 侧已 arm
                                 Latch/Write,播放本范围将覆盖该范围已有自动化;未
                                 arm 则仅试听、不落盘</span
                             >
@@ -8011,13 +8011,13 @@
                     >
                         采集 → 分析 → 输出:在 Tab1 打开采集开关并播放本范围
                     </span>
-                    <!-- 打印中(引擎驱动走带):mono 态;follow 档 Wave 2 换成 footer.printing.follow -->
+                    <!-- 打印中(写入自动化走带):mono 态;follow 档 Wave 2 换成 footer.printing.follow -->
                     <span
                         class="footer-hint footer-hint--mono"
                         data-gb="footer-print-status"
                         data-t="footer.printing"
                     >
-                        引擎驱动 {v} · {x}–{y} 小节
+                        写入自动化 {v} · {x}–{y} 小节
                     </span>
                     <!-- 打印结束:非 mono 长句 -->
                     <span
