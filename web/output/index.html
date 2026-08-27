@@ -1196,7 +1196,16 @@
                     rgba(var(--tc), 0.95),
                     rgba(var(--tc), 0.55)
                 );
-                transition: all var(--dur-1) var(--ease);
+                /* ⚠ **只过渡 opacity,几何一律不过渡**(SL-203;坑在 SL-192 的 Monitor 侧趟过)。
+                   这里原本是 `transition: all var(--dur-1)`(0.3s)。在「每帧重拼 innerHTML」的
+                   老写法下它从不生效 —— 节点是新建的,没有可过渡的旧计算值。补间改成
+                   「给既有节点逐帧写 CSS 变量」之后它**开始生效**:`--x`/`--h` 喂的是
+                   `left`/`height`,两者都在 `all` 的过渡集里,于是在 40ms 补间之上又叠一层
+                   ~300ms 低通 —— 补间逻辑全绿,屏幕上的柱子却追不上写入值。
+                   Monitor 侧实测过滞后 2.89 个百分点(约 26px),这边同理。
+                   运动归 rAF,过渡只留给 hover 淡出用的 opacity。
+                   守卫 = smoke-output-dist-page 的「渲染位置紧跟写入值」+ smoke-tab1 的源码断言。 */
+                transition: opacity var(--dur-1) var(--ease);
             }
             /* lead 轨原本整根染绿(--dist-bar-lead);轨色进来之后那条通道被占用,
                绿色语义改挂**柱顶 2px 帽**——身份色(轨)与语义色(lead)各占一处,
@@ -1225,7 +1234,8 @@
                 height: 1.5px;
                 border-radius: var(--r-pill);
                 background: rgba(var(--tc), 0.8);
-                transition: all var(--dur-1) var(--ease);
+                /* 同上:张开横线的 --x0/--w/--y 喂 left/width/bottom,几何不过渡。 */
+                transition: opacity var(--dur-1) var(--ease);
             }
             /* 底轴五刻度(设计稿 L552-554:左 L / −50 / 中 C / +50 / 右 R) */
             .dist-axis {

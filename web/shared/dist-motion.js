@@ -221,6 +221,15 @@ export function createDistMotion(opts) {
     // 隐藏前那一帧上。Monitor 现路走 `reset()` 碰不到(不可见即清空、回来必重建),
     // 但这是工厂的通用契约,别把正确性押在某一个调用方的接线上。
     let paintOwed = false;
+    // 上一次画进 DOM 的全局「最大角度」。
+    //
+    // 它**进几何但不进补间**:`distGeometry` 拿它缩放横位与张开半宽,可它是**直接操纵**
+    // (Output 的「最大角度」滑杆),要的是跟手,不是平滑 —— 给手势加 40ms 惯性是坏体验。
+    // 但它必须能**触发重画**:只拧滑杆时每轨的 pan/vol/width 一个都没变,`sameDistValues`
+    // 会早退 ⇒ 柱子纹丝不动,而 v5 P2-10 用户裁定要的正是「拧滑杆时分布图实时收拢/张开」。
+    // 故单独记一份,变了就立刻补一帧(不重启补间窗口)。
+    // Monitor 侧的 getter 恒回 100,这条永远不触发。
+    let lastPaintedWidth = null;
     let destroyed = false;
     // 只读诊断(页面级冒烟据此判「渲染循环是 rAF 驱动还是事件驱动」——
     // 事件驱动的话 `frames` 恒为 0,这是两者最干脆的分界)。
@@ -256,6 +265,7 @@ export function createDistMotion(opts) {
     /** 逐帧写入面:只写 CSS 变量,不碰节点结构、不做任何布局读。 */
     function paint() {
         if (!container) return;
+        lastPaintedWidth = getGlobalWidthPct();
         let si = 0;
         for (let i = 0; i < shown.length; i++) {
             const r = shown[i];
@@ -334,6 +344,21 @@ export function createDistMotion(opts) {
             const key = distShapeKey(list);
             const nextHi = Number(highlightCh) || 0;
 
+            if (!isVisible()) {
+                // **不可见就一步都不走**(05 §6.1 空闲零 rAF)。Output 侧这条是实打实的:
+                // Tab1 不在前台、或图表切到轨迹档时,`scvb.params` 仍以 25Hz 推着 render,
+                // 照常补间等于对着没人看的画面烧一条 60fps 循环。
+                //
+                // 顺带**不跨隐藏边界插值**:把结构指纹清成 null,回到可见的第一帧必走下面的
+                // 重建分支(隐藏期结构可能已经变过),且从当前真值直接落位 ——
+                // 隐藏那段运动没人看见,插出来只会是一段鬼影。
+                stop();
+                shapeKey = null;
+                from = [];
+                target = [];
+                shown = [];
+                return;
+            }
             if (key !== shapeKey) {
                 // 轨集 / 立体声 / lead 变了 ⇒ 逐轨下标不再对齐:**直接落到目标值**,
                 // 不插(理由见 distShapeKey 的头注)。换组后的第一帧也走这一支 ——
@@ -354,6 +379,12 @@ export function createDistMotion(opts) {
                 // 免得 hover 的瞬间把补间中的柱弹回目标位),补间照旧往下走。
                 hi = nextHi;
                 rebuild();
+            }
+            if (getGlobalWidthPct() !== lastPaintedWidth) {
+                // 只拧了滑杆:每轨三条值一个没变,下面的 `sameDistValues` 会早退 ——
+                // 不在这里补一帧,柱子就不跟手了(v5 P2-10)。**不重启补间窗口**:
+                // 直接操纵要的是当场跟手,给它加惯性是坏体验。
+                paint();
             }
             if (paintOwed && isVisible()) {
                 // 还了隐藏期欠下的那一笔,再走下面的「值没变就早退」——顺序不能倒。
