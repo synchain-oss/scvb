@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include "ipc/CtrlPlane.h"
+
 namespace scvb
 {
 
@@ -70,20 +72,131 @@ void FeatRing::startRun(int64_t timelineSample, const std::function<void()>& bet
     const int64_t firstFullSample = static_cast<int64_t>(h0) * hopSamples;
     s->pendingSkip = (firstFullSample > timelineSample) ? (firstFullSample - timelineSample) : 0;
     s->nextHop = h0;
+
+    // fingerprint 侧同样按 run 边界重置(04 §4.5):run 切换后滤波态已 reset,跨 run 拼出来的
+    // tile 不是同一段音频,必须丢弃重起。fpTileOpen=false ⇒ 只有走到 tile 起点(hop%100==0)
+    // 才会开始累加,run 中途接上的半个 tile 永不上报。
+    s->fpHop = h0;
+    s->fpTile.reset();
+    s->fpTileIdx = 0;
+    s->fpTileCount = 0;
+    s->fpTileOpen = false;
+    // 【带 run 边界的那个 tile 一律不上报】上面那句只在 h0 **不**落在整秒上时才顺带做到 ——
+    // h0 落在整秒上(从 0 起播、120BPM 的整小节循环点 = 2.000s,都不是小概率)时,run 的第一个
+    // tile 恰好从 h0 开起,而 h0 这一 hop 带着 extractor->startRun() 的预热差(它的滤波态是
+    // 「自己从零态过一遍」,与连贯采集那一遍不同)。不堵这一支的话:在整秒处设一个短循环反复
+    // 试听,每圈都报同一个 tile、每圈都带同一个预热差,滞回三条一凑就定谳 —— 素材一个字节
+    // 没改却弹「建议重新采集」。与「半个 tile 不上报」是同一条纪律,这里补上对齐的那一支。
+    s->fpSkipFirstTile = (h0 % analysis::kFpTileHops == 0);
+}
+
+void FeatRing::pushFpReport(u64 value) noexcept
+{
+    // [A] 单生产者:只读自己的 write,acquire-load 消费者的 read。满 → 丢最新 + 计数
+    // (绝不覆盖未读记录:未读的是更早、更该先给用户看的那一秒)。
+    const u32 w = fpWrite_.load(std::memory_order_relaxed);
+    const u32 r = fpRead_.load(std::memory_order_acquire);
+    if (w - r >= kFpQueueCapacity)
+    {
+        fpDrop_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    fpSlots_[w % kFpQueueCapacity] = value;
+    fpWrite_.store(w + 1, std::memory_order_release);
+}
+
+uint32_t FeatRing::drainFpReports(u64* out, uint32_t max) noexcept
+{
+    if (out == nullptr || max == 0)
+    {
+        return 0;
+    }
+    const u32 w = fpWrite_.load(std::memory_order_acquire);
+    u32 r = fpRead_.load(std::memory_order_relaxed);
+    uint32_t n = 0;
+    while (r != w && n < max)
+    {
+        out[n++] = fpSlots_[r % kFpQueueCapacity];
+        ++r;
+    }
+    fpRead_.store(r, std::memory_order_release);
+    return n;
+}
+
+void FeatRing::accumulateFp(FeatRunState& s, float kwMs, bool capturing) noexcept
+{
+    const uint64_t hop = s.fpHop;
+    ++s.fpHop;
+
+    if (hop % analysis::kFpTileHops == 0)
+    {
+        // tile 起点:开一个新 tile(此前若有未收尾的半个 tile,连同它一起丢弃)。
+        s.fpTile.reset();
+        // u64 除法直接留在 u64 里:先窄化到 u32 再比上限,会让超长时间线的 tile 号回绕成
+        // 一个合法的小号,把一条 18 小时之外的记录错报到某个真实 tile 上。
+        s.fpTileIdx = hop / analysis::kFpTileHops;
+        s.fpTileCount = 0;
+        // run 起点恰好落在 tile 起点时,本 tile 头一 hop 带 extractor 预热差 —— 整个丢掉
+        // (见 startRun 里 fpSkipFirstTile 的说明);只丢这一个,下一个 tile 照常。
+        s.fpTileOpen = !s.fpSkipFirstTile;
+        s.fpSkipFirstTile = false;
+    }
+    if (!s.fpTileOpen)
+    {
+        return;
+    }
+
+    // 量化到 FrameStore 的 dBq 单位后入 FNV-1a —— 与 Output 侧基线**同一个入口**(见
+    // FeatureFingerprint.h 头注「两端逐位一致的前提」)。
+    s.fpTile.pushKwDbq(analysis::quantizeKwDbq(kwMs));
+    if (++s.fpTileCount < analysis::kFpTileHops)
+    {
+        return;
+    }
+
+    s.fpTileOpen = false;
+    // 采集 ON 时不上报:此刻这一秒的特征正在被写成**新基线**,拿它跟自己比毫无意义
+    // (04 §4.5「采集 OFF 期间 Input 播放时……每秒上报一条 fp_report」)。
+    // tile_idx 超 16 位(≈18.2 小时)不上报(04 §4.5 截断语义),避免钳制后错报到 tile 65535。
+    if (capturing || s.fpTileIdx > analysis::kFpMaxTileIdx)
+    {
+        return;
+    }
+    pushFpReport(packFpReport(static_cast<u32>(s.fpTileIdx), s.fpTile.value()));
 }
 
 int FeatRing::processBlock(const float* const* channels, int numSamples)
 {
-    if (!capturing_.load(std::memory_order_relaxed) || numSamples <= 0)
+    if (numSamples <= 0)
     {
-        return 0; // 采集 OFF 或空块:静默丢弃(release 不写段、不推进 write_hop)
+        return 0;
     }
+    // 采集开关只门控**写段**,不门控 K 加权提取(04 §4.5:采集 OFF 期间照跑同一条代码路径,
+    // 产出的 kw 喂 fingerprint watchdog)。段的「仅采集 ON 写」冻结语义由下面的 if (capturing) 保住。
+    const bool capturing = capturing_.load(std::memory_order_relaxed);
     FeatRunState* s = state_.load(std::memory_order_acquire);
     const FeatRingBinding* b = binding_.load(std::memory_order_acquire);
     if (s == nullptr || b == nullptr || !b->bound)
     {
         return 0; // 未就绪/未绑定:静默不写、不推进 write_hop
     }
+
+    // 采集开关在 run 中途翻 OFF→ON:nextHop 还停在上次停采的位置,而时间线已经走远了。
+    // 不重锚的话接下来写进段的帧会被按**旧 hop 号**记账,Output 把「第 90 秒的音频」存到
+    // 「第 30 秒」的格子里 —— 覆盖率、分析、以及本卡的指纹基线全部错位(基线一错位,
+    // 关采集重播同一段音频就会整轨失配,滞回与 10% 两道门都拦不住,变成整轨误报)。
+    // 重锚 = startRun 的 base/write 双 store(J33 顺序不可倒),但**不 reset 提取器** ——
+    // 音频是连续的,滤波态没有断点,重置反而会在第一帧引入暖机差。
+    if (capturing && !lastCapturing_)
+    {
+        if (s->nextHop != s->fpHop)
+        {
+            b->header->base_hop.store(s->fpHop, std::memory_order_release);
+            b->header->write_hop.store(s->fpHop, std::memory_order_release);
+            s->nextHop = s->fpHop;
+        }
+    }
+    lastCapturing_ = capturing;
 
     int consumed = 0;
     bool tailDropped = false;
@@ -116,13 +229,17 @@ int FeatRing::processBlock(const float* const* channels, int numSamples)
             const int nFrames = std::min(got, static_cast<int>(s->out.size()));
             for (int i = 0; i < nFrames; ++i)
             {
-                const uint64_t hop = s->nextHop;
-                b->ring[hop % b->capacity] =
-                    FeatFrame{s->out[static_cast<std::size_t>(i)].kw_ms, s->out[static_cast<std::size_t>(i)].peak};
-                ++s->nextHop;
-                b->header->write_hop.store(s->nextHop, std::memory_order_release); // 稳态:写帧后推进 write_hop
+                const analysis::FeatFrame& f = s->out[static_cast<std::size_t>(i)];
+                if (capturing)
+                {
+                    const uint64_t hop = s->nextHop;
+                    b->ring[hop % b->capacity] = FeatFrame{f.kw_ms, f.peak};
+                    ++s->nextHop;
+                    b->header->write_hop.store(s->nextHop, std::memory_order_release); // 稳态:写帧后推进 write_hop
+                    ++written;
+                }
+                accumulateFp(*s, f.kw_ms, capturing);
             }
-            written += nFrames;
             consumed += chunk;
             remaining -= chunk;
         }
@@ -205,8 +322,9 @@ void FeatPuller::bind(u32 channel, const FeatHeader* header, const FeatFrame* ri
     b.bound = (magicOk && abiOk && ring != nullptr && declared != 0 && mappedCapacity >= declared);
 }
 
-void FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask)
+u32 FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGate, u32 selectedMask, u32 activeMask)
 {
+    u32 refreshed = 0;
     for (u32 ch = 1; ch <= kMaxChannels; ++ch)
     {
         const u32 bit = 1u << (ch - 1);
@@ -223,8 +341,12 @@ void FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGa
         {
             continue;
         }
-        pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), timeGate);
+        if (pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), timeGate) > 0)
+        {
+            refreshed |= 1u << (ch - 1);
+        }
     }
+    return refreshed;
 }
 
 FeatPullState& FeatPuller::state(u32 channel)

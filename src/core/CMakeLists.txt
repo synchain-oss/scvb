@@ -12,6 +12,8 @@ add_library(scvb_core STATIC
   analysis/CoverageMap.h
   analysis/FrameStore.cpp
   analysis/FrameStore.h
+  analysis/FeatureFingerprint.cpp
+  analysis/FeatureFingerprint.h
   analysis/PanCurve.cpp
   analysis/PanCurve.h
   dsp/PanMath.h

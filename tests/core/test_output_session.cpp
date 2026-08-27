@@ -4,6 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -753,4 +755,187 @@ TEST_CASE("T37-A 特征拉取端到端:Input 写 feat 段 → Output FrameStore 
     out.setCaptureEnabled(false);
     out.tick(1800);
     CHECK(frames.coveredHops(scvb::analysis::HopRange{0, static_cast<std::uint64_t>(wrote)}) == covered);
+}
+
+namespace
+{
+// 确定性测试信号(48kHz 单声道);gain≠1 = 「用户在 Input 前面插了个改过参数的处理器」。
+std::vector<float> fpSignal(int samples, float gain)
+{
+    std::vector<float> v(static_cast<std::size_t>(samples));
+    for (int i = 0; i < samples; ++i)
+    {
+        const double t = static_cast<double>(i) / 48000.0;
+        const double env = 0.3 + 0.25 * std::sin(2.0 * 3.14159265358979 * 0.7 * t);
+        v[static_cast<std::size_t>(i)] = static_cast<float>(gain * env * std::sin(2.0 * 3.14159265358979 * 440.0 * t));
+    }
+    return v;
+}
+
+// 模拟 InputProcessor::drainFpReports:[A] 攒的 fp 由 [M] 转投本 slot 的 ctrl 命令环。
+std::uint32_t relayFpReports(scvb::FeatRing& ring, scvb::CtrlPlane& ctrl, scvb::u32 channel)
+{
+    scvb::u64 values[32] = {};
+    const auto n = ring.drainFpReports(values, 32);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        REQUIRE(ctrl.enqueue(channel, scvb::CtrlOp::kFpReport, values[i]));
+    }
+    return n;
+}
+
+// 每拍推进一次音频写头再 tick。evaluateChannels 的在线判据含「最近 500ms 内确有新帧写入」,
+// 只在开头写一次的话该轨几拍之后就掉出 connected_mask,pullTick 会整轨跳过。
+void fpTickOnline(OutputSession& out, InputSession& in, scvb::u64 nowMs, std::int64_t& audioPos)
+{
+    float chunk[64] = {};
+    scvb::AudioRing::write(in.audioRing().acquire(), audioPos, chunk, 64);
+    audioPos += 64;
+    in.heartbeat(nowMs);
+    out.tick(nowMs);
+}
+
+// 喂满整段信号(512 一块,模拟宿主块流)。
+void fpFeed(scvb::FeatRing& ring, const std::vector<float>& mono)
+{
+    const int total = static_cast<int>(mono.size());
+    for (int off = 0; off < total; off += 512)
+    {
+        const int n = std::min(512, total - off);
+        const float* p = mono.data() + off;
+        const float* planar[2] = {p, nullptr};
+        ring.processBlock(planar, n);
+    }
+}
+} // namespace
+
+TEST_CASE("SL-177 端到端:采集 → 上游改动 → Output 该轨 stale", "[output][session][ctrl][fingerprint]")
+{
+    // 用户实测:在 Input 前面加了 EQ 并修改,Output 侧没有任何「素材变了,建议重新采集」的提示。
+    // 通路 = Input [A] 算 tile 指纹 → [M] 排水投 ctrl 命令环 → Output [M] 消费并与 FrameStore
+    // 基线比对(04 §4.5 / J46)。本例正反各走一遍:同一段音频不得报 stale,换过的音频必须报。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(2);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+    REQUIRE(in.featRing().bound());
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    out.setCaptureEnabled(true);
+
+    // 该轨过 [J32] 注入延迟进 connected_mask(pullTick 只拉在线轨)。
+    std::int64_t audioPos = 0;
+    fpTickOnline(out, in, 1300, audioPos);
+    fpTickOnline(out, in, 1600, audioPos);
+
+    // ---- ① 采集:Input 写 4 秒特征,Output 拉进 FrameStore 成为基线 ----
+    const std::vector<float> original = fpSignal(48000 * 4, 1.0f);
+    in.featRing().setCapturing(true);
+    in.featRing().startRun(0);
+    fpFeed(in.featRing(), original);
+    for (int i = 0; i < 8; ++i) // pullIncremental 每拍最多 256 hop,多拍几次拉满 400 hop
+    {
+        fpTickOnline(out, in, 1700 + static_cast<scvb::u64>(i) * 40, audioPos);
+    }
+    REQUIRE(out.frameStore().channel(2).coversFully(scvb::analysis::HopRange{0, 300}));
+    // 采集期间不上报 fp(此刻这一秒正在被写成新基线,拿它跟自己比毫无意义)。
+    scvb::u64 drained[32] = {};
+    CHECK(in.featRing().drainFpReports(drained, 32) == 0);
+
+    scvb::CtrlPlane inputCtrl(backend, 1);
+    REQUIRE(inputCtrl.open() == scvb::InitResult::kOk);
+
+    // ---- ② 采集关 + 重播**同一段**音频 → 指纹一致 → 不得 stale(反向验证)----
+    out.setCaptureEnabled(false);
+    in.featRing().setCapturing(false);
+    in.featRing().startRun(0);
+    fpFeed(in.featRing(), original);
+    const auto sameCount = relayFpReports(in.featRing(), inputCtrl, 2);
+    REQUIRE(sameCount >= 3); // 4 秒音频 ⇒ 至少 3 个完整 tile
+    out.tick(2100);
+    CHECK(out.fpTilesChecked(2) == sameCount);
+    CHECK(out.fpTilesMismatched(2) == 0);
+    CHECK_FALSE(out.channelStale(2)); // ← 素材没变就绝不能提示
+
+    // ---- ③ 用户在 Input 前面插了 EQ 并改了参数 → 指纹失配 → 该轨 stale ----
+    in.featRing().startRun(0);
+    fpFeed(in.featRing(), fpSignal(48000 * 4, 0.5f));
+    REQUIRE(relayFpReports(in.featRing(), inputCtrl, 2) >= 3);
+    out.tick(2200);
+    CHECK(out.fpTilesMismatched(2) >= 3); // 连续 3 秒失配才定谳(滞回)
+    CHECK(out.channelStale(2)); // ← 修复前这里恒 false(命令环只排空不消费)
+
+    // 只影响该轨,不牵连别的轨。
+    CHECK_FALSE(out.channelStale(1));
+    CHECK_FALSE(out.channelStale(3));
+
+    // ---- ④ 改回原样重播 → 提示自行撤下(只提示、可自愈,不阻断任何操作)----
+    in.featRing().startRun(0);
+    fpFeed(in.featRing(), original);
+    REQUIRE(relayFpReports(in.featRing(), inputCtrl, 2) >= 3);
+    out.tick(2300);
+    CHECK(out.fpTilesMismatched(2) == 0);
+    CHECK_FALSE(out.channelStale(2));
+}
+
+TEST_CASE("SL-177 闭环:照着 ⚠ 重新采集 → 提示撤下", "[output][session][ctrl][fingerprint]")
+{
+    // ⚠ 的行动号召是「建议重新采集」。重采集期间采集是 ON 的,而采集 ON 期间 Input 一条
+    // fp_report 都不发 —— 自愈路径此刻是断的。若不在「拉到新特征」这一跳上清账,用户照做之后
+    // ⚠ 原样挂着,只能靠再关一次采集重播一遍才撤下。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(2);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    out.setCaptureEnabled(true);
+    std::int64_t audioPos = 0;
+    fpTickOnline(out, in, 1300, audioPos);
+    fpTickOnline(out, in, 1600, audioPos);
+
+    // 采集 4 秒建立基线。
+    const std::vector<float> original = fpSignal(48000 * 4, 1.0f);
+    in.featRing().setCapturing(true);
+    in.featRing().startRun(0);
+    fpFeed(in.featRing(), original);
+    for (int i = 0; i < 8; ++i)
+    {
+        fpTickOnline(out, in, 1700 + static_cast<scvb::u64>(i) * 40, audioPos);
+    }
+    REQUIRE(out.frameStore().channel(2).coversFully(scvb::analysis::HopRange{0, 300}));
+
+    scvb::CtrlPlane inputCtrl(backend, 1);
+    REQUIRE(inputCtrl.open() == scvb::InitResult::kOk);
+
+    // 关采集 + 上游改了 → stale。
+    out.setCaptureEnabled(false);
+    in.featRing().setCapturing(false);
+    in.featRing().startRun(0);
+    fpFeed(in.featRing(), fpSignal(48000 * 4, 0.5f));
+    REQUIRE(relayFpReports(in.featRing(), inputCtrl, 2) >= 3);
+    out.tick(2100);
+    REQUIRE(out.channelStale(2));
+
+    // 用户照做:重新开采集,回到工程开头再播一遍(改过的素材这次被录成新基线)。
+    out.setCaptureEnabled(true);
+    in.featRing().setCapturing(true);
+    in.featRing().startRun(0); // 回卷 seek:读侧下一拍看到 write_hop 回退并重置游标
+    fpTickOnline(out, in, 2200, audioPos);
+    fpFeed(in.featRing(), fpSignal(48000 * 4, 0.5f));
+    for (int i = 0; i < 8; ++i)
+    {
+        fpTickOnline(out, in, 2240 + static_cast<scvb::u64>(i) * 40, audioPos);
+    }
+    // Output 一拉到新特征就清账 —— 旧判定所依据的基线正在被改写。
+    CHECK(out.fpTilesChecked(2) == 0);
+    CHECK_FALSE(out.channelStale(2)); // ← 修复前会一直挂着,只能靠再关一次采集重播才撤下
 }

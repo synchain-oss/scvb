@@ -214,7 +214,11 @@ void CtrlPlane::refreshGlobalInfo(const OutputGlobalInfoSnapshot& s)
     }
     // 写侧 release、读侧 acquire(见 readGlobalInfo)配对:诊断快照无需跨 48 字段的原子一致性,
     // 但单字段须有 happens-before,保证 Input 读到任一字段即见其完整写入。
-    g->capture_enabled.store(s.capture_enabled, std::memory_order_release);
+    // capture_enabled 最后写 = 「发布完成」旗标:读方握手(见 scvb_ipc_peer runGlobalInfoReader)以
+    // capture_enabled != 0 判定就绪。若先写 capture_enabled,读方会在数组字段尚未写完时退出轮询,读到
+    // 全零 gap_count(IPC-16 flake:gap_count14 偶发 0)。该次序只保证 0→1 首次发布一致性(读方 acquire
+    // 到 capture_enabled=1 时,之前所有字段的写入均已对其可见);稳态 250ms 周期重刷不保证跨 48 字段
+    // 原子性(诊断快照,可接受)。
     g->output_sample_rate.store(s.output_sample_rate, std::memory_order_release);
     g->flags.store(s.flags, std::memory_order_release);
     for (u32 i = 0; i < kMaxChannels; ++i)
@@ -223,6 +227,7 @@ void CtrlPlane::refreshGlobalInfo(const OutputGlobalInfoSnapshot& s)
         g->overlap_count[i].store(s.overlap_count[i], std::memory_order_release);
         g->epoch_summary[i].store(s.epoch_summary[i], std::memory_order_release);
     }
+    g->capture_enabled.store(s.capture_enabled, std::memory_order_release);
 }
 
 OutputGlobalInfoSnapshot CtrlPlane::readGlobalInfo() const

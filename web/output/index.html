@@ -3151,6 +3151,14 @@
                 border-radius: 50%;
                 background: rgba(var(--sem-amber), 0.9);
             }
+            /* 「数据可能已过期」⚠ 角标(04 §4.5 fingerprint watchdog):与「样本不足」黄标同族,
+               取同一支琥珀语义色;158px 轨头装不下整句,全句走 title tooltip。 */
+            .wave-lane__staledot {
+                flex: none;
+                font-size: 9px;
+                line-height: 1;
+                color: rgba(var(--sem-amber), 0.95);
+            }
             /* 「曲线可见」toggle 压成纯眼睛图标钮(B-08;24×14 私有 toggle 不进实现,C-09) */
             .wave-lane__eye {
                 position: relative;
@@ -4878,6 +4886,29 @@
                         </svg>
                         <!-- 词条 banner.noTimeline(T31 Wave 2 新增) -->
                         <span data-t="banner.noTimeline">宿主未提供时间线</span>
+                    </div>
+                    <!-- ⑧ 上游改动 → 采集数据过期(04 §4.5 fingerprint watchdog,SL-177)。
+                         **只提示,不自动失效、不阻断任何操作**;{m} = §2.8 里 stale 的轨数。 -->
+                    <div class="sc-banner" data-gb="banner-staleCapture" hidden>
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.staleCapture"
+                            data-gb="banner-staleCapture-text"
+                            >{m}
+                            轨的上游音频与已采集特征不一致,建议重新采集</span
+                        >
                     </div>
                     <!-- ⑦ 加载守卫:引擎驱动状态随工程恢复 -->
                     <div class="sc-banner" data-gb="banner-printGuard" hidden>

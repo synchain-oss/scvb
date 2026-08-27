@@ -79,7 +79,7 @@ node web-preview/tests/smoke-ready-race.mjs
 | `misaligned` | 路由失准:2–3 轨 `misalignCount>0` → 琥珀横幅① + Tab2 对应轨 ⚠ 计数(横幅①由 UI 按 `scvb.conn` 渲染,无独立 error code) |
 | `channel-conflict` | Input 侧:`claim="conflict"` + `channelConflict` 错误 + `occupiedMask` 含目标位;Output 侧不受影响 |
 | `second-output` | `outputReadOnly=true` + `secondOutput` 错误 + 全写控件 disabled。**`range.mode=daw_loop` 且宿主提供 loop(daw_loop 代表档)** |
-| `stereo-mixed` | mono+stereo 混存:stereo 轨带 ST、`participate_in_auto_pan=false` 默认、每轨 width 旋钮可用。**降级变体 `&loop=none`** 见上 |
+| `stereo-mixed` | mono+stereo 混存:stereo 轨带 ST、该轨在 **Output 真源与 Input §4.3 只读镜像两侧都**显式设 `participate_in_auto_pan=false`([J83] 起默认一律 `true`,本 fixture 要的是「用户手动排除某轨」的渲染面;只写一侧会造出真机不可能的组合)、每轨 width 旋钮可用。**降级变体 `&loop=none`** 见上 |
 
 **[J04] `range.mode` 一律三值枚举 `follow` / `daw_loop` / `manual`,默认 `follow`**;
 v0 那套「`manual` 配一对零值端点表示全曲」的哨兵约定已废除,mock 与 fixture 里不得残留。

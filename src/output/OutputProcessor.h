@@ -67,7 +67,7 @@ struct OutputRuntimeState
         bool enabled = true;
         juce::String label;
         int sourceChannels = 0; // 只读;0=未检测(每拍由 refreshSourceChannels 从音频环段头回填)
-        bool participateAutoPanSet = false; // false=未显式设置,emit 时按 J60 推导(mono=true/stereo=false)
+        bool participateAutoPanSet = false; // false=未显式设置 → participatesInAutoPan() 一律 true([J83])
         bool participateAutoPan = false;
         int priority = 5;
         bool leadLock = false;
@@ -201,6 +201,9 @@ public:
     // [M] 该轨**本次失准发作**的缺口数(scvb.conn.channels[].misalignCount 数据源)。恢复健康
     // 满 1s 即归零 —— 累计值上桥会把「路由失准」横幅永久钉死(T37 三轮 A 族)。
     scvb::u32 misalignCount(int channel) const { return session_.misalignCountRecent(static_cast<scvb::u32>(channel)); }
+    // [M] 该轨采集数据是否已过期(§2.8 segments.channels[].stale 数据源;04 §4.5 fingerprint
+    // watchdog)。判定由 session_ 在 tick() 的命令环消费里推进 —— 与本读点同在消息线程,串行。
+    bool captureStale(int channel) const { return session_.channelStale(static_cast<scvb::u32>(channel)); }
 
     // scvb.conn(契约 §2.3)的整帧数据面快照。T29 桥曾以「claim 态推导」的占位值充数
     // (全轨 slotState=2、heartbeatFresh 恒 false),UI 的 `slotState=2 ∧ heartbeatFresh`

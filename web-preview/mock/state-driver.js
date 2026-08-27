@@ -110,7 +110,15 @@ export const SCENARIO_MAP = Object.freeze({
     // T43([J75] A)轨迹图演示:开箱就落在轨迹档,且段表带一段跨轨对齐的缺口 ——
     // 「无分段覆盖的区间不画线」在这个场景里一眼可见、可截图、可断言。
     "chart-trajectory": "fifteen-tracks",
+    // SL-177(04 §4.5 fingerprint watchdog):几条轨的上游音频与已采集特征对不上
+    // (典型 = 用户在 Input 前面插了 EQ 并改了参数)。落在健康满配世界上,由 buildWorld
+    // 的场景覆写把 §2.8 的 stale 位摆开 —— 横幅 ⑧ / tab 导航琥珀点 / 泳道 ⚠ 三处提示
+    // 在浏览器里才可达、可截图、可断言(此前 shell.js 白名单里有名字,SCENARIO_MAP 里没接线)。
+    stale: "fifteen-tracks",
 });
+
+/** `stale` 场景里「数据已过期」的轨(取三条:够验证「只影响该轨、不牵连别的轨」)。 */
+const STALE_DEMO_CHANNELS = Object.freeze([2, 5, 11]);
 
 /** 宿主循环区(`daw_loop` 档的来源;`?loop=none` 时视为宿主根本不提供)。 */
 const HOST_LOOP = Object.freeze({ startS: 24, endS: 96 });
@@ -405,7 +413,7 @@ export function buildWorld(opts = {}) {
         );
     } else if (fixture === "stereo-mixed") {
         // mono+stereo 混存:四条 stereo 轨(生成器口径 DEMO_STEREO_CHANNELS)带 ST 标、
-        // participate_in_auto_pan 默认 false、每轨 width 旋钮可用;range 取 manual
+        // 每轨 width 旋钮可用;range 取 manual
         // (与 empty/fifteen-tracks 的 follow、second-output 的 daw_loop 一起凑满三值枚举)。
         outputSnapshot = makeTourDemoSnapshot({
             global: {
@@ -418,10 +426,18 @@ export function buildWorld(opts = {}) {
         });
         outputParams = makeParams({ versionActive: 1 });
         outputSegments = makeTourDemoSegments(1, "snapshot");
+        // 该轨**显式**关掉参与([J83] 起默认是 true)—— 本 fixture 要的是「用户手动把某轨
+        // 排除」那一面的渲染(轨道页开关的关闭态 + Input 远程只读摘要行的关闭态),不是默认档。
+        //
+        // 两侧必须一起写:契约 §4.3 说 Input 的 `scvb.config` 是**本组 ctrl 广播区中本 channel
+        // 的只读快照**,真源在 Output(ADR-004)。只改 Input 那一侧,预览里就会出现真机上
+        // 不可能出现的组合(Output 说参与、Input 镜像说不参与),而这正是靠预览截图核对
+        // 两页一致性的人最容易被骗的地方。
         const stereoCh = DEMO_STEREO_CHANNELS[0];
+        outputSnapshot.channels[stereoCh - 1].participate_in_auto_pan = false;
         inputSnapshot = connectedInputSnapshot(stereoCh, {
             source_channels: 2,
-            participate_in_auto_pan: false, // J60:stereo 默认不参与自动声像
+            participate_in_auto_pan: false,
         });
     } else {
         // fifteen-tracks:15 轨全连、4 stereo、覆盖/段表齐全;**range.mode=follow 默认档代表**。
@@ -500,6 +516,19 @@ export function buildWorld(opts = {}) {
         outputSegments = makeTourDemoSegments(1, "snapshot", {
             trajectoryGap: true,
         });
+    }
+    if (opts.scenario === "stale" && outputSegments) {
+        // SL-177 / 04 §4.5:把 §2.8 的 stale 位摆到三条轨上。**只改 stale**,段表其余
+        // 一律不动 —— 提示是「素材变了」,不是「段没了」,fingerprint watchdog 明文
+        // 「只提示,不自动失效、不阻断任何操作」。
+        outputSegments = {
+            ...outputSegments,
+            channels: outputSegments.channels.map((entry) =>
+                STALE_DEMO_CHANNELS.includes(entry.ch)
+                    ? { ...entry, stale: true }
+                    : entry,
+            ),
+        };
     }
 
     // ---- Input 七态场景覆写(T36;只改 Input 快照初值,不动周期事件与函数语义)----

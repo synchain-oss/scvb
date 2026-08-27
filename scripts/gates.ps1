@@ -222,7 +222,8 @@ elseif ($smokeFiles.Count -eq 0) {
 }
 else {
   # 退出码约定(T46 起):0 = 全绿;1 = 有断言失败;**2 = 缺可选外部依赖,本机跑不了**。
-  # 目前只有 smoke-monitor-page.mjs 会回 2(它要一个无头 Chrome/Edge)。为什么单列一档:
+  # 会回 2 的是两套页面级冒烟(都要一个无头 Chrome/Edge):smoke-monitor-page.mjs 与
+  # smoke-output-stale-page.mjs(SL-177 过期提示,04 §4.5)。为什么单列一档:
   # 把「本机没装浏览器」和「页面真的坏了」都判成红,等于逼每个只改 C++ 的人装浏览器,
   # 或者反过来诱导谁把这套从门禁里摘掉 —— 两条都比一条 SKIP 差。**但绝不静默**:
   # 打印 SKIP 行并计数,总结里带上,免得「一套没跑」看起来和「跑过了」一样。

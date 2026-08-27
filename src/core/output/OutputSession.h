@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "analysis/FeatureFingerprint.h"
 #include "analysis/FrameStore.h"
 #include "ipc/CtrlPlane.h"
 #include "ipc/FeatRing.h"
@@ -154,6 +155,16 @@ public:
     // 特征 hop 时长(ms):秒 ↔ hop 换算的唯一真源(桥面按它折算范围与覆盖率)。
     static constexpr u32 featHopMs() noexcept { return kFeatHopMs; }
 
+    // ---- 上游改动的过期检测(04 §4.5 fingerprint watchdog)--------------------------
+    // 该轨「上游音频与已采集特征不一致」= 桥面 §2.8 channels[].stale。只提示,不自动失效、
+    // 不阻断任何操作。数据来自 Input [M] 经命令环上报的 kFpReport(consumeCommands 消费)。
+    bool channelStale(u32 channel) const { return fpWatch_.stale(channel); }
+    // 诊断/测试:该轨已比对 tile 数与已定谳失配 tile 数。
+    u32 fpTilesChecked(u32 channel) const { return fpWatch_.tilesChecked(channel); }
+    u32 fpTilesMismatched(u32 channel) const { return fpWatch_.tilesMismatched(channel); }
+    // 重采集/清除覆盖后清账(打洞/整轨作废处调用):旧的失配定谳不该跨过一次重采集。
+    void resetChannelStale(u32 channel) { fpWatch_.resetChannel(channel); }
+
     // [M] 布防的**时间维**(契约 §1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
     // 落到 ChannelFrames::setGate —— 写入口按 hop ∈ gate 判,范围外静默丢弃、不记账。
     // 不设这道门的话特征按整条时间线累计,内嵌特征的 8MB 预算会先于功能问题暴露。
@@ -210,6 +221,8 @@ private:
     std::array<bool, kMaxChannels> featBound_{};
     FeatPuller featPuller_;
     analysis::FrameStore frameStore_;
+    // fingerprint watchdog 的比对账本([M] 独占;基线现算自 frameStore_,不占持久化字段)。
+    analysis::FingerprintWatch fpWatch_{kMaxChannels};
     // 布防时间维(§1 setCaptureEnabled);默认全域 = 不门控。
     analysis::HopRange featureGate_{0, std::numeric_limits<u64>::max()};
 
