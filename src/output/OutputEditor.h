@@ -130,6 +130,10 @@ private:
 
     // ---- diff-then-emit 状态(消息线程独占)----
     bool firstFrame_ = true; // mBridgeReady 后首帧必发各事件(§0.4)
+    // [SL-199] 上一拍 webview 是否可见:false→true 的边沿上强制一次 scvb.params 全量,
+    // 补发隐藏期被 emitEventIfBrowserIsVisible 丢掉、而 lastParamsValues_ 已经推进过的那些 id。
+    // 初值 false:首帧本来就走 forceFull,边沿不会多发一帧。
+    bool paramsWasVisible_ = false;
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)

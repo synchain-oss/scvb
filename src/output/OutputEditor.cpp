@@ -190,9 +190,20 @@ void OutputEditor::emitTick()
     if (first)
         firstFrame_ = false;
 
+    // [SL-199] scvb.params 的基线有两层,只有 lastParamsJson_ 那层挡住了隐藏期丢帧;
+    // lastParamsValues_ 在构建载荷时就推进了,与这一帧发没发出去无关。于是隐藏期改掉的值
+    // 会被永久吞掉(下一拍 changed==false → any==false → 提前 return,载荷压根不再构建)。
+    // **不可见→可见的边沿强制一次全量**把它兜住 —— 判定与记账见 BridgeArgs.h 的 paramsForceFull。
+    //
+    // ⚠ BRIDGEARGS-SL199-* 用例守的是 paramsForceFull / selectParamForEmit 两个纯函数本身,
+    // **守不到「这里还在调它」这一跳** —— scvb_params_tests 编不进本 TU(OutputEditor 依赖
+    // WebViewHost/WebView2)。把下面这行换回 `emitParams(first)`,单测照样全绿而 bug 原样回归。
+    // 改这两行必须同步复核那组用例(与 BridgeArgs.h 降级链 / HOST R4 同款约定)。
+    const bool paramsFull = scvb::output::paramsForceFull(first, webView().isVisible(), paramsWasVisible_);
+
     syncDawLoopRange(); // daw_loop 档:先把 range 跟到宿主循环区,再让 emitState 下发
     emitState(first);
-    emitParams(first);
+    emitParams(paramsFull);
     if (first || (tickCount_ % 6 == 0))
         emitConn(); // ~4Hz(25Hz 6 分频)
     if (first || (tickCount_ % 25 == 0))
@@ -285,13 +296,10 @@ void OutputEditor::emitParams(bool forceFull)
     for (const auto& id : ids)
     {
         const float value = readParamEngineering(apvts, id); // 工程值(非归一化,PR#55 第3轮重要1)
-        const auto it = lastParamsValues_.find(id);
-        const bool changed = it == lastParamsValues_.end() ||
-                             !juce::approximatelyEqual(static_cast<double>(it->second), static_cast<double>(value));
-        if (forceFull || changed)
+        // 选择 + 基线推进走 BridgeArgs.h 的共用实现 —— 用例驱动的就是这一份(SL-199 生产与用例同源)。
+        if (scvb::output::selectParamForEmit(lastParamsValues_, id, value, forceFull))
         {
             put(values, id.toRawUTF8(), juce::var(value));
-            lastParamsValues_[id] = value;
             any = true;
         }
     }

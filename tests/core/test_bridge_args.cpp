@@ -8,6 +8,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <map>
+
 #include "BridgeArgs.h"
 #include "OutputParams.h"
 
@@ -154,4 +156,133 @@ TEST_CASE("BRIDGEARGS-S2S-1 样本→秒安全换算(PR#55 第6轮缺陷1)", "[b
             Approx(22906492.245333).epsilon(1e-9));
     REQUIRE(scvb::output::kOpenEndedT1 == (static_cast<std::int64_t>(1) << 40));
     REQUIRE(scvb::output::samplesToSeconds(48000, -1.0) == Approx(0.0));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-199] 隐藏期 scvb.params 吞帧后必须能补发。
+//
+// `emitParams` 的两层基线里,只有 `lastParamsJson_` 挡住了隐藏期丢帧;`lastParamsValues_`
+// 在构建载荷时就推进了,与这一帧发没发出去无关。于是隐藏期某个 id 变了之后:
+// 下一拍 `changed == false` → `values` 为空 → `any == false` **提前 return** → 载荷压根不再
+// 构建,json 那层保护无从生效,这个变化**永远不会重发**。
+// [J85] 之后冻结维度的读回值只在参数面上,后果就是旋钮一直显示旧值。
+//
+// 下面这一串按 25Hz 帧逐拍重演该场景,驱动的是**生产同一份**实现
+// (`paramsForceFull` / `selectParamForEmit`,`emitParams` 的循环体就是后者)。
+// ---------------------------------------------------------------------------
+namespace
+{
+// 一帧 emitParams 的选择结果:本帧要下发哪些 id → 什么值(空 = 该帧不发事件)。
+std::map<juce::String, float> emitFrame(std::map<juce::String, float>& baseline,
+                                        const std::map<juce::String, float>& plane, bool firstFrame, bool visible,
+                                        bool& wasVisible)
+{
+    const bool forceFull = scvb::output::paramsForceFull(firstFrame, visible, wasVisible);
+    std::map<juce::String, float> sent;
+    for (const auto& kv : plane)
+    {
+        if (scvb::output::selectParamForEmit(baseline, kv.first, kv.second, forceFull))
+        {
+            sent[kv.first] = kv.second;
+        }
+    }
+    // 真实 emitParams 在 `!any && !forceFull` 时提前 return;不可见时载荷还会被
+    // emitEventIfBrowserIsVisible 丢掉 —— 两者对调用方是同一件事:这一帧没到达 UI。
+    if (!visible)
+    {
+        sent.clear();
+    }
+    return sent;
+}
+} // namespace
+
+TEST_CASE("BRIDGEARGS-SL199-1 隐藏期改参数 → 恢复可见必达且值正确", "[bridgeargs][params][SL199]")
+{
+    const juce::String kFrozenPan = "v1_t03_pan";
+    std::map<juce::String, float> plane{{kFrozenPan, 10.0f}, {"v1_t03_vol", -3.0f}, {"width", 100.0f}};
+    std::map<juce::String, float> baseline;
+    bool wasVisible = false;
+
+    // ① 首帧(可见):全量下发,基线建立。
+    auto sent = emitFrame(baseline, plane, /*firstFrame=*/true, /*visible=*/true, wasVisible);
+    REQUIRE(sent.size() == plane.size());
+    REQUIRE(sent.at(kFrozenPan) == 10.0f);
+
+    // ② 可见稳态:值没动 → 不重复发(diff 门照常生效,别为了修吞帧把 25Hz 变成全量广播)。
+    sent = emitFrame(baseline, plane, false, /*visible=*/true, wasVisible);
+    CHECK(sent.empty());
+
+    // ③ 面板被宿主隐藏/折叠(editor 未销毁)。隐藏期该冻结 pan 被改掉(宿主自动化或手动写入)。
+    plane[kFrozenPan] = 70.0f;
+    sent = emitFrame(baseline, plane, false, /*visible=*/false, wasVisible);
+    CHECK(sent.empty()); // 这一帧到不了 UI —— 但基线已经被推进到 70(这就是那个洞)
+    CHECK(baseline.at(kFrozenPan) == 70.0f);
+
+    // ④ 仍隐藏,再走几拍:值没再动,什么都不会发。
+    for (int i = 0; i < 3; ++i)
+    {
+        CHECK(emitFrame(baseline, plane, false, false, wasVisible).empty());
+    }
+
+    // ⑤ ★ 恢复可见:必须补发,且值是**隐藏期改成的那个新值**。
+    //    修复前:forceFull 恒 false → changed 恒 false(基线早就是 70)→ 一个 id 都不发,
+    //    旋钮一直显示 10,直到该参数再变一次。
+    sent = emitFrame(baseline, plane, false, /*visible=*/true, wasVisible);
+    REQUIRE_FALSE(sent.empty());
+    REQUIRE(sent.count(kFrozenPan) == 1);
+    CHECK(sent.at(kFrozenPan) == 70.0f);
+    CHECK(sent.size() == plane.size()); // 全量:隐藏期被吞的**所有** id 一并补上
+
+    // ⑥ 补发之后回到稳态:不再重复全量(边沿只触发一次)。
+    CHECK(emitFrame(baseline, plane, false, true, wasVisible).empty());
+
+    // ⑦ 可见期正常改值:仍走稀疏 diff,只发变的那个。
+    plane["v1_t03_vol"] = -9.0f;
+    sent = emitFrame(baseline, plane, false, true, wasVisible);
+    REQUIRE(sent.size() == 1);
+    CHECK(sent.at("v1_t03_vol") == -9.0f);
+}
+
+TEST_CASE("BRIDGEARGS-SL199-2 paramsForceFull 的边沿记账", "[bridgeargs][params][SL199]")
+{
+    bool wasVisible = false;
+
+    // 首帧恒 force(与 firstFrame_ 同款);且把 wasVisible 记成 true,不会紧接着再 force 一次。
+    CHECK(scvb::output::paramsForceFull(/*firstFrame=*/true, /*visibleNow=*/true, wasVisible));
+    CHECK(wasVisible);
+    CHECK_FALSE(scvb::output::paramsForceFull(false, true, wasVisible)); // 稳态可见:不 force
+
+    // 可见 → 不可见:不 force(这一帧本来就发不出去)。
+    CHECK_FALSE(scvb::output::paramsForceFull(false, false, wasVisible));
+    CHECK_FALSE(wasVisible);
+    CHECK_FALSE(scvb::output::paramsForceFull(false, false, wasVisible)); // 持续隐藏:仍不 force
+
+    // 不可见 → 可见:**这一拍 force**,且只 force 这一拍。
+    CHECK(scvb::output::paramsForceFull(false, true, wasVisible));
+    CHECK_FALSE(scvb::output::paramsForceFull(false, true, wasVisible));
+
+    // 首帧发生在不可见时:firstFrame 仍 force(与现行 emitParams(first) 同口径),
+    // 但那一帧到不了 UI —— 随后的可见边沿会再 force 一次补上。
+    bool w2 = false;
+    CHECK(scvb::output::paramsForceFull(true, false, w2));
+    CHECK_FALSE(w2);
+    CHECK(scvb::output::paramsForceFull(false, true, w2));
+}
+
+TEST_CASE("BRIDGEARGS-SL199-3 selectParamForEmit 的选择与基线推进", "[bridgeargs][params][SL199]")
+{
+    std::map<juce::String, float> baseline;
+
+    // 新 id:恒入选(基线里没有)。
+    CHECK(scvb::output::selectParamForEmit(baseline, "width", 100.0f, /*forceFull=*/false));
+    CHECK(baseline.at("width") == 100.0f);
+    // 同值:不入选(25Hz 的稀疏 diff 门)。
+    CHECK_FALSE(scvb::output::selectParamForEmit(baseline, "width", 100.0f, false));
+    // 变值:入选并推进基线。
+    CHECK(scvb::output::selectParamForEmit(baseline, "width", 80.0f, false));
+    CHECK(baseline.at("width") == 80.0f);
+    // forceFull:同值也入选(可见性边沿补发靠的就是这条)。
+    CHECK(scvb::output::selectParamForEmit(baseline, "width", 80.0f, /*forceFull=*/true));
+    // 浮点近似:approximatelyEqual 口径,极小抖动不算变(否则 25Hz 会一直发)。
+    CHECK_FALSE(scvb::output::selectParamForEmit(baseline, "width", 80.0f, false));
 }

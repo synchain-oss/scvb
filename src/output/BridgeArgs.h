@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 
 #include "state/StateCodec.h" // CrvsData/VersionCurve(R4 降级链的输入)
 
@@ -119,6 +120,52 @@ inline std::int64_t effectiveT1Samples(std::int64_t t0, std::int64_t t1, std::in
 inline double samplesToSeconds(std::int64_t samples, double sampleRate)
 {
     return sampleRate > 0.0 ? static_cast<double>(samples) / sampleRate : 0.0;
+}
+
+// --- [SL-199] scvb.params 的隐藏期吞帧 ---------------------------------------------
+//
+// `emitParams` 有**两层**基线,而只有一层挡住了隐藏期丢帧:
+//   ① `lastParamsJson_` —— 由 `emitIfChanged` 维护,**不可见时不推进**(那段注释已写明理由),
+//      所以恢复可见后同一份 json 会自然重发;
+//   ② `lastParamsValues_` —— 由 `emitParams` 自己维护,**在构建载荷时就推进了**,与这一帧
+//      究竟有没有发出去无关。
+// 于是:隐藏期某个 id 变了 → ② 已经等于新值 → 这一帧被 `emitEventIfBrowserIsVisible` 丢掉 →
+// 下一拍 `changed == false`、`values` 为空、`any == false` **提前 return**,载荷压根不再构建,
+// ① 那层保护也就无从生效。这个变化**永远不会重发**。
+//
+// [J85] 之后冻结维度的读回值**只**在参数面上(段表那条后路没了),所以这条洞的后果是:
+// 隐藏/折叠面板期间被宿主自动化或手动写入改掉的冻结值,恢复可见后旋钮一直显示旧值,
+// 直到该参数再变一次。`firstFrame_` 是 editor 生命周期级的 —— 宿主只是隐藏而不销毁 editor 时,
+// `emitParams(true)` 不会重来。
+//
+// 修法(SL-199):**不可见→可见的边沿强制一次全量**。比「按 key 回滚基线」简单可靠 ——
+// 它覆盖隐藏期被吞的**所有** id,不需要知道具体吞了哪几个;代价是每次重新打开面板多发一帧
+// 63 个 id 的全量,可忽略。(Input 侧对同类问题用的是「发出去了才推进基线」,见
+// `InputBridgeLogic.h` 的 `advanceEmitCache` / `advanceConfigSeq`;两种口径都成立,
+// 这里取前者是因为 `lastParamsValues_` 是 63 个 key 的 map,回滚要多存一份候选集。)
+//
+// 纯函数,可离线断言:`wasVisible` 由调用方持有(OutputEditor 成员),本函数负责记账。
+inline bool paramsForceFull(bool firstFrame, bool visibleNow, bool& wasVisible) noexcept
+{
+    const bool becameVisible = visibleNow && !wasVisible;
+    wasVisible = visibleNow;
+    return firstFrame || becameVisible;
+}
+
+// scvb.params 稀疏 diff 的选择 + 基线推进(`emitParams` 的循环体就是它)。
+// 返回 true = 该 id 本帧要下发;同时把基线推进到新值。
+// **基线在这里无条件推进** —— 这正是上面说的洞,由 `paramsForceFull` 的边沿兜住;
+// 抽出来是为了让「隐藏期改值 → 恢复可见 → 必达且值正确」这条链能离线断言(生产与用例同源)。
+inline bool selectParamForEmit(std::map<juce::String, float>& baseline, const juce::String& id, float value,
+                               bool forceFull)
+{
+    const auto it = baseline.find(id);
+    const bool changed =
+        it == baseline.end() || !juce::approximatelyEqual(static_cast<double>(it->second), static_cast<double>(value));
+    if (!forceFull && !changed)
+        return false;
+    baseline[id] = value;
+    return true;
 }
 
 } // namespace scvb::output
