@@ -2731,6 +2731,69 @@
                    #7E6836 加深到 #5e4b21)—— 同族按钮的按下态照此处理。 */
                 color: var(--acc-ink);
             }
+            /* 「重采集选区」开关(SL-193,用户 v5.4 实测拍板 2026-08-27:由按钮改开关)。
+               形制 = Tab1「01 采集」同族:.sc-toggle(base.css,唯一的开关视觉真源)+
+               状态点 + 态标签。**这里不写任何 `[data-recap=x] .sc-toggle{绿}`** —— 开态视觉
+               的唯一来源是 base.css 的 `.sc-toggle[data-on="1"]`,页面另写一份就会把组件的
+               状态源旁路掉(视觉转绿而 data-on/aria-checked 仍是 0/false:屏幕阅读器读「关」、
+               眼睛看「开」)。派生方向固定为 state.recapture.armed ⇒ data-on + aria-checked,
+               由 tab-wave.js 的 render() 一处写死。 */
+            .wave-recap {
+                display: flex;
+                align-items: center;
+                gap: var(--sp-6);
+                font-size: var(--fs-110);
+                color: var(--txt-2);
+            }
+            /* 状态点(形制取 .cap-dot):灰 = 未布防 / 琥珀 = 布防但没在记账 /
+               绿 + 脉冲 = 特征正在写入。「看不出来一点」的直接解药就是这一颗。 */
+            .wave-recap__dot {
+                width: var(--sp-6);
+                height: var(--sp-6);
+                border-radius: 50%;
+                flex: none;
+                background: rgb(var(--sem-gray));
+            }
+            .wave-recap[data-recap="armed"] .wave-recap__dot,
+            .wave-recap[data-recap="outside"] .wave-recap__dot,
+            .wave-recap[data-recap="needcap"] .wave-recap__dot {
+                background: rgb(var(--sem-amber));
+            }
+            .wave-recap[data-recap="capturing"] .wave-recap__dot {
+                background: rgb(var(--sem-green));
+                animation: livePulse var(--pulse-dur) infinite;
+            }
+            /* 五态叠同一网格格:容器宽 = 五者中最宽的那条,**与当前态无关**。
+               动作行是 flex-wrap:wrap,而裁定④要求这一行「不含任何条件件」——
+               行高必须是每种语言下的常量、与交互无关。若五态用 display:none 轮流
+               显隐,宽度随态跳变,极窄视口下换个态就可能多折一行 = 泳道窗被推,
+               正是裁定④要根治的那件事。故用 grid 叠放 + visibility 切换:
+               visibility:hidden 仍占位(宽度锁死),且同样对读屏隐藏。 */
+            .wave-recap__label {
+                display: inline-grid;
+            }
+            .wave-recap__t {
+                grid-area: 1 / 1;
+                white-space: nowrap;
+                visibility: hidden;
+            }
+            .wave-recap[data-recap="off"]
+                .wave-recap__t[data-recap-label="off"],
+            .wave-recap[data-recap="armed"]
+                .wave-recap__t[data-recap-label="armed"],
+            .wave-recap[data-recap="capturing"]
+                .wave-recap__t[data-recap-label="capturing"],
+            .wave-recap[data-recap="outside"]
+                .wave-recap__t[data-recap-label="outside"],
+            .wave-recap[data-recap="needcap"]
+                .wave-recap__t[data-recap-label="needcap"] {
+                visibility: visible;
+            }
+            /* 布防中把态标签提到正文色:开关一旦为 ON,这行字就是用户唯一的
+               「到底有没有在采」读数,不该还留在 --txt-2 的次级灰里。 */
+            .wave-recap:not([data-recap="off"]) .wave-recap__label {
+                color: var(--txt-1);
+            }
             /* 「播放结束自动停止」勾选(A2⑥;T33 Wave 4 用户反馈②:原生 input 与
                设计系统不符 → 改自绘勾选框,形制取 Tab3 轨头 .wave-lane__check 同族
                (方形圆角 + 薰衣草描边;勾选态实心 + 白勾 svg)。
@@ -6542,17 +6605,82 @@
                                 >
                                     <!-- [Wave 2] bridge.recaptureArm(tracksMask, startS, endS,
                                          autoStop?) —— 契约 §1.23;以返回值点亮 badge,
-                                         armed:false 按 §5.5 四值 reason 出行内说明 -->
-                                    <button
-                                        class="wave-btn"
-                                        data-glow="1"
-                                        data-gb="wave-btn-recapture"
-                                        data-t="wave.btnRecapture"
-                                        data-disabled="1"
-                                        aria-disabled="true"
+                                         armed:false 按 §5.5 四值 reason 出行内说明。
+                                         [SL-193,用户 v5.4 实测拍板 2026-08-27] 由按钮改为
+                                         **开关**:原按钮按下去没有任何持续可见的状态,用户
+                                         「根本不知道是否有正确开始采集,看不出来一点」。
+                                         形制取 Tab1「01 采集」同款(.sc-toggle + 状态点 + 态标签),
+                                         开 = recaptureArm(mask,startS,endS,autoStop),
+                                         关 = recaptureArm(0,0,0)(§1.23 语义行的撤防约定 ——
+                                         契约本就有这条路,不新增桥函数、不动冻结契约)。
+                                         **状态零乐观值**:data-on / aria-checked / 态标签全部由
+                                         scvb.state.recapture + scvb.playhead + state.global
+                                         的真事件回读驱动(§1.23「UI 以返回值而非乐观假设点亮」)。 -->
+                                    <div
+                                        class="wave-recap"
+                                        data-gb="wave-recapture-toggle"
+                                        data-recap="off"
                                     >
-                                        重采集选区
-                                    </button>
+                                        <div
+                                            class="sc-toggle"
+                                            data-on="0"
+                                            role="switch"
+                                            aria-checked="false"
+                                            tabindex="0"
+                                            data-t-aria="wave.btnRecapture"
+                                            data-gb="wave-btn-recapture"
+                                            data-disabled="1"
+                                            aria-disabled="true"
+                                        ></div>
+                                        <span
+                                            class="wave-recap__dot"
+                                            aria-hidden="true"
+                                        ></span>
+                                        <!-- 五态标签。四态与 Tab1 同族(off/armed/capturing/
+                                             outside),第五态 needcap 是 Tab3 特有:布防只是标记
+                                             失效单元,**真正记账的闸是 01 采集**(引擎侧
+                                             OutputSession::pullFeatures 只看 captureEnabled ×
+                                             global.range)—— 布防了却没开采集,一个 hop 都写不进去。
+                                             这正是用户「看不出来一点」的那一档,必须说出来。
+                                             五个 span 恒在 DOM 里叠同一网格格(见 .wave-recap__t),
+                                             容器宽 = 五者最宽 ⇒ 与当前态无关 ⇒ 动作行的折行不随
+                                             交互变(裁定④「本行只含恒定成员」不变式)。 -->
+                                        <span
+                                            class="wave-recap__label"
+                                            data-gb="wave-recapture-state"
+                                        >
+                                            <span
+                                                class="wave-recap__t"
+                                                data-recap-label="off"
+                                                data-t="wave.recaptureOff"
+                                                >重采集 OFF</span
+                                            >
+                                            <span
+                                                class="wave-recap__t"
+                                                data-recap-label="armed"
+                                                data-t="armedWaiting"
+                                                >已就绪·等待播放</span
+                                            >
+                                            <span
+                                                class="wave-recap__t"
+                                                data-recap-label="capturing"
+                                                data-t="wave.recapturing"
+                                                >重采集中</span
+                                            >
+                                            <span
+                                                class="wave-recap__t"
+                                                data-recap-label="outside"
+                                                data-t="wave.recaptureOutside"
+                                                >已离开重采集区</span
+                                            >
+                                            <span
+                                                class="wave-recap__t"
+                                                data-recap-label="needcap"
+                                                data-t="wave.recaptureNeedCapture"
+                                                >需先打开 01 采集</span
+                                            >
+                                        </span>
+                                    </div>
                                     <!-- A2⑥「播放结束自动停止」(recaptureArm 的 autoStop,
                                          默认 false)。Wave 4 反馈②:自绘勾选框(轨头
                                          .wave-lane__check 同族),input 仅视觉隐藏 —— 仍是

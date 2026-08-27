@@ -392,6 +392,92 @@ export function isLanesEmpty(store) {
     return true;
 }
 
+/**
+ * 「重采集选区」开关的五态(SL-193,用户 v5.4 实测拍板 2026-08-27)。
+ *
+ * 四态与 Tab1 的 `captureVisual` 同族,第五态 `needcap` 是 Tab3 特有的。判据逐条:
+ *
+ *   off        `state.recapture.armed` 为假 —— 没布防。
+ *   needcap    布防了,但 `global.capture_enabled` 是关的。**这一档必须单列**:
+ *              布防只是标记「哪一块失效、要重录」,真正决定特征写不写得进去的闸是
+ *              01 采集(引擎侧 `OutputSession::pullFeatures` 只看 captureEnabled ×
+ *              global.range;`recaptureArm` 的四个 runtime 字段在采集路径上没有消费方)。
+ *              所以「布防了但没开采集」= 播多久都一个 hop 都不会写 —— 报「已布防·等待播放」
+ *              就是**说谎**,用户等到天荒地老也等不到「采集中」。
+ *   armed      布防 ∧ 采集 ON ∧ 未播放 —— 真的只差按播放。
+ *   capturing  布防 ∧ 采集 ON ∧ 播放中 ∧ 在 `global.range` 内(§2.6 `inRange`)
+ *              ∧ 播放头落在布防区间 `[startS, endS)` 内 —— 此刻特征确实在写。
+ *   outside    上面那条里「位置」两项有任一不成立 —— 在播,但没播到该采的地方。
+ *
+ * 纯函数:node 侧直接断言,不需要 DOM(与 tab-master 的 captureVisual 同口径)。
+ *
+ * @param {object} state    `scvb.state`(读 recapture 与 global.capture_enabled)
+ * @param {object} playhead `scvb.playhead`(读 isPlaying / inRange / timeS)
+ * @returns {"off"|"needcap"|"armed"|"capturing"|"outside"}
+ */
+export function recaptureVisual(state, playhead) {
+    const st = state || {};
+    const rec = st.recapture || null;
+    if (!rec || !rec.armed) return "off";
+    if (!((st.global || {}).capture_enabled === true)) return "needcap";
+    if (!playhead || !playhead.isPlaying) return "armed";
+    if (playhead.inRange === false) return "outside";
+    const t = num(playhead.timeS, NaN);
+    const s0 = num(rec.startS, 0);
+    const s1 = num(rec.endS, 0);
+    return Number.isFinite(t) && t >= s0 && t < s1 ? "capturing" : "outside";
+}
+
+/**
+ * 「重采集选区」开关的不可用原因(SL-193;null = 可用)。返回值直接是**词条 key**,
+ * 既喂 disabled 判据也喂 tooltip —— 一个真源,不会出现「灰着但说得出理由」和
+ * 「说不出理由但灰着」两张皮。
+ *
+ * `armed=true` 恒可用:开关必须关得掉。撤防走 `recaptureArm(0,0,0)`,不吃 scope,
+ * 所以选区被改掉/清掉之后照样能关(否则开关会永久卡在 ON)。
+ */
+export function recaptureBlockReason(o) {
+    const s = o || {};
+    if (s.blocked) return "wave.armReason.readOnly";
+    if (s.armed) return null;
+    if (!s.picked) return "wave.armReason.noTracks";
+    if (!s.hasSel) return "wave.armReason.noSelection";
+    return null;
+}
+
+/**
+ * 「重分析选区」的不可用原因(SL-193;null = 可用)。同上:判据与 tooltip 同一真源。
+ *
+ * 【本函数就是「重分析一直是灰的」的定谳落点】改前的判据是
+ *     `!!scope && !blocked && hasData && previewHit`,其中
+ *     `previewHit = local.preview.intervals > 0`。
+ * 两处错:
+ *   ① **口径接错**。§1.6 的拒绝态逐字是「`range ∩ coverage = ∅`」,而 §1.5 dry-run 里
+ *      承载这个量的是 **`tracks`**(范围内有覆盖的轨数),不是 `intervals`
+ *      (会被重画的**已有段**数)。刚采完还没分析过的素材:覆盖满满当当、段表空空如也
+ *      ⇒ intervals=0 ⇒ 首次分析永远点不动 —— 鸡生蛋。同一个坑 Tab1 踩过并已绕开
+ *      (tab-master.js `analyzeNoData` 的行注:「只看段表会鸡生蛋(首采未析永远禁用)」),
+ *      Tab3 这一份把它又踩了一遍。
+ *   ② **真机上 `intervals` 恒为 0**。native 的 `previewAnalysis()` 只填 tracks 与
+ *      manualKept,`intervals` 一路留在默认值 0(本卡一并修);mock 的 `affectedOf()`
+ *      却算得好好的 —— 于是 web-preview 里怎么点怎么对,装进宿主就恒灰。
+ * 合起来:真机上「有选区 + 有数据」时按钮也**必然**灰,而且没有任何原因可看。
+ *
+ * 改后判据取 `previewTracks`:null = dry-run 回包还在路上(先放行,到达再收敛),
+ * 0 = 范围与覆盖真的没交集(§1.6 的拒绝态,与 analyze 的返回口径对齐)。
+ */
+export function reanalyzeBlockReason(o) {
+    const s = o || {};
+    if (s.blocked) return "wave.armReason.readOnly";
+    if (!s.picked) return "wave.armReason.noTracks";
+    if (!s.hasSel) return "wave.armReason.noSelection";
+    // 全局空态与「本选区无覆盖」共用同一句(「当前范围内无采集数据——调整范围或先采集」):
+    // 对用户而言要做的下一步逐字相同,分成两句只是让人多读一行。
+    if (!s.hasData) return "master.step2.desc.noData";
+    if (s.previewTracks === 0) return "master.step2.desc.noData";
+    return null;
+}
+
 /** 「重新识别」判据(05 行 302:无 origin≠auto 段时 disabled)。 */
 export function hasNonAutoSegments(segments) {
     for (const c of (segments && segments.channels) || []) {
@@ -1519,13 +1605,34 @@ export function createTabWave(opts) {
         return currentScope() || "all";
     }
 
-    async function doRecapture() {
+    /**
+     * 「重采集选区」开关(SL-193,用户 v5.4 实测拍板 2026-08-27)。
+     *
+     * 原先是一次性按钮:按下去只在别处冒一条 badge,开关本身没有任何持续状态,
+     * 用户「根本不知道是否有正确开始采集」。改成开关后两个方向都要有:
+     *   ON  → recaptureArm(mask, startS, endS, autoStop)(§1.23 布防)
+     *   OFF → recaptureArm(0, 0, 0)(§1.23 语义行的**撤防**约定:返回 {armed:false}
+     *         且不带 reason —— 契约本来就有这条路,不新增桥函数)
+     *
+     * **零乐观值**:本函数一个字都不写 local 状态,开关的 data-on / aria-checked
+     * 一律等 `scvb.state.recapture.armed` 经 25Hz 事件回读后由 render() 落笔
+     * (§1.23「UI 以返回值而非乐观假设点亮」)。撤防同理 —— 点完到状态翻转之间
+     * 那 ≤40ms 里开关保持旧态,好过先翻再被回读打回去。
+     */
+    async function toggleRecapture() {
         if (btnDisabled(els.btnRecapture) || isWriteBlocked()) return;
+        const rec = (getStore().state || {}).recapture || null;
+        if (rec && rec.armed) {
+            // 撤防不需要 scope:选区早已被改掉/清掉时也必须关得掉,否则开关会卡在 ON。
+            await call("recaptureArm", 0, 0, 0);
+            setToolbarNote(null);
+            requestRender();
+            return;
+        }
         const scope = currentScope();
         if (!scope) return;
         const autoStop = !!(els.autostop && els.autostop.checked);
-        // §1.23:UI 以**返回值**点亮 badge,不乐观假设;armed:false 按 §5.5
-        // 四值 reason 出行内说明、不点亮
+        // armed:false 按 §5.5 四值 reason 出行内说明、不点亮
         const res = await call(
             "recaptureArm",
             scope.tracksMask,
@@ -1711,6 +1818,8 @@ export function createTabWave(opts) {
         els.applying = $("wave-applying-spinner");
         els.applyBtn = $("wave-btn-applysegments");
         els.btnRecapture = $("wave-btn-recapture");
+        // [SL-193] 开关外壳:五态标签与状态点挂在它的 data-recap 上(CSS 派生)。
+        els.recapToggle = $("wave-recapture-toggle");
         els.btnReanalyze = $("wave-btn-reanalyze");
         els.btnReidentify = $("wave-btn-reidentify");
         els.btnClear = $("wave-btn-clearcoverage");
@@ -1973,8 +2082,17 @@ export function createTabWave(opts) {
         }
 
         // 四动作 + 抑制期显式应用 + 合并(判据在 render,入口再复检)
+        // [SL-193] 重采集是 role="switch" 的自绘开关(不是 <button>),原生的
+        // 「空格/回车 = 点击」不会自动来 —— 键盘可达要自己接,否则 tabindex 给了
+        // 焦点却按不动。口径与 Tab1 的 onActivate 一致(空格与回车都算,阻默认滚动)。
         if (els.btnRecapture) {
-            els.btnRecapture.addEventListener("click", doRecapture);
+            els.btnRecapture.addEventListener("click", toggleRecapture);
+            els.btnRecapture.addEventListener("keydown", (e) => {
+                if (e.key === " " || e.key === "Enter") {
+                    e.preventDefault();
+                    toggleRecapture();
+                }
+            });
         }
         if (els.btnReanalyze) {
             els.btnReanalyze.addEventListener("click", doReanalyze);
@@ -3104,24 +3222,61 @@ export function createTabWave(opts) {
             }
         }
 
-        // ---- 四钮判据(C-07:各钮各自的 05 判据,行 300-303)
+        // ---- 四件判据(C-07:各自的 05 判据,行 300-303)
+        //
+        // [SL-193] 重采集与重分析两件的判据改由 `recaptureBlockReason` /
+        // `reanalyzeBlockReason` 出**词条 key**:同一个返回值既决定灰不灰,也就是
+        // tooltip 的内容 —— 用户拍板「别让用户干瞪灰按钮」,而判据与理由分两处写的话,
+        // 迟早分叉成「灰着但没理由」。重分析那条的定谳(intervals vs tracks + native
+        // 恒 0)写在 `reanalyzeBlockReason` 的头注里。
         const scope = currentScope();
         const blocked = isWriteBlocked();
         const hasData = !isLanesEmpty(store);
-        // 重分析:「选区 ∩ coverage = ∅ 时 disabled」—— 判据取 §1.5 dry-run 的
-        // intervals(mock affectedOf 已按 coverage 口径);回包在途时先放行,
-        // 到达后收敛(analyze 对空交集也会以 {ok:false} 拒绝,双保险)。
-        const previewHit = local.preview ? local.preview.intervals > 0 : true;
-        setBtnEnabled(els.btnRecapture, !!scope && !blocked);
-        setBtnEnabled(
-            els.btnReanalyze,
-            !!scope && !blocked && hasData && previewHit,
-        );
+        // §1.5 dry-run 的**轨数**(不是区段数)= 「选区 ∩ coverage」的承载量。
+        // null = 回包还在路上 ⇒ 先放行,到达后收敛(analyze 对空交集也会以
+        // {ok:false} 拒绝,双保险)。
+        const previewTracks = local.preview
+            ? num(local.preview.tracks, 0)
+            : null;
+        const recArmed = !!((store.state || {}).recapture || {}).armed;
+        const recapWhy = recaptureBlockReason({
+            blocked,
+            armed: recArmed,
+            picked: local.lanePick.length > 0,
+            hasSel: !!scope,
+        });
+        const reanWhy = reanalyzeBlockReason({
+            blocked,
+            picked: local.lanePick.length > 0,
+            hasSel: !!scope,
+            hasData,
+            previewTracks,
+        });
+        setBtnEnabled(els.btnRecapture, !recapWhy);
+        setBtnEnabled(els.btnReanalyze, !reanWhy);
+        // tooltip 不走 applyI18n(它只刷 data-t / data-t-aria),故每次渲染按当前
+        // 字典重写;可用时 setTitle("") 会把 title **移除**,不留空气泡。
+        setTitle(els.btnRecapture, recapWhy ? t[recapWhy] || "" : "");
+        setTitle(els.btnReanalyze, reanWhy ? t[reanWhy] || "" : "");
         setBtnEnabled(
             els.btnReidentify,
             hasNonAutoSegments(store.segments) && !blocked,
         );
         setBtnEnabled(els.btnClear, !!scope && !blocked && hasData);
+
+        // ---- [SL-193] 重采集开关的态:ON/OFF 与五态标签全部由真事件回读派生,
+        //      零乐观值(§1.23「UI 以返回值而非乐观假设点亮」)。
+        //      派生方向单向:state.recapture.armed ⇒ data-on + aria-checked,
+        //      **一处落笔**;CSS 侧不得另写一份「开」的视觉(见 index.html 那段行注)。
+        //      三处写入都走 attr()(值没变就不碰 DOM)—— 本页 render 是 rAF 合帧的,
+        //      无条件 setAttribute 会把开关每帧标脏一次。
+        attr(els.btnRecapture, "data-on", recArmed ? "1" : "0");
+        attr(els.btnRecapture, "aria-checked", recArmed ? "true" : "false");
+        attr(
+            els.recapToggle,
+            "data-recap",
+            recaptureVisual(store.state, store.playhead),
+        );
 
         // ---- 轨选提示 ↔ 选区 chip 互斥切换(05 行 288;B-02/B-03 裁定:
         //      词条只含 {n} 轨句,范围 mono 串独立置于轨号串前,轨号 · 分隔)

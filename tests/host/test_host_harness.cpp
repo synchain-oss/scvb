@@ -878,6 +878,25 @@ TEST_CASE("HOST P0-1:采集 → 分析 → 出段表(全链,不卡死)", "[host]
             CHECK(segs[i].t0 >= segs[i - 1].t1); // 有序且不重叠
         }
     }
+
+    // [SL-193] 段表出来之后再干跑一次 —— §1.5 的三个数这时候必须都说得出话。
+    //
+    // 修复前 `previewAnalysis()` **从来没给 `intervals` 赋过值**,它一路留在成员初值 0,
+    // 桥面把这个 0 原样回给 web;而 web 的「重分析选区」判据当时正是 `intervals > 0`,
+    // 于是真机上这颗钮**恒灰**、影响预览行恒报「将影响 0 区段」(用户 v5.4 实测原话:
+    // 「为什么重分析选区一直是灰色的?」)。mock 的 affectedOf() 一直算得好好的,
+    // web-preview 里永远复现不出来 —— 只有真跑到这里才拦得住。
+    //
+    // **反向验证**:把 previewAnalysis 里的 `++a.intervals` 删掉,本条即红。
+    const auto preview2 = r.out.previewAnalysis(0, 0.0, coveredS);
+    CHECK(preview2.tracks >= 1);
+    CHECK(preview2.intervals >= 1);
+    // 范围过滤真的在生效:取一个**远在采集区之后**的空窗,三个数必须全 0
+    // (修复前 manualKept 不按范围过滤,整轨的用户段会漏进来)。
+    const auto preview3 = r.out.previewAnalysis(0, coveredS + 60.0, coveredS + 120.0);
+    CHECK(preview3.tracks == 0);
+    CHECK(preview3.intervals == 0);
+    CHECK(preview3.manualKept == 0);
 }
 
 TEST_CASE("HOST P0-1:无采集数据时分析被拒,不会挂起", "[host][t37][v4][analyze]")

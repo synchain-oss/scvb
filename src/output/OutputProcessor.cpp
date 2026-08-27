@@ -1854,6 +1854,16 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
         return a;
     }
 
+    // [SL-193] 段的范围过滤要用样本域(Segment::t0/t1 是 samples)。sr<=0 = 还没 prepare,
+    // 此时既没有覆盖也没有可比对的时间基,按「无数据」回全 0(与上面两条早退同档)。
+    const double sr = sampleRate_.load(std::memory_order_relaxed);
+    if (!(sr > 0.0))
+    {
+        return a;
+    }
+    const std::int64_t rangeS0 = static_cast<std::int64_t>(std::llround(std::max(0.0, startS) * sr));
+    const std::int64_t rangeS1 = static_cast<std::int64_t>(std::llround(std::max(0.0, endS) * sr));
+
     for (int t = 0; t < 15; ++t)
     {
         if (tracksMask != 0 && (tracksMask & (1u << t)) == 0)
@@ -1864,16 +1874,35 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
         {
             continue;
         }
-        if (session_.frameStore().channel(static_cast<scvb::u32>(t + 1)).coveredHops(range) > 0)
+        if (session_.frameStore().channel(static_cast<scvb::u32>(t + 1)).coveredHops(range) == 0)
         {
-            ++a.tracks;
+            continue; // 该轨在本范围内无覆盖 ⇒ 三个数一个都不贡献(口径同 mock affectedOf)
         }
+        ++a.tracks;
         // 用户段(user_edited / locked)重分析不覆盖(ADR-008)—— 如实计数供确认条显示。
         const auto& segs = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)]
                                .tracks[static_cast<std::size_t>(t)]
                                .segments;
         for (const auto& s : segs)
         {
+            // [SL-193] 两处修正,合起来才让 §1.5 的三个数在真机上说人话:
+            //
+            // ① **`intervals` 此前从没被赋过值** —— 只填 tracks/manualKept,`intervals`
+            //    一路留在成员初值 0。桥面把这个 0 原样回给 web,而 web 的「重分析选区」
+            //    判据当时正是 `intervals > 0` ⇒ 真机上这颗钮**恒灰**,且影响预览行恒报
+            //    「将影响 0 区段」(用户 v5.4 实测:「为什么重分析选区一直是灰色的?」)。
+            //    mock 的 affectedOf() 一直算得好好的,所以 web-preview 里永远复现不出来
+            //    —— 典型的 mock/native 对不齐。口径取 mock 同款:**范围内、且该轨有覆盖的
+            //    已有段数**(§1.5「只算 range ∩ coverage 与已有段相交」)。
+            // ② **manualKept 此前不过滤范围**,把整条轨的用户段全数进来 —— dry-run 报的
+            //    「{k} 处手动编辑将保留」于是恒大于事后 diff.kept,两个数对不上。
+            //
+            // 半开区间 [t0, t1) 与 [rangeS0, rangeS1) 相交:t1 > rangeS0 ∧ t0 < rangeS1。
+            if (!(s.t1 > rangeS0 && s.t0 < rangeS1))
+            {
+                continue;
+            }
+            ++a.intervals;
             if (scvb::state::segmentOrigin(s.flags) != scvb::state::SegmentOrigin::Auto ||
                 scvb::state::segmentLocked(s.flags))
             {

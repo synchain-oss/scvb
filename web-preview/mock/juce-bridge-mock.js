@@ -791,6 +791,15 @@ function buildOutputBackend(ctx) {
      * T33 Wave 2(T32 遗留批):补齐 §1.5 的 coverage 口径 —— 段除了与 scope
      * 相交,还必须与该轨 coverage 预览缓存(model.coverageRanges)相交才计数;
      * 没采到的区间里没有可重算的对象,`range ∩ coverage = ∅ ⇒ {0,0,0}`。
+     *
+     * 【SL-193】`tracks` 与 `intervals` 是**两个不同的量**,此前 mock 把它们绑在了
+     * 同一个 `hit.length` 上(段一个都没有 ⇒ tracks 也是 0)。可 §1.5/§1.6 里:
+     *   · `tracks`    = 范围内**有覆盖**的轨数 —— 这才是 §1.6 拒绝态「range ∩ coverage
+     *                   = ∅」的承载量,与有没有段无关;
+     *   · `intervals` = 会被重画的**已有段**数 —— 刚采完还没分析过时**本就该是 0**。
+     * 绑在一起的后果:刚采完的素材 tracks=0 ⇒ UI 判 disabled ⇒ 首次分析永远点不动
+     * (鸡生蛋),而 native 那侧 `tracks` 一直是照覆盖数的 —— 两边对不齐。
+     * 拆开后与 `OutputProcessor::previewAnalysis` 逐条同口径。
      */
     function affectedOf(scope) {
         const mask =
@@ -805,6 +814,9 @@ function buildOutputBackend(ctx) {
         const endS = isFiniteNumber(scope?.endS) ? scope.endS : Infinity;
         for (const ch of chList) {
             const cov = model.coverageRanges.get(ch) || [];
+            // 该轨在本范围内到底有没有采到东西 —— 与段表无关的独立判据。
+            if (!overlapsRanges(cov, startS, endS)) continue;
+            tracks++;
             const hit = segmentsOf(ch).filter(
                 (s) =>
                     s.t1S > startS &&
@@ -815,8 +827,6 @@ function buildOutputBackend(ctx) {
                         Math.min(s.t1S, endS),
                     ),
             );
-            if (hit.length === 0) continue;
-            tracks++;
             intervals += hit.length;
             // dry-run 的「将保留」判据必须与真跑一致(否则预览行报的数和事后 diff.kept 对不上):
             // 默认档保护用户段 ∪ 锁定段,与 `regenerateSegments({reanalysis:true})` 同一口径。
@@ -906,8 +916,13 @@ function buildOutputBackend(ctx) {
                 tracks: a.tracks,
                 manualKept: a.manualKept,
             };
-            // range ∩ coverage = ∅ ⇒ 受理失败(UI 侧同条件按钮 disabled)
-            if (a.intervals === 0) return { ok: false, affected };
+            // range ∩ coverage = ∅ ⇒ 受理失败(UI 侧同条件按钮 disabled)。
+            // [SL-193] 判据由 `intervals === 0` 改为 `tracks === 0`:§1.6 的拒绝态逐字是
+            // 「range ∩ coverage = ∅」,承载它的是 tracks(有覆盖的轨数),不是 intervals
+            // (会被重画的已有段数)。刚采完还没分析过的素材 intervals 本就是 0,按旧判据
+            // **首次分析永远受理不了** —— 而 native 的 startAnalysis 一直是按 `tracks == 0`
+            // 拒的,这条同时把 mock 与真桥对齐。
+            if (a.tracks === 0) return { ok: false, affected };
 
             const version = model.snapshot.global.version_active;
             const clearManual = !!(opts && opts.clearManual);
