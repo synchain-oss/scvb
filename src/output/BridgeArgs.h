@@ -138,21 +138,42 @@ inline double samplesToSeconds(std::int64_t samples, double sampleRate)
 // 直到该参数再变一次。`firstFrame_` 是 editor 生命周期级的 —— 宿主只是隐藏而不销毁 editor 时,
 // `emitParams(true)` 不会重来。
 //
-// 修法(SL-199):**不可见→可见的边沿强制一次全量**(scvb.segments 同款,见 segmentsResendNeeded)。比「按 key
+// 修法(SL-199):**不可见→可见置一个闩锁位,强制全量,直到真的发出去才清**(scvb.segments 同款,
+// 见 segmentsResendNeeded)。比「按 key
 // 回滚基线」简单可靠 —— 它覆盖隐藏期被吞的**所有** id,不需要知道具体吞了哪几个;代价是每次重新打开面板多发一帧 63 个 id
 // 的全量,可忽略。(Input 侧对同类问题用的是「发出去了才推进基线」,见 `InputBridgeLogic.h` 的 `advanceEmitCache` /
 // `advanceConfigSeq`;两种口径都成立, 这里取前者是因为 `lastParamsValues_` 是 63 个 key 的 map,回滚要多存一份候选集。)
 //
-// 纯函数,可离线断言:`wasVisible` 由调用方持有(OutputEditor 成员),本函数负责记账。
-// 「take」是因为它**有副作用**:同一拍只报一次边沿,调用方拿走之后 wasVisible 就跟到当前态。
-// ⚠ 正因为要记账,**绝不能放在 `||` 的右侧**(`first || takeVisibleEdge(...)` 会被短路:
-// 首帧那一拍不记账,于是紧接着的下一拍才报边沿、白发一次全量)。调用方一律分两行:
-// 先无条件 take 拿到边沿,再与 firstFrame 或运算。
-inline bool takeVisibleEdge(bool visibleNow, bool& wasVisible) noexcept
+// 纯函数,可离线断言:`wasVisible` / `pendingFull` 由调用方持有(OutputEditor 成员)。
+//
+// **闩锁,不是一次性边沿**(#119 复审重要):边沿版把「补发」压在 `isVisible()` 刚翻真的那一拍,
+// 而那一拍恰好是最不确定的时刻 —— `Component::isVisible()`(我们的判据)与 JUCE
+// `emitEventIfBrowserIsVisible` 内部的判据不保证逐帧一致(WebView2 侧刚被重新显示、页面刚恢复)。
+// 边沿一旦消费掉就没有第二次机会,那一帧丢了 SL-199 原样复现。
+// 闩锁语义 = 「**直到真的发出去为止一直补**」,与 Input 侧 `advanceEmitCache` / `advanceConfigSeq` /
+// `claimEdgeConsumed` 的幂等口径统一:没发出去基线就不动,下一拍自然重试,不依赖抓住某一拍。
+//
+// ⚠ 能力边界(如实记):这里的「发出去了」是 **C++ 侧观察得到的**那一层(`emitIfChanged` /
+// `emitSegments` 的返回值 = 可见且确实调了 `emitEventIfBrowserIsVisible`)。JUCE 内部若在那之后
+// 再丢一次,C++ 侧没有任何回执可查 —— 要闭合到「JS 真收到」需要 JS 侧 ack,那是另一条卡。
+// 即便如此,闩锁仍严格优于边沿:整个不可见期与任何「这一拍没发成」的拍都会继续补。
+inline void raiseResendLatch(bool visibleNow, bool& wasVisible, bool& pendingFull) noexcept
 {
-    const bool becameVisible = visibleNow && !wasVisible;
-    wasVisible = visibleNow;
-    return becameVisible;
+    if (visibleNow && !wasVisible)
+    {
+        pendingFull = true; // 不可见 → 可见:置位
+    }
+    wasVisible = visibleNow; // 记账无条件跟到当前态
+}
+
+// 这一帧的处置:`sent` = 上面那层「已下发」的观察值。只有确实发出去了才清位;
+// 没发出去(不可见 / 被丢)就保持,下一拍继续补。
+inline void settleResendLatch(bool sent, bool& pendingFull) noexcept
+{
+    if (sent)
+    {
+        pendingFull = false;
+    }
 }
 
 // scvb.segments 的重发判定(`emitTick` 里那个 if 就是它)。
@@ -161,24 +182,32 @@ inline bool takeVisibleEdge(bool visibleNow, bool& wasVisible) noexcept
 // `lastStaleMask_`)在 if 体里、调 `emitSegments` **之前**就推进了,与这一帧发没发出去无关。
 // 隐藏期段表变了(分析完成 / 加载工程 / stale 位翻转)→ 这一帧被丢掉 → 基线已经跟上 →
 // 恢复可见后条件恒假,段表陈旧到下一次段编辑 / undo / 切版本才刷新。
+// 而且它比 params **更依赖**「那一帧真的发出去了」:params 那路还有 `lastParamsJson_` 兜半层,
+// segments 这路直接 `emitEventIfBrowserIsVisible`,一层保护都没有 —— 所以 `pendingFull` 必须是
+// **闩锁位**(见 raiseResendLatch),补发帧自己被吞的话下一拍还补。
 //
 // 恢复可见时补一帧 `reason:"snapshot"` 的全量段表是**正确行为**(统筹裁定 2026-08-27):
 // 重开面板本就该看到新鲜段表。web 侧 `applySegmentsEvent` 对 snapshot 是整表替换、
 // `segmentsEventApplies` 的版本闸对当前激活版本恒放行 —— 中途到达的 snapshot 帧照常生效,
 // 不是只有首帧才认。
-inline bool segmentsResendNeeded(bool firstFrame, bool becameVisible, bool analyzed, bool sampleRateChanged,
+inline bool segmentsResendNeeded(bool firstFrame, bool pendingFull, bool analyzed, bool sampleRateChanged,
                                  bool crvsRevisionChanged, bool staleMaskChanged) noexcept
 {
-    return firstFrame || becameVisible || analyzed || sampleRateChanged || crvsRevisionChanged || staleMaskChanged;
+    return firstFrame || pendingFull || analyzed || sampleRateChanged || crvsRevisionChanged || staleMaskChanged;
 }
 
 // scvb.params 稀疏 diff 的选择 + 基线推进(`emitParams` 的循环体就是它)。
 // 返回 true = 该 id 本帧要下发;同时把基线推进到新值。
-// **基线在这里无条件推进** —— 这正是上面说的洞,由 `paramsForceFull` 的边沿兜住;
+// **基线在这里无条件推进** —— 这正是上面说的洞,由 `raiseResendLatch` 的闩锁兜住;
 // 抽出来是为了让「隐藏期改值 → 恢复可见 → 必达且值正确」这条链能离线断言(生产与用例同源)。
 inline bool selectParamForEmit(std::map<juce::String, float>& baseline, const juce::String& id, float value,
                                bool forceFull)
 {
+    // ⚠ 口径说明(#119 复审):两个入参都是 float,加宽到 double 后 `approximatelyEqual<double>` 的
+    // 默认容差是 double 量级(|v|≈80 时约 1.8e-14),而**相邻两个 float 在 80 附近就差 7.6e-6**
+    // —— 差了八个数量级。所以这里**等价于逐位精确比较**:任意两个不同的 float 一定判「变了」。
+    // 这是安全的那一侧(宁可多发一帧,绝不吞掉变化),故维持现状不动行为;要清的只是
+    // 「这里有容差」这个说法 —— 它不存在。(double 加宽是 PR#55 就有的写法,非本卡引入。)
     const auto it = baseline.find(id);
     const bool changed =
         it == baseline.end() || !juce::approximatelyEqual(static_cast<double>(it->second), static_cast<double>(value));

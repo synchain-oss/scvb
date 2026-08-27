@@ -195,16 +195,20 @@ void OutputEditor::emitTick()
     // 会被永久吞掉(下一拍 changed==false → any==false → 提前 return,载荷压根不再构建)。
     // **不可见→可见的边沿强制一次全量**把它兜住 —— 判定与记账见 BridgeArgs.h 的 takeVisibleEdge。
     //
-    // ⚠ BRIDGEARGS-SL199-* 用例守的是 takeVisibleEdge / selectParamForEmit / segmentsResendNeeded
-    // 三个纯函数本身,**守不到「这里还在调它」这一跳** —— scvb_params_tests 编不进本 TU
-    // (OutputEditor 依赖 WebViewHost/WebView2)。把下面这行换回 `emitParams(first)`,单测照样
-    // 全绿而 bug 原样回归。调用点由 smoke-tab2 的源码钉子锁住(与 tab-wave.js segEndS 同款);
-    // 改这几行必须同步复核那组用例与那颗钉子。
-    const bool becameVisible = scvb::output::takeVisibleEdge(webView().isVisible(), wasVisible_);
+    // ⚠ BRIDGEARGS-SL199-* 用例守的是 raiseResendLatch / settleResendLatch / selectParamForEmit /
+    // segmentsResendNeeded 四个纯函数本身,**守不到「这里还在调它们」这一跳** —— scvb_params_tests
+    // 编不进本 TU(OutputEditor 依赖 WebViewHost/WebView2)。退化改法(把 forceFull 换回裸 first、
+    // 或不 settle 就清位)在单测里全绿而 bug 原样回归,调用点由 smoke-tab2 的源码钉子锁住
+    // (与 tab-wave.js segEndS 同款);改这几行必须同步复核那组用例与那颗钉子。
+    //
+    // 闩锁置位:不可见→可见即置位,**清位只在确认这一帧真的发出去之后**(见下面两处 settle)。
+    const bool visibleNow = webView().isVisible();
+    scvb::output::raiseResendLatch(visibleNow, wasVisible_, pendingParamsFull_);
+    scvb::output::raiseResendLatch(visibleNow, wasSegVisible_, pendingSegmentsFull_);
 
     syncDawLoopRange(); // daw_loop 档:先把 range 跟到宿主循环区,再让 emitState 下发
     emitState(first);
-    emitParams(first || becameVisible);
+    scvb::output::settleResendLatch(emitParams(first || pendingParamsFull_), pendingParamsFull_);
     if (first || (tickCount_ % 6 == 0))
         emitConn(); // ~4Hz(25Hz 6 分频)
     if (first || (tickCount_ % 25 == 0))
@@ -231,16 +235,26 @@ void OutputEditor::emitTick()
         if (processor_.captureStale(t + 1))
             staleMask = static_cast<std::uint16_t>(staleMask | (1u << t));
     }
-    // [SL-199] `becameVisible` 与 params 同款:三个基线在下面的 if 体里先推进、后 emitSegments,
-    // 隐藏期那一帧被丢掉之后条件恒假,段表会陈旧到下一次段编辑/undo/切版本。判定见 BridgeArgs.h。
-    if (scvb::output::segmentsResendNeeded(first, becameVisible, analyzed,
+    // [SL-199] 与 params 同款:三个基线在下面的 if 体里先推进、后 emitSegments,隐藏期那一帧被
+    // 丢掉之后条件恒假,段表会陈旧到下一次段编辑/undo/切版本。判定见 BridgeArgs.h;
+    // `pendingSegmentsFull_` 是**闩锁**,补发帧自己被吞的话下一拍还补。
+    //
+    // `analyzed` 也必须闩住:takeAnalysisDone() 是**取走即清**,分析在隐藏期完成的话这一位会被
+    // 消费掉,恢复可见时只补一帧 reason:"snapshot" —— 而 Tab4 的「参数已改、结果陈旧」基线同步
+    // (tab-settings.js 只认 reason==="analyze")与 Tab3 的分析 diff 摘要条 + 倒计时撤条
+    // (tab-wave.js 只认 vad|segmentation|analyze)都会静默失效。段表看起来是新鲜的,这个缺口
+    // 反而更难被察觉(#119 复审顺带记账)。发出去了才清。
+    pendingAnalyzed_ = pendingAnalyzed_ || analyzed;
+    if (scvb::output::segmentsResendNeeded(first, pendingSegmentsFull_, pendingAnalyzed_,
                                            srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_),
                                            crvsRev != lastCrvsRevision_, staleMask != lastStaleMask_))
     {
         lastSegmentsSampleRate_ = srNow;
         lastCrvsRevision_ = crvsRev;
         lastStaleMask_ = staleMask;
-        emitSegments(analyzed ? "analyze" : "snapshot", kAllTracksMask);
+        const bool sent = emitSegments(pendingAnalyzed_ ? "analyze" : "snapshot", kAllTracksMask);
+        scvb::output::settleResendLatch(sent, pendingSegmentsFull_);
+        scvb::output::settleResendLatch(sent, pendingAnalyzed_);
     }
 
     // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
@@ -277,7 +291,7 @@ void OutputEditor::emitState(bool forceFull)
     emitIfChanged(Event::State, payload, lastStateJson_);
 }
 
-void OutputEditor::emitParams(bool forceFull)
+bool OutputEditor::emitParams(bool forceFull)
 {
     auto& apvts = processor_.getAPVTS();
     const int v = processor_.versionActive();
@@ -308,8 +322,10 @@ void OutputEditor::emitParams(bool forceFull)
         }
     }
 
+    // 没有任何 id 变化 → 这一帧本来就没内容可发,视为「已处置」(true):否则强制全量那一路
+    // 在「值确实一个都没变」时会让闩锁永远清不掉,25Hz 白构载荷。
     if (!any && !forceFull)
-        return;
+        return true;
 
     juce::var payload = obj();
     put(payload, "values", values);
@@ -321,7 +337,15 @@ void OutputEditor::emitParams(bool forceFull)
     put(payload, "full", forceFull);
     put(payload, "versionActive", v);
 
-    emitIfChanged(Event::Params, payload, lastParamsJson_);
+    // 返回「C++ 侧观察到这一帧确实下发了」(SL-199 闩锁的清位判据)。
+    // emitIfChanged 返回 false 有两种:① 不可见被丢 —— 闩锁必须保持;② json 与上一帧逐字相同 ——
+    // 那份载荷 UI 早就收到过(lastParamsJson_ 只在真发出去时才推进),没什么可补的,视为已处置。
+    // 两者必须分开,否则 ② 会让闩锁永远挂着。
+    if (emitIfChanged(Event::Params, payload, lastParamsJson_))
+    {
+        return true;
+    }
+    return webView().isVisible(); // 可见却没发 = 载荷与上一帧相同(情形②)
 }
 
 void OutputEditor::emitConn()
@@ -586,9 +610,17 @@ void OutputEditor::emitCaptureProgress()
     webView().emitEventIfBrowserIsVisible(Event::CaptureProgress, payload);
 }
 
-void OutputEditor::emitSegments(const juce::String& reason, std::uint16_t tracksMask)
+// 返回「C++ 侧观察到这一帧确实下发了」(SL-199 闩锁的清位判据)。不可见时 JUCE 会把载荷丢掉,
+// 此时返回 false —— 闩锁保持,下一拍继续补。JUCE 内部若在可见判定之后再丢一次,C++ 侧无回执可查
+// (要闭合到「JS 真收到」需 JS 侧 ack,另开卡),这一点在 BridgeArgs.h 的闩锁头注里如实记着。
+bool OutputEditor::emitSegments(const juce::String& reason, std::uint16_t tracksMask)
 {
+    if (!webView().isVisible())
+    {
+        return false;
+    }
     webView().emitEventIfBrowserIsVisible(Event::Segments, buildSegmentsPayload(reason, tracksMask));
+    return true;
 }
 
 void OutputEditor::emitError(const juce::String& code, int ch, const juce::var& detail, bool active)
