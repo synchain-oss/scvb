@@ -12,7 +12,6 @@
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
-#include "state/SidecarStore.h" // generateSessionGuid([SL-215] 会话 GUID 的唯一生成口径)
 #include "state/StateMigration.h"
 
 namespace
@@ -52,7 +51,11 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     // 在用户还没保存过工程时就要显示它 —— 留空(或此前那串写死的全零)会让这一行恒是废话。
     // 工程里存过合法值的话,setStateInformation 会覆盖掉这个新生成的值(工程 > 新生成),
     // 与相邻的 uiScale_ / uiLanguage_「工程 > 全局默认」同一条口径。
-    sessionGuid_ = juce::String(scvb::state::generateSessionGuid());
+    // 生成器用 juce::Uuid().toDashedString(),与 STATE_SCHEMA §4.3 点名的口径逐字一致。
+    // §4.3 写的「首次 getStateInformation() 时自生成」说的是**生成时机**;这里提前到构造期,
+    // 只为让设置页在首次存盘前也有真值可显示 —— 落盘格式(36 字符 dashed UUID)与「永久随
+    // state」的语义都不变,工程里存过的值仍然压过它。
+    sessionGuid_ = juce::Uuid().toDashedString();
 
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);

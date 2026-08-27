@@ -1250,6 +1250,61 @@ TEST_CASE("同一实例重认领不清 mask / 同 pid 另一实例与异 pid 均
     REQUIRE(a.outputSlot()->pid == 2001);
 }
 
+// [SL-210] 属主位必须在 release 成功时**就地清掉**,否则 SL-210 在「主实例被 releaseResources
+// → 同 pid 兄弟接管 → 主实例重新 prepare」这条相邻时序里原样复发(#127 两个审查 bot 同时指出)。
+// OutputSession::releaseSlot() 是 registry_.releaseOutput() 直调,绕开了会清位的
+// releaseOwnedSlot() —— 所以清位必须落在 releaseOutput 自己身上。
+TEST_CASE("[SL-210] release 后属主位失效:同 pid 兄弟接管后原主实例不得反抢", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry b(backend, 1);
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+
+    {
+        scvb::Registry a(backend, 1);
+        REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(a.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(a.ownsOutput());
+
+        // 宿主对 A 调 releaseResources() → OutputSession::releaseSlot() → releaseOutput 直调
+        // (**不经** releaseOwnedSlot)。属主位必须就地失效。
+        a.releaseOutput(2001);
+        REQUIRE(a.outputSlot()->state.load() == scvb::kSlotFree);
+        REQUIRE_FALSE(a.ownsOutput());
+
+        // 同 pid 的兄弟实例 B(同一 DAW 里的第二个 Output)接管空槽。
+        REQUIRE(b.claimOutput(2001, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(b.outputSlot()->state.load() == scvb::kSlotActive);
+
+        // A 重新 prepare:属主位已失效 → 必须是 kConflict(退观察者),不得反抢 B 的 slot。
+        REQUIRE(a.claimOutput(2001, kT0 + 200) == scvb::Registry::ClaimResult::kConflict);
+        REQUIRE(b.outputSlot()->state.load() == scvb::kSlotActive);
+    } // A 析构走 releaseOwnedSlot:陈旧属主位的第二条复发路径,同样不得释放 B 的 slot
+
+    REQUIRE(b.outputSlot()->state.load() == scvb::kSlotActive);
+    REQUIRE(b.outputSlot()->pid == 2001);
+}
+
+// 反向:属主自己释放后槽仍空时,重新认领必须照常成功(清属主位不能把正当续期一起挡死)。
+TEST_CASE("[SL-210] 反向:release 后槽仍空,同实例重新认领照常成功", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    a.releaseOutput(2001);
+    REQUIRE(a.outputSlot()->state.load() == scvb::kSlotFree);
+
+    // 无人抢占 → 走 kSlotFree 分支重新认领。
+    REQUIRE(a.claimOutput(2001, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.outputSlot()->state.load() == scvb::kSlotActive);
+    REQUIRE(a.outputSlot()->pid == 2001);
+}
+
 TEST_CASE("updateOwnedInputSlot 非属主调用为空操作", "[ipc][lifecycle]")
 {
     scvb::SegmentBackendInProcess::resetAll();

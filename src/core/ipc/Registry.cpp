@@ -413,7 +413,16 @@ void Registry::releaseOutput(u32 pid)
     if (ownsOutput_ && s.pid == pid &&
         s.state.compare_exchange_strong(expected, kSlotFree, std::memory_order_acq_rel, std::memory_order_acquire))
     {
-        // 释放成功。
+        // [SL-210] 释放成功 → **就地清属主位**。不清的话 SL-210 会在相邻时序里原样复发:
+        // OutputSession::releaseSlot() 是 releaseOutput 直调,绕开了会清位的 releaseOwnedSlot(),
+        // 于是宿主对主实例 A 调 releaseResources()(旁通/停用/采样率重配置)后 A 的 ownsOutput_
+        // 残留为真;同 pid 的观察者 B 在 25Hz tick 上接管空槽成 kActive;宿主再对 A 调
+        // prepareToPlay 时,claimOutput 的三个条件(kSlotActive / 同 pid / ownsOutput_)全中
+        // —— A 又拿回 kClaimed,双主实例、单声道症状原样回来。
+        // 另一条:此后 A 析构走 releaseOwnedSlot,陈旧属主位会把 B 正持有的 slot 释放成 Free。
+        // 清位不影响「同实例释放后重新 prepare」的正常续期 —— 槽仍空时走 kSlotFree 分支重新认领。
+        ownsOutput_ = false;
+        ownedPid_ = 0;
     }
 }
 
