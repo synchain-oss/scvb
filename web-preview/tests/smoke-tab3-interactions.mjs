@@ -1265,7 +1265,6 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
     {
         let voiced = 0;
         let coveredCols = 0;
-        let sameAsCovered = true;
         let voicedHi = 0;
         let voicedN = 0;
         let silentHi = 0;
@@ -1281,7 +1280,6 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
                 silentHi += tile.maxDb[i];
                 silentN++;
             }
-            if (!!tile.vad[i] !== !!tile.covered[i]) sameAsCovered = false;
         }
         check(coveredCols > 0, "[SL-206] 有覆盖列(前置)");
         check(voiced > 0, "[SL-206] mock:有声列存在(与 native 同款断言)");
@@ -1289,10 +1287,22 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
             voiced < coveredCols,
             "[SL-206] mock:不是「全判有声」(与 native 同款断言)",
         );
-        // 这条是关键:mock 若图省事把 covered 抄成 vad,preview 上绿线满屏、看起来更「正常」,
-        // 而真机永远画不出来 —— 那正是这条 bug 藏住三个版本的形态。
+        // 「mock 把 covered 抄成 vad」这一形态的钉子:那样 preview 绿线满屏、看着更「正常」,
+        // 真机却永远画不出来。整数组比对(含未覆盖列),不依赖上面那个 `if (!covered) continue`。
+        //
+        // ⚠ **如实标注它的实际强度**(两轮都被自己高估过,不再第三次):
+        //   · 第一版写在循环里、只比覆盖列 —— 那时 `vad !== covered` 恒等于 `!vad`,整条就是
+        //     `voiced < coveredCols` 的同义重复,一个新东西都没断到(复审逐字点破,属实);
+        //   · 改成整数组之后仍**不是独立判据**:未覆盖列的哨兵纪律(vad/stale/passId 全 0)由
+        //     上面那条断言单独守着,于是「抄袭」在本 mock 上必然同时触发
+        //     `voiced < coveredCols` —— 实测把 vad 改成恒 1,红的是三条而不是一条。
+        //   它的价值只在**不依赖**「未覆盖列 vad 恒 0」这条不变量:哪天哨兵纪律松了,
+        //   这条仍然守得住抄袭形态。按这个强度留着,别再当成「关键」那一条。
+        const copiesCovered = tile.vad.every(
+            (v, i) => !!v === !!tile.covered[i],
+        );
         check(
-            !sameAsCovered,
+            !copiesCovered,
             "[SL-206] mock 的 vad 不是 covered 的复制品(否则 preview 假绿、真机照旧空)",
         );
         check(

@@ -179,3 +179,83 @@ TEST_CASE("PIPE-5 非零起点范围(局部分析)照样出段", "[analysis][pip
         CHECK(sg.t1Samples <= cfg.rangeEndSample);
     }
 }
+
+// ---------------------------------------------------------------------------
+// [SL-206] 管线必须把 VAD **后验**灌进 PipelineResult —— 它是泳道绿线(§1.27 瓦片 vad 列)
+// 唯一的数据源。此前 `runEnergyVad` 的第五参传的是 nullptr,后验算完就地扔掉,
+// FrameStore 的 vadP 全仓没有生产者、真机恒 0。
+// 这一组是**核心侧**的直接断言(比 host harness 便宜、更贴回归点,CLAUDE.md §7)。
+// ---------------------------------------------------------------------------
+TEST_CASE("PIPE-6 后验灌进 PipelineResult:参与轨有值、未参与轨留空", "[analysis][pipeline][vad][SL206]")
+{
+    std::array<PipelineTrackFeatures, kPipelineTracks> features;
+    features[0] = makeAlternating(4, 40, 30, 0.02f); // 轨1:参与
+    features[1] = makeAlternating(4, 40, 30, 0.02f); // 轨2:有数据但下面会被 enabled=false 关掉
+    // 轨3:enabled 但无覆盖(anyCovered=false)
+    const std::size_t n = features[0].kwMs.size();
+    PipelineConfig cfg = makeConfig(n, /*activeTracks=*/1); // 只有轨1 enabled
+
+    const PipelineResult r = runAnalysisPipeline(features, cfg);
+    REQUIRE_FALSE(r.cancelled);
+
+    // ★ 参与轨:后验长度 = kwMs 长度,且**不是全零**(全零就等于没接上)。
+    const auto& p0 = r.vadPosterior[0];
+    REQUIRE(p0.size() == n);
+    bool anyNonZero = false;
+    for (const float v : p0)
+    {
+        CHECK(v >= 0.0f);
+        CHECK(v <= 1.0f); // 出口值域(EnergyVad 内已 clamp)
+        if (v > 0.0f)
+        {
+            anyNonZero = true;
+        }
+    }
+    CHECK(anyNonZero); // ← 修复前这里恒空/恒零
+
+    // ★ 与能量形状相关:有声段的后验均值显著高于静音段。
+    double loudSum = 0.0;
+    double quietSum = 0.0;
+    int loudN = 0;
+    int quietN = 0;
+    for (std::size_t k = 0; k < n; ++k)
+    {
+        if (features[0].kwMs[k] > 1e-6f)
+        {
+            loudSum += p0[k];
+            ++loudN;
+        }
+        else
+        {
+            quietSum += p0[k];
+            ++quietN;
+        }
+    }
+    REQUIRE(loudN > 0);
+    REQUIRE(quietN > 0);
+    CHECK(loudSum / loudN > quietSum / quietN + 0.3);
+
+    // ★ 未参与的轨留空(与 segments 同口径:关掉的轨 / 无覆盖的轨都不填)。
+    CHECK(r.vadPosterior[1].empty()); // enabled=false
+    CHECK(r.vadPosterior[2].empty()); // 无覆盖
+}
+
+TEST_CASE("PIPE-7 后验的 firstHop 与局部分析范围一致", "[analysis][pipeline][vad][SL206]")
+{
+    // 写回 FrameStore 要靠 firstHop 定位绝对 hop —— 它必须等于 rangeStartSample/hopSamples,
+    // 否则整条后验会被写到错误的时间位置上(绿线整体平移)。
+    std::array<PipelineTrackFeatures, kPipelineTracks> features;
+    features[0] = makeAlternating(3, 40, 30, 0.02f);
+    const std::size_t n = features[0].kwMs.size();
+
+    PipelineConfig cfg = makeConfig(n, /*activeTracks=*/1);
+    const std::int64_t hopSamples = static_cast<std::int64_t>(kHopMs * kSr / 1000.0);
+    const std::int64_t startHop = 1234;
+    cfg.rangeStartSample = startHop * hopSamples;
+    cfg.rangeEndSample = cfg.rangeStartSample + static_cast<std::int64_t>(n) * hopSamples;
+
+    const PipelineResult r = runAnalysisPipeline(features, cfg);
+    REQUIRE_FALSE(r.cancelled);
+    CHECK(r.firstHop == startHop);
+    CHECK(r.vadPosterior[0].size() == n);
+}
