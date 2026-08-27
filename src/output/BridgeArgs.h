@@ -138,18 +138,38 @@ inline double samplesToSeconds(std::int64_t samples, double sampleRate)
 // 直到该参数再变一次。`firstFrame_` 是 editor 生命周期级的 —— 宿主只是隐藏而不销毁 editor 时,
 // `emitParams(true)` 不会重来。
 //
-// 修法(SL-199):**不可见→可见的边沿强制一次全量**。比「按 key 回滚基线」简单可靠 ——
-// 它覆盖隐藏期被吞的**所有** id,不需要知道具体吞了哪几个;代价是每次重新打开面板多发一帧
-// 63 个 id 的全量,可忽略。(Input 侧对同类问题用的是「发出去了才推进基线」,见
-// `InputBridgeLogic.h` 的 `advanceEmitCache` / `advanceConfigSeq`;两种口径都成立,
-// 这里取前者是因为 `lastParamsValues_` 是 63 个 key 的 map,回滚要多存一份候选集。)
+// 修法(SL-199):**不可见→可见的边沿强制一次全量**(scvb.segments 同款,见 segmentsResendNeeded)。比「按 key
+// 回滚基线」简单可靠 —— 它覆盖隐藏期被吞的**所有** id,不需要知道具体吞了哪几个;代价是每次重新打开面板多发一帧 63 个 id
+// 的全量,可忽略。(Input 侧对同类问题用的是「发出去了才推进基线」,见 `InputBridgeLogic.h` 的 `advanceEmitCache` /
+// `advanceConfigSeq`;两种口径都成立, 这里取前者是因为 `lastParamsValues_` 是 63 个 key 的 map,回滚要多存一份候选集。)
 //
 // 纯函数,可离线断言:`wasVisible` 由调用方持有(OutputEditor 成员),本函数负责记账。
-inline bool paramsForceFull(bool firstFrame, bool visibleNow, bool& wasVisible) noexcept
+// 「take」是因为它**有副作用**:同一拍只报一次边沿,调用方拿走之后 wasVisible 就跟到当前态。
+// ⚠ 正因为要记账,**绝不能放在 `||` 的右侧**(`first || takeVisibleEdge(...)` 会被短路:
+// 首帧那一拍不记账,于是紧接着的下一拍才报边沿、白发一次全量)。调用方一律分两行:
+// 先无条件 take 拿到边沿,再与 firstFrame 或运算。
+inline bool takeVisibleEdge(bool visibleNow, bool& wasVisible) noexcept
 {
     const bool becameVisible = visibleNow && !wasVisible;
     wasVisible = visibleNow;
-    return firstFrame || becameVisible;
+    return becameVisible;
+}
+
+// scvb.segments 的重发判定(`emitTick` 里那个 if 就是它)。
+//
+// 它与 params 是**同一个洞**:三个触发基线(`lastSegmentsSampleRate_` / `lastCrvsRevision_` /
+// `lastStaleMask_`)在 if 体里、调 `emitSegments` **之前**就推进了,与这一帧发没发出去无关。
+// 隐藏期段表变了(分析完成 / 加载工程 / stale 位翻转)→ 这一帧被丢掉 → 基线已经跟上 →
+// 恢复可见后条件恒假,段表陈旧到下一次段编辑 / undo / 切版本才刷新。
+//
+// 恢复可见时补一帧 `reason:"snapshot"` 的全量段表是**正确行为**(统筹裁定 2026-08-27):
+// 重开面板本就该看到新鲜段表。web 侧 `applySegmentsEvent` 对 snapshot 是整表替换、
+// `segmentsEventApplies` 的版本闸对当前激活版本恒放行 —— 中途到达的 snapshot 帧照常生效,
+// 不是只有首帧才认。
+inline bool segmentsResendNeeded(bool firstFrame, bool becameVisible, bool analyzed, bool sampleRateChanged,
+                                 bool crvsRevisionChanged, bool staleMaskChanged) noexcept
+{
+    return firstFrame || becameVisible || analyzed || sampleRateChanged || crvsRevisionChanged || staleMaskChanged;
 }
 
 // scvb.params 稀疏 diff 的选择 + 基线推进(`emitParams` 的循环体就是它)。

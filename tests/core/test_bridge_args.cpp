@@ -177,7 +177,10 @@ std::map<juce::String, float> emitFrame(std::map<juce::String, float>& baseline,
                                         const std::map<juce::String, float>& plane, bool firstFrame, bool visible,
                                         bool& wasVisible)
 {
-    const bool forceFull = scvb::output::paramsForceFull(firstFrame, visible, wasVisible);
+    // ⚠ takeVisibleEdge **必须无条件调用**(它要记账)—— 写成 `firstFrame || takeVisibleEdge(...)`
+    // 会被短路:首帧不记账,于是下一拍才报边沿、白发一次全量。生产 emitTick 同款分两行写。
+    const bool edge = scvb::output::takeVisibleEdge(visible, wasVisible);
+    const bool forceFull = firstFrame || edge;
     std::map<juce::String, float> sent;
     for (const auto& kv : plane)
     {
@@ -243,30 +246,92 @@ TEST_CASE("BRIDGEARGS-SL199-1 隐藏期改参数 → 恢复可见必达且值正
     CHECK(sent.at("v1_t03_vol") == -9.0f);
 }
 
-TEST_CASE("BRIDGEARGS-SL199-2 paramsForceFull 的边沿记账", "[bridgeargs][params][SL199]")
+TEST_CASE("BRIDGEARGS-SL199-2 takeVisibleEdge 的边沿记账", "[bridgeargs][params][SL199]")
 {
     bool wasVisible = false;
 
-    // 首帧恒 force(与 firstFrame_ 同款);且把 wasVisible 记成 true,不会紧接着再 force 一次。
-    CHECK(scvb::output::paramsForceFull(/*firstFrame=*/true, /*visibleNow=*/true, wasVisible));
+    // 首次转可见:报边沿(首帧那一拍 emitTick 用的是 `first || edge`,两者叠加也只发一次全量)。
+    CHECK(scvb::output::takeVisibleEdge(/*visibleNow=*/true, wasVisible));
     CHECK(wasVisible);
-    CHECK_FALSE(scvb::output::paramsForceFull(false, true, wasVisible)); // 稳态可见:不 force
+    CHECK_FALSE(scvb::output::takeVisibleEdge(true, wasVisible)); // 稳态可见:不再报
 
-    // 可见 → 不可见:不 force(这一帧本来就发不出去)。
-    CHECK_FALSE(scvb::output::paramsForceFull(false, false, wasVisible));
+    // 可见 → 不可见:不报(这一帧本来就发不出去)。
+    CHECK_FALSE(scvb::output::takeVisibleEdge(false, wasVisible));
     CHECK_FALSE(wasVisible);
-    CHECK_FALSE(scvb::output::paramsForceFull(false, false, wasVisible)); // 持续隐藏:仍不 force
+    CHECK_FALSE(scvb::output::takeVisibleEdge(false, wasVisible)); // 持续隐藏:仍不报
 
-    // 不可见 → 可见:**这一拍 force**,且只 force 这一拍。
-    CHECK(scvb::output::paramsForceFull(false, true, wasVisible));
-    CHECK_FALSE(scvb::output::paramsForceFull(false, true, wasVisible));
+    // 不可见 → 可见:**这一拍报**,且只报这一拍(take 语义)。
+    CHECK(scvb::output::takeVisibleEdge(true, wasVisible));
+    CHECK_FALSE(scvb::output::takeVisibleEdge(true, wasVisible));
+}
 
-    // 首帧发生在不可见时:firstFrame 仍 force(与现行 emitParams(first) 同口径),
-    // 但那一帧到不了 UI —— 随后的可见边沿会再 force 一次补上。
-    bool w2 = false;
-    CHECK(scvb::output::paramsForceFull(true, false, w2));
-    CHECK_FALSE(w2);
-    CHECK(scvb::output::paramsForceFull(false, true, w2));
+TEST_CASE("BRIDGEARGS-SL199-4 segmentsResendNeeded:恢复可见补发全量快照", "[bridgeargs][segments][SL199]")
+{
+    using scvb::output::segmentsResendNeeded;
+    const bool F = false;
+
+    // 首帧必发(§0.4)。
+    CHECK(segmentsResendNeeded(/*firstFrame=*/true, F, F, F, F, F));
+    // 稳态:六个条件全假 → 不发(别把 25Hz 变成全量段表广播)。
+    CHECK_FALSE(segmentsResendNeeded(F, F, F, F, F, F));
+    // 四条既有触发面逐条仍然成立。
+    CHECK(segmentsResendNeeded(F, F, /*analyzed=*/true, F, F, F));
+    CHECK(segmentsResendNeeded(F, F, F, /*sampleRateChanged=*/true, F, F));
+    CHECK(segmentsResendNeeded(F, F, F, F, /*crvsRevisionChanged=*/true, F));
+    CHECK(segmentsResendNeeded(F, F, F, F, F, /*staleMaskChanged=*/true));
+    // ★ 新增的第五条:不可见→可见的边沿。
+    CHECK(segmentsResendNeeded(F, /*becameVisible=*/true, F, F, F, F));
+}
+
+TEST_CASE("BRIDGEARGS-SL199-5 隐藏期段表变化 → 恢复可见 snapshot 帧必达", "[bridgeargs][segments][SL199]")
+{
+    // 逐拍重演 emitTick 里那段:三个基线在**发之前**就推进,所以隐藏期丢掉的那一帧
+    // 不会因为「条件还成立」而自愈 —— 只能靠可见性边沿补。
+    std::uint32_t lastCrvsRev = 0;
+    bool wasVisible = false;
+
+    struct Frame
+    {
+        bool emitted = false;
+        std::uint32_t revAtEmit = 0;
+    };
+    std::uint32_t crvsRev = 0;
+    const auto tick = [&](bool firstFrame, bool visible) {
+        const bool edge = scvb::output::takeVisibleEdge(visible, wasVisible);
+        Frame f;
+        if (scvb::output::segmentsResendNeeded(firstFrame, edge, /*analyzed=*/false, /*srChanged=*/false,
+                                               crvsRev != lastCrvsRev, /*staleChanged=*/false))
+        {
+            lastCrvsRev = crvsRev; // ← 基线在这里推进(与生产同序:先推进,后 emit)
+            f.emitted = visible; // 不可见时 emitEventIfBrowserIsVisible 丢掉
+            f.revAtEmit = crvsRev;
+        }
+        return f;
+    };
+
+    // ① 首帧(可见):全量快照必发。
+    CHECK(tick(/*firstFrame=*/true, /*visible=*/true).emitted);
+    // ② 可见稳态:段表没动 → 不发。
+    CHECK_FALSE(tick(false, true).emitted);
+
+    // ③ 隐藏期加载了工程 / 分析回落 → CRVS 修订号变了。这一帧被丢掉,而基线已经跟上。
+    crvsRev = 7;
+    CHECK_FALSE(tick(false, /*visible=*/false).emitted);
+    CHECK(lastCrvsRev == 7); // ← 洞:基线推进了,条件不再成立
+    // ④ 仍隐藏若干拍:什么都不会发。
+    for (int i = 0; i < 3; ++i)
+    {
+        CHECK_FALSE(tick(false, false).emitted);
+    }
+
+    // ⑤ ★ 恢复可见:必须补一帧 snapshot,且带的是隐藏期那个新修订号。
+    //    修复前:条件恒假 → 段表陈旧到下一次段编辑 / undo / 切版本。
+    const auto restored = tick(false, /*visible=*/true);
+    REQUIRE(restored.emitted);
+    CHECK(restored.revAtEmit == 7);
+
+    // ⑥ 补发后回稳态:不再重复发(边沿只触发一拍)。
+    CHECK_FALSE(tick(false, true).emitted);
 }
 
 TEST_CASE("BRIDGEARGS-SL199-3 selectParamForEmit 的选择与基线推进", "[bridgeargs][params][SL199]")

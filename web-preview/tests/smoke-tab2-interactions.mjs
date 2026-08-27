@@ -305,6 +305,50 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         false,
         "已确认过 ⇒ 不再弹(每轨每会话一次)",
     );
+    // ------------------------------------------------------------------
+    // [SL-199] native 侧 scvb.params / scvb.segments 的**调用点钉子**。
+    //
+    // 为什么一颗 C++ 钉子会落在 web 冒烟里:`OutputEditor.cpp` 编不进任何 C++ 测试目标
+    // (它依赖 WebViewHost/WebView2,harness 也因此给 createEditor 一个空实现),
+    // 于是 `BRIDGEARGS-SL199-*` 只守得住那三个纯函数本身,守不到「emitTick 还在调它们」
+    // 这一跳 —— 把调用点换回 `emitParams(first)` 或旧的 `if (first || analyzed || ...)`,
+    // C++ 单测照样全绿而 bug 原样回归。手法与 tab-wave.js 的 segEndS 调用点钉子同款,
+    // 不新增门禁面(gate 3e 本来就跑这一套)。
+    {
+        const oe = src("src/output/OutputEditor.cpp");
+        check(
+            /const bool becameVisible = scvb::output::takeVisibleEdge\(webView\(\)\.isVisible\(\), wasVisible_\);/.test(
+                oe,
+            ),
+            "[SL-199] emitTick 无条件取可见性边沿(takeVisibleEdge 不得放在 || 右侧被短路)",
+        );
+        check(
+            /emitParams\(first \|\| becameVisible\);/.test(oe),
+            "[SL-199] emitParams 走「首帧或可见边沿」全量(不是裸 emitParams(first))",
+        );
+        check(
+            /scvb::output::selectParamForEmit\(lastParamsValues_, id, value, forceFull\)/.test(
+                oe,
+            ),
+            "[SL-199] emitParams 循环体走 selectParamForEmit(选择与基线推进同源)",
+        );
+        check(
+            /scvb::output::segmentsResendNeeded\(first, becameVisible, analyzed,/.test(
+                oe,
+            ),
+            "[SL-199] scvb.segments 的重发判定走 segmentsResendNeeded 且带 becameVisible",
+        );
+        // 反面钉:旧写法不得残留(改回去时这两条会红)。
+        check(
+            !/emitParams\(first\);/.test(oe),
+            "[SL-199] 不再有裸 emitParams(first)",
+        );
+        check(
+            !/if \(first \|\| analyzed \|\|/.test(oe),
+            "[SL-199] 不再有手写的 segments 重发条件(已收进 segmentsResendNeeded)",
+        );
+    }
+
     // 源码级:requestManual 必须走这个判定,不许退回裸 manualConfirmed.has(ch)
     check(
         /function requestManual[\s\S]{0,400}?needsManualConfirm\(/.test(s),

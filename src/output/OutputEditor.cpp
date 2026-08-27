@@ -193,17 +193,18 @@ void OutputEditor::emitTick()
     // [SL-199] scvb.params 的基线有两层,只有 lastParamsJson_ 那层挡住了隐藏期丢帧;
     // lastParamsValues_ 在构建载荷时就推进了,与这一帧发没发出去无关。于是隐藏期改掉的值
     // 会被永久吞掉(下一拍 changed==false → any==false → 提前 return,载荷压根不再构建)。
-    // **不可见→可见的边沿强制一次全量**把它兜住 —— 判定与记账见 BridgeArgs.h 的 paramsForceFull。
+    // **不可见→可见的边沿强制一次全量**把它兜住 —— 判定与记账见 BridgeArgs.h 的 takeVisibleEdge。
     //
-    // ⚠ BRIDGEARGS-SL199-* 用例守的是 paramsForceFull / selectParamForEmit 两个纯函数本身,
-    // **守不到「这里还在调它」这一跳** —— scvb_params_tests 编不进本 TU(OutputEditor 依赖
-    // WebViewHost/WebView2)。把下面这行换回 `emitParams(first)`,单测照样全绿而 bug 原样回归。
-    // 改这两行必须同步复核那组用例(与 BridgeArgs.h 降级链 / HOST R4 同款约定)。
-    const bool paramsFull = scvb::output::paramsForceFull(first, webView().isVisible(), paramsWasVisible_);
+    // ⚠ BRIDGEARGS-SL199-* 用例守的是 takeVisibleEdge / selectParamForEmit / segmentsResendNeeded
+    // 三个纯函数本身,**守不到「这里还在调它」这一跳** —— scvb_params_tests 编不进本 TU
+    // (OutputEditor 依赖 WebViewHost/WebView2)。把下面这行换回 `emitParams(first)`,单测照样
+    // 全绿而 bug 原样回归。调用点由 smoke-tab2 的源码钉子锁住(与 tab-wave.js segEndS 同款);
+    // 改这几行必须同步复核那组用例与那颗钉子。
+    const bool becameVisible = scvb::output::takeVisibleEdge(webView().isVisible(), wasVisible_);
 
     syncDawLoopRange(); // daw_loop 档:先把 range 跟到宿主循环区,再让 emitState 下发
     emitState(first);
-    emitParams(paramsFull);
+    emitParams(first || becameVisible);
     if (first || (tickCount_ % 6 == 0))
         emitConn(); // ~4Hz(25Hz 6 分频)
     if (first || (tickCount_ % 25 == 0))
@@ -230,8 +231,11 @@ void OutputEditor::emitTick()
         if (processor_.captureStale(t + 1))
             staleMask = static_cast<std::uint16_t>(staleMask | (1u << t));
     }
-    if (first || analyzed || (srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_)) ||
-        crvsRev != lastCrvsRevision_ || staleMask != lastStaleMask_)
+    // [SL-199] `becameVisible` 与 params 同款:三个基线在下面的 if 体里先推进、后 emitSegments,
+    // 隐藏期那一帧被丢掉之后条件恒假,段表会陈旧到下一次段编辑/undo/切版本。判定见 BridgeArgs.h。
+    if (scvb::output::segmentsResendNeeded(first, becameVisible, analyzed,
+                                           srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_),
+                                           crvsRev != lastCrvsRevision_, staleMask != lastStaleMask_))
     {
         lastSegmentsSampleRate_ = srNow;
         lastCrvsRevision_ = crvsRev;
