@@ -324,9 +324,11 @@ TEST_CASE("analyzeScopeRange:对象形 scope 缺省范围 = \"all\" 同款推导
     using scvb::output::analyzeAllRange;
     using scvb::output::analyzeScopeRange;
 
-    // ① 两个字段都缺(Tab2 单轨重新识别的形状):follow 档 → [0, 已采集末端],**范围必须有效**。
+    constexpr unsigned int kOneTrack = 1u << 2; // 指名第 3 轨(Tab2 单轨重新识别的形状)
+
+    // ① 两个字段都缺:follow 档 → [0, 已采集末端],**范围必须有效**。
     //    ← 把实现改回 `hasStartS=false 时用 0.0` 即红:endS 变 0,valid() 失败,分析照旧被拒。
-    const auto omitted = analyzeScopeRange(false, 0.0, false, 0.0, 0, 0.0, 0.0, 12.5);
+    const auto omitted = analyzeScopeRange(kOneTrack, false, 0.0, false, 0.0, 0, 0.0, 0.0, 12.5);
     CHECK(omitted.startS == 0.0);
     CHECK(omitted.endS == 12.5);
     CHECK(omitted.valid());
@@ -336,29 +338,45 @@ TEST_CASE("analyzeScopeRange:对象形 scope 缺省范围 = \"all\" 同款推导
     CHECK(omitted.endS == all.endS);
 
     // ② 两个字段都缺 + 显式范围档:跟着 range 走(用户设了范围就尊重它)。
-    const auto omittedManual = analyzeScopeRange(false, 0.0, false, 0.0, 2, 3.0, 9.0, 12.5);
+    const auto omittedManual = analyzeScopeRange(kOneTrack, false, 0.0, false, 0.0, 2, 3.0, 9.0, 12.5);
     CHECK(omittedManual.startS == 3.0);
     CHECK(omittedManual.endS == 9.0);
 
     // ③ 两个字段都在(Tab3 工具条那条链路):逐字照用,**修复前后完全一致**。
     //    这条是反向验证的另一半:若实现改成「一律走 all 推导」,这里立刻红。
-    const auto explicitBoth = analyzeScopeRange(true, 4.0, true, 7.0, 0, 0.0, 0.0, 12.5);
+    const auto explicitBoth = analyzeScopeRange(kOneTrack, true, 4.0, true, 7.0, 0, 0.0, 0.0, 12.5);
     CHECK(explicitBoth.startS == 4.0);
     CHECK(explicitBoth.endS == 7.0);
 
     // ④ 显式给的 [0,0] 仍然照用(调用方明确要空范围就是空范围,不替它兜底)。
-    const auto explicitEmpty = analyzeScopeRange(true, 0.0, true, 0.0, 0, 0.0, 0.0, 12.5);
+    const auto explicitEmpty = analyzeScopeRange(kOneTrack, true, 0.0, true, 0.0, 0, 0.0, 0.0, 12.5);
     CHECK_FALSE(explicitEmpty.valid());
 
     // ⑤ 只给一头:给了的照用,没给的取 all 档同侧端点。
-    const auto onlyStart = analyzeScopeRange(true, 5.0, false, 0.0, 0, 0.0, 0.0, 12.5);
+    const auto onlyStart = analyzeScopeRange(kOneTrack, true, 5.0, false, 0.0, 0, 0.0, 0.0, 12.5);
     CHECK(onlyStart.startS == 5.0);
     CHECK(onlyStart.endS == 12.5);
-    const auto onlyEnd = analyzeScopeRange(false, 0.0, true, 5.0, 0, 0.0, 0.0, 12.5);
+    const auto onlyEnd = analyzeScopeRange(kOneTrack, false, 0.0, true, 5.0, 0, 0.0, 0.0, 12.5);
     CHECK(onlyEnd.startS == 0.0);
     CHECK(onlyEnd.endS == 5.0);
 
     // ⑥ 缺省 + 一帧都没采到:仍然回空范围(由 §1.6 拒绝态作答),不凭空造一个区间。
-    const auto nothingCaptured = analyzeScopeRange(false, 0.0, false, 0.0, 0, 0.0, 0.0, 0.0);
+    const auto nothingCaptured = analyzeScopeRange(kOneTrack, false, 0.0, false, 0.0, 0, 0.0, 0.0, 0.0);
     CHECK_FALSE(nothingCaptured.valid());
+
+    // ⑦ 【PR #112 评审重要】既不指名轨、又不给范围 → **仍然判空**。
+    //    tracksMask=0 在 processor 侧是「不限轨」,放开缺省范围就成了「全 15 轨 × 全时间线」,
+    //    配上 clearManual:true 是不可撤销的 origin 全清。要全轨全时间线请显式走 "all"。
+    //    ← 把 tracksMask==0 那道守卫删掉即红。
+    const auto noMaskNoRange = analyzeScopeRange(0, false, 0.0, false, 0.0, 0, 0.0, 0.0, 12.5);
+    CHECK_FALSE(noMaskNoRange.valid());
+    const auto noMaskNoRangeManual = analyzeScopeRange(0, false, 0.0, false, 0.0, 2, 3.0, 9.0, 12.5);
+    CHECK_FALSE(noMaskNoRangeManual.valid());
+
+    // ⑧ 但「不限轨 + 显式范围」是修复前就成立的形状,必须逐字保留(守卫不许连它一起挡)。
+    //    ← 把守卫写成「tracksMask==0 一律判空」即红。
+    const auto noMaskExplicitRange = analyzeScopeRange(0, true, 3.0, true, 9.0, 0, 0.0, 0.0, 12.5);
+    CHECK(noMaskExplicitRange.startS == 3.0);
+    CHECK(noMaskExplicitRange.endS == 9.0);
+    CHECK(noMaskExplicitRange.valid());
 }

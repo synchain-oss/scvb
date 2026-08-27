@@ -50,8 +50,16 @@ inline AnalyzeRange analyzeAllRange(int rangeMode, double rangeStartS, double ra
 //
 // 只给一头的场景(理论上可能,契约没禁)按「给了的照用、没给的取 all 档同侧端点」处理;
 // 两头都给 → 逐字照用,行为与修复前完全一致(Tab3 工具条那条链路一字未变)。
-inline AnalyzeRange analyzeScopeRange(bool hasStartS, double startS, bool hasEndS, double endS, int rangeMode,
-                                      double rangeStartS, double rangeEndS, double capturedExtentS)
+//
+// `tracksMask` 参与判定的理由(PR #112 评审【重要】):0 在 processor 侧是「**不限轨**」
+// (startAnalysis 的 `tracksMask != 0 && …`)。「既不指名轨、又不给范围」的对象形 scope
+// 修复前被 [0,0] 挡下,若也跟着走 "all" 推导就成了「全 15 轨 × 全时间线」—— 配上
+// `clearManual:true` 那是不可撤销的 origin 全清(§1.6「撤销:否」)。本 PR 只该放开
+// 「指名了轨、没给范围」这一种形状;要全轨全时间线请显式用 `"all"`,那条路有 UI 二次确认。
+// 注意只在**两头都没给**时才挡:`{tracksMask:0, startS, endS}` = 不限轨 + 显式范围,
+// 是修复前就成立的形状,逐字保留。
+inline AnalyzeRange analyzeScopeRange(unsigned int tracksMask, bool hasStartS, double startS, bool hasEndS, double endS,
+                                      int rangeMode, double rangeStartS, double rangeEndS, double capturedExtentS)
 {
     if (hasStartS && hasEndS)
     {
@@ -59,6 +67,11 @@ inline AnalyzeRange analyzeScopeRange(bool hasStartS, double startS, bool hasEnd
         r.startS = startS;
         r.endS = endS;
         return r;
+    }
+
+    if (tracksMask == 0)
+    {
+        return AnalyzeRange{}; // 空范围 → §1.6 拒绝态 {ok:false, affected:{0,0,0}}
     }
 
     AnalyzeRange r = analyzeAllRange(rangeMode, rangeStartS, rangeEndS, capturedExtentS);

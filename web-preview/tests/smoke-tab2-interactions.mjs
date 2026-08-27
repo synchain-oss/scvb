@@ -956,9 +956,11 @@ log("=== ⑥b 单轨重新识别的请求形状(SL-190)===");
     // 真桥那侧的缺省口径由 C++ 的 analyzeScopeRange 保证,两边合起来才是完整的回归。
     // 若有人在这里补上 startS:0/endS:0「显式化」,native 会照单全收 → 空范围 → 又回到
     // 「点了没反应」。所以这里必须红。
-    const call = s.match(
-        /await call\(\s*"analyze",\s*\{[^}]*\},\s*\{[^}]*\},?\s*\)/,
-    );
+    // ⚠ 这条断言**刻意**把「JS 行为」耦合到源码文本上(node 侧无 DOM,拿不到真实点击)。
+    // 定位用「从 call("analyze" 起、最多 240 字符」的有界切片,不去数花括号 —— 数花括号的
+    // 写法在 scope 里多一层对象时会静默失配(PR #112 评审建议⑤)。切片够长能覆盖整个调用,
+    // 又不至于跨到下一个语句;真改写成别的形状时第一条断言先红,不会静默放行。
+    const call = s.match(/call\(\s*"analyze",[\s\S]{0,240}/);
     check(!!call, "tab-tracks.js 里能定位到单轨重新识别的 analyze 调用");
     if (call) {
         check(
@@ -968,6 +970,13 @@ log("=== ⑥b 单轨重新识别的请求形状(SL-190)===");
         check(
             !/startS|endS/.test(call[0]),
             "scope **不带** startS/endS —— 缺省即整条时间线,显式 [0,0] 会被 native 判成空范围",
+        );
+        // tracksMask 必须**非零**:0 在 native 侧是「不限轨」,而「不指名轨 + 不给范围」
+        // 被 analyzeScopeRange 判成空范围 —— 否则 clearManual 会全轨全时间线清 origin,
+        // 而 §1.6 明写「撤销:否」(PR #112 评审重要)。
+        check(
+            !/tracksMask:\s*0[,\s}]/.test(call[0]),
+            "scope 的 tracksMask 不是字面 0(0 = 不限轨,配 clearManual 是全轨 origin 全清)",
         );
         check(
             /clearManual:\s*true/.test(call[0]),

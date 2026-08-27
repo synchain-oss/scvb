@@ -35,7 +35,6 @@
 #include "state/StateCodec.h"
 
 #include <algorithm>
-#include <functional>
 #include <limits>
 
 // createEditor 是虚函数,vtable 需要定义。真实定义在 *PluginEntry.cpp —— 那两个 TU 会把
@@ -2252,7 +2251,7 @@ TEST_CASE("HOST SL-189:引擎驱动档下未冻结维度无视宿主自动化,�
 
     // 模拟宿主自动化 Read 档把已录值顶进参数。包 gesture 的理由同 setTrackManual 头注:
     // 裸写在 Read 档宿主上会被当场顶回去。
-    const std::function<void()> writeAutomation = [panParam, kAutomatedPan] {
+    const auto writeAutomation = [panParam, kAutomatedPan] {
         panParam->beginChangeGesture();
         panParam->setValueNotifyingHost(panParam->convertTo0to1(kAutomatedPan));
         panParam->endChangeGesture();
