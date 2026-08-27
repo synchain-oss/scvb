@@ -373,6 +373,11 @@ TEST_CASE("analyzeScopeRange:对象形 scope 缺省范围 = \"all\" 同款推导
     const auto noMaskNoRangeManual = analyzeScopeRange(0, false, 0.0, false, 0.0, 2, 3.0, 9.0, 12.5);
     CHECK_FALSE(noMaskNoRangeManual.valid());
 
+    // ⑦b 不指名轨 + 只给一头 → 也判空(安全方向):否则 {tracksMask:0, startS:5} 就成了
+    //     「全轨、5s 到时间线末端」的 origin 全清,与守卫用意正相反。
+    const auto noMaskOnlyStart = analyzeScopeRange(0, true, 5.0, false, 0.0, 0, 0.0, 0.0, 12.5);
+    CHECK_FALSE(noMaskOnlyStart.valid());
+
     // ⑧ 但「不限轨 + 显式范围」是修复前就成立的形状,必须逐字保留(守卫不许连它一起挡)。
     //    ← 把守卫写成「tracksMask==0 一律判空」即红。
     const auto noMaskExplicitRange = analyzeScopeRange(0, true, 3.0, true, 9.0, 0, 0.0, 0.0, 12.5);
