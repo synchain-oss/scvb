@@ -2442,6 +2442,11 @@ export function createTabWave(opts) {
         // 抢焦点:①只在泳道窗上挂(不是整页);②本文档已经有焦点就不动;③焦点正停在
         // 可编辑控件上时一律不动(别把人正在打的字打断)。
         // ⚠ **本条只能在真 DAW 里验**:无头浏览器里页面恒有焦点,这段代码根本不会执行。
+        //
+        // [统筹裁定 2026-08-28,#123 终轮] **保留 pointerenter 方案,不改「首个 wheel 事件
+        // 按需取焦」**:两案在无头环境都无法验证(见上),差异只能真机分辨;而按需取焦有
+        // 「第一记滚轮先被焦点路由吃掉、用户要滚两次」的先验风险,pointerenter 没有。
+        // 若 v5.6 真机复验(SL-221)证明本方案仍需先点一下,再连同 C++ 焦点策略一起换案。
         if (els.window) {
             els.window.addEventListener("pointerenter", () => {
                 if (typeof document === "undefined") return;
