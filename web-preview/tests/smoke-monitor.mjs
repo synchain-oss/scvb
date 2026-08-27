@@ -2355,6 +2355,30 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         );
     }
 
+    // ---- 工厂:一次 push 只取一个 width(#135 复审【重要】)
+    // 一拍里最多会「重拼一次 + 写变量两次」。三处各自去取 getter 的话,滑杆正在拖时
+    // 这一拍**内部**就能取到不同的值:拼串那一版用旧 width、写变量那一版用新 width,
+    // 画出半帧新半帧旧的几何。上一版只给 `rebuild(width)` 加了形参,而 `paint()` 仍在
+    // 自己取 —— 取值次数与时机与改动前逐字等价,注释却宣称「两处钉成一个数」。
+    // 这条断言钉的就是那个数:**整拍一次调用**。
+    {
+        let widthCalls = 0;
+        const m = DM.createDistMotion({
+            // 只给 innerHTML,不给 querySelectorAll:rebuild 拼完串就早退,bars 保持空,
+            // paint 照常跑完取 width 那一步 —— 正是本条要数的东西。
+            container: { innerHTML: "" },
+            getGlobalWidthPct: () => {
+                widthCalls++;
+                return 100;
+            },
+        });
+        m.push([row(1, -50, -6, 100)], 0, 1000); // 结构变 ⇒ 重拼 + 立刻画,同一拍
+        eq(widthCalls, 1, "首帧(重拼 + 画)整拍只取一次 width");
+        widthCalls = 0;
+        m.push([row(1, -50, -6, 100)], 2, 1040); // 只改高亮 ⇒ 重拼 + width 比对
+        eq(widthCalls, 1, "改高亮那一拍(重拼 + width 比对)也只取一次");
+    }
+
     // ---- 工厂:坏行在入口就滤掉,谓词与拼串侧同义(PR 115 审查第 3 条)
     // `distBarsHtml` 对 ch 非有限的行是 continue(不产出节点),而 paint() 按**下标**
     // 把 shown[i] 写进 bars[i]。两边谓词不一致,坏行会让节点与行整体错位一格 ——
@@ -2507,16 +2531,21 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
                     !/transition:\s*all/.test(rule),
                     `${sel} 不用 transition: all —— 几何进过渡集会把 rAF 补间叠成 300ms 低通`,
                 );
-                // 取**整条声明**再断,不能只断「以 opacity 开头」:
-                // `transition: opacity .3s, left .3s;` 会同时通过上面那条 `!all` 和一个
-                // 只看开头的正则 —— 而多出来的 `left` 正是要挡的那种回归。
-                const decl = (rule.match(/transition:([^;]*);/) || [, ""])[1];
+                // 要断的性质是「过渡集里**只有** opacity」,所以用**白名单**(拆逗号,
+                // 每段都必须是 opacity),不用黑名单 —— 黑名单永远漏一批:
+                // translate / scale / rotate / padding 都不在里面,而且补不全。
+                // 用 matchAll 收**每一条** transition 声明:后一条整体覆盖前一条,
+                // 只看第一条的话 `transition: opacity .3s; transition: left .3s;` 会放行,
+                // 而实际生效的正是 left。取到 `;` 或 `}` 为止,**不依赖尾分号** ——
+                // 规则块最后一条声明省略分号是合法 CSS,依赖它会在合法写法上误红。
+                const decls = [...rule.matchAll(/transition:\s*([^;}]*)/g)].map(
+                    (m) => m[1].trim(),
+                );
+                const onlyOpacity = (d) =>
+                    d.split(",").every((s) => /^opacity\b/.test(s.trim()));
                 check(
-                    /\bopacity\b/.test(decl) &&
-                        !/\b(all|left|top|right|bottom|width|height|inset|margin|transform)\b/.test(
-                            decl,
-                        ),
-                    `${sel} 的过渡集里只有 opacity、没有任何几何属性(实得 "${decl.trim()}")`,
+                    decls.length > 0 && decls.every(onlyOpacity),
+                    `${sel} 的过渡集里只有 opacity、没有别的属性(实得 "${decls.join(" | ")}")`,
                 );
             }
         }

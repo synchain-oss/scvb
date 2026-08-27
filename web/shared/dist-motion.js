@@ -245,9 +245,7 @@ export function createDistMotion(opts) {
     /**
      * 结构变了才走:重拼 innerHTML 并重新缓存节点。
      *
-     * `width` 由调用方传:重建之后紧跟着的那次 `paint()` 会自己再取一次 getter,
-     * 两次之间 width 完全可能变(滑杆正在拖)。终态一致,但拼串那一版会是旧值 ——
-     * 与 `paint()` 里立的「同一帧逐字节同一个 width」不是一回事。传参把两处钉成一个数。
+     * `width` 由调用方传,理由同 `paint()`:一拍里的重拼与随后的写变量必须用同一个数。
      */
     function rebuild(width) {
         if (!container) return;
@@ -269,13 +267,22 @@ export function createDistMotion(opts) {
         for (const k of Object.keys(vars)) node.style.setProperty(k, vars[k]);
     }
 
-    /** 逐帧写入面:只写 CSS 变量,不碰节点结构、不做任何布局读。 */
-    function paint() {
+    /**
+     * 逐帧写入面:只写 CSS 变量,不碰节点结构、不做任何布局读。
+     *
+     * `width` 可由调用方传:`push()` 一拍里可能既重拼又画(甚至画两次),各自取一次
+     * getter 的话,滑杆正在拖时这一拍内部就能取到两个不同的值 —— 拼串那一版用旧的、
+     * 写变量那一版用新的。传参把**整拍**钉成一个数。`tick()` 不传:它就是新的一帧,
+     * 本来就该重新取。
+     */
+    function paint(width) {
         if (!container) return;
         // 一帧只取一次:既省掉每行一次的 getter 调用(Output 满配下 ~900 次/秒),
         // 更要紧的是**保证同一帧里每根柱用的是逐字节同一个 width** ——
         // 逐行取的话,滑杆正在拖动时它可能在一帧中途变掉,画出半帧新半帧旧的几何。
-        const globalWidth = getGlobalWidthPct();
+        const globalWidth = Number.isFinite(width)
+            ? width
+            : getGlobalWidthPct();
         lastPaintedWidth = globalWidth;
         let si = 0;
         for (let i = 0; i < shown.length; i++) {
@@ -368,6 +375,9 @@ export function createDistMotion(opts) {
             const t = Number.isFinite(atMs) ? atMs : nowMs();
             const key = distShapeKey(list);
             const nextHi = Number(highlightCh) || 0;
+            // **一拍一个 width**:下面最多会重拼一次、写变量两次,各自取 getter 的话
+            // 滑杆拖动中这一拍内部就能取到不同的值(拼串旧、写变量新)。取一次贯穿到底。
+            const width = getGlobalWidthPct();
 
             if (key !== shapeKey) {
                 // 轨集 / 立体声 / lead 变了 ⇒ 逐轨下标不再对齐:**直接落到目标值**,
@@ -380,27 +390,25 @@ export function createDistMotion(opts) {
                 shown = list.map(copyRow);
                 t0 = t;
                 stop();
-                // 一个 width 贯穿「重拼 + 立刻画」这一拍
-                const w = getGlobalWidthPct();
-                rebuild(w);
-                if (isVisible()) paint();
+                rebuild(width);
+                if (isVisible()) paint(width);
                 return;
             }
             if (nextHi !== hi) {
                 // 高亮只改 `data-hi`,不动下标对齐 —— 重拼一次(用**当前显示值**拼,
                 // 免得 hover 的瞬间把补间中的柱弹回目标位),补间照旧往下走。
                 hi = nextHi;
-                rebuild(getGlobalWidthPct());
+                rebuild(width);
             }
-            if (getGlobalWidthPct() !== lastPaintedWidth) {
+            if (width !== lastPaintedWidth) {
                 // 只拧了滑杆:每轨三条值一个没变,下面的 `sameDistValues` 会早退 ——
                 // 不在这里补一帧,柱子就不跟手了(v5 P2-10)。**不重启补间窗口**:
                 // 直接操纵要的是当场跟手,给它加惯性是坏体验。
-                paint();
+                paint(width);
             }
             if (paintOwed && isVisible()) {
                 // 还了隐藏期欠下的那一笔,再走下面的「值没变就早退」——顺序不能倒。
-                paint();
+                paint(width);
                 paintOwed = false;
             }
             if (sameDistValues(target, list)) {

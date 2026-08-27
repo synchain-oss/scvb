@@ -1049,16 +1049,21 @@ log("=== ⑥ 分布图 rAF 补间(SL-203)===");
                 !/transition:\s*all/.test(rule),
                 `${sel} 不用 transition: all(几何进过渡集会把 rAF 补间叠成 300ms 低通)`,
             );
-            // 取**整条声明**再断,不能只断「以 opacity 开头」:
-            // `transition: opacity .3s, left .3s;` 会同时通过上面那条 `!all` 和一个
-            // 只看开头的正则 —— 而多出来的 `left` 正是要挡的那种回归。
-            const decl = (rule.match(/transition:([^;]*);/) || [, ""])[1];
+            // 要断的性质是「过渡集里**只有** opacity」,所以用**白名单**(拆逗号,
+            // 每段都必须是 opacity),不用黑名单 —— 黑名单永远漏一批:
+            // translate / scale / rotate / padding 都不在里面,而且补不全。
+            // 用 matchAll 收**每一条** transition 声明:后一条整体覆盖前一条,
+            // 只看第一条的话 `transition: opacity .3s; transition: left .3s;` 会放行,
+            // 而实际生效的正是 left。取到 `;` 或 `}` 为止,**不依赖尾分号** ——
+            // 规则块最后一条声明省略分号是合法 CSS,依赖它会在合法写法上误红。
+            const decls = [...rule.matchAll(/transition:\s*([^;}]*)/g)].map(
+                (m) => m[1].trim(),
+            );
+            const onlyOpacity = (d) =>
+                d.split(",").every((s) => /^opacity\b/.test(s.trim()));
             check(
-                /\bopacity\b/.test(decl) &&
-                    !/\b(all|left|top|right|bottom|width|height|inset|margin|transform)\b/.test(
-                        decl,
-                    ),
-                `${sel} 的过渡集里只有 opacity、没有任何几何属性(实得 "${decl.trim()}")`,
+                decls.length > 0 && decls.every(onlyOpacity),
+                `${sel} 的过渡集里只有 opacity、没有别的属性(实得 "${decls.join(" | ")}")`,
             );
         }
     }

@@ -336,6 +336,19 @@ try {
         const up = await waitFor(READY);
         check(up, "页面装载并吃到首帧");
 
+        // 把上面那段注释**钉成机器断言** —— 光写注释挡不住第三次。壳页工具条就在顶层
+        // document(`appendMetaField` 全程 textContent,格式是 `scenario=<code>值</code>`,
+        // 故 textContent 里就是 `scenario=curve-editor`),而 `allowedOr()` 对表外值
+        // 输出的正是字面量 `unknown`。这一条把两种错法都封上:
+        //   • 名字不在 `SCENARIO_NAMES.output` ⇒ 这里读到 `scenario=unknown`,红;
+        //   • 名字不在 `SCENARIO_MAP` ⇒ 静默回落只有一条 console.warn,而 `assertClean()`
+        //     只收 console.error 抓不到 —— 但那种名字进不了白名单,同样在这里红。
+        const named = await waitFor(
+            `/scenario=curve-editor/.test(document.body.textContent || "")`,
+            5000,
+        );
+        check(named, "壳页工具条认出了场景名(不是 scenario=unknown)");
+
         // **把数据面驱动起来 —— 走真实用户路径**:`setTrackManual(ch,"pan",v)` 就是用户把某轨
         // 声像设成手动值时 UI 发的那一个上行调用(契约 §1.16)。mock 收到后同拍补一帧
         // `scvb.params`,于是 render → renderDist → push,补间器拿到新的 pan。
@@ -613,7 +626,11 @@ try {
                 }
                 drift = n > 0 ? mx : -1;
             }
-            const ch1 = dg.shown && dg.shown[0] ? dg.shown[0].pan : null;
+            // 按**轨号**取,不按下标:写的是 setTrackManual(1, ...),
+            // 行序由 connectedChannels 决定,fixture 里哪天有一轨没连,
+            // shown[0] 就是别的轨 —— 那时这条会对着错的对象断言,而且多半还是绿的。
+            const rows = (dg.shown || []).filter((r) => r.ch === 1);
+            const ch1 = rows.length === 1 ? rows[0].pan : null;
             return { shown: dg.shown.length, bars: bars.length, drift, n, ch1 };
         `),
         );
