@@ -58,6 +58,12 @@ inline AnalyzeRange analyzeAllRange(int rangeMode, double rangeStartS, double ra
 // 「指名了轨、没给范围」这一种形状;要全轨全时间线请显式用 `"all"`,那条路有 UI 二次确认。
 // 注意只在**两头都没给**时才挡:`{tracksMask:0, startS, endS}` = 不限轨 + 显式范围,
 // 是修复前就成立的形状,逐字保留。
+//
+// 一个**有意**的取舍(PR #112 评审建议②):`daw_loop` / `manual` 档下缺省范围跟的是
+// `global.range`,于是 Tab2 的单轨重新识别只重算 range **内**的区间 —— 解冻提示要清的那条
+// 「全时限 user_edited 常值段」会被部分清除,range 外仍留着旧手动值。这与 Tab3「分析」同口径:
+// 用户显式设了范围就尊重它,不替他扩大写入面。要改成「单轨重新识别恒取全时间线」是产品语义
+// 决策(需用户拍板),不是这里顺手改的事。
 inline AnalyzeRange analyzeScopeRange(unsigned int tracksMask, bool hasStartS, double startS, bool hasEndS, double endS,
                                       int rangeMode, double rangeStartS, double rangeEndS, double capturedExtentS)
 {
