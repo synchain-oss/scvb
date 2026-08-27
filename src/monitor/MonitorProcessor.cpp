@@ -20,7 +20,8 @@ constexpr std::uint64_t kGroupsProbeIntervalMs = 1000; // 1Hz 跨组探测(J70)
 // 段**不存在**时的 attach 重试节流。这一条与读帧无关(读帧由定时器每拍做),
 // 它挡的是「Output 还没起来」时每拍一次 open+unmap —— 4Hz 重试足够,自愈延迟无人感知。
 constexpr std::uint64_t kVizAttachRetryMs = 250;
-// [M] 轮询频率(SL-192)。发布器升到 **30Hz**(kPublishIntervalMs = 33ms)之后,
+// [M] 轮询频率(SL-192)。发布器升到 **30Hz**(闸门 kPublishIntervalMs = 25ms + 60Hz 驱动,
+// 每两拍一帧 = 33.3ms;**不是 33ms 闸门** —— 那个值被本卡的抖动用例否掉了,见 VizPublisher.h)之后,
 // 读方采样率跟着走。曾经这里与发布器同为 4Hz,注释写着「与发布器同频,不多不少」——
 // 那句话漏了一件事:两个同频时钟**互不同步**。同频异相的采样会周期性地把某一帧整个跳过
 // (读到的还是上一帧),于是 UI 实得的更新率并不是发布率,而是在它上下漂。

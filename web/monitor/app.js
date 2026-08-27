@@ -261,10 +261,12 @@ function renderTrajAxis() {
 }
 
 // ------------------------------------------------------------- 分布图(rAF 补间)
-// viz 是 **4Hz** 数据面(契约 §6,冻结口径),而 Output 侧同一张图吃的是 25Hz 的
-// `scvb.params` —— 直出就是「15 根柱每 250ms 同拍齐跳一次」,正是 SL-192 里
-// 「一秒钟刷新一两次」的由来。写入面因此交给补间器:结构变了才重拼 innerHTML,
-// 数值逐帧插值只写 CSS 变量。可见性闸与轨迹图同源(`store.accepts.ok`)。
+// 本卡之前 viz 是 **4Hz** 数据面,而 Output 侧同一张图吃 25Hz 的 `scvb.params` ——
+// 直出就是「15 根柱每 250ms 同拍齐跳一次」,正是 SL-192 里「一秒钟刷新一两次」的由来。
+// SL-192 已把段侧发布提到 **30Hz**(契约变更),页面经桥面实得 **25Hz**(~40ms 一帧)。
+// 写入面仍交给补间器:结构变了才重拼 innerHTML,数值逐帧插值只写 CSS 变量 ——
+// 25Hz 仍是离散步,且停摆/节流/换组这些降级路径上帧照样会稀疏。
+// 可见性闸与轨迹图同源(`store.accepts.ok`)。
 const distMotion = createDistMotion({
     container: $("monitor-dist-bars"),
     isVisible: () => store.accepts.ok,

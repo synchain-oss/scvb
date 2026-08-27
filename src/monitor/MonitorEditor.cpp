@@ -25,10 +25,20 @@ using WBC = juce::WebBrowserComponent;
 //   ② 「更快也没有新数据」把「有没有新数据」与「多久去看一眼」混为一谈。载荷相不相同
 //      由下面的 `emitIfChanged` 判(值未变不发,契约 §0.4),闸只决定**检测延迟**。
 //
-// 现在每 tick(40ms)取一次载荷交给 `emitIfChanged`:重复帧被 JSON 比对挡掉,推送率仍是
-// 数据自身的 4Hz(**发布频率是冻结契约口径,一个字节没动**),而新帧的检测延迟从
-// ≤280ms 降到 ≤40ms。稳态载荷 = 帧头 + 每轨三条标量(车道只在 `lane_revision` 变的那一帧
-// 才带),构造 + 序列化的量级与同一个 tick 上早已 25Hz 跑着的 `scvb.playhead` 相当。
+// 现在每 tick(40ms)取一次载荷交给 `emitIfChanged`:重复帧被 JSON 比对挡掉,新帧的检测
+// 延迟从 ≤280ms 降到 ≤40ms。
+//
+// 桥面实得频率 = **≤25Hz**(本基准 tick 的上限;既有 50→25 减负裁定,本卡不重开)。
+// 段侧发布已由 SL-192 提到 **30Hz**(冻结契约变更,`docs/contract-changes/20260827-viz-30hz.md`)
+// —— 即段侧比桥面快,页面每秒看到 25 帧,漏掉的是「更旧的那一帧」,不是数据丢失。
+//
+// ⚠ 代价要说实话:本函数**每 tick 都全量构造一次载荷**(~30 个属性 + 5 个定长 15 数组 +
+// 15 次轨名 UTF-8 + JSON 序列化),`emitIfChanged` 只挡「发出去」那一步,挡不掉构造。
+// 升频后播放中几乎每拍都是新帧(段侧 30Hz > tick 25Hz),脏闸真正省下的是**数据静止期**。
+// 这**不**是「与同 tick 上的 `scvb.playhead` 相当」——那句话我先前写错了,两者差一个数量级。
+// 要省的话,可用 `seq`/`publishMs` + 三态/组号/needLanes 做一道廉价前置闸(检测延迟仍 ≤40ms);
+// 现在**不做**:那道闸的输入集一旦漏一个,就是「事件停更而页面看着完全正常」那类错,
+// 而本卡没有测量证据说这段构造已经构成问题。真要做,先量再改。
 
 const char* vizStateName(ScvbMonitorAudioProcessor::VizState s)
 {
@@ -309,7 +319,8 @@ void MonitorEditor::emitTick()
         emitIfChanged(bridge::kEvGroups, juce::var(obj), lastGroupsJson_);
     }
 
-    // scvb.viz:**变化即发**(SL-192;实得频率仍是数据自身的 4Hz,由 emitIfChanged 兜住)。
+    // scvb.viz:**变化即发**(SL-192;桥面实得 ≤25Hz = 本 tick 上限,段侧 30Hz,
+    // 重复帧由 emitIfChanged 兜住)。
     {
         // 车道只在 revision 变化(或从未送过)时带 —— 稳态帧就是一小把标量。
         const auto rev = processor_.vizSnapshot().laneRevision;

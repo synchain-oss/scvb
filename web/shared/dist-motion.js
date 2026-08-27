@@ -157,6 +157,18 @@ export function sameDistValues(a, b) {
     return true;
 }
 
+/**
+ * 行是否可用 —— **必须与 `distBarsHtml` 的过滤谓词逐字同义**。
+ *
+ * 拼串那边对 `ch` 非有限的行是 `continue`(不产出节点),而 `paint()` 是按**下标**把
+ * `shown[i]` 写进 `bars[i]` 的。两边谓词一旦不一致,坏行会让节点与行**整体错位一格**,
+ * 于是每根柱都写上邻轨的几何 —— 而 `setVars` 的 null 保护会让它一声不吭。
+ * Monitor 现路的 `colorChOf()` 恒出有限整数,这是潜雷不是现雷;在入口滤掉最省事。
+ */
+function usableRow(r) {
+    return !!r && Number.isFinite(Number(r.ch));
+}
+
 function copyRow(r) {
     return {
         ch: r.ch,
@@ -204,6 +216,11 @@ export function createDistMotion(opts) {
     // 于是「正在补间」的那一刻从外面读到的是 false —— 诊断面骗人,排查时会看反。
     // (PR #115 审查提的第二条。)
     let running = false;
+    // 隐藏期跳过的那些 paint 记成欠账:`tick()` 在不可见时照常推进 `shown` 却不写 DOM,
+    // 若之后来的 push 数值与 target 相同,`sameDistValues` 会早退、不重画 —— DOM 就停在
+    // 隐藏前那一帧上。Monitor 现路走 `reset()` 碰不到(不可见即清空、回来必重建),
+    // 但这是工厂的通用契约,别把正确性押在某一个调用方的接线上。
+    let paintOwed = false;
     let destroyed = false;
     // 只读诊断(页面级冒烟据此判「渲染循环是 rAF 驱动还是事件驱动」——
     // 事件驱动的话 `frames` 恒为 0,这是两者最干脆的分界)。
@@ -291,7 +308,12 @@ export function createDistMotion(opts) {
         for (let i = 0; i < target.length; i++) {
             shown[i] = lerpDistRow(from[i], target[i], p);
         }
-        if (isVisible()) paint();
+        if (isVisible()) {
+            paint();
+            paintOwed = false;
+        } else {
+            paintOwed = true;
+        }
         return p < 1;
     }
 
@@ -305,7 +327,9 @@ export function createDistMotion(opts) {
          */
         push(rows, highlightCh, atMs) {
             if (destroyed) return;
-            const list = (Array.isArray(rows) ? rows : []).map(copyRow);
+            const list = (Array.isArray(rows) ? rows : [])
+                .filter(usableRow)
+                .map(copyRow);
             const t = Number.isFinite(atMs) ? atMs : nowMs();
             const key = distShapeKey(list);
             const nextHi = Number(highlightCh) || 0;
@@ -330,6 +354,11 @@ export function createDistMotion(opts) {
                 // 免得 hover 的瞬间把补间中的柱弹回目标位),补间照旧往下走。
                 hi = nextHi;
                 rebuild();
+            }
+            if (paintOwed && isVisible()) {
+                // 还了隐藏期欠下的那一笔,再走下面的「值没变就早退」——顺序不能倒。
+                paint();
+                paintOwed = false;
             }
             if (sameDistValues(target, list)) {
                 // 值没变 ⇒ 起帧也画不出任何变化(与 meter.js 的 `settled && same` 同款)。
@@ -371,6 +400,13 @@ export function createDistMotion(opts) {
         destroy() {
             destroyed = true;
             stop();
+            // 放掉引用:`app.js` 的 pagehide 注释说的是「不拆就连着数据面与节点数组一起
+            // 钉在内存里」——只停 rAF 不清引用的话那句话不成立。
+            from = [];
+            target = [];
+            shown = [];
+            bars = [];
+            spans = [];
         },
 
         /** 当前显示值(插值后)。 */

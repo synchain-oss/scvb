@@ -2177,7 +2177,9 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
 // 用户实测(v5.4):「monitor 里的声像/音量分布……跟 output 的图相比帧数很低,一秒钟
 // 刷新一两次的感觉,而且速度比那边慢」。两页画的是同一件 `distribution-chart.js`,差的是
 // 数据面频率:Output 吃 25Hz 的 `scvb.params`,Monitor 吃 **4Hz** 的 viz 段(冻结口径)。
-// 补间层只做一件事:把 4Hz 的离散目标铺成 rAF 逐帧的连续运动,且**绝不外推**。
+// 补间层只做一件事:把离散到达的目标铺成 rAF 逐帧的连续运动,且**绝不外推**。
+// (SL-192 后半程把段侧提到 30Hz、页面实得 25Hz;补间仍在,因为 25Hz 依旧是离散步,
+//  且停摆 / 宿主节流 / 换组 / 旧版 4Hz Output 这些降级路径一个都没消失。)
 {
     const row = (ch, pan, volDb, widthPct, extra) => ({
         ch,
@@ -2308,7 +2310,7 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         eq(
             m.rows()[0].pan,
             15,
-            "补间时长不受「上一次 push 什么时候」影响(定值 250ms 的半程)",
+            "补间时长不受「上一次 push 什么时候」影响(定值 40ms 的半程)",
         );
     }
 
@@ -2339,13 +2341,78 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         );
     }
 
-    // ---- 工厂:destroy 之后一切写入口早退(与 trajectory-chart 同一条纪律)
+    // ---- 工厂:坏行在入口就滤掉,谓词与拼串侧同义(PR 115 审查第 3 条)
+    // `distBarsHtml` 对 ch 非有限的行是 continue(不产出节点),而 paint() 按**下标**
+    // 把 shown[i] 写进 bars[i]。两边谓词不一致,坏行会让节点与行整体错位一格 ——
+    // 每根柱写上邻轨的几何,而 setVars 的 null 保护让它一声不吭。
+    {
+        const m = DM.createDistMotion({});
+        m.push(
+            [row(1, -50, -6, 100), { ch: undefined }, row(3, 50, -6, 100)],
+            0,
+            1000,
+        );
+        eq(
+            m.rows().map((r) => r.ch),
+            [1, 3],
+            "ch 非有限的行在入口被滤掉(与 distBarsHtml 同一谓词)",
+        );
+        eq(
+            DC.distBarsHtml(m.rows(), 0).match(/class="dist-bar"/g).length,
+            m.rows().length,
+            "滤后的行数与拼串产出的柱数一一对应(下标不会错位)",
+        );
+        m.push([null, row(1, -50, -6, 100), row(3, 50, -6, 100)], 0, 1040);
+        eq(
+            m.rows().map((r) => r.ch),
+            [1, 3],
+            "null 行也不炸、也不进数据面",
+        );
+    }
+
+    // ---- 工厂:隐藏期跳过的 paint 记欠账,恢复可见时补画(PR 115 审查第 4 条)
+    // tick() 在不可见时照常推进 shown 却不写 DOM;若之后来的 push 数值与 target 相同,
+    // sameDistValues 会早退 —— DOM 就停在隐藏前那一帧上。
+    {
+        let visible = true;
+        const painted = [];
+        const node = () => ({
+            style: { setProperty: (k, v) => painted.push(k + v) },
+        });
+        const bars = [node()];
+        const container = {
+            innerHTML: "",
+            querySelectorAll: (sel) => (sel === ".dist-bar" ? bars : []),
+        };
+        const m = DM.createDistMotion({
+            container,
+            isVisible: () => visible,
+        });
+        m.push([row(1, -50, -6, 100)], 0, 1000);
+        m.push([row(1, 50, 6, 100)], 0, 1040);
+        visible = false;
+        m.tick(1080); // 补间到位,但不可见 ⇒ 跳过 paint,记欠账
+        const beforeRestore = painted.length;
+        visible = true;
+        m.push([row(1, 50, 6, 100)], 0, 1080); // 值与 target 相同 ⇒ 老实现会早退不重画
+        check(
+            painted.length > beforeRestore,
+            "恢复可见后补画了隐藏期欠下的那一帧(不留陈旧 DOM)",
+        );
+    }
+
+    // ---- 工厂:destroy 之后一切写入口早退(与 trajectory-chart 同一条纪律),且**放掉引用**
     {
         const m = DM.createDistMotion({});
         m.push([row(1, 0, 0, 100)], 0, 1000);
+        eq(m.rows().length, 1, "destroy 前有数据面");
         m.destroy();
+        // 放掉引用:app.js 的 pagehide 注释说「不拆就连着数据面与节点数组一起钉在内存里」,
+        // 只停 rAF 不清引用那句话就不成立(PR 115 审查第 5 条)。
+        eq(m.rows(), [], "destroy 清掉数据面引用");
         m.push([row(1, 100, 12, 100)], 0, 1040);
-        eq(m.rows()[0].pan, 0, "destroy 之后 push 一步不走");
+        eq(m.rows(), [], "destroy 之后 push 一步不走(不会把数据面又填回来)");
+        eq(m.diag().animating, false, "destroy 之后循环也不再起");
     }
 
     // ---- 几何格式化只有一处:补间写入面与拼串产物必须逐字对齐
