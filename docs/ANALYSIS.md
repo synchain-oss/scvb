@@ -42,7 +42,7 @@
 ## 6. 自动分配(ADR-010)
 
 - **规则槽位生成**(主唱锁中、成对对称、优先级高→角度大、中心可分配)+ **匈牙利指派**(代价函数见计划 02 §5)。
-- 每轨 `participate_in_auto_pan` 开关(J60):stereo 默认 false / mono 默认 true;参与的 stereo 轨以**中心点**入槽位分配(不区间化);全部轨参与 L/R 音量平衡(stereo 按实际双通道能量)。
+- 每轨 `participate_in_auto_pan` 开关(J60 立项,**默认档经 J83 修订**):未显式设置一律参与(检测值 source_channels 来自宿主总线布局而非素材声道,J60 旧默认前提不成立);是否排除由用户逐轨显式开关决定。参与的 stereo 轨以**中心点**入槽位分配(不区间化);全部轨参与 L/R 音量平衡(stereo 按实际双通道能量)。
 - 中心槽策略选项集 `analysis.center_slot_policy`(J69/U24④,值用桥面真值):`priority_queue`(默认)| `lead_exclusive` | `even_spread`。
 - 连续性滞回:相邻全局区间维持原布局的代价优势(见计划 02 §5)。
 
