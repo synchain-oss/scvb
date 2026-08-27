@@ -44,7 +44,10 @@ inline float readParamEngineering(juce::AudioProcessorValueTreeState& apvts, con
 }
 
 // gesture 通道白名单(契约 §1.12):全局三件 + 当前激活版本每轨 width/freeze。
-// pan/vol 走 setTrackManual(曲线真身),非激活版本参数不进本通道;白名单外回 badArg(不得静默忽略)。
+// pan/vol 走 setTrackManual(未冻结通道 = 曲线真身 + 参数面;[J85] 冻结通道 = **只**落参数面),
+// 非激活版本参数不进本通道;白名单外回 badArg(不得静默忽略)。
+// 「不在 gesture 白名单」≠「不写参数面」:UI 侧从不对 pan/vol 调 setParam(§1.13 防回环),但
+// native 侧处理 setTrackManual 时会自己带 gesture 落一次参数(#87 裁定②)。
 inline bool isGestureParam(const juce::String& id, int activeVersion)
 {
     if (id == "width" || id == "ms_balance" || id == "lead_select")

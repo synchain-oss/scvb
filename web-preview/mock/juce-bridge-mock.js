@@ -1154,14 +1154,59 @@ function buildOutputBackend(ctx) {
                 (panOrVol !== "pan" && panOrVol !== "vol") ||
                 !isFiniteNumber(value)
             ) {
-                // 「返回」行未登记 badArg ⇒ 非法入参按 §0.8 第 2 条夹取:
-                // 这里没有可夹取的语义(轨号/字段名不存在),按不改 state 的空写入处理。
+                // 契约 §1.16「返回」行**已登记 badArg**([J85] 起):`ch`/`panOrVol` 非法,
+                // 或 `value` 非有限(NaN/±Inf),一律拒绝而不是静默夹取 —— 冻结维度上这个数
+                // 就是音频目标值,夹取会把「JS 侧算出了 NaN」这件事藏起来。真桥
+                // `OutputEditor::handleSetTrackManual` 同款(两侧同改,CLAUDE.md §10)。
+                return BAD_ARG();
+            }
+            const v = model.snapshot.global.version_active;
+            const prefix = `v${v}_t${String(ch).padStart(2, "0")}_`;
+            const applied =
+                panOrVol === "pan"
+                    ? clamp(round(value, 1), -100, 100)
+                    : clamp(round(value, 1), -24, 12);
+            // 落一次参数面 —— 冻结维度的取值仲裁与打印器读的都是那里(真桥 #87 起同款)。
+            //
+            // **发送时序与真桥逐拍对齐**([J85] / #106 复审重要3):真桥的
+            // `handleSetTrackManual` 在 `emitSegments` **之前**同步补一次 `emitParams(false)`,
+            // 让参数面帧与段表帧同拍到达 —— 否则 UI 收到段表帧就丢乐观值,而冻结维度的新值
+            // 还挂在 25Hz tick 上没发,旋钮会先弹回旧值。mock 这里同样是「先 params、后 segments、
+            // 都在同一拍」。**改任何一侧都必须同改另一侧**,否则这类顺序 bug 会被 mock 盖住。
+            const setParamPlane = () => {
+                const id = prefix + panOrVol;
+                if (model.params.values[id] === applied) return;
+                model.params.values[id] = applied;
+                emit("scvb.params", {
+                    values: { [id]: applied },
+                    hostEcho: false,
+                    full: false,
+                    versionActive: v,
+                });
+            };
+            // [J85] 冻结通道与手动接管通道分家(真桥 OutputProcessor::setTrackManual 同款):
+            // 该维度**已冻结** → 静态值只落参数面,曲线真身一个字节不动(解冻即回引擎曲线,
+            // 不留常值段);**未冻结** → 用户主动接管,照旧写全时限常值段(04 §1.5 方案 A)。
+            // 解码口径与 native 的 `scvb::engine::freezeBitsOf`(`src/core/engine/FreezeBits.h`)
+            // 及 UI 的 `freezeBits`(`web/output/tab-tracks.js`)**三侧逐条一致**:
+            // 四舍五入 → 钳到 [0,3];非有限值回 0 = 未冻结。旧写法 `Math.trunc(x) & bit` 在
+            // 小数与越界上与 native 分叉(1.9 截成 1 而 native 进位成 2;4 按位截成 0 =「都没冻」
+            // 而 native 钳成 3 =「都冻」)。**改一侧必须同改另两侧**(#106 终轮复审建议)。
+            const frzRaw = Number(model.params.values[`${prefix}freeze`]) || 0;
+            const frzBits = Number.isFinite(frzRaw)
+                ? Math.min(3, Math.max(0, Math.round(frzRaw)))
+                : 0;
+            const dimFrozen = (frzBits & (panOrVol === "pan" ? 1 : 2)) !== 0;
+            if (dimFrozen) {
+                setParamPlane();
+                // 段表没变,§2.8 仍按契约回推该轨(reason 枚举闭合;UI 据此清乐观值)。
+                pushSegments("trackManual", [ch]);
                 return { ok: true, replacedSegments: 0, replacedLocked: 0 };
             }
+
             const old = segmentsOf(ch);
             const replacedSegments = old.length;
             const replacedLocked = old.filter((s) => s.locked).length;
-            // 04 §1.5 方案 A:向当前激活版本该轨写入**覆盖全时间线的单段常值**。
             // 段对象形状取生成器产物为原型(不自造字段),只改该改的几个键。
             const seed =
                 old[0] ||
@@ -1176,10 +1221,10 @@ function buildOutputBackend(ctx) {
             proto.t1S = model.durationS;
             proto.origin = "user_edited";
             proto.locked = true;
-            if (panOrVol === "pan")
-                proto.pan = clamp(round(value, 1), -100, 100);
-            else proto.volDb = clamp(round(value, 1), -24, 12);
+            if (panOrVol === "pan") proto.pan = applied;
+            else proto.volDb = applied;
             model.segByCh.set(ch, { ch, segments: [proto], stale: false });
+            setParamPlane();
             pushSegments("trackManual", [ch]);
             return { ok: true, replacedSegments, replacedLocked };
         },

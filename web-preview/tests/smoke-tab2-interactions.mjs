@@ -12,7 +12,8 @@
 //   ② freeze 四态双向映射(契约 §1.12-§1.14:int 0-3,bit0=pan / bit1=vol);
 //   ③ 首次确认的**三形态**(05 §2.2 R3 无条件触发):纯 auto 轨 / 纯 user_edited 轨 /
 //      含 locked 段的轨 —— 三者都必须弹,第三形态还要带 {l} 计数;
-//   ④ store → 15 行模型:状态灯五态、冻结维度读常值段、配对「(满)」后缀与超员标、
+//   ④ store → 15 行模型:状态灯五态、读回值逐维按 freeze 位分叉([J85]:冻结读参数面 /
+//      未冻结优先读常值段)、配对「(满)」后缀与超员标、
 //      多主唱计数、mono 轨 width no-op;
 //   ⑤ 列头 key 与列序(05 §2.2 列序代码块)+ 卡箍/toggle/PRIO 命中区的源码级断言(RE-06);
 //   ⑥ mock 端到端:setChannelConfig / setTrackManual / gesture 三段式 /
@@ -239,6 +240,67 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         /tracks\.manualOverwriteConfirm\.locked/.test(s),
         "locked 变体词条已接线",
     );
+
+    // [J85] 用户裁定 2026-08-27(方案 A):**冻结通道不弹确认条**,未冻结通道照旧弹。
+    // 两向都断:只断一边的话,「永远不弹」和「永远弹」各有一半能蒙混过去。
+    // freeze 位:bit0=pan / bit1=vol。
+    eq(
+        TT.needsManualConfirm(0, "vol", false),
+        true,
+        "[J85] 未冻结 + 未确认过 ⇒ 弹(整表压成常值段是破坏性操作,要用户点头)",
+    );
+    eq(
+        TT.needsManualConfirm(0, "pan", false),
+        true,
+        "[J85] 未冻结 pan + 未确认过 ⇒ 弹",
+    );
+    eq(
+        TT.needsManualConfirm(2, "vol", false),
+        false,
+        "[J85] 冻结 vol ⇒ 不弹(不替换任何段、不入撤销栈,确认条正文两句都不成立)",
+    );
+    eq(TT.needsManualConfirm(1, "pan", false), false, "[J85] 冻结 pan ⇒ 不弹");
+    // **逐维**而非整行:冻 pan 不该让 vol 那一维也免弹(vol 仍会整表压曲线)。
+    eq(
+        TT.needsManualConfirm(1, "vol", false),
+        true,
+        "[J85] 只冻 pan 时拖 vol ⇒ 仍要弹(逐维判定)",
+    );
+    eq(
+        TT.needsManualConfirm(2, "pan", false),
+        true,
+        "[J85] 只冻 vol 时拖 pan ⇒ 仍要弹(逐维判定)",
+    );
+    // 「每轨每会话一次」优先级最高:确认过之后两条通道都不再弹。
+    eq(
+        TT.needsManualConfirm(0, "vol", true),
+        false,
+        "已确认过 ⇒ 不再弹(每轨每会话一次)",
+    );
+    // 源码级:requestManual 必须走这个判定,不许退回裸 manualConfirmed.has(ch)
+    check(
+        /function requestManual[\s\S]{0,400}?needsManualConfirm\(/.test(s),
+        "requestManual 走 needsManualConfirm(不是裸 manualConfirmed.has)",
+    );
+    // **两个拖拽入口也必须走同一个判定**:拖拽落地走 endDrag → sendManual,**不经
+    // requestManual**,所以它们各自持一份闸口。上一轮只钉了 requestManual,这两处就留着
+    // 裸判定绿着漏过来了 —— pan 只在冻结态可拖,于是「必然已冻结」的 pan 首拖照弹一条
+    // 按裁定不该弹的确认条,还把「每轨每会话一次」的额度(按轨记)烧掉,使得真该弹的
+    // 未冻结 vol 首拖反而不弹(#106 终轮复审重要①)。
+    for (const fn of ["beginVolDrag", "beginPanDrag"]) {
+        check(
+            new RegExp(
+                `function ${fn}[\\s\\S]{0,700}?needsManualConfirm\\(`,
+            ).test(s),
+            `${fn} 走 needsManualConfirm(拖拽入口不经 requestManual,必须自己接上)`,
+        );
+        check(
+            !new RegExp(
+                `function ${fn}[\\s\\S]{0,700}?if \\(!local\\.manualConfirmed\\.has\\(ch\\)\\)`,
+            ).test(s),
+            `${fn} 不再留裸 manualConfirmed.has 闸口`,
+        );
+    }
 }
 
 // =============================================================================
@@ -331,7 +393,7 @@ log("=== ④ store → 15 行模型 ===");
         "多主唱计数",
     );
 
-    // 行模型:冻结维度读常值段,未冻结读参数面
+    // 行模型([J85]):冻结维度读**参数面**(冻结通道只写参数面),未冻结维度优先读常值段
     const store = {
         state: {
             group_id: 1,
@@ -360,7 +422,7 @@ log("=== ④ store → 15 行模型 ===");
             values: {
                 lead_select: 3,
                 v1_t01_freeze: 3, // 轨 1 两维度都冻结
-                v1_t01_pan: 55, // 参数面的值 —— 冻结时**不该**被读到
+                v1_t01_pan: 55, // 冻结维度的静态值只存这里([J85]),读回就该读到它
                 v1_t01_vol: 6,
                 v1_t02_pan: -40,
                 v1_t02_vol: -6,
@@ -390,12 +452,14 @@ log("=== ④ store → 15 行模型 ===");
     };
     const rows = TT.rowsFromStore(store);
     eq(rows.length, 15, "15 行");
-    eq(rows[0].pan, -20, "轨 1 pan 冻结 ⇒ 读常值段(不是参数面的 55)");
-    eq(rows[0].volDb, -3, "轨 1 vol 冻结 ⇒ 读常值段");
+    // [J85] 冻结维度读参数面:段表里那条常值段可能是**冻结前**接管手动时留下的旧值,
+    // 而冻结中的调整只落参数面 —— 读段表就会「看着没改、听着改了」。
+    eq(rows[0].pan, 55, "[J85] 轨 1 pan 冻结 ⇒ 读参数面(不是陈旧常值段的 -20)");
+    eq(rows[0].volDb, 6, "[J85] 轨 1 vol 冻结 ⇒ 读参数面");
     eq([rows[0].fp, rows[0].fv], [1, 1], "轨 1 冻结两位");
     eq(rows[1].pan, -40, "轨 2 无常值段 ⇒ 读参数面");
-    // 读回值不按 freeze 位分叉:未冻结但曲线是常值段的轨同样读该段 —— 否则「未冻结轨
-    // 拖卡箍」(05 允许,走一次性确认)会在下一帧被 25 Hz 的旧参数值弹回去。
+    // 未冻结维度仍优先读常值段:「未冻结轨拖卡箍」(05 允许,走一次性确认)写的是曲线真身,
+    // 改读参数面会在下一帧被 25 Hz 的旧参数值弹回去。
     {
         const unfrozen = TT.rowsFromStore({
             state: { global: { version_active: 1 }, channels: [] },
@@ -736,22 +800,109 @@ log("=== ⑥ mock 端到端(契约 §1.15 / §1.16 / §1.12-§1.14 / §1.6)===")
         res && res.ok === true && Number.isInteger(res.replacedSegments),
         "setTrackManual 回 {ok, replacedSegments, replacedLocked}",
     );
+    // 契约 §1.16「返回」行([J85]):非有限 value 一律 badArg,**不静默夹取** ——
+    // 冻结维度上这个数就是 DSP 的音频目标值,夹到 0 会把「JS 侧算出了 NaN」藏起来。
+    // 真桥 handleSetTrackManual 与 mock 两侧同款(CLAUDE.md §10)。
+    for (const bad of [NaN, Infinity, -Infinity]) {
+        eq(
+            await bridge.setTrackManual(2, "vol", bad),
+            { ok: false, reason: "badArg" },
+            `[J85] 非有限 value(${bad})⇒ badArg`,
+        );
+    }
+    // 轨号 / 维度名非法同属 badArg 这一档(与真桥同一个 if)。
+    eq(
+        await bridge.setTrackManual(99, "vol", 0),
+        { ok: false, reason: "badArg" },
+        "轨号越界 ⇒ badArg",
+    );
+    eq(
+        await bridge.setTrackManual(2, "width", 0),
+        { ok: false, reason: "badArg" },
+        "维度名非法 ⇒ badArg",
+    );
     await sleep(30);
     const tm = seen.segments.find((s) => s.reason === "trackManual");
     check(!!tm, "§2.8 回推 reason=trackManual");
     const constSeg = TT.manualConstantOf(TT.segmentsOfCh(tm, 2));
     check(!!constSeg, "回推的是单段全时限 user_edited 常值(04 §1.5 方案 A)");
     eq(constSeg.volDb, -6, "常值段 volDb = 写入值");
-    // 读回路径:冻结 vol 后行模型必须读到 -6 而不是参数面的值
-    const rows = TT.rowsFromStore({
-        state: { global: { version_active: 1 }, channels: [] },
-        params: {
-            values: { v1_t02_freeze: 2, v1_t02_vol: 0 },
-            versionActive: 1,
-        },
-        segments: tm,
-    });
-    eq(rows[1].volDb, -6, "冻结 vol ⇒ 行模型读常值段");
+    // 读回路径([J85] 逐维按 freeze 位分叉):
+    //   • 未冻结维度 → 读常值段(手动接管通道写的就是曲线真身);
+    //   • 冻结维度   → 读**参数面**(冻结通道只写参数面,段表里那条常值段可能是旧的 ——
+    //     读它就会把把手弹回旧值,而耳朵听到的是参数面上的新值)。
+    const rowsOf = (freeze, volParam) =>
+        TT.rowsFromStore({
+            state: { global: { version_active: 1 }, channels: [] },
+            params: {
+                values: { v1_t02_freeze: freeze, v1_t02_vol: volParam },
+                versionActive: 1,
+            },
+            segments: tm,
+        });
+    eq(rowsOf(0, 0)[1].volDb, -6, "未冻结 vol ⇒ 行模型读常值段");
+    eq(
+        rowsOf(2, -3)[1].volDb,
+        -3,
+        "[J85] 冻结 vol ⇒ 行模型读参数面(不读陈旧常值段)",
+    );
+    eq(
+        rowsOf(1, -3)[1].volDb,
+        -6,
+        "只冻 pan 时 vol 仍读常值段(逐维分叉,不是整行分叉)",
+    );
+
+    // [J85] 冻结通道:再写一次 vol,段表**一个字节都不许变**,值只落参数面。
+    // 事件时序也一并记下来:冻结通道的新值只在 `scvb.params` 里,它必须**不晚于**
+    // trackManual 段表帧到达 —— 晚一拍 UI 就会先丢乐观值再读到旧参数面,旋钮回弹(重要3)。
+    const frames = [];
+    bridge.on("scvb.params", (p) => frames.push({ kind: "params", p }));
+    bridge.on("scvb.segments", (s) => frames.push({ kind: "segments", s }));
+    // 冻结位走**与 toggleFreeze 同款的 gesture 三段式**(契约 §1.12-§1.14):UI 里没有裸
+    // setParam 这条路,冒烟也不许走 —— 否则测的是一条真机上不存在的写入路径(建议⑨)。
+    const frzId = TT.paramIdOf(1, 2, "freeze");
+    eq(
+        [
+            await bridge.beginParamGesture(frzId),
+            await bridge.setParam(frzId, 2), // 冻 vol 维
+            await bridge.endParamGesture(frzId),
+        ],
+        [{ ok: true }, { ok: true }, { ok: true }],
+        "freeze 在 §1.12 gesture 白名单里,三段式逐段回 ok",
+    );
+    const beforeFrozen = JSON.stringify(TT.segmentsOfCh(tm, 2));
+    seen.segments.length = 0;
+    frames.length = 0;
+    const frozenWrite = await bridge.setTrackManual(2, "vol", -12);
+    eq(
+        frozenWrite.replacedSegments,
+        0,
+        "[J85] 冻结通道不替换任何段 ⇒ replacedSegments=0",
+    );
+    await sleep(30);
+    const tm2 = seen.segments.find((s) => s.reason === "trackManual");
+    check(!!tm2, "冻结通道仍按 §2.8 回推 reason=trackManual");
+    eq(
+        JSON.stringify(TT.segmentsOfCh(tm2, 2)),
+        beforeFrozen,
+        "[J85] 冻结中调整:段表逐字节不变(解冻即回引擎曲线)",
+    );
+    // ⚠ 本条断言有个**前提**:`setParamPlane` 带去重门(值没变就不发 `scvb.params`),
+    // 与真桥 `emitParams` 的 diff 门同款。所以这一次写入的值必须**与上一次不同** ——
+    // 上面写的是 −6、这里写 −12,故参数面帧一定会发。若把 −12 改成 −6,params 帧会被
+    // 去重门吞掉、`paramIdx` 恒为 −1,断言变成「永远红」而不是「测出了时序问题」。
+    const paramIdx = frames.findIndex(
+        (f) =>
+            f.kind === "params" && f.p.values && f.p.values.v1_t02_vol === -12,
+    );
+    const segIdx = frames.findIndex(
+        (f) => f.kind === "segments" && f.s.reason === "trackManual",
+    );
+    check(paramIdx >= 0, "[J85] 冻结中调整:值落参数面并经 scvb.params 回推");
+    check(
+        segIdx >= 0 && paramIdx < segIdx,
+        "[J85] 参数面帧不晚于 trackManual 段表帧(真桥 emitParams 排在 emitSegments 之前;晚一拍 = 旋钮回弹)",
+    );
 
     // §1.6 单轨重新识别:analyze({tracksMask}, {clearManual:true})
     seen.segments.length = 0;

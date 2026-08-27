@@ -1905,3 +1905,283 @@ TEST_CASE("HOST R4:单哨兵段轨的降级右端严格大于左端", "[host][t3
     const double t1S = scvb::output::samplesToSeconds(t1Effective, sr);
     CHECK(t1S > t0S);
 }
+
+// ===========================================================================
+// v5.3 A2 实测 / 裁决 [J85]「冻结语义修订」—— 冻结只存参数面 + 冻结位,曲线真身不动
+//
+// 用户现场:冻结某轨 pan 调了个值,**解冻后 pan 永远停在冻结时的那个值,重新分析也不动**
+// —— 一次冻结即永久锁死。链条:
+//   ① 冻结中调整走 setTrackManual,它把静态值**整表烘焙**进曲线(单段全时限常值,
+//      t1 = 1<<40 哨兵,origin=user_edited);
+//   ② 解冻后 DspArbiter 回读曲线(DspArbiter.cpp §2.3 引擎权威分支),读到的仍是那条常值段;
+//   ③ 再分析按 ADR-008 不覆盖 origin=user 段 → 那条常值段永远不会被重算掉。
+// 三条合起来 = 冻结这个「临时接管」把曲线永久改写了。
+//
+// 修法:冻结通道**不写曲线**,只写参数面(冻结维度的取值仲裁与打印器读的都是那里)。
+// 手动接管(非冻结)与 clearManual 两条通道逐字不变 —— 用户主动「设为手动」仍然写曲线。
+// ===========================================================================
+
+namespace
+{
+
+// 段的逐字节相等(harness 里比「段表被没被改写」用;不比浮点近似,要的就是「一个字节都没动」)。
+bool sameSegments(const std::vector<scvb::state::Segment>& a, const std::vector<scvb::state::Segment>& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        if (a[i].t0 != b[i].t0 || a[i].t1 != b[i].t1 || a[i].pan != b[i].pan || a[i].volDb != b[i].volDb ||
+            a[i].flags != b[i].flags)
+            return false;
+    }
+    return true;
+}
+
+std::vector<scvb::state::Segment> segmentsOfTrack(ScvbOutputAudioProcessor& out, int ch)
+{
+    const auto crvs = out.crvsSnapshot();
+    return crvs.versions[static_cast<std::size_t>(out.versionActive() - 1)]
+        .tracks[static_cast<std::size_t>(ch - 1)]
+        .segments;
+}
+
+// 冻结位一次性写入(gesture 三段式 = UI 的 toggleFreeze 同款)。
+void setFreezeBits(ScvbOutputAudioProcessor& out, int ch, int bits)
+{
+    auto* p = out.getAPVTS().getParameter(scvb::params::freezeId(out.versionActive(), ch));
+    REQUIRE(p != nullptr);
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(bits)));
+    p->endChangeGesture();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(120);
+}
+
+float paramValueOf(ScvbOutputAudioProcessor& out, const juce::String& id)
+{
+    auto* p = out.getAPVTS().getParameter(id);
+    REQUIRE(p != nullptr);
+    return p->convertFrom0to1(p->getValue());
+}
+
+// 该轨段表是否全是 auto 段(分析产物没被手动值烘焙掉)。
+bool allAutoSegments(ScvbOutputAudioProcessor& out, int ch)
+{
+    const auto segs = segmentsOfTrack(out, ch);
+    if (segs.empty())
+        return false;
+    for (const auto& s : segs)
+        if (scvb::state::segmentOrigin(s.flags) != scvb::state::SegmentOrigin::Auto)
+            return false;
+    return true;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// [J85] 核心断言:**冻结期间 crvsSnapshot 段表不被改写**。修的就是这一条。
+// 顺带守住 J85 ⑤:手动接管(非冻结)那条通道原样写曲线,一个字都没改。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J85:冻结中调整只落参数面,段表逐字节不变", "[host][t37][v53][J85]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const int v = r.out.versionActive();
+    int replaced = 0;
+    int replacedLocked = 0;
+
+    // —— 通道②(不受本次改动影响):未冻结 = 用户主动接管手动 → 照旧写曲线真身 ——
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -40.0f, replaced, replacedLocked));
+    {
+        const auto segs = segmentsOfTrack(r.out, kTestChannel);
+        REQUIRE(segs.size() == 1);
+        CHECK(segs.front().pan == -40.0f); // 接管通道确实写进了曲线
+        CHECK(scvb::state::segmentOrigin(segs.front().flags) == scvb::state::SegmentOrigin::UserEdited);
+    }
+
+    // —— 通道①:冻结 pan 维后再调 —— 只许动参数面 ——
+    setFreezeBits(r.out, kTestChannel, 1); // bit0 = pan
+    const auto before = segmentsOfTrack(r.out, kTestChannel);
+
+    replaced = -1;
+    replacedLocked = -1;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 70.0f, replaced, replacedLocked));
+
+    // ★ 核心:段表逐字节不变(修复前这里被整表换成 pan=70 的常值段)。
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), before));
+    // 没替换任何段就得如实回 0(UI 的一次性确认条按这两个数报计数)。
+    CHECK(replaced == 0);
+    CHECK(replacedLocked == 0);
+    // 值落在冻结维度真正会被读的那个平面上。
+    CHECK(paramValueOf(r.out, scvb::params::panId(v, kTestChannel)) == Catch::Approx(70.0f).margin(0.01));
+
+    // 冻结是**逐维**的:pan 冻着,vol 没冻 → vol 仍走接管通道写曲线,且不冲掉 pan 那一维。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/false, -9.0f, replaced, replacedLocked));
+    {
+        const auto segs = segmentsOfTrack(r.out, kTestChannel);
+        REQUIRE(segs.size() == 1);
+        CHECK(segs.front().volDb == -9.0f);
+        CHECK(segs.front().pan == -40.0f); // 段表里的 pan 仍是接管时那个值(T37 D 族口径)
+        CHECK(replaced == 1); // 这一路确实替换了 1 段,如实回报
+    }
+    CHECK(paramValueOf(r.out, scvb::params::volId(v, kTestChannel)) == Catch::Approx(-9.0f).margin(0.01));
+
+    // 冻结通道不建段,值域钳制也得照 §1.16 的 value 域执行(不能靠建段函数顺手夹)。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 999.0f, replaced, replacedLocked));
+    CHECK(paramValueOf(r.out, scvb::params::panId(v, kTestChannel)) == Catch::Approx(100.0f).margin(0.01));
+
+    // 非有限值绝不许穿进参数面(#106 复审重要4):冻结维度上它就是 DspArbiter 的音频目标值,
+    // NaN 进去等于整条总线出 NaN。桥面另有 badArg 拒绝,这里断的是 native 兜底那一层。
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, nan, replaced, replacedLocked));
+    const float panAfterNan = paramValueOf(r.out, scvb::params::panId(v, kTestChannel));
+    CHECK(std::isfinite(panAfterNan));
+    CHECK(panAfterNan == Catch::Approx(0.0f).margin(0.01)); // 回中性值(pan 居中)
+    r.runBlocks(20, 0.5f);
+    const auto meters = r.out.meterSnapshot();
+    CHECK(std::isfinite(meters.busPeak[0])); // 总线没被污染
+    CHECK(std::isfinite(meters.busPeak[1]));
+}
+
+// ---------------------------------------------------------------------------
+// [J85] ②preview + ③解冻即回曲线:引擎权威下冻结维度播冻结静态值(= 写入自动化前的
+// preview),解冻后立刻回到**曲线采样值**并随时间运动(两个不同 tSec 取到两个不同的值 ——
+// 常值段是取不出这个差的,这一条就是「不残留常值段」的听感证据)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J85:解冻回引擎曲线,输出随时间运动(不残留常值段)", "[host][t37][v53][J85]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setOutputEnabled(true); // 引擎权威(ARMED/PRINT)
+
+    const int v = r.out.versionActive();
+    int replaced = 0;
+    int replacedLocked = 0;
+
+    // 造一条**随时间变化**的曲线:先接管出一条全时限常值段,再切成两段、两段给相反的 pan。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -100.0f, replaced, replacedLocked));
+    scvb::state::SegmentEditArgs split;
+    split.op = scvb::state::SegmentEditOp::Split;
+    split.segIdx = 0;
+    split.tSamples = static_cast<std::int64_t>(5.0 * kSr);
+    REQUIRE(r.out.editSegment(kTestChannel - 1, split) == scvb::state::SegmentEditResult::Ok);
+    for (int i = 0; i < 2; ++i)
+    {
+        scvb::state::SegmentEditArgs sv;
+        sv.op = scvb::state::SegmentEditOp::SetValues;
+        sv.segIdx = i;
+        sv.hasPan = true;
+        sv.pan = (i == 0) ? -100.0f : 100.0f; // 前段硬左、后段硬右
+        REQUIRE(r.out.editSegment(kTestChannel - 1, sv) == scvb::state::SegmentEditResult::Ok);
+    }
+    REQUIRE(segmentsOfTrack(r.out, kTestChannel).size() == 2);
+
+    // 总线 L/R 比:>1 = 偏左,<1 = 偏右(本组只有这一条 Input)。
+    const auto balanceAt = [&r](double tSec) {
+        r.ph.timeSamples = static_cast<std::int64_t>(tSec * kSr);
+        r.runBlocks(40, 0.5f); // 走过切换斜坡
+        float l = 0.0f;
+        float rr = 0.0f;
+        for (int i = 0; i < 12; ++i)
+        {
+            r.runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/4);
+            const auto m = r.out.meterSnapshot();
+            l = std::max(l, m.busPeak[0]);
+            rr = std::max(rr, m.busPeak[1]);
+        }
+        REQUIRE(l > 0.0f);
+        REQUIRE(rr > 0.0f);
+        return l / rr;
+    };
+
+    // 前置:未冻结时曲线说了算 —— 前段偏左、后段偏右,两个 tSec 取到两个不同的值。
+    const float leftEarly = balanceAt(2.0);
+    const float rightLate = balanceAt(8.0);
+    REQUIRE(leftEarly > 1.2f);
+    REQUIRE(rightLate < 0.83f);
+
+    // —— ② 冻结 pan 并调到居中:引擎权威下必须**立刻**播这个冻结静态值(preview 成立)——
+    setFreezeBits(r.out, kTestChannel, 1);
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 0.0f, replaced, replacedLocked));
+    CHECK(paramValueOf(r.out, scvb::params::panId(v, kTestChannel)) == Catch::Approx(0.0f).margin(0.01));
+    const float frozenEarly = balanceAt(2.0);
+    const float frozenLate = balanceAt(8.0);
+    CHECK(frozenEarly == Catch::Approx(1.0f).margin(0.15)); // 冻结值居中 → 两声道等量
+    CHECK(frozenLate == Catch::Approx(1.0f).margin(0.15)); // 且**与时间无关**(冻结 = 平直线)
+
+    // 居中值单独一条断不出「参数面被按什么值域读」:pan=0 归一化后是 0.5,若 DspArbiter 误把
+    // 归一化值当工程值读,0.5 仍然≈居中,断言照样绿(#106 复审建议)。所以再取两个**非居中**
+    // 的冻结值走完整 DSP 链,按 equal-power + dual-pan 解析值对拍:
+    //   stereo 源、width=100 → 子声像 = clamp(pan∓100);两路子声像增益叠加后
+    //   pan=+70 → L/R ≈ 0.8526/1.5225 ≈ 0.56;pan=−70 → 镜像 ≈ 1.79。
+    // 若参数被当成归一化值读(+70 → 0.85),L/R 会是 ≈0.99 —— 与 0.56 差着一个数量级的判据。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 70.0f, replaced, replacedLocked));
+    const float frozenRight = balanceAt(2.0);
+    CHECK(frozenRight < 0.75f); // 明显偏右(解析值 0.56)
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+    const float frozenLeft = balanceAt(2.0);
+    CHECK(frozenLeft > 1.33f); // 明显偏左(解析值 1.79)
+    CHECK(frozenLeft > frozenRight * 2.0f); // 两个冻结静态值真的推动了声像,不是同一个数
+
+    // 回到居中,免得下一段解冻断言把「冻结值恰好也偏左」当成曲线在动。
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 0.0f, replaced, replacedLocked));
+
+    // —— ③ 解冻:立刻回到曲线采样值,并随时间运动 ——
+    setFreezeBits(r.out, kTestChannel, 0);
+    const float thawedEarly = balanceAt(2.0);
+    const float thawedLate = balanceAt(8.0);
+    // 修复前:曲线已被冻结中那次调整整表烘焙成 pan=0 的常值段 → 这两个数都还是 1.0(居中),
+    // 而且再也回不来 —— 这正是用户现场的「解冻后 pan 永远停在冻结时的值」。
+    CHECK(thawedEarly > 1.2f);
+    CHECK(thawedLate < 0.83f);
+    CHECK(thawedEarly > thawedLate * 1.5f); // 两个 tSec 取到两个不同的值 = 曲线在动,不是常值
+
+    // 段表也得是原来那两段:冻结那一轮一个字节都没往里写。
+    const auto segs = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE(segs.size() == 2);
+    CHECK(segs[0].pan == -100.0f);
+    CHECK(segs[1].pan == 100.0f);
+}
+
+// ---------------------------------------------------------------------------
+// [J85] ④(用户现场后半句):解冻之后**再分析**必须能更新该轨曲线。
+// 修复前:冻结中调整烘焙出的是 origin=user_edited 段,普通再分析按 ADR-008 不覆盖它 ——
+// 于是「重新分析也不动」。修复后段表始终是 auto,再分析照常重算。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J85:冻结→调整→解冻后,再分析可更新该轨曲线", "[host][t37][v53][J85]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCh = 1;
+    constexpr float kFrozenPan = -80.0f;
+    REQUIRE(allAutoSegments(r.out, kCh)); // 前置:分析产物全是 auto 段
+
+    // 冻结 pan 维,再在冻结态调一个显眼的值(= 用户现场的操作)。
+    setFreezeBits(r.out, kCh, 1);
+    int replaced = 0;
+    int replacedLocked = 0;
+    const auto beforeFreeze = segmentsOfTrack(r.out, kCh);
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, kFrozenPan, replaced, replacedLocked));
+    // 分析产物一个字节都不许被烘焙掉(修复前:整表变成单段 user_edited 常值)。
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeFreeze));
+    CHECK(allAutoSegments(r.out, kCh));
+
+    // 解冻 → 再分析(**普通**分析,不带 clearManual —— 这正是修复前走不通的那条路)。
+    setFreezeBits(r.out, kCh, 0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    CHECK(allAutoSegments(r.out, kCh)); // 仍是 auto:没有 user 段挡着重算
+    const double after = r.firstPan(kCh);
+    REQUIRE(std::isfinite(after));
+    // 修复前:段表恒等于那个手动值(user 段被 ADR-008 保留下来),这里永远是 −80。
+    CHECK(std::abs(after - static_cast<double>(kFrozenPan)) > 1.0);
+}

@@ -9,6 +9,7 @@
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
+#include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
 #include "state/StateMigration.h"
@@ -1076,10 +1077,9 @@ void ScvbOutputAudioProcessor::publishConfigBroadcast()
 
         // freeze 是当前激活版本的自动化参数(J65 同一参数承载 pan/vol 两位)。
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
-        dst.freeze =
-            frz != nullptr
-                ? static_cast<scvb::u32>(juce::jlimit(0, 3, juce::roundToInt(frz->load(std::memory_order_relaxed))))
-                : 0u;
+        dst.freeze = frz != nullptr
+                         ? static_cast<scvb::u32>(scvb::engine::freezeBitsOf(frz->load(std::memory_order_relaxed)))
+                         : 0u;
 
         // label:UTF-8 按字节截断到最后一个完整序列边界,绝不切出半个码点(Input 侧直接当
         // C 字符串显示,半个码点会渲染成乱码方块)。
@@ -1606,19 +1606,49 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
 
     auto& track =
         crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)].tracks[static_cast<std::size_t>(ch - 1)];
-    replacedSegments = static_cast<int>(track.segments.size());
+    const int v = versionActive_;
+
+    // —— [J85] 冻结语义修订:**两条通道,只有一条写曲线** ——
+    //
+    // ① 该维度**已冻结**(freeze 对应位=1)= 冻结中调整。静态值只存**参数面 + 冻结位**,
+    //    曲线真身一个字节都不动。引擎权威下 DspArbiter 对冻结维度读的就是 rawPan/rawVol
+    //    (DspArbiter.cpp §2.3),所以只写参数面照样出声 —— 那正是「写入自动化前的 preview」。
+    // ② 该维度**未冻结** = 用户主动「设为手动」接管。照旧写常值段(04 §1.5 方案 A)+ 参数面,
+    //    UI 随后把 freeze 位置 1(tab-tracks.js「拖动 = 接管手动」)。这条通道不受本次改动影响。
+    //
+    // 为什么冻结通道必须停手:整表烘焙成「单段全时限常值」之后,解冻回曲线读到的仍是那条常值段,
+    // 而再分析按 ADR-008 不覆盖 origin=user 段 —— 于是**一次冻结即永久锁死**,pan 再也回不到
+    // 引擎分析曲线上(v5.3 A2 实测:解冻后 pan 永远停在冻结时的值,重新分析也不动)。
+    // 冻结本就该是可逆的临时接管,「解冻即回引擎曲线继续运动」是它的定义,不是附加要求。
+    //
+    // 位解码走 FreezeBits.h 的共用口径:走哪条通道必须与 DspArbiter 读哪个面**同一个判定**,
+    // 两份口径分叉就是「这边按未冻结写曲线、那边按已冻结读参数面」的错位(#106 复审建议⑥)。
+    const auto* frzRaw = handles_.rawFrz[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(ch - 1)];
+    const int frz = frzRaw != nullptr ? scvb::engine::freezeBitsOf(frzRaw->load(std::memory_order_relaxed)) : 0;
+    const bool dimFrozen = scvb::engine::freezeHasDim(frz, isPan);
+
+    // 冻结通道不替换任何段,`replaced*` 如实回 0(UI 的一次性确认条据此显示计数,
+    // 报一个没发生的替换数就是骗用户;PR#55 建议⑤的「如实统计」同口径)。
+    replacedSegments = 0;
     replacedLocked = 0;
-    for (const auto& s : track.segments)
-        if (scvb::state::segmentLocked(s.flags))
-            ++replacedLocked; // 如实统计锁定段(PR#55 建议⑤)
+    float applied = scvb::output::clampManualValue(isPan, value);
 
-    // 写一维必须保留另一维(§1.16 常值段的两个维度各自独立);构造与钳制口径见
-    // makeManualConstantSegment 头注(T37 三轮 D 族回归点,单测直接断言该纯函数)。
-    const scvb::state::Segment seg = scvb::output::makeManualConstantSegment(track.segments, isPan, value);
+    if (!dimFrozen)
+    {
+        replacedSegments = static_cast<int>(track.segments.size());
+        for (const auto& s : track.segments)
+            if (scvb::state::segmentLocked(s.flags))
+                ++replacedLocked; // 如实统计锁定段(PR#55 建议⑤)
 
-    scvb::output::commitCrvsTransaction(
-        authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
-        [&] { track.segments.assign(1, seg); }, [this] { rebuildAllCurves(); });
+        // 写一维必须保留另一维(§1.16 常值段的两个维度各自独立);构造与钳制口径见
+        // makeManualConstantSegment 头注(T37 三轮 D 族回归点,单测直接断言该纯函数)。
+        const scvb::state::Segment seg = scvb::output::makeManualConstantSegment(track.segments, isPan, value);
+        applied = isPan ? seg.pan : seg.volDb;
+
+        scvb::output::commitCrvsTransaction(
+            authority_.undoManager(), crvsData_, "Track manual ch" + juce::String(ch),
+            [&] { track.segments.assign(1, seg); }, [this] { rebuildAllCurves(); });
+    }
 
     // 手动值还必须落到**参数面**,否则冻结维度上它根本驱动不了声音。
     //
@@ -1627,12 +1657,11 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
     // 「手动写回成功」之后会**自动把该维度的 freeze 位置 1**(tab-tracks.js「拖动 = 接管手动」)。
     // 于是:第一次手动改能生效(此时 freeze 还是 0,曲线权威),UI 随即置 1,**之后每一次手动改
     // 都只写进曲线、对声音毫无作用** —— 而旋钮照样跟手,因为读回值取自段表。这正是 v4 实测
-    // P1-4「先测有效、稍后再调完全无效」。
+    // P1-4「先测有效、稍后再调完全无效」。[J85] 之后这一路更是**唯一**的落点:冻结通道不写曲线。
     //
     // 契约 §1.16 把本函数定义为「**冻结(freeze 对应位=1)时的手动静态值**」,PARAMETERS §freeze
     // 定义冻结维度为「引擎不驱动、host/**手动**权威」—— 手动值要当权威,就得落在冻结维度真正
-    // 读的那个平面上。§1.16 的「零 gesture」照旧遵守:不 begin/endChangeGesture,只设值。
-    const int v = versionActive_;
+    // 读的那个平面上。
     if (auto* raw = isPan ? handles_.rawPan[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(ch - 1)]
                           : handles_.rawVol[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(ch - 1)];
         raw != nullptr)
@@ -1640,7 +1669,6 @@ bool ScvbOutputAudioProcessor::setTrackManual(int ch, bool isPan, float value, i
         const juce::String id = isPan ? scvb::params::panId(v, ch) : scvb::params::volId(v, ch);
         if (auto* p = apvts.getParameter(id))
         {
-            const float applied = isPan ? seg.pan : seg.volDb;
             // **必须包 gesture**:裸 setValueNotifyingHost 在宿主看来是一次没有起止的孤立写入 ——
             // Cubase 这类宿主要么把它记成一个孤立自动化点、要么在自动化 Read 档下当场把值顶回去
             // (那样这条修复根本不生效)。begin/end 把它标成一次完整的用户编辑,宿主才会接受。
@@ -2014,7 +2042,7 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         tc.source =
             c.sourceChannels == 2 ? scvb::analysis::SourceChannels::Stereo : scvb::analysis::SourceChannels::Mono;
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
-        tc.freeze = frz != nullptr ? juce::jlimit(0, 3, juce::roundToInt(frz->load(std::memory_order_relaxed))) : 0;
+        tc.freeze = frz != nullptr ? scvb::engine::freezeBitsOf(frz->load(std::memory_order_relaxed)) : 0;
         if (clearManual && features[static_cast<std::size_t>(t)].anyCovered)
         {
             tc.freeze = 0; // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值

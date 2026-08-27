@@ -7,6 +7,7 @@
 // undo 事务并重建;失败(BadArg/NotAdjacent)不改原表、不碰 undo、不重建 —— 避免无效 undo 步。
 
 #include <algorithm>
+#include <cmath> // std::isfinite(clampManualValue 拦 NaN/Inf)
 #include <functional>
 #include <vector>
 
@@ -73,6 +74,24 @@ inline void commitCrvsTransaction(juce::UndoManager& undo, scvb::state::CrvsData
 //
 // existing = 该轨替换前的段表:非空则从首段继承另一维;空表(从未编辑/分析过)才落各自默认。
 // 纯函数,可离线断言。
+
+// 手动值的值域钳制(pan −100..+100 / vol −24..+12 dB,契约 §1.16 的 `value` 域)。
+// [J85] 冻结通道**不写曲线**,于是「钳制」不能再只藏在建段函数里 —— 参数面那一路也要用同一
+// 把尺子,否则两条通道对同一个越界输入会给出两个不同的落地值。
+//
+// **非有限值必须在这里就死掉**(#106 复审重要4):`std::clamp(NaN, lo, hi)` 两次比较全 false,
+// 原样把 NaN 吐回来。冻结维度上这个值不是显示用的数字,它**就是音频目标值** ——
+// `convertTo0to1(NaN)` → `rawPan/rawVol` = NaN → DspArbiter 冻结分支直接拿去喂平滑器与增益,
+// 一次畸形桥调用就能让整条总线出 NaN。回落 0(pan 居中 / vol 0dB)= 该维度的中性值,
+// 与「参数未接线」的默认同款。桥面 `handleSetTrackManual` 另有一道 badArg 拒绝,这里是兜底:
+// 桥不是唯一调用方(harness / 单测 / 将来的 native 调用者都走这条路)。
+inline float clampManualValue(bool isPan, float value)
+{
+    if (!std::isfinite(value))
+        return 0.0f;
+    return isPan ? std::clamp(value, -100.0f, 100.0f) : std::clamp(value, -24.0f, 12.0f);
+}
+
 inline scvb::state::Segment makeManualConstantSegment(const std::vector<scvb::state::Segment>& existing, bool isPan,
                                                       float value)
 {
@@ -87,8 +106,8 @@ inline scvb::state::Segment makeManualConstantSegment(const std::vector<scvb::st
     scvb::state::Segment seg;
     seg.t0 = 0;
     seg.t1 = static_cast<std::int64_t>(1) << 40; // 覆盖全时间线近似(真末端由宿主时间线提供)
-    seg.pan = isPan ? std::clamp(value, -100.0f, 100.0f) : keepPan;
-    seg.volDb = isPan ? keepVolDb : std::clamp(value, -24.0f, 12.0f);
+    seg.pan = isPan ? clampManualValue(true, value) : keepPan;
+    seg.volDb = isPan ? keepVolDb : clampManualValue(false, value);
     seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
     return seg;
 }

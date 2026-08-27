@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "AutomationPrinter.h"
 
+#include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter / setTrackManual 共用)
+
 #include <cmath>
 
 namespace scvb::output
@@ -165,9 +167,12 @@ bool AutomationPrinter::laneFrozen(const Lane& lane) const
     if (lane.freezeRaw == nullptr)
         return false;
 
-    const int frz = static_cast<int>(lane.freezeRaw->load(std::memory_order_relaxed));
-    // J65:bit0=冻结 pan,bit1=冻结 vol。
-    return lane.isPan ? ((frz & 1) != 0) : ((frz & 2) != 0);
+    // J65:bit0=冻结 pan,bit1=冻结 vol。解码走 FreezeBits.h 的共用口径 —— 打印器是「谁被冻结」
+    // 的第 5 个判定点(前 4 个:DspArbiter / setTrackManual / ctrl 广播 / 分析入参),
+    // 它与 DspArbiter 必须同答案:一个按冻结写平直线、另一个按未冻结采曲线,自动化车道与
+    // 听到的声音就会对不上(#106 终轮复审建议)。
+    const int frz = scvb::engine::freezeBitsOf(lane.freezeRaw->load(std::memory_order_relaxed));
+    return scvb::engine::freezeHasDim(frz, lane.isPan);
 }
 
 bool AutomationPrinter::nearSegmentBoundary(const scvb::CurveEvaluator* curve, double tSec) const

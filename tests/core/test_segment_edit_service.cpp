@@ -8,7 +8,10 @@
 
 #include <juce_data_structures/juce_data_structures.h>
 
+#include <limits>
+
 #include "AnalyzeScopeMath.h"
+#include "engine/FreezeBits.h"
 #include "SegmentEditService.h"
 #include "state/SegmentEdit.h"
 #include "state/StateCodec.h"
@@ -190,6 +193,85 @@ TEST_CASE("SERVICE-8 makeManualConstantSegment:交替写两维互不干扰(真�
     segs.assign(1, scvb::output::makeManualConstantSegment(segs, /*isPan=*/false, 2.0f));
     REQUIRE(segs[0].volDb == 2.0f);
     REQUIRE(segs[0].pan == 55.0f); // pan 没被音量冲掉
+}
+
+// ---------------------------------------------------------------------------
+// [J85] / #106 复审重要4:clampManualValue 是**两条通道共用的那把尺子** —— 冻结通道不建段,
+// 值直接落参数面,而冻结维度的参数面就是 DspArbiter 的音频目标值。所以它必须自己拦住
+// 非有限值:std::clamp(NaN, lo, hi) 两次比较全 false,会把 NaN 原样吐回去。
+// 四个边界 + NaN/±Inf 全部离线断死(纯函数,不需要 JUCE 宿主)。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-9 clampManualValue:四边界 + 非有限值", "[segedit][service][j85]")
+{
+    // 四个边界:pan ±100 / vol −24..+12(契约 §1.16 的 `value` 域),边界值本身必须原样通过。
+    CHECK(scvb::output::clampManualValue(/*isPan=*/true, -100.0f) == -100.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/true, 100.0f) == 100.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/false, -24.0f) == -24.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/false, 12.0f) == 12.0f);
+
+    // 越界:各自夹到自己那一侧(两个维度的域不同,不能共用一套上下限)。
+    CHECK(scvb::output::clampManualValue(/*isPan=*/true, 999.0f) == 100.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/true, -999.0f) == -100.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/false, 999.0f) == 12.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/false, -999.0f) == -24.0f);
+    // vol 的上限不是 pan 的上限 —— 一套上下限吃两维会让 +100 的 vol 悄悄过关。
+    CHECK(scvb::output::clampManualValue(/*isPan=*/false, 100.0f) == 12.0f);
+
+    // 非有限值:一律回中性值 0(pan 居中 / vol 0dB),**绝不许原样穿出去**。
+    // 修复前 std::clamp(NaN,…) 返回 NaN → convertTo0to1(NaN) → rawPan/rawVol = NaN →
+    // DspArbiter 冻结分支拿它当 pan/增益目标 → 整条总线出 NaN。
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    CHECK(scvb::output::clampManualValue(/*isPan=*/true, nan) == 0.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/false, nan) == 0.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/true, inf) == 0.0f);
+    CHECK(scvb::output::clampManualValue(/*isPan=*/false, -inf) == 0.0f);
+    // 建段通道走的是同一把尺子:NaN 不得落进段表(两维分别验)。
+    const std::vector<Segment> empty;
+    CHECK(scvb::output::makeManualConstantSegment(empty, /*isPan=*/true, nan).pan == 0.0f);
+    CHECK(scvb::output::makeManualConstantSegment(empty, /*isPan=*/false, nan).volDb == 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// [J85] / #106 复审建议⑥:freeze 位解码只许有一份口径 —— 音频线程的 DspArbiter::readFrz 与
+// 消息线程的 setTrackManual / ctrl 广播 / 分析入参共用 scvb::engine::freezeBitsOf。
+// 两边分叉 = 「一边按未冻结去写曲线、另一边按已冻结去读参数面」,正是 J85 要根治的错位。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-10 freezeBitsOf:四态 / 四舍五入 / 越界 / 非有限", "[segedit][service][j85]")
+{
+    using scvb::engine::freezeBitsOf;
+    using scvb::engine::freezeHasDim;
+
+    // 四态(J65:bit0=pan / bit1=vol)
+    CHECK(freezeBitsOf(0.0f) == 0);
+    CHECK(freezeBitsOf(1.0f) == 1);
+    CHECK(freezeBitsOf(2.0f) == 2);
+    CHECK(freezeBitsOf(3.0f) == 3);
+
+    // 四舍五入(旧 core 侧是截断:1.9 会被解成 1 = 只冻 pan,而 output 侧解成 2 = 只冻 vol)
+    CHECK(freezeBitsOf(1.9f) == 2);
+    CHECK(freezeBitsOf(0.4f) == 0);
+    CHECK(freezeBitsOf(2.5f) == 3);
+
+    // 越界钳制:保守取「多冻一维」,绝不按位截高位(4 & 3 == 0 会解成两维都没冻)
+    CHECK(freezeBitsOf(4.0f) == 3);
+    CHECK(freezeBitsOf(99.0f) == 3);
+    CHECK(freezeBitsOf(-1.0f) == 0);
+
+    // 非有限:回落 0 = 未冻结(与「参数未接线」同款默认),且不得走 float→int 的 UB 路径
+    CHECK(freezeBitsOf(std::numeric_limits<float>::quiet_NaN()) == 0);
+    CHECK(freezeBitsOf(std::numeric_limits<float>::infinity()) == 3);
+    CHECK(freezeBitsOf(-std::numeric_limits<float>::infinity()) == 0);
+
+    // 维度取位:isPan → bit0,否则 bit1
+    CHECK(freezeHasDim(1, /*isPan=*/true));
+    CHECK_FALSE(freezeHasDim(1, /*isPan=*/false));
+    CHECK(freezeHasDim(2, /*isPan=*/false));
+    CHECK_FALSE(freezeHasDim(2, /*isPan=*/true));
+    CHECK(freezeHasDim(3, /*isPan=*/true));
+    CHECK(freezeHasDim(3, /*isPan=*/false));
+    CHECK_FALSE(freezeHasDim(0, /*isPan=*/true));
+    CHECK_FALSE(freezeHasDim(0, /*isPan=*/false));
 }
 
 // ---------------------------------------------------------------------------
