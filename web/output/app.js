@@ -57,6 +57,7 @@ import {
     shouldAutoShowTourAsk,
 } from "./tour.js";
 import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
+import { disableNativeContextMenu } from "../shared/context-menu.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -459,6 +460,7 @@ const tabSettings = createTabSettings({
     onLocalChange: () => requestRender(),
     onReopenTour: () => tour && tour.start(),
     onViewWorkflow: () => showWorkflowCard(),
+    onOpenDocs: () => openDocsInBrowser(),
 });
 tabSettings.mount();
 // 四个 tab 装配完毕,render() 从这里起可以跑(装配前 render 直接早退 ——
@@ -524,6 +526,38 @@ langStart.mount();
 
 // ------------------------------------------------------------- 查看工作流程大卡(与 tour 步 2 同一张大卡)
 // 设置页「查看工作流程」入口:独立 overlay,渲染 workflow.* 五节点 + 优先级;零桥、零 state。
+// ---------------------------------------------------- 说明文档外链(SL-214)
+/**
+ * 文档地址(中文界面给中文手册,其余给英文)。
+ *
+ * **分支 pin 而不是版本 pin**:docs/RELEASE.md 里发布说明的写法是
+ * `blob/v{X.Y.Z}/docs/…` —— 那是对**已发过 tag** 的版本才成立的写法。眼下唯一的
+ * tag 是 v0.1.0(空壳骨架),按版本拼出来的链接对当前每一个构建都是 404。
+ * 故先 pin 默认分支;**发版时应按 RELEASE.md 的 tag 口径改回来**,改这一处即可。
+ */
+const DOCS_URL = {
+    zh: "https://github.com/synchain-oss/scvb/blob/dev/docs/USER_GUIDE.zh-CN.md",
+    en: "https://github.com/synchain-oss/scvb/blob/dev/docs/USER_GUIDE.md",
+};
+
+/**
+ * 在**系统浏览器**里打开说明文档。
+ *
+ * 通道 = `window.open` → WebView2 的 NewWindowRequested → JUCE 的
+ * `newWindowAttemptingToLoad` → `URL::launchInDefaultBrowser()`(见
+ * src/plugin-common/WebViewHost.cpp 的同名重写)。
+ * **不新增桥函数**:契约函数表里没有「打开外部 URL」这一项,而这条路本就是 JUCE
+ * 给的现成通道,走它就不用动冻结契约。
+ * 不用 `<a href>` 直接导航:那会把插件窗**整页替换**成一个网页,而插件窗没有后退键,
+ * 用户回不来。`window.open` 走的是新窗口请求,JUCE 已对它 put_Handled(true),
+ * WebView2 不会自己弹窗。
+ */
+function openDocsInBrowser() {
+    const url = DOCS_URL[lang] || DOCS_URL.en;
+    // noopener:被打开方拿不到 window.opener,标准外链纪律
+    window.open(url, "_blank", "noopener");
+}
+
 let workflowCard = null;
 function ensureWorkflowCard() {
     if (workflowCard) return workflowCard;
@@ -535,7 +569,12 @@ function ensureWorkflowCard() {
         ".workflow-card__node { padding: var(--sp-6) var(--sp-10); border-radius: var(--r-pill); background: rgba(var(--wh), 0.12); border: 1px solid rgba(var(--wh), 0.2); font-size: var(--fs-110); color: var(--txt-dark-2); white-space: nowrap; }",
         ".workflow-card__arrow { color: var(--txt-dark-4); }",
         ".workflow-card__priority { margin-top: var(--sp-10); padding: var(--sp-8) var(--sp-10); border-radius: var(--r-md); background: rgba(var(--wh), 0.08); border: 1px solid rgba(var(--wh), 0.16); font-size: var(--fs-115); color: var(--txt-dark-3); }",
-        ".workflow-card__close { margin-top: var(--sp-14); }",
+        // [SL-213 用户裁定 2026-08-27] 收口钮由左下的「取消」改成**右下的「确认」**。
+        // 右对齐用 `align-self:flex-end`,前提是面板本身是 flex 列 —— .sc-modal 不是,
+        // 故一并给面板加 workflow-card__panel。不用 float / margin-left:auto 那类招:
+        // 它们会把按钮从正常流里摘出去,基线与上一块的间距都得再补一遍。
+        ".workflow-card__panel { display: flex; flex-direction: column; }",
+        ".workflow-card__close { margin-top: var(--sp-14); align-self: flex-end; }",
     ].join("\n");
     document.head.appendChild(style);
 
@@ -546,7 +585,7 @@ function ensureWorkflowCard() {
     overlay.hidden = true;
 
     const panel = document.createElement("div");
-    panel.className = "sc-modal";
+    panel.className = "sc-modal workflow-card__panel";
     panel.style.width = "560px";
     panel.style.maxWidth = "calc(100% - 2 * var(--sp-24))";
     panel.setAttribute("role", "dialog");
@@ -587,9 +626,13 @@ function ensureWorkflowCard() {
     priority.setAttribute("data-t", "workflow.priority");
 
     const close = document.createElement("button");
-    close.className = "sc-btn workflow-card__close";
+    // [SL-213] 走 CTA 主按钮样式:裸 .sc-btn 在深色模态上是「白 .3 底 + --txt-2 深灰字」,
+    // 与 .sc-modal 的深底几乎糊成一片(用户实测「按钮配色与背景几乎同色」)。
+    // --acc-cta 实心紫 + --acc-ink 深字是 tokens 里既有的主行动配方,对比度足;
+    // base.css 那句「一屏最多一枚主行动」在这里成立 —— 本卡就这一个动作。
+    close.className = "sc-btn sc-btn--cta workflow-card__close";
     close.type = "button";
-    close.setAttribute("data-t", "common.cancel");
+    close.setAttribute("data-t", "common.confirm");
     close.addEventListener("click", () => {
         workflowCard.hidden = true;
     });
@@ -1712,6 +1755,10 @@ function syncUiFromState() {
 // 首帧:§0.6 mBridgeReady 门控由页面掌握 —— 装载时调一次 requestInitialState()。
 // ============================================================================
 refreshI18n();
+
+// [SL-207] 原生右键菜单抑制**挂在 try 之外**:首帧链路炸掉时露出来的是兜底面板,
+// 那上面右键冒出「查看网页源代码」比正常界面更穿帮。它不依赖桥、不会抛,先挂上。
+disableNativeContextMenu(document);
 
 (async function boot() {
     try {

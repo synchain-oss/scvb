@@ -55,6 +55,8 @@ import {
     OVERVIEW_COLS,
 } from "./canvas/waveform.js";
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
+import { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX } from "../shared/wheel.js";
+import { isEditableTarget } from "../shared/context-menu.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
 import {
     CHANNEL_COUNT,
@@ -122,6 +124,58 @@ export function laneHFromPercent(p) {
     const x = Math.min(Math.max(num(p, 0), 0), 1);
     return clampLaneH(LANE_H_MIN + x * (LANE_H_MAX - LANE_H_MIN));
 }
+
+// ---- 滚轮四路映射(SL-205)---------------------------------------------------
+// 改前**只实装了 Ctrl 一路**(`if (!e.ctrlKey) return`),另外三路连分支都没有。
+// 后果不只是「没功能」:没被 preventDefault 的滚轮会**漏给浏览器默认动作** ——
+// 页面级实测,裸滚轮把泳道列竖着滚跑了 121px(用户看到视图突变,自然以为缩放坏了)。
+
+/** Alt 纵向缩放:每格行高步进(22..88 共 66px,4px/格 ≈ 17 档)。 */
+export const LANE_H_WHEEL_STEP = 4;
+
+/**
+ * 微拖之后多久内不接受「双击边界 = 合并」(ms;复审【重要】)。
+ *
+ * 边界拖拽是**按下-微移-释放**,连着做两次会被浏览器判成一次 dblclick —— 于是
+ * 「我在细调这条边界」被读成「我要删掉这条边界」,左右两段当场合并。代价还特别大:
+ * 前两笔 move_boundary 已按契约 §5.4 把命中段变成 origin=user_edited + locked=true,
+ * 而 analyze(…,{clearManual:true}) 对 locked 段免疫(须先逐段解锁)。
+ * 故 commitBoundDrag **真发**了 move_boundary 之后的这一小段时间里,双击的边界分支
+ * 整个让路(既不合并、也不落到分割去 —— 落过去等于又加一条边界,同样不是用户要的)。
+ */
+export const BOUND_DRAG_MERGE_GUARD_MS = 400;
+
+/**
+ * 「刚提交过边界拖拽,这次双击不算合并」判定(纯函数,node 侧可断言)。
+ * `lastCommitMs` 为 0 / 非数 = 本会话还没提交过拖拽 ⇒ 不拦。
+ */
+export function mergeGuardedByDrag(nowMs, lastCommitMs) {
+    const t = num(lastCommitMs, 0);
+    if (!(t > 0)) return false;
+    const dt = num(nowMs, 0) - t;
+    return dt >= 0 && dt < BOUND_DRAG_MERGE_GUARD_MS;
+}
+
+/**
+ * 滚轮该走哪一路(纯函数,node 侧可断言)。
+ *
+ * 优先级 Ctrl > Alt > Shift > 裸,**不接受组合**:同时按住只认最高的那一个。
+ * 理由是可预测性 —— 组合键在不同宿主/输入设备上被吞被改的概率远高于单修饰键
+ * (Shift+滚轮在 Chrome 里就会被改写成 deltaX,见 wheelPx)。
+ *
+ * @returns {"hzoom"|"vzoom"|"vpan"|"hpan"}
+ */
+export function wheelRoute(e) {
+    const ev = e || {};
+    if (ev.ctrlKey || ev.metaKey) return "hzoom";
+    if (ev.altKey) return "vzoom";
+    if (ev.shiftKey) return "vpan";
+    return "hpan";
+}
+
+// 位移归一(deltaMode 分档 + 主轴取大)走 shared/wheel.js —— 与总览轨迹图**同一份**;
+// 两处曾各写一份逐字同义的实现,抽走免得下次只修一边(复审建议③)。
+export { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX };
 
 /** 段检查器宽(稿内 877;灰模 260 → 统一 262,登记差异)。 */
 export const INSPECTOR_W = 262;
@@ -935,6 +989,7 @@ export function createTabWave(opts) {
         inspectorOpen: true,
         reidentifyCounts: null, // {k,l}:重新识别确认框正文的定格计数(切语言补填用)
         boundDrag: null, // {ch, segIdx, tS, snapped, minS, maxS}
+        boundCommitAt: 0, // 上次**真发** move_boundary 的时刻(双击合并的让路判据)
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
         autostopUser: false, // 「播放结束自动停止」是用户手勾的(撤防不复位它)
         sliderKeyTimer: 0, // 键盘档「视为松手」计时
@@ -2308,8 +2363,24 @@ export function createTabWave(opts) {
             if (!local.boundDrag) showBoundHandle(false);
         });
 
-        // 双击段内 = 在此分割(05 行 313;split 两子段继承原值,§5.4)
+        // 双击两义(05 行 313):
+        //   · 双击**段间边界线**(±BOUNDARY_HIT_PX)= 删掉这条边界 = 合并左右两段
+        //     ([SL-207] 用户 v5.4 实测拍板 2026-08-27);
+        //   · 双击**段内**(离边界够远)= 在此分割(split 两子段继承原值,§5.4)。
+        //
+        // 边界判定**必须排在分割前面**:边界两侧各 6px 落在左右两段内部,先跑
+        // findIndex 的话双击边界会被判成「在段内某处」而去分割 —— 用户想删边界,
+        // 结果又多出一条边界,正好相反。
+        //
+        // 命中口径与拖拽边界**逐字复用同一套**(boundariesOf → timeToX → nearestHit
+        // ±BOUNDARY_HIT_PX):手柄摸得到的地方,双击就删得掉,不另立第二套判定。
         els.lanes.addEventListener("dblclick", (e) => {
+            // 刚提交过边界拖拽 ⇒ 这一下多半是「连着微调同一条边界两次」被浏览器判成的
+            // dblclick,不是任何一种双击意图。**整个处理器让路**(复审终轮①):
+            // 原先只在边界分支里挡,`j < 0` 那一档会漏出去 —— 把边界拖走之后落点常常
+            // 已经出了 ±6px,于是那一下照发**分割**,等于用户想细调却多出一条边界。
+            // 放到开头既堵死这一档,也比「每个分支各挡一次」简单。
+            if (mergeGuardedByDrag(Date.now(), local.boundCommitAt)) return;
             const p = lanesPoint(e);
             if (!p || p.ch < 1 || p.ch > LANE_COUNT) return;
             const stageW = stageWidth();
@@ -2319,6 +2390,21 @@ export function createTabWave(opts) {
             const t = xToTime(vp, stageW, p.x);
             const segCh = segmentsOfCh(getStore().segments, p.ch);
             const segs = (segCh && segCh.segments) || [];
+
+            // ① 边界:boundariesOf 的第 j 条 = segs[j] 与 segs[j+1] 之间那条
+            const xs = boundariesOf(segCh).map((b) =>
+                timeToX(vp, stageW, b.tS),
+            );
+            const j = nearestHit(p.x, xs, BOUNDARY_HIT_PX);
+            if (j >= 0 && segs[j] && segs[j + 1]) {
+                // 走既有 merge 桥函数与既有口径:editSegment(§1.16)本就进撤销栈,
+                // 与工具条「合并选中两段」逐字同一条路,不另加确认框 —— 误删一条
+                // 边界的代价是一次 Ctrl+Z,弹框反而挡住连续修边界的手感。
+                sendEdit(p.ch, "merge", { segIdxA: j, segIdxB: j + 1 });
+                return;
+            }
+
+            // ② 段内:在此分割
             const idx = segs.findIndex((s) => t >= s.t0S && t < segEndS(s));
             if (idx < 0) return;
             const s = segs[idx];
@@ -2329,37 +2415,105 @@ export function createTabWave(opts) {
             });
         });
 
-        // Ctrl+滚轮:以光标为中心缩放(05 行 319)。
+        // 滚轮四路映射(05 行 319;[SL-205] 用户 v5.4 实测拍板 2026-08-27)。
+        //
+        //   Ctrl  → 横向缩放(以光标为锚)      Alt   → 纵向缩放(泳道行高)
+        //   Shift → 纵向平移                    裸    → 横向平移
+        //
+        // **改前只实装了 Ctrl 一路**(`if (!e.ctrlKey) return`),另外三路连分支
+        // 都没有;而且没被 preventDefault 的滚轮会**漏给浏览器默认动作** ——
+        // 页面级实测:裸滚轮把泳道列竖着滚跑了 121px。用户报的三条(Alt 纵缩放
+        // 没有、Shift 纵向平移没有、裸滚轮横向平移没有)由此而来。
         //
         // **挂整个 Tab3 面板**,不是只挂泳道窗:Ctrl+滚轮是浏览器的页面缩放手势,
         // 没被 preventDefault 的地方(工具条、检查器、窗外留白)会让**整页**跟着
         // 缩放 —— 所有卡片一起变、看着就是闪一下(用户实测「放大缩小的时候全部
         // 卡片都会变白」)。面板内一律拦下:落在泳道窗内的按视口缩放,落在别处的
         // 只拦截、不缩放(用户显然不是想缩放浏览器)。
+        // 另外三路则**只在泳道窗内**接管并 preventDefault —— 窗外(检查器、参数
+        // 区)的普通滚轮必须照旧交给浏览器,否则那些地方就滚不动了。
+        // [SL-205 增补,用户实测 2026-08-27]「需要点一下,shift 滚轮和纯滚轮才有作用」。
+        //
+        // **页面层查下来没有任何焦点前置条件**:CDP 可信事件实测(切到本页之后**不曾在
+        // 泳道里点过一下**)四路全部生效 —— 见 web-preview/tests/wheel-route-probe.mjs。
+        // 也就是说这一条不在 web 这一层,在**宿主 / WebView2 的窗口焦点**那一层:
+        // WebViewHost 至今没有任何焦点处理(`grep -n "KeyboardFocus\|focus" 那个文件` 零命中),
+        // WebView2 子窗口要等用户点一下才拿到焦点,在那之前滚轮消息不一定路由过来。
+        //
+        // 能在 web 侧做的就这一件:**指针进入泳道窗时把焦点收进来**。三道闸防止它变成
+        // 抢焦点:①只在泳道窗上挂(不是整页);②本文档已经有焦点就不动;③焦点正停在
+        // 可编辑控件上时一律不动(别把人正在打的字打断)。
+        // ⚠ **本条只能在真 DAW 里验**:无头浏览器里页面恒有焦点,这段代码根本不会执行。
+        //
+        // [统筹裁定 2026-08-28,#123 终轮] **保留 pointerenter 方案,不改「首个 wheel 事件
+        // 按需取焦」**:两案在无头环境都无法验证(见上),差异只能真机分辨;而按需取焦有
+        // 「第一记滚轮先被焦点路由吃掉、用户要滚两次」的先验风险,pointerenter 没有。
+        // 若 v5.6 真机复验(SL-221)证明本方案仍需先点一下,再连同 C++ 焦点策略一起换案。
+        if (els.window) {
+            els.window.addEventListener("pointerenter", () => {
+                if (typeof document === "undefined") return;
+                if (document.hasFocus && document.hasFocus()) return;
+                // 复用 context-menu.js 的白名单判定(复审终轮②):这里原先是全仓
+                // **第三份**可编辑判定,而且是收窄之前的裸 `input` 版 —— 会把
+                // `type=range`(Tab3 参数条就是滑杆)也当成「正在编辑」而放弃收拢焦点。
+                if (isEditableTarget(document.activeElement)) return;
+                if (typeof window !== "undefined" && window.focus)
+                    window.focus();
+            });
+        }
+
         const wheelHost = els.panel || els.window || els.lanes;
         wheelHost.addEventListener(
             "wheel",
             (e) => {
-                if (!e.ctrlKey) return;
-                e.preventDefault(); // 先拦下页面缩放,再决定要不要动视口
+                const route = wheelRoute(e);
                 const inWindow =
                     els.window &&
                     typeof els.window.contains === "function" &&
                     els.window.contains(e.target);
+                if (route === "hzoom") {
+                    e.preventDefault(); // 先拦下页面缩放,再决定要不要动视口
+                    if (!inWindow) return;
+                    const stageW = stageWidth();
+                    if (!(stageW > 0)) return;
+                    const x = stageXFromClient(e.clientX);
+                    const vp = timeline.viewport();
+                    const anchorT = xToTime(
+                        vp,
+                        stageW,
+                        Math.min(Math.max(x, 0), stageW),
+                    );
+                    // 取向按**归一后**的位移定,不再直接看 deltaY:行模式与
+                    // Shift 改写都可能让 deltaY 是 0(见 shared/wheel.js)。
+                    // **零位移早退**(复审建议①):与下面三路同一口径 —— 归一后为 0
+                    // 说明这一发根本没位移,再往下走会按 `< 0 ? 放大 : 缩小` 白缩一格。
+                    const dz = wheelPx(e);
+                    if (!dz) return;
+                    timeline.zoom(anchorT, dz < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+                    return;
+                }
                 if (!inWindow) return;
+                e.preventDefault();
+                const px = wheelPx(e);
+                if (!px) return;
+                if (route === "vzoom") {
+                    // 上滚(px<0)= 放大 = 行变高,与纵向缩放条「上 = 高」同向
+                    applyLaneH(
+                        local.laneH + (px < 0 ? 1 : -1) * LANE_H_WHEEL_STEP,
+                    );
+                    return;
+                }
+                if (route === "vpan") {
+                    // 泳道列自己就是纵向滚动容器(lanesPoint 读的也是它的 scrollTop)
+                    if (els.lanes) els.lanes.scrollTop += px;
+                    return;
+                }
+                // 裸滚轮:横向平移。像素 → 秒按当前视口的 px/s 折算,
+                // 于是「滚一格挪多远」在任何缩放档下观感一致。
                 const stageW = stageWidth();
-                if (!(stageW > 0)) return;
-                const x = stageXFromClient(e.clientX);
-                const vp = timeline.viewport();
-                const anchorT = xToTime(
-                    vp,
-                    stageW,
-                    Math.min(Math.max(x, 0), stageW),
-                );
-                timeline.zoom(
-                    anchorT,
-                    e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP,
-                );
+                const span = spanOf(timeline.viewport());
+                if (!(stageW > 0) || !(span > 0)) return;
+                timeline.pan((px * span) / stageW);
             },
             { passive: false },
         );
@@ -2515,6 +2669,10 @@ export function createTabWave(opts) {
         // (ms 量化后)比原位,子毫秒抖动同样算零位移。
         const tS = Math.round(d.tS * 1000) / 1000;
         if (tS === Math.round(d.origT * 1000) / 1000) return;
+        // 时间戳**只在真发了 move_boundary 时**打(上面那条零位移早退不算):双击的
+        // 边界分支据此让路,免得「连着微调两次同一条边界」被浏览器判成 dblclick,
+        // 把这条边界删掉(复审【重要】;判据见 mergeGuardedByDrag)。
+        local.boundCommitAt = Date.now();
         sendEdit(d.ch, "move_boundary", {
             segIdx: d.segIdx,
             edge: "t0",

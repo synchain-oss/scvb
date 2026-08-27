@@ -557,5 +557,141 @@ log("=== ⑥ native 落点:ui.* 与 conn 的写/读路径(T37 真机回归)===")
 }
 
 // =============================================================================
+log(
+    "=== R3 增补:J88 改名 / SL-211 复制确认框 / SL-213 工作流程卡 / SL-214 文档外链 ===",
+);
+{
+    const app = src("web/output/app.js");
+    const html = src("web/output/index.html");
+    const ts = src("web/output/tab-settings.js");
+
+    // ---- J88:Output 模式开关 ON 档改名「写入自动化」(OFF 档不动)----
+    for (const [lang, want] of [
+        ["zh", "写入自动化"],
+        ["en", "WRITE AUTOMATION"],
+        ["fr", "ÉCRITURE AUTOMATION"],
+    ]) {
+        eq(T[lang].engineDrive, want, `J88 ${lang}.engineDrive 已改名`);
+    }
+    eq(T.zh.followHost, "跟随宿主", "J88 OFF 档不动");
+    // [复审终轮④] 静态兜底文案也得改:applyI18n 会覆盖它,但**字典未注入 / 首帧未刷**
+    // 时露出来的就是 HTML 里这一份。
+    check(
+        !/引擎驱动/.test(html),
+        "J88 index.html 的静态兜底文案(含注释)无旧档位名残留",
+    );
+    // 旧名不得残留在**任何**词条值里(footer / 加载守卫横幅 / tour / 工作流程卡都引用了它)。
+    // 唯一豁免:tracks.colLegend 的「不再被引擎驱动」是动词用法,不是档位名。
+    for (const lang of ["zh", "en", "fr"]) {
+        for (const [k, v] of Object.entries(T[lang])) {
+            if (k === "tracks.colLegend") continue;
+            check(
+                !/引擎驱动|ENGINE DRIVE|Engine drive|PILOTAGE MOTEUR|Pilotage moteur/.test(
+                    String(v),
+                ),
+                `J88 ${lang}.${k} 无旧档位名残留`,
+            );
+        }
+    }
+
+    // ---- SL-211①:复制确认框搬到卡片层 ----
+    // .sc-scrim 是 absolute + inset:0,盖住的是**最近的定位祖先**;原先它嵌在
+    // 210px 宽的 header-version 里,模态被挤扁、长正文当场截断(用户实测)。
+    check(
+        html.indexOf('data-gb="header-version-copy-confirm"') >
+            html.indexOf('data-gb="header-version"'),
+        "SL-211 复制确认框已挪出 header-version",
+    );
+    check(
+        /\.sc-modal--copyconfirm\s*\{[^}]*width:\s*460px/.test(html),
+        "SL-211 模态给了定宽(不再由文案长度决定框宽)",
+    );
+    check(
+        /\.sc-modal__foot\s*\{[^}]*justify-content:\s*flex-end/.test(html),
+        "SL-211 两枚钮排右下",
+    );
+
+    // ---- SL-213:工作流程卡收口钮 = 右下「确认」+ CTA 配色 ----
+    check(
+        /close\.setAttribute\("data-t", "common\.confirm"\)/.test(app),
+        "SL-213 收口钮文案改「确认」(原 common.cancel)",
+    );
+    check(
+        /close\.className = "sc-btn sc-btn--cta workflow-card__close"/.test(
+            app,
+        ),
+        "SL-213 收口钮走 CTA 配色(裸 .sc-btn 在深色模态上与底几乎同色)",
+    );
+    check(
+        /workflow-card__close \{[^}]*align-self: flex-end/.test(app),
+        "SL-213 收口钮排右下",
+    );
+    for (const [lang, want] of [
+        ["zh", "确认"],
+        ["en", "Confirm"],
+        ["fr", "Confirmer"],
+    ]) {
+        eq(T[lang]["common.confirm"], want, `SL-213 ${lang}.common.confirm`);
+    }
+
+    // ---- SL-214:文档钮接线 + 走系统浏览器 ----
+    // 定谳:这颗钮此前**根本没有 handler**(index.html 原注写着「点击行为仍未定」)。
+    check(
+        /el\.docs\.addEventListener\("click", openDocs\)/.test(ts),
+        "SL-214 文档钮已接线",
+    );
+    check(
+        /window\.open\(url, "_blank", "noopener"\)/.test(app),
+        "SL-214 走 window.open(→ WebView2 NewWindowRequested → JUCE 外链通道)",
+    );
+    check(
+        /USER_GUIDE\.zh-CN\.md/.test(app) && /USER_GUIDE\.md/.test(app),
+        "SL-214 中英两份手册地址都在(按界面语言选)",
+    );
+    {
+        // C++ 侧:JUCE 没暴露 WebView2 的 AreDefaultContextMenusEnabled,但**暴露了**
+        // newWindowAttemptingToLoad —— 不重写它外链就是死的(JUCE 默认实现什么都不做)。
+        const wv = src("src/plugin-common/WebViewHost.cpp");
+        check(
+            /void newWindowAttemptingToLoad\(const juce::String& newURL\) override/.test(
+                wv,
+            ),
+            "SL-214 C++ 侧重写了 JUCE 的外链虚函数",
+        );
+        check(
+            /launchInDefaultBrowser\(\)/.test(wv),
+            "SL-214 外链交给系统浏览器",
+        );
+        check(
+            /startsWithIgnoreCase\("https:\/\/"\)/.test(wv),
+            "SL-214 只放行 http/https(外链 = 把字符串交给系统执行,须限协议)",
+        );
+    }
+
+    // ---- SL-205 增补:悬停即可滚(焦点收拢的三道闸)----
+    {
+        const tw = src("web/output/tab-wave.js");
+        const i = tw.indexOf('els.window.addEventListener("pointerenter"');
+        const body = tw.slice(i, i + 900);
+        check(i > 0, "SL-205 指针进入泳道窗时收拢焦点");
+        check(
+            /document\.hasFocus\(\)\) return;/.test(body),
+            "SL-205 本文档已有焦点就不动(不抢焦点)",
+        );
+        // [复审终轮②] 第三道闸改成复用 context-menu 的 isEditableTarget ——
+        // 这里原先是全仓**第三份**可编辑判定,且是收窄之前的裸 input 版
+        // (会把 type=range 滑杆也当成「正在编辑」)。
+        check(
+            /isEditableTarget\(document\.activeElement\)/.test(body),
+            "SL-205 第三道闸复用 isEditableTarget(不再自带第三份判定)",
+        );
+        check(
+            /from "\.\.\/shared\/context-menu\.js"/.test(tw),
+            "SL-205 tab-wave 从 shared 引 isEditableTarget",
+        );
+    }
+}
+
+// =============================================================================
 log(fail === 0 ? "\n全部通过 ✅" : `\n失败 ${fail} 条 ❌`);
 process.exit(fail === 0 ? 0 : 1);

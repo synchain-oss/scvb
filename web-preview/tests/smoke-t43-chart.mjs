@@ -889,16 +889,25 @@ log("=== ⑦ 性能预算与空闲纪律(05 §6.1)===");
     const tm = src("web/output/tab-master.js");
     const html = src("web/output/index.html");
 
-    check(
-        /Math\.abs\(e\.deltaX\) > Math\.abs\(e\.deltaY\) \? e\.deltaX : e\.deltaY/.test(
-            tj,
-        ),
-        "滚轮增量取主轴(触控板横向 deltaX / Shift+滚轮被改写成横向滚动,同一路认)",
-    );
-    check(
-        /e\.deltaMode === 1/.test(tj) && /e\.deltaMode === 2/.test(tj),
-        "deltaMode 行/页折成 px(不折的话跨浏览器跨度差两个数量级)",
-    );
+    // [SL-205 复审建议③] 归一化(主轴取大 + deltaMode 折 px)已抽到 shared/wheel.js,
+    // 与 Tab3 泳道共用一份 —— 这两条断言随之改指真源,intent 不变:
+    // 本图的 wheelDelta 必须走那一份,而不是自己再写一遍。
+    {
+        const wl = src("web/shared/wheel.js");
+        check(
+            /Math\.abs\(dx\) > Math\.abs\(dy\) \? dx : dy/.test(wl),
+            "滚轮增量取主轴(触控板横向 deltaX / Shift+滚轮被改写成横向滚动,同一路认)",
+        );
+        check(
+            /ev\.deltaMode === 1/.test(wl) && /ev\.deltaMode === 2/.test(wl),
+            "deltaMode 行/页折成 px(不折的话跨浏览器跨度差两个数量级)",
+        );
+        check(
+            /from "\.\/wheel\.js"/.test(tj) &&
+                /wheelPx\(e, Math\.max\(local\.stageW, 1\)\)/.test(tj),
+            "本图的 wheelDelta 走 shared/wheel.js,并把自己的舞台宽当「一页」传进去",
+        );
+    }
     // 纵向两路**不**脱离横向跟随:altKey / shiftKey 分支里不许出现 breakFollow
     for (const [name, key] of [
         ["Alt(纵向缩放)", "altKey"],

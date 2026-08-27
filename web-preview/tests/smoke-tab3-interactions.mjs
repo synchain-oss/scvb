@@ -48,6 +48,8 @@ const WF = await import(u("web/output/canvas/waveform.js"));
 const HIT = await import(u("web/shared/hit.js"));
 const MD = await import(u("web/shared/mock-data.js"));
 const { T } = await import(u("web/shared/i18n.js"));
+const TWCM = await import(u("web/shared/context-menu.js"));
+const WHEEL = await import(u("web/shared/wheel.js"));
 
 let fail = 0;
 const log = (...a) => console.log(...a);
@@ -1759,7 +1761,7 @@ log("\n=== ⑩ Wave 3 视觉修的口径钉子(对抗校验修订批)===");
     // (a) 边界拖拽:点一下不拖 ⇒ 零位移不发 move_boundary(契约 §5.4 的后置会把
     //     该段变成 user_edited + locked,且 analyze(clearManual) 对 locked 免疫)
     check(
-        /function commitBoundDrag\(\)[\s\S]{0,900}if \(tS === Math\.round\(d\.origT \* 1000\) \/ 1000\) return;[\s\S]{0,200}sendEdit\(d\.ch, "move_boundary"/.test(
+        /function commitBoundDrag\(\)[\s\S]{0,900}if \(tS === Math\.round\(d\.origT \* 1000\) \/ 1000\) return;[\s\S]{0,600}sendEdit\(d\.ch, "move_boundary"/.test(
             tw,
         ),
         "commitBoundDrag 有零位移短路(误点不再把 auto 段钉死成 locked)",
@@ -3495,6 +3497,376 @@ log(
             /s\.t1 > rangeS0 && s\.t0 < rangeS1/.test(body),
             "(e4)native 的段计数按范围过滤(manualKept 不再整轨全收)",
         );
+    }
+}
+
+// =============================================================================
+log("=== ⑪ SL-205 滚轮四路映射 + SL-207 右键/双击(用户 v5.4 实测)===");
+{
+    const tw = src("web/output/tab-wave.js");
+
+    // ---- SL-205 (a) 路由纯函数:优先级 Ctrl > Alt > Shift > 裸 ----------------
+    // 改前整个处理器第一行就是 `if (!e.ctrlKey) return`,另外三路连分支都没有:
+    // ②Shift 纵向平移、③裸滚轮横向平移、Alt 纵向缩放全都不存在。页面级实测
+    // (CDP 可信事件)见 PR 正文的四路对照表。
+    {
+        const R = TW.wheelRoute;
+        eq(R({ ctrlKey: true }), "hzoom", "(a1)Ctrl → 横向缩放");
+        eq(R({ metaKey: true }), "hzoom", "(a2)Meta 同 Ctrl(与点选口径一致)");
+        eq(R({ altKey: true }), "vzoom", "(a3)Alt → 纵向缩放");
+        eq(R({ shiftKey: true }), "vpan", "(a4)Shift → 纵向平移");
+        eq(R({}), "hpan", "(a5)裸滚轮 → 横向平移");
+        // 组合只认最高优先级那一个,不发明第五种行为
+        eq(
+            R({ ctrlKey: true, altKey: true }),
+            "hzoom",
+            "(a6)Ctrl+Alt 仍走 Ctrl",
+        );
+        eq(
+            R({ altKey: true, shiftKey: true }),
+            "vzoom",
+            "(a7)Alt+Shift 仍走 Alt",
+        );
+        eq(R(null), "hpan", "(a8)缺参不炸,回落裸滚轮");
+    }
+
+    // ---- SL-205 (b) 位移归一:deltaMode 分档 + deltaX/deltaY 取大 -------------
+    {
+        const P = TW.wheelPx;
+        eq(P({ deltaY: 120, deltaMode: 0 }), 120, "(b1)像素模式原样");
+        eq(
+            P({ deltaY: 3, deltaMode: 1 }),
+            3 * TW.WHEEL_LINE_PX,
+            "(b2)行模式乘一行当量(不乘的话一格只挪 3px,平移形同没动)",
+        );
+        eq(
+            P({ deltaY: 1, deltaMode: 2 }),
+            TW.WHEEL_PAGE_PX,
+            "(b3)页模式乘一页当量",
+        );
+        // **这条是②失灵的直接成因**:Chrome 把 Shift+滚轮改写成 deltaX、deltaY 归零。
+        // 只读 deltaY 的话「Shift 纵向平移」永远拿到 0。
+        eq(
+            P({ deltaX: 120, deltaY: 0, deltaMode: 0 }),
+            120,
+            "(b4)只有 deltaX 时取 deltaX(Chrome 的 Shift+滚轮就是这样)",
+        );
+        eq(
+            P({ deltaX: 10, deltaY: -120, deltaMode: 0 }),
+            -120,
+            "(b5)两轴都有时取绝对值大的那个,并保留原符号",
+        );
+        eq(P({}), 0, "(b6)全缺 ⇒ 0(调用方据此早退,不做无位移的空动作)");
+    }
+
+    // ---- SL-205 (c) 处理器接线:四路都在,且都 preventDefault --------------
+    {
+        const from = tw.indexOf(
+            'wheelHost.addEventListener(\n            "wheel"',
+        );
+        const body = tw.slice(from, from + 3000);
+        check(body.length > 100, "(c1)滚轮处理器在");
+        check(
+            !/if \(!e\.ctrlKey\) return;/.test(tw),
+            "(c2)旧的「非 Ctrl 一律早退」已不复存在",
+        );
+        for (const [route, tag] of [
+            ["vzoom", "Alt 纵向缩放"],
+            ["vpan", "Shift 纵向平移"],
+        ]) {
+            check(
+                new RegExp(`route === "${route}"`).test(body),
+                `(c3)${tag} 有分支`,
+            );
+        }
+        check(
+            /timeline\.pan\(/.test(body),
+            "(c4)裸滚轮走 timeline.pan(横向平移)",
+        );
+        check(
+            /applyLaneH\(/.test(body),
+            "(c5)Alt 走 applyLaneH(行高的唯一写入点,不另开第二条路)",
+        );
+        check(
+            /els\.lanes\.scrollTop \+= px/.test(body),
+            "(c6)Shift 走泳道列自己的 scrollTop",
+        );
+        // 窗内四路都必须 preventDefault:漏一路就会掉回浏览器默认滚动,
+        // 实测那正是「裸滚轮把泳道列竖着滚跑 121px」的来源。
+        eq(
+            (body.match(/e\.preventDefault\(\)/g) || []).length,
+            2,
+            "(c7)两处 preventDefault:Ctrl 面板级拦页面缩放 + 窗内其余三路合用一处",
+        );
+    }
+
+    // ---- SL-207 (d) 原生右键菜单抑制 ---------------------------------------
+    {
+        const cm = src("web/shared/context-menu.js");
+        check(
+            /addEventListener\("contextmenu"/.test(cm),
+            "(d1)抑制走 contextmenu 监听(JUCE 8 没暴露 WebView2 的对应设置)",
+        );
+        check(
+            /EDITABLE_SELECTOR/.test(cm) && /input\[type="text"\]/.test(cm),
+            "(d2)可编辑控件走白名单放行 —— 否则输入框里连粘贴都没了",
+        );
+        for (const f of ["web/output/app.js", "web/input/app.js"]) {
+            const s = src(f);
+            check(
+                /disableNativeContextMenu\(document\);/.test(s),
+                `(d3)${f} 挂上了抑制`,
+            );
+            // 挂在 boot 的 try 之外:首帧炸掉露出兜底面板时,右键更不该冒出
+            // 「查看网页源代码」
+            check(
+                s.indexOf("disableNativeContextMenu(document);") <
+                    s.indexOf("(async function boot()"),
+                `(d4)${f} 的抑制排在 boot 之前(兜底面板也管得住)`,
+            );
+        }
+        // 纯函数面:可编辑判定。这里只验「命中即放行 / 不命中即拦」两档 ——
+        // 具体哪些选择器算可编辑(range 不放行、contenteditable=false 不放行等)
+        // 归 ⑫ 组的 (e1)-(e7),那边用的是按选择器逐条匹配的桩。
+        const el = (hit) => ({ closest: () => (hit ? {} : null) });
+        check(TWCM.isEditableTarget(el(true)), "(d5)可编辑目标判 true");
+        check(!TWCM.isEditableTarget(null), "(d6)空目标不炸");
+        check(
+            !TWCM.isEditableTarget(el(false)),
+            "(d7)普通目标判 false(会被拦)",
+        );
+    }
+
+    // ---- SL-207 (e) 双击边界 = 合并;双击段内 = 分割 -------------------------
+    {
+        const from = tw.indexOf('els.lanes.addEventListener("dblclick"');
+        const body = tw.slice(from, from + 2200);
+        check(body.length > 100, "(e1)双击处理器在");
+        check(
+            /nearestHit\(p\.x, xs, BOUNDARY_HIT_PX\)/.test(body),
+            "(e2)命中判定复用边界 ±6px 口径(与拖拽手柄同一套)",
+        );
+        check(
+            /sendEdit\(p\.ch, "merge", \{ segIdxA: j, segIdxB: j \+ 1 \}\)/.test(
+                body,
+            ),
+            "(e3)双击边界走既有 merge 桥函数(§1.16,自带撤销)",
+        );
+        // **顺序是要害**:边界两侧 6px 落在左右两段内部,先跑 findIndex 的话
+        // 双击边界会被判成「段内某处」而去分割 —— 用户想删边界,结果多出一条。
+        check(
+            body.indexOf('"merge"') < body.indexOf('"split"'),
+            "(e4)边界分支排在分割分支之前(顺序颠倒会把「删边界」做成「加边界」)",
+        );
+        check(
+            /segs\[j\] && segs\[j \+ 1\]/.test(body),
+            "(e5)合并前确认左右两段都在(段表与边界表不同步时不发越界下标)",
+        );
+    }
+}
+
+// =============================================================================
+log("=== ⑫ 复审收口:微拖×2 不得被判成「双击删边界」+ 四项建议 ===");
+{
+    const tw = src("web/output/tab-wave.js");
+
+    // ---- 【重要】边界微拖 × 2 会被浏览器判成 dblclick ------------------------
+    // 手势是「按下-微移-释放」,连着做两次浏览器就发一个 dblclick;若边界分支照常
+    // 合并,用户「细调这条边界」的动作就变成「删掉这条边界」。代价还特别大:前两笔
+    // move_boundary 已按契约 §5.4 把命中段变成 origin=user_edited + locked=true,
+    // 而 analyze(…,{clearManual:true}) 对 locked 段免疫(须先逐段解锁)。
+    {
+        const G = TW.mergeGuardedByDrag;
+        const W = TW.BOUND_DRAG_MERGE_GUARD_MS;
+        eq(W, 400, "(a1)让路窗 400ms");
+        // 正向:刚提交过拖拽 ⇒ 让路
+        check(G(1000, 1000), "(a2)同一时刻 ⇒ 让路");
+        check(G(1000 + W - 1, 1000), "(a3)窗内(399ms)⇒ 让路");
+        // 反向:窗外 / 从没拖过 ⇒ 正常合并
+        check(
+            !G(1000 + W, 1000),
+            "(a4)恰好到窗口边界(400ms)⇒ 不再让路,正常合并",
+        );
+        check(!G(9999, 1000), "(a5)早就过了 ⇒ 正常合并");
+        check(!G(1000, 0), "(a6)本会话没提交过拖拽 ⇒ 不拦(普通双击照常合并)");
+        check(!G(1000, undefined), "(a7)时间戳缺值 ⇒ 不拦");
+        // 时钟倒流(改系统时间/跨机器)不得把守卫永久点亮
+        check(
+            !G(500, 1000),
+            "(a8)now 早于时间戳 ⇒ 不拦(时钟倒流不永久锁死合并)",
+        );
+    }
+    // 接线:时间戳只在**真发** move_boundary 时打(零位移那条早退不算);
+    // 双击边界分支在 sendEdit 之前先问守卫,且守卫命中时**整个 return**
+    // —— 不能落到下面的分割去,那等于又加一条边界。
+    {
+        const iZero = tw.indexOf(
+            "if (tS === Math.round(d.origT * 1000) / 1000) return;",
+        );
+        const iStamp = tw.indexOf("local.boundCommitAt = Date.now();");
+        const iSend = tw.indexOf('sendEdit(d.ch, "move_boundary"');
+        check(
+            iZero > 0 && iStamp > iZero && iSend > iStamp,
+            "(b1)时间戳打在零位移早退之后、move_boundary 之前(点一下不拖不该武装守卫)",
+        );
+        const dbl = tw.slice(
+            tw.indexOf('els.lanes.addEventListener("dblclick"'),
+            tw.indexOf('els.lanes.addEventListener("dblclick"') + 2600,
+        );
+        const iGuard = dbl.indexOf(
+            "mergeGuardedByDrag(Date.now(), local.boundCommitAt)",
+        );
+        const iMerge = dbl.indexOf('"merge"');
+        const iSplit = dbl.indexOf('"split"');
+        const iFirstStmt = dbl.indexOf("const p = lanesPoint(e);");
+        // [复审终轮①] 守卫必须在**处理器开头**,不是只挡边界分支:
+        // 原先 `j < 0` 那一档会漏出去 —— 把边界拖走之后落点常常已经出了 ±6px,
+        // 那一下就照发**分割**,用户想细调却多出一条边界。
+        check(
+            iGuard > 0 && iGuard < iFirstStmt,
+            "(b2)守卫在处理器开头(排在第一条语句之前),不是只挡边界分支",
+        );
+        check(
+            dbl.slice(iGuard, iFirstStmt).includes("return;"),
+            "(b3)守卫命中即 return —— 分割、合并两条路一起让开",
+        );
+        check(
+            iMerge < iSplit,
+            "(b4)边界分支仍排在分割之前(SL-207 的顺序不能被破坏)",
+        );
+        // 守卫只问一次:挪到开头后,边界分支里那份必须撤掉,否则又是两处同义判定
+        eq(
+            (dbl.match(/mergeGuardedByDrag\(/g) || []).length,
+            1,
+            "(b5)守卫只在开头问一次(边界分支里那份已撤)",
+        );
+    }
+
+    // ---- 建议①:hzoom 零位移早退(与另外三路同口径)----
+    {
+        const i = tw.indexOf("const dz = wheelPx(e);");
+        check(i > 0, "(c1)hzoom 走归一后的位移");
+        check(
+            tw.slice(i, i + 120).includes("if (!dz) return;"),
+            "(c2)hzoom 零位移早退(否则会按 `<0?放大:缩小` 白缩一格)",
+        );
+    }
+
+    // ---- 建议③:wheelPx / WHEEL_LINE_PX 抽到 shared,两处共用 ----
+    {
+        const wheel = src("web/shared/wheel.js");
+        const traj = src("web/shared/trajectory-chart.js");
+        check(
+            /export function wheelPx/.test(wheel),
+            "(d1)shared/wheel.js 提供 wheelPx",
+        );
+        check(
+            /from "\.\.\/shared\/wheel\.js"/.test(tw),
+            "(d2)tab-wave 从 shared 引",
+        );
+        check(
+            /from "\.\/wheel\.js"/.test(traj),
+            "(d3)trajectory-chart 从 shared 引",
+        );
+        check(
+            !/function wheelDelta\(e\) \{[\s\S]{0,200}deltaMode === 1/.test(
+                traj,
+            ),
+            "(d4)trajectory-chart 不再自带一份同义实现",
+        );
+        // 作废注释:Tab3 已经统一,那句「本卡不擅自改 Tab3」不能留着
+        check(
+            !/本卡不擅自改 Tab3/.test(traj),
+            "(d5)「与 Tab3 分叉、留后续裁量」的作废注释已改写",
+        );
+        // 两处对同一个事件必须给出同一个数(页档除外 —— 那一档本就按各自的一屏折算)
+        for (const ev of [
+            { deltaY: 120, deltaMode: 0 },
+            { deltaX: 120, deltaY: 0, deltaMode: 0 },
+            { deltaY: 3, deltaMode: 1 },
+            { deltaX: 10, deltaY: -120, deltaMode: 0 },
+        ]) {
+            eq(
+                TW.wheelPx(ev),
+                WHEEL.wheelPx(ev),
+                `(d6)tab-wave 与 shared 对 ${JSON.stringify(ev)} 同值`,
+            );
+        }
+        eq(
+            WHEEL.wheelPx({ deltaY: 1, deltaMode: 2 }, 900),
+            900,
+            "(d7)页档按调用方给的一屏折算(轨迹图传自己的舞台宽)",
+        );
+        eq(
+            WHEEL.wheelPx({ deltaY: 1, deltaMode: 2 }),
+            WHEEL.WHEEL_PAGE_PX,
+            "(d8)没给一屏宽就回落常量档",
+        );
+    }
+
+    // ---- 建议②:右键放行选择器收窄 ----
+    {
+        // 用真实 DOM 语义的桩:closest 按选择器逐条匹配自己
+        const el = (tag, attrs) => ({
+            closest: (sel) =>
+                sel.split(", ").some((one) => {
+                    const m =
+                        /^(\w+)?(?:\[(\w+)="?([^"\]]*)"?\])?(?::not\(\[(\w+)\]\))?$/.exec(
+                            one.trim(),
+                        );
+                    if (!m) return false;
+                    const [, t, ak, av, notAttr] = m;
+                    if (t && t !== tag) return false;
+                    if (ak && String(attrs[ak]) !== av) return false;
+                    if (notAttr && attrs[notAttr] !== undefined) return false;
+                    return true;
+                })
+                    ? {}
+                    : null,
+        });
+        check(
+            TWCM.isEditableTarget(el("input", { type: "text" })),
+            "(e1)文本框放行",
+        );
+        check(TWCM.isEditableTarget(el("textarea", {})), "(e2)textarea 放行");
+        check(
+            TWCM.isEditableTarget(el("input", {})),
+            "(e3)缺省 type 的 input(即 text)放行",
+        );
+        check(
+            !TWCM.isEditableTarget(el("input", { type: "range" })),
+            "(e4)range 滑杆**不放行**(那上面没有粘贴可言,放行=露出浏览器菜单)",
+        );
+        check(
+            !TWCM.isEditableTarget(el("input", { type: "checkbox" })),
+            "(e5)checkbox 不放行",
+        );
+        check(
+            TWCM.isEditableTarget(el("div", { contenteditable: "true" })),
+            "(e6)contenteditable=true 放行",
+        );
+        check(
+            !TWCM.isEditableTarget(el("div", { contenteditable: "false" })),
+            "(e7)contenteditable=false **不放行**(显式声明不可编辑)",
+        );
+    }
+
+    // ---- 建议④:tour 词条把两个「无可见入口」的手势说出来 ----
+    {
+        for (const lang of ["zh", "en", "fr"]) {
+            const body = String(T[lang]["tour.step34.body"]);
+            for (const [tag, re] of [
+                ["Shift", /Shift|Maj/],
+                ["Ctrl", /Ctrl/],
+                ["Alt", /Alt/],
+            ]) {
+                check(re.test(body), `(f1)${lang}.step34 提到 ${tag} 滚轮档`);
+            }
+            check(
+                /分界线|divider|limite entre/.test(body),
+                `(f2)${lang}.step34 写了「双击分界线 = 合并」(手势无可见入口,引导词是唯一发现路径)`,
+            );
+        }
     }
 }
 

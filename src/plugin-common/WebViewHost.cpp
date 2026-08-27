@@ -103,6 +103,35 @@ public:
 
     void pageFinishedLoading(const juce::String& url) override { owner_.onNavigationFinished(url); }
 
+    // [SL-214] 外链通道:页面里的 window.open() / target=_blank 走这里。
+    //
+    // 为什么落这一层:JUCE 的 WebView2 后端已经把 NewWindowRequested 接到本虚函数上,
+    // 并且 put_Handled(true) —— 也就是说**不重写它,外链就是死的**(WebView2 不会弹
+    // 自己的窗,JUCE 的默认实现又什么都不做)。重写 + launchInDefaultBrowser 就是 JUCE
+    // 给的现成通道,**不需要新增桥函数**:契约函数表里没有「打开外部 URL」这一项,
+    // 走这条路就不必动冻结契约。
+    //
+    // 只放行 http/https:外链的本质是「把一个字符串交给系统去执行」,限定协议是这类
+    // 通道的基本纪律 —— file: 与自定义协议一律不接,哪怕页面是我们自己打包的资源。
+    //
+    // 本重写是**纯增量**,不碰 pageAboutToLoad,加载路径一个字节没动。代价是主框架导航
+    // (裸 <a href>、没有 target=_blank)仍会就地把整页替换掉 —— 插件窗没有后退键,那会是
+    // 死局。眼下页面里一个这样的链接都没有;真要补这道防线,得在 pageAboutToLoad 里按
+    // resource provider 根做白名单,而那条**会碰加载路径**,必须单独过 gate 8 真机验证。
+    void newWindowAttemptingToLoad(const juce::String& newURL) override
+    {
+        const auto url = newURL.trim();
+        if (url.startsWithIgnoreCase("https://") || url.startsWithIgnoreCase("http://"))
+        {
+            owner_.logDiag("external link -> default browser: " + url);
+            juce::URL(url).launchInDefaultBrowser();
+        }
+        else
+        {
+            owner_.logDiag("blocked non-http external link: " + url);
+        }
+    }
+
     bool pageLoadHadNetworkError(const juce::String& errorInfo) override
     {
         owner_.onNavigationError(errorInfo);
