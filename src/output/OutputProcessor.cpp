@@ -2212,6 +2212,37 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 
         if (!result.cancelled)
         {
+            // [SL-206] VAD 后验写回 FrameStore —— 泳道绿线(§1.27 瓦片 vad 列)唯一的数据源。
+            // 此前这一步整个不存在:管线把后验算完就扔(传 nullptr),`vadP` 全仓没有生产者,
+            // 真机恒 0、绿线一次都没画出来过;web-preview 的 mock 自己算了一份,于是三个版本
+            // 都被 mock 盖住(用户两次被这条误导)。
+            // 量化口径与读侧对齐:`waveformOf` 判 `vadP(h) > 127` 为有声,所以 0..1 → 0..255
+            // 四舍五入,p=0.5 恰好落 128(> 127)算有声,与 EnergyVad 的判决阈同侧。
+            // 只写**本次真参与分析**的轨与 hop(posterior 为空的轨跳过),绝不碰范围外的账。
+            {
+                auto& store = session_.frameStore();
+                for (int t = 0; t < 15; ++t)
+                {
+                    const auto& post = result.vadPosterior[static_cast<std::size_t>(t)];
+                    if (post.empty())
+                    {
+                        continue;
+                    }
+                    auto& frames = store.channel(static_cast<scvb::u32>(t + 1));
+                    for (std::size_t k = 0; k < post.size(); ++k)
+                    {
+                        const std::int64_t hop = result.firstHop + static_cast<std::int64_t>(k);
+                        if (hop < 0)
+                        {
+                            continue;
+                        }
+                        const float clamped = post[k] < 0.0f ? 0.0f : (post[k] > 1.0f ? 1.0f : post[k]);
+                        frames.setVadP(static_cast<std::uint64_t>(hop),
+                                       static_cast<std::uint8_t>(std::lround(clamped * 255.0f)));
+                    }
+                }
+            }
+
             auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
 
             for (int t = 0; t < 15; ++t)

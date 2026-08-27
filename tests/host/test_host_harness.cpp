@@ -2756,3 +2756,136 @@ TEST_CASE("HOST SL-202:state 往返必须保住段表(丢 CRVS = 全部轨落正
         CHECK(activeCurveOf(r.out, ch) != nullptr);
     }
 }
+
+// ===========================================================================
+// [SL-206] VAD 后验(vadP)必须有**生产者**。
+//
+// 定谳(ui-r2):泳道绿线的渲染侧齐全、`EnergyVad` 早就支持 `posteriorOut`、`FrameStore` 早就有
+// `setVadP`、`waveformOf` 早就按 `vadP(h) > 127` 给瓦片算 vad 列 —— 唯独中间那一段没人接:
+// 管线调 `runEnergyVad` 时第五参传 `nullptr`,后验算完就扔。于是 vadP 全仓**恒 0**,
+// 真机绿线一次都没画出来过;而 web-preview 的 mock 自己算了一份,preview 里一直看得见 ——
+// 这是「mock 盖住真机」的第三次(用户两次被它误导),所以本组用例断的是**真机数据面**。
+// ===========================================================================
+TEST_CASE("HOST SL-206:分析后 vadP 非全零,且与能量形状相关", "[host][t37][v55][SL206]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采一段**有声有静**交替的素材:后验若真接上了,它必须跟着这个形状走。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 有声
+        r.runBlocks(40, 0.0f, 4, 4); // 静音
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+
+    // 分析前:vadP 恒 0(生产者只有分析这一条路)。
+    {
+        const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 64);
+        int voicedBefore = 0;
+        for (const auto v : tile.vad)
+        {
+            voicedBefore += v ? 1 : 0;
+        }
+        REQUIRE(voicedBefore == 0); // 前置:分析前没有任何有声列
+    }
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    // ★ 分析后:瓦片的 vad 列**不再全零**(修复前这里恒 0 —— 绿线画不出来的直接判据)。
+    constexpr int kCols = 96;
+    const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, kCols);
+    int voiced = 0;
+    int coveredCols = 0;
+    double kwVoiced = 0.0;
+    double kwSilent = 0.0;
+    int nVoiced = 0;
+    int nSilent = 0;
+    for (int i = 0; i < kCols; ++i)
+    {
+        const auto k = static_cast<std::size_t>(i);
+        if (!tile.covered[k])
+        {
+            continue;
+        }
+        ++coveredCols;
+        if (tile.vad[k])
+        {
+            ++voiced;
+            kwVoiced += tile.maxDb[k];
+            ++nVoiced;
+        }
+        else
+        {
+            kwSilent += tile.maxDb[k];
+            ++nSilent;
+        }
+    }
+    REQUIRE(coveredCols > 0);
+    CHECK(voiced > 0); // ★ 核心:有声列存在
+    CHECK(voiced < coveredCols); // 且不是「全判有声」——那等于没判
+
+    // ★ 与能量形状相关:被判有声的列,包络峰值应显著高于被判静音的列。
+    REQUIRE(nVoiced > 0);
+    REQUIRE(nSilent > 0);
+    CHECK(kwVoiced / nVoiced > kwSilent / nSilent + 6.0); // 至少 6dB 的差
+}
+
+TEST_CASE("HOST SL-206:后验只写本次范围,范围外的 hop 不被动", "[host][t37][v55][SL206]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 10; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 4.0);
+    const double half = coveredS * 0.5;
+
+    // 只分析后半段。
+    REQUIRE(r.out.startAnalysis(0, half, coveredS).ok);
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    const auto front = r.out.waveformOf(kTestChannel, 0.0, half, 48);
+    const auto back = r.out.waveformOf(kTestChannel, half, coveredS, 48);
+    int voicedFront = 0;
+    int voicedBack = 0;
+    for (std::size_t i = 0; i < 48; ++i)
+    {
+        voicedFront += front.vad[i] ? 1 : 0;
+        voicedBack += back.vad[i] ? 1 : 0;
+    }
+    CHECK(voicedBack > 0); // 分析过的那一半:有声列出现
+    CHECK(voicedFront == 0); // 没分析的那一半:后验没被写过,仍是 0
+}

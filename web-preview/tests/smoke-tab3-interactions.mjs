@@ -1253,6 +1253,76 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
         ),
         "未覆盖列哨兵纪律(§1.27)",
     );
+    // ---- [SL-206] mock 与 native 的 **vad 口径对拍** ----
+    // 用户已经**两次**被 mock 盖住真机:泳道绿线的渲染侧齐全、mock 自己算了一份 vad,
+    // 而真机那一段(管线把 VAD 后验写回 FrameStore)**根本没人接** —— `runEnergyVad` 的
+    // `posteriorOut` 传的是 nullptr,`vadP` 全仓恒 0,绿线三个版本一次都没画出来过。
+    // 单看 preview 一切正常,所以两侧必须压**同一组语义断言**,谁塌了都当场露出来。
+    //
+    // native 侧对应用例:tests/host/test_host_harness.cpp 的 `HOST SL-206:分析后 vadP 非全零`
+    //   · 分析前 vad 列全 0(生产者只有分析这一条路)· 分析后 0 < voiced < coveredCols
+    //   · 有声列包络峰值 > 静音列 + 6dB
+    {
+        let voiced = 0;
+        let coveredCols = 0;
+        let sameAsCovered = true;
+        let voicedHi = 0;
+        let voicedN = 0;
+        let silentHi = 0;
+        let silentN = 0;
+        for (let i = 0; i < tile.vad.length; i++) {
+            if (!tile.covered[i]) continue;
+            coveredCols++;
+            if (tile.vad[i]) {
+                voiced++;
+                voicedHi += tile.maxDb[i];
+                voicedN++;
+            } else {
+                silentHi += tile.maxDb[i];
+                silentN++;
+            }
+            if (!!tile.vad[i] !== !!tile.covered[i]) sameAsCovered = false;
+        }
+        check(coveredCols > 0, "[SL-206] 有覆盖列(前置)");
+        check(voiced > 0, "[SL-206] mock:有声列存在(与 native 同款断言)");
+        check(
+            voiced < coveredCols,
+            "[SL-206] mock:不是「全判有声」(与 native 同款断言)",
+        );
+        // 这条是关键:mock 若图省事把 covered 抄成 vad,preview 上绿线满屏、看起来更「正常」,
+        // 而真机永远画不出来 —— 那正是这条 bug 藏住三个版本的形态。
+        check(
+            !sameAsCovered,
+            "[SL-206] mock 的 vad 不是 covered 的复制品(否则 preview 假绿、真机照旧空)",
+        );
+        check(
+            voicedN > 0 &&
+                silentN > 0 &&
+                voicedHi / voicedN > silentHi / silentN + 6,
+            "[SL-206] mock:有声列包络峰值显著高于静音列(与 native 同 6dB 口径)",
+        );
+        // 源码钉:native 侧那组必须成对存在,免得哪天被删了只剩半边对拍。
+        check(
+            /HOST SL-206:分析后 vadP 非全零/.test(
+                src("tests/host/test_host_harness.cpp"),
+            ),
+            "[SL-206] native 侧对拍用例仍在(两侧成对)",
+        );
+        // 生产链钉:管线必须把后验带出来(传 nullptr 就是这条 bug 本身)。
+        check(
+            // ⚠ 别用 `[^)]*`:实参表里 `f.kwMs.data()` 自带右括号,那个字符类跨不过去,
+            // 会在**代码完全正确**时判红(第一版就是这么红的)。同一行匹配即可。
+            /runEnergyVad\(.*posterior\.data\(\)\)/.test(
+                src("src/core/analysis/AnalysisPipeline.cpp"),
+            ),
+            "[SL-206] 管线把 VAD 后验带出(不再传 nullptr)",
+        );
+        check(
+            /frames\.setVadP\(/.test(src("src/output/OutputProcessor.cpp")),
+            "[SL-206] finishAnalysis 把后验写回 FrameStore",
+        );
+    }
+
     // 确定性:同参重取逐字节一致(种子固定)
     eq(
         MD.makeWaveformTile(4, 10, 90, 256),
