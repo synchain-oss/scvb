@@ -14,4 +14,4 @@
 
 ## 修订历史(摘自 constitution/ADR.md)
 
-- **[J60→ADR-010 补充]** 自动分配:每轨 `participate_in_auto_pan` 开关(stereo 默认 false/mono 默认 true);参与的 stereo 轨以**中心点**入槽位分配(不区间化);全部轨参与 L/R 音量平衡(stereo 按实际双通道能量)。
+- **[J60→ADR-010 补充]** 自动分配:每轨 `participate_in_auto_pan` 开关(stereo 默认 false/mono 默认 true);参与的 stereo 轨以**中心点**入槽位分配(不区间化);全部轨参与 L/R 音量平衡(stereo 按实际双通道能量)。**[J83 修订,2026-08-26]** 默认档改「未显式设置一律参与」:检测值 source_channels 来自宿主总线布局而非素材声道,J60 前提不成立;是否排除由用户逐轨显式开关决定。
