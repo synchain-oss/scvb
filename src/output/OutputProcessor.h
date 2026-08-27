@@ -221,6 +221,9 @@ public:
     // + 提示升级,绝不静默降级;原 blob 由宿主工程保有)。消息线程读写(setStateInformation 持
     // lifecycleMutex_),T30 桥经此把 abiMismatch 横幅推给 UI(Input PR#51 红旗#1 同款)。
     bool hasStateAbiMismatch() const noexcept { return stateAbiMismatch_; }
+    // [SL-217] 最近一次 setStateInformation 是否**没能恢复段真身**(缺 CRVS chunk 或解码失败)。
+    // 此时段表被**保留**而不是清空(§7.3 不得静默丢数据),这一位供诊断与后续上桥告警使用。
+    bool hasCrvsNotRestored() const noexcept { return crvsNotRestored_; }
     scvb::u32 stateAbiSeen() const noexcept { return stateAbiSeen_; }
 
     // ---- T29 桥面入口(消息线程)----
@@ -449,6 +452,7 @@ private:
 
     // PR#53 R1:state abi 拒载标志 + 保留的宿主原始字节 + 上次成功加载的容器(未知 chunk 原样回写)。
     bool stateAbiMismatch_ = false;
+    bool crvsNotRestored_ = false; // [SL-217] 最近一次加载没恢复段真身(段表已保留,不清空)
     scvb::u32 stateAbiSeen_ = 0;
     std::vector<std::uint8_t> preservedStateBlob_; // 拒载更高 abi 后保留的宿主原始字节(getStateInformation 原样回写)
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)

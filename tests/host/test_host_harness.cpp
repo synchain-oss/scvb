@@ -33,6 +33,7 @@
 #include "ipc/VizPlane.h"
 #include "state/OutputStateCodec.h"
 #include "state/StateCodec.h"
+#include "state/StateMigration.h"
 
 #include <algorithm>
 #include <limits>
@@ -2755,4 +2756,190 @@ TEST_CASE("HOST SL-202:state 往返必须保住段表(丢 CRVS = 全部轨落正
         CHECK(sameSegments(segmentsOfTrack(r.out, ch), before[static_cast<std::size_t>(ch - 1)]));
         CHECK(activeCurveOf(r.out, ch) != nullptr);
     }
+}
+
+// ===========================================================================
+// [SL-217] `setStateInformation` 的 CRVS 分支**不得静默清空段表**(§7.3 不得静默丢数据)。
+//
+// 原实现在「无 CRVS chunk」或「CRVS 解码失败」时把 crvsData_ 整个重置成默认 ——
+// 两个版本 × 15 轨的段表一次全清,悄无声息。后果不是「少了点东西」:段表一空 →
+// rebuildAllCurves 给 setCurve(nullptr) → DspArbiter 引擎权威分支恒 0 → **每条轨的声像都跳正中**,
+// 而 UI 上毫无提示。这正是 SL-202 现场「多轨落正中、只有全量分析才恢复」的形态,
+// 也是这条链上唯一能**一次清空所有轨**的代码路径。
+//
+// 宿主给出不含 CRVS 的 blob 是有正当场合的(轨道预设/参数预设只带 PRMS、别的实例的部分状态、
+// 旧版本或被裁剪过的工程数据)——「没有信息」不该被读成「删除全部」。
+// ===========================================================================
+namespace
+{
+// 从一份完整 blob 里**剥掉** CRVS chunk,模拟「宿主给了一份不含段表的状态」。
+// 直接在容器层解开→删→重编,不手搓字节(与生产同一套编解码,免得测的是我自己的假容器)。
+std::vector<std::uint8_t> blobWithoutCrvs(const juce::MemoryBlock& src)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    REQUIRE(chunks.find(scvb::state::kFourccCrvs) != nullptr); // 前置:原 blob 确实带 CRVS
+    chunks.chunks.erase(
+        std::remove_if(chunks.chunks.begin(), chunks.chunks.end(),
+                       [](const scvb::state::Chunk& c) { return c.fourcc == scvb::state::kFourccCrvs; }),
+        chunks.chunks.end());
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+} // namespace
+
+TEST_CASE("HOST SL-217:缺 CRVS chunk 的 state 不得清空段表", "[host][t37][v55][SL217]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    std::array<std::vector<scvb::state::Segment>, 3> before;
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        before[static_cast<std::size_t>(ch - 1)] = segmentsOfTrack(r.out, ch);
+        REQUIRE_FALSE(before[static_cast<std::size_t>(ch - 1)].empty());
+        REQUIRE(activeCurveOf(r.out, ch) != nullptr);
+    }
+
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+    REQUIRE(full.getSize() > 0);
+    const auto stripped = blobWithoutCrvs(full);
+
+    // ★ 灌一份**不含 CRVS** 的 state:段表必须原样保留,曲线必须还在。
+    r.out.setStateInformation(stripped.data(), static_cast<int>(stripped.size()));
+    MonoMultiRig::pump(200);
+
+    for (int ch = 1; ch <= 3; ++ch)
+    {
+        INFO("track " << ch);
+        CHECK(sameSegments(segmentsOfTrack(r.out, ch), before[static_cast<std::size_t>(ch - 1)]));
+        CHECK(activeCurveOf(r.out, ch) != nullptr); // ← 空表会让它变 nullptr = 正中
+    }
+    // 诊断位:如实标记「这一轮没恢复段真身」(供上桥告警/现场判别)。
+    CHECK(r.out.hasCrvsNotRestored());
+}
+
+TEST_CASE("HOST SL-217:CRVS 解码失败同样不得清空段表", "[host][t37][v55][SL217]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    const auto before = segmentsOfTrack(r.out, 1);
+    REQUIRE_FALSE(before.empty());
+
+    // 把 CRVS chunk 的 payload 换成一段解不开的垃圾(容器本身仍然合法 —— 走的是
+    // 「chunk 在、decodeCrvs 失败」那一支,而不是 Corrupt 整体拒载那一支)。
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    for (auto& c : chunks.chunks)
+    {
+        if (c.fourcc == scvb::state::kFourccCrvs)
+        {
+            c.payload.assign(16, std::uint8_t{0xEE}); // 解不开的载荷
+        }
+    }
+    std::vector<std::uint8_t> broken;
+    REQUIRE(scvb::state::encodeContainer(chunks, broken));
+
+    r.out.setStateInformation(broken.data(), static_cast<int>(broken.size()));
+    MonoMultiRig::pump(200);
+
+    // ★ 段表保留、曲线还在、诊断位置起。
+    CHECK(sameSegments(segmentsOfTrack(r.out, 1), before));
+    CHECK(activeCurveOf(r.out, 1) != nullptr);
+    CHECK(r.out.hasCrvsNotRestored());
+}
+
+TEST_CASE("HOST SL-217:正常往返仍照常恢复段表且不置诊断位", "[host][t37][v55][SL217]")
+{
+    // 对照组:别让「保留」把正常加载也一并跳过了 —— 完整 blob 必须真的把段表换成 blob 里那一份。
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full); // 这一份里带着分析结果
+    const auto analysed = segmentsOfTrack(r.out, 1);
+    REQUIRE_FALSE(analysed.empty());
+
+    // 把段表改掉(手动接管通道 → 单段常值),再灌回那份 blob:必须被换回分析结果。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(1, /*isPan=*/true, -70.0f, replaced, replacedLocked));
+    REQUIRE_FALSE(sameSegments(segmentsOfTrack(r.out, 1), analysed));
+
+    r.out.setStateInformation(full.getData(), static_cast<int>(full.getSize()));
+    MonoMultiRig::pump(200);
+
+    CHECK(sameSegments(segmentsOfTrack(r.out, 1), analysed)); // ★ 正常路径照旧生效
+    CHECK_FALSE(r.out.hasCrvsNotRestored()); // 诊断位只在真没恢复时才亮
+}
+
+// ---------------------------------------------------------------------------
+// [SL-217 / SL-202 追查] 宿主在**冻结 gesture 中途**拍 state 快照,CRVS 是否完整?
+//
+// 统筹的嫌疑:Cubase 这类宿主可能在参数 gesture 期间回写 preset 快照,若那一刻 CRVS
+// 不完整,随后回灌就正好命中「缺 CRVS → 清空」那条路。
+// 结论(本例钉死):**不成立**。冻结只写 APVTS 参数,压根不碰 crvsData_;
+// getStateInformation 持 lifecycleMutex_ 整体编码段真身,gesture 开着与否与它无关。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-217:冻结 gesture 中途取 state,CRVS 仍完整", "[host][t37][v55][SL217]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    const auto before = segmentsOfTrack(r.out, 1);
+    REQUIRE_FALSE(before.empty());
+
+    // 打开一个**未闭合**的 freeze gesture,并在中途取快照(模拟宿主此刻拍 preset)。
+    auto* frz = r.out.getAPVTS().getParameter(scvb::params::freezeId(r.out.versionActive(), 1));
+    REQUIRE(frz != nullptr);
+    frz->beginChangeGesture();
+    frz->setValueNotifyingHost(frz->convertTo0to1(1.0f));
+
+    juce::MemoryBlock mid;
+    r.out.getStateInformation(mid); // ← gesture 仍开着
+    frz->endChangeGesture();
+    MonoMultiRig::pump(120);
+
+    // ★ 这份快照里 CRVS chunk 在、且解得开、且段表就是分析结果。
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(mid.getData()), mid.getSize(), chunks).status ==
+            scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* crvs = chunks.find(scvb::state::kFourccCrvs);
+    REQUIRE(crvs != nullptr); // ← gesture 中途取的快照**不缺** CRVS
+    scvb::state::CrvsData decoded;
+    REQUIRE(scvb::state::decodeCrvs(crvs->payload.data(), crvs->payload.size(), decoded));
+    CHECK(
+        sameSegments(decoded.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[0].segments, before));
+
+    // 回灌这份快照:段表照常恢复,诊断位不亮。
+    r.out.setStateInformation(mid.getData(), static_cast<int>(mid.getSize()));
+    MonoMultiRig::pump(200);
+    CHECK(sameSegments(segmentsOfTrack(r.out, 1), before));
+    CHECK_FALSE(r.out.hasCrvsNotRestored());
 }
