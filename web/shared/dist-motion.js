@@ -265,16 +265,15 @@ export function createDistMotion(opts) {
     /** 逐帧写入面:只写 CSS 变量,不碰节点结构、不做任何布局读。 */
     function paint() {
         if (!container) return;
-        lastPaintedWidth = getGlobalWidthPct();
+        // 一帧只取一次:既省掉每行一次的 getter 调用(Output 满配下 ~900 次/秒),
+        // 更要紧的是**保证同一帧里每根柱用的是逐字节同一个 width** ——
+        // 逐行取的话,滑杆正在拖动时它可能在一帧中途变掉,画出半帧新半帧旧的几何。
+        const globalWidth = getGlobalWidthPct();
+        lastPaintedWidth = globalWidth;
         let si = 0;
         for (let i = 0; i < shown.length; i++) {
             const r = shown[i];
-            const geo = distGeometry(
-                r.pan,
-                r.volDb,
-                r.widthPct,
-                getGlobalWidthPct(),
-            );
+            const geo = distGeometry(r.pan, r.volDb, r.widthPct, globalWidth);
             setVars(bars[i], distBarVars(geo));
             if (r.stereo) {
                 setVars(spans[si], distSpanVars(geo));
@@ -337,13 +336,6 @@ export function createDistMotion(opts) {
          */
         push(rows, highlightCh, atMs) {
             if (destroyed) return;
-            const list = (Array.isArray(rows) ? rows : [])
-                .filter(usableRow)
-                .map(copyRow);
-            const t = Number.isFinite(atMs) ? atMs : nowMs();
-            const key = distShapeKey(list);
-            const nextHi = Number(highlightCh) || 0;
-
             if (!isVisible()) {
                 // **不可见就一步都不走**(05 §6.1 空闲零 rAF)。Output 侧这条是实打实的:
                 // Tab1 不在前台、或图表切到轨迹档时,`scvb.params` 仍以 25Hz 推着 render,
@@ -357,8 +349,19 @@ export function createDistMotion(opts) {
                 from = [];
                 target = [];
                 shown = [];
+                // 隐藏期欠的那笔重绘账**就此作废**:回到可见必走下面的重建分支
+                // (它自己会 rebuild + paint),再留着只会让 push 多画一次同样的东西。
+                paintOwed = false;
                 return;
             }
+
+            const list = (Array.isArray(rows) ? rows : [])
+                .filter(usableRow)
+                .map(copyRow);
+            const t = Number.isFinite(atMs) ? atMs : nowMs();
+            const key = distShapeKey(list);
+            const nextHi = Number(highlightCh) || 0;
+
             if (key !== shapeKey) {
                 // 轨集 / 立体声 / lead 变了 ⇒ 逐轨下标不再对齐:**直接落到目标值**,
                 // 不插(理由见 distShapeKey 的头注)。换组后的第一帧也走这一支 ——
