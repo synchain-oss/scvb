@@ -91,7 +91,37 @@ export function distGeometry(pan, volDb, widthPct, globalWidthPct = 100) {
 }
 
 // =============================================================================
-// 二、标记拼串(仍是纯函数:进 rows,出字符串)
+// 二、CSS 变量(几何 → 写入面;拼串与逐帧补间**共用这一处格式化**)
+// =============================================================================
+//
+// 为什么单列出来:`dist-motion.js` 的 rAF 补间不重拼 innerHTML(那会每帧销毁重建
+// 15 个节点,也把 CSS 过渡打断),而是给缓存好的节点逐帧写这几个自定义属性。
+// 若两条路各写一份 `toFixed(2) + "%"`,几何漂了**图照画**、只是补间落点与静态落点
+// 差一点点 —— 那是肉眼看不出来的错。故格式化只此一处,两条路都从这里取。
+
+/** 变量表 → `style` 里的声明串(不带末尾分号,与拼串模板逐字对齐)。 */
+function varsToStyle(vars) {
+    return Object.keys(vars)
+        .map((k) => `${k}:${vars[k]}`)
+        .join(";");
+}
+
+/** 一根柱的 CSS 变量(横位 + 柱高)。 */
+export function distBarVars(geo) {
+    return { "--x": geo.x.toFixed(2) + "%", "--h": geo.h.toFixed(2) + "%" };
+}
+
+/** 一条立体声张开横线的 CSS 变量(左端 + 宽 + 高度基线)。 */
+export function distSpanVars(geo) {
+    return {
+        "--x0": (geo.x - geo.half).toFixed(2) + "%",
+        "--w": (geo.half * 2).toFixed(2) + "%",
+        "--y": "calc(18px + " + geo.h.toFixed(2) + "%)",
+    };
+}
+
+// =============================================================================
+// 三、标记拼串(仍是纯函数:进 rows,出字符串)
 // =============================================================================
 
 /**
@@ -121,11 +151,11 @@ export function distBarsHtml(rows, highlightCh, globalWidthPct) {
         const tc = `--tc:var(${trackColorVar(ch)});`;
         if (r.stereo) {
             spans.push(
-                `<div class="dist-span" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}--x0:${(geo.x - geo.half).toFixed(2)}%;--w:${(geo.half * 2).toFixed(2)}%;--y:calc(18px + ${geo.h.toFixed(2)}%)"></div>`,
+                `<div class="dist-span" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}${varsToStyle(distSpanVars(geo))}"></div>`,
             );
         }
         bars.push(
-            `<div class="dist-bar" data-lead="${r.lead ? 1 : 0}" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}--x:${geo.x.toFixed(2)}%;--h:${geo.h.toFixed(2)}%"></div>`,
+            `<div class="dist-bar" data-lead="${r.lead ? 1 : 0}" data-ch="${ch}" data-hi="${dim(ch)}" style="${tc}${varsToStyle(distBarVars(geo))}"></div>`,
         );
     }
     return spans.concat(bars).join("");

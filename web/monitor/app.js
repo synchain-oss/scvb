@@ -14,7 +14,8 @@
 //   • 轨迹图 = `web/shared/trajectory-chart.js`(T43 交付,按其文件头的「复用契约」
 //     消费:喂 getSeries / getPalette,文案自己写,窗口收起时 destroy);
 //   • 分布图与图例 = `web/shared/distribution-chart.js`(T46 从 tab-master.js 提取,
-//     Output 侧产物逐字节不变);
+//     Output 侧产物逐字节不变);分布图的**帧间补间** = `web/shared/dist-motion.js`
+//     (SL-192:viz 是 4Hz 数据面,直出就是 15 根柱同拍齐跳);
 //   • 词条 / 占位符填充 / 设计盒缩放机制 = 与 Output、Input 同一套。
 //   本文件自己写的只有一件:**viz 段 → 两张图的投影**,在 `./viz.js`(纯函数,
 //   node 侧可断言;viz 事件的形状与「待与 T44/T45 对表」的清单也写在那份文件头)。
@@ -24,11 +25,8 @@
 // =============================================================================
 
 import { applyI18n, format, LANGS } from "../shared/i18n.js";
-import {
-    distBarsHtml,
-    legendChOf,
-    legendItemsHtml,
-} from "../shared/distribution-chart.js";
+import { legendChOf, legendItemsHtml } from "../shared/distribution-chart.js";
+import { createDistMotion } from "../shared/dist-motion.js";
 import {
     createTrajectoryChart,
     panTickText,
@@ -261,6 +259,17 @@ function renderTrajAxis() {
         }),
     );
 }
+
+// ------------------------------------------------------------- 分布图(rAF 补间)
+// viz 是 **4Hz** 数据面(契约 §6,冻结口径),而 Output 侧同一张图吃的是 25Hz 的
+// `scvb.params` —— 直出就是「15 根柱每 250ms 同拍齐跳一次」,正是 SL-192 里
+// 「一秒钟刷新一两次」的由来。写入面因此交给补间器:结构变了才重拼 innerHTML,
+// 数值逐帧插值只写 CSS 变量。可见性闸与轨迹图同源(`store.accepts.ok`)。
+const distMotion = createDistMotion({
+    container: $("monitor-dist-bars"),
+    isVisible: () => store.accepts.ok,
+    // viz 段只带每轨 width,不带全局「最大角度」—— 沿用 distGeometry 的 100 缺省。
+});
 
 // ------------------------------------------------------------- 图例 hover 联动
 // 事件委托挂容器,不逐行挂:行是按可见轨集重建的,逐行挂会随重建泄漏。
@@ -505,18 +514,18 @@ function render() {
     if (ver && store.version) ver.textContent = "v" + store.version;
 
     if (!online) {
-        // 不在线就不画图,也不留下上一组的残影;轨迹图收手(两条自持循环一起停)
+        // 不在线就不画图,也不留下上一组的残影;轨迹图收手(两条自持循环一起停)。
+        // 分布图走 `reset()` 而不是「写个空串」—— 它还要把补间状态与结构指纹一起清掉,
+        // 否则重新在线的第一帧会从上一组的柱位滑过来(见 dist-motion.js 的 reset 头注)。
         if (traj) traj.suspend();
-        writeHtml($("monitor-dist-bars"), "");
+        distMotion.reset();
         writeHtml(legendEl, "");
         return;
     }
 
-    // ---- 上:分布图(几何与拼串归 web/shared/distribution-chart.js)
-    writeHtml(
-        $("monitor-dist-bars"),
-        distBarsHtml(vizDistRows(viz), highlightCh),
-    );
+    // ---- 上:分布图。几何与拼串归 web/shared/distribution-chart.js,
+    // 「什么时候重拼、两帧之间怎么走」归 web/shared/dist-motion.js 的 rAF 补间。
+    distMotion.push(vizDistRows(viz), highlightCh);
 
     // ---- 图例(两图共用;行集 = 两图并集,理由见 viz.js 的 vizLegendRows)
     const legendHint = dictNow["chart.legendHint"] || "";
@@ -727,6 +736,9 @@ async function bootInner() {
 // 正是「按源文本断言」这种做法的反例:它证明的是字符在,不是代码跑得通。)
 addEventListener("pagehide", () => {
     if (traj) traj.destroy();
+    // 分布图的补间循环同理:不拆就是每开一次窗漏一条自持 rAF(它连着 15 行数据面
+    // 与缓存好的节点数组一起钉在内存里)。destroy() 幂等,重复调用一步不走。
+    distMotion.destroy();
 });
 
 // 测试面:web-preview 的 smoke 与截图器要能在页内读到投影结果(不经私有闭包)。
@@ -755,5 +767,10 @@ window.__SCVB_MONITOR__ = {
         seriesRuns: store.series.map((s) => s.runs.length),
         distTracks: vizDistRows(visibleFrame()).map((r) => r.ch),
         legendTracks: vizLegendRows(visibleFrame()).map((r) => r.ch),
+        // 分布图补间的只读诊断(SL-192)。`frames` 是 rAF 循环的帧计数 ——
+        // **事件驱动的实现里它恒为 0**,这是「rAF 驱动 vs 收到帧才画」最干脆的分界,
+        // 页面级冒烟据此断言,不必去猜某个采样点恰好落在动画中段。
+        // `shown` / `target` 一并给出:红了能一眼分清是「没在动」还是「动过头了」。
+        dist: distMotion.diag(),
     }),
 };

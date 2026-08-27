@@ -16,8 +16,19 @@ namespace
 {
 using WBC = juce::WebBrowserComponent;
 
-// scvb.viz 推送间隔:与 viz 发布器的 4Hz 同频 —— 更快也没有新数据。
-constexpr juce::uint64 kVizEmitIntervalMs = 250;
+// scvb.viz 的推送闸 —— **已取消**(SL-192)。原先这里是 `kVizEmitIntervalMs = 250`,
+// 注释写着「与发布器的 4Hz 同频 —— 更快也没有新数据」。两处错:
+//
+//   ① 这个闸挂在 WebViewHost 的 **25Hz** 基准 tick 上,而 `now - last >= 250` 在
+//      40ms 的栅格上最早只能命中 280ms(7 拍)—— 实得推送率是 **3.57Hz**,比发布器
+//      本身还慢,于是每隔约 2 秒就有一帧被整个跳过;
+//   ② 「更快也没有新数据」把「有没有新数据」与「多久去看一眼」混为一谈。载荷相不相同
+//      由下面的 `emitIfChanged` 判(值未变不发,契约 §0.4),闸只决定**检测延迟**。
+//
+// 现在每 tick(40ms)取一次载荷交给 `emitIfChanged`:重复帧被 JSON 比对挡掉,推送率仍是
+// 数据自身的 4Hz(**发布频率是冻结契约口径,一个字节没动**),而新帧的检测延迟从
+// ≤280ms 降到 ≤40ms。稳态载荷 = 帧头 + 每轨三条标量(车道只在 `lane_revision` 变的那一帧
+// 才带),构造 + 序列化的量级与同一个 tick 上早已 25Hz 跑着的 `scvb.playhead` 相当。
 
 const char* vizStateName(ScvbMonitorAudioProcessor::VizState s)
 {
@@ -96,7 +107,6 @@ juce::var MonitorEditor::buildSnapshot()
     lastSentLaneRevision_ = 0;
     lastSentLaneGroup_ = -1;
     lastGroupsMs_ = 0;
-    lastVizMs_ = 0;
 
     // 形状:{abi, version, group_id, groups_online, ui:{scale,language}, viz:<首帧,必带车道>}。
     // 首帧带上 viz —— 否则页面要空等一整个低频发布周期(250ms)才出图。
@@ -299,10 +309,8 @@ void MonitorEditor::emitTick()
         emitIfChanged(bridge::kEvGroups, juce::var(obj), lastGroupsJson_);
     }
 
-    // scvb.viz:4Hz(与发布器同频;更快没有新数据)。
-    if (now - lastVizMs_ >= kVizEmitIntervalMs)
+    // scvb.viz:**变化即发**(SL-192;实得频率仍是数据自身的 4Hz,由 emitIfChanged 兜住)。
     {
-        lastVizMs_ = now;
         // 车道只在 revision 变化(或从未送过)时带 —— 稳态帧就是一小把标量。
         const auto rev = processor_.vizSnapshot().laneRevision;
         const int grp = processor_.groupId();

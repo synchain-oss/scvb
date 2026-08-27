@@ -850,7 +850,9 @@
                             aria-hidden="true"
                         ></div>
                         <div class="dist-plot__base" aria-hidden="true"></div>
-                        <!-- 柱体 + 立体声张开横线由 app.js 经 distribution-chart.js 生成 -->
+                        <!-- 柱体 + 立体声张开横线由 app.js 经 dist-motion.js 生成并逐帧补间
+                             (SL-192:viz 是 4Hz 数据面,直出会让 15 根柱同拍齐跳)。
+                             本容器**整块归它所有**:结构变化时会被整体重拼,别往里放静态节点。 -->
                         <div
                             class="dist-bars"
                             data-gb="monitor-dist-bars"

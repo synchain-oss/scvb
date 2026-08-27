@@ -780,6 +780,117 @@ try {
     }
 
     // =========================================================================
+    log("=== ⑧c 分布图帧间补间(SL-192):rAF 驱动,不是收到帧才画 ===");
+    {
+        // 用户实测:「声像/音量分布……帧数很低,一秒钟刷新一两次」。viz 是 **4Hz** 数据面
+        // (冻结口径),直出就是 15 根柱每 250ms 同拍齐跳。修法是 `dist-motion.js` 的 rAF 补间。
+        //
+        // 这一节要证的是 node 侧证不到的两件:**循环真的是 rAF 驱动**,以及**插出来的中间值
+        // 真的写进了 DOM**。判据不靠「某次采样恰好落在动画中段」那种运气 —— `dist.frames`
+        // 是补间循环的帧计数,事件驱动的实现里它**恒为 0**,这是最干脆的分界。
+        const { snap } = await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+        );
+        eq(typeof snap.dist.frames, "number", "快照挂出了补间诊断面");
+
+        // 页内密集采样(每 30ms 一次),把往返开销与时序抖动都关在页内。
+        const collect = (ms, stepMs) =>
+            evaluate(
+                IN(`
+            return new Promise((res) => {
+                const out = [];
+                const t0 = performance.now();
+                const step = () => {
+                    const d = M.snapshot().dist;
+                    out.push({
+                        x: all(".dist-bar")
+                            .map((b) => b.style.getPropertyValue("--x"))
+                            .join("|"),
+                        target: (d.target || []).map((r) => r.pan).join("|"),
+                        shown: (d.shown || []).map((r) => r.pan).join("|"),
+                        frames: d.frames,
+                        pushes: d.pushes,
+                    });
+                    if (performance.now() - t0 >= ${ms}) res(out);
+                    else setTimeout(step, ${stepMs});
+                };
+                step();
+            });
+        `),
+            );
+
+        const samples = await collect(3000, 30);
+        const first = samples[0];
+        const last = samples[samples.length - 1];
+        const pushes = last.pushes - first.pushes;
+        const frames = last.frames - first.frames;
+        // 前提:这 3 秒里数据面**真的动过**。fixture 的乐句 3.2–7.6s 一段,15 轨叠起来
+        // 平均每 0.4s 就有一轨换段;没动过的话下面两条断言等于没测,故先把前提断死。
+        check(
+            pushes >= 2,
+            `3 秒内至少有两帧带来新值(实得 ${pushes} —— 为 0 说明这段时间数据面没动,下面的断言不作数)`,
+        );
+        // **事件驱动 ⇒ frames 恒为 0**;rAF 驱动 ⇒ 每次数据变化都铺满一整个补间窗口。
+        check(
+            frames >= pushes * 3,
+            `每帧数据被铺成多帧渲染(实得 ${frames} 渲染帧 / ${pushes} 数据帧)`,
+        );
+
+        // 中间态:一定采到过「显示值还没追上目标」的一刻 —— 这正是「插值在跑」的定义,
+        // 而「收到帧就直接落位」的实现里两者**永远相等**。
+        const midFlight = samples.filter((s) => s.shown !== s.target).length;
+        check(
+            midFlight > 0,
+            `采到过补间中段(显示值 ≠ 目标值;实得 ${midFlight} / ${samples.length} 次采样)`,
+        );
+
+        // DOM 面:插出来的中间值必须**真的写进了柱子**。不在这里重算一遍几何(那等于把
+        // distGeometry 抄第二份),而是比「不同取值的档数」—— 直出的话柱位只可能取到目标值
+        // 那几档,补间会在两档之间铺出更多档。
+        const distinctX = new Set(samples.map((s) => s.x)).size;
+        const distinctTarget = new Set(samples.map((s) => s.target)).size;
+        check(
+            distinctTarget >= 2,
+            `目标值在采样窗口内确实变过(实得 ${distinctTarget} 档)`,
+        );
+        check(
+            distinctX > distinctTarget,
+            `DOM 里的柱位取到了目标值之外的中间档(--x ${distinctX} 档 > 目标 ${distinctTarget} 档)`,
+        );
+        assertClean("monitor-online 补间");
+    }
+
+    // =========================================================================
+    log("=== ⑧d 空闲零 rAF(05 §6.1):没有新值就不许空转 ===");
+    {
+        // `?play=0` = 走带停住:viz 事件照旧 4Hz 到达,但每帧的三条标量逐字相同。
+        // 「值没变也照起一帧 rAF」是补间层最容易犯的错,而它在画面上**完全看不出来** ——
+        // 只是插件窗口开着就白烧一条 60fps 的循环。
+        await open(
+            "monitor-online",
+            IN(`return M && M.snapshot().online === true;`),
+            "&play=0",
+        );
+        // 先等补间收手(开箱首帧之后可能还有一两拍在走)
+        await waitFor(
+            IN(`return M.snapshot().dist.animating === false;`),
+            4000,
+        );
+        const a = await evaluate(IN(`return M.snapshot().dist;`));
+        await sleep(800);
+        const b = await evaluate(IN(`return M.snapshot().dist;`));
+        eq(
+            b.frames - a.frames,
+            0,
+            `停住 800ms 里一帧 rAF 都不许跑(实得 ${b.frames - a.frames} 帧)`,
+        );
+        eq(b.animating, false, "循环处于停止态");
+        check(b.shown.length > 0, "而柱子还在(停帧不等于清图)");
+        assertClean("monitor-online&play=0");
+    }
+
+    // =========================================================================
     log("=== ⑨ 裸开(无 mock 后端):零 console.error,页面不白屏 ===");
     {
         // 直开真源页(不经壳页 ⇒ 没有 __SCVB_MOCK__,也没有 __JUCE__)。

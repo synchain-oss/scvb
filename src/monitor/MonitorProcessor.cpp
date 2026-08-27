@@ -17,7 +17,20 @@ constexpr int kGroupIdMax = 8; // [J66] 1..8(A-H)
 constexpr int kUiScaleMinPercent = 50;
 constexpr int kUiScaleMaxPercent = 200;
 constexpr std::uint64_t kGroupsProbeIntervalMs = 1000; // 1Hz 跨组探测(J70)
-constexpr std::uint64_t kVizPollIntervalMs = 250; // 4Hz:与发布器同频,不多不少
+// 段**不存在**时的 attach 重试节流。这一条与读帧无关(读帧由定时器每拍做),
+// 它挡的是「Output 还没起来」时每拍一次 open+unmap —— 4Hz 重试足够,自愈延迟无人感知。
+constexpr std::uint64_t kVizAttachRetryMs = 250;
+// [M] 轮询频率(SL-192)。**发布器仍是 4Hz(冻结契约口径,一个字节没动)**,改的是读方
+// 的采样率。曾经这里也是 4Hz,注释写着「与发布器同频,不多不少」—— 那句话漏了一件事:
+// 两个 4Hz 时钟**互不同步**。同频异相的采样会周期性地把某一帧整个跳过(读到的还是上一帧),
+// 于是 UI 实得的更新率并不是 4Hz,而是 4Hz 上下漂、偶尔隔 500ms 才动一次;叠上编辑器侧
+// 那一层同款的 250ms 闸(见 MonitorEditor.cpp),用户看到的就是「一秒钟刷新一两次」。
+//
+// 20Hz(50ms)= 发布周期的 1/5:任何一帧最迟 50ms 内被读到,再不会整帧跳过,检测延迟
+// 从 ≤250ms 降到 ≤50ms。代价是 `VizPlane::read()` 从 4Hz 提到 20Hz —— 那是一次 ~16k 次
+// relaxed 原子读的定长循环(15 轨 × 1024 车道),几十微秒量级,跑在 [M] 上;
+// 相对「图慢半拍」这个真实体感,这点开销买得值。
+constexpr int kVizPollHz = 20;
 } // namespace
 
 ScvbMonitorAudioProcessor::ScvbMonitorAudioProcessor()
@@ -48,7 +61,7 @@ void ScvbMonitorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPe
     sawVizFrame_ = false;
     lastVizChangeMs_ = 0;
     lastAttachTryMs_ = 0;
-    startTimerHz(4);
+    startTimerHz(kVizPollHz);
 }
 
 void ScvbMonitorAudioProcessor::releaseResources()
@@ -241,7 +254,7 @@ bool ScvbMonitorAudioProcessor::setObservedGroup(int groupId)
     }
     groupId_ = groupId;
     // 只读换段:释放旧组句柄 + 指向新组,**不在这里 attach** —— 新组的 Output 可能还没上线,
-    // attach 由 [M] 4Hz 重试。绝不用 changeGroup():那是写方路径,会把「新组无写方」变成建段。
+    // attach 由 [M] 定时器重试(段不存在时 4Hz 节流)。绝不用 changeGroup():那是写方路径,会把「新组无写方」变成建段。
     vizPlane_.setGroupReadOnly(static_cast<scvb::u32>(groupId));
     vizState_ = VizState::kOffline;
     vizFresh_ = false;
@@ -268,7 +281,7 @@ void ScvbMonitorAudioProcessor::setUiLanguage(const juce::String& lang)
 }
 
 // ---------------------------------------------------------------------------
-// [M] 4Hz 定时器:viz attach/读 + 1Hz 跨组探测
+// [M] 20Hz 定时器(SL-192;发布器仍 4Hz):viz attach/读 + 1Hz 跨组探测
 // ---------------------------------------------------------------------------
 
 void ScvbMonitorAudioProcessor::timerCallback()
@@ -307,7 +320,7 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
 
     if (!vizPlane_.isOpen())
     {
-        if (nowMs - lastAttachTryMs_ < kVizPollIntervalMs)
+        if (nowMs - lastAttachTryMs_ < kVizAttachRetryMs)
         {
             return;
         }

@@ -61,7 +61,6 @@ private:
     bool sentLanes_ = false; // 是否送出过任何一帧车道(首帧必带)
     juce::String lastPlayheadJson_;
     juce::uint64 lastGroupsMs_ = 0; // 1Hz 折半
-    juce::uint64 lastVizMs_ = 0; // 4Hz 折半(与发布器同频)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MonitorEditor)
 };
