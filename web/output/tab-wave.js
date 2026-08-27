@@ -398,12 +398,14 @@ export function isLanesEmpty(store) {
  * 四态与 Tab1 的 `captureVisual` 同族,第五态 `needcap` 是 Tab3 特有的。判据逐条:
  *
  *   off        `state.recapture.armed` 为假 —— 没布防。
- *   needcap    布防了,但 `global.capture_enabled` 是关的。**这一档必须单列**:
- *              布防只是标记「哪一块失效、要重录」,真正决定特征写不写得进去的闸是
- *              01 采集(引擎侧 `OutputSession::pullFeatures` 只看 captureEnabled ×
- *              global.range;`recaptureArm` 的四个 runtime 字段在采集路径上没有消费方)。
- *              所以「布防了但没开采集」= 播多久都一个 hop 都不会写 —— 报「已布防·等待播放」
- *              就是**说谎**,用户等到天荒地老也等不到「采集中」。
+ *   needcap    布防了,但 `global.capture_enabled` 是关的。**这一档必须单列**:布防只是标记
+ *              「哪一块失效、要重录」,真正决定特征写不写得进去的闸是 01 采集。所以「布防了
+ *              但没开采集」= 播多久都一个 hop 都不会写 —— 报「已布防·等待播放」就是**说谎**,
+ *              用户等到天荒地老也等不到「采集中」。
+ *              **[J87] 之后这一档变罕见,但没有消失**:布防现在会自动打开 01 采集(裁定①),
+ *              正常路径进不来;但用户可以在布防期间手动把 01 采集关掉,而引擎侧**不会**因此
+ *              撤防(04 §4.2 ④ 的「采集 OFF 即解除布防」未实装,理由见 J87 的 PR 描述)——
+ *              于是这一档正是那个状态的如实显示。
  *   armed      布防 ∧ 采集 ON ∧ 未播放 —— 真的只差按播放。
  *   capturing  布防 ∧ 采集 ON ∧ 播放中 ∧ 在 `global.range` 内(§2.6 `inRange`)
  *              ∧ 播放头落在布防区间 `[startS, endS)` 内 —— 此刻特征确实在写。

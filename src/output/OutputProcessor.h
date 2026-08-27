@@ -111,6 +111,12 @@ struct OutputRuntimeState
     double recaptureStartS = 0.0;
     double recaptureEndS = 0.0;
     bool recaptureAutoStop = false;
+    // [J87] 布防时是不是**由我们**替用户打开的 01 采集(裁定①)。撤防时只有这一位为真才把
+    // 采集关回去(裁定③「恢复布防前的原值」)—— 布防前本来就开着的,撤防后必须保持开。
+    bool recaptureAutoEnabledCapture = false;
+    // [J87] 上一拍的播放头位置(秒),用于「越过选区右边界」的**边沿**判定(裁定③)。
+    // 用边沿而不是电平:布防时播放头若已在选区右侧,电平判定会当场自撤防。<0 = 尚无上一拍。
+    double recapturePrevPlayheadS = -1.0;
     bool analysisRunning = false;
     bool analysisHasProgress = false;
     // [W] 分析线程写 / [M] 25Hz emit 读 —— runtime_ 其余字段都由 lifecycleMutex_ 串行,
@@ -169,6 +175,15 @@ public:
     void setGroupId(int groupId);
     void setCaptureEnabled(bool on);
     void setOutputEnabled(bool on);
+
+    // [J87] 局部重采集布防(04 §4.2;桥面 §1.23 recaptureArm 的落地方)。两个口都在 [M]。
+    // 放在 processor 而不是 editor 里,是因为**撤防有两条触发路径**:桥面显式撤防,与 25Hz
+    // tick 里「播放头越过选区右边界」的自动撤防(裁定③)。两条必须走同一段「关采集/恢复原值」
+    // 的代码,分头写迟早会漂。armRecapture 只在 false→true 那一跳记「是不是我们开的采集」——
+    // 中途改选区/改轨勾选会再次调用它(04 §4.2 ②「立即以新值为布防范围」),那时不能重记,
+    // 否则布防前的原值就被现在这个(已被我们改成 true 的)值冲掉,撤防后再也关不回去。
+    void armRecapture(std::uint16_t tracksMask, double startS, double endS, bool autoStop);
+    void disarmRecapture();
     void setVersionActive(int version);
     int groupId() const { return groupId_; }
     int versionActive() const { return versionActive_; }
@@ -396,6 +411,18 @@ private:
     // 由 CRVS 段真身重建全部 30 轨 CurveEvaluator 并注入 authority + 打印器重取活动版本曲线。
     // 不可变契约(ADR-005);非锁定 —— 调用方须已持 lifecycleMutex_(rebindVersion 与 CRVS 写事务)。
     void rebuildAllCurves();
+
+    // [J87] 采集开关的**不加锁**内核:调用方须已持 lifecycleMutex_。setCaptureEnabled 是它的
+    // 加锁外壳;25Hz tick 全程持锁,自动撤防那一路直接用内核,不去依赖 CriticalSection 的可重入。
+    void applyCaptureEnabled(bool on);
+    // [J87] 撤防的**不加锁**内核:桥面撤防与「越界自动撤防」共用它,两条路不许分头写。
+    void disarmRecaptureLocked();
+    // [J87] 把记账门控(时间维 gate + 轨维 mask)按当前布防态套到 session 上。
+    // arm/disarm 与 25Hz tick 三处都调:桥面调用与 tick 不同拍,只在 tick 里设会留一个 40ms
+    // 的窗口,那段时间仍按 global.range 记账 —— 选区外的既有特征会在那一小段里被盖掉。
+    void applyFeatureGates();
+    // [J87] 25Hz tick 内的布防维护:套门控 + 「越过选区右边界」自动撤防。
+    void tickRecapture();
 
     juce::CriticalSection lifecycleMutex_; // 串行化 prepare/release/setState/claim/心跳
 

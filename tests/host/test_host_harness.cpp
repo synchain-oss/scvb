@@ -2943,3 +2943,257 @@ TEST_CASE("HOST SL-217:冻结 gesture 中途取 state,CRVS 仍完整", "[host][t
     CHECK(sameSegments(segmentsOfTrack(r.out, 1), before));
     CHECK_FALSE(r.out.hasCrvsNotRestored());
 }
+
+// ===========================================================================
+// [J87] 局部重采集布防的引擎侧实装(04 §4.2;用户 2026-08-27 三裁)。
+//
+// #114 定谳查出的洞:`recaptureArm` 的五个 runtime 字段在引擎侧**零消费方** —— 布防只把
+// badge 点亮,采集通路一个字节都没改,`autoStop` 更是连实现方都没有。而 USER_GUIDE 已经把
+// 行为写出去了。本组按三条裁定逐条钉死,判据全部取**引擎侧可观测量**(采集开关真值 /
+// coverage / waveformOf 内容),不看 UI:
+//   ① 布防即自动打开 01 采集;
+//   ② 布防期间采集收窄到「工作选区 × 选中轨掩码」,区外与未选轨的既有特征逐字节不动;
+//   ③ 勾了「播放结束自动停止」时,播放头越过选区右边界 → 自动撤防 + 把采集恢复成布防前的值。
+// ===========================================================================
+
+namespace
+{
+
+// waveformOf 的内容对拍(= 卡里说的「哈希比对」;直接比数组,失败时看得见是哪一列变了)。
+// 比 min/max/covered 三列:它们是 FrameStore 里 kw/peak 的直接投影,特征被改写必然反映过来。
+bool sameWaveform(const ScvbOutputAudioProcessor::WaveformTile& a, const ScvbOutputAudioProcessor::WaveformTile& b)
+{
+    if (a.minDb.size() != b.minDb.size() || a.maxDb.size() != b.maxDb.size() || a.covered.size() != b.covered.size())
+        return false;
+    for (std::size_t i = 0; i < a.minDb.size(); ++i)
+    {
+        if (a.minDb[i] != b.minDb[i] || a.maxDb[i] != b.maxDb[i] || a.covered[i] != b.covered[i])
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("HOST J87①③:布防自动开采集,撤防恢复布防前的原值", "[host][t37][j87]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+
+    // —— ① 布防前采集是关的 → 布防即自动打开(裁定①)——
+    r.out.setCaptureEnabled(false);
+    REQUIRE_FALSE(r.out.captureEnabled());
+    r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+    CHECK(r.out.runtime().recaptureArmed);
+    CHECK(r.out.captureEnabled()); // ← 修复前:布防只亮 badge,这里恒 false
+
+    // 中途改选区 = 再布防一次(04 §4.2 ②)。**不能**因此把「布防前采集是关的」这笔账冲掉 ——
+    // 冲掉了撤防就再也关不回去。这一条是 armRecapture 里那个 if (!recaptureArmed) 的用例。
+    r.out.armRecapture(kMask, 1.5, 3.0, /*autoStop=*/false);
+    CHECK(r.out.runtime().recaptureStartS == 1.5);
+    CHECK(r.out.captureEnabled());
+
+    // —— ③ 撤防 → 采集恢复成布防前的值(这里是 OFF)——
+    r.out.disarmRecapture();
+    CHECK_FALSE(r.out.runtime().recaptureArmed);
+    CHECK_FALSE(r.out.captureEnabled());
+
+    // —— ③ 反向:布防前采集**本来就开着** → 撤防后必须保持开 ——
+    r.out.setCaptureEnabled(true);
+    r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+    CHECK(r.out.captureEnabled());
+    r.out.disarmRecapture();
+    CHECK_FALSE(r.out.runtime().recaptureArmed);
+    CHECK(r.out.captureEnabled()); // ← 一律关掉的写法在这里红:用户自己开的采集被我们私自关了
+
+    // 撤防是幂等的:UI 侧「开关关掉」会重复发 recaptureArm(0,0,0),第二发不许再动采集。
+    r.out.disarmRecapture();
+    CHECK(r.out.captureEnabled());
+
+    // —— 用户在布防期间**自己**拧过采集开关 = 这把闸他接管了,撤防不许再替他动 ——
+    // 裁定③恢复的是「布防前的原值」,不是「盖掉用户中途的决定」。
+    r.out.setCaptureEnabled(false);
+    r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+    REQUIRE(r.out.captureEnabled()); // 我们替他开的
+    r.out.setCaptureEnabled(false); // 用户手动关掉
+    r.out.setCaptureEnabled(true); // 又自己开回来 —— 从这一刻起是他的决定
+    r.out.disarmRecapture();
+    CHECK(r.out.captureEnabled()); // ← 不清 autoEnabled 位的写法在这里红:用户开的采集被关掉
+}
+
+TEST_CASE("HOST J87②:布防期采集收窄到「选区 × 选中轨」,区外与未选轨逐字节不动", "[host][t37][j87]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // —— 第一遍:全局采集,把 3 条轨的 [0, ~6.4s] 全采一遍 ——
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 4.0);
+
+    constexpr int kArmedCh = 2; // 只重采第 2 轨
+    constexpr double kSelStartS = 2.0;
+    constexpr double kSelEndS = 3.0;
+    constexpr int kCols = 128;
+
+    // 三轨各自的「选区内 / 选区外」两段基线内容。
+    const auto beforeInside = r.out.waveformOf(kArmedCh, kSelStartS, kSelEndS, kCols);
+    const auto beforeOutside = r.out.waveformOf(kArmedCh, kSelEndS, coveredS, kCols);
+    const auto beforeCh1 = r.out.waveformOf(1, 0.0, coveredS, kCols);
+    const auto beforeCh3 = r.out.waveformOf(3, 0.0, coveredS, kCols);
+    REQUIRE(beforeInside.covered.size() == static_cast<std::size_t>(kCols));
+
+    // —— 第二遍:只对「第 2 轨 × [2s,3s)」布防,回到 0 用**明显不同的幅度**重播全程 ——
+    // 布防会自动打开采集(裁定①),所以这里不再手动开;这也顺带证明了那条链是通的。
+    r.out.setCaptureEnabled(false);
+    r.ph.timeSamples = 0;
+    r.out.armRecapture(static_cast<std::uint16_t>(1u << (kArmedCh - 1)), kSelStartS, kSelEndS,
+                       /*autoStop=*/false);
+    REQUIRE(r.out.captureEnabled());
+    MonoMultiRig::pump(400);
+    for (int burst = 0; burst < 6; ++burst)
+    {
+        r.runBlocks(60, 0.12f); // 第一遍是 0.5f —— 差一个数量级,特征必然不同
+        r.runBlocks(40, 0.0f);
+    }
+    MonoMultiRig::pump(400);
+
+    // ★ 选区内:被新素材覆盖(否则这一组测的是「什么都没发生」)。
+    const auto afterInside = r.out.waveformOf(kArmedCh, kSelStartS, kSelEndS, kCols);
+    CHECK_FALSE(sameWaveform(beforeInside, afterInside));
+
+    // ★ 选区外(同一条轨):逐字节不动 —— 04 §4.1「绝不触碰其他区间已有结果」。
+    //   修复前:布防不改门控,整条时间线按 global.range(follow=全域)重录,这里必红。
+    const auto afterOutside = r.out.waveformOf(kArmedCh, kSelEndS, coveredS, kCols);
+    CHECK(sameWaveform(beforeOutside, afterOutside));
+
+    // ★ 未选轨:整轨逐字节不动 —— 布防范围的轨维硬约束(04 §4.2「未选轨的写入被拉取侧丢弃」)。
+    //   这一条同时守住 pullTick 的「排空而不是跳过」:若未选轨只是 continue,撤防后那段积压
+    //   会被补拉进来,ch1/ch3 就变了。
+    CHECK(sameWaveform(beforeCh1, r.out.waveformOf(1, 0.0, coveredS, kCols)));
+    CHECK(sameWaveform(beforeCh3, r.out.waveformOf(3, 0.0, coveredS, kCols)));
+
+    // 撤防后再跑一段:未选轨的积压不许在这时候补拉进来(排空的后半段证据)。
+    r.out.disarmRecapture();
+    MonoMultiRig::pump(400);
+    r.runBlocks(40, 0.0f);
+    MonoMultiRig::pump(400);
+    CHECK(sameWaveform(beforeCh1, r.out.waveformOf(1, 0.0, coveredS, kCols)));
+    CHECK(sameWaveform(beforeCh3, r.out.waveformOf(3, 0.0, coveredS, kCols)));
+}
+
+TEST_CASE("HOST J87③:越过选区右边界自动撤防 + 恢复采集原值", "[host][t37][j87]")
+{
+    constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+    constexpr double kSelStartS = 1.0;
+    constexpr double kSelEndS = 2.0;
+
+    // 把播放头从选区左侧一路推过右边界;回报是否还布防。
+    const auto playAcross = [](Rig& r) {
+        r.ph.timeSamples = static_cast<std::int64_t>(0.5 * kSr);
+        for (int i = 0; i < 40 && r.out.runtime().recaptureArmed; ++i)
+        {
+            r.runBlocks(8, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+        }
+        return r.out.runtime().recaptureArmed;
+    };
+
+    SECTION("勾了自动停 + 布防前采集是关的 → 越界后撤防并把采集关回去")
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(false);
+        r.out.armRecapture(kMask, kSelStartS, kSelEndS, /*autoStop=*/true);
+        REQUIRE(r.out.captureEnabled());
+
+        CHECK_FALSE(playAcross(r)); // ← 修复前 autoStop 无实现方,这里恒 true
+        CHECK_FALSE(r.out.captureEnabled());
+    }
+
+    SECTION("勾了自动停 + 布防前采集本来就开着 → 撤防但采集保持开")
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        r.out.armRecapture(kMask, kSelStartS, kSelEndS, /*autoStop=*/true);
+
+        CHECK_FALSE(playAcross(r));
+        CHECK(r.out.captureEnabled()); // 裁定③的括号:恢复原值,不是一律关掉
+    }
+
+    SECTION("没勾自动停 → 越界不撤防(门控自己挡住区外记账就够了)")
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(false);
+        r.out.armRecapture(kMask, kSelStartS, kSelEndS, /*autoStop=*/false);
+
+        CHECK(playAcross(r)); // 仍布防 —— 这一条是上面两节的反向验证
+        CHECK(r.out.captureEnabled());
+    }
+
+    SECTION("布防时播放头已在选区右侧 → 不当场自撤防(边沿判定,不是电平判定)")
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(false);
+        r.ph.timeSamples = static_cast<std::int64_t>(5.0 * kSr); // 已经在选区右边
+        r.out.armRecapture(kMask, kSelStartS, kSelEndS, /*autoStop=*/true);
+        r.runBlocks(20, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+        // 电平判定("此刻在右侧就撤防")在这里会当场撤防,用户一按布防就自己关掉。
+        CHECK(r.out.runtime().recaptureArmed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [J87] 排空 vs 跳过(pullTick 里那一支)。
+//
+// 上一组用「回到 0 重播」构造重采集,那条路上宿主会 startRun 重锚,读游标被 run 切换守卫
+// 顺手重置了 —— 于是「跳过」与「排空」两种写法在那里表现一致,测不出差别。真正暴露它的是
+// **不回卷、原地往前播**的那条路:布防期间未选轨的读游标停在原地,撤防后 pullIncremental
+// 从旧游标接着拉,把布防期写进环里的那一段补进 FrameStore —— 未选轨凭空多出一段覆盖,
+// 而按 04 §4.2 那一段本该被丢弃。环容量 2^17 hop ≈ 21.8 分钟,这里两秒的积压离回绕很远,
+// 所以「补拉」是必然发生而不是碰运气。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J87②b:布防期未选轨的积压不得在撤防后被补拉", "[host][t37][j87]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    REQUIRE(r.capture() > 4.0); // 先把 [0, t0) 采满,顺带把采集开关留在 ON
+
+    // 布防前采集就是 ON —— 撤防后它必须保持 ON(裁定③),补拉才有机会发生。
+    REQUIRE(r.out.captureEnabled());
+    const double t0 = static_cast<double>(r.ph.timeSamples) / kSr;
+    const double selS = t0 + 0.5;
+    const double selE = t0 + 1.5;
+
+    // **不回卷**,原地往前布防第 2 轨的一小段。
+    r.out.armRecapture(/*tracksMask=*/1u << 1, selS, selE, /*autoStop=*/false);
+    MonoMultiRig::pump(200);
+    r.runBlocks(240, 0.3f); // ≈2.56s,整段跨过选区
+    MonoMultiRig::pump(400);
+
+    r.out.disarmRecapture();
+    MonoMultiRig::pump(400);
+    r.runBlocks(60, 0.3f); // 撤防后继续播:这一段是允许被记的
+    MonoMultiRig::pump(400);
+
+    // ★ 未选轨在**布防那一段**里必须一片空白。
+    //   「跳过而不是排空」的写法在这里红:撤防后那一拍会把 [t0, t0+2.5] 整段补拉进来。
+    CHECK(r.out.coverageOf(1, t0 + 0.05, t0 + 2.4).coveredS < 0.05);
+    CHECK(r.out.coverageOf(3, t0 + 0.05, t0 + 2.4).coveredS < 0.05);
+
+    // 对照组:选中轨在选区内确实采到了(否则上面两条是「什么都没发生」的假绿)。
+    CHECK(r.out.coverageOf(2, selS, selE).coveredS > 0.3);
+    // 而选中轨在选区**外**同样空白 —— 时间维门控(与上一组的内容对拍互为佐证)。
+    CHECK(r.out.coverageOf(2, selE + 0.1, t0 + 2.4).coveredS < 0.05);
+}

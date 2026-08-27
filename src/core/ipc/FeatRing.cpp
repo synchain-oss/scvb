@@ -332,16 +332,22 @@ u32 FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGat
         {
             continue; // 非在线轨(connected_mask)
         }
-        if (selectedMask != 0 && (selectedMask & bit) == 0)
-        {
-            continue; // 布防期未选中轨(04 §4.2 步骤 2)
-        }
         const auto& b = bindings_[ch - 1];
         if (!b.bound)
         {
             continue;
         }
-        if (pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), timeGate) > 0)
+
+        // 布防期未选中轨(04 §4.2 步骤 2):**排空,不是跳过**。
+        // 直接 continue 会把该轨的读游标 states_[] 冻在布防开始的位置,撤防之后 pullIncremental
+        // 从旧游标接着拉 —— 布防期间写进环里的那一段会被**补拉**进来,盖掉选区外的既有特征,
+        // 正好推翻本卡要守住的性质(「绝不触碰其他区间已有结果」,04 §4.1)。给一个空 gate 让它
+        // 走完整条正规路径:一帧都不写,但 lastPulled 照常推到写头,积压被如实丢弃。
+        // 走 pullIncremental 而不是自己拨游标,是为了把 run 切换 / 回退 / 环回绕三道守卫一并复用。
+        const analysis::HopRange gate =
+            (selectedMask == 0 || (selectedMask & bit) != 0) ? timeGate : analysis::HopRange{0, 0};
+
+        if (pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), gate) > 0)
         {
             refreshed |= 1u << (ch - 1);
         }

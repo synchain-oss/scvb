@@ -236,11 +236,11 @@ void OutputSession::pullFeatures()
         return; // 采集 OFF:Input 也不写 feat 段,连拉都省了
     }
 
-    // timeGate 与写入口的 gate 同一个范围(pullIncremental 也据它裁剪);selectedMask=0 = 不限轨
-    // (轨维在 Input 侧按广播区的 enabled 位布防,不重复门控);activeMask = 本组 connected_mask,
+    // timeGate 与写入口的 gate 同一个范围(pullIncremental 也据它裁剪);selectedMask 常态为 0 =
+    // 不限轨(轨维在 Input 侧按广播区的 enabled 位布防,不重复门控),局部重采集布防期换成选中轨
+    // 掩码([J87] 04 §4.2 ①:时间维与轨维同为硬约束);activeMask = 本组 connected_mask,
     // 只拉在线轨(04 §3.3)。
-    const u32 refreshed =
-        featPuller_.pullTick(frameStore_, featureGate_, /*selectedMask=*/0, registry_.connectedMask());
+    const u32 refreshed = featPuller_.pullTick(frameStore_, featureGate_, featureTrackMask_, registry_.connectedMask());
 
     // 04 §4.5:哪条轨拉到了新特征,哪条轨的旧失配定谳就作废 —— 基线正在被改写,拿它得出的
     // 结论不再成立。这是「⚠ 提示 → 用户重采集 → 提示撤下」闭环里唯一走得通的一跳:重采集

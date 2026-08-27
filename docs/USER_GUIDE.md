@@ -119,7 +119,7 @@ Freezing is a **reversible, temporary takeover**: values you adjust while frozen
 
 The unit of invalidation and recomputation is **(track x time range)**, and it **never touches results that already exist in other ranges**. Drag out a selection on the waveform page, then:
 
-- **Recapture**: arms the range (an armed badge appears in three places), rewrites features the next time playback reaches it, and stops automatically at the boundary. If the output switch is on while a range is armed, you get an amber warning.
+- **Recapture**: arms the range (an armed badge appears in three places) and **turns "01 Capture" on for you**. Playing over the range then rewrites features — but only inside **{ticked tracks} x {selection}**; nothing outside the selection, and nothing on unticked tracks, is touched. With "stop automatically when playback ends" ticked, crossing the right edge of the selection disarms and restores "01 Capture" to whatever it was before arming (if it was already on, it stays on); leave it unticked to stay armed, which is handy for looping a few takes over the same range. If the output switch is on while a range is armed, you get an amber warning.
 - **Re-analysis**: re-runs analysis over the selection only; segments and curves elsewhere are preserved exactly.
 
 ## Versions

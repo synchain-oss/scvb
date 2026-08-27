@@ -1906,14 +1906,14 @@ void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
         return;
     }
 
-    auto& rt = processor_.runtime();
     juce::var o = obj();
 
     // tracksMask=0 且 startS=endS=0 → 撤销布防。
     if (tracksMask == 0 && startS == 0.0 && endS == 0.0)
     {
-        rt.recaptureArmed = false;
-        rt.recaptureTracksMask = 0;
+        // [J87] 撤防要连采集一起收尾(裁定③:恢复布防前的 capture_enabled 原值)+ 把记账门控
+        // 放回 global.range。三件事在 processor 里是一段代码,与「越界自动撤防」那条路共用。
+        processor_.disarmRecapture();
         put(o, "armed", false);
         put(o, "tracksMask", 0);
         put(o, "startS", 0.0);
@@ -1932,7 +1932,9 @@ void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
 
     if (reason != nullptr)
     {
-        rt.recaptureArmed = false;
+        // 拒绝态也要走同一条撤防路径:此前只把 armed 抹成 false,若上一次布防是我们替用户开的
+        // 采集,这一发被拒之后采集就一直开着、门控还留在旧选区上(没人再去撤)。
+        processor_.disarmRecapture();
         put(o, "armed", false);
         put(o, "tracksMask", tracksMask);
         put(o, "startS", startS);
@@ -1942,11 +1944,9 @@ void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
         return;
     }
 
-    rt.recaptureArmed = true;
-    rt.recaptureTracksMask = static_cast<std::uint16_t>(tracksMask & 0x7FFF);
-    rt.recaptureStartS = startS;
-    rt.recaptureEndS = endS;
-    rt.recaptureAutoStop = autoStop;
+    // [J87] 布防即自动打开 01 采集(裁定①),并把记账门控换成「工作选区 × 选中轨掩码」
+    // (裁定②)。全在 processor 里做 —— 撤防那条路要读同一份「是不是我们开的采集」的账。
+    processor_.armRecapture(static_cast<std::uint16_t>(tracksMask & 0x7FFF), startS, endS, autoStop);
     put(o, "armed", true);
     put(o, "tracksMask", tracksMask);
     put(o, "startS", startS);
