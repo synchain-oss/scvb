@@ -166,7 +166,10 @@ juce::var OutputEditor::buildSnapshot()
     juce::var o = buildStateSubtree(true);
 
     // 快照专属字段(§1.1 语义行):session_guid / version / guide_seen_global / tour_seen_global / conn。
-    put(o, "session_guid", juce::var("00000000-0000-0000-0000-000000000000")); // 会话 GUID 归 T21/T40 持久化
+    // [SL-215] 此前这里是一串写死的全零字面量,于是设置页恒显示
+    // 「session 00000000-0000-0000-0000-000000000000」。真源在 processor(构造期生成、随 PRMS
+    // 持久化、加载时沿用工程里的那一个)。
+    put(o, "session_guid", juce::var(processor_.sessionGuid()));
     juce::var version = obj();
     put(version, "plugin", "0.1.0");
     put(version, "abi", static_cast<int>(scvb::kScvbAbi));
@@ -730,9 +733,20 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     }
     put(o, "versions", versions);
 
+    // [SL-215] features 此前写死 {embedded:false, bytes:0} —— 设置页据此恒显示「已保存为外部
+    // 文件(>8MB 自动)」,而实际上既没有外部文件、也没有任何特征。embedded=true 是当前唯一
+    // 成立的落法(FEAT chunk 内嵌进工程;外部 sidecar 归 T21/T40,尚未接线),bytes 报实际大小:
+    // 没采集过就是 0 MB「内嵌于工程」,是实话。
+    //
+    // 两处已知边界,接 T21/T40 时一并收(#127 审查记录):
+    //   ① 前端 storageOf() 的判据是 `!embedded || bytes > 8MB`,所以 FEAT 一旦真超过 8MB,
+    //      这一行又会说「已保存为外部文件」—— 在 sidecar 接线之前那仍是谎报。真正的修法是
+    //      让 embedded 由「特征到底落在哪」决定,而不是由字节数反推。
+    //   ② bytes 读的是 loadedChunks_(上次成功加载的容器),所以**本会话新采集但尚未存盘**的
+    //      特征这里恒为 0 —— 与工程文件里的实际字节数一致,不算错,但不是「内存里有多少」。
     juce::var features = obj();
-    put(features, "embedded", false);
-    put(features, "bytes", static_cast<juce::int64>(0));
+    put(features, "embedded", true);
+    put(features, "bytes", static_cast<juce::int64>(processor_.embeddedFeatureBytes()));
     put(o, "features", features);
 
     juce::var ui = obj();

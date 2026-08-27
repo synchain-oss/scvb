@@ -27,10 +27,12 @@
 
 #include "BridgeArgs.h"
 #include "InputBridgeLogic.h"
+#include "UiDefaultsStore.h" // [SL-208] 缩放档位全局默认
 #include "InputProcessor.h"
 #include "OutputProcessor.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
+#include "state/FeaturesCodec.h" // [SL-215] isValidSessionGuid
 #include "state/OutputStateCodec.h"
 #include "state/StateCodec.h"
 #include "state/StateMigration.h"
@@ -3196,4 +3198,207 @@ TEST_CASE("HOST J87②b:布防期未选轨的积压不得在撤防后被补拉",
     CHECK(r.out.coverageOf(2, selS, selE).coveredS > 0.3);
     // 而选中轨在选区**外**同样空白 —— 时间维门控(与上一组的内容对拍互为佐证)。
     CHECK(r.out.coverageOf(2, selE + 0.1, t0 + 2.4).coveredS < 0.05);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-210] 同组同 bus 的第二个 Output —— 只读观察者,不是第二个主实例。
+//
+// 真机症状:同一条总线上挂第二个 Output,总线输出塌成单声道、采集与分析跟着单声道,
+// 第一个 Output 正常,删掉第二个立刻恢复,全程无任何提示。
+//
+// 根因在 claim 层而不在 processBlock:两个实例同在一个 DAW 进程里、pid 相同,而
+// Registry::claimOutput 的「同 pid 重认领」分支只比 pid,于是第二个实例也拿到 kActive。
+// 两个主实例都替换总线,后挂的那个是全新实例、15 轨 pan 全在默认居中位,它的求和 L==R
+// 盖掉了前一个按用户 pan 值铺开的声像 —— 用户听到的「单声道」就是这么来的。
+//
+// 本用例必须在 harness 里做:两个 processor 真实同进程,pid 天然相同,in-process 单测
+// 里要手工传同一个 pid 才复现得出来(tests/core/test_output_session.cpp 的同名用例)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-210:同 bus 第二个 Output 进只读观察,不抢主实例", "[host][v56][SL210]")
+{
+    Rig r; // r.out = 第一个 Output(主实例)
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 主实例:非只读(观察者横幅不该显示),且确实在注入。
+    REQUIRE_FALSE(r.out.connSnapshot().readOnly);
+
+    // 同一条总线上再挂一个 Output:同组、同进程(pid 相同)。
+    auto second = std::make_unique<ScvbOutputAudioProcessor>();
+    second->setGroupId(kTestGroup);
+    second->setPlayHead(&r.ph);
+    second->prepareToPlay(kSr, kBlock);
+    Rig::pumpMessages(300);
+
+    // ① 第二个实例进只读观察 —— readOnly 正是桥面 §1.1 驱动观察者横幅的那一位,
+    //    修复前它恒 false,横幅逻辑在也永远不显示(用户报的「无任何提示」)。
+    REQUIRE(second->connSnapshot().readOnly);
+    // ② 主实例不受影响,没被挤下去。
+    REQUIRE_FALSE(r.out.connSnapshot().readOnly);
+
+    // ③ 观察者的音频严格逐样本直通:按位相等,一个样本都不许改。
+    //    (这是「零写入」纪律的音频面,对齐 Monitor 三铁律。)
+    juce::AudioBuffer<float> probe{2, kBlock};
+    Rig::fillSine(probe, 0.31f, r.ph.timeSamples);
+    juce::AudioBuffer<float> expected;
+    expected.makeCopyOf(probe);
+
+    juce::MidiBuffer midi;
+    for (int b = 0; b < 8; ++b)
+    {
+        second->processBlock(probe, midi);
+        for (int c = 0; c < 2; ++c)
+        {
+            const float* got = probe.getReadPointer(c);
+            const float* want = expected.getReadPointer(c);
+            for (int i = 0; i < kBlock; ++i)
+            {
+                // 按位相等,不是 Approx:观察者做的任何增益/淡入淡出都会在这里露出来。
+                REQUIRE(got[i] == want[i]);
+            }
+        }
+    }
+
+    // ④ 观察者绝不是单声道源:上面按位相等已经保证 L≠R 的输入原样出去。
+    //    再直接断言一次「左右没有被折叠成同一路」,把用户症状钉死在用例里。
+    juce::AudioBuffer<float> stereo{2, kBlock};
+    for (int i = 0; i < kBlock; ++i)
+    {
+        stereo.getWritePointer(0)[i] = 0.5f; // L
+        stereo.getWritePointer(1)[i] = -0.5f; // R(与 L 反相 —— 折叠成单声道就会归零)
+    }
+    second->processBlock(stereo, midi);
+    for (int i = 0; i < kBlock; ++i)
+    {
+        REQUIRE(stereo.getReadPointer(0)[i] == 0.5f);
+        REQUIRE(stereo.getReadPointer(1)[i] == -0.5f);
+    }
+
+    // ⑤ 反向验证:删掉观察者,主实例仍是主实例(slot 没被同 pid 的观察者释放掉)。
+    second->releaseResources();
+    second.reset();
+    Rig::pumpMessages(300);
+    REQUIRE_FALSE(r.out.connSnapshot().readOnly);
+    r.runBlocks(4, 0.25f, 1, 20);
+    REQUIRE(r.injected());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-215] 会话 GUID:非全零、随工程往返稳定。
+// 修复前桥面快照里是一串写死的全零字面量,设置页恒显示
+// 「session 00000000-0000-0000-0000-000000000000」;GUID 是 sidecar 文件名隔离的根基,
+// 全零等于所有工程共用一个身份。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-215:会话 GUID 非全零且随 state 往返稳定", "[host][v56][SL215]")
+{
+    constexpr const char* kAllZero = "00000000-0000-0000-0000-000000000000";
+
+    ScvbOutputAudioProcessor a;
+    const juce::String guidA = a.sessionGuid();
+
+    // ① 非全零、形状合法(36 字符 dashed UUID)。
+    REQUIRE(guidA.isNotEmpty());
+    REQUIRE(guidA != juce::String(kAllZero));
+    REQUIRE(scvb::state::isValidSessionGuid(guidA.toStdString()));
+
+    // ② 同一实例内稳定(不是每次读都重生成)。
+    REQUIRE(a.sessionGuid() == guidA);
+
+    // ③ 往返:存进 state → 新实例加载 → 拿到同一串。
+    juce::MemoryBlock blob;
+    a.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+
+    ScvbOutputAudioProcessor b;
+    const juce::String guidBFresh = b.sessionGuid();
+    REQUIRE(guidBFresh != guidA); // 前置:全新实例本来是另一串,否则往返断言没有意义
+
+    b.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    REQUIRE(b.sessionGuid() == guidA); // 沿用工程里的那一个
+
+    // ④ 二次往返不漂移。
+    juce::MemoryBlock blob2;
+    b.getStateInformation(blob2);
+    ScvbOutputAudioProcessor c;
+    c.setStateInformation(blob2.getData(), static_cast<int>(blob2.getSize()));
+    REQUIRE(c.sessionGuid() == guidA);
+
+    // ⑤ 反向验证:工程里没存过 GUID(老工程)→ 保留自己生成的那一个,不退回全零。
+    ScvbOutputAudioProcessor d;
+    const juce::String guidD = d.sessionGuid();
+    d.setStateInformation(nullptr, 0); // 空 state = 从未落过盘
+    REQUIRE(d.sessionGuid() == guidD);
+    REQUIRE(d.sessionGuid() != juce::String(kAllZero));
+
+    // ⑥ 未采集过 → 内嵌特征 0 字节(设置页据此显示「内嵌于工程(0.0 MB)」,
+    //    而不是修复前那句凭空的「已保存为外部文件」)。
+    REQUIRE(a.embeddedFeatureBytes() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-208] 缩放档位记忆:「保持」过的档位,换实例(= 重开窗 / 重开工程)必须还在。
+//
+// 用户报「重开不记住上次档位」。这条链路有两段,本用例把两段都钉住:
+//   ① 系统级全局默认(UiDefaultsStore)—— 新工程 / 新实例的起始档;
+//   ② 工程 state(CFGS.uiScale)—— 同一工程再打开时的档。
+// 两段都通了,「记不住」就只可能来自**没走「保持」确认**:Ctrl+- 是 WebView2 自带的浏览器
+// 缩放,插件既收不到也存不了(web/output/app.js 里没有任何 Ctrl +/- 处理,档位只经页脚下拉
+// 与设置页 select 进 setUiScale,再由「保持」走 commitUiScale 落盘)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-208:「保持」过的缩放档位换实例仍在(全局默认 + 工程 state)", "[host][v56][SL208]")
+{
+    namespace ud = scvb::uidefaults;
+
+    // 独享临时落盘目录,结束即删(含异常路径),不碰开发机上的真实全局默认。
+    struct TempStore
+    {
+        juce::File dir = juce::File::createTempFile("scvb-sl208")
+                             .getSiblingFile("scvb-sl208-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+        TempStore()
+        {
+            dir.createDirectory();
+            ud::setStorageDirForTesting(dir);
+        }
+        ~TempStore()
+        {
+            ud::setStorageDirForTesting({});
+            dir.deleteRecursively();
+        }
+    } store;
+
+    REQUIRE(ud::uiScalePercent() == 0); // 干净起点:从未「保持」过
+
+    // ① 全局默认:一个实例「保持」125%,下一个**全新实例**构造时就该起在 125%。
+    {
+        ScvbOutputAudioProcessor a;
+        REQUIRE(a.uiScalePercent() == 100); // 未设置过 → 出厂 100
+
+        // persistUiScaleAsDefault() 的两件事(editor 侧走 commitUiScale 时的等价动作)。
+        a.bridgeSetUiScalePercent(125);
+        ud::setUiScalePercent(125);
+        REQUIRE(a.uiScalePercent() == 125);
+    }
+    {
+        ScvbOutputAudioProcessor b; // 换实例 = 重开窗 / 新工程
+        REQUIRE(b.uiScalePercent() == 125);
+    }
+
+    // ② 工程 state:同一工程存下的档位,加载时压过全局默认(工程 > 全局默认)。
+    juce::MemoryBlock blob;
+    {
+        ScvbOutputAudioProcessor c;
+        c.bridgeSetUiScalePercent(200);
+        c.getStateInformation(blob);
+        REQUIRE(c.uiScalePercent() == 200);
+    }
+    {
+        ScvbOutputAudioProcessor d;
+        REQUIRE(d.uiScalePercent() == 125); // 先取到全局默认
+        d.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        REQUIRE(d.uiScalePercent() == 200); // 工程里的档位赢
+    }
+
+    // ③ 反向验证:越界档位既不落盘也不被读成「已设置」,不会把用户档位冲掉。
+    ud::setUiScalePercent(5000);
+    REQUIRE(ud::uiScalePercent() == 125);
 }

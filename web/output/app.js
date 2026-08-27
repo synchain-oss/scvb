@@ -822,6 +822,17 @@ if (scaleUi.keep) {
 if (scaleUi.revert) scaleUi.revert.addEventListener("click", revertScale);
 addEventListener("pagehide", stopScaleCountdown); // 关窗回退,不污染新实例
 
+// [SL-208] **这里故意没有 Ctrl +/-/0 的键盘入口**,别照直觉补。
+// 用户报「必须 Ctrl+- 手动档、重开还记不住」:他按的是 WebView2 自带的浏览器缩放,那层
+// 缩放插件收不到也存不了。直觉修法是在这里挂 keydown + preventDefault 转调 previewScale,
+// **但 Chromium 把 Ctrl 加减/0 划为浏览器保留加速键,页面 preventDefault 压不住它** ——
+// 真接上去会变成「插件档位 + 浏览器缩放」两层叠乘,固定设计盒直接溢出,比不接更糟。
+// 正确修法是在 WebView2 控制器上关掉 IsZoomControlEnabled / AreBrowserAcceleratorKeysEnabled,
+// 而 JUCE 的 WinWebView2 选项(withUserDataFolder / withDLLLocation / withStatusBarDisabled /
+// withBuiltInErrorPageDisabled / withBackgroundColour)没有暴露这两个开关 —— 需要动 JUCE 侧
+// 或拿原生控制器,已另开卡跟进。在那之前档位入口只有页脚下拉与设置页 select:两者都走
+// previewScale → 10 秒防呆 →「保持」落盘,记忆链路本身是通的(host 用例 SL-208 已钉住)。
+
 // ============================================================================
 // Header 版本区(契约 §1.9/§1.10/§1.11;05 §2.1 ③)
 // ============================================================================
