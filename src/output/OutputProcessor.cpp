@@ -12,6 +12,7 @@
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
+#include "state/SidecarStore.h" // generateSessionGuid([SL-215] 会话 GUID 的唯一生成口径)
 #include "state/StateMigration.h"
 
 namespace
@@ -46,6 +47,12 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
     {
         uiLanguage_ = defaultLang;
     }
+
+    // [SL-215] 会话 GUID 在构造期就生成:它是 sidecar 文件名隔离的根基,而设置页的存储状态行
+    // 在用户还没保存过工程时就要显示它 —— 留空(或此前那串写死的全零)会让这一行恒是废话。
+    // 工程里存过合法值的话,setStateInformation 会覆盖掉这个新生成的值(工程 > 新生成),
+    // 与相邻的 uiScale_ / uiLanguage_「工程 > 全局默认」同一条口径。
+    sessionGuid_ = juce::String(scvb::state::generateSessionGuid());
 
     handles_ = scvb::params::collectParamHandles(apvts);
     printer_.setShot(&playheadShot_);
@@ -1142,6 +1149,7 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),
                                        runtime_.tourSeen.load(std::memory_order_relaxed),
                                        runtime_.langChosen.load(std::memory_order_relaxed)});
+    scvb::output::writeSessionGuid(state, sessionGuid_); // [SL-215] 会话 GUID 随 PRMS 落盘
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     juce::MemoryBlock paramsBlock;
     copyXmlToBinary(*xml, paramsBlock);
@@ -1188,6 +1196,16 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
         return;
     }
     destData.append(blob.data(), blob.size());
+}
+
+std::int64_t ScvbOutputAudioProcessor::embeddedFeatureBytes() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // 特征目前只有「内嵌进工程的 FEAT chunk」这一种落法(外部 sidecar 归 T21/T40,尚未接线)。
+    // 桥面此前把 features 写死成 {embedded:false, bytes:0},设置页于是恒显示「已保存为外部文件」
+    // —— 一个字都不成立:既没有外部文件,也没有 0 字节的外部文件。这里报实际大小。
+    const scvb::state::Chunk* feat = loadedChunks_.find(scvb::state::kFourccFeat);
+    return feat != nullptr ? static_cast<std::int64_t>(feat->payload.size()) : 0;
 }
 
 void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
@@ -1251,6 +1269,13 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
             runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);
             runtime_.tourSeen.store(flags.tourSeen, std::memory_order_relaxed);
             runtime_.langChosen.store(flags.langChosen, std::memory_order_relaxed);
+            // [SL-215] 工程里存过合法 GUID 就沿用它 —— 这是「同一工程反复开,sidecar 指向同一份
+            // 特征」的全部依据。缺失(老工程)或形状非法(不可信字节)时保留构造期生成的那一个,
+            // 绝不把畸形串带进文件名;下次保存即把这个新的写回去。
+            if (const juce::String loadedGuid = scvb::output::readSessionGuid(loaded); loadedGuid.isNotEmpty())
+            {
+                sessionGuid_ = loadedGuid;
+            }
             apvts.replaceState(loaded);
             handles_ = scvb::params::collectParamHandles(apvts);
         }

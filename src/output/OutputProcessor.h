@@ -195,6 +195,10 @@ public:
     // [J75] T43:写 state ui.master_chart_mode(随工程持久化);"trajectory" 以外一律回落 "distribution"。
     void setMasterChartMode(const juce::String& mode);
     juce::String masterChartMode() const { return masterChartMode_; }
+    // [SL-215] 会话 GUID(36 字符 dashed UUID,恒非全零)。桥面 §1.1 快照的 session_guid 取这里。
+    juce::String sessionGuid() const { return sessionGuid_; }
+    // [SL-215] 工程内嵌特征字节数 = FEAT chunk 实际大小(无 FEAT → 0)。设置页存储状态行的真源。
+    std::int64_t embeddedFeatureBytes() const;
     // 桥面 ui 落 state(§1.30 setLang / §1.29 commitUiScale)。基类 WebViewHost 只维护 editor
     // 局部值,而 §2.1 的 ui.language / ui.scale 取自这里 —— 不落 processor,下一次 state emit
     // 会把旧值回推给 UI(T37 真机 bug A-1:选中文后切 tab 变回英文)。
@@ -472,6 +476,11 @@ private:
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
     juce::String masterChartMode_ = "distribution"; // [J75] T43(ui.master_chart_mode)
+    // [SL-215] 会话 GUID:构造时生成一次,setStateInformation 读到工程里存过的合法值就改用那个。
+    // 同一工程反复开 → 恒是同一串(sidecar 文件名才稳定);全新实例 → 各自唯一。
+    // 存取口径与相邻的 uiLanguage_ / masterChartMode_ 逐字相同(同样由 setStateInformation 写、
+    // 桥面按值读),不另立一套同步纪律。
+    juce::String sessionGuid_;
 
     // T29:桥面运行时 state + CRVS 段真身(消息线程独占)。
     OutputRuntimeState runtime_;
