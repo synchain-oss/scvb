@@ -198,7 +198,7 @@ struct CtrlRing {                  // size 448 align 64(头 64 + 16×24 记录)
 
 第五类共享内存段,为 **SCVB Monitor**(ADR-001 v2.1 第三 VST3 主目标,只读监视插件)提供跨进程只读数据面。每组一份,跨组互不可见。`SegmentKind` **在枚举尾部追加** `kViz`(既有 `kRegistry`/`kAudio`/`kFeat`/`kCtrl` 四值的顺序与数值一字未动)。mac 长度复核:最长 `/SynchainSCVB.v1.g8.viz` = 23 字符 ≤ 31(PSHMNAMLEN)。
 
-- **唯一写方** = 本组 claim 到 OutputSlot 的那一个 Output(`OutputClaimState::kActive`)的**消息线程 [M]**,4 Hz 低频发布
+- **唯一写方** = 本组 claim 到 OutputSlot 的那一个 Output(`OutputClaimState::kActive`)的**消息线程 [M]**,**30 Hz** 发布(SL-192;原 4 Hz,变更文档 `docs/contract-changes/20260827-viz-30hz.md`)
 - **唯一读方** = Monitor 的消息线程,**只读 attach**(`FILE_MAP_READ`),不 claim、无 ctrl 写权、一个字节都不写
 - **`processBlock`(音频线程 [A])对本段零写入**
 
@@ -287,8 +287,8 @@ struct VizTrackLabels {            // size 512 align 64
 
 ### 6.3 发布节拍
 
-- 帧头标量与 `VizTrackState` 每轨当前值:**250 ms(4 Hz)**,与既有 4 Hz 心跳闸门同款
-- 车道 + 位图 + 轨色(15×1024 次曲线求值):**按需重算** —— CRVS 修订变化 / 活动版本切换 / 窗口跨度变化 / **轨名**变化(`metaRevision`,FNV-1a 64 位)四者之一触发,外加 **30 s 兜底**。稳态下 4 Hz 只写帧头 + 每轨当前值(共 256 字节)
+- 帧头标量与 `VizTrackState` 每轨当前值:**30 Hz**(SL-192 升频;原 4 Hz)。实现口径:Output 的**独立 60 Hz 定时器** + 25 ms 闸门下限 ⇒ 每两拍发一帧 = 33.3 ms。闸门刻意**夹在一拍(16.7 ms)与两拍(33.3 ms)之间**并两头留余量 —— 写成 33 ms(= 目标周期本身)只剩 0.33 ms 余量,真机抖动一来就顺延到三拍、频率塌到 20 Hz
+- 车道 + 位图 + 轨色(15×1024 次曲线求值):**按需重算** —— CRVS 修订变化 / 活动版本切换 / 窗口跨度变化 / **轨名**变化(`metaRevision`,FNV-1a 64 位)四者之一触发,外加 **30 s 兜底**。**升频不影响本条** —— 稳态下一帧只写帧头 + 每轨当前值(约 380 字节;实测单帧 p50 **1.6 µs**,30 Hz 即 0.005% 一颗核,证据面 = `tests/core/test_viz_publish_cost.cpp`)
 - **width 不进 `metaRevision`**:它走帧头段、每帧都刷;掺进去会让「width 被自动化」变成每秒 15 360 次求值
 
 ### 6.4 一致性与生命周期

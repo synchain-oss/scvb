@@ -7,11 +7,12 @@
 // 本类不提供任何可从 [A] 调用的入口,VizPlane 也只被本类持有。
 //
 // 发布节拍(分频):
-//   - 帧头标量(playhead / 循环区 / 掩码 / 时刻)每 kPublishIntervalMs = 250ms 刷一次(**4 Hz**),
-//     与既有 4Hz 心跳闸门同款(OutputProcessor::timerCallback 的 lastHeartbeatMs_ 模式)。
+//   - 帧头标量(playhead / 循环区 / 掩码 / 时刻)实得 **30 Hz**(kPublishIntervalMs 是闸门下限 25ms,
+//     真正定频的是驱动量化;SL-192 升频,原为 250ms/4Hz)。驱动它的是 `OutputProcessor` 的**独立 60Hz 定时器**
+//     `vizTimer_`,不再搭主 25Hz [M] tick —— 25Hz 驱动不出 30Hz 的发布率。
 //   - 车道 + 位图 + 轨色(15×1024 次曲线求值)**按需重算**:CRVS 修订变化 / 活动版本切换 /
-//     窗口跨度变化 / 距上次重算 ≥ kLaneRefreshMaxMs(1s)四者之一触发。稳态下 4Hz 只写 128 字节帧头,
-//     消息线程负担可忽略。
+//     窗口跨度变化 / 距上次重算 ≥ kLaneRefreshMaxMs(30s)四者之一触发。**升频不影响这一条** ——
+//     稳态下一帧只写约 380 字节(实测 p50 1.20us),消息线程负担仍可忽略。
 //
 // 窗口口径:起点恒 0(工程起点),跨度 = max(最大分段末端, playhead+1, 最小跨度 60s) 向上取整到
 // kWindowQuantumSec(30s)边界 —— 量化是为了让跨度在播放中保持稳定,避免每帧重算车道。
@@ -57,7 +58,34 @@ struct VizPublishInput
 class VizPublisher
 {
 public:
-    static constexpr scvb::u64 kPublishIntervalMs = 250; // 4 Hz 帧头
+    // 帧头发布的**闸门下限**(ms)。实得发布率 = **30 Hz**(SL-192;此前 250ms = 4Hz)。
+    //
+    // ⚠ 25 不是「1000/25 = 40Hz」的意思 —— 它是一条**下限**,真正定出频率的是驱动定时器的
+    // 量化:`kPublishTimerHz`(60Hz)每拍 16.67ms,发布只能落在它的整数倍上
+    // (16.7 / 33.3 / 50 …)。闸门取 25 ⇒ 一拍(16.7)够不着、两拍(33.3)够得着
+    // ⇒ 稳定 **33.3ms = 30.0Hz**。
+    //
+    // 为什么**不能**把闸门写成 33(= 目标周期本身):那样两拍(33.33ms)只比闸门多 0.33ms,
+    // 余量几乎为零 —— 定时器稍有抖动,那一拍就够不着,于是顺延到三拍 = 50ms,频率塌到 20Hz。
+    // 这正是本卡反复栽的「同频异相」的第三种长相,而且它**只在有抖动的真机上**才现形:
+    // 理想时钟下数出来是漂亮的 30 帧。闸门必须**夹在两个可达节拍之间并留出余量**:
+    //   一拍 + 抖动上限 < 闸门 < 两拍 − 抖动上限   ⇒   20.7 < 25 < 29.3(按 ±4ms 估)
+    // 用例把这条规则本身钉住了(test_viz_plane.cpp 的 `[rate]`:带抖动跑,同频驱动必红)。
+    //
+    // 升频依据不是估算,是实测(`tests/core/test_viz_publish_cost.cpp`,Release/本机):
+    //   • 稳态一帧 `tick()` p50 **1.2-1.6 µs** ⇒ 30Hz = **0.005% 一颗核**;
+    //   • 调用方的输入采集(15 轨名 + FNV)p50 **0.2-0.3 µs** ⇒ 30Hz = 0.001%;
+    //   • 车道重算帧 p50 **~0.5 ms**,但它的触发条件(CRVS 修订 / 活动版本 / 窗口跨度 /
+    //     metaRevision + 30s 兜底)**与本频率无关** —— 升频一次都不会多算。
+    // 关键事实:段是 64KB,**但稳态一帧只写约 380 B**(15 个帧头标量 + 15×3 个每轨当前值);
+    // 整块 64KB 只在 `writeLanes` 那一帧写。按「64KB × 30Hz ≈ 2MB/s」估预算会高估三个数量级,
+    // 实际稳态写入量 ≈ 11 KB/s。
+    static constexpr scvb::u64 kPublishIntervalMs = 25; // 闸门下限;实得 30 Hz(60Hz 驱动的两拍)
+
+    // 驱动本发布器的定时器频率(`OutputProcessor` 的独立 `vizTimer_` 取它)。
+    // **必须 ≥2× 发布频率**:驱动与闸门同频不同相时,抖动会周期性把整帧丢掉 ——
+    // 那正是 SL-192 在读方两级各栽了一次的坑。60Hz 驱动 33ms 闸门 = 稳定每两拍一帧 = 30.0Hz。
+    static constexpr int kPublishTimerHz = 60;
     // 车道重算的**兜底**间隔。车道只依赖 CRVS 修订 / 活动版本 / 窗口跨度 / 轨名(metaRevision),
     // 四者全部显式跟踪 —— 兜底只为 metaRevision 的 FNV-1a 64 位哈希碰撞留一条后路,
     // 而那个概率可以忽略。所以放到 30s:重算一次要 15360 次曲线求值,1s 兜底等于把它变成常态开销
@@ -78,10 +106,11 @@ public:
     const scvb::VizPlane& plane() const { return plane_; }
 
     // 本拍是否到发布闸门。调用方据此**跳过输入采集**(采 15 个轨名 = 15 次堆分配),
-    // 而不是采完再被 tick() 丢掉 —— 定时器 25Hz、发布 4Hz,差六倍。
+    // 而不是采完再被 tick() 丢掉 —— 驱动 60Hz、发布 30Hz,一半的拍子在这里早退。
     bool due(scvb::u64 nowMs) const { return !everPublished_ || nowMs - lastPublishMs_ >= kPublishIntervalMs; }
 
-    // [M] 每 tick 调用(25Hz 亦可,内部按 250ms 闸门分频)。返回 true = 本次真的发布了一帧。
+    // [M] 每 tick 调用(生产路径 = 60Hz 的 vizTimer_,内部按 kPublishIntervalMs 闸门分频)。
+    // 返回 true = 本次真的发布了一帧。
     bool tick(scvb::u64 nowMs, const VizPublishInput& in);
 
     // 测试内省:上次发布的快照(只读)。

@@ -59,6 +59,7 @@ ScvbOutputAudioProcessor::ScvbOutputAudioProcessor()
 ScvbOutputAudioProcessor::~ScvbOutputAudioProcessor()
 {
     stopTimer();
+    vizTimer_.reset(); // [SL-192] viz 独立定时器:先拆,免得析构过程中还有一拍打进来
     // 顺序不可倒:先 cancelAnalysis() 把工作线程 signal + join 掉 —— join 返回即保证 run() 已经
     // 结束,此后不会再有人调 triggerAsyncUpdate();再 cancelPendingUpdate() 撤掉可能已经入队的
     // 那一次派发。两步做完,消息队列里不可能再有指向本对象的回调。
@@ -130,10 +131,27 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     vizPublisher_.setGroup(static_cast<scvb::u32>(groupId_));
 
     startTimerHz(25);
+    // [SL-192] viz 发布走**独立定时器**(为什么独立、为什么 60Hz:见 OutputProcessor.h 的 vizTimer_ 注释)。
+    // 惰性建、可重入:prepareToPlay 会被反复调用,已在跑就只是重设频率。
+    if (vizTimer_ == nullptr)
+    {
+        vizTimer_ = std::make_unique<juce::TimedCallback>([this] {
+            const auto now = scvb::steadyNowMs();
+            const juce::ScopedLock lock(lifecycleMutex_);
+            publishVizFrame(now);
+        });
+    }
+    vizTimer_->startTimerHz(scvb::output::VizPublisher::kPublishTimerHz);
 }
 
 void ScvbOutputAudioProcessor::releaseResources()
 {
+    // [SL-192] 先停 viz 定时器再取锁:它的回调自己要取 lifecycleMutex_,而 stopTimer() 会等
+    // 正在执行的那一拍跑完 —— 顺序倒过来就是「持锁等一个要拿同一把锁的回调」= 自死锁。
+    if (vizTimer_ != nullptr)
+    {
+        vizTimer_->stopTimer();
+    }
     const juce::ScopedLock lock(lifecycleMutex_);
     session_.release(scvb::steadyNowMs());
     vizPublisher_.release(); // [T44] viz 段与主链路同生命周期
@@ -894,9 +912,11 @@ void ScvbOutputAudioProcessor::timerCallback()
     }
     publishConfigBroadcast();
 
-    // [T44/J75] viz 段:先按 claim 态裁决建/释放(唯一写方 = kActive 的那个 Output),再发布。
+    // [T44/J75] viz 段的**建/释放**仍留在主 tick 上:它是 claim 生命周期的事,与帧率无关,
+    // 25Hz 已经绰绰有余。**发帧本身已移到独立的 60Hz `vizTimer_`**(SL-192)——
+    // 25Hz 的 tick 驱动不出 30Hz 的发布率。两者都在消息线程、都持同一把锁,无竞争;
+    // `publishVizFrame` 自己会先判 `isOpen()`,即使本拍 sync 还没跑到也安全。
     syncVizSegment();
-    publishVizFrame(now);
 }
 
 void ScvbOutputAudioProcessor::syncVizSegment()
@@ -924,8 +944,9 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     {
         return;
     }
-    // 4Hz 闸门**前置**:下面要采 15 个轨名(每个一次 toStdString 堆分配)+ 曲线指针,
-    // 而 tick() 只在 250ms 边界真的用得上 —— 25Hz 全采是白烧消息线程。
+    // 发布闸门**前置**:下面要采 15 个轨名(每个一次 toStdString 堆分配)+ 曲线指针,
+    // 而 tick() 只在 kPublishIntervalMs 边界真的用得上 —— 60Hz 驱动全采是白烧消息线程
+    // (实测:这段采集 p50 0.2-0.3us,见 tests/core/test_viz_publish_cost.cpp)。
     if (!vizPublisher_.due(nowMs))
     {
         return;

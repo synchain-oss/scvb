@@ -1077,7 +1077,7 @@ T25 卡验收要求「对 05 §1.4 的函数/事件全集**零差异**」。本�
 |---|---|---|
 | `scvb.state` | 变化时 | 组 / 缩放 / 语言 / **viz 三态与 fresh**(段级状态的唯一真源) |
 | `scvb.groups` | **1 Hz** | **逐字复用** §2.4 的既有形状:`{groups_online}` 位图,组胶囊绿点 |
-| `scvb.viz` | **4 Hz** | viz 帧:每轨当前值每帧刷;降采样车道按 `lane_revision` 变化才带(形状见 `web/monitor/viz.js` 头注;数据面 = ipc §6) |
+| `scvb.viz` | **≤25 Hz**(基准 tick 上限;数据面 30 Hz,值未变不发) | viz 帧:每轨当前值每帧刷;降采样车道按 `lane_revision` 变化才带(形状见 `web/monitor/viz.js` 头注;数据面 = ipc §6)。**SL-192**:段侧发布 30 Hz,而桥面受 WebViewHost 基准 tick(25 Hz)封顶 —— 两者不同是故意的:基准 tick 有 50→25 减负裁定,不因本卡重开 |
 | `scvb.playhead` | **25 Hz** | **逐字复用** §2.6 的既有载荷形状(WebViewHost 定时器上限) |
 
 后两个之所以逐字复用 Output 侧的形状而不另立一套:轨迹图的 `onPlayhead(ev)` 与组胶囊的消费代码因此**一行不改**。

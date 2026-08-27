@@ -36,6 +36,7 @@ const u = (p) => pathToFileURL(join(ROOT, p)).href;
 const src = (p) => readFileSync(join(ROOT, p), "utf8");
 
 const DC = await import(u("web/shared/distribution-chart.js"));
+const DM = await import(u("web/shared/dist-motion.js"));
 const TM = await import(u("web/output/tab-master.js"));
 const TC = await import(u("web/shared/trajectory-chart.js"));
 const TCOL = await import(u("web/shared/track-colors.js"));
@@ -2168,6 +2169,375 @@ log("=== ⑧ 生命周期:suspend / resume / destroy(T43 复用契约的首个�
         /addEventListener\("pagehide", stopScaleCountdown\)/.test(app),
         "pagehide 时缩放倒计时也停(关窗回退,不污染新实例)",
     );
+}
+
+// =============================================================================
+log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
+
+// 用户实测(v5.4):「monitor 里的声像/音量分布……跟 output 的图相比帧数很低,一秒钟
+// 刷新一两次的感觉,而且速度比那边慢」。两页画的是同一件 `distribution-chart.js`,差的是
+// 数据面频率:Output 吃 25Hz 的 `scvb.params`,Monitor 吃 **4Hz** 的 viz 段(冻结口径)。
+// 补间层只做一件事:把离散到达的目标铺成 rAF 逐帧的连续运动,且**绝不外推**。
+// (SL-192 后半程把段侧提到 30Hz、页面实得 25Hz;补间仍在,因为 25Hz 依旧是离散步,
+//  且停摆 / 宿主节流 / 换组 / 旧版 4Hz Output 这些降级路径一个都没消失。)
+{
+    const row = (ch, pan, volDb, widthPct, extra) => ({
+        ch,
+        pan,
+        volDb,
+        widthPct,
+        stereo: false,
+        lead: false,
+        ...(extra || {}),
+    });
+
+    // ---- 纯函数:进度封顶(反鬼影的那一条)
+    eq(DM.frameProgress(0, 250), 0, "p:起点 = 0");
+    eq(DM.frameProgress(125, 250), 0.5, "p:半程 = 0.5");
+    eq(DM.frameProgress(250, 250), 1, "p:整程 = 1");
+    eq(DM.frameProgress(9999, 250), 1, "p:**封顶 1**,写方停摆也不外推");
+    eq(DM.frameProgress(-5, 250), 0, "p:负 elapsed 夹到 0(时钟回拨不倒放)");
+    eq(DM.frameProgress(100, 0), 1, "p:时长为 0 ⇒ 直接到位,不出 Infinity");
+    eq(DM.frameProgress(NaN, 250), 1, "p:非有限 elapsed ⇒ 到位,不出 NaN");
+
+    // ---- 补间时长是**定值** = 页面实得的到达周期,不是「实测帧间隔」、也不是段侧发布周期。
+    // 链路:发布器 30Hz → [M] 60Hz → 桥面 25Hz(WebViewHost 基准 tick,既有 50→25 裁定)。
+    // 最慢的一级才是页面实得的速率 ⇒ 40ms。
+    // 为什么不取实测间隔:那量的是「数据多久变一次」(ramp 之间可以好几秒没动静),
+    // 拿它当时长会把一次孤立的段边界跳变抹成几秒的爬行 —— 编出来的运动。
+    eq(
+        DM.DIST_SPAN_MS,
+        40,
+        "补间时长 = 页面实得到达周期 40ms(= 桥面 25Hz;不是段侧的 33ms,更不是升频前的 250ms)",
+    );
+
+    // ---- 纯函数:逐行插值
+    eq(
+        DM.lerpDistRow(row(1, -100, -24, 0), row(1, 100, 12, 100), 0.5),
+        { ch: 1, stereo: false, lead: false, pan: 0, volDb: -6, widthPct: 50 },
+        "三条连续量各自线性插值",
+    );
+    // ⚠ 端点**刻意挑的是 −0.1 → 0.3**:`a + (b − a) · 1` 在这一对上算出
+    // 0.30000000000000004,而在 −100 → 100 这类整数对上恰好等于 b —— 拿整数对写这条断言
+    // 等于没写(改成 `a + (b − a) · p` 照样全绿)。到位要**逐位**等于目标,否则
+    // 「到没到位」就没法用相等去判,自停判据会永远差那么一丁点。
+    eq(
+        DM.lerpDistRow(row(1, -0.1, -0.1, -0.1), row(1, 0.3, 0.3, 0.3), 1),
+        {
+            ch: 1,
+            stereo: false,
+            lead: false,
+            pan: 0.3,
+            volDb: 0.3,
+            widthPct: 0.3,
+        },
+        "p=1 **逐位等于**目标(不是 a+(b−a)·1,那在浮点下不保证)",
+    );
+    {
+        const mixed = DM.lerpDistRow(
+            row(3, 0, -6, 100),
+            row(3, 40, -2, 80, { stereo: true, lead: true }),
+            0.25,
+        );
+        eq(
+            [mixed.stereo, mixed.lead],
+            [true, true],
+            "离散面(立体声 / lead)一律取目标行,不插",
+        );
+    }
+
+    // ---- 结构指纹:决定「能不能按下标插值」
+    eq(
+        DM.distShapeKey([row(1, 0, 0, 100), row(2, 0, 0, 100)]),
+        "1/00,2/00",
+        "指纹 = 轨号 + 立体声位 + lead 位",
+    );
+    check(
+        DM.distShapeKey([row(1, 0, 0, 100)]) !==
+            DM.distShapeKey([row(1, 0, 0, 100, { stereo: true })]),
+        "立体声位变了 ⇒ 指纹变(张开线的节点是新增的)",
+    );
+    check(
+        DM.distShapeKey([row(1, 0, 0, 100), row(2, 0, 0, 100)]) !==
+            DM.distShapeKey([row(2, 0, 0, 100)]),
+        "轨集变了 ⇒ 指纹变(下标不再对齐)",
+    );
+
+    // ---- 工厂:首帧 / 补间中段 / 到位 / 陈旧
+    {
+        const m = DM.createDistMotion({});
+        m.push([row(1, -50, -6, 100)], 0, 1000);
+        eq(
+            m.rows().map((r) => [r.pan, r.volDb]),
+            [[-50, -6]],
+            "首帧**直接落到目标**(从 0 扫过来会是一段虚构的开场动画)",
+        );
+        eq(m.diag().animating, false, "首帧不起 rAF");
+
+        m.push([row(1, 50, 6, 100)], 0, 1040);
+        m.tick(1040);
+        eq(m.rows()[0].pan, -50, "补间起点 = **当前显示值**,不是上一帧的目标");
+        m.tick(1060);
+        eq(
+            [m.rows()[0].pan, m.rows()[0].volDb],
+            [0, 0],
+            "半程:横位与柱高都走到一半(4Hz 的一步被铺成连续运动)",
+        );
+        check(m.tick(1079), "到位前 tick 报「还要续帧」");
+        eq(m.tick(1080), false, "到位那一帧报「可以自停」(空闲零 rAF)");
+        eq(m.rows()[0].pan, 50, "整程:精确落到目标");
+
+        // 写方停摆:帧流断在这里,此后无论过多久都不许再动一丝一毫。
+        m.tick(9500);
+        eq(
+            m.rows().map((r) => [r.pan, r.volDb, r.widthPct]),
+            [[50, 6, 100]],
+            "陈旧:冻在最后一份真数据上(**零外推** —— 外推出来的柱位是捏造的读数)",
+        );
+    }
+
+    // ---- 工厂:值没变的帧不起帧(宿主/mock 会照常按 4Hz 重发同一份值)
+    {
+        const m = DM.createDistMotion({});
+        m.push([row(1, 10, -3, 100)], 0, 1000);
+        m.push([row(1, 10, -3, 100)], 0, 1040);
+        eq(m.diag().pushes, 0, "重复值 ⇒ 一次补间都不起(空闲零 rAF)");
+        // 与数据面无关的 render(`scvb.groups` 1Hz 那一路)夹在两帧之间时,
+        // 补间仍须走满一个发布周期 —— 早先那版拿「上次 push 到现在」当时长,
+        // 这一下会把时长压成 50ms,画面上就是运动时快时慢。
+        m.push([row(1, 20, -3, 100)], 0, 1200); // ← 无关事件,值又变了
+        m.tick(1220);
+        eq(
+            m.rows()[0].pan,
+            15,
+            "补间时长不受「上一次 push 什么时候」影响(定值 40ms 的半程)",
+        );
+    }
+
+    // ---- 工厂:轨集变了不许跨轨插值
+    {
+        const m = DM.createDistMotion({});
+        m.push([row(1, -80, -6, 100), row(2, 80, -6, 100)], 0, 1000);
+        m.push([row(2, 80, -6, 100)], 0, 1040); // 轨 1 下线,轨 2 挪到下标 0
+        m.tick(1060);
+        eq(
+            m.rows().map((r) => [r.ch, r.pan]),
+            [[2, 80]],
+            "轨集变化 ⇒ 直接落位:轨 2 不会从轨 1 的位置滑过来",
+        );
+    }
+
+    // ---- 工厂:reset 之后不许从上一组的值插过来(换组清零)
+    {
+        const m = DM.createDistMotion({});
+        m.push([row(1, -90, -20, 100)], 0, 1000);
+        m.reset();
+        eq(m.rows(), [], "reset 清空显示值");
+        m.push([row(1, 90, 10, 100)], 0, 1040);
+        eq(
+            m.rows().map((r) => [r.pan, r.volDb]),
+            [[90, 10]],
+            "换组后第一帧直接落位(指纹清成 null,轨集相同也不会误判成「结构没变」)",
+        );
+    }
+
+    // ---- 工厂:坏行在入口就滤掉,谓词与拼串侧同义(PR 115 审查第 3 条)
+    // `distBarsHtml` 对 ch 非有限的行是 continue(不产出节点),而 paint() 按**下标**
+    // 把 shown[i] 写进 bars[i]。两边谓词不一致,坏行会让节点与行整体错位一格 ——
+    // 每根柱写上邻轨的几何,而 setVars 的 null 保护让它一声不吭。
+    {
+        const m = DM.createDistMotion({});
+        m.push(
+            [row(1, -50, -6, 100), { ch: undefined }, row(3, 50, -6, 100)],
+            0,
+            1000,
+        );
+        eq(
+            m.rows().map((r) => r.ch),
+            [1, 3],
+            "ch 非有限的行在入口被滤掉(与 distBarsHtml 同一谓词)",
+        );
+        eq(
+            DC.distBarsHtml(m.rows(), 0).match(/class="dist-bar"/g).length,
+            m.rows().length,
+            "滤后的行数与拼串产出的柱数一一对应(下标不会错位)",
+        );
+        m.push([null, row(1, -50, -6, 100), row(3, 50, -6, 100)], 0, 1040);
+        eq(
+            m.rows().map((r) => r.ch),
+            [1, 3],
+            "null 行也不炸、也不进数据面",
+        );
+    }
+
+    // ---- 工厂:隐藏期跳过的 paint 记欠账,恢复可见时补画(PR 115 审查第 4 条)
+    // tick() 在不可见时照常推进 shown 却不写 DOM;若之后来的 push 数值与 target 相同,
+    // sameDistValues 会早退 —— DOM 就停在隐藏前那一帧上。
+    {
+        let visible = true;
+        const painted = [];
+        const node = () => ({
+            style: { setProperty: (k, v) => painted.push(k + v) },
+        });
+        const bars = [node()];
+        const container = {
+            innerHTML: "",
+            querySelectorAll: (sel) => (sel === ".dist-bar" ? bars : []),
+        };
+        const m = DM.createDistMotion({
+            container,
+            isVisible: () => visible,
+        });
+        m.push([row(1, -50, -6, 100)], 0, 1000);
+        m.push([row(1, 50, 6, 100)], 0, 1040);
+        visible = false;
+        m.tick(1080); // 补间到位,但不可见 ⇒ 跳过 paint,记欠账
+        const beforeRestore = painted.length;
+        visible = true;
+        m.push([row(1, 50, 6, 100)], 0, 1080); // 值与 target 相同 ⇒ 老实现会早退不重画
+        check(
+            painted.length > beforeRestore,
+            "恢复可见后补画了隐藏期欠下的那一帧(不留陈旧 DOM)",
+        );
+    }
+
+    // ---- 工厂:destroy 之后一切写入口早退(与 trajectory-chart 同一条纪律),且**放掉引用**
+    {
+        const m = DM.createDistMotion({});
+        m.push([row(1, 0, 0, 100)], 0, 1000);
+        eq(m.rows().length, 1, "destroy 前有数据面");
+        m.destroy();
+        // 放掉引用:app.js 的 pagehide 注释说「不拆就连着数据面与节点数组一起钉在内存里」,
+        // 只停 rAF 不清引用那句话就不成立(PR 115 审查第 5 条)。
+        eq(m.rows(), [], "destroy 清掉数据面引用");
+        m.push([row(1, 100, 12, 100)], 0, 1040);
+        eq(m.rows(), [], "destroy 之后 push 一步不走(不会把数据面又填回来)");
+        eq(m.diag().animating, false, "destroy 之后循环也不再起");
+    }
+
+    // ---- 几何格式化只有一处:补间写入面与拼串产物必须逐字对齐
+    {
+        const geo = DC.distGeometry(-33.3, -7.7, 66.6);
+        const html = DC.distBarsHtml(
+            [row(1, -33.3, -7.7, 66.6, { stereo: true })],
+            0,
+        );
+        const bar = DC.distBarVars(geo);
+        const span = DC.distSpanVars(geo);
+        check(
+            html.includes(`--x:${bar["--x"]};--h:${bar["--h"]}`),
+            "distBarVars 的串与拼串模板逐字相同",
+        );
+        check(
+            html.includes(
+                `--x0:${span["--x0"]};--w:${span["--w"]};--y:${span["--y"]}`,
+            ),
+            "distSpanVars 的串与拼串模板逐字相同",
+        );
+    }
+
+    // ---- 页面接线:分布图不再走「收到帧就重拼 innerHTML」那条路
+    {
+        const app = src("web/monitor/app.js");
+        check(
+            /distMotion\.push\(vizDistRows\(viz\), highlightCh\)/.test(app),
+            "render 把行集交给补间器(不是每帧重拼 innerHTML)",
+        );
+        check(
+            !/distBarsHtml/.test(app),
+            "app.js 里不再直接拼柱体(拼串归补间器,免得两条路各写一份)",
+        );
+        check(
+            /distMotion\.reset\(\)/.test(app),
+            "不在线 / 换组时 reset(),不留上一组的补间状态",
+        );
+        check(
+            /distMotion\.destroy\(\)/.test(app),
+            "pagehide 时 destroy(),不漏自持 rAF",
+        );
+        const motion = src("web/shared/dist-motion.js");
+        check(
+            /requestAnimationFrame/.test(motion) &&
+                /cancelAnimationFrame/.test(motion),
+            "补间由 rAF 驱动,且有配对的 cancel",
+        );
+
+        // ---- 几何**不许**进 CSS 过渡集(PR 115 审查抓到的那条)
+        // 老写法每帧重拼 innerHTML,节点是新建的 ⇒ `transition: all` 从不生效;
+        // 改成「给既有节点逐帧写变量」之后它**开始生效**,于是 left/height 被叠上一层
+        // 300ms 低通 —— 补间逻辑全绿而屏幕上照样慢半拍(实测滞后 2.89 个百分点)。
+        // 行为面的守卫在 smoke-monitor-page ⑧c(量渲染位置);这里再钉一道源码面,
+        // 让「顺手把 transition 改回 all」在 node 侧就红,不必等页面级跑起来。
+        {
+            const html = src("web/monitor/index.html");
+            // 只查**生效的声明**,先把 CSS 注释剥掉 —— 上面那段讲这个坑的注释里逐字写着
+            // `transition: all`,不剥就会把自己的注释当成回归(与 ⑧ 节 `staleTimer`
+            // 那条同一手法:源文本断言必须先划清「代码」与「讲代码的话」)。
+            const ruleOf = (sel) => {
+                const i = html.indexOf(sel + " {");
+                if (i < 0) return "";
+                return html
+                    .slice(i, html.indexOf("}", i))
+                    .replace(/\/\*[\s\S]*?\*\//g, "");
+            };
+            for (const sel of [".dist-bar", ".dist-span"]) {
+                const rule = ruleOf(sel);
+                check(rule.length > 0, `找得到 ${sel} 的规则`);
+                check(
+                    !/transition:\s*all/.test(rule),
+                    `${sel} 不用 transition: all —— 几何进过渡集会把 rAF 补间叠成 300ms 低通`,
+                );
+                check(
+                    /transition:\s*opacity/.test(rule),
+                    `${sel} 只过渡 opacity(hover 淡出仍要动画)`,
+                );
+            }
+        }
+    }
+
+    // ---- 整条频率链(SL-192 两段合并后的口径)
+    // 发布器 30Hz → [M] 轮询 60Hz → 桥面 25Hz。**每一级都必须 ≥ 上一级,或是它的整数倍**:
+    // 同频异相的两级会周期性整帧跳过,这一卡在读方栽了两次、在写方差点栽第三次。
+    // 数值断言归 C++(test_viz_plane.cpp 的 [rate] 按逻辑钟数帧);这里守住常量本身不被改回去。
+    {
+        const proc = src("src/monitor/MonitorProcessor.cpp");
+        const edit = src("src/monitor/MonitorEditor.cpp");
+        const vp = src("src/core/output/VizPublisher.h");
+
+        // ① 发布端:33ms ≈ 30Hz(冻结契约变更,docs/contract-changes/20260827-viz-30hz.md)
+        check(
+            /kPublishIntervalMs\s*=\s*25;/.test(vp),
+            "发布闸门 25ms —— 夹在 60Hz 驱动的一拍(16.7)与两拍(33.3)之间,实得 30Hz",
+        );
+        // ② 驱动它的定时器必须 ≥2× 闸门 —— 同频异相会周期性丢帧
+        check(
+            /kPublishTimerHz\s*=\s*60;/.test(vp),
+            "发布驱动 60Hz:两拍 = 33.3ms = 30Hz,且闸门两头都有余量(抗抖动)",
+        );
+        check(
+            /vizTimer_->startTimerHz\(scvb::output::VizPublisher::kPublishTimerHz\)/.test(
+                src("src/output/OutputProcessor.cpp"),
+            ),
+            "发布走**独立**定时器,不搭主 25Hz tick(25Hz 驱动不出 30Hz)",
+        );
+        // ③ 读方轮询 60Hz = 2× 发布率
+        check(
+            /startTimerHz\(kVizPollHz\)/.test(proc) &&
+                /constexpr int kVizPollHz = 60;/.test(proc),
+            "[M] 轮询 60Hz = 2× 发布率(不会与 30Hz 发布器同频异相地跳过整帧)",
+        );
+        // ④ 桥面:没有闸,变化即发。只查**代码** —— 文件里讲这个坑的注释提到旧常量名是
+        // 应该的(与 ⑧ 节 `staleTimer` 那条同一手法),不该算成回归。
+        const editCode = edit.replace(/^\s*\/\/.*$/gm, "");
+        check(
+            !/kVizEmitIntervalMs/.test(editCode),
+            "编辑器侧的 250ms 推送闸已取消(它在 25Hz 栅格上实得 280ms = 3.57Hz)",
+        );
+        check(
+            /emitIfChanged\(bridge::kEvViz/.test(edit),
+            "scvb.viz 仍走 emitIfChanged:值未变不发,桥面实得 ≤25Hz(基准 tick 上限)",
+        );
+    }
 }
 
 // =============================================================================

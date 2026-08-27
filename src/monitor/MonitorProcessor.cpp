@@ -17,7 +17,19 @@ constexpr int kGroupIdMax = 8; // [J66] 1..8(A-H)
 constexpr int kUiScaleMinPercent = 50;
 constexpr int kUiScaleMaxPercent = 200;
 constexpr std::uint64_t kGroupsProbeIntervalMs = 1000; // 1Hz 跨组探测(J70)
-constexpr std::uint64_t kVizPollIntervalMs = 250; // 4Hz:与发布器同频,不多不少
+// 段**不存在**时的 attach 重试节流。这一条与读帧无关(读帧由定时器每拍做),
+// 它挡的是「Output 还没起来」时每拍一次 open+unmap —— 4Hz 重试足够,自愈延迟无人感知。
+constexpr std::uint64_t kVizAttachRetryMs = 250;
+// [M] 轮询频率(SL-192)。发布器升到 **30Hz**(闸门 kPublishIntervalMs = 25ms + 60Hz 驱动,
+// 每两拍一帧 = 33.3ms;**不是 33ms 闸门** —— 那个值被本卡的抖动用例否掉了,见 VizPublisher.h)之后,
+// 读方采样率跟着走。曾经这里与发布器同为 4Hz,注释写着「与发布器同频,不多不少」——
+// 那句话漏了一件事:两个同频时钟**互不同步**。同频异相的采样会周期性地把某一帧整个跳过
+// (读到的还是上一帧),于是 UI 实得的更新率并不是发布率,而是在它上下漂。
+//
+// **60Hz = 2× 发布率**:任何一帧最迟 16.7ms 内被读到,再不会整帧跳过。
+// 代价是 `VizPlane::read()` 跑到 60Hz —— 实测 p50 **3.80 µs**/次
+// (`tests/core/test_viz_publish_cost.cpp`),即 **0.023% 一颗核**,跑在 [M] 上,买得值。
+constexpr int kVizPollHz = 60;
 } // namespace
 
 ScvbMonitorAudioProcessor::ScvbMonitorAudioProcessor()
@@ -48,7 +60,7 @@ void ScvbMonitorAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPe
     sawVizFrame_ = false;
     lastVizChangeMs_ = 0;
     lastAttachTryMs_ = 0;
-    startTimerHz(4);
+    startTimerHz(kVizPollHz);
 }
 
 void ScvbMonitorAudioProcessor::releaseResources()
@@ -85,7 +97,7 @@ void ScvbMonitorAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     // 唯一的例外动作:把宿主 transport 快照发布给 [M](进程内 SPSC seqlock,**不是共享内存**)。
     // 零分配、零锁、不碰 buffer —— 逐样本按位相等不受影响(nulltest 用例覆盖)。
-    // 为什么不用 viz 段里的 playhead:那份是 4Hz 的冗余副本,竖线会一顿一顿;
+    // 为什么不用 viz 段里的 playhead:那份跟着发布节拍走,而竖线要的是本地时钟外推;
     // Monitor 与 Output 同处一个宿主,看到的是同一条 transport,直接读最准也最跟手。
     publishPlayhead();
 }
@@ -241,7 +253,7 @@ bool ScvbMonitorAudioProcessor::setObservedGroup(int groupId)
     }
     groupId_ = groupId;
     // 只读换段:释放旧组句柄 + 指向新组,**不在这里 attach** —— 新组的 Output 可能还没上线,
-    // attach 由 [M] 4Hz 重试。绝不用 changeGroup():那是写方路径,会把「新组无写方」变成建段。
+    // attach 由 [M] 定时器重试(段不存在时 4Hz 节流)。绝不用 changeGroup():那是写方路径,会把「新组无写方」变成建段。
     vizPlane_.setGroupReadOnly(static_cast<scvb::u32>(groupId));
     vizState_ = VizState::kOffline;
     vizFresh_ = false;
@@ -268,7 +280,7 @@ void ScvbMonitorAudioProcessor::setUiLanguage(const juce::String& lang)
 }
 
 // ---------------------------------------------------------------------------
-// [M] 4Hz 定时器:viz attach/读 + 1Hz 跨组探测
+// [M] 60Hz 定时器(SL-192;发布器 30Hz):viz attach/读 + 1Hz 跨组探测
 // ---------------------------------------------------------------------------
 
 void ScvbMonitorAudioProcessor::timerCallback()
@@ -307,7 +319,7 @@ void ScvbMonitorAudioProcessor::refreshViz(std::uint64_t nowMs)
 
     if (!vizPlane_.isOpen())
     {
-        if (nowMs - lastAttachTryMs_ < kVizPollIntervalMs)
+        if (nowMs - lastAttachTryMs_ < kVizAttachRetryMs)
         {
             return;
         }

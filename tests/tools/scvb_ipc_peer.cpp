@@ -927,14 +927,29 @@ int runVizPublisher(const Args& a)
     in.leadMask = 0x0001;
     in.widthPct[0] = 80.0f;
 
-    // 至少发一帧;linger 期间按真实 4Hz 续发,读方随时 attach 都能拿到一致帧。
-    // 时钟用 steadyNowMs()(与生产路径 OutputProcessor::timerCallback 同源)——
+    // 至少发一帧;linger 期间按**生产同款节拍**续发,读方随时 attach 都能拿到一致帧。
+    // 时钟用 steadyNowMs()(与生产路径 OutputProcessor 的 vizTimer_ 同源)——
     // 用从 0 起的假时钟会让 publish_ms 落在读方的「没动过」判据上。
+    //
+    // [SL-192] 驱动改成「**1ms 细粒度轮询 + 让发布器自己的闸门分频**」,不再是写死的 50ms。
+    //
+    // 为什么不按 kPublishTimerHz 算一个 ~16ms 的 Sleep:Windows 的默认定时器分辨率是
+    // ~15.6ms,`Sleep(16)` 实得约 31ms,配 33ms 闸门就变成每两拍才发一帧 = ~16Hz ——
+    // 实测就是这么来的(读方 1.5s 只看到 25 帧)。**驱动被分辨率抬慢、于是与闸门同频异相**,
+    // 又是 SL-192 那个坑的第三种长相。
+    // `Sleep(1)` 同样受分辨率影响,但它远小于闸门,即使被抬到 15.6ms 也是每两三拍一帧,
+    // 分频权仍在闸门手里 —— 对端因此忠实于生产路径(那边是 JUCE 的高分辨率 Timer)。
+    constexpr u32 driveMs = 1;
+    // 播放头**逐帧推进**:这是给读方的跨字段不变式 —— 帧头里的 playhead_samples 与
+    // publish_ms 必须同步前进。撕裂读(新旧两帧拼接)会让它们对不上或倒退,而
+    // 「所有字段都恒定」的对端根本测不出撕裂:拼接出来的帧与正确帧逐字节相同。
+    const auto step = static_cast<std::int64_t>(sr / 30.0); // 每帧约 1/30 秒
     pub.tick(scvb::steadyNowMs(), in);
     const u64 deadline = ::GetTickCount64() + static_cast<u64>(a.lingerMs > 0 ? a.lingerMs : 0);
     while (::GetTickCount64() < deadline)
     {
-        ::Sleep(50);
+        ::Sleep(driveMs);
+        in.playhead.timeSamples += step;
         pub.tick(scvb::steadyNowMs(), in);
     }
     return 0;

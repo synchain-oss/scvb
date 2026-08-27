@@ -32,7 +32,7 @@
 //     (hold 上一段的 pan)—— 只有位图是 0。消费侧若误把车道当覆盖判据,断线会整个消失,
 //     这正是 smoke 要抓的那个错;
 //   • 窗口跨度 = `max(最大分段末端, playhead+1, 60s)` 向上取整到 **30s** 边界,上限 24h;
-//   • 帧头 4Hz;车道 / 位图 / 轨色**按需重算**(`lane_revision` 变化时才随事件带上)。
+//   • 帧头按桥面到达周期(SL-192 后 25Hz);车道 / 位图 / 轨色**按需重算**(`lane_revision` 变化时才随事件带上)。
 //
 // **样本 ↔ 秒**:段里是样本,而契约 §0.2「UI 永不见样本、只收秒」—— 换算发生在 T45 的
 // C++ 桥。本文件模拟的是**桥之后**的那一层,故对外发秒;但内部仍按样本算一遍再除,
@@ -77,8 +77,15 @@ const WINDOW_QUANTUM_S = 30;
 const WINDOW_MIN_S = 60;
 const WINDOW_MAX_S = 24 * 3600;
 
-/** 帧头发布周期(ms):4Hz,照 T44「帧头标量 250ms」。 */
-const VIZ_FRAME_PERIOD_MS = 250;
+/**
+ * 帧到达周期(ms)。
+ *
+ * 注意这里模的是**桥面**而不是段侧 —— 本文件替身的是 `backend.addEventListener`,
+ * 页面从它那里收到帧的速率就是真宿主里 `MonitorEditor::emitTick` 的速率。
+ * SL-192 升频后:段侧发布 **30Hz**,而桥面受 WebViewHost 基准 tick 封顶在 **25Hz**(40ms)。
+ * 拿 33ms 造数会让 preview 比真宿主快一档,页面级冲烟里的时序断言就测的是另一个东西。
+ */
+const VIZ_FRAME_PERIOD_MS = 40;
 
 /** 车道兜底重算周期(ms):照 T44「距上次重算 ≥ 1s」四触发之一。 */
 const LANE_RECALC_MS = 1000;
@@ -786,26 +793,28 @@ function makeDriver(ctl) {
                     });
                 });
 
-            // 4Hz:viz 帧头(T44「帧头标量 250ms」)。
+            // 25Hz:viz 帧上桥(SL-192;段侧 30Hz 发布,桥面受基准 tick 封顶)。
             // `monitor-stalled` 下 publishMs 冻住 —— 事件照发,停摆的是时刻。
-            timers.push(
-                setInterval(() => {
-                    const s = ctl.state;
-                    s.publishMs += VIZ_FRAME_PERIOD_MS;
-                    s.seq += 2;
-                    // 车道兜底重算(T44 四触发之一:距上次 ≥1s)
-                    if (s.publishMs - s.lastLaneRecalcMs >= LANE_RECALC_MS) {
-                        s.lastLaneRecalcMs = s.publishMs;
-                        // 本 mock 的段表是静态的,内容没变 ⇒ **lane_revision 不 +1**。
-                        // T44 的语义是「只在重算车道时 +1」,而重算出同样的内容也不该
-                        // 让读方白重解析一次 15×1024 —— 这条正是稳态省流的来源。
-                    }
-                    // `vizFrozen`:事件流停发(写方进程已退出 / 宿主侧可见性门控挡掉)。
-                    // `scvb.state` 那一路照常 —— 段级事实只走它,这正是本场景要造的形态。
-                    if (s.vizFrozen) return;
-                    ctl.emit("scvb.viz", ctl.vizFrame(s.observed, s.tS));
-                }, VIZ_FRAME_PERIOD_MS),
-            );
+            // 走 `startFrameLoop` 而不是裸 `setInterval`,理由与上面播放头那一路逐字同源:
+            // Windows 的定时器分辨率 ~15.6ms 会把 `setInterval(40)` 抬到 ~46ms(实得 21.7Hz),
+            // 页面级冒烟里「单位时间收到几帧」那类断言就会测在一个偏慢的替身上。
+            // 升频前这一路是 250ms,分辨率误差占比可忽略,当时用 setInterval 没问题。
+            startFrameLoop(VIZ_FRAME_PERIOD_MS, () => {
+                const s = ctl.state;
+                s.publishMs += VIZ_FRAME_PERIOD_MS;
+                s.seq += 2;
+                // 车道兜底重算(T44 四触发之一:距上次 ≥30s)
+                if (s.publishMs - s.lastLaneRecalcMs >= LANE_RECALC_MS) {
+                    s.lastLaneRecalcMs = s.publishMs;
+                    // 本 mock 的段表是静态的,内容没变 ⇒ **lane_revision 不 +1**。
+                    // T44 的语义是「只在重算车道时 +1」,而重算出同样的内容也不该
+                    // 让读方白重解析一次 15×1024 —— 这条正是稳态省流的来源。
+                }
+                // `vizFrozen`:事件流停发(写方进程已退出 / 宿主侧可见性门控挡掉)。
+                // `scvb.state` 那一路照常 —— 段级事实只走它,这正是本场景要造的形态。
+                if (s.vizFrozen) return;
+                ctl.emit("scvb.viz", ctl.vizFrame(s.observed, s.tS));
+            });
 
             // 1Hz:组在线位图 + scvb.state(都是变化才发)
             timers.push(

@@ -61,6 +61,9 @@ add_executable(scvb_tests
   core/test_feature_fingerprint.cpp
   core/test_suggestion_export.cpp
   core/test_viz_plane.cpp
+  # 隐藏用例([.][vizcost]):viz 升频(SL-192)的单帧耗时实测面。ctest 默认不跑 ——
+  # 门禁里不该有按墙钟判红的断言。手工 `scvb_tests.exe "[vizcost]"` 复现。
+  core/test_viz_publish_cost.cpp
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)

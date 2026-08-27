@@ -404,7 +404,18 @@
                     rgba(var(--tc), 0.95),
                     rgba(var(--tc), 0.55)
                 );
-                transition: all var(--dur-1) var(--ease);
+                /* ⚠ **只过渡 opacity,几何一律不过渡**(SL-192)。
+                   这里原本是 `transition: all var(--dur-1)`(0.3s)。在「每帧重拼
+                   innerHTML」的老写法下它从不生效 —— 节点是新建的,没有可过渡的旧计算值。
+                   补间改成「给既有节点逐帧写 CSS 变量」之后它**开始生效**了:`--x`/`--h`
+                   喂的是 `left`/`height`,两者都在 `all` 的过渡集里,于是浏览器在 40ms
+                   补间之上又叠一层 ~300ms 低通 —— 补间逻辑全绿,屏幕上却仍旧慢半拍,
+                   正是本卡要修的那一半被悄悄还原(PR 115 审查抓到;实测渲染位置滞后
+                   写入值 2.89 个百分点)。
+                   运动归 rAF,过渡只留给 hover 淡出用的 opacity。
+                   守卫 = smoke-monitor-page ⑧c 的「渲染位置紧跟写入值」那条(读的是
+                   getBoundingClientRect,不是 inline 变量,故过渡一回来就红)。 */
+                transition: opacity var(--dur-1) var(--ease);
             }
             /* lead 轨的绿色语义挂**柱顶 2px 帽**(身份色=轨、语义色=lead,各占一处)。 */
             .dist-bar[data-lead="1"]::after {
@@ -431,7 +442,8 @@
                 height: 1.5px;
                 border-radius: var(--r-pill);
                 background: rgba(var(--tc), 0.8);
-                transition: all var(--dur-1) var(--ease);
+                /* 同上:张开横线的 --x0/--w/--y 喂 left/width/bottom,几何不过渡。 */
+                transition: opacity var(--dur-1) var(--ease);
             }
             .dist-axis {
                 position: absolute;
@@ -850,7 +862,9 @@
                             aria-hidden="true"
                         ></div>
                         <div class="dist-plot__base" aria-hidden="true"></div>
-                        <!-- 柱体 + 立体声张开横线由 app.js 经 distribution-chart.js 生成 -->
+                        <!-- 柱体 + 立体声张开横线由 app.js 经 dist-motion.js 生成并逐帧补间
+                             (SL-192:viz 是 4Hz 数据面,直出会让 15 根柱同拍齐跳)。
+                             本容器**整块归它所有**:结构变化时会被整体重拼,别往里放静态节点。 -->
                         <div
                             class="dist-bars"
                             data-gb="monitor-dist-bars"
