@@ -48,6 +48,7 @@ const WF = await import(u("web/output/canvas/waveform.js"));
 const HIT = await import(u("web/shared/hit.js"));
 const MD = await import(u("web/shared/mock-data.js"));
 const { T } = await import(u("web/shared/i18n.js"));
+const TWCM = await import(u("web/shared/context-menu.js"));
 
 let fail = 0;
 const log = (...a) => console.log(...a);
@@ -3494,6 +3495,174 @@ log(
         check(
             /s\.t1 > rangeS0 && s\.t0 < rangeS1/.test(body),
             "(e4)native 的段计数按范围过滤(manualKept 不再整轨全收)",
+        );
+    }
+}
+
+// =============================================================================
+log("=== ⑪ SL-205 滚轮四路映射 + SL-207 右键/双击(用户 v5.4 实测)===");
+{
+    const tw = src("web/output/tab-wave.js");
+
+    // ---- SL-205 (a) 路由纯函数:优先级 Ctrl > Alt > Shift > 裸 ----------------
+    // 改前整个处理器第一行就是 `if (!e.ctrlKey) return`,另外三路连分支都没有:
+    // ②Shift 纵向平移、③裸滚轮横向平移、Alt 纵向缩放全都不存在。页面级实测
+    // (CDP 可信事件)见 PR 正文的四路对照表。
+    {
+        const R = TW.wheelRoute;
+        eq(R({ ctrlKey: true }), "hzoom", "(a1)Ctrl → 横向缩放");
+        eq(R({ metaKey: true }), "hzoom", "(a2)Meta 同 Ctrl(与点选口径一致)");
+        eq(R({ altKey: true }), "vzoom", "(a3)Alt → 纵向缩放");
+        eq(R({ shiftKey: true }), "vpan", "(a4)Shift → 纵向平移");
+        eq(R({}), "hpan", "(a5)裸滚轮 → 横向平移");
+        // 组合只认最高优先级那一个,不发明第五种行为
+        eq(
+            R({ ctrlKey: true, altKey: true }),
+            "hzoom",
+            "(a6)Ctrl+Alt 仍走 Ctrl",
+        );
+        eq(
+            R({ altKey: true, shiftKey: true }),
+            "vzoom",
+            "(a7)Alt+Shift 仍走 Alt",
+        );
+        eq(R(null), "hpan", "(a8)缺参不炸,回落裸滚轮");
+    }
+
+    // ---- SL-205 (b) 位移归一:deltaMode 分档 + deltaX/deltaY 取大 -------------
+    {
+        const P = TW.wheelPx;
+        eq(P({ deltaY: 120, deltaMode: 0 }), 120, "(b1)像素模式原样");
+        eq(
+            P({ deltaY: 3, deltaMode: 1 }),
+            3 * TW.WHEEL_LINE_PX,
+            "(b2)行模式乘一行当量(不乘的话一格只挪 3px,平移形同没动)",
+        );
+        eq(
+            P({ deltaY: 1, deltaMode: 2 }),
+            TW.WHEEL_PAGE_PX,
+            "(b3)页模式乘一页当量",
+        );
+        // **这条是②失灵的直接成因**:Chrome 把 Shift+滚轮改写成 deltaX、deltaY 归零。
+        // 只读 deltaY 的话「Shift 纵向平移」永远拿到 0。
+        eq(
+            P({ deltaX: 120, deltaY: 0, deltaMode: 0 }),
+            120,
+            "(b4)只有 deltaX 时取 deltaX(Chrome 的 Shift+滚轮就是这样)",
+        );
+        eq(
+            P({ deltaX: 10, deltaY: -120, deltaMode: 0 }),
+            -120,
+            "(b5)两轴都有时取绝对值大的那个,并保留原符号",
+        );
+        eq(P({}), 0, "(b6)全缺 ⇒ 0(调用方据此早退,不做无位移的空动作)");
+    }
+
+    // ---- SL-205 (c) 处理器接线:四路都在,且都 preventDefault --------------
+    {
+        const from = tw.indexOf(
+            'wheelHost.addEventListener(\n            "wheel"',
+        );
+        const body = tw.slice(from, from + 3000);
+        check(body.length > 100, "(c1)滚轮处理器在");
+        check(
+            !/if \(!e\.ctrlKey\) return;/.test(tw),
+            "(c2)旧的「非 Ctrl 一律早退」已不复存在",
+        );
+        for (const [route, tag] of [
+            ["vzoom", "Alt 纵向缩放"],
+            ["vpan", "Shift 纵向平移"],
+        ]) {
+            check(
+                new RegExp(`route === "${route}"`).test(body),
+                `(c3)${tag} 有分支`,
+            );
+        }
+        check(
+            /timeline\.pan\(/.test(body),
+            "(c4)裸滚轮走 timeline.pan(横向平移)",
+        );
+        check(
+            /applyLaneH\(/.test(body),
+            "(c5)Alt 走 applyLaneH(行高的唯一写入点,不另开第二条路)",
+        );
+        check(
+            /els\.lanes\.scrollTop \+= px/.test(body),
+            "(c6)Shift 走泳道列自己的 scrollTop",
+        );
+        // 窗内四路都必须 preventDefault:漏一路就会掉回浏览器默认滚动,
+        // 实测那正是「裸滚轮把泳道列竖着滚跑 121px」的来源。
+        eq(
+            (body.match(/e\.preventDefault\(\)/g) || []).length,
+            2,
+            "(c7)两处 preventDefault:Ctrl 面板级拦页面缩放 + 窗内其余三路合用一处",
+        );
+    }
+
+    // ---- SL-207 (d) 原生右键菜单抑制 ---------------------------------------
+    {
+        const cm = src("web/shared/context-menu.js");
+        check(
+            /addEventListener\("contextmenu"/.test(cm),
+            "(d1)抑制走 contextmenu 监听(JUCE 8 没暴露 WebView2 的对应设置)",
+        );
+        check(
+            /input, textarea, select, \[contenteditable\]/.test(cm),
+            "(d2)可编辑控件放行 —— 否则输入框里连粘贴都没了",
+        );
+        for (const f of ["web/output/app.js", "web/input/app.js"]) {
+            const s = src(f);
+            check(
+                /disableNativeContextMenu\(document\);/.test(s),
+                `(d3)${f} 挂上了抑制`,
+            );
+            // 挂在 boot 的 try 之外:首帧炸掉露出兜底面板时,右键更不该冒出
+            // 「查看网页源代码」
+            check(
+                s.indexOf("disableNativeContextMenu(document);") <
+                    s.indexOf("(async function boot()"),
+                `(d4)${f} 的抑制排在 boot 之前(兜底面板也管得住)`,
+            );
+        }
+        // 纯函数面:可编辑判定
+        const el = (sel) => ({ closest: (q) => (q === sel ? {} : null) });
+        check(
+            TWCM.isEditableTarget(
+                el("input, textarea, select, [contenteditable]"),
+            ),
+            "(d5)可编辑目标判 true",
+        );
+        check(!TWCM.isEditableTarget(null), "(d6)空目标不炸");
+        check(
+            !TWCM.isEditableTarget({ closest: () => null }),
+            "(d7)普通目标判 false(会被拦)",
+        );
+    }
+
+    // ---- SL-207 (e) 双击边界 = 合并;双击段内 = 分割 -------------------------
+    {
+        const from = tw.indexOf('els.lanes.addEventListener("dblclick"');
+        const body = tw.slice(from, from + 2200);
+        check(body.length > 100, "(e1)双击处理器在");
+        check(
+            /nearestHit\(p\.x, xs, BOUNDARY_HIT_PX\)/.test(body),
+            "(e2)命中判定复用边界 ±6px 口径(与拖拽手柄同一套)",
+        );
+        check(
+            /sendEdit\(p\.ch, "merge", \{ segIdxA: j, segIdxB: j \+ 1 \}\)/.test(
+                body,
+            ),
+            "(e3)双击边界走既有 merge 桥函数(§1.16,自带撤销)",
+        );
+        // **顺序是要害**:边界两侧 6px 落在左右两段内部,先跑 findIndex 的话
+        // 双击边界会被判成「段内某处」而去分割 —— 用户想删边界,结果多出一条。
+        check(
+            body.indexOf('"merge"') < body.indexOf('"split"'),
+            "(e4)边界分支排在分割分支之前(顺序颠倒会把「删边界」做成「加边界」)",
+        );
+        check(
+            /segs\[j\] && segs\[j \+ 1\]/.test(body),
+            "(e5)合并前确认左右两段都在(段表与边界表不同步时不发越界下标)",
         );
     }
 }

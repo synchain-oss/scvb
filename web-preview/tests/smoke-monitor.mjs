@@ -2699,21 +2699,24 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
             /left: calc\(var\(--pk, 0%\) - var\(--meter-peak-w\)\)/.test(block),
             `P1-8 .${cls} 的 left 回让一个线宽(外沿贴柱顶)`,
         );
-        // [SL-191 用户裁定 2026-08-27] 这里原先断言 `transition: left var(--dur-meter)
-        // linear` **存在**,理由写的是「与液柱同步插值,瞬态不再裂开一道缝」。裁定推翻了
-        // 它:同步的是**时长**、不是**到达时刻** —— linear transition 在固定 180ms 内走完
-        // 各自的距离,液柱要跑几十上百 px 而白线常常一步不动,两者恒不同时到位。这正是
-        // 用户报的「柱头从来碰不到白线」。Tab2 玻璃管两件已一并去掉 transition;
-        // .sc-meter*(总线表)在 web 侧尚无驱动、不盲改,故仍保留 —— 断言按件分叉。
+        // [SL-191 → SL-204 用户裁定 2026-08-27] 这里原先断言 `transition: left
+        // var(--dur-meter) linear` **存在**,理由写的是「与液柱同步插值,瞬态不再裂开
+        // 一道缝」。裁定推翻了它:同步的是**时长**、不是**到达时刻** —— linear transition
+        // 在固定 180ms 内走完各自的距离,液柱要跑几十上百 px 而白线常常一步不动,两者恒
+        // 不同时到位。这正是用户报的「柱头从来碰不到白线」。
+        // SL-191 把玻璃管两件的过渡整条去掉;SL-204 按用户「软化起跳」的裁定改成
+        // `--dur-meter-tube`(33ms = 一个 §2.5 事件间隔)。**不得回到 --dur-meter**:
+        // 那是 5.4 个事件间隔,补的是过期目标,病会原样回来。
+        // .sc-meter*(总线表)在 web 侧尚无驱动、不盲改,故仍用 --dur-meter —— 断言按件分叉。
         if (cls === "sc-meter__peak") {
             check(
                 /transition: left var\(--dur-meter\) linear/.test(block),
-                `P1-8 .${cls} 暂留 transition(总线表无驱动;接线时按 SL-191 重测再定)`,
+                `P1-8 .${cls} 暂留 --dur-meter(总线表无驱动;接线时按 SL-191 重测再定)`,
             );
         } else {
             check(
-                !/transition/.test(block),
-                `SL-191 .${cls} 不带 transition(渲染逐帧等于弹道模型)`,
+                /transition: left var\(--dur-meter-tube\) linear/.test(block),
+                `SL-204 .${cls} 走一个事件间隔的补间(--dur-meter-tube)`,
             );
         }
         // v5.1 P1-G:2px 宽的盒子套胶囊圆角会被画成一颗收圆的点,视觉重心离开外沿 ——
@@ -2723,13 +2726,17 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
             `P1-G .${cls} 不用胶囊圆角(2px 刻线要齐头齐尾)`,
         );
     }
-    // [SL-191] **成对**断言:液柱与峰线要么都带 transition、要么都不带。
-    // 只去掉一边实测会得到反向病 —— 只去液柱 ⇒ 柱头反冲到白线外侧(最多 −16.2px),
-    // 因为白线换向时轮到它滞后 180ms。这条就是拦「只改一边」的。
+    // [SL-191 → SL-204] **成对**断言:液柱与峰线的补间时长必须逐字相同。
+    // 只改一边实测会得到反向病 —— 只去液柱 ⇒ 柱头反冲到白线外侧(最多 −16.2px),
+    // 因为白线换向时轮到它单独滞后。这条就是拦「只改一边」的。
     {
         const blockOf = (cls) => {
             const from = css.indexOf("." + cls + " {");
             return css.slice(from, css.indexOf("}", from) + 1);
+        };
+        const durOf = (block) => {
+            const m = /transition:\s*\w+\s+var\((--[\w-]+)\)/.exec(block);
+            return m ? m[1] : null;
         };
         const liq = blockOf("sc-tube__liquid");
         const pk = blockOf("sc-tube__peak");
@@ -2737,13 +2744,20 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
             liq.length > 0 && pk.length > 0,
             "SL-191 玻璃管液柱/峰线两条规则都在",
         );
-        check(
-            /transition/.test(liq) === /transition/.test(pk),
-            "SL-191 液柱与峰线的 transition 必须成对(只改一边会得到反向错位)",
+        eq(
+            durOf(liq),
+            durOf(pk),
+            "SL-204 液柱与峰线取同一个补间时长 token(只改一边会得到反向错位)",
         );
+        eq(
+            durOf(liq),
+            "--dur-meter-tube",
+            "SL-204 玻璃管走一个事件间隔的补间;回到 --dur-meter(5.4 个间隔)柱头就又够不着白线",
+        );
+        // token 的值本身也钉住:33ms = 30Hz 一发。改这个数等于改「补间跨几个事件」。
         check(
-            !/transition/.test(liq),
-            "SL-191 液柱不带 transition(.18s = 事件间隔的 5.4 倍,会压掉口径②的上行瞬时跟随)",
+            /--dur-meter-tube:\s*33ms;/.test(src("web/shared/tokens.css")),
+            "SL-204 --dur-meter-tube = 33ms(= 一个 §2.5 事件间隔)",
         );
     }
     // 首帧与弹道帧用同一套取整,免得首帧偏半个像素(meter.js 两处都是 toFixed(1))。

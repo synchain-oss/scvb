@@ -123,6 +123,54 @@ export function laneHFromPercent(p) {
     return clampLaneH(LANE_H_MIN + x * (LANE_H_MAX - LANE_H_MIN));
 }
 
+// ---- 滚轮四路映射(SL-205)---------------------------------------------------
+// 改前**只实装了 Ctrl 一路**(`if (!e.ctrlKey) return`),另外三路连分支都没有。
+// 后果不只是「没功能」:没被 preventDefault 的滚轮会**漏给浏览器默认动作** ——
+// 页面级实测,裸滚轮把泳道列竖着滚跑了 121px(用户看到视图突变,自然以为缩放坏了)。
+
+/** deltaMode=1 一行的像素当量(Chrome 桌面档约 16px/行)。 */
+export const WHEEL_LINE_PX = 16;
+/** deltaMode=2 一页的像素当量。 */
+export const WHEEL_PAGE_PX = 400;
+/** Alt 纵向缩放:每格行高步进(22..88 共 66px,4px/格 ≈ 17 档)。 */
+export const LANE_H_WHEEL_STEP = 4;
+
+/**
+ * 滚轮该走哪一路(纯函数,node 侧可断言)。
+ *
+ * 优先级 Ctrl > Alt > Shift > 裸,**不接受组合**:同时按住只认最高的那一个。
+ * 理由是可预测性 —— 组合键在不同宿主/输入设备上被吞被改的概率远高于单修饰键
+ * (Shift+滚轮在 Chrome 里就会被改写成 deltaX,见 wheelPx)。
+ *
+ * @returns {"hzoom"|"vzoom"|"vpan"|"hpan"}
+ */
+export function wheelRoute(e) {
+    const ev = e || {};
+    if (ev.ctrlKey || ev.metaKey) return "hzoom";
+    if (ev.altKey) return "vzoom";
+    if (ev.shiftKey) return "vpan";
+    return "hpan";
+}
+
+/**
+ * 滚轮位移归一到**像素**(带符号,正 = 向下/向右)。
+ *
+ * 两件都必须做,少一件就有整路失灵:
+ *   ① `deltaMode` 分档:0=像素 / 1=行 / 2=页。只读 delta 数值不乘当量的话,
+ *      行模式(部分鼠标驱动与宿主 WebView 会发)一格只挪 3px,平移形同没动。
+ *   ② **取 |deltaX| 与 |deltaY| 中较大的那个**:Chrome 把 Shift+滚轮改写成
+ *      **deltaX**(deltaY 归零)。只读 deltaY 的话「Shift 纵向平移」这一路
+ *      永远拿到 0 —— 正是用户报的②。
+ */
+export function wheelPx(e) {
+    const ev = e || {};
+    const mode = ev.deltaMode;
+    const k = mode === 1 ? WHEEL_LINE_PX : mode === 2 ? WHEEL_PAGE_PX : 1;
+    const dy = num(ev.deltaY, 0) * k;
+    const dx = num(ev.deltaX, 0) * k;
+    return Math.abs(dx) > Math.abs(dy) ? dx : dy;
+}
+
 /** 段检查器宽(稿内 877;灰模 260 → 统一 262,登记差异)。 */
 export const INSPECTOR_W = 262;
 
@@ -2306,7 +2354,17 @@ export function createTabWave(opts) {
             if (!local.boundDrag) showBoundHandle(false);
         });
 
-        // 双击段内 = 在此分割(05 行 313;split 两子段继承原值,§5.4)
+        // 双击两义(05 行 313):
+        //   · 双击**段间边界线**(±BOUNDARY_HIT_PX)= 删掉这条边界 = 合并左右两段
+        //     ([SL-207] 用户 v5.4 实测拍板 2026-08-27);
+        //   · 双击**段内**(离边界够远)= 在此分割(split 两子段继承原值,§5.4)。
+        //
+        // 边界判定**必须排在分割前面**:边界两侧各 6px 落在左右两段内部,先跑
+        // findIndex 的话双击边界会被判成「在段内某处」而去分割 —— 用户想删边界,
+        // 结果又多出一条边界,正好相反。
+        //
+        // 命中口径与拖拽边界**逐字复用同一套**(boundariesOf → timeToX → nearestHit
+        // ±BOUNDARY_HIT_PX):手柄摸得到的地方,双击就删得掉,不另立第二套判定。
         els.lanes.addEventListener("dblclick", (e) => {
             const p = lanesPoint(e);
             if (!p || p.ch < 1 || p.ch > LANE_COUNT) return;
@@ -2317,6 +2375,21 @@ export function createTabWave(opts) {
             const t = xToTime(vp, stageW, p.x);
             const segCh = segmentsOfCh(getStore().segments, p.ch);
             const segs = (segCh && segCh.segments) || [];
+
+            // ① 边界:boundariesOf 的第 j 条 = segs[j] 与 segs[j+1] 之间那条
+            const xs = boundariesOf(segCh).map((b) =>
+                timeToX(vp, stageW, b.tS),
+            );
+            const j = nearestHit(p.x, xs, BOUNDARY_HIT_PX);
+            if (j >= 0 && segs[j] && segs[j + 1]) {
+                // 走既有 merge 桥函数与既有口径:editSegment(§1.16)本就进撤销栈,
+                // 与工具条「合并选中两段」逐字同一条路,不另加确认框 —— 误删一条
+                // 边界的代价是一次 Ctrl+Z,弹框反而挡住连续修边界的手感。
+                sendEdit(p.ch, "merge", { segIdxA: j, segIdxB: j + 1 });
+                return;
+            }
+
+            // ② 段内:在此分割
             const idx = segs.findIndex((s) => t >= s.t0S && t < segEndS(s));
             if (idx < 0) return;
             const s = segs[idx];
@@ -2327,37 +2400,74 @@ export function createTabWave(opts) {
             });
         });
 
-        // Ctrl+滚轮:以光标为中心缩放(05 行 319)。
+        // 滚轮四路映射(05 行 319;[SL-205] 用户 v5.4 实测拍板 2026-08-27)。
+        //
+        //   Ctrl  → 横向缩放(以光标为锚)      Alt   → 纵向缩放(泳道行高)
+        //   Shift → 纵向平移                    裸    → 横向平移
+        //
+        // **改前只实装了 Ctrl 一路**(`if (!e.ctrlKey) return`),另外三路连分支
+        // 都没有;而且没被 preventDefault 的滚轮会**漏给浏览器默认动作** ——
+        // 页面级实测:裸滚轮把泳道列竖着滚跑了 121px。用户报的三条(Alt 纵缩放
+        // 没有、Shift 纵向平移没有、裸滚轮横向平移没有)由此而来。
         //
         // **挂整个 Tab3 面板**,不是只挂泳道窗:Ctrl+滚轮是浏览器的页面缩放手势,
         // 没被 preventDefault 的地方(工具条、检查器、窗外留白)会让**整页**跟着
         // 缩放 —— 所有卡片一起变、看着就是闪一下(用户实测「放大缩小的时候全部
         // 卡片都会变白」)。面板内一律拦下:落在泳道窗内的按视口缩放,落在别处的
         // 只拦截、不缩放(用户显然不是想缩放浏览器)。
+        // 另外三路则**只在泳道窗内**接管并 preventDefault —— 窗外(检查器、参数
+        // 区)的普通滚轮必须照旧交给浏览器,否则那些地方就滚不动了。
         const wheelHost = els.panel || els.window || els.lanes;
         wheelHost.addEventListener(
             "wheel",
             (e) => {
-                if (!e.ctrlKey) return;
-                e.preventDefault(); // 先拦下页面缩放,再决定要不要动视口
+                const route = wheelRoute(e);
                 const inWindow =
                     els.window &&
                     typeof els.window.contains === "function" &&
                     els.window.contains(e.target);
+                if (route === "hzoom") {
+                    e.preventDefault(); // 先拦下页面缩放,再决定要不要动视口
+                    if (!inWindow) return;
+                    const stageW = stageWidth();
+                    if (!(stageW > 0)) return;
+                    const x = stageXFromClient(e.clientX);
+                    const vp = timeline.viewport();
+                    const anchorT = xToTime(
+                        vp,
+                        stageW,
+                        Math.min(Math.max(x, 0), stageW),
+                    );
+                    // 取向按**归一后**的位移定,不再直接看 deltaY:行模式与
+                    // Shift 改写都可能让 deltaY 是 0(见 wheelPx)
+                    timeline.zoom(
+                        anchorT,
+                        wheelPx(e) < 0 ? ZOOM_STEP : 1 / ZOOM_STEP,
+                    );
+                    return;
+                }
                 if (!inWindow) return;
+                e.preventDefault();
+                const px = wheelPx(e);
+                if (!px) return;
+                if (route === "vzoom") {
+                    // 上滚(px<0)= 放大 = 行变高,与纵向缩放条「上 = 高」同向
+                    applyLaneH(
+                        local.laneH + (px < 0 ? 1 : -1) * LANE_H_WHEEL_STEP,
+                    );
+                    return;
+                }
+                if (route === "vpan") {
+                    // 泳道列自己就是纵向滚动容器(lanesPoint 读的也是它的 scrollTop)
+                    if (els.lanes) els.lanes.scrollTop += px;
+                    return;
+                }
+                // 裸滚轮:横向平移。像素 → 秒按当前视口的 px/s 折算,
+                // 于是「滚一格挪多远」在任何缩放档下观感一致。
                 const stageW = stageWidth();
-                if (!(stageW > 0)) return;
-                const x = stageXFromClient(e.clientX);
-                const vp = timeline.viewport();
-                const anchorT = xToTime(
-                    vp,
-                    stageW,
-                    Math.min(Math.max(x, 0), stageW),
-                );
-                timeline.zoom(
-                    anchorT,
-                    e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP,
-                );
+                const span = spanOf(timeline.viewport());
+                if (!(stageW > 0) || !(span > 0)) return;
+                timeline.pan((px * span) / stageW);
             },
             { passive: false },
         );
