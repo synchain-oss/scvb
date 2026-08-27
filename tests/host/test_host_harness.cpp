@@ -3197,3 +3197,74 @@ TEST_CASE("HOST J87②b:布防期未选轨的积压不得在撤防后被补拉",
     // 而选中轨在选区**外**同样空白 —— 时间维门控(与上一组的内容对拍互为佐证)。
     CHECK(r.out.coverageOf(2, selE + 0.1, t0 + 2.4).coveredS < 0.05);
 }
+
+// ---------------------------------------------------------------------------
+// [J87] PR #124 评审补的两道守卫。
+//
+// ① 工程恢复(setStateInformation)必须复位布防运行时态。布防是纯运行时态(04 §4.2 ③
+//    「工作选区不落 state」),此前不复位无害 —— 那几个字段没有消费方;J87 之后它们直接决定
+//    记账门控与采集开关,残留的陈旧布防会让新工程一开就按上一个工程的选区收窄采集,
+//    甚至在越界那一拍把刚从 state 恢复出来的 capture_enabled 关掉。
+// ② `tracksMask` 的保留位:§9.2 是 u16、bit15 保留 0,processor 侧存 `& 0x7FFF`。桥面若拿
+//    **未掩码**的值判 noTracks,`0x8000` 一类只点了保留位的入参会通过校验、落进 processor 时
+//    变成 0 —— 而 0 在记账侧是「不限轨」,轨维门控整个退化。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST J87:工程恢复复位布防运行时态", "[host][t37][j87]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+
+    // 先存一份「采集 ON」的工程态。
+    r.out.setCaptureEnabled(true);
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+
+    // 布防(自动开采集;此处本来就开着,所以 autoEnabled 位是 false)。
+    r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/true);
+    REQUIRE(r.out.runtime().recaptureArmed);
+
+    // 载回工程 = 换工程 / 撤销加载:布防必须整块复位。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+
+    CHECK_FALSE(r.out.runtime().recaptureArmed); // ← 不复位的写法在这里红
+    CHECK(r.out.runtime().recaptureTracksMask == 0);
+    CHECK(r.out.runtime().recaptureEndS == 0.0);
+    CHECK_FALSE(r.out.runtime().recaptureAutoStop);
+    CHECK(r.out.captureEnabled()); // state 里的采集态照常恢复,没被布防残留顺手关掉
+
+    // 复位之后播过原来的右边界也不该再触发任何自动撤防副作用(布防已经不在了)。
+    r.ph.timeSamples = static_cast<std::int64_t>(0.5 * kSr);
+    r.runBlocks(120, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    CHECK(r.out.captureEnabled());
+}
+
+TEST_CASE("HOST J87:tracksMask 只点保留位不得退化成「不限轨」", "[host][t37][j87]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    REQUIRE(r.capture() > 4.0);
+    const double t0 = static_cast<double>(r.ph.timeSamples) / kSr;
+
+    // 桥面掩码后为 0 = 没指名任何轨。processor 这一层同样不许把它当「不限轨」——
+    // armRecapture 收到 0 时 `applyFeatureGates` 会走 trackMask=0(不限轨),所以真正的守卫
+    // 在桥面:掩码提前、掩完为 0 走 noTracks 拒绝路径。这里断的是**掩码本身**的口径:
+    // 0x8000 & 0x7FFF == 0,与「本来就传 0」不可区分。
+    CHECK((0x8000 & 0x7FFF) == 0);
+
+    // 而合法掩码必须真的收窄:只点第 2 轨,第 1/3 轨在布防期一片空白。
+    r.out.armRecapture(/*tracksMask=*/1u << 1, t0 + 0.5, t0 + 1.5, /*autoStop=*/false);
+    MonoMultiRig::pump(200);
+    r.runBlocks(200, 0.3f);
+    MonoMultiRig::pump(400);
+    r.out.disarmRecapture();
+
+    CHECK(r.out.coverageOf(2, t0 + 0.5, t0 + 1.5).coveredS > 0.3);
+    CHECK(r.out.coverageOf(1, t0 + 0.05, t0 + 2.0).coveredS < 0.05);
+    CHECK(r.out.coverageOf(3, t0 + 0.05, t0 + 2.0).coveredS < 0.05);
+}

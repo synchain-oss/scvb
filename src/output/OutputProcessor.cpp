@@ -1288,6 +1288,20 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     session_.setCaptureEnabled(captureEnabled_);
     session_.setOutputEnabled(outputEnabled_);
 
+    // [J87] 布防是**纯运行时**态(04 §4.2 ③「工作选区不落 state,关闭工程只保存 global.range」),
+    // 换工程/重载 state 必须复位。此前不复位无害 —— 那五个字段在引擎侧没有消费方;现在它们
+    // 直接决定记账门控与采集开关,残留的陈旧布防会让新工程一开就按上一个工程的选区收窄采集,
+    // 甚至在越界那一拍把用户刚从 state 恢复出来的 capture_enabled 关掉(PR #124 评审重要①)。
+    // 复位后立刻套一次门控,不等下一拍 tick。
+    runtime_.recaptureArmed = false;
+    runtime_.recaptureTracksMask = 0;
+    runtime_.recaptureStartS = 0.0;
+    runtime_.recaptureEndS = 0.0;
+    runtime_.recaptureAutoStop = false;
+    runtime_.recaptureAutoEnabledCapture = false;
+    runtime_.recapturePrevPlayheadS = -1.0;
+    applyFeatureGates();
+
     // CRVS:段真身解码(版本名/段表/pan_curve)。
     //
     // [SL-217] **缺 chunk / 解码失败一律不得清空段表**(§7.3「不得静默丢数据」)。

@@ -312,6 +312,10 @@ function makeContext(role, world) {
         coverageRanges: new Map(),
         errors: clone(world.errors[role] || []),
         timers: new Set(),
+        // [J87] 布防时是不是**由我们**替用户打开的 01 采集(与真桥
+        // `OutputRuntimeState::recaptureAutoEnabledCapture` 同名同义)。撤防只在这一位为真
+        // 且采集仍开着时才关回去 —— 布防前本来就开着的保持开。
+        recaptureAutoEnabledCapture: false,
     };
 
     if (role === "output") {
@@ -886,6 +890,9 @@ function buildOutputBackend(ctx) {
         // ---- §1.2 -------------------------------------------------------------
         setCaptureEnabled(on) {
             if (noTimeline()) return { ok: false, reason: "noTimeline" };
+            // [J87] 用户**显式**拧过这把闸 = 他接管了,撤防时不再替他动(与真桥
+            // `ScvbOutputAudioProcessor::setCaptureEnabled` 同款)。
+            model.recaptureAutoEnabledCapture = false;
             patchState({ global: { capture_enabled: !!on } });
             return OK();
         },
@@ -1451,15 +1458,36 @@ function buildOutputBackend(ctx) {
 
         // ---- §1.23 ------------------------------------------------------------
         recaptureArm(tracksMask, startS, endS, autoStop) {
-            const mask = Number.isInteger(tracksMask) ? tracksMask >>> 0 : 0;
+            // [J87] 布防带一个副作用:**自动打开 01 采集**,撤防再把它恢复成布防前的值
+            // (只有「是我们替用户开的」才关回去)。真桥落在 `armRecapture`/`disarmRecapture`
+            // (OutputProcessor),这里必须同款 —— CLAUDE.md §10「mock 桥必须与真桥同契约」。
+            // 两侧分叉的代价刚在 SL-190 上付过一次:冒烟测的是宽松那一侧,真桥的洞漏出去了。
+            // `& 0x7fff` 与真桥同口径:bit15 是 §9.2 保留位,掩完为 0 要走 noTracks,不能变成
+            // 「不限轨」(那会让轨维门控整个失效)。
+            const mask = Number.isInteger(tracksMask)
+                ? (tracksMask >>> 0) & 0x7fff
+                : 0;
             const s = isFiniteNumber(startS) ? startS : 0;
             const e = isFiniteNumber(endS) ? endS : 0;
             const echo = { tracksMask: mask, startS: s, endS: e };
+            const disarm = () => {
+                const patch = {
+                    recapture: { armed: false, ...echo, autoStop: false },
+                };
+                // 恢复布防前的采集态:只有我们开的才关回去,且现在得还开着
+                // (布防期间用户自己关过 = 他接管了,不再替他动)。
+                if (
+                    model.recaptureAutoEnabledCapture &&
+                    model.snapshot.global.capture_enabled
+                ) {
+                    patch.global = { capture_enabled: false };
+                }
+                model.recaptureAutoEnabledCapture = false;
+                patchState(patch);
+            };
             // 撤销布防(§1.23 语义行的显式约定;与 range 的哨兵无关)
             if (mask === 0 && s === 0 && e === 0) {
-                patchState({
-                    recapture: { armed: false, ...echo, autoStop: false },
-                });
+                disarm();
                 return { armed: false, ...echo };
             }
             if (readOnly())
@@ -1470,9 +1498,19 @@ function buildOutputBackend(ctx) {
                 return { armed: false, ...echo, reason: "noTracks" };
             if (!(s < e))
                 return { armed: false, ...echo, reason: "noSelection" };
-            patchState({
+            // 只在 false→true 那一跳记「是不是我们开的」:中途改选区会再发一次布防
+            // (04 §4.2 ②),那时重记就会把「布防前」的账冲掉,撤防后再也关不回去。
+            const patch = {
                 recapture: { armed: true, ...echo, autoStop: !!autoStop },
-            });
+            };
+            if (!model.snapshot.recapture || !model.snapshot.recapture.armed) {
+                model.recaptureAutoEnabledCapture =
+                    !model.snapshot.global.capture_enabled;
+            }
+            if (!model.snapshot.global.capture_enabled) {
+                patch.global = { capture_enabled: true };
+            }
+            patchState(patch);
             return { armed: true, ...echo };
         },
 

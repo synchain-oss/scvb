@@ -3319,14 +3319,18 @@ log(
             "outside",
             "(b6)播放头在布防区间外 ⇒ outside",
         );
+        // (b7)[J87] `global.range` **不再参与**布防态的位置判定。
+        // 引擎侧布防期间的记账门控是「工作选区 × 选中轨掩码」,global.range 被整个换掉
+        // (04 §4.2 ①)—— 选区落在 range 之外时特征照写不误,而 §2.6 的 inRange 会是 false。
+        // 旧断言(inRange=false ⇒ outside)钉的是修复前的口径:屏幕说没在采、盘上正在写。
         eq(
             TW.recaptureVisual(armedState(), {
                 isPlaying: true,
                 inRange: false,
                 timeS: 15,
             }),
-            "outside",
-            "(b7)离开 global.range(§2.6 inRange=false)⇒ outside,不报 capturing",
+            "capturing",
+            "(b7)[J87] 播放头在布防区间内 ⇒ capturing,与 global.range 无关",
         );
         // 边界:endS 是开区间(播到 20.0 整已经出去了)
         eq(
