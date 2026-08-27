@@ -320,14 +320,18 @@ try {
     // =========================================================================
     log("=== ① Output 分布图:rAF 驱动,不是收到事件才画(SL-203)===");
     {
-        newBucket("connected");
+        newBucket("curve-editor");
         await cdp.send("Page.navigate", {
-            // 用**已接线**的场景名(SCENARIO_MAP 里确有 `connected` → fifteen-tracks)。
-            // 曾经写的是 `?scenario=printing` —— 那个名字在 shell 白名单里有、
-            // SCENARIO_MAP 里没有,会静默回落并 console.warn;功能上恰好够用,
-            // 但场景名与实得世界对不上。本套的数据面由探针自己用 setTrackManual 驱动,
-            // 不依赖任何走带状态。
-            url: `${base}/web-preview/output.html?scenario=connected`,
+            // 场景名必须**两张表都在**才不留不匹配 —— 这地方栽了两次:
+            //   • `printing` 在 `SCENARIO_NAMES.output` 白名单里,但 `SCENARIO_MAP` 里没有
+            //     ⇒ 静默回落 fifteen-tracks + console.warn;
+            //   • `connected` 反过来:`SCENARIO_MAP` 里有,却只在 `SCENARIO_NAMES.input`
+            //     ⇒ `allowedOr()` 判成表外值,壳页工具条显示 `scenario=unknown`。
+            // 两次都「功能上恰好够用」,所以都没被断言抓到 —— 而白名单那段注释的原话
+            // 正是「顺手把『参数拼错了』变成肉眼可见的信号」。
+            // `curve-editor` 在两张表里都有,且同样落满配 fifteen-tracks 世界。
+            // 本套的数据面由探针自己用 setTrackManual 驱动,不依赖场景带任何特殊状态。
+            url: `${base}/web-preview/output.html?scenario=curve-editor`,
         });
         const up = await waitFor(READY);
         check(up, "页面装载并吃到首帧");
@@ -396,7 +400,12 @@ try {
                     const dg = m && m.distMotion ? m.distMotion() : null;
                     const cont = q(".dist-bars");
                     const bars = all(".dist-bar");
+                    // n = 真正参与比较的柱数。没有它就有个**空绿口**:mx 初值 0,
+                    // 若哪天所有柱的 --x 都读不出来(改了写入面、或节点没建起来),
+                    // drift 会是 0 而不是 -1,阈值断言照样绿。
+                    // (注:本段在模板字面量里,注释**不能带反引号** —— 会把模板提前截断。)
                     let drift = -1;
+                    let n = 0;
                     if (cont && bars.length) {
                         const cr = cont.getBoundingClientRect();
                         let mx = 0;
@@ -410,9 +419,10 @@ try {
                                 100;
                             if (Number.isFinite(written) && cr.width > 0) {
                                 mx = Math.max(mx, Math.abs(rendered - written));
+                                n += 1;
                             }
                         }
-                        drift = mx;
+                        drift = n > 0 ? mx : -1;
                     }
                     out.push({
                         frames: dg ? dg.frames : -1,
@@ -420,6 +430,7 @@ try {
                         shown: dg ? JSON.stringify(dg.shown) : "",
                         target: dg ? JSON.stringify(dg.target) : "",
                         drift,
+                        n,
                     });
                     if (now - t0 >= 3000) res(out);
                     else setTimeout(step, 25);
@@ -478,12 +489,15 @@ try {
         // 位置上,而不是被 CSS 过渡糊住。读的是 getBoundingClientRect,不是 inline 变量 ——
         // 后者只能证明「我写进去了」,证明不了「屏幕上在哪」。Monitor 侧就是这条把
         // `transition: all` 那个坑抓出来的(实测滞后 2.89 个百分点)。
+        // 先断「真的有柱参与了比较」——否则下面那条会在「一根都没读到」时空绿。
+        const compared = Math.max(...probe.map((p) => p.n || 0));
+        check(compared > 0, `有柱参与渲染面比较(最多 ${compared} 根)`);
         const maxDrift = Math.max(...probe.map((p) => p.drift));
         check(
             maxDrift >= 0 && maxDrift < 1.5,
             `柱子渲染位置紧跟写入值,没有被 CSS 过渡拖住(最大偏差 ${maxDrift.toFixed(2)} 个百分点,阈值 1.5)`,
         );
-        assertClean("connected 分布图补间");
+        assertClean("curve-editor 分布图补间");
     }
 
     // =========================================================================
@@ -555,21 +569,35 @@ try {
         // 所以 `all(".dist-bar").length > 0` 恒真 —— 重建分支一步不跑它也绿。
         // (旧版就是这么写的,等于一条永远不会红的断言。)
         //
-        // 真正该守的性质是:**转一圈回来之后,屏幕上画的是「现在」的数据,不是隐藏前那份**。
-        // 上面隐藏期把 pan 一直搬到 ±70,所以只要重新接管这一步没做对,柱子就会停在
-        // 隐藏前的位置上。判据仍用空间量尺(渲染位置 vs 写入值),与帧率无关。
+        // 该守的性质是:**转一圈回来之后,屏幕上画的是「现在」的数据,不是隐藏前那份**。
+        // 判据分两截,缺一截都不成立:
+        //   ① `shown` 追上了**切回之后新写进去的** pan —— 隐藏期 `shown` 被清空,
+        //      不重新接管它就还是空的 / 还是旧值;
+        //   ② 渲染位置 == 写入的 `--x`(空间量尺,与帧率无关)—— 保证 ① 那份新值
+        //      真的到了屏幕上,而不是被 CSS 过渡拖在半路。
         //
-        // 老实说一句它的**强度边界**:这是**性质守卫**,不是变异诱饵。补间器回到可见有
-        // 两条冗余的追平路径(重建分支;以及「值变了 ⇒ start → tick → paint」这条普通路径),
-        // 把其中任一条单独摘掉,另一条仍会把 DOM 拉到当前值 —— 实测摘掉隐藏分支的清理
-        // 它照样绿。留着它是为了守住「转一圈回来画的是现在的数据」这条**结果**,
-        // 真要哪天两条路一起坏了(比如 paint 被条件挡死),它才是唯一会红的那条。
+        // ⚠ **单靠 ② 是不够的**,这一点上一版写错了:若重新接管压根没做对,`--x` 与渲染
+        // 位置会**一起**停在旧值上,drift ≈ 0 照样绿。所以必须有 ① 去钉「值是新的」,
+        // ② 只回答「新值有没有到屏幕上」。为此切回之后**显式写一个已知 pan** 再断 ——
+        // 隐藏期那段 ±70 的铺垫对这两条其实都不加区分力(它只保证隐藏期数据在动)。
+        const KNOWN_PAN = -95;
+        await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (mk && typeof mk.setTrackManual === "function") {
+                mk.setTrackManual(1, "pan", ${KNOWN_PAN});
+            }
+            return true;
+        `),
+        );
+        await sleep(400);
         const back = await evaluate(
             IN(`
             const dg = w.__SCVB_OUTPUT__.distMotion();
             const cont = q(".dist-bars");
             const bars = all(".dist-bar");
             let drift = -1;
+            let n = 0;
             if (cont && bars.length) {
                 const cr = cont.getBoundingClientRect();
                 let mx = 0;
@@ -580,20 +608,30 @@ try {
                         ((r.left + r.width / 2 - cr.left) / cr.width) * 100;
                     if (Number.isFinite(written) && cr.width > 0) {
                         mx = Math.max(mx, Math.abs(rendered - written));
+                        n += 1;
                     }
                 }
-                drift = mx;
+                drift = n > 0 ? mx : -1;
             }
-            return { shown: dg.shown.length, bars: bars.length, drift };
+            const ch1 = dg.shown && dg.shown[0] ? dg.shown[0].pan : null;
+            return { shown: dg.shown.length, bars: bars.length, drift, n, ch1 };
         `),
         );
         check(
             back.shown > 0,
             `切回分布档后补间器重新接管(shown ${back.shown} 行,DOM ${back.bars} 根柱)`,
         );
+        // ① 值是**新的**:切回之后写进去的那个已知 pan 真的到了补间器手里。
+        //    重新接管没做对的话,这里会是 null(shown 还是空)或旧值。
+        check(
+            back.ch1 === KNOWN_PAN,
+            `切回后补间器吃到的是切回之后写的新值(实得 ${back.ch1},期望 ${KNOWN_PAN})`,
+        );
+        // ② 新值到了**屏幕上**:渲染位置 == 写入的 --x。
+        check(back.n > 0, `有柱参与渲染面比较(${back.n} 根)`);
         check(
             back.drift >= 0 && back.drift < 1.5,
-            `切回后屏幕上画的是当前数据(渲染 vs 写入偏差 ${back.drift.toFixed(2)} 个百分点,阈值 1.5)`,
+            `切回后屏幕上画的就是那个新值(渲染 vs 写入偏差 ${back.drift.toFixed(2)} 个百分点,阈值 1.5)`,
         );
         assertClean("视图切换");
     }

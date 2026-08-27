@@ -2507,9 +2507,16 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
                     !/transition:\s*all/.test(rule),
                     `${sel} 不用 transition: all —— 几何进过渡集会把 rAF 补间叠成 300ms 低通`,
                 );
+                // 取**整条声明**再断,不能只断「以 opacity 开头」:
+                // `transition: opacity .3s, left .3s;` 会同时通过上面那条 `!all` 和一个
+                // 只看开头的正则 —— 而多出来的 `left` 正是要挡的那种回归。
+                const decl = (rule.match(/transition:([^;]*);/) || [, ""])[1];
                 check(
-                    /transition:\s*opacity/.test(rule),
-                    `${sel} 的过渡只覆盖 opacity(几何一律不进过渡集)`,
+                    /\bopacity\b/.test(decl) &&
+                        !/\b(all|left|top|right|bottom|width|height|inset|margin|transform)\b/.test(
+                            decl,
+                        ),
+                    `${sel} 的过渡集里只有 opacity、没有任何几何属性(实得 "${decl.trim()}")`,
                 );
             }
         }

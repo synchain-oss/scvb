@@ -242,10 +242,17 @@ export function createDistMotion(opts) {
             : Date.now();
     }
 
-    /** 结构变了才走:重拼 innerHTML 并重新缓存节点。 */
-    function rebuild() {
+    /**
+     * 结构变了才走:重拼 innerHTML 并重新缓存节点。
+     *
+     * `width` 由调用方传:重建之后紧跟着的那次 `paint()` 会自己再取一次 getter,
+     * 两次之间 width 完全可能变(滑杆正在拖)。终态一致,但拼串那一版会是旧值 ——
+     * 与 `paint()` 里立的「同一帧逐字节同一个 width」不是一回事。传参把两处钉成一个数。
+     */
+    function rebuild(width) {
         if (!container) return;
-        const html = distBarsHtml(shown, hi, getGlobalWidthPct());
+        const w = Number.isFinite(width) ? width : getGlobalWidthPct();
+        const html = distBarsHtml(shown, hi, w);
         if (container.innerHTML !== html) container.innerHTML = html;
         bars = [];
         spans = [];
@@ -373,7 +380,9 @@ export function createDistMotion(opts) {
                 shown = list.map(copyRow);
                 t0 = t;
                 stop();
-                rebuild();
+                // 一个 width 贯穿「重拼 + 立刻画」这一拍
+                const w = getGlobalWidthPct();
+                rebuild(w);
                 if (isVisible()) paint();
                 return;
             }
@@ -381,7 +390,7 @@ export function createDistMotion(opts) {
                 // 高亮只改 `data-hi`,不动下标对齐 —— 重拼一次(用**当前显示值**拼,
                 // 免得 hover 的瞬间把补间中的柱弹回目标位),补间照旧往下走。
                 hi = nextHi;
-                rebuild();
+                rebuild(getGlobalWidthPct());
             }
             if (getGlobalWidthPct() !== lastPaintedWidth) {
                 // 只拧了滑杆:每轨三条值一个没变,下面的 `sameDistValues` 会早退 ——
