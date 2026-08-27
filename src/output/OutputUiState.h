@@ -17,6 +17,10 @@
 
 #include <juce_data_structures/juce_data_structures.h>
 
+#include <string>
+
+#include "state/FeaturesCodec.h" // isValidSessionGuid(不可信 state 字节的 guid 形状校验)
+
 namespace scvb::output
 {
 
@@ -60,6 +64,41 @@ inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
     flags.tourSeen = static_cast<bool>(apvtsState.getProperty(kUiTourSeenProp, false));
     flags.langChosen = static_cast<bool>(apvtsState.getProperty(kUiLangChosenProp, false));
     return flags;
+}
+
+// [SL-215] 会话 GUID —— sidecar 文件名隔离的根基(<basename>-<GUID前8>.scvbfeat,04 §5.x)。
+// 它此前**根本没有生产落点**:桥面快照里写死一串全零字面量(OutputEditor 的 `session_guid`),
+// 设置页于是恒显示 session 00000000-0000-0000-0000-000000000000。
+//
+// **生成点只有一处**:`ScvbOutputAudioProcessor` 构造期的 `juce::Uuid().toDashedString()`,
+// 口径见 STATE_SCHEMA §4.3(该节点名的就是 juce::Uuid)。注意 `SidecarStore` 里另有一个
+// `generateSessionGuid()` —— 它产出的也是合法 dashed v4 UUID,但**不是**本 GUID 的生成点,
+// 目前只在 SidecarStore 内部(CoW 换新 GUID)被用到;别把两者当成同一个入口。
+//
+// 落在 PRMS 根节点属性面上,理由与上面三个 ui_ 位逐字相同:CFGS 是定长枚举式解码,尾部追加
+// 字段会让旧构建整块拒载并静默把配置打回默认;ValueTree 增删字段两个方向都容忍,无需升 abi、
+// 无需迁移函数,也就不动 STATE_SCHEMA 的冻结布局。
+inline const juce::Identifier kSessionGuidProp{"session_guid"};
+
+inline void writeSessionGuid(juce::ValueTree& apvtsState, const juce::String& guid)
+{
+    if (!apvtsState.isValid())
+    {
+        return;
+    }
+    apvtsState.setProperty(kSessionGuidProp, guid, nullptr);
+}
+
+// 读回并**校验形状**:state 字节不可信(§7.3),而这个 guid 会被 SidecarStore 拿去拼路径。
+// 非 36 字符 dashed UUID 一律当「没有」处理,由调用方重新生成 —— 绝不把畸形串带进文件名。
+inline juce::String readSessionGuid(const juce::ValueTree& apvtsState)
+{
+    if (!apvtsState.isValid())
+    {
+        return {};
+    }
+    const juce::String guid = apvtsState.getProperty(kSessionGuidProp, juce::String()).toString();
+    return scvb::state::isValidSessionGuid(guid.toStdString()) ? guid : juce::String();
 }
 
 } // namespace scvb::output

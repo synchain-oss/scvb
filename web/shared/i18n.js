@@ -56,7 +56,7 @@ export const T = {
         analyze: "分析",
         output: "输出",
         followHost: "跟随宿主",
-        engineDrive: "引擎驱动",
+        engineDrive: "写入自动化",
         version: "版本",
         priority: "优先级",
         leadLock: "主唱锁中",
@@ -116,16 +116,16 @@ export const T = {
             "此工程由更新版本的 SCVB 保存,请升级插件(本机 abi {a} / 工程 abi {b})",
         "banner.abiMismatch":
             "两端 SCVB 版本不匹配,已拒绝连接(Output abi {a} / Input abi {b})——请把两个插件升到同一版本",
-        "banner.printGuard": "输出开关处于引擎驱动状态(随工程恢复)",
-        "banner.printGuard.confirm": "继续引擎驱动",
+        "banner.printGuard": "输出开关处于写入自动化状态(随工程恢复)",
+        "banner.printGuard.confirm": "继续写入自动化",
         "out.master.writeConfirm":
-            "引擎驱动 {v} · 范围 {x}–{y} · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存",
-        "footer.printing": "引擎驱动 {v} · {x}–{y}",
+            "写入自动化 {v} · 范围 {x}–{y} · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存",
+        "footer.printing": "写入自动化 {v} · {x}–{y}",
         "footer.printDone":
             "本次录制覆盖 {x}–{y};若在录制自动化,建议切回跟随宿主试听核对",
         "out.master.writeConfirm.follow":
-            "引擎驱动 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放已分析区域将覆盖其已有自动化;未激活则仅试听、不保存",
-        "footer.printing.follow": "引擎驱动 {v} · 全曲跟随(已分析区域内)",
+            "写入自动化 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放已分析区域将覆盖其已有自动化;未激活则仅试听、不保存",
+        "footer.printing.follow": "写入自动化 {v} · 全曲跟随(已分析区域内)",
         "footer.printDone.follow":
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
         "wave.diffKept": "{k} 处手动编辑/锁定段已保留",
@@ -235,7 +235,7 @@ export const T = {
             "离线计算每个乐句的声像 / 音量方案;点击前可以先预览采集范围,手动编辑或锁定的段落会被保留。",
         "tour.step7.title": "第三步:输出",
         "tour.step7.body":
-            "切到「引擎驱动」后,参数由分析结果自动驱动;要把参数录成自动化,请在 DAW 侧打开 Latch 或 Write。",
+            "切到「写入自动化」后,参数由分析结果自动驱动;要把参数录成自动化,请在 DAW 侧打开 Latch 或 Write。",
         "tour.step12.title": "声像 / 音量分布",
         "tour.step12.body":
             "这是全体轨道的声像与音量的实时状态:柱高 = 音量,横位 = 声像;横向细线 = 立体声源的张开度与角度域曲线。",
@@ -295,7 +295,7 @@ export const T = {
             "查看分析结果、调整分段;上方是泳道曲线,下方是工具条;拖动、框选、缩放都在这页完成。",
         "tour.step34.title": "下方面板与操作",
         "tour.step34.body":
-            "框选泳道建立选区;拖拽边界微调分段;用滚轮或底部缩放条缩放 / 平移;双击可分割,选中段可合并。",
+            "框选泳道建立选区;拖拽边界微调分段。滚轮:裸滚=左右平移,Shift=上下平移,Ctrl=横向缩放,Alt=改泳道高度(底部缩放条同效)。双击段内=在此分割,双击段与段之间的分界线=删掉它、把左右两段并成一段;选中相邻两段也可合并。",
         "tour.step32.title": "泳道区",
         "tour.step32.body":
             "已为你放大泳道:每条泳道叠着 pan / vol 阶梯曲线,播放头随走带移动;上排 pan(声像)、下排 vol(音量)",
@@ -559,7 +559,7 @@ export const T = {
         // EN/FR 为 T35 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "set.usage.eyebrow": "使用说明",
         "set.usage.workflow":
-            "采集 → 分析 → 输出。开启采集并播放,插件记录每条轨的响度特征;分析在离线状态下算出每个乐句的声像/音量方案;输出切到「引擎驱动」后由插件驱动参数,在 DAW 侧开启 Latch 或 Write 模式以录制为自动化轨道。",
+            "采集 → 分析 → 输出。开启采集并播放,插件记录每条轨的响度特征;分析在离线状态下算出每个乐句的声像/音量方案;输出切到「写入自动化」后由插件驱动参数,在 DAW 侧开启 Latch 或 Write 模式以录制为自动化轨道。",
         "set.usage.docs": "文档",
 
         // ---- [J78] 「手动接管与自动化」说明块(05 §2.4;Tab4「使用说明」块之后)----
@@ -624,6 +624,7 @@ export const T = {
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "取消",
+        "common.confirm": "确认",
         "common.gotIt": "知道了",
         // 宿主自动化正在驱动这些参数时的解释(v5.1 P1-D:优先级是设计,缺的是「看得见」)。
         "master.hostEchoHint":
@@ -887,7 +888,7 @@ export const T = {
         analyze: "Analyze",
         output: "Output",
         followHost: "FOLLOW HOST",
-        engineDrive: "ENGINE DRIVE",
+        engineDrive: "WRITE AUTOMATION",
         version: "Version",
         priority: "Priority",
         leadLock: "Lead Lock",
@@ -950,16 +951,17 @@ export const T = {
         "banner.abiMismatch":
             "SCVB version mismatch — connection refused (Output abi {a} / Input abi {b}). Update both plug-ins to the same version.",
         "banner.printGuard":
-            "Output is in ENGINE DRIVE (restored with project)",
-        "banner.printGuard.confirm": "Continue engine drive",
+            "Output is in WRITE AUTOMATION (restored with project)",
+        "banner.printGuard.confirm": "Continue write automation",
         "out.master.writeConfirm":
-            "Engine drive {v} · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
-        "footer.printing": "ENGINE DRIVE {v} · {x}–{y}",
+            "Write automation {v} · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
+        "footer.printing": "WRITE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
         "out.master.writeConfirm.follow":
-            "Engine drive {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
-        "footer.printing.follow": "ENGINE DRIVE {v} · FOLLOW (ANALYZED AREAS)",
+            "Write automation {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
+        "footer.printing.follow":
+            "WRITE AUTOMATION {v} · FOLLOW (ANALYZED AREAS)",
         "footer.printDone.follow":
             "This pass covered the analyzed areas. If you were recording automation, switch back to Follow Host to check.",
         "wave.diffKept": "{k} edited/locked segments preserved",
@@ -1062,7 +1064,7 @@ export const T = {
             "Computes a pan/level plan for every phrase offline. Preview the capture range before you commit; edited or locked segments are preserved.",
         "tour.step7.title": "Step 3 — Output",
         "tour.step7.body":
-            "Switch to ENGINE DRIVE and the parameters are driven by the analysis result. To record them as automation, arm Latch or Write on the DAW side.",
+            "Switch to WRITE AUTOMATION and the parameters are driven by the analysis result. To record them as automation, arm Latch or Write on the DAW side.",
         "tour.step12.title": "Pan / level distribution",
         "tour.step12.body":
             "The live pan and level of all tracks: bar height = level, horizontal position = pan; the horizontal line = the stereo source spread and the angle-domain curve.",
@@ -1124,7 +1126,7 @@ export const T = {
             "Review results and adjust segments; lane curves on top, toolbar below; drag, box-select and zoom all happen here.",
         "tour.step34.title": "Bottom panel and actions",
         "tour.step34.body":
-            "Box-select lanes to make a selection; drag boundaries to fine-tune segments; wheel or bottom zoom bar to zoom/scroll; double-click to split, select two adjacent segments to merge.",
+            "Box-select lanes to make a selection; drag boundaries to fine-tune segments. Wheel: plain = pan left/right, Shift = pan up/down, Ctrl = zoom horizontally, Alt = change lane height (the bottom zoom bars do the same). Double-click inside a segment to split it there; double-click the divider between two segments to delete it and merge them; selecting two adjacent segments also merges.",
         "tour.step32.title": "Lane area",
         "tour.step32.body":
             "The lanes are zoomed in for you: each lane stacks the pan/vol step curves, and the playhead follows the transport; the top row is pan, the bottom row is vol.",
@@ -1377,7 +1379,7 @@ export const T = {
         // ---- T35 新增(EN 自译,待人工审校)----
         "set.usage.eyebrow": "USAGE",
         "set.usage.workflow":
-            "Capture → Analyze → Output. Turn on capture and play; the plug-in records each track's loudness features. Analysis computes a pan/level plan for every phrase offline. Switch Output to ENGINE DRIVE and the plug-in drives the parameters; enable Latch or Write mode in your DAW to record them as an automation track.",
+            "Capture → Analyze → Output. Turn on capture and play; the plug-in records each track's loudness features. Analysis computes a pan/level plan for every phrase offline. Switch Output to WRITE AUTOMATION and the plug-in drives the parameters; enable Latch or Write mode in your DAW to record them as an automation track.",
         "set.usage.docs": "Docs",
 
         // ---- [J78] 手动接管与自动化说明块(EN 自译,待人工审校;口径见 zh 侧同组注释)----
@@ -1446,6 +1448,7 @@ export const T = {
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "Cancel",
+        "common.confirm": "Confirm",
         "common.gotIt": "Got it",
         "master.hostEchoHint":
             "This parameter is being driven by host automation. To change it by hand, turn off Read on that track's automation, or switch it to Write.",
@@ -1669,7 +1672,7 @@ export const T = {
         analyze: "Analyser",
         output: "Sortie",
         followHost: "SUIVI HÔTE",
-        engineDrive: "PILOTAGE MOTEUR",
+        engineDrive: "ÉCRITURE AUTOMATION",
         version: "Version",
         priority: "Priorité",
         leadLock: "Verrou lead",
@@ -1731,17 +1734,17 @@ export const T = {
         "banner.abiMismatch":
             "Versions SCVB incompatibles — connexion refusée (abi Output {a} / abi Input {b}). Mettez les deux plug-ins à la même version.",
         "banner.printGuard":
-            "La sortie est en PILOTAGE MOTEUR (restauré avec le projet)",
-        "banner.printGuard.confirm": "Continuer le pilotage moteur",
+            "La sortie est en ÉCRITURE AUTOMATION (restauré avec le projet)",
+        "banner.printGuard.confirm": "Continuer l'écriture d'automation",
         "out.master.writeConfirm":
-            "Pilotage moteur {v} · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
-        "footer.printing": "PILOTAGE MOTEUR {v} · {x}–{y}",
+            "Écriture d'automation {v} · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
+        "footer.printing": "ÉCRITURE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "out.master.writeConfirm.follow":
-            "Pilotage moteur {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
+            "Écriture d'automation {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
         "footer.printing.follow":
-            "PILOTAGE MOTEUR {v} · SUIVI (ZONES ANALYSÉES)",
+            "ÉCRITURE AUTOMATION {v} · SUIVI (ZONES ANALYSÉES)",
         "footer.printDone.follow":
             "Cette passe a couvert les zones analysées. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "wave.diffKept": "{k} segments modifiés/verrouillés préservés",
@@ -1846,7 +1849,7 @@ export const T = {
             "Calcule hors ligne un plan pan/volume pour chaque phrase. Prévisualisez la plage de capture avant de valider ; les segments modifiés ou verrouillés sont préservés.",
         "tour.step7.title": "Étape 3 — Sortie",
         "tour.step7.body":
-            "Passez en PILOTAGE MOTEUR et les paramètres sont pilotés par le résultat de l'analyse. Pour les enregistrer en automation, armez Latch ou Write côté DAW.",
+            "Passez en ÉCRITURE AUTOMATION et les paramètres sont pilotés par le résultat de l'analyse. Pour les enregistrer en automation, armez Latch ou Write côté DAW.",
         "tour.step12.title": "Répartition pan / volume",
         "tour.step12.body":
             "L'état temps réel du pan et du volume de toutes les pistes : hauteur = volume, position horizontale = pan ; la fine ligne horizontale = l'ouverture de la source stéréo et la courbe angulaire.",
@@ -1909,7 +1912,7 @@ export const T = {
             "Vérifiez les résultats et ajustez les segments ; courbes des pistes en haut, barre d'outils en bas ; glisser, sélectionner par rectangle, zoomer se font ici.",
         "tour.step34.title": "Panneau inférieur et actions",
         "tour.step34.body":
-            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments ; molette ou barre de zoom pour zoomer/défiler ; double-clic pour diviser, sélectionnez deux segments adjacents pour fusionner.",
+            "Tracez une sélection sur les pistes ; glissez les limites pour ajuster les segments. Molette : seule = défilement horizontal, Maj = défilement vertical, Ctrl = zoom horizontal, Alt = hauteur des pistes (les barres de zoom font de même). Double-clic dans un segment pour le diviser ; double-clic sur la limite entre deux segments pour la supprimer et les fusionner ; sélectionner deux segments adjacents fusionne aussi.",
         "tour.step32.title": "Zone de pistes",
         "tour.step32.body":
             "Les pistes sont agrandies pour vous : chaque piste superpose les courbes en escalier pan/vol, la tête de lecture suit le transport ; rangée du haut = pan, du bas = vol.",
@@ -2172,7 +2175,7 @@ export const T = {
         // ---- T35 新增(FR 自译,待人工审校)----
         "set.usage.eyebrow": "MODE D'EMPLOI",
         "set.usage.workflow":
-            "Capture → Analyser → Sortie. Activez la capture et lancez la lecture ; le plug-in enregistre les caractéristiques de loudness de chaque piste. L'analyse calcule un plan pan/volume pour chaque phrase hors ligne. Passez la sortie en PILOTAGE MOTEUR pour que le plug-in pilote les paramètres ; activez le mode Latch ou Write dans votre DAW pour les enregistrer comme piste d'automation.",
+            "Capture → Analyser → Sortie. Activez la capture et lancez la lecture ; le plug-in enregistre les caractéristiques de loudness de chaque piste. L'analyse calcule un plan pan/volume pour chaque phrase hors ligne. Passez la sortie en ÉCRITURE AUTOMATION pour que le plug-in pilote les paramètres ; activez le mode Latch ou Write dans votre DAW pour les enregistrer comme piste d'automation.",
         "set.usage.docs": "Documentation",
 
         // ---- [J78] 手动接管与自动化说明块(FR 自译,待人工审校;口径见 zh 侧同组注释)----
@@ -2242,6 +2245,7 @@ export const T = {
         // 立项理由与逐条出处见 scratchpad/t31/deviations.md「新增词条」节;
         // EN/FR 为 T31 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "common.cancel": "Annuler",
+        "common.confirm": "Confirmer",
         "common.gotIt": "Compris",
         "master.hostEchoHint":
             "Ce paramètre est piloté par l'automation de l'hôte. Pour le modifier à la main, désactivez Read sur l'automation de cette piste, ou passez-la en Write.",

@@ -141,7 +141,7 @@ Input 是单页:channel 选择、组选择、连接状态、电平、直通/静�
 - 引擎只打印 **30 条**(15 轨 × pan/vol)。width / MS Balance / Lead Select 你可以自己自动化,引擎不打印它们,也不会去改写它们 —— **这三条始终以你 DAW 里的值为准**。
 - 输出开关 **ON** 时,那 30 条的 DSP 直接用引擎值(参数只是对外的打印头);**OFF** 时 DSP 用宿主参数值。
 - 切版本、复制版本、改段值、关输出开关,**都不会**产生宿主自动化事件。
-- 重开一个 `output_enabled=ON` 的工程时会有加载守卫横幅:在你点"继续引擎驱动"之前,插件只备而不发,**一个 gesture 都不会写出去**。
+- 重开一个 `output_enabled=ON` 的工程时会有加载守卫横幅:在你点"继续写入自动化"之前,插件只备而不发,**一个 gesture 都不会写出去**。
 - 逐 DAW 的坑(Cubase 车道位置、REAPER 关 GUI 不写、Pro Tools 循环只录第一遍等)见 [DAW_COMPATIBILITY.md](DAW_COMPATIBILITY.md)。
 
 ## Pan 曲线编辑器

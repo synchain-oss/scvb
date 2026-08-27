@@ -1205,7 +1205,14 @@ TEST_CASE("claimOutput 接管判定四格(J10 双条件)", "[ipc][lifecycle][tak
     }
 }
 
-TEST_CASE("第二个 Output 同 pid 重认领不清 mask / 异 pid 活跃 O3", "[ipc][lifecycle]")
+// [SL-210] 本用例此前把「同 pid 的**另一个** Registry 也拿到 kClaimed」写成了期望,等于把缺陷
+// 钉成了契约:真实 DAW 里同一宿主进程的两个 Output 实例 pid 相同,于是同组同 bus 挂第二个
+// Output 时两个实例都成了 kActive 主实例(都替换总线、都写 viz/广播、都打印自动化)。
+// 「同 pid 重认领不清 mask」这条意图针对的是**同一个实例**重新 prepare(采样率切换),
+// 因此下面改用同一个 Registry 对象来验证 —— 那才是它原本要保护的场景。
+// 对照:claimInput 早在 v10 就废掉了「同 pid 刷新接管」(见 Registry.cpp 内注:复制轨道带来的
+// 同 channel 复制体会抢走原实例的槽),Output 侧只是一直没跟上同一条纪律。
+TEST_CASE("同一实例重认领不清 mask / 同 pid 另一实例与异 pid 均 O3", "[ipc][lifecycle]")
 {
     scvb::SegmentBackendInProcess::resetAll();
     scvb::SegmentBackendInProcess backend;
@@ -1218,17 +1225,83 @@ TEST_CASE("第二个 Output 同 pid 重认领不清 mask / 异 pid 活跃 O3", "
     REQUIRE(a.connectedMask() == (1u << 2));
     REQUIRE(a.configSeq() == 1);
 
-    // 同 pid 重认领:只刷新 pid/心跳,不清 mask、不清 config_seq。
+    // 同一实例重认领(采样率切换):只刷新 pid/心跳,不清 mask、不清 config_seq。
+    REQUIRE(a.claimOutput(2001, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.connectedMask() == (1u << 2));
+    REQUIRE(a.configSeq() == 1);
+
+    // 同 pid 的另一个实例(同一 DAW 里挂的第二个 Output)→ kConflict,退观察者。
     scvb::Registry b(backend, 1);
     REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
-    REQUIRE(b.claimOutput(2001, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
-    REQUIRE(a.connectedMask() == (1u << 2));
+    REQUIRE(b.claimOutput(2001, kT0 + 200) == scvb::Registry::ClaimResult::kConflict);
+    REQUIRE(a.connectedMask() == (1u << 2)); // 主实例的拓扑判定未被打掉
     REQUIRE(a.configSeq() == 1);
 
     // 异 pid 活跃 → kConflict(只读观察 O3 机制)。
     scvb::Registry c(backend, 1);
     REQUIRE(c.open() == scvb::Registry::ClaimResult::kClaimed);
-    REQUIRE(c.claimOutput(2002, kT0 + 200) == scvb::Registry::ClaimResult::kConflict);
+    REQUIRE(c.claimOutput(2002, kT0 + 300) == scvb::Registry::ClaimResult::kConflict);
+    REQUIRE(a.outputSlot()->pid == 2001);
+
+    // 非属主 release 是空操作:同 pid 的 b 一析构就把主实例的 slot 释放掉的话,
+    // 主实例会在毫不知情的情况下失去 slot(旧 releaseOutput 只比 pid)。
+    b.releaseOutput(2001);
+    REQUIRE(a.outputSlot()->state.load() == scvb::kSlotActive);
+    REQUIRE(a.outputSlot()->pid == 2001);
+}
+
+// [SL-210] 属主位必须在 release 成功时**就地清掉**,否则 SL-210 在「主实例被 releaseResources
+// → 同 pid 兄弟接管 → 主实例重新 prepare」这条相邻时序里原样复发(#127 两个审查 bot 同时指出)。
+// OutputSession::releaseSlot() 是 registry_.releaseOutput() 直调,绕开了会清位的
+// releaseOwnedSlot() —— 所以清位必须落在 releaseOutput 自己身上。
+TEST_CASE("[SL-210] release 后属主位失效:同 pid 兄弟接管后原主实例不得反抢", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry b(backend, 1);
+    REQUIRE(b.open() == scvb::Registry::ClaimResult::kClaimed);
+
+    {
+        scvb::Registry a(backend, 1);
+        REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(a.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(a.ownsOutput());
+
+        // 宿主对 A 调 releaseResources() → OutputSession::releaseSlot() → releaseOutput 直调
+        // (**不经** releaseOwnedSlot)。属主位必须就地失效。
+        a.releaseOutput(2001);
+        REQUIRE(a.outputSlot()->state.load() == scvb::kSlotFree);
+        REQUIRE_FALSE(a.ownsOutput());
+
+        // 同 pid 的兄弟实例 B(同一 DAW 里的第二个 Output)接管空槽。
+        REQUIRE(b.claimOutput(2001, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
+        REQUIRE(b.outputSlot()->state.load() == scvb::kSlotActive);
+
+        // A 重新 prepare:属主位已失效 → 必须是 kConflict(退观察者),不得反抢 B 的 slot。
+        REQUIRE(a.claimOutput(2001, kT0 + 200) == scvb::Registry::ClaimResult::kConflict);
+        REQUIRE(b.outputSlot()->state.load() == scvb::kSlotActive);
+    } // A 析构走 releaseOwnedSlot:陈旧属主位的第二条复发路径,同样不得释放 B 的 slot
+
+    REQUIRE(b.outputSlot()->state.load() == scvb::kSlotActive);
+    REQUIRE(b.outputSlot()->pid == 2001);
+}
+
+// 反向:属主自己释放后槽仍空时,重新认领必须照常成功(清属主位不能把正当续期一起挡死)。
+TEST_CASE("[SL-210] 反向:release 后槽仍空,同实例重新认领照常成功", "[ipc][lifecycle]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    scvb::Registry a(backend, 1);
+    REQUIRE(a.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.claimOutput(2001, kT0) == scvb::Registry::ClaimResult::kClaimed);
+    a.releaseOutput(2001);
+    REQUIRE(a.outputSlot()->state.load() == scvb::kSlotFree);
+
+    // 无人抢占 → 走 kSlotFree 分支重新认领。
+    REQUIRE(a.claimOutput(2001, kT0 + 100) == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(a.outputSlot()->state.load() == scvb::kSlotActive);
     REQUIRE(a.outputSlot()->pid == 2001);
 }
 

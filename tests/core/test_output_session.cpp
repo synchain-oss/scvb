@@ -56,6 +56,92 @@ TEST_CASE("第二个 Output → O3 observer(只读观察)", "[output][session]")
     REQUIRE(b.state() == OutputClaimState::kObserver);
 }
 
+// [SL-210] 上面那条用的是**两个不同 pid**,而真实 DAW 里同一宿主进程的两个 Output 实例
+// pid 是同一个 —— 正是这个盲点让「同 pid 重认领」分支把第二个实例也放成了 kActive。
+TEST_CASE("[SL-210] 同进程(同 pid)第二个 Output → observer,不是第二个主实例", "[output][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kHostPid = 4242; // 同一个 DAW 进程
+
+    OutputSession a(backend, kHostPid);
+    REQUIRE(a.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+
+    OutputSession b(backend, kHostPid); // 同 bus 插入的第二个 Output:同组、同 pid
+    REQUIRE(b.prepare(48000, 512, 1100) == OutputClaimState::kObserver);
+    b.tick(1200);
+    REQUIRE(b.state() == OutputClaimState::kObserver);
+
+    // 主实例不受影响:仍是 slot 属主(observer 既没抢走 slot,也没把 pid 改写成自己)。
+    REQUIRE(a.state() == OutputClaimState::kActive);
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(probe.outputSlot()->state.load() == kSlotActive);
+    REQUIRE(probe.outputSlot()->pid == kHostPid);
+
+    // observer 不得注入:injectMask 恒 0 → processBlock 走直通,不替换总线。
+    REQUIRE(b.injectMask() == 0);
+}
+
+// 反向验证①:同一个实例重新 prepare(采样率切换 / 宿主重开)必须仍拿到 kActive ——
+// ownsOutput_ 这一条不能把正当续期一起挡掉。
+TEST_CASE("[SL-210] 反向:同实例重 prepare(采样率切换)仍 kActive", "[output][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kHostPid = 4242;
+    OutputSession a(backend, kHostPid);
+    REQUIRE(a.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+    // 采样率切换 → 宿主再调一次 prepareToPlay。
+    REQUIRE(a.prepare(44100, 256, 1100) == OutputClaimState::kActive);
+    REQUIRE(a.prepare(96000, 1024, 1200) == OutputClaimState::kActive);
+    REQUIRE(a.state() == OutputClaimState::kActive);
+}
+
+// 反向验证②:删掉 observer 不能动主实例的 slot(旧 releaseOutput 只比 pid,同 pid 的
+// observer 一析构就会把主实例的 slot 释放掉)。
+TEST_CASE("[SL-210] 反向:observer 析构不释放主实例 slot", "[output][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kHostPid = 4242;
+    OutputSession a(backend, kHostPid);
+    REQUIRE(a.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+
+    {
+        OutputSession b(backend, kHostPid);
+        REQUIRE(b.prepare(48000, 512, 1100) == OutputClaimState::kObserver);
+    } // b 析构:releaseSlot + Registry::releaseOwnedSlot 都不该碰 slot
+
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(probe.outputSlot()->state.load() == kSlotActive); // 仍活跃,没被释放成 kSlotFree
+    REQUIRE(probe.outputSlot()->pid == kHostPid);
+    REQUIRE(a.state() == OutputClaimState::kActive);
+}
+
+// 反向验证③:主实例走掉后,同 pid 的 observer 必须能在 25Hz tick 上接管(否则这条修复
+// 会把「删掉第一个 Output」变成整组失去主实例)。
+TEST_CASE("[SL-210] 反向:主实例释放后 observer 接管", "[output][session]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    constexpr u32 kHostPid = 4242;
+    OutputSession b(backend, kHostPid);
+    {
+        OutputSession a(backend, kHostPid);
+        REQUIRE(a.prepare(48000, 512, 1000) == OutputClaimState::kActive);
+        REQUIRE(b.prepare(48000, 512, 1100) == OutputClaimState::kObserver);
+    } // a 析构 → slot 归还
+
+    b.tick(1200); // observer 的 25Hz 重试 claim
+    REQUIRE(b.state() == OutputClaimState::kActive);
+}
+
 TEST_CASE("[J32] 200ms 注入延迟:muted 前不注入、≥200ms 后注入", "[output][session]")
 {
     scvb::SegmentBackendInProcess::resetAll();

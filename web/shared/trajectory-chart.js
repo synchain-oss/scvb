@@ -66,6 +66,7 @@ import {
 import { createLayerStack } from "../output/canvas/layers.js";
 import { createPlayhead } from "../output/canvas/playhead.js";
 import { resolveTrackPalette, rgbaOf, trackIndex } from "./track-colors.js";
+import { wheelPx } from "./wheel.js";
 
 // =============================================================================
 // 一、纯函数(无 DOM,node 可直接 import 断言)
@@ -111,11 +112,9 @@ export const PAN_VIEW_FULL = Object.freeze({ lo: PAN_MIN, hi: PAN_MAX });
 /** 单步纵向缩放倍率 —— 与时间轴同一手感(两轴共用 ZOOM_STEP)。 */
 export const PAN_ZOOM_STEP = ZOOM_STEP;
 
-/**
- * `deltaMode === 1`(按行)时一行折算多少 CSS px。取 16 —— 与本页正文行高同量级;
- * 精确值无所谓,要紧的是别把「按行」当「按像素」直接用(那样一格滚轮只挪 3px)。
- */
-export const WHEEL_LINE_PX = 16;
+// 滚轮归一化(deltaMode 分档 + 主轴取大)与 Tab3 泳道**同一份**,见 shared/wheel.js。
+// 两处原先各写了一份逐字同义的实现,抽走免得下次只修一边(SL-205 复审建议③)。
+export { WHEEL_LINE_PX } from "./wheel.js";
 
 /** y 轴刻度的候选步长(粗 → 细);缩放档越深取越细的那一档。 */
 export const PAN_TICK_STEPS = Object.freeze([50, 25, 20, 10, 5, 2, 1]);
@@ -765,22 +764,12 @@ export function createTrajectoryChart(opts) {
     }
 
     /**
-     * 滚轮增量 → **CSS px**(一个数,正 = 向下/向右)。
-     *
-     * 两件必须归一化的事:
-     *   • **轴**:取绝对值大的那一路。鼠标滚轮给 `deltaY`;触控板横向双指给 `deltaX`
-     *     (本图里横向滑动就是横向平移,天然对上);而 Shift+滚轮在 Chromium 系会被
-     *     **改写成横向滚动** —— 值落到 `deltaX`、`deltaY` 归零,Firefox 则仍走 `deltaY`。
-     *     取主轴对三种来源都成立,不必逐浏览器分支。
-     *   • **单位**:`deltaMode` 可能是行(1)或页(2)。不折成 px 的话,同一次滚动在
-     *     不同浏览器/设备上跨度差两个数量级 —— 平移会从「挪一点」变成「跳一屏」。
+     * 滚轮增量 → **CSS px**(轴与单位的归一化口径见 shared/wheel.js)。
+     * 本图的「一页」= 自己的舞台宽(一屏),故把 stageW 传进去;泳道页没有天然的
+     * 「一页」概念,用那边的常量档。
      */
     function wheelDelta(e) {
-        const raw =
-            Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-        if (e.deltaMode === 1) return raw * WHEEL_LINE_PX;
-        if (e.deltaMode === 2) return raw * Math.max(local.stageW, 1);
-        return raw;
+        return wheelPx(e, Math.max(local.stageW, 1));
     }
 
     function wire() {
@@ -790,9 +779,11 @@ export function createTrajectoryChart(opts) {
         //   滚轮        横向平移(左右滑动)        Ctrl+滚轮   横向缩放(中心跟光标 x)
         //   Shift+滚轮  纵向平移(上下滑动)        Alt+滚轮    纵向缩放(中心跟光标 y)
         //
-        // 「裸滚轮 = 平移、Ctrl+滚轮 = 缩放」把最常用的动作放在不按键的那一档;
-        // 代价是**本图的滚轮语义自此与 Tab3 泳道分叉**(那边裸滚轮仍是缩放,05 行 319)。
-        // 是否统一留用户后续裁量 —— 本卡不擅自改 Tab3。
+        // 「裸滚轮 = 平移、Ctrl+滚轮 = 缩放」把最常用的动作放在不按键的那一档。
+        // [SL-205 2026-08-27] 这里原先记着「本图语义自此与 Tab3 泳道分叉,是否统一留
+        // 用户后续裁量」—— **已经统一了**:Tab3 那边补齐四路后与本图逐路同义
+        // (裸=横向平移 / Shift=纵向平移 / Alt=纵向缩放 / Ctrl=横向缩放),
+        // 归一化也共用了 shared/wheel.js。两处若要再改,请一起改。
         //
         // 四路**一律 preventDefault**:裸滚轮不拦会连带滚动祖先容器;Ctrl+滚轮不拦
         // 会触发浏览器页面缩放(WebView 里同理);Alt+滚轮在部分平台有默认的历史
