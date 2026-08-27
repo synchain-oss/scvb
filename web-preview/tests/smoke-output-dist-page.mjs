@@ -183,7 +183,7 @@ const exe = chromePath();
 const CDP_PORT = Number(
     argv.get("cdp") || 9400 + Math.floor(Math.random() * 400),
 );
-const userDataDir = mkdtempSync(join(tmpdir(), "scvb-output-stale-"));
+const userDataDir = mkdtempSync(join(tmpdir(), "scvb-output-dist-"));
 const chrome = spawn(
     exe,
     [
@@ -249,7 +249,6 @@ const IN = (js) => `(() => {
     const d = f && f.contentDocument;
     if (!w || !d) return null;
     const q = (s) => d.querySelector(s);
-    const gb = (n) => q('[data-gb="' + n + '"]');
     const all = (s) => Array.from(d.querySelectorAll(s));
     ${js}
 })()`;
@@ -260,43 +259,8 @@ const READY = IN(`
     return !!(m && m.distMotion() && all(".dist-bar").length > 0);
 `);
 
-const PROBE = IN(`
-    const vis = (el) => !!el && !el.hidden;
-    const lanes = [];
-    for (let ch = 1; ch <= 15; ch++) {
-        const n = gb("wave-lane-" + ch + "-stale");
-        lanes.push({ ch: ch, present: !!n, shown: vis(n), title: n ? (n.getAttribute("title") || "") : null });
-    }
-    const banner = gb("banner-staleCapture");
-    const text = gb("banner-staleCapture-text");
-    const disabled = (name) => { const el = gb(name); return !!el && !!el.disabled; };
-    return {
-        banner: vis(banner),
-        bannerDisplay: banner ? w.getComputedStyle(banner).display : "(缺节点)",
-        bannerText: text ? text.textContent.trim() : null,
-        tabDot: vis(gb("tabnav-wave-stale-dot")),
-        lanesShown: lanes.filter((l) => l.shown).map((l) => l.ch),
-        lanesPresent: lanes.every((l) => l.present),
-        laneTitle: (lanes.find((l) => l.shown) || {}).title || "",
-        captureToggleDisabled: disabled("master-capture-toggle"),
-        outputToggleDisabled: disabled("master-output-toggle"),
-    };
-`);
-
-async function open(scenario) {
-    newBucket(scenario);
-    await cdp.send("Page.navigate", {
-        url: `${base}/web-preview/output.html?scenario=${scenario}`,
-    });
-    const ok = await waitFor(READY);
-    check(ok, `${scenario}:页面装载并吃到首帧段表`);
-    // 切到「波形与分段」页 —— 泳道 ⚠ 的显隐由 tab-wave 的 render 翻,得让它真渲染一次。
-    await evaluate(
-        IN(`const b = gb("tabnav-wave"); if (b) b.click(); return true;`),
-    );
-    await sleep(400);
-    return await evaluate(PROBE);
-}
+// 注:脚手架里那对 `PROBE` / `open()` 是从 smoke-output-stale-page 照抄来的,
+// 探的是那套的提示节点,本套一次没调 —— 已删,免得下一个人以为它们还有用。
 
 function assertClean(label) {
     check(
@@ -356,9 +320,14 @@ try {
     // =========================================================================
     log("=== ① Output 分布图:rAF 驱动,不是收到事件才画(SL-203)===");
     {
-        newBucket("printing");
+        newBucket("connected");
         await cdp.send("Page.navigate", {
-            url: `${base}/web-preview/output.html?scenario=printing`,
+            // 用**已接线**的场景名(SCENARIO_MAP 里确有 `connected` → fifteen-tracks)。
+            // 曾经写的是 `?scenario=printing` —— 那个名字在 shell 白名单里有、
+            // SCENARIO_MAP 里没有,会静默回落并 console.warn;功能上恰好够用,
+            // 但场景名与实得世界对不上。本套的数据面由探针自己用 setTrackManual 驱动,
+            // 不依赖任何走带状态。
+            url: `${base}/web-preview/output.html?scenario=connected`,
         });
         const up = await waitFor(READY);
         check(up, "页面装载并吃到首帧");
@@ -514,7 +483,7 @@ try {
             maxDrift >= 0 && maxDrift < 1.5,
             `柱子渲染位置紧跟写入值,没有被 CSS 过渡拖住(最大偏差 ${maxDrift.toFixed(2)} 个百分点,阈值 1.5)`,
         );
-        assertClean("printing 分布图补间");
+        assertClean("connected 分布图补间");
     }
 
     // =========================================================================
@@ -582,8 +551,50 @@ try {
         `),
         );
         await sleep(600);
-        const bars = await evaluate(IN(`return all(".dist-bar").length;`));
-        check(bars > 0, `切回分布档后重新出图(实得 ${bars} 根柱)`);
+        // ⚠ 这里**不能**数 DOM 里的柱子:隐藏期只清了补间器的内部状态,DOM 从没被清空,
+        // 所以 `all(".dist-bar").length > 0` 恒真 —— 重建分支一步不跑它也绿。
+        // (旧版就是这么写的,等于一条永远不会红的断言。)
+        //
+        // 真正该守的性质是:**转一圈回来之后,屏幕上画的是「现在」的数据,不是隐藏前那份**。
+        // 上面隐藏期把 pan 一直搬到 ±70,所以只要重新接管这一步没做对,柱子就会停在
+        // 隐藏前的位置上。判据仍用空间量尺(渲染位置 vs 写入值),与帧率无关。
+        //
+        // 老实说一句它的**强度边界**:这是**性质守卫**,不是变异诱饵。补间器回到可见有
+        // 两条冗余的追平路径(重建分支;以及「值变了 ⇒ start → tick → paint」这条普通路径),
+        // 把其中任一条单独摘掉,另一条仍会把 DOM 拉到当前值 —— 实测摘掉隐藏分支的清理
+        // 它照样绿。留着它是为了守住「转一圈回来画的是现在的数据」这条**结果**,
+        // 真要哪天两条路一起坏了(比如 paint 被条件挡死),它才是唯一会红的那条。
+        const back = await evaluate(
+            IN(`
+            const dg = w.__SCVB_OUTPUT__.distMotion();
+            const cont = q(".dist-bars");
+            const bars = all(".dist-bar");
+            let drift = -1;
+            if (cont && bars.length) {
+                const cr = cont.getBoundingClientRect();
+                let mx = 0;
+                for (const b of bars) {
+                    const written = parseFloat(b.style.getPropertyValue("--x"));
+                    const r = b.getBoundingClientRect();
+                    const rendered =
+                        ((r.left + r.width / 2 - cr.left) / cr.width) * 100;
+                    if (Number.isFinite(written) && cr.width > 0) {
+                        mx = Math.max(mx, Math.abs(rendered - written));
+                    }
+                }
+                drift = mx;
+            }
+            return { shown: dg.shown.length, bars: bars.length, drift };
+        `),
+        );
+        check(
+            back.shown > 0,
+            `切回分布档后补间器重新接管(shown ${back.shown} 行,DOM ${back.bars} 根柱)`,
+        );
+        check(
+            back.drift >= 0 && back.drift < 1.5,
+            `切回后屏幕上画的是当前数据(渲染 vs 写入偏差 ${back.drift.toFixed(2)} 个百分点,阈值 1.5)`,
+        );
         assertClean("视图切换");
     }
 } catch (e) {

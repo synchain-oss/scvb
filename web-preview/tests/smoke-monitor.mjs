@@ -2487,12 +2487,18 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
             // 只查**生效的声明**,先把 CSS 注释剥掉 —— 上面那段讲这个坑的注释里逐字写着
             // `transition: all`,不剥就会把自己的注释当成回归(与 ⑧ 节 `staleTimer`
             // 那条同一手法:源文本断言必须先划清「代码」与「讲代码的话」)。
+            // **先剥注释,再找规则体的 `}`**。反过来的话,注释里哪天出现一个 `}`
+            // 就会把规则截断在半路,断言从此断在一段残缺文本上 —— 而它多半还是绿的。
+            //
+            // 另注:下面只断「过渡集里除了 opacity 没有别的」,**不**断「hover 淡出会动画」——
+            // 高亮改的是 `data-hi`,那条路径走 rebuild()(整块 innerHTML 换新),新节点没有
+            // 可过渡的旧计算值,这条 opacity 过渡其实一次都不会跑。断一个不成立的事实,
+            // 等于把它写进合同。
+            const stripped = html.replace(/\/\*[\s\S]*?\*\//g, "");
             const ruleOf = (sel) => {
-                const i = html.indexOf(sel + " {");
+                const i = stripped.indexOf(sel + " {");
                 if (i < 0) return "";
-                return html
-                    .slice(i, html.indexOf("}", i))
-                    .replace(/\/\*[\s\S]*?\*\//g, "");
+                return stripped.slice(i, stripped.indexOf("}", i));
             };
             for (const sel of [".dist-bar", ".dist-span"]) {
                 const rule = ruleOf(sel);
@@ -2503,7 +2509,7 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
                 );
                 check(
                     /transition:\s*opacity/.test(rule),
-                    `${sel} 只过渡 opacity(hover 淡出仍要动画)`,
+                    `${sel} 的过渡只覆盖 opacity(几何一律不进过渡集)`,
                 );
             }
         }
