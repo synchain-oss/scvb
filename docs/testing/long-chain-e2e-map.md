@@ -29,8 +29,19 @@
 | `tests/core/test_monitor_harness.cpp`(`scvb_monitor_tests`) | Monitor 全链 | **真 Monitor processor** + 跨进程 viz peer | 真 Output(写方是 peer) |
 | `web-preview/tests/*.mjs` | 页面冒烟 | 真页面 + mock 桥 | 真段、真 native |
 
-三个 harness 都跑**真实命名共享内存段**,并发跑会互相假红 —— 跑之前取
-`C:\Users\lenovo\SCVB-TestKits\.ipc-test-lock`(`gates.ps1` 任何档位都算,gate 6 = ctest)。
+三个 harness 都跑**真实命名共享内存段**,段名只按**组号**区分、不带 run-id,所以**两个人(或两个
+agent)同时跑就会互相假红**,而且假红点常常与本次改动毫不相干(实测:一次没取锁的 `gates` 把
+`VIZ-2`「viz 段不存在时只读方拿到 kFailed」打红,而那次改动根本没碰 viz —— 并发实例留下的活段让
+「段不存在」这个前提不成立)。
+
+因此**跑之前必须取一把机器级互斥锁**(`gates.ps1` 的任何档位都算,gate 6 = ctest 会把三个套件
+一起跑掉)。锁的**位置是每台开发机自己的约定、不入库**;协议形式是「`mkdir` 型目录锁 + 锁目录内
+`owner.txt`(持有者 + ISO 时间戳 + PID)」:
+
+- `mkdir` 成功后**立刻**写 `owner.txt` —— mkdir 型锁天然是空目录,「空 = 孤儿」这条启发式必然
+  误判**正在持锁**的人;
+- 判孤儿的唯一合法依据是 `owner.txt` 的时间戳**超过 30 分钟**;
+- 释放前**核对 `owner.txt` 是自己**再 `rmdir`,绝不无条件删。
 
 ---
 
@@ -77,17 +88,24 @@ op 全集(`docs/IPC_CONTRACT.md:149`,v1 冻结)= `{kSetPriority, kFpReport}`;`kN
 
 | # | 跳 | 覆盖 | 用例 |
 |---|---|---|---|
-| C1 | **真 Output 装配 `VizPublishInput`**(轨名 `toStdString`、`leadMask`/`stereoMask`/`enabledMask` 逐位、`widthPct` 取活动版本参数句柄、`versionActive`、`playheadSnapshot`、`metaRevision` 哈希) | **✅ e2e(本卡新增)** | **`HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方逐字段读回`** —— 本卡之前是 **❌ 零**,详见 §2 |
+| C1a | 真 Output 装配 `VizPublishInput` —— **已断言的字段**:轨名 `toStdString`、`leadMask`、`stereoMask`、`enabledMask`(落段为 `onlineMask`)、`widthPct`(取**活动版本**的参数句柄)、`versionActive`、`playheadSnapshot`、车道(经 `activeCurves`) | **✅ e2e(本卡新增)** | **`HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方逐字段读回`** —— 本卡之前是 **❌ 零**,详见 §2 |
+| C1b | 装配里**未被直接断言**的部分:`metaRevision`(轨名 FNV,只驱动车道重算、不落段;间接体现为「改了轨名之后车道与 label 确实刷新了」)、`coveredMask`/`trackColor`/`volDb`/`panNow` | 🟡 间接 | `metaRevision` 的分频/重算语义由 `test_viz_plane.cpp:386` 覆盖(假段);其余字段由 `VIZ-1`/`VIZ-4`/`MON-CHAIN` 在 **peer 写方**一侧覆盖,**不经过真 Output 的装配** |
 | C2 | `VizPublisher` 降采样 / 车道重算 / 30Hz 分频闸 | 🟡 单测 | `test_viz_plane.cpp:318/386/493/520`(真 `VizPublisher`,**假段**;含最完整的反向验证范式) |
 | C3 | viz 段跨进程 + 生命周期 | ✅ | `VIZ-1`/`VIZ-3`/`VIZ-4`(真 peer);反向 `VIZ-2`(段不存在拿空态、绝不建段) |
 | C4 | Monitor attach + read + 陈旧判定 | ✅ | `MON-CHAIN`×3(真 Monitor processor + 跨进程 peer;含「段还在但写方停摆 → 不假装在线」反向) |
 | C5 | Monitor 桥面 → 页面 | 🟡 mock | `web-preview/tests/smoke-monitor-page.mjs`(真页面 + **mock 桥**,不经真段) |
 
-**C1 此前为什么是零**:C2/C3/C4 的写方**全是手搓 `VizPublishInput` 的 peer 或裸 `VizPublisher`**
+**C1a 此前为什么是零**:C2/C3/C4 的写方**全是手搓 `VizPublishInput` 的 peer 或裸 `VizPublisher`**
 (`scvb_ipc_peer.cpp` 的 `viz-writer`/`viz-publisher` 两个角色)。真 Output 的
 `publishVizFrame()`(`src/output/OutputProcessor.cpp:938-997`)那段装配没有任何用例走过 ——
-装配错一位(`leadMask` 取错字段、`label` 差一个下标、版本差一)段里就是错值,Monitor 画的就是错图,
-而 C2/C3/C4 照样全绿。这正是 T37「数据面从未接线」那一族的形状。
+装配错一位(`leadMask` 取错字段、`label` 差一个下标、`widthPct` 的**版本下标错一**)段里就是错值,
+Monitor 画的就是错图,而 C2/C3/C4 照样全绿。这正是 T37「数据面从未接线」那一族的形状。
+
+⚠ **本行只认「真的被断言到」的字段**(C1a/C1b 因此分开列)。列了字段却不断言,会让这张表本身
+失去可信度 —— 后来人查到 ✅ 就不会再补,而那一格其实是空的。这条纪律由 PR #155 复审【重要】②
+立下:初版把 `stereoMask`/`enabledMask`/`widthPct`/`metaRevision` 全列进 C1,用例却一条都没断言;
+`versionActive` 那条更甚 —— 两侧结构体默认值都是 1、Rig 又恒在版本 1,**把装配里那一行整行删掉
+断言照样绿**。现已补齐断言,并在用例里先 `setVersionActive(2)` 让它真的有牙齿。
 
 **仍留的缺口(不在本卡范围)**:C5 只有 mock 桥冒烟;「真段 → 真页面」全链需要页面侧能连真 native,
 属 web 冒烟体系的能力边界,记账在此。

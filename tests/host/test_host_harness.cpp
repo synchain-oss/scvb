@@ -14,6 +14,9 @@
 //
 // 组号纪律:一律用测试专用组(kTestGroup),避开开发机上可能正在跑的 DAW 活实例(g1/g2),
 // 与 scvb_stress 的 v10 约定同口径。段随进程退出销毁。
+// [SL-231] 另有一个**保留组** kNoWriterGroup:本文件恒不在该组建任何段,viz 的反向断言
+// (「邻组没有写方 ⇒ 只读方拿空态」)靠它成立。给新用例分组号时**不要分它**,
+// 否则那条反向会变成一次难解释的假红 —— 失败信息指向 viz 装配,真因却是组号撞车。
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -59,6 +62,10 @@ namespace
 
 // 测试专用组:避开 DAW 活实例常用的 g1/g2。
 constexpr int kTestGroup = 7;
+
+// [SL-231] 保留组:**恒无写方**,只给 viz 反向断言用。本文件出现过的组号是 4/5/6/7/9,
+// 8 空着 —— 勿分配给任何 rig(理由见文件头「组号纪律」)。
+constexpr int kNoWriterGroup = 8;
 constexpr int kTestChannel = 3;
 constexpr double kSr = 48000.0;
 constexpr int kBlock = 512;
@@ -4772,20 +4779,45 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
 
+    // **先切到版本 2**:`VizPublishInput::versionActive` 与 `VizSnapshot::versionActive` 的结构体
+    // 默认值都是 1,而 Rig 恒在版本 1 —— 不切版本的话,把装配里那行 `in.versionActive = ...`
+    // 整行删掉,断言照样绿(PR #155 复审【重要】①)。切版本还会走 rebindVersion,
+    // 顺带把「切版本 → 车道/句柄重绑」这一跳一起串上。
+    r.out.setVersionActive(2);
+
     // 被观察轨:改配置 —— 这一份 runtime 就是 publishVizFrame 的输入。
     auto& cfg = r.out.runtime().channels[kTestChannel - 1];
     cfg.label = juce::String::fromUTF8("\xE4\xB8\xBB\xE5\x94\xB1 A"); // "主唱 A":走 toStdString 这一跳
     cfg.leadLock = true; // → leadMask 的 bit{ch-1}
-    ++r.out.runtime().configSeq;
+    // 注:viz 装配**不读** configSeq(那是 ctrl 广播那一路的变化检测真源),故此处不动它。
 
     // 对照轨:一个字段都不动。没有它,「装配把同一份值填满所有轨」这类错误照样全绿。
     constexpr int kQuietCh = 10;
     REQUIRE(kQuietCh != kTestChannel);
 
-    // 给被观察轨一条曲线真身:没有曲线时车道恒哨兵,那样的断言证明不了装配跑通了。
+    // 给**版本 2** 的 width 一个和默认值不同的取值(默认 100)。装配取的是
+    // `handles_.rawTrkW[v-1][ch]` —— **版本下标错一**就会读回版本 1 的 100,
+    // 只断言「不是哨兵」抓不住那一位,断到具体数值才抓得住。
+    constexpr float kWidthV2 = 42.0f;
+    {
+        auto* wp = r.out.getAPVTS().getParameter(scvb::params::widthId(2, kTestChannel));
+        REQUIRE(wp != nullptr);
+        wp->setValueNotifyingHost(wp->convertTo0to1(kWidthV2));
+    }
+
+    // 给被观察轨一条曲线真身(落在**刚切过去的版本 2** 上):没有曲线时车道恒哨兵,
+    // 那样的断言证明不了装配跑通了。
     int replaced = 0;
     int locked = 0;
     REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 55.0f, replaced, locked));
+
+    // source_channels 的检测是**最终一致**的:refreshSourceChannels 要等音频段头写出来才回填,
+    // waitUntilInjected 之后它可能还停在 0(未检测)或 1。这里尽力等它稳定 —— 但**不作硬前提**,
+    // 下面的 stereoMask 断言与 runtime 当前值耦合,不管检测到哪一步都成立。
+    for (int waited = 0; waited < 3000 && r.out.runtime().channels[kTestChannel - 1].sourceChannels != 2; waited += 60)
+    {
+        r.runBlocks(4, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/12);
+    }
 
     // 让 Output 的 viz timer 真实发布若干帧(30Hz 闸门,400ms 足够十余帧)。
     r.runBlocks(60, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
@@ -4799,9 +4831,8 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     REQUIRE(probe.read(*frame));
 
     // ── 帧身份与全局字段 ──
-    CHECK((frame->seq % 2) == 0); // seqlock:读到的是一帧完整数据,不是撕裂的半帧
     CHECK(frame->sampleRate == static_cast<scvb::u32>(kSr));
-    CHECK(frame->versionActive == static_cast<scvb::u32>(r.out.versionActive()));
+    CHECK(frame->versionActive == 2u); // ← 不切版本的话两侧默认值都是 1,这条就没牙齿了
 
     // ── 逐轨装配:被观察轨 ──
     const auto bit = [](int ch) { return 1u << (ch - 1); };
@@ -4814,9 +4845,23 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
         std::count_if(lane.begin(), lane.end(), [](std::int16_t v) { return v != scvb::kVizPanNone; }));
     CHECK(realCols > 0);
 
+    // width:断到**具体数值**。句柄没接上 → NaN → 哨兵;版本下标错一 → 读回版本 1 的默认 100。
+    // 两种都与 42 不等,一条断言同时挡住(这正是复审【重要】② 点名的那一族)。
+    CHECK(frame->widthPct[kTestChannel - 1] ==
+          scvb::vizPackFixed(static_cast<double>(kWidthV2), scvb::kVizWidthMin, scvb::kVizWidthMax));
+    // stereo 检测值 → stereoMask;enabled 位 → onlineMask(VizPublisher.cpp:184-185)。
+    // stereoMask 与 runtime 的检测值**耦合**断言,而不是硬写 true:检测是最终一致的,硬写会把
+    // 一条护栏变成一颗时序炸弹(实测 —— 单独跑本用例时它停在 1,跟着 [analyze] 一起跑就是 2)。
+    // 耦合形式照样有牙齿:装配漏掉这一位、或把位算到别的轨上,两个方向都会红。
+    const bool srcIsStereo = (r.out.runtime().channels[kTestChannel - 1].sourceChannels == 2);
+    INFO("sourceChannels(ch" << kTestChannel << ") = " << r.out.runtime().channels[kTestChannel - 1].sourceChannels);
+    CHECK(((frame->stereoMask & bit(kTestChannel)) != 0u) == srcIsStereo);
+    CHECK((frame->onlineMask & bit(kTestChannel)) != 0u); // 该轨 enabled
+
     // ── 反向①:一个字段都没动的对照轨,不得被装配顺手填上 ──
     CHECK(frame->label[kQuietCh - 1].empty());
     CHECK((frame->leadMask & bit(kQuietCh)) == 0u);
+    CHECK((frame->stereoMask & bit(kQuietCh)) == 0u); // 没有 Input 的轨不该被检测成 stereo
     const auto& quietLane = frame->pan[kQuietCh - 1];
     CHECK(std::all_of(quietLane.begin(), quietLane.end(), [](std::int16_t v) { return v == scvb::kVizPanNone; }));
 
@@ -4827,10 +4872,13 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     auto later = std::make_unique<scvb::VizSnapshot>();
     REQUIRE(probe.read(*later));
     CHECK(later->playheadSamples > firstPlayhead);
+    // 发布器确实**在持续发帧**,不是两次都读到同一帧(与 MON-CHAIN「写方停摆」同口径)。
+    // 注:`seq % 2 == 0` 是 read() 自己的不变量,装配错成什么样它都绿,故不拿它当判据。
+    CHECK(later->seq > frame->seq);
 
     // ── 反向②:段是**按组**开的。邻组没有写方 ⇒ 只读方拿空态,绝不建段(VIZ-2 同口径)。
     //    没有这一条,上面所有断言在「publisher 发错组」时也可能因残段而恰好成立。
-    scvb::VizPlane wrongGroup(backend, static_cast<scvb::u32>(kTestGroup) + 1u);
+    scvb::VizPlane wrongGroup(backend, static_cast<scvb::u32>(kNoWriterGroup));
     CHECK(wrongGroup.attachReadOnly() != scvb::InitResult::kOk);
 }
 
@@ -4895,9 +4943,19 @@ struct GestureSpy final : juce::AudioProcessorListener
 
 TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成对", "[host][sl231][print][e2e]")
 {
+    // **spy 必须比 rig 活得久**:~MonoMultiRig → releaseResources() → printer_.endAllGestures()
+    // 会回调监听器。spy 声明在 rig 之后的话它先析构,一旦中途抛异常跳过 removeListener,
+    // 那次回调就打在已析构对象上(UAF,表现成无法解释的崩溃而不是可读的失败)。
+    GestureSpy spy;
+
     MonoMultiRig r;
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
+
+    // 采集**从 0 开始**:打印区间起点 lo = 首个段的起点 ≈ 采集开始时的播放头位置。不归零的话
+    // lo ≈ waitUntilInjected 推过的距离,机器越慢它越大;一旦超过正向段跑的 1.28s,
+    // 区间判定全程为假、begins 恒 0 —— 那是测试自己的时序没给够,不是被测物坏。
+    r.ph.timeSamples = 0;
 
     const double coveredS = r.capture();
     REQUIRE(coveredS > 0.0);
@@ -4911,7 +4969,6 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     r.out.setOutputEnabled(false);
     MonoMultiRig::pump(300);
 
-    GestureSpy spy;
     r.out.addListener(&spy);
 
     // ── 反向:输出关着(Follow 档,host 参数是权威)⇒ 仲裁不该给出 Print,一条都不该开 ──
