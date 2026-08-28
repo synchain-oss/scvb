@@ -198,6 +198,11 @@ public:
     juce::String masterChartMode() const { return masterChartMode_; }
     // [SL-215] 会话 GUID(36 字符 dashed UUID,恒非全零)。桥面 §1.1 快照的 session_guid 取这里。
     juce::String sessionGuid() const { return sessionGuid_; }
+    // [SL-233] **仅供测试**:把 sidecar 落盘根目录改到临时目录,避免单测写真实用户会话目录
+    // (崩溃即残留、并行 worktree 互相串扰)。传空 path 恢复默认位置。生产代码不得调用。
+    // 与 uidefaults::setStorageDirForTesting 同款(那处的理由逐条适用)。
+    static void setSidecarBaseDirForTesting(const std::filesystem::path& dir);
+
     // [SL-215/SL-226] 设置页存储状态行的两个真源:特征落在哪(内嵌/外部)+ 实际多少字节。
     // 两个必须成对读 —— 只看字节数分不出「内嵌 0.5MB」与「转出后引用节 0.5MB」。
     std::int64_t featureBytes() const;
@@ -429,6 +434,10 @@ private:
     void readFeaturesChunk(const scvb::state::StateChunks& chunks);
     // sidecar 落盘根目录 = <appdata>/Synchain/SCVB(与 UiDefaultsStore 同根,STATE_SCHEMA §4.3)。
     static std::filesystem::path sidecarBaseDir();
+    // [SL-233] 25Hz tick 内的 owner.lock 续租(10s 分频,STATE_SCHEMA §4.3)。调用方须已持
+    // lifecycleMutex_(要读 featuresSidecar_ / sessionGuid_)。nowMs = steady 时钟(只用于分频),
+    // 心跳写的是墙钟 —— 判活比的是墙钟,两者不能混。返回 true = 本拍真的写了心跳。
+    bool tickOwnerLockRefresh(std::uint64_t nowMs);
     // 特征的 hop 时基是否与本构建一致(当前冻结 10ms,恒真;为将来放开 hop 预留的闸)。
     static bool featureHopMatchesBuild(std::uint32_t hopMs);
 
@@ -578,6 +587,9 @@ private:
 
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;
+    // [SL-233] owner.lock 续租的分频计时(steady 时钟)。**故意从 0 起**:第一拍就跑一次,
+    // 让「加载完工程 / 刚存完盘」立刻续上租约,而不是先空窗 10s。不持锁时它只被 tick 读写。
+    std::uint64_t lastOwnerLockRefreshMs_ = 0;
     int timelineInvalidTicks_ = 0;
     // 分析作业([M] 起/停;线程体只读快照,完成后经 AsyncUpdater 回消息线程写 CRVS)。
     std::unique_ptr<AnalysisJob> analysisJob_;

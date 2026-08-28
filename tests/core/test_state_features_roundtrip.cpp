@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_state_features_roundtrip —— T21 特征持久化:FeaturesCodec + gzip + SidecarStore。
 // 覆盖:embedded 逐字节往返(vadPresent 存/省)、sidecar 引用往返、>8MB 自动转 sidecar 且回读、
-// 删除 sidecar 后特征缺失、双开同 GUID copy-on-write、owner.lock 判活、8MB/6MB 回滞、
+// 删除 sidecar 后特征缺失、双开同 GUID copy-on-write、owner.lock 判活与 [SL-233] 10s 续租、8MB/6MB 回滞、
 // gzip 5min/15轨 ≤2.25MB、sha256 已知向量、压缩炸弹防护、不可信字节校验。
 // 纯 C++17,无 JUCE(ADR-011)。
 
@@ -563,4 +563,130 @@ TEST_CASE("FEAT-SIDECAR-6 PID 复用竞态与路径穿越防护", "[state][featu
     REQUIRE_FALSE(store.write(evil, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, makeIdentity(1, "x")));
     store.remove(evil); // no-op,不越界删
     REQUIRE(std::filesystem::exists(tmp.path));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-233] owner.lock 的 10s 周期刷新(STATE_SCHEMA §4.3)。
+//
+// 契约写了「每 10s 由消息线程刷新;判活 = pid 存在 ∧ 心跳 < 30s」,而实现里 writeOwnerLock
+// 只有保存工程与 CoW 两个调用点 —— 于是「开着工程但不保存」的实例在上次保存 30s 后就被判死,
+// 后开的第二个实例读到死锁,不 copy-on-write 而直接共享同一份 sidecar(正是 CoW 要防的那一幕)。
+// 本用例把两个方向都钉住:同一个时刻 t+40s,续过租的判活、没续过的判死。
+// ---------------------------------------------------------------------------
+TEST_CASE("FEAT-SIDECAR-7 owner.lock 周期刷新维持租约", "[state][features][sidecar]")
+{
+    const auto gz = scvb::state::encodeFeatures(makeSmallFixture());
+    const ProcessIdentity idA = makeIdentity(1111, "A");
+    const ProcessIdentity idB = makeIdentity(2222, "B");
+
+    // 刷新周期必须真的比判活窗口短,否则「每 10s 刷一次」根本救不了「30s 判死」。
+    REQUIRE(scvb::state::kOwnerLockRefreshIntervalMs < scvb::state::kOwnerLockAliveHeartbeatMs);
+
+    OwnerLock written;
+    std::int64_t t0 = 0;
+
+    // ---- ① 反向验证:摘掉刷新 → A 的锁在 40s 后被判死,B 直接共享同一份 sidecar(修复前的行为)。----
+    {
+        TempDir tmp;
+        SidecarStore store(tmp.path);
+        REQUIRE(store.write(kGuid, gz.data(), gz.size(), 2, scvb::state::kFeatCodecVer, idA));
+        REQUIRE(store.readOwnerLock(kGuid, written));
+        t0 = static_cast<std::int64_t>(written.heartbeatEpochMs);
+
+        const std::int64_t t40 = t0 + 40000;
+        OwnerLock stale;
+        REQUIRE(store.readOwnerLock(kGuid, stale));
+        REQUIRE_FALSE(scvb::state::isOwnerLockAlive(stale, t40)); // 判死
+        std::string unused;
+        REQUIRE_FALSE(store.copyOnWriteIfNeeded(kGuid, idB, t40, unused)); // → 不 CoW,共享
+    }
+
+    // ---- ② 正向:A 每 10s 续租 → 同一个 t+40s,B 判活并走 CoW。----
+    {
+        TempDir tmp;
+        SidecarStore store(tmp.path);
+        REQUIRE(store.write(kGuid, gz.data(), gz.size(), 2, scvb::state::kFeatCodecVer, idA));
+        REQUIRE(store.readOwnerLock(kGuid, written));
+        t0 = static_cast<std::int64_t>(written.heartbeatEpochMs);
+
+        for (std::int64_t t = t0 + scvb::state::kOwnerLockRefreshIntervalMs; t <= t0 + 40000;
+             t += scvb::state::kOwnerLockRefreshIntervalMs)
+        {
+            REQUIRE(store.refreshOwnerLock(kGuid, idA, t)); // 消息线程每 10s 一次
+        }
+
+        const std::int64_t t40 = t0 + 40000;
+        OwnerLock fresh;
+        REQUIRE(store.readOwnerLock(kGuid, fresh));
+        REQUIRE(fresh.heartbeatEpochMs == static_cast<std::uint64_t>(t40)); // 心跳确实推进了
+        REQUIRE(fresh.pid == idA.pid); // 只动时间戳,持有者原样
+        REQUIRE(fresh.processStartEpochMs == idA.processStartEpochMs);
+        REQUIRE_FALSE(fresh.heartbeatIso8601.empty()); // 契约里的可读字段同步刷新
+        REQUIRE(scvb::state::isOwnerLockAlive(fresh, t40)); // 判活
+
+        std::string newGuid;
+        REQUIRE(store.copyOnWriteIfNeeded(kGuid, idB, t40, newGuid)); // → 走 CoW
+        REQUIRE(newGuid != kGuid);
+
+        // ---- ③ 停止刷新 >30s 后仍会判死(租约不是永久的:实例关掉就该让出去)。----
+        const std::int64_t tDead = t40 + scvb::state::kOwnerLockAliveHeartbeatMs;
+        OwnerLock afterStop;
+        REQUIRE(store.readOwnerLock(kGuid, afterStop));
+        REQUIRE_FALSE(scvb::state::isOwnerLockAlive(afterStop, tDead));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-233] 续租的三道闸:非法 guid / 盘上无锁不新建 / 锁非己绝不覆盖。
+// 第三道是要害 —— 覆盖他人的锁等于把别人正开着的 sidecar 抢过来,CoW 的判据就此消失。
+// ---------------------------------------------------------------------------
+TEST_CASE("FEAT-SIDECAR-8 owner.lock 刷新不越权", "[state][features][sidecar]")
+{
+    TempDir tmp;
+    SidecarStore store(tmp.path);
+    const auto gz = scvb::state::encodeFeatures(makeSmallFixture());
+    const ProcessIdentity idA = makeIdentity(1111, "A");
+    const ProcessIdentity idB = makeIdentity(2222, "B");
+
+    // ① 盘上没有 owner.lock → 不刷新、**也不新建**(没写过 sidecar 就没有租约可续)。
+    REQUIRE_FALSE(store.refreshOwnerLock(kGuid, idA, scvb::state::epochMsNow()));
+    REQUIRE_FALSE(
+        std::filesystem::exists(store.sessionDir(kGuid) / std::string(scvb::state::kSidecarOwnerLockFilename)));
+
+    // ② 锁归 A:B 刷不动,且盘上的心跳一个字节都没变。
+    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 2, scvb::state::kFeatCodecVer, idA));
+    OwnerLock before;
+    REQUIRE(store.readOwnerLock(kGuid, before));
+    const std::int64_t later = static_cast<std::int64_t>(before.heartbeatEpochMs) + 5000;
+    REQUIRE_FALSE(store.refreshOwnerLock(kGuid, idB, later));
+    OwnerLock after;
+    REQUIRE(store.readOwnerLock(kGuid, after));
+    REQUIRE(after.pid == before.pid);
+    REQUIRE(after.heartbeatEpochMs == before.heartbeatEpochMs);
+    REQUIRE(after.heartbeatIso8601 == before.heartbeatIso8601);
+
+    // ③ 反向验证:同一时刻换成持有者 A 就刷得动(排除「这个用例恒 false」)。
+    REQUIRE(store.refreshOwnerLock(kGuid, idA, later));
+    OwnerLock mine;
+    REQUIRE(store.readOwnerLock(kGuid, mine));
+    REQUIRE(mine.heartbeatEpochMs == static_cast<std::uint64_t>(later));
+
+    // ④ PID 复用:pid 相同、进程启动时间不同 → 不是己方,拒刷(与 CoW 同口径的双元组)。
+    ProcessIdentity reused;
+    reused.pid = idA.pid;
+    reused.processStartEpochMs = idA.processStartEpochMs + 1;
+    reused.hostName = "A-reused";
+    REQUIRE_FALSE(store.refreshOwnerLock(kGuid, reused, later + 1000));
+
+    // ⑤ pid=0(拿不到进程身份的退化值)不得宣示占有。
+    ProcessIdentity unknown;
+    unknown.pid = 0;
+    unknown.processStartEpochMs = 0;
+    REQUIRE_FALSE(store.refreshOwnerLock(kGuid, unknown, later + 1000));
+
+    // ⑥ 路径穿越:非法 guid 一律拒绝(与 read/write/remove 同一道闸)。
+    std::string evil;
+    for (int i = 0; i < 12; ++i)
+        evil += "../";
+    REQUIRE_FALSE(store.refreshOwnerLock(evil, idA, later + 1000));
 }

@@ -430,6 +430,25 @@ bool SidecarStore::readOwnerLock(const std::string& guid, OwnerLock& lock) const
     return any;
 }
 
+bool SidecarStore::refreshOwnerLock(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs)
+{
+    if (!isValidSessionGuid(guid))
+        return false; // 防目录穿越
+
+    OwnerLock lock;
+    if (!readOwnerLock(guid, lock))
+        return false; // 盘上没有租约 → 不新建(见头文件闸②)
+
+    // 归属判定与 copyOnWriteIfNeeded 逐字同口径:pid + 进程启动时间双元组,防 Windows PID 复用。
+    // pid==0 是「拿不到进程身份」的退化值(非 Windows),那种进程不该宣示占有任何 sidecar。
+    if (self.pid == 0u || lock.pid != self.pid || lock.processStartEpochMs != self.processStartEpochMs)
+        return false; // 锁归他人(或身份未知)→ 绝不覆盖(闸③)
+
+    lock.heartbeatEpochMs = static_cast<std::uint64_t>(nowEpochMs < 0 ? 0 : nowEpochMs);
+    lock.heartbeatIso8601 = iso8601UtcNow();
+    return writeOwnerLock(guid, lock);
+}
+
 bool SidecarStore::copyOnWriteIfNeeded(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs,
                                        std::string& newGuid)
 {

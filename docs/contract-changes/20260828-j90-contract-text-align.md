@@ -169,6 +169,12 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
      复审补的一条独立佐证:`OutputProcessor.cpp:1284-1287` 的代码注释**自己写明**该 10s 周期刷新
      「全仓尚未实现(T40 遗留,已单独落卡)」—— 即这是**已跟踪的实现缺口**,不是本次才发现的漂移。
      开卡后请把 issue 号回填到本条(PR #153 复审建议)。
+     **回填(2026-08-28):裁定为「补实现」,契约文字一字未动** —— **SL-233**(PR #__PRNUM__)
+     在 `SidecarStore` 补 `refreshOwnerLock()` + `kOwnerLockRefreshIntervalMs = 10000`,
+     由 `ScvbOutputAudioProcessor::tickOwnerLockRefresh()` 挂在既有 25Hz tick 上分频调用
+     (仅当本实例已走 sidecar **且** 盘上的 `owner.lock` 归本进程所有;锁不存在不新建、
+     锁属他人绝不覆盖 —— 那是 copy-on-write 唯一的判据)。`OutputProcessor.cpp` 里那条
+     自认「T40 遗留」的注释同步订正。
   ② **代码注释层(非契约文档),两条,建议并成一张「注释订正卡」**:
      - `src/output/OutputUiState.h:69` 把 sidecar 文件名写成 `<basename>-<GUID前8>.scvbfeat`,
        而实现与 §4.3 一致地采用目录式 `<base>/sessions/<GUID>/`(`SidecarStore.cpp:307`、
@@ -183,3 +189,7 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
      夹取只发生在桥面 `setUiScale` 那一路(`:2056` `juce::jlimit`)。而 §7.3 的口径是
      「`setStateInformation` 处理的是用户工程文件里的不可信字节」。是否要在加载路径补夹取,
      属实现裁定,超出 J90 批准面,一并留给上面 ① 的开卡窗口。
+     **回填(2026-08-28):裁定为「加载路径补夹取」,契约文字一字未动** —— **SL-234**
+     (PR #__PRNUM__)把百分比边界换算收拢成 `scvb::bridge::clampUiScalePercent()`
+     (边界仍是 `Min/MaxUiScale` 那一对常量,不新增第二份真源),桥面 `setUiScale` 与加载路径
+     共用它。Input 侧 `InputProcessor.cpp:428` 逐字同款的缺口一并补上。

@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "BridgeArgs.h"
+#include "BridgeBase.h" // [SL-234] Min/MaxUiScale + clampUiScalePercent(档位边界真源)
 #include "InputBridgeLogic.h"
 #include "UiDefaultsStore.h" // [SL-208] 缩放档位全局默认
 #include "InputProcessor.h"
@@ -33,11 +34,14 @@
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
 #include "state/FeaturesCodec.h" // [SL-215] isValidSessionGuid
+#include "state/InputStateCodec.h" // [SL-234] Input 侧 CFGS 同一处夹取缺口
 #include "state/OutputStateCodec.h"
+#include "state/SidecarStore.h" // [SL-233] owner.lock 续租
 #include "state/StateCodec.h"
 #include "state/StateMigration.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <limits>
 
 // createEditor 是虚函数,vtable 需要定义。真实定义在 *PluginEntry.cpp —— 那两个 TU 会把
@@ -4741,4 +4745,317 @@ TEST_CASE("HOST SL-209:空转分析(零产出)不压撤销步、不吃掉重做�
     // ★ 也没多压一条空步:一次 undo 就该弹回编辑前,而不是先弹掉一条恒等步。
     CHECK(r.out.undo());
     CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeEdit));
+}
+
+// ===========================================================================
+// [SL-233] owner.lock 的 10s 周期刷新(STATE_SCHEMA §4.3)—— 生产接线那一段。
+//
+// 契约的判活是「pid 存在 ∧ 心跳 < 30s」,而在这张卡之前,写 owner.lock 的地方只有
+// 「保存工程」与「copy-on-write」两处。后果:一个开着工程但没再保存的实例,在它上次保存
+// 30s 后就被判死 —— 后开的第二个实例读到死锁,于是**不**走 copy-on-write 而直接共享同一份
+// sidecar,正是 CoW 要防的那一幕(用户「另存为」出两个工程、两个都开着,重采集互相覆盖)。
+//
+// SidecarStore 那一层的正反向在 FEAT-SIDECAR-7/8(注入时钟)。本用例只钉**接线**:
+// 25Hz tick 到底有没有把这件事做起来 —— 那正是「实现里根本没有周期刷新点」漏掉的一环。
+// ===========================================================================
+namespace
+{
+// 独享临时 sidecar 根目录,结束即恢复(含异常路径),不碰开发机上真实的 %APPDATA% 会话目录。
+struct TempSidecarRoot
+{
+    std::filesystem::path path;
+    TempSidecarRoot()
+    {
+        path =
+            std::filesystem::temp_directory_path() / ("scvb-sl233-" + std::to_string(scvb::state::epochMsNow()) + "-" +
+                                                      std::to_string(juce::Random::getSystemRandom().nextInt(1000000)));
+        std::filesystem::create_directories(path);
+        ScvbOutputAudioProcessor::setSidecarBaseDirForTesting(path);
+    }
+    ~TempSidecarRoot()
+    {
+        ScvbOutputAudioProcessor::setSidecarBaseDirForTesting({});
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
+// 最小可解的特征夹具(2 通道 × 少量 hop);内容无关紧要,要的是「有一份能过 sha256 的 sidecar」。
+scvb::state::FeaturesData makeTinyFeatures()
+{
+    scvb::state::FeaturesData d;
+    d.sampleRate = 48000;
+    d.hopMs = 10;
+    d.vadPresent = false;
+    for (std::uint8_t ch = 1; ch <= 2; ++ch)
+    {
+        scvb::state::ChannelFeatures c;
+        c.channelId = ch;
+        constexpr std::uint32_t kHops = 32;
+        c.coverage.push_back(scvb::state::HopRange{0, kHops});
+        for (std::uint32_t i = 0; i < kHops; ++i)
+        {
+            c.kwDbq.push_back(static_cast<std::int16_t>(-3000 + static_cast<int>(i)));
+            c.peakDbq.push_back(static_cast<std::int16_t>(-2000 + static_cast<int>(i)));
+        }
+        d.channels.push_back(std::move(c));
+    }
+    return d;
+}
+
+// 把一份完整 blob 的 FEAT chunk 换成「指向 guid 的 sidecar 引用节」,让加载后的实例进入
+// sidecar 模式(featuresInSidecar()==true)。与生产同一套编解码,不手搓字节。
+std::vector<std::uint8_t> blobWithSidecarRef(const juce::MemoryBlock& src, const std::string& guid,
+                                             const std::vector<std::uint8_t>& gz, const scvb::state::FeaturesData& data)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+
+    scvb::state::SidecarRef ref;
+    ref.sessionGuid = guid;
+    ref.sha256 = scvb::state::sha256(gz.data(), gz.size());
+    ref.sidecarBytes = static_cast<std::uint64_t>(gz.size());
+    auto refSection =
+        scvb::state::encodeReference(ref, data.sampleRate, data.hopMs, static_cast<std::uint8_t>(data.channels.size()));
+    REQUIRE_FALSE(refSection.empty());
+    chunks.set(scvb::state::kFourccFeat, std::move(refSection));
+
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+// 读 owner.lock 的心跳(不存在则返回 0)。
+std::uint64_t heartbeatOf(const std::filesystem::path& base, const std::string& guid)
+{
+    scvb::state::OwnerLock lock;
+    if (!scvb::state::SidecarStore(base).readOwnerLock(guid, lock))
+    {
+        return 0;
+    }
+    return lock.heartbeatEpochMs;
+}
+} // namespace
+
+TEST_CASE("HOST SL-233:sidecar 模式下 25Hz tick 周期刷新 owner.lock", "[host][v56][SL233]")
+{
+    TempSidecarRoot root;
+    scvb::state::SidecarStore store(root.path);
+    const auto data = makeTinyFeatures();
+    const auto gz = scvb::state::encodeFeatures(data);
+    REQUIRE_FALSE(gz.empty());
+
+    const auto self = scvb::state::currentProcessIdentity();
+    REQUIRE(self.pid != 0u); // 前置:Windows 上拿得到进程身份,否则续租按设计一律拒绝
+
+    // ---- 造一份「本进程持有」的 sidecar;心跳随后倒拨,验证 tick 有没有把它续回来。----
+    std::string guid;
+    juce::MemoryBlock baseBlob;
+    {
+        ScvbOutputAudioProcessor seed;
+        guid = seed.sessionGuid().toStdString();
+        seed.getStateInformation(baseBlob);
+    }
+    REQUIRE(store.write(guid, gz.data(), gz.size(), static_cast<std::uint32_t>(data.channels.size()),
+                        scvb::state::kFeatCodecVer, self));
+
+    const auto backdate = [&](std::int64_t agoMs) {
+        scvb::state::OwnerLock lock;
+        REQUIRE(store.readOwnerLock(guid, lock));
+        lock.heartbeatEpochMs = static_cast<std::uint64_t>(scvb::state::epochMsNow() - agoMs);
+        REQUIRE(store.writeOwnerLock(guid, lock));
+        return lock.heartbeatEpochMs;
+    };
+
+    const std::vector<std::uint8_t> sidecarBlob = blobWithSidecarRef(baseBlob, guid, gz, data);
+
+    // ---- ① 反向验证(修复前的行为):**不在** sidecar 模式的实例不去碰 owner.lock。----
+    //      没有这一条,下面 ② 的「心跳变新了」可能只是「谁都会去刷一下」,证明不了门控。
+    {
+        const std::uint64_t before = backdate(20000);
+        Rig r; // 全新实例:特征内嵌(0 字节),featuresInSidecar()==false
+        REQUIRE_FALSE(r.out.featuresInSidecar());
+        Rig::pumpMessages(400); // 远超一拍 40ms;首拍就该做完决定
+        CHECK(heartbeatOf(root.path, guid) == before); // 一个字节都没动
+    }
+
+    // ---- ② 正向:加载一份走 sidecar 的工程 → tick 把心跳续到「刚刚」。----
+    std::uint64_t refreshed = 0;
+    {
+        const std::uint64_t before = backdate(20000);
+        Rig r;
+        r.out.setStateInformation(sidecarBlob.data(), static_cast<int>(sidecarBlob.size()));
+        REQUIRE(r.out.featuresInSidecar()); // 前置:引用节确实解开了(sha256 过)
+        REQUIRE(r.out.sessionGuid().toStdString() == guid);
+
+        Rig::pumpMessages(400);
+        refreshed = heartbeatOf(root.path, guid);
+        CHECK(refreshed > before); // 续上了
+
+        scvb::state::OwnerLock lock;
+        REQUIRE(store.readOwnerLock(guid, lock));
+        CHECK(scvb::state::isOwnerLockAlive(lock, scvb::state::epochMsNow()));
+        CHECK(lock.pid == self.pid); // 续租只动时间戳,持有者原样
+        CHECK(lock.processStartEpochMs == self.processStartEpochMs);
+
+        // 契约效果:此刻第二个实例(别的 pid)来开同一份工程,判活 → 走 copy-on-write。
+        scvb::state::ProcessIdentity other;
+        other.pid = self.pid + 1u;
+        other.processStartEpochMs = self.processStartEpochMs + 1u;
+        other.hostName = "other";
+        std::string newGuid;
+        CHECK(store.copyOnWriteIfNeeded(guid, other, scvb::state::epochMsNow(), newGuid));
+        CHECK(newGuid != guid);
+    }
+
+    // ---- ③ 反向验证:锁归他人时,tick 绝不把它抢过来(CoW 的判据不能被自己刷掉)。----
+    {
+        scvb::state::OwnerLock foreign;
+        foreign.pid = self.pid + 4242u;
+        foreign.processStartEpochMs = self.processStartEpochMs + 4242u;
+        foreign.heartbeatEpochMs = static_cast<std::uint64_t>(scvb::state::epochMsNow() - 20000);
+        foreign.heartbeatIso8601 = "1970-01-01T00:00:00Z";
+        REQUIRE(store.writeOwnerLock(guid, foreign));
+
+        Rig r;
+        r.out.setStateInformation(sidecarBlob.data(), static_cast<int>(sidecarBlob.size()));
+        REQUIRE(r.out.featuresInSidecar());
+        Rig::pumpMessages(400);
+
+        scvb::state::OwnerLock after;
+        REQUIRE(store.readOwnerLock(guid, after));
+        CHECK(after.pid == foreign.pid); // 持有者没被改
+        CHECK(after.heartbeatEpochMs == foreign.heartbeatEpochMs); // 心跳没被刷
+        CHECK(after.heartbeatIso8601 == foreign.heartbeatIso8601);
+    }
+
+    // ---- ④ 实例关掉后不再有人续租 → 30s 后按契约判死(租约不是永久的)。----
+    scvb::state::OwnerLock lease;
+    lease.pid = self.pid;
+    lease.processStartEpochMs = self.processStartEpochMs;
+    lease.heartbeatEpochMs = refreshed;
+    CHECK_FALSE(scvb::state::isOwnerLockAlive(lease, static_cast<std::int64_t>(refreshed) +
+                                                         scvb::state::kOwnerLockAliveHeartbeatMs));
+}
+
+// ===========================================================================
+// [SL-234] CFGS 的 ui.scale 在**加载期**也要夹取。
+//
+// §7.3:setStateInformation 处理的是用户工程文件里的不可信字节,范围字段必须先校验再用。
+// 此前夹取只在桥面 setUiScale 那一处 —— 手改过 / 被别的工具写坏 / 跨版本的工程带一个
+// 0 或几万的 uiScale,会被原样吃进去,再由「设计盒 × 档位」算出一个 0 像素或几万像素的窗口。
+// 两个插件同一处缺口,一并钉住。
+// ===========================================================================
+namespace
+{
+// 把一份完整 blob 里的 CFGS.uiScale 换成指定值(经生产 codec 解→改→编,不手搓字节)。
+std::vector<std::uint8_t> blobWithOutputUiScale(const juce::MemoryBlock& src, std::uint32_t percent)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    const auto* cfgs = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfgs != nullptr);
+
+    scvb::state::OutputState s;
+    REQUIRE(scvb::state::decodeOutputState(cfgs->payload.data(), cfgs->payload.size(), s));
+    s.uiScale = percent;
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeOutputState(s, payload));
+    chunks.set(scvb::state::kFourccCfgs, std::move(payload));
+
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+
+std::vector<std::uint8_t> blobWithInputUiScale(const juce::MemoryBlock& src, std::uint32_t percent)
+{
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(src.getData()), src.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    const auto* cfgs = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfgs != nullptr);
+
+    scvb::state::InputState s;
+    REQUIRE(scvb::state::decodeInputState(cfgs->payload.data(), cfgs->payload.size(), s));
+    s.uiScale = percent;
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(s, payload));
+    chunks.set(scvb::state::kFourccCfgs, std::move(payload));
+
+    std::vector<std::uint8_t> out;
+    REQUIRE(scvb::state::encodeContainer(chunks, out));
+    return out;
+}
+} // namespace
+
+TEST_CASE("HOST SL-234:加载期 CFGS.uiScale 越界值夹到边界", "[host][v56][SL234]")
+{
+    const int lo = juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f);
+    const int hi = juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f);
+
+    // 不碰开发机真实全局默认:构造期会读它,而本用例要的是「工程里那个值走完加载路径」。
+    struct TempStore
+    {
+        juce::File dir = juce::File::createTempFile("scvb-sl234")
+                             .getSiblingFile("scvb-sl234-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+        TempStore()
+        {
+            dir.createDirectory();
+            scvb::uidefaults::setStorageDirForTesting(dir);
+        }
+        ~TempStore()
+        {
+            scvb::uidefaults::setStorageDirForTesting({});
+            dir.deleteRecursively();
+        }
+    } store;
+
+    juce::MemoryBlock outBase;
+    juce::MemoryBlock inBase;
+    {
+        ScvbOutputAudioProcessor a;
+        a.getStateInformation(outBase);
+        ScvbInputAudioProcessor b;
+        b.getStateInformation(inBase);
+    }
+
+    // ---- ① Output:越界值分别夹到上/下界。0xFFFFFFFF 是**大**值,必须夹到上界 ——
+    //      先 static_cast<int> 再夹会把它折成 -1、"恰好"落到下界,那是溢出撞对的。----
+    const std::vector<std::pair<std::uint32_t, int>> outOfRange{{0u, lo}, {1u, lo}, {5000u, hi}, {0xFFFFFFFFu, hi}};
+    for (const auto& [stored, expect] : outOfRange)
+    {
+        const auto blob = blobWithOutputUiScale(outBase, stored);
+        ScvbOutputAudioProcessor a;
+        a.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+        CHECK(a.uiScalePercent() == expect);
+    }
+
+    // ---- ② 反向验证:区间内的值原样加载(不是「一律夹成边界」把用户档位吃掉)。----
+    for (const int ok : {lo, 100, 125, hi})
+    {
+        const auto blob = blobWithOutputUiScale(outBase, static_cast<std::uint32_t>(ok));
+        ScvbOutputAudioProcessor a;
+        a.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+        CHECK(a.uiScalePercent() == ok);
+    }
+
+    // ---- ③ Input 侧同一处缺口(加载期不夹取,只在桥面夹),正反向同款。----
+    const std::vector<std::pair<std::uint32_t, int>> inOutOfRange{{0u, lo}, {5000u, hi}, {0xFFFFFFFFu, hi}};
+    for (const auto& [stored, expect] : inOutOfRange)
+    {
+        const auto blob = blobWithInputUiScale(inBase, stored);
+        ScvbInputAudioProcessor b;
+        b.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+        CHECK(b.bridgeUiScalePercent() == expect);
+    }
+    for (const int ok : {lo, 100, hi})
+    {
+        const auto blob = blobWithInputUiScale(inBase, static_cast<std::uint32_t>(ok));
+        ScvbInputAudioProcessor b;
+        b.setStateInformation(blob.data(), static_cast<int>(blob.size()));
+        CHECK(b.bridgeUiScalePercent() == ok);
+    }
 }

@@ -2,6 +2,7 @@
 #include "BridgeBase.h"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace scvb::bridge
 {
@@ -9,6 +10,14 @@ namespace scvb::bridge
 float clampUiScale(float scale)
 {
     return juce::jlimit(plugin::MinUiScale, plugin::MaxUiScale, scale);
+}
+
+int clampUiScalePercent(std::int64_t percent)
+{
+    // 边界只在这一处由 Min/MaxUiScale 换算成百分比,调用方一律复用(见头文件注释)。
+    const auto lo = static_cast<std::int64_t>(juce::roundToInt(plugin::MinUiScale * 100.0f));
+    const auto hi = static_cast<std::int64_t>(juce::roundToInt(plugin::MaxUiScale * 100.0f));
+    return static_cast<int>(juce::jlimit(lo, hi, percent));
 }
 
 std::vector<std::pair<juce::String, juce::var>> buildUiSeedPairs(const UiSeed& seed)

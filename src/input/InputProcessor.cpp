@@ -425,7 +425,10 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     const int oldGroupId = groupId_;
     channelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
-    uiScale_ = static_cast<int>(s.uiScale);
+    // [SL-234] 加载期同样夹取:工程文件里的 uiScale 是不可信字节(STATE_SCHEMA §7.3),
+    // 此前直接赋值 —— 手改过 / 被别的工具写坏的工程能把窗口尺寸拉成 0 或几万像素,
+    // 而桥面那道 jlimit 只拦得住 UI 发来的值,拦不住加载路径。夹取函数与桥面同一个。
+    uiScale_ = scvb::bridge::clampUiScalePercent(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
     session_.setChannelId(s.channelId);
     session_.setGroupId(s.groupId);
@@ -650,8 +653,8 @@ void ScvbInputAudioProcessor::bridgeSetUiScalePercent(int percent)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     // 边界真源 = scvb::bridge::plugin::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
-    uiScale_ = juce::jlimit(juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f),
-                            juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f), percent);
+    // [SL-234] 百分比换算收拢进 clampUiScalePercent,与加载期共用同一份边界。
+    uiScale_ = scvb::bridge::clampUiScalePercent(percent);
 }
 
 int ScvbInputAudioProcessor::bridgeUiScalePercent() const

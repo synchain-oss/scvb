@@ -21,6 +21,12 @@ inline constexpr std::uint64_t kReembedThresholdBytes = 6ull * 1024u * 1024u; //
 // owner.lock 判活(04 §5.5):pid 存在 ∧ 心跳 < 30s。
 inline constexpr std::int64_t kOwnerLockAliveHeartbeatMs = 30000;
 
+// [SL-233] owner.lock 心跳刷新周期(STATE_SCHEMA §4.3「每 10s 由消息线程刷新」)。
+// 与判活窗口的 3 倍余量:漏掉两拍(GUI 卡顿 / 磁盘忙)仍判活,不会把自己的租约丢掉。
+inline constexpr std::int64_t kOwnerLockRefreshIntervalMs = 10000;
+static_assert(kOwnerLockRefreshIntervalMs * 2 < kOwnerLockAliveHeartbeatMs,
+              "刷新周期必须留够重试余量,否则单次刷新失败就被别的实例判死");
+
 inline constexpr std::string_view kSidecarFeaturesFilename = "features.bin.gz";
 inline constexpr std::string_view kSidecarManifestFilename = "manifest.json";
 inline constexpr std::string_view kSidecarOwnerLockFilename = "owner.lock";
@@ -85,6 +91,18 @@ public:
     // owner.lock 读写。
     bool writeOwnerLock(const std::string& guid, const OwnerLock& lock);
     bool readOwnerLock(const std::string& guid, OwnerLock& lock) const;
+
+    // [SL-233] owner.lock 续租(STATE_SCHEMA §4.3:sidecar 模式下每 10s 由消息线程刷新)。
+    // 只改心跳时间戳,pid / processStartEpochMs 原样留在盘上。三道闸,任一不过即返回 false 且**不写盘**:
+    //   ① guid 非法 → 防目录穿越(与本类其余入口同一道);
+    //   ② 盘上没有 owner.lock → **不新建**。没写过 sidecar 就没有租约可续;新建等于凭空宣示占有
+    //      一份自己没写过的外部特征,而 copyOnWriteIfNeeded 正是靠「谁写谁持锁」判他人的;
+    //   ③ 锁不归本进程(pid + processStartEpochMs 双元组,与 CoW 同口径防 PID 复用)→ **绝不覆盖**。
+    //      那是别人的活租约,也是 CoW 唯一的证据;把它改成自己的就等于把别人的 sidecar 抢过来。
+    // 过期但仍归本进程的锁**允许**续租:所有权没变(能抢走它的只有「别人写了一次 sidecar」,
+    // 那种情况 pid 已经不是自己,走 ③ 拒掉)。
+    // 返回 true = 心跳已落盘。调用方 = 消息线程(小文件、0.1Hz;音频线程一律禁止)。
+    bool refreshOwnerLock(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs);
 
     // copy-on-write(04 §5.6):owner.lock 活 ∧ 非己(pid + processStartEpochMs 双元组,防 PID 复用)→
     // 生成 newGuid、复制目录。返回 true = 已 CoW(newGuid 已设);false = 无需 CoW(无活锁/锁为己有/复制失败)。

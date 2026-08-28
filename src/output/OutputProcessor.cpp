@@ -798,6 +798,10 @@ void ScvbOutputAudioProcessor::timerCallback()
         session_.heartbeat(now);
     }
 
+    // [SL-233] owner.lock 续租(10s 分频;STATE_SCHEMA §4.3)。与上面那个 4Hz 心跳**不是一回事**:
+    // 那个走共享内存 registry 给同组插件看,这个写磁盘上的 owner.lock 给别的进程看。
+    tickOwnerLockRefresh(now);
+
     // 停流判定要知道走带在不在跑:走带停住时所有 Input 的写头本来就该冻着,那不是故障。
     session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
     session_.tick(now);
@@ -1224,14 +1228,60 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     destData.append(blob.data(), blob.size());
 }
 
+namespace
+{
+// [SL-233] 测试注入的 sidecar 根目录(空 = 用默认位置)。只由 setSidecarBaseDirForTesting 写,
+// 消息线程/单测线程;与 uidefaults 的 testDirRef 同款(那处的理由逐条适用)。
+std::filesystem::path& sidecarTestBaseDirRef()
+{
+    static std::filesystem::path dir;
+    return dir;
+}
+} // namespace
+
+void ScvbOutputAudioProcessor::setSidecarBaseDirForTesting(const std::filesystem::path& dir)
+{
+    sidecarTestBaseDirRef() = dir;
+}
+
 std::filesystem::path ScvbOutputAudioProcessor::sidecarBaseDir()
 {
+    if (const std::filesystem::path& testDir = sidecarTestBaseDirRef(); !testDir.empty())
+    {
+        return testDir; // 仅测试注入;生产恒空
+    }
     // 与 UiDefaultsStore 同根(%APPDATA%\Synchain\SCVB,STATE_SCHEMA §4.3)。
     // 注意这里**只接现行 appdata 机制** —— 存储位置的 UI 与策略归 T47([J84] 已裁),不在本卡。
     const juce::File appData = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
                                    .getChildFile("Synchain")
                                    .getChildFile("SCVB");
     return std::filesystem::path(appData.getFullPathName().toStdString());
+}
+
+bool ScvbOutputAudioProcessor::tickOwnerLockRefresh(std::uint64_t nowMs)
+{
+    // [SL-233] STATE_SCHEMA §4.3:「owner.lock 每 10s 由消息线程刷新;判活 = pid 存在 ∧ 心跳 < 30s」。
+    // 此前全仓没有任何周期刷新点 —— writeOwnerLock 只在保存工程与 CoW 两处被调,于是**开着工程
+    // 不保存**的实例在上次保存 30s 后就被判死:后开的第二个实例读到死锁,不走 copy-on-write 而
+    // 直接共享同一份 sidecar,正是 CoW 要防的那一幕(OutputProcessor 内那条「T40 遗留」注释说的就是它)。
+    // 注意这**不是** IPC registry 那个 250ms 心跳(session_.heartbeat,共享内存里的活性位);
+    // 两者同名不同物:一个证明「本实例还在跑」给同组插件看,一个证明「这份外部特征还有主」给别的进程看。
+    if (!featuresSidecar_)
+    {
+        return false; // 特征没外置 → 没有 sidecar 可续租(契约里这条刷新只属 sidecar 模式)
+    }
+    if (nowMs - lastOwnerLockRefreshMs_ < static_cast<std::uint64_t>(scvb::state::kOwnerLockRefreshIntervalMs))
+    {
+        return false;
+    }
+    lastOwnerLockRefreshMs_ = nowMs; // 无论刷不刷得成都推进,免得每拍都去敲一次磁盘
+
+    // 文件 I/O 在消息线程(§8 只禁音频线程),而且是 0.1Hz × 一百来字节的小文件 ——
+    // 与同持 lifecycleMutex_ 的 get/setStateInformation 动辄几 MB 的 sidecar 读写相比可以忽略;
+    // 音频线程从不取这把锁(processBlock 只经 session_ 拿裸指针做原子读写)。
+    scvb::state::SidecarStore store(sidecarBaseDir());
+    return store.refreshOwnerLock(sessionGuid_.toStdString(), scvb::state::currentProcessIdentity(),
+                                  scvb::state::epochMsNow());
 }
 
 void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chunks)
@@ -1281,10 +1331,11 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         // 上一次真转出过 sidecar 的话,顺手回收那个目录 —— 工程里的引用已经删了,再没人指向它,
         // 不删就是一份永远不会被读到的磁盘垃圾。两道闸与「收回内嵌」那条同口径:
         // 他人活锁不删;引用没解开过(那份根本不是我们认下的)也不删。
-        // ⚠ 判活窗口目前偏窄:isOwnerLockAlive 要心跳 < 30s,而 owner.lock 的 10s 周期刷新
-        //   (STATE_SCHEMA §4.3)**全仓尚未实现**(T40 遗留,已单独落卡)。在那之前,他人实例的锁
-        //   在其上次保存 30s 后就会被判死。孤儿目录只是可恢复的泄漏,remove_all 却不可逆 ——
-        //   心跳补上之前,这一处宁可少删。
+        // [SL-233] 判活窗口已经站得住了:owner.lock 的 10s 周期刷新(STATE_SCHEMA §4.3)由
+        //   tickOwnerLockRefresh 在 25Hz tick 上实装,他人实例只要还开着工程,锁就一直是活的 ——
+        //   此前它在对方**上次保存** 30s 后就被判死,于是这里会把别人正用着的目录删掉。
+        //   「宁可少删」的取向不变(孤儿目录只是可恢复的泄漏,remove_all 却不可逆),但现在
+        //   少删的只剩真正的死锁场景。
         // !featRefUnresolved_ 在这里是**恒真式防御**:上面那个 if 已经把置位的情形 return 掉了。
         // 留着是因为这两道闸的语义是「删之前要过的两关」,少一关就是缺口,不该靠上文的控制流来兜。
         if (featuresSidecar_ && !featRefUnresolved_)
@@ -1654,7 +1705,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     captureEnabled_ = s.captureEnabled != 0;
     outputEnabled_ = s.outputEnabled != 0;
     versionActive_ = static_cast<int>(s.versionActive);
-    uiScale_ = static_cast<int>(s.uiScale);
+    // [SL-234] 加载期同样夹取:工程文件里的 uiScale 是不可信字节(STATE_SCHEMA §7.3),
+    // 此前直接赋值 —— 手改过 / 被别的工具写坏的工程能把窗口尺寸拉成 0 或几万像素,
+    // 而桥面那道 jlimit 只拦得住 UI 发来的值,拦不住加载路径。夹取函数与桥面同一个。
+    uiScale_ = scvb::bridge::clampUiScalePercent(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
     // [J69/U24] analysis 配置落盘(T35 #62 评审遗留):未知枚举序号已由 codec 回落默认并计数。
     runtime_.loudnessMode = juce::String::fromUTF8(s.loudnessMode.c_str(), static_cast<int>(s.loudnessMode.size()));
@@ -2053,9 +2107,9 @@ void ScvbOutputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
 void ScvbOutputAudioProcessor::bridgeSetUiScalePercent(int percent)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    // 边界真源 = scvb::bridge::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
-    uiScale_ = juce::jlimit(juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f),
-                            juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f), percent);
+    // 边界真源 = scvb::bridge::plugin::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码档位边界)。
+    // [SL-234] 百分比换算收拢进 clampUiScalePercent,与加载期共用同一份边界。
+    uiScale_ = scvb::bridge::clampUiScalePercent(percent);
 }
 
 void ScvbOutputAudioProcessor::bridgeSetGuideSeen(bool seen)
