@@ -385,3 +385,42 @@ TEST_CASE("analyzeScopeRange:对象形 scope 缺省范围 = \"all\" 同款推导
     CHECK(noMaskExplicitRange.endS == 9.0);
     CHECK(noMaskExplicitRange.valid());
 }
+
+// ---------------------------------------------------------------------------
+// [SL-209 复审 S1] 撤销栈容量记账:getSizeInUnits 必须随**段数**增长,否则
+// juce::UndoManager 的 30000 units 上限等价于「3 万条事务」—— 而每条事务持有两份整个
+// CrvsData 快照(2 版本 × 15 轨全部段),分析回落一次就可能几万段,封顶一次都不会触发。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-11 撤销事务的 units 随段数增长(封顶才起得了作用)", "[segedit][service][SL209]")
+{
+    const auto unitsFor = [](std::size_t segCount) {
+        CrvsData before;
+        CrvsData after;
+        auto& segs = after.versions[0].tracks[0].segments;
+        for (std::size_t i = 0; i < segCount; ++i)
+        {
+            Segment s;
+            s.t0 = static_cast<std::int64_t>(i) * 100;
+            s.t1 = s.t0 + 100;
+            s.flags = makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+            segs.push_back(s);
+        }
+        CrvsData live = before;
+        juce::UndoManager undo;
+        scvb::output::commitCrvsTransaction(undo, live, "T", [&] { live = after; }, [] {});
+        // 事务已 perform;直接构造一个同样内容的 action 取其 units(commitCrvsTransaction
+        // 内部 new 出来的那个已交给 UndoManager 持有,拿不到指针)。
+        scvb::output::CrvsTransactionAction probe(live, before, after, [] {});
+        return probe.getSizeInUnits();
+    };
+
+    const int small = unitsFor(0);
+    const int mid = unitsFor(100);
+    const int big = unitsFor(10000);
+
+    CHECK(small >= 1); // 空快照也得占 1(0 会让它在容量账上「不存在」)
+    CHECK(mid > small); // ★ 随段数增长 —— 恒 1 的旧写法在这里就红了
+    CHECK(big > mid);
+    // 量级合理:1 万段两份快照应当远超 30000 units 的一个零头,让封顶真的够得着。
+    CHECK(big > 30000);
+}
