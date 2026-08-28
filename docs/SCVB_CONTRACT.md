@@ -104,11 +104,11 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `on: bool` |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"noTimeline"}` |
-| 语义 | 写 state `global.capture_enabled`。ON = 对 `{enabled 轨} × {global.range}` 布防;实际写特征段只在「播放中且在 range 内」发生(01 §5.1、04)。变更经 `scvb.state` 回推。 |
+| 语义 | 写 state `global.capture_enabled`。ON = 对 `{enabled 轨} × {global.range}` 布防;实际写特征段只在「播放中且在 range 内」发生(01 §5.1、04)。变更经 `scvb.state` 回推。**本函数是「用户自选采集态」的唯一入口**:在重采集布防期调用即视为用户**接管**这把闸,撤防不再替他恢复(§1.23 裁定③),且该值照实存进工程(`docs/STATE_SCHEMA.md` §三 `CFGS`)。工程恢复那一路不经过本函数。 |
 | 拒绝态 | `noTimeline` 场景下 UI 侧 disabled(05 §2.0 横幅⑥);C++ 侧收到调用时返回 `{ok:false, reason:"noTimeline"}` 并不改 state |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
-| 真源 | 05 §1.4 / §2.1 ① |
+| 真源 | 05 §1.4 / §2.1 ①;「用户自选采集态」一句 = [SL-225] PR #146,变更文档 `docs/contract-changes/20260828-j90-contract-text-align.md` |
 
 ### 1.3 `setOutputEnabled(on)`
 
@@ -341,11 +341,11 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `tracksMask: u16`;`startS: f64`;`endS: f64`;`autoStop?: bool`(默认 **false**,T25 补白) |
 | 返回 | `{ armed:bool, tracksMask:u16, startS:f64, endS:f64, reason?: "noTracks"\|"noSelection"\|"readOnly"\|"noTimeline" }`(`armed=false` 时必带 `reason`) |
-| 语义 | 局部重采集布防(轨×区间失效单元,ADR-007)。`autoStop=true` = 「播完自动停」:区间播毕自动 OFF(04 §4.2)。布防态同时进 `scvb.state.recapture`,重开面板/切 tab 后可恢复显示。**UI 以返回值而非乐观假设点亮布防 badge**。布防**只门控采集**:输出引擎恒按 `global.range ∩ coverage` 工作,与本次选区无关(03 §2.1,04 §4.2)。`tracksMask=0` → `reason:"noTracks"`;`startS>=endS` → `reason:"noSelection"`。传 `tracksMask=0 ∧ startS=endS=0` 视为**撤销布防**并返回 `{armed:false}` 无 `reason`。 |
+| 语义 | 局部重采集布防(轨×区间失效单元,ADR-007)。`autoStop=true` = 「播完自动停」:区间播毕自动 OFF(04 §4.2)。布防态同时进 `scvb.state.recapture`,重开面板/切 tab 后可恢复显示。**UI 以返回值而非乐观假设点亮布防 badge**。<br>**门控面**:布防期**特征记账**按「**工作选区 × 选中轨掩码**」两维硬约束门控,`global.range` **不参与**(落在选区外或未勾选轨的 hop 一律丢弃不记账,04 §4.2 ①);**撤防后当拍恢复 `global.range` 门控**。门控只挡**写入**,既有特征覆盖原样保留(04 §4.1);曲线真身与输出发射一概不受布防影响。<br>**副作用(布防会替用户开采集)**:布防在 `global.capture_enabled` **原为 `false`** 时把它置 `true`([J87] 裁定①),并记一笔「这一下是我们开的」(`recaptureAutoEnabledCapture`);中途改选区/改轨勾选会再次布防,但该记账**只在 `false→true` 那一跳**记,不重记。**撤防恢复布防前原值**(裁定③):只有**我们替他开的**才关回去,布防前本来就开着的保持开;用户在布防期间**显式**调用 §1.2 `setCaptureEnabled` 即视为**接管**,撤防不再替他动。该临时值**不进工程** —— `getStateInformation` 存的是用户自选的采集态(见 `docs/STATE_SCHEMA.md` §三 `CFGS`)。<br>`tracksMask=0` → `reason:"noTracks"`;`startS>=endS` → `reason:"noSelection"`。传 `tracksMask=0 ∧ startS=endS=0` 视为**撤销布防**并返回 `{armed:false}` 无 `reason`。 |
 | 拒绝态 | `armed:false` + `reason`(见上);只读观察态 → `reason:"readOnly"` |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
-| 真源 | 05 §1.4 / §2.3;04 §4.2 |
+| 真源 | 05 §1.4 / §2.3;04 §4.1 / §4.2;[J87] 裁定①③(变更文档 `20260828-j90-contract-text-align`) |
 
 ### 1.24 `clearCoverage(tracksMask, startS, endS)`
 
