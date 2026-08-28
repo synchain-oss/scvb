@@ -22,7 +22,7 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
 | 项 | 内容 |
 |---|---|
 | **原文** | 「**session_guid**:Output **首次 `getStateInformation()` 时** `juce::Uuid().toDashedString()` 自生成,永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。」 |
-| **新文** | 「**session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(……);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。落盘面见 §三 `PRMS`。」 |
+| **新文** | 「**session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(……);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。**PRMS 值不一定是加载期终值**:工程内 FEAT 走 sidecar 引用节时,引用节的 GUID **经校验通过后**再压过 PRMS 值(`readFeaturesChunk` 排在 PRMS 之后)。落盘面见 §三 `PRMS`。」 |
 | **依据(PR)** | #127([SL-215] 会话 GUID 落地) |
 | **依据(代码行号)** | 生成点:`src/output/OutputProcessor.cpp:60`(构造函数内 `sessionGuid_ = juce::Uuid().toDashedString();`,行注 52-59 明写「§4.3 写的『首次 getStateInformation() 时自生成』说的是**生成时机**;这里提前到构造期」)。落盘:`src/output/OutputProcessor.cpp:1165`(`writeSessionGuid(state, sessionGuid_)`,在 `getStateInformation` 内)。读回覆盖:`src/output/OutputProcessor.cpp:1625-1628`(`readSessionGuid` 非空即 `sessionGuid_ = loadedGuid`)。UI 落点:`src/output/OutputEditor.cpp:172` → `web/output/tab-settings.js:492`。形状校验:`src/output/OutputUiState.h:94-102`(非 36 字符 dashed UUID 一律当「没有」)。 |
 
@@ -137,7 +137,9 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
       (「生成 newGUID、本实例改用 newGUID」)打架;`sessionGuid_` 实有四个赋值点
       (`OutputProcessor.cpp:60` 构造期 `juce::Uuid()` / `:1376` CoW 换新 / `:1510` 校验通过的
       FEAT 引用节 / `:1627` PRMS 读回),故改为「**Output 侧的 `juce::Uuid()` 生成点**唯一」并
-      逐条列明其余覆盖路径。
+      逐条列明其余覆盖路径;同时补明「**PRMS 值不一定是加载期终值**」—— `readFeaturesChunk`
+      (`:1799`)排在 PRMS 读取(`:1609-1630`)之后,校验通过的 FEAT 引用节 GUID 会再压过它
+      (`:1508-1511`),否则 CoW 换过 GUID 的工程删不掉旧 sidecar 目录、留下孤儿。
       ② §三 新 bullet 的 CFGS 理由软化 —— 原写法「尾部追加字段会让旧构建整块拒载并静默把配置
       打回默认」是从既有代码注释原样搬入的**历史口径**,与同表 `CFGS` 行「已知字段后未知尾部原样
       回写」以及 `OutputStateCodec.cpp:192-196` 的 `unknownTail` 机制自相矛盾(且容器级
