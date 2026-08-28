@@ -313,6 +313,12 @@ TEST_CASE("HOST L-2/L-3:有声时电平快照非零,静音后落回地板", "[ho
 
     // 静音输入:测量随之回零(液柱落底,而不是冻在上一块的高度)。
     // [SL-222] 同样先 settle:定长的 40 块并不保证 Input→IPC→Output 这段管线延迟走完。
+    //
+    // ⚠ 先 REQUIRE(flowing):`waitUntilAudioQuiet` 有一条**平凡通过**路径 —— 这一轨若从来
+    // 就没通过(电平恒 0),它第一轮即 return true,下面两条 CHECK 也随之平凡为真。
+    // 上半段虽然会先红、INFO 也能分辨,但把前提显式钉住,静音这半边才真的有判据
+    // (#156 复审【建议】5)。
+    REQUIRE(flowing);
     r.runBlocks(40, /*amplitude=*/0.0f);
     const bool quieted = r.waitUntilAudioQuiet();
     INFO("waitUntilAudioQuiet=" << quieted);

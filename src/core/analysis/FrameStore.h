@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -103,7 +104,11 @@ public:
     void setVadP(uint64_t hop, uint8_t v);
 
     // [SL-232] 批量写 VAD 后验(`appendRange` 的写侧镜像,同一个理由)。
-    // `posterior[i]` 对应 hop `r.begin + i`,长度须 ≥ r 的跨度;量化在内部做。
+    // `posterior[i]` 对应 hop `r.begin + i`,`count` = 可读元素个数;量化在内部做。
+    //
+    // 为什么带 `count`:同族的 `appendRange` 收的是 `vector&`(长度自证),这里若只收裸指针,
+    // 「传宽了」就是一次**静默越界读**。带上长度后 r 会先被夹到 `[r.begin, r.begin+count)`,
+    // 传窄了退化成少写几个 hop(no-op 那一段),不再读越界。
     //
     // 为什么非要它:逐 hop 的写法是**每个 hop 两次 std::map 查找**(`hasHop` 的
     // `coversFully` 走一趟 lower_bound,`setVadP` 的 `pageFor` 再 find 一次),而外层
@@ -116,7 +121,7 @@ public:
     // 语义与逐 hop 版逐字相同:**未覆盖的 hop 不写**。后验在那里恒 0,写进去只会把 20KB 的
     // FeatPage 白建出来(`setVadP` 走 `pageFor(create=true)`,既不看 readOnly_ 也不看 gate_),
     // 正好抵消 FrameStore 的分页稀疏性;而读侧 waveformOf 本来就只遍历覆盖区。
-    void setVadPosteriorRange(HopRange r, const float* posterior);
+    void setVadPosteriorRange(HopRange r, const float* posterior, std::size_t count);
     float kwMs(uint64_t hop) const; // 反量化(供分析流水线)
     float peak(uint64_t hop) const;
 

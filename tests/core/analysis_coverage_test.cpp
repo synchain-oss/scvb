@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -479,7 +480,7 @@ TEST_CASE("FrameStore:setVadPosteriorRange 只写覆盖区,值与逐 hop 版逐�
     for (u64 h = 5; h < 45; ++h)
         post.push_back(static_cast<float>((h * 7) % 100) / 99.0f);
 
-    batch.setVadPosteriorRange({5, 45}, post.data());
+    batch.setVadPosteriorRange({5, 45}, post.data(), post.size());
     // 逐 hop 参照实现(= 本卡改动前那段代码,逐字):未覆盖跳过,覆盖处量化后写入。
     for (u64 h = 5; h < 45; ++h)
     {
@@ -514,7 +515,7 @@ TEST_CASE("FrameStore:setVadPosteriorRange 不为未覆盖的远端建页", "[st
     // 后验跨 40 页(4096 hop/页),但只有 hop 3 是覆盖的。
     const u64 span = FeatPage::kHops * 40;
     std::vector<float> post(static_cast<std::size_t>(span), 0.9f);
-    cf.setVadPosteriorRange({0, span}, post.data());
+    cf.setVadPosteriorRange({0, span}, post.data(), post.size());
 
     CHECK(cf.pageCount() == 1); // ★ 无脑建页会变成 40 —— 分页稀疏性被抵消
     CHECK(cf.vadP(3) == scvb::analysis::quantizeVadPosterior(0.9f));
@@ -532,7 +533,7 @@ TEST_CASE("FrameStore:setVadPosteriorRange 跨页边界与入参守卫", "[store
         cf.write(h, 0.01f, 0.1f);
 
     std::vector<float> post(static_cast<std::size_t>(hi - lo), 1.0f);
-    cf.setVadPosteriorRange({lo, hi}, post.data());
+    cf.setVadPosteriorRange({lo, hi}, post.data(), post.size());
     for (u64 h = lo; h < hi; ++h)
     {
         INFO("hop " << h);
@@ -540,10 +541,31 @@ TEST_CASE("FrameStore:setVadPosteriorRange 跨页边界与入参守卫", "[store
     }
     CHECK(cf.pageCount() == 2);
 
-    // 入参守卫:空指针 / 空区间 / 逆序区间都必须是 no-op(不崩、不改值)。
-    cf.setVadPosteriorRange({lo, hi}, nullptr);
-    cf.setVadPosteriorRange({lo, lo}, post.data());
-    cf.setVadPosteriorRange({hi, lo}, post.data());
+    // ★ count 短于区间跨度:只许**少写几个 hop**,绝不许读越界(#156 复审【建议】1)。
+    //   这里只喂 2 个元素、区间却有 7 个 hop —— 后 5 个必须原样不动。
+    {
+        ChannelFrames narrow;
+        narrow.setReadOnly(false);
+        for (u64 h = lo; h < hi; ++h)
+            narrow.write(h, 0.01f, 0.1f);
+        const std::array<float, 2> two{0.0f, 0.0f}; // 量化后 = 0,与「没写」区分不开,故先塞非 0
+        for (u64 h = lo; h < hi; ++h)
+            narrow.setVadP(h, 77);
+        narrow.setVadPosteriorRange({lo, hi}, two.data(), two.size());
+        CHECK(narrow.vadP(lo) == 0); // 前 2 个被 0.0f 覆盖
+        CHECK(narrow.vadP(lo + 1) == 0);
+        for (u64 h = lo + 2; h < hi; ++h)
+        {
+            INFO("hop " << h);
+            CHECK(narrow.vadP(h) == 77); // 后 5 个原样 —— 没夹长度就会读越界并覆写
+        }
+    }
+
+    // 入参守卫:空指针 / 空区间 / 逆序区间 / count=0 都必须是 no-op(不崩、不改值)。
+    cf.setVadPosteriorRange({lo, hi}, nullptr, post.size());
+    cf.setVadPosteriorRange({lo, lo}, post.data(), post.size());
+    cf.setVadPosteriorRange({hi, lo}, post.data(), post.size());
+    cf.setVadPosteriorRange({lo, hi}, post.data(), 0);
     CHECK(cf.vadP(lo) == 255);
 }
 
@@ -571,7 +593,7 @@ TEST_CASE("FrameStore:大跨度 setVadPosteriorRange 仍在时间预算内", "[s
     const auto t0 = std::chrono::steady_clock::now();
     for (int t = 0; t < kTracks; ++t)
     {
-        store.channel(static_cast<u32>(t + 1)).setVadPosteriorRange({0, kSpan}, post.data());
+        store.channel(static_cast<u32>(t + 1)).setVadPosteriorRange({0, kSpan}, post.data(), post.size());
     }
     const double elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 

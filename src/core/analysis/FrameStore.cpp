@@ -49,6 +49,9 @@ int16_t quantizePeakDbq(float peak) noexcept
 
 uint8_t quantizeVadPosterior(float p) noexcept
 {
+    // ⚠ 与 SL-206 那版逐 hop 写法的**唯一**差别:那边是 `lround(clamped * 255.0f)`(float 乘),
+    // 这里先升 double 再乘。极窄的取整临界值上两者可能差 1 —— 对 UI 热图无实际影响
+    // (读侧判据只是 `>127`),但「语义逐字相同」严格说要打这个星号,记在这里。
     // NaN 也走这一支(比较全 false)→ 0,不把畸形值放进泳道。
     if (!(p > 0.0f))
     {
@@ -186,14 +189,21 @@ void ChannelFrames::setVadP(uint64_t hop, uint8_t v)
     page->vadP[hop % FeatPage::kHops] = v;
 }
 
-void ChannelFrames::setVadPosteriorRange(HopRange r, const float* posterior)
+void ChannelFrames::setVadPosteriorRange(HopRange r, const float* posterior, std::size_t count)
 {
-    if (posterior == nullptr || r.end <= r.begin)
+    if (posterior == nullptr || r.end <= r.begin || count == 0)
     {
         return;
     }
+    // 先按**可读元素个数**夹住右端:调用方传宽了不许变成越界读,只许少写几个 hop。
+    if (r.end - r.begin > count)
+    {
+        r.end = r.begin + count;
+    }
     // 只走**已覆盖**的子区间:未覆盖处后验恒 0,写进去只会白建 20KB 的页(见头文件注)。
-    // intersect 已把区间裁进 r 内,实际区间数在几十以内(CoverageMap 的不变量)。
+    // intersect 已把区间裁进 r 内。⚠ 区间数**没有硬上限** —— `CoverageMap` 只保证有序 +
+    // 相邻合并,不保证条数;「几十」是现场经验量级(= 连续覆盖段数),不是不变量,别据此
+    // 做更强的假设。复杂度结论不受影响:仍是 O(重叠区间数 + 实际覆盖 hop 数),与**跨度**无关。
     for (const HopRange seg : coverage_.intersect(r))
     {
         uint64_t h = seg.begin;

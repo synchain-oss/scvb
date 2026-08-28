@@ -2836,9 +2836,11 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                     {
                         continue;
                     }
-                    // firstHop 可能为负(范围左端在 0 之前):负的那一截没有对应 hop,整体左裁。
-                    // HopRange 是 uint64,裁完才敢转。⚠ 先与 post.size() **比较**再取负 ——
-                    // `-INT64_MIN` 是 UB,现实中够不着,但这道守卫是免费的。
+                    // ⚠ 这一段是**纯防御码,当前产线不可达**:`startAnalysis` 已把 startS
+                    // clamp 到 ≥0,`rangeStartSample` 恒非负 ⇒ `result.firstHop >= 0`。
+                    // 留着是因为 firstHop 的来源(范围换算)将来若放开负范围,这里不该静默越界。
+                    // 语义:负的那一截没有对应 hop,整体左裁;HopRange 是 uint64,裁完才敢转。
+                    // 先与 post.size() **比较**再取负 —— `-INT64_MIN` 是 UB,够不着但守卫免费。
                     const auto span = static_cast<std::int64_t>(post.size());
                     const std::size_t skip = result.firstHop >= 0 ? std::size_t{0}
                                              : result.firstHop <= -span ? post.size() // 整条都落在 0 之前:全裁掉
@@ -2848,9 +2850,10 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                         continue;
                     }
                     const auto begin = static_cast<std::uint64_t>(result.firstHop + static_cast<std::int64_t>(skip));
+                    const std::size_t usable = post.size() - skip;
                     store.channel(static_cast<scvb::u32>(t + 1))
-                        .setVadPosteriorRange(scvb::analysis::HopRange{begin, begin + (post.size() - skip)},
-                                              post.data() + skip);
+                        .setVadPosteriorRange(scvb::analysis::HopRange{begin, begin + usable}, post.data() + skip,
+                                              usable);
                 }
             }
 
