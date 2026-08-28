@@ -1132,6 +1132,88 @@ TEST_CASE("HOST clearManual:true 时连用户段一并重算", "[host][t37][anal
     CHECK_FALSE(hasUserSeg()); // ← 修复前 opts 整个被丢弃,这里仍为 true
 }
 
+// ---------------------------------------------------------------------------
+// #148 复审【重要】③:clearManual × locked 三方一致。
+//
+// 契约 §1.6「`locked=true` 段不受影响,**须先逐段解锁**」/ §5.4「`locked` 段免疫」,
+// mock 的 `isProtectedSegment` 也是「先看 locked、再看 clearManual」—— 只有 native 把这两
+// 个判据折进同一个 `!clearManual &&` 短路里(#87 接 opts 时漏的),于是「重新识别(含手动段)」
+// 把用户显式上的锁一并抹掉。三方里错的是 native,契约与 mock 一字未动。
+//
+// 反向验证:把 finishAnalysis 的 `isLocked ||` 去掉(退回旧式)后本用例的 ② 必红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST clearManual 不得清掉 locked 段(契约 §1.6/§5.4)", "[host][t37][analyze][SL230]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    const auto segsOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        return crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    };
+    const auto waitDone = [&r]() {
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return;
+            }
+        }
+        FAIL("analysis did not finish");
+    };
+    const auto lockedCount = [&segsOf]() {
+        int n = 0;
+        for (const auto& sg : segsOf())
+        {
+            if (scvb::state::segmentLocked(sg.flags))
+            {
+                ++n;
+            }
+        }
+        return n;
+    };
+
+    // 手动写回 → 单段 user_edited 且 **locked=false**(makeManualConstantSegment 的口径)。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 40.0f, replaced, replacedLocked));
+    REQUIRE(segsOf().size() == 1);
+    REQUIRE(lockedCount() == 0);
+
+    // 用户显式挂锁(§5.4 set_locked:只改 locked,不动 origin)。
+    scvb::state::SegmentEditArgs lock;
+    lock.op = scvb::state::SegmentEditOp::SetLocked;
+    lock.segIdx = 0;
+    lock.locked = true;
+    // ⚠ editSegment 的 track 是 **0 基**(桥面 OutputEditor.cpp 也是 `ch - 1` 再进来),
+    // 与同一个类上 1 基的 setTrackManual(ch) 不同口径 —— 传错不会报错,只会静默改到隔壁轨。
+    REQUIRE(r.out.editSegment(kTestChannel - 1, lock) == scvb::state::SegmentEditResult::Ok);
+    REQUIRE(lockedCount() == 1);
+
+    // ① 普通分析:锁定段当然保留(存量口径,顺带把「锁真的挂上了」再钉一遍)。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/false).ok);
+    waitDone();
+    CHECK(lockedCount() == 1);
+
+    // ② clearManual=true:origin 那层保护放开,**锁这层不放** —— 段必须还在。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/true).ok);
+    waitDone();
+    CHECK(lockedCount() == 1); // ← 修复前锁定段被一并抹掉,这里为 0
+}
+
 // ===========================================================================
 // v5 实测 —— 多轨分析(P0-1)/ 重新识别清手动(P0-3)/ 波形瓦片(P0-4)/ 换组发布(P0-5)
 // ===========================================================================

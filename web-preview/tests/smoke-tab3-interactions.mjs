@@ -50,6 +50,7 @@ const MD = await import(u("web/shared/mock-data.js"));
 const { T } = await import(u("web/shared/i18n.js"));
 const TWCM = await import(u("web/shared/context-menu.js"));
 const WHEEL = await import(u("web/shared/wheel.js"));
+const ALT = await import(u("web/shared/alt-menu.js"));
 
 let fail = 0;
 const log = (...a) => console.log(...a);
@@ -1853,23 +1854,27 @@ log("=== ⑪ Wave 4 用户 preview 八条反馈(配色 / 勾选框 / 缩放条 /
     const html = src("web/output/index.html");
     const css = src("web/shared/tokens.css");
 
-    // ---- ① 文案:「播完自动停」整句化,三语齐(key 不变)
-    eq(T.zh.autoStop, "播放结束自动停止", "zh autoStop 改完整句");
+    // ---- ① 文案(key 不变,措辞两轮):
+    //   Wave 4 把「播完自动停」整句化成「播放结束自动停止」;
+    //   **[SL-228 用户裁定 2026-08-28]** 再改成「区域外自动停止」—— 更贴语义:
+    //   自动撤防的判据是**播放头越过选区右边界**(不是整段播放结束),
+    //   见 USER_GUIDE 那句「播放头越过选区右边界即自动撤防」。
+    //   旧断言按新裁定改写,不让上一轮的措辞拦住这一轮。
+    eq(T.zh.autoStop, "区域外自动停止", "zh autoStop = SL-228 裁定的措辞");
     check(
-        /playback ends/i.test(T.en.autoStop),
-        "en autoStop 是同义完整句(不再是 Auto-stop 短语)",
+        /outside the range/i.test(T.en.autoStop),
+        "en autoStop 说的是「范围之外」而不是「播放结束」",
     );
-    check(
-        /lecture/i.test(T.fr.autoStop),
-        "fr autoStop 是同义完整句(不再是 Arrêt auto 短语)",
-    );
+    check(/hors zone/i.test(T.fr.autoStop), "fr autoStop 说的是「区域之外」");
     check(
         ![T.zh, T.en, T.fr].some((d) =>
             Object.values(d).some((v) =>
-                /播完自动停|Auto-stop|Arrêt auto/.test(String(v)),
+                /播完自动停|播放结束自动停止|playback ends|fin de lecture/i.test(
+                    String(v),
+                ),
             ),
         ),
-        "旧短语在三语词条值里零命中(html 的旧文案由 applyI18n 覆盖)",
+        "两轮旧措辞在三语词条值里都零命中",
     );
 
     // ---- ② 自绘勾选框:仍是真 input(只视觉隐藏),同族形制 + 焦点环 + ≥24 命中
@@ -3897,6 +3902,124 @@ log("=== ⑫ 复审收口:微拖×2 不得被判成「双击删边界」+ 四项
                 /分界线|divider|limite entre/.test(body),
                 `(f2)${lang}.step34 写了「双击分界线 = 合并」(手势无可见入口,引导词是唯一发现路径)`,
             );
+        }
+    }
+}
+
+// =============================================================================
+log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器入口 ===");
+{
+    const tw = src("web/output/tab-wave.js");
+
+    // ---- SL-227:裸 Alt 的菜单模式抑制 -------------------------------------
+    // 机理:Windows 上**单独按下再松开 Alt** 会激活菜单栏、进入菜单模式,
+    // WebView2 里焦点因此从 web 内容上挪走;而 Alt+滚轮的手势天然以裸 Alt 的
+    // keyup 收尾 —— 于是「Alt 用过之后 Ctrl 横缩放概率失效」。
+    {
+        const S = ALT.shouldSuppressAltDefault;
+        check(S({ key: "Alt" }), "(a1)裸 Alt ⇒ 拦");
+        check(
+            !S({ key: "Alt", ctrlKey: true }),
+            "(a2)Ctrl+Alt ⇒ 放行(宿主地盘)",
+        );
+        check(!S({ key: "Alt", shiftKey: true }), "(a3)Shift+Alt ⇒ 放行");
+        check(!S({ key: "Alt", metaKey: true }), "(a4)Meta+Alt ⇒ 放行");
+        // 组合键里的 Alt,key 是那个字母/功能键,不该被本条吃掉
+        check(!S({ key: "F4", altKey: true }), "(a5)Alt+F4 ⇒ 放行(key 是 F4)");
+        check(
+            !S({ key: "f", altKey: true }),
+            "(a6)Alt+F 访问键 ⇒ 放行(key 是 f)",
+        );
+        check(!S({ key: "a" }), "(a7)普通键 ⇒ 放行");
+        check(!S(null), "(a8)缺参不炸");
+        const am = src("web/shared/alt-menu.js");
+        check(
+            /addEventListener\("keydown", onKey, true\)/.test(am) &&
+                /addEventListener\("keyup", onKey, true\)/.test(am),
+            "(a9)keydown+keyup 都挂,且走捕获阶段(菜单模式由 keyup 触发)",
+        );
+        for (const f of ["web/output/app.js", "web/input/app.js"]) {
+            check(
+                /suppressBareAltMenu\(document\);/.test(src(f)),
+                `(a10)${f} 已挂`,
+            );
+        }
+        // 真机验证项必须留字:无头里既没有菜单栏、页面也恒有焦点,效果观察不到
+        check(
+            /真机验证项(无头验不了)|真机复验口径/.test(am),
+            "(a11)文件头写清了真机验证项(这一条无头验不了)",
+        );
+    }
+
+    // ---- SL-230:检查器「恢复自动」入口 ------------------------------------
+    {
+        check(
+            /els\.inspRestore = \$\("inspector-restore"\);/.test(tw),
+            "(b1)检查器入口已接节点",
+        );
+        check(
+            /function renderInspectorRestore\(ch, idx, seg, editable\)/.test(
+                tw,
+            ),
+            "(b2)有独立的两态渲染",
+        );
+        // auto 段不出:给它一个「恢复自动」是废钮
+        check(
+            /const manual = !!seg && seg\.origin && seg\.origin !== "auto";/.test(
+                tw,
+            ),
+            "(b3)只在手动段上出",
+        );
+        // 锁定段只说不做 —— split/move_boundary/set_values 的后置(§5.4)恰恰会把
+        // 命中段置成 user_edited **且 locked**,那正是用户最常遇到的手动段
+        check(
+            /if \(seg\.locked\) \{[\s\S]{0,320}restoreAutoLocked/.test(tw),
+            "(b4)锁定段换成「先解锁」说明,不给点了没反应的钮",
+        );
+        check(
+            /"analyze",\s*\n?\s*\{ tracksMask: 1 << \(cur\.ch - 1\) \},\s*\n?\s*\{ clearManual: true \}/.test(
+                tw,
+            ),
+            "(b5)走 §1.6 的轨级 clearManual",
+        );
+        // 空态也要收起,否则挂着上一个段的入口(与 origin 角标同一个理由)
+        check(
+            /renderInspectorRestore\(0, -1, null, false\);/.test(tw),
+            "(b6)空态收起入口",
+        );
+        // [#148 复审【建议】①] 展开态跟**选中段**绑定。裸布尔的病:在段 A 上点开确认、
+        // 不取消直接去点段 B,面板一进去就停在「取消 / 继续」上 —— 用户没点过却已经在问他。
+        check(
+            /inspRestoreAsk: "",/.test(tw) &&
+                /local\.inspRestoreAsk = cur \? `\$\{cur\.ch\}:\$\{cur\.idx\}` : "";/.test(
+                    tw,
+                ) &&
+                /const asking = local\.inspRestoreAsk === `\$\{ch\}:\$\{idx\}`;/.test(
+                    tw,
+                ),
+            "(b7)展开态存的是段身份、按身份比对(不是裸布尔)",
+        );
+        // [#148 复审【建议】②] 「继续」在途去重:钮要等下一次 render 才隐,快速双击
+        // 会发两次 analyze —— 第二次基本是空操作,但白跑一趟秒级离线分析。
+        check(
+            /if \(local\.inspRestoreBusy\) return;/.test(tw) &&
+                /local\.inspRestoreBusy = true;/.test(tw) &&
+                /finally \{[\s\S]{0,40}local\.inspRestoreBusy = false;/.test(
+                    tw,
+                ),
+            "(b8)「继续」有在途去重,且用 finally 兜住抛错",
+        );
+        for (const k of [
+            "tracks.restoreAuto",
+            "tracks.restoreAutoHint",
+            "tracks.restoreAutoLocked",
+        ]) {
+            for (const lang of ["zh", "en", "fr"]) {
+                check(
+                    typeof T[lang][k] === "string" && T[lang][k].length > 0,
+                    `(b7)${lang}.${k} 非空`,
+                );
+            }
         }
     }
 }

@@ -100,7 +100,7 @@ export const T = {
         printing: "打印中",
         lowSample: "样本不足",
         // T33 Wave 4 用户 preview 裁定:短语「播完自动停」读不成句,改完整句(key 不变)
-        autoStop: "播放结束自动停止",
+        autoStop: "区域外自动停止",
         reidentify: "重新识别(含手动段)",
         applyToSegments: "应用到分段",
         setAsRange: "设为范围",
@@ -529,6 +529,13 @@ export const T = {
         "tracks.srErr": "采样率不一致",
         "tracks.labelEdit": "轨道名称(≤24 字符)",
         "tracks.reidentifyOne": "重新识别轨 {n}",
+        // [SL-230] 持久入口:只要该轨还被手动常值驱动就一直在(用户实测「找不到
+        // clearManual」—— 原先唯一的入口是解冻那一下的临时提示条,点掉就再也没有了)。
+        "tracks.restoreAuto": "恢复自动",
+        "tracks.restoreAutoHint": "本轨由手动固定值驱动",
+        // 锁定段按契约 §1.6 对 clearManual 免疫(「须先逐段解锁」)——
+        // 不说这一句,用户点完「恢复自动」只会看到「什么都没发生」。
+        "tracks.restoreAutoLocked": "本段已锁定;锁定的段不会被恢复,请先解锁",
         // 单轨重新识别的**二次确认**(05 §2.2「二次确认同 §2.3」;契约 §1.6 的
         // clearManual 分支:locked 段不受影响,须先逐段解锁)。T32 Wave 2 新增。
         "tracks.reidentifyConfirm":
@@ -934,7 +941,7 @@ export const T = {
         // 完整句(zh 同处纪律);⚠ 长度受工具条动作行约束 —— 37 字符的
         // 「Stop automatically when playback ends」实测把 EN 动作行挤成两行
         // (30px → 48px,可见泳道少一条),修订轮压回 23 字符
-        autoStop: "Stop when playback ends",
+        autoStop: "Auto-stop outside the range",
         reidentify: "Re-identify (incl. edited)",
         applyToSegments: "Apply",
         setAsRange: "Set as Range",
@@ -1352,6 +1359,11 @@ export const T = {
         "tracks.srErr": "Sample rate mismatch",
         "tracks.labelEdit": "Track name (24 characters max)",
         "tracks.reidentifyOne": "Re-identify track {n}",
+        "tracks.restoreAuto": "Restore automatic",
+        "tracks.restoreAutoHint":
+            "This track is driven by a manual fixed value",
+        "tracks.restoreAutoLocked":
+            "This segment is locked; locked segments are not restored — unlock it first",
         "tracks.reidentifyConfirm":
             "This clears the manual fixed value on track {n} and re-identifies it. Locked segments are left untouched. Continue?",
         "tracks.pairNone": "None",
@@ -1717,7 +1729,7 @@ export const T = {
         printing: "IMPRESSION",
         lowSample: "ÉCHANTILLON INSUFFISANT",
         // 同 EN:整句但压短,免得动作行换行(FR 最长态是工具条的宽度基准)
-        autoStop: "Arrêter en fin de lecture",
+        autoStop: "Arrêt auto hors zone",
         reidentify: "Ré-identifier (incl. modifiés)",
         applyToSegments: "Appliquer",
         setAsRange: "Définir comme plage",
@@ -2146,6 +2158,11 @@ export const T = {
         "tracks.srErr": "Fréquence d'échantillonnage incompatible",
         "tracks.labelEdit": "Nom de piste (24 caractères max)",
         "tracks.reidentifyOne": "Ré-identifier la piste {n}",
+        "tracks.restoreAuto": "Rétablir l'automatique",
+        "tracks.restoreAutoHint":
+            "Cette piste est pilotée par une valeur manuelle fixe",
+        "tracks.restoreAutoLocked":
+            "Ce segment est verrouillé ; les segments verrouillés ne sont pas rétablis — déverrouillez-le d'abord",
         "tracks.reidentifyConfirm":
             "La valeur fixe manuelle de la piste {n} sera effacée puis ré-identifiée ; les segments verrouillés restent inchangés. Continuer ?",
         "tracks.pairNone": "Aucun",

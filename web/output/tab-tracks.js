@@ -37,6 +37,7 @@
 
 // 弹道渲染器(契约 §2.5 的 30 Hz 事件 → rAF 补间);模块顶层零副作用,node 可直接 import。
 import { createMeterRenderer } from "./canvas/meter.js";
+import { paramIdOf, readbackVersion } from "../shared/param-id.js";
 // hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字;
 // format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
 // PR #60 红旗)。
@@ -312,10 +313,11 @@ function clamp01(v) {
 //   液柱 lv / 峰线 pk                                    ← §2.5 `scvb.meters`(经 meter.js 弹道)
 //   冻结维度的读回值 / 解冻提示判定                        ← §2.8 `scvb.segments`(常值段)
 
-/** 每轨 ParamID(契约 §1.12-§1.14:`v{v}_t{t:02d}_{knob}`,t 两位零填充)。 */
-export function paramIdOf(versionActive, ch, knob) {
-    return `v${Math.trunc(num(versionActive, 1))}_t${tt(ch)}_${knob}`;
-}
+// [SL-229 复审①] `paramIdOf` / `readbackVersion` 已移到 `web/shared/param-id.js` ——
+// Tab1 的分布图也要用同一份判据(它原先自己拼 `v{v}_t{ch}_pan`,切版本那一帧照样
+// 查空、照样闪一排居中柱)。**在此原样再导出**,既有 import 点一字不改
+// (手法同 tab-master 里的 distGeometry)。
+export { paramIdOf, readbackVersion } from "../shared/param-id.js";
 
 /**
  * 三个可拖控件的值域与默认值。
@@ -574,10 +576,13 @@ export function rowContext(store) {
         // 这才是 J78「显示权威」的完整形态:显示与 DSP 在**两个档上都**一致,
         // 而不是只在 ON 档对上。
         outputOn: (state.global || {}).output_enabled === true,
-        active:
-            (state.global && state.global.version_active) ||
-            (st.params && st.params.versionActive) ||
-            1,
+        // [SL-229] 读回命名空间跟着**params 真的带着的那一版**走,不跟 state 抢跑
+        // (详见 readbackVersion 头注:抢跑会让 15 轨闪一帧居中)。
+        active: readbackVersion(
+            vals,
+            (state.global && state.global.version_active) || 0,
+            (st.params && st.params.versionActive) || 0,
+        ),
         counts: pairCounts(chans),
         multiLead: leadLockCount(chans) >= 2 ? 1 : 0,
         leadSel: Math.trunc(num(vals.lead_select, 0)),
@@ -657,6 +662,9 @@ export function rowFromStore(store, ch, ctx) {
         recapture: c.recMask & (1 << (ch - 1)) ? 1 : 0,
         multiLead: c.multiLead,
         manualConst: seg ? 1 : 0,
+        // [SL-230] 手动常值有没有被锁:锁着的话 clearManual 碰不了它(契约 §1.6
+        // 「locked 免疫,须先逐段解锁」),「恢复自动」得改说「先解锁」而不是给钮。
+        manualConstLocked: seg && seg.locked ? 1 : 0,
     };
 }
 
@@ -721,6 +729,27 @@ export function trackHeadHtml() {
 
 const W = Object.fromEntries(TRACK_COLS.map((c) => [c.key, c.w]));
 
+// [SL-230 复审②]「恢复自动」的**触发钮**图标。逆时针环箭头,画成**内联 SVG**而不是
+// 字符 —— `↺`(U+21BA)在四款子集字体里一个字形都没有(gates 3h 实测),真机上会掉进
+// 系统字体或直接上屏方块;而重跑 fetch_fonts.py 要联网、且每加一个符号就得再跑一次。
+// 画出来的图形不吃字体,这条路一次走通就永久有效。`currentColor` 让它跟着按钮配色走。
+//
+// ⚠ 图标本身**不进文案字符集**,但**注释不要写进模板字面量里** —— gates 3h 的扫描面是
+// JS 字符串字面量,行模板是一整条模板字面量,写在里面的 HTML 注释会被当成文案统计,
+// 于是一段中文注释就能让门禁要求字体补上十几个汉字。故这段说明留在模块层。
+//
+// 它为什么在**行内**而不是浮条:`.tracks-row__hint` 是 absolute + top:100%,画在**下一行**
+// 头上。做临时提示(一次只出一条、点掉就走)没问题,做**常驻**入口就是灾难 —— 两条以上
+// 手动常值轨时每条都盖住下一行,下一行点不动,正是本卡要消灭的那类「点了没反应」。
+// 行高 44px 是设计常量(15 行 × 44 撑起整块),浮条改成占位会顶掉布局;故触发钮进单元格
+// (零宽度代价:只在该轨手动时才出),浮条只留给**确认**那一瞬(与 manual-overwrite
+// 确认条同一档,一次一条)。页面级实测见 web-preview/tests/row-occlusion-probe.mjs。
+const RESTORE_ICON =
+    '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+    '<path d="M4.2 6.4A4.6 4.6 0 1 1 3.5 8.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>' +
+    '<path d="M1.9 6.1 4.2 6.4 4.9 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>' +
+    "</svg>";
+
 /**
  * 一条轨行(设计稿 578-621)。
  * 全部状态写成 data-*:行 data-status / data-on / data-lead / data-dead,
@@ -769,6 +798,9 @@ export function trackRowHtml(t) {
         <span class="tracks-row__leadmark" data-t="tracks.leadCenter" data-gb="${gb("leadcenter")}"${t.leadCenter ? "" : " hidden"}></span>
         <!-- 采集后有效唱段 <1.5s(05 §2.2 R1):角标保短版,全句「样本不足,结果可能不稳」进 tooltip(统筹裁定 B12) -->
         <span class="sc-badge--amber tracks-row__mark" data-t="lowSample" data-gb="${gb("lowsample")}"${t.low ? "" : " hidden"}></span>
+        <!-- SL-230 restore-auto trigger (see rowHtml header note) -->
+        <button type="button" class="tracks-row__restore" data-gb="${gb("restore-auto")}"
+                data-disabled="0" hidden>${RESTORE_ICON}</button>
       </span>
       <span class="tracks-row__cell" role="cell" style="width:${W.pan}px">
         <!-- 冻结态:垂直拖拽 / 滚轮 ±1 / 双击回 0 → bridge.setTrackManual(${ch}, "pan", v)(契约 §1.16;
@@ -892,6 +924,18 @@ export function trackRowHtml(t) {
            **单链一次确认**:本条自身就是那次确认(正文含「已锁定段保持不变」),链接不再另开
            第二道确认条 —— 老写法「提示 → 确认条 → 取消 → 提示又回来」两件互为对方的出口,
            成了一个关不掉的环(v5 实测 P0-2)。「知道了」是这条链唯一的终止出口。 -->
+      <!-- [SL-230] **持久**的「恢复自动」入口。用户实测「找不到 clearManual」——
+           定谳:单轨 clearManual 此前**唯一**的入口是下面那条解冻提示条,而它只在
+           freeze 位 1→0 的那一下挂起、点「知道了」就永久消失;没走过冻结→解冻的人
+           (或点掉过的人)此后再也没有单轨入口,只剩 Tab3 工具条那个要先勾轨拖选区的
+           范围版。本行的显示条件与提示条**互补**:只要该轨仍被手动常值驱动就在,
+           提示条正显示时让位给它(那条自带同一个入口,两个一起出是重复)。
+           两态就地切换:按钮 → 确认(复用 tracks.reidentifyConfirm,与提示条同一句)。 -->
+      <div class="tracks-row__hint" data-gb="${gb("restore-auto-row")}" hidden>
+        <span data-gb="${gb("restore-auto-text")}"></span>
+        <button type="button" class="tracks-row__relink" data-gb="${gb("restore-auto-cancel")}" data-t="common.cancel"></button>
+        <button type="button" class="tracks-row__relink" data-gb="${gb("restore-auto-ok")}" data-t="common.continue"></button>
+      </div>
       <div class="tracks-row__hint" data-gb="${gb("manualdriven-hint")}" hidden>
         <span data-t="tracks.manualDrivenHint"></span>
         <button type="button" class="tracks-row__relink" data-gb="${gb("manualdriven-reidentify")}"></button>
@@ -960,6 +1004,9 @@ export function createTabTracks(opts) {
         gesture: null, // 拖动中的 ParamID(灰显/让位判定要排除自己)
         drag: null, // {ch, kind, id, startX, startY, start, moved, node}
         unfreezeHint: new Map(), // ch → 触发提示的 freeze 位(1..3)
+        // [SL-230 复审②] 展开确认的**那一条**轨(0 = 没有)。**不能是 Set** ——
+        // 确认浮条同样是 absolute/top:100%,两条同时展开照样互相盖。
+        restoreConfirm: 0,
         reidentifying: new Set(), // 单轨重新识别在途:期间不接受新的解冻提示挂起(P0-2)
         pairOpen: 0, // 配对面板展开中的轨(0 = 无;单例,同一时刻只开一个)
         editingCh: 0, // label 行内编辑中的轨(渲染不得覆写该行的输入框)
@@ -1644,6 +1691,25 @@ export function createTabTracks(opts) {
         // 确认条/提示行的按钮**不受整行 disabled 约束**(它们是撤下确认的出口)
         if (part === "manual-overwrite-cancel") return closeConfirm();
         if (part === "manual-overwrite-ok") return acceptConfirm();
+        // [SL-230] 持久入口的三枚钮:同样**不受整行 disabled 约束**(它们是撤下确认的出口),
+        // 真正的写面守卫在 doReidentify 里(isWriteBlocked / isRowDead 双守卫)。
+        if (part === "restore-auto") {
+            // 锁定态的钮是 data-disabled=1 + tooltip 说明原因(口径同 SL-193 的灰钮):
+            // clearManual 对 locked 段免疫,给它一次「展开确认再什么都不发生」更糟。
+            const btn = (local.rows.get(ch) || {}).restoreAuto;
+            if (btn && btn.getAttribute("data-disabled") === "1") return;
+            local.restoreConfirm = ch; // 一次一条
+            return requestRender();
+        }
+        if (part === "restore-auto-cancel") {
+            local.restoreConfirm = 0;
+            return requestRender();
+        }
+        if (part === "restore-auto-ok") {
+            local.restoreConfirm = 0;
+            doReidentify(ch); // 与解冻提示条逐字同一条路(analyze + clearManual)
+            return;
+        }
         if (part === "manualdriven-dismiss") {
             // 这条链的终止出口:撤下提示,不发任何写面调用。
             local.unfreezeHint.delete(ch);
@@ -1652,6 +1718,9 @@ export function createTabTracks(opts) {
         if (part === "manualdriven-reidentify") {
             // 只读观察/无时间线不得发起重析(analyze 是写面;持久评审)
             if (isWriteBlocked()) return;
+            // 锁定档:与行内触发钮同一条守卫(渲染面已置灰,这里再复检一次入口)
+            const rb = (local.rows.get(ch) || {}).manualdrivenReidentify;
+            if (rb && rb.getAttribute("data-disabled") === "1") return;
             // 提示正文本身即二次确认(见模板注释),这里直接发起 —— 不再开第二道确认条。
             return doReidentify(ch);
         }
@@ -1909,6 +1978,11 @@ export function createTabTracks(opts) {
             "manual-overwrite-cancel",
             "manual-overwrite-ok",
             "manualdriven-hint",
+            "restore-auto-row",
+            "restore-auto-text",
+            "restore-auto",
+            "restore-auto-cancel",
+            "restore-auto-ok",
             "manualdriven-reidentify",
             "manualdriven-dismiss",
         ];
@@ -2114,8 +2188,14 @@ export function createTabTracks(opts) {
             attr(n.labelcell, "data-editing", "0");
             // label 直接读 store(channels[].label 已在 demo 构建层本地化;
             // 真实插件路径 = DAW 轨名,不经 mock → 零误伤)。
-            text(n.label, row.label || labelPlaceholder(ch, t));
+            const shown = row.label || labelPlaceholder(ch, t);
+            text(n.label, shown);
             attr(n.label, "data-placeholder", row.label ? 0 : 1);
+            // 轨名被挤窄时靠 `text-overflow: ellipsis` 收场,但截断后名字就不可读了 ——
+            // label 单元格固定 150px,而条件角标最多同时挂三件(主唱居中标 26px +
+            // 样本不足角标 44px + SL-230 的触发钮 18px),实测最坏档轨名只剩 44px。
+            // 补一条 tooltip,截断至少是可恢复的(#148 二轮【建议】4)。
+            setTitle(n.label, shown);
         }
         setTitle(n.labelInput, t["tracks.labelEdit"]);
         show(n.leadcenter, !!row.leadCenter);
@@ -2178,7 +2258,7 @@ export function createTabTracks(opts) {
         syncToggle(n.enable, row.on, dis);
 
         // ---- 行内确认层 / 解冻提示 ----
-        syncConfirm(n, row, t, ch);
+        syncConfirm(n, row, t, ch, dis);
     }
 
     function syncToggle(node, on, dis) {
@@ -2248,7 +2328,8 @@ export function createTabTracks(opts) {
      * 同一时刻只出一件 —— 确认条是「需要一个决定」,提示是「一条建议 + 它自己的出口」。
      * 单轨重新识别**不再**经确认条(P0-2:两件互为出口会成环),提示条自带执行与终止两个钮。
      */
-    function syncConfirm(n, row, t, ch) {
+    // `dis` = 整行的 disabled 位("1"/"0",= srErr 死轨 ∪ 只读观察态),由调用方算好传进来。
+    function syncConfirm(n, row, t, ch, dis) {
         const c =
             local.confirm && local.confirm.ch === ch ? local.confirm : null;
         show(n.manualOverwriteConfirm, !!c);
@@ -2268,7 +2349,54 @@ export function createTabTracks(opts) {
         // 解冻提示:该位 1→0 且该轨当前版本曲线仍是单段全时限 user_edited 常值
         const hint = !c && local.unfreezeHint.has(ch) && !!row.manualConst;
         show(n.manualdrivenHint, hint);
-        attr(n.row, "data-confirm", c || hint ? 1 : 0);
+        // [SL-230] 常驻「恢复自动」触发钮:只要该轨仍被手动常值驱动就在(行内,不浮)。
+        // 与解冻提示条**不再互斥** —— 触发钮不占下一行的地方,提示条出没出都无所谓;
+        // 那条自带的「重新识别轨 {n}」仍是同一个动作,两处并存不冲突。
+        // 只读观察态(第二个 Output 实例)/ srErr 死轨:`doReidentify` 的写面守卫会直接
+        // 静默返回,钮再露出来就又是一枚「点了没反应」—— 正是本卡要去掉的东西。口径与
+        // 检查器那份的 `editable = !isWriteBlocked() && !isLaneDead()` 对齐(#148 复审【建议】2)。
+        const canRestore = !!row.manualConst && dis !== "1";
+        // 锁定的手动常值:clearManual 碰不了它(§1.6 locked 免疫)⇒ 置灰 + tooltip 说清
+        // 原因,不给一次「点了什么都不发生」(口径同 SL-193 的灰钮)。
+        const lockedConst = !!row.manualConstLocked;
+        const lockedTip = t["tracks.restoreAutoLocked"] || "";
+        if (n.restoreAuto) {
+            show(n.restoreAuto, canRestore);
+            if (canRestore) {
+                attr(n.restoreAuto, "data-disabled", lockedConst ? 1 : 0);
+                const tip = lockedConst
+                    ? lockedTip
+                    : t["tracks.restoreAuto"] || "";
+                attr(n.restoreAuto, "title", tip);
+                attr(n.restoreAuto, "aria-label", tip);
+                // 置灰只做视觉不够:原生 <button> 的 `data-disabled` 不摘 tab 序、不挡
+                // Enter/Space,键盘用户拿到的正是「按了没反应」。不上原生 `disabled` ——
+                // 部分平台会连 title tooltip 一起吞掉,那样连原因都说不出来了。
+                attr(
+                    n.restoreAuto,
+                    "aria-disabled",
+                    lockedConst ? "true" : "false",
+                );
+            }
+        }
+        // 确认浮条:**一次只出一条**(它和解冻提示条同族,都是 absolute/top:100%,
+        // 浮在下一行上;两条同时展开会互相盖)。
+        const asking = !c && !hint && canRestore && local.restoreConfirm === ch;
+        show(n.restoreAutoRow, asking);
+        attr(n.row, "data-confirm", c || hint || asking ? 1 : 0);
+        if (asking) {
+            text(
+                n.restoreAutoText,
+                fmt(t["tracks.reidentifyConfirm"], { n: tt(ch) }),
+            );
+            text(n.restoreAutoCancel, t["common.cancel"] || "");
+            text(n.restoreAutoOk, t["common.continue"] || "");
+        } else if (local.restoreConfirm === ch && (!canRestore || c || hint)) {
+            // 手动常值没了(刚恢复成功)⇒ 收起展开态。
+            // 被 `c` / `hint` **临时**顶掉时也要收:不收的话那两件一撤,确认浮条自己弹回来、
+            // 直接停在「取消 / 继续」上,用户没点过却已经在问他(#148 二轮【建议】1)。
+            local.restoreConfirm = 0;
+        }
         if (!hint) return;
         // 正文 = 提问 + 「已锁定段保持不变」——「链接即执行」之后,这条就是用户看到的
         // **唯一**一次告知,原先第二道确认条上的免疫说明不能跟着一起消失。
@@ -2278,10 +2406,33 @@ export function createTabTracks(opts) {
                 " " +
                 (t["tracks.manualDrivenHint.locked"] || ""),
         );
+        // 锁定档:这枚钮与上面那枚行内触发钮是**同一个动作**,得给同一个结论。
+        // 复审② 撤掉了「触发钮与提示条互斥」,复审③ 又让 native 真的对 locked 段免疫 ——
+        // 两下叠加之后,这枚钮在锁定档上点下去 `analyze(mask,{clearManual:true})` 什么都
+        // 不会变,而 `doReidentify` 已经先把提示条永久撤掉了,用户拿到的是零反馈。
+        // 同屏两个入口对同一件事给出相反结论,被判「可点」的那个才是无效的那个
+        // (#148 二轮【重要】)。置灰口径与行内钮逐字相同,只留「知道了」这个出口。
         text(
             n.manualdrivenReidentify,
             fmt(t["tracks.reidentifyOne"], { n: tt(ch) }),
         );
+        if (n.manualdrivenReidentify) {
+            attr(
+                n.manualdrivenReidentify,
+                "data-disabled",
+                lockedConst ? 1 : 0,
+            );
+            attr(
+                n.manualdrivenReidentify,
+                "aria-disabled",
+                lockedConst ? "true" : "false",
+            );
+            attr(
+                n.manualdrivenReidentify,
+                "title",
+                lockedConst ? lockedTip : "",
+            );
+        }
         text(n.manualdrivenDismiss, t["common.gotIt"] || "");
     }
 

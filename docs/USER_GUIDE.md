@@ -109,7 +109,8 @@ Select a segment on the waveform page and edit its pan / vol in the segment insp
 
 - hand-edited segments are marked `origin=user_edited`, newly created ones `origin=user_created`;
 - you can additionally mark a segment `locked`;
-- **automatic re-analysis will not overwrite either kind** unless you explicitly ask for them to be re-detected.
+- **automatic re-analysis will not overwrite either kind** unless you explicitly ask for them to be re-detected;
+- **a locked segment survives even "re-detect (including manual segments)"** — the lock is a second gate, and only you can lift it, segment by segment.
 
 **Freezing** a dimension on the Tracks page declares "I am taking this dimension over by hand": on write, that dimension is printed into automation as a flat line, and whatever you draw in the DAW afterwards will never be overridden by the engine. The priority chain is: **host automation > frozen manual value > manual touch-up > engine analysis curve**.
 
@@ -119,7 +120,7 @@ Freezing is a **reversible, temporary takeover**: values you adjust while frozen
 
 The unit of invalidation and recomputation is **(track x time range)**, and it **never touches results that already exist in other ranges**. Drag out a selection on the waveform page, then:
 
-- **Recapture**: arms the range (an armed badge appears in three places) and **turns "01 Capture" on for you**. Playing over the range then rewrites features — but only inside **{ticked tracks} x {selection}**; nothing outside the selection, and nothing on unticked tracks, is touched. With "stop automatically when playback ends" ticked, crossing the right edge of the selection disarms and restores "01 Capture" to whatever it was before arming (if it was already on, it stays on); leave it unticked to stay armed, which is handy for looping a few takes over the same range. If the output switch is on while a range is armed, you get an amber warning.
+- **Recapture**: arms the range (an armed badge appears in three places) and **turns "01 Capture" on for you**. Playing over the range then rewrites features — but only inside **{ticked tracks} x {selection}**; nothing outside the selection, and nothing on unticked tracks, is touched. With "auto-stop outside the range" ticked, crossing the right edge of the selection disarms and restores "01 Capture" to whatever it was before arming (if it was already on, it stays on); leave it unticked to stay armed, which is handy for looping a few takes over the same range. If the output switch is on while a range is armed, you get an amber warning.
 - **Re-analysis**: re-runs analysis over the selection only; segments and curves elsewhere are preserved exactly.
 
 ## Versions

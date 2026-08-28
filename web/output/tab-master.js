@@ -56,6 +56,7 @@ import {
 // Output,这一卡把同一件接过来。
 import { createDistMotion } from "../shared/dist-motion.js";
 import { format } from "../shared/i18n.js";
+import { readbackVersion } from "../shared/param-id.js";
 
 export { distGeometry } from "../shared/distribution-chart.js";
 
@@ -1980,7 +1981,16 @@ export function createTabMaster(opts) {
     function renderDist(st, s) {
         if (!el.distBars || !distMotion) return;
         const vals = st.params.values || {};
-        const v = (s.global && s.global.version_active) || 1;
+        // [SL-229 复审①] 与 Tab2 的读回**同一个版本闸**。本函数自己按
+        // `s.global.version_active` 拼 `v{v}_t{ch}_pan` 去查参数面 —— 切版本那一帧
+        // state 已经说 V2 而 params 还是上一版的 63 个 id(§2.2 全量重发),查了个空
+        // ⇒ pan/vol 双双回落 0 ⇒ 分布图闪一排居中柱。SL-229 只修了 Tab2 的话,
+        // 验收在这张图上不成立。
+        const v = readbackVersion(
+            vals,
+            (s.global && s.global.version_active) || 0,
+            (st.params && st.params.versionActive) || 0,
+        );
         const chans = s.channels || [];
         // 只画已连接轨(slotState=2 ∧ heartbeatFresh,与 pill 同判据)——
         // 空闲轨无参数值,vol=0 会被 distGeometry 画成居中高「幽灵柱」

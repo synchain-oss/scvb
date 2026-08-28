@@ -2036,6 +2036,43 @@
             .tracks-row__mark {
                 flex: none;
             }
+            /* [SL-230 复审②]「恢复自动」触发钮 —— 与上面两枚条件角标同族的行内小件。
+               为什么不做成浮条:.tracks-row__hint 是 absolute + top:100%,浮在**下一行**上;
+               做一次性提示没问题,做常驻入口则两条以上手动轨时每条盖住下一行,下一行
+               点不动。行高 44px 是设计常量(15×44 撑起整块),浮条改占位会顶掉布局,
+               所以入口进单元格、浮条只留给确认那一瞬。 */
+            .tracks-row__restore {
+                flex: none;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 18px;
+                padding: 0;
+                border-radius: var(--r-tag);
+                cursor: pointer;
+                line-height: 1;
+                color: var(--txt-2);
+                background: rgba(var(--acc), 0.28);
+                border: 1px solid rgba(var(--acc), 0.5);
+            }
+            /* 图标是内联 SVG 不是字符:U+21BA 在四款子集字体里一个字形都没有(gates 3h
+               实测),真机上会上屏方块;画出来的图形不吃字体。currentColor 跟着上一行的
+               color 走,置灰态由父层 opacity 一起带下去。 */
+            .tracks-row__restore svg {
+                display: block;
+                width: 11px;
+                height: 11px;
+            }
+            .tracks-row__restore:hover {
+                background: rgba(var(--acc), 0.42);
+            }
+            /* 锁定态:置灰 + 光标示意,原因走 title(口径同 SL-193 的灰钮 tooltip)——
+               clearManual 对 locked 段免疫,给一次「点了什么都不发生」更糟。 */
+            .tracks-row__restore[data-disabled="1"] {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
             /* Lead Select≠0 的行首居中标记(05 §2.2 主唱锁行;设计稿完全无此件)。
        取强调紫而非琥珀:它是「当前选中」信息,不是警告。 */
             .tracks-row__leadmark {
@@ -2343,6 +2380,17 @@
             .tracks-row__relink:hover {
                 background: rgba(var(--wh), 0.68);
                 border-color: rgba(var(--acc), 0.8);
+            }
+            /* 锁定档的「重新识别轨 {n}」:与行内触发钮同一副置灰长相,原因走 title。
+               clearManual 对 locked 段免疫,这枚钮点下去什么都不会变 —— 长得可点却
+               无效,比明着灰掉更糟(#148 二轮【重要】)。hover 高亮一并撤掉。 */
+            .tracks-row__relink[data-disabled="1"] {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+            .tracks-row__relink[data-disabled="1"]:hover {
+                background: rgba(var(--wh), 0.5);
+                border-color: rgba(var(--acc), 0.55);
             }
             /* 表尾图例行(设计稿 625-632,回流⑬):flex-start + 12px,**不换行**;
        中间靠一个 flex:1 的空占位把右侧两件推到右端(灰模缺这枚占位,三件挤在左端)。 */
@@ -2807,7 +2855,7 @@
             .wave-recap:not([data-recap="off"]) .wave-recap__label {
                 color: var(--txt-1);
             }
-            /* 「播放结束自动停止」勾选(A2⑥;T33 Wave 4 用户反馈②:原生 input 与
+            /* 「区域外自动停止」勾选(A2⑥;T33 Wave 4 用户反馈②:原生 input 与
                设计系统不符 → 改自绘勾选框,形制取 Tab3 轨头 .wave-lane__check 同族
                (方形圆角 + 薰衣草描边;勾选态实心 + 白勾 svg)。
                **仍是真 input**:只做视觉隐藏,留在 DOM 与 tab 序里,label 包住即关联,
@@ -6690,7 +6738,7 @@
                                             >
                                         </span>
                                     </div>
-                                    <!-- A2⑥「播放结束自动停止」(recaptureArm 的 autoStop,
+                                    <!-- A2⑥「区域外自动停止」(recaptureArm 的 autoStop,
                                          默认 false)。Wave 4 反馈②:自绘勾选框(轨头
                                          .wave-lane__check 同族),input 仅视觉隐藏 —— 仍是
                                          真 checkbox,label 包住即关联,tab 序不变 -->
@@ -6722,7 +6770,7 @@
                                             </svg>
                                         </span>
                                         <span data-t="autoStop"
-                                            >播放结束自动停止</span
+                                            >区域外自动停止</span
                                         >
                                     </label>
                                     <!-- [Wave 2] bridge.analyze(scope) —— 契约 §1.6;
@@ -7542,6 +7590,43 @@
                                     data-t-aria="wave.lockSegment"
                                     data-gb="inspector-locked-toggle"
                                 ></span>
+                            </div>
+                            <!-- [SL-230] 检查器里的「恢复自动」入口。用户实测「找不到
+                                 clearManual」—— 单轨 clearManual 此前唯一的入口是轨道页
+                                 解冻那一下的临时提示条,点掉就没了;而用户真正会去找它的
+                                 地方正是这里:选中一段自己改过的段,想把它还回自动。
+                                 作用面是**整轨**(契约 §1.6 的 analyze(tracksMask,
+                                 {clearManual:true}) 就是轨级),故确认句复用
+                                 tracks.reidentifyConfirm(带轨号,并说明锁定段免疫)。
+                                 两态就地切换,与轨道页那份同一手势。 -->
+                            <div
+                                class="inspector-lockrow"
+                                data-gb="inspector-restore"
+                                hidden
+                            >
+                                <span
+                                    class="inspector-lockrow__label"
+                                    data-gb="inspector-restore-text"
+                                ></span>
+                                <button
+                                    type="button"
+                                    class="sc-btn"
+                                    data-gb="inspector-restore-btn"
+                                ></button>
+                                <button
+                                    type="button"
+                                    class="sc-btn"
+                                    data-gb="inspector-restore-cancel"
+                                    data-t="common.cancel"
+                                    hidden
+                                ></button>
+                                <button
+                                    type="button"
+                                    class="sc-btn sc-btn--cta"
+                                    data-gb="inspector-restore-ok"
+                                    data-t="common.continue"
+                                    hidden
+                                ></button>
                             </div>
                             <!-- 底部常驻说明句(912;词条 wave.originLegend 逐字) -->
                             <p

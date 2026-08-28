@@ -1643,5 +1643,220 @@ log(
 }
 
 // =============================================================================
+log(
+    "=== ⑫ R4:SL-229 切版本读回命名空间 / SL-230 轨道页「恢复自动」持久入口 ===",
+);
+{
+    const tw = src("web/output/tab-tracks.js");
+    const P = (v, ch, d) => TT.paramIdOf(v, ch, d);
+
+    // ---- SL-229:切版本的那一帧不许闪出厂默认 ----------------------------
+    // 病:state.global.version_active 与 scvb.params 是两个事件。state 一说「现在是
+    // V2」,读回值立刻改查 v2_* 的 id —— 可 params 手上还是上一版那 63 个(§2.2:
+    // 切版本由 C++ 全量重发),查空 ⇒ num(undefined, def) 回落**居中**,15 轨齐刷刷
+    // 跳到中间;下一帧全量到达才跳回真值。
+    {
+        const R = TT.readbackVersion;
+        const v1 = { [P(1, 1, "pan")]: -70 };
+        const v2 = { [P(2, 1, "pan")]: 33 };
+        eq(
+            R(v1, 2, 1),
+            1,
+            "(a1)params 还没带 V2 的 id ⇒ 仍读 V1(= 切出时那一版)",
+        );
+        eq(R(v2, 2, 1), 2, "(a2)params 带上 V2 的 id ⇒ 原子翻到 V2");
+        eq(R(v1, 1, 1), 1, "(a3)没切版本时照旧");
+        eq(R({}, 0, 3), 3, "(a4)state 没给版本 ⇒ 用 params 那一版");
+        eq(R({}, 0, 0), 1, "(a5)两边都没给 ⇒ 回落 1(不炸)");
+        eq(R(null, 2, 0), 2, "(a6)vals 缺失 ⇒ 用 state 那一版(没有更好的信息)");
+    }
+    // 端到端:切版本那一帧读到的是**源版本的值**,不是居中
+    {
+        const st = (active) => ({
+            state: {
+                channels: [{ ch: 1 }],
+                global: { version_active: active, output_enabled: false },
+            },
+            params: {
+                values: { [P(1, 1, "pan")]: -70, [P(1, 1, "freeze")]: 0 },
+                versionActive: 1,
+            },
+            segments: { channels: [{ ch: 1, segments: [] }] },
+            playhead: { timeS: 0 },
+        });
+        eq(TT.rowFromStore(st(1), 1).pan, -70, "(b1)切换前");
+        eq(
+            TT.rowFromStore(st(2), 1).pan,
+            -70,
+            "(b2)切换那一帧仍是 −70(不闪居中 0)—— 这就是 SL-229 的验收",
+        );
+    }
+
+    // ---- SL-230:轨道页「恢复自动」持久入口 --------------------------------
+    // 定谳:单轨 clearManual 此前**唯一**的入口是解冻那一下的临时提示条,
+    // 只在 freeze 位 1→0 时挂起、点「知道了」就永久消失 —— 用户因此找不到。
+    {
+        check(
+            /data-gb="\$\{gb\("restore-auto-row"\)\}"/.test(tw),
+            "(c1)行内有持久入口",
+        );
+        // [复审②] 触发钮**在行内**、不是浮条:.tracks-row__hint 是 absolute+top:100%,
+        // 浮在下一行上 —— 常驻之后两条以上手动轨会各盖住下一行,下一行点不动,
+        // 正是本卡要消灭的「点了没反应」。行高 44px 是设计常量,浮条改占位会顶掉布局。
+        check(
+            /<button type="button" class="tracks-row__restore"/.test(tw),
+            "(c2)触发钮是行内小件(落在 label 单元格,与既有条件角标同族)",
+        );
+        // [#148 复审【建议】2] 只读观察态 / srErr 死轨要一并挡掉:`doReidentify` 的写面
+        // 守卫会静默返回,钮再露出来又是一枚「点了没反应」。`dis` = 整行 disabled 位。
+        check(
+            /const canRestore = !!row\.manualConst && dis !== "1";/.test(tw) &&
+                /function syncConfirm\(n, row, t, ch, dis\)/.test(tw),
+            "(c2b)该轨仍被手动常值驱动**且整行可写**才出",
+        );
+        // 确认浮条一次只出一条(它和解冻提示条同族,两条同时展开会互相盖)
+        check(
+            /restoreConfirm: 0,/.test(tw) &&
+                /local\.restoreConfirm === ch/.test(tw),
+            "(c2c)确认态是**单值**不是 Set —— 浮条一次只出一条",
+        );
+        // 三枚钮不受整行 disabled 约束(它们是撤下确认的出口),写面守卫在 doReidentify
+        check(
+            /if \(part === "restore-auto"\) \{/.test(tw) &&
+                /if \(part === "restore-auto-ok"\) \{/.test(tw),
+            "(c3)三枚钮已接线",
+        );
+        check(
+            /doReidentify\(ch\); \/\/ 与解冻提示条逐字同一条路/.test(tw),
+            "(c4)走既有 analyze(tracksMask,{clearManual:true}),不另造一条路",
+        );
+        // 锁定的手动常值:clearManual 碰不了(§1.6 locked 免疫)⇒ 只说不做,
+        // 否则又是一个「点了没反应」——正是 SL-230 本身的病根
+        // 锁定档:钮置灰 + title 说原因(口径同 SL-193 的灰钮),不给一次
+        // 「展开确认再什么都不发生」—— clearManual 对 locked 段免疫
+        check(
+            /const lockedConst = !!row\.manualConstLocked;/.test(tw) &&
+                /attr\(n\.restoreAuto, "data-disabled", lockedConst \? 1 : 0\);/.test(
+                    tw,
+                ),
+            "(c5)锁定档把钮置灰",
+        );
+        check(
+            /tracks\.restoreAutoLocked/.test(tw) &&
+                /attr\(n\.restoreAuto, "title", tip\);/.test(tw),
+            "(c5b)灰着的原因走 title(不让人干瞪一个点不动的钮)",
+        );
+        check(
+            /if \(btn && btn\.getAttribute\("data-disabled"\) === "1"\) return;/.test(
+                tw,
+            ),
+            "(c5c)灰钮点下去不展开确认(入口再复检一次)",
+        );
+        // [#148 二轮【重要】] 解冻提示条的「重新识别轨 {n}」是**同一个动作**,得给同一个结论。
+        // 复审② 撤掉了两者互斥、复审③ 又让 native 真的对 locked 段免疫 —— 两下叠加之后,
+        // 这枚钮在锁定档上点下去什么都不会变,而 doReidentify 已先把提示条永久撤掉,
+        // 用户拿到零反馈;且它与旁边那枚置灰钮同屏给出相反结论。
+        check(
+            /attr\(\s*n\.manualdrivenReidentify,\s*"data-disabled",\s*lockedConst \? 1 : 0,?\s*\);/.test(
+                tw,
+            ) &&
+                /const rb = \(local\.rows\.get\(ch\) \|\| \{\}\)\.manualdrivenReidentify;/.test(
+                    tw,
+                ),
+            "(c5d)提示条的「重新识别轨 {n}」在锁定档同样置灰 + 入口复检",
+        );
+        // 置灰得**看得出来**:.tracks-row__relink 原样是可点长相,只加 data-disabled
+        // 而没有配套样式的话,用户看到的是一枚长得能点、点了没反应的钮 —— 比明着灰更糟。
+        check(
+            /\.tracks-row__relink\[data-disabled="1"\]\s*\{[^}]*opacity:\s*0\.4/.test(
+                src("web/output/index.html"),
+            ) &&
+                /\.tracks-row__relink\[data-disabled="1"\]:hover\s*\{/.test(
+                    src("web/output/index.html"),
+                ),
+            "(c5d2)灰档有配套样式(含撤掉 hover 高亮)",
+        );
+        // [#148 二轮【建议】1] 被 c/hint 临时顶掉期间也要复位:不复位的话那两件一撤,
+        // 确认浮条自己弹回来、直接停在「取消 / 继续」上(用户没点过却已经在问他)。
+        check(
+            /local\.restoreConfirm === ch && \(!canRestore \|\| c \|\| hint\)/.test(
+                tw,
+            ),
+            "(c5e)展开态在被临时顶掉时一并复位",
+        );
+        // [#148 二轮【建议】2] 置灰要带语义:原生 <button> 的 data-disabled 不摘 tab 序、
+        // 不挡 Enter/Space,只做视觉的话键盘用户拿到的正是「按了没反应」。
+        check(
+            /attr\(\s*n\.restoreAuto,\s*"aria-disabled",\s*lockedConst \? "true" : "false",?\s*\);/.test(
+                tw,
+            ),
+            "(c5f)置灰同时落 aria-disabled(键盘/读屏面)",
+        );
+        // rowFromStore 要把 locked 位带出来,否则上一条判据永远为假
+        {
+            const seg = (locked) => ({
+                channels: [
+                    {
+                        ch: 1,
+                        segments: [
+                            {
+                                t0S: 0,
+                                t1S: 99,
+                                pan: 5,
+                                origin: "user_edited",
+                                locked,
+                            },
+                        ],
+                    },
+                ],
+            });
+            const mk = (locked) => ({
+                state: {
+                    channels: [{ ch: 1 }],
+                    global: { version_active: 1, output_enabled: false },
+                },
+                params: {
+                    values: { [P(1, 1, "pan")]: 0, [P(1, 1, "freeze")]: 0 },
+                    versionActive: 1,
+                },
+                segments: seg(locked),
+                playhead: { timeS: 0 },
+            });
+            eq(
+                TT.rowFromStore(mk(false), 1).manualConst,
+                1,
+                "(c6)手动常值判位",
+            );
+            eq(
+                TT.rowFromStore(mk(false), 1).manualConstLocked,
+                0,
+                "(c7)未锁 ⇒ manualConstLocked=0(可恢复)",
+            );
+            eq(
+                TT.rowFromStore(mk(true), 1).manualConstLocked,
+                1,
+                "(c8)已锁 ⇒ manualConstLocked=1(只说不做)",
+            );
+        }
+    }
+
+    // ---- SL-230 mock 对拍:手动常值**不上锁**,与真桥一致 -------------------
+    // 真桥 makeManualConstantSegment 写的是 makeSegmentFlags(UserEdited, **false**);
+    // mock 原先写 locked=true,于是 clearManual(对 locked 免疫)在 web-preview 里对
+    // 它自己造出来的手动常值完全无效 —— 点了没反应,而真机上是有效的。
+    {
+        const mock = src("web-preview/mock/juce-bridge-mock.js");
+        const svc = src("src/output/SegmentEditService.h");
+        check(/proto\.locked = false;/.test(mock), "(d1)mock 的手动常值不上锁");
+        check(
+            /makeSegmentFlags\(scvb::state::SegmentOrigin::UserEdited, false\)/.test(
+                svc,
+            ),
+            "(d2)真桥同款(本条一红说明两侧又分叉了)",
+        );
+    }
+}
+
+// =============================================================================
 log(fail === 0 ? "\n全部通过 ✅" : `\n失败 ${fail} 条 ❌`);
 process.exit(fail === 0 ? 0 : 1);

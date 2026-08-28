@@ -994,9 +994,15 @@ export function createTabWave(opts) {
         inspectorOpen: true,
         reidentifyCounts: null, // {k,l}:重新识别确认框正文的定格计数(切语言补填用)
         boundDrag: null, // {ch, segIdx, tS, snapped, minS, maxS}
+        // [SL-230] 检查器「恢复自动」展开确认的**是哪一段**("" = 没展开)。
+        // 不做成裸布尔(#148 复审【建议】①):那样它不跟选中段绑定 —— 在段 A 上点开确认、
+        // 不取消直接去点段 B,面板一进去就停在「取消 / 继续」上,用户没点过却已经在问他。
+        // 存段身份、按身份比对,选中段一变自然失配,不依赖别处记得复位。
+        inspRestoreAsk: "", // `${ch}:${segIdx}`
+        inspRestoreBusy: false, // 「继续」在途(#148 复审【建议】②:快速双击会白跑两趟秒级分析)
         boundCommitAt: 0, // 上次**真发** move_boundary 的时刻(双击合并的让路判据)
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
-        autostopUser: false, // 「播放结束自动停止」是用户手勾的(撤防不复位它)
+        autostopUser: false, // 「区域外自动停止」是用户手勾的(撤防不复位它)
         sliderKeyTimer: 0, // 键盘档「视为松手」计时
         lastParamSend: 0, // ≤50Hz 节流账(Date.now 系)
         paramTimer: 0, // 节流尾包计时器
@@ -1946,6 +1952,12 @@ export function createTabWave(opts) {
         els.inspVolSlider = $("inspector-vol-slider");
         els.inspVolInput = $("inspector-vol-input");
         els.inspLock = $("inspector-locked-toggle");
+        // [SL-230] 检查器里的「恢复自动」入口(四件:行 / 说明 / 触发钮 / 取消 + 继续)
+        els.inspRestore = $("inspector-restore");
+        els.inspRestoreText = $("inspector-restore-text");
+        els.inspRestoreBtn = $("inspector-restore-btn");
+        els.inspRestoreCancel = $("inspector-restore-cancel");
+        els.inspRestoreOk = $("inspector-restore-ok");
 
         // 15 泳道生成(afterbegin:让静态占位的 overlay/selband/playhead 留在
         // 后面的 DOM 序,绝对定位层叠在泳道之上)
@@ -3132,6 +3144,48 @@ export function createTabWave(opts) {
                 });
             };
             els.inspLock.addEventListener("click", flip);
+            // [SL-230]「恢复自动」三枚钮:两态就地切换,确认后走轨级 clearManual。
+            const askRestore = (on) => {
+                const cur = on ? currentSeg() : null;
+                local.inspRestoreAsk = cur ? `${cur.ch}:${cur.idx}` : "";
+                requestRender();
+            };
+            if (els.inspRestoreBtn) {
+                els.inspRestoreBtn.addEventListener("click", () =>
+                    askRestore(true),
+                );
+            }
+            if (els.inspRestoreCancel) {
+                els.inspRestoreCancel.addEventListener("click", () =>
+                    askRestore(false),
+                );
+            }
+            if (els.inspRestoreOk) {
+                els.inspRestoreOk.addEventListener("click", async () => {
+                    // 在途去重(#148 复审【建议】②):钮要等下一次 render 才隐,快速双击
+                    // 能发出两次 analyze —— 第二次基本是空操作,但白跑一趟秒级离线分析。
+                    // 口径同轨道页那份的 local.reidentifying(try/finally 兜住抛错)。
+                    if (local.inspRestoreBusy) return;
+                    const cur = currentSeg();
+                    local.inspRestoreAsk = "";
+                    if (!cur || isWriteBlocked() || isLaneDead(cur.ch)) {
+                        return requestRender();
+                    }
+                    local.inspRestoreBusy = true;
+                    try {
+                        // 与轨道页那份逐字同一条路:§1.6 的轨级 clearManual;
+                        // locked 段按契约免疫(确认句里已经说了)。
+                        await call(
+                            "analyze",
+                            { tracksMask: 1 << (cur.ch - 1) },
+                            { clearManual: true },
+                        );
+                    } finally {
+                        local.inspRestoreBusy = false;
+                    }
+                    requestRender();
+                });
+            }
             els.inspLock.addEventListener("keydown", (e) => {
                 if (e.key === " " || e.key === "Enter") {
                     e.preventDefault();
@@ -3850,6 +3904,9 @@ export function createTabWave(opts) {
             // 以编辑」同框。触发路径不止 Escape:§2.8 段表重编号后 rebindSegKeys
             // 失效 → selectedCh=0,走的也是这条早退。
             show(els.inspOrigin, false);
+            // [SL-230] 空态同样要收起「恢复自动」——与上面 origin 角标同一个理由:
+            // 面板改常驻之后它是可见的,不收就挂着上一个段的入口。
+            renderInspectorRestore(0, -1, null, false);
             return;
         }
         const seg = cur.seg;
@@ -3910,6 +3967,50 @@ export function createTabWave(opts) {
             attr(els.inspLock, "aria-checked", seg.locked ? "true" : "false");
             attr(els.inspLock, "aria-disabled", editable ? "false" : "true");
         }
+        // [SL-230]「恢复自动」:选中的这一段是手动来的(origin≠auto)才出 ——
+        // auto 段本来就在自动态,给它一个「恢复自动」是废钮。
+        // 作用面是**整轨**(§1.6 的 clearManual 就是轨级),确认句里说清楚。
+        renderInspectorRestore(cur.ch, cur.idx, seg, editable);
+    }
+
+    /** 检查器「恢复自动」两态(SL-230;与轨道页那份同一手势、同一确认句)。 */
+    function renderInspectorRestore(ch, idx, seg, editable) {
+        if (!els.inspRestore) return;
+        const t = getT();
+        const manual = !!seg && seg.origin && seg.origin !== "auto";
+        const on = manual && editable;
+        show(els.inspRestore, on);
+        if (!on) {
+            local.inspRestoreAsk = "";
+            return;
+        }
+        // **锁定段:只说不做**。契约 §1.6 的 clearManual 对 locked 段免疫(「须先逐段
+        // 解锁」),而 split / move_boundary / set_values 的后置(§5.4)恰恰会把命中段
+        // 置成 origin=user_edited **且 locked=true** —— 也就是说用户最常遇到的手动段
+        // 正是锁着的。给它一枚点了什么都不会发生的钮,就是又造一个「点了没反应」。
+        // 解锁开关就在本行正上方,把话说清就够了。
+        if (seg.locked) {
+            local.inspRestoreAsk = "";
+            text(els.inspRestoreText, t["tracks.restoreAutoLocked"] || "");
+            show(els.inspRestoreBtn, false);
+            show(els.inspRestoreCancel, false);
+            show(els.inspRestoreOk, false);
+            return;
+        }
+        // 按**段身份**比对:选中段一变,展开态自然失配(不靠别处记得复位)。
+        // 身份取 `currentSeg()` 那份下标(与 askRestore 写入时同源),不取载荷里的
+        // `segIdx` —— 两者按 §2.8 应当相等,但比对键没必要押在那条不变式上。
+        const asking = local.inspRestoreAsk === `${ch}:${idx}`;
+        text(
+            els.inspRestoreText,
+            asking
+                ? fmtKey("tracks.reidentifyConfirm", { n: tt(ch) })
+                : t["tracks.restoreAutoHint"] || "",
+        );
+        show(els.inspRestoreBtn, !asking);
+        show(els.inspRestoreCancel, asking);
+        show(els.inspRestoreOk, asking);
+        if (!asking) text(els.inspRestoreBtn, t["tracks.restoreAuto"] || "");
     }
 
     /**
