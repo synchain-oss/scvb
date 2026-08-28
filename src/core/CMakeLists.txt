@@ -80,6 +80,8 @@ add_library(scvb_core STATIC
   state/StateMigration.h
   state/FeaturesCodec.cpp
   state/FeaturesCodec.h
+  state/FeaturesSnapshot.cpp
+  state/FeaturesSnapshot.h
   state/SidecarStore.cpp
   state/SidecarStore.h
   state/InputStateCodec.cpp

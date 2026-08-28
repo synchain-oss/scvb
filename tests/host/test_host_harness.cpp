@@ -3412,9 +3412,10 @@ TEST_CASE("HOST SL-215:会话 GUID 非全零且随 state 往返稳定", "[host][
     REQUIRE(d.sessionGuid() == guidD);
     REQUIRE(d.sessionGuid() != juce::String(kAllZero));
 
-    // ⑥ 未采集过 → 内嵌特征 0 字节(设置页据此显示「内嵌于工程(0.0 MB)」,
+    // ⑥ 未采集过 → 特征 0 字节且落点是「内嵌」(设置页据此显示「内嵌于工程(0.0 MB)」,
     //    而不是修复前那句凭空的「已保存为外部文件」)。
-    REQUIRE(a.embeddedFeatureBytes() == 0);
+    REQUIRE(a.featureBytes() == 0);
+    REQUIRE_FALSE(a.featuresInSidecar());
 }
 
 // ---------------------------------------------------------------------------
@@ -3874,4 +3875,438 @@ TEST_CASE("HOST SL-225:布防替用户开的采集不得被存进工程", "[host
     r.runBlocks(760, 0.05f);
     Rig::pumpMessages(600);
     CHECK(r.out.captureStale(kTestChannel));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-226] 采集特征随工程往返 —— 重开工程泳道波形不得消失。
+//
+// 用户 v5.6 实测:保存 → 重开,**分段标记与分析内容都在,泳道波形全没**。
+// 根因是特征持久化整条从未接通:段表走 CRVS(编解码都真接了),波形来自 FrameStore,
+// 而 FEAT 节此前没有任何生产写点/读点 —— FrameStore 是纯内存,一关工程就没了。
+// 两条持久化路径一条接了一条没接,所以只丢一半。
+//
+// 本用例走真 processor 的 get/setStateInformation,把「采集 → 存 → 毁内存 → 载 → 出图」
+// 整条钉住;搬运层本身的逐 hop 往返在 tests/core/test_features_snapshot.cpp。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-226:采集特征随工程往返,重开后泳道波形仍在", "[host][v56][SL226]")
+{
+    juce::MemoryBlock blob;
+    double coveredS = 0.0;
+    std::vector<int> beforeCovered;
+    std::vector<double> beforeMax;
+    std::vector<double> beforeMin;
+
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+
+        coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+        REQUIRE(coveredS > 0.0); // 前置:确实采到了东西,否则往返断言没有意义
+
+        const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 64);
+        beforeCovered.assign(tile.covered.begin(), tile.covered.end());
+        beforeMax.assign(tile.maxDb.begin(), tile.maxDb.end());
+        beforeMin.assign(tile.minDb.begin(), tile.minDb.end());
+        REQUIRE(std::count(beforeCovered.begin(), beforeCovered.end(), 0) < 64); // 存前有波形
+
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // Rig 析构 = 内存里的 FrameStore 连同实例一起没了(等价于关工程)
+
+    // 全新实例 = 重开工程。加载前必须是空的,否则下面的断言证明不了任何事。
+    Rig r2;
+    REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+
+    // ① 覆盖回来了。
+    const double after = r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    CHECK(after == Catch::Approx(coveredS));
+
+    // ② 波形逐列与存前对拍 —— 这一条修复前恒红:整条泳道 covered 全 0。
+    const auto tile2 = r2.out.waveformOf(kTestChannel, 0.0, coveredS, 64);
+    REQUIRE(tile2.covered.size() == beforeCovered.size());
+    int coveredCols = 0;
+    for (std::size_t i = 0; i < beforeCovered.size(); ++i)
+    {
+        INFO("col=" << i);
+        CHECK(tile2.covered[i] == beforeCovered[i]);
+        if (beforeCovered[i] != 0)
+        {
+            ++coveredCols;
+            // 落盘存的就是量化值(int16 dB×100),回灌不再二次量化,所以包络应当原样回来。
+            CHECK(tile2.maxDb[i] == Catch::Approx(beforeMax[i]));
+            CHECK(tile2.minDb[i] == Catch::Approx(beforeMin[i]));
+            CHECK(tile2.maxDb[i] > -160.0); // 不是哨兵
+        }
+    }
+    CHECK(coveredCols > 0);
+
+    // ③ 没采过的远端仍如实回「未覆盖」:回灌不许把空洞填平。
+    // (变量名别用 far —— windows.h 把 far/near 定义成宏了。)
+    const auto distant = r2.out.waveformOf(kTestChannel, 600.0, 610.0, 16);
+    for (const int c : distant.covered)
+    {
+        CHECK(c == 0);
+    }
+}
+
+// [SL-226] 反向①:没采集过的工程存下去不带 FEAT,读回来也不该凭空长出波形。
+TEST_CASE("HOST SL-226:反向 —— 未采集的工程往返后仍无波形", "[host][v56][SL226]")
+{
+    juce::MemoryBlock blob;
+    {
+        Rig r;
+        r.out.getStateInformation(blob); // 从没开过采集
+        REQUIRE(blob.getSize() > 0);
+    }
+
+    Rig r2;
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+
+    CHECK(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+    const auto tile = r2.out.waveformOf(kTestChannel, 0.0, 10.0, 32);
+    for (const int c : tile.covered)
+    {
+        CHECK(c == 0);
+    }
+}
+
+// [SL-226] 反向②:特征被清空后再保存,必须把 FEAT 一并删掉 —— 留着上一版会让重开时
+// 把已经不存在的波形又捞回来。清空走**改组**这条真实用户路径([J66]:frameStore 按 channel
+// 索引存、没有 group 维度,改组必须整店作废)。
+TEST_CASE("HOST SL-226:反向 —— 特征清空后保存,重开不得捞回旧波形", "[host][v56][SL226]")
+{
+    juce::MemoryBlock withFeat;
+    juce::MemoryBlock cleared;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+        r.out.getStateInformation(withFeat);
+
+        r.out.setGroupId(6); // 改组 → frameStore 整店作废
+        Rig::pumpMessages(300);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+        r.out.getStateInformation(cleared);
+    }
+
+    // 带 FEAT 的那份照常恢复(前置:证明这两份 blob 确实不同)。
+    {
+        Rig a;
+        a.out.setStateInformation(withFeat.getData(), static_cast<int>(withFeat.getSize()));
+        Rig::pumpMessages(200);
+        CHECK(a.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+    }
+    // 清空后保存的那份,重开必须仍是空的。
+    {
+        Rig b;
+        b.out.setStateInformation(cleared.getData(), static_cast<int>(cleared.getSize()));
+        Rig::pumpMessages(200);
+        CHECK(b.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+    }
+}
+
+// [SL-226] 回归①(#147 审查【重要】①):**工程组 ≠ 当前组**时,回灌不得被 changeGroup 抹掉。
+// setStateInformation 末尾会在「已 prepared 且组不同」时走 session_.changeGroup(),而它第一件事
+// 就是 frameStore_.reset()。本卡初版把回灌排在它前面 —— 同组的用例全绿,换组的工程照样一片空白,
+// 而「宿主先 prepareToPlay(默认组)再灌工程 chunk」正是真机常规时序(v5 实测 P0-5 同款)。
+TEST_CASE("HOST SL-226:回归 —— 换组加载时波形不被 changeGroup 抹掉", "[host][v56][SL226]")
+{
+    juce::MemoryBlock blob;
+    double coveredS = 0.0;
+    {
+        Rig r; // Rig 用 kTestGroup(7)
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+        REQUIRE(coveredS > 0.0);
+        r.out.getStateInformation(blob); // 工程记的是组 7
+    }
+
+    // 新实例**先 prepareToPlay 在另一个组**,再灌工程 chunk —— 于是加载末尾必然走 changeGroup。
+    ScvbOutputAudioProcessor out2;
+    out2.setGroupId(4); // 与工程里的组 7 不同
+    FakePlayHead ph;
+    out2.setPlayHead(&ph);
+    out2.prepareToPlay(kSr, kBlock);
+    Rig::pumpMessages(200);
+    REQUIRE(out2.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+
+    out2.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(300);
+
+    // ← 修复前这里恒 0:回灌完又被 changeGroup 的 frameStore_.reset() 抹掉了。
+    CHECK(out2.coverageOf(kTestChannel, 0.0, 30.0).coveredS == Catch::Approx(coveredS));
+    const auto tile = out2.waveformOf(kTestChannel, 0.0, coveredS, 32);
+    CHECK(std::count(tile.covered.begin(), tile.covered.end(), 0) < 32);
+
+    out2.releaseResources();
+}
+
+// [SL-226] 回归②(#147 审查【重要】②):只带 PRMS 的部分 blob(轨道预设/参数预设)不得清空已采特征。
+// SL-217(#126)为 CRVS 立的规矩:「没有信息」不能读成「删除全部」。特征这条路同理 ——
+// 加载一个参数预设把波形静默清光、且不可撤销,正是 SL-226 症状的镜像。
+TEST_CASE("HOST SL-226:回归 —— 只带 PRMS 的预设不得清空已采波形", "[host][v56][SL226]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    // 造一份**只含 PRMS** 的容器(宿主的轨道预设/参数预设就是这个形状:没有 CFGS、没有 FEAT)。
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+    scvb::state::StateChunks loaded;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), loaded).status ==
+            scvb::state::StateLoadStatus::Ok);
+
+    scvb::state::StateChunks presetOnly;
+    presetOnly.abi = scvb::state::kCurrentAbi;
+    const scvb::state::Chunk* prms = loaded.find(scvb::state::kFourccPrms);
+    REQUIRE(prms != nullptr);
+    presetOnly.set(scvb::state::kFourccPrms, prms->payload);
+    REQUIRE(presetOnly.find(scvb::state::kFourccCfgs) == nullptr); // 前置:确实是部分 blob
+    REQUIRE(presetOnly.find(scvb::state::kFourccFeat) == nullptr);
+
+    std::vector<std::uint8_t> presetBlob;
+    REQUIRE(scvb::state::encodeContainer(presetOnly, presetBlob));
+
+    r.out.setStateInformation(presetBlob.data(), static_cast<int>(presetBlob.size()));
+    Rig::pumpMessages(200);
+
+    // ← 修复前:readFeaturesChunk 排在 CFGS 早退之前,缺 FEAT 即 reset,波形被静默清空。
+    CHECK(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == Catch::Approx(coveredS));
+    const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 32);
+    CHECK(std::count(tile.covered.begin(), tile.covered.end(), 0) < 32);
+}
+
+// [SL-226] 回归③(#147 复审【重要】③):**CFGS 损坏 ≠ 部分 blob**。
+// 这是一份完整工程,只是配置节坏了 —— 特征仍必须按本工程的 FEAT 处理。不处理的话上一个工程的
+// 波形会留在 FrameStore 里冒充本工程的,而 loadedChunks_ 已经换成本工程的了,
+// **下次保存就把上一个工程的特征写进这个工程**。
+TEST_CASE("HOST SL-226:回归 —— CFGS 损坏的完整工程不得留下上一工程的波形", "[host][v56][SL226]")
+{
+    // 工程 A:采过一段,存下来(带 FEAT)。
+    juce::MemoryBlock blobA;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+        r.out.getStateInformation(blobA);
+    }
+
+    // 工程 B:**没有 FEAT**(没采过),但 CFGS 被打坏。
+    juce::MemoryBlock blobBFull;
+    {
+        Rig r;
+        r.out.getStateInformation(blobBFull);
+    }
+    scvb::state::StateChunks b;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(blobBFull.getData()), blobBFull.getSize(), b).status ==
+        scvb::state::StateLoadStatus::Ok);
+    REQUIRE(b.find(scvb::state::kFourccFeat) == nullptr); // 前置:B 确实没有特征
+    // 把 CFGS 换成一段长度合法但内容过短的垃圾 → decodeOutputState 必失败。
+    b.set(scvb::state::kFourccCfgs, std::vector<std::uint8_t>{0x01, 0x02, 0x03});
+    std::vector<std::uint8_t> blobB;
+    REQUIRE(scvb::state::encodeContainer(b, blobB));
+
+    // 同一个实例:先载 A(有波形),再载 CFGS 损坏的 B(无波形)。
+    Rig r2;
+    r2.out.setStateInformation(blobA.getData(), static_cast<int>(blobA.getSize()));
+    Rig::pumpMessages(200);
+    REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0); // A 的波形在
+
+    r2.out.setStateInformation(blobB.data(), static_cast<int>(blobB.size()));
+    Rig::pumpMessages(200);
+
+    // ← 修复前:CFGS 早退把回灌一并跳过,A 的波形留在 FrameStore 里冒充 B 的。
+    CHECK(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+
+    // 而且下次保存不得把 A 的特征写进 B。
+    juce::MemoryBlock resaved;
+    r2.out.getStateInformation(resaved);
+    scvb::state::StateChunks out;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(resaved.getData()), resaved.getSize(), out).status ==
+        scvb::state::StateLoadStatus::Ok);
+    CHECK(out.find(scvb::state::kFourccFeat) == nullptr);
+}
+
+// [SL-226] 回归④(#147 三轮复审【重要】):「原样带走」的纪律不能挂在 loadedChunks_ 上。
+//
+// 三步序列:① 开一份 FEAT 是**高 codecVer**(本构建解不开)的工程 → 置 featCodecNewer_,
+// 该节必须原样带走;② 载一个只带 PRMS 的预设 → loadedChunks_ 被整个换成 {PRMS},而这条路
+// 不走 readFeaturesChunk、标志位不复位;③ 保存 → 若「原样回写」靠的是「chunks 从 loadedChunks_
+// 拷来、什么都不做即可」,此刻 chunks 里根本没有 FEAT —— 那份不认识的字节就永久消失了。
+// 修法是自己留底(preservedFeatChunk_)并在早退处**显式写回**。
+TEST_CASE("HOST SL-226:回归 —— 高 codecVer 的 FEAT 经 PRMS-only 预设后仍原样带走", "[host][v56][SL226]")
+{
+    // 造一份 FEAT payload 为「高 codecVer」的工程:拿真实容器,把 FEAT 换成 codecVer=99 的节。
+    juce::MemoryBlock baseBlob;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(120, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+        r.out.getStateInformation(baseBlob);
+    }
+
+    scvb::state::StateChunks base;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(baseBlob.getData()), baseBlob.getSize(), base).status ==
+        scvb::state::StateLoadStatus::Ok);
+    REQUIRE(base.find(scvb::state::kFourccFeat) != nullptr);
+
+    // 高 codecVer 的 FEAT 节:tag + codecVer=99 + 其余头字段(gzip 后放进 chunk)。
+    std::vector<std::uint8_t> raw;
+    const auto put32 = [&raw](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    const auto put16 = [&raw](std::uint16_t v) {
+        for (int i = 0; i < 2; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    put32(scvb::state::kFeatTag);
+    put16(99); // codecVer 远高于本构建
+    put16(scvb::state::kFeatFlagEmbedded);
+    put32(48000u);
+    put32(10u);
+    raw.push_back(0); // channelCount = 0
+    const auto futureFeat = scvb::state::gzipCompress(raw.data(), raw.size());
+    REQUIRE_FALSE(futureFeat.empty());
+
+    base.set(scvb::state::kFourccFeat, futureFeat);
+    std::vector<std::uint8_t> futureBlob;
+    REQUIRE(scvb::state::encodeContainer(base, futureBlob));
+
+    // 只带 PRMS 的预设 blob。
+    scvb::state::StateChunks presetOnly;
+    presetOnly.abi = scvb::state::kCurrentAbi;
+    presetOnly.set(scvb::state::kFourccPrms, base.find(scvb::state::kFourccPrms)->payload);
+    std::vector<std::uint8_t> presetBlob;
+    REQUIRE(scvb::state::encodeContainer(presetOnly, presetBlob));
+
+    Rig r2;
+    // ① 载入高 codecVer 工程。
+    r2.out.setStateInformation(futureBlob.data(), static_cast<int>(futureBlob.size()));
+    Rig::pumpMessages(200);
+    CHECK(r2.out.featureBytes() == static_cast<std::int64_t>(futureFeat.size())); // 解不开也如实报大小
+
+    // ② 载入只带 PRMS 的预设(loadedChunks_ 被换成 {PRMS})。
+    r2.out.setStateInformation(presetBlob.data(), static_cast<int>(presetBlob.size()));
+    Rig::pumpMessages(200);
+
+    // ③ 保存:那份解不开的 FEAT 必须**逐字节还在**。
+    juce::MemoryBlock resaved;
+    r2.out.getStateInformation(resaved);
+    scvb::state::StateChunks out;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(resaved.getData()), resaved.getSize(), out).status ==
+        scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* kept = out.find(scvb::state::kFourccFeat);
+    REQUIRE(kept != nullptr); // ← 修复前:这里是 nullptr,用户的高版本特征被静默丢弃
+    CHECK(kept->payload == futureFeat); // 逐字节相等,不是"重编了一份空的"
+}
+
+// [SL-226] 回归⑤(#147 四轮复审【建议】②):高 codecVer 的工程里**重新采集**,新数据必须存得进去。
+// 「原样带走」对**没动过**的工程是对的;但若早退排在 snapshot 之前,用户「开一份读不出来的工程 →
+// 泳道空 → 重新采集 → 保存」会把刚采的新数据静默丢掉,重开还是空 —— 正是本卡要治的症状换了个入口。
+TEST_CASE("HOST SL-226:回归 —— 高 codecVer 工程里重新采集,新数据不得被静默丢弃", "[host][v56][SL226]")
+{
+    // 造一份 FEAT 为高 codecVer 的工程(手法同回归④)。
+    juce::MemoryBlock baseBlob;
+    {
+        Rig r;
+        r.out.getStateInformation(baseBlob);
+    }
+    scvb::state::StateChunks base;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(baseBlob.getData()), baseBlob.getSize(), base).status ==
+        scvb::state::StateLoadStatus::Ok);
+
+    std::vector<std::uint8_t> raw;
+    const auto put32 = [&raw](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    const auto put16 = [&raw](std::uint16_t v) {
+        for (int i = 0; i < 2; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    put32(scvb::state::kFeatTag);
+    put16(99);
+    put16(scvb::state::kFeatFlagEmbedded);
+    put32(48000u);
+    put32(10u);
+    raw.push_back(0);
+    const auto futureFeat = scvb::state::gzipCompress(raw.data(), raw.size());
+    REQUIRE_FALSE(futureFeat.empty());
+    base.set(scvb::state::kFourccFeat, futureFeat);
+    std::vector<std::uint8_t> futureBlob;
+    REQUIRE(scvb::state::encodeContainer(base, futureBlob));
+
+    Rig r;
+    r.out.setStateInformation(futureBlob.data(), static_cast<int>(futureBlob.size()));
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0); // 解不开 → 泳道空
+
+    // 用户重新采集。
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(150, 0.5f);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    juce::MemoryBlock resaved;
+    r.out.getStateInformation(resaved);
+
+    scvb::state::StateChunks out;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(resaved.getData()), resaved.getSize(), out).status ==
+        scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* kept = out.find(scvb::state::kFourccFeat);
+    REQUIRE(kept != nullptr);
+    CHECK(kept->payload != futureFeat); // ← 修复前:早退在 snapshot 之前,原样带走旧的、丢掉新的
+
+    // 重开:新采的波形必须回得来。
+    Rig r2;
+    r2.out.setStateInformation(resaved.getData(), static_cast<int>(resaved.getSize()));
+    Rig::pumpMessages(200);
+    CHECK(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == Catch::Approx(coveredS));
 }

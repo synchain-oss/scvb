@@ -69,6 +69,24 @@ public:
     // 打洞:coverage_.punch(r)(重采集/清除用;页数据留待后续覆盖)。
     void invalidate(HopRange r) { coverage_.punch(r); }
 
+    // [SL-226] 持久化回灌入口(工程加载:FEAT → FrameStore)。与 write() 的三点不同,每一点都是
+    // 必需的,别把它合回 write():
+    //   ① 写的是**已量化**的 int16,不再过一遍 f32→dB 量化 —— 落盘存的就是量化值,再量化一次
+    //      等于把 0.01dB 的台阶又叠一层,往返对拍会漂;
+    //   ② **绕开 readOnly_/gate_**。加载时采集通常是 OFF(readOnly_=true),布防门也还没设,
+    //      走 write() 会被这两道门静默吃掉 —— 回灌一个字都进不去,症状与没接持久化完全一样;
+    //   ③ **不逐 hop 记账**。覆盖区间在 FEAT 里是显式存着的,由调用方经 addCoverage() 整段并入,
+    //      比一个 hop 一次 add 既快也精确(空洞不会被相邻合并抹平)。
+    void restoreHop(uint64_t hop, int16_t kwDbq, int16_t peakDbq, uint8_t vad);
+
+    // [SL-226] 整段并入覆盖记账(回灌配套;不变量仍由 CoverageMap 维持)。
+    void addCoverage(HopRange r) { coverage_.add(r); }
+
+    // [SL-226] 批量导出一段([begin,end) 追加到三个 out)。逐 hop 调 kwDbq/peakDbq/vadP 是**每个
+    // hop 三次 std::map 查找**,满配 20min×15 轨 ≈ 540 万次 —— 而这段跑在 getStateInformation
+    // 的 lifecycleMutex_ 临界区里,25Hz tick 正在抢同一把锁。按页取则每 4096 个 hop 才查一次。
+    void appendRange(HopRange r, std::vector<int16_t>& kw, std::vector<int16_t>& peak, std::vector<uint8_t>& vad) const;
+
     bool hasHop(uint64_t hop) const { return coverage_.coversFully(HopRange{hop, hop + 1}); }
 
     int16_t kwDbq(uint64_t hop) const;

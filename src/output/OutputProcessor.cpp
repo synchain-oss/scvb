@@ -12,6 +12,8 @@
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
+#include "state/FeaturesSnapshot.h" // [SL-226] FrameStore ↔ FEAT 搬运
+#include "state/SidecarStore.h" // [SL-226] >8MB 转外部文件(ADR-007 阈值 + 04 §5.3 回滞)
 #include "state/StateMigration.h"
 
 namespace
@@ -1144,6 +1146,14 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     scvb::state::StateChunks chunks = loadedChunks_;
     chunks.abi = scvb::state::kCurrentAbi;
 
+    // [SL-226] FEAT:采集特征(泳道波形的唯一数据源)。此前**从来没人写过这一节** ——
+    // 段表走 CRVS 照常往返,波形却只活在内存里,于是重开工程「分段还在、波形全没」。
+    //
+    // 顺序要紧:它必须排在下面的 PRMS 之前。转 sidecar 时 copy-on-write 可能换掉
+    // sessionGuid_(别的活实例正占着同一份外部特征),而**GUID 是随 PRMS 落盘的** ——
+    // 先写 PRMS 就会把旧 GUID 存进工程,下次开工程按旧 GUID 去找,找到的是别人那份或者空。
+    writeFeaturesChunk(chunks);
+
     // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
     // 两位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— CFGS 是定长枚举式解码,追加字段会让
     // 旧构建整块拒载并静默把 group/开关/版本打回默认;ValueTree 两个方向都容忍字段增删。
@@ -1214,14 +1224,338 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     destData.append(blob.data(), blob.size());
 }
 
-std::int64_t ScvbOutputAudioProcessor::embeddedFeatureBytes() const
+std::filesystem::path ScvbOutputAudioProcessor::sidecarBaseDir()
+{
+    // 与 UiDefaultsStore 同根(%APPDATA%\Synchain\SCVB,STATE_SCHEMA §4.3)。
+    // 注意这里**只接现行 appdata 机制** —— 存储位置的 UI 与策略归 T47([J84] 已裁),不在本卡。
+    const juce::File appData = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                                   .getChildFile("Synchain")
+                                   .getChildFile("SCVB");
+    return std::filesystem::path(appData.getFullPathName().toStdString());
+}
+
+void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chunks)
+{
+    // 「原样带走」的两条路(高 codecVer / 引用解不开)都**显式把留底字节写回去**,而不是靠
+    // 「chunks 是从 loadedChunks_ 拷来的,什么都不做就是原样回写」。那个前提会塌:
+    // 载入一份只带 PRMS 的部分 blob(轨道/参数预设)时 loadedChunks_ 被整个换成 {PRMS},
+    // 而那条路不走 readFeaturesChunk、两位不复位 —— 再保存时 chunks 里根本没有 FEAT 可"原样",
+    // 那份不认识的字节 / sidecar 的 GUID+sha256 指针就永久消失了(#147 三轮复审)。
+    const auto reinstatePreserved = [this, &chunks]() {
+        if (!preservedFeatChunk_.empty())
+        {
+            chunks.set(scvb::state::kFourccFeat, preservedFeatChunk_);
+        }
+    };
+
+    const std::uint32_t sr = static_cast<std::uint32_t>(sampleRate_.load(std::memory_order_relaxed) > 0.0
+                                                            ? sampleRate_.load(std::memory_order_relaxed)
+                                                            : static_cast<double>(scvb::state::kDefaultSampleRate));
+    const auto data =
+        scvb::state::snapshotFeatures(session_.frameStore(), sr, scvb::output::OutputSession::featHopMs());
+
+    // 读到过更高 codecVer(或那一节根本解不出来):原样带走,绝不用空的去覆盖用户的真数据。
+    //
+    // 但这一判**必须排在 snapshot 之后**:排在前面的话,「开一份本构建读不出来的工程 → 泳道空
+    // → 用户重新采集 → 保存」会把**用户刚采的新数据静默丢掉**,重开还是空 —— 那正是本卡要治的
+    // 症状,只是换了个入口。取舍口径:用户本会话真的采出了东西,就以新数据为准(那份旧字节
+    // 本构建反正也读不出来,而新数据是用户刚花时间做出来的);一个 hop 都没采,才原样带走。
+    if (featCodecNewer_ && data.channels.empty())
+    {
+        reinstatePreserved();
+        return;
+    }
+
+    if (data.channels.empty())
+    {
+        // 内存里没有特征。**但「没有」有两种,处置相反**:
+        if (featRefUnresolved_)
+        {
+            // ① 工程本来有引用节,只是这次没读出来(sidecar 不在 / sha256 不符)。删掉 chunk
+            //    等于把找回它的**唯一线索**也删了 —— 文件还在磁盘上,工程里却再没有指针。
+            //    原样带走,用户把外部文件接回去(换机拷贝/恢复备份)就还能救。
+            reinstatePreserved();
+            return;
+        }
+        // ② 真的一轨都没采过 / 特征被清空:删掉 chunk。留着上一版会让重开时又把旧波形捞回来。
+        // 上一次真转出过 sidecar 的话,顺手回收那个目录 —— 工程里的引用已经删了,再没人指向它,
+        // 不删就是一份永远不会被读到的磁盘垃圾。两道闸与「收回内嵌」那条同口径:
+        // 他人活锁不删;引用没解开过(那份根本不是我们认下的)也不删。
+        // ⚠ 判活窗口目前偏窄:isOwnerLockAlive 要心跳 < 30s,而 owner.lock 的 10s 周期刷新
+        //   (STATE_SCHEMA §4.3)**全仓尚未实现**(T40 遗留,已单独落卡)。在那之前,他人实例的锁
+        //   在其上次保存 30s 后就会被判死。孤儿目录只是可恢复的泄漏,remove_all 却不可逆 ——
+        //   心跳补上之前,这一处宁可少删。
+        // !featRefUnresolved_ 在这里是**恒真式防御**:上面那个 if 已经把置位的情形 return 掉了。
+        // 留着是因为这两道闸的语义是「删之前要过的两关」,少一关就是缺口,不该靠上文的控制流来兜。
+        if (featuresSidecar_ && !featRefUnresolved_)
+        {
+            scvb::state::SidecarStore store(sidecarBaseDir());
+            const auto self = scvb::state::currentProcessIdentity();
+            scvb::state::OwnerLock lock;
+            const bool heldByOther = store.readOwnerLock(sessionGuid_.toStdString(), lock) &&
+                                     scvb::state::isOwnerLockAlive(lock, scvb::state::epochMsNow()) &&
+                                     !(lock.pid == self.pid && lock.processStartEpochMs == self.processStartEpochMs);
+            if (!heldByOther)
+            {
+                store.remove(sessionGuid_.toStdString());
+            }
+        }
+        chunks.remove(scvb::state::kFourccFeat);
+        featuresSidecar_ = false;
+        featureBytes_ = 0;
+        preservedFeatChunk_.clear();
+        return;
+    }
+
+    const auto gz = scvb::state::encodeFeatures(data);
+    if (gz.empty())
+    {
+        return; // 编码失败:保留上一版 chunk,不写半份(04 §5.3 宁可旧数据也不写坏数据)
+    }
+
+    // 装 FEAT chunk 的**唯一出口**。写进去的是我们自己刚编出来的真数据,所以这一节从此不再是
+    // 「解不开的引用」—— featRefUnresolved_ 必须跟着清掉,且必须清在**每一条**装 chunk 的路径上。
+    // 写成 lambda 而不是在四处各写一遍:漏掉任意一条,那一位就会带着 true 活到下一次保存,
+    // 于是「特征已清空」被误判成「引用解不开」,真数据 chunk 被当成唯一线索保住,
+    // 上一轮刚修掉的幽灵波形原路绕回来(#147 复审【重要】①)。
+    const auto installFeat = [this, &chunks](const std::vector<std::uint8_t>& payload, bool sidecar,
+                                             std::int64_t bytes) {
+        chunks.set(scvb::state::kFourccFeat, payload);
+        featuresSidecar_ = sidecar;
+        featureBytes_ = bytes;
+        featRefUnresolved_ = false;
+        featCodecNewer_ = false;
+        // 留底也一并松手:这一节已经被我们自己的真数据换掉了,再留着既无意义,
+        // 又让一份最大 8MB 的副本白占内存。
+        preservedFeatChunk_.clear();
+    };
+
+    // ADR-007 阈值 + 04 §5.3 回滞:>8MB 转 sidecar,已转出且 <6MB 收回内嵌。
+    if (!scvb::state::SidecarStore::shouldUseSidecar(static_cast<std::uint64_t>(gz.size()), featuresSidecar_))
+    {
+        const bool wasSidecar = featuresSidecar_;
+        const bool refWasUnresolved = featRefUnresolved_;
+        installFeat(gz, /*sidecar=*/false, static_cast<std::int64_t>(gz.size()));
+        if (wasSidecar)
+        {
+            // 收回内嵌:删掉外部副本,防「工程里一份、sidecar 里另一份」双源分叉(04 §5.3)。
+            // 两道闸,少一道都会删掉不该删的:
+            //   ① 他人活锁 —— 删比覆盖更彻底,别人正开着同一份 sidecar 时直接 remove 会把它的
+            //      特征连根拔掉(写路径已有 CoW,删路径不能是个缺口);
+            //   ② 引用没解开过 —— 那份 sidecar 我们**根本没认下来**(文件缺失 / sha256 不符)。
+            //      读侧刚说完「这不是我的、不拿别人的冒充」,删侧就把整个目录 remove_all 掉,
+            //      等于对一份我们判定为「别人的」数据执行了最彻底的破坏(#147 复审【重要】②)。
+            if (!refWasUnresolved)
+            {
+                scvb::state::SidecarStore store(sidecarBaseDir());
+                const auto self = scvb::state::currentProcessIdentity();
+                scvb::state::OwnerLock lock;
+                const bool heldByOther =
+                    store.readOwnerLock(sessionGuid_.toStdString(), lock) &&
+                    scvb::state::isOwnerLockAlive(lock, scvb::state::epochMsNow()) &&
+                    !(lock.pid == self.pid && lock.processStartEpochMs == self.processStartEpochMs);
+                if (!heldByOther)
+                {
+                    store.remove(sessionGuid_.toStdString());
+                }
+            }
+        }
+        return;
+    }
+
+    scvb::state::SidecarStore store(sidecarBaseDir());
+    const auto self = scvb::state::currentProcessIdentity();
+    std::string guid = sessionGuid_.toStdString();
+
+    // 04 §5.6:写之前先判他人活锁 —— 同一份 sidecar 被另一个活着的实例占着(用户「另存为」出
+    // 两个工程共用一个 GUID)就 copy-on-write 换新 GUID,绝不覆盖别人的特征。
+    std::string newGuid;
+    if (store.copyOnWriteIfNeeded(guid, self, scvb::state::epochMsNow(), newGuid))
+    {
+        guid = newGuid;
+        sessionGuid_ = juce::String(newGuid); // 新 GUID 必须随本次保存一起落 PRMS,否则下次找不回来
+    }
+
+    if (!store.write(guid, gz.data(), gz.size(), static_cast<std::uint32_t>(data.channels.size()),
+                     scvb::state::kFeatCodecVer, self))
+    {
+        // 写外部文件失败(磁盘满/无权限):退回内嵌,别把特征丢了。工程会大一点,但数据在。
+        installFeat(gz, /*sidecar=*/false, static_cast<std::int64_t>(gz.size()));
+        DBG("SCVB Output: sidecar write failed; falling back to embedded FEAT");
+        return;
+    }
+
+    scvb::state::SidecarRef ref;
+    ref.sessionGuid = guid;
+    ref.sha256 = scvb::state::sha256(gz.data(), gz.size());
+    ref.sidecarBytes = static_cast<std::uint64_t>(gz.size());
+    const auto refSection =
+        scvb::state::encodeReference(ref, data.sampleRate, data.hopMs, static_cast<std::uint8_t>(data.channels.size()));
+    if (refSection.empty())
+    {
+        // 引用节编不出来(guid 非法)→ 内嵌兜底。
+        installFeat(gz, /*sidecar=*/false, static_cast<std::int64_t>(gz.size()));
+        return;
+    }
+    // 报**特征**字节数,不是引用节那一百来字节 —— 设置页存储行要的是「这份特征多大」。
+    installFeat(refSection, /*sidecar=*/true, static_cast<std::int64_t>(gz.size()));
+}
+
+void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks& chunks)
+{
+    // 调用前提:**只在加载一份完整工程时调**(正常路径 = 函数最后一步;CFGS 损坏路径 = 那处
+    // 早退前补的一次)。只带 PRMS 的部分 blob 不得调它 —— 那种 blob 没有「本工程的特征」这一说,
+    // 动 FrameStore 就是把「没有信息」当成了「删除全部」(SL-217/#126 的纪律)。
+    featCodecNewer_ = false;
+    featuresSidecar_ = false;
+    featRefUnresolved_ = false;
+    featureBytes_ = 0;
+    preservedFeatChunk_.clear();
+
+    const scvb::state::Chunk* feat = chunks.find(scvb::state::kFourccFeat);
+    if (feat == nullptr)
+    {
+        // 走到这里的一定是**带完整 CFGS 的整份工程**(部分 blob 在调用点之前就早退了,见调用处
+        // 行注②)。这样的工程没有 FEAT = 它真的没存过特征,该清 —— 不清就会把上一个工程的
+        // 波形留下来冒充本工程的。
+        session_.frameStore().reset();
+        return;
+    }
+
+    // 「这一节我读不出来」的**唯一收尾口**。六条路径(高 codecVer / 解码失败 / sidecar 缺失 /
+    // sha256 不符 / 内层不自洽 / 内层高 codecVer / hop 时基不符)全走它,一件事都漏不掉:
+    //   留底 → 置位 → 如实报字节数 → 清空 FrameStore。
+    // 收成一个口而不是各写一遍,理由与写侧的 installFeat 逐字相同:上一轮我在五处各补了一遍
+    // 留底,**第六处(sidecar 内层高 codecVer)就漏了** —— 于是刚修好的「原样带走」从内层原样
+    // 复发(#147 四轮复审)。同一个教训吃两次就够了。
+    //
+    // newerCodec = true 表示「不是坏,是太新」:两者对用户的意思不同(一个该提示升级,一个是
+    // 数据损坏),但对保存路径的要求完全一样 —— **原封不动带走,绝不用空的去覆盖**。
+    const auto preserveAndBail = [this, feat](bool newerCodec) {
+        preservedFeatChunk_ = feat->payload;
+        // 存储行仍报这一节的真实大小 —— 解不开不等于它不占地方,报 0 会让一份 5MB 的工程
+        // 显示「内嵌于工程 0.0 MB」。
+        featureBytes_ = static_cast<std::int64_t>(feat->payload.size());
+        if (newerCodec)
+        {
+            featCodecNewer_ = true;
+        }
+        else
+        {
+            featRefUnresolved_ = true;
+        }
+        session_.frameStore().reset();
+    };
+
+    const auto decoded = scvb::state::decodeFeatures(feat->payload.data(), feat->payload.size());
+    if (decoded.codecVerNewer)
+    {
+        // 高版本特征:按空处理(画不出来总比画错强),但原样带走原始字节。
+        preserveAndBail(/*newerCodec=*/true);
+        DBG("SCVB Output: FEAT codecVer newer than build; features shown empty, bytes preserved verbatim");
+        return;
+    }
+    if (!decoded.ok)
+    {
+        // 损坏:拒解,不半填充(§7.3)。**也留底** —— 与其余五条对称。
+        // 「解码失败」未必等于「用户的数据真的坏了」,也可能是本构建解码器的 bug;把它删掉,
+        // 一个未来修好的构建就再也没得读了。用户重新采集时 installFeat 会自然覆盖掉这一节,
+        // 不会永远赖着。
+        preserveAndBail(/*newerCodec=*/false);
+        return;
+    }
+
+    if (decoded.embedded)
+    {
+        if (!featureHopMatchesBuild(decoded.features.hopMs))
+        {
+            preserveAndBail(/*newerCodec=*/false);
+            return;
+        }
+        scvb::state::restoreFeatures(decoded.features, session_.frameStore());
+        featureBytes_ = static_cast<std::int64_t>(feat->payload.size());
+        return;
+    }
+
+    // 引用节:按**引用节里记的** GUID 找外部文件(不是 PRMS 那个)。形状校验在 decodeFeatures
+    // 里已经做过(非 dashed UUID 直接拒解),这里拿到的一定能安全拼路径。
+    featuresSidecar_ = true;
+    featureBytes_ = static_cast<std::int64_t>(decoded.ref.sidecarBytes);
+
+    std::vector<std::uint8_t> gz;
+    if (!scvb::state::SidecarStore(sidecarBaseDir()).read(decoded.ref.sessionGuid, gz))
+    {
+        // 外部文件不在(换机 / 被清理 / 还没同步过来):波形为空。置 featRefUnresolved_ 让
+        // 保存侧**原样保留这一节** —— 否则下次保存会把 GUID+sha256 一并删掉,文件还在磁盘上
+        // 却再也找不回来。
+        preserveAndBail(/*newerCodec=*/false);
+        DBG("SCVB Output: sidecar missing for session " << decoded.ref.sessionGuid);
+        return;
+    }
+    if (scvb::state::sha256(gz.data(), gz.size()) != decoded.ref.sha256)
+    {
+        preserveAndBail(/*newerCodec=*/false); // 不认它,但也不销毁指针
+        DBG("SCVB Output: sidecar sha256 mismatch; refusing to load");
+        return; // 内容与工程记录的不符:拒载,不拿别的工程的特征冒充本工程的
+    }
+
+    // 校验都过了、确实认下了这份 sidecar,**才**把 sessionGuid_ 对齐到引用节的 GUID。
+    // 理由:保存侧收回内嵌时 remove(sessionGuid_),两者对不上就删不掉旧 sidecar、留孤儿目录
+    // (工程经 CoW 换过 GUID 时就会不一致)。但这一步必须排在验证之后 —— 排在前面的话,
+    // 任何带引用节的 FEAT(哪怕文件不存在、哪怕 sha 不符)都能顶掉 sessionGuid_ 并随 PRMS
+    // 落盘、改掉桥面 §1.1 的 session_guid,而那份 sidecar 我们压根没认下来
+    // (#147 复审【建议】④)。
+    if (sessionGuid_.toStdString() != decoded.ref.sessionGuid)
+    {
+        sessionGuid_ = juce::String(decoded.ref.sessionGuid);
+    }
+    const auto inner = scvb::state::decodeFeatures(gz.data(), gz.size());
+    if (inner.codecVerNewer)
+    {
+        preserveAndBail(/*newerCodec=*/true); // ← 上一轮漏掉的第六条路
+        return;
+    }
+    if (!inner.ok || !inner.embedded)
+    {
+        preserveAndBail(/*newerCodec=*/false);
+        return; // sidecar 里又是一层引用 = 数据不自洽,拒载
+    }
+    if (!featureHopMatchesBuild(inner.features.hopMs))
+    {
+        preserveAndBail(/*newerCodec=*/false);
+        return;
+    }
+    scvb::state::restoreFeatures(inner.features, session_.frameStore());
+}
+
+bool ScvbOutputAudioProcessor::featureHopMatchesBuild(std::uint32_t hopMs)
+{
+    // hop 时长是 feat 段的几何常量(当前冻结在 10ms),coverage 的 hop 序号全按它换算。
+    // 真读到别的值就说明这份特征来自另一套时基 —— 照本构建的 hop 去还原会把整条时间轴拉错位,
+    // 画出来的波形对不上音频。宁可空着。当前恒等,属为将来放开 hop 时预留的闸。
+    if (hopMs == scvb::output::OutputSession::featHopMs())
+    {
+        return true;
+    }
+    DBG("SCVB Output: FEAT hopMs " << static_cast<int>(hopMs) << " != build "
+                                   << static_cast<int>(scvb::output::OutputSession::featHopMs())
+                                   << "; refusing to restore features");
+    return false;
+}
+
+bool ScvbOutputAudioProcessor::featuresInSidecar() const
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    // 特征目前只有「内嵌进工程的 FEAT chunk」这一种落法(外部 sidecar 归 T21/T40,尚未接线)。
-    // 桥面此前把 features 写死成 {embedded:false, bytes:0},设置页于是恒显示「已保存为外部文件」
-    // —— 一个字都不成立:既没有外部文件,也没有 0 字节的外部文件。这里报实际大小。
-    const scvb::state::Chunk* feat = loadedChunks_.find(scvb::state::kFourccFeat);
-    return feat != nullptr ? static_cast<std::int64_t>(feat->payload.size()) : 0;
+    return featuresSidecar_;
+}
+
+std::int64_t ScvbOutputAudioProcessor::featureBytes() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    // 内嵌 = FEAT chunk 大小;转出 = sidecar 文件大小(**不是**引用节那一百来字节)。
+    // 只在 load/save 时更新,所以「本会话新采集但尚未存盘」恒为 0 —— 与工程文件里的实际
+    // 字节数一致,不是「内存里有多少」。
+    return featureBytes_;
 }
 
 void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
@@ -1306,6 +1640,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     scvb::state::OutputDecodeReport report;
     if (!scvb::state::decodeOutputState(cfg->payload.data(), cfg->payload.size(), s, &report))
     {
+        // [SL-226] 配置节损坏 ≠ 部分 blob。这是一份**完整工程**,只是 CFGS 坏了 —— 特征仍必须
+        // 按本工程的 FEAT 处理,不能让上一个工程的波形留在 FrameStore 里冒充本工程的:
+        // loadedChunks_ 上面已经换成本工程的了,不处理的话**下次保存会把上一个工程的特征
+        // 写进这个工程**(#147 复审【重要】③)。
+        // 这里调它不违反「必须在 changeGroup 之后」那条约束 —— 损坏路径根本走不到 group 绑定。
+        readFeaturesChunk(chunks);
         return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
     }
     preservedCfgsTail_ = std::move(s.unknownTail); // 未来小版本追加字段保留,getStateInformation 原样回写
@@ -1443,6 +1783,20 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     {
         session_.setGroupId(static_cast<scvb::u32>(groupId_));
     }
+
+    // [SL-226] FEAT → FrameStore(泳道波形)。**必须是本函数的最后一步**,两条理由:
+    //
+    // ① 上面的 changeGroup() 第一件事就是 frameStore_.reset()([J66]:特征按 channel 索引存、
+    //    没有 group 维度,改组必须整店作废)。回灌排在它前面的话,**凡是工程组 ≠ 当前组的工程,
+    //    刚灌进去的特征立刻被抹掉** —— 而「宿主先 prepareToPlay(默认组 1)再灌工程 chunk」正是
+    //    真机上的常规时序(v5 实测 P0-5 就是这条路)。本卡初版正是栽在这里:同组的用例全绿,
+    //    换组的工程照样一片空白。#147 审查揪出。
+    //
+    // ② 排在 CFGS 早退**之后**,顺带拿到了 SL-217(#126)那条纪律想要的语义:轨道预设/参数预设
+    //    这类只带 PRMS 的部分 blob 走不到这里,于是**不动**已有特征 —— 「没有信息」不会被读成
+    //    「删掉全部」。而带完整 CFGS 的工程若确实没有 FEAT,那是这个工程真的没存过特征,
+    //    该清就清(否则会把上一个工程的波形留下来冒充本工程的)。
+    readFeaturesChunk(chunks);
 }
 
 void ScvbOutputAudioProcessor::setGroupId(int groupId)

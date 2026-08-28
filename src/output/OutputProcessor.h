@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -197,8 +198,10 @@ public:
     juce::String masterChartMode() const { return masterChartMode_; }
     // [SL-215] 会话 GUID(36 字符 dashed UUID,恒非全零)。桥面 §1.1 快照的 session_guid 取这里。
     juce::String sessionGuid() const { return sessionGuid_; }
-    // [SL-215] 工程内嵌特征字节数 = FEAT chunk 实际大小(无 FEAT → 0)。设置页存储状态行的真源。
-    std::int64_t embeddedFeatureBytes() const;
+    // [SL-215/SL-226] 设置页存储状态行的两个真源:特征落在哪(内嵌/外部)+ 实际多少字节。
+    // 两个必须成对读 —— 只看字节数分不出「内嵌 0.5MB」与「转出后引用节 0.5MB」。
+    std::int64_t featureBytes() const;
+    bool featuresInSidecar() const;
     // 桥面 ui 落 state(§1.30 setLang / §1.29 commitUiScale)。基类 WebViewHost 只维护 editor
     // 局部值,而 §2.1 的 ui.language / ui.scale 取自这里 —— 不落 processor,下一次 state emit
     // 会把旧值回推给 UI(T37 真机 bug A-1:选中文后切 tab 变回英文)。
@@ -416,6 +419,16 @@ private:
     // 不可变契约(ADR-005);非锁定 —— 调用方须已持 lifecycleMutex_(rebindVersion 与 CRVS 写事务)。
     void rebuildAllCurves();
 
+    // [SL-226] 特征持久化两端。调用方须已持 lifecycleMutex_(与 get/setStateInformation 同锁)。
+    // writeFeaturesChunk:FrameStore → FEAT chunk;超 ADR-007 阈值转 sidecar(写引用节)。
+    // readFeaturesChunk:FEAT chunk → FrameStore(embedded 直解;引用节经 sessionGuid 读 sidecar)。
+    void writeFeaturesChunk(scvb::state::StateChunks& chunks);
+    void readFeaturesChunk(const scvb::state::StateChunks& chunks);
+    // sidecar 落盘根目录 = <appdata>/Synchain/SCVB(与 UiDefaultsStore 同根,STATE_SCHEMA §4.3)。
+    static std::filesystem::path sidecarBaseDir();
+    // 特征的 hop 时基是否与本构建一致(当前冻结 10ms,恒真;为将来放开 hop 预留的闸)。
+    static bool featureHopMatchesBuild(std::uint32_t hopMs);
+
     // [J87] 采集开关的**不加锁**内核:调用方须已持 lifecycleMutex_。setCaptureEnabled 是它的
     // 加锁外壳;25Hz tick 全程持锁,自动撤防那一路直接用内核,不去依赖 CriticalSection 的可重入。
     void applyCaptureEnabled(bool on);
@@ -494,6 +507,28 @@ private:
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
     std::vector<std::uint8_t>
         preservedCfgsTail_; // CFGS 已知字段之后的未知尾部(未来小版本追加;save 原样回写,防静默丢字段)
+
+    // [SL-226] 特征持久化的两位运行时态。
+    // featuresSidecar_:上一次落盘是否走了 sidecar —— `shouldUseSidecar` 的回滞(>8MB 转出 /
+    // <6MB 收回)需要「当前在哪一侧」才判得了,只看本次字节数会在阈值附近来回抖。
+    bool featuresSidecar_ = false;
+    // featCodecNewer_:读到 codecVer 高于本构建的 FEAT。此时特征按空处理,但**绝不重编码** ——
+    // 保存时原样回写 loadedChunks_ 里那份原始 chunk(与容器级 abi 拒载同一条纪律:
+    // 不认识的数据只能原样带走,不能用「我这边是空的」去覆盖用户的真数据)。
+    bool featCodecNewer_ = false;
+    // featRefUnresolved_:工程里有 FEAT 引用节,但外部 sidecar 读不出来(文件不在 / sha256 不符)。
+    // 此时内存里没有特征,而保存路径的「一轨都没采过 → 删掉 FEAT chunk」会把**指针本身**也删掉 ——
+    // 文件还躺在磁盘上,工程里却再没有找回它的线索。置位后保存改为原样保留那一节。
+    bool featRefUnresolved_ = false;
+    // 特征实际字节数(压缩后)。内嵌 = FEAT chunk 大小;转出 = sidecar 文件大小(**不是**引用节的
+    // 一百来字节)。设置页存储状态行的分子;仅在 load/save 时更新,故「本会话新采集但尚未存盘」
+    // 恒为 0 —— 与工程文件里的实际字节数一致,不是「内存里有多少」。
+    std::int64_t featureBytes_ = 0;
+    // 上面两位(featCodecNewer_ / featRefUnresolved_)要「原样带走」的那份**原始 FEAT 字节**。
+    // 必须自己留一份,**不能指望 loadedChunks_**:载入一份只带 PRMS 的部分 blob(轨道/参数预设)
+    // 时 loadedChunks_ 会被整个换成 {PRMS},而那条路不走 readFeaturesChunk、两位也就不复位 ——
+    // 「什么都不做就是原样回写」的前提当场失效,那份不认识的字节永久消失(#147 三轮复审)。
+    std::vector<std::uint8_t> preservedFeatChunk_;
 
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。
