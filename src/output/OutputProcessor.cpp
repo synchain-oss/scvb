@@ -2410,6 +2410,45 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 
         if (!result.cancelled)
         {
+            // [SL-209] 分析结果**可撤销**(用户新需求):把整轮回落包成一次 CRVS 事务压进
+            // 既有 UndoManager —— 与段编辑同栈,Ctrl+Z 恢复分析前的段表、Ctrl+Y 重放分析结果。
+            //
+            // 为什么整表快照就够、不需要「按实际被替换面」另算:`commitCrvsTransaction` 快照的是
+            // **整个 CrvsData**(两版本 × 15 轨),undo 原样还原 —— 那份快照里本来就含着这一轮
+            // 保留下来的用户段与范围外 auto 段。所以「分析不覆盖 user 段」与「分析可撤销」天然共存:
+            // 撤销恢复的是**分析前的那一刻**,不管这一轮实际替换了哪几段。
+            //
+            // 一次分析 = **一条**撤销步:beginNewTransaction 起新事务,整轮合并循环在同一个
+            // mutator 里跑完;局部重分析同理(它改的面更小,快照口径不变)。
+            //
+            // ⚠ 旧注(「§1.6 撤销行逐字『否』,故不走 commitCrvsTransaction」)已被本卡推翻,
+            // 契约 §1.6 撤销行需同步改判 —— 见变更文档 20260827-sl209-analyze-undoable.md,
+            // **待用户批准**;在批准前代码与契约文字不一致,这一点在变更文档里显式登记着。
+            // 旧注提的第二条顾虑(Ctrl+Z 以 reason:"undo" 重发段表、与分析完成的 reason:"analyze"
+            // 打架)不成立:两者本就是两次不同的事件,undo 重发用 "undo" 正是 §2.8 的枚举语义,
+            // UI 的分析态由 analysis_run 驱动,不看段表 reason。
+            scvb::output::commitCrvsTransaction(
+                authority_.undoManager(), crvsData_, "Analyze",
+                [&] { applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual); },
+                [this] { rebuildAllCurves(); });
+        }
+
+        runtime_.analysisRunning = false;
+        runtime_.analysisProgress.store(result.cancelled ? 0.0f : 1.0f, std::memory_order_relaxed);
+        analysisDone_ = !result.cancelled; // editor 据此以 reason:"analyze" 重发段表(§2.8)
+        crvsRevision_.fetch_add(1, std::memory_order_release);
+    }
+    analysisRunning_.store(false, std::memory_order_release);
+}
+
+// [SL-209] 分析产物合入段表(原 finishAnalysis 的内联循环;抽出来是为了能整个塞进
+// commitCrvsTransaction 的 mutator)。调用方须已持 lifecycleMutex_。
+void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::PipelineResult& result,
+                                                     std::int64_t rangeStartSample, std::int64_t rangeEndSample,
+                                                     bool clearManual)
+{
+    {
+        {
             auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
 
             for (int t = 0; t < 15; ++t)
@@ -2474,18 +2513,6 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                           [](const scvb::state::Segment& x, const scvb::state::Segment& y) { return x.t0 < y.t0; });
                 dst = std::move(next);
             }
-
-            // §1.6 撤销行逐字「否(分析产物变更不入撤销栈)」——**不走 commitCrvsTransaction**
-            // (它内部 beginNewTransaction + perform,会把分析产物压进 undo)。直接写 + 重建曲线。
-            // 顺带:入栈还会让 Ctrl+Z 以 reason:"undo" 重发段表,和分析完成的 reason:"analyze"
-            // 打架,UI 的分析态更难对齐。
-            rebuildAllCurves();
         }
-
-        runtime_.analysisRunning = false;
-        runtime_.analysisProgress.store(result.cancelled ? 0.0f : 1.0f, std::memory_order_relaxed);
-        analysisDone_ = !result.cancelled; // editor 据此以 reason:"analyze" 重发段表(§2.8)
-        crvsRevision_.fetch_add(1, std::memory_order_release);
     }
-    analysisRunning_.store(false, std::memory_order_release);
 }

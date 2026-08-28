@@ -28,6 +28,20 @@ export const IDLE_REFETCH_MS = 120;
 /** 契约 §1.27:cols 上限。 */
 export const MAX_COLS = 4096;
 
+/**
+ * [SL-212] 单笔 `requestWaveform` 的**兜底超时**(ms)。
+ *
+ * 契约 §1.27 是「一次调用一次 resolve」,但那是**约定**,不是保证:桥那头是 WebView2 的
+ * 消息泵,P0-A 那一族现场里它被打满过。真丢一次回执的后果不是「这一帧没画」,而是
+ * **这个视口键被永久毒死** —— `getTile` 把 pending 的 promise 本身塞进了 LRU 做在途去重,
+ * 一笔永不 settle 的 promise 会让后续同键请求全部挂到它身上,`peek` 也永远命不中它。
+ * 用户平移/缩放回到同一个视口时,那条泳道就再也取不到数(而段表一切正常)。
+ *
+ * 超时只做一件事:**把键腾出来**,让下一次静止拍能重新发一发。取 8s —— 远高于任何健康
+ * 回执(真机上是毫秒级),只在「确实没人应答」时才会碰到,不会误杀慢回执。
+ */
+export const TILE_REQUEST_TIMEOUT_MS = 8000;
+
 /** 契约 §1.27:未覆盖列哨兵 dB。 */
 export const UNCOVERED_DB = -160;
 
@@ -265,6 +279,9 @@ export function createTileCache(cap = TILE_LRU_CAP) {
  *            peek:(ch,startS,endS,cols)=>object|null,
  *            invalidate:(ch?:number)=>void}}
  */
+/** [SL-212] 超时哨兵:与「真回执」区分开,避免把 undefined/null 误当成超时。 */
+const kTimedOut = Symbol("scvb.tileRequestTimedOut");
+
 export function createWaveformSource(opts) {
     const request = (opts || {}).request;
     /** ch → LRU(**新鲜**块;权威绘制只认这一份)。 */
@@ -339,11 +356,32 @@ export function createWaveformSource(opts) {
             cache.set(key, tile);
             return tile;
         };
-        p = Promise.resolve()
-            .then(() => request(ch, startS, endS, n))
-            // 契约 §5.5 风格的拒绝载荷({reason}/{observer})与畸形响应
-            // 一律当无数据(形状守卫见 isTileShape 头注)
-            .then(settle)
+        // [SL-212] 与**兜底超时**竞速:回执丢了不能让这个键挂死(见 TILE_REQUEST_TIMEOUT_MS)。
+        // 超时那一支只负责把键从缓存里腾走并回 null;真回执若在之后姗姗来迟,`settle` 会因为
+        // `cur !== p` 而拒绝回写(它本来就有这道身份校验),不会把过期数据塞回去。
+        const timeout = new Promise((resolve) => {
+            const id = setTimeout(
+                () => resolve(kTimedOut),
+                TILE_REQUEST_TIMEOUT_MS,
+            );
+            // node 侧别让这颗定时器吊住进程(浏览器无此 API)
+            if (id && typeof id.unref === "function") id.unref();
+        });
+        p = Promise.race([
+            Promise.resolve()
+                .then(() => request(ch, startS, endS, n))
+                // 契约 §5.5 风格的拒绝载荷({reason}/{observer})与畸形响应
+                // 一律当无数据(形状守卫见 isTileShape 头注)
+                .then(settle),
+            timeout,
+        ])
+            .then((v) => {
+                if (v !== kTimedOut) return v;
+                if ((cache.peek ? cache.peek(key) : undefined) === p) {
+                    cache.delete(key); // ← 腾键:下一次静止拍可以重新发
+                }
+                return null;
+            })
             .catch(() => {
                 if ((cache.peek ? cache.peek(key) : undefined) === p) {
                     cache.delete(key);

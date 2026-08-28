@@ -405,6 +405,9 @@ private:
     // 后台分析线程体 + 完成回落(见 startAnalysis)。
     class AnalysisJob;
     friend class AnalysisJob;
+    // [SL-209] 分析产物合入段表(finishAnalysis 的 mutator;须持 lifecycleMutex_)。
+    void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
+                               std::int64_t rangeEndSample, bool clearManual);
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
                         std::int64_t rangeEndSample, bool clearManual);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
