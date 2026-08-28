@@ -3428,14 +3428,38 @@ TEST_CASE("HOST J87:工程恢复复位布防运行时态", "[host][t37][j87]")
     r.out.getStateInformation(blob);
     REQUIRE(blob.getSize() > 0);
 
-    // 布防(自动开采集;此处本来就开着,所以 autoEnabled 位是 false)。
-    r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/true);
-    REQUIRE(r.out.runtime().recaptureArmed);
+    // —— 把**十个字段逐个弄脏** ——
+    // 这一段不是铺垫,是本用例的一半:只断「载回之后是零」而不先把它们弄脏,那些本来就是
+    // 零的字段(autoEnabled / prevPlayhead / range 三个)不复位也照样绿 —— 十条断言里五条
+    // 是空的,护栏只有一半真的存在(PR #140 评审重要)。所以每一项都先弄脏、再 REQUIRE
+    // 确认脏成功,最后才谈复位。
+    r.out.setCaptureEnabled(false); // 让下面那发布防去「替用户开」,autoEnabled 才会是 true
+    r.out.runtime().rangeMode = 2; // manual 档
+    r.out.runtime().rangeStartS = 3.0;
+    r.out.runtime().rangeEndS = 9.0;
+    // endS 取得远一点:autoStop=true 时播放头越过右边界会自动撤防,那样就不是「载回 state
+    // 才复位」而是被自动撤防顺手清了 —— 会把本用例测的东西掉包。
+    r.out.armRecapture(kMask, 1.0, 60.0, /*autoStop=*/true);
+    // 播几块让 25Hz tick 把 recapturePrevPlayheadS 填成非负(它只在 tick 里被写)。
+    r.ph.timeSamples = static_cast<std::int64_t>(1.2 * kSr);
+    r.runBlocks(24, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/12);
 
-    // 载回工程 = 换工程 / 撤销加载:布防必须整块复位。
+    // 前置:十个字段确实都不是复位值(弄脏成功),否则下面的断言测不出任何东西。
+    REQUIRE(r.out.runtime().recaptureArmed);
+    REQUIRE(r.out.runtime().recaptureTracksMask == kMask);
+    REQUIRE(r.out.runtime().recaptureStartS == 1.0);
+    REQUIRE(r.out.runtime().recaptureEndS == 60.0);
+    REQUIRE(r.out.runtime().recaptureAutoStop);
+    REQUIRE(r.out.runtime().recaptureAutoEnabledCapture);
+    REQUIRE(r.out.runtime().recapturePrevPlayheadS >= 0.0);
+    REQUIRE(r.out.runtime().rangeMode == 2);
+    REQUIRE(r.out.runtime().rangeStartS == 3.0);
+    REQUIRE(r.out.runtime().rangeEndS == 9.0);
+
+    // 载回工程 = 换工程 / 撤销加载:两组字段必须整块复位。
     r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
 
-    // 七个布防字段逐个回读(评审建议②:别只断一半,剩下的靠「行为面间接覆盖」说不清)。
+    // 十个字段逐个回读(评审建议②:别只断一半,剩下的靠「行为面间接覆盖」说不清)。
     CHECK_FALSE(r.out.runtime().recaptureArmed); // ← 不复位的写法在这里红
     CHECK(r.out.runtime().recaptureTracksMask == 0);
     CHECK(r.out.runtime().recaptureStartS == 0.0);
