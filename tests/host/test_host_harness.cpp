@@ -1333,16 +1333,26 @@ struct MonoMultiRig
     }
 
     // [#152 复审【建议】1] 只采**纯静音**:覆盖区有,但一句人声都没有 —— 分析零产出。
+    // 返回 {采集起点秒, 该起点之后的覆盖时长}。
     //
-    // ⚠ 必须**先在采集关闭下跑一段静音把环排空**再开采集:`waitUntilInjected` 往环里灌的是
-    // 0.25f 正弦,开采集那一瞬间环里的残留响帧会被排进 FrameStore,分析就真检出一段来 ——
+    // ⚠ 必须**先在采集关闭下跑够静音**再开采集,冲的是 **Input 的响度状态**,不是环深度:
+    // ADR-007 / IPC_CONTRACT §3「仅采集开关 ON 且播放时写」—— 采集 OFF 期间特征环里**根本
+    // 不会有帧**;但 `InputProcessor.cpp` 那一步的注释同时写明「K 加权与 hop 累加**在播放中恒跑**」,
+    // 于是 `captureArmed_` 翻 true 的那一刻,**K 加权 IIR 与 hop 累加器里还存着 `waitUntilInjected`
+    // 那段 0.25f 正弦的能量** —— 头几个 hop 带残余响度,VAD 真检出一小段。
     // 「零产出」这个前提于是随时序摇摆(实测:同一份 C++ 换个构建就翻面,4 连过与 4 连红各出现过)。
-    // 排空这一步把它钉成确定的。
-    double captureSilence()
+    // 240 块 ≈ 2.56 s 静音是给那条 IIR 衰减留的余量(所以这个数冲的是滤波器状态,调它要按衰减想)。
+    struct SilentCapture
     {
-        runBlocks(240, 0.0f); // 采集**关闭**下排空:环里 waitUntilInjected 的残响不进 FrameStore
+        double fromS = 0.0; // 开采集那一刻的时间轴位置(绝对秒)
+        double coveredS = 0.0; // 自 fromS 起的覆盖时长
+    };
+    SilentCapture captureSilence()
+    {
+        runBlocks(240, 0.0f); // 采集**关闭**下空跑:把 K 加权 IIR / hop 累加器里的残余能量衰掉
         pump(400);
-        const std::int64_t silenceStart = ph.timeSamples;
+        SilentCapture r{};
+        r.fromS = static_cast<double>(ph.timeSamples) / kSr;
         out.setCaptureEnabled(true);
         pump(400);
         for (int burst = 0; burst < 6; ++burst)
@@ -1351,13 +1361,17 @@ struct MonoMultiRig
         }
         pump(400);
         // 只问**开采集之后**那一段的覆盖:排空段在采集关闭期跑过,不该算进来。
-        const double fromS = static_cast<double>(silenceStart) / kSr;
-        return out.coverageOf(1, fromS, fromS + 30.0).coveredS;
+        r.coveredS = out.coverageOf(1, r.fromS, r.fromS + 30.0).coveredS;
+        return r;
     }
 
-    bool runAnalysisToCompletion(double endS, bool clearManual)
+    bool runAnalysisToCompletion(double endS, bool clearManual) { return runAnalysisIn(0.0, endS, clearManual); }
+
+    // 显式起点版(#152 复审:captureSilence 的覆盖不再从 0 起,区间得跟着走 ——
+    // 否则排空块数一调大,startAnalysis 会直接拒受,红在这里而错误指不到真原因)。
+    bool runAnalysisIn(double startS, double endS, bool clearManual)
     {
-        const auto accepted = out.startAnalysis(0, 0.0, endS, clearManual);
+        const auto accepted = out.startAnalysis(0, startS, endS, clearManual);
         if (!accepted.ok)
         {
             return false;
@@ -4702,9 +4716,9 @@ TEST_CASE("HOST SL-209:空转分析(零产出)不压撤销步、不吃掉重做�
     REQUIRE(sameSegments(segmentsOfTrack(r.out, kCh), beforeEdit));
 
     // ④ 采一段纯静音后分析:覆盖区有(分析受理),但一句都检不出 ⇒ 零产出。
-    const double coveredS = r.captureSilence();
-    REQUIRE(coveredS > 0.0);
-    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    const auto silent = r.captureSilence();
+    REQUIRE(silent.coveredS > 0.0);
+    REQUIRE(r.runAnalysisIn(silent.fromS, silent.fromS + silent.coveredS, /*clearManual=*/false));
     // 前置:确实零产出。判据要盖**全 15 轨 × 两版本** —— `producedAny` 看的是整份 result,
     // 只查一轨会让「别的轨检出了一段」偷偷把前提蒙混过去(那时事务照压,本例断言的就不是守卫了)。
     {
