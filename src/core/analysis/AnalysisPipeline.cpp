@@ -81,6 +81,7 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
     }
 
     const std::int64_t firstHop = cfg.rangeStartSample / hopSamples;
+    result.firstHop = firstHop; // [SL-206] 后验写回 FrameStore 要按绝对 hop 定位
 
     // ---- S1:逐轨 VAD → 超长段谷切分 → 样本域段 --------------------------------------
     std::vector<std::vector<AnalysisSegment>> trackSegments(static_cast<std::size_t>(kPipelineTracks));
@@ -102,7 +103,11 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
             continue;
         }
 
-        const VadResult vad = runEnergyVad(f.kwMs.data(), f.kwMs.size(), firstHop, cfg.vad, nullptr);
+        // [SL-206] 后验必须**带出去**:它是泳道绿线(§1.27 瓦片的 vad 列)唯一的数据源,
+        // 此前这里传 nullptr,算完就地扔掉,于是 FrameStore 的 vadP 全仓没有生产者。
+        auto& posterior = result.vadPosterior[static_cast<std::size_t>(t)];
+        posterior.assign(f.kwMs.size(), 0.0f);
+        const VadResult vad = runEnergyVad(f.kwMs.data(), f.kwMs.size(), firstHop, cfg.vad, posterior.data());
         addWarningOnce(result.warnings, vad.warningMessage() != nullptr ? vad.warningMessage() : std::string{});
 
         // 超长段按谷切分(§3.2):只对超过 maxSegment 的段做,短段原样保留。

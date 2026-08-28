@@ -102,6 +102,12 @@ void ChannelFrames::write(uint64_t hop, float kw_ms, float peak)
 
     FeatPage* page = pageFor(hop, /*create=*/true);
     const uint32_t idx = static_cast<uint32_t>(hop % FeatPage::kHops);
+    // [SL-206] **新特征进来 = 旧判决作废**:vadP 是分析写的后验,与这一 hop 的 kw/peak 同源。
+    // 不清的话,「采集 → 分析 → 清除该区间 → 重采一遍别的音频」之后 kw/peak 是新的、vadP 还是
+    // 上一份素材的判决,泳道会照着**旧素材**画绿线,直到用户再分析一次。
+    // (在 vadP 恒 0 的年代这条路径显不出来;后验一有生产者它就活了 —— 与本卡同批堵上。)
+    // O(1),就在已经拿到的页与下标上写,不额外找页。
+    page->vadP[idx] = 0;
     page->kw_dBq[idx] = quantizeKwDbq(kw_ms);
     page->peak_dBq[idx] = quantizePeakDbq(peak);
     coverage_.add(HopRange{hop, hop + 1});

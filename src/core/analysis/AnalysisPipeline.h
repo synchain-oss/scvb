@@ -77,6 +77,19 @@ struct PipelineResult
     int tracksTouched = 0; // 产出了段的轨数
     bool cancelled = false;
     std::vector<std::string> warnings; // VAD 守卫 / 宽度不足 / 平衡回退
+
+    // [SL-206] 逐 hop 的 VAD **后验** p[k] ∈ [0,1](§2.4 的截断后验),下标 0 = firstHop。
+    //
+    // 为什么要带出来:`EnergyVad` 早就支持 `posteriorOut`,`FrameStore` 早就有 `setVadP`,
+    // `waveformOf` 早就按 `vadP(h) > 127` 给瓦片算 `vad` 列,泳道也早就画绿线 —— 唯独**中间
+    // 这一段没人接**:管线调 `runEnergyVad` 时第五参传的是 `nullptr`,后验算完就地扔掉,
+    // 于是 `vadP` 全仓**没有生产者**,真机上恒 0、绿线一次都没画出来过。
+    // (web-preview 的 mock 自己算了一份,所以 preview 里一直看得见 —— 这条正是「mock 盖住真机」
+    //  的第三次,用例必须与 native 口径对拍。)
+    //
+    // 只对**本次真参与分析**的轨填(未启用 / 无覆盖的轨留空 vector),与 `segments` 同口径。
+    std::array<std::vector<float>, kPipelineTracks> vadPosterior{};
+    std::int64_t firstHop = 0; // vadPosterior[t][0] 对应的**绝对** hop 序号(写回 FrameStore 要它)
 };
 
 using PipelineProgressFn = std::function<void(float)>; // 0..1
