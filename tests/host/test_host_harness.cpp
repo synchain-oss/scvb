@@ -3330,9 +3330,10 @@ TEST_CASE("HOST SL-215:会话 GUID 非全零且随 state 往返稳定", "[host][
     REQUIRE(d.sessionGuid() == guidD);
     REQUIRE(d.sessionGuid() != juce::String(kAllZero));
 
-    // ⑥ 未采集过 → 内嵌特征 0 字节(设置页据此显示「内嵌于工程(0.0 MB)」,
+    // ⑥ 未采集过 → 特征 0 字节且落点是「内嵌」(设置页据此显示「内嵌于工程(0.0 MB)」,
     //    而不是修复前那句凭空的「已保存为外部文件」)。
-    REQUIRE(a.embeddedFeatureBytes() == 0);
+    REQUIRE(a.featureBytes() == 0);
+    REQUIRE_FALSE(a.featuresInSidecar());
 }
 
 // ---------------------------------------------------------------------------
@@ -3934,4 +3935,87 @@ TEST_CASE("HOST SL-226:反向 —— 特征清空后保存,重开不得捞回旧
         Rig::pumpMessages(200);
         CHECK(b.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
     }
+}
+
+// [SL-226] 回归①(#147 审查【重要】①):**工程组 ≠ 当前组**时,回灌不得被 changeGroup 抹掉。
+// setStateInformation 末尾会在「已 prepared 且组不同」时走 session_.changeGroup(),而它第一件事
+// 就是 frameStore_.reset()。本卡初版把回灌排在它前面 —— 同组的用例全绿,换组的工程照样一片空白,
+// 而「宿主先 prepareToPlay(默认组)再灌工程 chunk」正是真机常规时序(v5 实测 P0-5 同款)。
+TEST_CASE("HOST SL-226:回归 —— 换组加载时波形不被 changeGroup 抹掉", "[host][v56][SL226]")
+{
+    juce::MemoryBlock blob;
+    double coveredS = 0.0;
+    {
+        Rig r; // Rig 用 kTestGroup(7)
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+        REQUIRE(coveredS > 0.0);
+        r.out.getStateInformation(blob); // 工程记的是组 7
+    }
+
+    // 新实例**先 prepareToPlay 在另一个组**,再灌工程 chunk —— 于是加载末尾必然走 changeGroup。
+    ScvbOutputAudioProcessor out2;
+    out2.setGroupId(4); // 与工程里的组 7 不同
+    FakePlayHead ph;
+    out2.setPlayHead(&ph);
+    out2.prepareToPlay(kSr, kBlock);
+    Rig::pumpMessages(200);
+    REQUIRE(out2.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+
+    out2.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(300);
+
+    // ← 修复前这里恒 0:回灌完又被 changeGroup 的 frameStore_.reset() 抹掉了。
+    CHECK(out2.coverageOf(kTestChannel, 0.0, 30.0).coveredS == Catch::Approx(coveredS));
+    const auto tile = out2.waveformOf(kTestChannel, 0.0, coveredS, 32);
+    CHECK(std::count(tile.covered.begin(), tile.covered.end(), 0) < 32);
+
+    out2.releaseResources();
+}
+
+// [SL-226] 回归②(#147 审查【重要】②):只带 PRMS 的部分 blob(轨道预设/参数预设)不得清空已采特征。
+// SL-217(#126)为 CRVS 立的规矩:「没有信息」不能读成「删除全部」。特征这条路同理 ——
+// 加载一个参数预设把波形静默清光、且不可撤销,正是 SL-226 症状的镜像。
+TEST_CASE("HOST SL-226:回归 —— 只带 PRMS 的预设不得清空已采波形", "[host][v56][SL226]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(200, 0.5f);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    // 造一份**只含 PRMS** 的容器(宿主的轨道预设/参数预设就是这个形状:没有 CFGS、没有 FEAT)。
+    juce::MemoryBlock full;
+    r.out.getStateInformation(full);
+    scvb::state::StateChunks loaded;
+    REQUIRE(scvb::state::loadState(static_cast<const std::uint8_t*>(full.getData()), full.getSize(), loaded).status ==
+            scvb::state::StateLoadStatus::Ok);
+
+    scvb::state::StateChunks presetOnly;
+    presetOnly.abi = scvb::state::kCurrentAbi;
+    const scvb::state::Chunk* prms = loaded.find(scvb::state::kFourccPrms);
+    REQUIRE(prms != nullptr);
+    presetOnly.set(scvb::state::kFourccPrms, prms->payload);
+    REQUIRE(presetOnly.find(scvb::state::kFourccCfgs) == nullptr); // 前置:确实是部分 blob
+    REQUIRE(presetOnly.find(scvb::state::kFourccFeat) == nullptr);
+
+    std::vector<std::uint8_t> presetBlob;
+    REQUIRE(scvb::state::encodeContainer(presetOnly, presetBlob));
+
+    r.out.setStateInformation(presetBlob.data(), static_cast<int>(presetBlob.size()));
+    Rig::pumpMessages(200);
+
+    // ← 修复前:readFeaturesChunk 排在 CFGS 早退之前,缺 FEAT 即 reset,波形被静默清空。
+    CHECK(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == Catch::Approx(coveredS));
+    const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 32);
+    CHECK(std::count(tile.covered.begin(), tile.covered.end(), 0) < 32);
 }

@@ -117,6 +117,30 @@ void ChannelFrames::restoreHop(uint64_t hop, int16_t kwDbq, int16_t peakDbq, uin
     page->vadP[idx] = vad;
 }
 
+void ChannelFrames::appendRange(HopRange r, std::vector<int16_t>& kw, std::vector<int16_t>& peak,
+                                std::vector<uint8_t>& vad) const
+{
+    uint64_t h = r.begin;
+    while (h < r.end)
+    {
+        // 本页能覆盖到哪:min(页尾, 段尾)。
+        const uint64_t pageStart = (h / FeatPage::kHops) * FeatPage::kHops;
+        const uint64_t pageEnd = pageStart + FeatPage::kHops;
+        const uint64_t stop = std::min(pageEnd, r.end);
+        const FeatPage* page = pageForRead(h); // 每页一次索引查找
+
+        for (uint64_t x = h; x < stop; ++x)
+        {
+            const uint32_t idx = static_cast<uint32_t>(x % FeatPage::kHops);
+            // 页缺失(覆盖记账说有、页却没分配)按静音地板补,与逐 hop 访问器同口径。
+            kw.push_back(page ? page->kw_dBq[idx] : kSilenceDbq);
+            peak.push_back(page ? page->peak_dBq[idx] : kSilenceDbq);
+            vad.push_back(page ? page->vadP[idx] : uint8_t{0});
+        }
+        h = stop;
+    }
+}
+
 int16_t ChannelFrames::kwDbq(uint64_t hop) const
 {
     const FeatPage* page = pageForRead(hop);

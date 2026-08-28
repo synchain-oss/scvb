@@ -198,9 +198,9 @@ public:
     juce::String masterChartMode() const { return masterChartMode_; }
     // [SL-215] 会话 GUID(36 字符 dashed UUID,恒非全零)。桥面 §1.1 快照的 session_guid 取这里。
     juce::String sessionGuid() const { return sessionGuid_; }
-    // [SL-215] 工程内嵌特征字节数 = FEAT chunk 实际大小(无 FEAT → 0)。设置页存储状态行的真源。
-    std::int64_t embeddedFeatureBytes() const;
-    // [SL-226] 特征当前是否落在外部 sidecar(设置页存储状态行的另一半;true = 已转出)。
+    // [SL-215/SL-226] 设置页存储状态行的两个真源:特征落在哪(内嵌/外部)+ 实际多少字节。
+    // 两个必须成对读 —— 只看字节数分不出「内嵌 0.5MB」与「转出后引用节 0.5MB」。
+    std::int64_t featureBytes() const;
     bool featuresInSidecar() const;
     // 桥面 ui 落 state(§1.30 setLang / §1.29 commitUiScale)。基类 WebViewHost 只维护 editor
     // 局部值,而 §2.1 的 ui.language / ui.scale 取自这里 —— 不落 processor,下一次 state emit
@@ -426,6 +426,8 @@ private:
     void readFeaturesChunk(const scvb::state::StateChunks& chunks);
     // sidecar 落盘根目录 = <appdata>/Synchain/SCVB(与 UiDefaultsStore 同根,STATE_SCHEMA §4.3)。
     static std::filesystem::path sidecarBaseDir();
+    // 特征的 hop 时基是否与本构建一致(当前冻结 10ms,恒真;为将来放开 hop 预留的闸)。
+    static bool featureHopMatchesBuild(std::uint32_t hopMs);
 
     // [J87] 采集开关的**不加锁**内核:调用方须已持 lifecycleMutex_。setCaptureEnabled 是它的
     // 加锁外壳;25Hz tick 全程持锁,自动撤防那一路直接用内核,不去依赖 CriticalSection 的可重入。
@@ -514,6 +516,14 @@ private:
     // 保存时原样回写 loadedChunks_ 里那份原始 chunk(与容器级 abi 拒载同一条纪律:
     // 不认识的数据只能原样带走,不能用「我这边是空的」去覆盖用户的真数据)。
     bool featCodecNewer_ = false;
+    // featRefUnresolved_:工程里有 FEAT 引用节,但外部 sidecar 读不出来(文件不在 / sha256 不符)。
+    // 此时内存里没有特征,而保存路径的「一轨都没采过 → 删掉 FEAT chunk」会把**指针本身**也删掉 ——
+    // 文件还躺在磁盘上,工程里却再没有找回它的线索。置位后保存改为原样保留那一节。
+    bool featRefUnresolved_ = false;
+    // 特征实际字节数(压缩后)。内嵌 = FEAT chunk 大小;转出 = sidecar 文件大小(**不是**引用节的
+    // 一百来字节)。设置页存储状态行的分子;仅在 load/save 时更新,故「本会话新采集但尚未存盘」
+    // 恒为 0 —— 与工程文件里的实际字节数一致,不是「内存里有多少」。
+    std::int64_t featureBytes_ = 0;
 
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。

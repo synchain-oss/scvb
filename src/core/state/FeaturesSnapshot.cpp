@@ -36,13 +36,9 @@ FeaturesData snapshotFeatures(const analysis::FrameStore& store, std::uint32_t s
         for (const auto& r : ranges)
         {
             // 列式:按 range 顺序串联(与 FeaturesCodec 头注的节内布局同序)。
+            // 按页批量取 —— 逐 hop 三次 map 查找会在保存路径的临界区里烧掉一个量级的时间。
             cf.coverage.push_back(HopRange{r.begin, r.end});
-            for (std::uint64_t h = r.begin; h < r.end; ++h)
-            {
-                cf.kwDbq.push_back(frames.kwDbq(h));
-                cf.peakDbq.push_back(frames.peakDbq(h));
-                cf.vadPosterior.push_back(frames.vadP(h));
-            }
+            frames.appendRange(r, cf.kwDbq, cf.peakDbq, cf.vadPosterior);
         }
         data.channels.push_back(std::move(cf));
     }
@@ -71,6 +67,8 @@ void restoreFeatures(const FeaturesData& data, analysis::FrameStore& store)
         // 宁可少回灌几个 hop,也不越界读。
         std::size_t cursor = 0;
         const std::size_t n = cf.kwDbq.size();
+        // decodeFeatures 已保证 peak 与 kw 等长,这一位实际恒真 —— 留作恒真式防御,
+        // 因为本函数也直接受 harness/单测构造的 FeaturesData(那条路没有解码器把关)。
         const bool havePeak = cf.peakDbq.size() == n;
         const bool haveVad = cf.vadPosterior.size() == n; // [J06] 省略时为空,按 0 回灌
 

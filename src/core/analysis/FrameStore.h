@@ -82,6 +82,11 @@ public:
     // [SL-226] 整段并入覆盖记账(回灌配套;不变量仍由 CoverageMap 维持)。
     void addCoverage(HopRange r) { coverage_.add(r); }
 
+    // [SL-226] 批量导出一段([begin,end) 追加到三个 out)。逐 hop 调 kwDbq/peakDbq/vadP 是**每个
+    // hop 三次 std::map 查找**,满配 20min×15 轨 ≈ 540 万次 —— 而这段跑在 getStateInformation
+    // 的 lifecycleMutex_ 临界区里,25Hz tick 正在抢同一把锁。按页取则每 4096 个 hop 才查一次。
+    void appendRange(HopRange r, std::vector<int16_t>& kw, std::vector<int16_t>& peak, std::vector<uint8_t>& vad) const;
+
     bool hasHop(uint64_t hop) const { return coverage_.coversFully(HopRange{hop, hop + 1}); }
 
     int16_t kwDbq(uint64_t hop) const;
