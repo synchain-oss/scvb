@@ -36,7 +36,7 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
 |---|---|
 | **原文** | `PRMS` 行「内容」格 = 「APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen, **lang_chosen**([J81])}」—— **没有 `session_guid`** |
 | **新文** | 同上,末尾并上「+ **`session_guid`**([SL-215];见 §4.3)」;并在表下新增一条 bullet 说明**为什么落 `PRMS` 而不是 `CFGS`** |
-| **新增 bullet** | 「**`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长**布局,新字段只能靠「已知字段后未知尾部原样回写」这一条机制兜底(`OutputStateCodec.cpp` 的 `unknownTail`,且**仅在 abi=2 的枚举尾字段齐全时**才生效),已知字段各带范围校验,失败态还分两种 —— 头部六个越界即**整块拒载**,只有两个枚举尾字段越界才**回落默认并计数**;`ValueTree` 则对字段增删**两个方向**都天然容忍,无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。」 |
+| **新增 bullet** | 「**`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长**布局,新字段只能靠「已知字段后未知尾部原样回写」这一条机制兜底(`OutputStateCodec.cpp` 的 `unknownTail`,且**仅在 abi=2 的枚举尾字段齐全时**才生效),已知字段的失败态还分三种 —— 头部**五个**越界即**整块拒载**,两个枚举尾字段越界**回落默认并计数**,`ui.scale` **不作范围校验**;`ValueTree` 则对字段增删**两个方向**都天然容忍,无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。」 |
 | **依据(PR)** | #127 |
 | **依据(代码行号)** | 属性名与写入面:`src/output/OutputUiState.h:81`(`kSessionGuidProp{"session_guid"}`)、`:83-90`(`writeSessionGuid` → `apvtsState.setProperty(...)`,写的是 **APVTS 根节点属性**);同文件 `:69-80` 的头注即本 bullet 的理由原文。调用点:`src/output/OutputProcessor.cpp:1165`(紧挨 `writeUiFlags`,同一张 `apvts.copyState()`);`OutputProcessor.cpp:1159-1162` 的行注对 ui 三位写的是同一条理由。 |
 
@@ -152,6 +152,9 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
       按 `OutputStateCodec.cpp:126-141`,头部六个字段越界是**硬拒载**(`return false`),只有
       `:174-189` 的 `loudness_mode` / `center_slot_policy` 两个枚举尾字段才**回落默认并计数**
       (另 `:148-152`:`0 < remaining < 8` 枚举被截断同样拒载)。已按实现分开写。
+      ⑤ 第三轮复审【重要】:上条写成「头部**六个**」把 `ui.scale` 算了进去,而 `uiScale` 在
+      `OutputStateCodec.cpp` 里只被 `:122` 读出、`:171` 原样赋值,**全程没有任何范围校验**。
+      改为「头部**五个**硬拒载 + 两个枚举回落 + `ui.scale` 不校验」三分。
       另按【建议】2 统一了本节脚本清单与 PR 描述,按【建议】3 补了「`contractVersion` 保持 1.0」
       的理由(见「兼容性影响」末条)。
 - **未扩范围(核对时另见两处出入,已单列上报,本 PR 一个字都不动)**:
@@ -174,3 +177,9 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
        (「追加字段会让旧构建整块拒载并静默把 group/开关/版本打回默认」)。本 PR 把契约改准之后,
        **不准的那一侧变成了代码注释**(PR #153 第二轮复审【建议】2)。
      两条都是契约对、注释旧;本卡零行为变更、不碰代码。
+  ③ **实现层的一处观察(核对 ⑤ 时顺带看到,本卡不动)**:`CFGS` 的 `ui.scale` 在
+     `OutputStateCodec.cpp` 里只被 `:122` 读出、`:171` 原样赋值,解码器与加载路径
+     (`OutputProcessor.cpp:1657` `uiScale_ = static_cast<int>(s.uiScale);`)**都不夹取**;
+     夹取只发生在桥面 `setUiScale` 那一路(`:2056` `juce::jlimit`)。而 §7.3 的口径是
+     「`setStateInformation` 处理的是用户工程文件里的不可信字节」。是否要在加载路径补夹取,
+     属实现裁定,超出 J90 批准面,一并留给上面 ① 的开卡窗口。
