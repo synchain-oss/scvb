@@ -1370,7 +1370,8 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
 
     // 加载 state 后 CRVS 已整体替换 → 清空 UndoManager,否则 undo() 会恢复加载前的旧 CRVS 快照,
     // 静默丢弃刚加载的段数据(PR#55 第12轮;关闭 #48 tech-debt「fromState 清 undo」的桥面同款)。
-    // 桥的 UndoManager 只含 CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve,
+    // 桥的 UndoManager 只含 CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve/
+    // 分析回落([J89]),
     // 均写 crvsData_),无其它事务类别 → 全清口径安全(在 lifecycleMutex_ 内)。
     authority_.undoManager().clearUndoHistory();
 
@@ -2422,8 +2423,8 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // mutator 里跑完;局部重分析同理(它改的面更小,快照口径不变)。
             //
             // ⚠ 旧注(「§1.6 撤销行逐字『否』,故不走 commitCrvsTransaction」)已被本卡推翻,
-            // 契约 §1.6 撤销行需同步改判 —— 见变更文档 20260827-sl209-analyze-undoable.md,
-            // **待用户批准**;在批准前代码与契约文字不一致,这一点在变更文档里显式登记着。
+            // 契约 §1.6「撤销」行已随本卡改判为「是」([J89],2026-08-28 用户批准;
+            // 变更文档 20260827-sl209-analyze-undoable.md),代码与契约文字一致。
             // 旧注提的第二条顾虑(Ctrl+Z 以 reason:"undo" 重发段表、与分析完成的 reason:"analyze"
             // 打架)不成立:两者本就是两次不同的事件,undo 重发用 "undo" 正是 §2.8 的枚举语义,
             // UI 的分析态由 analysis_run 驱动,不看段表 reason。

@@ -76,22 +76,46 @@ log("=== ① [SL-212] 回执丢失不得永久毒死该视口键 ===");
     await flush();
     eq(calls, 1, "同键在途去重:不重复打桥");
 
-    // ★ 超时兜底把键腾出来。为了让冒烟能跑完,这里把超时常量当**上界**验:
-    //   直接等 TILE_REQUEST_TIMEOUT_MS 太久,故只断言「这一笔最终会 settle 成 null」的
-    //   机制存在 —— 用一个短超时的等价源来跑真实时序(见下)。
+    // ★ 兜底超时的**值域**必须真的能兜住:光断「常量存在 / >0」挡不住把它改成
+    //   Number.MAX_SAFE_INTEGER(或 1e12)这类「等于没有超时」的回退 —— 那种改法下
+    //   常量仍是有限正数,旧钉子照样绿。这里给一个**上界**:超时必须落在人还愿意等的
+    //   量级内(≤60s),否则毒键的存活期就等同于会话寿命,修等于没修。
     check(
         Number.isFinite(W.TILE_REQUEST_TIMEOUT_MS) &&
-            W.TILE_REQUEST_TIMEOUT_MS > 0,
-        "导出了兜底超时常量",
+            W.TILE_REQUEST_TIMEOUT_MS > 0 &&
+            W.TILE_REQUEST_TIMEOUT_MS <= 60000,
+        `兜底超时在可用量级内(实得 ${W.TILE_REQUEST_TIMEOUT_MS}ms,要求 0 < t ≤ 60000)`,
     );
-    // 源码级:getTile 必须与超时竞速,并在超时那一支腾键(否则键永久挂死)
+    // 源码级:**两个取数口都**要与超时竞速。分开写两颗钉是因为它们是同一族问题的两处
+    // (getTile 的 LRU 在途去重 / ensureOverview 的 rec.inflight),漏掉任一处都会留一条毒键路径;
+    // 概览那条更狠 —— 它不进 LRU、永不淘汰,一次丢包冻结到会话结束。
     const srcText = await import("node:fs").then((fs) =>
         fs.readFileSync(join(ROOT, "web/output/canvas/waveform.js"), "utf8"),
     );
     check(
-        /Promise\.race\(\[/.test(srcText) &&
-            /TILE_REQUEST_TIMEOUT_MS/.test(srcText),
-        "getTile 与兜底超时竞速",
+        /function withTimeout\(promise, ms\)/.test(srcText),
+        "超时竞速抽成公用件 withTimeout(两个取数口共用一份)",
+    );
+    check(
+        /p = withTimeout\([\s\S]{0,400}?timeoutMs,/.test(srcText),
+        "getTile 走 withTimeout(不是自己手搓一份 race)",
+    );
+    // 超时可注入是**为用例开的seam**;必须钉死生产侧的默认仍是 TILE_REQUEST_TIMEOUT_MS,
+    // 否则「默认变 undefined / 变成天文数字」这类回退会让整条兜底静默失效,而上面那两颗
+    // 结构钉照样绿(它们只看调用形态,不看默认值)。
+    check(
+        /timeoutMs > 0[\s\S]{0,120}?TILE_REQUEST_TIMEOUT_MS;/.test(srcText),
+        "[SL-212] 注入缺省/非法时回落 TILE_REQUEST_TIMEOUT_MS(生产侧不会没有超时)",
+    );
+    check(
+        /const p = withTimeout\([\s\S]{0,200}?request\(ch, a, b, n\)[\s\S]{0,120}?timeoutMs,/.test(
+            srcText,
+        ),
+        "[SL-212] ensureOverview 也走 withTimeout(概览毒键同族)",
+    );
+    check(
+        /if \(tile === kTimedOut\) return; \/\/ 超时:dirty 不清/.test(srcText),
+        "[SL-212] 概览超时:放掉 inflight 但**保持 dirty**(下一拍才会重发)",
     );
     // ⚠ 这条负责钉「**超时分支自己**腾键」。上一版写成
     // `/if \(v !== kTimedOut\) return v;[\s\S]{0,200}cache\.delete\(key\)/`,
@@ -128,6 +152,50 @@ log("=== ② [SL-212] 超时后同键能重新发出并画出来(真实时序,�
     const good = await src.getTile(CH, 0, 5, 100);
     check(!!good && Array.isArray(good.minDb), "腾键后同键能重新取到瓦片");
     eq(calls, 2, "确实重打了桥(不是命中残留的死键)");
+}
+
+// =============================================================================
+log("=== ②b [SL-212] 概览块:回执丢失后不得冻结到会话结束 ===");
+{
+    // 概览没有 LRU 淘汰,`rec.inflight` 一旦挂上一笔永不 settle 的 promise,这条轨的概览就
+    // **冻结到会话结束**;而它正是过渡帧「盖满整幅」的唯一兜底 —— 塌了就是缩放/平移露白。
+    //
+    // 这一组走**真实时序**(注入 60ms 超时,生产是 8s):`ensureOverview` 在 inflight 挂着时
+    // 是提前 return 的,所以「超时放掉 inflight → 下一拍重发」这个迁移在真超时之前根本观察不到,
+    // 光靠源码钉只能钉形态、钉不住行为。
+    let calls = 0;
+    let hang = true;
+    const src = W.createWaveformSource({
+        timeoutMs: 60,
+        request: (ch, s0, s1, cols) => {
+            calls++;
+            if (hang) {
+                hang = false;
+                return new Promise(() => {}); // 第一笔:回执丢失,永不 settle
+            }
+            return Promise.resolve(tileOf(cols));
+        },
+    });
+    const CH = 7;
+    src.ensureOverview(CH, 0, 600, W.OVERVIEW_COLS);
+    await flush();
+    eq(calls, 1, "[SL-212] 概览首笔已发出");
+    eq(src.peekOverview(CH), null, "[SL-212] 首笔在途 ⇒ 手上还没有概览");
+
+    // 在途期间不重复打桥(既有去重行为,别改坏)。
+    src.ensureOverview(CH, 0, 600, W.OVERVIEW_COLS);
+    await flush();
+    eq(calls, 1, "[SL-212] 在途期间不重复打桥");
+
+    // ★ 等过注入的超时 + 节流门:inflight 被放掉、dirty 仍在 ⇒ 下一拍真的重发,并拿到概览。
+    // ⚠ 重发要用**不同跨度**:同跨度时 `spanChanged` 为假,节流门取的是 OVERVIEW_REFRESH_MS
+    // (3000ms)而不是 OVERVIEW_SPAN_MIN_MS(120ms),等 220ms 会被门挡回去 —— 第一版就是
+    // 这么红的,红的是用例对节流门的理解,不是实现。曲长回填/切歌本来也就是换跨度那一支。
+    await new Promise((r) => setTimeout(r, 200)); // > timeoutMs(60) + OVERVIEW_SPAN_MIN_MS(120)
+    src.ensureOverview(CH, 0, 900, W.OVERVIEW_COLS);
+    await flush();
+    check(calls >= 2, "[SL-212] 超时后概览能重新发起(不再冻结到会话结束)");
+    check(!!src.peekOverview(CH), "[SL-212] 重发后概览到手");
 }
 
 // =============================================================================
