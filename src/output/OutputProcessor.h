@@ -587,9 +587,11 @@ private:
 
     // [M] 状态。
     uint64_t lastHeartbeatMs_ = 0;
-    // [SL-233] owner.lock 续租的分频计时(steady 时钟)。**故意从 0 起**:第一拍就跑一次,
-    // 让「加载完工程 / 刚存完盘」立刻续上租约,而不是先空窗 10s。不持锁时它只被 tick 读写。
+    // [SL-233] owner.lock 续租的分频计时(steady 时钟)。primed 位表达「首拍立刻刷一次」——
+    // 不能靠初值 0 来表达:steadyNowMs() 是开机以来的毫秒数,开机 10s 内被拉起的宿主 now-0
+    // 还不到一个周期,首刷会被推迟(PR #154 复审【建议】1)。两者都只被 tick 在持锁下读写。
     std::uint64_t lastOwnerLockRefreshMs_ = 0;
+    bool ownerLockRefreshPrimed_ = false;
     int timelineInvalidTicks_ = 0;
     // 分析作业([M] 起/停;线程体只读快照,完成后经 AsyncUpdater 回消息线程写 CRVS)。
     std::unique_ptr<AnalysisJob> analysisJob_;

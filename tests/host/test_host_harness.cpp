@@ -4870,12 +4870,20 @@ TEST_CASE("HOST SL-233:sidecar 模式下 25Hz tick 周期刷新 owner.lock", "[h
 
     const std::vector<std::uint8_t> sidecarBlob = blobWithSidecarRef(baseBlob, guid, gz, data);
 
-    // ---- ① 反向验证(修复前的行为):**不在** sidecar 模式的实例不去碰 owner.lock。----
-    //      没有这一条,下面 ② 的「心跳变新了」可能只是「谁都会去刷一下」,证明不了门控。
+    // ---- ① 反向验证:**不在** sidecar 模式的实例不去碰 owner.lock。----
+    //      关键是这个实例的 sessionGuid_ 必须**就是** guid 且锁**归它自己** —— 否则
+    //      「没刷新」也可能只是因为它指着别的 guid、或者闸②「无锁不新建」拦下的,
+    //      把 featuresSidecar_ 门控整个删掉用例照样过,反向验证就是空的(PR #154 复审【建议】1)。
     {
         const std::uint64_t before = backdate(20000);
-        Rig r; // 全新实例:特征内嵌(0 字节),featuresInSidecar()==false
-        REQUIRE_FALSE(r.out.featuresInSidecar());
+        Rig r;
+        // baseBlob 的 PRMS 带着 guid、FEAT 是内嵌(0 字节)→ 同一个 guid,但不在 sidecar 模式。
+        r.out.setStateInformation(baseBlob.getData(), static_cast<int>(baseBlob.getSize()));
+        REQUIRE(r.out.sessionGuid().toStdString() == guid); // 前置:指的就是这把锁
+        REQUIRE_FALSE(r.out.featuresInSidecar()); // 前置:确实不在 sidecar 模式
+        scvb::state::OwnerLock owned;
+        REQUIRE(store.readOwnerLock(guid, owned));
+        REQUIRE(owned.pid == self.pid); // 前置:锁归本进程,唯一拦得住它的只有 sidecar 门控
         Rig::pumpMessages(400); // 远超一拍 40ms;首拍就该做完决定
         CHECK(heartbeatOf(root.path, guid) == before); // 一个字节都没动
     }
@@ -4928,6 +4936,48 @@ TEST_CASE("HOST SL-233:sidecar 模式下 25Hz tick 周期刷新 owner.lock", "[h
         CHECK(after.pid == foreign.pid); // 持有者没被改
         CHECK(after.heartbeatEpochMs == foreign.heartbeatEpochMs); // 心跳没被刷
         CHECK(after.heartbeatIso8601 == foreign.heartbeatIso8601);
+    }
+
+    // ---- ③b 加载期认领:盘上是**上一会话留下的死锁**(最常见的一幕 —— 打开一份昨天存的工程)。
+    //      本实例加载后认领它、tick 续上,第二份副本再打开时才判活并走 CoW。
+    //      没有这一步,「只有写过 sidecar 的实例才持锁」会让续租的所有权前提永远不成立。----
+    {
+        scvb::state::OwnerLock dead;
+        dead.pid = self.pid + 9999u; // 上一会话的进程,早已退出
+        dead.processStartEpochMs = self.processStartEpochMs + 9999u;
+        dead.heartbeatEpochMs =
+            static_cast<std::uint64_t>(scvb::state::epochMsNow() - scvb::state::kOwnerLockAliveHeartbeatMs - 60000);
+        dead.heartbeatIso8601 = "1970-01-01T00:00:00Z";
+        REQUIRE(store.writeOwnerLock(guid, dead));
+        REQUIRE_FALSE(scvb::state::isOwnerLockAlive(dead, scvb::state::epochMsNow())); // 前置:确实是死锁
+
+        // 反向验证(修复前的行为):死锁摆在那儿,第二实例判死 → 不 CoW,直接共享。
+        scvb::state::ProcessIdentity other;
+        other.pid = self.pid + 1u;
+        other.processStartEpochMs = self.processStartEpochMs + 1u;
+        other.hostName = "other";
+        std::string shared;
+        REQUIRE_FALSE(store.copyOnWriteIfNeeded(guid, other, scvb::state::epochMsNow(), shared));
+
+        Rig r;
+        r.out.setStateInformation(sidecarBlob.data(), static_cast<int>(sidecarBlob.size()));
+        REQUIRE(r.out.featuresInSidecar());
+
+        scvb::state::OwnerLock claimed;
+        REQUIRE(store.readOwnerLock(guid, claimed));
+        CHECK(claimed.pid == self.pid); // 加载期就认领下来了(sha256 过之后才认)
+        CHECK(scvb::state::isOwnerLockAlive(claimed, scvb::state::epochMsNow()));
+
+        Rig::pumpMessages(400); // tick 继续续租
+        scvb::state::OwnerLock afterTick;
+        REQUIRE(store.readOwnerLock(guid, afterTick));
+        CHECK(afterTick.pid == self.pid);
+        CHECK(scvb::state::isOwnerLockAlive(afterTick, scvb::state::epochMsNow()));
+
+        // 正向:此刻第二实例来开同一份工程 → 判活 → 走 CoW(这正是 SL-233 要根治的那一幕)。
+        std::string newGuid;
+        CHECK(store.copyOnWriteIfNeeded(guid, other, scvb::state::epochMsNow(), newGuid));
+        CHECK(newGuid != guid);
     }
 
     // ---- ④ 实例关掉后不再有人续租 → 30s 后按契约判死(租约不是永久的)。----

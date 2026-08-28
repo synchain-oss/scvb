@@ -690,3 +690,104 @@ TEST_CASE("FEAT-SIDECAR-8 owner.lock 刷新不越权", "[state][features][sideca
         evil += "../";
     REQUIRE_FALSE(store.refreshOwnerLock(evil, idA, later + 1000));
 }
+
+// ---------------------------------------------------------------------------
+// [SL-233] 加载期认领无主的 owner.lock(§4.3 CoW 的前置)。
+//
+// 「只有写过 sidecar 的实例才持锁」留下一条支路:打开一份**上次会话**存的工程、本会话还没
+// 保存时,盘上躺的是上一会话留下的死锁,谁都不持有它 —— 续租在归属闸上被拒,后开的第二份
+// 副本读到死锁,不 copy-on-write 而直接共享。认领只在「无人持有」时发生,活锁归他人一律不动。
+// ---------------------------------------------------------------------------
+TEST_CASE("FEAT-SIDECAR-9 加载期认领无主锁,但绝不抢活锁", "[state][features][sidecar]")
+{
+    TempDir tmp;
+    SidecarStore store(tmp.path);
+    const auto gz = scvb::state::encodeFeatures(makeSmallFixture());
+    const ProcessIdentity idA = makeIdentity(1111, "A"); // 上一会话
+    const ProcessIdentity idB = makeIdentity(2222, "B"); // 本会话:只加载,没保存过
+    const ProcessIdentity idC = makeIdentity(3333, "C"); // 第三方
+
+    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 2, scvb::state::kFeatCodecVer, idA));
+    OwnerLock written;
+    REQUIRE(store.readOwnerLock(kGuid, written));
+    const std::int64_t t0 = static_cast<std::int64_t>(written.heartbeatEpochMs);
+
+    // A 早已退出:t0+40s 时它的锁按契约判死。
+    const std::int64_t tDead = t0 + 40000;
+    OwnerLock stale;
+    REQUIRE(store.readOwnerLock(kGuid, stale));
+    REQUIRE_FALSE(scvb::state::isOwnerLockAlive(stale, tDead));
+
+    // ---- ① 反向验证(修复前的行为):没人认领 → C 判死 → 不 CoW,直接共享。----
+    std::string shared;
+    REQUIRE_FALSE(store.copyOnWriteIfNeeded(kGuid, idC, tDead, shared));
+
+    // ---- ② B 加载工程时认领这把死锁 → 归 B 且判活。----
+    REQUIRE(store.claimOwnerLockIfUnheld(kGuid, idB, tDead));
+    OwnerLock mine;
+    REQUIRE(store.readOwnerLock(kGuid, mine));
+    REQUIRE(mine.pid == idB.pid);
+    REQUIRE(mine.processStartEpochMs == idB.processStartEpochMs);
+    REQUIRE(mine.heartbeatEpochMs == static_cast<std::uint64_t>(tDead));
+    REQUIRE(scvb::state::isOwnerLockAlive(mine, tDead));
+    // 认领之后 refreshOwnerLock 的所有权前提才成立(此前 B 刷不动)。
+    REQUIRE(store.refreshOwnerLock(kGuid, idB, tDead + 10000));
+
+    // ---- ③ 正向:同一时刻 C 再来开同一份工程 → 判活 → 走 CoW。----
+    std::string newGuid;
+    REQUIRE(store.copyOnWriteIfNeeded(kGuid, idC, tDead + 10000, newGuid));
+    REQUIRE(newGuid != kGuid);
+
+    // ---- ④ 要害反向验证:B 的锁是活的,C **绝不**能把它认领走。----
+    OwnerLock beforeSteal;
+    REQUIRE(store.readOwnerLock(kGuid, beforeSteal));
+    REQUIRE_FALSE(store.claimOwnerLockIfUnheld(kGuid, idC, tDead + 10000));
+    OwnerLock afterSteal;
+    REQUIRE(store.readOwnerLock(kGuid, afterSteal));
+    REQUIRE(afterSteal.pid == beforeSteal.pid);
+    REQUIRE(afterSteal.processStartEpochMs == beforeSteal.processStartEpochMs);
+    REQUIRE(afterSteal.heartbeatEpochMs == beforeSteal.heartbeatEpochMs);
+
+    // ---- ⑤ 已归自己 → 幂等返回 true,且不改心跳(续租是 refreshOwnerLock 的事)。----
+    REQUIRE(store.claimOwnerLockIfUnheld(kGuid, idB, tDead + 20000));
+    OwnerLock idempotent;
+    REQUIRE(store.readOwnerLock(kGuid, idempotent));
+    REQUIRE(idempotent.heartbeatEpochMs == beforeSteal.heartbeatEpochMs);
+
+    // ---- ⑥ 三道守卫:pid=0 / 路径穿越 / 没有特征文件时不得凭空造出一个只有锁的目录。----
+    ProcessIdentity unknown;
+    REQUIRE_FALSE(store.claimOwnerLockIfUnheld(kGuid, unknown, tDead));
+    std::string evil;
+    for (int i = 0; i < 12; ++i)
+        evil += "../";
+    REQUIRE_FALSE(store.claimOwnerLockIfUnheld(evil, idB, tDead));
+
+    const std::string kAbsent = "99999999-8888-4777-8666-555555555555";
+    REQUIRE_FALSE(store.claimOwnerLockIfUnheld(kAbsent, idB, tDead));
+    REQUIRE_FALSE(std::filesystem::exists(store.sessionDir(kAbsent)));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-233] owner.lock 的两个心跳字段必须出自同一个时间戳。
+// heartbeatEpochMs 判活、heartbeatIso8601 可读(契约 §4.3 两者并列);分头取「现在」会在
+// 注入时钟下写出一份自相矛盾的锁文件。
+// ---------------------------------------------------------------------------
+TEST_CASE("FEAT-SIDECAR-10 心跳的 epoch 与 ISO8601 同源", "[state][features][sidecar]")
+{
+    TempDir tmp;
+    SidecarStore store(tmp.path);
+    const auto gz = scvb::state::encodeFeatures(makeSmallFixture());
+    const ProcessIdentity idA = makeIdentity(1111, "A");
+    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 2, scvb::state::kFeatCodecVer, idA));
+
+    // 注入一个远离「现在」的时间戳(2001-09-09T01:46:40Z),两个字段必须都指向它。
+    constexpr std::int64_t kFixedEpochMs = 1000000000000;
+    REQUIRE(store.refreshOwnerLock(kGuid, idA, kFixedEpochMs));
+
+    OwnerLock lock;
+    REQUIRE(store.readOwnerLock(kGuid, lock));
+    REQUIRE(lock.heartbeatEpochMs == static_cast<std::uint64_t>(kFixedEpochMs));
+    REQUIRE(lock.heartbeatIso8601 == scvb::state::iso8601UtcFromEpochMs(kFixedEpochMs));
+    // 反向验证:它确实不是「刷新那一刻的真实墙钟」(否则本条断言恒真,证明不了同源)。
+    REQUIRE(lock.heartbeatIso8601 != scvb::state::iso8601UtcNow());
+}

@@ -425,7 +425,8 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     const int oldGroupId = groupId_;
     channelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
-    // [SL-234] 加载期同样夹取:工程文件里的 uiScale 是不可信字节(STATE_SCHEMA §7.3),
+    // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
+    // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
     // 此前直接赋值 —— 手改过 / 被别的工具写坏的工程能把窗口尺寸拉成 0 或几万像素,
     // 而桥面那道 jlimit 只拦得住 UI 发来的值,拦不住加载路径。夹取函数与桥面同一个。
     uiScale_ = scvb::bridge::clampUiScalePercent(s.uiScale);

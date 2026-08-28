@@ -1270,10 +1270,23 @@ bool ScvbOutputAudioProcessor::tickOwnerLockRefresh(std::uint64_t nowMs)
     {
         return false; // 特征没外置 → 没有 sidecar 可续租(契约里这条刷新只属 sidecar 模式)
     }
-    if (nowMs - lastOwnerLockRefreshMs_ < static_cast<std::uint64_t>(scvb::state::kOwnerLockRefreshIntervalMs))
+    if (featRefUnresolved_)
+    {
+        // 引用节解不开(文件缺失 / sha256 不符)时 featuresSidecar_ 同样是 true,但那份 sidecar
+        // 我们**明确拒绝认下**;此时 sessionGuid_ 指向的锁不是我们的租约,续它等于认领一份
+        // 自己都没验过的外部特征。与本文件两条删除路径「他人活锁不删 + 引用没解开过也不删」
+        // 的两道闸同口径 —— 少一关就是缺口(PR #154 复审【建议】2)。
+        return false;
+    }
+    // 首拍立刻刷一次(让「加载完工程 / 刚存完盘」马上续上租约),之后才按 10s 分频。
+    // 不能靠 lastOwnerLockRefreshMs_ 初值 0 来表达「首拍就跑」:steadyNowMs() 是开机以来的
+    // 毫秒数,宿主在开机 10s 内被拉起时 now-0 还不到一个周期,首刷会被推迟(PR #154 复审【建议】1)。
+    if (ownerLockRefreshPrimed_ &&
+        nowMs - lastOwnerLockRefreshMs_ < static_cast<std::uint64_t>(scvb::state::kOwnerLockRefreshIntervalMs))
     {
         return false;
     }
+    ownerLockRefreshPrimed_ = true;
     lastOwnerLockRefreshMs_ = nowMs; // 无论刷不刷得成都推进,免得每拍都去敲一次磁盘
 
     // 文件 I/O 在消息线程(§8 只禁音频线程),而且是 0.1Hz × 一百来字节的小文件 ——
@@ -1577,6 +1590,18 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
         return;
     }
     scvb::state::restoreFeatures(inner.features, session_.frameStore());
+
+    // [SL-233] 到这一步「本实例已经认下这份 sidecar」才第一次成立(sha256 过、内层解得开、
+    // hop 时基对得上、特征已进 FrameStore)。此时把无主的 owner.lock 认领下来 —— 否则
+    // tickOwnerLockRefresh 的所有权前提永远不成立:**只有写过 sidecar 的实例才持锁**,而
+    // 「打开一份上次会话存的工程、本会话还没保存」正是最常见的一幕,盘上躺着的是上一会话
+    // 留下的死锁,谁都不持有它。后开的第二份副本读到死锁 → 不 copy-on-write 而直接共享同一份
+    // sidecar,两边重采集互相覆盖 —— 正是本卡要根治的场景(PR #154 复审【重要】1)。
+    // claimOwnerLockIfUnheld 只在「锁不存在 / 已判死 / 本来就归自己」时写盘,**活锁归他人时
+    // 一律不动** —— 那把锁是 CoW 唯一的判据,抢过来比不刷新更糟。
+    scvb::state::SidecarStore(sidecarBaseDir())
+        .claimOwnerLockIfUnheld(sessionGuid_.toStdString(), scvb::state::currentProcessIdentity(),
+                                scvb::state::epochMsNow());
 }
 
 bool ScvbOutputAudioProcessor::featureHopMatchesBuild(std::uint32_t hopMs)
@@ -1705,7 +1730,8 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     captureEnabled_ = s.captureEnabled != 0;
     outputEnabled_ = s.outputEnabled != 0;
     versionActive_ = static_cast<int>(s.versionActive);
-    // [SL-234] 加载期同样夹取:工程文件里的 uiScale 是不可信字节(STATE_SCHEMA §7.3),
+    // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
+    // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
     // 此前直接赋值 —— 手改过 / 被别的工具写坏的工程能把窗口尺寸拉成 0 或几万像素,
     // 而桥面那道 jlimit 只拦得住 UI 发来的值,拦不住加载路径。夹取函数与桥面同一个。
     uiScale_ = scvb::bridge::clampUiScalePercent(s.uiScale);

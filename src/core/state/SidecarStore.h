@@ -22,7 +22,8 @@ inline constexpr std::uint64_t kReembedThresholdBytes = 6ull * 1024u * 1024u; //
 inline constexpr std::int64_t kOwnerLockAliveHeartbeatMs = 30000;
 
 // [SL-233] owner.lock 心跳刷新周期(STATE_SCHEMA §4.3「每 10s 由消息线程刷新」)。
-// 与判活窗口的 3 倍余量:漏掉两拍(GUI 卡顿 / 磁盘忙)仍判活,不会把自己的租约丢掉。
+// 与 30s 判活窗口的关系:漏掉**一**拍仍有整整一拍的余量;漏掉两拍时心跳恰好顶到 30s 边界
+// (判活是严格 `< 30s`),第三拍之前就算死。所以余量是「一拍安全、两拍到边」,不是三拍。
 inline constexpr std::int64_t kOwnerLockRefreshIntervalMs = 10000;
 static_assert(kOwnerLockRefreshIntervalMs * 2 < kOwnerLockAliveHeartbeatMs,
               "刷新周期必须留够重试余量,否则单次刷新失败就被别的实例判死");
@@ -41,6 +42,9 @@ std::string generateSessionGuid();
 // 当前 epoch 毫秒 / UTC ISO8601(心跳时间戳;std::chrono::system_clock,免 Win32)。
 std::int64_t epochMsNow();
 std::string iso8601UtcNow();
+// [SL-233] 由给定 epoch 毫秒格式化 ISO8601。owner.lock 的 heartbeatEpochMs 与 heartbeatIso8601
+// 必须由**同一个**时间戳产出,否则注入时钟的单测会写出自相矛盾的锁文件。
+std::string iso8601UtcFromEpochMs(std::int64_t epochMs);
 
 // 进程身份(owner.lock / copy-on-write 判定)。
 struct ProcessIdentity
@@ -103,6 +107,16 @@ public:
     // 那种情况 pid 已经不是自己,走 ③ 拒掉)。
     // 返回 true = 心跳已落盘。调用方 = 消息线程(小文件、0.1Hz;音频线程一律禁止)。
     bool refreshOwnerLock(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs);
+
+    // [SL-233] 加载期认领无主的 owner.lock(§4.3 CoW 的前置)。
+    // 只有**写过** sidecar 的实例才持锁,于是「打开一份上次会话存的工程、本会话还没保存」的实例
+    // 谁都不持锁:盘上是上一会话留下的死锁,续租在归属闸上被拒,后开的第二份副本读到死锁 →
+    // 不 CoW 而直接共享 —— 正是 SL-233 要根治的那一幕(PR #154 复审【重要】1)。
+    // 认领条件(任一不过即 false 且不写盘):guid 合法、pid 非 0、sidecar 特征文件确实存在、
+    // 且盘上**没有活锁归他人**(锁不存在 / 已判死 → 按定义无人持有,接手;已归自己 → 直接 true)。
+    // **绝不覆盖他人的活租约** —— 与 refreshOwnerLock 闸③、copyOnWriteIfNeeded 同一口径。
+    // 调用方 = 加载期 sha256 校验通过、确实认下这份 sidecar 之后(消息线程)。
+    bool claimOwnerLockIfUnheld(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs);
 
     // copy-on-write(04 §5.6):owner.lock 活 ∧ 非己(pid + processStartEpochMs 双元组,防 PID 复用)→
     // 生成 newGuid、复制目录。返回 true = 已 CoW(newGuid 已设);false = 无需 CoW(无活锁/锁为己有/复制失败)。
