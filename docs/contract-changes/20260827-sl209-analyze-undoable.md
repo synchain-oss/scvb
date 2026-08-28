@@ -125,6 +125,17 @@ inline constexpr int kCrvsUndoMinTransactions = 16;
 - 这是拿**深度**换一个**真的存在**的内存天花板:密集工程从「30 步 / 内存无上限」变成
   「≥16 步 / ≤64 MiB 量级」,典型工程则从 30 步涨到 ≈174 步。
 
+⚠ **极端情形(设计固有代价,不改)**:min 地板优先于 units 上限,所以「单条事务 > 整个预算」时
+它照样入栈,栈内存上界变成 `16 × 单条`。触发门槛是单次事务 >64 MiB ≈ 工程内 200 万段 —— 那时
+`CrvsData` 本身已占 GiB 级,撤销栈不是瓶颈。同理,JUCE 的 `totalUnitsStored` 是 `int`,
+`16 × perTxn > 2^31` 才会溢出(单条 >128 MB ≈ 400 万段),同样够不着。记录存档,不设额外守卫。
+
+**空转分析不压步**(#152 复审【建议】1):15 轨全无产出时 `applyAnalysisSegments` 是恒等变换,
+此时**不提交事务** —— 否则用户按一次 Ctrl+Z 段表纹丝不动,而「新事务入栈必清 redo 栈」已经把
+攒着的重做历史吃掉了。与本仓既有口径一致(`editSegmentTransactional` 判失败不进 undo、
+`setVersionName` 名字未变则短路)。用例:`HOST SL-209:空转分析(零产出)不压撤销步、不吃掉重做栈`
+(★反向:去掉 `producedAny` 守卫 → `redo()` 返回 false,红)。
+
 **用例**(`SERVICE-12`,`tests/core/test_segment_edit_service.cpp`),三支各带反向验证:
 
 1. 2000 段工程连压 64 条事务 → 64 次撤销全成功(实测深度 524)。

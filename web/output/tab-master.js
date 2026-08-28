@@ -232,11 +232,12 @@ export function applySegmentsEvent(prev, next) {
 //     也没有它的份 —— 本 reducer 喂的是段表事件,pan 曲线根本不走那条线。故接线那一卡
 //     要补的是**另一路证据**(scvb.state 里 `pan_curve` 变化 ⇒ 撤销栈长了一条),
 //     不是把它「同批并进本 reducer」。
-//   • `setVersionName` 在契约 §0.9 里列在**不入栈**那一列,但实现是入栈的:
-//     `src/output/OutputProcessor.cpp:784-787` 拿 `authority_.undoManager()` 提交了一笔
-//     `"Rename V{n}"` 事务(:782 已先做「名字未变则不产生空撤销事务」的短路)。
-//     两边对不上,以哪边为准须裁决;在此之前改名后 undo 钮会误灰(§2.8 也不为它发段表事件)。
-//     **本卡不改契约、不改 native**,只把出入登记在这里。
+//   • `setVersionName` 的**契约争议已经结了**:§0.9 左列现已含 `setVersionName`([J82]),
+//     与实现(`OutputProcessor.cpp` 拿 `authority_.undoManager()` 提交 `"Rename V{n}"` 事务,
+//     且已先做「名字未变则不产生空撤销事务」的短路)一致 —— 裁决 = 入栈。
+//     **仍然成立的缺口只剩一条**:§2.8 不为改名发段表事件,所以 web 侧对「改名入了栈」
+//     这件事**没有证据源**,`historyAfterSegments` 认不到它,改名后 undo 钮仍会误灰。
+//     要补得给它一条证据(回执或新事件),属契约面改动,不在本卡范围;登记在此。
 //
 // 起手为什么两向都**常亮**而不是灰:UndoManager 挂在处理器上(03 §5.3),编辑器
 // 关了再开、栈照旧非空 —— 首帧没有任何证据说它是空的,此时置灰会挡住真实可用的

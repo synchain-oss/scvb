@@ -2880,10 +2880,31 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // 旧注提的第二条顾虑(Ctrl+Z 以 reason:"undo" 重发段表、与分析完成的 reason:"analyze"
             // 打架)不成立:两者本就是两次不同的事件,undo 重发用 "undo" 正是 §2.8 的枚举语义,
             // UI 的分析态由 analysis_run 驱动,不看段表 reason。
-            scvb::output::commitCrvsTransaction(
-                authority_.undoManager(), crvsData_, "Analyze",
-                [&] { applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual); },
-                [this] { rebuildAllCurves(); });
+            //
+            // ⚠ **空转分析不压撤销步**(#152 复审【建议】1)。`applyAnalysisSegments` 的每轨
+            // 循环开头就是 `if (src.empty()) continue;` —— 15 轨全无产出(覆盖区整段静音、
+            // 或范围内一句都没检出)时它是**恒等变换**。若照压不误,用户按一次 Ctrl+Z 段表
+            // 纹丝不动,同时攒着的**重做栈被清空**(新事务入栈必清 redo,juce 语义)——
+            // 一次「什么都没发生」的操作吃掉了真实的重做历史。
+            // 这与本仓既有口径一致:`editSegmentTransactional` 判失败不进 undo(PR#55 缺陷3)、
+            // `setVersionName` 名字未变则短路不产生空事务。恒等变换同属「空事务」那一类。
+            // 走 else 支时行为与改判前逐字同款(照旧重建曲线),差别只有「不压步」这一条。
+            const bool producedAny =
+                std::any_of(result.segments.begin(), result.segments.end(), [](const auto& v) { return !v.empty(); });
+            if (producedAny)
+            {
+                scvb::output::commitCrvsTransaction(
+                    authority_.undoManager(), crvsData_, "Analyze",
+                    [&] { applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual); },
+                    [this] { rebuildAllCurves(); });
+            }
+            else
+            {
+                // 恒等,但仍照走一遍:万一将来 applyAnalysisSegments 对空产出不再恒等,
+                // 这一支自动跟上,不会静默丢改动(丢的只会是「本该有的那条撤销步」)。
+                applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual);
+                rebuildAllCurves();
+            }
         }
 
         runtime_.analysisRunning = false;

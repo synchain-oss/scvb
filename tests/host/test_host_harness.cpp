@@ -1332,6 +1332,19 @@ struct MonoMultiRig
         return out.coverageOf(1, 0.0, 30.0).coveredS;
     }
 
+    // [#152 复审【建议】1] 只采**纯静音**:覆盖区有,但一句人声都没有 —— 分析必然零产出。
+    double captureSilence()
+    {
+        out.setCaptureEnabled(true);
+        pump(400);
+        for (int burst = 0; burst < 6; ++burst)
+        {
+            runBlocks(100, 0.0f);
+        }
+        pump(400);
+        return out.coverageOf(1, 0.0, 30.0).coveredS;
+    }
+
     bool runAnalysisToCompletion(double endS, bool clearManual)
     {
         const auto accepted = out.startAnalysis(0, 0.0, endS, clearManual);
@@ -4638,4 +4651,57 @@ TEST_CASE("HOST SL-209:局部(选区)分析同样可撤销,且不碰范围外的
     CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), base));
     REQUIRE(r.out.redo());
     CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), afterPartial));
+}
+
+// ---------------------------------------------------------------------------
+// [#152 复审【建议】1] **空转分析不得压撤销步、不得清空重做栈**。
+//
+// `applyAnalysisSegments` 的每轨循环开头是 `if (src.empty()) continue;` —— 15 轨全无产出时
+// 它是恒等变换。照压不误的后果:用户按一次 Ctrl+Z 段表纹丝不动,而 juce 的「新事务入栈必清
+// redo 栈」语义已经把攒着的重做历史吃掉了 —— 一次什么都没发生的操作毁掉真实的重做面。
+// 与本仓既有口径一致:editSegmentTransactional 判失败不进 undo(PR#55 缺陷3)、
+// setVersionName 名字未变则短路不产生空事务。
+//
+// ★ 反向验证:把 finishAnalysis 里的 `if (producedAny)` 守卫去掉(无条件 commit),
+//   下面「redo 仍可用」与「undo 弹回的是编辑前」两条立刻红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-209:空转分析(零产出)不压撤销步、不吃掉重做栈", "[host][t37][v55][SL209]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    constexpr int kCh = 1;
+
+    // ① 先做一笔**真实**的 CRVS 变更(setTrackManual 走 commitCrvsTransaction,§0.9 左列),
+    //    攒出一条货真价实的撤销步。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, 25.0f, replaced, replacedLocked));
+    const auto afterEdit = segmentsOfTrack(r.out, kCh);
+    REQUIRE_FALSE(afterEdit.empty());
+
+    // ② 撤销再重做一次 —— 现在重做栈是空的、撤销栈有一条,状态回到 afterEdit。
+    REQUIRE(r.out.undo());
+    const auto beforeEdit = segmentsOfTrack(r.out, kCh);
+    REQUIRE(r.out.redo());
+    REQUIRE(sameSegments(segmentsOfTrack(r.out, kCh), afterEdit));
+
+    // ③ 再撤一次,把这条步挪到**重做**侧 —— 这就是空转分析将要吃掉的那份历史。
+    REQUIRE(r.out.undo());
+    REQUIRE(sameSegments(segmentsOfTrack(r.out, kCh), beforeEdit));
+
+    // ④ 采一段纯静音后分析:覆盖区有(分析受理),但一句都检不出 ⇒ 零产出。
+    const double coveredS = r.captureSilence();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    REQUIRE(segmentsOfTrack(r.out, kCh).empty()); // 前置:确实零产出(段表仍是撤销后的空表)
+
+    // ★ 重做栈没被吃掉:那条段编辑仍重做得回来。
+    CHECK(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), afterEdit));
+
+    // ★ 也没多压一条空步:一次 undo 就该弹回编辑前,而不是先弹掉一条恒等步。
+    CHECK(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeEdit));
 }
