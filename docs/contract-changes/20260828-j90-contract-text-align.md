@@ -22,7 +22,7 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
 | 项 | 内容 |
 |---|---|
 | **原文** | 「**session_guid**:Output **首次 `getStateInformation()` 时** `juce::Uuid().toDashedString()` 自生成,永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。」 |
-| **新文** | 「**session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(生成点唯一 = `ScvbOutputAudioProcessor` 构造函数),永久随 state(……);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。落盘面见 §三 `PRMS`。」 |
+| **新文** | 「**session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(……);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。落盘面见 §三 `PRMS`。」 |
 | **依据(PR)** | #127([SL-215] 会话 GUID 落地) |
 | **依据(代码行号)** | 生成点:`src/output/OutputProcessor.cpp:60`(构造函数内 `sessionGuid_ = juce::Uuid().toDashedString();`,行注 52-59 明写「§4.3 写的『首次 getStateInformation() 时自生成』说的是**生成时机**;这里提前到构造期」)。落盘:`src/output/OutputProcessor.cpp:1165`(`writeSessionGuid(state, sessionGuid_)`,在 `getStateInformation` 内)。读回覆盖:`src/output/OutputProcessor.cpp:1625-1628`(`readSessionGuid` 非空即 `sessionGuid_ = loadedGuid`)。UI 落点:`src/output/OutputEditor.cpp:172` → `web/output/tab-settings.js:492`。形状校验:`src/output/OutputUiState.h:94-102`(非 36 字符 dashed UUID 一律当「没有」)。 |
 
@@ -36,7 +36,7 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
 |---|---|
 | **原文** | `PRMS` 行「内容」格 = 「APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen, **lang_chosen**([J81])}」—— **没有 `session_guid`** |
 | **新文** | 同上,末尾并上「+ **`session_guid`**([SL-215];见 §4.3)」;并在表下新增一条 bullet 说明**为什么落 `PRMS` 而不是 `CFGS`** |
-| **新增 bullet** | 「**`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长枚举式**解码,尾部追加字段会让旧构建整块拒载并静默把 group/开关/版本打回默认;`ValueTree` 对字段增删两个方向都容忍,因此无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。」 |
+| **新增 bullet** | 「**`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长**布局,新字段只能靠「已知字段后未知尾部原样回写」这一条机制兜底(`OutputStateCodec.cpp` 的 `unknownTail`,且**仅在 abi=2 的枚举尾字段齐全时**才生效),已知字段还各带范围校验与回落;`ValueTree` 则对字段增删**两个方向**都天然容忍,无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。」 |
 | **依据(PR)** | #127 |
 | **依据(代码行号)** | 属性名与写入面:`src/output/OutputUiState.h:81`(`kSessionGuidProp{"session_guid"}`)、`:83-90`(`writeSessionGuid` → `apvtsState.setProperty(...)`,写的是 **APVTS 根节点属性**);同文件 `:69-80` 的头注即本 bullet 的理由原文。调用点:`src/output/OutputProcessor.cpp:1165`(紧挨 `writeUiFlags`,同一张 `apvts.copyState()`);`OutputProcessor.cpp:1159-1162` 的行注对 ui 三位写的是同一条理由。 |
 
@@ -72,6 +72,15 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
 **顺带对齐的一处**:`recaptureArm` 与 `disarmRecapture` 走**同一段** `disarmRecaptureLocked()`,
 「传 `tracksMask=0 ∧ startS=endS=0` 视为撤销布防」这句原文成立,原样保留(`:1963-1975` 幂等分支)。
 
+### ④b docs/SCVB_CONTRACT.md §1.23「拒绝态」行 —— 三条拒绝路径也会撤防(复审补登记)
+
+| 项 | 内容 |
+|---|---|
+| **原文** | 「`armed:false` + `reason`(见上);只读观察态 → `reason:"readOnly"`」—— **只说返回值,不说副作用** |
+| **新文** | 同上,并补「**三条拒绝路径都先走一次撤防**(与「撤销布防」「越界自动停」同一段代码):否则上一次布防若是我们替用户开的采集,这一发被拒之后采集会一直开着、门控还留在旧选区上,没人再去撤。」 |
+| **依据(代码行号)** | `src/output/OutputEditor.cpp:1939-1957`:三条 `reason`(`noTracks`/`noSelection`/`readOnly`)判完后,`if (reason != nullptr)` 分支**首行**即 `processor_.disarmRecapture();`,行注写的就是上面这条理由 |
+| **来源** | PR #153 复审【建议】1(claude-pr-review)。与 ④ 同属「§1.23 副作用漏登记」,**不扩范围** —— 同一函数、同一批 J87 实现、同一条「文字追上实现」的批准面。 |
+
 ### ⑤ docs/STATE_SCHEMA.md §三 `CFGS` + docs/SCVB_CONTRACT.md §1.2 —— #146 的「只存用户自选的采集态」
 
 **先答「既有文字是否已覆盖」:没有。** §三 `CFGS` 行原文只写 `capture_enabled` 一个词,
@@ -101,7 +110,11 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
   无迁移函数改动,旧工程读新构建、新构建读旧工程的行为一字未变。
 - **桥的冻结表面**:函数名 / 签名 / 返回字段 / 事件名 / 载荷字段零改动,
   `node scripts/check-bridge-parity.mjs` 照常绿;§7 manifest **未改**(§1.23 与 §1.2 的
-  `returns` 一字未动,本次改的全在 `语义` 列)。
+  `returns` 一字未动,本次改的全在 `语义` / `拒绝态` / `真源` 三列)。
+- **`contractVersion` 保持 `1.0`,§9.0 第 4 条不触发**:该条要求「改动同步更新 §7 manifest 与
+  版本行」,针对的是**冻结表面**的增删(§9 的「只增不改」流程)。本次零表面改动、零新增函数/事件/
+  字段,manifest 与版本行都无可同步之处 —— 升版本号反而会让「1.0 = 这一版冻结表面」这个约定失真。
+  记在此处不静默(PR #153 复审【建议】3)。
 - **i18n**:未新增/改名任何 key,`check-i18n` 不受影响。
 - **既有 DAW 自动化 / 既有工程**:不适用 —— 没有行为改动可影响。
 
@@ -109,13 +122,32 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
 
 - `branch-gate` 冻结契约 path guard:本 PR 触碰 `docs/STATE_SCHEMA.md` 与 `docs/SCVB_CONTRACT.md`,
   本文件即其要求的变更文档,PR 挂 `status/frozen-contract`。
-- `node scripts/check-bridge-parity.mjs`、`pwsh scripts/check-doc-parity.ps1`、
-  `pwsh scripts/check-readme-parity.ps1`:本机跑绿(见 PR 描述)。
+- 本机跑绿(与 PR 描述同一份清单):`node scripts/check-bridge-parity.mjs`、
+  `pwsh scripts/check-readme-parity.ps1`(其内部即 `check-doc-parity.ps1` 的两对调用)、
+  `node scripts/check-ipc-doc-parity.mjs --strict-missing`、
+  `npx prettier --check` 三个改动文件。
 
 ## 审批
 
 - [x] **用户批准:已批准(2026-08-28,用户,J90)** —— 批准面 = 本文件 ①—⑥ 六处文字对齐,
       范围限定「零行为变更、只让契约文字追上已合入的实现」。
+- [x] **复审后在同一批准面内的三处收口**(PR #153,deepseek-pr-review【重要】① + claude-pr-review
+      【建议】1/2/3、pr-agent 焦点项;**均为本 PR 新写文字的精度问题,不扩大批准面**):
+      ① §4.3 的「生成点唯一」加限定 —— 原写法比原文更强,且与本节自己的 copy-on-write 条
+      (「生成 newGUID、本实例改用 newGUID」)打架;`sessionGuid_` 实有四个赋值点
+      (`OutputProcessor.cpp:60` 构造期 `juce::Uuid()` / `:1376` CoW 换新 / `:1510` 校验通过的
+      FEAT 引用节 / `:1627` PRMS 读回),故改为「**Output 侧的 `juce::Uuid()` 生成点**唯一」并
+      逐条列明其余覆盖路径。
+      ② §三 新 bullet 的 CFGS 理由软化 —— 原写法「尾部追加字段会让旧构建整块拒载并静默把配置
+      打回默认」是从既有代码注释原样搬入的**历史口径**,与同表 `CFGS` 行「已知字段后未知尾部原样
+      回写」以及 `OutputStateCodec.cpp:192-196` 的 `unknownTail` 机制自相矛盾(且容器级
+      `RejectedNewer` 走的是「UI 横幅 + `preservedOriginal` 原样回写」,并非静默重置)。改为按
+      现行机制陈述:定长布局的新字段只能靠未知尾部兜底且**仅在 abi=2 枚举尾字段齐全时**生效,
+      不如 `ValueTree` 两个方向都天然容忍。**结论未变**(`session_guid` 该落 `PRMS`),变的是理由的
+      准确度。
+      ③ 新增 ④b:§1.23「拒绝态」行补登记「三条拒绝路径也先撤防」(`OutputEditor.cpp:1939-1957`)。
+      另按【建议】2 统一了本节脚本清单与 PR 描述,按【建议】3 补了「`contractVersion` 保持 1.0」
+      的理由(见「兼容性影响」末条)。
 - **未扩范围(核对时另见两处出入,已单列上报,本 PR 一个字都不动)**:
   ① **契约文档层,第三处出入 —— `STATE_SCHEMA` §4.3 `owner.lock` 的「每 10s 由消息线程刷新」在实现里
      不存在**:`SidecarStore::writeOwnerLock` 只有两个调用点 —— `SidecarStore.cpp:352`(随
@@ -125,6 +157,9 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
      (`SidecarStore.h:22` `kOwnerLockAliveHeartbeatMs = 30000`)。**后果**:一个开着不保存的实例,
      其 `owner.lock` 30 秒后即被判死,后开者不会走 copy-on-write 而是直接共享同一份 sidecar。
      这不是文字问题,**要么补实现要么改契约**,超出 J90「零行为变更」的批准面,留待单开卡裁定。
+     复审补的一条独立佐证:`OutputProcessor.cpp:1284-1287` 的代码注释**自己写明**该 10s 周期刷新
+     「全仓尚未实现(T40 遗留,已单独落卡)」—— 即这是**已跟踪的实现缺口**,不是本次才发现的漂移。
+     开卡后请把 issue 号回填到本条(PR #153 复审建议)。
   ② **代码注释层(非契约文档)**:`src/output/OutputUiState.h:69` 把 sidecar 文件名写成
      `<basename>-<GUID前8>.scvbfeat`,而实现与 §4.3 一致地采用目录式 `<base>/sessions/<GUID>/`
      (`SidecarStore.cpp:307`、`SidecarStore.h:24-26`)。契约文档没错,错的是那行注释;

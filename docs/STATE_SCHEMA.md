@@ -141,7 +141,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
 | `UICF` | ui.master_chart_mode([J75] T43;`0`=distribution / `1`=trajectory) | 自定义紧凑二进制(定长 4 字节 u32) |
 
 - **未知 fourcc 的块在 load 时原样保留、save 时原样回写**(前向小版本兼容);不设独立 SDCR chunk——sidecar 引用是 FEAT 节内 embedded=0 分支。
-- **`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长枚举式**解码,尾部追加字段会让旧构建整块拒载并静默把 group/开关/版本打回默认;`ValueTree` 对字段增删两个方向都容忍,因此无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。
+- **`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长**布局,新字段只能靠「已知字段后未知尾部原样回写」这一条机制兜底(`OutputStateCodec.cpp` 的 `unknownTail`,且**仅在 abi=2 的枚举尾字段齐全时**才生效),已知字段还各带范围校验与回落;`ValueTree` 则对字段增删**两个方向**都天然容忍,无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。
 - **`CFGS.capture_enabled` 存「用户自选值」而非「此刻的运行值」**([SL-225];见 `docs/SCVB_CONTRACT.md` §1.23):`recaptureArm` 布防会自动打开采集(§1.23 裁定①),那是**临时接管**,而**布防位本身不持久化**(04 §4.2 ③「工作选区不落 state」)。若不作此区分,用户在布防期间保存(或宿主自动保存)会把临时值存进工程,重开后采集莫名开着且界面无任何布防线索;后果不止开关不对 —— 采集 ON 期间 Input 一条 `fp_report` 都不发,04 §4.5 的上游改动 ⚠ 从此再也不出现。用户中途**显式**拧过采集开关(视为接管)与布防前本来就开着的两种情况,都照实存。
 - **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + UI 横幅提示升级;`preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据);③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
 - **当前迁移链**:`kMigrators = [migrate_1_to_2]`(abi 1→2)。`migrate_1_to_2` 为 **no-op** —— abi=1 的 CFGS 无 loudness_mode/center_slot_policy 两个尾字段,`OutputStateCodec::decodeOutputState` 按「长度回退」把缺失尾字段回落默认(kw_integrated / priority_queue),故无需重写 payload;旧版(abi=1)读新(abi=2)blob 走 RejectedNewer → `preservedOriginal` 原样回写(绝不静默降级)。详见 `docs/contract-changes/20260825-cfgs-persistence.md`。
@@ -183,7 +183,7 @@ FeatSection(压缩前布局):
 
 ### 4.3 sidecar 目录契约
 
-- **session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(生成点唯一 = `ScvbOutputAudioProcessor` 构造函数),永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。落盘面见 §三 `PRMS`。
+- **session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,见下 copy-on-write 条,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。落盘面见 §三 `PRMS`。
 - **路径**:`File::getSpecialLocation(userApplicationDataDirectory)` → Windows `%APPDATA%\Synchain\SCVB\sessions\<GUID>\`(macOS 后续 `~/Library/Application Support/...` 同构)。
 - **目录内容**:`manifest.json`、`features.bin.gz`(扩展名沿用 .gz,内容为 zlib RFC 1950)、`owner.lock`。
   - `manifest.json`:{schemaVersion, codecVer, createdAt, savedAt, sha256, bytes, channelCount, hostName}
