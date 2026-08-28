@@ -29,6 +29,8 @@
 //
 // 用法:node web-preview/tests/row-occlusion-probe.mjs [预览服务器端口]
 // 退出码:0 = 三态如期;1 = 有一态不符;2 = 环境不具备(没浏览器/没服务器)。
+// ⚠ 只跑 Windows:`EXE` 候选是两条 Windows 绝对路径,Linux/macOS 上恒 2 退出。手动测量台,
+// 不进 CI,故不去做跨平台发现;要在别处跑就自己把 `EXE` 指到本机浏览器上。
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -2381,6 +2381,17 @@
                 background: rgba(var(--wh), 0.68);
                 border-color: rgba(var(--acc), 0.8);
             }
+            /* 锁定档的「重新识别轨 {n}」:与行内触发钮同一副置灰长相,原因走 title。
+               clearManual 对 locked 段免疫,这枚钮点下去什么都不会变 —— 长得可点却
+               无效,比明着灰掉更糟(#148 二轮【重要】)。hover 高亮一并撤掉。 */
+            .tracks-row__relink[data-disabled="1"] {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+            .tracks-row__relink[data-disabled="1"]:hover {
+                background: rgba(var(--wh), 0.5);
+                border-color: rgba(var(--acc), 0.55);
+            }
             /* 表尾图例行(设计稿 625-632,回流⑬):flex-start + 12px,**不换行**;
        中间靠一个 flex:1 的空占位把右侧两件推到右端(灰模缺这枚占位,三件挤在左端)。 */
             .tracks-legend {

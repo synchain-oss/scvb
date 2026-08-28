@@ -1718,6 +1718,9 @@ export function createTabTracks(opts) {
         if (part === "manualdriven-reidentify") {
             // 只读观察/无时间线不得发起重析(analyze 是写面;持久评审)
             if (isWriteBlocked()) return;
+            // 锁定档:与行内触发钮同一条守卫(渲染面已置灰,这里再复检一次入口)
+            const rb = (local.rows.get(ch) || {}).manualdrivenReidentify;
+            if (rb && rb.getAttribute("data-disabled") === "1") return;
             // 提示正文本身即二次确认(见模板注释),这里直接发起 —— 不再开第二道确认条。
             return doReidentify(ch);
         }
@@ -2185,8 +2188,14 @@ export function createTabTracks(opts) {
             attr(n.labelcell, "data-editing", "0");
             // label 直接读 store(channels[].label 已在 demo 构建层本地化;
             // 真实插件路径 = DAW 轨名,不经 mock → 零误伤)。
-            text(n.label, row.label || labelPlaceholder(ch, t));
+            const shown = row.label || labelPlaceholder(ch, t);
+            text(n.label, shown);
             attr(n.label, "data-placeholder", row.label ? 0 : 1);
+            // 轨名被挤窄时靠 `text-overflow: ellipsis` 收场,但截断后名字就不可读了 ——
+            // label 单元格固定 150px,而条件角标最多同时挂三件(主唱居中标 26px +
+            // 样本不足角标 44px + SL-230 的触发钮 18px),实测最坏档轨名只剩 44px。
+            // 补一条 tooltip,截断至少是可恢复的(#148 二轮【建议】4)。
+            setTitle(n.label, shown);
         }
         setTitle(n.labelInput, t["tracks.labelEdit"]);
         show(n.leadcenter, !!row.leadCenter);
@@ -2347,18 +2356,27 @@ export function createTabTracks(opts) {
         // 静默返回,钮再露出来就又是一枚「点了没反应」—— 正是本卡要去掉的东西。口径与
         // 检查器那份的 `editable = !isWriteBlocked() && !isLaneDead()` 对齐(#148 复审【建议】2)。
         const canRestore = !!row.manualConst && dis !== "1";
+        // 锁定的手动常值:clearManual 碰不了它(§1.6 locked 免疫)⇒ 置灰 + tooltip 说清
+        // 原因,不给一次「点了什么都不发生」(口径同 SL-193 的灰钮)。
+        const lockedConst = !!row.manualConstLocked;
+        const lockedTip = t["tracks.restoreAutoLocked"] || "";
         if (n.restoreAuto) {
             show(n.restoreAuto, canRestore);
             if (canRestore) {
-                // 锁定的手动常值:clearManual 碰不了它(§1.6 locked 免疫)⇒ 钮置灰 +
-                // tooltip 说清原因,不给一次「点了什么都不发生」的确认(口径同 SL-193)。
-                const locked = !!row.manualConstLocked;
-                attr(n.restoreAuto, "data-disabled", locked ? 1 : 0);
-                const tip = locked
-                    ? t["tracks.restoreAutoLocked"] || ""
+                attr(n.restoreAuto, "data-disabled", lockedConst ? 1 : 0);
+                const tip = lockedConst
+                    ? lockedTip
                     : t["tracks.restoreAuto"] || "";
                 attr(n.restoreAuto, "title", tip);
                 attr(n.restoreAuto, "aria-label", tip);
+                // 置灰只做视觉不够:原生 <button> 的 `data-disabled` 不摘 tab 序、不挡
+                // Enter/Space,键盘用户拿到的正是「按了没反应」。不上原生 `disabled` ——
+                // 部分平台会连 title tooltip 一起吞掉,那样连原因都说不出来了。
+                attr(
+                    n.restoreAuto,
+                    "aria-disabled",
+                    lockedConst ? "true" : "false",
+                );
             }
         }
         // 确认浮条:**一次只出一条**(它和解冻提示条同族,都是 absolute/top:100%,
@@ -2373,8 +2391,10 @@ export function createTabTracks(opts) {
             );
             text(n.restoreAutoCancel, t["common.cancel"] || "");
             text(n.restoreAutoOk, t["common.continue"] || "");
-        } else if (local.restoreConfirm === ch && !canRestore) {
-            // 手动常值没了(刚恢复成功)⇒ 收起展开态
+        } else if (local.restoreConfirm === ch && (!canRestore || c || hint)) {
+            // 手动常值没了(刚恢复成功)⇒ 收起展开态。
+            // 被 `c` / `hint` **临时**顶掉时也要收:不收的话那两件一撤,确认浮条自己弹回来、
+            // 直接停在「取消 / 继续」上,用户没点过却已经在问他(#148 二轮【建议】1)。
             local.restoreConfirm = 0;
         }
         if (!hint) return;
@@ -2386,10 +2406,33 @@ export function createTabTracks(opts) {
                 " " +
                 (t["tracks.manualDrivenHint.locked"] || ""),
         );
+        // 锁定档:这枚钮与上面那枚行内触发钮是**同一个动作**,得给同一个结论。
+        // 复审② 撤掉了「触发钮与提示条互斥」,复审③ 又让 native 真的对 locked 段免疫 ——
+        // 两下叠加之后,这枚钮在锁定档上点下去 `analyze(mask,{clearManual:true})` 什么都
+        // 不会变,而 `doReidentify` 已经先把提示条永久撤掉了,用户拿到的是零反馈。
+        // 同屏两个入口对同一件事给出相反结论,被判「可点」的那个才是无效的那个
+        // (#148 二轮【重要】)。置灰口径与行内钮逐字相同,只留「知道了」这个出口。
         text(
             n.manualdrivenReidentify,
             fmt(t["tracks.reidentifyOne"], { n: tt(ch) }),
         );
+        if (n.manualdrivenReidentify) {
+            attr(
+                n.manualdrivenReidentify,
+                "data-disabled",
+                lockedConst ? 1 : 0,
+            );
+            attr(
+                n.manualdrivenReidentify,
+                "aria-disabled",
+                lockedConst ? "true" : "false",
+            );
+            attr(
+                n.manualdrivenReidentify,
+                "title",
+                lockedConst ? lockedTip : "",
+            );
+        }
         text(n.manualdrivenDismiss, t["common.gotIt"] || "");
     }
 

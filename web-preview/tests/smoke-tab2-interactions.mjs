@@ -1735,8 +1735,8 @@ log(
         // 锁定档:钮置灰 + title 说原因(口径同 SL-193 的灰钮),不给一次
         // 「展开确认再什么都不发生」—— clearManual 对 locked 段免疫
         check(
-            /const locked = !!row\.manualConstLocked;/.test(tw) &&
-                /attr\(n\.restoreAuto, "data-disabled", locked \? 1 : 0\);/.test(
+            /const lockedConst = !!row\.manualConstLocked;/.test(tw) &&
+                /attr\(n\.restoreAuto, "data-disabled", lockedConst \? 1 : 0\);/.test(
                     tw,
                 ),
             "(c5)锁定档把钮置灰",
@@ -1751,6 +1751,46 @@ log(
                 tw,
             ),
             "(c5c)灰钮点下去不展开确认(入口再复检一次)",
+        );
+        // [#148 二轮【重要】] 解冻提示条的「重新识别轨 {n}」是**同一个动作**,得给同一个结论。
+        // 复审② 撤掉了两者互斥、复审③ 又让 native 真的对 locked 段免疫 —— 两下叠加之后,
+        // 这枚钮在锁定档上点下去什么都不会变,而 doReidentify 已先把提示条永久撤掉,
+        // 用户拿到零反馈;且它与旁边那枚置灰钮同屏给出相反结论。
+        check(
+            /attr\(\s*n\.manualdrivenReidentify,\s*"data-disabled",\s*lockedConst \? 1 : 0,?\s*\);/.test(
+                tw,
+            ) &&
+                /const rb = \(local\.rows\.get\(ch\) \|\| \{\}\)\.manualdrivenReidentify;/.test(
+                    tw,
+                ),
+            "(c5d)提示条的「重新识别轨 {n}」在锁定档同样置灰 + 入口复检",
+        );
+        // 置灰得**看得出来**:.tracks-row__relink 原样是可点长相,只加 data-disabled
+        // 而没有配套样式的话,用户看到的是一枚长得能点、点了没反应的钮 —— 比明着灰更糟。
+        check(
+            /\.tracks-row__relink\[data-disabled="1"\]\s*\{[^}]*opacity:\s*0\.4/.test(
+                src("web/output/index.html"),
+            ) &&
+                /\.tracks-row__relink\[data-disabled="1"\]:hover\s*\{/.test(
+                    src("web/output/index.html"),
+                ),
+            "(c5d2)灰档有配套样式(含撤掉 hover 高亮)",
+        );
+        // [#148 二轮【建议】1] 被 c/hint 临时顶掉期间也要复位:不复位的话那两件一撤,
+        // 确认浮条自己弹回来、直接停在「取消 / 继续」上(用户没点过却已经在问他)。
+        check(
+            /local\.restoreConfirm === ch && \(!canRestore \|\| c \|\| hint\)/.test(
+                tw,
+            ),
+            "(c5e)展开态在被临时顶掉时一并复位",
+        );
+        // [#148 二轮【建议】2] 置灰要带语义:原生 <button> 的 data-disabled 不摘 tab 序、
+        // 不挡 Enter/Space,只做视觉的话键盘用户拿到的正是「按了没反应」。
+        check(
+            /attr\(\s*n\.restoreAuto,\s*"aria-disabled",\s*lockedConst \? "true" : "false",?\s*\);/.test(
+                tw,
+            ),
+            "(c5f)置灰同时落 aria-disabled(键盘/读屏面)",
         );
         // rowFromStore 要把 locked 位带出来,否则上一条判据永远为假
         {
