@@ -3,6 +3,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,24 @@ inline constexpr float MaxUiScale = 3.0f;
 
 // clamp 到 [MinUiScale, MaxUiScale](与 Bridge 逐条一致)。
 float clampUiScale(float scale);
+
+// [SL-234] 百分比档位 clamp,边界 = 上面同一对常量 ×100(**禁止再写第三份硬编码边界**)。
+// 调用方三处:桥面 setUiScale(bridge*SetUiScalePercent)、**加载期** CFGS.uiScale
+// (STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验(原样透出,**由上层处理**)」——
+//  上层就是加载路径;工程文件是不可信字节,铁律出处 = CLAUDE.md §7 铁律 3)、
+// UiDefaultsStore 的全局默认区间判定。
+// 入参取 std::int64_t 而不是 int:CFGS 里 uiScale 是 u32,先 static_cast<int> 再夹会把
+// 4294967295 折成 -1 —— 结果虽然也落在下界,但那是**溢出撞上的**,不是范围校验。
+// 定义放在头里(与下面的 designBoxWindowSize 同款):三个调用方分属三个不同的链接单元,
+// UiDefaultsStore.cpp 就被 scvb_params_tests 单独链去而不带 BridgeBase.cpp —— 纯计算函数
+// 走 inline,免得为一条 jlimit 给每个目标补依赖(PR #154 CI 的 LNK2019)。
+inline int clampUiScalePercent(std::int64_t percent)
+{
+    // 边界只在这一处由 Min/MaxUiScale 换算成百分比,调用方一律复用。
+    const auto lo = static_cast<std::int64_t>(juce::roundToInt(plugin::MinUiScale * 100.0f));
+    const auto hi = static_cast<std::int64_t>(juce::roundToInt(plugin::MaxUiScale * 100.0f));
+    return static_cast<int>(juce::jlimit(lo, hi, percent));
+}
 
 // 设计盒窗口尺寸(机制 9):setSize(round(W×F), round(H×F)),固定设计盒 + CSS zoom。
 struct DesignBoxSize

@@ -2,6 +2,7 @@
 #include "BridgeBase.h"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace scvb::bridge
 {

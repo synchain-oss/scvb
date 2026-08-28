@@ -88,6 +88,32 @@ TEST_CASE("clampUiScale matches Bridge bounds")
     CHECK(clampUiScale(9.0f) == scvb::bridge::plugin::MaxUiScale);
 }
 
+// [SL-234] 百分比档位 clamp:桥面 setUiScale 与**加载期** CFGS.uiScale 共用的那一个。
+// 边界必须由 Min/MaxUiScale 换算出来,不是写死的 33/300 —— 用常量表达断言,常量改了用例跟着走。
+TEST_CASE("clampUiScalePercent matches Bridge bounds (SL-234)")
+{
+    using scvb::bridge::clampUiScalePercent;
+    const int lo = juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f);
+    const int hi = juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f);
+
+    // 区间内原样(反向验证:不是恒返回边界)。
+    CHECK(clampUiScalePercent(100) == 100);
+    CHECK(clampUiScalePercent(lo) == lo);
+    CHECK(clampUiScalePercent(hi) == hi);
+
+    // 越界夹到边界。
+    CHECK(clampUiScalePercent(lo - 1) == lo);
+    CHECK(clampUiScalePercent(hi + 1) == hi);
+    CHECK(clampUiScalePercent(0) == lo);
+    CHECK(clampUiScalePercent(-1) == lo);
+    CHECK(clampUiScalePercent(100000) == hi);
+
+    // u32 全宽:CFGS 里 uiScale 是 u32,入参取 int64 才不会先溢出成 -1 再"恰好"夹到下界 ——
+    // 4294967295 是**大**值,必须夹到上界。
+    CHECK(clampUiScalePercent(static_cast<std::int64_t>(0xFFFFFFFFu)) == hi);
+    CHECK(clampUiScalePercent(static_cast<std::int64_t>(0x80000000u)) == hi);
+}
+
 TEST_CASE("designBoxWindowSize rounds DESIGN × scale (zoom mechanism)")
 {
     using scvb::bridge::designBoxWindowSize;

@@ -253,9 +253,12 @@ std::int64_t epochMsNow()
         .count();
 }
 
-std::string iso8601UtcNow()
+std::string iso8601UtcFromEpochMs(std::int64_t epochMs)
 {
-    const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    // [SL-233] 由**同一个**时间戳格式化,而不是各自取一次「现在」:owner.lock 的 heartbeatEpochMs
+    // 与 heartbeatIso8601 是同一个心跳的两种写法(前者判活、后者可读),分头取会在注入时钟的
+    // 单测里写出一份自相矛盾的锁文件(PR #154 复审【建议】3)。
+    const std::time_t t = static_cast<std::time_t>(epochMs / 1000);
     std::tm tm{};
 #ifdef _WIN32
     gmtime_s(&tm, &t);
@@ -265,6 +268,11 @@ std::string iso8601UtcNow()
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
     return std::string(buf);
+}
+
+std::string iso8601UtcNow()
+{
+    return iso8601UtcFromEpochMs(epochMsNow());
 }
 
 ProcessIdentity currentProcessIdentity()
@@ -428,6 +436,56 @@ bool SidecarStore::readOwnerLock(const std::string& guid, OwnerLock& lock) const
             lock.heartbeatIso8601 = val;
     }
     return any;
+}
+
+bool SidecarStore::refreshOwnerLock(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs)
+{
+    if (!isValidSessionGuid(guid))
+        return false; // 防目录穿越
+
+    OwnerLock lock;
+    if (!readOwnerLock(guid, lock))
+        return false; // 盘上没有租约 → 不新建(见头文件闸②)
+
+    // 归属判定与 copyOnWriteIfNeeded 逐字同口径:pid + 进程启动时间双元组,防 Windows PID 复用。
+    // pid==0 是「拿不到进程身份」的退化值(非 Windows),那种进程不该宣示占有任何 sidecar。
+    if (self.pid == 0u || lock.pid != self.pid || lock.processStartEpochMs != self.processStartEpochMs)
+        return false; // 锁归他人(或身份未知)→ 绝不覆盖(闸③)
+
+    lock.heartbeatEpochMs = static_cast<std::uint64_t>(nowEpochMs < 0 ? 0 : nowEpochMs);
+    lock.heartbeatIso8601 = iso8601UtcFromEpochMs(nowEpochMs < 0 ? 0 : nowEpochMs);
+    return writeOwnerLock(guid, lock);
+}
+
+bool SidecarStore::claimOwnerLockIfUnheld(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs)
+{
+    if (!isValidSessionGuid(guid))
+        return false; // 防目录穿越
+    if (self.pid == 0u)
+        return false; // 拿不到进程身份的退化值不得宣示占有(与 refreshOwnerLock 同口径)
+    if (!std::filesystem::exists(sessionDir(guid) / std::string(kSidecarFeaturesFilename)))
+        return false; // 没有特征文件就没有可占的 sidecar(别凭空造出一个只有锁的空目录)
+
+    OwnerLock existing;
+    if (readOwnerLock(guid, existing))
+    {
+        // 已归本进程 → 无需重复宣示,心跳留给 refreshOwnerLock 去推(认领只负责「拿到所有权」)。
+        // 「归自己但已判死」也走这一支:tick 的分频计时那时必然已过一个周期,下一拍 40ms 就补上心跳。
+        if (existing.pid == self.pid && existing.processStartEpochMs == self.processStartEpochMs)
+            return true;
+        // **活锁归他人 → 绝不覆盖**。那是 copy-on-write 的判据,抢过来就等于把别人正开着的
+        // sidecar 认成自己的。这一条与 refreshOwnerLock 的闸③、copyOnWriteIfNeeded 的判定同口径。
+        if (isOwnerLockAlive(existing, nowEpochMs))
+            return false;
+        // 落到这里 = 锁存在但已判死(上一会话留下的)→ 按定义无人持有,可以接手。
+    }
+
+    OwnerLock mine;
+    mine.pid = self.pid;
+    mine.processStartEpochMs = self.processStartEpochMs;
+    mine.heartbeatEpochMs = static_cast<std::uint64_t>(nowEpochMs < 0 ? 0 : nowEpochMs);
+    mine.heartbeatIso8601 = iso8601UtcFromEpochMs(nowEpochMs < 0 ? 0 : nowEpochMs);
+    return writeOwnerLock(guid, mine);
 }
 
 bool SidecarStore::copyOnWriteIfNeeded(const std::string& guid, const ProcessIdentity& self, std::int64_t nowEpochMs,
