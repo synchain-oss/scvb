@@ -3663,9 +3663,9 @@ TEST_CASE("HOST SL-225:布防→撤防之后,上游改动仍须翻出 stale", "[
         REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
     };
     // 回到同一段时间线喂不同素材(= 改狠了上游 EQ),再问 stale。
-    const auto upstreamChangedThenAsk = [](Rig& r) {
+    const auto upstreamChangedThenAsk = [](Rig& r, float amplitude = 0.05f) {
         r.ph.timeSamples = 0;
-        r.runBlocks(760, 0.05f);
+        r.runBlocks(760, amplitude);
         Rig::pumpMessages(600);
         return r.out.captureStale(kTestChannel);
     };
@@ -3720,7 +3720,17 @@ TEST_CASE("HOST SL-225:布防→撤防之后,上游改动仍须翻出 stale", "[
         // 拿它跟自己比毫无意义(FeatRing::accumulateFp 的 `if (capturing) return;`)。
         // 钉住它是为了把「采集 ON 所以没提示」与「链断了所以没提示」两件事分开 ——
         // 用户看到的都是「提示不见了」,但只有后者是 bug。
-        CHECK_FALSE(upstreamChangedThenAsk(r));
+        CHECK_FALSE(upstreamChangedThenAsk(r, 0.05f));
+
+        // ⚠ 但**只有上面那条负向断言是空的**:链整个断掉它也照样绿。所以紧接着在**同一个
+        // 配置上**把链跑活一次 —— 只关掉采集,别的都不动,⚠ 必须出现。两条合起来才说明
+        // 「刚才没提示是因为采集 ON,不是因为链死了」(PR #146 评审建议:负向断言可空转)。
+        //
+        // 素材要换第三种:上一段是在**采集 ON** 下播的,它已经把基线重写成 0.05 那一版了,
+        // 再拿 0.05 去比会匹配上 —— 那就又成了一条自证其说的假绿。
+        r.out.setCaptureEnabled(false);
+        Rig::pumpMessages(200);
+        CHECK(upstreamChangedThenAsk(r, 0.3f));
     }
 }
 
