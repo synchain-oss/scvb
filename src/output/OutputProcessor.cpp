@@ -1162,7 +1162,20 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // CFGS:Output 配置(group_id / 采集 / 输出 / 版本 / ui,[J66] 最小 T24 子集)。
     scvb::state::OutputState s;
     s.groupId = static_cast<scvb::u32>(groupId_);
-    s.captureEnabled = captureEnabled_ ? 1u : 0u;
+    // [SL-225] 存的是**用户自己选的**采集态,不是布防临时替他开的那一下。
+    //
+    // [J87] 裁定① 让「重采集选区」自动打开 01 采集,那是**临时接管** —— 撤防会按裁定③ 把它
+    // 恢复成布防前的值。但若用户在布防期间保存工程(或宿主自动保存),这个临时值会落进 CFGS,
+    // 而**布防位本身不持久化**(04 §4.2 ③「工作选区不落 state」):重开工程后采集莫名其妙开着,
+    // 界面上没有任何布防线索,用户也从没自己开过它。
+    //
+    // 后果不止是「开关状态不对」:采集 ON 期间 Input **一条 fp_report 都不发**
+    // (FeatRing::accumulateFp 的 `if (capturing) return;`),于是 04 §4.5 的上游改动 ⚠ 从此
+    // 再也不出现 —— 用户实测「重采提醒消失了」(v5.6 SL-225),而且完全查不出原因。
+    //
+    // `recaptureAutoEnabledCapture` 恰好就是「这一下是不是我们开的」那本账:用户中途自己拧过
+    // 开关会把它清零(视为接管),布防前本来就开着的也是 false —— 两种情况都照实存。
+    s.captureEnabled = (captureEnabled_ && !runtime_.recaptureAutoEnabledCapture) ? 1u : 0u;
     s.outputEnabled = outputEnabled_ ? 1u : 0u;
     s.versionActive = static_cast<scvb::u32>(versionActive_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);

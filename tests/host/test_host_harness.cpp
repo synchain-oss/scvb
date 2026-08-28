@@ -3590,3 +3590,196 @@ TEST_CASE("HOST J87:tracksMask 只点保留位不得退化成「不限轨」", "
     CHECK(r.out.coverageOf(1, t0 + 0.05, t0 + 2.0).coveredS < 0.05);
     CHECK(r.out.coverageOf(3, t0 + 0.05, t0 + 2.0).coveredS < 0.05);
 }
+
+// ===========================================================================
+// [SL-225] v5.6 实测 P1 回归:**重采提醒不见了**。
+// 用户现场:把上游 EQ 改狠 → 本该出「该轨上游音频与已采集特征不一致,建议重新采集」的
+// ⚠(04 §4.5 fingerprint watchdog,#107 实装),v5.5 还在,v5.6 没了。
+//
+// #107 之后碰过这条链的只有 J87 的三个 PR(#124/#131/#140),所以先立一条**不变量**用例:
+// **未布防的常规采集必须完全不受 J87 影响**。这条链很长而此前只有单测(FingerprintWatch /
+// TileFingerprint)与 IPC 层用例,**没有任何端到端回归** —— 这正是它能悄悄断掉的原因。
+// 本用例把整条链在真 harness 里跑通:
+//
+//   Input[A] 逐 hop 算 kw → 攒满 100 hop 一个 tile → FNV-1a 打包 → [A] SPSC 队列
+//     → Input[M] 25Hz drainFpReports → 本 slot ctrl 命令环
+//     → Output[M] drainCtrl 收 kFpReport → FingerprintWatch::onReport
+//     → 拿 FrameStore 里**已采集**的 kw 重算同一 tile 的基线 → 比对 → 滞回 3 条 + >10%
+//     → channelStale → 桥面 §2.8 channels[].stale
+//
+// 判据取 `captureStale`(引擎侧真值),不看 UI。
+//
+// 两个必须踩准的前提,踩不准这条用例会「绿得毫无意义」:
+//   ① **fp_report 只在采集 OFF 时发**(FeatRing::accumulateFp:`if (capturing) return;`)——
+//      采集 ON 时这一秒的特征正在被写成新基线,拿它跟自己比毫无意义;
+//   ② 第二遍必须回到**同一段时间线**,否则 tile 号对不上、基线不存在(baselineTileFingerprint
+//      在 coverage 不全时返回 false),那些上报会被「无基线」分支整条跳过,分母都进不去。
+// ===========================================================================
+TEST_CASE("HOST SL-225:常规采集(未布防)下上游改动仍须翻出 stale", "[host][t37][v56][SL225]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // ★ 不变量:本用例**全程不布防**。J87 的门控只在布防期改口径,常规采集这条路必须原样。
+    REQUIRE_FALSE(r.out.runtime().recaptureArmed);
+
+    // —— 第一遍:常规采集,录下「上游改动前」的素材,它就是基线 ——
+    r.out.setCaptureEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(760, 0.5f); // ≈8.1s
+    Rig::pumpMessages(400);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0); // 前置:基线确实存在
+    REQUIRE_FALSE(r.out.runtime().recaptureArmed);
+
+    // —— 采集 OFF:这是 fp 上报的**开关**(前提①),不是可有可无的一步 ——
+    r.out.setCaptureEnabled(false);
+    Rig::pumpMessages(200);
+    REQUIRE_FALSE(r.out.captureStale(kTestChannel)); // 前置:此刻还没有任何失配定谳
+
+    // —— 第二遍:回到同一段时间线(前提②),喂**明显不同**的素材 = 用户把上游 EQ 改狠了 ——
+    // 幅度差一个数量级 ⇒ kw 差远超 0.5dB 的量化桶 ⇒ 每个 tile 的 FNV 都不同。
+    r.ph.timeSamples = 0;
+    r.runBlocks(760, 0.05f);
+    Rig::pumpMessages(600);
+
+    // ★ 上游改动必须被认出来(滞回 3 条 + >10%,8 秒足够攒够)。
+    CHECK(r.out.captureStale(kTestChannel));
+}
+
+// [SL-225] 上一条(纯常规路径)在 feature/v1 tip 上是**绿**的 —— 那条链本身没断。
+// 于是把嫌疑面推到 J87 真正改过的地方:布防/撤防走一遭之后,这条链还在不在。
+// 三种走法分别对应用户可能的操作序列;判据同上,取引擎侧 captureStale。
+TEST_CASE("HOST SL-225:布防→撤防之后,上游改动仍须翻出 stale", "[host][t37][v56][SL225]")
+{
+    constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+
+    // 采一段基线(采集 ON),回报采到的秒数。
+    const auto layBaseline = [](Rig& r) {
+        r.out.setCaptureEnabled(true);
+        r.ph.timeSamples = 0;
+        r.runBlocks(760, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+    };
+    // 回到同一段时间线喂不同素材(= 改狠了上游 EQ),再问 stale。
+    const auto upstreamChangedThenAsk = [](Rig& r) {
+        r.ph.timeSamples = 0;
+        r.runBlocks(760, 0.05f);
+        Rig::pumpMessages(600);
+        return r.out.captureStale(kTestChannel);
+    };
+
+    SECTION("布防前采集 OFF:撤防把采集关回去 ⇒ fp 上报恢复,stale 照常翻出")
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        layBaseline(r);
+
+        r.out.setCaptureEnabled(false);
+        r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false); // 替用户开了采集
+        REQUIRE(r.out.captureEnabled());
+        r.out.disarmRecapture(); // 裁定③:恢复成布防前的 OFF
+        REQUIRE_FALSE(r.out.captureEnabled());
+        Rig::pumpMessages(200);
+
+        CHECK(upstreamChangedThenAsk(r));
+    }
+
+    SECTION("布防期间用户自己把采集关掉:撤防不再替他动 ⇒ 采集是 OFF,stale 照常翻出")
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        layBaseline(r);
+
+        r.out.setCaptureEnabled(false);
+        r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+        r.out.setCaptureEnabled(false); // 用户接管:布防期间自己关掉
+        r.out.disarmRecapture();
+        REQUIRE_FALSE(r.out.captureEnabled());
+        Rig::pumpMessages(200);
+
+        CHECK(upstreamChangedThenAsk(r));
+    }
+
+    SECTION("撤防后采集仍是 ON(布防前就开着):**按 §4.5 本就不该有 stale** —— 采集 ON 期间不上报")
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        layBaseline(r); // 这一步之后采集是 ON
+
+        r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+        r.out.disarmRecapture(); // 布防前本来就开着 ⇒ 保持开(裁定③)
+        REQUIRE(r.out.captureEnabled());
+        Rig::pumpMessages(200);
+
+        // 这一条**期望为假**,而且不是缺陷:采集 ON 时这一秒的特征正被写成新基线,
+        // 拿它跟自己比毫无意义(FeatRing::accumulateFp 的 `if (capturing) return;`)。
+        // 钉住它是为了把「采集 ON 所以没提示」与「链断了所以没提示」两件事分开 ——
+        // 用户看到的都是「提示不见了」,但只有后者是 bug。
+        CHECK_FALSE(upstreamChangedThenAsk(r));
+    }
+}
+
+// [SL-225] 定谳落点:布防替用户开的采集会**被存进工程**。
+//
+// 前两条用例说明链本身没断。真正能让用户「提示莫名其妙没了」的是这条:
+//   ① 用户点「重采集选区」→ [J87] 裁定① 替他打开 01 采集;
+//   ② 用户此时保存工程(或宿主自动保存)→ CFGS 里 capture_enabled 落成 1;
+//   ③ 重开工程 → 采集是 ON,而**布防位不持久化**(04 §4.2 ③,工作选区不落 state),
+//      于是界面上没有任何「正在布防」的线索,用户也从没自己开过采集;
+//   ④ 采集 ON 期间 Input 一条 fp_report 都不发(FeatRing::accumulateFp 的 `if (capturing) return;`)
+//      —— 于是改多狠的 EQ 都不会再有 ⚠。
+//
+// 用户看到的就是「重采提醒消失了」,而且查不出原因:采集开关确实开着,但那不是他开的。
+// 布防是**临时接管**,它替用户开的那一下不该越过一次保存活到下一个工程会话去。
+TEST_CASE("HOST SL-225:布防替用户开的采集不得被存进工程", "[host][t37][v56][SL225]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+
+    // 先采一段基线(⚠ 的比对对象),再由用户自己把采集关掉 —— 关着才是他要存进工程的状态。
+    r.out.setCaptureEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(760, 0.5f);
+    Rig::pumpMessages(400);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+    r.out.setCaptureEnabled(false);
+    REQUIRE_FALSE(r.out.captureEnabled());
+
+    // 点「重采集选区」:布防替他把采集打开(裁定①)。
+    r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+    REQUIRE(r.out.captureEnabled());
+    REQUIRE(r.out.runtime().recaptureAutoEnabledCapture); // 确实是我们开的,不是他
+
+    // 此刻保存工程。
+    juce::MemoryBlock blob;
+    r.out.getStateInformation(blob);
+    REQUIRE(blob.getSize() > 0);
+
+    // 载回这份工程(= 重开工程)。用同一个实例载回,好让 FrameStore 里的基线还在 ——
+    // 下面那半条断言要靠它把整条 ⚠ 链跑到底。
+    r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+
+    // ★ 载回来的采集态必须是**用户自己选的那个**(OFF),不是布防替他开的那个。
+    //   修复前:CFGS 里存的是 1,这里回 true —— 而布防位不持久化,用户完全看不出为什么。
+    CHECK_FALSE(r.out.captureEnabled());
+    // 布防位本来就不持久化,顺带钉住(04 §4.2 ③)。
+    CHECK_FALSE(r.out.runtime().recaptureArmed);
+
+    // ★★ 而且要真的把用户看得见的那件事跑通:改狠上游 → ⚠ 必须回来。
+    //    这半条才是 SL-225 的正题 —— 上面那条只说明「开关值对了」,这条说明「提醒又出现了」。
+    //    修复前:采集载回来是 ON,Input 一条 fp_report 都不发,这里恒 false。
+    Rig::pumpMessages(200);
+    r.ph.timeSamples = 0;
+    r.runBlocks(760, 0.05f);
+    Rig::pumpMessages(600);
+    CHECK(r.out.captureStale(kTestChannel));
+}
