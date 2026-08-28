@@ -2466,9 +2466,16 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                     // clearManual(§1.6 opts「重新识别(含手动段)」)= 连用户段一并重算:
                     // 用户读了二次确认文案、点了确认,就该真的清掉手动段 —— 此前 opts 整个被丢弃,
                     // 行为与普通分析逐字节相同,是「按钮亮着、点了没用」。范围外的段仍然保留。
-                    const bool isUser =
-                        !clearManual && (scvb::state::segmentOrigin(sg.flags) != scvb::state::SegmentOrigin::Auto ||
-                                         scvb::state::segmentLocked(sg.flags));
+                    //
+                    // ⚠ `locked` 段**不在 clearManual 的清除面内**:契约 §1.6「`locked=true` 段不受
+                    // 影响,**须先逐段解锁**」、§5.4「`locked` 段免疫」—— clearManual 只放开
+                    // 「origin≠auto」那一层保护,锁是用户显式挂上的第二道闸,只有 `set_locked` 摘得掉。
+                    // 修复前这两个判据被折进同一个 `!clearManual &&` 短路里,于是 clearManual 把
+                    // 锁定段一并抹掉,与冻结契约、与 mock 的 `isProtectedSegment` 三方对不齐
+                    // (#148 复审【重要】③;这是 #87 接 opts 时漏掉的一处,契约文字一字未动)。
+                    const bool isLocked = scvb::state::segmentLocked(sg.flags);
+                    const bool isUser = isLocked || (!clearManual && scvb::state::segmentOrigin(sg.flags) !=
+                                                                         scvb::state::SegmentOrigin::Auto);
                     const bool outsideRange = sg.t1 <= rangeStartSample || sg.t0 >= rangeEndSample;
                     if (isUser || outsideRange)
                     {

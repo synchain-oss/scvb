@@ -109,7 +109,8 @@ Select a segment on the waveform page and edit its pan / vol in the segment insp
 
 - hand-edited segments are marked `origin=user_edited`, newly created ones `origin=user_created`;
 - you can additionally mark a segment `locked`;
-- **automatic re-analysis will not overwrite either kind** unless you explicitly ask for them to be re-detected.
+- **automatic re-analysis will not overwrite either kind** unless you explicitly ask for them to be re-detected;
+- **a locked segment survives even "re-detect (including manual segments)"** — the lock is a second gate, and only you can lift it, segment by segment.
 
 **Freezing** a dimension on the Tracks page declares "I am taking this dimension over by hand": on write, that dimension is printed into automation as a flat line, and whatever you draw in the DAW afterwards will never be overridden by the engine. The priority chain is: **host automation > frozen manual value > manual touch-up > engine analysis curve**.
 

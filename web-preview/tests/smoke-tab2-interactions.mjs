@@ -1700,10 +1700,25 @@ log(
             /data-gb="\$\{gb\("restore-auto-row"\)\}"/.test(tw),
             "(c1)行内有持久入口",
         );
-        // 与解冻提示条**互斥**:那条自带同一个入口,两个一起出是重复
+        // [复审②] 触发钮**在行内**、不是浮条:.tracks-row__hint 是 absolute+top:100%,
+        // 浮在下一行上 —— 常驻之后两条以上手动轨会各盖住下一行,下一行点不动,
+        // 正是本卡要消灭的「点了没反应」。行高 44px 是设计常量,浮条改占位会顶掉布局。
         check(
-            /const restore = !c && !hint && !!row\.manualConst;/.test(tw),
-            "(c2)显示条件 = 有手动常值 且 没在弹确认 且 解冻提示条没出",
+            /<button type="button" class="tracks-row__restore"/.test(tw),
+            "(c2)触发钮是行内小件(落在 label 单元格,与既有条件角标同族)",
+        );
+        // [#148 复审【建议】2] 只读观察态 / srErr 死轨要一并挡掉:`doReidentify` 的写面
+        // 守卫会静默返回,钮再露出来又是一枚「点了没反应」。`dis` = 整行 disabled 位。
+        check(
+            /const canRestore = !!row\.manualConst && dis !== "1";/.test(tw) &&
+                /function syncConfirm\(n, row, t, ch, dis\)/.test(tw),
+            "(c2b)该轨仍被手动常值驱动**且整行可写**才出",
+        );
+        // 确认浮条一次只出一条(它和解冻提示条同族,两条同时展开会互相盖)
+        check(
+            /restoreConfirm: 0,/.test(tw) &&
+                /local\.restoreConfirm === ch/.test(tw),
+            "(c2c)确认态是**单值**不是 Set —— 浮条一次只出一条",
         );
         // 三枚钮不受整行 disabled 约束(它们是撤下确认的出口),写面守卫在 doReidentify
         check(
@@ -1717,9 +1732,25 @@ log(
         );
         // 锁定的手动常值:clearManual 碰不了(§1.6 locked 免疫)⇒ 只说不做,
         // 否则又是一个「点了没反应」——正是 SL-230 本身的病根
+        // 锁定档:钮置灰 + title 说原因(口径同 SL-193 的灰钮),不给一次
+        // 「展开确认再什么都不发生」—— clearManual 对 locked 段免疫
         check(
-            /if \(restore && row\.manualConstLocked\) \{/.test(tw),
-            "(c5)锁定档单列:给说明而不是给一枚点了没反应的钮",
+            /const locked = !!row\.manualConstLocked;/.test(tw) &&
+                /attr\(n\.restoreAuto, "data-disabled", locked \? 1 : 0\);/.test(
+                    tw,
+                ),
+            "(c5)锁定档把钮置灰",
+        );
+        check(
+            /tracks\.restoreAutoLocked/.test(tw) &&
+                /attr\(n\.restoreAuto, "title", tip\);/.test(tw),
+            "(c5b)灰着的原因走 title(不让人干瞪一个点不动的钮)",
+        );
+        check(
+            /if \(btn && btn\.getAttribute\("data-disabled"\) === "1"\) return;/.test(
+                tw,
+            ),
+            "(c5c)灰钮点下去不展开确认(入口再复检一次)",
         );
         // rowFromStore 要把 locked 位带出来,否则上一条判据永远为假
         {

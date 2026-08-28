@@ -3958,7 +3958,9 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
             "(b1)检查器入口已接节点",
         );
         check(
-            /function renderInspectorRestore\(ch, seg, editable\)/.test(tw),
+            /function renderInspectorRestore\(ch, idx, seg, editable\)/.test(
+                tw,
+            ),
             "(b2)有独立的两态渲染",
         );
         // auto 段不出:给它一个「恢复自动」是废钮
@@ -3982,8 +3984,30 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
         );
         // 空态也要收起,否则挂着上一个段的入口(与 origin 角标同一个理由)
         check(
-            /renderInspectorRestore\(0, null, false\);/.test(tw),
+            /renderInspectorRestore\(0, -1, null, false\);/.test(tw),
             "(b6)空态收起入口",
+        );
+        // [#148 复审【建议】①] 展开态跟**选中段**绑定。裸布尔的病:在段 A 上点开确认、
+        // 不取消直接去点段 B,面板一进去就停在「取消 / 继续」上 —— 用户没点过却已经在问他。
+        check(
+            /inspRestoreAsk: "",/.test(tw) &&
+                /local\.inspRestoreAsk = cur \? `\$\{cur\.ch\}:\$\{cur\.idx\}` : "";/.test(
+                    tw,
+                ) &&
+                /const asking = local\.inspRestoreAsk === `\$\{ch\}:\$\{idx\}`;/.test(
+                    tw,
+                ),
+            "(b7)展开态存的是段身份、按身份比对(不是裸布尔)",
+        );
+        // [#148 复审【建议】②] 「继续」在途去重:钮要等下一次 render 才隐,快速双击
+        // 会发两次 analyze —— 第二次基本是空操作,但白跑一趟秒级离线分析。
+        check(
+            /if \(local\.inspRestoreBusy\) return;/.test(tw) &&
+                /local\.inspRestoreBusy = true;/.test(tw) &&
+                /finally \{[\s\S]{0,40}local\.inspRestoreBusy = false;/.test(
+                    tw,
+                ),
+            "(b8)「继续」有在途去重,且用 finally 兜住抛错",
         );
         for (const k of [
             "tracks.restoreAuto",
