@@ -1,7 +1,7 @@
 # STATE_SCHEMA —— SCVB state schema 与 abi 兼容规则(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-08-25(abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy,详见 `docs/contract-changes/20260825-cfgs-persistence.md`)
+> 最后更新: 2026-08-28([J90] 文字对齐已实装口径:§4.3 session_guid 生成时机 / §三 PRMS 补登记 session_guid / §三 CFGS capture_enabled 存「用户自选值」——**abi 仍为 2,零行为变更**,详见 `docs/contract-changes/20260828-j90-contract-text-align.md`;上一次实质变更 2026-08-25 abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy,详见 `docs/contract-changes/20260825-cfgs-persistence.md`)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` **v2.3** + 计划 04 §5 蒸馏转正;J81 修宪转正:`ui.lang_chosen` / Input `ui.guide_seen`)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
@@ -134,13 +134,15 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
 
 | fourcc | 内容 | 编码 |
 |---|---|---|
-| `PRMS` | APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen, **lang_chosen**([J81])} | ValueTree 二进制 |
-| `CFGS` | **当前已落盘**: group_id / capture_enabled / output_enabled / version_active / ui{scale, language} / analysis{loudness_mode, center_slot_policy}。<br>**挂账未落盘**(后续任务扩展): analysis{vad, segmentation, transition_ramp_ms} / channels[15]{source_channels, participate_in_auto_pan} / print 设置 | 紧凑二进制(6×u32 头 + uiLanguage 变长 + loudness_mode/center_slot_policy 两 u32 枚举序号;已知字段后未知尾部原样回写) |
+| `PRMS` | APVTS 参数树(**123** 参数值 [J59/J65])+ ui{scale, language, active_tab, guide_seen, tour_seen, **lang_chosen**([J81])}+ **`session_guid`**([SL-215];见 §4.3) | ValueTree 二进制 |
+| `CFGS` | **当前已落盘**: group_id / capture_enabled(**存的是用户自选的采集态**:布防期由 `recaptureArm` 临时替用户打开的那一下不存,见下 [SL-225] 一条)/ output_enabled / version_active / ui{scale, language} / analysis{loudness_mode, center_slot_policy}。<br>**挂账未落盘**(后续任务扩展): analysis{vad, segmentation, transition_ramp_ms} / channels[15]{source_channels, participate_in_auto_pan} / print 设置 | 紧凑二进制(6×u32 头 + uiLanguage 变长 + loudness_mode/center_slot_policy 两 u32 枚举序号;已知字段后未知尾部原样回写) |
 | `CRVS` | versions[2] 曲线真身 + pan_curve + versionMeta(含 name)+ 每轨 excluded_ranges | 自定义紧凑二进制(u16 minor 版本;segment = {i64 t0, i64 t1, f32 pan, f32 vol_db, u32 flags}) |
 | `FEAT` | 特征流(per-channel kw_ms/peak/vad_posterior/coverage);embedded 标志与 sidecar 引用 | zlib(RFC 1950,miniz),节内编码见 §四 |
 | `UICF` | ui.master_chart_mode([J75] T43;`0`=distribution / `1`=trajectory) | 自定义紧凑二进制(定长 4 字节 u32) |
 
 - **未知 fourcc 的块在 load 时原样保留、save 时原样回写**(前向小版本兼容);不设独立 SDCR chunk——sidecar 引用是 FEAT 节内 embedded=0 分支。
+- **`session_guid` 落在 `PRMS` 根节点属性面而非 `CFGS`**([SL-215]):`CFGS` 是**定长**布局,新字段只能靠「已知字段后未知尾部原样回写」这一条机制兜底(`OutputStateCodec.cpp` 的 `unknownTail`,且**仅在 abi=2 的枚举尾字段齐全时**才生效),已知字段的失败态还分三种 —— 头部**五个**(`group_id`/`capture_enabled`/`output_enabled`/`version_active`/`langBytes`)越界即**整块拒载**,两个枚举尾字段越界**回落默认并计数**,`ui.scale` 在本节解码器里**不作范围校验**(原样透出,由上层处理);`ValueTree` 则对字段增删**两个方向**都天然容忍,无需升 abi、无需迁移函数,也不动本节的冻结布局。理由与同挂 `PRMS` 的 `ui.guide_seen`/`tour_seen`/`lang_chosen` 三位逐字相同。
+- **`CFGS.capture_enabled` 存「用户自选值」而非「此刻的运行值」**([SL-225];见 `docs/SCVB_CONTRACT.md` §1.23):`recaptureArm` 布防会自动打开采集(§1.23 裁定①),那是**临时接管**,而**布防位本身不持久化**(04 §4.2 ③「工作选区不落 state」)。若不作此区分,用户在布防期间保存(或宿主自动保存)会把临时值存进工程,重开后采集莫名开着且界面无任何布防线索;后果不止开关不对 —— 采集 ON 期间 Input 一条 `fp_report` 都不发,04 §4.5 的上游改动 ⚠ 从此再也不出现。用户中途**显式**拧过采集开关(视为接管)与布防前本来就开着的两种情况,都照实存。
 - **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + UI 横幅提示升级;`preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据);③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
 - **当前迁移链**:`kMigrators = [migrate_1_to_2]`(abi 1→2)。`migrate_1_to_2` 为 **no-op** —— abi=1 的 CFGS 无 loudness_mode/center_slot_policy 两个尾字段,`OutputStateCodec::decodeOutputState` 按「长度回退」把缺失尾字段回落默认(kw_integrated / priority_queue),故无需重写 payload;旧版(abi=1)读新(abi=2)blob 走 RejectedNewer → `preservedOriginal` 原样回写(绝不静默降级)。详见 `docs/contract-changes/20260825-cfgs-persistence.md`。
 - **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 提示升级」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。
@@ -181,7 +183,7 @@ FeatSection(压缩前布局):
 
 ### 4.3 sidecar 目录契约
 
-- **session_guid**:Output 首次 `getStateInformation()` 时 `juce::Uuid().toDashedString()` 自生成,永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。
+- **session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,见下 copy-on-write 条,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。**PRMS 值不一定是加载期终值**:工程内 FEAT 走 sidecar 引用节时,引用节的 GUID **经校验通过后**再压过 PRMS 值(`readFeaturesChunk` 排在 PRMS 之后;两者因 CoW 换过 GUID 而不一致时以引用节为准,否则删不掉旧 sidecar 目录、留下孤儿)。落盘面见 §三 `PRMS`。
 - **路径**:`File::getSpecialLocation(userApplicationDataDirectory)` → Windows `%APPDATA%\Synchain\SCVB\sessions\<GUID>\`(macOS 后续 `~/Library/Application Support/...` 同构)。
 - **目录内容**:`manifest.json`、`features.bin.gz`(扩展名沿用 .gz,内容为 zlib RFC 1950)、`owner.lock`。
   - `manifest.json`:{schemaVersion, codecVer, createdAt, savedAt, sha256, bytes, channelCount, hostName}
