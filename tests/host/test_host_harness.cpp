@@ -3428,17 +3428,49 @@ TEST_CASE("HOST J87:工程恢复复位布防运行时态", "[host][t37][j87]")
     r.out.getStateInformation(blob);
     REQUIRE(blob.getSize() > 0);
 
-    // 布防(自动开采集;此处本来就开着,所以 autoEnabled 位是 false)。
-    r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/true);
-    REQUIRE(r.out.runtime().recaptureArmed);
+    // —— 把**十个字段逐个弄脏** ——
+    // 这一段不是铺垫,是本用例的一半:只断「载回之后是零」而不先把它们弄脏,那些本来就是
+    // 零的字段(autoEnabled / prevPlayhead / range 三个)不复位也照样绿 —— 十条断言里五条
+    // 是空的,护栏只有一半真的存在(PR #140 评审重要)。所以每一项都先弄脏、再 REQUIRE
+    // 确认脏成功,最后才谈复位。
+    r.out.setCaptureEnabled(false); // 让下面那发布防去「替用户开」,autoEnabled 才会是 true
+    r.out.runtime().rangeMode = 2; // manual 档
+    r.out.runtime().rangeStartS = 3.0;
+    r.out.runtime().rangeEndS = 9.0;
+    // endS 取得远一点:autoStop=true 时播放头越过右边界会自动撤防,那样就不是「载回 state
+    // 才复位」而是被自动撤防顺手清了 —— 会把本用例测的东西掉包。
+    r.out.armRecapture(kMask, 1.0, 60.0, /*autoStop=*/true);
+    // 播几块让 25Hz tick 把 recapturePrevPlayheadS 填成非负(它只在 tick 里被写)。
+    r.ph.timeSamples = static_cast<std::int64_t>(1.2 * kSr);
+    r.runBlocks(24, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/12);
 
-    // 载回工程 = 换工程 / 撤销加载:布防必须整块复位。
+    // 前置:十个字段确实都不是复位值(弄脏成功),否则下面的断言测不出任何东西。
+    REQUIRE(r.out.runtime().recaptureArmed);
+    REQUIRE(r.out.runtime().recaptureTracksMask == kMask);
+    REQUIRE(r.out.runtime().recaptureStartS == 1.0);
+    REQUIRE(r.out.runtime().recaptureEndS == 60.0);
+    REQUIRE(r.out.runtime().recaptureAutoStop);
+    REQUIRE(r.out.runtime().recaptureAutoEnabledCapture);
+    REQUIRE(r.out.runtime().recapturePrevPlayheadS >= 0.0);
+    REQUIRE(r.out.runtime().rangeMode == 2);
+    REQUIRE(r.out.runtime().rangeStartS == 3.0);
+    REQUIRE(r.out.runtime().rangeEndS == 9.0);
+
+    // 载回工程 = 换工程 / 撤销加载:两组字段必须整块复位。
     r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
 
+    // 十个字段逐个回读(评审建议②:别只断一半,剩下的靠「行为面间接覆盖」说不清)。
     CHECK_FALSE(r.out.runtime().recaptureArmed); // ← 不复位的写法在这里红
     CHECK(r.out.runtime().recaptureTracksMask == 0);
+    CHECK(r.out.runtime().recaptureStartS == 0.0);
     CHECK(r.out.runtime().recaptureEndS == 0.0);
     CHECK_FALSE(r.out.runtime().recaptureAutoStop);
+    CHECK_FALSE(r.out.runtime().recaptureAutoEnabledCapture);
+    CHECK(r.out.runtime().recapturePrevPlayheadS < 0.0);
+    // range 三字段同属「不随工程走」,一并归零到 §1.8 默认档(统筹指定①)。
+    CHECK(r.out.runtime().rangeMode == 0);
+    CHECK(r.out.runtime().rangeStartS == 0.0);
+    CHECK(r.out.runtime().rangeEndS == 0.0);
     CHECK(r.out.captureEnabled()); // state 里的采集态照常恢复,没被布防残留顺手关掉
 }
 
@@ -3540,10 +3572,11 @@ TEST_CASE("HOST J87:tracksMask 只点保留位不得退化成「不限轨」", "
     REQUIRE(r.capture() > 4.0);
     const double t0 = static_cast<double>(r.ph.timeSamples) / kSr;
 
-    // 桥面掩码后为 0 = 没指名任何轨。processor 这一层同样不许把它当「不限轨」——
-    // armRecapture 收到 0 时 `applyFeatureGates` 会走 trackMask=0(不限轨),所以真正的守卫
-    // 在桥面:掩码提前、掩完为 0 走 noTracks 拒绝路径。这里断的是**掩码本身**的口径:
-    // 0x8000 & 0x7FFF == 0,与「本来就传 0」不可区分。
+    // ⚠ 下面这行是**编译期恒真式**,不触达 handleRecaptureArm —— 它只是把「0x8000 掩完为 0,
+    // 与本来就传 0 不可区分」这个前提写在案发现场,**不是守卫**(评审建议③:免得后人当它是)。
+    // 桥面那条真正的拒绝路径(recaptureArm(0x8000,…) ⇒ reason:"noTracks")由
+    // web-preview/tests/smoke-tab3-interactions.mjs 覆盖 —— handleRecaptureArm 要 WebView 才能
+    // 构造,harness 够不着,与 P1-F/SL-190 抽纯函数是同一类结构性限制。
     CHECK((0x8000 & 0x7FFF) == 0);
 
     // 而合法掩码必须真的收窄:只点第 2 轨,第 1/3 轨在布防期一片空白。

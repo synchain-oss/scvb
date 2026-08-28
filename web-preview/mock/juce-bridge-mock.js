@@ -1508,10 +1508,14 @@ function buildOutputBackend(ctx) {
                 disarm();
                 return { armed: false, ...echo, reason };
             };
-            if (readOnly()) return reject("readOnly");
-            if (model.caps.noTimeline) return reject("noTimeline");
+            // 判序与真桥对齐:`handleRecaptureArm` 是 noTracks → noSelection → readOnly。
+            // §1.23 没规定优先级,两边随便排都不违约 —— 但既然这轮在收「同款」,顺手对齐,
+            // 免得将来某个用例同时满足两条时两侧报出不同的 reason(评审建议④)。
+            // noTimeline 是 mock 独有的能力位,排在最后。
             if (mask === 0) return reject("noTracks");
             if (!(s < e)) return reject("noSelection");
+            if (readOnly()) return reject("readOnly");
+            if (model.caps.noTimeline) return reject("noTimeline");
             // 只在 false→true 那一跳记「是不是我们开的」:中途改选区会再发一次布防
             // (04 §4.2 ②),那时重记就会把「布防前」的账冲掉,撤防后再也关不回去。
             const patch = {
