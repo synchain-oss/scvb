@@ -1320,6 +1320,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // 一开就按上一个工程的口径收窄采集。此前不复位无害 —— 布防那组在引擎侧没有消费方;现在
     // 它们直接决定门控与采集开关(PR #124 评审重要①、PR #131 统筹补充)。
     //
+    // **落点是有意的**:这里在「CFGS 解码成功」之后,所以只带 PRMS 的轨道/参数预设(cfg==nullptr)
+    // 与两条拒载路径都**不**复位 —— 载一个参数预设不该打断用户正在进行的重采集布防。
+    // 「换工程」才复位,「换预设」不动(PR #131 评审建议①:别当漏网补到外面去)。
+    //
     //   · 布防七字段 —— 04 §4.2 ③「工作选区不落 state」,本就该每次载入归零;残留的陈旧布防
     //     还会在越界那一拍把用户刚从 state 恢复出来的 capture_enabled 关掉;
     //   · range 三字段 —— CFGS(OutputStateCodec)里**没有** range,所以它同样不随工程走。
