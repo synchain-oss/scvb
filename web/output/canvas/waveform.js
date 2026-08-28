@@ -270,15 +270,6 @@ export function createTileCache(cap = TILE_LRU_CAP) {
     };
 }
 
-/**
- * 拉取源:按 (ch, 视口, cols) 取块,LRU 8 块/轨 + 在途去重。
- * @param {object} opts
- * @param {(ch:number, startS:number, endS:number, cols:number) => Promise<object>} opts.request
- *        契约 §1.27 的桥函数(tab-wave 里包一层 bridge 容错)
- * @returns {{getTile:(ch,startS,endS,cols)=>Promise<object|null>,
- *            peek:(ch,startS,endS,cols)=>object|null,
- *            invalidate:(ch?:number)=>void}}
- */
 /** [SL-212] 超时哨兵:与「真回执」区分开,避免把 undefined/null 误当成超时。 */
 const kTimedOut = Symbol("scvb.tileRequestTimedOut");
 
@@ -292,14 +283,29 @@ const kTimedOut = Symbol("scvb.tileRequestTimedOut");
  * 一次丢包就冻结到会话结束,而它正是过渡帧「盖满整幅」的唯一兜底,塌了就露白。
  */
 function withTimeout(promise, ms) {
+    let id;
     const timeout = new Promise((resolve) => {
-        const id = setTimeout(() => resolve(kTimedOut), ms);
+        id = setTimeout(() => resolve(kTimedOut), ms);
         // node 侧别让这颗定时器吊住进程(浏览器无此 API)
         if (id && typeof id.unref === "function") id.unref();
     });
-    return Promise.race([promise, timeout]);
+    // 竞速一分胜负就把定时器撤了:真回执是毫秒级的,不撤等于每笔请求都留一颗空转 8s 的
+    // 定时器 + 一个吊着的 resolve 闭包。`IDLE_REFETCH_MS` 120ms × 最多 14 条泳道 + 概览,
+    // 8 秒窗口里能同时挂上百颗。node 侧有 unref 不吊住进程,闭包一样留着。
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
 }
 
+/**
+ * 拉取源:按 (ch, 视口, cols) 取块,LRU 8 块/轨 + 在途去重。
+ * @param {object} opts
+ * @param {(ch:number, startS:number, endS:number, cols:number) => Promise<object>} opts.request
+ *        契约 §1.27 的桥函数(tab-wave 里包一层 bridge 容错)
+ * @param {number} [opts.timeoutMs] [SL-212] 单次取数的兜底超时(ms);**仅供用例注入**,
+ *        非有限值/非正数一律回落 `TILE_REQUEST_TIMEOUT_MS`(生产侧不传)。
+ * @returns {{getTile:(ch,startS,endS,cols)=>Promise<object|null>,
+ *            peek:(ch,startS,endS,cols)=>object|null,
+ *            invalidate:(ch?:number)=>void}}
+ */
 export function createWaveformSource(opts) {
     const request = (opts || {}).request;
     // [SL-212] 兜底超时可注入 —— **只为让用例能验真状态迁移**:概览那条路在 `rec.inflight`

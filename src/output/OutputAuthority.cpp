@@ -3,6 +3,8 @@
 
 #include <functional>
 
+#include "SegmentEditService.h" // configureCrvsUndoBudget:CRVS 撤销预算的唯一真源
+
 namespace
 {
 
@@ -95,6 +97,14 @@ void OutputAuthority::setVersionActive(int version)
     m_versions.setVersionActive(version); // 越界钳制 + warning 计数(不静默取模)
     if (m_prepared && m_versions.versionActive() != before)
         rebindSources(); // 版本号未变则不重发快照(避免虚假 versionChanged)
+}
+
+OutputAuthority::OutputAuthority()
+{
+    // 撤销预算的**唯一**装配点。CopyVersion/RenameVersion 这两条动作 getSizeInUnits 恒回 1,
+    // 在这套字节口径下等于「几乎不占预算」—— 正确:它们持有的是 shared_ptr 浅拷贝与一个字符串,
+    // 与整表 CRVS 快照不在一个量级。
+    scvb::output::configureCrvsUndoBudget(m_undoManager);
 }
 
 int OutputAuthority::versionActive() const

@@ -57,11 +57,81 @@ mutator,逻辑逐字未改)。
 ## 兼容性影响
 
 - **撤销栈**:多了一类事务。栈本身是插件内的运行时结构,不持久化,无迁移问题。
-- **内存**:每次分析多留两份 `CrvsData` 快照(与 `editSegment` / `setTrackManual` 同量级)。
+- **内存**:每次分析多留两份 `CrvsData` 快照(与 `editSegment` / `setTrackManual` 同量级);
+  上限由本卡新定的 64 MiB 预算 + 最少 16 步兜住(见下「撤销预算的定参与推导」)。
 - **state / 参数面 / IPC**:未触碰。
-- **UI**:撤销/重做按钮的可用性判据(`tab-master.js` 由回执与 §2.8 `reason` 推)天然把
-  `analyze` 后的可撤销态算进去 —— 因为分析完成本来就会发一次段表事件。
+- **UI**:撤销/重做按钮的可用性判据(`tab-master.js` 的 `historyAfterSegments`,由回执与
+  §2.8 `reason` 推)是**白名单**语义 —— 它认的是 `UNDOABLE_REASONS` 这张表里有没有这个
+  `reason`,**不是**「有没有发过段表事件」。所以 §0.9 改判**必须同批改 web 一侧**:
+  `web/output/tab-master.js` 的 `UNDOABLE_REASONS` 加 `"analyze"`,
+  `web-preview/tests/smoke-undo-redo.mjs` 把 `analyze` 从「右列不入栈」组挪到左列组
+  (期望 `{undo:true, redo:false}`)。
+  ⚠ 本文件初版在这里写的是「天然把 `analyze` 算进去」—— **那句是错的**,已更正:
+  不改白名单的后果是分析完成后 undo 钮不置亮(用户此前空点过一次撤销把它置灰之后,
+  它会一直灰着),而 `app.js` 的 Ctrl+Z 不看按钮属性照样能撤 —— 鼠标与键盘两个入口行为分叉;
+  反向也错:新事务入栈会清空 redo 栈,redo 钮却仍亮着(点一下拿 `ok:false` 才自愈)。
+- **撤销深度(本卡显式定参,见下节)**:`CrvsTransactionAction::getSizeInUnits()` 从「恒 1」
+  改成按段数记字节后,`juce::UndoManager` 的**默认**预算(30000 units / 最少 30 步)会让真实
+  工程的撤销深度塌到 30 步,且内存并没有被真的按字节封住。本卡在 `OutputAuthority` 显式定参,
+  推导见 `SegmentEditService.h` 的 `kCrvsUndoBudgetBytes` 注释。
+- **已知取舍(不回退的两处 UI 摘要)**:撤销分析之后,Tab4「参数已改、结果陈旧」基线与 Tab3 的
+  分析 diff 摘要条**不会跟着回退**(它们只认 `reason:"analyze"`,撤销发的是 `reason:"undo"`)。
+  于是段表已经回到分析前,摘要条还在描述那一轮被撤销的分析。**判定为可接受**:这两处描述的是
+  「最后一次分析这个动作发生过什么」,不是「当前段表长什么样」;要让它们回退就得给撤销/重做也
+  带上「这一步跨越了哪一次分析」的信息,那是 §2.8 载荷的扩张,超出本卡范围。记录在此,不静默。
 - **旧构建**:桥函数签名与事件形状未变,新旧 web 都不受影响。
+
+## 撤销预算的定参与推导(#152 复审【重要】①②)
+
+分析事务与段编辑走同一个 `CrvsTransactionAction`,而本卡把它的 `getSizeInUnits()` 从「恒 1」
+改成按段数记字节(1 unit ≡ 1 字节)。这一改与 `juce::UndoManager` 的**默认**参数
+(`maxNumberOfUnitsToKeep = 30000`,`minimumTransactionsToKeep = 30`)组合出副作用,故显式定参。
+
+**先把 JUCE 的裁剪语义核准**(`juce_UndoManager.cpp`,8.0.8 逐行核对):
+
+```cpp
+while (nextIndex > 0 && totalUnitsStored > maxNumUnitsToKeep
+                     && transactions.size() > minimumTransactionsToKeep)
+    { 丢掉栈底那条 }
+```
+
+三个条件是**与**,`minimumTransactionsToKeep` 优先于 units 上限。由此:
+
+- ✅ **单条超限事务永远不会被丢**(栈里事务数没超过 min 时循环根本不进)。所以复审里
+  「超限动作被丢 / 整个撤销历史被清空 ⇒ 分析撤销静默失效」这个判断**与源码不符**,已按源码更正:
+  「一次分析 = 一条撤销步」在任何段数下都成立。
+- ⚠ 真正的后果是**深度**与**内存**:默认参数下,两份快照总段数 ≳ 938 就一口吃光 30000 units,
+  于是撤销深度恒 = `minimumTransactionsToKeep` = 30 步;而这 30 条大快照照样全留着
+  (密集工程一条 ≈ 3.8 MB ⇒ ≈ 115 MB),内存**并没有**被按字节封住。
+
+**定参**(`src/output/SegmentEditService.h`,生产装配点 = `OutputAuthority` 的构造):
+
+```cpp
+inline constexpr int kCrvsUndoBudgetBytes     = 64 * 1024 * 1024; // 64 MiB
+inline constexpr int kCrvsUndoMinTransactions = 16;
+```
+
+推导:一条事务 ≈ `(旧段数 + 新段数) × 32B`,稳态下 ≈ `64·N`(N = 2 版本 × 15 轨的总段数)。
+
+| 工程档位 | N | 一步开销 | 64 MiB 买到的深度 | 默认预算下的深度 |
+|---|---|---|---|---|
+| 典型(200 段/轨/版本) | 6,000 | 384 KB | ≈ **174 步** | 30 步(内存无封顶) |
+| 密集(2,000 段/轨/版本) | 60,000 | 3.84 MB | ≈ **17 步** | 30 步(≈ 115 MB 挂栈上) |
+
+- 64 MiB 的量级依据:插件内存大头是 FrameStore 的特征页(一小时素材 × 15 轨为百 MB 级),
+  撤销栈压在它下面一个档位 —— 既不成为内存主项,又留得下上百步编辑历史。
+- 最少 16 步是**硬地板**(JUCE 的 min 优先于 units);取 16 而非更大,是为了让地板在密集档上
+  不越过预算:16 × 3.84 MB ≈ 61 MB ≲ 64 MiB,与该档算出的 ≈17 步同量级,两个数不打架。
+- 这是拿**深度**换一个**真的存在**的内存天花板:密集工程从「30 步 / 内存无上限」变成
+  「≥16 步 / ≤64 MiB 量级」,典型工程则从 30 步涨到 ≈174 步。
+
+**用例**(`SERVICE-12`,`tests/core/test_segment_edit_service.cpp`),三支各带反向验证:
+
+1. 2000 段工程连压 64 条事务 → 64 次撤销全成功(实测深度 524)。
+   ★ 反向:删掉 `configureCrvsUndoBudget(undo)` → 实测退回 **30 步**,红。
+2. 生产装配点:`OutputAuthority` 出厂即带预算(同样 64/64)。
+   ★ 反向:删掉构造里那行 → 实测退回 **30 步**,红。
+3. 封顶咬合:连压 700 条后深度被裁到 524 < 700,且 ≥ 硬地板 —— 证明预算不是「调大到形同虚设」。
 
 ## 机器门禁
 

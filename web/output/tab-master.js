@@ -245,8 +245,21 @@ export function applySegmentsEvent(prev, next) {
 /** 两向可用性的起手值(见上:无证据 ⇒ 保守常亮)。 */
 export const HISTORY_AVAIL_INIT = Object.freeze({ undo: true, redo: true });
 
-/** §2.8 `reason` 十值里**入撤销栈**的那几个(= §0.9 左列 ∩ 段表回推面)。 */
-const UNDOABLE_REASONS = new Set(["edit", "trackManual", "copyVersion"]);
+/**
+ * §2.8 `reason` 十值里**入撤销栈**的那几个(= §0.9 左列 ∩ 段表回推面)。
+ *
+ * `analyze` 自 [J89](2026-08-28 用户批准,变更文档 `20260827-sl209-analyze-undoable.md`)
+ * 起进左列:一次分析 = 一条撤销步(`finishAnalysis` 把整轮回落包进 `commitCrvsTransaction`)。
+ * ⚠ 这是**白名单**语义 —— 契约 §0.9 改判后若不同步改这里,分析完成发的那次段表事件
+ * 就走 `return cur` 原样返回,undo 钮不置亮(用户此前空点过一次撤销后它会一直灰着,
+ * 而键盘 Ctrl+Z 那条路不看按钮属性,于是两个入口行为分叉)。契约改一列,这里就得改一行。
+ */
+const UNDOABLE_REASONS = new Set([
+    "edit",
+    "trackManual",
+    "copyVersion",
+    "analyze",
+]);
 
 /**
  * `undo()` / `redo()` 回执 → 新可用性(证据①)。
@@ -271,8 +284,9 @@ export function historyAfterCall(prev, kind, ok) {
  *
  * 新事务入栈会**清空 redo 栈**(juce::UndoManager 语义,03 §5.3),故 undo 置亮、
  * redo 置灰。`reason:"undo"`/`"redo"` 是本 reducer 自己动作的回推,必须排除在外
- * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(analyze/vad/
+ * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(vad/
  * segmentation/versionActive/snapshot)按 §0.9 右列不入栈,不动两向。
+ * `analyze` 自 [J89] 起改判进左列(见 `UNDOABLE_REASONS`),与 `edit` 同支处理。
  *
  * @param {{undo:boolean,redo:boolean}|null|undefined} prev
  * @param {object|null} seg `scvb.segments` 载荷

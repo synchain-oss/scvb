@@ -2900,79 +2900,75 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
                                                      std::int64_t rangeStartSample, std::int64_t rangeEndSample,
                                                      bool clearManual)
 {
+    auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
+
+    for (int t = 0; t < 15; ++t)
     {
+        const auto& src = result.segments[static_cast<std::size_t>(t)];
+        if (src.empty())
         {
-            auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
+            continue; // 无产出的轨保持原样(不清空既有段)
+        }
+        auto& dst = version.tracks[static_cast<std::size_t>(t)].segments;
 
-            for (int t = 0; t < 15; ++t)
+        // 保留两类既有段:
+        //   ① 用户段(user_edited / user_created / locked)—— ADR-008「重分析不覆盖」;
+        //   ② **完全落在本次分析范围之外**的 auto 段 —— 局部重分析只对
+        //      (轨道 × 时间区间)失效,绝不能触碰其他区间的已有结果(ADR-008 / §4.4)。
+        // 修复前这里是「本次产出 + 用户段」整表替换,于是「划了循环区 → 点分析」
+        // 会把循环区**之外**先前分析出来的段全部静默抹掉,UI 上毫无提示。
+        // 与范围**相交**的 auto 段(含跨边界者)由本次产出取代 —— 那正是被重分析的区间。
+        std::vector<scvb::state::Segment> kept;
+        for (const auto& sg : dst)
+        {
+            // clearManual(§1.6 opts「重新识别(含手动段)」)= 连用户段一并重算:
+            // 用户读了二次确认文案、点了确认,就该真的清掉手动段 —— 此前 opts 整个被丢弃,
+            // 行为与普通分析逐字节相同,是「按钮亮着、点了没用」。范围外的段仍然保留。
+            //
+            // ⚠ `locked` 段**不在 clearManual 的清除面内**:契约 §1.6「`locked=true` 段不受
+            // 影响,**须先逐段解锁**」、§5.4「`locked` 段免疫」—— clearManual 只放开
+            // 「origin≠auto」那一层保护,锁是用户显式挂上的第二道闸,只有 `set_locked` 摘得掉。
+            // 修复前这两个判据被折进同一个 `!clearManual &&` 短路里,于是 clearManual 把
+            // 锁定段一并抹掉,与冻结契约、与 mock 的 `isProtectedSegment` 三方对不齐
+            // (#148 复审【重要】③;这是 #87 接 opts 时漏掉的一处,契约文字一字未动)。
+            const bool isLocked = scvb::state::segmentLocked(sg.flags);
+            const bool isUser =
+                isLocked || (!clearManual && scvb::state::segmentOrigin(sg.flags) != scvb::state::SegmentOrigin::Auto);
+            const bool outsideRange = sg.t1 <= rangeStartSample || sg.t0 >= rangeEndSample;
+            if (isUser || outsideRange)
             {
-                const auto& src = result.segments[static_cast<std::size_t>(t)];
-                if (src.empty())
-                {
-                    continue; // 无产出的轨保持原样(不清空既有段)
-                }
-                auto& dst = version.tracks[static_cast<std::size_t>(t)].segments;
-
-                // 保留两类既有段:
-                //   ① 用户段(user_edited / user_created / locked)—— ADR-008「重分析不覆盖」;
-                //   ② **完全落在本次分析范围之外**的 auto 段 —— 局部重分析只对
-                //      (轨道 × 时间区间)失效,绝不能触碰其他区间的已有结果(ADR-008 / §4.4)。
-                // 修复前这里是「本次产出 + 用户段」整表替换,于是「划了循环区 → 点分析」
-                // 会把循环区**之外**先前分析出来的段全部静默抹掉,UI 上毫无提示。
-                // 与范围**相交**的 auto 段(含跨边界者)由本次产出取代 —— 那正是被重分析的区间。
-                std::vector<scvb::state::Segment> kept;
-                for (const auto& sg : dst)
-                {
-                    // clearManual(§1.6 opts「重新识别(含手动段)」)= 连用户段一并重算:
-                    // 用户读了二次确认文案、点了确认,就该真的清掉手动段 —— 此前 opts 整个被丢弃,
-                    // 行为与普通分析逐字节相同,是「按钮亮着、点了没用」。范围外的段仍然保留。
-                    //
-                    // ⚠ `locked` 段**不在 clearManual 的清除面内**:契约 §1.6「`locked=true` 段不受
-                    // 影响,**须先逐段解锁**」、§5.4「`locked` 段免疫」—— clearManual 只放开
-                    // 「origin≠auto」那一层保护,锁是用户显式挂上的第二道闸,只有 `set_locked` 摘得掉。
-                    // 修复前这两个判据被折进同一个 `!clearManual &&` 短路里,于是 clearManual 把
-                    // 锁定段一并抹掉,与冻结契约、与 mock 的 `isProtectedSegment` 三方对不齐
-                    // (#148 复审【重要】③;这是 #87 接 opts 时漏掉的一处,契约文字一字未动)。
-                    const bool isLocked = scvb::state::segmentLocked(sg.flags);
-                    const bool isUser = isLocked || (!clearManual && scvb::state::segmentOrigin(sg.flags) !=
-                                                                         scvb::state::SegmentOrigin::Auto);
-                    const bool outsideRange = sg.t1 <= rangeStartSample || sg.t0 >= rangeEndSample;
-                    if (isUser || outsideRange)
-                    {
-                        kept.push_back(sg);
-                    }
-                }
-
-                std::vector<scvb::state::Segment> next;
-                next.reserve(src.size() + kept.size());
-                for (const auto& as : src)
-                {
-                    scvb::state::Segment seg;
-                    seg.t0 = as.t0Samples;
-                    seg.t1 = as.t1Samples;
-                    seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
-                    seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
-                    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
-                    // 与保留段重叠则让位(用户段优先;范围外 auto 段本就不该与范围内产出重叠)。
-                    bool clash = false;
-                    for (const auto& k : kept)
-                    {
-                        if (seg.t0 < k.t1 && k.t0 < seg.t1)
-                        {
-                            clash = true;
-                            break;
-                        }
-                    }
-                    if (!clash)
-                    {
-                        next.push_back(seg);
-                    }
-                }
-                next.insert(next.end(), kept.begin(), kept.end());
-                std::sort(next.begin(), next.end(),
-                          [](const scvb::state::Segment& x, const scvb::state::Segment& y) { return x.t0 < y.t0; });
-                dst = std::move(next);
+                kept.push_back(sg);
             }
         }
+
+        std::vector<scvb::state::Segment> next;
+        next.reserve(src.size() + kept.size());
+        for (const auto& as : src)
+        {
+            scvb::state::Segment seg;
+            seg.t0 = as.t0Samples;
+            seg.t1 = as.t1Samples;
+            seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
+            seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
+            seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+            // 与保留段重叠则让位(用户段优先;范围外 auto 段本就不该与范围内产出重叠)。
+            bool clash = false;
+            for (const auto& k : kept)
+            {
+                if (seg.t0 < k.t1 && k.t0 < seg.t1)
+                {
+                    clash = true;
+                    break;
+                }
+            }
+            if (!clash)
+            {
+                next.push_back(seg);
+            }
+        }
+        next.insert(next.end(), kept.begin(), kept.end());
+        std::sort(next.begin(), next.end(),
+                  [](const scvb::state::Segment& x, const scvb::state::Segment& y) { return x.t0 < y.t0; });
+        dst = std::move(next);
     }
 }

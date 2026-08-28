@@ -109,7 +109,10 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
     );
 
     // ---- 段表事件:新事务入栈 ⇒ undo 亮、redo 灭(juce::UndoManager 语义)----
-    for (const reason of ["edit", "trackManual", "copyVersion"]) {
+    // `analyze` 自 [J89](2026-08-28 批准)起进 §0.9 左列 —— 这一条是反向验证的着力点:
+    // 把它从下面右列组挪上来,若 tab-master.js 的 UNDOABLE_REASONS 没同步加 "analyze",
+    // 这里立刻红(reducer 会 return cur 原样返回 {undo:false,redo:true})。
+    for (const reason of ["edit", "trackManual", "copyVersion", "analyze"]) {
         eq(
             historyAfterSegments({ undo: false, redo: true }, { reason }),
             { undo: true, redo: false },
@@ -124,14 +127,8 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
             `reason:"${reason}"(本操作自己的回推)不动两向`,
         );
     }
-    // §0.9 右列 + 首帧:不入栈,不动
-    for (const reason of [
-        "analyze",
-        "vad",
-        "segmentation",
-        "versionActive",
-        "snapshot",
-    ]) {
+    // §0.9 右列 + 首帧:不入栈,不动(`analyze` 已随 [J89] 改判上移到左列组)
+    for (const reason of ["vad", "segmentation", "versionActive", "snapshot"]) {
         eq(
             historyAfterSegments({ undo: false, redo: false }, { reason }),
             { undo: false, redo: false },
@@ -169,8 +166,8 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
     });
     eq(
         pushes,
-        ["edit", "trackManual", "copyVersion"],
-        "十值里判为「新事务入栈」的恰是 §0.9 左列在段表面的那三个",
+        ["analyze", "edit", "trackManual", "copyVersion"],
+        "十值里判为「新事务入栈」的恰是 §0.9 左列在段表面的那四个([J89] 起含 analyze)",
     );
 }
 
