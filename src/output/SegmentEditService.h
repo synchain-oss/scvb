@@ -45,7 +45,31 @@ public:
         return true;
     }
 
-    int getSizeInUnits() override { return 1; }
+    // [SL-209 复审 S1] 撤销栈的容量上限按「units」记(juce::UndoManager 默认 30000)。
+    // 恒回 1 时那个上限等价于「3 万条事务」—— 而本事务持有的是**两份整个 `CrvsData` 快照**
+    // (2 版本 × 15 轨的全部段);分析回落一次就可能是几万段,几十条这样的事务就能把内存
+    // 顶到几百 MB,上限却一次都不会触发。改成按**段数近似字节**记,让封顶真正起作用。
+    //
+    // 口径:两份快照的总段数 × 32B(Segment = t0/t1 各 8 + pan/vol 各 4 + flags 4 = 28,
+    // 取 32 含 vector 记账的粗余量)。只数段、不数 pan_curve/版本名 —— 段是唯一会上量级的那项。
+    // 至少回 1:UndoManager 用 0 会让这条事务在容量账上「不存在」。
+    int getSizeInUnits() override
+    {
+        const auto segBytes = [](const scvb::state::CrvsData& d) {
+            std::size_t n = 0;
+            for (const auto& v : d.versions)
+            {
+                for (const auto& t : v.tracks)
+                {
+                    n += t.segments.size();
+                }
+            }
+            return n * 32u;
+        };
+        const std::size_t bytes = segBytes(oldData_) + segBytes(newData_);
+        // 下限 1(0 会让本事务在容量账上「不存在」);上限夹到 2^30 防 int 溢出。
+        return static_cast<int>(std::clamp<std::size_t>(bytes, 1u, 1u << 30));
+    }
 
 private:
     scvb::state::CrvsData& crvs_;
@@ -54,7 +78,8 @@ private:
     std::function<void()> rebuild_;
 };
 
-// 通用 CRVS 变更事务(无条件成功,如 setVersionName/copyVersion/setTrackManual/setPanCurve)。
+// 通用 CRVS 变更事务(无条件成功,如 setVersionName/copyVersion/setTrackManual/setPanCurve/
+// **分析回落**([J89] 起分析可撤销,见 finishAnalysis))。
 inline void commitCrvsTransaction(juce::UndoManager& undo, scvb::state::CrvsData& crvs, const juce::String& name,
                                   const std::function<void()>& mutator, const std::function<void()>& rebuild)
 {
