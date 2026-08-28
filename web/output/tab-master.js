@@ -221,9 +221,12 @@ export function applySegmentsEvent(prev, next) {
 // §1.1 首帧快照与 §2.1 `scvb.state` 的字段全集里**都没有** canUndo/canRedo 之类的
 // 可用性信号。既然不发明新桥面(零契约变更),可用性只能由两手证据推出:
 //   ① **回执**:点下去拿到 `{ok:false}` —— 这是「该向栈空」的第一手、也是唯一权威证据;
-//   ② **新事务入栈**:§0.9 左列四类入栈操作里,当前 web 侧真正发得出的三类
-//      (`editSegment` / `setTrackManual` / `copyVersion`)都经 §2.8 段表事件带
-//      `reason` 回推,见其 reason 即知撤销栈刚长了一条。
+//   ② **新事务入栈**:§0.9 左列**六类**入栈操作里,当前 web 侧真正发得出段表事件的**四类**
+//      (`editSegment` / `setTrackManual` / `copyVersion` / `analyze`([J89] 起))都经
+//      §2.8 段表事件带 `reason` 回推,见其 reason 即知撤销栈刚长了一条。
+//      (左列六类 = 上述四类 + `setPanCurve` + `setVersionName`,后两类的缺口见下。
+//       ⚠ `docs/SCVB_CONTRACT.md` §1.25/§1.26 那句「覆盖左列的四类操作」自 [J82] 起就已过期,
+//       属冻结契约文字、须走 §5 批准流程另开卡订正 —— 本卡不动它,登记在此。)
 //
 // **已知缺口(两条,都会让 undo 钮在真实可撤销的操作后误灰)**:
 //   • 第四类入栈操作 `setPanCurve` 眼下 web 侧无调用点(曲线窗只读,
@@ -232,11 +235,12 @@ export function applySegmentsEvent(prev, next) {
 //     也没有它的份 —— 本 reducer 喂的是段表事件,pan 曲线根本不走那条线。故接线那一卡
 //     要补的是**另一路证据**(scvb.state 里 `pan_curve` 变化 ⇒ 撤销栈长了一条),
 //     不是把它「同批并进本 reducer」。
-//   • `setVersionName` 在契约 §0.9 里列在**不入栈**那一列,但实现是入栈的:
-//     `src/output/OutputProcessor.cpp:784-787` 拿 `authority_.undoManager()` 提交了一笔
-//     `"Rename V{n}"` 事务(:782 已先做「名字未变则不产生空撤销事务」的短路)。
-//     两边对不上,以哪边为准须裁决;在此之前改名后 undo 钮会误灰(§2.8 也不为它发段表事件)。
-//     **本卡不改契约、不改 native**,只把出入登记在这里。
+//   • `setVersionName` 的**契约争议已经结了**:§0.9 左列现已含 `setVersionName`([J82]),
+//     与实现(`OutputProcessor.cpp` 拿 `authority_.undoManager()` 提交 `"Rename V{n}"` 事务,
+//     且已先做「名字未变则不产生空撤销事务」的短路)一致 —— 裁决 = 入栈。
+//     **仍然成立的缺口只剩一条**:§2.8 不为改名发段表事件,所以 web 侧对「改名入了栈」
+//     这件事**没有证据源**,`historyAfterSegments` 认不到它,改名后 undo 钮仍会误灰。
+//     要补得给它一条证据(回执或新事件),属契约面改动,不在本卡范围;登记在此。
 //
 // 起手为什么两向都**常亮**而不是灰:UndoManager 挂在处理器上(03 §5.3),编辑器
 // 关了再开、栈照旧非空 —— 首帧没有任何证据说它是空的,此时置灰会挡住真实可用的
@@ -245,8 +249,21 @@ export function applySegmentsEvent(prev, next) {
 /** 两向可用性的起手值(见上:无证据 ⇒ 保守常亮)。 */
 export const HISTORY_AVAIL_INIT = Object.freeze({ undo: true, redo: true });
 
-/** §2.8 `reason` 十值里**入撤销栈**的那几个(= §0.9 左列 ∩ 段表回推面)。 */
-const UNDOABLE_REASONS = new Set(["edit", "trackManual", "copyVersion"]);
+/**
+ * §2.8 `reason` 十值里**入撤销栈**的那几个(= §0.9 左列 ∩ 段表回推面)。
+ *
+ * `analyze` 自 [J89](2026-08-28 用户批准,变更文档 `20260827-sl209-analyze-undoable.md`)
+ * 起进左列:一次分析 = 一条撤销步(`finishAnalysis` 把整轮回落包进 `commitCrvsTransaction`)。
+ * ⚠ 这是**白名单**语义 —— 契约 §0.9 改判后若不同步改这里,分析完成发的那次段表事件
+ * 就走 `return cur` 原样返回,undo 钮不置亮(用户此前空点过一次撤销后它会一直灰着,
+ * 而键盘 Ctrl+Z 那条路不看按钮属性,于是两个入口行为分叉)。契约改一列,这里就得改一行。
+ */
+const UNDOABLE_REASONS = new Set([
+    "edit",
+    "trackManual",
+    "copyVersion",
+    "analyze",
+]);
 
 /**
  * `undo()` / `redo()` 回执 → 新可用性(证据①)。
@@ -271,8 +288,10 @@ export function historyAfterCall(prev, kind, ok) {
  *
  * 新事务入栈会**清空 redo 栈**(juce::UndoManager 语义,03 §5.3),故 undo 置亮、
  * redo 置灰。`reason:"undo"`/`"redo"` 是本 reducer 自己动作的回推,必须排除在外
- * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(analyze/vad/
+ * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(vad/
  * segmentation/versionActive/snapshot)按 §0.9 右列不入栈,不动两向。
+ * `analyze` 自 [J89] 起改判进左列(见 `UNDOABLE_REASONS`),但**只置亮 undo、不清 redo** ——
+ * 理由见函数体内注(空转分析不压步,段表事件里没有「压没压步」的证据)。
  *
  * @param {{undo:boolean,redo:boolean}|null|undefined} prev
  * @param {object|null} seg `scvb.segments` 载荷
@@ -280,6 +299,18 @@ export function historyAfterCall(prev, kind, ok) {
 export function historyAfterSegments(prev, seg) {
     const cur = prev || HISTORY_AVAIL_INIT;
     if (!seg || !UNDOABLE_REASONS.has(seg.reason)) return cur;
+    // ⚠ `analyze` **只置亮 undo,不碰 redo**(#152 第三轮复审【重要】)。
+    //
+    // 其余三类必然压一条事务 ⇒ redo 栈必然被清,置灰是**有证据**的。`analyze` 不然:
+    // C++ 侧对**空转分析**(15 轨零产出)有守卫,不压事务、不清 redo 栈,但 `analysisDone_`
+    // 照样置位、段表事件照样以 `reason:"analyze"` 发出 —— 段表事件里**没有**「这一轮到底压没压步」
+    // 的证据。于是若照着清 redo:空转分析后 redo 栈明明还在,钮却灰了,而**灰掉的钮点不动**,
+    // 拿不到那次会救回它的 `ok:true` 回执 —— **不可自愈**。
+    //
+    // 按本文件头注那条原则办(「置灰会挡住真实可用的动作(真错),常亮的代价只是白点一下、
+    // 回执把它置灰(可自愈)」):证据不足时留亮。代价是产出型分析后 redo 钮会多亮一会儿,
+    // 点一下拿 `ok:false` 就自愈 —— 拿可自愈的假亮,换掉不可自愈的假灰。
+    if (seg.reason === "analyze") return { ...cur, undo: true };
     return { undo: true, redo: false };
 }
 

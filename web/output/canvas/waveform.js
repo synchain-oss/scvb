@@ -28,6 +28,20 @@ export const IDLE_REFETCH_MS = 120;
 /** 契约 §1.27:cols 上限。 */
 export const MAX_COLS = 4096;
 
+/**
+ * [SL-212] 单笔 `requestWaveform` 的**兜底超时**(ms)。
+ *
+ * 契约 §1.27 是「一次调用一次 resolve」,但那是**约定**,不是保证:桥那头是 WebView2 的
+ * 消息泵,P0-A 那一族现场里它被打满过。真丢一次回执的后果不是「这一帧没画」,而是
+ * **这个视口键被永久毒死** —— `getTile` 把 pending 的 promise 本身塞进了 LRU 做在途去重,
+ * 一笔永不 settle 的 promise 会让后续同键请求全部挂到它身上,`peek` 也永远命不中它。
+ * 用户平移/缩放回到同一个视口时,那条泳道就再也取不到数(而段表一切正常)。
+ *
+ * 超时只做一件事:**把键腾出来**,让下一次静止拍能重新发一发。取 8s —— 远高于任何健康
+ * 回执(真机上是毫秒级),只在「确实没人应答」时才会碰到,不会误杀慢回执。
+ */
+export const TILE_REQUEST_TIMEOUT_MS = 8000;
+
 /** 契约 §1.27:未覆盖列哨兵 dB。 */
 export const UNCOVERED_DB = -160;
 
@@ -256,17 +270,52 @@ export function createTileCache(cap = TILE_LRU_CAP) {
     };
 }
 
+/** [SL-212] 超时哨兵:与「真回执」区分开,避免把 undefined/null 误当成超时。 */
+const kTimedOut = Symbol("scvb.tileRequestTimedOut");
+
+/**
+ * [SL-212] 与兜底超时竞速的公用件:赢了回原值,超时回 `kTimedOut`。
+ *
+ * **两个取数口都必须走它** —— `getTile`(视口块)与 `ensureOverview`(全曲概览块)是
+ * 同一族问题:桥回执丢一次,那一笔 promise 永不 settle,而两处都把「在途」记在自己的状态里
+ * 做去重(`getTile` 把 promise 塞进 LRU,`ensureOverview` 记 `rec.inflight`)——
+ * 于是同一个键/同一条轨的概览会**永久**取不到数。概览那条更狠:它没有 LRU 淘汰,
+ * 一次丢包就冻结到会话结束,而它正是过渡帧「盖满整幅」的唯一兜底,塌了就露白。
+ */
+function withTimeout(promise, ms) {
+    let id;
+    const timeout = new Promise((resolve) => {
+        id = setTimeout(() => resolve(kTimedOut), ms);
+        // node 侧别让这颗定时器吊住进程(浏览器无此 API)
+        if (id && typeof id.unref === "function") id.unref();
+    });
+    // 竞速一分胜负就把定时器撤了:真回执是毫秒级的,不撤等于每笔请求都留一颗空转 8s 的
+    // 定时器 + 一个吊着的 resolve 闭包。`IDLE_REFETCH_MS` 120ms × 最多 14 条泳道 + 概览,
+    // 8 秒窗口里能同时挂上百颗。node 侧有 unref 不吊住进程,闭包一样留着。
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
+}
+
 /**
  * 拉取源:按 (ch, 视口, cols) 取块,LRU 8 块/轨 + 在途去重。
  * @param {object} opts
  * @param {(ch:number, startS:number, endS:number, cols:number) => Promise<object>} opts.request
  *        契约 §1.27 的桥函数(tab-wave 里包一层 bridge 容错)
+ * @param {number} [opts.timeoutMs] [SL-212] 单次取数的兜底超时(ms);**仅供用例注入**,
+ *        非有限值/非正数一律回落 `TILE_REQUEST_TIMEOUT_MS`(生产侧不传)。
  * @returns {{getTile:(ch,startS,endS,cols)=>Promise<object|null>,
  *            peek:(ch,startS,endS,cols)=>object|null,
  *            invalidate:(ch?:number)=>void}}
  */
 export function createWaveformSource(opts) {
     const request = (opts || {}).request;
+    // [SL-212] 兜底超时可注入 —— **只为让用例能验真状态迁移**:概览那条路在 `rec.inflight`
+    // 挂着时是提前 return 的(见 ensureOverview 的节流门),所以「超时放掉 inflight → 下一拍重发」
+    // 这个迁移在真超时(8s)之前根本观察不到。冒烟里真等 8 秒不值当,而只用源码钉又只能钉形态、
+    // 钉不住行为。生产侧不传,取 TILE_REQUEST_TIMEOUT_MS。
+    const timeoutMs =
+        Number.isFinite((opts || {}).timeoutMs) && (opts || {}).timeoutMs > 0
+            ? (opts || {}).timeoutMs
+            : TILE_REQUEST_TIMEOUT_MS;
     /** ch → LRU(**新鲜**块;权威绘制只认这一份)。 */
     const perCh = new Map();
     /**
@@ -339,11 +388,24 @@ export function createWaveformSource(opts) {
             cache.set(key, tile);
             return tile;
         };
-        p = Promise.resolve()
-            .then(() => request(ch, startS, endS, n))
-            // 契约 §5.5 风格的拒绝载荷({reason}/{observer})与畸形响应
-            // 一律当无数据(形状守卫见 isTileShape 头注)
-            .then(settle)
+        // [SL-212] 与**兜底超时**竞速:回执丢了不能让这个键挂死(见 TILE_REQUEST_TIMEOUT_MS)。
+        // 超时那一支只负责把键从缓存里腾走并回 null;真回执若在之后姗姗来迟,`settle` 会因为
+        // `cur !== p` 而拒绝回写(它本来就有这道身份校验),不会把过期数据塞回去。
+        p = withTimeout(
+            Promise.resolve()
+                .then(() => request(ch, startS, endS, n))
+                // 契约 §5.5 风格的拒绝载荷({reason}/{observer})与畸形响应
+                // 一律当无数据(形状守卫见 isTileShape 头注)
+                .then(settle),
+            timeoutMs,
+        )
+            .then((v) => {
+                if (v !== kTimedOut) return v;
+                if ((cache.peek ? cache.peek(key) : undefined) === p) {
+                    cache.delete(key); // ← 腾键:下一次静止拍可以重新发
+                }
+                return null;
+            })
             .catch(() => {
                 if ((cache.peek ? cache.peek(key) : undefined) === p) {
                     cache.delete(key);
@@ -399,11 +461,19 @@ export function createWaveformSource(opts) {
             return rec.have;
         }
         rec.at = now;
-        const p = Promise.resolve()
-            .then(() => request(ch, a, b, n))
+        // [SL-212] 概览块同样要兜底超时 —— 它与 getTile 是**同一族毒键**,且更狠:
+        // 概览不进 LRU、永不淘汰,`rec.inflight` 一旦挂上一笔永不 settle 的 promise,
+        // 这条轨的概览就**冻结到会话结束**;而它正是过渡帧「盖满整幅」的唯一兜底,
+        // 塌了 = 缩放/平移时露白。超时只做一件事:放掉 inflight 并**保持 dirty**,
+        // 下一拍过了节流门自然重发(与 getTile 的「腾键」同一口径)。
+        const p = withTimeout(
+            Promise.resolve().then(() => request(ch, a, b, n)),
+            timeoutMs,
+        )
             .then((tile) => {
                 if (rec.inflight !== p) return; // 已被更新的一笔取代
                 rec.inflight = null;
+                if (tile === kTimedOut) return; // 超时:dirty 不清,下一拍重发
                 if (!isTileShape(tile)) return;
                 // have 自带几何:want 可能已经被下一笔改掉,画的时候必须用
                 // **这份数据自己的**起止,否则曲长一变就画歪

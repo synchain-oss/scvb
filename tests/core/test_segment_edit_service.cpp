@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "AnalyzeScopeMath.h"
+#include "OutputAuthority.h" // SERVICE-12 第三支:钉住**生产装配点**真的装上了预算
 #include "engine/FreezeBits.h"
 #include "SegmentEditService.h"
 #include "state/SegmentEdit.h"
@@ -384,4 +385,137 @@ TEST_CASE("analyzeScopeRange:对象形 scope 缺省范围 = \"all\" 同款推导
     CHECK(noMaskExplicitRange.startS == 3.0);
     CHECK(noMaskExplicitRange.endS == 9.0);
     CHECK(noMaskExplicitRange.valid());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-209 复审 S1] 撤销栈容量记账:getSizeInUnits 必须随**段数**增长,否则
+// juce::UndoManager 的 30000 units 上限等价于「3 万条事务」—— 而每条事务持有两份整个
+// CrvsData 快照(2 版本 × 15 轨全部段),分析回落一次就可能几万段,封顶一次都不会触发。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-11 撤销事务的 units 随段数增长(封顶才起得了作用)", "[segedit][service][SL209]")
+{
+    const auto unitsFor = [](std::size_t segCount) {
+        CrvsData before;
+        CrvsData after;
+        auto& segs = after.versions[0].tracks[0].segments;
+        for (std::size_t i = 0; i < segCount; ++i)
+        {
+            Segment s;
+            s.t0 = static_cast<std::int64_t>(i) * 100;
+            s.t1 = s.t0 + 100;
+            s.flags = makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+            segs.push_back(s);
+        }
+        CrvsData live = before;
+        juce::UndoManager undo;
+        scvb::output::commitCrvsTransaction(undo, live, "T", [&] { live = after; }, [] {});
+        // 事务已 perform;直接构造一个同样内容的 action 取其 units(commitCrvsTransaction
+        // 内部 new 出来的那个已交给 UndoManager 持有,拿不到指针)。
+        scvb::output::CrvsTransactionAction probe(live, before, after, [] {});
+        return probe.getSizeInUnits();
+    };
+
+    const int small = unitsFor(0);
+    const int mid = unitsFor(100);
+    const int big = unitsFor(10000);
+
+    CHECK(small >= 1); // 空快照也得占 1(0 会让它在容量账上「不存在」)
+    CHECK(mid > small); // ★ 随段数增长 —— 恒 1 的旧写法在这里就红了
+    CHECK(big > mid);
+    // 量级合理:1 万段两份快照应当远超 30000 units 的一个零头,让封顶真的够得着。
+    CHECK(big > 30000);
+    // 口径逐字节:1 万段 × 32B(只在 after 一侧)—— 记错成「近似」会在这里露馅。
+    CHECK(big == static_cast<int>(10000 * sizeof(Segment)));
+}
+
+// ---------------------------------------------------------------------------
+// [#152 复审【重要】①②] 大段数工程下的**撤销深度**。
+//
+// 复审提出的失效路径是「单条超限事务会被丢 / 整个历史被清空 ⇒ 分析撤销静默失效」。逐行核对
+// JUCE 8.0.8 `UndoManager::dropOldTransactionsIfTooLarge` 后:裁剪循环的三个条件是**与**,
+// 且 `transactions.size() > minimumTransactionsToKeep` 优先于 units 上限 —— **单条超限事务
+// 永远不会被丢**,所以「一次分析 = 一条撤销步」不会失效。真正的后果是**深度**:默认参数
+// (30000, 30) 下任何真实工程的单条事务都吃光预算,深度恒 = 30。
+//
+// 本例钉的就是这一条:2000 段的工程连压 64 条事务,64 次撤销必须全成功。
+// ★ 反向验证:把 `configureCrvsUndoBudget(undo)` 那行删掉(= 退回 juce 默认预算),
+//   第 31 次起 undo() 就开始返回 false,本例立刻红。
+// 同时钉住封顶**确实咬合**(不是把预算调大到形同虚设):连压 700 条后深度必须被裁到 700 以下。
+// ---------------------------------------------------------------------------
+TEST_CASE("SERVICE-12 大段数工程(2000 段)撤销深度:预算够用 + 封顶真咬合", "[segedit][service][SL209]")
+{
+    constexpr std::size_t kSegs = 2000; // ≥2000 段:两份快照 = 128,000 units,远超默认 30000
+
+    CrvsData table;
+    {
+        auto& segs = table.versions[0].tracks[0].segments;
+        segs.reserve(kSegs);
+        for (std::size_t i = 0; i < kSegs; ++i)
+        {
+            Segment sg;
+            sg.t0 = static_cast<std::int64_t>(i) * 100;
+            sg.t1 = sg.t0 + 100;
+            sg.flags = makeSegmentFlags(SegmentOrigin::Auto, false);
+            segs.push_back(sg);
+        }
+    }
+
+    // 一条事务的 units:(旧 + 新)× 32B。稳态下新旧同量级,这里旧表已含 kSegs 段。
+    const int perTxn = [&] {
+        scvb::output::CrvsTransactionAction probe(table, table, table, [] {});
+        return probe.getSizeInUnits();
+    }();
+    REQUIRE(perTxn == static_cast<int>(2 * kSegs * sizeof(Segment))); // = 128,000
+    REQUIRE(perTxn > 30000); // 单条就吃光 juce 默认预算 —— 这正是复审说的那个前提
+
+    // 深度 = 预算 / 单条开销(向下取整),这里 ≈ 67,108,864 / 128,000 ≈ 524 步。
+    const int expectedDepth = scvb::output::kCrvsUndoBudgetBytes / perTxn;
+    REQUIRE(expectedDepth > 64); // 推导自洽:64 MiB 在这一档上买得起远超 64 步
+
+    const auto pushN = [&](juce::UndoManager& undo, CrvsData& live, int n) {
+        for (int k = 0; k < n; ++k)
+        {
+            CrvsData next = live;
+            next.versions[0].tracks[0].segments[0].pan = static_cast<float>(k % 100);
+            scvb::output::commitCrvsTransaction(undo, live, "T", [&] { live = next; }, [] {});
+        }
+    };
+    const auto countUndos = [](juce::UndoManager& undo) {
+        int n = 0;
+        while (undo.undo())
+            ++n;
+        return n;
+    };
+
+    SECTION("64 步撤销全成立(默认预算下第 31 步起就撤不动)")
+    {
+        CrvsData live = table;
+        juce::UndoManager undo;
+        scvb::output::configureCrvsUndoBudget(undo); // ★ 删掉这行 = 反向验证,本 SECTION 转红
+        pushN(undo, live, 64);
+        CHECK(countUndos(undo) == 64);
+    }
+
+    SECTION("生产装配点:OutputAuthority 出厂即带预算(不是只有 helper 自己带)")
+    {
+        // ★ 这一支钉的是**接线**:上面两支只证明 configureCrvsUndoBudget 有效,
+        //   若 OutputAuthority 的构造忘了调它,生产侧照样是 juce 默认值。
+        //   反向验证:删掉 OutputAuthority::OutputAuthority() 里那行 → 这里退回 30 → 红。
+        CrvsData live = table;
+        scvb::output::OutputAuthority authority;
+        pushN(authority.undoManager(), live, 64);
+        CHECK(countUndos(authority.undoManager()) == 64);
+    }
+
+    SECTION("封顶咬合:连压 700 条后深度被裁,且不低于硬地板")
+    {
+        CrvsData live = table;
+        juce::UndoManager undo;
+        scvb::output::configureCrvsUndoBudget(undo);
+        pushN(undo, live, 700);
+        const int deep = countUndos(undo);
+        CHECK(deep < 700); // 预算真的裁了 —— 否则就是「调大到形同虚设」
+        CHECK(deep >= scvb::output::kCrvsUndoMinTransactions); // JUCE 的 min 硬地板
+        CHECK(deep >= 64); // 且远高于默认预算给的 30
+    }
 }

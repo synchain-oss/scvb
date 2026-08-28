@@ -116,6 +116,27 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
             `§0.9 左列 reason:"${reason}" ⇒ undo 置亮、redo 清空`,
         );
     }
+    // `analyze` 自 [J89](2026-08-28 批准)起进 §0.9 左列 —— 这一条是红旗的反向验证着力点:
+    // 若 tab-master.js 的 UNDOABLE_REASONS 没同步加 "analyze",reducer 会 return cur
+    // 原样返回 {undo:false,...},这里立刻红。
+    eq(
+        historyAfterSegments(
+            { undo: false, redo: true },
+            { reason: "analyze" },
+        ),
+        { undo: true, redo: true },
+        '§0.9 左列 reason:"analyze"([J89]) ⇒ undo 置亮',
+    );
+    // ★ 但它**不清 redo**:C++ 侧空转分析(零产出)有守卫、不压事务、redo 栈还在,
+    //   而段表事件里没有「压没压步」的证据。清了就是把一个**真实可用**的重做钮灰掉,
+    //   且灰钮点不动、拿不到会救回它的 ok:true 回执 —— 不可自愈(本文件头注判定的「真错」)。
+    //   反向验证:把 historyAfterSegments 里 analyze 那一支删掉(落回 {undo:true,redo:false})
+    //   → 这条立刻红。
+    eq(
+        historyAfterSegments({ undo: true, redo: true }, { reason: "analyze" }),
+        { undo: true, redo: true },
+        'reason:"analyze" 不得清空 redo —— 空转分析不压步,证据不足时宁可留亮(可自愈)',
+    );
     // undo/redo 自己的回推必须排除:否则一次 undo 会把刚长出来的 redo 当场灭掉
     for (const reason of ["undo", "redo"]) {
         eq(
@@ -124,14 +145,8 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
             `reason:"${reason}"(本操作自己的回推)不动两向`,
         );
     }
-    // §0.9 右列 + 首帧:不入栈,不动
-    for (const reason of [
-        "analyze",
-        "vad",
-        "segmentation",
-        "versionActive",
-        "snapshot",
-    ]) {
+    // §0.9 右列 + 首帧:不入栈,不动(`analyze` 已随 [J89] 改判上移到左列组)
+    for (const reason of ["vad", "segmentation", "versionActive", "snapshot"]) {
         eq(
             historyAfterSegments({ undo: false, redo: false }, { reason }),
             { undo: false, redo: false },
@@ -158,6 +173,7 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
         "copyVersion",
         "snapshot",
     ];
+    // 判据用「undo 有没有被置亮」——`analyze` 有意不清 redo(见上),用 redo 分类会漏掉它。
     const pushes = TEN.filter((reason) => {
         const next = historyAfterSegments(
             { undo: false, redo: true },
@@ -165,12 +181,23 @@ log("=== ① 可用性 reducer(契约 §1.25/§1.26 回执驱动)===");
                 reason,
             },
         );
-        return next.undo === true && next.redo === false;
+        return next.undo === true;
     });
     eq(
         pushes,
+        ["analyze", "edit", "trackManual", "copyVersion"],
+        "十值里判为「新事务入栈」的恰是 §0.9 左列在段表面的那四个([J89] 起含 analyze)",
+    );
+    // 这四个里**只有 analyze 不清 redo**:另外三类必然压一条事务,清 redo 是有证据的。
+    const clearsRedo = pushes.filter(
+        (reason) =>
+            historyAfterSegments({ undo: true, redo: true }, { reason })
+                .redo === false,
+    );
+    eq(
+        clearsRedo,
         ["edit", "trackManual", "copyVersion"],
-        "十值里判为「新事务入栈」的恰是 §0.9 左列在段表面的那三个",
+        "四个入栈 reason 里恰有三个清空 redo —— analyze 例外(空转分析可能根本没压步)",
     );
 }
 

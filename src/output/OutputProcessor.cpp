@@ -1749,7 +1749,8 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
 
     // 加载 state 后 CRVS 已整体替换 → 清空 UndoManager,否则 undo() 会恢复加载前的旧 CRVS 快照,
     // 静默丢弃刚加载的段数据(PR#55 第12轮;关闭 #48 tech-debt「fromState 清 undo」的桥面同款)。
-    // 桥的 UndoManager 只含 CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve,
+    // 桥的 UndoManager 只含 CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve/
+    // 分析回落([J89]),
     // 均写 crvsData_),无其它事务类别 → 全清口径安全(在 lifecycleMutex_ 内)。
     authority_.undoManager().clearUndoHistory();
 
@@ -2858,83 +2859,52 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                 }
             }
 
-            auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
+            // ⚠ 合并注(#151 SL-206 × #152 SL-209):vadP 写回**留在 CRVS 事务之外**。
+            // 它写的是 FrameStore(采集特征面),不在 commitCrvsTransaction 的快照口径(CrvsData)里,
+            // 塞进 mutator 只会让 redo 重跑一遍同样的写、undo 又还原不了它。撤销的语义面只有段表。
 
-            for (int t = 0; t < 15; ++t)
+            // [SL-209] 分析结果**可撤销**(用户新需求):把整轮回落包成一次 CRVS 事务压进
+            // 既有 UndoManager —— 与段编辑同栈,Ctrl+Z 恢复分析前的段表、Ctrl+Y 重放分析结果。
+            //
+            // 为什么整表快照就够、不需要「按实际被替换面」另算:`commitCrvsTransaction` 快照的是
+            // **整个 CrvsData**(两版本 × 15 轨),undo 原样还原 —— 那份快照里本来就含着这一轮
+            // 保留下来的用户段与范围外 auto 段。所以「分析不覆盖 user 段」与「分析可撤销」天然共存:
+            // 撤销恢复的是**分析前的那一刻**,不管这一轮实际替换了哪几段。
+            //
+            // 一次分析 = **一条**撤销步:beginNewTransaction 起新事务,整轮合并循环在同一个
+            // mutator 里跑完;局部重分析同理(它改的面更小,快照口径不变)。
+            //
+            // ⚠ 旧注(「§1.6 撤销行逐字『否』,故不走 commitCrvsTransaction」)已被本卡推翻,
+            // 契约 §1.6「撤销」行已随本卡改判为「是」([J89],2026-08-28 用户批准;
+            // 变更文档 20260827-sl209-analyze-undoable.md),代码与契约文字一致。
+            // 旧注提的第二条顾虑(Ctrl+Z 以 reason:"undo" 重发段表、与分析完成的 reason:"analyze"
+            // 打架)不成立:两者本就是两次不同的事件,undo 重发用 "undo" 正是 §2.8 的枚举语义,
+            // UI 的分析态由 analysis_run 驱动,不看段表 reason。
+            //
+            // ⚠ **空转分析不压撤销步**(#152 复审【建议】1)。`applyAnalysisSegments` 的每轨
+            // 循环开头就是 `if (src.empty()) continue;` —— 15 轨全无产出(覆盖区整段静音、
+            // 或范围内一句都没检出)时它是**恒等变换**。若照压不误,用户按一次 Ctrl+Z 段表
+            // 纹丝不动,同时攒着的**重做栈被清空**(新事务入栈必清 redo,juce 语义)——
+            // 一次「什么都没发生」的操作吃掉了真实的重做历史。
+            // 这与本仓既有口径一致:`editSegmentTransactional` 判失败不进 undo(PR#55 缺陷3)、
+            // `setVersionName` 名字未变则短路不产生空事务。恒等变换同属「空事务」那一类。
+            // 走 else 支时行为与改判前逐字同款(照旧重建曲线),差别只有「不压步」这一条。
+            const bool producedAny =
+                std::any_of(result.segments.begin(), result.segments.end(), [](const auto& v) { return !v.empty(); });
+            if (producedAny)
             {
-                const auto& src = result.segments[static_cast<std::size_t>(t)];
-                if (src.empty())
-                {
-                    continue; // 无产出的轨保持原样(不清空既有段)
-                }
-                auto& dst = version.tracks[static_cast<std::size_t>(t)].segments;
-
-                // 保留两类既有段:
-                //   ① 用户段(user_edited / user_created / locked)—— ADR-008「重分析不覆盖」;
-                //   ② **完全落在本次分析范围之外**的 auto 段 —— 局部重分析只对
-                //      (轨道 × 时间区间)失效,绝不能触碰其他区间的已有结果(ADR-008 / §4.4)。
-                // 修复前这里是「本次产出 + 用户段」整表替换,于是「划了循环区 → 点分析」
-                // 会把循环区**之外**先前分析出来的段全部静默抹掉,UI 上毫无提示。
-                // 与范围**相交**的 auto 段(含跨边界者)由本次产出取代 —— 那正是被重分析的区间。
-                std::vector<scvb::state::Segment> kept;
-                for (const auto& sg : dst)
-                {
-                    // clearManual(§1.6 opts「重新识别(含手动段)」)= 连用户段一并重算:
-                    // 用户读了二次确认文案、点了确认,就该真的清掉手动段 —— 此前 opts 整个被丢弃,
-                    // 行为与普通分析逐字节相同,是「按钮亮着、点了没用」。范围外的段仍然保留。
-                    //
-                    // ⚠ `locked` 段**不在 clearManual 的清除面内**:契约 §1.6「`locked=true` 段不受
-                    // 影响,**须先逐段解锁**」、§5.4「`locked` 段免疫」—— clearManual 只放开
-                    // 「origin≠auto」那一层保护,锁是用户显式挂上的第二道闸,只有 `set_locked` 摘得掉。
-                    // 修复前这两个判据被折进同一个 `!clearManual &&` 短路里,于是 clearManual 把
-                    // 锁定段一并抹掉,与冻结契约、与 mock 的 `isProtectedSegment` 三方对不齐
-                    // (#148 复审【重要】③;这是 #87 接 opts 时漏掉的一处,契约文字一字未动)。
-                    const bool isLocked = scvb::state::segmentLocked(sg.flags);
-                    const bool isUser = isLocked || (!clearManual && scvb::state::segmentOrigin(sg.flags) !=
-                                                                         scvb::state::SegmentOrigin::Auto);
-                    const bool outsideRange = sg.t1 <= rangeStartSample || sg.t0 >= rangeEndSample;
-                    if (isUser || outsideRange)
-                    {
-                        kept.push_back(sg);
-                    }
-                }
-
-                std::vector<scvb::state::Segment> next;
-                next.reserve(src.size() + kept.size());
-                for (const auto& as : src)
-                {
-                    scvb::state::Segment seg;
-                    seg.t0 = as.t0Samples;
-                    seg.t1 = as.t1Samples;
-                    seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
-                    seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
-                    seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
-                    // 与保留段重叠则让位(用户段优先;范围外 auto 段本就不该与范围内产出重叠)。
-                    bool clash = false;
-                    for (const auto& k : kept)
-                    {
-                        if (seg.t0 < k.t1 && k.t0 < seg.t1)
-                        {
-                            clash = true;
-                            break;
-                        }
-                    }
-                    if (!clash)
-                    {
-                        next.push_back(seg);
-                    }
-                }
-                next.insert(next.end(), kept.begin(), kept.end());
-                std::sort(next.begin(), next.end(),
-                          [](const scvb::state::Segment& x, const scvb::state::Segment& y) { return x.t0 < y.t0; });
-                dst = std::move(next);
+                scvb::output::commitCrvsTransaction(
+                    authority_.undoManager(), crvsData_, "Analyze",
+                    [&] { applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual); },
+                    [this] { rebuildAllCurves(); });
             }
-
-            // §1.6 撤销行逐字「否(分析产物变更不入撤销栈)」——**不走 commitCrvsTransaction**
-            // (它内部 beginNewTransaction + perform,会把分析产物压进 undo)。直接写 + 重建曲线。
-            // 顺带:入栈还会让 Ctrl+Z 以 reason:"undo" 重发段表,和分析完成的 reason:"analyze"
-            // 打架,UI 的分析态更难对齐。
-            rebuildAllCurves();
+            else
+            {
+                // 恒等,但仍照走一遍:万一将来 applyAnalysisSegments 对空产出不再恒等,
+                // 这一支自动跟上,不会静默丢改动(丢的只会是「本该有的那条撤销步」)。
+                applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual);
+                rebuildAllCurves();
+            }
         }
 
         runtime_.analysisRunning = false;
@@ -2943,4 +2913,83 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
         crvsRevision_.fetch_add(1, std::memory_order_release);
     }
     analysisRunning_.store(false, std::memory_order_release);
+}
+
+// [SL-209] 分析产物合入段表(原 finishAnalysis 的内联循环;抽出来是为了能整个塞进
+// commitCrvsTransaction 的 mutator)。调用方须已持 lifecycleMutex_。
+void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::PipelineResult& result,
+                                                     std::int64_t rangeStartSample, std::int64_t rangeEndSample,
+                                                     bool clearManual)
+{
+    auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
+
+    for (int t = 0; t < 15; ++t)
+    {
+        const auto& src = result.segments[static_cast<std::size_t>(t)];
+        if (src.empty())
+        {
+            continue; // 无产出的轨保持原样(不清空既有段)
+        }
+        auto& dst = version.tracks[static_cast<std::size_t>(t)].segments;
+
+        // 保留两类既有段:
+        //   ① 用户段(user_edited / user_created / locked)—— ADR-008「重分析不覆盖」;
+        //   ② **完全落在本次分析范围之外**的 auto 段 —— 局部重分析只对
+        //      (轨道 × 时间区间)失效,绝不能触碰其他区间的已有结果(ADR-008 / §4.4)。
+        // 修复前这里是「本次产出 + 用户段」整表替换,于是「划了循环区 → 点分析」
+        // 会把循环区**之外**先前分析出来的段全部静默抹掉,UI 上毫无提示。
+        // 与范围**相交**的 auto 段(含跨边界者)由本次产出取代 —— 那正是被重分析的区间。
+        std::vector<scvb::state::Segment> kept;
+        for (const auto& sg : dst)
+        {
+            // clearManual(§1.6 opts「重新识别(含手动段)」)= 连用户段一并重算:
+            // 用户读了二次确认文案、点了确认,就该真的清掉手动段 —— 此前 opts 整个被丢弃,
+            // 行为与普通分析逐字节相同,是「按钮亮着、点了没用」。范围外的段仍然保留。
+            //
+            // ⚠ `locked` 段**不在 clearManual 的清除面内**:契约 §1.6「`locked=true` 段不受
+            // 影响,**须先逐段解锁**」、§5.4「`locked` 段免疫」—— clearManual 只放开
+            // 「origin≠auto」那一层保护,锁是用户显式挂上的第二道闸,只有 `set_locked` 摘得掉。
+            // 修复前这两个判据被折进同一个 `!clearManual &&` 短路里,于是 clearManual 把
+            // 锁定段一并抹掉,与冻结契约、与 mock 的 `isProtectedSegment` 三方对不齐
+            // (#148 复审【重要】③;这是 #87 接 opts 时漏掉的一处,契约文字一字未动)。
+            const bool isLocked = scvb::state::segmentLocked(sg.flags);
+            const bool isUser =
+                isLocked || (!clearManual && scvb::state::segmentOrigin(sg.flags) != scvb::state::SegmentOrigin::Auto);
+            const bool outsideRange = sg.t1 <= rangeStartSample || sg.t0 >= rangeEndSample;
+            if (isUser || outsideRange)
+            {
+                kept.push_back(sg);
+            }
+        }
+
+        std::vector<scvb::state::Segment> next;
+        next.reserve(src.size() + kept.size());
+        for (const auto& as : src)
+        {
+            scvb::state::Segment seg;
+            seg.t0 = as.t0Samples;
+            seg.t1 = as.t1Samples;
+            seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
+            seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
+            seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+            // 与保留段重叠则让位(用户段优先;范围外 auto 段本就不该与范围内产出重叠)。
+            bool clash = false;
+            for (const auto& k : kept)
+            {
+                if (seg.t0 < k.t1 && k.t0 < seg.t1)
+                {
+                    clash = true;
+                    break;
+                }
+            }
+            if (!clash)
+            {
+                next.push_back(seg);
+            }
+        }
+        next.insert(next.end(), kept.begin(), kept.end());
+        std::sort(next.begin(), next.end(),
+                  [](const scvb::state::Segment& x, const scvb::state::Segment& y) { return x.t0 < y.t0; });
+        dst = std::move(next);
+    }
 }

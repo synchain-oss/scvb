@@ -1332,9 +1332,46 @@ struct MonoMultiRig
         return out.coverageOf(1, 0.0, 30.0).coveredS;
     }
 
-    bool runAnalysisToCompletion(double endS, bool clearManual)
+    // [#152 复审【建议】1] 只采**纯静音**:覆盖区有,但一句人声都没有 —— 分析零产出。
+    // 返回 {采集起点秒, 该起点之后的覆盖时长}。
+    //
+    // ⚠ 必须**先在采集关闭下跑够静音**再开采集,冲的是 **Input 的响度状态**,不是环深度:
+    // ADR-007 / IPC_CONTRACT §3「仅采集开关 ON 且播放时写」—— 采集 OFF 期间特征环里**根本
+    // 不会有帧**;但 `InputProcessor.cpp` 那一步的注释同时写明「K 加权与 hop 累加**在播放中恒跑**」,
+    // 于是 `captureArmed_` 翻 true 的那一刻,**K 加权 IIR 与 hop 累加器里还存着 `waitUntilInjected`
+    // 那段 0.25f 正弦的能量** —— 头几个 hop 带残余响度,VAD 真检出一小段。
+    // 「零产出」这个前提于是随时序摇摆(实测:同一份 C++ 换个构建就翻面,4 连过与 4 连红各出现过)。
+    // 240 块 ≈ 2.56 s 静音是给那条 IIR 衰减留的余量(所以这个数冲的是滤波器状态,调它要按衰减想)。
+    struct SilentCapture
     {
-        const auto accepted = out.startAnalysis(0, 0.0, endS, clearManual);
+        double fromS = 0.0; // 开采集那一刻的时间轴位置(绝对秒)
+        double coveredS = 0.0; // 自 fromS 起的覆盖时长
+    };
+    SilentCapture captureSilence()
+    {
+        runBlocks(240, 0.0f); // 采集**关闭**下空跑:把 K 加权 IIR / hop 累加器里的残余能量衰掉
+        pump(400);
+        SilentCapture r{};
+        r.fromS = static_cast<double>(ph.timeSamples) / kSr;
+        out.setCaptureEnabled(true);
+        pump(400);
+        for (int burst = 0; burst < 6; ++burst)
+        {
+            runBlocks(100, 0.0f);
+        }
+        pump(400);
+        // 只问**开采集之后**那一段的覆盖:排空段在采集关闭期跑过,不该算进来。
+        r.coveredS = out.coverageOf(1, r.fromS, r.fromS + 30.0).coveredS;
+        return r;
+    }
+
+    bool runAnalysisToCompletion(double endS, bool clearManual) { return runAnalysisIn(0.0, endS, clearManual); }
+
+    // 显式起点版(#152 复审:captureSilence 的覆盖不再从 0 起,区间得跟着走 ——
+    // 否则排空块数一调大,startAnalysis 会直接拒受,红在这里而错误指不到真原因)。
+    bool runAnalysisIn(double startS, double endS, bool clearManual)
+    {
+        const auto accepted = out.startAnalysis(0, startS, endS, clearManual);
         if (!accepted.ok)
         {
             return false;
@@ -4503,4 +4540,205 @@ TEST_CASE("HOST SL-206:清覆盖后重采,旧绿线不得残留", "[host][t37][v
 
     // ★ 重采之后**没有再分析**:该区间的绿线必须已经作废(而不是照着旧素材继续画)。
     CHECK(voicedCols(0.0, coveredS, 64) == 0);
+}
+
+// ===========================================================================
+// [SL-209] 分析结果可撤销(用户新需求)。
+//
+// 分析回落整轮包成**一次** CRVS 事务压进既有 UndoManager(与段编辑同栈):
+// Ctrl+Z 恢复分析前的段表,Ctrl+Y 重放分析结果。
+//
+// 「与『分析不覆盖 user 段』共存」这条是自动成立的:事务快照的是**整个 CrvsData**,
+// undo 还原的是「分析前的那一刻」—— 那一刻本来就含着这一轮会被保留的用户段与范围外
+// auto 段,不需要另算「实际被替换面」。下面第二例就是拿一条用户段把这一点钉死。
+//
+// 契约 §1.6「撤销」行已随本卡改判为「是」([J89],2026-08-28 用户批准),§0.9 撤销表左列
+// 亦已登记 analyze;变更文档 20260827-sl209-analyze-undoable.md 与改动同 PR(§5)。
+// ===========================================================================
+TEST_CASE("HOST SL-209:分析可撤销 —— 撤销回分析前,重做回分析结果", "[host][t37][v55][SL209]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    constexpr int kCh = 1;
+    const auto beforeAnalyze = segmentsOfTrack(r.out, kCh); // 分析前(通常是空表)
+
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    const auto afterAnalyze = segmentsOfTrack(r.out, kCh);
+    REQUIRE_FALSE(afterAnalyze.empty()); // 前置:确实分析出东西了
+    REQUIRE_FALSE(sameSegments(afterAnalyze, beforeAnalyze));
+
+    // ★ 撤销:回到分析前的段表(一次分析 = 一条撤销步)。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeAnalyze));
+    // 曲线也跟着回退(撤销走的是 commitCrvsTransaction 的 rebuild 回调)。
+    // 分析前是空表 → 曲线指针应为空;非空表则应有曲线。
+    CHECK((activeCurveOf(r.out, kCh) != nullptr) == !beforeAnalyze.empty());
+
+    // ★ 重做:重放分析结果(逐字节相同)。
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), afterAnalyze));
+    CHECK(activeCurveOf(r.out, kCh) != nullptr);
+
+    // 一次分析只压**一条**步:再撤一次应当又回到分析前,而不是停在中间态。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeAnalyze));
+}
+
+TEST_CASE("HOST SL-209:撤销与「分析不覆盖 user 段」共存", "[host][t37][v55][SL209]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    constexpr int kCh = 2;
+    // 先造一条用户段(未冻结 → 手动接管通道写曲线真身,origin=user_edited)。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, -55.0f, replaced, replacedLocked));
+    const auto withUserSeg = segmentsOfTrack(r.out, kCh);
+    REQUIRE(withUserSeg.size() == 1);
+    REQUIRE(scvb::state::segmentOrigin(withUserSeg.front().flags) == scvb::state::SegmentOrigin::UserEdited);
+
+    // 普通分析(不带 clearManual):ADR-008 —— 用户段必须原样保留。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    {
+        bool stillHasUser = false;
+        for (const auto& sg : segmentsOfTrack(r.out, kCh))
+        {
+            if (scvb::state::segmentOrigin(sg.flags) == scvb::state::SegmentOrigin::UserEdited)
+            {
+                stillHasUser = true;
+            }
+        }
+        CHECK(stillHasUser); // 前置:共存语义本身没坏
+    }
+    const auto afterAnalyze = segmentsOfTrack(r.out, kCh);
+
+    // ★ 撤销:回到**分析前那一刻** —— 那一刻的表里就有这条用户段,所以它当然还在。
+    //    这正是「整表快照」口径的好处:不需要另算「这一轮实际替换了哪几段」。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), withUserSeg));
+
+    // ★ 重做:回到分析结果(用户段仍在其中)。
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), afterAnalyze));
+}
+
+TEST_CASE("HOST SL-209:局部(选区)分析同样可撤销,且不碰范围外的段", "[host][t37][v55][SL209]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 10; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 4.0);
+
+    const auto runAnalysis = [&r](double a, double b) {
+        REQUIRE(r.out.startAnalysis(0, a, b).ok);
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return;
+            }
+        }
+        FAIL("analysis did not finish");
+    };
+
+    runAnalysis(0.0, coveredS); // 打底:全范围
+    const auto base = segmentsOfTrack(r.out, kTestChannel);
+    REQUIRE_FALSE(base.empty());
+
+    runAnalysis(coveredS * 0.5, coveredS); // 只重分析后半段
+    const auto afterPartial = segmentsOfTrack(r.out, kTestChannel);
+
+    // ★ 撤销局部分析:整表回到打底那一轮的样子(范围外的段本来就没动,撤销后当然一致)。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), base));
+    REQUIRE(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kTestChannel), afterPartial));
+}
+
+// ---------------------------------------------------------------------------
+// [#152 复审【建议】1] **空转分析不得压撤销步、不得清空重做栈**。
+//
+// `applyAnalysisSegments` 的每轨循环开头是 `if (src.empty()) continue;` —— 15 轨全无产出时
+// 它是恒等变换。照压不误的后果:用户按一次 Ctrl+Z 段表纹丝不动,而 juce 的「新事务入栈必清
+// redo 栈」语义已经把攒着的重做历史吃掉了 —— 一次什么都没发生的操作毁掉真实的重做面。
+// 与本仓既有口径一致:editSegmentTransactional 判失败不进 undo(PR#55 缺陷3)、
+// setVersionName 名字未变则短路不产生空事务。
+//
+// ★ 反向验证:把 finishAnalysis 里的 `if (producedAny)` 守卫去掉(无条件 commit),
+//   下面「redo 仍可用」与「undo 弹回的是编辑前」两条立刻红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-209:空转分析(零产出)不压撤销步、不吃掉重做栈", "[host][t37][v55][SL209]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    constexpr int kCh = 1;
+
+    // ① 先做一笔**真实**的 CRVS 变更(setTrackManual 走 commitCrvsTransaction,§0.9 左列),
+    //    攒出一条货真价实的撤销步。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, 25.0f, replaced, replacedLocked));
+    const auto afterEdit = segmentsOfTrack(r.out, kCh);
+    REQUIRE_FALSE(afterEdit.empty());
+
+    // ② 撤销再重做一次 —— 现在重做栈是空的、撤销栈有一条,状态回到 afterEdit。
+    REQUIRE(r.out.undo());
+    const auto beforeEdit = segmentsOfTrack(r.out, kCh);
+    REQUIRE(r.out.redo());
+    REQUIRE(sameSegments(segmentsOfTrack(r.out, kCh), afterEdit));
+
+    // ③ 再撤一次,把这条步挪到**重做**侧 —— 这就是空转分析将要吃掉的那份历史。
+    REQUIRE(r.out.undo());
+    REQUIRE(sameSegments(segmentsOfTrack(r.out, kCh), beforeEdit));
+
+    // ④ 采一段纯静音后分析:覆盖区有(分析受理),但一句都检不出 ⇒ 零产出。
+    const auto silent = r.captureSilence();
+    REQUIRE(silent.coveredS > 0.0);
+    REQUIRE(r.runAnalysisIn(silent.fromS, silent.fromS + silent.coveredS, /*clearManual=*/false));
+    // 前置:确实零产出。判据要盖**全 15 轨 × 两版本** —— `producedAny` 看的是整份 result,
+    // 只查一轨会让「别的轨检出了一段」偷偷把前提蒙混过去(那时事务照压,本例断言的就不是守卫了)。
+    {
+        const auto snap = r.out.crvsSnapshot();
+        std::size_t total = 0;
+        for (const auto& v : snap.versions)
+        {
+            for (const auto& t : v.tracks)
+            {
+                total += t.segments.size();
+            }
+        }
+        REQUIRE(total == 0);
+    }
+
+    // ★ 重做栈没被吃掉:那条段编辑仍重做得回来。
+    CHECK(r.out.redo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), afterEdit));
+
+    // ★ 也没多压一条空步:一次 undo 就该弹回编辑前,而不是先弹掉一条恒等步。
+    CHECK(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeEdit));
 }

@@ -41,6 +41,12 @@ public:
     static_assert(kNumVersions == scvb::params::kNumVersions, "engine/params 版本数漂移");
     static_assert(kNumTracks == scvb::params::kNumTracks, "engine/params 轨数漂移");
 
+    // [#152 复审【重要】①②] 构造时给 m_undoManager 装上 CRVS 撤销预算(见 SegmentEditService.h 的
+    // `configureCrvsUndoBudget` / `kCrvsUndoBudgetBytes`)。不能吃 juce::UndoManager 的默认
+    // (30000 units, 30 步):`CrvsTransactionAction::getSizeInUnits()` 按字节记账后,真实工程的
+    // **单条**事务就吃光默认预算 —— 深度塌到 30 步,而内存反倒没被按字节封住。
+    OutputAuthority();
+
     void prepare(double sampleRate, const scvb::params::ParamHandles& handles);
 
     // ---- 版本切换(消息线程)----

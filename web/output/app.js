@@ -1644,7 +1644,8 @@ if (bridge) {
     });
 
     bridge.on("scvb.segments", (seg) => {
-        // [D1] 新事务入栈的第二手证据(reason ∈ edit/trackManual/copyVersion)。
+        // [D1] 新事务入栈的第二手证据(reason ∈ tab-master.js 的 UNDOABLE_REASONS ——
+        // edit/trackManual/copyVersion,[J89] 起加 analyze;那张白名单是唯一真源,别在这里另抄一份)。
         // **必须排在下面的版本闸之前**:撤销栈挂在处理器上、是整个工程一条(03 §5.3),
         // 不分版本;而 `copyVersion` 的段表事件带的正是**目标**版本号,拿去和
         // `version_active` 比必然不等 —— 放在闸后就等于「复制到非激活版本」这一类

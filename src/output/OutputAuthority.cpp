@@ -3,6 +3,8 @@
 
 #include <functional>
 
+#include "SegmentEditService.h" // configureCrvsUndoBudget:CRVS 撤销预算的唯一真源
+
 namespace
 {
 
@@ -95,6 +97,20 @@ void OutputAuthority::setVersionActive(int version)
     m_versions.setVersionActive(version); // 越界钳制 + warning 计数(不静默取模)
     if (m_prepared && m_versions.versionActive() != before)
         rebindSources(); // 版本号未变则不重发快照(避免虚假 versionChanged)
+}
+
+OutputAuthority::OutputAuthority()
+{
+    // 撤销预算的**唯一**装配点。
+    //
+    // 本文件匿名 namespace 里的 `CopyVersionAction` / `RenameVersionAction` 的 getSizeInUnits
+    // 恒回 1,在这套字节口径下等于「几乎不占预算」—— 对**这两个 action** 是正确的:它们持有的
+    // 是 shared_ptr 浅拷贝与一个字符串,与整表 CRVS 快照不在一个量级。
+    // ⚠ 别据此以为「版本改名/复制对撤销预算免费」:**生产路径**上的
+    // `ScvbOutputAudioProcessor::setVersionName` / `copyVersion` 走的是 `commitCrvsTransaction`
+    // → `CrvsTransactionAction`,同样**按整表段数记全字节**。这里说的只是 authority 自带的
+    // 曲线层 action(#152 第三轮复审【建议】3)。
+    scvb::output::configureCrvsUndoBudget(m_undoManager);
 }
 
 int OutputAuthority::versionActive() const
