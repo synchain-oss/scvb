@@ -221,9 +221,12 @@ export function applySegmentsEvent(prev, next) {
 // §1.1 首帧快照与 §2.1 `scvb.state` 的字段全集里**都没有** canUndo/canRedo 之类的
 // 可用性信号。既然不发明新桥面(零契约变更),可用性只能由两手证据推出:
 //   ① **回执**:点下去拿到 `{ok:false}` —— 这是「该向栈空」的第一手、也是唯一权威证据;
-//   ② **新事务入栈**:§0.9 左列四类入栈操作里,当前 web 侧真正发得出的三类
-//      (`editSegment` / `setTrackManual` / `copyVersion`)都经 §2.8 段表事件带
-//      `reason` 回推,见其 reason 即知撤销栈刚长了一条。
+//   ② **新事务入栈**:§0.9 左列**六类**入栈操作里,当前 web 侧真正发得出段表事件的**四类**
+//      (`editSegment` / `setTrackManual` / `copyVersion` / `analyze`([J89] 起))都经
+//      §2.8 段表事件带 `reason` 回推,见其 reason 即知撤销栈刚长了一条。
+//      (左列六类 = 上述四类 + `setPanCurve` + `setVersionName`,后两类的缺口见下。
+//       ⚠ `docs/SCVB_CONTRACT.md` §1.25/§1.26 那句「覆盖左列的四类操作」自 [J82] 起就已过期,
+//       属冻结契约文字、须走 §5 批准流程另开卡订正 —— 本卡不动它,登记在此。)
 //
 // **已知缺口(两条,都会让 undo 钮在真实可撤销的操作后误灰)**:
 //   • 第四类入栈操作 `setPanCurve` 眼下 web 侧无调用点(曲线窗只读,
@@ -287,7 +290,8 @@ export function historyAfterCall(prev, kind, ok) {
  * redo 置灰。`reason:"undo"`/`"redo"` 是本 reducer 自己动作的回推,必须排除在外
  * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(vad/
  * segmentation/versionActive/snapshot)按 §0.9 右列不入栈,不动两向。
- * `analyze` 自 [J89] 起改判进左列(见 `UNDOABLE_REASONS`),与 `edit` 同支处理。
+ * `analyze` 自 [J89] 起改判进左列(见 `UNDOABLE_REASONS`),但**只置亮 undo、不清 redo** ——
+ * 理由见函数体内注(空转分析不压步,段表事件里没有「压没压步」的证据)。
  *
  * @param {{undo:boolean,redo:boolean}|null|undefined} prev
  * @param {object|null} seg `scvb.segments` 载荷
@@ -295,6 +299,18 @@ export function historyAfterCall(prev, kind, ok) {
 export function historyAfterSegments(prev, seg) {
     const cur = prev || HISTORY_AVAIL_INIT;
     if (!seg || !UNDOABLE_REASONS.has(seg.reason)) return cur;
+    // ⚠ `analyze` **只置亮 undo,不碰 redo**(#152 第三轮复审【重要】)。
+    //
+    // 其余三类必然压一条事务 ⇒ redo 栈必然被清,置灰是**有证据**的。`analyze` 不然:
+    // C++ 侧对**空转分析**(15 轨零产出)有守卫,不压事务、不清 redo 栈,但 `analysisDone_`
+    // 照样置位、段表事件照样以 `reason:"analyze"` 发出 —— 段表事件里**没有**「这一轮到底压没压步」
+    // 的证据。于是若照着清 redo:空转分析后 redo 栈明明还在,钮却灰了,而**灰掉的钮点不动**,
+    // 拿不到那次会救回它的 `ok:true` 回执 —— **不可自愈**。
+    //
+    // 按本文件头注那条原则办(「置灰会挡住真实可用的动作(真错),常亮的代价只是白点一下、
+    // 回执把它置灰(可自愈)」):证据不足时留亮。代价是产出型分析后 redo 钮会多亮一会儿,
+    // 点一下拿 `ok:false` 就自愈 —— 拿可自愈的假亮,换掉不可自愈的假灰。
+    if (seg.reason === "analyze") return { ...cur, undo: true };
     return { undo: true, redo: false };
 }
 

@@ -1332,9 +1332,17 @@ struct MonoMultiRig
         return out.coverageOf(1, 0.0, 30.0).coveredS;
     }
 
-    // [#152 复审【建议】1] 只采**纯静音**:覆盖区有,但一句人声都没有 —— 分析必然零产出。
+    // [#152 复审【建议】1] 只采**纯静音**:覆盖区有,但一句人声都没有 —— 分析零产出。
+    //
+    // ⚠ 必须**先在采集关闭下跑一段静音把环排空**再开采集:`waitUntilInjected` 往环里灌的是
+    // 0.25f 正弦,开采集那一瞬间环里的残留响帧会被排进 FrameStore,分析就真检出一段来 ——
+    // 「零产出」这个前提于是随时序摇摆(实测:同一份 C++ 换个构建就翻面,4 连过与 4 连红各出现过)。
+    // 排空这一步把它钉成确定的。
     double captureSilence()
     {
+        runBlocks(240, 0.0f); // 采集**关闭**下排空:环里 waitUntilInjected 的残响不进 FrameStore
+        pump(400);
+        const std::int64_t silenceStart = ph.timeSamples;
         out.setCaptureEnabled(true);
         pump(400);
         for (int burst = 0; burst < 6; ++burst)
@@ -1342,7 +1350,9 @@ struct MonoMultiRig
             runBlocks(100, 0.0f);
         }
         pump(400);
-        return out.coverageOf(1, 0.0, 30.0).coveredS;
+        // 只问**开采集之后**那一段的覆盖:排空段在采集关闭期跑过,不该算进来。
+        const double fromS = static_cast<double>(silenceStart) / kSr;
+        return out.coverageOf(1, fromS, fromS + 30.0).coveredS;
     }
 
     bool runAnalysisToCompletion(double endS, bool clearManual)
@@ -4695,7 +4705,20 @@ TEST_CASE("HOST SL-209:空转分析(零产出)不压撤销步、不吃掉重做�
     const double coveredS = r.captureSilence();
     REQUIRE(coveredS > 0.0);
     REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
-    REQUIRE(segmentsOfTrack(r.out, kCh).empty()); // 前置:确实零产出(段表仍是撤销后的空表)
+    // 前置:确实零产出。判据要盖**全 15 轨 × 两版本** —— `producedAny` 看的是整份 result,
+    // 只查一轨会让「别的轨检出了一段」偷偷把前提蒙混过去(那时事务照压,本例断言的就不是守卫了)。
+    {
+        const auto snap = r.out.crvsSnapshot();
+        std::size_t total = 0;
+        for (const auto& v : snap.versions)
+        {
+            for (const auto& t : v.tracks)
+            {
+                total += t.segments.size();
+            }
+        }
+        REQUIRE(total == 0);
+    }
 
     // ★ 重做栈没被吃掉:那条段编辑仍重做得回来。
     CHECK(r.out.redo());

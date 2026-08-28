@@ -101,9 +101,15 @@ void OutputAuthority::setVersionActive(int version)
 
 OutputAuthority::OutputAuthority()
 {
-    // 撤销预算的**唯一**装配点。CopyVersion/RenameVersion 这两条动作 getSizeInUnits 恒回 1,
-    // 在这套字节口径下等于「几乎不占预算」—— 正确:它们持有的是 shared_ptr 浅拷贝与一个字符串,
-    // 与整表 CRVS 快照不在一个量级。
+    // 撤销预算的**唯一**装配点。
+    //
+    // 本文件匿名 namespace 里的 `CopyVersionAction` / `RenameVersionAction` 的 getSizeInUnits
+    // 恒回 1,在这套字节口径下等于「几乎不占预算」—— 对**这两个 action** 是正确的:它们持有的
+    // 是 shared_ptr 浅拷贝与一个字符串,与整表 CRVS 快照不在一个量级。
+    // ⚠ 别据此以为「版本改名/复制对撤销预算免费」:**生产路径**上的
+    // `ScvbOutputAudioProcessor::setVersionName` / `copyVersion` 走的是 `commitCrvsTransaction`
+    // → `CrvsTransactionAction`,同样**按整表段数记全字节**。这里说的只是 authority 自带的
+    // 曲线层 action(#152 第三轮复审【建议】3)。
     scvb::output::configureCrvsUndoBudget(m_undoManager);
 }
 
