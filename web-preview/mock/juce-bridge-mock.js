@@ -1252,7 +1252,14 @@ function buildOutputBackend(ctx) {
             proto.t0S = 0;
             proto.t1S = model.durationS;
             proto.origin = "user_edited";
-            proto.locked = true;
+            // [SL-230] **locked = false,与真桥一致**。真桥的
+            // `scvb::output::makeManualConstantSegment`(src/output/SegmentEditService.h)
+            // 写的是 `makeSegmentFlags(SegmentOrigin::UserEdited, false)` —— 手动接管产生的
+            // 常值段**不上锁**。mock 这里原先写 true,后果不是「多锁一下」那么轻:
+            // `clearManual` 按契约对 locked 段免疫(§1.6「须先逐段解锁」),于是在 web-preview 里
+            // 「恢复自动 / 重新识别轨 {n}」对**它自己刚造出来的**手动常值完全无效 ——
+            // 点了没反应,而真机上是有效的。又一处 mock 说谎、真机没病的对不齐。
+            proto.locked = false;
             if (panOrVol === "pan") proto.pan = applied;
             else proto.volDb = applied;
             model.segByCh.set(ch, { ch, segments: [proto], stale: false });

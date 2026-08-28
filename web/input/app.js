@@ -17,6 +17,7 @@ import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
 import { createInputTour, shouldShowInputGuide } from "./tour-in.js";
 import { sourceKind } from "../shared/source-kind.js";
 import { disableNativeContextMenu } from "../shared/context-menu.js";
+import { suppressBareAltMenu } from "../shared/alt-menu.js";
 
 // ------------------------------------------------------------- 单一真源常量
 // 契约 §0.2:g = 1..8,UI 显示 A-H;ch = 1..15(J59)。
@@ -981,6 +982,10 @@ refreshI18n();
 // [SL-207] 原生右键菜单抑制**挂在 try 之外**:首帧链路炸掉时露出来的是兜底面板,
 // 那上面右键冒出「查看网页源代码」比正常界面更穿帮。它不依赖桥、不会抛,先挂上。
 disableNativeContextMenu(document);
+// [SL-227] 裸 Alt 会激活 Windows 的菜单模式、把焦点从 WebView 内容上挪走 ——
+// 而 Alt+滚轮的手势天然以裸 Alt 的 keyup 收尾,于是「Alt 用过之后 Ctrl 横缩放
+// 概率失效」。同样挂在 try 之外:它不依赖桥、不会抛。
+suppressBareAltMenu(document);
 
 (async function boot() {
     try {

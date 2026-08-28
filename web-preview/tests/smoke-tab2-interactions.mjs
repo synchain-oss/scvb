@@ -1643,5 +1643,149 @@ log(
 }
 
 // =============================================================================
+log(
+    "=== ⑫ R4:SL-229 切版本读回命名空间 / SL-230 轨道页「恢复自动」持久入口 ===",
+);
+{
+    const tw = src("web/output/tab-tracks.js");
+    const P = (v, ch, d) => TT.paramIdOf(v, ch, d);
+
+    // ---- SL-229:切版本的那一帧不许闪出厂默认 ----------------------------
+    // 病:state.global.version_active 与 scvb.params 是两个事件。state 一说「现在是
+    // V2」,读回值立刻改查 v2_* 的 id —— 可 params 手上还是上一版那 63 个(§2.2:
+    // 切版本由 C++ 全量重发),查空 ⇒ num(undefined, def) 回落**居中**,15 轨齐刷刷
+    // 跳到中间;下一帧全量到达才跳回真值。
+    {
+        const R = TT.readbackVersion;
+        const v1 = { [P(1, 1, "pan")]: -70 };
+        const v2 = { [P(2, 1, "pan")]: 33 };
+        eq(
+            R(v1, 2, 1),
+            1,
+            "(a1)params 还没带 V2 的 id ⇒ 仍读 V1(= 切出时那一版)",
+        );
+        eq(R(v2, 2, 1), 2, "(a2)params 带上 V2 的 id ⇒ 原子翻到 V2");
+        eq(R(v1, 1, 1), 1, "(a3)没切版本时照旧");
+        eq(R({}, 0, 3), 3, "(a4)state 没给版本 ⇒ 用 params 那一版");
+        eq(R({}, 0, 0), 1, "(a5)两边都没给 ⇒ 回落 1(不炸)");
+        eq(R(null, 2, 0), 2, "(a6)vals 缺失 ⇒ 用 state 那一版(没有更好的信息)");
+    }
+    // 端到端:切版本那一帧读到的是**源版本的值**,不是居中
+    {
+        const st = (active) => ({
+            state: {
+                channels: [{ ch: 1 }],
+                global: { version_active: active, output_enabled: false },
+            },
+            params: {
+                values: { [P(1, 1, "pan")]: -70, [P(1, 1, "freeze")]: 0 },
+                versionActive: 1,
+            },
+            segments: { channels: [{ ch: 1, segments: [] }] },
+            playhead: { timeS: 0 },
+        });
+        eq(TT.rowFromStore(st(1), 1).pan, -70, "(b1)切换前");
+        eq(
+            TT.rowFromStore(st(2), 1).pan,
+            -70,
+            "(b2)切换那一帧仍是 −70(不闪居中 0)—— 这就是 SL-229 的验收",
+        );
+    }
+
+    // ---- SL-230:轨道页「恢复自动」持久入口 --------------------------------
+    // 定谳:单轨 clearManual 此前**唯一**的入口是解冻那一下的临时提示条,
+    // 只在 freeze 位 1→0 时挂起、点「知道了」就永久消失 —— 用户因此找不到。
+    {
+        check(
+            /data-gb="\$\{gb\("restore-auto-row"\)\}"/.test(tw),
+            "(c1)行内有持久入口",
+        );
+        // 与解冻提示条**互斥**:那条自带同一个入口,两个一起出是重复
+        check(
+            /const restore = !c && !hint && !!row\.manualConst;/.test(tw),
+            "(c2)显示条件 = 有手动常值 且 没在弹确认 且 解冻提示条没出",
+        );
+        // 三枚钮不受整行 disabled 约束(它们是撤下确认的出口),写面守卫在 doReidentify
+        check(
+            /if \(part === "restore-auto"\) \{/.test(tw) &&
+                /if \(part === "restore-auto-ok"\) \{/.test(tw),
+            "(c3)三枚钮已接线",
+        );
+        check(
+            /doReidentify\(ch\); \/\/ 与解冻提示条逐字同一条路/.test(tw),
+            "(c4)走既有 analyze(tracksMask,{clearManual:true}),不另造一条路",
+        );
+        // 锁定的手动常值:clearManual 碰不了(§1.6 locked 免疫)⇒ 只说不做,
+        // 否则又是一个「点了没反应」——正是 SL-230 本身的病根
+        check(
+            /if \(restore && row\.manualConstLocked\) \{/.test(tw),
+            "(c5)锁定档单列:给说明而不是给一枚点了没反应的钮",
+        );
+        // rowFromStore 要把 locked 位带出来,否则上一条判据永远为假
+        {
+            const seg = (locked) => ({
+                channels: [
+                    {
+                        ch: 1,
+                        segments: [
+                            {
+                                t0S: 0,
+                                t1S: 99,
+                                pan: 5,
+                                origin: "user_edited",
+                                locked,
+                            },
+                        ],
+                    },
+                ],
+            });
+            const mk = (locked) => ({
+                state: {
+                    channels: [{ ch: 1 }],
+                    global: { version_active: 1, output_enabled: false },
+                },
+                params: {
+                    values: { [P(1, 1, "pan")]: 0, [P(1, 1, "freeze")]: 0 },
+                    versionActive: 1,
+                },
+                segments: seg(locked),
+                playhead: { timeS: 0 },
+            });
+            eq(
+                TT.rowFromStore(mk(false), 1).manualConst,
+                1,
+                "(c6)手动常值判位",
+            );
+            eq(
+                TT.rowFromStore(mk(false), 1).manualConstLocked,
+                0,
+                "(c7)未锁 ⇒ manualConstLocked=0(可恢复)",
+            );
+            eq(
+                TT.rowFromStore(mk(true), 1).manualConstLocked,
+                1,
+                "(c8)已锁 ⇒ manualConstLocked=1(只说不做)",
+            );
+        }
+    }
+
+    // ---- SL-230 mock 对拍:手动常值**不上锁**,与真桥一致 -------------------
+    // 真桥 makeManualConstantSegment 写的是 makeSegmentFlags(UserEdited, **false**);
+    // mock 原先写 locked=true,于是 clearManual(对 locked 免疫)在 web-preview 里对
+    // 它自己造出来的手动常值完全无效 —— 点了没反应,而真机上是有效的。
+    {
+        const mock = src("web-preview/mock/juce-bridge-mock.js");
+        const svc = src("src/output/SegmentEditService.h");
+        check(/proto\.locked = false;/.test(mock), "(d1)mock 的手动常值不上锁");
+        check(
+            /makeSegmentFlags\(scvb::state::SegmentOrigin::UserEdited, false\)/.test(
+                svc,
+            ),
+            "(d2)真桥同款(本条一红说明两侧又分叉了)",
+        );
+    }
+}
+
+// =============================================================================
 log(fail === 0 ? "\n全部通过 ✅" : `\n失败 ${fail} 条 ❌`);
 process.exit(fail === 0 ? 0 : 1);

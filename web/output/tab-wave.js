@@ -994,9 +994,10 @@ export function createTabWave(opts) {
         inspectorOpen: true,
         reidentifyCounts: null, // {k,l}:重新识别确认框正文的定格计数(切语言补填用)
         boundDrag: null, // {ch, segIdx, tS, snapped, minS, maxS}
+        inspRestoreAsk: false, // [SL-230] 检查器「恢复自动」是否已展开确认
         boundCommitAt: 0, // 上次**真发** move_boundary 的时刻(双击合并的让路判据)
         sliderDrag: null, // 正在拖的滑杆(els.sliders 元素)
-        autostopUser: false, // 「播放结束自动停止」是用户手勾的(撤防不复位它)
+        autostopUser: false, // 「区域外自动停止」是用户手勾的(撤防不复位它)
         sliderKeyTimer: 0, // 键盘档「视为松手」计时
         lastParamSend: 0, // ≤50Hz 节流账(Date.now 系)
         paramTimer: 0, // 节流尾包计时器
@@ -1946,6 +1947,12 @@ export function createTabWave(opts) {
         els.inspVolSlider = $("inspector-vol-slider");
         els.inspVolInput = $("inspector-vol-input");
         els.inspLock = $("inspector-locked-toggle");
+        // [SL-230] 检查器里的「恢复自动」入口(四件:行 / 说明 / 触发钮 / 取消 + 继续)
+        els.inspRestore = $("inspector-restore");
+        els.inspRestoreText = $("inspector-restore-text");
+        els.inspRestoreBtn = $("inspector-restore-btn");
+        els.inspRestoreCancel = $("inspector-restore-cancel");
+        els.inspRestoreOk = $("inspector-restore-ok");
 
         // 15 泳道生成(afterbegin:让静态占位的 overlay/selband/playhead 留在
         // 后面的 DOM 序,绝对定位层叠在泳道之上)
@@ -3132,6 +3139,38 @@ export function createTabWave(opts) {
                 });
             };
             els.inspLock.addEventListener("click", flip);
+            // [SL-230]「恢复自动」三枚钮:两态就地切换,确认后走轨级 clearManual。
+            const askRestore = (on) => {
+                local.inspRestoreAsk = on;
+                requestRender();
+            };
+            if (els.inspRestoreBtn) {
+                els.inspRestoreBtn.addEventListener("click", () =>
+                    askRestore(true),
+                );
+            }
+            if (els.inspRestoreCancel) {
+                els.inspRestoreCancel.addEventListener("click", () =>
+                    askRestore(false),
+                );
+            }
+            if (els.inspRestoreOk) {
+                els.inspRestoreOk.addEventListener("click", async () => {
+                    const cur = currentSeg();
+                    local.inspRestoreAsk = false;
+                    if (!cur || isWriteBlocked() || isLaneDead(cur.ch)) {
+                        return requestRender();
+                    }
+                    // 与轨道页那份逐字同一条路:§1.6 的轨级 clearManual;
+                    // locked 段按契约免疫(确认句里已经说了)。
+                    await call(
+                        "analyze",
+                        { tracksMask: 1 << (cur.ch - 1) },
+                        { clearManual: true },
+                    );
+                    requestRender();
+                });
+            }
             els.inspLock.addEventListener("keydown", (e) => {
                 if (e.key === " " || e.key === "Enter") {
                     e.preventDefault();
@@ -3850,6 +3889,9 @@ export function createTabWave(opts) {
             // 以编辑」同框。触发路径不止 Escape:§2.8 段表重编号后 rebindSegKeys
             // 失效 → selectedCh=0,走的也是这条早退。
             show(els.inspOrigin, false);
+            // [SL-230] 空态同样要收起「恢复自动」——与上面 origin 角标同一个理由:
+            // 面板改常驻之后它是可见的,不收就挂着上一个段的入口。
+            renderInspectorRestore(0, null, false);
             return;
         }
         const seg = cur.seg;
@@ -3910,6 +3952,47 @@ export function createTabWave(opts) {
             attr(els.inspLock, "aria-checked", seg.locked ? "true" : "false");
             attr(els.inspLock, "aria-disabled", editable ? "false" : "true");
         }
+        // [SL-230]「恢复自动」:选中的这一段是手动来的(origin≠auto)才出 ——
+        // auto 段本来就在自动态,给它一个「恢复自动」是废钮。
+        // 作用面是**整轨**(§1.6 的 clearManual 就是轨级),确认句里说清楚。
+        renderInspectorRestore(cur.ch, seg, editable);
+    }
+
+    /** 检查器「恢复自动」两态(SL-230;与轨道页那份同一手势、同一确认句)。 */
+    function renderInspectorRestore(ch, seg, editable) {
+        if (!els.inspRestore) return;
+        const t = getT();
+        const manual = !!seg && seg.origin && seg.origin !== "auto";
+        const on = manual && editable;
+        show(els.inspRestore, on);
+        if (!on) {
+            local.inspRestoreAsk = false;
+            return;
+        }
+        // **锁定段:只说不做**。契约 §1.6 的 clearManual 对 locked 段免疫(「须先逐段
+        // 解锁」),而 split / move_boundary / set_values 的后置(§5.4)恰恰会把命中段
+        // 置成 origin=user_edited **且 locked=true** —— 也就是说用户最常遇到的手动段
+        // 正是锁着的。给它一枚点了什么都不会发生的钮,就是又造一个「点了没反应」。
+        // 解锁开关就在本行正上方,把话说清就够了。
+        if (seg.locked) {
+            local.inspRestoreAsk = false;
+            text(els.inspRestoreText, t["tracks.restoreAutoLocked"] || "");
+            show(els.inspRestoreBtn, false);
+            show(els.inspRestoreCancel, false);
+            show(els.inspRestoreOk, false);
+            return;
+        }
+        const asking = !!local.inspRestoreAsk;
+        text(
+            els.inspRestoreText,
+            asking
+                ? fmtKey("tracks.reidentifyConfirm", { n: tt(ch) })
+                : t["tracks.restoreAutoHint"] || "",
+        );
+        show(els.inspRestoreBtn, !asking);
+        show(els.inspRestoreCancel, asking);
+        show(els.inspRestoreOk, asking);
+        if (!asking) text(els.inspRestoreBtn, t["tracks.restoreAuto"] || "");
     }
 
     /**
