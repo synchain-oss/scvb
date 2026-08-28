@@ -169,7 +169,7 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
      复审补的一条独立佐证:`OutputProcessor.cpp:1284-1287` 的代码注释**自己写明**该 10s 周期刷新
      「全仓尚未实现(T40 遗留,已单独落卡)」—— 即这是**已跟踪的实现缺口**,不是本次才发现的漂移。
      开卡后请把 issue 号回填到本条(PR #153 复审建议)。
-     **回填(2026-08-28):裁定为「补实现」,契约文字一字未动** —— **SL-233**(PR #__PRNUM__)
+     **回填(2026-08-28):裁定为「补实现」,契约文字一字未动** —— **SL-233**(PR #154)
      在 `SidecarStore` 补 `refreshOwnerLock()` + `kOwnerLockRefreshIntervalMs = 10000`,
      由 `ScvbOutputAudioProcessor::tickOwnerLockRefresh()` 挂在既有 25Hz tick 上分频调用
      (仅当本实例已走 sidecar **且** 盘上的 `owner.lock` 归本进程所有;锁不存在不新建、
@@ -190,6 +190,6 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
      「`setStateInformation` 处理的是用户工程文件里的不可信字节」。是否要在加载路径补夹取,
      属实现裁定,超出 J90 批准面,一并留给上面 ① 的开卡窗口。
      **回填(2026-08-28):裁定为「加载路径补夹取」,契约文字一字未动** —— **SL-234**
-     (PR #__PRNUM__)把百分比边界换算收拢成 `scvb::bridge::clampUiScalePercent()`
+     (PR #154)把百分比边界换算收拢成 `scvb::bridge::clampUiScalePercent()`
      (边界仍是 `Min/MaxUiScale` 那一对常量,不新增第二份真源),桥面 `setUiScale` 与加载路径
      共用它。Input 侧 `InputProcessor.cpp:428` 逐字同款的缺口一并补上。
