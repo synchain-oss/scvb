@@ -32,10 +32,10 @@ bool isSupportedLang(const juce::String& lang)
 }
 
 // 档位边界真源 = scvb::bridge::Min/MaxUiScale(§1.28/§1.29:C++ 不得二次硬编码)。
+// [SL-234] 换算不再就地展开:夹取即恒等 ⇔ 本来就在区间内,与桥面/加载期共用同一个 clamp。
 bool inRange(int percent)
 {
-    return percent >= juce::roundToInt(scvb::bridge::plugin::MinUiScale * 100.0f) &&
-           percent <= juce::roundToInt(scvb::bridge::plugin::MaxUiScale * 100.0f);
+    return scvb::bridge::clampUiScalePercent(percent) == percent;
 }
 
 // 测试注入的落盘目录(空 = 用默认位置)。只由 setStorageDirForTesting 写,消息线程/单测线程。
