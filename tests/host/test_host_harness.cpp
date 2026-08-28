@@ -4791,9 +4791,12 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     cfg.leadLock = true; // → leadMask 的 bit{ch-1}
     // 注:viz 装配**不读** configSeq(那是 ctrl 广播那一路的变化检测真源),故此处不动它。
 
-    // 对照轨:一个字段都不动。没有它,「装配把同一份值填满所有轨」这类错误照样全绿。
+    // 对照轨:除了**关掉 enabled** 之外一个字段都不动。没有它,「装配把同一份值填满所有轨」
+    // 这类错误照样全绿。关 enabled 是为了让 onlineMask 那一格可证伪 —— Channel::enabled 默认
+    // 全 true(OutputProcessor.h:67),15 位恒满的话装配错位根本抓不到(复审【建议】1)。
     constexpr int kQuietCh = 10;
     REQUIRE(kQuietCh != kTestChannel);
+    r.out.runtime().channels[kQuietCh - 1].enabled = false;
 
     // 给**版本 2** 的 width 一个和默认值不同的取值(默认 100)。装配取的是
     // `handles_.rawTrkW[v-1][ch]` —— **版本下标错一**就会读回版本 1 的 100,
@@ -4818,6 +4821,11 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     {
         r.runBlocks(4, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/12);
     }
+
+    // **在最后一轮发布之前**取检测值:放在 read() 之后取的话,万一等待循环超时后它才翻成 2,
+    // 「最后一次发布 → read」之间就错开一拍,等式两侧对不上(复审【建议】3)。检测是单向落定的,
+    // 所以下面用**单向蕴含**断言:已经检测成 stereo ⇒ 段里那一位必须置起。
+    const bool srcIsStereo = (r.out.runtime().channels[kTestChannel - 1].sourceChannels == 2);
 
     // 让 Output 的 viz timer 真实发布若干帧(30Hz 闸门,400ms 足够十余帧)。
     r.runBlocks(60, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
@@ -4850,18 +4858,21 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     CHECK(frame->widthPct[kTestChannel - 1] ==
           scvb::vizPackFixed(static_cast<double>(kWidthV2), scvb::kVizWidthMin, scvb::kVizWidthMax));
     // stereo 检测值 → stereoMask;enabled 位 → onlineMask(VizPublisher.cpp:184-185)。
-    // stereoMask 与 runtime 的检测值**耦合**断言,而不是硬写 true:检测是最终一致的,硬写会把
-    // 一条护栏变成一颗时序炸弹(实测 —— 单独跑本用例时它停在 1,跟着 [analyze] 一起跑就是 2)。
-    // 耦合形式照样有牙齿:装配漏掉这一位、或把位算到别的轨上,两个方向都会红。
-    const bool srcIsStereo = (r.out.runtime().channels[kTestChannel - 1].sourceChannels == 2);
+    // stereoMask **不硬写 true**:source_channels 由 refreshSourceChannels 从音频段头最终一致
+    // 回填,硬写会把一条护栏变成时序炸弹(实测 —— 单独跑本用例时它停在 1,跟着 [analyze]
+    // 一起跑就是 2)。用单向蕴含 + 下面对照轨那一位,两个错位方向都留着牙齿。
     INFO("sourceChannels(ch" << kTestChannel << ") = " << r.out.runtime().channels[kTestChannel - 1].sourceChannels);
-    CHECK(((frame->stereoMask & bit(kTestChannel)) != 0u) == srcIsStereo);
+    if (srcIsStereo)
+    {
+        CHECK((frame->stereoMask & bit(kTestChannel)) != 0u);
+    }
     CHECK((frame->onlineMask & bit(kTestChannel)) != 0u); // 该轨 enabled
 
     // ── 反向①:一个字段都没动的对照轨,不得被装配顺手填上 ──
     CHECK(frame->label[kQuietCh - 1].empty());
     CHECK((frame->leadMask & bit(kQuietCh)) == 0u);
     CHECK((frame->stereoMask & bit(kQuietCh)) == 0u); // 没有 Input 的轨不该被检测成 stereo
+    CHECK((frame->onlineMask & bit(kQuietCh)) == 0u); // ← 刚把它 enabled 关掉了
     const auto& quietLane = frame->pan[kQuietCh - 1];
     CHECK(std::all_of(quietLane.begin(), quietLane.end(), [](std::int16_t v) { return v == scvb::kVizPanNone; }));
 
