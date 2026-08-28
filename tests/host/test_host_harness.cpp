@@ -4019,3 +4019,61 @@ TEST_CASE("HOST SL-226:回归 —— 只带 PRMS 的预设不得清空已采波�
     const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 32);
     CHECK(std::count(tile.covered.begin(), tile.covered.end(), 0) < 32);
 }
+
+// [SL-226] 回归③(#147 复审【重要】③):**CFGS 损坏 ≠ 部分 blob**。
+// 这是一份完整工程,只是配置节坏了 —— 特征仍必须按本工程的 FEAT 处理。不处理的话上一个工程的
+// 波形会留在 FrameStore 里冒充本工程的,而 loadedChunks_ 已经换成本工程的了,
+// **下次保存就把上一个工程的特征写进这个工程**。
+TEST_CASE("HOST SL-226:回归 —— CFGS 损坏的完整工程不得留下上一工程的波形", "[host][v56][SL226]")
+{
+    // 工程 A:采过一段,存下来(带 FEAT)。
+    juce::MemoryBlock blobA;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+        r.out.getStateInformation(blobA);
+    }
+
+    // 工程 B:**没有 FEAT**(没采过),但 CFGS 被打坏。
+    juce::MemoryBlock blobBFull;
+    {
+        Rig r;
+        r.out.getStateInformation(blobBFull);
+    }
+    scvb::state::StateChunks b;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(blobBFull.getData()), blobBFull.getSize(), b).status ==
+        scvb::state::StateLoadStatus::Ok);
+    REQUIRE(b.find(scvb::state::kFourccFeat) == nullptr); // 前置:B 确实没有特征
+    // 把 CFGS 换成一段长度合法但内容过短的垃圾 → decodeOutputState 必失败。
+    b.set(scvb::state::kFourccCfgs, std::vector<std::uint8_t>{0x01, 0x02, 0x03});
+    std::vector<std::uint8_t> blobB;
+    REQUIRE(scvb::state::encodeContainer(b, blobB));
+
+    // 同一个实例:先载 A(有波形),再载 CFGS 损坏的 B(无波形)。
+    Rig r2;
+    r2.out.setStateInformation(blobA.getData(), static_cast<int>(blobA.getSize()));
+    Rig::pumpMessages(200);
+    REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0); // A 的波形在
+
+    r2.out.setStateInformation(blobB.data(), static_cast<int>(blobB.size()));
+    Rig::pumpMessages(200);
+
+    // ← 修复前:CFGS 早退把回灌一并跳过,A 的波形留在 FrameStore 里冒充 B 的。
+    CHECK(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+
+    // 而且下次保存不得把 A 的特征写进 B。
+    juce::MemoryBlock resaved;
+    r2.out.getStateInformation(resaved);
+    scvb::state::StateChunks out;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(resaved.getData()), resaved.getSize(), out).status ==
+        scvb::state::StateLoadStatus::Ok);
+    CHECK(out.find(scvb::state::kFourccFeat) == nullptr);
+}

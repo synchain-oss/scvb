@@ -1272,28 +1272,49 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         return; // 编码失败:保留上一版 chunk,不写半份(04 §5.3 宁可旧数据也不写坏数据)
     }
 
+    // 装 FEAT chunk 的**唯一出口**。写进去的是我们自己刚编出来的真数据,所以这一节从此不再是
+    // 「解不开的引用」—— featRefUnresolved_ 必须跟着清掉,且必须清在**每一条**装 chunk 的路径上。
+    // 写成 lambda 而不是在四处各写一遍:漏掉任意一条,那一位就会带着 true 活到下一次保存,
+    // 于是「特征已清空」被误判成「引用解不开」,真数据 chunk 被当成唯一线索保住,
+    // 上一轮刚修掉的幽灵波形原路绕回来(#147 复审【重要】①)。
+    const auto installFeat = [this, &chunks](const std::vector<std::uint8_t>& payload, bool sidecar,
+                                             std::int64_t bytes) {
+        chunks.set(scvb::state::kFourccFeat, payload);
+        featuresSidecar_ = sidecar;
+        featureBytes_ = bytes;
+        featRefUnresolved_ = false;
+    };
+
     // ADR-007 阈值 + 04 §5.3 回滞:>8MB 转 sidecar,已转出且 <6MB 收回内嵌。
     if (!scvb::state::SidecarStore::shouldUseSidecar(static_cast<std::uint64_t>(gz.size()), featuresSidecar_))
     {
-        chunks.set(scvb::state::kFourccFeat, gz);
-        if (featuresSidecar_)
+        const bool wasSidecar = featuresSidecar_;
+        const bool refWasUnresolved = featRefUnresolved_;
+        installFeat(gz, /*sidecar=*/false, static_cast<std::int64_t>(gz.size()));
+        if (wasSidecar)
         {
             // 收回内嵌:删掉外部副本,防「工程里一份、sidecar 里另一份」双源分叉(04 §5.3)。
-            // 删之前同样要过活锁这一关 —— 删比覆盖更彻底,别人正开着同一份 sidecar 时
-            // 直接 remove 会把它的特征连根拔掉(写路径已有 CoW,删路径不能是个缺口)。
-            scvb::state::SidecarStore store(sidecarBaseDir());
-            const auto self = scvb::state::currentProcessIdentity();
-            scvb::state::OwnerLock lock;
-            const bool heldByOther = store.readOwnerLock(sessionGuid_.toStdString(), lock) &&
-                                     scvb::state::isOwnerLockAlive(lock, scvb::state::epochMsNow()) &&
-                                     !(lock.pid == self.pid && lock.processStartEpochMs == self.processStartEpochMs);
-            if (!heldByOther)
+            // 两道闸,少一道都会删掉不该删的:
+            //   ① 他人活锁 —— 删比覆盖更彻底,别人正开着同一份 sidecar 时直接 remove 会把它的
+            //      特征连根拔掉(写路径已有 CoW,删路径不能是个缺口);
+            //   ② 引用没解开过 —— 那份 sidecar 我们**根本没认下来**(文件缺失 / sha256 不符)。
+            //      读侧刚说完「这不是我的、不拿别人的冒充」,删侧就把整个目录 remove_all 掉,
+            //      等于对一份我们判定为「别人的」数据执行了最彻底的破坏(#147 复审【重要】②)。
+            if (!refWasUnresolved)
             {
-                store.remove(sessionGuid_.toStdString());
+                scvb::state::SidecarStore store(sidecarBaseDir());
+                const auto self = scvb::state::currentProcessIdentity();
+                scvb::state::OwnerLock lock;
+                const bool heldByOther =
+                    store.readOwnerLock(sessionGuid_.toStdString(), lock) &&
+                    scvb::state::isOwnerLockAlive(lock, scvb::state::epochMsNow()) &&
+                    !(lock.pid == self.pid && lock.processStartEpochMs == self.processStartEpochMs);
+                if (!heldByOther)
+                {
+                    store.remove(sessionGuid_.toStdString());
+                }
             }
-            featuresSidecar_ = false;
         }
-        featureBytes_ = static_cast<std::int64_t>(gz.size());
         return;
     }
 
@@ -1314,9 +1335,7 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
                      scvb::state::kFeatCodecVer, self))
     {
         // 写外部文件失败(磁盘满/无权限):退回内嵌,别把特征丢了。工程会大一点,但数据在。
-        chunks.set(scvb::state::kFourccFeat, gz);
-        featuresSidecar_ = false;
-        featureBytes_ = static_cast<std::int64_t>(gz.size());
+        installFeat(gz, /*sidecar=*/false, static_cast<std::int64_t>(gz.size()));
         DBG("SCVB Output: sidecar write failed; falling back to embedded FEAT");
         return;
     }
@@ -1329,16 +1348,12 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         scvb::state::encodeReference(ref, data.sampleRate, data.hopMs, static_cast<std::uint8_t>(data.channels.size()));
     if (refSection.empty())
     {
-        chunks.set(scvb::state::kFourccFeat, gz); // 引用节编不出来(guid 非法)→ 内嵌兜底
-        featuresSidecar_ = false;
-        featureBytes_ = static_cast<std::int64_t>(gz.size());
+        // 引用节编不出来(guid 非法)→ 内嵌兜底。
+        installFeat(gz, /*sidecar=*/false, static_cast<std::int64_t>(gz.size()));
         return;
     }
-    chunks.set(scvb::state::kFourccFeat, refSection);
-    featuresSidecar_ = true;
     // 报**特征**字节数,不是引用节那一百来字节 —— 设置页存储行要的是「这份特征多大」。
-    featureBytes_ = static_cast<std::int64_t>(gz.size());
-    featRefUnresolved_ = false;
+    installFeat(refSection, /*sidecar=*/true, static_cast<std::int64_t>(gz.size()));
 }
 
 void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks& chunks)
@@ -1390,13 +1405,6 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
     featuresSidecar_ = true;
     featureBytes_ = static_cast<std::int64_t>(decoded.ref.sidecarBytes);
 
-    // 把 sessionGuid_ 对齐到引用节的 GUID:保存侧的收回内嵌要 remove(sessionGuid_),两者
-    // 对不上就删不掉旧 sidecar,留一个永久孤儿目录。工程经 CoW 换过 GUID 时两者就会不一致。
-    if (sessionGuid_.toStdString() != decoded.ref.sessionGuid)
-    {
-        sessionGuid_ = juce::String(decoded.ref.sessionGuid);
-    }
-
     std::vector<std::uint8_t> gz;
     if (!scvb::state::SidecarStore(sidecarBaseDir()).read(decoded.ref.sessionGuid, gz))
     {
@@ -1414,6 +1422,17 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
         session_.frameStore().reset();
         DBG("SCVB Output: sidecar sha256 mismatch; refusing to load");
         return; // 内容与工程记录的不符:拒载,不拿别的工程的特征冒充本工程的
+    }
+
+    // 校验都过了、确实认下了这份 sidecar,**才**把 sessionGuid_ 对齐到引用节的 GUID。
+    // 理由:保存侧收回内嵌时 remove(sessionGuid_),两者对不上就删不掉旧 sidecar、留孤儿目录
+    // (工程经 CoW 换过 GUID 时就会不一致)。但这一步必须排在验证之后 —— 排在前面的话,
+    // 任何带引用节的 FEAT(哪怕文件不存在、哪怕 sha 不符)都能顶掉 sessionGuid_ 并随 PRMS
+    // 落盘、改掉桥面 §1.1 的 session_guid,而那份 sidecar 我们压根没认下来
+    // (#147 复审【建议】④)。
+    if (sessionGuid_.toStdString() != decoded.ref.sessionGuid)
+    {
+        sessionGuid_ = juce::String(decoded.ref.sessionGuid);
     }
     const auto inner = scvb::state::decodeFeatures(gz.data(), gz.size());
     if (inner.codecVerNewer)
@@ -1549,6 +1568,12 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     scvb::state::OutputDecodeReport report;
     if (!scvb::state::decodeOutputState(cfg->payload.data(), cfg->payload.size(), s, &report))
     {
+        // [SL-226] 配置节损坏 ≠ 部分 blob。这是一份**完整工程**,只是 CFGS 坏了 —— 特征仍必须
+        // 按本工程的 FEAT 处理,不能让上一个工程的波形留在 FrameStore 里冒充本工程的:
+        // loadedChunks_ 上面已经换成本工程的了,不处理的话**下次保存会把上一个工程的特征
+        // 写进这个工程**(#147 复审【重要】③)。
+        // 这里调它不违反「必须在 changeGroup 之后」那条约束 —— 损坏路径根本走不到 group 绑定。
+        readFeaturesChunk(chunks);
         return; // 范围校验失败 → 拒载(CLAUDE.md §7.3)
     }
     preservedCfgsTail_ = std::move(s.unknownTail); // 未来小版本追加字段保留,getStateInformation 原样回写
