@@ -169,12 +169,19 @@ SL-215(#127)、J87(#124/#131/#146)三批实现早已在 `feature/v1` 上,契约�
      复审补的一条独立佐证:`OutputProcessor.cpp:1284-1287` 的代码注释**自己写明**该 10s 周期刷新
      「全仓尚未实现(T40 遗留,已单独落卡)」—— 即这是**已跟踪的实现缺口**,不是本次才发现的漂移。
      开卡后请把 issue 号回填到本条(PR #153 复审建议)。
-     **回填(2026-08-28):裁定为「补实现」,契约文字一字未动** —— **SL-233**(PR #154)
-     在 `SidecarStore` 补 `refreshOwnerLock()` + `kOwnerLockRefreshIntervalMs = 10000`,
-     由 `ScvbOutputAudioProcessor::tickOwnerLockRefresh()` 挂在既有 25Hz tick 上分频调用
-     (仅当本实例已走 sidecar **且** 盘上的 `owner.lock` 归本进程所有;锁不存在不新建、
-     锁属他人绝不覆盖 —— 那是 copy-on-write 唯一的判据)。`OutputProcessor.cpp` 里那条
-     自认「T40 遗留」的注释同步订正。
+     **回填(2026-08-28):裁定为「补实现」,契约文字一字未动** —— **SL-233**(PR #154)。
+     落地口径分**两个**入口,读实现时别只看其中一个:
+     - **续租**(`SidecarStore::refreshOwnerLock()` + `kOwnerLockRefreshIntervalMs = 10000`):
+       由 `ScvbOutputAudioProcessor::tickOwnerLockRefresh()` 挂在既有 25Hz tick 上分频调用,
+       仅当本实例已走 sidecar、引用节已解开、**且**盘上的 `owner.lock` 归本进程所有时才刷新;
+       **锁不存在时不新建**(续租只续自己的租约),锁属他人一律不覆盖。
+     - **加载期认领**(`SidecarStore::claimOwnerLockIfUnheld()`):在 `readFeaturesChunk` 里
+       sha256 校验通过、确实认下这份 sidecar 之后调用。**这一处会在「锁不存在 / 已判死」时写盘**,
+       因为「只有写过 sidecar 的实例才持锁」会让「打开一份上次会话存的工程、本会话还没保存」
+       的实例永远不持锁 —— 那正是 §4.3 CoW 要覆盖的最常见一幕。认领同样**绝不覆盖他人的活锁**
+       (那是 copy-on-write 唯一的判据),另有 pid=0 与「无特征文件不凭空造只有锁的空目录」两道守卫。
+     两个入口的归属判定都用 `pid + processStartEpochMs` 双元组,与 `copyOnWriteIfNeeded` 逐字同口径。
+     `OutputProcessor.cpp` 里那条自认「T40 遗留」的注释同步订正。
   ② **代码注释层(非契约文档),两条,建议并成一张「注释订正卡」**:
      - `src/output/OutputUiState.h:69` 把 sidecar 文件名写成 `<basename>-<GUID前8>.scvbfeat`,
        而实现与 §4.3 一致地采用目录式 `<base>/sessions/<GUID>/`(`SidecarStore.cpp:307`、

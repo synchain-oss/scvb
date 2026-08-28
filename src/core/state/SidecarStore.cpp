@@ -469,7 +469,8 @@ bool SidecarStore::claimOwnerLockIfUnheld(const std::string& guid, const Process
     OwnerLock existing;
     if (readOwnerLock(guid, existing))
     {
-        // 已归本进程 → 无需重复宣示(续租归 refreshOwnerLock)。
+        // 已归本进程 → 无需重复宣示,心跳留给 refreshOwnerLock 去推(认领只负责「拿到所有权」)。
+        // 「归自己但已判死」也走这一支:tick 的分频计时那时必然已过一个周期,下一拍 40ms 就补上心跳。
         if (existing.pid == self.pid && existing.processStartEpochMs == self.processStartEpochMs)
             return true;
         // **活锁归他人 → 绝不覆盖**。那是 copy-on-write 的判据,抢过来就等于把别人正开着的

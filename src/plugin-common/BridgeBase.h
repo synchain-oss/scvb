@@ -53,7 +53,8 @@ float clampUiScale(float scale);
 
 // [SL-234] 百分比档位 clamp,边界 = 上面同一对常量 ×100(**禁止再写第三份硬编码边界**)。
 // 调用方三处:桥面 setUiScale(bridge*SetUiScalePercent)、**加载期** CFGS.uiScale
-// (STATE_SCHEMA §7.3:setStateInformation 处理的是工程文件里的不可信字节,范围字段先校验再用)、
+// (STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验(原样透出,**由上层处理**)」——
+//  上层就是加载路径;工程文件是不可信字节,铁律出处 = CLAUDE.md §7 铁律 3)、
 // UiDefaultsStore 的全局默认区间判定。
 // 入参取 std::int64_t 而不是 int:CFGS 里 uiScale 是 u32,先 static_cast<int> 再夹会把
 // 4294967295 折成 -1 —— 结果虽然也落在下界,但那是**溢出撞上的**,不是范围校验。
