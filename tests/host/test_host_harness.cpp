@@ -4158,3 +4158,73 @@ TEST_CASE("HOST SL-226:回归 —— 高 codecVer 的 FEAT 经 PRMS-only 预设�
     REQUIRE(kept != nullptr); // ← 修复前:这里是 nullptr,用户的高版本特征被静默丢弃
     CHECK(kept->payload == futureFeat); // 逐字节相等,不是"重编了一份空的"
 }
+
+// [SL-226] 回归⑤(#147 四轮复审【建议】②):高 codecVer 的工程里**重新采集**,新数据必须存得进去。
+// 「原样带走」对**没动过**的工程是对的;但若早退排在 snapshot 之前,用户「开一份读不出来的工程 →
+// 泳道空 → 重新采集 → 保存」会把刚采的新数据静默丢掉,重开还是空 —— 正是本卡要治的症状换了个入口。
+TEST_CASE("HOST SL-226:回归 —— 高 codecVer 工程里重新采集,新数据不得被静默丢弃", "[host][v56][SL226]")
+{
+    // 造一份 FEAT 为高 codecVer 的工程(手法同回归④)。
+    juce::MemoryBlock baseBlob;
+    {
+        Rig r;
+        r.out.getStateInformation(baseBlob);
+    }
+    scvb::state::StateChunks base;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(baseBlob.getData()), baseBlob.getSize(), base).status ==
+        scvb::state::StateLoadStatus::Ok);
+
+    std::vector<std::uint8_t> raw;
+    const auto put32 = [&raw](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    const auto put16 = [&raw](std::uint16_t v) {
+        for (int i = 0; i < 2; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    put32(scvb::state::kFeatTag);
+    put16(99);
+    put16(scvb::state::kFeatFlagEmbedded);
+    put32(48000u);
+    put32(10u);
+    raw.push_back(0);
+    const auto futureFeat = scvb::state::gzipCompress(raw.data(), raw.size());
+    REQUIRE_FALSE(futureFeat.empty());
+    base.set(scvb::state::kFourccFeat, futureFeat);
+    std::vector<std::uint8_t> futureBlob;
+    REQUIRE(scvb::state::encodeContainer(base, futureBlob));
+
+    Rig r;
+    r.out.setStateInformation(futureBlob.data(), static_cast<int>(futureBlob.size()));
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0); // 解不开 → 泳道空
+
+    // 用户重新采集。
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    r.runBlocks(150, 0.5f);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    juce::MemoryBlock resaved;
+    r.out.getStateInformation(resaved);
+
+    scvb::state::StateChunks out;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(resaved.getData()), resaved.getSize(), out).status ==
+        scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* kept = out.find(scvb::state::kFourccFeat);
+    REQUIRE(kept != nullptr);
+    CHECK(kept->payload != futureFeat); // ← 修复前:早退在 snapshot 之前,原样带走旧的、丢掉新的
+
+    // 重开:新采的波形必须回得来。
+    Rig r2;
+    r2.out.setStateInformation(resaved.getData(), static_cast<int>(resaved.getSize()));
+    Rig::pumpMessages(200);
+    CHECK(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == Catch::Approx(coveredS));
+}

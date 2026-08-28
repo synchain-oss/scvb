@@ -1248,18 +1248,23 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         }
     };
 
-    // 读到过更高 codecVer:原样带走,绝不用「我这边解出来是空的」去覆盖用户的真数据。
-    if (featCodecNewer_)
-    {
-        reinstatePreserved();
-        return;
-    }
-
     const std::uint32_t sr = static_cast<std::uint32_t>(sampleRate_.load(std::memory_order_relaxed) > 0.0
                                                             ? sampleRate_.load(std::memory_order_relaxed)
                                                             : static_cast<double>(scvb::state::kDefaultSampleRate));
     const auto data =
         scvb::state::snapshotFeatures(session_.frameStore(), sr, scvb::output::OutputSession::featHopMs());
+
+    // 读到过更高 codecVer(或那一节根本解不出来):原样带走,绝不用空的去覆盖用户的真数据。
+    //
+    // 但这一判**必须排在 snapshot 之后**:排在前面的话,「开一份本构建读不出来的工程 → 泳道空
+    // → 用户重新采集 → 保存」会把**用户刚采的新数据静默丢掉**,重开还是空 —— 那正是本卡要治的
+    // 症状,只是换了个入口。取舍口径:用户本会话真的采出了东西,就以新数据为准(那份旧字节
+    // 本构建反正也读不出来,而新数据是用户刚花时间做出来的);一个 hop 都没采,才原样带走。
+    if (featCodecNewer_ && data.channels.empty())
+    {
+        reinstatePreserved();
+        return;
+    }
 
     if (data.channels.empty())
     {
@@ -1276,6 +1281,12 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         // 上一次真转出过 sidecar 的话,顺手回收那个目录 —— 工程里的引用已经删了,再没人指向它,
         // 不删就是一份永远不会被读到的磁盘垃圾。两道闸与「收回内嵌」那条同口径:
         // 他人活锁不删;引用没解开过(那份根本不是我们认下的)也不删。
+        // ⚠ 判活窗口目前偏窄:isOwnerLockAlive 要心跳 < 30s,而 owner.lock 的 10s 周期刷新
+        //   (STATE_SCHEMA §4.3)**全仓尚未实现**(T40 遗留,已单独落卡)。在那之前,他人实例的锁
+        //   在其上次保存 30s 后就会被判死。孤儿目录只是可恢复的泄漏,remove_all 却不可逆 ——
+        //   心跳补上之前,这一处宁可少删。
+        // !featRefUnresolved_ 在这里是**恒真式防御**:上面那个 if 已经把置位的情形 return 掉了。
+        // 留着是因为这两道闸的语义是「删之前要过的两关」,少一关就是缺口,不该靠上文的控制流来兜。
         if (featuresSidecar_ && !featRefUnresolved_)
         {
             scvb::state::SidecarStore store(sidecarBaseDir());
@@ -1313,6 +1324,10 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         featuresSidecar_ = sidecar;
         featureBytes_ = bytes;
         featRefUnresolved_ = false;
+        featCodecNewer_ = false;
+        // 留底也一并松手:这一节已经被我们自己的真数据换掉了,再留着既无意义,
+        // 又让一份最大 8MB 的副本白占内存。
+        preservedFeatChunk_.clear();
     };
 
     // ADR-007 阈值 + 04 §5.3 回滞:>8MB 转 sidecar,已转出且 <6MB 收回内嵌。
@@ -1407,22 +1422,46 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
         return;
     }
 
-    const auto decoded = scvb::state::decodeFeatures(feat->payload.data(), feat->payload.size());
-    if (decoded.codecVerNewer)
-    {
-        // 高版本特征:按空处理(画不出来总比画错强),但留底 + 置位,让 save 原样带走原始字节。
-        featCodecNewer_ = true;
+    // 「这一节我读不出来」的**唯一收尾口**。六条路径(高 codecVer / 解码失败 / sidecar 缺失 /
+    // sha256 不符 / 内层不自洽 / 内层高 codecVer / hop 时基不符)全走它,一件事都漏不掉:
+    //   留底 → 置位 → 如实报字节数 → 清空 FrameStore。
+    // 收成一个口而不是各写一遍,理由与写侧的 installFeat 逐字相同:上一轮我在五处各补了一遍
+    // 留底,**第六处(sidecar 内层高 codecVer)就漏了** —— 于是刚修好的「原样带走」从内层原样
+    // 复发(#147 四轮复审)。同一个教训吃两次就够了。
+    //
+    // newerCodec = true 表示「不是坏,是太新」:两者对用户的意思不同(一个该提示升级,一个是
+    // 数据损坏),但对保存路径的要求完全一样 —— **原封不动带走,绝不用空的去覆盖**。
+    const auto preserveAndBail = [this, feat](bool newerCodec) {
         preservedFeatChunk_ = feat->payload;
         // 存储行仍报这一节的真实大小 —— 解不开不等于它不占地方,报 0 会让一份 5MB 的工程
         // 显示「内嵌于工程 0.0 MB」。
         featureBytes_ = static_cast<std::int64_t>(feat->payload.size());
+        if (newerCodec)
+        {
+            featCodecNewer_ = true;
+        }
+        else
+        {
+            featRefUnresolved_ = true;
+        }
         session_.frameStore().reset();
+    };
+
+    const auto decoded = scvb::state::decodeFeatures(feat->payload.data(), feat->payload.size());
+    if (decoded.codecVerNewer)
+    {
+        // 高版本特征:按空处理(画不出来总比画错强),但原样带走原始字节。
+        preserveAndBail(/*newerCodec=*/true);
         DBG("SCVB Output: FEAT codecVer newer than build; features shown empty, bytes preserved verbatim");
         return;
     }
     if (!decoded.ok)
     {
-        session_.frameStore().reset(); // 损坏:拒解,不半填充(§7.3)
+        // 损坏:拒解,不半填充(§7.3)。**也留底** —— 与其余五条对称。
+        // 「解码失败」未必等于「用户的数据真的坏了」,也可能是本构建解码器的 bug;把它删掉,
+        // 一个未来修好的构建就再也没得读了。用户重新采集时 installFeat 会自然覆盖掉这一节,
+        // 不会永远赖着。
+        preserveAndBail(/*newerCodec=*/false);
         return;
     }
 
@@ -1430,7 +1469,7 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
     {
         if (!featureHopMatchesBuild(decoded.features.hopMs))
         {
-            session_.frameStore().reset();
+            preserveAndBail(/*newerCodec=*/false);
             return;
         }
         scvb::state::restoreFeatures(decoded.features, session_.frameStore());
@@ -1449,17 +1488,13 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
         // 外部文件不在(换机 / 被清理 / 还没同步过来):波形为空。置 featRefUnresolved_ 让
         // 保存侧**原样保留这一节** —— 否则下次保存会把 GUID+sha256 一并删掉,文件还在磁盘上
         // 却再也找不回来。
-        featRefUnresolved_ = true;
-        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节
-        session_.frameStore().reset();
+        preserveAndBail(/*newerCodec=*/false);
         DBG("SCVB Output: sidecar missing for session " << decoded.ref.sessionGuid);
         return;
     }
     if (scvb::state::sha256(gz.data(), gz.size()) != decoded.ref.sha256)
     {
-        featRefUnresolved_ = true;
-        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节 // 同上:不认它,但也不销毁指针
-        session_.frameStore().reset();
+        preserveAndBail(/*newerCodec=*/false); // 不认它,但也不销毁指针
         DBG("SCVB Output: sidecar sha256 mismatch; refusing to load");
         return; // 内容与工程记录的不符:拒载,不拿别的工程的特征冒充本工程的
     }
@@ -1477,22 +1512,17 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
     const auto inner = scvb::state::decodeFeatures(gz.data(), gz.size());
     if (inner.codecVerNewer)
     {
-        featCodecNewer_ = true;
-        session_.frameStore().reset();
+        preserveAndBail(/*newerCodec=*/true); // ← 上一轮漏掉的第六条路
         return;
     }
     if (!inner.ok || !inner.embedded)
     {
-        featRefUnresolved_ = true;
-        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节
-        session_.frameStore().reset();
+        preserveAndBail(/*newerCodec=*/false);
         return; // sidecar 里又是一层引用 = 数据不自洽,拒载
     }
     if (!featureHopMatchesBuild(inner.features.hopMs))
     {
-        featRefUnresolved_ = true;
-        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节
-        session_.frameStore().reset();
+        preserveAndBail(/*newerCodec=*/false);
         return;
     }
     scvb::state::restoreFeatures(inner.features, session_.frameStore());
