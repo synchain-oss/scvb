@@ -2819,9 +2819,14 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // `p>0.5` 只表示「过了双阈值中点」,不等于经过迟滞 + 丢短 + padding + 并段之后的判决;
             // 守卫分支(LoudRegion 判全段有声)下后验甚至可能整体 <0.5。记在这里,免得下次
             // 「绿线和段块对不齐」被当成 bug 再查一轮。
-            // 量化口径与读侧对齐:`waveformOf` 判 `vadP(h) > 127` 为有声,所以 0..1 → 0..255
-            // 四舍五入,p=0.5 恰好落 128(> 127)算有声,与 EnergyVad 的判决阈同侧。
-            // 只写**本次真参与分析**的轨与 hop(posterior 为空的轨跳过),绝不碰范围外的账。
+            // 只写**本次真参与分析**的轨与 hop(posterior 为空的轨跳过),绝不碰范围外的账;
+            // 量化口径(0..1 → 0..255,与读侧 `vadP(h) > 127` 同侧)见 `quantizeVadPosterior`。
+            //
+            // [SL-232] 走**批量**入口 `setVadPosteriorRange`:逐 hop 的老写法是每个 hop 两次
+            // std::map 查找(hasHop 的 coversFully + setVadP 的 pageFor),而外层循环次数恒等于
+            // `lastHop - firstHop`、与实际有多少数据无关 —— 满选 1h × 15 轨 ≈ 1080 万次查找,
+            // 全程持 lifecycleMutex_ 跑在消息线程上(P0-A 冻死同族)。批量版先按覆盖区间收窄、
+            // 再按页推进,每 4096 hop 才查一次索引,迭代数与实际数据量同阶。语义逐字不变。
             {
                 auto& store = session_.frameStore();
                 for (int t = 0; t < 15; ++t)
@@ -2831,31 +2836,21 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                     {
                         continue;
                     }
-                    auto& frames = store.channel(static_cast<scvb::u32>(t + 1));
-                    for (std::size_t k = 0; k < post.size(); ++k)
+                    // firstHop 可能为负(范围左端在 0 之前):负的那一截没有对应 hop,整体左裁。
+                    // HopRange 是 uint64,裁完才敢转。⚠ 先与 post.size() **比较**再取负 ——
+                    // `-INT64_MIN` 是 UB,现实中够不着,但这道守卫是免费的。
+                    const auto span = static_cast<std::int64_t>(post.size());
+                    const std::size_t skip = result.firstHop >= 0 ? std::size_t{0}
+                                             : result.firstHop <= -span ? post.size() // 整条都落在 0 之前:全裁掉
+                                                                        : static_cast<std::size_t>(-result.firstHop);
+                    if (skip >= post.size())
                     {
-                        const std::int64_t hop = result.firstHop + static_cast<std::int64_t>(k);
-                        if (hop < 0)
-                        {
-                            continue;
-                        }
-                        // 未覆盖的 hop **不写**:后验在那里恒 0,写进去只会把 20KB 的 FeatPage
-                        // 白建出来(setVadP 走 pageFor(create=true),既不看 readOnly_ 也不看 gate_),
-                        // 正好抵消 FrameStore 的分页稀疏性;而读侧 waveformOf 本来就只遍历覆盖区。
-                        // 顺带把循环压到**真有数据**的量级:post.size() = lastHop-firstHop 与覆盖量无关,
-                        // 一小时素材 ≈ 360k hop × 15 轨 ≈ 5.4M 次 map 查找,还全程持 lifecycleMutex_
-                        // 跑在消息线程上 —— 与 waveformOf 注释里记的那次 P0-A 冻死同一族
-                        // (「迭代数与实际数据量无关」)。
-                        if (!frames.hasHop(static_cast<std::uint64_t>(hop)))
-                        {
-                            continue;
-                        }
-                        // clamp 是**防御性**的,不是补漏:EnergyVad 出口(EnergyVad.cpp:145)已经
-                        // 把后验夹到 [0,1]。留着只为「量化这一步不依赖上游的值域承诺」。
-                        const float clamped = post[k] < 0.0f ? 0.0f : (post[k] > 1.0f ? 1.0f : post[k]);
-                        frames.setVadP(static_cast<std::uint64_t>(hop),
-                                       static_cast<std::uint8_t>(std::lround(clamped * 255.0f)));
+                        continue;
                     }
+                    const auto begin = static_cast<std::uint64_t>(result.firstHop + static_cast<std::int64_t>(skip));
+                    store.channel(static_cast<scvb::u32>(t + 1))
+                        .setVadPosteriorRange(scvb::analysis::HopRange{begin, begin + (post.size() - skip)},
+                                              post.data() + skip);
                 }
             }
 

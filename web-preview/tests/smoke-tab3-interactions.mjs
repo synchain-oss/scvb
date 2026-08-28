@@ -1330,8 +1330,14 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
             ),
             "[SL-206] 管线把 VAD 后验带出(不再传 nullptr)",
         );
+        // [SL-232] 入口从逐 hop 的 `frames.setVadP(` 换成了批量的 `setVadPosteriorRange(`
+        // (逐 hop 版是每 hop 两次 map 查找、迭代数等于分析跨度,与实际数据量无关)。
+        // 这里钉的是**生产链还在**,不是某一种写法,所以两种入口都认 —— 只要 finishAnalysis
+        // 还把后验交给 FrameStore 就算数;真被删成 nullptr 那条 bug 才红。
         check(
-            /frames\.setVadP\(/.test(src("src/output/OutputProcessor.cpp")),
+            /setVadPosteriorRange\(|frames\.setVadP\(/.test(
+                src("src/output/OutputProcessor.cpp"),
+            ),
             "[SL-206] finishAnalysis 把后验写回 FrameStore",
         );
     }

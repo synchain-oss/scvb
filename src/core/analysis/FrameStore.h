@@ -35,6 +35,14 @@ int16_t quantizePeakDbq(float peak) noexcept;
 float dequantizeKwMs(int16_t dbq) noexcept;
 float dequantizePeak(int16_t dbq) noexcept;
 
+// [SL-206/SL-232] VAD 后验量化:0..1 → 0..255。
+//
+// 口径与**读侧**对齐:`waveformOf` 判 `vadP(h) > 127` 为有声,所以取四舍五入 —— p=0.5 恰好
+// 落 128(> 127)算有声,与 EnergyVad 的判决阈同侧。clamp 是**防御性**的、不是补漏:
+// EnergyVad 出口已把后验夹到 [0,1];留着只为「量化这一步不依赖上游的值域承诺」。
+// 放在这里(而不是调用方)是因为 vadP 归 FrameStore 所有,与上面两个量化器同族。
+uint8_t quantizeVadPosterior(float p) noexcept;
+
 // 单 channel 特征存储(04 §3.1 ChannelFrames)。
 class ChannelFrames
 {
@@ -93,6 +101,22 @@ public:
     int16_t peakDbq(uint64_t hop) const;
     uint8_t vadP(uint64_t hop) const;
     void setVadP(uint64_t hop, uint8_t v);
+
+    // [SL-232] 批量写 VAD 后验(`appendRange` 的写侧镜像,同一个理由)。
+    // `posterior[i]` 对应 hop `r.begin + i`,长度须 ≥ r 的跨度;量化在内部做。
+    //
+    // 为什么非要它:逐 hop 的写法是**每个 hop 两次 std::map 查找**(`hasHop` 的
+    // `coversFully` 走一趟 lower_bound,`setVadP` 的 `pageFor` 再 find 一次),而外层
+    // 循环次数恒等于 `lastHop - firstHop` —— 与**实际有多少数据**无关。满选 1h × 15 轨
+    // ≈ 1080 万次查找,还全程持 lifecycleMutex_ 跑在消息线程上,与 waveformOf 注释里
+    // 记的那次 P0-A 冻死同一族(「迭代数与实际数据量无关」)。
+    // 这里改成:先经 coverage_.intersect(r) 只取**真被覆盖**的子区间(实际 n 在几十以内),
+    // 再按页推进,**每 4096 个 hop 才查一次索引** —— 迭代数与实际数据量同阶。
+    //
+    // 语义与逐 hop 版逐字相同:**未覆盖的 hop 不写**。后验在那里恒 0,写进去只会把 20KB 的
+    // FeatPage 白建出来(`setVadP` 走 `pageFor(create=true)`,既不看 readOnly_ 也不看 gate_),
+    // 正好抵消 FrameStore 的分页稀疏性;而读侧 waveformOf 本来就只遍历覆盖区。
+    void setVadPosteriorRange(HopRange r, const float* posterior);
     float kwMs(uint64_t hop) const; // 反量化(供分析流水线)
     float peak(uint64_t hop) const;
 

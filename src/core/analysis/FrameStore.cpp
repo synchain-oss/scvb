@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "analysis/FrameStore.h"
 
+#include <algorithm> // std::min(setVadPosteriorRange / appendRange 的按页推进)
 #include <cassert>
 #include <cmath>
 
@@ -44,6 +45,20 @@ int16_t quantizePeakDbq(float peak) noexcept
         return kSilenceDbq;
     }
     return quantizeDbq(20.0 * std::log10(static_cast<double>(peak)));
+}
+
+uint8_t quantizeVadPosterior(float p) noexcept
+{
+    // NaN 也走这一支(比较全 false)→ 0,不把畸形值放进泳道。
+    if (!(p > 0.0f))
+    {
+        return 0;
+    }
+    if (p >= 1.0f)
+    {
+        return 255;
+    }
+    return static_cast<uint8_t>(std::lround(static_cast<double>(p) * 255.0));
 }
 
 float dequantizeKwMs(int16_t dbq) noexcept
@@ -169,6 +184,32 @@ void ChannelFrames::setVadP(uint64_t hop, uint8_t v)
 {
     FeatPage* page = pageFor(hop, /*create=*/true);
     page->vadP[hop % FeatPage::kHops] = v;
+}
+
+void ChannelFrames::setVadPosteriorRange(HopRange r, const float* posterior)
+{
+    if (posterior == nullptr || r.end <= r.begin)
+    {
+        return;
+    }
+    // 只走**已覆盖**的子区间:未覆盖处后验恒 0,写进去只会白建 20KB 的页(见头文件注)。
+    // intersect 已把区间裁进 r 内,实际区间数在几十以内(CoverageMap 的不变量)。
+    for (const HopRange seg : coverage_.intersect(r))
+    {
+        uint64_t h = seg.begin;
+        while (h < seg.end)
+        {
+            // 本页能覆盖到哪:min(页尾, 段尾)—— 与 appendRange 同一把尺子。
+            const uint64_t pageStart = (h / FeatPage::kHops) * FeatPage::kHops;
+            const uint64_t stop = std::min(pageStart + FeatPage::kHops, seg.end);
+            FeatPage* page = pageFor(h, /*create=*/true); // 每页一次索引查找
+            for (uint64_t x = h; x < stop; ++x)
+            {
+                page->vadP[x % FeatPage::kHops] = quantizeVadPosterior(posterior[x - r.begin]);
+            }
+            h = stop;
+        }
+    }
 }
 
 float ChannelFrames::kwMs(uint64_t hop) const

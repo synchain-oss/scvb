@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -27,6 +28,7 @@ using scvb::u64;
 using scvb::analysis::ChannelFrames;
 using scvb::analysis::CoverageMap;
 using scvb::analysis::FeatFrame;
+using scvb::analysis::FeatPage;
 using scvb::analysis::FrameStore;
 using scvb::analysis::HopRange;
 
@@ -410,6 +412,193 @@ TEST_CASE("FrameStore gate:区外 hop 丢弃不记账", "[store][gate]")
         cf.write(h, 0.5f, 0.5f); // 区外 [0,10) 与 [20,25] 被 gate 丢弃
     REQUIRE(cf.coveredHops({0, 30}) == 10);
     REQUIRE(cf.coverage().ranges() == std::vector<HopRange>{{10, 20}});
+}
+
+// ---------------------------------------------------------------------------
+// [SL-206 复审【重要】2 / SL-232] vadP 的写侧:write() 作废旧判决、批量入口只写覆盖区。
+//
+// `write()` 里那行 `page->vadP[idx] = 0`(「新特征进来 = 旧判决作废」)是 #151 唯一有行为的
+// 新逻辑之一,此前**只有 host harness 的间接用例**,core 侧一条都没有(CLAUDE.md §7 要求
+// scvb_core 的纯逻辑配 Catch2)。这一组把它和 SL-232 的批量写一起钉在最便宜的那一层。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("FrameStore:write 覆盖新特征时清掉旧 vadP", "[store][vad][SL206]")
+{
+    ChannelFrames cf;
+    cf.setReadOnly(false);
+    cf.write(100, 0.01f, 0.1f);
+    cf.setVadP(100, 200);
+    REQUIRE(cf.vadP(100) == 200);
+
+    cf.write(100, 0.02f, 0.2f); // 新素材进来
+    CHECK(cf.vadP(100) == 0); // ★ 旧判决作废 —— 删掉 write() 里那行 vadP=0 即红
+}
+
+TEST_CASE("FrameStore:write 早退(只读 / 越 gate)不得误清已有 vadP", "[store][vad][SL206]")
+{
+    // 早退顺序一旦被挪到 vadP=0 之后,这两条会静默丢判决 —— 当前实现是对的,补上守着。
+    SECTION("只读")
+    {
+        ChannelFrames cf;
+        cf.setReadOnly(false);
+        cf.write(7, 0.01f, 0.1f);
+        cf.setVadP(7, 190);
+        cf.setReadOnly(true);
+        cf.write(7, 0.5f, 0.5f); // 采集 OFF:静默丢弃
+        CHECK(cf.vadP(7) == 190); // 判决原样留着
+    }
+    SECTION("越 gate")
+    {
+        ChannelFrames cf;
+        cf.setReadOnly(false);
+        cf.write(7, 0.01f, 0.1f);
+        cf.setVadP(7, 190);
+        cf.setGate({100, 200}); // 7 落在门外
+        cf.write(7, 0.5f, 0.5f);
+        CHECK(cf.vadP(7) == 190);
+    }
+}
+
+TEST_CASE("FrameStore:setVadPosteriorRange 只写覆盖区,值与逐 hop 版逐字节相同", "[store][vad][SL232]")
+{
+    // 覆盖是 [10,20) ∪ [30,35),中间 [20,30) 是洞 —— 批量写必须原样跳过那个洞。
+    ChannelFrames batch;
+    ChannelFrames oneByOne;
+    for (ChannelFrames* cf : {&batch, &oneByOne})
+    {
+        cf->setReadOnly(false);
+        for (u64 h = 10; h < 20; ++h)
+            cf->write(h, 0.01f, 0.1f);
+        for (u64 h = 30; h < 35; ++h)
+            cf->write(h, 0.01f, 0.1f);
+    }
+    REQUIRE(batch.coveredHops({0, 50}) == 15);
+
+    // 后验覆盖 [5,45):两端与洞都超出覆盖区,正好把「只写覆盖区」这条钉住。
+    std::vector<float> post;
+    for (u64 h = 5; h < 45; ++h)
+        post.push_back(static_cast<float>((h * 7) % 100) / 99.0f);
+
+    batch.setVadPosteriorRange({5, 45}, post.data());
+    // 逐 hop 参照实现(= 本卡改动前那段代码,逐字):未覆盖跳过,覆盖处量化后写入。
+    for (u64 h = 5; h < 45; ++h)
+    {
+        if (!oneByOne.hasHop(h))
+            continue;
+        oneByOne.setVadP(h, scvb::analysis::quantizeVadPosterior(post[h - 5]));
+    }
+
+    for (u64 h = 0; h < 50; ++h)
+    {
+        INFO("hop " << h);
+        CHECK(batch.vadP(h) == oneByOne.vadP(h)); // ★ 与参照实现逐字节相同
+    }
+    // 洞与两端必须仍是 0(既没写值,也没白建页)。
+    for (u64 h : {u64{5}, u64{9}, u64{20}, u64{29}, u64{45}, u64{49}})
+    {
+        INFO("uncovered hop " << h);
+        CHECK(batch.vadP(h) == 0);
+    }
+    // ★ 未覆盖处不建页:覆盖只落在页 0,所以恰好一页。批量写若对整条 [5,45) 无脑建页,
+    //   这个数不会变(同一页);真正的守卫是下面那条跨页用例。
+    CHECK(batch.pageCount() == 1);
+}
+
+TEST_CASE("FrameStore:setVadPosteriorRange 不为未覆盖的远端建页", "[store][vad][SL232]")
+{
+    ChannelFrames cf;
+    cf.setReadOnly(false);
+    cf.write(3, 0.01f, 0.1f); // 只覆盖页 0 的一个 hop
+    REQUIRE(cf.pageCount() == 1);
+
+    // 后验跨 40 页(4096 hop/页),但只有 hop 3 是覆盖的。
+    const u64 span = FeatPage::kHops * 40;
+    std::vector<float> post(static_cast<std::size_t>(span), 0.9f);
+    cf.setVadPosteriorRange({0, span}, post.data());
+
+    CHECK(cf.pageCount() == 1); // ★ 无脑建页会变成 40 —— 分页稀疏性被抵消
+    CHECK(cf.vadP(3) == scvb::analysis::quantizeVadPosterior(0.9f));
+    CHECK(cf.vadP(FeatPage::kHops * 20) == 0); // 远端未覆盖,原样 0
+}
+
+TEST_CASE("FrameStore:setVadPosteriorRange 跨页边界与入参守卫", "[store][vad][SL232]")
+{
+    ChannelFrames cf;
+    cf.setReadOnly(false);
+    // 骑在页 0/1 边界上:[kHops-3, kHops+4)。
+    const u64 lo = FeatPage::kHops - 3;
+    const u64 hi = FeatPage::kHops + 4;
+    for (u64 h = lo; h < hi; ++h)
+        cf.write(h, 0.01f, 0.1f);
+
+    std::vector<float> post(static_cast<std::size_t>(hi - lo), 1.0f);
+    cf.setVadPosteriorRange({lo, hi}, post.data());
+    for (u64 h = lo; h < hi; ++h)
+    {
+        INFO("hop " << h);
+        CHECK(cf.vadP(h) == 255); // ★ 跨页两侧都写到了(按页推进漏掉半边即红)
+    }
+    CHECK(cf.pageCount() == 2);
+
+    // 入参守卫:空指针 / 空区间 / 逆序区间都必须是 no-op(不崩、不改值)。
+    cf.setVadPosteriorRange({lo, hi}, nullptr);
+    cf.setVadPosteriorRange({lo, lo}, post.data());
+    cf.setVadPosteriorRange({hi, lo}, post.data());
+    CHECK(cf.vadP(lo) == 255);
+}
+
+TEST_CASE("FrameStore:大跨度 setVadPosteriorRange 仍在时间预算内", "[store][vad][SL232][hang]")
+{
+    // 真机现场的形状(与 P0-A 那一族同款):**覆盖极稀疏、分析跨度极大**。
+    // 满选一小时 = 360k hop,15 轨;逐 hop 的老写法是每 hop 两次 std::map 查找
+    // ≈ 1080 万次,还全程持 lifecycleMutex_ 跑在消息线程上。批量版按覆盖区间收窄 +
+    // 按页推进,迭代数与**实际数据量**同阶,与跨度无关。
+    constexpr u64 kSpan = 360000; // 1h @ 10ms hop
+    constexpr int kTracks = 15;
+
+    FrameStore store(kTracks);
+    for (int t = 0; t < kTracks; ++t)
+    {
+        auto& cf = store.channel(static_cast<u32>(t + 1));
+        cf.setReadOnly(false);
+        for (u64 h = 0; h < 500; ++h) // 每轨只采了 5 秒
+        {
+            cf.write(h, 0.01f, 0.1f);
+        }
+    }
+    const std::vector<float> post(static_cast<std::size_t>(kSpan), 0.7f);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int t = 0; t < kTracks; ++t)
+    {
+        store.channel(static_cast<u32>(t + 1)).setVadPosteriorRange({0, kSpan}, post.data());
+    }
+    const double elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+
+    // 本机实测(RelWithDebInfo):批量版 **0.21–0.23ms**(只走 15 轨 × 500 个覆盖 hop);
+    // 退回逐 hop 的老写法 **115ms**(15 × 360k 次 coversFully + pageFor)—— 相差约 500 倍。
+    // 预算取 20ms:对新实现留了近**两个数量级**余量(构建机器再慢也不会假红),
+    // 同时把旧实现挡在 5 倍之外,绝不可能蒙混过关。定预算的办法与 P0-A 那一族逐字同款。
+    // ★ 反向验证:把 setVadPosteriorRange 换回逐 hop 写法 → 实测 115ms,本条红。
+    CHECK(elapsedMs < 20.0);
+
+    // 值仍然对:覆盖区写进去了,跨度里其余部分一个字都没动、也没白建页。
+    CHECK(store.channel(1).vadP(10) == scvb::analysis::quantizeVadPosterior(0.7f));
+    CHECK(store.channel(1).vadP(1000) == 0);
+    CHECK(store.channel(1).pageCount() == 1);
+}
+
+TEST_CASE("FrameStore:quantizeVadPosterior 与读侧判据(>127)同侧", "[store][vad][SL232]")
+{
+    using scvb::analysis::quantizeVadPosterior;
+    CHECK(quantizeVadPosterior(0.0f) == 0);
+    CHECK(quantizeVadPosterior(1.0f) == 255);
+    // p=0.5 必须落 128(> 127 算有声),与 EnergyVad 的判决阈同侧 —— 取整改成截断即 127,红。
+    CHECK(quantizeVadPosterior(0.5f) == 128);
+    // 值域守卫:越界与 NaN 都不许溢出成别的数。
+    CHECK(quantizeVadPosterior(-1.0f) == 0);
+    CHECK(quantizeVadPosterior(2.0f) == 255);
+    CHECK(quantizeVadPosterior(std::numeric_limits<float>::quiet_NaN()) == 0);
 }
 
 // ---------------------------------------------------------------------------
