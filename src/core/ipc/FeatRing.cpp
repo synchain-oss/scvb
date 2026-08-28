@@ -249,7 +249,7 @@ int FeatRing::processBlock(const float* const* channels, int numSamples)
 }
 
 uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 capacity, FeatPullState& state,
-                         analysis::ChannelFrames& store, analysis::HopRange timeGate)
+                         analysis::ChannelFrames& store, analysis::HopRange timeGate, bool drainOnly)
 {
     const uint64_t b1 = header.base_hop.load(std::memory_order_acquire);
     const uint64_t w = header.write_hop.load(std::memory_order_acquire);
@@ -285,6 +285,15 @@ uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 ca
     if (w >= state.lastPulled + capacity)
     {
         state.lastPulled = (w > capacity) ? (w - capacity) : b1;
+    }
+
+    if (drainOnly)
+    {
+        // 排空:一帧不写,游标直接推到写头。**不能**套 kMaxBurstHops —— 那个上限是为「写入
+        // 有代价」设的限速,而排空零写入;受限的话离线快速渲染下追不上写头,残留积压会在
+        // 撤防后被补拉进来(PR #124 评审重要②)。
+        state.lastPulled = w;
+        return 0;
     }
 
     const uint64_t start = std::max(state.lastPulled, b1);
@@ -341,13 +350,13 @@ u32 FeatPuller::pullTick(analysis::FrameStore& store, analysis::HopRange timeGat
         // 布防期未选中轨(04 §4.2 步骤 2):**排空,不是跳过**。
         // 直接 continue 会把该轨的读游标 states_[] 冻在布防开始的位置,撤防之后 pullIncremental
         // 从旧游标接着拉 —— 布防期间写进环里的那一段会被**补拉**进来,盖掉选区外的既有特征,
-        // 正好推翻本卡要守住的性质(「绝不触碰其他区间已有结果」,04 §4.1)。给一个空 gate 让它
-        // 走完整条正规路径:一帧都不写,但 lastPulled 照常推到写头,积压被如实丢弃。
-        // 走 pullIncremental 而不是自己拨游标,是为了把 run 切换 / 回退 / 环回绕三道守卫一并复用。
-        const analysis::HopRange gate =
-            (selectedMask == 0 || (selectedMask & bit) != 0) ? timeGate : analysis::HopRange{0, 0};
+        // 正好推翻本卡要守住的性质(「绝不触碰其他区间已有结果」,04 §4.1)。
+        // 走 pullIncremental(drainOnly)而不是自己拨游标,是为了把 run 切换 / 回退 / 环回绕
+        // 三道守卫一并复用;drainOnly 同时绕开 kMaxBurstHops 限速,见那个参数的头注。
+        const bool selected = (selectedMask == 0 || (selectedMask & bit) != 0);
 
-        if (pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), gate) > 0)
+        if (pullIncremental(*b.header, b.ring, b.capacity, states_[ch - 1], store.channel(ch), timeGate,
+                            /*drainOnly=*/!selected) > 0)
         {
             refreshed |= 1u << (ch - 1);
         }

@@ -461,14 +461,19 @@ export function isLanesEmpty(store) {
  *              撤防(04 §4.2 ④ 的「采集 OFF 即解除布防」未实装,理由见 J87 的 PR 描述)——
  *              于是这一档正是那个状态的如实显示。
  *   armed      布防 ∧ 采集 ON ∧ 未播放 —— 真的只差按播放。
- *   capturing  布防 ∧ 采集 ON ∧ 播放中 ∧ 在 `global.range` 内(§2.6 `inRange`)
- *              ∧ 播放头落在布防区间 `[startS, endS)` 内 —— 此刻特征确实在写。
- *   outside    上面那条里「位置」两项有任一不成立 —— 在播,但没播到该采的地方。
+ *   capturing  布防 ∧ 采集 ON ∧ 播放中 ∧ 播放头落在布防区间 `[startS, endS)` 内 ——
+ *              此刻特征确实在写。
+ *   outside    在播,但没播到该采的地方。
+ *
+ * **[J87] `global.range`(§2.6 `inRange`)不再参与判定。** 引擎侧布防期间的记账门控是
+ * 「工作选区 × 选中轨掩码」,`global.range` 被整个换掉(04 §4.2 ①)—— 选区在 range 之外时
+ * 特征照写不误,而 `inRange` 会是 false。旧写法会在那种情形报「已离开重采集区」,
+ * 屏幕上说没在采、盘上却正在写,是**说反了**。判位置只看布防区间这一条。
  *
  * 纯函数:node 侧直接断言,不需要 DOM(与 tab-master 的 captureVisual 同口径)。
  *
  * @param {object} state    `scvb.state`(读 recapture 与 global.capture_enabled)
- * @param {object} playhead `scvb.playhead`(读 isPlaying / inRange / timeS)
+ * @param {object} playhead `scvb.playhead`(读 isPlaying / timeS)
  * @returns {"off"|"needcap"|"armed"|"capturing"|"outside"}
  */
 export function recaptureVisual(state, playhead) {
@@ -477,7 +482,7 @@ export function recaptureVisual(state, playhead) {
     if (!rec || !rec.armed) return "off";
     if (!((st.global || {}).capture_enabled === true)) return "needcap";
     if (!playhead || !playhead.isPlaying) return "armed";
-    if (playhead.inRange === false) return "outside";
+    // [J87] 不看 playhead.inRange —— 它算的是 global.range,而布防期的门控已经不是它了。
     const t = num(playhead.timeS, NaN);
     const s0 = num(rec.startS, 0);
     const s1 = num(rec.endS, 0);

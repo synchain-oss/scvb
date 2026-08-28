@@ -1427,8 +1427,28 @@ log("=== ⑥ mock 端到端(两段式 / 五 op / 布防 / 清除 / setRange)==="
             "noSelection",
             "布防拒绝 noSelection",
         );
+        // [J87] 只点了 §9.2 保留位(bit15)的掩码:掩完为 0,必须与「本来就传 0」同路径拒掉。
+        // 不掩码就判的写法会让它通过校验、落到引擎侧变成 0 —— 而 0 在记账侧是「**不限轨**」,
+        // 轨维门控整个退化,选区内所有在线轨被改写(PR #124 评审重要⑤;真桥同款守卫在
+        // OutputEditor::handleRecaptureArm 的入参掩码上)。
+        eq(
+            (await b.recaptureArm(0x8000, 30, 60)).reason,
+            "noTracks",
+            "[J87] 只点保留位的掩码 ⇒ noTracks(不得退化成「不限轨」)",
+        );
+        // [J87] 布防带副作用:自动打开 01 采集(裁定①),撤防恢复布防前的值。
+        // mock 必须与真桥同款,否则这条链又变成「冒烟测宽松那一侧」—— SL-190 的病根。
+        // 先把采集显式关掉,那个「替你开」才观测得到(fixture 默认是开着的)。
+        const capBefore = (await b.requestInitialState()).global
+            .capture_enabled;
+        await b.setCaptureEnabled(false);
         r = await b.recaptureArm(0b111, 30, 60, true);
         eq(r.armed, true, "布防受理");
+        eq(
+            (await b.requestInitialState()).global.capture_enabled,
+            true,
+            "[J87] 布防自动打开 01 采集",
+        );
         const rec = (await b.requestInitialState()).recapture;
         eq(
             [rec.armed, rec.tracksMask, rec.autoStop],
@@ -1440,6 +1460,13 @@ log("=== ⑥ mock 端到端(两段式 / 五 op / 布防 / 清除 / setRange)==="
             r.armed === false && !("reason" in r),
             "撤销布防 armed:false 无 reason",
         );
+        // [J87] 撤防把采集恢复成布防前的值(布防前被我们显式关成了 OFF)。
+        eq(
+            (await b.requestInitialState()).global.capture_enabled,
+            false,
+            "[J87] 撤防恢复布防前的采集态(只关我们开的那一次)",
+        );
+        await b.setCaptureEnabled(capBefore); // 还原,后面的断言不受影响
 
         // 清除(§1.24):真扣除 → clearedS>0、波形 covered 哨兵、coveragePct 降
         const covBefore = (await b.requestWaveform(ch, 20, 40, 64)).covered;
@@ -3321,14 +3348,18 @@ log(
             "outside",
             "(b6)播放头在布防区间外 ⇒ outside",
         );
+        // (b7)[J87] `global.range` **不再参与**布防态的位置判定。
+        // 引擎侧布防期间的记账门控是「工作选区 × 选中轨掩码」,global.range 被整个换掉
+        // (04 §4.2 ①)—— 选区落在 range 之外时特征照写不误,而 §2.6 的 inRange 会是 false。
+        // 旧断言(inRange=false ⇒ outside)钉的是修复前的口径:屏幕说没在采、盘上正在写。
         eq(
             TW.recaptureVisual(armedState(), {
                 isPlaying: true,
                 inRange: false,
                 timeS: 15,
             }),
-            "outside",
-            "(b7)离开 global.range(§2.6 inRange=false)⇒ outside,不报 capturing",
+            "capturing",
+            "(b7)[J87] 播放头在布防区间内 ⇒ capturing,与 global.range 无关",
         );
         // 边界:endS 是开区间(播到 20.0 整已经出去了)
         eq(

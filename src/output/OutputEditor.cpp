@@ -1910,7 +1910,11 @@ void OutputEditor::handleEditSegment(const ArgList& a, Completion c)
 
 void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
 {
-    const int tracksMask = a.size() > 0 ? static_cast<int>(a[0]) : 0;
+    // **先掩码再判**(PR #124 评审重要):`tracksMask` 是 §9.2 的 u16、bit15 保留 0,而
+    // processor 侧存的是 `& 0x7FFF`。拿未掩码的值判 noTracks 的话,`0x8000` 这类只点了保留位的
+    // 入参会通过校验、落进 processor 时变成 0 —— 而 0 在记账侧是「**不限轨**」,轨维门控整个
+    // 退化,选区内所有在线轨都被改写。掩码提前,让「掩完为 0」与「本来就是 0」走同一条拒绝路径。
+    const int tracksMask = (a.size() > 0 ? static_cast<int>(a[0]) : 0) & 0x7FFF;
     const double startS = a.size() > 1 ? static_cast<double>(a[1]) : 0.0;
     const double endS = a.size() > 2 ? static_cast<double>(a[2]) : 0.0;
     bool autoStop = false;
@@ -1960,7 +1964,7 @@ void OutputEditor::handleRecaptureArm(const ArgList& a, Completion c)
 
     // [J87] 布防即自动打开 01 采集(裁定①),并把记账门控换成「工作选区 × 选中轨掩码」
     // (裁定②)。全在 processor 里做 —— 撤防那条路要读同一份「是不是我们开的采集」的账。
-    processor_.armRecapture(static_cast<std::uint16_t>(tracksMask & 0x7FFF), startS, endS, autoStop);
+    processor_.armRecapture(static_cast<std::uint16_t>(tracksMask), startS, endS, autoStop);
     put(o, "armed", true);
     put(o, "tracksMask", tracksMask);
     put(o, "startS", startS);

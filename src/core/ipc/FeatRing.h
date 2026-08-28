@@ -197,8 +197,12 @@ private:
 
 // §3.3 读侧:单 channel 一次 seqlock 增量拉取。返回本拍写入 FrameStore 的 hop 数。
 // capacity 必须是 attach 时的几何快照(见 FeatPuller::bind),不得回读段头 capacity_hops。
+// drainOnly = **排空**([J87] 布防期未选中轨):一帧都不写,但把读游标一路推到写头。
+// 它与「传空 timeGate」不等价 —— 空 gate 仍受 kMaxBurstHops 每拍上限约束,离线快速渲染时
+// 写头一拍能跑出远超 256 hop,排空追不上,撤防后残留的那段就会被补拉进来盖掉既有特征。
+// 排空没有任何写入,不需要限速,直接跳到写头(run 切换 / 回退 / 环回绕三道守卫照常先跑)。
 uint32_t pullIncremental(const FeatHeader& header, const FeatFrame* ring, u32 capacity, FeatPullState& state,
-                         analysis::ChannelFrames& store, analysis::HopRange timeGate);
+                         analysis::ChannelFrames& store, analysis::HopRange timeGate, bool drainOnly = false);
 
 // Output [M] 25Hz 增量拉取驱动(04 §3.3;Analyze 前补拉即再调一次 pullTick)。
 // 门控:timeGate = 时间维(global.range 或布防工作选区);selectedMask = 轨维(bit{N-1} 选中轨,
