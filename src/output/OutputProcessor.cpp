@@ -2810,6 +2810,59 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 
         if (!result.cancelled)
         {
+            // [SL-206] VAD 后验写回 FrameStore —— 泳道绿线(§1.27 瓦片 vad 列)唯一的数据源。
+            // 此前这一步整个不存在:管线把后验算完就扔(传 nullptr),`vadP` 全仓没有生产者,
+            // 真机恒 0、绿线一次都没画出来过;web-preview 的 mock 自己算了一份,于是三个版本
+            // 都被 mock 盖住(用户两次被这条误导)。
+            // ⚠ **后验 ≠ 状态机判决**,泳道绿线与段块必然有出入,这是设计不是 bug(02 §2.4:
+            // 后验供 UI 热图)。`runEnergyVad` 的后验是 (l[k]-toff)/(ton-toff) 的截断值,
+            // `p>0.5` 只表示「过了双阈值中点」,不等于经过迟滞 + 丢短 + padding + 并段之后的判决;
+            // 守卫分支(LoudRegion 判全段有声)下后验甚至可能整体 <0.5。记在这里,免得下次
+            // 「绿线和段块对不齐」被当成 bug 再查一轮。
+            // 量化口径与读侧对齐:`waveformOf` 判 `vadP(h) > 127` 为有声,所以 0..1 → 0..255
+            // 四舍五入,p=0.5 恰好落 128(> 127)算有声,与 EnergyVad 的判决阈同侧。
+            // 只写**本次真参与分析**的轨与 hop(posterior 为空的轨跳过),绝不碰范围外的账。
+            {
+                auto& store = session_.frameStore();
+                for (int t = 0; t < 15; ++t)
+                {
+                    const auto& post = result.vadPosterior[static_cast<std::size_t>(t)];
+                    if (post.empty())
+                    {
+                        continue;
+                    }
+                    auto& frames = store.channel(static_cast<scvb::u32>(t + 1));
+                    for (std::size_t k = 0; k < post.size(); ++k)
+                    {
+                        const std::int64_t hop = result.firstHop + static_cast<std::int64_t>(k);
+                        if (hop < 0)
+                        {
+                            continue;
+                        }
+                        // 未覆盖的 hop **不写**:后验在那里恒 0,写进去只会把 20KB 的 FeatPage
+                        // 白建出来(setVadP 走 pageFor(create=true),既不看 readOnly_ 也不看 gate_),
+                        // 正好抵消 FrameStore 的分页稀疏性;而读侧 waveformOf 本来就只遍历覆盖区。
+                        // 顺带把循环压到**真有数据**的量级:post.size() = lastHop-firstHop 与覆盖量无关,
+                        // 一小时素材 ≈ 360k hop × 15 轨 ≈ 5.4M 次 map 查找,还全程持 lifecycleMutex_
+                        // 跑在消息线程上 —— 与 waveformOf 注释里记的那次 P0-A 冻死同一族
+                        // (「迭代数与实际数据量无关」)。
+                        if (!frames.hasHop(static_cast<std::uint64_t>(hop)))
+                        {
+                            continue;
+                        }
+                        // clamp 是**防御性**的,不是补漏:EnergyVad 出口(EnergyVad.cpp:145)已经
+                        // 把后验夹到 [0,1]。留着只为「量化这一步不依赖上游的值域承诺」。
+                        const float clamped = post[k] < 0.0f ? 0.0f : (post[k] > 1.0f ? 1.0f : post[k]);
+                        frames.setVadP(static_cast<std::uint64_t>(hop),
+                                       static_cast<std::uint8_t>(std::lround(clamped * 255.0f)));
+                    }
+                }
+            }
+
+            // ⚠ 合并注(#151 SL-206 × #152 SL-209):vadP 写回**留在 CRVS 事务之外**。
+            // 它写的是 FrameStore(采集特征面),不在 commitCrvsTransaction 的快照口径(CrvsData)里,
+            // 塞进 mutator 只会让 redo 重跑一遍同样的写、undo 又还原不了它。撤销的语义面只有段表。
+
             // [SL-209] 分析结果**可撤销**(用户新需求):把整轮回落包成一次 CRVS 事务压进
             // 既有 UndoManager —— 与段编辑同栈,Ctrl+Z 恢复分析前的段表、Ctrl+Y 重放分析结果。
             //

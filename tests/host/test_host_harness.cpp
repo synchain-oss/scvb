@@ -4311,6 +4311,200 @@ TEST_CASE("HOST SL-226:回归 —— 高 codecVer 工程里重新采集,新数�
     CHECK(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == Catch::Approx(coveredS));
 }
 
+// [SL-206] VAD 后验(vadP)必须有**生产者**。
+//
+// 定谳(ui-r2):泳道绿线的渲染侧齐全、`EnergyVad` 早就支持 `posteriorOut`、`FrameStore` 早就有
+// `setVadP`、`waveformOf` 早就按 `vadP(h) > 127` 给瓦片算 vad 列 —— 唯独中间那一段没人接:
+// 管线调 `runEnergyVad` 时第五参传 `nullptr`,后验算完就扔。于是 vadP 全仓**恒 0**,
+// 真机绿线一次都没画出来过;而 web-preview 的 mock 自己算了一份,preview 里一直看得见 ——
+// 这是「mock 盖住真机」的第三次(用户两次被它误导),所以本组用例断的是**真机数据面**。
+// ===========================================================================
+TEST_CASE("HOST SL-206:分析后 vadP 非全零,且与能量形状相关", "[host][t37][v55][SL206]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采一段**有声有静**交替的素材:后验若真接上了,它必须跟着这个形状走。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 有声
+        r.runBlocks(40, 0.0f, 4, 4); // 静音
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+
+    // 分析前:vadP 恒 0(生产者只有分析这一条路)。
+    {
+        const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 64);
+        int voicedBefore = 0;
+        for (const auto v : tile.vad)
+        {
+            voicedBefore += v ? 1 : 0;
+        }
+        REQUIRE(voicedBefore == 0); // 前置:分析前没有任何有声列
+    }
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    // ★ 分析后:瓦片的 vad 列**不再全零**(修复前这里恒 0 —— 绿线画不出来的直接判据)。
+    constexpr int kCols = 96;
+    const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, kCols);
+    int voiced = 0;
+    int coveredCols = 0;
+    double kwVoiced = 0.0;
+    double kwSilent = 0.0;
+    int nVoiced = 0;
+    int nSilent = 0;
+    for (int i = 0; i < kCols; ++i)
+    {
+        const auto k = static_cast<std::size_t>(i);
+        if (!tile.covered[k])
+        {
+            continue;
+        }
+        ++coveredCols;
+        if (tile.vad[k])
+        {
+            ++voiced;
+            kwVoiced += tile.maxDb[k];
+            ++nVoiced;
+        }
+        else
+        {
+            kwSilent += tile.maxDb[k];
+            ++nSilent;
+        }
+    }
+    REQUIRE(coveredCols > 0);
+    CHECK(voiced > 0); // ★ 核心:有声列存在
+    CHECK(voiced < coveredCols); // 且不是「全判有声」——那等于没判
+
+    // ★ 与能量形状相关:被判有声的列,包络峰值应显著高于被判静音的列。
+    REQUIRE(nVoiced > 0);
+    REQUIRE(nSilent > 0);
+    CHECK(kwVoiced / nVoiced > kwSilent / nSilent + 6.0); // 至少 6dB 的差
+}
+
+TEST_CASE("HOST SL-206:后验只写本次范围,范围外的 hop 不被动", "[host][t37][v55][SL206]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 10; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 4.0);
+    const double half = coveredS * 0.5;
+
+    // 只分析后半段。
+    REQUIRE(r.out.startAnalysis(0, half, coveredS).ok);
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    const auto front = r.out.waveformOf(kTestChannel, 0.0, half, 48);
+    const auto back = r.out.waveformOf(kTestChannel, half, coveredS, 48);
+    int voicedFront = 0;
+    int voicedBack = 0;
+    for (std::size_t i = 0; i < 48; ++i)
+    {
+        voicedFront += front.vad[i] ? 1 : 0;
+        voicedBack += back.vad[i] ? 1 : 0;
+    }
+    CHECK(voicedBack > 0); // 分析过的那一半:有声列出现
+    CHECK(voicedFront == 0); // 没分析的那一半:后验没被写过,仍是 0
+}
+
+// ---------------------------------------------------------------------------
+// [SL-206 复审重要②] 后验一有生产者,就同时激活了一条**以前不可能出现**的陈旧数据路径:
+// `ChannelFrames::write()` 只覆写 kw/peak,**不动 vadP**;`invalidate()` 也只打洞、页留着。
+// 于是「采集 → 分析 → 清除该区间 → 重采一遍别的音频」之后,kw/peak 是新的、vadP 还是上一份
+// 素材的判决 —— 泳道照着**旧素材**画绿线,直到用户再分析一次。
+// 修法:write() 里 O(1) 清 vadP(新特征进来 = 旧判决作废)。本例钉死它。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-206:清覆盖后重采,旧绿线不得残留", "[host][t37][v55][SL206]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // ① 采一段有声有静的素材并分析 → vadP 有值。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    const std::int64_t t0 = r.ph.timeSamples;
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(60, 0.5f, 4, 4);
+        r.runBlocks(40, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    const auto voicedCols = [&r](double a, double b, int cols) {
+        const auto tile = r.out.waveformOf(kTestChannel, a, b, cols);
+        int v = 0;
+        for (int i = 0; i < cols; ++i)
+        {
+            v += tile.vad[static_cast<std::size_t>(i)] ? 1 : 0;
+        }
+        return v;
+    };
+    REQUIRE(voicedCols(0.0, coveredS, 64) > 0); // 前置:绿线确实出来了
+
+    // ② 清除该区间的覆盖,再**重采一段纯静音**(与第一次完全不同的素材)。
+    r.out.clearCoverage(static_cast<std::uint16_t>(1u << (kTestChannel - 1)), 0.0, coveredS);
+    Rig::pumpMessages(200);
+    r.ph.timeSamples = t0; // 回到原处重采
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(100, 0.0f, 4, 4); // 全静音
+    }
+    Rig::pumpMessages(400);
+
+    // ★ 重采之后**没有再分析**:该区间的绿线必须已经作废(而不是照着旧素材继续画)。
+    CHECK(voicedCols(0.0, coveredS, 64) == 0);
+}
+
 // ===========================================================================
 // [SL-209] 分析结果可撤销(用户新需求)。
 //
