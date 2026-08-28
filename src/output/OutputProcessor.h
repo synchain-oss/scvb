@@ -524,6 +524,11 @@ private:
     // 一百来字节)。设置页存储状态行的分子;仅在 load/save 时更新,故「本会话新采集但尚未存盘」
     // 恒为 0 —— 与工程文件里的实际字节数一致,不是「内存里有多少」。
     std::int64_t featureBytes_ = 0;
+    // 上面两位(featCodecNewer_ / featRefUnresolved_)要「原样带走」的那份**原始 FEAT 字节**。
+    // 必须自己留一份,**不能指望 loadedChunks_**:载入一份只带 PRMS 的部分 blob(轨道/参数预设)
+    // 时 loadedChunks_ 会被整个换成 {PRMS},而那条路不走 readFeaturesChunk、两位也就不复位 ——
+    // 「什么都不做就是原样回写」的前提当场失效,那份不认识的字节永久消失(#147 三轮复审)。
+    std::vector<std::uint8_t> preservedFeatChunk_;
 
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。

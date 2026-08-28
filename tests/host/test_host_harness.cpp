@@ -4077,3 +4077,84 @@ TEST_CASE("HOST SL-226:回归 —— CFGS 损坏的完整工程不得留下上�
         scvb::state::StateLoadStatus::Ok);
     CHECK(out.find(scvb::state::kFourccFeat) == nullptr);
 }
+
+// [SL-226] 回归④(#147 三轮复审【重要】):「原样带走」的纪律不能挂在 loadedChunks_ 上。
+//
+// 三步序列:① 开一份 FEAT 是**高 codecVer**(本构建解不开)的工程 → 置 featCodecNewer_,
+// 该节必须原样带走;② 载一个只带 PRMS 的预设 → loadedChunks_ 被整个换成 {PRMS},而这条路
+// 不走 readFeaturesChunk、标志位不复位;③ 保存 → 若「原样回写」靠的是「chunks 从 loadedChunks_
+// 拷来、什么都不做即可」,此刻 chunks 里根本没有 FEAT —— 那份不认识的字节就永久消失了。
+// 修法是自己留底(preservedFeatChunk_)并在早退处**显式写回**。
+TEST_CASE("HOST SL-226:回归 —— 高 codecVer 的 FEAT 经 PRMS-only 预设后仍原样带走", "[host][v56][SL226]")
+{
+    // 造一份 FEAT payload 为「高 codecVer」的工程:拿真实容器,把 FEAT 换成 codecVer=99 的节。
+    juce::MemoryBlock baseBlob;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(120, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+        r.out.getStateInformation(baseBlob);
+    }
+
+    scvb::state::StateChunks base;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(baseBlob.getData()), baseBlob.getSize(), base).status ==
+        scvb::state::StateLoadStatus::Ok);
+    REQUIRE(base.find(scvb::state::kFourccFeat) != nullptr);
+
+    // 高 codecVer 的 FEAT 节:tag + codecVer=99 + 其余头字段(gzip 后放进 chunk)。
+    std::vector<std::uint8_t> raw;
+    const auto put32 = [&raw](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    const auto put16 = [&raw](std::uint16_t v) {
+        for (int i = 0; i < 2; ++i)
+            raw.push_back(static_cast<std::uint8_t>((v >> (8 * i)) & 0xFF));
+    };
+    put32(scvb::state::kFeatTag);
+    put16(99); // codecVer 远高于本构建
+    put16(scvb::state::kFeatFlagEmbedded);
+    put32(48000u);
+    put32(10u);
+    raw.push_back(0); // channelCount = 0
+    const auto futureFeat = scvb::state::gzipCompress(raw.data(), raw.size());
+    REQUIRE_FALSE(futureFeat.empty());
+
+    base.set(scvb::state::kFourccFeat, futureFeat);
+    std::vector<std::uint8_t> futureBlob;
+    REQUIRE(scvb::state::encodeContainer(base, futureBlob));
+
+    // 只带 PRMS 的预设 blob。
+    scvb::state::StateChunks presetOnly;
+    presetOnly.abi = scvb::state::kCurrentAbi;
+    presetOnly.set(scvb::state::kFourccPrms, base.find(scvb::state::kFourccPrms)->payload);
+    std::vector<std::uint8_t> presetBlob;
+    REQUIRE(scvb::state::encodeContainer(presetOnly, presetBlob));
+
+    Rig r2;
+    // ① 载入高 codecVer 工程。
+    r2.out.setStateInformation(futureBlob.data(), static_cast<int>(futureBlob.size()));
+    Rig::pumpMessages(200);
+    CHECK(r2.out.featureBytes() == static_cast<std::int64_t>(futureFeat.size())); // 解不开也如实报大小
+
+    // ② 载入只带 PRMS 的预设(loadedChunks_ 被换成 {PRMS})。
+    r2.out.setStateInformation(presetBlob.data(), static_cast<int>(presetBlob.size()));
+    Rig::pumpMessages(200);
+
+    // ③ 保存:那份解不开的 FEAT 必须**逐字节还在**。
+    juce::MemoryBlock resaved;
+    r2.out.getStateInformation(resaved);
+    scvb::state::StateChunks out;
+    REQUIRE(
+        scvb::state::loadState(static_cast<const std::uint8_t*>(resaved.getData()), resaved.getSize(), out).status ==
+        scvb::state::StateLoadStatus::Ok);
+    const scvb::state::Chunk* kept = out.find(scvb::state::kFourccFeat);
+    REQUIRE(kept != nullptr); // ← 修复前:这里是 nullptr,用户的高版本特征被静默丢弃
+    CHECK(kept->payload == futureFeat); // 逐字节相等,不是"重编了一份空的"
+}

@@ -1236,10 +1236,22 @@ std::filesystem::path ScvbOutputAudioProcessor::sidecarBaseDir()
 
 void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chunks)
 {
-    // 读到过更高 codecVer:原样保留 loadedChunks_ 里那份,绝不用「我这边解出来是空的」去覆盖。
-    // chunks 是从 loadedChunks_ 拷来的,什么都不做就是原样回写。
+    // 「原样带走」的两条路(高 codecVer / 引用解不开)都**显式把留底字节写回去**,而不是靠
+    // 「chunks 是从 loadedChunks_ 拷来的,什么都不做就是原样回写」。那个前提会塌:
+    // 载入一份只带 PRMS 的部分 blob(轨道/参数预设)时 loadedChunks_ 被整个换成 {PRMS},
+    // 而那条路不走 readFeaturesChunk、两位不复位 —— 再保存时 chunks 里根本没有 FEAT 可"原样",
+    // 那份不认识的字节 / sidecar 的 GUID+sha256 指针就永久消失了(#147 三轮复审)。
+    const auto reinstatePreserved = [this, &chunks]() {
+        if (!preservedFeatChunk_.empty())
+        {
+            chunks.set(scvb::state::kFourccFeat, preservedFeatChunk_);
+        }
+    };
+
+    // 读到过更高 codecVer:原样带走,绝不用「我这边解出来是空的」去覆盖用户的真数据。
     if (featCodecNewer_)
     {
+        reinstatePreserved();
         return;
     }
 
@@ -1256,13 +1268,31 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         {
             // ① 工程本来有引用节,只是这次没读出来(sidecar 不在 / sha256 不符)。删掉 chunk
             //    等于把找回它的**唯一线索**也删了 —— 文件还在磁盘上,工程里却再没有指针。
-            //    原样保留,用户把外部文件接回去(换机拷贝/恢复备份)就还能救。
+            //    原样带走,用户把外部文件接回去(换机拷贝/恢复备份)就还能救。
+            reinstatePreserved();
             return;
         }
         // ② 真的一轨都没采过 / 特征被清空:删掉 chunk。留着上一版会让重开时又把旧波形捞回来。
+        // 上一次真转出过 sidecar 的话,顺手回收那个目录 —— 工程里的引用已经删了,再没人指向它,
+        // 不删就是一份永远不会被读到的磁盘垃圾。两道闸与「收回内嵌」那条同口径:
+        // 他人活锁不删;引用没解开过(那份根本不是我们认下的)也不删。
+        if (featuresSidecar_ && !featRefUnresolved_)
+        {
+            scvb::state::SidecarStore store(sidecarBaseDir());
+            const auto self = scvb::state::currentProcessIdentity();
+            scvb::state::OwnerLock lock;
+            const bool heldByOther = store.readOwnerLock(sessionGuid_.toStdString(), lock) &&
+                                     scvb::state::isOwnerLockAlive(lock, scvb::state::epochMsNow()) &&
+                                     !(lock.pid == self.pid && lock.processStartEpochMs == self.processStartEpochMs);
+            if (!heldByOther)
+            {
+                store.remove(sessionGuid_.toStdString());
+            }
+        }
         chunks.remove(scvb::state::kFourccFeat);
         featuresSidecar_ = false;
         featureBytes_ = 0;
+        preservedFeatChunk_.clear();
         return;
     }
 
@@ -1358,10 +1388,14 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
 
 void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks& chunks)
 {
+    // 调用前提:**只在加载一份完整工程时调**(正常路径 = 函数最后一步;CFGS 损坏路径 = 那处
+    // 早退前补的一次)。只带 PRMS 的部分 blob 不得调它 —— 那种 blob 没有「本工程的特征」这一说,
+    // 动 FrameStore 就是把「没有信息」当成了「删除全部」(SL-217/#126 的纪律)。
     featCodecNewer_ = false;
     featuresSidecar_ = false;
     featRefUnresolved_ = false;
     featureBytes_ = 0;
+    preservedFeatChunk_.clear();
 
     const scvb::state::Chunk* feat = chunks.find(scvb::state::kFourccFeat);
     if (feat == nullptr)
@@ -1376,8 +1410,12 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
     const auto decoded = scvb::state::decodeFeatures(feat->payload.data(), feat->payload.size());
     if (decoded.codecVerNewer)
     {
-        // 高版本特征:按空处理(画不出来总比画错强),但置位让 save 原样回写原始字节。
+        // 高版本特征:按空处理(画不出来总比画错强),但留底 + 置位,让 save 原样带走原始字节。
         featCodecNewer_ = true;
+        preservedFeatChunk_ = feat->payload;
+        // 存储行仍报这一节的真实大小 —— 解不开不等于它不占地方,报 0 会让一份 5MB 的工程
+        // 显示「内嵌于工程 0.0 MB」。
+        featureBytes_ = static_cast<std::int64_t>(feat->payload.size());
         session_.frameStore().reset();
         DBG("SCVB Output: FEAT codecVer newer than build; features shown empty, bytes preserved verbatim");
         return;
@@ -1412,13 +1450,15 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
         // 保存侧**原样保留这一节** —— 否则下次保存会把 GUID+sha256 一并删掉,文件还在磁盘上
         // 却再也找不回来。
         featRefUnresolved_ = true;
+        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节
         session_.frameStore().reset();
         DBG("SCVB Output: sidecar missing for session " << decoded.ref.sessionGuid);
         return;
     }
     if (scvb::state::sha256(gz.data(), gz.size()) != decoded.ref.sha256)
     {
-        featRefUnresolved_ = true; // 同上:不认它,但也不销毁指针
+        featRefUnresolved_ = true;
+        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节 // 同上:不认它,但也不销毁指针
         session_.frameStore().reset();
         DBG("SCVB Output: sidecar sha256 mismatch; refusing to load");
         return; // 内容与工程记录的不符:拒载,不拿别的工程的特征冒充本工程的
@@ -1444,12 +1484,14 @@ void ScvbOutputAudioProcessor::readFeaturesChunk(const scvb::state::StateChunks&
     if (!inner.ok || !inner.embedded)
     {
         featRefUnresolved_ = true;
+        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节
         session_.frameStore().reset();
         return; // sidecar 里又是一层引用 = 数据不自洽,拒载
     }
     if (!featureHopMatchesBuild(inner.features.hopMs))
     {
         featRefUnresolved_ = true;
+        preservedFeatChunk_ = feat->payload; // 留底:保存时显式原样带走这一节
         session_.frameStore().reset();
         return;
     }
