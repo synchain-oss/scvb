@@ -49,6 +49,7 @@ add_executable(scvb_tests
   core/test_design_box.cpp
   core/test_state_codec.cpp
   core/test_state_features_roundtrip.cpp
+  core/test_features_snapshot.cpp
   core/test_segment_edit.cpp
   core/test_audio_ring.cpp
   core/test_output_stage.cpp

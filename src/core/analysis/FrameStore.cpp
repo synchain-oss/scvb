@@ -107,6 +107,16 @@ void ChannelFrames::write(uint64_t hop, float kw_ms, float peak)
     coverage_.add(HopRange{hop, hop + 1});
 }
 
+void ChannelFrames::restoreHop(uint64_t hop, int16_t kwDbq, int16_t peakDbq, uint8_t vad)
+{
+    // 见头注:刻意不看 readOnly_/gate_,也刻意不记账。
+    FeatPage* page = pageFor(hop, /*create=*/true);
+    const uint32_t idx = static_cast<uint32_t>(hop % FeatPage::kHops);
+    page->kw_dBq[idx] = kwDbq;
+    page->peak_dBq[idx] = peakDbq;
+    page->vadP[idx] = vad;
+}
+
 int16_t ChannelFrames::kwDbq(uint64_t hop) const
 {
     const FeatPage* page = pageForRead(hop);

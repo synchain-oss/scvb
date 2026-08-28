@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -199,6 +200,8 @@ public:
     juce::String sessionGuid() const { return sessionGuid_; }
     // [SL-215] 工程内嵌特征字节数 = FEAT chunk 实际大小(无 FEAT → 0)。设置页存储状态行的真源。
     std::int64_t embeddedFeatureBytes() const;
+    // [SL-226] 特征当前是否落在外部 sidecar(设置页存储状态行的另一半;true = 已转出)。
+    bool featuresInSidecar() const;
     // 桥面 ui 落 state(§1.30 setLang / §1.29 commitUiScale)。基类 WebViewHost 只维护 editor
     // 局部值,而 §2.1 的 ui.language / ui.scale 取自这里 —— 不落 processor,下一次 state emit
     // 会把旧值回推给 UI(T37 真机 bug A-1:选中文后切 tab 变回英文)。
@@ -416,6 +419,14 @@ private:
     // 不可变契约(ADR-005);非锁定 —— 调用方须已持 lifecycleMutex_(rebindVersion 与 CRVS 写事务)。
     void rebuildAllCurves();
 
+    // [SL-226] 特征持久化两端。调用方须已持 lifecycleMutex_(与 get/setStateInformation 同锁)。
+    // writeFeaturesChunk:FrameStore → FEAT chunk;超 ADR-007 阈值转 sidecar(写引用节)。
+    // readFeaturesChunk:FEAT chunk → FrameStore(embedded 直解;引用节经 sessionGuid 读 sidecar)。
+    void writeFeaturesChunk(scvb::state::StateChunks& chunks);
+    void readFeaturesChunk(const scvb::state::StateChunks& chunks);
+    // sidecar 落盘根目录 = <appdata>/Synchain/SCVB(与 UiDefaultsStore 同根,STATE_SCHEMA §4.3)。
+    static std::filesystem::path sidecarBaseDir();
+
     // [J87] 采集开关的**不加锁**内核:调用方须已持 lifecycleMutex_。setCaptureEnabled 是它的
     // 加锁外壳;25Hz tick 全程持锁,自动撤防那一路直接用内核,不去依赖 CriticalSection 的可重入。
     void applyCaptureEnabled(bool on);
@@ -494,6 +505,15 @@ private:
     scvb::state::StateChunks loadedChunks_; // 上次成功加载的容器(FEAT/CRVS/未知 fourcc 原样回写,T19 纪律)
     std::vector<std::uint8_t>
         preservedCfgsTail_; // CFGS 已知字段之后的未知尾部(未来小版本追加;save 原样回写,防静默丢字段)
+
+    // [SL-226] 特征持久化的两位运行时态。
+    // featuresSidecar_:上一次落盘是否走了 sidecar —— `shouldUseSidecar` 的回滞(>8MB 转出 /
+    // <6MB 收回)需要「当前在哪一侧」才判得了,只看本次字节数会在阈值附近来回抖。
+    bool featuresSidecar_ = false;
+    // featCodecNewer_:读到 codecVer 高于本构建的 FEAT。此时特征按空处理,但**绝不重编码** ——
+    // 保存时原样回写 loadedChunks_ 里那份原始 chunk(与容器级 abi 拒载同一条纪律:
+    // 不认识的数据只能原样带走,不能用「我这边是空的」去覆盖用户的真数据)。
+    bool featCodecNewer_ = false;
 
     bool prepared_ = false;
     // 跨线程读写(宿主 prepareToPlay/音频线程写 vs editor emitTick/消息线程读)→ 必须原子(PR#55 第9轮)。

@@ -3793,3 +3793,145 @@ TEST_CASE("HOST SL-225:布防替用户开的采集不得被存进工程", "[host
     Rig::pumpMessages(600);
     CHECK(r.out.captureStale(kTestChannel));
 }
+
+// ---------------------------------------------------------------------------
+// [SL-226] 采集特征随工程往返 —— 重开工程泳道波形不得消失。
+//
+// 用户 v5.6 实测:保存 → 重开,**分段标记与分析内容都在,泳道波形全没**。
+// 根因是特征持久化整条从未接通:段表走 CRVS(编解码都真接了),波形来自 FrameStore,
+// 而 FEAT 节此前没有任何生产写点/读点 —— FrameStore 是纯内存,一关工程就没了。
+// 两条持久化路径一条接了一条没接,所以只丢一半。
+//
+// 本用例走真 processor 的 get/setStateInformation,把「采集 → 存 → 毁内存 → 载 → 出图」
+// 整条钉住;搬运层本身的逐 hop 往返在 tests/core/test_features_snapshot.cpp。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-226:采集特征随工程往返,重开后泳道波形仍在", "[host][v56][SL226]")
+{
+    juce::MemoryBlock blob;
+    double coveredS = 0.0;
+    std::vector<int> beforeCovered;
+    std::vector<double> beforeMax;
+    std::vector<double> beforeMin;
+
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+
+        coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+        REQUIRE(coveredS > 0.0); // 前置:确实采到了东西,否则往返断言没有意义
+
+        const auto tile = r.out.waveformOf(kTestChannel, 0.0, coveredS, 64);
+        beforeCovered.assign(tile.covered.begin(), tile.covered.end());
+        beforeMax.assign(tile.maxDb.begin(), tile.maxDb.end());
+        beforeMin.assign(tile.minDb.begin(), tile.minDb.end());
+        REQUIRE(std::count(beforeCovered.begin(), beforeCovered.end(), 0) < 64); // 存前有波形
+
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // Rig 析构 = 内存里的 FrameStore 连同实例一起没了(等价于关工程)
+
+    // 全新实例 = 重开工程。加载前必须是空的,否则下面的断言证明不了任何事。
+    Rig r2;
+    REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+
+    // ① 覆盖回来了。
+    const double after = r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    CHECK(after == Catch::Approx(coveredS));
+
+    // ② 波形逐列与存前对拍 —— 这一条修复前恒红:整条泳道 covered 全 0。
+    const auto tile2 = r2.out.waveformOf(kTestChannel, 0.0, coveredS, 64);
+    REQUIRE(tile2.covered.size() == beforeCovered.size());
+    int coveredCols = 0;
+    for (std::size_t i = 0; i < beforeCovered.size(); ++i)
+    {
+        INFO("col=" << i);
+        CHECK(tile2.covered[i] == beforeCovered[i]);
+        if (beforeCovered[i] != 0)
+        {
+            ++coveredCols;
+            // 落盘存的就是量化值(int16 dB×100),回灌不再二次量化,所以包络应当原样回来。
+            CHECK(tile2.maxDb[i] == Catch::Approx(beforeMax[i]));
+            CHECK(tile2.minDb[i] == Catch::Approx(beforeMin[i]));
+            CHECK(tile2.maxDb[i] > -160.0); // 不是哨兵
+        }
+    }
+    CHECK(coveredCols > 0);
+
+    // ③ 没采过的远端仍如实回「未覆盖」:回灌不许把空洞填平。
+    // (变量名别用 far —— windows.h 把 far/near 定义成宏了。)
+    const auto distant = r2.out.waveformOf(kTestChannel, 600.0, 610.0, 16);
+    for (const int c : distant.covered)
+    {
+        CHECK(c == 0);
+    }
+}
+
+// [SL-226] 反向①:没采集过的工程存下去不带 FEAT,读回来也不该凭空长出波形。
+TEST_CASE("HOST SL-226:反向 —— 未采集的工程往返后仍无波形", "[host][v56][SL226]")
+{
+    juce::MemoryBlock blob;
+    {
+        Rig r;
+        r.out.getStateInformation(blob); // 从没开过采集
+        REQUIRE(blob.getSize() > 0);
+    }
+
+    Rig r2;
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+
+    CHECK(r2.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+    const auto tile = r2.out.waveformOf(kTestChannel, 0.0, 10.0, 32);
+    for (const int c : tile.covered)
+    {
+        CHECK(c == 0);
+    }
+}
+
+// [SL-226] 反向②:特征被清空后再保存,必须把 FEAT 一并删掉 —— 留着上一版会让重开时
+// 把已经不存在的波形又捞回来。清空走**改组**这条真实用户路径([J66]:frameStore 按 channel
+// 索引存、没有 group 维度,改组必须整店作废)。
+TEST_CASE("HOST SL-226:反向 —— 特征清空后保存,重开不得捞回旧波形", "[host][v56][SL226]")
+{
+    juce::MemoryBlock withFeat;
+    juce::MemoryBlock cleared;
+    {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+        r.out.setCaptureEnabled(true);
+        Rig::pumpMessages(400);
+        r.runBlocks(200, 0.5f);
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+        r.out.getStateInformation(withFeat);
+
+        r.out.setGroupId(6); // 改组 → frameStore 整店作废
+        Rig::pumpMessages(300);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+        r.out.getStateInformation(cleared);
+    }
+
+    // 带 FEAT 的那份照常恢复(前置:证明这两份 blob 确实不同)。
+    {
+        Rig a;
+        a.out.setStateInformation(withFeat.getData(), static_cast<int>(withFeat.getSize()));
+        Rig::pumpMessages(200);
+        CHECK(a.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS > 0.0);
+    }
+    // 清空后保存的那份,重开必须仍是空的。
+    {
+        Rig b;
+        b.out.setStateInformation(cleared.getData(), static_cast<int>(cleared.getSize()));
+        Rig::pumpMessages(200);
+        CHECK(b.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
+    }
+}
