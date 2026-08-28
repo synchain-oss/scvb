@@ -193,3 +193,5 @@
 
 [Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/synchain-oss/scvb/releases/tag/v0.1.0
+
+<!-- SL-206 重铸标记 2026-08-28T10:13:23-04:00 -->
