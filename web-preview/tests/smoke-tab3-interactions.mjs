@@ -1330,9 +1330,16 @@ log("=== ⑤ token 存在性 + mock 假波形(5min×15,J59)===");
             ),
             "[SL-206] 管线把 VAD 后验带出(不再传 nullptr)",
         );
+        // [SL-232] 入口从逐 hop 的 `frames.setVadP(` 换成了批量的 `.setVadPosteriorRange(`
+        // (逐 hop 版是每 hop 两次 map 查找、迭代数等于分析跨度,与实际数据量无关)。
+        // ⚠ 不再保留 `frames.setVadP(` 那一支:生产代码已无调用方,留着等于「逐 hop 循环
+        // 写回来也照样绿」,把 SL-232 的回归口子敞开(#156 复审【建议】4)。
+        // 带**前导点**锚定调用形态,免得将来散文注释里出现同名字样误绿。
         check(
-            /frames\.setVadP\(/.test(src("src/output/OutputProcessor.cpp")),
-            "[SL-206] finishAnalysis 把后验写回 FrameStore",
+            /\.setVadPosteriorRange\(/.test(
+                src("src/output/OutputProcessor.cpp"),
+            ),
+            "[SL-206/SL-232] finishAnalysis 经批量入口把后验写回 FrameStore",
         );
     }
 

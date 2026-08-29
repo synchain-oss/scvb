@@ -191,9 +191,18 @@ TEST_CASE("PIPE-6 后验灌进 PipelineResult:参与轨有值、未参与轨留�
     std::array<PipelineTrackFeatures, kPipelineTracks> features;
     features[0] = makeAlternating(4, 40, 30, 0.02f); // 轨1:参与
     features[1] = makeAlternating(4, 40, 30, 0.02f); // 轨2:有数据但下面会被 enabled=false 关掉
-    // 轨3:enabled 但无覆盖(anyCovered=false)
+    // 轨3:**enabled 且 kwMs 非空,但 anyCovered=false** —— 管线的跳过判据是
+    // `!tc.enabled || !f.anyCovered || f.kwMs.empty()` 三选一,三条得分开钉。
+    // ⚠ 修复前这里只写了注释、没有真造出这个形状:`makeConfig(n, 1)` 把轨2/轨3 一起
+    // enabled=false 了,于是两条空断言走的都是 `!tc.enabled`,`anyCovered=false` 那支
+    // 一次都没被执行过(#151 复审【重要】2)。
+    features[2] = makeAlternating(4, 40, 30, 0.02f);
+    features[2].covered.assign(features[2].kwMs.size(), 0u); // 一个 hop 都没采到
+    features[2].anyCovered = false;
+
     const std::size_t n = features[0].kwMs.size();
     PipelineConfig cfg = makeConfig(n, /*activeTracks=*/1); // 只有轨1 enabled
+    cfg.tracks[2].enabled = true; // ★ 轨3 开着 —— 这样留空只可能是 anyCovered=false 挡的
 
     const PipelineResult r = runAnalysisPipeline(features, cfg);
     REQUIRE_FALSE(r.cancelled);
@@ -236,8 +245,11 @@ TEST_CASE("PIPE-6 后验灌进 PipelineResult:参与轨有值、未参与轨留�
     CHECK(loudSum / loudN > quietSum / quietN + 0.3);
 
     // ★ 未参与的轨留空(与 segments 同口径:关掉的轨 / 无覆盖的轨都不填)。
-    CHECK(r.vadPosterior[1].empty()); // enabled=false
-    CHECK(r.vadPosterior[2].empty()); // 无覆盖
+    CHECK(r.vadPosterior[1].empty()); // enabled=false 这一支
+    // ★ 这一条走的是 anyCovered=false —— 轨3 是 enabled 的、kwMs 也非空,
+    //   留空的唯一原因只能是无覆盖。反向验证:把上面那行 anyCovered 改回 true → 本条红。
+    CHECK(r.vadPosterior[2].empty());
+    CHECK(r.segments[2].empty()); // 同一支也不许产段
 }
 
 TEST_CASE("PIPE-7 后验的 firstHop 与局部分析范围一致", "[analysis][pipeline][vad][SL206]")

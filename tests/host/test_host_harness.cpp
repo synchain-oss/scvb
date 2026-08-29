@@ -202,6 +202,54 @@ struct Rig
         const auto& c = snap.channels[kTestChannel - 1];
         return c.slotState == scvb::kSlotActive && c.heartbeatAgeMs <= 2000;
     }
+
+    // [SL-222] 等到**音频真的在流**(本轨电平量得到东西)。
+    //
+    // `waitUntilInjected` 只保证**控制面**通了:slot claim + 心跳新鲜。它不保证
+    // [J32] 的 200ms 注入延迟已经走完,更不保证首块音频已经进环、被 Output 量到 ——
+    // 机器负载高时 `meterSnapshot()` 会间歇性地还停在地板上,L-2/L-3 于是以
+    // `trackPeak == 0` 假红(既有假红,与代码无关)。写法照 SL-189 那条用例的 settle 循环。
+    //
+    // 判据用**本轨** trackPeak,而不是 busPeak:总线可能被别的轨先点亮,那对
+    // 「这一轨的电平通了没有」不构成证据。
+    //
+    // ⚠ 它**只等,不断言** —— 等满预算仍是 0 时照样返回 false 让调用方的 CHECK 去红。
+    // 真回归(电平恒地板)时判据必须还留在用例里,不能被这个 helper 悄悄搬走。
+    bool waitUntilAudioFlowing(int maxRounds = 60)
+    {
+        for (int i = 0; i < maxRounds; ++i)
+        {
+            if (out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f)
+            {
+                return true;
+            }
+            runBlocks(4, 0.5f, /*pumpEveryN=*/2, /*pumpMs=*/8);
+        }
+        return out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f;
+    }
+
+    // [SL-222] 反向的同一件事:喂静音,等本轨电平**落回地板**。
+    //
+    // 为什么也需要它:Input 量到的电平经 IPC 到 Output 有一段管线延迟,「喂 40 块静音」
+    // 是个拍脑袋的定长,并不保证那段延迟已经走完。实测**单独跑** `[L2]` 时
+    // `quiet.trackPeak` 会稳定停在 0.49999(上一段有声的值)而整套跑就是绿的 ——
+    // 差别只是整套里前面那些用例顺带把管线预热了。这与有声那一向是同一族的时序耦合,
+    // 一并按 settle 修掉,顺带让这一例**单独跑也成立**(此前只有整套跑才绿)。
+    //
+    // 同样**只等不断言**:落不回去(真回归 = 液柱冻在上一块的高度)时等满预算返回 false,
+    // 判据仍留在用例的 CHECK 上。
+    bool waitUntilAudioQuiet(int maxRounds = 60)
+    {
+        for (int i = 0; i < maxRounds; ++i)
+        {
+            if (out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f)
+            {
+                return true;
+            }
+            runBlocks(4, 0.0f, /*pumpEveryN=*/2, /*pumpMs=*/8);
+        }
+        return out.meterSnapshot().trackPeak[kTestChannel - 1] == 0.0f;
+    }
 };
 
 } // namespace
@@ -253,6 +301,12 @@ TEST_CASE("HOST L-2/L-3:有声时电平快照非零,静音后落回地板", "[ho
     REQUIRE(r.waitUntilInjected());
 
     // 有声:该轨与总线都应量到非零电平(修复前恒为 -60dB 地板 → 线性 0)。
+    //
+    // [SL-222] 先 settle 再取快照:claim + 心跳只说明控制面通了,不代表首块音频已经
+    // 进环并被量到,机器负载高时下面的 trackPeak 会间歇性地还是 0(假红)。
+    // settle 只等不断言,判据仍是下面那几条 CHECK —— 真回归时它等满预算,CHECK 照样红。
+    const bool flowing = r.waitUntilAudioFlowing();
+    INFO("waitUntilAudioFlowing=" << flowing); // 假红与真回归在失败输出里一眼可分
     r.runBlocks(40, /*amplitude=*/0.5f);
     const auto loud = r.out.meterSnapshot();
     const std::size_t idx = kTestChannel - 1;
@@ -262,7 +316,16 @@ TEST_CASE("HOST L-2/L-3:有声时电平快照非零,静音后落回地板", "[ho
     CHECK(loud.trackPeak[idx] >= loud.trackRms[idx]); // 峰值不小于 RMS
 
     // 静音输入:测量随之回零(液柱落底,而不是冻在上一块的高度)。
+    // [SL-222] 同样先 settle:定长的 40 块并不保证 Input→IPC→Output 这段管线延迟走完。
+    //
+    // ⚠ 先 REQUIRE(flowing):`waitUntilAudioQuiet` 有一条**平凡通过**路径 —— 这一轨若从来
+    // 就没通过(电平恒 0),它第一轮即 return true,下面两条 CHECK 也随之平凡为真。
+    // 上半段虽然会先红、INFO 也能分辨,但把前提显式钉住,静音这半边才真的有判据
+    // (#156 复审【建议】5)。
+    REQUIRE(flowing);
     r.runBlocks(40, /*amplitude=*/0.0f);
+    const bool quieted = r.waitUntilAudioQuiet();
+    INFO("waitUntilAudioQuiet=" << quieted);
     const auto quiet = r.out.meterSnapshot();
     CHECK(quiet.trackPeak[idx] == 0.0f);
     CHECK(quiet.trackRms[idx] == 0.0f);
@@ -4541,6 +4604,14 @@ TEST_CASE("HOST SL-206:清覆盖后重采,旧绿线不得残留", "[host][t37][v
         r.runBlocks(100, 0.0f, 4, 4); // 全静音
     }
     Rig::pumpMessages(400);
+
+    // 前置:重采**确实落账**了(#151 复审【重要】1)。`waveformOf` 对未覆盖的列一律返回
+    // covered=0/vad=0(哨兵纪律),所以下面那个 0 有**两条**通过路径:想断的那条是
+    // `write()` 里 `page->vadP[idx]=0` 生效;不想要的那条是重采根本没落账
+    // (FeatPuller 的 lastPulled 单调推进,playhead 回跳后这批 hop 会被整批跳过)——
+    // 那时该区间自始至终没有覆盖列,断言同样为 0 而 write() 一次都没被调用,
+    // 这一例就再也钉不住那行。加这条硬前置把第 2 条路堵死。
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, coveredS).coveredS > 0.0);
 
     // ★ 重采之后**没有再分析**:该区间的绿线必须已经作废(而不是照着旧素材继续画)。
     CHECK(voicedCols(0.0, coveredS, 64) == 0);
