@@ -14,6 +14,9 @@
 //
 // 组号纪律:一律用测试专用组(kTestGroup),避开开发机上可能正在跑的 DAW 活实例(g1/g2),
 // 与 scvb_stress 的 v10 约定同口径。段随进程退出销毁。
+// [SL-231] 另有一个**保留组** kNoWriterGroup:本文件恒不在该组建任何段,viz 的反向断言
+// (「邻组没有写方 ⇒ 只读方拿空态」)靠它成立。给新用例分组号时**不要分它**,
+// 否则那条反向会变成一次难解释的假红 —— 失败信息指向 viz 装配,真因却是组号撞车。
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -43,6 +46,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <limits>
+#include <set> // [SL-231] GestureSpy 的配对校验
 
 // createEditor 是虚函数,vtable 需要定义。真实定义在 *PluginEntry.cpp —— 那两个 TU 会把
 // WebViewHost/WebView2 拖进来,harness 不编它们(见 OutputPluginEntry.cpp 头注)。
@@ -62,6 +66,10 @@ namespace
 
 // 测试专用组:避开 DAW 活实例常用的 g1/g2。
 constexpr int kTestGroup = 7;
+
+// [SL-231] 保留组:**恒无写方**,只给 viz 反向断言用。本文件出现过的组号是 4/5/6/7/9,
+// 8 空着 —— 勿分配给任何 rig(理由见文件头「组号纪律」)。
+constexpr int kNoWriterGroup = 8;
 constexpr int kTestChannel = 3;
 constexpr double kSr = 48000.0;
 constexpr int kBlock = 512;
@@ -4816,6 +4824,277 @@ TEST_CASE("HOST SL-209:空转分析(零产出)不压撤销步、不吃掉重做�
     // ★ 也没多压一条空步:一次 undo 就该弹回编辑前,而不是先弹掉一条恒等步。
     CHECK(r.out.undo());
     CHECK(sameSegments(segmentsOfTrack(r.out, kCh), beforeEdit));
+}
+
+// ===========================================================================
+// SL-231 长链端到端护栏(盘点矩阵见 docs/testing/long-chain-e2e-map.md)
+//
+// 立卡背景:04 §4.5 的指纹链在 v5.6 之前**零端到端护栏**,于是 J87 那个「布防替用户开的
+// 采集态泄漏进工程」的洞一路睡到用户手里才被发现(#146 定谳)。盘点六条跨进程/跨线程长链后,
+// 只有两处仍是「每一跳都有单测、整条链没人走」——本节各补一条,判据一律落在**链末端的
+// 可观测量**上,不看被测物自己的内部计数器。
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// SL-231 ①:viz 发布链 —— 真 Output 的配置/曲线 → viz 段 → 只读方读回。
+//
+// 既有覆盖为什么不够:viz 段的读写语义有 tests/core/test_viz_plane.cpp 守着,跨进程一致性
+// 有 tests/ipc/test_ipc_viz.cpp(VIZ-1/3/4)与 tests/core/test_monitor_harness.cpp 守着 ——
+// 但**那三处的写方全是手搓 VizPublishInput 的 peer 或裸 VizPublisher**。真 Output 里
+// `publishVizFrame()` 的那段装配(轨名 toStdString、leadMask/stereoMask 逐位、widthPct 取
+// 活动版本的参数句柄、versionActive、playheadSnapshot、metaRevision 哈希)**没有任何用例
+// 走过**。装配错一位——leadMask 取错字段、label 差一个下标、version 差一——段里就是错值,
+// Monitor 画的就是错图,而上面那三处照样全绿。这正是 T37「数据面从未接线」那一族的形状。
+//
+// 判据落点 = 只读方 `VizPlane::attachReadOnly()` + `read()` 读回的帧,不碰 publisher 内部。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方逐字段读回", "[host][sl231][viz][e2e]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // **先切到版本 2**:`VizPublishInput::versionActive` 与 `VizSnapshot::versionActive` 的结构体
+    // 默认值都是 1,而 Rig 恒在版本 1 —— 不切版本的话,把装配里那行 `in.versionActive = ...`
+    // 整行删掉,断言照样绿(PR #155 复审【重要】①)。切版本还会走 rebindVersion,
+    // 顺带把「切版本 → 车道/句柄重绑」这一跳一起串上。
+    r.out.setVersionActive(2);
+
+    // 被观察轨:改配置 —— 这一份 runtime 就是 publishVizFrame 的输入。
+    auto& cfg = r.out.runtime().channels[kTestChannel - 1];
+    cfg.label = juce::String::fromUTF8("\xE4\xB8\xBB\xE5\x94\xB1 A"); // "主唱 A":走 toStdString 这一跳
+    cfg.leadLock = true; // → leadMask 的 bit{ch-1}
+    // 注:viz 装配**不读** configSeq(那是 ctrl 广播那一路的变化检测真源),故此处不动它。
+
+    // 对照轨:除了**关掉 enabled** 之外一个字段都不动。没有它,「装配把同一份值填满所有轨」
+    // 这类错误照样全绿。关 enabled 是为了让 onlineMask 那一格可证伪 —— Channel::enabled 默认
+    // 全 true(`OutputRuntimeState::Channel::enabled` 的成员初始化),15 位恒满的话装配错位根本
+    // 抓不到(复审【建议】1)。
+    constexpr int kQuietCh = 10;
+    REQUIRE(kQuietCh != kTestChannel);
+    r.out.runtime().channels[kQuietCh - 1].enabled = false;
+
+    // 给**版本 2** 的 width 一个和默认值不同的取值(默认 100)。装配取的是
+    // `handles_.rawTrkW[v-1][ch]` —— **版本下标错一**就会读回版本 1 的 100,
+    // 只断言「不是哨兵」抓不住那一位,断到具体数值才抓得住。
+    constexpr float kWidthV2 = 42.0f;
+    {
+        auto* wp = r.out.getAPVTS().getParameter(scvb::params::widthId(2, kTestChannel));
+        REQUIRE(wp != nullptr);
+        wp->setValueNotifyingHost(wp->convertTo0to1(kWidthV2));
+    }
+
+    // 给被观察轨一条曲线真身(落在**刚切过去的版本 2** 上):没有曲线时车道恒哨兵,
+    // 那样的断言证明不了装配跑通了。
+    int replaced = 0;
+    int locked = 0;
+    REQUIRE(r.out.setTrackManual(kTestChannel, /*isPan=*/true, 55.0f, replaced, locked));
+
+    // source_channels 的检测是**最终一致**的:refreshSourceChannels 要等音频段头写出来才回填,
+    // waitUntilInjected 之后它可能还停在 0(未检测)或 1。这里尽力等它稳定 —— 但**不作硬前提**,
+    // 下面的 stereoMask 断言与 runtime 当前值耦合,不管检测到哪一步都成立。
+    for (int waited = 0; waited < 3000 && r.out.runtime().channels[kTestChannel - 1].sourceChannels != 2; waited += 60)
+    {
+        r.runBlocks(4, 0.25f, /*pumpEveryN=*/1, /*pumpMs=*/12);
+    }
+
+    // **在最后一轮发布之前**取检测值:放在 read() 之后取的话,万一等待循环超时后它才翻成 2,
+    // 「最后一次发布 → read」之间就错开一拍,等式两侧对不上(复审【建议】3)。检测是单向落定的,
+    // 所以下面用**单向蕴含**断言:已经检测成 stereo ⇒ 段里那一位必须置起。
+    const bool srcIsStereo = (r.out.runtime().channels[kTestChannel - 1].sourceChannels == 2);
+
+    // 让 Output 的 viz timer 真实发布若干帧(30Hz 闸门,400ms 足够十余帧)。
+    r.runBlocks(60, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    Rig::pumpMessages(400);
+
+    scvb::SegmentBackendWin32 backend;
+    scvb::VizPlane probe(backend, static_cast<scvb::u32>(kTestGroup));
+    REQUIRE(probe.attachReadOnly() == scvb::InitResult::kOk);
+
+    auto frame = std::make_unique<scvb::VizSnapshot>();
+    REQUIRE(probe.read(*frame));
+
+    // ── 帧身份与全局字段 ──
+    CHECK(frame->sampleRate == static_cast<scvb::u32>(kSr));
+    CHECK(frame->versionActive == 2u); // ← 不切版本的话两侧默认值都是 1,这条就没牙齿了
+
+    // ── 逐轨装配:被观察轨 ──
+    const auto bit = [](int ch) { return 1u << (ch - 1); };
+    CHECK(frame->label[kTestChannel - 1] == std::string("\xE4\xB8\xBB\xE5\x94\xB1 A"));
+    CHECK((frame->leadMask & bit(kTestChannel)) != 0u);
+
+    // 车道:该轨有曲线 ⇒ 至少一列不是哨兵(全哨兵 = 车道这一跳没接上)。
+    const auto& lane = frame->pan[kTestChannel - 1];
+    const auto realCols = static_cast<std::size_t>(
+        std::count_if(lane.begin(), lane.end(), [](std::int16_t v) { return v != scvb::kVizPanNone; }));
+    CHECK(realCols > 0);
+
+    // width:断到**具体数值**。句柄没接上 → NaN → 哨兵;版本下标错一 → 读回版本 1 的默认 100。
+    // 两种都与 42 不等,一条断言同时挡住(这正是复审【重要】② 点名的那一族)。
+    CHECK(frame->widthPct[kTestChannel - 1] ==
+          scvb::vizPackFixed(static_cast<double>(kWidthV2), scvb::kVizWidthMin, scvb::kVizWidthMax));
+    // stereo 检测值 → stereoMask;enabled 位 → onlineMask(见 VizPublisher::tick 里
+    // `s.onlineMask = in.enabledMask` / `s.stereoMask = in.stereoMask` 两行)。
+    // stereoMask **不硬写 true**:source_channels 由 refreshSourceChannels 从音频段头最终一致
+    // 回填,硬写会把一条护栏变成时序炸弹(实测 —— 单独跑本用例时它停在 1,跟着 [analyze]
+    // 一起跑就是 2)。用单向蕴含 + 下面对照轨那一位,两个错位方向都留着牙齿。
+    INFO("sourceChannels(ch" << kTestChannel << ") = " << r.out.runtime().channels[kTestChannel - 1].sourceChannels);
+    if (srcIsStereo)
+    {
+        CHECK((frame->stereoMask & bit(kTestChannel)) != 0u);
+    }
+    else
+    {
+        // 降级必须**留痕**:单向蕴含在 srcIsStereo 为假时一条断言都不执行,而 INFO 只在同
+        // scope 有失败时才打印 —— 不留痕的话,「等待超时、这颗牙没咬上」的那次运行在 ctest
+        // 输出里和完整跑过一模一样。这是本卡那条纪律(只认真的断言到的字段)的**运行期**版本。
+        WARN("stereo 检测未在等待窗口内落定(sourceChannels != 2):本轮 stereoMask 未被断言");
+    }
+    CHECK((frame->onlineMask & bit(kTestChannel)) != 0u); // 该轨 enabled
+
+    // ── 反向①:一个字段都没动的对照轨,不得被装配顺手填上 ──
+    CHECK(frame->label[kQuietCh - 1].empty());
+    CHECK((frame->leadMask & bit(kQuietCh)) == 0u);
+    CHECK((frame->stereoMask & bit(kQuietCh)) == 0u); // 没有 Input 的轨不该被检测成 stereo
+    CHECK((frame->onlineMask & bit(kQuietCh)) == 0u); // ← 刚把它 enabled 关掉了
+    const auto& quietLane = frame->pan[kQuietCh - 1];
+    CHECK(std::all_of(quietLane.begin(), quietLane.end(), [](std::int16_t v) { return v == scvb::kVizPanNone; }));
+
+    // ── 播放头这一跳:帧里的 playheadSamples 随走带推进(装配读的是真 playheadSnapshot)──
+    const std::int64_t firstPlayhead = frame->playheadSamples;
+    r.runBlocks(60, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    Rig::pumpMessages(300);
+    auto later = std::make_unique<scvb::VizSnapshot>();
+    REQUIRE(probe.read(*later));
+    CHECK(later->playheadSamples > firstPlayhead);
+    // 发布器确实**在持续发帧**,不是两次都读到同一帧(与 MON-CHAIN「写方停摆」同口径)。
+    // 注:`seq % 2 == 0` 是 read() 自己的不变量,装配错成什么样它都绿,故不拿它当判据。
+    CHECK(later->seq > frame->seq);
+
+    // ── 反向②:段是**按组**开的。邻组没有写方 ⇒ 只读方拿空态,绝不建段(VIZ-2 同口径)。
+    //    没有这一条,上面所有断言在「publisher 发错组」时也可能因残段而恰好成立。
+    scvb::VizPlane wrongGroup(backend, static_cast<scvb::u32>(kNoWriterGroup));
+    CHECK(wrongGroup.attachReadOnly() != scvb::InitResult::kOk);
+}
+
+// ---------------------------------------------------------------------------
+// SL-231 ②:自动化打印链的末跳 —— **真 processor 的权威仲裁** → 打印器 → 宿主 gesture。
+//
+// 既有覆盖到哪一步:「gesture 该不该开」的**决策**有 tests/core/test_authority.cpp(对
+// AuthorityMode 返回的标志位做的纯结构体单测);「打印器开不开 gesture」有
+// tests/core/test_printer.cpp 的 PRINTER-GUARD 系列 —— 那里已经挂了真 JUCE 参数监听器
+// (CountingListener::gestureBegins),所以**这一跳不是零覆盖**。
+//
+// 缺的是把它们串起来的那一段:test_printer.cpp 是直接 `printer.setMode(...)` + `printer.tick()`
+// 驱动一个**独立的 AutomationPrinter fixture**,从不经过 ScvbOutputAudioProcessor 自己的
+// 权威仲裁(`outputEnabled_ && playing && inRange` → Print/Armed/Follow,
+// ScvbOutputAudioProcessor::timerCallback 里那段 `printer_.setMode(mode)` 之前的判定)、
+// 车道绑定(bindVersion/setCurves)与 25Hz 真驱动。
+// 于是「仲裁算错档 → 打印器根本没进 Print → 宿主自动化车道整条是空的」这一族,
+// 两边的单测都照样全绿。
+//
+// 这一跳漏了会怎样:裸 setValueNotifyingHost 在 Cubase 这类宿主看来是一次没有起止的孤立
+// 写入,要么被记成孤立自动化点,要么在 Read 档下当场把值顶回去(那样写入根本不生效)——
+// 参数值断言全绿,用户那边自动化车道却是空的。这条真机现象记在
+// docs/contract-changes/20260826-j85-freeze-param-plane.md。
+//
+// 判据落点 = 挂在**真 processor** 上的 juce::AudioProcessorListener 收到的回调,
+// 不看打印器自己的 numGesturesOpen()。
+// ---------------------------------------------------------------------------
+namespace
+{
+
+// 宿主替身:只记 gesture 事件,并就地做配对校验。
+struct GestureSpy final : juce::AudioProcessorListener
+{
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
+    void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails&) override {}
+
+    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) override
+    {
+        ++begins;
+        if (!open.insert(index).second)
+        {
+            ++doubleBegin; // 同一参数连开两次 = 不配对(JUCE 侧 debug 也会 jassert)
+        }
+    }
+
+    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int index) override
+    {
+        ++ends;
+        if (open.erase(index) == 0)
+        {
+            ++orphanEnd; // 没 begin 就 end
+        }
+    }
+
+    int begins = 0;
+    int ends = 0;
+    int doubleBegin = 0;
+    int orphanEnd = 0;
+    std::set<int> open;
+};
+
+} // namespace
+
+TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成对", "[host][sl231][print][e2e]")
+{
+    // **spy 必须比 rig 活得久**:~MonoMultiRig → releaseResources() → printer_.endAllGestures()
+    // 会回调监听器。spy 声明在 rig 之后的话它先析构,一旦中途抛异常跳过 removeListener,
+    // 那次回调就打在已析构对象上(UAF,表现成无法解释的崩溃而不是可读的失败)。
+    GestureSpy spy;
+
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采集**从 0 开始**:打印区间起点 lo = 首个段的起点 ≈ 采集开始时的播放头位置。不归零的话
+    // lo ≈ waitUntilInjected 推过的距离,机器越慢它越大;一旦超过正向段跑的 1.28s,
+    // 区间判定全程为假、begins 恒 0 —— 那是测试自己的时序没给够,不是被测物坏。
+    r.ph.timeSamples = 0;
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    // **先关输出再挂监听器**,原因有二:
+    //   ① `outputEnabled_` 的**成员初始化值就是 true**(见 ScvbOutputAudioProcessor 的
+    //      `bool outputEnabled_ = true;`),分析一出段表、走带一进
+    //      区间,打印器当场就进 Print 并把 gesture 全开了 —— 不先清干净,下面「重新 begin」
+    //      的计数会因为 gesture 早就开着(begin 是幂等的)而恒为 0;
+    //   ② 关输出会走 Follow 分支的 endAllGestures,正好给出一个干净起点。
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(300);
+
+    r.out.addListener(&spy);
+
+    // ── 反向:输出关着(Follow 档,host 参数是权威)⇒ 仲裁不该给出 Print,一条都不该开 ──
+    //    没有这一段,下面的 begins>0 证明不了是**仲裁 + 打印器**开的。
+    r.ph.timeSamples = 0;
+    r.runBlocks(60, 0.5f);
+    MonoMultiRig::pump(300);
+    CHECK(spy.begins == 0);
+
+    // ── 正向:开输出 + 走带回到已分析区间 ⇒ 仲裁给出 Print,打印器包 gesture 写参数 ──
+    r.out.setOutputEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(120, 0.5f);
+    MonoMultiRig::pump(400);
+
+    CHECK(spy.begins > 0); // ← 仲裁没进 Print、或末跳裸写不包 gesture,都停在 0
+    CHECK(spy.doubleBegin == 0); // ← 同一参数连开两次(JUCE debug 侧也会 jassert)
+    CHECK(spy.orphanEnd == 0); // ← 没 begin 就 end
+
+    // ── 收尾:再关输出 ⇒ endAllGestures 必须把开着的全部闭合,不给宿主留悬空 gesture ──
+    const int beginsBeforeClose = spy.begins;
+    r.out.setOutputEnabled(false);
+    MonoMultiRig::pump(400);
+
+    CHECK(spy.open.empty());
+    CHECK(spy.ends == spy.begins);
+    CHECK(spy.begins == beginsBeforeClose); // 关输出不该再开新的
+
+    r.out.removeListener(&spy);
 }
 
 // ===========================================================================
