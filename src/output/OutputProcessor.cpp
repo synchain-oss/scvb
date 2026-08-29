@@ -1159,8 +1159,9 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     writeFeaturesChunk(chunks);
 
     // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
-    // 两位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— CFGS 是定长枚举式解码,追加字段会让
-    // 旧构建整块拒载并静默把 group/开关/版本打回默认;ValueTree 两个方向都容忍字段增删。
+    // 两位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— CFGS 的 24 字节定长 header 偏移冻结,
+    // 尾部虽自 [J69/U24] 起容忍长度变化(未知尾字节走 unknownTail 原样回写),但早于那次改动的
+    // 构建对超长 payload 仍整块拒载,把 group/开关/版本打回默认;ValueTree 两个方向都容忍字段增删。
     // 见 OutputUiState.h 头注(STATE_SCHEMA §三 的 ui 组本就登记在 PRMS 名下)。
     auto state = apvts.copyState();
     scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),

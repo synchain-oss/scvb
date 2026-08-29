@@ -5,10 +5,13 @@
 //
 // 为什么放 PRMS 而不是 CFGS:STATE_SCHEMA §三 的 chunk 表本来就把
 // `ui{scale, language, active_tab, guide_seen, tour_seen}` 登记在 **PRMS** 名下,
-// 而 CFGS 的 OutputStateCodec 是定长枚举式解码(总长必须逐字等于 24+langBytes)——
-// 往它尾部追加字段会让任何**旧**构建整块拒载,而拒载路径是一句裸 return:
-// group_id / 采集 / 输出 / 活动版本全部静默回默认(违反 §7.3「不得静默丢数据」)。
-// 用户手上同时有新旧两个测试包、来回换着开同一个工程,这条路径是真会被踩到的。
+// 而 CFGS 的 OutputStateCodec 只有 24 字节定长 header(6×u32)之后那一段才容忍长度变化:
+// [J69/U24] 起,缺末两个 u32 的旧 payload 回落默认、多出来的尾字节存进
+// `OutputState::unknownTail` 并在编码时原样回写;但**早于**那次改动的构建(当时是
+// `kHeaderBytes + langBytes != size` 的严格等长校验)对任何超长 payload 仍整块拒载,
+// 而拒载路径是一句裸 return:group_id / 采集 / 输出 / 活动版本全部回默认
+// (违反 §7.3「不得静默丢数据」)。用户手上同时有新旧两个测试包、来回换着开同一个工程,
+// 这条路径是真会被踩到的;header 那 6 个 u32 的偏移则至今冻结,任何情况下都不许就地插字段。
 //
 // ValueTree(XML)两个方向都天生容忍字段增删:
 //   • 旧构建读新工程 —— 多出来的两个属性被忽略,其余参数照常加载;
@@ -66,7 +69,9 @@ inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
     return flags;
 }
 
-// [SL-215] 会话 GUID —— sidecar 文件名隔离的根基(<basename>-<GUID前8>.scvbfeat,04 §5.x)。
+// [SL-215] 会话 GUID —— sidecar **目录**隔离的根基:SidecarStore 按 `<base>/sessions/<GUID>/`
+// 分目录,目录内是固定的三个文件名 features.bin.gz / manifest.json / owner.lock(04 §5.4/§5.5)。
+// 也就是说隔离靠的是目录名而非文件名 —— 同一 baseDir 下各会话各占一个 GUID 目录,互不覆盖。
 // 它此前**根本没有生产落点**:桥面快照里写死一串全零字面量(OutputEditor 的 `session_guid`),
 // 设置页于是恒显示 session 00000000-0000-0000-0000-000000000000。
 //
@@ -75,9 +80,9 @@ inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
 // `generateSessionGuid()` —— 它产出的也是合法 dashed v4 UUID,但**不是**本 GUID 的生成点,
 // 目前只在 SidecarStore 内部(CoW 换新 GUID)被用到;别把两者当成同一个入口。
 //
-// 落在 PRMS 根节点属性面上,理由与上面三个 ui_ 位逐字相同:CFGS 是定长枚举式解码,尾部追加
-// 字段会让旧构建整块拒载并静默把配置打回默认;ValueTree 增删字段两个方向都容忍,无需升 abi、
-// 无需迁移函数,也就不动 STATE_SCHEMA 的冻结布局。
+// 落在 PRMS 根节点属性面上,理由与上面三个 ui_ 位逐字相同(见本文件头注:CFGS 的定长 header
+// 偏移冻结,且早于 [J69/U24] 的构建对超长 payload 整块拒载、把配置打回默认);ValueTree 增删
+// 字段两个方向都容忍,无需升 abi、无需迁移函数,也就不动 STATE_SCHEMA 的冻结布局。
 inline const juce::Identifier kSessionGuidProp{"session_guid"};
 
 inline void writeSessionGuid(juce::ValueTree& apvtsState, const juce::String& guid)
@@ -90,7 +95,7 @@ inline void writeSessionGuid(juce::ValueTree& apvtsState, const juce::String& gu
 }
 
 // 读回并**校验形状**:state 字节不可信(§7.3),而这个 guid 会被 SidecarStore 拿去拼路径。
-// 非 36 字符 dashed UUID 一律当「没有」处理,由调用方重新生成 —— 绝不把畸形串带进文件名。
+// 非 36 字符 dashed UUID 一律当「没有」处理,由调用方重新生成 —— 绝不把畸形串带进目录名。
 inline juce::String readSessionGuid(const juce::ValueTree& apvtsState)
 {
     if (!apvtsState.isValid())

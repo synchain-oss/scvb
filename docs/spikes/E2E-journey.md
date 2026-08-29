@@ -72,7 +72,7 @@ fingerprint 过期」——步 3(电平与失准计数)、6/7(真实 coverage �
 
 ## 3. DAW 真机执行清单(可勾选)
 
-> 打印后照着打勾;产物目录建议 `C:\Users\lenovo\deepseekHarness\S1-2026-08-16\T37\`,
+> 打印后照着打勾;产物目录建议 `<workspace>\S1-2026-08-16\T37\`(`<workspace>` = 本机实测工作目录,不入库),
 > 截图命名 `t37-<格子号>.png`。主测 DAW = Cubase 15(48000 / buffer 512),REAPER 7 兜底。
 
 ### 3.1 十六步中的真机步(与 §1 对齐)

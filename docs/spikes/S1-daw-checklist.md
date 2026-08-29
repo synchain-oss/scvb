@@ -4,6 +4,8 @@
 > 判据真源 = 10 §1.1.3;每格做完**立即**读 csv + 跑 null test 记录,不要攒到最后。
 >
 > **DAW 范围(用户决定 2026-08-14,U27)**:Cubase 15 为主测 DAW → REAPER 7 只跑 Cubase 覆盖不了的兜底格 → Ableton Live 跳过 → Studio One 仅作可选对照。
+>
+> **路径占位符**:`<workspace>` = 本机实测工作目录(不入库,自选)。
 
 ## 0. 装机与工具(一次性准备)
 
@@ -33,7 +35,7 @@
 ## 0c. 真人声素材(可选:真实数据格)
 
 用户提供了三组已对齐的真人声单声道轨(48kHz / 24bit / mono),
-本地路径:`C:\Users\lenovo\deepseekHarness\SCVB\masterPlan\assets\vocal-test\`(gitignore,不入库)。
+本地路径:`<workspace>\SCVB\masterPlan\assets\vocal-test\`(gitignore,不入库)。
 **三组是三个不同项目(三首歌),严禁混用**;每次真实数据格只取一个项目。
 
 | 项目目录                     | 轨数      | 时长 | 建议用途                                                                                |
@@ -82,10 +84,10 @@
 **唯一工作目录(所有文件都放这里,周日开始前先建好)**
 
 ```powershell
-mkdir C:\Users\lenovo\deepseekHarness\S1-2026-08-16
+mkdir <workspace>\S1-2026-08-16
 ```
 
-- **csv**:scvb_diag 的 `--out` 全部指到这个目录(如 `--out C:\Users\lenovo\deepseekHarness\S1-2026-08-16\s1-reaper-R1.csv`)
+- **csv**:scvb_diag 的 `--out` 全部指到这个目录(如 `--out <workspace>\S1-2026-08-16\s1-reaper-R1.csv`)
 - **wav**:所有离线导出(`ref_A_*` / `ref_Aprime_*` / `test_*`)导出时选这个目录
 - **截图 png**:也存这个目录,命名 `s1-<daw>-<格子号>.png`
 - 目录做完**原样保留**,周日晚把整个目录路径发给调度者
