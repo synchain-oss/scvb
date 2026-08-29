@@ -4797,7 +4797,8 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
 
     // 对照轨:除了**关掉 enabled** 之外一个字段都不动。没有它,「装配把同一份值填满所有轨」
     // 这类错误照样全绿。关 enabled 是为了让 onlineMask 那一格可证伪 —— Channel::enabled 默认
-    // 全 true(OutputProcessor.h:67),15 位恒满的话装配错位根本抓不到(复审【建议】1)。
+    // 全 true(`OutputRuntimeState::Channel::enabled` 的成员初始化),15 位恒满的话装配错位根本
+    // 抓不到(复审【建议】1)。
     constexpr int kQuietCh = 10;
     REQUIRE(kQuietCh != kTestChannel);
     r.out.runtime().channels[kQuietCh - 1].enabled = false;
@@ -4861,7 +4862,8 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     // 两种都与 42 不等,一条断言同时挡住(这正是复审【重要】② 点名的那一族)。
     CHECK(frame->widthPct[kTestChannel - 1] ==
           scvb::vizPackFixed(static_cast<double>(kWidthV2), scvb::kVizWidthMin, scvb::kVizWidthMax));
-    // stereo 检测值 → stereoMask;enabled 位 → onlineMask(VizPublisher.cpp:184-185)。
+    // stereo 检测值 → stereoMask;enabled 位 → onlineMask(见 VizPublisher::tick 里
+    // `s.onlineMask = in.enabledMask` / `s.stereoMask = in.stereoMask` 两行)。
     // stereoMask **不硬写 true**:source_channels 由 refreshSourceChannels 从音频段头最终一致
     // 回填,硬写会把一条护栏变成时序炸弹(实测 —— 单独跑本用例时它停在 1,跟着 [analyze]
     // 一起跑就是 2)。用单向蕴含 + 下面对照轨那一位,两个错位方向都留着牙齿。
@@ -4869,6 +4871,13 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
     if (srcIsStereo)
     {
         CHECK((frame->stereoMask & bit(kTestChannel)) != 0u);
+    }
+    else
+    {
+        // 降级必须**留痕**:单向蕴含在 srcIsStereo 为假时一条断言都不执行,而 INFO 只在同
+        // scope 有失败时才打印 —— 不留痕的话,「等待超时、这颗牙没咬上」的那次运行在 ctest
+        // 输出里和完整跑过一模一样。这是本卡那条纪律(只认真的断言到的字段)的**运行期**版本。
+        WARN("stereo 检测未在等待窗口内落定(sourceChannels != 2):本轮 stereoMask 未被断言");
     }
     CHECK((frame->onlineMask & bit(kTestChannel)) != 0u); // 该轨 enabled
 
@@ -4908,7 +4917,8 @@ TEST_CASE("HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方�
 // 缺的是把它们串起来的那一段:test_printer.cpp 是直接 `printer.setMode(...)` + `printer.tick()`
 // 驱动一个**独立的 AutomationPrinter fixture**,从不经过 ScvbOutputAudioProcessor 自己的
 // 权威仲裁(`outputEnabled_ && playing && inRange` → Print/Armed/Follow,
-// OutputProcessor.cpp:874-880)、车道绑定(bindVersion/setCurves)与 25Hz 真驱动。
+// ScvbOutputAudioProcessor::timerCallback 里那段 `printer_.setMode(mode)` 之前的判定)、
+// 车道绑定(bindVersion/setCurves)与 25Hz 真驱动。
 // 于是「仲裁算错档 → 打印器根本没进 Print → 宿主自动化车道整条是空的」这一族,
 // 两边的单测都照样全绿。
 //
@@ -4977,7 +4987,8 @@ TEST_CASE("HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成�
     REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
 
     // **先关输出再挂监听器**,原因有二:
-    //   ① `outputEnabled_` 的默认值是 true(OutputProcessor.h:490),分析一出段表、走带一进
+    //   ① `outputEnabled_` 的**成员初始化值就是 true**(见 ScvbOutputAudioProcessor 的
+    //      `bool outputEnabled_ = true;`),分析一出段表、走带一进
     //      区间,打印器当场就进 Print 并把 gesture 全开了 —— 不先清干净,下面「重新 begin」
     //      的计数会因为 gesture 早就开着(begin 是幂等的)而恒为 0;
     //   ② 关输出会走 Follow 分支的 endAllGestures,正好给出一个干净起点。

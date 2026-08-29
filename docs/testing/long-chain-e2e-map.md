@@ -20,6 +20,12 @@
 只满足「每一跳各有单测」不算 e2e。四族历史 bug(T37)全部是**跳与跳之间从未接线**,而每一跳的
 单测当时都是绿的。
 
+**引用纪律**:本表引生产代码一律用**符号名**(`ScvbOutputAudioProcessor::publishVizFrame()`、
+`isKnownCtrlOp`),引用例一律用**全名**,都不写行号。理由是本表自己踩过 —— 初版按行号引,
+本 PR 合并一次 `feature/v1` 就烂了五处;而本表的全部价值是「不用每次重 grep 8000 行」,
+一张行号已烂的表比没有表更费事。`HOST P0-1` 这类前缀在本仓有 7 条同名开头的用例,
+只有全名能消歧。
+
 **三个 harness 各自的能耐**(决定一条链只能在哪里测):
 
 | harness | 目标 | 能做什么 | 够不着什么 |
@@ -69,7 +75,7 @@ agent)同时跑就会互相假红**,而且假红点常常与本次改动毫不�
 `Input[M] enqueue → (ctrl 段 SPSC) → Output[M] dequeue → 落 state → 广播区 → Input 读回`
 
 op 全集(`docs/IPC_CONTRACT.md:149`,v1 冻结)= `{kSetPriority, kFpReport}`;`kNone` 是哨兵,
-`isKnownCtrlOp` 只认这三个(`src/core/ipc/CtrlPlane.h:170`)。**两个真 op 各有一条 e2e**,
+`isKnownCtrlOp`(`src/core/ipc/CtrlPlane.h`)只认这三个。**两个真 op 各有一条 e2e**,
 不存在「某个 op 从没端到端跑过」的缺口。
 
 | # | 跳 | 覆盖 | 用例 |
@@ -97,7 +103,7 @@ op 全集(`docs/IPC_CONTRACT.md:149`,v1 冻结)= `{kSetPriority, kFpReport}`;`kN
 
 **C1a 此前为什么是零**:C2/C3/C4 的写方**全是手搓 `VizPublishInput` 的 peer 或裸 `VizPublisher`**
 (`scvb_ipc_peer.cpp` 的 `viz-writer`/`viz-publisher` 两个角色)。真 Output 的
-`publishVizFrame()`(`src/output/OutputProcessor.cpp:938-997`)那段装配没有任何用例走过 ——
+`ScvbOutputAudioProcessor::publishVizFrame()` 那段装配没有任何用例走过 ——
 装配错一位(`leadMask` 取错字段、`label` 差一个下标、`widthPct` 的**版本下标错一**)段里就是错值,
 Monitor 画的就是错图,而 C2/C3/C4 照样全绿。这正是 T37「数据面从未接线」那一族的形状。
 
@@ -132,7 +138,7 @@ Monitor 画的就是错图,而 C2/C3/C4 照样全绿。这正是 T37「数据面
 |---|---|---|---|
 | E1 | CRVS → `activeCurves` 曲线对象 | ✅ | `HOST SL-202`×3(曲线指针非空 + `panAt()` 采样) |
 | E2 | 权威仲裁的 gesture **决策** | 🟡 单测 | `test_authority.cpp:105-230`(对 `AuthorityMode` 返回的 `beginGesture`/`endAllGestures` 标志位,纯结构体) |
-| E3 | 打印器逐车道求值 → `setValueNotifyingHost` | ✅ | `HOST P0-1 ③`(行 1511) |
+| E3 | 打印器逐车道求值 → `setValueNotifyingHost` | ✅ | `HOST P0-1:分析产物经打印器写进宿主参数(自动化非零写入)`(本文件有 7 条以 `HOST P0-1` 开头的用例,故引全名) |
 | E4 | → APVTS 参数值 | ✅ | `HOST P1-4`、`HOST J85`×2、`HOST SL-187`(自写不得被记成 hostEcho) |
 | E5 | 打印器 → 宿主 gesture 事件(begin/end 成对) | 🟡 单测 | `test_printer.cpp` PRINTER-GUARD 系列:真 JUCE 参数 + `CountingListener::gestureBegins`,但驱动的是**独立 fixture**(`printer.setMode()` + `printer.tick()` 直驱) |
 | E5e | **真 processor 的权威仲裁 → 打印器 → 宿主 gesture** | **✅ e2e(本卡新增)** | **`HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成对`** —— 本卡之前是 **❌ 零**,详见 §2 |
@@ -143,7 +149,7 @@ Monitor 画的就是错图,而 C2/C3/C4 照样全绿。这正是 T37「数据面
 (`CountingListener::gestureBegins`,`tests/core/test_printer.cpp:214` 起)。缺的不是这一跳本身,
 而是**把它和上游仲裁串起来的那一段**:那些用例直接 `printer.setMode(...)` + `printer.tick()`
 驱动一个独立的 `AutomationPrinter` fixture,从不经过 `ScvbOutputAudioProcessor` 自己的档位仲裁
-(`outputEnabled_ && playing && inRange` → Print/Armed/Follow,`src/output/OutputProcessor.cpp:874-880`)、
+(`outputEnabled_ && playing && inRange` → Print/Armed/Follow,见 `ScvbOutputAudioProcessor::timerCallback` 里 `printer_.setMode(mode)` 之前那段)、
 车道绑定(`bindVersion`/`setCurves`)与 25Hz 真驱动。
 
 于是这一族会整族漏过去:**仲裁算错档 → 打印器根本没进 Print → 宿主自动化车道整条是空的**,
@@ -174,7 +180,7 @@ Monitor 画的就是错图,而 C2/C3/C4 照样全绿。这正是 T37「数据面
 | 链 | 用例 | 真链路 | 末端判据 | 反向验证 |
 |---|---|---|---|---|
 | **C1a** | `HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方逐字段读回` | 真 `Rig`(Output+Input)+ 真 Win32 viz 段;写方是**真 Output 的 `publishVizFrame()`**,不是 peer | 只读方 `attachReadOnly()` + `read()` 读回的帧:`sampleRate`、`versionActive`(用例先 `setVersionActive(2)` —— 否则两侧结构体默认值都是 1、这条恒绿)、`label[ch]` 逐字节(UTF-8)、`leadMask` 对位、`widthPct` 断到**具体数值**(先把版本 2 的 width 设 42,默认是 100)、`stereoMask`(单向蕴含,理由见反向③)、`onlineMask`、车道非全哨兵、`playheadSamples` 随走带推进、`later->seq > frame->seq`(发布器在持续发帧) | ① **对照轨**(除关掉 `enabled` 外一字未改)必须是空 label + `leadMask`/`stereoMask`/`onlineMask` 三位全清 + 车道全哨兵 —— 挡住「装配把同一份值填满所有轨」;② **邻组** `attachReadOnly()` 必须失败 —— 挡住「publisher 发错组、断言靠残段恰好成立」;③ **实跑注入过两种断链**:`leadMask` 装配失效 → 红;`rawTrkW[0][ch]`(**版本下标错一**)→ `widthPct` 红(`10000 == 4200`)。`stereoMask` 用单向蕴含而非等式:`source_channels` 是最终一致回填的(实测单独跑本用例停在 1、跟 `[analyze]` 一起跑是 2),硬写等式会把护栏变成时序炸弹;错位方向由对照轨那一位兜住 |
-| **E5e** | `HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成对` | 真 `MonoMultiRig` + 真采集 + 真分析 + 真仲裁 + 真打印;宿主替身 = 挂在**真 processor** 上的 `juce::AudioProcessorListener` | 监听器收到的 `audioProcessorParameterChangeGestureBegin/End`:`begins > 0`、同一参数不重复 begin、无孤儿 end;关输出后 `open` 集合清空、`ends == begins` 且不再新开 | **关掉输出(Follow 档)时 `begins == 0`**。⚠ 这一段能成立有个前提:`outputEnabled_` 的**默认值是 `true`**(`OutputProcessor.h:490`),分析一出段表、走带一进区间打印器当场就进 Print —— 所以用例必须**先显式关输出再挂监听器**,否则 gesture 早开着(begin 幂等),「重新 begin」的计数恒为 0,反向段会假绿 |
+| **E5e** | `HOST SL-231:打印器的 gesture 真的到达宿主且 begin/end 成对` | 真 `MonoMultiRig` + 真采集 + 真分析 + 真仲裁 + 真打印;宿主替身 = 挂在**真 processor** 上的 `juce::AudioProcessorListener` | 监听器收到的 `audioProcessorParameterChangeGestureBegin/End`:`begins > 0`、同一参数不重复 begin、无孤儿 end;关输出后 `open` 集合清空、`ends == begins` 且不再新开 | **关掉输出(Follow 档)时 `begins == 0`**。⚠ 这一段能成立有个前提:`outputEnabled_` 的**成员初始化值就是 `true`**(`ScvbOutputAudioProcessor` 里 `bool outputEnabled_ = true;`),分析一出段表、走带一进区间打印器当场就进 Print —— 所以用例必须**先显式关输出再挂监听器**,否则 gesture 早开着(begin 幂等),「重新 begin」的计数恒为 0,反向段会假绿 |
 
 两条都刻意**不看被测物的内部计数器**(`VizPublisher::publishCount()` / `AutomationPrinter::numGesturesOpen()`)——
 那两个变绿只说明代码跑到了,不说明数据真的出现在链末端。
