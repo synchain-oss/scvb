@@ -6,10 +6,10 @@
 // 保证长时间线稀疏覆盖不炸内存。量化即入库:f32 → int16 dB(×100),0.01dB 分辨率。
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
-#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -101,6 +101,10 @@ public:
     int16_t kwDbq(uint64_t hop) const;
     int16_t peakDbq(uint64_t hop) const;
     uint8_t vadP(uint64_t hop) const;
+
+    // ⚠ [SL-232 起] **生产写侧已统一走 `setVadPosteriorRange`**,本函数生产代码零调用方,
+    // 保留是给用例塞哨兵值用的(以及将来可能的单点恢复路径)。别拿它把批量版绕回逐 hop ——
+    // 那正是本卡要修掉的形态(每 hop 两次 map 查找、迭代数等于跨度)。
     void setVadP(uint64_t hop, uint8_t v);
 
     // [SL-232] 批量写 VAD 后验(`appendRange` 的写侧镜像,同一个理由)。
@@ -115,8 +119,11 @@ public:
     // 循环次数恒等于 `lastHop - firstHop` —— 与**实际有多少数据**无关。满选 1h × 15 轨
     // ≈ 1080 万次查找,还全程持 lifecycleMutex_ 跑在消息线程上,与 waveformOf 注释里
     // 记的那次 P0-A 冻死同一族(「迭代数与实际数据量无关」)。
-    // 这里改成:先经 coverage_.intersect(r) 只取**真被覆盖**的子区间(实际 n 在几十以内),
-    // 再按页推进,**每 4096 个 hop 才查一次索引** —— 迭代数与实际数据量同阶。
+    // 这里改成:先经 coverage_.intersect(r) 只取**真被覆盖**的子区间,再按页推进,
+    // **每 4096 个 hop 才查一次索引** —— 迭代数与实际数据量同阶。
+    // ⚠ 子区间数**没有硬上限**:`CoverageMap` 只保证有序 + 相邻合并,不保证条数。
+    // 「几十」是现场经验量级(= 连续覆盖段数),**不是不变量**,别据此做更强假设。
+    // 复杂度结论不受影响:O(重叠区间数 + 实际覆盖 hop 数),与**跨度**无关。
     //
     // 语义与逐 hop 版逐字相同:**未覆盖的 hop 不写**。后验在那里恒 0,写进去只会把 20KB 的
     // FeatPage 白建出来(`setVadP` 走 `pageFor(create=true)`,既不看 readOnly_ 也不看 gate_),

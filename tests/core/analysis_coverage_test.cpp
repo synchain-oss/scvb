@@ -8,9 +8,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
-#include <cmath>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
