@@ -1159,11 +1159,11 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     writeFeaturesChunk(chunks);
 
     // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
-    // 这几位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— STATE_SCHEMA §三 的 chunk 表本就把 ui 组
-    // 登记在 PRMS 名下;同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
+    // 这几位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— STATE_SCHEMA §三 的 chunk 表把 guide_seen /
+    // tour_seen / lang_chosen 连同 session_guid 只登记在 PRMS 名下(ui.scale / ui.language 才是
+    // 两行都有的);同 abi 内 ValueTree 两个方向都容忍属性增删,不用动 abi、不用写迁移函数。
     // 见 OutputUiState.h 头注(那里另记了 CFGS 尾扩口径自 [J69/U24] 起的变化,以及跨 abi 整块
     // 拒载是 PRMS/CFGS 共同处境、论证不了字段该放哪一节)。
-    // 见 OutputUiState.h 头注(STATE_SCHEMA §三 的 ui 组本就登记在 PRMS 名下)。
     auto state = apvts.copyState();
     scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),
                                        runtime_.tourSeen.load(std::memory_order_relaxed),

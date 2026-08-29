@@ -3,9 +3,10 @@
 
 // OutputUiState —— 首启已读位在 PRMS(APVTS ValueTree)里的读写(T37 真机 bug A-3)。
 //
-// 为什么放 PRMS 而不是 CFGS:**STATE_SCHEMA §三 的 chunk 表本来就把
-// `ui{scale, language, active_tab, guide_seen, tour_seen}` 登记在 PRMS 名下** —— 这条不依赖
-// 任何版本假设,是本模块的真正依据。
+// 为什么放 PRMS 而不是 CFGS:**STATE_SCHEMA §三 的 chunk 表把本模块经手的这几位只登记在
+// PRMS 名下** —— `ui.guide_seen` / `ui.tour_seen` / `ui.lang_chosen`([J81]),外加下面那个
+// `session_guid`([SL-215])。这条不依赖任何版本假设,是本模块的真正依据。
+// 别拿 `ui.scale` / `ui.language` 举证:那两个在 PRMS 与 CFGS 两行**都**登记着,证不出该放哪边。
 //
 // 当年(T37)还有一条机制上的理由,今天只剩一半,别再照旧口径记:那时 CFGS 的
 // OutputStateCodec 是 `kHeaderBytes + langBytes != size` 的严格等长解码,尾部**加不进**字段,
@@ -92,8 +93,8 @@ inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
 // 目前只在 SidecarStore 内部(CoW 换新 GUID)被用到;别把两者当成同一个入口。
 //
 // 落在 PRMS 根节点属性面上,理由与上面三个 ui_ 位逐字相同(见本文件头注:STATE_SCHEMA §三
-// 把 ui 组登记在 PRMS 名下;同 abi 内 ValueTree 增删字段两个方向都容忍,无需升 abi、无需迁移
-// 函数),也就不动 STATE_SCHEMA 的冻结布局。
+// 把它连同那三位一并登记在 PRMS 名下;同 abi 内 ValueTree 增删字段两个方向都容忍,无需升
+// abi、无需迁移函数),也就不动 STATE_SCHEMA 的冻结布局。
 inline const juce::Identifier kSessionGuidProp{"session_guid"};
 
 inline void writeSessionGuid(juce::ValueTree& apvtsState, const juce::String& guid)
