@@ -6,6 +6,8 @@
 // 为什么放 PRMS 而不是 CFGS:**STATE_SCHEMA §三 的 chunk 表把本模块经手的这几位只登记在
 // PRMS 名下** —— `ui.guide_seen` / `ui.tour_seen` / `ui.lang_chosen`([J81]),外加下面那个
 // `session_guid`([SL-215])。这条不依赖任何版本假设,是本模块的真正依据。
+// (限 Output 侧:Input 的 `ui.guide_seen` 是**另一个**位,走 InputStateCodec 的 CFGS 尾扩,
+// 见 STATE_SCHEMA §三 的 Input 条 —— 别拿那一行来推翻这里。)
 // 别拿 `ui.scale` / `ui.language` 举证:那两个在 PRMS 与 CFGS 两行**都**登记着,证不出该放哪边。
 //
 // 当年(T37)还有一条机制上的理由,今天只剩一半,别再照旧口径记:那时 CFGS 的

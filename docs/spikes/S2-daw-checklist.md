@@ -17,7 +17,7 @@
    pwsh scripts/gates.ps1 -Quick -BuildDir build-T03
    # 手动把产物拷到用户级 VST3:
    # build-T03\SCVBS2Output_artefacts\Release\VST3\SCVB S2 Output.vst3
-   #   → %LOCALAPPDATA%\Programs\Common\VST3\SCVB S2 Output.vst3
+   #   → $env:LOCALAPPDATA\Programs\Common\VST3\SCVB S2 Output.vst3
    ~~~
 
 2. 确认 DAW 扫到插件:**SCVB S2 Output**(Synchain 厂商)。打开其编辑器,应见:

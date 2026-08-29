@@ -87,7 +87,7 @@
 mkdir '<workspace>\S1-2026-08-16'
 ```
 
-- **csv**:scvb_diag 的 `--out` 全部指到这个目录(如 `--out <workspace>\S1-2026-08-16\s1-reaper-R1.csv`)
+- **csv**:scvb_diag 的 `--out` 全部指到这个目录(如 `--out '<workspace>\S1-2026-08-16\s1-reaper-R1.csv'`)
 - **wav**:所有离线导出(`ref_A_*` / `ref_Aprime_*` / `test_*`)导出时选这个目录
 - **截图 png**:也存这个目录,命名 `s1-<daw>-<格子号>.png`
 - 目录做完**原样保留**,周日晚把整个目录路径发给调度者
