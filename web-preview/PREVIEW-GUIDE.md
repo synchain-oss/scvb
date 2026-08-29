@@ -45,7 +45,7 @@ D.querySelector('[data-tab-btn="wave"]').click();
 
 ```powershell
 # 1) 起服(独立窗口留着,别关)
-pwsh <repo>\web-preview\serve.ps1
+pwsh '<repo>\web-preview\serve.ps1'
 
 # 2) 浏览器打开(或加 -Open 让脚本自己开导航页)
 #    http://127.0.0.1:8823/web-preview/output.html?fixture=fifteen-tracks
@@ -82,7 +82,7 @@ Chrome DevTools 协议),Windows 上自动找 Chrome/Edge。
 
 ```powershell
 # 前置:服务器已在跑(通路 A 第 1 步)
-cd <repo>
+cd '<repo>'
 
 # 最常用:切到某个 tab 抓整屏
 node web-preview/shot.mjs --tab=wave  --out=web-preview/.shots/tab3.png

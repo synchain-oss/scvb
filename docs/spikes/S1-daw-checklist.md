@@ -84,7 +84,7 @@
 **唯一工作目录(所有文件都放这里,周日开始前先建好)**
 
 ```powershell
-mkdir <workspace>\S1-2026-08-16
+mkdir '<workspace>\S1-2026-08-16'
 ```
 
 - **csv**:scvb_diag 的 `--out` 全部指到这个目录(如 `--out <workspace>\S1-2026-08-16\s1-reaper-R1.csv`)
@@ -94,7 +94,7 @@ mkdir <workspace>\S1-2026-08-16
 
 **scvb_diag 的开闭节奏(每格一个,不是全程一个)**
 
-1. 开始某格前:开终端跑 `scvb_diag --out C:\...\s1-<daw>-<格子号>.csv --group 1`
+1. 开始某格前:开终端跑 `scvb_diag --out '<workspace>\S1-2026-08-16\s1-<daw>-<格子号>.csv' --group 1`
 2. 该格播完:Ctrl+C 关闭
 3. 下一格:重复 1-2,换新的格子号文件名
 

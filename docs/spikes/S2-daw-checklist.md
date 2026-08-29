@@ -31,7 +31,7 @@
 **唯一工作目录(周日开始前先建好)**
 
 ~~~powershell
-mkdir <workspace>\S1-2026-08-16\S2
+mkdir '<workspace>\S1-2026-08-16\S2'
 ~~~
 
 | 产物 | 谁记录 | 你要做的动作 |

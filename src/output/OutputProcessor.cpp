@@ -1159,9 +1159,9 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     writeFeaturesChunk(chunks);
 
     // PRMS:123 参数(ValueTree XML 二进制,host 自动化面)+ ui 首启已读位。
-    // 两位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— CFGS 的 24 字节定长 header 偏移冻结,
-    // 尾部虽自 [J69/U24] 起容忍长度变化(未知尾字节走 unknownTail 原样回写),但早于那次改动的
-    // 构建对超长 payload 仍整块拒载,把 group/开关/版本打回默认;ValueTree 两个方向都容忍字段增删。
+    // 这几位挂在 PRMS 的根节点属性上而不是 CFGS 尾部 —— 往 CFGS 尾部加字段要升容器 abi,而
+    // pre-J69 构建([J69/U24] 把 abi 升到 2)读到 abi=2 就在 loadState 走 RejectedNewer 整块拒载,
+    // CFGS 不进解码、group/开关/版本全停在默认;ValueTree 两个方向都容忍字段增删,且不用动 abi。
     // 见 OutputUiState.h 头注(STATE_SCHEMA §三 的 ui 组本就登记在 PRMS 名下)。
     auto state = apvts.copyState();
     scvb::output::writeUiFlags(state, {runtime_.guideSeen.load(std::memory_order_relaxed),
@@ -1690,7 +1690,7 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         if (xml != nullptr)
         {
             const juce::ValueTree loaded = juce::ValueTree::fromXml(*xml);
-            // 首启已读位与参数同在 PRMS(见 OutputUiState.h);属性缺失 = 老工程 ⇒ 两位 false,
+            // 首启已读位与参数同在 PRMS(见 OutputUiState.h);属性缺失 = 老工程 ⇒ 这几位 false,
             // 用户会再走一遍首启,之后即落盘不再重放。
             const auto flags = scvb::output::readUiFlags(loaded);
             runtime_.guideSeen.store(flags.guideSeen, std::memory_order_relaxed);

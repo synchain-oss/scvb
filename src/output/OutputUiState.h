@@ -5,17 +5,21 @@
 //
 // 为什么放 PRMS 而不是 CFGS:STATE_SCHEMA §三 的 chunk 表本来就把
 // `ui{scale, language, active_tab, guide_seen, tour_seen}` 登记在 **PRMS** 名下,
-// 而 CFGS 的 OutputStateCodec 只有 24 字节定长 header(6×u32)之后那一段才容忍长度变化:
-// [J69/U24] 起,缺末两个 u32 的旧 payload 回落默认、多出来的尾字节存进
-// `OutputState::unknownTail` 并在编码时原样回写;但**早于**那次改动的构建(当时是
-// `kHeaderBytes + langBytes != size` 的严格等长校验)对任何超长 payload 仍整块拒载,
-// 而拒载路径是一句裸 return:group_id / 采集 / 输出 / 活动版本全部回默认
-// (违反 §7.3「不得静默丢数据」)。用户手上同时有新旧两个测试包、来回换着开同一个工程,
-// 这条路径是真会被踩到的;header 那 6 个 u32 的偏移则至今冻结,任何情况下都不许就地插字段。
+// 而 CFGS 的 OutputStateCodec 长度纪律很紧:24 字节 header(6×u32)+ langBytes 语言字节
+// + 8 字节枚举尾**都是严格长度**,多一字节少一字节都拒载(`base > size` / `0 < remaining < 8`);
+// 只有再往后的未知尾部才容忍 —— 存进 `OutputState::unknownTail`、编码时原样回写([J69/U24] 起)。
+// header 那 6 个 u32 的偏移至今冻结,任何情况下都不许就地插字段。
+//
+// 但真正卡住**跨版本**的不是这条长度校验,而是**容器 abi**:给 CFGS 尾扩那两个枚举时
+// ([J69/U24])顺手把 abi 1→2 升了一格,于是 pre-J69 的构建(kCurrentAbi=1)读到 abi=2 的工程,
+// 在 `loadState` 就走 RejectedNewer 整块拒载 —— CFGS 压根不进解码,该实例的
+// group_id / 采集 / 输出 / 活动版本全停在默认(原始字节由 preservedStateBlob_ 原样回写,
+// 工程本身不会被写坏,但这一开确实什么都没读到)。用户手上同时有新旧两个测试包、
+// 来回换着开同一个工程,这条路径是真会被踩到的。
 //
 // ValueTree(XML)两个方向都天生容忍字段增删:
-//   • 旧构建读新工程 —— 多出来的两个属性被忽略,其余参数照常加载;
-//   • 新构建读旧工程 —— 属性不存在,两位取默认 false。
+//   • 旧构建读新工程 —— 多出来的这几个属性被忽略,其余参数照常加载;
+//   • 新构建读旧工程 —— 属性不存在,这几位取默认 false。
 // 无需升 abi、无需迁移函数;将来补 §1.31 的 ui.active_tab 同样零成本。
 
 #include <juce_data_structures/juce_data_structures.h>
@@ -55,7 +59,7 @@ inline void writeUiFlags(juce::ValueTree& apvtsState, const OutputUiFlags& flags
 }
 
 // 从工程里解出的 APVTS 树读回(setStateInformation:replaceState 之前/之后皆可)。
-// 属性缺失 = 老工程 / 从未落过盘 ⇒ 两位为 false(= 该走首启)。
+// 属性缺失 = 老工程 / 从未落过盘 ⇒ 这几位为 false(= 该走首启)。
 inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
 {
     OutputUiFlags flags;
@@ -80,9 +84,9 @@ inline OutputUiFlags readUiFlags(const juce::ValueTree& apvtsState)
 // `generateSessionGuid()` —— 它产出的也是合法 dashed v4 UUID,但**不是**本 GUID 的生成点,
 // 目前只在 SidecarStore 内部(CoW 换新 GUID)被用到;别把两者当成同一个入口。
 //
-// 落在 PRMS 根节点属性面上,理由与上面三个 ui_ 位逐字相同(见本文件头注:CFGS 的定长 header
-// 偏移冻结,且早于 [J69/U24] 的构建对超长 payload 整块拒载、把配置打回默认);ValueTree 增删
-// 字段两个方向都容忍,无需升 abi、无需迁移函数,也就不动 STATE_SCHEMA 的冻结布局。
+// 落在 PRMS 根节点属性面上,理由与上面三个 ui_ 位逐字相同(见本文件头注:往 CFGS 尾部加字段
+// 要升容器 abi,而升了 abi 老构建就整块拒载、配置停在默认);ValueTree 增删字段两个方向都容忍,
+// 无需升 abi、无需迁移函数,也就不动 STATE_SCHEMA 的冻结布局。
 inline const juce::Identifier kSessionGuidProp{"session_guid"};
 
 inline void writeSessionGuid(juce::ValueTree& apvtsState, const juce::String& guid)
