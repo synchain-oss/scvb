@@ -103,8 +103,11 @@ public:
     uint8_t vadP(uint64_t hop) const;
 
     // ⚠ [SL-232 起] **生产写侧已统一走 `setVadPosteriorRange`**,本函数生产代码零调用方,
-    // 保留是给用例塞哨兵值用的(以及将来可能的单点恢复路径)。别拿它把批量版绕回逐 hop ——
-    // 那正是本卡要修掉的形态(每 hop 两次 map 查找、迭代数等于跨度)。
+    // 保留**只为给用例塞哨兵值**。别拿它把批量版绕回逐 hop —— 那正是本卡要修掉的形态
+    // (每 hop 两次 map 查找、迭代数等于跨度)。
+    // ⚠ 也**别拿它写恢复路径**:它与 `setVadPosteriorRange` 一样绕开 `readOnly_`/`gate_`,
+    // 且**不记 coverage**;没有覆盖记账,`waveformOf` 那边照样按「未覆盖」回 0 —— 写进去等于白写。
+    // 回灌走 `restoreHop()` + `addCoverage()`(那对函数就是为这件事准备的,见其注释)。
     void setVadP(uint64_t hop, uint8_t v);
 
     // [SL-232] 批量写 VAD 后验(`appendRange` 的写侧镜像,同一个理由)。
