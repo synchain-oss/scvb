@@ -46,7 +46,11 @@ import {
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
 } from "./tab-master.js";
-import { createTabTracks, staleTrackCount } from "./tab-tracks.js";
+import {
+    createTabTracks,
+    hasSegmentedMaterial,
+    staleTrackCount,
+} from "./tab-tracks.js";
 import { createTabWave } from "./tab-wave.js";
 import { createTabSuggestions } from "./tab-suggestions.js";
 import { createCurveEditor } from "./canvas/curve-editor.js";
@@ -1399,6 +1403,27 @@ function renderBanners() {
         fill($("banner-staleCapture-text"), "banner.staleCapture", {
             m: staleTracks,
         });
+
+    // ⑨ [SL-239] 采集开着 ⇒ 上面那条提示整条是哑的,而用户完全看不出来。
+    //
+    // 04 §4.5 的比对**只在采集 OFF 期间发生**(FeatRing::accumulateFp 的 `if (capturing) return;`
+    //  —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义)。这本身不是缺陷;缺陷是
+    // 它不可见:v5.6.2 实测里用户按终验清单做「改狠上游 EQ → 应出 ⚠」,采集还开着,
+    // 于是既没有 ⚠、也没有任何线索说明为什么(SL-239 定谳)。更糟的是机会**一次性消耗** ——
+    // 那一遍带采集的重播已经把基线刷成改后素材,事后再关采集也换不回那条 ⚠
+    // (`HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗` 把这两件事都钉住了)。
+    //
+    // 第二个判据是「已经有段表」:光看 capture_enabled 会在用户**第一遍采集**期间就把横幅
+    // 摆出来,而那时他正按流程采集,「提示暂停」对他没有意义。
+    //
+    // **只读态(第二个 Output)不特殊处理**,有意的:那边关不了采集,但「为什么没有 ⚠」
+    // 这个解释对他同样成立,而且坐在 DAW 前的往往就是他。把一条正确的解释藏起来,
+    // 换来的只是「又一次说不清为什么」——这正是本卡要修的那件事。
+    show(
+        $("banner-fpPausedByCapture"),
+        !!(s.global && s.global.capture_enabled) &&
+            hasSegmentedMaterial(vs.segments),
+    );
 
     // toast:一次性提示(§5.1 降级纪律②:可关闭)
     show($("toast-projectCopy"), err.has("projectCopy"));

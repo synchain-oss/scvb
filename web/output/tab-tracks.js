@@ -439,6 +439,25 @@ export function staleTrackCount(segments) {
 }
 
 /**
+ * [SL-239] 这份工程里**已经有分析产物**(任一轨有段)。
+ *
+ * 只有一个用处:横幅 ⑨「采集开着 ⇒ 上游改动提示暂停」的第二个判据。为什么需要它 ——
+ * 光看 `capture_enabled` 会在**第一遍采集**期间就把横幅摆出来,而那时用户正按流程采集,
+ * 「提示暂停」对他毫无意义;有段表 = 他已经采过并分析过一轮,`stale` 那条提示从这一刻起
+ * 才是他真正会依赖的东西,也才值得告诉他它现在是哑的。
+ *
+ * 与 `staleTrackCount` 同一条纪律:读**合并后**的段表视图,不是单个事件的 `channels`。
+ */
+export function hasSegmentedMaterial(segments) {
+    const list = (segments && segments.channels) || [];
+    for (const c of list) {
+        if (c && Array.isArray(c.segments) && c.segments.length > 0)
+            return true;
+    }
+    return false;
+}
+
+/**
  * 「单段全时限 `user_edited` 常值」判定 —— `setTrackManual` **手动接管通道**的产物特征
  * (契约 §1.16 编码 = 04 §1.5 方案 A)。两处用它:
  *   ① **未冻结**维度的读回值(05 §2.2「读回值同样取自该段」)—— [J85] 之后冻结维度改读

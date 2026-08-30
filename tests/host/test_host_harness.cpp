@@ -5459,3 +5459,124 @@ TEST_CASE("HOST SL-234:加载期 CFGS.uiScale 越界值夹到边界", "[host][v5
         CHECK(b.bridgeUiScalePercent() == ok);
     }
 }
+
+// ===========================================================================
+// [SL-239] v5.6.2 实测 P1 仍在:#146 合入后,用户「改狠上游 EQ → ⚠ 重采提醒」**依旧
+// 不出现**。本组两条把定谳钉住 —— **指纹链一条都没断,断的是「01 采集开着时整条功能
+// 是哑的」,而用户的自然流程正好把采集留在 ON**。
+//
+// 为什么 #146 的 e2e 全绿而用户仍不触发(SL-231 盘点要回答的那个问题):
+// `HOST SL-225` 三条用例**每一条在问 stale 之前都显式 `setCaptureEnabled(false)`**,
+// 唯一留着 ON 的那个 SECTION 断的是 `CHECK_FALSE` —— 它把「采集 ON 所以没提示」
+// **当成正确行为钉住了**。于是那批用例覆盖的是「采集已关」这个前提下的链路健康,
+// 而用户的前提恰恰是采集没关(终验清单 A1/B13 全文没有一句「先关掉 01 采集」,
+// 产品里也没有任何地方提示要关)。
+//
+// 另有一处**盲区**同批补上:SL-225 的「重开工程」是**同实例 setStateInformation**,
+// FrameStore 的基线全程留在内存里,FEAT→FrameStore 那一跳从没被走过。下面第一条改用
+// SL-226 那条真路径(Rig 析构 + 全新实例),把「基线真的随工程回来了」也一并钉住。
+// ===========================================================================
+
+// ① 用户场景的整链 e2e:采集 → 存 → **关工程** → 重开 → 改狠上游 → ⚠。
+//    判据取 `captureStale`(引擎侧真值,链末端),不看内部计数器。
+TEST_CASE("HOST SL-239:工程重开(全新实例)后上游改动仍须翻出 stale", "[host][v562][SL239]")
+{
+    // 采一段基线,由用户自己把采集关掉(= 他要存进工程的状态),再保存。
+    const auto layBaselineAndSave = [](juce::MemoryBlock& blob) {
+        Rig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+
+        r.out.setCaptureEnabled(true);
+        r.ph.timeSamples = 0;
+        r.runBlocks(760, 0.5f); // ≈8.1s
+        Rig::pumpMessages(400);
+        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+        r.out.setCaptureEnabled(false);
+        Rig::pumpMessages(200);
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    }; // Rig 在这里析构 = 关工程,内存里的 FrameStore 连同两个实例一起没了
+
+    // 重开工程(全新实例)后回到同一段时间线播一遍,问 stale。
+    const auto reopenThenPlay = [](const juce::MemoryBlock& blob, float amplitude) {
+        Rig r2;
+        REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS == 0.0); // 加载前是空的
+        r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        Rig::pumpMessages(200);
+
+        REQUIRE_FALSE(r2.out.captureEnabled()); // 采集态 = 用户自己存的 OFF
+        // 基线真的随工程回来了(FEAT → FrameStore)。没有这一条,下面断言不出任何东西:
+        // 基线缺席时 baselineTileFingerprint 返回 false,上报会走「无基线」分支整条跳过。
+        REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+        r2.ph.playing = true;
+        REQUIRE(r2.waitUntilInjected());
+        r2.ph.timeSamples = 0;
+        r2.runBlocks(760, amplitude);
+        Rig::pumpMessages(600);
+        return r2.out.captureStale(kTestChannel);
+    };
+
+    juce::MemoryBlock blob;
+    layBaselineAndSave(blob);
+
+    // ★ 改狠上游 EQ = 同一段时间线上喂差一个数量级的素材 ⇒ ⚠ 必须回来。
+    CHECK(reopenThenPlay(blob, 0.05f));
+
+    // ★ 反向:素材一个字节没改(同振幅)⇒ 绝不许报。这一条同时是 FEAT 回灌保真度的判据 ——
+    //   落盘存的就是量化后的 int16 dBq,回灌若有任何一位不精确,这里就会整轨误报。
+    CHECK_FALSE(reopenThenPlay(blob, 0.5f));
+}
+
+// ② 断口本身:**采集 ON 期间整条提示是哑的**,而且机会**一次性消耗**。
+//
+// 这一条不是在钉「正确行为」,是在钉「用户看不见的那件事真的会发生」—— 它是本卡 web 侧
+// 那条提示横幅的存在理由,横幅文案改了就该回来看这里。
+//
+// ⚠ 三条断言里前两条是 CHECK_FALSE(空转也会绿),所以第三条**必须**留着:同一个 rig 上
+// 只把采集关掉、换第三种素材,⚠ 必须出现。三条合起来才说明「刚才没提示是因为采集 ON
+// 且基线已被刷新,不是因为链死了」(PR #146 评审立下的负向断言纪律)。
+//
+// 前两条**没有**配「注入一处断链让它变红」的反向验证,不是漏了,是它不存在:本卡实跑试过
+// 把 `accumulateFp` 的 `if (capturing) return;` 整个去掉(= 采集 ON 也照发 fp_report),
+// 两条**照样绿** —— 报告到达 Output 时基线已被同一遍采集覆写,比出来的是「自己跟自己一样」。
+// 也就是说这两条钉的是一条**结构性属性**,不是某一行代码的行为;能证伪它的只有「在覆写前
+// 快照基线」那种设计级改动。第三条正向断言就是它们的防空转装置。
+TEST_CASE("HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗", "[host][v562][SL239]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const auto replay = [&r](float amplitude) {
+        r.ph.timeSamples = 0;
+        r.runBlocks(760, amplitude);
+        Rig::pumpMessages(600);
+        return r.out.captureStale(kTestChannel);
+    };
+
+    // 基线:采集 ON 播一遍 0.5 的素材。
+    r.out.setCaptureEnabled(true);
+    r.ph.timeSamples = 0;
+    r.runBlocks(760, 0.5f);
+    Rig::pumpMessages(400);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+    // ★① 采集**留在 ON**(用户的自然流程:没有任何地方叫他关)→ 改狠上游再播:
+    //     没有 ⚠。按 04 §4.5 这不是缺陷(FeatRing::accumulateFp 的 `if (capturing) return;`
+    //     —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义),但用户看到的就是「提醒没了」。
+    CHECK_FALSE(replay(0.05f));
+
+    // ★② 而且**机会已经用掉了**:上面那遍采集 ON 的重播已经把基线刷成改后素材,
+    //     此刻再把采集关掉、播**同一段**,⚠ 也不会回来 —— 用户全程没有任何提示,
+    //     却已经永久失去了这一次「上游动过」的证据。
+    r.out.setCaptureEnabled(false);
+    Rig::pumpMessages(200);
+    CHECK_FALSE(replay(0.05f));
+
+    // ★③ 正向防空转:同一个 rig、只换第三种素材(基线现在是 0.05 那一版)⇒ ⚠ 必须出现。
+    //     没有这一条,上面两条 CHECK_FALSE 在整条链死掉时照样绿。
+    CHECK(replay(0.3f));
+}

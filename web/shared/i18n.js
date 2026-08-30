@@ -712,6 +712,12 @@ export const T = {
         // **只提示,不自动失效、不阻断任何操作**(04 §4.5 UI 条)。
         "banner.staleCapture":
             "{m} 轨的上游音频与已采集特征不一致,建议重新采集",
+        // [SL-239] 横幅 ⑨:采集 ON 期间上一条提示整条是哑的(FeatRing::accumulateFp 的
+        // `if (capturing) return;` —— 这一秒的特征正被写成新基线,拿它跟自己比毫无意义)。
+        // 用户按终验清单做「改狠上游 EQ → 应出 ⚠」时采集通常还开着,于是他看到的是
+        // 「提醒没了」而查不出原因;文案必须把**可执行动作**说出来,不能只说状态。
+        "banner.fpPausedByCapture":
+            "采集开着时不比对上游改动(这一秒的特征正被写成新基线)——要检查上游有没有动过,先关掉采集再播放",
         "wave.staleTrack": "该轨上游音频与已采集特征不一致,建议重新采集",
         // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
         "master.versionArmedConfirm": "引擎输出将平滑切至新版本,是否继续?",
@@ -1542,6 +1548,8 @@ export const T = {
         "banner.noTimeline": "Host provides no timeline",
         "banner.staleCapture":
             "Upstream audio no longer matches the captured features on {m} track(s) — re-capture recommended",
+        "banner.fpPausedByCapture":
+            "Upstream-change detection is paused while capture is on (these features are being rewritten as the new baseline) — turn capture off, then play, to check whether upstream changed",
         "wave.staleTrack":
             "Upstream audio no longer matches the captured features on this track — re-capture recommended",
         "master.versionArmedConfirm":
@@ -2347,6 +2355,8 @@ export const T = {
         "banner.noTimeline": "L'hôte ne fournit aucune timeline",
         "banner.staleCapture":
             "L'audio en amont ne correspond plus aux caractéristiques capturées sur {m} piste(s) — recapture recommandée",
+        "banner.fpPausedByCapture":
+            "La détection des changements en amont est suspendue tant que la capture est active (ces caractéristiques sont réécrites comme nouvelle référence) — désactivez la capture, puis lancez la lecture, pour vérifier si l'amont a changé",
         "wave.staleTrack":
             "L'audio en amont ne correspond plus aux caractéristiques capturées sur cette piste — recapture recommandée",
         "master.versionArmedConfirm":

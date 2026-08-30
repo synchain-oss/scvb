@@ -11,6 +11,8 @@
 //   ① `?scenario=stale`(fingerprint watchdog 摆开三条轨)⇒ 横幅 ⑧ 可见且写着 3 轨、
 //      tab 导航琥珀点亮、泳道 2/5/11 的 ⚠ 可见且带整句 tooltip、其余 12 轨的 ⚠ 收起;
 //   ② **反向** `?scenario=connected`(素材没变)⇒ 三处提示全部收起;
+//   ②b [SL-239] 横幅 ⑨「采集开着 ⇒ 上游改动比对已暂停」:`connected`(采集 ON + 已有段表)
+//      ⇒ 亮起且文案带得动作;`stale`(采集 OFF)⇒ 收起。两个场景互为对方的反向;
 //   ③ 两个场景都要零未捕获异常、零 console.error;
 //   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
 //      分析按钮一个都不许被 disable。
@@ -267,11 +269,17 @@ const PROBE = IN(`
     }
     const banner = gb("banner-staleCapture");
     const text = gb("banner-staleCapture-text");
+    const paused = gb("banner-fpPausedByCapture");
+    const pausedText = gb("banner-fpPausedByCapture-text");
     const disabled = (name) => { const el = gb(name); return !!el && !!el.disabled; };
     return {
         banner: vis(banner),
         bannerDisplay: banner ? w.getComputedStyle(banner).display : "(缺节点)",
         bannerText: text ? text.textContent.trim() : null,
+        pausedPresent: !!paused,
+        paused: vis(paused),
+        pausedDisplay: paused ? w.getComputedStyle(paused).display : "(缺节点)",
+        pausedText: pausedText ? pausedText.textContent.trim() : null,
         tabDot: vis(gb("tabnav-wave-stale-dot")),
         lanesShown: lanes.filter((l) => l.shown).map((l) => l.ch),
         lanesPresent: lanes.every((l) => l.present),
@@ -393,6 +401,10 @@ try {
             !p.outputToggleDisabled,
             "stale 不 disable 输出开关(只提示,不阻断)",
         );
+        // [SL-239] ⑨ 的**反向**:本场景采集是 OFF(stale 这一位只可能在采集 OFF 期间产生),
+        // 「比对已暂停」那条横幅必须收起 —— 否则两条互相矛盾的横幅会同时挂着。
+        check(p.pausedPresent, "横幅 ⑨ 的节点在模板里(不是选择器写错了)");
+        check(!p.paused, "采集 OFF ⇒ 横幅 ⑨「比对已暂停」收起");
         assertClean("scenario=stale");
     }
 
@@ -404,6 +416,20 @@ try {
         check(!p.banner, "横幅 ⑧ 收起");
         check(!p.tabDot, "tab 导航琥珀点熄灭");
         eq(p.lanesShown, [], "没有任何泳道挂 ⚠");
+        // [SL-239] 而本场景采集是 **ON** 且段表已在 ⇒ 横幅 ⑨ 必须亮,并把可执行动作说出来。
+        // 这正是用户 v5.6.2 实测所处的那一态:他改狠了上游 EQ 却什么都没等到,
+        // 而真因是采集还开着(采集 ON 期间 Input 一条 fp_report 都不发)。
+        check(p.paused, "采集 ON + 已有段表 ⇒ 横幅 ⑨「比对已暂停」亮起");
+        check(
+            p.pausedDisplay !== "none",
+            `横幅 ⑨ 的 computed display 不是 none(实得 ${p.pausedDisplay})`,
+        );
+        check(
+            /关掉采集|turn capture off|désactivez la capture/i.test(
+                p.pausedText || "",
+            ),
+            `横幅 ⑨ 说出了可执行动作「先关掉采集」(实得「${p.pausedText}」)`,
+        );
         assertClean("scenario=connected");
     }
 } catch (e) {

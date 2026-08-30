@@ -529,6 +529,17 @@ export function buildWorld(opts = {}) {
                     : entry,
             ),
         };
+        // [SL-239] 采集必须是 OFF:`stale` 这一位**只可能在采集 OFF 期间产生**
+        // (采集 ON 时 Input 一条 fp_report 都不发)。基础世界 makeTourDemoSnapshot 的
+        // capture_enabled 是 true,照搬过来就构造出一个真机上不可能出现的组合,
+        // 而横幅 ⑨(采集开着 ⇒ 比对暂停)在这个世界里正好该是收起的 —— 不改这一位,
+        // 本场景就同时摆出两条互相矛盾的横幅,冒烟也就失去了「⑨ 的反向」这一档。
+        if (outputSnapshot) {
+            outputSnapshot = {
+                ...outputSnapshot,
+                global: { ...outputSnapshot.global, capture_enabled: false },
+            };
+        }
     }
 
     // ---- Input 七态场景覆写(T36;只改 Input 快照初值,不动周期事件与函数语义)----
