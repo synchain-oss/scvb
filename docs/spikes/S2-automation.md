@@ -2,6 +2,8 @@
 
 > 卡 = T03(07-execution-plan §T03);真源 = 03 §1/§3/§4/§8、research/08 §10、ADR-006/014、params-v0 v2.1 §一。
 > 本文件含「DAW 支持等级表(初版)」;周日上机后回填定版(判据清单见 S2-daw-checklist.md)。
+>
+> **路径占位符**:`<toolchain>` = 本机工具链根目录(JUCE / CMake 解包处)。
 
 <!-- 会话表头(周日上机填写) -->
 
@@ -72,8 +74,8 @@ spike 不声明 bypass 参数(避免扰动 123 布局)。JUCE VST3 wrapper 会�
 ## 3. 构建与装机
 
 ~~~powershell
-$env:JUCE_PATH = 'C:\Users\lenovo\deepseekHarness\juce'
-$env:PATH = 'C:\Users\lenovo\deepseekHarness\tools\cmake-3.31.12-windows-x86_64\bin;' + $env:PATH
+$env:JUCE_PATH = '<toolchain>\juce'
+$env:PATH = '<toolchain>\tools\cmake-3.31.12-windows-x86_64\bin;' + $env:PATH
 pwsh scripts/gates.ps1 -Quick -BuildDir build-T03
 # 产物:build-T03\SCVBS2Output_artefacts\Release\VST3\SCVB S2 Output.vst3
 ~~~

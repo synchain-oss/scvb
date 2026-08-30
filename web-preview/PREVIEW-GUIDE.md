@@ -3,6 +3,8 @@
 > 谁该读:①想自己点开看一眼 UI 的**用户**;②要出图给用户过目的 **Claude / DeepSeek 会话**。
 > 一句话:预览 = `serve.ps1` 起的本地静态服务 + 壳页把 mock 注进真源页的 iframe;
 > 看图有三条通路 —— **人眼(浏览器)/ Claude(真机扩展)/ 任何会话(无头截图 `shot.mjs`)**。
+>
+> **路径占位符**:`<repo>` = 本仓 checkout 根目录。
 
 ---
 
@@ -43,7 +45,7 @@ D.querySelector('[data-tab-btn="wave"]').click();
 
 ```powershell
 # 1) 起服(独立窗口留着,别关)
-pwsh C:\Users\lenovo\claudeCode\synchain\SCVB\scvb-wt-t27b\web-preview\serve.ps1
+pwsh '<repo>\web-preview\serve.ps1'
 
 # 2) 浏览器打开(或加 -Open 让脚本自己开导航页)
 #    http://127.0.0.1:8823/web-preview/output.html?fixture=fifteen-tracks
@@ -80,7 +82,7 @@ Chrome DevTools 协议),Windows 上自动找 Chrome/Edge。
 
 ```powershell
 # 前置:服务器已在跑(通路 A 第 1 步)
-cd C:\Users\lenovo\claudeCode\synchain\SCVB\scvb-wt-t27b
+cd '<repo>'
 
 # 最常用:切到某个 tab 抓整屏
 node web-preview/shot.mjs --tab=wave  --out=web-preview/.shots/tab3.png

@@ -4,18 +4,20 @@
 > 判据真源 = T03 验收 / 03 §4(DAW 作战手册)/ research/08 §2.1。
 >
 > **DAW 范围(用户决定 U27 口径)**:Cubase 15 为主测 DAW → REAPER 7 只做 Cubase 覆盖不了的兜底格 → Live / Studio One / FL 标为可选/尽力(能测就测,不测不阻塞)。
+>
+> **路径占位符**:`<toolchain>` = 本机工具链根目录(JUCE / CMake 解包处),`<workspace>` = 本机实测工作目录(不入库,自选)。
 
 ## 0. 装机与准备(一次性)
 
 1. 构建并装机(把 S2 spike 装进用户级 VST3 目录):
 
    ~~~powershell
-   $env:JUCE_PATH = 'C:\Users\lenovo\deepseekHarness\juce'
-   $env:PATH = 'C:\Users\lenovo\deepseekHarness\tools\cmake-3.31.12-windows-x86_64\bin;' + $env:PATH
+   $env:JUCE_PATH = '<toolchain>\juce'
+   $env:PATH = '<toolchain>\tools\cmake-3.31.12-windows-x86_64\bin;' + $env:PATH
    pwsh scripts/gates.ps1 -Quick -BuildDir build-T03
    # 手动把产物拷到用户级 VST3:
    # build-T03\SCVBS2Output_artefacts\Release\VST3\SCVB S2 Output.vst3
-   #   → C:\Users\lenovo\AppData\Local\Programs\Common\VST3\SCVB S2 Output.vst3
+   #   → $env:LOCALAPPDATA\Programs\Common\VST3\SCVB S2 Output.vst3
    ~~~
 
 2. 确认 DAW 扫到插件:**SCVB S2 Output**(Synchain 厂商)。打开其编辑器,应见:
@@ -29,7 +31,7 @@
 **唯一工作目录(周日开始前先建好)**
 
 ~~~powershell
-mkdir C:\Users\lenovo\deepseekHarness\S1-2026-08-16\S2
+mkdir '<workspace>\S1-2026-08-16\S2'
 ~~~
 
 | 产物 | 谁记录 | 你要做的动作 |
