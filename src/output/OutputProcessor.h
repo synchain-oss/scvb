@@ -444,6 +444,10 @@ private:
     // [J87] 采集开关的**不加锁**内核:调用方须已持 lifecycleMutex_。setCaptureEnabled 是它的
     // 加锁外壳;25Hz tick 全程持锁,自动撤防那一路直接用内核,不去依赖 CriticalSection 的可重入。
     void applyCaptureEnabled(bool on);
+    // [J92a] 与 applyCaptureEnabled 成对的**内部**写点(不触发互斥)。
+    // 互斥只由**桥面**的 setCaptureEnabled / setOutputEnabled 触发 —— 布防替用户开采集走的是
+    // applyCaptureEnabled 这条内部路,天然豁免(§1.23 裁定① 优先)。
+    void applyOutputEnabled(bool on);
     // [J87] 撤防的**不加锁**内核:桥面撤防与「越界自动撤防」共用它,两条路不许分头写。
     void disarmRecaptureLocked();
     // [J87] 把记账门控(时间维 gate + 轨维 mask)按当前布防态套到 session 上。

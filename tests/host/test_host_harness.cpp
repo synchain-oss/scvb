@@ -3617,7 +3617,9 @@ TEST_CASE("HOST J87:工程恢复复位布防运行时态", "[host][t37][j87]")
 
     constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
 
-    // 先存一份「采集 ON」的工程态。
+    // 先存一份工程态。**注意**:[J91] 之后采集态根本不落盘(`getStateInformation` 恒写 0),
+    // 所以这里开不开采集对存下来的 blob 毫无影响 —— 留着这一行只是为了让本用例的
+    // 前后对照与改判前逐字可比(见末尾那条 CHECK_FALSE 的说明)。
     r.out.setCaptureEnabled(true);
     juce::MemoryBlock blob;
     r.out.getStateInformation(blob);
@@ -3666,7 +3668,18 @@ TEST_CASE("HOST J87:工程恢复复位布防运行时态", "[host][t37][j87]")
     CHECK(r.out.runtime().rangeMode == 0);
     CHECK(r.out.runtime().rangeStartS == 0.0);
     CHECK(r.out.runtime().rangeEndS == 0.0);
-    CHECK(r.out.captureEnabled()); // state 里的采集态照常恢复,没被布防残留顺手关掉
+    // ⚠ [J91] **本行的期望在 2026-08-30 反转过,这不是回归**。
+    //
+    // 改判前:采集态随工程走,所以载回「采集 ON」的工程后这里断的是 `CHECK(captureEnabled())`
+    // ——「state 里的采集态照常恢复,没被布防残留顺手关掉」。
+    // 改判后([J91],用户批准):采集是**录制动作**不是工程设置,`getStateInformation` 恒写 0、
+    // `setStateInformation` 一律忽略,重开工程一律为**关**。于是这里必然是 false。
+    //
+    // 本用例真正守的东西**一个字没变** —— 「陈旧布防不得在载入后顺手改采集开关」。那条不变量
+    // 现在由紧随其后的姊妹用例(「陈旧布防不得把恢复出来的采集关掉」)以**加载后手动开采集**
+    // 的方式继续守着;这里只剩「加载后恒为关」这一条 J91 的口径断言。
+    // 后来人若看到这行觉得别扭想改回 CHECK():先读 docs/contract-changes/20260830-j91-capture-not-persisted.md。
+    CHECK_FALSE(r.out.captureEnabled());
 }
 
 // 上一条断的是「字段有没有复位」;这一条断的是**那个复位到底挡住了什么**。
@@ -3686,8 +3699,7 @@ TEST_CASE("HOST J87:工程恢复后,陈旧布防不得把恢复出来的采集�
     constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
     constexpr double kOldEndS = 2.0;
 
-    // 先做一份「采集 ON」的工程存档(② 的来源)。
-    r.out.setCaptureEnabled(true);
+    // 先做一份工程存档(② 的来源)。[J91] 之后采集态不落盘,这份 blob 里没有采集态。
     juce::MemoryBlock blob;
     r.out.getStateInformation(blob);
     REQUIRE(blob.getSize() > 0);
@@ -3698,9 +3710,22 @@ TEST_CASE("HOST J87:工程恢复后,陈旧布防不得把恢复出来的采集�
     REQUIRE(r.out.captureEnabled());
     REQUIRE(r.out.runtime().recaptureAutoEnabledCapture);
 
-    // ② 载回「采集 ON」的工程。复位这一步若缺席,布防与 autoEnabled 位都会活下来。
+    // ② 载回工程。复位这一步若缺席,布防与 autoEnabled 位都会活下来。
+    //
+    // ⚠ [J91] **本段的构造手法换过一次,被测不变量一个字没变**。改判前采集态随工程走,
+    // 所以这里靠「载回一份采集 ON 的工程」来制造「载入后采集是开的」这个前提;改判后采集
+    // 恒不落盘、加载恒为关,那条路没了 —— 改用**用户自己手动开采集**制造同一个落差。
     r.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
-    REQUIRE(r.out.captureEnabled()); // state 里的采集态确实恢复出来了
+    REQUIRE_FALSE(r.out.captureEnabled()); // [J91] 加载后恒为关
+
+    r.out.setCaptureEnabled(true); // 用户自己把采集打开
+    REQUIRE(r.out.captureEnabled());
+    // `setCaptureEnabled` 会把 autoEnabled 清零(§1.23「用户接管」语义)。而本用例要制造的
+    // 敌对前提恰恰是「陈旧布防仍以为采集是它开的」—— 在**不复位**的实现里,那一位本来就从
+    // ① 一路活到现在。所以手动按回去:正确实现里它无害(armed 已复位,越界那一拍什么都不会
+    // 触发),不复位的实现里它与那边的真实状态一致。**少了这一行,不复位的实现也不会去关
+    // 采集,本用例就测不出任何东西了**(反向验证实跑确认过:注掉七字段复位 ⇒ 本条转红)。
+    r.out.runtime().recaptureAutoEnabledCapture = true;
 
     // ③ 从旧选区左侧一路播过旧的 endS —— 每拍推进 512/48000≈10.7ms,这里给足 4 秒。
     r.ph.timeSamples = static_cast<std::int64_t>(0.5 * kSr);
@@ -5784,69 +5809,145 @@ TEST_CASE("HOST [SL-242] 段级 clearManual 不得吃掉左邻段", "[host][t37]
 TEST_CASE("HOST SL-239:工程重开(全新实例)后上游改动仍须翻出 stale", "[host][v562][SL239]")
 {
     // 采一段基线,由用户自己把采集关掉(= 他要存进工程的状态),再保存。
-    const auto layBaselineAndSave = [](juce::MemoryBlock& blob) {
+    const auto layBaselineAndSave =
+        [](juce::MemoryBlock& blob) {
+            // [SL-247] J91:采集态不落盘,重开工程一律为关。
+            // [SL-247] J92a:采集 ↔ 跟随引擎手动互斥,**布防豁免**。
+            //
+            // 立卡链条:SL-239 定谳「04 §4.5 的上游改动 ⚠ 只在采集 OFF 期间比对,而流程里没有任何
+            // 地方叫用户把采集关掉」。#146(SL-225)只堵住了「布防替用户开的那一下不许落盘」这**一种**
+            // 来源;用户自己开着采集保存、或打开一份 v5.6 期间已被污染的旧工程,重开后照样是 ON,
+            // ⚠ 照样不出现(用户实测两轮)。J91 把口径整个换掉:采集是**录制动作**不是工程设置。
+            //
+            // 契约:docs/contract-changes/20260830-j91-capture-not-persisted.md
+            //       docs/STATE_SCHEMA.md §三 CFGS + [J91] 一条;docs/SCVB_CONTRACT.md §1.2/§1.3/§1.23
+            // ===========================================================================
+
+            // ① J91 正题 = SL-239 探路时实测**红**的那条(E1),现在必须绿:
+            //    工程里存着「采集 ON」,重开后采集必须是**关**,于是上游改动 ⚠ 照常翻出。
+            TEST_CASE("HOST SL-247:采集 ON 时存的工程,重开后采集恒为关且 ⚠ 照常翻出", "[host][SL247][j91]")
+            {
+                juce::MemoryBlock blob;
+                {
+                    Rig r;
+                    r.ph.playing = true;
+                    REQUIRE(r.waitUntilInjected());
+
+                    r.out.setCaptureEnabled(true);
+                    r.ph.timeSamples = 0;
+                    r.runBlocks(760, 0.5f); // ≈8.1s
+                    Rig::pumpMessages(400);
+                    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+                    r.out.setCaptureEnabled(false);
+                    Rig::pumpMessages(200);
+                    r.out.getStateInformation(blob);
+                    REQUIRE(blob.getSize() > 0);
+                }; // Rig 在这里析构 = 关工程,内存里的 FrameStore 连同两个实例一起没了
+
+                // 重开工程(全新实例)后回到同一段时间线播一遍,问 stale。
+                const auto reopenThenPlay = [](const juce::MemoryBlock& blob, float amplitude) {
+                    Rig r2;
+                    REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS == 0.0); // 加载前是空的
+                    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+                    Rig::pumpMessages(200);
+
+                    REQUIRE_FALSE(r2.out.captureEnabled()); // 采集态 = 用户自己存的 OFF
+                    // 基线真的随工程回来了(FEAT → FrameStore)。没有这一条,下面断言不出任何东西:
+                    // 基线缺席时 baselineTileFingerprint 返回 false,上报会走「无基线」分支整条跳过。
+                    REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+                    r2.ph.playing = true;
+                    REQUIRE(r2.waitUntilInjected());
+                    r2.ph.timeSamples = 0;
+                    r2.runBlocks(760, amplitude);
+                    Rig::pumpMessages(600);
+                    return r2.out.captureStale(kTestChannel);
+                };
+
+                juce::MemoryBlock blob;
+                layBaselineAndSave(blob);
+
+                // ★ 改狠上游 EQ = 同一段时间线上喂差一个数量级的素材 ⇒ ⚠ 必须回来。
+                CHECK(reopenThenPlay(blob, 0.05f));
+
+                // ★ 反向:素材一个字节没改(同振幅)⇒ 绝不许报。这一条同时是 FEAT 回灌保真度的判据 ——
+                //   落盘存的就是量化后的 int16 dBq,回灌若有任何一位不精确,这里就会整轨误报。
+                CHECK_FALSE(reopenThenPlay(blob, 0.5f));
+            }
+
+            // ② 断口本身:**采集 ON 期间整条提示是哑的**,而且机会**一次性消耗**。
+            //
+            // 这一条不是在钉「正确行为」,是在钉「用户看不见的那件事真的会发生」—— 它是本卡 web 侧
+            // 那条提示横幅的存在理由,横幅文案改了就该回来看这里。
+            //
+            // ⚠ 三条断言里前两条是 CHECK_FALSE(空转也会绿),所以第三条**必须**留着:同一个 rig 上
+            // 只把采集关掉、换第三种素材,⚠ 必须出现。三条合起来才说明「刚才没提示是因为采集 ON
+            // 且基线已被刷新,不是因为链死了」(PR #146 评审立下的负向断言纪律)。
+            //
+            // 前两条**没有**配「注入一处断链让它变红」的反向验证,不是漏了,是它不存在:本卡实跑试过
+            // 把 `accumulateFp` 的 `if (capturing) return;` 整个去掉(= 采集 ON 也照发 fp_report),
+            // 两条**照样绿** —— 报告到达 Output 时基线已被同一遍采集覆写,比出来的是「自己跟自己一样」。
+            // 也就是说这两条钉的是一条**结构性属性**,不是某一行代码的行为;能证伪它的只有「在覆写前
+            // 快照基线」那种设计级改动。第三条正向断言就是它们的防空转装置。
+            TEST_CASE("HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗", "[host][v562][SL239]")
+            r.runBlocks(760, 0.5f); // ≈8.1s 基线
+            Rig::pumpMessages(400);
+            REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+            // ★ 采集**留在 ON** 就保存 —— 改判前这份 blob 会把 ON 带进下一个工程会话,
+            //   于是重开后 Input 一条 fp_report 都不发,⚠ 永不出现(SL-239 的 E1 实测红)。
+            REQUIRE(r.out.captureEnabled());
+            r.out.getStateInformation(blob);
+            REQUIRE(blob.getSize() > 0);
+        } // 析构 = 关工程
+
+    Rig r2; // 全新实例 = 重开工程
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+
+    // ★★ J91:不管存的时候采集是什么状态,载回来一律是**关**。
+    CHECK_FALSE(r2.out.captureEnabled());
+    // 基线仍随工程回来(J91 只改采集态,不碰 FEAT)—— 没有它下面那条断言不出东西。
+    REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
+
+    r2.ph.playing = true;
+    REQUIRE(r2.waitUntilInjected());
+    r2.ph.timeSamples = 0;
+    r2.runBlocks(760, 0.05f); // 改狠上游 EQ
+    Rig::pumpMessages(600);
+
+    // ★★★ 用户看得见的那件事:⚠ 回来了。改判前这里恒 false。
+    CHECK(r2.out.captureStale(kTestChannel));
+}
+
+// ② J91 的反向:**存的时候采集是关**,载回来当然也是关 —— 挡住「把断言写成恒真」。
+//    这一条单独存在的理由:上面那条若把实现写成「加载后恒为关」以外的任何东西
+//    (比如「取反」),它照样绿;两条一起才钉住「恒为关」而不是「跟着存的值走或取反」。
+TEST_CASE("HOST SL-247:采集 OFF 时存的工程,重开后同样是关(J91 恒为关,不是取反)", "[host][SL247][j91]")
+{
+    juce::MemoryBlock blob;
+    {
         Rig r;
         r.ph.playing = true;
         REQUIRE(r.waitUntilInjected());
-
-        r.out.setCaptureEnabled(true);
-        r.ph.timeSamples = 0;
-        r.runBlocks(760, 0.5f); // ≈8.1s
-        Rig::pumpMessages(400);
-        REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
-
         r.out.setCaptureEnabled(false);
-        Rig::pumpMessages(200);
+        REQUIRE_FALSE(r.out.captureEnabled());
         r.out.getStateInformation(blob);
         REQUIRE(blob.getSize() > 0);
-    }; // Rig 在这里析构 = 关工程,内存里的 FrameStore 连同两个实例一起没了
-
-    // 重开工程(全新实例)后回到同一段时间线播一遍,问 stale。
-    const auto reopenThenPlay = [](const juce::MemoryBlock& blob, float amplitude) {
-        Rig r2;
-        REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS == 0.0); // 加载前是空的
-        r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
-        Rig::pumpMessages(200);
-
-        REQUIRE_FALSE(r2.out.captureEnabled()); // 采集态 = 用户自己存的 OFF
-        // 基线真的随工程回来了(FEAT → FrameStore)。没有这一条,下面断言不出任何东西:
-        // 基线缺席时 baselineTileFingerprint 返回 false,上报会走「无基线」分支整条跳过。
-        REQUIRE(r2.out.coverageOf(kTestChannel, 0.0, 7.0).coveredS > 5.0);
-
-        r2.ph.playing = true;
-        REQUIRE(r2.waitUntilInjected());
-        r2.ph.timeSamples = 0;
-        r2.runBlocks(760, amplitude);
-        Rig::pumpMessages(600);
-        return r2.out.captureStale(kTestChannel);
-    };
-
-    juce::MemoryBlock blob;
-    layBaselineAndSave(blob);
-
-    // ★ 改狠上游 EQ = 同一段时间线上喂差一个数量级的素材 ⇒ ⚠ 必须回来。
-    CHECK(reopenThenPlay(blob, 0.05f));
-
-    // ★ 反向:素材一个字节没改(同振幅)⇒ 绝不许报。这一条同时是 FEAT 回灌保真度的判据 ——
-    //   落盘存的就是量化后的 int16 dBq,回灌若有任何一位不精确,这里就会整轨误报。
-    CHECK_FALSE(reopenThenPlay(blob, 0.5f));
+    }
+    Rig r2;
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    Rig::pumpMessages(200);
+    CHECK_FALSE(r2.out.captureEnabled());
 }
 
-// ② 断口本身:**采集 ON 期间整条提示是哑的**,而且机会**一次性消耗**。
+// ③ J92a:双向手动互斥 + **布防豁免**。
 //
-// 这一条不是在钉「正确行为」,是在钉「用户看不见的那件事真的会发生」—— 它是本卡 web 侧
-// 那条提示横幅的存在理由,横幅文案改了就该回来看这里。
-//
-// ⚠ 三条断言里前两条是 CHECK_FALSE(空转也会绿),所以第三条**必须**留着:同一个 rig 上
-// 只把采集关掉、换第三种素材,⚠ 必须出现。三条合起来才说明「刚才没提示是因为采集 ON
-// 且基线已被刷新,不是因为链死了」(PR #146 评审立下的负向断言纪律)。
-//
-// 前两条**没有**配「注入一处断链让它变红」的反向验证,不是漏了,是它不存在:本卡实跑试过
-// 把 `accumulateFp` 的 `if (capturing) return;` 整个去掉(= 采集 ON 也照发 fp_report),
-// 两条**照样绿** —— 报告到达 Output 时基线已被同一遍采集覆写,比出来的是「自己跟自己一样」。
-// 也就是说这两条钉的是一条**结构性属性**,不是某一行代码的行为;能证伪它的只有「在覆写前
-// 快照基线」那种设计级改动。第三条正向断言就是它们的防空转装置。
-TEST_CASE("HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗", "[host][v562][SL239]")
+// 判据全取引擎侧真值(`captureEnabled()` / `outputEnabled()`),不看 UI。
+// 豁免那一节是本用例的正题 —— 它守的是「点『重采集选区』不会静默关掉用户的输出引擎」,
+// 那正是硬互斥若无差别生效时会造成的、用户拍板时不可能预见的连锁。
+TEST_CASE("HOST SL-247:采集与跟随引擎手动互斥,布防豁免", "[host][SL247][j92a]")
 {
     Rig r;
     r.ph.playing = true;
@@ -5881,4 +5982,122 @@ TEST_CASE("HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗"
     // ★③ 正向防空转:同一个 rig、只换第三种素材(基线现在是 0.05 那一版)⇒ ⚠ 必须出现。
     //     没有这一条,上面两条 CHECK_FALSE 在整条链死掉时照样绿。
     CHECK(replay(0.3f));
+    SECTION("手动开采集 ⇒ 关跟随引擎")
+    {
+        r.out.setOutputEnabled(true);
+        REQUIRE(r.out.outputEnabled());
+        r.out.setCaptureEnabled(true);
+        CHECK(r.out.captureEnabled());
+        CHECK_FALSE(r.out.outputEnabled()); // ★ 互斥
+    }
+
+    SECTION("手动开跟随引擎 ⇒ 关采集")
+    {
+        r.out.setCaptureEnabled(true);
+        REQUIRE(r.out.captureEnabled());
+        r.out.setOutputEnabled(true);
+        CHECK(r.out.outputEnabled());
+        CHECK_FALSE(r.out.captureEnabled()); // ★ 反方向互斥
+    }
+
+    SECTION("关一个不牵连另一个 —— 互斥只在**开**的那一跳生效")
+    {
+        r.out.setCaptureEnabled(true);
+        REQUIRE(r.out.captureEnabled());
+        r.out.setCaptureEnabled(false);
+        CHECK_FALSE(r.out.captureEnabled());
+        CHECK_FALSE(r.out.outputEnabled()); // 本来就是关的,没被「反向打开」
+    }
+
+    SECTION("★ 布防豁免:点「重采集选区」不得关掉用户的输出引擎")
+    {
+        constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+
+        // 用户自己把输出开着、采集关着(布防才会替他开采集,裁定① 的前提)。
+        r.out.setOutputEnabled(true);
+        REQUIRE(r.out.outputEnabled());
+        REQUIRE_FALSE(r.out.captureEnabled());
+
+        r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+
+        // 布防替他开了采集(§1.23 裁定①)……
+        CHECK(r.out.captureEnabled());
+        CHECK(r.out.runtime().recaptureAutoEnabledCapture);
+        // ★★ ……但**没有**顺手关掉他的输出引擎。无差别互斥的实现在这里红。
+        //     豁免不是靠 if,是靠调用点区分:布防走内部 applyCaptureEnabled,
+        //     互斥只写在桥面 setCaptureEnabled 里。
+        CHECK(r.out.outputEnabled());
+    }
+
+    SECTION("布防期用户手动开输出 ⇒ 采集被关、本次重采集作废,而布防位保留")
+    {
+        constexpr std::uint16_t kMask = 1u << (kTestChannel - 1);
+        r.out.setCaptureEnabled(false);
+        r.out.armRecapture(kMask, 1.0, 2.0, /*autoStop=*/false);
+        REQUIRE(r.out.captureEnabled());
+        REQUIRE(r.out.runtime().recaptureArmed);
+
+        r.out.setOutputEnabled(true); // 用户手动开输出 = 接管
+
+        CHECK(r.out.outputEnabled());
+        CHECK_FALSE(r.out.captureEnabled()); // 互斥关掉了采集 ⇒ 这次重采集作废
+        // ★ 布防位**保留**(不自动撤防):撤了用户就丢了刚拖出来的工作选区且毫无痕迹。
+        //   留着,`armed ∧ !capture_enabled` 本身就是桥面出提示的依据(不新增契约字段)。
+        CHECK(r.out.runtime().recaptureArmed);
+        // 视为用户接管这把闸,撤防不再替他恢复(与 §1.23 裁定③ 同款)。
+        CHECK_FALSE(r.out.runtime().recaptureAutoEnabledCapture);
+    }
+}
+
+// ④ **读侧那一道单独的护栏** —— 没有它,J91 对**老工程**就是空的。
+//
+// 为什么必须单独立一条:写侧恒 0 之后,凡是本构建自己存出来的 blob,`capture_enabled` 都是 0
+// —— 读侧忽不忽略**看不出差别**。实跑验证过:把读侧退回 `captureEnabled_ = s.captureEnabled != 0`,
+// 上面 ①② 两条**照样全绿**。也就是说读侧那行生产代码当时没有任何用例守着,后来人「顺手化简」
+// 把它删掉,一切照绿,而 v5.6 期间被污染的老工程从此再也好不了 —— 那恰恰是 J91 对用户最直接的好处。
+//
+// 所以这里**手工造一份 `capture_enabled = 1` 的 CFGS**(绕开 getStateInformation,模拟旧构建
+// 存下的工程),断言载入后仍是关。这条用例是「老工程自愈」这个承诺的唯一护栏。
+TEST_CASE("HOST SL-247:老工程里 capture_enabled=1 也必须载成关(读侧护栏)", "[host][SL247][j91]")
+{
+    // 先拿一份合法的整份工程做底(本构建存的,里面 capture_enabled 已是 0)。
+    juce::MemoryBlock base;
+    {
+        Rig r;
+        r.out.getStateInformation(base);
+        REQUIRE(base.getSize() > 0);
+    }
+
+    // 把 CFGS 里的 capture_enabled 手工改成 1 —— 这就是一份「旧构建存的、被污染的工程」。
+    scvb::state::StateChunks chunks;
+    const auto res = scvb::state::loadState(static_cast<const std::uint8_t*>(base.getData()), base.getSize(), chunks);
+    REQUIRE(res.status == scvb::state::StateLoadStatus::Ok);
+    const auto* cfgs = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfgs != nullptr);
+    scvb::state::OutputState s;
+    REQUIRE(scvb::state::decodeOutputState(cfgs->payload.data(), cfgs->payload.size(), s));
+    REQUIRE(s.captureEnabled == 0u); // 前置:本构建存的确实是 0(写侧恒 0 那一半的旁证)
+    s.captureEnabled = 1u; // ← 手工污染
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeOutputState(s, payload));
+    chunks.set(scvb::state::kFourccCfgs, std::move(payload));
+    std::vector<std::uint8_t> poisoned;
+    REQUIRE(scvb::state::encodeContainer(chunks, poisoned));
+
+    // 前置:这份 blob 里那一位**真的是 1**(否则下面断言是空的)。
+    {
+        scvb::state::StateChunks back;
+        REQUIRE(scvb::state::loadState(poisoned.data(), poisoned.size(), back).status ==
+                scvb::state::StateLoadStatus::Ok);
+        const auto* c2 = back.find(scvb::state::kFourccCfgs);
+        REQUIRE(c2 != nullptr);
+        scvb::state::OutputState s2;
+        REQUIRE(scvb::state::decodeOutputState(c2->payload.data(), c2->payload.size(), s2));
+        REQUIRE(s2.captureEnabled == 1u);
+    }
+
+    // ★ 载入这份被污染的工程 —— 采集必须是**关**。读侧退回 `s.captureEnabled != 0` 时这条转红。
+    ScvbOutputAudioProcessor out;
+    out.setStateInformation(poisoned.data(), static_cast<int>(poisoned.size()));
+    CHECK_FALSE(out.captureEnabled());
 }

@@ -1179,20 +1179,25 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // CFGS:Output 配置(group_id / 采集 / 输出 / 版本 / ui,[J66] 最小 T24 子集)。
     scvb::state::OutputState s;
     s.groupId = static_cast<scvb::u32>(groupId_);
-    // [SL-225] 存的是**用户自己选的**采集态,不是布防临时替他开的那一下。
+    // [J91] 采集态**恒写 0,不随工程走** —— 采集是一次「录制动作」,不是工程设置。
     //
-    // [J87] 裁定① 让「重采集选区」自动打开 01 采集,那是**临时接管** —— 撤防会按裁定③ 把它
-    // 恢复成布防前的值。但若用户在布防期间保存工程(或宿主自动保存),这个临时值会落进 CFGS,
-    // 而**布防位本身不持久化**(04 §4.2 ③「工作选区不落 state」):重开工程后采集莫名其妙开着,
-    // 界面上没有任何布防线索,用户也从没自己开过它。
+    // 沿革:[SL-225](#146)曾把这里改成「存用户自己选的那个值,排除布防临时替他开的那一下」。
+    // 那一版只堵住了**一种**让重开后采集莫名开着的来源;用户自己开着采集保存、或打开一份 v5.6
+    // 期间已被污染的旧工程,重开后照样是 ON。而采集 ON 期间 Input **一条 fp_report 都不发**
+    // (FeatRing::accumulateFp 的 `if (capturing) return;`),于是 04 §4.5 的上游改动 ⚠ 对用户
+    // 而言**根本不存在,且查不出原因** —— SL-239 用户实测两轮都栽在这里。
     //
-    // 后果不止是「开关状态不对」:采集 ON 期间 Input **一条 fp_report 都不发**
-    // (FeatRing::accumulateFp 的 `if (capturing) return;`),于是 04 §4.5 的上游改动 ⚠ 从此
-    // 再也不出现 —— 用户实测「重采提醒消失了」(v5.6 SL-225),而且完全查不出原因。
+    // 所以口径整个换掉:不再区分「谁开的」,**一个字都不存**;加载侧一律恢复成关
+    // (见 setStateInformation)。没有哪个 DAW 会把「录音已布防且正在滚动」存进工程再替你恢复。
+    // 顺带把 v5.6 期间被污染的旧工程一并救回来 —— 它们再打开就是正常的,用户不用做任何事。
     //
-    // `recaptureAutoEnabledCapture` 恰好就是「这一下是不是我们开的」那本账:用户中途自己拧过
-    // 开关会把它清零(视为接管),布防前本来就开着的也是 false —— 两种情况都照实存。
-    s.captureEnabled = (captureEnabled_ && !runtime_.recaptureAutoEnabledCapture) ? 1u : 0u;
+    // 字段**保留在 CFGS 布局里、不删不挪**(abi 仍为 2):老工程照常解码,新工程在老构建里
+    // 读到 0 也只是「用户存前把采集关了」,两个方向都无异常。
+    // 契约:docs/STATE_SCHEMA.md §三 CFGS 与 [J91] 一条;docs/SCVB_CONTRACT.md §1.2。
+    //
+    // ⚠ `recaptureAutoEnabledCapture` 这本账**仍然要留着** —— 它现在只服务于 §1.23 裁定③ 的
+    // 「撤防恢复布防前原值」,与持久化再无关系。删了它撤防就恢复不回去。
+    s.captureEnabled = 0u;
     s.outputEnabled = outputEnabled_ ? 1u : 0u;
     s.versionActive = static_cast<scvb::u32>(versionActive_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
@@ -1730,7 +1735,11 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     preservedCfgsTail_ = std::move(s.unknownTail); // 未来小版本追加字段保留,getStateInformation 原样回写
 
     groupId_ = static_cast<int>(s.groupId);
-    captureEnabled_ = s.captureEnabled != 0;
+    // [J91] 采集态**不随工程恢复**:`CFGS` 里那一位一律忽略,恒回到关。
+    // 写侧已恒写 0(见 getStateInformation),这里再挡一道是为了**老工程** —— v5.6 期间存下的
+    // 工程里那一位可能是 1,只有读侧也忽略,那批工程才真的自愈。
+    // 要采集就再点一次 §1.2 setCaptureEnabled。
+    captureEnabled_ = false;
     outputEnabled_ = s.outputEnabled != 0;
     versionActive_ = static_cast<int>(s.versionActive);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
@@ -2004,6 +2013,13 @@ void ScvbOutputAudioProcessor::applyCaptureEnabled(bool on)
     session_.setCaptureEnabled(on);
 }
 
+void ScvbOutputAudioProcessor::applyOutputEnabled(bool on)
+{
+    // 调用方须已持 lifecycleMutex_。与 applyCaptureEnabled 对称的**内部**写点:不触发 J92a 互斥。
+    outputEnabled_ = on;
+    session_.setOutputEnabled(on);
+}
+
 void ScvbOutputAudioProcessor::setCaptureEnabled(bool on)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
@@ -2012,6 +2028,16 @@ void ScvbOutputAudioProcessor::setCaptureEnabled(bool on)
     // §1.2 setCaptureEnabled —— 工程恢复那一路直接写 captureEnabled_ + session_,不经过这里。
     runtime_.recaptureAutoEnabledCapture = false;
     applyCaptureEnabled(on);
+
+    // [J92a] 采集与跟随引擎互斥:手动开一个,另一个自动关(用户 2026-08-30 拍板)。
+    //
+    // **只在这条桥面路上做**。布防替用户开采集走的是 applyCaptureEnabled 那条内部路
+    // (armRecapture 里),因此天然豁免 —— §1.23 裁定① 优先。这个豁免不是加了个 if,
+    // 是**靠调用点区分**的:点「重采集选区」绝不会顺手关掉用户的输出引擎。
+    if (on && outputEnabled_)
+    {
+        applyOutputEnabled(false);
+    }
 }
 
 void ScvbOutputAudioProcessor::armRecapture(std::uint16_t tracksMask, double startS, double endS, bool autoStop)
@@ -2084,8 +2110,22 @@ void ScvbOutputAudioProcessor::disarmRecaptureLocked()
 void ScvbOutputAudioProcessor::setOutputEnabled(bool on)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    outputEnabled_ = on;
-    session_.setOutputEnabled(on);
+    applyOutputEnabled(on);
+
+    // [J92a] 反方向的互斥:手动开跟随引擎 ⇒ 关采集。
+    //
+    // 布防期这样做 = **本次重采集当场作废**(采集关了,门控就没有意义)。此时**保留布防位**
+    // 而不是顺手撤防:撤了用户就丢了刚拖出来的工作选区、且毫无痕迹;留着则
+    // 「armed ∧ !capture_enabled」这个组合本身就是可观测的证据,桥面据它出提示
+    // (§2.1 两个字段都是现成的,不新增契约字段)。
+    //
+    // 顺带盖住一个**早于本卡**就存在的洞:用户在布防期手动关采集(§1.23 裁定③ 的「接管」)
+    // 同样会落到 armed ∧ !capture,此前界面上一个字都没有。同一条提示两条路都覆盖。
+    if (on && captureEnabled_)
+    {
+        runtime_.recaptureAutoEnabledCapture = false; // 与 setCaptureEnabled 同款:视为用户接管
+        applyCaptureEnabled(false);
+    }
 }
 
 void ScvbOutputAudioProcessor::setVersionActive(int version)
