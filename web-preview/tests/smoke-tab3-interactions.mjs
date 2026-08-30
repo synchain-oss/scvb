@@ -840,7 +840,7 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             // 接线面:两个判据都在,缺一个横幅就会在错误的时候出现或永不出现。
             const bat = appSrc.indexOf('$("banner-fpPausedByCapture")');
             check(bat > 0, "找得到横幅 ⑨ 的接线块");
-            const blk = bat > 0 ? appSrc.slice(bat, bat + 300) : "";
+            const blk = bat > 0 ? appSrc.slice(bat, bat + 400) : "";
             check(
                 /capture_enabled/.test(blk),
                 "横幅 ⑨ 的判据含 capture_enabled(§2.1)",
@@ -848,6 +848,17 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             check(
                 /hasSegmentedMaterial\(vs\.segments\)/.test(blk),
                 "横幅 ⑨ 的第二判据读**合并后**的段表视图(与 ⑧ 同一条纪律)",
+            );
+            // 后两项都是「不说反话」的护栏,#158 三个 bot 各自独立揪出。
+            // DOM 侧由 smoke-output-stale-page.mjs 的 `stale` / `recapture-armed`
+            // 两档真渲染验证(两档都实跑注入过、各红一次);这里守的是判据没被人删掉。
+            check(
+                /staleTracks === 0/.test(blk),
+                "横幅 ⑨ 在已有 ⚠ 时让位(⑨ 只解释「为什么没有 ⚠」,不与 ⑧ 打架)",
+            );
+            check(
+                /recapture[\s\S]{0,20}armed/.test(blk),
+                "横幅 ⑨ 在重采集布防期收起(那时采集是 §1.23 裁定① 替用户开的,叫他关是反向指令)",
             );
             check(
                 !/disabled|readOnly\s*=/.test(blk),

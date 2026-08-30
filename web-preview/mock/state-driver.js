@@ -529,17 +529,17 @@ export function buildWorld(opts = {}) {
                     : entry,
             ),
         };
-        // [SL-239] 采集必须是 OFF:`stale` 这一位**只可能在采集 OFF 期间产生**
-        // (采集 ON 时 Input 一条 fp_report 都不发)。基础世界 makeTourDemoSnapshot 的
-        // capture_enabled 是 true,照搬过来就构造出一个真机上不可能出现的组合,
-        // 而横幅 ⑨(采集开着 ⇒ 比对暂停)在这个世界里正好该是收起的 —— 不改这一位,
-        // 本场景就同时摆出两条互相矛盾的横幅,冒烟也就失去了「⑨ 的反向」这一档。
-        if (outputSnapshot) {
-            outputSnapshot = {
-                ...outputSnapshot,
-                global: { ...outputSnapshot.global, capture_enabled: false },
-            };
-        }
+        // [SL-239] `capture_enabled` **刻意保持基础世界的 true**,别把它改成 false。
+        //
+        // 初版这里强行改成了 false,注释还写着「stale ∧ 采集 ON 是真机上不可能的组合」——
+        // 那句话是错的,#158 三个 bot 各自独立指出。`stale` 是**闩住**的:撤销它的唯一路径是
+        // `FingerprintWatch::resetChannel`(拉到新特征 / 打洞 / 换组),而 `setCaptureEnabled`
+        // 只写一个布尔位、不碰它。于是「看到 ⚠ → 打开采集准备重采 → 还没按播放」这一拍,
+        // stale 仍为真而采集已经 ON —— 组合真机可达,而且正是 ⑧ 闭环的必经入口。
+        //
+        // 改成 false 等于把这个**唯一有争议**的组合从冒烟里永久排除掉,把缝糊在预览世界里。
+        // 保留 true,本场景就成了横幅 ⑨ 判据里 `staleTracks === 0` 那一项的真反向:
+        // 采集开着、段表也在,但 ⚠ 已经挂着 ⇒ ⑨ 必须让位,只留 ⑧。
     }
 
     // ---- Input 七态场景覆写(T36;只改 Input 快照初值,不动周期事件与函数语义)----
