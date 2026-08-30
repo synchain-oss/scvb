@@ -1200,14 +1200,17 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
     );
 
     // 而**段表**带着复制过来的真曲线 —— 这就是分布图该读的那一份。
-    const segCh1 = ((sl241.store.segments || {}).channels || []).find(
-        (c) => c && c.ch === 1,
-    );
+    // 与 (b3) 同理:对**所有**轨取 some(),不押宝 ch1 —— 段值是按 version 播种的伪随机,
+    // 单看一轨恰好取整到 0 就误红。
+    const segChans = (sl241.store.segments || {}).channels || [];
     check(
-        segCh1 &&
-            (segCh1.segments || []).length > 0 &&
-            segCh1.segments.some(
-                (sg) => Number.isFinite(sg.pan) && sg.pan !== 0,
+        segChans.length > 0 &&
+            segChans.some(
+                (c) =>
+                    c &&
+                    (c.segments || []).some(
+                        (sg) => Number.isFinite(sg.pan) && sg.pan !== 0,
+                    ),
             ),
         // 措辞留意:这里钉的是「V2 段表存在且带非零 pan」,**不是**「copyVersion 深拷了
         // src 的曲线」—— mock 的 copyVersion 走 regenerateSegments 现生成 dst 那一版的
@@ -1219,7 +1222,7 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
     // 用读回链把两者串起来:输出 ON 时,分布图该显示的是**段**的 pan,不是参数面的 0。
     // 对**所有**已连接轨取,不押宝某一轨:段值是按 version 播种的伪随机,
     // 单看 ch1 的首段恰好取整到 0 就会误红(#159 复审【建议】5)。
-    const shownPans = ((sl241.store.segments || {}).channels || []).map((c) => {
+    const shownPans = segChans.map((c) => {
         const seg = RB.readbackSegsOf(c, NONE, /*outputOn=*/ true, 0).pan;
         return seg ? seg.pan : null;
     });
