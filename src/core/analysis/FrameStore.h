@@ -75,6 +75,16 @@ public:
     // 写入口:readOnly 或 hop 越 gate → 静默丢弃(不写页、不记账)。
     void write(uint64_t hop, float kw_ms, float peak);
 
+    // [SL-240] 写入时是否**作废这一 hop 的旧 VAD 判决**(见 write() 里那段注释)。
+    // 布防重采集期由 Output 置 true:那是用户明说「这段素材要换」,而 §1.23 规定布防
+    // **保留既有覆盖**(门控只挡写入),所以 write() 里那条「没覆盖才清」看不见它。
+    // 常态 false —— 采集开着又放一遍同一段音频不是换素材,判决没有作废的理由。
+    // ⚠ 「换了素材却既没打洞也没布防」那一档:采集 **OFF** 时由指纹守望提示(⚠),
+    // 采集 **ON** 时 `fp_report` 被抑制、⚠ 不会亮,旧判决会留到下次重新分析 ——
+    // 那是明知的取舍,完整说明见 `write()` 里那段注释,别只读这半句。
+    void setVadInvalidateOnWrite(bool on) noexcept { vadInvalidateOnWrite_ = on; }
+    bool vadInvalidateOnWrite() const noexcept { return vadInvalidateOnWrite_; }
+
     // 打洞:coverage_.punch(r)(重采集/清除用;页数据留待后续覆盖)。
     void invalidate(HopRange r) { coverage_.punch(r); }
 
@@ -149,6 +159,7 @@ private:
     std::map<uint64_t, std::unique_ptr<FeatPage>> pages_;
     CoverageMap coverage_;
     bool readOnly_ = true; // 采集 OFF/未布防默认只读:Output 布防路径必须先 setReadOnly(false) 才能记账
+    bool vadInvalidateOnWrite_ = false; // [SL-240] 见 setVadInvalidateOnWrite()
     HopRange gate_{0, std::numeric_limits<uint64_t>::max()};
 };
 

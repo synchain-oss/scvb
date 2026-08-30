@@ -179,6 +179,12 @@ public:
     void setFeatureTrackMask(u32 mask) noexcept { featureTrackMask_ = mask & 0x7FFFu; }
     u32 featureTrackMask() const noexcept { return featureTrackMask_; }
 
+    // [SL-240] 布防重采集期 = 用户明说「这段素材要换」⇒ 写特征时同时作废旧 VAD 判决。
+    // 与 setFeatureGate 同一条下发通道(pullFeatures 每拍逐轨应用)。常态 false:
+    // 采集开着又放一遍同一段音频不是换素材,判决不该被抹掉(见 ChannelFrames::write)。
+    void setFeatureVadInvalidate(bool on) noexcept { featureVadInvalidate_ = on; }
+    bool featureVadInvalidate() const noexcept { return featureVadInvalidate_; }
+
     // [M] 立刻按**当前**门控补拉一次(不等下一拍 25Hz tick)。
     // 唯一用途:布防生效**之前**把积压清干净(见 armRecapture)。未选中轨在布防期走 drainOnly,
     // 游标直接跳到写头 —— 若布防那一刻读方本来就落后(离线快速渲染会),那段**布防前**就该
@@ -248,6 +254,7 @@ private:
     analysis::HopRange featureGate_{0, std::numeric_limits<u64>::max()};
     // 布防轨维([J87] 04 §4.2);默认 0 = 不限轨。
     u32 featureTrackMask_ = 0;
+    bool featureVadInvalidate_ = false; // [SL-240] 见 setFeatureVadInvalidate()
 
     // [A] 只读的注入掩码(bit{N-1} = channel N 可注入混音);[M] 25Hz 写。
     std::atomic<u32> injectMask_{0};
