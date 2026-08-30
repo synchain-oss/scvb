@@ -240,13 +240,19 @@ export const FEAT_HOP_S = 0.01;
  * `openEnded` 段恒回 false:它的 `t1S` 只是保守下界(§2.8),真右端是 +∞,
  * 拿 `t1S - t0S` 当窗宽会把「整轨全时限」误判成短段。
  *
- * ⚠ 本判据只覆盖「窗太窄 ⇒ 必然空产出」这一条**确定性**通路,已知两个缺口,都不改:
+ * ⚠ 本判据只覆盖「窗太窄 ⇒ 必然空产出」这一条**确定性**通路,已知三个缺口,都不改:
  *   · 「窗够宽但区间内 VAD 判静音 ⇒ 产出也空 ⇒ 手动段原样留着」那条路它拦不住 ——
  *     要靠「零变化时给一条反馈」通用收口,不是前置拦截能穷举的(已立 SL-244 同批的
  *     另一张卡 SL-248);
  *   · 未镜像 `analyzeHopWindow` 的 `kMaxHop = 1e7`(>27.8 小时的段真跑判空窗拒绝、
  *     本闸放行)。**理论可达性为零** —— 非 openEnded 段来自对采集环(分钟量级)的 VAD,
- *     段身不可能跨 27.8 小时;登记在此,免得「判据与真跑同源」这句话留下未记的缺口。
+ *     段身不可能跨 27.8 小时;登记在此,免得「判据与真跑同源」这句话留下未记的缺口;
+ *   · `local.segmentation.min_segment_ms` 的缓存初值是 420,而 native runtime 默认是
+ *     120(`OutputProcessor.h`)—— **首帧 state 回推之前**,120-420ms 的段会被本闸判成
+ *     「太短」而收起入口,可那时真跑用的是 120、做得成。`clampMinSegMs` 修不掉这一格
+ *     (两个数都在 [50,500] 内,夹取恒等);方向是多挡、`syncParamGroup` 回推后自愈,
+ *     且要根治得让 web 知道 native 的 runtime 默认(它现在只消费 state,不消费 runtime
+ *     默认),不值得为一格开口子。
  *
  * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
  * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
@@ -269,9 +275,12 @@ export function restoreWindowTooShort(seg, minSegmentMs) {
  * [SL-242] 把 `min_segment_ms` 夹成真桥收下的那个值(纯函数,node 侧可断言)。
  *
  * 真源 = `src/output/OutputEditor.cpp` 的 `juce::jlimit(50, 500, …)`(02-dsp-spec §0.3
- * 常量表)。web 侧的滑杆值域是 0..1500、缓存初值 420,而 native runtime 默认 120 ——
- * 三个数互不相同,所以**预测判据必须按真桥夹取后的值算**,否则闸的口径在 state 回推
- * 之前与真跑分叉(方向是多挡、且回推后自愈,但分叉本身就是本卡要消灭的东西)。
+ * 常量表)。web 侧的滑杆值域是 0..1500,超出 [50,500] 的那一段真桥根本收不下,所以
+ * **预测判据必须按真桥夹取后的值算**,否则闸的口径在 state 回推之前与真跑分叉。
+ *
+ * 它修的**只是滑杆越界那一格**。`local` 缓存初值 420 与 native runtime 默认 120 之间
+ * 那一格**不在夹取的射程内**(两个数都落在 [50,500] 内,夹取恒等)—— 那是一条独立缺口,
+ * 与另外两条一起登记在 `restoreWindowTooShort` 的头注里。
  */
 export function clampMinSegMs(v) {
     const n = Number(v);
@@ -4145,10 +4154,13 @@ export function createTabWave(opts) {
         // 调小),不给一枚点了什么都不会发生的钮。
         // 入参**照 native 的夹取来**(#161 复审四轮):`local.segmentation` 是本地缓存,
         // 滑杆值域 0..1500,而真桥收进来时 `OutputEditor.cpp` 夹成 [50,500]。不夹的话
-        // 两头各差一格:拧到 1500 而 state 回显未到时,900ms 的段会被判「太短」而整行
-        // 消失(真跑做得成);反向,缓存初值 420 vs native 默认 120,回推前 120-420ms
-        // 的段被误判。两个方向都是**多挡**且 `syncParamGroup` 回推后自愈,但本卡的立论
-        // 是「web 的预测判据必须与真跑同源」,注释既然引了那个夹取,判据就得照着算。
+        // 拧到 1500 而 state 回显未到时,`minHops = 150` ⇒ 900ms 的段被判「太短」而整行
+        // 消失,可真跑(夹到 500)做得成。方向是**多挡**且 `syncParamGroup` 回推后自愈,
+        // 但本卡的立论是「web 的预测判据必须与真跑同源」,注释既然引了那个夹取,判据就
+        // 得照着算。
+        // ⚠ 夹取**只修上界这一格**:缓存初值 420 vs native 默认 120 那一格它是恒等的
+        // (`clampMinSegMs(420) === 420`),那是另一条缺口,登记在 restoreWindowTooShort
+        // 的头注里(#161 复审六轮:这半句原先算在夹取名下,是错的)。
         const minSegMs = clampMinSegMs(local.segmentation.min_segment_ms);
         if (restoreWindowTooShort(seg, minSegMs)) {
             local.inspRestoreAsk = "";
