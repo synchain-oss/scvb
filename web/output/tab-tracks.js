@@ -38,6 +38,14 @@
 // 弹道渲染器(契约 §2.5 的 30 Hz 事件 → rAF 补间);模块顶层零副作用,node 可直接 import。
 import { createMeterRenderer } from "./canvas/meter.js";
 import { paramIdOf, readbackVersion } from "../shared/param-id.js";
+// [SL-241] 未冻结维度的读回真源(优先级链 + 它依赖的三个纯判定)已移到
+// `web/shared/readback.js` —— Tab1 的分布图要用**同一条链**(它原先只读参数面,
+// 于是 SL-211 的验收只在 Tab2 成立)。详见那一件的头注。
+import {
+    freezeBits,
+    readbackSegsOf,
+    segmentsOfCh,
+} from "../shared/readback.js";
 // hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字;
 // format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
 // PR #60 红旗)。
@@ -220,26 +228,6 @@ export function pairIdOf(letter) {
     return i < 0 ? 0 : i + 1;
 }
 
-/**
- * 每轨 freeze 参数 `v{active}_t{ch:02d}_freeze`(契约 §1.12-§1.14:int 0-3,
- * bit0=pan / bit1=vol,两枚开关各改一位)。
- *
- * **解码口径与 native 侧 `scvb::engine::freezeBitsOf`(`src/core/engine/FreezeBits.h`)逐条对齐**:
- * 四舍五入 → 钳到 [0,3];非有限值(NaN)回 0 = 未冻结。旧写法是 `Math.trunc(x) & 3`,
- * 与 native 在两处分叉:小数 1.9 截断成 1(native 进位成 2)、越界 4 被按位截成 0
- * =「两维都没冻」(native 钳成 3 =「两维都冻」,保守的那一边)。freeze 当前是
- * `AudioParameterInt`、值恒为精确整数,所以现在不会真分叉;但「谁被冻结」这件事在
- * native / UI / mock 三侧都要同一个答案,否则 UI 会按未冻结去画一条 native 认为已冻结的轨
- * (#106 终轮复审建议)。**改这里必须同改 `FreezeBits.h` 与 mock 的同名解码**。
- */
-export function freezeBits(freeze) {
-    const raw = num(freeze, 0);
-    const f = Number.isFinite(raw)
-        ? Math.min(3, Math.max(0, Math.round(raw)))
-        : 0;
-    return { pan: (f & 1) === 1, vol: (f & 2) === 2 };
-}
-
 export function freezeValue(panFrozen, volFrozen) {
     return (panFrozen ? 1 : 0) | (volFrozen ? 2 : 0);
 }
@@ -318,6 +306,14 @@ function clamp01(v) {
 // 查空、照样闪一排居中柱)。**在此原样再导出**,既有 import 点一字不改
 // (手法同 tab-master 里的 distGeometry)。
 export { paramIdOf, readbackVersion } from "../shared/param-id.js";
+// [SL-241] 同上:在此原样再导出,既有 import 点(app.js / tab-wave.js / 冒烟)一字不改。
+export {
+    curveSegmentAt,
+    freezeBits,
+    manualConstantOf,
+    readbackSegsOf,
+    segmentsOfCh,
+} from "../shared/readback.js";
 
 /**
  * 三个可拖控件的值域与默认值。
@@ -417,13 +413,6 @@ export function leadLockCount(channels) {
     return n;
 }
 
-/** 从合并后的段表视图里取某轨(契约 §2.8:`channels` 只含受影响轨)。 */
-export function segmentsOfCh(segments, ch) {
-    const list = (segments && segments.channels) || [];
-    for (const c of list) if (c && c.ch === ch) return c;
-    return null;
-}
-
 /**
  * §2.8 里 `stale` 为真的轨数(04 §4.5 fingerprint watchdog:该轨上游音频与已采集特征
  * 不一致,建议重新采集)。横幅 ⑧ 与 tab 导航琥珀点共用它。
@@ -436,65 +425,6 @@ export function staleTrackCount(segments) {
     let n = 0;
     for (const c of list) if (c && c.stale) n += 1;
     return n;
-}
-
-/**
- * 「单段全时限 `user_edited` 常值」判定 —— `setTrackManual` **手动接管通道**的产物特征
- * (契约 §1.16 编码 = 04 §1.5 方案 A)。两处用它:
- *   ① **未冻结**维度的读回值(05 §2.2「读回值同样取自该段」)—— [J85] 之后冻结维度改读
- *      参数面,因为冻结通道根本不写曲线,段表里那条常值段只可能是**冻结前**留下的旧值;
- *   ② 解冻提示(该位 1→0 且该轨仍由手动常值驱动)。
- * 命中返回该段本身(调用方要读 pan/volDb),否则 null。
- */
-export function manualConstantOf(segChannel) {
-    const segs = (segChannel && segChannel.segments) || [];
-    if (segs.length !== 1) return null;
-    const s = segs[0];
-    return s && s.origin === "user_edited" ? s : null;
-}
-
-/**
- * 曲线在某一时刻所处的段(**未冻结维度的读回真源**;SL-211,用户 v5.4 实测拍板 2026-08-27)。
- *
- * 为什么需要它:未冻结维度此前的回落是**参数面**。可参数面在非 PRINT 态装的是**宿主**
- * 那一份值 —— 刚复制完版本、切进去还没播放时,那就是出厂默认(pan 居中)。于是用户看到
- * 「全轨声像都在中间」,一播放又全对了(引擎开始驱动参数面)。用户裁定:**切进去就该
- * 显示曲线的起始值**。
- *
- * 口径与 J78 优先级链一致 —— 显示的是**该维度的权威**:
- *   · 冻结维度 → 参数面(宿主自动化 / 冻结手动值当家),不走本函数;
- *   · 未冻结维度 → 引擎分析曲线,即本函数;曲线还不存在(没分析过)才回落参数面。
- *
- * **钳位口径逐条对齐 `CurveEvaluator::valueAt`**(复审终轮③b;src/core/engine 那份是
- * DSP 真身,显示层跟它走才叫「显示权威」):
- *   · 首段之前   → **首段**值(「切进版本还没播放」,t=0 常常就落在这一档);
- *   · 末段之后   → **末段**值(不是首段 —— 原先把「曲线前」与「曲线后」混成一档回落
- *                  segs[0],播放头停在曲线尾端时会显示曲线开头的值,和耳朵对不上);
- *   · 段间空隙   → **前一段**值(引擎那边是「ramp 之前保持前段值」;显示层没有 ramp
- *                  模型,取前段即那一刻的稳态值);
- *   · 段表为空   → null(调用方回落参数面:还没分析过,曲线本就不存在)。
- */
-export function curveSegmentAt(segChannel, tS) {
-    const segs = ((segChannel && segChannel.segments) || []).filter(Boolean);
-    if (!segs.length) return null;
-    const t = num(tS, 0);
-    const first = segs[0];
-    const last = segs[segs.length - 1];
-    // 首段之前
-    if (t < num(first.t0S, 0)) return first;
-    // 末段之后(t1 <= t0 = 开放尾段,那就没有「之后」)
-    const lastT0 = num(last.t0S, 0);
-    const lastT1 = num(last.t1S, 0);
-    if (lastT1 > lastT0 && t >= lastT1) return last;
-    // 段内 / 段间空隙:落在第 i 段内取第 i 段;落在 i 与 i+1 之间的空隙取第 i 段
-    let hit = first;
-    for (const s of segs) {
-        const t0 = num(s.t0S, 0);
-        const t1 = num(s.t1S, 0);
-        if (t >= t0 && (t < t1 || !(t1 > t0))) return s; // 段内(含开放尾段)
-        if (t >= t0) hit = s; // 已越过本段 ⇒ 暂记为「前一段」
-    }
-    return hit;
 }
 
 /**
@@ -608,7 +538,7 @@ export function rowFromStore(store, ch, ctx) {
     // (`requestManual` / `beginVolDrag`)传的都是原值,`rowFromStore` 曾是唯一的例外(SL-188)。
     const freeze = num(vals[paramIdOf(active, ch, "freeze")], 0);
     const bits = freezeBits(freeze);
-    const seg = manualConstantOf(segmentsOfCh(c.segments, ch));
+    const segCh = segmentsOfCh(c.segments, ch);
     // 读回值,**逐维按 freeze 位分叉**([J85]):
     //   • 冻结维度 → **参数面**。冻结的静态值只存参数面 + 冻结位,曲线真身不再被烘焙成
     //     常值段(`setTrackManual` 的冻结通道不写曲线)。此时段表里若还留着一条**旧的**
@@ -624,11 +554,15 @@ export function rowFromStore(store, ch, ctx) {
     //     · 输出 OFF(跟随宿主)= 引擎根本不驱动,声音跟的就是宿主参数面 ⇒ 读参数面。
     //       这一档若也显示曲线,就成了「看着曲线、听着宿主」——显示与 DSP 反而分了家。
     //   只有段表整个为空(还没分析过)才无条件回落参数面。
-    const curve = c.outputOn
-        ? curveSegmentAt(segmentsOfCh(c.segments, ch), c.timeS)
-        : null;
-    const panSeg = bits.pan ? null : seg || curve;
-    const volSeg = bits.vol ? null : seg || curve;
+    // [SL-241] 这条链本身已抽到 `readbackSegsOf`(web/shared/readback.js)—— Tab1 的
+    // 分布图读的是同一个量,却一直只读参数面。抽出来之后两处共用,再想分叉得先改那里。
+    // 一次算两维:frozen 只决定「用不用」,不影响算出来是哪一段。
+    // `manual` = 行上那枚「手动常值」标,由同一次调用回出 —— 标与读回链因此必然同判定。
+    const {
+        pan: panSeg,
+        vol: volSeg,
+        manual: seg,
+    } = readbackSegsOf(segCh, bits, c.outputOn, c.timeS);
     const pan = panSeg
         ? num(panSeg.pan, PAN_RANGE.def)
         : num(vals[paramIdOf(active, ch, "pan")], PAN_RANGE.def);

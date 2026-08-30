@@ -1093,6 +1093,184 @@ log("=== ⑥ 分布图 rAF 补间(SL-203)===");
 }
 
 // =============================================================================
+log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ===");
+//
+// 用户实测(Cubase 15 Pro,v5.6.2):复制版本后切到新版本,**声像显示全轨居中**,
+// 一开始播放就正常。SL-211 把这一幕在 Tab2 修掉了(未冻结维度改读曲线段),
+// SL-229 又给分布图补了**版本闸** —— 可病灶在**源**上:`copyVersion` 契约是
+// 「零参数写入」(03 §5.3;`tests/core/test_version_params.cpp` VERSION-COPY-ZERO-1),
+// 引擎打印头又只驱动**当前激活版本**,于是刚复制出来还没播过的版本,那 63 个 id
+// 装的就是出厂默认(pan 居中)。分布图一直只读参数面,所以它照旧全轨居中。
+//
+// 本组两层:(a) 读回链本身;(b) **mock/native 对拍** —— mock 原先每次切版本都现造
+// 一帧带画像值的参数面,于是 preview 里这一幕根本重现不出来(mock 盖住真机的第五次)。
+{
+    const RB = await import(u("web/shared/readback.js"));
+
+    // ---- (a) 读回链(纯函数;口径逐条即 J78「显示的是该维度的权威」)
+    const segCh = {
+        ch: 1,
+        segments: [
+            { t0S: 0, t1S: 10, pan: -70, volDb: -3, origin: "auto" },
+            { t0S: 10, t1S: 20, pan: 40, volDb: 2, origin: "auto" },
+        ],
+    };
+    const NONE = { pan: false, vol: false };
+    const BOTH = { pan: true, vol: true };
+    eq(
+        RB.readbackSegsOf(segCh, BOTH, true, 0),
+        { pan: null, vol: null, manual: null },
+        "(a1) 冻结维度 ⇒ 回落参数面([J85])",
+    );
+    eq(
+        RB.readbackSegsOf(segCh, NONE, true, 0).pan.pan,
+        -70,
+        "(a2) 未冻结 + 输出 ON + 播放头在曲线之前 ⇒ 首段(= 切进版本还没播放那一档)",
+    );
+    eq(
+        RB.readbackSegsOf(segCh, NONE, true, 15).pan.pan,
+        40,
+        "(a3) 播放头落在第二段内 ⇒ 第二段",
+    );
+    eq(
+        RB.readbackSegsOf(segCh, NONE, false, 15).pan,
+        null,
+        "(a4) 输出 OFF(跟随宿主)⇒ 回落参数面(SL-211 复审终轮③a 裁定)",
+    );
+    eq(
+        RB.readbackSegsOf(null, NONE, true, 0),
+        { pan: null, vol: null, manual: null },
+        "(a5) 段表为空 ⇒ 参数面",
+    );
+    const manualSeg = {
+        ch: 1,
+        segments: [
+            { t0S: 0, t1S: 999, pan: 12, volDb: 1, origin: "user_edited" },
+        ],
+    };
+    eq(
+        RB.readbackSegsOf(manualSeg, NONE, false, 500).pan.pan,
+        12,
+        "(a6) 手动常值段优先于输出档(05 §2.2「读回值同样取自该段」)",
+    );
+    // 逐维分叉:只冻 pan 时 vol 仍读段(一次算两维不能把两维的位混掉)。
+    eq(
+        [
+            RB.readbackSegsOf(segCh, { pan: true, vol: false }, true, 0).pan,
+            RB.readbackSegsOf(segCh, { pan: true, vol: false }, true, 0).vol
+                .volDb,
+        ],
+        [null, -3],
+        "(a7) 只冻 pan ⇒ pan 走参数面、vol 仍走段",
+    );
+    // `manual` 回出的就是命中的手动常值段本身 —— Tab2 行上那枚标与这条链同判定。
+    eq(
+        RB.readbackSegsOf(manualSeg, NONE, true, 0).manual.pan,
+        12,
+        "(a8) 命中手动常值段时 manual 回出该段(行上的标与读回链必然同判定)",
+    );
+    eq(
+        RB.readbackSegsOf(segCh, NONE, true, 0).manual,
+        null,
+        "(a8) 纯 auto 段表 ⇒ manual 为 null",
+    );
+
+    // ---- (b) mock/native 对拍:复制版本 → 切过去,参数面必须是**出厂默认**
+    const sl241 = await openSession("fixture=fifteen-tracks");
+    const panId = (v, ch) => `v${v}_t${String(ch).padStart(2, "0")}_pan`;
+    const heads = [1, 2, 3];
+
+    // 前置:V1 的参数面本来是有画像值的(否则下面那条「V2 全 0」空绿)。
+    const v1Pans = heads.map((ch) => sl241.store.params.values[panId(1, ch)]);
+    check(
+        v1Pans.some((x) => Number.isFinite(x) && x !== 0),
+        `前置:V1 参数面有非默认 pan(实得 ${JSON.stringify(v1Pans)})`,
+    );
+
+    await sl241.bridge.copyVersion(1, 2);
+    await sl241.bridge.setVersionActive(2);
+    await sleep(120);
+
+    const v2Pans = heads.map((ch) => sl241.store.params.values[panId(2, ch)]);
+    check(
+        v2Pans.every((x) => x === 0),
+        `(b1) 切到刚复制出来的 V2:参数面是出厂默认 pan=0(实得 ${JSON.stringify(v2Pans)})` +
+            " —— 契约「copyVersion 零参数写入」+「打印头只驱动激活版」的直接后果;" +
+            "mock 原先现造一帧画像值,这一条即红",
+    );
+
+    // 而**段表**带着复制过来的真曲线 —— 这就是分布图该读的那一份。
+    // 与 (b3) 同理:对**所有**轨取 some(),不押宝 ch1 —— 段值是按 version 播种的伪随机,
+    // 单看一轨恰好取整到 0 就误红。
+    const segChans = (sl241.store.segments || {}).channels || [];
+    check(
+        segChans.length > 0 &&
+            segChans.some(
+                (c) =>
+                    c &&
+                    (c.segments || []).some(
+                        (sg) => Number.isFinite(sg.pan) && sg.pan !== 0,
+                    ),
+            ),
+        // 措辞留意:这里钉的是「V2 段表存在且带非零 pan」,**不是**「copyVersion 深拷了
+        // src 的曲线」—— mock 的 copyVersion 走 regenerateSegments 现生成 dst 那一版的
+        // 种子曲线,与契约 §1.11 的深拷贝并不一致(基线如此,非本卡引入)。本卡只需要
+        // 「段表里有真值可读」这一条(#159 复审【建议】4)。
+        "(b2) 切版本同拍到达的段表里有 V2 的曲线(非零 pan)—— 读回真源就在手边",
+    );
+
+    // 用读回链把两者串起来:输出 ON 时,分布图该显示的是**段**的 pan,不是参数面的 0。
+    // 对**所有**已连接轨取,不押宝某一轨:段值是按 version 播种的伪随机,
+    // 单看 ch1 的首段恰好取整到 0 就会误红(#159 复审【建议】5)。
+    const shownPans = segChans.map((c) => {
+        const seg = RB.readbackSegsOf(c, NONE, /*outputOn=*/ true, 0).pan;
+        return seg ? seg.pan : null;
+    });
+    check(
+        shownPans.length > 0 &&
+            shownPans.some((p) => Number.isFinite(p) && p !== 0),
+        `(b3) 读回链在「刚切进 V2、还没播放」这一刻给出曲线值而非居中(实得 ${JSON.stringify(shownPans.slice(0, 5))}…)`,
+    );
+
+    // 切回 V1:它自己那一份参数面必须原样还在(按版本存,不是每次现造)。
+    await sl241.bridge.setVersionActive(1);
+    await sleep(120);
+    eq(
+        heads.map((ch) => sl241.store.params.values[panId(1, ch)]),
+        v1Pans,
+        "(b4) 切回 V1:参数面还是 V1 自己那一份(按版本存的往返)",
+    );
+
+    // (b5) 全局三件**不跟版本走**(#159 复审【重要】1):native 侧 width / ms_balance /
+    // lead_select 没有 v{n}_ 前缀、版本无关,打印头也不碰。整帧按版本存会造出
+    // 「V1 拧到 130 → 切 V2 打回 100 → 切回 V1 又变 130」这种真机没有的往返。
+    await sl241.bridge.beginParamGesture("width");
+    await sl241.bridge.setParam("width", 130);
+    await sl241.bridge.endParamGesture("width");
+    await sleep(120);
+    eq(
+        sl241.store.params.values.width,
+        130,
+        "(b5) 前置:V1 上全局 width 拧到 130",
+    );
+    await sl241.bridge.setVersionActive(2);
+    await sleep(120);
+    eq(
+        sl241.store.params.values.width,
+        130,
+        "(b5) 切到 V2:全局 width 不跟版本走(打回 100 即红)",
+    );
+    await sl241.bridge.setVersionActive(1);
+    await sleep(120);
+    eq(
+        sl241.store.params.values.width,
+        130,
+        "(b5) 切回 V1:全局 width 仍是 130",
+    );
+    sl241.session.stop();
+}
+
+// =============================================================================
 if (fail > 0) {
     console.error(`\nsmoke-tab1-interactions 失败(${fail} 项)`);
     process.exit(1);
