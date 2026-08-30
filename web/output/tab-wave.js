@@ -207,6 +207,61 @@ export function segmentRestoreScope(ch, seg) {
 }
 
 /**
+ * 特征 hop 时长(秒)。真源 = `src/core/ipc/SegmentLayout.h` 的 `kFeatHopMs = 10`。
+ *
+ * 为什么这一个 native 几何常量可以进 web,而 mock 那边的同一件事我拒了(见
+ * `juce-bridge-mock.js` 的 `affectedOf` 头注):**两处的后果不是一个量级**。
+ * mock 那边不建模量化,藏住的只有两端各 <10ms 的边角,藏不住作用域回归;
+ * 而这里 hop 网格**直接决定一个 UI 入口出不出得来** —— 差一格就是「钮亮着、
+ * 点了没反应」,正是本卡要消灭的那一族。判据要跟真跑同源,就得知道网格。
+ */
+export const FEAT_HOP_S = 0.01;
+
+/**
+ * [SL-242] 段级「恢复自动」在这一段里**必然**产不出新段吗(纯函数,node 侧可断言)。
+ *
+ * 判据链(与 native 逐环同源):
+ *   · `analyzeHopWindow` 向内取整 ⇒ 窗宽
+ *     `N = floor(t1S/hop + ε) − ceil(t0S/hop − ε)`(hop 数);
+ *   · `EnergyVad.cpp` 的 P1「丢短」**先于** padding 执行:`minHops = minSegmentMs / 10`
+ *     (C++ 里是 int 除法),`endHop − startHop >= minHops` 才留;
+ *   · 核心段被 `selStart/selEnd` 夹在窗内 ⇒ 最长也就是 N;
+ *   · ⇒ `N < minHops` 时该轨产出**必为空** ⇒ `applyAnalysisSegments` 的
+ *     `if (src.empty()) continue;` ⇒ 段表逐字节不动,而 `startAnalysis` 早已回
+ *     `ok:true` ⇒ 用户点完零变化、零提示。
+ *
+ * **必须按量化后的窗宽判,不能按 `t1S - t0S` 判**(#161 复审二轮【重要】):两者最多
+ * 差两个 hop(20ms),那一格里静默无操作原样还在。反例(min_segment_ms = 420):
+ * 段 `[0.0035, 0.4235)` 的 `segMs` 恰是 420 ⇒ 按毫秒判**放行**;而
+ * `firstHop = ceil(0.35) = 1`、`lastHop = floor(42.35) = 42` ⇒ `N = 41 < 42` ⇒ 产出为空。
+ * 而非 hop 对齐的边界正是 `split` / `move_boundary` 造出来的,与本卡另一条成因
+ * 是同一批段 —— 这个 20ms 的盲带恰好落在最容易踩到的地方。
+ *
+ * `openEnded` 段恒回 false:它的 `t1S` 只是保守下界(§2.8),真右端是 +∞,
+ * 拿 `t1S - t0S` 当窗宽会把「整轨全时限」误判成短段。
+ *
+ * ⚠ 本判据只覆盖「窗太窄 ⇒ 必然空产出」这一条**确定性**通路。「窗够宽但区间内
+ * VAD 判静音 ⇒ 产出也空 ⇒ 手动段原样留着」那条路它拦不住 —— 那条要靠「零变化时
+ * 给一条反馈」通用收口,不是前置拦截能穷举的(已报统筹另立卡)。
+ *
+ * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
+ * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
+ * @returns {boolean} true = 引擎在这一窗里必然产不出段(入口该收起)
+ */
+export function restoreWindowTooShort(seg, minSegmentMs) {
+    const s = seg || {};
+    if (s.openEnded === true) return false;
+    const minMs = Number(minSegmentMs);
+    if (!Number.isFinite(minMs) || minMs <= 0) return false;
+    if (!Number.isFinite(s.t0S) || !Number.isFinite(s.t1S)) return false;
+    const EPS = 1e-6;
+    const firstHop = Math.ceil(Math.max(0, s.t0S) / FEAT_HOP_S - EPS);
+    const lastHop = Math.floor(Math.max(0, s.t1S) / FEAT_HOP_S + EPS);
+    // `Math.floor(minMs / 10)` 对齐 C++ 的 int 除法(`p.minSegmentMs / 10`)。
+    return lastHop - firstHop < Math.floor(minMs / 10);
+}
+
+/**
  * 滚轮该走哪一路(纯函数,node 侧可断言)。
  *
  * 优先级 Ctrl > Alt > Shift > 裸,**不接受组合**:同时按住只认最高的那一个。
@@ -4057,27 +4112,21 @@ export function createTabWave(opts) {
             show(els.inspRestoreOk, false);
             return;
         }
-        // **短于最小分段时长的段:只说不做**(#161 复审【重要】②)。
-        // 引擎在这一窗里产不出任何段:`EnergyVad` 的 P1「丢短」先于 padding 执行
-        // (`minHops = min_segment_ms / 10`),核心段又被 `selStart/selEnd` 夹在窗内
-        // ⇒ 窗宽 < min_segment_ms 时该轨产出必为空 ⇒ `applyAnalysisSegments` 的
-        // `if (src.empty()) continue;` 让整轨逐字节不动 —— 那个手动段还是手动段。
-        // 而 `startAnalysis` 早已回了 `ok:true`(受理判据只看 coveredHops),调用点
-        // 也不看返回值,于是用户点完「继续」**零变化、零提示**。
-        //
-        // 这一档在本卡之前几乎不可达(轨级 scope 的窗是整条时间线),是**段级 scope
-        // 把它从边角变成了常见**:`split` 对子段长度没有下限,切出 100–300ms 很容易,
-        // 而本卡的原始投诉正是「点一个**小片段**」。修复前那一下是错误地清整轨,
-        // 不拦的话修复后就换成另一种「点了没反应」—— 同一张卡不能左手修右手造。
-        // 处理口径与上面的锁定段逐字一致:说清楚 + 给出出路(合并相邻段,或把
-        // 「最小分段」滑杆调到该段时长以下),不给一枚点了什么都不会发生的钮。
-        //
-        // `openEnded` 段**不进这道闸**:它的 `t1S` 只是保守下界(§2.8),真右端是 +∞,
-        // 拿 `t1S - t0S` 当窗宽会把一个「整轨全时限」的段误判成短段(空工程下那个下界
-        // 只有一个 hop),于是给出一句完全说反了的提示。
+        // **段身不可信:整个入口收起**(#161 复审二轮)。零宽 / 倒序 / t1S 非有限的段,
+        // `segmentRestoreScope` 会回 null、点「继续」是 `return requestRender()` ——
+        // 又一个「点了没反应」。挂着一枚点不动的钮比不挂更糟,直接不出这一行。
+        if (!segmentRestoreScope(ch, seg)) {
+            local.inspRestoreAsk = "";
+            show(els.inspRestore, false);
+            return;
+        }
+        // **窗太窄的段:只说不做**(#161 复审【重要】② + 二轮口径订正)。
+        // 判据按**量化后的窗宽**算,不是 `t1S - t0S` —— 两者最多差两个 hop,那一格里
+        // 静默无操作原样还在(反例与完整判据链见 `restoreWindowTooShort` 头注)。
+        // 处理口径与上面的锁定段逐字一致:说清楚 + 给出路(合并相邻段,或把「最小分段」
+        // 调小),不给一枚点了什么都不会发生的钮。
         const minSegMs = num(local.segmentation.min_segment_ms, 0);
-        const segMs = (num(seg.t1S, 0) - num(seg.t0S, 0)) * 1000;
-        if (!seg.openEnded && minSegMs > 0 && segMs > 0 && segMs < minSegMs) {
+        if (restoreWindowTooShort(seg, minSegMs)) {
             local.inspRestoreAsk = "";
             text(
                 els.inspRestoreText,

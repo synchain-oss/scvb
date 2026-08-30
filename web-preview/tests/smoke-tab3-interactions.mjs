@@ -4274,21 +4274,46 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
         // 就整轨跳过 ⇒ 段表逐字节不动、analyze 却已回 ok:true ⇒ 点了零变化零提示。
         // 与锁定段同一处理:两态入口收起,换成说清楚的一句 + 出路。
         check(
-            /const minSegMs = num\(local\.segmentation\.min_segment_ms, 0\);/.test(
-                tw,
-            ) &&
-                /if \(!seg\.openEnded && minSegMs > 0 && segMs > 0 && segMs < minSegMs\) \{/.test(
-                    tw,
-                ) &&
+            /if \(restoreWindowTooShort\(seg, minSegMs\)\) \{/.test(tw) &&
                 /fmtKey\("wave\.restoreSegTooShort"/.test(tw),
             "(b16)短段:入口只说不做,不给一枚点了没反应的钮",
         );
-        // openEnded 段不进这道闸:它的 t1S 只是下界,拿 t1S-t0S 当窗宽会把「整轨全时限」
-        // 误判成短段(空工程下那个下界只有一个 hop)。
+        // 段身不可信(零宽/倒序/t1S 非有限)⇒ 整行收起:scope 回 null 时点「继续」
+        // 是 return requestRender(),挂着一枚点不动的钮比不挂更糟。
         check(
-            /`openEnded` 段\*\*不进这道闸\*\*/.test(tw),
-            "(b16b)短段闸把 openEnded 排除在外,并写明了理由",
+            /if \(!segmentRestoreScope\(ch, seg\)\) \{[\s\S]{0,160}show\(els\.inspRestore, false\);/.test(
+                tw,
+            ),
+            "(b16b)段身不可信 ⇒ 整个入口收起,不留点不动的钮",
         );
+        // ---- [#161 复审二轮【重要】] 闸的口径必须是**量化后的窗宽**,不是 t1S-t0S ----
+        // 两者最多差两个 hop,那一格里「点了没反应」原样还在;而非 hop 对齐的边界正是
+        // split / move_boundary 造出来的,与本卡另一条成因是同一批段。
+        {
+            const F = TW.restoreWindowTooShort;
+            // 复审给的反例:segMs 恰是 420(按毫秒判会放行),但窗只有 41 hop < 42。
+            check(
+                F({ t0S: 0.0035, t1S: 0.4235 }, 420),
+                "(b16c)复审反例:segMs=420 放行、窗 41 hop 却产不出段 ⇒ 必须拦",
+            );
+            // 反向:同样 420ms 但 hop 对齐 ⇒ 窗恰好 42 hop ⇒ 放行(证明不是「一律拦」)
+            check(
+                !F({ t0S: 0.01, t1S: 0.43 }, 420),
+                "(b16d)hop 对齐的 420ms 段窗恰好够 ⇒ 放行",
+            );
+            check(!F({ t0S: 1, t1S: 5 }, 420), "(b16e)宽段放行");
+            check(F({ t0S: 3, t1S: 3 }, 420), "(b16f)零宽段:窗 0 hop ⇒ 拦");
+            check(F({ t0S: 5, t1S: 4 }, 420), "(b16g)倒序段 ⇒ 拦");
+            check(
+                !F({ t0S: 0, t1S: 0.01, openEnded: true }, 420),
+                "(b16h)openEnded 恒放行(t1S 只是下界,不是真末端)",
+            );
+            check(
+                !F({ t0S: 1, t1S: 1.2 }, 0) && !F({ t0S: 1, t1S: 1.2 }, NaN),
+                "(b16i)min_segment_ms 不可用时不拦(拿不到判据就别挡路)",
+            );
+            eq(TW.FEAT_HOP_S, 0.01, "(b16j)hop 常量与 kFeatHopMs=10 同值");
+        }
         // [#161 复审【重要】③] 确认句要说明「该轨的冻结会被一并解除」——
         // freeze 是轨级参数,窄范围 clearManual 照样整轨清零(SL-244 待定性)。
         // 不说的话,用户读到「其他段保持不变」却听见声音当场变了,文案与作用面

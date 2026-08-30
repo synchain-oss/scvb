@@ -586,23 +586,28 @@ TEST_CASE("analyzeHopWindow:范围向内取整,不把窗撑到范围之外", "[o
         CHECK_FALSE(analyzeHopWindow(1.0, 2.0, 0.0).valid()); // hopS 非法
     }
 
-    SECTION("非有限 endS 不得撞进 double→uint64 的 UB")
+    SECTION("巨大/非有限 endS 一律判空窗,不留 double→uint64 越界与下游溢出")
     {
-        // [#161 复审【建议】⑦] NaN 被 `!(endS > startS)` 挡住,但 +Inf 不会:
-        // 未夹取时 `lastFloor` 是 inf,转 uint64 在值域外是 **UB**。桥面的
-        // `givenNumber()` 只判「是不是数」不判有限性,`{startS:0, endS:Infinity}`
-        // 透得进来。夹取后它退成一个合法(且大到任何真时间线都够不着)的窗。
-        const auto inf = analyzeHopWindow(0.0, std::numeric_limits<double>::infinity(), kHopS);
-        REQUIRE(inf.valid());
-        CHECK(inf.firstHop == 0u);
-        CHECK(inf.lastHop == static_cast<std::uint64_t>(9.0e15));
-        // NaN 仍走空窗那条早退(`!(endS > startS)` 对 NaN 恒真)。
+        // [#161 复审二轮] 上一轮夹在 9e15 等于没夹:那个数根本活不到被用的时候 ——
+        // `f.kwMs.assign(numHops)` 要 36 PB,而 `lastHop * hopSamples` 在 sr=192k 下
+        // 9e15 × 1920 ≈ 1.73e19 已经溢出 int64。现在按「对下游有意义的量级」判空窗。
+        //
+        // **够得着的是「有限但巨大」,不是 Infinity**:`JSON.stringify(Infinity)` = "null",
+        // 桥面 `givenNumber()` 判假,Infinity 过不了桥(上一轮那个 SECTION 测的恰好是
+        // 唯一到不了的那种输入)。这里两种都测,但把可达的那一种放在第一条。
+        CHECK_FALSE(analyzeHopWindow(0.0, 1.0e12, kHopS).valid()); // ≈3 万年,JSON 传得动
+        CHECK_FALSE(analyzeHopWindow(0.0, std::numeric_limits<double>::infinity(), kHopS).valid());
         CHECK_FALSE(analyzeHopWindow(0.0, std::numeric_limits<double>::quiet_NaN(), kHopS).valid());
         CHECK_FALSE(analyzeHopWindow(std::numeric_limits<double>::quiet_NaN(), 1.0, kHopS).valid());
-        // 起点本身就越界:不产生 lastHop < firstHop 的倒置窗。
-        CHECK_FALSE(
-            analyzeHopWindow(std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), kHopS)
-                .valid());
+        // 起点巨大、窗却很窄:窗宽合法但 hop **下标**本身会让下游乘法溢出,同样拒掉。
+        CHECK_FALSE(analyzeHopWindow(1.0e12, 1.0e12 + 1.0, kHopS).valid());
+
+        // 边界两侧:恰好到上限收,越过一个 hop 就拒 —— 证明这道闸不是「一律拒大数」。
+        constexpr double kMaxHopS = 1.0e7 * 0.010; // kMaxHop × hop = 1e5 s ≈ 27.8 小时
+        const auto atLimit = analyzeHopWindow(0.0, kMaxHopS, kHopS);
+        REQUIRE(atLimit.valid());
+        CHECK(atLimit.lastHop == 10000000u);
+        CHECK_FALSE(analyzeHopWindow(0.0, kMaxHopS + 0.010, kHopS).valid());
     }
 
     SECTION("负起点按 0 夹取,不产生回绕的巨大 hop 下标")

@@ -143,17 +143,32 @@ inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS
         return w; // 空窗 → 调用方回 §1.6 拒绝态
     }
     constexpr double kHopEps = 1e-6;
-    // 上限夹取(#161 复审【建议】⑦):`NaN` 已被上面的 `!(endS > startS)` 挡住,但
-    // `+Inf` 不会 —— `lastFloor` 会是 inf,而 `double → uint64` 在值域外是 **UB**。
-    // 桥面的 `givenNumber()` 只判「是不是数」不判有限性,`{startS:0, endS:Infinity}`
-    // 透得进来(截断版有同样的洞,非本卡引入)。9e15 hop @10ms ≈ 285 万年,任何真
-    // 时间线都够不着,夹在这里既堵 UB 又不改变任何可达输入的行为。
-    constexpr double kMaxHop = 9.0e15;
+    // **上限**(#161 复审二轮【建议】)。上一轮夹在 9e15 等于没夹 —— 跑不到那个数就先
+    // 在下游倒了,而且是换个地方继续 UB:
+    //   · `startAnalysis` 的 `f.kwMs.assign(numHops, 0.0f)`:9e15 个 float ≈ 36 PB,
+    //     消息线程当场 bad_alloc(那里没有 try/catch);
+    //   · `static_cast<std::int64_t>(lastHop) * hopSamples`:sr=192k 时 hopSamples=1920,
+    //     9e15 × 1920 ≈ 1.73e19 > INT64_MAX ⇒ **有符号溢出,又是 UB**(48k 下
+    //     9e15 × 480 = 4.32e18 恰好没事,所以这条只在高采样率工程上现形)。
+    //
+    // 真正够得着的入口**不是** `Infinity`:`JSON.stringify(Infinity)` = `"null"`,
+    // 桥面 `givenNumber()` 判假,它根本过不了桥(上一轮那个 SECTION 测的恰好是唯一
+    // 到不了的那种)。够得着的是**有限但巨大**的秒值 —— `endS = 1e12`(≈3 万年)
+    // JSON 传得动、`givenNumber()` 也认。
+    //
+    // 所以口径改成「对下游有意义的量级」+ **判空窗拒掉**,而不是夹取:夹取会把用户
+    // 要的范围**静默缩窄**,而「静默改变作用面」正是本卡要修的那个病。越界 ⇒ 空窗 ⇒
+    // §1.6 拒绝态 `{ok:false, affected:{0,0,0}}`,是一个看得见的结果。
+    // 1e7 hop @10ms ≈ 27.8 小时:FrameStore 是有界环,任何真工程都够不着;
+    // 而 1e7 × 1920 = 1.92e10 离 INT64_MAX 还有 8 个量级,`assign(1e7)` 也只有 40MB 级。
+    // 判据写成 `lastFloor <= kMaxHop`:它对 `NaN` / `+Inf` 都为假,于是这两种也一并
+    // 拒在**转换之前** —— 全程没有越界的 double → uint64。
+    constexpr double kMaxHop = 1.0e7;
     const double firstCeil = std::ceil(std::max(0.0, startS) / hopS - kHopEps);
-    const double lastFloor = std::min(kMaxHop, std::floor(std::max(0.0, endS) / hopS + kHopEps));
-    if (!(firstCeil <= kMaxHop) || !(lastFloor > firstCeil))
+    const double lastFloor = std::floor(std::max(0.0, endS) / hopS + kHopEps);
+    if (!(lastFloor > firstCeil) || !(lastFloor <= kMaxHop))
     {
-        return w; // 范围窄于一个 hop(或起点本身已越界):没有完整 hop 可分析
+        return w; // 窄于一个 hop,或范围末端越出可分析量级:两者都回空窗
     }
     w.firstHop = static_cast<std::uint64_t>(firstCeil < 0.0 ? 0.0 : firstCeil);
     w.lastHop = static_cast<std::uint64_t>(lastFloor < 0.0 ? 0.0 : lastFloor);
