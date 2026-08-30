@@ -29,8 +29,12 @@
 //     `origin≠"auto"` **或** `locked===true` 的段逐字节原样留在表里;
 //   • `clearManual:true`:未锁定的用户段 `origin` 重置为 auto 后参与重算,
 //     **`locked===true` 段仍免疫**(契约「locked 免疫,须先逐段解锁」,04 §4.4);
+//   • [SL-242] scope 带 `startS`/`endS` 时是**局部**重算:完全落在范围外的既有段逐字节
+//     保留(不看 origin/locked),新段只取完全落在范围内的 —— 与真桥 applyAnalysisSegments
+//     的 `outsideRange` 同口径。缺省(不给范围)= 整轨,行为与此前一致;
 //   • 保留段与新算出的 auto 段合并后按 `t0S` 排序、`segIdx` 0 基重编号;新段若与保留段
-//     时间重叠则整段丢弃(保留段优先),`diff.kept` = 本次保留的用户/锁定段数(§2.8 的 {k})。
+//     时间重叠则整段丢弃(保留段优先),`diff.kept` = 本次保留的、**与范围相交的**用户/
+//     锁定段数(§2.8 的 {k})。
 //   反例(本文件早前的写法):重算 = `model.segByCh.set(ch, 生成器产物)` —— 用户刚编辑或
 //   锁定的段会在下一次重分析里凭空消失,而契约的 locked 保护恰恰要靠这条建模在 UI 侧预演。
 //
@@ -564,18 +568,50 @@ function makeContext(role, world) {
 
     /**
      * 重算结果 ← 旧段表的合并(重分析语义,见文件头「重分析语义已按 J34 建模」)。
-     * @returns {{merged:object[], kept:number}} `kept` = 本次原样保留的用户/锁定段数。
+     *
+     * [SL-242] **范围是这条建模的一部分**,此前整个缺席:mock 不论 scope 给没给
+     * `startS`/`endS`,一律拿生成器的整轨产物去合并 —— 也就是「每次 analyze 都是全轨
+     * 重算」。真桥那一侧 `applyAnalysisSegments` 一直有 `outsideRange` 那一支(局部
+     * 重分析只对「轨 × 时间区间」失效,范围外的既有段逐字节保留)。两侧口径分叉的后果
+     * 不是「mock 少建模了一件事」,而是**段级/选区级 clearManual 的作用域回归在冒烟里
+     * 恒绿** —— 这正是 SL-242 那条路上冒烟没拦住的原因(mock 说谎第 5 次)。
+     *
+     * 口径逐条对齐 native:
+     *   · 保留 = 受保护(用户段 ∪ 锁定段)**或**完全落在范围外(`t1S <= startS ||
+     *     t0S >= endS`,半开区间,与 native 的 `sg.t1 <= rangeStart || sg.t0 >= rangeEnd`
+     *     逐字同形);
+     *   · 新段只取**完全落在范围内**的那些。native 的产出天然被 hop 窗夹在范围里
+     *     (AnalysisPipeline 的段 = [firstHop, lastHop) 内的 VAD 段),生成器不知道范围,
+     *     所以这里补一道夹取。**不裁半截段** —— 理由同下面那条重叠处理。
+     *   · `kept` 计数只算**与范围相交的受保护段**:§2.8 的 {k} 是「本次保留了几个手动/
+     *     锁定段」,范围外的段压根不在本次作用面里,算进去会让预览行的数与事后 diff 对不上
+     *     (`affectedOf` 的 `manualKept` 也是按相交算的)。
+     *
+     * @param {number} startS 范围起(秒);缺省 -Infinity = 不限
+     * @param {number} endS   范围止(秒);缺省 +Infinity = 不限
+     * @returns {{merged:object[], kept:number}} `kept` = 本次保留的、与范围相交的用户/锁定段数。
      */
-    function mergeReanalyzed(oldList, freshList, clearManual) {
-        const kept = oldList.filter((s) => isProtectedSegment(s, clearManual));
+    function mergeReanalyzed(
+        oldList,
+        freshList,
+        clearManual,
+        startS = -Infinity,
+        endS = Infinity,
+    ) {
+        const outside = (s) => s.t1S <= startS || s.t0S >= endS;
+        const kept = oldList.filter(
+            (s) => isProtectedSegment(s, clearManual) || outside(s),
+        );
         // 重算产物一律是**分析产出**:origin 归 auto、locked 归 false。
         // (生成器为了让首帧好看会掺几条 user_edited/user_created,那是「上次留下的用户段」
         //  的画像,不该被当成本次算出来的东西二次冒充成保留段。)
-        const fresh = freshList.map((s) => ({
-            ...s,
-            origin: "auto",
-            locked: false,
-        }));
+        const fresh = freshList
+            .filter((s) => s.t0S >= startS && s.t1S <= endS)
+            .map((s) => ({
+                ...s,
+                origin: "auto",
+                locked: false,
+            }));
         // 重叠处理:保留段优先,与之相交的新段**整段丢弃**。
         // (裁掉重叠部分会造出生成器没产过的半截段——边界、响度、diff 三处都要跟着补算;
         //  丢弃只需一次相交判定,且时间轴上不会出现两段抢同一区间,故取丢弃。)
@@ -585,7 +621,10 @@ function makeContext(role, world) {
         const merged = kept
             .concat(survivors)
             .sort((a, b) => a.t0S - b.t0S || a.t1S - b.t1S);
-        return { merged: renumber(merged), kept: kept.length };
+        return {
+            merged: renumber(merged),
+            kept: kept.filter((s) => !outside(s)).length,
+        };
     }
 
     /**
@@ -600,7 +639,15 @@ function makeContext(role, world) {
         version,
         reason,
         chList,
-        { store = true, reanalysis = false, clearManual = false } = {},
+        {
+            store = true,
+            reanalysis = false,
+            clearManual = false,
+            // [SL-242] 局部重分析的范围(秒)。缺省 ±∞ = 不限 —— 松手档(vad /
+            // segmentation)与版本切换/复制走的就是这一档,行为与修复前逐字相同。
+            startS = -Infinity,
+            endS = Infinity,
+        } = {},
     ) {
         const frame = makeSegments(version, reason, chList);
         if (store) {
@@ -611,6 +658,8 @@ function makeContext(role, world) {
                         segmentsOf(entry.ch),
                         clone(entry.segments),
                         clearManual,
+                        startS,
+                        endS,
                     );
                     kept += merged.kept;
                     model.segByCh.set(entry.ch, {
@@ -846,7 +895,16 @@ function buildOutputBackend(ctx) {
             // 默认档保护用户段 ∪ 锁定段,与 `regenerateSegments({reanalysis:true})` 同一口径。
             manualKept += hit.filter((s) => isProtectedSegment(s)).length;
         }
-        return { intervals, tracks, manualKept, channels: chList };
+        // [SL-242] 范围一并回给调用方:`analyze` 要拿它去做**局部**重算
+        // (mergeReanalyzed 的 startS/endS),而不是每次都全轨重算。
+        return {
+            intervals,
+            tracks,
+            manualKept,
+            channels: chList,
+            startS,
+            endS,
+        };
     }
 
     function pushSegments(reason, chList) {
@@ -966,6 +1024,10 @@ function buildOutputBackend(ctx) {
                     {
                         reanalysis: true,
                         clearManual,
+                        // [SL-242] scope 的范围要真的作用到重算面上:范围外的既有段
+                        // 逐字节保留(与 native 的 applyAnalysisSegments 同口径)。
+                        startS: a.startS,
+                        endS: a.endS,
                     },
                 );
                 emitRecomputedSegments("analyze", a.channels, frame);

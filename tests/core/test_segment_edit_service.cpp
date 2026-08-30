@@ -519,3 +519,78 @@ TEST_CASE("SERVICE-12 大段数工程(2000 段)撤销深度:预算够用 + 封�
         CHECK(deep >= 64); // 且远高于默认预算给的 30
     }
 }
+
+// ---------------------------------------------------------------------------
+// [SL-242] analyzeHopWindow —— 范围 → hop 窗必须**向内取整**。
+//
+// 靶子:`firstHop` 修复前是截断(向 0 取整),于是非 hop 对齐的范围起点会把
+// `cfg.rangeStartSample` 推到 startS **之前**最多一个 hop。那个数正是
+// applyAnalysisSegments 判 `outsideRange` 用的门槛 —— 于是紧贴范围左边、
+// `t1 == startS` 的那一段被判成「与范围相交」而删掉,而本次产出只覆盖
+// [rangeStart, rangeEnd),补不回它 ⇒ 一整段凭空消失(SL-242 的 native 侧成因)。
+//
+// 反向验证:把 `analyzeHopWindow` 的 `std::ceil(... - kHopEps)` 改回
+// `std::floor(...)`(= 截断),SECTION「非对齐起点」必红。
+// ---------------------------------------------------------------------------
+TEST_CASE("analyzeHopWindow:范围向内取整,不把窗撑到范围之外", "[output][analyze][SL242]")
+{
+    using scvb::output::analyzeHopWindow;
+    constexpr double kHopS = 0.010; // kFeatHopMs = 10
+
+    SECTION("hop 对齐的范围:逐字照用,一个 hop 都不多不少")
+    {
+        const auto w = analyzeHopWindow(1.00, 2.00, kHopS);
+        REQUIRE(w.valid());
+        CHECK(w.firstHop == 100u);
+        CHECK(w.lastHop == 200u);
+    }
+
+    SECTION("非对齐起点:窗的左沿**不许**落到 startS 之前")
+    {
+        // 1.234s = 123.4 hop。修复前截断成 123 ⇒ 窗从 1.230s 起,把 [.., 1.234) 那一段
+        // 一并卷进「范围内」;向内取整取 124 ⇒ 窗从 1.240s 起,左邻段安全。
+        const auto w = analyzeHopWindow(1.234, 2.0, kHopS);
+        REQUIRE(w.valid());
+        CHECK(w.firstHop == 124u);
+        CHECK(static_cast<double>(w.firstHop) * kHopS >= 1.234);
+        CHECK(w.lastHop == 200u);
+    }
+
+    SECTION("非对齐终点:窗的右沿**不许**落到 endS 之后")
+    {
+        const auto w = analyzeHopWindow(1.0, 2.005, kHopS);
+        REQUIRE(w.valid());
+        CHECK(w.lastHop == 200u);
+        CHECK(static_cast<double>(w.lastHop) * kHopS <= 2.005);
+    }
+
+    SECTION("浮点残差不许吃掉首尾各一个 hop")
+    {
+        // 「样本 ÷ 采样率」链上算出来的秒值:48000 样本 @48k = 1.0s,但 4.8e-1/1e-2
+        // 这类除法在别的路径上会给出 99.99999999997 / 100.00000000003。
+        const auto low = analyzeHopWindow(1.0 - 1e-13, 2.0 - 1e-13, kHopS);
+        REQUIRE(low.valid());
+        CHECK(low.firstHop == 100u);
+        CHECK(low.lastHop == 200u);
+        const auto high = analyzeHopWindow(1.0 + 1e-13, 2.0 + 1e-13, kHopS);
+        REQUIRE(high.valid());
+        CHECK(high.firstHop == 100u);
+        CHECK(high.lastHop == 200u);
+    }
+
+    SECTION("窄于一个 hop / 非法范围:空窗 ⇒ 调用方回 §1.6 拒绝态")
+    {
+        CHECK_FALSE(analyzeHopWindow(1.2341, 1.2349, kHopS).valid()); // 0.8ms
+        CHECK_FALSE(analyzeHopWindow(2.0, 1.0, kHopS).valid()); // 倒序
+        CHECK_FALSE(analyzeHopWindow(1.0, 1.0, kHopS).valid()); // 空区间
+        CHECK_FALSE(analyzeHopWindow(1.0, 2.0, 0.0).valid()); // hopS 非法
+    }
+
+    SECTION("负起点按 0 夹取,不产生回绕的巨大 hop 下标")
+    {
+        const auto w = analyzeHopWindow(-5.0, 1.0, kHopS);
+        REQUIRE(w.valid());
+        CHECK(w.firstHop == 0u);
+        CHECK(w.lastHop == 100u);
+    }
+}

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
 // analyze/previewAnalyze 的「全部」范围推导(§1.5/§1.6 的 "all" 分支)。
 //
 // 单拎成纯函数的理由:它是 v5.1 P1-F 的**唯一**修复点,而它原先埋在
@@ -93,6 +97,61 @@ inline AnalyzeRange analyzeScopeRange(unsigned int tracksMask, bool hasStartS, d
         r.endS = endS;
     }
     return r;
+}
+
+// analyze 的**范围 → hop 窗**量化(§1.6:范围是半开区间 [startS, endS))。
+//
+// 单拎成纯函数的理由同上:它决定的不只是「分析哪几个 hop」,还决定 finishAnalysis 里
+// 「哪些既有段算落在范围内、要被本次产出取代」—— applyAnalysisSegments 的 outsideRange
+// 判据读的正是 `firstHop * hopSamples`。两件事共用一个数,量化方向错一格就是**范围外的段
+// 被静默删掉**,而这一格在 DAW 里够不着(段边界要非 hop 对齐才现形)。
+//
+// 口径 = **向内取整**(firstHop 上取、lastHop 下取):取「完全被 [startS, endS) 包住」的
+// 那个最大 hop 窗。修复前 firstHop 走的是**截断**(向 0 取整),于是范围起点只要不是 hop
+// 的整数倍,`rangeStartSample` 就落到 startS **之前**最多一个 hop(10ms)处 —— 紧挨在
+// 范围左边、`t1 == startS` 的那一段于是满足 `t1 > rangeStartSample`,被判成「与范围相交」
+// 而从段表里删掉;可本次分析的产出只覆盖 [rangeStart, rangeEnd),补不回它的段身
+// ⇒ **一整段(可能几十秒)凭空消失**。10ms 的重叠毁掉一个任意长的段,这是 SL-242 的
+// 一条独立成因(另一条在 web 侧:段级「恢复自动」发的是轨级 scope)。
+//
+// 谁碰得到:段边界非 hop 对齐 = 用户编辑过的边界(split / move_boundary,§5.4)。
+// 那两个 op 的后置是 `locked=true`,锁定段本就免疫,所以现网多数情形被锁挡住了;
+// 一旦用户把相邻两段都解了锁再对右边那段做「恢复自动」(clearManual 放开 origin 那层),
+// 左邻段就直接没了 —— 用户看到的正是「整个大片段被合并」。
+//
+// 代价:范围两端各有不足一个 hop 的边角不进本次分析。hop 是分析的时间分辨率下限
+// (kFeatHopMs=10),半个 hop 本来就没有可分析的特征值,这是**量化本身**的代价,不是丢数据。
+// 反过来,窄于一个 hop 的范围会退成空窗 → §1.6 拒绝态 `{ok:false, affected:{0,0,0}}`;
+// 段短于 10ms 时段级「恢复自动」于是不受理(分段最小时长 J23 默认 400ms,够不着)。
+//
+// `kHopEps`:秒值是「样本 ÷ 采样率」算出来的,再除以 hopS 会带浮点残差。1e-6 hop
+// = 10ns @10ms hop,比一个采样(48k 下 ~20.8µs)小三个量级 —— 只吃残差,吃不到真数据。
+// 不带它的话「恰好 hop 对齐」的范围会因为 399.999999997 被上取到 400、下取到 399,
+// 平白丢掉首尾各一个 hop。
+struct AnalyzeHopWindow
+{
+    std::uint64_t firstHop = 0;
+    std::uint64_t lastHop = 0; // 半开:窗 = [firstHop, lastHop)
+    bool valid() const { return lastHop > firstHop; }
+};
+
+inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS)
+{
+    AnalyzeHopWindow w;
+    if (!(hopS > 0.0) || !(endS > startS))
+    {
+        return w; // 空窗 → 调用方回 §1.6 拒绝态
+    }
+    constexpr double kHopEps = 1e-6;
+    const double firstCeil = std::ceil(std::max(0.0, startS) / hopS - kHopEps);
+    const double lastFloor = std::floor(std::max(0.0, endS) / hopS + kHopEps);
+    if (!(lastFloor > firstCeil))
+    {
+        return w; // 范围窄于一个 hop:没有完整 hop 可分析
+    }
+    w.firstHop = static_cast<std::uint64_t>(firstCeil < 0.0 ? 0.0 : firstCeil);
+    w.lastHop = static_cast<std::uint64_t>(lastFloor < 0.0 ? 0.0 : lastFloor);
+    return w;
 }
 
 } // namespace scvb::output

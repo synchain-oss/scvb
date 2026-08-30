@@ -157,6 +157,45 @@ export function mergeGuardedByDrag(nowMs, lastCommitMs) {
 }
 
 /**
+ * [SL-242] 段级「恢复自动」的 scope(纯函数,node 侧可断言)。
+ *
+ * 用户实测(v5.6.2 终验 A7):点**一个小片段**的「恢复自动」,整个大片段被合并、
+ * 全都回了自动。成因就在这里 —— 这枚钮此前发的是 `{tracksMask: 1 << (ch-1)}`,
+ * **不带范围**;而 §1.6 的对象形 scope 缺省范围 = 走 `"all"` 那条推导(见
+ * `AnalyzeScopeMath.h::analyzeScopeRange`),于是「整轨 × 整条时间线」的手动段
+ * 一次清光。钮长在**段检查器**里、就在这一段的锁定开关下面,用户读到的当然是
+ * 「把**这一段**还回自动」—— 入口的位置就是它的作用域承诺。
+ *
+ * 定谳后的语义(写进 PR / 确认句):**恢复自动 = 只重算选中这一段的区间**,
+ * 该段的 origin 回 auto、值回引擎算出来的值;**不合并边界**,相邻段(不论 auto、
+ * 手动还是锁定)一个字节都不动。相邻自动段要不要并起来是另一件事,不在本入口里做。
+ *
+ * `openEnded` 段(§2.8):`t1S` 只是一个**保守下界**,不是真末端 —— 那是
+ * `setTrackManual` 造的「单段全时限常值」,CRVS 里 t1 是 1<<40 哨兵。对它取
+ * `endS = t1S` 会把段的右半截留在手动态。故这一档**不给 endS**,让真桥按
+ * `analyzeScopeRange`「给了的照用、没给的取 all 档同侧端点」推到时间线末端 ——
+ * 那本来就是这个段的真实覆盖面(它就是整轨)。
+ *
+ * 拿不到有限的 `t0S` 时回 `null`(调用方不发请求)。**不退回轨级 scope** ——
+ * 那正是本卡要修掉的行为,拿它当兜底等于把缺陷留一条后门。
+ *
+ * @param {number} ch 1..15
+ * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
+ * @returns {{tracksMask:number, startS:number, endS?:number}|null}
+ */
+export function segmentRestoreScope(ch, seg) {
+    const n = Number(ch);
+    if (!Number.isInteger(n) || n < 1 || n > LANE_COUNT) return null;
+    const s = seg || {};
+    if (!Number.isFinite(s.t0S)) return null;
+    const scope = { tracksMask: 1 << (n - 1), startS: s.t0S };
+    if (!s.openEnded && Number.isFinite(s.t1S) && s.t1S > s.t0S) {
+        scope.endS = s.t1S;
+    }
+    return scope;
+}
+
+/**
  * 滚轮该走哪一路(纯函数,node 侧可断言)。
  *
  * 优先级 Ctrl > Alt > Shift > 裸,**不接受组合**:同时按住只认最高的那一个。
@@ -3171,15 +3210,16 @@ export function createTabWave(opts) {
                     if (!cur || isWriteBlocked() || isLaneDead(cur.ch)) {
                         return requestRender();
                     }
+                    // [SL-242] 作用面 = **选中这一段的区间**,不是整轨。
+                    // §1.6 的 scope 本来就是 `{tracksMask, startS?, endS?}`,带上范围
+                    // 是照契约用它,不是扩契约(真桥那一侧 analyzeScopeRange 早就认
+                    // 「两头都给 ⇒ 逐字照用」)。判据与 openEnded 那档见
+                    // segmentRestoreScope 的头注。
+                    const scope = segmentRestoreScope(cur.ch, cur.seg);
+                    if (!scope) return requestRender(); // 段没有可用的 t0S:不发轨级请求
                     local.inspRestoreBusy = true;
                     try {
-                        // 与轨道页那份逐字同一条路:§1.6 的轨级 clearManual;
-                        // locked 段按契约免疫(确认句里已经说了)。
-                        await call(
-                            "analyze",
-                            { tracksMask: 1 << (cur.ch - 1) },
-                            { clearManual: true },
-                        );
+                        await call("analyze", scope, { clearManual: true });
                     } finally {
                         local.inspRestoreBusy = false;
                     }
@@ -3969,11 +4009,19 @@ export function createTabWave(opts) {
         }
         // [SL-230]「恢复自动」:选中的这一段是手动来的(origin≠auto)才出 ——
         // auto 段本来就在自动态,给它一个「恢复自动」是废钮。
-        // 作用面是**整轨**(§1.6 的 clearManual 就是轨级),确认句里说清楚。
+        // [SL-242] 作用面是**这一段**(scope 带上该段区间,见 segmentRestoreScope),
+        // 不再是整轨;确认句同步换成段口径的 wave.restoreSegConfirm。
         renderInspectorRestore(cur.ch, cur.idx, seg, editable);
     }
 
-    /** 检查器「恢复自动」两态(SL-230;与轨道页那份同一手势、同一确认句)。 */
+    /**
+     * 检查器「恢复自动」两态(SL-230 的手势;SL-242 起作用域与文案都是**段级**)。
+     *
+     * 与轨道页那份是同一套手势(按钮 → 就地展开「取消 / 继续」),但**不是同一件事**:
+     * 轨道页那条(`doReidentify`)清的是整轨,它长在轨道行上、确认句说「轨 {n}」;
+     * 这一条只重算选中的这一段。两处曾共用 tracks.* 那两条词条,于是文案说轨、
+     * 位置说段 —— 用户点完发现整轨都回了自动(终验 A7),那正是 SL-242。
+     */
     function renderInspectorRestore(ch, idx, seg, editable) {
         if (!els.inspRestore) return;
         const t = getT();
@@ -4001,11 +4049,14 @@ export function createTabWave(opts) {
         // 身份取 `currentSeg()` 那份下标(与 askRestore 写入时同源),不取载荷里的
         // `segIdx` —— 两者按 §2.8 应当相等,但比对键没必要押在那条不变式上。
         const asking = local.inspRestoreAsk === `${ch}:${idx}`;
+        // [SL-242] 段口径的两条词条:提示句说「本段」,确认句说「只重算该段、其余段
+        // 保持不变」。不再借轨道页的 tracks.restoreAutoHint / tracks.reidentifyConfirm
+        // —— 那两条说的是整轨,而这枚钮只动这一段,借来就是在文案上撒谎。
         text(
             els.inspRestoreText,
             asking
-                ? fmtKey("tracks.reidentifyConfirm", { n: tt(ch) })
-                : t["tracks.restoreAutoHint"] || "",
+                ? t["wave.restoreSegConfirm"] || ""
+                : t["wave.restoreSegHint"] || "",
         );
         show(els.inspRestoreBtn, !asking);
         show(els.inspRestoreCancel, asking);

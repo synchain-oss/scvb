@@ -1598,6 +1598,82 @@ log("=== ⑥ mock 端到端(两段式 / 五 op / 布防 / 清除 / setRange)==="
         void st;
         void s;
     });
+
+    // ---- [SL-242] 段级「恢复自动」= 只重算这一段 -----------------------------
+    // 用户实测(v5.6.2 终验 A7):点一个**小片段**的「恢复自动」,整个大片段被合并、
+    // 全都回了自动。两条独立成因,这一块守的是**数据面**那半:
+    //   ① web 侧发的是轨级 scope(修在 tab-wave.js 的 segmentRestoreScope,断言见 ⑫);
+    //   ② mock 侧压根不看 scope 的范围 —— 每次 analyze 都拿生成器的整轨产物合并,
+    //      于是「范围外的段有没有被动」这件事在冒烟里**恒绿**(mock 说谎第 5 次)。
+    // 本块是**真跑 mock 端到端**(不是源码正则):造一个「大段里切出的小手动段」,
+    // 只对小段发范围 scope,断言范围外的段逐字节不动、段数不塌。
+    //
+    // 反向验证:把 mergeReanalyzed 的 `|| outside(s)` 去掉(退回修复前),
+    // 「范围外的段逐字节保留」必红。
+    await withOutput("fixture=fifteen-tracks", async (b, seen) => {
+        const ch = 1;
+        const segsNow = async () => {
+            const last = seen[seen.length - 1];
+            return last.channels.find((c) => c.ch === ch).segments;
+        };
+        // 先切一刀,造出「大自动段里的小段」;split 的后置是两子段 locked=true。
+        await b.editSegment(ch, "set_values", { segIdx: 0, pan: 5 }); // 先落一帧,拿到段表
+        let segs = await segsNow();
+        check(segs.length >= 3, "起手段数够(至少三段才有「范围外」可断言)");
+        const target = segs[1];
+        await b.editSegment(ch, "split", {
+            segIdx: 1,
+            tS: (target.t0S + target.t1S) / 2,
+        });
+        segs = await segsNow();
+        // 两子段都解锁:锁定段对 clearManual 免疫(§1.6),锁着就走不到真正会删段的路。
+        await b.editSegment(ch, "set_locked", { segIdx: 1, locked: false });
+        await b.editSegment(ch, "set_locked", { segIdx: 2, locked: false });
+        const before = await segsNow();
+        const small = before[2]; // 右边那个小段
+        check(
+            small.origin !== "auto" && small.locked === false,
+            "靶子段是「未锁定的手动段」(检查器那枚钮出得来的形状)",
+        );
+        const outsideOf = (list) =>
+            list.filter((s) => s.t1S <= small.t0S || s.t0S >= small.t1S);
+        const key = (s) =>
+            [s.t0S, s.t1S, s.origin, s.locked, s.pan, s.volDb].join("|");
+        const outBefore = outsideOf(before).map(key).sort();
+
+        const r = await b.analyze(
+            { tracksMask: 1 << (ch - 1), startS: small.t0S, endS: small.t1S },
+            { clearManual: true },
+        );
+        eq(r.ok, true, "段级 scope 受理(§1.6 的对象形 scope 本来就带可选范围)");
+        await sleep(900); // mock 的 [W] 退化成 800ms
+
+        const after = await segsNow();
+        eq(
+            outsideOf(after).map(key).sort(),
+            outBefore,
+            "[SL-242] 范围外的段逐字节保留(不合并、不改 origin、不挪边界)",
+        );
+        // 范围内那一段真的回了自动:范围里不许再留 origin≠auto 的段。
+        // (产出可能是 0 段 —— 生成器在这个窄区间里未必造得出段,故不断言段数。)
+        check(
+            after
+                .filter((s) => s.t1S > small.t0S && s.t0S < small.t1S)
+                .every((s) => s.origin === "auto"),
+            "[SL-242] 范围内的手动标记真的被清掉了(clearManual 生效)",
+        );
+        // 反向:同一份段表,发**轨级** scope(不带范围)时范围外的段就该被重算 ——
+        // 证明上面那条绿不是「mock 根本没重算过」蒙出来的。
+        const beforeTrack = await segsNow();
+        await b.analyze({ tracksMask: 1 << (ch - 1) }, { clearManual: true });
+        await sleep(900);
+        const afterTrack = await segsNow();
+        check(
+            JSON.stringify(beforeTrack.map(key)) !==
+                JSON.stringify(afterTrack.map(key)),
+            "反向:轨级 scope 确实动了整轨(上一条的绿不是「什么都没跑」)",
+        );
+    });
 }
 
 // =============================================================================
@@ -4063,11 +4139,24 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
             /if \(seg\.locked\) \{[\s\S]{0,320}restoreAutoLocked/.test(tw),
             "(b4)锁定段换成「先解锁」说明,不给点了没反应的钮",
         );
+        // [SL-242] 作用面从整轨收成**这一段**:钮长在段检查器里,发的 scope 就得带
+        // 这一段的区间。接线是「先算 scope,算不出就不发」——**不许**退回轨级兜底,
+        // 那正是本卡要修掉的行为,拿它当兜底等于留一条后门。
         check(
-            /"analyze",\s*\n?\s*\{ tracksMask: 1 << \(cur\.ch - 1\) \},\s*\n?\s*\{ clearManual: true \}/.test(
+            /const scope = segmentRestoreScope\(cur\.ch, cur\.seg\);/.test(
+                tw,
+            ) &&
+                /if \(!scope\) return requestRender\(\);/.test(tw) &&
+                /await call\("analyze", scope, \{ clearManual: true \}\);/.test(
+                    tw,
+                ),
+            "(b5)检查器入口走段级 scope(segmentRestoreScope)",
+        );
+        check(
+            !/\{ tracksMask: 1 << \(cur\.ch - 1\) \},\s*\n?\s*\{ clearManual: true \}/.test(
                 tw,
             ),
-            "(b5)走 §1.6 的轨级 clearManual",
+            "(b5b)旧的轨级写法零残留",
         );
         // 空态也要收起,否则挂着上一个段的入口(与 origin 角标同一个理由)
         check(
@@ -4096,10 +4185,73 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                 ),
             "(b8)「继续」有在途去重,且用 finally 兜住抛错",
         );
+        // [SL-242] 提示句/确认句换成段口径:轨道页那两条说的是「本轨」「轨 {n}」,
+        // 借来用就是位置说段、文案说轨,用户读到的承诺与实际作用面对不上。
+        check(
+            /t\["wave\.restoreSegConfirm"\]/.test(tw) &&
+                /t\["wave\.restoreSegHint"\]/.test(tw) &&
+                !/fmtKey\("tracks\.reidentifyConfirm"/.test(tw) &&
+                !/t\["tracks\.restoreAutoHint"\]/.test(tw),
+            "(b9)检查器用段口径词条,不再借轨道页那两条",
+        );
+        // ---- [SL-242] segmentRestoreScope 纯函数:**真调**,不是正则看一眼 ----
+        {
+            const S = TW.segmentRestoreScope;
+            eq(
+                S(3, { t0S: 4.5, t1S: 7.25, origin: "user_edited" }),
+                { tracksMask: 1 << 2, startS: 4.5, endS: 7.25 },
+                "(b10)普通手动段:scope 带该段区间(整轨那份 endS/startS 缺席)",
+            );
+            // openEnded(§2.8):`t1S` 只是保守下界,不是真末端 —— 取它当 endS 会把
+            // 段的右半截留在手动态。这一档**不给 endS**,让真桥按 analyzeScopeRange
+            // 的「没给的取 all 档同侧端点」推到时间线末端。
+            const oe = S(1, { t0S: 0, t1S: 12.5, openEnded: true });
+            eq(oe.tracksMask, 1, "(b11)openEnded:轨位对");
+            eq(oe.startS, 0, "(b11)openEnded:起点照给");
+            check(
+                !("endS" in oe),
+                "(b11)openEnded 不给 endS(t1S 是下界,不是真末端)",
+            );
+            // 拿不到有限 t0S ⇒ null(调用方不发)。绝不退回轨级 scope。
+            for (const bad of [
+                null,
+                {},
+                { t0S: NaN, t1S: 3 },
+                { t1S: 3 },
+                { t0S: "4.5", t1S: 7 },
+            ]) {
+                eq(S(3, bad), null, "(b12)段区间不可用 ⇒ null,不退回轨级");
+            }
+            // 数字串("3")**不**在这张表里:那一档走 Number() 归一,按 3 处理是
+            // 有意的宽容(§0.2 的轨号在桥面是数,但 DOM dataset 取出来是串)。
+            for (const ch of [0, 16, -1, 1.5, "x", null, undefined]) {
+                eq(
+                    S(ch, { t0S: 1, t1S: 2 }),
+                    null,
+                    `(b13)轨号非法(${String(ch)})⇒ null`,
+                );
+            }
+            // 零宽/倒序区间:startS 照给、endS 不给(半开区间给不出合法范围时不硬造)
+            const flat = S(2, { t0S: 3, t1S: 3 });
+            check(
+                flat && flat.startS === 3 && !("endS" in flat),
+                "(b14)零宽段不硬造 endS",
+            );
+        }
+        // [SL-242] `tracks.restoreAutoHint`(「本轨由手动固定值驱动」)**已删**:
+        // 它此前唯一的消费方就是检查器那一行,而检查器现在说的是段。留着一条现无
+        // 消费方、口径又是「整轨」的词条,下一个人照样会把它借回来 —— 那正是本卡。
+        check(
+            !("tracks.restoreAutoHint" in T.zh) &&
+                !("tracks.restoreAutoHint" in T.en) &&
+                !("tracks.restoreAutoHint" in T.fr),
+            "(b15)整轨口径的 tracks.restoreAutoHint 已从三语字典删干净",
+        );
         for (const k of [
             "tracks.restoreAuto",
-            "tracks.restoreAutoHint",
             "tracks.restoreAutoLocked",
+            "wave.restoreSegHint",
+            "wave.restoreSegConfirm",
         ]) {
             for (const lang of ["zh", "en", "fr"]) {
                 check(
