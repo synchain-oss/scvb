@@ -157,6 +157,138 @@ export function mergeGuardedByDrag(nowMs, lastCommitMs) {
 }
 
 /**
+ * [SL-242] 段级「恢复自动」的 scope(纯函数,node 侧可断言)。
+ *
+ * 用户实测(v5.6.2 终验 A7):点**一个小片段**的「恢复自动」,整个大片段被合并、
+ * 全都回了自动。成因就在这里 —— 这枚钮此前发的是 `{tracksMask: 1 << (ch-1)}`,
+ * **不带范围**;而 §1.6 的对象形 scope 缺省范围 = 走 `"all"` 那条推导(见
+ * `AnalyzeScopeMath.h::analyzeScopeRange`),于是「整轨 × 整条时间线」的手动段
+ * 一次清光。钮长在**段检查器**里、就在这一段的锁定开关下面,用户读到的当然是
+ * 「把**这一段**还回自动」—— 入口的位置就是它的作用域承诺。
+ *
+ * 定谳后的语义(写进 PR / 确认句):**恢复自动 = 只重算选中这一段的区间**,
+ * 该段的 origin 回 auto、值回引擎算出来的值;**不合并边界**,相邻段(不论 auto、
+ * 手动还是锁定)一个字节都不动。相邻自动段要不要并起来是另一件事,不在本入口里做。
+ *
+ * `openEnded` 段(§2.8)是**唯一**允许省 `endS` 的一档:它的 `t1S` 只是一个
+ * **保守下界**,不是真末端 —— 那是 `setTrackManual` 造的「单段全时限常值」,
+ * CRVS 里 t1 是 1<<40 哨兵。对它取 `endS = t1S` 会把段的右半截留在手动态。
+ * 省掉 `endS` 后真桥按 `analyzeScopeRange`「给了的照用、没给的取 all 档同侧端点」
+ * 推末端 —— **末端取哪个跟 Range 档位走**:`follow` 档是已采集时间线末端,
+ * `daw_loop` / `manual` 档是 `global.range` 的末端(于是 openEnded 段只会被
+ * 部分恢复)。这与 `AnalyzeScopeMath.h` 里已登记的 Tab2 同族取舍一致 ——
+ * 「用户显式设了范围就尊重它,不替他扩大写入面」,不是本函数新引入的。
+ *
+ * **其余一切拿不到合法段身的情形一律回 `null`(调用方不发请求)**:`t0S` 非有限,
+ * 或非 openEnded 段的 `t1S` 非有限 / `t1S <= t0S`(零宽、倒序)。
+ * 后一条是 #161 复审【重要】① 补的:老写法让这些退化段落进「省 endS」那一档,
+ * 而缺 `endS` 在真桥会展开成 **[t0S, 时间线末端]** —— 配 `clearManual:true` 就是
+ * 「从这一段起点一路清到末尾」,**与本卡要修的作用面外溢是同一个形状,只是换了
+ * 一扇门**。现实可达性低(§2.8 保证非 openEnded 段 `t1S > t0S`),
+ * 但它是防御分支,而防御分支恰恰不该把「更宽的作用面」当兜底 ——
+ * 拿宽 scope 兜底等于给缺陷留后门,这条纪律与「拿不到 t0S 回 null」是同一条。
+ *
+ * @param {number} ch 1..15
+ * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
+ * @returns {{tracksMask:number, startS:number, endS?:number}|null}
+ */
+export function segmentRestoreScope(ch, seg) {
+    const n = Number(ch);
+    if (!Number.isInteger(n) || n < 1 || n > LANE_COUNT) return null;
+    const s = seg || {};
+    if (!Number.isFinite(s.t0S)) return null;
+    const scope = { tracksMask: 1 << (n - 1), startS: s.t0S };
+    // openEnded:真右端是 +∞,交给真桥推末端(唯一允许省 endS 的一档)。
+    if (s.openEnded === true) return scope;
+    // 其余段身不可信 ⇒ 不发请求。**绝不**退化成缺 endS 的过宽 scope。
+    if (!Number.isFinite(s.t1S) || s.t1S <= s.t0S) return null;
+    scope.endS = s.t1S;
+    return scope;
+}
+
+/**
+ * 特征 hop 时长(秒)。真源 = `src/core/ipc/SegmentLayout.h` 的 `kFeatHopMs = 10`。
+ *
+ * 为什么这一个 native 几何常量可以进 web,而 mock 那边的同一件事我拒了(见
+ * `juce-bridge-mock.js` 的 `affectedOf` 头注):**两处的后果不是一个量级**。
+ * mock 那边不建模量化,藏住的只有两端各 <10ms 的边角,藏不住作用域回归;
+ * 而这里 hop 网格**直接决定一个 UI 入口出不出得来** —— 差一格就是「钮亮着、
+ * 点了没反应」,正是本卡要消灭的那一族。判据要跟真跑同源,就得知道网格。
+ */
+export const FEAT_HOP_S = 0.01;
+
+/**
+ * [SL-242] 段级「恢复自动」在这一段里**必然**产不出新段吗(纯函数,node 侧可断言)。
+ *
+ * 判据链(与 native 逐环同源):
+ *   · `analyzeHopWindow` 向内取整 ⇒ 窗宽
+ *     `N = floor(t1S/hop + ε) − ceil(t0S/hop − ε)`(hop 数);
+ *   · `EnergyVad.cpp` 的 P1「丢短」**先于** padding 执行:`minHops = minSegmentMs / 10`
+ *     (C++ 里是 int 除法),`endHop − startHop >= minHops` 才留;
+ *   · 核心段被 `selStart/selEnd` 夹在窗内 ⇒ 最长也就是 N;
+ *   · ⇒ `N < minHops` 时该轨产出**必为空** ⇒ `applyAnalysisSegments` 的
+ *     `if (src.empty()) continue;` ⇒ 段表逐字节不动,而 `startAnalysis` 早已回
+ *     `ok:true` ⇒ 用户点完零变化、零提示。
+ *
+ * **必须按量化后的窗宽判,不能按 `t1S - t0S` 判**(#161 复审二轮【重要】):两者最多
+ * 差两个 hop(20ms),那一格里静默无操作原样还在。反例(min_segment_ms = 420):
+ * 段 `[0.0035, 0.4235)` 的 `segMs` 恰是 420 ⇒ 按毫秒判**放行**;而
+ * `firstHop = ceil(0.35) = 1`、`lastHop = floor(42.35) = 42` ⇒ `N = 41 < 42` ⇒ 产出为空。
+ * 而非 hop 对齐的边界正是 `split` / `move_boundary` 造出来的,与本卡另一条成因
+ * 是同一批段 —— 这个 20ms 的盲带恰好落在最容易踩到的地方。
+ *
+ * `openEnded` 段恒回 false:它的 `t1S` 只是保守下界(§2.8),真右端是 +∞,
+ * 拿 `t1S - t0S` 当窗宽会把「整轨全时限」误判成短段。
+ *
+ * ⚠ 本判据只覆盖「窗太窄 ⇒ 必然空产出」这一条**确定性**通路,已知三个缺口,都不改:
+ *   · 「窗够宽但区间内 VAD 判静音 ⇒ 产出也空 ⇒ 手动段原样留着」那条路它拦不住 ——
+ *     要靠「零变化时给一条反馈」通用收口,不是前置拦截能穷举的(已立 SL-244 同批的
+ *     另一张卡 SL-248);
+ *   · 未镜像 `analyzeHopWindow` 的 `kMaxHop = 1e7`(>27.8 小时的段真跑判空窗拒绝、
+ *     本闸放行)。**理论可达性为零** —— 非 openEnded 段来自对采集环(分钟量级)的 VAD,
+ *     段身不可能跨 27.8 小时;登记在此,免得「判据与真跑同源」这句话留下未记的缺口;
+ *   · `local.segmentation.min_segment_ms` 的缓存初值是 420,而 native runtime 默认是
+ *     120(`OutputProcessor.h`)—— **首帧 state 回推之前**,120-420ms 的段会被本闸判成
+ *     「太短」而收起入口,可那时真跑用的是 120、做得成。`clampMinSegMs` 修不掉这一格
+ *     (两个数都在 [50,500] 内,夹取恒等);方向是多挡、`syncParamGroup` 回推后自愈,
+ *     且要根治得让 web 知道 native 的 runtime 默认(它现在只消费 state,不消费 runtime
+ *     默认),不值得为一格开口子。
+ *
+ * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
+ * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
+ * @returns {boolean} true = 引擎在这一窗里必然产不出段(入口该收起)
+ */
+export function restoreWindowTooShort(seg, minSegmentMs) {
+    const s = seg || {};
+    if (s.openEnded === true) return false;
+    const minMs = Number(minSegmentMs);
+    if (!Number.isFinite(minMs) || minMs <= 0) return false;
+    if (!Number.isFinite(s.t0S) || !Number.isFinite(s.t1S)) return false;
+    const EPS = 1e-6;
+    const firstHop = Math.ceil(Math.max(0, s.t0S) / FEAT_HOP_S - EPS);
+    const lastHop = Math.floor(Math.max(0, s.t1S) / FEAT_HOP_S + EPS);
+    // `Math.floor(minMs / 10)` 对齐 C++ 的 int 除法(`p.minSegmentMs / 10`)。
+    return lastHop - firstHop < Math.floor(minMs / 10);
+}
+
+/**
+ * [SL-242] 把 `min_segment_ms` 夹成真桥收下的那个值(纯函数,node 侧可断言)。
+ *
+ * 真源 = `src/output/OutputEditor.cpp` 的 `juce::jlimit(50, 500, …)`(02-dsp-spec §0.3
+ * 常量表)。web 侧的滑杆值域是 0..1500,超出 [50,500] 的那一段真桥根本收不下,所以
+ * **预测判据必须按真桥夹取后的值算**,否则闸的口径在 state 回推之前与真跑分叉。
+ *
+ * 它修的**只是滑杆越界那一格**。`local` 缓存初值 420 与 native runtime 默认 120 之间
+ * 那一格**不在夹取的射程内**(两个数都落在 [50,500] 内,夹取恒等)—— 那是一条独立缺口,
+ * 与另外两条一起登记在 `restoreWindowTooShort` 的头注里。
+ */
+export function clampMinSegMs(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0; // 拿不到判据 ⇒ 交给调用方按「不拦」处理
+    return Math.min(500, Math.max(50, n));
+}
+
+/**
  * 滚轮该走哪一路(纯函数,node 侧可断言)。
  *
  * 优先级 Ctrl > Alt > Shift > 裸,**不接受组合**:同时按住只认最高的那一个。
@@ -3144,7 +3276,8 @@ export function createTabWave(opts) {
                 });
             };
             els.inspLock.addEventListener("click", flip);
-            // [SL-230]「恢复自动」三枚钮:两态就地切换,确认后走轨级 clearManual。
+            // [SL-230]「恢复自动」三枚钮:两态就地切换,确认后走 clearManual。
+            // [SL-242] 作用面是**选中的这一段**,不是整轨(scope 见 segmentRestoreScope)。
             const askRestore = (on) => {
                 const cur = on ? currentSeg() : null;
                 local.inspRestoreAsk = cur ? `${cur.ch}:${cur.idx}` : "";
@@ -3171,15 +3304,16 @@ export function createTabWave(opts) {
                     if (!cur || isWriteBlocked() || isLaneDead(cur.ch)) {
                         return requestRender();
                     }
+                    // [SL-242] 作用面 = **选中这一段的区间**,不是整轨。
+                    // §1.6 的 scope 本来就是 `{tracksMask, startS?, endS?}`,带上范围
+                    // 是照契约用它,不是扩契约(真桥那一侧 analyzeScopeRange 早就认
+                    // 「两头都给 ⇒ 逐字照用」)。判据与 openEnded 那档见
+                    // segmentRestoreScope 的头注。
+                    const scope = segmentRestoreScope(cur.ch, cur.seg);
+                    if (!scope) return requestRender(); // 段没有可用的 t0S:不发轨级请求
                     local.inspRestoreBusy = true;
                     try {
-                        // 与轨道页那份逐字同一条路:§1.6 的轨级 clearManual;
-                        // locked 段按契约免疫(确认句里已经说了)。
-                        await call(
-                            "analyze",
-                            { tracksMask: 1 << (cur.ch - 1) },
-                            { clearManual: true },
-                        );
+                        await call("analyze", scope, { clearManual: true });
                     } finally {
                         local.inspRestoreBusy = false;
                     }
@@ -3969,11 +4103,19 @@ export function createTabWave(opts) {
         }
         // [SL-230]「恢复自动」:选中的这一段是手动来的(origin≠auto)才出 ——
         // auto 段本来就在自动态,给它一个「恢复自动」是废钮。
-        // 作用面是**整轨**(§1.6 的 clearManual 就是轨级),确认句里说清楚。
+        // [SL-242] 作用面是**这一段**(scope 带上该段区间,见 segmentRestoreScope),
+        // 不再是整轨;确认句同步换成段口径的 wave.restoreSegConfirm。
         renderInspectorRestore(cur.ch, cur.idx, seg, editable);
     }
 
-    /** 检查器「恢复自动」两态(SL-230;与轨道页那份同一手势、同一确认句)。 */
+    /**
+     * 检查器「恢复自动」两态(SL-230 的手势;SL-242 起作用域与文案都是**段级**)。
+     *
+     * 与轨道页那份是同一套手势(按钮 → 就地展开「取消 / 继续」),但**不是同一件事**:
+     * 轨道页那条(`doReidentify`)清的是整轨,它长在轨道行上、确认句说「轨 {n}」;
+     * 这一条只重算选中的这一段。两处曾共用 tracks.* 那两条词条,于是文案说轨、
+     * 位置说段 —— 用户点完发现整轨都回了自动(终验 A7),那正是 SL-242。
+     */
     function renderInspectorRestore(ch, idx, seg, editable) {
         if (!els.inspRestore) return;
         const t = getT();
@@ -3997,15 +4139,52 @@ export function createTabWave(opts) {
             show(els.inspRestoreOk, false);
             return;
         }
+        // **段身不可信:整个入口收起**(#161 复审二轮)。零宽 / 倒序 / t1S 非有限的段,
+        // `segmentRestoreScope` 会回 null、点「继续」是 `return requestRender()` ——
+        // 又一个「点了没反应」。挂着一枚点不动的钮比不挂更糟,直接不出这一行。
+        if (!segmentRestoreScope(ch, seg)) {
+            local.inspRestoreAsk = "";
+            show(els.inspRestore, false);
+            return;
+        }
+        // **窗太窄的段:只说不做**(#161 复审【重要】② + 二轮口径订正)。
+        // 判据按**量化后的窗宽**算,不是 `t1S - t0S` —— 两者最多差两个 hop,那一格里
+        // 静默无操作原样还在(反例与完整判据链见 `restoreWindowTooShort` 头注)。
+        // 处理口径与上面的锁定段逐字一致:说清楚 + 给出路(合并相邻段,或把「最小分段」
+        // 调小),不给一枚点了什么都不会发生的钮。
+        // 入参**照 native 的夹取来**(#161 复审四轮):`local.segmentation` 是本地缓存,
+        // 滑杆值域 0..1500,而真桥收进来时 `OutputEditor.cpp` 夹成 [50,500]。不夹的话
+        // 拧到 1500 而 state 回显未到时,`minHops = 150` ⇒ 900ms 的段被判「太短」而整行
+        // 消失,可真跑(夹到 500)做得成。方向是**多挡**且 `syncParamGroup` 回推后自愈,
+        // 但本卡的立论是「web 的预测判据必须与真跑同源」,注释既然引了那个夹取,判据就
+        // 得照着算。
+        // ⚠ 夹取**只修上界这一格**:缓存初值 420 vs native 默认 120 那一格它是恒等的
+        // (`clampMinSegMs(420) === 420`),那是另一条缺口,登记在 restoreWindowTooShort
+        // 的头注里(#161 复审六轮:这半句原先算在夹取名下,是错的)。
+        const minSegMs = clampMinSegMs(local.segmentation.min_segment_ms);
+        if (restoreWindowTooShort(seg, minSegMs)) {
+            local.inspRestoreAsk = "";
+            text(
+                els.inspRestoreText,
+                fmtKey("wave.restoreSegTooShort", { n: Math.round(minSegMs) }),
+            );
+            show(els.inspRestoreBtn, false);
+            show(els.inspRestoreCancel, false);
+            show(els.inspRestoreOk, false);
+            return;
+        }
         // 按**段身份**比对:选中段一变,展开态自然失配(不靠别处记得复位)。
         // 身份取 `currentSeg()` 那份下标(与 askRestore 写入时同源),不取载荷里的
         // `segIdx` —— 两者按 §2.8 应当相等,但比对键没必要押在那条不变式上。
         const asking = local.inspRestoreAsk === `${ch}:${idx}`;
+        // [SL-242] 段口径的两条词条:提示句说「本段」,确认句说「只重算该段、其余段
+        // 保持不变」。不再借轨道页的 tracks.restoreAutoHint / tracks.reidentifyConfirm
+        // —— 那两条说的是整轨,而这枚钮只动这一段,借来就是在文案上撒谎。
         text(
             els.inspRestoreText,
             asking
-                ? fmtKey("tracks.reidentifyConfirm", { n: tt(ch) })
-                : t["tracks.restoreAutoHint"] || "",
+                ? t["wave.restoreSegConfirm"] || ""
+                : t["wave.restoreSegHint"] || "",
         );
         show(els.inspRestoreBtn, !asking);
         show(els.inspRestoreCancel, asking);

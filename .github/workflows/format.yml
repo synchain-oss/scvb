@@ -56,8 +56,9 @@ jobs:
         #
         # 退出码约定(T46 起,与 scripts/gates.ps1 的 Gate 3e 同口径):
         #   0 = 全绿;1 = 有断言失败;**2 = 缺可选外部依赖**
-        #   (会回 2 的是**三套**页面级冒烟 —— smoke-monitor-page.mjs、
-        #   smoke-output-stale-page.mjs 与 smoke-output-dist-page.mjs,
+        #   (会回 2 的是**四套**页面级冒烟 —— smoke-monitor-page.mjs、
+        #   smoke-output-stale-page.mjs、smoke-output-dist-page.mjs 与
+        #   smoke-seg-restore-page.mjs([SL-242] 段级「恢复自动」的作用域),
         #   都要一个无头 Chrome/Edge。执行面按 glob 自动收,加一套不必改这行)。
         # 2 记 ::warning:: 而**不**判红:这是 required check,一旦 runner 镜像哪天不再
         # 预装 Chrome,判红会把仓库里**每一个** PR 卡住,而它本来只是少跑一套。

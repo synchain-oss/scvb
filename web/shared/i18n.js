@@ -532,7 +532,6 @@ export const T = {
         // [SL-230] 持久入口:只要该轨还被手动常值驱动就一直在(用户实测「找不到
         // clearManual」—— 原先唯一的入口是解冻那一下的临时提示条,点掉就再也没有了)。
         "tracks.restoreAuto": "恢复自动",
-        "tracks.restoreAutoHint": "本轨由手动固定值驱动",
         // 锁定段按契约 §1.6 对 clearManual 免疫(「须先逐段解锁」)——
         // 不说这一句,用户点完「恢复自动」只会看到「什么都没发生」。
         "tracks.restoreAutoLocked": "本段已锁定;锁定的段不会被恢复,请先解锁",
@@ -846,6 +845,20 @@ export const T = {
         // 二次确认框两枚(05 §2.3 行 302/303 逐字)
         "wave.reidentifyConfirm":
             "将清除 {k} 个手动编辑标记并重算;{l} 个已锁定段保持不变,确定?",
+        // [SL-242] 段检查器里的「恢复自动」—— 作用面是**选中的那一段**,不是整轨。
+        // 此前这里复用轨道页的 tracks.restoreAutoHint / tracks.reidentifyConfirm
+        // (「本轨…」「将清除轨 {n} 的手动固定值…」),而钮就长在这一段的锁定开关
+        // 底下 —— 文案说轨、位置说段,用户实测点完发现整轨都变了(终验 A7)。
+        // 作用域已按「只重算该段」修正,文案跟着改成段口径,并把「不动相邻段」明说
+        // 出来:那正是用户在这一步最担心的事。
+        "wave.restoreSegHint": "本段由手动值驱动",
+        "wave.restoreSegConfirm":
+            "将把选中的这一段恢复成自动识别结果、只重算该段;其他段(相邻段与已锁定段)保持不变。若该轨处于冻结状态,冻结会被一并解除,是否继续?",
+        // [#161 复审【重要】②] 段短于最小分段时长时,引擎在这一窗里产不出任何段
+        // (EnergyVad 的「丢短」先于 padding),段表逐字节不动 —— 钮点下去零变化、
+        // 零提示。与锁定段同一处理:说清楚 + 给出路,不给一枚点了没反应的钮。
+        "wave.restoreSegTooShort":
+            "本段短于最小分段时长({n} ms);恢复自动在这一段里得不到新段。请先与相邻段合并,或把「最小分段」调小。",
         "wave.clearCoverageConfirm":
             "将删除选中轨×选区的采集特征数据,是否继续?",
         // ---- T33 Wave 2 交互反馈件(05 §2.3 行 300-313 / 契约 §5.5;
@@ -1360,8 +1373,6 @@ export const T = {
         "tracks.labelEdit": "Track name (24 characters max)",
         "tracks.reidentifyOne": "Re-identify track {n}",
         "tracks.restoreAuto": "Restore automatic",
-        "tracks.restoreAutoHint":
-            "This track is driven by a manual fixed value",
         "tracks.restoreAutoLocked":
             "This segment is locked; locked segments are not restored — unlock it first",
         "tracks.reidentifyConfirm":
@@ -1638,6 +1649,11 @@ export const T = {
             "Vertical zoom (drag to change the lane height, arrow keys to step)",
         "wave.reidentifyConfirm":
             "This clears {k} manual edit marks and recomputes; {l} locked segments stay unchanged. Continue?",
+        "wave.restoreSegHint": "This segment is driven by a manual value",
+        "wave.restoreSegConfirm":
+            "This restores the selected segment to the automatic result and re-analyses that segment only; every other segment — neighbours and locked segments alike — stays unchanged. If this track is frozen, the freeze is lifted as well. Continue?",
+        "wave.restoreSegTooShort":
+            "This segment is shorter than the minimum segment length ({n} ms), so restoring it produces no new segment. Merge it with a neighbour first, or lower “Min segment”.",
         "wave.clearCoverageConfirm":
             "This deletes the captured feature data for the selected tracks × selection. Continue?",
         // ---- T33 Wave 2 interaction feedback (05 §2.3 / contract §5.5; U17 review pending) ----
@@ -2159,8 +2175,6 @@ export const T = {
         "tracks.labelEdit": "Nom de piste (24 caractères max)",
         "tracks.reidentifyOne": "Ré-identifier la piste {n}",
         "tracks.restoreAuto": "Rétablir l'automatique",
-        "tracks.restoreAutoHint":
-            "Cette piste est pilotée par une valeur manuelle fixe",
         "tracks.restoreAutoLocked":
             "Ce segment est verrouillé ; les segments verrouillés ne sont pas rétablis — déverrouillez-le d'abord",
         "tracks.reidentifyConfirm":
@@ -2446,6 +2460,11 @@ export const T = {
             "Zoom vertical (glissez pour changer la hauteur des pistes, flèches pour avancer pas à pas)",
         "wave.reidentifyConfirm":
             "Efface {k} marques d'édition manuelle et recalcule ; {l} segments verrouillés restent inchangés. Continuer ?",
+        "wave.restoreSegHint": "Ce segment est piloté par une valeur manuelle",
+        "wave.restoreSegConfirm":
+            "Le segment sélectionné sera rétabli sur le résultat automatique et lui seul sera recalculé ; tous les autres segments — voisins comme verrouillés — restent inchangés. Si cette piste est gelée, le gel sera également levé. Continuer ?",
+        "wave.restoreSegTooShort":
+            "Ce segment est plus court que la durée minimale de segment ({n} ms) : le rétablissement ne produira aucun nouveau segment. Fusionnez-le d’abord avec un voisin, ou réduisez « Segment min ».",
         "wave.clearCoverageConfirm":
             "Supprime les données de caractéristiques capturées pour les pistes sélectionnées × la sélection. Continuer ?",
         // ---- Retours d'interaction T33 Wave 2(05 §2.3 / contrat §5.5;relecture U17 en attente)----
