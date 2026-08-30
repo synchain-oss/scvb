@@ -678,7 +678,48 @@ try {
         });
         check(await waitFor(READY), "页面重新装载并吃到首帧");
 
+        // 前置:**切版本之前**这张图本来就画得开。这一条同时把两个隐式前提钉住
+        // (#159 复审【建议】3):① 渲染面这条路是通的;② 全局「最大角度」不为 0 ——
+        // `distGeometry` 的横位是 `pan x globalWidthPct/100`,width=0 时不论 pan 多少
+        // 全都落在 50%,底下那条渲染面断言会变成假红,而排查会从渲染层一路往回找。
+        const readBars = IN(`
+            const dg = w.__SCVB_OUTPUT__.distMotion();
+            const rows = dg.target || [];
+            const bars = all(".dist-bar");
+            const xs = bars
+                .map((b) => parseFloat(b.style.getPropertyValue("--x")))
+                .filter((x) => Number.isFinite(x));
+            return {
+                n: rows.length,
+                offCenter: rows.filter((r) => Math.abs(r.pan) > 0.05).length,
+                bars: bars.length,
+                barsOffCenter: xs.filter((x) => Math.abs(x - 50) > 0.05).length,
+            };
+        `);
+        // 等首轮补间收手再读:柱子的 `--x` 从居中起补,页面刚装载那一刻本来就都在 50%
+        // (实测 13/15 轨已有值、0/15 根柱到位)。等不到就说明渲染这条路根本不通 ——
+        // 那正是这条前置要抓的。
+        const settled = await waitFor(
+            IN(`
+            const bars = all(".dist-bar");
+            const xs = bars
+                .map((b) => parseFloat(b.style.getPropertyValue("--x")))
+                .filter((x) => Number.isFinite(x));
+            return bars.length > 0 && xs.some((x) => Math.abs(x - 50) > 0.05);
+        `),
+            8000,
+        );
+        check(settled, "首轮补间收手,柱子落到各自的位置上");
+        const before = await evaluate(readBars);
+        check(
+            before.n > 0 && before.offCenter > 0 && before.barsOffCenter > 0,
+            `前置:切版本**之前**这张图本来就画得开(${before.offCenter}/${before.n} 轨、${before.barsOffCenter}/${before.bars} 根柱不在中间)`,
+        );
+
         // 用户那一幕的三步(走带已由 `play=0` 停着):输出 ON → 复制 → 切过去。
+        // 三步的**回执**都带回来断:mock 的 copyVersion / setVersionActive 在 PRINT 态会回
+        // `{rejected:"printing"}`,只 `return "ok"` 的话这一步被拒也照样绿,真正被钉住的
+        // 就只剩「切进一个没被驱动过的版本」了(#159 复审【建议】3)。
         const acted = await evaluate(
             IN(`
             const mk = w.__SCVB_MOCK__;
@@ -686,36 +727,24 @@ try {
             for (const fn of ["setOutputEnabled", "copyVersion", "setVersionActive"]) {
                 if (typeof mk[fn] !== "function") return "no-" + fn;
             }
-            mk.setOutputEnabled(true);
-            mk.copyVersion(1, 2);
-            mk.setVersionActive(2);
-            return "ok";
+            const r1 = mk.setOutputEnabled(true);
+            const r2 = mk.copyVersion(1, 2);
+            const r3 = mk.setVersionActive(2);
+            return JSON.stringify([r1, r2, r3]);
         `),
         );
+        const okAll =
+            typeof acted === "string" &&
+            acted.startsWith("[") &&
+            !/rejected|error/.test(acted);
         check(
-            acted === "ok",
-            `输出 ON + copyVersion(1,2) + 切到 V2(实得 ${acted})`,
+            okAll,
+            `输出 ON + copyVersion(1,2) + 切到 V2 三步都被接受(回执 ${acted})`,
         );
         await sleep(600); // 全量 params/segments 到齐 + 一轮补间收手
 
-        const shot = await evaluate(
-            IN(`
-            const dg = w.__SCVB_OUTPUT__.distMotion();
-            const rows = dg.target || [];
-            const bars = all(".dist-bar");
-            // 渲染面:--x 是柱心的横向百分比,pan=0(居中)恰好是 50%。
-            const xs = bars
-                .map((b) => parseFloat(b.style.getPropertyValue("--x")))
-                .filter((x) => Number.isFinite(x));
-            return {
-                n: rows.length,
-                pans: rows.map((r) => r.pan),
-                offCenter: rows.filter((r) => Math.abs(r.pan) > 0.05).length,
-                bars: bars.length,
-                barsOffCenter: xs.filter((x) => Math.abs(x - 50) > 0.05).length,
-            };
-        `),
-        );
+        // 渲染面读的是 `--x`(柱心横向百分比),pan=0(居中)恰好是 50%。
+        const shot = await evaluate(readBars);
         check(
             shot.n > 0,
             `切版本后分布图仍有行(实得 ${shot.n} 行 / ${shot.bars} 根柱)`,

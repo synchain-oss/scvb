@@ -44,7 +44,7 @@ import { paramIdOf, readbackVersion } from "../shared/param-id.js";
 import {
     freezeBits,
     manualConstantOf,
-    readbackSegOf,
+    readbackSegsOf,
     segmentsOfCh,
 } from "../shared/readback.js";
 // hostEcho 灰显的批次新鲜度窗口 —— 与 Tab1 **共用同一个常量**,不在这里写第二份数字;
@@ -312,7 +312,7 @@ export {
     curveSegmentAt,
     freezeBits,
     manualConstantOf,
-    readbackSegOf,
+    readbackSegsOf,
     segmentsOfCh,
 } from "../shared/readback.js";
 
@@ -556,10 +556,15 @@ export function rowFromStore(store, ch, ctx) {
     //     · 输出 OFF(跟随宿主)= 引擎根本不驱动,声音跟的就是宿主参数面 ⇒ 读参数面。
     //       这一档若也显示曲线,就成了「看着曲线、听着宿主」——显示与 DSP 反而分了家。
     //   只有段表整个为空(还没分析过)才无条件回落参数面。
-    // [SL-241] 这条链本身已抽到 `readbackSegOf`(web/shared/readback.js)—— Tab1 的
+    // [SL-241] 这条链本身已抽到 `readbackSegsOf`(web/shared/readback.js)—— Tab1 的
     // 分布图读的是同一个量,却一直只读参数面。抽出来之后两处共用,再想分叉得先改那里。
-    const panSeg = readbackSegOf(segCh, bits.pan, c.outputOn, c.timeS);
-    const volSeg = readbackSegOf(segCh, bits.vol, c.outputOn, c.timeS);
+    // 一次算两维:frozen 只决定「用不用」,不影响算出来是哪一段。
+    const { pan: panSeg, vol: volSeg } = readbackSegsOf(
+        segCh,
+        bits,
+        c.outputOn,
+        c.timeS,
+    );
     const pan = panSeg
         ? num(panSeg.pan, PAN_RANGE.def)
         : num(vals[paramIdOf(active, ch, "pan")], PAN_RANGE.def);

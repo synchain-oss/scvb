@@ -59,7 +59,11 @@ import { format } from "../shared/i18n.js";
 import { paramIdOf, readbackVersion } from "../shared/param-id.js";
 // [SL-241] 未冻结维度的读回真源与 Tab2 **同一条链**(SL-211 只修在 tab-tracks.js
 // 里,分布图这边一直只读参数面 —— 详见 web/shared/readback.js 头注)。
-import { freezeBits, readbackSegOf, segmentsOfCh } from "../shared/readback.js";
+import {
+    freezeBits,
+    readbackSegsOf,
+    segmentsOfCh,
+} from "../shared/readback.js";
 
 export { distGeometry } from "../shared/distribution-chart.js";
 
@@ -2040,8 +2044,14 @@ export function createTabMaster(opts) {
             const cfg = chans[ch - 1] || {};
             const segCh = segmentsOfCh(st.segments, ch);
             const bits = freezeBits(vals[paramIdOf(v, ch, "freeze")]);
-            const panSeg = readbackSegOf(segCh, bits.pan, outputOn, timeS);
-            const volSeg = readbackSegOf(segCh, bits.vol, outputOn, timeS);
+            // 一次算两维(#159 复审【建议】2):frozen 只决定「用不用」,
+            // 不影响算出来是哪一段;逐维调会把整段扫描与 filter 数组白做一遍。
+            const { pan: panSeg, vol: volSeg } = readbackSegsOf(
+                segCh,
+                bits,
+                outputOn,
+                timeS,
+            );
             return {
                 ch,
                 pan: panSeg

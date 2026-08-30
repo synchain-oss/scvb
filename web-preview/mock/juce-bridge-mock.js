@@ -220,6 +220,12 @@ const PER_TRACK_PARAM_RANGE = Object.freeze({
     freeze: { lo: 0, hi: 3, int: true }, // bit0=pan / bit1=vol(J65)
 });
 
+/**
+ * [SL-241] 全局参数 id(= 上表的键集,不另抄一份):**与版本无关**,没有 `v{n}_` 前缀。
+ * `setVersionActive` 按版本换参数面时要把它们盖回去,见那里的注释。
+ */
+const kGlobalParamIds = Object.freeze(Object.keys(GLOBAL_PARAM_RANGE));
+
 /** 该 id 是否属于 gesture 三段式可驱动的参数面(否则一律 `{ok:false, reason:"badArg"}`)。 */
 function isWritableParamId(values, id) {
     return (
@@ -1055,9 +1061,20 @@ function buildOutputBackend(ctx) {
             // [SL-241] params 取**那一版自己的**那一份:切出去的先存回表里(打印头/手动
             // 接管在它上面写过的值不能丢),切进来的没存过就是出厂默认 —— 与 native 的
             // 「copyVersion 零参数写入 + 打印头只驱动激活版」逐条对齐,详见 paramsByVersion。
+            // ⚠ 只有**版本内**那 60 个 id 按版本走。全局三件(width / ms_balance /
+            // lead_select)没有 `v{n}_` 前缀、与版本无关(native:`OutputParams.cpp:172/179`;
+            // 打印头也明说不落打印面、host 恒权威),整帧按版本存会造出一个真机没有的往返:
+            // V1 上把「最大角度」拧到 130 → 切 V2 打回 100 → 切回 V1 又变回 130,
+            // 全局量看起来「跟着版本走」。那会是 mock 自己造的第六次假象,而且正好长在
+            // 这次专门用来对齐真机的机制上(#159 复审【重要】1)。
+            const globals = {};
+            for (const id of kGlobalParamIds) {
+                globals[id] = model.params.values[id];
+            }
             model.paramsByVersion.set(cur, model.params);
             model.params =
                 model.paramsByVersion.get(next) || makeDefaultParams(next);
+            Object.assign(model.params.values, globals);
             model.paramsByVersion.set(next, model.params);
             emit("scvb.params", ctl.paramsFullPayload());
             emit(

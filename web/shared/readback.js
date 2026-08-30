@@ -83,6 +83,11 @@ export function manualConstantOf(segChannel) {
  *   · 段间空隙   → **前一段**值(引擎那边是「ramp 之前保持前段值」;显示层没有 ramp
  *                  模型,取前段即那一刻的稳态值);
  *   · 段表为空   → null(调用方回落参数面:还没分析过,曲线本就不存在)。
+ *
+ * ⚠ **已知偏差(不是本函数的 bug,记在这里免得下一个人当 bug 查)**:引擎打印头调的是
+ * `CurveEvaluator::panAt`,它在段边界的 80ms 窗口内做 smoothstep 插值(ADR-010);而本
+ * 函数返回的是**段常值**。于是段边界那 80ms,显示与写进宿主的值有偏差。显示层不建 ramp
+ * 模型是刻意的(取那一刻的稳态值),分布图那边还有 rAF 补间兜着,肉眼几乎看不出。
  */
 export function curveSegmentAt(segChannel, tS) {
     const segs = ((segChannel && segChannel.segments) || []).filter(Boolean);
@@ -108,19 +113,28 @@ export function curveSegmentAt(segChannel, tS) {
 }
 
 /**
- * 某个维度(pan / vol)的读回真源:返回**该读的段**;`null` = 回落参数面。
- * [SL-241] 这条优先级链原先只长在 `rowFromStore` 里,分布图那边压根没有 —— 抽出来
- * 之后两处调同一个函数,再想分叉得先改这里。口径逐条即 J78「显示的是该维度的权威」:
+ * 一条轨的读回真源:一次算出 pan / vol **两维各自该读的段**;`null` = 该维回落参数面。
+ *
+ * [SL-241] 这条优先级链原先只长在 `rowFromStore` 里,分布图那边压根没有 —— 抽出来之后
+ * 两处调同一个函数,再想分叉得先改这里。口径逐条即 J78「显示的是该维度的权威」:
  *   · **冻结**维度 → 参数面(宿主自动化 / 冻结手动值当家),不看段表([J85]);
- *   · 有**手动常值段** → 该段(05 §2.2「读回值同样取自该段」);
- *   · 输出 **ON**(引擎按曲线驱动)→ 播放头所处的曲线段(SL-211 复审终轮③a 裁定);
- *   · 输出 **OFF**(跟随宿主)→ 参数面 —— 这一档显示曲线就成了「看着曲线、听着宿主」;
- *   · 段表为空(还没分析过)→ `null`,回落参数面。
+ *   · 有**手动常值段** → 该段(05 §2.2「读回值同样取自该段」)。**这一档不看输出档** ——
+ *     手动接管写的是曲线真身,ON/OFF 两边听到的都是它;
+ *   · 否则输出 **ON**(引擎按曲线驱动)→ 播放头所处的曲线段(SL-211 复审终轮③a 裁定);
+ *   · 否则输出 **OFF**(跟随宿主)→ 参数面 —— 这一档显示曲线就成了「看着曲线、听着宿主」;
+ *   · 段表为空(还没分析过)→ 两维都 `null`,回落参数面。
+ *
+ * 为什么一次算两维、而不是每维调一次:`frozen` 只决定「用不用」,不影响算出来**是哪一段**。
+ * 逐维调会把 `manualConstantOf` + `curveSegmentAt` 全量重算一遍(后者每次还新分配一个
+ * `filter` 数组),而调用方是 25Hz 的整页 render × 15 轨(#159 复审【建议】2)。
  */
-export function readbackSegOf(segChannel, frozen, outputOn, timeS) {
-    if (frozen) return null;
-    return (
+export function readbackSegsOf(segChannel, bits, outputOn, timeS) {
+    const seg =
         manualConstantOf(segChannel) ||
-        (outputOn ? curveSegmentAt(segChannel, timeS) : null)
-    );
+        (outputOn ? curveSegmentAt(segChannel, timeS) : null);
+    const frozen = bits || {};
+    return {
+        pan: frozen.pan ? null : seg,
+        vol: frozen.vol ? null : seg,
+    };
 }

@@ -1115,27 +1115,33 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
             { t0S: 10, t1S: 20, pan: 40, volDb: 2, origin: "auto" },
         ],
     };
+    const NONE = { pan: false, vol: false };
+    const BOTH = { pan: true, vol: true };
     eq(
-        RB.readbackSegOf(segCh, true, true, 0),
-        null,
+        RB.readbackSegsOf(segCh, BOTH, true, 0),
+        { pan: null, vol: null },
         "(a1) 冻结维度 ⇒ 回落参数面([J85])",
     );
     eq(
-        RB.readbackSegOf(segCh, false, true, 0).pan,
+        RB.readbackSegsOf(segCh, NONE, true, 0).pan.pan,
         -70,
         "(a2) 未冻结 + 输出 ON + 播放头在曲线之前 ⇒ 首段(= 切进版本还没播放那一档)",
     );
     eq(
-        RB.readbackSegOf(segCh, false, true, 15).pan,
+        RB.readbackSegsOf(segCh, NONE, true, 15).pan.pan,
         40,
         "(a3) 播放头落在第二段内 ⇒ 第二段",
     );
     eq(
-        RB.readbackSegOf(segCh, false, false, 15),
+        RB.readbackSegsOf(segCh, NONE, false, 15).pan,
         null,
         "(a4) 输出 OFF(跟随宿主)⇒ 回落参数面(SL-211 复审终轮③a 裁定)",
     );
-    eq(RB.readbackSegOf(null, false, true, 0), null, "(a5) 段表为空 ⇒ 参数面");
+    eq(
+        RB.readbackSegsOf(null, NONE, true, 0),
+        { pan: null, vol: null },
+        "(a5) 段表为空 ⇒ 参数面",
+    );
     const manualSeg = {
         ch: 1,
         segments: [
@@ -1143,9 +1149,19 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
         ],
     };
     eq(
-        RB.readbackSegOf(manualSeg, false, false, 500).pan,
+        RB.readbackSegsOf(manualSeg, NONE, false, 500).pan.pan,
         12,
         "(a6) 手动常值段优先于输出档(05 §2.2「读回值同样取自该段」)",
+    );
+    // 逐维分叉:只冻 pan 时 vol 仍读段(一次算两维不能把两维的位混掉)。
+    eq(
+        [
+            RB.readbackSegsOf(segCh, { pan: true, vol: false }, true, 0).pan,
+            RB.readbackSegsOf(segCh, { pan: true, vol: false }, true, 0).vol
+                .volDb,
+        ],
+        [null, -3],
+        "(a7) 只冻 pan ⇒ pan 走参数面、vol 仍走段",
     );
 
     // ---- (b) mock/native 对拍:复制版本 → 切过去,参数面必须是**出厂默认**
@@ -1182,14 +1198,24 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
             segCh1.segments.some(
                 (sg) => Number.isFinite(sg.pan) && sg.pan !== 0,
             ),
-        "(b2) 切版本同拍到达的段表带着 V2 的真曲线(非零 pan)—— 读回真源就在手边",
+        // 措辞留意:这里钉的是「V2 段表存在且带非零 pan」,**不是**「copyVersion 深拷了
+        // src 的曲线」—— mock 的 copyVersion 走 regenerateSegments 现生成 dst 那一版的
+        // 种子曲线,与契约 §1.11 的深拷贝并不一致(基线如此,非本卡引入)。本卡只需要
+        // 「段表里有真值可读」这一条(#159 复审【建议】4)。
+        "(b2) 切版本同拍到达的段表里有 V2 的曲线(非零 pan)—— 读回真源就在手边",
     );
 
     // 用读回链把两者串起来:输出 ON 时,分布图该显示的是**段**的 pan,不是参数面的 0。
-    const shownSeg = RB.readbackSegOf(segCh1, false, /*outputOn=*/ true, 0);
+    // 对**所有**已连接轨取,不押宝某一轨:段值是按 version 播种的伪随机,
+    // 单看 ch1 的首段恰好取整到 0 就会误红(#159 复审【建议】5)。
+    const shownPans = ((sl241.store.segments || {}).channels || []).map((c) => {
+        const seg = RB.readbackSegsOf(c, NONE, /*outputOn=*/ true, 0).pan;
+        return seg ? seg.pan : null;
+    });
     check(
-        shownSeg && Number.isFinite(shownSeg.pan) && shownSeg.pan !== 0,
-        `(b3) 读回链在「刚切进 V2、还没播放」这一刻给出曲线值而非居中(实得 ${JSON.stringify(shownSeg && shownSeg.pan)})`,
+        shownPans.length > 0 &&
+            shownPans.some((p) => Number.isFinite(p) && p !== 0),
+        `(b3) 读回链在「刚切进 V2、还没播放」这一刻给出曲线值而非居中(实得 ${JSON.stringify(shownPans.slice(0, 5))}…)`,
     );
 
     // 切回 V1:它自己那一份参数面必须原样还在(按版本存,不是每次现造)。
@@ -1199,6 +1225,33 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
         heads.map((ch) => sl241.store.params.values[panId(1, ch)]),
         v1Pans,
         "(b4) 切回 V1:参数面还是 V1 自己那一份(按版本存的往返)",
+    );
+
+    // (b5) 全局三件**不跟版本走**(#159 复审【重要】1):native 侧 width / ms_balance /
+    // lead_select 没有 v{n}_ 前缀、版本无关,打印头也不碰。整帧按版本存会造出
+    // 「V1 拧到 130 → 切 V2 打回 100 → 切回 V1 又变 130」这种真机没有的往返。
+    await sl241.bridge.beginParamGesture("width");
+    await sl241.bridge.setParam("width", 130);
+    await sl241.bridge.endParamGesture("width");
+    await sleep(120);
+    eq(
+        sl241.store.params.values.width,
+        130,
+        "(b5) 前置:V1 上全局 width 拧到 130",
+    );
+    await sl241.bridge.setVersionActive(2);
+    await sleep(120);
+    eq(
+        sl241.store.params.values.width,
+        130,
+        "(b5) 切到 V2:全局 width 不跟版本走(打回 100 即红)",
+    );
+    await sl241.bridge.setVersionActive(1);
+    await sleep(120);
+    eq(
+        sl241.store.params.values.width,
+        130,
+        "(b5) 切回 V1:全局 width 仍是 130",
     );
     sl241.session.stop();
 }
