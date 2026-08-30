@@ -809,8 +809,69 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             at > 0 && !/disabled|readOnly\s*=/.test(appSrc.slice(at, at + 400)),
             "stale 横幅分支不 disable 任何控件(04 §4.5:只提示,不阻断)",
         );
+        // ---- [SL-239] 横幅 ⑨「采集开着 ⇒ 上游改动比对已暂停」的数据面与接线面 ----
+        //
+        // 立卡:v5.6.2 实测里 #146 合入后用户仍等不到 ⚠。定谳 = 链没断,断的是
+        // **采集 ON 期间整条比对是哑的**(FeatRing::accumulateFp 的 `if (capturing) return;`),
+        // 而终验清单没有一句叫用户先关采集。引擎侧那一半由 harness 的
+        // `HOST SL-239:采集 ON 期间提示是哑的,且机会一次性消耗` 钉住;
+        // DOM 侧由 smoke-output-stale-page.mjs 在无头 Chrome 里正反向各渲染一次;
+        // 这里断 node 断得到的:reducer + 接线 + 三语词条。
+        {
+            const withSegs = {
+                channels: [
+                    { ch: 2, stale: false, segments: [] },
+                    { ch: 5, stale: false, segments: [{ segIdx: 0 }] },
+                ],
+            };
+            check(
+                TT.hasSegmentedMaterial(withSegs),
+                "hasSegmentedMaterial:任一轨有段 ⇒ 真",
+            );
+            check(
+                !TT.hasSegmentedMaterial(seg),
+                "hasSegmentedMaterial:所有轨段表都空 ⇒ 假(反向:第一遍采集期间不摆横幅)",
+            );
+            check(
+                !TT.hasSegmentedMaterial(null) &&
+                    !TT.hasSegmentedMaterial({ channels: [] }),
+                "hasSegmentedMaterial:空段表 / 零轨 ⇒ 假(反向)",
+            );
+            // 接线面:两个判据都在,缺一个横幅就会在错误的时候出现或永不出现。
+            const bat = appSrc.indexOf('$("banner-fpPausedByCapture")');
+            check(bat > 0, "找得到横幅 ⑨ 的接线块");
+            const blk = bat > 0 ? appSrc.slice(bat, bat + 400) : "";
+            check(
+                /capture_enabled/.test(blk),
+                "横幅 ⑨ 的判据含 capture_enabled(§2.1)",
+            );
+            check(
+                /hasSegmentedMaterial\(vs\.segments\)/.test(blk),
+                "横幅 ⑨ 的第二判据读**合并后**的段表视图(与 ⑧ 同一条纪律)",
+            );
+            // 后两项都是「不说反话」的护栏,#158 三个 bot 各自独立揪出。
+            // DOM 侧由 smoke-output-stale-page.mjs 的 `stale` / `recapture-armed`
+            // 两档真渲染验证(两档都实跑注入过、各红一次);这里守的是判据没被人删掉。
+            check(
+                /staleTracks === 0/.test(blk),
+                "横幅 ⑨ 在已有 ⚠ 时让位(⑨ 只解释「为什么没有 ⚠」,不与 ⑧ 打架)",
+            );
+            check(
+                /recapture[\s\S]{0,20}armed/.test(blk),
+                "横幅 ⑨ 在重采集布防期收起(那时采集是 §1.23 裁定① 替用户开的,叫他关是反向指令)",
+            );
+            check(
+                !/disabled|readOnly\s*=/.test(blk),
+                "横幅 ⑨ 同样不 disable 任何控件(04 §4.5:只提示,不阻断)",
+            );
+        }
+
         // 三语齐 + 占位符一致 + 语义落在「建议重新采集」。
-        for (const key of ["banner.staleCapture", "wave.staleTrack"]) {
+        for (const key of [
+            "banner.staleCapture",
+            "wave.staleTrack",
+            "banner.fpPausedByCapture",
+        ]) {
             for (const lang of ["zh", "en", "fr"]) {
                 check(
                     typeof T[lang][key] === "string" && T[lang][key].length > 0,

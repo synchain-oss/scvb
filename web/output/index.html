@@ -5030,6 +5030,32 @@
                             轨的上游音频与已采集特征不一致,建议重新采集</span
                         >
                     </div>
+                    <!-- ⑨ [SL-239] 采集开着 ⇒ 上面那条上游改动提示整条是哑的。
+                         不是错误、不阻断任何操作;判据 = §2.1 capture_enabled ∧ §2.8 已有段表。 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-fpPausedByCapture"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.fpPausedByCapture"
+                            data-gb="banner-fpPausedByCapture-text"
+                            >采集开着时不比对上游改动(这一秒的特征正被写成新基线)——要检查上游有没有动过,先关掉采集再播放</span
+                        >
+                    </div>
                     <!-- ⑦ 加载守卫:写入自动化状态随工程恢复 -->
                     <div class="sc-banner" data-gb="banner-printGuard" hidden>
                         <svg

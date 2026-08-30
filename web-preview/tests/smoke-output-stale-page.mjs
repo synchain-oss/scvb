@@ -11,6 +11,11 @@
 //   ① `?scenario=stale`(fingerprint watchdog 摆开三条轨)⇒ 横幅 ⑧ 可见且写着 3 轨、
 //      tab 导航琥珀点亮、泳道 2/5/11 的 ⚠ 可见且带整句 tooltip、其余 12 轨的 ⚠ 收起;
 //   ② **反向** `?scenario=connected`(素材没变)⇒ 三处提示全部收起;
+//   ②b [SL-239] 横幅 ⑨「采集开着 ⇒ 上游改动比对已暂停」的三档(判据四项,后两项是
+//      「不说反话」的护栏):`connected`(采集 ON + 段表 + 无 stale + 未布防)⇒ 亮起且文案
+//      带得动作;`stale`(采集**同样** ON,只是 ⚠ 已挂)⇒ 让位只留 ⑧;
+//      `recapture-armed`(布防期,采集是被 §1.23 裁定① 替用户打开的)⇒ 收起 ——
+//      此刻用户正应当保持采集开着播完那一段,⑨ 的「先关掉采集」是反向指令;
 //   ③ 两个场景都要零未捕获异常、零 console.error;
 //   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
 //      分析按钮一个都不许被 disable。
@@ -267,11 +272,21 @@ const PROBE = IN(`
     }
     const banner = gb("banner-staleCapture");
     const text = gb("banner-staleCapture-text");
+    const paused = gb("banner-fpPausedByCapture");
+    const pausedText = gb("banner-fpPausedByCapture-text");
     const disabled = (name) => { const el = gb(name); return !!el && !!el.disabled; };
     return {
         banner: vis(banner),
         bannerDisplay: banner ? w.getComputedStyle(banner).display : "(缺节点)",
         bannerText: text ? text.textContent.trim() : null,
+        captureEnabled: (() => {
+            const sw = gb("master-capture-toggle-switch");
+            return !!sw && sw.getAttribute("aria-checked") === "true";
+        })(),
+        pausedPresent: !!paused,
+        paused: vis(paused),
+        pausedDisplay: paused ? w.getComputedStyle(paused).display : "(缺节点)",
+        pausedText: pausedText ? pausedText.textContent.trim() : null,
         tabDot: vis(gb("tabnav-wave-stale-dot")),
         lanesShown: lanes.filter((l) => l.shown).map((l) => l.ch),
         lanesPresent: lanes.every((l) => l.present),
@@ -393,6 +408,18 @@ try {
             !p.outputToggleDisabled,
             "stale 不 disable 输出开关(只提示,不阻断)",
         );
+        // [SL-239] ⑨ 的**反向**,而且是**有牙齿的那一种**:本场景采集是 **ON**、段表也在,
+        // 唯一差别就是 stale 已置位 —— ⑨ 必须让位,只留 ⑧。
+        //
+        // 这个组合真机可达(stale 是闩住的,`setCaptureEnabled` 不清它):
+        // 「看到 ⚠ → 打开采集准备重采 → 还没按播放」。若 ⑨ 不让位,用户会同时收到
+        // 「建议重新采集」和「先关掉采集」两条互相打架的指令 —— 那正是本卡要修的那类毛病。
+        check(p.pausedPresent, "横幅 ⑨ 的节点在模板里(不是选择器写错了)");
+        check(
+            p.captureEnabled,
+            `前置:本场景采集确实是 ON(否则下一条退化成白测,实得 ${p.captureEnabled}）`,
+        );
+        check(!p.paused, "stale 已挂 ⇒ 横幅 ⑨ 让位,只留 ⑧(采集 ON 也不出)");
         assertClean("scenario=stale");
     }
 
@@ -404,7 +431,47 @@ try {
         check(!p.banner, "横幅 ⑧ 收起");
         check(!p.tabDot, "tab 导航琥珀点熄灭");
         eq(p.lanesShown, [], "没有任何泳道挂 ⚠");
+        // [SL-239] 而本场景采集是 **ON** 且段表已在 ⇒ 横幅 ⑨ 必须亮,并把可执行动作说出来。
+        // 这正是用户 v5.6.2 实测所处的那一态:他改狠了上游 EQ 却什么都没等到,
+        // 而真因是采集还开着(采集 ON 期间 Input 一条 fp_report 都不发)。
+        check(p.paused, "采集 ON + 已有段表 ⇒ 横幅 ⑨「比对已暂停」亮起");
+        check(
+            p.pausedDisplay !== "none",
+            `横幅 ⑨ 的 computed display 不是 none(实得 ${p.pausedDisplay})`,
+        );
+        check(
+            /关掉采集|turn capture off|désactivez la capture/i.test(
+                p.pausedText || "",
+            ),
+            `横幅 ⑨ 说出了可执行动作「先关掉采集」(实得「${p.pausedText}」)`,
+        );
         assertClean("scenario=connected");
+    }
+
+    // =========================================================================
+    // [SL-239] ③ 布防期:采集是 §1.23 裁定① **替用户打开**的,⑨ 必须收起。
+    //
+    // 这一档是 #158 复审【重要】1:此刻用户正应当保持采集开着把选区播完,而 ⑨ 会叫他
+    // 「先关掉采集」——**指令方向正好相反**;照做还会被记成「用户接管」(裁定③),
+    // 连撤防恢复原值都一并作废。判据里 `!recapture.armed` 那一项守的就是这里。
+    log("=== ③ scenario=recapture-armed:布防期 ⑨ 必须收起(否则是反向指令)===");
+    {
+        const p = await open("recapture-armed");
+        check(p !== null, "取到页内 DOM 快照");
+        check(
+            p.captureEnabled,
+            `前置:布防已替用户打开采集(否则本档退化成白测,实得 ${p.captureEnabled}）`,
+        );
+        eq(
+            p.lanesShown,
+            [],
+            "布防期没有 stale 轨(前置:⑨ 的收起不是被 ⑧ 顶掉的)",
+        );
+        check(
+            !p.paused,
+            "布防期 ⇒ 横幅 ⑨ 收起(采集 ON + 段表在 + 无 stale,只差布防位)",
+        );
+        assertClean("scenario=recapture-armed");
     }
 } catch (e) {
     fail++;
