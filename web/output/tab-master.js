@@ -56,7 +56,10 @@ import {
 // Output,这一卡把同一件接过来。
 import { createDistMotion } from "../shared/dist-motion.js";
 import { format } from "../shared/i18n.js";
-import { readbackVersion } from "../shared/param-id.js";
+import { paramIdOf, readbackVersion } from "../shared/param-id.js";
+// [SL-241] 未冻结维度的读回真源与 Tab2 **同一条链**(SL-211 只修在 tab-tracks.js
+// 里,分布图这边一直只读参数面 —— 详见 web/shared/readback.js 头注)。
+import { freezeBits, readbackSegOf, segmentsOfCh } from "../shared/readback.js";
 
 export { distGeometry } from "../shared/distribution-chart.js";
 
@@ -2023,17 +2026,31 @@ export function createTabMaster(opts) {
             (st.params && st.params.versionActive) || 0,
         );
         const chans = s.channels || [];
+        // [SL-241] 读回**真源**闸,与 Tab2 的 `rowFromStore` 共用 `readbackSegOf`。
+        // SL-229 给这张图补的是**版本**闸(读哪一版的命名空间),而这一幕的病灶在
+        // **源**上:`copyVersion` 契约是「零参数写入」(03 §5.3),刚复制出来的版本
+        // 切进去、引擎打印头还没跑过,那 63 个 id 装的就是出厂默认(pan 居中);
+        // 于是 15 轨齐刷刷居中,一播放又全对 —— 与 SL-211 修掉的是同一幕,换了张图。
+        const outputOn = (s.global || {}).output_enabled === true;
+        const timeS = num((st.playhead || {}).timeS, 0);
         // 只画已连接轨(slotState=2 ∧ heartbeatFresh,与 pill 同判据)——
         // 空闲轨无参数值,vol=0 会被 distGeometry 画成居中高「幽灵柱」
         // (设计稿绘制前滤掉 idle/srErr 轨;PR #52 bot 抓取)。
         const rows = connectedChannels(st.conn).map((ch) => {
-            const p = `v${v}_t${tt(ch)}_`;
             const cfg = chans[ch - 1] || {};
+            const segCh = segmentsOfCh(st.segments, ch);
+            const bits = freezeBits(vals[paramIdOf(v, ch, "freeze")]);
+            const panSeg = readbackSegOf(segCh, bits.pan, outputOn, timeS);
+            const volSeg = readbackSegOf(segCh, bits.vol, outputOn, timeS);
             return {
                 ch,
-                pan: num(vals[p + "pan"], 0),
-                volDb: num(vals[p + "vol"], 0),
-                widthPct: num(vals[p + "width"], 100),
+                pan: panSeg
+                    ? num(panSeg.pan, 0)
+                    : num(vals[paramIdOf(v, ch, "pan")], 0),
+                volDb: volSeg
+                    ? num(volSeg.volDb, 0)
+                    : num(vals[paramIdOf(v, ch, "vol")], 0),
+                widthPct: num(vals[paramIdOf(v, ch, "width")], 100),
                 stereo: cfg.source_channels === 2,
                 lead: !!cfg.lead_lock,
             };

@@ -652,6 +652,92 @@ try {
         );
         assertClean("视图切换");
     }
+
+    // =========================================================================
+    log("=== ③ SL-241:复制版本 → 切进去,分布图不许全轨居中 ===");
+    //
+    // 用户实测(Cubase 15 Pro,v5.6.2):复制版本后切到新版本,**声像显示全轨居中**,
+    // 一开始播放就正常。成因见 `web/shared/readback.js` 头注:`copyVersion` 契约是
+    // 「零参数写入」,引擎打印头又只驱动当前激活版本 —— 刚切进去还没播过的那一版,
+    // 参数面装的就是出厂默认(pan 居中)。分布图此前**只读参数面**,于是照单全收。
+    //
+    // 这一条必须是**页面级**的:node 侧断得到读回链(smoke-tab1-interactions ⑦),
+    // 断不到「renderDist 真的改用了那条链」——而后者正是本卡改的那几行。
+    // 判据取补间器的 `target`(= renderDist 最近推进来的那一帧行模型)。
+    {
+        newBucket("sl241-version-switch");
+        await cdp.send("Page.navigate", {
+            // 重新装载,且 **`play=0` 停走带**:上一节 setTrackManual 给轨 1 留了条
+            // 手动常值段,会盖住「读曲线段」这条支路 —— 本节要断的恰是那一支。
+            //
+            // ⚠ `play=0` 不是可选项。mock 的 PRINT 是三与(输出 ON ∧ 播放中 ∧ 在 range 内),
+            // 一旦成立,`printedParamsDiff` 就把段值写进参数面 —— 那正是用户说的
+            // 「一开始播放就正常」。带着走带跑本节,**修复前也会绿**(实测 14/15 不居中),
+            // 这一条就再也钉不住 renderDist 那几行。走带停着才是「刚切进去还没播」那一刻。
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=0`,
+        });
+        check(await waitFor(READY), "页面重新装载并吃到首帧");
+
+        // 用户那一幕的三步(走带已由 `play=0` 停着):输出 ON → 复制 → 切过去。
+        const acted = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk) return "no-mock";
+            for (const fn of ["setOutputEnabled", "copyVersion", "setVersionActive"]) {
+                if (typeof mk[fn] !== "function") return "no-" + fn;
+            }
+            mk.setOutputEnabled(true);
+            mk.copyVersion(1, 2);
+            mk.setVersionActive(2);
+            return "ok";
+        `),
+        );
+        check(
+            acted === "ok",
+            `输出 ON + copyVersion(1,2) + 切到 V2(实得 ${acted})`,
+        );
+        await sleep(600); // 全量 params/segments 到齐 + 一轮补间收手
+
+        const shot = await evaluate(
+            IN(`
+            const dg = w.__SCVB_OUTPUT__.distMotion();
+            const rows = dg.target || [];
+            const bars = all(".dist-bar");
+            // 渲染面:--x 是柱心的横向百分比,pan=0(居中)恰好是 50%。
+            const xs = bars
+                .map((b) => parseFloat(b.style.getPropertyValue("--x")))
+                .filter((x) => Number.isFinite(x));
+            return {
+                n: rows.length,
+                pans: rows.map((r) => r.pan),
+                offCenter: rows.filter((r) => Math.abs(r.pan) > 0.05).length,
+                bars: bars.length,
+                barsOffCenter: xs.filter((x) => Math.abs(x - 50) > 0.05).length,
+            };
+        `),
+        );
+        check(
+            shot.n > 0,
+            `切版本后分布图仍有行(实得 ${shot.n} 行 / ${shot.bars} 根柱)`,
+        );
+        log(
+            `  (切到 V2 后:${shot.offCenter}/${shot.n} 轨不在中间;柱 ${shot.barsOffCenter}/${shot.bars} 根不在 50%)`,
+        );
+        // ★ 核心:**多数轨不在中间**。修复前这两个计数都恰好是 0 —— 参数面上 V2 的
+        // 63 个 id 全是出厂默认,分布图照着画,15 根柱齐刷刷落在 50%。
+        // 取「过半」而不是「全部」:mock 的段生成器是随机的,某一轨的首段 pan 恰好
+        // 落在 0 上是合法的,拿它判红就是按随机数判红。修复前后是 0 与 ~15 的对比,
+        // 过半这道线两边都离得很远。
+        check(
+            shot.offCenter * 2 > shot.n,
+            `(写入面)切进刚复制的 V2:多数轨读的是曲线值而非出厂默认居中(实得 ${shot.offCenter}/${shot.n})`,
+        );
+        check(
+            shot.barsOffCenter * 2 > shot.bars,
+            `(渲染面)屏幕上的柱子也不在中间(实得 ${shot.barsOffCenter}/${shot.bars} 根偏离 50%)`,
+        );
+        assertClean("SL-241 切版本");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

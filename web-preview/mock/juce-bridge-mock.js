@@ -301,6 +301,18 @@ function makeContext(role, world) {
         // §4.1 `abi_remote`:探测不到对端就**没有这个字段**(不发哨兵)。
         abiRemote: role === "input" ? world.input.abiRemote : undefined,
         params: role === "output" ? clone(world.output.params) : null,
+        // [SL-241] 参数面是**按版本**分开的一份份,不是「切到哪一版就现造一帧画像值」。
+        // 契约:`copyVersion` **零参数写入**(03 §5.3;`tests/core/test_version_params.cpp`
+        // 的 VERSION-COPY-ZERO-1「123 参数逐位不变」),而引擎打印头只驱动**当前激活
+        // 版本**那 63 个 id。于是一个刚复制出来、还没播过的版本,它的 pan/vol 就是出厂
+        // 默认(pan 居中 / vol 0dB)—— 这正是用户实测「复制版本切进去 15 轨齐刷刷居中,
+        // 一播放又全对」的数据面成因。
+        // 原先 `setVersionActive` 每次都 `makeParams({versionActive})` 现造一帧带 DEMO_TRACKS
+        // 画像值的参数面,于是 preview 里这一幕**根本重现不出来**,SL-211/SL-229 两卡的
+        // 验收都是在一个不会犯病的 mock 上做的 —— mock 盖住真机的第五次(前四次:
+        // intervals / vadP / locked / timing)。这张表把它对齐:只有 fixture 那一版
+        // (= 世界给的 world.output.params)带值,其余版本未被驱动过就是出厂默认。
+        paramsByVersion: new Map(),
         groupsOnline: world.groupsOnline,
         segVersion: role === "output" ? world.output.segments.version : 1,
         segByCh: new Map(),
@@ -1037,9 +1049,16 @@ function buildOutputBackend(ctx) {
                 VERSION_COUNT,
                 model.snapshot.global.version_active,
             );
+            const cur = model.snapshot.global.version_active;
             patchState({ global: { version_active: next } });
-            // 切版本:全量重发 params + 全量重发 segments(§1.9 语义行)
-            model.params = makeParams({ versionActive: next });
+            // 切版本:全量重发 params + 全量重发 segments(§1.9 语义行)。
+            // [SL-241] params 取**那一版自己的**那一份:切出去的先存回表里(打印头/手动
+            // 接管在它上面写过的值不能丢),切进来的没存过就是出厂默认 —— 与 native 的
+            // 「copyVersion 零参数写入 + 打印头只驱动激活版」逐条对齐,详见 paramsByVersion。
+            model.paramsByVersion.set(cur, model.params);
+            model.params =
+                model.paramsByVersion.get(next) || makeDefaultParams(next);
+            model.paramsByVersion.set(next, model.params);
             emit("scvb.params", ctl.paramsFullPayload());
             emit(
                 "scvb.segments",
