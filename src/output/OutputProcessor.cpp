@@ -1922,11 +1922,16 @@ void ScvbOutputAudioProcessor::applyFeatureGates()
 
     scvb::analysis::HopRange gate{0, std::numeric_limits<std::uint64_t>::max()};
     std::uint32_t trackMask = 0;
+    // [SL-240] 布防重采集 = 用户明说「这段素材要换」,写进去的特征同时作废旧 VAD 判决。
+    // 单独一个布尔而不是复用 `trackMask != 0`:两者现在恰好同真同假,但那是巧合不是
+    // 契约 —— 轨维掩码将来若在别的场合也非零,vadP 会跟着被无声抹掉。
+    bool vadInvalidate = false;
 
     if (runtime_.recaptureArmed && runtime_.recaptureEndS > runtime_.recaptureStartS)
     {
         gate = scvb::analysis::HopRange{toHop(runtime_.recaptureStartS), toHop(runtime_.recaptureEndS)};
         trackMask = runtime_.recaptureTracksMask;
+        vadInvalidate = true;
     }
     else if (runtime_.rangeMode != 0 && runtime_.rangeEndS > runtime_.rangeStartS)
     {
@@ -1935,6 +1940,7 @@ void ScvbOutputAudioProcessor::applyFeatureGates()
 
     session_.setFeatureGate(gate);
     session_.setFeatureTrackMask(trackMask);
+    session_.setFeatureVadInvalidate(vadInvalidate);
 }
 
 void ScvbOutputAudioProcessor::tickRecapture()

@@ -123,9 +123,24 @@ void ChannelFrames::write(uint64_t hop, float kw_ms, float peak)
     // [SL-206] **新特征进来 = 旧判决作废**:vadP 是分析写的后验,与这一 hop 的 kw/peak 同源。
     // 不清的话,「采集 → 分析 → 清除该区间 → 重采一遍别的音频」之后 kw/peak 是新的、vadP 还是
     // 上一份素材的判决,泳道会照着**旧素材**画绿线,直到用户再分析一次。
-    // (在 vadP 恒 0 的年代这条路径显不出来;后验一有生产者它就活了 —— 与本卡同批堵上。)
-    // O(1),就在已经拿到的页与下标上写,不额外找页。
-    page->vadP[idx] = 0;
+    //
+    // [SL-240] 但这条只在**这一 hop 的数据真的被换掉**时成立,SL-206 当初是无条件清的:
+    //   ① 这一 hop **还没有覆盖** —— 新采到的地方,或 `clearCoverage` 打过洞之后的重采
+    //      (上面那句话里的「清除该区间」走的正是 `invalidate()`,打完洞覆盖就没了);
+    //   ② **重采集布防期**(`vadInvalidateOnWrite_`)—— 用户明说「这段素材要换」,而
+    //      §1.23 规定布防**保留既有覆盖**(门控只挡写入),所以 ① 看不见它。
+    // 其余情形 = 采集开着、用户又放了一遍**同一段**音频:kw/peak 被同样的值原样覆写,
+    // 判决没有作废的理由。无条件清的后果是用户实测的那一幕 —— 「泳道绿线有时有有时没,
+    // 而且**播放到哪消失到哪**」(SL-240):FeatRing 的 hop 是时间线序号,重播同一段就是
+    // 拿同样的 hop 号再写一遍,于是播放头走到哪,已分析段的绿线就被抹到哪。
+    //
+    // 「素材换了但没打洞也没布防」那一档不归这里管:它由 04 §4.5 的指纹守望(`channelStale`
+    // ⇒ ⚠ 提示用户重采/重分析)负责,那是**提示**而不是**抹掉显示**。
+    // 判据本身 O(log n)(n = 覆盖区间数,实测几十),与已经在做的 `coverage_.add` 同阶。
+    if (vadInvalidateOnWrite_ || !coverage_.coversFully(HopRange{hop, hop + 1}))
+    {
+        page->vadP[idx] = 0; // O(1),就在已经拿到的页与下标上写,不额外找页
+    }
     page->kw_dBq[idx] = quantizeKwDbq(kw_ms);
     page->peak_dBq[idx] = quantizePeakDbq(peak);
     coverage_.add(HopRange{hop, hop + 1});

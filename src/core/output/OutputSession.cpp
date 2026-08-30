@@ -230,6 +230,8 @@ void OutputSession::pullFeatures()
         frames.setReadOnly(!capturing);
         // 布防时间维(§1 setCaptureEnabled):范围外的 hop 静默丢弃、不记账。
         frames.setGate(featureGate_);
+        // [SL-240] 与门控同一拍下发:只有布防重采集期才让写入顺手作废旧 VAD 判决。
+        frames.setVadInvalidateOnWrite(featureVadInvalidate_);
     }
     if (!capturing)
     {

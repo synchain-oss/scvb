@@ -423,16 +423,62 @@ TEST_CASE("FrameStore gate:区外 hop 丢弃不记账", "[store][gate]")
 // scvb_core 的纯逻辑配 Catch2)。这一组把它和 SL-232 的批量写一起钉在最便宜的那一层。
 // ---------------------------------------------------------------------------
 
-TEST_CASE("FrameStore:write 覆盖新特征时清掉旧 vadP", "[store][vad][SL206]")
+// [SL-240] SL-206 当初是**无条件**清的,于是「采集开着又放一遍同一段音频」也被当成
+// 换素材:FeatRing 的 hop 是时间线序号,重播就是拿同样的 hop 号再写一遍 —— 用户实测
+// 「泳道绿线有时有有时没,而且播放到哪消失到哪」。三节分别钉住改后的三条支路。
+TEST_CASE("FrameStore:write 只在数据真被换掉时作废旧 vadP", "[store][vad][SL206][SL240]")
 {
-    ChannelFrames cf;
-    cf.setReadOnly(false);
-    cf.write(100, 0.01f, 0.1f);
-    cf.setVadP(100, 200);
-    REQUIRE(cf.vadP(100) == 200);
+    SECTION("重播同一段(hop 已覆盖、未布防):判决原样留着")
+    {
+        ChannelFrames cf;
+        cf.setReadOnly(false);
+        cf.write(100, 0.01f, 0.1f);
+        cf.setVadP(100, 200);
+        REQUIRE(cf.vadP(100) == 200);
 
-    cf.write(100, 0.02f, 0.2f); // 新素材进来
-    CHECK(cf.vadP(100) == 0); // ★ 旧判决作废 —— 删掉 write() 里那行 vadP=0 即红
+        cf.write(100, 0.01f, 0.1f); // 又放了一遍:同一 hop 再写一次
+        CHECK(cf.vadP(100) == 200); // ★ SL-240:绿线不许被一次重播抹掉
+    }
+    SECTION("clearCoverage 打洞之后重采:旧判决作废")
+    {
+        // 「采集 → 分析 → 清除该区间 → 重采一遍别的音频」—— SL-206 立卡时说的那一幕。
+        // 清除走的是 invalidate()(打洞),打完这一 hop 就没覆盖了。
+        ChannelFrames cf;
+        cf.setReadOnly(false);
+        cf.write(100, 0.01f, 0.1f);
+        cf.setVadP(100, 200);
+        cf.invalidate(HopRange{100, 101});
+        REQUIRE_FALSE(cf.coversFully(HopRange{100, 101}));
+
+        cf.write(100, 0.02f, 0.2f); // 重采:别的素材
+        CHECK(cf.vadP(100) == 0); // ★ 旧判决作废
+    }
+    SECTION("布防重采集期:覆盖还在,旧判决也作废")
+    {
+        // §1.23:布防**保留既有覆盖**(门控只挡写入),所以上一节那条「没覆盖才清」
+        // 看不见它 —— 这一路由 Output 显式置位(setVadInvalidateOnWrite)。
+        ChannelFrames cf;
+        cf.setReadOnly(false);
+        cf.write(100, 0.01f, 0.1f);
+        cf.setVadP(100, 200);
+        REQUIRE(cf.coversFully(HopRange{100, 101}));
+
+        cf.setVadInvalidateOnWrite(true);
+        cf.write(100, 0.02f, 0.2f);
+        CHECK(cf.vadP(100) == 0); // ★ 换素材:判决作废
+    }
+    SECTION("撤防之后回到常态:重播不再抹判决")
+    {
+        ChannelFrames cf;
+        cf.setReadOnly(false);
+        cf.setVadInvalidateOnWrite(true);
+        cf.write(100, 0.01f, 0.1f);
+        cf.setVadP(100, 200);
+
+        cf.setVadInvalidateOnWrite(false); // 撤防
+        cf.write(100, 0.01f, 0.1f);
+        CHECK(cf.vadP(100) == 200); // 标志位漏撤(常真)即红
+    }
 }
 
 TEST_CASE("FrameStore:write 早退(只读 / 越 gate)不得误清已有 vadP", "[store][vad][SL206]")

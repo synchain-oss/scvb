@@ -5459,3 +5459,144 @@ TEST_CASE("HOST SL-234:加载期 CFGS.uiScale 越界值夹到边界", "[host][v5
         CHECK(b.bridgeUiScalePercent() == ok);
     }
 }
+
+// ===========================================================================
+// [SL-240] 泳道绿线「有时有有时没,而且**播放到哪消失到哪**」(用户 v5.6.2 实测,
+// Cubase 15 Pro)。
+//
+// 定谳:`FeatRing` 写侧的 hop 是**时间线序号**(`FeatRunState::nextHop`,回卷 seek 起
+// 新 run 时按播放头重算),所以「采集开着又放一遍同一段」= 拿同样的 hop 号再写一遍。
+// 而 SL-206 在 `ChannelFrames::write()` 里**无条件**清 vadP(「新特征进来 = 旧判决
+// 作废」),于是每重播一次,已分析段的绿线就被播放头一路抹过去 —— 「有时有有时没」
+// = 分析完之后有没有再播过。
+//
+// 修法见 `FrameStore.cpp` 里那段注释:只在数据**真被换掉**时作废(该 hop 还没覆盖 /
+// 布防重采集期)。下面两例分守两边 —— 一例守「重播不许抹」,一例守「布防重采要抹」。
+// 两例都断**真机数据面**(waveformOf 的 vad 列),不碰 mock:vadP 正是 mock 说谎的
+// 前科之一(SL-206 头注记的第三次)。
+// ===========================================================================
+namespace
+{
+/** 该轨 [a,b) 上被判有声的瓦片列数(泳道绿线的直接判据)。 */
+int voicedColsOf(ScvbOutputAudioProcessor& out, double a, double b, int cols)
+{
+    const auto tile = out.waveformOf(kTestChannel, a, b, cols);
+    int v = 0;
+    for (int i = 0; i < cols; ++i)
+    {
+        v += tile.vad[static_cast<std::size_t>(i)] ? 1 : 0;
+    }
+    return v;
+}
+
+/** 采一段有声有静交替的素材(两例共用同一份素材形状)。 */
+void captureBursts(Rig& r, int bursts = 8)
+{
+    for (int i = 0; i < bursts; ++i)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 有声
+        r.runBlocks(40, 0.0f, 4, 4); // 静音
+    }
+}
+
+/** 等分析跑完(与本文件其余分析用例同一等法)。 */
+void waitAnalysis(Rig& r)
+{
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        Rig::pumpMessages(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("HOST SL-240:分析完再放一遍,已分析段的绿线不许被播放抹掉", "[host][t37][v56][SL240]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // ① 采集 → 分析 → 绿线出来。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    const std::int64_t t0 = r.ph.timeSamples;
+    captureBursts(r);
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    waitAnalysis(r);
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    const double half = coveredS * 0.5;
+    const int voicedBefore = voicedColsOf(r.out, 0.0, half, 64);
+    REQUIRE(voicedBefore > 0); // 前置:绿线确实画出来了
+
+    // ② 在**尾巴**上打个洞。这个洞与断言区(前半段)不相交,它只有一个用途:
+    //    给下面「重播确实落账了」一条**不依赖 vadP** 的硬证据 —— 洞被重新填上,
+    //    就说明 FeatPuller 真的把这一段的 hop 又拉了一遍、write() 真的跑过。
+    //    没有它的话,「绿线还在」有两条通过路径:想断的那条是 write() 保住了判决,
+    //    不想要的那条是重播压根没落账(playhead 回跳后整批被跳过)—— 后者同样绿,
+    //    这一例就再也钉不住那几行。同一个坑 SL-206 那例记过一次。
+    const double holeStartS = coveredS * 0.9;
+    const auto mask = static_cast<std::uint16_t>(1u << (kTestChannel - 1));
+    REQUIRE(r.out.clearCoverage(mask, holeStartS, coveredS) > 0.0);
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.coverageOf(kTestChannel, holeStartS, coveredS).coveredS == Catch::Approx(0.0));
+
+    // ③ 回到原处,**采集仍开着**,把同一段再放一遍(= 用户按下播放)。
+    //    不清覆盖、不布防重采 —— 这就是「又听了一遍」而已。
+    r.ph.timeSamples = t0;
+    captureBursts(r);
+    Rig::pumpMessages(400);
+
+    // 硬前置:洞被填回来了 ⇒ 这一段的 write() 确实又跑了一遍。
+    REQUIRE(r.out.coverageOf(kTestChannel, holeStartS, coveredS).coveredS > 0.0);
+
+    // ★ 核心:前半段(没打洞、没重采)的绿线必须原样还在。
+    //   修复前这里是 0 —— 播放头走到哪,vadP 就被抹到哪。
+    CHECK(voicedColsOf(r.out, 0.0, half, 64) == voicedBefore);
+}
+
+TEST_CASE("HOST SL-240:布防重采集期重采,旧绿线仍须作废", "[host][t37][v56][SL240]")
+{
+    // 上一例把「无条件清」摘掉之后,布防重采这一路会跟着丢 —— §1.23 明写布防
+    // **保留既有覆盖**(门控只挡写入),所以 write() 里那条「没覆盖才清」看不见它。
+    // 这一例守住那条显式支路(OutputProcessor → OutputSession → ChannelFrames)。
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    const std::int64_t t0 = r.ph.timeSamples;
+    captureBursts(r);
+    Rig::pumpMessages(400);
+
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    waitAnalysis(r);
+    REQUIRE_FALSE(r.out.analysisRunning());
+    REQUIRE(voicedColsOf(r.out, 0.0, coveredS, 64) > 0); // 前置:绿线出来了
+
+    // 布防整段重采(覆盖按契约原样留着),回到原处重放一段**纯静音**。
+    const auto mask = static_cast<std::uint16_t>(1u << (kTestChannel - 1));
+    r.out.armRecapture(mask, 0.0, coveredS, /*autoStop=*/false);
+    Rig::pumpMessages(200);
+    REQUIRE(r.out.coverageOf(kTestChannel, 0.0, coveredS).coveredS > 0.0); // 布防不清覆盖
+
+    r.ph.timeSamples = t0;
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(100, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+
+    // ★ 换了素材:该区间的绿线必须已经作废(没再分析过,不该照着旧素材继续画)。
+    CHECK(voicedColsOf(r.out, 0.0, coveredS, 64) == 0);
+}
