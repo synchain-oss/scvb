@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "AnalyzeScopeMath.h" // [SL-242] 范围 → hop 窗的向内取整(纯函数,scvb_tests 直接断言)
 #include "BridgeBase.h" // Min/MaxUiScale(缩放档位边界的单一真源,§1.28)
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
@@ -2569,12 +2570,16 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
     }
     const juce::ScopedLock lock(lifecycleMutex_);
     const double hopS = featHopSeconds();
-    const scvb::analysis::HopRange range{static_cast<std::uint64_t>(std::max(0.0, startS) / hopS),
-                                         static_cast<std::uint64_t>(std::max(0.0, endS) / hopS)};
-    if (range.end <= range.begin)
+    // [SL-242] hop 窗与 `startAnalysis` **同一个纯函数**。dry-run 的用途就是给 UI 判
+    // 「这颗钮点不点得动」(§1.5/§1.6 的 disabled 判据),两侧量化口径一分叉,就会出现
+    // 「预览说有 1 轨、真跑回 {ok:false, affected:{0,0,0}}」—— 钮亮着、点了没反应,
+    // 正是这一族缺陷的老形状。窄于一个 hop 的范围在两侧都判空。
+    const auto hopWindow = scvb::output::analyzeHopWindow(startS, endS, hopS);
+    if (!hopWindow.valid())
     {
         return a;
     }
+    const scvb::analysis::HopRange range{hopWindow.firstHop, hopWindow.lastHop};
 
     // [SL-193] 段的范围过滤要用样本域(Segment::t0/t1 是 samples)。sr<=0 = 还没 prepare,
     // 此时既没有覆盖也没有可比对的时间基,按「无数据」回全 0(与上面两条早退同档)。
@@ -2583,8 +2588,24 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
     {
         return a;
     }
-    const std::int64_t rangeS0 = static_cast<std::int64_t>(std::llround(std::max(0.0, startS) * sr));
-    const std::int64_t rangeS1 = static_cast<std::int64_t>(std::llround(std::max(0.0, endS) * sr));
+    // [SL-242 复审【建议】②/④] 段相交判据也跟 hop 窗同源,不再用未量化的秒值。
+    // 真跑那侧 `applyAnalysisSegments` 判 outsideRange 用的就是 `firstHop * hopSamples`
+    // / `lastHop * hopSamples`;这里若按 llround(startS * sr) 算,「只与两端不足一个
+    // hop 的边角相交」的段会被 dry-run 多算进 intervals / manualKept,真跑却判 outside
+    // 原样保留 —— 两个数对不上,正是本函数头注里 [SL-193] 修过的那一族。差值 < 10ms,
+    // 但本卡的立论就是「两侧量化口径不许分叉」,自己先守住。
+    // `hopSamples <= 0` 守卫与 `startAnalysis`(:2679)对称补齐(#161 复审二轮【建议】):
+    // 它为 0 时 rangeS0 == rangeS1 == 0 ⇒ 所有段判 outside ⇒ `manualKept` 恒 0,
+    // 而改动前的 `llround(startS * sr)` 不会退化成恒 0 —— 这条退化是同源化顺带引入的。
+    // 真实采样率下够不着(sr >= 8k ⇒ hopSamples >= 80),纯对称性:两个入口对同一个
+    // 退化输入要给同一个答案,不能一个早退、一个悄悄算出一组全 0 的影响面。
+    const std::int64_t hopSamplesPv = static_cast<std::int64_t>(std::llround(hopS * sr));
+    if (hopSamplesPv <= 0)
+    {
+        return a;
+    }
+    const std::int64_t rangeS0 = static_cast<std::int64_t>(hopWindow.firstHop) * hopSamplesPv;
+    const std::int64_t rangeS1 = static_cast<std::int64_t>(hopWindow.lastHop) * hopSamplesPv;
 
     for (int t = 0; t < 15; ++t)
     {
@@ -2660,12 +2681,17 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         return a;
     }
 
-    const std::uint64_t firstHop = static_cast<std::uint64_t>(std::max(0.0, startS) / hopS);
-    const std::uint64_t lastHop = static_cast<std::uint64_t>(std::max(0.0, endS) / hopS);
-    if (lastHop <= firstHop)
+    // [SL-242] 范围 → hop 窗走 `analyzeHopWindow` 的**向内取整**,不再是截断:截断会让
+    // `cfg.rangeStartSample` 落到 startS 之前最多一个 hop,而 applyAnalysisSegments 的
+    // `outsideRange` 读的就是这个数 —— 紧贴范围左边、`t1 == startS` 的那一段会被判成
+    // 「相交」而删掉,本次产出又补不回它(判据与代价见 AnalyzeScopeMath.h 的头注)。
+    const auto hopWindow = scvb::output::analyzeHopWindow(startS, endS, hopS);
+    if (!hopWindow.valid())
     {
         return a;
     }
+    const std::uint64_t firstHop = hopWindow.firstHop;
+    const std::uint64_t lastHop = hopWindow.lastHop;
     const std::size_t numHops = static_cast<std::size_t>(lastHop - firstHop);
 
     // 取样:把范围内每轨的 kw/peak 拷成线程私有快照(30s × 15 轨 ≈ 180KB,量级可忽略)。
@@ -2753,6 +2779,13 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
     // 关冻结之所以也没用,是因为曲线里已经是同一个数了。
     // 只对**本次真会被分析的轨**(在 scope 内、启用、范围内有覆盖)动手:范围内无数据的轨清了位
     // 就会掉进一条空曲线,那是把「保持现状」改成了静默丢值。
+    //
+    // [SL-242] 注:freeze 是**轨级**参数(§1.12-§1.14),没有「只解冻这一段」这回事,
+    // 所以窄范围的 clearManual 照样把整轨的位清零 —— 这不是本卡新引入的:Tab3 工具条的
+    // 选区版 `analyze(scope,{clearManual:true})` 一直走这条路,段级入口只是接上了同一条。
+    // 不清位的话曲线换了也没用(DspArbiter 对冻结维度读的是 rawPan/rawVol,P0-3 那一族),
+    // 「只清范围内的冻结」在参数面上无从表达。要改成「窄范围不动 freeze」是产品语义决策
+    // (需用户拍板),不是这里顺手改的事。
     if (clearManual)
     {
         for (int t = 0; t < 15; ++t)

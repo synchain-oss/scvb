@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
 // analyze/previewAnalyze 的「全部」范围推导(§1.5/§1.6 的 "all" 分支)。
 //
 // 单拎成纯函数的理由:它是 v5.1 P1-F 的**唯一**修复点,而它原先埋在
@@ -93,6 +97,84 @@ inline AnalyzeRange analyzeScopeRange(unsigned int tracksMask, bool hasStartS, d
         r.endS = endS;
     }
     return r;
+}
+
+// analyze 的**范围 → hop 窗**量化(§1.6:范围是半开区间 [startS, endS))。
+//
+// 单拎成纯函数的理由同上:它决定的不只是「分析哪几个 hop」,还决定 finishAnalysis 里
+// 「哪些既有段算落在范围内、要被本次产出取代」—— applyAnalysisSegments 的 outsideRange
+// 判据读的正是 `firstHop * hopSamples`。两件事共用一个数,量化方向错一格就是**范围外的段
+// 被静默删掉**,而这一格在 DAW 里够不着(段边界要非 hop 对齐才现形)。
+//
+// 口径 = **向内取整**(firstHop 上取、lastHop 下取):取「完全被 [startS, endS) 包住」的
+// 那个最大 hop 窗。修复前 firstHop 走的是**截断**(向 0 取整),于是范围起点只要不是 hop
+// 的整数倍,`rangeStartSample` 就落到 startS **之前**最多一个 hop(10ms)处 —— 紧挨在
+// 范围左边、`t1 == startS` 的那一段于是满足 `t1 > rangeStartSample`,被判成「与范围相交」
+// 而从段表里删掉;可本次分析的产出只覆盖 [rangeStart, rangeEnd),补不回它的段身
+// ⇒ **一整段(可能几十秒)凭空消失**。10ms 的重叠毁掉一个任意长的段,这是 SL-242 的
+// 一条独立成因(另一条在 web 侧:段级「恢复自动」发的是轨级 scope)。
+//
+// 谁碰得到:段边界非 hop 对齐 = 用户编辑过的边界(split / move_boundary,§5.4)。
+// 那两个 op 的后置是 `locked=true`,锁定段本就免疫,所以现网多数情形被锁挡住了;
+// 一旦用户把相邻两段都解了锁再对右边那段做「恢复自动」(clearManual 放开 origin 那层),
+// 左邻段就直接没了 —— 用户看到的正是「整个大片段被合并」。
+//
+// 代价:范围两端各有不足一个 hop 的边角不进本次分析。hop 是分析的时间分辨率下限
+// (kFeatHopMs=10),半个 hop 本来就没有可分析的特征值,这是**量化本身**的代价,不是丢数据。
+// 反过来,窄于一个 hop 的范围会退成空窗 → §1.6 拒绝态 `{ok:false, affected:{0,0,0}}`;
+// 段短于 10ms 时段级「恢复自动」于是不受理 —— 够不着:最小分段(native 默认 120ms,
+// `OutputProcessor.h` 的 `segmentationMinSegmentMs`;桥面入参还被 `OutputEditor.cpp`
+// 夹在 [50,500])的下界 50ms 也比一个 hop 大五倍。
+//
+// `kHopEps`:秒值是「样本 ÷ 采样率」算出来的,再除以 hopS 会带浮点残差。1e-6 hop
+// = 10ns @10ms hop,比一个采样(48k 下 ~20.8µs)小三个量级 —— 只吃残差,吃不到真数据。
+// 不带它的话「恰好 hop 对齐」的范围会因为 399.999999997 被上取到 400、下取到 399,
+// 平白丢掉首尾各一个 hop。
+struct AnalyzeHopWindow
+{
+    std::uint64_t firstHop = 0;
+    std::uint64_t lastHop = 0; // 半开:窗 = [firstHop, lastHop)
+    bool valid() const { return lastHop > firstHop; }
+};
+
+inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS)
+{
+    AnalyzeHopWindow w;
+    if (!(hopS > 0.0) || !(endS > startS))
+    {
+        return w; // 空窗 → 调用方回 §1.6 拒绝态
+    }
+    constexpr double kHopEps = 1e-6;
+    // **上限**(#161 复审二轮【建议】)。上一轮夹在 9e15 等于没夹 —— 跑不到那个数就先
+    // 在下游倒了,而且是换个地方继续 UB:
+    //   · `startAnalysis` 的 `f.kwMs.assign(numHops, 0.0f)`:9e15 个 float ≈ 36 PB,
+    //     消息线程当场 bad_alloc(那里没有 try/catch);
+    //   · `static_cast<std::int64_t>(lastHop) * hopSamples`:sr=192k 时 hopSamples=1920,
+    //     9e15 × 1920 ≈ 1.73e19 > INT64_MAX ⇒ **有符号溢出,又是 UB**(48k 下
+    //     9e15 × 480 = 4.32e18 恰好没事,所以这条只在高采样率工程上现形)。
+    //
+    // 真正够得着的入口**不是** `Infinity`:`JSON.stringify(Infinity)` = `"null"`,
+    // 桥面 `givenNumber()` 判假,它根本过不了桥(上一轮那个 SECTION 测的恰好是唯一
+    // 到不了的那种)。够得着的是**有限但巨大**的秒值 —— `endS = 1e12`(≈3 万年)
+    // JSON 传得动、`givenNumber()` 也认。
+    //
+    // 所以口径改成「对下游有意义的量级」+ **判空窗拒掉**,而不是夹取:夹取会把用户
+    // 要的范围**静默缩窄**,而「静默改变作用面」正是本卡要修的那个病。越界 ⇒ 空窗 ⇒
+    // §1.6 拒绝态 `{ok:false, affected:{0,0,0}}`,是一个看得见的结果。
+    // 1e7 hop @10ms ≈ 27.8 小时:FrameStore 是有界环,任何真工程都够不着;
+    // 而 1e7 × 1920 = 1.92e10 离 INT64_MAX 还有 8 个量级,`assign(1e7)` 也只有 40MB 级。
+    // 判据写成 `lastFloor <= kMaxHop`:它对 `NaN` / `+Inf` 都为假,于是这两种也一并
+    // 拒在**转换之前** —— 全程没有越界的 double → uint64。
+    constexpr double kMaxHop = 1.0e7;
+    const double firstCeil = std::ceil(std::max(0.0, startS) / hopS - kHopEps);
+    const double lastFloor = std::floor(std::max(0.0, endS) / hopS + kHopEps);
+    if (!(lastFloor > firstCeil) || !(lastFloor <= kMaxHop))
+    {
+        return w; // 窄于一个 hop,或范围末端越出可分析量级:两者都回空窗
+    }
+    w.firstHop = static_cast<std::uint64_t>(firstCeil < 0.0 ? 0.0 : firstCeil);
+    w.lastHop = static_cast<std::uint64_t>(lastFloor < 0.0 ? 0.0 : lastFloor);
+    return w;
 }
 
 } // namespace scvb::output

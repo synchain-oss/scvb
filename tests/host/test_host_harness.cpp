@@ -5615,6 +5615,154 @@ TEST_CASE("HOST SL-240:布防重采集期重采,旧绿线仍须作废", "[host][
 }
 
 // ===========================================================================
+// [SL-242] 段级「恢复自动」的作用域 —— 只动选中那一段。
+//
+// 用户实测(v5.6.2 终验 A7,Cubase 15 Pro):点一个**小片段**的「恢复自动」,结果
+// 整个大片段被合并、全部回了自动。定谳两条独立成因:
+//   ① web 侧:检查器那枚钮发的是**轨级** scope(`{tracksMask}`,不带范围)——
+//      整轨的手动段一次清光(修在 tab-wave.js 的 segmentRestoreScope);
+//   ② native 侧:范围 → hop 窗**截断**取整,`cfg.rangeStartSample` 会落到 startS
+//      之前最多一个 hop(10ms)。applyAnalysisSegments 判 `outsideRange` 读的就是
+//      这个数,于是紧贴范围左边、`t1 == startS` 的那一段被判成「与范围相交」而删掉;
+//      本次分析只产出 [rangeStart, rangeEnd) 内的段,补不回它 ⇒ **左邻段整段消失**。
+//      10ms 的重叠毁掉一个任意长的段,用户看到的就是「大片段被合并」。
+//
+// 本用例守的是 ②(①在 web 冒烟侧守)。够得着 ② 的前提是段边界**非 hop 对齐** ——
+// 那正是用户编辑过的边界(split / move_boundary,§5.4),所以这里先切一刀。
+// split 的后置是两子段 locked=true(锁定段本就免疫),故还要显式解锁,把「origin
+// 这层保护被 clearManual 放开、锁那层不在」这个真正暴露的形状造出来。
+//
+// 反向验证:把 AnalyzeScopeMath.h 的 `analyzeHopWindow` 改回截断
+// (`std::floor(... / hopS)` 取 firstHop),③ 的左邻段断言必红。
+// ===========================================================================
+TEST_CASE("HOST [SL-242] 段级 clearManual 不得吃掉左邻段", "[host][t37][analyze][SL242]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(50, 0.5f, 4, 4);
+        r.runBlocks(30, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    const auto segsOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        return crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    };
+    const auto waitDone = [&r]() {
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return;
+            }
+        }
+        FAIL("analysis did not finish");
+    };
+    // 「一个字节都没变」的判据:五个字段全等(t0/t1/flags/pan/volDb)。只比 t0/t1 会漏掉
+    // 「边界没动但 origin 被清了」,只比 flags 会漏掉「段还在但被挪了」,不比值会漏掉
+    // 「段还在、origin 也对,但 pan/vol 被本轮产出改写了」。
+    const auto sameSeg = [](const scvb::state::Segment& a, const scvb::state::Segment& b) {
+        return a.t0 == b.t0 && a.t1 == b.t1 && a.flags == b.flags && std::abs(a.pan - b.pan) < 1e-6f &&
+               std::abs(a.volDb - b.volDb) < 1e-6f;
+    };
+
+    // ---- ① 全量分析一遍,拿一张 auto 段表(边界都是 hop 对齐的)。----
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, /*clearManual=*/false).ok);
+    waitDone();
+    REQUIRE(segsOf().size() >= 1);
+
+    // ---- ② 在首段里切一刀,造出「大自动段内的小手动段」。----
+    // 切点刻意 **+7 样本**:非 hop 对齐(48k 下一个 hop = 480 样本)。对齐的切点
+    // 走不到本用例的靶子 —— 那正是这个缺陷在 DAW 里难现形的原因。
+    const auto seed = segsOf();
+    const std::int64_t span = seed[0].t1 - seed[0].t0;
+    REQUIRE(span > 4800); // 至少 100ms,切完两半都还够一个 hop
+    const std::int64_t cut = seed[0].t0 + span / 2 + 7;
+    REQUIRE(cut % 480 != 0); // 门槛本身要成立,否则这条用例什么都没证明
+
+    scvb::state::SegmentEditArgs split;
+    split.op = scvb::state::SegmentEditOp::Split;
+    split.segIdx = 0;
+    split.tSamples = cut;
+    // ⚠ editSegment 的 track 是 0 基(桥面也是 `ch - 1` 再进来),与 1 基的
+    //   setTrackManual(ch) 不同口径 —— 传错不报错,只静默改到隔壁轨。
+    REQUIRE(r.out.editSegment(kTestChannel - 1, split) == scvb::state::SegmentEditResult::Ok);
+
+    // 两子段都解锁:split 的后置是 locked=true,而锁定段对 clearManual 免疫(§1.6),
+    // 锁着就走不到「origin 保护被放开」那条真正会删段的路。
+    for (int idx : {0, 1})
+    {
+        scvb::state::SegmentEditArgs unlock;
+        unlock.op = scvb::state::SegmentEditOp::SetLocked;
+        unlock.segIdx = idx;
+        unlock.locked = false;
+        REQUIRE(r.out.editSegment(kTestChannel - 1, unlock) == scvb::state::SegmentEditResult::Ok);
+    }
+
+    const auto before = segsOf();
+    REQUIRE(before.size() >= 2);
+    REQUIRE(before[0].t1 == cut);
+    REQUIRE(before[1].t0 == cut);
+    REQUIRE_FALSE(scvb::state::segmentLocked(before[0].flags));
+    REQUIRE_FALSE(scvb::state::segmentLocked(before[1].flags));
+
+    // ---- ③ 只对**右边那个小段**做「恢复自动」。----
+    const double segStartS = static_cast<double>(before[1].t0) / kSr;
+    const double segEndS = static_cast<double>(before[1].t1) / kSr;
+    const std::uint16_t mask = static_cast<std::uint16_t>(1u << (kTestChannel - 1));
+    REQUIRE(r.out.startAnalysis(mask, segStartS, segEndS, /*clearManual=*/true).ok);
+    waitDone();
+
+    const auto after = segsOf();
+
+    // ③-a 左邻段(以及一切完全落在范围外的段)必须**逐字节**还在。
+    //      ← 修复前左邻段被整段删掉:hop 窗左沿落在 cut 之前,它被判成「相交」。
+    for (const auto& b : before)
+    {
+        if (!(b.t1 <= before[1].t0 || b.t0 >= before[1].t1))
+        {
+            continue; // 与范围相交的段本就该被本次重算取代
+        }
+        const bool survived =
+            std::any_of(after.begin(), after.end(), [&](const scvb::state::Segment& x) { return sameSeg(x, b); });
+        INFO("范围外的段被动了:t0=" << b.t0 << " t1=" << b.t1);
+        CHECK(survived);
+    }
+
+    // ③-b 范围内那一段真的回了自动:范围里不许再留 origin≠auto 的段。
+    //      (本次产出可能是 0 段 —— VAD 判静音时段表就该空着,故不断言段数。)
+    for (const auto& x : after)
+    {
+        if (x.t1 <= before[1].t0 || x.t0 >= before[1].t1)
+        {
+            continue;
+        }
+        CHECK(scvb::state::segmentOrigin(x.flags) == scvb::state::SegmentOrigin::Auto);
+    }
+
+    // ③-c 反向:段数不许塌成「整轨一段」。用户报的现象是「整个大片段被合并」,
+    //      这条钉的就是那个观感 —— 范围外的段一个不少。
+    const std::size_t outsideBefore =
+        static_cast<std::size_t>(std::count_if(before.begin(), before.end(), [&](const scvb::state::Segment& b) {
+            return b.t1 <= before[1].t0 || b.t0 >= before[1].t1;
+        }));
+    const std::size_t outsideAfter =
+        static_cast<std::size_t>(std::count_if(after.begin(), after.end(), [&](const scvb::state::Segment& x) {
+            return x.t1 <= before[1].t0 || x.t0 >= before[1].t1;
+        }));
+    CHECK(outsideAfter == outsideBefore);
+}
+
+// ===========================================================================
 // [SL-239] v5.6.2 实测 P1 仍在:#146 合入后,用户「改狠上游 EQ → ⚠ 重采提醒」**依旧
 // 不出现**。本组两条把定谳钉住 —— **指纹链一条都没断,断的是「01 采集开着时整条功能
 // 是哑的」,而用户的自然流程正好把采集留在 ON**。

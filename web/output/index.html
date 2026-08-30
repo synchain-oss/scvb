@@ -7621,10 +7621,15 @@
                                  clearManual」—— 单轨 clearManual 此前唯一的入口是轨道页
                                  解冻那一下的临时提示条,点掉就没了;而用户真正会去找它的
                                  地方正是这里:选中一段自己改过的段,想把它还回自动。
-                                 作用面是**整轨**(契约 §1.6 的 analyze(tracksMask,
-                                 {clearManual:true}) 就是轨级),故确认句复用
-                                 tracks.reidentifyConfirm(带轨号,并说明锁定段免疫)。
-                                 两态就地切换,与轨道页那份同一手势。 -->
+                                 [SL-242] 作用面是**选中的那一段**:发的 scope 是
+                                 `{tracksMask, startS, endS}`(契约 §1.6 的 scope 本来
+                                 就带可选范围),只重算该段、不合并边界、相邻段与锁定段
+                                 一个字节不动。此前发的是不带范围的轨级 scope、确认句还
+                                 借了 tracks.reidentifyConfirm(「轨 {n}」)—— 位置说段、
+                                 文案说轨、行为清整轨,三者各说各的,用户点一个小片段结果
+                                 整轨都回了自动(v5.6.2 终验 A7)。现在确认句是段口径的
+                                 wave.restoreSegConfirm。两态就地切换,手势与轨道页那份
+                                 相同(但那一条是真·轨级,别再把两处的词条混用)。 -->
                             <div
                                 class="inspector-lockrow"
                                 data-gb="inspector-restore"
