@@ -652,6 +652,125 @@ try {
         );
         assertClean("视图切换");
     }
+
+    // =========================================================================
+    log("=== ③ SL-241:复制版本 → 切进去,分布图不许全轨居中 ===");
+    //
+    // 用户实测(Cubase 15 Pro,v5.6.2):复制版本后切到新版本,**声像显示全轨居中**,
+    // 一开始播放就正常。成因见 `web/shared/readback.js` 头注:`copyVersion` 契约是
+    // 「零参数写入」,引擎打印头又只驱动当前激活版本 —— 刚切进去还没播过的那一版,
+    // 参数面装的就是出厂默认(pan 居中)。分布图此前**只读参数面**,于是照单全收。
+    //
+    // 这一条必须是**页面级**的:node 侧断得到读回链(smoke-tab1-interactions ⑦),
+    // 断不到「renderDist 真的改用了那条链」——而后者正是本卡改的那几行。
+    // 判据取补间器的 `target`(= renderDist 最近推进来的那一帧行模型)。
+    {
+        newBucket("sl241-version-switch");
+        await cdp.send("Page.navigate", {
+            // 重新装载,且 **`play=0` 停走带**:上一节 setTrackManual 给轨 1 留了条
+            // 手动常值段,会盖住「读曲线段」这条支路 —— 本节要断的恰是那一支。
+            //
+            // ⚠ `play=0` 不是可选项。mock 的 PRINT 是三与(输出 ON ∧ 播放中 ∧ 在 range 内),
+            // 一旦成立,`printedParamsDiff` 就把段值写进参数面 —— 那正是用户说的
+            // 「一开始播放就正常」。带着走带跑本节,**修复前也会绿**(实测 14/15 不居中),
+            // 这一条就再也钉不住 renderDist 那几行。走带停着才是「刚切进去还没播」那一刻。
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=0`,
+        });
+        check(await waitFor(READY), "页面重新装载并吃到首帧");
+
+        // 前置:**切版本之前**这张图本来就画得开。这一条同时把两个隐式前提钉住
+        // (#159 复审【建议】3):① 渲染面这条路是通的;② 全局「最大角度」不为 0 ——
+        // `distGeometry` 的横位是 `pan x globalWidthPct/100`,width=0 时不论 pan 多少
+        // 全都落在 50%,底下那条渲染面断言会变成假红,而排查会从渲染层一路往回找。
+        const readBars = IN(`
+            const dg = w.__SCVB_OUTPUT__.distMotion();
+            const rows = dg.target || [];
+            const bars = all(".dist-bar");
+            const xs = bars
+                .map((b) => parseFloat(b.style.getPropertyValue("--x")))
+                .filter((x) => Number.isFinite(x));
+            return {
+                n: rows.length,
+                offCenter: rows.filter((r) => Math.abs(r.pan) > 0.05).length,
+                bars: bars.length,
+                barsOffCenter: xs.filter((x) => Math.abs(x - 50) > 0.05).length,
+            };
+        `);
+        // 等首轮补间收手再读:柱子的 `--x` 从居中起补,页面刚装载那一刻本来就都在 50%
+        // (实测 13/15 轨已有值、0/15 根柱到位)。等不到就说明渲染这条路根本不通 ——
+        // 那正是这条前置要抓的。
+        const settled = await waitFor(
+            IN(`
+            const bars = all(".dist-bar");
+            const xs = bars
+                .map((b) => parseFloat(b.style.getPropertyValue("--x")))
+                .filter((x) => Number.isFinite(x));
+            return bars.length > 0 && xs.some((x) => Math.abs(x - 50) > 0.05);
+        `),
+            8000,
+        );
+        check(settled, "首轮补间收手,柱子落到各自的位置上");
+        const before = await evaluate(readBars);
+        check(
+            before.n > 0 && before.offCenter > 0 && before.barsOffCenter > 0,
+            `前置:切版本**之前**这张图本来就画得开(${before.offCenter}/${before.n} 轨、${before.barsOffCenter}/${before.bars} 根柱不在中间)`,
+        );
+
+        // 用户那一幕的三步(走带已由 `play=0` 停着):输出 ON → 复制 → 切过去。
+        // 三步的**回执**都带回来断:mock 的 copyVersion / setVersionActive 在 PRINT 态会回
+        // `{rejected:"printing"}`,只 `return "ok"` 的话这一步被拒也照样绿,真正被钉住的
+        // 就只剩「切进一个没被驱动过的版本」了(#159 复审【建议】3)。
+        const acted = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk) return "no-mock";
+            for (const fn of ["setOutputEnabled", "copyVersion", "setVersionActive"]) {
+                if (typeof mk[fn] !== "function") return "no-" + fn;
+            }
+            const r1 = mk.setOutputEnabled(true);
+            const r2 = mk.copyVersion(1, 2);
+            const r3 = mk.setVersionActive(2);
+            return JSON.stringify([r1, r2, r3]);
+        `),
+        );
+        const okAll =
+            typeof acted === "string" &&
+            acted.startsWith("[") &&
+            // 两种拒绝形态都要堵:PRINT 闸回 {rejected:"printing"},而参数/前置校验回的是
+            // {ok:false, reason:"..."}(mock 的 BAD_ARG / noTimeline)——后者里既没有
+            // "rejected" 也没有 "error",只查 rejected 的话 copyVersion 被 BAD_ARG 拒掉
+            // 这条 check 照样绿,正是它本来要消灭的那种「被拒也绿」(#159 复审第二轮)。
+            !/rejected|"ok":\s*false/.test(acted);
+        check(
+            okAll,
+            `输出 ON + copyVersion(1,2) + 切到 V2 三步都被接受(回执 ${acted})`,
+        );
+        await sleep(600); // 全量 params/segments 到齐 + 一轮补间收手
+
+        // 渲染面读的是 `--x`(柱心横向百分比),pan=0(居中)恰好是 50%。
+        const shot = await evaluate(readBars);
+        check(
+            shot.n > 0,
+            `切版本后分布图仍有行(实得 ${shot.n} 行 / ${shot.bars} 根柱)`,
+        );
+        log(
+            `  (切到 V2 后:${shot.offCenter}/${shot.n} 轨不在中间;柱 ${shot.barsOffCenter}/${shot.bars} 根不在 50%)`,
+        );
+        // ★ 核心:**多数轨不在中间**。修复前这两个计数都恰好是 0 —— 参数面上 V2 的
+        // 63 个 id 全是出厂默认,分布图照着画,15 根柱齐刷刷落在 50%。
+        // 取「过半」而不是「全部」:mock 的段生成器是随机的,某一轨的首段 pan 恰好
+        // 落在 0 上是合法的,拿它判红就是按随机数判红。修复前后是 0 与 ~15 的对比,
+        // 过半这道线两边都离得很远。
+        check(
+            shot.offCenter * 2 > shot.n,
+            `(写入面)切进刚复制的 V2:多数轨读的是曲线值而非出厂默认居中(实得 ${shot.offCenter}/${shot.n})`,
+        );
+        check(
+            shot.barsOffCenter * 2 > shot.bars,
+            `(渲染面)屏幕上的柱子也不在中间(实得 ${shot.barsOffCenter}/${shot.bars} 根偏离 50%)`,
+        );
+        assertClean("SL-241 切版本");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
