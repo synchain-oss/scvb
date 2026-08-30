@@ -177,13 +177,13 @@ public:
     // 未选中轨**不是**跳过不动:pullTick 会拿空 gate 把它们的读游标推到写头(排空但不写),
     // 否则撤防后那段积压会被补拉进来,把选区外的既有特征覆盖掉 —— 正是本卡要守住的性质。
     void setFeatureTrackMask(u32 mask) noexcept { featureTrackMask_ = mask & 0x7FFFu; }
+    u32 featureTrackMask() const noexcept { return featureTrackMask_; }
 
     // [SL-240] 布防重采集期 = 用户明说「这段素材要换」⇒ 写特征时同时作废旧 VAD 判决。
     // 与 setFeatureGate 同一条下发通道(pullFeatures 每拍逐轨应用)。常态 false:
     // 采集开着又放一遍同一段音频不是换素材,判决不该被抹掉(见 ChannelFrames::write)。
     void setFeatureVadInvalidate(bool on) noexcept { featureVadInvalidate_ = on; }
     bool featureVadInvalidate() const noexcept { return featureVadInvalidate_; }
-    u32 featureTrackMask() const noexcept { return featureTrackMask_; }
 
     // [M] 立刻按**当前**门控补拉一次(不等下一拍 25Hz tick)。
     // 唯一用途:布防生效**之前**把积压清干净(见 armRecapture)。未选中轨在布防期走 drainOnly,

@@ -464,6 +464,7 @@ TEST_CASE("FrameStore:write 只在数据真被换掉时作废旧 vadP", "[store]
         REQUIRE(cf.coversFully(HopRange{100, 101}));
 
         cf.setVadInvalidateOnWrite(true);
+        REQUIRE(cf.vadInvalidateOnWrite());
         cf.write(100, 0.02f, 0.2f);
         CHECK(cf.vadP(100) == 0); // ★ 换素材:判决作废
     }
@@ -476,6 +477,7 @@ TEST_CASE("FrameStore:write 只在数据真被换掉时作废旧 vadP", "[store]
         cf.setVadP(100, 200);
 
         cf.setVadInvalidateOnWrite(false); // 撤防
+        REQUIRE_FALSE(cf.vadInvalidateOnWrite());
         cf.write(100, 0.01f, 0.1f);
         CHECK(cf.vadP(100) == 200); // 标志位漏撤(常真)即红
     }

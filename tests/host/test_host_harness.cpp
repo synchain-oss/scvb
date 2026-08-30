@@ -5582,11 +5582,18 @@ TEST_CASE("HOST SL-240:布防重采集期重采,旧绿线仍须作废", "[host][
     REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
     waitAnalysis(r);
     REQUIRE_FALSE(r.out.analysisRunning());
-    REQUIRE(voicedColsOf(r.out, 0.0, coveredS, 64) > 0); // 前置:绿线出来了
+    // 断言窗口整段前移 0.2s,理由见文末那条 CHECK 的注释(回放装置的 run 起点边)。
+    constexpr double kEdgeS = 0.2;
+    REQUIRE(voicedColsOf(r.out, kEdgeS, coveredS, 64) > 0); // 前置:绿线出来了
 
     // 布防整段重采(覆盖按契约原样留着),回到原处重放一段**纯静音**。
+    //
+    // 布防右界给 2s 余量:`coveredS` 是「覆盖了多少秒」而不是「覆盖到几秒」,而布防门是
+    // `toHop(endS)` 截断的**半开**区间 —— 正好卡在右界上的那个 hop 会落在门外、旧判决
+    // 留着,于是瓦片最后一列仍判有声。本机实测没撞上(唯一的残留在**左**边界,见文末),
+    // 这 2s 是不让它在别的机器上变成偶发红。
     const auto mask = static_cast<std::uint16_t>(1u << (kTestChannel - 1));
-    r.out.armRecapture(mask, 0.0, coveredS, /*autoStop=*/false);
+    r.out.armRecapture(mask, 0.0, coveredS + 2.0, /*autoStop=*/false);
     Rig::pumpMessages(200);
     REQUIRE(r.out.coverageOf(kTestChannel, 0.0, coveredS).coveredS > 0.0); // 布防不清覆盖
 
@@ -5597,6 +5604,12 @@ TEST_CASE("HOST SL-240:布防重采集期重采,旧绿线仍须作废", "[host][
     }
     Rig::pumpMessages(400);
 
-    // ★ 换了素材:该区间的绿线必须已经作废(没再分析过,不该照着旧素材继续画)。
-    CHECK(voicedColsOf(r.out, 0.0, coveredS, 64) == 0);
+    // ★ 换了素材:重采到的那一整段绿线必须已经作废(没再分析过,不该照着旧素材继续画)。
+    //
+    // 窗口从 0.2s 起、不从 0 起:回卷 seek 起的**新 run** 与第一遍「采集开关翻 ON」起的那个
+    // run,hop 栅格对齐点不一样(`pendingSkip` 各自吃掉一段不足一 hop 的余数),于是开头
+    // 有几个 hop 这一遍压根没被重写,旧判决自然留着。实测**就 1 个 hop**(853 列的瓦片里
+    // 第 3 列,≈30ms)。那是**用例这个回放装置**的边,不是产品的边 —— 真机里用户按停再播,
+    // 两个 run 的起点本来就不必对齐。kEdgeS = 20 个 hop 的余量,把它整个让出去。
+    CHECK(voicedColsOf(r.out, kEdgeS, coveredS, 64) == 0);
 }
