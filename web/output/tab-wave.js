@@ -240,14 +240,32 @@ export const FEAT_HOP_S = 0.01;
  * `openEnded` 段恒回 false:它的 `t1S` 只是保守下界(§2.8),真右端是 +∞,
  * 拿 `t1S - t0S` 当窗宽会把「整轨全时限」误判成短段。
  *
- * ⚠ 本判据只覆盖「窗太窄 ⇒ 必然空产出」这一条**确定性**通路。「窗够宽但区间内
- * VAD 判静音 ⇒ 产出也空 ⇒ 手动段原样留着」那条路它拦不住 —— 那条要靠「零变化时
- * 给一条反馈」通用收口,不是前置拦截能穷举的(已报统筹另立卡)。
+ * ⚠ 本判据只覆盖「窗太窄 ⇒ 必然空产出」这一条**确定性**通路,已知两个缺口,都不改:
+ *   · 「窗够宽但区间内 VAD 判静音 ⇒ 产出也空 ⇒ 手动段原样留着」那条路它拦不住 ——
+ *     要靠「零变化时给一条反馈」通用收口,不是前置拦截能穷举的(已立 SL-244 同批的
+ *     另一张卡 SL-248);
+ *   · 未镜像 `analyzeHopWindow` 的 `kMaxHop = 1e7`(>27.8 小时的段真跑判空窗拒绝、
+ *     本闸放行)。**理论可达性为零** —— 非 openEnded 段来自对采集环(分钟量级)的 VAD,
+ *     段身不可能跨 27.8 小时;登记在此,免得「判据与真跑同源」这句话留下未记的缺口。
  *
  * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
  * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
  * @returns {boolean} true = 引擎在这一窗里必然产不出段(入口该收起)
  */
+/**
+ * [SL-242] 把 `min_segment_ms` 夹成真桥收下的那个值(纯函数,node 侧可断言)。
+ *
+ * 真源 = `src/output/OutputEditor.cpp` 的 `juce::jlimit(50, 500, …)`(02-dsp-spec §0.3
+ * 常量表)。web 侧的滑杆值域是 0..1500、缓存初值 420,而 native runtime 默认 120 ——
+ * 三个数互不相同,所以**预测判据必须按真桥夹取后的值算**,否则闸的口径在 state 回推
+ * 之前与真跑分叉(方向是多挡、且回推后自愈,但分叉本身就是本卡要消灭的东西)。
+ */
+export function clampMinSegMs(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0; // 拿不到判据 ⇒ 交给调用方按「不拦」处理
+    return Math.min(500, Math.max(50, n));
+}
+
 export function restoreWindowTooShort(seg, minSegmentMs) {
     const s = seg || {};
     if (s.openEnded === true) return false;
@@ -4125,7 +4143,13 @@ export function createTabWave(opts) {
         // 静默无操作原样还在(反例与完整判据链见 `restoreWindowTooShort` 头注)。
         // 处理口径与上面的锁定段逐字一致:说清楚 + 给出路(合并相邻段,或把「最小分段」
         // 调小),不给一枚点了什么都不会发生的钮。
-        const minSegMs = num(local.segmentation.min_segment_ms, 0);
+        // 入参**照 native 的夹取来**(#161 复审四轮):`local.segmentation` 是本地缓存,
+        // 滑杆值域 0..1500,而真桥收进来时 `OutputEditor.cpp` 夹成 [50,500]。不夹的话
+        // 两头各差一格:拧到 1500 而 state 回显未到时,900ms 的段会被判「太短」而整行
+        // 消失(真跑做得成);反向,缓存初值 420 vs native 默认 120,回推前 120-420ms
+        // 的段被误判。两个方向都是**多挡**且 `syncParamGroup` 回推后自愈,但本卡的立论
+        // 是「web 的预测判据必须与真跑同源」,注释既然引了那个夹取,判据就得照着算。
+        const minSegMs = clampMinSegMs(local.segmentation.min_segment_ms);
         if (restoreWindowTooShort(seg, minSegMs)) {
             local.inspRestoreAsk = "";
             text(

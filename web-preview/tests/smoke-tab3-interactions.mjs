@@ -4312,6 +4312,32 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                 !F({ t0S: 1, t1S: 1.2 }, 0) && !F({ t0S: 1, t1S: 1.2 }, NaN),
                 "(b16i)min_segment_ms 不可用时不拦(拿不到判据就别挡路)",
             );
+            // [#161 复审四轮] 入参要镜像真桥的 jlimit(50,500):web 滑杆 0..1500、
+            // 缓存初值 420、native 默认 120,三个数互不相同,不夹就在 state 回推前分叉。
+            {
+                const C = TW.clampMinSegMs;
+                eq(
+                    C(1500),
+                    500,
+                    "(b16k)超上限夹到 500(同 OutputEditor 的 jlimit)",
+                );
+                eq(C(0), 50, "(b16k)低于下限夹到 50");
+                eq(C(120), 120, "(b16k)native 默认 120 原样");
+                eq(C(420), 420, "(b16k)web 缓存初值 420 原样");
+                eq(C(NaN), 0, "(b16k)不可解析 ⇒ 0(交给调用方按「不拦」处理)");
+                // 接线:渲染路径必须用夹取后的值,不能直接拿 local 缓存
+                check(
+                    /const minSegMs = clampMinSegMs\(local\.segmentation\.min_segment_ms\);/.test(
+                        tw,
+                    ),
+                    "(b16l)短段闸用的是夹取后的 min_segment_ms",
+                );
+                // 反例:滑杆拧到 1500 而 state 未回推时,900ms 的段真跑做得成 ⇒ 不该被挡
+                check(
+                    !F({ t0S: 1, t1S: 1.9 }, C(1500)),
+                    "(b16m)900ms 段在 minSeg=1500(夹到 500)下放行 —— 不夹会误挡",
+                );
+            }
             // [#161 复审三轮] 不写 `eq(TW.FEAT_HOP_S, 0.01)` —— 那是**自证式**断言:
             // 字面量与被测值同源,谁把真源改成 20 它照样绿,而 restoreWindowTooShort
             // 会整体错半格(窗宽算成两倍)⇒ 闸全面失灵 ⇒ 短段又变回「点了没反应」。

@@ -2594,7 +2594,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
     // hop 的边角相交」的段会被 dry-run 多算进 intervals / manualKept,真跑却判 outside
     // 原样保留 —— 两个数对不上,正是本函数头注里 [SL-193] 修过的那一族。差值 < 10ms,
     // 但本卡的立论就是「两侧量化口径不许分叉」,自己先守住。
-    // `hopSamples <= 0` 守卫与 `startAnalysis`(:2670)对称补齐(#161 复审二轮【建议】):
+    // `hopSamples <= 0` 守卫与 `startAnalysis`(:2679)对称补齐(#161 复审二轮【建议】):
     // 它为 0 时 rangeS0 == rangeS1 == 0 ⇒ 所有段判 outside ⇒ `manualKept` 恒 0,
     // 而改动前的 `llround(startS * sr)` 不会退化成恒 0 —— 这条退化是同源化顺带引入的。
     // 真实采样率下够不着(sr >= 8k ⇒ hopSamples >= 80),纯对称性:两个入口对同一个
