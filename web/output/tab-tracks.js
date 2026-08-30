@@ -43,7 +43,6 @@ import { paramIdOf, readbackVersion } from "../shared/param-id.js";
 // 于是 SL-211 的验收只在 Tab2 成立)。详见那一件的头注。
 import {
     freezeBits,
-    manualConstantOf,
     readbackSegsOf,
     segmentsOfCh,
 } from "../shared/readback.js";
@@ -540,7 +539,6 @@ export function rowFromStore(store, ch, ctx) {
     const freeze = num(vals[paramIdOf(active, ch, "freeze")], 0);
     const bits = freezeBits(freeze);
     const segCh = segmentsOfCh(c.segments, ch);
-    const seg = manualConstantOf(segCh); // 行上的「手动常值」标(与读回链同一判定)
     // 读回值,**逐维按 freeze 位分叉**([J85]):
     //   • 冻结维度 → **参数面**。冻结的静态值只存参数面 + 冻结位,曲线真身不再被烘焙成
     //     常值段(`setTrackManual` 的冻结通道不写曲线)。此时段表里若还留着一条**旧的**
@@ -559,12 +557,12 @@ export function rowFromStore(store, ch, ctx) {
     // [SL-241] 这条链本身已抽到 `readbackSegsOf`(web/shared/readback.js)—— Tab1 的
     // 分布图读的是同一个量,却一直只读参数面。抽出来之后两处共用,再想分叉得先改那里。
     // 一次算两维:frozen 只决定「用不用」,不影响算出来是哪一段。
-    const { pan: panSeg, vol: volSeg } = readbackSegsOf(
-        segCh,
-        bits,
-        c.outputOn,
-        c.timeS,
-    );
+    // `manual` = 行上那枚「手动常值」标,由同一次调用回出 —— 标与读回链因此必然同判定。
+    const {
+        pan: panSeg,
+        vol: volSeg,
+        manual: seg,
+    } = readbackSegsOf(segCh, bits, c.outputOn, c.timeS);
     const pan = panSeg
         ? num(panSeg.pan, PAN_RANGE.def)
         : num(vals[paramIdOf(active, ch, "pan")], PAN_RANGE.def);

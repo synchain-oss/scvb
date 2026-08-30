@@ -127,14 +127,18 @@ export function curveSegmentAt(segChannel, tS) {
  * 为什么一次算两维、而不是每维调一次:`frozen` 只决定「用不用」,不影响算出来**是哪一段**。
  * 逐维调会把 `manualConstantOf` + `curveSegmentAt` 全量重算一遍(后者每次还新分配一个
  * `filter` 数组),而调用方是 25Hz 的整页 render × 15 轨(#159 复审【建议】2)。
+ *
+ * 同时把命中的**手动常值段**一并回出(`manual`)。Tab2 的行上还要一个「手动接管」标,
+ * 调用方自己再调一次 `manualConstantOf` 的话不只是白算 —— 标和链有可能分头改到分家。
+ * 回出来之后,那个标与这条链**必然**同一个判定(#159 复审第三轮)。
  */
 export function readbackSegsOf(segChannel, bits, outputOn, timeS) {
-    const seg =
-        manualConstantOf(segChannel) ||
-        (outputOn ? curveSegmentAt(segChannel, timeS) : null);
+    const manual = manualConstantOf(segChannel);
+    const seg = manual || (outputOn ? curveSegmentAt(segChannel, timeS) : null);
     const frozen = bits || {};
     return {
         pan: frozen.pan ? null : seg,
         vol: frozen.vol ? null : seg,
+        manual,
     };
 }

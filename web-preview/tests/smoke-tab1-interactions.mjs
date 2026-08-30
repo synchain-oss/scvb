@@ -1119,7 +1119,7 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
     const BOTH = { pan: true, vol: true };
     eq(
         RB.readbackSegsOf(segCh, BOTH, true, 0),
-        { pan: null, vol: null },
+        { pan: null, vol: null, manual: null },
         "(a1) 冻结维度 ⇒ 回落参数面([J85])",
     );
     eq(
@@ -1139,7 +1139,7 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
     );
     eq(
         RB.readbackSegsOf(null, NONE, true, 0),
-        { pan: null, vol: null },
+        { pan: null, vol: null, manual: null },
         "(a5) 段表为空 ⇒ 参数面",
     );
     const manualSeg = {
@@ -1162,6 +1162,17 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
         ],
         [null, -3],
         "(a7) 只冻 pan ⇒ pan 走参数面、vol 仍走段",
+    );
+    // `manual` 回出的就是命中的手动常值段本身 —— Tab2 行上那枚标与这条链同判定。
+    eq(
+        RB.readbackSegsOf(manualSeg, NONE, true, 0).manual.pan,
+        12,
+        "(a8) 命中手动常值段时 manual 回出该段(行上的标与读回链必然同判定)",
+    );
+    eq(
+        RB.readbackSegsOf(segCh, NONE, true, 0).manual,
+        null,
+        "(a8) 纯 auto 段表 ⇒ manual 为 null",
     );
 
     // ---- (b) mock/native 对拍:复制版本 → 切过去,参数面必须是**出厂默认**
