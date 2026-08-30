@@ -4312,7 +4312,24 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                 !F({ t0S: 1, t1S: 1.2 }, 0) && !F({ t0S: 1, t1S: 1.2 }, NaN),
                 "(b16i)min_segment_ms 不可用时不拦(拿不到判据就别挡路)",
             );
-            eq(TW.FEAT_HOP_S, 0.01, "(b16j)hop 常量与 kFeatHopMs=10 同值");
+            // [#161 复审三轮] 不写 `eq(TW.FEAT_HOP_S, 0.01)` —— 那是**自证式**断言:
+            // 字面量与被测值同源,谁把真源改成 20 它照样绿,而 restoreWindowTooShort
+            // 会整体错半格(窗宽算成两倍)⇒ 闸全面失灵 ⇒ 短段又变回「点了没反应」。
+            // 既然头注承认这个常量是几何泄漏、且它决定一个 UI 入口出不出得来,
+            // 就得配一道**跨语言对拍**,而不是让「真源 = SegmentLayout.h」停在注释里。
+            // 口径同 check-bridge-parity.mjs 比对 C++ 常量表。
+            {
+                const hopH = src("src/core/ipc/SegmentLayout.h");
+                const m = /kFeatHopMs\s*=\s*(\d+)/.exec(hopH);
+                check(!!m, "(b16j)读得到 SegmentLayout.h 的 kFeatHopMs 真源");
+                if (m) {
+                    eq(
+                        TW.FEAT_HOP_S,
+                        Number(m[1]) / 1000,
+                        "(b16j)FEAT_HOP_S 与 kFeatHopMs 真源对拍(改 native 忘改 web 必红)",
+                    );
+                }
+            }
         }
         // [#161 复审【重要】③] 确认句要说明「该轨的冻结会被一并解除」——
         // freeze 是轨级参数,窄范围 clearManual 照样整轨清零(SL-244 待定性)。
