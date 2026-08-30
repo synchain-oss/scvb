@@ -170,14 +170,23 @@ export function mergeGuardedByDrag(nowMs, lastCommitMs) {
  * 该段的 origin 回 auto、值回引擎算出来的值;**不合并边界**,相邻段(不论 auto、
  * 手动还是锁定)一个字节都不动。相邻自动段要不要并起来是另一件事,不在本入口里做。
  *
- * `openEnded` 段(§2.8):`t1S` 只是一个**保守下界**,不是真末端 —— 那是
- * `setTrackManual` 造的「单段全时限常值」,CRVS 里 t1 是 1<<40 哨兵。对它取
- * `endS = t1S` 会把段的右半截留在手动态。故这一档**不给 endS**,让真桥按
- * `analyzeScopeRange`「给了的照用、没给的取 all 档同侧端点」推到时间线末端 ——
- * 那本来就是这个段的真实覆盖面(它就是整轨)。
+ * `openEnded` 段(§2.8)是**唯一**允许省 `endS` 的一档:它的 `t1S` 只是一个
+ * **保守下界**,不是真末端 —— 那是 `setTrackManual` 造的「单段全时限常值」,
+ * CRVS 里 t1 是 1<<40 哨兵。对它取 `endS = t1S` 会把段的右半截留在手动态。
+ * 省掉 `endS` 后真桥按 `analyzeScopeRange`「给了的照用、没给的取 all 档同侧端点」
+ * 推末端 —— **末端取哪个跟 Range 档位走**:`follow` 档是已采集时间线末端,
+ * `daw_loop` / `manual` 档是 `global.range` 的末端(于是 openEnded 段只会被
+ * 部分恢复)。这与 `AnalyzeScopeMath.h` 里已登记的 Tab2 同族取舍一致 ——
+ * 「用户显式设了范围就尊重它,不替他扩大写入面」,不是本函数新引入的。
  *
- * 拿不到有限的 `t0S` 时回 `null`(调用方不发请求)。**不退回轨级 scope** ——
- * 那正是本卡要修掉的行为,拿它当兜底等于把缺陷留一条后门。
+ * **其余一切拿不到合法段身的情形一律回 `null`(调用方不发请求)**:`t0S` 非有限,
+ * 或非 openEnded 段的 `t1S` 非有限 / `t1S <= t0S`(零宽、倒序)。
+ * 后一条是 #161 复审【重要】① 补的:老写法让这些退化段落进「省 endS」那一档,
+ * 而缺 `endS` 在真桥会展开成 **[t0S, 时间线末端]** —— 配 `clearManual:true` 就是
+ * 「从这一段起点一路清到末尾」,**与本卡要修的作用面外溢是同一个形状,只是换了
+ * 一扇门**。现实可达性低(§2.8 保证非 openEnded 段 `t1S > t0S`、J23 分段最小
+ * 时长 400ms),但它是防御分支,而防御分支恰恰不该把「更宽的作用面」当兜底 ——
+ * 拿宽 scope 兜底等于给缺陷留后门,这条纪律与「拿不到 t0S 回 null」是同一条。
  *
  * @param {number} ch 1..15
  * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
@@ -189,9 +198,11 @@ export function segmentRestoreScope(ch, seg) {
     const s = seg || {};
     if (!Number.isFinite(s.t0S)) return null;
     const scope = { tracksMask: 1 << (n - 1), startS: s.t0S };
-    if (!s.openEnded && Number.isFinite(s.t1S) && s.t1S > s.t0S) {
-        scope.endS = s.t1S;
-    }
+    // openEnded:真右端是 +∞,交给真桥推末端(唯一允许省 endS 的一档)。
+    if (s.openEnded === true) return scope;
+    // 其余段身不可信 ⇒ 不发请求。**绝不**退化成缺 endS 的过宽 scope。
+    if (!Number.isFinite(s.t1S) || s.t1S <= s.t0S) return null;
+    scope.endS = s.t1S;
     return scope;
 }
 
@@ -3183,7 +3194,8 @@ export function createTabWave(opts) {
                 });
             };
             els.inspLock.addEventListener("click", flip);
-            // [SL-230]「恢复自动」三枚钮:两态就地切换,确认后走轨级 clearManual。
+            // [SL-230]「恢复自动」三枚钮:两态就地切换,确认后走 clearManual。
+            // [SL-242] 作用面是**选中的这一段**,不是整轨(scope 见 segmentRestoreScope)。
             const askRestore = (on) => {
                 const cur = on ? currentSeg() : null;
                 local.inspRestoreAsk = cur ? `${cur.ch}:${cur.idx}` : "";
@@ -4040,6 +4052,37 @@ export function createTabWave(opts) {
         if (seg.locked) {
             local.inspRestoreAsk = "";
             text(els.inspRestoreText, t["tracks.restoreAutoLocked"] || "");
+            show(els.inspRestoreBtn, false);
+            show(els.inspRestoreCancel, false);
+            show(els.inspRestoreOk, false);
+            return;
+        }
+        // **短于最小分段时长的段:只说不做**(#161 复审【重要】②)。
+        // 引擎在这一窗里产不出任何段:`EnergyVad` 的 P1「丢短」先于 padding 执行
+        // (`minHops = min_segment_ms / 10`),核心段又被 `selStart/selEnd` 夹在窗内
+        // ⇒ 窗宽 < min_segment_ms 时该轨产出必为空 ⇒ `applyAnalysisSegments` 的
+        // `if (src.empty()) continue;` 让整轨逐字节不动 —— 那个手动段还是手动段。
+        // 而 `startAnalysis` 早已回了 `ok:true`(受理判据只看 coveredHops),调用点
+        // 也不看返回值,于是用户点完「继续」**零变化、零提示**。
+        //
+        // 这一档在本卡之前几乎不可达(轨级 scope 的窗是整条时间线),是**段级 scope
+        // 把它从边角变成了常见**:`split` 对子段长度没有下限,切出 100–300ms 很容易,
+        // 而本卡的原始投诉正是「点一个**小片段**」。修复前那一下是错误地清整轨,
+        // 不拦的话修复后就换成另一种「点了没反应」—— 同一张卡不能左手修右手造。
+        // 处理口径与上面的锁定段逐字一致:说清楚 + 给出出路(合并相邻段,或把
+        // 「最小分段」滑杆调到该段时长以下),不给一枚点了什么都不会发生的钮。
+        //
+        // `openEnded` 段**不进这道闸**:它的 `t1S` 只是保守下界(§2.8),真右端是 +∞,
+        // 拿 `t1S - t0S` 当窗宽会把一个「整轨全时限」的段误判成短段(空工程下那个下界
+        // 只有一个 hop),于是给出一句完全说反了的提示。
+        const minSegMs = num(local.segmentation.min_segment_ms, 0);
+        const segMs = (num(seg.t1S, 0) - num(seg.t0S, 0)) * 1000;
+        if (!seg.openEnded && minSegMs > 0 && segMs > 0 && segMs < minSegMs) {
+            local.inspRestoreAsk = "";
+            text(
+                els.inspRestoreText,
+                fmtKey("wave.restoreSegTooShort", { n: Math.round(minSegMs) }),
+            );
             show(els.inspRestoreBtn, false);
             show(els.inspRestoreCancel, false);
             show(els.inspRestoreOk, false);

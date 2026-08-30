@@ -2588,8 +2588,15 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnaly
     {
         return a;
     }
-    const std::int64_t rangeS0 = static_cast<std::int64_t>(std::llround(std::max(0.0, startS) * sr));
-    const std::int64_t rangeS1 = static_cast<std::int64_t>(std::llround(std::max(0.0, endS) * sr));
+    // [SL-242 复审【建议】②/④] 段相交判据也跟 hop 窗同源,不再用未量化的秒值。
+    // 真跑那侧 `applyAnalysisSegments` 判 outsideRange 用的就是 `firstHop * hopSamples`
+    // / `lastHop * hopSamples`;这里若按 llround(startS * sr) 算,「只与两端不足一个
+    // hop 的边角相交」的段会被 dry-run 多算进 intervals / manualKept,真跑却判 outside
+    // 原样保留 —— 两个数对不上,正是本函数头注里 [SL-193] 修过的那一族。差值 < 10ms,
+    // 但本卡的立论就是「两侧量化口径不许分叉」,自己先守住。
+    const std::int64_t hopSamplesPv = static_cast<std::int64_t>(std::llround(hopS * sr));
+    const std::int64_t rangeS0 = static_cast<std::int64_t>(hopWindow.firstHop) * hopSamplesPv;
+    const std::int64_t rangeS1 = static_cast<std::int64_t>(hopWindow.lastHop) * hopSamplesPv;
 
     for (int t = 0; t < 15; ++t)
     {

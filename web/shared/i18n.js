@@ -853,7 +853,12 @@ export const T = {
         // 出来:那正是用户在这一步最担心的事。
         "wave.restoreSegHint": "本段由手动值驱动",
         "wave.restoreSegConfirm":
-            "将把选中的这一段恢复成自动识别结果、只重算该段;其他段(相邻段与已锁定段)保持不变,是否继续?",
+            "将把选中的这一段恢复成自动识别结果、只重算该段;其他段(相邻段与已锁定段)保持不变。若该轨处于冻结状态,冻结会被一并解除,是否继续?",
+        // [#161 复审【重要】②] 段短于最小分段时长时,引擎在这一窗里产不出任何段
+        // (EnergyVad 的「丢短」先于 padding),段表逐字节不动 —— 钮点下去零变化、
+        // 零提示。与锁定段同一处理:说清楚 + 给出路,不给一枚点了没反应的钮。
+        "wave.restoreSegTooShort":
+            "本段短于最小分段时长({n} ms);恢复自动在这一段里得不到新段。请先与相邻段合并,或把「最小分段」调小。",
         "wave.clearCoverageConfirm":
             "将删除选中轨×选区的采集特征数据,是否继续?",
         // ---- T33 Wave 2 交互反馈件(05 §2.3 行 300-313 / 契约 §5.5;
@@ -1646,7 +1651,9 @@ export const T = {
             "This clears {k} manual edit marks and recomputes; {l} locked segments stay unchanged. Continue?",
         "wave.restoreSegHint": "This segment is driven by a manual value",
         "wave.restoreSegConfirm":
-            "This restores the selected segment to the automatic result and re-analyses that segment only; every other segment — neighbours and locked segments alike — stays unchanged. Continue?",
+            "This restores the selected segment to the automatic result and re-analyses that segment only; every other segment — neighbours and locked segments alike — stays unchanged. If this track is frozen, the freeze is lifted as well. Continue?",
+        "wave.restoreSegTooShort":
+            "This segment is shorter than the minimum segment length ({n} ms), so restoring it produces no new segment. Merge it with a neighbour first, or lower “Min segment”.",
         "wave.clearCoverageConfirm":
             "This deletes the captured feature data for the selected tracks × selection. Continue?",
         // ---- T33 Wave 2 interaction feedback (05 §2.3 / contract §5.5; U17 review pending) ----
@@ -2455,7 +2462,9 @@ export const T = {
             "Efface {k} marques d'édition manuelle et recalcule ; {l} segments verrouillés restent inchangés. Continuer ?",
         "wave.restoreSegHint": "Ce segment est piloté par une valeur manuelle",
         "wave.restoreSegConfirm":
-            "Le segment sélectionné sera rétabli sur le résultat automatique et lui seul sera recalculé ; tous les autres segments — voisins comme verrouillés — restent inchangés. Continuer ?",
+            "Le segment sélectionné sera rétabli sur le résultat automatique et lui seul sera recalculé ; tous les autres segments — voisins comme verrouillés — restent inchangés. Si cette piste est gelée, le gel sera également levé. Continuer ?",
+        "wave.restoreSegTooShort":
+            "Ce segment est plus court que la durée minimale de segment ({n} ms) : le rétablissement ne produira aucun nouveau segment. Fusionnez-le d’abord avec un voisin, ou réduisez « Segment min ».",
         "wave.clearCoverageConfirm":
             "Supprime les données de caractéristiques capturées pour les pistes sélectionnées × la sélection. Continuer ?",
         // ---- Retours d'interaction T33 Wave 2(05 §2.3 / contrat §5.5;relecture U17 en attente)----

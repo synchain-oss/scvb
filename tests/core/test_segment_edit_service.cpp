@@ -586,6 +586,25 @@ TEST_CASE("analyzeHopWindow:范围向内取整,不把窗撑到范围之外", "[o
         CHECK_FALSE(analyzeHopWindow(1.0, 2.0, 0.0).valid()); // hopS 非法
     }
 
+    SECTION("非有限 endS 不得撞进 double→uint64 的 UB")
+    {
+        // [#161 复审【建议】⑦] NaN 被 `!(endS > startS)` 挡住,但 +Inf 不会:
+        // 未夹取时 `lastFloor` 是 inf,转 uint64 在值域外是 **UB**。桥面的
+        // `givenNumber()` 只判「是不是数」不判有限性,`{startS:0, endS:Infinity}`
+        // 透得进来。夹取后它退成一个合法(且大到任何真时间线都够不着)的窗。
+        const auto inf = analyzeHopWindow(0.0, std::numeric_limits<double>::infinity(), kHopS);
+        REQUIRE(inf.valid());
+        CHECK(inf.firstHop == 0u);
+        CHECK(inf.lastHop == static_cast<std::uint64_t>(9.0e15));
+        // NaN 仍走空窗那条早退(`!(endS > startS)` 对 NaN 恒真)。
+        CHECK_FALSE(analyzeHopWindow(0.0, std::numeric_limits<double>::quiet_NaN(), kHopS).valid());
+        CHECK_FALSE(analyzeHopWindow(std::numeric_limits<double>::quiet_NaN(), 1.0, kHopS).valid());
+        // 起点本身就越界:不产生 lastHop < firstHop 的倒置窗。
+        CHECK_FALSE(
+            analyzeHopWindow(std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), kHopS)
+                .valid());
+    }
+
     SECTION("负起点按 0 夹取,不产生回绕的巨大 hop 下标")
     {
         const auto w = analyzeHopWindow(-5.0, 1.0, kHopS);

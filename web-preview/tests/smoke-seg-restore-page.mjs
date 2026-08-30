@@ -48,7 +48,7 @@ import {
     statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT =
@@ -117,7 +117,13 @@ const server = createServer((req, res) => {
     let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
     if (p.endsWith("/")) p += "index.html";
     const abs = resolve(join(ROOT, p));
-    if (!abs.startsWith(resolve(ROOT))) {
+    // 目录**边界**判定,不是字符串前缀判定(#161 复审 pr-agent 安全项)。
+    // 裸 `startsWith(root)` 的洞:ROOT=`/a/repo` 时 `/a/repo2/x` 也过 —— 百分号编码的
+    // `%2e%2e` 会在 decodeURIComponent 之后还原成 `..`,resolve 出去落到兄弟目录,
+    // 而它恰好与 ROOT 共享字符串前缀。服务器虽只绑 127.0.0.1、只活在冒烟进程里,
+    // 但这是「读文件的边界判定」,没有理由写成会漏的那种。
+    const rootAbs = resolve(ROOT);
+    if (abs !== rootAbs && !abs.startsWith(rootAbs + sep)) {
         res.writeHead(403).end("nope");
         return;
     }
@@ -560,8 +566,17 @@ if (toolbarState === "clicked") {
         );
     }
 } else {
-    log(`  (跳过 ⑤:工具条「重新识别」当前 ${toolbarState})`);
+    log(`  (工具条「重新识别」当前 ${toolbarState})`);
 }
+// [#161 复审【建议】⑧] ⑤ 是「④ 的绿不是把每个 analyze 都改成段级蒙的」这条**反向
+// 护栏**,而上面那个 else 分支只 log 一行 —— fixture 一变(钮变 disabled)它就永久
+// 失效,而且不判红:一条护栏悄悄退化成恒跳过,比没有这条护栏更糟,因为它还在报绿。
+// 本 fixture(默认 output.html)下工具条钮**已知可用**,所以「⑤ 真的跑到了」本身
+// 就是一条断言。将来 fixture 真要改成钮不可用,这里会红,逼人显式重新裁定。
+check(
+    toolbarState === "clicked",
+    `⑤ 反向护栏真的跑到了(工具条钮可点;实得 ${toolbarState})`,
+);
 
 // ---- ⑥ 零异常 -------------------------------------------------------------
 check(

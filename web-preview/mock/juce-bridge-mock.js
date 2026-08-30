@@ -869,6 +869,15 @@ function buildOutputBackend(ctx) {
         // 受理结果一致,「一帧都没采到」与「manual 档窄范围」两种情形会分叉。
         // 要消掉它得连 `"all"` 字符串形一起按 range 档位重推,牵动多套冒烟,另开卡。
         //
+        // [SL-242 复审【建议】⑤] 同一族再登记一条:**mock 不建模 hop 量化**。真桥的
+        // `analyzeHopWindow` 把范围向内取整到 10ms 的 hop 网格,窄于一个 hop 的范围判空窗
+        // ⇒ `{ok:false, affected:{0,0,0}}`;这里只按秒值 `overlapsRanges` 判有没有覆盖,
+        // 窄范围照样受理。当前够不着(J23 分段最小时长 400ms,段级 scope 的窗远宽于一个
+        // hop),但 `min_segment_ms` 一旦调小,冒烟就会重演「预览绿、真跑拒」。
+        // **不在 mock 里实现量化**是有意的:hop 网格是分析引擎的几何(kFeatHopMs),不是
+        // 桥面契约的一部分,把这个 native 常量搬进来是本文件的第一处几何泄漏;而它能藏住的
+        // 只有两端各 <10ms 的边角,藏不住作用域回归(那一层由 outsideRange 的建模守着)。
+        //
         // 同一族的另一条(**先于** SL-190 就在,不是这次引入):`{tracksMask:0, startS, endS}`
         // 在真桥是「不限轨 + 显式范围」照单全收,在这里 `channelsOfMask(0)` 得空轨 → {ok:false}。
         // 而 `{tracksMask:0}`(连范围也不给)两侧现在**是对齐的** —— 真桥由 analyzeScopeRange

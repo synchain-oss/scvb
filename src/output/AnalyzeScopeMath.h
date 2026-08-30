@@ -143,11 +143,17 @@ inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS
         return w; // 空窗 → 调用方回 §1.6 拒绝态
     }
     constexpr double kHopEps = 1e-6;
+    // 上限夹取(#161 复审【建议】⑦):`NaN` 已被上面的 `!(endS > startS)` 挡住,但
+    // `+Inf` 不会 —— `lastFloor` 会是 inf,而 `double → uint64` 在值域外是 **UB**。
+    // 桥面的 `givenNumber()` 只判「是不是数」不判有限性,`{startS:0, endS:Infinity}`
+    // 透得进来(截断版有同样的洞,非本卡引入)。9e15 hop @10ms ≈ 285 万年,任何真
+    // 时间线都够不着,夹在这里既堵 UB 又不改变任何可达输入的行为。
+    constexpr double kMaxHop = 9.0e15;
     const double firstCeil = std::ceil(std::max(0.0, startS) / hopS - kHopEps);
-    const double lastFloor = std::floor(std::max(0.0, endS) / hopS + kHopEps);
-    if (!(lastFloor > firstCeil))
+    const double lastFloor = std::min(kMaxHop, std::floor(std::max(0.0, endS) / hopS + kHopEps));
+    if (!(firstCeil <= kMaxHop) || !(lastFloor > firstCeil))
     {
-        return w; // 范围窄于一个 hop:没有完整 hop 可分析
+        return w; // 范围窄于一个 hop(或起点本身已越界):没有完整 hop 可分析
     }
     w.firstHop = static_cast<std::uint64_t>(firstCeil < 0.0 ? 0.0 : firstCeil);
     w.lastHop = static_cast<std::uint64_t>(lastFloor < 0.0 ? 0.0 : lastFloor);

@@ -4202,9 +4202,10 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                 { tracksMask: 1 << 2, startS: 4.5, endS: 7.25 },
                 "(b10)普通手动段:scope 带该段区间(整轨那份 endS/startS 缺席)",
             );
-            // openEnded(§2.8):`t1S` 只是保守下界,不是真末端 —— 取它当 endS 会把
-            // 段的右半截留在手动态。这一档**不给 endS**,让真桥按 analyzeScopeRange
-            // 的「没给的取 all 档同侧端点」推到时间线末端。
+            // openEnded(§2.8)是**唯一**允许省 endS 的一档:`t1S` 只是保守下界,不是
+            // 真末端 —— 取它当 endS 会把段的右半截留在手动态。省掉 endS 后真桥按
+            // analyzeScopeRange 的「没给的取 all 档同侧端点」推末端(follow 档 = 已采集
+            // 时间线末端;daw_loop / manual 档 = global.range 末端)。
             const oe = S(1, { t0S: 0, t1S: 12.5, openEnded: true });
             eq(oe.tracksMask, 1, "(b11)openEnded:轨位对");
             eq(oe.startS, 0, "(b11)openEnded:起点照给");
@@ -4231,11 +4232,32 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                     `(b13)轨号非法(${String(ch)})⇒ null`,
                 );
             }
-            // 零宽/倒序区间:startS 照给、endS 不给(半开区间给不出合法范围时不硬造)
-            const flat = S(2, { t0S: 3, t1S: 3 });
+            // [#161 复审【重要】①] 非 openEnded 的退化段(零宽 / 倒序 / t1S 非有限)
+            // **一律回 null**,不再退化成「省 endS」那一档。
+            // 老写法把它钉成了「startS 照给、endS 不给」,可缺 endS 在真桥会走
+            // analyzeScopeRange 的 all 档推导 ⇒ 作用面展开成 [t0S, 时间线末端],
+            // 配 clearManual 就是「从这一段起点一路清到末尾」—— 与本卡要修的作用面
+            // 外溢是同一个形状,只是换了一扇门。防御分支尤其不该拿宽 scope 兜底。
+            for (const degenerate of [
+                { t0S: 3, t1S: 3 }, // 零宽
+                { t0S: 5, t1S: 4 }, // 倒序
+                { t0S: 3, t1S: NaN }, // t1S 非有限
+                { t0S: 3, t1S: Infinity },
+                { t0S: 3 }, // 缺 t1S
+                { t0S: 3, t1S: 3, openEnded: false },
+            ]) {
+                eq(
+                    S(2, degenerate),
+                    null,
+                    `(b14)退化段 ⇒ null,不发缺 endS 的过宽 scope(${JSON.stringify(degenerate)})`,
+                );
+            }
+            // 反向:openEnded 为真时,同一个「t1S 不合法」的段**仍然**给 scope ——
+            // 证明上面那条不是把 openEnded 一起误杀了。
+            const oeFlat = S(2, { t0S: 3, t1S: 3, openEnded: true });
             check(
-                flat && flat.startS === 3 && !("endS" in flat),
-                "(b14)零宽段不硬造 endS",
+                oeFlat && oeFlat.startS === 3 && !("endS" in oeFlat),
+                "(b14b)openEnded 不受退化判据影响(它的右端本来就是 +∞)",
             );
         }
         // [SL-242] `tracks.restoreAutoHint`(「本轨由手动固定值驱动」)**已删**:
@@ -4247,11 +4269,43 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                 !("tracks.restoreAutoHint" in T.fr),
             "(b15)整轨口径的 tracks.restoreAutoHint 已从三语字典删干净",
         );
+        // [#161 复审【重要】②] 段短于 min_segment_ms ⇒ 引擎在这一窗里得不到任何段
+        // (EnergyVad 的 P1「丢短」先于 padding),applyAnalysisSegments 见 src.empty()
+        // 就整轨跳过 ⇒ 段表逐字节不动、analyze 却已回 ok:true ⇒ 点了零变化零提示。
+        // 与锁定段同一处理:两态入口收起,换成说清楚的一句 + 出路。
+        check(
+            /const minSegMs = num\(local\.segmentation\.min_segment_ms, 0\);/.test(
+                tw,
+            ) &&
+                /if \(!seg\.openEnded && minSegMs > 0 && segMs > 0 && segMs < minSegMs\) \{/.test(
+                    tw,
+                ) &&
+                /fmtKey\("wave\.restoreSegTooShort"/.test(tw),
+            "(b16)短段:入口只说不做,不给一枚点了没反应的钮",
+        );
+        // openEnded 段不进这道闸:它的 t1S 只是下界,拿 t1S-t0S 当窗宽会把「整轨全时限」
+        // 误判成短段(空工程下那个下界只有一个 hop)。
+        check(
+            /`openEnded` 段\*\*不进这道闸\*\*/.test(tw),
+            "(b16b)短段闸把 openEnded 排除在外,并写明了理由",
+        );
+        // [#161 复审【重要】③] 确认句要说明「该轨的冻结会被一并解除」——
+        // freeze 是轨级参数,窄范围 clearManual 照样整轨清零(SL-244 待定性)。
+        // 不说的话,用户读到「其他段保持不变」却听见声音当场变了,文案与作用面
+        // 第二次错位,与本卡的病因同形。
+        for (const lang of ["zh", "en", "fr"]) {
+            const v = String(T[lang]["wave.restoreSegConfirm"] || "");
+            check(
+                /冻结|frozen|freeze|gel/i.test(v),
+                `(b17)${lang} 确认句写明了冻结会被一并解除`,
+            );
+        }
         for (const k of [
             "tracks.restoreAuto",
             "tracks.restoreAutoLocked",
             "wave.restoreSegHint",
             "wave.restoreSegConfirm",
+            "wave.restoreSegTooShort",
         ]) {
             for (const lang of ["zh", "en", "fr"]) {
                 check(
