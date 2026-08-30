@@ -79,6 +79,9 @@ public:
     // 布防重采集期由 Output 置 true:那是用户明说「这段素材要换」,而 §1.23 规定布防
     // **保留既有覆盖**(门控只挡写入),所以 write() 里那条「没覆盖才清」看不见它。
     // 常态 false —— 采集开着又放一遍同一段音频不是换素材,判决没有作废的理由。
+    // ⚠ 「换了素材却既没打洞也没布防」那一档:采集 **OFF** 时由指纹守望提示(⚠),
+    // 采集 **ON** 时 `fp_report` 被抑制、⚠ 不会亮,旧判决会留到下次重新分析 ——
+    // 那是明知的取舍,完整说明见 `write()` 里那段注释,别只读这半句。
     void setVadInvalidateOnWrite(bool on) noexcept { vadInvalidateOnWrite_ = on; }
     bool vadInvalidateOnWrite() const noexcept { return vadInvalidateOnWrite_; }
 
