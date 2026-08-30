@@ -736,7 +736,11 @@ try {
         const okAll =
             typeof acted === "string" &&
             acted.startsWith("[") &&
-            !/rejected|error/.test(acted);
+            // 两种拒绝形态都要堵:PRINT 闸回 {rejected:"printing"},而参数/前置校验回的是
+            // {ok:false, reason:"..."}(mock 的 BAD_ARG / noTimeline)——后者里既没有
+            // "rejected" 也没有 "error",只查 rejected 的话 copyVersion 被 BAD_ARG 拒掉
+            // 这条 check 照样绿,正是它本来要消灭的那种「被拒也绿」(#159 复审第二轮)。
+            !/rejected|"ok":\s*false/.test(acted);
         check(
             okAll,
             `输出 ON + copyVersion(1,2) + 切到 V2 三步都被接受(回执 ${acted})`,

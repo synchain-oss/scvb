@@ -2030,7 +2030,7 @@ export function createTabMaster(opts) {
             (st.params && st.params.versionActive) || 0,
         );
         const chans = s.channels || [];
-        // [SL-241] 读回**真源**闸,与 Tab2 的 `rowFromStore` 共用 `readbackSegOf`。
+        // [SL-241] 读回**真源**闸,与 Tab2 的 `rowFromStore` 共用 `readbackSegsOf`。
         // SL-229 给这张图补的是**版本**闸(读哪一版的命名空间),而这一幕的病灶在
         // **源**上:`copyVersion` 契约是「零参数写入」(03 §5.3),刚复制出来的版本
         // 切进去、引擎打印头还没跑过,那 63 个 id 装的就是出厂默认(pan 居中);
