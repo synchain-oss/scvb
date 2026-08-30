@@ -252,6 +252,19 @@ export const FEAT_HOP_S = 0.01;
  * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
  * @returns {boolean} true = 引擎在这一窗里必然产不出段(入口该收起)
  */
+export function restoreWindowTooShort(seg, minSegmentMs) {
+    const s = seg || {};
+    if (s.openEnded === true) return false;
+    const minMs = Number(minSegmentMs);
+    if (!Number.isFinite(minMs) || minMs <= 0) return false;
+    if (!Number.isFinite(s.t0S) || !Number.isFinite(s.t1S)) return false;
+    const EPS = 1e-6;
+    const firstHop = Math.ceil(Math.max(0, s.t0S) / FEAT_HOP_S - EPS);
+    const lastHop = Math.floor(Math.max(0, s.t1S) / FEAT_HOP_S + EPS);
+    // `Math.floor(minMs / 10)` 对齐 C++ 的 int 除法(`p.minSegmentMs / 10`)。
+    return lastHop - firstHop < Math.floor(minMs / 10);
+}
+
 /**
  * [SL-242] 把 `min_segment_ms` 夹成真桥收下的那个值(纯函数,node 侧可断言)。
  *
@@ -264,19 +277,6 @@ export function clampMinSegMs(v) {
     const n = Number(v);
     if (!Number.isFinite(n)) return 0; // 拿不到判据 ⇒ 交给调用方按「不拦」处理
     return Math.min(500, Math.max(50, n));
-}
-
-export function restoreWindowTooShort(seg, minSegmentMs) {
-    const s = seg || {};
-    if (s.openEnded === true) return false;
-    const minMs = Number(minSegmentMs);
-    if (!Number.isFinite(minMs) || minMs <= 0) return false;
-    if (!Number.isFinite(s.t0S) || !Number.isFinite(s.t1S)) return false;
-    const EPS = 1e-6;
-    const firstHop = Math.ceil(Math.max(0, s.t0S) / FEAT_HOP_S - EPS);
-    const lastHop = Math.floor(Math.max(0, s.t1S) / FEAT_HOP_S + EPS);
-    // `Math.floor(minMs / 10)` 对齐 C++ 的 int 除法(`p.minSegmentMs / 10`)。
-    return lastHop - firstHop < Math.floor(minMs / 10);
 }
 
 /**
