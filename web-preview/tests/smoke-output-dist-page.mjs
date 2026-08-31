@@ -794,6 +794,24 @@ try {
             return true;
         `),
         );
+        // 裁定③ 的 console 读数钩子:**必须在 8 秒采样之前**装上 —— 那行读数只在
+        // 「两帧 hostEcho:true 间隔越过释放窗口」时打印,而那正是采样窗里徽标灭一下
+        // 再亮的同一时刻。装晚了(等采样跑完再装)就会错过整段,实测捞到 0 条。
+        await evaluate(
+            IN(`
+            w.__SL251_DBG__ = [];
+            const orig = w.console.debug;
+            w.__SL251_CANARY__ = 0;
+            w.console.debug = function (...a) {
+                const s = a.join(" ");
+                if (s.indexOf("[SCVB][SL-251]") >= 0) w.__SL251_DBG__.push(s);
+                if (s.indexOf("__canary__") >= 0) w.__SL251_CANARY__++;
+                return orig.apply(this, a);
+            };
+            w.console.debug("__canary__");
+            return true;
+        `),
+        );
         await sleep(1200); // 等打印头开始推 hostEcho:true 的帧
 
         const readState = IN(`
@@ -901,6 +919,35 @@ try {
             total <= 6,
             `(f) ★ 播放期翻转降到基线的 1/5 以内(实得合计 ${total} 次:${JSON.stringify(flick.flips)};修前 30 次)`,
         );
+        // ---- (g) 裁定③ 的 console 读数**真的会打印**(复审第一轮【重要】1 的回归)
+        //
+        // 那行 `console.debug` 是「释放窗口 2000ms 本机测不出真机间隔分布」的唯一补偿手段,
+        // 而它第一版是**死代码**:`store.params` 在读 prevAt 之前就被整体重写了,gap 恒 ≈0。
+        // 静态看不出来,只有真跑才知道 —— 所以这一条必须是页面级。
+        // 判据窗口 = 上面整节(钩子在进 PRINT 后就装上了):徽标每灭一次,就意味着两帧
+        // hostEcho:true 之间越过了释放窗口,那正是这行读数该打印的时刻。
+        const dbg = await evaluate(
+            IN(`
+            return {
+                n: (w.__SL251_DBG__ || []).length,
+                first: (w.__SL251_DBG__ || [])[0] || "",
+                canary: w.__SL251_CANARY__ || 0,
+            };
+        `),
+        );
+        log(
+            `  console 读数命中 ${dbg.n} 次(钩子自检 canary=${dbg.canary});首条:${dbg.first.slice(0, 120)}`,
+        );
+        check(
+            dbg.canary === 1,
+            `(g) 前置:console.debug 钩子本身有效(canary=${dbg.canary})`,
+        );
+        check(
+            dbg.n > 0,
+            `(g) ★ 裁定③ 的 console 读数真的打印了(实得 ${dbg.n} 次)—— ` +
+                `第一版是死代码(prevAt 在 store.params 被重写后才取,gap 恒 ≈0),那一版这里是 0`,
+        );
+
         assertClean("SL-251 闪烁");
     }
 } catch (e) {

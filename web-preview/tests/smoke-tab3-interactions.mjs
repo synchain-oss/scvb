@@ -4555,6 +4555,36 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
         );
     }
 
+    // ---- ⑤ HTML 静态标记 == SLIDERS(跨源)
+    //
+    // Tab3 的七条滑杆是**静态 HTML**:`aria-valuemin/max` 全仓**没有任何运行期代码会写**
+    // (Tab2 那三条是 JS 按 *_RANGE 常量现拼的,Tab3 不是)。所以静态标记就是终值 ——
+    // 值域改了而标记没跟着改,屏幕阅读器会**永久播报错误值域**,而所有跑得起来的断言
+    // 都照样绿(#164 复审第二轮【重要】)。这一条把两边钉在一起。
+    {
+        const html = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+        for (const def of TW.SLIDERS) {
+            const i = html.indexOf(`data-gb="${def.gb}"`);
+            check(i >= 0, `(e) HTML 里找得到 ${def.gb}`);
+            if (i < 0) continue;
+            // 从该滑杆容器起往后取一段,覆盖它自己的 role="slider" 那一块。
+            const block = html.slice(i, i + 1400);
+            const gi = (re) => {
+                const m = re.exec(block);
+                return m ? Number(m[1]) : NaN;
+            };
+            eq(
+                [
+                    gi(/aria-valuemin="([-\d.]+)"/),
+                    gi(/aria-valuemax="([-\d.]+)"/),
+                    gi(/aria-valuenow="([-\d.]+)"/),
+                ],
+                [def.min, def.max, def.def],
+                `(e) ★ ${def.gb} 的 aria 值域/初值 == SLIDERS 定义(静态标记,运行期没人改)`,
+            );
+        }
+    }
+
     // ---- ④ mock 桥同刻度(CLAUDE.md §10:契约改动两侧同改)
     // 这一条是**往返**:mock 快照的值 → 滑杆读数。纯源码正则数不出它 ——
     // mock 留旧刻度的话,preview 一开窗灵敏度就贴左端,而上面那些断言全绿。
