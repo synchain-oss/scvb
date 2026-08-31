@@ -792,6 +792,12 @@ void ScvbOutputAudioProcessor::timerCallback()
     const auto now = scvb::steadyNowMs();
     const juce::ScopedLock lock(lifecycleMutex_);
 
+    // [SL-254 / J95①] 把宿主宣告的离线渲染态同步给 session —— 它决定 evaluateChannels 里
+    // 要不要走 [J32] 那道 **墙钟** 200ms 注入延迟。放在 tick 首而不是 prepareToPlay:宿主
+    // 可能在 prepare 之后才 setNonRealtime(true)(JUCE 允许运行期切换),只在 prepare 里取
+    // 会漏掉那一路,而漏掉的表现恰好就是本卡要修的前段静音。
+    session_.setNonRealtime(isNonRealtime());
+
     // 4Hz 心跳(250ms 折半在 25Hz 定时器内)。
     if (now - lastHeartbeatMs_ >= scvb::kHeartbeatIntervalMs)
     {

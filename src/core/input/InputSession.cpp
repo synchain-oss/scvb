@@ -225,6 +225,7 @@ InputSessionBlockView InputSession::acquireBlock() const
     // PR#51 第3轮红旗:经租约基址 + 冻结偏移快照 InputSlot*,不读 registry_ 可变 header_。
     // 租约为空(改组已请求释放)→ base 为 null → registrySlot 为 null(setCapturing 空操作)。
     v.registrySlot = Registry::inputSlotAtBase(v.registryLease.base(), v.channel);
+    v.outputSlot = Registry::outputSlotAtBase(v.registryLease.base());
     return v;
 }
 

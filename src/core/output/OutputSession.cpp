@@ -349,9 +349,15 @@ void OutputSession::evaluateChannels(u64 nowMs)
             onlinePrev_[idx] = true;
 
             // [J32] 注入延迟:等该轨 muted 确认位或延迟 ≥200ms(先到者)才开始注入。
+            //
+            // [SL-254 / J95①] **非实时(离线渲染)不走这道延迟** —— 它是墙钟量,而离线的音频
+            // 时间线跑在墙钟前面 N 倍,同一个窗口会吃掉 N 倍样本(实测 122x 下前段静音 4.69s)。
+            // 非实时下与 setConnectedMaskBit 在**同一次评估**里一起置 injectMask,Input 侧逐块
+            // 读 connected_mask 跟着同块静音 ⇒ 交接落在同一块,既不静音也不叠加。
+            // 实时路径逐字不动(200ms / muted 确认位 / 80ms ramp 全保留)。
             const u32 flags = slot->flags.load(std::memory_order_acquire);
             const bool muted = (flags & kFlagMuted) != 0;
-            if (muted || (nowMs - onlineSinceMs_[idx] >= kInjectDelayMs))
+            if (nonRealtime() || muted || (nowMs - onlineSinceMs_[idx] >= kInjectDelayMs))
             {
                 inject |= (1u << (ch - 1));
             }

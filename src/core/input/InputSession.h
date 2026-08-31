@@ -49,6 +49,8 @@ struct InputSessionBlockView
     const AudioRingBinding* audio = nullptr; // 音频环绑定(可为 null → 不写环)
     u32 channel = 0; // claimed channel 快照(0 = 未绑定)
     InputSlot* registrySlot = nullptr; // 经 registryLease 基址 + 冻结偏移快照(PR#51 第3轮红旗)
+    // [SL-254] 同一条租约下的 OutputSlot(只读):非实时下 [A] 逐块读 connected_mask 判静音。
+    OutputSlot* outputSlot = nullptr;
     SegmentHandle::Lease registryLease; // registry 段租约
     SegmentHandle::Lease audioLease; // audio 段租约
     SegmentHandle::Lease featLease; // feat 段租约

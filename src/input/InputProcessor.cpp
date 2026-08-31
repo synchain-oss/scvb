@@ -258,7 +258,34 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     meter_.store(peak, std::memory_order_relaxed);
 
     // 6) 输出级仲裁(ADR-002 v1/J12+J32):读 C18 模式字经 RampSwitcher 渲染。
-    const scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
+    scvb::u32 mode = c18Stage_.load(std::memory_order_acquire);
+
+    // [SL-254 / J95①] **非实时(离线渲染)走同块交接** —— 不等 [M],不走 ramp。
+    //
+    // 病:J32 那套「Output 置 mask → Input 下一拍 [M] 静音 → Output 等 muted 确认位或 200ms 再注入」
+    // 全是**墙钟**量,而离线渲染的音频时间线跑在墙钟前面 N 倍。于是「Input 已静音、Output 未注入」
+    // 那个窗口按倍速放大:实测 5x→0.128s、48x→2.13s、122x→4.69s(折合墙钟恒为一拍 [M] ≈40ms),
+    // 用户 v5.6.3 离线导出前约 10 秒全静音就是它(≈250x)。1.7x 近实时那档静音为 0 —— 所以
+    // 实时反相能完美抵消、离线不能。
+    //
+    // 修法(J95① 裁定):非实时下 Input **逐块**读 `connected_mask` 决定档位,与 Output 在
+    // 同一次 evaluateChannels 里置的 injectMask 对齐 ⇒ 同块交接。
+    // ⛔ **不能只把 Output 那个 200ms 闸改成样本计**:Input 的静音时刻同样由 [M] 驱动、同样随
+    // 倍速变晚(实测 48x 下第 264 块才静音),单改一侧会让注入远早于静音 ⇒ 几百块**双路叠加**,
+    // 对 null test 与静音同样致命且更隐蔽(它是响的)。宪法 ADR.md [J32→ADR-002] 已把这条禁令入册。
+    //
+    // RT 纪律:只做 mapped 内存上的 atomic load,零分配、零锁、零系统调用;OutputSlot 走与
+    // registrySlot 同一条 registry 租约 + 冻结偏移(Registry::outputSlotAtBase)。
+    if (isNonRealtime() && block.outputSlot != nullptr && block.channel >= 1 && block.channel <= scvb::kMaxChannels)
+    {
+        const scvb::u32 mask = block.outputSlot->connected_mask.load(std::memory_order_acquire);
+        const bool takenOver = (mask & (1u << (block.channel - 1))) != 0;
+        const auto target =
+            takenOver ? scvb::input::OutputStageMode::kSilence : scvb::input::OutputStageMode::kPassthrough;
+        mode = static_cast<scvb::u32>(target);
+        rampSwitcher_.snapTo(target); // 同块硬切:ramp 也是墙钟量,离线会被放大成超长淡入
+    }
+
     rampSwitcher_.render(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), nRender,
                          mode == static_cast<scvb::u32>(scvb::input::OutputStageMode::kSilence)
                              ? scvb::input::OutputStageMode::kSilence

@@ -6151,3 +6151,116 @@ TEST_CASE("HOST SL-247:采集 ON 那一刻,引擎侧确实是横幅 ⑨ 判据�
     CHECK_FALSE(r.out.captureStale(kTestChannel));
     CHECK_FALSE(r.out.runtime().recaptureArmed);
 }
+
+// ===========================================================================
+// [SL-254 / J95①] 离线(非实时)渲染的同块交接。
+//
+// 立卡:用户 v5.6.3 实测 #48「离线导出前约 10 秒完全静音」,而实时渲染反相可完美抵消。
+// 定谳:J32 的注入握手全程按**墙钟**闸控(`steadyNowMs` + [M] 25Hz),与音频时间线解耦 ——
+// 「Input 已静音、Output 未注入」那个窗口在离线下按倍速放大。实测折合墙钟恒为一拍 [M]
+// ≈40ms,而时间线静音 5x→0.128s / 48x→2.13s / 122x→4.69s(≈250x 即用户的 10s)。
+//
+// 下面两条**必须成对**:一条防静音、一条防叠加。任一条单独存在,都会被**另一个方向**的
+// 错误修法绕过 —— 这正是本卡定谳时先后踩到的两个坑(先以为是 200ms 闸,而只改 Output 侧
+// 闸门为样本计会把静音翻成几百块双路叠加)。宪法 ADR.md [J32→ADR-002] 的 J95① 补注
+// 已把「不得只改一侧」连同实测数字入册。
+//
+// 判据都取**引擎侧可观测量**(Input 轨输出 / Output 总线注入),不看内部计数器。
+// ===========================================================================
+
+namespace
+{
+// 以「每泵一次消息循环推多少块」模拟离线渲染倍速:推得越多 = 音频跑在墙钟前面越远。
+// 返回 {Input 首个静音块, Output 首个注入块, 两者同时静音的块数}。
+struct OfflineHandoverProbe
+{
+    int firstInputSilent = -1;
+    int firstInject = -1;
+    int bothSilentBlocks = 0;
+};
+
+OfflineHandoverProbe runOfflineHandover(Rig& r, int blocksPerPump, int totalBlocks)
+{
+    OfflineHandoverProbe p;
+    for (int i = 0; i < totalBlocks; ++i)
+    {
+        Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
+        r.outBuf.clear();
+        r.in.processBlock(r.inBuf, r.midi);
+        r.out.processBlock(r.outBuf, r.midi);
+
+        float inPk = 0.0f, outPk = 0.0f;
+        for (int c = 0; c < r.inBuf.getNumChannels(); ++c)
+            for (int s = 0; s < r.inBuf.getNumSamples(); ++s)
+                inPk = std::max(inPk, std::abs(r.inBuf.getReadPointer(c)[s]));
+        for (int c = 0; c < r.outBuf.getNumChannels(); ++c)
+            for (int s = 0; s < r.outBuf.getNumSamples(); ++s)
+                outPk = std::max(outPk, std::abs(r.outBuf.getReadPointer(c)[s]));
+
+        if (p.firstInputSilent < 0 && inPk < 1e-6f)
+            p.firstInputSilent = i;
+        if (p.firstInject < 0 && outPk > 1e-6f)
+            p.firstInject = i;
+        // 「Input 静音 ∧ Output 未注入」= 用户听到的全零。DAW 里直通期总线有声,harness 不
+        // 路由,所以必须分开量 —— 合起来量会把直通期误算成静音。
+        if (inPk < 1e-6f && outPk < 1e-6f)
+            ++p.bothSilentBlocks;
+
+        r.ph.timeSamples += kBlock;
+        if ((i % blocksPerPump) == blocksPerPump - 1)
+            Rig::pumpMessages(1);
+    }
+    return p;
+}
+} // namespace
+
+// ① 防静音:非实时下,不论音频跑得多快,「Input 静音 ∧ Output 未注入」的重叠窗恒为 0。
+//    反向 = 退回墙钟闸(实时路径)⇒ 重叠窗随倍速线性增长。
+TEST_CASE("HOST SL-254:非实时渲染不得出现「Input 静音 ∧ Output 未注入」的全零窗", "[host][SL254]")
+{
+    for (const int blocksPerPump : {8, 16, 32})
+    {
+        Rig r;
+        r.in.setNonRealtime(true); // 宿主宣告离线渲染
+        r.out.setNonRealtime(true);
+        r.ph.playing = true;
+
+        const auto p = runOfflineHandover(r, blocksPerPump, 900);
+        INFO("blocksPerPump=" << blocksPerPump << " Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject
+                              << " 全零块=" << p.bothSilentBlocks);
+        // ★ 核心判据:一块全零都不许有。墙钟闸的实现在这里红,且红的块数随倍速放大。
+        CHECK(p.bothSilentBlocks == 0);
+    }
+}
+
+// ② 防叠加:非实时下,Output 的首个注入块**不得早于** Input 的首个静音块。
+//    这一条专守被 J95① 明令禁用的那个修法(只把 Output 的 200ms 闸改成样本计)——
+//    那样注入会跑到 Input 静音之前,几百块双路叠加,而 ① 照样绿。
+TEST_CASE("HOST SL-254:非实时下注入不得早于 Input 静音(防双路叠加)", "[host][SL254]")
+{
+    Rig r;
+    r.in.setNonRealtime(true);
+    r.out.setNonRealtime(true);
+    r.ph.playing = true;
+
+    const auto p = runOfflineHandover(r, 16, 900);
+    REQUIRE(p.firstInputSilent >= 0); // 前置:确实交接过(否则两条断言都是空的)
+    REQUIRE(p.firstInject >= 0);
+    INFO("Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject);
+    // ★ 同块交接:注入不早于静音(允许同块,不允许更早)。
+    CHECK(p.firstInject >= p.firstInputSilent);
+}
+
+// ③ 实时路径逐字不变:J32 的 200ms / muted 确认位 / 80ms ramp 一个都没动。
+//    没有这一条,上面两条会诱使后来人把非实时那套直接铺到实时路径上。
+TEST_CASE("HOST SL-254:实时路径仍走 J32 原协议(注入延迟未被顺手删掉)", "[host][SL254]")
+{
+    Rig r; // 不宣告非实时 = 实时路径
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    CHECK(r.injected());
+    // 实时下 Input 最终静音、Output 最终注入,稳态与改动前一致。
+    r.runBlocks(60, 0.5f);
+    Rig::pumpMessages(200);
+    CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f);
+}

@@ -86,6 +86,17 @@ public:
     // 音频线程:target 为当前目标档(调用方从 C18 模式字读出)。原地渲染(直通=缩放 cos(θ),静音=清零)。
     void render(float* const* ch, int numChannels, int numSamples, OutputStageMode target);
 
+    // [SL-254 / J95①] 非实时(离线渲染)专用:**同块硬切**,不走 80ms ramp。
+    // 只在 `isNonRealtime()` 为真时调用 —— 实时路径一个字不动(ramp 仍是 J32 的 80ms)。
+    // 为什么离线不能留 ramp:ramp 也是**墙钟**量,80ms 在 250x 倍速下会摊成 20s 的渐变,
+    // 等于把「前段静音」换成「前段超长淡入」,同样被倍速放大(J95① 裁定:去掉)。
+    // 离线是确定性渲染,交接点两侧是同一份信号,硬切不产生咔哒。
+    void snapTo(OutputStageMode target) noexcept
+    {
+        target_ = target;
+        theta_ = (target == OutputStageMode::kSilence) ? kHalfPi : 0.0;
+    }
+
     // 稳态判定(供 [M] muted 确认位 C19;仅音频线程写,消息线程经 atomic 间接读,见 InputProcessor)。
     bool isSettledSilence() const noexcept { return target_ == OutputStageMode::kSilence && theta_ >= kHalfPi; }
     bool isSettledPassthrough() const noexcept { return target_ == OutputStageMode::kPassthrough && theta_ <= 0.0; }
