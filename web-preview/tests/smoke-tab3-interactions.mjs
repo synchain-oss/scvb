@@ -860,6 +860,12 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
                 /recapture[\s\S]{0,20}armed/.test(blk),
                 "横幅 ⑨ 在重采集布防期收起(那时采集是 §1.23 裁定① 替用户开的,叫他关是反向指令)",
             );
+            // [SL-247] 第五项:noTimeline 在场时让位给 ⑥(#158 复审 deepseek)。
+            // DOM 侧由 smoke-output-stale-page.mjs 的 `no-timeline` 档真渲染验证(实跑注入红过)。
+            check(
+                /!vs\.noTimeline/.test(blk),
+                "横幅 ⑨ 在无时间线时让位给 ⑥(真因不是采集开关,且那把开关此时还是 disabled)",
+            );
             check(
                 !/disabled|readOnly\s*=/.test(blk),
                 "横幅 ⑨ 同样不 disable 任何控件(04 §4.5:只提示,不阻断)",

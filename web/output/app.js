@@ -1432,9 +1432,21 @@ function renderBanners() {
     // **只读态(第二个 Output)不特殊处理**,有意的:那边关不了采集,但「为什么没有 ⚠」
     // 这个解释对他同样成立,而且坐在 DAW 前的往往就是他。把一条正确的解释藏起来,
     // 换来的只是「又一次说不清为什么」——这正是本卡要修的那件事。
+    //
+    // **而 `noTimeline`(⑥)在场时必须让位** —— 与只读态**不同类**,别把两者按同一口径处理
+    // (#158 复审 deepseek 的观察,本卡采纳):
+    //   · 只读态下「比对暂停是因为采集开着」**仍然为真**,只是他关不了 ⇒ ⑨ 照出无妨;
+    //   · `noTimeline` 下比对停摆的真因是**没有时间线**,而 ⑨ 会把它归因到采集开关上。
+    //     更糟的是那条动作**做不到**:`tab-master.js` 的写控件闸是 `readOnly || noTimeline`
+    //     一并挡,采集开关此时是 disabled —— 用户既关不掉采集,也没有时间线可播,照做 ⚠
+    //     也不会回来。⑥ 此刻已经在把真因说清楚了,⑨ 再说一遍反而是**把因果说反**,
+    //     与本卡要修的「说不清为什么」是同一种毛病、只是换了一格。
+    //   · 这一态可达:工程已有段表 + 换一个不给时间线的宿主打开。
+    // `vs.noTimeline` 就在本函数上方(⑥ 那一段)刚赋过值,零额外读取。
     show(
         $("banner-fpPausedByCapture"),
         !!(s.global && s.global.capture_enabled) &&
+            !vs.noTimeline &&
             staleTracks === 0 &&
             !(s.recapture && s.recapture.armed) &&
             hasSegmentedMaterial(vs.segments),

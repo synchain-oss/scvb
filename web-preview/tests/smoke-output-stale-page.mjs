@@ -16,7 +16,9 @@
 //      带得动作;`stale`(采集**同样** ON,只是 ⚠ 已挂)⇒ 让位只留 ⑧;
 //      `recapture-armed`(布防期,采集是被 §1.23 裁定① 替用户打开的)⇒ 收起 ——
 //      此刻用户正应当保持采集开着播完那一段,⑨ 的「先关掉采集」是反向指令;
-//   ③ 两个场景都要零未捕获异常、零 console.error;
+//   ②c [SL-247] `no-timeline`:⑨ 让位给 ⑥ —— noTimeline 下比对停摆的真因不是采集开关,
+//      而采集开关此时还是 disabled,⑨ 的「先关掉采集」既做不到、也把因果说反了;
+//   ③ 各场景都要零未捕获异常、零 console.error;
 //   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
 //      分析按钮一个都不许被 disable。
 //
@@ -283,6 +285,13 @@ const PROBE = IN(`
             const sw = gb("master-capture-toggle-switch");
             return !!sw && sw.getAttribute("aria-checked") === "true";
         })(),
+        noTimelineBanner: vis(gb("banner-noTimeline")),
+        // 采集开关的写闸在 DOM 上是 data-disabled(它是 div 不是表单控件,没有 .disabled)。
+        // tab-master.js 的 isWriteBlocked() = readOnly || noTimeline,两处都写这一位。
+        captureSwitchBlocked: (() => {
+            const sw = gb("master-capture-toggle-switch");
+            return !!sw && sw.getAttribute("data-disabled") === "1";
+        })(),
         pausedPresent: !!paused,
         paused: vis(paused),
         pausedDisplay: paused ? w.getComputedStyle(paused).display : "(缺节点)",
@@ -472,6 +481,33 @@ try {
             "布防期 ⇒ 横幅 ⑨ 收起(采集 ON + 段表在 + 无 stale,只差布防位)",
         );
         assertClean("scenario=recapture-armed");
+    }
+
+    // =========================================================================
+    // [SL-247] ④ `noTimeline` 在场:⑨ 必须让位给 ⑥,否则是**做不到且归因说反**的动作。
+    //
+    // 来自 #158 复审(deepseek)。与只读态**不同类**:只读态下「比对暂停是因为采集开着」
+    // 仍然为真(只是他关不了),而 noTimeline 下真因是**没有时间线** —— ⑨ 若还在,
+    // 就把停摆归因到采集开关上,而那把开关此时是 disabled(写控件闸 = readOnly || noTimeline),
+    // 用户既关不掉也没得播,照做 ⚠ 也不会回来。
+    log("=== ④ scenario=no-timeline:⑨ 让位给 ⑥(否则给的是做不到的动作)===");
+    {
+        const p = await open("no-timeline");
+        check(p !== null, "取到页内 DOM 快照");
+        check(
+            p.captureEnabled,
+            `前置:本场景采集确实是 ON(否则 ⑨ 本来就不该出,这一档退化成白测,实得 ${p.captureEnabled}）`,
+        );
+        check(
+            p.noTimelineBanner,
+            "横幅 ⑥「宿主未提供时间线」在场(它才是说真因的那条)",
+        );
+        check(
+            p.captureSwitchBlocked,
+            "前置:采集开关此时确实被写闸挡住(data-disabled=1)—— ⑨ 的「先关掉采集」做不到",
+        );
+        check(!p.paused, "noTimeline ⇒ 横幅 ⑨ 让位,只留 ⑥");
+        assertClean("scenario=no-timeline");
     }
 } catch (e) {
     fail++;
