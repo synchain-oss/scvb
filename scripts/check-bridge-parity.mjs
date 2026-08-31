@@ -909,9 +909,21 @@ checkEventPayloadFields();
         } else {
             const NL = String.fromCharCode(10);
             const end = editorSrc.indexOf(NL + "}" + NL, start);
-            const body = editorSrc.slice(
-                start,
-                end > 0 ? end : editorSrc.length,
+            // **先剥行注释再抽名字**(#163 复审【建议】):正则直接扫源码文本的话,
+            // `// add(Fn::ExportSuggestions, …); // 先关掉查个 bug` 会被算成「已注册」,
+            // 门禁绿 —— 而「有人临时注释掉一行注册忘了恢复」恰恰是本节最想拦的那一族
+            // (本 PR 定谳的那个洞,只是把「注释掉」换成了「从没写」)。
+            // 块注释这一族里基本不出现,不特殊处理。
+            const stripLineComments = (src) =>
+                src
+                    .split(NL)
+                    .map((line) => {
+                        const i = line.indexOf("//");
+                        return i < 0 ? line : line.slice(0, i);
+                    })
+                    .join(NL);
+            const body = stripLineComments(
+                editorSrc.slice(start, end > 0 ? end : editorSrc.length),
             );
             // 常量名 → 桥名(`inline constexpr const char* Xxx = "yyy";`,允许跨行折行)
             const constMap = new Map();
@@ -934,7 +946,9 @@ checkEventPayloadFields();
             }
             // 外壳侧(WebViewHost)—— 不同的调用形状与常量命名空间
             if (existsSync(hostPath)) {
-                for (const m of readFileSync(hostPath, "utf8").matchAll(
+                for (const m of stripLineComments(
+                    readFileSync(hostPath, "utf8"),
+                ).matchAll(
                     /withNativeFunction\(\s*juce::Identifier\(\s*bridge::Fn::([A-Za-z_][A-Za-z0-9_]*)/g,
                 )) {
                     const bridgeName = constMap.get(m[1]);

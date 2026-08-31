@@ -655,7 +655,7 @@ TEST_CASE("parseSuggestionScope:§1.36 入参归一与拒绝态", "[output][sugg
         CHECK(parseSuggestionScope(true, "", false, 0, false, 0, false, 0, kActive).badArg);
     }
 
-    SECTION("tracksMask:bit15 是保留位,先掩再判")
+    SECTION("tracksMask:bit15 掩掉;掩完为 0 **不拒**,留给 noData")
     {
         const auto one = parseSuggestionScope(false, "", true, 0x0001, false, 0, false, 0, kActive);
         REQUIRE_FALSE(one.badArg);
@@ -664,25 +664,67 @@ TEST_CASE("parseSuggestionScope:§1.36 入参归一与拒绝态", "[output][sugg
         const auto withReserved = parseSuggestionScope(false, "", true, 0x8001, false, 0, false, 0, kActive);
         REQUIRE_FALSE(withReserved.badArg);
         CHECK(withReserved.scope.tracksMask == 0x0001u);
-        // **只点保留位** ⇒ 掩完为 0 ⇒ badArg(与 §1.23 [J87] 同口径:
-        // 「掩完为 0」不能退化成「不限轨」,那是把空选区当全选)
-        CHECK(parseSuggestionScope(false, "", true, 0x8000, false, 0, false, 0, kActive).badArg);
-        CHECK(parseSuggestionScope(false, "", true, 0, false, 0, false, 0, kActive).badArg);
+        // [#163 复审【红旗】] 掩完为 0 **不是 badArg**:§1.36 拒绝态只有
+        // 「versions 不在两值内 / endS ≤ startS」两条,零轨落在「scope 内零段」⇒ noData。
+        // mock 与冒烟(「零轨 → noData」)都钉死这一档;曾照 §1.23 [J87] 抄成 badArg 是错的
+        // —— 那是写函数的口径,导出是只读的。
+        for (const int m : {0x8000, 0})
+        {
+            const auto zero = parseSuggestionScope(false, "", true, m, false, 0, false, 0, kActive);
+            CHECK_FALSE(zero.badArg);
+            CHECK(zero.scope.tracksMask == 0u); // 交给 buildRows 得零行 ⇒ noData
+        }
     }
 
-    SECTION("时间窗:两头都给且成立才启用")
+    SECTION("时间窗:两头都给逐字照用;倒序/零宽 ⇒ badArg")
     {
         const auto win = parseSuggestionScope(false, "", false, 0, true, 1.5, true, 4.0, kActive);
         REQUIRE_FALSE(win.badArg);
         CHECK(win.scope.startSec == 1.5);
         CHECK(win.scope.endSec == 4.0);
-        // 只给一头 ⇒ 整个不限(不做单边窗:导出没有 UI 回显能让用户发现范围被单边开放)
-        const auto onlyStart = parseSuggestionScope(false, "", false, 0, true, 1.5, false, 0.0, kActive);
-        REQUIRE_FALSE(onlyStart.badArg);
-        CHECK(onlyStart.scope.startSec < 0.0);
-        CHECK(onlyStart.scope.endSec < 0.0);
-        // 两头都给但倒序/零宽 ⇒ 调用方算错了范围,不是「不限」
+        // §1.36 拒绝态第二条逐字:endS ≤ startS(mock 亦然:`if (!(endS > startS)) return BAD_ARG()`)
         CHECK(parseSuggestionScope(false, "", false, 0, true, 4.0, true, 1.5, kActive).badArg);
         CHECK(parseSuggestionScope(false, "", false, 0, true, 2.0, true, 2.0, kActive).badArg);
+    }
+
+    SECTION("[#163 复审【重要】] 只给一头 = **半开窗**,与 mock 的 ±∞ 同口径")
+    {
+        // 老写法把单边窗退化成「整个不限」,而 mock 用 `isFiniteNumber(x) ? x : ±Infinity`
+        // ⇒ `{startS:30}` 在预览页只导 30s 之后的段、在真宿主导全部。同一次点击两侧行集不同,
+        // 而这条路没有任何回显能让用户发现。`{startS:30}` 的字面意思就是「从 30 秒起」。
+        const auto onlyStart = parseSuggestionScope(false, "", false, 0, true, 30.0, false, 0.0, kActive);
+        REQUIRE_FALSE(onlyStart.badArg);
+        CHECK(onlyStart.scope.startSec == 30.0);
+        CHECK(onlyStart.scope.endSec > 1.0e300); // ≡ +∞:`t0Sec < endSec` 恒真
+        // 缺左端取 0.0(段时间恒 ≥ 0,真实段上与 −∞ 等效)
+        const auto onlyEnd = parseSuggestionScope(false, "", false, 0, false, 0.0, true, 30.0, kActive);
+        REQUIRE_FALSE(onlyEnd.badArg);
+        CHECK(onlyEnd.scope.startSec == 0.0);
+        CHECK(onlyEnd.scope.endSec == 30.0);
+        // 只给右端且 ≤ 0:窗内不可能有段。不拒(§1.36 没这一条),但也不能退回「不限」
+        // —— 那会把「只要 0 秒之前的段」变成「导出全部」。退成空窗 ⇒ 零行 ⇒ noData。
+        // ⚠ 这一档不能写成 `0/0`:`inWindow` 在 `!(endSec > startSec)` 时**关掉筛选**,
+        // `0/0` 反而是「全导」—— 与本意正相反(本轮自查到的)。取远端空窗,让筛选真的生效。
+        const auto endZero = parseSuggestionScope(false, "", false, 0, false, 0.0, true, 0.0, kActive);
+        REQUIRE_FALSE(endZero.badArg);
+        CHECK(endZero.scope.startSec > 1.0e300); // 真实段的 t1Sec 够不到 ⇒ 零行 ⇒ noData
+        CHECK(endZero.scope.endSec > endZero.scope.startSec); // 筛选**必须**生效,不能退成「不限」
+    }
+
+    SECTION("非有限值按「没给」处理(与 mock 的 isFiniteNumber 同口径)")
+    {
+        const double inf = std::numeric_limits<double>::infinity();
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        // `{startS:0, endS:Infinity}` 不得带着 inf 进 Scope(mock 有 isFiniteNumber 守卫,
+        // 老写法没有)。顺带:Infinity 其实过不了桥 —— JSON.stringify(Infinity) 是 "null"。
+        const auto infEnd = parseSuggestionScope(false, "", false, 0, true, 0.0, true, inf, kActive);
+        REQUIRE_FALSE(infEnd.badArg);
+        CHECK(infEnd.scope.startSec == 0.0);
+        CHECK(infEnd.scope.endSec > 1.0e300); // 退成「只给左端」的半开窗
+        // 两头都非有限 ⇒ 等价于都没给 ⇒ 不限
+        const auto bothNan = parseSuggestionScope(false, "", false, 0, true, nan, true, nan, kActive);
+        REQUIRE_FALSE(bothNan.badArg);
+        CHECK(bothNan.scope.startSec < 0.0);
+        CHECK(bothNan.scope.endSec < 0.0);
     }
 }

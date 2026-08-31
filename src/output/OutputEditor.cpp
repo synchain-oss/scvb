@@ -2180,13 +2180,13 @@ void OutputEditor::handleConfirmPrintGuard(const ArgList& /*a*/, Completion c)
 // 捕获裸 `this` 是这一族最常见的崩法(与 AnalysisJob 那条「不用裸 callAsync 捕获 owner」同源)。
 void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
 {
-    // 只读观察态不导出:§5.6 的 `{observer:true}` 是「写入未生效」的语义,而导出不写 state。
-    // 但它**会弹一个系统级对话框**,只读实例弹框会让用户以为自己在操作主实例。按写面处置。
-    if (isReadOnly())
-    {
-        c(observerResp());
-        return;
-    }
+    // **不设 isReadOnly 闸**(#163 复审【红旗】):§1.36 的「返回」行与 §7 manifest 逐字只有
+    // 五种形态(`{ok,rows,path}` + 四个 reason),`{observer:true}` 不在其中 —— 加了就是给一个
+    // 冻结函数**私自添第六种返回**,而 web 的分支是 `ok → cancelled → else 一律 exportFail`,
+    // 只读实例点导出会显示「导出失败:unknown」,一句纯噪音。
+    // 而且 §5.6 的 observer 适用面是「只读观察态下的**一切写函数**」,§1.36 自己写着
+    // 「不写 state、不发 gesture、不动参数、不入撤销栈」—— 导出根本不在那个面里。
+    // 只读实例照样有完整的 CRVS 与段表,导出一份 CSV 不影响任何人。
 
     // ---- 入参归一(§1.36:scope 整体可省 = 全默认)----
     const juce::var scopeVar = a.size() > 0 ? a[0] : juce::var();
@@ -2264,27 +2264,45 @@ void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
     // `SCVB-suggestions-<版本名>-<YYYYMMDD-HHmm>.csv`,版本名里的路径字符换 `_`。
     // 两侧各写一份是有意的:这里是真宿主的保存框默认名,web 那份服务 mock/预览,
     // 中间隔着桥,抽公共模块反而要把 JUCE 字符串拖进 web 侧的纯函数层。
-    const juce::String versionName = [&] {
-        const int v = parsed.scope.allVersions ? processor_.versionActive() : parsed.scope.activeVersion;
-        const int clamped = juce::jlimit(1, static_cast<int>(scvb::state::kNumVersions), v);
-        const std::size_t idx = static_cast<std::size_t>(clamped - 1);
-        return juce::String::fromUTF8(curves.versions[idx].meta.name.c_str());
+    // `versions:"all"` 时导的是**两个版本**,文件名不能挂激活版本名 —— 否则用户下次翻
+    // 文件夹只会把它当成单版本表(#163 复审【建议】②;mock 用的就是 `all` 这个 tag)。
+    const juce::String versionTag = [&] {
+        if (parsed.scope.allVersions)
+        {
+            return juce::String("all");
+        }
+        const int clamped = juce::jlimit(1, static_cast<int>(scvb::state::kNumVersions), parsed.scope.activeVersion);
+        return juce::String::fromUTF8(curves.versions[static_cast<std::size_t>(clamped - 1)].meta.name.c_str());
     }();
     // 9 个路径非法字符对 9 个下划线 —— `replaceCharacters` 是**逐字符**配对映射,
     // 两串长度必须相等,少一个就会把后面的字符集体错位映射(而不是报错)。
     const juce::String safeName =
-        versionName.isEmpty() ? juce::String("V") : versionName.replaceCharacters("\\/:*?\"<>|", "_________");
+        versionTag.isEmpty() ? juce::String("V1") : versionTag.replaceCharacters("\\/:*?\"<>|", "_________");
     const juce::String suggested =
         "SCVB-suggestions-" + safeName + "-" + juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M") + ".csv";
+    // 保存框标题按当前界面语言硬编码三语:**native 侧本仓没有 i18n 通道** —— 全仓没有任何
+    // 地方安装 `juce::LocalisedStrings`,`TRANS` 恒等于英文原串(它此前是全仓唯一一处 TRANS)。
+    // 而语言是 web 的 `setLang` 选的、落在 `processor_.uiLanguage()`。就地硬编码是目前唯一能
+    // 让对话框跟随界面语言的做法;将来有了 native i18n 通道再收拢(#163 复审【建议】①)。
+    const juce::String lang = processor_.uiLanguage();
+    const juce::String chooserTitle =
+        lang.startsWithIgnoreCase("zh")
+            ? juce::String::fromUTF8("\xe5\xaf\xbc\xe5\x87\xba\xe5\xbb\xba\xe8\xae\xae\xe8\xa1\xa8")
+        : lang.startsWithIgnoreCase("fr") ? juce::String("Exporter les suggestions")
+                                          : juce::String("Export suggestions");
     auto chooser = std::make_shared<juce::FileChooser>(
-        TRANS("Export suggestions"),
-        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(suggested), "*.csv");
+        chooserTitle, juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(suggested),
+        "*.csv");
     const int chooserFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
                              juce::FileBrowserComponent::warnAboutOverwriting;
 
     juce::Component::SafePointer<OutputEditor> safe(this);
     const int rowCount = static_cast<int>(rows.size());
     // `chooser` 用 shared_ptr 捕获:FileChooser 必须活到回调跑完,而它不能是栈对象。
+    // ⚠ 这是一个**自引用环**(FileChooser 持有 async callback,callback 又持有它的
+    // shared_ptr)。不泄漏,靠的是 JUCE 在 `finished()` 里把 callback **move 出来**再调用 ——
+    // 环在那一刻断开。这依赖 JUCE 的实现细节:照抄到别的「回调存活到调用之后」的 API 上会漏
+    // (#163 复审【建议】顺带项)。
     chooser->launchAsync(chooserFlags, [safe, chooser, csv, rowCount, c](const juce::FileChooser& fc) mutable {
         if (safe == nullptr)
         {
@@ -2299,8 +2317,16 @@ void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
             c(o);
             return;
         }
-        // 先写临时再改名会引入一堆平台差异;这里直接覆写,失败即 ioError(不谎报成功)。
-        if (!target.replaceWithText(juce::String::fromUTF8(csv.c_str(), static_cast<int>(csv.size()))))
+        // **必须写字节,不能走 `replaceWithText`**(#163 复审【重要】):后者第四个参数
+        // `lineEndings` 有默认值(CRLF),于是它走 `OutputStream::writeText` 的**换行改写**
+        // 路径,而不是原样写字节。而文件形制是**冻结**的(§1.36:UTF-8 带 BOM、CRLF 含最后
+        // 一行、RFC 4180 转义),`toCsv` 已经逐字节做完 —— 再让 JUCE 过一遍归一化,
+        // **引号内**被转义保护的裸 LF 会被改写成 CRLF、裸 CR 会被吞掉(轨名来自
+        // `setChannelConfig`,是用户文本,`csvField` 明确会转义含 CR/LF 的字段),
+        // 写进磁盘的字节就与 core 单测断言过的那份不是同一串了。
+        // `std::string → juce::String → 再编回 UTF-8` 的往返在非法 UTF-8 轨名上也不是恒等的。
+        // `replaceWithData` 是原子替换(写 temp 再 move),返回值语义相同。
+        if (!target.replaceWithData(csv.data(), csv.size()))
         {
             juce::var o = obj();
             put(o, "ok", false);
