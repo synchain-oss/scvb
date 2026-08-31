@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "FallbackPanel.h"
 
+#include "PlatformWebView.h"
+
 #include <utility>
 
 namespace scvb::webview
@@ -57,7 +59,9 @@ FallbackPanel::~FallbackPanel() = default;
 
 void FallbackPanel::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colour(0xff18161d));
+    // [SL-253] 收编到 `PlatformWebView.h` 的单一真源:此前这里是自己的字面量
+    // 0xff18161d,与外层那层差一点点 —— WebView2 挂掉那一瞬会看见一次色阶跳变。
+    g.fillAll(scvb::webview::shellBackdrop());
 }
 
 void FallbackPanel::resized()

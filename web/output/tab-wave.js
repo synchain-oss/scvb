@@ -247,12 +247,9 @@ export const FEAT_HOP_S = 0.01;
  *   · 未镜像 `analyzeHopWindow` 的 `kMaxHop = 1e7`(>27.8 小时的段真跑判空窗拒绝、
  *     本闸放行)。**理论可达性为零** —— 非 openEnded 段来自对采集环(分钟量级)的 VAD,
  *     段身不可能跨 27.8 小时;登记在此,免得「判据与真跑同源」这句话留下未记的缺口;
- *   · `local.segmentation.min_segment_ms` 的缓存初值是 420,而 native runtime 默认是
- *     120(`OutputProcessor.h`)—— **首帧 state 回推之前**,120-420ms 的段会被本闸判成
- *     「太短」而收起入口,可那时真跑用的是 120、做得成。`clampMinSegMs` 修不掉这一格
- *     (两个数都在 [50,500] 内,夹取恒等);方向是多挡、`syncParamGroup` 回推后自愈,
- *     且要根治得让 web 知道 native 的 runtime 默认(它现在只消费 state,不消费 runtime
- *     默认),不值得为一格开口子。
+ *   · ~~缓存初值 420 vs native runtime 默认 120 的分叉~~ —— **[SL-251 同批已消除]**:
+ *     UI 默认已照 02-dsp-spec §0.3 改成 120,与 native runtime 默认同值,首帧 state
+ *     回推前后不再有这一格差异。
  *
  * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
  * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
@@ -396,9 +393,9 @@ export const SLIDERS = Object.freeze(
         // prettier-ignore
         { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 0, max: 500, def: 200, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", tip: "wave.tipSensitivity", min: 0, max: 1, def: 0.62, unit: "", dp: 2 },
+        { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", tip: "wave.tipSensitivity", min: 0, max: 100, def: 50, unit: "", dp: 0 },
         // prettier-ignore
-        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", tip: "wave.tipMinSeg", min: 0, max: 1500, def: 420, unit: "ms", dp: 0 },
+        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", tip: "wave.tipMinSeg", min: 50, max: 500, def: 120, unit: "ms", dp: 0 },
     ].map(Object.freeze),
 );
 
@@ -416,20 +413,6 @@ export const DEFAULT_VAD_PARAMS = Object.freeze({
 });
 
 /** 分段参数缓存初值(契约 §1.19:{mode, sensitivity, min_segment_ms} 整包)。 */
-/**
- * [SL-251 同批] `sensitivity` 的**刻度换算**:UI 显示归一化 0..1(两位小数),而 native
- * 与 02-dsp-spec §0.3 常量表用的是 **0..100**(`OutputEditor::handleSetSegmentation` 的
- * `jlimit(0.0f, 100.0f)`,runtime 默认 50)。
- *
- * 不换算的后果是**双向都坏**:UI 发 0.62 → native 收下 0.62(落在 0..100 内不被夹)⇒ 存成
- * 「百分之 0.62」≈ 最低灵敏度;反过来 state 回推 50 进一个 max=1 的滑杆 ⇒ 把手直接顶到最右。
- * 于是这条滑杆在整个行程上都是错的,而且看不出来。
- *
- * 换算只做在**桥面两侧**(下发 ×100、回推 ÷100),`local.segmentation.sensitivity` 与滑杆
- * 显示一律留在 0..1 —— 显示一个像素都不动。
- */
-export const SEG_SENSITIVITY_SCALE = 100;
-
 export const DEFAULT_SEGMENTATION = Object.freeze({
     // [SL-251 同批] `"auto"` **不在 native 白名单里**(`BridgeArgs.h::isSegmentationMode`
     // 只认 `vad_only | valley`,标注真源 02-dsp-spec §362),而 `sendParams("seg")` 是
@@ -438,8 +421,13 @@ export const DEFAULT_SEGMENTATION = Object.freeze({
     // 而自愈,所以只在「开窗就去拖滑杆」那一小段咬人 —— 但那恰是最常见的第一次操作。
     // 与 native runtime 默认对齐,取 "valley"。
     mode: "valley",
-    sensitivity: 0.62,
-    min_segment_ms: 420,
+    // [SL-251 同批] 三个字段一律照 **02-dsp-spec** 的常量表,不再自造一套 UI 刻度:
+    //   · sensitivity → §0.3「50 | 0..100 | state」(§384:s∈0..100 映射 minDepth);
+    //   · min_segment_ms → §0.3「120 | 50..500 | state」(与 PipelineConfig 默认同值)。
+    // 原先 UI 用的 0..1/0.62 与 0..1500/420 **在规格里没有出处**,而 native 一直按规格
+    // 夹取 —— 于是 0.62 被存成「百分之 0.62」≈ 最低灵敏度,500ms 以上是死行程。
+    sensitivity: 50,
+    min_segment_ms: 120,
 });
 
 function num(v, dflt) {
@@ -1530,13 +1518,7 @@ export function createTabWave(opts) {
         if (api === "vad") {
             call("setVadParams", { ...local.vadParams });
         } else {
-            // sensitivity 换算到 native/DSP 的 0..100(见 SEG_SENSITIVITY_SCALE 头注)。
-            call("setSegmentation", {
-                ...local.segmentation,
-                sensitivity:
-                    num(local.segmentation.sensitivity, 0) *
-                    SEG_SENSITIVITY_SCALE,
-            });
+            call("setSegmentation", { ...local.segmentation });
         }
     }
 
@@ -3576,11 +3558,6 @@ export function createTabWave(opts) {
             const ana = (store.state || {}).analysis || {};
             syncParamGroup(local.vadParams, ana.vad);
             syncParamGroup(local.segmentation, ana.segmentation);
-            // state 里的 sensitivity 是 native 刻度(0..100),换回显示刻度(0..1)。
-            if (Number.isFinite((ana.segmentation || {}).sensitivity)) {
-                local.segmentation.sensitivity =
-                    ana.segmentation.sensitivity / SEG_SENSITIVITY_SCALE;
-            }
         }
         for (const s of els.sliders || []) {
             const src =

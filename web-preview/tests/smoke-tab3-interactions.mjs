@@ -1019,7 +1019,16 @@ log("=== ② 布局常量(设计稿几何:158 / 34 / 262 / 44 …)===");
     );
     // 默认值行程比与设计稿 2070-2074 逐一相符(值域反推的自证)
     const P = TW.SLIDERS.map((s) => Math.round(TW.sliderPercent(s, s.def)));
-    eq(P, [44, 30, 36, 24, 40, 62, 28], "七杆默认行程比 = 稿内 p 值");
+    // [SL-251 同批] 后两杆的 p 值随值域一起变了:sensitivity 0..1/0.62(62%)→ 0..100/50
+    // (50%);min_segment_ms 0..1500/420(28%)→ 50..500/120(16%)。
+    // 设计稿 2070-2074 那两个 p 值是**照着 UI 那套无出处的值域**画的,而 02-dsp-spec §0.3
+    // 常量表才是真源(统筹已查证原文:sensitivity「50 | 0..100」、min_segment_ms
+    // 「120 | 50..500」)。规格 > 设计稿,故此处按规格更新;前五杆一字未动。
+    eq(
+        P,
+        [44, 30, 36, 24, 40, 50, 16],
+        "七杆默认行程比 = 值域反推(后两杆照 02-dsp-spec)",
+    );
     // J23:padding 默认 120/200;§1.18 五字段整包缓存底账与滑杆默认一致
     eq(TW.DEFAULT_VAD_PARAMS.padding_pre_ms, 120, "J23 前留白 120");
     eq(TW.DEFAULT_VAD_PARAMS.padding_post_ms, 200, "J23 后留白 200");
@@ -1030,11 +1039,8 @@ log("=== ② 布局常量(设计稿几何:158 / 34 / 262 / 44 …)===");
         "setSegmentation 三字段整包",
     );
     eq(TW.fmtSliderValue(TW.SLIDERS[0], -38), "-38 dB", "滑杆读数格式(dB)");
-    eq(
-        TW.fmtSliderValue(TW.SLIDERS[5], 0.62),
-        "0.62",
-        "滑杆读数格式(无单位两位)",
-    );
+    // [SL-251 同批] sensitivity 从 0..1/两位小数改成规格的 0..100/整数(02-dsp-spec §0.3)。
+    eq(TW.fmtSliderValue(TW.SLIDERS[5], 50), "50", "滑杆读数格式(无单位整数)");
     eq(TW.sliderPercent(TW.SLIDERS[0], -999), 0, "行程比越界夹取");
 
     // 泳道模板:锚点面(appendix B 新增件)齐 —— node 侧字符串断言
@@ -1896,8 +1902,8 @@ log("=== ⑦ 交互纯函数 + 源码级纪律断言(Wave 2)===");
         "setVadParams 五字段整包下发(不发单字段)",
     );
     check(
-        /call\("setSegmentation",\s*\{\s*\.\.\.local\.segmentation,/.test(tw),
-        "setSegmentation 三字段整包下发(展开整包;唯一的额外项是 sensitivity 的刻度换算)",
+        tw.includes('call("setSegmentation", { ...local.segmentation })'),
+        "setSegmentation 三字段整包下发",
     );
     // UI 不自建 300ms 防抖去调 analyze(brief §0.5):releaseSlider 体内无 analyze
     const relBody = tw.slice(
@@ -4509,49 +4515,28 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
             `不在的话 sendParams("seg") 是**整包**下发,mode 一不合法三个字段一个都进不去(退回 "auto" 即红)`,
     );
 
-    // ---- ② sensitivity:UI 归一化 0..1,native/DSP 0..100,换算常量必须对得上
+    // ---- ② sensitivity:UI 值域/默认值必须与 native 夹取同刻度(不是换算,是对齐)
     const sens = TW.SLIDERS.find((s) => s.field === "sensitivity");
-    check(!!sens, "(b) 找得到 sensitivity 滑杆定义");
-    eq(
-        [sens.min, sens.max],
-        [0, 1],
-        "(b) UI 显示刻度保持归一化 0..1(不动显示)",
+    const cppSens = /jlimit\(0\.0f,\s*([\d.]+)f,[\s\S]{0,80}?sensitivity/.exec(
+        cppSrc,
     );
-    const cppSensClamp =
-        /jlimit\(0\.0f,\s*([\d.]+)f,[\s\S]{0,80}?sensitivity/.exec(cppSrc);
-    check(
-        !!cppSensClamp,
-        `(b) 取到 native 的 sensitivity 夹取上界(实得 ${cppSensClamp && cppSensClamp[1]})`,
-    );
-    if (cppSensClamp) {
+    check(!!sens && !!cppSens, "(b) 取到两侧的 sensitivity 定义");
+    if (sens && cppSens) {
         eq(
-            TW.SEG_SENSITIVITY_SCALE,
-            Number(cppSensClamp[1]),
-            "(b) ★ 换算常量 == native 夹取上界 —— 两侧刻度对上(不换算则 0.62 被存成「百分之 0.62」)",
+            [sens.min, sens.max],
+            [0, Number(cppSens[1])],
+            "(b) ★ UI 值域 == native 夹取(0..100,02-dsp-spec §0.3)——" +
+                "退回 0..1 则 0.62 会被 native 当成「百分之 0.62」存下,滑杆整个行程都是错的",
         );
+        eq(sens.def, 50, "(b) 默认值 = 规格的 50(§0.3 常量表 / §384 待定项⑥)");
+        eq(sens.dp, 0, "(b) 0..100 是整数档,不再显示两位小数");
     }
     check(
-        /setSegmentation",\s*\{[\s\S]{0,200}?SEG_SENSITIVITY_SCALE/.test(
-            waveSrc,
-        ),
-        "(b) 下发处真的做了换算(不是只定义了常量)",
-    );
-    check(
-        /ana\.segmentation\.sensitivity\s*\/\s*SEG_SENSITIVITY_SCALE/.test(
-            waveSrc,
-        ),
-        "(b) 回推处也换算回显示刻度 —— 否则 state 的 50 会把 max=1 的把手顶到最右",
+        !/SEG_SENSITIVITY_SCALE/.test(waveSrc),
+        "(b) 桥面**不做**刻度换算 —— native 一直是对的,该改的是 UI 自己那套无出处的值域",
     );
 
-    // ---- ③ min_segment_ms:**已知冲突,登记不修**(SL-251 复审实测)
-    //
-    // UI 行程 0..1500,native 夹取 50..500(标注真源 02-dsp-spec §0.3 常量表)——
-    // 500 以上的行程拖了会被静默夹回,是死行程。但 UI 这一侧**不是笔误**:
-    // 上面 ② 组那条「七杆默认行程比 = 稿内 p 值」把 def=420 在 0..1500 上的 28%
-    // 钉死在设计稿 2070-2074 里。收窄到 50..500 会把把手挪到 82% —— 那是**改设计稿**,
-    // 不是改 bug;放宽 native 则要动 DSP 规格常量表。两边都得用户/规格拍板,
-    // 故本卡只登记、不擅改(已报统筹,随 SL-255 一起裁)。
-    // 这条断言守的是「别在没人拍板的情况下悄悄改任一侧」:两个数一动就红。
+    // ---- ③ min_segment_ms:同上,值域与默认值都照规格
     const minseg = TW.SLIDERS.find((s) => s.field === "min_segment_ms");
     const cppMs = /jlimit\((\d+),\s*(\d+),[\s\S]{0,80}?min_segment_ms/.exec(
         cppSrc,
@@ -4559,12 +4544,35 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
     check(!!minseg && !!cppMs, "(c) 取到两侧的 min_segment_ms 定义");
     if (minseg && cppMs) {
         eq(
-            [minseg.min, minseg.max, Number(cppMs[1]), Number(cppMs[2])],
-            [0, 1500, 50, 500],
-            "(c) ★ 已知冲突原样登记:UI 0..1500(设计稿钉死)vs native 50..500(DSP 规格)——" +
-                "任一侧被悄悄改动即红,等拍板后连同 SL-255 一起收",
+            [minseg.min, minseg.max],
+            [Number(cppMs[1]), Number(cppMs[2])],
+            "(c) ★ UI 行程 == native 夹取(50..500)—— 退回 0..1500 则 500 以上是死行程",
+        );
+        eq(
+            minseg.def,
+            120,
+            "(c) 默认值 = 规格/PipelineConfig 的 120(不再是 420)",
         );
     }
+
+    // ---- ④ mock 桥同刻度(CLAUDE.md §10:契约改动两侧同改)
+    // 这一条是**往返**:mock 快照的值 → 滑杆读数。纯源码正则数不出它 ——
+    // mock 留旧刻度的话,preview 一开窗灵敏度就贴左端,而上面那些断言全绿。
+    const snapSeg =
+        (MD.FIFTEEN_TRACKS.snapshot.analysis || {}).segmentation || {};
+    check(
+        Number.isFinite(snapSeg.sensitivity) &&
+            snapSeg.sensitivity >= 0 &&
+            snapSeg.sensitivity <= 100 &&
+            snapSeg.sensitivity > 1,
+        `(d) ★ mock 快照的 sensitivity 用 native 刻度 0..100(实得 ${snapSeg.sensitivity};留 0.62 即红)`,
+    );
+    check(
+        Number.isFinite(snapSeg.min_segment_ms) &&
+            snapSeg.min_segment_ms >= 50 &&
+            snapSeg.min_segment_ms <= 500,
+        `(d) mock 快照的 min_segment_ms 落在规格夹取内(实得 ${snapSeg.min_segment_ms})`,
+    );
 }
 
 // =============================================================================
