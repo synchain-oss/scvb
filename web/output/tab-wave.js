@@ -416,8 +416,28 @@ export const DEFAULT_VAD_PARAMS = Object.freeze({
 });
 
 /** 分段参数缓存初值(契约 §1.19:{mode, sensitivity, min_segment_ms} 整包)。 */
+/**
+ * [SL-251 同批] `sensitivity` 的**刻度换算**:UI 显示归一化 0..1(两位小数),而 native
+ * 与 02-dsp-spec §0.3 常量表用的是 **0..100**(`OutputEditor::handleSetSegmentation` 的
+ * `jlimit(0.0f, 100.0f)`,runtime 默认 50)。
+ *
+ * 不换算的后果是**双向都坏**:UI 发 0.62 → native 收下 0.62(落在 0..100 内不被夹)⇒ 存成
+ * 「百分之 0.62」≈ 最低灵敏度;反过来 state 回推 50 进一个 max=1 的滑杆 ⇒ 把手直接顶到最右。
+ * 于是这条滑杆在整个行程上都是错的,而且看不出来。
+ *
+ * 换算只做在**桥面两侧**(下发 ×100、回推 ÷100),`local.segmentation.sensitivity` 与滑杆
+ * 显示一律留在 0..1 —— 显示一个像素都不动。
+ */
+export const SEG_SENSITIVITY_SCALE = 100;
+
 export const DEFAULT_SEGMENTATION = Object.freeze({
-    mode: "auto",
+    // [SL-251 同批] `"auto"` **不在 native 白名单里**(`BridgeArgs.h::isSegmentationMode`
+    // 只认 `vad_only | valley`,标注真源 02-dsp-spec §362),而 `sendParams("seg")` 是
+    // **整包**下发 —— mode 一不合法,整个 setSegmentation 直接 badArg 返回,三个字段一个
+    // 都进不去。首帧 `scvb.state` 回推后 `syncParamGroup` 会把它换成 native 的 "valley"
+    // 而自愈,所以只在「开窗就去拖滑杆」那一小段咬人 —— 但那恰是最常见的第一次操作。
+    // 与 native runtime 默认对齐,取 "valley"。
+    mode: "valley",
     sensitivity: 0.62,
     min_segment_ms: 420,
 });
@@ -1510,7 +1530,13 @@ export function createTabWave(opts) {
         if (api === "vad") {
             call("setVadParams", { ...local.vadParams });
         } else {
-            call("setSegmentation", { ...local.segmentation });
+            // sensitivity 换算到 native/DSP 的 0..100(见 SEG_SENSITIVITY_SCALE 头注)。
+            call("setSegmentation", {
+                ...local.segmentation,
+                sensitivity:
+                    num(local.segmentation.sensitivity, 0) *
+                    SEG_SENSITIVITY_SCALE,
+            });
         }
     }
 
@@ -3550,6 +3576,11 @@ export function createTabWave(opts) {
             const ana = (store.state || {}).analysis || {};
             syncParamGroup(local.vadParams, ana.vad);
             syncParamGroup(local.segmentation, ana.segmentation);
+            // state 里的 sensitivity 是 native 刻度(0..100),换回显示刻度(0..1)。
+            if (Number.isFinite((ana.segmentation || {}).sensitivity)) {
+                local.segmentation.sensitivity =
+                    ana.segmentation.sensitivity / SEG_SENSITIVITY_SCALE;
+            }
         }
         for (const s of els.sliders || []) {
             const src =

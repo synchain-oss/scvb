@@ -1896,8 +1896,8 @@ log("=== ⑦ 交互纯函数 + 源码级纪律断言(Wave 2)===");
         "setVadParams 五字段整包下发(不发单字段)",
     );
     check(
-        tw.includes('call("setSegmentation", { ...local.segmentation })'),
-        "setSegmentation 三字段整包下发",
+        /call\("setSegmentation",\s*\{\s*\.\.\.local\.segmentation,/.test(tw),
+        "setSegmentation 三字段整包下发(展开整包;唯一的额外项是 sensitivity 的刻度换算)",
     );
     // UI 不自建 300ms 防抖去调 analyze(brief §0.5):releaseSlider 体内无 analyze
     const relBody = tw.slice(
@@ -4479,6 +4479,91 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                 );
             }
         }
+    }
+}
+
+// =============================================================================
+log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native 对齐 ===");
+//
+// SL-255 定谳时顺带挖出来的:那两条滑杆即便把流水线接上,大半个行程仍然是没反应的。
+// 三条各自独立,合在一起才让「拖了没效果」这句话彻底站不住。
+{
+    const cppSrc = readFileSync(
+        join(ROOT, "src/output/OutputEditor.cpp"),
+        "utf8",
+    );
+    const argsSrc = readFileSync(join(ROOT, "src/output/BridgeArgs.h"), "utf8");
+    const waveSrc = readFileSync(join(ROOT, "web/output/tab-wave.js"), "utf8");
+
+    // ---- ① mode:默认值必须在 native 白名单里,否则整包 setSegmentation 恒 badArg
+    const modes = (argsSrc.match(/mode == "(\w+)"/g) || []).map((m) =>
+        m.replace(/mode == "|"/g, ""),
+    );
+    check(
+        modes.length >= 2,
+        `(a) 取到 native 的 mode 白名单(实得 ${JSON.stringify(modes)})`,
+    );
+    check(
+        modes.includes(TW.DEFAULT_SEGMENTATION.mode),
+        `(a) ★ UI 默认 mode "${TW.DEFAULT_SEGMENTATION.mode}" 在 native 白名单内 —— ` +
+            `不在的话 sendParams("seg") 是**整包**下发,mode 一不合法三个字段一个都进不去(退回 "auto" 即红)`,
+    );
+
+    // ---- ② sensitivity:UI 归一化 0..1,native/DSP 0..100,换算常量必须对得上
+    const sens = TW.SLIDERS.find((s) => s.field === "sensitivity");
+    check(!!sens, "(b) 找得到 sensitivity 滑杆定义");
+    eq(
+        [sens.min, sens.max],
+        [0, 1],
+        "(b) UI 显示刻度保持归一化 0..1(不动显示)",
+    );
+    const cppSensClamp =
+        /jlimit\(0\.0f,\s*([\d.]+)f,[\s\S]{0,80}?sensitivity/.exec(cppSrc);
+    check(
+        !!cppSensClamp,
+        `(b) 取到 native 的 sensitivity 夹取上界(实得 ${cppSensClamp && cppSensClamp[1]})`,
+    );
+    if (cppSensClamp) {
+        eq(
+            TW.SEG_SENSITIVITY_SCALE,
+            Number(cppSensClamp[1]),
+            "(b) ★ 换算常量 == native 夹取上界 —— 两侧刻度对上(不换算则 0.62 被存成「百分之 0.62」)",
+        );
+    }
+    check(
+        /setSegmentation",\s*\{[\s\S]{0,200}?SEG_SENSITIVITY_SCALE/.test(
+            waveSrc,
+        ),
+        "(b) 下发处真的做了换算(不是只定义了常量)",
+    );
+    check(
+        /ana\.segmentation\.sensitivity\s*\/\s*SEG_SENSITIVITY_SCALE/.test(
+            waveSrc,
+        ),
+        "(b) 回推处也换算回显示刻度 —— 否则 state 的 50 会把 max=1 的把手顶到最右",
+    );
+
+    // ---- ③ min_segment_ms:**已知冲突,登记不修**(SL-251 复审实测)
+    //
+    // UI 行程 0..1500,native 夹取 50..500(标注真源 02-dsp-spec §0.3 常量表)——
+    // 500 以上的行程拖了会被静默夹回,是死行程。但 UI 这一侧**不是笔误**:
+    // 上面 ② 组那条「七杆默认行程比 = 稿内 p 值」把 def=420 在 0..1500 上的 28%
+    // 钉死在设计稿 2070-2074 里。收窄到 50..500 会把把手挪到 82% —— 那是**改设计稿**,
+    // 不是改 bug;放宽 native 则要动 DSP 规格常量表。两边都得用户/规格拍板,
+    // 故本卡只登记、不擅改(已报统筹,随 SL-255 一起裁)。
+    // 这条断言守的是「别在没人拍板的情况下悄悄改任一侧」:两个数一动就红。
+    const minseg = TW.SLIDERS.find((s) => s.field === "min_segment_ms");
+    const cppMs = /jlimit\((\d+),\s*(\d+),[\s\S]{0,80}?min_segment_ms/.exec(
+        cppSrc,
+    );
+    check(!!minseg && !!cppMs, "(c) 取到两侧的 min_segment_ms 定义");
+    if (minseg && cppMs) {
+        eq(
+            [minseg.min, minseg.max, Number(cppMs[1]), Number(cppMs[2])],
+            [0, 1500, 50, 500],
+            "(c) ★ 已知冲突原样登记:UI 0..1500(设计稿钉死)vs native 50..500(DSP 规格)——" +
+                "任一侧被悄悄改动即红,等拍板后连同 SL-255 一起收",
+        );
     }
 }
 

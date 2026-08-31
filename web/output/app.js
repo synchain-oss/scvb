@@ -45,6 +45,7 @@ import {
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
+    HOST_ECHO_RELEASE_MS,
 } from "./tab-master.js";
 import {
     createTabTracks,
@@ -1662,6 +1663,18 @@ if (bridge) {
             versionActive: (p && p.versionActive) || store.params.versionActive,
         };
         if (p && p.hostEcho) {
+            // [SL-251/J93 裁定③] 调试读数,**不进设置页 UI**:hostEcho:true 两帧之间的间隔
+            // 一旦超过闩锁的释放窗口,徽标就会灭一下再亮 —— 也就是用户看得见的那一次眨眼。
+            // 释放窗口取 2000ms 是按「宿主自动化按曲线事件写、间隔秒级」估的,**真机的间隔
+            // 分布本机测不出来**(mock 只有慢通道)。所以把超窗的那几次原样打到 console:
+            // 用户真机若仍见眨眼,拿这几行就能直接把窗口调对,不用再猜。
+            const prevAt = store.params.hostEchoAt || 0;
+            const gap = prevAt ? Date.now() - prevAt : 0;
+            if (prevAt && gap >= HOST_ECHO_RELEASE_MS) {
+                console.debug(
+                    `[SCVB][SL-251] hostEcho 间隔 ${gap}ms ≥ 释放窗口 ${HOST_ECHO_RELEASE_MS}ms —— 提示徽标会在这一段灭掉再亮(看到眨眼就是这里)`,
+                );
+            }
             clearTimeout(hostEchoTimer);
             hostEchoTimer = setTimeout(requestRender, HOST_ECHO_FRESH_MS + 50);
         }
