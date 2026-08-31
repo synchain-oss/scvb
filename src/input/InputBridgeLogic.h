@@ -72,10 +72,13 @@ bool advanceConfigSeq(u32 configSeq, bool emitted, u32& lastConfigSeq);
 juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args);
 
 // --- 载荷构造(键名与契约逐字一致;全部返回新 DynamicObject)--------------------------
-// §4.1 scvb.state:{channel_id, group_id, claim, abi, abi_remote?, ui:{scale, language}}。
+// §4.1 scvb.state:{channel_id, group_id, claim, abi, abi_remote?, ui:{scale, language, guide_seen}}。
 // abi_remote 仅 abiMismatch 且探测到(≠0)时存在(§4.1 字段纪律:探测不到则字段不存在)。
+// [SL-258] `ui.guide_seen` 是 §4.1 载荷行逐字要求的第三个 ui 字段,也是 `setGuideSeen` 写入后的
+// 回推路径;它与 §3.1 快照的 ui 子树**字段集必须一致**(§4.1 字段纪律行),两处一起改。
 juce::var buildStatePayload(int channelId, int groupId, const juce::String& claim, u32 abi,
-                            const juce::Optional<u32>& abiRemote, float uiScale, const juce::String& lang);
+                            const juce::Optional<u32>& abiRemote, float uiScale, const juce::String& lang,
+                            bool guideSeen);
 
 // §4.2 scvb.conn:{outputOnline, maskBit, capturing, passthrough, passthroughPending, occupiedMask}。
 juce::var buildConnPayload(const InputConnSnapshot& s);
@@ -109,9 +112,12 @@ juce::var buildPriorityResponse(bool queued, const juce::String& reason);
 // §5.6 拒绝语义 {conflict:true}(Input setChannelId/setGroupId)。
 juce::var conflictResponse();
 
-// §3.1 首帧快照 InputSnapshot:{channel_id, group_id, role:"input", conn, config, ui:{scale, language},
-//   version:{plugin, abi}}。claim 不经快照回推(唯一通道 = §4.1 scvb.state,§3.1 无 claim 键)。
+// §3.1 首帧快照 InputSnapshot:{channel_id, group_id, role:"input", conn, config,
+//   ui:{scale, language, guide_seen}, guide_seen_global, version:{plugin, abi}}。
+// claim 不经快照回推(唯一通道 = §4.1 scvb.state,§3.1 无 claim 键)。
+// [SL-258] `guide_seen_global` 挂**顶层**而不进 ui:§3.1 语义行明写它「只读、不属工程 state」。
 juce::var buildInputSnapshot(int channelId, int groupId, const InputConnSnapshot& conn, const ConfigSnapshot& config,
-                             float uiScale, const juce::String& lang, const juce::String& pluginVersion, u32 abi);
+                             float uiScale, const juce::String& lang, bool guideSeen, bool guideSeenGlobal,
+                             const juce::String& pluginVersion, u32 abi);
 
 } // namespace scvb::input::bridge

@@ -2020,10 +2020,11 @@ function buildInputBackend(ctx) {
             return OK();
         },
 
-        // ---- 待转正:setGuideSeen([J80] T48 Input 首启轻量引导)------------------
-        // **契约 §3 里还没有这个名字**(Input 函数表当前 7 个)—— 它停在 bridge.js 的
-        // PENDING_FUNCS.input 等 native 落地,见
-        // docs/contract-changes/20260825-input-guide-seen.md。
+        // ---- §3.8 setGuideSeen([J80] T48 Input 首启轻量引导)---------------------
+        // **已在冻结契约里**:§3.8 定义齐全、§7 manifest.input 收录(Input 函数表 8 个),
+        // `PENDING_FUNCS.input` 现已为空(随 [J81] 修宪转正,变更文档
+        // docs/contract-changes/20260825-input-guide-seen.md);[SL-258] 起真宿主的
+        // InputEditor 也挂上了 handler,mock 与真宿主现在都全功能。
         // 形制逐字照 Output 侧 §1.32:工程位写 state.ui.guide_seen 并经 scvb.state 回推;
         // alsoGlobal 只写系统级全局默认位(**不回写 state**,故不进 patchState)。
         setGuideSeen(seen, alsoGlobal = true) {

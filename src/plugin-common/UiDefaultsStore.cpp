@@ -20,8 +20,15 @@ constexpr const char* kKeyLang = "lang_global"; // 选中的语言值本身(跨�
 // 缩放档位**按角色分键**:两插件的档位表不同(Output {0.5…2} / Input {0.33…3}),
 // 共用一个键会在 Input 也实现 §3.6 落盘后互相污染(Input 存 300 → Output 构造读回 300,
 // 而 300 不在 Output 档位里)。inRange 用的是并集边界,拦不住这种污染。
-// 两个 *_seen_global 是 Output 专属(Input 没有引导页/导览),无需分键。
 constexpr const char* kKeyUiScale = "ui_scale_percent_output";
+
+// [SL-258] guide_seen 全局位**同样按角色分键**。原注释写「两个 *_seen_global 是 Output 专属
+// (Input 没有引导页/导览),无需分键」—— 那是 [J80]/T48 之前的旧事实,Input 现在有首启轻量
+// 引导(契约 §3.8)。契约 §3.1 语义行逐字要求「**Input 与 Output 的全局位各存一份**」:
+// 共用一个位会让先装 Output 的用户永远看不到 Input 的引导,**而那正是 J80 立 T48 的全部理由**。
+// Output 沿用原键名不动(改名 = 老用户已勾的「不再显示」全部失效),Input 另起后缀键。
+// tour 仍是 Output 专属(Input 没有交互式导览),故 kKeyTourSeen 不分键。
+constexpr const char* kKeyGuideSeenInput = "guide_seen_global_input";
 
 // UI 语言白名单。真源 = §1.30 的归一集(scvb::bridge::normalizeLang 只吐 {zh,en,fr}),
 // 本处**只做落盘侧的复核**,不新增第二套语言表 —— 加语言时两处必须一起改,故写成一个函数,
@@ -97,6 +104,16 @@ bool guideSeenGlobal()
 void setGuideSeenGlobal(bool seen)
 {
     writeBool(kKeyGuideSeen, seen);
+}
+
+bool guideSeenGlobalInput()
+{
+    return readBool(kKeyGuideSeenInput);
+}
+
+void setGuideSeenGlobalInput(bool seen)
+{
+    writeBool(kKeyGuideSeenInput, seen);
 }
 
 bool tourSeenGlobal()

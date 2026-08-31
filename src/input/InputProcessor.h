@@ -103,6 +103,12 @@ public:
     void bridgeSetUiScalePercent(int percent); // commitUiScale 落 state(clamp 33..300)
     int bridgeUiScalePercent() const;
     juce::String bridgeUiLanguage() const;
+    // [SL-258] setGuideSeen(§3.8)落 state `ui.guide_seen`。**当前只是会话内运行时态** ——
+    // 随工程持久化要等 [SL-238]:`InputStateCodec` 严格等长、无尾扩机制,STATE_SCHEMA 虽已登记
+    // Input 侧 `uiGuideSeen` 但 codec 从没编码它。那一层不在本卡范围内,故重开工程会回 false;
+    // 跨工程的「不再显示」承诺由 `uidefaults::guideSeenGlobalInput()`(真落盘)兜住。
+    void bridgeSetGuideSeen(bool seen);
+    bool bridgeUiGuideSeen() const;
 
 private:
     // 25Hz [M] 定时器:健康判定 → C18 模式字;每 ~250ms 心跳(4Hz)。
@@ -161,6 +167,7 @@ private:
     int groupId_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";
+    bool uiGuideSeen_ = false; // [SL-258] §3.8;会话内运行时态(持久化待 SL-238)
 
     bool prepared_ = false;
 

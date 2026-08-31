@@ -698,6 +698,18 @@ void ScvbInputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
     uiLanguage_ = lang; // 已由桥层 normalize({zh,en,fr});getStateInformation 持久化
 }
 
+void ScvbInputAudioProcessor::bridgeSetGuideSeen(bool seen)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiGuideSeen_ = seen;
+}
+
+bool ScvbInputAudioProcessor::bridgeUiGuideSeen() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return uiGuideSeen_;
+}
+
 void ScvbInputAudioProcessor::bridgeSetUiScalePercent(int percent)
 {
     const juce::ScopedLock lock(lifecycleMutex_);

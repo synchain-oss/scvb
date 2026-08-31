@@ -125,7 +125,8 @@ juce::Optional<int> parseIntArg(const juce::Array<juce::var>& args)
 }
 
 juce::var buildStatePayload(int channelId, int groupId, const juce::String& claim, u32 abi,
-                            const juce::Optional<u32>& abiRemote, float uiScale, const juce::String& lang)
+                            const juce::Optional<u32>& abiRemote, float uiScale, const juce::String& lang,
+                            bool guideSeen)
 {
     auto* o = new juce::DynamicObject();
     o->setProperty("channel_id", channelId);
@@ -139,6 +140,7 @@ juce::var buildStatePayload(int channelId, int groupId, const juce::String& clai
     auto* ui = new juce::DynamicObject();
     ui->setProperty("scale", uiScale);
     ui->setProperty("language", lang);
+    ui->setProperty("guide_seen", guideSeen); // §4.1 载荷行:ui 三字段与 §3.1 快照同拼写(A-30)
     o->setProperty("ui", juce::var(ui));
     return juce::var(o);
 }
@@ -249,7 +251,8 @@ juce::var conflictResponse()
 }
 
 juce::var buildInputSnapshot(int channelId, int groupId, const InputConnSnapshot& conn, const ConfigSnapshot& config,
-                             float uiScale, const juce::String& lang, const juce::String& pluginVersion, u32 abi)
+                             float uiScale, const juce::String& lang, bool guideSeen, bool guideSeenGlobal,
+                             const juce::String& pluginVersion, u32 abi)
 {
     auto* o = new juce::DynamicObject();
     o->setProperty("channel_id", channelId);
@@ -260,7 +263,11 @@ juce::var buildInputSnapshot(int channelId, int groupId, const InputConnSnapshot
     auto* ui = new juce::DynamicObject();
     ui->setProperty("scale", uiScale);
     ui->setProperty("language", lang);
+    ui->setProperty("guide_seen", guideSeen); // §3.1:随工程走的已读位(持久化待 SL-238)
     o->setProperty("ui", juce::var(ui));
+    // §3.1 语义行:全局判定位**只读、不属工程 state**,故挂顶层而不进 ui 子树。
+    // 首启判据两侧同构:工程 ui.guide_seen === false 且 guide_seen_global === false 才弹。
+    o->setProperty("guide_seen_global", guideSeenGlobal);
     auto* version = new juce::DynamicObject();
     version->setProperty("plugin", pluginVersion);
     version->setProperty("abi", static_cast<int>(abi));

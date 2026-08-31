@@ -122,6 +122,29 @@ juce::String normalizeLang(const juce::String& code);
 // 否则(缺参/非数值/不在档位表)返回 false(调用方回 {ok:false, reason:"badArg"})。
 bool parseUiScaleArg(const juce::Array<juce::var>& args, const juce::String& role, float& outScale);
 
+// [SL-258] 从 src/output/BridgeArgs.h 上提到共用层:Input 的 §3.8 setGuideSeen 与 Output 的
+// §1.32 是**逐字同签名**的两侧同名函数,布尔口径必须同一份 —— 抄第二份正是两侧漂移的起点
+// (§0.1 第 4 条:同一语义不得两个落点)。Output 侧调用点不变,BridgeArgs.h 留 using 转发。
+// 严格布尔提取(PR#55 缺陷3):仅接受 bool / int / int64 数值;isBool → 真值,isInt/isInt64 → !=0。
+// 其它(字符串/对象/void)返回 false,调用方回 badArg。JUCE 8.0.8 的 var::operator bool() 实为
+// type->toBool(value)(juce_Variant.cpp:567;bool→boolToBool L246、int→intToBool L149、void→defaultToBool
+// L100),对 bool 返回真值、对 void 返回 false;此处仍显式分型,避免字符串 "false" 被 stringToBool
+// 误判为非空即 true。
+inline bool strictBool(const juce::var& v, bool& out)
+{
+    if (v.isBool())
+    {
+        out = static_cast<bool>(v);
+        return true;
+    }
+    if (v.isInt() || v.isInt64())
+    {
+        out = static_cast<juce::int64>(v) != 0;
+        return true;
+    }
+    return false;
+}
+
 // --- 回执助手(两插件共用的原生函数回执构造)-------------------------------------------
 // {ok:true}
 juce::var okResponse();

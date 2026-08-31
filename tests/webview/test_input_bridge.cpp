@@ -205,7 +205,8 @@ TEST_CASE("T30 parseIntArg:类型不符/越界 → 空(回 badArg);数值截断(
 
 TEST_CASE("T30 buildStatePayload:键名 + abi_remote 条件存在(§4.1)")
 {
-    const auto withRemote = obj(buildStatePayload(3, 2, "abiMismatch", 1, juce::Optional<scvb::u32>(7), 1.25f, "fr"));
+    const auto withRemote =
+        obj(buildStatePayload(3, 2, "abiMismatch", 1, juce::Optional<scvb::u32>(7), 1.25f, "fr", true));
     CHECK(static_cast<int>(withRemote->getProperty("channel_id")) == 3);
     CHECK(static_cast<int>(withRemote->getProperty("group_id")) == 2);
     CHECK(withRemote->getProperty("claim").toString() == "abiMismatch");
@@ -214,11 +215,16 @@ TEST_CASE("T30 buildStatePayload:键名 + abi_remote 条件存在(§4.1)")
     const auto ui = obj(withRemote->getProperty("ui"));
     CHECK(static_cast<float>(ui->getProperty("scale")) == 1.25f);
     CHECK(ui->getProperty("language").toString() == "fr");
+    // [SL-258] §4.1 载荷行的 ui 第三字段:setGuideSeen 写入后的回推路径。
+    CHECK(static_cast<bool>(ui->getProperty("guide_seen")) == true);
 
     // 探测不到 → abi_remote 字段不存在(§4.1 字段纪律)。
-    const auto noRemote = obj(buildStatePayload(3, 2, "active", 1, juce::Optional<scvb::u32>(), 1.0f, "zh"));
+    const auto noRemote = obj(buildStatePayload(3, 2, "active", 1, juce::Optional<scvb::u32>(), 1.0f, "zh", false));
     CHECK_FALSE(noRemote->hasProperty("abi_remote"));
     CHECK(noRemote->getProperty("claim").toString() == "active");
+    CHECK(static_cast<bool>(obj(noRemote->getProperty("ui"))->getProperty("guide_seen")) == false);
+    // 全局位**不进** scvb.state:§3.1 语义行明写它只读、不属工程 state,只在首帧快照顶层。
+    CHECK_FALSE(noRemote->hasProperty("guide_seen_global"));
 }
 
 TEST_CASE("T30 buildConnPayload 六字段(§4.2)")
@@ -357,7 +363,8 @@ TEST_CASE("T30 buildInputSnapshot 首帧快照形状(§3.1)")
     cfg.sourceChannels = 2;
     cfg.configSeq = 7;
     const auto s =
-        obj(buildInputSnapshot(4, 1, connSnapshot(true, true, false, false, false, 8), cfg, 1.0f, "zh", "0.1.0", 1));
+        obj(buildInputSnapshot(4, 1, connSnapshot(true, true, false, false, false, 8), cfg, 1.0f, "zh", false, true,
+                               "0.1.0", 1));
     CHECK(static_cast<int>(s->getProperty("channel_id")) == 4);
     CHECK(static_cast<int>(s->getProperty("group_id")) == 1);
     CHECK(s->getProperty("role").toString() == "input");
@@ -367,6 +374,11 @@ TEST_CASE("T30 buildInputSnapshot 首帧快照形状(§3.1)")
     const auto ui = obj(s->getProperty("ui"));
     CHECK(static_cast<float>(ui->getProperty("scale")) == 1.0f);
     CHECK(ui->getProperty("language").toString() == "zh");
+    // [SL-258] §3.1:工程位进 ui 子树、全局判定位挂**顶层**(语义行:只读、不属工程 state)。
+    // 两者**必须能各自取值** —— 首启判据是「工程 false 且 全局 false 才弹」,合成一个位就废了。
+    CHECK(static_cast<bool>(ui->getProperty("guide_seen")) == false);
+    CHECK(static_cast<bool>(s->getProperty("guide_seen_global")) == true);
+    CHECK_FALSE(ui->hasProperty("guide_seen_global")); // 不重复挂进 ui(同一语义两个落点,§0.1 第 4 条)
     const auto version = obj(s->getProperty("version"));
     CHECK(version->getProperty("plugin").toString() == "0.1.0");
     CHECK(static_cast<int>(version->getProperty("abi")) == 1);

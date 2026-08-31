@@ -3,8 +3,8 @@
 
 // UiDefaultsStore —— 系统级 UI 全局默认(**跨工程**,不随工程 state 走)。
 //
-// 承载三项(契约 §1.29/§1.32/§1.33):
-//   • guide_seen_global —— 首启红字九条页勾了「不再显示」;
+// 承载四项(契约 §1.29/§1.32/§1.33/§3.8):
+//   • guide_seen_global —— 首启红字九条页勾了「不再显示」(**按侧各存一份**,见下);
 //   • tour_seen_global  —— 交互式导览已完成或已婉拒;
 //   • uiScalePercent    —— 缩放防呆确认「保持」后落的默认档位(0 = 未设置)。
 //
@@ -25,8 +25,15 @@
 namespace scvb::uidefaults
 {
 
+// **Output 侧**的首启红字九条页「不再显示」(§1.32)。
 bool guideSeenGlobal();
 void setGuideSeenGlobal(bool seen);
+
+// **Input 侧**的首启轻量引导「不再显示」(§3.8,[J81]/J80/T48)。与 Output 的**各存一份**:
+// 契约 §3.1 语义行逐字要求分键 —— 两侧引导讲的是两个界面、两套内容,共用一个位会让先装
+// Output 的用户永远看不到 Input 的引导,而那正是 J80 立 T48 的全部理由。
+bool guideSeenGlobalInput();
+void setGuideSeenGlobalInput(bool seen);
 
 bool tourSeenGlobal();
 
