@@ -1671,8 +1671,12 @@ if (bridge) {
             const prevAt = store.params.hostEchoAt || 0;
             const gap = prevAt ? Date.now() - prevAt : 0;
             if (prevAt && gap >= HOST_ECHO_RELEASE_MS) {
+                // 纯 ASCII:①它只进开发者控制台,不上屏;②`scripts/check-font-coverage.py`
+                // 扫的是 web/ 下**全部 .js 的字符串字面量**,这里写中文会把新字形塞进字体
+                // 子集(实测「徽/灭/眨/隔」四个字四款字体都没有,gate 3h 直接红);
+                // ③用户要把这几行贴回来给我们,ASCII 复制粘贴不会乱码。
                 console.debug(
-                    `[SCVB][SL-251] hostEcho 间隔 ${gap}ms ≥ 释放窗口 ${HOST_ECHO_RELEASE_MS}ms —— 提示徽标会在这一段灭掉再亮(看到眨眼就是这里)`,
+                    `[SCVB][SL-251] hostEcho gap ${gap}ms >= release window ${HOST_ECHO_RELEASE_MS}ms; the host-driven badge blinks off and back on across this gap.`,
                 );
             }
             clearTimeout(hostEchoTimer);
