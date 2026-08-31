@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -85,37 +86,34 @@ inline SuggestionScopeParse parseSuggestionScope(bool hasVersions, const std::st
     const bool okStart = hasStart && std::isfinite(startS);
     const bool okEnd = hasEnd && std::isfinite(endS);
 
-    if (okStart && okEnd)
+    // §1.36 拒绝态第二条:两头都给且 `endS ≤ startS` ⇒ badArg(mock 亦然)
+    if (okStart && okEnd && !(endS > startS))
     {
-        if (!(endS > startS))
-        {
-            r.badArg = true; // §1.36 拒绝态第二条:endS ≤ startS
-            return r;
-        }
-        r.scope.startSec = startS;
-        r.scope.endSec = endS;
+        r.badArg = true;
+        return r;
     }
-    else if (okStart)
+
+    // 三支收成**一条归一路径**(#163 复审二轮【重要】)。分开写的时候漏掉了负左端那一支:
+    // `{startS:-5, endS:10}` 被逐字抄进 `Scope`,而 `inWindow` 用 `startSec >= 0` **兼作
+    // 「窗生效」旗标** —— `!(−5 >= 0)` 为真 ⇒ **整个筛选关掉 ⇒ 全导**,而 mock 的
+    // `t1S > −5 && t0S < 10` 只导 10s 之前的段。§1.36 对 `startS` 只写 `f64`(没写非负),
+    // 所以负值是**契约合法**的入参 —— 两侧行集不同,而导出这条路没有任何回显。
+    // 归一在这一层做掉,不把负值原样递给下游让它误判成「不限」。
+    if (okStart || okEnd)
     {
-        r.scope.startSec = startS;
-        r.scope.endSec = std::numeric_limits<double>::max(); // ≡ +∞(mock 口径)
-    }
-    else if (okEnd)
-    {
-        if (endS > 0.0)
+        const double lo = okStart ? std::max(0.0, startS) : 0.0; // 负左端 ≡ −∞ ≡ 0(段时间恒 ≥ 0)
+        const double hi = okEnd ? endS : std::numeric_limits<double>::max(); // 缺右端 ≡ +∞
+        if (hi > lo)
         {
-            // ≡ −∞:段时间恒 ≥ 0,真实段上 `t1Sec > 0` 与 `> -∞` 等效。
-            r.scope.startSec = 0.0;
-            r.scope.endSec = endS;
+            r.scope.startSec = lo;
+            r.scope.endSec = hi;
         }
         else
         {
-            // 右端 ≤ 0 ⇒ 窗内不可能有段(段时间恒 ≥ 0)。**不是 badArg**(§1.36 没这一条),
-            // 但也**不能**退回「不限」——那会把「只要 0 秒之前的段」变成「导出全部」。
-            // ⚠ `Scope` 表达不了「空窗」:`inWindow` 在 `!(endSec > startSec)` 时**关掉筛选**
-            //   (返回 true),所以 `0/0` 反而是「全导」—— 与本意正相反。
-            // 故取一个真实段够不到的远端区间:`t1Sec > startSec` 对任何真实段恒假 ⇒ 零行 ⇒
-            // noData,与 mock 的 `t0S < endS` 恒假同结果。
+            // 钳完窗不成立(如只给 `endS ≤ 0`)⇒ 窗内不可能有段。**不是 badArg**
+            // (§1.36 没这一条),但**绝不能**留成 `lo >= hi` —— `inWindow` 会把它当
+            // 「窗未生效」而**全导**,与本意正相反。取一个真实段够不到的远端区间:
+            // `t1Sec > startSec` 对任何真实段恒假 ⇒ 零行 ⇒ noData,与 mock 同结果。
             r.scope.startSec = std::numeric_limits<double>::max() * 0.5;
             r.scope.endSec = std::numeric_limits<double>::max();
         }

@@ -711,6 +711,23 @@ TEST_CASE("parseSuggestionScope:§1.36 入参归一与拒绝态", "[output][sugg
         CHECK(endZero.scope.endSec > endZero.scope.startSec); // 筛选**必须**生效,不能退成「不限」
     }
 
+    SECTION("[#163 二轮【重要】] 负左端必须归一 —— 否则 inWindow 会把筛选整个关掉")
+    {
+        // `inWindow` 用 `startSec >= 0` **兼作「窗生效」旗标**:负左端逐字抄进 Scope 会让
+        // `!(startSec >= 0)` 为真 ⇒ 筛选关掉 ⇒ **全导**,而 mock 的 `t1S > -5 && t0S < 10`
+        // 只导 10s 之前的段。§1.36 对 startS 只写 f64(没写非负)⇒ 负值是契约合法入参。
+        const auto neg = parseSuggestionScope(false, "", false, 0, true, -5.0, true, 10.0, kActive);
+        REQUIRE_FALSE(neg.badArg);
+        CHECK(neg.scope.startSec == 0.0); // 钳到 0(≡ −∞:段时间恒 ≥ 0)
+        CHECK(neg.scope.endSec == 10.0);
+        CHECK(neg.scope.startSec >= 0.0); // ← 这一条就是 inWindow 的「窗生效」判据
+        // 只给负左端:钳到 0 + 右端 +∞ ⇒ 仍然是「全导」,与 mock 的 (−5, +∞) 同结果
+        const auto negOnly = parseSuggestionScope(false, "", false, 0, true, -5.0, false, 0.0, kActive);
+        REQUIRE_FALSE(negOnly.badArg);
+        CHECK(negOnly.scope.startSec == 0.0);
+        CHECK(negOnly.scope.endSec > 1.0e300);
+    }
+
     SECTION("非有限值按「没给」处理(与 mock 的 isFiniteNumber 同口径)")
     {
         const double inf = std::numeric_limits<double>::infinity();

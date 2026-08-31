@@ -2202,7 +2202,34 @@ void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
                              scopeVar.getDynamicObject()->hasProperty(juce::Identifier("versions"));
     const std::string versions =
         hasVersions ? scopeVar.getProperty("versions", juce::var()).toString().toStdString() : std::string{};
-    const bool hasMask = givenNumber(scopeVar, "tracksMask");
+    // `tracksMask` 判得比 startS/endS **严**(#163 复审二轮【建议】):必须是**整数值**且落在
+    // int32 内,否则按「没给」回落全 15 轨 —— 与 mock 的 `Number.isInteger(x) ? … : 0x7fff`
+    // 逐条对齐。两个理由:
+    //   ① `{tracksMask:1.5}` 在 mock 回落全轨,而 `static_cast<int>(1.5)` 会截成 1 ⇒ 只导轨 1;
+    //   ② `juce::var` 存的是 double,`operator int()` 对**超出 int 表示范围**的值是 **UB**
+    //      (`{tracksMask:1e20}`)。载荷来自 WebView,这一层的定位就是入参归一,
+    //      不该假定调用方守规矩。
+    // startS/endS 保持宽判即可 —— 非有限值那一档 `parseSuggestionScope` 已用 `std::isfinite`
+    // 兜住,与 mock 的 `isFiniteNumber` 同口径。
+    const auto givenIntegral = [](const juce::var& o, const char* key) {
+        auto* dyn = o.getDynamicObject();
+        if (dyn == nullptr || !dyn->hasProperty(juce::Identifier(key)))
+        {
+            return false;
+        }
+        const juce::var v = o.getProperty(juce::Identifier(key), juce::var());
+        if (v.isInt() || v.isInt64())
+        {
+            return true;
+        }
+        if (v.isDouble())
+        {
+            const double d = static_cast<double>(v);
+            return std::isfinite(d) && d == std::floor(d) && d >= -2147483648.0 && d <= 2147483647.0;
+        }
+        return false;
+    };
+    const bool hasMask = givenIntegral(scopeVar, "tracksMask");
     const bool hasStart = givenNumber(scopeVar, "startS");
     const bool hasEnd = givenNumber(scopeVar, "endS");
 
