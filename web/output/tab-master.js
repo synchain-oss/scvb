@@ -907,6 +907,12 @@ export function createTabMaster(opts) {
         pendingGroup: 0, // 改组确认条的预选组(0 = 未弹)
         // [SL-247] 「写入双后果」确认板的**意图位**。显隐不再由 show/hide 直写 DOM,而是
         // 在 renderFlow 里派生成「意图 ∧ output_enabled」—— 理由见 showWriteConfirm 的注释。
+        //
+        // ⛔ **别把它简化掉、退回「只看 output_enabled」的状态单判**:那一版会在真机上把
+        // 确认板永久吃掉(#162 复审第二轮的回归)。而且**自动化套件测不出这一退化** ——
+        // mock 的 `patchState → emit` 是同步的,预览世界里状态在 render 之前就翻好了,
+        // 页面级冒烟照样绿;真机那条 async 回推是 mock 复现不了的。守它的是
+        // `smoke-tab3-interactions` 的源码级断言(「showWriteConfirm 不直写 hidden」)。
         writeConfirmOpen: false,
         analyzeFlashUntil: 0, // data-analyze="done" 闪绿的截止时刻
         analyzePending: false, // analyze 受理回执→state 确认之间的在途标志
