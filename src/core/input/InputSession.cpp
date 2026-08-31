@@ -128,6 +128,34 @@ void InputSession::setCapturing(InputSlot* slot, bool capturing)
     }
 }
 
+bool InputSession::outputOnline(u64 nowMs) const
+{
+    const OutputSlot* os = registry_.outputSlot();
+    if (os == nullptr)
+    {
+        return false;
+    }
+    // state 校验防「释放后 ≤2s 残留新鲜」:releaseOutput 把 state 置回 kSlotFree,但**不清**
+    // connected_mask(清 mask 只在 claimOutput 的两条路径),故 mask 位不足以证明 Output 在场。
+    return os->state.load(std::memory_order_acquire) == kSlotActive &&
+           !isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs);
+}
+
+bool InputSession::outputClaimedButStale(u64 nowMs) const
+{
+    const OutputSlot* os = registry_.outputSlot();
+    if (os == nullptr)
+    {
+        return false; // 没有 Output ⇒ 不是「死的 Output」;直通与否由 mask/state 判
+    }
+    if (os->state.load(std::memory_order_acquire) != kSlotActive)
+    {
+        return false; // 优雅退场:音频线程逐块读 state 已判掉,这里不重复否决
+    }
+    // 自称 kSlotActive 却心跳陈旧 = 崩溃/挂死且没走释放路径 —— 唯一必须靠 [M] 时钟才能识别的那种。
+    return isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs);
+}
+
 bool InputSession::isHealthy(u64 nowMs) const
 {
     const u32 ch = claimedChannel_.load(std::memory_order_acquire);
@@ -135,16 +163,12 @@ bool InputSession::isHealthy(u64 nowMs) const
     {
         return false;
     }
+    if (!outputOnline(nowMs))
+    {
+        return false;
+    }
     const OutputSlot* os = registry_.outputSlot();
     if (os == nullptr)
-    {
-        return false;
-    }
-    if (os->state.load(std::memory_order_acquire) != kSlotActive)
-    {
-        return false;
-    }
-    if (isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs))
     {
         return false;
     }
@@ -161,8 +185,7 @@ InputConnSnapshot InputSession::connSnapshot(u64 nowMs) const
     if (os != nullptr)
     {
         // §4.2 outputOnline = 本组 OutputSlot 心跳新鲜 ≤2000ms;附 state 校验防「释放后 ≤2s 残留新鲜」。
-        s.outputOnline = os->state.load(std::memory_order_acquire) == kSlotActive &&
-                         !isStaleDisplay(os->heartbeat_ms.load(std::memory_order_acquire), nowMs);
+        s.outputOnline = outputOnline(nowMs);
         // §4.2 maskBit 以 outputOnline 为前提(PR#54 R5):Output 心跳陈旧时 connected_mask 位
         // 仍在也不置位,否则 kActive 的 claimValue 会误判为 "active"(已死 Output 显示健康)。
         if (s.outputOnline && ch >= 1 && ch <= kMaxChannels)

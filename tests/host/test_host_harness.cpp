@@ -6177,9 +6177,15 @@ struct OfflineHandoverProbe
     int firstInputSilent = -1;
     int firstInject = -1;
     int bothSilentBlocks = 0;
+    // 「过渡块」= Input 电平严格落在 0 与源电平之间 ⇒ 80ms ramp 正在渐变。
+    // 硬切(snapTo)下**不存在**这种块:每块非满即零。这是实时/非实时唯一稳定可分的印记 ——
+    // J32 的 200ms 闸会被 muted 确认位抄近路,所以「注入晚 200ms」在 harness 里不可靠。
+    int rampBlocks = 0;
 };
 
-OfflineHandoverProbe runOfflineHandover(Rig& r, int blocksPerPump, int totalBlocks)
+// pumpMs:每次泵消息循环的**墙钟**时长。离线用 1(墙钟几乎不走 = 音频跑在墙钟前面);
+// 实时用 20(让 J32 的 200ms 墙钟闸真的走得完,否则实时探针量不到注入)。
+OfflineHandoverProbe runOfflineHandover(Rig& r, int blocksPerPump, int totalBlocks, int pumpMs = 1)
 {
     OfflineHandoverProbe p;
     for (int i = 0; i < totalBlocks; ++i)
@@ -6199,6 +6205,9 @@ OfflineHandoverProbe runOfflineHandover(Rig& r, int blocksPerPump, int totalBloc
 
         if (p.firstInputSilent < 0 && inPk < 1e-6f)
             p.firstInputSilent = i;
+        // 源幅度 0.5:落在 (1e-4, 0.45) 之间 = ramp 中途。硬切不产生这样的块。
+        if (inPk > 1e-4f && inPk < 0.45f)
+            ++p.rampBlocks;
         if (p.firstInject < 0 && outPk > 1e-6f)
             p.firstInject = i;
         // 「Input 静音 ∧ Output 未注入」= 用户听到的全零。DAW 里直通期总线有声,harness 不
@@ -6208,7 +6217,7 @@ OfflineHandoverProbe runOfflineHandover(Rig& r, int blocksPerPump, int totalBloc
 
         r.ph.timeSamples += kBlock;
         if ((i % blocksPerPump) == blocksPerPump - 1)
-            Rig::pumpMessages(1);
+            Rig::pumpMessages(pumpMs);
     }
     return p;
 }
@@ -6227,9 +6236,12 @@ TEST_CASE("HOST SL-254:非实时渲染不得出现「Input 静音 ∧ Output 未
 
         const auto p = runOfflineHandover(r, blocksPerPump, 900);
         INFO("blocksPerPump=" << blocksPerPump << " Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject
-                              << " 全零块=" << p.bothSilentBlocks);
+                              << " 全零块=" << p.bothSilentBlocks << " ramp块=" << p.rampBlocks);
         // ★ 核心判据:一块全零都不许有。墙钟闸的实现在这里红,且红的块数随倍速放大。
         CHECK(p.bothSilentBlocks == 0);
+        // ★ 与 ③ 成镜像:非实时是**硬切**,不许有 ramp 过渡块(ramp 也是墙钟量,250x 下会摊成 20s
+        //   渐变 —— 把「前段静音」换成「前段超长淡入」,同样被倍速放大)。谁把 ramp 放回非实时,这里红。
+        CHECK(p.rampBlocks == 0);
     }
 }
 
@@ -6253,14 +6265,83 @@ TEST_CASE("HOST SL-254:非实时下注入不得早于 Input 静音(防双路叠�
 
 // ③ 实时路径逐字不变:J32 的 200ms / muted 确认位 / 80ms ramp 一个都没动。
 //    没有这一条,上面两条会诱使后来人把非实时那套直接铺到实时路径上。
+//
+//    【复审 r1 补强】原形态只断言实时**稳态**(最终注入 + meter>0),而把实时也改成同块硬切之后
+//    那两条照样全绿 —— 正是本用例声称要防的事。断言必须落在**过渡期**:实时下那个「Input 已静音
+//    ∧ Output 未注入」的窗口是墙钟闸的**可观测投影**,它必须**存在且非零**(实时下它被 80ms ramp
+//    盖住、听不见,所以是良性的;离线下它就是本卡的病)。①「非实时恒为 0」与 ③「实时必须 >0」
+//    构成一对方向相反的钳子:谁把两条路径搞成同一套,必有一条红。
 TEST_CASE("HOST SL-254:实时路径仍走 J32 原协议(注入延迟未被顺手删掉)", "[host][SL254]")
 {
     Rig r; // 不宣告非实时 = 实时路径
     r.ph.playing = true;
+
+    // ⚠ 探针必须从**尚未交接**的状态起跑:先 waitUntilInjected() 的话交接早在探针之前就完成了,
+    //   量到的 firstInject/firstInputSilent 都只是「稳态第一块」,恒等 ⇒ 断言恒假(已踩过)。
+    // pumpMs=20 让 J32 的 200ms 墙钟闸在探针窗口内真的走得完。
+    const auto p = runOfflineHandover(r, 4, 600, /*pumpMs=*/20);
+    INFO("实时:Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject << " 全零块=" << p.bothSilentBlocks
+                           << " ramp块=" << p.rampBlocks);
+    REQUIRE(p.firstInputSilent >= 0);
+    REQUIRE(p.firstInject >= 0);
+    // ★ 80ms ramp 仍在:实时下必有「电平介于 0 与源之间」的过渡块。
+    //   把实时也改成同块硬切(snapTo)⇒ 每块非满即零 ⇒ rampBlocks 归 0 ⇒ 本条红,而 ①②④ 照样绿。
+    //
+    //   为什么不断言「注入晚于静音 200ms」:J32 的注入闸是「muted 确认位 **或** 200ms,先到者」,
+    //   实时下 Input 一静音就置确认位,Output 下一拍即注入 —— 200ms 那条几乎从不生效,拿它做断言
+    //   会恒假(已实测:实时 Input静音@16 注入@16、全零块=0)。ramp 才是实时路径稳定可观测的印记。
+    CHECK(p.rampBlocks > 0);
+    //   ⚠ 这里**不能**照搬 ② 的「注入不早于静音」:实时下 [M] 的 muted 确认位取的是 stageMachine
+    //   的**目标档**(`InputProcessor.cpp` 的 setMuted 注释写明「以目标档近似」),而 [A] 还在走
+    //   80ms ramp,所以注入合法地落在 ramp 中途(实测 注入@16 而全静音@20)—— 那段重叠是**渐弱**
+    //   的淡出而不是等幅双路,正是 J32 用 ramp 覆盖掉的部分。非实时没有 ramp,故 ② 在那边才成立。
+
+    // 稳态与改动前一致(原断言保留)。
     REQUIRE(r.waitUntilInjected());
     CHECK(r.injected());
-    // 实时下 Input 最终静音、Output 最终注入,稳态与改动前一致。
     r.runBlocks(60, 0.5f);
     Rig::pumpMessages(200);
     CHECK(r.out.meterSnapshot().trackPeak[kTestChannel - 1] > 0.0f);
+}
+
+// ④ 【复审 r1 红旗】非实时下健康前提不被豁免:Output 释放后 Input 必须回直通,不得恒静音。
+//
+//    `Registry::releaseOutput()` 把 OutputSlot.state 置回 kSlotFree 时**不清 connected_mask**
+//    (清 mask 只在 claimOutput 的两条路径)。于是「Output 被旁通/删除/宿主调 releaseResources()」
+//    之后 mask 位**残留**。若非实时逐块路径只读 mask 一位,就会把「无 Output」渲染成**整条导出
+//    全零** —— 与本卡要修的用户症状同类,且正是 [J12] 立条要消除的事故面。
+//    宪法 J95① 段末已明写:非实时豁免的只是时间窗与 ramp,**不豁免健康前提**。
+TEST_CASE("HOST SL-254:非实时下 Output 释放后必须回直通(健康前提不被豁免)", "[host][SL254]")
+{
+    Rig r;
+    r.in.setNonRealtime(true);
+    r.out.setNonRealtime(true);
+    r.ph.playing = true;
+
+    // 先跑到交接完成:Input 确实已被接管静音(否则后面的断言是空的)。
+    const auto before = runOfflineHandover(r, 16, 600);
+    REQUIRE(before.firstInputSilent >= 0);
+    REQUIRE(before.firstInject >= 0);
+
+    // Output 退场:走宿主真实路径 releaseResources() ⇒ session_.release() ⇒ releaseSlot()
+    // ⇒ Registry::releaseOutput():state = kSlotFree,而 connected_mask **位残留**。
+    r.out.releaseResources();
+    Rig::pumpMessages(80); // 让 Input 的 [M] 跑几拍,发布 outputAlive_=0
+
+    // ★ 此后 Input 必须回到直通:逐块读到的 mask 位还在,但 state 已 kSlotFree、存活位已落。
+    float peak = 0.0f;
+    for (int i = 0; i < 200; ++i)
+    {
+        Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
+        r.in.processBlock(r.inBuf, r.midi);
+        for (int c = 0; c < r.inBuf.getNumChannels(); ++c)
+            for (int s = 0; s < r.inBuf.getNumSamples(); ++s)
+                peak = std::max(peak, std::abs(r.inBuf.getReadPointer(c)[s]));
+        r.ph.timeSamples += kBlock;
+        if ((i % 16) == 15)
+            Rig::pumpMessages(1);
+    }
+    INFO("Output 释放后 Input 峰值=" << peak);
+    // 只读 mask 一位的实现在这里红(peak 恒 0 = 整条导出全零)。
+    CHECK(peak > 1e-3f);
 }

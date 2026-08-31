@@ -276,12 +276,25 @@ void ScvbInputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     //
     // RT 纪律:只做 mapped 内存上的 atomic load,零分配、零锁、零系统调用;OutputSlot 走与
     // registrySlot 同一条 registry 租约 + 冻结偏移(Registry::outputSlotAtBase)。
+    // ⚠ **健康前提不被豁免**(宪法 J95① 段末;SL-254 复审红旗):J95① 豁免的只是时间窗与 ramp。
+    // `connected_mask` 一位**不足以**证明 Output 在场 —— `Registry::releaseOutput()` 把 state 置回
+    // kSlotFree 时**不清 mask**(清 mask 只在 claimOutput 的两条路径),于是 Output 被旁通/删除/
+    // 宿主对它调 releaseResources() 后 mask 位残留,只读 mask 会把「无 Output」渲染成**整条导出
+    // 全零** —— 正是 [J12] 立条要消除的事故面,也与本卡要修的症状同类。
+    // 故非实时静音条件 = mask 位 ∧ state 活(**逐块**读,零延迟)∧ ¬outputStale_([M] 发布)。
+    // 三者的分工不可对调:
+    //  · mask 与 state 必须**逐块**读 —— 用 [M] 的滞后位替代会让 Input 晚静音而 Output 已注入 =
+    //    本卡明令要防的**双路叠加**;state 逐块读还让「优雅退场」零延迟地回直通。
+    //  · 心跳新鲜度需要时钟、音频线程取不到,只能由 [M] 发布,且**极性必须是「已确认死」**:
+    //    换成「在场位」(尚未确认活 ⇒ 不静音)会在上升沿晚一拍,实测即刻红(注入@304 早于静音@320)。
     if (isNonRealtime() && block.outputSlot != nullptr && block.channel >= 1 && block.channel <= scvb::kMaxChannels)
     {
         const scvb::u32 mask = block.outputSlot->connected_mask.load(std::memory_order_acquire);
-        const bool takenOver = (mask & (1u << (block.channel - 1))) != 0;
-        const auto target =
-            takenOver ? scvb::input::OutputStageMode::kSilence : scvb::input::OutputStageMode::kPassthrough;
+        const bool maskBit = (mask & (1u << (block.channel - 1))) != 0;
+        const bool slotActive = block.outputSlot->state.load(std::memory_order_acquire) == scvb::kSlotActive;
+        const bool confirmedDead = outputStale_.load(std::memory_order_acquire) != 0;
+        const auto target = (maskBit && slotActive && !confirmedDead) ? scvb::input::OutputStageMode::kSilence
+                                                                      : scvb::input::OutputStageMode::kPassthrough;
         mode = static_cast<scvb::u32>(target);
         rampSwitcher_.snapTo(target); // 同块硬切:ramp 也是墙钟量,离线会被放大成超长淡入
     }
@@ -311,9 +324,17 @@ void ScvbInputAudioProcessor::timerCallback()
     const scvb::input::OutputStageMode target = stageMachine_.evaluate(healthy, now);
     c18Stage_.store(static_cast<scvb::u32>(target), std::memory_order_release);
 
+    // [SL-254 / J95①] Output「已确认死」否决位:非实时逐块路径的健康前提里**需要时钟**的那一半。
+    // 与 c18Stage_ 分开发布,因为它**不经 StageSwitchStateMachine 的 5s 滞回** —— 非实时下滞回同样
+    // 是墙钟量(宪法:无滞回)。极性见头文件:必须是「已确认死」,不能是「在场」。
+    outputStale_.store(session_.outputClaimedButStale(now) ? 1u : 0u, std::memory_order_release);
+
     // muted 确认位(C19,J32):健康(静音)置位、切直通前清位。
     // 精确的「ramp 完成」时点由 [A] 经 RampSwitcher 判定;此处 [M] 以目标档近似,
     // 80ms ramp 窗口被 Output 侧 ≥200ms 注入延迟覆盖(J32)。
+    // ⚠ 非实时下该位不再代表 [A] 的实际档位:[A] 走逐块 mask/健康位硬切,[M] 这里取的是 stageMachine
+    // 的目标档,两者可差一拍。当前 Output 在非实时下忽略该确认位(直接同块注入),故无害;
+    // 若日后非实时要重新消费 C19,必须先把它改成由 [A] 发布,否则语义对不上。
     session_.setMuted(target == scvb::input::OutputStageMode::kSilence);
 
     // 采集布防(ADR-007 / 契约 §1 setCaptureEnabled:ON = 对 **{enabled 轨} × {global.range}** 布防)。

@@ -102,6 +102,19 @@ public:
     // [M] 25Hz 健康判定([J12]):见文件头。claim 未就绪/OutputSlot 空 → false(直通)。
     bool isHealthy(u64 nowMs) const;
 
+    // [M] Output 在场判定([J12] 的「无 Output」那一半):state 活 ∧ 心跳新鲜。
+    // isHealthy 与 connSnapshot 都以它为前提,单一真源 —— 两处各写一遍正是 SL-254 复审红旗
+    // 的成因(非实时逐块路径漏掉了它)。心跳新鲜度需要时钟,故只能在 [M] 求值。
+    bool outputOnline(u64 nowMs) const;
+
+    // [M] **只在正面观测到「自称活着但心跳已死」时为真**(Output 崩了却没走释放路径)。
+    // 语义刻意是「已确认死」而不是「尚未确认活」—— 非实时逐块路径拿它当**否决位**:
+    // 默认 false ⇒ Output 一置 mask,Input 当块就能静音,不会因为 [M] 还没跑而晚静音
+    // (晚静音 = Output 已注入而 Input 还直通 = 本卡明令要防的**双路叠加**;用「在场位」
+    // 做前提时实测就是这样红的:注入@304 而静音@320)。
+    // 「Output 优雅退场」不归它管:那条 state 会变 kSlotFree,由音频线程**逐块**读 state 判。
+    bool outputClaimedButStale(u64 nowMs) const;
+
     // [M] 25Hz 延迟释放回收([M] 心跳/轮询周期调用):registry + audio/feat 段句柄。
     void reap(u64 nowMs);
     std::size_t pendingReleaseCount() const { return registry_.pendingReleaseCount() + pendingSegments_.size(); }

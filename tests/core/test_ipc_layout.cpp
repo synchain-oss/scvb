@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ipc/CtrlPlane.h"
+#include "ipc/Registry.h" // [SL-254] outputSlotAtBase 的冻结偏移对拍
 #include "ipc/SegmentLayout.h"
 #include "ipc/VizPlane.h"
 
@@ -734,3 +735,23 @@ TEST_CASE("SegmentBackendWin32 full names equal Local prefix + logical", "[ipc][
     REQUIRE(scvb::segmentCtrlName(8) == L"Local\\SynchainSCVB.v1.g8.ctrl");
 }
 #endif
+
+// [SL-254 / J95①] Registry::outputSlotAtBase —— 音频线程用的「租约基址 + 冻结偏移」寻址。
+// 复审 r1【重要】:新增 core 纯逻辑须有 Catch2 用例(CLAUDE.md §7)。
+TEST_CASE("SL-254:outputSlotAtBase 与冻结偏移一致、空基址返回 nullptr", "[ipc][layout][SL254]")
+{
+    REQUIRE(scvb::Registry::outputSlotAtBase(nullptr) == nullptr);
+
+    // 用一块与段同尺寸的普通缓冲当基址:只验寻址算术,不建段。
+    std::vector<char> buf(scvb::kRegistrySegmentSize, 0);
+    void* base = buf.data();
+    auto* os = scvb::Registry::outputSlotAtBase(base);
+    REQUIRE(os != nullptr);
+
+    // ★ 与冻结布局逐字对齐:偏移必须正好是 kOutputSlotOffset,不能是「碰巧能跑」的别的值。
+    const auto delta = reinterpret_cast<char*>(os) - static_cast<char*>(base);
+    REQUIRE(static_cast<std::size_t>(delta) == scvb::kOutputSlotOffset);
+    REQUIRE(scvb::kOutputSlotOffset == sizeof(scvb::RegistryHeader) + scvb::kMaxChannels * sizeof(scvb::InputSlot));
+    // 落在段内(尾部不越界)。
+    REQUIRE(static_cast<std::size_t>(delta) + sizeof(scvb::OutputSlot) <= scvb::kRegistrySegmentSize);
+}

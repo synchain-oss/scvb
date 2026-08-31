@@ -355,6 +355,13 @@ void OutputSession::evaluateChannels(u64 nowMs)
             // 非实时下与 setConnectedMaskBit 在**同一次评估**里一起置 injectMask,Input 侧逐块
             // 读 connected_mask 跟着同块静音 ⇒ 交接落在同一块,既不静音也不叠加。
             // 实时路径逐字不动(200ms / muted 确认位 / 80ms ramp 全保留)。
+            //
+            // ⚠ 残留上限 **≤1 块**,不是 0:本次评估在 [M] 上跑,若它恰好落在 Input 的 processBlock
+            // 与 Output 的 processBlock **之间**,那一块就是「Input 还直通 ∧ Output 已注入」的叠加。
+            // 实时下被 200ms 闸盖住,非实时是新引入的。要真归零得把交接点锚到时间线(某个 hop /
+            // timeInSamples,两侧同用),那是比本卡更大的改动。**别把它当成 0** —— 一块的量级与
+            // 「几百块叠加」(被禁用的单改一侧修法)差三个数量级,可接受;但后来人若把 [M] 频率
+            // 调低或把块长调大,这个上限会跟着涨。
             const u32 flags = slot->flags.load(std::memory_order_acquire);
             const bool muted = (flags & kFlagMuted) != 0;
             if (nonRealtime() || muted || (nowMs - onlineSinceMs_[idx] >= kInjectDelayMs))
