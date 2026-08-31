@@ -928,20 +928,43 @@ try {
         // rAF 节奏多快,CI 上实测捞不到(本机能捞到 3048ms 那一条)—— 那就是本仓注释里
         // 反复记过的「按帧率判红」。这里改成关掉输出 → 打印停 → 静置超过释放窗口 →
         // 再打开,下一帧 hostEcho:true 的间隔必然越窗。两步都走真实桥调用。
-        await evaluate(
+        const offR = await evaluate(
             IN(`
             const mk = w.__SCVB_MOCK__;
-            if (mk) mk.setOutputEnabled(false);
-            return true;
+            if (!mk) return "no-mock";
+            return JSON.stringify(mk.setOutputEnabled(false));
         `),
         );
+        check(
+            typeof offR === "string" && !/rejected|"ok":\s*false/.test(offR),
+            `(h) 关输出被接受(回执 ${offR})—— 丢返回值的话下面整段会在「没真关掉」上空绿`,
+        );
         await sleep(2600); // > HOST_ECHO_RELEASE_MS(2000),静置期零 hostEcho 帧
-        await evaluate(
+
+        // ---- (h) 顺带把**熄侧**钉一下:静置超过释放窗口之后,徽标必须已经灭了。
+        // ⚠ 说清它证明什么、不证明什么:它断的是**用户可见结果**(停了就该退),
+        // **不是**退场定时器那一行的回归 —— preview 里 `scvb.conn` 每 ~250ms 仍在推
+        // (heartbeatAgeMs 是活计数器),render 根本停不下来,所以就算定时器还挂在
+        // 650ms 上,这条也会绿。真正的定时器回归要「页面全静」,mock 上造不出来(已登记)。
+        const quiet = await evaluate(readState);
+        check(
+            quiet.width === "0" &&
+                quiet.widthBadge === "0" &&
+                quiet.ms === "0" &&
+                quiet.lead === "0",
+            `(h) ★ 静置 2.6s(> 释放窗口)后三张卡与徽标都已熄(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})`,
+        );
+
+        const onR = await evaluate(
             IN(`
             const mk = w.__SCVB_MOCK__;
-            if (mk) mk.setOutputEnabled(true);
-            return true;
+            if (!mk) return "no-mock";
+            return JSON.stringify(mk.setOutputEnabled(true));
         `),
+        );
+        check(
+            typeof onR === "string" && !/rejected|"ok":\s*false/.test(onR),
+            `(h) 重新打开输出被接受(回执 ${onR})`,
         );
         await sleep(1200); // 等打印头重新推第一帧 hostEcho:true
         const dbg = await evaluate(
