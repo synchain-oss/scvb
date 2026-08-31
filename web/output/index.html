@@ -4468,6 +4468,24 @@
                 opacity: 0.55;
             }
 
+            /* ---- [J93 裁定②③] 整体调整页的三张参数卡:hostEcho 由**压暗改为徽标**。
+                   ⚠ 上面那条 `[data-host-echo="1"]` **不带作用域**,Tab2 的每轨控件也在用,
+                   所以这里另起 `data-host-driven`,不去动它。图表卡则整个退出提示名单
+                   —— 图表是只读展示,不存在「调了会被宿主盖掉」。 ---- */
+            .host-badge {
+                display: inline-flex;
+                align-items: center;
+                margin-left: 6px;
+                color: var(--txt-3);
+                /* 常驻占位:只切 visibility,不切 display —— 否则 card-head 会一出一进
+                   地撑动,等于把 SL-251 的闪烁换成跳动。 */
+                visibility: hidden;
+                pointer-events: none; /* 纯陈述,不挡任何操作(裁定③逐字) */
+            }
+            .host-badge[data-on="1"] {
+                visibility: visible;
+            }
+
             /* ---- 引导页:九条红字缺失时的醒目占位注记(gen-hard-rules.mjs 归 T39b)---- */
             .guide-overlay__missing {
                 margin: 0;
@@ -5613,6 +5631,38 @@
                                         data-t="master.widthEyebrow"
                                         >WIDTH · 最大角度</span
                                     >
+                                    <!-- [J93 裁定③] hostEcho 徽标:宿主自动化正在写这条参数。常驻占位、
+                                         只切 visibility(用 hidden 会撑动 card-head,把闪烁换成跳动);
+                                         内联 SVG 而不是字形 —— 新字形要过 check-font-coverage 的子集门禁。 -->
+                                    <span
+                                        class="host-badge"
+                                        data-gb="master-width-hostbadge"
+                                        data-on="0"
+                                        aria-hidden="true"
+                                        data-t-aria="master.hostEchoBadgeAria"
+                                    >
+                                        <svg
+                                            viewBox="0 0 14 14"
+                                            width="14"
+                                            height="14"
+                                            focusable="false"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                d="M1 9.5c2.2 0 2.9-5 5-5s2.8 5 5 5"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="1.4"
+                                                stroke-linecap="round"
+                                            />
+                                            <circle
+                                                cx="11.6"
+                                                cy="4.2"
+                                                r="1.7"
+                                                fill="currentColor"
+                                            />
+                                        </svg>
+                                    </span>
                                     <!-- 大读数 ±{θ}°,θ = round(width% × 0.6)(设计稿 L2015);默认 width=100 → ±60° -->
                                     <span
                                         class="card-read"
@@ -5658,6 +5708,38 @@
                                         data-t="master.msEyebrow"
                                         >MS BALANCE</span
                                     >
+                                    <!-- [J93 裁定③] hostEcho 徽标:宿主自动化正在写这条参数。常驻占位、
+                                         只切 visibility(用 hidden 会撑动 card-head,把闪烁换成跳动);
+                                         内联 SVG 而不是字形 —— 新字形要过 check-font-coverage 的子集门禁。 -->
+                                    <span
+                                        class="host-badge"
+                                        data-gb="master-msbalance-hostbadge"
+                                        data-on="0"
+                                        aria-hidden="true"
+                                        data-t-aria="master.hostEchoBadgeAria"
+                                    >
+                                        <svg
+                                            viewBox="0 0 14 14"
+                                            width="14"
+                                            height="14"
+                                            focusable="false"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                d="M1 9.5c2.2 0 2.9-5 5-5s2.8 5 5 5"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="1.4"
+                                                stroke-linecap="round"
+                                            />
+                                            <circle
+                                                cx="11.6"
+                                                cy="4.2"
+                                                r="1.7"
+                                                fill="currentColor"
+                                            />
+                                        </svg>
+                                    </span>
                                     <span
                                         class="card-read"
                                         data-gb="master-msbalance-reading"
@@ -5703,6 +5785,38 @@
                                     data-t="master.leadEyebrow"
                                     >LEAD SELECT</span
                                 >
+                                <!-- [J93 裁定③] hostEcho 徽标:宿主自动化正在写这条参数。常驻占位、
+                                     只切 visibility(用 hidden 会撑动 card-head,把闪烁换成跳动);
+                                     内联 SVG 而不是字形 —— 新字形要过 check-font-coverage 的子集门禁。 -->
+                                <span
+                                    class="host-badge"
+                                    data-gb="master-leadselect-hostbadge"
+                                    data-on="0"
+                                    aria-hidden="true"
+                                    data-t-aria="master.hostEchoBadgeAria"
+                                >
+                                    <svg
+                                        viewBox="0 0 14 14"
+                                        width="14"
+                                        height="14"
+                                        focusable="false"
+                                        aria-hidden="true"
+                                    >
+                                        <path
+                                            d="M1 9.5c2.2 0 2.9-5 5-5s2.8 5 5 5"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="1.4"
+                                            stroke-linecap="round"
+                                        />
+                                        <circle
+                                            cx="11.6"
+                                            cy="4.2"
+                                            r="1.7"
+                                            fill="currentColor"
+                                        />
+                                    </svg>
+                                </span>
                                 <!-- 自定义下拉(用户反馈 2026-08-18:拉开的选项列表要做样式,
                                      原生 <select> 弹层不可定制)——面板复用缩放下拉的深色玻璃配方;
                                      选项由 tab-master renderLeadOptions 生成:0=遵循分析 + 轨 01..15 -->
@@ -6653,7 +6767,7 @@
                                                 <span
                                                     class="wave-slider__val"
                                                     data-gb="wave-seg-sensitivity-val"
-                                                    >0.62</span
+                                                    >50</span
                                                 >
                                             </div>
                                             <div
@@ -6661,10 +6775,10 @@
                                                 role="slider"
                                                 tabindex="0"
                                                 aria-valuemin="0"
-                                                aria-valuemax="1"
-                                                aria-valuenow="0.62"
+                                                aria-valuemax="100"
+                                                aria-valuenow="50"
                                                 data-t-aria="wave.sldSensitivity"
-                                                style="--p: 62"
+                                                style="--p: 50"
                                             >
                                                 <span
                                                     class="wave-slider__fill"
@@ -6687,18 +6801,18 @@
                                                 <span
                                                     class="wave-slider__val"
                                                     data-gb="wave-seg-minlen-val"
-                                                    >420 ms</span
+                                                    >120 ms</span
                                                 >
                                             </div>
                                             <div
                                                 class="wave-slider__track"
                                                 role="slider"
                                                 tabindex="0"
-                                                aria-valuemin="0"
-                                                aria-valuemax="1500"
-                                                aria-valuenow="420"
+                                                aria-valuemin="50"
+                                                aria-valuemax="500"
+                                                aria-valuenow="120"
                                                 data-t-aria="wave.sldMinSeg"
-                                                style="--p: 28"
+                                                style="--p: 16"
                                             >
                                                 <span
                                                     class="wave-slider__fill"

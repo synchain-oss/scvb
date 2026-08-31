@@ -148,6 +148,10 @@ WebViewHost::WebViewHost(juce::AudioProcessor& processor, Config config)
     : juce::AudioProcessorEditor(&processor), config_(std::move(config)), provider_(config_.resourceSource),
       uiScale_(bridge::clampUiScale(config_.uiScale)), lang_(config_.lang)
 {
+    // [SL-253] 声明本组件完全不透明:JUCE 因此不会去画它下面的东西,而 paint() 会先铺
+    // 满暗色 —— 把「窗口已显示、WebView2 控制器还没建好」那一段的白挡掉。
+    setOpaque(true);
+
     // UDF 必须在装 Options 之前定好,并当场探一次可写性:WebView2 自己碰这个目录时的失败被
     // JUCE 吞掉(环境创建回调的 HRESULT 形参无名),等到那时候就只剩「超时」两个字了。
     userDataFolder_ = PlatformWebView::makeUserDataFolder(config_.userDataFolderName);
@@ -248,6 +252,14 @@ void WebViewHost::releaseReadyBridge()
 juce::WebBrowserComponent& WebViewHost::webView()
 {
     return *webView_;
+}
+
+void WebViewHost::paint(juce::Graphics& g)
+{
+    // [SL-253] 见头文件注:窗口一显示就先铺满暗色,别让 DAW 把这块空窗画成白的。
+    // 这一层管的是「控制器还没建好」那一段;控制器建好之后由 WebView2 自己的
+    // DefaultBackgroundColor 接手(PlatformWebView::makeWebViewOptions)。
+    g.fillAll(scvb::webview::shellBackdrop());
 }
 
 void WebViewHost::resized()

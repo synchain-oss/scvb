@@ -57,6 +57,9 @@ import {
 import { createDistMotion } from "../shared/dist-motion.js";
 import { format } from "../shared/i18n.js";
 import { paramIdOf, readbackVersion } from "../shared/param-id.js";
+// ⚠ 下面那条 `export { … } from` 只是**再导出**,不会把名字带进本模块作用域 ——
+// renderParams 要用 hostEchoOn,必须另外 import 一次(同 readbackSegsOf 的写法)。
+import { hostEchoOn } from "../shared/host-echo.js";
 // [SL-241] 未冻结维度的读回真源与 Tab2 **同一条链**(SL-211 只修在 tab-tracks.js
 // 里,分布图这边一直只读参数面 —— 详见 web/shared/readback.js 头注)。
 import {
@@ -122,7 +125,13 @@ export const RAMP_MS = Object.freeze({ min: 20, max: 300, def: 80 });
  * 600ms = 15 帧余量:批次不断则灰显续命,停发(打印结束且值不再变,§0.4)后
  * 由 app.js 的定时器补一拍 render 退灰 —— hostEcho 标志本身没有「回落帧」。
  */
-export const HOST_ECHO_FRESH_MS = 600;
+// [SL-251/J93] 常量与判据已移到 `web/shared/host-echo.js` —— Tab1 与 Tab2 原先各存一份
+// 逐字相同的判据,于是同一个闪烁两边都有。在此原样再导出,既有 import 点一字不改。
+export {
+    HOST_ECHO_FRESH_MS,
+    HOST_ECHO_RELEASE_MS,
+    hostEchoOn,
+} from "../shared/host-echo.js";
 
 /**
  * 本地乐观值(`local.paramEcho`)的**失效**规则 —— 收到一帧 `scvb.params` 后算新的 echo 表。
@@ -969,6 +978,10 @@ export function createTabMaster(opts) {
         leadLabel: $("master-leadselect-label"),
         leadPanel: $("master-leadselect-panel"),
         distCard: $("master-distchart"),
+        // [J93 裁定③] 三张参数卡的 hostEcho 徽标(压暗的替身)。
+        widthBadge: $("master-width-hostbadge"),
+        msBadge: $("master-msbalance-hostbadge"),
+        leadBadge: $("master-leadselect-hostbadge"),
         distBars: $("master-distchart-bars"),
         // [J75] T43 双视图
         chartSeg: $("master-chart-mode-seg"),
@@ -1921,11 +1934,9 @@ export function createTabMaster(opts) {
         // 引擎打印期间照样可改,整片 grid 一起灰会把它们一并锁死。
         // 灰显按批次新鲜度判定(hostEchoAt 由 app.js 记):hostEcho 标志本身停发后不会
         // 翻回 false,直接用它会让四张卡在打印结束后**永久滞留** 55% 透明。
-        const echo =
-            st.params.hostEcho &&
-            Date.now() - (st.params.hostEchoAt || 0) < HOST_ECHO_FRESH_MS
-                ? "1"
-                : "0";
+        // [SL-251/J93] 判据换成共享的**非对称闩锁**(亮立刻、熄延迟),不再看
+        // `params.hostEcho` 那一位 —— 详见 web/shared/host-echo.js 头注。
+        const echo = hostEchoOn(st.params) ? "1" : "0";
         // 灰显之外还要**说清楚为什么** —— 光变淡用户只会当成又一个「调了没反应」。
         // 契约的优先级表(宿主自动化 > 冻结手动值 > 手动微调 > 引擎曲线)是设计,
         // 缺的一直是「让用户看见自己在跟谁抢方向盘」(v5.1 实测 P1-D)。
@@ -1933,16 +1944,26 @@ export function createTabMaster(opts) {
         // getT());写成裸 `t` 会在 echo==="1" 的那一刻抛 ReferenceError,而那一刻恰恰就是
         // 本提示唯一该出现的时刻 —— 等于「宿主一驱动参数,Tab1 整页停更」。
         const echoTip = echo === "1" ? getT()["master.hostEchoHint"] || "" : "";
-        for (const node of [
-            el.widthCard,
-            el.msCard,
-            el.leadCard,
-            el.distCard,
-        ]) {
+        // [J93 裁定②] **图表卡不再进这份名单**。图表是只读展示,不存在「你调了会被宿主
+        // 盖掉」这回事,压暗它的理由比压暗三张参数卡弱得多;而它一暗,下面的分布图/轨迹图
+        // /档位切换/图例整片跟着暗 —— 用户实测点名的就是这一条。
+        //
+        // [J93 裁定③] 三张参数卡改用**新属性** `data-host-driven` 挂徽标,不再压暗。
+        // ⚠ 刻意**不复用** `data-host-echo`:那条 CSS(`[data-host-echo="1"]{opacity:.55}`)
+        // 是**不带作用域**的,Tab2 的每轨控件(声像把手/width/音量卡箍/两个冻结钮)也在用
+        // 同一个属性。在这里改属性语义会把 Tab2 的灰显一起改掉 —— 而 J93 只裁了整体调整页。
+        for (const node of [el.widthCard, el.msCard, el.leadCard]) {
             if (!node) continue;
-            node.setAttribute("data-host-echo", echo);
+            node.setAttribute("data-host-driven", echo);
             if (echoTip) node.setAttribute("title", echoTip);
             else node.removeAttribute("title");
+        }
+        // 徽标本体:常驻占位,只切 visibility —— 用 hidden/display:none 会让 card-head
+        // 一出一进地撑动,等于把闪烁换成跳动(SL-251 修的就是「看着不稳」)。
+        for (const node of [el.widthBadge, el.msBadge, el.leadBadge]) {
+            if (!node) continue;
+            node.setAttribute("data-on", echo);
+            node.setAttribute("aria-hidden", echo === "1" ? "false" : "true");
         }
     }
 

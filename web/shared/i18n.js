@@ -633,6 +633,8 @@ export const T = {
         // 宿主自动化正在驱动这些参数时的解释(v5.1 P1-D:优先级是设计,缺的是「看得见」)。
         "master.hostEchoHint":
             "该参数正由宿主自动化驱动;要手动改,请把该轨的自动化 Read 关闭,或切到 Write。",
+        // [J93] 徽标的无障碍名(徽标本体是内联 SVG,aria-hidden);tooltip 仍用上面那条长句。
+        "master.hostEchoBadgeAria": "宿主自动化正在驱动该参数",
         // 中性态:写方停着(乐句间隙宿主挂起 Input / 用户 bypass),不是故障。
         "tracks.suspended": "暂无数据(挂起)",
         "tab.master": "整体调整",
@@ -1483,6 +1485,7 @@ export const T = {
         "common.gotIt": "Got it",
         "master.hostEchoHint":
             "This parameter is being driven by host automation. To change it by hand, turn off Read on that track's automation, or switch it to Write.",
+        "master.hostEchoBadgeAria": "Host automation is driving this parameter",
         "tracks.suspended": "No data (suspended)",
         "tab.master": "Master",
         "tab.tracks": "Tracks",
@@ -2290,6 +2293,8 @@ export const T = {
         "common.gotIt": "Compris",
         "master.hostEchoHint":
             "Ce paramètre est piloté par l'automation de l'hôte. Pour le modifier à la main, désactivez Read sur l'automation de cette piste, ou passez-la en Write.",
+        "master.hostEchoBadgeAria":
+            "L'automation de l'hôte pilote ce paramètre",
         "tracks.suspended": "Aucune donnée (suspendu)",
         "tab.master": "Général",
         "tab.tracks": "Pistes",

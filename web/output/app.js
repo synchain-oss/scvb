@@ -45,6 +45,7 @@ import {
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
+    HOST_ECHO_RELEASE_MS,
 } from "./tab-master.js";
 import {
     createTabTracks,
@@ -1645,6 +1646,9 @@ if (bridge) {
     });
 
     bridge.on("scvb.params", (p) => {
+        // ⚠ 必须在下面整体重写 `store.params` **之前**取:重写后 `hostEchoAt` 已是本帧的
+        // 时间戳,再去算间隔恒得 ≈0,那条调试读数就成了永不触发的死代码(#164 复审【重要】)。
+        const prevHostEchoAt = store.params.hostEchoAt || 0;
         // §2.2:values 是稀疏 diff;full:true 时整批替换(切版本后 C++ 全量重发)
         const values =
             p && p.full
@@ -1662,8 +1666,30 @@ if (bridge) {
             versionActive: (p && p.versionActive) || store.params.versionActive,
         };
         if (p && p.hostEcho) {
+            // [SL-251/J93 裁定③] 调试读数,**不进设置页 UI**:hostEcho:true 两帧之间的间隔
+            // 一旦超过闩锁的释放窗口,徽标就会灭一下再亮 —— 也就是用户看得见的那一次眨眼。
+            // 释放窗口取 2000ms 是按「宿主自动化按曲线事件写、间隔秒级」估的,**真机的间隔
+            // 分布本机测不出来**(mock 只有慢通道)。所以把超窗的那几次原样打到 console:
+            // 用户真机若仍见眨眼,拿这几行就能直接把窗口调对,不用再猜。
+            const gap = prevHostEchoAt ? Date.now() - prevHostEchoAt : 0;
+            if (prevHostEchoAt && gap >= HOST_ECHO_RELEASE_MS) {
+                // 纯 ASCII:①它只进开发者控制台,不上屏;②`scripts/check-font-coverage.py`
+                // 扫的是 web/ 下**全部 .js 的字符串字面量**,这里写中文会把新字形塞进字体
+                // 子集(实测「徽/灭/眨/隔」四个字四款字体都没有,gate 3h 直接红);
+                // ③用户要把这几行贴回来给我们,ASCII 复制粘贴不会乱码。
+                console.debug(
+                    `[SCVB][SL-251] hostEcho gap ${gap}ms >= release window ${HOST_ECHO_RELEASE_MS}ms; the host-driven badge blinks off and back on across this gap.`,
+                );
+            }
+            // ⚠ 定时器必须跟着**释放窗口**走,不是新鲜度窗口:闩锁到 RELEASE_MS 才熄,
+            // 而 650ms 那一拍 render 时它还亮着、且不会再排下一次 —— 于是「停播 + 宿主停写」
+            // 这条最常见的收尾路径上没有任何东西再触发 render,徽标与 Tab2 灰显会一直挂着
+            // (旧注释提防的「永久滞留 55% 透明」原样复活,只是原因换成了「没人来 render」)。
             clearTimeout(hostEchoTimer);
-            hostEchoTimer = setTimeout(requestRender, HOST_ECHO_FRESH_MS + 50);
+            hostEchoTimer = setTimeout(
+                requestRender,
+                HOST_ECHO_RELEASE_MS + 50,
+            );
         }
         // 本地乐观值让位给引擎回推(必须排在 render 之前;规则见 tab-master.js nextParamEcho):
         // 少了这一步,任一次本地拖动都会把该 ParamID 的显示**永久遮蔽**——

@@ -771,6 +771,239 @@ try {
         );
         assertClean("SL-241 切版本");
     }
+
+    // =========================================================================
+    log("=== ④ SL-251/J93:播放期不再闪烁 + 图表卡不再压暗 ===");
+    //
+    // 用户实测(v5.6.3):播放时整体调整页很多设置变暗、**包括下面的图表**,然后开始闪烁。
+    // 修前本探针实测:四张卡的 data-host-echo 各 1.3 次/秒翻转(8s / 10 次)。
+    //
+    // 这一节必须是页面级:node 侧断得到闩锁纯函数(smoke-tab1-interactions ⑧),
+    // 断不到「renderParams 真的改用了它、且图表卡真的退出了名单」。
+    {
+        newBucket("sl251-flicker");
+        await cdp.send("Page.navigate", {
+            // play=1:走带在跑,配合输出 ON 进 PRINT —— 用户那一幕的前提。
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+        await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (mk) mk.setOutputEnabled(true);
+            return true;
+        `),
+        );
+        // 裁定③ 的 console 读数钩子:**必须在 8 秒采样之前**装上 —— 那行读数只在
+        // 「两帧 hostEcho:true 间隔越过释放窗口」时打印,而那正是采样窗里徽标灭一下
+        // 再亮的同一时刻。装晚了(等采样跑完再装)就会错过整段,实测捞到 0 条。
+        await evaluate(
+            IN(`
+            w.__SL251_DBG__ = [];
+            const orig = w.console.debug;
+            w.__SL251_CANARY__ = 0;
+            w.console.debug = function (...a) {
+                const s = a.join(" ");
+                if (s.indexOf("[SCVB][SL-251]") >= 0) w.__SL251_DBG__.push(s);
+                if (s.indexOf("__canary__") >= 0) w.__SL251_CANARY__++;
+                return orig.apply(this, a);
+            };
+            w.console.debug("__canary__");
+            return true;
+        `),
+        );
+        await sleep(1200); // 等打印头开始推 hostEcho:true 的帧
+
+        const readState = IN(`
+            const pick = (gb) => {
+                const n = d.querySelector('[data-gb="' + gb + '"]');
+                return n ? (n.getAttribute("data-host-driven") || "-") : "?";
+            };
+            const badge = (gb) => {
+                const n = d.querySelector('[data-gb="' + gb + '-hostbadge"]');
+                return n ? (n.getAttribute("data-on") || "-") : "?";
+            };
+            const dist = d.querySelector('[data-gb="master-distchart"]');
+            return {
+                width: pick("master-width"),
+                ms: pick("master-msbalance"),
+                lead: pick("master-leadselect"),
+                widthBadge: badge("master-width"),
+                msBadge: badge("master-msbalance"),
+                leadBadge: badge("master-leadselect"),
+                distDriven: dist ? (dist.getAttribute("data-host-driven") || "-") : "?",
+                distEcho: dist ? (dist.getAttribute("data-host-echo") || "-") : "?",
+                distOpacity: dist ? getComputedStyle(dist).opacity : "?",
+            };
+        `);
+
+        const on = await evaluate(readState);
+        log(`  打印中:${JSON.stringify(on)}`);
+        check(
+            on.width === "1" && on.ms === "1" && on.lead === "1",
+            `(a) 打印中三张参数卡挂上 data-host-driven=1(实得 ${on.width}/${on.ms}/${on.lead})`,
+        );
+        check(
+            on.widthBadge === "1" && on.msBadge === "1" && on.leadBadge === "1",
+            "(b) 三枚徽标同步亮起(裁定③:提示改成徽标)",
+        );
+        // ★ 裁定②:图表卡整个退出提示名单 —— 既不该挂属性,更不该被压暗。
+        check(
+            on.distDriven === "-" && on.distEcho === "-",
+            `(c) ★ 图表卡不再挂任何 hostEcho 属性(实得 driven=${on.distDriven} echo=${on.distEcho})`,
+        );
+        check(
+            on.distOpacity === "1" || parseFloat(on.distOpacity) > 0.99,
+            `(d) ★ 图表卡不透明度回到 1(实得 ${on.distOpacity};修前是 0.55)`,
+        );
+
+        // ---- (e) **native 快通道对拍**:中间插一帧 hostEcho:false,徽标不许被打断。
+        //
+        // ⚠ mock 在纯播放期只发 hostEcho:true 的帧,所以**它自己重现不出真机那条快通道**
+        // (native 每帧都带 C++ 那个 600ms 窗口的当前值,宿主一停写就是 false)。
+        // 这里借 `setParam` 走一条**真的 mock 代码路径**造出那一帧:它发的正是
+        // `{values:{...}, hostEcho:false}`(juce-bridge-mock.js 的 §1.13 回声),
+        // 与 native 插进来的 false 帧同形。不加这一条,这一节在 mock 上是**空绿**的。
+        const afterFalse = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk || typeof mk.setParam !== "function") return null;
+            mk.setParam("width", 101);   // ← 发一帧 hostEcho:false
+            return true;
+        `),
+        );
+        check(afterFalse === true, "(e) 成功注入一帧 hostEcho:false");
+        await sleep(120); // 让那一帧走完 store → render
+        const still = await evaluate(readState);
+        check(
+            still.width === "1" && still.widthBadge === "1",
+            `(e) ★ 一帧 hostEcho:false **没有**打断徽标(实得 driven=${still.width} badge=${still.widthBadge})—— 退回旧判据这里即红`,
+        );
+
+        // ---- (f) 8 秒逐帧采样:翻转次数必须回到 0
+        const flick = await evaluate(
+            IN(`
+            return new Promise((res) => {
+                const ids = ["master-width","master-msbalance","master-leadselect"];
+                const seen = {}; const flips = {};
+                let frames = 0; const t0 = performance.now();
+                // 采样窗内**越窗间隔**的条数:每一条会让徽标灭一次再亮一次 = 每张卡 2 次翻转。
+                const g0 = (w.__SL251_DBG__ || []).length;
+                const step = () => {
+                    frames++;
+                    for (const id of ids) {
+                        const n = d.querySelector('[data-gb="' + id + '"]');
+                        const v = n ? n.getAttribute("data-host-driven") : "-";
+                        if (seen[id] === undefined) { seen[id] = v; flips[id] = 0; }
+                        else if (seen[id] !== v) { flips[id] += 1; seen[id] = v; }
+                    }
+                    if (performance.now() - t0 >= 8000) {
+                        res({ frames, flips, gaps: (w.__SL251_DBG__ || []).length - g0 });
+                    } else requestAnimationFrame(step);
+                };
+                requestAnimationFrame(step);
+            });
+        `),
+        );
+        const total = Object.values(flick.flips).reduce((a, b) => a + b, 0);
+        log(
+            `  8s / ${flick.frames} 帧,三张卡翻转合计 ${total} 次(修前实测每张 10 次)`,
+        );
+        // 判据是**不变式**,不是魔数:每一次翻转都必须被一条「越窗间隔」解释掉。
+        //
+        // 一条越窗间隔 ⇒ 徽标灭一次、再亮一次 = 每张卡 2 次翻转,三张卡 6 次。所以
+        //     总翻转 <= 2 × 卡数 × 采样窗内的越窗间隔条数
+        // 越窗间隔 = 闩锁**该**释放的时刻(信号真的停了 >2s),不是判据在抖;判据抖的话
+        // 翻转会**多于**这个上界。修前那一版(看最近一帧的原始布尔)实测 30 次而间隔只有
+        // 一两条,这条不变式一样拦得住。
+        //
+        // ⚠ 上一版这里写的是 `total <= 6`。本次 CI 实得**正好 6**,余量归零 —— 而
+        // web-smoke 是 required check,下一窗多撞上半条间隔就是一次假红,与 (g) 上一轮
+        // 栽的是同一个坑(按帧率/走带节奏判红)。换成不变式之后就与这些无关了。
+        // 顺带:这也把 PR 正文里「那 6 次不是抖动、是信号真停了」的论证从**注释升级成断言**。
+        const gaps = flick.gaps || 0;
+        // 上界 = 3 张卡 ×(每条间隔 2 次 + 1 次跨窗余量)。那个 +1 是给「间隔在采样窗
+        // **开始之前**就起头、窗内只看到重新亮起那一半」的情形:它的日志条目落在 g0 之前,
+        // 不计进 gaps,却贡献 1 次翻转 —— 不留这一格会在另一个方向上假红。
+        const bound = 3 * (2 * gaps + 1);
+        log(`  采样窗内越窗间隔 ${gaps} 条 ⇒ 翻转上界 ${bound}`);
+        check(
+            total <= bound,
+            `(f) ★ 每一次翻转都被越窗间隔解释掉(实得 ${total} 次 <= 上界 ${bound};` +
+                `间隔 ${gaps} 条;${JSON.stringify(flick.flips)})—— 判据若在抖,翻转会多于上界`,
+        );
+        // ---- (g) 裁定③ 的 console 读数**真的会打印**(复审第一轮【重要】1 的回归)
+        //
+        // 那行 `console.debug` 是「释放窗口 2000ms 本机测不出真机间隔分布」的唯一补偿手段,
+        // 而它第一版是**死代码**:`store.params` 在读 prevAt 之前就被整体重写了,gap 恒 ≈0。
+        // 静态看不出来,只有真跑才知道 —— 所以这一条必须是页面级。
+        // ⚠ 间隔**自己造**,不靠等 mock 的段边界撞上来:后者取决于走带在这一节里跑到哪、
+        // rAF 节奏多快,CI 上实测捞不到(本机能捞到 3048ms 那一条)—— 那就是本仓注释里
+        // 反复记过的「按帧率判红」。这里改成关掉输出 → 打印停 → 静置超过释放窗口 →
+        // 再打开,下一帧 hostEcho:true 的间隔必然越窗。两步都走真实桥调用。
+        const offR = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk) return "no-mock";
+            return JSON.stringify(mk.setOutputEnabled(false));
+        `),
+        );
+        check(
+            typeof offR === "string" && !/rejected|"ok":\s*false/.test(offR),
+            `(h) 关输出被接受(回执 ${offR})—— 丢返回值的话下面整段会在「没真关掉」上空绿`,
+        );
+        await sleep(2600); // > HOST_ECHO_RELEASE_MS(2000),静置期零 hostEcho 帧
+
+        // ---- (h) 顺带把**熄侧**钉一下:静置超过释放窗口之后,徽标必须已经灭了。
+        // ⚠ 说清它证明什么、不证明什么:它断的是**用户可见结果**(停了就该退),
+        // **不是**退场定时器那一行的回归 —— preview 里 `scvb.conn` 每 ~250ms 仍在推
+        // (heartbeatAgeMs 是活计数器),render 根本停不下来,所以就算定时器还挂在
+        // 650ms 上,这条也会绿。真正的定时器回归要「页面全静」,mock 上造不出来(已登记)。
+        const quiet = await evaluate(readState);
+        check(
+            quiet.width === "0" &&
+                quiet.widthBadge === "0" &&
+                quiet.ms === "0" &&
+                quiet.lead === "0",
+            `(h) ★ 静置 2.6s(> 释放窗口)后三张卡与徽标都已熄(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})`,
+        );
+
+        const onR = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk) return "no-mock";
+            return JSON.stringify(mk.setOutputEnabled(true));
+        `),
+        );
+        check(
+            typeof onR === "string" && !/rejected|"ok":\s*false/.test(onR),
+            `(h) 重新打开输出被接受(回执 ${onR})`,
+        );
+        await sleep(1200); // 等打印头重新推第一帧 hostEcho:true
+        const dbg = await evaluate(
+            IN(`
+            return {
+                n: (w.__SL251_DBG__ || []).length,
+                first: (w.__SL251_DBG__ || [])[0] || "",
+                canary: w.__SL251_CANARY__ || 0,
+            };
+        `),
+        );
+        log(
+            `  console 读数命中 ${dbg.n} 次(钩子自检 canary=${dbg.canary});首条:${dbg.first.slice(0, 120)}`,
+        );
+        check(
+            dbg.canary === 1,
+            `(g) 前置:console.debug 钩子本身有效(canary=${dbg.canary})`,
+        );
+        check(
+            dbg.n > 0,
+            `(g) ★ 裁定③ 的 console 读数真的打印了(实得 ${dbg.n} 次)—— ` +
+                `第一版是死代码(prevAt 在 store.params 被重写后才取,gap 恒 ≈0),那一版这里是 0`,
+        );
+
+        assertClean("SL-251 闪烁");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

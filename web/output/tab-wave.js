@@ -247,12 +247,9 @@ export const FEAT_HOP_S = 0.01;
  *   · 未镜像 `analyzeHopWindow` 的 `kMaxHop = 1e7`(>27.8 小时的段真跑判空窗拒绝、
  *     本闸放行)。**理论可达性为零** —— 非 openEnded 段来自对采集环(分钟量级)的 VAD,
  *     段身不可能跨 27.8 小时;登记在此,免得「判据与真跑同源」这句话留下未记的缺口;
- *   · `local.segmentation.min_segment_ms` 的缓存初值是 420,而 native runtime 默认是
- *     120(`OutputProcessor.h`)—— **首帧 state 回推之前**,120-420ms 的段会被本闸判成
- *     「太短」而收起入口,可那时真跑用的是 120、做得成。`clampMinSegMs` 修不掉这一格
- *     (两个数都在 [50,500] 内,夹取恒等);方向是多挡、`syncParamGroup` 回推后自愈,
- *     且要根治得让 web 知道 native 的 runtime 默认(它现在只消费 state,不消费 runtime
- *     默认),不值得为一格开口子。
+ *   · ~~缓存初值 420 vs native runtime 默认 120 的分叉~~ —— **[SL-251 同批已消除]**:
+ *     UI 默认已照 02-dsp-spec §0.3 改成 120,与 native runtime 默认同值,首帧 state
+ *     回推前后不再有这一格差异。
  *
  * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
  * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
@@ -396,9 +393,9 @@ export const SLIDERS = Object.freeze(
         // prettier-ignore
         { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 0, max: 500, def: 200, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", tip: "wave.tipSensitivity", min: 0, max: 1, def: 0.62, unit: "", dp: 2 },
+        { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", tip: "wave.tipSensitivity", min: 0, max: 100, def: 50, unit: "", dp: 0 },
         // prettier-ignore
-        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", tip: "wave.tipMinSeg", min: 0, max: 1500, def: 420, unit: "ms", dp: 0 },
+        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", tip: "wave.tipMinSeg", min: 50, max: 500, def: 120, unit: "ms", dp: 0 },
     ].map(Object.freeze),
 );
 
@@ -417,9 +414,20 @@ export const DEFAULT_VAD_PARAMS = Object.freeze({
 
 /** 分段参数缓存初值(契约 §1.19:{mode, sensitivity, min_segment_ms} 整包)。 */
 export const DEFAULT_SEGMENTATION = Object.freeze({
-    mode: "auto",
-    sensitivity: 0.62,
-    min_segment_ms: 420,
+    // [SL-251 同批] `"auto"` **不在 native 白名单里**(`BridgeArgs.h::isSegmentationMode`
+    // 只认 `vad_only | valley`,标注真源 02-dsp-spec §362),而 `sendParams("seg")` 是
+    // **整包**下发 —— mode 一不合法,整个 setSegmentation 直接 badArg 返回,三个字段一个
+    // 都进不去。首帧 `scvb.state` 回推后 `syncParamGroup` 会把它换成 native 的 "valley"
+    // 而自愈,所以只在「开窗就去拖滑杆」那一小段咬人 —— 但那恰是最常见的第一次操作。
+    // 与 native runtime 默认对齐,取 "valley"。
+    mode: "valley",
+    // [SL-251 同批] 三个字段一律照 **02-dsp-spec** 的常量表,不再自造一套 UI 刻度:
+    //   · sensitivity → §0.3「50 | 0..100 | state」(§384:s∈0..100 映射 minDepth);
+    //   · min_segment_ms → §0.3「120 | 50..500 | state」(与 PipelineConfig 默认同值)。
+    // 原先 UI 用的 0..1/0.62 与 0..1500/420 **在规格里没有出处**,而 native 一直按规格
+    // 夹取 —— 于是 0.62 被存成「百分之 0.62」≈ 最低灵敏度,500ms 以上是死行程。
+    sensitivity: 50,
+    min_segment_ms: 120,
 });
 
 function num(v, dflt) {

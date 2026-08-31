@@ -99,6 +99,11 @@ juce::WebBrowserComponent::Options PlatformWebView::makeWebViewOptions(juce::Web
 #if JUCE_WINDOWS
     WBC::Options::WinWebView2 wv2;
     wv2 = wv2.withUserDataFolder(userDataFolder);
+    // [SL-253] WebView2 在**任何** web 内容之下铺的那一层。不设的话它是默认构造的
+    // juce::Colour = ARGB 0x00000000 = **全透明**,JUCE 会把这个值原样 put 进
+    // put_DefaultBackgroundColor —— 于是从控制器建好到 tokens.css/base.css 解析完为止,
+    // 这一层什么都不挡,露的是窗口的白。铺上暗色即可覆盖整段。
+    wv2 = wv2.withBackgroundColour(shellBackdrop());
     options = options.withBackend(WBC::Options::Backend::webview2).withWinWebView2Options(wv2);
 #else
     juce::ignoreUnused(userDataFolder);

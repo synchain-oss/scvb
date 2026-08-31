@@ -37,6 +37,9 @@ public:
     ~WebViewHost() override;
 
     void resized() override;
+    // [SL-253] 覆盖「窗口已显示、WebView2 控制器还没建好」那一段(冷启动预算 15s)——
+    // 上面 WebView2 的底色要等控制器存在才生效,这一段只有组件自己能挡。
+    void paint(juce::Graphics& g) override;
 
     // 缩放(机制 9):uiScale 实时预览(不落盘);commitUiScale 防呆确认后落盘全局默认。
     float uiScale() const { return uiScale_; }
