@@ -1,7 +1,7 @@
 # STATE_SCHEMA —— SCVB state schema 与 abi 兼容规则(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-08-28([J90] 文字对齐已实装口径:§4.3 session_guid 生成时机 / §三 PRMS 补登记 session_guid / §三 CFGS capture_enabled 存「用户自选值」——**abi 仍为 2,零行为变更**,详见 `docs/contract-changes/20260828-j90-contract-text-align.md`;上一次实质变更 2026-08-25 abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy,详见 `docs/contract-changes/20260825-cfgs-persistence.md`)
+> 最后更新: 2026-08-30([J91] + [J92a] **行为变更**:§三 `CFGS` 的 `capture_enabled` 由「存用户自选值」改为**恒写 `0`、加载一律忽略、重开工程恒为关**(采集是录制动作不是工程设置),连带 `SCVB_CONTRACT.md` §1.2/§1.3 补 J92a 互斥副作用 —— **abi 仍为 2、`CFGS` 布局零变化、不加迁移函数**,但**不是零行为变更**:「重开后采集保持上次状态」这条行为没有了,详见 `docs/contract-changes/20260830-j91-capture-not-persisted.md`;上一次文字对齐 2026-08-28([J90]:§4.3 session_guid 生成时机 / §三 PRMS 补登记 session_guid / §三 CFGS capture_enabled 存「用户自选值」——**abi 仍为 2,零行为变更**,详见 `docs/contract-changes/20260828-j90-contract-text-align.md`;上一次实质变更 2026-08-25 abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy,详见 `docs/contract-changes/20260825-cfgs-persistence.md`)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` **v2.3** + 计划 04 §5 蒸馏转正;J81 修宪转正:`ui.lang_chosen` / Input `ui.guide_seen`)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。

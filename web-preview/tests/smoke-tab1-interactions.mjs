@@ -587,6 +587,25 @@ async function openSession(params) {
         "回推后 data-cap 应为 armed",
     );
 
+    // [SL-247 / J92a] 互斥双向,且 **mock 桥必须与真桥同契约**(CLAUDE.md §10)。
+    // #162 复审【重要】① 揪出过一次:真桥加了互斥、mock 两个 setter 没跟上,
+    // 于是预览世界里存在「采集 ON ∧ 输出 ON」这个真机上不可能的组合,而靠预览截图
+    // 核对两页一致性的人会被它骗过去。这里把两个方向都钉住。
+    await bridge.setOutputEnabled(true);
+    await sleep(60);
+    eq(
+        [store.state.global.output_enabled, store.state.global.capture_enabled],
+        [true, false],
+        "J92a:手动开跟随引擎 ⇒ 采集被关(上一步刚把采集开着,故这一条不是空转)",
+    );
+    await bridge.setCaptureEnabled(true);
+    await sleep(60);
+    eq(
+        [store.state.global.capture_enabled, store.state.global.output_enabled],
+        [true, false],
+        "J92a 反方向:手动开采集 ⇒ 跟随引擎被关",
+    );
+
     // 影响预览:UI 用的 scope 形状必须被 mock 认下来(§1.5)
     const preview = await bridge.previewAnalyze(TM.analyzeScope(store.state));
     check(

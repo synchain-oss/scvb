@@ -1704,6 +1704,19 @@ export function createTabMaster(opts) {
                 sw.setAttribute("data-disabled", isWriteBlocked() ? "1" : "0");
         }
 
+        // [SL-247 / J92a] 「写入双后果」确认板与 `output_enabled` **与门**:引擎一旦为假就强制收起。
+        //
+        // 这块板此前是**纯命令式**开合(showWriteConfirm / hideWriteConfirm),每一条
+        // 「输出转 OFF」的路都得**手工**配一次 hideWriteConfirm()。J92a 新开了一条谁都没配的路:
+        // 用户开采集 ⇒ C++ 侧把 output_enabled 拨掉,web 侧无人知会,板子就那么摊着,
+        // 继续讲「引擎将开始写入自动化」这套已经不成立的话,板上那颗「撤销」按下去还是空操作。
+        //
+        // 所以不逐路补 hide,而是在 render 里与门 —— 以后再多几条把引擎拨掉的路也不会漏
+        // (#162 复审【重要】③ 给的就是这个更彻底的改法)。
+        if (el.writeConfirm && !g.output_enabled) {
+            el.writeConfirm.hidden = true;
+        }
+
         // write 确认条正文:follow 档走 .follow 变体(无 {x}–{y} 空洞)
         if (el.writeConfirmText) {
             const key = writeConfirmKey(g.range ? g.range.mode : "follow");

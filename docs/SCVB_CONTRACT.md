@@ -108,7 +108,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 拒绝态 | `noTimeline` 场景下 UI 侧 disabled(05 §2.0 横幅⑥);C++ 侧收到调用时返回 `{ok:false, reason:"noTimeline"}` 并不改 state |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
-| 真源 | 05 §1.4 / §2.1 ①;「用户自选采集态」一句 = [SL-225] PR #146,变更文档 `docs/contract-changes/20260828-j90-contract-text-align.md` |
+| 真源 | 05 §1.4 / §2.1 ①;**「用户自选采集态」那一句已由 [J91] 删除**(J91 之后采集态不落盘,该说法无持久化含义;[SL-225] PR `#146` 与 [J90] 的旧口径见 git 历史)。当前语义行的两条副作用 —— 不落盘([J91])与互斥([J92a])—— 变更文档 `docs/contract-changes/20260830-j91-capture-not-persisted.md` |
 
 ### 1.3 `setOutputEnabled(on)`
 
