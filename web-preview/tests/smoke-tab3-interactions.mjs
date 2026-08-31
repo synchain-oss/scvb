@@ -881,9 +881,21 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
             // 「`hidden` 没摘 / CSS 压成 display:none」这类失效 —— 该交互序列目前**没有**
             // 页面级冒烟覆盖(已在 PR 描述里如实登记),这一条是它现有的唯一护栏。
             const tmSrc = src("web/output/tab-master.js");
+            // 改成贴近**失效模式**的形状(#162 复审第二轮建议):守的不是「与门在」,
+            // 而是「`showWriteConfirm` **不直写** `hidden`」—— 直写正是第一版把板子吃掉的原因
+            // (点开那一帧桥调用还没回推,单判与门当场把它扣回去,而 writeConfirmSeen 已闩死)。
+            // DOM 侧那条序列由 smoke-output-stale-page.mjs 第 ⑥ 档真渲染验证(实跑注入红过)。
+            const showFn =
+                (tmSrc.match(/function showWriteConfirm\(\)[\s\S]{0,240}?\}/) ||
+                    [])[0] || "";
+            check(showFn.length > 0, "找得到 showWriteConfirm 函数体");
             check(
-                /el\.writeConfirm\s*&&\s*!g\.output_enabled/.test(tmSrc),
-                "写入确认板与 output_enabled 与门(引擎为假即强制收起)",
+                !/hidden\s*=/.test(showFn),
+                "showWriteConfirm 不直写 hidden(只翻意图位,显隐由 render 派生)",
+            );
+            check(
+                /writeConfirmOpen\s*&&\s*g\.output_enabled/.test(tmSrc),
+                "确认板显隐 = 意图位 ∧ output_enabled(互斥拨掉引擎时跟着收起)",
             );
         }
 

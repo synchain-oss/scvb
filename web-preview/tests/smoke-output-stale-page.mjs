@@ -544,6 +544,65 @@ try {
         check(!p.paused, "⑩ 在场时 ⑨ 收起(采集是关的,⑨ 的前提本就不成立)");
         assertClean("scenario=recapture-voided");
     }
+
+    // =========================================================================
+    // [SL-247 / J92a] ⑥ 「写入双后果」确认板:开引擎 ⇒ 真的出现;再开采集 ⇒ 收起。
+    //
+    // 这一条是 #162 复审第二轮的产物,也是**唯一**能把「与门写对了」与「与门把板子吃了」
+    // 区分开的断言 —— 源码级正则对两者不可区分(它只证明与门在)。
+    // 第一版修法(renderFlow 里只看 `output_enabled` 的单判与门)在真机上会把板子永久吃掉:
+    // 点开那一帧桥调用还没回推,与门把刚摘的 hidden 扣回去,而 `writeConfirmSeen` 已闩死。
+    // 现在的实现是「意图位 ∧ output_enabled」的幂等派生,这一档就是它的护栏。
+    log("=== ⑥ 写入确认板:开引擎 ⇒ 出现;开采集(互斥关引擎)⇒ 收起 ===");
+    {
+        const p0 = await open("connected");
+        check(p0 !== null, "取到页内 DOM 快照");
+        // 回到 Tab1(前面几档把页面切到了「波形与分段」)。
+        await evaluate(
+            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
+        );
+        await sleep(200);
+
+        const confirmHidden = () =>
+            evaluate(
+                IN(
+                    `const n = gb("master-write-confirm"); return n ? !!n.hidden : null;`,
+                ),
+            );
+        const capOn = () =>
+            evaluate(
+                IN(`const n = gb("master-capture-toggle-switch");
+                    return !!n && n.getAttribute("aria-checked") === "true";`),
+            );
+
+        check((await confirmHidden()) === true, "前置:确认板初始收起");
+
+        // 开跟随引擎 —— 本工程会话首次 OFF→ON,05 §2.0 要求就地展开双后果。
+        await evaluate(
+            IN(
+                `const n = gb("master-output-toggle-switch"); if (n) n.click(); return true;`,
+            ),
+        );
+        await sleep(400);
+        check(
+            (await confirmHidden()) === false,
+            "★ 开引擎 ⇒ 确认板真的出现在 DOM 上(单判与门的实现在这里红:板子被当场吃掉)",
+        );
+
+        // 再开采集 —— J92a 互斥把引擎拨掉 ⇒ 板子必须跟着收起。
+        await evaluate(
+            IN(
+                `const n = gb("master-capture-toggle-switch"); if (n) n.click(); return true;`,
+            ),
+        );
+        await sleep(400);
+        check(await capOn(), "前置:采集确实开起来了(否则下一条是空转)");
+        check(
+            (await confirmHidden()) === true,
+            "★ 互斥把引擎关掉 ⇒ 确认板跟着收起(不再摊着讲已不成立的双后果)",
+        );
+        assertClean("scenario=connected(写入确认板序列)");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

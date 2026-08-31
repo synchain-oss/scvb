@@ -905,6 +905,9 @@ export function createTabMaster(opts) {
 
     const local = {
         pendingGroup: 0, // 改组确认条的预选组(0 = 未弹)
+        // [SL-247] 「写入双后果」确认板的**意图位**。显隐不再由 show/hide 直写 DOM,而是
+        // 在 renderFlow 里派生成「意图 ∧ output_enabled」—— 理由见 showWriteConfirm 的注释。
+        writeConfirmOpen: false,
         analyzeFlashUntil: 0, // data-analyze="done" 闪绿的截止时刻
         analyzePending: false, // analyze 受理回执→state 确认之间的在途标志
         preview: null, // previewAnalyze 的最近一次返回
@@ -1086,12 +1089,26 @@ export function createTabMaster(opts) {
         }
     }
 
+    // [SL-247] 两个口子只翻**意图位**,不直写 `hidden` —— 真正的显隐在 renderFlow 里
+    // 派生成「意图 ∧ `g.output_enabled`」。
+    //
+    // 为什么不能直写(#162 复审第二轮抓到的真机回归,本仓「mock 说谎」那一族):
+    // `outSwitch` 的 handler 里 `call("setOutputEnabled", true)` 是 **async 且不 await** 的,
+    // 紧接着就同步调 `showWriteConfirm()` → `render()`。那一刻 `scvb.state` 回推还没到,
+    // store 里 `output_enabled` **仍是 false**。若 renderFlow 里是「状态单判」的与门,
+    // 它会把刚摘掉的 `hidden` 当场扣回去;而等真值到达时**没有任何代码会再摘一次**
+    // (全文只有这里写过 `hidden = false`),偏偏 `writeConfirmSeen` 已经闩死 ——
+    // 净效果是 05 §2.0 要求的那块首次 OFF→ON 知情面板在真机上**彻底消失**。
+    //
+    // 预览世界看不出来:mock 的 `patchState → emit` 是**同步**派发,store 在
+    // `showWriteConfirm()` 之前就翻成 true 了,与门放行,浏览器里一切正常。
     function showWriteConfirm() {
-        if (el.writeConfirm) el.writeConfirm.hidden = false;
+        local.writeConfirmOpen = true;
         render();
     }
     function hideWriteConfirm() {
-        if (el.writeConfirm) el.writeConfirm.hidden = true;
+        local.writeConfirmOpen = false;
+        render();
     }
 
     /** 只读观察态(契约 §5.1 `secondOutput`)与无时间线(§5.1 `noTimeline`)下全写控件失效。 */
@@ -1704,17 +1721,20 @@ export function createTabMaster(opts) {
                 sw.setAttribute("data-disabled", isWriteBlocked() ? "1" : "0");
         }
 
-        // [SL-247 / J92a] 「写入双后果」确认板与 `output_enabled` **与门**:引擎一旦为假就强制收起。
+        // [SL-247 / J92a] 「写入双后果」确认板的显隐 = **意图位 ∧ `output_enabled`**,
+        // 幂等纯投影(与本仓「晚一帧与提前投影逐字相同」的口径一致)。
         //
-        // 这块板此前是**纯命令式**开合(showWriteConfirm / hideWriteConfirm),每一条
-        // 「输出转 OFF」的路都得**手工**配一次 hideWriteConfirm()。J92a 新开了一条谁都没配的路:
-        // 用户开采集 ⇒ C++ 侧把 output_enabled 拨掉,web 侧无人知会,板子就那么摊着,
-        // 继续讲「引擎将开始写入自动化」这套已经不成立的话,板上那颗「撤销」按下去还是空操作。
+        // 这块板此前是**纯命令式**开合,每一条「输出转 OFF」的路都得**手工**配一次
+        // hideWriteConfirm()。J92a 新开了一条谁都没配的路:用户开采集 ⇒ C++ 侧把
+        // output_enabled 拨掉,web 侧无人知会,板子摊着继续讲已经不成立的双后果,
+        // 上面那颗「撤销」按下去还是空操作。派生之后,以后再多几条拨掉引擎的路也兜得住。
         //
-        // 所以不逐路补 hide,而是在 render 里与门 —— 以后再多几条把引擎拨掉的路也不会漏
-        // (#162 复审【重要】③ 给的就是这个更彻底的改法)。
-        if (el.writeConfirm && !g.output_enabled) {
-            el.writeConfirm.hidden = true;
+        // ⚠ **不能写成只看状态的与门**:点开那一帧 `output_enabled` 还没回推(桥调用不 await),
+        // 单判会把板子当场吃掉且再不复现 —— 详见 showWriteConfirm 的注释。意图位就是为此存在。
+        if (el.writeConfirm) {
+            el.writeConfirm.hidden = !(
+                local.writeConfirmOpen && g.output_enabled
+            );
         }
 
         // write 确认条正文:follow 档走 .follow 变体(无 {x}–{y} 空洞)
