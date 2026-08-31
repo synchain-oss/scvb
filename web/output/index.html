@@ -5031,7 +5031,11 @@
                         >
                     </div>
                     <!-- ⑨ [SL-239] 采集开着 ⇒ 上面那条上游改动提示整条是哑的。
-                         不是错误、不阻断任何操作;判据 = §2.1 capture_enabled ∧ §2.8 已有段表。 -->
+                         不是错误、不阻断任何操作。**判据五项**,真源在 app.js 的 renderBanners ⑨,
+                         改判据必须同步改这里(#158 复审两轮都指出这条注释滞后):
+                         §2.1 capture_enabled ∧ 有时间线 ∧ 无 stale 轨 ∧ 未布防重采集 ∧ §2.8 已有段表。
+                         后三项都是「不说反话」的护栏 —— 少任何一项 ⑨ 都会在
+                         「采集本就该开着」或「真因不是采集」的场合给出反向指令。 -->
                     <div
                         class="sc-banner"
                         data-gb="banner-fpPausedByCapture"
@@ -5054,6 +5058,35 @@
                             data-t="banner.fpPausedByCapture"
                             data-gb="banner-fpPausedByCapture-text"
                             >采集开着时不比对上游改动(这一秒的特征正被写成新基线)——要检查上游有没有动过,先关掉采集再播放</span
+                        >
+                    </div>
+                    <!-- ⑩ [SL-247 / J92a] 布防还在、采集却已关 ⇒ 本次重采集不会记录任何东西。
+                         判据 = §2.1 recapture.armed ∧ !capture_enabled(两个现成字段,不新增契约字段)。
+                         两条路都落到这一态:布防期手动开跟随引擎(互斥关了采集)/ 布防期手动关采集
+                         (§1.23 裁定③ 接管)。后者早于本卡就存在,此前界面上一个字都没有。
+                         醒目但**非阻塞**、不弹确认框(沿 J85 口径)。 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-recaptureVoided"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.recaptureVoided"
+                            data-gb="banner-recaptureVoided-text"
+                            >重采集布防还在,但采集已关——这次重采集不会记录任何东西;重新打开采集,或撤销布防</span
                         >
                     </div>
                     <!-- ⑦ 加载守卫:写入自动化状态随工程恢复 -->

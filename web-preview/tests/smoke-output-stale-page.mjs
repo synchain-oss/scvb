@@ -16,7 +16,9 @@
 //      带得动作;`stale`(采集**同样** ON,只是 ⚠ 已挂)⇒ 让位只留 ⑧;
 //      `recapture-armed`(布防期,采集是被 §1.23 裁定① 替用户打开的)⇒ 收起 ——
 //      此刻用户正应当保持采集开着播完那一段,⑨ 的「先关掉采集」是反向指令;
-//   ③ 两个场景都要零未捕获异常、零 console.error;
+//   ②c [SL-247] `no-timeline`:⑨ 让位给 ⑥ —— noTimeline 下比对停摆的真因不是采集开关,
+//      而采集开关此时还是 disabled,⑨ 的「先关掉采集」既做不到、也把因果说反了;
+//   ③ 各场景都要零未捕获异常、零 console.error;
 //   ④ 提示不阻断任何操作(04 §4.5「只提示,不自动失效」):stale 场景下采集/输出开关、
 //      分析按钮一个都不许被 disable。
 //
@@ -283,6 +285,19 @@ const PROBE = IN(`
             const sw = gb("master-capture-toggle-switch");
             return !!sw && sw.getAttribute("aria-checked") === "true";
         })(),
+        noTimelineBanner: vis(gb("banner-noTimeline")),
+        voided: vis(gb("banner-recaptureVoided")),
+        voidedPresent: !!gb("banner-recaptureVoided"),
+        voidedText: (() => {
+            const n = gb("banner-recaptureVoided-text");
+            return n ? n.textContent.trim() : null;
+        })(),
+        // 采集开关的写闸在 DOM 上是 data-disabled(它是 div 不是表单控件,没有 .disabled)。
+        // tab-master.js 的 isWriteBlocked() = readOnly || noTimeline,两处都写这一位。
+        captureSwitchBlocked: (() => {
+            const sw = gb("master-capture-toggle-switch");
+            return !!sw && sw.getAttribute("data-disabled") === "1";
+        })(),
         pausedPresent: !!paused,
         paused: vis(paused),
         pausedDisplay: paused ? w.getComputedStyle(paused).display : "(缺节点)",
@@ -420,6 +435,10 @@ try {
             `前置:本场景采集确实是 ON(否则下一条退化成白测,实得 ${p.captureEnabled}）`,
         );
         check(!p.paused, "stale 已挂 ⇒ 横幅 ⑨ 让位,只留 ⑧(采集 ON 也不出)");
+        check(
+            !p.voided,
+            "未布防 ⇒ 横幅 ⑩ 收起(反向:它只在布防在 ∧ 采集关时出)",
+        );
         assertClean("scenario=stale");
     }
 
@@ -472,6 +491,122 @@ try {
             "布防期 ⇒ 横幅 ⑨ 收起(采集 ON + 段表在 + 无 stale,只差布防位)",
         );
         assertClean("scenario=recapture-armed");
+    }
+
+    // =========================================================================
+    // [SL-247] ④ `noTimeline` 在场:⑨ 必须让位给 ⑥,否则是**做不到且归因说反**的动作。
+    //
+    // 来自 #158 复审(deepseek)。与只读态**不同类**:只读态下「比对暂停是因为采集开着」
+    // 仍然为真(只是他关不了),而 noTimeline 下真因是**没有时间线** —— ⑨ 若还在,
+    // 就把停摆归因到采集开关上,而那把开关此时是 disabled(写控件闸 = readOnly || noTimeline),
+    // 用户既关不掉也没得播,照做 ⚠ 也不会回来。
+    log("=== ④ scenario=no-timeline:⑨ 让位给 ⑥(否则给的是做不到的动作)===");
+    {
+        const p = await open("no-timeline");
+        check(p !== null, "取到页内 DOM 快照");
+        check(
+            p.captureEnabled,
+            `前置:本场景采集确实是 ON(否则 ⑨ 本来就不该出,这一档退化成白测,实得 ${p.captureEnabled}）`,
+        );
+        check(
+            p.noTimelineBanner,
+            "横幅 ⑥「宿主未提供时间线」在场(它才是说真因的那条)",
+        );
+        check(
+            p.captureSwitchBlocked,
+            "前置:采集开关此时确实被写闸挡住(data-disabled=1)—— ⑨ 的「先关掉采集」做不到",
+        );
+        check(!p.paused, "noTimeline ⇒ 横幅 ⑨ 让位,只留 ⑥");
+        assertClean("scenario=no-timeline");
+    }
+
+    // =========================================================================
+    // [SL-247 / J92a] ⑤ 布防还在、采集已关 ⇒ 横幅 ⑩「这次重采集不会记录任何东西」。
+    //
+    // 这一态**早于本卡就可达**(布防期手动关采集 = §1.23 裁定③ 的接管),而此前界面上
+    // 一个字都没有 —— 用户只会觉得「布防着却什么都没采到」。J92a 又给它加了第二条路
+    // (布防期手动开跟随引擎,互斥把采集关了),两条路对页面是同一态。
+    log("=== ⑤ scenario=recapture-voided:布防在、采集关 ⇒ ⑩ 亮 ===");
+    {
+        const p = await open("recapture-voided");
+        check(p !== null, "取到页内 DOM 快照");
+        check(p.voidedPresent, "横幅 ⑩ 的节点在模板里");
+        check(!p.captureEnabled, "前置:本场景采集确实是 OFF(⑩ 的判据之一)");
+        check(p.voided, "布防在 ∧ 采集关 ⇒ 横幅 ⑩ 亮");
+        check(
+            /重新打开采集|Turn capture back on|Réactivez la capture/i.test(
+                p.voidedText || "",
+            ),
+            `横幅 ⑩ 给出了出路(实得「${p.voidedText}」)`,
+        );
+        // ⑨ 在这一档必须收起 —— 判据里 capture_enabled 为假,它本来就不该出;
+        // 断上一句是为了钉住两条横幅不会同框说两套话。
+        check(!p.paused, "⑩ 在场时 ⑨ 收起(采集是关的,⑨ 的前提本就不成立)");
+        assertClean("scenario=recapture-voided");
+    }
+
+    // =========================================================================
+    // [SL-247 / J92a] ⑥ 「写入双后果」确认板:开引擎 ⇒ 真的出现;再开采集 ⇒ 收起。
+    //
+    // 本档守的是**行为**:板子该出现时出现、互斥拨掉引擎时收起。
+    //
+    // ⚠ **它分辨不了「与门写对了」与「与门把板子吃了」** —— 这一句是订正:本卡曾在
+    // commit message 与 PR 处置帖里宣称「退回单判与门 ⇒ 本档当场红」,那是**半命中注入**
+    // 造成的假红,不成立(#162 复审第三轮 deepseek 提出质疑,本卡精确还原第一版后核实)。
+    // 机理:`call()` 虽是 async,但 `bridge[name](...)` 在第一个 await 之前**同步求值**,
+    // 而 mock 的 `patchState → emit` 也是同步派发 —— 预览世界里 `output_enabled` 在
+    // `showWriteConfirm()` 渲染之前就已翻真,状态单判的与门根本不会 hide。
+    // **那个回归是真机时序独有的,自动化套件结构上测不出。**
+    // 守它的是 `smoke-tab3-interactions` 的源码级断言(「showWriteConfirm 不直写 hidden」)。
+    log("=== ⑥ 写入确认板:开引擎 ⇒ 出现;开采集(互斥关引擎)⇒ 收起 ===");
+    {
+        const p0 = await open("connected");
+        check(p0 !== null, "取到页内 DOM 快照");
+        // 回到 Tab1(前面几档把页面切到了「波形与分段」)。
+        await evaluate(
+            IN(`const b = gb("tabnav-master"); if (b) b.click(); return true;`),
+        );
+        await sleep(200);
+
+        const confirmHidden = () =>
+            evaluate(
+                IN(
+                    `const n = gb("master-write-confirm"); return n ? !!n.hidden : null;`,
+                ),
+            );
+        const capOn = () =>
+            evaluate(
+                IN(`const n = gb("master-capture-toggle-switch");
+                    return !!n && n.getAttribute("aria-checked") === "true";`),
+            );
+
+        check((await confirmHidden()) === true, "前置:确认板初始收起");
+
+        // 开跟随引擎 —— 本工程会话首次 OFF→ON,05 §2.0 要求就地展开双后果。
+        await evaluate(
+            IN(
+                `const n = gb("master-output-toggle-switch"); if (n) n.click(); return true;`,
+            ),
+        );
+        await sleep(400);
+        check(
+            (await confirmHidden()) === false,
+            "★ 开引擎 ⇒ 确认板真的出现在 DOM 上(守行为;分辨不了单判与门那一版,见档头)",
+        );
+
+        // 再开采集 —— J92a 互斥把引擎拨掉 ⇒ 板子必须跟着收起。
+        await evaluate(
+            IN(
+                `const n = gb("master-capture-toggle-switch"); if (n) n.click(); return true;`,
+            ),
+        );
+        await sleep(400);
+        check(await capOn(), "前置:采集确实开起来了(否则下一条是空转)");
+        check(
+            (await confirmHidden()) === true,
+            "★ 互斥把引擎关掉 ⇒ 确认板跟着收起(不再摊着讲已不成立的双后果)",
+        );
+        assertClean("scenario=connected(写入确认板序列)");
     }
 } catch (e) {
     fail++;

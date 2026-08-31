@@ -860,9 +860,45 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
                 /recapture[\s\S]{0,20}armed/.test(blk),
                 "横幅 ⑨ 在重采集布防期收起(那时采集是 §1.23 裁定① 替用户开的,叫他关是反向指令)",
             );
+            // [SL-247] 第五项:noTimeline 在场时让位给 ⑥(#158 复审 deepseek)。
+            // DOM 侧由 smoke-output-stale-page.mjs 的 `no-timeline` 档真渲染验证(实跑注入红过)。
+            check(
+                /!vs\.noTimeline/.test(blk),
+                "横幅 ⑨ 在无时间线时让位给 ⑥(真因不是采集开关,且那把开关此时还是 disabled)",
+            );
             check(
                 !/disabled|readOnly\s*=/.test(blk),
                 "横幅 ⑨ 同样不 disable 任何控件(04 §4.5:只提示,不阻断)",
+            );
+            // [SL-247 / J92a] 「写入双后果」确认板必须与 `output_enabled` **与门**。
+            //
+            // #162 复审【重要】③:这块板是纯命令式开合,每条「输出转 OFF」的路都要手工配
+            // 一次 hideWriteConfirm();J92a 新开的那条(开采集 ⇒ C++ 侧把输出拨掉)谁都没配,
+            // 于是板子摊着继续讲已经不成立的双后果,板上「撤销」按下去还是空操作。
+            // 改法取更彻底的那个:在 render 里与门 —— **但必须是「意图 ∧ 状态」,不是状态单判**
+            // (状态单判会把板子吃掉,见下)。以后再多几条拨掉引擎的路也不会漏。
+            const tmSrc = src("web/output/tab-master.js");
+            // 形状贴近**失效模式**(#162 复审建议):守的不是「与门在」,而是
+            // 「`showWriteConfirm` **不直写** `hidden`」—— 直写正是第一版把板子吃掉的原因
+            // (点开那一帧桥调用还没回推,状态单判的与门当场把它扣回去,而 writeConfirmSeen
+            // 已闩死 ⇒ 本会话再不补弹)。**与门必须是「意图 ∧ 状态」,不是状态单判。**
+            //
+            // ⚠ **本条是这一退化的唯一护栏,而且只能是源码级的**:mock 的
+            // `patchState → emit` 是**同步**派发,预览世界里状态在 render 之前就翻好了,
+            // 所以退回第一版时 `smoke-output-stale-page` 第 ⑥ 档**照样全绿**(本卡实跑核过,
+            // 修正了此前一处不实的「注入即红」记录)。第 ⑥ 档守的是**行为**
+            // (板子会出现、互斥时会收起),不是「第一版 vs 第二版」的分辨。
+            const showFn =
+                (tmSrc.match(/function showWriteConfirm\(\)[\s\S]{0,240}?\}/) ||
+                    [])[0] || "";
+            check(showFn.length > 0, "找得到 showWriteConfirm 函数体");
+            check(
+                !/hidden\s*=/.test(showFn),
+                "showWriteConfirm 不直写 hidden(只翻意图位,显隐由 render 派生)",
+            );
+            check(
+                /writeConfirmOpen\s*&&\s*g\.output_enabled/.test(tmSrc),
+                "确认板显隐 = 意图位 ∧ output_enabled(互斥拨掉引擎时跟着收起)",
             );
         }
 

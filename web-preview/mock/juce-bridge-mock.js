@@ -978,14 +978,36 @@ function buildOutputBackend(ctx) {
             // [J87] 用户**显式**拧过这把闸 = 他接管了,撤防时不再替他动(与真桥
             // `ScvbOutputAudioProcessor::setCaptureEnabled` 同款)。
             model.recaptureAutoEnabledCapture = false;
-            patchState({ global: { capture_enabled: !!on } });
+            // [J92a] 手动开采集 ⇒ 关跟随引擎(§1.2 语义行的副作用)。**必须与真桥同契约**
+            // (CLAUDE.md §10):少了这两行,预览世界里就存在「采集 ON ∧ 输出 ON」这个
+            // 真机上不可能的组合,而靠预览截图核对两页一致性的人会被它骗过去。
+            // **布防豁免天然成立**:`recaptureArm` 替用户开采集走的是下面那条 `patchState`
+            // 直写路,不经过本函数 —— 与真桥「互斥只写在桥面 setter」同一个结构。
+            patchState({
+                global: {
+                    capture_enabled: !!on,
+                    ...(on ? { output_enabled: false } : {}),
+                },
+            });
             return OK();
         },
 
         // ---- §1.3 -------------------------------------------------------------
         setOutputEnabled(on) {
             if (noTimeline()) return { ok: false, reason: "noTimeline" };
-            patchState({ global: { output_enabled: !!on } });
+            // [J92a] 反方向互斥:手动开跟随引擎 ⇒ 关采集,并视为用户**接管**采集闸
+            // (清 recaptureAutoEnabledCapture,与真桥 §1.3 副作用逐条对应)。
+            // 布防期这样做 = 本次重采集作废,但**布防位保留** —— 于是
+            // `armed ∧ !capture_enabled` 这个组合可达,横幅 ⑩ 才有得测。
+            if (on && model.snapshot.global.capture_enabled) {
+                model.recaptureAutoEnabledCapture = false;
+            }
+            patchState({
+                global: {
+                    output_enabled: !!on,
+                    ...(on ? { capture_enabled: false } : {}),
+                },
+            });
             return OK();
         },
 

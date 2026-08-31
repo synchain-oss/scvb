@@ -115,6 +115,16 @@ export const SCENARIO_MAP = Object.freeze({
     // 的场景覆写把 §2.8 的 stale 位摆开 —— 横幅 ⑧ / tab 导航琥珀点 / 泳道 ⚠ 三处提示
     // 在浏览器里才可达、可截图、可断言(此前 shell.js 白名单里有名字,SCENARIO_MAP 里没接线)。
     stale: "fifteen-tracks",
+    // [SL-247] 宿主不给时间线(§5.1 `noTimeline`)。`shell.js` 的白名单里一直有这个名字,
+    // 但 SCENARIO_MAP 从没接过线 —— 与 SL-177 之前的 `stale` 同一种「有名无实」。
+    // 落在健康满配世界上(**要有段表**),横幅 ⑥ 与 ⑨ 的取舍才有得测:
+    // ⑥ 说真因(没有时间线),⑨ 必须让位 —— 否则它会把停摆归因到采集开关上,
+    // 而那把开关此时恰恰是 disabled(写控件闸 = `readOnly || noTimeline`),用户照做也做不到。
+    "no-timeline": "fifteen-tracks",
+    // [SL-247 / J92a] 布防还在、采集却已关 —— 横幅 ⑩ 的世界。
+    // 真机到达路径有两条(布防期手动开跟随引擎被互斥关了采集 / 布防期手动关采集 = §1.23
+    // 裁定③ 接管),对页面而言是同一态,故一个场景即可覆盖。
+    "recapture-voided": "fifteen-tracks",
 });
 
 /** `stale` 场景里「数据已过期」的轨(取三条:够验证「只影响该轨、不牵连别的轨」)。 */
@@ -516,6 +526,34 @@ export function buildWorld(opts = {}) {
         outputSegments = makeTourDemoSegments(1, "snapshot", {
             trajectoryGap: true,
         });
+    }
+    if (opts.scenario === "recapture-voided" && outputSnapshot) {
+        // [SL-247] 布防位保留、采集已关。**采集必须是 OFF**:这一态的定义就是这两位的组合,
+        // 把采集摆成 ON 就成了普通布防态(那是 `recapture-armed` 场景),⑩ 也就不该出。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: { ...outputSnapshot.global, capture_enabled: false },
+            recapture: {
+                armed: true,
+                tracksMask: maskOfChannels(RECAPTURE_DEMO.channels.slice()),
+                startS: RECAPTURE_DEMO.startS,
+                endS: RECAPTURE_DEMO.endS,
+                autoStop: false,
+            },
+        };
+    }
+    if (opts.scenario === "no-timeline" && outputSnapshot) {
+        // [SL-247] 两件都要:`caps.noTimeline` 决定桥函数的拒绝分支与写控件闸,
+        // `scvb.error` 的 noTimeline 码才是横幅 ⑥ / `vs.noTimeline` 的数据源(app.js 读 err)。
+        // 只给其中一件,页面上就会出现真机上不可能的半态。
+        caps.noTimeline = true;
+        errors.output.push(makeError("noTimeline"));
+        // 采集**开着**且段表已在 —— 这正是 ⑨ 的其余四项判据全部满足、只差 noTimeline
+        // 这一项的那一格;⑨ 若不让位,这一档就会红。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: { ...outputSnapshot.global, capture_enabled: true },
+        };
     }
     if (opts.scenario === "stale" && outputSegments) {
         // SL-177 / 04 §4.5:把 §2.8 的 stale 位摆到三条轨上。**只改 stale**,段表其余

@@ -104,11 +104,11 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `on: bool` |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"noTimeline"}` |
-| 语义 | 写 state `global.capture_enabled`。ON = 对 `{enabled 轨} × {global.range}` 布防;实际写特征段只在「播放中且在 range 内」发生(01 §5.1、04)。变更经 `scvb.state` 回推。**本函数是「用户自选采集态」的唯一入口**:在重采集布防期调用即视为用户**接管**这把闸,撤防不再替他恢复(§1.23 裁定③),且该值照实存进工程(`docs/STATE_SCHEMA.md` §三 `CFGS`)。工程恢复那一路不经过本函数。 |
+| 语义 | 写 state `global.capture_enabled`。ON = 对 `{enabled 轨} × {global.range}` 布防;实际写特征段只在「播放中且在 range 内」发生(01 §5.1、04)。变更经 `scvb.state` 回推。<br>**采集态是纯运行时态,不随工程持久化**([J91]:`getStateInformation` 对该字段恒写 `0`,`setStateInformation` 一律忽略、加载后恒为**关**;见 `docs/STATE_SCHEMA.md` §三 `CFGS`)。<br>**副作用(J92a 互斥)**:本函数以 `on=true` 被**用户手动**调用时,同时把 `global.output_enabled` 置 `false`。**布防豁免** —— §1.23 `recaptureArm` 替用户打开采集的那一下**不**触发互斥([J92a],§1.23 裁定① 优先),因此点「重采集选区」**不会**关掉用户的输出引擎。<br>在重采集布防期调用即视为用户**接管**这把闸,撤防不再替他恢复(§1.23 裁定③)。工程恢复那一路不经过本函数。 |
 | 拒绝态 | `noTimeline` 场景下 UI 侧 disabled(05 §2.0 横幅⑥);C++ 侧收到调用时返回 `{ok:false, reason:"noTimeline"}` 并不改 state |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
-| 真源 | 05 §1.4 / §2.1 ①;「用户自选采集态」一句 = [SL-225] PR #146,变更文档 `docs/contract-changes/20260828-j90-contract-text-align.md` |
+| 真源 | 05 §1.4 / §2.1 ①;**「用户自选采集态」那一句已由 [J91] 删除**(J91 之后采集态不落盘,该说法无持久化含义;[SL-225] PR `#146` 与 [J90] 的旧口径见 git 历史)。当前语义行的两条副作用 —— 不落盘([J91])与互斥([J92a])—— 变更文档 `docs/contract-changes/20260830-j91-capture-not-persisted.md` |
 
 ### 1.3 `setOutputEnabled(on)`
 
@@ -116,7 +116,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `on: bool`(**两态**:ON=引擎驱动参数 write,OFF=follow host;ADR-005 / J08 维持 bool) |
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"noTimeline"}` |
-| 语义 | 写 state `global.output_enabled`。ON 且「播放中 ∧ 在 range 内」= PRINT 态(打印头写 gesture);ON 且停止/区间外 = ARMED;OFF = FOLLOW(03 §2.2 三态)。加载守卫未确认时**行为止于 ARMED**(04 §5.3,守卫态见 §2.1 `print_guard`,确认入口 = §1.34 `confirmPrintGuard()`)。 |
+| 语义 | 写 state `global.output_enabled`。ON 且「播放中 ∧ 在 range 内」= PRINT 态(打印头写 gesture);ON 且停止/区间外 = ARMED;OFF = FOLLOW(03 §2.2 三态)。加载守卫未确认时**行为止于 ARMED**(04 §5.3,守卫态见 §2.1 `print_guard`,确认入口 = §1.34 `confirmPrintGuard()`)。<br>**副作用(J92a 互斥)**:本函数以 `on=true` 被**用户手动**调用时,同时把 `global.capture_enabled` 置 `false`(并视为用户**接管**采集闸,清 `recaptureAutoEnabledCapture`)。若此时正处于 §1.23 重采集布防期,**本次重采集当场作废**(采集被关,门控失去意义);**布防位保留不自动撤防** —— 撤了用户就丢了刚拖出来的工作选区且毫无痕迹,留着则 `recapture.armed ∧ !capture_enabled` 这个组合本身即可观测的证据,UI 据它出**醒目但非阻塞**的提示(横幅,**不弹确认框**,沿 [J85] 口径),不新增契约字段。该提示同时覆盖另一条路:用户在布防期手动**关**采集(§1.23 裁定③ 的「接管」)落到同一组合。 |
 | 拒绝态 | 同 1.2 的 `noTimeline` 分支 |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
@@ -341,7 +341,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 参数 | `tracksMask: u16`;`startS: f64`;`endS: f64`;`autoStop?: bool`(默认 **false**,T25 补白) |
 | 返回 | `{ armed:bool, tracksMask:u16, startS:f64, endS:f64, reason?: "noTracks"\|"noSelection"\|"readOnly"\|"noTimeline" }`(`armed=false` 时必带 `reason`) |
-| 语义 | 局部重采集布防(轨×区间失效单元,ADR-007)。`autoStop=true` = 「播完自动停」:区间播毕自动 OFF(04 §4.2)。布防态同时进 `scvb.state.recapture`,重开面板/切 tab 后可恢复显示。**UI 以返回值而非乐观假设点亮布防 badge**。<br>**门控面**:布防期**特征记账**按「**工作选区 × 选中轨掩码**」两维硬约束门控,`global.range` **不参与**(落在选区外或未勾选轨的 hop 一律丢弃不记账,04 §4.2 ①);**撤防后当拍恢复 `global.range` 门控**。门控只挡**写入**,既有特征覆盖原样保留(04 §4.1);曲线真身与输出发射一概不受布防影响。<br>**副作用(布防会替用户开采集)**:布防在 `global.capture_enabled` **原为 `false`** 时把它置 `true`([J87] 裁定①),并记一笔「这一下是我们开的」(`recaptureAutoEnabledCapture`);中途改选区/改轨勾选会再次布防,但该记账**只在 `false→true` 那一跳**记,不重记。**撤防恢复布防前原值**(裁定③):只有**我们替他开的**才关回去,布防前本来就开着的保持开;用户在布防期间**显式**调用 §1.2 `setCaptureEnabled` 即视为**接管**,撤防不再替他动。该临时值**不进工程** —— `getStateInformation` 存的是用户自选的采集态(见 `docs/STATE_SCHEMA.md` §三 `CFGS`)。<br>`tracksMask=0` → `reason:"noTracks"`;`startS>=endS` → `reason:"noSelection"`。传 `tracksMask=0 ∧ startS=endS=0` 视为**撤销布防**并返回 `{armed:false}` 无 `reason`。 |
+| 语义 | 局部重采集布防(轨×区间失效单元,ADR-007)。`autoStop=true` = 「播完自动停」:区间播毕自动 OFF(04 §4.2)。布防态同时进 `scvb.state.recapture`,重开面板/切 tab 后可恢复显示。**UI 以返回值而非乐观假设点亮布防 badge**。<br>**门控面**:布防期**特征记账**按「**工作选区 × 选中轨掩码**」两维硬约束门控,`global.range` **不参与**(落在选区外或未勾选轨的 hop 一律丢弃不记账,04 §4.2 ①);**撤防后当拍恢复 `global.range` 门控**。门控只挡**写入**,既有特征覆盖原样保留(04 §4.1);曲线真身与输出发射一概不受布防影响。<br>**副作用(布防会替用户开采集)**:布防在 `global.capture_enabled` **原为 `false`** 时把它置 `true`([J87] 裁定①),并记一笔「这一下是我们开的」(`recaptureAutoEnabledCapture`);中途改选区/改轨勾选会再次布防,但该记账**只在 `false→true` 那一跳**记,不重记。**撤防恢复布防前原值**(裁定③):只有**我们替他开的**才关回去,布防前本来就开着的保持开;用户在布防期间**显式**调用 §1.2 `setCaptureEnabled` 即视为**接管**,撤防不再替他动。该临时值**不进工程** —— `getStateInformation` 对 `capture_enabled` **恒写 `0`**([J91]),布防替用户开的那一下自然也不会存;`recaptureAutoEnabledCapture` 这本账只服务于本节裁定③ 的撤防恢复,与持久化无关。**本副作用不触发 §1.2/§1.3 的 J92a 互斥**([J92a],裁定① 优先):布防替用户开采集时**不**关闭输出引擎,故 `footer.recaptureOutputWarn`(「输出引擎仍按全局范围工作,与本次重采集选区无关」)在布防期**仍然可达** —— 它正是为「布防期输出仍 ON」这一格准备的。<br>`tracksMask=0` → `reason:"noTracks"`;`startS>=endS` → `reason:"noSelection"`。传 `tracksMask=0 ∧ startS=endS=0` 视为**撤销布防**并返回 `{armed:false}` 无 `reason`。 |
 | 拒绝态 | `armed:false` + `reason`(见上);只读观察态 → `reason:"readOnly"`。**三条拒绝路径都先走一次撤防**(与「撤销布防」「越界自动停」同一段代码):否则上一次布防若是我们替用户开的采集,这一发被拒之后采集会一直开着、门控还留在旧选区上,没人再去撤。 |
 | 撤销 | 否 |
 | 线程/频率 | [M];用户操作触发 |
