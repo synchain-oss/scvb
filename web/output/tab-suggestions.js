@@ -40,12 +40,13 @@
 //   于是 UI 手里**就只有激活版本的真相** —— 表格与导出都按当前版本走,不假装能出全版本。
 //   跨版本导出是 native 的事(桥函数 scope 里留了 `versions:"all"`,由 C++ 从 CRVS 真身出)。
 //
-// 【桥面处置】`exportSuggestions(scope)` **不在冻结契约 §7 manifest 里**。按仓 CLAUDE.md §5
-//   写了变更文档 `docs/contract-changes/20260825-export-suggestions.md`,名字停在
-//   `web/shared/bridge.js` 的 `PENDING_FUNCS` 里(T43 立的先例):
-//     • mock/预览:后端已实现 → 全功能可演示;
-//     • 真 JUCE 宿主(native 未落地):桥上根本不挂这个名字 → 导出钮 disabled 并给出说明,
-//       **不写、也不假装写了**任何文件。
+// 【桥面处置】`exportSuggestions(scope)` **已在冻结契约里**:§1.36 定义齐全、§7 manifest
+//   收录、§5.6 的 `cancelled`/`noData`/`ioError` 三值也已登记(随 [J81] 修宪转正,
+//   变更文档 `docs/contract-changes/20260825-export-suggestions.md`)。
+//   [SL-256] 之前它还差最后一环:`OutputEditor::registerNativeFunctions` 从没挂 handler,
+//   于是真宿主上桥面不出现这个名字。**那一环已补上**,mock 与真宿主现在都全功能。
+//   (为什么门禁没拦住:parity 比的是「名字集合」,而常量表里一直有这个名字 ——
+//    本卡同批给 parity 补了「已注册 handler ↔ manifest」双向断言。)
 //
 // 两段导出:纯函数(无 DOM,node 直接 import 断言)+ createTabSuggestions()(DOM 接线)。
 // 模块顶层零副作用、零 document 触碰。
@@ -612,25 +613,15 @@ export function createTabSuggestions(opts) {
             const off = total === 0 || local.busy || !exportAvailable();
             setAttr(el.exportBtn, "data-disabled", off ? "1" : "0");
             setAttr(el.exportBtn, "aria-disabled", off ? "true" : "false");
-            setAttr(
-                el.exportBtn,
-                "title",
-                exportAvailable()
-                    ? ""
-                    : t(
-                          "suggest.exportUnavailable",
-                          "导出待 native 侧接线(见 docs/contract-changes/20260825-export-suggestions.md)",
-                      ),
-            );
+            // [SL-256] 「尚未接通导出」那句已撤:native 侧 handler 已注册(§1.36),
+            // 且 parity 门禁新增「已注册 handler 数 == manifest 条目数」断言 —— 谁把注册
+            // 摘掉,门禁当场红,轮不到运行期再用一句文案兜。留着它就是留一句假话。
+            setAttr(el.exportBtn, "title", "");
         }
         if (el.status) {
-            // 桥上没挂 exportSuggestions(真 JUCE 宿主,native 未落地)时**常驻**说明:
-            // 只挂在 title 上的话,用户点了一枚灰钮却什么也没发生,零反馈。
-            const s =
-                local.status ||
-                (total > 0 && !exportAvailable()
-                    ? { key: "suggest.exportUnavailable", tone: "warn" }
-                    : null);
+            // [SL-256] 原先这里还有一条「桥上没挂 exportSuggestions」的常驻说明,已撤:
+            // 见上面 title 那处的理由 —— 该函数现已注册,且由 parity 门禁钉住。
+            const s = local.status;
             setText(el.status, s ? fill(t(s.key, s.key), s.args || {}) : "");
             el.status.hidden = !s;
             setAttr(el.status, "data-tone", (s && s.tone) || "info");

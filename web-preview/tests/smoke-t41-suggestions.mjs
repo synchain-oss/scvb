@@ -23,7 +23,7 @@
 //   ⑧b 脏检查:同一份输入不重建行集;state/segments 换对象与 width 真改才算脏;
 //   ⑧c stale:过期采集的轨逐行可辨,且**不混进** CSV(13 列冻结);
 //   ⑨ 词条:`suggest.*` 三语齐备、非空、占位符一致、禁词零命中;
-//   ⑩ 源码不变式:桥面名字停在 PENDING_FUNCS(没有偷偷进 BRIDGE_FUNCTIONS)、变更文档在库、
+//   ⑩ 源码不变式:桥面名字**已出** PENDING_FUNCS、**已进** BRIDGE_FUNCTIONS([J81] 转正)、变更文档在库、
 //      ARIA table 树连着、斑马纹按行号取、行节点走池子复用 + scroll 合帧、
 //      表头与数据行的 9px 滚动条错位两条配对修复都在、桥不可用时状态行常驻说明、
 //      返回泳道还焦、建议表开着时泳道 rAF 停、[J67] 的「不得复活列表视图」纪律仍在文件头。
@@ -453,7 +453,7 @@ log("=== ⑦ mock 端到端:exportSuggestions 往返 ===");
 
     check(
         typeof bridge.exportSuggestions === "function",
-        "mock 实现了待转正名字 ⇒ 桥上挂得到(预览页当场可走全流程)",
+        "mock 实现了 §1.36 的名字 ⇒ 桥上挂得到(预览页当场可走全流程)",
     );
 
     // 事件仓:快照走桥(与 app.js 同路),段表取 fixture 那一份 —— §0.4 的「首帧必发」
@@ -676,14 +676,15 @@ log("=== ⑨ 词条 suggest.* ===");
 log("=== ⑩ 源码不变式 ===");
 
 {
-    // 桥面名字必须停在 PENDING_FUNCS,**没有**偷偷进 parity 比对面
+    // 桥面名字必须**已出** PENDING_FUNCS、**已进** parity 比对面([J81] 转正,§7 manifest 收录)。
+    // 文案按本文件惯例写「应当成立的事」—— `check` 失败时打印的就是这一句。
     check(
         !BR.PENDING_FUNCS.output.includes("exportSuggestions"),
-        "exportSuggestions 在 PENDING_FUNCS.output",
+        "exportSuggestions 已不在 PENDING_FUNCS.output([J81] 转正后该表已空)",
     );
     check(
         BR.BRIDGE_FUNCTIONS.output.includes("exportSuggestions"),
-        "exportSuggestions **不在** BRIDGE_FUNCTIONS(契约 §7 还没收它)",
+        "exportSuggestions 在 BRIDGE_FUNCTIONS(契约 §7 manifest 已收录)",
     );
     eq(
         BR.BRIDGE_FUNCTIONS.output.length,
@@ -833,11 +834,21 @@ log("=== ⑩ 源码不变式 ===");
         "destroy() 把行节点从 DOM 摘掉(不只是清数组)",
     );
 
-    // 桥不可用时要有**常驻**说明,不能只挂在 title 上(点一枚灰钮零反馈)
+    // [SL-256] 原断言钉的是「桥上没挂 exportSuggestions 时的常驻说明」。那条说明已撤 ——
+    // native handler 已注册(§1.36),说明本身在本卡之后是**假话**。改判成反向断言:
+    // 三语字典与实现里都不许再留「尚未接通导出」这一族文案。
+    // 「注册没注册」这件事由 check-bridge-parity 的「已注册 handler ↔ manifest」双向断言
+    // 兜底(源码正则钉不住 C++ 注册面,那是另一侧的事)。
     check(
-        /local\.status \|\|[\s\S]{0,200}suggest\.exportUnavailable/.test(js),
-        "桥上没挂 exportSuggestions 时状态行常驻说明",
+        !/exportUnavailable/.test(js),
+        "[SL-256] 实现里不再有「尚未接通导出」兜底分支",
     );
+    for (const lang of ["zh", "en", "fr"]) {
+        check(
+            !("suggest.exportUnavailable" in T[lang]),
+            `[SL-256] ${lang} 字典里 suggest.exportUnavailable 已删净`,
+        );
+    }
     check(
         /el\.entry\.focus\(\)/.test(js),
         "返回泳道时焦点还给入口钮(不掉回 body)",

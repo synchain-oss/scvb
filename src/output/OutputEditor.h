@@ -114,6 +114,11 @@ private:
     void handleSetGuideSeen(const ArgList& a, Completion c);
     void handleSetTourSeen(const ArgList& a, Completion c);
     void handleConfirmPrintGuard(const ArgList& a, Completion c);
+    // [SL-256] §1.36 建议表 CSV 导出。契约/manifest/web/mock/C++ 常量表**早就都有它**,
+    // 唯独 registerNativeFunctions 从没挂过 handler —— 于是真宿主上桥面根本不出现这个名字,
+    // web 只能显示「本版本尚未接通导出」。parity 门禁比的是**名字集合**(常量表里有),
+    // 所以它一直是绿的,证明不了「名字被挂成了 handler」(本卡同批补上那道断言)。
+    void handleExportSuggestions(const ArgList& a, Completion c);
 
     // 只读观察态判定(OutputSession kObserver)。
     bool isReadOnly() const;

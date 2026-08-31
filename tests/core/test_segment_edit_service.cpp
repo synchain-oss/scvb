@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "AnalyzeScopeMath.h"
+#include "SuggestionScopeArgs.h" // [SL-256] §1.36 入参归一
 #include "OutputAuthority.h" // SERVICE-12 第三支:钉住**生产装配点**真的装上了预算
 #include "engine/FreezeBits.h"
 #include "SegmentEditService.h"
@@ -616,5 +617,133 @@ TEST_CASE("analyzeHopWindow:范围向内取整,不把窗撑到范围之外", "[o
         REQUIRE(w.valid());
         CHECK(w.firstHop == 0u);
         CHECK(w.lastHop == 100u);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-256] parseSuggestionScope —— §1.36 `exportSuggestions(scope)` 的入参归一。
+//
+// 抽成纯函数的理由与同目录 `analyzeHopWindow` / `analyzeScopeRange` 一脉相承:它埋在
+// `OutputEditor` 的私有成员里就够不着(那个类要 WebView 才构造得起来,离线 harness 编不进
+// 那个 TU),于是这一层只能靠源码正则去看 —— 改回去照样绿。
+//
+// 反向验证(三条均实跑过):给 `parseSuggestionScope` **加回**「掩完为 0 ⇒ badArg」
+// 那条守卫(#163 一轮已按 §1.36 拒绝态行删掉它),「tracksMask」一档必红;
+// 把负左端的 `std::max(0.0, startS)` 去掉,「负左端必须归一」一档必红;
+// 把未知 `versions` 的 badArg 改成「回落 active」,对应 SECTION 必红。
+// ---------------------------------------------------------------------------
+TEST_CASE("parseSuggestionScope:§1.36 入参归一与拒绝态", "[output][suggest][SL256]")
+{
+    using scvb::output::parseSuggestionScope;
+    constexpr int kActive = 2;
+
+    SECTION("整体可省 = 全默认(active + 全 15 轨 + 不限时间窗)")
+    {
+        const auto r = parseSuggestionScope(false, "", false, 0, false, 0.0, false, 0.0, kActive);
+        REQUIRE_FALSE(r.badArg);
+        CHECK_FALSE(r.scope.allVersions);
+        CHECK(r.scope.activeVersion == kActive);
+        CHECK(r.scope.tracksMask == 0x7FFFu);
+        CHECK(r.scope.startSec < 0.0); // < 0 = 不限(SuggestionExport::Scope 的约定)
+        CHECK(r.scope.endSec < 0.0);
+    }
+
+    SECTION("versions 三态:active / all / 未知值拒收")
+    {
+        CHECK_FALSE(parseSuggestionScope(true, "active", false, 0, false, 0, false, 0, kActive).scope.allVersions);
+        CHECK(parseSuggestionScope(true, "all", false, 0, false, 0, false, 0, kActive).scope.allVersions);
+        // 未知枚举**不宽容回落** —— 静默导出一份不是用户要的范围,比报错更糟。
+        CHECK(parseSuggestionScope(true, "ALL", false, 0, false, 0, false, 0, kActive).badArg);
+        CHECK(parseSuggestionScope(true, "", false, 0, false, 0, false, 0, kActive).badArg);
+    }
+
+    SECTION("tracksMask:bit15 掩掉;掩完为 0 **不拒**,留给 noData")
+    {
+        const auto one = parseSuggestionScope(false, "", true, 0x0001, false, 0, false, 0, kActive);
+        REQUIRE_FALSE(one.badArg);
+        CHECK(one.scope.tracksMask == 0x0001u);
+        // 给了 bit15 也要被掩掉,不能带进 scope
+        const auto withReserved = parseSuggestionScope(false, "", true, 0x8001, false, 0, false, 0, kActive);
+        REQUIRE_FALSE(withReserved.badArg);
+        CHECK(withReserved.scope.tracksMask == 0x0001u);
+        // [#163 复审【红旗】] 掩完为 0 **不是 badArg**:§1.36 拒绝态只有
+        // 「versions 不在两值内 / endS ≤ startS」两条,零轨落在「scope 内零段」⇒ noData。
+        // mock 与冒烟(「零轨 → noData」)都钉死这一档;曾照 §1.23 [J87] 抄成 badArg 是错的
+        // —— 那是写函数的口径,导出是只读的。
+        for (const int m : {0x8000, 0})
+        {
+            const auto zero = parseSuggestionScope(false, "", true, m, false, 0, false, 0, kActive);
+            CHECK_FALSE(zero.badArg);
+            CHECK(zero.scope.tracksMask == 0u); // 交给 buildRows 得零行 ⇒ noData
+        }
+    }
+
+    SECTION("时间窗:两头都给逐字照用;倒序/零宽 ⇒ badArg")
+    {
+        const auto win = parseSuggestionScope(false, "", false, 0, true, 1.5, true, 4.0, kActive);
+        REQUIRE_FALSE(win.badArg);
+        CHECK(win.scope.startSec == 1.5);
+        CHECK(win.scope.endSec == 4.0);
+        // §1.36 拒绝态第二条逐字:endS ≤ startS(mock 亦然:`if (!(endS > startS)) return BAD_ARG()`)
+        CHECK(parseSuggestionScope(false, "", false, 0, true, 4.0, true, 1.5, kActive).badArg);
+        CHECK(parseSuggestionScope(false, "", false, 0, true, 2.0, true, 2.0, kActive).badArg);
+    }
+
+    SECTION("[#163 复审【重要】] 只给一头 = **半开窗**,与 mock 的 ±∞ 同口径")
+    {
+        // 老写法把单边窗退化成「整个不限」,而 mock 用 `isFiniteNumber(x) ? x : ±Infinity`
+        // ⇒ `{startS:30}` 在预览页只导 30s 之后的段、在真宿主导全部。同一次点击两侧行集不同,
+        // 而这条路没有任何回显能让用户发现。`{startS:30}` 的字面意思就是「从 30 秒起」。
+        const auto onlyStart = parseSuggestionScope(false, "", false, 0, true, 30.0, false, 0.0, kActive);
+        REQUIRE_FALSE(onlyStart.badArg);
+        CHECK(onlyStart.scope.startSec == 30.0);
+        CHECK(onlyStart.scope.endSec > 1.0e300); // ≡ +∞:`t0Sec < endSec` 恒真
+        // 缺左端取 0.0(段时间恒 ≥ 0,真实段上与 −∞ 等效)
+        const auto onlyEnd = parseSuggestionScope(false, "", false, 0, false, 0.0, true, 30.0, kActive);
+        REQUIRE_FALSE(onlyEnd.badArg);
+        CHECK(onlyEnd.scope.startSec == 0.0);
+        CHECK(onlyEnd.scope.endSec == 30.0);
+        // 只给右端且 ≤ 0:窗内不可能有段。不拒(§1.36 没这一条),但也不能退回「不限」
+        // —— 那会把「只要 0 秒之前的段」变成「导出全部」。退成空窗 ⇒ 零行 ⇒ noData。
+        // ⚠ 这一档不能写成 `0/0`:`inWindow` 在 `!(endSec > startSec)` 时**关掉筛选**,
+        // `0/0` 反而是「全导」—— 与本意正相反(本轮自查到的)。取远端空窗,让筛选真的生效。
+        const auto endZero = parseSuggestionScope(false, "", false, 0, false, 0.0, true, 0.0, kActive);
+        REQUIRE_FALSE(endZero.badArg);
+        CHECK(endZero.scope.startSec > 1.0e300); // 真实段的 t1Sec 够不到 ⇒ 零行 ⇒ noData
+        CHECK(endZero.scope.endSec > endZero.scope.startSec); // 筛选**必须**生效,不能退成「不限」
+    }
+
+    SECTION("[#163 二轮【重要】] 负左端必须归一 —— 否则 inWindow 会把筛选整个关掉")
+    {
+        // `inWindow` 用 `startSec >= 0` **兼作「窗生效」旗标**:负左端逐字抄进 Scope 会让
+        // `!(startSec >= 0)` 为真 ⇒ 筛选关掉 ⇒ **全导**,而 mock 的 `t1S > -5 && t0S < 10`
+        // 只导 10s 之前的段。§1.36 对 startS 只写 f64(没写非负)⇒ 负值是契约合法入参。
+        const auto neg = parseSuggestionScope(false, "", false, 0, true, -5.0, true, 10.0, kActive);
+        REQUIRE_FALSE(neg.badArg);
+        CHECK(neg.scope.startSec == 0.0); // 钳到 0(≡ −∞:段时间恒 ≥ 0)
+        CHECK(neg.scope.endSec == 10.0);
+        CHECK(neg.scope.startSec >= 0.0); // ← 这一条就是 inWindow 的「窗生效」判据
+        // 只给负左端:钳到 0 + 右端 +∞ ⇒ 仍然是「全导」,与 mock 的 (−5, +∞) 同结果
+        const auto negOnly = parseSuggestionScope(false, "", false, 0, true, -5.0, false, 0.0, kActive);
+        REQUIRE_FALSE(negOnly.badArg);
+        CHECK(negOnly.scope.startSec == 0.0);
+        CHECK(negOnly.scope.endSec > 1.0e300);
+    }
+
+    SECTION("非有限值按「没给」处理(与 mock 的 isFiniteNumber 同口径)")
+    {
+        const double inf = std::numeric_limits<double>::infinity();
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        // `{startS:0, endS:Infinity}` 不得带着 inf 进 Scope(mock 有 isFiniteNumber 守卫,
+        // 老写法没有)。顺带:Infinity 其实过不了桥 —— JSON.stringify(Infinity) 是 "null"。
+        const auto infEnd = parseSuggestionScope(false, "", false, 0, true, 0.0, true, inf, kActive);
+        REQUIRE_FALSE(infEnd.badArg);
+        CHECK(infEnd.scope.startSec == 0.0);
+        CHECK(infEnd.scope.endSec > 1.0e300); // 退成「只给左端」的半开窗
+        // 两头都非有限 ⇒ 等价于都没给 ⇒ 不限
+        const auto bothNan = parseSuggestionScope(false, "", false, 0, true, nan, true, nan, kActive);
+        REQUIRE_FALSE(bothNan.badArg);
+        CHECK(bothNan.scope.startSec < 0.0);
+        CHECK(bothNan.scope.endSec < 0.0);
     }
 }

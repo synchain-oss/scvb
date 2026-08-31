@@ -452,8 +452,6 @@ export const T = {
         "suggest.exportOk": "已导出 {n} 行 → {path}",
         "suggest.exportCancelled": "已取消导出",
         "suggest.exportFail": "导出失败:{reason}",
-        "suggest.exportUnavailable":
-            "本版本尚未接通导出——保存对话框待 native 侧落地",
         "suggest.tableAria": "建议表:每轨每段的声像 / 音量 / 宽度建议值",
         "suggest.rowsAria": "建议表数据区,方向键滚动",
         "suggest.col.trackIndex": "轨",
@@ -1313,8 +1311,6 @@ export const T = {
         "suggest.exportOk": "Exported {n} rows → {path}",
         "suggest.exportCancelled": "Export cancelled",
         "suggest.exportFail": "Export failed: {reason}",
-        "suggest.exportUnavailable":
-            "Export is not wired up in this build yet — the save dialog is pending on the native side",
         "suggest.tableAria":
             "Suggestion table: pan / volume / width suggestions per track and segment",
         "suggest.rowsAria": "Suggestion rows, arrow keys to scroll",
@@ -2114,8 +2110,6 @@ export const T = {
         "suggest.exportOk": "{n} lignes exportées → {path}",
         "suggest.exportCancelled": "Export annulé",
         "suggest.exportFail": "Échec de l'export : {reason}",
-        "suggest.exportUnavailable":
-            "L'export n'est pas encore raccordé dans cette version — la boîte de dialogue d'enregistrement est en attente côté natif",
         "suggest.tableAria":
             "Tableau de suggestions : suggestions de panoramique / volume / largeur par piste et par segment",
         "suggest.rowsAria": "Lignes de suggestions, flèches pour faire défiler",
