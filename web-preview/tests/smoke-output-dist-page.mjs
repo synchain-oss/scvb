@@ -924,8 +924,26 @@ try {
         // 那行 `console.debug` 是「释放窗口 2000ms 本机测不出真机间隔分布」的唯一补偿手段,
         // 而它第一版是**死代码**:`store.params` 在读 prevAt 之前就被整体重写了,gap 恒 ≈0。
         // 静态看不出来,只有真跑才知道 —— 所以这一条必须是页面级。
-        // 判据窗口 = 上面整节(钩子在进 PRINT 后就装上了):徽标每灭一次,就意味着两帧
-        // hostEcho:true 之间越过了释放窗口,那正是这行读数该打印的时刻。
+        // ⚠ 间隔**自己造**,不靠等 mock 的段边界撞上来:后者取决于走带在这一节里跑到哪、
+        // rAF 节奏多快,CI 上实测捞不到(本机能捞到 3048ms 那一条)—— 那就是本仓注释里
+        // 反复记过的「按帧率判红」。这里改成关掉输出 → 打印停 → 静置超过释放窗口 →
+        // 再打开,下一帧 hostEcho:true 的间隔必然越窗。两步都走真实桥调用。
+        await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (mk) mk.setOutputEnabled(false);
+            return true;
+        `),
+        );
+        await sleep(2600); // > HOST_ECHO_RELEASE_MS(2000),静置期零 hostEcho 帧
+        await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (mk) mk.setOutputEnabled(true);
+            return true;
+        `),
+        );
+        await sleep(1200); // 等打印头重新推第一帧 hostEcho:true
         const dbg = await evaluate(
             IN(`
             return {
