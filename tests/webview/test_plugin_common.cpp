@@ -327,6 +327,15 @@ TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFold
     const auto o1 = PlatformWebView::makeWebViewOptions(WBC::Options{}, in1);
     CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
     CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == in1);
+
+    // [SL-253] WebView2 在所有 web 内容**之下**铺的那一层必须是**不透明暗色**。
+    // 不设的话它是默认构造的 juce::Colour = ARGB 0x00000000(全透明),JUCE 会把这个值
+    // 原样 put 进 put_DefaultBackgroundColor —— 于是从控制器建好到 tokens.css/base.css
+    // 解析完为止这一层什么都不挡,露的是窗口的白(用户实测「开窗一瞬全白」)。
+    const auto bg = o1.getWinWebView2BackendOptions().getBackgroundColour();
+    CHECK(bg == scvb::webview::shellBackdrop());
+    CHECK(bg.isOpaque()); // JUCE 只接受全不透明或全透明;半透明会在其内部断言
+    CHECK_FALSE(bg == juce::Colour()); // ★ 反向哨兵:退回默认构造(全透明)即红
     CHECK(in1.getFileName() == "SCVBInputWV2");
 
     // 目录名里不许再出现 PID / 实例序号:那正是「每实例一个目录」的残留特征。

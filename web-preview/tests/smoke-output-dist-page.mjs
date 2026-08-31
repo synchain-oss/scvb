@@ -771,6 +771,138 @@ try {
         );
         assertClean("SL-241 切版本");
     }
+
+    // =========================================================================
+    log("=== ④ SL-251/J93:播放期不再闪烁 + 图表卡不再压暗 ===");
+    //
+    // 用户实测(v5.6.3):播放时整体调整页很多设置变暗、**包括下面的图表**,然后开始闪烁。
+    // 修前本探针实测:四张卡的 data-host-echo 各 1.3 次/秒翻转(8s / 10 次)。
+    //
+    // 这一节必须是页面级:node 侧断得到闩锁纯函数(smoke-tab1-interactions ⑧),
+    // 断不到「renderParams 真的改用了它、且图表卡真的退出了名单」。
+    {
+        newBucket("sl251-flicker");
+        await cdp.send("Page.navigate", {
+            // play=1:走带在跑,配合输出 ON 进 PRINT —— 用户那一幕的前提。
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+        await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (mk) mk.setOutputEnabled(true);
+            return true;
+        `),
+        );
+        await sleep(1200); // 等打印头开始推 hostEcho:true 的帧
+
+        const readState = IN(`
+            const pick = (gb) => {
+                const n = d.querySelector('[data-gb="' + gb + '"]');
+                return n ? (n.getAttribute("data-host-driven") || "-") : "?";
+            };
+            const badge = (gb) => {
+                const n = d.querySelector('[data-gb="' + gb + '-hostbadge"]');
+                return n ? (n.getAttribute("data-on") || "-") : "?";
+            };
+            const dist = d.querySelector('[data-gb="master-distchart"]');
+            return {
+                width: pick("master-width"),
+                ms: pick("master-msbalance"),
+                lead: pick("master-leadselect"),
+                widthBadge: badge("master-width"),
+                msBadge: badge("master-msbalance"),
+                leadBadge: badge("master-leadselect"),
+                distDriven: dist ? (dist.getAttribute("data-host-driven") || "-") : "?",
+                distEcho: dist ? (dist.getAttribute("data-host-echo") || "-") : "?",
+                distOpacity: dist ? getComputedStyle(dist).opacity : "?",
+            };
+        `);
+
+        const on = await evaluate(readState);
+        log(`  打印中:${JSON.stringify(on)}`);
+        check(
+            on.width === "1" && on.ms === "1" && on.lead === "1",
+            `(a) 打印中三张参数卡挂上 data-host-driven=1(实得 ${on.width}/${on.ms}/${on.lead})`,
+        );
+        check(
+            on.widthBadge === "1" && on.msBadge === "1" && on.leadBadge === "1",
+            "(b) 三枚徽标同步亮起(裁定③:提示改成徽标)",
+        );
+        // ★ 裁定②:图表卡整个退出提示名单 —— 既不该挂属性,更不该被压暗。
+        check(
+            on.distDriven === "-" && on.distEcho === "-",
+            `(c) ★ 图表卡不再挂任何 hostEcho 属性(实得 driven=${on.distDriven} echo=${on.distEcho})`,
+        );
+        check(
+            on.distOpacity === "1" || parseFloat(on.distOpacity) > 0.99,
+            `(d) ★ 图表卡不透明度回到 1(实得 ${on.distOpacity};修前是 0.55)`,
+        );
+
+        // ---- (e) **native 快通道对拍**:中间插一帧 hostEcho:false,徽标不许被打断。
+        //
+        // ⚠ mock 在纯播放期只发 hostEcho:true 的帧,所以**它自己重现不出真机那条快通道**
+        // (native 每帧都带 C++ 那个 600ms 窗口的当前值,宿主一停写就是 false)。
+        // 这里借 `setParam` 走一条**真的 mock 代码路径**造出那一帧:它发的正是
+        // `{values:{...}, hostEcho:false}`(juce-bridge-mock.js 的 §1.13 回声),
+        // 与 native 插进来的 false 帧同形。不加这一条,这一节在 mock 上是**空绿**的。
+        const afterFalse = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk || typeof mk.setParam !== "function") return null;
+            mk.setParam("width", 101);   // ← 发一帧 hostEcho:false
+            return true;
+        `),
+        );
+        check(afterFalse === true, "(e) 成功注入一帧 hostEcho:false");
+        await sleep(120); // 让那一帧走完 store → render
+        const still = await evaluate(readState);
+        check(
+            still.width === "1" && still.widthBadge === "1",
+            `(e) ★ 一帧 hostEcho:false **没有**打断徽标(实得 driven=${still.width} badge=${still.widthBadge})—— 退回旧判据这里即红`,
+        );
+
+        // ---- (f) 8 秒逐帧采样:翻转次数必须回到 0
+        const flick = await evaluate(
+            IN(`
+            return new Promise((res) => {
+                const ids = ["master-width","master-msbalance","master-leadselect"];
+                const seen = {}; const flips = {};
+                let frames = 0; const t0 = performance.now();
+                const step = () => {
+                    frames++;
+                    for (const id of ids) {
+                        const n = d.querySelector('[data-gb="' + id + '"]');
+                        const v = n ? n.getAttribute("data-host-driven") : "-";
+                        if (seen[id] === undefined) { seen[id] = v; flips[id] = 0; }
+                        else if (seen[id] !== v) { flips[id] += 1; seen[id] = v; }
+                    }
+                    if (performance.now() - t0 >= 8000) res({ frames, flips });
+                    else requestAnimationFrame(step);
+                };
+                requestAnimationFrame(step);
+            });
+        `),
+        );
+        const total = Object.values(flick.flips).reduce((a, b) => a + b, 0);
+        log(
+            `  8s / ${flick.frames} 帧,三张卡翻转合计 ${total} 次(修前实测每张 10 次)`,
+        );
+        // 修前基线:每张卡 10 次 / 8s(合计 30)。修后实测合计 6(每张 2)。
+        //
+        // ⚠ 为什么不断「零翻转」:剩下的这两次**不是**抖动,是闩锁在**信号真的停了**之后
+        // 正常释放又重新亮起。mock 的 hostEcho:true 帧是「pan/vol 值变了才发」,而值变的
+        // 节奏 = 段边界,demo 段长本来就有超过释放窗口的 —— 那是 mock 信号自身的稀疏,
+        // 不是判据在抖。真机的语义不同(native 那一位由**宿主写入**喂,与我们的值变无关),
+        // 它的间隔分布本机测不出来,所以这里**不拿 mock 的段长去反推窗口该多大**。
+        // 真正把「快通道」钉死的是上面的 (e):信号还在来的时候,一帧 false 打不断它。
+        // 阈值取 6 = 每张卡 2 次,比修前基线低 5 倍;真退回旧判据会是 30,拦得住。
+        check(
+            total <= 6,
+            `(f) ★ 播放期翻转降到基线的 1/5 以内(实得合计 ${total} 次:${JSON.stringify(flick.flips)};修前 30 次)`,
+        );
+        assertClean("SL-251 闪烁");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

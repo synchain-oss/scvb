@@ -50,7 +50,7 @@ import {
 // format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
 // PR #60 红旗)。
 import {
-    HOST_ECHO_FRESH_MS,
+    hostEchoOn,
     format,
     lowSampleChannels,
     secondsToTimecode,
@@ -2054,14 +2054,11 @@ export function createTabTracks(opts) {
             counts: model.counts,
             active: model.active,
             blocked: isWriteBlocked(),
-            // hostEcho 灰显按**批次新鲜度**判定(口径与 Tab1 一致:hostEcho 标志停发后不会
-            // 翻回 false,直接用它会让 pan/width/卡箍/冻结永久滞留 55% 透明)。
-            echo:
-                (st.params || {}).hostEcho &&
-                Date.now() - ((st.params || {}).hostEchoAt || 0) <
-                    HOST_ECHO_FRESH_MS
-                    ? "1"
-                    : "0",
+            // [SL-251/J93] 与 Tab1 共用同一条**非对称闩锁**判据(亮立刻、熄延迟)。
+            // 这一份原先是 Tab1 那条的逐字副本,所以同一个闪烁 Tab2 也有 —— 用户只是
+            // 当时人在 Tab1 没看见。灰显本身(`data-host-echo` + 那条 CSS)一字未动:
+            // J93 只裁了整体调整页的三张参数卡改徽标,轨道页不在裁定范围内。
+            echo: hostEchoOn(st.params) ? "1" : "0",
         };
     }
 

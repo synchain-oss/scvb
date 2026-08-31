@@ -1290,6 +1290,126 @@ log("=== ⑦ SL-241:复制版本切进去,分布图不许回落出厂默认 ==="
 }
 
 // =============================================================================
+log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数卡改徽标 ===");
+//
+// 用户实测(v5.6.3):播放时整体调整页很多设置变暗、包括下面的图表,然后开始闪烁。
+// 定谳:压暗判据原先是 `hostEcho && (now - hostEchoAt < 600)`。第一项是**最近一帧的
+// 原始布尔**,被每一帧 scvb.params 覆写 —— 一帧 false 就瞬间打掉,零缓冲;而帧本身是
+// 「值变了才发」,于是「宿主还在写、我们的值恰好平着」时也会误熄。页面级探针实测
+// 四张卡各 1.3 次/秒翻转。J93 三裁:①灭侧加迟滞 ②图表卡摘出 ③三张参数卡改徽标。
+{
+    const HE = await import(u("web/shared/host-echo.js"));
+
+    // ---- (a) 闩锁纯函数:亮立刻、熄延迟,且**不看** hostEcho 那一位
+    const T0 = 1_000_000;
+    eq(HE.hostEchoOn({}, T0), false, "(a1) 从未收到 true 帧 ⇒ 不亮");
+    eq(HE.hostEchoOn({ hostEchoAt: 0 }, T0), false, "(a2) at=0 当作从未收到");
+    eq(
+        HE.hostEchoOn({ hostEchoAt: T0 }, T0),
+        true,
+        "(a3) 刚收到 true 帧 ⇒ 立刻亮(信息不迟到)",
+    );
+    eq(
+        HE.hostEchoOn({ hostEchoAt: T0 }, T0 + HE.HOST_ECHO_RELEASE_MS - 1),
+        true,
+        "(a4) 释放窗口内 ⇒ 保持亮",
+    );
+    eq(
+        HE.hostEchoOn({ hostEchoAt: T0 }, T0 + HE.HOST_ECHO_RELEASE_MS),
+        false,
+        "(a5) 越过释放窗口 ⇒ 熄(一次性,不抖)",
+    );
+    // ★ 本卡的核心:**一帧 false 不许打断**。这一条正是闪烁的机理,也是唯一能把
+    // 「快通道」钉死在纯函数层的断言 —— hostEcho:false 根本不进判据。
+    eq(
+        HE.hostEchoOn({ hostEcho: false, hostEchoAt: T0 }, T0 + 100),
+        true,
+        "(a6) ★ 中间来一帧 hostEcho:false ⇒ **仍然亮**(退回旧判据即红)",
+    );
+    check(
+        HE.HOST_ECHO_RELEASE_MS > HE.HOST_ECHO_FRESH_MS,
+        `(a7) 释放窗口必须比新鲜度窗口宽(实得 ${HE.HOST_ECHO_RELEASE_MS} vs ${HE.HOST_ECHO_FRESH_MS})`,
+    );
+
+    // ---- (b) 源码级不变式:图表卡摘出 + 两 tab 共用同一条判据
+    const tmSrc = readFileSync(join(ROOT, "web/output/tab-master.js"), "utf8");
+    const ttSrc = readFileSync(join(ROOT, "web/output/tab-tracks.js"), "utf8");
+    check(
+        /for \(const node of \[el\.widthCard, el\.msCard, el\.leadCard\]\)/.test(
+            tmSrc,
+        ),
+        "(b1) 提示名单只剩三张参数卡 —— 图表卡(distCard)已摘出(J93 裁定②)",
+    );
+    check(
+        !/el\.distCard,\s*\]\)/.test(tmSrc),
+        "(b2) distCard 不再出现在那份名单里",
+    );
+    check(
+        tmSrc.includes('setAttribute("data-host-driven"'),
+        "(b3) 三张参数卡改挂新属性 data-host-driven(不复用 data-host-echo)",
+    );
+    // 断的是「不再**写**」,不是「源码里不许出现这个词」—— 解释为什么不复用它的那条注释
+    // 本身就得提到它。用 setAttribute 落点判,才是行为面。
+    check(
+        !/setAttribute\(\s*"data-host-echo"/.test(tmSrc),
+        "(b4) ★ Tab1 不再写 data-host-echo —— 那条 CSS 不带作用域,Tab2 每轨控件也在用,复用会误伤",
+    );
+    check(
+        /setAttribute\(\s*"data-host-echo"/.test(ttSrc) ||
+            /attr\(\s*n\.\w+,\s*"data-host-echo"/.test(ttSrc),
+        "(b4) Tab2 仍在写 data-host-echo(灰显不动)",
+    );
+    check(
+        /data-host-echo/.test(ttSrc),
+        "(b5) Tab2 的 data-host-echo 灰显原样保留(J93 未裁轨道页)",
+    );
+    for (const [name, src] of [
+        ["tab-master", tmSrc],
+        ["tab-tracks", ttSrc],
+    ]) {
+        check(
+            src.includes("hostEchoOn(st.params)"),
+            `(b6) ${name} 用的是共享判据 hostEchoOn(两处曾各存一份逐字副本)`,
+        );
+        check(
+            !/hostEcho &&\s*$|hostEcho &&\n/.test(src),
+            `(b6) ${name} 不再有 \`hostEcho &&\` 那条旧判据`,
+        );
+    }
+
+    // ---- (c) 徽标的可及性与三语词条
+    const htmlSrc = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+    eq(
+        (htmlSrc.match(/class="host-badge"/g) || []).length,
+        3,
+        "(c1) 三张参数卡各一枚徽标",
+    );
+    check(
+        /\.host-badge\s*\{[^}]*visibility:\s*hidden/.test(htmlSrc),
+        "(c2) 徽标常驻占位、只切 visibility(用 display:none 会把闪烁换成跳动)",
+    );
+    check(
+        /\.host-badge\s*\{[^}]*pointer-events:\s*none/.test(htmlSrc),
+        "(c3) 徽标不吃指针事件(裁定③:不挡操作)",
+    );
+    check(
+        htmlSrc.includes('data-t-aria="master.hostEchoBadgeAria"'),
+        "(c4) 徽标带 aria 词条(SVG 本体 aria-hidden)",
+    );
+    for (const lang of ["zh", "en", "fr"]) {
+        check(
+            typeof T[lang]["master.hostEchoBadgeAria"] === "string" &&
+                T[lang]["master.hostEchoBadgeAria"].length > 0,
+            `(c5) aria 词条三语齐:${lang}`,
+        );
+        check(
+            typeof T[lang]["master.hostEchoHint"] === "string",
+            `(c5) tooltip 词条仍在:${lang}`,
+        );
+    }
+}
+
+// =============================================================================
 if (fail > 0) {
     console.error(`\nsmoke-tab1-interactions 失败(${fail} 项)`);
     process.exit(1);

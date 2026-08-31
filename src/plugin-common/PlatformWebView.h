@@ -5,6 +5,20 @@
 
 namespace scvb::webview
 {
+// [SL-253] 开窗底色的**唯一真源**。用户实测:插件窗口一开有一瞬间全白,然后才画出暗色 UI。
+// 成因是开窗路径上**三层都没有不透明底色**(编辑器组件无 paint、WebView2 的
+// DefaultBackgroundColor 默认全透明、HTML 的底色藏在两个外链 css 里),白的是窗口本身。
+//
+// 取值与 `web/shared/tokens.css` 的 `--page-backdrop: #191820` 对齐 —— 那条注释原话就是
+// 「仅防露白」,只是它来得太晚。此前仓里这个深色有**两个**字面量(tokens 的 #191820 与
+// FallbackPanel 的 0xff18161d),现在三处共用这一个,免得以后再漂。
+// ⚠ 必须**完全不透明**:JUCE 的 withBackgroundColour 只接受全不透明或全透明(见其头注断言)。
+inline constexpr juce::uint32 kShellBackdropArgb = 0xff191820;
+inline juce::Colour shellBackdrop() noexcept
+{
+    return juce::Colour(kShellBackdropArgb);
+}
+
 // PlatformWebView —— 平台 WebView 分支集中地(01 §9;01 §6.1 机制 1/2 与机制 3 前半)。
 //   Windows:WebView2(显式后端选择 + 可写 user-data 目录 + 静态 loader 运行时探测);
 //   macOS/Linux:WKWebView / WebKitGTK(JUCE 内建,无需探测,恒可用)。
