@@ -123,11 +123,10 @@ void InputEditor::emitTick()
     {
         abiRemote = snap.remoteAbi; // 探测不到 → 字段不存在(§4.1 字段纪律)
     }
-    emitIfChanged(
-        bridge::kEvState,
-        bridge::buildStatePayload(snap.channelId, snap.groupId, claim, snap.localAbi, abiRemote, uiScale(), lang(),
-                                  processor_.bridgeUiGuideSeen()),
-        lastStateJson_);
+    emitIfChanged(bridge::kEvState,
+                  bridge::buildStatePayload(snap.channelId, snap.groupId, claim, snap.localAbi, abiRemote, uiScale(),
+                                            lang(), processor_.bridgeUiGuideSeen()),
+                  lastStateJson_);
 
     // scvb.conn:~4Hz diff-then-emit(§4.2;滞回窗口 = 不健康且目标仍为静音,J32)。
     if (now - lastConnMs_ >= scvb::kHeartbeatIntervalMs)

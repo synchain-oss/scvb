@@ -38,8 +38,7 @@ struct TempStore
 };
 } // namespace
 
-TEST_CASE("[SL258] guide_seen 全局位按侧分键 —— Output 与 Input 各存一份、互不串扰",
-          "[uidefaults][SL258]")
+TEST_CASE("[SL258] guide_seen 全局位按侧分键 —— Output 与 Input 各存一份、互不串扰", "[uidefaults][SL258]")
 {
     TempStore store;
 

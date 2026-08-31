@@ -912,7 +912,9 @@ checkEventPayloadFields();
     // 三种注册形状的抽取:返回常量标识符(尚未经常量表映射成桥名)。
     const identsOf = (body) => {
         const out = [];
-        for (const m of body.matchAll(/add\(\s*Fn::([A-Za-z_][A-Za-z0-9_]*)/g)) {
+        for (const m of body.matchAll(
+            /add\(\s*Fn::([A-Za-z_][A-Za-z0-9_]*)/g,
+        )) {
             out.push(m[1]);
         }
         for (const m of body.matchAll(
@@ -956,7 +958,9 @@ checkEventPayloadFields();
         );
         const contractSide = contractFns[cfg.side];
         if (!Array.isArray(contractSide) || contractSide.length === 0) {
-            skip(`契约 manifest.${cfg.side} 为空,跳过 ${cfg.side} 侧已注册 handler 对拍`);
+            skip(
+                `契约 manifest.${cfg.side} 为空,跳过 ${cfg.side} 侧已注册 handler 对拍`,
+            );
             continue;
         }
         if (!existsSync(cfg.editor) || !existsSync(cfg.header)) {
@@ -1007,9 +1011,7 @@ checkEventPayloadFields();
             continue;
         }
         if (registered.size === 0) {
-            fail(
-                `${cfg.marker} 里抽不到任何注册调用,本节口径需同步`,
-            );
+            fail(`${cfg.marker} 里抽不到任何注册调用,本节口径需同步`);
             continue;
         }
         const contracted = new Set(contractSide);

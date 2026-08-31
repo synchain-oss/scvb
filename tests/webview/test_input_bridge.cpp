@@ -362,9 +362,8 @@ TEST_CASE("T30 buildInputSnapshot 首帧快照形状(§3.1)")
     ConfigSnapshot cfg;
     cfg.sourceChannels = 2;
     cfg.configSeq = 7;
-    const auto s =
-        obj(buildInputSnapshot(4, 1, connSnapshot(true, true, false, false, false, 8), cfg, 1.0f, "zh", false, true,
-                               "0.1.0", 1));
+    const auto s = obj(buildInputSnapshot(4, 1, connSnapshot(true, true, false, false, false, 8), cfg, 1.0f, "zh",
+                                          false, true, "0.1.0", 1));
     CHECK(static_cast<int>(s->getProperty("channel_id")) == 4);
     CHECK(static_cast<int>(s->getProperty("group_id")) == 1);
     CHECK(s->getProperty("role").toString() == "input");
