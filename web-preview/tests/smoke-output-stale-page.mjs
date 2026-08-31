@@ -286,6 +286,12 @@ const PROBE = IN(`
             return !!sw && sw.getAttribute("aria-checked") === "true";
         })(),
         noTimelineBanner: vis(gb("banner-noTimeline")),
+        voided: vis(gb("banner-recaptureVoided")),
+        voidedPresent: !!gb("banner-recaptureVoided"),
+        voidedText: (() => {
+            const n = gb("banner-recaptureVoided-text");
+            return n ? n.textContent.trim() : null;
+        })(),
         // 采集开关的写闸在 DOM 上是 data-disabled(它是 div 不是表单控件,没有 .disabled)。
         // tab-master.js 的 isWriteBlocked() = readOnly || noTimeline,两处都写这一位。
         captureSwitchBlocked: (() => {
@@ -429,6 +435,10 @@ try {
             `前置:本场景采集确实是 ON(否则下一条退化成白测,实得 ${p.captureEnabled}）`,
         );
         check(!p.paused, "stale 已挂 ⇒ 横幅 ⑨ 让位,只留 ⑧(采集 ON 也不出)");
+        check(
+            !p.voided,
+            "未布防 ⇒ 横幅 ⑩ 收起(反向:它只在布防在 ∧ 采集关时出)",
+        );
         assertClean("scenario=stale");
     }
 
@@ -508,6 +518,31 @@ try {
         );
         check(!p.paused, "noTimeline ⇒ 横幅 ⑨ 让位,只留 ⑥");
         assertClean("scenario=no-timeline");
+    }
+
+    // =========================================================================
+    // [SL-247 / J92a] ⑤ 布防还在、采集已关 ⇒ 横幅 ⑩「这次重采集不会记录任何东西」。
+    //
+    // 这一态**早于本卡就可达**(布防期手动关采集 = §1.23 裁定③ 的接管),而此前界面上
+    // 一个字都没有 —— 用户只会觉得「布防着却什么都没采到」。J92a 又给它加了第二条路
+    // (布防期手动开跟随引擎,互斥把采集关了),两条路对页面是同一态。
+    log("=== ⑤ scenario=recapture-voided:布防在、采集关 ⇒ ⑩ 亮 ===");
+    {
+        const p = await open("recapture-voided");
+        check(p !== null, "取到页内 DOM 快照");
+        check(p.voidedPresent, "横幅 ⑩ 的节点在模板里");
+        check(!p.captureEnabled, "前置:本场景采集确实是 OFF(⑩ 的判据之一)");
+        check(p.voided, "布防在 ∧ 采集关 ⇒ 横幅 ⑩ 亮");
+        check(
+            /重新打开采集|Turn capture back on|Réactivez la capture/i.test(
+                p.voidedText || "",
+            ),
+            `横幅 ⑩ 给出了出路(实得「${p.voidedText}」)`,
+        );
+        // ⑨ 在这一档必须收起 —— 判据里 capture_enabled 为假,它本来就不该出;
+        // 断上一句是为了钉住两条横幅不会同框说两套话。
+        check(!p.paused, "⑩ 在场时 ⑨ 收起(采集是关的,⑨ 的前提本就不成立)");
+        assertClean("scenario=recapture-voided");
     }
 } catch (e) {
     fail++;

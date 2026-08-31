@@ -5060,6 +5060,35 @@
                             >采集开着时不比对上游改动(这一秒的特征正被写成新基线)——要检查上游有没有动过,先关掉采集再播放</span
                         >
                     </div>
+                    <!-- ⑩ [SL-247 / J92a] 布防还在、采集却已关 ⇒ 本次重采集不会记录任何东西。
+                         判据 = §2.1 recapture.armed ∧ !capture_enabled(两个现成字段,不新增契约字段)。
+                         两条路都落到这一态:布防期手动开跟随引擎(互斥关了采集)/ 布防期手动关采集
+                         (§1.23 裁定③ 接管)。后者早于本卡就存在,此前界面上一个字都没有。
+                         醒目但**非阻塞**、不弹确认框(沿 J85 口径)。 -->
+                    <div
+                        class="sc-banner"
+                        data-gb="banner-recaptureVoided"
+                        hidden
+                    >
+                        <svg
+                            class="sc-banner__icon"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 2v6M7 10.5v.7"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                            />
+                        </svg>
+                        <span
+                            data-t="banner.recaptureVoided"
+                            data-gb="banner-recaptureVoided-text"
+                            >重采集布防还在,但采集已关——这次重采集不会记录任何东西;重新打开采集,或撤销布防</span
+                        >
+                    </div>
                     <!-- ⑦ 加载守卫:写入自动化状态随工程恢复 -->
                     <div class="sc-banner" data-gb="banner-printGuard" hidden>
                         <svg

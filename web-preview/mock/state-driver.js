@@ -121,6 +121,10 @@ export const SCENARIO_MAP = Object.freeze({
     // ⑥ 说真因(没有时间线),⑨ 必须让位 —— 否则它会把停摆归因到采集开关上,
     // 而那把开关此时恰恰是 disabled(写控件闸 = `readOnly || noTimeline`),用户照做也做不到。
     "no-timeline": "fifteen-tracks",
+    // [SL-247 / J92a] 布防还在、采集却已关 —— 横幅 ⑩ 的世界。
+    // 真机到达路径有两条(布防期手动开跟随引擎被互斥关了采集 / 布防期手动关采集 = §1.23
+    // 裁定③ 接管),对页面而言是同一态,故一个场景即可覆盖。
+    "recapture-voided": "fifteen-tracks",
 });
 
 /** `stale` 场景里「数据已过期」的轨(取三条:够验证「只影响该轨、不牵连别的轨」)。 */
@@ -522,6 +526,21 @@ export function buildWorld(opts = {}) {
         outputSegments = makeTourDemoSegments(1, "snapshot", {
             trajectoryGap: true,
         });
+    }
+    if (opts.scenario === "recapture-voided" && outputSnapshot) {
+        // [SL-247] 布防位保留、采集已关。**采集必须是 OFF**:这一态的定义就是这两位的组合,
+        // 把采集摆成 ON 就成了普通布防态(那是 `recapture-armed` 场景),⑩ 也就不该出。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: { ...outputSnapshot.global, capture_enabled: false },
+            recapture: {
+                armed: true,
+                tracksMask: maskOfChannels(RECAPTURE_DEMO.channels.slice()),
+                startS: RECAPTURE_DEMO.startS,
+                endS: RECAPTURE_DEMO.endS,
+                autoStop: false,
+            },
+        };
     }
     if (opts.scenario === "no-timeline" && outputSnapshot) {
         // [SL-247] 两件都要:`caps.noTimeline` 决定桥函数的拒绝分支与写控件闸,

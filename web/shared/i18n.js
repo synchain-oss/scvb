@@ -717,6 +717,12 @@ export const T = {
         // 「提醒没了」而查不出原因;文案必须把**可执行动作**说出来,不能只说状态。
         "banner.fpPausedByCapture":
             "采集开着时不比对上游改动(这一秒的特征正被写成新基线)——要检查上游有没有动过,先关掉采集再播放",
+        // [SL-247 / J92a] 横幅 ⑩:布防还在、采集却已经关了 ⇒ 这次重采集不会记录任何东西。
+        // 两条路都会落到这一态:① 布防期手动开跟随引擎(J92a 互斥把采集关了);
+        // ② 布防期手动关采集(§1.23 裁定③ 的「接管」)—— 后者早于本卡就存在,此前界面上一个字都没有。
+        // 文案不说「谁把它关的」,只说**现在是什么状态 + 怎么办**,两条路才都读得通。
+        "banner.recaptureVoided":
+            "重采集布防还在,但采集已关——这次重采集不会记录任何东西;重新打开采集,或撤销布防",
         "wave.staleTrack": "该轨上游音频与已采集特征不一致,建议重新采集",
         // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
         "master.versionArmedConfirm": "引擎输出将平滑切至新版本,是否继续?",
@@ -1561,6 +1567,8 @@ export const T = {
             "Upstream audio no longer matches the captured features on {m} track(s) — re-capture recommended",
         "banner.fpPausedByCapture":
             "Upstream-change detection is paused while capture is on (these features are being rewritten as the new baseline) — turn capture off, then play, to check whether upstream changed",
+        "banner.recaptureVoided":
+            "Re-capture is still armed but capture is off — this re-capture will record nothing. Turn capture back on, or disarm.",
         "wave.staleTrack":
             "Upstream audio no longer matches the captured features on this track — re-capture recommended",
         "master.versionArmedConfirm":
@@ -2371,6 +2379,8 @@ export const T = {
             "L'audio en amont ne correspond plus aux caractéristiques capturées sur {m} piste(s) — recapture recommandée",
         "banner.fpPausedByCapture":
             "La détection des changements en amont est suspendue tant que la capture est active (ces caractéristiques sont réécrites comme nouvelle référence) — désactivez la capture, puis lancez la lecture, pour vérifier si l'amont a changé",
+        "banner.recaptureVoided":
+            "La recapture est toujours armée mais la capture est désactivée — cette recapture n'enregistrera rien. Réactivez la capture, ou désarmez.",
         "wave.staleTrack":
             "L'audio en amont ne correspond plus aux caractéristiques capturées sur cette piste — recapture recommandée",
         "master.versionArmedConfirm":

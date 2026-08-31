@@ -1452,6 +1452,24 @@ function renderBanners() {
             hasSegmentedMaterial(vs.segments),
     );
 
+    // ⑩ [SL-247 / J92a] 布防还在、采集却已经关了 ⇒ **这次重采集不会记录任何东西**。
+    //
+    // 判据只用 §2.1 的两个**现成**字段(`recapture.armed` ∧ `!capture_enabled`),
+    // 不新增契约字段 —— 这也是 J92a 选择「保留布防位、不自动撤防」的直接理由:
+    // 撤了用户就丢了刚拖出来的工作选区且毫无痕迹,留着这个组合本身就是可观测的证据。
+    //
+    // **两条路都落到这一态,文案因此只说状态与出路、不说是谁关的**:
+    //   ① 布防期用户手动开跟随引擎 —— J92a 互斥把采集关了(§1.3 副作用);
+    //   ② 布防期用户手动关采集 —— §1.23 裁定③ 的「接管」。**这条早于本卡就存在**,
+    //      而此前界面上一个字都没有,用户只会觉得「布防着却什么都没采到」。
+    //
+    // 醒目但**非阻塞**:不弹确认框、不 disable 任何控件(沿 [J85] 口径)。
+    show(
+        $("banner-recaptureVoided"),
+        !!(s.recapture && s.recapture.armed) &&
+            !(s.global && s.global.capture_enabled),
+    );
+
     // toast:一次性提示(§5.1 降级纪律②:可关闭)
     show($("toast-projectCopy"), err.has("projectCopy"));
     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
