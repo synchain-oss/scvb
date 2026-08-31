@@ -2,6 +2,7 @@
 #include "OutputEditor.h"
 
 #include "AnalyzeScopeMath.h"
+#include "SuggestionScopeArgs.h" // [SL-256] §1.36 入参归一(纯函数,scvb_params_tests 直接断言)
 
 #include <algorithm>
 #include <cmath>
@@ -933,6 +934,7 @@ void OutputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& o
     add(Fn::SetGuideSeen, &OutputEditor::handleSetGuideSeen);
     add(Fn::SetTourSeen, &OutputEditor::handleSetTourSeen);
     add(Fn::ConfirmPrintGuard, &OutputEditor::handleConfirmPrintGuard);
+    add(Fn::ExportSuggestions, &OutputEditor::handleExportSuggestions); // [SL-256] §1.36
 }
 
 // ============================================================================
@@ -2159,6 +2161,159 @@ void OutputEditor::handleConfirmPrintGuard(const ArgList& /*a*/, Completion c)
 {
     processor_.runtime().printGuardPending = false; // 幂等(§1.34)
     c(okResp());
+}
+
+// [SL-256] §1.36 `exportSuggestions(scope)` —— 建议表 CSV 导出。
+//
+// 为什么这条到今天才接上:契约 §1.36、§7 manifest、§5.6 的三个 reason、web、mock、以及
+// `OutputBridgeApi.h` 的名字常量**全都早已就位**,唯独 `registerNativeFunctions` 没挂
+// handler。而 `check-bridge-parity.mjs` 比的是**名字集合**三方相等(常量表里有这个名字),
+// 于是门禁一路绿灯 —— 它证明不了「名字被挂成了 handler」。本卡同批给 parity 补了
+// 「已注册 handler 数 == manifest 条目数」那道断言,这一族(常量写了、handler 忘了)从此当场红。
+//
+// **纯计算在 core**(`scvb::suggest::buildRows/toCsv`,不链 JUCE、离线可单测);本函数只做
+// 三件 JUCE 侧的事:入参归一、装 `ExportInput`、弹保存框并落盘。
+//
+// ⚠ **异步生命周期**:保存对话框必须 `launchAsync`(消息线程不能模态阻塞,JUCE 在插件宿主里
+// 也不保证允许模态循环)。回调里**先查 SafePointer**:用户在对话框开着的时候关掉插件窗口,
+// `this` 就没了 —— 那时 WebView 也没了,没有人在等这个 promise,直接返回不调 completion。
+// 捕获裸 `this` 是这一族最常见的崩法(与 AnalysisJob 那条「不用裸 callAsync 捕获 owner」同源)。
+void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
+{
+    // 只读观察态不导出:§5.6 的 `{observer:true}` 是「写入未生效」的语义,而导出不写 state。
+    // 但它**会弹一个系统级对话框**,只读实例弹框会让用户以为自己在操作主实例。按写面处置。
+    if (isReadOnly())
+    {
+        c(observerResp());
+        return;
+    }
+
+    // ---- 入参归一(§1.36:scope 整体可省 = 全默认)----
+    const juce::var scopeVar = a.size() > 0 ? a[0] : juce::var();
+    const auto givenNumber = [](const juce::var& o, const char* key) {
+        if (auto* dyn = o.getDynamicObject(); dyn != nullptr && dyn->hasProperty(juce::Identifier(key)))
+        {
+            const juce::var v = o.getProperty(juce::Identifier(key), juce::var());
+            return v.isDouble() || v.isInt() || v.isInt64();
+        }
+        return false;
+    };
+    const bool hasVersions = scopeVar.getDynamicObject() != nullptr &&
+                             scopeVar.getDynamicObject()->hasProperty(juce::Identifier("versions"));
+    const std::string versions =
+        hasVersions ? scopeVar.getProperty("versions", juce::var()).toString().toStdString() : std::string{};
+    const bool hasMask = givenNumber(scopeVar, "tracksMask");
+    const bool hasStart = givenNumber(scopeVar, "startS");
+    const bool hasEnd = givenNumber(scopeVar, "endS");
+
+    const auto parsed = scvb::output::parseSuggestionScope(
+        hasVersions, versions, hasMask, hasMask ? static_cast<int>(scopeVar.getProperty("tracksMask", 0)) : 0, hasStart,
+        hasStart ? static_cast<double>(scopeVar.getProperty("startS", 0.0)) : 0.0, hasEnd,
+        hasEnd ? static_cast<double>(scopeVar.getProperty("endS", 0.0)) : 0.0, processor_.versionActive());
+    if (parsed.badArg)
+    {
+        c(badArgResp());
+        return;
+    }
+
+    // ---- 装 ExportInput ----
+    const scvb::state::CrvsData curves = processor_.crvsSnapshot();
+    scvb::suggest::ExportInput input;
+    input.curves = &curves;
+    input.sampleRate = processor_.sampleRate();
+    const auto& rt = processor_.runtime();
+    for (int t = 0; t < scvb::state::kNumTracks; ++t)
+    {
+        auto& meta = input.tracks[static_cast<std::size_t>(t)];
+        meta.label = rt.channels[static_cast<std::size_t>(t)].label.toStdString();
+        meta.sourceChannels = rt.channels[static_cast<std::size_t>(t)].sourceChannels;
+    }
+    // width:参数面真值。取不到的格留哨兵 —— `kWidthUnknown` 的头注写明了为什么不能填 0
+    // (0 在 stereo 轨上是「收成 mono」的有效建议,把「没装这一格」写成 0 是替用户下了反向决定)。
+    auto& apvts = processor_.getAPVTS();
+    for (int v = 1; v <= scvb::state::kNumVersions; ++v)
+    {
+        for (int t = 1; t <= scvb::state::kNumTracks; ++t)
+        {
+            auto& cell = input.widthPercent[static_cast<std::size_t>(v - 1)][static_cast<std::size_t>(t - 1)];
+            const juce::String id = scvb::params::widthId(v, t);
+            if (apvts.getParameter(id) != nullptr)
+            {
+                // 走 BridgeArgs.h 的**工程值**读法(非归一化)—— 与 §2.2 上桥的那份同源,
+                // 免得导出表里的 width 与用户在界面上看到的数不是一个刻度(PR#55 第3轮重要1)。
+                cell = readParamEngineering(apvts, id);
+            }
+        }
+    }
+
+    const std::vector<scvb::suggest::Row> rows = scvb::suggest::buildRows(input, parsed.scope);
+    if (rows.empty())
+    {
+        // §1.36:`noData` = 这个范围里没有可导的段(还没分析 / 范围空)。
+        // **在弹保存框之前**判:让用户选完路径再告诉他没东西可写,是白费一次操作。
+        juce::var o = obj();
+        put(o, "ok", false);
+        put(o, "reason", "noData");
+        c(o);
+        return;
+    }
+    const std::string csv = scvb::suggest::toCsv(rows);
+
+    // ---- 保存对话框(异步)----
+    // 文件名与 web 侧 `tab-suggestions.js` 的 `defaultFileName()` **同口径**:
+    // `SCVB-suggestions-<版本名>-<YYYYMMDD-HHmm>.csv`,版本名里的路径字符换 `_`。
+    // 两侧各写一份是有意的:这里是真宿主的保存框默认名,web 那份服务 mock/预览,
+    // 中间隔着桥,抽公共模块反而要把 JUCE 字符串拖进 web 侧的纯函数层。
+    const juce::String versionName = [&] {
+        const int v = parsed.scope.allVersions ? processor_.versionActive() : parsed.scope.activeVersion;
+        const int clamped = juce::jlimit(1, static_cast<int>(scvb::state::kNumVersions), v);
+        const std::size_t idx = static_cast<std::size_t>(clamped - 1);
+        return juce::String::fromUTF8(curves.versions[idx].meta.name.c_str());
+    }();
+    // 9 个路径非法字符对 9 个下划线 —— `replaceCharacters` 是**逐字符**配对映射,
+    // 两串长度必须相等,少一个就会把后面的字符集体错位映射(而不是报错)。
+    const juce::String safeName =
+        versionName.isEmpty() ? juce::String("V") : versionName.replaceCharacters("\\/:*?\"<>|", "_________");
+    const juce::String suggested =
+        "SCVB-suggestions-" + safeName + "-" + juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M") + ".csv";
+    auto chooser = std::make_shared<juce::FileChooser>(
+        TRANS("Export suggestions"),
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(suggested), "*.csv");
+    const int chooserFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
+                             juce::FileBrowserComponent::warnAboutOverwriting;
+
+    juce::Component::SafePointer<OutputEditor> safe(this);
+    const int rowCount = static_cast<int>(rows.size());
+    // `chooser` 用 shared_ptr 捕获:FileChooser 必须活到回调跑完,而它不能是栈对象。
+    chooser->launchAsync(chooserFlags, [safe, chooser, csv, rowCount, c](const juce::FileChooser& fc) mutable {
+        if (safe == nullptr)
+        {
+            return; // 编辑器已析构 ⇒ WebView 也没了,没有人在等这个 promise
+        }
+        const juce::File target = fc.getResult();
+        if (target == juce::File{})
+        {
+            juce::var o = obj();
+            put(o, "ok", false);
+            put(o, "reason", "cancelled"); // §5.6:本契约第一个「用户可取消的阻塞式操作」
+            c(o);
+            return;
+        }
+        // 先写临时再改名会引入一堆平台差异;这里直接覆写,失败即 ioError(不谎报成功)。
+        if (!target.replaceWithText(juce::String::fromUTF8(csv.c_str(), static_cast<int>(csv.size()))))
+        {
+            juce::var o = obj();
+            put(o, "ok", false);
+            put(o, "reason", "ioError");
+            c(o);
+            return;
+        }
+        juce::var o = obj();
+        put(o, "ok", true);
+        put(o, "rows", rowCount);
+        put(o, "path", target.getFullPathName());
+        c(o);
+    });
 }
 
 } // namespace scvb::output

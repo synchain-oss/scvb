@@ -864,6 +864,123 @@ if (compared === 0) {
 
 checkEventPayloadFields();
 
+// ---------------------------------------------------------------------------
+// 五、**已注册 handler** 对拍([SL-256] 新增)
+// ---------------------------------------------------------------------------
+// 为什么补这一节:上面的三方比对查的是**名字集合**(契约 manifest ↔ mock ↔ C++ 常量表)。
+// C++ 那一侧读的是 `OutputBridgeApi.h` 的**常量表** —— 常量写了就算数。可 web 能不能真的
+// 调到一个桥函数,取决于 `OutputEditor::registerNativeFunctions` 有没有把那个名字
+// **挂上 handler**;常量表里有、注册表里没有,三方名字集合照样全等,门禁全绿。
+//
+// 这不是假想:`exportSuggestions` 契约 §1.36 齐全、§7 manifest 收录、§5.6 三个 reason 登记、
+// web 与 mock 都实现了、常量表也有 —— 唯独没注册 handler。于是真宿主上桥面根本不出现这个
+// 名字,用户点「导出 CSV」只看到「本版本尚未接通导出」,而 parity 从头到尾是绿的([SL-256] 定谳)。
+//
+// 口径:从 `registerNativeFunctions` 函数体里抽 `add(Fn::Xxx, …)` 的常量名,经常量表映射成
+// 桥名,与 manifest 的 Output 函数名集合**双向**比对。只查 Output —— Input/Monitor 的注册面
+// 不在本仓这一侧(Input 有自己的 editor,Monitor 零写函数),要扩再单独开卡。
+{
+    log("");
+    log(
+        "[E] 已注册 handler 对拍 —— OutputEditor::registerNativeFunctions ↔ manifest.output",
+    );
+    // **注册面有两处,缺一处就会误报**:
+    //   · 插件专属函数 —— `OutputEditor::registerNativeFunctions` 的 `add(Fn::Xxx, …)`;
+    //   · 通用外壳三件 + 首帧 —— `WebViewHost::…` 的
+    //     `.withNativeFunction(juce::Identifier(bridge::Fn::Xxx), …)`(requestInitialState /
+    //     setLang / setUiScale / commitUiScale,常量在 `plugin-common/BridgeBase.h`)。
+    // 只读前者会把这四个判成「没注册」——本节初版就是这么误报的,它们其实一直是通的。
+    const editorPath = join(REPO_ROOT, "src", "output", "OutputEditor.cpp");
+    const hostPath = join(REPO_ROOT, "src", "plugin-common", "WebViewHost.cpp");
+    const headerPath = HEADER_PATHS.output;
+    const basePath = join(REPO_ROOT, "src", "plugin-common", "BridgeBase.h");
+    if (!existsSync(editorPath) || !existsSync(headerPath)) {
+        skip(
+            "读不到 OutputEditor.cpp 或 OutputBridgeApi.h,跳过已注册 handler 对拍",
+        );
+    } else {
+        const editorSrc = readFileSync(editorPath, "utf8");
+        const marker = "void OutputEditor::registerNativeFunctions";
+        const start = editorSrc.indexOf(marker);
+        if (start < 0) {
+            fail(
+                "找不到 OutputEditor::registerNativeFunctions —— 注册面改名了?本节口径需同步",
+            );
+        } else {
+            const NL = String.fromCharCode(10);
+            const end = editorSrc.indexOf(NL + "}" + NL, start);
+            const body = editorSrc.slice(
+                start,
+                end > 0 ? end : editorSrc.length,
+            );
+            // 常量名 → 桥名(`inline constexpr const char* Xxx = "yyy";`,允许跨行折行)
+            const constMap = new Map();
+            for (const hp of [headerPath, basePath]) {
+                if (!existsSync(hp)) continue;
+                for (const m of readFileSync(hp, "utf8").matchAll(
+                    /constexpr\s+const\s+char\*\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"/g,
+                )) {
+                    constMap.set(m[1], m[2]);
+                }
+            }
+            const registered = new Set();
+            const unresolved = [];
+            for (const m of body.matchAll(
+                /add\(\s*Fn::([A-Za-z_][A-Za-z0-9_]*)/g,
+            )) {
+                const bridgeName = constMap.get(m[1]);
+                if (bridgeName) registered.add(bridgeName);
+                else unresolved.push(m[1]);
+            }
+            // 外壳侧(WebViewHost)—— 不同的调用形状与常量命名空间
+            if (existsSync(hostPath)) {
+                for (const m of readFileSync(hostPath, "utf8").matchAll(
+                    /withNativeFunction\(\s*juce::Identifier\(\s*bridge::Fn::([A-Za-z_][A-Za-z0-9_]*)/g,
+                )) {
+                    const bridgeName = constMap.get(m[1]);
+                    if (bridgeName) registered.add(bridgeName);
+                    else unresolved.push(m[1]);
+                }
+            }
+            if (unresolved.length > 0) {
+                fail(
+                    `注册面用到的常量在常量表里查不到:${unresolved.join(", ")}` +
+                        " —— 常量表与注册面对不上,本节无法判定",
+                );
+            } else if (registered.size === 0) {
+                fail(
+                    "registerNativeFunctions 里抽不到任何 add(Fn::…),本节口径需同步",
+                );
+            } else {
+                const contracted = new Set(contractFns.output);
+                const notRegistered = [...contracted].filter(
+                    (n) => !registered.has(n),
+                );
+                const notContracted = [...registered].filter(
+                    (n) => !contracted.has(n),
+                );
+                if (notRegistered.length > 0) {
+                    errors.push(
+                        `契约 §7 manifest 登记了但**没注册 handler**:${notRegistered.join(", ")}` +
+                            " —— web 在真宿主上调不到它(常量表有名字不等于挂了 handler)",
+                    );
+                }
+                if (notContracted.length > 0) {
+                    errors.push(
+                        `注册了但契约 §7 manifest 没登记:${notContracted.join(", ")}` +
+                            " —— 桥面多出契约外的函数,须走 §9 补契约",
+                    );
+                }
+                if (notRegistered.length === 0 && notContracted.length === 0) {
+                    ok(
+                        `已注册 handler ${registered.size} 个,与 manifest.output 函数名集合双向相等`,
+                    );
+                }
+            }
+        }
+    }
+}
+
 finish();
 
 // ---------------------------------------------------------------------------

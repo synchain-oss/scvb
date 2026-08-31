@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "AnalyzeScopeMath.h"
+#include "SuggestionScopeArgs.h" // [SL-256] §1.36 入参归一
 #include "OutputAuthority.h" // SERVICE-12 第三支:钉住**生产装配点**真的装上了预算
 #include "engine/FreezeBits.h"
 #include "SegmentEditService.h"
@@ -616,5 +617,72 @@ TEST_CASE("analyzeHopWindow:范围向内取整,不把窗撑到范围之外", "[o
         REQUIRE(w.valid());
         CHECK(w.firstHop == 0u);
         CHECK(w.lastHop == 100u);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-256] parseSuggestionScope —— §1.36 `exportSuggestions(scope)` 的入参归一。
+//
+// 抽成纯函数的理由与同目录 `analyzeHopWindow` / `analyzeScopeRange` 一脉相承:它埋在
+// `OutputEditor` 的私有成员里就够不着(那个类要 WebView 才构造得起来,离线 harness 编不进
+// 那个 TU),于是这一层只能靠源码正则去看 —— 改回去照样绿。
+//
+// 反向验证:把 `parseSuggestionScope` 里 `masked == 0` 那条守卫去掉,「只点保留位」一档必红;
+// 把未知 `versions` 的 badArg 改成「回落 active」,对应 SECTION 必红。
+// ---------------------------------------------------------------------------
+TEST_CASE("parseSuggestionScope:§1.36 入参归一与拒绝态", "[output][suggest][SL256]")
+{
+    using scvb::output::parseSuggestionScope;
+    constexpr int kActive = 2;
+
+    SECTION("整体可省 = 全默认(active + 全 15 轨 + 不限时间窗)")
+    {
+        const auto r = parseSuggestionScope(false, "", false, 0, false, 0.0, false, 0.0, kActive);
+        REQUIRE_FALSE(r.badArg);
+        CHECK_FALSE(r.scope.allVersions);
+        CHECK(r.scope.activeVersion == kActive);
+        CHECK(r.scope.tracksMask == 0x7FFFu);
+        CHECK(r.scope.startSec < 0.0); // < 0 = 不限(SuggestionExport::Scope 的约定)
+        CHECK(r.scope.endSec < 0.0);
+    }
+
+    SECTION("versions 三态:active / all / 未知值拒收")
+    {
+        CHECK_FALSE(parseSuggestionScope(true, "active", false, 0, false, 0, false, 0, kActive).scope.allVersions);
+        CHECK(parseSuggestionScope(true, "all", false, 0, false, 0, false, 0, kActive).scope.allVersions);
+        // 未知枚举**不宽容回落** —— 静默导出一份不是用户要的范围,比报错更糟。
+        CHECK(parseSuggestionScope(true, "ALL", false, 0, false, 0, false, 0, kActive).badArg);
+        CHECK(parseSuggestionScope(true, "", false, 0, false, 0, false, 0, kActive).badArg);
+    }
+
+    SECTION("tracksMask:bit15 是保留位,先掩再判")
+    {
+        const auto one = parseSuggestionScope(false, "", true, 0x0001, false, 0, false, 0, kActive);
+        REQUIRE_FALSE(one.badArg);
+        CHECK(one.scope.tracksMask == 0x0001u);
+        // 给了 bit15 也要被掩掉,不能带进 scope
+        const auto withReserved = parseSuggestionScope(false, "", true, 0x8001, false, 0, false, 0, kActive);
+        REQUIRE_FALSE(withReserved.badArg);
+        CHECK(withReserved.scope.tracksMask == 0x0001u);
+        // **只点保留位** ⇒ 掩完为 0 ⇒ badArg(与 §1.23 [J87] 同口径:
+        // 「掩完为 0」不能退化成「不限轨」,那是把空选区当全选)
+        CHECK(parseSuggestionScope(false, "", true, 0x8000, false, 0, false, 0, kActive).badArg);
+        CHECK(parseSuggestionScope(false, "", true, 0, false, 0, false, 0, kActive).badArg);
+    }
+
+    SECTION("时间窗:两头都给且成立才启用")
+    {
+        const auto win = parseSuggestionScope(false, "", false, 0, true, 1.5, true, 4.0, kActive);
+        REQUIRE_FALSE(win.badArg);
+        CHECK(win.scope.startSec == 1.5);
+        CHECK(win.scope.endSec == 4.0);
+        // 只给一头 ⇒ 整个不限(不做单边窗:导出没有 UI 回显能让用户发现范围被单边开放)
+        const auto onlyStart = parseSuggestionScope(false, "", false, 0, true, 1.5, false, 0.0, kActive);
+        REQUIRE_FALSE(onlyStart.badArg);
+        CHECK(onlyStart.scope.startSec < 0.0);
+        CHECK(onlyStart.scope.endSec < 0.0);
+        // 两头都给但倒序/零宽 ⇒ 调用方算错了范围,不是「不限」
+        CHECK(parseSuggestionScope(false, "", false, 0, true, 4.0, true, 1.5, kActive).badArg);
+        CHECK(parseSuggestionScope(false, "", false, 0, true, 2.0, true, 2.0, kActive).badArg);
     }
 }

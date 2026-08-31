@@ -833,11 +833,21 @@ log("=== ⑩ 源码不变式 ===");
         "destroy() 把行节点从 DOM 摘掉(不只是清数组)",
     );
 
-    // 桥不可用时要有**常驻**说明,不能只挂在 title 上(点一枚灰钮零反馈)
+    // [SL-256] 原断言钉的是「桥上没挂 exportSuggestions 时的常驻说明」。那条说明已撤 ——
+    // native handler 已注册(§1.36),说明本身在本卡之后是**假话**。改判成反向断言:
+    // 三语字典与实现里都不许再留「尚未接通导出」这一族文案。
+    // 「注册没注册」这件事由 check-bridge-parity 的「已注册 handler ↔ manifest」双向断言
+    // 兜底(源码正则钉不住 C++ 注册面,那是另一侧的事)。
     check(
-        /local\.status \|\|[\s\S]{0,200}suggest\.exportUnavailable/.test(js),
-        "桥上没挂 exportSuggestions 时状态行常驻说明",
+        !/exportUnavailable/.test(js),
+        "[SL-256] 实现里不再有「尚未接通导出」兜底分支",
     );
+    for (const lang of ["zh", "en", "fr"]) {
+        check(
+            !("suggest.exportUnavailable" in T[lang]),
+            `[SL-256] ${lang} 字典里 suggest.exportUnavailable 已删净`,
+        );
+    }
     check(
         /el\.entry\.focus\(\)/.test(js),
         "返回泳道时焦点还给入口钮(不掉回 body)",
