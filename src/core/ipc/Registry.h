@@ -147,13 +147,16 @@ public:
     // [SL-254 / J95①] 同款:音频线程经租约基址寻址 OutputSlot(布局冻结 kOutputSlotOffset)。
     // 非实时(离线渲染)下 Input 需要**逐块**读 connected_mask 来决定静音 —— 靠 [M] 25Hz
     // 那一拍会迟到,而离线时一拍 = N 倍样本(SL-254 实测 ~122x 下迟到 456 块)。
-    static OutputSlot* outputSlotAtBase(void* base) noexcept
+    // 返回 **const**:OutputSlot 是 Output 侧独占写,Input 只读 connected_mask / state。
+    // 把这条所有权边界做成编译期约束(零成本),与 InputSession 里既有的 `const OutputSlot*` 用法对齐。
+    // (对比 inputSlotAtBase 返回非 const 是有理由的:setCapturing 要写 InputSlot::flags。)
+    static const OutputSlot* outputSlotAtBase(const void* base) noexcept
     {
         if (base == nullptr)
         {
             return nullptr;
         }
-        return reinterpret_cast<OutputSlot*>(static_cast<char*>(base) + kOutputSlotOffset);
+        return reinterpret_cast<const OutputSlot*>(static_cast<const char*>(base) + kOutputSlotOffset);
     }
 
     // 音频线程按块租约(引用计数握手释放):块首 lease(),块末析构归还;持有期内保证 registry

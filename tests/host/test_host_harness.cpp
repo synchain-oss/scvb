@@ -6237,6 +6237,11 @@ TEST_CASE("HOST SL-254:非实时渲染不得出现「Input 静音 ∧ Output 未
         const auto p = runOfflineHandover(r, blocksPerPump, 900);
         INFO("blocksPerPump=" << blocksPerPump << " Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject
                               << " 全零块=" << p.bothSilentBlocks << " ramp块=" << p.rampBlocks);
+        // ★ 前置:确实交接过。缺了这两行,「本轮根本没发生交接」会让下面两条 `== 0` **恒真** ⇒
+        //   空跑全绿。而 blocksPerPump 越大、泵次数越少、墙钟预算越紧,最该覆盖高倍速的那档
+        //   反而最可能一拍 [M] 都没落下来 —— 主防线空跑是最不该出现的假绿。
+        REQUIRE(p.firstInputSilent >= 0);
+        REQUIRE(p.firstInject >= 0);
         // ★ 核心判据:一块全零都不许有。墙钟闸的实现在这里红,且红的块数随倍速放大。
         CHECK(p.bothSilentBlocks == 0);
         // ★ 与 ③ 成镜像:非实时是**硬切**,不许有 ramp 过渡块(ramp 也是墙钟量,250x 下会摊成 20s
@@ -6326,7 +6331,10 @@ TEST_CASE("HOST SL-254:非实时下 Output 释放后必须回直通(健康前提
     // Output 退场:走宿主真实路径 releaseResources() ⇒ session_.release() ⇒ releaseSlot()
     // ⇒ Registry::releaseOutput():state = kSlotFree,而 connected_mask **位残留**。
     r.out.releaseResources();
-    Rig::pumpMessages(80); // 让 Input 的 [M] 跑几拍,发布 outputAlive_=0
+    // 让 [M] 跑几拍。注意**不是** outputStale_ 在起作用:state 已 kSlotFree,`outputClaimedButStale()`
+    // 按设计提前 return false(不重复否决),真正兜住的是 [A] 的**逐块 state 读**。
+    // outputStale_ 那条路(自称 kSlotActive 却心跳陈旧)由 ⑤ 覆盖。
+    Rig::pumpMessages(80);
 
     // ★ 此后 Input 必须回到直通:逐块读到的 mask 位还在,但 state 已 kSlotFree、存活位已落。
     float peak = 0.0f;
@@ -6343,5 +6351,59 @@ TEST_CASE("HOST SL-254:非实时下 Output 释放后必须回直通(健康前提
     }
     INFO("Output 释放后 Input 峰值=" << peak);
     // 只读 mask 一位的实现在这里红(peak 恒 0 = 整条导出全零)。
+    CHECK(peak > 1e-3f);
+}
+
+// ⑤ 【复审 r2】崩溃未释放:Output 停心跳但**不**走释放路径(state 仍 kSlotActive、mask 位仍在)。
+//
+//    这是 `outputStale_` / `InputSession::outputClaimedButStale()` **存在的唯一理由** ——
+//    ④ 走的是 releaseResources ⇒ state=kSlotFree,而该函数在 state 非 kSlotActive 时提前
+//    return false,所以 ④ 全程 outputStale_==0、把否决位整条删掉也照样绿(与上一轮回归③ 同形态)。
+//    没有这一条,那条判据就是零覆盖的死代码。
+TEST_CASE("HOST SL-254:非实时下 Output 崩溃未释放(心跳陈旧)也必须回直通", "[host][SL254]")
+{
+    Rig r;
+    r.in.setNonRealtime(true);
+    r.out.setNonRealtime(true);
+    r.ph.playing = true;
+
+    const auto before = runOfflineHandover(r, 16, 600);
+    REQUIRE(before.firstInputSilent >= 0); // 前置:确实交接过
+    REQUIRE(before.firstInject >= 0);
+
+    // 模拟「Output 进程挂死」:**不**调 releaseResources(state 仍 kSlotActive、mask 位仍在),
+    // 只把 OutputSlot 的心跳**持续拨旧**。Output 的 [M] 仍在跑、每 250ms 会刷回心跳,所以
+    // 必须在每次泵消息**之前**重新拨旧 —— 一次性拨旧会被它刷掉,那样测的就不是这条路了。
+    scvb::SegmentBackendWin32 backend;
+    scvb::Registry probe(backend, kTestGroup);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    scvb::OutputSlot* os = probe.outputSlot();
+    REQUIRE(os != nullptr);
+    REQUIRE(os->state.load() == scvb::kSlotActive); // 前置:仍自称活着(没走释放路径)
+    REQUIRE((probe.connectedMask() & (1u << (kTestChannel - 1))) != 0); // 前置:mask 位仍在
+
+    const auto backdate = [&os] { os->heartbeat_ms.store(1); }; // 1 = 远古,必然 > kStaleDisplayMs
+
+    backdate();
+    Rig::pumpMessages(60); // 让 Input 的 [M] 至少跑一拍,把 outputStale_ 置 1
+
+    float peak = 0.0f;
+    for (int i = 0; i < 200; ++i)
+    {
+        backdate();
+        Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
+        r.in.processBlock(r.inBuf, r.midi);
+        for (int c = 0; c < r.inBuf.getNumChannels(); ++c)
+            for (int s = 0; s < r.inBuf.getNumSamples(); ++s)
+                peak = std::max(peak, std::abs(r.inBuf.getReadPointer(c)[s]));
+        r.ph.timeSamples += kBlock;
+        if ((i % 16) == 15)
+        {
+            backdate();
+            Rig::pumpMessages(1);
+        }
+    }
+    INFO("Output 心跳陈旧后 Input 峰值=" << peak);
+    // ★ 删掉 outputStale_ 否决位 ⇒ 这里红(Input 认残留 mask 恒静音 = 整条导出全零)。
     CHECK(peak > 1e-3f);
 }

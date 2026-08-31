@@ -749,7 +749,7 @@ TEST_CASE("SL-254:outputSlotAtBase 与冻结偏移一致、空基址返回 nullp
     REQUIRE(os != nullptr);
 
     // ★ 与冻结布局逐字对齐:偏移必须正好是 kOutputSlotOffset,不能是「碰巧能跑」的别的值。
-    const auto delta = reinterpret_cast<char*>(os) - static_cast<char*>(base);
+    const auto delta = reinterpret_cast<const char*>(os) - static_cast<const char*>(base);
     REQUIRE(static_cast<std::size_t>(delta) == scvb::kOutputSlotOffset);
     REQUIRE(scvb::kOutputSlotOffset == sizeof(scvb::RegistryHeader) + scvb::kMaxChannels * sizeof(scvb::InputSlot));
     // 落在段内(尾部不越界)。

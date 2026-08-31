@@ -93,16 +93,27 @@ J32 的注入握手**全程按墙钟闸控**,与音频时间线解耦:
    两处踩过的坑,记在此免得后人重蹈:(a) 复审 r1 前只断言稳态「最终注入 + meter>0」,把实时改成硬切照样全绿 —— 测不出它声称要防的事;
    (b) 改写时先试过「注入晚于静音 ≥1 拍 [M]」,**恒假** —— J32 的闸是「muted 确认位**或** 200ms,先到者」,实时下 Input 一静音就置确认位、Output 下一拍即注入,200ms 那条几乎从不生效(实测 注入@16 静音@16);
    且 [M] 的确认位取的是 stageMachine 的**目标档**,[A] 还在走 80ms ramp,故注入合法地落在 ramp 中途(实测 注入@16 而全静音@20)。ramp 的存在性才是实时路径稳定可观测的印记。
-4. **健康前提不被豁免** —— 非实时下 Output 走 `releaseResources()` 退场后(`state = kSlotFree` 而 mask 位**残留**),Input 必须回**直通**。
+4. **健康前提不被豁免(优雅退场)** —— 非实时下 Output 走 `releaseResources()` 退场后(`state = kSlotFree` 而 mask 位**残留**),Input 必须回**直通**。
    反向:只读 mask 一位 ⇒ Input 恒静音 ⇒ 整条导出全零,该断言红(**已实跑验证**,与 ③ 的反向注入同一轮)。
+5. **健康前提不被豁免(崩溃未释放)** —— Output **停心跳但不走释放路径**(`state` 仍 `kSlotActive`、mask 位仍在)时,Input 同样必须回直通。
+   反向:删掉 `outputStale_` 否决位 ⇒ **⑤ 红(`Input 峰值 = 0`)而 ④ 绿**。这一对实测结果正说明两条覆盖**不同路径**:
+   ④ 由 [A] 的**逐块 `state` 读**兜住,⑤ 由 [M] 的**否决位**兜住。
+   **没有 ⑤,`outputStale_` 就是零覆盖的死代码** —— 复审 r2 抓出:④ 走 `kSlotFree`,而 `outputClaimedButStale()` 在 state 非 active 时提前 `return false`,故 ④ 全程用不到它。
+   实现注意:不能停 Output 的 [M](`juce::Timer` 是私有继承,无公开 stop),故用「**持续拨旧 `heartbeat_ms`**」——
+   一次性拨旧会被 Output 的 4Hz 心跳刷回去,那样测的就不是这条路了。
+
+回归 ① 另补了 ② 同款前置断言 `REQUIRE(firstInputSilent >= 0)` / `REQUIRE(firstInject >= 0)`:
+两条断言都是「不许出现 X」的形态,**没发生交接就恒真** ⇒ 空跑全绿,而 ① 是本卡主防线。
+(补后 `blocksPerPump = 32` 那档实测**照样绿**,说明此前并未真的空跑;这道前置是防将来。)
 
 **单元级(`scvb_core`,CLAUDE.md §7)**
 
 - `tests/core/test_output_stage.cpp`:`snapTo` 后**立即**进稳态(C19 判据)、紧接 `render` **无中间增益样本**(硬切非 ramp)、未调 `snapTo` 时实时 ramp 行为不变。
 - `tests/core/test_ipc_layout.cpp`:`Registry::outputSlotAtBase` 空基址返回 `nullptr`、偏移与冻结的 `kOutputSlotOffset` 逐字相等且不越界。
 - `tests/core/test_output_session.cpp`:`setNonRealtime(true)` 令 `evaluateChannels` **当拍**置 `injectMask`(与既有 [J32] 用例同一时序,实时形态在该处红);运行期切回实时后 200ms 闸原样恢复。
+- `tests/core/test_input_session.cpp`:`outputClaimedButStale()` 四格 —— active+陈旧→`true`、active+新鲜→`false`、**free+陈旧→`false`**(刻意不重复否决,把「极性反常」变成可执行文档,防后人「顺手修」成 `true`)、无 slot→`false`,含阈值边界;并钉 `outputOnline()` 为 `isHealthy`/`connSnapshot` 的**单一真源**(心跳一陈旧三者同时翻,不许漂移)。
 
-①②③ 三条构成方向相反的钳子:**任一单独存在都会被另一个方向的错误修法绕过**(这正是本卡定谳时先后踩到的坑,且 ③ 的强度不足在复审 r1 被抓出)。④ 守的是 [J12] 的事故面。
+①②③ 三条构成方向相反的钳子:**任一单独存在都会被另一个方向的错误修法绕过**(这正是本卡定谳时先后踩到的坑,且 ③ 的强度不足在复审 r1 被抓出)。④⑤ 守的是 [J12] 的事故面的两条不同路径。
 
 ## 六、过目时的两点已裁(J95①)
 
