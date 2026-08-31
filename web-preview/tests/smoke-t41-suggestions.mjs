@@ -23,7 +23,7 @@
 //   ⑧b 脏检查:同一份输入不重建行集;state/segments 换对象与 width 真改才算脏;
 //   ⑧c stale:过期采集的轨逐行可辨,且**不混进** CSV(13 列冻结);
 //   ⑨ 词条:`suggest.*` 三语齐备、非空、占位符一致、禁词零命中;
-//   ⑩ 源码不变式:桥面名字停在 PENDING_FUNCS(没有偷偷进 BRIDGE_FUNCTIONS)、变更文档在库、
+//   ⑩ 源码不变式:桥面名字**已出** PENDING_FUNCS、**已进** BRIDGE_FUNCTIONS([J81] 转正)、变更文档在库、
 //      ARIA table 树连着、斑马纹按行号取、行节点走池子复用 + scroll 合帧、
 //      表头与数据行的 9px 滚动条错位两条配对修复都在、桥不可用时状态行常驻说明、
 //      返回泳道还焦、建议表开着时泳道 rAF 停、[J67] 的「不得复活列表视图」纪律仍在文件头。
@@ -453,7 +453,7 @@ log("=== ⑦ mock 端到端:exportSuggestions 往返 ===");
 
     check(
         typeof bridge.exportSuggestions === "function",
-        "mock 实现了待转正名字 ⇒ 桥上挂得到(预览页当场可走全流程)",
+        "mock 实现了 §1.36 的名字 ⇒ 桥上挂得到(预览页当场可走全流程)",
     );
 
     // 事件仓:快照走桥(与 app.js 同路),段表取 fixture 那一份 —— §0.4 的「首帧必发」
@@ -676,14 +676,15 @@ log("=== ⑨ 词条 suggest.* ===");
 log("=== ⑩ 源码不变式 ===");
 
 {
-    // 桥面名字必须停在 PENDING_FUNCS,**没有**偷偷进 parity 比对面
+    // 桥面名字必须**已出** PENDING_FUNCS、**已进** parity 比对面([J81] 转正,§7 manifest 收录)。
+    // 文案按本文件惯例写「应当成立的事」—— `check` 失败时打印的就是这一句。
     check(
         !BR.PENDING_FUNCS.output.includes("exportSuggestions"),
-        "exportSuggestions 在 PENDING_FUNCS.output",
+        "exportSuggestions 已不在 PENDING_FUNCS.output([J81] 转正后该表已空)",
     );
     check(
         BR.BRIDGE_FUNCTIONS.output.includes("exportSuggestions"),
-        "exportSuggestions **不在** BRIDGE_FUNCTIONS(契约 §7 还没收它)",
+        "exportSuggestions 在 BRIDGE_FUNCTIONS(契约 §7 manifest 已收录)",
     );
     eq(
         BR.BRIDGE_FUNCTIONS.output.length,

@@ -2202,13 +2202,17 @@ void OutputEditor::handleExportSuggestions(const ArgList& a, Completion c)
                              scopeVar.getDynamicObject()->hasProperty(juce::Identifier("versions"));
     const std::string versions =
         hasVersions ? scopeVar.getProperty("versions", juce::var()).toString().toStdString() : std::string{};
-    // `tracksMask` 判得比 startS/endS **严**(#163 复审二轮【建议】):必须是**整数值**且落在
-    // int32 内,否则按「没给」回落全 15 轨 —— 与 mock 的 `Number.isInteger(x) ? … : 0x7fff`
-    // 逐条对齐。两个理由:
+    // `tracksMask` 判得比 startS/endS **严**(#163 复审二轮【建议】):必须是**整数值**,
+    // `double` 分支还要求落在 int32 内,否则按「没给」回落全 15 轨 —— 在 web 实际会发的
+    // 入参面(0..0x7FFF)上与 mock 的 `Number.isInteger(x) ? … : 0x7fff` 等价。两个理由:
     //   ① `{tracksMask:1.5}` 在 mock 回落全轨,而 `static_cast<int>(1.5)` 会截成 1 ⇒ 只导轨 1;
     //   ② `juce::var` 存的是 double,`operator int()` 对**超出 int 表示范围**的值是 **UB**
     //      (`{tracksMask:1e20}`)。载荷来自 WebView,这一层的定位就是入参归一,
     //      不该假定调用方守规矩。
+    // 差半格,记在此不再收窄(#163 复审四轮【建议】):`isInt64` 分支不做范围判,超 int32 的
+    // 整数走 `static_cast<int>` 的**实现定义**转换(C++17;不是 UB),MSVC 上是模 2^32 截断 ——
+    // 恰与 JS `ToInt32` 同结果,`{tracksMask:4294967296}` 两侧同得掩码 0 ⇒ noData;而超 int32 的
+    // **double**(`1e20`)native 回落全轨、mock 走 `ToInt32` 得另一掩码。两档桥面都够不到。
     // startS/endS 保持宽判即可 —— 非有限值那一档 `parseSuggestionScope` 已用 `std::isfinite`
     // 兜住,与 mock 的 `isFiniteNumber` 同口径。
     const auto givenIntegral = [](const juce::var& o, const char* key) {
