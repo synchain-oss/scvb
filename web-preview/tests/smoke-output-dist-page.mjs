@@ -887,6 +887,8 @@ try {
                 const ids = ["master-width","master-msbalance","master-leadselect"];
                 const seen = {}; const flips = {};
                 let frames = 0; const t0 = performance.now();
+                // 采样窗内**越窗间隔**的条数:每一条会让徽标灭一次再亮一次 = 每张卡 2 次翻转。
+                const g0 = (w.__SL251_DBG__ || []).length;
                 const step = () => {
                     frames++;
                     for (const id of ids) {
@@ -895,8 +897,9 @@ try {
                         if (seen[id] === undefined) { seen[id] = v; flips[id] = 0; }
                         else if (seen[id] !== v) { flips[id] += 1; seen[id] = v; }
                     }
-                    if (performance.now() - t0 >= 8000) res({ frames, flips });
-                    else requestAnimationFrame(step);
+                    if (performance.now() - t0 >= 8000) {
+                        res({ frames, flips, gaps: (w.__SL251_DBG__ || []).length - g0 });
+                    } else requestAnimationFrame(step);
                 };
                 requestAnimationFrame(step);
             });
@@ -906,18 +909,28 @@ try {
         log(
             `  8s / ${flick.frames} 帧,三张卡翻转合计 ${total} 次(修前实测每张 10 次)`,
         );
-        // 修前基线:每张卡 10 次 / 8s(合计 30)。修后实测合计 6(每张 2)。
+        // 判据是**不变式**,不是魔数:每一次翻转都必须被一条「越窗间隔」解释掉。
         //
-        // ⚠ 为什么不断「零翻转」:剩下的这两次**不是**抖动,是闩锁在**信号真的停了**之后
-        // 正常释放又重新亮起。mock 的 hostEcho:true 帧是「pan/vol 值变了才发」,而值变的
-        // 节奏 = 段边界,demo 段长本来就有超过释放窗口的 —— 那是 mock 信号自身的稀疏,
-        // 不是判据在抖。真机的语义不同(native 那一位由**宿主写入**喂,与我们的值变无关),
-        // 它的间隔分布本机测不出来,所以这里**不拿 mock 的段长去反推窗口该多大**。
-        // 真正把「快通道」钉死的是上面的 (e):信号还在来的时候,一帧 false 打不断它。
-        // 阈值取 6 = 每张卡 2 次,比修前基线低 5 倍;真退回旧判据会是 30,拦得住。
+        // 一条越窗间隔 ⇒ 徽标灭一次、再亮一次 = 每张卡 2 次翻转,三张卡 6 次。所以
+        //     总翻转 <= 2 × 卡数 × 采样窗内的越窗间隔条数
+        // 越窗间隔 = 闩锁**该**释放的时刻(信号真的停了 >2s),不是判据在抖;判据抖的话
+        // 翻转会**多于**这个上界。修前那一版(看最近一帧的原始布尔)实测 30 次而间隔只有
+        // 一两条,这条不变式一样拦得住。
+        //
+        // ⚠ 上一版这里写的是 `total <= 6`。本次 CI 实得**正好 6**,余量归零 —— 而
+        // web-smoke 是 required check,下一窗多撞上半条间隔就是一次假红,与 (g) 上一轮
+        // 栽的是同一个坑(按帧率/走带节奏判红)。换成不变式之后就与这些无关了。
+        // 顺带:这也把 PR 正文里「那 6 次不是抖动、是信号真停了」的论证从**注释升级成断言**。
+        const gaps = flick.gaps || 0;
+        // 上界 = 3 张卡 ×(每条间隔 2 次 + 1 次跨窗余量)。那个 +1 是给「间隔在采样窗
+        // **开始之前**就起头、窗内只看到重新亮起那一半」的情形:它的日志条目落在 g0 之前,
+        // 不计进 gaps,却贡献 1 次翻转 —— 不留这一格会在另一个方向上假红。
+        const bound = 3 * (2 * gaps + 1);
+        log(`  采样窗内越窗间隔 ${gaps} 条 ⇒ 翻转上界 ${bound}`);
         check(
-            total <= 6,
-            `(f) ★ 播放期翻转降到基线的 1/5 以内(实得合计 ${total} 次:${JSON.stringify(flick.flips)};修前 30 次)`,
+            total <= bound,
+            `(f) ★ 每一次翻转都被越窗间隔解释掉(实得 ${total} 次 <= 上界 ${bound};` +
+                `间隔 ${gaps} 条;${JSON.stringify(flick.flips)})—— 判据若在抖,翻转会多于上界`,
         );
         // ---- (g) 裁定③ 的 console 读数**真的会打印**(复审第一轮【重要】1 的回归)
         //
