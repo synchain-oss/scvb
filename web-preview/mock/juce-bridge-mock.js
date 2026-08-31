@@ -1831,10 +1831,12 @@ function buildOutputBackend(ctx) {
             return OK();
         },
 
-        // ---- 待转正:exportSuggestions(scope)(T41)-----------------------------
-        // 同样**不在契约 §7 manifest 里**,停在 PENDING_FUNCS 等 native 落地(保存对话框 +
-        // src/core/export/SuggestionExport 落盘),见
-        // docs/contract-changes/20260825-export-suggestions.md。
+        // ---- §1.36 exportSuggestions(scope)(T41)---------------------------------
+        // **已在冻结契约里**:§1.36 定义齐全、§7 manifest 收录、§5.6 的
+        // cancelled / noData / ioError 三值也已登记(随 [J81] 修宪转正,变更文档
+        // docs/contract-changes/20260825-export-suggestions.md),PENDING_FUNCS.output 现已为空。
+        // [SL-256] 起真宿主的 OutputEditor 也挂上了 handler(保存对话框 +
+        // src/core/export/SuggestionExport 落盘),mock 与真宿主现在都全功能。
         //
         // 本方法扮演的是 **C++ 侧**:从自己这份 state 真相(段表 + 版本名)独立数出行数,
         // 而不是把 UI 算好的数字收回来 —— 于是「UI 那张表的行数」与「导出报回的行数」是

@@ -627,7 +627,9 @@ TEST_CASE("analyzeHopWindow:范围向内取整,不把窗撑到范围之外", "[o
 // `OutputEditor` 的私有成员里就够不着(那个类要 WebView 才构造得起来,离线 harness 编不进
 // 那个 TU),于是这一层只能靠源码正则去看 —— 改回去照样绿。
 //
-// 反向验证:把 `parseSuggestionScope` 里 `masked == 0` 那条守卫去掉,「只点保留位」一档必红;
+// 反向验证(三条均实跑过):给 `parseSuggestionScope` **加回**「掩完为 0 ⇒ badArg」
+// 那条守卫(#163 一轮已按 §1.36 拒绝态行删掉它),「tracksMask」一档必红;
+// 把负左端的 `std::max(0.0, startS)` 去掉,「负左端必须归一」一档必红;
 // 把未知 `versions` 的 badArg 改成「回落 active」,对应 SECTION 必红。
 // ---------------------------------------------------------------------------
 TEST_CASE("parseSuggestionScope:§1.36 入参归一与拒绝态", "[output][suggest][SL256]")
