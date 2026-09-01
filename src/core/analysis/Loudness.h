@@ -3,7 +3,8 @@
 
 #include <cstddef>
 
-// [SL-262] `LoudnessMode` 的**唯一定义**在这里。本文件此前自带一份同名同命名空间的枚举
+// [SL-262] `LoudnessMode` 的**唯一定义**在 `analysis/LoudnessMode.h`;本文件只是 include 它。
+// 本文件此前自带一份同名同命名空间的枚举
 // (拼法 kIntegrated/kRms/kPeakDbfs),与 `LoudnessMode.h` 的 KIntegrated/Rms/PeakDbfs
 // 并存 —— 同一命名空间两个定义,按标准是 ODR 违规,靠「没有哪个 TU 同时 include 两头」
 // 侥幸不炸。SL-252 让 `AutoAssign.h`(公开头)include 了 LoudnessMode.h 后传播面扩大,
