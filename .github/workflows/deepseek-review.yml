@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with: { fetch-depth: 1 }
-      - uses: anthropics/claude-code-action@d40ddef4c030e508327d6e35a9c45f3368482c50 # v1
+      - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1
         env:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
           # ── 模型切换口 ── 默认 flash(性能优于 pro 且便宜);[1M] 为网关上下文标注,
