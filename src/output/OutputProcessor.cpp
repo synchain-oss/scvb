@@ -313,23 +313,26 @@ double ScvbOutputAudioProcessor::featHopSeconds()
     return static_cast<double>(scvb::output::OutputSession::featHopMs()) / 1000.0;
 }
 
-double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, double t0S, double t1S) const
+double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, std::int64_t t0Samples, std::int64_t t1Samples) const
 {
-    if (channel < 1 || channel > 15 || !(t1S > t0S))
+    if (channel < 1 || channel > 15 || !(t1Samples > t0Samples))
     {
         return scvb::analysis::lufsFromMeanKw(0.0); // −120 替身,与流水线静音档同值
     }
 
     const juce::ScopedLock lock(lifecycleMutex_);
 
-    // 秒 → hop:hop 时长是 feat 段的几何常量,不是采样率派生量(与 coverageOf 同口径)。
-    const double hopS = featHopSeconds();
-    const auto toHop = [hopS](double s) {
-        const double h = s / hopS;
-        return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
-    };
-    const std::uint64_t first = toHop(t0S);
-    const std::uint64_t last = toHop(t1S);
+    // 采样点 → hop,**整型除法**,与 `AnalysisPipeline` 的 `t / hopSamples` 逐字同款。
+    // [SL-262] 此前走的是秒→hop 的浮点除法(`s / 0.01`),段边界恰落 hop 边界时约 4.9%
+    // 会截断到 k−1(实测 1..200000 个边界里 9721 次),把段尾最后一个 hop 排除出窗口。
+    const double sr = getSampleRate();
+    const std::int64_t hopSamples = static_cast<std::int64_t>(std::llround(featHopSeconds() * sr));
+    if (hopSamples <= 0)
+    {
+        return scvb::analysis::lufsFromMeanKw(0.0); // 未 prepare / 采样率未知
+    }
+    const std::uint64_t first = static_cast<std::uint64_t>(std::max<std::int64_t>(0, t0Samples) / hopSamples);
+    const std::uint64_t last = static_cast<std::uint64_t>(std::max<std::int64_t>(0, t1Samples) / hopSamples);
     if (last <= first)
     {
         return scvb::analysis::lufsFromMeanKw(0.0);

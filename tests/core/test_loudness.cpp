@@ -92,7 +92,7 @@ TEST_CASE("LOUD-1: 两 hop kw_ms={0.1,0.2} → z=0.15 / L=−8.9301", "[loudness
     const float kwMs[] = {0.1f, 0.2f};
     const float peak[] = {0.5f, 0.5f};
 
-    const auto v = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::kIntegrated);
+    const auto v = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::KIntegrated);
 
     REQUIRE(v.z == Approx(0.15).margin(1e-12));
     REQUIRE(v.level == Approx(-8.9301).margin(1e-4));
@@ -103,7 +103,7 @@ TEST_CASE("LOUD-2: kw_ms 全 0 → floor −120.69,有限不 NaN/Inf", "[loudnes
     const float kwMs[] = {0.0f, 0.0f, 0.0f};
     const float peak[] = {0.0f, 0.0f, 0.0f};
 
-    const auto v = scvb::analysis::segmentLoudness(kwMs, peak, 3, scvb::analysis::LoudnessMode::kIntegrated);
+    const auto v = scvb::analysis::segmentLoudness(kwMs, peak, 3, scvb::analysis::LoudnessMode::KIntegrated);
 
     REQUIRE(v.z == 0.0);
     REQUIRE(v.level == Approx(-120.69).margin(0.01));
@@ -116,14 +116,14 @@ TEST_CASE("LOUD-3: 段乘 10^(u/10)(u=+3) → L_seg 恰好 +3.0 LU", "[loudness]
     const float kwMs[] = {0.05f, 0.1f, 0.3f, 0.2f};
     const float peak[] = {0.4f, 0.4f, 0.4f, 0.4f};
 
-    const auto base = scvb::analysis::segmentLoudness(kwMs, peak, 4, scvb::analysis::LoudnessMode::kIntegrated);
+    const auto base = scvb::analysis::segmentLoudness(kwMs, peak, 4, scvb::analysis::LoudnessMode::KIntegrated);
 
     const double gain = std::pow(10.0, 3.0 / 10.0);
     float kwMsScaled[4];
     for (int k = 0; k < 4; ++k)
         kwMsScaled[k] = static_cast<float>(static_cast<double>(kwMs[k]) * gain);
 
-    const auto scaled = scvb::analysis::segmentLoudness(kwMsScaled, peak, 4, scvb::analysis::LoudnessMode::kIntegrated);
+    const auto scaled = scvb::analysis::segmentLoudness(kwMsScaled, peak, 4, scvb::analysis::LoudnessMode::KIntegrated);
 
     REQUIRE(scaled.level - base.level == Approx(3.0).margin(1e-6));
     REQUIRE(scaled.z == Approx(base.z * gain).epsilon(1e-6));
@@ -161,7 +161,7 @@ TEST_CASE("LOUD-4: 997Hz 正弦全链与 KW-1 一致(全链路)", "[loudness]")
     splitFrames(frames, kwMs, peak);
 
     const auto seg = scvb::analysis::measureSegment(kwMs.data(), peak.data(), static_cast<int>(kwMs.size()),
-                                                    scvb::analysis::LoudnessMode::kIntegrated);
+                                                    scvb::analysis::LoudnessMode::KIntegrated);
 
     REQUIRE(seg.main.level == Approx(refLufs).margin(0.05));
     REQUIRE(seg.main.level == Approx(-3.01).margin(0.05));
@@ -175,7 +175,7 @@ TEST_CASE("LOUD-4: 997Hz 正弦全链与 KW-1 一致(全链路)", "[loudness]")
     splitFrames(mixedFrames, kwMsMixed, peakMixed);
     const auto segMixed =
         scvb::analysis::measureSegment(kwMsMixed.data(), peakMixed.data(), static_cast<int>(kwMsMixed.size()),
-                                       scvb::analysis::LoudnessMode::kIntegrated);
+                                       scvb::analysis::LoudnessMode::KIntegrated);
 
     REQUIRE(segMixed.main.z == seg.main.z);
     REQUIRE(segMixed.main.level == seg.main.level);
@@ -193,7 +193,7 @@ TEST_CASE("LOUD-4: 997Hz 正弦全链与 KW-1 一致(全链路)", "[loudness]")
     splitFrames(rerunFrames, kwMsRerun, peakRerun);
     const auto segRerun =
         scvb::analysis::measureSegment(kwMsRerun.data(), peakRerun.data(), static_cast<int>(kwMsRerun.size()),
-                                       scvb::analysis::LoudnessMode::kIntegrated);
+                                       scvb::analysis::LoudnessMode::KIntegrated);
 
     REQUIRE(segRerun.main.z == seg.main.z);
     REQUIRE(segRerun.main.level == seg.main.level);
@@ -208,9 +208,9 @@ TEST_CASE("LOUD-5: 三档口径解析向量(J69)", "[loudness]")
     const float kwMs[] = {0.01f, 0.09f};
     const float peak[] = {0.2f, 0.5f};
 
-    const auto integrated = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::kIntegrated);
-    const auto rms = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::kRms);
-    const auto peakDb = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::kPeakDbfs);
+    const auto integrated = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::KIntegrated);
+    const auto rms = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::Rms);
+    const auto peakDb = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::PeakDbfs);
 
     REQUIRE(integrated.z == Approx(0.05).margin(1e-12));
     REQUIRE(integrated.level == Approx(-13.7013).margin(1e-4));
@@ -227,9 +227,9 @@ TEST_CASE("LOUD-5: 三档口径解析向量(J69)", "[loudness]")
     // 同 mode 重跑 100 次逐位一致(纯函数确定性)。
     for (int i = 0; i < 100; ++i)
     {
-        const auto a = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::kIntegrated);
-        const auto b = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::kRms);
-        const auto c = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::kPeakDbfs);
+        const auto a = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::KIntegrated);
+        const auto b = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::Rms);
+        const auto c = scvb::analysis::segmentLoudness(kwMs, peak, 2, scvb::analysis::LoudnessMode::PeakDbfs);
         REQUIRE(a.z == integrated.z);
         REQUIRE(a.level == integrated.level);
         REQUIRE(b.level == rms.level);
@@ -242,8 +242,8 @@ TEST_CASE("LOUD-5: 三档口径解析向量(J69)", "[loudness]")
     // 无动态(全 hop 等值)⇒ rms 恰比 k_integrated 高 0.691 dB(仅差 BS.1770 偏移)。
     const float flat[] = {0.04f, 0.04f, 0.04f};
     const float flatPeak[] = {0.5f, 0.5f, 0.5f};
-    const auto flatInt = scvb::analysis::segmentLoudness(flat, flatPeak, 3, scvb::analysis::LoudnessMode::kIntegrated);
-    const auto flatRms = scvb::analysis::segmentLoudness(flat, flatPeak, 3, scvb::analysis::LoudnessMode::kRms);
+    const auto flatInt = scvb::analysis::segmentLoudness(flat, flatPeak, 3, scvb::analysis::LoudnessMode::KIntegrated);
+    const auto flatRms = scvb::analysis::segmentLoudness(flat, flatPeak, 3, scvb::analysis::LoudnessMode::Rms);
     REQUIRE(flatRms.level - flatInt.level == Approx(0.691).margin(1e-3));
 }
 
@@ -260,7 +260,7 @@ TEST_CASE("LOUD-attached: 附带指标 peakMax 与 400ms 滑窗 p95/max/min", "[
     }
 
     const auto seg =
-        scvb::analysis::measureSegment(kwMs.data(), peak.data(), n, scvb::analysis::LoudnessMode::kIntegrated);
+        scvb::analysis::measureSegment(kwMs.data(), peak.data(), n, scvb::analysis::LoudnessMode::KIntegrated);
 
     REQUIRE(seg.peakMax == Approx(peak[static_cast<std::size_t>(n - 1)]).margin(1e-12));
     REQUIRE(seg.momentary.max >= seg.momentary.min);
@@ -268,7 +268,7 @@ TEST_CASE("LOUD-attached: 附带指标 peakMax 与 400ms 滑窗 p95/max/min", "[
     REQUIRE(seg.momentary.p95 >= seg.momentary.min);
 
     // 滑窗口径恒 K 加权:附带指标不随 mode 变化。
-    const auto segRms = scvb::analysis::measureSegment(kwMs.data(), peak.data(), n, scvb::analysis::LoudnessMode::kRms);
+    const auto segRms = scvb::analysis::measureSegment(kwMs.data(), peak.data(), n, scvb::analysis::LoudnessMode::Rms);
     REQUIRE(segRms.momentary.p95 == seg.momentary.p95);
     REQUIRE(segRms.momentary.max == seg.momentary.max);
     REQUIRE(segRms.momentary.min == seg.momentary.min);

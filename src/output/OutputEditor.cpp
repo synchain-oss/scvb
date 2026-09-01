@@ -897,7 +897,7 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             // 字段(宪法 params-v0 定死持久化段字段)。按 FEAT **重算真值**:零契约文字变更、
             // 不动 state abi;重开工程照样有值(FEAT 随工程走),改完段边界后自动跟着变。
             put(seg, "loudnessLufs",
-                processor_.segmentLoudnessLufs(t + 1, samplesToSeconds(s.t0, sr), samplesToSeconds(t1Effective, sr)));
+                processor_.segmentLoudnessLufs(t + 1, s.t0, t1Effective)); // [SL-262] 传采样点,不经秒往返
             push(segArr, seg);
         }
         put(ch, "segments", segArr);

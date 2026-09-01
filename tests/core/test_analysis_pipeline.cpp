@@ -11,6 +11,10 @@
 
 #include "analysis/AnalysisPipeline.h"
 #include "analysis/BalanceBasis.h" // [SL-252] 平衡归一化基准 z(ADR-009 v2.2 澄清 ②)
+// [SL-262] **回归守卫**:与 BalanceBasis.h 拉进来的 `analysis/LoudnessMode.h` 同时 include。
+// 收敛之前这两个头各有一份同名同命名空间的 `LoudnessMode` / `SegmentLoudness`,本行会让
+// 整个 TU 报 C2011。**别删这一行** —— 它不为用例服务,只为「第二份定义再也进不来」服务。
+#include "analysis/Loudness.h"
 
 using namespace scvb::analysis;
 
@@ -287,10 +291,11 @@ TEST_CASE("PIPE-7 后验的 firstHop 与局部分析范围一致", "[analysis][p
 //   ③ 三档**都是非负线性能量量** —— AutoAssign 要 `zSum += z` / `zHat = z/zSum`,塞 dB
 //      (负数)进去 zSum 会变负。这条守的正是修宪「正文第三条继续完整适用」那句话。
 //
-// 放在本文件而不是 test_loudness.cpp:后者 include 的 `analysis/Loudness.h` 里另有一份
-// **同名同命名空间**的 `LoudnessMode` / `SegmentLoudness` 定义(与 `analysis/LoudnessMode.h`
-// 的那份成员都不同),两头一起 include 会直接 C2011 重定义。那是独立于本卡的既有缺陷,
-// 已单独报卡,不在本卡顺手改。
+// 放在本文件而不是 test_loudness.cpp 的原始理由已消失([SL-262] 已把 ODR 债收敛掉):
+// 那时 `analysis/Loudness.h` 里另有一份**同名同命名空间**的 `LoudnessMode` /
+// `SegmentLoudness`,两头一起 include 会 C2011 重定义。现在两个头**可以同时 include** ——
+// 本文件顶部就同时引了它们,这本身就是那条 ODR 收敛的**回归守卫**:谁再引入第二份定义,
+// 本 TU 编不过。用例留在这里不动(它测的是流水线层,本来就该在这个文件)。
 // ---------------------------------------------------------------------------
 TEST_CASE("[SL252] balanceBasisZ:默认档逐位等于 meanKw,三档真分歧且同为线性能量", "[analysis][balance][SL252]")
 {
