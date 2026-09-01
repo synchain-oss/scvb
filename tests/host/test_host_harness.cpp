@@ -260,6 +260,137 @@ struct Rig
     }
 };
 
+// ---------------------------------------------------------------------------
+// [SL-263] 多轨 Rig —— N 个 Input 实例各占一路,同组,共用一个 Output。
+//
+// 为什么必须多轨:平衡层的归一化基准 z 只在**轨与轨之间**才有意义
+// (`zHat = z / zSum`)。单轨时 zSum 就是它自己 ⇒ zHat ≡ 1,**换任何响度档产出都一样**,
+// 拿单轨去测「换档要不要真变」得到的是一条永远绿的空用例。既有 `Rig` 只绑一个 Input
+// (kTestChannel),所以 SL-252 那条「删掉 startAnalysis 传 loudnessMode 那行」的回归
+// 一直没人守得住 —— 本结构就是补这个缺口。
+//
+// 每路可给**不同占空比**:那正是让三档 z 分叉的条件(长响短歇 ⇒ 均值高;
+// 短促强峰 ⇒ 峰值高而均值低)。
+// ---------------------------------------------------------------------------
+struct MultiRig
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    ScvbOutputAudioProcessor out;
+    std::vector<std::unique_ptr<ScvbInputAudioProcessor>> ins;
+    std::vector<int> channels;
+    std::vector<std::unique_ptr<juce::AudioBuffer<float>>> inBufs;
+    FakePlayHead ph;
+    juce::AudioBuffer<float> outBuf{2, kBlock};
+    juce::MidiBuffer midi;
+
+    explicit MultiRig(std::vector<int> chans) : channels(std::move(chans))
+    {
+        out.setGroupId(kTestGroup);
+        out.setPlayHead(&ph);
+        out.prepareToPlay(kSr, kBlock);
+        for (const int ch : channels)
+        {
+            auto in = std::make_unique<ScvbInputAudioProcessor>();
+            in->setGroupId(kTestGroup);
+            in->setChannelId(ch);
+            in->setPlayHead(&ph);
+            in->prepareToPlay(kSr, kBlock);
+            ins.push_back(std::move(in));
+            inBufs.push_back(std::make_unique<juce::AudioBuffer<float>>(2, kBlock));
+        }
+    }
+
+    ~MultiRig()
+    {
+        for (auto& in : ins)
+        {
+            in->releaseResources();
+        }
+        out.releaseResources();
+    }
+
+    // 每路各自的振幅推 n 块(Input 全部先算,Output 后算 —— 与 Rig 的默认顺序一致)。
+    void runBlocks(int blocks, const std::vector<float>& amps, int pumpEveryN = 4, int pumpMs = 8)
+    {
+        for (int b = 0; b < blocks; ++b)
+        {
+            for (std::size_t k = 0; k < ins.size(); ++k)
+            {
+                Rig::fillSine(*inBufs[k], k < amps.size() ? amps[k] : 0.0f, ph.timeSamples);
+                ins[k]->processBlock(*inBufs[k], midi);
+            }
+            outBuf.clear();
+            out.processBlock(outBuf, midi);
+            if (ph.playing)
+            {
+                ph.timeSamples += kBlock;
+            }
+            if (pumpEveryN > 0 && (b % pumpEveryN) == pumpEveryN - 1)
+            {
+                Rig::pumpMessages(pumpMs);
+            }
+        }
+    }
+
+    // 全部轨都进注入集(claim + 心跳新鲜)。
+    bool waitUntilAllInjected(int maxMs = 6000)
+    {
+        const std::vector<float> amps(ins.size(), 0.25f);
+        for (int waited = 0; waited < maxMs; waited += 40)
+        {
+            runBlocks(2, amps, /*pumpEveryN=*/1, /*pumpMs=*/20);
+            const auto snap = out.connSnapshot();
+            bool all = true;
+            for (const int ch : channels)
+            {
+                const auto& c = snap.channels[static_cast<std::size_t>(ch - 1)];
+                all = all && c.slotState == scvb::kSlotActive && c.heartbeatAgeMs <= 2000;
+            }
+            if (all)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 采一段「各轨占空比不同」的素材:轨 k 的响/歇块数由 duty[k] 给。
+    void captureAlternating(const std::vector<std::pair<int, int>>& duty, int rounds)
+    {
+        for (int r = 0; r < rounds; ++r)
+        {
+            // 逐轨的响歇相位不同 ⇒ 同一时刻活跃集合会变,指派层才有得算。
+            for (int phase = 0; phase < 2; ++phase)
+            {
+                std::vector<float> amps;
+                for (std::size_t k = 0; k < ins.size(); ++k)
+                {
+                    amps.push_back(phase == 0 ? 0.6f : 0.0f);
+                }
+                const int blocks = phase == 0 ? duty[0].first : duty[0].second;
+                runBlocks(blocks, amps, /*pumpEveryN=*/2, /*pumpMs=*/6);
+            }
+        }
+    }
+
+    // 全轨全段的 (pan, volDb) 展平快照 —— 换档前后对拍用。
+    std::vector<double> panVolOf()
+    {
+        std::vector<double> v;
+        const auto crvs = out.crvsSnapshot();
+        const auto& ver = crvs.versions[static_cast<std::size_t>(out.versionActive() - 1)];
+        for (const int ch : channels)
+        {
+            for (const auto& seg : ver.tracks[static_cast<std::size_t>(ch - 1)].segments)
+            {
+                v.push_back(static_cast<double>(seg.pan));
+                v.push_back(static_cast<double>(seg.volDb));
+            }
+        }
+        return v;
+    }
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -6744,4 +6875,105 @@ TEST_CASE("HOST SL-255:取消松手档重分段后,下一次「点分析」的 r
     waitAnalysis(r);
     // ★ 必须是 Analyze。改前这里拿到的是 Vad(上一轮被取消的 reason 留在成员里没人清)。
     CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-263] 端到端:`analysis.loudness_mode` 必须真的走到平衡产出。
+//
+// 这条补的是 SL-252 复审点名、当时**没能钉住**的那一档:删掉 `OutputProcessor.cpp` 里
+// `cfg.balance.loudnessMode = parseLoudnessMode(...)` 那一行(= 完全回到断链状态),
+// core 侧的流水线用例照样全绿 —— 因为它们自己装配 `PipelineConfig`,整条路径不经
+// `startAnalysis`。只有端到端跑一遍才守得到「**这里还在调它**」这一跳
+// (判例:`OutputEditor.cpp` 的 HOST R4 注释「否则测试照绿而 bug 回归」)。
+//
+// **必须多轨**:`zHat = z / zSum`,单轨时 zSum 就是自己 ⇒ zHat ≡ 1,换档产出必然相同。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAnalysis 那一跳)", "[host][analyze][loudness][SL263]")
+{
+    MultiRig r({2, 3, 5});
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilAllInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    // 有声/静音交替,采够切得出多段的素材。
+    for (int burst = 0; burst < 8; ++burst)
+    {
+        r.runBlocks(40, {0.6f, 0.25f, 0.45f}, /*pumpEveryN=*/2, /*pumpMs=*/6);
+        r.runBlocks(24, {0.0f, 0.0f, 0.0f}, /*pumpEveryN=*/2, /*pumpMs=*/6);
+    }
+    Rig::pumpMessages(500);
+
+    const double coveredS = r.out.coverageOf(3, 0.0, 120.0).coveredS;
+    REQUIRE(coveredS > 1.0);
+
+    const auto analyze = [&r, coveredS](const char* mode) {
+        r.out.setAnalysisConfig(mode, "", /*hasLoudness=*/true, /*hasCenter=*/false);
+        REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+        for (int i = 0; i < 200 && r.out.analysisRunning(); ++i)
+        {
+            Rig::pumpMessages(50);
+        }
+        REQUIRE_FALSE(r.out.analysisRunning());
+        Rig::pumpMessages(200);
+        return r.panVolOf();
+    };
+
+    const auto vK = analyze("kw_integrated");
+    REQUIRE_FALSE(vK.empty()); // 没段就什么都测不出来 —— 素材不够时这里先红
+
+    const auto vP = analyze("peak_dbfs");
+    REQUIRE(vP.size() == vK.size());
+
+    bool anyDiff = false;
+    for (std::size_t i = 0; i < vP.size() && !anyDiff; ++i)
+    {
+        anyDiff = (vP[i] != vK[i]);
+    }
+    // ⚠ **这一行就是那一跳**:删掉 startAnalysis 里 `cfg.balance.loudnessMode = ...`
+    // 或把 `balanceBasisZ` 换回 `meanKw`,本行必红。断链时代它恒为 false。
+    CHECK(anyDiff);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-263] `segmentLoudnessLufs` 的三个早退分支(SL-257 那一支此前零用例)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL263:segmentLoudnessLufs 早退分支回 −120 且不越界", "[host][analyze][loudness][SL263]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double kSilent = -120.0; // lufsFromMeanKw(0.0) 的静音替身
+
+    // ① 空窗 / 倒序窗(t1 <= t0)
+    CHECK(r.out.segmentLoudnessLufs(kTestChannel, 0, 0) == kSilent);
+    CHECK(r.out.segmentLoudnessLufs(kTestChannel, 48000, 0) == kSilent);
+
+    // ② 越界 channel(合法域 1..15)—— 不得越界读 frameStore
+    CHECK(r.out.segmentLoudnessLufs(0, 0, 48000) == kSilent);
+    CHECK(r.out.segmentLoudnessLufs(16, 0, 48000) == kSilent);
+    CHECK(r.out.segmentLoudnessLufs(-1, 0, 48000) == kSilent);
+
+    // ③ 整段未覆盖(远端窗口,没有任何采集数据)⇒ 均值 0 ⇒ 静音替身
+    CHECK(r.out.segmentLoudnessLufs(kTestChannel, 48000LL * 3600, 48000LL * 3601) == kSilent);
+
+    // 采一段真素材后,覆盖窗口应当给出**有限且高于静音替身**的值(证明它不是恒回 −120)。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(300);
+    r.runBlocks(200, 0.5f, 4, 6);
+    Rig::pumpMessages(400);
+    // ⚠ 窗口必须取**真实覆盖区间**,不能用 `[0, coveredS]`:`coveredS` 是覆盖**时长**,
+    // 而播放头在开采集之前就已经走了一段,`[0, 时长]` 未必与实际被覆盖的 hop 区间相交
+    // (第一版就是这么写的,拿到 −120 差点误判成实现回归)。
+    const auto cov = r.out.coverageOf(kTestChannel, 0.0, 600.0);
+    REQUIRE(cov.coveredS > 0.0);
+    REQUIRE_FALSE(cov.ranges.empty());
+    const std::int64_t hopSamples = static_cast<std::int64_t>(ScvbOutputAudioProcessor::featHopSeconds() * kSr);
+    REQUIRE(hopSamples > 0);
+    const auto& cr = cov.ranges.front();
+    const double real = r.out.segmentLoudnessLufs(kTestChannel, static_cast<std::int64_t>(cr.begin) * hopSamples,
+                                                  static_cast<std::int64_t>(cr.end) * hopSamples);
+    CHECK(std::isfinite(real));
+    CHECK(real > kSilent); // 恒回静音替身(例如整型换算写错成恒 0 窗)时必红
 }
