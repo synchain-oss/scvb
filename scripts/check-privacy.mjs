@@ -182,7 +182,9 @@ if (selfTest) {
         [
             "P2",
             j("c:", "\\", "users", "\\", "someone"),
-            j("%", "USERPROFILE", "%"),
+            // ⚠ shouldMiss 必须真能匹配 RE_WIN_HOME,否则 exempt 根本不会被调到,
+            // `%` / `$` / `...` 三个分支就是不可达 + 空断言(与 r1 删掉的 MAIL_ALLOW 同形态)。
+            j("C:", "\\", "Users", "\\", "%", "USERNAME", "%", "\\", "AppData"),
         ],
         [
             "P2",
@@ -192,9 +194,13 @@ if (selfTest) {
         [
             "P2",
             j("C:", "\\\\", "Users", "\\\\", "someone"),
-            j("$", "env:USERPROFILE"),
+            j("C:", "\\", "Users", "\\", "$", "env:UserProfile"),
         ],
-        ["P2", j("/", "c", "/", "Users", "/", "someone"), "无关 /c/ 文本"],
+        [
+            "P2",
+            j("/", "c", "/", "Users", "/", "someone"),
+            j("C:", "/", "Users", "/", "...", "/", "proj"), // 驱动 "..." 分支
+        ],
         [
             "P2",
             j("/", "mnt", "/", "c", "/", "Users", "/", "someone"),
