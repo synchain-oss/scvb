@@ -54,7 +54,7 @@ jobs:
           echo "WEBVIEW2_USER_DATA_FOLDER=$env:RUNNER_TEMP\wv2ud" >> $env:GITHUB_ENV
 
       # 4) 缓存 WebView2 NuGet 包(CMake 配置期拉到 build/packages)
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: build/packages
           key: webview2-nuget-${{ env.WEBVIEW2_NUGET_VERSION }}
