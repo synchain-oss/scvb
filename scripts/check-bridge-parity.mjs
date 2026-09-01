@@ -82,6 +82,9 @@ const BRIDGE_JS_PATH = join(REPO_ROOT, "web", "shared", "bridge.js");
 const HEADER_PATHS = {
     input: join(REPO_ROOT, "src", "input", "InputBridgeApi.h"),
     output: join(REPO_ROOT, "src", "output", "OutputBridgeApi.h"),
+    // [SL-258] monitor 也进来:第五节按侧取常量表,路径只留这一个真源 —— 之前 SIDES 里
+    // 另写了一份,改一处漏一处就会走进「读不到 → 静默跳过」。
+    monitor: join(REPO_ROOT, "src", "monitor", "MonitorBridgeApi.h"),
 };
 
 /** 禁止复活名单 —— 与 docs/SCVB_CONTRACT.md §8.2 同源,改动必须两处同步。 */
@@ -935,19 +938,19 @@ checkEventPayloadFields();
             side: "output",
             editor: join(REPO_ROOT, "src", "output", "OutputEditor.cpp"),
             marker: "void OutputEditor::registerNativeFunctions",
-            header: join(REPO_ROOT, "src", "output", "OutputBridgeApi.h"),
+            header: HEADER_PATHS.output,
         },
         {
             side: "input",
             editor: join(REPO_ROOT, "src", "input", "InputEditor.cpp"),
             marker: "void InputEditor::registerNativeFunctions",
-            header: join(REPO_ROOT, "src", "input", "InputBridgeApi.h"),
+            header: HEADER_PATHS.input,
         },
         {
             side: "monitor",
             editor: join(REPO_ROOT, "src", "monitor", "MonitorEditor.cpp"),
             marker: "void MonitorEditor::registerNativeFunctions",
-            header: join(REPO_ROOT, "src", "monitor", "MonitorBridgeApi.h"),
+            header: HEADER_PATHS.monitor,
         },
     ];
 
@@ -964,8 +967,11 @@ checkEventPayloadFields();
             continue;
         }
         if (!existsSync(cfg.editor) || !existsSync(cfg.header)) {
-            skip(
-                `读不到 ${rel(cfg.editor)} 或 ${rel(cfg.header)},跳过 ${cfg.side} 侧已注册 handler 对拍`,
+            // [SL-258 复审【建议】] **不能 skip**。本节存在的全部理由就是「不能静默变绿」——
+            // 三侧的 editor 与 header 都是已知在仓的文件,不是可选依赖;路径写错 / 文件改名 /
+            // 目录重构都会让这一节静默跳过,而「找不到 marker」那条走的是 fail,两者必须同档。
+            fail(
+                `读不到 ${rel(cfg.editor)} 或 ${rel(cfg.header)} —— ${cfg.side} 侧注册面/常量表移动了?本节口径需同步`,
             );
             continue;
         }

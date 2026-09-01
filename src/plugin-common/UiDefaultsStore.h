@@ -3,10 +3,13 @@
 
 // UiDefaultsStore —— 系统级 UI 全局默认(**跨工程**,不随工程 state 走)。
 //
-// 承载四项(契约 §1.29/§1.32/§1.33/§3.8):
-//   • guide_seen_global —— 首启红字九条页勾了「不再显示」(**按侧各存一份**,见下);
-//   • tour_seen_global  —— 交互式导览已完成或已婉拒;
-//   • uiScalePercent    —— 缩放防呆确认「保持」后落的默认档位(0 = 未设置)。
+// 承载五项(契约 §1.29/§1.30/§1.32/§1.33/§3.8):
+//   • guide_seen_global —— 首启引导勾了「不再显示」(**Output / Input 各存一份**,见下);
+//   • tour_seen_global  —— 交互式导览已完成或已婉拒(Output 专属:Input 没有交互式导览);
+//   • lang_chosen       —— 用户**显式选过**语言(跨工程,§1.30 [J81] 副作用);
+//   • lang_global       —— 选中的语言值本身(只记「选过」不记「选的是哪个」会得到
+//                          「不再问 + 回英文」,比不修更糟,v5 实测 P1-6);
+//   • uiScalePercent    —— 缩放防呆确认「保持」后落的默认档位(0 = 未设置;按角色分键)。
 //
 // 为什么存在:此前 §1.1 快照里的 guide_seen_global / tour_seen_global 是**硬编码 false**、
 // WebViewHost::persistUiScaleAsDefault 是**空实现** —— 「不再显示」的跨工程承诺从未兑现

@@ -59,10 +59,14 @@ TEST_CASE("[SL258] guide_seen 全局位按侧分键 —— Output 与 Input 各�
     CHECK(ud::guideSeenGlobalInput());
     CHECK_FALSE(ud::guideSeenGlobal());
 
-    // ③ 真过磁盘:每次调用现开一份 PropertiesFile,读得回 = 换实例/换工程也读得回
-    //    (Input 侧的跨工程「不再显示」承诺就靠这一条,§3.8 的 alsoGlobal)。
+    // ③ 清位后仍可再置。**注意断言强度**(复审【建议】):`set(false)` 后 `CHECK_FALSE` 与
+    //    `readBool` 的默认值同值,写侧**空实现**也能过——那条证明不了任何事。真正证明
+    //    「换实例/换工程也读得回」的是上面 ② (写 true 再读回 true,每次调用现开一份
+    //    PropertiesFile);这里补一次「清完再置」,写侧空实现在这一行必红。
     ud::setGuideSeenGlobalInput(false);
     CHECK_FALSE(ud::guideSeenGlobalInput());
+    ud::setGuideSeenGlobalInput(true);
+    CHECK(ud::guideSeenGlobalInput());
 }
 
 TEST_CASE("UiDefaultsStore:全局默认写一次、换实例读得回(T37 A-3)", "[output][uidefaults][t37]")
