@@ -313,6 +313,42 @@ double ScvbOutputAudioProcessor::featHopSeconds()
     return static_cast<double>(scvb::output::OutputSession::featHopMs()) / 1000.0;
 }
 
+double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, double t0S, double t1S) const
+{
+    if (channel < 1 || channel > 15 || !(t1S > t0S))
+    {
+        return scvb::analysis::lufsFromMeanKw(0.0); // −120 替身,与流水线静音档同值
+    }
+
+    const juce::ScopedLock lock(lifecycleMutex_);
+
+    // 秒 → hop:hop 时长是 feat 段的几何常量,不是采样率派生量(与 coverageOf 同口径)。
+    const double hopS = featHopSeconds();
+    const auto toHop = [hopS](double s) {
+        const double h = s / hopS;
+        return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
+    };
+    const std::uint64_t first = toHop(t0S);
+    const std::uint64_t last = toHop(t1S);
+    if (last <= first)
+    {
+        return scvb::analysis::lufsFromMeanKw(0.0);
+    }
+
+    const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(channel));
+    double acc = 0.0;
+    for (std::uint64_t hop = first; hop < last; ++hop)
+    {
+        if (!frames.hasHop(hop))
+        {
+            continue; // 未覆盖 hop 计静音(0)—— 与 startAnalysis 装特征时逐字同口径
+        }
+        acc += static_cast<double>(frames.kwMs(hop));
+    }
+    const double meanKw = acc / static_cast<double>(last - first);
+    return scvb::analysis::lufsFromMeanKw(meanKw);
+}
+
 ScvbOutputAudioProcessor::CoverageInfo ScvbOutputAudioProcessor::coverageOf(int channel, double startS, double endS)
 {
     CoverageInfo info;

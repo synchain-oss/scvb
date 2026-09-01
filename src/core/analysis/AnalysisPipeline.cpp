@@ -25,13 +25,6 @@ void report(const PipelineProgressFn& fn, float p)
     }
 }
 
-
-// K 加权均方 → LUFS(ITU-R BS.1770 的 −0.691 偏置)。静音回 −inf 的替身 −120。
-double lufsFromMeanKw(double m)
-{
-    return m > 0.0 ? (10.0 * std::log10(m) - 0.691) : -120.0;
-}
-
 void addWarningOnce(std::vector<std::string>& out, const std::string& w)
 {
     if (w.empty())
@@ -45,6 +38,14 @@ void addWarningOnce(std::vector<std::string>& out, const std::string& w)
 }
 
 } // namespace
+
+// K 加权均方 → LUFS(ITU-R BS.1770 的 −0.691 偏置)。静音回 −inf 的替身 −120。
+// [SL-257] 从匿名命名空间移出:§2.8 `loudnessLufs` 的上桥值要在 emit 时按 FEAT 重算,
+// 换算必须与流水线**共用同一份**——各写一份就是下一个「两侧口径漂移」。
+double lufsFromMeanKw(double m)
+{
+    return m > 0.0 ? (10.0 * std::log10(m) - 0.691) : -120.0;
+}
 
 PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipelineTracks>& features,
                                    const PipelineConfig& cfg, const PipelineProgressFn& onProgress,

@@ -46,6 +46,11 @@ struct PipelineTrackConfig
 };
 
 // 一次分析作业的全部输入配置。
+// K 加权均方(线性能量)→ LUFS(BS.1770 的 −0.691 偏置;静音回 −120 替身)。
+// §2.8 `loudnessLufs` 与 `AnalysisSegment.loudnessLufs` 的**唯一换算口径**:
+// 流水线产段时用它,桥面 emit 时按 FEAT 重算也用它([SL-257] 真值化)。
+double lufsFromMeanKw(double meanKwLinear);
+
 struct PipelineConfig
 {
     double sampleRate = 48000.0;
