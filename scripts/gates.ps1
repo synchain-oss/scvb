@@ -7,6 +7,8 @@
     pwsh scripts/gates.ps1 -Quick          # 跳过 pluginval(gate 7/8),快速回环
   所有 cmake/ctest/pluginval 路径基于 -BuildDir(默认 build),并行 agent 靠它隔离构建目录。
   [R4/J56] gate 3b(gitleaks)/ 3c(reuse lint)与 check-spdx.ps1 已由 T01d 接入(06 §5.1)。
+  [SL-265] gate 3j(check-privacy)= 公开仓隐私门禁,与 3b 同族:gitleaks 只管 secrets,
+  个人身份信息(代号禁词/本机路径/个人邮箱域/主机名)由 3j 管;CI 侧对应 compliance.yml 两步。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
@@ -146,6 +148,33 @@ else {
   if ($LASTEXITCODE -ne 0) { $gl | Select-Object -Last 20 | ForEach-Object { Write-Host ("  " + $_) } }
   Set-Gate '3b gitleaks' ($LASTEXITCODE -eq 0)
 }
+
+# ==================================================================
+Write-Host '=== Gate 3j: check-privacy (公开仓隐私门禁) ==='
+# ==================================================================
+# [SL-265] 与 gitleaks 同族但管的是**另一半**:gitleaks 只认 secrets(密钥/令牌),
+# 个人身份信息(代号禁词 / 本机路径 / 个人邮箱域 / 主机名)它一条都不拦,故单列一关。
+# **先自检再扫**:本门禁的失效模式是「静默放行」—— 针被改坏或豁免表被放宽后扫描照样退 0,
+# 门禁看着绿其实什么都没拦。自检红 = 门禁自己坏了,比扫描结果更要紧。
+# 与 .github/workflows/compliance.yml 的两步逐字同参。
+$privacyOk = $false
+if (Get-Command node -ErrorAction SilentlyContinue) {
+  $pvSelf = (& node scripts/check-privacy.mjs --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $pvSelf | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red }
+    Write-Host '  自检失败 = 门禁本身坏了(不是仓里有命中)' -ForegroundColor Red
+  }
+  else {
+    $pv = (& node scripts/check-privacy.mjs 2>&1)
+    $privacyOk = ($LASTEXITCODE -eq 0)
+    if ($privacyOk) { $pv | Select-Object -Last 1 | ForEach-Object { Write-Host ("  " + $_) } }
+    else { $pv | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red } }
+  }
+}
+else {
+  Write-Host '  node 未找到(需 Node >= 18)' -ForegroundColor Red
+}
+Set-Gate '3j check-privacy' $privacyOk
 
 # ==================================================================
 Write-Host '=== Gate 3c: reuse lint (REUSE 合规) ==='

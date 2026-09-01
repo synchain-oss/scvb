@@ -42,3 +42,20 @@ jobs:
         # 设计盒常量唯一真源守卫:生成物 src/core/DesignBox.h 与 web/shared/design-box.js 对拍
         # (与 gates.ps1 gate 3d 同参;纯脚本步骤,不引入新 action)
         run: python3 scripts/gen-design-box.py --check
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # [SL-265] 钉版而非用 runner 自带 node:自带版本的大版本由 GitHub 单方面滚动,
+          # 而本仓其余 node 门禁(web-smoke / docs-truth)都经 setup-node 钉在 22 —— 隐私门禁
+          # 跟同一口径,免得哪天 runner 换代变成「本地绿 / CI 行为不同」。脚本内另有 >=18 守卫兜底。
+          node-version: "22"
+      - name: Privacy gate self-test
+        # [SL-265] **先自检再扫**:这条门禁的失效模式是「静默放行」—— 针被改坏或豁免表被放宽后,
+        # 扫描照样退 0,门禁看着绿其实什么都没拦(幽灵门禁)。自检用内置坏样例验证四条规则确实
+        # 会命中、且豁免样例确实不命中;它红了说明门禁本身坏了,比扫描结果更要紧,故排在前面。
+        # 与 gates.ps1 gate 3j 同参。
+        run: node scripts/check-privacy.mjs --self-test
+      - name: Privacy scan
+        # [SL-265] 公开仓隐私门禁:代号禁词(零容忍)/ 个人本机路径 / 个人邮箱域 / 个人主机名。
+        # 放在 compliance 而非 format:同族是本 job 里的 gitleaks(密钥)与 REUSE(合规),
+        # gates 侧也挂在 3b(gitleaks)旁,两侧位置对应。与 gates.ps1 gate 3j 同参。
+        run: node scripts/check-privacy.mjs
