@@ -479,6 +479,11 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     // 而桥面那道 jlimit 只拦得住 UI 发来的值,拦不住加载路径。夹取函数与桥面同一个。
     uiScale_ = scvb::bridge::clampUiScalePercent(s.uiScale);
     uiLanguage_ = juce::String::fromUTF8(s.uiLanguage.c_str(), static_cast<int>(s.uiLanguage.size()));
+    // [SL-258 复审【重要】] `ui.guide_seen` 按 §3.1 是**随工程走**的。它现在只是会话内运行时态
+    // (持久化待 SL-238),所以换载另一份工程 state 时必须**显式清零** —— 否则上一个工程的已读位
+    // 会原样带进新工程(宿主切 preset / 复制轨道后 load state 都走这条路),与契约语义正好相反。
+    // 失败方向也安全:至多多弹一次引导,而不是该弹不弹。SL-238 落了尾扩字段后改成解码值。
+    uiGuideSeen_ = false;
     session_.setChannelId(s.channelId);
     session_.setGroupId(s.groupId);
     // T30 PR#54 复审【重要】1 + R9:ctrl_ 命令环段组必须与 state 的 group_id 同组 —— 否则
@@ -696,6 +701,18 @@ void ScvbInputAudioProcessor::bridgeSetUiLanguage(const juce::String& lang)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
     uiLanguage_ = lang; // 已由桥层 normalize({zh,en,fr});getStateInformation 持久化
+}
+
+void ScvbInputAudioProcessor::bridgeSetGuideSeen(bool seen)
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    uiGuideSeen_ = seen;
+}
+
+bool ScvbInputAudioProcessor::bridgeUiGuideSeen() const
+{
+    const juce::ScopedLock lock(lifecycleMutex_);
+    return uiGuideSeen_;
 }
 
 void ScvbInputAudioProcessor::bridgeSetUiScalePercent(int percent)

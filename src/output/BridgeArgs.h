@@ -10,30 +10,15 @@
 #include <cstdint>
 #include <map>
 
+#include "BridgeBase.h" // strictBool 真身(两插件共用的桥面参数口径)
 #include "state/StateCodec.h" // CrvsData/VersionCurve(R4 降级链的输入)
 
 namespace scvb::output
 {
 
-// 严格布尔提取(PR#55 缺陷3):仅接受 bool / int / int64 数值;isBool → 真值,isInt/isInt64 → !=0。
-// 其它(字符串/对象/void)返回 false,调用方回 badArg。JUCE 8.0.8 的 var::operator bool() 实为
-// type->toBool(value)(juce_Variant.cpp:567;bool→boolToBool L246、int→intToBool L149、void→defaultToBool
-// L100),对 bool 返回真值、对 void 返回 false;此处仍显式分型,避免字符串 "false" 被 stringToBool
-// 误判为非空即 true。
-inline bool strictBool(const juce::var& v, bool& out)
-{
-    if (v.isBool())
-    {
-        out = static_cast<bool>(v);
-        return true;
-    }
-    if (v.isInt() || v.isInt64())
-    {
-        out = static_cast<juce::int64>(v) != 0;
-        return true;
-    }
-    return false;
-}
+// 严格布尔提取 —— 真身已上提到 scvb::bridge(plugin-common/BridgeBase.h),两侧共用一份。
+// 这里转发,Output 既有调用点(unqualified strictBool)与单测一个字都不用改。
+using scvb::bridge::strictBool;
 
 // 读取参数的**工程值**(契约 §2.2 f32 工程值)。APVTS 的 getRawParameterValue 返回归一化 0..1 原子,
 // 须经 convertFrom0to1 还原(PR#55 第3轮重要1;AudioParameterFloat::get() 同款)。

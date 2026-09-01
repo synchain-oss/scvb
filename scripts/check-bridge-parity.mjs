@@ -82,6 +82,9 @@ const BRIDGE_JS_PATH = join(REPO_ROOT, "web", "shared", "bridge.js");
 const HEADER_PATHS = {
     input: join(REPO_ROOT, "src", "input", "InputBridgeApi.h"),
     output: join(REPO_ROOT, "src", "output", "OutputBridgeApi.h"),
+    // [SL-258] monitor 也进来:第五节按侧取常量表,路径只留这一个真源 —— 之前 SIDES 里
+    // 另写了一份,改一处漏一处就会走进「读不到 → 静默跳过」。
+    monitor: join(REPO_ROOT, "src", "monitor", "MonitorBridgeApi.h"),
 };
 
 /** 禁止复活名单 —— 与 docs/SCVB_CONTRACT.md §8.2 同源,改动必须两处同步。 */
@@ -865,132 +868,177 @@ if (compared === 0) {
 checkEventPayloadFields();
 
 // ---------------------------------------------------------------------------
-// 五、**已注册 handler** 对拍([SL-256] 新增)
+// 五、**已注册 handler** 对拍([SL-256] 新增 Output;[SL-258] 扩到 input / monitor 三侧)
 // ---------------------------------------------------------------------------
 // 为什么补这一节:上面的三方比对查的是**名字集合**(契约 manifest ↔ mock ↔ C++ 常量表)。
-// C++ 那一侧读的是 `OutputBridgeApi.h` 的**常量表** —— 常量写了就算数。可 web 能不能真的
-// 调到一个桥函数,取决于 `OutputEditor::registerNativeFunctions` 有没有把那个名字
+// C++ 那一侧读的是各侧 `*BridgeApi.h` 的**常量表** —— 常量写了就算数。可 web 能不能真的
+// 调到一个桥函数,取决于该侧 editor 的 `registerNativeFunctions` 有没有把那个名字
 // **挂上 handler**;常量表里有、注册表里没有,三方名字集合照样全等,门禁全绿。
 //
-// 这不是假想:`exportSuggestions` 契约 §1.36 齐全、§7 manifest 收录、§5.6 三个 reason 登记、
-// web 与 mock 都实现了、常量表也有 —— 唯独没注册 handler。于是真宿主上桥面根本不出现这个
-// 名字,用户点「导出 CSV」只看到「本版本尚未接通导出」,而 parity 从头到尾是绿的([SL-256] 定谳)。
+// 这不是假想,而且**同一族栽了两次**:
+//   · `exportSuggestions`(Output)—— 契约 §1.36 齐全、§7 manifest 收录、§5.6 三个 reason 登记、
+//     web 与 mock 都实现了、常量表也有,唯独没注册 handler([SL-256] 定谳);
+//   · `setGuideSeen`(Input)—— 契约 §3.8 齐全、§7 manifest.input 收录、常量 `kFnSetGuideSeen` 在、
+//     `web/input/tour-in.js` 首启链完成与 Skip 都真调用,唯独没注册([SL-258] 定谳)。
+//     跨工程的「不再显示」承诺因此从未兑现,而这正是 J80 立 T48 的全部理由。
 //
-// 口径:从 `registerNativeFunctions` 函数体里抽 `add(Fn::Xxx, …)` 的常量名,经常量表映射成
-// 桥名,与 manifest 的 Output 函数名集合**双向**比对。只查 Output —— Input/Monitor 的注册面
-// 不在本仓这一侧(Input 有自己的 editor,Monitor 零写函数),要扩再单独开卡。
+// 第二次栽是**本节自己的覆盖面不够**:[SL-256] 初版只查 Output,头注还写着「Input/Monitor 的
+// 注册面不在本仓这一侧」—— 那是假的,`src/input/InputEditor.cpp` 与 `src/monitor/MonitorEditor.cpp`
+// 就在本仓。所以本次不是「再补一个洞」,是把门禁扩到**三侧全覆盖**,让这一族不能再有第三次。
+//
+// 口径:从各侧 `<Role>Editor::registerNativeFunctions` 函数体里抽注册名,经常量表映射成桥名,
+// 与 manifest 对应侧的函数名集合**双向**比对。三侧注册形状不同,三种都要认:
+//   · Output ——  `add(Fn::Xxx, …)`(先在编辑器里建了 add 助手);
+//   · Input / Monitor —— `.withNativeFunction(juce::Identifier(bridge::kFnXxx), …)`;
+//   · 通用外壳四件 —— `WebViewHost` 的 `.withNativeFunction(juce::Identifier(bridge::Fn::Xxx), …)`
+//     (requestInitialState / setLang / setUiScale / commitUiScale,常量在 `plugin-common/BridgeBase.h`),
+//     三侧**共用**同一份注册,故每侧都要并进去。漏读它会把这四个判成「没注册」——
+//     本节初版就是这么误报的,它们其实一直是通的。
 {
-    log("");
-    log(
-        "[E] 已注册 handler 对拍 —— OutputEditor::registerNativeFunctions ↔ manifest.output",
-    );
-    // **注册面有两处,缺一处就会误报**:
-    //   · 插件专属函数 —— `OutputEditor::registerNativeFunctions` 的 `add(Fn::Xxx, …)`;
-    //   · 通用外壳三件 + 首帧 —— `WebViewHost::…` 的
-    //     `.withNativeFunction(juce::Identifier(bridge::Fn::Xxx), …)`(requestInitialState /
-    //     setLang / setUiScale / commitUiScale,常量在 `plugin-common/BridgeBase.h`)。
-    // 只读前者会把这四个判成「没注册」——本节初版就是这么误报的,它们其实一直是通的。
-    const editorPath = join(REPO_ROOT, "src", "output", "OutputEditor.cpp");
     const hostPath = join(REPO_ROOT, "src", "plugin-common", "WebViewHost.cpp");
-    const headerPath = HEADER_PATHS.output;
     const basePath = join(REPO_ROOT, "src", "plugin-common", "BridgeBase.h");
-    if (!existsSync(editorPath) || !existsSync(headerPath)) {
-        skip(
-            "读不到 OutputEditor.cpp 或 OutputBridgeApi.h,跳过已注册 handler 对拍",
+    const NL = String.fromCharCode(10);
+
+    // **先剥行注释再抽名字**(#163 复审【建议】):正则直接扫源码文本的话,
+    // `// add(Fn::ExportSuggestions, …); // 先关掉查个 bug` 会被算成「已注册」,门禁绿 ——
+    // 而「有人临时注释掉一行注册忘了恢复」恰恰是本节最想拦的那一族(两次定谳的那两个洞,
+    // 只是把「注释掉」换成了「从没写」)。块注释这一族里基本不出现,不特殊处理。
+    const stripLineComments = (src) =>
+        src
+            .split(NL)
+            .map((line) => {
+                const i = line.indexOf("//");
+                return i < 0 ? line : line.slice(0, i);
+            })
+            .join(NL);
+
+    // 三种注册形状的抽取:返回常量标识符(尚未经常量表映射成桥名)。
+    const identsOf = (body) => {
+        const out = [];
+        for (const m of body.matchAll(
+            /add\(\s*Fn::([A-Za-z_][A-Za-z0-9_]*)/g,
+        )) {
+            out.push(m[1]);
+        }
+        for (const m of body.matchAll(
+            /withNativeFunction\(\s*juce::Identifier\(\s*bridge::(?:Fn::)?([A-Za-z_][A-Za-z0-9_]*)/g,
+        )) {
+            out.push(m[1]);
+        }
+        return out;
+    };
+
+    // 通用外壳四件:三侧共用,抽一次。
+    const hostIdents = existsSync(hostPath)
+        ? identsOf(stripLineComments(readFileSync(hostPath, "utf8")))
+        : [];
+
+    const SIDES = [
+        {
+            side: "output",
+            editor: join(REPO_ROOT, "src", "output", "OutputEditor.cpp"),
+            marker: "void OutputEditor::registerNativeFunctions",
+            header: HEADER_PATHS.output,
+        },
+        {
+            side: "input",
+            editor: join(REPO_ROOT, "src", "input", "InputEditor.cpp"),
+            marker: "void InputEditor::registerNativeFunctions",
+            header: HEADER_PATHS.input,
+        },
+        {
+            side: "monitor",
+            editor: join(REPO_ROOT, "src", "monitor", "MonitorEditor.cpp"),
+            marker: "void MonitorEditor::registerNativeFunctions",
+            header: HEADER_PATHS.monitor,
+        },
+    ];
+
+    for (const cfg of SIDES) {
+        log("");
+        log(
+            `[E] 已注册 handler 对拍 —— ${cfg.marker.replace("void ", "").replace("::registerNativeFunctions", "")}::registerNativeFunctions ↔ manifest.${cfg.side}`,
         );
-    } else {
-        const editorSrc = readFileSync(editorPath, "utf8");
-        const marker = "void OutputEditor::registerNativeFunctions";
-        const start = editorSrc.indexOf(marker);
+        const contractSide = contractFns[cfg.side];
+        if (!Array.isArray(contractSide) || contractSide.length === 0) {
+            skip(
+                `契约 manifest.${cfg.side} 为空,跳过 ${cfg.side} 侧已注册 handler 对拍`,
+            );
+            continue;
+        }
+        if (!existsSync(cfg.editor) || !existsSync(cfg.header)) {
+            // [SL-258 复审【建议】] **不能 skip**。本节存在的全部理由就是「不能静默变绿」——
+            // 三侧的 editor 与 header 都是已知在仓的文件,不是可选依赖;路径写错 / 文件改名 /
+            // 目录重构都会让这一节静默跳过,而「找不到 marker」那条走的是 fail,两者必须同档。
+            fail(
+                `读不到 ${rel(cfg.editor)} 或 ${rel(cfg.header)} —— ${cfg.side} 侧注册面/常量表移动了?本节口径需同步`,
+            );
+            continue;
+        }
+        const editorSrc = readFileSync(cfg.editor, "utf8");
+        const start = editorSrc.indexOf(cfg.marker);
         if (start < 0) {
             fail(
-                "找不到 OutputEditor::registerNativeFunctions —— 注册面改名了?本节口径需同步",
+                `找不到 ${cfg.marker} —— ${cfg.side} 侧注册面改名了?本节口径需同步`,
             );
-        } else {
-            const NL = String.fromCharCode(10);
-            const end = editorSrc.indexOf(NL + "}" + NL, start);
-            // **先剥行注释再抽名字**(#163 复审【建议】):正则直接扫源码文本的话,
-            // `// add(Fn::ExportSuggestions, …); // 先关掉查个 bug` 会被算成「已注册」,
-            // 门禁绿 —— 而「有人临时注释掉一行注册忘了恢复」恰恰是本节最想拦的那一族
-            // (本 PR 定谳的那个洞,只是把「注释掉」换成了「从没写」)。
-            // 块注释这一族里基本不出现,不特殊处理。
-            const stripLineComments = (src) =>
-                src
-                    .split(NL)
-                    .map((line) => {
-                        const i = line.indexOf("//");
-                        return i < 0 ? line : line.slice(0, i);
-                    })
-                    .join(NL);
-            const body = stripLineComments(
-                editorSrc.slice(start, end > 0 ? end : editorSrc.length),
-            );
-            // 常量名 → 桥名(`inline constexpr const char* Xxx = "yyy";`,允许跨行折行)
-            const constMap = new Map();
-            for (const hp of [headerPath, basePath]) {
-                if (!existsSync(hp)) continue;
-                for (const m of readFileSync(hp, "utf8").matchAll(
-                    /constexpr\s+const\s+char\*\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"/g,
-                )) {
-                    constMap.set(m[1], m[2]);
-                }
-            }
-            const registered = new Set();
-            const unresolved = [];
-            for (const m of body.matchAll(
-                /add\(\s*Fn::([A-Za-z_][A-Za-z0-9_]*)/g,
+            continue;
+        }
+        const end = editorSrc.indexOf(NL + "}" + NL, start);
+        // 函数体截断前提:体内**没有列首裸 `}` 行**(三侧当前都成立 —— 体是一串平铺注册调用,
+        // 多行 lambda 收尾是缩进的 `});` / `    };`,不是 `\n}\n`)。将来若在体内加独立 `{…}` 块
+        // 会提前截断、漏抽后续注册 —— 那是**少抽 ⇒ 误红**,失败方向安全,不至于放过真洞。
+        const body = stripLineComments(
+            editorSrc.slice(start, end > 0 ? end : editorSrc.length),
+        );
+        // 常量名 → 桥名(`inline constexpr const char* Xxx = "yyy";`,允许跨行折行)。
+        // 每侧只取**本侧头 + 共用 BridgeBase.h**:三侧常量表各自独立,合并会让 A 侧的名字
+        // 在 B 侧被解析成功、把「B 没注册」洗成绿。
+        const constMap = new Map();
+        for (const hp of [cfg.header, basePath]) {
+            if (!existsSync(hp)) continue;
+            for (const m of readFileSync(hp, "utf8").matchAll(
+                /constexpr\s+const\s+char\*\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"/g,
             )) {
-                const bridgeName = constMap.get(m[1]);
-                if (bridgeName) registered.add(bridgeName);
-                else unresolved.push(m[1]);
+                constMap.set(m[1], m[2]);
             }
-            // 外壳侧(WebViewHost)—— 不同的调用形状与常量命名空间
-            if (existsSync(hostPath)) {
-                for (const m of stripLineComments(
-                    readFileSync(hostPath, "utf8"),
-                ).matchAll(
-                    /withNativeFunction\(\s*juce::Identifier\(\s*bridge::Fn::([A-Za-z_][A-Za-z0-9_]*)/g,
-                )) {
-                    const bridgeName = constMap.get(m[1]);
-                    if (bridgeName) registered.add(bridgeName);
-                    else unresolved.push(m[1]);
-                }
-            }
-            if (unresolved.length > 0) {
-                fail(
-                    `注册面用到的常量在常量表里查不到:${unresolved.join(", ")}` +
-                        " —— 常量表与注册面对不上,本节无法判定",
-                );
-            } else if (registered.size === 0) {
-                fail(
-                    "registerNativeFunctions 里抽不到任何 add(Fn::…),本节口径需同步",
-                );
-            } else {
-                const contracted = new Set(contractFns.output);
-                const notRegistered = [...contracted].filter(
-                    (n) => !registered.has(n),
-                );
-                const notContracted = [...registered].filter(
-                    (n) => !contracted.has(n),
-                );
-                if (notRegistered.length > 0) {
-                    errors.push(
-                        `契约 §7 manifest 登记了但**没注册 handler**:${notRegistered.join(", ")}` +
-                            " —— web 在真宿主上调不到它(常量表有名字不等于挂了 handler)",
-                    );
-                }
-                if (notContracted.length > 0) {
-                    errors.push(
-                        `注册了但契约 §7 manifest 没登记:${notContracted.join(", ")}` +
-                            " —— 桥面多出契约外的函数,须走 §9 补契约",
-                    );
-                }
-                if (notRegistered.length === 0 && notContracted.length === 0) {
-                    ok(
-                        `已注册 handler ${registered.size} 个,与 manifest.output 函数名集合双向相等`,
-                    );
-                }
-            }
+        }
+        const registered = new Set();
+        const unresolved = [];
+        for (const ident of [...identsOf(body), ...hostIdents]) {
+            const bridgeName = constMap.get(ident);
+            if (bridgeName) registered.add(bridgeName);
+            else unresolved.push(ident);
+        }
+        if (unresolved.length > 0) {
+            fail(
+                `${cfg.side} 侧注册面用到的常量在常量表里查不到:${unresolved.join(", ")}` +
+                    " —— 常量表与注册面对不上,本节无法判定",
+            );
+            continue;
+        }
+        if (registered.size === 0) {
+            fail(`${cfg.marker} 里抽不到任何注册调用,本节口径需同步`);
+            continue;
+        }
+        const contracted = new Set(contractSide);
+        const notRegistered = [...contracted].filter((n) => !registered.has(n));
+        const notContracted = [...registered].filter((n) => !contracted.has(n));
+        if (notRegistered.length > 0) {
+            fail(
+                `契约 §7 manifest.${cfg.side} 登记了但**没注册 handler**:${notRegistered.join(", ")}` +
+                    " —— web 在真宿主上调不到它(常量表有名字不等于挂了 handler)",
+            );
+        }
+        if (notContracted.length > 0) {
+            fail(
+                `${cfg.side} 侧注册了但契约 §7 manifest 没登记:${notContracted.join(", ")}` +
+                    " —— 桥面多出契约外的函数,须走 §9 补契约",
+            );
+        }
+        if (notRegistered.length === 0 && notContracted.length === 0) {
+            ok(
+                `${cfg.side}:已注册 handler ${registered.size} 个,与 manifest.${cfg.side} 函数名集合双向相等`,
+            );
         }
     }
 }

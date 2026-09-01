@@ -20,3 +20,11 @@
 - **影响**:无(三条都已转成可诊断状态)。
 - **缓解**:测试包内附 `诊断.ps1`(= `scripts/check-webview2.ps1`),一次查完运行时版本 / user-data 可写性 / 子进程是否在跑。
 - **彻底修复方向**:等 Cubase 15 真机回归数据。**JUCE 侧有一处上游限制须记住**:`juce_WebBrowserComponent_windows.cpp` 把 `CreateCoreWebView2EnvironmentWithOptions` 与 `CreateCoreWebView2Controller` 两个完成回调的 HRESULT 形参都写成**无名参数直接丢弃**,失败时既不抛也不通知客户端。故「环境为什么没起来」的确切 HRESULT 在 JUCE 8.0.8 下拿不到,只能靠「导航事件从未到达」判定这一类。若后续需要精确 HRESULT,得自己直连 loader 复现一次环境创建(需引 `<WebView2.h>`),或向上游提 patch。
+
+## KI-3:`STATE_SCHEMA` 声明了 Input 侧 `uiGuideSeen` 的编码落点,而 `InputStateCodec` 没做
+
+- **现象**:Input 首启引导的已读位 `ui.guide_seen` **不随工程持久化** —— 重开工程一律回 `false`。
+- **原因**:`docs/STATE_SCHEMA.md`(**冻结文档**)第 100 / 154 行逐字写着 `InputStateCodec` 的 `CFGS` 尾扩 `u32 uiGuideSeen`,而实现里 `InputStateCodec` **严格等长校验、没有尾扩机制**,从来没编码过这个字段。属「冻结文档声明了、实现没做」——缺口自 [J81] 修宪写进文档时就存在。
+- **影响**:**用户可见承诺不受影响**。跨工程的「不再显示」由系统级全局位 `guide_seen_global_input` 兜住([SL-258] 已真落盘,按侧分键);工程内的位只在本次会话有效,且换载工程时显式清零(不会把上个工程的位带过去)。至多是「同一工程重开后引导再弹一次」,而全局位已勾时根本不弹。
+- **缓解**:无需用户操作。
+- **彻底修复方向**:**SL-238** —— 二选一:① 给 `InputStateCodec` 加尾扩机制 + 测试后实装该字段;② 走 §5 契约流程把该字段从 `STATE_SCHEMA` 撤回。定性未决。

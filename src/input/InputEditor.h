@@ -44,6 +44,10 @@ private:
                           juce::WebBrowserComponent::NativeFunctionCompletion complete);
     void handleRemoteSetPriority(const juce::Array<juce::var>& args,
                                  juce::WebBrowserComponent::NativeFunctionCompletion complete);
+    // [SL-258] §3.8 setGuideSeen(seen, alsoGlobal = true):Input 首启轻量引导已读的唯一写入口。
+    // 语义逐字照 Output §1.32(契约 §3.8 明写「签名与语义逐字照 Output 侧 §1.32」)。
+    void handleSetGuideSeen(const juce::Array<juce::var>& args,
+                            juce::WebBrowserComponent::NativeFunctionCompletion complete);
 
     // JSON 串比对后按需 emit(DynamicObject 的 var== 是指针比较,不可用于 diff)。
     // 返回 true = 事件已实际发出(可见且 json 变化);false = 未发出(值未变,或隐藏被丢弃)。

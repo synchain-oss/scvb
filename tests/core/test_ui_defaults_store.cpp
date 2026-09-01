@@ -38,6 +38,37 @@ struct TempStore
 };
 } // namespace
 
+TEST_CASE("[SL258] guide_seen 全局位按侧分键 —— Output 与 Input 各存一份、互不串扰", "[uidefaults][SL258]")
+{
+    TempStore store;
+
+    // 为什么必须分键(契约 §3.1 语义行逐字):两侧引导讲的是两个界面、两套内容。
+    // 共用一个位的话,先装 Output 的用户在 Output 里勾过「不再显示」之后,**永远看不到
+    // Input 的引导** —— 而那正是 J80 立 T48 的全部理由。本用例就是钉这一条。
+    REQUIRE_FALSE(ud::guideSeenGlobal());
+    REQUIRE_FALSE(ud::guideSeenGlobalInput());
+
+    // ① Output 勾了「不再显示」⇒ **不得**连带把 Input 的位也置上。
+    ud::setGuideSeenGlobal(true);
+    CHECK(ud::guideSeenGlobal());
+    CHECK_FALSE(ud::guideSeenGlobalInput()); // 反向:合并成一个键时这里必红
+
+    // ② 反过来同理:Input 置位不影响 Output(且两位可各自独立取值)。
+    ud::setGuideSeenGlobalInput(true);
+    ud::setGuideSeenGlobal(false);
+    CHECK(ud::guideSeenGlobalInput());
+    CHECK_FALSE(ud::guideSeenGlobal());
+
+    // ③ 清位后仍可再置。**注意断言强度**(复审【建议】):`set(false)` 后 `CHECK_FALSE` 与
+    //    `readBool` 的默认值同值,写侧**空实现**也能过——那条证明不了任何事。真正证明
+    //    「换实例/换工程也读得回」的是上面 ② (写 true 再读回 true,每次调用现开一份
+    //    PropertiesFile);这里补一次「清完再置」,写侧空实现在这一行必红。
+    ud::setGuideSeenGlobalInput(false);
+    CHECK_FALSE(ud::guideSeenGlobalInput());
+    ud::setGuideSeenGlobalInput(true);
+    CHECK(ud::guideSeenGlobalInput());
+}
+
 TEST_CASE("UiDefaultsStore:全局默认写一次、换实例读得回(T37 A-3)", "[output][uidefaults][t37]")
 {
     TempStore store;

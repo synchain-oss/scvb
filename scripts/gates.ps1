@@ -339,6 +339,32 @@ else {
 }
 
 # ==================================================================
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒 三方对拍(scripts/check-*-parity + design-box)==='
+# ==================================================================
+# [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
+# 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
+# 扩到 input/monitor 三侧的版本,都只有人手动 node 才会红。同一族的洞因此栽了两次
+# (exportSuggestions 与 setGuideSeen:契约齐全、常量在、web 真调用,唯独没注册 handler),
+# **即便门禁当时已经写好也照样栽**。判级理由与 Gate 3g 逐字同款:门禁没有执行者等于没有门禁。
+# 三条本地实跑均 exit=0 后才接线(curve 最坏偏差 9.6e-5 dB / 容差 0.01 dB)。
+if (-not $nodeCmd) {
+  Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Set-Gate '3i 桥面/曲线/设计盒对拍' $false
+}
+else {
+  $parityOk = $true
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs')) {
+    $out = (& node (Join-Path 'scripts' $sc) 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host ("  {0}:" -f $sc) -ForegroundColor Red
+      $out | ForEach-Object { Write-Host ("  " + $_) }
+    }
+  }
+  Set-Gate '3i 桥面/曲线/设计盒对拍' $parityOk
+}
+
+# ==================================================================
 Write-Host '=== Gate 3h: 字体子集覆盖(文案字符 <-> web/fonts/*.woff2 逐字对拍)==='
 # ==================================================================
 # [F12] web/fonts/README.md 早就写着「新增文案不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」。

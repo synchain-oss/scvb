@@ -118,6 +118,21 @@ jobs:
         # 不加 --strict:文档「未标注」按 WARN 走(判级理由见脚本头注),等契约 §5
         # 补齐标注后再把它收紧成红线。
         run: node scripts/check-ipc-doc-parity.mjs
+      - name: Bridge parity (contract manifest <-> mock <-> C++ 常量表 <-> 已注册 handler)
+        # [SL-258] **此前这个脚本没有任何执行者** —— 既不在 CI、也不在 gates、也不在
+        # package.json。于是 [SL-256] 给它加的「已注册 handler ↔ manifest」断言,以及本卡
+        # 扩到 input/monitor 三侧的版本,都只有人手动 `node` 才会红。
+        # 同一族的洞因此栽了两次(`exportSuggestions` 与 `setGuideSeen`:契约齐全、常量在、
+        # web 真调用,唯独没注册 handler),**即便门禁当时已经写好也照样栽**。
+        # 判级理由与上面 IPC 契约对拍那条逐字同款:「只挂在本地 gates 上等于没有执行者」——
+        # 而这一条连本地 gates 都没挂上。零依赖(仓内脚本 + 本 job 已有的 node),无 secrets。
+        run: node scripts/check-bridge-parity.mjs
+      - name: Curve parity (C++ LUT <-> JS 参考实现)
+        # 同族幽灵门禁,一并接上执行者(本地实跑 exit=0,最坏偏差 9.6e-5 dB / 容差 0.01 dB)。
+        run: node scripts/check-curve-parity.mjs
+      - name: Design box parity (三侧窗口尺寸与缩放档位)
+        # 同上(本地实跑 exit=0:output 1180x780 / input 460x560 / monitor 960x720)。
+        run: node scripts/check-design-box.mjs
       - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
         # 与 scripts/gates.ps1 的 Gate 3h **同一条命令**。web/fonts/README.md 自己写着
         # 「不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」—— 那句话在 2026-08 被兑现:

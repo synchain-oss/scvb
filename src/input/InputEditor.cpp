@@ -56,6 +56,13 @@ void InputEditor::registerNativeFunctions(juce::WebBrowserComponent::Options& op
                   .withNativeFunction(juce::Identifier(bridge::kFnRemoteSetPriority),
                                       [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
                                           handleRemoteSetPriority(a, std::move(c));
+                                      })
+                  // [SL-258] §3.8 setGuideSeen —— 常量、契约 §7 manifest.input、web 调用方
+                  // (tour-in.js 首启链完成与 Skip)一直都在,唯独这一行注册从来没写过,
+                  // 于是真宿主上桥面根本没有这个名字。与 [SL-256] 的 exportSuggestions 同族。
+                  .withNativeFunction(juce::Identifier(bridge::kFnSetGuideSeen),
+                                      [this](const juce::Array<juce::var>& a, WBC::NativeFunctionCompletion c) {
+                                          handleSetGuideSeen(a, std::move(c));
                                       });
 }
 
@@ -96,8 +103,9 @@ juce::var InputEditor::buildSnapshot()
     cfg.channelId = snap.channelId;
     cfg.broadcast = snap.broadcast;
 
-    return bridge::buildInputSnapshot(snap.channelId, snap.groupId, conn, cfg, uiScale(), lang(), pluginVersion_,
-                                      snap.localAbi);
+    return bridge::buildInputSnapshot(snap.channelId, snap.groupId, conn, cfg, uiScale(), lang(),
+                                      processor_.bridgeUiGuideSeen(), scvb::uidefaults::guideSeenGlobalInput(),
+                                      pluginVersion_, snap.localAbi);
 }
 
 void InputEditor::emitTick()
@@ -115,10 +123,10 @@ void InputEditor::emitTick()
     {
         abiRemote = snap.remoteAbi; // 探测不到 → 字段不存在(§4.1 字段纪律)
     }
-    emitIfChanged(
-        bridge::kEvState,
-        bridge::buildStatePayload(snap.channelId, snap.groupId, claim, snap.localAbi, abiRemote, uiScale(), lang()),
-        lastStateJson_);
+    emitIfChanged(bridge::kEvState,
+                  bridge::buildStatePayload(snap.channelId, snap.groupId, claim, snap.localAbi, abiRemote, uiScale(),
+                                            lang(), processor_.bridgeUiGuideSeen()),
+                  lastStateJson_);
 
     // scvb.conn:~4Hz diff-then-emit(§4.2;滞回窗口 = 不健康且目标仍为静音,J32)。
     if (now - lastConnMs_ >= scvb::kHeartbeatIntervalMs)
@@ -202,6 +210,33 @@ void InputEditor::handleSetChannelId(const juce::Array<juce::var>& args, WBC::Na
     }
     const auto st = processor_.setChannelId(*n); // 内部 clamp 0..15;n=0 = 释放
     complete(st == InputClaimState::kConflict ? bridge::conflictResponse() : scvb::bridge::okResponse());
+}
+
+void InputEditor::handleSetGuideSeen(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
+{
+    // §3.8「签名与语义逐字照 Output 侧 §1.32」—— 实现也逐字照 OutputEditor::handleSetGuideSeen,
+    // 连 badArg 的判法都同一份 `scvb::bridge::strictBool`(两侧共用,不再各写一份)。
+    bool seen = false;
+    if (args.size() < 1 || !scvb::bridge::strictBool(args[0], seen))
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    // alsoGlobal 缺省 true:勾了「不再显示」才写系统级全局默认,承诺跨工程成立。
+    // **两个参数都校验完才落任何值** —— badArg 回执与已生效的副作用不能并存(Output 侧同款注释)。
+    bool alsoGlobal = true;
+    if (args.size() >= 2 && !scvb::bridge::strictBool(args[1], alsoGlobal))
+    {
+        complete(scvb::bridge::badArgResponse());
+        return;
+    }
+    processor_.bridgeSetGuideSeen(seen); // 持 lifecycleMutex_(与 getStateInformation 同锁)
+    if (alsoGlobal)
+    {
+        // **Input 侧的全局位**,与 Output 各存一份(契约 §3.1 语义行;UiDefaultsStore 分键)。
+        scvb::uidefaults::setGuideSeenGlobalInput(seen);
+    }
+    complete(scvb::bridge::okResponse());
 }
 
 void InputEditor::handleSetGroupId(const juce::Array<juce::var>& args, WBC::NativeFunctionCompletion complete)
