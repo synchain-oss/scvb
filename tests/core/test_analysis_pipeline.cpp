@@ -356,6 +356,10 @@ TEST_CASE("[SL252] balanceBasisZ:默认档逐位等于 meanKw,三档真分歧且
 TEST_CASE("[SL252] 流水线级:换档 → pan 真变;默认档与不设该字段逐位相同", "[analysis][pipeline][balance][SL252]")
 {
     // 三轨占空比不同 ⇒ 「均值」与「峰值」给出的相对能量排序不同 ⇒ 指派结果必然分叉。
+    // ⚠ 易脆性提示(#168 复审):`makeAlternating` 里 `peak = sqrt(kw)`,故 `max(peak)² ≡ max(kw)`,
+    // `peak_dbfs` 与 `kw_integrated` 的分歧**完全来自「段内含次峰值 hop」**。将来若 VAD / 谷切分
+    // 调参让段正好贴合响区,本用例会变成**假红**(方向安全:不是假绿,但排查成本不低)——
+    // 那时该调的是这里的占空比,不是把断言放宽。
     std::array<PipelineTrackFeatures, kPipelineTracks> features;
     features[0] = makeAlternating(4, 120, 40, 0.05f); // 长响短歇:均值高
     features[1] = makeAlternating(4, 30, 130, 0.20f); // 短促强峰:峰值高、均值低
@@ -400,7 +404,13 @@ TEST_CASE("[SL252] 流水线级:换档 → pan 真变;默认档与不设该字�
     {
         anyDiff = (vP[i] != vK[i]);
     }
-    CHECK(anyDiff); // 删掉 startAnalysis 那行赋值 / 把 balanceBasisZ 换回 meanKw ⇒ 本行必红
+    // ⚠ **本行钉住的只有回归 ②**(`AnalysisPipeline.cpp` 里 `balanceBasisZ(...)` 被换回
+    // `meanKw(...)`)。**钉不住回归 ①**(删掉 `OutputProcessor.cpp` 的
+    // `cfg.balance.loudnessMode = ...`):本用例自己装配 cfg、**整条路径不经 startAnalysis**,
+    // 那行删掉这里照样全绿。那一跳要**多轨** host 用例才测得出 —— 单轨下 `zHat = z/zSum`
+    // 恒为 1、换档产出必然相同,而现有 Rig 只绑一个 Input(已另立卡 SL-263)。
+    // 留在仓里被后人读到的是注释、不是 commit message,所以缺口写在这里而不只写在提交说明里。
+    CHECK(anyDiff);
 
     // ③ rms 档同理:与默认档不同(三档两两分叉在纯函数层已钉,这里钉「传得到」)。
     auto cfgR = makeConfig(n, 3);
