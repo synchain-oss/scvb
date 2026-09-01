@@ -325,11 +325,16 @@ double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, std::int64_t t
     // 采样点 → hop,**整型除法**,与 `AnalysisPipeline` 的 `t / hopSamples` 逐字同款。
     // [SL-262] 此前走的是秒→hop 的浮点除法(`s / 0.01`),段边界恰落 hop 边界时约 4.9%
     // 会截断到 k−1(实测 1..200000 个边界里 9721 次),把段尾最后一个 hop 排除出窗口。
-    const double sr = getSampleRate();
+    // 采样率取**本类自己的 `sampleRate_`**(prepare 时写的原子),**不是** JUCE 的
+    // `getSampleRate()` —— 后者由宿主的 `setRateAndBufferSizeDetails` 设置,直接调
+    // `prepareToPlay` 的离线 harness 里恒为 0,会让这里恒早退回 −120(SL-263 的 host 用例
+    // 当场逮到:覆盖区间明明有数据却拿到静音替身)。`sampleRate_` 是本仓既有的单一真源
+    // (`isPrepared()` 也读它)。
+    const double sr = sampleRate_.load(std::memory_order_relaxed);
     const std::int64_t hopSamples = static_cast<std::int64_t>(std::llround(featHopSeconds() * sr));
     if (hopSamples <= 0)
     {
-        return scvb::analysis::lufsFromMeanKw(0.0); // 未 prepare / 采样率未知
+        return scvb::analysis::lufsFromMeanKw(0.0); // 未 prepare(sampleRate_ == 0)
     }
     const std::uint64_t first = static_cast<std::uint64_t>(std::max<std::int64_t>(0, t0Samples) / hopSamples);
     const std::uint64_t last = static_cast<std::uint64_t>(std::max<std::int64_t>(0, t1Samples) / hopSamples);
