@@ -6,11 +6,14 @@
 //     P2 个人本机路径      —— C:\Users\<具体用户名>;占位符(<workspace> 等)豁免
 //     P3 个人邮箱域        —— gmail/qq/163/... ;third_party/ 等 vendored 目录与
 //                             contact@synchain.ca / *.noreply.github.com 豁免
-//     P4 个人主机名        —— DESKTOP-XXXXXXX / LAPTOP-XXXXXXX
+//     P4 个人主机名        —— DESKTOP-<序列号> / LAPTOP-<序列号>
 //
 //   **为什么所有针都从片段拼出来**:本脚本自己也是被扫的跟踪文件。若把禁词写成字面量,
 //   它会扫到自己 ⇒ 只能给自己开豁免 ⇒ 那个豁免就成了藏东西的地方。拼装后源码里不含任何
 //   完整禁词,脚本可以和别的文件一样被自己扫,**不需要任何自我豁免**。
+//   同理,**自检夹具也必须拼装**:第一版把 `someone@gmail.com` / `DESKTOP-AB12CD3` 写成字面量,
+//   脚本一被纳入跟踪就扫到自己的夹具、当场三处命中(未跟踪时 `git ls-files` 看不见它,所以
+//   加进版本库前一直是绿的 —— 典型的「入库那一刻才炸」)。头注里的示例也不能写成能匹配的形态。
 //   `--self-test` 会校验拼装结果确实等于目标形态(防止有人把片段改坏、让门禁静默失效)。
 //
 //   用法:
@@ -161,8 +164,12 @@ if (selfTest) {
             j("D:", "\\", "Users", "\\", "someone", "\\", "proj"),
             j("C:", "\\", "Users", "\\", "<workspace>", "\\", "proj"),
         ],
-        ["P3", "someone@gmail.com", "contact@synchain.ca"],
-        ["P4", "DESKTOP-AB12CD3", "DESKTOP-短"],
+        [
+            "P3",
+            j("someone", "@", "gmail", ".com"),
+            j("contact", "@", "synchain", ".ca"),
+        ],
+        ["P4", j("DESKTOP", "-", "AB12CD3"), j("DESKTOP", "-", "短")],
     ];
     let bad = 0;
     for (const [id, shouldHit, shouldMiss] of cases) {
