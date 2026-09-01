@@ -147,6 +147,12 @@ private:
     scvb::input::StageSwitchStateMachine stageMachine_;
     scvb::input::RampSwitcher rampSwitcher_;
     std::atomic<scvb::u32> c18Stage_{static_cast<scvb::u32>(scvb::input::OutputStageMode::kPassthrough)};
+    // [SL-254 / J95①] Output「已确认死」否决位([M] 25Hz 发布 = 自称 kSlotActive 但心跳陈旧)。
+    // 非实时逐块路径用它补齐 isHealthy 里**取不到时钟**的那一半健康前提;实时路径不读它。
+    // ⚠ 极性刻意是「已确认死」而不是「在场」:默认 0 ⇒ Output 一置 mask,Input 当块即可静音。
+    // 用「在场位」做前提会在上升沿晚一拍 ⇒ Output 已注入而 Input 还直通 = 双路叠加(实测红:
+    // 注入@304 早于静音@320)。
+    std::atomic<scvb::u32> outputStale_{0};
     std::atomic<scvb::u32> captureArmed_{0}; // 采集开关(Output ctrl 广播 capture_enabled;ADR-007)
     std::atomic<float> meter_{0.0f};
 

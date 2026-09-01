@@ -165,6 +165,13 @@ public:
     // 重采集/清除覆盖后清账(打洞/整轨作废处调用):旧的失配定谳不该跨过一次重采集。
     void resetChannelStale(u32 channel) { fpWatch_.resetChannel(channel); }
 
+    // [SL-254 / J95①] 宿主宣告的离线(非实时)渲染态。由 ScvbOutputAudioProcessor 从
+    // `isNonRealtime()` 同步下来;为真时 evaluateChannels 跳过 [J32] 的 200ms 注入延迟,
+    // 让 connected_mask 与 injectMask 在**同一次评估**里一起置位 —— Input 侧逐块读前者,
+    // 于是两边同块交接。理由与禁止「仅样本闸」的实测见宪法 ADR.md [J32→ADR-002] J95① 补注。
+    void setNonRealtime(bool on) noexcept { nonRealtime_.store(on, std::memory_order_relaxed); }
+    bool nonRealtime() const noexcept { return nonRealtime_.load(std::memory_order_relaxed); }
+
     // [M] 布防的**时间维**(契约 §1 setCaptureEnabled:ON = 对 {enabled 轨} × {global.range} 布防)。
     // 落到 ChannelFrames::setGate —— 写入口按 hop ∈ gate 判,范围外静默丢弃、不记账。
     // 不设这道门的话特征按整条时间线累计,内嵌特征的 8MB 预算会先于功能问题暴露。
@@ -250,6 +257,7 @@ private:
     analysis::FrameStore frameStore_;
     // fingerprint watchdog 的比对账本([M] 独占;基线现算自 frameStore_,不占持久化字段)。
     analysis::FingerprintWatch fpWatch_{kMaxChannels};
+    std::atomic<bool> nonRealtime_{false}; // [SL-254] 宿主离线渲染态([M] 写 / [M] 读)
     // 布防时间维(§1 setCaptureEnabled);默认全域 = 不门控。
     analysis::HopRange featureGate_{0, std::numeric_limits<u64>::max()};
     // 布防轨维([J87] 04 §4.2);默认 0 = 不限轨。

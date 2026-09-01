@@ -1025,3 +1025,59 @@ TEST_CASE("SL-177 闭环:照着 ⚠ 重新采集 → 提示撤下", "[output][se
     CHECK(out.fpTilesChecked(2) == 0);
     CHECK_FALSE(out.channelStale(2)); // ← 修复前会一直挂着,只能靠再关一次采集重播才撤下
 }
+
+// ===========================================================================
+// [SL-254 / J95①] setNonRealtime —— 离线渲染下跳过 [J32] 的 200ms **墙钟** 注入闸。
+// 复审 r1【重要】:新增 core 纯逻辑须有 Catch2 用例(CLAUDE.md §7);host harness 是集成级。
+// ===========================================================================
+
+TEST_CASE("SL-254:非实时下首次上线即注入(跳过 200ms 墙钟闸)", "[output][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+    float buf[16] = {};
+    scvb::AudioRing::write(in.audioRing().acquire(), 0, buf, 16);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    out.setNonRealtime(true); // 宿主宣告离线渲染
+    REQUIRE(out.nonRealtime());
+
+    // ★ 与上面那条 [J32] 用例**同一时序**(单次 tick、无 muted 位、0 < 200ms):
+    //   实时下 injectMask 必为 0,非实时下必须**当拍**置位 —— 同块交接的 Output 半边。
+    out.tick(1300);
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE((probe.connectedMask() & (1u << 2)) != 0);
+    REQUIRE((out.injectMask() & (1u << 2)) != 0); // 实时形态在这里红(injectMask == 0)
+}
+
+TEST_CASE("SL-254:非实时标志可运行期切回,实时闸随即恢复", "[output][session][SL254]")
+{
+    // 守住「实时路径一字不动」:宿主 bounce 结束后切回实时,200ms 闸必须原样回来。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+    in.heartbeat(1100);
+    float buf[16] = {};
+    scvb::AudioRing::write(in.audioRing().acquire(), 0, buf, 16);
+
+    OutputSession out(backend, 2001);
+    REQUIRE(out.prepare(48000, 512, 1200) == OutputClaimState::kActive);
+    REQUIRE_FALSE(out.nonRealtime()); // 默认实时
+
+    out.tick(1300);
+    REQUIRE(out.injectMask() == 0); // 实时:0 < 200ms,不注入
+
+    out.setNonRealtime(true);
+    out.tick(1340); // 仍 < 200ms,但已宣告非实时 → 当拍注入
+    REQUIRE((out.injectMask() & (1u << 2)) != 0);
+}

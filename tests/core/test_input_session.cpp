@@ -229,3 +229,81 @@ TEST_CASE("channel_id=0 后 prepare 不残留旧 claim", "[input][session]")
     REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
     REQUIRE(probe.inputSlot(3)->state.load() == kSlotFree);
 }
+
+// ===========================================================================
+// [SL-254 / J95① 复审 r2] 非实时健康前提的两个 [M] 判据。
+//
+// `outputClaimedButStale()` 是本卡为堵红旗新增的否决位真源,它的**极性刻意反常**
+// (「已确认死」而不是「在场」),下面四个格子把这件事变成可执行文档 —— 尤其是
+// 「kSlotFree + 心跳陈旧 → false」那条:它看着像漏判,其实是刻意不重复否决
+// (那条路由音频线程**逐块**读 state 兜住,零延迟),别让后来人"顺手修"成 true。
+// ===========================================================================
+
+TEST_CASE("SL-254:outputClaimedButStale 四格(极性刻意是「已确认死」)", "[input][session][SL254]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+
+    // 无 OutputSlot 认领 → 不是「死的 Output」。
+    CHECK_FALSE(in.outputClaimedButStale(1000));
+    CHECK_FALSE(in.outputOnline(1000));
+
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(probe.claimOutput(/*pid=*/2001, /*nowMs=*/1000) == scvb::Registry::ClaimResult::kClaimed);
+    scvb::OutputSlot* os = probe.outputSlot();
+    REQUIRE(os != nullptr);
+    REQUIRE(os->state.load() == kSlotActive);
+
+    // ① kSlotActive + 心跳新鲜 → false(活着,不否决);outputOnline 为真。
+    os->heartbeat_ms.store(1000);
+    CHECK_FALSE(in.outputClaimedButStale(1000));
+    CHECK(in.outputOnline(1000));
+
+    // ② kSlotActive + 心跳陈旧(> kStaleDisplayMs=2000)→ **true**,这是它唯一负责的那条路:
+    //    崩溃/挂死却没走释放路径,state 残留 active、mask 位残留,只有心跳会陈旧。
+    CHECK(in.outputClaimedButStale(1000 + scvb::kStaleDisplayMs + 1));
+    CHECK_FALSE(in.outputOnline(1000 + scvb::kStaleDisplayMs + 1));
+
+    // 边界:恰好等于阈值不算陈旧(isStaleDisplay 用的是严格大于)。
+    CHECK_FALSE(in.outputClaimedButStale(1000 + scvb::kStaleDisplayMs));
+
+    // ③ kSlotFree + 心跳陈旧 → **false**(刻意不重复否决:优雅退场由 [A] 逐块读 state 兜住)。
+    os->state.store(kSlotFree);
+    CHECK_FALSE(in.outputClaimedButStale(1000 + scvb::kStaleDisplayMs + 1));
+    CHECK_FALSE(in.outputOnline(1000 + scvb::kStaleDisplayMs + 1));
+}
+
+TEST_CASE("SL-254:outputOnline 是 isHealthy 与 connSnapshot 的单一真源", "[input][session][SL254]")
+{
+    // 本轮把两处各写一遍的健康判定并成 outputOnline() —— 两处漂移正是红旗的成因。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession in(backend, 1001);
+    in.setChannelId(3);
+    REQUIRE(in.prepare(48000, 512, 1, 1000) == InputClaimState::kActive);
+
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(probe.claimOutput(/*pid=*/2001, /*nowMs=*/1000) == scvb::Registry::ClaimResult::kClaimed);
+    probe.setConnectedMaskBit(3);
+    probe.outputSlot()->heartbeat_ms.store(1000);
+
+    // 三者同口径:在场 ∧ mask 位 ⇒ 健康;快照的 outputOnline 与判据同源。
+    CHECK(in.outputOnline(1000));
+    CHECK(in.isHealthy(1000));
+    CHECK(in.connSnapshot(1000).outputOnline);
+
+    // 心跳一陈旧,三者同时翻(不允许出现「isHealthy 说健康而 connSnapshot 说离线」这种漂移)。
+    const scvb::u64 stale = 1000 + scvb::kStaleDisplayMs + 1;
+    CHECK_FALSE(in.outputOnline(stale));
+    CHECK_FALSE(in.isHealthy(stale));
+    CHECK_FALSE(in.connSnapshot(stale).outputOnline);
+    // mask 位仍在(releaseOutput/崩溃都不清它)—— 正是「只读 mask 一位」不足以判在场的由来。
+    CHECK((probe.connectedMask() & (1u << 2)) != 0);
+}

@@ -102,6 +102,13 @@ void ScvbOutputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 {
     const juce::ScopedLock lock(lifecycleMutex_);
 
+    // [SL-254 / J95①] 离线渲染态在**这里也同步一次**(tick 首那次仍保留,两处都要)。
+    // 宿主 bounce 的典型序列是 setNonRealtime(true) → prepareToPlay → 首块:只在 tick 首取的话,
+    // Input 侧 isNonRealtime() 是**逐块**即时生效、Output 侧要等下一拍 [M],中间那段里 Input 已按
+    // mask 硬切静音而 Output 还在走 200ms 墙钟闸 —— 又是一段全零窗,且同样按离线倍速放大。
+    // 在 prepare 补一次正好卡在首块之前把这个不对称窗口收掉;tick 首那次负责运行期切换。
+    session_.setNonRealtime(isNonRealtime());
+
     sampleRate_.store(sampleRate > 0.0 ? sampleRate : 48000.0, std::memory_order_relaxed); // 原子写(PR#55 第9轮)
     const double sr = sampleRate_.load(std::memory_order_relaxed);
     preparedMaxBlock_ = samplesPerBlock > 0 ? samplesPerBlock : 512;
@@ -791,6 +798,12 @@ void ScvbOutputAudioProcessor::timerCallback()
 {
     const auto now = scvb::steadyNowMs();
     const juce::ScopedLock lock(lifecycleMutex_);
+
+    // [SL-254 / J95①] 把宿主宣告的离线渲染态同步给 session —— 它决定 evaluateChannels 里
+    // 要不要走 [J32] 那道 **墙钟** 200ms 注入延迟。放在 tick 首而不是 prepareToPlay:宿主
+    // 可能在 prepare 之后才 setNonRealtime(true)(JUCE 允许运行期切换),只在 prepare 里取
+    // 会漏掉那一路,而漏掉的表现恰好就是本卡要修的前段静音。
+    session_.setNonRealtime(isNonRealtime());
 
     // 4Hz 心跳(250ms 折半在 25Hz 定时器内)。
     if (now - lastHeartbeatMs_ >= scvb::kHeartbeatIntervalMs)

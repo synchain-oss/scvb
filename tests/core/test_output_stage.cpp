@@ -167,3 +167,74 @@ TEST_CASE("大块静音档全块清零(PR#51 重要#2)", "[input][outputstage]")
         REQUIRE(ch[0][i] == 0.0f); // ramp 结束后的全块尾段必须为零
     }
 }
+
+// ===========================================================================
+// [SL-254 / J95①] RampSwitcher::snapTo —— 非实时(离线渲染)同块硬切。
+// 复审 r1【重要】:新增 core 纯逻辑须有对应 Catch2 用例(CLAUDE.md §7);
+// host harness 那几条是集成级,替代不了这里的语义钉死。
+// ===========================================================================
+
+TEST_CASE("SL-254:snapTo 立即进稳态(C19 muted 确认位的判据)", "[input][outputstage][SL254]")
+{
+    RampSwitcher rs;
+    rs.prepare(48000.0);
+    REQUIRE(rs.isSettledPassthrough()); // 初始档
+
+    // ★ snapTo 之后**不需要再渲染任何样本**就已是稳态 —— [M] 的 muted 确认位(C19)读的就是
+    //   这两个判定,theta_ 没设对会静默错位(注入与静音的先后就此错乱)。
+    rs.snapTo(OutputStageMode::kSilence);
+    REQUIRE(rs.isSettledSilence());
+    REQUIRE_FALSE(rs.isSettledPassthrough());
+
+    rs.snapTo(OutputStageMode::kPassthrough);
+    REQUIRE(rs.isSettledPassthrough());
+    REQUIRE_FALSE(rs.isSettledSilence());
+}
+
+TEST_CASE("SL-254:snapTo 后紧接 render 无中间增益(硬切,不是 ramp)", "[input][outputstage][SL254]")
+{
+    // ★ 这条是 J95① 裁定①「无 ramp」的可执行形态:ramp 也是墙钟量,80ms 在 250x 下会摊成
+    //   20s 渐变,等于把「前段静音」换成「前段超长淡入」。硬切 ⇒ 首块就必须是终值。
+    const int n = 512;
+
+    {
+        RampSwitcher rs;
+        rs.prepare(48000.0);
+        auto buf = makeSignal(n);
+        float* ch[1] = {buf.data()};
+        rs.snapTo(OutputStageMode::kSilence);
+        rs.render(ch, 1, n, OutputStageMode::kSilence);
+        for (int i = 0; i < n; ++i)
+        {
+            REQUIRE(ch[0][i] == 0.0f); // 整块清零,一个中间增益样本都不许有
+        }
+    }
+
+    {
+        // 反向:静音态硬切回直通,首块即原样(cos(0)=1),不得出现淡入。
+        RampSwitcher rs;
+        rs.prepare(48000.0);
+        rs.snapTo(OutputStageMode::kSilence);
+        auto buf = makeSignal(n);
+        const auto ref = makeSignal(n);
+        float* ch[1] = {buf.data()};
+        rs.snapTo(OutputStageMode::kPassthrough);
+        rs.render(ch, 1, n, OutputStageMode::kPassthrough);
+        for (int i = 0; i < n; ++i)
+        {
+            REQUIRE(ch[0][i] == ref[static_cast<std::size_t>(i)]);
+        }
+    }
+}
+
+TEST_CASE("SL-254:snapTo 不改变实时 ramp 行为(未调用即仍是 80ms 渐变)", "[input][outputstage][SL254]")
+{
+    // 守住「实时路径一字不动」:不调 snapTo 时,render 仍走 80ms ramp —— 首块**不**是终值。
+    RampSwitcher rs;
+    rs.prepare(48000.0);
+    const int n = 512; // < 3840(80ms@48k),故首块必落在 ramp 中途
+    auto buf = makeSignal(n);
+    float* ch[1] = {buf.data()};
+    rs.render(ch, 1, n, OutputStageMode::kSilence);
+    REQUIRE_FALSE(rs.isSettledSilence()); // 还在渐变途中,没到稳态
+}
