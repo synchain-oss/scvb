@@ -108,11 +108,14 @@ inline double balanceBasisZ(LoudnessMode mode, const std::vector<float>& kw, con
         double maxPeak = 0.0;
         for (std::int64_t i = b; i < e; ++i)
         {
-            maxPeak = std::max(maxPeak, static_cast<double>(peak[static_cast<std::size_t>(i)]));
-        }
-        if (maxPeak < 0.0)
-        {
-            maxPeak = 0.0;
+            // 与 Rms 支同口径:负值 / NaN 只可能来自坏数据,夹到 0,别让它污染 z。
+            // 用 `v > maxPeak` 而不是 `std::max`:前者对 NaN 恒假、天然把 NaN 挡在外面,
+            // 而 `std::max(0.0, NaN)` 返回哪一个是实现决定的,不是标准保证。
+            const double v = static_cast<double>(peak[static_cast<std::size_t>(i)]);
+            if (v > maxPeak)
+            {
+                maxPeak = v;
+            }
         }
         return maxPeak * maxPeak; // 幅度 → 能量当量
     }

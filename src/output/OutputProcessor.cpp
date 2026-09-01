@@ -337,13 +337,21 @@ double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, double t0S, do
 
     const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(channel));
     double acc = 0.0;
-    for (std::uint64_t hop = first; hop < last; ++hop)
+    // **先与覆盖区求交,不要逐 hop 试探**(#168 复审【重要】):`for (hop) if (!hasHop) continue`
+    // 的迭代数恒等于**跨度**、与实际有多少数据无关,且每 hop 两次 std::map 查找。本仓这一形态
+    // 已经栽过两次并留了判例:`waveformTile`(本文件 427-437,「宿主消息泵被占住,UI 整体冻死」)
+    // 与 `FrameStore::setVadPosteriorRange`(FrameStore.h 130-140,「1h×15 轨 ≈ 1080 万次查找」)。
+    // 本函数的调用点是 `buildSegmentsPayload` 的**每段一次**,全量 emit ≈ 时间线总 hop × 轨数
+    // (20min×15 轨 ≈ 180 万次迭代),且全程持 lifecycleMutex_、跑在 web-message 回调里,
+    // 而 25Hz tick 正在抢同一把锁 —— 与 SL-226 注释记的那次同一量级。
+    // `intersect` 的产物按定义就是「有数据的 hop」,连 hasHop 那趟 lower_bound 一并省掉。
+    // **分母仍用整跨度**:未覆盖 hop 计静音(0),与 startAnalysis 装特征时逐字同口径,数值不变。
+    for (const auto& cr : frames.coverage().intersect(scvb::analysis::HopRange{first, last}))
     {
-        if (!frames.hasHop(hop))
+        for (std::uint64_t hop = cr.begin; hop < cr.end; ++hop)
         {
-            continue; // 未覆盖 hop 计静音(0)—— 与 startAnalysis 装特征时逐字同口径
+            acc += static_cast<double>(frames.kwMs(hop));
         }
-        acc += static_cast<double>(frames.kwMs(hop));
     }
     const double meanKw = acc / static_cast<double>(last - first);
     return scvb::analysis::lufsFromMeanKw(meanKw);
@@ -2862,8 +2870,12 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
     // [SL-252 / J95②a] 响度口径取 state —— **这一行就是此前整条链断掉的地方**。
     // `centerSlotPolicy` 传了、`loudnessMode` 没传,于是三档 z 恒等、切档重分析结果一模一样
     // (用户 v5.6.3 实测第 19 条「三个模式结果好像是一样的」= 断链,不是巧合)。
-    // 字符串→枚举走 core 的 `parseLoudnessMode`(唯一真源,顺带兼容历史拼写 "k_integrated");
-    // 解析不出来时它回默认档 —— 与 §1.21 的三值校验同口径,不在这里造第二套判定。
+    // 字符串→枚举走 core 的 `parseLoudnessMode`(唯一真源,顺带兼容历史拼写 "k_integrated")。
+    // **`.fellBack` / `.warning` 在此刻意丢弃**(#168 复审【建议】):上游 §1.21 的三值校验
+    // 已经把非法串挡在 `runtime_.loudnessMode` 之外,这里回落默认档是够不到的兜底;
+    // 且紧邻上方的 `centerSlotPolicy` 走 if/else 也是同款静默兜底,两者口径一致。
+    // 真要把 warning 透出来,该走流水线的 `result.warnings`(addWarningOnce)那条通路,
+    // 而不是在配置装配处另起一套 —— 那是独立改动,不在本卡。
     cfg.balance.loudnessMode = scvb::analysis::parseLoudnessMode(runtime_.loudnessMode.toRawUTF8()).mode;
 
     // §1.6「重新识别(含手动段)」= clearManual:除了不再保留用户段(见 finishAnalysis),还必须

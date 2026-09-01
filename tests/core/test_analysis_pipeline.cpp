@@ -339,3 +339,78 @@ TEST_CASE("[SL252] balanceBasisZ:默认档逐位等于 meanKw,三档真分歧且
         CHECK_FALSE(std::isnan(balanceBasisZ(m, kw, peak, -5, 2)));
     }
 }
+
+// ---------------------------------------------------------------------------
+// [SL-252 / J95②a] **流水线级**:loudness_mode 必须真的改变平衡产出。
+//
+// 上面那条 `[SL252]` 用例守的是纯函数 `balanceBasisZ` 本身,**守不住这次真正断掉的那一跳**
+// (#168 复审【重要】):本卡的缺陷不是「函数算错」,是「函数没被调用」——
+// `cfg.balance.loudnessMode` 在 `startAnalysis` 里漏赋值。只有纯函数用例的话,下面两种回归
+// 照样全绿:① 删掉 `OutputProcessor.cpp` 那行 `cfg.balance.loudnessMode = ...`(= 完全回到
+// 断链状态);② 把 `AnalysisPipeline.cpp` 里的 `balanceBasisZ(...)` 换回 `meanKw(...)`。
+//
+// 本仓对这类「守得住零件、守不住那一跳」的缺口有判例(`OutputEditor.cpp:857`:
+// 「HOST R4 用例守的是降级链三函数本身,守不到『这里还在调它』这一跳…否则测试照绿而 bug 回归」)。
+// 本用例就补在**用户第 19 条实测所处的观察层**:同一批特征、同一份配置,只换档,看 pan 变不变。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL252] 流水线级:换档 → pan 真变;默认档与不设该字段逐位相同", "[analysis][pipeline][balance][SL252]")
+{
+    // 三轨占空比不同 ⇒ 「均值」与「峰值」给出的相对能量排序不同 ⇒ 指派结果必然分叉。
+    std::array<PipelineTrackFeatures, kPipelineTracks> features;
+    features[0] = makeAlternating(4, 120, 40, 0.05f); // 长响短歇:均值高
+    features[1] = makeAlternating(4, 30, 130, 0.20f); // 短促强峰:峰值高、均值低
+    features[2] = makeAlternating(4, 80, 80, 0.03f);
+    const std::size_t n = features[0].kwMs.size();
+
+    const auto panOf = [](const PipelineResult& r) {
+        std::vector<double> v;
+        for (int t = 0; t < 3; ++t)
+        {
+            for (const auto& s : r.segments[static_cast<std::size_t>(t)])
+            {
+                v.push_back(s.pan);
+                v.push_back(s.volDb);
+            }
+        }
+        return v;
+    };
+
+    // ① 不设该字段(= 修订前的行为)与显式默认档,**逐位相同**。
+    //    这一条钉死「默认档不得走等价换算」——它与 `[SL252]` 纯函数用例的 `==` 互为里外。
+    auto cfgDefault = makeConfig(n, 3);
+    auto cfgK = makeConfig(n, 3);
+    cfgK.balance.loudnessMode = LoudnessMode::KIntegrated;
+    const auto vDefault = panOf(runAnalysisPipeline(features, cfgDefault));
+    const auto vK = panOf(runAnalysisPipeline(features, cfgK));
+    REQUIRE_FALSE(vDefault.empty());
+    REQUIRE(vDefault.size() == vK.size());
+    for (std::size_t i = 0; i < vDefault.size(); ++i)
+    {
+        CHECK(vDefault[i] == vK[i]); // 逐位,不是近似
+    }
+
+    // ② 换到 peak_dbfs 档 ⇒ 产出**必须真变**。
+    //    断链时代这里恒等 —— 那正是用户 v5.6.3 实测第 19 条看到的现象。
+    auto cfgP = makeConfig(n, 3);
+    cfgP.balance.loudnessMode = LoudnessMode::PeakDbfs;
+    const auto vP = panOf(runAnalysisPipeline(features, cfgP));
+    REQUIRE(vP.size() == vK.size());
+    bool anyDiff = false;
+    for (std::size_t i = 0; i < vP.size() && !anyDiff; ++i)
+    {
+        anyDiff = (vP[i] != vK[i]);
+    }
+    CHECK(anyDiff); // 删掉 startAnalysis 那行赋值 / 把 balanceBasisZ 换回 meanKw ⇒ 本行必红
+
+    // ③ rms 档同理:与默认档不同(三档两两分叉在纯函数层已钉,这里钉「传得到」)。
+    auto cfgR = makeConfig(n, 3);
+    cfgR.balance.loudnessMode = LoudnessMode::Rms;
+    const auto vR = panOf(runAnalysisPipeline(features, cfgR));
+    REQUIRE(vR.size() == vK.size());
+    bool anyDiffR = false;
+    for (std::size_t i = 0; i < vR.size() && !anyDiffR; ++i)
+    {
+        anyDiffR = (vR[i] != vK[i]);
+    }
+    CHECK(anyDiffR);
+}
