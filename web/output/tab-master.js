@@ -292,7 +292,7 @@ const UNDOABLE_REASONS = new Set([
 ]);
 
 /**
- * 上面三类里**「可能空转、不一定压步」**的那一族(见 `historyAfterSegments` 函数体内注)。
+ * 上面**六类**里**「可能空转、不一定压步」**的那一族(见 `historyAfterSegments` 函数体内注)。
  * 三者走同一条 C++ 路径(`finishAnalysis`),同一个「段表没变就不压撤销步」的守卫,
  * 所以对 redo 的处置必须逐字同款。
  */
