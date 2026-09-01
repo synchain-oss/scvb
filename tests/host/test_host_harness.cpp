@@ -6236,7 +6236,18 @@ TEST_CASE("HOST SL-254:非实时渲染不得出现「Input 静音 ∧ Output 未
         r.out.setNonRealtime(true);
         r.ph.playing = true;
 
-        const auto p = runOfflineHandover(r, blocksPerPump, 900);
+        // 总块数按档位**等比放大**,让每档拿到同样多的泵次数(= 同样的墙钟预算),
+        // 而**不是**加大 pumpMs —— 倍速比 = 块数/墙钟,加 pumpMs 会把该档的倍速降下去,
+        // 正好失去「覆盖高倍速」的本意。
+        //
+        // 为什么必须这么做(实测,不是推演):原先三档共用 totalBlocks=900,于是
+        // blocksPerPump=32 只泵 28 次 ≈ 28ms 墙钟,**不足一拍 [M](40ms)**。本机快、
+        // 压线能过;CI runner 慢一点就整轮**没发生交接**,firstInputSilent 停在 -1。
+        // 在补上面那两条 REQUIRE 之前,这种情况下两条 `== 0` 恒真 ⇒ **空跑全绿**,
+        // 主防线在 CI 上很可能一直什么都没测。前置断言把它从「假绿」变成了「诚实的红」,
+        // 这里再把墙钟预算给够。
+        const int pumpsWanted = 112; // 与原先 blocksPerPump=8 那档的泵次数持平
+        const auto p = runOfflineHandover(r, blocksPerPump, pumpsWanted * blocksPerPump);
         INFO("blocksPerPump=" << blocksPerPump << " Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject
                               << " 全零块=" << p.bothSilentBlocks << " ramp块=" << p.rampBlocks);
         // ★ 前置:确实交接过。缺了这两行,「本轮根本没发生交接」会让下面两条 `== 0` **恒真** ⇒
