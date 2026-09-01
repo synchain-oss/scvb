@@ -179,3 +179,16 @@ scvb/
 - **[J81 连带]** ADR-004 的「参数布局:自动化参数全部在 Output」**不受影响** —— Monitor 0 参数,123 参数面逐字不动(params-v0 v2.3 §一 有显式零变动声明);ADR-002 的注册表/心跳/接管语义**不受影响** —— Monitor 不参与其中任何一项。
 - **[J81 连带]** ADR-011 的质量门:pluginval strictness 5 与 CI 构建计数由 2 目标扩到 3 目标;`build.ps1 -Target` 增 `Monitor`。
 - **[J81 记录]** 本次修宪同批升 `ipc-contract-v0.md` v1.5 → **v1.6**(ctrl 广播区正式布局 + viz 段)与 `params-v0.md` v2.2 → **v2.3**(state ui/analysis 组增补 + state 容器 abi 1→2 + 123 零变动声明)。三件同一个 commit、同一个 J 编号,依「修宪流程」第 4 条落地清单五项执行。`setVersionName` 的撤销归属另立 **J82**。
+
+# v2.2 修订(2026-08-31,J95 修宪并批)
+
+- **[J95②→ADR-009 澄清]** 区分**上报段响度**与**平衡归一化基准**两件事:
+  ① 正文第一条「段响度 = 段内 ungated K-weighted 积分响度」界定的是**上报口径 L_seg**,
+     不随 `analysis.loudness_mode` 变化(J18 对拍口径同样不变);
+  ② **平衡归一化基准** z 由 `analysis.loudness_mode` 选择 —— `kw_integrated`(默认)
+     = `mean(kw)`,与本次修订前逐位相同;`rms` = `(mean(√kw))²`;`peak_dbfs` = `max(peak)²`。
+     三档**均为线性能量量**,故正文第三条「所有平衡计算在线性能量域做(O(N) 算术)」
+     **不受影响、继续完整适用**。
+  依据:SL-252 定谳 —— 设计稿「第二响度指标」条注明本设置「影响分析时的段间响度归一化
+  基准;改后需重分析」,而实现从未把它接进引擎(`PipelineConfig` 无该字段),三档结果恒等。
+  用户 2026-08-31 拍板走 A 案(切档→重分析→pan/volDb 真变;默认档逐位不变)。
