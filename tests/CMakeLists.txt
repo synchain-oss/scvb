@@ -45,6 +45,7 @@ add_executable(scvb_tests
   core/test_ipc_layout.cpp
   core/test_ipc_lifecycle.cpp
   core/analysis_coverage_test.cpp
+  core/test_segment_diff.cpp
   core/test_analysis_pipeline.cpp
   core/test_design_box.cpp
   core/test_state_codec.cpp

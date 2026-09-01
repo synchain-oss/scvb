@@ -546,11 +546,22 @@ export function createTabSettings(opts) {
     }
 
     /**
-     * 全量分析完成(scvb.segments reason="analyze")→ 基线同步为当前值(03 §6.3:
-     * 全量分析完成时同步 applied.*,派生 stale 归零)。局部分析/快照不同步。
+     * 分析完成(scvb.segments reason ∈ {analyze, vad, segmentation})→ 基线同步为当前值
+     * (03 §6.3:全量分析完成时同步 applied.*,派生 stale 归零)。快照/切版本不同步。
+     *
+     * ⚠ **三个 reason 都要认**([SL-255])。松手档(`vad`/`segmentation`)自 [J95③a] 起
+     * 跑的是**同一条完整流水线**、用的是**当前的 `loudness_mode`**,产出与「点分析」同质;
+     * 只认 `analyze` 的话,拖 VAD 滑杆松手重分段完成后基线不同步,派生 stale 不归零 ——
+     * 「参数已改、结果陈旧」提示会一直挂着,而结果其实已经是新的。
+     * (这条不一致是本卡新引入的:此前这条路根本不存在。)
      */
     function onSegments(seg) {
-        if (seg && seg.reason === "analyze") {
+        if (
+            seg &&
+            (seg.reason === "analyze" ||
+                seg.reason === "vad" ||
+                seg.reason === "segmentation")
+        ) {
             local.analysisConfigBaseline = config().loudness_mode;
             requestRender();
         }

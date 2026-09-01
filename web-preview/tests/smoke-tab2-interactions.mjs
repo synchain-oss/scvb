@@ -321,6 +321,29 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
     // 判红,而失败信息说的是「不再有裸 emitParams(first)」—— 排查的人得先怀疑代码再怀疑注释。
     {
         const oe = src("src/output/OutputEditor.cpp");
+        // 判据形态见下面用它的那处 check。写成正则字面量(不是 new RegExp 字符串),
+        // 免去一层转义:`//[^\r\n]*` 吃掉中间任意多行 // 注释。
+        //
+        // ⚠ 块体用**回火**写法 `(?:(?!processor_\.armResegment\()[^{}])*`,不是朴素的
+        // `[^{}]*`:后者只禁大括号,块内多出一句 `processor_.armResegment(...)` 照样匹配 ——
+        // 而「块内不含 armResegment」正是这颗钉自称要断言的两件事之一。
+        const RE_ARM_OUTSIDE_CHANGED =
+            /if \(changed\)\s*\{\s*\+\+rt\.configSeq;(?:(?!processor_\.armResegment\()[^{}])*\}\s*(?:\/\/[^\r\n]*[\r\n]+\s*)*processor_\.armResegment\(/;
+        // 取**这一个函数自己的**函数体:从它的定义处到下一个 `void OutputEditor::` 定义为止。
+        //
+        // ⚠ 不能用「定义处起固定长度的窗口」:`handleSetVadParams` 只有约 1900 字符,
+        // 取 4000 会把紧随其后的 `handleSetSegmentation` 整个吞进来 —— 于是 vad 那一轮的
+        // 断言被 segmentation 的代码喂饱,**两者只要有一个写对就双双通过**。
+        // (两处都是 [SL-255/viz-r4] 收口时重跑反向注入抓到的:把 vad 的调用挪回
+        //  `if (changed)` 内 —— 正是本条要防的那个退化 —— 本例当时依旧全绿。)
+        const fnBodyOf = (name) => {
+            const start = oe.indexOf(`void OutputEditor::${name}(`);
+            if (start < 0) return "";
+            const rest = oe.slice(start);
+            const end = rest.indexOf("\nvoid OutputEditor::", 1);
+            return end < 0 ? rest : rest.slice(0, end);
+        };
+        const oeh = src("src/output/OutputEditor.h"); // [SL-255] 闩锁字段的类型在头文件里
         check(
             /scvb::output::raiseResendLatch\(visibleNow, wasVisible_, pendingParamsFull_\);/.test(
                 oe,
@@ -343,20 +366,53 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
             "[SL-199] emitParams 循环体走 selectParamForEmit(选择与基线推进同源)",
         );
         check(
-            /scvb::output::segmentsResendNeeded\(first, pendingSegmentsFull_, pendingAnalyzed_,/.test(
+            /scvb::output::segmentsResendNeeded\(first, pendingSegmentsFull_, pendingAnalyzed,/.test(
                 oe,
-            ),
+            ), // pendingAnalyzed 现为由 reason 枚举派生的局部 bool(见下条),判定入参形态未变
             "[SL-199] scvb.segments 的重发判定走 segmentsResendNeeded 且带闩锁位",
         );
+        // [SL-255] `pendingAnalyzed` 由 bool 升成三值枚举 `pendingAnalyzedReason_`
+        // ——「完成了没」变成「哪一种完成」(analyze / vad / segmentation)。守的性质一字未变:
+        // **发出去了才清位**。故判据跟着形态走,但两条断言的语义与 SL-199 当初立的完全相同。
         check(
             /settleResendLatch\(sent, pendingSegmentsFull_\);/.test(oe) &&
-                /settleResendLatch\(sent, pendingAnalyzed_\);/.test(oe),
-            "[SL-199] segments 与 analyzed 两个闩锁都按实际下发清位",
+                /if \(sent\)\s+pendingAnalyzedReason_ =\s+ScvbOutputAudioProcessor::AnalysisDoneReason::None;/.test(
+                    oe,
+                ),
+            "[SL-199] segments 与 analyzed 两个闩锁都按实际下发清位(analyzed 侧已升为 reason 枚举)",
         );
         check(
-            /pendingAnalyzed_ = pendingAnalyzed_ \|\| analyzed;/.test(oe),
+            /if \(analyzedReason != ScvbOutputAudioProcessor::AnalysisDoneReason::None\)\s+pendingAnalyzedReason_ = analyzedReason;/.test(
+                oe,
+            ),
             "[SL-199] analyzed 闩住(takeAnalysisDone 取走即清,隐藏期完成的分析不能丢 reason)",
         );
+        // [SL-255] 闩住的必须是 **reason** 而不只是 bool:隐藏期完成的那一次若只闩「完成了」,
+        // 恢复可见时 reason 会退化成 "analyze",而 Tab3 的倒计时撤条认的是 vad|segmentation|analyze
+        // 里**对应的那一个**,松手档的条就撤不掉。
+        check(
+            !/bool pendingAnalyzed_ = false;/.test(oeh) &&
+                /AnalysisDoneReason pendingAnalyzedReason_/.test(oeh),
+            "[SL-255] 闩锁存的是 reason 枚举,不是 bool(退回 bool 会丢松手档的 reason)",
+        );
+        // [SL-255 复审②] `armResegment` 必须落在 `if (changed)` **之外**。
+        //
+        // 为什么只能在源码形态上钉:这两个 handler 属 `OutputEditor.cpp`,只编进插件目标,
+        // 任何测试可执行文件都链不到它(`scvb_host_tests` 连 createEditor 都是桩)——
+        // 「桥面 setter → 排防抖」这半条链没有可执行的落点。故按本仓既有做法
+        // (SL-199 那一组同款)钉源码形态,并在 host 侧用「防抖窗内重复布防要重排」
+        // 把**下半条链**的语义单独钉住,两边合起来才是完整的回归网。
+        //
+        // 判据形态:`if (changed)` 块体里**只剩** `++rt.configSeq;`(块内不含 armResegment),
+        // 且紧随其后(可隔注释)就是 `processor_.armResegment(`。
+        for (const setter of ["handleSetVadParams", "handleSetSegmentation"]) {
+            const body = fnBodyOf(setter);
+            check(
+                body.length > 0 && RE_ARM_OUTSIDE_CHANGED.test(body),
+                `[SL-255] ${setter}:armResegment 在 if (changed) 之外(防抖的是调用流,不是变化流)`,
+            );
+        }
+
         // 反面钉(带行形态约束,见上面的注释):旧写法不得残留。
         check(
             !/^\s+emitParams\(first\);\s*$/m.test(oe),

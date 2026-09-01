@@ -237,10 +237,11 @@ export function applySegmentsEvent(prev, next) {
 // §1.1 首帧快照与 §2.1 `scvb.state` 的字段全集里**都没有** canUndo/canRedo 之类的
 // 可用性信号。既然不发明新桥面(零契约变更),可用性只能由两手证据推出:
 //   ① **回执**:点下去拿到 `{ok:false}` —— 这是「该向栈空」的第一手、也是唯一权威证据;
-//   ② **新事务入栈**:§0.9 左列**六类**入栈操作里,当前 web 侧真正发得出段表事件的**四类**
-//      (`editSegment` / `setTrackManual` / `copyVersion` / `analyze`([J89] 起))都经
-//      §2.8 段表事件带 `reason` 回推,见其 reason 即知撤销栈刚长了一条。
-//      (左列六类 = 上述四类 + `setPanCurve` + `setVersionName`,后两类的缺口见下。
+//   ② **新事务入栈**:§0.9 左列**八类**入栈操作里,当前 web 侧真正发得出段表事件的**六类**
+//      (`editSegment` / `setTrackManual` / `copyVersion` / `analyze`([J89] 起)/
+//      `setVadParams` / `setSegmentation`([J95③a] 起,仅其松手档触发的那一次重分段))
+//      都经 §2.8 段表事件带 `reason` 回推,见其 reason 即知撤销栈刚长了一条。
+//      (左列八类 = 上述六类 + `setPanCurve` + `setVersionName`,后两类的缺口见下。
 //       ⚠ `docs/SCVB_CONTRACT.md` §1.25/§1.26 那句「覆盖左列的四类操作」自 [J82] 起就已过期,
 //       属冻结契约文字、须走 §5 批准流程另开卡订正 —— 本卡不动它,登记在此。)
 //
@@ -279,7 +280,23 @@ const UNDOABLE_REASONS = new Set([
     "trackManual",
     "copyVersion",
     "analyze",
+    // [J95③a / SL-255] 松手档重分段同样入栈:§0.9 左列现已含 `setVadParams` /
+    // `setSegmentation`(**仅其松手档触发的那一次重分段**),native 的 `finishAnalysis`
+    // 对这两条路压的是真事务(与 analyze 同栈、同口径)。
+    // 不补这两个,就是上面那句「契约改一列,这里就得改一行」预告的后果:松手档重分段
+    // 完成后事件带 `reason:"vad"` ⇒ 本 reducer 走 `return cur` ⇒ undo 钮不置亮,
+    // 而键盘 Ctrl+Z 那条路不看按钮属性 —— 两个入口行为分叉(用户空点过一次撤销之后
+    // 钮会一直灰着,却撤得动)。
+    "vad",
+    "segmentation",
 ]);
+
+/**
+ * 上面**六类**里**「可能空转、不一定压步」**的那一族(见 `historyAfterSegments` 函数体内注)。
+ * 三者走同一条 C++ 路径(`finishAnalysis`),同一个「段表没变就不压撤销步」的守卫,
+ * 所以对 redo 的处置必须逐字同款。
+ */
+const ANALYSIS_REASONS = new Set(["analyze", "vad", "segmentation"]);
 
 /**
  * `undo()` / `redo()` 回执 → 新可用性(证据①)。
@@ -304,10 +321,11 @@ export function historyAfterCall(prev, kind, ok) {
  *
  * 新事务入栈会**清空 redo 栈**(juce::UndoManager 语义,03 §5.3),故 undo 置亮、
  * redo 置灰。`reason:"undo"`/`"redo"` 是本 reducer 自己动作的回推,必须排除在外
- * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(vad/
- * segmentation/versionActive/snapshot)按 §0.9 右列不入栈,不动两向。
- * `analyze` 自 [J89] 起改判进左列(见 `UNDOABLE_REASONS`),但**只置亮 undo、不清 redo** ——
- * 理由见函数体内注(空转分析不压步,段表事件里没有「压没压步」的证据)。
+ * (不然一次 undo 会把刚长出来的 redo 当场灭掉);其余 reason(versionActive/snapshot)
+ * 按 §0.9 右列不入栈,不动两向。
+ * `analyze` 自 [J89] 起、`vad`/`segmentation` 自 [J95③a] 起改判进左列
+ * (见 `UNDOABLE_REASONS`),但**只置亮 undo、不清 redo** ——
+ * 理由见函数体内注(空转/恒等的那一轮不压步,段表事件里没有「压没压步」的证据)。
  *
  * @param {{undo:boolean,redo:boolean}|null|undefined} prev
  * @param {object|null} seg `scvb.segments` 载荷
@@ -315,18 +333,20 @@ export function historyAfterCall(prev, kind, ok) {
 export function historyAfterSegments(prev, seg) {
     const cur = prev || HISTORY_AVAIL_INIT;
     if (!seg || !UNDOABLE_REASONS.has(seg.reason)) return cur;
-    // ⚠ `analyze` **只置亮 undo,不碰 redo**(#152 第三轮复审【重要】)。
+    // ⚠ 分析那一族(`analyze` / `vad` / `segmentation`)**只置亮 undo,不碰 redo**
+    // (#152 第三轮复审【重要】;[SL-255] 起 `vad`/`segmentation` 同款)。
     //
-    // 其余三类必然压一条事务 ⇒ redo 栈必然被清,置灰是**有证据**的。`analyze` 不然:
-    // C++ 侧对**空转分析**(15 轨零产出)有守卫,不压事务、不清 redo 栈,但 `analysisDone_`
-    // 照样置位、段表事件照样以 `reason:"analyze"` 发出 —— 段表事件里**没有**「这一轮到底压没压步」
-    // 的证据。于是若照着清 redo:空转分析后 redo 栈明明还在,钮却灰了,而**灰掉的钮点不动**,
-    // 拿不到那次会救回它的 `ok:true` 回执 —— **不可自愈**。
+    // 其余三类必然压一条事务 ⇒ redo 栈必然被清,置灰是**有证据**的。分析那一族不然:
+    // C++ 侧的 `finishAnalysis` 对**段表没变**的那一轮(15 轨零产出,或松手档补发重排跑出
+    // 逐字节相同的结果)有守卫,不压事务、不清 redo 栈,但完成位照样置、段表事件照样带
+    // 对应 reason 发出 —— 段表事件里**没有**「这一轮到底压没压步」的证据。于是若照着清
+    // redo:空转那一轮 redo 栈明明还在,钮却灰了,而**灰掉的钮点不动**,拿不到那次会
+    // 救回它的 `ok:true` 回执 —— **不可自愈**。
     //
     // 按本文件头注那条原则办(「置灰会挡住真实可用的动作(真错),常亮的代价只是白点一下、
     // 回执把它置灰(可自愈)」):证据不足时留亮。代价是产出型分析后 redo 钮会多亮一会儿,
     // 点一下拿 `ok:false` 就自愈 —— 拿可自愈的假亮,换掉不可自愈的假灰。
-    if (seg.reason === "analyze") return { ...cur, undo: true };
+    if (ANALYSIS_REASONS.has(seg.reason)) return { ...cur, undo: true };
     return { undo: true, redo: false };
 }
 
