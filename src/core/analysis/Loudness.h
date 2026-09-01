@@ -42,6 +42,17 @@ struct SegmentLoudness
     MomentaryStats momentary;
 };
 
+// ---------------------------------------------------------------------------
+// [SL-252 / J95②a] **这三个 mode-aware 函数服务的是「第二响度指标读数」那条路,
+// 不是平衡归一化基准 z。** 修宪 ADR-009 v2.2 把两件事分开了:
+//   · 上报段响度 L_seg(澄清 ①)—— 恒为 ungated K-weighted 积分,不随 mode 变;
+//   · 平衡归一化基准 z(澄清 ②)—— 按 mode 选档,落点是 `analysis/BalanceBasis.h`
+//     的 `balanceBasisZ`,**返回线性能量**。
+// 本文件这几个返回的是 **dB**,且三档不在同一把尺上(KIntegrated 含 −0.691 偏移走
+// 10·log10 的能量域,Rms/PeakDbfs 无偏移走 20·log10 的幅度域)——塞进 z 会让 AutoAssign
+// 的 `zSum` 变负、`zHat` 失去意义,所以 A 案**没有复用**它们,另写了纯函数。
+// **保留不动**:它们是「第二指标读数」尚未落地那条路的既有实现,不是死代码,别顺手删。
+// ---------------------------------------------------------------------------
 // 仅求主指标(§4.1/§4.3);kwMs/peak 为段内 hop 特征序列,长度 numHops(>0)。
 // 纯函数、确定性:同输入同 platform 逐位一致,与块切分无关(切分一致性由特征层保证)。
 LoudnessValue segmentLoudness(const float* kwMs, const float* peak, int numHops, LoudnessMode mode);

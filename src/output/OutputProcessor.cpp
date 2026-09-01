@@ -10,6 +10,7 @@
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
+#include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
 #include "output/MixMath.h"
@@ -2822,6 +2823,12 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::EvenOffset;
     else
         cfg.assign.centerSlotPolicy = scvb::analysis::CenterSlotPolicy::PriorityQueue;
+    // [SL-252 / J95②a] 响度口径取 state —— **这一行就是此前整条链断掉的地方**。
+    // `centerSlotPolicy` 传了、`loudnessMode` 没传,于是三档 z 恒等、切档重分析结果一模一样
+    // (用户 v5.6.3 实测第 19 条「三个模式结果好像是一样的」= 断链,不是巧合)。
+    // 字符串→枚举走 core 的 `parseLoudnessMode`(唯一真源,顺带兼容历史拼写 "k_integrated");
+    // 解析不出来时它回默认档 —— 与 §1.21 的三值校验同口径,不在这里造第二套判定。
+    cfg.balance.loudnessMode = scvb::analysis::parseLoudnessMode(runtime_.loudnessMode.toRawUTF8()).mode;
 
     // §1.6「重新识别(含手动段)」= clearManual:除了不再保留用户段(见 finishAnalysis),还必须
     // **把 freeze 位清零**。此前只清段不清位,于是:

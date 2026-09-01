@@ -6,9 +6,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "analysis/AnalysisPipeline.h"
+#include "analysis/BalanceBasis.h" // [SL-252] 平衡归一化基准 z(ADR-009 v2.2 澄清 ②)
 
 using namespace scvb::analysis;
 
@@ -270,4 +272,70 @@ TEST_CASE("PIPE-7 后验的 firstHop 与局部分析范围一致", "[analysis][p
     REQUIRE_FALSE(r.cancelled);
     CHECK(r.firstHop == startHop);
     CHECK(r.vadPosterior[0].size() == n);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-252 / J95②a] 平衡归一化基准 z —— ADR-009 v2.2 澄清 ② 的落点。
+//
+// 修宪把两件事分开:**上报段响度 L_seg**(澄清 ①,不随 mode 变)与**归一化基准 z**
+// (澄清 ②,按 mode 选档)。本用例只钉后者,钉三条:
+//   ① 默认档**逐位**等于 `meanKw` —— 是 `==` 不是「约等于」。这条是硬要求:把默认档实现成
+//      `10^(L/10)` 之类的等价换算,既有工程重分析后 pan/volDb 会发生肉眼不可见但逐位不同的
+//      漂移。反向验证:把 KIntegrated 分支改成经 dB 往返,本节必红。
+//   ② 三档**真分歧** —— 断链时代三档恒等,正是用户 v5.6.3 实测第 19 条「三个模式出来的结果
+//      好像是一样的」;
+//   ③ 三档**都是非负线性能量量** —— AutoAssign 要 `zSum += z` / `zHat = z/zSum`,塞 dB
+//      (负数)进去 zSum 会变负。这条守的正是修宪「正文第三条继续完整适用」那句话。
+//
+// 放在本文件而不是 test_loudness.cpp:后者 include 的 `analysis/Loudness.h` 里另有一份
+// **同名同命名空间**的 `LoudnessMode` / `SegmentLoudness` 定义(与 `analysis/LoudnessMode.h`
+// 的那份成员都不同),两头一起 include 会直接 C2011 重定义。那是独立于本卡的既有缺陷,
+// 已单独报卡,不在本卡顺手改。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL252] balanceBasisZ:默认档逐位等于 meanKw,三档真分歧且同为线性能量", "[analysis][balance][SL252]")
+{
+    // 刻意造成三档必然分歧的形状:能量集中在少数 hop(峰值高、均值低)。
+    const std::vector<float> kw{0.04f, 0.0004f, 0.0004f, 0.0004f};
+    const std::vector<float> peak{0.5f, 0.02f, 0.02f, 0.02f};
+    const std::int64_t b = 0, e = 4;
+
+    const double zK = balanceBasisZ(LoudnessMode::KIntegrated, kw, peak, b, e);
+    const double zR = balanceBasisZ(LoudnessMode::Rms, kw, peak, b, e);
+    const double zP = balanceBasisZ(LoudnessMode::PeakDbfs, kw, peak, b, e);
+
+    // ① 默认档逐位相等(== 而非近似):同一个 meanKw、同一条代码路径。
+    CHECK(zK == meanKw(kw, b, e));
+
+    // ② 三档两两不等 —— 断链时代这三个值是同一个数。
+    CHECK(zK != zR);
+    CHECK(zK != zP);
+    CHECK(zR != zP);
+
+    // 数学口径逐档核对(与 ADR-009 v2.2 澄清 ② 的公式逐字对应)
+    // 期望值必须由**同一批 float 输入**算出:`0.0004f` 不是精确的 0.0004,拿十进制字面量
+    // 当期望会差出 ~2e-10 —— 那是浮点表示,不是实现错。
+    double sumKw = 0.0, sumAmp = 0.0;
+    for (const float v : kw)
+    {
+        sumKw += static_cast<double>(v);
+        sumAmp += std::sqrt(static_cast<double>(v));
+    }
+    CHECK(std::abs(zK - sumKw / 4.0) < 1e-15); // mean(kw)
+    const double meanAmp = sumAmp / 4.0;
+    CHECK(std::abs(zR - meanAmp * meanAmp) < 1e-15); // (mean(√kw))²
+    const double maxPeak = static_cast<double>(peak[0]);
+    CHECK(std::abs(zP - maxPeak * maxPeak) < 1e-15); // max(peak)²
+
+    // ③ 三档同为**非负线性能量**(AutoAssign 的 zSum / zHat 前提)。
+    CHECK(zK >= 0.0);
+    CHECK(zR >= 0.0);
+    CHECK(zP >= 0.0);
+
+    // 空窗 / 越界窗:三档一致回 0.0,不产出 NaN(下游 zSum 为 0 有既有分支接住)。
+    for (const auto m : {LoudnessMode::KIntegrated, LoudnessMode::Rms, LoudnessMode::PeakDbfs})
+    {
+        CHECK(balanceBasisZ(m, kw, peak, 2, 2) == 0.0);
+        CHECK(balanceBasisZ(m, kw, peak, 99, 100) == 0.0);
+        CHECK_FALSE(std::isnan(balanceBasisZ(m, kw, peak, -5, 2)));
+    }
 }
