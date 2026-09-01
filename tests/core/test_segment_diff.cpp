@@ -15,6 +15,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
+#include <numeric>
+#include <random>
+
 #include "output/SegmentDiff.h"
 
 using scvb::output::diffTrackInto;
@@ -23,6 +27,13 @@ using scvb::state::Segment;
 
 namespace
 {
+// 既有各例都不测**范围维**:给一个覆盖全时间轴的范围 ⇒ kept 判据与加范围过滤之前逐字等价。
+// 范围维单独由下面「kept 只数范围内的手动/锁定段」一例守着。
+void diffAll(int ch, const std::vector<Segment>& a, const std::vector<Segment>& b, SegmentDiff& out)
+{
+    diffTrackInto(ch, a, b, std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::max(), out);
+}
+
 Segment seg(std::int64_t t0, std::int64_t t1, float pan, float vol)
 {
     Segment s;
@@ -40,7 +51,7 @@ TEST_CASE("SegmentDiff:同一段值变了 → changed,带前后值与新表下�
     const std::vector<Segment> after{seg(0, 100, -20.0f, 1.0f), seg(100, 200, 45.0f, -2.0f)};
 
     SegmentDiff d;
-    diffTrackInto(3, before, after, d);
+    diffAll(3, before, after, d);
 
     CHECK(d.added == 0);
     CHECK(d.removed == 0);
@@ -60,7 +71,7 @@ TEST_CASE("SegmentDiff:边界挪了但仍是同一段 → 不算增删", "[outpu
     const std::vector<Segment> after{seg(10, 130, -20.0f, 1.0f)};
 
     SegmentDiff d;
-    diffTrackInto(1, before, after, d);
+    diffAll(1, before, after, d);
 
     CHECK(d.added == 0); // ★ 重叠配对认出是同一段
     CHECK(d.removed == 0);
@@ -75,7 +86,7 @@ TEST_CASE("SegmentDiff:一分为二 → 一条配上、另一条算新增", "[ou
     const std::vector<Segment> after{seg(0, 90, -20.0f, 1.0f), seg(110, 200, -20.0f, 1.0f)};
 
     SegmentDiff d;
-    diffTrackInto(1, before, after, d);
+    diffAll(1, before, after, d);
 
     CHECK(d.kept == 0);
     CHECK(d.added == 1); // ★ 第二条没有旧段可配
@@ -85,17 +96,17 @@ TEST_CASE("SegmentDiff:一分为二 → 一条配上、另一条算新增", "[ou
 TEST_CASE("SegmentDiff:整段消失 / 凭空出现", "[output][diff][SL255]")
 {
     SegmentDiff gone;
-    diffTrackInto(1, {seg(0, 100, 0.0f, 0.0f)}, {}, gone);
+    diffAll(1, {seg(0, 100, 0.0f, 0.0f)}, {}, gone);
     CHECK(gone.removed == 1);
     CHECK(gone.added == 0);
 
     SegmentDiff born;
-    diffTrackInto(1, {}, {seg(0, 100, 0.0f, 0.0f)}, born);
+    diffAll(1, {}, {seg(0, 100, 0.0f, 0.0f)}, born);
     CHECK(born.added == 1);
     CHECK(born.removed == 0);
 
     SegmentDiff both; // 完全不重叠 = 一删一增,不是 changed
-    diffTrackInto(1, {seg(0, 100, 0.0f, 0.0f)}, {seg(500, 600, 0.0f, 0.0f)}, both);
+    diffAll(1, {seg(0, 100, 0.0f, 0.0f)}, {seg(500, 600, 0.0f, 0.0f)}, both);
     CHECK(both.added == 1);
     CHECK(both.removed == 1);
     CHECK(both.changed.empty());
@@ -109,13 +120,13 @@ TEST_CASE("SegmentDiff:亚显示精度的抖动不算改动", "[output][diff][SL
     const std::vector<Segment> after{seg(0, 100, -20.04f, 1.04f)};
 
     SegmentDiff d;
-    diffTrackInto(1, before, after, d);
+    diffAll(1, before, after, d);
     CHECK(d.kept == 0);
     CHECK(d.changed.empty());
 
     // 但跨过显示精度的那一档要认出来(-20.0 → -19.9)。
     SegmentDiff d2;
-    diffTrackInto(1, before, {seg(0, 100, -19.94f, 1.00f)}, d2);
+    diffAll(1, before, {seg(0, 100, -19.94f, 1.00f)}, d2);
     CHECK(d2.changed.size() == 1);
 }
 
@@ -140,7 +151,7 @@ TEST_CASE("SegmentDiff:kept 数的是「保留下来的手动/锁定段」,不�
     const std::vector<Segment> after{seg(0, 100, -5.0f, 1.0f), userSeg(100, 200), lockedSeg(200, 300)};
 
     SegmentDiff d;
-    diffTrackInto(2, before, after, d);
+    diffAll(2, before, after, d);
 
     CHECK(d.kept == 2); // ★ user_edited + locked 各一 —— 与「改没改」无关
     CHECK(d.changed.size() == 1); // 只有那条 auto 段值变了
@@ -151,9 +162,135 @@ TEST_CASE("SegmentDiff:kept 数的是「保留下来的手动/锁定段」,不�
 TEST_CASE("SegmentDiff:空对空 → 全零(恒等变换不该报出改动)", "[output][diff][SL255]")
 {
     SegmentDiff d;
-    diffTrackInto(1, {}, {}, d);
+    diffAll(1, {}, {}, d);
     CHECK(d.kept == 0);
     CHECK(d.added == 0);
     CHECK(d.removed == 0);
     CHECK(d.changed.empty());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-255 复审] 以下五例守的是本轮复审改出来的四条口径。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SegmentDiff:kept 只数**范围内**的手动/锁定段(与 previewAnalysis 同尺)", "[output][diff][SL255]")
+{
+    // 立此例的理由:`previewAnalysis` 的 `manualKept` 自 [SL-193] 起就是「范围相交才计数」,
+    // 而 diff 这侧若不过滤,Tab3 同一张卡上 A-07 预览行与 A-02 摘要行的 {k} 会给两个数 ——
+    // 正是 SL-193 修掉的那族对不齐,从另一侧再造一遍。
+    auto user = [](std::int64_t t0, std::int64_t t1) {
+        Segment s = seg(t0, t1, 0.0f, 0.0f);
+        s.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::UserEdited, false);
+        return s;
+    };
+    auto locked = [](std::int64_t t0, std::int64_t t1) {
+        Segment s = seg(t0, t1, 0.0f, 0.0f);
+        s.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, true);
+        return s;
+    };
+    // 范围 = [1000, 2000)。三条手动/锁定段:一条在内、一条在外、一条只与右边界相邻(半开 ⇒ 在外)。
+    const std::vector<Segment> table{user(1200, 1400), locked(1500, 1600), user(100, 900), user(2000, 2100)};
+
+    SegmentDiff d;
+    diffTrackInto(5, table, table, 1000, 2000, d);
+    CHECK(d.added == 0);
+    CHECK(d.removed == 0);
+    CHECK(d.changed.empty());
+    // ★ 删掉 diffTrackInto 里那句范围过滤(`if (!(sg.t1 > r0 && sg.t0 < r1)) continue;`)
+    //   这一条立刻变成 4 == 2 而红。
+    CHECK(d.kept == 2);
+
+    // 同一张表、范围放到全时间轴 ⇒ 四条全数(证明差别真的来自范围维,不是别的)。
+    SegmentDiff all;
+    diffAll(5, table, table, all);
+    CHECK(all.kept == 4);
+}
+
+TEST_CASE("SegmentDiff:diff 全空 ≠ 段表没变(segmentsIdentical 才是判据)", "[output][diff][SL255]")
+{
+    // 这一条守的是 `finishAnalysis` 里「段表没变才不压撤销步」的**判据选型**:
+    // 边界挪了、pan/volDb 一个没变 —— diff 四项全空,段表却真的变了。
+    // 若拿「diff 是否全空」当作「改没改」,这一轮就漏压撤销步,用户撤不回来。
+    const std::vector<Segment> before{seg(0, 100, -20.0f, 1.0f)};
+    const std::vector<Segment> after{seg(0, 140, -20.0f, 1.0f)};
+
+    SegmentDiff d;
+    diffAll(1, before, after, d);
+    CHECK(d.added == 0);
+    CHECK(d.removed == 0);
+    CHECK(d.changed.empty());
+    CHECK(d.kept == 0); // 四项全空
+
+    CHECK_FALSE(scvb::output::segmentsIdentical(before, after)); // ★ 但段表确实变了
+    CHECK(scvb::output::segmentsIdentical(before, before));
+
+    // flags 单独变(比如某段被锁上)也算变 —— 五个字段全比。
+    std::vector<Segment> lockedOne = before;
+    lockedOne[0].flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, true);
+    CHECK_FALSE(scvb::output::segmentsIdentical(before, lockedOne));
+}
+
+TEST_CASE("SegmentDiff:changed 封顶,而 added/removed/kept 仍是精确总数", "[output][diff][SL255]")
+{
+    // 全量重分段时跨过 1 位小数的段可能数以千计,UI 那侧是逐条拼 <li> 的无封顶列表。
+    const std::size_t n = scvb::output::kMaxChangedItems + 37;
+    std::vector<Segment> before;
+    std::vector<Segment> after;
+    before.reserve(n);
+    after.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        const auto t0 = static_cast<std::int64_t>(i) * 100;
+        before.push_back(seg(t0, t0 + 90, 0.0f, 0.0f));
+        after.push_back(seg(t0, t0 + 90, 5.0f, 0.0f)); // 每一段的 pan 都跨过显示精度
+    }
+    // 再额外加一条新表独有的段(不与任何旧段重叠)⇒ added 必须照实数,不受封顶影响。
+    after.push_back(
+        seg(static_cast<std::int64_t>(n) * 100 + 500, static_cast<std::int64_t>(n) * 100 + 600, 0.0f, 0.0f));
+
+    SegmentDiff d;
+    diffAll(2, before, after, d);
+    CHECK(d.changed.size() == scvb::output::kMaxChangedItems); // ★ 明细截断
+    CHECK(d.added == 1); // ★ 但总数不撒谎
+    CHECK(d.removed == 0);
+}
+
+TEST_CASE("SegmentDiff:非有限值不判同(lround(NaN) 是实现定义行为)", "[output][diff][SL255]")
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(scvb::output::sameAtDisplayPrecision(nan, nan));
+    CHECK_FALSE(scvb::output::sameAtDisplayPrecision(nan, 0.0f));
+    CHECK_FALSE(scvb::output::sameAtDisplayPrecision(std::numeric_limits<float>::infinity(), 1.0f));
+    CHECK(scvb::output::sameAtDisplayPrecision(1.23f, 1.24f)); // 对照:仍按 1 位小数判同
+}
+
+TEST_CASE("SegmentDiff:线性配对与输入顺序无关(乱序输入结果一致)", "[output][diff][SL255]")
+{
+    // 配对从「逐对枚举」改成「按 t0 有序 + 单调游标」的线性扫([SL-255] 复审⑦:
+    // 本函数对 15 轨全程持 lifecycleMutex_ 跑在消息线程上)。这一条钉住:
+    // 改法只换复杂度,不换答案 —— 且不对调用方的入参顺序提要求。
+    std::vector<Segment> before;
+    std::vector<Segment> after;
+    for (int i = 0; i < 120; ++i)
+    {
+        const auto t0 = static_cast<std::int64_t>(i) * 1000;
+        before.push_back(seg(t0, t0 + 800, 0.0f, 0.0f));
+        // 新表:边界整体右移 100,且每三段改一次 pan ⇒ 全部配得上,changed 恰 40 条。
+        after.push_back(seg(t0 + 100, t0 + 900, (i % 3 == 0) ? 20.0f : 0.0f, 0.0f));
+    }
+
+    SegmentDiff sorted;
+    diffAll(7, before, after, sorted);
+    CHECK(sorted.added == 0);
+    CHECK(sorted.removed == 0);
+    CHECK(sorted.changed.size() == 40);
+
+    std::mt19937 rng(12345);
+    std::vector<Segment> beforeShuffled = before;
+    std::shuffle(beforeShuffled.begin(), beforeShuffled.end(), rng);
+    SegmentDiff shuffled;
+    diffAll(7, beforeShuffled, after, shuffled);
+    CHECK(shuffled.added == sorted.added);
+    CHECK(shuffled.removed == sorted.removed);
+    CHECK(shuffled.changed.size() == sorted.changed.size());
 }

@@ -438,7 +438,8 @@ private:
     void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
                                std::int64_t rangeEndSample, bool clearManual);
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
-                        std::int64_t rangeEndSample, bool clearManual);
+                        std::int64_t rangeEndSample, bool clearManual, AnalysisDoneReason resegmentReason,
+                        std::uint16_t analyzedTracks);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
     void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
@@ -645,6 +646,11 @@ private:
         std::uint32_t generation = 0;
         bool clearManual = false;
         bool valid = false;
+        // [SL-255 复审①] 本轮是不是松手档触发的,以及**真参与分析**的轨集合。
+        // 这两样跟着结果走(而不是留在成员里),取消那条路才能把它们一起丢掉 ——
+        // 见 pendingResegmentReason_ 的头注。
+        AnalysisDoneReason resegmentReason = AnalysisDoneReason::None;
+        std::uint16_t analyzedTracks = 0;
     };
     PendingAnalysis pendingAnalysis_;
     // 分析刚完成([M] 置位 / editor 取走)。§2.8 的 reason 要落 "analyze" —— web 有两处认它:
@@ -654,7 +660,14 @@ private:
     // [SL-255] 松手档防抖:0 = 未排;否则是到点时刻(steadyNowMs 口径)。
     std::int64_t resegmentDueAtMs_ = 0;
     AnalysisDoneReason resegmentReason_ = AnalysisDoneReason::None;
-    // 已起飞的那一轮是谁触发的(startAnalysis 之后、finishAnalysis 之前存放)。
+    // 「下一次起飞的那一轮是谁触发的」——**只在 tickResegmentDebounce → startAnalysis
+    // 这一小段里活着**:startAnalysis 真造出作业时就把它取走(取走即清)塞进作业口径的
+    // analysisResegmentReason_,此后一路随 PendingAnalysis 走。
+    //
+    // ⚠ 为什么不能把 reason 一直留在成员里等 finishAnalysis 来读([SL-255] 复审①):
+    // 取消那条路**根本不经过 finishAnalysis**(handleAsyncUpdate 代号不符就 return),
+    // 于是「松手重分段 → 点取消 → 再点分析」会让后面那次「点分析」以 reason:"vad" 发出,
+    // Tab4 的陈旧基线与 undo 钮白名单都认不到它。让 reason 随作业走,代号一丢它就跟着丢。
     AnalysisDoneReason pendingResegmentReason_ = AnalysisDoneReason::None;
     // [SL-255] 最近一次流水线的段表前后比对(§2.8 载荷的 diff 块)。事务里两份 CrvsData
     // 快照本来就同时在手,顺手算完存这儿;editor 发段表时取走。
@@ -663,6 +676,9 @@ private:
     static constexpr std::int64_t kResegmentDebounceMs = 300; // 契约 §1.18 逐字
     // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
     bool analysisClearManual_ = false;
+    // 同上,本次作业的触发档与真参与分析的轨集合([M] 写,交接时随结果走)。
+    AnalysisDoneReason analysisResegmentReason_ = AnalysisDoneReason::None;
+    std::uint16_t analysisTracksMask_ = 0;
 
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;

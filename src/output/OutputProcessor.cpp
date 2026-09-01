@@ -820,7 +820,6 @@ void ScvbOutputAudioProcessor::timerCallback()
     session_.setTransportPlaying((playheadSnapshot().flags & scvb::engine::kPlayheadIsPlaying) != 0);
     session_.tick(now);
     reapRetiredJobs(); // 退休分析作业的非阻塞回收(见 retiredJobs_ 头注)
-    tickResegmentDebounce(now); // [SL-255] 松手档 300ms 防抖到点 → 起流水线
 
     // 时间线健康前置(§4.2 [J51]):连续无时间线 ≥0.5s → 清 mask(Inputs 走 J12 直通)。
     if (timelineValid_.load(std::memory_order_relaxed) == 0)
@@ -898,6 +897,15 @@ void ScvbOutputAudioProcessor::timerCallback()
         }
         printer_.setMode(mode);
     }
+
+    // [SL-255] 松手档 300ms 防抖到点 → 起流水线。
+    //
+    // ⚠ **必须排在上面那段三态求值之后**([SL-255] 复审②):到点复检读的是
+    // `printer_.mode()`,而那个值就是上一段刚 setMode 进去的。排在前面的话,复检看到的
+    // 是**上一拍**的 mode —— 用户在防抖窗内按下播放、到点恰落在 mode 还没更新的那一拍,
+    // 重分段就会在 PRINT 态下改写段表并 rebuildAllCurves(),正是 §1.18「抑制条件**只有**
+    // PRINT 态或分析进行中」要防的那一格。窗口只有一拍(40ms),但它是可证伪的竞态。
+    tickResegmentDebounce(now);
 
     // 轨启用位(§1.15):推给打印器的车道闸(enabled=false 整轨不 begin、不写,03 §3.2),
     // 并落成 [A] 每块读的位图(混音时整轨不注入)。此前两处都没接 —— setTrackEnabled 实现完整
@@ -2554,6 +2562,8 @@ public:
             owner_.pendingAnalysis_.rangeEndSample = config_.rangeEndSample;
             owner_.pendingAnalysis_.generation = generation_;
             owner_.pendingAnalysis_.clearManual = owner_.analysisClearManual_;
+            owner_.pendingAnalysis_.resegmentReason = owner_.analysisResegmentReason_;
+            owner_.pendingAnalysis_.analyzedTracks = owner_.analysisTracksMask_;
             owner_.pendingAnalysis_.valid = true;
         }
         owner_.triggerAsyncUpdate();
@@ -2611,7 +2621,8 @@ void ScvbOutputAudioProcessor::handleAsyncUpdate()
     {
         return;
     }
-    finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.clearManual);
+    finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.clearManual,
+                   pending.resegmentReason, pending.analyzedTracks);
 }
 
 ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnalysis(std::uint16_t tracksMask,
@@ -2805,6 +2816,7 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
 
     // 取样:把范围内每轨的 kw/peak 拷成线程私有快照(30s × 15 轨 ≈ 180KB,量级可忽略)。
     std::array<scvb::analysis::PipelineTrackFeatures, 15> features;
+    std::uint16_t analyzedTracks = 0;
     for (int t = 0; t < 15; ++t)
     {
         auto& f = features[static_cast<std::size_t>(t)];
@@ -2840,6 +2852,10 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
         if (f.anyCovered)
         {
             ++a.tracks;
+            // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 范围内有覆盖)——
+            // 与 previewAnalysis 计 tracks/manualKept 的三条判据逐字同款。diff 的 kept
+            // 按这个集合筛轨,两个 {k} 才在同一把尺子上。
+            analyzedTracks = static_cast<std::uint16_t>(analyzedTracks | (1u << t));
         }
     }
 
@@ -3007,6 +3023,11 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
 
     const std::uint32_t gen = analysisGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
     analysisClearManual_ = clearManual;
+    analysisTracksMask_ = analyzedTracks;
+    // [SL-255 复审①] 作业真造出来了才把 reason **取走**(取走即清):早退的那几支不消费它,
+    // 留给调用方(tickResegmentDebounce 的 !accepted.ok 分支)清。此后 reason 随作业走。
+    analysisResegmentReason_ = pendingResegmentReason_;
+    pendingResegmentReason_ = AnalysisDoneReason::None;
     analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen);
     analysisJob_->startThread();
 
@@ -3038,7 +3059,8 @@ void ScvbOutputAudioProcessor::cancelAnalysis()
 }
 
 void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
-                                              std::int64_t rangeEndSample, bool clearManual)
+                                              std::int64_t rangeEndSample, bool clearManual,
+                                              AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks)
 {
     {
         const juce::ScopedLock lock(lifecycleMutex_);
@@ -3114,60 +3136,96 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // 打架)不成立:两者本就是两次不同的事件,undo 重发用 "undo" 正是 §2.8 的枚举语义,
             // UI 的分析态由 analysis_run 驱动,不看段表 reason。
             //
-            // ⚠ **空转分析不压撤销步**(#152 复审【建议】1)。`applyAnalysisSegments` 的每轨
-            // 循环开头就是 `if (src.empty()) continue;` —— 15 轨全无产出(覆盖区整段静音、
-            // 或范围内一句都没检出)时它是**恒等变换**。若照压不误,用户按一次 Ctrl+Z 段表
-            // 纹丝不动,同时攒着的**重做栈被清空**(新事务入栈必清 redo,juce 语义)——
-            // 一次「什么都没发生」的操作吃掉了真实的重做历史。
-            // 这与本仓既有口径一致:`editSegmentTransactional` 判失败不进 undo(PR#55 缺陷3)、
-            // `setVersionName` 名字未变则短路不产生空事务。恒等变换同属「空事务」那一类。
-            // 走 else 支时行为与改判前逐字同款(照旧重建曲线),差别只有「不压步」这一条。
+            // ⚠ **恒等的那一轮不压撤销步**(#152 复审【建议】1 立的规矩;[SL-255] 起判据
+            // 由「零产出」放宽成「段表没变」,理由见下面 tableChanged 处的头注)。
+            //
             // [SL-255] 段表前后比对(§2.8 的 diff 块;此前是硬编码全 0 的桩)。
-            // 在 mutator 之前抓一份「改前」,应用完再逐轨比 —— 事务本来就要复制整个
-            // CrvsData,这里只多留一份**当前版本**的段表引用,量级可忽略。
+            //
+            // ⚠ `beforeTracks` 是**整表深拷贝**(15 轨 × 每轨 vector<Segment>),不是引用
+            // —— 旧注那句「只多留一份引用」是错的([SL-255] 复审【建议】)。它有两个用途,
+            // 缺一不可:① diff 的「改前」侧;② 判「这一轮到底改没改」(见下)。量级与
+            // commitCrvsTransaction 内部那两份 CrvsData 快照同阶,不是新增的数量级。
             const int vIdx = juce::jlimit(1, 2, versionActive_) - 1;
-            const auto beforeTracks = crvsData_.versions[static_cast<std::size_t>(vIdx)].tracks;
+            auto& liveTracks = crvsData_.versions[static_cast<std::size_t>(vIdx)].tracks;
+            const auto beforeTracks = liveTracks;
 
-            const bool producedAny =
-                std::any_of(result.segments.begin(), result.segments.end(), [](const auto& v) { return !v.empty(); });
-            if (producedAny)
+            // **先在事务外应用一次**,拿到「改后」再决定压不压撤销步。
+            // `applyAnalysisSegments` 的写面只有 `versions[active].tracks[*].segments`
+            // (整个函数唯一的赋值目标),所以「应用 → 还原 → 在事务里重放」与「直接在
+            // 事务里跑一次」逐字节等价;代价是多跑一遍纯内存的合并循环,相对整条流水线
+            // 可忽略。
+            applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual);
+
+            // 判据从「有没有产出」升级成「段表到底变没变」([SL-255] 复审②的连带)。
+            //
+            // 为什么必须升级:复审②把 `armResegment` 提到 `if (changed)` 之外后,
+            // 「拖到某值 → 停手挑一会儿 → 再松手」会跑**两遍**同参数流水线,第二遍的
+            // 产出与第一遍逐字节相同 —— 照压不误的话用户按一次 Ctrl+Z 段表纹丝不动,
+            // 而攒着的**重做栈被清空**(新事务入栈必清 redo,juce 语义)。
+            // 这与既有口径一致:`editSegmentTransactional` 判失败不进 undo(PR#55 缺陷3)、
+            // `setVersionName` 名字未变则短路。空事务就是不该入栈。
+            //
+            // ⚠ **不能拿 `lastSegmentDiff_` 是否全空来代替**:`changed` 只比 pan/volDb,
+            // 「边界挪了但两个值没变」的重分段 diff 全空、段表却真变了,漏压这一步用户
+            // 就撤不回来。所以这里比的是五个字段全等(`segmentsIdentical`)。
+            //
+            // 旧判据 `producedAny`(15 轨全无产出)是本判据的真子集:无产出 ⇒
+            // applyAnalysisSegments 恒等 ⇒ tableChanged 为假,行为不变。
+            bool tableChanged = false;
+            for (int t = 0; t < scvb::state::kNumTracks && !tableChanged; ++t)
             {
+                tableChanged = !scvb::output::segmentsIdentical(beforeTracks[static_cast<std::size_t>(t)].segments,
+                                                                liveTracks[static_cast<std::size_t>(t)].segments);
+            }
+
+            if (tableChanged)
+            {
+                // 还原,让事务拿到正确的「改前」快照,再由 mutator 重放同一次合并。
+                liveTracks = beforeTracks;
+                // 事务名与「点分析」区分开(变更文档兼容性段承诺过):用户在撤销栈里
+                // 认得出哪一步是拖滑杆松手带出来的重分段,哪一步是自己点的分析。
+                const char* txnName = (resegmentReason != AnalysisDoneReason::None) ? "Resegment" : "Analyze";
                 scvb::output::commitCrvsTransaction(
-                    authority_.undoManager(), crvsData_, "Analyze",
+                    authority_.undoManager(), crvsData_, txnName,
                     [&] { applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual); },
                     [this] { rebuildAllCurves(); });
             }
             else
             {
-                // 恒等,但仍照走一遍:万一将来 applyAnalysisSegments 对空产出不再恒等,
-                // 这一支自动跟上,不会静默丢改动(丢的只会是「本该有的那条撤销步」)。
-                applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual);
                 rebuildAllCurves();
             }
 
             // 应用完再比:改后的段表就是即将发出去的那一份。
+            // 轨维只数**本轮真参与分析**的轨(见 analyzedTracks 的来源),范围维在
+            // diffTrackInto 里按半开区间筛 —— 两条都与 previewAnalysis 的 manualKept
+            // 同源,A-07 预览行与 A-02 摘要行的 {k} 才在同一把尺子上([SL-255] 复审③)。
             lastSegmentDiff_ = scvb::output::SegmentDiff{};
-            if (!result.cancelled)
+            for (int t = 0; t < scvb::state::kNumTracks; ++t)
             {
-                const auto& afterTracks = crvsData_.versions[static_cast<std::size_t>(vIdx)].tracks;
-                for (int t = 0; t < scvb::state::kNumTracks; ++t)
+                if ((analyzedTracks & (1u << t)) == 0)
                 {
-                    scvb::output::diffTrackInto(t + 1, beforeTracks[static_cast<std::size_t>(t)].segments,
-                                                afterTracks[static_cast<std::size_t>(t)].segments, lastSegmentDiff_);
+                    continue; // 没参与的轨整表恒等,也不该贡献 kept
                 }
+                scvb::output::diffTrackInto(t + 1, beforeTracks[static_cast<std::size_t>(t)].segments,
+                                            liveTracks[static_cast<std::size_t>(t)].segments, rangeStartSample,
+                                            rangeEndSample, lastSegmentDiff_);
             }
         }
 
         runtime_.analysisRunning = false;
         runtime_.analysisProgress.store(result.cancelled ? 0.0f : 1.0f, std::memory_order_relaxed);
-        // [SL-255] 完成时的 §2.8 reason:防抖那一路记在 pendingResegmentReason_,点「分析」
-        // 那一路落 Analyze。取走即清,免得下一次分析继承上一次的 reason。
+        // [SL-255] 完成时的 §2.8 reason:松手档那一路随作业带过来(`resegmentReason`),
+        // 点「分析」那一路带的是 None ⇒ 落 Analyze。
+        //
+        // ⚠ reason **随作业走、不留成员**([SL-255] 复审①):取消那条路根本不经过本函数
+        // (handleAsyncUpdate 代号不符就整份丢弃),留在成员里的话「松手重分段 → 取消 →
+        // 再点分析」会让后面那次「点分析」以 reason:"vad" 发出 —— Tab4 的陈旧基线与
+        // undo 钮白名单都认不到它。代号一丢,reason 跟着丢。
         if (!result.cancelled)
         {
-            analysisDoneReason_ = (pendingResegmentReason_ != AnalysisDoneReason::None) ? pendingResegmentReason_
-                                                                                        : AnalysisDoneReason::Analyze;
+            analysisDoneReason_ =
+                (resegmentReason != AnalysisDoneReason::None) ? resegmentReason : AnalysisDoneReason::Analyze;
         }
-        pendingResegmentReason_ = AnalysisDoneReason::None;
         crvsRevision_.fetch_add(1, std::memory_order_release);
     }
     analysisRunning_.store(false, std::memory_order_release);

@@ -245,7 +245,8 @@ void OutputEditor::emitTick()
     //
     // `analyzed` 也必须闩住:takeAnalysisDone() 是**取走即清**,分析在隐藏期完成的话这一位会被
     // 消费掉,恢复可见时只补一帧 reason:"snapshot" —— 而 Tab4 的「参数已改、结果陈旧」基线同步
-    // (tab-settings.js 只认 reason==="analyze")与 Tab3 的分析 diff 摘要条 + 倒计时撤条
+    // (tab-settings.js 认 analyze|vad|segmentation;[SL-255] 起松手档与「点分析」同质,
+    // 三个都认)与 Tab3 的分析 diff 摘要条 + 倒计时撤条
     // (tab-wave.js 只认 vad|segmentation|analyze)都会静默失效。段表看起来是新鲜的,这个缺口
     // 反而更难被察觉(#119 复审顺带记账)。发出去了才清。
     // [SL-255] 闩住的不再只是「完成了没」,而是**哪一种完成** —— 隐藏期完成的那一次若只
@@ -254,8 +255,8 @@ void OutputEditor::emitTick()
     // 新的一次覆盖旧的(后到的更能代表当前段表)。
     if (analyzedReason != ScvbOutputAudioProcessor::AnalysisDoneReason::None)
         pendingAnalyzedReason_ = analyzedReason;
-    const bool pendingAnalyzed_ = pendingAnalyzedReason_ != ScvbOutputAudioProcessor::AnalysisDoneReason::None;
-    if (scvb::output::segmentsResendNeeded(first, pendingSegmentsFull_, pendingAnalyzed_,
+    const bool pendingAnalyzed = pendingAnalyzedReason_ != ScvbOutputAudioProcessor::AnalysisDoneReason::None;
+    if (scvb::output::segmentsResendNeeded(first, pendingSegmentsFull_, pendingAnalyzed,
                                            srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_),
                                            crvsRev != lastCrvsRevision_, staleMask != lastStaleMask_))
     {
@@ -1701,10 +1702,19 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     if (changed)
     {
         ++rt.configSeq; // PR#55 缺陷4
-        // [SL-255] 松手档:排一次 300ms 防抖重分段(§1.18)。放在 `changed` 里 ——
-        // 值没变的重复下发天然不重排,拖动期那串同值调用不会把到点时刻一直往后推。
-        processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
     }
+    // [SL-255] 松手档:排一次 300ms 防抖重分段(§1.18)。
+    //
+    // ⚠ **必须在 `if (changed)` 之外**([SL-255] 复审②)。契约 §1.18 的措辞是「UI
+    // **停止调用**后」—— 防抖的对象是**调用流**,不是变化流;mock 的
+    // `debounceAnalysisPipeline` 也是每次调用无条件 clearTimeout + 重排。
+    // 放进 `changed` 里会漏掉最常见的一种手势:`tab-wave.js::releaseSlider` 在本次手势
+    // 动过值(`s.dirty`)时补发尾值,而 `dirty` 记的是「这一手势动过没」、**不是**「与上次
+    // 下发的值不同」。于是「拖到某值 → 停手挑一会儿(>300ms,防抖已到点跑完并发过事件)
+    // → 再松手」,尾包与上次逐字相同 ⇒ changed==false ⇒ 不重排 ⇒ 松手时 `armCountdown`
+    // 挂上的倒计时条等不到任何新事件,2s 兜底静默撤掉,用户看到的又是「拖了没效果」。
+    // 代价(同参数多跑一遍流水线)由 `finishAnalysis` 的「段表没变就不压撤销步」兜住。
+    processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
     c(okResp());
 }
 
@@ -1744,9 +1754,10 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     if (changed)
     {
         ++rt.configSeq; // PR#55 缺陷4
-        // [SL-255] 同 §1.18,reason 落 "segmentation"(§1.19)。
-        processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Segmentation);
     }
+    // [SL-255] 同 §1.18,reason 落 "segmentation"(§1.19);同样在 `if (changed)` 之外,
+    // 理由逐字见 handleSetVadParams 那处的头注。
+    processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Segmentation);
     c(okResp());
 }
 
