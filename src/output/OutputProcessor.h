@@ -300,7 +300,11 @@ public:
     // (FEAT 随工程走),改完段边界后自动跟着变(缓存做不到这一点)。
     // 口径与分析流水线逐条一致:未覆盖 hop 计 0(静音),再 `lufsFromMeanKw`。
     // 持 lifecycleMutex_(与写 FrameStore 的 timerCallback 串行),[M] 调用。
-    double segmentLoudnessLufs(int channel, double t0S, double t1S) const;
+    // 入参是**采样点**而不是秒([SL-262] 口径核对的结论):秒→hop 走浮点除法时,段边界恰落
+    // hop 边界的情况有约 **4.9%** 会被截断到 k−1(实测 1..200000 个边界里 9721 次,
+    // 例:`29*0.01/0.01 = 28.999999999999996 → 28`),把段尾最后一个 hop 排除出上报窗口。
+    // 改走与分析流水线**逐字同款**的整型 `samples / hopSamples`,两侧口径彻底对齐。
+    double segmentLoudnessLufs(int channel, std::int64_t t0Samples, std::int64_t t1Samples) const;
     // hop → 秒的换算系数(feat 段几何常量,不是采样率派生量)。
     static double featHopSeconds();
 

@@ -10,6 +10,7 @@
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
+#include "analysis/HopMath.h" // [SL-262] 采样点→hop 的唯一换算口径(与分析入口共用)
 #include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
@@ -313,23 +314,33 @@ double ScvbOutputAudioProcessor::featHopSeconds()
     return static_cast<double>(scvb::output::OutputSession::featHopMs()) / 1000.0;
 }
 
-double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, double t0S, double t1S) const
+double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, std::int64_t t0Samples, std::int64_t t1Samples) const
 {
-    if (channel < 1 || channel > 15 || !(t1S > t0S))
+    if (channel < 1 || channel > 15 || !(t1Samples > t0Samples))
     {
         return scvb::analysis::lufsFromMeanKw(0.0); // −120 替身,与流水线静音档同值
     }
 
     const juce::ScopedLock lock(lifecycleMutex_);
 
-    // 秒 → hop:hop 时长是 feat 段的几何常量,不是采样率派生量(与 coverageOf 同口径)。
-    const double hopS = featHopSeconds();
-    const auto toHop = [hopS](double s) {
-        const double h = s / hopS;
-        return h <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(h);
-    };
-    const std::uint64_t first = toHop(t0S);
-    const std::uint64_t last = toHop(t1S);
+    // 采样点 → hop,**整型除法**,与 `AnalysisPipeline` 的 `t / hopSamples` 逐字同款。
+    // [SL-262] 此前走的是秒→hop 的浮点除法(`s / 0.01`),段边界恰落 hop 边界时约 4.9%
+    // 会截断到 k−1(实测 1..200000 个边界里 9721 次),把段尾最后一个 hop 排除出窗口。
+    // 采样率取**本类自己的 `sampleRate_`**(prepare 时写的原子),**不是** JUCE 的
+    // `getSampleRate()` —— 后者由宿主的 `setRateAndBufferSizeDetails` 设置,直接调
+    // `prepareToPlay` 的离线 harness 里恒为 0,会让这里恒早退回 −120(SL-263 的 host 用例
+    // 当场逮到:覆盖区间明明有数据却拿到静音替身)。`sampleRate_` 是本仓既有的单一真源
+    // (`isPrepared()` 也读它)。
+    // [SL-262] 换算走 `analysis/HopMath.h` 的共用纯函数 —— 与 `AnalysisPipeline` 同一份口径,
+    // 且 `scvb_tests` 能直接把 hop 边界钉死(本函数挂在 processor 上,core 单测够不着)。
+    const double sr = sampleRate_.load(std::memory_order_relaxed);
+    const auto win = scvb::analysis::hopWindowFromSamples(t0Samples, t1Samples, featHopSeconds(), sr);
+    if (!win.valid)
+    {
+        return scvb::analysis::lufsFromMeanKw(0.0); // 未 prepare / 空窗 / 倒序窗
+    }
+    const std::uint64_t first = win.first;
+    const std::uint64_t last = win.last;
     if (last <= first)
     {
         return scvb::analysis::lufsFromMeanKw(0.0);

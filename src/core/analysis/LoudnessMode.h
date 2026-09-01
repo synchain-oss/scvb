@@ -67,13 +67,18 @@ struct AnalysisSettingsStale
 };
 
 // 分析链段响度口径求值:读 settings 决定第二指标口径;主口径恒为 computeLseg(不随 settings 变)。
-struct SegmentLoudness
+//
+// [SL-262] 本类型原名 `SegmentLoudness`,与 `analysis/Loudness.h` 里**同名同命名空间**但
+// **成员完全不同**的另一个结构并存(那个是 `{LoudnessValue main; peakMax; MomentaryStats}`)
+// —— 按标准是 ODR 违规。改名收敛:`SegmentLoudness` 这个名字留给 Loudness.h 那份**完整测量
+// 结果**,本类型按它真正承载的东西命名 —— **两个读数**(主口径 + 第二指标)。
+struct SegmentLoudnessReadings
 {
     double lseg = 0.0; // 主口径 L_seg(ADR-009/[J18] 冻结),恒等于 computeLseg(kwMs, n)
     double lmode = 0.0; // 第二指标,依 settings.loudnessMode(02 §4.3)
 };
 
-SegmentLoudness computeSegmentLoudness(const AnalysisSettingsStale& settings, const float* kwMs, const float* peak,
-                                       std::size_t n);
+SegmentLoudnessReadings computeSegmentLoudness(const AnalysisSettingsStale& settings, const float* kwMs,
+                                               const float* peak, std::size_t n);
 
 } // namespace scvb::analysis

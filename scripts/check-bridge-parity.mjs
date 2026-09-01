@@ -721,7 +721,10 @@ const MONITOR_BASE_FNS = [
     "setLang",
 ];
 const MONITOR_COUNTS = { functions: 5, events: 4 };
-const MONITOR_HEADER = "src/monitor/MonitorBridgeApi.h";
+// [SL-262] 路径取自 `HEADER_PATHS.monitor` —— 此前这里是同一路径的**第二份字面量**
+// (字符串常量 + 另一种 join 拼法),而 SL-258 的注释却写着「路径只留这一个真源」,
+// 那句话当时只对第五节成立。同一语义两个落点(§0.1 第 4 条)正是本卡在收的债。
+const MONITOR_HEADER = rel(HEADER_PATHS.monitor);
 
 log("");
 log("[M] Monitor 侧 —— 契约 §10 / " + MONITOR_HEADER);
@@ -761,7 +764,7 @@ log("[M] Monitor 侧 —— 契约 §10 / " + MONITOR_HEADER);
             ]);
         }
 
-        const mhPath = join(REPO_ROOT, MONITOR_HEADER);
+        const mhPath = HEADER_PATHS.monitor;
         if (existsSync(mhPath)) {
             const mh = extractCppNames(readFileSync(mhPath, "utf8"));
             const extra = mh.functions.filter((f) => !mFns.includes(f));
@@ -902,9 +905,18 @@ checkEventPayloadFields();
     // **先剥行注释再抽名字**(#163 复审【建议】):正则直接扫源码文本的话,
     // `// add(Fn::ExportSuggestions, …); // 先关掉查个 bug` 会被算成「已注册」,门禁绿 ——
     // 而「有人临时注释掉一行注册忘了恢复」恰恰是本节最想拦的那一族(两次定谳的那两个洞,
-    // 只是把「注释掉」换成了「从没写」)。块注释这一族里基本不出现,不特殊处理。
+    // 只是把「注释掉」换成了「从没写」)。块注释那一族见下(SL-262 已补剥离)。
+    // [SL-262] **先剥块注释再剥行注释**。只剥 `//` 的话,整块 `/* … */` 注释掉的注册会被算成
+    // 「已注册」——失败方向是**假绿**,恰是本节最想拦的那一族(历史两次栽的是「从没写」,
+    // 但「临时整块注释掉忘了恢复」是同一形状)。
+    // **顺序是有意的取舍**(#169 复审订正了我原本写反的理由):块优先的代价是
+    // `// 见 /* 这里` 这种行注释里的 `/*` 会启动一次跨段吞噬、一路吃到下一个 `*/`,
+    // 把中间真实的注册行一起剥掉 —— 方向是**假红**(误报「没注册」),可接受;
+    // 行优先则会让 `/* … // … */` 漏剥,方向是**假绿**,不可接受。故取块优先。
+    // (现四个被扫文件里没有任何 `//` 行含 `/*`,不是活 bug。)
+    const stripBlockComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "");
     const stripLineComments = (src) =>
-        src
+        stripBlockComments(src)
             .split(NL)
             .map((line) => {
                 const i = line.indexOf("//");

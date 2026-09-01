@@ -3,22 +3,24 @@
 
 #include <cstddef>
 
+// [SL-262] `LoudnessMode` 的**唯一定义**在 `analysis/LoudnessMode.h`;本文件只是 include 它。
+// 本文件此前自带一份同名同命名空间的枚举
+// (拼法 kIntegrated/kRms/kPeakDbfs),与 `LoudnessMode.h` 的 KIntegrated/Rms/PeakDbfs
+// 并存 —— 同一命名空间两个定义,按标准是 ODR 违规,靠「没有哪个 TU 同时 include 两头」
+// 侥幸不炸。SL-252 让 `AutoAssign.h`(公开头)include 了 LoudnessMode.h 后传播面扩大,
+// 本卡收敛成单一定义。保留的是 LoudnessMode.h 那份:它带 `parseLoudnessMode` /
+// `loudnessModeToString`(桥面 §1.21/§9.2 的真源)且有显式序号,序号与旧拼法逐一对应。
+#include "analysis/LoudnessMode.h"
+
 namespace scvb::analysis
 {
 
-// 段响度口径(02-dsp-spec §4.3 / J69 / U24①)。
-// 三档全部由现有 hop 特征(kw_ms / peak,ipc v1.5 冻结)离线可算,切换不需重采集。
-enum class LoudnessMode
-{
-    kIntegrated, // 默认:K 加权段积分(ungated,窗长=段长)
-    kRms, // RMS 平均(幅度域算术平均)
-    kPeakDbfs, // 峰值 dBFS(未加权样本峰值)
-};
-
 // 段响度主指标(§4.1/§4.3)。
-// z     = 线性等效能量,下游 §5/§6 平衡计算的输入;增益 u dB ⇒ z → z·10^(u/10)。
-//         k_integrated 档 z = (1/N)·Σ kw_ms(线性能量,与 LOUD-1/5 向量一致);
-//         rms / peak_dbfs 档 z = 10^(L/10)。
+// z     = 线性等效能量;增益 u dB ⇒ z → z·10^(u/10)。
+//         ⚠ **平衡层用的归一化基准 z 不走这里** —— 那条路由 ADR-009 v2.2 [J95②→ADR-009 澄清]
+//         定义、落点是 `analysis/BalanceBasis.h` 的 `balanceBasisZ`(SL-252)。本字段是
+//         `segmentLoudness` 自己的读数;`rms`/`peak_dbfs` 档在这里走 `10^(L/10)` 的 dB 往返,
+//         与 BalanceBasis 的直接式**数学等价但浮点不逐位相同**,别把两者混用。
 // level = 主指标 L_mode(LUFS;k_integrated / rms 为 K 加权口径,peak_dbfs 为 dBFS)。
 struct LoudnessValue
 {

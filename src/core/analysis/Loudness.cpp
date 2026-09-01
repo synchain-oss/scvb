@@ -30,15 +30,15 @@ LoudnessValue silentValue(LoudnessMode mode)
     LoudnessValue out;
     switch (mode)
     {
-    case LoudnessMode::kIntegrated:
+    case LoudnessMode::KIntegrated:
         out.z = 0.0;
         out.level = energyToLoudness(0.0);
         break;
-    case LoudnessMode::kRms:
+    case LoudnessMode::Rms:
         out.level = amplitudeToLevel(0.0);
         out.z = std::pow(10.0, out.level / 10.0);
         break;
-    case LoudnessMode::kPeakDbfs:
+    case LoudnessMode::PeakDbfs:
         out.level = amplitudeToLevel(0.0);
         out.z = std::pow(10.0, out.level / 10.0);
         break;
@@ -56,7 +56,7 @@ LoudnessValue segmentLoudness(const float* kwMs, const float* peak, int numHops,
 
     switch (mode)
     {
-    case LoudnessMode::kIntegrated: {
+    case LoudnessMode::KIntegrated: {
         // 线性能量域:K-weighted mean-square 的段内算术平均(ungated,窗长=段长)。
         double sum = 0.0;
         for (int k = 0; k < numHops; ++k)
@@ -65,7 +65,7 @@ LoudnessValue segmentLoudness(const float* kwMs, const float* peak, int numHops,
         out.level = energyToLoudness(out.z);
         break;
     }
-    case LoudnessMode::kRms: {
+    case LoudnessMode::Rms: {
         // 幅度域算术平均(逐 hop RMS 幅度取均值,仍带 K 加权)。
         double sum = 0.0;
         for (int k = 0; k < numHops; ++k)
@@ -75,7 +75,7 @@ LoudnessValue segmentLoudness(const float* kwMs, const float* peak, int numHops,
         out.z = std::pow(10.0, out.level / 10.0);
         break;
     }
-    case LoudnessMode::kPeakDbfs: {
+    case LoudnessMode::PeakDbfs: {
         double pk = 0.0;
         for (int k = 0; k < numHops; ++k)
             pk = std::max(pk, static_cast<double>(peak[k]));
