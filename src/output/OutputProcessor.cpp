@@ -3145,12 +3145,21 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // —— 旧注那句「只多留一份引用」是错的([SL-255] 复审【建议】)。它有两个用途,
             // 缺一不可:① diff 的「改前」侧;② 判「这一轮到底改没改」(见下)。量级与
             // commitCrvsTransaction 内部那两份 CrvsData 快照同阶,不是新增的数量级。
-            // ⚠ 这里的版本下标必须与 `applyAnalysisSegments` 用的**逐字是同一个表达式**
+            // ⚠ 这里的版本下标必须与 `applyAnalysisSegments` 取到**同一个版本**
             // ([SL-255] 复审④):下面「事务外先应用一次 → 还原 → 事务里重放」的还原步
             // (`liveTracks = beforeTracks`)只有在两者指向同一个版本时才成立 —— 一旦指向
             // 两个版本,还原会还错版本,而事务里的重放又把改动应用一次,净效果是**双重应用**。
             // 故这里不另加 jlimit 夹取(全文件另外十处取活动版本用的都是这个裸表达式,
             // 夹取反而让这一处与 applyAnalysisSegments 变成两个式子)。
+            //
+            // ⚠ 但「同一个表达式」只是**必要**条件,**真正的保证是锁**([SL-255] 复审⑤):
+            // 两处读的是两个时刻的 `versionActive_`,它们相等靠的是本函数全程持
+            // `lifecycleMutex_`,而 `setVersionActive`(:2156)写它时取的是同一把锁。
+            // 将来若有人收窄锁粒度(比如让 apply / commit 各自取一次锁),表达式再一样
+            // 也会分叉 —— 改锁粒度前先回来看这一段。
+            //
+            // 取值域由 `setVersionActive` 的 jlimit 保证;夹取既已去掉,就在 debug 下钉住。
+            jassert(versionActive_ >= 1 && versionActive_ <= kVersionMax);
             const int vIdx = versionActive_ - 1;
             auto& liveTracks = crvsData_.versions[static_cast<std::size_t>(vIdx)].tracks;
             const auto beforeTracks = liveTracks;
