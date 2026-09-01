@@ -6384,26 +6384,47 @@ TEST_CASE("HOST SL-254:非实时下 Output 崩溃未释放(心跳陈旧)也必�
 
     const auto backdate = [&os] { os->heartbeat_ms.store(1); }; // 1 = 远古,必然 > kStaleDisplayMs
 
-    backdate();
-    Rig::pumpMessages(60); // 让 Input 的 [M] 至少跑一拍,把 outputStale_ 置 1
-
-    float peak = 0.0f;
-    for (int i = 0; i < 200; ++i)
+    // settle 循环(照本文件 waitUntilInjected / heartbeatOf 那两处的既有形态):**每轮都重新拨旧**,
+    // 每轮泵满 ≥1 拍 [M],等到否决位真的生效为止。
+    //
+    // ⚠ 不能写成「拨旧一次 + 泵 60ms + 之后只泵 1ms」(复审 r2 抓出的竞态):Output 的 [M] 仍在跑,
+    // 4Hz 心跳会把 heartbeat_ms 刷回新鲜。若那 60ms 里恰好轮到它刷、且排在 Input 的 [M] 之前,
+    // Input 读到的就是新鲜心跳 ⇒ outputStale_ 停在 0;而后续每 16 块才泵 1ms、累计仅约 12ms,
+    // **不足一拍 [M]**,再没有翻盘机会 ⇒ peak 恒 0 ⇒ **假红**(方向是误报,但仍是不稳定用例)。
+    // ⚠ 光断言「回了直通」**不够有牙齿**:settle 循环拉长后,Output 的 [M] 有机会把该轨判下线并
+    // `clearConnectedMaskBit`,那样 Input 回直通就与否决位无关了 —— 实测过:只断言 wentPassthrough
+    // 时,把否决位删掉该用例**照样绿**。所以必须在**观测到直通的那一轮**同时钉住「mask 位仍在 ∧
+    // state 仍 active」——「残留 mask 之下仍回直通」才是否决位独有的效果,别的路径都满足不了。
+    bool wentPassthrough = false;
+    bool maskStillSetAtPassthrough = false;
+    bool sawMaskCleared = false;
+    for (int waited = 0; waited < 2000 && !wentPassthrough; waited += 40)
     {
         backdate();
+        Rig::pumpMessages(40); // ≥ 一拍 [M],保证 Input 有机会评估
+        backdate(); // 泵完再拨一次:这一拍里 Output 可能刚把心跳刷回新鲜
+
+        const bool maskSet = (probe.connectedMask() & (1u << (kTestChannel - 1))) != 0;
+        const bool stateActive = os->state.load(std::memory_order_acquire) == scvb::kSlotActive;
+        if (!maskSet)
+        {
+            sawMaskCleared = true;
+        }
+
         Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
         r.in.processBlock(r.inBuf, r.midi);
-        for (int c = 0; c < r.inBuf.getNumChannels(); ++c)
-            for (int s = 0; s < r.inBuf.getNumSamples(); ++s)
-                peak = std::max(peak, std::abs(r.inBuf.getReadPointer(c)[s]));
         r.ph.timeSamples += kBlock;
-        if ((i % 16) == 15)
+
+        if (r.inBuf.getMagnitude(0, r.inBuf.getNumSamples()) > 1e-3f)
         {
-            backdate();
-            Rig::pumpMessages(1);
+            wentPassthrough = true;
+            maskStillSetAtPassthrough = maskSet && stateActive;
         }
     }
-    INFO("Output 心跳陈旧后 Input 峰值=" << peak);
-    // ★ 删掉 outputStale_ 否决位 ⇒ 这里红(Input 认残留 mask 恒静音 = 整条导出全零)。
-    CHECK(peak > 1e-3f);
+    INFO("回直通=" << wentPassthrough << " 直通时 mask 仍在=" << maskStillSetAtPassthrough
+                   << " 期间曾观测到 mask 被清=" << sawMaskCleared);
+    // ★ 删掉 outputStale_ 否决位 ⇒ 两条里必有一条红:mask 仍在时 Input 恒静音(第一条红),
+    //   或 Input 因 mask 被清才直通(第二条红)。两条都绿只可能是否决位真的生效了。
+    REQUIRE(wentPassthrough);
+    REQUIRE(maskStillSetAtPassthrough);
 }

@@ -99,8 +99,14 @@ J32 的注入握手**全程按墙钟闸控**,与音频时间线解耦:
    反向:删掉 `outputStale_` 否决位 ⇒ **⑤ 红(`Input 峰值 = 0`)而 ④ 绿**。这一对实测结果正说明两条覆盖**不同路径**:
    ④ 由 [A] 的**逐块 `state` 读**兜住,⑤ 由 [M] 的**否决位**兜住。
    **没有 ⑤,`outputStale_` 就是零覆盖的死代码** —— 复审 r2 抓出:④ 走 `kSlotFree`,而 `outputClaimedButStale()` 在 state 非 active 时提前 `return false`,故 ④ 全程用不到它。
-   实现注意:不能停 Output 的 [M](`juce::Timer` 是私有继承,无公开 stop),故用「**持续拨旧 `heartbeat_ms`**」——
-   一次性拨旧会被 Output 的 4Hz 心跳刷回去,那样测的就不是这条路了。
+   实现注意(两个坑,都是实测踩出来的,复审 r2/r3 各一个):
+   - 不能停 Output 的 [M](`juce::Timer` 是私有继承,无公开 stop),故用「**持续拨旧 `heartbeat_ms`**」+ settle 循环
+     (每轮泵满 ≥1 拍 [M])。一次性拨旧 + 只泵 60ms 会与 Output 的 4Hz 心跳**竞态** ⇒ 偶发假红。
+   - **光断言「回了直通」没有牙齿。** settle 循环拉长后,Output 有机会把该轨判下线并 `clearConnectedMaskBit`,
+     那时 Input 回直通与否决位无关。实测:只断言 `wentPassthrough` 时,删掉否决位该用例**照样绿**,
+     诊断输出 `回直通=1 直通时 mask 仍在=0 期间曾观测到 mask 被清=1`。
+     故必须在**观测到直通的那一轮**同时钉住「mask 位仍在 ∧ `state` 仍 active」——
+     **「残留 mask 之下仍回直通」才是否决位独有的效果**,别的路径都满足不了。
 
 回归 ① 另补了 ② 同款前置断言 `REQUIRE(firstInputSilent >= 0)` / `REQUIRE(firstInject >= 0)`:
 两条断言都是「不许出现 X」的形态,**没发生交接就恒真** ⇒ 空跑全绿,而 ① 是本卡主防线。
