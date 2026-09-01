@@ -3145,7 +3145,13 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // —— 旧注那句「只多留一份引用」是错的([SL-255] 复审【建议】)。它有两个用途,
             // 缺一不可:① diff 的「改前」侧;② 判「这一轮到底改没改」(见下)。量级与
             // commitCrvsTransaction 内部那两份 CrvsData 快照同阶,不是新增的数量级。
-            const int vIdx = juce::jlimit(1, 2, versionActive_) - 1;
+            // ⚠ 这里的版本下标必须与 `applyAnalysisSegments` 用的**逐字是同一个表达式**
+            // ([SL-255] 复审④):下面「事务外先应用一次 → 还原 → 事务里重放」的还原步
+            // (`liveTracks = beforeTracks`)只有在两者指向同一个版本时才成立 —— 一旦指向
+            // 两个版本,还原会还错版本,而事务里的重放又把改动应用一次,净效果是**双重应用**。
+            // 故这里不另加 jlimit 夹取(全文件另外十处取活动版本用的都是这个裸表达式,
+            // 夹取反而让这一处与 applyAnalysisSegments 变成两个式子)。
+            const int vIdx = versionActive_ - 1;
             auto& liveTracks = crvsData_.versions[static_cast<std::size_t>(vIdx)].tracks;
             const auto beforeTracks = liveTracks;
 

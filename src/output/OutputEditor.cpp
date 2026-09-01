@@ -1714,6 +1714,13 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     // → 再松手」,尾包与上次逐字相同 ⇒ changed==false ⇒ 不重排 ⇒ 松手时 `armCountdown`
     // 挂上的倒计时条等不到任何新事件,2s 兜底静默撤掉,用户看到的又是「拖了没效果」。
     // 代价(同参数多跑一遍流水线)由 `finishAnalysis` 的「段表没变就不压撤销步」兜住。
+    //
+    // ⚠ **给将来接新调用点的人**([SL-255] 复审顺带登记):提到 `changed` 之外以后,
+    // 「值没改就别跑整条流水线」这道闸**只剩 web 侧** `tab-wave.js::releaseSlider` 的
+    // `!dirty` 早退。当前 `setVadParams`/`setSegmentation` 的生产调用点只有
+    // `sendParamsThrottled` / `releaseSlider`(全仓 grep 过,开窗/hydrate 都不做初始下发),
+    // 所以现在没问题;但从此**调一次 = 排一整条流水线**。若要接状态恢复、预设加载、
+    // Input 远端同步这类新调用方,得在那一侧自己去重,别指望这里替你挡。
     processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
     c(okResp());
 }

@@ -76,6 +76,12 @@ struct SegmentDiff
 // (kept/added/removed/changed),加一个「还有多少条」的字段属契约变更,不在本卡范围。
 // `kept`/`added`/`removed` 三个**仍是精确总数**,只有 `changed[]` 这张明细表被截断。
 // 取 200:比 mock 的展示档(8 条)宽得多,又把最坏 DOM 规模钉在三位数。
+//
+// ⚠ 封顶是**全局**的(`out` 跨 15 轨累积),而调用方按轨号顺序逐轨调用 —— 所以截断也
+// **按轨号顺序**发生:轨 1 自己就改满 200 条时,轨 2..15 一条明细都进不来([SL-255] 复审②)。
+// 条目是带轨号渲染的,用户会因此看到「只有 1 轨有改动」的错觉。没有改成按轨配额:
+// `added/removed/kept` 三个总数仍如实反映全局改动量,而这条摘要本就是几秒后自动收起的
+// 瞥一眼式反馈;真要均摊,得先定「配额怎么分、余数给谁」的呈现口径,那该单独立卡。
 inline constexpr std::size_t kMaxChangedItems = 200;
 
 // 显示精度:1 位小数(UI 的 `fmtSigned(x, 1)`)。判「用户看得出来的差别」,不是判浮点相等。
@@ -129,9 +135,16 @@ inline bool segmentsIdentical(const std::vector<scvb::state::Segment>& a,
 // 密集工程(2000 段/轨)的 O(n²) 会在 [M] 上吃掉几十毫秒(与 [SL-232] 在同一个
 // `finishAnalysis` 里修过的「P0-A 冻死」同族)。
 //
-// 两张表在生产侧都已按 t0 有序且互不重叠,但本函数**不对调用方提这个要求**:自建有序
-// 下标(`std::sort` 对已有序输入近乎线性),排序后语义与逐对枚举的贪心逐字等价 ——
-// 非重叠段的重叠量为 0,而选优判据是严格 `>`,零重叠者本就永远选不上。
+// 两张表在生产侧都已按 t0 有序且互不重叠,但本函数**不要求调用方先排好序**:自建有序
+// 下标(`std::sort` 对已有序输入近乎线性)。
+//
+// ⚠ 「与逐对枚举的贪心结果等价」这条**只在同一张表内的段互不重叠时成立**
+// ([SL-255] 复审③;别把它当成「对任意输入都等价」)。理由:排序改变的正是**新段的
+// 处理顺序**,而每条旧段只配一次 —— 两条新段争同一条旧段时,先处理的那条拿走它,
+// 换个顺序就换个配法。段互不重叠时这种争抢不存在(重叠量为 0 的候选,在严格 `>` 的
+// 选优判据下本就永远选不上),等价才成立。
+// 生产侧这个前提由 `applyAnalysisSegments` 保证(它有 clash 检查 + 末尾 `std::sort`),
+// 所以够不着;下面那条乱序用例也只打乱 `before` 的**输入顺序**,没有制造重叠。
 inline void diffTrackInto(int ch, const std::vector<scvb::state::Segment>& oldSegs,
                           const std::vector<scvb::state::Segment>& newSegs, std::int64_t rangeStartSample,
                           std::int64_t rangeEndSample, SegmentDiff& out)
