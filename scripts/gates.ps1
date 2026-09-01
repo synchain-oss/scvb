@@ -9,6 +9,8 @@
   [R4/J56] gate 3b(gitleaks)/ 3c(reuse lint)与 check-spdx.ps1 已由 T01d 接入(06 §5.1)。
   [SL-265] gate 3j(check-privacy)= 公开仓隐私门禁,与 3b 同族:gitleaks 只管 secrets,
   个人身份信息(代号禁词/本机路径/个人邮箱域/主机名)由 3j 管;CI 侧对应 compliance.yml 两步。
+  [SL-267] gate 3k(check-font-names)= 字体保留名门禁(OFL-1.1 §3),与 3c/3j 同属合规族:
+  断言分发的 woff2 `name` 表不含上游 RFN;CI 侧同样落在 compliance.yml(自测 + 扫描两步)。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
@@ -420,6 +422,40 @@ else {
   else { $fontOut | Select-String -Pattern '\[INFO\]|—' | ForEach-Object { Write-Host ("  " + $_) } }
   Set-Gate '3h 字体子集覆盖' $fontOk
 }
+
+# ==================================================================
+Write-Host '=== Gate 3k: 字体保留名(woff2 name 表 <-> OFL-1.1 §3 RFN 断言)==='
+# ==================================================================
+# [SL-267] 与 3h 同吃 web/fonts/*.woff2,但问的是**另一个问题**:3h 问「字够不够」,
+# 3k 问「名字能不能用」。OFL-1.1 §3 禁止 Modified Version 使用上游保留字体名(RFN),
+# 而子集化就是修改;IBM Plex 两款的 RFN 是 "Plex" 一词本身,仓库带着这个违规转了 public。
+# 判据落在字体 `name` 表而非文件名:文件改叫 ScvbSans.woff2 而 name 表里仍写 "IBM Plex Sans"
+# 的话,装进系统字体册 / DevTools 字体面板 / PDF 导出读到的依然是上游名 —— 违规照旧,
+# 而 diff 看着已经改完了。woff2 是 brotli 压缩的,grep 二进制不命中不等于名字已清除。
+#
+# **先自检再扫**,理由与 3j 逐字同款:本门禁的失效模式是「静默放行」——
+# 署名豁免表被放宽、或子串比对被写成相等比对之后,扫描照样退 0。自检用仓内真字体就地
+# 合成坏样例,验证「漏改的呈现名必红 / 署名记录不误伤 / 未登记字体必红」三档确实成立。
+# python 守卫同 Gate 3d/3h:命令不存在时 $LASTEXITCODE 会保留上一条外部命令的 0。
+# 与 .github/workflows/compliance.yml 的两步逐字同参。
+$fontNameOk = $false
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+  Write-Host '  python 未找到(check-font-names.py 需要,另需 fontTools + brotli)' -ForegroundColor Red
+}
+else {
+  $fnSelf = (& python scripts\check-font-names.py --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $fnSelf | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red }
+    Write-Host '  自检失败 = 门禁本身坏了(不是字体里有 RFN)' -ForegroundColor Red
+  }
+  else {
+    $fnOut = (& python scripts\check-font-names.py 2>&1)
+    $fontNameOk = ($LASTEXITCODE -eq 0)
+    if ($fontNameOk) { $fnOut | Select-Object -Last 1 | ForEach-Object { Write-Host ("  " + $_) } }
+    else { $fnOut | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red } }
+  }
+}
+Set-Gate '3k 字体保留名' $fontNameOk
 
 # ==================================================================
 # ---- gate 4/5/6 前置守卫:cmake / ctest 必须真实可执行 ----

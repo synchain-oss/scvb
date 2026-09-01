@@ -367,7 +367,7 @@ def subset_local(ttf_bytes, text):
     opts = subset.Options()
     opts.flavor = "woff2"
     opts.layout_features = ["*"]
-    opts.name_IDs = ["*"]  # 保留版权/许可名条目:OFL-1.1 §4 的署名随产物分发
+    opts.name_IDs = ["*"]  # 保留版权/许可名条目:OFL-1.1 §2 要求的署名随产物分发
     opts.name_legacy = True
     opts.name_languages = ["*"]
     opts.notdef_outline = True  # 缺字画方框而不是画空白:上屏方块是能看见的 bug,空白不是
@@ -378,6 +378,103 @@ def subset_local(ttf_bytes, text):
     buf = io.BytesIO()
     subset.save_font(font, buf, opts)
     return buf.getvalue()
+
+
+# ---- OFL-1.1 §3 改名 --------------------------------------------------------
+# [SL-267] 只有「上游带 RFN 且分发名要去掉 RFN」的家族才进这张表。
+# 输出文件名 -> (分发家族名, 分发 PostScript 名, 上游保留字体名 RFN)
+#
+# Space Grotesk 不在表内:版权行无 "with Reserved Font Name",名字不受 §3 限制。
+# Noto Sans SC 也不在表内:它的 RFN 是 "Source"(nameID 0 逐字写着),而分发名
+# 'Noto Sans SC' 本就不含该词 —— 无需改名,但仍由 check-font-names.py 守住不回归。
+RENAME = {
+    "ScvbSans.woff2": ("SCVB Sans", "ScvbSans-Regular", "Plex"),
+    "ScvbMono.woff2": ("SCVB Mono", "ScvbMono-Regular", "Plex"),
+}
+
+# OFL-1.1 §2 要求「每份拷贝都包含上述版权声明与本许可证」。上游子集的 name 表里
+# 有 nameID 0(版权)但可能缺 13(许可证声明),改名时一并补齐。
+OFL_LICENSE_DESC = (
+    "This Font Software is licensed under the SIL Open Font License, Version 1.1. "
+    "This license is available with a FAQ at https://scripts.sil.org/OFL"
+)
+# 呈现给用户的主字体名相关记录:家族 / 唯一 ID / 全名 / PostScript 名 / 排版家族与子族
+NAME_IDS_FAMILY = (1, 3, 4, 6, 16, 17)
+# 署名记录:0 版权 / 7 商标 / 13 许可证声明 / 14 许可证 URL。一张表两重身份:
+#   • **永不改写**,随分发逐字保留(OFL-1.1 §2 的随附义务);
+#   • **不参与下面的 RFN 复核** —— OFL 惯例的版权行本身就写着 "with Reserved Font Name 'X'",
+#     商标声明同理(本仓 NotoSansSC 的 nameID 7 逐字是 "Source is a trademark of Adobe…"),
+#     那是要求保留的署名,不是残留的违规名;算进断言只会制造恒红。
+# scripts/check-font-names.py 用同一口径做门禁侧断言,并在导入时与 RENAME 对拍,不会静默漂移。
+NAME_IDS_ATTRIBUTION = (0, 7, 13, 14)
+
+
+def _unique_id(existing, ps_name):
+    """nameID 3 惯例是 "<version>;<vendor>;<postscript name>",只换后两段。"""
+    version = existing.split(";")[0].strip() if existing else ""
+    return ";".join(p for p in (version, "Synchain", ps_name) if p)
+
+
+def rename_font(path, family, ps_name, reserved):
+    """就地重写子集 woff2 的 `name` 表,去掉上游保留字体名(OFL-1.1 §3)。
+
+    §3 限制的是「呈现给用户的主字体名」,故**必须改 name 表** —— 只改文件名与 CSS
+    family 不够:装到系统里、或被 DevTools/PDF 导出读出来的仍是上游名。
+    §2 要求的署名(NAME_IDS_ATTRIBUTION)原样保留,并补齐可能缺失的 13。
+    """
+    from fontTools.ttLib import TTFont  # 仅改名家族需要;见模块顶部「依赖」
+
+    font = TTFont(path)
+    name = font["name"]
+    # §2 的署名记录:改名前后必须逐字不变(下面 keep_before/keep_after 对比)
+    keep_before = {
+        (r.nameID, r.platformID, r.platEncID, r.langID): r.toUnicode()
+        for r in name.names
+        if r.nameID in NAME_IDS_ATTRIBUTION
+    }
+    # name 记录按 (platformID, platEncID, langID) 分槽,逐槽改,Mac/Windows 记录都覆盖到
+    for slot in sorted({(r.platformID, r.platEncID, r.langID) for r in name.names}):
+
+        def current(nid, default="", _slot=slot):
+            rec = name.getName(nid, *_slot)
+            return rec.toUnicode() if rec is not None else default
+
+        subfamily = current(2, "Regular")
+        values = {
+            1: family,
+            3: _unique_id(current(3), ps_name),
+            4: "%s %s" % (family, subfamily),
+            6: ps_name,
+            16: family,
+            17: subfamily,
+        }
+        for nid in NAME_IDS_FAMILY:
+            if name.getName(nid, *slot) is not None:
+                name.setName(values[nid], nid, *slot)
+        if name.getName(13, *slot) is None:
+            name.setName(OFL_LICENSE_DESC, 13, *slot)
+
+    # fail-closed 复核:署名以外的**每一条** name 记录都不得残留 RFN —— 不只查
+    # NAME_IDS_FAMILY 那六条,漏改的槽位(如 nameID 5 的版本串)同样会呈现给用户。
+    # 大小写双侧 casefold:上游若写成 "plex"/"PLEX" 同样要命中。
+    needle = reserved.casefold()
+    stray = sorted(
+        {
+            r.toUnicode()
+            for r in name.names
+            if r.nameID not in NAME_IDS_ATTRIBUTION and needle in r.toUnicode().casefold()
+        }
+    )
+    if stray:  # 改名没改干净就不要产出一个仍带 RFN 的分发物
+        raise SystemExit("!! %s 的 name 表仍含保留字体名 %r: %s" % (path, reserved, stray))
+    keep_after = {
+        (r.nameID, r.platformID, r.platEncID, r.langID): r.toUnicode()
+        for r in name.names
+        if r.nameID in NAME_IDS_ATTRIBUTION
+    }
+    if any(keep_after.get(k) != v for k, v in keep_before.items()):  # §2 署名被动过 = 不合规
+        raise SystemExit("!! %s 的署名记录(nameID %s)被改动" % (path, NAME_IDS_ATTRIBUTION))
+    font.save(path)
 
 
 USAGE = """用法: python scripts/fetch_fonts.py [输出目录] [--print-charset] [--help]
@@ -421,17 +518,25 @@ def main():
         # 字重按 tokens.css 三分工取单一档:Grotesk 只用于标题/数值/CTA(600),
         # Sans/Mono 正文与标签(400)。@font-face 声明的 font-weight 区间比这宽,
         # 是给字体栈回退留口子——配 body 的 font-synthesis:none,缺字重时宁可回退不合成伪粗。
+        #
+        # [SL-267] 输出名不再用上游名:IBM Plex 两款的 RFN 是 "Plex"(见 RENAME 与
+        # THIRD-PARTY-NOTICES.md),子集化 = Modified Version,按 OFL-1.1 §3 不得使用 RFN。
         ("SpaceGrotesk.woff2", "Space Grotesk:wght@600"),
-        ("IBMPlexSans.woff2", "IBM Plex Sans:wght@400"),
-        ("IBMPlexMono.woff2", "IBM Plex Mono:wght@400"),
+        ("ScvbSans.woff2", "IBM Plex Sans:wght@400"),
+        ("ScvbMono.woff2", "IBM Plex Mono:wght@400"),
     ]
 
     os.makedirs(out, exist_ok=True)
     for fname, family in latin_fonts:
         data = fetch_css2_subset(family, latin)
-        with open(os.path.join(out, fname), "wb") as f:
+        path = os.path.join(out, fname)
+        with open(path, "wb") as f:
             f.write(data)
-        print("OK %-20s %7d bytes  (CSS2 text=)" % (fname, len(data)))
+        if fname in RENAME:
+            rename_font(path, *RENAME[fname])
+            print("OK %-20s %7d bytes  (CSS2 text= + OFL §3 改名)" % (fname, os.path.getsize(path)))
+        else:
+            print("OK %-20s %7d bytes  (CSS2 text=)" % (fname, len(data)))
 
     # Noto 的字符集是 CJK + 全部拉丁:三条字体栈都以 'Noto Sans SC' 为最后一道内嵌回退,
     # 拉丁三款没有的字形(如 ⚠ ① ②)全靠它兜住,所以它必须是四款里字符集最全的一款。

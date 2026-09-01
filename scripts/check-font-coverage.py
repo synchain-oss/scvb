@@ -42,7 +42,7 @@ except ImportError:
 import fetch_fonts as ff
 
 # 与 fetch_fonts.py 的 fonts 表一一对应;改文件名两处同步
-LATIN_FONTS = ["SpaceGrotesk.woff2", "IBMPlexSans.woff2", "IBMPlexMono.woff2"]
+LATIN_FONTS = ["SpaceGrotesk.woff2", "ScvbSans.woff2", "ScvbMono.woff2"]
 CJK_FONT = "NotoSansSC.woff2"
 ALL_FONTS = LATIN_FONTS + [CJK_FONT]
 

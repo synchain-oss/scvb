@@ -409,7 +409,7 @@ const STYLE_FALLBACK = {
     axis: "rgba(255, 255, 255, 0.45)",
     base: "rgba(255, 255, 255, 0.35)",
     text: "#7a7a84",
-    mono: '"IBM Plex Mono", "Noto Sans SC", ui-monospace, monospace',
+    mono: '"SCVB Mono", "Noto Sans SC", ui-monospace, monospace',
 };
 
 /** 非高亮轨在 hover 联动时的淡出档(纯展示,05 J75 B「hover 联动高亮」)。 */
