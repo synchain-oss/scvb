@@ -6185,6 +6185,21 @@ struct OfflineHandoverProbe
     int rampBlocks = 0;
 };
 
+// 交接所需的**墙钟预算**,以泵次数计(泵数 = totalBlocks / blocksPerPump)。
+// 离线那四个调用点共用这一个真源 —— 下次再遇到更慢的 runner 只改这里。
+//
+// 为什么是 112:本机实测各档交接分别发生在第 11(8 档)/ 19(16 档)/ 17(32 档)泵。
+// 原先三档共用 totalBlocks=900,泵数是 112/56/**28**,32 档只剩 1.6× 余量 —— CI runner
+// 慢一点就越不过去,整轮**根本没发生交接**(firstInputSilent = -1),已在 CI 上真红过一次。
+// 由此可知 CI 需要的泵数 **> 1.6 倍本机**;按同一把尺子,④/⑤ 原先的 37 泵(≈1.9×)同样
+// 不安全,而它们的前置断言是**给主断言铺路的 setup** —— 它一挂,真正要测的「Output
+// 释放/崩溃后 Input 必须回直通」根本执行不到,变成与被测行为无关的 setup flake。
+// 故四处统一到 112 泵(16 档余量 ≈5.9×,32 档 ≈6.6×)。
+//
+// ⚠ 要加余量就加**泵数**(本常量),**不要**加 pumpMs:倍速比 = 块数/墙钟,
+// 加 pumpMs 会把该档的模拟倍速降下去,正好失去「覆盖高倍速」的本意。
+constexpr int kHandoverPumps = 112;
+
 // pumpMs:每次泵消息循环的**墙钟**时长。离线用 1(墙钟几乎不走 = 音频跑在墙钟前面);
 // 实时用 20(让 J32 的 200ms 墙钟闸真的走得完,否则实时探针量不到注入)。
 OfflineHandoverProbe runOfflineHandover(Rig& r, int blocksPerPump, int totalBlocks, int pumpMs = 1)
@@ -6236,18 +6251,9 @@ TEST_CASE("HOST SL-254:非实时渲染不得出现「Input 静音 ∧ Output 未
         r.out.setNonRealtime(true);
         r.ph.playing = true;
 
-        // 总块数按档位**等比放大**,让每档拿到同样多的泵次数(= 同样的墙钟预算),
-        // 而**不是**加大 pumpMs —— 倍速比 = 块数/墙钟,加 pumpMs 会把该档的倍速降下去,
-        // 正好失去「覆盖高倍速」的本意。
-        //
-        // 为什么必须这么做(实测,不是推演):原先三档共用 totalBlocks=900,于是
-        // blocksPerPump=32 只泵 28 次 ≈ 28ms 墙钟,**不足一拍 [M](40ms)**。本机快、
-        // 压线能过;CI runner 慢一点就整轮**没发生交接**,firstInputSilent 停在 -1。
-        // 在补上面那两条 REQUIRE 之前,这种情况下两条 `== 0` 恒真 ⇒ **空跑全绿**,
-        // 主防线在 CI 上很可能一直什么都没测。前置断言把它从「假绿」变成了「诚实的红」,
-        // 这里再把墙钟预算给够。
-        const int pumpsWanted = 112; // 与原先 blocksPerPump=8 那档的泵次数持平
-        const auto p = runOfflineHandover(r, blocksPerPump, pumpsWanted * blocksPerPump);
+        // 总块数按档位**等比放大**,让每档拿到同样多的泵次数(= 同样的墙钟预算);
+        // 取值与理由见 kHandoverPumps 的头注(四个离线调用点共用那一个真源)。
+        const auto p = runOfflineHandover(r, blocksPerPump, kHandoverPumps * blocksPerPump);
         INFO("blocksPerPump=" << blocksPerPump << " Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject
                               << " 全零块=" << p.bothSilentBlocks << " ramp块=" << p.rampBlocks);
         // ★ 前置:确实交接过。缺了这两行,「本轮根本没发生交接」会让下面两条 `== 0` **恒真** ⇒
@@ -6273,7 +6279,7 @@ TEST_CASE("HOST SL-254:非实时下注入不得早于 Input 静音(防双路叠�
     r.out.setNonRealtime(true);
     r.ph.playing = true;
 
-    const auto p = runOfflineHandover(r, 16, 900);
+    const auto p = runOfflineHandover(r, 16, kHandoverPumps * 16);
     REQUIRE(p.firstInputSilent >= 0); // 前置:确实交接过(否则两条断言都是空的)
     REQUIRE(p.firstInject >= 0);
     INFO("Input静音@" << p.firstInputSilent << " 注入@" << p.firstInject);
@@ -6337,7 +6343,7 @@ TEST_CASE("HOST SL-254:非实时下 Output 释放后必须回直通(健康前提
     r.ph.playing = true;
 
     // 先跑到交接完成:Input 确实已被接管静音(否则后面的断言是空的)。
-    const auto before = runOfflineHandover(r, 16, 600);
+    const auto before = runOfflineHandover(r, 16, kHandoverPumps * 16);
     REQUIRE(before.firstInputSilent >= 0);
     REQUIRE(before.firstInject >= 0);
 
@@ -6380,7 +6386,7 @@ TEST_CASE("HOST SL-254:非实时下 Output 崩溃未释放(心跳陈旧)也必�
     r.out.setNonRealtime(true);
     r.ph.playing = true;
 
-    const auto before = runOfflineHandover(r, 16, 600);
+    const auto before = runOfflineHandover(r, 16, kHandoverPumps * 16);
     REQUIRE(before.firstInputSilent >= 0); // 前置:确实交接过
     REQUIRE(before.firstInject >= 0);
 
