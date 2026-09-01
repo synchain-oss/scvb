@@ -59,6 +59,11 @@ struct PipelineConfig
     std::array<PipelineTrackConfig, kPipelineTracks> tracks{};
 };
 
+// K 加权均方(线性能量)→ LUFS(BS.1770 的 −0.691 偏置;静音回 −120 替身)。
+// §2.8 `loudnessLufs` 与 `AnalysisSegment.loudnessLufs` 的**唯一换算口径**:
+// 流水线产段时用它,桥面 emit 时按 FEAT 重算也用它([SL-257] 真值化)。
+double lufsFromMeanKw(double meanKwLinear);
+
 // 每轨的特征切片(调用方从 FrameStore 里按范围抠出来的快照:kw 线性能量 + 峰值)。
 // 长度必须一致 = 范围内 hop 数;未覆盖的 hop 由调用方填静音(kw=0)。
 // covered 标记哪些 hop 真有采集数据 —— 全 false 的轨直接跳过(不产生段)。

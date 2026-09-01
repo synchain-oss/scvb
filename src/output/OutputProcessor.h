@@ -290,6 +290,16 @@ public:
         std::vector<scvb::analysis::HopRange> ranges; // 覆盖区间(hop 域;秒换算用 featHopSeconds)
     };
     CoverageInfo coverageOf(int channel, double startS, double endS);
+
+    // [SL-252 / SL-257] 某段的**上报响度** L_seg(§2.8 `loudnessLufs`),emit 时按 FEAT 重算。
+    // 此前上桥恒为 `0.0`:`applyAnalysisSegments` 把 `AnalysisSegment` 抄进 `state::Segment`
+    // 时丢掉了它,而 `state::Segment` 没有响度字段(宪法 params-v0 定死持久化段字段),
+    // 于是「字段在、UI 消费点在、就是没有值」—— 与 SL-177 修过的 `stale` 同族。
+    // 走**按 FEAT 重算**而不是加缓存:零契约文字变更、不动 state abi,重开工程照样有值
+    // (FEAT 随工程走),改完段边界后自动跟着变(缓存做不到这一点)。
+    // 口径与分析流水线逐条一致:未覆盖 hop 计 0(静音),再 `lufsFromMeanKw`。
+    // 持 lifecycleMutex_(与写 FrameStore 的 timerCallback 串行),[M] 调用。
+    double segmentLoudnessLufs(int channel, double t0S, double t1S) const;
     // hop → 秒的换算系数(feat 段几何常量,不是采样率派生量)。
     static double featHopSeconds();
 

@@ -40,6 +40,17 @@ double computeLseg(const float* kwMs, std::size_t n);
 
 // 第二响度指标(02 §4.3),按 mode 求值。kwMs = K-weighted mean-square;
 // peak = 未加权样本峰值(仅 PeakDbfs 档使用,可为 nullptr,其余档忽略)。
+// ---------------------------------------------------------------------------
+// [SL-252 / J95②a] **这三个 mode-aware 函数服务的是「第二响度指标读数」那条路,
+// 不是平衡归一化基准 z。** 修宪 ADR-009 v2.2 把两件事分开了:
+//   · 上报段响度 L_seg(澄清 ①)—— 恒为 ungated K-weighted 积分,不随 mode 变;
+//   · 平衡归一化基准 z(澄清 ②)—— 按 mode 选档,落点是 `analysis/BalanceBasis.h`
+//     的 `balanceBasisZ`,**返回线性能量**。
+// 本文件这几个返回的是 **dB**,且三档不在同一把尺上(KIntegrated 含 −0.691 偏移走
+// 10·log10 的能量域,Rms/PeakDbfs 无偏移走 20·log10 的幅度域)——塞进 z 会让 AutoAssign
+// 的 `zSum` 变负、`zHat` 失去意义,所以 A 案**没有复用**它们,另写了纯函数。
+// **保留不动**:它们是「第二指标读数」尚未落地那条路的既有实现,不是死代码,别顺手删。
+// ---------------------------------------------------------------------------
 double computeLoudnessMetric(LoudnessMode mode, const float* kwMs, const float* peak, std::size_t n);
 
 // 分析设置失效标记(03 §6.3):analysis_settings_stale := loudness_mode ≠ applied.loudness_mode。

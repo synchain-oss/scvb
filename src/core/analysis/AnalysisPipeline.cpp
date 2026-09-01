@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "analysis/AnalysisPipeline.h"
 
+#include "analysis/BalanceBasis.h" // meanKw 真身 + 平衡归一化基准 z(ADR-009 v2.2)
+
 #include <algorithm>
 #include <cmath>
 
@@ -23,34 +25,6 @@ void report(const PipelineProgressFn& fn, float p)
     }
 }
 
-// 段内平均 K 加权能量 → 平衡用的线性能量 z(§4 的总能量口径)。
-double meanKw(const std::vector<float>& kw, std::int64_t begin, std::int64_t end)
-{
-    if (end <= begin)
-    {
-        return 0.0;
-    }
-    const std::int64_t n = static_cast<std::int64_t>(kw.size());
-    const std::int64_t b = std::max<std::int64_t>(0, begin);
-    const std::int64_t e = std::min<std::int64_t>(n, end);
-    if (e <= b)
-    {
-        return 0.0;
-    }
-    double acc = 0.0;
-    for (std::int64_t i = b; i < e; ++i)
-    {
-        acc += static_cast<double>(kw[static_cast<std::size_t>(i)]);
-    }
-    return acc / static_cast<double>(e - b);
-}
-
-// K 加权均方 → LUFS(ITU-R BS.1770 的 −0.691 偏置)。静音回 −inf 的替身 −120。
-double lufsFromMeanKw(double m)
-{
-    return m > 0.0 ? (10.0 * std::log10(m) - 0.691) : -120.0;
-}
-
 void addWarningOnce(std::vector<std::string>& out, const std::string& w)
 {
     if (w.empty())
@@ -64,6 +38,14 @@ void addWarningOnce(std::vector<std::string>& out, const std::string& w)
 }
 
 } // namespace
+
+// K 加权均方 → LUFS(ITU-R BS.1770 的 −0.691 偏置)。静音回 −inf 的替身 −120。
+// [SL-257] 从匿名命名空间移出:§2.8 `loudnessLufs` 的上桥值要在 emit 时按 FEAT 重算,
+// 换算必须与流水线**共用同一份**——各写一份就是下一个「两侧口径漂移」。
+double lufsFromMeanKw(double m)
+{
+    return m > 0.0 ? (10.0 * std::log10(m) - 0.691) : -120.0;
+}
 
 PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipelineTracks>& features,
                                    const PipelineConfig& cfg, const PipelineProgressFn& onProgress,
@@ -229,7 +211,12 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
 
             const std::int64_t b = gi.t0 / hopSamples - firstHop;
             const std::int64_t e = gi.t1 / hopSamples - firstHop;
-            const double z = meanKw(f.kwMs, b, e);
+            // [SL-252 / J95②a] 归一化基准按 `analysis.loudness_mode` 选档(ADR-009 v2.2 澄清 ②)。
+            // 默认档 `kw_integrated` 仍是同一个 `meanKw`,**逐位不变**;另两档同为线性能量量,
+            // 故正文第三条「所有平衡计算在线性能量域做」继续完整适用。
+            // 注意**只有这里**按档走:上面 `as.energyLinear` / `as.loudnessLufs` 是**上报口径**
+            // L_seg(澄清 ①),不随 mode 变化。
+            const double z = balanceBasisZ(cfg.balance.loudnessMode, f.kwMs, f.peak, b, e);
             m.z = z;
             if (tc.source == SourceChannels::Stereo)
             {

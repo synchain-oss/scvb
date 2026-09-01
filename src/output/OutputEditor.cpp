@@ -865,7 +865,13 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
             put(seg, "volDb", static_cast<double>(s.volDb));
             put(seg, "origin", originName(scvb::state::segmentOrigin(s.flags)));
             put(seg, "locked", scvb::state::segmentLocked(s.flags));
-            put(seg, "loudnessLufs", 0.0); // 段内积分响度归 T21 分析管线
+            // [SL-252 / SL-257] 此前这里是写死的 `0.0` —— §2.8 字段在、UI 消费点在、就是没有值
+            // (与 SL-177 修过的 `stale` 同族)。根因是 `applyAnalysisSegments` 把
+            // `AnalysisSegment` 抄进 `state::Segment` 时丢掉了它,而 `state::Segment` 没有响度
+            // 字段(宪法 params-v0 定死持久化段字段)。按 FEAT **重算真值**:零契约文字变更、
+            // 不动 state abi;重开工程照样有值(FEAT 随工程走),改完段边界后自动跟着变。
+            put(seg, "loudnessLufs",
+                processor_.segmentLoudnessLufs(t + 1, samplesToSeconds(s.t0, sr), samplesToSeconds(t1Effective, sr)));
             push(segArr, seg);
         }
         put(ch, "segments", segArr);

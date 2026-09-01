@@ -6,9 +6,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "analysis/AnalysisPipeline.h"
+#include "analysis/BalanceBasis.h" // [SL-252] 平衡归一化基准 z(ADR-009 v2.2 澄清 ②)
 
 using namespace scvb::analysis;
 
@@ -270,4 +272,155 @@ TEST_CASE("PIPE-7 后验的 firstHop 与局部分析范围一致", "[analysis][p
     REQUIRE_FALSE(r.cancelled);
     CHECK(r.firstHop == startHop);
     CHECK(r.vadPosterior[0].size() == n);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-252 / J95②a] 平衡归一化基准 z —— ADR-009 v2.2 澄清 ② 的落点。
+//
+// 修宪把两件事分开:**上报段响度 L_seg**(澄清 ①,不随 mode 变)与**归一化基准 z**
+// (澄清 ②,按 mode 选档)。本用例只钉后者,钉三条:
+//   ① 默认档**逐位**等于 `meanKw` —— 是 `==` 不是「约等于」。这条是硬要求:把默认档实现成
+//      `10^(L/10)` 之类的等价换算,既有工程重分析后 pan/volDb 会发生肉眼不可见但逐位不同的
+//      漂移。反向验证:把 KIntegrated 分支改成经 dB 往返,本节必红。
+//   ② 三档**真分歧** —— 断链时代三档恒等,正是用户 v5.6.3 实测第 19 条「三个模式出来的结果
+//      好像是一样的」;
+//   ③ 三档**都是非负线性能量量** —— AutoAssign 要 `zSum += z` / `zHat = z/zSum`,塞 dB
+//      (负数)进去 zSum 会变负。这条守的正是修宪「正文第三条继续完整适用」那句话。
+//
+// 放在本文件而不是 test_loudness.cpp:后者 include 的 `analysis/Loudness.h` 里另有一份
+// **同名同命名空间**的 `LoudnessMode` / `SegmentLoudness` 定义(与 `analysis/LoudnessMode.h`
+// 的那份成员都不同),两头一起 include 会直接 C2011 重定义。那是独立于本卡的既有缺陷,
+// 已单独报卡,不在本卡顺手改。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL252] balanceBasisZ:默认档逐位等于 meanKw,三档真分歧且同为线性能量", "[analysis][balance][SL252]")
+{
+    // 刻意造成三档必然分歧的形状:能量集中在少数 hop(峰值高、均值低)。
+    const std::vector<float> kw{0.04f, 0.0004f, 0.0004f, 0.0004f};
+    const std::vector<float> peak{0.5f, 0.02f, 0.02f, 0.02f};
+    const std::int64_t b = 0, e = 4;
+
+    const double zK = balanceBasisZ(LoudnessMode::KIntegrated, kw, peak, b, e);
+    const double zR = balanceBasisZ(LoudnessMode::Rms, kw, peak, b, e);
+    const double zP = balanceBasisZ(LoudnessMode::PeakDbfs, kw, peak, b, e);
+
+    // ① 默认档逐位相等(== 而非近似):同一个 meanKw、同一条代码路径。
+    CHECK(zK == meanKw(kw, b, e));
+
+    // ② 三档两两不等 —— 断链时代这三个值是同一个数。
+    CHECK(zK != zR);
+    CHECK(zK != zP);
+    CHECK(zR != zP);
+
+    // 数学口径逐档核对(与 ADR-009 v2.2 澄清 ② 的公式逐字对应)
+    // 期望值必须由**同一批 float 输入**算出:`0.0004f` 不是精确的 0.0004,拿十进制字面量
+    // 当期望会差出 ~2e-10 —— 那是浮点表示,不是实现错。
+    double sumKw = 0.0, sumAmp = 0.0;
+    for (const float v : kw)
+    {
+        sumKw += static_cast<double>(v);
+        sumAmp += std::sqrt(static_cast<double>(v));
+    }
+    CHECK(std::abs(zK - sumKw / 4.0) < 1e-15); // mean(kw)
+    const double meanAmp = sumAmp / 4.0;
+    CHECK(std::abs(zR - meanAmp * meanAmp) < 1e-15); // (mean(√kw))²
+    const double maxPeak = static_cast<double>(peak[0]);
+    CHECK(std::abs(zP - maxPeak * maxPeak) < 1e-15); // max(peak)²
+
+    // ③ 三档同为**非负线性能量**(AutoAssign 的 zSum / zHat 前提)。
+    CHECK(zK >= 0.0);
+    CHECK(zR >= 0.0);
+    CHECK(zP >= 0.0);
+
+    // 空窗 / 越界窗:三档一致回 0.0,不产出 NaN(下游 zSum 为 0 有既有分支接住)。
+    for (const auto m : {LoudnessMode::KIntegrated, LoudnessMode::Rms, LoudnessMode::PeakDbfs})
+    {
+        CHECK(balanceBasisZ(m, kw, peak, 2, 2) == 0.0);
+        CHECK(balanceBasisZ(m, kw, peak, 99, 100) == 0.0);
+        CHECK_FALSE(std::isnan(balanceBasisZ(m, kw, peak, -5, 2)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-252 / J95②a] **流水线级**:loudness_mode 必须真的改变平衡产出。
+//
+// 上面那条 `[SL252]` 用例守的是纯函数 `balanceBasisZ` 本身,**守不住这次真正断掉的那一跳**
+// (#168 复审【重要】):本卡的缺陷不是「函数算错」,是「函数没被调用」——
+// `cfg.balance.loudnessMode` 在 `startAnalysis` 里漏赋值。只有纯函数用例的话,下面两种回归
+// 照样全绿:① 删掉 `OutputProcessor.cpp` 那行 `cfg.balance.loudnessMode = ...`(= 完全回到
+// 断链状态);② 把 `AnalysisPipeline.cpp` 里的 `balanceBasisZ(...)` 换回 `meanKw(...)`。
+//
+// 本仓对这类「守得住零件、守不住那一跳」的缺口有判例(`OutputEditor.cpp:857`:
+// 「HOST R4 用例守的是降级链三函数本身,守不到『这里还在调它』这一跳…否则测试照绿而 bug 回归」)。
+// 本用例就补在**用户第 19 条实测所处的观察层**:同一批特征、同一份配置,只换档,看 pan 变不变。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL252] 流水线级:换档 → pan 真变;默认档与不设该字段逐位相同", "[analysis][pipeline][balance][SL252]")
+{
+    // 三轨占空比不同 ⇒ 「均值」与「峰值」给出的相对能量排序不同 ⇒ 指派结果必然分叉。
+    // ⚠ 易脆性提示(#168 复审):`makeAlternating` 里 `peak = sqrt(kw)`,故 `max(peak)² ≡ max(kw)`,
+    // `peak_dbfs` 与 `kw_integrated` 的分歧**完全来自「段内含次峰值 hop」**。将来若 VAD / 谷切分
+    // 调参让段正好贴合响区,本用例会变成**假红**(方向安全:不是假绿,但排查成本不低)——
+    // 那时该调的是这里的占空比,不是把断言放宽。
+    std::array<PipelineTrackFeatures, kPipelineTracks> features;
+    features[0] = makeAlternating(4, 120, 40, 0.05f); // 长响短歇:均值高
+    features[1] = makeAlternating(4, 30, 130, 0.20f); // 短促强峰:峰值高、均值低
+    features[2] = makeAlternating(4, 80, 80, 0.03f);
+    const std::size_t n = features[0].kwMs.size();
+
+    const auto panOf = [](const PipelineResult& r) {
+        std::vector<double> v;
+        for (int t = 0; t < 3; ++t)
+        {
+            for (const auto& s : r.segments[static_cast<std::size_t>(t)])
+            {
+                v.push_back(s.pan);
+                v.push_back(s.volDb);
+            }
+        }
+        return v;
+    };
+
+    // ① 不设该字段(= 修订前的行为)与显式默认档,**逐位相同**。
+    //    这一条钉死「默认档不得走等价换算」——它与 `[SL252]` 纯函数用例的 `==` 互为里外。
+    auto cfgDefault = makeConfig(n, 3);
+    auto cfgK = makeConfig(n, 3);
+    cfgK.balance.loudnessMode = LoudnessMode::KIntegrated;
+    const auto vDefault = panOf(runAnalysisPipeline(features, cfgDefault));
+    const auto vK = panOf(runAnalysisPipeline(features, cfgK));
+    REQUIRE_FALSE(vDefault.empty());
+    REQUIRE(vDefault.size() == vK.size());
+    for (std::size_t i = 0; i < vDefault.size(); ++i)
+    {
+        CHECK(vDefault[i] == vK[i]); // 逐位,不是近似
+    }
+
+    // ② 换到 peak_dbfs 档 ⇒ 产出**必须真变**。
+    //    断链时代这里恒等 —— 那正是用户 v5.6.3 实测第 19 条看到的现象。
+    auto cfgP = makeConfig(n, 3);
+    cfgP.balance.loudnessMode = LoudnessMode::PeakDbfs;
+    const auto vP = panOf(runAnalysisPipeline(features, cfgP));
+    REQUIRE(vP.size() == vK.size());
+    bool anyDiff = false;
+    for (std::size_t i = 0; i < vP.size() && !anyDiff; ++i)
+    {
+        anyDiff = (vP[i] != vK[i]);
+    }
+    // ⚠ **本行钉住的只有回归 ②**(`AnalysisPipeline.cpp` 里 `balanceBasisZ(...)` 被换回
+    // `meanKw(...)`)。**钉不住回归 ①**(删掉 `OutputProcessor.cpp` 的
+    // `cfg.balance.loudnessMode = ...`):本用例自己装配 cfg、**整条路径不经 startAnalysis**,
+    // 那行删掉这里照样全绿。那一跳要**多轨** host 用例才测得出 —— 单轨下 `zHat = z/zSum`
+    // 恒为 1、换档产出必然相同,而现有 Rig 只绑一个 Input(已另立卡 SL-263)。
+    // 留在仓里被后人读到的是注释、不是 commit message,所以缺口写在这里而不只写在提交说明里。
+    CHECK(anyDiff);
+
+    // ③ rms 档同理:与默认档不同(三档两两分叉在纯函数层已钉,这里钉「传得到」)。
+    auto cfgR = makeConfig(n, 3);
+    cfgR.balance.loudnessMode = LoudnessMode::Rms;
+    const auto vR = panOf(runAnalysisPipeline(features, cfgR));
+    REQUIRE(vR.size() == vK.size());
+    bool anyDiffR = false;
+    for (std::size_t i = 0; i < vR.size() && !anyDiffR; ++i)
+    {
+        anyDiffR = (vR[i] != vK[i]);
+    }
+    CHECK(anyDiffR);
 }

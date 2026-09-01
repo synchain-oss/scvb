@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "analysis/LoudnessMode.h" // BalanceConfig.loudnessMode(归一化基准口径)
 
 namespace scvb::analysis
 {
@@ -106,6 +107,9 @@ struct BalanceConfig
     double deltaMax = 15.0; // δ ∈ [−15,+15](§6.4 step 3)。
     double deltaPrecision = 0.1; // δ 步进精度。
     int deltaBinaryIters = 20; // δ 二分 ≤20 次。
+    // [SL-252 / J95②a] 平衡**归一化基准 z** 的口径(ADR-009 v2.2 澄清 ②)。默认档 = 修订前行为。
+    // 只影响 z 怎么算,**不影响上报段响度 L_seg**(澄清 ①,那条仍恒为 ungated K-weighted 积分)。
+    LoudnessMode loudnessMode = LoudnessMode::KIntegrated;
 };
 
 // 平衡结果(02 §6.2/§6.4)。
