@@ -4,8 +4,8 @@
 //   拦下四类会把维护者个人信息带进公开仓的内容:
 //     P1 项目代号禁词      —— 零容忍,无豁免(硬规:公开材料严禁该标识与其邮箱形态)
 //     P2 个人本机路径      —— C:\Users\<具体用户名>;占位符(<workspace> 等)豁免
-//     P3 个人邮箱域        —— gmail/qq/163/... ;third_party/ 等 vendored 目录与
-//                             contact@synchain.ca / *.noreply.github.com 豁免
+//     P3 个人邮箱域        —— gmail/qq/163/... ;仅 third_party/ 等 vendored 目录豁免
+//                             (对外邮箱 contact@synchain.ca 的域不在表内,本就不会命中)
 //     P4 个人主机名        —— DESKTOP-<序列号> / LAPTOP-<序列号>
 //
 //   **为什么所有针都从片段拼出来**:本脚本自己也是被扫的跟踪文件。若把禁词写成字面量,
@@ -80,16 +80,26 @@ const MAIL_DOMAINS = [
 ].join("|");
 
 // P2 的用户名段:排除路径分隔符/引号/空白;占位符(以 < 开头、或 % 包裹的环境变量)另判。
+// 分隔符必须吃三种形态,否则最容易**复发**的那几类文件全部漏网(复审 r1 实测:六种写法只中一种):
+// 单反斜杠 = 手写 / cmd 输出;正斜杠 = **CMake 规范形式**、compile_commands.json;
+// 双反斜杠 = **JSON 转义**(.vscode/settings.json、CMakePresets.json 等落盘路径)。
+// 另加 MSYS 与 WSL 的前缀形态(见下面 DRIVE 的两条分支;此处不写出样例 —— 写出来会被自己命中)。
+// `i` 标志覆盖小写盘符与小写 users。
+// P2 防的正是「构建产物 / 编辑器配置被误提交」,那些文件里的路径几乎都是上面这些形态。
+const BS = "\\\\"; // 正则源码里的「一个反斜杠」
+const SEP = j("(?:", BS, BS, "|", BS, "|/)"); // 双反斜杠 / 单反斜杠 / 正斜杠
+const DRIVE = j("(?:[A-Za-z]:", SEP, "|/(?:mnt/)?[A-Za-z]/)"); // 盘符 / MSYS / WSL
+
 const RE_CODENAME = new RegExp(CODENAME, "gi");
 const RE_WIN_HOME = new RegExp(
-    j("[A-Za-z]:", "\\\\", WIN_USERS) + "([^\\\\/\\s\"'`|;*?]+)",
-    "g",
+    j(DRIVE, "Users", SEP) + "([^\\\\/\\s\"'`|;*?]+)",
+    "gi",
 );
 const RE_MAIL = new RegExp(
     j("[A-Za-z0-9._%+-]+", "@", "(", MAIL_DOMAINS, ")", "\\.", "(com|cn|net)"),
     "gi",
 );
-const RE_HOST = new RegExp(j("\\b(DESKTOP", "|LAPTOP)-[A-Z0-9]{5,}"), "g");
+const RE_HOST = new RegExp(j("\\b(DESKTOP", "|LAPTOP)-[A-Z0-9]{5,}"), "gi"); // i:小写主机名同样拦
 
 // 占位符用户名:<workspace> / <user> / <你的用户名> / %USERPROFILE% / $env:...
 const isPlaceholderUser = (s) =>
@@ -99,8 +109,13 @@ const isPlaceholderUser = (s) =>
 const VENDORED = ["third_party/", "external/", "vendor/", "LICENSES/"];
 const isVendored = (rel) => VENDORED.some((d) => rel.startsWith(d));
 
-// P3 允许的对外邮箱(唯一对外联络地址)与 GitHub noreply 提交身份。
-const MAIL_ALLOW = [/contact@synchain\.ca/i, /@users\.noreply\.github\.com/i];
+// 【复审 r1 删除 MAIL_ALLOW】原先这里有一张「允许邮箱」表(contact@synchain.ca、
+// *.noreply.github.com)。它是**不可达代码**:RE_MAIL 要求域名 ∈ MAIL_DOMAINS 且 TLD ∈
+// (com|cn|net),而 `synchain.ca`(TLD 不在表内)与 `users.noreply.github.com`(域名不在表内)
+// **都不可能匹配 RE_MAIL**,所以那张表一次也不会被查到 —— 更糟的是它让自检的负样例变成**空断言**
+// (删掉整张表,自检照样绿)。看着像安全网、实则从不生效的代码比没有更危险,故删除。
+// 这两个地址本来就不会被 P3 命中,不需要豁免;将来若往 MAIL_DOMAINS 里加了通用域名,再连同
+// 配套断言一起补回来。
 
 const RULES = [
     {
@@ -120,8 +135,7 @@ const RULES = [
         id: "P3",
         name: "个人邮箱域(" + MAIL_DOMAINS.replace(/\|/g, "/") + ")",
         re: RE_MAIL,
-        exempt: (rel, m) =>
-            isVendored(rel) || MAIL_ALLOW.some((a) => a.test(m[0])),
+        exempt: (rel) => isVendored(rel),
     },
     {
         id: "P4",
@@ -139,7 +153,6 @@ if (listRules) {
     console.log("豁免:");
     console.log("  P2 占位符用户名:<...> / %...% / $...");
     console.log("  P3 vendored 目录:" + VENDORED.join(" "));
-    console.log("  P3 允许邮箱:contact@synchain.ca、*.noreply.github.com");
     process.exit(0);
 }
 
@@ -165,12 +178,36 @@ if (selfTest) {
             j("D:", "\\", "Users", "\\", "someone", "\\", "proj"),
             j("C:", "\\", "Users", "\\", "<workspace>", "\\", "proj"),
         ],
+        // P2 的其余五种形态各来一条(复审 r1:原先只覆盖手写形态,而复发路径恰是另外几种)。
+        [
+            "P2",
+            j("c:", "\\", "users", "\\", "someone"),
+            j("%", "USERPROFILE", "%"),
+        ],
+        [
+            "P2",
+            j("C:", "/", "Users", "/", "someone"),
+            j("C:", "/", "Users", "/", "<user>"),
+        ],
+        [
+            "P2",
+            j("C:", "\\\\", "Users", "\\\\", "someone"),
+            j("$", "env:USERPROFILE"),
+        ],
+        ["P2", j("/", "c", "/", "Users", "/", "someone"), "无关 /c/ 文本"],
+        [
+            "P2",
+            j("/", "mnt", "/", "c", "/", "Users", "/", "someone"),
+            "无关文本",
+        ],
         [
             "P3",
             j("someone", "@", "gmail", ".com"),
-            j("contact", "@", "synchain", ".ca"),
+            j("someone", "@", "example", ".org"), // 域不在表内 ⇒ 本就不该命中
         ],
         ["P4", j("DESKTOP", "-", "AB12CD3"), j("DESKTOP", "-", "短")],
+        // 小写主机名:`i` 标志被去掉就红(复审 r1)。
+        ["P4", j("laptop", "-", "z9y8x7w"), j("LAPTOP", "-", "abc")],
     ];
     let bad = 0;
     for (const [id, shouldHit, shouldMiss] of cases) {
@@ -187,6 +224,48 @@ if (selfTest) {
         }
         if (miss) {
             console.error("self-test: " + id + " 误报 —— 应豁免却命中");
+            bad++;
+        }
+    }
+    // ★ 豁免表**被放宽**同样会让门禁静默失效,而上面所有用例都传 rel="some/file.txt",
+    //   `isVendored` 永远走 false 分支 ⇒ 把 VENDORED 改成 [""] 或 isVendored 改成恒 true,
+    //   自检与全量扫描**双双全绿**(仓里唯一真命中 miniz 本就被豁免),P3 整条静默失效。
+    //   所以豁免必须按**范围**断言:同一条命中,vendored 下豁免、非 vendored 下必须照红。
+    {
+        const p3 = RULES.find((r) => r.id === "P3");
+        const mail = j("someone", "@", "gmail", ".com");
+        const hitIn = (rel) =>
+            [...mail.matchAll(p3.re)].some((m) => !p3.exempt(rel, m));
+        if (hitIn("third_party/x.h")) {
+            console.error("self-test: P3 vendored 豁免失效 —— 上游文件不该红");
+            bad++;
+        }
+        if (!hitIn("src/core/X.cpp")) {
+            console.error(
+                "self-test: P3 豁免被放宽 —— 非 vendored 路径也被放行(门禁静默失效)",
+            );
+            bad++;
+        }
+    }
+    // ★ MAIL_DOMAINS 逐字比对独立真值:十个域里原先只有 gmail 被样例覆盖,
+    //   删掉 qq/163/foxmail 等任意一个,自检照样全绿(与 CODENAME 同一个形态的漏洞)。
+    {
+        const DOMAINS_TRUTH = [
+            "gmail",
+            "qq",
+            "163",
+            "126",
+            "outlook",
+            "hotmail",
+            "yahoo",
+            "foxmail",
+            "icloud",
+            "sina",
+        ].join("|");
+        if (MAIL_DOMAINS !== DOMAINS_TRUTH) {
+            console.error(
+                "self-test: MAIL_DOMAINS 与独立真值不符 —— 有域被增删,P3 覆盖面变了",
+            );
             bad++;
         }
     }
@@ -222,6 +301,22 @@ try {
     process.exit(1);
 }
 
+// 命中片段打码(与同 job 的 gitleaks --redact 同口径:公开 Actions 日志不得回显 PII 本体)。
+//
+// 分级:**P1 全打**——它是唯一「一次都不能公开出现」的串,而首尾各留 2 字符对一个 6 字符的词
+// 等于泄漏 4/6(实测输出曾是 `el**vo`,基本等于明文)。其余规则保留**前 2 字符**给出形态线索
+// (如 `C:***********`),但**不留尾部**——尾部往往正是用户名/域名的可辨识部分。
+// 定位本来就靠 file:line:col,开发者在自己的工作副本里一看便知,打码片段只是辅助。
+const redact = (str, ruleId) => {
+    // 含 P1 禁词的命中一律**全打**,不论是被哪条规则抓到的:同一个串常同时命中 P1 与 P3
+    // (禁词出现在邮箱本地部),只给 P1 全打的话,P3 那行仍会漏出禁词前缀。
+    RE_CODENAME.lastIndex = 0;
+    if (ruleId === "P1" || RE_CODENAME.test(str) || str.length <= 4) {
+        return "*".repeat(str.length);
+    }
+    return str.slice(0, 2) + "*".repeat(str.length - 2);
+};
+
 const findings = [];
 let scanned = 0;
 
@@ -252,7 +347,12 @@ for (const rel of files) {
                     rel,
                     line: i + 1,
                     col: (m.index ?? 0) + 1,
-                    text: lines[i].trim().slice(0, 160),
+                    // ⚠ **只存打码后的命中片段,绝不存整行原文**。本门禁跑在公开仓的
+                    // compliance job 上,Actions 日志是**公开、长期留存、可被抓取**的:
+                    // 回显整行 = 门禁把它要拦的 PII 亲手发布了一次(P1 尤其致命 —— 红一次
+                    // 就等于公开一次)。同 job 的 gitleaks 用 `--redact` 正是这个理由。
+                    // 定位靠 file:line:col 已经足够;打码片段还能直接告诉开发者「命中的是哪一段」。
+                    text: redact(m[0], rule.id),
                 });
             }
         }
@@ -284,7 +384,16 @@ for (const f of findings) {
     );
 }
 console.error("\n规则说明见 `node scripts/check-privacy.mjs --list-rules`。");
-console.error(
-    "误报请调豁免表(脚本内 VENDORED / MAIL_ALLOW / isPlaceholderUser),不要给整个文件开天窗。",
-);
+// 提示必须按规则分叉:P1 是**唯一**没有豁免点的规则(exempt 恒 false),对它说「去调豁免表」
+// 是把人指向一条走不通的路 —— 零容忍是本卡刻意的设计,命中就只能清理内容本身。
+if (findings.some((f) => f.rule.id === "P1")) {
+    console.error(
+        "P1 **无豁免**(零容忍):命中即须清理内容本身,不存在调表放行的选项。",
+    );
+}
+if (findings.some((f) => f.rule.id !== "P1")) {
+    console.error(
+        "P2/P3/P4 若确属误报,调对应豁免点(isPlaceholderUser / VENDORED),不要给整个文件开天窗。",
+    );
+}
 process.exit(1);

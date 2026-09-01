@@ -7,8 +7,8 @@
     pwsh scripts/gates.ps1 -Quick          # 跳过 pluginval(gate 7/8),快速回环
   所有 cmake/ctest/pluginval 路径基于 -BuildDir(默认 build),并行 agent 靠它隔离构建目录。
   [R4/J56] gate 3b(gitleaks)/ 3c(reuse lint)与 check-spdx.ps1 已由 T01d 接入(06 §5.1)。
-  [SL-265] gate 3i(check-privacy)= 公开仓隐私门禁,与 3b 同族:gitleaks 只管 secrets,
-  个人身份信息(代号禁词/本机路径/个人邮箱域/主机名)由 3i 管;CI 侧对应 compliance.yml 两步。
+  [SL-265] gate 3j(check-privacy)= 公开仓隐私门禁,与 3b 同族:gitleaks 只管 secrets,
+  个人身份信息(代号禁词/本机路径/个人邮箱域/主机名)由 3j 管;CI 侧对应 compliance.yml 两步。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
@@ -150,7 +150,7 @@ else {
 }
 
 # ==================================================================
-Write-Host '=== Gate 3i: check-privacy (公开仓隐私门禁) ==='
+Write-Host '=== Gate 3j: check-privacy (公开仓隐私门禁) ==='
 # ==================================================================
 # [SL-265] 与 gitleaks 同族但管的是**另一半**:gitleaks 只认 secrets(密钥/令牌),
 # 个人身份信息(代号禁词 / 本机路径 / 个人邮箱域 / 主机名)它一条都不拦,故单列一关。
@@ -174,7 +174,7 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 else {
   Write-Host '  node 未找到(需 Node >= 18)' -ForegroundColor Red
 }
-Set-Gate '3i check-privacy' $privacyOk
+Set-Gate '3j check-privacy' $privacyOk
 
 # ==================================================================
 Write-Host '=== Gate 3c: reuse lint (REUSE 合规) ==='
