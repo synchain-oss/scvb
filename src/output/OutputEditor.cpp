@@ -230,7 +230,7 @@ void OutputEditor::emitTick()
     // 分析刚完成时 reason 必须是 "analyze" 而不是 "snapshot"(§2.8):web 有两处认它 ——
     // Tab4 的「参数已改、结果陈旧」基线同步,与 Tab3 的分析 diff 摘要条 + 倒计时撤条。
     // 落成 snapshot 会让这两处静默失效(分析完了标记还挂着、摘要条不出)。
-    const bool analyzed = processor_.takeAnalysisDone();
+    const auto analyzedReason = processor_.takeAnalysisDone();
     // stale 位翻转同样要重发(04 §4.5):fingerprint watchdog 的判定由播放驱动、与段编辑无关,
     // 不在这里检测的话「该轨数据可能已过期」会一直等到下一次段编辑/切版本才上桥。
     std::uint16_t staleMask = 0;
@@ -248,7 +248,13 @@ void OutputEditor::emitTick()
     // (tab-settings.js 只认 reason==="analyze")与 Tab3 的分析 diff 摘要条 + 倒计时撤条
     // (tab-wave.js 只认 vad|segmentation|analyze)都会静默失效。段表看起来是新鲜的,这个缺口
     // 反而更难被察觉(#119 复审顺带记账)。发出去了才清。
-    pendingAnalyzed_ = pendingAnalyzed_ || analyzed;
+    // [SL-255] 闩住的不再只是「完成了没」,而是**哪一种完成** —— 隐藏期完成的那一次若只
+    // 闩 bool,恢复可见时 reason 会退化成 "analyze",而 Tab3 的倒计时撤条认的是
+    // `vad|segmentation|analyze` 里**对应的那一个**,松手档的条就撤不掉。
+    // 新的一次覆盖旧的(后到的更能代表当前段表)。
+    if (analyzedReason != ScvbOutputAudioProcessor::AnalysisDoneReason::None)
+        pendingAnalyzedReason_ = analyzedReason;
+    const bool pendingAnalyzed_ = pendingAnalyzedReason_ != ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     if (scvb::output::segmentsResendNeeded(first, pendingSegmentsFull_, pendingAnalyzed_,
                                            srNow > 0.0 && !juce::approximatelyEqual(srNow, lastSegmentsSampleRate_),
                                            crvsRev != lastCrvsRevision_, staleMask != lastStaleMask_))
@@ -256,9 +262,10 @@ void OutputEditor::emitTick()
         lastSegmentsSampleRate_ = srNow;
         lastCrvsRevision_ = crvsRev;
         lastStaleMask_ = staleMask;
-        const bool sent = emitSegments(pendingAnalyzed_ ? "analyze" : "snapshot", kAllTracksMask);
+        const bool sent = emitSegments(segmentsReasonOf(pendingAnalyzedReason_), kAllTracksMask);
         scvb::output::settleResendLatch(sent, pendingSegmentsFull_);
-        scvb::output::settleResendLatch(sent, pendingAnalyzed_);
+        if (sent)
+            pendingAnalyzedReason_ = ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     }
 
     // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
@@ -617,6 +624,24 @@ void OutputEditor::emitCaptureProgress()
 // 返回「C++ 侧观察到这一帧确实下发了」(SL-199 闩锁的清位判据)。不可见时 JUCE 会把载荷丢掉,
 // 此时返回 false —— 闩锁保持,下一拍继续补。JUCE 内部若在可见判定之后再丢一次,C++ 侧无回执可查
 // (要闭合到「JS 真收到」需 JS 侧 ack,另开卡),这一点在 BridgeArgs.h 的闩锁头注里如实记着。
+// [SL-255] reason 枚举 → §2.8 的 reason 串。None = 不是分析完成触发的那一次重发,
+// 落 "snapshot"(全量补发的既有语义)。
+const char* OutputEditor::segmentsReasonOf(ScvbOutputAudioProcessor::AnalysisDoneReason r)
+{
+    switch (r)
+    {
+    case ScvbOutputAudioProcessor::AnalysisDoneReason::Analyze:
+        return "analyze";
+    case ScvbOutputAudioProcessor::AnalysisDoneReason::Vad:
+        return "vad";
+    case ScvbOutputAudioProcessor::AnalysisDoneReason::Segmentation:
+        return "segmentation";
+    case ScvbOutputAudioProcessor::AnalysisDoneReason::None:
+        break;
+    }
+    return "snapshot";
+}
+
 bool OutputEditor::emitSegments(const juce::String& reason, std::uint16_t tracksMask)
 {
     if (!webView().isVisible())
@@ -876,11 +901,33 @@ juce::var OutputEditor::buildSegmentsPayload(const juce::String& reason, std::ui
         push(channels, ch);
     }
 
+    // [SL-255] §2.8 的 diff 块。此前是**硬编码全 0 的桩** —— 而 §1.18/§1.19 的语义行明写
+    // 回发的事件「含 diff 摘要」,Tab3 的 A-02 摘要条也一直在读它。判同口径见 SegmentDiff.h。
+    //
+    // 只有分析完成那一次带真值:其余重发(snapshot / 切版本 / 段编辑 / undo…)本来就不是
+    // 「这一轮流水线改了什么」的语境,填上一轮的数会更误导。
+    const bool carriesDiff = (reason == "analyze" || reason == "vad" || reason == "segmentation");
+    const auto& d = processor_.lastSegmentDiff();
     juce::var diff = obj();
-    put(diff, "kept", 0);
-    put(diff, "changed", mkArray());
-    put(diff, "added", 0);
-    put(diff, "removed", 0);
+    put(diff, "kept", carriesDiff ? d.kept : 0);
+    juce::var changedArr = mkArray();
+    if (carriesDiff)
+    {
+        for (const auto& it : d.changed)
+        {
+            juce::var e = obj();
+            put(e, "ch", it.ch);
+            put(e, "segIdx", it.segIdx);
+            put(e, "panFrom", it.panFrom);
+            put(e, "panTo", it.panTo);
+            put(e, "volDbFrom", it.volDbFrom);
+            put(e, "volDbTo", it.volDbTo);
+            push(changedArr, e);
+        }
+    }
+    put(diff, "changed", changedArr);
+    put(diff, "added", carriesDiff ? d.added : 0);
+    put(diff, "removed", carriesDiff ? d.removed : 0);
 
     juce::var o = obj();
     put(o, "version", v);
@@ -1652,7 +1699,12 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     rt.vadPaddingPreMs = pp;
     rt.vadPaddingPostMs = po;
     if (changed)
+    {
         ++rt.configSeq; // PR#55 缺陷4
+        // [SL-255] 松手档:排一次 300ms 防抖重分段(§1.18)。放在 `changed` 里 ——
+        // 值没变的重复下发天然不重排,拖动期那串同值调用不会把到点时刻一直往后推。
+        processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    }
     c(okResp());
 }
 
@@ -1690,7 +1742,11 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     rt.segmentationSensitivity = sens;
     rt.segmentationMinSegmentMs = mms;
     if (changed)
+    {
         ++rt.configSeq; // PR#55 缺陷4
+        // [SL-255] 同 §1.18,reason 落 "segmentation"(§1.19)。
+        processor_.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Segmentation);
+    }
     c(okResp());
 }
 

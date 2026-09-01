@@ -321,6 +321,7 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
     // 判红,而失败信息说的是「不再有裸 emitParams(first)」—— 排查的人得先怀疑代码再怀疑注释。
     {
         const oe = src("src/output/OutputEditor.cpp");
+        const oeh = src("src/output/OutputEditor.h"); // [SL-255] 闩锁字段的类型在头文件里
         check(
             /scvb::output::raiseResendLatch\(visibleNow, wasVisible_, pendingParamsFull_\);/.test(
                 oe,
@@ -345,17 +346,32 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         check(
             /scvb::output::segmentsResendNeeded\(first, pendingSegmentsFull_, pendingAnalyzed_,/.test(
                 oe,
-            ),
+            ), // pendingAnalyzed_ 现为由 reason 枚举派生的局部 bool(见下条),判定入参形态未变
             "[SL-199] scvb.segments 的重发判定走 segmentsResendNeeded 且带闩锁位",
         );
+        // [SL-255] `pendingAnalyzed_` 由 bool 升成三值枚举 `pendingAnalyzedReason_`
+        // ——「完成了没」变成「哪一种完成」(analyze / vad / segmentation)。守的性质一字未变:
+        // **发出去了才清位**。故判据跟着形态走,但两条断言的语义与 SL-199 当初立的完全相同。
         check(
             /settleResendLatch\(sent, pendingSegmentsFull_\);/.test(oe) &&
-                /settleResendLatch\(sent, pendingAnalyzed_\);/.test(oe),
-            "[SL-199] segments 与 analyzed 两个闩锁都按实际下发清位",
+                /if \(sent\)\s+pendingAnalyzedReason_ =\s+ScvbOutputAudioProcessor::AnalysisDoneReason::None;/.test(
+                    oe,
+                ),
+            "[SL-199] segments 与 analyzed 两个闩锁都按实际下发清位(analyzed 侧已升为 reason 枚举)",
         );
         check(
-            /pendingAnalyzed_ = pendingAnalyzed_ \|\| analyzed;/.test(oe),
+            /if \(analyzedReason != ScvbOutputAudioProcessor::AnalysisDoneReason::None\)\s+pendingAnalyzedReason_ = analyzedReason;/.test(
+                oe,
+            ),
             "[SL-199] analyzed 闩住(takeAnalysisDone 取走即清,隐藏期完成的分析不能丢 reason)",
+        );
+        // [SL-255] 闩住的必须是 **reason** 而不只是 bool:隐藏期完成的那一次若只闩「完成了」,
+        // 恢复可见时 reason 会退化成 "analyze",而 Tab3 的倒计时撤条认的是 vad|segmentation|analyze
+        // 里**对应的那一个**,松手档的条就撤不掉。
+        check(
+            !/bool pendingAnalyzed_ = false;/.test(oeh) &&
+                /AnalysisDoneReason pendingAnalyzedReason_/.test(oeh),
+            "[SL-255] 闩锁存的是 reason 枚举,不是 bool(退回 bool 会丢松手档的 reason)",
         );
         // 反面钉(带行形态约束,见上面的注释):旧写法不得残留。
         check(

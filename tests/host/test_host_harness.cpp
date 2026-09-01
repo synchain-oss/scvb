@@ -6428,3 +6428,178 @@ TEST_CASE("HOST SL-254:非实时下 Output 崩溃未释放(心跳陈旧)也必�
     REQUIRE(wentPassthrough);
     REQUIRE(maskStillSetAtPassthrough);
 }
+
+// ===========================================================================
+// [SL-255] 松手档 300ms 防抖重分段 —— [W] 流水线实装(J95③)。
+//
+// 用户实测:「松手 300ms 应用,图上看不出效果」。定谳:那条流水线在 native **根本不存在**,
+// 只存在于 preview 的 mock —— `handleSetVadParams` / `handleSetSegmentation` 的全部函数体是
+// 「夹取 → 赋值 → ++configSeq → 返回 ok」,`startAnalysis` 全仓只有「点分析」一个调用点,
+// 全仓也从不发 `reason:"vad"/"segmentation"` 的 §2.8 事件(web 有消费者、没生产者)。
+// 而契约 §1.18 白纸黑字写着「由 **C++ 侧 300ms 防抖**自动跑完整流水线」—— UI 正是据此
+// **刻意不自建定时器**的。于是那条「300ms 后应用…」的倒计时条,等的是一个永远不来的事件。
+//
+// 本组断真机数据面:段表**真的变了**、reason 落对、用户段没被动。
+// ===========================================================================
+namespace
+{
+// [SL-255] 这三例要的是「**分得出多段**」的素材。`captureBursts` 的静音只有 40 块,会被
+// VAD 的 hangover(180ms)+ 前后 padding 桥接成一整段 —— 实测整轨只出 **1** 个段,于是
+// 「重分段前后段数不同」这种判据既测不出东西、又会随机翻车。静音拉到 200 块。
+void captureSpacedBursts(Rig& r, int bursts = 6)
+{
+    for (int i = 0; i < bursts; ++i)
+    {
+        r.runBlocks(60, 0.5f, 4, 4); // 有声
+        r.runBlocks(200, 0.0f, 4, 4); // 长静音:确保切得开
+    }
+}
+} // namespace
+
+TEST_CASE("HOST SL-255:改 VAD 参数松手 → 300ms 后真的重分段并以 reason:\"vad\" 发出", "[host][t37][v57][SL255]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 采一段有声有静的素材并分析出段表。
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    captureSpacedBursts(r);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    waitAnalysis(r);
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    // 段真身按既有用例的读法:crvsSnapshot() → 当前版本 → 该轨。
+    const auto segsOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        return crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    };
+    const auto segCountOf = [&segsOf](int) { return segsOf().size(); };
+    const auto before = segCountOf(kTestChannel);
+    INFO("analyzed segments = " << before);
+    REQUIRE(before > 0); // 前置:先得有段表可改
+    const auto revBefore = r.out.crvsRevision();
+
+    // ★ 走带停下来:PRINT 态是契约 §1.18 的抑制条件之一,不停的话这一条会被合法地抑制掉。
+    r.ph.playing = false;
+    Rig::pumpMessages(100);
+
+    // 改 VAD 阈值(等价于用户拖完滑杆松手那一下的整包下发)。
+    r.out.runtime().vadThresholdDb = 12.0f; // 与默认差得远,保证分段结果真的不同
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+
+    // 防抖 300ms(25Hz tick 分辨率 40ms ⇒ 实际 300~340ms),再等流水线跑完。
+    Rig::pumpMessages(600);
+    waitAnalysis(r);
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    // ★ 核心判据是**机制**,不是「段数变没变」:`takeAnalysisDone()` 回 Vad ⟺ 防抖真的到点
+    // ∧ 流水线真的跑完 ∧ reason 一路带到了 editor 那一层。修前这一整条链根本不存在
+    // (setter 只写 config 就返回),这里恒为 None。
+    //
+    // 为什么不断「段数变了」:段数取决于 VAD 阈值与素材的相互作用,同一份素材换个阈值完全
+    // 可能仍是同样多段 —— 那是**分段算法**的性质,不是本卡要证的东西。实测第一版就是这么
+    // 翻车的(before=1 after=1),而流水线其实跑了。
+    const auto doneReason = r.out.takeAnalysisDone();
+    CHECK(doneReason == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    // 且 CRVS 真的动过一次(修订号推进 = 段表被重写并重建了曲线)。
+    CHECK(r.out.crvsRevision() != revBefore);
+}
+
+TEST_CASE("HOST SL-255:重分段不动 locked 段([J34] / §1.18 逐字)", "[host][t37][v57][SL255]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    captureSpacedBursts(r);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    waitAnalysis(r);
+
+    const auto segsOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        return crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    };
+
+    // 前置显式化:段表为空时 editSegment 会回 BadArg,而那个报错完全看不出根因
+    // (实测栽过一次:`1 == 0`,查了半天才发现是「这一轮根本没分出段」)。
+    INFO("analyzed segments = " << segsOf().size());
+    REQUIRE_FALSE(segsOf().empty());
+
+    // 把第 0 段锁上并记下它的边界与值。
+    {
+        scvb::state::SegmentEditArgs a;
+        a.op = scvb::state::SegmentEditOp::SetLocked;
+        a.segIdx = 0;
+        a.locked = true;
+        // ⚠ `editSegment` 的 track 是**0 基**的(`editSegmentTransactional` 里
+        // `versions[version - 1].tracks[track]` —— 版本 1 基、轨 0 基,同一个表达式里两套口径)。
+        // 生产调用点也是 `const int track = ch - 1;`。直接传 1 基的 kTestChannel 会去改**隔壁轨**,
+        // 那条轨没段 ⇒ 回 BadArg,而报错只显示 `1 == 0`,根本看不出是索引错了(实测栽过一次)。
+        REQUIRE(r.out.editSegment(kTestChannel - 1, a) == scvb::state::SegmentEditResult::Ok);
+    }
+    const auto locked0 = segsOf().at(0);
+    REQUIRE(scvb::state::segmentLocked(locked0.flags));
+
+    r.ph.playing = false;
+    Rig::pumpMessages(100);
+    r.out.runtime().vadThresholdDb = 12.0f;
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    Rig::pumpMessages(600);
+    waitAnalysis(r);
+
+    // ⚠ 先证「这一轮流水线**真的跑了**」,否则本例是**空绿**的:防抖若压根没起,锁段当然
+    // 纹丝不动,断言照样通过 —— 那就成了「什么都没发生」也算数(实测:摘掉防抖后本例仍绿)。
+    REQUIRE(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+
+    // ★ 锁着的那一段逐字段不动 —— 契约 §1.18「仅改写 origin=auto 且未 locked 的段」。
+    const auto segs = segsOf();
+    const auto it =
+        std::find_if(segs.begin(), segs.end(), [](const auto& s) { return scvb::state::segmentLocked(s.flags); });
+    REQUIRE(it != segs.end()); // 锁段还在
+    CHECK(it->t0 == locked0.t0);
+    CHECK(it->t1 == locked0.t1);
+    CHECK(it->pan == locked0.pan);
+    CHECK(it->volDb == locked0.volDb);
+}
+
+TEST_CASE("HOST SL-255:PRINT 态与分析进行中一律抑制(§1.18 [J47])", "[host][t37][v57][SL255]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    captureSpacedBursts(r);
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 60.0).coveredS;
+    REQUIRE(coveredS > 2.0);
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS).ok);
+    waitAnalysis(r);
+    const auto segsOf = [&r]() {
+        const auto crvs = r.out.crvsSnapshot();
+        return crvs.versions[static_cast<std::size_t>(r.out.versionActive() - 1)].tracks[kTestChannel - 1].segments;
+    };
+    const auto before = segsOf().size();
+
+    // PRINT 态 = 输出 ON ∧ 播放中 ∧ 在 range 内。
+    r.out.setOutputEnabled(true);
+    r.ph.playing = true;
+    Rig::pumpMessages(200);
+
+    r.out.runtime().vadThresholdDb = 12.0f;
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    Rig::pumpMessages(800); // 远超防抖窗
+    waitAnalysis(r);
+
+    // ★ 抑制:段表纹丝不动。UI 那边退回显式「应用到分段(重分析)」按钮,与契约描述一致。
+    CHECK(segsOf().size() == before);
+}

@@ -146,7 +146,11 @@ private:
     // analyzed 闩锁位:takeAnalysisDone() 取走即清,隐藏期分析完成的话这一位会被消费掉,
     // 恢复可见只补 snapshot —— Tab4 陈旧基线同步与 Tab3 diff 摘要条只认 reason="analyze",
     // 会静默失效。发出去了才清(#119 复审顺带记账)。
-    bool pendingAnalyzed_ = false;
+    // [SL-255] 闩住「哪一种完成」而不只是「完成了没」——理由见 emitTick 里的注释。
+    ScvbOutputAudioProcessor::AnalysisDoneReason pendingAnalyzedReason_ =
+        ScvbOutputAudioProcessor::AnalysisDoneReason::None;
+    // reason 枚举 → §2.8 的 reason 串(None 落 "snapshot")。
+    static const char* segmentsReasonOf(ScvbOutputAudioProcessor::AnalysisDoneReason r);
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)

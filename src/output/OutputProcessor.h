@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "OutputAuthority.h"
+#include "output/SegmentDiff.h" // [SL-255] §2.8 diff 块的纯函数比对(JUCE-free,scvb_tests 直接断言)
 #include "OutputParams.h"
 #include "dsp/ParamSmoother.h"
 #include "engine/PlayheadShot.h"
@@ -340,13 +341,33 @@ public:
     AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual = false);
     void cancelAnalysis();
     bool analysisRunning() const { return analysisRunning_.load(std::memory_order_acquire); }
-    // [M] 取走「分析刚完成」标记(取走即清)。editor 据此把段表以 reason:"analyze" 发出。
-    bool takeAnalysisDone()
+    // [SL-255] 这一轮流水线是**谁触发的** —— 决定段表以哪个 §2.8 `reason` 发出。
+    // 必须一路带到 editor:`takeAnalysisDone()` 是取走即清,而编辑器隐藏期完成的那一次要
+    // 靠 `pendingAnalyzed_` 闩住;只闩一个 bool 的话,恢复可见时 reason 会退化成 "analyze",
+    // 而 Tab3 的倒计时撤条只认 `vad|segmentation|analyze` 里**对应的那一个**。
+    enum class AnalysisDoneReason
     {
-        const bool v = analysisDone_;
-        analysisDone_ = false;
+        None = 0,
+        Analyze, // 用户点「分析」(§1.6)
+        Vad, // setVadParams 松手档防抖(§1.18)
+        Segmentation // setSegmentation 松手档防抖(§1.19)
+    };
+
+    // [M] 取走「分析刚完成」标记(取走即清)。editor 据此把段表以对应 reason 发出。
+    // [M] 最近一次流水线的 diff(供 §2.8 载荷)。发过一次就不再变,直到下一轮分析。
+    const scvb::output::SegmentDiff& lastSegmentDiff() const { return lastSegmentDiff_; }
+
+    AnalysisDoneReason takeAnalysisDone()
+    {
+        const auto v = analysisDoneReason_;
+        analysisDoneReason_ = AnalysisDoneReason::None;
         return v;
     }
+
+    // [SL-255] 松手档防抖:两个 setter 改完就来排一次,300ms 内再来就重排(取消上一次)。
+    // 抑制条件按契约 §1.18 —— **只有** PRINT 态或分析进行中([J47]);排的时候看一次、
+    // 到点再看一次(300ms 里状态可能已经变了)。
+    void armResegment(AnalysisDoneReason reason);
     // 干跑影响面(§1.5 previewAnalyze):不改任何数据,只数「范围 × 有覆盖的轨」。
     AnalyzeAccepted previewAnalysis(std::uint16_t tracksMask, double startS, double endS);
 
@@ -629,7 +650,17 @@ private:
     // 分析刚完成([M] 置位 / editor 取走)。§2.8 的 reason 要落 "analyze" —— web 有两处认它:
     // Tab4 的「参数已改、结果陈旧」基线同步,与 Tab3 的分析 diff 摘要条。只 bump crvsRevision_
     // 会让段表以 "snapshot" 发出,那两处静默失效。
-    bool analysisDone_ = false;
+    AnalysisDoneReason analysisDoneReason_ = AnalysisDoneReason::None;
+    // [SL-255] 松手档防抖:0 = 未排;否则是到点时刻(steadyNowMs 口径)。
+    std::int64_t resegmentDueAtMs_ = 0;
+    AnalysisDoneReason resegmentReason_ = AnalysisDoneReason::None;
+    // 已起飞的那一轮是谁触发的(startAnalysis 之后、finishAnalysis 之前存放)。
+    AnalysisDoneReason pendingResegmentReason_ = AnalysisDoneReason::None;
+    // [SL-255] 最近一次流水线的段表前后比对(§2.8 载荷的 diff 块)。事务里两份 CrvsData
+    // 快照本来就同时在手,顺手算完存这儿;editor 发段表时取走。
+    scvb::output::SegmentDiff lastSegmentDiff_;
+    void tickResegmentDebounce(std::int64_t nowMs); // [M] 25Hz;调用方已持 lifecycleMutex_
+    static constexpr std::int64_t kResegmentDebounceMs = 300; // 契约 §1.18 逐字
     // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
     bool analysisClearManual_ = false;
 

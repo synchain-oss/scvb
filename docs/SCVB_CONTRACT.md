@@ -76,7 +76,7 @@
 
 | 入撤销栈(插件自有 UndoManager,03 §5.3) | 不入撤销栈 |
 |---|---|
-| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**仅未冻结的手动接管通道**,[J85])、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setChannelConfig`、`setVadParams`、`setSegmentation`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
+| `setPanCurve`、`editSegment`(全部 5 个 op)、`setTrackManual`(**仅未冻结的手动接管通道**,[J85])、`copyVersion`、**`setVersionName`**([J82])、**`analyze`**([J89]:一次分析 = 一条撤销步,见 §1.6)、**`setVadParams`/`setSegmentation`**(**仅其松手档触发的重分段**,[J95③a]:阈值/灵敏度本身不入栈,见 §1.18) | `setCaptureEnabled`、`setOutputEnabled`、`setGroupId`、`setRange`、`setVersionActive`、`setChannelConfig`、`setTransitionRamp`、`setAnalysisConfig`、`previewAnalyze`/`cancelAnalyze`(只读干跑 / 取消,不改段表)、`recaptureArm`、`clearCoverage`、`confirmPrintGuard`、UI 类(`setUiScale`/`commitUiScale`/`setLang`/`setActiveTab`/`setGuideSeen`/`setTourSeen`/`setMasterChartMode`) |
 
 UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()` 并 `preventDefault`(防止冒泡到宿主撤销);焦点在文本输入框时不拦截(05 §1.3)。
 
@@ -283,7 +283,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
 | 语义 | 写 state `analysis.vad`。**两段式(04 §1.2 逐字)**:<br>**拖动档** —— 每次调用只触发**即时重判决**并回发 VAD/边界**预览**(非破坏:不写 `versions` 曲线;目标 <50ms);<br>**松手档** —— UI 停止调用后由 **C++ 侧 300ms 防抖**自动跑完整流水线,**仅改写 `origin=auto` 且未 `locked` 的段**(J34),用户段逐字节不动;完成后回发 `scvb.segments`(`reason:"vad"`,含 diff 摘要)。<br>抑制条件**只有** PRINT 态或分析进行中(J47):抑制时不自动应用,UI 退回显式「应用到分段(重分析)」按钮 = `analyze(scope)`。 |
 | 拒绝态 | 字段缺失/越界 → `{ok:false, reason:"badArg"}` |
-| 撤销 | 否(阈值本身不入栈;其触发的段改写属分析产物) |
+| 撤销 | **是**([J95③a],2026-08-31 用户批准;变更文档 `docs/contract-changes/20260831-j95-3a-release-apply.md`)。阈值本身**仍不入栈**;它在**松手档触发的那一次重分段 = 一条**撤销步 —— 沿 [J89] 与 `analyze` 同栈同口径(提交前把整个 CRVS 快照压进既有 UndoManager)。撤销 = 恢复重分段前的段表,重做 = 重放重分段结果;两者各经 `scvb.segments`(`reason:"undo"` / `"redo"`)回推全量段表(§2.8,枚举与行为均不变)。<br>改前为「否(阈值本身不入栈;其触发的段改写属分析产物)」—— 该括注把定性挂在「分析产物」上,而 [J89] 已将分析产物改判为可撤销,遂成同一份产物两套规矩,本次一并修回。 |
 | 线程/频率 | [M] 预览同步;松手档 [M] 防抖计时 → [W] 流水线 |
 | 真源 | 05 §1.4 / §2.3;两段式 04 §1.2 |
 
@@ -295,7 +295,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | 返回 | `{ok:true}` 或 `{ok:false, reason:"badArg"}` |
 | 语义 | 写 state `analysis.segmentation`;**两段式与抑制条件同 §1.18**(拖动=预览,松手 300ms 防抖跑流水线,仅 `origin=auto` 且未 `locked` 段);完成后 `scvb.segments`(`reason:"segmentation"`)。 |
 | 拒绝态 | 同 §1.18 |
-| 撤销 | 否 |
+| 撤销 | **是** —— 同 §1.18([J95③a]:松手档触发的那一次重分段 = 一条撤销步,沿 [J89];灵敏度/最短段长本身不入栈)。改前为「否」。 |
 | 线程/频率 | 同 §1.18 |
 | 真源 | 05 §1.4 / §2.3 |
 
