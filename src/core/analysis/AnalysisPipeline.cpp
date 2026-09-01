@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "analysis/AnalysisPipeline.h"
 
-#include "analysis/BalanceBasis.h" // meanKw 真身 + 平衡归一化基准 z(ADR-009 v2.2)
+#include "analysis/BalanceBasis.h"
+#include "analysis/HopMath.h" // [SL-262] 采样点→hop 的唯一换算口径 // meanKw 真身 + 平衡归一化基准 z(ADR-009 v2.2)
 
 #include <algorithm>
 #include <cmath>
@@ -56,7 +57,9 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
     const double sr = cfg.sampleRate > 0.0 ? cfg.sampleRate : 48000.0;
     const int hopMs = cfg.hopMs > 0 ? cfg.hopMs : 10;
     const double hopSec = static_cast<double>(hopMs) / 1000.0;
-    const std::int64_t hopSamples = static_cast<std::int64_t>(std::llround(hopSec * sr));
+    // [SL-262] 与上报路径共用同一份换算(`analysis/HopMath.h`)—— 此前这条式子在这里和
+    // `OutputProcessor::segmentLoudnessLufs` 各写了一遍。
+    const std::int64_t hopSamples = hopSamplesFor(hopSec, sr);
     if (hopSamples <= 0 || cfg.rangeEndSample <= cfg.rangeStartSample)
     {
         return result;

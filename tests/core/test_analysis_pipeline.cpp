@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "analysis/AnalysisPipeline.h"
+#include "analysis/HopMath.h" // [SL-262] 采样点→hop 唯一口径
 #include "analysis/BalanceBasis.h" // [SL-252] 平衡归一化基准 z(ADR-009 v2.2 澄清 ②)
 // [SL-262] **回归守卫**:与 BalanceBasis.h 拉进来的 `analysis/LoudnessMode.h` 同时 include。
 // 收敛之前这两个头各有一份同名同命名空间的 `LoudnessMode` / `SegmentLoudness`,本行会让
@@ -428,4 +429,71 @@ TEST_CASE("[SL252] 流水线级:换档 → pan 真变;默认档与不设该字�
         anyDiffR = (vR[i] != vK[i]);
     }
     CHECK(anyDiffR);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-262] 采样点 → hop 的唯一换算口径(`analysis/HopMath.h`)。
+//
+// 这条用例的存在理由([#169] 复审【重要】②):本卡真正**改变数值输出**的就是这处 hop 窗口
+// 尾端的 off-by-one,而它原先只活在 `OutputProcessor::segmentLoudnessLufs` 里 ——
+// 那是 `ScvbOutputAudioProcessor` 的成员,`scvb_tests` 够不着,于是「谁把它改回秒往返,
+// 测试照绿」。抽成纯函数后就能在这里直接钉死(判例:`AnalyzeScopeMath.h` 头注)。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL262] hopWindowFromSamples:hop 边界不得被浮点截断到 k−1", "[analysis][hop][SL262]")
+{
+    using scvb::analysis::hopSamplesFor;
+    using scvb::analysis::hopWindowFromSamples;
+
+    constexpr double kHopSec = 0.01;
+    constexpr double kSrLocal = 48000.0;
+    const std::int64_t hopSamples = hopSamplesFor(kHopSec, kSrLocal);
+    REQUIRE(hopSamples == 480);
+
+    // ① 恰落 hop 边界的右端**必须**得到 k,不能是 k−1。
+    //    旧的秒往返写法(`(k*hopSec) / hopSec`)在这些 k 上会截断 —— 实测 1..200000 里 9721 个。
+    //    这里逐个复算,并顺带断言「旧写法确实会错」,免得这条用例退化成一句空话。
+    // 扫全区间但**只累计、不逐个断言** —— 逐个 REQUIRE 会往套件里灌 60 万条断言,
+    // 把「断言总数」这个本来就不该当基线的数字冲得更没意义(#168 复审【建议】D 的同族)。
+    std::int64_t intWrong = 0;
+    std::int64_t firstWrongK = 0;
+    int floatWouldTruncate = 0;
+    for (std::int64_t k = 1; k <= 200000; ++k)
+    {
+        const auto w = hopWindowFromSamples(0, k * hopSamples, kHopSec, kSrLocal);
+        if (!w.valid || w.first != 0u || w.last != static_cast<std::uint64_t>(k))
+        {
+            if (intWrong == 0)
+            {
+                firstWrongK = k;
+            }
+            ++intWrong;
+        }
+        // 旧口径:采样点 → 秒 → hop 的浮点往返
+        const double seconds = static_cast<double>(k * hopSamples) / kSrLocal;
+        if (static_cast<std::int64_t>(seconds / kHopSec) != k)
+        {
+            ++floatWouldTruncate;
+        }
+    }
+    INFO("首个出错的 k = " << firstWrongK);
+    CHECK(intWrong == 0); // 整型口径:20 万个 hop 边界一个都不许错
+    // 旧写法在这段区间里**确实**会错(数量级钉一下,避免将来有人以为这条防的是空气)。
+    CHECK(floatWouldTruncate > 1000);
+
+    // ② 不足一个 hop 的窗 ⇒ 不成立(first == last)。
+    CHECK_FALSE(hopWindowFromSamples(0, hopSamples - 1, kHopSec, kSrLocal).valid);
+    // ③ 空窗 / 倒序 ⇒ 不成立。
+    CHECK_FALSE(hopWindowFromSamples(480, 480, kHopSec, kSrLocal).valid);
+    CHECK_FALSE(hopWindowFromSamples(960, 480, kHopSec, kSrLocal).valid);
+    // ④ 负采样点夹到 0(不越界读)。
+    const auto neg = hopWindowFromSamples(-4800, 4800, kHopSec, kSrLocal);
+    CHECK(neg.valid);
+    CHECK(neg.first == 0u);
+    CHECK(neg.last == 10u);
+    // ⑤ 采样率非正 ⇒ 按 48000 兜底(与 prepareToPlay 同款,不造第二套)。
+    CHECK(hopSamplesFor(kHopSec, 0.0) == 480);
+    CHECK(hopSamplesFor(kHopSec, -1.0) == 480);
+    // ⑥ hopSeconds 非正 ⇒ 换算不成立。
+    CHECK(hopSamplesFor(0.0, kSrLocal) == 0);
+    CHECK_FALSE(hopWindowFromSamples(0, 48000, 0.0, kSrLocal).valid);
 }

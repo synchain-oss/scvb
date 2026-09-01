@@ -10,6 +10,7 @@
 #include "OutputUiState.h"
 #include "SegmentEditService.h"
 #include "UiDefaultsStore.h"
+#include "analysis/HopMath.h" // [SL-262] 采样点→hop 的唯一换算口径(与分析入口共用)
 #include "analysis/LoudnessMode.h" // [SL-252] parseLoudnessMode:字符串→档位的唯一真源
 #include "engine/FreezeBits.h" // freeze 位解码的唯一口径(与 DspArbiter 共用,#106 复审建议⑥)
 #include "ipc/RegistryProbe.h"
@@ -330,14 +331,16 @@ double ScvbOutputAudioProcessor::segmentLoudnessLufs(int channel, std::int64_t t
     // `prepareToPlay` 的离线 harness 里恒为 0,会让这里恒早退回 −120(SL-263 的 host 用例
     // 当场逮到:覆盖区间明明有数据却拿到静音替身)。`sampleRate_` 是本仓既有的单一真源
     // (`isPrepared()` 也读它)。
+    // [SL-262] 换算走 `analysis/HopMath.h` 的共用纯函数 —— 与 `AnalysisPipeline` 同一份口径,
+    // 且 `scvb_tests` 能直接把 hop 边界钉死(本函数挂在 processor 上,core 单测够不着)。
     const double sr = sampleRate_.load(std::memory_order_relaxed);
-    const std::int64_t hopSamples = static_cast<std::int64_t>(std::llround(featHopSeconds() * sr));
-    if (hopSamples <= 0)
+    const auto win = scvb::analysis::hopWindowFromSamples(t0Samples, t1Samples, featHopSeconds(), sr);
+    if (!win.valid)
     {
-        return scvb::analysis::lufsFromMeanKw(0.0); // 未 prepare(sampleRate_ == 0)
+        return scvb::analysis::lufsFromMeanKw(0.0); // 未 prepare / 空窗 / 倒序窗
     }
-    const std::uint64_t first = static_cast<std::uint64_t>(std::max<std::int64_t>(0, t0Samples) / hopSamples);
-    const std::uint64_t last = static_cast<std::uint64_t>(std::max<std::int64_t>(0, t1Samples) / hopSamples);
+    const std::uint64_t first = win.first;
+    const std::uint64_t last = win.last;
     if (last <= first)
     {
         return scvb::analysis::lufsFromMeanKw(0.0);
