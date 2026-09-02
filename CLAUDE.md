@@ -24,7 +24,7 @@
 ## 1. 分支模型与工作流程
 
 - 默认主干 = `dev`;SCVB 主支线 = `feature/v1`(ADR-013/J13)。子支线命名 `feat/<TASK-ID>-<slug>`,一张卡一条子支线一个 PR。
-- same-repo 只收 `feat/*` / `feature/*`(以及 `dependabot/*`)到 `dev`;子 PR(base=`feature/v1`)跑 review bot + 完整 CI(2026-08-19 起,见 §4)。
+- same-repo 只收 `feat/*` / `feature/*`(以及 `dependabot/*`)到 `dev`;子 PR(base=`feature/v1`)跑 review bot + **轻档 CI**(2026-09-02 [J96] 起不再跑 `build-vst3`,编译证据改由本地 gates 与出包前的批次全量提供,见 §4)。
 - `branch-gate` 除分支命名外还承担两条断言:**DCO**(每个 commit 必须有 `Signed-off-by:`,内联 `gh api` 实现,不引第三方 action)与**冻结契约 path guard**(见 §5)。
 - **fork PR 门禁政策(J31/J41,唯一政策)**:
   - fork → **任意分支名**(不要用 `dev`/`stage`/`prod`/`feature/v1`/`feature/extraction`)→ PR 到 `dev`;
@@ -39,18 +39,33 @@
 
 - 一律经 `pwsh scripts/gates.ps1`(06 §5.1 的 gate 1–8,另含十个子档:`3b` gitleaks、`3c` reuse lint + `check-spdx.ps1`、`3d` 设计盒真源、`3e` web smoke、`3f` 文档真源、`3g` IPC 契约文档对拍、`3h` 字体子集覆盖、`3i` 桥面/曲线/设计盒对拍、`3j` 隐私、`3k` 字体保留名)。子档只增不减,以 `gates.ps1` 的 `Set-Gate` 为准。
 - 三个档位:`gates.ps1` 全量(含 gate 8 真机 GUI pluginval)/ `-PluginOnly` 跑 gate 1–7(已与 CI 等价)/ `-Quick` 跳过 pluginval(gate 7/8)做快速回环。JUCE 路径经 `-JucePath` 传入(或环境变量 `JUCE_PATH`)。
-- 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。
+- 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。**[J96] 之后这条从「建议」变成「唯一的编译门」**:子 PR 不再跑 `build-vst3`,所以本地 gates 没跑过的编译错误在合进 `feature/v1` 之前没有任何机器会看见。
 - 并行 agent 必须各用独立 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
-- **2026-08-19 起子 PR 同样触发完整 CI**(仓库已公开、Actions 免费,用户指令:所有将并入 dev 的 PR 都跑 build-vst3/format/compliance;gate 8 真机 GUI pluginval 仍为本地收口 gate)。
+- **锁纪律([SL-277]/[J96] 拆锁,2026-09-02)**:`gates.ps1` 自己在 gate 6/7/8 外面套一把命名互斥体 `SCVB-ipc-tests`(`Global\` 拿不到就退 `Local\`),gate 1–5 **完全不持锁**。
+  - 拆锁的理由:要互斥的是**跨进程共享内存段**(段名前缀 `SynchainSCVB.v1.` 全机唯一,ctest 的 ipc 套件与 pluginval 都会开同名段),而 configure/build 只动各自的 `-BuildDir`。旧做法把整条 gates 包进一把外部目录锁,连 20 分钟的编译一起串行,四个 agent 排队等一个人编译。
+  - **调用方不要再在 `gates.ps1` 外面套目录锁** —— 那会把刚拆开的编译重新串起来。手跑 `ctest` / `pluginval`(不经 gates.ps1)时才需要自备互斥。
+  - 互斥体是内核对象,进程被 kill 或崩溃时**必然**释放:没有 owner 文件、没有孤儿判定、也没有「等超时后覆写别人的锁」这条路径。
+  - 逃生口 `-NoIpcLock` 只在确认本机没有第二个 agent 时用;关掉它并行跑出来的红大概率是抢段,不是回归。
 
 ## 3. 评审规则
 
 - 处理完所有 comment,不止 bot 的(D2);子 PR 的 merge 由用户人工审核并亲自执行。
 
-## 4. 各 Workflow 触发范围一览
+## 4. CI 三档与各 Workflow 触发范围
 
-- `build-vst3`(job `build-and-validate`)/ `format`(job `clang-format`)/ `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(2026-08-19 用户指令:子 PR 同样跑 CI);`branch-gate`(命名 + DCO + 冻结契约 path guard)仍仅 pull_request→dev。
-- `compliance`(gitleaks + reuse lint):无 secrets,fork PR 同样跑。
+**CI 三档([SL-277]/[J96],2026-09-02 用户裁定;推翻 2026-08-19「所有 PR 跑完整 CI」)**
+
+| 档  | 触发                                                  | 跑什么                                                                                                      |
+| --- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 轻  | 子 PR(base=`feature/**`)                             | `format`(clang-format / web-smoke / docs-truth)+ `compliance` + 三个 review bot。**不跑 `build-vst3`。**      |
+| 中  | 里程碑 PR(base=`dev`)、push→`dev`                    | 上面全部 + `build-vst3` + `branch-gate`                                                                       |
+| 重  | `workflow_dispatch`(input `ref`,默认 `feature/v1`)  | `build-vst3` 全量 —— **出包前硬门**                                                                           |
+
+- **出包流程硬规:出包(打 tag / 发 `release`)之前必须对目标 ref 手动 dispatch 一次 `build-vst3` 并全绿。** 命令:`gh workflow run build-vst3.yml --repo synchain-oss/scvb --ref feature/v1 -f ref=feature/v1`,然后 `gh run list --workflow build-vst3.yml -L 1` 看结果。没有这一次绿,不允许出包 —— push→`feature/**` 触发已撤,主支线上再没有别的机器编译证据。要取包也走这一次:preview artifact(`SCVB-VST3-win64-preview-<slug>-<sha>`)就由这次 run 产出。
+- **逃生口**:任何 PR 打上 `ci:full` 标签即照跑 `build-vst3` 全量(job 的 `if:` 判标签,`on.pull_request.types` 含 `labeled`/`unlabeled`)。子 PR 改到 `CMakeLists.txt` / 依赖 / workflow 本身时用它。
+- **编译缓存**:`build-vst3` 用 `Ninja Multi-Config` + sccache(GitHub Actions 缓存后端)。换生成器不是审美选择 —— `CMAKE_<LANG>_COMPILER_LAUNCHER` 对 Visual Studio(MSBuild)生成器**无效**,不换就没有编译缓存。每次 run 末尾打印 `sccache --show-stats`:缓存失效的形态是静默零命中(CI 照样绿,只是慢回改造前),不打印没人会发现。
+- `build-vst3`(job `build-and-validate`):pull_request→`dev` + `feature/**`(feature 侧只为 `ci:full` 逃生口留触发面,job `if:` 决定跑不跑)、push→`dev`、`workflow_dispatch`。`format` / `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(轻档照跑)。`branch-gate`(命名 + DCO + 冻结契约 path guard)仍仅 pull_request→dev。
+- `compliance`(gitleaks + reuse lint + check-privacy + 设计盒真源):无 secrets,fork PR 同样跑。
 - `claude-review`:所有 base 分支、**仅 same-repo**(J31);`deepseek-review` / `pr-agent` 默认 disable,同样仅 same-repo。
 - `review-dispatch`:维护者评论 `/review` 显式触发 —— 这是 §0 铁律第 4 条**方案 D** 的实现,也是本仓目前给 fork PR 做 AI 审查的**默认通道**(铁律允许的另一条是方案 C 的 workflow_run 两阶段,本仓未实现)。
 - `release`:push tags `v*` 触发草稿 Release(tag ↔ CMake VERSION 一致性门禁 + 打包)。

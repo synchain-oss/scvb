@@ -2,7 +2,9 @@ name: Format
 
 on:
   pull_request:
-    # 2026-08-19 用户指令:feature/** 子 PR 同样跑 format(CI 覆盖全部并入 dev 的 PR)。
+    # [SL-277/J96,2026-09-02] CI 三档里的**轻档**:子 PR 不跑 build-vst3,但 format 的三个 job
+    # (clang-format / web-smoke / docs-truth)全部保留 —— 它们都是 ubuntu 上的分钟级检查,
+    # 省下的那 20 分钟是 Windows 编译,不是这里。三档定义见 build-vst3.yml 头注与 CLAUDE.md §4。
     branches: [dev, "feature/**"]
     types: [opened, synchronize, reopened, ready_for_review]
   push:

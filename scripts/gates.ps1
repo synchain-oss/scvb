@@ -12,6 +12,10 @@
   [SL-267] gate 3k(check-font-names)= 字体保留名门禁(OFL-1.1 §3),与 3c/3j 同属合规族:
   断言分发的 woff2 `name` 表与进包文本资源的字体栈都不含上游 RFN;
   CI 侧同样落在 compliance.yml(自测 + 扫描两步)。
+  [SL-277/J96] **锁纪律**:gate 1-5 完全不持锁,多个 agent 可以同时 configure/build;
+  gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行(共享内存段名全机唯一)。
+  调用方**不要**再在外面把整条 gates 包进目录锁 —— 那会把编译也串起来,正是本卡要拆掉的。
+  逃生口 `-NoIpcLock` 只在确认无并行 agent 时用。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
@@ -21,7 +25,10 @@ param(
   [string]$Config = 'Release',
   [string]$JucePath = $env:JUCE_PATH,
   [string]$BuildDir = 'build',
-  [string]$PluginvalExe = $env:PLUGINVAL_EXE
+  [string]$PluginvalExe = $env:PLUGINVAL_EXE,
+  # [SL-277] 逃生口:确认本机没有第二个 agent 在跑 gate 6/7/8 时才用。
+  # 平时**不要**加 —— 关掉互斥后并行跑出来的红大概率是抢共享内存段,不是回归。
+  [switch]$NoIpcLock
 )
 
 $ErrorActionPreference = 'Continue'
@@ -48,6 +55,58 @@ function Set-Skip {
   param([string]$Name)
   $results.Add([pscustomobject]@{ Gate = $Name; Result = 'SKIP' })
   Write-Host ("[SKIP] {0}" -f $Name) -ForegroundColor Yellow
+}
+
+# ---- IPC 测试锁(只包 gate 6/7/8;[SL-277]/[J96] 拆锁)-----------------------
+# **为什么只包 6/7/8**:gate 4(configure)/ 5(build)只读写各自的 `-BuildDir`,
+# 并行 agent 之间零共享状态;真正需要互斥的是**跨进程共享内存段** —— 段名前缀
+# `SynchainSCVB.v1.` 是全机唯一的(docs/IPC_CONTRACT.md),ctest 里的 ipc 套件与
+# pluginval 加载插件时都会去开同名段,两份同时跑必然互相踩,红得很像回归。
+# 改造前的做法是各 agent 在**脚本外面**把整条 gates 包进一把目录锁,于是 20 分钟的
+# 编译也被串行化了:四个 agent 排队等一个人编译,而它们本来完全可以并行编。
+#
+# **为什么用命名互斥体而不是目录锁**:内核对象在进程退出时**必然**释放(哪怕被
+# kill、哪怕崩溃),所以没有 owner.txt、没有孤儿判定、也没有「等超时后覆写别人的锁」
+# 这条已经实伤过人的路径。目录锁那套协议仍然可以留给「不经 gates.ps1 手跑 ctest」
+# 的场景,但经 gates.ps1 的路径不再需要它。
+#
+# **Global vs Local**:`Global\` 需要 SeCreateGlobalPrivilege,普通会话未必给;拿不到
+# 就退到 `Local\`(同一用户登录会话内互斥)。本项目的并行形态就是同一用户下的多个
+# agent 终端,`Local\` 足够。两个作用域用**同一个**优先级顺序,不同进程才会落在
+# 同一把锁上 —— 顺序反了会各持一把,互斥就没了。
+function Enter-ScvbIpcLock {
+  if ($NoIpcLock) {
+    Write-Host '  [ipc-lock] -NoIpcLock:跳过 IPC 测试锁(仅限确认无并行 agent 时)' -ForegroundColor Yellow
+    return $null
+  }
+  foreach ($scope in @('Global', 'Local')) {
+    $name = "$scope\SCVB-ipc-tests"
+    try { $m = New-Object System.Threading.Mutex($false, $name) }
+    catch {
+      Write-Host ("  [ipc-lock] {0} 不可用({1}),降级重试" -f $name, $_.Exception.GetType().Name) -ForegroundColor Yellow
+      continue
+    }
+    Write-Host ("  [ipc-lock] 等待 {0}(gate 6/7/8 互斥)..." -f $name) -ForegroundColor Yellow
+    try { $null = $m.WaitOne() }
+    catch [System.Threading.AbandonedMutexException] {
+      # 前一个持有者进程异常退出。锁已经归我们了,只是说明上一次跑得不干净。
+      Write-Host '  [ipc-lock] 前一持有者异常退出(AbandonedMutex),已接管' -ForegroundColor Yellow
+    }
+    Write-Host ("  [ipc-lock] 已获得 {0}" -f $name) -ForegroundColor Green
+    return $m
+  }
+  # 两个作用域都建不出来(实际上不会发生)。**不静默** —— 并发假红最难查的就是
+  # 「以为有锁,其实没有」,所以这里必须在日志里留下红字。
+  Write-Host '  [ipc-lock] 互斥体创建失败,gate 6/7/8 将在无互斥保护下运行;若此时有并行 agent,红结果不可信' -ForegroundColor Red
+  return $null
+}
+
+function Exit-ScvbIpcLock {
+  param($Mutex)
+  if ($null -eq $Mutex) { return }
+  try { $Mutex.ReleaseMutex() } catch { Write-Host ("  [ipc-lock] 释放异常:{0}" -f $_.Exception.Message) -ForegroundColor Yellow }
+  $Mutex.Dispose()
+  Write-Host '  [ipc-lock] 已释放' -ForegroundColor Green
 }
 
 # ---- 定位 pluginval ----
@@ -465,27 +524,20 @@ else {
 Set-Gate '3k 字体保留名' $fontNameOk
 
 # ==================================================================
-# ---- gate 4/5/6 前置守卫:cmake / ctest 必须真实可执行 ----
+# ---- gate 4/5 前置守卫:cmake 必须真实可执行 ----
 # 不设守卫的后果不是「报错」,是**假绿**:外部命令不存在时 PowerShell 抛
 # command-not-found,但 $LASTEXITCODE 保留上一条命令的旧值(通常 0),
 # 于是 Set-Gate ($LASTEXITCODE -eq 0) 判 PASS —— 构建与测试一次没跑却全绿。
 # 同族教训见 node(Gate 3e)/ gitleaks(Gate 3b)的 Get-Command 守卫。
+# [SL-277] ctest 的守卫已随 gate 6 一起挪到下面的持锁段里 —— 拆锁后 gate 6 不再
+# 与 gate 4/5 同处一个 if/else,守卫也得跟着走,否则「ctest 不在 PATH」这条会漏判。
 $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
 $ctestCmd = Get-Command ctest -ErrorAction SilentlyContinue
-$buildToolsOk = $true
 if (-not $cmakeCmd) {
-  Write-Host '  cmake 不在 PATH —— gate 4/5/6 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
-  $buildToolsOk = $false
-}
-if (-not $ctestCmd) {
-  Write-Host '  ctest 不在 PATH —— gate 6 无法执行(同上)' -ForegroundColor Red
-  $buildToolsOk = $false
-}
-if (-not $buildToolsOk) {
+  Write-Host '  cmake 不在 PATH —— gate 4/5 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   Write-Host '  提示:仓库自带 cmake 在 ..\tools\cmake-*-windows-x86_64\bin,加进 PATH 后重跑。' -ForegroundColor Yellow
   Set-Gate '4 配置' $false
   Set-Gate '5 构建' $false
-  Set-Gate '6 ctest' $false
 }
 else {
 
@@ -517,14 +569,29 @@ if ($w.Count -gt 0) {
 }
 Set-Gate '5 构建' $buildOk
 
-# ==================================================================
-Write-Host '=== Gate 6: ctest ==='
-# ==================================================================
-$ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error 2>&1)
-if ($LASTEXITCODE -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
-Set-Gate '6 ctest' ($LASTEXITCODE -eq 0)
+} # end gate 4/5 守卫 else
 
-} # end gate 4/5/6 守卫 else
+# ==================================================================
+# ===== 持锁段起点:gate 6 / 7 / 8 全程持 IPC 测试锁([SL-277]/[J96] 拆锁)=====
+# 锁**只包这一段**。gate 4(configure)/ 5(build)在上面已经跑完并释放,理由见
+# Enter-ScvbIpcLock 的头注。
+# ==================================================================
+$ipcLock = Enter-ScvbIpcLock
+try {
+
+  # ==================================================================
+  Write-Host '=== Gate 6: ctest ==='
+  # ==================================================================
+  if (-not $cmakeCmd -or -not $ctestCmd) {
+    Write-Host '  cmake / ctest 不在 PATH —— gate 6 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+    Write-Host '  提示:仓库自带 cmake 在 ..\tools\cmake-*-windows-x86_64\bin,加进 PATH 后重跑。' -ForegroundColor Yellow
+    Set-Gate '6 ctest' $false
+  }
+  else {
+    $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error 2>&1)
+    if ($LASTEXITCODE -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
+    Set-Gate '6 ctest' ($LASTEXITCODE -eq 0)
+  }
 
 # ==================================================================
 # Gate 7: pluginval 非 GUI(与 CI 等价,06 §3.1)
@@ -576,6 +643,9 @@ else {
     Set-Gate '8 pluginval 全量含 GUI' $false
   }
   else {
+    # [SL-277] 这把 GUI 专用互斥体保留:经 gates.ps1 的路径此时已经持着外层的
+    # SCVB-ipc-tests(两把锁的获取顺序全脚本唯一 = 先 ipc 后 gui,不会死锁),
+    # 但**不经 gates.ps1** 手跑 GUI pluginval 的场景只认得这一把,去掉就没保护了。
     $mutex = New-Object System.Threading.Mutex($false, 'Global\SCVB-pluginval-gui')
     Write-Host '  等待 GUI pluginval 全局互斥体...' -ForegroundColor Yellow
     $null = $mutex.WaitOne()
@@ -608,6 +678,14 @@ else {
     Set-Gate '8 pluginval 全量含 GUI' $pv
   }
 }
+
+}
+finally {
+  # 无论 gate 6/7/8 里哪一步抛异常都必须归还 —— 但即便这里没跑到,互斥体也会在
+  # 进程退出时由内核释放(这正是不用目录锁的理由)。
+  Exit-ScvbIpcLock $ipcLock
+}
+# ===== 持锁段终点 =====
 
 # ==================================================================
 # 汇总(可直接粘进 PR 描述的表格)

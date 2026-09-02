@@ -2,7 +2,9 @@ name: Compliance
 # 三仓逐字取本节;仓库间唯一差异 = 无。它不读任何 secret,也不 checkout 子模块。
 on:
   pull_request:
-    # 2026-08-19 用户指令:feature/** 子 PR 同样跑 compliance(CI 覆盖全部并入 dev 的 PR)。
+    # [SL-277/J96,2026-09-02] CI 三档里的**轻档**:子 PR 不跑 build-vst3,但 compliance 全部保留
+    # —— 密钥/许可/隐私门禁一旦漏跑,坏东西就进了公开仓的历史,和「慢 20 分钟」不是一个量级。
+    # 三档定义见 build-vst3.yml 头注与 CLAUDE.md §4。
     branches: [dev, "feature/**"]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
