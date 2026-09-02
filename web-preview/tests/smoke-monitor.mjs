@@ -2614,6 +2614,28 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
             `(b) ★ 建器同时打了 has-zero-line —— 没有它,「变量喂不到」不等于「不画」,` +
                 `而是线退到图顶(实得 ${JSON.stringify(cls)})`,
         );
+
+        // 上面两条守的是 **JS 那半边**(建器打没打)。「打了才显示」的另一半在 CSS 里,
+        // 而且两页各存一份逐字重复的规则 —— 谁把某一页的 `display:none` 删掉,正常路径下
+        // 渲染完全不变(类照打、线照对齐)、页面级 ⑪ 也全绿,**降级形态却悄悄退回
+        // 「图顶横线」**;谁把 `.dist-plot.has-zero-line` 选择器写错,那一页的线直接不画,
+        // 而页面级只跑 Output,Monitor 侧无人接。两条都在「改错时会怎样」这一档。
+        for (const page of [
+            "web/monitor/index.html",
+            "web/output/index.html",
+        ]) {
+            const css = src(page);
+            check(
+                /\.dist-plot__zero\s*\{[^}]*display:\s*none/.test(css),
+                `(c) ★ ${page}:.dist-plot__zero 默认 display:none —— 没有它,--zero-h 喂不到时线会退到图顶`,
+            );
+            check(
+                /\.dist-plot\.has-zero-line\s+\.dist-plot__zero\s*\{[^}]*display:\s*block/.test(
+                    css,
+                ),
+                `(d) ★ ${page}:拿到 has-zero-line 才显示`,
+            );
+        }
     }
 
     // ---- 页面接线:分布图不再走「收到帧就重拼 innerHTML」那条路
