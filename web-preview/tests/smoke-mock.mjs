@@ -728,6 +728,7 @@ log(
         let minGated = Infinity;
         let frames = 0;
         let framesAtCap = 0;
+        let notFull = ""; // 满档路径下第一帧不满档的身份,给失败文案用
         for (const reason of ["vad", "segmentation", "analyze", "edit"]) {
             for (let v = 1; v <= 2; v++) {
                 const frame = md.makeSegments(v, reason, undefined, {
@@ -736,6 +737,9 @@ log(
                 frames++;
                 if ((frame.diff.changed || []).length === md.DIFF_CHANGED_CAP) {
                     framesAtCap++;
+                    // 不满档时报错要说清是**哪一帧**,否则只能回头自己复现。
+                } else if (fill && notFull === "") {
+                    notFull = `${reason}/v${v} 只有 ${(frame.diff.changed || []).length} 条`;
                 }
                 for (const c of frame.diff.changed || []) {
                     seen++;
@@ -753,16 +757,25 @@ log(
         //     先后两版都栽在魔数上:`> 1000` 隐含「封顶 ≥ 126」,`> cap * 6` 隐含
         //     「封顶 < 674」(每帧只有 505 条 auto 段,封顶再大也填不满)——
         //     方向相反,同一种病。
-        //   · 默认档:`% 17` 抽稀后每帧 29 条,这里只要一个「素材没塌」的下界。
+        //   · 默认档:`% 17` 抽稀后每帧 29 条,除了「素材没塌」的下界,再加一条
+        //     **反向**断言 —— 默认档**不许**顶到封顶。它接住的是「抽稀被误删」
+        //     (那样默认档也会满档,满档那一支就不再是独立路径,两条断言合成一条)。
         if (fill) {
             check(
                 framesAtCap === frames,
                 `[${path}] 每一帧都顶到封顶 ${md.DIFF_CHANGED_CAP} 条` +
-                    `(实得 ${framesAtCap}/${frames} 帧;不满档 ⇒ 下面那条断言只扫到一部分素材,` +
+                    `(实得 ${framesAtCap}/${frames} 帧` +
+                    (notFull ? `,首个不满档的是 ${notFull}` : "") +
+                    ";不满档 ⇒ 下面那条断言只扫到一部分素材," +
                     "而页面级冒烟的「200+」判据也会跟着落空)",
             );
         } else {
             check(seen > 100, `[${path}] 样本量够大(实得 ${seen} 条,应 >100)`);
+            check(
+                framesAtCap === 0,
+                `[${path}] 没有任何一帧顶到封顶(实得 ${framesAtCap}/${frames} 帧顶满)—— ` +
+                    "默认档一满档就说明 `% 17` 抽稀没生效,两条路径塌成同一条",
+            );
         }
         check(
             invisible === 0,

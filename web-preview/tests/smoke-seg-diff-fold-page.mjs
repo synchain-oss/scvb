@@ -40,7 +40,8 @@
 //       常态素材只出 29 条,这个分支一条用例都到不了 —— 故本条另开一次装载,走
 //       `?scenario=diff-flood`(mock 的 `diffFillToCap`)把 changed 抽满。
 //       删掉 tab-wave.js 里 `nChanged >= DIFF_CHANGED_CAP` 那个三元 => 红。
-//       (三处 200 是否同值由 smoke-mock.mjs 的源码字面量对拍守,不在本套。)
+//       (三处 200 是否同值由 smoke-mock.mjs 的三方对拍守 —— native 走正则、
+//        两侧 JS 走 import 比运行时真值 —— 不在本套。)
 //
 // ⏱ 本套**跑得慢**(本机实测 ~60s),这是判据本身要求的:(4) 那三条要真的等过
 // `DIFF_HIDE_MS`(6s)两次与 `DIFF_HIDE_OPEN_MS`(30s)一次 —— 自动收起的时长是被测
