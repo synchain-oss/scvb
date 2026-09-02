@@ -32,8 +32,9 @@ name: Build & Validate
 
 on:
   pull_request:
-    # feature/** 留在触发面上**只为** `ci:full` 逃生口:事件级过滤掉就没有任何办法
-    # 在子 PR 上手动开全量了。跑不跑由下面 job 的 `if:` 决定。
+    # feature/** 留在触发面上有两个理由:**主要**是让 `detect-native` 有机会在子 PR 上做
+    # 路径判定([SL-283] —— 碰了 native 路径就照编),**其次**才是 `ci:full` 逃生口要有事件
+    # 可挂(事件级过滤掉就没有任何办法在子 PR 上手动开全量)。跑不跑由下面 job 的 `if:` 决定。
     branches: [dev, "feature/**"]
     types:
       [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
@@ -114,7 +115,15 @@ jobs:
           #   build-vst3.yml                     —— 改构建配方本身,必须自己编一遍验证
           NATIVE_RE='^(src/|tests/|cmake/|web/|third_party/|CMakeLists\.txt$|\.juce-version$|\.pluginval-version$|\.sccache-version$|\.sccache-sha256$|\.github/workflows/build-vst3\.yml$)'
 
-          files=$(git diff --name-only HEAD^1 HEAD 2>/dev/null) || files=''
+          # 两个开关都是**堵静默跳过**用的(PR#180 复审采纳),不是风格问题:
+          #  `--no-renames`:改名检测默认开,`--name-only` 对一次改名只打印**目标**路径。
+          #    于是 `src/core/Foo.cpp → docs/Foo.md` 只输出 `docs/Foo.md` ⇒ 不命中 ⇒ 不编,
+          #    而源码树里那个 .cpp 已经没了。关掉检测,两侧路径都打印,源路径照样命中。
+          #  `core.quotepath=false`:默认 true 会把非 ASCII 路径输出成 `"web/…"`(带前导
+          #    双引号),`^web/` 就不匹配了。**本仓已经有这种路径**
+          #    (`"docs/design/SCVB \350\256\276…dc.html"`),现在恰好落在 docs/ 所以无害;
+          #    哪天 src/ 或 web/fonts/ 下出现一个中文名文件,就会静默跳过编译。
+          files=$(git -c core.quotepath=false diff --no-renames --name-only HEAD^1 HEAD 2>/dev/null) || files=''
           if [ -z "$files" ]; then
             # 取不到改动面(浅克隆缺父提交 / PR 不可合并 / 合并提交形态变了)——
             # 这时**不能**判成「没碰 native」,那正好是静默跳过。倒向照编。
@@ -124,15 +133,34 @@ jobs:
           fi
 
           echo "本 PR 改动 $(echo "$files" | wc -l) 个文件"
-          hits=$(echo "$files" | grep -E "$NATIVE_RE" || true)
-          if [ -n "$hits" ]; then
+          # `grep` 的退出码要分三档,不能用 `|| true` 一把吞掉(PR#180 复审采纳):
+          # 0=有命中、1=无命中、**>=2 才是出错**(正则坏了 / 读失败)。吞掉的话出错会和
+          # 「无命中」一起落进 else ⇒ native=false ⇒ 静默跳过,与上面「取不到改动面」
+          # 那条同族却没有对称处理。
+          hits=$(echo "$files" | grep -E "$NATIVE_RE") || rc=$?
+          rc=${rc:-0}
+          if [ "$rc" -ge 2 ]; then
+            echo "::warning::grep 判定出错(exit=$rc),保守判定 native=true(照编)"
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 文件名在 fork PR 上是外部可控内容,直接 echo 会让 `::error::` 之类前缀被 runner
+          # 当 workflow 命令解释(只能造日志噪声,`set-output` 早已停用)。包一层 stop-commands
+          # 把这段日志降级成纯文本。
+          EOM="scvb-stop-$RANDOM$RANDOM"
+          echo "::stop-commands::$EOM"
+          if [ "$rc" -eq 0 ]; then
             echo "命中 native 路径,照跑全量构建:"
             echo "$hits" | sed 's/^/  /'
-            echo "native=true" >> "$GITHUB_OUTPUT"
           else
             echo "未命中 native 路径(纯文档 / 脚本 / web-preview 等),跳过全量构建。"
             echo "改动面:"
             echo "$files" | sed 's/^/  /'
+          fi
+          echo "::$EOM::"
+          if [ "$rc" -eq 0 ]; then
+            echo "native=true" >> "$GITHUB_OUTPUT"
+          else
             echo "native=false" >> "$GITHUB_OUTPUT"
           fi
 
