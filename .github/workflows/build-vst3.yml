@@ -37,7 +37,7 @@ on:
 
 concurrency:
   # dispatch 也进 group:同一 ref 连点两次只留最后一次;不同 ref 的两次 dispatch 互不取消。
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -64,7 +64,7 @@ jobs:
         with:
           # 只有 workflow_dispatch 才用 input;其余事件留空 = actions/checkout 的默认
           # 行为(PR 用 merge ref、push 用 push 的 sha)。
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || '' }}
 
       # 0) 版本单一真源:JUCE / pluginval 版本只存在于仓库根的 .juce-version / .pluginval-version
       #    (12 §6.3 / D-12)。workflow 里不再硬编码 JUCE / pluginval 版本号字面量。
@@ -79,7 +79,7 @@ jobs:
           "JUCE_TAG=$juce"      | Out-File $env:GITHUB_ENV -Append
           "PLUGINVAL_TAG=$pv"   | Out-File $env:GITHUB_ENV -Append
           # dispatch 时 github.ref_name 是发起 run 的那个 ref,不一定等于 input;以实际构建的 ref 为准。
-          $eff  = "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}"
+          $eff  = "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}"
           $slug = $eff.Replace('/', '-').Replace([char]92, '-')
           "REF_SLUG=$slug"      | Out-File $env:GITHUB_ENV -Append
 
