@@ -489,7 +489,7 @@ else {
 }
 
 # ==================================================================
-Write-Host '=== Gate 3i: 桥面/曲线/设计盒 三方对拍(scripts/check-*-parity + design-box)==='
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径对拍(scripts/check-*)==='
 # ==================================================================
 # [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
 # 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
@@ -497,21 +497,55 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒 三方对拍(scripts/check-*-pa
 # (exportSuggestions 与 setGuideSeen:契约齐全、常量在、web 真调用,唯独没注册 handler),
 # **即便门禁当时已经写好也照样栽**。判级理由与 Gate 3g 逐字同款:门禁没有执行者等于没有门禁。
 # 三条本地实跑均 exit=0 后才接线(curve 最坏偏差 9.6e-5 dB / 容差 0.01 dB)。
+# [SL-283] 第四条 check-native-paths.mjs 同理接进来:它与 format.yml 的 docs-truth 跑
+# **逐字同一条命令**。本仓的纪律是「只挂在本地 gates 上等于没有执行者」,反过来同样成立 ——
+# 只挂在 CI 上,改 NATIVE_RE 的人本地全绿、推上去才红。
+# 注意它在**没有 grep 的机器上**(Windows 裸装)会把「JS ↔ grep -E 引擎对拍」那一档降级成
+# 警告仍返回 0 —— 本地绿不等于那一档验过,那一档以 CI(ubuntu)为准。
 if (-not $nodeCmd) {
   Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
-  Set-Gate '3i 桥面/曲线/设计盒对拍' $false
+  Set-Gate '3i 桥面/曲线/设计盒/native 路径对拍' $false
 }
 else {
   $parityOk = $true
-  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs')) {
+  $parityWarn = 0
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
       $parityOk = $false
       Write-Host ("  {0}:" -f $sc) -ForegroundColor Red
       $out | ForEach-Object { Write-Host ("  " + $_) }
     }
+    else {
+      # [SL-283] **成功时也要把 [WARN] 行回显,并把「降级了几档」带进汇总表**。
+      # check-native-paths 在没有 grep 的机器上会把「JS ↔ grep -E 引擎对拍」那一档降级成
+      # 警告并**仍返回 0** —— 而 Windows 上 `grep` 通常不在 PATH 上(Git for Windows 的
+      # grep 只在 Git Bash 里),所以降级在本地是**常态而不是例外**。
+      # 只回显还不够:`Set-Gate` 只有 PASS/FAIL 两态,汇总表里「降级过的一次」和「全跑过的
+      # 一次」会长得一模一样,而跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字。
+      # 与 Gate 3e 同款处理(见 :400-403「绝不静默:SKIP 计数要带进总结」):把降级计数拼进
+      # gate 名,让「有一档没跑」在汇总表里就与「跑过了」不同形。
+      $warnLines = @($out | Where-Object { $_ -match '\[WARN\]' })
+      if ($warnLines.Count -gt 0) {
+        $parityWarn += $warnLines.Count
+        $warnLines | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+      }
+    }
   }
-  Set-Gate '3i 桥面/曲线/设计盒对拍' $parityOk
+  # 标签只说**数出来的东西**,不替别人的 `[WARN]` 下定义(PR#180 复审采纳)。
+  # 这里数的单位是**行**,不是「档」:今天恰好 1:1(check-native-paths 的降级是单次
+  # 单行 console.warn),但同在这个数组里的 check-bridge-parity 有一个已定义、当前零
+  # 调用的 `warn()` helper(:272),它的语义是「**通过但有提示**」而不是「某档没跑」——
+  # 谁哪天用上它,写死「−N 档降级」就会对着几条纯提示喊降级。这个信号刚建立起来就是
+  # 要让人信它,喊错一次,下次真降级也会被当成噪声。
+  # 反过来也不严丝合缝:check-bridge-parity 的 :1229 是真「跳过」,却直接 warns.push
+  # 而**不打 [WARN]**,这里数不到。所以这半句只能是「上方有几处 WARN,自己看」,
+  # 不能冒充「降级档数」的权威计数。
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍'
+  if ($parityWarn -gt 0) {
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+  }
+  Set-Gate $parityLabel $parityOk
 }
 
 # ==================================================================

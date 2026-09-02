@@ -137,6 +137,16 @@ jobs:
       - name: Design box parity (三侧窗口尺寸与缩放档位)
         # 同上(本地实跑 exit=0:output 1180x780 / input 460x560 / monitor 960x720)。
         run: node scripts/check-design-box.mjs
+      - name: Native path filter teeth (build-vst3.yml 的 NATIVE_RE)
+        # [SL-283] `detect-native` 的 NATIVE_RE 决定「子 PR 碰没碰 native 路径 ⇒ 要不要在
+        # CI 上编一遍」。它被改坏的失效形态是**静默的**:动了 C++ 的子 PR 不再编译,而 CI
+        # 照样全绿 —— 正是 [SL-283] 要补的那个洞原样复发,没有别的门禁会看见。
+        # 所以判据本身也要有判据:正反例 + **删除式验证**(逐个删掉正则里的一个分支,都必须
+        # 有正例变红 —— 防的是「写错到永不匹配的分支」也能让正反例全绿)。
+        # 与本 job 里其它「生成物 ↔ 真源」对拍同档:正则从 build-vst3.yml 里读出来,不手抄,
+        # 手抄两边会各自漂移,而漂移方向恰好是「测试还绿着,CI 已经不编了」。
+        # 零依赖(仓内脚本 + 本 job 已有的 node),不联网、无 secrets ⇒ fork PR 也跑得动。
+        run: node scripts/check-native-paths.mjs
       - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
         # 与 scripts/gates.ps1 的 Gate 3h **同一条命令**。web/fonts/README.md 自己写着
         # 「不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」—— 那句话在 2026-08 被兑现:

@@ -24,7 +24,7 @@
 ## 1. 分支模型与工作流程
 
 - 默认主干 = `dev`;SCVB 主支线 = `feature/v1`(ADR-013/J13)。子支线命名 `feat/<TASK-ID>-<slug>`,一张卡一条子支线一个 PR。
-- same-repo 只收 `feat/*` / `feature/*`(以及 `dependabot/*`)到 `dev`;子 PR(base=`feature/v1`)跑 review bot + **轻档 CI**(2026-09-02 [J96] 起不再跑 `build-vst3`,编译证据改由本地 gates 与出包前的批次全量提供,见 §4)。
+- same-repo 只收 `feat/*` / `feature/*`(以及 `dependabot/*`)到 `dev`;子 PR(base=`feature/v1`)跑 review bot + **轻档 CI**(2026-09-02 [J96] 起默认不跑 `build-vst3`;**[SL-283] 起碰了 native 路径的子 PR 照跑全量**,纯文档 / 脚本 PR 才真的跳过,见 §4)。
 - `branch-gate` 除分支命名外还承担两条断言:**DCO**(每个 commit 必须有 `Signed-off-by:`,内联 `gh api` 实现,不引第三方 action)与**冻结契约 path guard**(见 §5)。
 - **fork PR 门禁政策(J31/J41,唯一政策)**:
   - fork → **任意分支名**(不要用 `dev`/`stage`/`prod`/`feature/v1`/`feature/extraction`)→ PR 到 `dev`;
@@ -37,10 +37,10 @@
 
 ## 2. 提 PR 前的本地 Gates
 
-- 一律经 `pwsh scripts/gates.ps1`(06 §5.1 的 gate 1–8,另含十个子档:`3b` gitleaks、`3c` reuse lint + `check-spdx.ps1`、`3d` 设计盒真源、`3e` web smoke、`3f` 文档真源、`3g` IPC 契约文档对拍、`3h` 字体子集覆盖、`3i` 桥面/曲线/设计盒对拍、`3j` 隐私、`3k` 字体保留名)。子档只增不减,以 `gates.ps1` 的 `Set-Gate` 为准。
+- 一律经 `pwsh scripts/gates.ps1`(06 §5.1 的 gate 1–8,另含十个子档:`3b` gitleaks、`3c` reuse lint + `check-spdx.ps1`、`3d` 设计盒真源、`3e` web smoke、`3f` 文档真源、`3g` IPC 契约文档对拍、`3h` 字体子集覆盖、`3i` 桥面/曲线/设计盒/native 路径对拍、`3j` 隐私、`3k` 字体保留名)。子档只增不减,以 `gates.ps1` 的 `Set-Gate` 为准。
 - 三个档位:`gates.ps1` 全量(含 gate 8 真机 GUI pluginval)/ `-PluginOnly` 跑 gate 1–7 / `-Quick` 跳过 pluginval(gate 7/8)做快速回环。JUCE 路径经 `-JucePath` 传入(或环境变量 `JUCE_PATH`)。
-- **本地 gates 与 CI 的生成器不同,不是等价关系**([J96] 起):CI 是 `Ninja Multi-Config` + sccache,本地 gate 4 默认用 CMake 在 Windows 上的默认生成器(Visual Studio)。两者会在不同的地方红 —— `add_custom_command` 漏声明的隐式依赖(MSBuild 靠工程内顺序兜住、Ninja 并行到炸)、生成物时序、PCH 行为。以前无所谓,因为 push→`feature/**` 每次都在 CI 上编一遍;那条触发撤掉之后,**Ninja 侧的错第一次被看见就是出包前那次 dispatch**。所以:改到 `CMakeLists.txt` / 构建脚本 / 依赖的 PR,要么打 `ci:full` 标签让 CI 编一遍,要么在 Developer Command Prompt 里跑 `pwsh scripts/gates.ps1 -Generator "Ninja Multi-Config"` 自己先对一遍(该参数默认空 = 保持旧行为;**不做自动探测**,`ninja` 在 PATH 上但 shell 里没有 vcvars 时会把所有人的 gate 4 一起变红)。
-- 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。**[J96] 之后这条从「建议」变成「唯一的编译门」**:子 PR 不再跑 `build-vst3`,所以本地 gates 没跑过的编译错误在合进 `feature/v1` 之前没有任何机器会看见。
+- **本地 gates 与 CI 的生成器不同,不是等价关系**([J96] 起):CI 是 `Ninja Multi-Config` + sccache,本地 gate 4 默认用 CMake 在 Windows 上的默认生成器(Visual Studio)。两者会在不同的地方红 —— `add_custom_command` 漏声明的隐式依赖(MSBuild 靠工程内顺序兜住、Ninja 并行到炸)、生成物时序、PCH 行为。以前无所谓,因为 push→`feature/**` 每次都在 CI 上编一遍;那条触发撤掉之后,**Ninja 侧的错第一次被看见就是出包前那次 dispatch**。所以:改到 `CMakeLists.txt` / 构建脚本 / 依赖的 PR,**[SL-283] 起会自动照编**(这些路径都在 `NATIVE_RE` 里,不用再打 `ci:full`);想在本地先对一遍,就在 Developer Command Prompt 里跑 `pwsh scripts/gates.ps1 -Generator "Ninja Multi-Config"`(该参数默认空 = 保持旧行为;**不做自动探测**,`ninja` 在 PATH 上但 shell 里没有 vcvars 时会把所有人的 gate 4 一起变红)。
+- 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。**[J96] 之后这条从「建议」变成第一道编译门**:子 PR 默认不跑 `build-vst3`。**[SL-283] 起收窄**:碰了 native 路径的子 PR 在 CI 上照跑全量,所以「没有任何机器会看见」现在**只对纯文档 / 脚本子 PR 成立**(而那类 PR 本来也不该有编译错)。即便如此本地 gates 仍是第一道也是最快的一道 —— CI 那道要等 7 分钟,而且它只在你碰了 native 路径时才醒。
 - 并行 agent 必须各用独立 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
 - **锁纪律([SL-277]/[J96] 拆锁,2026-09-02)**:`gates.ps1` 自己在 gate 6/7/8 外面套一把命名互斥体 `Local\SCVB-ipc-tests`,gate 1–5 **完全不持锁**。
   - 拆锁的理由:要互斥的是**跨进程共享内存段**(段名前缀 `SynchainSCVB.v1.` 全机唯一,ctest 的 ipc 套件与 pluginval 都会开同名段),而 configure/build 只动各自的 `-BuildDir`。旧做法把整条 gates 包进一把外部目录锁,连 20 分钟的编译一起串行,四个 agent 排队等一个人编译。
@@ -60,17 +60,24 @@
 
 | 档  | 触发                                                  | 跑什么                                                                                                      |
 | --- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| 轻  | 子 PR(base=`feature/**`)                             | `format`(clang-format / web-smoke / docs-truth)+ `compliance` + 三个 review bot。**不跑 `build-vst3`。**      |
-| 中  | 里程碑 PR(base=`dev`)、push→`dev`                    | 上面全部 + `build-vst3` + `branch-gate`                                                                       |
+| 轻  | 子 PR(base=`feature/**`)**且没碰 native 路径**        | `format`(clang-format / web-smoke / docs-truth)+ `compliance` + 三个 review bot。**不跑 `build-vst3`。**      |
+| 轻+ | 子 PR **碰了 native 路径**([SL-283])                  | 上面全部 + `build-vst3`(缓存热时约 7 分钟)。判定见 `detect-native` job                                        |
+| 中  | 里程碑 PR(base=`dev`)、push→`dev`                    | 上面全部 + `build-vst3` + `branch-gate`(**不看路径**,里程碑 PR 一律全量)                                     |
 | 重  | `workflow_dispatch`(input `ref`,默认 `feature/v1`)  | `build-vst3` 全量 —— **出包前硬门**                                                                           |
+
+> **成本口径**:`src/` `tests/` `cmake/` `web/` 覆盖了本仓绝大多数子 PR,所以**预计多数子 PR 会落在「轻+」而不是「轻」** —— [J96] 省下来的那笔,实际只剩纯文档 / 脚本 / `web-preview/` 那一档。这是 [SL-283] 有意换回来的:用 7 分钟买「动了 C++ 就一定编过」。看账单前先读这一句,别又翻一轮案。
 
 - **出包流程硬规:出包(打 tag / 发 `release`)之前必须对目标 ref 手动 dispatch 一次 `build-vst3` 并全绿。** 命令:`gh workflow run build-vst3.yml --repo synchain-oss/scvb --ref feature/v1 -f ref=feature/v1`,然后 `gh run list --workflow build-vst3.yml -L 1` 看结果。没有这一次绿,不允许出包 —— push→`feature/**` 触发已撤,主支线上再没有别的机器编译证据。要取包也走这一次:preview artifact(`SCVB-VST3-win64-preview-<slug>-<sha>`)就由这次 run 产出,`<sha>` 是**真正被 checkout 的那个 commit**(`git rev-parse HEAD`),不是 `github.sha`。
   - **`--ref` 与 `-f ref=` 是两件事**:前者决定用哪份 workflow 定义,后者决定构建哪棵源码树。两者指向不同分支时,workflow 会读不到只存在于其中一边的钉版文件(`.juce-version` / `.pluginval-version` / `.sccache-version` / `.sccache-sha256`),第一步就带着这句解释报错退出(本卡实测踩过一次)。正常出包两者都填 `feature/v1`。
-- **逃生口**:**子 PR** 打上 `ci:full` 标签即照跑 `build-vst3` 全量(job 的 `if:` 判标签,`on.pull_request.types` 含 `labeled`/`unlabeled`)。改到 `CMakeLists.txt` / 依赖 / workflow 本身时用它。base=`dev` 的 PR **不吃**这个标签 —— 它每次 synchronize 本来就跑全量,标签再起一次只是在同一个 concurrency group 里排队重编;dev PR 想临时再编一次用 `workflow_dispatch`。
+- **逃生口**:**子 PR** 打上 `ci:full` 标签即照跑 `build-vst3` 全量(job 的 `if:` 判标签,`on.pull_request.types` 含 `labeled`/`unlabeled`)。**[SL-283] 之后它的真实用途收窄了**:碰了 native 路径的子 PR 已经自动照编,所以这个标签剩下的用处是「**没碰** native 路径(纯文档 / 脚本 / `web-preview/`)但仍想手动编一次」。base=`dev` 的 PR **不吃**这个标签 —— 它每次 synchronize 本来就跑全量,标签再起一次只是在同一个 concurrency group 里排队重编;dev PR 想临时再编一次用 `workflow_dispatch`。
 - **编译缓存**:`build-vst3` 用 `Ninja Multi-Config` + sccache(磁盘缓存 + `actions/cache` 跨 run 搬运)。换生成器不是审美选择 —— `CMAKE_<LANG>_COMPILER_LAUNCHER` 对 Visual Studio(MSBuild)生成器**无效**,不换就没有编译缓存。sccache 二进制**手动钉版下载**(`.sccache-version` + `.sccache-sha256` 两个单一真源),不走 marketplace action:org 的 action 白名单本来就不放行它,而且与 gitleaks 手动下载同一条纪律。每次 run 末尾打印 `sccache --show-stats`:缓存失效的形态是静默零命中(CI 照样绿,只是慢回改造前),不打印没人会发现。
 - **org action 白名单**:本 org 只放行 GitHub 自家 action、`synchain-oss/*`,以及 `anthropics/claude-code-action@*` / `oven-sh/setup-bun@*` / `qodo-ai/pr-agent@*` / `softprops/action-gh-release@*`。**加任何别的第三方 action 都会让整个 run 直接 `startup_failure`** —— 没有 job、没有 check、没有日志,只有一句「workflow file issue」,很容易被误判成语法错。先考虑用 `run:` 步骤自己实现;确实需要新 action 时,由用户在 org 设置里放行后再用。
-- **子 PR(base=`feature/**`)上还剩哪些机器门禁**:`format` 三个 job + `compliance` + 三个 review bot,**没有** `build-vst3`,也**没有** `branch-gate` —— 后者仅挂 pull_request→`dev`,所以 **DCO(每个 commit 的 `Signed-off-by:`)与冻结契约 path guard 在子 PR 上一次都不跑**,要到 feature→dev 收口 PR 才第一次生效。改冻结契约的子 PR 别指望机器拦你。
-- `build-vst3`(job `build-and-validate`):pull_request→`dev` + `feature/**`(feature 侧只为 `ci:full` 逃生口留触发面,job `if:` 决定跑不跑)、push→`dev`、`workflow_dispatch`。`format` / `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(轻档照跑)。`branch-gate`(命名 + DCO + 冻结契约 path guard)仍仅 pull_request→dev。
+- **native 路径清单([SL-283],单一真源 = `build-vst3.yml` 的 `detect-native` 步里那条 `NATIVE_RE`)**:`src/` / `tests/` / `cmake/` / `CMakeLists.txt` / **`web/`** / `third_party/` / 四个钉版文件 / `build-vst3.yml` 自身。子 PR 碰到其中任一就照跑全量。
+  - **`web/` 必须在清单里**,它不是纯前端:`cmake/ScvbWebAssets.cmake` 经 `juce_add_binary_data` 把 `web/` 编进插件二进制。文件名唯一性与 `EXTRA_DIRS` 是 **configure 期 `FATAL_ERROR`**,「页面真会去取的每个文件都进了包」由 **ctest 的 `test_web_assets_embedded`** 兜(第四层门禁)—— 这两道**都只在编译时才跑**。把 `web/` 判成「纯前端可跳过」,等于让这两道一次都不跑,而「资源没进包 = 空白窗口」这一类本仓已经栽过三次。`web-preview/`(浏览器预览)才是真的不参与构建。
+  - 清单**只加不减**要谨慎:漏一条 = 改了它却没编,且是静默的。这条正则**有自己的门禁**:`scripts/check-native-paths.mjs`(docs-truth 里跑),做正反例断言 + **删除式验证**(逐个删掉正则的一个分支,都必须有正例变红)。改 `NATIVE_RE` 时同步改那里的正反例清单 —— 只改正则不改用例,门禁会直接红给你看。
+- **子 PR(base=`feature/**`)上还剩哪些机器门禁**:`format` 三个 job + `compliance` + 三个 review bot,`build-vst3` **仅在碰了 native 路径或带 `ci:full` 时**跑,且**没有** `branch-gate` —— 后者仅挂 pull_request→`dev`,所以 **DCO(每个 commit 的 `Signed-off-by:`)与冻结契约 path guard 在子 PR 上一次都不跑**,要到 feature→dev 收口 PR 才第一次生效。改冻结契约的子 PR 别指望机器拦你。
+  - 清单里还会多出一行 `detect-native`([SL-283]):它是 `build-and-validate` 的 **`needs` 前置**,不是新增的一道判据 —— 只回答「这个 PR 碰没碰 native 路径」,自己不断言任何东西;**判定逻辑**从不判红(算不出来就倒向「照编」)—— 但 job 本身仍可能因 checkout / runner / 超时而红,那时 `!cancelled()` 让 build 照跑。每个 PR 上都跑,十几秒(实测 6–8 秒)。**别把它读成多了一道门禁**,它只决定后面那道跑不跑。
+- `build-vst3`(job `detect-native` → `build-and-validate`):pull_request→`dev` + `feature/**`(feature 侧留触发面有两个理由:**主要**是让 `detect-native` 有机会在子 PR 上做路径判定 [SL-283],**其次**才是 `ci:full` 逃生口有事件可挂;跑不跑由 job `if:` 决定)、push→`dev`、`workflow_dispatch`。`detect-native` 在这四条通道上**都跑**(非 pull_request 事件直接输出 `native=true` 直通),`build-and-validate` 靠 `needs` 接它的输出。`format` / `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(轻档照跑)。`branch-gate`(命名 + DCO + 冻结契约 path guard)仍仅 pull_request→dev。
 - `compliance`(gitleaks + reuse lint + check-privacy + 设计盒真源):无 secrets,fork PR 同样跑。
 - `claude-review`:所有 base 分支、**仅 same-repo**(J31);`deepseek-review` / `pr-agent` 默认 disable,同样仅 same-repo。
 - `review-dispatch`:维护者评论 `/review` 显式触发 —— 这是 §0 铁律第 4 条**方案 D** 的实现,也是本仓目前给 fork PR 做 AI 审查的**默认通道**(铁律允许的另一条是方案 C 的 workflow_run 两阶段,本仓未实现)。
