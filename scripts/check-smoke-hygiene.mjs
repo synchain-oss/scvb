@@ -78,10 +78,14 @@ for (const p of files) {
         bad.push("B. 缺 `CDP_DEFAULT_TIMEOUT_MS` 兜底常量");
     else if (!/timeoutMs\s*\|\|\s*CDP_DEFAULT_TIMEOUT_MS/.test(s))
         bad.push("B. 定义了 `CDP_DEFAULT_TIMEOUT_MS` 但 send 里没用它");
-    // C 放宽到「第二实参里同时出现 ms 与 Date.now() - t0」,不再耦合逐字形态:
-    // 耦合到形参名与换行的话,把 `expr` 改名、或 prettier 把那行折行,都会让一份
-    // **语义完全正确**的冒烟变红,而报错文案还说「没按预算取上界」—— 把人带错方向。
-    const evalArg = s.match(/evaluate\(\s*expr\s*,([\s\S]{0,160}?)\)\s*;/);
+    // C 只认「第二实参里同时出现 `ms` 与 `Date.now() - t0`」,**不认形参名、不认换行**:
+    // 耦合到那两样的话,把 `expr` 改名成 `expression`、或 prettier 把那行折行,都会让一份
+    // 语义完全正确的冒烟变红,而失败文案说的却是「没按剩余预算取上界」—— 把人带错方向。
+    // (第一版这句注释就写在这儿,而下面那行正则里 `expr` 仍是逐字的 —— 注释与代码反着来,
+    //  复审逮到了。现在形参名放开成任意标识符,这句话才是真的。)
+    const evalArg = s.match(
+        /evaluate\(\s*[A-Za-z_$][\w$]*\s*,([\s\S]{0,160}?)\)\s*;/,
+    );
     if (
         !evalArg ||
         !evalArg[1].includes("ms") ||

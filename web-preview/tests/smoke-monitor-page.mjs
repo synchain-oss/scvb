@@ -164,7 +164,9 @@ function cdpConnect(wsUrl) {
     //     实测 smoke-output-dist-page 的 `measureOff` 合法跑满 12s,而同一文件最紧的
     //     `waitFor` 预算也是 12s:两个约束互相矛盾,任何单一常数都满足不了。
     //
-    // 所以:`waitFor` 传自己预算的一半(见下面 waitFor),其余调用用这个宽的默认值 ——
+    // 所以:`waitFor` 内部的 evaluate 传**本次还剩多少预算**(见下面 waitFor —— 第一版写的是
+    // 「预算的一半」,被复审指出那会把耗时落在 (ms/2, ms) 的**合法**调用从过变成必红,
+    // 等于新增一类红;按剩余预算取则不改变任何原本能过的行为)。其余调用用这个宽的默认值 ——
     // 它只负责兜住**真挂死**,不负责区分快慢。
     const CDP_DEFAULT_TIMEOUT_MS = 20000;
     return {
