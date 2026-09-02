@@ -67,6 +67,7 @@
 - **逃生口**:任何 PR 打上 `ci:full` 标签即照跑 `build-vst3` 全量(job 的 `if:` 判标签,`on.pull_request.types` 含 `labeled`/`unlabeled`)。子 PR 改到 `CMakeLists.txt` / 依赖 / workflow 本身时用它。
 - **编译缓存**:`build-vst3` 用 `Ninja Multi-Config` + sccache(磁盘缓存 + `actions/cache` 跨 run 搬运)。换生成器不是审美选择 —— `CMAKE_<LANG>_COMPILER_LAUNCHER` 对 Visual Studio(MSBuild)生成器**无效**,不换就没有编译缓存。sccache 二进制**手动钉版下载**(`.sccache-version` + `.sccache-sha256` 两个单一真源),不走 marketplace action:org 的 action 白名单本来就不放行它,而且与 gitleaks 手动下载同一条纪律。每次 run 末尾打印 `sccache --show-stats`:缓存失效的形态是静默零命中(CI 照样绿,只是慢回改造前),不打印没人会发现。
 - **org action 白名单**:本 org 只放行 GitHub 自家 action、`synchain-oss/*`,以及 `anthropics/claude-code-action@*` / `oven-sh/setup-bun@*` / `qodo-ai/pr-agent@*` / `softprops/action-gh-release@*`。**加任何别的第三方 action 都会让整个 run 直接 `startup_failure`** —— 没有 job、没有 check、没有日志,只有一句「workflow file issue」,很容易被误判成语法错。先考虑用 `run:` 步骤自己实现;确实需要新 action 时,由用户在 org 设置里放行后再用。
+- **子 PR(base=`feature/**`)上还剩哪些机器门禁**:`format` 三个 job + `compliance` + 三个 review bot,**没有** `build-vst3`,也**没有** `branch-gate` —— 后者仅挂 pull_request→`dev`,所以 **DCO(每个 commit 的 `Signed-off-by:`)与冻结契约 path guard 在子 PR 上一次都不跑**,要到 feature→dev 收口 PR 才第一次生效。改冻结契约的子 PR 别指望机器拦你。
 - `build-vst3`(job `build-and-validate`):pull_request→`dev` + `feature/**`(feature 侧只为 `ci:full` 逃生口留触发面,job `if:` 决定跑不跑)、push→`dev`、`workflow_dispatch`。`format` / `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(轻档照跑)。`branch-gate`(命名 + DCO + 冻结契约 path guard)仍仅 pull_request→dev。
 - `compliance`(gitleaks + reuse lint + check-privacy + 设计盒真源):无 secrets,fork PR 同样跑。
 - `claude-review`:所有 base 分支、**仅 same-repo**(J31);`deepseek-review` / `pr-agent` 默认 disable,同样仅 same-repo。
@@ -83,8 +84,9 @@
 ## 6. 环境与依赖
 
 - JUCE(版本见 `.juce-version`)、CMake ≥3.22、MSVC 2022(静态 CRT `/MT`)、WebView2 SDK(NuGet,版本常量在 `CMakeLists.txt` 的 `WEBVIEW2_VERSION`)+ WebView2 Evergreen Runtime、pluginval(版本见 `.pluginval-version`)、Catch2(仅测试目标,由 `tests/CMakeLists.txt` 的 FetchContent 钉版拉取)、clang-format 18.1.8(J38 钉死)、gitleaks(版本见 `.gitleaks-version`)、`reuse`(pipx)。
+- **仅 CI 侧的构建依赖**([J96] 起):Ninja(runner 镜像自带,缺了回退 choco)与 sccache(版本见 `.sccache-version`,校验和见 `.sccache-sha256`)。本地 gates **不需要**这两个 —— 默认仍走 CMake 的默认生成器;只有显式跑 `-Generator "Ninja Multi-Config"` 复现 CI 时才要,且要在 Developer Command Prompt 里(见 §2)。
 - **可选依赖:无头 Chrome / Edge**(T46 起)。`web-preview/tests/smoke-*-page.mjs` 这几套(经 CDP 驱动真页面:Monitor 投影面、Output 过期提示面、Output 分布图补间面)用得到,**没装不算失败** —— 该套回退出码 **2**,`scripts/gates.ps1` 的 Gate 3e 与 CI 的 web-smoke job 都把 2 记成 SKIP / `::warning::` 而不判红(理由写在那两处的注释里:web-smoke 是 required check,为一个可选依赖判红会卡住仓库里每一个 PR)。装了才跑得到「页面真的执行起来」那一层断言 —— node 侧的其余各套都不执行页面 JS,建议装。
-- **版本单一真源纪律**:`.juce-version` / `.pluginval-version` / `.gitleaks-version` 三个文件是各自版本的唯一真源,workflow 与 `scripts/*.ps1` **一律从文件读**,不得写版本号字面量。
+- **版本单一真源纪律**:`.juce-version` / `.pluginval-version` / `.gitleaks-version` / `.sccache-version` / `.sccache-sha256` **五个**文件是各自版本(与校验和)的唯一真源,workflow 与 `scripts/*.ps1` **一律从文件读**,不得写版本号字面量。这条纪律的价值在于清单是穷举的 —— 漏记一个,就等于给「再写一个版本号字面量」开了口子;新增钉版依赖时**必须**同时加到这里。
 - 构建流水线不需要任何 secret(06 §3.1);review bot 用 org secrets(`CLAUDE_CODE_OAUTH_TOKEN` / `DEEPSEEK_KEY`)。
 
 ## 7. 冻结契约铁律

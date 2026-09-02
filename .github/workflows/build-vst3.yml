@@ -270,6 +270,11 @@ jobs:
 
       # 5c) 缓存命中率进日志。sccache 失效的形态是**静默零命中**(缓存没恢复上、键变了、
       #     编译参数不可缓存),CI 照样全绿只是慢回 20 分钟。不打印就没人会发现。
+      #     **一条已知的「命中率恒为 0」成因**:sccache 对 MSVC 的 `/Zi`(独立 PDB)
+      #     不可缓存,只有 `/Z7`(调试信息嵌进 obj)可缓存。本仓 Release 不带调试信息
+      #     格式,所以现在没事;但哪天 JUCE 或 CMakeLists 给 Release 加上 `/Zi`,
+      #     表现就是这里 `Cache misses` 一直 100% 而 CI 全绿。先记在这,省得下次
+      #     有人对着 0 命中猜半天。
       #     顺手停掉 server:让它把内存里的索引落盘,之后 actions/cache 的 post 步
       #     搬走的才是完整的一份。
       - name: sccache stats
