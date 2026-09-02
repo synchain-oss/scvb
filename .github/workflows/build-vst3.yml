@@ -54,11 +54,13 @@ jobs:
     timeout-minutes: 60
     env:
       WEBVIEW2_NUGET_VERSION: "1.0.2957.106" # 必须与 CMakeLists 的 WEBVIEW2_VERSION 一致
-      # sccache 的 GitHub Actions 缓存后端开关(mozilla-actions/sccache-action 只负责装
-      # 二进制,后端要自己开)。关掉它 sccache 会静默退化成「本地磁盘缓存」,而 runner
-      # 每次都是新机器 ⇒ 命中率恒为 0,速度回到改造前而 CI 照样绿 —— 所以下面有一步
-      # 显式打印 `--show-stats`,让命中率进日志,退化看得见。
-      SCCACHE_GHA_ENABLED: "true"
+      # sccache 用**本地磁盘缓存 + actions/cache 跨 run 搬运**,不用它的 GHA 后端:
+      # 那个后端要 ACTIONS_RUNTIME_TOKEN / ACTIONS_RESULTS_URL,而这两个变量只发给
+      # JS action,`run:` 步骤里拿不到 —— 想拿就得再引一个 action 去 exportVariable,
+      # 换来的是又一个白名单外的依赖。磁盘缓存 + actions/cache(GitHub 自家,白名单放行)
+      # 效果相同且少一层依赖。
+      SCCACHE_DIR: ${{ github.workspace }}\.sccache
+      SCCACHE_CACHE_SIZE: 2G
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -139,6 +141,13 @@ jobs:
           $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue)
           if (-not $cl) { Write-Error "MSVC 环境已加载但 cl.exe 仍不在 PATH"; exit 1 }
           Write-Host "cl.exe = $($cl.Source)"
+          # 工具集版本进 sccache 缓存键。从 VCToolsInstallDir 的末段取(形如 14.44.35207),
+          # **不**去跑 `cl.exe` 读 banner —— 无输入文件时它退非零,会把整步染红。
+          $tools = [Environment]::GetEnvironmentVariable('VCToolsInstallDir')
+          if (-not $tools) { Write-Error "VCToolsInstallDir 为空,取不到工具集版本"; exit 1 }
+          $msvc = Split-Path $tools.TrimEnd('\') -Leaf
+          "MSVC_VER=$msvc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "MSVC toolset = $msvc"
 
       # 4c) Ninja —— CMAKE_<LANG>_COMPILER_LAUNCHER **只对 Makefile / Ninja 生成器生效**,
       #     Visual Studio(MSBuild)生成器会直接忽略它。所以要用 sccache 就必须换生成器,
@@ -154,9 +163,48 @@ jobs:
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { Write-Error "ninja 安装后仍不可用"; exit 1 }
           ninja --version
 
-      # 4d) sccache —— MSVC 编译缓存。跨 run 走 GitHub Actions 缓存后端(见 job env)。
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # 4d) sccache —— MSVC 编译缓存。
+      #     **不用 mozilla-actions/sccache-action**:org 的 action 白名单不放行它
+      #     (首推实测 = startup_failure,原话「is not allowed in synchain-oss/scvb」),
+      #     何况直接取发行版二进制本来就更合本仓纪律 —— compliance.yml 里的 gitleaks
+      #     同样是「钉版手动下载」而不是 marketplace action,理由逐字同款:不把版本
+      #     漂移权交给第三方。
+      #     版本单一真源 = `.sccache-version`,完整性真源 = `.sccache-sha256`。
+      #     **不**去下上游同目录的 `.sha256` 侧车文件:它和二进制同源同页,只能查传输
+      #     损坏,查不出发行页被换 —— 那样的校验是摆设。
+      - name: Install sccache (pinned + sha256)
+        shell: pwsh
+        run: |
+          $ver  = (Get-Content .sccache-version -Raw).Trim()
+          $want = (Get-Content .sccache-sha256  -Raw).Trim().ToLower()
+          if (-not $ver -or -not $want) { Write-Error "空的 .sccache-version / .sccache-sha256"; exit 1 }
+          $name = "sccache-v$ver-x86_64-pc-windows-msvc"
+          $zip  = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Invoke-WebRequest "https://github.com/mozilla/sccache/releases/download/v$ver/$name.zip" -OutFile $zip
+          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $want) { Write-Error "sccache 校验和不符: want=$want got=$got"; exit 1 }
+          $dest = Join-Path $env:RUNNER_TEMP "sccache"
+          Expand-Archive $zip -DestinationPath $dest -Force
+          $bin = Join-Path $dest $name
+          if (-not (Test-Path (Join-Path $bin "sccache.exe"))) { Write-Error "解包后没有 sccache.exe"; exit 1 }
+          $bin | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          New-Item -ItemType Directory -Force $env:SCCACHE_DIR | Out-Null
+          & (Join-Path $bin "sccache.exe") --version
+
+      # 4e) 把 sccache 的磁盘缓存跨 run 搬运。
+      #     键里带 **MSVC 工具集版本 + 本仓 CMakeLists 的哈希**:换编译器或改构建脚本
+      #     后旧对象大概率全不命中,让它换一把键重新长,而不是背着一坨死缓存。
+      #     键尾加 run_id 是为了**每次都写回**(actions/cache 只在 key 未命中时保存;
+      #     不加就永远只写第一次那份,后面新增的编译产物一个都存不下来),靠 restore-keys
+      #     的前缀去捞上一次那份。
+      - name: Restore sccache disk cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-${{ runner.os }}-${{ env.MSVC_VER }}-${{ hashFiles('CMakeLists.txt', 'src/**/CMakeLists.txt', 'tests/**/CMakeLists.txt', 'cmake/*.cmake', '.juce-version', '.sccache-version') }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ env.MSVC_VER }}-${{ hashFiles('CMakeLists.txt', 'src/**/CMakeLists.txt', 'tests/**/CMakeLists.txt', 'cmake/*.cmake', '.juce-version', '.sccache-version') }}-
+            sccache-${{ runner.os }}-${{ env.MSVC_VER }}-
 
       # 5) Configure —— 一次配置产出全部 5 个 target(core / Input / Output / tests / ipc_tests)
       #    **不再清 build/**:runner 是一次性的,build/ 里唯一的既有内容就是上面刚恢复的
@@ -188,8 +236,10 @@ jobs:
             Write-Error "MSVC 告警 $($w.Count) 条,ADR-011 要求 /W4 零 warning"; exit 1
           }
 
-      # 5c) 缓存命中率进日志。sccache 失效的形态是**静默零命中**(后端没开、键变了、
+      # 5c) 缓存命中率进日志。sccache 失效的形态是**静默零命中**(缓存没恢复上、键变了、
       #     编译参数不可缓存),CI 照样全绿只是慢回 20 分钟。不打印就没人会发现。
+      #     顺手停掉 server:让它把内存里的索引落盘,之后 actions/cache 的 post 步
+      #     搬走的才是完整的一份。
       - name: sccache stats
         if: always()
         shell: pwsh
@@ -201,6 +251,8 @@ jobs:
           }
           sccache --show-stats
           Write-Host "::notice::上面的 'Cache hits' / 'Cache misses' 就是本次编译缓存的实际收益"
+          sccache --stop-server | Out-Host
+          exit 0
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
