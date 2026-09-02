@@ -38,7 +38,12 @@ on:
 concurrency:
   # dispatch 也进 group:同一 ref 连点两次只留最后一次;不同 ref 的两次 dispatch 互不取消。
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.inputs.ref || github.ref }}
-  cancel-in-progress: true
+  # **标签事件永不取消在跑的 run**(PR#176 复审采纳)。取消发生在 job `if:` **求值之前**,
+  # 所以在 `cancel-in-progress: true` 下,给一个 base=dev 的 PR 加个无关标签
+  # (`bug` / `Review effort 4/5` …)就会打断正在跑的全量构建 —— 而那正是本卡要省的
+  # 那 20 分钟。只在 `if:` 里收窄标签名救不了:取消照样先发生,新 run 又被跳过,
+  # 结果是构建被杀掉且没有任何东西顶上,比不改还差。
+  cancel-in-progress: ${{ github.event.action != 'labeled' && github.event.action != 'unlabeled' }}
 
 jobs:
   build-and-validate:
@@ -46,10 +51,19 @@ jobs:
     # 三档 + 逃生口的唯一判定处。push / workflow_dispatch 一律跑;pull_request 只在
     # base=dev 或带 `ci:full` 标签时跑。**不要**把这条搬去 `on:` 的事件过滤 —— 标签
     # 是 PR 的属性而不是事件的属性,只有 job 级 `if:` 看得见。
+    # 标签事件还要**再**收窄到 `ci:full` 本身:上面的 concurrency 已经保证标签事件
+    # 不取消在跑的 run,此时收窄是安全的 —— 无关标签 → 什么都不发生;加 `ci:full`
+    # → 起一次全量;摘掉 `ci:full` → labels 里没有它,第一条 contains 就假,同样跳过。
     if: >
       github.event_name != 'pull_request' ||
       github.base_ref == 'dev' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      (
+      contains(github.event.pull_request.labels.*.name, 'ci:full') &&
+      (
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      github.event.label.name == 'ci:full'
+      )
+      )
     runs-on: windows-2022
     timeout-minutes: 60
     env:
@@ -60,7 +74,12 @@ jobs:
       # 换来的是又一个白名单外的依赖。磁盘缓存 + actions/cache(GitHub 自家,白名单放行)
       # 效果相同且少一层依赖。
       SCCACHE_DIR: ${{ github.workspace }}\.sccache
-      SCCACHE_CACHE_SIZE: 2G
+      # 上限给 1G:实测一次冷跑(500 个编译单元、JUCE + 5 个 target)之后 sccache 的
+      # `Cache size` 是 **104 MiB**,1G 有十倍余量。**不要**随手写 2G —— sccache 只在
+      # 超限时才 LRU 清理,给多少它就长到多少,而每次 run 都会把这份缓存写回一条
+      # actions/cache 条目,仓库配额只有 10 GB(LRU 淘汰),撑大了会把 juce-* /
+      # webview2-nuget-* 一起挤掉,表现为「CI 照样绿,只是又慢回去了」。
+      SCCACHE_CACHE_SIZE: 1G
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -74,6 +93,12 @@ jobs:
       #    而 upload-artifact@v4 直接拒绝含 '/' 的 artifact 名。
       - name: Resolve pinned versions & ref slug
         shell: pwsh
+        # `EFF_REF` 走 env 而**不是**直接把 `${{ }}` 插进脚本正文(PR#176 复审采纳):
+        # dispatch 的 input 是人写的字符串,直接插值等于把它当代码拼进 PowerShell;
+        # 经 env 传进来它永远只是一个值。能 dispatch 的虽然只有有写权限的人,但这条
+        # 防线是免费的。
+        env:
+          EFF_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
         run: |
           $juce = (Get-Content .juce-version -Raw).Trim()
           $pv   = (Get-Content .pluginval-version -Raw).Trim()
@@ -81,9 +106,16 @@ jobs:
           "JUCE_TAG=$juce"      | Out-File $env:GITHUB_ENV -Append
           "PLUGINVAL_TAG=$pv"   | Out-File $env:GITHUB_ENV -Append
           # dispatch 时 github.ref_name 是发起 run 的那个 ref,不一定等于 input;以实际构建的 ref 为准。
-          $eff  = "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}"
-          $slug = $eff.Replace('/', '-').Replace([char]92, '-')
+          $slug = $env:EFF_REF.Replace('/', '-').Replace([char]92, '-')
           "REF_SLUG=$slug"      | Out-File $env:GITHUB_ENV -Append
+          # 真正被 checkout 的那个 commit。**不能用 `github.sha`**:workflow_dispatch 时
+          # 它是「发起 run 的 ref 的 HEAD」,而我们 checkout 的是 `inputs.ref` ——
+          # 两者可以是不同的 commit,artifact 名里写错就等于溯源失效,而出包前那次
+          # dispatch 产出的包,artifact 名是「这个包对应哪次提交」的唯一凭据。
+          $built = (git rev-parse HEAD).Trim()
+          if (-not $built) { Write-Error "取不到 HEAD sha"; exit 1 }
+          "BUILT_SHA=$built"    | Out-File $env:GITHUB_ENV -Append
+          Write-Host "built ref=$env:EFF_REF slug=$slug sha=$built"
 
       # 1) JUCE:浅克隆锁 tag(不用 FetchContent,避免上游漂移让 CI 突然红)。
       #    先查缓存 —— 键里带 tag,升级 .juce-version 自动换键。
@@ -257,7 +289,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
-          name: SCVB-build-log-${{ github.sha }}
+          name: SCVB-build-log-${{ env.BUILT_SHA }}
           path: build.log
           retention-days: 7
 
@@ -316,7 +348,7 @@ jobs:
         with:
           # 用 REF_SLUG 而不是原始 ref:feature/v1 含 '/',upload-artifact@v4 会直接
           # 报 Invalid artifact name。
-          name: SCVB-VST3-win64-preview-${{ env.REF_SLUG }}-${{ github.sha }}
+          name: SCVB-VST3-win64-preview-${{ env.REF_SLUG }}-${{ env.BUILT_SHA }}
           path: build/**/*.vst3
           if-no-files-found: error
           retention-days: 30
@@ -325,7 +357,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: SCVB-pluginval-logs-${{ github.sha }}
+          name: SCVB-pluginval-logs-${{ env.BUILT_SHA }}
           path: ${{ runner.temp }}/pluginval-logs
           retention-days: 7
           if-no-files-found: ignore

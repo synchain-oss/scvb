@@ -38,13 +38,15 @@
 ## 2. 提 PR 前的本地 Gates
 
 - 一律经 `pwsh scripts/gates.ps1`(06 §5.1 的 gate 1–8,另含十个子档:`3b` gitleaks、`3c` reuse lint + `check-spdx.ps1`、`3d` 设计盒真源、`3e` web smoke、`3f` 文档真源、`3g` IPC 契约文档对拍、`3h` 字体子集覆盖、`3i` 桥面/曲线/设计盒对拍、`3j` 隐私、`3k` 字体保留名)。子档只增不减,以 `gates.ps1` 的 `Set-Gate` 为准。
-- 三个档位:`gates.ps1` 全量(含 gate 8 真机 GUI pluginval)/ `-PluginOnly` 跑 gate 1–7(已与 CI 等价)/ `-Quick` 跳过 pluginval(gate 7/8)做快速回环。JUCE 路径经 `-JucePath` 传入(或环境变量 `JUCE_PATH`)。
+- 三个档位:`gates.ps1` 全量(含 gate 8 真机 GUI pluginval)/ `-PluginOnly` 跑 gate 1–7 / `-Quick` 跳过 pluginval(gate 7/8)做快速回环。JUCE 路径经 `-JucePath` 传入(或环境变量 `JUCE_PATH`)。
+- **本地 gates 与 CI 的生成器不同,不是等价关系**([J96] 起):CI 是 `Ninja Multi-Config` + sccache,本地 gate 4 默认用 CMake 在 Windows 上的默认生成器(Visual Studio)。两者会在不同的地方红 —— `add_custom_command` 漏声明的隐式依赖(MSBuild 靠工程内顺序兜住、Ninja 并行到炸)、生成物时序、PCH 行为。以前无所谓,因为 push→`feature/**` 每次都在 CI 上编一遍;那条触发撤掉之后,**Ninja 侧的错第一次被看见就是出包前那次 dispatch**。所以:改到 `CMakeLists.txt` / 构建脚本 / 依赖的 PR,要么打 `ci:full` 标签让 CI 编一遍,要么在 Developer Command Prompt 里跑 `pwsh scripts/gates.ps1 -Generator "Ninja Multi-Config"` 自己先对一遍(该参数默认空 = 保持旧行为;**不做自动探测**,`ninja` 在 PATH 上但 shell 里没有 vcvars 时会把所有人的 gate 4 一起变红)。
 - 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。**[J96] 之后这条从「建议」变成「唯一的编译门」**:子 PR 不再跑 `build-vst3`,所以本地 gates 没跑过的编译错误在合进 `feature/v1` 之前没有任何机器会看见。
 - 并行 agent 必须各用独立 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
-- **锁纪律([SL-277]/[J96] 拆锁,2026-09-02)**:`gates.ps1` 自己在 gate 6/7/8 外面套一把命名互斥体 `SCVB-ipc-tests`(`Global\` 拿不到就退 `Local\`),gate 1–5 **完全不持锁**。
+- **锁纪律([SL-277]/[J96] 拆锁,2026-09-02)**:`gates.ps1` 自己在 gate 6/7/8 外面套一把命名互斥体 `Local\SCVB-ipc-tests`,gate 1–5 **完全不持锁**。
   - 拆锁的理由:要互斥的是**跨进程共享内存段**(段名前缀 `SynchainSCVB.v1.` 全机唯一,ctest 的 ipc 套件与 pluginval 都会开同名段),而 configure/build 只动各自的 `-BuildDir`。旧做法把整条 gates 包进一把外部目录锁,连 20 分钟的编译一起串行,四个 agent 排队等一个人编译。
   - **调用方不要再在 `gates.ps1` 外面套目录锁** —— 那会把刚拆开的编译重新串起来。手跑 `ctest` / `pluginval`(不经 gates.ps1)时才需要自备互斥。
   - 互斥体是内核对象,进程被 kill 或崩溃时**必然**释放:没有 owner 文件、没有孤儿判定、也没有「等超时后覆写别人的锁」这条路径。
+  - **只用 `Local\`,不设 `Global\` 降级**:`Global\` 创建失败的现实原因是已存在的同名对象 DACL 拒绝当前 token(提权终端先建、普通终端拿不到),一旦降级就变成两个进程各持一把不同的锁 —— 「以为有锁,其实没有」,正是本卡要根除的那类。同一用户登录会话下的多个 agent 终端用 `Local\` 就够。建不出来时**判负**(汇总表里多一行 FAIL),绝不静默继续。gate 8 的 GUI 互斥体同档。
   - 逃生口 `-NoIpcLock` 只在确认本机没有第二个 agent 时用;关掉它并行跑出来的红大概率是抢段,不是回归。
 
 ## 3. 评审规则

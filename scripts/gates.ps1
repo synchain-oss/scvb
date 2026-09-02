@@ -26,6 +26,13 @@ param(
   [string]$JucePath = $env:JUCE_PATH,
   [string]$BuildDir = 'build',
   [string]$PluginvalExe = $env:PLUGINVAL_EXE,
+  # [SL-277] CMake 生成器。默认空 = 沿用 CMake 在本机的默认选择(Windows 上是 Visual
+  # Studio 生成器),与本卡之前的行为逐字一致。
+  # 传 'Ninja Multi-Config' 可复现 CI 侧的构建(CI 自 [J96] 起用它 + sccache)。
+  # **不做自动探测**:`ninja` 在 PATH 上但当前 shell 没有 vcvars 时,`-G Ninja` 会
+  # 因为找不到 cl.exe 直接配置失败 —— 自动探测会把所有 agent 的 gate 4 一起变红,
+  # 而他们什么都没改。所以要用就显式传,并且在 Developer Command Prompt 里跑。
+  [string]$Generator = $env:SCVB_CMAKE_GENERATOR,
   # [SL-277] 逃生口:确认本机没有第二个 agent 在跑 gate 6/7/8 时才用。
   # 平时**不要**加 —— 关掉互斥后并行跑出来的红大概率是抢共享内存段,不是回归。
   [switch]$NoIpcLock
@@ -70,35 +77,49 @@ function Set-Skip {
 # 这条已经实伤过人的路径。目录锁那套协议仍然可以留给「不经 gates.ps1 手跑 ctest」
 # 的场景,但经 gates.ps1 的路径不再需要它。
 #
-# **Global vs Local**:`Global\` 需要 SeCreateGlobalPrivilege,普通会话未必给;拿不到
-# 就退到 `Local\`(同一用户登录会话内互斥)。本项目的并行形态就是同一用户下的多个
-# agent 终端,`Local\` 足够。两个作用域用**同一个**优先级顺序,不同进程才会落在
-# 同一把锁上 —— 顺序反了会各持一把,互斥就没了。
+# **只用 `Local\`,不设 Global 降级**(PR#176 复审采纳)。曾经写成「先试 `Global\`,
+# 失败退 `Local\`」,那是一个**静默失去互斥**的洞:`Global\` 创建失败的现实原因不是
+# 缺 SeCreateGlobalPrivilege(交互登录用户一般都有),而是**已存在的同名 Global 对象
+# 的 DACL 拒绝当前 token** —— 提权终端里的 agent A 先建了 `Global\`,普通终端里的
+# agent B 抛 UnauthorizedAccessException 被 catch 吃掉、退到 `Local\`,于是 A 持
+# Global、B 持 Local,**两把不同的锁**,共享内存段照抢,而日志里只有一行黄字。
+# 本项目的并行形态就是同一用户登录会话下的多个 agent 终端,`Local\` 本来就够;
+# 去掉那一档,混合作用域的洞就不存在了。
+# 建不出来时**判负**(见调用处的 Set-Gate),绝不静默继续 —— 并发假红最难查的
+# 就是「以为有锁,其实没有」。
+function New-ScvbMutex {
+  param([string]$Name, [string]$Tag)
+  try { return New-Object System.Threading.Mutex($false, "Local\$Name") }
+  catch {
+    Write-Host ("  [{0}] 互斥体 Local\{1} 创建失败({2}):{3}" -f $Tag, $Name, $_.Exception.GetType().Name, $_.Exception.Message) -ForegroundColor Red
+    return $null
+  }
+}
+
+function Wait-ScvbMutex {
+  param($Mutex, [string]$Name, [string]$Tag)
+  Write-Host ("  [{0}] 等待 Local\{1}..." -f $Tag, $Name) -ForegroundColor Yellow
+  try { $null = $Mutex.WaitOne() }
+  catch [System.Threading.AbandonedMutexException] {
+    # 前一个持有者进程异常退出。锁已经归我们了,只是说明上一次跑得不干净。
+    Write-Host ("  [{0}] 前一持有者异常退出(AbandonedMutex),已接管" -f $Tag) -ForegroundColor Yellow
+  }
+  Write-Host ("  [{0}] 已获得 Local\{1}" -f $Tag, $Name) -ForegroundColor Green
+}
+
 function Enter-ScvbIpcLock {
   if ($NoIpcLock) {
     Write-Host '  [ipc-lock] -NoIpcLock:跳过 IPC 测试锁(仅限确认无并行 agent 时)' -ForegroundColor Yellow
     return $null
   }
-  foreach ($scope in @('Global', 'Local')) {
-    $name = "$scope\SCVB-ipc-tests"
-    try { $m = New-Object System.Threading.Mutex($false, $name) }
-    catch {
-      Write-Host ("  [ipc-lock] {0} 不可用({1}),降级重试" -f $name, $_.Exception.GetType().Name) -ForegroundColor Yellow
-      continue
-    }
-    Write-Host ("  [ipc-lock] 等待 {0}(gate 6/7/8 互斥)..." -f $name) -ForegroundColor Yellow
-    try { $null = $m.WaitOne() }
-    catch [System.Threading.AbandonedMutexException] {
-      # 前一个持有者进程异常退出。锁已经归我们了,只是说明上一次跑得不干净。
-      Write-Host '  [ipc-lock] 前一持有者异常退出(AbandonedMutex),已接管' -ForegroundColor Yellow
-    }
-    Write-Host ("  [ipc-lock] 已获得 {0}" -f $name) -ForegroundColor Green
-    return $m
+  $m = New-ScvbMutex -Name 'SCVB-ipc-tests' -Tag 'ipc-lock'
+  if ($null -eq $m) {
+    # 判负而不是静默放行:拿不到锁就等于没有并发保护,后面 gate 6/7/8 的结果不可信。
+    Set-Gate 'IPC 测试锁(gate 6/7/8 互斥)' $false
+    return $null
   }
-  # 两个作用域都建不出来(实际上不会发生)。**不静默** —— 并发假红最难查的就是
-  # 「以为有锁,其实没有」,所以这里必须在日志里留下红字。
-  Write-Host '  [ipc-lock] 互斥体创建失败,gate 6/7/8 将在无互斥保护下运行;若此时有并行 agent,红结果不可信' -ForegroundColor Red
-  return $null
+  Wait-ScvbMutex -Mutex $m -Name 'SCVB-ipc-tests' -Tag 'ipc-lock'
+  return $m
 }
 
 function Exit-ScvbIpcLock {
@@ -544,7 +565,23 @@ else {
 # ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)
 # ==================================================================
-$cfg = (& cmake -S . -B $BuildDir "-DCMAKE_BUILD_TYPE=$Config" "-DSCVB_BUILD_TESTS=ON" "-DJUCE_PATH=$JucePath" 2>&1)
+$cfgArgs = @('-S', '.', '-B', $BuildDir, "-DCMAKE_BUILD_TYPE=$Config", '-DSCVB_BUILD_TESTS=ON', "-DJUCE_PATH=$JucePath")
+if ($Generator) {
+  $cfgArgs = @('-G', $Generator) + $cfgArgs
+  # 与 CI 的 configure 逐字对齐:多配置 Ninja 下只生成 Release 一档。
+  if ($Generator -like 'Ninja Multi-Config*') { $cfgArgs += "-DCMAKE_CONFIGURATION_TYPES=$Config" }
+  Write-Host ("  生成器:{0}(显式指定)" -f $Generator) -ForegroundColor Cyan
+}
+else {
+  # [SL-277] 本地与 CI 的生成器**不同**,这不是等价关系,别当成等价的用:
+  # CI 是 Ninja Multi-Config + sccache,本地默认是 Visual Studio 生成器。
+  # 两者会在不同的地方红(add_custom_command 隐式依赖漏声明、生成物时序、PCH 行为),
+  # 而 push→feature/** 的 CI 触发已在 [J96] 撤掉 —— Ninja 侧的错第一次被看见的时刻
+  # 就是出包前那次 dispatch。改到构建系统的 PR 请打 `ci:full`,或在 Developer
+  # Command Prompt 里跑 `-Generator "Ninja Multi-Config"` 先自己对一遍。
+  Write-Host '  生成器:CMake 默认(CI 用的是 Ninja Multi-Config,二者不等价;见 CLAUDE.md §2)' -ForegroundColor DarkGray
+}
+$cfg = (& cmake @cfgArgs 2>&1)
 if ($LASTEXITCODE -ne 0) { $cfg | ForEach-Object { Write-Host ("  " + $_) } }
 Set-Gate '4 配置' ($LASTEXITCODE -eq 0)
 
@@ -646,36 +683,52 @@ else {
     # [SL-277] 这把 GUI 专用互斥体保留:经 gates.ps1 的路径此时已经持着外层的
     # SCVB-ipc-tests(两把锁的获取顺序全脚本唯一 = 先 ipc 后 gui,不会死锁),
     # 但**不经 gates.ps1** 手跑 GUI pluginval 的场景只认得这一把,去掉就没保护了。
-    $mutex = New-Object System.Threading.Mutex($false, 'Global\SCVB-pluginval-gui')
-    Write-Host '  等待 GUI pluginval 全局互斥体...' -ForegroundColor Yellow
-    $null = $mutex.WaitOne()
-    Write-Host '  已获得 GUI pluginval 互斥体' -ForegroundColor Green
-    $pv = $true
-    try {
-      $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
-      New-Item -ItemType Directory -Force $logDir | Out-Null
-      # [issue #24] 再按路径收窄到 src/input、src/output、src/monitor(生产插件目录,同名 bundle 不重复计数)。
-    $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3', 'SCVB Monitor.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output|monitor)[\\/]' })
-      if ($bundles.Count -ne 3) {
-        Write-Host ("  期望 3 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
-        $pv = $false
-      }
-      else {
-        foreach ($b in $bundles) {
-          & $PluginvalExe --strictness-level 5 --timeout-ms 60000 --output-dir $logDir $b.FullName 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host ("  pluginval FAIL: {0}" -f $b.Name) -ForegroundColor Red
-            $pv = $false
+    #
+    # PR#176 复审两处采纳:
+    #  ① 原来是裸 `New-Object`,没有任何守卫。脚本顶部是 `$ErrorActionPreference =
+    #     'Continue'`,所以构造失败时不中止:`$mutex` 留 $null → `$mutex.WaitOne()`
+    #     报错继续 → `$pv` 保持 $true → pluginval 整段可能一次没跑,最后判 **PASS**。
+    #     这就是 gate 4/5 守卫注释里反复说的那种**假绿**,只是从「$LASTEXITCODE 陈旧」
+    #     换成了「在 $null 上调方法」。现在走 New-ScvbMutex,建不出来直接判负。
+    #  ② 作用域由 `Global\` 改 `Local\`,与 IPC 锁同一档 —— 理由见 New-ScvbMutex 头注
+    #     (提权终端先建 Global 会让普通终端拿不到,于是各持一把)。
+    #     **过渡期注意**:本 PR 合并前,别的 worktree 里还是旧脚本(用 `Global\`),
+    #     那期间两侧不互斥;gate 8 只在 feature→dev 收口跑,窗口很短,合并后即消失。
+    $mutex = New-ScvbMutex -Name 'SCVB-pluginval-gui' -Tag 'gui-lock'
+    if ($null -eq $mutex) {
+      # 判负,**不是** return:本段处在脚本级 try/finally 里,`return` 会直接结束整个
+      # 脚本 —— finally 照跑、但汇总表与 `exit 1` 全被跳过,进程以 0 退出 = 又一种假绿。
+      Set-Gate '8 pluginval 全量含 GUI' $false
+    }
+    else {
+      Wait-ScvbMutex -Mutex $mutex -Name 'SCVB-pluginval-gui' -Tag 'gui-lock'
+      $pv = $true
+      try {
+        $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
+        New-Item -ItemType Directory -Force $logDir | Out-Null
+        # [issue #24] 再按路径收窄到 src/input、src/output、src/monitor(生产插件目录,同名 bundle 不重复计数)。
+        $bundles = @(Get-ChildItem -Path $BuildDir -Recurse -Filter '*.vst3' -Directory | Where-Object { $_.Name -in @('SCVB Input.vst3', 'SCVB Output.vst3', 'SCVB Monitor.vst3') -and $_.FullName -match '[\\/]src[\\/](input|output|monitor)[\\/]' })
+        if ($bundles.Count -ne 3) {
+          Write-Host ("  期望 3 个 .vst3 bundle,实际 {0} 个" -f $bundles.Count) -ForegroundColor Red
+          $pv = $false
+        }
+        else {
+          foreach ($b in $bundles) {
+            & $PluginvalExe --strictness-level 5 --timeout-ms 60000 --output-dir $logDir $b.FullName 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ("  pluginval FAIL: {0}" -f $b.Name) -ForegroundColor Red
+              $pv = $false
+            }
+            else { Write-Host ("  pluginval PASS: {0}" -f $b.Name) -ForegroundColor Green }
           }
-          else { Write-Host ("  pluginval PASS: {0}" -f $b.Name) -ForegroundColor Green }
         }
       }
+      finally {
+        $mutex.ReleaseMutex()
+        $mutex.Dispose()
+      }
+      Set-Gate '8 pluginval 全量含 GUI' $pv
     }
-    finally {
-      $mutex.ReleaseMutex()
-      $mutex.Dispose()
-    }
-    Set-Gate '8 pluginval 全量含 GUI' $pv
   }
 }
 
