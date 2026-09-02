@@ -291,6 +291,9 @@ function makeContext(role, world) {
     const model = {
         role,
         fixture: world.fixture,
+        // [SL-274] 场景名:目前只有 `diff-flood` 用它(见 recompute 的 makeSegments 调用),
+        // 让重算那一帧的 `changed[]` 顶到封顶,页面的「N+」分支才可达。
+        scenario: world.scenario ?? null,
         caps: clone(world.caps),
         durationS: world.durationS,
         /** §0.6:requestInitialState() 之前不推送任何事件。 */
@@ -667,7 +670,12 @@ function makeContext(role, world) {
             endS = Infinity,
         } = {},
     ) {
-        const frame = makeSegments(version, reason, chList);
+        // [SL-274] `diff-flood` 场景下让 `changed[]` 顶到封顶(200):常态素材只出 29 条,
+        // 页面那条「顶到封顶就印 N+」的分支到不了(#179 复审【重要】)。默认档零影响 ——
+        // 不开这个场景时第四个实参是 `{ diffFillToCap: false }`,与不传逐字等价。
+        const frame = makeSegments(version, reason, chList, {
+            diffFillToCap: model.scenario === "diff-flood",
+        });
         if (store) {
             let kept = 0;
             for (const entry of frame.channels) {

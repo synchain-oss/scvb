@@ -19,13 +19,14 @@
 // 这条缺陷从定义上就落在它够不着的地方。判例逐字见 smoke-output-dist-page.mjs 头注
 // 的「写入面的断言证明不了渲染面」。
 //
-// 四条判据,**各自配一条删之即红的通路**:
+// 五条判据,**各自配一条删之即红的通路**:
 //   (1) 默认折叠:`<details>` 的 open 为假、而明细条目**已在 DOM 里**(不是没数据)。
 //       删掉折叠(默认展开)=> 红。
 //   (2) 展开封顶:展开后 `.wave-diff__items` 自己滚(scrollHeight > clientHeight)
 //       且 clientHeight <= max-height。删掉 `max-height` => 明细整列铺开 => 红。
 //   (3) 工具条预算(本卡真正的不变量):折叠态与展开态都要满足
-//       `工具条高 + 泳道窗高 <= 面板高`,且泳道矩形与面板可视矩形真的有交集。
+//       `工具条高 + 泳道窗高 <= 面板高`,且泳道矩形与面板可视矩形真的有交集;
+//       再加一条**两态自比**:折叠态工具条必须矮于展开态(折叠真的省下了高度)。
 //       去掉折叠或去掉明细封顶 => 29 条明细平铺、工具条涨到 614px(> 面板 555px)=> 红。
 //       两个数都要量:面板是 overflow:hidden,**盒子还在**不等于**看得见**。
 //       (为什么不是「压窄视口 + min-height 兜底」——那两条实测都不承力,
@@ -35,8 +36,13 @@
 //       (4b) 收回折叠后按短档撤下 —— 长档把自动收起整条废掉 => 红;
 //       (4c) 展开态跨过 `DIFF_HIDE_OPEN_MS` 也要撤下 —— 展开态改回「不起表」
 //            (第一版形态,会让这块永远挂在屏上而它没有关闭钮)=> 红。
+//   (5) 顶到 `changed[]` 封顶(200)时,折叠头印的是**下界**「200+」而不是「200」。
+//       常态素材只出 29 条,这个分支一条用例都到不了 —— 故本条另开一次装载,走
+//       `?scenario=diff-flood`(mock 的 `diffFillToCap`)把 changed 抽满。
+//       删掉 tab-wave.js 里 `nChanged >= DIFF_CHANGED_CAP` 那个三元 => 红。
+//       (三处 200 是否同值由 smoke-mock.mjs 的源码字面量对拍守,不在本套。)
 //
-// ⏱ 本套**跑得慢**(本机实测 ~53s),这是判据本身要求的:(4) 那三条要真的等过
+// ⏱ 本套**跑得慢**(本机实测 ~60s),这是判据本身要求的:(4) 那三条要真的等过
 // `DIFF_HIDE_MS`(6s)两次与 `DIFF_HIDE_OPEN_MS`(30s)一次 —— 自动收起的时长是被测
 // 行为,拿假计时器替掉就等于不测它。慢是买来的确定性,别为了提速把等待砍掉。
 //
@@ -61,7 +67,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT =
     process.argv[2] && !process.argv[2].startsWith("--")
@@ -328,9 +334,24 @@ cdp.on((m) => {
 // `.wave-diff__items` 的 max-height —— 与 web/output/index.html 的 CSS 同源。
 // 改那边必须同步改这里(改一处不改另一处 => 本套红)。
 const ITEMS_MAX_H = 168;
-// tab-wave.js 的两档自动收起时长(折叠态 / 展开态)。
-const DIFF_HIDE_MS = 6000;
-const DIFF_HIDE_OPEN_MS = 30000;
+// 两档自动收起时长:**从被测源码直接取**,不抄副本(#179 复审【建议】)。
+// 抄一份常量的后果是「改了 tab-wave.js 却忘了改这里」时本套仍然绿 —— 那两个数是**被测
+// 行为**本身,副本一旦漂移,(4a)/(4c) 断的就不再是页面实际的收起时长。
+const TW = await import(
+    pathToFileURL(join(ROOT, "web/output/tab-wave.js")).href
+);
+const { DIFF_HIDE_MS, DIFF_HIDE_OPEN_MS, DIFF_CHANGED_CAP } = TW;
+if (
+    !Number.isFinite(DIFF_HIDE_MS) ||
+    !Number.isFinite(DIFF_HIDE_OPEN_MS) ||
+    !Number.isFinite(DIFF_CHANGED_CAP)
+) {
+    // 常量被改名/删掉时,`undefined` 会让 sleep 立刻返回、断言全部空过 —— 宁可当场炸。
+    throw new Error(
+        "tab-wave.js 未导出 DIFF_HIDE_MS / DIFF_HIDE_OPEN_MS / DIFF_CHANGED_CAP —— " +
+            "改名了就同步改这里,别让本套静默空过",
+    );
+}
 
 log(`(站点根 ${ROOT} -> ${base};CDP ${CDP_PORT})`);
 log("=== SL-274 diff 摘要折叠 + 泳道保底 —— 页面级 ===");
@@ -514,16 +535,20 @@ check(
     m3.barH > 0 && m3.panelH > 0 && m3.barH + m3.winH <= m3.panelH + 2,
     `(3) 折叠态工具条 ${m3.barH}px + 泳道窗 ${m3.winH}px 装得进面板 ${m3.panelH}px`,
 );
-check(
-    m3.barH < m3.panelH / 2,
-    `(3) 折叠态工具条不超过面板的一半(实得 ${m3.barH}px / ${m3.panelH}px;` +
-        "去掉折叠 => 明细平铺 => 这里立刻破)",
-);
-
 await evaluate(OPEN("true"));
 await sleep(300);
 const m3b = await evaluate(MEASURE);
 log("  [工具条预算 · 展开态] " + JSON.stringify(m3b));
+// 折叠**真的省下了高度** —— 折叠态工具条必须明显矮于展开态。
+// (原先这里写的是「折叠态工具条 < 面板的一半」,那个 1/2 没有出处、也与上一条真正的
+//  不变量 `barH + winH <= panelH` 不同源:工具条以后合法地多一行,它就会以「折叠没生效」
+//  的名义假红。#179 复审【建议】。改成两态自比,provenance 就是折叠这件事本身:
+//  删掉折叠 => 默认即展开 => 两态同高 => 这条红。)
+check(
+    m3.barH > 0 && m3b.barH > m3.barH,
+    `(3) 折叠确实压住了工具条(折叠态 ${m3.barH}px < 展开态 ${m3b.barH}px;` +
+        "删掉折叠 => 默认就是展开态 => 两态同高 => 红)",
+);
 check(
     m3b.open && m3b.barH + m3b.winH <= m3b.panelH + 2,
     `(3) 展开态工具条 ${m3b.barH}px + 泳道窗 ${m3b.winH}px 仍装得进面板 ${m3b.panelH}px` +
@@ -534,6 +559,46 @@ check(
     `(3) 展开态泳道**仍看得见**(可视高 ${m3b.lanesVisibleH}px,盒高 ${m3b.lanesH}px)`,
 );
 await evaluate(OPEN("false"));
+
+// ---- (5) 顶到封顶时折叠头印的是「N+」而不是「N」-------------------------------
+// `changed[]` 是**会被截断**的那一个(native `kMaxChangedItems` / web `DIFF_CHANGED_CAP` /
+// mock 三处同为 200,同值由 smoke-mock.mjs 上门禁),而 added/removed/kept 是如实总数。
+// 顶到封顶时直接印 `changed.length` 会把「至少 200 段改了」说成「正好 200 段」——
+// 那是这一行唯一可能撒的谎,所以渲染成「200+」。
+//
+// **为什么要单开一个 mock 场景**:常态素材只出 29 条,这个分支一条用例都到不了 ——
+// 新增的、用户可见的分支没有删之即红的通路,等于没守(#179 复审【重要】)。
+// `?scenario=diff-flood` 把 `makeSegments` 的 `diffFillToCap` 打开,抽满 200 条。
+// 删掉 tab-wave.js 里那个三元(直接印 `String(nChanged)`)⇒ 折叠头出「200」⇒ 本条红。
+log("");
+log("=== (5) changed 顶到封顶 => 折叠头印下界「N+」===");
+await cdp.send("Page.navigate", {
+    url: `${base}/web-preview/output.html?scenario=diff-flood`,
+});
+check(await waitFor(READY), "(5) diff-flood 场景装载并吃到首帧段表");
+await evaluate(
+    IN(`const b = gb("tabnav-wave"); if (b) b.click(); return true;`),
+);
+await sleep(600);
+eq(await evaluate(NUDGE), "ok", "(5) SENSITIVITY 杆推得动(触发满档那一帧)");
+await sleep(1500);
+const m5cap = await evaluate(MEASURE);
+log("  [满档] " + JSON.stringify(m5cap));
+check(
+    m5cap.diffShown && m5cap.liCount === DIFF_CHANGED_CAP,
+    `(5) 前置:明细恰好顶到封顶 ${DIFF_CHANGED_CAP} 条(实得 ${m5cap.liCount};` +
+        "不满档则下面那条断言量的是普通计数、空过)",
+);
+check(
+    m5cap.summary.includes(`${DIFF_CHANGED_CAP}+`),
+    `(5) 折叠头把计数印成「${DIFF_CHANGED_CAP}+」而不是「${DIFF_CHANGED_CAP}」` +
+        `(实得 "${m5cap.summary}";删掉 tab-wave.js 的 nChanged >= DIFF_CHANGED_CAP 三元 => 红)`,
+);
+check(
+    m5cap.lanesH > 0 && m5cap.lanesVisibleH > 0,
+    `(5) 满档折叠态泳道仍看得见(盒高 ${m5cap.lanesH}px / 可视 ${m5cap.lanesVisibleH}px)` +
+        " —— 200 条明细正是本卡缺陷的真机量级",
+);
 
 // ---- 页面零 console.error / 零未捕获异常(全套通用底线)-----------------------
 check(

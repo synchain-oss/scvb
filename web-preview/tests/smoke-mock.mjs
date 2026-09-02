@@ -20,6 +20,7 @@
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
 // =============================================================================
 
+import { readFileSync } from "node:fs"; // [SL-274] 封顶三处同值的源码字面量对拍
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -693,11 +694,12 @@ log("\n=== ⑦ [J83] participate_in_auto_pan 默认档 ===");
 }
 
 // ---------------------------------------------------------------------------
-// [SL-274] diff.changed 的每一条都必须是**用户看得见**的改动。
+// [SL-274] diff.changed 的每一条都必须是**幅度值得一提**的改动。
 //
 // native 侧 `src/core/output/SegmentDiff.h::changedAtDisplayPrecision` 只登记
 // 「量化到 1 位小数后不同 **且** 幅度 >= 半个显示步长」的段 —— 这一条是本卡的修复:
-// 用户 v5.6.5 实测「摘要弹出全轨全段」,里头大半是屏幕上看不出差别的条目。
+// 用户 v5.6.5 实测「摘要弹出全轨全段」,里头大半是贴着量化边界、幅度小到不值一提的条目
+// (它们屏幕上的数字**确实变了**,滤掉是因为变化量太小,不是因为「看不见」)。
 // mock 若发得出 native 发不出的东西,页面级冒烟看到的就不是真机会有的画面。
 //
 // **为什么断在这里、而不是在 mock 里加一段过滤**:实测四个 reason x 两个 version
@@ -734,6 +736,54 @@ log("=== [SL-274] mock 的 diff.changed 与 native 判据同口径 ===");
     log(
         `  ${seen} 条 changed,零条亚显示精度;最小 |dPan| = ${minPan.toFixed(4)}`,
     );
+}
+
+// ---------------------------------------------------------------------------
+// [SL-274] `changed[]` 的封顶 **200** 是三处同值,这里给它上机器门禁。
+//
+// 三处:native `src/core/output/SegmentDiff.h::kMaxChangedItems`、
+// web `web/output/tab-wave.js::DIFF_CHANGED_CAP`、mock `web/shared/mock-data.js` 的字面量。
+// 改前只有注释在绑三者(「改一处要三处一起改」),而本仓对单一真源一向是上门禁的
+// (`.juce-version`、`check-bridge-parity`、`check-*-parity`)—— 注释绑不住,人会漏。
+//
+// 为什么这条**必须**存在:web 侧拿 `DIFF_CHANGED_CAP` 判「这一帧顶到封顶没有」,顶到就把
+// 计数渲染成「200+」(它是下界,不是总数)。三者一旦不同值,那个判断就会在错误的点翻面 ——
+// native 截到 200、web 以为封顶是 500 ⇒ 屏幕上印「200」,把「至少 200 段改了」说成
+// 「正好 200 段」。这正是本卡在 tab-wave.js 那段头注里说的「这一行唯一可能撒的谎」。
+//
+// 读源码字面量而不是 import:native 是 C++ 头文件,只能正则;三处用同一种读法,
+// 免得哪天 web 侧改成动态计算而这条门禁还以为自己在对拍。
+log("");
+log("=== [SL-274] changed[] 封顶三处同值(native / web / mock)===");
+{
+    const grab = (relPath, re, what) => {
+        const src = readFileSync(join(ROOT, relPath), "utf8");
+        const m = src.match(re);
+        check(!!m, `${what}:在 ${relPath} 里找得到那个常量`);
+        return m ? Number(m[1]) : NaN;
+    };
+    const nativeCap = grab(
+        "src/core/output/SegmentDiff.h",
+        /kMaxChangedItems\s*=\s*(\d+)/,
+        "native kMaxChangedItems",
+    );
+    const webCap = grab(
+        "web/output/tab-wave.js",
+        /DIFF_CHANGED_CAP\s*=\s*(\d+)/,
+        "web DIFF_CHANGED_CAP",
+    );
+    const mockCap = grab(
+        "web/shared/mock-data.js",
+        /changed\.length\s*<\s*(\d+)/,
+        "mock changed 封顶",
+    );
+    check(
+        nativeCap === webCap && webCap === mockCap,
+        `三处同值(native ${nativeCap} / web ${webCap} / mock ${mockCap}) —— ` +
+            "任一处单独改动都会让「顶到封顶就渲染成 N+」在错误的点翻面",
+    );
+    // 三个值都打出来:红的时候日志要直接说清是哪一处跑偏了,别再让人回去翻源码。
+    log(`  native ${nativeCap} / web ${webCap} / mock ${mockCap}`);
 }
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);

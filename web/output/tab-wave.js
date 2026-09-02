@@ -1653,7 +1653,8 @@ export function createTabWave(opts) {
      * `reason:"edit"`、**根本不进 `setDiff`**(见下方 §2.8 分发处只认 vad/segmentation/
      * analyze 三值)—— 一旦永不收起,用户点开后离开,这块就会一直挂在屏幕上描述一个
      * 早已被覆盖的状态,而它自己**没有关闭钮**。30s 是「读得完几十条」与「别赖着不走」
-     * 之间的取值;调它要同步改页面级冒烟里的同名常量。
+     * 之间的取值。页面级冒烟 `smoke-seg-diff-fold-page.mjs` **直接 import 这两个常量**
+     * (不抄副本),所以调它这里改一处即可 —— 代价是那套的 wall-clock 跟着变。
      */
     function armDiffHide() {
         if (local.diffTimer) clearTimeout(local.diffTimer);

@@ -915,6 +915,9 @@ export const T = {
         // [SL-274] diffSummary = 折叠头,**默认态只出这一行**(计数);明细在它下面,
         // 展开才渲染。改前明细逐条平铺,一次全量重分段几十上百条会把泳道窗挤没。
         "wave.diffSummary": "{c} 段有改动 · 新增 {a} 段 · 移除 {r} 段",
+        // [SL-274 复审] 明细区是 max-height 封顶的滚动区,补了 `tabindex=0` 才键盘可达;
+        // 可聚焦容器必须有名,否则读屏只念出一串条目、说不出这是什么(走 data-t-aria)。
+        "wave.diffItemsLabel": "本次改动明细",
         "wave.diffItem": "轨 {ch} · 段 {i}:pan {pf}→{pt} · vol {vf}→{vt}",
         // clearCoverage 回执反馈(契约 §1.24 的 clearedS)
         "wave.clearedCoverage": "已清除 {s} s 采集数据",
@@ -1717,6 +1720,7 @@ export const T = {
         "wave.btnMerge": "Merge selected pair",
         "wave.recaptureOverlap": "Will overwrite {k} segments of existing data",
         "wave.diffSummary": "{c} changed · {a} added · {r} removed",
+        "wave.diffItemsLabel": "Change details",
         "wave.diffItem": "Track {ch} · seg {i}: pan {pf}→{pt} · vol {vf}→{vt}",
         "wave.clearedCoverage": "Cleared {s} s of captured data",
     },
@@ -2540,6 +2544,7 @@ export const T = {
         "wave.btnMerge": "Fusionner la paire sélectionnée",
         "wave.recaptureOverlap": "Écrasera {k} segments de données existantes",
         "wave.diffSummary": "{c} modifiés · {a} ajoutés · {r} supprimés",
+        "wave.diffItemsLabel": "Détail des modifications",
         "wave.diffItem": "Piste {ch} · seg {i} : pan {pf}→{pt} · vol {vf}→{vt}",
         "wave.clearedCoverage": "{s} s de données capturées effacées",
     },

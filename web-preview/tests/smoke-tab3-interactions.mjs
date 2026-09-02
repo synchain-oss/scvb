@@ -1964,6 +1964,9 @@ log("=== ⑧ Wave 2 新词条三语(反馈件族;U17 注记)===");
         "wave.recaptureOverlap",
         "wave.diffItem",
         "wave.diffSummary",
+        // [SL-274 复审] 明细滚动区的 aria-label(走 data-t-aria)。它没有占位符,
+        // 但同样要三语齐 —— 切语言时 applyI18n 会把它一并同步,缺一语就退回中文。
+        "wave.diffItemsLabel",
         "wave.clearedCoverage",
     ];
     const ph = (s) => (String(s).match(/\{\w+\}/g) || []).sort().join(",");

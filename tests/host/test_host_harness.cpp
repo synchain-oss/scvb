@@ -1399,7 +1399,10 @@ struct MonoMultiRig
                 if (trackIdx == 1)
                 {
                     // 窄脉冲串:64 样本一个周期,只有头 4 个样本出声。
-                    // 峰值仍是 amp,而均方降到 ~1/16 ⇒ crest 拉高约 4 倍。
+                    // 峰值 **≈** amp(不是恰好 amp:64 样本窗相对 440Hz 的 109.09 样本
+                    // 周期在滑动,开窗那几个样本里 |sin| 的上确界实测 0.99999)——
+                    // 与本函数头注「略低于 amp」同口径,别把这两句写成一句「就是 amp」。
+                    // 均方则降到 ~1/16 ⇒ crest 拉高约 4 倍。
                     v = ((n % 64) < 4) ? s : 0.0;
                 }
                 else if (trackIdx == 2)
@@ -6962,9 +6965,19 @@ TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAn
     // ---- pan:逐位不动 --------------------------------------------------------
     // 指派代价不读 z 的直接推论。它同时是上面那条的**对照**:若 volDb 的差来自数值噪声
     // 而非换档,pan 不可能一位不差地对上。
+    //
+    // ⚠ **这一条红了,排查方向与上面 volDb 那条相反,别走错**([SL-274] 复审):
+    // 「pan 不动」成立的前提是**首趟 `solveBalance` 收敛**(level 1)—— 只有落到
+    // `solveBalanceWithFallback` 的 level 2,`balHint->zHat` 才进 `entryCost`,pan 才会
+    // 跟着 z 动。core 侧 `[SL252/SL-273]` 那条正因为这个理由**拒绝**把 rms 档的 pan 写成
+    // 断言(「取决于收不收敛、素材一动就可能翻面」);host 侧 peak 档吃的是同一个条件,
+    // 只是这份素材下稳定收敛。所以红了先确认**是不是掉进 level 2 了**(换编译器、换优化
+    // 档、动 `variedCrest` 的波形参数都可能推进去),不要先怀疑数值噪声、更不要放宽成近似
+    // 比较 —— 放宽等于把这条断言钉的那件事(指派代价不读 z)整个放掉。
     for (std::size_t i = 0; i < panP.size(); ++i)
     {
-        INFO("段 " << i << ":pan " << panK[i] << " -> " << panP[i]);
+        INFO("段 " << i << ":pan " << panK[i] << " -> " << panP[i]
+                   << "(若此条红:先查 peak 档是否落到 solveBalanceWithFallback 的 level 2)");
         CHECK(panP[i] == panK[i]);
     }
 }
