@@ -59,7 +59,7 @@ import { format } from "../shared/i18n.js";
 import { paramIdOf, readbackVersion } from "../shared/param-id.js";
 // ⚠ 下面那条 `export { … } from` 只是**再导出**,不会把名字带进本模块作用域 ——
 // renderParams 要用 hostEchoOn,必须另外 import 一次(同 readbackSegsOf 的写法)。
-import { hostEchoOn, storeIsPlaying } from "../shared/host-echo.js";
+import { hostEchoOn, hostEchoUseWideWindow } from "../shared/host-echo.js";
 // [SL-241] 未冻结维度的读回真源与 Tab2 **同一条链**(SL-211 只修在 tab-tracks.js
 // 里,分布图这边一直只读参数面 —— 详见 web/shared/readback.js 头注)。
 import {
@@ -129,12 +129,12 @@ export const RAMP_MS = Object.freeze({ min: 20, max: 300, def: 80 });
 // 逐字相同的判据,于是同一个闪烁两边都有。在此原样再导出,既有 import 点一字不改。
 export {
     HOST_ECHO_FRESH_MS,
-    HOST_ECHO_RELEASE_MS,
+    HOST_ECHO_RELEASE_STOPPED_MS,
     // [SL-270] 播放中另有一档释放窗口;两个 tab 与 app.js 的 console 读数都要用到。
     HOST_ECHO_RELEASE_PLAYING_MS,
     hostEchoReleaseMs,
     hostEchoOn,
-    storeIsPlaying,
+    hostEchoUseWideWindow,
 } from "../shared/host-echo.js";
 
 /**
@@ -1963,7 +1963,7 @@ export function createTabMaster(opts) {
         // [SL-270] 第三个参数 = 走带态。停走用短窗口(徽标不滞留),播放中用长窗口
         // (盖住宿主两次写之间的秒级间隔)。少了它,按停之后残余的那一截会在用户
         // 立刻重按播放时于**播放中途**走完 —— 那正是用户报的「图标在播放中消失」。
-        const echo = hostEchoOn(st.params, undefined, storeIsPlaying(st))
+        const echo = hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st))
             ? "1"
             : "0";
         // 灰显之外还要**说清楚为什么** —— 光变淡用户只会当成又一个「调了没反应」。

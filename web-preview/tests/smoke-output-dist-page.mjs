@@ -1066,6 +1066,13 @@ try {
         // 用「最大角度」这把真滑杆造零宽:distGeometry 的 half = min(width%/100×16×g, x, 100−x),
         // g = 全局 width/100。g=0 ⇒ 每一行的 half 都归零,一次把所有张开线推进退化态,
         // 不用去猜某一轨的 pan 参数 id。走的是 setParam 这条真桥路径。
+        //
+        // 断的是**逐帧写变量**那条路,不是重拼那条(PR 178 复审有人读成了后者):
+        // 只拧全局 width 时轨集/立体声/lead/高亮一个没变 ⇒ `distShapeKey` 不变 ⇒
+        // dist-motion 的 `push` 不进 `key !== shapeKey` 的重拼支,落在
+        // `if (width !== lastPaintedWidth) paint(width)` 上 —— `paint` 就是 rAF 补间
+        // 每帧调的那一个,`--span-h` 由它经 `setVars`/`distSpanVars` 写下去。
+        // 所以「补间落点上零宽也零高」这条,下面这组已经断到了。
         const rects = IN(`
             const out = [];
             for (const n of all(".dist-span")) {
@@ -1294,6 +1301,55 @@ try {
             "(d) ★ 重按播放后徽标重新亮起(短窗口没有把它锁死)",
         );
         log(`  (d) 重按播放后徽标 = ${await evaluate(badge)}`);
+
+        // ---- (e) [PR 178 复审【重要】2] **播放中没有任何人来 render** 那一幕。
+        //
+        // (a) 之所以量得到播放档,是因为 `scvb.playhead` 的 `timeS` 每帧在走 ⇒ 页面侧
+        // `samePlayhead` 每帧判不同 ⇒ 每帧 requestRender,长窗口到期那一刻正好有 render
+        // 顺手把徽标熄了。但那是**宿主的行为**,不是我们能担保的事:native 的
+        // `OutputEditor::emitPlayhead` 算 timeS 用
+        // `pod.timeSamples >= 0 ? samplesToSeconds(...) : 0.0` —— 宿主给了 `isPlaying`
+        // 却不给 `timeInSamples` 时 timeS 恒 0.0,载荷逐帧逐字相同,native 的
+        // `emitIfChanged` 与页面的 `samePlayhead` 两道去重都判「没变」,整个播放期
+        // **一次 render 都不排**。那时能把徽标熄掉的只剩定时器,而只排停走档那一拍的话
+        // 它在 950ms 就烧完了(闩锁还亮着,950 < 2500),之后再没有东西来 render ——
+        // 徽标与 Tab2 灰显**永久滞留**。
+        //
+        // `ctl.setHostTimeAvailable(false)` 复现的就是这类宿主(预览专用开关,见
+        // juce-bridge-mock 那一条)。采集闸不用管:`setOutputEnabled(true)` 的契约副作用
+        // 已经把 capture 关了,所以 `scvb.captureProgress` 这条 2Hz 的 render 源本来就
+        // 不在场 —— 本节量到的熄灭只可能来自定时器。
+        //
+        // ★ 删除式:去掉播放档那一拍 setTimeout,(e) 会一路采到 12s 超时(-2)当场红。
+        const setHostTime = (on) =>
+            evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.ctl || !s.ctl.setHostTimeAvailable) return "no-hook";
+            s.ctl.setHostTimeAvailable(${on ? "true" : "false"});
+            return "ok";
+        })()`);
+        const frozenMs = await measureRelease(
+            "e 播放中·宿主不给走带位置",
+            async () => {
+                await setOutput(false);
+                check(
+                    (await setHostTime(false)) === "ok",
+                    "(e) 前提:预览会话认得 setHostTimeAvailable(没有它这一幕造不出来)",
+                );
+            },
+        );
+        check(
+            typeof frozenMs === "number" && frozenMs > 0,
+            `(e) 测到了有效读数(实得 ${frozenMs};-2 = 12s 内**根本没熄**,正是回归的形状)`,
+        );
+        if (typeof frozenMs === "number" && frozenMs > 0) {
+            check(
+                frozenMs > 1500 && frozenMs < 4000,
+                `(e) ★ 播放期一次 render 都不排时,徽标仍按播放档熄灭` +
+                    `(实得 ${frozenMs}ms,期望 ≈2500)—— 靠的是播放档那一拍定时器`,
+            );
+        }
+        await setHostTime(true);
 
         assertClean("SL-270 释放窗口");
     }

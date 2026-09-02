@@ -43,9 +43,10 @@ export const HOST_ECHO_FRESH_MS = 600;
  *      播放的尾巴。
  * 所以窗口按**走带态**分两档:停走用短的(滞留感没了,② 的残余也就不存在了),
  * 播放中用长的(宿主两次写之间的秒级间隔照旧盖得住,SL-251 的抖不回来)。
- * 判据源 `isPlaying` 是契约 §2.6 `scvb.playhead` 的字段,30Hz 常推,页面侧一直有。
+ * 判据源 `isPlaying` 是契约 §2.6 `scvb.playhead` 的字段,页面侧由 `app.js` 的订阅存进
+ * `store.playhead`;**走带态未知时取宽档**,理由见 `hostEchoUseWideWindow` 的头注。
  */
-export const HOST_ECHO_RELEASE_MS = 900;
+export const HOST_ECHO_RELEASE_STOPPED_MS = 900;
 
 /**
  * **播放中**的释放窗口(ms)。见上:播放中要盖住「宿主按曲线事件写、间隔秒级」那一段,
@@ -61,37 +62,49 @@ export const HOST_ECHO_RELEASE_PLAYING_MS = 2500;
  * 当前该用哪一档释放窗口。单列出来是因为 `app.js` 的 console 读数也要用同一个数 ——
  * 那行读数说的是「这个间隔会让徽标灭一下再亮」,拿错档位就是在说假话。
  *
- * @param {boolean} [playing] 走带是否在跑(`scvb.playhead` 的 `isPlaying`)
+ * @param {boolean} [wide] 该不该取宽档(见 `hostEchoUseWideWindow`:播放中 **或** 走带态未知)
  */
-export function hostEchoReleaseMs(playing) {
-    return playing ? HOST_ECHO_RELEASE_PLAYING_MS : HOST_ECHO_RELEASE_MS;
+export function hostEchoReleaseMs(wide) {
+    return wide ? HOST_ECHO_RELEASE_PLAYING_MS : HOST_ECHO_RELEASE_STOPPED_MS;
 }
 
 /**
  * 宿主自动化此刻是否正在驱动车道(= 该不该给出 hostEcho 的视觉提示)。
  *
- * **只看时间戳,不看 `params.hostEcho` 那一位**——理由见 `HOST_ECHO_RELEASE_MS` 的头注。
+ * **只看时间戳,不看 `params.hostEcho` 那一位**——理由见 `HOST_ECHO_RELEASE_STOPPED_MS` 的头注。
  * `hostEchoAt` 由 `app.js` **只在 true 帧**推进(false 帧不重置),所以这里的语义正好是
  * 「距最后一次『宿主在写』的确认过了多久」。
  *
  * @param {{hostEchoAt?: number}} params `store.params`
  * @param {number} [nowMs] 注入时钟(用例用;省略取 `Date.now()`)
- * @param {boolean} [playing] 走带是否在跑;[SL-270] 决定用哪一档释放窗口
+ * @param {boolean} [wide] 取宽档还是窄档;[SL-270] 由 `hostEchoUseWideWindow` 给
  */
-export function hostEchoOn(params, nowMs, playing) {
+export function hostEchoOn(params, nowMs, wide) {
     const at = (params && params.hostEchoAt) || 0;
     if (!at) return false; // 从未收到过 true 帧
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-    return now - at < hostEchoReleaseMs(!!playing);
+    return now - at < hostEchoReleaseMs(!!wide);
 }
 
 /**
- * `store` → 走带是否在跑。抽出来只为一件事:两个 tab **都**要传这个参数给
- * `hostEchoOn`,而「从 store 的哪一处取 isPlaying」写成两份就又是 SL-251 那个病灶
+ * `store` → 该用**宽**档释放窗口吗。抽出来的第一条理由:两个 tab **都**要把这个参数
+ * 传给 `hostEchoOn`,而「从 store 的哪一处取走带态」写成两份就又是 SL-251 那个病灶
  * (同一个判断各存一份)的第四次发作。
  *
+ * 第二条理由是它**不等于** `store.playhead.isPlaying`([PR 178 复审【建议】3]):
+ * `store.playhead` 的初值是 `null`(`app.js` 的 `scvb.playhead` 订阅到达前它一直是),
+ * 直接取 `isPlaying` 会把「**不在播放**」与「**还不知道走带态**」压成同一个 `false`,
+ * 于是走带态未知时释放窗口从 SL-251 的 2000ms **收窄**到 900ms —— 而 SL-251 修的那个抖
+ * 恰恰是靠「窗口比宿主两次写之间的间隔宽」压住的。窗口一收窄,抖就可能回来,且回来的
+ * 形态与 SL-251 逐字相同(用户视角:徽标高频眨眼),很难再归因到本卡。
+ * 所以**未知并进宽档**:宁可多亮一会儿,也不要把已修的抖放回来。函数名说的就是这件事
+ * ——叫 `isPlaying` 而对 `playhead == null` 返回 true 会读成 bug。
+ *
  * @param {{playhead?: {isPlaying?: boolean}}} store
+ * @returns {boolean} 播放中 **或** 走带态未知 ⇒ true(宽档)
  */
-export function storeIsPlaying(store) {
-    return !!(store && store.playhead && store.playhead.isPlaying);
+export function hostEchoUseWideWindow(store) {
+    const ph = store && store.playhead;
+    if (!ph) return true; // 走带态未知 ⇒ 宽档
+    return !!ph.isPlaying;
 }

@@ -45,11 +45,13 @@ import {
     GROUP_IDS,
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
-    HOST_ECHO_RELEASE_MS,
+    HOST_ECHO_RELEASE_STOPPED_MS,
     // [SL-270] 释放窗口按走带态分档;下面那行 console 读数必须用**当时那一档**,
     // 否则它会把「播放中根本不会让徽标灭」的间隔也报成一次眨眼。
+    // 两档的常量都要:退出定时器**两拍各排一个**(见 scvb.params 订阅)。
+    HOST_ECHO_RELEASE_PLAYING_MS,
     hostEchoReleaseMs,
-    storeIsPlaying,
+    hostEchoUseWideWindow,
 } from "./tab-master.js";
 import {
     createTabTracks,
@@ -730,7 +732,10 @@ const scaleUi = {
 };
 let scaleTimer = 0;
 // hostEcho 灰显的退出定时器(批次停发后补一拍 render;见 scvb.params 订阅)。
+// [SL-270] 两个句柄:短的按停走档、长的按播放档 —— 走带态在窗口里翻转时,
+// 哪一档先到期都得有人来 render,漏排哪一个都会让徽标滞留。
 let hostEchoTimer = 0;
+let hostEchoTimerWide = 0;
 // footer「打印结束」提示的 8 秒窗到点补一拍(见 renderFooter)。
 let printDoneTimer = 0;
 let scalePrev = 1;
@@ -1679,7 +1684,7 @@ if (bridge) {
             // [SL-270] 门限取**当时那一档**窗口:播放中是 2500ms、停走是 900ms。
             // 写死一个数的话,播放中 1200ms 的间隔会被报成一次眨眼(它不是),而停走时
             // 1000ms 的间隔会被漏掉(它是)—— 两个方向都会把用户贴回来的读数带偏。
-            const releaseMs = hostEchoReleaseMs(storeIsPlaying(store));
+            const releaseMs = hostEchoReleaseMs(hostEchoUseWideWindow(store));
             if (prevHostEchoAt && gap >= releaseMs) {
                 // 纯 ASCII:①它只进开发者控制台,不上屏;②`scripts/check-font-coverage.py`
                 // 扫的是 web/ 下**全部 .js 的字符串字面量**,这里写中文会把新字形塞进字体
@@ -1693,15 +1698,30 @@ if (bridge) {
             // 而 650ms 那一拍 render 时它还亮着、且不会再排下一次 —— 于是「停播 + 宿主停写」
             // 这条最常见的收尾路径上没有任何东西再触发 render,徽标与 Tab2 灰显会一直挂着
             // (旧注释提防的「永久滞留 55% 透明」原样复活,只是原因换成了「没人来 render」)。
-            // [SL-270] 只按**停走档**排这一拍就够,不必再为播放档排第二个:播放中
-            // `scvb.playhead` 是 30Hz 常推,而它的 `timeS` 每帧都在走 —— 下面那条订阅的
-            // `samePlayhead` 因此每帧都判不同、每帧都 requestRender,长窗口到期那一刻
-            // 必然有 render。真正没人来 render 的只有停走之后(位置不动 ⇒ 载荷逐字相同
-            // ⇒ 那条订阅不再排 render),而那时生效的正是这个短窗口。
+            // [SL-270] **两档各排一拍**,短的管停走、长的兜播放。
+            // 上一版只排了停走档那一拍,论证是「播放中 `scvb.playhead` 常推、`timeS` 每帧
+            // 在走 ⇒ 下面那条订阅每帧 requestRender,长窗口到期那一刻必然有 render」。
+            // 这条论证有一个**本仓自己代码里的反例**([PR 178 复审【重要】2]):
+            // `OutputEditor::emitPlayhead` 算 `timeS` 是
+            // `pod.timeSamples >= 0 ? samplesToSeconds(...) : 0.0` —— 宿主给了 `isPlaying`
+            // 却**没给 `timeInSamples`** 时 `timeS` 恒 0.0,`inRange` / loop 字段也不动,
+            // 载荷逐帧逐字相同;native 的 `emitIfChanged` 与页面侧的 `samePlayhead` 两道
+            // 去重于是都判「没变」⇒ **整个播放期一次 render 都不排**。此时停走档那一拍
+            // (950ms)render 时闩锁还亮着(950 < 2500),之后再没有东西来 render,
+            // 徽标与 Tab2 灰显**永久滞留** —— 正是本段提防的那一幕,只是原因从「宿主停写」
+            // 换成了「没人来 render」。
+            // 补的这一拍在正常路径上只是一次空 render(闩锁那时已熄,投影不变),
+            // 换掉的是「宿主一定会推变化的 playhead 载荷」这条隐含假设。
+            // 两拍都要:走带态可能在这段窗口里翻转,哪一档到期都得有人来 render。
             clearTimeout(hostEchoTimer);
             hostEchoTimer = setTimeout(
                 requestRender,
-                HOST_ECHO_RELEASE_MS + 50,
+                HOST_ECHO_RELEASE_STOPPED_MS + 50,
+            );
+            clearTimeout(hostEchoTimerWide);
+            hostEchoTimerWide = setTimeout(
+                requestRender,
+                HOST_ECHO_RELEASE_PLAYING_MS + 50,
             );
         }
         // 本地乐观值让位给引擎回推(必须排在 render 之前;规则见 tab-master.js nextParamEcho):

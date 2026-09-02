@@ -51,7 +51,7 @@ import {
 // PR #60 红旗)。
 import {
     hostEchoOn,
-    storeIsPlaying,
+    hostEchoUseWideWindow,
     format,
     lowSampleChannels,
     secondsToTimecode,
@@ -2061,7 +2061,7 @@ export function createTabTracks(opts) {
             // J93 只裁了整体调整页的三张参数卡改徽标,轨道页不在裁定范围内。
             // [SL-270] 走带态同样要传:两个 tab 用同一份判据,窗口分档也必须同步,
             // 否则 Tab1 的徽标灭了而 Tab2 的灰显还挂着(SL-251 病灶的又一种形态)。
-            echo: hostEchoOn(st.params, undefined, storeIsPlaying(st))
+            echo: hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st))
                 ? "1"
                 : "0",
         };

@@ -1226,7 +1226,18 @@
                    分布图最多 15 根柱 + 15 条张开线,层数是常数级,不随时长或轨内容增长。
                    ⚠ 判据只能是**真机**:本条修的是 WebView2 的光栅行为,无头 Chrome 上修前
                    修后都不出线。页面级冒烟守的是「这条声明还在」(见 smoke-output-dist-page
-                   ⑨),不是「线没了」—— 别把它读成后者。 */
+                   ⑨),不是「线没了」—— 别把它读成后者。
+                   ⚠ [PR 178 复审【建议】4] **真机若仍出线,下一步不是再叠一条提层声明**:
+                   `--x`/`--h` 喂的 `left`/`height` 都是**布局**属性,每帧写仍触发 layout +
+                   本层重光栅,提层只是把「腾出来那一列」的擦除责任挪到合成阶段;而
+                   `will-change` 是提示、小层还可能被 layer squashing 合回去 —— 所以这一版
+                   是**概率修**,方向对但不彻底。原理上堵死这条路的写法是把两个量搬到
+                   `transform`:柱子固定在 bottom + left:50% + 满高,`--x` 走 `translateX`、
+                   `--h` 走 `transform-origin: bottom` 的 `scaleY`(张开线同理 translateX +
+                   scaleX),几何变化从此不进 layout / paint,失效矩形问题在原理上不存在。
+                   代价说清:`scaleY` 会把 `border-radius: 3px 3px 1px 1px` 一起拉伸(柱高
+                   行程 8%..88%,形变肉眼可见),要保住圆角得拆成「外层 translateX + 内层
+                   scaleY」两层、或把圆角挪到 ::before —— 那是一次真改版,不该顺手做。 */
                 will-change: transform;
                 transform: translateZ(0);
             }
@@ -1258,7 +1269,14 @@
                    夹住(distGeometry 的 `half`),声像拖到硬左/硬右时它归零 —— 而一个
                    宽 0、高 1.5px 的胶囊在光栅上仍会留下一小道痕。零宽时连高一起归零,
                    这个元素才真的什么都不画。真源在 `distSpanVars`(--span-h)。 */
-                height: var(--span-h, 1.5px);
+                /* [PR 178 复审【建议】5] **不给缺省值**:写入面只有两条(本页拼串走
+                   distribution-chart.js 的 `distSpanVars`,逐帧补间走 dist-motion.js 的
+                   setVars),两条都写 `--span-h` —— 缺省值永远走不到,却会在有人改
+                   `SPAN_THICKNESS_PX` 时静默失配(逐字节 oracle 断的是 `distSpanVars`
+                   的输出,断不到 CSS 缺省)。去掉它,这个数就只剩 JS 侧一处。
+                   未喂到变量 = 本条声明失效 = height:auto,而绝对定位的空 div 在 auto 下
+                   就是零高 —— 与「没写入面就不该画」一致。 */
+                height: var(--span-h);
                 border-radius: var(--r-pill);
                 background: rgba(var(--tc), 0.8);
                 /* 同上:张开横线的 --x0/--w/--y 喂 left/width/bottom,几何不过渡。 */
