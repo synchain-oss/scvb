@@ -15,7 +15,8 @@
   [SL-277/J96] **锁纪律**:gate 1-5 完全不持锁,多个 agent 可以同时 configure/build;
   gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行(共享内存段名全机唯一)。
   调用方**不要**再在外面把整条 gates 包进目录锁 —— 那会把编译也串起来,正是本卡要拆掉的。
-  等锁有 30 分钟上界:超时(或互斥体建不出来)→ 判负并**跳过** gate 6/7/8 不执行,
+  等锁有 30 分钟上界:超时(或互斥体建不出来)→ 锁那一行判负,gate 6/7/8 **一概不执行**
+  (本档位下本来要跑的记 FAIL、本来就跳过的仍记 SKIP),整条 gates 以 1 退出。
   绝不无锁硬跑 —— 无锁跑会去抢隔壁持锁 agent 的共享内存段,让那一侧收到查不出的假红。
   逃生口 `-NoIpcLock` 只在确认无并行 agent 时用。
 .EXAMPLE   pwsh scripts/gates.ps1
@@ -65,6 +66,13 @@ function Set-Skip {
   $results.Add([pscustomobject]@{ Gate = $Name; Result = 'SKIP' })
   Write-Host ("[SKIP] {0}" -f $Name) -ForegroundColor Yellow
 }
+
+# 「哪个档位跑哪几道」的**单一真源**([SL-277] PR#176 复审采纳)。gate 7/8 的正常路径
+# 与「拿不到 IPC 锁」的判负路径都读这两个变量 —— 各写各的 `if ($Quick …)` 就会在改档位时
+# 只改一处,失效形态是汇总表把 SKIP/FAIL 记反:退出码不受影响,所以没人会立刻发现。
+# gate 6(ctest)在所有档位都跑,不需要这样的开关。
+$runGate7 = -not $Quick
+$runGate8 = -not ($Quick -or $PluginOnly)
 
 # ---- IPC 测试锁(只包 gate 6/7/8;[SL-277]/[J96] 拆锁)-----------------------
 # **为什么只包 6/7/8**:gate 4(configure)/ 5(build)只读写各自的 `-BuildDir`,
@@ -594,11 +602,17 @@ else {
 # ==================================================================
 Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)
 # ==================================================================
-$cfgArgs = @('-S', '.', '-B', $BuildDir, "-DCMAKE_BUILD_TYPE=$Config", '-DSCVB_BUILD_TESTS=ON', "-DJUCE_PATH=$JucePath")
+$cfgArgs = @('-S', '.', '-B', $BuildDir, '-DSCVB_BUILD_TESTS=ON', "-DJUCE_PATH=$JucePath")
+if ($Generator -like '*Multi-Config*') {
+  # 多配置生成器下 `CMAKE_BUILD_TYPE` 一律被忽略(档位由 `--build --config` / `ctest -C` 选),
+  # 传了只会让人以为它在起作用 —— CI 侧同理,那边也不传(build-vst3.yml 的 configure 步)。
+  $cfgArgs += "-DCMAKE_CONFIGURATION_TYPES=$Config"
+}
+else {
+  $cfgArgs += "-DCMAKE_BUILD_TYPE=$Config"
+}
 if ($Generator) {
   $cfgArgs = @('-G', $Generator) + $cfgArgs
-  # 与 CI 的 configure 逐字对齐:多配置 Ninja 下只生成 Release 一档。
-  if ($Generator -like 'Ninja Multi-Config*') { $cfgArgs += "-DCMAKE_CONFIGURATION_TYPES=$Config" }
   Write-Host ("  生成器:{0}(显式指定)" -f $Generator) -ForegroundColor Cyan
 }
 else {
@@ -659,8 +673,8 @@ if (-not $ipcLockOk) {
   # 档位照旧:`-Quick` / `-PluginOnly` 本来就不跑的那几道仍记 SKIP,不要因为锁的问题
   # 把它们写成 FAIL —— 汇总表要如实说「这一道压根没安排跑」还是「安排了但不可信」。
   # 判负的力度不受影响:锁那一行与 gate 6 已经让整条 gates 以 1 退出。
-  if ($Quick) { Set-Skip '7 pluginval 非 GUI' } else { Set-Gate '7 pluginval 非 GUI' $false }
-  if ($Quick -or $PluginOnly) { Set-Skip '8 pluginval 全量含 GUI' } else { Set-Gate '8 pluginval 全量含 GUI' $false }
+  if ($runGate7) { Set-Gate '7 pluginval 非 GUI' $false } else { Set-Skip '7 pluginval 非 GUI' }
+  if ($runGate8) { Set-Gate '8 pluginval 全量含 GUI' $false } else { Set-Skip '8 pluginval 全量含 GUI' }
 }
 else {
 
@@ -681,7 +695,7 @@ else {
 # ==================================================================
 # Gate 7: pluginval 非 GUI(与 CI 等价,06 §3.1)
 # ==================================================================
-if ($Quick) {
+if (-not $runGate7) {
   Set-Skip '7 pluginval 非 GUI'
 }
 else {
@@ -718,7 +732,7 @@ else {
 # ==================================================================
 # Gate 8: pluginval 全量含 GUI(本地真机;全局互斥,06 §5.1)
 # ==================================================================
-if ($Quick -or $PluginOnly) {
+if (-not $runGate8) {
   Set-Skip '8 pluginval 全量含 GUI'
 }
 else {

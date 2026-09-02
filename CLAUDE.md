@@ -47,7 +47,7 @@
   - **调用方不要再在 `gates.ps1` 外面套目录锁** —— 那会把刚拆开的编译重新串起来。手跑 `ctest` / `pluginval`(不经 gates.ps1)时才需要自备互斥。
   - 互斥体是内核对象,进程被 kill 或崩溃时**必然**释放:没有 owner 文件、没有孤儿判定、也没有「等超时后覆写别人的锁」这条路径。
   - **只用 `Local\`,不设 `Global\` 降级**:`Global\` 创建失败的现实原因是已存在的同名对象 DACL 拒绝当前 token(提权终端先建、普通终端拿不到),一旦降级就变成两个进程各持一把不同的锁 —— 「以为有锁,其实没有」,正是本卡要根除的那类。同一用户登录会话下的多个 agent 终端用 `Local\` 就够。建不出来时**判负**(汇总表里多一行 FAIL),绝不静默继续。gate 8 的 GUI 互斥体同档。
-  - **等锁 30 分钟封顶,拿不到就判负并跳过 6/7/8**:GUI pluginval 的 `--timeout-ms` 只管单个测试项,进程本身卡在模态框上时不受它约束,无上界的等待会让别的 agent 在「等待 Local\…」那一行之后零输出地挂几小时。超时或建不出互斥体时,6/7/8 一并判 FAIL 而**不执行** —— 无锁硬跑等于去抢隔壁持锁 agent 的共享内存段,让那一侧收到自己日志里查不到原因的假红。
+  - **等锁 30 分钟封顶,拿不到就判负并跳过 6/7/8**:GUI pluginval 的 `--timeout-ms` 只管单个测试项,进程本身卡在模态框上时不受它约束,无上界的等待会让别的 agent 在「等待 Local\…」那一行之后零输出地挂几小时。超时或建不出互斥体时,6/7/8 **一概不执行**(该跑的记 FAIL、本档位本来就跳过的仍记 SKIP),整条 gates 以 1 退出 —— 无锁硬跑等于去抢隔壁持锁 agent 的共享内存段,让那一侧收到自己日志里查不到原因的假红。
   - 逃生口 `-NoIpcLock` 只在确认本机没有第二个 agent 时用;关掉它并行跑出来的红大概率是抢段,不是回归。
 
 ## 3. 评审规则
@@ -66,7 +66,7 @@
 
 - **出包流程硬规:出包(打 tag / 发 `release`)之前必须对目标 ref 手动 dispatch 一次 `build-vst3` 并全绿。** 命令:`gh workflow run build-vst3.yml --repo synchain-oss/scvb --ref feature/v1 -f ref=feature/v1`,然后 `gh run list --workflow build-vst3.yml -L 1` 看结果。没有这一次绿,不允许出包 —— push→`feature/**` 触发已撤,主支线上再没有别的机器编译证据。要取包也走这一次:preview artifact(`SCVB-VST3-win64-preview-<slug>-<sha>`)就由这次 run 产出,`<sha>` 是**真正被 checkout 的那个 commit**(`git rev-parse HEAD`),不是 `github.sha`。
   - **`--ref` 与 `-f ref=` 是两件事**:前者决定用哪份 workflow 定义,后者决定构建哪棵源码树。两者指向不同分支时,workflow 会读不到只存在于其中一边的钉版文件(`.juce-version` / `.pluginval-version` / `.sccache-version` / `.sccache-sha256`),第一步就带着这句解释报错退出(本卡实测踩过一次)。正常出包两者都填 `feature/v1`。
-- **逃生口**:任何 PR 打上 `ci:full` 标签即照跑 `build-vst3` 全量(job 的 `if:` 判标签,`on.pull_request.types` 含 `labeled`/`unlabeled`)。子 PR 改到 `CMakeLists.txt` / 依赖 / workflow 本身时用它。
+- **逃生口**:**子 PR** 打上 `ci:full` 标签即照跑 `build-vst3` 全量(job 的 `if:` 判标签,`on.pull_request.types` 含 `labeled`/`unlabeled`)。改到 `CMakeLists.txt` / 依赖 / workflow 本身时用它。base=`dev` 的 PR **不吃**这个标签 —— 它每次 synchronize 本来就跑全量,标签再起一次只是在同一个 concurrency group 里排队重编;dev PR 想临时再编一次用 `workflow_dispatch`。
 - **编译缓存**:`build-vst3` 用 `Ninja Multi-Config` + sccache(磁盘缓存 + `actions/cache` 跨 run 搬运)。换生成器不是审美选择 —— `CMAKE_<LANG>_COMPILER_LAUNCHER` 对 Visual Studio(MSBuild)生成器**无效**,不换就没有编译缓存。sccache 二进制**手动钉版下载**(`.sccache-version` + `.sccache-sha256` 两个单一真源),不走 marketplace action:org 的 action 白名单本来就不放行它,而且与 gitleaks 手动下载同一条纪律。每次 run 末尾打印 `sccache --show-stats`:缓存失效的形态是静默零命中(CI 照样绿,只是慢回改造前),不打印没人会发现。
 - **org action 白名单**:本 org 只放行 GitHub 自家 action、`synchain-oss/*`,以及 `anthropics/claude-code-action@*` / `oven-sh/setup-bun@*` / `qodo-ai/pr-agent@*` / `softprops/action-gh-release@*`。**加任何别的第三方 action 都会让整个 run 直接 `startup_failure`** —— 没有 job、没有 check、没有日志,只有一句「workflow file issue」,很容易被误判成语法错。先考虑用 `run:` 步骤自己实现;确实需要新 action 时,由用户在 org 设置里放行后再用。
 - **子 PR(base=`feature/**`)上还剩哪些机器门禁**:`format` 三个 job + `compliance` + 三个 review bot,**没有** `build-vst3`,也**没有** `branch-gate` —— 后者仅挂 pull_request→`dev`,所以 **DCO(每个 commit 的 `Signed-off-by:`)与冻结契约 path guard 在子 PR 上一次都不跑**,要到 feature→dev 收口 PR 才第一次生效。改冻结契约的子 PR 别指望机器拦你。

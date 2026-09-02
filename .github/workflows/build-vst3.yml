@@ -12,8 +12,10 @@ name: Build & Validate
 #   重档  **出包前硬门**:`workflow_dispatch`(input `ref`,默认 `feature/v1`)必须跑一次
 #         并绿,才允许打包。这是 feature/v1 主支线唯一的机器编译证据 —— push→`feature/**`
 #         触发已在本卡撤掉(每次子 PR 合入都冷编译 20 分钟,正是用户要省掉的那笔)。
-#   逃生口 任何 PR 打上 `ci:full` 标签即照跑全量(`types` 含 labeled/unlabeled,
-#         job 的 `if:` 判标签)。子 PR 改到构建系统/依赖时用它。
+#   逃生口 **子 PR** 打上 `ci:full` 标签即照跑全量(`types` 含 labeled/unlabeled,
+#         job 的 `if:` 判标签)。改到构建系统/依赖时用它。
+#         base=`dev` 的 PR **不吃**这个标签:它每次 synchronize 本来就跑全量,标签再起
+#         一次只会在同一个 concurrency group 里排队重编;想临时再编一次用 dispatch。
 #
 # 分支保护 required contexts 不由本卡改(用户待办)。已核对:`dev` 无 required status
 # checks;`feature/v1` 的 required contexts 只有三个 review bot —— 故子 PR 上本 job 被
