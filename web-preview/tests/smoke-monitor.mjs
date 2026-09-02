@@ -2583,6 +2583,39 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         }
     }
 
+    // ---- [SL-280] `--zero-h` / `has-zero-line` 的**接线判据**(node 侧,不依赖浏览器)
+    //
+    // ⚠ 为什么这条必须在 node 套里,而不是只放页面级:按 CLAUDE.md §6,无头 Chrome/Edge 是
+    //   **可选依赖** —— `smoke-*-page.mjs` 缺依赖时整套退出码 2,gate 3e 与 CI 的 web-smoke
+    //   都把 2 记成 SKIP / `::warning::`,**不判红**。把接线判据只放在那边,等于在没装浏览器
+    //   的机器上一条门禁都没有,而这恰恰是本卡列为「删除式 3」的那条(复审【重要】指出)。
+    //   `createDistMotion` 对 container 只要求 `closest` / `style` / `classList`,喂假对象即可。
+    //
+    // ★ 删除式:删掉建器里的 `setProperty` 或 `classList.add`,下面两条分别当场红。
+    {
+        const seen = {};
+        const cls = [];
+        const fakePlot = {
+            style: { setProperty: (k, v) => (seen[k] = v) },
+            classList: { add: (c) => cls.push(c) },
+        };
+        DM.createDistMotion({
+            container: {
+                closest: (sel) => (sel === ".dist-plot" ? fakePlot : null),
+            },
+        });
+        eq(
+            seen["--zero-h"],
+            DC.zeroDbLinePct() + "%",
+            "(a) ★ 建器把 --zero-h 喂给了 .dist-plot,且取自 zeroDbLinePct()(不是另写的数)",
+        );
+        check(
+            cls.includes("has-zero-line"),
+            `(b) ★ 建器同时打了 has-zero-line —— 没有它,「变量喂不到」不等于「不画」,` +
+                `而是线退到图顶(实得 ${JSON.stringify(cls)})`,
+        );
+    }
+
     // ---- 页面接线:分布图不再走「收到帧就重拼 innerHTML」那条路
     {
         const app = src("web/monitor/app.js");

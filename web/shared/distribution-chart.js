@@ -34,6 +34,10 @@ import { trackColorVar } from "./track-colors.js";
 export const VOL_MIN_DB = -24;
 export const VOL_MAX_DB = 12;
 
+/** [SL-280] 柱高行程的两端(块高百分比)——与上面两个值域常量同类,故并排放。 */
+export const BAR_H_MIN_PCT = 8;
+export const BAR_H_MAX_PCT = 88;
+
 function clamp(lo, hi, v) {
     return v < lo ? lo : v > hi ? hi : v;
 }
@@ -61,22 +65,6 @@ export function esc(s) {
             })[c],
     );
 }
-
-/**
- * 分布图一根柱/一条张开线的几何(设计稿 L2037-2056)。
- * 横位 x =(有效 pan+100)/200;柱高 ∝ 音量行程(−24..+12 dB 归一后 /0.70 拉满卡片高);
- * 张开半宽 =(轨 width%/100)×16,并被 x 与 100−x 夹住不出框。
- *
- * **有效 pan = 名义 pan × 全局 width/100**(PanMath::scaleByGlobalWidth,DSP 逐样本同式)。
- * 段表与参数面存的是**名义** pan,真正听到的位置要经全局「最大角度」几何缩放 —— 图上不缩放
- * 就等于画了一张听不到的图,而且拧「最大角度」时分布图纹丝不动(用户裁定 v5 P2-10)。
- * 立体声张开线同理:两个子声像一起被缩放,半宽跟着乘同一个系数。
- *
- * @param {number} [globalWidthPct=100] 全局 width(0..150);缺省 100 = 不缩放,
- *        供数据面不含该值的调用方(Monitor 的 viz 段只带每轨 width)沿用原几何。
- */
-export const BAR_H_MIN_PCT = 8;
-export const BAR_H_MAX_PCT = 88;
 
 /**
  * volDb → 柱高(块高百分比)。**唯一真源**:柱、0 dB 基准线、用例三处都从这里取。
@@ -107,13 +95,28 @@ export function barHeightPct(volDb) {
  * [SL-280] 0 dB 基准横线的高度(块高百分比)= `barHeightPct(0)` = 61.33。
  *
  * **不写死这个数**:线要落在「0 dB 那根柱的顶边」上,而柱顶由 `barHeightPct` 决定 ——
- * 两处各写一份就是本仓刚清过的那类漂移。页面侧把它写成 CSS 变量喂给 `.dist-plot__zero`
- * (见两页 `wireChart`),CSS 里**不给缺省**,喂不到时由页面级用例抓。
+ * 两处各写一份就是本仓刚清过的那类漂移。`dist-motion` 建器把它写成 CSS 变量喂给
+ * `.dist-plot`,并同时打 `has-zero-line` —— 后者让「喂不到」真的等于「不画」
+ * (只靠不给缺省做不到:变量未定义时 `bottom` 声明失效 ⇒ 线退到图顶,比不画更误导)。
  */
 export function zeroDbLinePct() {
     return round2(barHeightPct(0));
 }
 
+/**
+ * 分布图一根柱/一条张开线的几何(设计稿 L2037-2056)。
+ * 横位 x =(有效 pan+100)/200;柱高见 `barHeightPct`(−24..+12 dB **线性铺满**
+ * `BAR_H_MIN_PCT..BAR_H_MAX_PCT`;[SL-280] 之前是「归一后 /0.70」,那会在 −1.82 dB 以上压平);
+ * 张开半宽 =(轨 width%/100)×16,并被 x 与 100−x 夹住不出框。
+ *
+ * **有效 pan = 名义 pan × 全局 width/100**(PanMath::scaleByGlobalWidth,DSP 逐样本同式)。
+ * 段表与参数面存的是**名义** pan,真正听到的位置要经全局「最大角度」几何缩放 —— 图上不缩放
+ * 就等于画了一张听不到的图,而且拧「最大角度」时分布图纹丝不动(用户裁定 v5 P2-10)。
+ * 立体声张开线同理:两个子声像一起被缩放,半宽跟着乘同一个系数。
+ *
+ * @param {number} [globalWidthPct=100] 全局 width(0..150);缺省 100 = 不缩放,
+ *        供数据面不含该值的调用方(Monitor 的 viz 段只带每轨 width)沿用原几何。
+ */
 export function distGeometry(pan, volDb, widthPct, globalWidthPct = 100) {
     const g = clamp(0, 150, Number(globalWidthPct) || 0) / 100;
     const x = ((clamp(-100, 100, clamp(-100, 100, pan) * g) + 100) / 200) * 100;

@@ -408,7 +408,14 @@ export const T = {
         "master.step1.desc": "开关打开后播放本范围以记录响度特征",
         "master.widthAngleHint": "最外层人声的角度。0–90°",
         "master.msHint": "−100 偏 Mid / +100 偏 Side",
-        "master.distHint": "柱高 = 音量,横位 = 声像;横线 = 立体声源张开度",
+        // [SL-280] 图里现在有**两种**横线:短的是立体声张开度(只有 half×2 那么宽),
+        // 通栏那条是 0 dB 基准。原文只说「横线 = 立体声源张开度」,而新增那条更醒目
+        // (left:0/right:0),用户照提示读图第一眼看到的正好不是提示说的那条 —— 本卡修的
+        // 就是这类「照 hint 读图读出别的意思」,故一并把两者区分开。
+        // ⚠ 用词受**字体子集**约束(gate 3h):「贯穿」的「贯 U+8D2F / 穿 U+7A7F」四款字体
+        // 都没有字形,写了会红并要求联网重跑 fetch_fonts.py。「通栏」二字语料里已有。
+        "master.distHint":
+            "柱高 = 音量,横位 = 声像;短横线 = 立体声源张开度,通栏横线 = 0 dB 基准",
         "master.distAxis": "左 L · −50 · 中 C · +50 · 右 R",
         // [SL-280] 0 dB 基准线左端小标注。三语同值:它是**单位记号**不是句子,
         // 翻译成「0 分贝」反而不如原样(dB 在三语里都是通用写法)。
@@ -1303,7 +1310,7 @@ export const T = {
         "master.widthAngleHint": "The angle of the outermost vocals. 0–90°",
         "master.msHint": "−100 toward Mid / +100 toward Side",
         "master.distHint":
-            "Bar height = level, horizontal position = pan; the line = stereo source width",
+            "Bar height = level, horizontal position = pan; short line = stereo source width, full-width line = 0 dB reference",
         "master.distAxis": "L · −50 · C · +50 · R",
         "master.distZero": "0 dB",
 
@@ -2110,7 +2117,7 @@ export const T = {
         "master.widthAngleHint": "L'angle des voix les plus externes. 0–90°",
         "master.msHint": "−100 vers Mid / +100 vers Side",
         "master.distHint":
-            "Hauteur = volume, position horizontale = panoramique ; le trait = largeur de la source stéréo",
+            "Hauteur = volume, position horizontale = panoramique ; trait court = largeur de la source stéréo, trait pleine largeur = référence 0 dB",
         "master.distAxis": "G · −50 · C · +50 · D",
         "master.distZero": "0 dB",
 
