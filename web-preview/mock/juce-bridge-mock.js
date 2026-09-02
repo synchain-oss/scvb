@@ -299,6 +299,14 @@ function makeContext(role, world) {
             timeS: world.transport.timeS,
             isPlaying: world.transport.isPlaying,
         },
+        // [SL-270/PR 178] **宿主给不给走带位置**。默认 true = 正常宿主。
+        // 置 false 复现的是 native 那条真实分支:`OutputEditor::emitPlayhead` 算
+        // `timeS` 用 `pod.timeSamples >= 0 ? samplesToSeconds(...) : 0.0` —— 宿主给了
+        // `isPlaying` 却**没给 `timeInSamples`** 时 `timeS` 恒 0.0,整个播放期
+        // `scvb.playhead` 的载荷逐帧逐字相同,页面侧的 `samePlayhead` 于是一次
+        // `requestRender` 都不排。只有 `ctl.setHostTimeAvailable` 写它(见那一条),
+        // 页面与契约面一个字节都不知道它存在。
+        hostTimeAvailable: true,
         snapshot,
         // conn / config 与快照共用同一对象,写一处两处同步(契约 §1.1/§3.1 语义行:
         // 快照的 conn/config 子树与事件载荷不得各自漂移)。
@@ -730,10 +738,26 @@ function makeContext(role, world) {
         },
         isPrinting,
         inRangeAt,
+        /**
+         * [SL-270/PR 178] **预览专用**开关,不在桥面契约里(它挂在 `ctl` 上,不在 mock
+         * 的契约函数表上,与 `setTransport` 同一层)。关掉 = 复现「宿主给 isPlaying
+         * 却不给 timeInSamples」的那类宿主,见 `model.hostTimeAvailable` 的头注。
+         * 页面级用例靠它把「播放期一次 render 都不排」变成可复现的一幕。
+         */
+        setHostTimeAvailable(on) {
+            model.hostTimeAvailable = on !== false;
+        },
         /** §2.6 的可选字段:宿主提供 loop 才出现,缺失即字段不存在(不发哨兵)。 */
         playheadOverrides(tS) {
+            // 宿主不给走带位置时,native 侧 timeS 恒 0.0 —— 连同 inRange 一起按 0 算,
+            // 载荷才真的逐帧逐字相同(只改 timeS 而 inRange 还跟着真位置走的话,
+            // `samePlayhead` 照旧判不同,那就不是要复现的那一幕了)。
+            // ⚠ 开关**开着**时一个字节都不许改:`timeS` 的四舍五入归 `makePlayhead`,
+            // 这里再写一次会把未取整的累加值盖回去(逐字节对拍当场漂)。
+            const t = model.hostTimeAvailable ? tS : 0;
             const loop = loopWindow();
-            const extra = { inRange: inRangeAt(tS) };
+            const extra = { inRange: inRangeAt(t) };
+            if (!model.hostTimeAvailable) extra.timeS = 0;
             if (loop) {
                 extra.loopStartS = loop.startS;
                 extra.loopEndS = loop.endS;

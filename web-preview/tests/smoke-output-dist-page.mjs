@@ -934,7 +934,8 @@ try {
         );
         // ---- (g) 裁定③ 的 console 读数**真的会打印**(复审第一轮【重要】1 的回归)
         //
-        // 那行 `console.debug` 是「释放窗口 2000ms 本机测不出真机间隔分布」的唯一补偿手段,
+        // 那行 `console.debug` 是「释放窗口本机测不出真机间隔分布」的唯一补偿手段
+        // (SL-251 当时是 2000ms 一个窗口打天下;SL-270 之后是停走 900 / 播放 2500 两档),
         // 而它第一版是**死代码**:`store.params` 在读 prevAt 之前就被整体重写了,gap 恒 ≈0。
         // 静态看不出来,只有真跑才知道 —— 所以这一条必须是页面级。
         // ⚠ 间隔**自己造**,不靠等 mock 的段边界撞上来:后者取决于走带在这一节里跑到哪、
@@ -952,20 +953,36 @@ try {
             typeof offR === "string" && !/rejected|"ok":\s*false/.test(offR),
             `(h) 关输出被接受(回执 ${offR})—— 丢返回值的话下面整段会在「没真关掉」上空绿`,
         );
-        await sleep(2600); // > HOST_ECHO_RELEASE_MS(2000),静置期零 hostEcho 帧
+        // [SL-270] 这一节里走带**仍在跑**(?play=1),所以此刻生效的是**播放档**
+        // (HOST_ECHO_RELEASE_PLAYING_MS = 2500),不是停走档的 900。静置必须越过播放档,
+        // 否则下面 (h) 会在「还没到该熄的时候」判红。留足余量:2500 + 900,不卡在边界上
+        // (本仓记过一次「按帧率/节奏判红」的假红)。
+        await sleep(3400);
 
         // ---- (h) 顺带把**熄侧**钉一下:静置超过释放窗口之后,徽标必须已经灭了。
-        // ⚠ 说清它证明什么、不证明什么:它断的是**用户可见结果**(停了就该退),
-        // **不是**退场定时器那一行的回归 —— preview 里 `scvb.conn` 每 ~250ms 仍在推
-        // (heartbeatAgeMs 是活计数器),render 根本停不下来,所以就算定时器还挂在
-        // 650ms 上,这条也会绿。真正的定时器回归要「页面全静」,mock 上造不出来(已登记)。
+        // ⚠ 说清它证明什么、不证明什么:它断的是**用户可见结果**(停了就该退)。
+        //
+        // 本节 render 停不下来,**原因不是 conn 心跳** —— 这一句上一版写错了,已按实测订正:
+        //   • `scvb.conn` 走的是 `emitIfChanged`(`state-driver.js:809`),`JSON.stringify`
+        //     逐字相同即**不发**(`juce-bridge-mock.js:422`),静置期一帧都不推;
+        //   • `heartbeatAgeMs` 也不是活计数器,是 `40 + floor(unit(0x5001, ch) * 260)`
+        //     (`mock-data.js:1109`),按**轨号**确定性取值,与时间无关。
+        // 真正让 render 停不下来的是本节的 `?play=1`:`scvb.playhead` 每帧 `timeS` 在走
+        // ⇒ `samePlayhead` 判不同 ⇒ 逐帧 `requestRender`。
+        //
+        // 所以本条的免责范围要跟着收窄:走带在跑时它兜不到「定时器挂错档」这类回归
+        // (逐帧 render 会替定时器把徽标熄掉)。**真正钉住那一拍定时器的是下面的 (e)**
+        // —— 它用 `setHostTimeAvailable(false)` 把 playhead 载荷钉成逐帧逐字相同,
+        // 唯一那条活着的 render 源就没了,删掉长定时器当场红(实测 8166ms)。
+        // 别再照上一版那句话推论「conn 心跳还在,所以 (e) 也会空绿」—— 那条推论错在
+        // 前提上,而它已经真的误导过一个审查端点。
         const quiet = await evaluate(readState);
         check(
             quiet.width === "0" &&
                 quiet.widthBadge === "0" &&
                 quiet.ms === "0" &&
                 quiet.lead === "0",
-            `(h) ★ 静置 2.6s(> 释放窗口)后三张卡与徽标都已熄(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})`,
+            `(h) ★ 静置 3.4s(> 播放档释放窗口)后三张卡与徽标都已熄(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})`,
         );
 
         const onR = await evaluate(
@@ -1003,6 +1020,351 @@ try {
         );
 
         assertClean("SL-251 闪烁");
+    }
+
+    // =========================================================================
+    // ⑨ [SL-269] 分布图的**光栅面**:合成层隔离 + 零宽张开线
+    // -------------------------------------------------------------------------
+    // 用户实测(v5.6.5,WebView2):播放中每根柱子的顶端往上拖出一条与轨同色的细竖线,
+    // 一路到 plot 顶边,多轨同时。
+    //
+    // ⚠ 先把这一节**证明不了**什么说清楚,免得下一个人把它读成「线没了」:
+    //   拖影是 WebView2 的失效矩形行为,**无头 Chrome 上修前修后都不出线** —— 本套跑的
+    //   正是无头 Chrome,所以它守不到现象。它守的是**修法还在**:两条声明(合成层隔离)
+    //   与一条几何(零宽 ⇒ 零高)在**渲染面**上确实生效。现象一侧的判据只有真机。
+    //   这也是为什么这里读的是 getComputedStyle / getBoundingClientRect 而不是源码正则:
+    //   源码里写了 ≠ 这条规则真的落到了元素上(选择器写错、被后面的规则盖掉都可能)。
+    // =========================================================================
+    {
+        newBucket("sl269-raster");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+
+        // ---- (a) 柱与张开线各自独占合成层
+        const layers = await evaluate(
+            IN(`
+            const one = (sel) => {
+                const n = q(sel);
+                if (!n) return null;
+                const cs = w.getComputedStyle(n);
+                return { willChange: cs.willChange, transform: cs.transform };
+            };
+            return { bar: one(".dist-bar"), span: one(".dist-span"),
+                     bars: all(".dist-bar").length, spans: all(".dist-span").length };
+        `),
+        );
+        check(
+            layers && layers.bars > 0 && layers.spans > 0,
+            `(a) 前提:页面上确有柱与张开线(实得 ${layers && layers.bars} / ${layers && layers.spans})`,
+        );
+        for (const [name, got] of [
+            ["dist-bar", layers && layers.bar],
+            ["dist-span", layers && layers.span],
+        ]) {
+            check(
+                !!got && /transform/.test(got.willChange),
+                `(a) ★ ${name} 声明了 will-change: transform(实得 ${got && got.willChange})`,
+            );
+            // translateZ(0) 计算出来是 matrix3d(…),不会是 "none"。删掉那一行即红。
+            check(
+                !!got && got.transform !== "none" && got.transform !== "",
+                `(a) ★ ${name} 有非 none 的 transform(= 强制独立层;实得 ${got && got.transform})`,
+            );
+        }
+
+        // ---- (b) 零宽的张开线必须**一个像素都不画**
+        //
+        // 用「最大角度」这把真滑杆造零宽:distGeometry 的 half = min(width%/100×16×g, x, 100−x),
+        // g = 全局 width/100。g=0 ⇒ 每一行的 half 都归零,一次把所有张开线推进退化态,
+        // 不用去猜某一轨的 pan 参数 id。走的是 setParam 这条真桥路径。
+        //
+        // 断的是**逐帧写变量**那条路,不是重拼那条(PR 178 复审有人读成了后者):
+        // 只拧全局 width 时轨集/立体声/lead/高亮一个没变 ⇒ `distShapeKey` 不变 ⇒
+        // dist-motion 的 `push` 不进 `key !== shapeKey` 的重拼支,落在
+        // `if (width !== lastPaintedWidth) paint(width)` 上 —— `paint` 就是 rAF 补间
+        // 每帧调的那一个,`--span-h` 由它经 `setVars`/`distSpanVars` 写下去。
+        // 所以「补间落点上零宽也零高」这条,下面这组已经断到了。
+        const rects = IN(`
+            const out = [];
+            for (const n of all(".dist-span")) {
+                const r = n.getBoundingClientRect();
+                out.push({ w: Math.round(r.width * 100) / 100, h: Math.round(r.height * 100) / 100 });
+            }
+            return out;
+        `);
+        const wide = await evaluate(rects);
+        check(
+            wide.length > 0 && wide.some((v) => v.w > 0 && v.h > 1),
+            `(b) 前提:常态下张开线有宽也有粗(实得 ${JSON.stringify(wide.slice(0, 3))})`,
+        );
+
+        const setW0 = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk || typeof mk.setParam !== "function") return "no-mock";
+            return JSON.stringify(mk.setParam("width", 0));
+        `),
+        );
+        check(
+            typeof setW0 === "string" && !/rejected|"ok":\s*false/.test(setW0),
+            `(b) 「最大角度」拧到 0 被接受(回执 ${setW0})—— 丢返回值的话下面整段会空绿`,
+        );
+        await sleep(500); // 让 rAF 补间走完(补间窗 40ms 级)
+        const zero = await evaluate(rects);
+        log(`  最大角度=0 时的张开线矩形:${JSON.stringify(zero.slice(0, 3))}`);
+        check(
+            zero.length > 0 && zero.every((v) => v.w === 0),
+            `(b) 前提:最大角度=0 之后每条张开线都是零宽(实得 ${JSON.stringify(zero.slice(0, 3))})`,
+        );
+        check(
+            zero.length > 0 && zero.every((v) => v.h === 0),
+            `(b) ★ 零宽的张开线渲染高度也是 0 —— 退回写死的 height:1.5px 即红` +
+                `(实得 ${JSON.stringify(zero.slice(0, 3))})`,
+        );
+
+        assertClean("SL-269 光栅面");
+    }
+
+    // =========================================================================
+    // ⑩ [SL-270] hostEcho 徽标:释放窗口按走带态分两档
+    // -------------------------------------------------------------------------
+    // 用户实测(v5.6.5):① 停走之后徽标还挂着近两秒;② 快速起停会让徽标在**播放中途**
+    // 消失。② 是 ① 的另一面 —— 按停那一刻闩锁还剩一大截,立刻重按播放,这一截残余在新的
+    // 一段播放里走完。
+    //
+    // ⚠ 同样先说清楚**证明不了**什么:② 的完整现象需要「宿主两次写之间隔着秒级」,而 mock
+    //   的打印头一恢复就立刻推帧(本文件 SL-251 节已记过:mock 只有慢通道)。所以这里不去
+    //   赌那一幕,而是把**机理**钉在渲染面上:两档窗口各自真的在生效。② 的修复等价于
+    //   「按停即回短窗口」,那就是 (d)。
+    // =========================================================================
+    {
+        newBucket("sl270-release-windows");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+
+        const BADGE = `d.querySelector('[data-gb="master-width-hostbadge"]')`;
+        const badge = IN(`
+            const n = ${BADGE};
+            return n ? (n.getAttribute("data-on") || "-") : "?";
+        `);
+        const badgeOn = IN(`
+            const n = ${BADGE};
+            return !!n && n.getAttribute("data-on") === "1";
+        `);
+        const badgeOff = IN(`
+            const n = ${BADGE};
+            return !!n && n.getAttribute("data-on") === "0";
+        `);
+        const setOutput = (on) =>
+            evaluate(
+                IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk) return "no-mock";
+            return JSON.stringify(mk.setOutputEnabled(${on ? "true" : "false"}));
+        `),
+            );
+        // 走带开关在**壳页**上:走带是宿主的东西,`__SCVB_MOCK__` 只有桥面的上行函数。
+        const setPlaying = (on) =>
+            evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.ctl) return "no-session";
+            s.ctl.setTransport({ isPlaying: ${on ? "true" : "false"} });
+            return "ok";
+        })()`);
+
+        // ---- 量法:从**徽标亮起那一刻**量到它熄灭,而不是从「我发了指令」那一刻量。
+        //
+        // 这一条是本节能不能算数的关键。闩锁量的是「距最后一帧 hostEcho:true 多久」,
+        // 而那一帧什么时候来我们并不知道 —— mock 的打印头是「值变了才发」,实测两帧之间
+        // 能隔两三秒。从指令时刻起算的话,测出来的间隔里混着一段未知的「上一帧有多旧」,
+        // 只能给上界、给不出下界,于是「播放档确实更宽」这半条根本证明不了(本仓记过
+        // 「按帧率/节奏判红」的假红,这里是同一个坑的另一面)。
+        //
+        // 改成:先把徽标打灭,再打开打印头,**在页内**盯住 0 → 1 那一次跳变并落一个
+        // 时间戳(`__SL270_ON_AT__`)—— 跳变意味着刚刚到了一帧 true,起点就此钉死;
+        // 随后停掉信号源,页内一直采到徽标转 0,回报的差值就是**真正的释放窗口**
+        // (外加一次 CDP 往返,几十毫秒量级,只会让读数偏大一点点)。
+        const armOnEdge = IN(`
+            w.__SL270_ON_AT__ = 0;
+            const tick = () => {
+                const n = ${BADGE};
+                if (n && n.getAttribute("data-on") === "1") {
+                    w.__SL270_ON_AT__ = w.performance.now();
+                    return;
+                }
+                w.setTimeout(tick, 30);
+            };
+            tick();
+            return true;
+        `);
+        const onEdgeSeen = IN(`return (w.__SL270_ON_AT__ || 0) > 0;`);
+        const measureOff = IN(`
+            return new Promise((res) => {
+                const t0 = w.__SL270_ON_AT__ || 0;
+                if (!t0) return res(-1);
+                const step = () => {
+                    const n = ${BADGE};
+                    if (n && n.getAttribute("data-on") === "0") {
+                        return res(Math.round(w.performance.now() - t0));
+                    }
+                    if (w.performance.now() - t0 > 12000) return res(-2);
+                    w.setTimeout(step, 30);
+                };
+                step();
+            });
+        `);
+
+        // 一次完整测量:打灭 → 装边沿探针 → 开打印头 → 等 0→1 跳变 → 掐掉信号源 → 采到熄。
+        async function measureRelease(label, killSignal) {
+            await setOutput(false);
+            if (
+                !check(
+                    await waitFor(badgeOff, 12000),
+                    `(${label}) 前置:先把徽标打灭`,
+                )
+            )
+                return null;
+            await evaluate(armOnEdge);
+            const r = await setOutput(true);
+            if (
+                !check(
+                    typeof r === "string" && !/rejected|"ok":\s*false/.test(r),
+                    `(${label}) 前置:打开打印头被接受(回执 ${r})`,
+                )
+            )
+                return null;
+            // 亮起要等打印头写出一个**变化**的值;mock 上实测能到 2-3 秒,故给足额度。
+            if (
+                !check(
+                    await waitFor(onEdgeSeen, 15000),
+                    `(${label}) 前置:观察到徽标 0 → 1 的那一次跳变(起点由它钉死)`,
+                )
+            )
+                return null;
+            await killSignal();
+            const ms = await evaluate(measureOff);
+            log(`  ${label}:从亮起到熄灭 ${ms} ms`);
+            return ms;
+        }
+
+        check(
+            (await setPlaying(true)) === "ok",
+            "(前提) 壳页暴露了预览会话(window.__SCVB_PREVIEW__.ctl)—— 没有它整节都测不了",
+        );
+
+        // ---- (a) **播放档**:关掉打印头,但走带**继续跑**。
+        const playingMs = await measureRelease("a 播放档", () =>
+            setOutput(false),
+        );
+        // ---- (b) **停走档**:打印头开着,直接停走带(mock 的 PRINT 是三与,停走即停印)。
+        const stoppedMs = await measureRelease("b 停走档", () =>
+            setPlaying(false),
+        );
+
+        check(
+            typeof playingMs === "number" && playingMs > 0,
+            `(a) 播放档测到了有效读数(实得 ${playingMs})`,
+        );
+        check(
+            typeof stoppedMs === "number" && stoppedMs > 0,
+            `(b) 停走档测到了有效读数(实得 ${stoppedMs})`,
+        );
+        // 判据写成**区间**而不是等号:读数里含一次 CDP 往返 + 采样步长 + 一拍 render,
+        // 上下各留 600ms。这两条各自都是删除式判据 ——
+        //   • 退回「一个窗口打天下」:两个读数会挤到同一个数上,(c) 必红;
+        //   • 调用方忘了把走带态传进 hostEchoOn:播放档掉到停走档上,(a) 必红。
+        if (typeof playingMs === "number" && playingMs > 0) {
+            check(
+                playingMs > 1500 && playingMs < 4000,
+                `(a) ★ 播放中的释放窗口落在播放档量级(实得 ${playingMs}ms,期望 ≈2500)`,
+            );
+        }
+        if (typeof stoppedMs === "number" && stoppedMs > 0) {
+            check(
+                stoppedMs < 1600,
+                `(b) ★ 停走后的释放窗口落在停走档量级(实得 ${stoppedMs}ms,期望 ≈900)` +
+                    ` —— 用户报的「停走之后图标停留过久」就是这个数原先是 2000`,
+            );
+        }
+        if (
+            typeof playingMs === "number" &&
+            typeof stoppedMs === "number" &&
+            playingMs > 0 &&
+            stoppedMs > 0
+        ) {
+            check(
+                playingMs - stoppedMs > 800,
+                `(c) ★ 两档确实分开(播放 ${playingMs}ms − 停走 ${stoppedMs}ms > 800ms)` +
+                    ` —— 这一条是「按停即回短窗口」的直接证据,也就是用户报的第二幕` +
+                    `(快速起停时残余在播放中途走完)被修掉的机理`,
+            );
+        }
+
+        // ---- (d) 重按播放之后徽标必须**能回来**:短窗口是给停走用的,不能把重新开始的
+        // 那一段播放也一起摁死。这一条守的是「修第一幕别修出一个新的第二幕」。
+        // ⚠ 用 waitFor 而不是定长 sleep:亮起要等打印头写出一个变化的值,mock 上实测
+        // 2-3 秒(本机跑过 1.5s 的定长,假红一次)。真出回归的话它永远不亮,一样红。
+        await setPlaying(true);
+        check(
+            await waitFor(badgeOn, 15000),
+            "(d) ★ 重按播放后徽标重新亮起(短窗口没有把它锁死)",
+        );
+        log(`  (d) 重按播放后徽标 = ${await evaluate(badge)}`);
+
+        // ---- (e) [PR 178 复审【重要】2] **播放中没有任何人来 render** 那一幕。
+        //
+        // (a) 之所以量得到播放档,是因为 `scvb.playhead` 的 `timeS` 每帧在走 ⇒ 页面侧
+        // `samePlayhead` 每帧判不同 ⇒ 每帧 requestRender,长窗口到期那一刻正好有 render
+        // 顺手把徽标熄了。但那是**宿主的行为**,不是我们能担保的事:native 的
+        // `OutputEditor::emitPlayhead` 算 timeS 用
+        // `pod.timeSamples >= 0 ? samplesToSeconds(...) : 0.0` —— 宿主给了 `isPlaying`
+        // 却不给 `timeInSamples` 时 timeS 恒 0.0,载荷逐帧逐字相同,native 的
+        // `emitIfChanged` 与页面的 `samePlayhead` 两道去重都判「没变」,整个播放期
+        // **一次 render 都不排**。那时能把徽标熄掉的只剩定时器,而只排停走档那一拍的话
+        // 它在 950ms 就烧完了(闩锁还亮着,950 < 2500),之后再没有东西来 render ——
+        // 徽标与 Tab2 灰显**永久滞留**。
+        //
+        // `ctl.setHostTimeAvailable(false)` 复现的就是这类宿主(预览专用开关,见
+        // juce-bridge-mock 那一条)。采集闸不用管:`setOutputEnabled(true)` 的契约副作用
+        // 已经把 capture 关了,所以 `scvb.captureProgress` 这条 2Hz 的 render 源本来就
+        // 不在场 —— 本节量到的熄灭只可能来自定时器。
+        //
+        // ★ 删除式:去掉播放档那一拍 setTimeout,(e) 会一路采到 12s 超时(-2)当场红。
+        const setHostTime = (on) =>
+            evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.ctl || !s.ctl.setHostTimeAvailable) return "no-hook";
+            s.ctl.setHostTimeAvailable(${on ? "true" : "false"});
+            return "ok";
+        })()`);
+        const frozenMs = await measureRelease(
+            "e 播放中·宿主不给走带位置",
+            async () => {
+                await setOutput(false);
+                check(
+                    (await setHostTime(false)) === "ok",
+                    "(e) 前提:预览会话认得 setHostTimeAvailable(没有它这一幕造不出来)",
+                );
+            },
+        );
+        check(
+            typeof frozenMs === "number" && frozenMs > 0,
+            `(e) 测到了有效读数(实得 ${frozenMs};-2 = 12s 内**根本没熄**,正是回归的形状)`,
+        );
+        if (typeof frozenMs === "number" && frozenMs > 0) {
+            check(
+                frozenMs > 1500 && frozenMs < 4000,
+                `(e) ★ 播放期一次 render 都不排时,徽标仍按播放档熄灭` +
+                    `(实得 ${frozenMs}ms,期望 ≈2500)—— 靠的是播放档那一拍定时器`,
+            );
+        }
+        await setHostTime(true);
+
+        assertClean("SL-270 释放窗口");
     }
 } catch (e) {
     fail++;

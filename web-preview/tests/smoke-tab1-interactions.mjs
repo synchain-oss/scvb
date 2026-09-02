@@ -1310,12 +1310,15 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         "(a3) 刚收到 true 帧 ⇒ 立刻亮(信息不迟到)",
     );
     eq(
-        HE.hostEchoOn({ hostEchoAt: T0 }, T0 + HE.HOST_ECHO_RELEASE_MS - 1),
+        HE.hostEchoOn(
+            { hostEchoAt: T0 },
+            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS - 1,
+        ),
         true,
         "(a4) 释放窗口内 ⇒ 保持亮",
     );
     eq(
-        HE.hostEchoOn({ hostEchoAt: T0 }, T0 + HE.HOST_ECHO_RELEASE_MS),
+        HE.hostEchoOn({ hostEchoAt: T0 }, T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS),
         false,
         "(a5) 越过释放窗口 ⇒ 熄(一次性,不抖)",
     );
@@ -1327,8 +1330,91 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         "(a6) ★ 中间来一帧 hostEcho:false ⇒ **仍然亮**(退回旧判据即红)",
     );
     check(
-        HE.HOST_ECHO_RELEASE_MS > HE.HOST_ECHO_FRESH_MS,
-        `(a7) 释放窗口必须比新鲜度窗口宽(实得 ${HE.HOST_ECHO_RELEASE_MS} vs ${HE.HOST_ECHO_FRESH_MS})`,
+        HE.HOST_ECHO_RELEASE_STOPPED_MS > HE.HOST_ECHO_FRESH_MS,
+        `(a7) 释放窗口必须比新鲜度窗口宽(实得 ${HE.HOST_ECHO_RELEASE_STOPPED_MS} vs ${HE.HOST_ECHO_FRESH_MS})`,
+    );
+
+    // ---- (a8..a14) [SL-270] 释放窗口按**走带态**分两档
+    //
+    // 用户实测(v5.6.5):① 停走后徽标还挂着近两秒;② 快速起停会让徽标在**播放中途**
+    // 消失。② 是 ① 的另一面 —— 按停那一刻闩锁还剩一大截,立刻重按播放,这一截残余
+    // 在新的一段播放里走完。修法是停走用短窗口、播放中用长窗口。
+    //
+    // 本组同时是**删除式判据**。哪条拦哪种退化,逐种写清(原先只写了「(a10)(a11) 必有
+    // 一条红」,而那只对其中一种退化成立):
+    //   • 退回**停走档**单窗口(忽略第三个实参 ⇒ 恒 900):(a10) 红;
+    //   • 退回**任何比停走档宽**的单窗口(播放档 2500、或 SL-251 的历史值 2000):
+    //     (a12) 红 —— 停走时越过 900 却还亮着;(a10)(a11) 在 2000 这一档下都是绿的;
+    //   • 退化成「播放中永不熄」:(a11) 红。
+    check(
+        HE.HOST_ECHO_RELEASE_PLAYING_MS > HE.HOST_ECHO_RELEASE_STOPPED_MS,
+        `(a8) 播放档必须比停走档宽(实得 ${HE.HOST_ECHO_RELEASE_PLAYING_MS} vs ${HE.HOST_ECHO_RELEASE_STOPPED_MS})`,
+    );
+    eq(
+        [HE.hostEchoReleaseMs(false), HE.hostEchoReleaseMs(true)],
+        [HE.HOST_ECHO_RELEASE_STOPPED_MS, HE.HOST_ECHO_RELEASE_PLAYING_MS],
+        "(a9) hostEchoReleaseMs 是两档的唯一真源(app.js 的 console 读数同取这一份)",
+    );
+    eq(
+        HE.hostEchoOn(
+            { hostEchoAt: T0 },
+            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS,
+            true,
+        ),
+        true,
+        "(a10) ★ 播放中越过**停走档**仍亮(退回单窗口即红)",
+    );
+    eq(
+        HE.hostEchoOn(
+            { hostEchoAt: T0 },
+            T0 + HE.HOST_ECHO_RELEASE_PLAYING_MS,
+            true,
+        ),
+        false,
+        "(a11) ★ 播放中越过**播放档**才熄 —— 不是「播放中永不熄」",
+    );
+    // ② 的直接还原:按停的那一刻起,判据立刻切回短窗口,残余不会带进下一段播放。
+    // 这一条钉的是**用户可见结果**,不是实现:同一个 `at`,同一个 `now`,只因走带停了
+    // 就该熄 —— 一个窗口打天下的实现在这里必然给 true。
+    eq(
+        HE.hostEchoOn(
+            { hostEchoAt: T0 },
+            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS + 1,
+            false,
+        ),
+        false,
+        "(a12) ★ 快速起停:按停即回短窗口,残余不带进下一段播放",
+    );
+    // [PR 178 复审【建议】3] 「不在播放」与「还不知道走带态」**不是同一件事**,不许压成
+    // 同一个 false:`store.playhead` 的初值是 null,直接取 isPlaying 会让走带态未知时的
+    // 窗口从 SL-251 的 2000ms 收窄到 900ms,而 SL-251 修的抖恰恰靠「窗口比宿主两次写之间
+    // 的间隔宽」压住 —— 收窄就可能把它原样放回来,且回来的形态与 SL-251 逐字相同。
+    // ★ 删除式:把函数退回 `!!(store && store.playhead && store.playhead.isPlaying)`,
+    //   后两项变 false,(a13) 当场红。
+    eq(
+        [
+            HE.hostEchoUseWideWindow({ playhead: { isPlaying: true } }),
+            HE.hostEchoUseWideWindow({ playhead: { isPlaying: false } }),
+            HE.hostEchoUseWideWindow({ playhead: null }),
+            HE.hostEchoUseWideWindow(null),
+            // [PR 178 复审第四轮] `playhead` 在场却没有 `isPlaying` —— 契约面不可达
+            // (native 两侧与 mock 都无条件写该字段),但它是「未知」不是「停走」,
+            // 判据必须与头注那句「未知 ⇒ 宽档」逐字相符。
+            // ★ 删除式:退回 `!!ph.isPlaying`,这一项变 false,本条当场红。
+            HE.hostEchoUseWideWindow({ playhead: {} }),
+        ],
+        [true, false, true, true, true],
+        "(a13) ★ 走带态**未知**并进宽档(playhead 缺席/为空/无 isPlaying ⇒ true);只有明确停走才走窄档",
+    );
+    // (a13) 的用户可见后果:走带态还没到过页面时,徽标不会在 900ms 就熄。
+    eq(
+        HE.hostEchoOn(
+            { hostEchoAt: T0 },
+            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS,
+            HE.hostEchoUseWideWindow({}),
+        ),
+        true,
+        "(a14) ★ 首帧 playhead 之前:越过停走档仍亮(未知不当停走处理)",
     );
 
     // ---- (b) 源码级不变式:图表卡摘出 + 两 tab 共用同一条判据
@@ -1368,8 +1454,17 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         ["tab-tracks", ttSrc],
     ]) {
         check(
-            src.includes("hostEchoOn(st.params)"),
+            /hostEchoOn\(\s*st\.params[,)]/.test(src),
             `(b6) ${name} 用的是共享判据 hostEchoOn(两处曾各存一份逐字副本)`,
+        );
+        // [SL-270] **接线**判据,不是零件判据:`hostEchoOn` 支持走带分档不等于调用方
+        // 真把走带态传进去了。少了第三个实参,分档就是死代码,而纯函数用例照样全绿
+        // —— 本仓记过一次「测接线不只测零件」,这条就是那条教训的落点。
+        check(
+            /hostEchoOn\(\s*st\.params,\s*undefined,\s*hostEchoUseWideWindow\(st\)\s*\)/.test(
+                src,
+            ),
+            `(b6) ★ ${name} 把走带态传进判据(hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st)))`,
         );
         check(
             !/hostEcho &&\s*$|hostEcho &&\n/.test(src),

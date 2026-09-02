@@ -4,7 +4,15 @@
 #include "BridgeBase.h"
 #include "PlatformWebView.h"
 
+#include <type_traits>
 #include <utility>
+
+// [SL-271] 品红探针。开成 1 后 HostWebView::paint 铺品红而不是 shellBackdrop —— 真机上一眼
+// 能分出「白闪没了是因为我们这层 paint 真的在跑」还是「WebView2 这次恰好起得快」。
+// 默认关,只经 -DSCVB_PROBE_MAGENTA=1 临时开;交付构建里它必须是 0。
+#ifndef SCVB_PROBE_MAGENTA
+#define SCVB_PROBE_MAGENTA 0
+#endif
 
 namespace scvb::webview
 {
@@ -95,6 +103,69 @@ class WebViewHost::HostWebView final : public juce::WebBrowserComponent
 public:
     HostWebView(WebViewHost& owner, Options options) : juce::WebBrowserComponent(std::move(options)), owner_(owner) {}
 
+    // -------------------------------------------------------------------------
+    // [SL-271] 开窗白闪的**真正**那一层。
+    //
+    // SL-253 铺了三层暗色,用户仍看得见白闪,原因是三层没有一层管到这一段:
+    //   ① WebViewHost::paint —— 从不执行。本组件是 WebBrowserComponent,它在构造里
+    //      setOpaque(true)(juce_WebBrowserComponent.cpp:590),又铺满父组件;JUCE 画父组件
+    //      前会把不透明子组件的矩形从裁剪区里剔掉(detail/juce_ComponentHelpers.h 的
+    //      clipObscuredRegions:isOpaque() ⇒ excludeClipRegion)。父的 fillAll 净效果为 0。
+    //   ② WebView2 的 DefaultBackgroundColor —— 要等**控制器建好**才有意义,而白闪正是
+    //      控制器建好之前那一段。
+    //   ③ tokens.css 的 --page-backdrop —— 更晚,要等页面解析。
+    // 而这一段真正在画的是 JUCE 自己:WebBrowserComponent::paint 转给后端的 fallbackPaint,
+    // WebView2 后端那份**每帧无条件** fillAll(Colours::white)
+    // (juce_WebBrowserComponent_windows.cpp:492)。白的来源就是它。
+    //
+    // 修法:**先调基类,再把自己的底盖上去**。两次 fillAll 落在同一个 Graphics、同一次
+    // paint 里,先白后暗,中间不上屏 —— Windows 侧两条渲染路都是整帧画完才出:软件渲染
+    // 画进 offscreenImage 再 blit(juce_Windowing_windows.cpp:4907),Direct2D 走
+    // startFrame/endFrame 成对包住整次 paint(同文件 :5144-5145)。上屏的只有暗的那一层。
+    // WebViewHost::paint 保留不动:兜底面板路径下 webView_ 被 setVisible(false),
+    // 那时父组件的 fillAll 才真的会画。
+    //
+    // ⚠ 为什么**不是**「覆写且不调基类」(PR 178 复审【重要】1 纠正的正是这一版):
+    //   基类的 fallbackPaint 不只是画白 —— 它尾巴上那句
+    //   `if (! hasBrowserBeenCreated()) checkWindowAssociation();`
+    //   (juce_WebBrowserComponent_windows.cpp:496-497)是 WebView2 控制器的**重试泵**:
+    //   createWebView() 在 peer 为空时直接 return,而我们在构造期就 goToURL(本文件的
+    //   beginLoadAttempt),那一刻 peer 还没有。控制器能不能建起来,全靠此后一次次重入
+    //   checkWindowAssociation。绕过基类 = 把泵拆了。
+    //   ⚠ 这里**刻意不写「窗永远开不出来」**:那是前几轮流传过、而本卡实测**证伪**了的
+    //   绝对说法。实测(见下方 static_assert 旁记录)是:删掉基类调用后,pluginval 全量
+    //   含 GUI 三个 bundle 照样全 PASS、窗开得出来 —— JUCE 自己的 parentHierarchyChanged()
+    //   / visibilityChanged() 已足够把控制器建起来。paint 里这个泵兜的是「那两条事件路径
+    //   都赶在 peer 就绪之前跑完」这一类时序,pluginval 的开窗时序撞不出来,真实宿主
+    //   (窗口延迟创建、宿主自己的插件扫描沙箱进程)更容易撞上。
+    //   所以拆掉它是**真机上的开窗风险**,不是「必然开不出来」——而这条风险没有任何
+    //   机检兜得住(缺口登记 SL-282)。
+    //   而在本层**复刻**一份泵同样不行(下面这两条说的是**那个被否掉的方案**,不是现状):
+    //     • 复刻件只能押在 JUCE 的私有实现细节上(基类的条件 `hasBrowserBeenCreated()`
+    //       与 `visibilityChanged() == impl->checkWindowAssociation()` 都不是公开契约),
+    //       `.juce-version` 一升就可能静默变成空调用;
+    //     • 而 static_assert 守不到「那份复刻还在」—— 删掉它断言照旧全绿,本文件又不进
+    //       任何测试目标,于是它会无声地烂掉。
+    //   调基类之后没有可删的复刻件:泵连同它的条件一字未动留在 JUCE 里。
+    //   ⚠ 但**别把这读成「守住 override 就守住了全部」**:上面那句
+    //   `juce::WebBrowserComponent::paint(g);` 删掉照样编得过、断言照样绿,泵一样会没
+    //   —— 详见 static_assert 旁的实测记录。差别在**必守面从两处减到一处、且那一处显式**:
+    //   基类签名一变就编译红,不会像复刻件那样静默失效。
+    //   代价只是每次 paint 多一次纯色 fillAll(paint 本就极低频)。
+    // -------------------------------------------------------------------------
+    void paint(juce::Graphics& g) override
+    {
+        // 基类 = fallbackPaint:WebView2 后端的 fillAll(Colours::white) + 控制器重试泵。
+        // 这一句**必须在前**:它画的白由下面整块盖掉,而泵要的是「每帧都被调到」。
+        juce::WebBrowserComponent::paint(g);
+
+#if SCVB_PROBE_MAGENTA
+        g.fillAll(juce::Colours::magenta); // 真机探针:见文件顶部宏注释,交付构建里不会走到
+#else
+        g.fillAll(scvb::webview::shellBackdrop());
+#endif
+    }
+
     bool pageAboutToLoad(const juce::String& url) override
     {
         owner_.onNavigationStarted(url);
@@ -138,6 +209,25 @@ public:
         return false; // 不显示 WebView2 内建错误页 —— 兜底面板给的是可操作信息,内建页不是
     }
 
+    // [SL-271] 删除式判据。paint 的 override 一旦被删掉,`&HostWebView::paint` 会经名字查找
+    // 落到基类,decltype 变成 void (juce::WebBrowserComponent::*)(juce::Graphics&),本断言
+    // 当场编译红(gate 4 / CI 都会拦下)。WebViewHost.cpp 不进任何测试目标(它只在
+    // scvb_plugin_common 这个 INTERFACE 库里,随插件 target 编译),运行期用例够不着这一层,
+    // 编译期断言是唯一守得住的判据 —— 与 SL-263 同族。
+    // 它守得住的**范围**:只有「paint 由本类覆写」这一件事。函数体里那句
+    // `juce::WebBrowserComponent::paint(g);` 它**守不到** —— 删掉照样编得过、断言照样绿、
+    // 白底照样盖着,而重试泵就跟着没了。这不是推测:本卡真跑过这条注入(删该行 → 重建 →
+    // gate 8 等价的 pluginval 全量含 GUI,strict 5),**三个 bundle 全 PASS、窗照常开得出来**
+    // ⇒ 那一行**无机检覆盖,只有真机兜得住**(缺口登记在 SL-282)。顺带纠正一个流传过的
+    // 说法:「泵拆了窗就开不出来」不成立 —— pluginval 环境下 JUCE 自己的
+    // parentHierarchyChanged() / visibilityChanged() 已足够把控制器建起来,paint 里这个泵
+    // 是**重试兜底**,不是唯一通路。
+    // 相对上一版(在本层复刻一份泵)的收益因此不在「守得住」,而在**必守面**:
+    // 从两处减到一处,且剩下那处是显式基类调用,签名一变就编译红,不会静默失效。
+    static_assert(std::is_same_v<decltype(&HostWebView::paint), void (HostWebView::*)(juce::Graphics&)>,
+                  "[SL-271] HostWebView::paint 必须由本类覆写:少了它,JUCE WebView2 后端的 "
+                  "fallbackPaint 会每帧 fillAll(Colours::white),开窗白闪回归。");
+
 private:
     WebViewHost& owner_;
 
@@ -148,8 +238,9 @@ WebViewHost::WebViewHost(juce::AudioProcessor& processor, Config config)
     : juce::AudioProcessorEditor(&processor), config_(std::move(config)), provider_(config_.resourceSource),
       uiScale_(bridge::clampUiScale(config_.uiScale)), lang_(config_.lang)
 {
-    // [SL-253] 声明本组件完全不透明:JUCE 因此不会去画它下面的东西,而 paint() 会先铺
-    // 满暗色 —— 把「窗口已显示、WebView2 控制器还没建好」那一段的白挡掉。
+    // 声明本组件完全不透明:JUCE 因此不会去画它下面的东西(宿主给的编辑器容器)。
+    // [SL-271] 更正 SL-253 时的说法 —— 这一句挡不住开窗白闪,白闪那一段本 paint 根本不执行;
+    // 见 HostWebView::paint 的注释。它管的是兜底面板路径下这块底。
     setOpaque(true);
 
     // UDF 必须在装 Options 之前定好,并当场探一次可写性:WebView2 自己碰这个目录时的失败被
@@ -256,9 +347,9 @@ juce::WebBrowserComponent& WebViewHost::webView()
 
 void WebViewHost::paint(juce::Graphics& g)
 {
-    // [SL-253] 见头文件注:窗口一显示就先铺满暗色,别让 DAW 把这块空窗画成白的。
-    // 这一层管的是「控制器还没建好」那一段;控制器建好之后由 WebView2 自己的
-    // DefaultBackgroundColor 接手(PlatformWebView::makeWebViewOptions)。
+    // 见头文件注:webView_ 可见时本函数净效果为 0(不透明子组件已把这块从裁剪区剔掉),
+    // 开窗那一段由 HostWebView::paint 接住。留着它是为了兜底面板路径 —— 那时 webView_
+    // 被 setVisible(false),这块底才真的由本组件画。
     g.fillAll(scvb::webview::shellBackdrop());
 }
 

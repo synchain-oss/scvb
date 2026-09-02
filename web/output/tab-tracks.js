@@ -51,6 +51,7 @@ import {
 // PR #60 红旗)。
 import {
     hostEchoOn,
+    hostEchoUseWideWindow,
     format,
     lowSampleChannels,
     secondsToTimecode,
@@ -2058,7 +2059,11 @@ export function createTabTracks(opts) {
             // 这一份原先是 Tab1 那条的逐字副本,所以同一个闪烁 Tab2 也有 —— 用户只是
             // 当时人在 Tab1 没看见。灰显本身(`data-host-echo` + 那条 CSS)一字未动:
             // J93 只裁了整体调整页的三张参数卡改徽标,轨道页不在裁定范围内。
-            echo: hostEchoOn(st.params) ? "1" : "0",
+            // [SL-270] 走带态同样要传:两个 tab 用同一份判据,窗口分档也必须同步,
+            // 否则 Tab1 的徽标灭了而 Tab2 的灰显还挂着(SL-251 病灶的又一种形态)。
+            echo: hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st))
+                ? "1"
+                : "0",
         };
     }
 
