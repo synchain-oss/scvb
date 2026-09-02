@@ -62,10 +62,10 @@
 | --- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | 轻  | 子 PR(base=`feature/**`)**且没碰 native 路径**        | `format`(clang-format / web-smoke / docs-truth)+ `compliance` + 三个 review bot。**不跑 `build-vst3`。**      |
 | 轻+ | 子 PR **碰了 native 路径**([SL-283])                  | 上面全部 + `build-vst3`(缓存热时约 7 分钟)。判定见 `detect-native` job                                        |
-
-> **成本口径**:`src/` `tests/` `cmake/` `web/` 覆盖了本仓绝大多数子 PR,所以**预计多数子 PR 会落在「轻+」而不是「轻」** —— [J96] 省下来的那笔,实际只剩纯文档 / 脚本 / `web-preview/` 那一档。这是 [SL-283] 有意换回来的:用 7 分钟买「动了 C++ 就一定编过」。看账单前先读这一句,别又翻一轮案。
 | 中  | 里程碑 PR(base=`dev`)、push→`dev`                    | 上面全部 + `build-vst3` + `branch-gate`(**不看路径**,里程碑 PR 一律全量)                                     |
 | 重  | `workflow_dispatch`(input `ref`,默认 `feature/v1`)  | `build-vst3` 全量 —— **出包前硬门**                                                                           |
+
+> **成本口径**:`src/` `tests/` `cmake/` `web/` 覆盖了本仓绝大多数子 PR,所以**预计多数子 PR 会落在「轻+」而不是「轻」** —— [J96] 省下来的那笔,实际只剩纯文档 / 脚本 / `web-preview/` 那一档。这是 [SL-283] 有意换回来的:用 7 分钟买「动了 C++ 就一定编过」。看账单前先读这一句,别又翻一轮案。
 
 - **出包流程硬规:出包(打 tag / 发 `release`)之前必须对目标 ref 手动 dispatch 一次 `build-vst3` 并全绿。** 命令:`gh workflow run build-vst3.yml --repo synchain-oss/scvb --ref feature/v1 -f ref=feature/v1`,然后 `gh run list --workflow build-vst3.yml -L 1` 看结果。没有这一次绿,不允许出包 —— push→`feature/**` 触发已撤,主支线上再没有别的机器编译证据。要取包也走这一次:preview artifact(`SCVB-VST3-win64-preview-<slug>-<sha>`)就由这次 run 产出,`<sha>` 是**真正被 checkout 的那个 commit**(`git rev-parse HEAD`),不是 `github.sha`。
   - **`--ref` 与 `-f ref=` 是两件事**:前者决定用哪份 workflow 定义,后者决定构建哪棵源码树。两者指向不同分支时,workflow 会读不到只存在于其中一边的钉版文件(`.juce-version` / `.pluginval-version` / `.sccache-version` / `.sccache-sha256`),第一步就带着这句解释报错退出(本卡实测踩过一次)。正常出包两者都填 `feature/v1`。
