@@ -132,14 +132,18 @@ public:
     //   createWebView() 在 peer 为空时直接 return,而我们在构造期就 goToURL(本文件的
     //   beginLoadAttempt),那一刻 peer 还没有。控制器能不能建起来,全靠此后一次次重入
     //   checkWindowAssociation。绕过基类 = 把泵拆了,白窗会变成**永远不开**的窗。
-    //   而在本层**复刻**一份泵同样不行,理由是判据:
+    //   而在本层**复刻**一份泵同样不行(下面这两条说的是**那个被否掉的方案**,不是现状):
     //     • 复刻件只能押在 JUCE 的私有实现细节上(基类的条件 `hasBrowserBeenCreated()`
     //       与 `visibilityChanged() == impl->checkWindowAssociation()` 都不是公开契约),
     //       `.juce-version` 一升就可能静默变成空调用;
-    //     • 下面那条 static_assert 守得到「paint 由本类覆写」,**守不到函数体里那份复刻
-    //       还在** —— 把它删掉断言照旧全绿,而本文件不进任何测试目标。
-    //   调基类就没有可删的复刻件:泵连同它的条件一字未动留在 JUCE 里,守住 override
-    //   就等于守住了全部。代价只是每次 paint 多一次纯色 fillAll(paint 本就极低频)。
+    //     • 而 static_assert 守不到「那份复刻还在」—— 删掉它断言照旧全绿,本文件又不进
+    //       任何测试目标,于是它会无声地烂掉。
+    //   调基类之后没有可删的复刻件:泵连同它的条件一字未动留在 JUCE 里。
+    //   ⚠ 但**别把这读成「守住 override 就守住了全部」**:上面那句
+    //   `juce::WebBrowserComponent::paint(g);` 删掉照样编得过、断言照样绿,泵一样会没
+    //   —— 详见 static_assert 旁的实测记录。差别在**必守面从两处减到一处、且那一处显式**:
+    //   基类签名一变就编译红,不会像复刻件那样静默失效。
+    //   代价只是每次 paint 多一次纯色 fillAll(paint 本就极低频)。
     // -------------------------------------------------------------------------
     void paint(juce::Graphics& g) override
     {
@@ -202,8 +206,16 @@ public:
     // 当场编译红(gate 4 / CI 都会拦下)。WebViewHost.cpp 不进任何测试目标(它只在
     // scvb_plugin_common 这个 INTERFACE 库里,随插件 target 编译),运行期用例够不着这一层,
     // 编译期断言是唯一守得住的判据 —— 与 SL-263 同族。
-    // 它守得住的**范围**取决于 paint 的写法:本层不复刻基类的重试泵(见 paint 头注),
-    // 函数体里没有「删掉也编得过」的必守行,故「override 还在」= 「白底盖着 ∧ 泵还在」。
+    // 它守得住的**范围**:只有「paint 由本类覆写」这一件事。函数体里那句
+    // `juce::WebBrowserComponent::paint(g);` 它**守不到** —— 删掉照样编得过、断言照样绿、
+    // 白底照样盖着,而重试泵就跟着没了。这不是推测:本卡真跑过这条注入(删该行 → 重建 →
+    // gate 8 等价的 pluginval 全量含 GUI,strict 5),**三个 bundle 全 PASS、窗照常开得出来**
+    // ⇒ 那一行**无机检覆盖,只有真机兜得住**(缺口登记在 SL-282)。顺带纠正一个流传过的
+    // 说法:「泵拆了窗就开不出来」不成立 —— pluginval 环境下 JUCE 自己的
+    // parentHierarchyChanged() / visibilityChanged() 已足够把控制器建起来,paint 里这个泵
+    // 是**重试兜底**,不是唯一通路。
+    // 相对上一版(在本层复刻一份泵)的收益因此不在「守得住」,而在**必守面**:
+    // 从两处减到一处,且剩下那处是显式基类调用,签名一变就编译红,不会静默失效。
     static_assert(std::is_same_v<decltype(&HostWebView::paint), void (HostWebView::*)(juce::Graphics&)>,
                   "[SL-271] HostWebView::paint 必须由本类覆写:少了它,JUCE WebView2 后端的 "
                   "fallbackPaint 会每帧 fillAll(Colours::white),开窗白闪回归。");

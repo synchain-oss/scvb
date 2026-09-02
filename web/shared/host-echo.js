@@ -77,7 +77,10 @@ export function hostEchoReleaseMs(wide) {
  *
  * @param {{hostEchoAt?: number}} params `store.params`
  * @param {number} [nowMs] 注入时钟(用例用;省略取 `Date.now()`)
- * @param {boolean} [wide] 取宽档还是窄档;[SL-270] 由 `hostEchoUseWideWindow` 给
+ * @param {boolean} [wide] 取宽档还是窄档;[SL-270] 由 `hostEchoUseWideWindow` 给。
+ *        ⚠ **省略即窄档(停走 900ms)**:按 SL-270 之前的老习惯两参调用,拿到的不是
+ *        当年那个 2000ms 单窗口,而是 900ms —— 静默变窄,正是【建议】3 要防的那一幕。
+ *        生产调用方(两个 tab + app.js 读数)都传了第三个实参,smoke-tab1 ⑧(b6) 钉着。
  */
 export function hostEchoOn(params, nowMs, wide) {
     const at = (params && params.hostEchoAt) || 0;
