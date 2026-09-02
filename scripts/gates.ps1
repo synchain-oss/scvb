@@ -15,6 +15,8 @@
   [SL-277/J96] **锁纪律**:gate 1-5 完全不持锁,多个 agent 可以同时 configure/build;
   gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行(共享内存段名全机唯一)。
   调用方**不要**再在外面把整条 gates 包进目录锁 —— 那会把编译也串起来,正是本卡要拆掉的。
+  等锁有 30 分钟上界:超时(或互斥体建不出来)→ 判负并**跳过** gate 6/7/8 不执行,
+  绝不无锁硬跑 —— 无锁跑会去抢隔壁持锁 agent 的共享内存段,让那一侧收到查不出的假红。
   逃生口 `-NoIpcLock` 只在确认无并行 agent 时用。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
@@ -96,18 +98,37 @@ function New-ScvbMutex {
   }
 }
 
+# 等锁**必须有上界**(PR#176 复审采纳)。这把锁现在包着 gate 8 的 GUI pluginval,
+# 而 `--timeout-ms` 只管单个测试项 —— 进程本身卡在模态框或崩溃对话框上时它不受约束。
+# 无超时的 `WaitOne()` 会让其余 agent 在「等待 Local\...」那一行之后静静挂几个小时,
+# 零输出。改造前的目录锁至少有「超时 + 接管」那条路(那条路自身实伤过人,删掉是对的),
+# 现在换成:**宁可红,不要无限挂** —— 超时返回 $false,调用处把对应 gate 判负。
+# 返回值就是「有没有真的拿到」,调用处一律要判,别丢。
+# `SCVB_MUTEX_WAIT_MINUTES` 只为**验证这条判据**而存在(反向验证:外面另起一个进程占住
+# 互斥体,把上界调到 1 分钟,就能在一分钟内看到 6/7/8 判负而不是等半小时)。平时不要设 ——
+# 调小不会削弱互斥(拿不到锁一律判负 + 跳过,绝不无锁跑),只会让正常排队更容易被判负。
+$script:ScvbMutexWaitMinutes = if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES } else { 30 }
+
 function Wait-ScvbMutex {
-  param($Mutex, [string]$Name, [string]$Tag)
+  param($Mutex, [string]$Name, [string]$Tag, [int]$TimeoutMinutes = $script:ScvbMutexWaitMinutes)
   # 时间戳带毫秒:并发验证时,「谁在什么时刻拿到/放开」这条证据只能来自进程**内部**的
   # 时钟。外面用管道加时间戳靠不住 —— pwsh 往管道写是块缓冲的,读到的时刻会晚于打印
   # 时刻,两条流的偏移量还不一样,拿它对拍会看出根本不存在的重叠。
-  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2}..." -f $Tag, (Get-Date).ToUniversalTime(), $Name) -ForegroundColor Yellow
-  try { $null = $Mutex.WaitOne() }
+  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2}(上界 {3} 分钟)..." -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes) -ForegroundColor Yellow
+  $got = $false
+  try { $got = $Mutex.WaitOne([TimeSpan]::FromMinutes($TimeoutMinutes)) }
   catch [System.Threading.AbandonedMutexException] {
     # 前一个持有者进程异常退出。锁已经归我们了,只是说明上一次跑得不干净。
+    $got = $true
     Write-Host ("  [{0}] 前一持有者异常退出(AbandonedMutex),已接管" -f $Tag) -ForegroundColor Yellow
   }
+  if (-not $got) {
+    Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2} 超过 {3} 分钟仍未获得,判负" -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes) -ForegroundColor Red
+    Write-Host ("  [{0}] 提示:多半有卡死的 pluginval / ctest 进程还占着锁,查一下再重跑。" -f $Tag) -ForegroundColor Yellow
+    return $false
+  }
   Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 已获得 Local\{2}" -f $Tag, (Get-Date).ToUniversalTime(), $Name) -ForegroundColor Green
+  return $true
 }
 
 function Enter-ScvbIpcLock {
@@ -121,7 +142,12 @@ function Enter-ScvbIpcLock {
     Set-Gate 'IPC 测试锁(gate 6/7/8 互斥)' $false
     return $null
   }
-  Wait-ScvbMutex -Mutex $m -Name 'SCVB-ipc-tests' -Tag 'ipc-lock'
+  if (-not (Wait-ScvbMutex -Mutex $m -Name 'SCVB-ipc-tests' -Tag 'ipc-lock')) {
+    # 等超时 = 同样没有并发保护,与建不出来同一档处理。句柄没拿到锁,直接 Dispose。
+    Set-Gate 'IPC 测试锁(gate 6/7/8 互斥)' $false
+    $m.Dispose()
+    return $null
+  }
   return $m
 }
 
@@ -617,7 +643,23 @@ Set-Gate '5 构建' $buildOk
 # Enter-ScvbIpcLock 的头注。
 # ==================================================================
 $ipcLock = Enter-ScvbIpcLock
+# 拿不到锁(建不出互斥体 / 等超时,两种都已在 Enter-ScvbIpcLock 里判负)时**不跑**
+# 6/7/8,而不是无锁硬跑一遍(PR#176 复审采纳)。本进程反正注定 exit 1,自己没损失;
+# 有损失的是**隔壁那个正老老实实持着锁跑的 agent** —— 它会被这一份无锁的 ipc 套件抢走
+# 共享内存段、收到一个假红,而它自己的日志里什么异常都看不到。那正是本卡要根除的
+# 失效类的镜像版(「以为别人有锁,其实没有」)。
+# `-NoIpcLock` 不受影响:那是用户显式声明「本机没有第二个 agent」,$ipcLock 为 $null
+# 是预期的,所以这里要 `-or $NoIpcLock` 而不是只判 $null。
+$ipcLockOk = ($null -ne $ipcLock) -or $NoIpcLock
 try {
+
+if (-not $ipcLockOk) {
+  Write-Host '=== Gate 6/7/8: 跳过执行,直接判负(没有 IPC 测试锁 = 没有并发保护)===' -ForegroundColor Red
+  Set-Gate '6 ctest' $false
+  Set-Gate '7 pluginval 非 GUI' $false
+  Set-Gate '8 pluginval 全量含 GUI' $false
+}
+else {
 
   # ==================================================================
   Write-Host '=== Gate 6: ctest ==='
@@ -697,14 +739,18 @@ else {
     #     (提权终端先建 Global 会让普通终端拿不到,于是各持一把)。
     #     **过渡期注意**:本 PR 合并前,别的 worktree 里还是旧脚本(用 `Global\`),
     #     那期间两侧不互斥;gate 8 只在 feature→dev 收口跑,窗口很短,合并后即消失。
+    #  ③ 等锁超时与建不出来同一档处理:`-and` 在 PowerShell 里短路,所以 $mutex 为
+    #     $null 时不会去调 Wait-ScvbMutex。拿不到就判负、不跑 —— 与外层 IPC 锁
+    #     ($ipcLockOk)一个道理:无锁硬跑会把隔壁 agent 的 GUI 会话搅了。
     $mutex = New-ScvbMutex -Name 'SCVB-pluginval-gui' -Tag 'gui-lock'
-    if ($null -eq $mutex) {
+    $guiLockOk = ($null -ne $mutex) -and (Wait-ScvbMutex -Mutex $mutex -Name 'SCVB-pluginval-gui' -Tag 'gui-lock')
+    if (-not $guiLockOk) {
       # 判负,**不是** return:本段处在脚本级 try/finally 里,`return` 会直接结束整个
       # 脚本 —— finally 照跑、但汇总表与 `exit 1` 全被跳过,进程以 0 退出 = 又一种假绿。
+      if ($null -ne $mutex) { $mutex.Dispose() }   # 超时路径:句柄没拿到锁,不能 ReleaseMutex
       Set-Gate '8 pluginval 全量含 GUI' $false
     }
     else {
-      Wait-ScvbMutex -Mutex $mutex -Name 'SCVB-pluginval-gui' -Tag 'gui-lock'
       $pv = $true
       try {
         $logDir = Join-Path $BuildDir 'pluginval-gui-logs'
@@ -734,6 +780,8 @@ else {
     }
   }
 }
+
+} # end IPC 锁守卫 else
 
 }
 finally {

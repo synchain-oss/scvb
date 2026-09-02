@@ -51,17 +51,37 @@ jobs:
     # 三档 + 逃生口的唯一判定处。push / workflow_dispatch 一律跑;pull_request 只在
     # base=dev 或带 `ci:full` 标签时跑。**不要**把这条搬去 `on:` 的事件过滤 —— 标签
     # 是 PR 的属性而不是事件的属性,只有 job 级 `if:` 看得见。
-    # 标签事件还要**再**收窄到 `ci:full` 本身:上面的 concurrency 已经保证标签事件
-    # 不取消在跑的 run,此时收窄是安全的 —— 无关标签 → 什么都不发生;加 `ci:full`
-    # → 起一次全量;摘掉 `ci:full` → labels 里没有它,第一条 contains 就假,同样跳过。
+    #
+    # 写成**按 `action` 分家的两条互斥支路**,而不是「常规判据 || 标签判据」的嵌套
+    # `||`(PR#176 复审采纳,三个 bot 同指)。理由是 `||` 从左往右短路:上一版把标签名
+    # 的收窄放进第三个分支,而 base=`dev` 的 PR 在第二个分支 `github.base_ref == 'dev'`
+    # 就已经为真,那段收窄**根本求不到** —— pr-agent 更新 `Review effort N/5`(bot 打
+    # 标签是必然事件,本 PR 自己就有这个标签)即起一次 20 分钟全量,方向与本卡相反。
+    # 改造前 `labeled` 不在 `types` 里 = 0 次,别把它变成每个里程碑 PR 多烧一次。
+    # 分家写法让「标签事件」只有一个入口,以后往另一路加判据也不会被短路绕过去。
+    #
+    #   标签事件(labeled / unlabeled):只认 `ci:full` 这一个名字,**且**要求 PR 上此刻
+    #     仍带着它 —— 打上 → 起一次全量;摘掉(`contains` 已为假)→ 不起;别的标签增删
+    #     → 什么都不发生。收窄之所以安全,是因为上面的 concurrency 已经保证标签事件不
+    #     取消在跑的 run;两者顺序颠倒就会变成「构建被杀掉且没有东西顶上」,别拆开只留一行。
+    #   非标签事件(opened / synchronize / reopened / ready_for_review):维持三档判据 ——
+    #     base=`dev` 的里程碑 PR 跑全量,子 PR 只在带 `ci:full` 时跑。
+    #
+    # `github.event.label.name` 在非标签事件上求值为 null(不是报错),所以两条支路各自
+    # 的 `action` 判据就是它们互斥的保证。
     if: >
       github.event_name != 'pull_request' ||
+      (
+      (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+      github.event.label.name == 'ci:full' &&
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      ) ||
+      (
+      github.event.action != 'labeled' &&
+      github.event.action != 'unlabeled' &&
+      (
       github.base_ref == 'dev' ||
-      (
-      contains(github.event.pull_request.labels.*.name, 'ci:full') &&
-      (
-      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
-      github.event.label.name == 'ci:full'
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
       )
       )
     runs-on: windows-2022
@@ -106,6 +126,10 @@ jobs:
           # 本卡实测踩过一次(run 33594229435:定义在 ci/SL-277-tiered-ci 上、内容是
           # feature/v1,后者当时还没有 .sccache-version)。挂在这一步比挂在半路好——
           # 报错要直接说出这个分家,不能只留一句 "Cannot find path"。
+          # **这份清单是副本**:真源在 CLAUDE.md §6「版本单一真源」(那里五个,含
+          # `.gitleaks-version`;本工作流不用 gitleaks,故这里四个)。新增钉版依赖时
+          # 两处都要加 —— 只加真源、忘了这里,dispatch 旧 ref 又会退回裸
+          # "Cannot find path"(PR#176 复审采纳)。
           $pins = @('.juce-version', '.pluginval-version', '.sccache-version', '.sccache-sha256')
           $missing = @($pins | Where-Object { -not (Test-Path $_) })
           if ($missing.Count -gt 0) {
@@ -260,9 +284,12 @@ jobs:
       - name: Configure CMake (Ninja Multi-Config + sccache)
         shell: pwsh
         run: |
+          # 只传 `-DCMAKE_CONFIGURATION_TYPES=Release`,**不传** `-DCMAKE_BUILD_TYPE`
+          # (PR#176 复审采纳):多配置生成器下配置由 `--build --config` / `ctest -C` 选,
+          # `CMAKE_BUILD_TYPE` 一律被忽略。留着不会出错,只会让人以为它在起作用 ——
+          # 下面 5b/6 的 `--config Release` 才是真正决定构建哪一档的地方。
           cmake -S . -B build -G "Ninja Multi-Config" `
             -DCMAKE_CONFIGURATION_TYPES=Release `
-            -DCMAKE_BUILD_TYPE=Release `
             -DJUCE_PATH="${{ github.workspace }}/JUCE" `
             -DSCVB_BUILD_TESTS=ON `
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `

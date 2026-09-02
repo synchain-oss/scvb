@@ -47,6 +47,7 @@
   - **调用方不要再在 `gates.ps1` 外面套目录锁** —— 那会把刚拆开的编译重新串起来。手跑 `ctest` / `pluginval`(不经 gates.ps1)时才需要自备互斥。
   - 互斥体是内核对象,进程被 kill 或崩溃时**必然**释放:没有 owner 文件、没有孤儿判定、也没有「等超时后覆写别人的锁」这条路径。
   - **只用 `Local\`,不设 `Global\` 降级**:`Global\` 创建失败的现实原因是已存在的同名对象 DACL 拒绝当前 token(提权终端先建、普通终端拿不到),一旦降级就变成两个进程各持一把不同的锁 —— 「以为有锁,其实没有」,正是本卡要根除的那类。同一用户登录会话下的多个 agent 终端用 `Local\` 就够。建不出来时**判负**(汇总表里多一行 FAIL),绝不静默继续。gate 8 的 GUI 互斥体同档。
+  - **等锁 30 分钟封顶,拿不到就判负并跳过 6/7/8**:GUI pluginval 的 `--timeout-ms` 只管单个测试项,进程本身卡在模态框上时不受它约束,无上界的等待会让别的 agent 在「等待 Local\…」那一行之后零输出地挂几小时。超时或建不出互斥体时,6/7/8 一并判 FAIL 而**不执行** —— 无锁硬跑等于去抢隔壁持锁 agent 的共享内存段,让那一侧收到自己日志里查不到原因的假红。
   - 逃生口 `-NoIpcLock` 只在确认本机没有第二个 agent 时用;关掉它并行跑出来的红大概率是抢段,不是回归。
 
 ## 3. 评审规则
@@ -87,7 +88,7 @@
 - JUCE(版本见 `.juce-version`)、CMake ≥3.22、MSVC 2022(静态 CRT `/MT`)、WebView2 SDK(NuGet,版本常量在 `CMakeLists.txt` 的 `WEBVIEW2_VERSION`)+ WebView2 Evergreen Runtime、pluginval(版本见 `.pluginval-version`)、Catch2(仅测试目标,由 `tests/CMakeLists.txt` 的 FetchContent 钉版拉取)、clang-format 18.1.8(J38 钉死)、gitleaks(版本见 `.gitleaks-version`)、`reuse`(pipx)。
 - **仅 CI 侧的构建依赖**([J96] 起):Ninja(runner 镜像自带,缺了回退 choco)与 sccache(版本见 `.sccache-version`,校验和见 `.sccache-sha256`)。本地 gates **不需要**这两个 —— 默认仍走 CMake 的默认生成器;只有显式跑 `-Generator "Ninja Multi-Config"` 复现 CI 时才要,且要在 Developer Command Prompt 里(见 §2)。
 - **可选依赖:无头 Chrome / Edge**(T46 起)。`web-preview/tests/smoke-*-page.mjs` 这几套(经 CDP 驱动真页面:Monitor 投影面、Output 过期提示面、Output 分布图补间面)用得到,**没装不算失败** —— 该套回退出码 **2**,`scripts/gates.ps1` 的 Gate 3e 与 CI 的 web-smoke job 都把 2 记成 SKIP / `::warning::` 而不判红(理由写在那两处的注释里:web-smoke 是 required check,为一个可选依赖判红会卡住仓库里每一个 PR)。装了才跑得到「页面真的执行起来」那一层断言 —— node 侧的其余各套都不执行页面 JS,建议装。
-- **版本单一真源纪律**:`.juce-version` / `.pluginval-version` / `.gitleaks-version` / `.sccache-version` / `.sccache-sha256` **五个**文件是各自版本(与校验和)的唯一真源,workflow 与 `scripts/*.ps1` **一律从文件读**,不得写版本号字面量。这条纪律的价值在于清单是穷举的 —— 漏记一个,就等于给「再写一个版本号字面量」开了口子;新增钉版依赖时**必须**同时加到这里。
+- **版本单一真源纪律**:`.juce-version` / `.pluginval-version` / `.gitleaks-version` / `.sccache-version` / `.sccache-sha256` **五个**文件是各自版本(与校验和)的唯一真源,workflow 与 `scripts/*.ps1` **一律从文件读**,不得写版本号字面量。这条纪律的价值在于清单是穷举的 —— 漏记一个,就等于给「再写一个版本号字面量」开了口子;新增钉版依赖时**必须**同时加到这里。这份清单在 `build-vst3.yml` 的 "Resolve pinned versions" 步里有一份**副本**(那里四个,不含 build 侧用不到的 `.gitleaks-version`),用于 dispatch 时前置校验;两处要一起改,只改这里会让 dispatch 旧 ref 退回裸 `Cannot find path`。
 - 构建流水线不需要任何 secret(06 §3.1);review bot 用 org secrets(`CLAUDE_CODE_OAUTH_TOKEN` / `DEEPSEEK_KEY`)。
 
 ## 7. 冻结契约铁律
