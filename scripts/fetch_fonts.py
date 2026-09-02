@@ -17,7 +17,8 @@
     (上游全量字体的 fvar 默认实例同为 Thin(100),与旧产物一致 —— tokens.css 那条
     `font-weight: 300 700` 描述符仍是中文不发丝细的唯一依靠,见 web/fonts/README.md。)
 
-因此本脚本需要 `fontTools` + `brotli`(仅 Noto 子集化与 woff2 压缩用);
+因此本脚本需要 `fontTools` + `brotli`:Noto 的子集化与 woff2 压缩用它,
+拉丁两款按 OFL-1.1 §3 改写 `name` 表(`rename_font()`)同样用它;
 `--print-charset` / `--help` 不碰这两个包。
 
 与 Bridge 原脚本的唯一实质差异:字符集不再手写常量,而是**扫描 web/ 下全部 .js 与 .html**
@@ -392,6 +393,26 @@ RENAME = {
     "ScvbMono.woff2": ("SCVB Mono", "ScvbMono-Regular", "Plex"),
 }
 
+# ---- 输出文件名的真源 -------------------------------------------------------
+# 分发文件名此前在三处各抄一份(这里的 main() 局部表、check-font-coverage.py 的 LATIN_FONTS、
+# check-font-names.py 的 RESERVED),改一个名要记得改三处,漏一处的症状是「另一道门禁在扫
+# 一个不存在的文件」。提到模块级后,另两份都从这里派生或与它对拍,真源只剩一处。
+#
+# (输出文件名, Google 家族+字重)
+# 字重按 tokens.css 三分工取单一档:Grotesk 只用于标题/数值/CTA(600),
+# Sans/Mono 正文与标签(400)。@font-face 声明的 font-weight 区间比这宽,
+# 是给字体栈回退留口子——配 body 的 font-synthesis:none,缺字重时宁可回退不合成伪粗。
+#
+# [SL-267] 输出名不再用上游名:IBM Plex 两款的 RFN 是 "Plex"(见 RENAME 与
+# THIRD-PARTY-NOTICES.md),子集化 = Modified Version,按 OFL-1.1 §3 不得使用 RFN。
+LATIN_OUTPUTS = [
+    ("SpaceGrotesk.woff2", "Space Grotesk:wght@600"),
+    ("ScvbSans.woff2", "IBM Plex Sans:wght@400"),
+    ("ScvbMono.woff2", "IBM Plex Mono:wght@400"),
+]
+# CJK 一款走本地子集化那条路(见头注),不经 CSS2 `text=`,故与上表分列。
+CJK_OUTPUT = "NotoSansSC.woff2"
+
 # OFL-1.1 §2 要求「每份拷贝都包含上述版权声明与本许可证」。上游子集的 name 表里
 # 有 nameID 0(版权)但可能缺 13(许可证声明),改名时一并补齐。
 OFL_LICENSE_DESC = (
@@ -410,8 +431,15 @@ NAME_IDS_ATTRIBUTION = (0, 7, 13, 14)
 
 
 def _unique_id(existing, ps_name):
-    """nameID 3 惯例是 "<version>;<vendor>;<postscript name>",只换后两段。"""
-    version = existing.split(";")[0].strip() if existing else ""
+    """nameID 3 惯例是 "<version>;<vendor>;<postscript name>",只换后两段。
+
+    上游不按惯例写的形态(见过 "IBM Plex Sans Regular" 这种整串无分号的)切不出版本段,
+    照搬就把 RFN 原样带进了新的唯一 ID。那条路当前 fail-closed —— 下面的 stray 复核会
+    `SystemExit` —— 但报错指向「name 表仍含 RFN」而不是「nameID 3 的解析假设不成立」,
+    排查要多走一圈。故分段数不足惯例形态时整串丢弃,只留 `Synchain;<ps>`。
+    """
+    parts = existing.split(";") if existing else []
+    version = parts[0].strip() if len(parts) >= 2 else ""
     return ";".join(p for p in (version, "Synchain", ps_name) if p)
 
 
@@ -513,21 +541,8 @@ def main():
         print("CJK:", cjk)
         return
 
-    latin_fonts = [
-        # (输出文件名, Google 家族+字重)
-        # 字重按 tokens.css 三分工取单一档:Grotesk 只用于标题/数值/CTA(600),
-        # Sans/Mono 正文与标签(400)。@font-face 声明的 font-weight 区间比这宽,
-        # 是给字体栈回退留口子——配 body 的 font-synthesis:none,缺字重时宁可回退不合成伪粗。
-        #
-        # [SL-267] 输出名不再用上游名:IBM Plex 两款的 RFN 是 "Plex"(见 RENAME 与
-        # THIRD-PARTY-NOTICES.md),子集化 = Modified Version,按 OFL-1.1 §3 不得使用 RFN。
-        ("SpaceGrotesk.woff2", "Space Grotesk:wght@600"),
-        ("ScvbSans.woff2", "IBM Plex Sans:wght@400"),
-        ("ScvbMono.woff2", "IBM Plex Mono:wght@400"),
-    ]
-
     os.makedirs(out, exist_ok=True)
-    for fname, family in latin_fonts:
+    for fname, family in LATIN_OUTPUTS:
         data = fetch_css2_subset(family, latin)
         path = os.path.join(out, fname)
         with open(path, "wb") as f:
@@ -541,9 +556,9 @@ def main():
     # Noto 的字符集是 CJK + 全部拉丁:三条字体栈都以 'Noto Sans SC' 为最后一道内嵌回退,
     # 拉丁三款没有的字形(如 ⚠ ① ②)全靠它兜住,所以它必须是四款里字符集最全的一款。
     noto = subset_local(fetch(NOTO_TTF_URL), cjk + latin)
-    with open(os.path.join(out, "NotoSansSC.woff2"), "wb") as f:
+    with open(os.path.join(out, CJK_OUTPUT), "wb") as f:
         f.write(noto)
-    print("OK %-20s %7d bytes  (上游全量 + 本地 fontTools 子集)" % ("NotoSansSC.woff2", len(noto)))
+    print("OK %-20s %7d bytes  (上游全量 + 本地 fontTools 子集)" % (CJK_OUTPUT, len(noto)))
     print("-> ", out)
 
 

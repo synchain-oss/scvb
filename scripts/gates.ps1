@@ -10,7 +10,8 @@
   [SL-265] gate 3j(check-privacy)= 公开仓隐私门禁,与 3b 同族:gitleaks 只管 secrets,
   个人身份信息(代号禁词/本机路径/个人邮箱域/主机名)由 3j 管;CI 侧对应 compliance.yml 两步。
   [SL-267] gate 3k(check-font-names)= 字体保留名门禁(OFL-1.1 §3),与 3c/3j 同属合规族:
-  断言分发的 woff2 `name` 表不含上游 RFN;CI 侧同样落在 compliance.yml(自测 + 扫描两步)。
+  断言分发的 woff2 `name` 表与进包文本资源的字体栈都不含上游 RFN;
+  CI 侧同样落在 compliance.yml(自测 + 扫描两步)。
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
@@ -432,6 +433,11 @@ Write-Host '=== Gate 3k: 字体保留名(woff2 name 表 <-> OFL-1.1 §3 RFN 断�
 # 判据落在字体 `name` 表而非文件名:文件改叫 ScvbSans.woff2 而 name 表里仍写 "IBM Plex Sans"
 # 的话,装进系统字体册 / DevTools 字体面板 / PDF 导出读到的依然是上游名 —— 违规照旧,
 # 而 diff 看着已经改完了。woff2 是 brotli 压缩的,grep 二进制不命中不等于名字已清除。
+# 违规面还有第三处:进包的 CSS/JS 里的 `@font-face` family 与字体栈字面量 —— 只守 woff2 的话,
+# 把 family 改回上游名而字体一字不动,解表照样全绿,而分发出去的 CSS 又在呈现 RFN。
+# 故本门禁同时扫 web/ 下的 .css/.js/.html(vendored 的 web/js/juce/ 除外),
+# 判据只落在字体名上下文(font-family: 声明 / --ff-* 变量 / 含通用族关键字的字符串),
+# 不是整文件 grep —— RFN "Source" 是常用词,整文件扫会刷出几十条假红。
 #
 # **先自检再扫**,理由与 3j 逐字同款:本门禁的失效模式是「静默放行」——
 # 署名豁免表被放宽、或子串比对被写成相等比对之后,扫描照样退 0。自检用仓内真字体就地

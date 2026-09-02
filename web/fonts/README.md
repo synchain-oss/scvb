@@ -96,11 +96,23 @@ OFL-1.1 **§3** 规定:Modified Version **不得使用**上游声明的 Reserved
 "with Reserved Font Name 'X'",`NotoSansSC.woff2` 的 nameID 7 逐字是
 "Source is a trademark of Adobe…";把它们算进断言只会制造恒红。
 
-回归由 `scripts/check-font-names.py` 守住(gates **3k** + `.github/workflows/compliance.yml` 两步)。
-它解出每款 woff2 的 `name` 表逐条比对 —— **woff2 是 brotli 压缩的,grep 二进制不命中
-不等于名字已清除**,只有解表才算证据。目录里出现未登记的 `.woff2` 同样判红:新增家族必须
-先核 RFN 再进包,没有默认放行。门禁自身另有 `--self-test`(与隐私门禁 3j 同款,排在扫描之前),
-用仓内真字体就地合成坏样例,验证「漏改的呈现名必红 / 署名记录不误伤 / 未登记字体必红」。
+回归由 `scripts/check-font-names.py` 守住(gates **3k** + `.github/workflows/compliance.yml` 两步),
+两个面都扫:
+
+1. **每款 woff2 的 `name` 表**逐条比对 —— **woff2 是 brotli 压缩的,grep 二进制不命中
+   不等于名字已清除**,只有解表才算证据。目录里出现未登记的 `.woff2` 同样判红:新增家族
+   必须先核 RFN 再进包,没有默认放行。
+2. **随分发进包的文本资源**(`web/` 下的 `.css`/`.js`/`.html`,vendored 的 `web/js/juce/` 除外)
+   里的字体名。违规面共三处 —— 文件名、`@font-face` family 与字体栈字面量、`name` 表 ——
+   只守两头的话,把 family 改回 `"IBM Plex Sans"` 而 woff2 一字不动,解表照样全绿,而进了
+   `.vst3` 的 CSS 又在向用户呈现 RFN。判据**只落在字体名上下文**(`font-family:` 声明、
+   `--ff-*` 字体栈变量、含 CSS 通用族关键字的字符串字面量),不是整文件 grep:RFN "Source"
+   是个常用词,整文件扫会在 `source_channels` 这类标识符上刷出几十条假红,而假红的结局
+   通常是整道扫描被关掉。
+
+门禁自身另有 `--self-test`(与隐私门禁 3j 同款,排在扫描之前),用仓内真字体与临时样例
+就地合成坏样例,验证「漏改的呈现名必红(含版本/设计者/描述这些非署名槽)/ CSS 与 JS 字体栈里的
+RFN 必红 / 署名记录与常用词不误伤 / vendored 目录不误伤 / 未登记字体必红」。
 
 ## 重新生成
 
@@ -115,11 +127,14 @@ python scripts/check-font-names.py             # 校验保留字体名(gates 3k 
 ```
 
 法语重音是否真被扫进来,只能看 `--print-charset` 打印的 **LATIN** 那一行(CJK 行看不出)。
-**只有 `fetch_fonts.py` 联网,产物是离线资产。** 换文件名要同步改四处:
-`web/shared/tokens.css` 的四条 `@font-face`(family 与 `url()`)、`web/shared/trajectory-chart.js`
-的 `STYLE_FALLBACK.mono`、`check-font-coverage.py` 的 `LATIN_FONTS`、`check-font-names.py` 的
-`RESERVED`。改**家族名**还要同步 `fetch_fonts.py` 的 `RENAME`(它与 `RESERVED` 在导入期对拍,
-漂了会直接判红)。`cmake/ScvbWebAssets.cmake` 用 `file(GLOB)` 扫 `web/fonts/*.woff2`,不绑文件名。
+**只有 `fetch_fonts.py` 联网,产物是离线资产。** 输出文件名的真源是 `fetch_fonts.py` 的
+`LATIN_OUTPUTS` / `CJK_OUTPUT`:`check-font-coverage.py` 的 `LATIN_FONTS` 从它派生,
+`check-font-names.py` 的 `RESERVED`(逐款人工核过的 RFN 结论,不可派生)在导入期与它对拍键集,
+所以换文件名改真源那一处即可,漏登记会直接判红。另需手工同步的只剩 web 侧两处引用:
+`web/shared/tokens.css` 的四条 `@font-face`(family 与 `url()`)与 `web/shared/trajectory-chart.js`
+的 `STYLE_FALLBACK.mono` —— 这两处若把上游名写回去,由上文第 2 条的文本资源扫描判红。
+改**家族名**还要同步 `fetch_fonts.py` 的 `RENAME`(它与 `RESERVED` 同样在导入期对拍)。
+`cmake/ScvbWebAssets.cmake` 用 `file(GLOB)` 扫 `web/fonts/*.woff2`,不绑文件名。
 
 ### 两条取字体路线(按家族分工)
 

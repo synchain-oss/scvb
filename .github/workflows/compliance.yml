@@ -77,7 +77,8 @@ jobs:
           python -m pip install --disable-pip-version-check fonttools==4.60.1 Brotli==1.2.0
           python scripts/check-font-names.py --self-test
       - name: Font reserved-name scan (OFL-1.1 §3)
-        # [SL-267] 断言随 .vst3 分发的四款 woff2 的 `name` 表不含上游保留字体名(RFN)。
+        # [SL-267] 断言随 .vst3 分发的四款 woff2 的 `name` 表、以及同样进包的 .css/.js/.html
+        # 里的字体栈字面量,都不含上游保留字体名(RFN)。
         # 与 gitleaks / REUSE 同族(都是「分发物合规」),故落在 compliance 而非 docs-truth:
         # docs-truth 的字体覆盖(gate 3h)问的是「字够不够」,这一条问的是「名字能不能用」。
         # 不联网(只读仓内 woff2)、无 secrets ⇒ fork PR 也跑得动。与 gates.ps1 gate 3k 同参。

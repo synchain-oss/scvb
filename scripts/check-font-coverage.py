@@ -41,9 +41,11 @@ except ImportError:
 
 import fetch_fonts as ff
 
-# 与 fetch_fonts.py 的 fonts 表一一对应;改文件名两处同步
-LATIN_FONTS = ["SpaceGrotesk.woff2", "ScvbSans.woff2", "ScvbMono.woff2"]
-CJK_FONT = "NotoSansSC.woff2"
+# 文件名的真源在 fetch_fonts.py(产出这些文件的那一侧),这里只**派生**:
+# 手抄第二份的话,改名时漏改这里的症状是本门禁去扫一个不存在的文件 —— 而那会红在
+# 「文件不存在」上,不是红在覆盖率上,排查要多走一圈。
+LATIN_FONTS = [_fname for _fname, _family in ff.LATIN_OUTPUTS]
+CJK_FONT = ff.CJK_OUTPUT
 ALL_FONTS = LATIN_FONTS + [CJK_FONT]
 
 # ---- 四款上游家族本身就没有的字形 ------------------------------------------------

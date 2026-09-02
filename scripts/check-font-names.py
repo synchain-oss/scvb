@@ -21,14 +21,24 @@ woff2 是 brotli 压缩的,**grep 二进制不命中不等于名字已清除**,�
 不是残留的违规名;把它们算进断言只会制造恒红。除这四条以外的**全部** nameID 都要扫,
 而不只扫 1/3/4/6/16/17:漏改一个槽位(如 nameID 5 的版本串)同样是呈现给用户的名字。
 
+**分发的 CSS/JS 里的字体名同样受 §3 约束**:违规面共三处 —— 文件名、`@font-face` family
+与字体栈字面量、`name` 表。前者由 `RESERVED` 的登记制守住、后者由解表比对守住,而中间那处
+(`tokens.css` 的 `font-family` 与 `trajectory-chart.js` 的 `STYLE_FALLBACK.mono`)若只守两头
+就没有机检:把 family 改回 "IBM Plex Sans" 而 woff2 一字不动,解表照样全绿,可随 `.vst3`
+分发的 CSS 又把 RFN 呈现给用户了。故本脚本另扫 `web/` 下的文本资源(即 `ScvbWebAssets.cmake`
+进包的那批 `.css`/`.js`/`.html`,vendored 的 `web/js/juce/` 除外)。
+判据**只落在字体名上下文**(`font-family:` 声明、`--ff-*` 字体栈变量、含 CSS 通用族关键字的
+字符串字面量),不是整文件 grep:RFN "Source" 是个常用词,整文件扫会在 `source_channels` /
+`renderSource()` 这类标识符上刷出几十条假红,而假红最终会把整道扫描废掉。
+
 依赖:fontTools + brotli(解 woff2 必需):`pip install fonttools brotli`
 
 用法:
-    python scripts/check-font-names.py              # 扫 web/fonts,命中即非零退出(gates 3k)
+    python scripts/check-font-names.py              # 扫 web/fonts 的 woff2 + web/ 的文本资源(gates 3k)
     python scripts/check-font-names.py --self-test  # 先验门禁本身:坏样例必红、署名样例不误伤
-    python scripts/check-font-names.py <字体目录>   # 指定目录(自测与 CI 之外一般用不到)
+    python scripts/check-font-names.py <目录>       # 指定目录:woff2 与文本资源都扫它(自测与 CI 之外一般用不到)
 """
-import glob, os, shutil, sys, tempfile
+import glob, os, re, shutil, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -62,6 +72,28 @@ ATTRIBUTION_IDS = (0, 7, 13, 14)
 # 字体总得有个家族名和 PostScript 名。一款都扫不到 = 断言无对象,是**空转的门禁**而非通过。
 REQUIRED_IDS = (1, 6)
 
+# ---- 分发文本资源侧(见模块头注「分发的 CSS/JS 里的字体名同样受 §3 约束」)----
+# 进包的文本类型,口径照 cmake/ScvbWebAssets.cmake 的 glob(html/js/css 三类)。
+TEXT_ASSET_EXTS = (".css", ".js", ".html")
+# vendored:JUCE 官方前端 helper 不是我们写的字体栈,上游怎么写就怎么进包,不归本门禁管。
+TEXT_ASSET_SKIP_DIRS = (os.path.join("js", "juce"),)
+# CSS 通用族关键字 —— 用来认出「这串文本是个字体栈」。JS 里的字体栈(STYLE_FALLBACK.mono)
+# 没有 `font-family:` 前缀,只能靠它认;顺带兜住多行字体栈里不带声明名的那几行。
+GENERIC_FAMILIES = (
+    "sans-serif",
+    "serif",
+    "monospace",
+    "ui-monospace",
+    "ui-sans-serif",
+    "system-ui",
+    "cursive",
+    "fantasy",
+)
+# 字体名上下文:① font-family 声明值 ② --ff-* 字体栈变量值 ③ 含通用族关键字的字符串字面量。
+# ①② 跨行(prettier 会把长字体栈折行),故值取到 `;` / `}` 为止而不是取到行尾。
+_DECL_RE = re.compile(r"(?:font-family|--ff-[\w-]*)\s*:\s*([^;{}]{0,400})", re.S)
+_STRING_RE = re.compile(r"""(['"])((?:(?!\1)[^\\\n]){0,400})\1""")
+
 # 与 fetch_fonts.py 对拍:生成侧与门禁侧各自独立声明(门禁不该把判据整个托付给被审查的
 # 那一侧),但两处一旦漂移就会出现「生成侧按新词改名、门禁侧仍按旧词断言」的静默失效,
 # 故在导入期就把差异变成硬失败。
@@ -71,6 +103,15 @@ for _fname, (_family, _ps, _rfn) in ff.RENAME.items():
             "!! RESERVED 与 fetch_fonts.RENAME 对 %s 的 RFN 不一致(%r vs %r);两处须同步"
             % (_fname, RESERVED.get(_fname), _rfn)
         )
+# 登记表的**键集**同样与生成侧对拍:RFN 是逐款人工核验的结论(不可派生),但「有哪些
+# 文件」是生成侧说了算的。生成侧加一款而这里没登记,目录检查要等到那款字体真的落进
+# web/fonts 才判红;对拍则在导入期就说清楚缺谁。
+_produced = {_f for _f, _fam in ff.LATIN_OUTPUTS} | {ff.CJK_OUTPUT}
+if set(RESERVED) != _produced:
+    sys.exit(
+        "!! RESERVED 的登记集与 fetch_fonts 的产出集不一致(缺登记 %s / 多登记 %s);两处须同步"
+        % (sorted(_produced - set(RESERVED)), sorted(set(RESERVED) - _produced))
+    )
 if ATTRIBUTION_IDS != ff.NAME_IDS_ATTRIBUTION:
     sys.exit(
         "!! ATTRIBUTION_IDS 与 fetch_fonts.NAME_IDS_ATTRIBUTION 不一致(%r vs %r);两处须同步"
@@ -98,6 +139,57 @@ def scan_font(path, reserved):
         for r in records
         if r.nameID not in ATTRIBUTION_IDS and needle in r.toUnicode().casefold()
     ]
+
+
+def font_contexts(text):
+    """从一份文本资源里摘出所有「字体名上下文」,供 RFN 断言。见 `_DECL_RE` / `_STRING_RE` 注。"""
+    out = [m.group(1) for m in _DECL_RE.finditer(text)]
+    out += [
+        m.group(2)
+        for m in _STRING_RE.finditer(text)
+        if any(g in m.group(2) for g in GENERIC_FAMILIES)
+    ]
+    return out
+
+
+def check_text_assets(root, verbose=True):
+    """扫 `root` 下随分发进包的文本资源:字体名上下文里不得出现任何登记在册的 RFN。
+
+    判据面故意窄到「字体名上下文」而不是整文件 —— 理由见模块头注(RFN "Source" 是常用词)。
+    扫描面则取全部 RFN(不分家族):CSS 里写的是家族名,与哪个 woff2 文件对应无从判断,
+    因此只要是登记过的上游保留名,出现在字体栈里就判红。
+    """
+    needles = sorted({r.casefold() for r in RESERVED.values() if r})
+    problems = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        if any(
+            rel_dir == d or rel_dir.startswith(d + os.sep) for d in TEXT_ASSET_SKIP_DIRS
+        ):
+            dirnames[:] = []
+            continue
+        for fname in sorted(filenames):
+            if not fname.endswith(TEXT_ASSET_EXTS):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            scanned += 1
+            for ctx in font_contexts(text):
+                folded = ctx.casefold()
+                for needle in needles:
+                    if needle in folded:
+                        problems.append(
+                            "%s 的字体名上下文含保留字体名 %r:%r"
+                            % (os.path.relpath(path, root), needle, " ".join(ctx.split()))
+                        )
+    # 一份都没扫到 = 目录写错 / 扩展名口径漂了,是**空转的门禁**而非通过(同 REQUIRED_IDS)。
+    if not scanned:
+        problems.append("%s 下没扫到任何 %s 文本资源(断言无对象)" % (root, "/".join(TEXT_ASSET_EXTS)))
+    elif verbose and not problems:
+        print("OK   %-20s %d 份文本资源的字体栈均不含保留字体名" % ("(css/js/html)", scanned))
+    return problems
 
 
 def check_dir(font_dir, verbose=True):
@@ -186,11 +278,39 @@ def self_test():
         if not any("Unregistered.woff2" in p for p in check_dir(tmp, verbose=False)):
             failures.append("未登记字体竟未判红(新增家族会绕过 RFN 核验)")
 
+        # ⑦ 分发文本资源里的 family 字面量 ⇒ 必须命中。woff2 一字不动、只把 CSS 的 family
+        #    改回上游名,是「解表全绿而分发物仍呈现 RFN」的那条漏网路径。
+        assets = os.path.join(tmp, "assets")
+        os.makedirs(os.path.join(assets, "js", "juce"))
+        with open(os.path.join(assets, "bad.css"), "w", encoding="utf-8") as fh:
+            fh.write('@font-face {\n  font-family: "IBM Plex Sans";\n}\n')
+        with open(os.path.join(assets, "bad.js"), "w", encoding="utf-8") as fh:  # 无声明名,靠通用族关键字认出
+            fh.write("const F = { mono: '\"IBM Plex Mono\", ui-monospace, monospace' };\n")
+        # vendored 目录里的同样内容 ⇒ 必须**不**命中(上游怎么写就怎么进包)
+        with open(os.path.join(assets, "js", "juce", "vendored.css"), "w", encoding="utf-8") as fh:
+            fh.write('a { font-family: "IBM Plex Sans", sans-serif; }\n')
+        hits = check_text_assets(assets, verbose=False)
+        if not any("bad.css" in p for p in hits):
+            failures.append("CSS 的 font-family 里的 RFN 竟未命中(分发物仍会呈现上游名)")
+        if not any("bad.js" in p for p in hits):
+            failures.append("JS 字体栈字面量里的 RFN 竟未命中(STYLE_FALLBACK 那条路没被守住)")
+        if any("vendored" in p for p in hits):
+            failures.append("vendored 的 web/js/juce 被判违规(排除失效,门禁会恒红)")
+        # ⑧ 常用词不误伤:RFN "Source" 在标识符里到处都是,整文件 grep 会刷出几十条假红,
+        #    而假红最后一定以「把这条扫描关掉」收场。判据必须只落在字体名上下文。
+        with open(os.path.join(assets, "ok.js"), "w", encoding="utf-8") as fh:
+            fh.write('import { sourceKind } from "./source-kind.js";\nconst n = cfg.source_channels;\n')
+        if any("ok.js" in p for p in check_text_assets(assets, verbose=False)):
+            failures.append("标识符里的 'source' 被判违规(判据溢出字体名上下文,会制造假红)")
+
     if failures:
         for f in failures:
             print("!! " + f)
         sys.exit("字体保留名门禁自测失败(%d 项):门禁本身坏了,先修它" % len(failures))
-    print("-> 自测通过:漏改的呈现名必红(含版本/设计者/描述槽)、署名记录不误伤、未登记字体必红")
+    print(
+        "-> 自测通过:漏改的呈现名必红(含版本/设计者/描述槽)、CSS/JS 字体栈里的 RFN 必红、"
+        "署名记录与常用词不误伤、未登记字体必红"
+    )
 
 
 def main():
@@ -202,13 +322,16 @@ def main():
         sys.exit("!! 无法识别的参数 %s;用法见文件头注" % unknown)
     argv = [a for a in args if a != "--self-test"]
     if len(argv) > 1:
-        sys.exit("!! 最多接受一个字体目录参数,收到 %s" % argv)
+        sys.exit("!! 最多接受一个目录参数,收到 %s" % argv)
     if "--self-test" in args:
         self_test()
         if not argv:
             return
-    font_dir = os.path.abspath(argv[0] if argv else os.path.join(HERE, "..", "web", "fonts"))
-    problems = check_dir(font_dir)
+    # 默认口径:woff2 在 web/fonts,文本资源在 web/(进包面见 cmake/ScvbWebAssets.cmake)。
+    # 给了目录参数就两样都扫它 —— 少扫一样等于门禁只剩一半,而输出看不出来。
+    web_root = os.path.abspath(argv[0] if argv else os.path.join(HERE, "..", "web"))
+    font_dir = web_root if argv else os.path.join(web_root, "fonts")
+    problems = check_dir(font_dir) + check_text_assets(web_root)
     if problems:
         print("")
         for p in problems:
@@ -217,7 +340,7 @@ def main():
             "字体保留名断言失败(%d 项);改名与重新生成见 web/fonts/README.md 的「保留字体名(RFN)」一节"
             % len(problems)
         )
-    print("-> %s:四款字体的呈现名全部通过 OFL-1.1 §3 断言" % font_dir)
+    print("-> %s:四款字体的呈现名与分发文本资源的字体栈全部通过 OFL-1.1 §3 断言" % web_root)
 
 
 if __name__ == "__main__":

@@ -55,7 +55,8 @@ Catch2 / libebur128 见 `tests/CMakeLists.txt` 的 `FetchContent_Declare(... GIT
     仍写 "IBM Plex Sans" 的话,装进系统字体册或被 PDF 导出读到的依然是上游名。
     cmap 与字形一字未动,视觉零变化;版权(nameID 0)与许可证(13/14)原样保留,故本表
     仍以上游家族名登记来源 —— §3 限制的是分发名,不是溯源署名。与 Bridge 仓同源同结论。
-    回归由 `scripts/check-font-names.py` 守住(gates **3k** + `compliance.yml` 两步)。
+    回归由 `scripts/check-font-names.py` 守住(gates **3k** + `compliance.yml` 两步):
+    既解 woff2 的 `name` 表断言,也扫进包的 `.css`/`.js`/`.html` 里的字体栈字面量。
   - **Noto Sans SC**:RFN 为 **"Source"**。子集名 `NotoSansSC.woff2` / family `'Noto Sans SC'` 不含
     "Source",不触发 RFN 限制(注:"Noto" 是 Google 商标,不是 RFN)。它同样登记进上述断言表,
     守住不回归;其 nameID 0/7 里逐字出现的 "Source" 是 §2 要求保留的版权与商标署名,不参与断言。
