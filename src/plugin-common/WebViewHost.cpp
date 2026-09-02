@@ -118,39 +118,44 @@ public:
     // WebView2 后端那份**每帧无条件** fillAll(Colours::white)
     // (juce_WebBrowserComponent_windows.cpp:492)。白的来源就是它。
     //
-    // 所以修法只能是在**本层**覆写 paint 且**不调基类** —— 把那次 fillAll(white) 从调用链上
-    // 摘掉。WebViewHost::paint 保留不动:兜底面板路径下 webView_ 被 setVisible(false),
+    // 修法:**先调基类,再把自己的底盖上去**。两次 fillAll 落在同一个 Graphics、同一次
+    // paint 里,先白后暗,中间不上屏 —— Windows 侧两条渲染路都是整帧画完才出:软件渲染
+    // 画进 offscreenImage 再 blit(juce_Windowing_windows.cpp:4907),Direct2D 走
+    // startFrame/endFrame 成对包住整次 paint(同文件 :5144-5145)。上屏的只有暗的那一层。
+    // WebViewHost::paint 保留不动:兜底面板路径下 webView_ 被 setVisible(false),
     // 那时父组件的 fillAll 才真的会画。
     //
-    // ⚠ 但基类的 fallbackPaint 不只是画白 —— 它尾巴上那句
-    //   `if (! hasBrowserBeenCreated()) checkWindowAssociation();` 是 WebView2 控制器的
-    //   **重试泵**:createWebView() 在 peer 为空时直接 return(同文件 :1038),而我们在构造期
-    //   就 goToURL(本文件的 beginLoadAttempt),那一刻 peer 还没有。控制器能不能建起来,
-    //   全靠此后一次次重入 checkWindowAssociation。整份 paint 一删了之 = 把泵拆了,白窗会
-    //   变成**永远不开**的窗。故这里显式补回同一次调用:WebBrowserComponent::visibilityChanged()
-    //   的实现就是 `impl->checkWindowAssociation();`(juce_WebBrowserComponent.cpp:690)。
-    //   两道闸口对齐基类语义:
-    //     • navigationSeen_ —— 首个导航事件到达即证明控制器已建成,与基类的
-    //       `! hasBrowserBeenCreated()` 同义,此后不再泵(基类同样不泵);
-    //     • isShowing() —— 比基类更严一格。checkWindowAssociation 在「不 showing 且 webView
-    //       已存在」时会把页面导去 about:blank;基类靠 hasBrowserBeenCreated() 挡住了这条,
-    //       我们靠 isShowing() 挡住它,绝不能在这里把已加载的页面踢掉。
+    // ⚠ 为什么**不是**「覆写且不调基类」(PR 178 复审【重要】1 纠正的正是这一版):
+    //   基类的 fallbackPaint 不只是画白 —— 它尾巴上那句
+    //   `if (! hasBrowserBeenCreated()) checkWindowAssociation();`
+    //   (juce_WebBrowserComponent_windows.cpp:496-497)是 WebView2 控制器的**重试泵**:
+    //   createWebView() 在 peer 为空时直接 return,而我们在构造期就 goToURL(本文件的
+    //   beginLoadAttempt),那一刻 peer 还没有。控制器能不能建起来,全靠此后一次次重入
+    //   checkWindowAssociation。绕过基类 = 把泵拆了,白窗会变成**永远不开**的窗。
+    //   而在本层**复刻**一份泵同样不行,理由是判据:
+    //     • 复刻件只能押在 JUCE 的私有实现细节上(基类的条件 `hasBrowserBeenCreated()`
+    //       与 `visibilityChanged() == impl->checkWindowAssociation()` 都不是公开契约),
+    //       `.juce-version` 一升就可能静默变成空调用;
+    //     • 下面那条 static_assert 守得到「paint 由本类覆写」,**守不到函数体里那份复刻
+    //       还在** —— 把它删掉断言照旧全绿,而本文件不进任何测试目标。
+    //   调基类就没有可删的复刻件:泵连同它的条件一字未动留在 JUCE 里,守住 override
+    //   就等于守住了全部。代价只是每次 paint 多一次纯色 fillAll(paint 本就极低频)。
     // -------------------------------------------------------------------------
     void paint(juce::Graphics& g) override
     {
+        // 基类 = fallbackPaint:WebView2 后端的 fillAll(Colours::white) + 控制器重试泵。
+        // 这一句**必须在前**:它画的白由下面整块盖掉,而泵要的是「每帧都被调到」。
+        juce::WebBrowserComponent::paint(g);
+
 #if SCVB_PROBE_MAGENTA
         g.fillAll(juce::Colours::magenta); // 真机探针:见文件顶部宏注释,交付构建里不会走到
 #else
         g.fillAll(scvb::webview::shellBackdrop());
 #endif
-
-        if (!navigationSeen_ && isShowing())
-            juce::WebBrowserComponent::visibilityChanged(); // = impl->checkWindowAssociation()
     }
 
     bool pageAboutToLoad(const juce::String& url) override
     {
-        navigationSeen_ = true; // 控制器已建成 ⇒ paint 不必再泵(与基类 hasBrowserBeenCreated 对齐)
         owner_.onNavigationStarted(url);
         return true; // 本插件只导航到 resource provider 根,不拦
     }
@@ -197,16 +202,14 @@ public:
     // 当场编译红(gate 4 / CI 都会拦下)。WebViewHost.cpp 不进任何测试目标(它只在
     // scvb_plugin_common 这个 INTERFACE 库里,随插件 target 编译),运行期用例够不着这一层,
     // 编译期断言是唯一守得住的判据 —— 与 SL-263 同族。
+    // 它守得住的**范围**取决于 paint 的写法:本层不复刻基类的重试泵(见 paint 头注),
+    // 函数体里没有「删掉也编得过」的必守行,故「override 还在」= 「白底盖着 ∧ 泵还在」。
     static_assert(std::is_same_v<decltype(&HostWebView::paint), void (HostWebView::*)(juce::Graphics&)>,
                   "[SL-271] HostWebView::paint 必须由本类覆写:少了它,JUCE WebView2 后端的 "
                   "fallbackPaint 会每帧 fillAll(Colours::white),开窗白闪回归。");
 
 private:
     WebViewHost& owner_;
-    // 首个导航事件是否到过。见 paint():它与基类的 hasBrowserBeenCreated() 同义,决定
-    // 还要不要继续泵 checkWindowAssociation。retry 不重建 HostWebView,故不随 retry 复位
-    // ——— 控制器在 retry 之后依然存在,泵也确实不该再跑。
-    bool navigationSeen_ = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HostWebView)
 };
