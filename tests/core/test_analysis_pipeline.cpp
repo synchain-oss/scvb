@@ -623,7 +623,26 @@ TEST_CASE("[SL-284] maxFallbackLevel 取逐区间最坏值,不被末个收敛区
     const auto res = runAnalysisPipeline(features, cfg);
     REQUIRE_FALSE(res.cancelled);
     INFO("区间数 = " << res.intervals << ",maxFallbackLevel = " << res.maxFallbackLevel);
-    REQUIRE(res.intervals >= 2); // 前置:只有一个区间时 max 与末值恒等,本条就成了空过
+    REQUIRE(res.intervals >= 2); // 前置①:只有一个区间时 max 与末值恒等,本条就成了空过
+
+    // 前置②:**末区间那种形状(只剩两条对称弱轨)确实收敛**。
+    //
+    // 本条能区分 max / 末值,靠的是两件事同时成立:① 至少一个区间掉级(下面那条 CHECK),
+    // ② 末区间收敛。只断 ① 是不够的(#183 复审):哪天 `assignInterval` 的槽位策略、
+    // `tol` 或 `uMax` 一变,让**所有**区间都掉出 level 1,本条照样绿 —— 而末值口径此时
+    // 也给 >=2,**突变检测能力就静默失效了**,恰好回到本条要根除的那个状态。
+    // 而且比 host 那两条更难发现:注释还信誓旦旦写着「末段收敛」。
+    // 所以把 ② 也断出来:同一份素材只留两条弱轨单独跑一趟当对照组。
+    // 两条一起红时,能直接读出翻面的是哪一半。
+    std::array<PipelineTrackFeatures, kPipelineTracks> tailOnly;
+    tailOnly[1] = features[1];
+    tailOnly[2] = features[2];
+    auto tailCfg = makeConfig(features[1].kwMs.size(), 3);
+    tailCfg.tracks[0].enabled = false; // 只剩 t1/t2 —— 即末区间的活跃集合
+    const auto tail = runAnalysisPipeline(tailOnly, tailCfg);
+    INFO("对照组(仅 t1/t2)区间数 = " << tail.intervals << ",回退级 = " << tail.maxFallbackLevel);
+    REQUIRE(tail.maxFallbackLevel == 1); // 读到 0 = 对照组压根没跑过平衡,同样是空过,必须红
+
     // 改成末值口径 ⇒ 末段收敛 ⇒ 这里读到 1 ⇒ 红。
     CHECK(res.maxFallbackLevel >= 2);
 }
