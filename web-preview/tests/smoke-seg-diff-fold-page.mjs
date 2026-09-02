@@ -230,23 +230,30 @@ function cdpConnect(wsUrl) {
     // 这个数**必须小于 `waitFor` 的 20s 预算**:`waitFor` 内部的 `evaluate` 是 try/catch
     // 兜住再重试的,超时短于它才能「丢一次响应 → 下一轮补上」;若反过来设成 30s,
     // 一次超时就直接吃穿 waitFor 的整个预算,把可恢复的抖动变成硬红。
-    const CDP_CALL_TIMEOUT_MS = 10000;
+    // [SL-287] 与另外五套统一成**按调用点取上界**,不再是一个文件级常数:
+    // `waitFor` 内部的 evaluate 传自己预算的一半(永远小于预算,丢一次响应下一轮补上),
+    // 一次性直接调用用这个宽默认值,只负责兜住真挂死。
+    // 换掉固定 10s 的理由见 smoke-output-dist-page:那一套有合法跑 8s 的采样 evaluate、
+    // 还有内部自带 12s 上界的 `measureOff`,而它最紧的 waitFor 预算也是 12s ——
+    // 「大于合法最大值」与「小于最小预算」在单一常数下无解。六套用同一形态,免得各自漂。
+    const CDP_DEFAULT_TIMEOUT_MS = 20000;
     return {
         ready,
         on: (fn) => listeners.push(fn),
-        send(method, params) {
+        send(method, params, timeoutMs) {
             const mid = ++id;
+            const budget = timeoutMs || CDP_DEFAULT_TIMEOUT_MS;
             return new Promise((ok, no) => {
                 const timer = setTimeout(() => {
                     pending.delete(mid);
                     no(
                         new Error(
-                            `CDP 调用超时 ${CDP_CALL_TIMEOUT_MS}ms:${method}(id=${mid})—— ` +
+                            `CDP 调用超时 ${budget}ms:${method}(id=${mid})—— ` +
                                 "响应没回来。多半是这一步之前的导航把渲染器换掉了;" +
                                 "**不要**改成重试或调大超时,那只是把红拖慢",
                         ),
                     );
-                }, CDP_CALL_TIMEOUT_MS);
+                }, budget);
                 pending.set(mid, {
                     resolve: (v) => {
                         clearTimeout(timer);
@@ -326,12 +333,16 @@ let cdp = null;
 const errors = [];
 const exceptions = [];
 
-async function evaluate(expression) {
-    const r = await cdp.send("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-    });
+async function evaluate(expression, timeoutMs) {
+    const r = await cdp.send(
+        "Runtime.evaluate",
+        {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+        },
+        timeoutMs,
+    );
     if (r.exceptionDetails) {
         throw new Error(
             "页内求值抛错:" +
@@ -415,7 +426,9 @@ async function waitFor(expr, ms = 20000) {
     while (Date.now() - t0 < ms) {
         let v = null;
         try {
-            v = await evaluate(expr);
+            // 这次 evaluate 的上界 = 本次 waitFor 预算的一半:短于预算才能把
+            // 「丢一次响应」消化成下一轮重试;等于或大于预算就变成一次性硬红。
+            v = await evaluate(expr, Math.max(250, Math.floor(ms / 2)));
         } catch {
             v = null;
         }
@@ -736,8 +749,8 @@ await evaluate(OPEN("false"));
 // 删掉 tab-wave.js 里那个三元(直接印 `String(nChanged)`)⇒ 折叠头出「200」⇒ 本条红。
 log("");
 log("=== (5) changed 顶到封顶 => 折叠头印下界「N+」===");
-// ⚠ **本套是六套里唯一做第二次导航的**,而这一步正是那个「CDP 响应永远不来」的触发点
-// (见 cdpConnect 头注:实测挂 75 分钟)。两道防护缺一不可:
+// ⚠ 这一步(第二次导航)正是那个「CDP 响应永远不来」的触发点
+// (见 cdpConnect 头注:实测挂 75 分钟;各套的真实导航次数也记在那里)。两道防护缺一不可:
 //   · `Page.navigate` 本身走带超时的 `send`,卡住就当场抛,而不是静默等下去;
 //   · 导航后**先等 load 事件再等 READY**。只等 READY 也能过,但那是拿 `Runtime.evaluate`
 //     去戳一个正在被换掉的渲染器 —— 恰好是丢响应的那个窗口。先收 `Page.loadEventFired`

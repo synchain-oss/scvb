@@ -381,11 +381,44 @@ else {
   # 把「本机没装浏览器」和「页面真的坏了」都判成红,等于逼每个只改 C++ 的人装浏览器,
   # 或者反过来诱导谁把这套从门禁里摘掉 —— 两条都比一条 SKIP 差。**但绝不静默**:
   # 打印 SKIP 行并计数,总结里带上,免得「一套没跑」看起来和「跑过了」一样。
+  # ⚠ **每套都要有整体超时**([SL-287])。原来这里是裸的 `(& node $f.FullName 2>&1)` ——
+  # 一套挂死,gate 3e 就停在那儿不动,而**此时外层目录锁已经在手**,整批 agent 全在排队。
+  # SL-274 实测过一次:75 分钟零输出,node 与 Chrome 都还活着。
+  # 页面级冒烟内部现在有 CDP 截止时间兜住「响应不回来」那一类,但兜不住「Chrome 根本没起来」
+  # 「WebSocket 没连上」「页面永不 load」——那些卡在 CDP 之外,只有这一层能收。
+  #
+  # 上界取 300s:实测最慢的一套(seg-diff-fold)健康时跑 57s,其余 5–34s,**5 倍余量**;
+  # 而代价上限从 75 分钟降到 5 分钟。
+  # 超时后**判红并继续下一套**,不整段中止 —— 一次跑完看全所有红项,与本 gate 既有的
+  # 「不提前 break」口径一致。
+  # 用 Start-Process + WaitForExit 而不是 `&`:`&` 没有超时可言;`Kill($true)` 连子进程树
+  # 一起收,否则被杀的只是 node,它起的 Chrome 会留下来(正是 SL-274 压住锁的那个形态)。
   $smokeOk = $true
   $smokeSkipped = 0
+  $smokeHung = 0
+  $smokeTimeoutSec = 300
   foreach ($f in $smokeFiles) {
-    $out = (& node $f.FullName 2>&1)
-    $rc = $LASTEXITCODE
+    $soPath = [System.IO.Path]::GetTempFileName()
+    $sePath = [System.IO.Path]::GetTempFileName()
+    $proc = Start-Process -FilePath $nodeCmd.Source -ArgumentList @($f.FullName) `
+      -NoNewWindow -PassThru -RedirectStandardOutput $soPath -RedirectStandardError $sePath
+    if ($proc.WaitForExit($smokeTimeoutSec * 1000)) {
+      $rc = $proc.ExitCode
+    }
+    else {
+      # 连进程树一起收:只杀 node 的话,它起的无头 Chrome 会活下来继续占资源。
+      try { $proc.Kill($true) } catch { try { $proc.Kill() } catch {} }
+      $rc = -1
+      $smokeHung++
+      $smokeOk = $false
+      Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,已连进程树杀掉并判红" -f $f.Name, $smokeTimeoutSec) -ForegroundColor Red
+      Write-Host '         (这一套内部的 CDP 截止时间没能兜住 ⇒ 多半卡在 CDP 之外:Chrome 没起来 / WebSocket 没连上 / 页面永不 load)' -ForegroundColor Yellow
+    }
+    $out = @()
+    foreach ($fp in @($soPath, $sePath)) {
+      if (Test-Path $fp) { $out += (Get-Content -LiteralPath $fp -ErrorAction SilentlyContinue) }
+    }
+    Remove-Item -LiteralPath $soPath, $sePath -Force -ErrorAction SilentlyContinue
     if ($rc -eq 2) {
       $smokeSkipped++
       Write-Host ("  [SKIP] {0}:缺可选外部依赖(见该脚本文件头)" -f $f.Name) -ForegroundColor Yellow
@@ -395,13 +428,21 @@ else {
     elseif ($rc -ne 0) {
       $smokeOk = $false
       Write-Host ("  {0}:" -f $f.Name) -ForegroundColor Red
-      $out | Select-String -Pattern '\[FAIL\]' | Select-Object -First 20 |
+      # 捞 `[FATAL]` 与 `[FAIL]` 两种([SL-287])。页面级冒烟的 uncaughtException /
+      # unhandledRejection 处理器打的是 `[FATAL]`,只捞 `[FAIL]` 的话「脚本自己炸了」
+      # 会一行不显示 —— 而 [J96] 之后本机 gates 是子 PR 上唯一的编译/行为门,
+      # 致命错误不进摘要等于没报。
+      $out | Select-String -Pattern '\[FAIL\]|\[FATAL\]' | Select-Object -First 20 |
       ForEach-Object { Write-Host ("  " + $_) }
     }
   }
   $smokeLabel = '3e web smoke({0} 套,node {1})' -f $smokeFiles.Count, $nv
   if ($smokeSkipped -gt 0) {
     $smokeLabel = '3e web smoke({0} 套 −{1} SKIP,node {2})' -f $smokeFiles.Count, $smokeSkipped, $nv
+  }
+  # 挂死也要进摘要:跑完 gates 的人看的是汇总表,不是往回滚屏找那行 [HUNG]。
+  if ($smokeHung -gt 0) {
+    $smokeLabel = '{0}(!{1} 套超时被杀)' -f $smokeLabel, $smokeHung
   }
   Set-Gate $smokeLabel $smokeOk
 }
@@ -490,7 +531,7 @@ else {
 }
 
 # ==================================================================
-Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径对拍(scripts/check-*)==='
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法 对拍(scripts/check-*)==='
 # ==================================================================
 # [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
 # 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
@@ -505,12 +546,12 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径对拍(scripts/che
 # 警告仍返回 0 —— 本地绿不等于那一档验过,那一档以 CI(ubuntu)为准。
 if (-not $nodeCmd) {
   Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
-  Set-Gate '3i 桥面/曲线/设计盒/native 路径对拍' $false
+  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍' $false
 }
 else {
   $parityOk = $true
   $parityWarn = 0
-  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs')) {
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
       $parityOk = $false
@@ -542,9 +583,9 @@ else {
   # 反过来也不严丝合缝:check-bridge-parity 的 :1229 是真「跳过」,却直接 warns.push
   # 而**不打 [WARN]**,这里数不到。所以这半句只能是「上方有几处 WARN,自己看」,
   # 不能冒充「降级档数」的权威计数。
-  $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍'
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍'
   if ($parityWarn -gt 0) {
-    $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
   }
   Set-Gate $parityLabel $parityOk
 }
