@@ -18,7 +18,9 @@ name: Build & Validate
 #         并绿,才允许打包。这是 feature/v1 主支线唯一的机器编译证据 —— push→`feature/**`
 #         触发已在本卡撤掉(每次子 PR 合入都冷编译 20 分钟,正是用户要省掉的那笔)。
 #   逃生口 **子 PR** 打上 `ci:full` 标签即照跑全量(`types` 含 labeled/unlabeled,
-#         job 的 `if:` 判标签)。改到构建系统/依赖时用它。
+#         job 的 `if:` 判标签)。**[SL-283] 之后它的用途收窄了**:碰了 native 路径的子 PR
+#         已由 `detect-native` 自动照编,所以这个标签剩下的用处是「**没碰** native
+#         (纯文档 / 脚本 / `web-preview/`)但仍想手动编一次」。
 #         base=`dev` 的 PR **不吃**这个标签:它每次 synchronize 本来就跑全量,标签再起
 #         一次只会在同一个 concurrency group 里排队重编;想临时再编一次用 dispatch。
 #         **别靠反复打标签「刷新」构建**:标签事件的 `cancel-in-progress` 是 `false`
@@ -28,7 +30,9 @@ name: Build & Validate
 #
 # 分支保护 required contexts 不由本卡改(用户待办)。已核对:`dev` 无 required status
 # checks;`feature/v1` 的 required contexts 只有三个 review bot —— 故子 PR 上本 job 被
-# `if:` 跳过(不产生 check run)不会把任何 PR 卡在 pending。
+# `if:` 跳过(不产生 check run)不会把任何 PR 卡在 pending。**注意前提**:[SL-283] 之后
+# 只有**没碰 native 路径**的子 PR 才会被跳过;碰了的会照跑并产生 check run(结论不变 ——
+# required contexts 只有三个 review bot,跑或不跑都不卡 pending)。
 
 on:
   pull_request:
@@ -100,7 +104,7 @@ jobs:
         run: |
           set -uo pipefail
           # 非 pull_request(push→dev / workflow_dispatch)一律照编:出包硬门与 dev 快照
-          # 不受路径过滤影响,这个 job 对它们只是一道 20 秒的直通。
+          # 不受路径过滤影响,这个 job 对它们只是一道十几秒的直通(实测 6–8 秒)。
           if [ "$EVENT_NAME" != 'pull_request' ]; then
             echo "非 pull_request 事件($EVENT_NAME):直通,native=true"
             echo "native=true" >> "$GITHUB_OUTPUT"

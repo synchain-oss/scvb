@@ -514,6 +514,14 @@ else {
       Write-Host ("  {0}:" -f $sc) -ForegroundColor Red
       $out | ForEach-Object { Write-Host ("  " + $_) }
     }
+    else {
+      # [SL-283] **成功时也要把 [WARN] 行回显**。check-native-paths 在没有 grep 的机器上
+      # 会把「JS ↔ grep -E 引擎对拍」那一档降级成警告并**仍返回 0** —— 而 Windows 上
+      # `grep` 通常不在 PATH 上(Git for Windows 的 grep 只在 Git Bash 里),所以降级在
+      # 本地是**常态而不是例外**。原来只在非零时回显 $out,那句警告一个字都不上屏,
+      # 汇总表只剩一行 `3i … PASS` —— 正是本仓反复引用的「看起来有执行者,其实没有」。
+      $out | Where-Object { $_ -match '\[WARN\]' } | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+    }
   }
   Set-Gate '3i 桥面/曲线/设计盒/native 路径对拍' $parityOk
 }
