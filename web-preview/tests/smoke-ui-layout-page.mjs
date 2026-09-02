@@ -38,6 +38,12 @@
 //         把 tab-settings.js 里的 `call("analyze", "all")` 删掉,本条即红;
 //      C4b [SL-276 二轮复审] analyze 在途期间主钮置灰(防连点打第二发),跑完必须解开:
 //         删掉 doReanalyzeFromAsk 的 finally 即红(钮永久停在 disabled,其余条目照样绿);
+//      C4c [SL-276 三轮复审] 锁**本身**有没有牙:给 mock 的 analyze 套「慢回执 + 计数」
+//         垫片,同一同步回合里连点两下主钮 ⇒ 只准打出一发。C4b 断的是「跑完解得开」,
+//         两道锁一起删掉它照样绿,所以必须另立本条。两道锁(reanalyzeInFlight 早退 /
+//         btn.disabled)各自独立挡得住第二下,故本条是**两道都拆掉才红**。
+//         同批断言在途期间主钮挂着 `data-disabled="1"` —— 本仓禁用视觉走这个属性钩子,
+//         光设 `.disabled` 一个像素都不会变(没有对应的 `:disabled` 规则);
 //      C5 Esc 关框;
 //      C6 三语各弹一次,正文非空且不等于 key;
 //      C8 [SL-276 复审] **弹窗只由用户点击驱动,不由派生的 stale 位驱动**:
@@ -828,9 +834,72 @@ try {
     check(
         await evaluate(
             IN(`const b = gb("reanalyze-ask-primary");
-                return !!b && b.disabled === false;`),
+                return !!b && b.disabled === false
+                    && !b.hasAttribute("data-disabled");`),
         ),
         "C4b analyze 跑完后主钮解锁(in-flight 置灰不会把钮永久锁死)",
+    );
+
+    // C4c [SL-276 三轮复审] 钉**锁本身**。C4b 只断言「跑完解得开」,把两道锁一起删掉它
+    // 照样全绿 —— 所以另立一条:给 mock 的 analyze 套一层「慢回执 + 计数」垫片,在同一个
+    // 同步回合里连点两下主钮,断言只打出**一发**。
+    // 两道锁(reanalyzeInFlight 早退 / btn.disabled)各自都能独立挡住第二下,所以本条是
+    // 「两道都拆掉才红」;单拆一道仍绿是设计如此,不是判据没牙。
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m) return false;
+                const orig = Object.getPrototypeOf(m).analyze;
+                if (typeof orig !== "function") return false;
+                w.__uir7Calls = 0;
+                m.analyze = function (scope) {
+                    w.__uir7Calls++;
+                    return new Promise((res) => {
+                        w.setTimeout(() => res(orig.call(m, scope)), 1500);
+                    });
+                };
+                return true;`),
+        ),
+        "C4c 慢回执 analyze 计数垫片装上",
+    );
+    check(await setLoudness("rms"), "C4c 再改档以重新开框");
+    check(await waitFor(askOpen, 4000), "C4c 框已开");
+    // 同一回合里连点两下:第一下同步置起两道锁,第二下必须打不出第二发。
+    check(
+        await evaluate(
+            IN(`const b = gb("reanalyze-ask-primary");
+                if (!b) return false;
+                b.click();
+                b.click();
+                return true;`),
+        ),
+        "C4c 连点两下已发出",
+    );
+    check(
+        await evaluate(
+            IN(`const b = gb("reanalyze-ask-primary");
+                return !!b && b.getAttribute("data-disabled") === "1";`),
+        ),
+        "C4c 在途期间主钮挂上仓内禁用口径 data-disabled(光设 .disabled 在本仓不可见)",
+    );
+    check(
+        await waitFor(
+            IN(`const b = gb("reanalyze-ask-primary");
+                return !!b && b.disabled === false;`),
+            8000,
+        ),
+        "C4c 慢回执落地后解锁",
+    );
+    const uir7Calls = await evaluate(IN(`return w.__uir7Calls;`));
+    check(uir7Calls === 1, `C4c 连点两下只打出一发 analyze(实得 ${uir7Calls})`);
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m) return false;
+                delete m.analyze;
+                return typeof m.analyze === "function";`),
+        ),
+        "C4c 垫片已摘(analyze 回到原型上的真实现)",
     );
 
     // C8 [SL-276 复审] stale 一上来就为真的工程:badge 亮、框不弹。

@@ -570,13 +570,32 @@ export function createTabSettings(opts) {
     //
     // [SL-276 二轮复审] **在途期间锁主钮**。「拒绝态不关框」之后框在 await 期间是开着的、
     // 主钮也还可点,连点两下就打出第二发 analyze(第二发被 §1.6 的 busy 拒掉 —— 但那是
-    // 让后端替 UI 兜一个 UI 自己拦得住的连点)。置灰同时也是这一下已受理的可见反馈。
+    // 让后端替 UI 兜一个 UI 自己拦得住的连点)。
     // call() 内有 try/catch、异常路径回 null 而不抛,所以 finally 一定跑得到,不会锁死钮。
+    //
+    // [SL-276 三轮复审] 三条都是「看着做了、其实没生效」那一类,逐条核过:
+    //   ① **光设 `.disabled` 在本仓看不见**。`web/` 里唯一的 `:disabled` 规则是
+    //      `.tracks-row__pair-trigger:disabled`(output/index.html),与本钮无关;而
+    //      `.sc-btn--cta` 自带 background/color,作者样式在场时 UA 的禁用灰不生效,
+    //      `.sc-btn:hover{scale:1.02}` 也照样命中 —— 用户看到的是「按钮没变、hover 还会动、
+    //      点了没反应」。禁用视觉的仓内口径是属性钩子 `.sc-btn[data-disabled="1"]`
+    //      (base.css:opacity .4 + not-allowed + scale 归 1),故两者一起挂、一起摘,
+    //      不新写 CSS。
+    //   ② **disable 一个正持焦的元素会把焦点掉回 `<body>`**(Chromium)。成功路径无所谓
+    //      (框马上关,closeReanalyzeAsk 把焦点还回响度胶囊);但 busy / observer 这条路
+    //      **框是留着的**,焦点却已经在框外 —— 键盘用户再按 Enter 什么都不会发生,想重试
+    //      反而更难。故 finally 里框还开着就把焦点还给主钮。
+    //   ③ 防连点由 `reanalyzeInFlight` 早退与 `disabled` 两道**各自独立**挡住。冒烟 C4c
+    //      钉的是「连点两下只打出一发 analyze」,**两道都拆掉才会红**(留一道仍守得住);
+    //      C4b 钉的是另一件事 —— 跑完一定解锁(finally 丢了就永久停在 disabled)。
     async function doReanalyzeFromAsk() {
         if (local.reanalyzeInFlight) return;
         local.reanalyzeInFlight = true;
         const btn = el.reanalyzeAskPrimary;
-        if (btn) btn.disabled = true;
+        if (btn) {
+            btn.disabled = true;
+            btn.setAttribute("data-disabled", "1");
+        }
         try {
             const res = await call("analyze", "all");
             if (!res || res.observer || res.ok === false) {
@@ -587,7 +606,12 @@ export function createTabSettings(opts) {
             requestRender();
         } finally {
             local.reanalyzeInFlight = false;
-            if (btn) btn.disabled = false;
+            if (btn) {
+                btn.disabled = false;
+                btn.removeAttribute("data-disabled");
+                if (el.reanalyzeAsk && !el.reanalyzeAsk.hidden)
+                    btn.focus({ preventScroll: true });
+            }
         }
     }
 
