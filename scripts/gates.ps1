@@ -507,6 +507,7 @@ if (-not $nodeCmd) {
 }
 else {
   $parityOk = $true
+  $parityWarn = 0
   foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -515,15 +516,26 @@ else {
       $out | ForEach-Object { Write-Host ("  " + $_) }
     }
     else {
-      # [SL-283] **成功时也要把 [WARN] 行回显**。check-native-paths 在没有 grep 的机器上
-      # 会把「JS ↔ grep -E 引擎对拍」那一档降级成警告并**仍返回 0** —— 而 Windows 上
-      # `grep` 通常不在 PATH 上(Git for Windows 的 grep 只在 Git Bash 里),所以降级在
-      # 本地是**常态而不是例外**。原来只在非零时回显 $out,那句警告一个字都不上屏,
-      # 汇总表只剩一行 `3i … PASS` —— 正是本仓反复引用的「看起来有执行者,其实没有」。
-      $out | Where-Object { $_ -match '\[WARN\]' } | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+      # [SL-283] **成功时也要把 [WARN] 行回显,并把「降级了几档」带进汇总表**。
+      # check-native-paths 在没有 grep 的机器上会把「JS ↔ grep -E 引擎对拍」那一档降级成
+      # 警告并**仍返回 0** —— 而 Windows 上 `grep` 通常不在 PATH 上(Git for Windows 的
+      # grep 只在 Git Bash 里),所以降级在本地是**常态而不是例外**。
+      # 只回显还不够:`Set-Gate` 只有 PASS/FAIL 两态,汇总表里「降级过的一次」和「全跑过的
+      # 一次」会长得一模一样,而跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字。
+      # 与 Gate 3e 同款处理(见 :400-403「绝不静默:SKIP 计数要带进总结」):把降级计数拼进
+      # gate 名,让「有一档没跑」在汇总表里就与「跑过了」不同形。
+      $warnLines = @($out | Where-Object { $_ -match '\[WARN\]' })
+      if ($warnLines.Count -gt 0) {
+        $parityWarn += $warnLines.Count
+        $warnLines | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+      }
     }
   }
-  Set-Gate '3i 桥面/曲线/设计盒/native 路径对拍' $parityOk
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍'
+  if ($parityWarn -gt 0) {
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍(−{0} 档降级,见上方 [WARN])' -f $parityWarn
+  }
+  Set-Gate $parityLabel $parityOk
 }
 
 # ==================================================================
