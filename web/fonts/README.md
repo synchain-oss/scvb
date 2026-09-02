@@ -154,7 +154,7 @@ python scripts/check-font-names.py             # 校验保留字体名(gates 3k 
 | 家族                    | 路线                                                | 为什么                                                                          |
 | ----------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------- |
 | 拉丁三款                | Google Fonts CSS2 `text=`,Google 直接返回子集 WOFF2 | 拉丁集有上界(约 150 字符),URL 恒在 1KB 内;且 `text=` 返回**所请求字重的静态实例** |
-| `Noto Sans SC`          | 下载上游全量可变字体,本地 `fontTools` 子集化        | CJK 集已 769 字且只增不减,`text=` 的 GET URL 会撞上限                           |
+| `Noto Sans SC`          | 下载上游全量可变字体,本地 `fontTools` 子集化        | CJK 集已 772 字且只增不减,`text=` 的 GET URL 会撞上限                           |
 
 **为什么 CJK 侧必须离开 `text=`:**`text=` 走 GET,实测 URL 约 7.1KB 尚可,7.5KB 起
 Google **不报 414,而是静默忽略 `text=`**,改返回 101 段 `unicode-range` 分片 CSS。老脚本的正则
