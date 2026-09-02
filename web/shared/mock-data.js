@@ -857,11 +857,31 @@ export function makeSegments(
                 loudnessLufs: round(-12 - unit(0x8103, ch * 157 + i) * 14, 1),
             };
             if (seg.origin !== "auto") manualKept++;
-            // diff.changed 只登记「本次真的改了值」的 auto 段,挑前几条给 UI 变更列表看
+            // diff.changed 只登记「本次真的改了值」的 auto 段。
+            //
+            // [SL-274] 封顶从 8 抬到 **200** —— 与 native 的
+            // `src/core/output/SegmentDiff.h::kMaxChangedItems`、web 侧的
+            // `tab-wave.js::DIFF_CHANGED_CAP` **三处同值**,改一处要三处一起改。
+            // 改前的 8 是个「展示档」—— 而正因为它,**冒烟永远看不到用户看到的东西**:
+            // 一次全量重分段在真机上给几十上百条,把 `.wave-toolbar` 撑到把泳道窗挤没
+            // (用户 v5.6.5 实测「泳道完全消失」),mock 只给 8 条时页面看着一切正常。
+            // 这是本仓「mock 盖住真机」判例的又一例(见 AnalysisPipeline 的 vadPosterior
+            // 头注、mergeReanalyzed 的 SL-242 头注)。要让页面级冒烟能真的守住这条,
+            // mock 必须给得出 native 给得出的量。
+            //
+            // [SL-274] **与 native 的 changed 判据同口径**:native 自
+            // `changedAtDisplayPrecision` 起,只登记「量化到 1 位小数后不同**且**幅度过
+            // 半个显示步长」的段;mock 不许发出 native 发不出的那种「看不见的改动」,
+            // 否则页面在 mock 下会显示「pan 4.2→4.2 · vol −8.0→−8.0」这种空条目。
+            // **这里没有加过滤代码**:实测四个 reason × 两个 version 共 232 条里,
+            // 最小 |Δpan| 恰好是 0.1(一整档),一条都滤不掉 —— 加了就是永不触发的死判据
+            // (删掉它没有任何用例会红)。真正决定这件事的是 `panJitter`/`volJitter` 的量级,
+            // 所以约束落在 **smoke-mock.mjs 的断言**上:抖动哪天被调小到产生亚显示精度的
+            // 改动,那条会立刻红、逼人当场处理,而不是被一段静默过滤盖过去。
             if (
                 origin === "auto" &&
                 (ch * 3 + i) % 17 === 0 &&
-                changed.length < 8
+                changed.length < 200
             ) {
                 changed.push({
                     ch,

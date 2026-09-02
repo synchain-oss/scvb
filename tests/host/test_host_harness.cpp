@@ -26,6 +26,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <utility> // [SL-273] std::make_pair(pan/vol 两路快照)
 #include <vector>
 
 #include "BridgeArgs.h"
@@ -1347,6 +1348,78 @@ struct MonoMultiRig
 
     static void pump(int ms) { juce::MessageManager::getInstance()->runDispatchLoopUntil(ms); }
 
+    // -----------------------------------------------------------------------
+    // [SL-273] 每轨**不同波形**(峰值因数各异)的素材。
+    //
+    // **为什么非要它** —— 这是本卡改的核心缺陷。本机台原本三轨都是
+    // `fillSine(amp_i · s(t))`:同一条正弦、同一相位,只缩幅度。于是三轨互为**标量倍**,
+    // x_i(t) = c_i · s(t),而三档 z 全都正比于 c_i²:
+    //     z_kw   = mean(kw_i)        = c_i² · mean(kw_s)          (K 加权是线性滤波,能量二次)
+    //     z_rms  = (mean √kw_i)²     = c_i² · (mean √kw_s)²
+    //     z_peak = max(peak_i)²      = c_i² · max(peak_s)²         (峰值是未加权样本峰)
+    // 换档相当于给每轨的 z 乘一个系数 r_i = z_mode/z_kw,而上面三行说明
+    // **r_i 与 i 无关**(那三个比值把 c_i² 整个约掉了)—— 换档是纯粹的**共模缩放**。
+    // 平衡解对「所有 z 同乘一个常数」严格不变(`zHat = z/zSum` 约掉,增益求解同理),
+    // 所以理论上换档后产出应当**逐位相同**;实测残留的 maxDiff ≈ 0.0011 是每轨
+    // K 加权 IIR 在 float 下各自舍入的产物,**不是信号**。
+    // 旧用例把这 0.0011 当成「换档真的传到了」的证据,阈值只好一路调到 1e-6 ——
+    // 那是在拿浮点噪声当判据:实现真的断链时它同样可能非零,方向上并不安全。
+    //
+    // 旧注释里那句「均值 ∝ amp²、峰值 ∝ amp,两种基准给出的相对能量排序不同」是**错的**:
+    // `peak_dbfs` 档返回的是 `max(peak)²`,与均值一样 ∝ amp²(见 `BalanceBasis.h` 该分支)。
+    // 幅度差**永远**产生不了档间分歧,不管幅度差多大。
+    //
+    // **改法**:让三轨不再互为标量倍 —— 同样的响歇包络、同样的基频,但**峰值因数**
+    // (peak / rms)差一个数量级。峰值因数正是 `max(peak)²` 与 `mean(kw)` 之间的那个比,
+    // 它一变,r_i 就真的离散了,换档才有**设计出来的**信号可断言。
+    //   · ch1 正弦     —— crest = √2 ≈ 1.41
+    //   · ch2 窄脉冲串 —— 64 样本周期里只响 4 个,crest ≈ 5.7(齿音/爆破音的替身)
+    //   · ch3 方波     —— crest = 1(压过头的垫底轨的替身)
+    // 三路都是 `amp × (值域含在 [-1, 1] 的波形)`,故 **没有任何一路会削顶**
+    // (amp 最大 0.5)。方波的样本峰恰好是 amp;正弦在足够多样本上取到 amp;
+    // 窄脉冲串取到的是那 4 个开窗样本里的最大值,略低于 amp —— 三者的**样本峰**
+    // 都在同一量级,而 `mean(kw)` 被 crest 拉开一个数量级,
+    // r_peak = max(peak)²/mean(kw) 的离散度就是这么来的。
+    // (所以本机台的离散度是**设计出来的**,不像旧版那样来自舍入残差;
+    //  具体数值由用例自己断言,不在这里写死。)
+    //
+    // ⚠ 只有显式 `variedCrest = true` 的用例吃这份素材。默认档保持原样,是为了让
+    // 本文件另外二十余条用例的产出**逐位不变** —— 它们断的是别的面,不该被本卡搅动。
+    static void fillVaried(juce::AudioBuffer<float>& buf, float amp, std::int64_t t0, int trackIdx)
+    {
+        for (int c = 0; c < buf.getNumChannels(); ++c)
+        {
+            float* d = buf.getWritePointer(c);
+            for (int i = 0; i < buf.getNumSamples(); ++i)
+            {
+                const std::int64_t n = t0 + i;
+                const double t = static_cast<double>(n) / kSr;
+                const double s = std::sin(2.0 * juce::MathConstants<double>::pi * 440.0 * t);
+                double v = 0.0;
+                if (trackIdx == 1)
+                {
+                    // 窄脉冲串:64 样本一个周期,只有头 4 个样本出声。
+                    // 峰值仍是 amp,而均方降到 ~1/16 ⇒ crest 拉高约 4 倍。
+                    v = ((n % 64) < 4) ? s : 0.0;
+                }
+                else if (trackIdx == 2)
+                {
+                    // 方波:峰值 = amp、均方 = amp² ⇒ crest = 1(三轨里最低)。
+                    v = (s >= 0.0) ? 1.0 : -1.0;
+                }
+                else
+                {
+                    v = s; // 正弦:crest = √2
+                }
+                d[i] = amp * static_cast<float>(v);
+            }
+        }
+    }
+
+    // [SL-273] 每轨波形是否**各不相同**。默认 false = 三轨同相位正弦、只缩幅度
+    // (本文件二十余条用例的既有素材,保持逐位不变);置 true 见 `fillVaried` 头注。
+    bool variedCrest = false;
+
     // 每轨给**不同幅度**的素材:平衡层要有可分的能量差,否则三轨完全对称,
     // 「全是 0」与「解本身就是 0」分不开。
     void runBlocks(int blocks, float amplitude, int pumpEveryN = 4, int pumpMs = 8)
@@ -1356,7 +1429,15 @@ struct MonoMultiRig
             outBuf.clear();
             for (int i = 0; i < kCount; ++i)
             {
-                Rig::fillSine(inBuf, amplitude * (0.4f + 0.3f * static_cast<float>(i)), ph.timeSamples);
+                const float amp = amplitude * (0.4f + 0.3f * static_cast<float>(i));
+                if (variedCrest)
+                {
+                    fillVaried(inBuf, amp, ph.timeSamples, i);
+                }
+                else
+                {
+                    Rig::fillSine(inBuf, amp, ph.timeSamples);
+                }
                 ins[static_cast<std::size_t>(i)]->processBlock(inBuf, midi);
             }
             out.processBlock(outBuf, midi);
@@ -1463,11 +1544,16 @@ struct MonoMultiRig
         return false;
     }
 
-    // 该轨段表里第一个段的 pan(无段回 NaN)。
-    // [SL-263] 全轨全段的 (pan, volDb) 展平快照 —— 换响度档前后对拍用。
+    // [SL-263] 全轨全段的展平快照 —— 换响度档前后对拍用。
     // 挂在本机台上而不是另造一台:本文件 ~25 条用例已经在用它,再造第二台多轨 rig
     // 就是「同一语义两个落点」(#171 复审【重要】;判例见 analysis/HopMath.h 头注)。
-    std::vector<double> panVolOf()
+    //
+    // [SL-273] 原本只有一个 `panVolOf()`,把 pan 与 volDb 交错压进同一条 vector。
+    // 那样只答得出「有没有哪一位变了」,答不出「变的是 pan 还是 vol」—— 而这两件事的
+    // 性质完全不同(pan 只在指派掉到 level 2 时才动,vol 才是换档的必然信号,
+    // 逐字见 tests/core/test_analysis_pipeline.cpp 里 [SL252/SL-273] 那条的头注)。
+    // 拆成两个取值器,断言各断各的。
+    std::vector<double> flatOf(bool wantPan)
     {
         std::vector<double> v;
         const auto crvs = out.crvsSnapshot();
@@ -1476,13 +1562,15 @@ struct MonoMultiRig
         {
             for (const auto& seg : ver.tracks[static_cast<std::size_t>(ch - 1)].segments)
             {
-                v.push_back(static_cast<double>(seg.pan));
-                v.push_back(static_cast<double>(seg.volDb));
+                v.push_back(static_cast<double>(wantPan ? seg.pan : seg.volDb));
             }
         }
         return v;
     }
+    std::vector<double> pansOf() { return flatOf(true); }
+    std::vector<double> volsOf() { return flatOf(false); }
 
+    // 该轨段表里第一个段的 pan(无段回 NaN)。
     double firstPan(int ch)
     {
         const auto crvs = out.crvsSnapshot();
@@ -6794,17 +6882,36 @@ TEST_CASE("HOST SL-255:取消松手档重分段后,下一次「点分析」的 r
 // **必须多轨**:平衡层的 z 只在轨与轨之间才有意义(`zHat = z / zSum`),单轨时 zSum
 // 就是它自己 ⇒ zHat ≡ 1,换任何档产出都一样,那样的用例永远绿。
 //
-// 用**既有的** `MonoMultiRig`(3 轨、每轨不同幅度),不另造机台 —— #171 复审【重要】:
-// 本文件早就有它、~25 条用例在用,真正缺的只有「`setAnalysisConfig` 那一跳没人调」
-// 与「全轨全段展平快照」两样,已就地补成 `panVolOf()`。
+// 用**既有的** `MonoMultiRig`(3 轨),不另造机台 —— #171 复审【重要】:本文件早就有它、
+// ~25 条用例在用,真正缺的只有「`setAnalysisConfig` 那一跳没人调」与「全轨全段展平快照」
+// 两样,已就地补成 `pansOf()` / `volsOf()`。
 //
-// 三档分叉的机理:三轨**幅度不同**(`amplitude * (0.4 + 0.3i)`),而
-// 均值 ∝ amp²、峰值 ∝ amp —— 两种基准给出的**相对**能量排序不同,指派结果因此分叉。
-// (不是占空比差异:本机台三轨响歇是同相位的。)
+// ---------------------------------------------------------------------------
+// [SL-273] **本用例此前测的是浮点噪声,改的就是这一处。**
+//
+// 旧版的机理注释写着:「三轨幅度不同,而均值 ∝ amp²、峰值 ∝ amp —— 两种基准给出的
+// 相对能量排序不同,指派结果因此分叉」。**两句都错**:
+//   · `peak_dbfs` 档返回的是 `max(peak)²`(`BalanceBasis.h` 该分支逐字),与均值一样
+//     ∝ amp²。三轨互为标量倍时,三档 z 全都正比于同一个 c_i²,换档 = **共模缩放**,
+//     而平衡解对共模缩放严格不变 ⇒ 换档本应**逐位不变**。幅度差多大都不产生分歧。
+//   · 变的也不是「指派结果」:指派代价 `baseCost()` 一个字都不读 z(见
+//     tests/core/test_analysis_pipeline.cpp 里 [SL252/SL-273] 那条的头注)。
+// 旧版实测到的 maxDiff ≈ 0.0011 是每轨 K 加权 IIR 在 float 下各自舍入的残差,
+// 于是阈值只好一路调到 1e-6 —— 那是拿浮点噪声当判据,断链时它同样可能非零。
+//
+// 改法:开 `variedCrest`,让三轨**峰值因数**差一个数量级(正弦 / 窄脉冲串 / 方波,
+// 见 `MonoMultiRig::fillVaried` 头注)。峰值因数一离散,`max(peak)²` 与 `mean(kw)`
+// 的比就真的按轨不同,换档才有**设计出来的**信号。断言随之分成两路:
+//   · **volDb 必须真变**,且幅度要够大(阈值按 UI 显示步长 0.1 dB 定,不是按噪声定);
+//   · **pan 逐位不动** —— 指派代价不读 z 的直接推论,也是「vol 真变」不是随机抖动的
+//     旁证:真要是数值噪声在动,pan 不会一位不差地对上。
 // ---------------------------------------------------------------------------
 TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAnalysis 那一跳)", "[host][analyze][loudness][SL263]")
 {
     MonoMultiRig r;
+    // [SL-273] 三轨波形各异(峰值因数拉开一个数量级)。**必须在采集之前置位** ——
+    // `capture()` 内部就在跑 `runBlocks`,晚一步这份素材就进不了特征环。
+    r.variedCrest = true;
     r.ph.playing = true;
     REQUIRE(r.waitUntilInjected());
     REQUIRE(r.capture() > 1.0);
@@ -6822,29 +6929,44 @@ TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAn
     const auto analyze = [&r, startS, endS](const char* mode) {
         r.out.setAnalysisConfig(mode, "", /*hasLoudness=*/true, /*hasCenter=*/false);
         REQUIRE(r.runAnalysisIn(startS, endS, /*clearManual=*/true));
-        return r.panVolOf();
+        return std::make_pair(r.pansOf(), r.volsOf());
     };
 
-    const auto vK = analyze("kw_integrated");
-    REQUIRE_FALSE(vK.empty()); // 没段就什么都测不出来 —— 素材不够时这里先红
+    // 用具名 vector 而不是结构化绑定:Catch2 的 INFO/CAPTURE 宏会把表达式塞进
+    // 内部对象里,而 C++17 的结构化绑定名在有些捕获形态下不可用 —— 换个写法就没这事。
+    const auto pairK = analyze("kw_integrated");
+    const std::vector<double> panK = pairK.first;
+    const std::vector<double> volK = pairK.second;
+    REQUIRE_FALSE(panK.empty()); // 没段就什么都测不出来 —— 素材不够时这里先红
 
-    const auto vP = analyze("peak_dbfs");
-    REQUIRE(vP.size() == vK.size());
+    const auto pairP = analyze("peak_dbfs");
+    const std::vector<double> panP = pairP.first;
+    const std::vector<double> volP = pairP.second;
+    REQUIRE(panP.size() == panK.size());
+    REQUIRE(volP.size() == volK.size());
 
-    // 「真变」不用精确不等(#171 复审【建议】:那样任何 1e-16 抖动都能把它变绿),但阈值也
-    // **不能拍脑袋定大** —— 我第一版写 0.01,而本机台实测信号量级是 **1e-3**(maxDiff≈0.0011),
-    // 于是用例在一条真的通了的路径上假红,gates 因此红了一轮。
-    //
-    // 定 1e-6 的依据:断链态两轮**输入与配置逐位相同、流水线确定性** ⇒ maxDiff **恰为 0**,
-    // 所以任何正阈值都检得出;1e-6 远高于 double 噪声、又远低于实测信号 1e-3,
-    // 两头都留了三个数量级余量。**将来信号变小时该查机台幅度差,不是继续调小阈值。**
-    double maxDiff = 0.0;
-    for (std::size_t i = 0; i < vP.size(); ++i)
+    // ---- volDb:必须真变,阈值按**用户看得见**定 -----------------------------
+    // 旧版这里是 `> 1e-6`。那个数是被机台逼出来的:三轨互为标量倍时换档本该逐位不变,
+    // 实测到的 1e-3 只是 float 舍入残差,阈值只能贴着噪声定。素材换成峰值因数各异之后,
+    // 信号是**设计出来的**,于是阈值也回到有物理意义的那把尺:0.1 dB = UI 显示步长
+    // (`fmtSigned(x, 1)`),比它小的差用户根本读不出来,不配当「换档真的传到了」的证据。
+    // **将来这里变红,先查机台素材的峰值因数还在不在,不是把阈值调小。**
+    double maxVolDiff = 0.0;
+    for (std::size_t i = 0; i < volP.size(); ++i)
     {
-        maxDiff = std::max(maxDiff, std::abs(vP[i] - vK[i]));
+        maxVolDiff = std::max(maxVolDiff, std::abs(volP[i] - volK[i]));
     }
-    INFO("换档前后最大差 = " << maxDiff);
-    CHECK(maxDiff > 1e-6); // 删掉 startAnalysis 那行赋值 / 把 balanceBasisZ 换回 meanKw ⇒ 必红
+    INFO("换档前后 volDb 最大差 = " << maxVolDiff);
+    CHECK(maxVolDiff > 0.1); // 删掉 startAnalysis 那行赋值 / 把 balanceBasisZ 换回 meanKw ⇒ 必红
+
+    // ---- pan:逐位不动 --------------------------------------------------------
+    // 指派代价不读 z 的直接推论。它同时是上面那条的**对照**:若 volDb 的差来自数值噪声
+    // 而非换档,pan 不可能一位不差地对上。
+    for (std::size_t i = 0; i < panP.size(); ++i)
+    {
+        INFO("段 " << i << ":pan " << panK[i] << " -> " << panP[i]);
+        CHECK(panP[i] == panK[i]);
+    }
 }
 
 // ---------------------------------------------------------------------------

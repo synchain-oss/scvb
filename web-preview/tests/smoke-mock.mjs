@@ -692,5 +692,49 @@ log("\n=== ⑦ [J83] participate_in_auto_pan 默认档 ===");
     log(`  stereo-mixed:ch${mirrorCh} 两侧同为 false(§4.3 只读镜像自洽)`);
 }
 
+// ---------------------------------------------------------------------------
+// [SL-274] diff.changed 的每一条都必须是**用户看得见**的改动。
+//
+// native 侧 `src/core/output/SegmentDiff.h::changedAtDisplayPrecision` 只登记
+// 「量化到 1 位小数后不同 **且** 幅度 >= 半个显示步长」的段 —— 这一条是本卡的修复:
+// 用户 v5.6.5 实测「摘要弹出全轨全段」,里头大半是屏幕上看不出差别的条目。
+// mock 若发得出 native 发不出的东西,页面级冒烟看到的就不是真机会有的画面。
+//
+// **为什么断在这里、而不是在 mock 里加一段过滤**:实测四个 reason x 两个 version
+// 共 232 条,最小 |dPan| 恰好是 0.1(一整档),过滤代码一条都滤不掉 —— 那是永不触发的
+// 死判据,删掉它不会有任何用例变红。真正决定这件事的是 panJitter / volJitter 的量级,
+// 所以把约束写成断言:哪天有人把抖动调小到能产生亚显示精度的改动,这里立刻红,
+// 逼人当场决定「改抖动还是给 mock 加过滤」,而不是被一段静默过滤盖过去。
+log("");
+log("=== [SL-274] mock 的 diff.changed 与 native 判据同口径 ===");
+{
+    const md = await import(u("web/shared/mock-data.js"));
+    const GATE = 0.05; // 半个显示步长(native 的 kChangeAmplitudeGate)
+    let seen = 0;
+    let invisible = 0;
+    let minPan = Infinity;
+    for (const reason of ["vad", "segmentation", "analyze", "edit"]) {
+        for (let v = 1; v <= 2; v++) {
+            for (const c of md.makeSegments(v, reason).diff.changed || []) {
+                seen++;
+                const dp = Math.abs(c.panTo - c.panFrom);
+                const dv = Math.abs(c.volDbTo - c.volDbFrom);
+                minPan = Math.min(minPan, dp);
+                if (dp < GATE && dv < GATE) invisible++;
+            }
+        }
+    }
+    check(seen > 100, `样本量够大(实得 ${seen} 条,应 >100)`);
+    check(
+        invisible === 0,
+        `每条 changed 至少有一维过得了 native 的幅度闸门 ${GATE}` +
+            `(实得 ${invisible} 条两维都低于闸门 —— native 不会发这种条目,` +
+            "mock 也不该发:要么把 panJitter/volJitter 调回大幅度,要么给 mock 补过滤)",
+    );
+    log(
+        `  ${seen} 条 changed,零条亚显示精度;最小 |dPan| = ${minPan.toFixed(4)}`,
+    );
+}
+
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

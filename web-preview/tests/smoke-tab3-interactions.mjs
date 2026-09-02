@@ -1963,7 +1963,7 @@ log("=== ⑧ Wave 2 新词条三语(反馈件族;U17 注记)===");
         "wave.btnMerge",
         "wave.recaptureOverlap",
         "wave.diffItem",
-        "wave.diffAddedRemoved",
+        "wave.diffSummary",
         "wave.clearedCoverage",
     ];
     const ph = (s) => (String(s).match(/\{\w+\}/g) || []).sort().join(",");

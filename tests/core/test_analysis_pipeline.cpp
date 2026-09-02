@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm> // [SL-273] std::max(两路 maxAbsDiff)
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -357,11 +358,43 @@ TEST_CASE("[SL252] balanceBasisZ:默认档逐位等于 meanKw,三档真分歧且
 //
 // 本仓对这类「守得住零件、守不住那一跳」的缺口有判例(`OutputEditor.cpp:857`:
 // 「HOST R4 用例守的是降级链三函数本身,守不到『这里还在调它』这一跳…否则测试照绿而 bug 回归」)。
-// 本用例就补在**用户第 19 条实测所处的观察层**:同一批特征、同一份配置,只换档,看 pan 变不变。
+// 本用例就补在**用户第 19 条实测所处的观察层**:同一批特征、同一份配置,只换档,看产出变不变。
+//
 // ---------------------------------------------------------------------------
-TEST_CASE("[SL252] 流水线级:换档 → pan 真变;默认档与不设该字段逐位相同", "[analysis][pipeline][balance][SL252]")
+// [SL-273] **本用例此前名不副实,改的就是这一处。**
+//
+// 旧版有一个叫 `panOf()` 的取值器,名字写着 pan,身体里却把 `pan` 与 `volDb` 交错
+// `push_back` 进同一个 `vector`,再对整条 vector 断言「至少有一位不同」。于是:
+//   · 用例名与断言文字都说「换档 → pan 真变」;
+//   · 而**真正让它变绿的是 volDb** —— 实测 peak 档下 pan **一位都没动**(见下)。
+// 名不副实的用例比没有用例更坏:它让「pan 到底该不该变」这个问题看起来已经有人守着了。
+//
+// 拆开量之后的**实测**(seg-r3 探针,同一份素材、同一份配置,只换档):
+//   ┌────────────┬──────────────────────┬──────────────────────┐
+//   │            │ pan                  │ volDb                │
+//   ├────────────┼──────────────────────┼──────────────────────┤
+//   │ peak vs kw │ 逐位相同(maxDiff 0)│ maxDiff 1.75 dB      │
+//   │ rms  vs kw │ 24 位里 8 位不同     │ maxDiff 1.42 dB      │
+//   └────────────┴──────────────────────┴──────────────────────┘
+//
+// **pan 为什么可以不动**(`AutoAssign.cpp` 逐字):第一趟指派的代价 `baseCost()` 只读
+// `priority` / `prevPan` / 槽位几何,**一个字都不读 z**;z 只在 `entryCost()` 里经
+// `balHint->zHat` 进来,而 `balHint` 只有第二趟(`solveBalanceWithFallback` 的 level 2,
+// 首趟 solveBalance 不收敛才走)才非空。所以:
+//   · level 1 收敛 ⇒ pan 与 loudness_mode **无关**,换档只动 volDb(peak 那一行);
+//   · 落到 level 2 ⇒ zHat 进了指派代价,pan 才可能跟着动(rms 那一行)。
+// 换句话说 **volDb 才是「换档真的传到了平衡层」的必然信号,pan 只是偶然信号**。
+// 所以下面按两路分开断言,且把必然的那一路(volDb)定为主断言。
+//
+// ⚠ 不要把 rms 那一行的「pan 变了 8 位」也写成断言:它取决于首趟收不收敛,
+// 素材一动就可能翻面 —— 那是**记录**,不是判据。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL252/SL-273] 流水线级:换档 → volDb 真变、peak 档 pan 逐位不动;默认档与不设该字段逐位相同",
+          "[analysis][pipeline][balance][SL252][SL273]")
 {
-    // 三轨占空比不同 ⇒ 「均值」与「峰值」给出的相对能量排序不同 ⇒ 指派结果必然分叉。
+    // 三轨占空比不同 ⇒ 「均值」与「峰值」给出的相对能量排序不同 ⇒ **平衡增益**分叉。
+    // (旧注释这里写的是「指派结果必然分叉」—— [SL-273] 实测证伪:peak 档下 pan 逐位不动,
+    //  分叉全在 volDb 上。指派代价不读 z,见用例头注。)
     // ⚠ 易脆性提示(#168 复审):`makeAlternating` 里 `peak = sqrt(kw)`,故 `max(peak)² ≡ max(kw)`,
     // `peak_dbfs` 与 `kw_integrated` 的分歧**完全来自「段内含次峰值 hop」**。将来若 VAD / 谷切分
     // 调参让段正好贴合响区,本用例会变成**假红**(方向安全:不是假绿,但排查成本不低)——
@@ -372,63 +405,98 @@ TEST_CASE("[SL252] 流水线级:换档 → pan 真变;默认档与不设该字�
     features[2] = makeAlternating(4, 80, 80, 0.03f);
     const std::size_t n = features[0].kwMs.size();
 
-    const auto panOf = [](const PipelineResult& r) {
+    // [SL-273] 两个取值器,**各取各的**。合成一条交错 vector 是旧版名不副实的根源。
+    const auto pansOf = [](const PipelineResult& r) {
         std::vector<double> v;
         for (int t = 0; t < 3; ++t)
         {
             for (const auto& s : r.segments[static_cast<std::size_t>(t)])
             {
                 v.push_back(s.pan);
+            }
+        }
+        return v;
+    };
+    const auto volsOf = [](const PipelineResult& r) {
+        std::vector<double> v;
+        for (int t = 0; t < 3; ++t)
+        {
+            for (const auto& s : r.segments[static_cast<std::size_t>(t)])
+            {
                 v.push_back(s.volDb);
             }
         }
         return v;
     };
+    // 「至少有一位差得过阈值」。阈值 0.1 dB = UI 显示步长:比它小的差用户看不见,
+    // 拿来当「换档真的传到了」的证据太弱(实测信号 1.4~1.75 dB,留了一个数量级余量)。
+    const auto maxAbsDiff = [](const std::vector<double>& a, const std::vector<double>& b) {
+        double m = 0.0;
+        for (std::size_t i = 0; i < a.size() && i < b.size(); ++i)
+        {
+            m = std::max(m, std::abs(a[i] - b[i]));
+        }
+        return m;
+    };
 
-    // ① 不设该字段(= 修订前的行为)与显式默认档,**逐位相同**。
+    // ① 不设该字段(= 修订前的行为)与显式默认档,**pan 与 volDb 都逐位相同**。
     //    这一条钉死「默认档不得走等价换算」——它与 `[SL252]` 纯函数用例的 `==` 互为里外。
     auto cfgDefault = makeConfig(n, 3);
     auto cfgK = makeConfig(n, 3);
     cfgK.balance.loudnessMode = LoudnessMode::KIntegrated;
-    const auto vDefault = panOf(runAnalysisPipeline(features, cfgDefault));
-    const auto vK = panOf(runAnalysisPipeline(features, cfgK));
-    REQUIRE_FALSE(vDefault.empty());
-    REQUIRE(vDefault.size() == vK.size());
-    for (std::size_t i = 0; i < vDefault.size(); ++i)
+    const auto rDefault = runAnalysisPipeline(features, cfgDefault);
+    const auto rK = runAnalysisPipeline(features, cfgK);
+    const auto panDefault = pansOf(rDefault);
+    const auto volDefault = volsOf(rDefault);
+    const auto panK = pansOf(rK);
+    const auto volK = volsOf(rK);
+    REQUIRE_FALSE(panDefault.empty());
+    REQUIRE(panDefault.size() == panK.size());
+    REQUIRE(volDefault.size() == volK.size());
+    for (std::size_t i = 0; i < panDefault.size(); ++i)
     {
-        CHECK(vDefault[i] == vK[i]); // 逐位,不是近似
+        CHECK(panDefault[i] == panK[i]); // 逐位,不是近似
+        CHECK(volDefault[i] == volK[i]);
     }
 
-    // ② 换到 peak_dbfs 档 ⇒ 产出**必须真变**。
-    //    断链时代这里恒等 —— 那正是用户 v5.6.3 实测第 19 条看到的现象。
+    // ② 换到 peak_dbfs 档。**两路分开断,各钉各的**:
+    //    · volDb **必须真变** —— 换档传到了平衡层的**必然**信号(z 只影响增益求解);
+    //      断链时代这里恒等,那正是用户 v5.6.3 实测第 19 条看到的现象。
+    //    · pan **必须逐位不动** —— 首趟指派代价一个字都不读 z(见用例头注)。
+    //      这一条是新增的:谁把 z 引进 `baseCost()`,或让本该 level 1 收敛的解掉进
+    //      level 2,这里立刻红。旧版把它和 volDb 揉在一条 `anyDiff` 里,等于没守。
     auto cfgP = makeConfig(n, 3);
     cfgP.balance.loudnessMode = LoudnessMode::PeakDbfs;
-    const auto vP = panOf(runAnalysisPipeline(features, cfgP));
-    REQUIRE(vP.size() == vK.size());
-    bool anyDiff = false;
-    for (std::size_t i = 0; i < vP.size() && !anyDiff; ++i)
-    {
-        anyDiff = (vP[i] != vK[i]);
-    }
-    // ⚠ **本行钉住的只有回归 ②**(`AnalysisPipeline.cpp` 里 `balanceBasisZ(...)` 被换回
-    // `meanKw(...)`)。**钉不住回归 ①**(删掉 `OutputProcessor.cpp` 的
+    const auto rP = runAnalysisPipeline(features, cfgP);
+    const auto panP = pansOf(rP);
+    const auto volP = volsOf(rP);
+    REQUIRE(panP.size() == panK.size());
+    REQUIRE(volP.size() == volK.size());
+    // ⚠ **volDb 这一行钉住的只有回归 ②**(`AnalysisPipeline.cpp` 里 `balanceBasisZ(...)`
+    // 被换回 `meanKw(...)`)。**钉不住回归 ①**(删掉 `OutputProcessor.cpp` 的
     // `cfg.balance.loudnessMode = ...`):本用例自己装配 cfg、**整条路径不经 startAnalysis**,
-    // 那行删掉这里照样全绿。那一跳要**多轨** host 用例才测得出 —— 单轨下 `zHat = z/zSum`
-    // 恒为 1、换档产出必然相同,而现有 Rig 只绑一个 Input(已另立卡 SL-263)。
+    // 那行删掉这里照样全绿。那一跳由 host 侧 `HOST SL263` 那条多轨用例接住。
     // 留在仓里被后人读到的是注释、不是 commit message,所以缺口写在这里而不只写在提交说明里。
-    CHECK(anyDiff);
+    INFO("peak vs kw:volDb maxDiff = " << maxAbsDiff(volP, volK));
+    CHECK(maxAbsDiff(volP, volK) > 0.1); // 实测 1.75 dB
+    for (std::size_t i = 0; i < panP.size(); ++i)
+    {
+        CHECK(panP[i] == panK[i]);
+    }
 
-    // ③ rms 档同理:与默认档不同(三档两两分叉在纯函数层已钉,这里钉「传得到」)。
+    // ③ rms 档:同样断 volDb 真变(三档两两分叉在纯函数层已钉,这里钉「传得到」)。
+    //    ⚠ **pan 在这一档实测会变**(24 位里 8 位不同,maxDiff 15)—— 首趟 solveBalance
+    //    不收敛、落到 level 2 的平衡感知重指派,zHat 于是进了指派代价。这是设计内的,
+    //    但它取决于收敛与否、素材一动就可能翻面,所以**只记录、不断言**(写成断言
+    //    会得到一条随机翻面的用例)。要断「level 2 这条路还通」得另立一条直接压
+    //    `solveBalanceWithFallback` 的用例,那属 AutoAssign 的面,不在本文件。
     auto cfgR = makeConfig(n, 3);
     cfgR.balance.loudnessMode = LoudnessMode::Rms;
-    const auto vR = panOf(runAnalysisPipeline(features, cfgR));
-    REQUIRE(vR.size() == vK.size());
-    bool anyDiffR = false;
-    for (std::size_t i = 0; i < vR.size() && !anyDiffR; ++i)
-    {
-        anyDiffR = (vR[i] != vK[i]);
-    }
-    CHECK(anyDiffR);
+    const auto rR = runAnalysisPipeline(features, cfgR);
+    const auto volR = volsOf(rR);
+    REQUIRE(volR.size() == volK.size());
+    INFO("rms vs kw:volDb maxDiff = " << maxAbsDiff(volR, volK));
+    CHECK(maxAbsDiff(volR, volK) > 0.1); // 实测 1.42 dB
 }
 
 // ---------------------------------------------------------------------------
