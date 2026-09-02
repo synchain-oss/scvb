@@ -111,12 +111,28 @@ export function distBarVars(geo) {
     return { "--x": geo.x.toFixed(2) + "%", "--h": geo.h.toFixed(2) + "%" };
 }
 
-/** 一条立体声张开横线的 CSS 变量(左端 + 宽 + 高度基线)。 */
+/**
+ * 一条立体声张开横线的 CSS 变量(左端 + 宽 + 高度基线 + 线粗)。
+ *
+ * [SL-269] `--span-h` 是**线粗**,不是几何量:它只有两个取值。
+ * `half` 被 `x` 与 `100 - x` 夹住(见 `distGeometry`),声像拖到硬左/硬右时它归零 ——
+ * 而一个宽 0、高 1.5px、带 pill 圆角的盒子在光栅上仍会留下一小道痕(用户实测)。
+ * 零宽时把高一起归零,这个元素才真的一个像素都不画。CSS 侧写成
+ * `height: var(--span-h, 1.5px)`,缺省值与旧的写死值逐字相同 —— 没喂到这个变量的
+ * 调用方(若有)行为不变。
+ */
+export const SPAN_THICKNESS_PX = 1.5;
+
 export function distSpanVars(geo) {
+    const w = geo.half * 2;
     return {
         "--x0": (geo.x - geo.half).toFixed(2) + "%",
-        "--w": (geo.half * 2).toFixed(2) + "%",
+        "--w": w.toFixed(2) + "%",
         "--y": "calc(18px + " + geo.h.toFixed(2) + "%)",
+        // 判据用 `toFixed(2)` 之后的那个数,不是 `w` 本身:CSS 拿到的是格式化后的串,
+        // 「渲染出来是 0 宽」与「原始值恰好 0」不是一回事(half = 0.001 会写成 "0.00%",
+        // 屏幕上照样是零宽的一道痕)。
+        "--span-h": Number(w.toFixed(2)) > 0 ? SPAN_THICKNESS_PX + "px" : "0px",
     };
 }
 

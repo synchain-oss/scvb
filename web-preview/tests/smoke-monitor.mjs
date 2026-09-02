@@ -99,8 +99,12 @@ log("=== ① 提取件不回归(Output 侧零行为变化)===");
     // 两段模板)。照着新实现抄一遍是自证,故这里保留旧写法的每一处空格与顺序。
     const oracleBar = (ch, geo, tc, hi, lead) =>
         `<div class="dist-bar" data-lead="${lead ? 1 : 0}" data-ch="${ch}" data-hi="${hi}" style="${tc}--x:${geo.x.toFixed(2)}%;--h:${geo.h.toFixed(2)}%"></div>`;
+    // ⚠ [SL-269] 张开线的 oracle 比提取前的模板**多一个** `--span-h` —— 这是本仓有意
+    // 的偏离,不是抄漏:零宽时线粗要一起归零,否则硬左/硬右的声像会在光栅上留一小道痕。
+    // 这里把新变量原样写进 oracle(而不是放宽成 startsWith),逐字节的约束因此一格没松:
+    // 值算错、顺序换了、变量名改了,这一条照旧红。
     const oracleSpan = (ch, geo, tc, hi) =>
-        `<div class="dist-span" data-ch="${ch}" data-hi="${hi}" style="${tc}--x0:${(geo.x - geo.half).toFixed(2)}%;--w:${(geo.half * 2).toFixed(2)}%;--y:calc(18px + ${geo.h.toFixed(2)}%)"></div>`;
+        `<div class="dist-span" data-ch="${ch}" data-hi="${hi}" style="${tc}--x0:${(geo.x - geo.half).toFixed(2)}%;--w:${(geo.half * 2).toFixed(2)}%;--y:calc(18px + ${geo.h.toFixed(2)}%);--span-h:${Number((geo.half * 2).toFixed(2)) > 0 ? "1.5px" : "0px"}"></div>`;
 
     const rows = [
         {
@@ -2470,9 +2474,52 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         );
         check(
             html.includes(
-                `--x0:${span["--x0"]};--w:${span["--w"]};--y:${span["--y"]}`,
+                `--x0:${span["--x0"]};--w:${span["--w"]};--y:${span["--y"]};` +
+                    `--span-h:${span["--span-h"]}`,
             ),
-            "distSpanVars 的串与拼串模板逐字相同",
+            "distSpanVars 的串与拼串模板逐字相同(含 [SL-269] 的 --span-h)",
+        );
+    }
+
+    // ---- [SL-269] 张开横线在**零宽**时必须连线粗一起归零
+    //
+    // `half` 被 `x` 与 `100 - x` 夹住(distGeometry),声像拖到硬左/硬右时它归零 ——
+    // 而一个宽 0、高 1.5px、带 pill 圆角的盒子在光栅上仍留一小道痕(用户实测)。
+    // 这一组是 `--span-h` 的**删除式判据**:把 distSpanVars 里那行三元退回恒 "1.5px",
+    // (b) 与 (c) 立刻红。
+    {
+        const wide = DC.distSpanVars(DC.distGeometry(0, 0, 100, 100));
+        check(
+            Number(wide["--w"].replace("%", "")) > 0,
+            `(a) 前提:声像居中 + width 100 时张开线确有宽度(实得 ${wide["--w"]})`,
+        );
+        eq(wide["--span-h"], "1.5px", "(b) 有宽度时线粗仍是原来那个 1.5px");
+
+        // 硬左:half 被 `x = 0` 夹成 0。
+        const hardL = DC.distGeometry(-100, 0, 100, 100);
+        eq(hardL.half, 0, "(c) 前提:硬左时 half 归零");
+        eq(
+            DC.distSpanVars(hardL)["--span-h"],
+            "0px",
+            "(c) ★ 零宽 ⇒ 线粗也归零",
+        );
+        // 硬右同理(两端都要,`Math.min(…, x, 100 - x)` 是两个夹子)。
+        const hardR = DC.distGeometry(100, 0, 100, 100);
+        eq(hardR.half, 0, "(d) 前提:硬右时 half 归零");
+        eq(DC.distSpanVars(hardR)["--span-h"], "0px", "(d) ★ 硬右侧同样归零");
+
+        // 判据必须落在**格式化之后**的那个数上:half 小到 toFixed(2) 会写成 "0.00%" 时,
+        // 屏幕上照样是零宽的一道痕。用原始 `half > 0` 判的话这一条会红。
+        const tiny = { x: 50, h: 50, half: 0.001 };
+        eq(
+            DC.distSpanVars(tiny)["--w"],
+            "0.00%",
+            "(e) 前提:极小 half 格式化成 0.00%",
+        );
+        eq(
+            DC.distSpanVars(tiny)["--span-h"],
+            "0px",
+            "(e) ★ 格式化后为零宽 ⇒ 线粗归零(按原始 half>0 判的话这里是 1.5px)",
         );
     }
 

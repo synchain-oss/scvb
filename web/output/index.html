@@ -1209,6 +1209,26 @@
                    哪天高亮改成「只改属性不重拼」,这条过渡才会真正生效。
                    守卫 = smoke-output-dist-page 的「渲染位置紧跟写入值」+ smoke-tab1 的源码断言。 */
                 transition: opacity var(--dur-1) var(--ease);
+                /* [SL-269] **各柱独占一个合成层**。
+                   用户实测(v5.6.5,WebView2):播放中分布图里每根柱子的顶端会往上拖出一条
+                   与轨同色的 1px 竖线,一路到 plot 顶边,多轨同时。无头 Chrome 复现不出来 ——
+                   这是光栅面的**失效矩形**问题,不是布局问题:SL-203(PR 121)之前每帧重拼
+                   innerHTML,节点整批销毁重建,等于每帧全量失效,天然盖住;改成「常驻节点逐帧
+                   写 --x/--h」之后,变的是 `left`/`height` 这两个布局属性,柱顶扫过的那一列
+                   像素要靠父层的失效矩形去擦,而柱顶有 3px 圆角、顶端有效宽约 1px,又落在
+                   亚像素上(--h 是 toFixed(2) 的百分比)—— 擦不干净的残片逐帧累积成竖线。
+                   把柱子提成自己的合成层之后,几何变化只重栅格化本层,腾出来的那一列由父层
+                   原样合成,不存在「擦不干净」。
+                   两条声明**不是**抄重了:`will-change: transform` 是「请提层」的**提示**,
+                   Chromium 允许在内存吃紧或判定该元素并不在动时不理它;`translateZ(0)` 是一个
+                   真的 3D 变换,提层是**结果**而不是建议。本条修的是一台我们复现不了的机器上的
+                   光栅行为,两条一起写是为了不把结论押在那个提示会被采纳上。代价有界:
+                   分布图最多 15 根柱 + 15 条张开线,层数是常数级,不随时长或轨内容增长。
+                   ⚠ 判据只能是**真机**:本条修的是 WebView2 的光栅行为,无头 Chrome 上修前
+                   修后都不出线。页面级冒烟守的是「这条声明还在」(见 smoke-output-dist-page
+                   ⑨),不是「线没了」—— 别把它读成后者。 */
+                will-change: transform;
+                transform: translateZ(0);
             }
             /* lead 轨原本整根染绿(--dist-bar-lead);轨色进来之后那条通道被占用,
                绿色语义改挂**柱顶 2px 帽**——身份色(轨)与语义色(lead)各占一处,
@@ -1234,11 +1254,18 @@
                 bottom: var(--y, 40%);
                 left: var(--x0, 45%);
                 width: var(--w, 10%);
-                height: 1.5px;
+                /* [SL-269] 高度**由写入面给**,不再写死 1.5px。张开半宽被 `x` 与 `100-x`
+                   夹住(distGeometry 的 `half`),声像拖到硬左/硬右时它归零 —— 而一个
+                   宽 0、高 1.5px 的胶囊在光栅上仍会留下一小道痕。零宽时连高一起归零,
+                   这个元素才真的什么都不画。真源在 `distSpanVars`(--span-h)。 */
+                height: var(--span-h, 1.5px);
                 border-radius: var(--r-pill);
                 background: rgba(var(--tc), 0.8);
                 /* 同上:张开横线的 --x0/--w/--y 喂 left/width/bottom,几何不过渡。 */
                 transition: opacity var(--dur-1) var(--ease);
+                /* [SL-269] 与 .dist-bar 同一条理由:独占合成层,几何变化不脏父层。 */
+                will-change: transform;
+                transform: translateZ(0);
             }
             /* 底轴五刻度(设计稿 L552-554:左 L / −50 / 中 C / +50 / 右 R) */
             .dist-axis {

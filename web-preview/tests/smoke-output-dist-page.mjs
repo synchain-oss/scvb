@@ -1004,6 +1004,104 @@ try {
 
         assertClean("SL-251 闪烁");
     }
+
+    // =========================================================================
+    // ⑨ [SL-269] 分布图的**光栅面**:合成层隔离 + 零宽张开线
+    // -------------------------------------------------------------------------
+    // 用户实测(v5.6.5,WebView2):播放中每根柱子的顶端往上拖出一条与轨同色的细竖线,
+    // 一路到 plot 顶边,多轨同时。
+    //
+    // ⚠ 先把这一节**证明不了**什么说清楚,免得下一个人把它读成「线没了」:
+    //   拖影是 WebView2 的失效矩形行为,**无头 Chrome 上修前修后都不出线** —— 本套跑的
+    //   正是无头 Chrome,所以它守不到现象。它守的是**修法还在**:两条声明(合成层隔离)
+    //   与一条几何(零宽 ⇒ 零高)在**渲染面**上确实生效。现象一侧的判据只有真机。
+    //   这也是为什么这里读的是 getComputedStyle / getBoundingClientRect 而不是源码正则:
+    //   源码里写了 ≠ 这条规则真的落到了元素上(选择器写错、被后面的规则盖掉都可能)。
+    // =========================================================================
+    {
+        newBucket("sl269-raster");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+
+        // ---- (a) 柱与张开线各自独占合成层
+        const layers = await evaluate(
+            IN(`
+            const one = (sel) => {
+                const n = q(sel);
+                if (!n) return null;
+                const cs = w.getComputedStyle(n);
+                return { willChange: cs.willChange, transform: cs.transform };
+            };
+            return { bar: one(".dist-bar"), span: one(".dist-span"),
+                     bars: all(".dist-bar").length, spans: all(".dist-span").length };
+        `),
+        );
+        check(
+            layers && layers.bars > 0 && layers.spans > 0,
+            `(a) 前提:页面上确有柱与张开线(实得 ${layers && layers.bars} / ${layers && layers.spans})`,
+        );
+        for (const [name, got] of [
+            ["dist-bar", layers && layers.bar],
+            ["dist-span", layers && layers.span],
+        ]) {
+            check(
+                !!got && /transform/.test(got.willChange),
+                `(a) ★ ${name} 声明了 will-change: transform(实得 ${got && got.willChange})`,
+            );
+            // translateZ(0) 计算出来是 matrix3d(…),不会是 "none"。删掉那一行即红。
+            check(
+                !!got && got.transform !== "none" && got.transform !== "",
+                `(a) ★ ${name} 有非 none 的 transform(= 强制独立层;实得 ${got && got.transform})`,
+            );
+        }
+
+        // ---- (b) 零宽的张开线必须**一个像素都不画**
+        //
+        // 用「最大角度」这把真滑杆造零宽:distGeometry 的 half = min(width%/100×16×g, x, 100−x),
+        // g = 全局 width/100。g=0 ⇒ 每一行的 half 都归零,一次把所有张开线推进退化态,
+        // 不用去猜某一轨的 pan 参数 id。走的是 setParam 这条真桥路径。
+        const rects = IN(`
+            const out = [];
+            for (const n of all(".dist-span")) {
+                const r = n.getBoundingClientRect();
+                out.push({ w: Math.round(r.width * 100) / 100, h: Math.round(r.height * 100) / 100 });
+            }
+            return out;
+        `);
+        const wide = await evaluate(rects);
+        check(
+            wide.length > 0 && wide.some((v) => v.w > 0 && v.h > 1),
+            `(b) 前提:常态下张开线有宽也有粗(实得 ${JSON.stringify(wide.slice(0, 3))})`,
+        );
+
+        const setW0 = await evaluate(
+            IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk || typeof mk.setParam !== "function") return "no-mock";
+            return JSON.stringify(mk.setParam("width", 0));
+        `),
+        );
+        check(
+            typeof setW0 === "string" && !/rejected|"ok":\s*false/.test(setW0),
+            `(b) 「最大角度」拧到 0 被接受(回执 ${setW0})—— 丢返回值的话下面整段会空绿`,
+        );
+        await sleep(500); // 让 rAF 补间走完(补间窗 40ms 级)
+        const zero = await evaluate(rects);
+        log(`  最大角度=0 时的张开线矩形:${JSON.stringify(zero.slice(0, 3))}`);
+        check(
+            zero.length > 0 && zero.every((v) => v.w === 0),
+            `(b) 前提:最大角度=0 之后每条张开线都是零宽(实得 ${JSON.stringify(zero.slice(0, 3))})`,
+        );
+        check(
+            zero.length > 0 && zero.every((v) => v.h === 0),
+            `(b) ★ 零宽的张开线渲染高度也是 0 —— 退回写死的 height:1.5px 即红` +
+                `(实得 ${JSON.stringify(zero.slice(0, 3))})`,
+        );
+
+        assertClean("SL-269 光栅面");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
