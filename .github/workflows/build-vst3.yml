@@ -5,9 +5,14 @@ name: Build & Validate
 # 子 PR)都跑完整 CI」的指令。用户新口径:「每次出包之前才跑完整 CI / 只有某些 branch 的 PR
 # 才触发全量 CI / 尽可能多的本地编译 / 只要确保出包之前跑了全量 CI 就行」。
 #
-#   轻档  子 PR(base=`feature/**`):**不跑本工作流**。仍跑 format(clang-format /
-#         web-smoke / docs-truth)、compliance(gitleaks / REUSE / check-privacy / 设计盒)
-#         与三个 review bot;编译与 ctest 由本地 `scripts/gates.ps1` 兜(CLAUDE.md §2)。
+#   轻档  子 PR(base=`feature/**`)**且没碰 native 路径**:不跑本工作流。仍跑 format
+#         (clang-format / web-smoke / docs-truth)、compliance(gitleaks / REUSE /
+#         check-privacy / 设计盒)与三个 review bot。
+#         **[SL-283] 修正**:碰了 native 路径(src / tests / cmake / CMakeLists.txt /
+#         **web** / third_party / 钉版文件 / 本文件)的子 PR **照跑全量** —— 判定见下面
+#         `detect-native` job。[J96] 原来一刀切跳过,结果是「动了 C++ 的子 PR 在 CI 侧
+#         一次都不编译」,「CI 全绿」不再等价「native 编过」,下一张就可能把没编过的
+#         C++ 合进去。本地 `scripts/gates.ps1`(CLAUDE.md §2)仍是第一道,但它靠人记得跑。
 #   中档  里程碑 PR(base=`dev`)与 push→`dev`:照跑全量,与本工作流历史行为一致。
 #   重档  **出包前硬门**:`workflow_dispatch`(input `ref`,默认 `feature/v1`)必须跑一次
 #         并绿,才允许打包。这是 feature/v1 主支线唯一的机器编译证据 —— push→`feature/**`
@@ -52,8 +57,88 @@ concurrency:
   cancel-in-progress: ${{ github.event.action != 'labeled' && github.event.action != 'unlabeled' }}
 
 jobs:
+  # ── detect-native([SL-283]):这个 PR 碰没碰「会影响 native 构建」的路径 ───────────
+  # **为什么需要它**:[J96] 之后子 PR 一律跳过 build-and-validate,于是动了 C++ / CMake /
+  # web 资源的子 PR 在 CI 侧**一次都不编译** —— 「CI 8/8 全绿」不再等价于「native 编过」。
+  # 本 job 把这个缺口补回来:命中 native 路径的子 PR 照跑全量,纯文档 / 脚本 PR 仍跳过。
+  #
+  # **为什么不用 `on.pull_request.paths`**:那是**事件级**过滤,纯文档 PR 根本不会创建 run,
+  # 于是给它打 `ci:full` 也**起不来** —— 逃生口会被一起过滤掉。路径判断必须在 job 级做,
+  # 才能与标签支路、dispatch 支路并存。
+  #
+  # **为什么不用 `dorny/paths-filter` 之类**:org 的 action 白名单不放行 marketplace action
+  # (sccache 就是因此改成钉版手动下载的),这里同样自己算 —— 反正只是一次 `git diff`。
+  #
+  # **失效方向**:任何一步出错都倒向 `native=true`(照编),绝不倒向「跳过」。倒错方向
+  # 就是把本卡要补的洞原样又开一次,而且是静默的。
+  detect-native:
+    name: detect-native
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # 只声明这一个 job 的权限,不动 build-and-validate 那边的 token
+    outputs:
+      native: ${{ steps.scan.outputs.native }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # pull_request 事件下 checkout 的是 refs/pull/N/merge 这个**合并提交**,
+          # 它的 ^1 = base、^2 = head,所以 `git diff HEAD^1 HEAD` 正好是本 PR 的改动面。
+          # 深度 2 就够拿到两个父提交;不要 fetch-depth: 0,那会把整个历史拉下来。
+          fetch-depth: 2
+      - id: scan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          # 非 pull_request(push→dev / workflow_dispatch)一律照编:出包硬门与 dev 快照
+          # 不受路径过滤影响,这个 job 对它们只是一道 20 秒的直通。
+          if [ "$EVENT_NAME" != 'pull_request' ]; then
+            echo "非 pull_request 事件($EVENT_NAME):直通,native=true"
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 会影响 native 构建产物的路径。**清单是穷举的** —— 漏一条就等于给
+          # 「改了它却没编」开口子,与 CLAUDE.md §6 版本真源那条同一族纪律。
+          #   src/ tests/ cmake/ CMakeLists.txt  —— C++ 与构建脚本本体
+          #   web/                               —— **经 juce_add_binary_data 编进二进制**
+          #                                         (cmake/ScvbWebAssets.cmake),不是纯前端:
+          #                                         文件名唯一性与 EXTRA_DIRS 是 configure 期
+          #                                         FATAL_ERROR,import 闭包由 ctest 的
+          #                                         test_web_assets_embedded 兜 —— 两道都只在
+          #                                         编译时才跑,跳过构建就等于**这两道全不跑**
+          #   third_party/                       —— vendored 上游(miniz 等)
+          #   .*-version / .sccache-sha256       —— 钉版依赖变了就得重编(CLAUDE.md §6)
+          #   build-vst3.yml                     —— 改构建配方本身,必须自己编一遍验证
+          NATIVE_RE='^(src/|tests/|cmake/|web/|third_party/|CMakeLists\.txt$|\.juce-version$|\.pluginval-version$|\.sccache-version$|\.sccache-sha256$|\.github/workflows/build-vst3\.yml$)'
+
+          files=$(git diff --name-only HEAD^1 HEAD 2>/dev/null) || files=''
+          if [ -z "$files" ]; then
+            # 取不到改动面(浅克隆缺父提交 / PR 不可合并 / 合并提交形态变了)——
+            # 这时**不能**判成「没碰 native」,那正好是静默跳过。倒向照编。
+            echo "::warning::取不到本 PR 的改动文件清单,保守判定 native=true(照编)"
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "本 PR 改动 $(echo "$files" | wc -l) 个文件"
+          hits=$(echo "$files" | grep -E "$NATIVE_RE" || true)
+          if [ -n "$hits" ]; then
+            echo "命中 native 路径,照跑全量构建:"
+            echo "$hits" | sed 's/^/  /'
+            echo "native=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "未命中 native 路径(纯文档 / 脚本 / web-preview 等),跳过全量构建。"
+            echo "改动面:"
+            echo "$files" | sed 's/^/  /'
+            echo "native=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build-and-validate:
     name: build-and-validate # ← 这个字符串就是 required check 的 context,永不改名
+    needs: detect-native
     # 三档 + 逃生口的唯一判定处。push / workflow_dispatch 一律跑;pull_request 只在
     # base=dev 或带 `ci:full` 标签时跑。**不要**把这条搬去 `on:` 的事件过滤 —— 标签
     # 是 PR 的属性而不是事件的属性,只有 job 级 `if:` 看得见。
@@ -76,11 +161,21 @@ jobs:
     #     一遍 —— 与被修掉的那条同形,只是触发者从 bot 换成了人。dev PR 上想临时再编一次
     #     用 `workflow_dispatch`,不要靠标签。
     #   非标签事件(opened / synchronize / reopened / ready_for_review):维持三档判据 ——
-    #     base=`dev` 的里程碑 PR 跑全量,子 PR 只在带 `ci:full` 时跑。
+    #     base=`dev` 的里程碑 PR 跑全量;子 PR 在带 `ci:full` **或**碰了 native 路径时跑
+    #     ([SL-283],见 detect-native 的头注)。
     #
     # `github.event.label.name` 在非标签事件上求值为 null(不是报错),所以两条支路各自
     # 的 `action` 判据就是它们互斥的保证。
+    #
+    # **`!cancelled()` 与 `!= 'false'` 是一对**([SL-283]):默认的 `success()` 会在
+    # detect-native 挂掉时把本 job 一起跳过 —— 那是「因为探测坏了所以不编译」,方向反了。
+    # 加 `!cancelled()` 让本 job 照样求值,而 detect-native 挂掉时 `outputs.native` 是空串,
+    # 空串 `!= 'false'` 为真 ⇒ 照编。所以判据写成「**不是明确的 false** 就编」,而不是
+    # 「等于 true 才编」—— 后者会把「探测失败」和「确实没碰 native」混为一谈。
+    # 取消仍然有效:`!cancelled()` 不覆盖 concurrency 的取消。
     if: >
+      !cancelled() &&
+      (
       github.event_name != 'pull_request' ||
       (
       (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
@@ -93,7 +188,9 @@ jobs:
       github.event.action != 'unlabeled' &&
       (
       github.base_ref == 'dev' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      needs.detect-native.outputs.native != 'false'
+      )
       )
       )
     runs-on: windows-2022

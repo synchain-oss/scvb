@@ -24,7 +24,7 @@
 ## 1. 分支模型与工作流程
 
 - 默认主干 = `dev`;SCVB 主支线 = `feature/v1`(ADR-013/J13)。子支线命名 `feat/<TASK-ID>-<slug>`,一张卡一条子支线一个 PR。
-- same-repo 只收 `feat/*` / `feature/*`(以及 `dependabot/*`)到 `dev`;子 PR(base=`feature/v1`)跑 review bot + **轻档 CI**(2026-09-02 [J96] 起不再跑 `build-vst3`,编译证据改由本地 gates 与出包前的批次全量提供,见 §4)。
+- same-repo 只收 `feat/*` / `feature/*`(以及 `dependabot/*`)到 `dev`;子 PR(base=`feature/v1`)跑 review bot + **轻档 CI**(2026-09-02 [J96] 起默认不跑 `build-vst3`;**[SL-283] 起碰了 native 路径的子 PR 照跑全量**,纯文档 / 脚本 PR 才真的跳过,见 §4)。
 - `branch-gate` 除分支命名外还承担两条断言:**DCO**(每个 commit 必须有 `Signed-off-by:`,内联 `gh api` 实现,不引第三方 action)与**冻结契约 path guard**(见 §5)。
 - **fork PR 门禁政策(J31/J41,唯一政策)**:
   - fork → **任意分支名**(不要用 `dev`/`stage`/`prod`/`feature/v1`/`feature/extraction`)→ PR 到 `dev`;
@@ -60,8 +60,9 @@
 
 | 档  | 触发                                                  | 跑什么                                                                                                      |
 | --- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| 轻  | 子 PR(base=`feature/**`)                             | `format`(clang-format / web-smoke / docs-truth)+ `compliance` + 三个 review bot。**不跑 `build-vst3`。**      |
-| 中  | 里程碑 PR(base=`dev`)、push→`dev`                    | 上面全部 + `build-vst3` + `branch-gate`                                                                       |
+| 轻  | 子 PR(base=`feature/**`)**且没碰 native 路径**        | `format`(clang-format / web-smoke / docs-truth)+ `compliance` + 三个 review bot。**不跑 `build-vst3`。**      |
+| 轻+ | 子 PR **碰了 native 路径**([SL-283])                  | 上面全部 + `build-vst3`(缓存热时约 7 分钟)。判定见 `detect-native` job                                        |
+| 中  | 里程碑 PR(base=`dev`)、push→`dev`                    | 上面全部 + `build-vst3` + `branch-gate`(**不看路径**,里程碑 PR 一律全量)                                     |
 | 重  | `workflow_dispatch`(input `ref`,默认 `feature/v1`)  | `build-vst3` 全量 —— **出包前硬门**                                                                           |
 
 - **出包流程硬规:出包(打 tag / 发 `release`)之前必须对目标 ref 手动 dispatch 一次 `build-vst3` 并全绿。** 命令:`gh workflow run build-vst3.yml --repo synchain-oss/scvb --ref feature/v1 -f ref=feature/v1`,然后 `gh run list --workflow build-vst3.yml -L 1` 看结果。没有这一次绿,不允许出包 —— push→`feature/**` 触发已撤,主支线上再没有别的机器编译证据。要取包也走这一次:preview artifact(`SCVB-VST3-win64-preview-<slug>-<sha>`)就由这次 run 产出,`<sha>` 是**真正被 checkout 的那个 commit**(`git rev-parse HEAD`),不是 `github.sha`。
@@ -69,7 +70,10 @@
 - **逃生口**:**子 PR** 打上 `ci:full` 标签即照跑 `build-vst3` 全量(job 的 `if:` 判标签,`on.pull_request.types` 含 `labeled`/`unlabeled`)。改到 `CMakeLists.txt` / 依赖 / workflow 本身时用它。base=`dev` 的 PR **不吃**这个标签 —— 它每次 synchronize 本来就跑全量,标签再起一次只是在同一个 concurrency group 里排队重编;dev PR 想临时再编一次用 `workflow_dispatch`。
 - **编译缓存**:`build-vst3` 用 `Ninja Multi-Config` + sccache(磁盘缓存 + `actions/cache` 跨 run 搬运)。换生成器不是审美选择 —— `CMAKE_<LANG>_COMPILER_LAUNCHER` 对 Visual Studio(MSBuild)生成器**无效**,不换就没有编译缓存。sccache 二进制**手动钉版下载**(`.sccache-version` + `.sccache-sha256` 两个单一真源),不走 marketplace action:org 的 action 白名单本来就不放行它,而且与 gitleaks 手动下载同一条纪律。每次 run 末尾打印 `sccache --show-stats`:缓存失效的形态是静默零命中(CI 照样绿,只是慢回改造前),不打印没人会发现。
 - **org action 白名单**:本 org 只放行 GitHub 自家 action、`synchain-oss/*`,以及 `anthropics/claude-code-action@*` / `oven-sh/setup-bun@*` / `qodo-ai/pr-agent@*` / `softprops/action-gh-release@*`。**加任何别的第三方 action 都会让整个 run 直接 `startup_failure`** —— 没有 job、没有 check、没有日志,只有一句「workflow file issue」,很容易被误判成语法错。先考虑用 `run:` 步骤自己实现;确实需要新 action 时,由用户在 org 设置里放行后再用。
-- **子 PR(base=`feature/**`)上还剩哪些机器门禁**:`format` 三个 job + `compliance` + 三个 review bot,**没有** `build-vst3`,也**没有** `branch-gate` —— 后者仅挂 pull_request→`dev`,所以 **DCO(每个 commit 的 `Signed-off-by:`)与冻结契约 path guard 在子 PR 上一次都不跑**,要到 feature→dev 收口 PR 才第一次生效。改冻结契约的子 PR 别指望机器拦你。
+- **native 路径清单([SL-283],单一真源 = `build-vst3.yml` 的 `detect-native` 步里那条 `NATIVE_RE`)**:`src/` / `tests/` / `cmake/` / `CMakeLists.txt` / **`web/`** / `third_party/` / 四个钉版文件 / `build-vst3.yml` 自身。子 PR 碰到其中任一就照跑全量。
+  - **`web/` 必须在清单里**,它不是纯前端:`cmake/ScvbWebAssets.cmake` 经 `juce_add_binary_data` 把 `web/` 编进插件二进制。文件名唯一性与 `EXTRA_DIRS` 是 **configure 期 `FATAL_ERROR`**,「页面真会去取的每个文件都进了包」由 **ctest 的 `test_web_assets_embedded`** 兜(第四层门禁)—— 这两道**都只在编译时才跑**。把 `web/` 判成「纯前端可跳过」,等于让这两道一次都不跑,而「资源没进包 = 空白窗口」这一类本仓已经栽过三次。`web-preview/`(浏览器预览)才是真的不参与构建。
+  - 清单**只加不减**要谨慎:漏一条 = 改了它却没编,且是静默的。改这条正则时同步跑 `sl283-cir3-pathre.py` 的删除式验证(每个分支删掉都必须有用例变红)。
+- **子 PR(base=`feature/**`)上还剩哪些机器门禁**:`format` 三个 job + `compliance` + 三个 review bot,`build-vst3` **仅在碰了 native 路径或带 `ci:full` 时**跑,且**没有** `branch-gate` —— 后者仅挂 pull_request→`dev`,所以 **DCO(每个 commit 的 `Signed-off-by:`)与冻结契约 path guard 在子 PR 上一次都不跑**,要到 feature→dev 收口 PR 才第一次生效。改冻结契约的子 PR 别指望机器拦你。
 - `build-vst3`(job `build-and-validate`):pull_request→`dev` + `feature/**`(feature 侧只为 `ci:full` 逃生口留触发面,job `if:` 决定跑不跑)、push→`dev`、`workflow_dispatch`。`format` / `compliance`:pull_request→dev + `feature/**`,push→dev + `feature/**`(轻档照跑)。`branch-gate`(命名 + DCO + 冻结契约 path guard)仍仅 pull_request→dev。
 - `compliance`(gitleaks + reuse lint + check-privacy + 设计盒真源):无 secrets,fork PR 同样跑。
 - `claude-review`:所有 base 分支、**仅 same-repo**(J31);`deepseek-review` / `pr-agent` 默认 disable,同样仅 same-repo。
