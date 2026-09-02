@@ -656,8 +656,11 @@ try {
 if (-not $ipcLockOk) {
   Write-Host '=== Gate 6/7/8: 跳过执行,直接判负(没有 IPC 测试锁 = 没有并发保护)===' -ForegroundColor Red
   Set-Gate '6 ctest' $false
-  Set-Gate '7 pluginval 非 GUI' $false
-  Set-Gate '8 pluginval 全量含 GUI' $false
+  # 档位照旧:`-Quick` / `-PluginOnly` 本来就不跑的那几道仍记 SKIP,不要因为锁的问题
+  # 把它们写成 FAIL —— 汇总表要如实说「这一道压根没安排跑」还是「安排了但不可信」。
+  # 判负的力度不受影响:锁那一行与 gate 6 已经让整条 gates 以 1 退出。
+  if ($Quick) { Set-Skip '7 pluginval 非 GUI' } else { Set-Gate '7 pluginval 非 GUI' $false }
+  if ($Quick -or $PluginOnly) { Set-Skip '8 pluginval 全量含 GUI' } else { Set-Gate '8 pluginval 全量含 GUI' $false }
 }
 else {
 

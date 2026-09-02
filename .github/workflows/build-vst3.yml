@@ -61,9 +61,14 @@ jobs:
     # 分家写法让「标签事件」只有一个入口,以后往另一路加判据也不会被短路绕过去。
     #
     #   标签事件(labeled / unlabeled):只认 `ci:full` 这一个名字,**且**要求 PR 上此刻
-    #     仍带着它 —— 打上 → 起一次全量;摘掉(`contains` 已为假)→ 不起;别的标签增删
-    #     → 什么都不发生。收窄之所以安全,是因为上面的 concurrency 已经保证标签事件不
-    #     取消在跑的 run;两者顺序颠倒就会变成「构建被杀掉且没有东西顶上」,别拆开只留一行。
+    #     仍带着它,**且** base 不是 `dev` —— 打上 → 起一次全量;摘掉(`contains` 已为假)
+    #     → 不起;别的标签增删 → 什么都不发生。收窄之所以安全,是因为上面的 concurrency
+    #     已经保证标签事件不取消在跑的 run;两者顺序颠倒就会变成「构建被杀掉且没有东西
+    #     顶上」,别拆开只留一行。
+    #     `base_ref != 'dev'` 那一项:`ci:full` 是**子 PR 专用**的逃生口,dev PR 本来每次
+    #     synchronize 就跑全量,再给它加标签只会在同一个 concurrency group 里排队重编
+    #     一遍 —— 与被修掉的那条同形,只是触发者从 bot 换成了人。dev PR 上想临时再编一次
+    #     用 `workflow_dispatch`,不要靠标签。
     #   非标签事件(opened / synchronize / reopened / ready_for_review):维持三档判据 ——
     #     base=`dev` 的里程碑 PR 跑全量,子 PR 只在带 `ci:full` 时跑。
     #
@@ -74,7 +79,8 @@ jobs:
       (
       (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
       github.event.label.name == 'ci:full' &&
-      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      contains(github.event.pull_request.labels.*.name, 'ci:full') &&
+      github.base_ref != 'dev'
       ) ||
       (
       github.event.action != 'labeled' &&
