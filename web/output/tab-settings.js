@@ -191,6 +191,10 @@ export function createTabSettings(opts) {
         loudnessSeg: $("settings-loudnessmode-seg"),
         centerSeg: $("settings-centerslot-seg"),
         loudnessStale: $("settings-loudnessmode-stale"),
+        // [SL-276] 重分析提示弹窗(卡片层单例,不在 Tab4 子树里 —— 见 index.html 那段注释)
+        reanalyzeAsk: $("reanalyze-ask"),
+        reanalyzeAskLater: $("reanalyze-ask-later"),
+        reanalyzeAskPrimary: $("reanalyze-ask-primary"),
         guideBox: $("settings-guideblock-rules"),
         guideList: $("settings-guideblock-rules-list"),
         guideMissing: $("settings-guideblock-rules-missing"),
@@ -215,8 +219,43 @@ export function createTabSettings(opts) {
     //   §1.1/§2.1 未暴露 applied.* / analysis_settings_stale,故 UI 以本地基线承载同语义:
     //   mount 时快照当前值(mock 环境即初值);真插件下由分析完成事件(onSegments)同步;
     //   stale = 当前值 !== 基线值 —— 改走提示出现,改回基线值立即消失。
+    //
+    //   **已知边界,归 [SL-279],本卡不动**:mount() 早于 bootInner() 的
+    //   requestInitialState,所以这里快照到的是空 store 的默认档,不是工程存的那个值。
+    //   由此派生出一对方向相反的偏差 —— 存成非默认档的工程一进 Tab4 琥珀 badge 就亮
+    //   (误报);同一会话里把口径切回 mount 默认值时 stale 立刻归假、badge 灭,而段表
+    //   其实还是按旧档分析的(漏报)。两条同根,都是「基线在 state 到达前快照」。
+    //   看着像顺手能修(初始快照落地后补一次 syncBaseline),实际是**产品取舍不是清理**:
+    //   契约没暴露 applied.*,UI 分不出「工程存的就是这个档且已按它分析过」与「上次改了档
+    //   没重分析就存盘」,补同步等于把误报换成漏报。故整条留给 SL-279 评估,不在本卡顺手做。
+    //   注意弹窗**不吃这条**:它另有 askOnNextStale 一次性闸(见下),三条误报路径都不弹框。
     const local = {
         analysisConfigBaseline: null,
+        // [SL-276] 已就哪个口径值弹过框。**按值记而不是按布尔记**:改走 → 弹一次;
+        // 点「稍后」后继续在别的档之间来回切,每换到一个新的脏值都该再弹一次;
+        // 改回基线(stale 归 false)时清空,下次再改走照弹。
+        reanalyzeAskedFor: null,
+        // [SL-276 复审] 弹窗的触发面是**用户点击**,不是派生的 stale 位。
+        // 琥珀 badge 可以纯派生(多一枚小标记的代价很小),模态框不行 —— stale 有三条
+        // 「用户什么都没做也为真」的路径,升级成框之后每条都变成一次要点掉的打断:
+        //   ① 开工程即真:mount() 在 app.js 里同步跑,那时 store.state 还是 {},基线取到的是
+        //      ANALYSIS_CONFIG_DEFAULTS.loudness_mode;工程真值要等 bootInner() 的
+        //      requestInitialState 落地。存成 rms/peak_dbfs 的工程一进 Tab4 就 stale 恒真,
+        //      而首帧 scvb.segments 的 reason 是 "snapshot",onSegments 不认、纠不回来。
+        //   ② 只读观察态(J69):主实例改档,观察实例经 scvb.state 收到新值也会 stale ——
+        //      框里那枚「重新分析」是写控件,契约 §5.6 要求只读态下写控件一律不可操作。
+        //   ③ 切版本 / 快照恢复:基线刻意不随这两条同步(见 analysisConfigBaseline 那段),
+        //      而那个版本的段表与它自己的口径本来就是对齐的。
+        // 本位只由 wireSeg 里 loudness_mode **写成功**的回调置起,syncStale 之外无人写它。
+        // ①②③ 三条因此一次性关掉,而琥珀 badge 的既有语义一个字节没动。
+        // **一次性**:syncStale 真开框那一下就地清掉(见那处注释)。留着的话「稍后」
+        // 关框之后本位仍为真,后续任何非用户驱动的口径变化都能再弹一次 —— ①②③ 换个
+        // 入口又漏回来。下一次要弹,得由 wireSeg 里新的一次写成功重新置位。
+        askOnNextStale: false,
+        // 开框前的焦点落点,关框时还回去(「稍后」/ 遮罩 / Esc 三个出口都走 closeReanalyzeAsk)。
+        reanalyzeReturnFocus: null,
+        // analyze("all") 在途:主钮置灰 + 早退,防连点打出第二发(见 doReanalyzeFromAsk)。
+        reanalyzeInFlight: false,
         nineOpen: false,
         diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
@@ -294,6 +333,11 @@ export function createTabSettings(opts) {
                 }
                 // 不做乐观 dirty —— syncStale 按「当前值 vs 基线」派生提示;
                 // 且该提示只由 loudness_mode 承载(center_slot_policy 不弹,用户 preview 口径)。
+                //
+                // [SL-276 复审] **这里是弹窗唯一的开闸点**:写真的被受理了,才允许下一次
+                // syncStale 把框推到眼前。放在 res 判定之后 —— 桥缺失 / observer 拒 / badArg
+                // 上面已经早退,走到这儿就是「用户刚改了档且改成了」。
+                if (field === "loudness_mode") local.askOnNextStale = true;
                 requestRender();
             });
         });
@@ -410,6 +454,71 @@ export function createTabSettings(opts) {
         if (el.diagChevron)
             el.diagChevron.addEventListener("click", toggleDiag);
         if (el.diagCopy) el.diagCopy.addEventListener("click", copyDiag);
+        // [SL-276] 弹窗三个出口:「稍后」/ 点遮罩本身 / Esc —— 都只关框,不写任何 state。
+        if (el.reanalyzeAskLater)
+            el.reanalyzeAskLater.addEventListener("click", closeReanalyzeAsk);
+        if (el.reanalyzeAskPrimary)
+            el.reanalyzeAskPrimary.addEventListener(
+                "click",
+                doReanalyzeFromAsk,
+            );
+        if (el.reanalyzeAsk)
+            el.reanalyzeAsk.addEventListener("click", (e) => {
+                if (e.target === el.reanalyzeAsk) closeReanalyzeAsk();
+            });
+        // Esc 挂在 document 上(而不是框上):框里只有两枚按钮,焦点一旦被挪走
+        // (点了遮罩、或 AT 把焦点收回 body)就再也收不到键。只在本框可见时动作,
+        // 且 mount() 全程只跑一次(app.js:471),不会叠加同一个监听。
+        // 与别处 Esc 不打架:另一条 document 级 Esc 在 tab-wave.js,自带
+        // `isPanelActive()` 闸;而本框只可能在 Tab4 弹出 —— app.js 的 render 按
+        // 当前 tab 分派,`tabSettings.render()`(=> syncStale)只在设置页跑。
+        (root.ownerDocument || root).addEventListener("keydown", (e) => {
+            if (!el.reanalyzeAsk || el.reanalyzeAsk.hidden) return;
+            if (e.key === "Escape") {
+                e.preventDefault();
+                closeReanalyzeAsk();
+                return;
+            }
+            // [SL-276 复审] Tab 圈在框里。框声明了 aria-modal="true",而 aria-modal
+            // **只影响辅助技术的朗读范围,不拦 Tab** —— 不圈的话焦点会走到遮罩背后那些
+            // 此刻不该被操作的控件上(响度胶囊、诊断区、页脚)。框里只有两枚钮,
+            // 所以不必引入通用 focus-trap:两端各自回卷即可。
+            if (e.key !== "Tab") return;
+            const first = el.reanalyzeAskLater;
+            const last = el.reanalyzeAskPrimary;
+            if (!first || !last) return;
+            const doc = root.ownerDocument || root;
+            const here = doc && doc.activeElement;
+            // [SL-276 二轮复审] 回卷目标要避开 disabled 的那枚:主钮在 analyze 在途期间
+            // 会被置灰(见 doReanalyzeFromAsk),而 focus() 对 disabled 元素是空操作 ——
+            // 直接回卷过去的话,preventDefault() 已经吃掉了这次 Tab、焦点却原地不动,
+            // Tab 在那一小段时间里等于失灵。置灰的只可能是主钮,故退到「稍后」。
+            //
+            // [SL-276 四轮复审] `focusable` 不能只用在「回卷**进来**」那两条,**正向 Tab
+            // 出去**那条的比较对象也得换成它 —— 否则圈闭在「稍后」这一格上是**开口**的:
+            // 主钮置灰时焦点停在 first,正向 Tab 三条分支一条都不命中 ⇒ 不 preventDefault
+            // ⇒ 浏览器按 DOM 顺序接着走。主钮可点时下一个正好是它(index.html 里 later 在前、
+            // primary 在后),所以平时看不出来;而在途期间它 disabled、会被跳过,焦点直接
+            // 落到遮罩背后的响度胶囊 / 诊断区 —— 正是上面那段说要拦住的东西。
+            // 这条路正是「在途置灰」那条修补引出来的,而且走得到:置灰把焦点掉回 <body>
+            // → 一次 Tab 命中第三分支被送到「稍后」→ 再一次就出框了。
+            // 换成「实际生效的末位」之后:主钮可点时 focusable(last, first) === last,
+            // 行为与从前逐字相同;置灰时它等于 first,于是从「稍后」正向 Tab 就地回卷到
+            // 自己,焦点出不去。
+            const focusable = (pref, alt) =>
+                pref && pref.disabled !== true ? pref : alt;
+            if (e.shiftKey && here === first) {
+                e.preventDefault();
+                focusable(last, first).focus({ preventScroll: true });
+            } else if (!e.shiftKey && here === focusable(last, first)) {
+                e.preventDefault();
+                first.focus({ preventScroll: true });
+            } else if (here !== first && here !== last) {
+                // 焦点已经在框外(点过遮罩、或被 AT 收回 body):收回框里再继续。
+                e.preventDefault();
+                focusable(last, first).focus({ preventScroll: true });
+            }
+        });
     }
 
     // --------------------------------------------------------------- render
@@ -431,6 +540,93 @@ export function createTabSettings(opts) {
         }
     }
 
+    // ---------------------------------------------------------- [SL-276] 重分析弹窗
+    // [J85] 的口径是「不弹阻塞确认框」;本框是用户 2026-09-01 明确点名的**唯一**例外
+    // (原来只有一条小琥珀 badge,用户看不清)。别据此在别处再开第二个弹窗。
+    function closeReanalyzeAsk() {
+        const wasOpen = !!el.reanalyzeAsk && !el.reanalyzeAsk.hidden;
+        show(el.reanalyzeAsk, false);
+        if (!wasOpen) return;
+        // 焦点还回开框前那一件(通常是响度胶囊里刚被按下的那枚钮)。不还的话
+        // 键盘用户按 Esc 之后焦点落在 <body>,Tab 得从卡片开头重走一遍。
+        const back = local.reanalyzeReturnFocus;
+        local.reanalyzeReturnFocus = null;
+        if (back && typeof back.focus === "function" && back.isConnected)
+            back.focus({ preventScroll: true });
+    }
+
+    function openReanalyzeAsk() {
+        // [SL-276 复审] 只读观察态一律不弹:框里那枚「重新分析」是写控件,
+        // 契约 §5.6 要求只读态下写控件不可操作(后端另有 {observer:true} 兜底,
+        // 但那是「点了才知道」,UI 这一闸才是用户看得见的那道)。
+        if (isReadOnly()) return;
+        if (el.reanalyzeAsk && el.reanalyzeAsk.hidden) {
+            const doc = root.ownerDocument || root;
+            local.reanalyzeReturnFocus = doc && doc.activeElement;
+        }
+        show(el.reanalyzeAsk, true);
+        if (
+            el.reanalyzeAskPrimary &&
+            typeof el.reanalyzeAskPrimary.focus === "function"
+        )
+            el.reanalyzeAskPrimary.focus({ preventScroll: true });
+    }
+
+    // 「重新分析」= 契约 §1.6 analyze("all")(全轨全时长;设置页没有选区概念)。
+    // 受理回执之外什么都不做:结果经 §2.8 回推,基线由 onSegments 同步、琥珀 badge 自己灭。
+    //
+    // [SL-276 复审] **拒绝态不关框**。§1.6 会回 {ok:false, reason:"busy"}(已有分析在跑),
+    // §5.6 会回 {observer:true};先关框再发请求的话,这两种情况下框没了、琥珀 badge 还挂着、
+    // 也没有任何别的反馈 —— 看起来就是「这枚钮坏了」。框留着 = 这一下没生效、可以再点,
+    // 与 wireSeg 里「被拒就只 requestRender、不落乐观值」是同一口径(本仓不用 toast)。
+    //
+    // [SL-276 二轮复审] **在途期间锁主钮**。「拒绝态不关框」之后框在 await 期间是开着的、
+    // 主钮也还可点,连点两下就打出第二发 analyze(第二发被 §1.6 的 busy 拒掉 —— 但那是
+    // 让后端替 UI 兜一个 UI 自己拦得住的连点)。
+    // call() 内有 try/catch、异常路径回 null 而不抛,所以 finally 一定跑得到,不会锁死钮。
+    //
+    // [SL-276 三轮复审] 三条都是「看着做了、其实没生效」那一类,逐条核过:
+    //   ① **光设 `.disabled` 在本仓看不见**。`web/` 里唯一的 `:disabled` 规则是
+    //      `.tracks-row__pair-trigger:disabled`(output/index.html),与本钮无关;而
+    //      `.sc-btn--cta` 自带 background/color,作者样式在场时 UA 的禁用灰不生效,
+    //      `.sc-btn:hover{scale:1.02}` 也照样命中 —— 用户看到的是「按钮没变、hover 还会动、
+    //      点了没反应」。禁用视觉的仓内口径是属性钩子 `.sc-btn[data-disabled="1"]`
+    //      (base.css:opacity .4 + not-allowed + scale 归 1),故两者一起挂、一起摘,
+    //      不新写 CSS。
+    //   ② **disable 一个正持焦的元素会把焦点掉回 `<body>`**(Chromium)。成功路径无所谓
+    //      (框马上关,closeReanalyzeAsk 把焦点还回响度胶囊);但 busy / observer 这条路
+    //      **框是留着的**,焦点却已经在框外 —— 键盘用户再按 Enter 什么都不会发生,想重试
+    //      反而更难。故 finally 里框还开着就把焦点还给主钮。
+    //   ③ 防连点由 `reanalyzeInFlight` 早退与 `disabled` 两道**各自独立**挡住。冒烟 C4c
+    //      钉的是「连点两下只打出一发 analyze」,**两道都拆掉才会红**(留一道仍守得住);
+    //      C4b 钉的是另一件事 —— 跑完一定解锁(finally 丢了就永久停在 disabled)。
+    async function doReanalyzeFromAsk() {
+        if (local.reanalyzeInFlight) return;
+        local.reanalyzeInFlight = true;
+        const btn = el.reanalyzeAskPrimary;
+        if (btn) {
+            btn.disabled = true;
+            btn.setAttribute("data-disabled", "1");
+        }
+        try {
+            const res = await call("analyze", "all");
+            if (!res || res.observer || res.ok === false) {
+                requestRender();
+                return;
+            }
+            closeReanalyzeAsk();
+            requestRender();
+        } finally {
+            local.reanalyzeInFlight = false;
+            if (btn) {
+                btn.disabled = false;
+                btn.removeAttribute("data-disabled");
+                if (el.reanalyzeAsk && !el.reanalyzeAsk.hidden)
+                    btn.focus({ preventScroll: true });
+            }
+        }
+    }
+
     function syncStale() {
         const stale =
             local.analysisConfigBaseline !== null &&
@@ -441,6 +637,30 @@ export function createTabSettings(opts) {
         show(el.loudnessStale, stale);
         if (el.loudnessStale)
             attr(el.loudnessStale, "data-stale", stale ? "1" : "0");
+
+        // 琥珀 badge 是**常驻状态位**(点过「稍后」之后还看得见口径是脏的),纯派生;
+        // 弹窗在同一判据之上**再加一道 askOnNextStale 闸**(只由用户点档写成功置起) ——
+        // 理由见 local.askOnNextStale 那段的 ①②③。reanalyzeAskedFor 则挡住每帧重弹。
+        if (!stale) {
+            local.reanalyzeAskedFor = null;
+            local.askOnNextStale = false;
+            closeReanalyzeAsk();
+            return;
+        }
+        if (!local.askOnNextStale) return; // 不是用户刚改的档 ⇒ 只留 badge,不弹框
+        const mode = config().loudness_mode;
+        if (local.reanalyzeAskedFor !== mode) {
+            local.reanalyzeAskedFor = mode;
+            // [SL-276 二轮复审] **弹之前就地消费掉这一位**,一次置位只换一次弹框。
+            // 不清的话它要等 stale 归假才灭,于是「改档 → 弹 → 稍后」之后本位仍为真;
+            // 此后 ②(只读观察态收 scvb.state)或 ③(切版本 / 快照恢复)把口径换到
+            // **另一个**脏值,reanalyzeAskedFor !== mode 就成立 —— 框照弹,而用户这一
+            // 轮什么都没点。上一轮【重要】关掉的正是这类打断,换个入口又漏了回来。
+            // 清在 openReanalyzeAsk() 之前:只读早退那条路也算消费掉(那次 asked 已按
+            // 本值记下,转成可写态后同值不会补弹),免得本位在只读实例里一直挂着。
+            local.askOnNextStale = false;
+            openReanalyzeAsk();
+        }
     }
 
     function renderGuideRules() {

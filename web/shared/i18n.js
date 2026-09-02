@@ -549,8 +549,24 @@ export const T = {
         "wave.originLegend":
             "origin:E = 手动编辑,C = 手动创建,auto 段无角标。锁定段在重新识别时保持不变。",
         "set.loudnessMode.title": "段落响度分析算法",
-        "set.loudnessMode.note":
-            "影响分析时的段间响度归一化基准;改后需重分析。",
+        "set.loudnessMode.note": "影响分析时的段间响度归一化基准。",
+        // [SL-273] 换档影响面(用户 2026-09-01 定谳,2026-09-02 按 seg-r3 实测更正)。
+        // **一条词条渲染两处**:本设置卡的第二行说明,与 [SL-276] 重分析弹窗的第二段 ——
+        // 两处共用同一个 key,是为了让「两边写的是同一句」由结构保证,而不是靠两份手抄
+        // 的文案碰巧一致。原来 set.loudnessMode.note 尾巴上那半句「改后需重分析」并进本条。
+        //
+        // ⚠ **不能写成「不改变声像分配」**(初稿就是这么写的,已更正)。口径依据在
+        // AutoAssign 侧,两条都核过:
+        //   · 「通常不变」的来源:换档只改 balanceBasisZ 算出的 z(AnalysisPipeline.cpp
+        //     m.z),而首趟指派的 entryCost 只在 balHint 非空时才乘 zHat —— level 1 不传
+        //     hint,所以第一趟指派与响度口径无关,pan 逐位相同。
+        //   · 「也会变化」的来源:z 变了会改平衡解收不收敛。首趟不收敛就进
+        //     solveBalanceWithFallback 的 level 2(带 hint 重跑 assignInterval,槽位真重排),
+        //     再不收敛进 level 3(applyDeltaShift 平移最外环),两级都会让 pans 与 level 1
+        //     不同。seg-r3 用同一组素材实跑:rms 对 kw 24 段里 8 段 pan 变了(峰值差 15)。
+        // 所以口径是「通常不变」,不是「不变」——写死成后者就是对用户的一句假承诺。
+        "set.reanalyze.scopeNote":
+            "切换响度口径会重算各轨音量平衡;声像通常不变,但素材差异大到平衡解需要重新指派时也会变化;改后需重新分析。",
         "set.centerSlot.title": "多轨争抢中心位时的优先级",
         "set.centerSlot.note":
             "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
@@ -605,10 +621,20 @@ export const T = {
         "set.diag.colGen": "GEN",
         "set.diag.colSeq": "SEQ",
         "set.reanalyze": "改后需重分析",
+        // [SL-276] 分析口径改动后的弹窗(用户 2026-09-01 裁定):旧的一条小琥珀 badge
+        // (set.reanalyze)看不清,改由本框推到眼前;badge 作为常驻状态位保留。
+        "set.reanalyzeAsk.body": "分析口径已更改,建议重新分析",
+        "set.reanalyzeAsk.primary": "重新分析",
+        "set.reanalyzeAsk.later": "稍后",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "直通中:未对本轨做任何处理",
-        "in.pillSub.takenOver": "已接管:本轨静音,声音由插入 Output 的总线输出",
+        // [SL-272] header 副文案改单行不折(用户 2026-09-01 v5.6.5 实测)。
+        // 逼着改文案的是 EN / FR:header 内容盒 418px,旧措辞实测 en 443 / fr 440,
+        // 光靠上面那次布局重排还是差二十几 px。zh 旧措辞 271px 本来就放得下,
+        // 这里跟着收窄纯粹是为了三语说的是同一句话,不是宽度所迫。
+        // 语义逐字不变:本轨静音,声音由 Output 所在的总线出。
+        "in.pillSub.takenOver": "已接管:本轨静音,声音由 Output 总线输出",
         "in.pillSub.hysteresis": "连接不稳定,即将切换直通",
         "in.pillSub.stereo": "本轨为立体声源,SCVB 将保留其宽度",
         "in.source.mono": "本轨为单声道源",
@@ -1401,7 +1427,9 @@ export const T = {
             "origin: E = edited, C = created by hand; auto segments carry no badge. Locked segments survive re-identification.",
         "set.loudnessMode.title": "Segment loudness analysis algorithm",
         "set.loudnessMode.note":
-            "Sets the reference for segment-to-segment loudness normalization; changing it requires re-analysis.",
+            "Sets the reference for segment-to-segment loudness normalization.",
+        "set.reanalyze.scopeNote":
+            "Switching the loudness metric recomputes the volume balance of every track. Pan placement usually stays as it is, but it can change when the tracks differ enough that the balance pass has to reassign slots. Re-analysis is required afterwards.",
         "set.centerSlot.title":
             "Priority when tracks compete for the center slot",
         "set.centerSlot.note":
@@ -1453,11 +1481,15 @@ export const T = {
         "set.diag.colGen": "GEN",
         "set.diag.colSeq": "SEQ",
         "set.reanalyze": "Re-analysis required",
+        "set.reanalyzeAsk.body":
+            "Analysis settings changed — re-analysis is recommended",
+        "set.reanalyzeAsk.primary": "Re-analyze",
+        "set.reanalyzeAsk.later": "Later",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Passthrough: no processing on this track",
         "in.pillSub.takenOver":
-            "Taken over: this track is muted, and audio is output by the bus inserted into Output",
+            "Taken over: track muted, audio leaves via the Output bus",
         "in.pillSub.hysteresis":
             "Connection unstable — switching to passthrough",
         "in.pillSub.stereo":
@@ -2208,7 +2240,9 @@ export const T = {
         "set.loudnessMode.title":
             "Algorithme d'analyse de loudness des segments",
         "set.loudnessMode.note":
-            "Définit la référence de normalisation du loudness entre segments ; tout changement impose une ré-analyse.",
+            "Définit la référence de normalisation du loudness entre segments.",
+        "set.reanalyze.scopeNote":
+            "Changer la métrique de loudness recalcule l’équilibre de volume de chaque piste. La répartition panoramique reste généralement inchangée, mais elle peut changer lorsque les pistes diffèrent au point que la passe d’équilibrage doit réattribuer les positions. Une ré-analyse est ensuite nécessaire.",
         "set.centerSlot.title":
             "Priorité quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
@@ -2261,11 +2295,15 @@ export const T = {
         "set.diag.colGen": "GEN",
         "set.diag.colSeq": "SEQ",
         "set.reanalyze": "Ré-analyse requise",
+        "set.reanalyzeAsk.body":
+            "Les réglages d'analyse ont changé — une ré-analyse est conseillée",
+        "set.reanalyzeAsk.primary": "Ré-analyser",
+        "set.reanalyzeAsk.later": "Plus tard",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Direct : aucun traitement sur cette piste",
         "in.pillSub.takenOver":
-            "Pris en charge : cette piste est coupée, et le son sort par le bus inséré dans Output",
+            "Pris en charge : piste coupée, le son sort par le bus Output",
         "in.pillSub.hysteresis":
             "Connexion instable — passage en direct imminent",
         "in.pillSub.stereo":

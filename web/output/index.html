@@ -2466,6 +2466,18 @@
                 gap: var(--sp-9);
                 min-height: 0; /* 让表体在 flex 列里真的能收缩并滚动 */
             }
+            /* [SL-275] 建议表视图里的 <p> 一律去掉 UA 默认外边距 ——
+               纵向间距统一由外层 flex 的 gap 承担(同口径见
+               .guide-overlay__title / .settings-guideblock__workflow 两处的 margin: 0)。
+               不去的后果实测过:<p> 的默认 margin 是 1em,于是每个 <p> 的上下各多出
+               一个字号的隐形留白 —— 标题 13.5px、说明句与状态行 10px、其余脚注 9px。
+               标题卡因此被撑到 108px(其中标题区 86px);去掉之后整卡 61px、标题区 39px
+               (标题 20 + gap 4 + 说明句 15)。用户 2026-09-01 v5.6.5 实测反馈
+               「标题区纵向留白过大 / 下方说明段行距过大」指的就是这一处;
+               文案一字未改,字号/行高也未动(与 .sc-hint 同为 1.5)。 */
+            .suggest-view p {
+                margin: 0;
+            }
             .suggest-head {
                 flex: none;
                 display: flex;
@@ -4556,6 +4568,41 @@
             /* ---- 缩放 10 秒防呆确认(卡片层单例;.sc-scrim 已给 position:absolute;inset:0)---- */
             [data-gb="scale-confirm"] {
                 z-index: 9;
+            }
+
+            /* ---- [SL-276] 「分析口径已改」重分析提示(卡片层单例;用户 2026-09-01 裁定)----
+               定位祖先必须是 #card 而不是设置卡:.sc-scrim 是 absolute + inset:0,
+               嵌在设置卡里会被挤成卡宽并把正文截断(SL-211 已经栽过一次,记在
+               header-version-copy-confirm 那段)。宽度口径照 .sc-modal--copyconfirm
+               (定宽 + `max-width: calc(100% - 2*--sp-24)`),数值取 420 而不是它的 460
+               —— 本框正文短一截,460 会显得空。
+               ⚠ [J85] 的口径是「不弹阻塞确认框」;本框是用户 2026-09-01 明确点名的**唯一**例外
+               (旧的一条小琥珀 badge 用户看不清),别据此再开第二处。 */
+            [data-gb="reanalyze-ask"] {
+                z-index: 9;
+            }
+            .sc-modal--reanalyze {
+                width: 420px;
+                max-width: calc(100% - 2 * var(--sp-24));
+            }
+            /* [SL-273] 弹窗第二段(换档影响面)。**不能复用 .sc-hint** —— 那条的
+               `--txt-4` 是浅色面上的弱化色,落到深色玻璃模态上对比度掉到几乎看不见;
+               深色面的次级色阶是 --txt-dark-3/4(同一个 .sc-modal__body 走的就是 -3)。
+               margin 写死而不吃 <p> 的 UA 默认值:.sc-modal 不是 flex 容器,两段之间
+               的距离只能由这一条决定(SL-275 修的正是「靠 UA margin 撑间距」这种写法)。 */
+            .sc-modal__note {
+                margin: var(--sp-9) 0 0;
+                font-size: var(--fs-95);
+                line-height: 1.5;
+                color: var(--txt-dark-4);
+                text-wrap: pretty;
+            }
+            /* 正文段的 UA 默认 margin 在本框里归零 —— 两段之间的距离全由上面那条
+               `.sc-modal__note` 的 margin-top 说了算(否则相邻兄弟外边距折叠成
+               max(1em, --sp-9),间距变成「看运气」)。只圈到 --reanalyze:
+               另外两个既有模态(copyconfirm / scale-confirm)的观感不在本卡范围内。 */
+            .sc-modal--reanalyze .sc-modal__body {
+                margin: 0;
             }
 
             /* ---- 版本复制确认(SL-211;卡片层单例)----
@@ -8085,6 +8132,16 @@
                                         class="sc-hint"
                                         data-t="set.loudnessMode.note"
                                     ></p>
+                                    <!-- [SL-273] 换档影响面。**同一条 set.reanalyze.scopeNote 也渲染在
+                                         [SL-276] 弹窗的第二段** —— 定谳要求两处都写明,共用一个 key 是让
+                                         「两处一致」由结构保证而不是靠手抄。影响面的口径写在词条那一侧
+                                         (web/shared/i18n.js 的 set.reanalyze.scopeNote),此处不复述,
+                                         免得两份描述各自漂移。 -->
+                                    <p
+                                        class="sc-hint"
+                                        data-gb="settings-loudnessmode-scopenote"
+                                        data-t="set.reanalyze.scopeNote"
+                                    ></p>
                                     <p
                                         class="sc-badge--amber set-block__stale"
                                         data-gb="settings-loudnessmode-stale"
@@ -8477,6 +8534,53 @@
                         >
                             保持
                         </button>
+                    </div>
+                </div>
+
+                <!-- ====================== [SL-276] 「分析口径已更改」重分析提示 ======================
+                     触发面 = Tab4 的响度口径与基线不一致(tab-settings.js syncStale 的同一判据,
+                     即旧的琥珀 badge 那一条)。琥珀 badge 保留为**常驻状态位**(点「稍后」之后
+                     还看得见口径是脏的),本框只负责把这件事推到用户眼前一次。
+                     「重新分析」= 契约 §1.6 analyze("all")(不新增桥函数、不改契约);
+                     「稍后」/ Esc / 点遮罩 = 关闭,不写任何 state。 -->
+                <div class="sc-scrim" data-gb="reanalyze-ask" hidden>
+                    <!-- role="alertdialog" 必须有可访问名,否则读屏只念出「对话框」三个字。
+                         两条 aria 都指向框里已有的段落,不新增词条(复审【建议】)。 -->
+                    <div
+                        class="sc-modal sc-modal--reanalyze"
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-labelledby="reanalyze-ask-body"
+                        aria-describedby="reanalyze-ask-scopenote"
+                        data-gb="reanalyze-ask-panel"
+                    >
+                        <p
+                            id="reanalyze-ask-body"
+                            class="sc-modal__body"
+                            data-gb="reanalyze-ask-body"
+                            data-t="set.reanalyzeAsk.body"
+                        ></p>
+                        <!-- [SL-273] 与设置页响度卡第二行**同一条词条**(见那处注释)。 -->
+                        <p
+                            id="reanalyze-ask-scopenote"
+                            class="sc-modal__note"
+                            data-gb="reanalyze-ask-scopenote"
+                            data-t="set.reanalyze.scopeNote"
+                        ></p>
+                        <div class="sc-modal__foot">
+                            <button
+                                type="button"
+                                class="sc-btn sc-btn--dark"
+                                data-gb="reanalyze-ask-later"
+                                data-t="set.reanalyzeAsk.later"
+                            ></button>
+                            <button
+                                type="button"
+                                class="sc-btn sc-btn--cta"
+                                data-gb="reanalyze-ask-primary"
+                                data-t="set.reanalyzeAsk.primary"
+                            ></button>
+                        </div>
                     </div>
                 </div>
 
