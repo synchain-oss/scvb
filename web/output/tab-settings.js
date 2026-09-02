@@ -479,16 +479,22 @@ export function createTabSettings(opts) {
             if (!first || !last) return;
             const doc = root.ownerDocument || root;
             const here = doc && doc.activeElement;
+            // [SL-276 二轮复审] 回卷目标要避开 disabled 的那枚:主钮在 analyze 在途期间
+            // 会被置灰(见 doReanalyzeFromAsk),而 focus() 对 disabled 元素是空操作 ——
+            // 直接回卷过去的话,preventDefault() 已经吃掉了这次 Tab、焦点却原地不动,
+            // Tab 在那一小段时间里等于失灵。置灰的只可能是主钮,故退到「稍后」。
+            const focusable = (pref, alt) =>
+                pref && pref.disabled !== true ? pref : alt;
             if (e.shiftKey && here === first) {
                 e.preventDefault();
-                last.focus({ preventScroll: true });
+                focusable(last, first).focus({ preventScroll: true });
             } else if (!e.shiftKey && here === last) {
                 e.preventDefault();
                 first.focus({ preventScroll: true });
             } else if (here !== first && here !== last) {
                 // 焦点已经在框外(点过遮罩、或被 AT 收回 body):收回框里再继续。
                 e.preventDefault();
-                last.focus({ preventScroll: true });
+                focusable(last, first).focus({ preventScroll: true });
             }
         });
     }
