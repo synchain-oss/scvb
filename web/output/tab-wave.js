@@ -825,8 +825,23 @@ export const PARAM_THROTTLE_MS = 25;
 /** previewAnalyze 节流(ms;契约 §1.5「UI 侧节流调用」)。 */
 export const PREVIEW_THROTTLE_MS = 250;
 
-/** diff 变更列表自动收起(ms;A-02 一次性反馈组件)。 */
+/** diff 变更列表自动收起(ms;A-02 一次性反馈组件)。折叠态用这一档。 */
 export const DIFF_HIDE_MS = 6000;
+
+/**
+ * [SL-274] `diff.changed` 明细的封顶条数 —— 与 native 的
+ * `src/core/output/SegmentDiff.h::kMaxChangedItems` 和
+ * `web/shared/mock-data.js::DIFF_CHANGED_CAP` **三处同值**;
+ * **同值由 `web-preview/tests/smoke-mock.mjs` 的三方对拍守着,不靠人记**。
+ * 只用来判「这一帧顶到封顶了吗」,顶到就把计数渲染成「N+」(它是下界,不是总数)。
+ */
+export const DIFF_CHANGED_CAP = 200;
+
+/**
+ * [SL-274] 明细**展开**时的自动收起时长(ms)。见 `armDiffHide` 头注:
+ * 读明细要比瞥一眼计数久得多,但这块仍是一次性反馈、且没有关闭钮,所以有上限而不是不收。
+ */
+export const DIFF_HIDE_OPEN_MS = 30000;
 
 /** 边界吸附捕获半径(CSS px;A-14:命中谷点加亮 + 轻微磁吸)。 */
 export const SNAP_PX = 6;
@@ -1614,18 +1629,47 @@ export function createTabWave(opts) {
         }
     }
 
-    /** diff 变更列表(A-02:一次性反馈,DIFF_HIDE_MS 后自动收起)。 */
+    /**
+     * diff 变更列表(A-02:一次性反馈,过一段时间自动收起;时长见 `armDiffHide`)。
+     *
+     * [SL-274] 每来一帧新 diff 都把 `<details>` **收回折叠态**:这是「一次性反馈」组件,
+     * 上一轮展开的明细留在屏幕上会被当成这一轮的结果读。
+     */
     function setDiff(diff) {
         if (local.diffTimer) clearTimeout(local.diffTimer);
         local.diffTimer = 0;
         local.diff = diff || null;
-        if (local.diff) {
-            local.diffTimer = setTimeout(() => {
+        if (els.diffDetails) els.diffDetails.open = false;
+        if (local.diff) armDiffHide();
+    }
+
+    /**
+     * [SL-274] 自动收起。**折叠态与展开态用两个时长**:
+     *   · 折叠态 `DIFF_HIDE_MS`(6s)—— 屏幕上只有一行计数,瞥一眼就够;
+     *   · 展开态 `DIFF_HIDE_OPEN_MS`(30s)—— 用户点开明细正在读的时候把整块撤下去,
+     *     是把一次性反馈变成一次性挫败。
+     *
+     * ⚠ 展开态**也必须有上限**,不能像第一版那样直接 `return` 不起表:这块的语义是
+     * 「一次性反馈,非常驻视图」(见 index.html 该节点头注),而后续的手动编辑走
+     * `reason:"edit"`、**根本不进 `setDiff`**(见下方 §2.8 分发处只认 vad/segmentation/
+     * analyze 三值)—— 一旦永不收起,用户点开后离开,这块就会一直挂在屏幕上描述一个
+     * 早已被覆盖的状态,而它自己**没有关闭钮**。30s 是「读得完几十条」与「别赖着不走」
+     * 之间的取值。页面级冒烟 `smoke-seg-diff-fold-page.mjs` **直接 import 这两个常量**
+     * (不抄副本),所以调它这里改一处即可 —— 代价是那套的 wall-clock 跟着变。
+     */
+    function armDiffHide() {
+        if (local.diffTimer) clearTimeout(local.diffTimer);
+        local.diffTimer = 0;
+        if (!local.diff) return;
+        const openNow = !!(els.diffDetails && els.diffDetails.open);
+        local.diffTimer = setTimeout(
+            () => {
                 local.diffTimer = 0;
                 local.diff = null;
                 requestRender();
-            }, DIFF_HIDE_MS);
-        }
+            },
+            openNow ? DIFF_HIDE_OPEN_MS : DIFF_HIDE_MS,
+        );
     }
 
     // ---- previewAnalyze 节流(§1.5:纯只读 dry-run;A-07)---------------------
@@ -2035,7 +2079,13 @@ export function createTabWave(opts) {
         els.armNote = $("wave-arm-note");
         els.countdown = $("wave-debounce-countdown");
         els.diff = $("wave-diff-list");
-        els.diffKept = els.diff ? els.diff.querySelector("[data-t]") : null;
+        // [SL-274] 首行 wave.diffKept 与折叠头 wave.diffSummary **都带 [data-t]** ——
+        // 原先的 `querySelector("[data-t]")` 现在会同时命中两个,取第一个恰好还是首行,
+        // 但那是**位置巧合**、不是判据。按 data-gb 点名取:再往这块里加一个词条节点,
+        // 首行的文案也不会被写到别的节点上去。
+        els.diffKept = $("wave-diff-kept");
+        els.diffDetails = $("wave-diff-details");
+        els.diffSummary = $("wave-diff-summary");
         els.diffItems = $("wave-diff-list-items");
         els.previewLine = $("wave-reanalyze-preview");
         els.rangetip = $("wave-selection-setrange-tip");
@@ -2355,6 +2405,16 @@ export function createTabWave(opts) {
                 local.rangeTip = null;
                 requestRender();
             });
+        }
+        // [SL-274] 展开/收起 diff 明细:两态各按自己的时长重新起表(见 `armDiffHide`)。
+        // 用 `<details>` 的原生 `toggle` 而不是自己造一个开合钮 —— 键盘可达、
+        // aria-expanded 由浏览器维护,不必再补一套 a11y 接线。
+        // ⚠ `toggle` 是**异步**派发的(HTML 规范:排任务队列,不同步触发),所以
+        // `setDiff` 里那句 `open = false` 不会在 `setDiff` 内重入本回调 —— 它先自己
+        // 起一次折叠档的表,排队的 toggle 稍后再 clear + 重起同一档。净效果相同,
+        // 而这只成立于 `armDiffHide` 开头那句无条件 `clearTimeout`:别把它删了。
+        if (els.diffDetails) {
+            els.diffDetails.addEventListener("toggle", armDiffHide);
         }
         if (els.recapBadge) {
             els.recapBadge.addEventListener("click", locateRecapture);
@@ -3720,6 +3780,33 @@ export function createTabWave(opts) {
                     fmtKey("wave.diffKept", { k: num(local.diff.kept, 0) }),
                 );
             }
+            // [SL-274] 折叠头 = 三个计数,**默认态屏幕上只有这一行**。
+            //
+            // ⚠ `changed` 是**会被截断**的那一个:native 的 `kMaxChangedItems` 与 mock
+            // 同为 200,而 `added` / `removed` / `kept` 是如实的全局总数(逐字见
+            // `src/core/output/SegmentDiff.h` 该常量的头注)。所以顶到封顶时要写成
+            // 「200+」—— 直接印 `changed.length` 会把「至少 200 段改了」说成「正好 200 段」,
+            // 那是这一行唯一可能撒的谎。契约 §2.8 没有「改动总数」字段,补不了真值,
+            // 但**说清楚这是下界**不需要动契约。
+            //
+            // ⚠ 「恰好 200 条且没被截断」那一帧也会印成「200+」(复审第 3 轮记一笔):
+            // `nChanged` 只是数组长度,分不出「截到 200」与「本来就 200」。方向是安全的
+            // 那一侧 —— 下界永真,只是这一帧偏保守。要分开得让 native 多发一个「是否截断」
+            // 的字段,那是契约变更,不在本卡范围。
+            if (els.diffSummary) {
+                const nChanged = (local.diff.changed || []).length;
+                text(
+                    els.diffSummary,
+                    fmtKey("wave.diffSummary", {
+                        c:
+                            nChanged >= DIFF_CHANGED_CAP
+                                ? `${nChanged}+`
+                                : String(nChanged),
+                        a: num(local.diff.added, 0),
+                        r: num(local.diff.removed, 0),
+                    }),
+                );
+            }
             renderDiffItems(local.diff);
             show(els.diff, true);
         } else {
@@ -3929,13 +4016,10 @@ export function createTabWave(opts) {
                 }),
             )}</li>`;
         }
-        const a = num(diff.added, 0);
-        const r = num(diff.removed, 0);
-        if (a > 0 || r > 0) {
-            html += `<li>${esc(
-                fmtKey("wave.diffAddedRemoved", { a, r }),
-            )}</li>`;
-        }
+        // [SL-274] 这里**不再**补一条 added/removed 尾行。折叠头 `wave.diffSummary`
+        // 是常驻可见的那一行,三个计数都在它上面;明细区再写一遍就是同一句话贴两遍,
+        // 而且尾行会跟着明细一起滚走 —— 计数属于「一眼就要看到」的那类信息,
+        // 该待在不滚动的头上。旧词条 `wave.diffAddedRemoved` 随之退役(三语一并删)。
         if (els.diffItems.innerHTML !== html) els.diffItems.innerHTML = html;
     }
 

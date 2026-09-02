@@ -3144,6 +3144,22 @@
                 gap: var(--sp-5);
             }
             /* ---- 深色泳道窗(806:--dark-window 三停靠逐字;shadow 补图例帧档) ---- */
+            /* [SL-274] `min-height: 0` **保持不动**,这里记下为什么没往上抬。
+               本卡缺陷是「工具条长高 → 泳道窗被吃光 → 泳道消失」:`.wave-toolbar` 是
+               `flex:none`(不可压缩),而本元素 `flex:1; min-height:0`(可压到零)。
+               把 min-height 抬到一屏泳道的高度看似是条便宜的兜底,实测**买不到任何东西**:
+                 · `#card` 是 `height: var(--box-h)` 的**固定设计盒**(:305,780px,
+                   由 app.js 从 design-box.js 写入),面板高不随视口变 —— 没有「窗口太矮」
+                   这个场景,兜底永远不承力,也就**没有删之即红的用例**;
+                 · 真的溢出时它也救不了:本面板是
+                   `#content > section[data-tab-panel="wave"] { overflow: hidden }`(:2440,
+                   比通用的 `overflow: auto`(:640)特异度更高也更靠后),`.wave-main`
+                   自己不设 overflow —— 工具条一旦长过整栏,泳道窗会保住盒子却被整体推到
+                   裁切线以下,屏幕上照样什么都看不见,且不出滚动条。压扁与推走,对用户
+                   是同一件事。
+               所以治法只有一条:**把工具条摁住**。那就是折叠(默认只出计数)与
+               `.wave-diff__items` 的 max-height 两道,页面级冒烟按「工具条 + 泳道窗
+               装得进面板」直接断。 */
             .wave-window {
                 flex: 1;
                 min-height: 0;
@@ -3539,6 +3555,20 @@
                 font-variant-numeric: tabular-nums;
                 font-size: var(--fs-90);
                 color: var(--txt-3);
+            }
+            /* [SL-274] 折叠头:默认态只有这一行,明细在它下面。 */
+            .wave-diff__summary {
+                cursor: pointer;
+                font-size: var(--fs-95);
+                color: var(--txt-2);
+            }
+            /* [SL-274] 展开态封顶:明细自己滚,绝不把工具条撑到把泳道窗挤没。
+               改前这张表无封顶,一次全量重分段的几十上百条会把 `.wave-toolbar`
+               (flex:none,不可压缩)撑到整屏,`.wave-window`(flex:1;min-height:0)
+               被压到 0 —— 泳道整块消失。折叠是默认态的解,这条是展开态的解。 */
+            .wave-diff__items {
+                max-height: 168px;
+                overflow-y: auto;
             }
             /* 播放头(838):滚动层内纵贯;采集中的绿色进度点(A-15)是头部子件 */
             .wave-playhead {
@@ -7291,16 +7321,65 @@
                                 ></div>
 
                                 <!-- A2② diff 变更列表(一次性反馈,非常驻视图,J67;
-                                     首行 wave.diffKept;数据 = scvb.segments.diff,Wave 2) -->
+                                     首行 wave.diffKept;数据 = scvb.segments.diff,Wave 2)
+
+                                     [SL-274] **默认只出计数,明细折进 <details>**。
+                                     改前明细是逐条 <li> 平铺、无折叠无封顶:一次全量重分段
+                                     动辄几十上百条,而 `.wave-toolbar` 是 `flex:none`(不可
+                                     压缩)、下面的 `.wave-window` 是 `flex:1; min-height:0`
+                                     (可压到 0)—— 明细一多,泳道窗被整块挤没,直到 6s 后
+                                     diff 自动收起才回来。用户 v5.6.5 实测「泳道完全消失,
+                                     过一会才出现」就是这个,页面级冒烟已复现(29 条明细 ⇒
+                                     wave-lanes clientHeight = 0)。
+                                     两道一起做:折叠让默认态只占一行;`.wave-diff__items`
+                                     的 max-height 让展开态也封顶。**没有**第三道
+                                     「给 `.wave-window` 加 min-height 兜底」—— 为什么不加,
+                                     逐字见该规则的头注。 -->
                                 <div
                                     class="wave-diff"
                                     data-gb="wave-diff-list"
                                     hidden
                                 >
-                                    <p class="sc-hint" data-t="wave.diffKept">
+                                    <p
+                                        class="sc-hint"
+                                        data-gb="wave-diff-kept"
+                                        data-t="wave.diffKept"
+                                    >
                                         {k} 处手动编辑/锁定段已保留
                                     </p>
-                                    <ul data-gb="wave-diff-list-items"></ul>
+                                    <details
+                                        class="wave-diff__more"
+                                        data-gb="wave-diff-details"
+                                    >
+                                        <summary
+                                            class="wave-diff__summary"
+                                            data-gb="wave-diff-summary"
+                                            data-t="wave.diffSummary"
+                                        >
+                                            {c} 段有改动 · 新增 {a} 段 · 移除
+                                            {r} 段
+                                        </summary>
+                                        <!-- [SL-274 复审] `max-height + overflow-y:auto` 造出
+                                             一个滚动区,而滚动区默认**只能用滚轮/触控**滚 ——
+                                             封顶 200 条明细,纯键盘用户到不了第 7 条以后。
+                                             折叠头走 <details>/<summary> 原生、a11y 免费,这一层
+                                             得自己补:`tabindex=0` 让它进 Tab 序,方向键/PageDown
+                                             才滚得动;aria-label 给这个可聚焦容器一个可读的名
+                                             (无名的可聚焦区在读屏里只会念出一串条目)。
+                                             ⚠ **不写 `role`**(复审第 2 轮:第一版写了 `role=group`)——
+                                             `<ul>` 的隐式 role 就是 `list`,它本身就支持 aria-label;
+                                             盖成 group 之后读屏不再播报「列表,200 项」,而条目数正是
+                                             这块唯一有用的结构信息(尤其「200+」那一帧)。
+                                             Chromium 的 keyboard-focusable scrollers 要看 WebView2
+                                             Evergreen 的实际版本,不能当保底。CLAUDE.md §10。 -->
+                                        <ul
+                                            class="wave-diff__items"
+                                            data-gb="wave-diff-list-items"
+                                            tabindex="0"
+                                            data-t-aria="wave.diffItemsLabel"
+                                            aria-label="本次改动明细"
+                                        ></ul>
+                                    </details>
                                 </div>
 
                                 <!-- A2④「重新识别」二次确认框(05 行 302 逐字) -->

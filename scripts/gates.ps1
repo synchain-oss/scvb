@@ -371,10 +371,11 @@ elseif ($smokeFiles.Count -eq 0) {
 }
 else {
   # 退出码约定(T46 起):0 = 全绿;1 = 有断言失败;**2 = 缺可选外部依赖,本机跑不了**。
-  # 会回 2 的是**五套**页面级冒烟(都要一个无头 Chrome/Edge):smoke-monitor-page.mjs、
+  # 会回 2 的是**六套**页面级冒烟(都要一个无头 Chrome/Edge):smoke-monitor-page.mjs、
   # smoke-output-stale-page.mjs(SL-177 过期提示,04 §4.5)、smoke-output-dist-page.mjs
-  # (SL-203 分布图补间)、smoke-seg-restore-page.mjs(SL-242 段级「恢复自动」的作用域)
-  # 与 smoke-ui-layout-page.mjs(SL-272/275/276/273 header 几何、建议表留白、重分析弹窗)。
+  # (SL-203 分布图补间)、smoke-seg-restore-page.mjs(SL-242 段级「恢复自动」的作用域)、
+  # smoke-ui-layout-page.mjs(SL-272/275/276/273 header 几何、建议表留白、重分析弹窗)
+  # 与 smoke-seg-diff-fold-page.mjs(SL-274 diff 摘要折叠 + 泳道保底)。
   # 执行面按 glob 自动收,加一套不必改这里 —— 这行只是给人读的。
   # 为什么单列一档:
   # 把「本机没装浏览器」和「页面真的坏了」都判成红,等于逼每个只改 C++ 的人装浏览器,

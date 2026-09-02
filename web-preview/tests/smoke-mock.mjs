@@ -20,6 +20,7 @@
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
 // =============================================================================
 
+import { readFileSync } from "node:fs"; // [SL-274] 封顶对拍读 native 那个 C++ 常量
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -690,6 +691,166 @@ log("\n=== ⑦ [J83] participate_in_auto_pan 默认档 ===");
             `Input=${inSnap.config.participate_in_auto_pan}`,
     );
     log(`  stereo-mixed:ch${mirrorCh} 两侧同为 false(§4.3 只读镜像自洽)`);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-274] diff.changed 的每一条都必须是**幅度值得一提**的改动。
+//
+// native 侧 `src/core/output/SegmentDiff.h::changedAtDisplayPrecision` 只登记
+// 「量化到 1 位小数后不同 **且** 幅度 >= 半个显示步长」的段 —— 这一条是本卡的修复:
+// 用户 v5.6.5 实测「摘要弹出全轨全段」,里头大半是贴着量化边界、幅度小到不值一提的条目
+// (它们屏幕上的数字**确实变了**,滤掉是因为变化量太小,不是因为「看不见」)。
+// mock 若发得出 native 发不出的东西,页面级冒烟看到的就不是真机会有的画面。
+//
+// **为什么断在这里、而不是在 mock 里加一段过滤**:实测两条路径(默认档 232 条 /
+// 满档 1600 条),逐条 max(|dPan|,|dVol|) 的最小值分别是 0.2 / 0.1 —— 都 >= 一整档,
+// 过滤代码一条都滤不掉,那是永不触发的
+// 死判据,删掉它不会有任何用例变红。真正决定这件事的是 panJitter / volJitter 的量级,
+// 所以把约束写成断言:哪天有人把抖动调小到能产生亚显示精度的改动,这里立刻红,
+// 逼人当场决定「改抖动还是给 mock 加过滤」,而不是被一段静默过滤盖过去。
+// ⚠ **两条路径都要扫**([SL-274] 复审第 2 轮【重要】):`diffFillToCap` 拿掉的正是
+// `% 17` 那道抽稀,于是 diff-flood 下进表的是**另一批段** —— 它们的 panJitter/volJitter
+// 落点不受默认档那批的断言覆盖。`unit()` 是种子函数、完全确定,所以「有没有一条两维
+// 都低于闸门」这件事要么已经发生要么永不发生;不扫就等于不知道是哪一种。
+log("");
+log(
+    "=== [SL-274] mock 的 diff.changed 与 native 判据同口径(默认档 + diff-flood)===",
+);
+{
+    const md = await import(u("web/shared/mock-data.js"));
+    const GATE = 0.05; // 半个显示步长(native 的 kChangeAmplitudeGate)
+    const seenBy = {}; // 两条路径各自的条数,循环结束后自比
+    for (const fill of [false, true]) {
+        let seen = 0;
+        let invisible = 0;
+        // 报「逐条两维取大者」的最小值 —— 那才是断言真正问的那个量。
+        // (不报最小 |dPan|:满档下有整批 pan 一动不动、只有 volDb 变的条目,
+        //  那批完全合法 —— native 的判据本来就是两维取「或」。)
+        let minGated = Infinity;
+        let frames = 0;
+        let framesAtCap = 0;
+        let notFull = ""; // 满档路径下第一帧不满档的身份,给失败文案用
+        for (const reason of ["vad", "segmentation", "analyze", "edit"]) {
+            for (let v = 1; v <= 2; v++) {
+                const frame = md.makeSegments(v, reason, undefined, {
+                    diffFillToCap: fill,
+                });
+                frames++;
+                if ((frame.diff.changed || []).length === md.DIFF_CHANGED_CAP) {
+                    framesAtCap++;
+                    // 不满档时报错要说清是**哪一帧**,否则只能回头自己复现。
+                } else if (fill && notFull === "") {
+                    notFull = `${reason}/v${v} 只有 ${(frame.diff.changed || []).length} 条`;
+                }
+                for (const c of frame.diff.changed || []) {
+                    seen++;
+                    const dp = Math.abs(c.panTo - c.panFrom);
+                    const dv = Math.abs(c.volDbTo - c.volDbFrom);
+                    minGated = Math.min(minGated, Math.max(dp, dv));
+                    if (dp < GATE && dv < GATE) invisible++;
+                }
+            }
+        }
+        const path = fill ? "diff-flood(满档)" : "默认档";
+        // 「素材够不够」按路径分开断,且**满档那条不用任何魔数**(复审第 3/4 轮):
+        //   · 满档:直接断**每一帧都恰好顶到封顶**。这就是 `diffFillToCap` 的定义,
+        //     不是它的某个数值推论 —— 先后两版都栽在魔数上:`> 1000` 隐含
+        //     「封顶 ≥ 126」,`> cap * 6` 隐含「封顶 < 674」,方向相反、同一种病。
+        //     ⚠ 但这一版**也不是**「与封顶完全无关」:每帧只有 ~505 条 auto 段,
+        //     封顶一旦抬过它就填不满、本条先红。那是本套的**结构性前提**
+        //     (封顶要落在「默认档每帧条数 ~29」与「每帧 auto 段池 ~505」之间),
+        //     不是断言写法能绕开的 —— 逐字见下面那条自比断言的头注。
+        //   · 默认档:`% 17` 抽稀后每帧 29 条,这里只要一个「素材没塌」的下界;
+        //     「抽稀真的生效了吗」由**循环之后**那条两条路径自比来断(见下)——
+        //     那条**同样有一根封顶边界**(`cap ≤ 29` 时两路相等),理由与写法逐字见
+        //     该断言的头注,别照第 6 轮那版的说法以为它与封顶无关。
+        seenBy[String(fill)] = seen;
+        if (fill) {
+            check(
+                framesAtCap === frames,
+                `[${path}] 每一帧都顶到封顶 ${md.DIFF_CHANGED_CAP} 条` +
+                    `(实得 ${framesAtCap}/${frames} 帧` +
+                    (notFull ? `,首个不满档的是 ${notFull}` : "") +
+                    ";不满档 ⇒ 下面那条断言只扫到一部分素材," +
+                    "而页面级冒烟的「200+」判据也会跟着落空)",
+            );
+        } else {
+            check(seen > 100, `[${path}] 样本量够大(实得 ${seen} 条,应 >100)`);
+        }
+        check(
+            invisible === 0,
+            `[${path}] 每条 changed 至少有一维过得了 native 的幅度闸门 ${GATE}` +
+                `(实得 ${invisible} 条两维都低于闸门 —— native 不会发这种条目,` +
+                "mock 也不该发:要么把 panJitter/volJitter 调回大幅度,要么给 mock 补过滤)",
+        );
+        log(
+            `  [${path}] ${seen} 条 changed,零条两维皆亚闸门;` +
+                `逐条 max(|dPan|,|dVol|) 的最小值 = ${minGated.toFixed(4)}`,
+        );
+    }
+    // 「`% 17` 抽稀真的生效了吗」——**两条路径自比**(复审第 6 轮)。
+    //
+    // ⚠ **别再写「与封顶取多少无关」**(复审第 7 轮两个 bot 同点,那句话是错的):
+    // `changed.length < DIFF_CHANGED_CAP` 那道闸**两条路径都吃**,于是
+    // `seenBy.false = 8 × min(29, cap)`、`seenBy.true = 8 × min(505, cap)`,
+    // 两者相等 ⟺ `cap ≤ 29` —— 与上一版 `framesAtCap === 0`(⟺ `cap ≥ 30`)
+    // 是**同一条边界**,红点位置逐字相同,检出能力也等价。
+    //
+    // 那根边界拔不掉,因为它不是断言的写法问题,而是**这套测试设计的结构性前提**:
+    // 封顶必须高于默认档每帧条数(~29,否则默认档自己也撞封顶、两路塌成一条),
+    // 又必须低于每帧 auto 段池(~505,否则满档支填不满、`framesAtCap === frames` 先红)。
+    // 换的这一版真正买到的只有一件事:**失败文案说得全**,不再单指「抽稀没生效」。
+    check(
+        seenBy.false < seenBy.true,
+        `默认档(${seenBy.false} 条)必须严格少于满档(${seenBy.true} 条)—— ` +
+            "两者相等有两种可能:`% 17` 抽稀没生效,或封顶被改到 ≤ 默认档每帧条数(~29);" +
+            "无论哪种,满档那一支都不再是独立路径,而上面两条断言仍会双双绿着",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// [SL-274] `changed[]` 的封顶 **200** 是三处同值,这里给它上机器门禁。
+//
+// 三处:native `src/core/output/SegmentDiff.h::kMaxChangedItems`、
+// web `web/output/tab-wave.js::DIFF_CHANGED_CAP`、mock `web/shared/mock-data.js::DIFF_CHANGED_CAP`。
+// 改前只有注释在绑三者(「改一处要三处一起改」),而本仓对单一真源一向是上门禁的
+// (`.juce-version`、`check-bridge-parity`、`check-*-parity`)—— 注释绑不住,人会漏。
+//
+// 为什么这条**必须**存在:web 侧拿 `DIFF_CHANGED_CAP` 判「这一帧顶到封顶没有」,顶到就把
+// 计数渲染成「200+」(它是下界,不是总数)。三者一旦不同值,那个判断就会在错误的点翻面 ——
+// native 截到 200、web 以为封顶是 500 ⇒ 屏幕上印「200」,把「至少 200 段改了」说成
+// 「正好 200 段」。这正是本卡在 tab-wave.js 那段头注里说的「这一行唯一可能撒的谎」。
+//
+// **两侧 JS 直接 import、只有 native 走正则**(复审第 3 轮):C++ 头文件没有别的读法;
+// 而 JS 那两个 import 比的是**运行时真值**,比源码长相硬。第一版三处统一用正则,
+// 代价是 mock 那处只能匹配裸字面量 `changed.length < 200` —— 那等于**把「给这个数起个
+// 名字」判成红**:谁写成 `changed.length < SOME_CONST`,门禁就以「找不到常量」拦住他。
+// 现在 mock 侧也有了具名导出,那条反向激励一并消失。
+log("");
+log("=== [SL-274] changed[] 封顶三处同值(native / web / mock)===");
+{
+    const nativeSrc = readFileSync(
+        join(ROOT, "src/core/output/SegmentDiff.h"),
+        "utf8",
+    );
+    const m = nativeSrc.match(/kMaxChangedItems\s*=\s*(\d+)/);
+    check(!!m, "native kMaxChangedItems:在 SegmentDiff.h 里找得到那个常量");
+    const nativeCap = m ? Number(m[1]) : NaN;
+    const webCap = (await import(u("web/output/tab-wave.js"))).DIFF_CHANGED_CAP;
+    const mockCap = (await import(u("web/shared/mock-data.js")))
+        .DIFF_CHANGED_CAP;
+    check(
+        Number.isFinite(webCap) && Number.isFinite(mockCap),
+        `web / mock 两侧都导出了 DIFF_CHANGED_CAP(实得 ${webCap} / ${mockCap};` +
+            "常量被改名/删掉时 undefined 会让下面那条比较恒假 —— 这里先拦一道)",
+    );
+    check(
+        nativeCap === webCap && webCap === mockCap,
+        `三处同值(native ${nativeCap} / web ${webCap} / mock ${mockCap}) —— ` +
+            "任一处单独改动都会让「顶到封顶就渲染成 N+」在错误的点翻面",
+    );
+    // 三个值都打出来:红的时候日志要直接说清是哪一处跑偏了,别再让人回去翻源码。
+    log(`  native ${nativeCap} / web ${webCap} / mock ${mockCap}`);
 }
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);

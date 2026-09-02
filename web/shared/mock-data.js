@@ -60,6 +60,18 @@ export const WAVEFORM_UNCOVERED_DB = -160;
 export const HEARTBEAT_AGE_NONE = 0xffffffff;
 
 /**
+ * `diff.changed[]` 的条数封顶 —— 与 native 的
+ * `src/core/output/SegmentDiff.h::kMaxChangedItems` 和
+ * `web/output/tab-wave.js::DIFF_CHANGED_CAP` **三处同值**(门禁见 smoke-mock.mjs)。
+ *
+ * [SL-274 复审第 3 轮] 原先这里是 `makeSegments` 里的**裸字面量** `200`,而门禁靠正则
+ * `changed.length < (\d+)` 去读它 —— 那等于**把「给这个数起个名字」判成红**:谁写成
+ * `changed.length < SOME_CONST`,门禁就会以「找不到常量」的名义拦住他。起了名之后
+ * 门禁改成直接 import 这个值,比正则更硬(比的是**运行时真值**,不是源码长相)。
+ */
+export const DIFF_CHANGED_CAP = 200;
+
+/**
  * Tab1 分布图视图两态([J75] T43 的 state `ui.master_chart_mode`)。
  *
  * **刻意不进 `ENUMS`**:那个对象的头注写着「契约 §5 / §7 manifest 的枚举镜像」,
@@ -795,9 +807,12 @@ export function makeCaptureProgress(tS = 0, channels = allChannels()) {
  * @param {number} version 1..2
  * @param {string} reason §2.8 十值枚举之一
  * @param {number[]} channels 受影响轨(`snapshot`/`versionActive` 语义上必须是全部轨)
- * @param {{trajectoryGap?: boolean}} [opts] `trajectoryGap` = 在 `TRAJECTORY_GAP` 窗口内
- *   把 `TRAJECTORY_GAP_CHANNELS` 几条轨的段整段挖掉([J75] T43 轨迹图断线的定点验收面)。
- *   **缺省 false** —— 不传就与本参数引入前逐字节相同。
+ * @param {{trajectoryGap?: boolean, diffFillToCap?: boolean}} [opts]
+ *   `trajectoryGap` = 在 `TRAJECTORY_GAP` 窗口内把 `TRAJECTORY_GAP_CHANNELS` 几条轨的段
+ *   整段挖掉([J75] T43 轨迹图断线的定点验收面)。
+ *   `diffFillToCap` = 拿掉 `diff.changed` 的 `% 17` 抽稀,让它顶到封顶 200 条
+ *   ([SL-274] `?scenario=diff-flood`:页面那条「顶到封顶就印 N+」的分支只有满档才可达)。
+ *   两者**缺省都是 false** —— 不传就与各自引入前逐字节相同。
  */
 export function makeSegments(
     version = 1,
@@ -857,11 +872,40 @@ export function makeSegments(
                 loudnessLufs: round(-12 - unit(0x8103, ch * 157 + i) * 14, 1),
             };
             if (seg.origin !== "auto") manualKept++;
-            // diff.changed 只登记「本次真的改了值」的 auto 段,挑前几条给 UI 变更列表看
+            // diff.changed 只登记「本次真的改了值」的 auto 段。
+            //
+            // [SL-274] 封顶从 8 抬到 **200**(即本文件顶部的 `DIFF_CHANGED_CAP`)—— 与 native 的
+            // `src/core/output/SegmentDiff.h::kMaxChangedItems`、web 侧的
+            // `tab-wave.js::DIFF_CHANGED_CAP` **三处同值**;同值由
+            // `web-preview/tests/smoke-mock.mjs` 的三方对拍守着,不靠人记。
+            // 改前的 8 是个「展示档」—— 而正因为它,**冒烟永远看不到用户看到的东西**:
+            // 一次全量重分段在真机上给几十上百条,把 `.wave-toolbar` 撑到把泳道窗挤没
+            // (用户 v5.6.5 实测「泳道完全消失」),mock 只给 8 条时页面看着一切正常。
+            // 这是本仓「mock 盖住真机」判例的又一例(见 AnalysisPipeline 的 vadPosterior
+            // 头注、mergeReanalyzed 的 SL-242 头注)。要让页面级冒烟能真的守住这条,
+            // mock 必须给得出 native 给得出的量。
+            //
+            // [SL-274] **与 native 的 changed 判据同口径**:native 自
+            // `changedAtDisplayPrecision` 起,只登记「量化到 1 位小数后不同**且**幅度过
+            // 半个显示步长」的段;mock 不许发出 native 发不出的那种「看不见的改动」,
+            // 否则页面在 mock 下会显示「pan 4.2→4.2 · vol −8.0→−8.0」这种空条目。
+            // **这里没有加过滤代码**:实测两条路径(默认档 232 条 / 满档 1600 条)里,
+            // 逐条 `max(|Δpan|, |ΔvolDb|)` 的最小值分别是 0.2 / 0.1(都 ≥ 一整档),
+            // 一条都滤不掉 —— 加了就是永不触发的死判据
+            // (删掉它没有任何用例会红)。真正决定这件事的是 `panJitter`/`volJitter` 的量级,
+            // 所以约束落在 **smoke-mock.mjs 的断言**上:抖动哪天被调小到产生亚显示精度的
+            // 改动,那条会立刻红、逼人当场处理,而不是被一段静默过滤盖过去。
+            //
+            // [SL-274] `opts.diffFillToCap`(**默认关**,只有 `?scenario=diff-flood` 的预览
+            // 会开)拿掉 `% 17` 那道抽稀,让 changed 真的**顶到封顶**。为什么需要它:
+            // 常态素材出 29 条,`tab-wave.js` 里「顶到封顶就把计数渲染成 `N+`」那个分支
+            // 就**一条用例都到不了** —— 那是本卡新增的、用户可见的分支,没有删之即红的通路
+            // 等于没守(#179 复审【重要】)。505 条 auto 段里抽满 200 条绰绰有余,
+            // 所以开关一开就必然撞封顶,页面级冒烟据此断「印的是 200+ 而不是 200」。
             if (
                 origin === "auto" &&
-                (ch * 3 + i) % 17 === 0 &&
-                changed.length < 8
+                (opts.diffFillToCap || (ch * 3 + i) % 17 === 0) &&
+                changed.length < DIFF_CHANGED_CAP
             ) {
                 changed.push({
                     ch,

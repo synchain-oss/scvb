@@ -131,6 +131,12 @@ export const SCENARIO_MAP = Object.freeze({
     // 真机到达路径有两条(布防期手动开跟随引擎被互斥关了采集 / 布防期手动关采集 = §1.23
     // 裁定③ 接管),对页面而言是同一态,故一个场景即可覆盖。
     "recapture-voided": "fifteen-tracks",
+    // [SL-274] diff 摘要顶到 `changed[]` 封顶(200)的那一帧。常态素材只出 29 条,于是
+    // `tab-wave.js` 里「顶到封顶就把计数渲染成 `N+`」那个**用户可见**分支一条用例都到不了
+    // (#179 复审【重要】)。本场景把 `makeSegments` 的 `diffFillToCap` 打开(接线见
+    // juce-bridge-mock 的 recompute),页面级冒烟据此断「印的是 200+ 而不是 200」。
+    // 落在健康满配世界上 —— 要有 15 轨五百多条 auto 段,才抽得满 200 条。
+    "diff-flood": "fifteen-tracks",
 });
 
 /** `stale` 场景里「数据已过期」的轨(取三条:够验证「只影响该轨、不牵连别的轨」)。 */
@@ -708,6 +714,10 @@ export function buildWorld(opts = {}) {
 
     return {
         fixture,
+        // [SL-274] 场景名随 world 一起往下走。此前只有 buildWorld 自己在用 `opts.scenario`
+        // 做初值覆写,后端拿不到 —— 而 diff-flood 要改的是**重算时怎么造 changed[]**,
+        // 那件事发生在 juce-bridge-mock 的 recompute 里,不在任何初值上。
+        scenario: opts.scenario ?? null,
         durationS: DEMO_DURATION_S,
         caps,
         transport,
