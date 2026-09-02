@@ -129,6 +129,19 @@ jobs:
           #    双引号),`^web/` 就不匹配了。**本仓已经有这种路径**
           #    (`"docs/design/SCVB \350\256\276…dc.html"`),现在恰好落在 docs/ 所以无害;
           #    哪天 src/ 或 web/fonts/ 下出现一个中文名文件,就会静默跳过编译。
+          # **先断言 HEAD 真的是那个合并提交**(PR#180 复审采纳)。上面 checkout 那段注释把
+          # 「^1 = base」当成前提,但这个前提有一种破法:PR 有冲突时 GitHub 不更新
+          # refs/pull/N/merge,checkout 可能落到 head commit 上 —— 那时 `HEAD^1` 变成
+          # **子支线上一个 commit**,`git diff HEAD^1 HEAD` 收窄成「最后一次 push 改了什么」。
+          # 于是「前面几个 commit 动过 src/、最后一次只改文档」的 PR 会被静默判 native=false。
+          # diff 非空,所以走不进下面那条「取不到改动面」的兜底 —— 这是它自己的一档。
+          # 让前提从隐含变成显式:没有第二个父提交就说明不在 merge ref 上,倒向照编。
+          if ! git rev-parse --verify --quiet 'HEAD^2' >/dev/null 2>&1; then
+            echo "::warning::HEAD 不是合并提交(PR 可能有冲突,merge ref 未更新)——改动面无从算起,保守判定 native=true(照编)"
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           files=$(git -c core.quotepath=false diff --no-renames --name-only HEAD^1 HEAD 2>/dev/null) || files=''
           if [ -z "$files" ]; then
             # 取不到改动面(浅克隆缺父提交 / PR 不可合并 / 合并提交形态变了)——

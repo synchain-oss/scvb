@@ -78,9 +78,14 @@ function ereHitSet(pattern, paths) {
         encoding: "utf8",
     });
     if (r.error) return null; // 本机没有 grep(非 CI 环境),交给调用处降级
-    if (r.status >= 2) {
+    // `r.signal` 有值时 `r.status` 是 null,会从 `>= 2` 底下穿过去,然后拿着**被截断的**
+    // stdout 去比对 —— 结果仍是红(命中集合对不上),但错因会被误报成「两个引擎不一致」。
+    // 概率极低,但错因说准的成本是一个 `||`(PR#180 复审采纳)。
+    if (r.signal || r.status >= 2) {
         console.error(
-            `check-native-paths: grep -E 拒绝了这条正则(exit=${r.status})—— ERE 不认它的语法。`,
+            r.signal
+                ? `check-native-paths: grep 被信号 ${r.signal} 终止,拿不到可信的命中集合(不是正则的问题)。`
+                : `check-native-paths: grep -E 拒绝了这条正则(exit=${r.status})—— ERE 不认它的语法。`,
         );
         console.error((r.stderr || "").trim());
         process.exit(1);
@@ -193,11 +198,18 @@ if (!(PATTERN.startsWith("^(") && PATTERN.endsWith(")"))) {
     process.exit(1);
 }
 const alts = PATTERN.slice(2, -1).split("|");
-// 拆了要能原样拼回去,否则说明某个分支里有字面量 '|'(比如写进了字符类),拆法不成立。
-if (`^(${alts.join("|")})` !== PATTERN) {
+// 这里原本写的是「拆完能拼回去就说明拆法成立」—— 那是个**恒真式**
+// (`split("|").join("|")` 恒等于原串),它什么都拦不住,却在注释里声称拦得住
+// (PR#180 复审指出,实测嵌套组也照样「拼得回去」)。换成真的检查:
+// 白名单放行 `(` 与 `)`,所以将来写成 `^(src/|(tests|cmake)/)` 是合法的,而按顶层 `|`
+// 硬拆会拼出 `^(src/|cmake)/)` 这类非法正则 —— `new RegExp` 抛 SyntaxError 且无人接,
+// 报错形态从这句中文退化成栈回溯。当前正则不需要嵌套组,直接判负并说清原因。
+if (alts.some((a) => a.includes("(") || a.includes(")"))) {
     console.error(
-        "check-native-paths: 按 '|' 拆分后拼不回原正则,删除式验证不可靠。",
+        "check-native-paths: NATIVE_RE 里出现了嵌套组 —— 删除式验证按顶层 '|' 拆分," +
+            "拆到嵌套组会拼出非法正则。要用嵌套组,得先把 ③ 的拆法换成真正的解析。",
     );
+    console.error(`  实际拿到: ${PATTERN}`);
     process.exit(1);
 }
 
