@@ -191,6 +191,10 @@ export function createTabSettings(opts) {
         loudnessSeg: $("settings-loudnessmode-seg"),
         centerSeg: $("settings-centerslot-seg"),
         loudnessStale: $("settings-loudnessmode-stale"),
+        // [SL-276] 重分析提示弹窗(卡片层单例,不在 Tab4 子树里 —— 见 index.html 那段注释)
+        reanalyzeAsk: $("reanalyze-ask"),
+        reanalyzeAskLater: $("reanalyze-ask-later"),
+        reanalyzeAskPrimary: $("reanalyze-ask-primary"),
         guideBox: $("settings-guideblock-rules"),
         guideList: $("settings-guideblock-rules-list"),
         guideMissing: $("settings-guideblock-rules-missing"),
@@ -217,6 +221,10 @@ export function createTabSettings(opts) {
     //   stale = 当前值 !== 基线值 —— 改走提示出现,改回基线值立即消失。
     const local = {
         analysisConfigBaseline: null,
+        // [SL-276] 已就哪个口径值弹过框。**按值记而不是按布尔记**:改走 → 弹一次;
+        // 点「稍后」后继续在别的档之间来回切,每换到一个新的脏值都该再弹一次;
+        // 改回基线(stale 归 false)时清空,下次再改走照弹。
+        reanalyzeAskedFor: null,
         nineOpen: false,
         diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
@@ -410,6 +418,30 @@ export function createTabSettings(opts) {
         if (el.diagChevron)
             el.diagChevron.addEventListener("click", toggleDiag);
         if (el.diagCopy) el.diagCopy.addEventListener("click", copyDiag);
+        // [SL-276] 弹窗三个出口:「稍后」/ 点遮罩本身 / Esc —— 都只关框,不写任何 state。
+        if (el.reanalyzeAskLater)
+            el.reanalyzeAskLater.addEventListener("click", closeReanalyzeAsk);
+        if (el.reanalyzeAskPrimary)
+            el.reanalyzeAskPrimary.addEventListener(
+                "click",
+                doReanalyzeFromAsk,
+            );
+        if (el.reanalyzeAsk)
+            el.reanalyzeAsk.addEventListener("click", (e) => {
+                if (e.target === el.reanalyzeAsk) closeReanalyzeAsk();
+            });
+        // Esc 挂在 document 上(而不是框上):框里只有两枚按钮,焦点一旦被挪走
+        // (点了遮罩、或 AT 把焦点收回 body)就再也收不到键。只在本框可见时动作,
+        // 且 mount() 全程只跑一次(app.js:471),不会叠加同一个监听。
+        // 与别处 Esc 不打架:另一条 document 级 Esc 在 tab-wave.js,自带
+        // `isPanelActive()` 闸;而本框只可能在 Tab4 弹出 —— app.js 的 render 按
+        // 当前 tab 分派,`tabSettings.render()`(=> syncStale)只在设置页跑。
+        (root.ownerDocument || root).addEventListener("keydown", (e) => {
+            if (e.key !== "Escape") return;
+            if (!el.reanalyzeAsk || el.reanalyzeAsk.hidden) return;
+            e.preventDefault();
+            closeReanalyzeAsk();
+        });
     }
 
     // --------------------------------------------------------------- render
@@ -431,6 +463,31 @@ export function createTabSettings(opts) {
         }
     }
 
+    // ---------------------------------------------------------- [SL-276] 重分析弹窗
+    // [J85] 的口径是「不弹阻塞确认框」;本框是用户 2026-09-01 明确点名的**唯一**例外
+    // (原来只有一条小琥珀 badge,用户看不清)。别据此在别处再开第二个弹窗。
+    function closeReanalyzeAsk() {
+        show(el.reanalyzeAsk, false);
+    }
+
+    function openReanalyzeAsk() {
+        show(el.reanalyzeAsk, true);
+        if (
+            el.reanalyzeAskPrimary &&
+            typeof el.reanalyzeAskPrimary.focus === "function"
+        )
+            el.reanalyzeAskPrimary.focus({ preventScroll: true });
+    }
+
+    // 「重新分析」= 契约 §1.6 analyze("all")(全轨全时长;设置页没有选区概念)。
+    // 受理回执之外什么都不做:结果经 §2.8 回推,基线由 onSegments 同步、琥珀 badge 自己灭。
+    // busy(已有分析在跑)也照样关框 —— 再弹一次并不能让那次分析跑得更快。
+    async function doReanalyzeFromAsk() {
+        closeReanalyzeAsk();
+        await call("analyze", "all");
+        requestRender();
+    }
+
     function syncStale() {
         const stale =
             local.analysisConfigBaseline !== null &&
@@ -441,6 +498,19 @@ export function createTabSettings(opts) {
         show(el.loudnessStale, stale);
         if (el.loudnessStale)
             attr(el.loudnessStale, "data-stale", stale ? "1" : "0");
+
+        // 琥珀 badge 是**常驻状态位**(点过「稍后」之后还看得见口径是脏的);
+        // 弹窗是同一判据上的一次性推送,由 reanalyzeAskedFor 挡住每帧重弹。
+        if (!stale) {
+            local.reanalyzeAskedFor = null;
+            closeReanalyzeAsk();
+            return;
+        }
+        const mode = config().loudness_mode;
+        if (local.reanalyzeAskedFor !== mode) {
+            local.reanalyzeAskedFor = mode;
+            openReanalyzeAsk();
+        }
     }
 
     function renderGuideRules() {

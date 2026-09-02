@@ -99,13 +99,15 @@
                 gap: var(--sp-14);
             }
 
-            /* ---- Header(05 §1.1:品牌块 + 连接状态 pill + 语言胶囊) */
+            /* ---- Header(05 §1.1:品牌块 + 连接状态 pill + 语言胶囊)
+               [SL-272] 由单行 flex 改两行 grid,理由见下方 .ipt-header__conn 一段。 */
             .ipt-header {
                 flex: none;
-                display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: var(--sp-12);
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: start;
+                column-gap: var(--sp-12);
+                row-gap: var(--sp-7);
             }
             .ipt-brand {
                 display: flex;
@@ -147,31 +149,50 @@
             .ipt-brand__subtitle {
                 white-space: nowrap;
             }
-            .ipt-header__status {
-                flex: none;
-                display: flex;
-                flex-direction: column;
-                align-items: flex-end;
-                gap: var(--sp-5);
+            /* [SL-272]③ 语言胶囊单独占右上角(与 Output header 的语言胶囊同位)。 */
+            .ipt-header__lang {
+                grid-column: 2;
+                justify-self: end;
             }
-            .ipt-header__pillsub {
-                max-width: 200px;
-                text-align: right;
-                color: var(--txt-2);
-            }
-            /* 连接状态整块(pill + 音频路径副文案):[J80] mini tour 第 ④ 步的 spotlight 目标 ——
-               只框 pill 会把「直通中 / 已接管」这句正文关在亮区外,而那句正是该步要讲的东西 */
+            /* 连接状态整块(组 badge + pill + 音频路径副文案):[J80] mini tour 第 ④ 步的
+               spotlight 目标 —— 只框 pill 会把「直通中 / 已接管」这句正文关在亮区外,
+               而那句正是该步要讲的东西 */
             .ipt-header__conn {
+                grid-column: 1 / -1;
                 display: flex;
                 flex-direction: column;
                 align-items: flex-end;
                 gap: var(--sp-5);
             }
-            /* header 工具行:语言胶囊 + 「?」重看引导([J80];Input 无设置页,重看入口只能落 header) */
-            .ipt-header__tools {
+            /* [SL-272]④ 组 badge 换到本行行首(左贴齐,与品牌块同一列):
+               Output 侧惯例是「品牌块紧接组 badge」,但 Input 设计盒只有 460px 宽
+               (design-box.js `input.w`),header 的内容盒实测 418px。照搬排在品牌块
+               右侧就得与语言胶囊挤同一行:品牌块 305 + 组 badge 46/71/79(zh/en/fr)
+               + 语言胶囊 101 + 两个 gap,三语没有一种放得下 —— FR 的「Groupe A」
+               单是三件的净宽就 485px,溢出 60 多。落到第二行行首后既与品牌块左对齐、
+               又不跟任何东西争宽。 */
+            .ipt-header__connrow {
+                align-self: stretch;
                 display: flex;
                 align-items: center;
-                gap: var(--sp-6);
+                justify-content: space-between;
+                gap: var(--sp-8);
+            }
+            /* [SL-272]① 副文案单行不折。真正让它不折行的是上面两条:
+               ① 所在的 .ipt-header__conn 横跨整张 header(418px 可用),不再是旧布局
+                 那条 200px 的右栏;② 三语文案同批收窄(i18n in.pillSub.takenOver,
+                 收窄后的单行文本宽实测 zh 218 / en 304 / fr 312 px,都进得去 418)。
+               nowrap + ellipsis 不是当下的生效项,而是护栏:将来译文再变长时宁可
+               看得见地截断,也不静静地流回两行(那正是本卡要修的现象)。
+               align-self: stretch 是为了让它真的占满一行 —— 否则 flex 子项收紧到
+               文本宽,scrollWidth 恒等于 clientWidth,冒烟那条溢出断言就是无牙的。 */
+            .ipt-header__pillsub {
+                align-self: stretch;
+                text-align: right;
+                color: var(--txt-2);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             .ipt-help {
                 flex: none;
@@ -539,20 +560,64 @@
                         </div>
                     </div>
                 </div>
-                <div class="ipt-header__status">
-                    <!-- 独立「组 {X}」badge(J71③;空/未连接态同样常显) -->
-                    <span
-                        class="ipt-group-badge"
-                        data-gb="input.header.groupBadge"
+                <!-- [SL-272]③ 语言胶囊 = header 最右上角(与 Output 同位)。 -->
+                <div
+                    class="sc-seg sc-seg--sm ipt-header__lang"
+                    data-gb="input.header.lang"
+                    role="tablist"
+                    data-t-aria="language"
+                >
+                    <button
+                        type="button"
+                        class="sc-seg__item"
+                        data-gb="input.header.lang.zh"
+                        data-lang="zh"
+                        role="tab"
+                        aria-selected="true"
                     >
-                        <span data-t="group.label">组</span>
-                        <span data-gb="input.header.groupBadgeLetter">A</span>
-                    </span>
-                    <div
-                        class="ipt-header__conn"
-                        data-gb="input.header.conn"
-                        data-tour="pill"
+                        中
+                    </button>
+                    <button
+                        type="button"
+                        class="sc-seg__item"
+                        data-gb="input.header.lang.en"
+                        data-lang="en"
+                        role="tab"
+                        aria-selected="false"
                     >
+                        EN
+                    </button>
+                    <button
+                        type="button"
+                        class="sc-seg__item"
+                        data-gb="input.header.lang.fr"
+                        data-lang="fr"
+                        role="tab"
+                        aria-selected="false"
+                    >
+                        FR
+                    </button>
+                </div>
+                <!-- [SL-272] 第二行:横跨整个 header。行内左端 = 组 badge(④),右端 =
+                     连接 pill;下面一行是音频路径副文案(①,单行不折)。
+                     三者仍同在 data-tour="pill" 这一个盒子里 —— [J80] 第 ④ 步要把
+                     「直通中 / 已接管」这句正文一起框进亮区。 -->
+                <div
+                    class="ipt-header__conn"
+                    data-gb="input.header.conn"
+                    data-tour="pill"
+                >
+                    <div class="ipt-header__connrow">
+                        <!-- 独立「组 {X}」badge(J71③;空/未连接态同样常显) -->
+                        <span
+                            class="ipt-group-badge"
+                            data-gb="input.header.groupBadge"
+                        >
+                            <span data-t="group.label">组</span>
+                            <span data-gb="input.header.groupBadgeLetter"
+                                >A</span
+                            >
+                        </span>
                         <div
                             class="sc-pill"
                             data-gb="input.header.pill"
@@ -564,61 +629,11 @@
                                 data-t="state.noChannel"
                             ></span>
                         </div>
-                        <div
-                            class="ipt-header__pillsub sc-hint"
-                            data-gb="input.header.pillSub"
-                        ></div>
                     </div>
-                    <div class="ipt-header__tools">
-                        <div
-                            class="sc-seg sc-seg--sm"
-                            data-gb="input.header.lang"
-                            role="tablist"
-                            data-t-aria="language"
-                        >
-                            <button
-                                type="button"
-                                class="sc-seg__item"
-                                data-gb="input.header.lang.zh"
-                                data-lang="zh"
-                                role="tab"
-                                aria-selected="true"
-                            >
-                                中
-                            </button>
-                            <button
-                                type="button"
-                                class="sc-seg__item"
-                                data-gb="input.header.lang.en"
-                                data-lang="en"
-                                role="tab"
-                                aria-selected="false"
-                            >
-                                EN
-                            </button>
-                            <button
-                                type="button"
-                                class="sc-seg__item"
-                                data-gb="input.header.lang.fr"
-                                data-lang="fr"
-                                role="tab"
-                                aria-selected="false"
-                            >
-                                FR
-                            </button>
-                        </div>
-                        <!-- 重看引导([J80]:Input 无设置页,「?」= 唯一重看入口;
-                             mini tour 末步 spotlight 高亮的就是本按钮,J62 同款自指) -->
-                        <button
-                            type="button"
-                            class="sc-btn ipt-help"
-                            data-gb="input.header.help"
-                            data-tour="help"
-                            data-t-aria="tour-in.help"
-                        >
-                            ?
-                        </button>
-                    </div>
+                    <div
+                        class="ipt-header__pillsub sc-hint"
+                        data-gb="input.header.pillSub"
+                    ></div>
                 </div>
             </header>
 
@@ -915,6 +930,19 @@
                         data-gb="input.footer.version"
                         >v0.0.0</span
                     >
+                    <!-- 重看引导([J80]:Input 无设置页,「?」= 唯一重看入口;
+                         mini tour 末步 spotlight 高亮的就是本按钮,J62 同款自指)。
+                         [SL-272]② 位置由 header 右上改到 footer 末位 = 卡片右下角
+                         (header 右上角让给语言胶囊);锚点 data-gb / data-tour 不变。 -->
+                    <button
+                        type="button"
+                        class="sc-btn ipt-help"
+                        data-gb="input.header.help"
+                        data-tour="help"
+                        data-t-aria="tour-in.help"
+                    >
+                        ?
+                    </button>
                 </div>
             </footer>
 

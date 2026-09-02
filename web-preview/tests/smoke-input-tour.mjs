@@ -317,7 +317,8 @@ log("=== ⑤ 源码级:零 Audio / 唯一桥调用 / a11y / 锚点 / 复用共�
         "说明框按钮例外(各自动作,不推进)",
     );
 
-    // 锚点落点:四个 data-tour + header「?」重看入口
+    // 锚点落点:四个 data-tour + 「?」重看入口([SL-272]② 起它在卡片右下的 footer 里,
+    // 不再在 header 右上;锚点名 input.header.help 保持不变,故本段断言不受挪位影响)
     for (const a of ["group", "channel", "pill", "help"]) {
         check(
             html.includes('data-tour="' + a + '"'),
@@ -326,7 +327,7 @@ log("=== ⑤ 源码级:零 Audio / 唯一桥调用 / a11y / 锚点 / 复用共�
     }
     check(
         html.includes('data-gb="input.header.help"'),
-        "header「?」重看入口落点",
+        "「?」重看入口落点(锚点名沿用 input.header.help)",
     );
     check(
         html.includes('data-t-aria="tour-in.help"'),
