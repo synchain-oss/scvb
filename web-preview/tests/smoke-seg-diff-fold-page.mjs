@@ -176,13 +176,50 @@ function cdpConnect(wsUrl) {
             once: true,
         });
     });
+    // ⚠ 每条 CDP 调用**必须有截止时间**([SL-274] 本机实测踩到)。
+    //
+    // 原版(与其余五套页面级冒烟同源)的 `send()` 把 resolve 塞进 `pending` 就返回,
+    // 响应不来就**永远不 resolve** —— 本套实测在 gate 3e 里挂了 **75 分钟**零输出,
+    // Chrome 与 node 都还活着,而它同时占着本机 IPC 锁,把整批 agent 堵在排队上。
+    // (CI 上则是一路烧到 job 超时才红,`web-smoke` 还是 required check。)
+    //
+    // 为什么偏偏是本套:六套里只有它**中途做第二次 `Page.navigate`**(判据 (5) 要换
+    // `?scenario=diff-flood` 重新装载)。导航会把旧 document 的渲染器换掉,紧随其后的
+    // `Runtime.evaluate` 就可能等一个永远不来的响应。洞是公共的,踩响它的是二次导航。
+    //
+    // 修法是**超时抛错**而不是重试:响应不来说明页面或渲染器已经不对了,重试只会把
+    // 一个确定的红拖成一个更慢的红。错误里带上 method 与 id,红出来直接指到是哪一条卡住。
+    //
+    // 这个数**必须小于 `waitFor` 的 20s 预算**:`waitFor` 内部的 `evaluate` 是 try/catch
+    // 兜住再重试的,超时短于它才能「丢一次响应 → 下一轮补上」;若反过来设成 30s,
+    // 一次超时就直接吃穿 waitFor 的整个预算,把可恢复的抖动变成硬红。
+    const CDP_CALL_TIMEOUT_MS = 10000;
     return {
         ready,
         on: (fn) => listeners.push(fn),
         send(method, params) {
             const mid = ++id;
             return new Promise((ok, no) => {
-                pending.set(mid, { resolve: ok, reject: no });
+                const timer = setTimeout(() => {
+                    pending.delete(mid);
+                    no(
+                        new Error(
+                            `CDP 调用超时 ${CDP_CALL_TIMEOUT_MS}ms:${method}(id=${mid})—— ` +
+                                "响应没回来。多半是这一步之前的导航把渲染器换掉了;" +
+                                "**不要**改成重试或调大超时,那只是把红拖慢",
+                        ),
+                    );
+                }, CDP_CALL_TIMEOUT_MS);
+                pending.set(mid, {
+                    resolve: (v) => {
+                        clearTimeout(timer);
+                        ok(v);
+                    },
+                    reject: (e) => {
+                        clearTimeout(timer);
+                        no(e);
+                    },
+                });
                 ws.send(
                     JSON.stringify({ id: mid, method, params: params || {} }),
                 );
@@ -259,6 +296,50 @@ async function evaluate(expression) {
         );
     }
     return r.result?.value;
+}
+
+// 收尾:**任何**退出路径都要走一遍,不只是跑完那一条([SL-274] 本机实测)。
+// 原版把 kill/close/rmSync 摊在文件末尾,于是**只有happy path 会清理** ——
+// 一旦中途抛错(比如上面新加的 CDP 超时),进程直接死,headless Chrome 与
+// `scvb-diff-fold-*` 临时目录全部留在机器上。这次排查时本机已积了 35 个残留目录,
+// 而那次挂死留下的 Chrome 正是压着 IPC 锁不放的原因之一。
+let tornDown = false;
+function teardown() {
+    if (tornDown) return;
+    tornDown = true;
+    try {
+        cdp?.close();
+    } catch {}
+    try {
+        chrome?.kill();
+    } catch {}
+    try {
+        server.close();
+    } catch {}
+    try {
+        rmSync(userDataDir, { recursive: true, force: true });
+    } catch {}
+}
+// ⚠ 收得干净的是**进程**,不保证临时目录:`chrome.kill()` 之后文件句柄未必立刻释放,
+// 紧跟的 `rmSync` 在 Windows 上可能失败,留下一个空的 `scvb-diff-fold-*`。
+// 那是可接受的残渣(系统会清),而**跑着的 headless Chrome 不是** —— 它会占住端口与
+// 机器资源,这次就是它跟着挂死的 node 一起赖了 75 分钟。`exit` 处理器只能同步收尾
+// (Node 规范),所以这里不等、也不重试。
+
+process.on("exit", teardown);
+for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+        teardown();
+        process.exit(130);
+    });
+}
+// 未捕获异常/未处理拒绝:先打印再收尾,否则 Chrome 会跟着一起漏。
+for (const ev of ["uncaughtException", "unhandledRejection"]) {
+    process.on(ev, (e) => {
+        console.error(`  [FATAL] ${ev}:`, e && e.message ? e.message : e);
+        teardown();
+        process.exit(1);
+    });
 }
 
 async function waitFor(expr, ms = 20000) {
@@ -587,9 +668,25 @@ await evaluate(OPEN("false"));
 // 删掉 tab-wave.js 里那个三元(直接印 `String(nChanged)`)⇒ 折叠头出「200」⇒ 本条红。
 log("");
 log("=== (5) changed 顶到封顶 => 折叠头印下界「N+」===");
+// ⚠ **本套是六套里唯一做第二次导航的**,而这一步正是那个「CDP 响应永远不来」的触发点
+// (见 cdpConnect 头注:实测挂 75 分钟)。两道防护缺一不可:
+//   · `Page.navigate` 本身走带超时的 `send`,卡住就当场抛,而不是静默等下去;
+//   · 导航后**先等 load 事件再等 READY**。只等 READY 也能过,但那是拿 `Runtime.evaluate`
+//     去戳一个正在被换掉的渲染器 —— 恰好是丢响应的那个窗口。先收 `Page.loadEventFired`
+//     等于让浏览器告诉我们「新 document 已经就位」,再开始求值。
+//   · 收不到 load 事件不直接判红:后面 READY 那条(20s 预算、每轮 try/catch)才是判据,
+//     这里只负责**别在导航途中求值**。
+const loadSeen = (() => {
+    let hit = false;
+    cdp.on((m) => {
+        if (m.method === "Page.loadEventFired") hit = true;
+    });
+    return () => hit;
+})();
 await cdp.send("Page.navigate", {
     url: `${base}/web-preview/output.html?scenario=diff-flood`,
 });
+for (let i = 0; i < 100 && !loadSeen(); i++) await sleep(100);
 check(await waitFor(READY), "(5) diff-flood 场景装载并吃到首帧段表");
 await evaluate(
     IN(`const b = gb("tabnav-wave"); if (b) b.click(); return true;`),
@@ -626,16 +723,5 @@ check(
 );
 
 log(fail === 0 ? "\n全绿" : `\n${fail} 条 FAIL`);
-try {
-    cdp.close();
-} catch {}
-try {
-    chrome.kill();
-} catch {}
-try {
-    server.close();
-} catch {}
-try {
-    rmSync(userDataDir, { recursive: true, force: true });
-} catch {}
+teardown();
 process.exit(fail === 0 ? 0 : 1);
