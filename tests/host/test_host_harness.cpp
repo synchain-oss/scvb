@@ -1573,6 +1573,14 @@ struct MonoMultiRig
     std::vector<double> pansOf() { return flatOf(true); }
     std::vector<double> volsOf() { return flatOf(false); }
 
+    // [SL-284] 最近一次落地分析里最坏的平衡回退级(§6.4;1..4,0 = 没跑过平衡)。
+    //
+    // 存在的理由是**让断言钉住前提,而不是它的推论**:本文件多条「换档/换素材后 pan 该不该动」
+    // 的断言,成立前提都是「首趟 `solveBalance` 收敛」——z 只有在 level 2 的 `balHint->zHat`
+    // 里才进指派代价。前提断不了时,红出来的是结论层现象(「pan 变了」),
+    // 得从结论倒推回原因;有了它就能先断前提、再断推论,红在哪一层一目了然。
+    int fallbackLevel() { return out.lastMaxFallbackLevel(); }
+
     // 该轨段表里第一个段的 pan(无段回 NaN)。
     double firstPan(int ch)
     {
@@ -6929,24 +6937,46 @@ TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAn
     const double endS = static_cast<double>(cov.ranges.back().end) * hopS;
     REQUIRE(endS > startS);
 
+    // [SL-284] 连 fallback level 一起带回来:下面要**先断前提再断推论**。
+    struct Run
+    {
+        std::vector<double> pans;
+        std::vector<double> vols;
+        int level = 0;
+    };
     const auto analyze = [&r, startS, endS](const char* mode) {
         r.out.setAnalysisConfig(mode, "", /*hasLoudness=*/true, /*hasCenter=*/false);
         REQUIRE(r.runAnalysisIn(startS, endS, /*clearManual=*/true));
-        return std::make_pair(r.pansOf(), r.volsOf());
+        return Run{r.pansOf(), r.volsOf(), r.fallbackLevel()};
     };
 
     // 用具名 vector 而不是结构化绑定:Catch2 的 INFO/CAPTURE 宏会把表达式塞进
     // 内部对象里,而 C++17 的结构化绑定名在有些捕获形态下不可用 —— 换个写法就没这事。
-    const auto pairK = analyze("kw_integrated");
-    const std::vector<double> panK = pairK.first;
-    const std::vector<double> volK = pairK.second;
+    const Run runK = analyze("kw_integrated");
+    const std::vector<double> panK = runK.pans;
+    const std::vector<double> volK = runK.vols;
     REQUIRE_FALSE(panK.empty()); // 没段就什么都测不出来 —— 素材不够时这里先红
 
-    const auto pairP = analyze("peak_dbfs");
-    const std::vector<double> panP = pairP.first;
-    const std::vector<double> volP = pairP.second;
+    const Run runP = analyze("peak_dbfs");
+    const std::vector<double> panP = runP.pans;
+    const std::vector<double> volP = runP.vols;
     REQUIRE(panP.size() == panK.size());
     REQUIRE(volP.size() == volK.size());
+
+    // ---- 前提:两次分析的**每个区间**首趟 solveBalance 都收敛(level 1)----------
+    //
+    // [SL-284] 这条必须在下面 pan 那条**之前**断,而且是 `== 1` 不是 `<= 1`:
+    //   · 掉到 level 2 ⇒ `balHint->zHat` 进了指派代价 ⇒ pan **本来就允许跟着 z 动**,
+    //     那时下面「pan 逐位不动」失效是**预期**,不是回归 —— 红在这一条才说得清原因;
+    //   · 读到 0 ⇒ 这次压根没跑过平衡(没有区间参与),下面两条断言全是空过,
+    //     必须显式红,不能把「没跑」当成「收敛」。
+    // 换句话说:下面 pan 那条断的是**推论**,这条断的是它赖以成立的**前提**。
+    // 前提断了才轮得到推论;前提破了直接在这里说清「首趟未收敛」,不必让人从 pan 差值倒推。
+    INFO("kw 档最坏回退级 = " << runK.level << ",peak 档 = " << runP.level
+                              << "(1 = 每个区间首趟都收敛;>=2 = 首趟未收敛,z 已进指派代价;"
+                                 "0 = 本次没有区间跑过平衡)");
+    REQUIRE(runK.level == 1);
+    REQUIRE(runP.level == 1);
 
     // ---- volDb:必须真变,阈值按**用户看得见**定 -----------------------------
     // 旧版这里是 `> 1e-6`。那个数是被机台逼出来的:三轨互为标量倍时换档本该逐位不变,
@@ -6966,20 +6996,98 @@ TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAn
     // 指派代价不读 z 的直接推论。它同时是上面那条的**对照**:若 volDb 的差来自数值噪声
     // 而非换档,pan 不可能一位不差地对上。
     //
-    // ⚠ **这一条红了,排查方向与上面 volDb 那条相反,别走错**([SL-274] 复审):
     // 「pan 不动」成立的前提是**首趟 `solveBalance` 收敛**(level 1)—— 只有落到
     // `solveBalanceWithFallback` 的 level 2,`balHint->zHat` 才进 `entryCost`,pan 才会
     // 跟着 z 动。core 侧 `[SL252/SL-273]` 那条正因为这个理由**拒绝**把 rms 档的 pan 写成
-    // 断言(「取决于收不收敛、素材一动就可能翻面」);host 侧 peak 档吃的是同一个条件,
-    // 只是这份素材下稳定收敛。所以红了先确认**是不是掉进 level 2 了**(换编译器、换优化
-    // 档、动 `variedCrest` 的波形参数都可能推进去),不要先怀疑数值噪声、更不要放宽成近似
-    // 比较 —— 放宽等于把这条断言钉的那件事(指派代价不读 z)整个放掉。
+    // 断言(「取决于收不收敛、素材一动就可能翻面」);host 侧 peak 档吃的是同一个条件。
+    //
+    // ⚠ [SL-284] **那个前提现在由上面 `runK.level == 1` / `runP.level == 1` 直接断着**,
+    // 不再靠这里的注释提醒人去查。所以本条红 = 前提成立(首趟收敛)**却**出现了 pan 变动,
+    // 那就是真回归:有人把 z 引进了 `baseCost()`。
+    // **不要放宽成近似比较** —— 放宽等于把这条断言钉的那件事(指派代价不读 z)整个放掉。
+    // (改素材/换编译器把解推进 level 2 时,红的是上面那条前提,不是这一条。)
     for (std::size_t i = 0; i < panP.size(); ++i)
     {
         INFO("段 " << i << ":pan " << panK[i] << " -> " << panP[i]
-                   << "(若此条红:先查 peak 档是否落到 solveBalanceWithFallback 的 level 2)");
+                   << "(前提已断:两档均 level 1 ⇒ 此处变动是 baseCost 读了 z 的真回归)");
         CHECK(panP[i] == panK[i]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-284] fallback level 这条前提断言**必须有牙**:它得报得出 ≠1。
+//
+// 为什么单开一条:上面 `HOST SL263` 现在先断 `level == 1` 再断「pan 逐位不动」。
+// 但**如果 `lastMaxFallbackLevel()` 因为哪天接线断了而恒返回 1(或恒返回 0 被写成 <=1),
+// 那条前提就永远成立、永远绿** —— 一条恒真的判据比没有判据更坏,因为它看起来在守。
+// 所以这里把回退链**真的推到 level ≥ 2**,证明这条通路报得出「首趟没收敛」。
+// 这就是那条前提断言的删之即红通路:把 `finishAnalysis` 里那行记账删掉、或把管线里
+// `result.maxFallbackLevel` 的赋值删掉 ⇒ 本条立刻红(读到 0 或 1)。
+//
+// 怎么把它推下去(配方照搬 core 侧 `tests/core/test_balance.cpp` 的「回退链 level 2」):
+// **一条高能量轨被冻结在硬左**,剩下的轨没有足够杠杆把 D 拉回容差内 ⇒ 首趟 solveBalance
+// 不收敛 ⇒ 进 level 2 的平衡感知重指派。本机台 ch3 幅度最大(`0.4+0.3*i`,i=2 ⇒ 1.0),
+// 所以冻结 ch3 造成的不平衡最大。
+//
+// ⚠ 分析必须走 `clearManual=false`:`true` 会**清掉冻结位**(见 `HOST P0-3`),
+// 那样冻结轨在分析时又变回自由轨,不平衡消失、level 掉回 1,本条就成了空过。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL284:高能量轨冻结硬左 → 首趟不收敛,回退级报得出 >=2", "[host][analyze][balance][SL284]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    // ① 基线:不动任何东西,本机台素材首趟就收敛。
+    //    这一半同样重要 —— 它证明下面的 >=2 是**冻结造成的**,不是这台机台本来就不收敛。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/true));
+    INFO("基线(无冻结)回退级 = " << r.fallbackLevel());
+    REQUIRE(r.fallbackLevel() == 1);
+
+    // ② 把**两条较响的轨**(ch2/ch3)一起手动钉到硬左并冻结 pan 维。
+    //
+    // 为什么是两条不是一条:本机台幅度是 `amp*(0.4+0.3*i)`,能量比 ≈ 0.16 : 0.49 : 1.0。
+    // **只冻 ch3 实测仍收敛(level 1)** —— 它占约 6 成能量,剩下两条自由轨往右摆再加上
+    // ±4 dB 的 u 杠杆,足够把 D 拉回 0.3 LU 的容差内。冻住 ch2+ch3 ⇒ 约 9 成能量钉死在
+    // 硬左,只剩最弱的 ch1(约 1 成)可动,杠杆不够 ⇒ 首趟必不收敛。
+    // 这个数字是**实测出来的**,不是估的:一条不够就是一条不够。
+    constexpr float kHardLeft = -100.0f;
+    auto& apvts = r.out.getAPVTS();
+    for (const int ch : {2, 3})
+    {
+        int replaced = 0;
+        int replacedLocked = 0;
+        REQUIRE(r.out.setTrackManual(ch, /*isPan=*/true, kHardLeft, replaced, replacedLocked));
+        const juce::String frzId = scvb::params::freezeId(r.out.versionActive(), ch);
+        auto* frz = apvts.getParameter(frzId);
+        REQUIRE(frz != nullptr);
+        frz->beginChangeGesture();
+        frz->setValueNotifyingHost(frz->convertTo0to1(1.0f)); // bit0 = pan 维冻结
+        frz->endChangeGesture();
+        MonoMultiRig::pump(100);
+        REQUIRE(juce::roundToInt(apvts.getRawParameterValue(frzId)->load()) == 1);
+    }
+
+    // ③ 保留手动/冻结重分析 ⇒ 首趟解被那两条硬左的响轨拽偏,收不进容差。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    // ⚠ **先证明冻结真的进了管线**:若冻结没生效,那两条轨会被当自由轨重新指派,
+    // 不平衡根本不存在 —— 那样下面的 level 断言即使红也是**红错了原因**。
+    // 冻结维度的 pan 必须原样是手动值(见 `HOST P0-3`:冻结维读参数面)。
+    for (const int ch : {2, 3})
+    {
+        INFO("ch" << ch << " 分析后的 pan = " << r.firstPan(ch) << "(应仍是冻结的手动值)");
+        REQUIRE(r.firstPan(ch) == Catch::Approx(static_cast<double>(kHardLeft)));
+    }
+    const int level = r.fallbackLevel();
+    INFO("冻结 ch2/ch3 到 " << kHardLeft << " 后的最坏回退级 = " << level
+                            << "(1 = 首趟收敛;>=2 = 首趟未收敛,已进平衡感知重指派)");
+    // 断 `>= 2` 而不是 `== 2`:落 2/3/4 取决于剩余杠杆够不够,那是回退链自己的分级,
+    // 本条要钉的只是「这条通路报得出『首趟没收敛』」。钉死某一级会让它随素材翻面。
+    CHECK(level >= 2);
 }
 
 // ---------------------------------------------------------------------------

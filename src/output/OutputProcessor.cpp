@@ -3097,6 +3097,20 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
     analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen);
     analysisJob_->startThread();
 
+    // [SL-284] 新作业一受理就把回退级清 0 —— **不清零会造出假绿**(#183 复审)。
+    //
+    // `finishAnalysis` 只在结果真正落地时写,而落地不是必然的:代号不符时
+    // `handleAsyncUpdate` 直接 return(见上方那道 generation 门),`finishAnalysis` 压根不跑。
+    // 若这里不清零,那一趟读到的是**上一趟留下的级** —— 而调用方(测试/排障)判「这一趟
+    // 首趟收敛没有」时会把陈旧值当本趟答案,方向恰好是**假绿**:
+    // 前提断言绿、而段表也还是上一趟的陈旧快照,于是「产出不该变」的断言一并空过。
+    // 清 0 之后那种情形读到 0 = 「本次没有落地的平衡结果」,断言按 `== 1` 当场红。
+    //
+    // 这与本字段自己的口径完全同构:0 不是合法级,它就表示「没有可用的答案」,
+    // 必须显式红而不是被当成收敛。名字也因此更贴切 —— 「最近一次**落地**的级」,
+    // 新作业一开跑,旧值就不再是「最近一次落地」的答案了。
+    lastMaxFallbackLevel_.store(0, std::memory_order_relaxed);
+
     a.ok = true;
     a.intervals = 0; // 受理回执:区间数要跑完才知道,不谎报
     return a;
@@ -3133,6 +3147,11 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 
         if (!result.cancelled)
         {
+            // [SL-284] 平衡回退级记账 —— 与本次真正落地的那批段同源。
+            // 放在 `!result.cancelled` 里面:取消的那份结果整份丢弃,不该污染诊断值
+            // (口径逐字见 `lastMaxFallbackLevel_` 的声明处)。
+            lastMaxFallbackLevel_.store(result.maxFallbackLevel, std::memory_order_relaxed);
+
             // [SL-206] VAD 后验写回 FrameStore —— 泳道绿线(§1.27 瓦片 vad 列)唯一的数据源。
             // 此前这一步整个不存在:管线把后验算完就扔(传 nullptr),`vadP` 全仓没有生产者,
             // 真机恒 0、绿线一次都没画出来过;web-preview 的 mock 自己算了一份,于是三个版本

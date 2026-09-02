@@ -95,6 +95,18 @@ struct PipelineResult
     // 只对**本次真参与分析**的轨填(未启用 / 无覆盖的轨留空 vector),与 `segments` 同口径。
     std::array<std::vector<float>, kPipelineTracks> vadPosterior{};
     std::int64_t firstHop = 0; // vadPosterior[t][0] 对应的**绝对** hop 序号(写回 FrameStore 要它)
+
+    // [SL-284] 本次分析里**最坏**的平衡回退级(§6.4 回退链,取值 1..4);没有任何区间跑过
+    // 平衡时留 **0**(空段表/全部区间被跳过 —— 0 不是合法级,读侧据此区分「没跑过」与「跑了且收敛」)。
+    //
+    // 为什么要带出来:`solveBalanceWithFallback` 早就逐级填 `BalanceResult::fallbackLevel`,
+    // 但那个值在下面的区间循环里**用完就扔** —— 于是「首趟 solveBalance 到底收敛没有」
+    // 在管线之外**没有任何观察点**。与 `vadPosterior` 是同一形态:两头都有,中间没人接。
+    //
+    // ⚠ **为什么取 max 而不是单值/末值**:`solveBalanceWithFallback` 是**逐区间**调用的,
+    // 每个区间各有自己的级。「首趟收敛」唯一有意义的表述是**没有任何区间掉出 level 1**,
+    // 即 `maxFallbackLevel == 1`;取末值会被最后一个收敛的区间盖掉中间掉过级的事实。
+    int maxFallbackLevel = 0;
 };
 
 using PipelineProgressFn = std::function<void(float)>; // 0..1
