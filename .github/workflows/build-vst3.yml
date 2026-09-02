@@ -86,6 +86,12 @@ jobs:
           # pull_request 事件下 checkout 的是 refs/pull/N/merge 这个**合并提交**,
           # 它的 ^1 = base、^2 = head,所以 `git diff HEAD^1 HEAD` 正好是本 PR 的改动面。
           # 深度 2 就够拿到两个父提交;不要 fetch-depth: 0,那会把整个历史拉下来。
+          #
+          # **这是 PR 相对 base 的「累计」改动面,不是「最后一个 commit 改了什么」。**
+          # 所以会看到「某个 commit 只改了文档,却仍然照编」—— 只要 PR 里**任何一个**
+          # commit 碰过 native 路径就命中。这是对的:要回答的问题是「这个 PR 合进去之后
+          # native 产物会不会变」。按单个 commit 判会漏 —— 先推一版改 `src/`、再推一版
+          # 只改文档,后一次就会把前一次的编译需求判没了。别把这个形态当 bug 报。
           fetch-depth: 2
       - id: scan
         shell: bash
