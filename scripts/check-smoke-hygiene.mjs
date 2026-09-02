@@ -11,6 +11,10 @@
 //   两条都是「加一套新冒烟时很容易照着旧模板复制、而复制出来的那份照样全绿」——
 //   所以要有一道机检钉住写法,而不是靠人记得。
 //
+//   ⚠ 本检查是**文本级**的,不是语义级:三种 handler 形态都靠字符串包含判断,所以
+//   handler 体里写一句 `// teardown 在别处做` 的注释也能顶替真调用。要根治得上 AST,
+//   对一道防「照模板复制」的门禁不划算 —— 但别以为它比实际更严。
+//
 //   四条断言(每条都对应一个真实踩过的形态,不是泛泛的好习惯):
 //     A. `send(method, params, timeoutMs)` —— CDP 调用能带截止时间。
 //     B. 有 `CDP_DEFAULT_TIMEOUT_MS` 兜底(一次性调用用),且 send 里真的用了它。
@@ -127,10 +131,25 @@ for (const p of files) {
             )
                 return true;
             // 形态二:`for (const x of [… h …]) { … teardown() … }` —— 名字在数组字面量里。
-            const at = s.indexOf(h);
-            if (at < 0) return false;
-            const forAt = s.lastIndexOf("for (", at);
-            if (forAt >= 0 && bodyAfter(at).includes("teardown")) return true;
+            // ⚠ 锚点钉在 `for (` 上,并要求**同一个体**里同时出现信号名与 `teardown`。
+            // 上一版写的是 `forAt >= 0 && bodyAfter(at)…`,复审指出两个毛病:
+            //   · `forAt >= 0` **恒真**(这些文件在信号名之前有几十个 `for (`),等于没写 ——
+            //     与本卡前面修掉的那条恒真式守卫同族,只是这次藏在合取式里;
+            //   · `at` 是**全文件首次出现**该字符串,今天恰好落在数组字面量上才对。哪天有人
+            //     在头注里写一句带引号的 `"SIGTERM"`(本族注释本来就在讨论它),锚点就会跳到
+            //     那条注释,`bodyAfter` 取到随便哪个后续块 —— 判定从此随机,而且是静默的。
+            // 取值范围是「`for (` 到它的体结束」这**一整段**,不是只取体:
+            // 信号名在 `for (const sig of ["SIGINT", "SIGTERM"])` 的**数组头**里,不在体内。
+            // (复审给的补丁写的是 `bodyAfter(forAt).includes(h)`,我照抄之后六套全红 ——
+            //  诊断对、补丁形态不对,验一遍才发现。)
+            const forAt = s.lastIndexOf("for (", s.indexOf(h));
+            if (forAt >= 0) {
+                const body = bodyAfter(forAt);
+                const span = body
+                    ? s.slice(forAt, s.indexOf(body) + body.length)
+                    : "";
+                if (span.includes(h) && span.includes("teardown")) return true;
+            }
             // 形态三:`process.on(h, (…) => { … teardown() … })` —— 内联回调体。
             const onAt = s.indexOf(`process.on(${h}`);
             return onAt >= 0 && bodyAfter(onAt).includes("teardown");

@@ -22,6 +22,13 @@
 .EXAMPLE   pwsh scripts/gates.ps1
 .EXAMPLE   pwsh scripts/gates.ps1 -PluginOnly -BuildDir build-T15
 #>
+#Requires -Version 7.0
+# 本脚本一直是 pwsh 7 跑的,但那是**隐含前提**;PR#182 复审建议显式化。两处依赖它:
+#   · gate 3e 的 `$proc.Kill($true)`(连进程树)是 .NET Core 3.0+ 的重载;
+#   · gate 3e 读重定向输出用的 `Get-Content` 默认 UTF-8 —— Windows PowerShell 5.1 下
+#     默认 ANSI,捞出来给人看的中文 `[FAIL]` 行会是乱码。
+# 与其在编码上打补丁,不如把前提写在门口。
+
 param(
   [switch]$Quick,
   [switch]$PluginOnly,
@@ -403,11 +410,27 @@ else {
   $smokeHung = 0
   # `SCVB_SMOKE_TIMEOUT_SEC` 是给慢机器的口子(照 SCVB_MUTEX_WAIT_MINUTES 的先例),
   # 平时不用设。调大不会削弱任何判据 —— 超时只负责兜住挂死,不参与判对错。
-  $smokeTimeoutSec = if ($env:SCVB_SMOKE_TIMEOUT_SEC) { [int]$env:SCVB_SMOKE_TIMEOUT_SEC } else { 300 }
+  # **非法值要钳住**(PR#182 复审):`=abc` 会让 `[int]` 转换抛错、整条 gates 挂;
+  # `=0` 或负数会让 `WaitForExit(0)` 立刻返回 false ⇒ **每一套都被判 [HUNG]**,
+  # 而且看起来像真挂死。转换失败回默认值,并压一个 30s 下界。
+  $smokeTimeoutSec = 300
+  if ($env:SCVB_SMOKE_TIMEOUT_SEC) {
+    $parsed = 0
+    if ([int]::TryParse($env:SCVB_SMOKE_TIMEOUT_SEC, [ref]$parsed) -and $parsed -ge 30) {
+      $smokeTimeoutSec = $parsed
+    }
+    else {
+      Write-Host ("  [WARN] SCVB_SMOKE_TIMEOUT_SEC='{0}' 不是 >=30 的整数,回落到默认 300s" -f $env:SCVB_SMOKE_TIMEOUT_SEC) -ForegroundColor Yellow
+    }
+  }
   foreach ($f in $smokeFiles) {
     $soPath = [System.IO.Path]::GetTempFileName()
     $sePath = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $nodeCmd.Source -ArgumentList @($f.FullName) `
+    # 路径要**自己加引号**(PR#182 复审):`Start-Process` 把 `-ArgumentList` 按空格拼成
+    # 命令行、**不会**自动引号化,而旧写法 `& node $f.FullName` 是 PowerShell 直接传参、
+    # 自带引号化。检出路径含空格时 node 会收到被拆词的路径,这一套直接跑不起来,
+    # 报的还是「找不到文件」,不会有人想到是 gates 这一行的锅。
+    $proc = Start-Process -FilePath $nodeCmd.Source -ArgumentList ('"{0}"' -f $f.FullName) `
       -NoNewWindow -PassThru -RedirectStandardOutput $soPath -RedirectStandardError $sePath
     if ($proc.WaitForExit($smokeTimeoutSec * 1000)) {
       $rc = $proc.ExitCode
@@ -421,6 +444,9 @@ else {
         Write-Host '         [WARN] 本机 pwsh 不支持 Kill($true)(需 .NET Core 3.0+),回退成只杀 node —— 它起的 Chrome 可能留下,手动查一下' -ForegroundColor Yellow
         try { $proc.Kill() } catch {}
       }
+      # `Kill` 是**异步**的:句柄未必已关,紧跟着读重定向文件可能读到截断的输出 ——
+      # 而这恰恰是最需要诊断信息的那条路径。等一个有界的短时,不会重新引入无限等。
+      try { $null = $proc.WaitForExit(5000) } catch {}
       $rc = -1
       $smokeHung++
       $smokeOk = $false
