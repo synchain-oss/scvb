@@ -103,16 +103,29 @@ let fail = 0;
 
 // 全部输出走 `writeSync(1, …)` 而不是 `console.log`([SL-274] 第 11 轮复审)。
 //
-// 理由与致命行那条**是同一条**:`process.exit()` 不等挂起的异步写,而 stdout 在
-// gates 里是被 `(& node $f.FullName 2>&1)` 收成管道的 —— 管道上 `console.log` 是异步的。
+// 理由与致命行那条**是同一条**:`process.exit()` 不等挂起的异步写,而本地 gates 是
+// `$out = (& node $f.FullName 2>&1)`(`scripts/gates.ps1:387`)—— stdout 被收成管道。
 // 上一轮只把**致命那一行**改成同步,于是同一条失败路径上**先前**打的 `[FAIL]` 与进度行
 // 仍可能被 `process.exit(1)` 截掉:红是红了,却说不清前面已经断到哪一步。
+//
+// ⚠ **别把这句写成「同步写在哪儿都无条件成立」**(第 12 轮复审):Node 对
+// `process.stdout` 的同步性是**分档**的 —— 管道/socket 在 **Windows 上同步、POSIX 上
+// 异步**(libuv 给该 fd 设了 `O_NONBLOCK`),而对非阻塞管道调 `fs.writeSync` 可能抛
+// `EAGAIN`。所以这条改动**真正买到保障的是本地 gates 这条 Windows 路径**,也正是
+// 出问题的那条;`web-smoke`(`ubuntu-latest`)那侧 `format.yml` 直接 `node "$f"` 继承
+// stdio、本来就没有这个截断面。POSIX 上万一真抛 `EAGAIN`,下面的 catch 会兜回
+// `console.log` —— 退化成原来的行为,不会因为「想打得更稳」反而把整套打挂。
+//
 // 一套冒烟的输出量是几十行,同步写的代价可以忽略,而「红的时候话说不全」的代价不行。
 function out(s) {
     try {
         writeSync(1, s + "\n");
     } catch {
-        console.log(s); // fd 1 不可写时的兜底,不让打印本身把整套打挂
+        // fd 1 不可写(POSIX 非阻塞管道的 EAGAIN、或 fd 已断)时退回异步写。
+        // 这里**不再抛**:打印失败不该变成判定失败。
+        try {
+            console.log(s);
+        } catch {}
     }
 }
 const log = (s) => out(s);
@@ -372,7 +385,7 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 //   · **写法**:用 `writeSync(2, …)` 而不是 `console.error` —— `process.exit()` 不等挂起的
 //     异步写,stdout/stderr 被重定向成管道/文件时(gates 正是 `$out = (& node …)`)最后
 //     那行**可能被截断**。`writeSync` 直写 fd 2,退不退出都不会丢;
-//     stderr 到不到得了 gates:`scripts/gates.ps1:386` 是 `(& node $f.FullName 2>&1)`,
+//     stderr 到不到得了 gates:`scripts/gates.ps1:387` 是 `(& node $f.FullName 2>&1)`,
 //     **stderr 已并进 stdout**,所以写 fd 2 没问题。
 //   · **前缀必须含 `[FAIL]`**:gate 3e 红时打解释行的那句是
 //     `scripts/gates.ps1:398` 的 `Select-String -Pattern '\[FAIL\]'` ——
