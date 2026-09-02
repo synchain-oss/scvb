@@ -39,7 +39,10 @@ if (process.argv.includes("--help")) {
 
 // ---- ① 从真源读正则 ----------------------------------------------------------
 const yml = fs.readFileSync(WORKFLOW, "utf8");
-const m = yml.match(/NATIVE_RE='([^']+)'/);
+// 行锚(`^\s*`)不是装饰:无锚的话,谁哪天在**注释里**逐字引用一句 NATIVE_RE='…'
+// 作例子,`match` 取到的就是那个例子而不是真判据 —— 于是这个门禁会去验一条根本没在
+// 用的正则,真判据被改坏它照样绿。当前文件里这是唯一一处单引号形态,加锚是免疫,不是修 bug。
+const m = yml.match(/^\s*NATIVE_RE='([^']+)'/m);
 if (!m) {
     console.error(
         "check-native-paths: 在 .github/workflows/build-vst3.yml 里找不到 NATIVE_RE='...'。",
