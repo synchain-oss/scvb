@@ -98,13 +98,16 @@ function New-ScvbMutex {
 
 function Wait-ScvbMutex {
   param($Mutex, [string]$Name, [string]$Tag)
-  Write-Host ("  [{0}] 等待 Local\{1}..." -f $Tag, $Name) -ForegroundColor Yellow
+  # 时间戳带毫秒:并发验证时,「谁在什么时刻拿到/放开」这条证据只能来自进程**内部**的
+  # 时钟。外面用管道加时间戳靠不住 —— pwsh 往管道写是块缓冲的,读到的时刻会晚于打印
+  # 时刻,两条流的偏移量还不一样,拿它对拍会看出根本不存在的重叠。
+  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2}..." -f $Tag, (Get-Date).ToUniversalTime(), $Name) -ForegroundColor Yellow
   try { $null = $Mutex.WaitOne() }
   catch [System.Threading.AbandonedMutexException] {
     # 前一个持有者进程异常退出。锁已经归我们了,只是说明上一次跑得不干净。
     Write-Host ("  [{0}] 前一持有者异常退出(AbandonedMutex),已接管" -f $Tag) -ForegroundColor Yellow
   }
-  Write-Host ("  [{0}] 已获得 Local\{1}" -f $Tag, $Name) -ForegroundColor Green
+  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 已获得 Local\{2}" -f $Tag, (Get-Date).ToUniversalTime(), $Name) -ForegroundColor Green
 }
 
 function Enter-ScvbIpcLock {
@@ -127,7 +130,7 @@ function Exit-ScvbIpcLock {
   if ($null -eq $Mutex) { return }
   try { $Mutex.ReleaseMutex() } catch { Write-Host ("  [ipc-lock] 释放异常:{0}" -f $_.Exception.Message) -ForegroundColor Yellow }
   $Mutex.Dispose()
-  Write-Host '  [ipc-lock] 已释放' -ForegroundColor Green
+  Write-Host ("  [ipc-lock] {0:HH:mm:ss.fff}Z 已释放" -f (Get-Date).ToUniversalTime()) -ForegroundColor Green
 }
 
 # ---- 定位 pluginval ----

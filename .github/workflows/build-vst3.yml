@@ -100,6 +100,20 @@ jobs:
         env:
           EFF_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
         run: |
+          # 钉版文件必须都在**被 checkout 的那棵树**上。workflow_dispatch 是唯一会让
+          # 「workflow 定义」与「源码树」分家的通道:定义取自发起 run 的 ref,内容取自
+          # input `ref`。把 input 指到一个还没有某个钉版文件的旧 ref,就会在这里挂。
+          # 本卡实测踩过一次(run 33594229435:定义在 ci/SL-277-tiered-ci 上、内容是
+          # feature/v1,后者当时还没有 .sccache-version)。挂在这一步比挂在半路好——
+          # 报错要直接说出这个分家,不能只留一句 "Cannot find path"。
+          $pins = @('.juce-version', '.pluginval-version', '.sccache-version', '.sccache-sha256')
+          $missing = @($pins | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) {
+            Write-Error ("被构建的 ref 上缺少钉版文件:" + ($missing -join ', ') +
+              "。workflow_dispatch 的 workflow 定义来自发起 run 的 ref,而源码来自 input ref —— " +
+              "把 input 指到含这些文件的 ref(通常是已合并的 feature/v1),或先把它们合进目标分支。")
+            exit 1
+          }
           $juce = (Get-Content .juce-version -Raw).Trim()
           $pv   = (Get-Content .pluginval-version -Raw).Trim()
           if (-not $juce -or -not $pv) { Write-Error "空的 .juce-version / .pluginval-version"; exit 1 }
