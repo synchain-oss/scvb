@@ -491,6 +491,15 @@ export async function mountPreview({ role: pageRole }) {
             );
         }
         session = factory({ role, params });
+        // [SL-270] 把会话挂到**壳页**窗口上,给页面级冒烟一个走带开关。
+        //
+        // 为什么挂在这里而不是往真源页面加测试钩子:走带是**宿主**的东西,页面侧只是
+        // `scvb.playhead` 的读者;要造「快速起停」就得动宿主,而预览里的宿主就是这个
+        // driver。`__SCVB_MOCK__`(= session.mock)只有桥面那些上行函数,没有走带 ——
+        // 走带在 `session.ctl.setTransport` 上。
+        // 影响面为零:web-preview/ 不进插件包(ResourceProvider 嵌的是 web/),壳页本身
+        // 就是开发工具;真源页面一个字节没改。
+        window.__SCVB_PREVIEW__ = session;
     } catch (e) {
         setStatus({ ok: false, text: `mock 后端不可用:${e.message}` });
         console.error("[web-preview] 载入 mock/state-driver.js 失败:", e);

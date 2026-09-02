@@ -32,10 +32,40 @@ export const HOST_ECHO_FRESH_MS = 600;
  *
  * 修法是**非对称闩锁**:亮**立刻**(收到一帧 true 就亮,信息不迟到),熄**延迟**
  * (距最后一次 true 帧超过本窗口才熄)。窗口必须比「宿主两次写之间的间隔」长,否则
- * 只是把每秒 25 次的抖降成每秒几次。取 2000ms 而不是沿用 600ms:600 是为 25Hz 批次
- * 续命设的,而宿主自动化的写入是**按曲线事件**来的,间隔可以是秒级。
+ * 只是把每秒 25 次的抖降成每秒几次。SL-251 当时**一个**窗口打天下,取 2000ms:600 是
+ * 为 25Hz 批次续命设的,而宿主自动化的写入按曲线事件来,间隔可以是秒级。
+ *
+ * [SL-270] 用户实测,一个窗口打天下两头都不对:
+ *   ① **停走之后徽标还挂着近两秒** —— 走带都停了,宿主早就不写了,这两秒纯属滞留;
+ *   ② **快速起停会让徽标在播放中途消失**。它就是 ① 的另一面:按停的那一刻闩锁还剩
+ *      一大截,用户马上又按播放,于是这一截**残余**在新的一段播放里走完 —— 徽标在
+ *      「播放中」灭掉,要等宿主下一次真写才亮回来。看着像随机掉线,其实是上一段
+ *      播放的尾巴。
+ * 所以窗口按**走带态**分两档:停走用短的(滞留感没了,② 的残余也就不存在了),
+ * 播放中用长的(宿主两次写之间的秒级间隔照旧盖得住,SL-251 的抖不回来)。
+ * 判据源 `isPlaying` 是契约 §2.6 `scvb.playhead` 的字段,30Hz 常推,页面侧一直有。
  */
-export const HOST_ECHO_RELEASE_MS = 2000;
+export const HOST_ECHO_RELEASE_MS = 900;
+
+/**
+ * **播放中**的释放窗口(ms)。见上:播放中要盖住「宿主按曲线事件写、间隔秒级」那一段,
+ * 不能用停走档的 900ms —— 那会把 SL-251 修掉的抖原样放回来。
+ *
+ * ⚠ 900 / 2500 这两个数是**估的**,不是真机量的:「宿主两次写之间的间隔」分布本机
+ * 造不出来(mock 只有慢通道)。`app.js` 里那行 `console.debug` 读数就是为收这组数留的
+ * —— 用户真机若仍见眨眼,拿那几行直接把窗口调对,不用再猜。
+ */
+export const HOST_ECHO_RELEASE_PLAYING_MS = 2500;
+
+/**
+ * 当前该用哪一档释放窗口。单列出来是因为 `app.js` 的 console 读数也要用同一个数 ——
+ * 那行读数说的是「这个间隔会让徽标灭一下再亮」,拿错档位就是在说假话。
+ *
+ * @param {boolean} [playing] 走带是否在跑(`scvb.playhead` 的 `isPlaying`)
+ */
+export function hostEchoReleaseMs(playing) {
+    return playing ? HOST_ECHO_RELEASE_PLAYING_MS : HOST_ECHO_RELEASE_MS;
+}
 
 /**
  * 宿主自动化此刻是否正在驱动车道(= 该不该给出 hostEcho 的视觉提示)。
@@ -46,10 +76,22 @@ export const HOST_ECHO_RELEASE_MS = 2000;
  *
  * @param {{hostEchoAt?: number}} params `store.params`
  * @param {number} [nowMs] 注入时钟(用例用;省略取 `Date.now()`)
+ * @param {boolean} [playing] 走带是否在跑;[SL-270] 决定用哪一档释放窗口
  */
-export function hostEchoOn(params, nowMs) {
+export function hostEchoOn(params, nowMs, playing) {
     const at = (params && params.hostEchoAt) || 0;
     if (!at) return false; // 从未收到过 true 帧
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-    return now - at < HOST_ECHO_RELEASE_MS;
+    return now - at < hostEchoReleaseMs(!!playing);
+}
+
+/**
+ * `store` → 走带是否在跑。抽出来只为一件事:两个 tab **都**要传这个参数给
+ * `hostEchoOn`,而「从 store 的哪一处取 isPlaying」写成两份就又是 SL-251 那个病灶
+ * (同一个判断各存一份)的第四次发作。
+ *
+ * @param {{playhead?: {isPlaying?: boolean}}} store
+ */
+export function storeIsPlaying(store) {
+    return !!(store && store.playhead && store.playhead.isPlaying);
 }

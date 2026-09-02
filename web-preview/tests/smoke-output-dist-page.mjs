@@ -952,7 +952,11 @@ try {
             typeof offR === "string" && !/rejected|"ok":\s*false/.test(offR),
             `(h) 关输出被接受(回执 ${offR})—— 丢返回值的话下面整段会在「没真关掉」上空绿`,
         );
-        await sleep(2600); // > HOST_ECHO_RELEASE_MS(2000),静置期零 hostEcho 帧
+        // [SL-270] 这一节里走带**仍在跑**(?play=1),所以此刻生效的是**播放档**
+        // (HOST_ECHO_RELEASE_PLAYING_MS = 2500),不是停走档的 900。静置必须越过播放档,
+        // 否则下面 (h) 会在「还没到该熄的时候」判红。留足余量:2500 + 900,不卡在边界上
+        // (本仓记过一次「按帧率/节奏判红」的假红)。
+        await sleep(3400);
 
         // ---- (h) 顺带把**熄侧**钉一下:静置超过释放窗口之后,徽标必须已经灭了。
         // ⚠ 说清它证明什么、不证明什么:它断的是**用户可见结果**(停了就该退),
@@ -965,7 +969,7 @@ try {
                 quiet.widthBadge === "0" &&
                 quiet.ms === "0" &&
                 quiet.lead === "0",
-            `(h) ★ 静置 2.6s(> 释放窗口)后三张卡与徽标都已熄(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})`,
+            `(h) ★ 静置 3.4s(> 播放档释放窗口)后三张卡与徽标都已熄(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})`,
         );
 
         const onR = await evaluate(
@@ -1101,6 +1105,197 @@ try {
         );
 
         assertClean("SL-269 光栅面");
+    }
+
+    // =========================================================================
+    // ⑩ [SL-270] hostEcho 徽标:释放窗口按走带态分两档
+    // -------------------------------------------------------------------------
+    // 用户实测(v5.6.5):① 停走之后徽标还挂着近两秒;② 快速起停会让徽标在**播放中途**
+    // 消失。② 是 ① 的另一面 —— 按停那一刻闩锁还剩一大截,立刻重按播放,这一截残余在新的
+    // 一段播放里走完。
+    //
+    // ⚠ 同样先说清楚**证明不了**什么:② 的完整现象需要「宿主两次写之间隔着秒级」,而 mock
+    //   的打印头一恢复就立刻推帧(本文件 SL-251 节已记过:mock 只有慢通道)。所以这里不去
+    //   赌那一幕,而是把**机理**钉在渲染面上:两档窗口各自真的在生效。② 的修复等价于
+    //   「按停即回短窗口」,那就是 (d)。
+    // =========================================================================
+    {
+        newBucket("sl270-release-windows");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+
+        const BADGE = `d.querySelector('[data-gb="master-width-hostbadge"]')`;
+        const badge = IN(`
+            const n = ${BADGE};
+            return n ? (n.getAttribute("data-on") || "-") : "?";
+        `);
+        const badgeOn = IN(`
+            const n = ${BADGE};
+            return !!n && n.getAttribute("data-on") === "1";
+        `);
+        const badgeOff = IN(`
+            const n = ${BADGE};
+            return !!n && n.getAttribute("data-on") === "0";
+        `);
+        const setOutput = (on) =>
+            evaluate(
+                IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk) return "no-mock";
+            return JSON.stringify(mk.setOutputEnabled(${on ? "true" : "false"}));
+        `),
+            );
+        // 走带开关在**壳页**上:走带是宿主的东西,`__SCVB_MOCK__` 只有桥面的上行函数。
+        const setPlaying = (on) =>
+            evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.ctl) return "no-session";
+            s.ctl.setTransport({ isPlaying: ${on ? "true" : "false"} });
+            return "ok";
+        })()`);
+
+        // ---- 量法:从**徽标亮起那一刻**量到它熄灭,而不是从「我发了指令」那一刻量。
+        //
+        // 这一条是本节能不能算数的关键。闩锁量的是「距最后一帧 hostEcho:true 多久」,
+        // 而那一帧什么时候来我们并不知道 —— mock 的打印头是「值变了才发」,实测两帧之间
+        // 能隔两三秒。从指令时刻起算的话,测出来的间隔里混着一段未知的「上一帧有多旧」,
+        // 只能给上界、给不出下界,于是「播放档确实更宽」这半条根本证明不了(本仓记过
+        // 「按帧率/节奏判红」的假红,这里是同一个坑的另一面)。
+        //
+        // 改成:先把徽标打灭,再打开打印头,**在页内**盯住 0 → 1 那一次跳变并落一个
+        // 时间戳(`__SL270_ON_AT__`)—— 跳变意味着刚刚到了一帧 true,起点就此钉死;
+        // 随后停掉信号源,页内一直采到徽标转 0,回报的差值就是**真正的释放窗口**
+        // (外加一次 CDP 往返,几十毫秒量级,只会让读数偏大一点点)。
+        const armOnEdge = IN(`
+            w.__SL270_ON_AT__ = 0;
+            const tick = () => {
+                const n = ${BADGE};
+                if (n && n.getAttribute("data-on") === "1") {
+                    w.__SL270_ON_AT__ = w.performance.now();
+                    return;
+                }
+                w.setTimeout(tick, 30);
+            };
+            tick();
+            return true;
+        `);
+        const onEdgeSeen = IN(`return (w.__SL270_ON_AT__ || 0) > 0;`);
+        const measureOff = IN(`
+            return new Promise((res) => {
+                const t0 = w.__SL270_ON_AT__ || 0;
+                if (!t0) return res(-1);
+                const step = () => {
+                    const n = ${BADGE};
+                    if (n && n.getAttribute("data-on") === "0") {
+                        return res(Math.round(w.performance.now() - t0));
+                    }
+                    if (w.performance.now() - t0 > 12000) return res(-2);
+                    w.setTimeout(step, 30);
+                };
+                step();
+            });
+        `);
+
+        // 一次完整测量:打灭 → 装边沿探针 → 开打印头 → 等 0→1 跳变 → 掐掉信号源 → 采到熄。
+        async function measureRelease(label, killSignal) {
+            await setOutput(false);
+            if (
+                !check(
+                    await waitFor(badgeOff, 12000),
+                    `(${label}) 前置:先把徽标打灭`,
+                )
+            )
+                return null;
+            await evaluate(armOnEdge);
+            const r = await setOutput(true);
+            if (
+                !check(
+                    typeof r === "string" && !/rejected|"ok":\s*false/.test(r),
+                    `(${label}) 前置:打开打印头被接受(回执 ${r})`,
+                )
+            )
+                return null;
+            // 亮起要等打印头写出一个**变化**的值;mock 上实测能到 2-3 秒,故给足额度。
+            if (
+                !check(
+                    await waitFor(onEdgeSeen, 15000),
+                    `(${label}) 前置:观察到徽标 0 → 1 的那一次跳变(起点由它钉死)`,
+                )
+            )
+                return null;
+            await killSignal();
+            const ms = await evaluate(measureOff);
+            log(`  ${label}:从亮起到熄灭 ${ms} ms`);
+            return ms;
+        }
+
+        check(
+            (await setPlaying(true)) === "ok",
+            "(前提) 壳页暴露了预览会话(window.__SCVB_PREVIEW__.ctl)—— 没有它整节都测不了",
+        );
+
+        // ---- (a) **播放档**:关掉打印头,但走带**继续跑**。
+        const playingMs = await measureRelease("a 播放档", () =>
+            setOutput(false),
+        );
+        // ---- (b) **停走档**:打印头开着,直接停走带(mock 的 PRINT 是三与,停走即停印)。
+        const stoppedMs = await measureRelease("b 停走档", () =>
+            setPlaying(false),
+        );
+
+        check(
+            typeof playingMs === "number" && playingMs > 0,
+            `(a) 播放档测到了有效读数(实得 ${playingMs})`,
+        );
+        check(
+            typeof stoppedMs === "number" && stoppedMs > 0,
+            `(b) 停走档测到了有效读数(实得 ${stoppedMs})`,
+        );
+        // 判据写成**区间**而不是等号:读数里含一次 CDP 往返 + 采样步长 + 一拍 render,
+        // 上下各留 600ms。这两条各自都是删除式判据 ——
+        //   • 退回「一个窗口打天下」:两个读数会挤到同一个数上,(c) 必红;
+        //   • 调用方忘了把走带态传进 hostEchoOn:播放档掉到停走档上,(a) 必红。
+        if (typeof playingMs === "number" && playingMs > 0) {
+            check(
+                playingMs > 1500 && playingMs < 4000,
+                `(a) ★ 播放中的释放窗口落在播放档量级(实得 ${playingMs}ms,期望 ≈2500)`,
+            );
+        }
+        if (typeof stoppedMs === "number" && stoppedMs > 0) {
+            check(
+                stoppedMs < 1600,
+                `(b) ★ 停走后的释放窗口落在停走档量级(实得 ${stoppedMs}ms,期望 ≈900)` +
+                    ` —— 用户报的「停走之后图标停留过久」就是这个数原先是 2000`,
+            );
+        }
+        if (
+            typeof playingMs === "number" &&
+            typeof stoppedMs === "number" &&
+            playingMs > 0 &&
+            stoppedMs > 0
+        ) {
+            check(
+                playingMs - stoppedMs > 800,
+                `(c) ★ 两档确实分开(播放 ${playingMs}ms − 停走 ${stoppedMs}ms > 800ms)` +
+                    ` —— 这一条是「按停即回短窗口」的直接证据,也就是用户报的第二幕` +
+                    `(快速起停时残余在播放中途走完)被修掉的机理`,
+            );
+        }
+
+        // ---- (d) 重按播放之后徽标必须**能回来**:短窗口是给停走用的,不能把重新开始的
+        // 那一段播放也一起摁死。这一条守的是「修第一幕别修出一个新的第二幕」。
+        // ⚠ 用 waitFor 而不是定长 sleep:亮起要等打印头写出一个变化的值,mock 上实测
+        // 2-3 秒(本机跑过 1.5s 的定长,假红一次)。真出回归的话它永远不亮,一样红。
+        await setPlaying(true);
+        check(
+            await waitFor(badgeOn, 15000),
+            "(d) ★ 重按播放后徽标重新亮起(短窗口没有把它锁死)",
+        );
+        log(`  (d) 重按播放后徽标 = ${await evaluate(badge)}`);
+
+        assertClean("SL-270 释放窗口");
     }
 } catch (e) {
     fail++;

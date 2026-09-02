@@ -46,6 +46,10 @@ import {
     CHANNEL_COUNT,
     HOST_ECHO_FRESH_MS,
     HOST_ECHO_RELEASE_MS,
+    // [SL-270] 释放窗口按走带态分档;下面那行 console 读数必须用**当时那一档**,
+    // 否则它会把「播放中根本不会让徽标灭」的间隔也报成一次眨眼。
+    hostEchoReleaseMs,
+    storeIsPlaying,
 } from "./tab-master.js";
 import {
     createTabTracks,
@@ -1672,19 +1676,28 @@ if (bridge) {
             // 分布本机测不出来**(mock 只有慢通道)。所以把超窗的那几次原样打到 console:
             // 用户真机若仍见眨眼,拿这几行就能直接把窗口调对,不用再猜。
             const gap = prevHostEchoAt ? Date.now() - prevHostEchoAt : 0;
-            if (prevHostEchoAt && gap >= HOST_ECHO_RELEASE_MS) {
+            // [SL-270] 门限取**当时那一档**窗口:播放中是 2500ms、停走是 900ms。
+            // 写死一个数的话,播放中 1200ms 的间隔会被报成一次眨眼(它不是),而停走时
+            // 1000ms 的间隔会被漏掉(它是)—— 两个方向都会把用户贴回来的读数带偏。
+            const releaseMs = hostEchoReleaseMs(storeIsPlaying(store));
+            if (prevHostEchoAt && gap >= releaseMs) {
                 // 纯 ASCII:①它只进开发者控制台,不上屏;②`scripts/check-font-coverage.py`
                 // 扫的是 web/ 下**全部 .js 的字符串字面量**,这里写中文会把新字形塞进字体
                 // 子集(实测「徽/灭/眨/隔」四个字四款字体都没有,gate 3h 直接红);
                 // ③用户要把这几行贴回来给我们,ASCII 复制粘贴不会乱码。
                 console.debug(
-                    `[SCVB][SL-251] hostEcho gap ${gap}ms >= release window ${HOST_ECHO_RELEASE_MS}ms; the host-driven badge blinks off and back on across this gap.`,
+                    `[SCVB][SL-251] hostEcho gap ${gap}ms >= release window ${releaseMs}ms; the host-driven badge blinks off and back on across this gap.`,
                 );
             }
             // ⚠ 定时器必须跟着**释放窗口**走,不是新鲜度窗口:闩锁到 RELEASE_MS 才熄,
             // 而 650ms 那一拍 render 时它还亮着、且不会再排下一次 —— 于是「停播 + 宿主停写」
             // 这条最常见的收尾路径上没有任何东西再触发 render,徽标与 Tab2 灰显会一直挂着
             // (旧注释提防的「永久滞留 55% 透明」原样复活,只是原因换成了「没人来 render」)。
+            // [SL-270] 只按**停走档**排这一拍就够,不必再为播放档排第二个:播放中
+            // `scvb.playhead` 是 30Hz 常推,而它的 `timeS` 每帧都在走 —— 下面那条订阅的
+            // `samePlayhead` 因此每帧都判不同、每帧都 requestRender,长窗口到期那一刻
+            // 必然有 render。真正没人来 render 的只有停走之后(位置不动 ⇒ 载荷逐字相同
+            // ⇒ 那条订阅不再排 render),而那时生效的正是这个短窗口。
             clearTimeout(hostEchoTimer);
             hostEchoTimer = setTimeout(
                 requestRender,

@@ -1331,6 +1331,60 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         `(a7) 释放窗口必须比新鲜度窗口宽(实得 ${HE.HOST_ECHO_RELEASE_MS} vs ${HE.HOST_ECHO_FRESH_MS})`,
     );
 
+    // ---- (a8..a12) [SL-270] 释放窗口按**走带态**分两档
+    //
+    // 用户实测(v5.6.5):① 停走后徽标还挂着近两秒;② 快速起停会让徽标在**播放中途**
+    // 消失。② 是 ① 的另一面 —— 按停那一刻闩锁还剩一大截,立刻重按播放,这一截残余
+    // 在新的一段播放里走完。修法是停走用短窗口、播放中用长窗口。
+    //
+    // 本组同时是**删除式判据**:把 `hostEchoOn` 的第三个参数忽略掉(退回单窗口),
+    // (a10) 与 (a11) 之中必有一条红。
+    check(
+        HE.HOST_ECHO_RELEASE_PLAYING_MS > HE.HOST_ECHO_RELEASE_MS,
+        `(a8) 播放档必须比停走档宽(实得 ${HE.HOST_ECHO_RELEASE_PLAYING_MS} vs ${HE.HOST_ECHO_RELEASE_MS})`,
+    );
+    eq(
+        [HE.hostEchoReleaseMs(false), HE.hostEchoReleaseMs(true)],
+        [HE.HOST_ECHO_RELEASE_MS, HE.HOST_ECHO_RELEASE_PLAYING_MS],
+        "(a9) hostEchoReleaseMs 是两档的唯一真源(app.js 的 console 读数同取这一份)",
+    );
+    eq(
+        HE.hostEchoOn({ hostEchoAt: T0 }, T0 + HE.HOST_ECHO_RELEASE_MS, true),
+        true,
+        "(a10) ★ 播放中越过**停走档**仍亮(退回单窗口即红)",
+    );
+    eq(
+        HE.hostEchoOn(
+            { hostEchoAt: T0 },
+            T0 + HE.HOST_ECHO_RELEASE_PLAYING_MS,
+            true,
+        ),
+        false,
+        "(a11) ★ 播放中越过**播放档**才熄 —— 不是「播放中永不熄」",
+    );
+    // ② 的直接还原:按停的那一刻起,判据立刻切回短窗口,残余不会带进下一段播放。
+    // 这一条钉的是**用户可见结果**,不是实现:同一个 `at`,同一个 `now`,只因走带停了
+    // 就该熄 —— 一个窗口打天下的实现在这里必然给 true。
+    eq(
+        HE.hostEchoOn(
+            { hostEchoAt: T0 },
+            T0 + HE.HOST_ECHO_RELEASE_MS + 1,
+            false,
+        ),
+        false,
+        "(a12) ★ 快速起停:按停即回短窗口,残余不带进下一段播放",
+    );
+    eq(
+        [
+            HE.storeIsPlaying({ playhead: { isPlaying: true } }),
+            HE.storeIsPlaying({ playhead: { isPlaying: false } }),
+            HE.storeIsPlaying({ playhead: null }),
+            HE.storeIsPlaying(null),
+        ],
+        [true, false, false, false],
+        "(a13) storeIsPlaying 对 store.playhead 缺席/为空都安全(首帧之前它就是 null)",
+    );
+
     // ---- (b) 源码级不变式:图表卡摘出 + 两 tab 共用同一条判据
     const tmSrc = readFileSync(join(ROOT, "web/output/tab-master.js"), "utf8");
     const ttSrc = readFileSync(join(ROOT, "web/output/tab-tracks.js"), "utf8");
@@ -1368,8 +1422,17 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         ["tab-tracks", ttSrc],
     ]) {
         check(
-            src.includes("hostEchoOn(st.params)"),
+            /hostEchoOn\(\s*st\.params[,)]/.test(src),
             `(b6) ${name} 用的是共享判据 hostEchoOn(两处曾各存一份逐字副本)`,
+        );
+        // [SL-270] **接线**判据,不是零件判据:`hostEchoOn` 支持走带分档不等于调用方
+        // 真把走带态传进去了。少了第三个实参,分档就是死代码,而纯函数用例照样全绿
+        // —— 本仓记过一次「测接线不只测零件」,这条就是那条教训的落点。
+        check(
+            /hostEchoOn\(\s*st\.params,\s*undefined,\s*storeIsPlaying\(st\)\s*\)/.test(
+                src,
+            ),
+            `(b6) ★ ${name} 把走带态传进判据(hostEchoOn(st.params, undefined, storeIsPlaying(st)))`,
         );
         check(
             !/hostEcho &&\s*$|hostEcho &&\n/.test(src),
