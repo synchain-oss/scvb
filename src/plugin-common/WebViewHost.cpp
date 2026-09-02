@@ -131,7 +131,15 @@ public:
     //   (juce_WebBrowserComponent_windows.cpp:496-497)是 WebView2 控制器的**重试泵**:
     //   createWebView() 在 peer 为空时直接 return,而我们在构造期就 goToURL(本文件的
     //   beginLoadAttempt),那一刻 peer 还没有。控制器能不能建起来,全靠此后一次次重入
-    //   checkWindowAssociation。绕过基类 = 把泵拆了,白窗会变成**永远不开**的窗。
+    //   checkWindowAssociation。绕过基类 = 把泵拆了。
+    //   ⚠ 这里**刻意不写「窗永远开不出来」**:那是前几轮流传过、而本卡实测**证伪**了的
+    //   绝对说法。实测(见下方 static_assert 旁记录)是:删掉基类调用后,pluginval 全量
+    //   含 GUI 三个 bundle 照样全 PASS、窗开得出来 —— JUCE 自己的 parentHierarchyChanged()
+    //   / visibilityChanged() 已足够把控制器建起来。paint 里这个泵兜的是「那两条事件路径
+    //   都赶在 peer 就绪之前跑完」这一类时序,pluginval 的开窗时序撞不出来,真实宿主
+    //   (窗口延迟创建、宿主自己的插件扫描沙箱进程)更容易撞上。
+    //   所以拆掉它是**真机上的开窗风险**,不是「必然开不出来」——而这条风险没有任何
+    //   机检兜得住(缺口登记 SL-282)。
     //   而在本层**复刻**一份泵同样不行(下面这两条说的是**那个被否掉的方案**,不是现状):
     //     • 复刻件只能押在 JUCE 的私有实现细节上(基类的条件 `hasBrowserBeenCreated()`
     //       与 `visibilityChanged() == impl->checkWindowAssociation()` 都不是公开契约),

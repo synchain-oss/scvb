@@ -959,10 +959,22 @@ try {
         await sleep(3400);
 
         // ---- (h) 顺带把**熄侧**钉一下:静置超过释放窗口之后,徽标必须已经灭了。
-        // ⚠ 说清它证明什么、不证明什么:它断的是**用户可见结果**(停了就该退),
-        // **不是**退场定时器那一行的回归 —— preview 里 `scvb.conn` 每 ~250ms 仍在推
-        // (heartbeatAgeMs 是活计数器),render 根本停不下来,所以就算定时器还挂在
-        // 650ms 上,这条也会绿。真正的定时器回归要「页面全静」,mock 上造不出来(已登记)。
+        // ⚠ 说清它证明什么、不证明什么:它断的是**用户可见结果**(停了就该退)。
+        //
+        // 本节 render 停不下来,**原因不是 conn 心跳** —— 这一句上一版写错了,已按实测订正:
+        //   • `scvb.conn` 走的是 `emitIfChanged`(`state-driver.js:809`),`JSON.stringify`
+        //     逐字相同即**不发**(`juce-bridge-mock.js:422`),静置期一帧都不推;
+        //   • `heartbeatAgeMs` 也不是活计数器,是 `40 + floor(unit(0x5001, ch) * 260)`
+        //     (`mock-data.js:1109`),按**轨号**确定性取值,与时间无关。
+        // 真正让 render 停不下来的是本节的 `?play=1`:`scvb.playhead` 每帧 `timeS` 在走
+        // ⇒ `samePlayhead` 判不同 ⇒ 逐帧 `requestRender`。
+        //
+        // 所以本条的免责范围要跟着收窄:走带在跑时它兜不到「定时器挂错档」这类回归
+        // (逐帧 render 会替定时器把徽标熄掉)。**真正钉住那一拍定时器的是下面的 (e)**
+        // —— 它用 `setHostTimeAvailable(false)` 把 playhead 载荷钉成逐帧逐字相同,
+        // 唯一那条活着的 render 源就没了,删掉长定时器当场红(实测 8166ms)。
+        // 别再照上一版那句话推论「conn 心跳还在,所以 (e) 也会空绿」—— 那条推论错在
+        // 前提上,而它已经真的误导过一个审查端点。
         const quiet = await evaluate(readState);
         check(
             quiet.width === "0" &&

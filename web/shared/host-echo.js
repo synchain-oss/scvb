@@ -103,11 +103,20 @@ export function hostEchoOn(params, nowMs, wide) {
  * 所以**未知并进宽档**:宁可多亮一会儿,也不要把已修的抖放回来。函数名说的就是这件事
  * ——叫 `isPlaying` 而对 `playhead == null` 返回 true 会读成 bug。
  *
+ * 判据写成「**只有明确停走才取窄档**」而不是「在播放才取宽档」:两者只在
+ * `playhead` 在场却没有 `isPlaying` 时不同,而那一档该算**未知**、该走宽档。
+ * 该形态在本仓的契约面上不可达(native 两侧 `OutputEditor.cpp:529` /
+ * `MonitorEditor.cpp:278` 都无条件写这个字段,mock 的 `makePlayhead` 也恒带),
+ * 所以这不是在修一个能复现的 bug —— 是让**代码与上面那句话逐字相符**:
+ * 上一版写 `!!ph.isPlaying`,`{playhead:{}}` 会悄悄落到窄档,而头注说的是「未知 ⇒ 宽」。
+ * 本卡整轮都在清理「注释比代码承诺得多」,这一处便按同一条尺子改代码而不是加脚注。
+ * ([PR 178 复审第四轮 pr-agent 建议;不可达性我独立核过])
+ *
  * @param {{playhead?: {isPlaying?: boolean}}} store
- * @returns {boolean} 播放中 **或** 走带态未知 ⇒ true(宽档)
+ * @returns {boolean} 播放中 **或** 走带态未知(含 `playhead` 无 `isPlaying`)⇒ true(宽档)
  */
 export function hostEchoUseWideWindow(store) {
     const ph = store && store.playhead;
-    if (!ph) return true; // 走带态未知 ⇒ 宽档
-    return !!ph.isPlaying;
+    // 只有 isPlaying === false 这一种「明确停走」取窄档;缺席/未知一律宽档。
+    return !ph || ph.isPlaying !== false;
 }

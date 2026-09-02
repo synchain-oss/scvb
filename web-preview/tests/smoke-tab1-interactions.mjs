@@ -1397,9 +1397,14 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             HE.hostEchoUseWideWindow({ playhead: { isPlaying: false } }),
             HE.hostEchoUseWideWindow({ playhead: null }),
             HE.hostEchoUseWideWindow(null),
+            // [PR 178 复审第四轮] `playhead` 在场却没有 `isPlaying` —— 契约面不可达
+            // (native 两侧与 mock 都无条件写该字段),但它是「未知」不是「停走」,
+            // 判据必须与头注那句「未知 ⇒ 宽档」逐字相符。
+            // ★ 删除式:退回 `!!ph.isPlaying`,这一项变 false,本条当场红。
+            HE.hostEchoUseWideWindow({ playhead: {} }),
         ],
-        [true, false, true, true],
-        "(a13) ★ 走带态**未知**并进宽档(playhead 缺席/为空 ⇒ true);只有明确停走才走窄档",
+        [true, false, true, true, true],
+        "(a13) ★ 走带态**未知**并进宽档(playhead 缺席/为空/无 isPlaying ⇒ true);只有明确停走才走窄档",
     );
     // (a13) 的用户可见后果:走带态还没到过页面时,徽标不会在 900ms 就熄。
     eq(
