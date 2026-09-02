@@ -20,7 +20,7 @@
 // 退出码:0 = 全绿;1 = 有断言失败(逐条打印 [FAIL])。
 // =============================================================================
 
-import { readFileSync } from "node:fs"; // [SL-274] 封顶三处同值的源码字面量对拍
+import { readFileSync } from "node:fs"; // [SL-274] 封顶对拍读 native 那个 C++ 常量
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -741,9 +741,13 @@ log(
             }
         }
         const path = fill ? "diff-flood(满档)" : "默认档";
-        // 下界按路径分开:默认档 8 帧 × 29 条 = 232,满档 8 帧 × 200 条 = 1600。
-        // 写死「>100」对满档太松,会盖不住「封顶哪天被调小到 20」这种退化。
-        const floorN = fill ? 1000 : 100;
+        // 下界按路径分开:默认档 8 帧 × 29 条 = 232,满档 8 帧 × 封顶 = 1600。
+        // 写死「>100」对满档太松,盖不住「fill 机制静默只出几条」这种退化。
+        // 满档那条**跟封顶挂钩**而不是写死 1000(复审第 3 轮):写死 1000 等于在这里
+        // 又压了一根「封顶 ≥ 126」的隐式钉 —— 哪天三处封顶被**合法地统一改小**(比如 100),
+        // 对拍仍绿、页面 (5) 用 import 的常量也仍自洽,却会在这里以「实得 800,应 >1000」
+        // 这种莫名其妙的文案红掉。本条的本职只是「fill 真的顶满了吗」。
+        const floorN = fill ? md.DIFF_CHANGED_CAP * 6 : 100;
         check(
             seen > floorN,
             `[${path}] 样本量够大(实得 ${seen} 条,应 >${floorN})`,
@@ -765,7 +769,7 @@ log(
 // [SL-274] `changed[]` 的封顶 **200** 是三处同值,这里给它上机器门禁。
 //
 // 三处:native `src/core/output/SegmentDiff.h::kMaxChangedItems`、
-// web `web/output/tab-wave.js::DIFF_CHANGED_CAP`、mock `web/shared/mock-data.js` 的字面量。
+// web `web/output/tab-wave.js::DIFF_CHANGED_CAP`、mock `web/shared/mock-data.js::DIFF_CHANGED_CAP`。
 // 改前只有注释在绑三者(「改一处要三处一起改」),而本仓对单一真源一向是上门禁的
 // (`.juce-version`、`check-bridge-parity`、`check-*-parity`)—— 注释绑不住,人会漏。
 //
@@ -774,31 +778,28 @@ log(
 // native 截到 200、web 以为封顶是 500 ⇒ 屏幕上印「200」,把「至少 200 段改了」说成
 // 「正好 200 段」。这正是本卡在 tab-wave.js 那段头注里说的「这一行唯一可能撒的谎」。
 //
-// 读源码字面量而不是 import:native 是 C++ 头文件,只能正则;三处用同一种读法,
-// 免得哪天 web 侧改成动态计算而这条门禁还以为自己在对拍。
+// **两侧 JS 直接 import、只有 native 走正则**(复审第 3 轮):C++ 头文件没有别的读法;
+// 而 JS 那两个 import 比的是**运行时真值**,比源码长相硬。第一版三处统一用正则,
+// 代价是 mock 那处只能匹配裸字面量 `changed.length < 200` —— 那等于**把「给这个数起个
+// 名字」判成红**:谁写成 `changed.length < SOME_CONST`,门禁就以「找不到常量」拦住他。
+// 现在 mock 侧也有了具名导出,那条反向激励一并消失。
 log("");
 log("=== [SL-274] changed[] 封顶三处同值(native / web / mock)===");
 {
-    const grab = (relPath, re, what) => {
-        const src = readFileSync(join(ROOT, relPath), "utf8");
-        const m = src.match(re);
-        check(!!m, `${what}:在 ${relPath} 里找得到那个常量`);
-        return m ? Number(m[1]) : NaN;
-    };
-    const nativeCap = grab(
-        "src/core/output/SegmentDiff.h",
-        /kMaxChangedItems\s*=\s*(\d+)/,
-        "native kMaxChangedItems",
+    const nativeSrc = readFileSync(
+        join(ROOT, "src/core/output/SegmentDiff.h"),
+        "utf8",
     );
-    const webCap = grab(
-        "web/output/tab-wave.js",
-        /DIFF_CHANGED_CAP\s*=\s*(\d+)/,
-        "web DIFF_CHANGED_CAP",
-    );
-    const mockCap = grab(
-        "web/shared/mock-data.js",
-        /changed\.length\s*<\s*(\d+)/,
-        "mock changed 封顶",
+    const m = nativeSrc.match(/kMaxChangedItems\s*=\s*(\d+)/);
+    check(!!m, "native kMaxChangedItems:在 SegmentDiff.h 里找得到那个常量");
+    const nativeCap = m ? Number(m[1]) : NaN;
+    const webCap = (await import(u("web/output/tab-wave.js"))).DIFF_CHANGED_CAP;
+    const mockCap = (await import(u("web/shared/mock-data.js")))
+        .DIFF_CHANGED_CAP;
+    check(
+        Number.isFinite(webCap) && Number.isFinite(mockCap),
+        `web / mock 两侧都导出了 DIFF_CHANGED_CAP(实得 ${webCap} / ${mockCap};` +
+            "常量被改名/删掉时 undefined 会让下面那条比较恒假 —— 这里先拦一道)",
     );
     check(
         nativeCap === webCap && webCap === mockCap,

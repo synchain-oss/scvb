@@ -60,6 +60,18 @@ export const WAVEFORM_UNCOVERED_DB = -160;
 export const HEARTBEAT_AGE_NONE = 0xffffffff;
 
 /**
+ * `diff.changed[]` 的条数封顶 —— 与 native 的
+ * `src/core/output/SegmentDiff.h::kMaxChangedItems` 和
+ * `web/output/tab-wave.js::DIFF_CHANGED_CAP` **三处同值**(门禁见 smoke-mock.mjs)。
+ *
+ * [SL-274 复审第 3 轮] 原先这里是 `makeSegments` 里的**裸字面量** `200`,而门禁靠正则
+ * `changed.length < (\d+)` 去读它 —— 那等于**把「给这个数起个名字」判成红**:谁写成
+ * `changed.length < SOME_CONST`,门禁就会以「找不到常量」的名义拦住他。起了名之后
+ * 门禁改成直接 import 这个值,比正则更硬(比的是**运行时真值**,不是源码长相)。
+ */
+export const DIFF_CHANGED_CAP = 200;
+
+/**
  * Tab1 分布图视图两态([J75] T43 的 state `ui.master_chart_mode`)。
  *
  * **刻意不进 `ENUMS`**:那个对象的头注写着「契约 §5 / §7 manifest 的枚举镜像」,
@@ -892,7 +904,7 @@ export function makeSegments(
             if (
                 origin === "auto" &&
                 (opts.diffFillToCap || (ch * 3 + i) % 17 === 0) &&
-                changed.length < 200
+                changed.length < DIFF_CHANGED_CAP
             ) {
                 changed.push({
                     ch,
