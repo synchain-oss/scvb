@@ -565,3 +565,65 @@ TEST_CASE("[SL262] hopWindowFromSamples:hop 边界不得被浮点截断到 k−1
     CHECK(hopSamplesFor(0.0, kSrLocal) == 0);
     CHECK_FALSE(hopWindowFromSamples(0, 48000, 0.0, kSrLocal).valid);
 }
+
+// ---------------------------------------------------------------------------
+// [SL-284] `maxFallbackLevel` 取的是**逐区间最坏**,不是末个区间的级。
+//
+// 为什么单开一条 core 用例(#183 复审【重要】):host 侧那两条钉不住这个语义 ——
+//   · `HOST SL263`:两档全程 level 1,max / 末值 / 首值**恒等**;
+//   · `HOST SL284`:冻结是全时段的,所有区间一起掉出 level 1,三者仍然恒等。
+// 也就是说接线里唯一带判断的那一步(`std::max`)是**突变漏检**的:把它改成
+// `result.maxFallbackLevel = br.fallbackLevel;`(末值口径)那两条照样全绿。
+// 本条造出「**中间**区间掉级、最后一个区间收敛」的形状,让两种口径给出不同答案:
+// max ⇒ >=2(对),末值 ⇒ 1(错)。改成末值 ⇒ 本条立刻红。
+//
+// 形状怎么造:一条**高能量且 pan 维冻结在硬左**的轨只在中段发声(配方同
+// `tests/core/test_balance.cpp` 的「回退链 level 2」),两条弱的自由轨全程发声。
+// 于是全局区间按那条轨的进出切成三段,中段被硬左的强轨拽偏、首趟收不进容差,
+// 末段只剩两条对称的弱轨 ⇒ 回到 level 1。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL-284] maxFallbackLevel 取逐区间最坏值,不被末个收敛区间盖掉", "[analysis][pipeline][SL284]")
+{
+    // 逐段拼 kw 序列:loud 段给 kw,quiet 段给静音底噪。
+    const auto push = [](PipelineTrackFeatures& f, int hops, float kw) {
+        for (int i = 0; i < hops; ++i)
+        {
+            f.kwMs.push_back(kw);
+            f.peak.push_back(std::sqrt(kw));
+        }
+    };
+    constexpr int kPhase = 120; // 每段 1.2s,足够 VAD 起段
+    constexpr float kQuiet = 1e-9f;
+
+    std::array<PipelineTrackFeatures, kPipelineTracks> features;
+    // t0:只在**中段**发声,且能量远高于另两条 —— 它就是把中段拽偏的那条。
+    push(features[0], kPhase, kQuiet);
+    push(features[0], kPhase, 0.40f);
+    push(features[0], kPhase, kQuiet);
+    // t1/t2:全程发声、能量弱且彼此相当 —— 末段只剩它们时是对称解,必收敛。
+    for (const int t : {1, 2})
+    {
+        push(features[static_cast<std::size_t>(t)], kPhase * 3, 0.02f);
+    }
+    for (auto& f : features)
+    {
+        if (f.kwMs.empty())
+        {
+            continue;
+        }
+        f.covered.assign(f.kwMs.size(), 1u);
+        f.anyCovered = true;
+    }
+
+    auto cfg = makeConfig(features[0].kwMs.size(), 3);
+    // t0 = manual 硬左(pan 维冻结)⇒ 它不占槽、pan 保持 −100,中段的 D 无从抵消。
+    cfg.tracks[0].freeze = 1;
+    cfg.tracks[0].currentPan = -100.0;
+
+    const auto res = runAnalysisPipeline(features, cfg);
+    REQUIRE_FALSE(res.cancelled);
+    INFO("区间数 = " << res.intervals << ",maxFallbackLevel = " << res.maxFallbackLevel);
+    REQUIRE(res.intervals >= 2); // 前置:只有一个区间时 max 与末值恒等,本条就成了空过
+    // 改成末值口径 ⇒ 末段收敛 ⇒ 这里读到 1 ⇒ 红。
+    CHECK(res.maxFallbackLevel >= 2);
+}
