@@ -70,16 +70,20 @@ const HANDLERS = [
     '"unhandledRejection"',
 ];
 
-// 从 idx 起找第一个 `{`,配对到它的 `}`,返回含两端的那一段。C 与 D 共用。
+// 从 idx 起找第一个 `{`,配对到它的 `}`。返回 `{ open, end, text }` —— **把 open 一起带回来**,
+// 调用处就不必再拿 text 去全文 `indexOf` 找它在哪(复审指出:那是一次无锚再搜索,
+// 文件里更早处若有一段逐字相同的小块,会返回更早那处 ⇒ 切出空串 ⇒ 假红)。
+// C 与 D 共用。
 function braceBody(src, idx) {
     const open = src.indexOf("{", idx);
-    if (open < 0) return "";
+    if (open < 0) return null;
     let depth = 0;
     for (let i = open; i < src.length; i++) {
         if (src[i] === "{") depth++;
-        else if (src[i] === "}" && --depth === 0) return src.slice(open, i + 1);
+        else if (src[i] === "}" && --depth === 0)
+            return { open, end: i + 1, text: src.slice(open, i + 1) };
     }
-    return "";
+    return null;
 }
 
 let failed = 0;
@@ -108,7 +112,7 @@ for (const p of files) {
     // `timeoutMs`(里面有子串 `ms`!)却不含 `Date.now() - t0` ⇒ 判红,而文案说
     // 「waitFor 没按剩余预算取上界」—— 正是上面那三行注释声称已经消灭的「把人带错方向」。
     const wfAt = s.search(/async function waitFor\s*\(/);
-    const wfBody = wfAt >= 0 ? braceBody(s, wfAt) : "";
+    const wfBody = (wfAt >= 0 && braceBody(s, wfAt)?.text) || "";
     const evalArg = wfBody.match(
         /evaluate\(\s*[A-Za-z_$][\w$]*\s*,([\s\S]{0,160}?)\)\s*;/,
     );
@@ -133,7 +137,6 @@ for (const p of files) {
         // `process.on("exit", teardown)` 改成 `process.on("exit", () => {})` 之后照样全绿 ——
         // 因为紧跟其后的信号循环体里有 `teardown`,落进了那个窗口。邻近度不是包含关系。
         // 改成**花括号配对取出真正的体**再看里面有没有 `teardown`。
-        const bodyAfter = (idx) => braceBody(s, idx);
         const covered = (h) => {
             // 形态一:`process.on("exit", teardown)` —— 直接把函数名当回调传进去。
             if (
@@ -154,17 +157,33 @@ for (const p of files) {
             // 信号名在 `for (const sig of ["SIGINT", "SIGTERM"])` 的**数组头**里,不在体内。
             // (复审给的补丁写的是 `bodyAfter(forAt).includes(h)`,我照抄之后六套全红 ——
             //  诊断对、补丁形态不对,验一遍才发现。)
-            const forAt = s.lastIndexOf("for (", s.indexOf(h));
-            if (forAt >= 0) {
-                const body = bodyAfter(forAt);
-                const span = body
-                    ? s.slice(forAt, s.indexOf(body) + body.length)
-                    : "";
-                if (span.includes(h) && span.includes("teardown")) return true;
+            // 遍历 h 的**每一处**出现,不是只看首现:上一版用 `s.indexOf(h)` 当搜索上界,
+            // 首现只是从「锚点」降级成了「上界」、没有消失(复审指出)。方向那时已从
+            // 静默假绿变成假红,但注释宣称的「不再依赖首现」当时还不成立 —— 现在成立了。
+            for (let at = s.indexOf(h); at >= 0; at = s.indexOf(h, at + 1)) {
+                const forAt = s.lastIndexOf("for (", at);
+                if (forAt < 0) continue;
+                const b = braceBody(s, forAt);
+                if (!b) continue;
+                // 用 open/end 精确切,不再拿 text 去全文 `indexOf` 找位置 ——
+                // 那是一次无锚再搜索,更早处若有逐字相同的小块会切出空串 ⇒ 假红。
+                const span = s.slice(forAt, b.end);
+                // 还要求这段里真的在**注册**:光有「循环头提到信号名 + 体里调了 teardown」
+                // 不代表它是 handler —— 任何调 teardown 的循环体里写一句提到 "SIGTERM"
+                // 的注释就能顶替。`process.on(` 这一条几乎零成本。
+                if (
+                    span.includes(h) &&
+                    span.includes("teardown") &&
+                    span.includes("process.on(")
+                )
+                    return true;
             }
             // 形态三:`process.on(h, (…) => { … teardown() … })` —— 内联回调体。
             const onAt = s.indexOf(`process.on(${h}`);
-            return onAt >= 0 && bodyAfter(onAt).includes("teardown");
+            return (
+                onAt >= 0 &&
+                (braceBody(s, onAt)?.text || "").includes("teardown")
+            );
         };
         const miss = HANDLERS.filter((h) => !covered(h));
         if (miss.length)
