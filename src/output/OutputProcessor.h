@@ -266,6 +266,15 @@ public:
     // getStateInformation 同锁读,消除 emitState 无锁读 runtime_ 的剩余竞态 —— 复评重要②)。
     std::pair<juce::String, juce::String> analysisConfigSnapshot();
 
+    // [SL-284] 最近一次**落地**的分析里最坏的平衡回退级(§6.4 回退链):1..4;从未落地过 = 0。
+    //
+    // 供测试**先断前提再断推论**:很多「换档/换素材后产出该不该变」的断言,成立前提都是
+    // 「首趟 `solveBalance` 收敛」(z 只有在 level 2 的 `balHint->zHat` 里才进指派代价)。
+    // 前提断不了时,红出来的信息是结论层的现象(「pan 变了」),排障要从结论倒推原因。
+    // 判「首趟都收敛」用 `== 1`,**不要用 `<= 1`** —— 0 表示这次压根没跑过平衡,
+    // 那种情况下任何「产出不该变」的断言都是空过,必须显式红而不是被当成收敛。
+    int lastMaxFallbackLevel() const noexcept { return lastMaxFallbackLevel_.load(std::memory_order_relaxed); }
+
     // 运行时 state(消息线程独占;仅桥 native function 写 / emitTick 读,宿主不触,无需锁)。
     // 例外:loudnessMode/centerSlotPolicy 由 setAnalysisConfig 持锁写、getStateInformation 持锁读,
     // emitState 必须经 analysisConfigSnapshot() 持锁读 —— 其余字段仍消息线程独占。
@@ -650,6 +659,17 @@ private:
     //   ① 「已投递完成消息 → 用户随后取消」的竞态(旧口径会照写 CRVS,与「取消 = 结果整份丢弃」相左);
     //   ② 取消后紧接着重启的新作业,不会被上一份迟到的结果污染。
     std::atomic<std::uint32_t> analysisGeneration_{0};
+
+    // [SL-284] 最近一次**真正落地**的分析里最坏的平衡回退级(1..4;从未落地过 = 0)。
+    //
+    // 只在 `finishAnalysis` 里写 —— 那时已经过了 generation 比对,不是被丢弃的那份,
+    // 所以它与 CRVS 里那批段**同源**:读到 1 就表示「产出这些段的那次分析,每个区间首趟都收敛」。
+    // 取消 / 过期的结果整份丢弃,不会污染这个值。
+    //
+    // 用 atomic 而不进 `lifecycleMutex_`:它是个诊断标量,不与别的字段组成不变量,
+    // 读侧也不需要与段表原子一致 —— 多一层锁耦合不如少一层。
+    std::atomic<int> lastMaxFallbackLevel_{0};
+
     // 结果交接槽([W] 写 / [M] 取,pendingMutex_ 串行)。
     juce::CriticalSection pendingMutex_;
     struct PendingAnalysis

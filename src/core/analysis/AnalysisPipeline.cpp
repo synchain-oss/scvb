@@ -243,6 +243,9 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         {
             addWarningOnce(result.warnings, w);
         }
+        // [SL-284] 逐区间取**最坏**级带出去(口径与判据逐字见 `PipelineResult::maxFallbackLevel`)。
+        // 放在 warnings 之后、回写之前:与 `br` 的生命周期同段,后面 `br` 只被读不被改。
+        result.maxFallbackLevel = std::max(result.maxFallbackLevel, br.fallbackLevel);
 
         // 回写:区间 × 活跃轨 → 一段常值(pan 来自指派,volDb 来自平衡修正 u)。
         std::size_t k = 0;

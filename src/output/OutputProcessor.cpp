@@ -3133,6 +3133,11 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 
         if (!result.cancelled)
         {
+            // [SL-284] 平衡回退级记账 —— 与本次真正落地的那批段同源。
+            // 放在 `!result.cancelled` 里面:取消的那份结果整份丢弃,不该污染诊断值
+            // (口径逐字见 `lastMaxFallbackLevel_` 的声明处)。
+            lastMaxFallbackLevel_.store(result.maxFallbackLevel, std::memory_order_relaxed);
+
             // [SL-206] VAD 后验写回 FrameStore —— 泳道绿线(§1.27 瓦片 vad 列)唯一的数据源。
             // 此前这一步整个不存在:管线把后验算完就扔(传 nullptr),`vadP` 全仓没有生产者,
             // 真机恒 0、绿线一次都没画出来过;web-preview 的 mock 自己算了一份,于是三个版本
