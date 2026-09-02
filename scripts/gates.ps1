@@ -531,9 +531,18 @@ else {
       }
     }
   }
+  # 标签只说**数出来的东西**,不替别人的 `[WARN]` 下定义(PR#180 复审采纳)。
+  # 这里数的单位是**行**,不是「档」:今天恰好 1:1(check-native-paths 的降级是单次
+  # 单行 console.warn),但同在这个数组里的 check-bridge-parity 有一个已定义、当前零
+  # 调用的 `warn()` helper(:272),它的语义是「**通过但有提示**」而不是「某档没跑」——
+  # 谁哪天用上它,写死「−N 档降级」就会对着几条纯提示喊降级。这个信号刚建立起来就是
+  # 要让人信它,喊错一次,下次真降级也会被当成噪声。
+  # 反过来也不严丝合缝:check-bridge-parity 的 :1229 是真「跳过」,却直接 warns.push
+  # 而**不打 [WARN]**,这里数不到。所以这半句只能是「上方有几处 WARN,自己看」,
+  # 不能冒充「降级档数」的权威计数。
   $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍'
   if ($parityWarn -gt 0) {
-    $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍(−{0} 档降级,见上方 [WARN])' -f $parityWarn
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
   }
   Set-Gate $parityLabel $parityOk
 }
