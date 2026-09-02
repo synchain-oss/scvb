@@ -21,6 +21,10 @@
 //      A4 语言胶囊在**右上角**(右边缘齐 header 右缘、顶边齐 header 顶缘,且高于连接行);
 //      A5 「?」重看入口在**右下角**(落在 footer 里、且是 footer 最右的一件);
 //      A6 header / 连接行 / footer 各自零横向溢出(check-design-box 的运行期对偶);
+//      A7 [复审] 副文案的 title 与正文**逐字一致**:nowrap + ellipsis 那道护栏真生效时,
+//         被截掉的半句只剩 title 这一条通路(悬停 / 读屏)。三语各验一次 —— 语言一切,
+//         renderPill() 会把两者一起重写,验的正是「两者没有漂开」;
+//         删掉 app.js renderPill() 里那行 setAttribute("title", …) 即红。
 //   B. `output.html` Tab3 建议表视图:
 //      B1 视图内每个 <p> 的上下 margin 都是 0(删掉 `.suggest-view p{margin:0}` 即红);
 //      B2 标题区高度 = 标题 + gap + 说明句(±2px),不含任何隐形外边距;
@@ -34,6 +38,13 @@
 //         把 tab-settings.js 里的 `call("analyze", "all")` 删掉,本条即红;
 //      C5 Esc 关框;
 //      C6 三语各弹一次,正文非空且不等于 key;
+//      C8 [SL-276 复审] **弹窗只由用户点击驱动,不由派生的 stale 位驱动**:
+//         `?scenario=loudness-nondefault` 的工程存的是 rms(不是出厂默认档),于是
+//         一进 Tab4 stale 就为真 —— 琥珀 badge **该亮**(它是纯派生的常驻状态位),
+//         而弹窗**不该弹**(用户一个字都没改)。这是三条误报路径里最容易复现的一条,
+//         另两条(只读观察态 / 切版本)同一道 askOnNextStale 闸一并挡住。
+//         把 syncStale 里的 `if (!local.askOnNextStale) return;` 删掉,本条即红。
+//         改完档之后照样弹(C1 覆盖),所以这道闸没有把功能一起关掉。
 //      C7 [SL-273] 换档影响面这句话在**两处**都写着,且逐字同一句:设置页响度卡第二行
 //         与弹窗第二段共用词条 set.reanalyze.scopeNote。断言取两处的 textContent 做
 //         全等比较 —— 拿掉任一处的 data-t(或把它换成另一条词条)即红,三语各验一次;
@@ -140,9 +151,9 @@ const MIME = {
 const server = createServer((req, res) => {
     let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
     if (p.endsWith("/")) p += "index.html";
-    // 无头浏览器会自己发一条 /favicon.ico；仓里没这个文件，404 会以
-    // console.error 的形式进错误桶，把「零 console.error」那条断言泳死。
-    // 回 204 而不是把它从错误桶里过滤掉：过滤器会顺手放过真的资源 404。
+    // 无头浏览器会自己发一条 /favicon.ico;仓里没这个文件,404 会以
+    // console.error 的形式进错误桶,把「零 console.error」那条断言淹死。
+    // 回 204 而不是把它从错误桶里过滤掉:过滤器会顺手放过真的资源 404。
     if (p === "/favicon.ico") {
         res.writeHead(204).end();
         return;
@@ -350,6 +361,7 @@ const INPUT_PROBE = IN(`
     const fr = R(footer);
     return {
         text: sub.textContent.trim(),
+        subTitle: sub.getAttribute("title"),
         subH: sub.offsetHeight,
         lineH: lh,
         subScrollW: sub.scrollWidth,
@@ -626,6 +638,11 @@ try {
         le(p.connrowScrollW, p.connrowClientW, `${lang}:连接行零横向溢出`);
         le(p.footerScrollW, p.footerClientW, `${lang}:footer 零横向溢出`);
         le(p.docScrollW, p.docClientW, `${lang}:文档零横向滚动`);
+        // A7 截断护栏的第二条通路:title 必须与正文逐字一致(切语言后也不许漂开)。
+        check(
+            typeof p.subTitle === "string" && p.subTitle.trim() === p.text,
+            `${lang}:pillSub 的 title 与正文逐字一致(title=${JSON.stringify(p.subTitle)} / 正文=${JSON.stringify(p.text)})`,
+        );
         assertClean(`input/${lang}`);
     }
 
@@ -751,7 +768,7 @@ try {
     await click("tabnav-settings");
     await sleep(400);
 
-    // C1 初始不弹
+    // C1 初始不弹(这一档的工程口径 = 出厂默认,stale 本来就为假)
     check(await evaluate(askClosed), "初始不弹");
     check(await setLoudness("rms"), "切响度档 rms 可点");
     check(await waitFor(askOpen, 4000), "C1 切响度档 ⇒ 弹窗弹出");
@@ -797,12 +814,60 @@ try {
         "C4 analyze 真的跑完(琥珀 badge 由 segments 帧自己灭)",
     );
 
+    // C8 [SL-276 复审] stale 一上来就为真的工程:badge 亮、框不弹。
+    // 与 C1 的分工:C1 是「stale 为假 ⇒ 不弹」(弱),C8 是「stale 为真但不是用户改的
+    // ⇒ 仍不弹」(强)。没有 C8,把弹窗退回纯派生触发时冒烟依然全绿。
+    newBucket("stale-on-load");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=loudness-nondefault`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C8 非默认口径工程装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+    const sol = await evaluate(ASK_PROBE);
+    if (check(sol, "C8 探针取到锚点")) {
+        check(
+            sol.badgeShown,
+            "C8 琥珀 badge 亮着(纯派生的常驻状态位,语义不变)",
+        );
+        check(
+            !sol.open,
+            "C8 但弹窗**没有**弹 —— 用户什么都没改,不该被模态框打断",
+        );
+    }
+    // 同一张页上再确认这道闸没有把功能一起关掉:用户真去改档,照样弹。
+    check(await setLoudness("peak_dbfs"), "C8 在这张页上改档可点");
+    check(await waitFor(askOpen, 4000), "C8 用户真改档 ⇒ 照样弹");
+    assertClean("stale-on-load");
+
     // C5 Esc 关框
+    newBucket("reanalyze-ask-2");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?fixture=fifteen-tracks`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C5 页面重载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(400);
     check(await setLoudness("rms"), "再切一次 rms 可点");
-    check(await waitFor(askOpen, 4000), "C5 基线已同步,再改走仍会弹");
+    check(
+        await waitFor(askOpen, 4000),
+        "C5 改走 ⇒ 弹出(为 Esc 备一个开着的框)",
+    );
     await pressEscape();
     check(await waitFor(askClosed, 3000), "C5 Esc 关框");
-    assertClean("reanalyze-ask");
+    assertClean("reanalyze-ask-2");
 
     // C6 三语各弹一次:正文非空且不是 key 字面量
     for (const lang of LANGS) {

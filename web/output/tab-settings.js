@@ -225,6 +225,22 @@ export function createTabSettings(opts) {
         // 点「稍后」后继续在别的档之间来回切,每换到一个新的脏值都该再弹一次;
         // 改回基线(stale 归 false)时清空,下次再改走照弹。
         reanalyzeAskedFor: null,
+        // [SL-276 复审] 弹窗的触发面是**用户点击**,不是派生的 stale 位。
+        // 琥珀 badge 可以纯派生(多一枚小标记的代价很小),模态框不行 —— stale 有三条
+        // 「用户什么都没做也为真」的路径,升级成框之后每条都变成一次要点掉的打断:
+        //   ① 开工程即真:mount() 在 app.js 里同步跑,那时 store.state 还是 {},基线取到的是
+        //      ANALYSIS_CONFIG_DEFAULTS.loudness_mode;工程真值要等 bootInner() 的
+        //      requestInitialState 落地。存成 rms/peak_dbfs 的工程一进 Tab4 就 stale 恒真,
+        //      而首帧 scvb.segments 的 reason 是 "snapshot",onSegments 不认、纠不回来。
+        //   ② 只读观察态(J69):主实例改档,观察实例经 scvb.state 收到新值也会 stale ——
+        //      框里那枚「重新分析」是写控件,契约 §5.6 要求只读态下写控件一律不可操作。
+        //   ③ 切版本 / 快照恢复:基线刻意不随这两条同步(见 analysisConfigBaseline 那段),
+        //      而那个版本的段表与它自己的口径本来就是对齐的。
+        // 本位只由 wireSeg 里 loudness_mode **写成功**的回调置起,syncStale 之外无人写它。
+        // ①②③ 三条因此一次性关掉,而琥珀 badge 的既有语义一个字节没动。
+        askOnNextStale: false,
+        // 开框前的焦点落点,关框时还回去(「稍后」/ 遮罩 / Esc 三个出口都走 closeReanalyzeAsk)。
+        reanalyzeReturnFocus: null,
         nineOpen: false,
         diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
@@ -302,6 +318,11 @@ export function createTabSettings(opts) {
                 }
                 // 不做乐观 dirty —— syncStale 按「当前值 vs 基线」派生提示;
                 // 且该提示只由 loudness_mode 承载(center_slot_policy 不弹,用户 preview 口径)。
+                //
+                // [SL-276 复审] **这里是弹窗唯一的开闸点**:写真的被受理了,才允许下一次
+                // syncStale 把框推到眼前。放在 res 判定之后 —— 桥缺失 / observer 拒 / badArg
+                // 上面已经早退,走到这儿就是「用户刚改了档且改成了」。
+                if (field === "loudness_mode") local.askOnNextStale = true;
                 requestRender();
             });
         });
@@ -437,10 +458,33 @@ export function createTabSettings(opts) {
         // `isPanelActive()` 闸;而本框只可能在 Tab4 弹出 —— app.js 的 render 按
         // 当前 tab 分派,`tabSettings.render()`(=> syncStale)只在设置页跑。
         (root.ownerDocument || root).addEventListener("keydown", (e) => {
-            if (e.key !== "Escape") return;
             if (!el.reanalyzeAsk || el.reanalyzeAsk.hidden) return;
-            e.preventDefault();
-            closeReanalyzeAsk();
+            if (e.key === "Escape") {
+                e.preventDefault();
+                closeReanalyzeAsk();
+                return;
+            }
+            // [SL-276 复审] Tab 圈在框里。框声明了 aria-modal="true",而 aria-modal
+            // **只影响辅助技术的朗读范围,不拦 Tab** —— 不圈的话焦点会走到遮罩背后那些
+            // 此刻不该被操作的控件上(响度胶囊、诊断区、页脚)。框里只有两枚钮,
+            // 所以不必引入通用 focus-trap:两端各自回卷即可。
+            if (e.key !== "Tab") return;
+            const first = el.reanalyzeAskLater;
+            const last = el.reanalyzeAskPrimary;
+            if (!first || !last) return;
+            const doc = root.ownerDocument || root;
+            const here = doc && doc.activeElement;
+            if (e.shiftKey && here === first) {
+                e.preventDefault();
+                last.focus({ preventScroll: true });
+            } else if (!e.shiftKey && here === last) {
+                e.preventDefault();
+                first.focus({ preventScroll: true });
+            } else if (here !== first && here !== last) {
+                // 焦点已经在框外(点过遮罩、或被 AT 收回 body):收回框里再继续。
+                e.preventDefault();
+                last.focus({ preventScroll: true });
+            }
         });
     }
 
@@ -467,10 +511,26 @@ export function createTabSettings(opts) {
     // [J85] 的口径是「不弹阻塞确认框」;本框是用户 2026-09-01 明确点名的**唯一**例外
     // (原来只有一条小琥珀 badge,用户看不清)。别据此在别处再开第二个弹窗。
     function closeReanalyzeAsk() {
+        const wasOpen = !!el.reanalyzeAsk && !el.reanalyzeAsk.hidden;
         show(el.reanalyzeAsk, false);
+        if (!wasOpen) return;
+        // 焦点还回开框前那一件(通常是响度胶囊里刚被按下的那枚钮)。不还的话
+        // 键盘用户按 Esc 之后焦点落在 <body>,Tab 得从卡片开头重走一遍。
+        const back = local.reanalyzeReturnFocus;
+        local.reanalyzeReturnFocus = null;
+        if (back && typeof back.focus === "function" && back.isConnected)
+            back.focus({ preventScroll: true });
     }
 
     function openReanalyzeAsk() {
+        // [SL-276 复审] 只读观察态一律不弹:框里那枚「重新分析」是写控件,
+        // 契约 §5.6 要求只读态下写控件不可操作(后端另有 {observer:true} 兜底,
+        // 但那是「点了才知道」,UI 这一闸才是用户看得见的那道)。
+        if (isReadOnly()) return;
+        if (el.reanalyzeAsk && el.reanalyzeAsk.hidden) {
+            const doc = root.ownerDocument || root;
+            local.reanalyzeReturnFocus = doc && doc.activeElement;
+        }
         show(el.reanalyzeAsk, true);
         if (
             el.reanalyzeAskPrimary &&
@@ -481,10 +541,18 @@ export function createTabSettings(opts) {
 
     // 「重新分析」= 契约 §1.6 analyze("all")(全轨全时长;设置页没有选区概念)。
     // 受理回执之外什么都不做:结果经 §2.8 回推,基线由 onSegments 同步、琥珀 badge 自己灭。
-    // busy(已有分析在跑)也照样关框 —— 再弹一次并不能让那次分析跑得更快。
+    //
+    // [SL-276 复审] **拒绝态不关框**。§1.6 会回 {ok:false, reason:"busy"}(已有分析在跑),
+    // §5.6 会回 {observer:true};先关框再发请求的话,这两种情况下框没了、琥珀 badge 还挂着、
+    // 也没有任何别的反馈 —— 看起来就是「这枚钮坏了」。框留着 = 这一下没生效、可以再点,
+    // 与 wireSeg 里「被拒就只 requestRender、不落乐观值」是同一口径(本仓不用 toast)。
     async function doReanalyzeFromAsk() {
+        const res = await call("analyze", "all");
+        if (!res || res.observer || res.ok === false) {
+            requestRender();
+            return;
+        }
         closeReanalyzeAsk();
-        await call("analyze", "all");
         requestRender();
     }
 
@@ -499,13 +567,16 @@ export function createTabSettings(opts) {
         if (el.loudnessStale)
             attr(el.loudnessStale, "data-stale", stale ? "1" : "0");
 
-        // 琥珀 badge 是**常驻状态位**(点过「稍后」之后还看得见口径是脏的);
-        // 弹窗是同一判据上的一次性推送,由 reanalyzeAskedFor 挡住每帧重弹。
+        // 琥珀 badge 是**常驻状态位**(点过「稍后」之后还看得见口径是脏的),纯派生;
+        // 弹窗在同一判据之上**再加一道 askOnNextStale 闸**(只由用户点档写成功置起) ——
+        // 理由见 local.askOnNextStale 那段的 ①②③。reanalyzeAskedFor 则挡住每帧重弹。
         if (!stale) {
             local.reanalyzeAskedFor = null;
+            local.askOnNextStale = false;
             closeReanalyzeAsk();
             return;
         }
+        if (!local.askOnNextStale) return; // 不是用户刚改的档 ⇒ 只留 badge,不弹框
         const mode = config().loudness_mode;
         if (local.reanalyzeAskedFor !== mode) {
             local.reanalyzeAskedFor = mode;

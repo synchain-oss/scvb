@@ -673,7 +673,12 @@ function renderHeader() {
         pill.setAttribute("data-pulse", ps.pulse ? "1" : "0");
         fillKeyed($("input.header.pillText"), ps.key, ps.vals);
     }
-    fillKeyed($("input.header.pillSub"), pillSubKey(), {});
+    // [SL-272 复审] 副文案带了 nowrap + ellipsis 护栏(见 index.html 那段)。护栏一旦
+    // 真的生效,被截掉的半句就没有第二条通路可读了 —— 所以把同一串同步写进 title:
+    // 截断态下悬停/读屏拿得到全句,不截断时 title 与正文一字不差、无害。
+    const sub = $("input.header.pillSub");
+    fillKeyed(sub, pillSubKey(), {});
+    if (sub) sub.setAttribute("title", sub.textContent || "");
 }
 
 function renderBanners() {

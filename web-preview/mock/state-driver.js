@@ -121,6 +121,12 @@ export const SCENARIO_MAP = Object.freeze({
     // ⑥ 说真因(没有时间线),⑨ 必须让位 —— 否则它会把停摆归因到采集开关上,
     // 而那把开关此时恰恰是 disabled(写控件闸 = `readOnly || noTimeline`),用户照做也做不到。
     "no-timeline": "fifteen-tracks",
+    // [SL-276 复审] 工程存的响度口径**不是**出厂默认(用户用过 rms 并按 rms 分析过)。
+    // 这一档专治一个测试盲区:六个 fixture 的 analysis.loudness_mode 全是默认档
+    // (mock-data.js),于是「初始不弹」那条断言只覆盖到「stale 为假时不弹」,
+    // 覆盖不到真正危险的那条 ——「stale 一上来就为真(基线在 state 到达前快照的),
+    // 用户什么都没做,框却弹了」。有了本档,那条误报路径在冒烟里才可达。
+    "loudness-nondefault": "fifteen-tracks",
     // [SL-247 / J92a] 布防还在、采集却已关 —— 横幅 ⑩ 的世界。
     // 真机到达路径有两条(布防期手动开跟随引擎被互斥关了采集 / 布防期手动关采集 = §1.23
     // 裁定③ 接管),对页面而言是同一态,故一个场景即可覆盖。
@@ -487,6 +493,14 @@ export function buildWorld(opts = {}) {
                 endS: RECAPTURE_DEMO.endS,
                 autoStop: false,
             },
+        };
+    }
+    if (opts.scenario === "loudness-nondefault" && outputSnapshot) {
+        // 只改工程存的口径,别的一律不动 —— 要复现的正是「加载完就与 UI 基线不一致」。
+        // 段表照旧(它本来就是按 rms 分析出来的),所以「结果其实是新的」这一点也对得上。
+        outputSnapshot = {
+            ...outputSnapshot,
+            analysis: { ...outputSnapshot.analysis, loudness_mode: "rms" },
         };
     }
     if (opts.scenario === "first-run" && outputSnapshot) {

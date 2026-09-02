@@ -8543,19 +8543,25 @@
                      「重新分析」= 契约 §1.6 analyze("all")(不新增桥函数、不改契约);
                      「稍后」/ Esc / 点遮罩 = 关闭,不写任何 state。 -->
                 <div class="sc-scrim" data-gb="reanalyze-ask" hidden>
+                    <!-- role="alertdialog" 必须有可访问名,否则读屏只念出「对话框」三个字。
+                         两条 aria 都指向框里已有的段落,不新增词条(复审【建议】)。 -->
                     <div
                         class="sc-modal sc-modal--reanalyze"
                         role="alertdialog"
                         aria-modal="true"
+                        aria-labelledby="reanalyze-ask-body"
+                        aria-describedby="reanalyze-ask-scopenote"
                         data-gb="reanalyze-ask-panel"
                     >
                         <p
+                            id="reanalyze-ask-body"
                             class="sc-modal__body"
                             data-gb="reanalyze-ask-body"
                             data-t="set.reanalyzeAsk.body"
                         ></p>
                         <!-- [SL-273] 与设置页响度卡第二行**同一条词条**(见那处注释)。 -->
                         <p
+                            id="reanalyze-ask-scopenote"
                             class="sc-modal__note"
                             data-gb="reanalyze-ask-scopenote"
                             data-t="set.reanalyze.scopeNote"

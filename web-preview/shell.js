@@ -137,6 +137,7 @@ const SCENARIO_NAMES = {
         // 05 正文之外、由实施卡引入的演示场景(SCENARIO_MAP 里确有,不是「参数拼错了」):
         "curve-editor", // T34 曲线编辑器(非零 ms_balance,叠加线可见)
         "chart-trajectory", // T43([J75] A)分布图轨迹档 + 断线缺口
+        "loudness-nondefault", // [SL-276 复审] 工程存的响度口径非默认档(rms)
     ],
     input: [
         "occupied",
