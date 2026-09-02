@@ -16,6 +16,10 @@ name: Build & Validate
 #         job 的 `if:` 判标签)。改到构建系统/依赖时用它。
 #         base=`dev` 的 PR **不吃**这个标签:它每次 synchronize 本来就跑全量,标签再起
 #         一次只会在同一个 concurrency group 里排队重编;想临时再编一次用 dispatch。
+#         **别靠反复打标签「刷新」构建**:标签事件的 `cancel-in-progress` 是 `false`
+#         (见下面 concurrency 的注释 —— 那是为了不让无关标签打断构建而刻意选的),
+#         所以在构建进行中重新打 `ci:full`,得到的是**排队再编一遍**,不是替换掉在跑
+#         的那个。想替换只能用 `workflow_dispatch`,或者等它跑完。
 #
 # 分支保护 required contexts 不由本卡改(用户待办)。已核对:`dev` 无 required status
 # checks;`feature/v1` 的 required contexts 只有三个 review bot —— 故子 PR 上本 job 被

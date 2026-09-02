@@ -604,11 +604,16 @@ Write-Host ('=== Gate 4: 配置 (BuildDir={0}) ===' -f $BuildDir)
 # ==================================================================
 $cfgArgs = @('-S', '.', '-B', $BuildDir, '-DSCVB_BUILD_TESTS=ON', "-DJUCE_PATH=$JucePath")
 if ($Generator -like '*Multi-Config*') {
-  # 多配置生成器下 `CMAKE_BUILD_TYPE` 一律被忽略(档位由 `--build --config` / `ctest -C` 选),
+  # 多配置生成器下档位由 `--build --config` / `ctest -C` 选,`CMAKE_BUILD_TYPE` 会被忽略;
   # 传了只会让人以为它在起作用 —— CI 侧同理,那边也不传(build-vst3.yml 的 configure 步)。
   $cfgArgs += "-DCMAKE_CONFIGURATION_TYPES=$Config"
 }
 else {
+  # **这条分支是按生成器名字分,不是按「是不是多配置」分**(PR#176 复审的一处校正):
+  # 默认路径($Generator 为空)在 Windows 上落到 Visual Studio 生成器,那**也是**多配置的,
+  # 于是照样拿到一个被忽略的 `CMAKE_BUILD_TYPE`。明知如此仍这么写,是因为默认路径要**逐字**
+  # 保持本卡之前的行为(默认档位不该因为这条清理而变),而单配置生成器(`-G Ninja`、
+  # Makefiles)确实需要它。想连默认路径一起清,得先把「默认生成器是什么」钉死,那是另一张卡。
   $cfgArgs += "-DCMAKE_BUILD_TYPE=$Config"
 }
 if ($Generator) {
