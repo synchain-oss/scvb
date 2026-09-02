@@ -139,6 +139,8 @@ def self_test():
     或把子串比对写成相等比对)后扫描照样退 0,门禁看着绿其实什么都没拦。故与
     `check-privacy.mjs --self-test` 同款:自测排在扫描之前,它红比扫描红更要紧。
     坏样例由仓内真字体就地改一条 name 记录合成,不引入任何外部素材。
+    除呈现名外还逐个钉死几个描述性槽位(5 版本 / 9 设计者 / 10 描述)确实在扫 ——
+    它们被塞进 ATTRIBUTION_IDS 是「让门禁少扫一格」的唯一途径,得先在这里绊一跤。
     """
     src = os.path.join(HERE, "..", "web", "fonts", "ScvbMono.woff2")
     if not os.path.exists(src):
@@ -157,9 +159,18 @@ def self_test():
         # ① 改名漏了 nameID 1(最典型的「只改了文件名」形态)⇒ 必须命中
         if not scan_font(sample(1, "IBM Plex Mono"), "Plex"):
             failures.append("nameID 1 写回 'IBM Plex Mono' 竟未命中(RFN 断言失效)")
-        # ② 漏在 1/3/4/6/16/17 之外的槽位(版本串)⇒ 同样必须命中,否则扫描面太窄
-        if not scan_font(sample(5, "Version 2.3 (IBM Plex Mono subset)"), "Plex"):
-            failures.append("nameID 5 里的 RFN 竟未命中(扫描面窄到只剩呈现名)")
+        # ② 漏在 1/3/4/6/16/17 之外的槽位 ⇒ 同样必须命中,否则扫描面太窄。
+        # 逐个槽位钉死,是因为**放宽 ATTRIBUTION_IDS 是唯一能让扫描面少一格的手段**:
+        # 将来上游若在这些描述性槽位里带上 RFN(如 Noto 在 nameID 10 写 "Source Han Sans"),
+        # 门禁会红,而最省事的「解法」正是把该 nameID 塞进豁免表 —— 那等于悄悄放行。
+        # 钉死之后谁这么改都会先被本档绊倒,而不是让扫描静默少扫一格。
+        for _nid, _bad in (
+            (5, "Version 2.3 (IBM Plex Mono subset)"),  # 版本串
+            (9, "IBM Plex Type Team"),  # 设计者
+            (10, "Subset of IBM Plex Mono, generated for SCVB"),  # 描述
+        ):
+            if not scan_font(sample(_nid, _bad), "Plex"):
+                failures.append("nameID %d 里的 RFN 竟未命中(该槽位被排除出扫描面)" % _nid)
         # ③ 大小写变体 ⇒ 双侧 casefold 必须命中
         if not scan_font(sample(1, "ibm PLEX mono"), "Plex"):
             failures.append("大小写变体竟未命中(casefold 比对失效)")
@@ -179,7 +190,7 @@ def self_test():
         for f in failures:
             print("!! " + f)
         sys.exit("字体保留名门禁自测失败(%d 项):门禁本身坏了,先修它" % len(failures))
-    print("-> 自测通过:漏改的呈现名必红、署名记录不误伤、未登记字体必红")
+    print("-> 自测通过:漏改的呈现名必红(含版本/设计者/描述槽)、署名记录不误伤、未登记字体必红")
 
 
 def main():
