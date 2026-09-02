@@ -37,8 +37,11 @@ public:
     ~WebViewHost() override;
 
     void resized() override;
-    // [SL-253] 覆盖「窗口已显示、WebView2 控制器还没建好」那一段(冷启动预算 15s)——
-    // 上面 WebView2 的底色要等控制器存在才生效,这一段只有组件自己能挡。
+    // 铺满 shellBackdrop()。[SL-271] 更正 SL-253 时的说法:本函数**挡不住**开窗白闪。
+    // webView_ 可见时它铺满本组件且 setOpaque(true),JUCE 会把它的矩形从父组件的裁剪区里
+    // 剔掉,本 paint 净效果为 0(真正管那一段的是 HostWebView::paint,见 .cpp)。
+    // 它仍然有用,且只有一个用途:兜底面板路径 —— 那时 webView_ 被 setVisible(false),
+    // 本组件自己露出来,这一层就是面板四周那块底。
     void paint(juce::Graphics& g) override;
 
     // 缩放(机制 9):uiScale 实时预览(不落盘);commitUiScale 防呆确认后落盘全局默认。
