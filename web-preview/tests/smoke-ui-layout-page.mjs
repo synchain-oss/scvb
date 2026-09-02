@@ -44,6 +44,11 @@
 //         btn.disabled)各自独立挡得住第二下,故本条是**两道都拆掉才红**。
 //         同批断言在途期间主钮挂着 `data-disabled="1"` —— 本仓禁用视觉走这个属性钩子,
 //         光设 `.disabled` 一个像素都不会变(没有对应的 `:disabled` 规则);
+//      C4d [SL-276 四轮复审] 在途 + 键盘的**组合**面:主钮置灰时从「稍后」正向 Tab 不许
+//         出框。判据是 `defaultPrevented`(这次 Tab 有没有被框吃掉),**不是**「焦点还在
+//         框里」—— 合成 KeyboardEvent 不触发原生走焦,后者修好前后都成立,是条无牙断言。
+//         把 Tab 圈闭正向分支的 `here === focusable(last, first)` 改回 `here === last`
+//         即红。同一处已连出三轮、每轮都是上一轮补丁的副作用,所以判据钉在组合上;
 //      C5 Esc 关框;
 //      C6 三语各弹一次,正文非空且不等于 key;
 //      C8 [SL-276 复审] **弹窗只由用户点击驱动,不由派生的 stale 位驱动**:
@@ -881,6 +886,28 @@ try {
                 return !!b && b.getAttribute("data-disabled") === "1";`),
         ),
         "C4c 在途期间主钮挂上仓内禁用口径 data-disabled(光设 .disabled 在本仓不可见)",
+    );
+    // C4d [SL-276 四轮复审] 在途 + 键盘:主钮置灰时,从「稍后」**正向** Tab 不许出框。
+    //
+    // 判据取 `defaultPrevented` 而**不是**「焦点还在框里」:合成 KeyboardEvent 不会触发
+    // 浏览器的原生 Tab 走焦,所以「焦点没动」在修好前后都成立 —— 那样写是条无牙断言。
+    // 真正区分两者的是**这次 Tab 有没有被框吃掉**:修好后正向分支命中 ⇒ preventDefault();
+    // 没修则三条分支全不命中 ⇒ 事件放行 ⇒ 真实浏览器就把焦点交给「稍后」后面那个可聚焦
+    // 元素(主钮此刻 disabled、被跳过,于是落到遮罩背后的响度胶囊 / 诊断区)。
+    check(
+        await evaluate(
+            IN(`const later = gb("reanalyze-ask-later");
+                const b = gb("reanalyze-ask-primary");
+                if (!later || !b || b.disabled !== true) return null;
+                later.focus();
+                if (d.activeElement !== later) return null;
+                const ev = new w.KeyboardEvent("keydown", {
+                    key: "Tab", bubbles: true, cancelable: true,
+                });
+                d.dispatchEvent(ev);
+                return ev.defaultPrevented;`),
+        ),
+        "C4d 在途置灰时从「稍后」正向 Tab 被弹窗吃掉(圈闭没有开口,焦点逃不到遮罩背后)",
     );
     check(
         await waitFor(

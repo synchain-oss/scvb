@@ -493,12 +493,24 @@ export function createTabSettings(opts) {
             // 会被置灰(见 doReanalyzeFromAsk),而 focus() 对 disabled 元素是空操作 ——
             // 直接回卷过去的话,preventDefault() 已经吃掉了这次 Tab、焦点却原地不动,
             // Tab 在那一小段时间里等于失灵。置灰的只可能是主钮,故退到「稍后」。
+            //
+            // [SL-276 四轮复审] `focusable` 不能只用在「回卷**进来**」那两条,**正向 Tab
+            // 出去**那条的比较对象也得换成它 —— 否则圈闭在「稍后」这一格上是**开口**的:
+            // 主钮置灰时焦点停在 first,正向 Tab 三条分支一条都不命中 ⇒ 不 preventDefault
+            // ⇒ 浏览器按 DOM 顺序接着走。主钮可点时下一个正好是它(index.html 里 later 在前、
+            // primary 在后),所以平时看不出来;而在途期间它 disabled、会被跳过,焦点直接
+            // 落到遮罩背后的响度胶囊 / 诊断区 —— 正是上面那段说要拦住的东西。
+            // 这条路正是「在途置灰」那条修补引出来的,而且走得到:置灰把焦点掉回 <body>
+            // → 一次 Tab 命中第三分支被送到「稍后」→ 再一次就出框了。
+            // 换成「实际生效的末位」之后:主钮可点时 focusable(last, first) === last,
+            // 行为与从前逐字相同;置灰时它等于 first,于是从「稍后」正向 Tab 就地回卷到
+            // 自己,焦点出不去。
             const focusable = (pref, alt) =>
                 pref && pref.disabled !== true ? pref : alt;
             if (e.shiftKey && here === first) {
                 e.preventDefault();
                 focusable(last, first).focus({ preventScroll: true });
-            } else if (!e.shiftKey && here === last) {
+            } else if (!e.shiftKey && here === focusable(last, first)) {
                 e.preventDefault();
                 first.focus({ preventScroll: true });
             } else if (here !== first && here !== last) {
