@@ -227,26 +227,34 @@ function cdpConnect(wsUrl) {
     // 修法是**超时抛错**而不是重试:响应不来说明页面或渲染器已经不对了,重试只会把
     // 一个确定的红拖成一个更慢的红。错误里带上 method 与 id,红出来直接指到是哪一条卡住。
     //
-    // 这个数**必须小于 `waitFor` 的 20s 预算**:`waitFor` 内部的 `evaluate` 是 try/catch
-    // 兜住再重试的,超时短于它才能「丢一次响应 → 下一轮补上」;若反过来设成 30s,
-    // 一次超时就直接吃穿 waitFor 的整个预算,把可恢复的抖动变成硬红。
-    const CDP_CALL_TIMEOUT_MS = 10000;
+    // ⚠ 这里**不再**与 `waitFor` 的预算比大小(固定 10s 时代的残留说法已删):这个常量只给
+    // **一次性直接调用**用,而 `waitFor` 内部的 evaluate 走的是自己的剩余预算,两者不相干。
+    // 留着旧说法会让下一个人以为它必须 < 20000,从而不敢把它调宽。
+    // [SL-287] 与另外五套统一成**按调用点取上界**,不再是一个文件级常数:
+    // `waitFor` 内部的 evaluate 传**本次还剩多少预算**(第一版写「预算的一半」,被复审指出
+    // 那会把耗时落在 (ms/2, ms) 的合法调用从过变成必红;按剩余预算取不改变原本能过的行为),
+    // 一次性直接调用用这个宽默认值,只负责兜住真挂死。
+    // 换掉固定 10s 的理由见 smoke-output-dist-page:那一套有合法跑 8s 的采样 evaluate、
+    // 还有内部自带 12s 上界的 `measureOff`,而它最紧的 waitFor 预算也是 12s ——
+    // 「大于合法最大值」与「小于最小预算」在单一常数下无解。六套用同一形态,免得各自漂。
+    const CDP_DEFAULT_TIMEOUT_MS = 20000;
     return {
         ready,
         on: (fn) => listeners.push(fn),
-        send(method, params) {
+        send(method, params, timeoutMs) {
             const mid = ++id;
+            const budget = timeoutMs || CDP_DEFAULT_TIMEOUT_MS;
             return new Promise((ok, no) => {
                 const timer = setTimeout(() => {
                     pending.delete(mid);
                     no(
                         new Error(
-                            `CDP 调用超时 ${CDP_CALL_TIMEOUT_MS}ms:${method}(id=${mid})—— ` +
+                            `CDP 调用超时 ${budget}ms:${method}(id=${mid})—— ` +
                                 "响应没回来。多半是这一步之前的导航把渲染器换掉了;" +
                                 "**不要**改成重试或调大超时,那只是把红拖慢",
                         ),
                     );
-                }, CDP_CALL_TIMEOUT_MS);
+                }, budget);
                 pending.set(mid, {
                     resolve: (v) => {
                         clearTimeout(timer);
@@ -326,12 +334,16 @@ let cdp = null;
 const errors = [];
 const exceptions = [];
 
-async function evaluate(expression) {
-    const r = await cdp.send("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-    });
+async function evaluate(expression, timeoutMs) {
+    const r = await cdp.send(
+        "Runtime.evaluate",
+        {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+        },
+        timeoutMs,
+    );
     if (r.exceptionDetails) {
         throw new Error(
             "页内求值抛错:" +
@@ -383,27 +395,29 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 // 这一行要真的到得了人眼前,两件事都得对(第 10/11 轮复审,**都是核过源码才写的**):
 //
 //   · **写法**:用 `writeSync(2, …)` 而不是 `console.error` —— `process.exit()` 不等挂起的
-//     异步写,stdout/stderr 被重定向成管道/文件时(gates 正是 `$out = (& node …)`)最后
-//     那行**可能被截断**。`writeSync` 直写 fd 2,退不退出都不会丢;
-//     stderr 到不到得了 gates:`scripts/gates.ps1:387` 是 `(& node $f.FullName 2>&1)`,
-//     **stderr 已并进 stdout**,所以写 fd 2 没问题。
-//   · **前缀必须含 `[FAIL]`**:gate 3e 红时打解释行的那句是
-//     `scripts/gates.ps1:398` 的 `Select-String -Pattern '\[FAIL\]'` ——
-//     **不带 `^` 锚点的子串匹配**。于是:
-//       (a) 缩进**从来不影响**(本文件 `check()` 打的就是 `  [FAIL] …`,照样被抓到);
-//       (b) 而 `[FATAL]` **不含子串 `[FAIL]`**(F-A-T-A-L ≠ F-A-I-L)—— 第 10 轮我
-//           写成 `[FATAL]` 并声称「靠去掉缩进解决」,**两句都错**:缩进不是问题,
-//           而那个前缀让这条被整条过滤,gate 3e 只会打一行文件名、零解释行。
-//     所以这里打 `[FAIL] FATAL …`:含 `[FAIL]` 走同一条渠道(并计入那 20 行上限),
-//     后面的 `FATAL` 保住「这不是普通断言失败,是整套死了」的语义。
+//     异步写,stdout/stderr 被重定向成管道/文件时最后那行**可能被截断**。
+//     `writeSync` 直写 fd 2,退不退出都不会丢。
+//     ⚠ 这一条的**理由已被 [SL-287] 改掉**(结论仍成立):原文写「gates 是
+//     `(& node … 2>&1)`,stderr 已并进 stdout」—— 现在 gate 3e 用
+//     `Start-Process … -RedirectStandardOutput/-RedirectStandardError` 写**两个独立文件**,
+//     没有 `2>&1` 了;stderr 仍到得了 gates,是因为它把两个文件**先后拼进** `$out`。
+//     顺带一个新事实:stdout 与 stderr 是**先后拼接、不是交错** —— 这一行会整体排在所有
+//     stdout 之后,读日志时别按出现顺序去推因果。
+//   · **前缀**:[SL-287] 之前 gate 3e 只捞 `Select-String '\[FAIL\]'`,而
+//     `[FATAL]` **不含子串 `[FAIL]`**(F-A-T-A-L ≠ F-A-I-L),所以本文件当时改打
+//     `[FAIL] FATAL …` 才不至于被整条过滤。**现在 gate 3e 捞 `'\[FAIL\]|\[FATAL\]'`**,
+//     那个变通已无必要,故与另外五套统一成 `[FATAL]`。
+//     (缩进从来不影响:那是**不带 `^` 锚点的子串匹配**。第 10 轮我把原因归到缩进上,写错了。)
 //     [J96] 之后本地 gates 是子 PR 上唯一的门,这条诊断丢了就真的没有别处能看。
+//   · 六套里只有本文件用 `writeSync(2, …)`,另五套是 `console.error` —— 那是本文件多出来的
+//     一层稳,不是不一致的 bug;要不要推广到另五套,留给动它们的下一张卡。
 for (const ev of ["uncaughtException", "unhandledRejection"]) {
     process.on(ev, (e) => {
         const msg = e && e.message ? e.message : String(e);
         try {
-            writeSync(2, `  [FAIL] FATAL ${ev}:${msg}\n`);
+            writeSync(2, `  [FATAL] ${ev}:${msg}\n`);
         } catch {
-            console.error(`  [FAIL] FATAL ${ev}:`, msg);
+            console.error(`  [FATAL] ${ev}:`, msg);
         }
         teardown();
         process.exit(1);
@@ -415,7 +429,18 @@ async function waitFor(expr, ms = 20000) {
     while (Date.now() - t0 < ms) {
         let v = null;
         try {
-            v = await evaluate(expr);
+            // 这次 evaluate 的上界 = **本次 waitFor 还剩多少预算**(留 250ms 收尾),
+            // 不是「预算的一半」。第一版写成 ms/2,被复审指出**把语义改窄了**:
+            // 一次耗时落在 (ms/2, ms) 区间的**合法**调用,改动前能过、改动后必红 ——
+            // 而 monitor 这一套的实测最慢单次是 3020ms、上界只有 5000ms,余量 1.65 倍,
+            // 在与别的 job 抢 CPU 的 ubuntu runner 上抖一下就会把慢但合法判成红。
+            // (PR 里那次「未复现的 monitor exit=1」很可能就是这个,首要假设。)
+            // 按剩余预算取则**不改变任何原本能过的行为**:慢调用可以用掉几乎整个预算,
+            // 真挂死仍会在预算到点前被砍断,由下面的 while 条件收尾。
+            v = await evaluate(
+                expr,
+                Math.max(1000, ms - (Date.now() - t0) - 250),
+            );
         } catch {
             v = null;
         }
@@ -736,8 +761,8 @@ await evaluate(OPEN("false"));
 // 删掉 tab-wave.js 里那个三元(直接印 `String(nChanged)`)⇒ 折叠头出「200」⇒ 本条红。
 log("");
 log("=== (5) changed 顶到封顶 => 折叠头印下界「N+」===");
-// ⚠ **本套是六套里唯一做第二次导航的**,而这一步正是那个「CDP 响应永远不来」的触发点
-// (见 cdpConnect 头注:实测挂 75 分钟)。两道防护缺一不可:
+// ⚠ 这一步(第二次导航)正是那个「CDP 响应永远不来」的触发点
+// (见 cdpConnect 头注:实测挂 75 分钟;各套的真实导航次数也记在那里)。两道防护缺一不可:
 //   · `Page.navigate` 本身走带超时的 `send`,卡住就当场抛,而不是静默等下去;
 //   · 导航后**先等 load 事件再等 READY**。只等 READY 也能过,但那是拿 `Runtime.evaluate`
 //     去戳一个正在被换掉的渲染器 —— 恰好是丢响应的那个窗口。先收 `Page.loadEventFired`

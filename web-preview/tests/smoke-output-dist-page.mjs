@@ -140,13 +140,60 @@ function cdpConnect(wsUrl) {
             once: true,
         });
     });
+    // ⚠ CDP 截止时间**按调用点取,不取一个文件级常数**([SL-287],本机实测逼出来的)。
+    //
+    // 两类调用的合法时长根本不同,一个常数满足不了:
+    //   · `waitFor` 内部的 evaluate —— 上界必须**小于该次 waitFor 自己的预算**,
+    //     否则一次超时就吃穿整个预算,把「丢一次响应下一轮补上」变成硬红。
+    //   · 一次性的直接 evaluate —— 里面可能是**故意跑很久**的在页探针。
+    //     实测 smoke-output-dist-page 的 `measureOff` 合法跑满 12s,而同一文件最紧的
+    //     `waitFor` 预算也是 12s:两个约束互相矛盾,任何单一常数都满足不了。
+    //
+    // 所以:`waitFor` 内部的 evaluate 传**本次还剩多少预算**(见下面 waitFor —— 第一版写的是
+    // 「预算的一半」,被复审指出那会把耗时落在 (ms/2, ms) 的**合法**调用从过变成必红,
+    // 等于新增一类红;按剩余预算取则不改变任何原本能过的行为)。其余调用用这个宽的默认值 ——
+    // 它只负责兜住**真挂死**,不负责区分快慢。
+    const CDP_DEFAULT_TIMEOUT_MS = 20000;
     return {
         ready,
         on: (fn) => listeners.push(fn),
-        send(method, params) {
+        send(method, params, timeoutMs) {
             const mid = ++id;
+            const budget = timeoutMs || CDP_DEFAULT_TIMEOUT_MS;
             return new Promise((ok, no) => {
-                pending.set(mid, { resolve: ok, reject: no });
+                // 每条 CDP 调用都必须有截止时间:原版把 resolve 塞进 `pending` 就返回,
+                // 响应不来就**永远不 resolve**。SL-274 在同源的 seg-diff-fold 上实测挂过
+                // 75 分钟零输出(Chrome 与 node 都还活着)。
+                // ⚠ 因果限定在**当时**:那次还赶上 [SL-277] 拆锁**之前**的形态 ——
+                // 整条 gates 被外部目录锁包着,所以一套挂死会把整批 agent 一起堵住。
+                // 拆锁后 gate 1–5 不持锁(gates.ps1 只在 gate 6/7/8 外套 `Local\SCVB-ipc-tests`),
+                // 而 web smoke 是 gate 3e ⇒ 代价收窄成「**本轮** gates 停死」,不再连累别人。
+                // 那仍然是一整轮,所以超时照加;但别照着旧说法去推断锁的作用域。
+                // CI 上则是一路烧到 job 超时才红。
+                //
+                // 超时**抛错而不重试**:响应不来说明页面或渲染器已经不对了,
+                // 重试只会把一个确定的红拖成一个更慢的红。错误里带 method 与 id,
+                // 红出来直接指到是哪一条卡住。
+                const timer = setTimeout(() => {
+                    pending.delete(mid);
+                    no(
+                        new Error(
+                            `CDP 调用超时 ${budget}ms:${method}(id=${mid})—— ` +
+                                "响应没回来。多半是这一步之前的导航把渲染器换掉了;" +
+                                "**不要**改成重试或调大超时,那只是把红拖慢",
+                        ),
+                    );
+                }, budget);
+                pending.set(mid, {
+                    resolve: (v) => {
+                        clearTimeout(timer);
+                        ok(v);
+                    },
+                    reject: (e) => {
+                        clearTimeout(timer);
+                        no(e);
+                    },
+                });
                 ws.send(
                     JSON.stringify({ id: mid, method, params: params || {} }),
                 );
@@ -203,6 +250,60 @@ const chrome = spawn(
     ],
     { stdio: "ignore" },
 );
+
+// ⚠ 收尾必须走**所有**退出路径,不只是跑完那一条([SL-287])。
+// 本文件原有的 try/finally 只包住**主断言体**,而 Chrome 是在进入那个 try **之前**就 spawn 的 ——
+// 那段窗口里抛错(CDP 连接、Page.enable、首次导航,恰好是上面新加的超时最可能开火的地方)
+// 就会把 headless Chrome 留在机器上。
+// 而且信号完全没人接:SL-287 同时给 gates 3e 加了整套超时,超时会向本进程发信号。
+//
+// ⚠ **本机(Windows)实测的边界,别把这段的作用说大**:
+//   · 浏览器进程:node 一死,Windows 会把 spawn 出来的 Chrome 一起收掉 —— 实测原版在
+//     SIGTERM 下也能从 10 个进程回到 0。所以在 Windows 上这段对**进程**是双保险,不是唯一解。
+//     它真正吃劲的地方是 **Linux**:`web-smoke` 跑在 ubuntu-latest,而 POSIX 下父进程退出
+//     **不会**自动收掉 spawn 的子进程 —— 而本文件的 try/finally 只包住主断言体,
+//     spawn 到进 try 之间那段窗口(CDP 连接、Page.enable、首次导航)在 Linux 上没人收。
+//   · 临时目录:`chrome.kill()` 之后文件句柄未必立刻释放,紧跟的 `rmSync` 在 Windows 上
+//     **会失败**,留下一个空壳目录 —— 实测本 PR 版本与原版在注入失败时**同样各留 1 个**。
+//     这一点不吹:本机 temp 下现有 981 个 `scvb-*` 残留目录,这段收不干净它们。
+//     它保证的是「每条退出路径都**尝试过**收尾」,以及在 Linux 上真的收得掉。
+let tornDown = false;
+function teardown() {
+    if (tornDown) return;
+    tornDown = true;
+    try {
+        cdp?.close();
+    } catch {}
+    try {
+        chrome?.kill();
+    } catch {}
+    try {
+        server.close();
+    } catch {}
+    try {
+        rmSync(userDataDir, { recursive: true, force: true });
+    } catch {}
+}
+// `exit` 处理器只能同步收尾(Node 规范),所以这里不等句柄、不重试 rmSync ——
+// 留一个空壳目录是可接受的残渣(系统会清),而**跑着的 headless Chrome 不是**。
+process.on("exit", teardown);
+for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+        teardown();
+        process.exit(130);
+    });
+}
+// 未捕获异常 / 未处理拒绝:先打印再收尾,否则 Chrome 会跟着一起漏。
+// 新加的 CDP 超时是**定时器里 reject**,那条 promise 当时若没人 await,
+// 就会以 unhandledRejection 形式到这里 —— 这一支不是摆设。
+for (const ev of ["uncaughtException", "unhandledRejection"]) {
+    process.on(ev, (e) => {
+        console.error(`  [FATAL] ${ev}:`, e && e.message ? e.message : e);
+        teardown();
+        process.exit(1);
+    });
+}
+
 chrome.on("error", (e) => noBrowser(`浏览器启动失败:${e.message}`));
 
 let cdp = null;
@@ -211,12 +312,16 @@ const newBucket = (label) => {
     bucket = { label, errors: [], exceptions: [] };
 };
 
-async function evaluate(expression) {
-    const r = await cdp.send("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-    });
+async function evaluate(expression, timeoutMs) {
+    const r = await cdp.send(
+        "Runtime.evaluate",
+        {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+        },
+        timeoutMs,
+    );
     if (r.exceptionDetails) {
         throw new Error(
             "页内求值抛错:" +
@@ -232,7 +337,18 @@ async function waitFor(expr, ms = 15000) {
     while (Date.now() - t0 < ms) {
         let v = null;
         try {
-            v = await evaluate(expr);
+            // 这次 evaluate 的上界 = **本次 waitFor 还剩多少预算**(留 250ms 收尾),
+            // 不是「预算的一半」。第一版写成 ms/2,被复审指出**把语义改窄了**:
+            // 一次耗时落在 (ms/2, ms) 区间的**合法**调用,改动前能过、改动后必红 ——
+            // 而 monitor 这一套的实测最慢单次是 3020ms、上界只有 5000ms,余量 1.65 倍,
+            // 在与别的 job 抢 CPU 的 ubuntu runner 上抖一下就会把慢但合法判成红。
+            // (PR 里那次「未复现的 monitor exit=1」很可能就是这个,首要假设。)
+            // 按剩余预算取则**不改变任何原本能过的行为**:慢调用可以用掉几乎整个预算,
+            // 真挂死仍会在预算到点前被砍断,由下面的 while 条件收尾。
+            v = await evaluate(
+                expr,
+                Math.max(1000, ms - (Date.now() - t0) - 250),
+            );
         } catch {
             v = null;
         }
