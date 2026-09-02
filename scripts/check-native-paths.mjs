@@ -5,10 +5,13 @@
 //   改坏,失效形态是**静默的**:动了 C++ 的子 PR 不再编译,而 CI 照样全绿 —— 正是 [SL-283]
 //   要补的那个洞原样复发。所以判据本身也要有判据。
 //
-//   三件事:
+//   四件事:
 //     ① 正则**从 workflow 文件里读出来**,不在这里手抄一份 —— 手抄的话两边会各自漂移,
 //        而漂移的方向恰好是「测试还绿着,CI 已经不编了」。
 //     ② 正反例逐条断言(命中面 = 会进构建的路径;不命中面 = 文档 / 脚本 / 浏览器预览)。
+//     ②b **两个引擎的命中集合逐条一致**:CI 侧执行者是 `grep -E`(ERE),这里是 JS
+//        RegExp。只在 JS 下断言等于「在另一个引擎下验收」,`\d` 这类两边都合法但含义
+//        不同的写法会让这里绿、CI 悄悄少编。
 //     ③ **删除式验证**:把正则拆成分支,逐个删掉一个分支,要求至少一个正例因此变红。
 //        没有这一步,一条写错到永不匹配的分支(比如漏了转义)也能让 ① 全绿。
 //   用法:
@@ -17,6 +20,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(
@@ -47,6 +51,42 @@ if (!m) {
 }
 const PATTERN = m[1];
 const rx = new RegExp(PATTERN);
+
+// ---- ①b 引擎分叉:判据与执行者不是同一个正则引擎 -------------------------------
+// CI 侧是 `grep -E`(POSIX ERE),这里是 JS `RegExp`。真源读对了,但语义是在**另一个
+// 引擎**下被断言的。两种分叉的严重性不同:
+//   · 写了 ERE 不认的语法(`(?:…)` / `(?=…)`)⇒ grep 退出 >=2 ⇒ 被 detect-native 里
+//     那条 `rc >= 2` 分档接住,倒向照编 —— **安全方向**。
+//   · 写了两边都合法**但含义不同**的东西 ⇒ 这里绿、CI 的命中面悄悄变窄 —— **危险方向**,
+//     正是本脚本要防的那类。典型例子:`\d` 在 JS 里是数字类,在 ERE 里就是字面量 `d`
+//     (实测 `^\.sccache-sha\d56$`:JS 匹配 `.sccache-sha256`,`grep -E` 不匹配)。
+// 所以下面两道都要:
+const CHARSET_WHITELIST = /[^\w^$()|/.\\-]/;
+if (CHARSET_WHITELIST.test(PATTERN)) {
+    console.error(
+        "check-native-paths: NATIVE_RE 含白名单之外的正则字符 —— CI 侧用 grep -E(ERE)、" +
+            "这里用 JS RegExp,复杂语法在两个引擎下可能含义不同。",
+    );
+    console.error(`  实际拿到: ${PATTERN}`);
+    process.exit(1);
+}
+// **白名单挡不住危险方向**:`\d` 的两个字符(`\` 与 `d`)都在白名单里。所以真正有牙的是
+// 下面这道 —— 把同一批用例喂给**真的 `grep -E`**,两个引擎的命中集合必须逐条一致。
+function ereHitSet(pattern, paths) {
+    const r = spawnSync("grep", ["-E", pattern], {
+        input: paths.join("\n") + "\n",
+        encoding: "utf8",
+    });
+    if (r.error) return null; // 本机没有 grep(非 CI 环境),交给调用处降级
+    if (r.status >= 2) {
+        console.error(
+            `check-native-paths: grep -E 拒绝了这条正则(exit=${r.status})—— ERE 不认它的语法。`,
+        );
+        console.error((r.stderr || "").trim());
+        process.exit(1);
+    }
+    return new Set(r.stdout.split("\n").filter(Boolean));
+}
 
 // ---- ② 正反例 ---------------------------------------------------------------
 // 命中 = 改了它就必须在 CI 上编一遍。
@@ -110,6 +150,38 @@ if (failed > 0) {
     process.exit(1);
 }
 console.log(`① 正反例: ${HIT.length} 命中 / ${MISS.length} 不命中,全过。`);
+
+// ---- ②b 两个引擎的命中集合必须逐条一致 ----------------------------------------
+const ALL = [...HIT, ...MISS];
+const ere = ereHitSet(PATTERN, ALL);
+if (ere === null) {
+    // CI(ubuntu)上一定有 grep;本机没有时降级成警告 —— 但要说清降级掉的是**哪一档**,
+    // 别让人以为「绿了就等于两个引擎一致」。
+    console.warn(
+        "  [WARN] 本机没有 grep,跳过「JS ↔ grep -E 命中集合一致」这一档。" +
+            "白名单挡不住 `\\d` 这类两边都合法但含义不同的写法,这一档只有 CI 上跑得到。",
+    );
+} else {
+    const js = new Set(ALL.filter((p) => rx.test(p)));
+    const onlyJs = [...js].filter((p) => !ere.has(p));
+    const onlyEre = [...ere].filter((p) => !js.has(p));
+    if (onlyJs.length || onlyEre.length) {
+        console.error(
+            "check-native-paths: **两个引擎的命中面不一致** —— 这里(JS RegExp)绿了,但 CI 用的是 grep -E。",
+        );
+        for (const p of onlyJs)
+            console.error(`  [FAIL] 只有 JS 命中(CI 会漏编): ${p}`);
+        for (const p of onlyEre)
+            console.error(`  [FAIL] 只有 ERE 命中(本测试判据失真): ${p}`);
+        console.error(
+            "  典型成因:`\\d` / `\\s` / `\\b` 这类 JS 认、ERE 当字面量的转义。改用 ERE 也认的写法。",
+        );
+        process.exit(1);
+    }
+    console.log(
+        `②b 引擎一致性: JS 与 grep -E 对 ${ALL.length} 条用例命中集合逐条一致。`,
+    );
+}
 
 // ---- ③ 删除式验证 -----------------------------------------------------------
 // 形态必须是 ^(a|b|c...) —— 变了就让这个测试硬红,而不是悄悄跳过删除式验证。
