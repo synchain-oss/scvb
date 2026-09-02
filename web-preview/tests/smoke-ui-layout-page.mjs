@@ -240,8 +240,13 @@ function cdpConnect(wsUrl) {
             return new Promise((ok, no) => {
                 // 每条 CDP 调用都必须有截止时间:原版把 resolve 塞进 `pending` 就返回,
                 // 响应不来就**永远不 resolve**。SL-274 在同源的 seg-diff-fold 上实测挂过
-                // 75 分钟零输出(Chrome 与 node 都还活着),而它同时占着本机 IPC 锁,
-                // 把整批 agent 堵在排队上;CI 上则是一路烧到 job 超时才红。
+                // 75 分钟零输出(Chrome 与 node 都还活着)。
+                // ⚠ 因果限定在**当时**:那次还赶上 [SL-277] 拆锁**之前**的形态 ——
+                // 整条 gates 被外部目录锁包着,所以一套挂死会把整批 agent 一起堵住。
+                // 拆锁后 gate 1–5 不持锁(gates.ps1 只在 gate 6/7/8 外套 `Local\SCVB-ipc-tests`),
+                // 而 web smoke 是 gate 3e ⇒ 代价收窄成「**本轮** gates 停死」,不再连累别人。
+                // 那仍然是一整轮,所以超时照加;但别照着旧说法去推断锁的作用域。
+                // CI 上则是一路烧到 job 超时才红。
                 //
                 // 超时**抛错而不重试**:响应不来说明页面或渲染器已经不对了,
                 // 重试只会把一个确定的红拖成一个更慢的红。错误里带 method 与 id,
@@ -333,8 +338,8 @@ const chrome = spawn(
 //   · 浏览器进程:node 一死,Windows 会把 spawn 出来的 Chrome 一起收掉 —— 实测原版在
 //     SIGTERM 下也能从 10 个进程回到 0。所以在 Windows 上这段对**进程**是双保险,不是唯一解。
 //     它真正吃劲的地方是 **Linux**:`web-smoke` 跑在 ubuntu-latest,而 POSIX 下父进程退出
-//     **不会**自动收掉 spawn 的子进程 —— 尤其本文件连 try/finally 都没有(见上),
-//     一次抛错就再没有任何地方会 `chrome.kill()`。
+//     **不会**自动收掉 spawn 的子进程 —— 而本文件的 try/finally 只包住主断言体,
+//     spawn 到进 try 之间那段窗口(CDP 连接、Page.enable、首次导航)在 Linux 上没人收。
 //   · 临时目录:`chrome.kill()` 之后文件句柄未必立刻释放,紧跟的 `rmSync` 在 Windows 上
 //     **会失败**,留下一个空壳目录 —— 实测本 PR 版本与原版在注入失败时**同样各留 1 个**。
 //     这一点不吹:本机 temp 下现有 981 个 `scvb-*` 残留目录,这段收不干净它们。
@@ -409,9 +414,18 @@ async function waitFor(expr, ms = 15000) {
     while (Date.now() - t0 < ms) {
         let v = null;
         try {
-            // 这次 evaluate 的上界 = 本次 waitFor 预算的一半:短于预算才能把
-            // 「丢一次响应」消化成下一轮重试;等于或大于预算就变成一次性硬红。
-            v = await evaluate(expr, Math.max(250, Math.floor(ms / 2)));
+            // 这次 evaluate 的上界 = **本次 waitFor 还剩多少预算**(留 250ms 收尾),
+            // 不是「预算的一半」。第一版写成 ms/2,被复审指出**把语义改窄了**:
+            // 一次耗时落在 (ms/2, ms) 区间的**合法**调用,改动前能过、改动后必红 ——
+            // 而 monitor 这一套的实测最慢单次是 3020ms、上界只有 5000ms,余量 1.65 倍,
+            // 在与别的 job 抢 CPU 的 ubuntu runner 上抖一下就会把慢但合法判成红。
+            // (PR 里那次「未复现的 monitor exit=1」很可能就是这个,首要假设。)
+            // 按剩余预算取则**不改变任何原本能过的行为**:慢调用可以用掉几乎整个预算,
+            // 真挂死仍会在预算到点前被砍断,由下面的 while 条件收尾。
+            v = await evaluate(
+                expr,
+                Math.max(1000, ms - (Date.now() - t0) - 250),
+            );
         } catch {
             v = null;
         }

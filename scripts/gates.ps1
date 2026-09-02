@@ -382,8 +382,13 @@ else {
   # 或者反过来诱导谁把这套从门禁里摘掉 —— 两条都比一条 SKIP 差。**但绝不静默**:
   # 打印 SKIP 行并计数,总结里带上,免得「一套没跑」看起来和「跑过了」一样。
   # ⚠ **每套都要有整体超时**([SL-287])。原来这里是裸的 `(& node $f.FullName 2>&1)` ——
-  # 一套挂死,gate 3e 就停在那儿不动,而**此时外层目录锁已经在手**,整批 agent 全在排队。
-  # SL-274 实测过一次:75 分钟零输出,node 与 Chrome 都还活着。
+  # 一套挂死,gate 3e 就停在那儿不动 —— SL-274 实测过一次:75 分钟零输出,
+  # node 与 Chrome 都还活着。
+  # ⚠ 因果限定在**当时**:那次赶上 [SL-277] 拆锁**之前**的形态(整条 gates 被外部目录锁
+  # 包着),所以一套挂死会把整批 agent 一起堵住。拆锁后 gate 1–5 **完全不持锁**
+  # (本文件只在 gate 6/7/8 外套 `Local\SCVB-ipc-tests`,见 :16 / :147),而 web smoke 是
+  # gate 3e ⇒ 代价收窄成「**本轮** gates 停死」,不再连累别人。那仍然是一整轮,
+  # 所以超时照加;但别照着旧说法去推断锁的作用域。
   # 页面级冒烟内部现在有 CDP 截止时间兜住「响应不回来」那一类,但兜不住「Chrome 根本没起来」
   # 「WebSocket 没连上」「页面永不 load」——那些卡在 CDP 之外,只有这一层能收。
   #
@@ -396,7 +401,9 @@ else {
   $smokeOk = $true
   $smokeSkipped = 0
   $smokeHung = 0
-  $smokeTimeoutSec = 300
+  # `SCVB_SMOKE_TIMEOUT_SEC` 是给慢机器的口子(照 SCVB_MUTEX_WAIT_MINUTES 的先例),
+  # 平时不用设。调大不会削弱任何判据 —— 超时只负责兜住挂死,不参与判对错。
+  $smokeTimeoutSec = if ($env:SCVB_SMOKE_TIMEOUT_SEC) { [int]$env:SCVB_SMOKE_TIMEOUT_SEC } else { 300 }
   foreach ($f in $smokeFiles) {
     $soPath = [System.IO.Path]::GetTempFileName()
     $sePath = [System.IO.Path]::GetTempFileName()
@@ -407,7 +414,13 @@ else {
     }
     else {
       # 连进程树一起收:只杀 node 的话,它起的无头 Chrome 会活下来继续占资源。
-      try { $proc.Kill($true) } catch { try { $proc.Kill() } catch {} }
+      # `Kill($true)`(连进程树)是 .NET Core 3.0+ 的重载。回退到 `Kill()` 时**只杀 node,
+      # 它起的 Chrome 会留下** —— 正是本段要根除的形态,所以回退必须出声,不能静默。
+      try { $proc.Kill($true) }
+      catch {
+        Write-Host '         [WARN] 本机 pwsh 不支持 Kill($true)(需 .NET Core 3.0+),回退成只杀 node —— 它起的 Chrome 可能留下,手动查一下' -ForegroundColor Yellow
+        try { $proc.Kill() } catch {}
+      }
       $rc = -1
       $smokeHung++
       $smokeOk = $false

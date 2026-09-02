@@ -426,9 +426,18 @@ async function waitFor(expr, ms = 20000) {
     while (Date.now() - t0 < ms) {
         let v = null;
         try {
-            // 这次 evaluate 的上界 = 本次 waitFor 预算的一半:短于预算才能把
-            // 「丢一次响应」消化成下一轮重试;等于或大于预算就变成一次性硬红。
-            v = await evaluate(expr, Math.max(250, Math.floor(ms / 2)));
+            // 这次 evaluate 的上界 = **本次 waitFor 还剩多少预算**(留 250ms 收尾),
+            // 不是「预算的一半」。第一版写成 ms/2,被复审指出**把语义改窄了**:
+            // 一次耗时落在 (ms/2, ms) 区间的**合法**调用,改动前能过、改动后必红 ——
+            // 而 monitor 这一套的实测最慢单次是 3020ms、上界只有 5000ms,余量 1.65 倍,
+            // 在与别的 job 抢 CPU 的 ubuntu runner 上抖一下就会把慢但合法判成红。
+            // (PR 里那次「未复现的 monitor exit=1」很可能就是这个,首要假设。)
+            // 按剩余预算取则**不改变任何原本能过的行为**:慢调用可以用掉几乎整个预算,
+            // 真挂死仍会在预算到点前被砍断,由下面的 while 条件收尾。
+            v = await evaluate(
+                expr,
+                Math.max(1000, ms - (Date.now() - t0) - 250),
+            );
         } catch {
             v = null;
         }
