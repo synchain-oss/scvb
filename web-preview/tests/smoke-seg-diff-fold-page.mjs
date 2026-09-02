@@ -65,6 +65,7 @@ import {
     readFileSync,
     rmSync,
     statSync,
+    writeSync, // [SL-274] 致命错误直写 fd 2,process.exit() 截不掉
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -180,12 +181,18 @@ function cdpConnect(wsUrl) {
     //
     // 原版(与其余五套页面级冒烟同源)的 `send()` 把 resolve 塞进 `pending` 就返回,
     // 响应不来就**永远不 resolve** —— 本套实测在 gate 3e 里挂了 **75 分钟**零输出,
-    // Chrome 与 node 都还活着,而它同时占着本机 IPC 锁,把整批 agent 堵在排队上。
-    // (CI 上则是一路烧到 job 超时才红,`web-smoke` 还是 required check。)
+    // Chrome 与 node 都还活着。(CI 上则是一路烧到 job 超时才红,而 `web-smoke` 是
+    // required check;本机那次还顺带占住了跑 gates 的 agent 自己那把外层目录锁。)
     //
-    // 为什么偏偏是本套:六套里只有它**中途做第二次 `Page.navigate`**(判据 (5) 要换
-    // `?scenario=diff-flood` 重新装载)。导航会把旧 document 的渲染器换掉,紧随其后的
-    // `Runtime.evaluate` 就可能等一个永远不来的响应。洞是公共的,踩响它的是二次导航。
+    // **触发形态是「导航把旧渲染器换掉,紧随其后的 `Runtime.evaluate` 等一个永远不来的
+    // 响应」**;本套判据 (5) 要换 `?scenario=diff-flood` 重新装载,踩的就是这一下。
+    //
+    // ⚠ **别写成「六套里只有本套会二次导航」**(第 10 轮复审 grep 证伪,那句话我写错过):
+    // 实际是 `smoke-ui-layout-page.mjs` **8 次**、`smoke-monitor-page.mjs` 4 次、
+    // `smoke-output-dist-page.mjs` 3 次、本套 4 次,只有 seg-restore / output-stale 是 1 次。
+    // 也就是说**曝险面比本卡大得多,而且都还没修**(它们没有超时也只在 happy path 收尾)。
+    // 本卡不越界改别人的文件,已在 PR 里点名建议单独立卡统一收口 —— 谁去做那张卡,
+    // 照搬本文件这两段(超时 + teardown)即可。
     //
     // 修法是**超时抛错**而不是重试:响应不来说明页面或渲染器已经不对了,重试只会把
     // 一个确定的红拖成一个更慢的红。错误里带上 method 与 id,红出来直接指到是哪一条卡住。
@@ -299,10 +306,11 @@ async function evaluate(expression) {
 }
 
 // 收尾:**任何**退出路径都要走一遍,不只是跑完那一条([SL-274] 本机实测)。
-// 原版把 kill/close/rmSync 摊在文件末尾,于是**只有happy path 会清理** ——
+// 原版把 kill/close/rmSync 摊在文件末尾,于是**只有 happy path 会清理** ——
 // 一旦中途抛错(比如上面新加的 CDP 超时),进程直接死,headless Chrome 与
 // `scvb-diff-fold-*` 临时目录全部留在机器上。这次排查时本机已积了 35 个残留目录,
-// 而那次挂死留下的 Chrome 正是压着 IPC 锁不放的原因之一。
+// 而挂死那次留下的 Chrome 一直活到人工介入才被杀掉。
+// (其余五套页面级冒烟同样只在 happy path 收尾 —— 见上面 cdpConnect 头注那条。)
 let tornDown = false;
 function teardown() {
     if (tornDown) return;
@@ -334,9 +342,20 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
     });
 }
 // 未捕获异常/未处理拒绝:先打印再收尾,否则 Chrome 会跟着一起漏。
+//
+// ⚠ 用 `writeSync(2, …)` 而不是 `console.error`(第 10 轮复审):`process.exit()` 不等
+// 待挂起的异步写,stdout/stderr 被重定向成管道或文件时(gates 就是这么跑的)最后那行
+// **可能被截断** —— 而这一行恰恰是唯一说明「为什么红」的东西,丢了就等于白报错。
+// `writeSync` 直写 fd 2,退不退出都不会丢。
+// 行首**不留缩进**:gates 与本地 runner 的摘要都按 `^\[` 抓行,缩进会让这条被过滤掉。
 for (const ev of ["uncaughtException", "unhandledRejection"]) {
     process.on(ev, (e) => {
-        console.error(`  [FATAL] ${ev}:`, e && e.message ? e.message : e);
+        const msg = e && e.message ? e.message : String(e);
+        try {
+            writeSync(2, `[FATAL] ${ev}:${msg}\n`);
+        } catch {
+            console.error(`[FATAL] ${ev}:`, msg);
+        }
         teardown();
         process.exit(1);
     });
