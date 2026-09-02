@@ -34,6 +34,10 @@ import { trackColorVar } from "./track-colors.js";
 export const VOL_MIN_DB = -24;
 export const VOL_MAX_DB = 12;
 
+/** [SL-280] 柱高行程的两端(块高百分比)——与上面两个值域常量同类,故并排放。 */
+export const BAR_H_MIN_PCT = 8;
+export const BAR_H_MAX_PCT = 88;
+
 function clamp(lo, hi, v) {
     return v < lo ? lo : v > hi ? hi : v;
 }
@@ -63,8 +67,46 @@ export function esc(s) {
 }
 
 /**
+ * volDb → 柱高(块高百分比)。**唯一真源**:柱、0 dB 基准线、用例三处都从这里取。
+ *
+ * [SL-280] 线性铺满 `BAR_H_MIN_PCT..BAR_H_MAX_PCT`,**不再除 0.70**。
+ * 旧式是 `归一 / 0.70 × 100` 再夹到 8..88 —— 归一值 0.616 就撞上夹子,解出来是
+ * **volDb ≥ −1.824 dB 一律画成 88%**。而每轨 vol 的出厂默认就是 0 dB
+ * (`tab-tracks.js` 的 `VOL_RANGE.def`),真实工程里各轨也多坐在 unity 附近,于是
+ * 用户看到的是「15 根柱齐刷刷一样高」(v5.6.5 实测,用户点名)。
+ * 更糟的是饱和点落在推子行程 0.616,而 J03 定「0 dB 在行程 2/3」—— 曲线**恰好在
+ * 最常用的那个值之前就顶到头**。
+ *
+ * 现在 −24..+12 dB 在 8%..88% 上严格单调:0 dB → 61.33%,+12 → 88,−24 → 8。
+ * `clamp` 保留为纯防御(`volDb` 进来前已被 clamp,夹不到)。
+ */
+export function barHeightPct(volDb) {
+    const norm =
+        (clamp(VOL_MIN_DB, VOL_MAX_DB, volDb) - VOL_MIN_DB) /
+        (VOL_MAX_DB - VOL_MIN_DB);
+    return clamp(
+        BAR_H_MIN_PCT,
+        BAR_H_MAX_PCT,
+        BAR_H_MIN_PCT + norm * (BAR_H_MAX_PCT - BAR_H_MIN_PCT),
+    );
+}
+
+/**
+ * [SL-280] 0 dB 基准横线的高度(块高百分比)= `barHeightPct(0)` = 61.33。
+ *
+ * **不写死这个数**:线要落在「0 dB 那根柱的顶边」上,而柱顶由 `barHeightPct` 决定 ——
+ * 两处各写一份就是本仓刚清过的那类漂移。`dist-motion` 建器把它写成 CSS 变量喂给
+ * `.dist-plot`,并同时打 `has-zero-line` —— 后者让「喂不到」真的等于「不画」
+ * (只靠不给缺省做不到:变量未定义时 `bottom` 声明失效 ⇒ 线退到图顶,比不画更误导)。
+ */
+export function zeroDbLinePct() {
+    return round2(barHeightPct(0));
+}
+
+/**
  * 分布图一根柱/一条张开线的几何(设计稿 L2037-2056)。
- * 横位 x =(有效 pan+100)/200;柱高 ∝ 音量行程(−24..+12 dB 归一后 /0.70 拉满卡片高);
+ * 横位 x =(有效 pan+100)/200;柱高见 `barHeightPct`(−24..+12 dB **线性铺满**
+ * `BAR_H_MIN_PCT..BAR_H_MAX_PCT`;[SL-280] 之前是「归一后 /0.70」,那会在 −1.82 dB 以上压平);
  * 张开半宽 =(轨 width%/100)×16,并被 x 与 100−x 夹住不出框。
  *
  * **有效 pan = 名义 pan × 全局 width/100**(PanMath::scaleByGlobalWidth,DSP 逐样本同式)。
@@ -78,14 +120,7 @@ export function esc(s) {
 export function distGeometry(pan, volDb, widthPct, globalWidthPct = 100) {
     const g = clamp(0, 150, Number(globalWidthPct) || 0) / 100;
     const x = ((clamp(-100, 100, clamp(-100, 100, pan) * g) + 100) / 200) * 100;
-    const h = clamp(
-        8,
-        88,
-        ((clamp(VOL_MIN_DB, VOL_MAX_DB, volDb) - VOL_MIN_DB) /
-            (VOL_MAX_DB - VOL_MIN_DB) /
-            0.7) *
-            100,
-    );
+    const h = barHeightPct(volDb);
     const half = Math.min((clamp(0, 100, widthPct) / 100) * 16 * g, x, 100 - x);
     return { x: round2(x), h: round2(h), half: round2(half) };
 }

@@ -51,6 +51,7 @@ import {
     distBarsHtml,
     distGeometry,
     distSpanVars,
+    zeroDbLinePct,
 } from "./distribution-chart.js";
 
 /**
@@ -200,6 +201,27 @@ export function createDistMotion(opts) {
         typeof o.getGlobalWidthPct === "function"
             ? o.getGlobalWidthPct
             : () => 100;
+
+    // [SL-280] 把 0 dB 基准线的高度喂给 CSS。**挂在这里而不是各页自己写**:两页都只经
+    // 本工厂拿到 container(Output 的 wireChart、Monitor 的 app.js),写成两份就又是
+    // 「同一个数各存一份」——本仓刚为这类漂移连收过几轮。
+    // 线要落在「0 dB 那根柱的顶边」上,而柱顶由 `barHeightPct` 决定,故两者同源
+    // (`zeroDbLinePct()` 就是 `barHeightPct(0)`)。
+    //
+    // ⚠ 连同 `has-zero-line` 一起打,**是为了让「喂不到」真的等于「不画」**。
+    // 上一版只写变量、CSS 不给缺省,注释写「喂不到就是声明失效、线不画」——**那句是错的**
+    // (复审【重要】指出;而本卡自己的删除式输出早就摆着反证:删掉写入后线并没有消失,
+    // 而是跑到 top 540 去了,我当时没看出来)。真实降级是:`bottom: calc(15px + var(--zero-h))`
+    // 整条失效 ⇒ `bottom: auto`,而 `.dist-plot__zero` 绝对定位又没给 `top` ⇒ 退回**静态位置**;
+    // 它前面的兄弟(`__mid` / `__q` / `__base`)全部脱流,于是静态位置就落在 `.dist-plot`
+    // 内容盒**顶边** —— 图的最上沿画出一条带「0 dB」标注的横线,**比不画更误导**。
+    // 类名不携带数值,真源仍只有 `zeroDbLinePct()` 一处,不构成「同一个数各存两份」。
+    const plot =
+        container && container.closest && container.closest(".dist-plot");
+    if (plot && plot.style) {
+        plot.style.setProperty("--zero-h", zeroDbLinePct() + "%");
+        if (plot.classList) plot.classList.add("has-zero-line");
+    }
 
     // `null` 而不是 `""`:空行集的指纹也是 `""`,用它当「还没有过任何一帧」会让
     // 「reset 之后收到的第一帧」被误判成「结构没变」,于是从上一组的值插过去。
