@@ -4,12 +4,14 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 `web/` 与 `web-preview/` 全域禁止出现 Google Fonts 域名,CI 用 grep 断言零命中)。
 每个 `.woff2` 都是 **`text=` 子集**:只含 UI 实际用到的字形。
 
-| 文件                 | 来源家族      | 字重            | 用途(tokens.css 变量)                                   |
-| -------------------- | ------------- | --------------- | -------------------------------------------------------- |
-| `SpaceGrotesk.woff2` | Space Grotesk | 600             | `--ff-grotesk`:标题 / 大数字 / CTA                       |
-| `IBMPlexSans.woff2`  | IBM Plex Sans | 400             | `--ff-sans`:正文默认                                     |
-| `IBMPlexMono.woff2`  | IBM Plex Mono | 400             | `--ff-mono`:mono 标签 / eyebrow / dB 读数 / tabular-nums |
-| `NotoSansSC.woff2`   | Noto Sans SC  | 可变(见下) | 全部 CJK(经三条字体栈的逐字回退命中);字重跟随元素      |
+| 文件                 | 分发家族名(`@font-face`) | 来源家族      | 字重            | 用途(tokens.css 变量)                                   |
+| -------------------- | ------------------------- | ------------- | --------------- | -------------------------------------------------------- |
+| `SpaceGrotesk.woff2` | `Space Grotesk`           | Space Grotesk | 600             | `--ff-grotesk`:标题 / 大数字 / CTA                       |
+| `ScvbSans.woff2`     | `SCVB Sans`               | IBM Plex Sans | 400             | `--ff-sans`:正文默认                                     |
+| `ScvbMono.woff2`     | `SCVB Mono`               | IBM Plex Mono | 400             | `--ff-mono`:mono 标签 / eyebrow / dB 读数 / tabular-nums |
+| `NotoSansSC.woff2`   | `Noto Sans SC`            | Noto Sans SC  | 可变(见下) | 全部 CJK(经三条字体栈的逐字回退命中);字重跟随元素      |
+
+中间两行「分发家族名」与「来源家族」不同,是 OFL-1.1 §3 的改名结果,见下文「保留字体名(RFN)」。
 
 许可证 OFL-1.1(`REUSE.toml` 的 `web/fonts/**` 特例块声明),版权行见 `THIRD-PARTY-NOTICES.md`
 (四款的家族 / 版本 / 上游 URL 已登记在那张表里)。
@@ -36,7 +38,8 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 > 逐字比对「重算出的所需字符集」与「四个 woff2 的 cmap」,缺一个字就红并列出缺字。
 > 改完文案忘了重跑,提 PR 前的 gates 就会拦下。
 
-> `⚠`(U+26A0)与 `⇒ ① ② ④ ⓘ`:Space Grotesk / IBM Plex 两族本身没有这些字形,
+> `⚠`(U+26A0)与 `⇒ ① ② ④ ⓘ`:Space Grotesk 与 IBM Plex 两族(即 `SCVB Sans` / `SCVB Mono`
+> 的来源)本身没有这些字形,
 > 子集里自然也没有,由字体栈回退到 `Noto Sans SC`(它有)。这正是三条栈都必须把
 > `'Noto Sans SC'` 排在拉丁字体之后、系统字体之前的原因——回退目标是内嵌字体,
 > 不依赖宿主系统字体。gates 3h 把这一档记为 `[INFO]`,不判红。
@@ -68,6 +71,54 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 > 字重打到 wght 轴并夹在 300–700;删掉或改成单值,默认 Thin 实例会接管,全部中文变成发丝细体,
 > 而三道门禁一条都查不出来。
 
+## 保留字体名(RFN)
+
+OFL-1.1 **§3** 规定:Modified Version **不得使用**上游声明的 Reserved Font Name(RFN)。
+**子集化就是修改**,所以本目录四款全部受这一条约束,逐款核验结论(登记在
+`scripts/check-font-names.py` 的 `RESERVED`,与 `THIRD-PARTY-NOTICES.md` 的字体一节同源):
+
+| 文件                 | 上游 RFN | 处置                                          |
+| -------------------- | -------- | --------------------------------------------- |
+| `SpaceGrotesk.woff2` | 无       | 上游版权行没有 RFN 声明,原样分发              |
+| `ScvbSans.woff2`     | `Plex`   | 已改名:`SCVB Sans` / `ScvbSans-Regular`      |
+| `ScvbMono.woff2`     | `Plex`   | 已改名:`SCVB Mono` / `ScvbMono-Regular`      |
+| `NotoSansSC.woff2`   | `Source` | 分发名本就不含它,不必改名;登记在册守住不回归 |
+
+> **改名改的是字体 `name` 表,不是文件名。** §3 管的是「呈现给用户的字体名」——它存在
+> woff2 的 `name` 表里(nameID 1 家族 / 3 唯一 ID / 4 全名 / 6 PostScript 名 / 16·17 排版家族)。
+> 文件改叫 `ScvbSans.woff2`、CSS 里也写了 `'SCVB Sans'`,但 `name` 表仍是 "IBM Plex Sans" 的话,
+> 装进系统字体册、被 DevTools 字体面板或 PDF 导出读到的**依然是上游名**,违规照旧,
+> 而 diff 看着已经改完了。改名由 `fetch_fonts.py` 的 `rename_font()` 在生成期做,
+> `cmap` 与字形一字未动 —— **视觉零变化**。
+
+版权(nameID 0)、商标(7)、许可证声明与 URL(13/14)四条署名**永不改写**,随分发逐字保留
+(OFL-1.1 §2 的随附义务),因此也不参与 RFN 断言 —— OFL 惯例的版权行本身就写着
+"with Reserved Font Name 'X'",`NotoSansSC.woff2` 的 nameID 7 逐字是
+"Source is a trademark of Adobe…";把它们算进断言只会制造恒红。
+
+回归由 `scripts/check-font-names.py` 守住(gates **3k** + `.github/workflows/compliance.yml` 两步),
+两个面都扫:
+
+1. **每款 woff2 的 `name` 表**逐条比对 —— **woff2 是 brotli 压缩的,grep 二进制不命中
+   不等于名字已清除**,只有解表才算证据。目录里出现未登记的 `.woff2` 同样判红:新增家族
+   必须先核 RFN 再进包,没有默认放行。
+2. **随分发进包的文本资源**(`web/` 下的 `.css`/`.js`/`.html`,vendored 的 `web/js/juce/` 除外)
+   里的字体名。违规面共三处 —— 文件名、`@font-face` family 与字体栈字面量、`name` 表 ——
+   只守两头的话,把 family 改回 `"IBM Plex Sans"` 而 woff2 一字不动,解表照样全绿,而进了
+   `.vst3` 的 CSS 又在向用户呈现 RFN。判据**只落在字体名上下文**:字体声明值
+   (`font-family:` / `font:` 简写 / 驼峰 `fontFamily` 的赋值)、`--ff-*` 字体栈变量、
+   含 CSS 通用族关键字的字符串字面量(含反引号模板串,canvas 的 `ctx.font` 已在用)、
+   以及 `src: local(…)` 里的家族名(它指的是装在用户机器上的那款上游字体)。
+   不做整文件 grep:RFN "Source" 是个常用词,整文件扫会在 `source_channels` 这类标识符上
+   刷出几十条假红,而假红的结局通常是整道扫描被关掉。非 UTF-8 的文件判红,不替换坏字节
+   接着扫 —— 坏字节可能正落在 RFN 中间,那就成了「扫过了但没扫到」。
+
+门禁自身另有 `--self-test`(与隐私门禁 3j 同款,排在扫描之前),用仓内真字体与临时样例
+就地合成坏样例,验证「漏改的呈现名必红(含版本/设计者/描述这些非署名槽)/ 上面五类字体名
+上下文里的 RFN **逐类**必红(每类一个样例、一条断言,合成一个文件数条数是没牙的:同一行
+常被两条路重复命中,删掉一类支持后条数仍够)/ 署名记录与常用词不误伤 / vendored 目录不误伤 /
+非 UTF-8 必红 / 未登记字体必红」。
+
 ## 重新生成
 
 新增/改动 UI 文案或语言后必须重跑(否则新字上屏是方块):
@@ -77,11 +128,18 @@ python scripts/fetch_fonts.py                  # 输出到本目录(联网)
 python scripts/fetch_fonts.py --print-charset  # 只看扫出来的两个子集(拉丁 + CJK),不联网
 python scripts/fetch_fonts.py --help           # 用法
 python scripts/check-font-coverage.py          # 校验产物覆盖(gates 3h 跑的就是它,不联网)
+python scripts/check-font-names.py             # 校验保留字体名(gates 3k 跑的就是它,不联网)
 ```
 
 法语重音是否真被扫进来,只能看 `--print-charset` 打印的 **LATIN** 那一行(CJK 行看不出)。
-**只有 `fetch_fonts.py` 联网,产物是离线资产。** 换文件名要同步改
-`web/shared/tokens.css` 的四条 `@font-face`,以及 `check-font-coverage.py` 的文件名表。
+**只有 `fetch_fonts.py` 联网,产物是离线资产。** 输出文件名的真源是 `fetch_fonts.py` 的
+`LATIN_OUTPUTS` / `CJK_OUTPUT`:`check-font-coverage.py` 的 `LATIN_FONTS` 从它派生,
+`check-font-names.py` 的 `RESERVED`(逐款人工核过的 RFN 结论,不可派生)在导入期与它对拍键集,
+所以换文件名改真源那一处即可,漏登记会直接判红。另需手工同步的只剩 web 侧两处引用:
+`web/shared/tokens.css` 的四条 `@font-face`(family 与 `url()`)与 `web/shared/trajectory-chart.js`
+的 `STYLE_FALLBACK.mono` —— 这两处若把上游名写回去,由上文第 2 条的文本资源扫描判红。
+改**家族名**还要同步 `fetch_fonts.py` 的 `RENAME`(它与 `RESERVED` 同样在导入期对拍)。
+`cmake/ScvbWebAssets.cmake` 用 `file(GLOB)` 扫 `web/fonts/*.woff2`,不绑文件名。
 
 ### 两条取字体路线(按家族分工)
 
@@ -102,10 +160,15 @@ Google **不报 414,而是静默忽略 `text=`**,改返回 101 段 `unicode-rang
 
 ## 离线回退(当前未启用)
 
-若构建/开发机取不到上游,应急口径:把 Bridge 仓 `vst-plugin/web/fonts/*.woff2`
+若构建/开发机取不到上游,应急口径:把 Bridge 仓 `web/fonts/*.woff2`
 复制过来占位,并在本节顶部醒目注明「占位子集,字形不全」。占位子集只含 Bridge 那 40 个汉字,
 SCVB 的 768 个 CJK 字会大面积缺字 —— 走回退期间 **gates 3h 会一直红**,这是刻意的:
 占位子集就是缺字状态,不该看起来像正常态。
+
+> 走回退时拉丁两款**必须改成本仓的文件名**:Bridge 那边按 §3 改名后叫 `BridgeSans.woff2` /
+> `BridgeMono.woff2`,直接拷进来是未登记文件,gates 3k 会判红。改完文件名即可 —— 它们的
+> `name` 表写的是 `Bridge Sans` / `Bridge Mono`(已核上游产物),不含 RFN;而 `@font-face`
+> 的 family 由 `tokens.css` 自己声明,与字体内部家族名无关,不必跟着改。
 
 当前四款均为**联网实跑生成的 SCVB 真子集**,未走回退。`check-font-coverage.py` 实测:
 920 个所需字符里 918 个有字形,拉丁三款按设计缺 `⇒ ① ② ④ ⓘ ⚠`(逐字回退到 Noto),

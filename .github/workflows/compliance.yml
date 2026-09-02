@@ -59,3 +59,27 @@ jobs:
         # 放在 compliance 而非 format:同族是本 job 里的 gitleaks(密钥)与 REUSE(合规),
         # gates 侧也挂在 3b(gitleaks)旁,两侧位置对应。与 gates.ps1 gate 3j 同参。
         run: node scripts/check-privacy.mjs
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        # [SL-267] 只为下面两步字体保留名断言。钉版理由同 format.yml 的 docs-truth:
+        # runner 自带 python 的版本随镜像漂,而本 job 是 required check。
+        # **排在 Design-box 那步之后**:setup-python 会把 3.13 抢到 PATH 最前,而那一步用的是
+        # runner 自带 python3 —— 顺序一换就等于顺手改了另一道门禁的解释器。
+        with:
+          python-version: "3.13"
+      - name: Font reserved-name gate self-test
+        # [SL-267] **先自检再扫**,与上面隐私门禁两步同款:本门禁的失效模式同样是「静默放行」
+        # —— 署名豁免表被放宽、或子串比对被写成相等比对之后,扫描照样退 0,门禁看着绿其实
+        # 什么都没拦。自检红说明门禁本身坏了,比扫描结果更要紧,故排在前面。
+        # pip 锁到补丁号,与 docs-truth 的字体覆盖那步同版本:fontTools 的 name 表读写行为
+        # 随版本变,浮动版本会让「同一份字体昨天绿今天红」而中间什么都没改。
+        # 与 gates.ps1 gate 3k 同参。
+        run: |
+          python -m pip install --disable-pip-version-check fonttools==4.60.1 Brotli==1.2.0
+          python scripts/check-font-names.py --self-test
+      - name: Font reserved-name scan (OFL-1.1 §3)
+        # [SL-267] 断言随 .vst3 分发的四款 woff2 的 `name` 表、以及同样进包的 .css/.js/.html
+        # 里的字体栈字面量,都不含上游保留字体名(RFN)。
+        # 与 gitleaks / REUSE 同族(都是「分发物合规」),故落在 compliance 而非 docs-truth:
+        # docs-truth 的字体覆盖(gate 3h)问的是「字够不够」,这一条问的是「名字能不能用」。
+        # 不联网(只读仓内 woff2)、无 secrets ⇒ fork PR 也跑得动。与 gates.ps1 gate 3k 同参。
+        run: python scripts/check-font-names.py

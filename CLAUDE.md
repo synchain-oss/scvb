@@ -37,7 +37,7 @@
 
 ## 2. 提 PR 前的本地 Gates
 
-- 一律经 `pwsh scripts/gates.ps1`(06 §5.1 的 gate 1–8,含 `3b` gitleaks、`3c` reuse lint + `check-spdx.ps1`、`3d` 设计盒真源、`3e` web smoke 四个子档)。
+- 一律经 `pwsh scripts/gates.ps1`(06 §5.1 的 gate 1–8,另含十个子档:`3b` gitleaks、`3c` reuse lint + `check-spdx.ps1`、`3d` 设计盒真源、`3e` web smoke、`3f` 文档真源、`3g` IPC 契约文档对拍、`3h` 字体子集覆盖、`3i` 桥面/曲线/设计盒对拍、`3j` 隐私、`3k` 字体保留名)。子档只增不减,以 `gates.ps1` 的 `Set-Gate` 为准。
 - 三个档位:`gates.ps1` 全量(含 gate 8 真机 GUI pluginval)/ `-PluginOnly` 跑 gate 1–7(已与 CI 等价)/ `-Quick` 跳过 pluginval(gate 7/8)做快速回环。JUCE 路径经 `-JucePath` 传入(或环境变量 `JUCE_PATH`)。
 - 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。
 - 并行 agent 必须各用独立 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
