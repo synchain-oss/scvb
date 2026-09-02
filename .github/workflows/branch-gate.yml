@@ -3,7 +3,9 @@ name: Branch Gate
 # 晋升链(v1 只有 dev 一条长期分支):
 #   feat/* | feature/*  ->  dev            (same-repo)
 #   任意分支名(除长期分支名) -> dev        (fork,J31/J41)
-# 子 PR(base=feature/*)故意不受此命名门禁约束(D2;完整 CI 自 2026-08-19 起已覆盖 feature/** PR)。
+# 子 PR(base=feature/*)故意不受此命名门禁约束(D2)。
+# [SL-277/J96,2026-09-02] 子 PR 已回到轻档 CI(不跑 build-vst3);本工作流的触发面不受影响
+# —— 它本来就只挂 pull_request→dev。
 # 发版里程碑再打开下面被注释的 prod/stage 规则。
 
 on:

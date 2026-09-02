@@ -1,45 +1,183 @@
 name: Build & Validate
 
+# ── CI 三档(SL-277 / [J96],2026-09-02 用户裁定)────────────────────────────
+# 本节推翻 2026-08-19 那条「仓库已公开、Actions 免费,所有将并入 dev 的 PR(含 feature/**
+# 子 PR)都跑完整 CI」的指令。用户新口径:「每次出包之前才跑完整 CI / 只有某些 branch 的 PR
+# 才触发全量 CI / 尽可能多的本地编译 / 只要确保出包之前跑了全量 CI 就行」。
+#
+#   轻档  子 PR(base=`feature/**`):**不跑本工作流**。仍跑 format(clang-format /
+#         web-smoke / docs-truth)、compliance(gitleaks / REUSE / check-privacy / 设计盒)
+#         与三个 review bot;编译与 ctest 由本地 `scripts/gates.ps1` 兜(CLAUDE.md §2)。
+#   中档  里程碑 PR(base=`dev`)与 push→`dev`:照跑全量,与本工作流历史行为一致。
+#   重档  **出包前硬门**:`workflow_dispatch`(input `ref`,默认 `feature/v1`)必须跑一次
+#         并绿,才允许打包。这是 feature/v1 主支线唯一的机器编译证据 —— push→`feature/**`
+#         触发已在本卡撤掉(每次子 PR 合入都冷编译 20 分钟,正是用户要省掉的那笔)。
+#   逃生口 **子 PR** 打上 `ci:full` 标签即照跑全量(`types` 含 labeled/unlabeled,
+#         job 的 `if:` 判标签)。改到构建系统/依赖时用它。
+#         base=`dev` 的 PR **不吃**这个标签:它每次 synchronize 本来就跑全量,标签再起
+#         一次只会在同一个 concurrency group 里排队重编;想临时再编一次用 dispatch。
+#         **别靠反复打标签「刷新」构建**:标签事件的 `cancel-in-progress` 是 `false`
+#         (见下面 concurrency 的注释 —— 那是为了不让无关标签打断构建而刻意选的),
+#         所以在构建进行中重新打 `ci:full`,得到的是**排队再编一遍**,不是替换掉在跑
+#         的那个。想替换只能用 `workflow_dispatch`,或者等它跑完。
+#
+# 分支保护 required contexts 不由本卡改(用户待办)。已核对:`dev` 无 required status
+# checks;`feature/v1` 的 required contexts 只有三个 review bot —— 故子 PR 上本 job 被
+# `if:` 跳过(不产生 check run)不会把任何 PR 卡在 pending。
+
 on:
   pull_request:
-    # 2026-08-19 用户指令:仓库已公开、Actions 免费,所有将并入 dev 的 PR(含 feature/** 子 PR)都跑完整 CI。
+    # feature/** 留在触发面上**只为** `ci:full` 逃生口:事件级过滤掉就没有任何办法
+    # 在子 PR 上手动开全量了。跑不跑由下面 job 的 `if:` 决定。
     branches: [dev, "feature/**"]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types:
+      [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   push:
-    branches: [dev, "feature/**"] # feature 主支线推送 → preview artifact(D3 通道3)
+    branches: [dev] # dev 快照 artifact(D3 通道2);feature/** 改由 workflow_dispatch 出
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "要构建的 ref(出包前批次全量;默认主支线)"
+        required: false
+        default: feature/v1
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # dispatch 也进 group:同一 ref 连点两次只留最后一次;不同 ref 的两次 dispatch 互不取消。
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.inputs.ref || github.ref }}
+  # **标签事件永不取消在跑的 run**(PR#176 复审采纳)。取消发生在 job `if:` **求值之前**,
+  # 所以在 `cancel-in-progress: true` 下,给一个 base=dev 的 PR 加个无关标签
+  # (`bug` / `Review effort 4/5` …)就会打断正在跑的全量构建 —— 而那正是本卡要省的
+  # 那 20 分钟。只在 `if:` 里收窄标签名救不了:取消照样先发生,新 run 又被跳过,
+  # 结果是构建被杀掉且没有任何东西顶上,比不改还差。
+  cancel-in-progress: ${{ github.event.action != 'labeled' && github.event.action != 'unlabeled' }}
 
 jobs:
   build-and-validate:
     name: build-and-validate # ← 这个字符串就是 required check 的 context,永不改名
+    # 三档 + 逃生口的唯一判定处。push / workflow_dispatch 一律跑;pull_request 只在
+    # base=dev 或带 `ci:full` 标签时跑。**不要**把这条搬去 `on:` 的事件过滤 —— 标签
+    # 是 PR 的属性而不是事件的属性,只有 job 级 `if:` 看得见。
+    #
+    # 写成**按 `action` 分家的两条互斥支路**,而不是「常规判据 || 标签判据」的嵌套
+    # `||`(PR#176 复审采纳,三个 bot 同指)。理由是 `||` 从左往右短路:上一版把标签名
+    # 的收窄放进第三个分支,而 base=`dev` 的 PR 在第二个分支 `github.base_ref == 'dev'`
+    # 就已经为真,那段收窄**根本求不到** —— pr-agent 更新 `Review effort N/5`(bot 打
+    # 标签是必然事件,本 PR 自己就有这个标签)即起一次 20 分钟全量,方向与本卡相反。
+    # 改造前 `labeled` 不在 `types` 里 = 0 次,别把它变成每个里程碑 PR 多烧一次。
+    # 分家写法让「标签事件」只有一个入口,以后往另一路加判据也不会被短路绕过去。
+    #
+    #   标签事件(labeled / unlabeled):只认 `ci:full` 这一个名字,**且**要求 PR 上此刻
+    #     仍带着它,**且** base 不是 `dev` —— 打上 → 起一次全量;摘掉(`contains` 已为假)
+    #     → 不起;别的标签增删 → 什么都不发生。收窄之所以安全,是因为上面的 concurrency
+    #     已经保证标签事件不取消在跑的 run;两者顺序颠倒就会变成「构建被杀掉且没有东西
+    #     顶上」,别拆开只留一行。
+    #     `base_ref != 'dev'` 那一项:`ci:full` 是**子 PR 专用**的逃生口,dev PR 本来每次
+    #     synchronize 就跑全量,再给它加标签只会在同一个 concurrency group 里排队重编
+    #     一遍 —— 与被修掉的那条同形,只是触发者从 bot 换成了人。dev PR 上想临时再编一次
+    #     用 `workflow_dispatch`,不要靠标签。
+    #   非标签事件(opened / synchronize / reopened / ready_for_review):维持三档判据 ——
+    #     base=`dev` 的里程碑 PR 跑全量,子 PR 只在带 `ci:full` 时跑。
+    #
+    # `github.event.label.name` 在非标签事件上求值为 null(不是报错),所以两条支路各自
+    # 的 `action` 判据就是它们互斥的保证。
+    if: >
+      github.event_name != 'pull_request' ||
+      (
+      (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+      github.event.label.name == 'ci:full' &&
+      contains(github.event.pull_request.labels.*.name, 'ci:full') &&
+      github.base_ref != 'dev'
+      ) ||
+      (
+      github.event.action != 'labeled' &&
+      github.event.action != 'unlabeled' &&
+      (
+      github.base_ref == 'dev' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      )
+      )
     runs-on: windows-2022
     timeout-minutes: 60
     env:
       WEBVIEW2_NUGET_VERSION: "1.0.2957.106" # 必须与 CMakeLists 的 WEBVIEW2_VERSION 一致
+      # sccache 用**本地磁盘缓存 + actions/cache 跨 run 搬运**,不用它的 GHA 后端:
+      # 那个后端要 ACTIONS_RUNTIME_TOKEN / ACTIONS_RESULTS_URL,而这两个变量只发给
+      # JS action,`run:` 步骤里拿不到 —— 想拿就得再引一个 action 去 exportVariable,
+      # 换来的是又一个白名单外的依赖。磁盘缓存 + actions/cache(GitHub 自家,白名单放行)
+      # 效果相同且少一层依赖。
+      SCCACHE_DIR: ${{ github.workspace }}\.sccache
+      # 上限给 1G:实测一次冷跑(500 个编译单元、JUCE + 5 个 target)之后 sccache 的
+      # `Cache size` 是 **104 MiB**,1G 有十倍余量。**不要**随手写 2G —— sccache 只在
+      # 超限时才 LRU 清理,给多少它就长到多少,而每次 run 都会把这份缓存写回一条
+      # actions/cache 条目,仓库配额只有 10 GB(LRU 淘汰),撑大了会把 juce-* /
+      # webview2-nuget-* 一起挤掉,表现为「CI 照样绿,只是又慢回去了」。
+      SCCACHE_CACHE_SIZE: 1G
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # 只有 workflow_dispatch 才用 input;其余事件留空 = actions/checkout 的默认
+          # 行为(PR 用 merge ref、push 用 push 的 sha)。
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || '' }}
 
       # 0) 版本单一真源:JUCE / pluginval 版本只存在于仓库根的 .juce-version / .pluginval-version
       #    (12 §6.3 / D-12)。workflow 里不再硬编码 JUCE / pluginval 版本号字面量。
-      #    同时算出 artifact 名用的 ref slug —— github.ref_name 对 feature/v1 会带斜杠,
+      #    同时算出 artifact 名用的 ref slug —— feature/v1 带斜杠,
       #    而 upload-artifact@v4 直接拒绝含 '/' 的 artifact 名。
       - name: Resolve pinned versions & ref slug
         shell: pwsh
+        # `EFF_REF` 走 env 而**不是**直接把 `${{ }}` 插进脚本正文(PR#176 复审采纳):
+        # dispatch 的 input 是人写的字符串,直接插值等于把它当代码拼进 PowerShell;
+        # 经 env 传进来它永远只是一个值。能 dispatch 的虽然只有有写权限的人,但这条
+        # 防线是免费的。
+        env:
+          EFF_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
         run: |
+          # 钉版文件必须都在**被 checkout 的那棵树**上。workflow_dispatch 是唯一会让
+          # 「workflow 定义」与「源码树」分家的通道:定义取自发起 run 的 ref,内容取自
+          # input `ref`。把 input 指到一个还没有某个钉版文件的旧 ref,就会在这里挂。
+          # 本卡实测踩过一次(run 33594229435:定义在 ci/SL-277-tiered-ci 上、内容是
+          # feature/v1,后者当时还没有 .sccache-version)。挂在这一步比挂在半路好——
+          # 报错要直接说出这个分家,不能只留一句 "Cannot find path"。
+          # **这份清单是副本**:真源在 CLAUDE.md §6「版本单一真源」(那里五个,含
+          # `.gitleaks-version`;本工作流不用 gitleaks,故这里四个)。新增钉版依赖时
+          # 两处都要加 —— 只加真源、忘了这里,dispatch 旧 ref 又会退回裸
+          # "Cannot find path"(PR#176 复审采纳)。
+          $pins = @('.juce-version', '.pluginval-version', '.sccache-version', '.sccache-sha256')
+          $missing = @($pins | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) {
+            Write-Error ("被构建的 ref 上缺少钉版文件:" + ($missing -join ', ') +
+              "。workflow_dispatch 的 workflow 定义来自发起 run 的 ref,而源码来自 input ref —— " +
+              "把 input 指到含这些文件的 ref(通常是已合并的 feature/v1),或先把它们合进目标分支。")
+            exit 1
+          }
           $juce = (Get-Content .juce-version -Raw).Trim()
           $pv   = (Get-Content .pluginval-version -Raw).Trim()
           if (-not $juce -or -not $pv) { Write-Error "空的 .juce-version / .pluginval-version"; exit 1 }
           "JUCE_TAG=$juce"      | Out-File $env:GITHUB_ENV -Append
           "PLUGINVAL_TAG=$pv"   | Out-File $env:GITHUB_ENV -Append
-          $slug = "${{ github.ref_name }}".Replace('/', '-').Replace([char]92, '-')
+          # dispatch 时 github.ref_name 是发起 run 的那个 ref,不一定等于 input;以实际构建的 ref 为准。
+          $slug = $env:EFF_REF.Replace('/', '-').Replace([char]92, '-')
           "REF_SLUG=$slug"      | Out-File $env:GITHUB_ENV -Append
+          # 真正被 checkout 的那个 commit。**不能用 `github.sha`**:workflow_dispatch 时
+          # 它是「发起 run 的 ref 的 HEAD」,而我们 checkout 的是 `inputs.ref` ——
+          # 两者可以是不同的 commit,artifact 名里写错就等于溯源失效,而出包前那次
+          # dispatch 产出的包,artifact 名是「这个包对应哪次提交」的唯一凭据。
+          $built = (git rev-parse HEAD).Trim()
+          if (-not $built) { Write-Error "取不到 HEAD sha"; exit 1 }
+          "BUILT_SHA=$built"    | Out-File $env:GITHUB_ENV -Append
+          Write-Host "built ref=$env:EFF_REF slug=$slug sha=$built"
 
-      # 1) JUCE:浅克隆锁 tag(不用 FetchContent,避免上游漂移让 CI 突然红)
+      # 1) JUCE:浅克隆锁 tag(不用 FetchContent,避免上游漂移让 CI 突然红)。
+      #    先查缓存 —— 键里带 tag,升级 .juce-version 自动换键。
+      - name: Restore JUCE cache
+        id: juce-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/JUCE
+          key: juce-${{ runner.os }}-${{ env.JUCE_TAG }}
+
       - name: Clone JUCE (shallow, pinned)
+        if: steps.juce-cache.outputs.cache-hit != 'true'
         run: git clone --depth 1 --branch $env:JUCE_TAG https://github.com/juce-framework/JUCE.git "${{ github.workspace }}/JUCE"
 
       # 2) [V-3 定论] SCVB 零 vcpkg 依赖 —— 共享内存,无 ixwebsocket(那是 Bridge 的 WebSocket 依赖),
@@ -55,17 +193,121 @@ jobs:
           echo "WEBVIEW2_USER_DATA_FOLDER=$env:RUNNER_TEMP\wv2ud" >> $env:GITHUB_ENV
 
       # 4) 缓存 WebView2 NuGet 包(CMake 配置期拉到 build/packages)
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/packages
           key: webview2-nuget-${{ env.WEBVIEW2_NUGET_VERSION }}
 
-      # 5) Configure —— 一次配置产出全部 5 个 target(core / Input / Output / tests / ipc_tests)
-      - name: Configure CMake
+      # 4b) MSVC 开发环境 —— 换 Ninja 后必须先有 cl.exe/INCLUDE/LIB。
+      #     不引第三方 setup-msvc action:那会把「哪个 MSVC」的决定权交给上游
+      #     (与 compliance.yml 里 gitleaks 不用 marketplace action 同一条纪律);
+      #     vswhere 是 VS Installer 自带的官方定位器,零新增依赖面。
+      #     只把编译必需的几个变量写进 GITHUB_ENV,**不整份 dump env** —— 整份 dump
+      #     会把多行值与其它 runner 变量一起灌进去,是一条现成的注入面。
+      - name: Set up MSVC environment (vswhere)
         shell: pwsh
         run: |
-          if (Test-Path build) { Get-ChildItem build -Exclude packages | Remove-Item -Recurse -Force }
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DJUCE_PATH="${{ github.workspace }}/JUCE" -DSCVB_BUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { Write-Error "vswhere 不存在:$vswhere"; exit 1 }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { Write-Error "vswhere 没找到带 VC 工具集的 VS 安装"; exit 1 }
+          & "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
+          # 白名单导出:PATH 与 MSVC 搜索路径变量。多行值一律拒绝(GITHUB_ENV 的
+          # `K=V` 单行语法承不住,静默截断比报错更难查)。
+          foreach ($k in @('PATH','INCLUDE','LIB','LIBPATH','VSINSTALLDIR','VCToolsInstallDir','WindowsSdkDir','WindowsSDKVersion','UCRTVersion')) {
+            $v = [Environment]::GetEnvironmentVariable($k)
+            if ($null -eq $v -or $v -eq '') { continue }
+            if ($v -match "`n") { Write-Error "环境变量 $k 含换行,拒绝写入 GITHUB_ENV"; exit 1 }
+            "$k=$v" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue)
+          if (-not $cl) { Write-Error "MSVC 环境已加载但 cl.exe 仍不在 PATH"; exit 1 }
+          Write-Host "cl.exe = $($cl.Source)"
+          # 工具集版本进 sccache 缓存键。从 VCToolsInstallDir 的末段取(形如 14.44.35207),
+          # **不**去跑 `cl.exe` 读 banner —— 无输入文件时它退非零,会把整步染红。
+          $tools = [Environment]::GetEnvironmentVariable('VCToolsInstallDir')
+          if (-not $tools) { Write-Error "VCToolsInstallDir 为空,取不到工具集版本"; exit 1 }
+          $msvc = Split-Path $tools.TrimEnd('\') -Leaf
+          "MSVC_VER=$msvc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "MSVC toolset = $msvc"
+
+      # 4c) Ninja —— CMAKE_<LANG>_COMPILER_LAUNCHER **只对 Makefile / Ninja 生成器生效**,
+      #     Visual Studio(MSBuild)生成器会直接忽略它。所以要用 sccache 就必须换生成器,
+      #     这不是可选项。用 Ninja Multi-Config 而不是单配置 Ninja:`--build --config Release`
+      #     与 `ctest -C Release` 逐字不变,产物目录层级也与 VS 生成器同形(.../Release/VST3/…),
+      #     下游 pluginval 与 artifact 的路径断言一条都不用改。
+      - name: Ensure Ninja
+        shell: pwsh
+        run: |
+          if (Get-Command ninja -ErrorAction SilentlyContinue) { ninja --version; exit 0 }
+          Write-Host "::warning::runner 镜像未预装 ninja,回退到 choco 安装"
+          choco install ninja -y --no-progress
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { Write-Error "ninja 安装后仍不可用"; exit 1 }
+          ninja --version
+
+      # 4d) sccache —— MSVC 编译缓存。
+      #     **不用 mozilla-actions/sccache-action**:org 的 action 白名单不放行它
+      #     (首推实测 = startup_failure,原话「is not allowed in synchain-oss/scvb」),
+      #     何况直接取发行版二进制本来就更合本仓纪律 —— compliance.yml 里的 gitleaks
+      #     同样是「钉版手动下载」而不是 marketplace action,理由逐字同款:不把版本
+      #     漂移权交给第三方。
+      #     版本单一真源 = `.sccache-version`,完整性真源 = `.sccache-sha256`。
+      #     **不**去下上游同目录的 `.sha256` 侧车文件:它和二进制同源同页,只能查传输
+      #     损坏,查不出发行页被换 —— 那样的校验是摆设。
+      - name: Install sccache (pinned + sha256)
+        shell: pwsh
+        run: |
+          $ver  = (Get-Content .sccache-version -Raw).Trim()
+          $want = (Get-Content .sccache-sha256  -Raw).Trim().ToLower()
+          if (-not $ver -or -not $want) { Write-Error "空的 .sccache-version / .sccache-sha256"; exit 1 }
+          $name = "sccache-v$ver-x86_64-pc-windows-msvc"
+          $zip  = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Invoke-WebRequest "https://github.com/mozilla/sccache/releases/download/v$ver/$name.zip" -OutFile $zip
+          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $want) { Write-Error "sccache 校验和不符: want=$want got=$got"; exit 1 }
+          $dest = Join-Path $env:RUNNER_TEMP "sccache"
+          Expand-Archive $zip -DestinationPath $dest -Force
+          $bin = Join-Path $dest $name
+          if (-not (Test-Path (Join-Path $bin "sccache.exe"))) { Write-Error "解包后没有 sccache.exe"; exit 1 }
+          $bin | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          New-Item -ItemType Directory -Force $env:SCCACHE_DIR | Out-Null
+          & (Join-Path $bin "sccache.exe") --version
+
+      # 4e) 把 sccache 的磁盘缓存跨 run 搬运。
+      #     键里带 **MSVC 工具集版本 + 本仓 CMakeLists 的哈希**:换编译器或改构建脚本
+      #     后旧对象大概率全不命中,让它换一把键重新长,而不是背着一坨死缓存。
+      #     键尾加 run_id 是为了**每次都写回**(actions/cache 只在 key 未命中时保存;
+      #     不加就永远只写第一次那份,后面新增的编译产物一个都存不下来),靠 restore-keys
+      #     的前缀去捞上一次那份。
+      - name: Restore sccache disk cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-${{ runner.os }}-${{ env.MSVC_VER }}-${{ hashFiles('CMakeLists.txt', 'src/**/CMakeLists.txt', 'tests/**/CMakeLists.txt', 'cmake/*.cmake', '.juce-version', '.sccache-version') }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ env.MSVC_VER }}-${{ hashFiles('CMakeLists.txt', 'src/**/CMakeLists.txt', 'tests/**/CMakeLists.txt', 'cmake/*.cmake', '.juce-version', '.sccache-version') }}-
+            sccache-${{ runner.os }}-${{ env.MSVC_VER }}-
+
+      # 5) Configure —— 一次配置产出全部 5 个 target(core / Input / Output / tests / ipc_tests)
+      #    **不再清 build/**:runner 是一次性的,build/ 里唯一的既有内容就是上面刚恢复的
+      #    build/packages 缓存 —— 清掉它等于每次重下 WebView2 NuGet。原来那句
+      #    `Remove-Item -Exclude packages` 是 VS 生成器时代为了躲开残留缓存写的,现在
+      #    既无残留可躲,留着只会把缓存目录附近的东西一起删。
+      - name: Configure CMake (Ninja Multi-Config + sccache)
+        shell: pwsh
+        run: |
+          # 只传 `-DCMAKE_CONFIGURATION_TYPES=Release`,**不传** `-DCMAKE_BUILD_TYPE`
+          # (PR#176 复审采纳):多配置生成器下配置由 `--build --config` / `ctest -C` 选,
+          # `CMAKE_BUILD_TYPE` 一律被忽略。留着不会出错,只会让人以为它在起作用 ——
+          # 下面 5b/6 的 `--config Release` 才是真正决定构建哪一档的地方。
+          cmake -S . -B build -G "Ninja Multi-Config" `
+            -DCMAKE_CONFIGURATION_TYPES=Release `
+            -DJUCE_PATH="${{ github.workspace }}/JUCE" `
+            -DSCVB_BUILD_TESTS=ON `
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          if ($LASTEXITCODE -ne 0) { Write-Error "configure failed"; exit 1 }
 
       # 5b) Build + 零 warning 断言(ADR-011 的 /W4 门在 CI 侧的机器强制)
       - name: Build (fail on any MSVC warning)
@@ -79,10 +321,33 @@ jobs:
             Write-Error "MSVC 告警 $($w.Count) 条,ADR-011 要求 /W4 零 warning"; exit 1
           }
 
-      - uses: actions/upload-artifact@v4
+      # 5c) 缓存命中率进日志。sccache 失效的形态是**静默零命中**(缓存没恢复上、键变了、
+      #     编译参数不可缓存),CI 照样全绿只是慢回 20 分钟。不打印就没人会发现。
+      #     **一条已知的「命中率恒为 0」成因**:sccache 对 MSVC 的 `/Zi`(独立 PDB)
+      #     不可缓存,只有 `/Z7`(调试信息嵌进 obj)可缓存。本仓 Release 不带调试信息
+      #     格式,所以现在没事;但哪天 JUCE 或 CMakeLists 给 Release 加上 `/Zi`,
+      #     表现就是这里 `Cache misses` 一直 100% 而 CI 全绿。先记在这,省得下次
+      #     有人对着 0 命中猜半天。
+      #     顺手停掉 server:让它把内存里的索引落盘,之后 actions/cache 的 post 步
+      #     搬走的才是完整的一份。
+      - name: sccache stats
+        if: always()
+        shell: pwsh
+        run: |
+          # 前面某步先挂掉时 sccache 可能根本没装上;诊断步不该把 run 再染红一次。
+          if (-not (Get-Command sccache -ErrorAction SilentlyContinue)) {
+            Write-Host "::warning::sccache 不在 PATH,本次没有编译缓存统计可看"
+            exit 0
+          }
+          sccache --show-stats
+          Write-Host "::notice::上面的 'Cache hits' / 'Cache misses' 就是本次编译缓存的实际收益"
+          sccache --stop-server | Out-Host
+          exit 0
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
-          name: SCVB-build-log-${{ github.sha }}
+          name: SCVB-build-log-${{ env.BUILT_SHA }}
           path: build.log
           retention-days: 7
 
@@ -90,7 +355,7 @@ jobs:
       - name: Unit tests (ctest)
         run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
 
-      # 7) pluginval —— 两个 bundle 都必须过
+      # 7) pluginval —— 三个 bundle 都必须过
       - name: Download pluginval
         shell: pwsh
         run: |
@@ -112,12 +377,12 @@ jobs:
             Write-Host "::endgroup::"
             if ($code -ne 0) { Write-Error "pluginval failed for $($b.Name) (exit $code)"; exit 1 }
           }
-          Write-Host "Non-GUI strictness-5 passed for both plugins; full GUI validation is a LOCAL gate (see scripts/gates.ps1)."
+          Write-Host "Non-GUI strictness-5 passed for all three plugins; full GUI validation is a LOCAL gate (see scripts/gates.ps1)."
 
       # 8) artifact(命名/保留策略见 §6.3)
       - name: Upload VST3 (PR)
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SCVB-VST3-win64-pr${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: build/**/*.vst3
@@ -126,29 +391,31 @@ jobs:
 
       - name: Upload VST3 (dev snapshot)
         if: github.event_name == 'push' && github.ref_name == 'dev'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SCVB-VST3-win64-dev-${{ github.sha }}
           path: build/**/*.vst3
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload VST3 (preview / feature mainline)
-        if: github.event_name == 'push' && github.ref_name != 'dev'
-        uses: actions/upload-artifact@v4
+      - name: Upload VST3 (preview / 出包前批次全量)
+        # push→feature/** 撤掉后,预览通道(D3 通道3)改由本条产出 —— 出包前那次
+        # dispatch 既是硬门也是取包处。**这一步不能漏**:漏了就得为了拿包再跑一次全量。
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          # 用 REF_SLUG 而不是 github.ref_name:feature/v1 含 '/',upload-artifact@v4 会直接
+          # 用 REF_SLUG 而不是原始 ref:feature/v1 含 '/',upload-artifact@v4 会直接
           # 报 Invalid artifact name。
-          name: SCVB-VST3-win64-preview-${{ env.REF_SLUG }}-${{ github.sha }}
+          name: SCVB-VST3-win64-preview-${{ env.REF_SLUG }}-${{ env.BUILT_SHA }}
           path: build/**/*.vst3
           if-no-files-found: error
           retention-days: 30
 
       - name: Upload pluginval logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: SCVB-pluginval-logs-${{ github.sha }}
+          name: SCVB-pluginval-logs-${{ env.BUILT_SHA }}
           path: ${{ runner.temp }}/pluginval-logs
           retention-days: 7
           if-no-files-found: ignore
