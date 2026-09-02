@@ -795,9 +795,12 @@ export function makeCaptureProgress(tS = 0, channels = allChannels()) {
  * @param {number} version 1..2
  * @param {string} reason §2.8 十值枚举之一
  * @param {number[]} channels 受影响轨(`snapshot`/`versionActive` 语义上必须是全部轨)
- * @param {{trajectoryGap?: boolean}} [opts] `trajectoryGap` = 在 `TRAJECTORY_GAP` 窗口内
- *   把 `TRAJECTORY_GAP_CHANNELS` 几条轨的段整段挖掉([J75] T43 轨迹图断线的定点验收面)。
- *   **缺省 false** —— 不传就与本参数引入前逐字节相同。
+ * @param {{trajectoryGap?: boolean, diffFillToCap?: boolean}} [opts]
+ *   `trajectoryGap` = 在 `TRAJECTORY_GAP` 窗口内把 `TRAJECTORY_GAP_CHANNELS` 几条轨的段
+ *   整段挖掉([J75] T43 轨迹图断线的定点验收面)。
+ *   `diffFillToCap` = 拿掉 `diff.changed` 的 `% 17` 抽稀,让它顶到封顶 200 条
+ *   ([SL-274] `?scenario=diff-flood`:页面那条「顶到封顶就印 N+」的分支只有满档才可达)。
+ *   两者**缺省都是 false** —— 不传就与各自引入前逐字节相同。
  */
 export function makeSegments(
     version = 1,
@@ -873,8 +876,9 @@ export function makeSegments(
             // `changedAtDisplayPrecision` 起,只登记「量化到 1 位小数后不同**且**幅度过
             // 半个显示步长」的段;mock 不许发出 native 发不出的那种「看不见的改动」,
             // 否则页面在 mock 下会显示「pan 4.2→4.2 · vol −8.0→−8.0」这种空条目。
-            // **这里没有加过滤代码**:实测四个 reason × 两个 version 共 232 条里,
-            // 最小 |Δpan| 恰好是 0.1(一整档),一条都滤不掉 —— 加了就是永不触发的死判据
+            // **这里没有加过滤代码**:实测两条路径(默认档 232 条 / 满档 1600 条)里,
+            // 逐条 `max(|Δpan|, |ΔvolDb|)` 的最小值分别是 0.2 / 0.1(都 ≥ 一整档),
+            // 一条都滤不掉 —— 加了就是永不触发的死判据
             // (删掉它没有任何用例会红)。真正决定这件事的是 `panJitter`/`volJitter` 的量级,
             // 所以约束落在 **smoke-mock.mjs 的断言**上:抖动哪天被调小到产生亚显示精度的
             // 改动,那条会立刻红、逼人当场处理,而不是被一段静默过滤盖过去。

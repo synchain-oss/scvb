@@ -702,40 +702,63 @@ log("\n=== ⑦ [J83] participate_in_auto_pan 默认档 ===");
 // (它们屏幕上的数字**确实变了**,滤掉是因为变化量太小,不是因为「看不见」)。
 // mock 若发得出 native 发不出的东西,页面级冒烟看到的就不是真机会有的画面。
 //
-// **为什么断在这里、而不是在 mock 里加一段过滤**:实测四个 reason x 两个 version
-// 共 232 条,最小 |dPan| 恰好是 0.1(一整档),过滤代码一条都滤不掉 —— 那是永不触发的
+// **为什么断在这里、而不是在 mock 里加一段过滤**:实测两条路径(默认档 232 条 /
+// 满档 1600 条),逐条 max(|dPan|,|dVol|) 的最小值分别是 0.2 / 0.1 —— 都 >= 一整档,
+// 过滤代码一条都滤不掉,那是永不触发的
 // 死判据,删掉它不会有任何用例变红。真正决定这件事的是 panJitter / volJitter 的量级,
 // 所以把约束写成断言:哪天有人把抖动调小到能产生亚显示精度的改动,这里立刻红,
 // 逼人当场决定「改抖动还是给 mock 加过滤」,而不是被一段静默过滤盖过去。
+// ⚠ **两条路径都要扫**([SL-274] 复审第 2 轮【重要】):`diffFillToCap` 拿掉的正是
+// `% 17` 那道抽稀,于是 diff-flood 下进表的是**另一批段** —— 它们的 panJitter/volJitter
+// 落点不受默认档那批的断言覆盖。`unit()` 是种子函数、完全确定,所以「有没有一条两维
+// 都低于闸门」这件事要么已经发生要么永不发生;不扫就等于不知道是哪一种。
 log("");
-log("=== [SL-274] mock 的 diff.changed 与 native 判据同口径 ===");
+log(
+    "=== [SL-274] mock 的 diff.changed 与 native 判据同口径(默认档 + diff-flood)===",
+);
 {
     const md = await import(u("web/shared/mock-data.js"));
     const GATE = 0.05; // 半个显示步长(native 的 kChangeAmplitudeGate)
-    let seen = 0;
-    let invisible = 0;
-    let minPan = Infinity;
-    for (const reason of ["vad", "segmentation", "analyze", "edit"]) {
-        for (let v = 1; v <= 2; v++) {
-            for (const c of md.makeSegments(v, reason).diff.changed || []) {
-                seen++;
-                const dp = Math.abs(c.panTo - c.panFrom);
-                const dv = Math.abs(c.volDbTo - c.volDbFrom);
-                minPan = Math.min(minPan, dp);
-                if (dp < GATE && dv < GATE) invisible++;
+    for (const fill of [false, true]) {
+        let seen = 0;
+        let invisible = 0;
+        // 报「逐条两维取大者」的最小值 —— 那才是断言真正问的那个量。
+        // (不报最小 |dPan|:满档下有整批 pan 一动不动、只有 volDb 变的条目,
+        //  那批完全合法 —— native 的判据本来就是两维取「或」。)
+        let minGated = Infinity;
+        for (const reason of ["vad", "segmentation", "analyze", "edit"]) {
+            for (let v = 1; v <= 2; v++) {
+                const frame = md.makeSegments(v, reason, undefined, {
+                    diffFillToCap: fill,
+                });
+                for (const c of frame.diff.changed || []) {
+                    seen++;
+                    const dp = Math.abs(c.panTo - c.panFrom);
+                    const dv = Math.abs(c.volDbTo - c.volDbFrom);
+                    minGated = Math.min(minGated, Math.max(dp, dv));
+                    if (dp < GATE && dv < GATE) invisible++;
+                }
             }
         }
+        const path = fill ? "diff-flood(满档)" : "默认档";
+        // 下界按路径分开:默认档 8 帧 × 29 条 = 232,满档 8 帧 × 200 条 = 1600。
+        // 写死「>100」对满档太松,会盖不住「封顶哪天被调小到 20」这种退化。
+        const floorN = fill ? 1000 : 100;
+        check(
+            seen > floorN,
+            `[${path}] 样本量够大(实得 ${seen} 条,应 >${floorN})`,
+        );
+        check(
+            invisible === 0,
+            `[${path}] 每条 changed 至少有一维过得了 native 的幅度闸门 ${GATE}` +
+                `(实得 ${invisible} 条两维都低于闸门 —— native 不会发这种条目,` +
+                "mock 也不该发:要么把 panJitter/volJitter 调回大幅度,要么给 mock 补过滤)",
+        );
+        log(
+            `  [${path}] ${seen} 条 changed,零条两维皆亚闸门;` +
+                `逐条 max(|dPan|,|dVol|) 的最小值 = ${minGated.toFixed(4)}`,
+        );
     }
-    check(seen > 100, `样本量够大(实得 ${seen} 条,应 >100)`);
-    check(
-        invisible === 0,
-        `每条 changed 至少有一维过得了 native 的幅度闸门 ${GATE}` +
-            `(实得 ${invisible} 条两维都低于闸门 —— native 不会发这种条目,` +
-            "mock 也不该发:要么把 panJitter/volJitter 调回大幅度,要么给 mock 补过滤)",
-    );
-    log(
-        `  ${seen} 条 changed,零条亚显示精度;最小 |dPan| = ${minPan.toFixed(4)}`,
-    );
 }
 
 // ---------------------------------------------------------------------------

@@ -7319,15 +7319,18 @@
                                              封顶 200 条明细,纯键盘用户到不了第 7 条以后。
                                              折叠头走 <details>/<summary> 原生、a11y 免费,这一层
                                              得自己补:`tabindex=0` 让它进 Tab 序,方向键/PageDown
-                                             才滚得动;`role=group` + aria-label 给它一个可读的名
-                                             (无名的可聚焦容器在读屏里只会念出一串条目)。
+                                             才滚得动;aria-label 给这个可聚焦容器一个可读的名
+                                             (无名的可聚焦区在读屏里只会念出一串条目)。
+                                             ⚠ **不写 `role`**(复审第 2 轮:第一版写了 `role=group`)——
+                                             `<ul>` 的隐式 role 就是 `list`,它本身就支持 aria-label;
+                                             盖成 group 之后读屏不再播报「列表,200 项」,而条目数正是
+                                             这块唯一有用的结构信息(尤其「200+」那一帧)。
                                              Chromium 的 keyboard-focusable scrollers 要看 WebView2
                                              Evergreen 的实际版本,不能当保底。CLAUDE.md §10。 -->
                                         <ul
                                             class="wave-diff__items"
                                             data-gb="wave-diff-list-items"
                                             tabindex="0"
-                                            role="group"
                                             data-t-aria="wave.diffItemsLabel"
                                             aria-label="本次改动明细"
                                         ></ul>

@@ -331,9 +331,20 @@ cdp.on((m) => {
         );
     }
 });
-// `.wave-diff__items` 的 max-height —— 与 web/output/index.html 的 CSS 同源。
-// 改那边必须同步改这里(改一处不改另一处 => 本套红)。
-const ITEMS_MAX_H = 168;
+// `.wave-diff__items` 的 max-height —— **从 CSS 里正则读**,不抄副本(复审第 2 轮)。
+// CSS 常量 import 不了,但读法与 smoke-mock.mjs 那条封顶对拍同源:注释绑不住,人会漏。
+// 第一版这里写死 168 并在注释里叮嘱「改那边必须同步改这里」—— 那正是本 PR 自己反对的形态。
+const ITEMS_MAX_H = (() => {
+    const css = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+    const m = css.match(/\.wave-diff__items\s*\{[^}]*?max-height:\s*(\d+)px/s);
+    if (!m) {
+        throw new Error(
+            "在 web/output/index.html 里找不到 .wave-diff__items 的 max-height —— " +
+                "规则改名/改写了就同步改这条正则,别让判据 (2) 静默空过",
+        );
+    }
+    return Number(m[1]);
+})();
 // 两档自动收起时长:**从被测源码直接取**,不抄副本(#179 复审【建议】)。
 // 抄一份常量的后果是「改了 tab-wave.js 却忘了改这里」时本套仍然绿 —— 那两个数是**被测
 // 行为**本身,副本一旦漂移,(4a)/(4c) 断的就不再是页面实际的收起时长。
@@ -496,7 +507,10 @@ check(
 eq(await evaluate(NUDGE), "ok", "(4c) 杆推得动(为长档上限再起一轮)");
 await sleep(1500);
 await evaluate(OPEN("true"));
-await sleep(DIFF_HIDE_OPEN_MS + 1500);
+// 余量 3s(复审第 2 轮:第一版 1.5s)。方向本来就安全 —— 等得越久越容易过 —— 但这套是
+// required check,CI runner 上 `setTimeout` 被延后一秒多就会假红,而多等 1.5s 对
+// 整套 ~60s 的 wall-clock 几乎没有影响。拿可以忽略的时间换一档确定性。
+await sleep(DIFF_HIDE_OPEN_MS + 3000);
 const m6 = await evaluate(MEASURE);
 check(
     !m6.diffShown,
