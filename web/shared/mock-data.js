@@ -874,9 +874,10 @@ export function makeSegments(
             if (seg.origin !== "auto") manualKept++;
             // diff.changed 只登记「本次真的改了值」的 auto 段。
             //
-            // [SL-274] 封顶从 8 抬到 **200** —— 与 native 的
+            // [SL-274] 封顶从 8 抬到 **200**(即本文件顶部的 `DIFF_CHANGED_CAP`)—— 与 native 的
             // `src/core/output/SegmentDiff.h::kMaxChangedItems`、web 侧的
-            // `tab-wave.js::DIFF_CHANGED_CAP` **三处同值**,改一处要三处一起改。
+            // `tab-wave.js::DIFF_CHANGED_CAP` **三处同值**;同值由
+            // `web-preview/tests/smoke-mock.mjs` 的三方对拍守着,不靠人记。
             // 改前的 8 是个「展示档」—— 而正因为它,**冒烟永远看不到用户看到的东西**:
             // 一次全量重分段在真机上给几十上百条,把 `.wave-toolbar` 撑到把泳道窗挤没
             // (用户 v5.6.5 实测「泳道完全消失」),mock 只给 8 条时页面看着一切正常。

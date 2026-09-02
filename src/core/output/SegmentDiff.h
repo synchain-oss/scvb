@@ -81,9 +81,10 @@ struct SegmentDiff
 // ⚠ **超出部分是被截掉的,不另发计数**:§2.8 的 `diff` 块字段是冻结的四个
 // (kept/added/removed/changed),加一个「还有多少条」的字段属契约变更,不在本卡范围。
 // `kept`/`added`/`removed` 三个**仍是精确总数**,只有 `changed[]` 这张明细表被截断。
-// 取 200:把最坏 DOM 规模钉在三位数。([SL-274] 起 `web/shared/mock-data.js` 里
-// `changed` 的封顶(字面量,无常量名)与 web 侧
-// `tab-wave.js::DIFF_CHANGED_CAP` 也是 200 —— **三处同值**,改一处要三处一起改;
+// 取 200:把最坏 DOM 规模钉在三位数。([SL-274] 起这是**三处同值**的常数,另两处是
+// `web/output/tab-wave.js::DIFF_CHANGED_CAP` 与 `web/shared/mock-data.js::DIFF_CHANGED_CAP`。
+// **同值由机器守,不靠人记**:`web-preview/tests/smoke-mock.mjs` 有一条三方对拍
+// (本常量走正则,两侧 JS 走 import 比运行时真值),改一处不改另两处 ⇒ 那条当场红。
 // web 侧拿它判「这一帧顶到封顶没有」,顶到就把计数渲染成「200+」而不是「200」。)
 //
 // ⚠ 封顶是**全局**的(`out` 跨 15 轨累积),而调用方按轨号顺序逐轨调用 —— 所以截断也

@@ -726,11 +726,17 @@ log(
         // (不报最小 |dPan|:满档下有整批 pan 一动不动、只有 volDb 变的条目,
         //  那批完全合法 —— native 的判据本来就是两维取「或」。)
         let minGated = Infinity;
+        let frames = 0;
+        let framesAtCap = 0;
         for (const reason of ["vad", "segmentation", "analyze", "edit"]) {
             for (let v = 1; v <= 2; v++) {
                 const frame = md.makeSegments(v, reason, undefined, {
                     diffFillToCap: fill,
                 });
+                frames++;
+                if ((frame.diff.changed || []).length === md.DIFF_CHANGED_CAP) {
+                    framesAtCap++;
+                }
                 for (const c of frame.diff.changed || []) {
                     seen++;
                     const dp = Math.abs(c.panTo - c.panFrom);
@@ -741,17 +747,23 @@ log(
             }
         }
         const path = fill ? "diff-flood(满档)" : "默认档";
-        // 下界按路径分开:默认档 8 帧 × 29 条 = 232,满档 8 帧 × 封顶 = 1600。
-        // 写死「>100」对满档太松,盖不住「fill 机制静默只出几条」这种退化。
-        // 满档那条**跟封顶挂钩**而不是写死 1000(复审第 3 轮):写死 1000 等于在这里
-        // 又压了一根「封顶 ≥ 126」的隐式钉 —— 哪天三处封顶被**合法地统一改小**(比如 100),
-        // 对拍仍绿、页面 (5) 用 import 的常量也仍自洽,却会在这里以「实得 800,应 >1000」
-        // 这种莫名其妙的文案红掉。本条的本职只是「fill 真的顶满了吗」。
-        const floorN = fill ? md.DIFF_CHANGED_CAP * 6 : 100;
-        check(
-            seen > floorN,
-            `[${path}] 样本量够大(实得 ${seen} 条,应 >${floorN})`,
-        );
+        // 「素材够不够」按路径分开断,且**满档那条不用任何魔数**(复审第 3/4 轮):
+        //   · 满档:直接断**每一帧都恰好顶到封顶**。这就是 `diffFillToCap` 的定义,
+        //     不是它的某个数值推论 —— 无论封顶被改大改小都自洽。
+        //     先后两版都栽在魔数上:`> 1000` 隐含「封顶 ≥ 126」,`> cap * 6` 隐含
+        //     「封顶 < 674」(每帧只有 505 条 auto 段,封顶再大也填不满)——
+        //     方向相反,同一种病。
+        //   · 默认档:`% 17` 抽稀后每帧 29 条,这里只要一个「素材没塌」的下界。
+        if (fill) {
+            check(
+                framesAtCap === frames,
+                `[${path}] 每一帧都顶到封顶 ${md.DIFF_CHANGED_CAP} 条` +
+                    `(实得 ${framesAtCap}/${frames} 帧;不满档 ⇒ 下面那条断言只扫到一部分素材,` +
+                    "而页面级冒烟的「200+」判据也会跟着落空)",
+            );
+        } else {
+            check(seen > 100, `[${path}] 样本量够大(实得 ${seen} 条,应 >100)`);
+        }
         check(
             invisible === 0,
             `[${path}] 每条 changed 至少有一维过得了 native 的幅度闸门 ${GATE}` +

@@ -830,8 +830,9 @@ export const DIFF_HIDE_MS = 6000;
 
 /**
  * [SL-274] `diff.changed` 明细的封顶条数 —— 与 native 的
- * `src/core/output/SegmentDiff.h::kMaxChangedItems` 和 `web/shared/mock-data.js` 里
- * `changed` 的封顶(字面量,无常量名)**三处同值**。
+ * `src/core/output/SegmentDiff.h::kMaxChangedItems` 和
+ * `web/shared/mock-data.js::DIFF_CHANGED_CAP` **三处同值**;
+ * **同值由 `web-preview/tests/smoke-mock.mjs` 的三方对拍守着,不靠人记**。
  * 只用来判「这一帧顶到封顶了吗」,顶到就把计数渲染成「N+」(它是下界,不是总数)。
  */
 export const DIFF_CHANGED_CAP = 200;
