@@ -70,6 +70,18 @@ const HANDLERS = [
     '"unhandledRejection"',
 ];
 
+// 从 idx 起找第一个 `{`,配对到它的 `}`,返回含两端的那一段。C 与 D 共用。
+function braceBody(src, idx) {
+    const open = src.indexOf("{", idx);
+    if (open < 0) return "";
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+        if (src[i] === "{") depth++;
+        else if (src[i] === "}" && --depth === 0) return src.slice(open, i + 1);
+    }
+    return "";
+}
+
 let failed = 0;
 for (const p of files) {
     const s = fs.readFileSync(p, "utf8");
@@ -87,7 +99,17 @@ for (const p of files) {
     // 语义完全正确的冒烟变红,而失败文案说的却是「没按剩余预算取上界」—— 把人带错方向。
     // (第一版这句注释就写在这儿,而下面那行正则里 `expr` 仍是逐字的 —— 注释与代码反着来,
     //  复审逮到了。现在形参名放开成任意标识符,这句话才是真的。)
-    const evalArg = s.match(
+    // ⚠ 锚点必须钉在 **`waitFor` 的函数体**里,不能对整个文件 `match`(复审第三轮):
+    // 放开形参名之后,全文件第一处 `evaluate(<标识符>,` 逐字都是**声明**
+    // (`async function evaluate(expression, timeoutMs) {`),不是 waitFor 里那次调用。
+    // 改前的逐字 `expr` 之所以没事,是因为 `\s*expr\s*,` 匹配不上 `expression,` ——
+    // 声明是被**构造性地排除**的;放宽之后那层保护没了,今天不红只是因为
+    // `{0,160}?` 够不着声明体里的 `);`(实测余量仅约 45 字符)。一旦越过去,捕获段会含
+    // `timeoutMs`(里面有子串 `ms`!)却不含 `Date.now() - t0` ⇒ 判红,而文案说
+    // 「waitFor 没按剩余预算取上界」—— 正是上面那三行注释声称已经消灭的「把人带错方向」。
+    const wfAt = s.search(/async function waitFor\s*\(/);
+    const wfBody = wfAt >= 0 ? braceBody(s, wfAt) : "";
+    const evalArg = wfBody.match(
         /evaluate\(\s*[A-Za-z_$][\w$]*\s*,([\s\S]{0,160}?)\)\s*;/,
     );
     if (
@@ -111,17 +133,7 @@ for (const p of files) {
         // `process.on("exit", teardown)` 改成 `process.on("exit", () => {})` 之后照样全绿 ——
         // 因为紧跟其后的信号循环体里有 `teardown`,落进了那个窗口。邻近度不是包含关系。
         // 改成**花括号配对取出真正的体**再看里面有没有 `teardown`。
-        const bodyAfter = (idx) => {
-            const open = s.indexOf("{", idx);
-            if (open < 0) return "";
-            let depth = 0;
-            for (let i = open; i < s.length; i++) {
-                if (s[i] === "{") depth++;
-                else if (s[i] === "}" && --depth === 0)
-                    return s.slice(open, i + 1);
-            }
-            return "";
-        };
+        const bodyAfter = (idx) => braceBody(s, idx);
         const covered = (h) => {
             // 形态一:`process.on("exit", teardown)` —— 直接把函数名当回调传进去。
             if (

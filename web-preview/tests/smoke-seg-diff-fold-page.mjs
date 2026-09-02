@@ -395,27 +395,29 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 // 这一行要真的到得了人眼前,两件事都得对(第 10/11 轮复审,**都是核过源码才写的**):
 //
 //   · **写法**:用 `writeSync(2, …)` 而不是 `console.error` —— `process.exit()` 不等挂起的
-//     异步写,stdout/stderr 被重定向成管道/文件时(gates 正是 `$out = (& node …)`)最后
-//     那行**可能被截断**。`writeSync` 直写 fd 2,退不退出都不会丢;
-//     stderr 到不到得了 gates:`scripts/gates.ps1:387` 是 `(& node $f.FullName 2>&1)`,
-//     **stderr 已并进 stdout**,所以写 fd 2 没问题。
-//   · **前缀必须含 `[FAIL]`**:gate 3e 红时打解释行的那句是
-//     `scripts/gates.ps1:398` 的 `Select-String -Pattern '\[FAIL\]'` ——
-//     **不带 `^` 锚点的子串匹配**。于是:
-//       (a) 缩进**从来不影响**(本文件 `check()` 打的就是 `  [FAIL] …`,照样被抓到);
-//       (b) 而 `[FATAL]` **不含子串 `[FAIL]`**(F-A-T-A-L ≠ F-A-I-L)—— 第 10 轮我
-//           写成 `[FATAL]` 并声称「靠去掉缩进解决」,**两句都错**:缩进不是问题,
-//           而那个前缀让这条被整条过滤,gate 3e 只会打一行文件名、零解释行。
-//     所以这里打 `[FAIL] FATAL …`:含 `[FAIL]` 走同一条渠道(并计入那 20 行上限),
-//     后面的 `FATAL` 保住「这不是普通断言失败,是整套死了」的语义。
+//     异步写,stdout/stderr 被重定向成管道/文件时最后那行**可能被截断**。
+//     `writeSync` 直写 fd 2,退不退出都不会丢。
+//     ⚠ 这一条的**理由已被 [SL-287] 改掉**(结论仍成立):原文写「gates 是
+//     `(& node … 2>&1)`,stderr 已并进 stdout」—— 现在 gate 3e 用
+//     `Start-Process … -RedirectStandardOutput/-RedirectStandardError` 写**两个独立文件**,
+//     没有 `2>&1` 了;stderr 仍到得了 gates,是因为它把两个文件**先后拼进** `$out`。
+//     顺带一个新事实:stdout 与 stderr 是**先后拼接、不是交错** —— 这一行会整体排在所有
+//     stdout 之后,读日志时别按出现顺序去推因果。
+//   · **前缀**:[SL-287] 之前 gate 3e 只捞 `Select-String '\[FAIL\]'`,而
+//     `[FATAL]` **不含子串 `[FAIL]`**(F-A-T-A-L ≠ F-A-I-L),所以本文件当时改打
+//     `[FAIL] FATAL …` 才不至于被整条过滤。**现在 gate 3e 捞 `'\[FAIL\]|\[FATAL\]'`**,
+//     那个变通已无必要,故与另外五套统一成 `[FATAL]`。
+//     (缩进从来不影响:那是**不带 `^` 锚点的子串匹配**。第 10 轮我把原因归到缩进上,写错了。)
 //     [J96] 之后本地 gates 是子 PR 上唯一的门,这条诊断丢了就真的没有别处能看。
+//   · 六套里只有本文件用 `writeSync(2, …)`,另五套是 `console.error` —— 那是本文件多出来的
+//     一层稳,不是不一致的 bug;要不要推广到另五套,留给动它们的下一张卡。
 for (const ev of ["uncaughtException", "unhandledRejection"]) {
     process.on(ev, (e) => {
         const msg = e && e.message ? e.message : String(e);
         try {
-            writeSync(2, `  [FAIL] FATAL ${ev}:${msg}\n`);
+            writeSync(2, `  [FATAL] ${ev}:${msg}\n`);
         } catch {
-            console.error(`  [FAIL] FATAL ${ev}:`, msg);
+            console.error(`  [FATAL] ${ev}:`, msg);
         }
         teardown();
         process.exit(1);
