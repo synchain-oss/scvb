@@ -410,6 +410,11 @@ export const T = {
         "master.msHint": "−100 偏 Mid / +100 偏 Side",
         "master.distHint": "柱高 = 音量,横位 = 声像;横线 = 立体声源张开度",
         "master.distAxis": "左 L · −50 · 中 C · +50 · 右 R",
+        // [SL-280] 0 dB 基准线左端小标注。三语同值:它是**单位记号**不是句子,
+        // 翻译成「0 分贝」反而不如原样(dB 在三语里都是通用写法)。
+        // ⚠ check-i18n 的「三语逐字相同 ⇒ 判占位符」红线目前只作用于 GUIDE_KEYS
+        // (guide.rule1..9),普通词条不受它管;若将来扩到全量 key,本条须显式豁免。
+        "master.distZero": "0 dB",
 
         // T43 / [J75] A+B:分布图双视图(分布 ↔ 轨迹)+ 15 色轨道配色。
         // EN/FR 为本卡自译,与 tour.step* 同批**待 U17 人工审校**。
@@ -1300,6 +1305,7 @@ export const T = {
         "master.distHint":
             "Bar height = level, horizontal position = pan; the line = stereo source width",
         "master.distAxis": "L · −50 · C · +50 · R",
+        "master.distZero": "0 dB",
 
         // T43 / [J75] A+B —— 自译,**待 U17 人工审校**。
         "chart.modeGroup": "Distribution chart view",
@@ -2106,6 +2112,7 @@ export const T = {
         "master.distHint":
             "Hauteur = volume, position horizontale = panoramique ; le trait = largeur de la source stéréo",
         "master.distAxis": "G · −50 · C · +50 · D",
+        "master.distZero": "0 dB",
 
         // T43 / [J75] A+B —— 自译,**待 U17 人工审校**。
         "chart.modeGroup": "Vue du graphique de répartition",

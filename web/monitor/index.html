@@ -380,6 +380,29 @@
             .dist-plot__q--r {
                 left: 75%;
             }
+            /* [SL-280] 0 dB 基准横线。柱底在 bottom:15px、柱高是块高百分比,所以
+               这条线落在 calc(15px + var(--zero-h)) 上时,正好压在「0 dB 那根柱」的顶边。
+               --zero-h 由 dist-motion 建器时写入(= barHeightPct(0) = 61.33%),**不给缺省**:
+               喂不到就是本条声明失效、线不画,由页面级用例抓 —— 好过画在一个看着合理却错的位置。
+               次亮档与 .dist-plot__base 同色(--w-35),与底轴刻度同风格。 */
+            .dist-plot__zero {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: calc(15px + var(--zero-h));
+                height: 1px;
+                background: var(--w-35);
+            }
+            .dist-plot__zero-label {
+                position: absolute;
+                left: 2px;
+                bottom: 2px;
+                font-family: var(--ff-mono);
+                font-size: var(--fs-85);
+                line-height: 1;
+                color: var(--txt-4);
+                pointer-events: none;
+            }
             .dist-plot__base {
                 position: absolute;
                 left: 0;
@@ -910,6 +933,14 @@
                             aria-hidden="true"
                         ></div>
                         <div class="dist-plot__base" aria-hidden="true"></div>
+                        <!-- [SL-280] 0 dB 基准横线 + 左端小标注(词条 master.distZero,与 Output 页共用) -->
+                        <div class="dist-plot__zero" aria-hidden="true">
+                            <span
+                                class="dist-plot__zero-label"
+                                data-t="master.distZero"
+                                >0 dB</span
+                            >
+                        </div>
                         <!-- 柱体 + 立体声张开横线由 app.js 经 dist-motion.js 生成并逐帧补间
                              (SL-192:viz 是 4Hz 数据面,直出会让 15 根柱同拍齐跳)。
                              本容器**整块归它所有**:结构变化时会被整体重拼,别往里放静态节点。 -->

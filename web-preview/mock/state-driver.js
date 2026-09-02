@@ -25,6 +25,7 @@
 // 依赖方向:web-preview/ → web/(单向,06 §6.2)。本文件不碰 DOM 结构、不复制任何 UI 代码。
 // =============================================================================
 
+import { paramIdOf } from "../../web/shared/param-id.js";
 import {
     createMockBackend,
     makeDefaultParams,
@@ -127,6 +128,12 @@ export const SCENARIO_MAP = Object.freeze({
     // 覆盖不到真正危险的那条 ——「stale 一上来就为真(基线在 state 到达前快照的),
     // 用户什么都没做,框却弹了」。有了本档,那条误报路径在冒烟里才可达。
     "loudness-nondefault": "fifteen-tracks",
+    // [SL-280] 分布图柱高映射的回归场景:DEMO_TRACKS 的推子行程最高 0.62(= −1.7 dB),
+    // 全部落在旧公式的**饱和点之下**,所以「−1.82 dB 以上一律画成 88%」这条缺陷在
+    // preview 里三个月都没露过面 —— mock 数据恰好避开了缺陷区间。本场景把若干轨顶到
+    // **0 dB 及以上**,让「不同 vol ⇒ 不同柱高」在 unity 附近可断言。
+    // 有意**不动 DEMO_TRACKS**:那张表是设计稿 1382-1397 行的转写,改数字等于偏离转写口径。
+    "hot-levels": "fifteen-tracks",
     // [SL-247 / J92a] 布防还在、采集却已关 —— 横幅 ⑩ 的世界。
     // 真机到达路径有两条(布防期手动开跟随引擎被互斥关了采集 / 布防期手动关采集 = §1.23
     // 裁定③ 接管),对页面而言是同一态,故一个场景即可覆盖。
@@ -521,6 +528,22 @@ export function buildWorld(opts = {}) {
             guide_seen_global: false,
             tour_seen_global: false,
         };
+    }
+    if (opts.scenario === "hot-levels" && outputParams) {
+        // [SL-280] 只覆写 vol 参数面初值,不动段表、不动周期事件语义。
+        // 取值有意跨过 0 dB 两侧且**两两不等**:旧公式下 ch1..ch4 会全部画成 88%(饱和),
+        // 新公式下四根柱高度两两不同 —— 页面级用例断的就是这个差。
+        const HOT = { 1: 12, 2: 6, 3: 0, 4: -6 };
+        const hot = { ...outputParams.values };
+        const v =
+            outputSnapshot && outputSnapshot.global
+                ? outputSnapshot.global.version_active || 1
+                : 1;
+        // ParamID 走 `paramIdOf`,不在这里再拼一份 `v{v}_t{tt}_vol` —— 格式只此一处真源。
+        for (const [ch, db] of Object.entries(HOT)) {
+            hot[paramIdOf(v, Number(ch), "vol")] = db;
+        }
+        outputParams = { ...outputParams, values: hot };
     }
     if (opts.scenario === "curve-editor" && outputParams) {
         // T34:MS 等效增益叠加线演示 —— 非零 ms_balance 使 g_eq 曲线偏离 0 dB 可见。

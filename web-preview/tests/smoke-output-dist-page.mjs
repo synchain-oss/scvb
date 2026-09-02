@@ -1023,6 +1023,108 @@ try {
     }
 
     // =========================================================================
+    // ⑪ [SL-280] 柱高真的随音量变 —— 用户点名的那一幕
+    // -------------------------------------------------------------------------
+    // 用户实测(v5.6.5):「柱状图里面的柱子高度不是应该代表音量吗,现在为什么都一样高?」
+    //
+    // 定谳:柱高一直绑着 volDb(不是没做),病在旧式归一后**又除 0.70** 再夹 8..88 ——
+    // volDb ≥ −1.824 dB 一律画成 88%。每轨 vol 出厂默认就是 0 dB,真实工程各轨也多坐在
+    // unity 附近,于是齐刷刷一样高。
+    //
+    // ⚠ 为什么必须页面级、纯函数用例不够:纯函数断的是 `barHeightPct` 的返回值,
+    //   断不到「这个数真的变成了屏幕上的高度」。中间还隔着 `--h` 写入面、CSS
+    //   `height: var(--h)` 与容器高 —— 任何一环断掉,纯函数照样全绿而柱子照样一样高。
+    //   这里读 `getBoundingClientRect().height`,量的是渲染结果。
+    //
+    // ⚠ 用 `?scenario=hot-levels`:DEMO_TRACKS 的推子行程最高 0.62(−1.7 dB),全部落在
+    //   旧公式饱和点之下 —— 换句话说**默认 fixture 恰好避开了缺陷区间**,这正是它三个月
+    //   没被发现的原因。该场景把 ch1..ch4 顶到 +12 / +6 / 0 / −6 dB,跨过 unity 两侧。
+    // =========================================================================
+    {
+        newBucket("sl280-bar-height");
+        await cdp.send("Page.navigate", {
+            // ⚠ **不带 `play=1`**:走带一跑,mock 的引擎打印头就按段表逐帧改写 vol 参数面,
+            // 把本场景的初值冲掉(实测柱高会朝段表值漂,四档差被压成 ~1.2dB 一档)。
+            // 柱高映射与走带无关,静态页反而是确定性的量法。
+            url: `${base}/web-preview/output.html?scenario=hot-levels`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+        // rAF 补间从上一状态插到目标值,补间窗 40ms 级;给足余量再量,避免量在中途。
+        await sleep(600);
+
+        // 逐柱读**渲染高度**(按 data-ch 取,不靠下标)
+        const barH = IN(`
+            const out = {};
+            for (const n of all(".dist-bar")) {
+                const ch = n.getAttribute("data-ch");
+                out[ch] = Math.round(n.getBoundingClientRect().height * 100) / 100;
+            }
+            return out;
+        `);
+        const hs = await evaluate(barH);
+        log(
+            `  ch1..ch4 渲染高度:${JSON.stringify([1, 2, 3, 4].map((c) => hs[c]))}`,
+        );
+
+        check(
+            hs && Object.keys(hs).length > 0,
+            `(a) 前提:页面上确有柱(实得 ${hs && Object.keys(hs).length} 根)`,
+        );
+        const quad = [1, 2, 3, 4].map((c) => hs[String(c)]);
+        check(
+            quad.every((v) => typeof v === "number" && v > 0),
+            `(a) 前提:ch1..ch4 四根柱都量到了高度(实得 ${JSON.stringify(quad)})`,
+        );
+
+        // ★ 核心:+12 / +6 / 0 / −6 dB 四档,渲染高度必须**两两不同且严格递减**。
+        //   旧式下这四档的 --h 全是 88% ⇒ 四个数全等 ⇒ 本条红。
+        check(
+            new Set(quad).size === quad.length,
+            `(b) ★ 四档音量的柱高**两两不同**(实得 ${JSON.stringify(quad)})` +
+                ` —— 用户报的「都一样高」就是这四个数全等`,
+        );
+        check(
+            quad[0] > quad[1] && quad[1] > quad[2] && quad[2] > quad[3],
+            `(c) ★ 音量越大柱越高,严格递减 +12 > +6 > 0 > −6(实得 ${JSON.stringify(quad)})`,
+        );
+
+        // ---- 0 dB 基准线:必须落在「0 dB 那根柱(ch3)的顶边」上
+        //
+        // 这一条同时是 `--zero-h` 的**接线判据**:CSS 侧不给缺省,dist-motion 若没把
+        // 变量写下去,`bottom` 声明失效 ⇒ 线跑到容器底部 ⇒ 两者的 top 差出一大截。
+        const zeroGeom = IN(`
+            const line = q(".dist-plot__zero");
+            const bar3 = q('.dist-bar[data-ch="3"]');
+            if (!line || !bar3) return null;
+            const lr = line.getBoundingClientRect();
+            const br = bar3.getBoundingClientRect();
+            const cs = w.getComputedStyle(line);
+            return {
+                lineTop: Math.round(lr.top * 100) / 100,
+                barTop: Math.round(br.top * 100) / 100,
+                bottom: cs.bottom,
+                label: (q(".dist-plot__zero-label") || {}).textContent || "",
+            };
+        `);
+        const zg = await evaluate(zeroGeom);
+        log(`  0 dB 线:${JSON.stringify(zg)}`);
+        check(!!zg, "(d) 前提:页面上确有 .dist-plot__zero 与 ch3 的柱");
+        if (zg) {
+            check(
+                Math.abs(zg.lineTop - zg.barTop) <= 1.5,
+                `(d) ★ 0 dB 基准线压在 0 dB 那根柱的顶边上` +
+                    `(线 top ${zg.lineTop} vs 柱 top ${zg.barTop},容差 1.5px)` +
+                    ` —— 也是 --zero-h 的接线判据:没写进去 bottom 就失效`,
+            );
+            check(
+                /^0\s*dB$/.test(String(zg.label).trim()),
+                `(e) 基准线左端标注是 "0 dB"(词条 master.distZero;实得 ${JSON.stringify(zg.label)})`,
+            );
+        }
+
+        assertClean("SL-280 柱高映射");
+    }
+
     // ⑨ [SL-269] 分布图的**光栅面**:合成层隔离 + 零宽张开线
     // -------------------------------------------------------------------------
     // 用户实测(v5.6.5,WebView2):播放中每根柱子的顶端往上拖出一条与轨同色的细竖线,

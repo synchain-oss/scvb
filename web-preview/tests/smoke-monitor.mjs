@@ -77,11 +77,9 @@ log("=== ① 提取件不回归(Output 侧零行为变化)===");
         TM.distGeometry === DC.distGeometry,
         "tab-master.distGeometry ≡ distribution-chart.distGeometry(再导出,不是副本)",
     );
-    eq(
-        DC.distGeometry(0, -6, 100),
-        { x: 50, h: 71.43, half: 16 },
-        "居中轨几何",
-    );
+    // [SL-280] 期望值随柱高映射改过:−6 dB 旧式是 71.43(归一 /0.70 之后),
+    // 新式线性铺满 8..88 ⇒ 48。x 与 half 不受影响(只有 h 的公式变了)。
+    eq(DC.distGeometry(0, -6, 100), { x: 50, h: 48, half: 16 }, "居中轨几何");
     eq(
         DC.distGeometry(-100, 12, 100),
         { x: 0, h: 88, half: 0 },
@@ -2521,6 +2519,68 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
             "0px",
             "(e) ★ 格式化后为零宽 ⇒ 线粗归零(按原始 half>0 判的话这里是 1.5px)",
         );
+    }
+
+    // ---- [SL-280] 柱高必须**线性铺满**,不得在任一段饱和压平
+    //
+    // 用户实测(v5.6.5):分布图「柱子高度都一样高」。病灶不是「没做这个功能」——
+    // 柱高一直绑着 volDb —— 而是旧式在归一之后**又除 0.70** 再夹到 8..88:
+    // 归一值 0.616 就撞上夹子,解出来是 **volDb ≥ −1.824 dB 一律 88%**。
+    // 而每轨 vol 出厂默认就是 0 dB,真实工程各轨也多坐在 unity 附近 ⇒ 齐刷刷一样高。
+    // (更糟:J03 定「0 dB 在推子行程 2/3 = 0.667」,而饱和点落在 0.616 —— 恰好卡在
+    //  最常用的那个值**之前**顶到头。)
+    //
+    // ★ 删除式:把 `/ 0.70` 加回 `barHeightPct`,(b) 严格单调当场红,(c)(d) 也红。
+    {
+        eq(
+            DC.barHeightPct(DC.VOL_MIN_DB),
+            DC.BAR_H_MIN_PCT,
+            "(a) 下端点对齐 8%",
+        );
+        eq(
+            DC.barHeightPct(DC.VOL_MAX_DB),
+            DC.BAR_H_MAX_PCT,
+            "(a) 上端点对齐 88%",
+        );
+
+        // 逐 dB 严格单调 —— 比断几个点位难绕过:任何「某一段压平」的写法都会在这里红。
+        const hs = [];
+        for (let v = DC.VOL_MIN_DB; v <= DC.VOL_MAX_DB; v += 1) {
+            hs.push(DC.barHeightPct(v));
+        }
+        check(
+            hs.every((v, i) => i === 0 || v > hs[i - 1]),
+            `(b) ★ −24..+12 dB 上逐 dB **严格单调**(旧式在 −1.82 dB 以上全是 88)`,
+        );
+
+        // 用户那一幕的直接还原:unity 附近两两不同。旧式下这四个全是 88。
+        const hot = [0, 3, 6, 12].map((v) => DC.barHeightPct(v));
+        check(
+            new Set(hot).size === hot.length,
+            `(c) ★ 0 / +3 / +6 / +12 dB 四档柱高**两两不同**(实得 ${hot.join(" / ")})` +
+                ` —— 旧式在这四档上全是 ${DC.BAR_H_MAX_PCT}`,
+        );
+        check(
+            DC.barHeightPct(-1.82) < DC.BAR_H_MAX_PCT,
+            `(d) ★ 旧式的饱和点 −1.82 dB 不再顶到上夹(实得 ${DC.barHeightPct(-1.82)})`,
+        );
+
+        // 0 dB 基准线与「0 dB 那根柱的顶边」同源 —— 两处各写一份就是本仓刚清过的那类漂移。
+        eq(
+            DC.zeroDbLinePct(),
+            Math.round(DC.barHeightPct(0) * 100) / 100,
+            "(e) ★ zeroDbLinePct() 就是 barHeightPct(0),不是另写的一个数",
+        );
+        eq(DC.zeroDbLinePct(), 61.33, "(e) 0 dB 基准线落在 61.33%(规格补记)");
+
+        // 几何出口也走同一条:distGeometry.h 必须等于 barHeightPct。
+        for (const v of [-24, -12, -1.82, 0, 6, 12]) {
+            eq(
+                DC.distGeometry(0, v, 100, 100).h,
+                Math.round(DC.barHeightPct(v) * 100) / 100,
+                `(f) distGeometry(volDb=${v}).h 取自 barHeightPct`,
+            );
+        }
     }
 
     // ---- 页面接线:分布图不再走「收到帧就重拼 innerHTML」那条路

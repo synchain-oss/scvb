@@ -51,6 +51,7 @@ import {
     distBarsHtml,
     distGeometry,
     distSpanVars,
+    zeroDbLinePct,
 } from "./distribution-chart.js";
 
 /**
@@ -200,6 +201,18 @@ export function createDistMotion(opts) {
         typeof o.getGlobalWidthPct === "function"
             ? o.getGlobalWidthPct
             : () => 100;
+
+    // [SL-280] 把 0 dB 基准线的高度喂给 CSS。**挂在这里而不是各页自己写**:两页都只经
+    // 本工厂拿到 container(Output 的 wireChart、Monitor 的 app.js),写成两份就又是
+    // 「同一个数各存一份」——本仓刚为这类漂移连收过几轮。
+    // 线要落在「0 dB 那根柱的顶边」上,而柱顶由 `barHeightPct` 决定,故两者同源
+    // (`zeroDbLinePct()` 就是 `barHeightPct(0)`)。CSS 侧**不给缺省**:喂不到就是
+    // 声明失效,由页面级用例抓,而不是画在一个看起来合理却错的位置上。
+    const plot =
+        container && container.closest && container.closest(".dist-plot");
+    if (plot && plot.style) {
+        plot.style.setProperty("--zero-h", zeroDbLinePct() + "%");
+    }
 
     // `null` 而不是 `""`:空行集的指纹也是 `""`,用它当「还没有过任何一帧」会让
     // 「reset 之后收到的第一帧」被误判成「结构没变」,于是从上一组的值插过去。
