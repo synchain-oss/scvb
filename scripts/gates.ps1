@@ -436,7 +436,8 @@ Write-Host '=== Gate 3k: 字体保留名(woff2 name 表 <-> OFL-1.1 §3 RFN 断�
 # 违规面还有第三处:进包的 CSS/JS 里的 `@font-face` family 与字体栈字面量 —— 只守 woff2 的话,
 # 把 family 改回上游名而字体一字不动,解表照样全绿,而分发出去的 CSS 又在呈现 RFN。
 # 故本门禁同时扫 web/ 下的 .css/.js/.html(vendored 的 web/js/juce/ 除外),
-# 判据只落在字体名上下文(font-family: 声明 / --ff-* 变量 / 含通用族关键字的字符串),
+# 判据只落在字体名上下文(font-family: / font: 简写 / 驼峰 fontFamily / --ff-* 变量 /
+# 含通用族关键字的字符串字面量含模板串 / src: local(...) 里的家族名),
 # 不是整文件 grep —— RFN "Source" 是常用词,整文件扫会刷出几十条假红。
 #
 # **先自检再扫**,理由与 3j 逐字同款:本门禁的失效模式是「静默放行」——

@@ -27,16 +27,21 @@ woff2 是 brotli 压缩的,**grep 二进制不命中不等于名字已清除**,�
 就没有机检:把 family 改回 "IBM Plex Sans" 而 woff2 一字不动,解表照样全绿,可随 `.vst3`
 分发的 CSS 又把 RFN 呈现给用户了。故本脚本另扫 `web/` 下的文本资源(即 `ScvbWebAssets.cmake`
 进包的那批 `.css`/`.js`/`.html`,vendored 的 `web/js/juce/` 除外)。
-判据**只落在字体名上下文**(`font-family:` 声明、`--ff-*` 字体栈变量、含 CSS 通用族关键字的
-字符串字面量),不是整文件 grep:RFN "Source" 是个常用词,整文件扫会在 `source_channels` /
+判据**只落在字体名上下文**:字体声明值(`font-family:` / `font:` 简写 / 驼峰 `fontFamily`
+的赋值)、`--ff-*` 字体栈变量、含 CSS 通用族关键字的字符串字面量(含反引号模板串)、
+以及 `src: local(…)` 里的家族名。
+不是整文件 grep:RFN "Source" 是个常用词,整文件扫会在 `source_channels` /
 `renderSource()` 这类标识符上刷出几十条假红,而假红最终会把整道扫描废掉。
+读不出来的文件(非 UTF-8)判红而不是替换掉坏字节接着扫 —— 坏字节可能正落在 RFN 中间。
 
 依赖:fontTools + brotli(解 woff2 必需):`pip install fonttools brotli`
 
 用法:
     python scripts/check-font-names.py              # 扫 web/fonts 的 woff2 + web/ 的文本资源(gates 3k)
     python scripts/check-font-names.py --self-test  # 先验门禁本身:坏样例必红、署名样例不误伤
-    python scripts/check-font-names.py <目录>       # 指定目录:woff2 与文本资源都扫它(自测与 CI 之外一般用不到)
+    python scripts/check-font-names.py <目录>       # 指定目录:woff2 与文本资源都扫它 ——
+                                                   # 该目录须两样都有,只传 web/fonts 会红在
+                                                   #「没扫到文本资源」上。自测与 CI 之外一般用不到
 """
 import glob, os, re, shutil, sys, tempfile
 
@@ -89,10 +94,22 @@ GENERIC_FAMILIES = (
     "cursive",
     "fantasy",
 )
-# 字体名上下文:① font-family 声明值 ② --ff-* 字体栈变量值 ③ 含通用族关键字的字符串字面量。
+# 字体名上下文:① 字体声明值 ② --ff-* 字体栈变量值 ③ 含通用族关键字的字符串字面量
+# ④ src: local(…) 的实参(见下面 _LOCAL_RE)。
 # ①② 跨行(prettier 会把长字体栈折行),故值取到 `;` / `}` 为止而不是取到行尾。
-_DECL_RE = re.compile(r"(?:font-family|--ff-[\w-]*)\s*:\s*([^;{}]{0,400})", re.S)
-_STRING_RE = re.compile(r"""(['"])((?:(?!\1)[^\\\n]){0,400})\1""")
+# 声明名收三类:CSS 的 `font-family` 与 `font` 简写、DOM/对象字面量的驼峰 `fontFamily`;
+# 分隔符收 `:` 与 `=` —— `el.style.fontFamily = "…"` 与 `ctx.font = ...` 都是赋值不是声明。
+# 字符串字面量的引号含**反引号**:canvas 那条路已经在用模板串拼字体
+# (trajectory-chart.js 的 `ctx.font`),字体栈哪天直接写进模板串是自然的下一步。
+# 转义引号靠 `\\.` 吞掉:少了它,一条含 \" 的字体栈会整条掉出扫描面。
+_DECL_RE = re.compile(
+    r"(?:font-family|fontFamily|--ff-[\w-]*|font)\s*[:=]\s*([^;{}]{0,400})", re.S
+)
+_STRING_RE = re.compile(r"""(['"`])((?:\\.|(?!\1)[^\n]){0,400})\1""")
+# ④ `@font-face { src: local("IBM Plex Sans"), url(…) }` —— 标准写法,指的是**装在用户机器上**
+# 的那款上游字体,同样是把 RFN 呈现给用户;而它既不在声明值里(声明名是 src),
+# 引号里也没有通用族关键字,前三条都认不出它。全仓现无 local() 调用,接进来零误伤。
+_LOCAL_RE = re.compile(r"""local\(\s*(?:(['"])(.{0,200}?)\1|([^)]{0,200}?))\s*\)""", re.S)
 
 # 与 fetch_fonts.py 对拍:生成侧与门禁侧各自独立声明(门禁不该把判据整个托付给被审查的
 # 那一侧),但两处一旦漂移就会出现「生成侧按新词改名、门禁侧仍按旧词断言」的静默失效,
@@ -149,6 +166,7 @@ def font_contexts(text):
         for m in _STRING_RE.finditer(text)
         if any(g in m.group(2) for g in GENERIC_FAMILIES)
     ]
+    out += [m.group(2) or m.group(3) or "" for m in _LOCAL_RE.finditer(text)]
     return out
 
 
@@ -173,8 +191,16 @@ def check_text_assets(root, verbose=True):
             if not fname.endswith(TEXT_ASSET_EXTS):
                 continue
             path = os.path.join(dirpath, fname)
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
+            rel = os.path.relpath(path, root)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+            except UnicodeDecodeError as exc:
+                # 判红,而不是 errors="replace" 接着扫:读不干净的文件里 RFN 可能正好落在
+                # 被替换掉的那几个字节上 —— 那就成了「扫过了但没扫到」。全仓 UTF-8 是既有
+                # 纪律,真出现非 UTF-8 说明别处坏了,让它红在这句人话上,别抛 traceback。
+                problems.append("%s 不是 UTF-8,读不出来无从断言(%s)" % (rel, exc))
+                continue
             scanned += 1
             for ctx in font_contexts(text):
                 folded = ctx.casefold()
@@ -182,7 +208,7 @@ def check_text_assets(root, verbose=True):
                     if needle in folded:
                         problems.append(
                             "%s 的字体名上下文含保留字体名 %r:%r"
-                            % (os.path.relpath(path, root), needle, " ".join(ctx.split()))
+                            % (rel, needle, " ".join(ctx.split()))
                         )
     # 一份都没扫到 = 目录写错 / 扩展名口径漂了,是**空转的门禁**而非通过(同 REQUIRED_IDS)。
     if not scanned:
@@ -286,6 +312,26 @@ def self_test():
             fh.write('@font-face {\n  font-family: "IBM Plex Sans";\n}\n')
         with open(os.path.join(assets, "bad.js"), "w", encoding="utf-8") as fh:  # 无声明名,靠通用族关键字认出
             fh.write("const F = { mono: '\"IBM Plex Mono\", ui-monospace, monospace' };\n")
+        # 模板串 / 驼峰属性 / 转义引号 / font 简写:都是这个代码库自然会走到的写法,
+        # 漏掉哪一种都等于给 RFN 留一条门。**每种写法一个文件、一条断言** —— 合成一个文件
+        # 数命中条数是没牙的:同一行常被声明名与字符串两条路重复命中,删掉一种支持后
+        # 条数仍够,断言照样绿。故每个样例都刻意只有一条路认得出它:
+        with open(os.path.join(assets, "bad_tpl.js"), "w", encoding="utf-8") as fh:
+            # 反引号模板串,属性名 `mono` 不是声明名 ⇒ 只有 _STRING_RE 的反引号支持认得出
+            fh.write("const F = { mono: `\"IBM Plex Mono\", ui-monospace, monospace` };\n")
+        with open(os.path.join(assets, "bad_camel.js"), "w", encoding="utf-8") as fh:
+            # 栈里没有通用族关键字 ⇒ 只有 _DECL_RE 的驼峰 fontFamily 认得出
+            fh.write('el.style.fontFamily = "IBM Plex Sans";\n')
+        with open(os.path.join(assets, "bad_escape.js"), "w", encoding="utf-8") as fh:
+            # 转义引号开头 ⇒ 只有 _STRING_RE 的 `\\.` 支持能把整条字体栈圈进来
+            fh.write('const s = "\\"IBM Plex Mono\\", ui-monospace, monospace";\n')
+        with open(os.path.join(assets, "bad_shorthand.css"), "w", encoding="utf-8") as fh:
+            # CSS `font:` 简写 ⇒ 只有 _DECL_RE 收了 font 才认得出
+            fh.write('.x { font: 600 12px "IBM Plex Mono"; }\n')
+        with open(os.path.join(assets, "bad_local.css"), "w", encoding="utf-8") as fh:
+            # src: local(…) 指的是装在用户机器上的上游字体;声明名是 src、引号里也没有
+            # 通用族关键字 ⇒ 只有 _LOCAL_RE 认得出
+            fh.write('@font-face { src: local("IBM Plex Sans"), url("../fonts/ScvbSans.woff2"); }\n')
         # vendored 目录里的同样内容 ⇒ 必须**不**命中(上游怎么写就怎么进包)
         with open(os.path.join(assets, "js", "juce", "vendored.css"), "w", encoding="utf-8") as fh:
             fh.write('a { font-family: "IBM Plex Sans", sans-serif; }\n')
@@ -294,6 +340,15 @@ def self_test():
             failures.append("CSS 的 font-family 里的 RFN 竟未命中(分发物仍会呈现上游名)")
         if not any("bad.js" in p for p in hits):
             failures.append("JS 字体栈字面量里的 RFN 竟未命中(STYLE_FALLBACK 那条路没被守住)")
+        for _f, _why in (
+            ("bad_tpl.js", "模板串里的字体栈(canvas 的 ctx.font 已在用模板串)"),
+            ("bad_camel.js", "驼峰 el.style.fontFamily 的赋值"),
+            ("bad_escape.js", "含转义引号的字体栈"),
+            ("bad_shorthand.css", "CSS `font:` 简写"),
+            ("bad_local.css", "@font-face 的 src: local(…)"),
+        ):
+            if not any(_f in p for p in hits):
+                failures.append("%s 里的 RFN 竟未命中(%s 不在扫描面内)" % (_f, _why))
         if any("vendored" in p for p in hits):
             failures.append("vendored 的 web/js/juce 被判违规(排除失效,门禁会恒红)")
         # ⑧ 常用词不误伤:RFN "Source" 在标识符里到处都是,整文件 grep 会刷出几十条假红,
@@ -302,6 +357,16 @@ def self_test():
             fh.write('import { sourceKind } from "./source-kind.js";\nconst n = cfg.source_channels;\n')
         if any("ok.js" in p for p in check_text_assets(assets, verbose=False)):
             failures.append("标识符里的 'source' 被判违规(判据溢出字体名上下文,会制造假红)")
+        # ⑨ 读不出来的文本资源 ⇒ 判红。样例把坏字节塞在 RFN **词中间**:换成
+        #    errors="replace" 接着扫的话,"IBM Ple?x Sans" 里 needle 找不到,门禁会静默放行。
+        enc = os.path.join(tmp, "enc")
+        os.makedirs(enc)
+        with open(os.path.join(enc, "broken.css"), "wb") as fh:
+            fh.write(b'a { font-family: "IBM Ple\xffx Sans"; }\n')
+        if not any(
+            "broken.css" in p and "UTF-8" in p for p in check_text_assets(enc, verbose=False)
+        ):
+            failures.append("非 UTF-8 的文本资源竟未判红(读不干净 = 无从断言,不能算通过)")
 
     if failures:
         for f in failures:
