@@ -219,6 +219,16 @@ export function createTabSettings(opts) {
     //   §1.1/§2.1 未暴露 applied.* / analysis_settings_stale,故 UI 以本地基线承载同语义:
     //   mount 时快照当前值(mock 环境即初值);真插件下由分析完成事件(onSegments)同步;
     //   stale = 当前值 !== 基线值 —— 改走提示出现,改回基线值立即消失。
+    //
+    //   **已知边界,归 [SL-279],本卡不动**:mount() 早于 bootInner() 的
+    //   requestInitialState,所以这里快照到的是空 store 的默认档,不是工程存的那个值。
+    //   由此派生出一对方向相反的偏差 —— 存成非默认档的工程一进 Tab4 琥珀 badge 就亮
+    //   (误报);同一会话里把口径切回 mount 默认值时 stale 立刻归假、badge 灭,而段表
+    //   其实还是按旧档分析的(漏报)。两条同根,都是「基线在 state 到达前快照」。
+    //   看着像顺手能修(初始快照落地后补一次 syncBaseline),实际是**产品取舍不是清理**:
+    //   契约没暴露 applied.*,UI 分不出「工程存的就是这个档且已按它分析过」与「上次改了档
+    //   没重分析就存盘」,补同步等于把误报换成漏报。故整条留给 SL-279 评估,不在本卡顺手做。
+    //   注意弹窗**不吃这条**:它另有 askOnNextStale 一次性闸(见下),三条误报路径都不弹框。
     const local = {
         analysisConfigBaseline: null,
         // [SL-276] 已就哪个口径值弹过框。**按值记而不是按布尔记**:改走 → 弹一次;
