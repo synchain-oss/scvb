@@ -238,9 +238,14 @@ export function createTabSettings(opts) {
         //      而那个版本的段表与它自己的口径本来就是对齐的。
         // 本位只由 wireSeg 里 loudness_mode **写成功**的回调置起,syncStale 之外无人写它。
         // ①②③ 三条因此一次性关掉,而琥珀 badge 的既有语义一个字节没动。
+        // **一次性**:syncStale 真开框那一下就地清掉(见那处注释)。留着的话「稍后」
+        // 关框之后本位仍为真,后续任何非用户驱动的口径变化都能再弹一次 —— ①②③ 换个
+        // 入口又漏回来。下一次要弹,得由 wireSeg 里新的一次写成功重新置位。
         askOnNextStale: false,
         // 开框前的焦点落点,关框时还回去(「稍后」/ 遮罩 / Esc 三个出口都走 closeReanalyzeAsk)。
         reanalyzeReturnFocus: null,
+        // analyze("all") 在途:主钮置灰 + 早退,防连点打出第二发(见 doReanalyzeFromAsk)。
+        reanalyzeInFlight: false,
         nineOpen: false,
         diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
@@ -546,14 +551,28 @@ export function createTabSettings(opts) {
     // §5.6 会回 {observer:true};先关框再发请求的话,这两种情况下框没了、琥珀 badge 还挂着、
     // 也没有任何别的反馈 —— 看起来就是「这枚钮坏了」。框留着 = 这一下没生效、可以再点,
     // 与 wireSeg 里「被拒就只 requestRender、不落乐观值」是同一口径(本仓不用 toast)。
+    //
+    // [SL-276 二轮复审] **在途期间锁主钮**。「拒绝态不关框」之后框在 await 期间是开着的、
+    // 主钮也还可点,连点两下就打出第二发 analyze(第二发被 §1.6 的 busy 拒掉 —— 但那是
+    // 让后端替 UI 兜一个 UI 自己拦得住的连点)。置灰同时也是这一下已受理的可见反馈。
+    // call() 内有 try/catch、异常路径回 null 而不抛,所以 finally 一定跑得到,不会锁死钮。
     async function doReanalyzeFromAsk() {
-        const res = await call("analyze", "all");
-        if (!res || res.observer || res.ok === false) {
+        if (local.reanalyzeInFlight) return;
+        local.reanalyzeInFlight = true;
+        const btn = el.reanalyzeAskPrimary;
+        if (btn) btn.disabled = true;
+        try {
+            const res = await call("analyze", "all");
+            if (!res || res.observer || res.ok === false) {
+                requestRender();
+                return;
+            }
+            closeReanalyzeAsk();
             requestRender();
-            return;
+        } finally {
+            local.reanalyzeInFlight = false;
+            if (btn) btn.disabled = false;
         }
-        closeReanalyzeAsk();
-        requestRender();
     }
 
     function syncStale() {
@@ -580,6 +599,14 @@ export function createTabSettings(opts) {
         const mode = config().loudness_mode;
         if (local.reanalyzeAskedFor !== mode) {
             local.reanalyzeAskedFor = mode;
+            // [SL-276 二轮复审] **弹之前就地消费掉这一位**,一次置位只换一次弹框。
+            // 不清的话它要等 stale 归假才灭,于是「改档 → 弹 → 稍后」之后本位仍为真;
+            // 此后 ②(只读观察态收 scvb.state)或 ③(切版本 / 快照恢复)把口径换到
+            // **另一个**脏值,reanalyzeAskedFor !== mode 就成立 —— 框照弹,而用户这一
+            // 轮什么都没点。上一轮【重要】关掉的正是这类打断,换个入口又漏了回来。
+            // 清在 openReanalyzeAsk() 之前:只读早退那条路也算消费掉(那次 asked 已按
+            // 本值记下,转成可写态后同值不会补弹),免得本位在只读实例里一直挂着。
+            local.askOnNextStale = false;
             openReanalyzeAsk();
         }
     }

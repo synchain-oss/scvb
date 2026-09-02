@@ -550,12 +550,23 @@ export const T = {
             "origin:E = 手动编辑,C = 手动创建,auto 段无角标。锁定段在重新识别时保持不变。",
         "set.loudnessMode.title": "段落响度分析算法",
         "set.loudnessMode.note": "影响分析时的段间响度归一化基准。",
-        // [SL-273] 换档影响面(用户 2026-09-01 定谳)。**一条词条渲染两处**:本设置卡的
-        // 第二行说明,与 [SL-276] 重分析弹窗的第二段 —— 两处共用同一个 key,是为了让
-        // 「两边写的是同一句」由结构保证,而不是靠两份手抄的文案碰巧一致。
-        // 原来 set.loudnessMode.note 尾巴上那半句「改后需重分析」并进本条,不再重复。
+        // [SL-273] 换档影响面(用户 2026-09-01 定谳,2026-09-02 按 seg-r3 实测更正)。
+        // **一条词条渲染两处**:本设置卡的第二行说明,与 [SL-276] 重分析弹窗的第二段 ——
+        // 两处共用同一个 key,是为了让「两边写的是同一句」由结构保证,而不是靠两份手抄
+        // 的文案碰巧一致。原来 set.loudnessMode.note 尾巴上那半句「改后需重分析」并进本条。
+        //
+        // ⚠ **不能写成「不改变声像分配」**(初稿就是这么写的,已更正)。口径依据在
+        // AutoAssign 侧,两条都核过:
+        //   · 「通常不变」的来源:换档只改 balanceBasisZ 算出的 z(AnalysisPipeline.cpp
+        //     m.z),而首趟指派的 entryCost 只在 balHint 非空时才乘 zHat —— level 1 不传
+        //     hint,所以第一趟指派与响度口径无关,pan 逐位相同。
+        //   · 「也会变化」的来源:z 变了会改平衡解收不收敛。首趟不收敛就进
+        //     solveBalanceWithFallback 的 level 2(带 hint 重跑 assignInterval,槽位真重排),
+        //     再不收敛进 level 3(applyDeltaShift 平移最外环),两级都会让 pans 与 level 1
+        //     不同。seg-r3 用同一组素材实跑:rms 对 kw 24 段里 8 段 pan 变了(峰值差 15)。
+        // 所以口径是「通常不变」,不是「不变」——写死成后者就是对用户的一句假承诺。
         "set.reanalyze.scopeNote":
-            "切换响度口径会重算各轨音量平衡,不改变声像分配;改后需重新分析。",
+            "切换响度口径会重算各轨音量平衡;声像通常不变,但素材差异大到平衡解需要重新指派时也会变化;改后需重新分析。",
         "set.centerSlot.title": "多轨争抢中心位时的优先级",
         "set.centerSlot.note":
             "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
@@ -1418,7 +1429,7 @@ export const T = {
         "set.loudnessMode.note":
             "Sets the reference for segment-to-segment loudness normalization.",
         "set.reanalyze.scopeNote":
-            "Switching the loudness metric recomputes the volume balance of every track; it does not change the pan placement. Re-analysis is required afterwards.",
+            "Switching the loudness metric recomputes the volume balance of every track. Pan placement usually stays as it is, but it can change when the tracks differ enough that the balance pass has to reassign slots. Re-analysis is required afterwards.",
         "set.centerSlot.title":
             "Priority when tracks compete for the center slot",
         "set.centerSlot.note":
@@ -2231,7 +2242,7 @@ export const T = {
         "set.loudnessMode.note":
             "Définit la référence de normalisation du loudness entre segments.",
         "set.reanalyze.scopeNote":
-            "Changer la métrique de loudness recalcule l’équilibre de volume de chaque piste, sans modifier la répartition panoramique ; une ré-analyse est ensuite nécessaire.",
+            "Changer la métrique de loudness recalcule l’équilibre de volume de chaque piste. La répartition panoramique reste généralement inchangée, mais elle peut changer lorsque les pistes diffèrent au point que la passe d’équilibrage doit réattribuer les positions. Une ré-analyse est ensuite nécessaire.",
         "set.centerSlot.title":
             "Priorité quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":

@@ -36,6 +36,8 @@
 //      C4 「重新分析」= 关框 + 真的跑完一次 analyze —— 判据是**琥珀 badge 自己灭掉**
 //         (基线由 scvb.segments 的 analyze 帧同步),而不是「按钮被点到了」。
 //         把 tab-settings.js 里的 `call("analyze", "all")` 删掉,本条即红;
+//      C4b [SL-276 二轮复审] analyze 在途期间主钮置灰(防连点打第二发),跑完必须解开:
+//         删掉 doReanalyzeFromAsk 的 finally 即红(钮永久停在 disabled,其余条目照样绿);
 //      C5 Esc 关框;
 //      C6 三语各弹一次,正文非空且不等于 key;
 //      C8 [SL-276 复审] **弹窗只由用户点击驱动,不由派生的 stale 位驱动**:
@@ -45,6 +47,13 @@
 //         另两条(只读观察态 / 切版本)同一道 askOnNextStale 闸一并挡住。
 //         把 syncStale 里的 `if (!local.askOnNextStale) return;` 删掉,本条即红。
 //         改完档之后照样弹(C1 覆盖),所以这道闸没有把功能一起关掉。
+//      C9 [SL-276 二轮复审] 那道闸是**一次性**的:用户改档弹过、点「稍后」关掉之后,
+//         再来一次**非用户驱动**的口径变化(这里直接调 mock 的 setAnalysisConfig,
+//         绕开 UI 写入路径 —— 与只读观察态收 scvb.state / 切版本走的是同一条「值从
+//         后端来」的路)不得再弹。C8 管的是「从没被置位过」,C9 管的是「置位过、已经
+//         用掉了」;不补 C9 的话,askOnNextStale 弹完不清也全绿。
+//         把 syncStale 里那行 `local.askOnNextStale = false;`(openReanalyzeAsk 之前
+//         那一行)删掉,本条即红。末尾再由用户真改一次档确认框照样弹。
 //      C7 [SL-273] 换档影响面这句话在**两处**都写着,且逐字同一句:设置页响度卡第二行
 //         与弹窗第二段共用词条 set.reanalyze.scopeNote。断言取两处的 textContent 做
 //         全等比较 —— 拿掉任一处的 data-t(或把它换成另一条词条)即红,三语各验一次;
@@ -813,6 +822,16 @@ try {
         await waitFor(badgeGone, 8000),
         "C4 analyze 真的跑完(琥珀 badge 由 segments 帧自己灭)",
     );
+    // C4b [SL-276 二轮复审] 主钮在 analyze 在途期间会被置灰(防连点打出第二发),
+    // 这一条钉的是**它一定解得开**:doReanalyzeFromAsk 的 finally 一旦丢了,钮就永久
+    // 停在 disabled 上,而框已经关掉、badge 也灭了,上面几条照样全绿 —— 看不出来。
+    check(
+        await evaluate(
+            IN(`const b = gb("reanalyze-ask-primary");
+                return !!b && b.disabled === false;`),
+        ),
+        "C4b analyze 跑完后主钮解锁(in-flight 置灰不会把钮永久锁死)",
+    );
 
     // C8 [SL-276 复审] stale 一上来就为真的工程:badge 亮、框不弹。
     // 与 C1 的分工:C1 是「stale 为假 ⇒ 不弹」(弱),C8 是「stale 为真但不是用户改的
@@ -845,6 +864,72 @@ try {
     check(await setLoudness("peak_dbfs"), "C8 在这张页上改档可点");
     check(await waitFor(askOpen, 4000), "C8 用户真改档 ⇒ 照样弹");
     assertClean("stale-on-load");
+
+    // C9 [SL-276 二轮复审] askOnNextStale 是**一次性**的:弹过就得清掉。
+    // C8 管「从没被置位过」,C9 管「置位过、已经用掉了」—— 后者是 C8 的改法留下的口子:
+    // 本位原来只有 stale 归假才灭,于是「改档 → 弹 → 稍后」之后它仍为真,再来一次
+    // 非用户驱动的换档照样能把框推到眼前。
+    newBucket("reanalyze-ask-oneshot");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?fixture=fifteen-tracks`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C9 页面重载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(400);
+
+    // ① 用户真改一次档 ⇒ 置位 + 弹框(此后 reanalyzeAskedFor = peak_dbfs)。
+    check(await setLoudness("peak_dbfs"), "C9 用户改档 peak_dbfs 可点");
+    check(await waitFor(askOpen, 4000), "C9 用户改档 ⇒ 弹框");
+    check(await click("reanalyze-ask-later"), "C9 「稍后」可点");
+    check(await waitFor(askClosed, 3000), "C9 「稍后」关框");
+
+    // ② 非用户驱动的口径变化:直接调 mock 后端的 setAnalysisConfig,**绕开 UI 的写入
+    //    路径**(wireSeg 那条),所以 askOnNextStale 不会被重新置位。这与只读观察态收
+    //    scvb.state、切版本、快照恢复是同一条「新值从后端来」的路。换到 rms —— 与上一步
+    //    记下的 peak_dbfs 是不同值,于是 reanalyzeAskedFor !== mode 成立,**唯一**还能挡住
+    //    这一框的就是被清掉的那一位。
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m || typeof m.setAnalysisConfig !== "function") return false;
+                const r = m.setAnalysisConfig({ loudness_mode: "rms" });
+                return !!r && r.ok !== false;`),
+        ),
+        "C9 mock 侧改档被受理(非 UI 写入路径)",
+    );
+    check(
+        await waitFor(
+            IN(`const b = q('[data-gb="settings-loudnessmode-seg"] [data-value="rms"]');
+                return !!b && b.getAttribute("aria-pressed") === "true";`),
+            5000,
+        ),
+        "C9 新口径经 scvb.state 落到 UI(证明这一轮 syncStale 真跑过,不是没触发)",
+    );
+    const oneShot = await evaluate(ASK_PROBE);
+    if (check(oneShot, "C9 探针取到锚点")) {
+        check(
+            !oneShot.open,
+            "C9 非用户驱动的换档**不再弹** —— 一次置位只换一次弹框,用完就清",
+        );
+        check(oneShot.badgeShown, "C9 琥珀 badge 仍在(纯派生语义不变)");
+    }
+
+    // ③ 这道「一次性」没有把功能一起关掉:用户再真改一次档,照样弹。
+    //    先回基线(stale 归假 ⇒ 连同 reanalyzeAskedFor 一起清),再改走 —— 直接点
+    //    peak_dbfs 的话会撞上 wireSeg 的「点击已选中档不重复写」与按值去重两道,
+    //    验不到本条想验的东西。
+    check(await setLoudness("kw_integrated"), "C9 回基线可点");
+    check(await waitFor(badgeGone, 4000), "C9 回基线 ⇒ stale 归假(badge 灭)");
+    check(await evaluate(askClosed), "C9 回基线不弹框");
+    check(await setLoudness("rms"), "C9 用户再改走可点");
+    check(await waitFor(askOpen, 4000), "C9 用户再改走 ⇒ 照样弹");
+    assertClean("reanalyze-ask-oneshot");
 
     // C5 Esc 关框
     newBucket("reanalyze-ask-2");
