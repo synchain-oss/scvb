@@ -343,18 +343,30 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 }
 // 未捕获异常/未处理拒绝:先打印再收尾,否则 Chrome 会跟着一起漏。
 //
-// ⚠ 用 `writeSync(2, …)` 而不是 `console.error`(第 10 轮复审):`process.exit()` 不等
-// 待挂起的异步写,stdout/stderr 被重定向成管道或文件时(gates 就是这么跑的)最后那行
-// **可能被截断** —— 而这一行恰恰是唯一说明「为什么红」的东西,丢了就等于白报错。
-// `writeSync` 直写 fd 2,退不退出都不会丢。
-// 行首**不留缩进**:gates 与本地 runner 的摘要都按 `^\[` 抓行,缩进会让这条被过滤掉。
+// 这一行要真的到得了人眼前,两件事都得对(第 10/11 轮复审,**都是核过源码才写的**):
+//
+//   · **写法**:用 `writeSync(2, …)` 而不是 `console.error` —— `process.exit()` 不等挂起的
+//     异步写,stdout/stderr 被重定向成管道/文件时(gates 正是 `$out = (& node …)`)最后
+//     那行**可能被截断**。`writeSync` 直写 fd 2,退不退出都不会丢;
+//     stderr 到不到得了 gates:`scripts/gates.ps1:386` 是 `(& node $f.FullName 2>&1)`,
+//     **stderr 已并进 stdout**,所以写 fd 2 没问题。
+//   · **前缀必须含 `[FAIL]`**:gate 3e 红时打解释行的那句是
+//     `scripts/gates.ps1:398` 的 `Select-String -Pattern '\[FAIL\]'` ——
+//     **不带 `^` 锚点的子串匹配**。于是:
+//       (a) 缩进**从来不影响**(本文件 `check()` 打的就是 `  [FAIL] …`,照样被抓到);
+//       (b) 而 `[FATAL]` **不含子串 `[FAIL]`**(F-A-T-A-L ≠ F-A-I-L)—— 第 10 轮我
+//           写成 `[FATAL]` 并声称「靠去掉缩进解决」,**两句都错**:缩进不是问题,
+//           而那个前缀让这条被整条过滤,gate 3e 只会打一行文件名、零解释行。
+//     所以这里打 `[FAIL] FATAL …`:含 `[FAIL]` 走同一条渠道(并计入那 20 行上限),
+//     后面的 `FATAL` 保住「这不是普通断言失败,是整套死了」的语义。
+//     [J96] 之后本地 gates 是子 PR 上唯一的门,这条诊断丢了就真的没有别处能看。
 for (const ev of ["uncaughtException", "unhandledRejection"]) {
     process.on(ev, (e) => {
         const msg = e && e.message ? e.message : String(e);
         try {
-            writeSync(2, `[FATAL] ${ev}:${msg}\n`);
+            writeSync(2, `  [FAIL] FATAL ${ev}:${msg}\n`);
         } catch {
-            console.error(`[FATAL] ${ev}:`, msg);
+            console.error(`  [FAIL] FATAL ${ev}:`, msg);
         }
         teardown();
         process.exit(1);
