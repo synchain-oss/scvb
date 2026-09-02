@@ -163,8 +163,22 @@ console.log(`① 正反例: ${HIT.length} 命中 / ${MISS.length} 不命中,全�
 const ALL = [...HIT, ...MISS];
 const ere = ereHitSet(PATTERN, ALL);
 if (ere === null) {
-    // CI(ubuntu)上一定有 grep;本机没有时降级成警告 —— 但要说清降级掉的是**哪一档**,
-    // 别让人以为「绿了就等于两个引擎一致」。
+    // **在 CI 上必须硬红**(PR#180 复审采纳)。这一档在本地可以降级,是因为我在
+    // gates.ps1 的注释里写了「本地绿不等于那一档验过,那一档以 CI 为准」——
+    // 那句话要成立,CI 上就不能也悄悄跳过它。否则「以 CI 为准」这条兜底本身是空的:
+    // 门禁绿着,而它自称验过的那一档一次没跑,正是本卡通篇在治的形态。
+    // ubuntu runner 一定有 grep,所以这条分支今天不会触发 —— 它守的是「哪天不再有」。
+    if (process.env.CI) {
+        console.error(
+            "check-native-paths: 当前在 CI 环境却找不到 grep,「JS ↔ grep -E 命中集合一致」这一档无法执行。",
+        );
+        console.error(
+            "  这一档只有 CI 跑得到(本地允许降级),所以 CI 上跳过它 = 门禁绿着但没验过,必须判负。",
+        );
+        process.exit(1);
+    }
+    // 本地(非 CI)降级成警告 —— 但要说清降级掉的是**哪一档**,别让人以为
+    // 「绿了就等于两个引擎一致」。
     console.warn(
         "  [WARN] 本机没有 grep,跳过「JS ↔ grep -E 命中集合一致」这一档。" +
             "白名单挡不住 `\\d` 这类两边都合法但含义不同的写法,这一档只有 CI 上跑得到。",
