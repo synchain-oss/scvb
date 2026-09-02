@@ -100,11 +100,26 @@ const CHROME_CANDIDATES = [
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let fail = 0;
-const log = (s) => console.log(s);
+
+// 全部输出走 `writeSync(1, …)` 而不是 `console.log`([SL-274] 第 11 轮复审)。
+//
+// 理由与致命行那条**是同一条**:`process.exit()` 不等挂起的异步写,而 stdout 在
+// gates 里是被 `(& node $f.FullName 2>&1)` 收成管道的 —— 管道上 `console.log` 是异步的。
+// 上一轮只把**致命那一行**改成同步,于是同一条失败路径上**先前**打的 `[FAIL]` 与进度行
+// 仍可能被 `process.exit(1)` 截掉:红是红了,却说不清前面已经断到哪一步。
+// 一套冒烟的输出量是几十行,同步写的代价可以忽略,而「红的时候话说不全」的代价不行。
+function out(s) {
+    try {
+        writeSync(1, s + "\n");
+    } catch {
+        console.log(s); // fd 1 不可写时的兜底,不让打印本身把整套打挂
+    }
+}
+const log = (s) => out(s);
 function check(cond, msg) {
     if (cond) return true;
     fail++;
-    console.log(`  [FAIL] ${msg}`);
+    out(`  [FAIL] ${msg}`);
     return false;
 }
 function eq(got, want, msg) {
@@ -112,7 +127,7 @@ function eq(got, want, msg) {
     const b = JSON.stringify(want);
     if (a === b) return true;
     fail++;
-    console.log(`  [FAIL] ${msg}\n         实得 ${a}\n         应为 ${b}`);
+    out(`  [FAIL] ${msg}\n         实得 ${a}\n         应为 ${b}`);
     return false;
 }
 
@@ -188,8 +203,10 @@ function cdpConnect(wsUrl) {
     // 响应」**;本套判据 (5) 要换 `?scenario=diff-flood` 重新装载,踩的就是这一下。
     //
     // ⚠ **别写成「六套里只有本套会二次导航」**(第 10 轮复审 grep 证伪,那句话我写错过):
-    // 实际是 `smoke-ui-layout-page.mjs` **8 次**、`smoke-monitor-page.mjs` 4 次、
-    // `smoke-output-dist-page.mjs` 3 次、本套 4 次,只有 seg-restore / output-stale 是 1 次。
+    // 实点 `cdp.send("Page.navigate"` 的**真实调用**(不含注释里提到的 —— 第 11 轮复审
+    // 又抓到我把这个数抄错:上一版写「本套 4 次」是 `grep -c 'Page.navigate'` 把注释
+    // 一起数进去了):
+    //     ui-layout 8 / monitor 4 / output-dist 3 / **本套 2** / seg-restore 1 / output-stale 1
     // 也就是说**曝险面比本卡大得多,而且都还没修**(它们没有超时也只在 happy path 收尾)。
     // 本卡不越界改别人的文件,已在 PR 里点名建议单独立卡统一收口 —— 谁去做那张卡,
     // 照搬本文件这两段(超时 + teardown)即可。
@@ -237,11 +254,18 @@ function cdpConnect(wsUrl) {
 }
 
 function noBrowser(msg) {
-    console.error(
-        `❌ ${msg}\n` +
-            "   页面级冒烟无法运行(退出码 2)。这**不是**通过:装一个 Chrome/Edge," +
-            "或用 --chrome=<路径> 指定。",
-    );
+    // 同样走同步写:这条也紧跟 `process.exit()`,而 gate 3e 判 rc=2 时按 `^❌` 抓解释行
+    // (`scripts/gates.ps1:392`)—— 被截断就只剩一行 SKIP、说不出缺的是什么。
+    try {
+        writeSync(
+            2,
+            `❌ ${msg}\n` +
+                "   页面级冒烟无法运行(退出码 2)。这**不是**通过:装一个 Chrome/Edge," +
+                "或用 --chrome=<路径> 指定。\n",
+        );
+    } catch {
+        console.error(`❌ ${msg}`);
+    }
     try {
         server.close();
     } catch {}
