@@ -56,8 +56,25 @@ const pageSuites = fs.existsSync(TESTS)
     ? fs
           .readdirSync(TESTS)
           .filter((f) => f.startsWith("smoke-") && f.endsWith(".mjs"))
-          .map((f) => ({ name: f, text: read(path.join(TESTS, f)) }))
-          .filter((f) => f.text.includes('chrome.on("error"'))
+          .map((f) => {
+              const text = read(path.join(TESTS, f));
+              // [SL-297 复审] **判定要用剥掉整行注释的那一份**。第一版直接在原文上
+              // `includes("browserFailed")`,而我自己在 `smoke-monitor-page.mjs` 的
+              // `if (!targets)` 上方写了一大段解释、里面就有 `browserFailed()` 字样 ——
+              // 于是那条断言在**最该守的那个文件**上变成了哑弹:把真调用改回
+              // `noBrowser(` 它照样绿。这是本卡第三次撞上同一形态(② PowerShell、
+              // ③ YAML、这里 JS),三处口径统一:**整行注释一律先剥**。
+              // 只剥**整行**注释,不碰行内 `//` —— 后者会把 `http://127.0.0.1` 这类串
+              // 拦腰截断(`check-smoke-hygiene` 对同一个坑有明说)。
+              const code = text
+                  .split("\n")
+                  .filter((l) => !/^\s*\/\//.test(l))
+                  .join("\n");
+              return { name: f, code };
+          })
+          // 用剥过注释的 `code` 判定「是不是页面级冒烟」:注释里提一句 `chrome.on("error")`
+          // 不应该把一个文件收进执行面。
+          .filter((f) => f.code.includes('chrome.on("error"'))
     : [];
 
 if (pageSuites.length === 0)
@@ -67,12 +84,12 @@ if (pageSuites.length === 0)
     );
 
 for (const s of pageSuites) {
-    if (!/function\s+browserFailed\s*\(/.test(s.text))
+    if (!/function\s+browserFailed\s*\(/.test(s.code))
         fail(
             `${s.name}:没有 browserFailed() —— 「浏览器在但没起来」会退回缺依赖那一档`,
         );
     // spawn 失败
-    const spawnLine = s.text
+    const spawnLine = s.code
         .split("\n")
         .find((l) => l.includes('chrome.on("error"'));
     if (spawnLine && !spawnLine.includes("browserFailed"))
@@ -81,20 +98,21 @@ for (const s of pageSuites) {
                 `能走到 spawn 就说明二进制在,那是失败不是缺依赖`,
         );
     // CDP 握手超时:`if (!targets)` 之后的那一小段里必须调 browserFailed
-    const i = s.text.indexOf("if (!targets)");
+    const i = s.code.indexOf("if (!targets)");
     if (i < 0) {
         fail(
             `${s.name}:找不到 CDP 握手的 \`if (!targets)\` 分支(判据锚点变了,回来同步本检查)`,
         );
     } else {
-        const seg = s.text.slice(i, i + 1400);
+        // 窗口同 ③ 段放宽到 2000(剥注释后这一段本就短得多,余量是给将来加代码用的)。
+        const seg = s.code.slice(i, i + 2000);
         if (!seg.includes("browserFailed"))
             fail(
-                `${s.name}:CDP 握手超时没走 browserFailed —— 会静默退回 [SKIP] 且照算 PASS`,
+                `${s.name}:CDP 握手超时没走 browserFailed(**或该分支长过了 2000 字符的匹配窗口** —— 先确认是哪一种)—— 会静默退回 [SKIP] 且照算 PASS`,
             );
     }
     // 反向:真缺依赖那两处必须**仍然**是 noBrowser(两类不能又被合并回去)
-    if (!/noBrowser\("本机找不到 Chrome\/Edge"\)/.test(s.text))
+    if (!/noBrowser\("本机找不到 Chrome\/Edge"\)/.test(s.code))
         fail(
             `${s.name}:「本机找不到 Chrome/Edge」不再走 noBrowser —— 真缺依赖被误升成失败档`,
         );
