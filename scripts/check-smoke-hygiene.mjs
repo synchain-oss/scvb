@@ -21,8 +21,10 @@
 //     · **`parenSpan`(圆括号配对)**:同上,串里的裸 `(`/`)` 会带偏;
 //     · **`bodyAfter` 的深度计数**:同样只数字符,不懂串;且无花括号体以「深度 0 的换行」
 //       为**近似**上界(见该函数头注:成员链断行会假红,失效方向倒向报错);
-//     · **`skipComment`**:只认 `//` 与 `/* */` 的字面形态,对**串里的** `//`(如
-//       `"http://…"`)是盲的 —— 会把它当成行注释起点。
+//     · **`commentEnd` / `commentBoundary`(注释跳过,**两个口径**)**:都只认 `//` 与
+//       `/* */` 的字面形态,对**串里的** `//`(如 `"http://…"`)是盲的 —— 会把它当成
+//       行注释起点;两者**强度不同**(前者整段跳到 `*/`,给「跳到体的开头」;后者停在
+//       注释内第一个换行,因为那个换行是体的上界),理由见它们各自的函数头注。
 //   今天六套逐个核过:`waitFor` 体与三个 handler 体花括号/圆括号平衡、串里无裸括号、
 //   收尾段无 `http://` 之类的串。要根治这几条都得上 AST,对一道防「照模板复制」的门禁
 //   不划算 —— 但别以为它比实际更严。
@@ -548,7 +550,42 @@ const SELFTEST = [
         ].join(NL),
         false,
     ],
+    [
+        "体**内部**的行注释里有裸括号(合法,应判过)",
+        // 钉住 `bodyAfter` 主循环那条 `commentBoundary` 的**存在**:
+        // 主循环若不跳注释,注释里这个裸 `{` 会把 curly 抬到 1 再也回不来 ⇒
+        // 找不到深度 0 的分号 ⇒ null ⇒ 判不覆盖(假红)。
+        // 注册跨多行但都在括号内(depth > 0),所以换行上界不会提前收口。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    process.on(",
+            "        sig, // 别写成 () => {",
+            "        teardown,",
+            "    );",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
+        ].join(NL),
+        false,
+    ],
     // ---- 删除式:必须红 ------------------------------------------------------
+    [
+        "体内跨行块注释吞掉换行上界(钉 commentBoundary 的收口口径)",
+        // 复审第 4 轮采纳时举的那份复现:块注释若被**整段**跳过,后面那条独立的
+        // `teardown();` 会被并进 span ⇒ 判「已覆盖」⇒ 假绿。
+        // handler 本身什么也没收尾,所以正确答案是红。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    process.on(sig, () => process.exit(130)) /* 备注",
+            "    还没写完 */ teardown();",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) {',
+            "    process.on(ev, () => {",
+            "        teardown();",
+            "    });",
+            "}",
+        ].join(NL),
+        true,
+    ],
     [
         "**跨行块注释**里写着注册,真体不收尾(复审第 5 轮)",
         // 与第 9 格同形,但换成块注释 —— 那一格用行注释,打不中这条路径。
