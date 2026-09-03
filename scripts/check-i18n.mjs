@@ -237,7 +237,8 @@ for (const file of htmlFiles) {
 //              (依据见这两条词条正上方的警示注释);
 //   **1 撤回** —— `footer.printing` 的单位词是尚未兑现的前置(A17 无 tempo map / deviations A26),
 //              两侧都回到无单位。注意**只有词条那一侧对 base 净零**:base 的内联本来就带
-//              「小节」(`index.html:8520`),所以内联那一侧是真改了 —— 与本段上面那句
+//              「小节」(`git show origin/feature/v1:web/output/index.html` 里那条
+//              `data-t="footer.printing"` 的内联;指 base、不会漂),所以内联那一侧是真改了 —— 与本段上面那句
 //              「终裁改的是内联」一致,别把「净零」写成两侧都没动;
 //              (这段注释在本卡里改了五遍 —— **指路引原句比引行号长寿**,同文件行号下一次
 //               编辑就过期,这也是本卡治的同一个毛病。)
@@ -305,7 +306,8 @@ for (const file of htmlFiles) {
 //   • 内联若用 HTML 实体写 CJK 标点(`&times;` 之类)而词条是字面字符 ⇒ 假红;
 //   • 空白归一只压缩空白、不删 token 中间的换行 ⇒ 折行必须落在词间自然空白处。
 // 还有一条**本判据管不到**的:JS 里 `t.someKey || "字面量"` 这一族兜底是词条的**第三份拷贝**,
-// 2b 只认 HTML 的 `data-t=` ⇒ 扫不到(本卡就在 tab-master.js:1877/1933 逮到两处漏网的旧词)。
+// 2b 只认 HTML 的 `data-t=` ⇒ 扫不到(本卡就在 `tab-master.js` 的两处
+// `t.leadFollowAnalysis || "…"` 兜底里逮到漏网的旧词)。
 const INLINE_MIN = 100;
 if (webExists && htmlFiles.length > 0 && inlineChecked < INLINE_MIN) {
     fail(

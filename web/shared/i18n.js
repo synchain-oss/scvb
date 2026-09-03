@@ -69,7 +69,8 @@ export const T = {
         "tracks.monoWidthNoop": "mono 源无法调整宽度",
         // ⚠ [SL-293] 后半句用**参与语义**,**别照 05 §5 写成「音量豁免为独立选项」**。
         // 同 `tracks.colLegend`:那一列的显示层已按**用户裁定 2026-08-21** 取反为「参与音量调节」
-        //(tab-tracks.js:95-96 / :606 / 同格 aria `tracks.colVolPart`),05 §5 停在改版之前。
+        // (`tab-tracks.js` 的头注「豁免改参与语义开关」、同文件 `volPart: cfg.lead_vol_exempt ? 0 : 1`
+        //  那行、以及同格 aria `tracks.colVolPart`),05 §5 停在改版之前。
         // en 侧尤其硬:`Vol Exempt` 是**界面上不存在的标签**(列头是 `Vol`,无障碍名是
         // `Volume participation`)。J58 要保的是「这个开关独立、不随 Lead 联动」这层意思,
         // 不是「豁免」这个词 —— 本卡第一版照规格抄,把 base 里本来就对的内联改坏了。
