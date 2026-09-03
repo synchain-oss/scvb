@@ -398,6 +398,10 @@ if (tracked === null) {
 
     const unclassified = [];
     const listRot = [];
+    // 引擎分叉与三张清单**一点关系都没有**(它是「JS 与 grep -E 对同一条正则的理解不一样」)。
+    // 混进 listRot 会让它顶着「清单与仓库现状对不上」的抬头打印,人会先去翻 NON_NATIVE_TOP
+    // 找一条根本不存在的错行 —— 错因说不准,正是本卡通篇在治的东西(复审第 2 轮)。
+    const engineRot = [];
     for (const [top, group] of [...byTop].sort()) {
         const hits = group.filter((f) => rx.test(f)).length;
         const inNon = NON_NATIVE_TOP.includes(top);
@@ -468,6 +472,15 @@ if (tracked === null) {
             `清单里有重复或交叠条目(计数与断言都会失真): ${[...new Set(dupTop)].join(", ")}`,
         );
 
+    // MIXED_EXPECT 是本卡新加的**第三张清单**,别让它成为唯一没有判据的那张(复审第 2 轮):
+    // key 不在 MIXED_TOP 里 ⇒ `want` 永远读不到 ⇒ 打错字或 `.github/` 哪天挪走之后,
+    // 那条**没有任何人再看**,却长得和有效条目一模一样。与下面对另外两张单子的规矩同源。
+    for (const t of Object.keys(MIXED_EXPECT))
+        if (!MIXED_TOP.includes(t))
+            listRot.push(
+                `${t}:在 MIXED_EXPECT 里钉了命中集合,却不在 MIXED_TOP 里 —— 没有任何人会读它(僵尸条目)`,
+            );
+
     const present = new Set(byTop.keys());
     for (const t of [...NON_NATIVE_TOP, ...MIXED_TOP])
         if (!present.has(t))
@@ -485,19 +498,27 @@ if (tracked === null) {
         const onlyJs2 = [...jsAll].filter((f) => !ereAll.has(f));
         const onlyEre2 = [...ereAll].filter((f) => !jsAll.has(f));
         for (const f of onlyJs2)
-            listRot.push(
-                `引擎分叉(全仓路径):只有 JS 命中,CI 的 grep -E 会漏编 ${f}`,
-            );
+            engineRot.push(`只有 JS 命中,CI 的 grep -E 会漏编: ${f}`);
         for (const f of onlyEre2)
-            listRot.push(
-                `引擎分叉(全仓路径):只有 grep -E 命中,本门禁判据失真 ${f}`,
+            engineRot.push(`只有 grep -E 命中,本门禁判据失真: ${f}`);
+        if (engineRot.length === 0)
+            console.log(
+                `   └ 全仓路径对拍: ${tracked.length} 条真实路径,两个引擎命中集合一致。`,
             );
+    } else {
+        // **跳过要出声**:②b 的 WARN 原话是「跳过『JS ↔ grep -E 命中集合一致』这一档」,
+        // 读者会理解成那 30 条手写用例,不会想到它还捎带把全仓真实路径这半档一起带走了。
+        // 按 gates.ps1 自己的口径:降级过的一次不能和全跑过的一次长得一模一样(复审第 2 轮)。
+        console.warn(
+            "  [WARN] 本机没有 grep,「全仓路径引擎对拍」这半档也一并跳过了 —— " +
+                "它与上面那条 WARN 是两档:那条是 30 条手写用例,这条是全仓真实路径。",
+        );
     }
 
     // ⚠ 这一段必须落在下面那道汇总判负**之前**:它是往 `listRot` 里塞发现的,
     //    而 `listRot` 在那道判负里被消费掉。放到判负之后 = 塞进去的东西没有任何人再看,
     //    门禁照绿 —— 本卡初稿就是这么写的,复审第 1 轮的注入实测把它逮出来了。
-    if (unclassified.length || listRot.length) {
+    if (unclassified.length || listRot.length || engineRot.length) {
         console.error(
             "check-native-paths: **顶层条目分类不全** —— detect-native 靠 NATIVE_RE 决定子 PR 编不编,",
         );
@@ -520,6 +541,12 @@ if (tracked === null) {
         }
         for (const msg of listRot)
             console.error(`  [FAIL] 清单与仓库现状对不上: ${msg}`);
+        for (const msg of engineRot)
+            console.error(`  [FAIL] 两个引擎对同一条正则理解不一致: ${msg}`);
+        if (engineRot.length)
+            console.error(
+                "         典型成因:`\d` / `\s` / `\b` 这类 JS 认、ERE 当字面量的转义。与三张清单无关。",
+            );
         process.exit(1);
     }
     // **直接数,不用减法**(复审第 1 轮):减法把「三个数加起来一定等于总数」当不变量,
