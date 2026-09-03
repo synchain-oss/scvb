@@ -32,8 +32,9 @@
 //     D. 收尾走**所有**退出路径:有 `teardown()`,且 exit / SIGINT / SIGTERM /
 //        uncaughtException / unhandledRejection 五个都挂上了**且 handler 体里真的调了它**
 //        —— 只检字符串在不在的话,一个空的 `process.on("exit", () => {})` 也能全绿。
-//   [SL-291] **判据自己也要有判据**:每次运行**先跑一遍内置自检矩阵**(7 格:4 格正例
-//   「合法但不常见的写法不许红」+ 3 格删除式「该红必须红」),不合预期就直接退出、
+//   [SL-291] **判据自己也要有判据**:每次运行**先跑一遍内置自检矩阵**(正例「合法但不
+//   常见的写法不许红」+ 删除式「该红必须红」;**格数以下面 `SELFTEST` 为准,别在这里写死** ——
+//   第一版写了「7 格」,补两格正例后就成了假话),不合预期就直接退出、
 //   **不再往下看真文件** —— 判据坏掉时,它对真文件的任何结论都不可信。
 //   矩阵内置而不是另起测试文件,是因为本门禁扫的正是 `web-preview/tests/smoke-*.mjs`:
 //   样本放进那个目录会被它自己扫到(判例:扫描器入库才炸),放别处又要另接一条 CI 命令。
@@ -122,10 +123,23 @@ function parenSpan(src, idx) {
 // (旧的 `braceBody(s, forAt)` 会抓到箭头体的 `{…}` 判过)。
 // 我把「行为零回归」写进过 PR 描述,那句只在今天这 6 套(全是带花括号的循环体)上成立。
 //
-// 按深度找还顺带堵住另一头:裸 indexOf **没有上界**,无分号(ASI)写法下会一路滑到
-// 后面某处的 `;`、把无关代码并进 span —— 那正是本卡要根治的**假绿**。今天靠 prettier 的
-// `semi: true` 兜着,但那是「外部条件恰好成立」,不是构造性排除(与本卡删掉 `limit`
-// 形参时用的是同一把尺子)。深度归零找不到分号 ⇒ 返回 null ⇒ 判不覆盖。
+// 另一头是**上界**:裸 indexOf 没有上界,无分号(ASI)写法下会滑到后面某处的 `;`、
+// 把无关代码并进 span —— 那正是本卡要根治的**假绿**。
+//
+// ⚠ **光按深度不够,这一点我写错过一版**(复审第 2 轮):深度只让扫描**跳过嵌套里的
+// 分号**,并**不给扫描加上界** —— `}` 让 curly 归 0 之后,它照样能一路滑到后面任意一条
+// 顶层语句的 `;`:
+//     for (const sig of [...])
+//         process.on(sig, () => process.exit(130))      // ASI,无分号
+//     if (true) { teardown(); process.on('noop', () => {}); }
+//     const later = 1;                                   // ← 滑到这里才停
+// span 于是把整个 `if` 块并了进来,里面既有 `teardown` 又有 `process.on(` ⇒ 判「已覆盖」。
+// 而上一版注释却宣称「顺带堵住另一头」—— 正是本卡自己在治的「看着有防护、实际没做事」。
+//
+// 边界取「深度 0 的 `;`」**或**「深度 0 的换行」,**谁先算谁** —— ASI 的语句边界本来就是
+// 行尾;prettier 折长行时折在括号里(depth > 0),折行因此不受影响。两者都取不到 ⇒
+// 返回 null ⇒ 判不覆盖。这样才是构造性排除,不再依赖 `semi: true` 这个外部条件。
+const NEWLINE = String.fromCharCode(10); // 换行符;写成常量避免转义歧义
 function bodyAfter(src, from) {
     let i = from;
     while (i < src.length && /\s/.test(src[i])) i++;
@@ -145,6 +159,9 @@ function bodyAfter(src, from) {
         else if (c === "}") curly--;
         else if (c === ";" && paren === 0 && curly === 0)
             return { end: j + 1, text: src.slice(i, j + 1) };
+        // 深度 0 的换行 = ASI 的语句边界,它和分号一样是这条语句的终点。
+        else if (c === NEWLINE && paren === 0 && curly === 0)
+            return { end: j, text: src.slice(i, j) };
     }
     return null;
 }
@@ -401,6 +418,25 @@ const SELFTEST = [
         false,
     ],
     // ---- 删除式:必须红 ------------------------------------------------------
+    [
+        "ASI 无分号 + 后面有顶层语句(本卡第 2 轮才堵住的那个假绿)",
+        // 复审第 2 轮给的复现:体没有分号收尾,深度归零后扫描会一路滑到 `const later = 1;`,
+        // 把中间那个 `if` 块并进 span —— 里面既有 teardown 又有 process.on( ⇒ 判「已覆盖」。
+        // 只按深度找分号挡不住它,必须**同时以深度 0 的换行为界**。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    process.on(sig, () => process.exit(130))",
+            "if (true) { teardown(); process.on('noop', () => {}); }",
+            "const later = 1;",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) {',
+            "    process.on(ev, () => {",
+            "        teardown();",
+            "    });",
+            "}",
+        ].join(NL),
+        true,
+    ],
     [
         "单行无花括号循环但**没调 teardown**(本卡要抓的那个洞)",
         // ⚠ 这一格必须**只让 sig 那条路径可疑**:其余四条退出路径都用最稳的写法覆盖住,
