@@ -2620,6 +2620,14 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
         // 渲染完全不变(类照打、线照对齐)、页面级 ⑪ 也全绿,**降级形态却悄悄退回
         // 「图顶横线」**;谁把 `.dist-plot.has-zero-line` 选择器写错,那一页的线直接不画,
         // 而页面级只跑 Output,Monitor 侧无人接。两条都在「改错时会怎样」这一档。
+        //
+        // ⚠ 本块下面这三条 (c)(d)(e) 钉的是**写法**不是行为,方向是**安全侧**(改写法会
+        //   假红、不会漏判):(d) 用 `\s+` 钉了后代组合器,而 `.dist-plot__zero` 实际是
+        //   直接子元素,将来合法改写成 `>` 会误红;(e) 钉的是 `class="dist-plot__zero"`
+        //   这种单类精确引号写法,加第二个类同样误红。**改这几处写法要同步改本正则。**
+        //   另注:(c) 只断「存在一条 display:none」,挡不住后置的无条件覆盖
+        //   (`.dist-plot__zero{display:block!important}`)—— 当前两页均无此覆盖;
+        //   真要堵那一档,正解是页面级读 `getComputedStyle`,不是再加正则。
         for (const page of [
             "web/monitor/index.html",
             "web/output/index.html",

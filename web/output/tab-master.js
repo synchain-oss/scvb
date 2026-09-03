@@ -1843,7 +1843,8 @@ export function createTabMaster(opts) {
     /**
      * Lead Select 的 15 个「{ch} · {label}」选项来自 `scvb.state.channels[].label`
      * (契约 §2.1);自定义下拉面板(用户反馈 2026-08-18:原生 <select> 弹层
-     * 不可样式化),0 项「遵循分析」随选项一起重建、带 data-t。
+     * 不可样式化),0 项随选项一起重建、带 data-t(上屏名取词条 `leadFollowAnalysis`,
+     * 现为「自动选择」;J58/05 §5 称「遵循分析」,档名待 SL-293 下一批统一)。
      * 标签签名没变就不重建 —— 重建会打断用户正在展开的下拉。
      */
     let leadSig = "";
@@ -1874,7 +1875,7 @@ export function createTabMaster(opts) {
         const follow = mkOpt(0);
         const followText = document.createElement("span");
         followText.setAttribute("data-t", "leadFollowAnalysis");
-        followText.textContent = t.leadFollowAnalysis || "遵循分析";
+        followText.textContent = t.leadFollowAnalysis || "自动选择";
         follow.appendChild(followText);
         frag.appendChild(follow);
         for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
@@ -1930,7 +1931,7 @@ export function createTabMaster(opts) {
             if (leadV === 0) {
                 el.leadLabel.setAttribute("data-t", "leadFollowAnalysis");
                 el.leadLabel.textContent =
-                    getT().leadFollowAnalysis || "遵循分析";
+                    getT().leadFollowAnalysis || "自动选择";
             } else {
                 el.leadLabel.removeAttribute("data-t");
                 const chans = (getStore().state || {}).channels || [];

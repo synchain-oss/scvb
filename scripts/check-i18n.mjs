@@ -211,6 +211,115 @@ for (const file of htmlFiles) {
     }
 }
 
+// ------------------------- 检查 2b:HTML 内联回退文案必须与 zh 词条逐字相同
+//
+// [SL-293] 为什么要有这条:`applyI18n` 在运行期会用词条覆盖 `<span data-t=...>` 的静态文本,
+// 所以内联那份只是**首帧回退**——正因为「稳态看不出来」,它漂了没有任何东西会红。
+// 实测代价:一次扫出 **33 处**不一致(`checked=161 / mismatched=33 / distinctKeys=31`,
+// 三页里只有 Output 页有):**21 处判定内联陈旧、12 处判定词条那边有问题**。
+// 别把后 12 处记成「内联反而是对的」—— 那句话至少在 3 处不成立:`footer.printing` 恰恰相反
+// (base 的**内联**才带「小节」、词条本来就不带,终裁改的是内联),`tracks.colLegend` 与
+// `master.leadSelectHint` 的裁判后来由更晚的用户裁定接管、「偏离规格」这个框根本不适用。
+// 举一个**站得住、无裁判层级争议**的例子:`out.master.writeConfirm` 把「30 条**车道**」写成
+// 「30 条**轨道**」—— 只有 15 轨,车道才是 30(15×pan/vol),纯事实错。
+// 这类错**用户看得见**,而首帧那一瞬还会闪一下另一份。
+//
+// ⚠ 这段立意注释原先还举了 `tracks.colLegend`「语义写反」与 `master.leadSelectHint`「整句丢了
+//   『音量豁免为独立选项』」两例,**两个例子后来都被推翻了**:那两处的裁判不是 05 规格,而是
+//   更晚的**用户裁定 2026-08-21**(见 `i18n.js` 里这两条词条正上方的警示注释);照规格改反倒
+//   把口径改坏。例子已删,免得后人拿这段当「照规格改回去」的授权 —— 立意注释被当口径读,
+//   正是本卡治了一整轮的那种漂移。
+//
+// 那 12 处最终的落地(加起来正好 12,别写成对不上的分账):
+//   **5 改** —— 按 05 规格:`msHint` / `step1.desc` / `transitionHint` / `widthAngleHint` /
+//              `out.master.writeConfirm`;
+//   **2 改** —— **按更晚的用户裁定、明确不回 05 规格**:`tracks.colLegend` / `master.leadSelectHint`
+//              (依据见这两条词条正上方的警示注释);
+//   **1 撤回** —— `footer.printing` 的单位词是尚未兑现的前置(A17 无 tempo map / deviations A26),
+//              两侧都回到无单位。注意**只有词条那一侧对 base 净零**:base 的内联本来就带
+//              「小节」(`git show origin/feature/v1:web/output/index.html` 里那条
+//              `data-t="footer.printing"` 的内联;指 base、不会漂),所以内联那一侧是真改了 —— 与本段上面那句
+//              「终裁改的是内联」一致,别把「净零」写成两侧都没动;
+//              (这段注释在本卡里改了五遍 —— **指路引原句比引行号长寿**,同文件行号下一次
+//               编辑就过期,这也是本卡治的同一个毛病。)
+//   **4 推迟** —— 纯措辞(`armedWaiting` / `footer.printDone` / `leadFollowAnalysis` /
+//              `wave.trackPickHint`),词条不动、内联先同步成现行词条。
+// 另有 2 条**不在这 12 处之内**也改了:`out.master.writeConfirm.follow`(与兄弟条目对齐措辞)、
+// `tour.step11.body`(指着界面上不存在的档名)。故词典净改动 = 5+2+2 = **9 条 key × 3 语**。
+//
+// 判据方向:**以 zh 词条为准**(它是上屏那一份),内联必须逐字等于它。
+//
+// ⚠ **它保证的是「内联 ≟ 词条」的内部一致,不保证「词条 ≟ 用户裁定/规格」。**
+//   两侧**同错**且彼此逐字一致时,本条是绿的 —— 本卡自己撞上过:`tracks.colLegend` 与
+//   `master.leadSelectHint` 被一起改成了 2026-08-21 裁定已废掉的「豁免」口径,
+//   两侧同步、2b 全绿,是**人审**把它拉回来的。所以别拿「2b 绿了」当某条文案正确的理由;
+//   文案对不对的裁判是 05 §5 + `plan/adjudications.md` + 代码里记着的用户裁定,不是本条。
+// 只比中文内联:纯 ASCII 的占位文本(如 `0 dB`、`{v}`)与空元素不参与。
+// ★ 删之即红:把任一页某个 data-t 元素的内联文字**改一个字**,本条当场红。
+//   边界(复审③要求写清,免得后人误信这句话的覆盖面):把内联文字**整个删空**
+//   (`>正文</span>` → `></span>`)**不会**红 —— 它走下面 `inline === ""` 那条跳过分支。
+//   这不是缺陷:空元素本来就是「运行期由 applyI18n 填」的合法写法,断它反而误杀。
+//   本判据管的是「内联里写了中文、但写得跟词条不一样」,不是「内联必须有中文」。
+const INLINE_RE = /data-t="([\w.]+)"[^>]*>([^<]{1,600})</g;
+const NL = String.fromCharCode(10);
+const norm = (s) => String(s).replace(/\s+/g, " ").trim();
+let inlineChecked = 0;
+for (const file of htmlFiles) {
+    const text = fs.readFileSync(file, "utf8");
+    let m;
+    INLINE_RE.lastIndex = 0;
+    while ((m = INLINE_RE.exec(text)) !== null) {
+        const key = m[1];
+        const inline = norm(m[2]);
+        if (inline === "" || !/[一-鿿]/.test(inline)) continue;
+        const want = T.zh ? T.zh[key] : undefined;
+        if (want === undefined) continue; // 缺 key 由检查 2 报
+        inlineChecked += 1;
+        if (inline !== norm(want)) {
+            const line = text.slice(0, m.index).split(NL).length;
+            fail(
+                rel(file) +
+                    ":" +
+                    line +
+                    " 内联回退文案与 zh 词条不一致「" +
+                    key +
+                    "」 词条=" +
+                    norm(want) +
+                    " / 内联=" +
+                    inline,
+            );
+        }
+    }
+}
+
+// ★ [SL-293 复审③] 静默零命中要红 —— 检查 2b 有两条**不报错的退出口**:
+//   ① 内联正文超 600 字(`[^<]{1,600}` 整体失配);
+//   ② data-t 元素里嵌了子元素(`>` 之后第一个字符就是 `<`)。
+// 两种情形都是**整条跳过、不计数、不报**。今天三页一处都没有(legend 的 `<strong>` 是
+// applyI18n 之后由 JS 重建的,静态 HTML 里没有),但门禁的作用期是「以后」:重排一次 HTML
+// 就可能把比对面悄悄清零,而汇总行照样绿 —— 本仓在 sccache 上栽过同一形态。
+// 故 ①把实际比对条数打进汇总行(人一眼看得见它有没有塌),②钉一条下界当机检。
+// 下界取 100 是**留足增删余量的下限**、不是当前值(当前 150+);它拦的是「塌成个位数或零」
+// 这种量级事故,不是正常增删几条词条。
+//
+// 另记两条**本判据的维护面**(方向都安全 —— 会假红或漏检,不会静默变绿):
+//   • 内联若用 HTML 实体写 CJK 标点(`&times;` 之类)而词条是字面字符 ⇒ 假红;
+//   • 空白归一只压缩空白、不删 token 中间的换行 ⇒ 折行必须落在词间自然空白处。
+// 还有一条**本判据管不到**的:JS 里 `t.someKey || "字面量"` 这一族兜底是词条的**第三份拷贝**,
+// 2b 只认 HTML 的 `data-t=` ⇒ 扫不到(本卡就在 `tab-master.js` 的两处
+// `t.leadFollowAnalysis || "…"` 兜底里逮到漏网的旧词)。
+const INLINE_MIN = 100;
+if (webExists && htmlFiles.length > 0 && inlineChecked < INLINE_MIN) {
+    fail(
+        "检查 2b 实际只比对了 " +
+            inlineChecked +
+            " 处内联(下界 " +
+            INLINE_MIN +
+            ")—— 比对面塌了。多半不是内联真的少了,而是 HTML 结构变化让 INLINE_RE 整体失配:" +
+            "先查 data-t 元素里是否新嵌了子元素、或正文是否超过 600 字。",
+    );
+}
+
 // --------------------------------------------------------- 检查 3:死 key
 // 引用判据(宽松,宁可漏判也不误杀):引号字符串字面量、模板串、`.ident` 属性访问;
 // 拼接式取词(`"guide.rule" + n`、带插值的 `tour.step${i}`)按字面前缀登记,避免整组 key 被误报为死 key。
@@ -386,7 +495,9 @@ console.log(
         htmlFiles.length +
         " 个 / JS " +
         jsFiles.length +
-        " 个);警告 " +
+        " 个);内联回退比对 " +
+        inlineChecked +
+        " 处;警告 " +
         warnings.length +
         " 条",
 );
