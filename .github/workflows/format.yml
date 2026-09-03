@@ -98,8 +98,7 @@ jobs:
           # 对齐。逐文件 annotation 散在日志里,而看 checks 的人看的是这一屏 ——
           # 「少跑了几套」和「全跑过了」不能长得一样(这正是本卡要治的形态)。
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-            printf 'web-smoke:%d 套,跳过(缺浏览器)%d,**没跑成(浏览器在但没连上)%d**
-'               "${#files[@]}" "$skipped" "$flaky" >>"$GITHUB_STEP_SUMMARY"
+            echo "web-smoke:${#files[@]} 套,跳过(缺浏览器)$skipped,**没跑成(浏览器在但没连上)$flaky**" >>"$GITHUB_STEP_SUMMARY"
           fi
           exit $fail
 
