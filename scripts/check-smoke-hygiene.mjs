@@ -11,14 +11,21 @@
 //   两条都是「加一套新冒烟时很容易照着旧模板复制、而复制出来的那份照样全绿」——
 //   所以要有一道机检钉住写法,而不是靠人记得。
 //
-//   ⚠ 本检查是**文本级**的,不是语义级,两处边界都说明白:
-//     · 三种 handler 形态靠字符串包含判断 ⇒ handler 体里写一句 `// teardown 在别处做`
-//       的注释也能顶替真调用;
-//     · `braceBody` 的花括号配对对**字符串 / 模板串 / 注释里的裸括号是盲的** ——
-//       C 与 D 都吃这一份,所以 `waitFor` 体或 handler 体里将来出现一个含裸 `{`/`}` 的
-//       字符串,配对会跑偏 ⇒ 假红。今天六套的 `waitFor` 体与三个 handler 体都花括号平衡、
-//       串里无裸括号(逐个核过)。
-//   要根治这两条都得上 AST,对一道防「照模板复制」的门禁不划算 —— 但别以为它比实际更严。
+//   ⚠ 本检查是**文本级**的,不是语义级。下面这份边界清单**必须与扫描器数量同步** ——
+//   [SL-291] 复审连着三轮点名它没跟上(当时还写着「两处边界」,而扫描器已经有五个),
+//   而「都说明白」是一句承诺:清单漏了哪一条,读者就会以为那一条不存在。
+//     · **字符串包含判断**:三种 handler 形态靠 `includes` 认 ⇒ handler 体里写一句
+//       `// teardown 在别处做` 的注释也能顶替真调用;
+//     · **`braceBody`(花括号配对)**:对字符串 / 模板串里的裸括号是盲的 —— C 与 D 都吃
+//       这一份,`waitFor` 体或 handler 体里出现含裸 `{`/`}` 的串,配对会跑偏 ⇒ 假红;
+//     · **`parenSpan`(圆括号配对)**:同上,串里的裸 `(`/`)` 会带偏;
+//     · **`bodyAfter` 的深度计数**:同样只数字符,不懂串;且无花括号体以「深度 0 的换行」
+//       为**近似**上界(见该函数头注:成员链断行会假红,失效方向倒向报错);
+//     · **`skipComment`**:只认 `//` 与 `/* */` 的字面形态,对**串里的** `//`(如
+//       `"http://…"`)是盲的 —— 会把它当成行注释起点。
+//   今天六套逐个核过:`waitFor` 体与三个 handler 体花括号/圆括号平衡、串里无裸括号、
+//   收尾段无 `http://` 之类的串。要根治这几条都得上 AST,对一道防「照模板复制」的门禁
+//   不划算 —— 但别以为它比实际更严。
 //
 //   四条断言(每条都对应一个真实踩过的形态,不是泛泛的好习惯):
 //     A. `send(method, params, timeoutMs)` —— CDP 调用能带截止时间。
@@ -168,7 +175,14 @@ function skipComment(src, i) {
     }
     if (src[i] === "/" && src[i + 1] === "*") {
         const close = src.indexOf("*/", i + 2);
-        return close < 0 ? src.length : close + 2;
+        if (close < 0) return src.length;
+        // 跨行的块注释**也只跳到它的第一个换行**,与行注释同档(复审第 4 轮):
+        // 若整段跳过,中间那些深度 0 的换行就再也不被 `bodyAfter` 的主循环看见 ⇒
+        // 上界在该形态下退化 ⇒ 假绿。两支强度必须一样,否则注释说不清它到底保证了什么。
+        // (`skipTrivia` 是循环调用,停在换行处不影响它继续往前跳。)
+        const nl = src.indexOf(NEWLINE, i);
+        if (nl >= 0 && nl < close) return nl;
+        return close + 2;
     }
     return i;
 }
@@ -316,7 +330,15 @@ function problemsOf(s) {
                 if (!head.text.includes(h)) continue;
                 const body = bodyAfter(s, head.end);
                 if (!body) continue; // 取不到体 ⇒ 不认(倒向报错)
-                const span = s.slice(forAt, body.end);
+                // ⚠ **拼 head + body,不要裸切 `s.slice(forAt, body.end)`**(复审第 4 轮):
+                // 裸切会把「循环头与体之间被跳过的那段注释」一起切进来,于是
+                //     for (const sig of [...])
+                //         // 见 process.on(sig, teardown)
+                //         process.exit(130);          // 真体没注册也没收尾
+                // 里的注释同时提供了 `teardown` 与 `process.on(` ⇒ 判「已覆盖」⇒ **假绿**。
+                // 边界本来就已经算出来了,只是没用上。信号名另有 `head.text` 单独判过,
+                // `teardown` 与 `process.on(` 本就该在体内,所以这是**纯收紧**。
+                const span = head.text + body.text;
                 // 还要求这段里真的在**注册**:光有「循环头提到信号名 + 体里调了 teardown」
                 // 不代表它是 handler —— 任何调 teardown 的循环体里写一句提到 "SIGTERM"
                 // 的注释就能顶替。`process.on(` 这一条几乎零成本。
@@ -493,6 +515,24 @@ const SELFTEST = [
         false,
     ],
     // ---- 删除式:必须红 ------------------------------------------------------
+    [
+        "循环头与体之间的注释里写着注册,真体不收尾(复审第 4 轮)",
+        // 裸切 `s.slice(forAt, body.end)` 会把这行注释一起切进 span ——
+        // 注释同时提供 `teardown` 与 `process.on(` ⇒ 判「已覆盖」⇒ 假绿。
+        // 拼 `head.text + body.text` 之后注释落在两段之外,判红。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    // 见 process.on(sig, teardown)",
+            "    process.exit(130);",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) {',
+            "    process.on(ev, () => {",
+            "        teardown();",
+            "    });",
+            "}",
+        ].join(NL),
+        true,
+    ],
     [
         "ASI 无分号 + 后面有顶层语句(本卡第 2 轮才堵住的那个假绿)",
         // 复审第 2 轮给的复现:体没有分号收尾,深度归零后扫描会一路滑到 `const later = 1;`,
