@@ -377,7 +377,11 @@ elseif ($smokeFiles.Count -eq 0) {
   Set-Gate '3e web smoke' $false
 }
 else {
-  # 退出码约定(T46 起):0 = 全绿;1 = 有断言失败;**2 = 缺可选外部依赖,本机跑不了**。
+  # 退出码约定(T46 起,[SL-297] 增第三档):0 = 全绿;1 = 有断言失败;
+  # **2 = 缺可选外部依赖(本机没有浏览器)**;**3 = 浏览器在,但这一次没起来 / 没连上**。
+  # 2 与 3 都**不判红**,区别只在摘要里怎么显形:2 = `[SKIP]`,3 = `[FLAKY-SKIP]` + 单独计数。
+  # 分这两档的代价是实测出来的:压成一个码时,一台装着 Chrome 的机器上一次瞬时超时会让
+  # 整套判据无声消失,而汇总行照写全 PASS(SL-293 多轮 gates 撞到三次,掉的套件每次不同)。
   # 会回 2 的是**六套**页面级冒烟(都要一个无头 Chrome/Edge):smoke-monitor-page.mjs、
   # smoke-output-stale-page.mjs(SL-177 过期提示,04 §4.5)、smoke-output-dist-page.mjs
   # (SL-203 分布图补间)、smoke-seg-restore-page.mjs(SL-242 段级「恢复自动」的作用域)、
@@ -407,6 +411,7 @@ else {
   # 一起收,否则被杀的只是 node,它起的 Chrome 会留下来(正是 SL-274 压住锁的那个形态)。
   $smokeOk = $true
   $smokeSkipped = 0
+  $smokeFlaky = 0
   $smokeHung = 0
   # `SCVB_SMOKE_TIMEOUT_SEC` 是给慢机器的口子(照 SCVB_MUTEX_WAIT_MINUTES 的先例),
   # 平时不用设。调大不会削弱任何判据 —— 超时只负责兜住挂死,不参与判对错。
@@ -464,6 +469,18 @@ else {
       $out | Select-String -Pattern '^❌' | Select-Object -First 2 |
       ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
     }
+    elseif ($rc -eq 3) {
+      # [SL-297] **浏览器在、这一次没跑成**。与 rc=2 分开的理由见那一族脚本的
+      # `browserFailed()`:压成同一个码时,一台**装着 Chrome** 的机器上一次瞬时超时
+      # 会让整套判据无声消失,而汇总行照写全 PASS(SL-293 多轮 gates 实测撞到三次,
+      # 每次掉的套件还不一样,两套单独重跑都全绿 —— 丢的是运行机会,不是代码)。
+      # **判定不变**:与 rc=2 一样不判红。把超时直接改成硬红在当前抖动率下会卡住所有人,
+      # 那是第二步(重试/退避)的事,不在本卡。这里只负责让它**在摘要里显形**。
+      $smokeFlaky++
+      Write-Host ("  [FLAKY-SKIP] {0}:浏览器在,但这一次没起来 / 没连上 —— **本套没跑成**,不是缺依赖" -f $f.Name) -ForegroundColor Yellow
+      $out | Select-String -Pattern '^❌' | Select-Object -First 2 |
+      ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
+    }
     elseif ($rc -ne 0) {
       $smokeOk = $false
       Write-Host ("  {0}:" -f $f.Name) -ForegroundColor Red
@@ -478,6 +495,12 @@ else {
   $smokeLabel = '3e web smoke({0} 套,node {1})' -f $smokeFiles.Count, $nv
   if ($smokeSkipped -gt 0) {
     $smokeLabel = '3e web smoke({0} 套 −{1} SKIP,node {2})' -f $smokeFiles.Count, $smokeSkipped, $nv
+  }
+  # [SL-297] FLAKY-SKIP **必须进汇总标签**:跑完 gates 的人看的是这张表,不是往回滚屏。
+  # 这一条正是本卡要堵的洞 —— 只在滚屏里打一行 `[FLAKY-SKIP]`、汇总仍写「24 套」,
+  # 等于「没跑成」长得和「跑过了」一模一样。`!` 前缀与 [HUNG] 同款,一眼能看出是异常档。
+  if ($smokeFlaky -gt 0) {
+    $smokeLabel = '{0}(!{1} 套没跑成:浏览器在但没连上)' -f $smokeLabel, $smokeFlaky
   }
   # 挂死也要进摘要:跑完 gates 的人看的是汇总表,不是往回滚屏找那行 [HUNG]。
   if ($smokeHung -gt 0) {
@@ -581,6 +604,10 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法 对�
 # [SL-283] 第四条 check-native-paths.mjs 同理接进来:它与 format.yml 的 docs-truth 跑
 # **逐字同一条命令**。本仓的纪律是「只挂在本地 gates 上等于没有执行者」,反过来同样成立 ——
 # 只挂在 CI 上,改 NATIVE_RE 的人本地全绿、推上去才红。
+# [SL-297] 第六条 check-gates-visibility.mjs:它读的是 **gates.ps1 自己**,断言 Gate 3e 的
+# rc=3(浏览器在但没连上)有独立计数**且计数接进了汇总标签**。本卡修的洞就是「降级了但
+# 摘要里看不见」,而那个修复自己也会被人删回去 —— 删掉标签里那段插值,`[FLAKY-SKIP]`
+# 退回只在滚屏出现一行,洞原样复现而所有现有用例照绿。所以钉的是**接线**不是常量。
 # 注意它在**没有 grep 的机器上**(Windows 裸装)会把「JS ↔ grep -E 引擎对拍」那一档降级成
 # 警告仍返回 0 —— 本地绿不等于那一档验过,那一档以 CI(ubuntu)为准。
 if (-not $nodeCmd) {
@@ -590,7 +617,7 @@ if (-not $nodeCmd) {
 else {
   $parityOk = $true
   $parityWarn = 0
-  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs')) {
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
       $parityOk = $false
