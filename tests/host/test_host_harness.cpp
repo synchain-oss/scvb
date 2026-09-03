@@ -1505,11 +1505,17 @@ struct MonoMultiRig
         double startS = 0.0;
         double endS = 0.0;
     };
+    // `probeEndS` 只是**探测窗**,与 `capture()` 里写死的 30.0 是两个口径:
+    // `capture()` 返回的 `coveredS` 是被那个 30 s 查询窗**截断过**的时长,
+    // 而这里默认探到 600 s,为的是别把覆盖区右端截掉。两个数不必相等,但别把它们读成同一个。
     Window coverageWindow(int ch = 1, double probeEndS = 600.0)
     {
         const auto cov = out.coverageOf(ch, 0.0, probeEndS);
         if (cov.ranges.empty())
         {
+            // 出声再回 {0,0}:否则调用处只红出 `0.0 > 0.0`,读不出「压根没采到覆盖」——
+            // 正是本卡要治的「红错原因」。`INFO` 在这里注册,调用处 REQUIRE 失败时照样打印。
+            INFO("coverageWindow: ch=" << ch << " 在 [0, " << probeEndS << ") 内没有任何覆盖区间");
             return {}; // 调用处用 `REQUIRE(w.endS > w.startS)` 接住:没采到东西就该红在那儿
         }
         const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
@@ -6954,13 +6960,13 @@ TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAn
 
     // 分析窗取**真实覆盖区间**,不能拿 `coveredS`(它是覆盖**时长**)当结束时刻 ——
     // 采集是在播放头已经走出去一段之后才打开的,`[0, coveredS)` 与真实覆盖区只是部分相交,
-    // 相交多少取决于机器负载(#171 复审【重要】;与下一条用例里那个坑逐字同款)。
-    const auto cov = r.out.coverageOf(1, 0.0, 600.0);
-    REQUIRE_FALSE(cov.ranges.empty());
-    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
-    const double startS = static_cast<double>(cov.ranges.front().begin) * hopS;
-    const double endS = static_cast<double>(cov.ranges.back().end) * hopS;
-    REQUIRE(endS > startS);
+    // 相交多少取决于机器负载(#171 复审【重要】)。
+    // [SL-292] 这七行原本写在这儿,现已抽成 `MonoMultiRig::coverageWindow()` ——
+    // 抽出来的当轮就把这里回填掉,否则同一口径两个落点,改 helper 时这边不会跟着走。
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    const double startS = win.startS;
+    const double endS = win.endS;
 
     // [SL-284] 连 fallback level 一起带回来:下面要**先断前提再断推论**。
     struct Run
@@ -7080,6 +7086,12 @@ TEST_CASE("HOST SL284:高能量轨冻结硬左 → 首趟不收敛,回退级报�
     // ⇒ `startS > 0` ⇒ `endS`(时刻)必然大于 `coveredS`(时长)。
     // 这两条一旦不成立,说明 rig 的采集时序变了,那时 `[0, coveredS)` 与真实覆盖区的
     // 关系也跟着变,本条注释与上面的取窗都要重新想一遍 —— 所以它们是判据不是装饰。
+    // `startS > 0` 的余量只有**一个 hop 出头**,它依赖这个前提:
+    //   `waitUntilInjected()` 每轮至少跑一次 `runBlocks(2, …)` ⇒ 开采集前播放头已走
+    //   `2 × kBlock / kSr = 2 × 512 / 48000 ≈ 21.3 ms`,而 `featHopSeconds() = 10 ms`
+    //   ⇒ 首个覆盖 hop 索引 ≥ 2 ⇒ `startS ≥ 0.02`。
+    // **`kBlock` 若降到 128,2 块只有 5.3 ms < 10 ms,首个覆盖 hop 落在索引 0,这条直接红**
+    // —— 而红出来看着像「rig 采集时序变了」,其实只是块长变了。红在这里先看这个前提。
     INFO("覆盖区 = [" << win.startS << ", " << win.endS << ") 秒;coveredS(时长)= " << coveredS);
     REQUIRE(win.startS > 0.0);
     REQUIRE(win.endS > coveredS);
