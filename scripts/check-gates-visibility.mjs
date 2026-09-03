@@ -138,7 +138,10 @@ for (const s of pageSuites) {
         fail(
             `${s.name}:「本机找不到 Chrome/Edge」不再走 noBrowser —— 真缺依赖被误升成失败档`,
         );
-    if (!/if \(!existsSync\(p\)\) noBrowser\(/.test(s.code))
+    // `\s*` 而不是一个literal空格:这一行在六套里**恰好是 80 列**(prettier 的 printWidth),
+    // 余量为零 —— 任何一次改名都会让 prettier 把它折行,而写死空格的正则会当场**假红**、
+    // 还报成「不再走 noBrowser」把人指到不存在的问题上。判据不该钉排版决定。
+    if (!/if \(!existsSync\(p\)\)\s*noBrowser\(/.test(s.code))
         fail(
             `${s.name}:\`--chrome\` 路径不存在那处不再走 noBrowser —— 那是真缺依赖,不是「浏览器在但没连上」`,
         );
