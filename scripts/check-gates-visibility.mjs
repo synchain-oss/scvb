@@ -108,11 +108,11 @@ for (const s of pageSuites) {
             `${s.name}:browserFailed() 退的不是 3(或函数体长过匹配窗口)—— ` +
                 `退 2 就等于把「浏览器在但没连上」又并回「缺依赖」,而名字还在、其余断言全绿`,
         );
-    // spawn 失败
-    const spawnLine = s.code
-        .split("\n")
-        .find((l) => l.includes('chrome.on("error"'));
-    if (spawnLine && !spawnLine.includes("browserFailed"))
+    // spawn 失败。**不按「行」找**:逐行 `find` 等于把判据钉在 prettier 的换行决定上 ——
+    // 这一行显示宽 72(printWidth 80),一次改名就可能被折成两行,那时 `find` 到的那一行里
+    // 没有 `browserFailed`,判据**假红**且报「没走 browserFailed」,把人指到不存在的问题上。
+    // 与下面 `--chrome` 那条同款,改用带上界的跨行匹配。
+    if (!/chrome\.on\("error"[\s\S]{0,200}?browserFailed\(/.test(s.code))
         fail(
             `${s.name}:spawn 失败(chrome.on("error"))没走 browserFailed —— ` +
                 `能走到 spawn 就说明二进制在,那是失败不是缺依赖`,
