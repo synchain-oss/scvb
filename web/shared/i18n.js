@@ -1813,7 +1813,7 @@ export const T = {
         "tracks.monoWidthNoop":
             "Une source mono ne peut pas ajuster la largeur",
         "master.leadSelectHint":
-            "Piste forcée au centre ; la participation volume est un interrupteur indépendant, non affectée",
+            "Piste forcée au centre ; la participation au volume est un réglage indépendant, non lié à ce choix",
         pair: "Paire",
         threshold: "Seuil",
         sensitivity: "Sensibilité",
