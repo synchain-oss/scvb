@@ -568,13 +568,28 @@ finally {
   # 只按「本机所有 chrome」计数,不去杀 —— 杀掉用户自己的浏览器是更坏的副作用,
   # 而 3e 的临时 user-data-dir 已由各套自己的 teardown 负责([SL-287])。
   if ($smokeLockOk -and -not $NoIpcLock) {
-    $leftover = @(Get-Process chrome -ErrorAction SilentlyContinue).Count
-    if ($leftover -gt 0) {
-      Start-Sleep -Seconds 3
-      $leftover = @(Get-Process chrome -ErrorAction SilentlyContinue).Count
+    # **只数本套起的那些**,不数「本机所有 chrome」。第一版数了全部,于是把
+    # **用户自己开着的浏览器**也算进来 —— 首次并发验收就打出「仍有 8 个 chrome」,
+    # 而那 8 个多半是人在用的窗口:一条永远为真的警告等于没有警告。
+    # 判据用**命令行**(`--headless` / 临时 user-data-dir 名里的 `scvb-`),不是进程名 ——
+    # 与 SL-301 测量期清理残留时踩到的是同一条:按进程名一把抓会误伤用户的浏览器。
+    $mine = @()
+    try {
+      $mine = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
+        Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
     }
-    if ($leftover -gt 0) {
-      Write-Host ("  [ipc-lock] 放 3e 锁时本机仍有 {0} 个 chrome 进程 —— 若非你自己的浏览器,说明某套冒烟没收干净(见 SL-287 的 teardown 纪律)" -f $leftover) -ForegroundColor Yellow
+    catch {
+      # 取不到命令行(权限/CIM 不可用)时**不猜**:宁可不报,也不要拿「所有 chrome」冒充。
+      Write-Host ("  [ipc-lock] 无法枚举 chrome 命令行({0}),跳过残留核对" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
+      $mine = $null
+    }
+    if ($null -ne $mine -and $mine.Count -gt 0) {
+      Start-Sleep -Seconds 3
+      $mine = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
+      if ($mine.Count -gt 0) {
+        Write-Host ("  [ipc-lock] 放 3e 锁时仍有 {0} 个**本套的**无头 chrome 没退 —— 某套冒烟没收干净(见 SL-287 的 teardown 纪律);下一个拿到锁的 agent 会在被占着核的机器上跑 6/7/8" -f $mine.Count) -ForegroundColor Yellow
+      }
     }
   }
   Exit-ScvbIpcLock -Mutex $smokeLock -Segment 'gate 3e'
