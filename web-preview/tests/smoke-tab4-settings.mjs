@@ -581,10 +581,13 @@ log(
         "J88 index.html 的静态兜底文案(含注释)无旧档位名残留",
     );
     // 旧名不得残留在**任何**词条值里(footer / 加载守卫横幅 / tour / 工作流程卡都引用了它)。
-    // 唯一豁免:tracks.colLegend 的「不再被引擎驱动」是动词用法,不是档位名。
+    // [SL-293] 原先这里给 tracks.colLegend 开了一条豁免,理由是它那句「不再被引擎驱动」
+    // 是动词用法。本卡按 05 规格重写 colLegend 后,三语分别是「不再驱动」/「no longer
+    // driven」/「plus piloté」,**豁免的对象已经不存在** —— 而一条对不上任何词条的
+    // `continue` 不是无害的死代码:它让 colLegend 永久退出这道检查,谁把档位名写回这一条
+    // 都不会红。故连豁免带注释一并删掉,让 J88 的判据覆盖全部词条。
     for (const lang of ["zh", "en", "fr"]) {
         for (const [k, v] of Object.entries(T[lang])) {
-            if (k === "tracks.colLegend") continue;
             check(
                 !/引擎驱动|ENGINE DRIVE|Engine drive|PILOTAGE MOTEUR|Pilotage moteur/.test(
                     String(v),
