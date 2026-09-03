@@ -232,8 +232,7 @@ function noBrowser(msg) {
 // 3 的语义就是「这一轮没跑成,而且不是因为没装浏览器」——由 gates 打成 [FLAKY-SKIP]。
 function browserFailed(msg) {
     console.error(
-        `❌ ${msg}
-` +
+        `❌ ${msg}\n` +
             "   页面级冒烟**没跑成**(退出码 3):浏览器是在的,但这一次没起来 / 没连上。" +
             "这**不是**通过,也**不是**「本机没装浏览器」——重跑一次通常就好;" +
             "连续复现请查 CDP 端口占用、机器负载或 Chrome 版本。",

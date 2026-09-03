@@ -68,7 +68,7 @@ jobs:
         #   重分析弹窗)与 smoke-seg-diff-fold-page.mjs([SL-274] diff 摘要折叠 +
         #   泳道保底),都要一个无头 Chrome/Edge。执行面按 glob 自动收,
         #   加一套不必改这行)。
-        # 2 记 ::warning:: 而**不**判红:这是 required check,一旦 runner 镜像哪天不再
+        # 2 **与 3** 都记 ::warning:: 而**不**判红:这是 required check,一旦 runner 镜像哪天不再
         # 预装 Chrome,判红会把仓库里**每一个** PR 卡住,而它本来只是少跑一套。
         # 也绝不静默 —— warning 进 checks 摘要,长期没跑看得见。
         run: |
@@ -76,20 +76,31 @@ jobs:
           files=(web-preview/tests/smoke-*.mjs)
           test ${#files[@]} -gt 0 || { echo "::error::no web smokes found"; exit 1; }
           fail=0
+          skipped=0
+          flaky=0
           for f in "${files[@]}"; do
             echo "--- $f"
             node "$f"; rc=$?
             if [ $rc -eq 2 ]; then
+              skipped=$((skipped+1))
               echo "::warning file=$f::skipped — 缺可选外部依赖(无头浏览器),本套未跑"
             elif [ $rc -eq 3 ]; then
               # [SL-297] 浏览器在、这一次没跑成。**同样不判红**(理由同下:required check
               # 判红会卡住每一个 PR),但措辞必须与 rc=2 分开 —— runner 上装着 Chrome 时
               # 报「缺可选外部依赖」是假话,而且会让人以为不用管。
+              flaky=$((flaky+1))
               echo "::warning file=$f::FLAKY — 浏览器在但这一次没起来/没连上,本套**没跑成**(不是缺依赖);重跑通常即可"
             elif [ $rc -ne 0 ]; then
               echo "::error file=$f::web smoke failed"; fail=1
             fi
           done
+          # [SL-297] **降级要进摘要,不能只有逐文件 annotation**:与 gates 3e 的汇总标签
+          # 对齐。逐文件 annotation 散在日志里,而看 checks 的人看的是这一屏 ——
+          # 「少跑了几套」和「全跑过了」不能长得一样(这正是本卡要治的形态)。
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            printf 'web-smoke:%d 套,跳过(缺浏览器)%d,**没跑成(浏览器在但没连上)%d**
+'               "${#files[@]}" "$skipped" "$flaky" >>"$GITHUB_STEP_SUMMARY"
+          fi
           exit $fail
 
   docs-truth:

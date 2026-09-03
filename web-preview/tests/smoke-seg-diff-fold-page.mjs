@@ -303,13 +303,21 @@ function noBrowser(msg) {
 // **仍然不判红**(理由见调用点):判红会把每个 PR 卡在与改动无关的环境抖动上。
 // 3 的语义就是「这一轮没跑成,而且不是因为没装浏览器」——由 gates 打成 [FLAKY-SKIP]。
 function browserFailed(msg) {
-    console.error(
-        `❌ ${msg}
-` +
-            "   页面级冒烟**没跑成**(退出码 3):浏览器是在的,但这一次没起来 / 没连上。" +
-            "这**不是**通过,也**不是**「本机没装浏览器」——重跑一次通常就好;" +
-            "连续复现请查 CDP 端口占用、机器负载或 Chrome 版本。",
-    );
+    // 与本文件的 `noBrowser()` 同款走**同步写**:这条也紧跟 `process.exit()`,而 gate 3e
+    // 判 rc=3 时同样按 `^❌` 抓解释行 —— 被截断就只剩一行 [FLAKY-SKIP]、说不出没跑成的原因。
+    // (本文件特意用 `writeSync` 而不是 `console.error` 的理由见 noBrowser 处;
+    //  新出口沿用同一层加固,别因为是「新写的」就退回 console.error。)
+    try {
+        writeSync(
+            2,
+            `❌ ${msg}\n` +
+                "   页面级冒烟**没跑成**(退出码 3):浏览器是在的,但这一次没起来 / 没连上。" +
+                "这**不是**通过,也**不是**「本机没装浏览器」——重跑一次通常就好;" +
+                "连续复现请查 CDP 端口占用、机器负载或 Chrome 版本。\n",
+        );
+    } catch {
+        console.error(`❌ ${msg}`);
+    }
     try {
         server.close();
     } catch {}

@@ -244,8 +244,7 @@ function noBrowser(msg) {
 // 3 的语义就是「这一轮没跑成,而且不是因为没装浏览器」——由 gates 打成 [FLAKY-SKIP]。
 function browserFailed(msg) {
     console.error(
-        `❌ ${msg}
-` +
+        `❌ ${msg}\n` +
             "   页面级冒烟**没跑成**(退出码 3):浏览器是在的,但这一次没起来 / 没连上。" +
             "这**不是**通过,也**不是**「本机没装浏览器」——重跑一次通常就好;" +
             "连续复现请查 CDP 端口占用、机器负载或 Chrome 版本。",
@@ -354,7 +353,10 @@ for (const ev of ["uncaughtException", "unhandledRejection"]) {
     });
 }
 
-// 起不来(权限 / 镜像里其实没这个可执行 / 沙箱拒绝)也归「缺依赖」那一档 ——
+// 起不来(权限 / 可执行坏了 / 沙箱拒绝)= **浏览器在,但这一次没起来** ⇒ `browserFailed()`
+// 的 rc=3、汇总里打 `[FLAKY-SKIP]`。[SL-297] 前这里写的是「也归**缺依赖**那一档」——
+// 与本文件 CDP 超时处那句被证伪的话是**同一句的孪生**,一并订正:`existsSync` 已经在
+// `chromePath()` 里把「本机没有浏览器」筛掉了,能走到 spawn 这一步就说明二进制是在的。
 // 不挂这个监听器的话,node 会把它变成 Unhandled 'error' event 直接崩,
 // 退出码与「断言失败」混成一个,门禁那边就分不出该不该判红。
 chrome.on("error", (e) => browserFailed(`浏览器启动失败:${e.message}`));
