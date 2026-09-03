@@ -24,6 +24,8 @@
 //   · PowerShell 侧**先剥掉整行注释**再匹配 —— 否则一行 `# TODO: $smokeLabel 拼上 $smokeFlaky`
 //     就能顶替真接线(复审指出的**漏判**口子,不是假红口子,已堵);
 //   · 但**行内**尾注释(`$x = 1  # …$smokeFlaky…`)仍不剥,那一档依旧可被顶替;
+//   · ③ 段的 YAML/bash 侧**同样先剥整行注释**(与 ② 段对称,复审指出的漏判口子已堵);
+//     它的**行内**尾注释同理没剥 —— 两侧缺口一样,别只说一边;
 //   · 变量改名 / 标签改用别的拼接写法(`-join`)会**假红**。假红逼人回来读这段注释,
 //     漏判才会让洞悄悄回来 —— 所以这两类的方向是**不对称的**,别笼统说「方向安全」。
 //   · 它**不验证运行时真打出了那行**;那由 SL-297 的删除式实跑覆盖(注入 CDP 握手失败 ⇒
@@ -133,14 +135,22 @@ else {
 const WF = path.join(ROOT, ".github", "workflows", "format.yml");
 if (!fs.existsSync(WF)) fail("找不到 .github/workflows/format.yml");
 else {
-    const yml = read(WF);
+    // 与 ② 段**对称**地先剥掉整行注释(复审指出:不剥的话,rc=3 分支里一行
+    // `# … ::warning …` 注释就能顶替真 `echo`,那是**漏判**)。YAML/bash 的整行注释同为 `#`。
+    const yml = read(WF)
+        .split("\n")
+        .filter((l) => !/^\s*#/.test(l))
+        .join("\n");
+    // 窗口取 2000 而不是 600:rc=3 分支当前约 330 字符,而**这类分支最容易长大的正是中文注释**;
+    // 超窗时 `m` 为 null,报出来的却是「没有 rc=3 分支」—— 那个分支明明在,会把人指到一个
+    // 不存在的问题上。所以既放宽窗口,也在失败文案里点明「或超出匹配窗口」这一可能。
     const m =
-        /elif\s+\[\s*\$rc\s+-eq\s+3\s*\]\s*;\s*then([\s\S]{0,600}?)(?:elif|fi)\b/.exec(
+        /elif\s+\[\s*\$rc\s+-eq\s+3\s*\]\s*;\s*then([\s\S]{0,2000}?)(?:elif|fi)\b/.exec(
             yml,
         );
     if (!m)
         fail(
-            "format.yml 的 web-smoke 没有 `elif [ $rc -eq 3 ]` 分支 —— rc=3 会落进 " +
+            "format.yml 的 web-smoke 没有 `elif [ $rc -eq 3 ]` 分支(**或该分支长过了 2000 字符的匹配窗口** —— 先确认是哪一种)—— rc=3 会落进 " +
                 "`[ $rc -ne 0 ]` ⇒ ::error:: + fail=1,在 required check 上把瞬时抖动变成硬红",
         );
     else {
