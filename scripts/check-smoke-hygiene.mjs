@@ -63,21 +63,6 @@ if (process.argv.includes("--help")) {
     process.exit(0);
 }
 
-// 只管**起浏览器的那一族**:靠 `cdpConnect` 认,而不是靠文件名里有没有 "page"。
-// 按文件名认会漏掉将来叫别的名字的新冒烟 —— 那正是这道门禁要防的「照模板复制一份」。
-const files = fs
-    .readdirSync(TESTS)
-    .filter((f) => f.startsWith("smoke-") && f.endsWith(".mjs"))
-    .map((f) => path.join(TESTS, f))
-    .filter((p) => fs.readFileSync(p, "utf8").includes("function cdpConnect("));
-
-if (files.length === 0) {
-    console.error(
-        "check-smoke-hygiene: 一套带 cdpConnect 的冒烟都没找到 —— 这个门禁八成失效了(路径或形态变了)。",
-    );
-    process.exit(1);
-}
-
 const HANDLERS = [
     '"exit"',
     '"SIGINT"',
@@ -124,8 +109,23 @@ function parenSpan(src, idx) {
     return null;
 }
 
-// [SL-291] 取「紧跟 from 之后的那个体」:有花括号就取配对块,**没有花括号就取到分号为止**
-// (单行写法)。取不到 ⇒ 返回 null,调用方据此判**不覆盖**(失效方向倒向报错,不是放过)。
+// [SL-291] 取「紧跟 from 之后的那个体」:有花括号就取配对块,没有花括号就取**这一条语句**
+// (到**嵌套深度为 0 的那个分号**为止)。取不到 ⇒ 返回 null,调用方据此判**不覆盖**
+// (失效方向倒向报错,不是放过)。
+//
+// ⚠ **不能裸用 `indexOf(";")`**(复审第 1 轮【重要】):无花括号循环的体常常是一个
+// **带嵌套体的调用**,第一个分号在嵌套里面 ——
+//     for (const sig of [...])
+//         process.on(sig, () => { process.exit(130); teardown(); });
+// 裸 indexOf 命中的是 `process.exit(130);` 那个分号,箭头体被**从中间截断**,
+// `teardown` 落在 span 之外 ⇒ 判「没调」⇒ **假红**,而且这相对旧写法是**行为收窄**
+// (旧的 `braceBody(s, forAt)` 会抓到箭头体的 `{…}` 判过)。
+// 我把「行为零回归」写进过 PR 描述,那句只在今天这 6 套(全是带花括号的循环体)上成立。
+//
+// 按深度找还顺带堵住另一头:裸 indexOf **没有上界**,无分号(ASI)写法下会一路滑到
+// 后面某处的 `;`、把无关代码并进 span —— 那正是本卡要根治的**假绿**。今天靠 prettier 的
+// `semi: true` 兜着,但那是「外部条件恰好成立」,不是构造性排除(与本卡删掉 `limit`
+// 形参时用的是同一把尺子)。深度归零找不到分号 ⇒ 返回 null ⇒ 判不覆盖。
 function bodyAfter(src, from) {
     let i = from;
     while (i < src.length && /\s/.test(src[i])) i++;
@@ -135,8 +135,18 @@ function bodyAfter(src, from) {
         const b = braceBody(src, i);
         return b && { end: b.end, text: b.text };
     }
-    const semi = src.indexOf(";", i);
-    return semi < 0 ? null : { end: semi + 1, text: src.slice(i, semi + 1) };
+    let paren = 0;
+    let curly = 0;
+    for (let j = i; j < src.length; j++) {
+        const c = src[j];
+        if (c === "(") paren++;
+        else if (c === ")") paren--;
+        else if (c === "{") curly++;
+        else if (c === "}") curly--;
+        else if (c === ";" && paren === 0 && curly === 0)
+            return { end: j + 1, text: src.slice(i, j + 1) };
+    }
+    return null;
 }
 
 // [SL-291] 四档检查抽成纯函数(输入源码文本 → 输出问题清单),这样**判据自己也能被测**:
@@ -258,10 +268,18 @@ function problemsOf(s) {
             // `h` 形如 `"SIGTERM"`(自带引号),引号在正则里不是元字符,直接内插即可。
             // (第一版这里写了 `h.replace(/"/g, '"')` —— 把 `"` 换成 `"`,**是个空操作**,
             //  却长得像在做转义。看着有防护、实际什么都没做,删掉。)
-            const onAt = s.search(new RegExp(`process\\.on\\(\\s*${h}`));
-            if (onAt < 0) return false;
-            const call = parenSpan(s, onAt);
-            return !!call && call.text.includes("teardown");
+            // ⚠ **遍历每一处出现,不是只看首现**(复审第 1 轮)——与形态二上面那条
+            // 「首现只是从锚点降级成上界、没有消失」是同一个毛病,第一版没把它套过来。
+            // 触发形态:更早处有一段示例或被注释掉的注册(**本族的头注本来就在讨论这些形态**),
+            // 首现钉在那里 ⇒ 括号跨度里没有 `teardown` ⇒ 判红,而真正的注册在后面、永远看不到。
+            const re = new RegExp(`process\\.on\\(\\s*${h}`, "g");
+            for (let m = re.exec(s); m; m = re.exec(s)) {
+                const call = parenSpan(s, m.index);
+                if (call && call.text.includes("teardown")) return true;
+                // 跳过这一整次调用再往下找,免得在同一处原地打转。
+                if (call) re.lastIndex = Math.max(re.lastIndex, call.end);
+            }
+            return false;
         };
         const miss = HANDLERS.filter((h) => !covered(h));
         if (miss.length)
@@ -349,6 +367,39 @@ const SELFTEST = [
         ].join(NL),
         false,
     ],
+    [
+        "无花括号循环 + 嵌套体里 teardown 不是第一条语句(合法,应判过)",
+        // ⚠ 这一格补的是第一版自检矩阵的**盲区**(复审第 1 轮指出):
+        // 上面那格「单行无花括号循环」用的是最简形态 `process.on(sig, teardown)`,
+        // `teardown` 就在第一个分号之前,所以**永远踩不到「分号切一半」**那条路径。
+        // 这里让 handler 体带嵌套且 `teardown()` 排在 `process.exit()` 之后 ——
+        // 裸 `indexOf(";")` 会在 `process.exit(130);` 处截断 ⇒ 假红。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    process.on(sig, () => {",
+            "        process.exit(130);",
+            "        teardown();",
+            "    });",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
+        ].join(NL),
+        false,
+    ],
+    [
+        "更早处有被注释掉的反面示例(合法,应判过)",
+        // 形态三只看首现时,锚点会钉在注释里那处 ⇒ 判红。本族头注**本来就在讨论这些形态**,
+        // 所以这不是假想:遍历每一处出现才对。
+        [
+            '// 反面教材:别写成 process.on("SIGINT", () => {});',
+            '// 也别写成 process.on("SIGTERM", () => {});',
+            'process.on("exit", teardown);',
+            'process.on("SIGINT", () => teardown());',
+            'process.on("SIGTERM", () => teardown());',
+            'process.on("uncaughtException", () => teardown());',
+            'process.on("unhandledRejection", () => teardown());',
+        ].join(NL),
+        false,
+    ],
     // ---- 删除式:必须红 ------------------------------------------------------
     [
         "单行无花括号循环但**没调 teardown**(本卡要抓的那个洞)",
@@ -432,6 +483,39 @@ if (process.argv.includes("--selftest")) {
         `check-smoke-hygiene 自检通过:${SELFTEST.length} 格(含删除式与反向用例)。`,
     );
     process.exit(0);
+}
+
+// 只管**起浏览器的那一族**:靠 `cdpConnect` 认,而不是靠文件名里有没有 "page"。
+// 按文件名认会漏掉将来叫别的名字的新冒烟 —— 那正是这道门禁要防的「照模板复制一份」。
+//
+// ⚠ **必须放在自检之后**(复审第 1 轮):这一块原先在模块顶层无条件执行,于是
+//   · `--selftest` 实际仍会扫真文件目录,与它自己声明的「不扫真文件」反着来;
+//   · 目录改名 / 一套都找不到时,先在这里 `exit(1)`,**自检矩阵一格都跑不到** ——
+//     而「排查判据本身」恰恰是判据可能同时坏掉的场景,那时伸手去拿的开关却拒绝启动;
+//   · `TESTS` 不存在时 `readdirSync` 直接抛 ENOENT,连那句话都没有。
+// 自检矩阵不依赖 `files`,下移即可,与文件头声明的次序(先自检、不过就不再看真文件)对齐。
+let entries;
+try {
+    entries = fs.readdirSync(TESTS);
+} catch (e) {
+    // 目录不在时 `readdirSync` 抛 ENOENT,裸栈对读者毫无信息量;这里换成说得清的一句。
+    // 与下面「一套都没找到」同一口径:门禁**够不到被测面**时判红,不是静默放过。
+    console.error(
+        `check-smoke-hygiene: 读不到 ${TESTS}(${e.code || e.message})—— ` +
+            "这个门禁八成失效了(路径变了?)。",
+    );
+    process.exit(1);
+}
+const files = entries
+    .filter((f) => f.startsWith("smoke-") && f.endsWith(".mjs"))
+    .map((f) => path.join(TESTS, f))
+    .filter((p) => fs.readFileSync(p, "utf8").includes("function cdpConnect("));
+
+if (files.length === 0) {
+    console.error(
+        "check-smoke-hygiene: 一套带 cdpConnect 的冒烟都没找到 —— 这个门禁八成失效了(路径或形态变了)。",
+    );
+    process.exit(1);
 }
 
 let failed = 0;
