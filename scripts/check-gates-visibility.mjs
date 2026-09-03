@@ -131,10 +131,30 @@ for (const s of pageSuites) {
                 `${s.name}:CDP 握手超时没走 browserFailed(**或该分支长过了 2000 字符的匹配窗口** —— 先确认是哪一种)—— 会静默退回 [SKIP] 且照算 PASS`,
             );
     }
-    // 反向:真缺依赖那两处必须**仍然**是 noBrowser(两类不能又被合并回去)
+    // 反向:真缺依赖那两处必须**仍然**是 noBrowser(两类不能又被合并回去)。
+    // 两个调用点都要断 —— 上一版只断了一个,而 PR 描述里「反向:rc=2 原样」的实跑
+    // 在机器上的唯一对应物就是这几条。
     if (!/noBrowser\("本机找不到 Chrome\/Edge"\)/.test(s.code))
         fail(
             `${s.name}:「本机找不到 Chrome/Edge」不再走 noBrowser —— 真缺依赖被误升成失败档`,
+        );
+    if (!/if \(!existsSync\(p\)\) noBrowser\(/.test(s.code))
+        fail(
+            `${s.name}:\`--chrome\` 路径不存在那处不再走 noBrowser —— 那是真缺依赖,不是「浏览器在但没连上」`,
+        );
+    // ★ 与上面 browserFailed 那条**同款**:断的是**退出码**,不是名字。
+    //   把 `noBrowser()` 退成 3,上面两条与 ②③ 两段全绿,而一台**真没装浏览器**的机器
+    //   会在汇总里被写成「浏览器在但没连上」—— 逐字是假话,本卡为两类分家立的那条界线
+    //   当场被抹掉。坏的不是判定(两档都不判红),是**摘要说了假话** ——
+    //   而「摘要不能说假话」正是本卡的全部主题。
+    if (
+        !/function\s+noBrowser\s*\([\s\S]{0,900}?process\.exit\(2\)/.test(
+            s.code,
+        )
+    )
+        fail(
+            `${s.name}:noBrowser() 退的不是 2(或函数体长过匹配窗口)—— ` +
+                `退 3 会让「本机没装浏览器」在汇总里显示成「浏览器在但没连上」`,
         );
 }
 
