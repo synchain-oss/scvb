@@ -538,10 +538,20 @@ export function buildWorld(opts = {}) {
     if (opts.scenario === "hot-levels" && outputSnapshot) {
         // [SL-293] 本场景是**出包截图/肉眼核对**用的,首启引导浮层会给整页盖一层背景模糊,
         // 把「柱高是否分层」这类判断削弱成猜 —— 而本仓刚栽过一次工具伪证据(SL-290)。
-        // 两级 guide_seen 都置真 ⇒ 引导页与 tour 询问步都不弹,截图干净。
+        // 四个位全部置真 ⇒ 引导页(shouldShowGuide)与 tour 询问步(shouldShowTourAsk)都不弹。
+        //
+        // 别把这四行读成等价的四颗钉:`makeTourDemoSnapshot`(mock-data.js:1200-1206)的基线
+        // 已经是 guide_seen / guide_seen_global **真**、tour_seen / tour_seen_global **假**
+        // ——「tour 还没走完」正是 demo 的前提。所以在那条基线上,**真正改变行为的是 tour 两位**,
+        // guide 两位是防回归钉。四位仍全部显式写出:本场景是 scenario 层、叠在**任一** fixture
+        // 的快照上,不同 fixture 的基线不一样,不能依赖某一条。
+        //
+        // `tour_seen`(工程位)是复审补上的:`shouldShowTourAsk` 现在要求工程位与全局位**同时**
+        // 为假才弹,只置全局位今天够用;但判据一旦收窄成只看工程位,询问步就会静默回来 ——
+        // 而回归形态恰好是「出包截图上又蒙了一层」。first-run-tour 分支两级都写,这里对齐它。
         outputSnapshot = {
             ...outputSnapshot,
-            ui: { ...outputSnapshot.ui, guide_seen: true },
+            ui: { ...outputSnapshot.ui, guide_seen: true, tour_seen: true },
             guide_seen_global: true,
             tour_seen_global: true,
         };
