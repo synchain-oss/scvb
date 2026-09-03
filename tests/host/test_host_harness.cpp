@@ -1514,8 +1514,13 @@ struct MonoMultiRig
         if (cov.ranges.empty())
         {
             // 出声再回 {0,0}:否则调用处只红出 `0.0 > 0.0`,读不出「压根没采到覆盖」——
-            // 正是本卡要治的「红错原因」。`INFO` 在这里注册,调用处 REQUIRE 失败时照样打印。
-            INFO("coverageWindow: ch=" << ch << " 在 [0, " << probeEndS << ") 内没有任何覆盖区间");
+            // 正是本卡要治的「红错原因」。
+            // ⚠ **必须是 `UNSCOPED_INFO` 不能是 `INFO`**:`INFO` 展开成栈上的
+            // `Catch::ScopedMessage`,析构即 `popScopedMessage`(见 catch_message.cpp),
+            // `return` 一走消息就被弹掉,**到不了调用处**——上一版就是这么写的,实测红出来
+            // 仍只有 `0.0 > 0.0`,等于没加。`UNSCOPED_INFO` 留到**下一条断言**为止,
+            // 而调用处紧跟着的就是那条 `REQUIRE(win.endS > win.startS)`,窗口正好对上。
+            UNSCOPED_INFO("coverageWindow: ch=" << ch << " 在 [0, " << probeEndS << ") 内没有任何覆盖区间");
             return {}; // 调用处用 `REQUIRE(w.endS > w.startS)` 接住:没采到东西就该红在那儿
         }
         const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
