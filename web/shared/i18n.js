@@ -120,11 +120,20 @@ export const T = {
         "banner.printGuard.confirm": "继续写入自动化",
         "out.master.writeConfirm":
             "写入自动化 {v} · 范围 {x}–{y} · 30 条车道;若 DAW 侧已 arm Latch/Write,播放本范围将覆盖该范围已有自动化;未 arm 则仅试听、不落盘",
-        "footer.printing": "写入自动化 {v} · {x}–{y} 小节",
+        // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的,别照 05 §5 加回「小节」**。
+        // app.js:1540-1544 把这两个占位符一律填 **mm:ss.mmm**(桥面 §1.8/§0.2 第 3 条:
+        // UI 只收秒);而**桥面没有宿主 tempo map 入口**(A17),小节值算不出来 ——
+        // 05 §5 那句「{x}–{y} 小节」是一条**尚未兑现的前置**,不是词条漂移。
+        // 加回单位词的后果是 footer 显示「写入自动化 V1 · 00:12.000–01:36.000 小节」:
+        // 不带单位是**不精确但不撒谎**,带上就是**明确错标**。
+        // 该单位词待统筹按 A17/A19 同款裁定(deviations A26),拿到 tempo map(T33)后回填。
+        // (本卡第一版照规格加过一次,被复审按 app.js 的填值实证否掉 —— en/fr 的
+        //  `BARS` / `MESURES` 同理。en/fr 三处要一起动。)
+        "footer.printing": "写入自动化 {v} · {x}–{y}",
         "footer.printDone":
             "本次录制覆盖 {x}–{y};若在录制自动化,建议切回跟随宿主试听核对",
         "out.master.writeConfirm.follow":
-            "写入自动化 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条车道;若 DAW 侧已激活 Latch/Write,播放已分析区域将覆盖其已有自动化;未激活则仅试听、不保存",
+            "写入自动化 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条车道;若 DAW 侧已 arm Latch/Write,播放已分析区域将覆盖其已有自动化;未 arm 则仅试听、不落盘",
         "footer.printing.follow": "写入自动化 {v} · 全曲跟随(已分析区域内)",
         "footer.printDone.follow":
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
@@ -245,7 +254,7 @@ export const T = {
         "tour.step10.body":
             "总线 M/S 平衡:−100 偏向 Mid,+100 偏向 Side;调整MS音量关系。",
         "tour.step11.title": "Lead Select",
-        "tour.step11.body": "通过序号选择和实时强制居中Lead轨道,0=遵循分析。",
+        "tour.step11.body": "通过序号选择和实时强制居中Lead轨道,0=自动选择。",
         "tour.step14.title": "Range · 范围",
         "tour.step14.body":
             "三档选项:全曲跟随 / 循环区 / 手动,决定采集和输出的作用范围。",
@@ -505,8 +514,16 @@ export const T = {
             "段与段之间参数不瞬切,走完这段斜坡才到下一段的值。太短交界会「跳」,太长声像糊在两处之间。",
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
+        // ⚠ [SL-293] 「音量」段是**参与语义**,**别照 05 §5 改成「音量豁免…不进平衡计算」**。
+        // 屏幕上那枚开关的显示层是**取反**的,依据是 tab-tracks.js:834-836 逐字记着的
+        // **用户裁定 2026-08-21**:「开=参与音量调节,与声像一致;契约字段仍是反义的
+        // `lead_vol_exempt`,仅显示层取反,桥面不动」。同格子的无障碍标签
+        // `tracks.colVolPart` 也是「参与音量调节」。05 §2.2/§5 停在改版**之前**的豁免口径。
+        // 照规格改回豁免口径的后果:默认 15 轨全 ON,用户照图例读出来是「全被豁免」——
+        // **正好反了**,而这是会让人把设置调反的那一档。(裁判层级同 J88:晚出的用户裁定
+        //  覆盖 05 规格;区别是这条没有 J 号,只落在代码注释里,grep adjudications.md 找不到。)
         "tracks.colLegend":
-            "音量＝音量豁免,该轨不进音量平衡计算 · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
+            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
         // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
@@ -1033,11 +1050,11 @@ export const T = {
         "banner.printGuard.confirm": "Continue write automation",
         "out.master.writeConfirm":
             "Write automation {v} · range {x}–{y} · 30 lanes. If Latch/Write is armed in your DAW, playing this range will overwrite existing automation there; if not armed, this is monitoring only.",
-        "footer.printing": "WRITE AUTOMATION {v} · BARS {x}–{y}",
+        "footer.printing": "WRITE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
         "out.master.writeConfirm.follow":
-            "Write automation {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 lanes. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
+            "Write automation {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 lanes. If Latch/Write is armed in your DAW, playing analyzed areas will overwrite existing automation there; if not armed, this is monitoring only.",
         "footer.printing.follow":
             "WRITE AUTOMATION {v} · FOLLOW (ANALYZED AREAS)",
         "footer.printDone.follow":
@@ -1153,7 +1170,7 @@ export const T = {
             "Bus M/S balance: −100 toward Mid, +100 toward Side; adjust the M/S level relationship.",
         "tour.step11.title": "Lead Select",
         "tour.step11.body":
-            "Pick a track by number and force it to center in real time; 0 = follow analysis.",
+            "Pick a track by number and force it to center in real time; 0 = auto-select.",
         "tour.step14.title": "Range",
         "tour.step14.body":
             "Three modes: Follow / Loop / Manual; sets the capture and output scope.",
@@ -1402,7 +1419,7 @@ export const T = {
         "master.copyConfirmWarn":
             "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = volume exempt, this track is excluded from level balancing · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
+            "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
         "tracks.emptyGroup":
             "Group {g} has no inputs yet — insert SCVB Input in the last slot of each vocal track and select group {g}",
         // ---- T32 Wave 1 新增(EN 为 T32 自译,待人工审校)----
@@ -1837,11 +1854,11 @@ export const T = {
         "banner.printGuard.confirm": "Continuer l'écriture d'automation",
         "out.master.writeConfirm":
             "Écriture d'automation {v} · plage {x}–{y} · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
-        "footer.printing": "ÉCRITURE AUTOMATION {v} · MESURES {x}–{y}",
+        "footer.printing": "ÉCRITURE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "out.master.writeConfirm.follow":
-            "Écriture d'automation {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 voies. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
+            "Écriture d'automation {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
         "footer.printing.follow":
             "ÉCRITURE AUTOMATION {v} · SUIVI (ZONES ANALYSÉES)",
         "footer.printDone.follow":
@@ -1960,7 +1977,7 @@ export const T = {
             "Balance M/S du bus : −100 vers Mid, +100 vers Side ; ajustez le rapport de volume M/S.",
         "tour.step11.title": "Lead Select",
         "tour.step11.body":
-            "Choisissez une piste par numéro et forcez-la au centre en temps réel ; 0 = suivre l'analyse.",
+            "Choisissez une piste par numéro et forcez-la au centre en temps réel ; 0 = sélection auto.",
         "tour.step14.title": "Plage",
         "tour.step14.body":
             "Trois modes : Suivi / Boucle / Manuel ; définit la portée de la capture et de la sortie.",
@@ -2216,7 +2233,7 @@ export const T = {
         "master.copyConfirmWarn":
             "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl+Z).",
         "tracks.colLegend":
-            "Vol = exemption de volume, la piste est exclue de l'équilibrage · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
+            "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":
             "Le groupe {g} n'a encore aucune entrée — insérez SCVB Input dans le dernier emplacement de chaque piste vocale et sélectionnez le groupe {g}",
         // ---- T32 Wave 1 新增(FR 为 T32 自译,发布前必须人工审校,05 §5)----

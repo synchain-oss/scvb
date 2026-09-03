@@ -1874,7 +1874,7 @@ export function createTabMaster(opts) {
         const follow = mkOpt(0);
         const followText = document.createElement("span");
         followText.setAttribute("data-t", "leadFollowAnalysis");
-        followText.textContent = t.leadFollowAnalysis || "遵循分析";
+        followText.textContent = t.leadFollowAnalysis || "自动选择";
         follow.appendChild(followText);
         frag.appendChild(follow);
         for (let ch = 1; ch <= CHANNEL_COUNT; ch++) {
@@ -1930,7 +1930,7 @@ export function createTabMaster(opts) {
             if (leadV === 0) {
                 el.leadLabel.setAttribute("data-t", "leadFollowAnalysis");
                 el.leadLabel.textContent =
-                    getT().leadFollowAnalysis || "遵循分析";
+                    getT().leadFollowAnalysis || "自动选择";
             } else {
                 el.leadLabel.removeAttribute("data-t");
                 const chans = (getStore().state || {}).channels || [];
