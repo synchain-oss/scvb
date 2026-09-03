@@ -67,7 +67,14 @@ export const T = {
         participateAutoPan: "参与自动声像",
         trackWidth: "轨道宽度",
         "tracks.monoWidthNoop": "mono 源无法调整宽度",
-        "master.leadSelectHint": "该轨强制居中;音量豁免为独立选项,不随此联动",
+        // ⚠ [SL-293] 后半句用**参与语义**,**别照 05 §5 写成「音量豁免为独立选项」**。
+        // 同 `tracks.colLegend`:那一列的显示层已按**用户裁定 2026-08-21** 取反为「参与音量调节」
+        //(tab-tracks.js:95-96 / :606 / 同格 aria `tracks.colVolPart`),05 §5 停在改版之前。
+        // en 侧尤其硬:`Vol Exempt` 是**界面上不存在的标签**(列头是 `Vol`,无障碍名是
+        // `Volume participation`)。J58 要保的是「这个开关独立、不随 Lead 联动」这层意思,
+        // 不是「豁免」这个词 —— 本卡第一版照规格抄,把 base 里本来就对的内联改坏了。
+        "master.leadSelectHint":
+            "该轨强制居中;是否参与音量调节为独立开关,不随此联动",
         pair: "配对",
         threshold: "阈值",
         sensitivity: "灵敏度",
@@ -528,7 +535,7 @@ export const T = {
         // **正好反了**,而这是会让人把设置调反的那一档。(裁判层级同 J88:晚出的用户裁定
         //  覆盖 05 规格;区别是这条没有 J 号,只落在代码注释里,grep adjudications.md 找不到。)
         "tracks.colLegend":
-            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡)· 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
+            "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡) · 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
             "组 {g} 尚无输入——在人声轨插件链最后一格插入 SCVB Input 并选择组 {g}",
         // ---- T32 Wave 1 新增(Output Tab2 正式实现;05 §2.2 有语义无 key 的位置)----
@@ -1000,7 +1007,7 @@ export const T = {
         trackWidth: "Track Width",
         "tracks.monoWidthNoop": "Mono source cannot adjust width",
         "master.leadSelectHint":
-            "Track forced to center; Vol Exempt is independent and unaffected",
+            "Track forced to center; Volume participation is an independent switch and is not affected",
         pair: "Pair",
         threshold: "Threshold",
         sensitivity: "Sensitivity",
@@ -1806,7 +1813,7 @@ export const T = {
         "tracks.monoWidthNoop":
             "Une source mono ne peut pas ajuster la largeur",
         "master.leadSelectHint":
-            "Piste forcée au centre ; l'exemption de volume est indépendante",
+            "Piste forcée au centre ; la participation volume est un interrupteur indépendant, non affectée",
         pair: "Paire",
         threshold: "Seuil",
         sensitivity: "Sensibilité",
