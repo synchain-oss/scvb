@@ -247,8 +247,9 @@ function cdpConnect(wsUrl) {
                 // 75 分钟零输出(Chrome 与 node 都还活着)。
                 // ⚠ 因果限定在**当时**:那次还赶上 [SL-277] 拆锁**之前**的形态 ——
                 // 整条 gates 被外部目录锁包着,所以一套挂死会把整批 agent 一起堵住。
-                // 拆锁后 gate 1–5 不持锁(gates.ps1 只在 gate 6/7/8 外套 `Local\SCVB-ipc-tests`),
-                // 而 web smoke 是 gate 3e ⇒ 代价收窄成「**本轮** gates 停死」,不再连累别人。
+                // [SL-301] 起 3e 也持 `Local\SCVB-ipc-tests` 了(它的 Chrome 负载会把同机
+                // 别人的 gate 6 拖红)⇒ **一套挂死会堵住全场**,不再只停死本轮。
+                // 这正是本文件那条 CDP 截止时间与 gates 3e 的 300s/套上界现在更要紧的原因。
                 // 那仍然是一整轮,所以超时照加;但别照着旧说法去推断锁的作用域。
                 // CI 上则是一路烧到 job 超时才红。
                 //

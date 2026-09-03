@@ -13,9 +13,10 @@
   断言分发的 woff2 `name` 表与进包文本资源的字体栈都不含上游 RFN;
   CI 侧同样落在 compliance.yml(自测 + 扫描两步)。
   [SL-277/J96] **锁纪律**:gate 1-5 完全不持锁,多个 agent 可以同时 configure/build;
-  gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行(共享内存段名全机唯一)。
+  gate 3e 与 gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行
+  ——**两段分别持、之间放开**([SL-301];3f..5 的 configure/build 不持锁,可并行)。
   调用方**不要**再在外面把整条 gates 包进目录锁 —— 那会把编译也串起来,正是本卡要拆掉的。
-  等锁有 30 分钟上界:超时(或互斥体建不出来)→ 锁那一行判负,gate 6/7/8 **一概不执行**
+  等锁有 45 分钟上界:超时(或互斥体建不出来)→ 锁那一行判负,该段 **一概不执行**
   (本档位下本来要跑的记 FAIL、本来就跳过的仍记 SKIP),整条 gates 以 1 退出。
   绝不无锁硬跑 —— 无锁跑会去抢隔壁持锁 agent 的共享内存段,让那一侧收到查不出的假红。
   逃生口 `-NoIpcLock` 只在确认无并行 agent 时用。
@@ -43,7 +44,7 @@ param(
   # 因为找不到 cl.exe 直接配置失败 —— 自动探测会把所有 agent 的 gate 4 一起变红,
   # 而他们什么都没改。所以要用就显式传,并且在 Developer Command Prompt 里跑。
   [string]$Generator = $env:SCVB_CMAKE_GENERATOR,
-  # [SL-277] 逃生口:确认本机没有第二个 agent 在跑 gate 6/7/8 时才用。
+  # [SL-277] 逃生口:确认本机没有第二个 agent 在跑 gate 3e / 6/7/8 时才用。
   # 平时**不要**加 —— 关掉互斥后并行跑出来的红大概率是抢共享内存段,不是回归。
   [switch]$NoIpcLock
 )
@@ -81,8 +82,8 @@ function Set-Skip {
 $runGate7 = -not $Quick
 $runGate8 = -not ($Quick -or $PluginOnly)
 
-# ---- IPC 测试锁(只包 gate 6/7/8;[SL-277]/[J96] 拆锁)-----------------------
-# **为什么只包 6/7/8**:gate 4(configure)/ 5(build)只读写各自的 `-BuildDir`,
+# ---- IPC 测试锁(两段:gate 3e 与 gate 6/7/8;[SL-277]/[J96] 拆锁、[SL-301] 纳入 3e)----
+# **为什么不包 4/5**:gate 4(configure)/ 5(build)只读写各自的 `-BuildDir`,
 # 并行 agent 之间零共享状态;真正需要互斥的是**跨进程共享内存段** —— 段名前缀
 # `SynchainSCVB.v1.` 是全机唯一的(docs/IPC_CONTRACT.md),ctest 里的 ipc 套件与
 # pluginval 加载插件时都会去开同名段,两份同时跑必然互相踩,红得很像回归。
@@ -122,7 +123,13 @@ function New-ScvbMutex {
 # `SCVB_MUTEX_WAIT_MINUTES` 只为**验证这条判据**而存在(反向验证:外面另起一个进程占住
 # 互斥体,把上界调到 1 分钟,就能在一分钟内看到 6/7/8 判负而不是等半小时)。平时不要设 ——
 # 调小不会削弱互斥(拿不到锁一律判负 + 跳过,绝不无锁跑),只会让正常排队更容易被判负。
-$script:ScvbMutexWaitMinutes = if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES } else { 30 }
+# [SL-301] 上界由 30 抬到 45。算术:3e 进锁之后,**病态**的 3e 段最坏能持锁
+# 6 × 300s(每套上界,SL-287)≈ 31 分钟 —— 与原来的 30 分钟上界擦边,于是
+# 「隔壁那份 3e 慢了一点」就会把**所有**等锁的 agent 判负,而他们日志里只看到
+# 「等锁超过 30 分钟」,查不到原因在别人的 web smoke 上。那是本卡引入的新失效形态。
+# 45 给了 ~1.5 倍余量;**没有**改成「超时就无锁硬跑」——拿不到锁仍一律判负。
+# 另一条路(给 3e 段一个整体预算、超了中止判负)会改红绿判定,本卡明确不动判定,故不取。
+$script:ScvbMutexWaitMinutes = if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES } else { 45 }
 
 function Wait-ScvbMutex {
   param($Mutex, [string]$Name, [string]$Tag, [int]$TimeoutMinutes = $script:ScvbMutexWaitMinutes)
@@ -130,6 +137,12 @@ function Wait-ScvbMutex {
   # 时钟。外面用管道加时间戳靠不住 —— pwsh 往管道写是块缓冲的,读到的时刻会晚于打印
   # 时刻,两条流的偏移量还不一样,拿它对拍会看出根本不存在的重叠。
   Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2}(上界 {3} 分钟)..." -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes) -ForegroundColor Yellow
+  # [SL-301] 排队要**显形**:只打「等待…」「已获得」两行,读日志的人看不出等了多久 ——
+  # 而本卡把 3e 也纳入互斥面之后,排队会变成常态。等了 0 秒和等了 8 分钟必须一眼可分,
+  # 否则就是本仓治了一整轮的那个形态(降级/排队发生了,但摘要里看不见)。
+  # **拿不到持有者身份**:命名互斥体是内核对象,没有 owner 信息;要给出「持有者 X」
+  # 得再引一个 owner 文件,那正是判例里实伤过人的目录锁形态,不做。所以只报时长。
+  $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
   $got = $false
   try { $got = $Mutex.WaitOne([TimeSpan]::FromMinutes($TimeoutMinutes)) }
   catch [System.Threading.AbandonedMutexException] {
@@ -138,28 +151,34 @@ function Wait-ScvbMutex {
     Write-Host ("  [{0}] 前一持有者异常退出(AbandonedMutex),已接管" -f $Tag) -ForegroundColor Yellow
   }
   if (-not $got) {
-    Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2} 超过 {3} 分钟仍未获得,判负" -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes) -ForegroundColor Red
+    $waitSw.Stop()
+    Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2} 超过 {3} 分钟仍未获得(实等 {4:N1} 秒),判负" -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes, $waitSw.Elapsed.TotalSeconds) -ForegroundColor Red
     Write-Host ("  [{0}] 提示:多半有卡死的 pluginval / ctest 进程还占着锁,查一下再重跑。" -f $Tag) -ForegroundColor Yellow
     return $false
   }
-  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 已获得 Local\{2}" -f $Tag, (Get-Date).ToUniversalTime(), $Name) -ForegroundColor Green
+  $waitSw.Stop()
+  Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 已获得 Local\{2}(等锁 {3:N1} 秒)" -f $Tag, (Get-Date).ToUniversalTime(), $Name, $waitSw.Elapsed.TotalSeconds) -ForegroundColor Green
   return $true
 }
 
+# [SL-301] 参数化段名:这把锁现在有**两个**持锁段(3e 与 6/7/8),判负信息必须说清
+# 是**哪一段**没拿到锁 —— 否则汇总里只看到一条「IPC 测试锁」判负,读的人不知道
+# 是 web smoke 那段还是 ctest 那段没跑。
 function Enter-ScvbIpcLock {
+  param([string]$Segment = 'gate 6/7/8')
   if ($NoIpcLock) {
-    Write-Host '  [ipc-lock] -NoIpcLock:跳过 IPC 测试锁(仅限确认无并行 agent 时)' -ForegroundColor Yellow
+    Write-Host ("  [ipc-lock] -NoIpcLock:跳过 IPC 测试锁({0};仅限确认无并行 agent 时)" -f $Segment) -ForegroundColor Yellow
     return $null
   }
   $m = New-ScvbMutex -Name 'SCVB-ipc-tests' -Tag 'ipc-lock'
   if ($null -eq $m) {
-    # 判负而不是静默放行:拿不到锁就等于没有并发保护,后面 gate 6/7/8 的结果不可信。
-    Set-Gate 'IPC 测试锁(gate 6/7/8 互斥)' $false
+    # 判负而不是静默放行:拿不到锁就等于没有并发保护,该段的结果不可信。
+    Set-Gate ("IPC 测试锁({0} 互斥)" -f $Segment) $false
     return $null
   }
   if (-not (Wait-ScvbMutex -Mutex $m -Name 'SCVB-ipc-tests' -Tag 'ipc-lock')) {
     # 等超时 = 同样没有并发保护,与建不出来同一档处理。句柄没拿到锁,直接 Dispose。
-    Set-Gate 'IPC 测试锁(gate 6/7/8 互斥)' $false
+    Set-Gate ("IPC 测试锁({0} 互斥)" -f $Segment) $false
     $m.Dispose()
     return $null
   }
@@ -167,11 +186,11 @@ function Enter-ScvbIpcLock {
 }
 
 function Exit-ScvbIpcLock {
-  param($Mutex)
+  param($Mutex, [string]$Segment = 'gate 6/7/8')
   if ($null -eq $Mutex) { return }
   try { $Mutex.ReleaseMutex() } catch { Write-Host ("  [ipc-lock] 释放异常:{0}" -f $_.Exception.Message) -ForegroundColor Yellow }
   $Mutex.Dispose()
-  Write-Host ("  [ipc-lock] {0:HH:mm:ss.fff}Z 已释放" -f (Get-Date).ToUniversalTime()) -ForegroundColor Green
+  Write-Host ("  [ipc-lock] {0:HH:mm:ss.fff}Z 已释放({1})" -f (Get-Date).ToUniversalTime(), $Segment) -ForegroundColor Green
 }
 
 # ---- 定位 pluginval ----
@@ -343,6 +362,26 @@ else {
 }
 
 # ==================================================================
+# ===== 持锁段①起点:gate 3e 全程持 IPC 测试锁([SL-301])=====
+# ==================================================================
+# **为什么 3e 也要这把锁**([SL-301] 实测):3e 起 6 个无头 Chrome(单跑峰值 15 个进程、
+# 吃掉约 11 个核),而这份负载会**把同机另一个 agent 的 gate 6 拖红** —— 实测一次:
+# `scvb_ipc_tests` 的「15 claimer 抢同一 channel ⇒ 恰好 1 个成功」在对方 3e 跑着时判红,
+# 而那个 PR 只动 `tests/host/`。互斥体原来只串行化 6/7/8,**挡得住别人的 ctest、挡不住 3e**。
+# 形态与真回归不可分,所以这不是「重试能兜住」的一档。
+#
+# **为什么分两段持、不是一路持到 gate 8**:取锁点前移到 3e 之后,若一路持到 8,
+# `4 configure` / `5 build` 就一起进了锁 —— 实测持锁从 **9-10 分钟涨到约 36 分钟**,
+# 而多出来的 22 分钟全是 build。要的不变式是「全机任一时刻只有一份 3e **或**一份 6/7/8」,
+# 两段持锁**同样满足**(两段都要这把锁),而 build 保持并行。观测到的伤害是 3e↔gate 6,
+# 不是 3e↔build:build 没有时序断言。
+#
+# 拿不到锁的处置与 6/7/8 **逐字同款**:判负 + 不执行。理由也同款 —— 无锁硬跑就是去抢
+# 隔壁持锁 agent 的资源,让那一侧收到一个自己日志里查不到原因的假红。
+$smokeLock = Enter-ScvbIpcLock -Segment 'gate 3e'
+$smokeLockOk = ($null -ne $smokeLock) -or $NoIpcLock
+
+# ==================================================================
 Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
 # ==================================================================
 # web-preview/tests 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到端 + 源码级
@@ -363,7 +402,16 @@ if ($nodeCmd) {
 }
 $smokeDir = Join-Path $RepoRoot 'web-preview\tests'
 $smokeFiles = @(Get-ChildItem -Path $smokeDir -Filter 'smoke-*.mjs' -ErrorAction SilentlyContinue)
-if (-not $nodeCmd) {
+try {
+
+if (-not $smokeLockOk) {
+  # 与 gate 6/7/8 同款:拿不到锁 = 没有并发保护,**不执行**而不是无锁硬跑。
+  # 无锁跑 3e 会起 6 个 Chrome 去抢隔壁持锁 agent 的机器,让那一侧的 gate 6 收到假红 ——
+  # 那正是本卡要根除的形态,自己这一份反正注定 exit 1。
+  Write-Host '=== Gate 3e: 跳过执行,直接判负(没有 IPC 测试锁 = 没有并发保护)===' -ForegroundColor Red
+  Set-Gate '3e web smoke' $false
+}
+elseif (-not $nodeCmd) {
   # 用到 node 内建 fetch 与全局 WebSocket,故要求 ≥ 22(与 CI 的 node-version 一致)
   Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
   Set-Gate '3e web smoke' $false
@@ -395,11 +443,12 @@ else {
   # ⚠ **每套都要有整体超时**([SL-287])。原来这里是裸的 `(& node $f.FullName 2>&1)` ——
   # 一套挂死,gate 3e 就停在那儿不动 —— SL-274 实测过一次:75 分钟零输出,
   # node 与 Chrome 都还活着。
-  # ⚠ 因果限定在**当时**:那次赶上 [SL-277] 拆锁**之前**的形态(整条 gates 被外部目录锁
-  # 包着),所以一套挂死会把整批 agent 一起堵住。拆锁后 gate 1–5 **完全不持锁**
-  # (本文件只在 gate 6/7/8 外套 `Local\SCVB-ipc-tests`,见文件头注与 New-ScvbMutex 的调用处),而 web smoke 是
-  # gate 3e ⇒ 代价收窄成「**本轮** gates 停死」,不再连累别人。那仍然是一整轮,
-  # 所以超时照加;但别照着旧说法去推断锁的作用域。
+  # ⚠ **[SL-301] 这段因果已经变了,别照旧说法推断锁的作用域。** SL-277 拆锁之后曾有一段
+  # 时间 gate 1–5 完全不持锁,那时「一套挂死」的代价收窄成「**本轮** gates 停死」、不连累别人。
+  # **现在 3e 自己持锁**(它的 Chrome 负载会把同机别人的 gate 6 拖红),所以「一套挂死」
+  # **重新会堵住全场** —— 这条超时因此比那时更要紧,不是「照加」而是**承重**。
+  # 最坏账要算清:6 个页面级 × 300s ≈ 31 分钟,这就是别人可能等锁的上限,
+  # 也是等锁上界从 30 抬到 45 分钟的原因(见 :131 的算术)。
   # 页面级冒烟内部现在有 CDP 截止时间兜住「响应不回来」那一类,但兜不住「Chrome 根本没起来」
   # 「WebSocket 没连上」「页面永不 load」——那些卡在 CDP 之外,只有这一层能收。
   #
@@ -508,6 +557,29 @@ else {
   }
   Set-Gate $smokeLabel $smokeOk
 }
+
+}
+finally {
+  # [SL-301] **放锁前先确认本段起的浏览器已经归零**。放了锁而 Chrome 还活着,
+  # 下一个 agent 拿到锁开始跑 6/7/8,机器上却仍有上一份的 6 个 Chrome 在吃核 ——
+  # 「放了锁但资源还占着」等于没放,本卡的不变式当场失效。
+  # 正常路径下 3e 自己会收干净(每套跑完即退,超时那支走 `Kill($true)` 连进程树);
+  # 这里只做**核对与兜底**:仍有残留就等一小会儿再报,让读日志的人看得见。
+  # 只按「本机所有 chrome」计数,不去杀 —— 杀掉用户自己的浏览器是更坏的副作用,
+  # 而 3e 的临时 user-data-dir 已由各套自己的 teardown 负责([SL-287])。
+  if ($smokeLockOk -and -not $NoIpcLock) {
+    $leftover = @(Get-Process chrome -ErrorAction SilentlyContinue).Count
+    if ($leftover -gt 0) {
+      Start-Sleep -Seconds 3
+      $leftover = @(Get-Process chrome -ErrorAction SilentlyContinue).Count
+    }
+    if ($leftover -gt 0) {
+      Write-Host ("  [ipc-lock] 放 3e 锁时本机仍有 {0} 个 chrome 进程 —— 若非你自己的浏览器,说明某套冒烟没收干净(见 SL-287 的 teardown 纪律)" -f $leftover) -ForegroundColor Yellow
+    }
+  }
+  Exit-ScvbIpcLock -Mutex $smokeLock -Segment 'gate 3e'
+}
+# ===== 持锁段①终点:3f..5(configure/build)**不持锁**,可与别的 agent 并行 =====
 
 # ==================================================================
 Write-Host '=== Gate 3f: 文档真源(九条红字生成物 + 双语结构对等)==='
@@ -827,7 +899,7 @@ Set-Gate '5 构建' $buildOk
 # 锁**只包这一段**。gate 4(configure)/ 5(build)在上面已经跑完并释放,理由见
 # Enter-ScvbIpcLock 的头注。
 # ==================================================================
-$ipcLock = Enter-ScvbIpcLock
+$ipcLock = Enter-ScvbIpcLock -Segment 'gate 6/7/8'
 # 拿不到锁(建不出互斥体 / 等超时,两种都已在 Enter-ScvbIpcLock 里判负)时**不跑**
 # 6/7/8,而不是无锁硬跑一遍(PR#176 复审采纳)。本进程反正注定 exit 1,自己没损失;
 # 有损失的是**隔壁那个正老老实实持着锁跑的 agent** —— 它会被这一份无锁的 ipc 套件抢走
@@ -975,7 +1047,7 @@ else {
 finally {
   # 无论 gate 6/7/8 里哪一步抛异常都必须归还 —— 但即便这里没跑到,互斥体也会在
   # 进程退出时由内核释放(这正是不用目录锁的理由)。
-  Exit-ScvbIpcLock $ipcLock
+  Exit-ScvbIpcLock -Mutex $ipcLock -Segment 'gate 6/7/8'
 }
 # ===== 持锁段终点 =====
 
