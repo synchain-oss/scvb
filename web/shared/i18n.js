@@ -1073,6 +1073,12 @@ export const T = {
         "banner.printGuard.confirm": "Continue write automation",
         "out.master.writeConfirm":
             "Write automation {v} · range {x}–{y} · 30 lanes. If Latch/Write is armed in your DAW, playing this range will overwrite existing automation there; if not armed, this is monitoring only.",
+        // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
+        //   05 §5 的 en/fr 列**逐字写着 `BARS` / `MESURES`**,照着加回去就会显示
+        //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js:1540-1544 把这两个
+        //   占位符填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
+        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
+        //   tempo map 后再回填,三语一起动。
         "footer.printing": "WRITE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
@@ -1883,6 +1889,12 @@ export const T = {
         "banner.printGuard.confirm": "Continuer l'écriture d'automation",
         "out.master.writeConfirm":
             "Écriture d'automation {v} · plage {x}–{y} · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
+        // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
+        //   05 §5 的 en/fr 列**逐字写着 `BARS` / `MESURES`**,照着加回去就会显示
+        //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js:1540-1544 把这两个
+        //   占位符填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
+        //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
+        //   tempo map 后再回填,三语一起动。
         "footer.printing": "ÉCRITURE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
