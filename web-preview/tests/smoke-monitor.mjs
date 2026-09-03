@@ -2635,6 +2635,15 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
                 ),
                 `(d) ★ ${page}:拿到 has-zero-line 才显示`,
             );
+            // (c)(d) 守的是**规则**,守不住**元素**。删掉 `<div class="dist-plot__zero">`:
+            // (a)(b) 照绿(建器只对 `.dist-plot` 打变量与类,不看子节点在不在)、
+            // (c)(d) 照绿(规则还在,只是没有元素去命中),而该页的基准线**整条不见** ——
+            // 页面级 ⑪ 又只跑 Output、且缺无头浏览器时整套退 SKIP,于是 Monitor 侧零判据。
+            // 这条正是本卡自己列过的失效路径,补上才闭合。
+            check(
+                /class="dist-plot__zero"/.test(css),
+                `(e) ★ ${page}:.dist-plot__zero 元素本身在页里 —— 规则再对,没有元素也画不出线`,
+            );
         }
     }
 
