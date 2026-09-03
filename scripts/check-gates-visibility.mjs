@@ -109,8 +109,11 @@ for (const s of pageSuites) {
                 `退 2 就等于把「浏览器在但没连上」又并回「缺依赖」,而名字还在、其余断言全绿`,
         );
     // spawn 失败。**不按「行」找**:逐行 `find` 等于把判据钉在 prettier 的换行决定上 ——
-    // 这一行显示宽 72(printWidth 80),一次改名就可能被折成两行,那时 `find` 到的那一行里
-    // 没有 `browserFailed`,判据**假红**且报「没走 browserFailed」,把人指到不存在的问题上。
+    // 这两行都贴着 printWidth 80 的上限、余量只有几列(具体几列取决于怎么算 CJK 宽度,
+    // 别把某个具体数字写死在这里 —— 本卡已经因为「拿 awk 的字符数当 prettier 的显示宽」
+    // 把错数写进过 commit;结论不依赖那个数:余量小到一次改名就会被折行),
+    // 一旦折成两行,`find` 到的那一行里就没有 `browserFailed`,判据**假红**且报
+    // 「没走 browserFailed」,把人指到不存在的问题上。
     // 与下面 `--chrome` 那条同款,改用带上界的跨行匹配。
     if (!/chrome\.on\("error"[\s\S]{0,200}?browserFailed\(/.test(s.code))
         fail(
@@ -138,8 +141,9 @@ for (const s of pageSuites) {
         fail(
             `${s.name}:「本机找不到 Chrome/Edge」不再走 noBrowser —— 真缺依赖被误升成失败档`,
         );
-    // `\s*` 而不是一个literal空格:这一行在六套里**恰好是 80 列**(prettier 的 printWidth),
-    // 余量为零 —— 任何一次改名都会让 prettier 把它折行,而写死空格的正则会当场**假红**、
+    // `\s*` 而不是一个 literal 空格:这一行贴着 printWidth 80 的上限、**余量只有几列**
+    //(见上面 spawn 那段:别在注释里写死一个具体列数)—— 任何一次改名都会让 prettier
+    // 把它折行,而写死空格的正则会当场**假红**、
     // 还报成「不再走 noBrowser」把人指到不存在的问题上。判据不该钉排版决定。
     if (!/if \(!existsSync\(p\)\)\s*noBrowser\(/.test(s.code))
         fail(
