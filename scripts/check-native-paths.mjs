@@ -14,6 +14,9 @@
 //        不同的写法会让这里绿、CI 悄悄少编。
 //     ③ **删除式验证**:把正则拆成分支,逐个删掉一个分支,要求至少一个正例因此变红。
 //        没有这一步,一条写错到永不匹配的分支(比如漏了转义)也能让 ① 全绿。
+//     ④ **顶层条目全覆盖**:上面三档保的都是「这条正则别被改坏」,保不住「构建面新长出
+//        一个它没覆盖的目录」。穷举 `git ls-files` 的顶层条目,要求每一个都落进命中面或
+//        **显式**的 non-native 清单,两边都不沾即判红 —— 新目录红在加它的那个 PR 上。[SL-286]
 //   用法:
 //     node scripts/check-native-paths.mjs [--help]
 //   退出码:任一断言失败 = 1,全通过 = 0。
@@ -55,6 +58,16 @@ if (!m) {
 const PATTERN = m[1];
 const rx = new RegExp(PATTERN);
 
+// `process.env.CI` 是**字符串**:`CI=false` / `CI=0` 都是非空串,裸真值判断一律为真。
+// 后果是本地误判成 CI ⇒ 本该降级的档硬红(假红,不是静默放过),但「显式说了 false 却
+// 不算数」本身就会让人不再信这个开关(PR#180 复审转 [SL-286])。
+const isCI = (() => {
+    const v = process.env.CI;
+    if (v === undefined || v === null) return false;
+    const t = String(v).trim().toLowerCase();
+    return t !== "" && t !== "false" && t !== "0";
+})();
+
 // ---- ①b 引擎分叉:判据与执行者不是同一个正则引擎 -------------------------------
 // CI 侧是 `grep -E`(POSIX ERE),这里是 JS `RegExp`。真源读对了,但语义是在**另一个
 // 引擎**下被断言的。两种分叉的严重性不同:
@@ -80,7 +93,16 @@ function ereHitSet(pattern, paths) {
         input: paths.join("\n") + "\n",
         encoding: "utf8",
     });
-    if (r.error) return null; // 本机没有 grep(非 CI 环境),交给调用处降级
+    if (r.error) {
+        // **只有「找不到 grep」才允许降级**。原先一句 `if (r.error) return null` 把
+        // 权限不足、进程数耗尽这些失败也一律说成「本机没有 grep」—— 错因说窄了,人会
+        // 照着那句话去装一个已经装好的东西。与下面 `r.signal` 那条同类(PR#180 复审转 [SL-286])。
+        if (r.error.code === "ENOENT") return null; // 真的没有 grep,交给调用处降级
+        console.error(
+            `check-native-paths: 调用 grep 失败(${r.error.code || r.error.message})——不是「没装 grep」,也不是正则的问题。`,
+        );
+        process.exit(1);
+    }
     // `r.signal` 有值时 `r.status` 是 null,会从 `>= 2` 底下穿过去,然后拿着**被截断的**
     // stdout 去比对 —— 结果仍是红(命中集合对不上),但错因会被误报成「两个引擎不一致」。
     // 概率极低,但错因说准的成本是一个 `||`(PR#180 复审采纳)。
@@ -168,7 +190,7 @@ if (ere === null) {
     // 那句话要成立,CI 上就不能也悄悄跳过它。否则「以 CI 为准」这条兜底本身是空的:
     // 门禁绿着,而它自称验过的那一档一次没跑,正是本卡通篇在治的形态。
     // ubuntu runner 一定有 grep,所以这条分支今天不会触发 —— 它守的是「哪天不再有」。
-    if (process.env.CI) {
+    if (isCI) {
         console.error(
             "check-native-paths: 当前在 CI 环境却找不到 grep,「JS ↔ grep -E 命中集合一致」这一档无法执行。",
         );
@@ -248,6 +270,198 @@ if (toothless.length > 0) {
     process.exit(1);
 }
 console.log(
-    `② 删除式验证: ${alts.length} 个分支,删掉任一都有正例变红,判据有牙。`,
+    `③ 删除式验证: ${alts.length} 个分支,删掉任一都有正例变红,判据有牙。`,
 );
+
+// ---- ④ 顶层条目全覆盖:构建面新长出一个目录,必须当场分类 ----------------------
+// ①②③ 保的都是「**这条正则**别被改坏」。它们保不住另一个方向:**构建面长出一个正则
+// 没覆盖的新目录**。将来新增 `res/` 并被 CMake 消费,加它的那个 PR 自己一定会编
+// (它必然动 `CMakeLists.txt` ⇒ 命中 NATIVE_RE),于是**当场看不出问题**;而此后
+// 只碰 `res/` 的子 PR 静默判 native=false —— [SL-283] 那个洞原样复发,触发事件从
+// 「改正则」换成「加目录」。[SL-286]
+//
+// 所以这一档不看正则,看**仓库现状**:穷举顶层条目,要求每一个都被显式分类。于是新目录
+// 红在**加它的那个 PR** 上,而不是等下一张子 PR 静默漏编 —— 拦在引入时刻,不是后果时刻。
+//
+// ⚠ 白名单**逐条列举,不留通配兜底**。写成「其余都算 non-native」这道门当场退化成恒真,
+//    与 [SL-291] 刚修掉的 `braceBody`「匹配不到就放过」是镜像的同一种病。代价是新增一个
+//    `screenshots-*` 也得来加一行 —— 这正是要的:**分类是一个动作,不是默认值**。
+const NON_NATIVE_TOP = [
+    ".clang-format",
+    ".editorconfig",
+    ".gitattributes",
+    ".gitignore",
+    ".gitleaks-version",
+    ".gitleaks.toml",
+    ".markdown-link-check.json",
+    ".prettierignore",
+    "CHANGELOG.md",
+    "CLAUDE.md",
+    "CODE_OF_CONDUCT.md",
+    "CODE_OF_CONDUCT.zh-CN.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "LICENSES/",
+    "README.md",
+    "README.zh-CN.md",
+    "REUSE.toml",
+    "SECURITY.md",
+    "THIRD-PARTY-NOTICES.md",
+    "docs/",
+    "screenshots-d1/",
+    "screenshots-font/",
+    "screenshots-sl193/",
+    "screenshots-sl211/",
+    "screenshots-sl213/",
+    "screenshots-sl230/",
+    "screenshots-sl272/",
+    "screenshots-t41/",
+    "screenshots-t43/",
+    "screenshots-t46/",
+    "screenshots-t48/",
+    "screenshots/",
+    "scripts/",
+    "spikes/",
+    "web-preview/",
+];
+// **混合**顶层条目:内部既有命中面又有不命中面,所以两张清单哪张都放不下它。
+// 今天只有 `.github/`:`workflows/build-vst3.yml` 命中(改构建配方要自己编一遍),
+// 同目录的 `format.yml` 等 14 个文件不命中。单列一张,并在下面**断言它真的是混合的** ——
+// 否则「混合」会变成一个万能借口:哪天 `.github/` 整个进了构建,把它挂在这里就能瞒过去。
+const MIXED_TOP = [".github/"];
+
+function topLevelOf(file) {
+    const i = file.indexOf("/");
+    return i < 0 ? file : file.slice(0, i + 1);
+}
+
+// `core.quotepath=false` 不是抄来的防御,是实测:本仓**已经有**一个非 ASCII 路径
+// (`docs/design/SCVB 设计稿.dc.html`)。默认 `quotepath=true` 会把它整条输出成
+// `"docs/design/SCVB \350\256\276…"` —— **带前导双引号**,顶层段于是被切成 `"docs/`,
+// 一个仓里根本不存在的条目。实测不加这个开关顶层条目从 47 变 48,多出来的正是 `"docs/`,
+// 它既不命中 NATIVE_RE 也不在清单里 ⇒ 这道门会对着一个幻影**常红**,而且报的还是错的因。
+// 与 detect-native 用同一个开关同因(build-vst3.yml 里那段 `core.quotepath=false` 注释)。
+function trackedFiles() {
+    const r = spawnSync("git", ["-c", "core.quotepath=false", "ls-files"], {
+        encoding: "utf8",
+        cwd: repoRoot,
+    });
+    if (r.error) {
+        // 只有「找不到 git」才允许降级;别的失败(权限、进程数耗尽…)说成「没装 git」
+        // 就是把错因说窄,人会照着那句话去装一个已经装好的东西。
+        if (r.error.code === "ENOENT") return null;
+        console.error(
+            `check-native-paths: 调用 git 失败(${r.error.code || r.error.message})——不是「没装 git」。`,
+        );
+        process.exit(1);
+    }
+    if (r.signal || r.status !== 0) {
+        console.error(
+            r.signal
+                ? `check-native-paths: git ls-files 被信号 ${r.signal} 终止,拿不到可信的文件清单。`
+                : `check-native-paths: git ls-files 失败(exit=${r.status})——这里不是 git 工作树?`,
+        );
+        console.error((r.stderr || "").trim());
+        process.exit(1);
+    }
+    return r.stdout.split("\n").filter(Boolean);
+}
+
+const tracked = trackedFiles();
+if (tracked === null) {
+    // 与 ②b 同一条口径:CI 上跳过 = 门禁绿着但没验过,必须判负。
+    if (isCI) {
+        console.error(
+            "check-native-paths: 当前在 CI 环境却找不到 git,「顶层条目全覆盖」这一档无法执行。",
+        );
+        process.exit(1);
+    }
+    console.warn(
+        "  [WARN] 本机没有 git,跳过「顶层条目全覆盖」这一档 —— " +
+            "新增顶层目录漏进 NATIVE_RE 这一类只有跑得到 git 的地方查得出。",
+    );
+} else {
+    const byTop = new Map();
+    for (const f of tracked) {
+        const t = topLevelOf(f);
+        if (!byTop.has(t)) byTop.set(t, []);
+        byTop.get(t).push(f);
+    }
+
+    const unclassified = [];
+    const listRot = [];
+    for (const [top, group] of [...byTop].sort()) {
+        const hits = group.filter((f) => rx.test(f)).length;
+        const inNon = NON_NATIVE_TOP.includes(top);
+        const inMixed = MIXED_TOP.includes(top);
+        // 顶层条目自身命中 NATIVE_RE(`src/` 命中 `^src/`,`CMakeLists.txt` 命中它那条)
+        // = 整棵子树都在命中面里,不需要上任何清单。
+        if (rx.test(top)) {
+            if (inNon || inMixed)
+                listRot.push(
+                    `${top}:命中 NATIVE_RE(整体进构建),却还挂在清单里 —— 清单该删掉它`,
+                );
+            continue;
+        }
+        if (inMixed) {
+            // 断言它**真的**混合:全命中或全不命中都说明它不该在这张单子上。
+            if (hits === 0)
+                listRot.push(
+                    `${top}:挂在 MIXED_TOP,但里面一个文件都不命中 NATIVE_RE —— 它是纯 non-native,挪去 NON_NATIVE_TOP`,
+                );
+            else if (hits === group.length)
+                listRot.push(
+                    `${top}:挂在 MIXED_TOP,但里面每个文件都命中 —— 它已是整体 native,该由 NATIVE_RE 覆盖`,
+                );
+            continue;
+        }
+        if (inNon) {
+            // 白名单是**判据**不是装饰:被列为 non-native 的目录一旦长出命中面,
+            // 说明它进构建了,清单在替它挡着 —— 必须红。
+            if (hits > 0)
+                listRot.push(
+                    `${top}:列在 NON_NATIVE_TOP,但里面有 ${hits} 个文件命中 NATIVE_RE —— 它已经进构建了`,
+                );
+            continue;
+        }
+        unclassified.push([top, group.length, hits]);
+    }
+
+    // 僵尸条目:清单里列着、仓库里已经没有的顶层条目。留着它 = 这行不再有任何判据兜着,
+    // 而它长得和有效条目一模一样;更坏的是同名目录哪天以 native 身份回来,它当场替其挡住。
+    const present = new Set(byTop.keys());
+    for (const t of [...NON_NATIVE_TOP, ...MIXED_TOP])
+        if (!present.has(t))
+            listRot.push(
+                `${t}:清单里列着,但仓库里已经没有这个顶层条目(僵尸条目)`,
+            );
+
+    if (unclassified.length || listRot.length) {
+        console.error(
+            "check-native-paths: **顶层条目分类不全** —— detect-native 靠 NATIVE_RE 决定子 PR 编不编,",
+        );
+        console.error(
+            "  没被分类的顶层条目会**静默**落到 native=false 那一侧(改它不编译,CI 照样全绿)。",
+        );
+        for (const [t, n, h] of unclassified) {
+            console.error(
+                `  [FAIL] 未分类顶层条目: ${t}(${n} 个文件,${h} 个命中 NATIVE_RE)`,
+            );
+            console.error(
+                h > 0
+                    ? "         里面已经有文件命中 NATIVE_RE —— 多半该整体进 NATIVE_RE。"
+                    : "         **进构建就加进 build-vst3.yml 的 NATIVE_RE;不进构建就加进本文件的 NON_NATIVE_TOP。**",
+            );
+        }
+        for (const msg of listRot)
+            console.error(`  [FAIL] 清单与仓库现状对不上: ${msg}`);
+        process.exit(1);
+    }
+    console.log(
+        `④ 顶层条目全覆盖: ${byTop.size} 个顶层条目全部已分类` +
+            `(${byTop.size - NON_NATIVE_TOP.length - MIXED_TOP.length} 命中 NATIVE_RE / ` +
+            `${NON_NATIVE_TOP.length} 显式 non-native / ${MIXED_TOP.length} 混合)。`,
+    );
+}
+
 console.log("check-native-paths 通过。");

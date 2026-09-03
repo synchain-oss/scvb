@@ -269,6 +269,11 @@ const fail = (msg) => {
     errors.push(msg);
     log("  [ERROR] " + msg);
 };
+// ⚠ 想加警告一律走这个 helper,**别直接 `warns.push`**:计数与屏显是一对。
+// 裸 push 只进计数、不打 `[WARN]` —— gates.ps1 gate 3i 是按 `[WARN]` **逐行**抓的
+// (`$out | Where-Object { $_ -match '\[WARN\]' }`),于是那条「跳过」在门禁屏上**隐身**:
+// 某一档真的没跑,汇总表却和全跑过的一次长得一模一样。载荷字段对拍那四处曾经就是裸 push
+// (PR#180 复审指出,[SL-286] 改掉)。与「降级路径必须在摘要里可见」同族。
 const warn = (msg) => {
     warns.push(msg);
     log("  [WARN]  " + msg);
@@ -1226,7 +1231,7 @@ function checkEventPayloadFields() {
 
     const editorPath = join(REPO_ROOT, "src", "output", "OutputEditor.cpp");
     if (!existsSync(editorPath)) {
-        warns.push("载荷字段对拍:读不到 OutputEditor.cpp,跳过");
+        warn("载荷字段对拍:读不到 OutputEditor.cpp,跳过");
         return;
     }
     const editor = readFileSync(editorPath, "utf8");
@@ -1264,7 +1269,7 @@ function checkEventPayloadFields() {
             .split(/\r?\n/)
             .find((l) => l.includes("| 载荷 |") && l.includes(c.anchor));
         if (!line) {
-            warns.push(
+            warn(
                 `载荷字段对拍:契约里找不到 ${c.event} 的载荷行(锚点 ${c.anchor}),跳过`,
             );
             continue;
@@ -1280,7 +1285,7 @@ function checkEventPayloadFields() {
         // —— 那是**假红**,而假红会让人把门禁关掉,比没门禁更坏。
         const fnStart = editor.indexOf(c.fn);
         if (fnStart < 0) {
-            warns.push(`载荷字段对拍:找不到 ${c.fn},跳过`);
+            warn(`载荷字段对拍:找不到 ${c.fn},跳过`);
             continue;
         }
         const NL = String.fromCharCode(10);
@@ -1292,7 +1297,7 @@ function checkEventPayloadFields() {
         );
         const codeFields = new Set([...body.matchAll(re)].map((m) => m[1]));
         if (codeFields.size === 0) {
-            warns.push(
+            warn(
                 `载荷字段对拍:${c.event} 在实现里抽不到 put(${c.varName}, …),跳过`,
             );
             continue;
