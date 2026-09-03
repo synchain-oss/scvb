@@ -5971,7 +5971,10 @@
                                 </span>
                                 <!-- 自定义下拉(用户反馈 2026-08-18:拉开的选项列表要做样式,
                                      原生 <select> 弹层不可定制)——面板复用缩放下拉的深色玻璃配方;
-                                     选项由 tab-master renderLeadOptions 生成:0=遵循分析 + 轨 01..15 -->
+                                     选项由 tab-master renderLeadOptions 生成:0 档 + 轨 01..15。
+                                     0 档的**上屏名**取词条 `leadFollowAnalysis`(现为「自动选择」);
+                                     J58 与 05 §5 里这一档叫「遵循分析」,档名待 SL-293 下一批统一 —— 
+                                     所以这里不写死任何一个名字,免得注释又比代码先过期。 -->
                                 <div
                                     class="lead-select-wrap"
                                     data-gb="master-leadselect-select"
