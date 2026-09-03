@@ -534,10 +534,14 @@ export const T = {
         // 照规格改回豁免口径的后果:默认 15 轨全 ON,用户照图例读出来是「全被豁免」——
         // **正好反了**,而这是会让人把设置调反的那一档。(裁判层级同 J88:晚出的用户裁定
         //  覆盖 05 规格;区别是这条没有 J 号,只落在代码注释里,grep adjudications.md 找不到。)
-        // fr 的两段介词写法**不对称是有原因的,别顺手统一**:「音量」段 `participation volume`
-        // 与同格 aria `tracks.colVolPart` fr 逐字同构(术语标签形态),「声像」段
-        // `participation au pan auto` 取的是 05 §5 fr 原文。两种都是合法法语,改任一边都会
-        // 破坏它各自对齐的那个真源。EN/FR 人工审校(T32)若要统一,两个真源要一起改。
+        // fr 的两段介词写法**不对称,别在没裁定之前顺手统一**。三个可核事实(复审补出第三条,
+        // 我原先只写了前两条,那样写等于替 T32 把话说满了):
+        //   ① 「音量」段 `participation volume` 与同格 aria `tracks.colVolPart` fr **逐字同构**;
+        //   ② 「声像」段 `participation au pan auto` 取的是 **05 §5 fr 原文**;
+        //   ③ 但那一列开关**自己的 fr 标签** `participateAutoPan` = `Participation pan auto`,
+        //      **不带介词** —— 按 ① 的标准(同格标签同构)它该跟音量段一样,与 ② 指向相反。
+        // 两种写法都是合法法语,本卡**不动**:三个参照点里有两个互相矛盾,这是 T32 EN/FR 人工
+        // 审校该裁的事,不是文案对齐能顺手办的。要统一就三处一起改,别只改看起来碍眼的那一处。
         "tracks.colLegend":
             "音量＝参与音量调节,该轨是否进音量平衡计算(默认开) · 声像＝参与自动声像,该轨是否进声像重分布(stereo 轨默认关,仍参与音量平衡) · 冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)",
         "tracks.emptyGroup":
@@ -1010,6 +1014,9 @@ export const T = {
         participateAutoPan: "Auto-Pan Participate",
         trackWidth: "Track Width",
         "tracks.monoWidthNoop": "Mono source cannot adjust width",
+        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):这里用**参与语义**,
+        //   **别照 05 §5 改成 `Vol Exempt` / `l'exemption de volume`** —— 那个标签界面上不存在。
+        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "master.leadSelectHint":
             "Track forced to center; Volume participation is an independent switch and is not affected",
         pair: "Pair",
@@ -1434,6 +1441,9 @@ export const T = {
             "Values ramp between segments instead of jumping. Too short and the seam clicks; too long and the image smears between two spots.",
         "master.copyConfirmWarn":
             "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl+Z).",
+        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `tracks.colLegend` 上方):「音量」段是**参与语义**,
+        //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
+        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "tracks.colLegend":
             "Vol = volume participation, whether this track joins level balancing (on by default) · Pan = auto-pan participation, whether it joins pan redistribution (stereo off by default, still level-balanced) · Freeze P/V = still analyzed but no longer driven; knob/fader unlock to manual (both switches share one per-track parameter)",
         "tracks.emptyGroup":
@@ -1816,6 +1826,9 @@ export const T = {
         trackWidth: "Largeur de piste",
         "tracks.monoWidthNoop":
             "Une source mono ne peut pas ajuster la largeur",
+        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):这里用**参与语义**,
+        //   **别照 05 §5 改成 `Vol Exempt` / `l'exemption de volume`** —— 那个标签界面上不存在。
+        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "master.leadSelectHint":
             "Piste forcée au centre ; la participation au volume est un réglage indépendant, non lié à ce choix",
         pair: "Paire",
@@ -2248,6 +2261,9 @@ export const T = {
             "Les valeurs suivent une rampe entre segments au lieu de sauter. Trop court, la jointure « saute » ; trop long, l'image se brouille entre deux positions.",
         "master.copyConfirmWarn":
             "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl+Z).",
+        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `tracks.colLegend` 上方):「音量」段是**参与语义**,
+        //   **别照 05 §5 改成 `volume exempt` / `exemption de volume`**(用户裁定 2026-08-21 已取反)。
+        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
         "tracks.colLegend":
             "Vol = participation volume, si la piste entre dans l'équilibrage (activé par défaut) · Pan = participation au pan auto, si la piste entre dans la redistribution (stéréo désactivé par défaut, équilibrage conservé) · Gel P/V = toujours analysé mais plus piloté ; potentiomètre/fader déverrouillés en manuel (les deux interrupteurs partagent un même paramètre par piste)",
         "tracks.emptyGroup":

@@ -218,7 +218,7 @@ for (const file of htmlFiles) {
 // 实测代价:一次扫出 **33 处**不一致(`checked=161 / mismatched=33 / distinctKeys=31`,
 // 三页里只有 Output 页有):**21 处判定内联陈旧、12 处判定词条那边有问题**。
 // 别把后 12 处记成「内联反而是对的」—— 那句话至少在 3 处不成立:`footer.printing` 恰恰相反
-//(base 的**内联**才带「小节」、词条本来就不带,终裁改的是内联),`tracks.colLegend` 与
+// (base 的**内联**才带「小节」、词条本来就不带,终裁改的是内联),`tracks.colLegend` 与
 // `master.leadSelectHint` 的裁判后来由更晚的用户裁定接管、「偏离规格」这个框根本不适用。
 // 举一个**站得住、无裁判层级争议**的例子:`out.master.writeConfirm` 把「30 条**车道**」写成
 // 「30 条**轨道**」—— 只有 15 轨,车道才是 30(15×pan/vol),纯事实错。
@@ -236,7 +236,9 @@ for (const file of htmlFiles) {
 //   **2 改** —— **按更晚的用户裁定、明确不回 05 规格**:`tracks.colLegend` / `master.leadSelectHint`
 //              (依据见这两条词条正上方的警示注释);
 //   **1 撤回** —— `footer.printing` 的单位词是尚未兑现的前置(A17 无 tempo map / deviations A26),
-//              两侧都回到无单位,对 base 净零;
+//              两侧都回到无单位。注意**只有词条那一侧对 base 净零**:base 的内联本来就带
+//              「小节」(`index.html:8520`),所以内联那一侧是真改了 —— 与上面第 220 行说的
+//              「终裁改的是内联」一致,别把「净零」写成两侧都没动;
 //   **4 推迟** —— 纯措辞(`armedWaiting` / `footer.printDone` / `leadFollowAnalysis` /
 //              `wave.trackPickHint`),词条不动、内联先同步成现行词条。
 // 另有 2 条**不在这 12 处之内**也改了:`out.master.writeConfirm.follow`(与兄弟条目对齐措辞)、
