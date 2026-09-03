@@ -329,6 +329,14 @@ const NON_NATIVE_TOP = [
 // 同目录的 `format.yml` 等 14 个文件不命中。单列一张,并在下面**断言它真的是混合的** ——
 // 否则「混合」会变成一个万能借口:哪天 `.github/` 整个进了构建,把它挂在这里就能瞒过去。
 const MIXED_TOP = [".github/"];
+// **混合条目的命中集合也要逐条钉死**(复审第 1 轮)。只断言「0 < 命中 < 总数」的话,
+// `.github/` 就成了本卡唯一豁免于「新长出的东西必须当场分类」的入口 —— 而这道门整篇
+// 就是来消灭这种豁免的。具体形态:哪天加 `.github/actions/build-cache/action.yml` 并被
+// `build-vst3.yml` 消费,`.github/` 仍然「有的命中有的不命中」⇒ 照绿,而新长出来的那棵
+// 子树谁也没分类过。钉死集合之后,`.github/` 内部再长出命中面也必须来登记一笔。
+const MIXED_EXPECT = {
+    ".github/": [".github/workflows/build-vst3.yml"],
+};
 
 function topLevelOf(file) {
     const i = file.indexOf("/");
@@ -413,6 +421,26 @@ if (tracked === null) {
                 listRot.push(
                     `${top}:挂在 MIXED_TOP,但里面每个文件都命中 —— 它已是整体 native,该由 NATIVE_RE 覆盖`,
                 );
+            // 上面两条只管「还算不算混合」,拦不住**混合内部长出新的命中面**。命中集合逐条对拍
+            // 才是那道门:多一条 = 有新东西进了构建没人登记;少一条 = 登记的那条没了(僵尸)。
+            const want = MIXED_EXPECT[top];
+            if (!want) {
+                listRot.push(
+                    `${top}:挂在 MIXED_TOP 却没在 MIXED_EXPECT 里钉命中集合 —— 混合条目必须逐条钉死,否则它是个豁免口`,
+                );
+            } else {
+                const got = group.filter((f) => rx.test(f)).sort();
+                const extra = got.filter((f) => !want.includes(f));
+                const gone = want.filter((f) => !got.includes(f));
+                for (const f of extra)
+                    listRot.push(
+                        `${top}:新长出命中 NATIVE_RE 的文件 ${f},但 MIXED_EXPECT 里没登记 —— 它进构建了,来登记一笔`,
+                    );
+                for (const f of gone)
+                    listRot.push(
+                        `${top}:MIXED_EXPECT 里登记了 ${f},但它现在不命中 NATIVE_RE(改名了?正则改窄了?)`,
+                    );
+            }
             continue;
         }
         if (inNon) {
@@ -429,6 +457,17 @@ if (tracked === null) {
 
     // 僵尸条目:清单里列着、仓库里已经没有的顶层条目。留着它 = 这行不再有任何判据兜着,
     // 而它长得和有效条目一模一样;更坏的是同名目录哪天以 native 身份回来,它当场替其挡住。
+    // 清单里**重复一行**(新增 screenshots-* 时最容易贴两遍)或**同一条同时挂在两张单子上**,
+    // 僵尸检查用 `present.has(t)` 两份副本都为真、过得去,`.length` 却多算一个 ⇒ 汇总行静默偏一;
+    // 交叠更坏:`inMixed` 先 `continue`,NON_NATIVE 那道「长出命中面就红」一次都不跑(复审第 1 轮)。
+    const dupTop = [...NON_NATIVE_TOP, ...MIXED_TOP].filter(
+        (t, i, a) => a.indexOf(t) !== i,
+    );
+    if (dupTop.length)
+        listRot.push(
+            `清单里有重复或交叠条目(计数与断言都会失真): ${[...new Set(dupTop)].join(", ")}`,
+        );
+
     const present = new Set(byTop.keys());
     for (const t of [...NON_NATIVE_TOP, ...MIXED_TOP])
         if (!present.has(t))
@@ -436,6 +475,28 @@ if (tracked === null) {
                 `${t}:清单里列着,但仓库里已经没有这个顶层条目(僵尸条目)`,
             );
 
+    // ②b 的引擎对拍只喂了手写用例,而「JS 认、ERE 当字面量」这类分叉**恰恰在真实路径上
+    // 才现形** —— 手写用例是照着当前正则编的,天然覆盖不到「正则改坏之后才分叉的那些路径」。
+    // ④ 手上已经有全仓路径了,顺手再对拍一次,这一档就从「样本对拍」升级成「仓库现状对拍」。
+    // (复审第 1 轮。grep 没有时 ②b 已经报过降级,这里静默跳过不再重复刷屏。)
+    const ereAll = ereHitSet(PATTERN, tracked);
+    if (ereAll) {
+        const jsAll = new Set(tracked.filter((f) => rx.test(f)));
+        const onlyJs2 = [...jsAll].filter((f) => !ereAll.has(f));
+        const onlyEre2 = [...ereAll].filter((f) => !jsAll.has(f));
+        for (const f of onlyJs2)
+            listRot.push(
+                `引擎分叉(全仓路径):只有 JS 命中,CI 的 grep -E 会漏编 ${f}`,
+            );
+        for (const f of onlyEre2)
+            listRot.push(
+                `引擎分叉(全仓路径):只有 grep -E 命中,本门禁判据失真 ${f}`,
+            );
+    }
+
+    // ⚠ 这一段必须落在下面那道汇总判负**之前**:它是往 `listRot` 里塞发现的,
+    //    而 `listRot` 在那道判负里被消费掉。放到判负之后 = 塞进去的东西没有任何人再看,
+    //    门禁照绿 —— 本卡初稿就是这么写的,复审第 1 轮的注入实测把它逮出来了。
     if (unclassified.length || listRot.length) {
         console.error(
             "check-native-paths: **顶层条目分类不全** —— detect-native 靠 NATIVE_RE 决定子 PR 编不编,",
@@ -447,20 +508,27 @@ if (tracked === null) {
             console.error(
                 `  [FAIL] 未分类顶层条目: ${t}(${n} 个文件,${h} 个命中 NATIVE_RE)`,
             );
+            // 出路有**三条**,别只说两条(复审第 1 轮):把天生混合的新目录一句「整体进
+            // NATIVE_RE」打发掉,照做就是整棵子树进命中面 ⇒ 此后每个子 PR 白编七分钟。
             console.error(
-                h > 0
-                    ? "         里面已经有文件命中 NATIVE_RE —— 多半该整体进 NATIVE_RE。"
-                    : "         **进构建就加进 build-vst3.yml 的 NATIVE_RE;不进构建就加进本文件的 NON_NATIVE_TOP。**",
+                h === 0
+                    ? "         **不进构建 ⇒ 加进本文件的 NON_NATIVE_TOP;进构建 ⇒ 加进 build-vst3.yml 的 NATIVE_RE。**"
+                    : h === n
+                      ? "         里面每个文件都命中 NATIVE_RE ⇒ **该整体进 NATIVE_RE**(顶层加一条分支)。"
+                      : "         **它是混合的**:要么把命中的那几条挪进 NATIVE_RE,要么把这个顶层条目登记进 MIXED_TOP + MIXED_EXPECT。",
             );
         }
         for (const msg of listRot)
             console.error(`  [FAIL] 清单与仓库现状对不上: ${msg}`);
         process.exit(1);
     }
+    // **直接数,不用减法**(复审第 1 轮):减法把「三个数加起来一定等于总数」当不变量,
+    // 而重复/交叠恰好会打破它 —— 于是汇总行会静默少报一条命中,正是本文件通篇在治的形态。
+    const nativeTops = [...byTop.keys()].filter((t) => rx.test(t)).length;
     console.log(
         `④ 顶层条目全覆盖: ${byTop.size} 个顶层条目全部已分类` +
-            `(${byTop.size - NON_NATIVE_TOP.length - MIXED_TOP.length} 命中 NATIVE_RE / ` +
-            `${NON_NATIVE_TOP.length} 显式 non-native / ${MIXED_TOP.length} 混合)。`,
+            `(${nativeTops} 命中 NATIVE_RE / ${NON_NATIVE_TOP.length} 显式 non-native / ` +
+            `${MIXED_TOP.length} 混合)。`,
     );
 }
 
