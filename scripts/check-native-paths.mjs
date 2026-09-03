@@ -383,12 +383,13 @@ if (tracked === null) {
     // 与 ②b 同一条口径:CI 上跳过 = 门禁绿着但没验过,必须判负。
     if (isCI) {
         console.error(
-            "check-native-paths: 当前在 CI 环境却找不到 git,「顶层条目全覆盖」这一档无法执行。",
+            "check-native-paths: 当前在 CI 环境却找不到 git,「顶层条目全覆盖」与「全仓路径引擎对拍」两档都无法执行。",
         );
         process.exit(1);
     }
     console.warn(
-        "  [WARN] 本机没有 git,跳过「顶层条目全覆盖」这一档 —— " +
+        "  [WARN] 本机没有 git,跳过「顶层条目全覆盖」**与「全仓路径引擎对拍」两档** —— " +
+            "后者嵌在前者里(拿不到全仓路径就无从对拍),所以这一行代表两档没跑。" +
             "新增顶层目录漏进 NATIVE_RE 这一类只有跑得到 git 的地方查得出。",
     );
 } else {
