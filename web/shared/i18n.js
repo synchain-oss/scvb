@@ -132,6 +132,11 @@ export const T = {
         "footer.printing": "写入自动化 {v} · {x}–{y}",
         "footer.printDone":
             "本次录制覆盖 {x}–{y};若在录制自动化,建议切回跟随宿主试听核对",
+        // [SL-293] follow 变体与上面 `out.master.writeConfirm` **措辞刻意保持一致**
+        //(arm / 不落盘):05 §5 两条原文用的就是同一套词,而这是「会覆盖 DAW 已有
+        // 自动化」的那句警告 —— 用户在两种范围模式间切一下,不该看到它换说法。
+        // 本卡改前 follow 侧写的是「已激活 / 不保存」(en `active` / fr `actif`),已按
+        // 规格对齐;en/fr 三处同理。别再让两条分家。
         "out.master.writeConfirm.follow":
             "写入自动化 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条车道;若 DAW 侧已 arm Latch/Write,播放已分析区域将覆盖其已有自动化;未 arm 则仅试听、不落盘",
         "footer.printing.follow": "写入自动化 {v} · 全曲跟随(已分析区域内)",
