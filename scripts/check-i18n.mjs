@@ -226,8 +226,17 @@ for (const file of htmlFiles) {
 //   把口径改坏。例子已删,免得后人拿这段当「照规格改回去」的授权 —— 立意注释被当口径读,
 //   正是本卡治了一整轮的那种漂移。
 //
-// 那 12 处最终的落地是 **8 改 / 1 撤回(`footer.printing` 的单位词是尚未兑现的前置)/
-// 4 推迟(纯措辞)**,不是「12 处都改」。
+// 那 12 处最终的落地(加起来正好 12,别写成对不上的分账):
+//   **5 改** —— 按 05 规格:`msHint` / `step1.desc` / `transitionHint` / `widthAngleHint` /
+//              `out.master.writeConfirm`;
+//   **2 改** —— **按更晚的用户裁定、明确不回 05 规格**:`tracks.colLegend` / `master.leadSelectHint`
+//              (依据见这两条词条正上方的警示注释);
+//   **1 撤回** —— `footer.printing` 的单位词是尚未兑现的前置(A17 无 tempo map / deviations A26),
+//              两侧都回到无单位,对 base 净零;
+//   **4 推迟** —— 纯措辞(`armedWaiting` / `footer.printDone` / `leadFollowAnalysis` /
+//              `wave.trackPickHint`),词条不动、内联先同步成现行词条。
+// 另有 2 条**不在这 12 处之内**也改了:`out.master.writeConfirm.follow`(与兄弟条目对齐措辞)、
+// `tour.step11.body`(指着界面上不存在的档名)。故词典净改动 = 5+2+2 = **9 条 key × 3 语**。
 //
 // 判据方向:**以 zh 词条为准**(它是上屏那一份),内联必须逐字等于它。
 //
