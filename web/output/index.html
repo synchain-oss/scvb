@@ -5495,7 +5495,7 @@
                                             class="cap-label"
                                             data-cap-label="armed"
                                             data-t="armedWaiting"
-                                            >已布防·等待播放</span
+                                            >已就绪·等待播放</span
                                         >
                                         <span
                                             class="cap-label"
@@ -5685,8 +5685,8 @@
                                 class="master-write-confirm__text"
                                 data-t="out.master.writeConfirm"
                                 data-gb="master-write-confirm-text"
-                                >写入自动化 {v} · 范围 {x}–{y} · 30 条车道;若
-                                DAW 侧已 arm
+                                >引擎驱动 {v} · 范围 {x}–{y} · 30 条车道;若 DAW
+                                侧已 arm
                                 Latch/Write,播放本范围将覆盖该范围已有自动化;未
                                 arm 则仅试听、不落盘</span
                             >
@@ -5988,7 +5988,7 @@
                                         <span
                                             data-gb="master-leadselect-label"
                                             data-t="leadFollowAnalysis"
-                                            >遵循分析</span
+                                            >自动选择</span
                                         >
                                     </button>
                                     <div
@@ -6012,7 +6012,7 @@
                                     data-gb="master-leadselect-hint"
                                     data-t="master.leadSelectHint"
                                 >
-                                    该轨强制居中;是否参与音量调节为独立开关,不随此联动
+                                    该轨强制居中;音量豁免为独立选项,不随此联动
                                 </p>
                                 <!-- [T3x] bridge.beginParamGesture("lead_select") / setParam("lead_select", v) / endParamGesture("lead_select") —— 契约 §1.12-1.14 -->
                             </div>
@@ -6672,12 +6672,11 @@
                                 class="tracks-legend__text sc-hint"
                                 data-t="tracks.colLegend"
                                 data-gb="tracks-legend-text"
-                            >
-                                音量＝参与音量调节,该轨是否进音量平衡计算(默认开)·
+                                >音量＝音量豁免,该轨不进音量平衡计算 ·
                                 声像＝参与自动声像,该轨是否进声像重分布(stereo
                                 轨默认关,仍参与音量平衡)·
-                                冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)
-                            </span>
+                                冻结P/V＝结果照算但不再驱动,旋钮解锁为手动(两开关共用一个每轨自动化参数)</span
+                            >
                             <span
                                 class="tracks-legend__spacer"
                                 aria-hidden="true"
@@ -7200,7 +7199,7 @@
                                         data-gb="wave-trackpickhint"
                                         data-t="wave.trackPickHint"
                                     >
-                                        勾选左侧轨头选择目标轨(可多选,shift
+                                        勾选左侧轨头选择目标轨(可多选,按 Shift
                                         连选)
                                     </div>
                                     <!-- 选区 chip(677-681):词条只含 {n} 轨句(B-02),
@@ -8511,18 +8510,16 @@
                         class="footer-hint footer-hint--mono"
                         data-gb="footer-print-status"
                         data-t="footer.printing"
+                        >引擎驱动 {v} · {x}–{y} 小节</span
                     >
-                        写入自动化 {v} · {x}–{y} 小节
-                    </span>
                     <!-- 打印结束:非 mono 长句 -->
                     <span
                         class="footer-hint"
                         data-gb="footer-print-done"
                         data-t="footer.printDone"
+                        >本次录制覆盖
+                        {x}–{y};若在录制自动化,建议切回跟随宿主试听核对</span
                     >
-                        本次打印覆盖
-                        {x}–{y};若在录制自动化,建议切回跟随宿主试听核对
-                    </span>
                     <!-- 重采集布防 badge③(05 §2.3「重采集选区」行 ③ / §2.1① 输出开关行):
          输出开关为 ON 或在布防期被打开 → footer 追加琥珀警告。
          数据源 scvb.state.recapture + 输出开关态,显隐留 Wave 2。 -->

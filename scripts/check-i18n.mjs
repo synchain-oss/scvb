@@ -211,6 +211,51 @@ for (const file of htmlFiles) {
     }
 }
 
+// ------------------------- 检查 2b:HTML 内联回退文案必须与 zh 词条逐字相同
+//
+// [SL-293] 为什么要有这条:`applyI18n` 在运行期会用词条覆盖 `<span data-t=...>` 的静态文本,
+// 所以内联那份只是**首帧回退**——正因为「稳态看不出来」,它漂了没有任何东西会红。
+// 实测代价:一次扫出 33 处不一致,其中 12 处是**词条偏离了 05 规格**、内联反而是对的
+// (`master.leadSelectHint` 把「音量豁免为独立选项,不随此联动」整句丢了;
+//  `tracks.colLegend` 的「音量」列语义被写反;`out.master.writeConfirm` 把「30 条车道」
+//  写成「30 条轨道」——只有 15 轨,车道才是 30)。这类错**用户看得见**,而首帧那一瞬
+//  还会闪一下另一份文案。
+//
+// 判据方向:**以 zh 词条为准**(它是上屏那一份),内联必须逐字等于它。
+// 只比中文内联:纯 ASCII 的占位文本(如 `0 dB`、`{v}`)与空元素不参与。
+// ★ 删之即红:把任一页某个 data-t 元素的内联文字改一个字,本条当场红。
+const INLINE_RE = /data-t="([\w.]+)"[^>]*>([^<]{1,600})</g;
+const NL = String.fromCharCode(10);
+const norm = (s) => String(s).replace(/\s+/g, " ").trim();
+let inlineChecked = 0;
+for (const file of htmlFiles) {
+    const text = fs.readFileSync(file, "utf8");
+    let m;
+    INLINE_RE.lastIndex = 0;
+    while ((m = INLINE_RE.exec(text)) !== null) {
+        const key = m[1];
+        const inline = norm(m[2]);
+        if (inline === "" || !/[一-鿿]/.test(inline)) continue;
+        const want = T.zh ? T.zh[key] : undefined;
+        if (want === undefined) continue; // 缺 key 由检查 2 报
+        inlineChecked += 1;
+        if (inline !== norm(want)) {
+            const line = text.slice(0, m.index).split(NL).length;
+            fail(
+                rel(file) +
+                    ":" +
+                    line +
+                    " 内联回退文案与 zh 词条不一致「" +
+                    key +
+                    "」 词条=" +
+                    norm(want) +
+                    " / 内联=" +
+                    inline,
+            );
+        }
+    }
+}
+
 // --------------------------------------------------------- 检查 3:死 key
 // 引用判据(宽松,宁可漏判也不误杀):引号字符串字面量、模板串、`.ident` 属性访问;
 // 拼接式取词(`"guide.rule" + n`、带插值的 `tour.step${i}`)按字面前缀登记,避免整组 key 被误报为死 key。
