@@ -136,13 +136,54 @@ function parenSpan(src, idx) {
 // span 于是把整个 `if` 块并了进来,里面既有 `teardown` 又有 `process.on(` ⇒ 判「已覆盖」。
 // 而上一版注释却宣称「顺带堵住另一头」—— 正是本卡自己在治的「看着有防护、实际没做事」。
 //
-// 边界取「深度 0 的 `;`」**或**「深度 0 的换行」,**谁先算谁** —— ASI 的语句边界本来就是
-// 行尾;prettier 折长行时折在括号里(depth > 0),折行因此不受影响。两者都取不到 ⇒
-// 返回 null ⇒ 判不覆盖。这样才是构造性排除,不再依赖 `semi: true` 这个外部条件。
+// 边界取「深度 0 的 `;`」**或**「深度 0 的换行」,**谁先算谁**。
+//
+// ⚠ 说清楚这条的**强度**(复审第 3 轮:上一版把它写成「构造性排除」,又比代码强了一档):
+// ASI 的真规则不是「行尾即语句边界」,而是「下一个 token 接不下去时才补分号」。
+// 深度 0 的换行处**继续同一条语句**是合法且常见的 —— 典型是成员链断行:
+//     for (const sig of [...])
+//         emitter
+//             .on(sig, teardown);      // `emitter` 行尾 depth === 0
+// 那种写法下本函数会在 `emitter` 后就收口 ⇒ span 不含 `teardown` ⇒ **假红**。
+// 所以行尾只是一个**近似上界**,不是构造性排除;取它是因为**失效方向倒向报错**
+// (假红看得见、有人来修),而不取会留下真正的假绿(见上面那段复现)。
+// prettier 折长行多数折在括号里(depth > 0)不受影响,但成员链断行它确实会在 depth 0 折 ——
+// 「折行不受影响」也只是今天恰好成立,别把它写成保证。今天六套都不是那种写法。
 const NEWLINE = String.fromCharCode(10); // 换行符;写成常量避免转义歧义
+
+// [SL-291] 跳过空白**与注释**。复审第 3 轮:上一版只跳空白,于是注释行会参与边界判定 ——
+//     for (const sig of [...])
+//         // 收尾见下
+//         process.on(sig, teardown);
+// 光标落在 `/` 上、扫到该行行尾(depth 0)就收口 ⇒ span 是那行注释 ⇒ **假红**;
+// 更糟的是注释里出现一个裸 `(` 或 `{`(**本族头注本来就在讨论这些形态**),
+// 深度再也回不到 0 ⇒ 扫到文件尾 ⇒ null ⇒ 同样假红。这是相对上一版的**新收窄**,不能留。
+// (串/模板串里的裸括号仍是文件头已声明的盲区,不在本卡范围。)
+// 若 i 处正好起一段注释,返回它之后的位置;否则原样返回 i(**不跳空白**)。
+function skipComment(src, i) {
+    if (src[i] === "/" && src[i + 1] === "/") {
+        const nl = src.indexOf(NEWLINE, i);
+        // 行注释**不吞掉那个换行**:换行是 bodyAfter 的上界,吞了就把上界也吞了。
+        return nl < 0 ? src.length : nl;
+    }
+    if (src[i] === "/" && src[i + 1] === "*") {
+        const close = src.indexOf("*/", i + 2);
+        return close < 0 ? src.length : close + 2;
+    }
+    return i;
+}
+
+function skipTrivia(src, i) {
+    for (;;) {
+        while (i < src.length && /\s/.test(src[i])) i++;
+        const j = skipComment(src, i);
+        if (j === i) return i;
+        i = j;
+    }
+}
+
 function bodyAfter(src, from) {
-    let i = from;
-    while (i < src.length && /\s/.test(src[i])) i++;
+    let i = skipTrivia(src, from);
     if (i >= src.length) return null;
     if (src[i] === "{") {
         // `{` **正好在光标处**才走配对 —— 这就是边界本身:不存在「往后找」的机会。
@@ -152,6 +193,15 @@ function bodyAfter(src, from) {
     let paren = 0;
     let curly = 0;
     for (let j = i; j < src.length; j++) {
+        // 注释区间整段跳过:否则注释里一个裸 `(`/`{` 就能把深度带偏,之后再也回不到 0
+        // ⇒ 扫到文件尾 ⇒ 判不覆盖(假红)。与 skipTrivia 同一条理由。
+        // ⚠ 这里**只跳注释、不跳空白** —— 用 skipTrivia 会把深度 0 的换行一并吞掉,
+        //    而那个换行正是上面那条上界本身(自检矩阵当场逮到:ASI 那格从红变绿)。
+        const afterComment = skipComment(src, j);
+        if (afterComment > j) {
+            j = afterComment - 1; // for 的 j++ 会补回来
+            continue;
+        }
         const c = src[j];
         if (c === "(") paren++;
         else if (c === ")") paren--;
@@ -414,6 +464,31 @@ const SELFTEST = [
             'process.on("SIGTERM", () => teardown());',
             'process.on("uncaughtException", () => teardown());',
             'process.on("unhandledRejection", () => teardown());',
+        ].join(NL),
+        false,
+    ],
+    [
+        "注册前有行注释(合法,应判过)",
+        // 复审第 3 轮:上一版只跳空白不跳注释,光标落在 `/` 上、扫到行尾就收口 ⇒ 假红。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    // 收尾见下",
+            "    process.on(sig, teardown);",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
+        ].join(NL),
+        false,
+    ],
+    [
+        "注释里有裸括号(合法,应判过)",
+        // 更糟的那种:注释里一个裸 `(`/`{` 会把深度带偏、再也回不到 0 ⇒ 扫到文件尾 ⇒ 假红。
+        // **本族头注本来就在讨论这些形态**,所以这不是假想。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    // 别写成 process.on(sig, () => {}) 这种空体 {",
+            "    process.on(sig, teardown);",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
         ].join(NL),
         false,
     ],
