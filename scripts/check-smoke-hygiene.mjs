@@ -166,23 +166,43 @@ const NEWLINE = String.fromCharCode(10); // 换行符;写成常量避免转义�
 // 更糟的是注释里出现一个裸 `(` 或 `{`(**本族头注本来就在讨论这些形态**),
 // 深度再也回不到 0 ⇒ 扫到文件尾 ⇒ null ⇒ 同样假红。这是相对上一版的**新收窄**,不能留。
 // (串/模板串里的裸括号仍是文件头已声明的盲区,不在本卡范围。)
-// 若 i 处正好起一段注释,返回它之后的位置;否则原样返回 i(**不跳空白**)。
-function skipComment(src, i) {
+// [SL-291] 注释跳过**分两个口径,因为两个调用方要的不是一回事**(复审第 5 轮):
+//
+//   · `skipTrivia`(跳到**体的开头**)要把注释**整段**跳掉 —— 块注释一路跳到 `*/`;
+//   · `bodyAfter` 的主扫描(找**体的上界**)要在注释里的**第一个换行**处收口 ——
+//     那个换行就是上界本身。
+//
+// 上一版把两者合成一个「块注释也只跳到第一个换行」,结果 `skipTrivia` 会**停在块注释
+// 中间**:跳到第一个换行后,空白循环吃掉换行与缩进,光标落在注释第二行正文上,
+// 那里不以 `/` 开头 ⇒ 就地返回。于是半段注释被当成体 —— 既造新假红(跨行块注释
+// 的下半段被当成体),又让「注释里写着注册」那格换成块注释就打不中(假绿)。
+// 两个口径必须分开,合并只是看起来省了一个函数。
+
+// 整段跳过:用于 skipTrivia。行注释停在它的换行处(交给空白循环去吃),块注释跳到 `*/` 之后。
+function commentEnd(src, i) {
     if (src[i] === "/" && src[i + 1] === "/") {
         const nl = src.indexOf(NEWLINE, i);
-        // 行注释**不吞掉那个换行**:换行是 bodyAfter 的上界,吞了就把上界也吞了。
+        return nl < 0 ? src.length : nl;
+    }
+    if (src[i] === "/" && src[i + 1] === "*") {
+        const close = src.indexOf("*/", i + 2);
+        return close < 0 ? src.length : close + 2;
+    }
+    return i;
+}
+
+// 扫描口径:用于 bodyAfter 的主循环。两种注释都停在**它内部的第一个换行**处 ——
+// 那个换行是体的上界,不能被注释吞掉(第 2 轮立的上界,第 4 轮差点被块注释绕过)。
+function commentBoundary(src, i) {
+    if (src[i] === "/" && src[i + 1] === "/") {
+        const nl = src.indexOf(NEWLINE, i);
         return nl < 0 ? src.length : nl;
     }
     if (src[i] === "/" && src[i + 1] === "*") {
         const close = src.indexOf("*/", i + 2);
         if (close < 0) return src.length;
-        // 跨行的块注释**也只跳到它的第一个换行**,与行注释同档(复审第 4 轮):
-        // 若整段跳过,中间那些深度 0 的换行就再也不被 `bodyAfter` 的主循环看见 ⇒
-        // 上界在该形态下退化 ⇒ 假绿。两支强度必须一样,否则注释说不清它到底保证了什么。
-        // (`skipTrivia` 是循环调用,停在换行处不影响它继续往前跳。)
         const nl = src.indexOf(NEWLINE, i);
-        if (nl >= 0 && nl < close) return nl;
-        return close + 2;
+        return nl >= 0 && nl < close ? nl : close + 2;
     }
     return i;
 }
@@ -190,7 +210,7 @@ function skipComment(src, i) {
 function skipTrivia(src, i) {
     for (;;) {
         while (i < src.length && /\s/.test(src[i])) i++;
-        const j = skipComment(src, i);
+        const j = commentEnd(src, i);
         if (j === i) return i;
         i = j;
     }
@@ -211,7 +231,7 @@ function bodyAfter(src, from) {
         // ⇒ 扫到文件尾 ⇒ 判不覆盖(假红)。与 skipTrivia 同一条理由。
         // ⚠ 这里**只跳注释、不跳空白** —— 用 skipTrivia 会把深度 0 的换行一并吞掉,
         //    而那个换行正是上面那条上界本身(自检矩阵当场逮到:ASI 那格从红变绿)。
-        const afterComment = skipComment(src, j);
+        const afterComment = commentBoundary(src, j);
         if (afterComment > j) {
             j = afterComment - 1; // for 的 j++ 会补回来
             continue;
@@ -514,7 +534,38 @@ const SELFTEST = [
         ].join(NL),
         false,
     ],
+    [
+        "注册前有**跨行块注释**(合法,应判过)",
+        // 复审第 5 轮:块注释「只跳到第一个换行」曾让 skipTrivia 停在注释中间,
+        // 半段注释被当成体 ⇒ 假红。13 格里原先没有任何一格用块注释,所以打不中。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    /* 收尾",
+            "       见下 */",
+            "    process.on(sig, teardown);",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
+        ].join(NL),
+        false,
+    ],
     // ---- 删除式:必须红 ------------------------------------------------------
+    [
+        "**跨行块注释**里写着注册,真体不收尾(复审第 5 轮)",
+        // 与第 9 格同形,但换成块注释 —— 那一格用行注释,打不中这条路径。
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"])',
+            "    /* 见",
+            "       process.on(sig, teardown); */",
+            "    process.exit(130);",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) {',
+            "    process.on(ev, () => {",
+            "        teardown();",
+            "    });",
+            "}",
+        ].join(NL),
+        true,
+    ],
     [
         "循环头与体之间的注释里写着注册,真体不收尾(复审第 4 轮)",
         // 裸切 `s.slice(forAt, body.end)` 会把这行注释一起切进 span ——
