@@ -85,7 +85,16 @@
 - **冻结中调整不进插件的撤销栈**:那一路不改曲线、只写自动化参数,所以此时按 Ctrl+Z 撤掉的会是你更早的某一次段编辑,而不是刚才那下旋钮 —— 要回退冻结期间的调整,请用宿主自己的撤销(那些值是以自动化写入的形式落在 DAW 里的)。冻结维度上的手动写入也不再弹「将替换该轨全部分段结果」的确认条:它一段都不会替换(#106)
 - `web/shared/i18n.js` 的 `guide.title` 与 `guide.rule1..9` 改为生成区,不再手写(#74)
 - 界面文案第二轮定稿:「Armed」→「已就绪」、「打印中」→「自动化写入中」、「失联」→「链接异常」、「段检查器」→「段落详情与编辑」等(#76)
-- 所有并入 `dev` 的 PR(含 `feature/v1` 的子 PR)现在都跑完整 CI(#56)
+- CI 分三档跑,不再一刀切「所有 PR 都跑完整 CI」([J96] 用户新口径:只要确保**出包之前**
+  跑过全量就行)。**轻档** = `feature/**` 的子 PR 且没碰 native 路径:只跑 format(clang-format /
+  web-smoke / docs-truth)、compliance(gitleaks / REUSE / check-privacy / 设计盒)与三个
+  review bot,省掉 20 分钟的 Windows 冷编译;**中档** = 里程碑 PR(base=`dev`)与 push→`dev`
+  照跑全量;**重档** = **出包前硬门**,`workflow_dispatch` 必须跑一次并绿才允许打包 ——
+  这是 `feature/v1` 主支线唯一的机器编译证据(#176)
+- 轻档补回 native 编译覆盖:子 PR 只要碰了 `src/` `tests/` `cmake/` `CMakeLists.txt`
+  **`web/`**(经 `juce_add_binary_data` 编进二进制)`third_party/` 或钉版文件,由 `detect-native`
+  判定后**照跑全量**。[J96] 原来一刀切跳过的后果是「动了 C++ 的子 PR 在 CI 侧一次都不编译」,
+  「CI 全绿」不再等价于「native 编过」;失效方向倒向「照编」,任何一步出错都不会倒向跳过(#180)
 - S1 测试工程推子统一 −18 dB,避免 15 轨叠加时总线削波(#21)
 - 代码评审机器人升级到 claude-opus-5(#67)
 

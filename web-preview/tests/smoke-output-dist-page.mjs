@@ -1206,8 +1206,15 @@ try {
 
         // ---- 0 dB 基准线:必须落在「0 dB 那根柱(ch3)的顶边」上
         //
-        // 这一条同时是 `--zero-h` 的**接线判据**:CSS 侧不给缺省,dist-motion 若没把
-        // 变量写下去,`bottom` 声明失效 ⇒ 线跑到容器底部 ⇒ 两者的 top 差出一大截。
+        // 这一条同时是**接线判据**。降级分两档,红的理由不同,别读混:
+        //   • 只删建器里的 `setProperty`(`has-zero-line` 还在)⇒ 线照显示,但 `bottom`
+        //     整条声明失效 ⇒ `bottom:auto` ⇒ 绝对定位又没给 `top` ⇒ 退回静态位置 =
+        //     `.dist-plot` 内容盒**顶边**。实测:线 top 540.22,而 ch3 柱 top 593.39、
+        //     柱高 108.11 ⇒ 该页 plot 顶 ≈ 540.2 —— 线正画在**图顶**,两者 top 差一大截。
+        //   • 建器里的 `classList.add` 也删掉 ⇒ `.dist-plot__zero` 默认 `display:none`
+        //     ⇒ 矩形全零 ⇒ `lineTop = 0`,同样红,但红在「压根没画」而不是「错位」。
+        // (旧版这里写「线跑到容器**底部**」—— 方向是反的;而「CSS 侧不给缺省」那句也已被
+        //  `has-zero-line` 取代。两处一并订正,全仓回扫过:无同义残留。)
         const zeroGeom = IN(`
             const line = q(".dist-plot__zero");
             const bar3 = q('.dist-bar[data-ch="3"]');

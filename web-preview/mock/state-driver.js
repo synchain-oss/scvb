@@ -535,6 +535,17 @@ export function buildWorld(opts = {}) {
             tour_seen_global: false,
         };
     }
+    if (opts.scenario === "hot-levels" && outputSnapshot) {
+        // [SL-293] 本场景是**出包截图/肉眼核对**用的,首启引导浮层会给整页盖一层背景模糊,
+        // 把「柱高是否分层」这类判断削弱成猜 —— 而本仓刚栽过一次工具伪证据(SL-290)。
+        // 两级 guide_seen 都置真 ⇒ 引导页与 tour 询问步都不弹,截图干净。
+        outputSnapshot = {
+            ...outputSnapshot,
+            ui: { ...outputSnapshot.ui, guide_seen: true },
+            guide_seen_global: true,
+            tour_seen_global: true,
+        };
+    }
     if (opts.scenario === "hot-levels" && outputParams) {
         // [SL-280] 只覆写 vol 参数面初值,不动段表、不动周期事件语义。
         // 取值有意跨过 0 dB 两侧且**两两不等**:旧公式下 ch1..ch4 会全部画成 88%(饱和),
