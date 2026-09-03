@@ -32,9 +32,17 @@
 //     D. 收尾走**所有**退出路径:有 `teardown()`,且 exit / SIGINT / SIGTERM /
 //        uncaughtException / unhandledRejection 五个都挂上了**且 handler 体里真的调了它**
 //        —— 只检字符串在不在的话,一个空的 `process.on("exit", () => {})` 也能全绿。
+//   [SL-291] **判据自己也要有判据**:每次运行**先跑一遍内置自检矩阵**(7 格:4 格正例
+//   「合法但不常见的写法不许红」+ 3 格删除式「该红必须红」),不合预期就直接退出、
+//   **不再往下看真文件** —— 判据坏掉时,它对真文件的任何结论都不可信。
+//   矩阵内置而不是另起测试文件,是因为本门禁扫的正是 `web-preview/tests/smoke-*.mjs`:
+//   样本放进那个目录会被它自己扫到(判例:扫描器入库才炸),放别处又要另接一条 CI 命令。
+//   内置成运行前置,CI 与 gates 里那条既有命令自动带上它。
+//
 //   用法:
-//     node scripts/check-smoke-hygiene.mjs [--help]
-//   退出码:任一断言失败 = 1,全通过 = 0。
+//     node scripts/check-smoke-hygiene.mjs [--help] [--selftest]
+//       --selftest  只跑自检矩阵,不扫真文件(排查判据本身时用)
+//   退出码:自检失败 / 任一断言失败 = 1,全通过 = 0。
 
 import fs from "node:fs";
 import path from "node:path";
@@ -47,8 +55,11 @@ const repoRoot = path.resolve(
 const TESTS = path.join(repoRoot, "web-preview", "tests");
 
 if (process.argv.includes("--help")) {
-    console.log("用法: node scripts/check-smoke-hygiene.mjs");
+    console.log("用法: node scripts/check-smoke-hygiene.mjs [--selftest]");
     console.log("断言页面级冒烟都有 CDP 截止时间,且收尾走所有退出路径。");
+    console.log(
+        "每次运行都先跑内置自检矩阵(正例 + 删除式);--selftest 只跑它。",
+    );
     process.exit(0);
 }
 
@@ -79,6 +90,13 @@ const HANDLERS = [
 // 调用处就不必再拿 text 去全文 `indexOf` 找它在哪(复审指出:那是一次无锚再搜索,
 // 文件里更早处若有一段逐字相同的小块,会返回更早那处 ⇒ 切出空串 ⇒ 假红)。
 // C 与 D 共用。
+//
+// ⚠ [SL-291] **本函数自己不设边界,边界由调用方给** —— 见 `bodyAfter`:它只在光标处
+// 确实是 `{` 时才调本函数,所以「往后滑到无关块」这件事在那条路径上**由构造排除**。
+// (第一版给本函数加了个 `limit` 形参,但唯一的调用方在调用前就已经确认 `{` 就在光标处,
+//  那个形参因此**没有任何调用方依赖、也没有任何用例能让它变红** —— 无牙守卫比没有守卫更坏,
+//  已删。D 档的真正边界是 `parenSpan` + `bodyAfter` 这一对。)
+// C 档取 `waitFor` 体时仍用本函数的无边界形态:那里锚点就是函数声明,下一个 `{` 正是它的体。
 function braceBody(src, idx) {
     const open = src.indexOf("{", idx);
     if (open < 0) return null;
@@ -91,10 +109,41 @@ function braceBody(src, idx) {
     return null;
 }
 
-let failed = 0;
-for (const p of files) {
-    const s = fs.readFileSync(p, "utf8");
-    const name = path.basename(p);
+// [SL-291] 从 idx 起找第一个 `(`,配对到它的 `)`。用来把「**这一次调用/这个循环头**」
+// 框出来,给 braceBody 一个真实边界,而不是让它在整个文件里往后找。
+// 与 braceBody 同样是文本级、对串/注释里的裸括号是盲的(边界说明见文件头)。
+function parenSpan(src, idx) {
+    const open = src.indexOf("(", idx);
+    if (open < 0) return null;
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+        if (src[i] === "(") depth++;
+        else if (src[i] === ")" && --depth === 0)
+            return { open, end: i + 1, text: src.slice(open, i + 1) };
+    }
+    return null;
+}
+
+// [SL-291] 取「紧跟 from 之后的那个体」:有花括号就取配对块,**没有花括号就取到分号为止**
+// (单行写法)。取不到 ⇒ 返回 null,调用方据此判**不覆盖**(失效方向倒向报错,不是放过)。
+function bodyAfter(src, from) {
+    let i = from;
+    while (i < src.length && /\s/.test(src[i])) i++;
+    if (i >= src.length) return null;
+    if (src[i] === "{") {
+        // `{` **正好在光标处**才走配对 —— 这就是边界本身:不存在「往后找」的机会。
+        const b = braceBody(src, i);
+        return b && { end: b.end, text: b.text };
+    }
+    const semi = src.indexOf(";", i);
+    return semi < 0 ? null : { end: semi + 1, text: src.slice(i, semi + 1) };
+}
+
+// [SL-291] 四档检查抽成纯函数(输入源码文本 → 输出问题清单),这样**判据自己也能被测**:
+// 下面的自检矩阵拿拼装出来的样本喂它,断言「该红的红、该过的过」。
+// 抽之前这些检查只在真文件上跑过,而真文件恰好六套写法完全一致 —— 等于判据的大部分
+// 分支从没被执行过(形态三今天一次都不会走到)。
+function problemsOf(s) {
     const bad = [];
 
     if (!/send\(method,\s*params,\s*timeoutMs\)/.test(s))
@@ -178,27 +227,41 @@ for (const p of files) {
             for (let at = s.indexOf(h); at >= 0; at = s.indexOf(h, at + 1)) {
                 const forAt = s.lastIndexOf("for (", at);
                 if (forAt < 0) continue;
-                const b = braceBody(s, forAt);
-                if (!b) continue;
-                // 用 open/end 精确切,不再拿 text 去全文 `indexOf` 找位置 ——
-                // 那是一次无锚再搜索,更早处若有逐字相同的小块会切出空串 ⇒ 假红。
-                const span = s.slice(forAt, b.end);
+                // [SL-291] 先把**循环头**框出来,再取紧跟其后的体 —— 而不是从 `for (`
+                // 一路找下一个 `{`。旧写法在**单行无花括号**循环下会滑到后面某个无关块:
+                //     for (const sig of ["SIGINT","SIGTERM"]) process.on(sig, onSig);
+                // 那时 `braceBody(s, forAt)` 抓到的是再往后的某个 `{…}`,而它里面通常
+                // 恰好有 `teardown` 与 `process.on(` ⇒ **静默判绿**,实际这条路径没覆盖。
+                const head = parenSpan(s, forAt);
+                if (!head) continue;
+                // 信号名必须在**循环头**里(它写在数组字面量 `["SIGINT","SIGTERM"]` 中),
+                // 而不只是「这段里出现过」——否则体内一句提到信号名的注释就能顶替。
+                if (!head.text.includes(h)) continue;
+                const body = bodyAfter(s, head.end);
+                if (!body) continue; // 取不到体 ⇒ 不认(倒向报错)
+                const span = s.slice(forAt, body.end);
                 // 还要求这段里真的在**注册**:光有「循环头提到信号名 + 体里调了 teardown」
                 // 不代表它是 handler —— 任何调 teardown 的循环体里写一句提到 "SIGTERM"
                 // 的注释就能顶替。`process.on(` 这一条几乎零成本。
-                if (
-                    span.includes(h) &&
-                    span.includes("teardown") &&
-                    span.includes("process.on(")
-                )
+                if (span.includes("teardown") && span.includes("process.on("))
                     return true;
             }
-            // 形态三:`process.on(h, (…) => { … teardown() … })` —— 内联回调体。
-            const onAt = s.indexOf(`process.on(${h}`);
-            return (
-                onAt >= 0 &&
-                (braceBody(s, onAt)?.text || "").includes("teardown")
-            );
+            // 形态三:`process.on(h, …)` —— 内联回调。
+            //
+            // [SL-291] 取**这次调用的括号跨度**,不再「从 onAt 起找下一个 `{`」:
+            //   · 无花括号的箭头体 `process.on("SIGTERM", () => teardown());` 本来就没有 `{`,
+            //     旧写法会滑到后面无关的块 ⇒ 假绿(而这种写法**是合法且应当判过的**);
+            //   · 空体 `process.on("SIGTERM", () => {});` 的括号跨度里没有 `teardown` ⇒ 判红,
+            //     与本档要防的「照模板复制后把 handler 体改空」正对上。
+            // 括号跨度同时覆盖了「有花括号」与「无花括号」两种形态,不必分支。
+            // 注册点用正则找(容忍 `process.on( "SIGTERM"` 这种空白),找不到 ⇒ 判红。
+            // `h` 形如 `"SIGTERM"`(自带引号),引号在正则里不是元字符,直接内插即可。
+            // (第一版这里写了 `h.replace(/"/g, '"')` —— 把 `"` 换成 `"`,**是个空操作**,
+            //  却长得像在做转义。看着有防护、实际什么都没做,删掉。)
+            const onAt = s.search(new RegExp(`process\\.on\\(\\s*${h}`));
+            if (onAt < 0) return false;
+            const call = parenSpan(s, onAt);
+            return !!call && call.text.includes("teardown");
         };
         const miss = HANDLERS.filter((h) => !covered(h));
         if (miss.length)
@@ -207,6 +270,175 @@ for (const p of files) {
             );
     }
 
+    return bad;
+}
+
+// ---------------------------------------------------------------------------
+// [SL-291] **门禁自检**:每次运行都先跑一遍,不合预期就直接退出 —— 零自我豁免。
+//
+// 为什么内置而不是另起一个测试文件:这道门禁扫的正是 `web-preview/tests/smoke-*.mjs`,
+// 把样本放进那个目录会被它自己扫到(「扫描器入库才炸」);而放在别处又需要另外接一条
+// CI/gates 命令才跑得到。**内置成运行前置**则两边都不必改:CI 与 gates 里那条既有的
+// `node scripts/check-smoke-hygiene.mjs` 自动带上它。
+//
+// 样本一律**拼装**而不是写成整份文件:只保留被测的那几行形态,其余用最小骨架凑齐
+// A/B/C 三档,免得一个无关档位失败把 D 档的结论污染掉。
+const NL = String.fromCharCode(10); // 换行符,避免在生成器里转义反斜杠
+const SKELETON = [
+    "function send(method, params, timeoutMs) {}",
+    "const CDP_DEFAULT_TIMEOUT_MS = 20000;",
+    "const x = timeoutMs || CDP_DEFAULT_TIMEOUT_MS;",
+    "async function waitFor(expr, ms) {",
+    "  const t0 = Date.now();",
+    "  await evaluate(expr, Math.max(0, ms - (Date.now() - t0)));",
+    "}",
+    "function teardown() {}",
+].join(NL);
+
+// 六套真文件今天的写法(形态一 + 两个带花括号的 for 循环)—— 正例基线。
+const REAL_SHAPE = [
+    'process.on("exit", teardown);',
+    'for (const sig of ["SIGINT", "SIGTERM"]) {',
+    "    process.on(sig, () => {",
+    "        teardown();",
+    "        process.exit(130);",
+    "    });",
+    "}",
+    'for (const ev of ["uncaughtException", "unhandledRejection"]) {',
+    "    process.on(ev, (e) => {",
+    "        teardown();",
+    "        process.exit(1);",
+    "    });",
+    "}",
+].join(NL);
+
+// 每格:[样本名, 源码, 期望「D 档是否报问题」]。
+// **正反都要有**:只有删除式(该红的红)会做出一碰就红的过紧判据,
+// 反向用例(合法但不常见的写法**不该红**)才是它的对侧约束。
+const SELFTEST = [
+    // ---- 正例:不该红 --------------------------------------------------------
+    ["真文件今天的写法", REAL_SHAPE, false],
+    [
+        "单行无花括号循环(合法,应判过)",
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, teardown);',
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
+        ].join(NL),
+        false,
+    ],
+    [
+        "无花括号箭头体(合法,应判过)",
+        [
+            'process.on("exit", teardown);',
+            'process.on("SIGINT", () => teardown());',
+            'process.on("SIGTERM", () => teardown());',
+            'process.on("uncaughtException", () => teardown());',
+            'process.on("unhandledRejection", () => teardown());',
+        ].join(NL),
+        false,
+    ],
+    [
+        "注册点带多余空白(合法,应判过)",
+        [
+            'process.on( "exit" , teardown );',
+            'process.on( "SIGINT", () => teardown());',
+            'process.on( "SIGTERM", () => teardown());',
+            'process.on( "uncaughtException", () => teardown());',
+            'process.on( "unhandledRejection", () => teardown());',
+        ].join(NL),
+        false,
+    ],
+    // ---- 删除式:必须红 ------------------------------------------------------
+    [
+        "单行无花括号循环但**没调 teardown**(本卡要抓的那个洞)",
+        // ⚠ 这一格必须**只让 sig 那条路径可疑**:其余四条退出路径都用最稳的写法覆盖住,
+        // 否则它可能因为**别的**路径没覆盖而变红 —— 那样注入回旧写法时它照样红,
+        // 这一格就检不出本卡要防的那个假绿(「注入要精准:核红在不在设计接住它的那条断言上」)。
+        [
+            'process.on("exit", teardown);',
+            // 只有 SIGINT/SIGTERM 走「单行无花括号且体内不调 teardown」;
+            // 紧随其后是一个**含 teardown 与 process.on( 的无关块** ——
+            // 无边界的 braceBody 正是滑到这里、把它当成循环体而判绿的。
+            'for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(130));',
+            "if (true) {",
+            "    teardown();",
+            "    process.on('noop', () => {});",
+            "}",
+            // 这两条用**带花括号**的循环稳稳覆盖住,不参与本格的判定。
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) {',
+            "    process.on(ev, () => {",
+            "        teardown();",
+            "    });",
+            "}",
+        ].join(NL),
+        true,
+    ],
+    [
+        "handler 体被改空",
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT", "SIGTERM"]) {',
+            "    process.on(sig, () => {});",
+            "}",
+            "function later() { teardown(); }",
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
+        ].join(NL),
+        true,
+    ],
+    [
+        "整条退出路径没挂",
+        [
+            'process.on("exit", teardown);',
+            'for (const sig of ["SIGINT"]) process.on(sig, teardown);',
+            'for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, teardown);',
+        ].join(NL),
+        true,
+    ],
+];
+
+{
+    let selfBad = 0;
+    for (const [label, shape, wantBad] of SELFTEST) {
+        const problems = problemsOf(`${SKELETON}
+${shape}
+`);
+        const dProblems = problems.filter((b) => b.startsWith("D."));
+        // 只看 D 档:A/B/C 由骨架保证,若它们红了说明骨架该同步更新,单独报出来。
+        const nonD = problems.filter((b) => !b.startsWith("D."));
+        if (nonD.length) {
+            selfBad++;
+            console.error(`  [自检骨架失效] ${label}:${nonD.join(" | ")}`);
+        }
+        if (dProblems.length > 0 !== wantBad) {
+            selfBad++;
+            console.error(
+                `  [自检失败] ${label}:期望 D 档${wantBad ? "报问题" : "不报问题"},` +
+                    `实得 ${dProblems.length ? dProblems.join(" | ") : "无问题"}`,
+            );
+        }
+    }
+    if (selfBad > 0) {
+        console.error(
+            `check-smoke-hygiene: **门禁自检未通过**(${selfBad} 项)—— 判据本身坏了,` +
+                "此时对真文件的任何结论都不可信,故不再往下跑。",
+        );
+        process.exit(1);
+    }
+}
+
+if (process.argv.includes("--selftest")) {
+    console.log(
+        `check-smoke-hygiene 自检通过:${SELFTEST.length} 格(含删除式与反向用例)。`,
+    );
+    process.exit(0);
+}
+
+let failed = 0;
+for (const p of files) {
+    const s = fs.readFileSync(p, "utf8");
+    const name = path.basename(p);
+    const bad = problemsOf(s);
     if (bad.length) {
         failed++;
         console.error(`  [FAIL] ${name}`);
