@@ -636,7 +636,7 @@ else {
       # (Git for Windows 的 grep 只在 Git Bash 里),所以降级在本地是**常态而不是例外**。
       # 只回显还不够:`Set-Gate` 只有 PASS/FAIL 两态,汇总表里「降级过的一次」和「全跑过的
       # 一次」会长得一模一样,而跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字。
-      # 与 Gate 3e 同款处理(见那段「**但绝不静默**:SKIP 计数要带进总结」):把降级计数拼进
+      # 与 Gate 3e 同款处理(见那段 **但绝不静默** —— SKIP 计数要带进总结):把降级计数拼进
       # gate 名,让「有一档没跑」在汇总表里就与「跑过了」不同形。
       $warnLines = @($out | Where-Object { $_ -match '\[WARN\]' })
       if ($warnLines.Count -gt 0) {
