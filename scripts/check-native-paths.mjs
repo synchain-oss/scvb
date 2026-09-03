@@ -491,7 +491,9 @@ if (tracked === null) {
     // ②b 的引擎对拍只喂了手写用例,而「JS 认、ERE 当字面量」这类分叉**恰恰在真实路径上
     // 才现形** —— 手写用例是照着当前正则编的,天然覆盖不到「正则改坏之后才分叉的那些路径」。
     // ④ 手上已经有全仓路径了,顺手再对拍一次,这一档就从「样本对拍」升级成「仓库现状对拍」。
-    // (复审第 1 轮。grep 没有时 ②b 已经报过降级,这里静默跳过不再重复刷屏。)
+    // (复审第 1 轮加;第 2 轮起 grep 缺席时这一档**也出声** —— 见下面的 else 分支。
+    //  原先这里写的是「②b 已经报过降级,这里静默跳过不再重复刷屏」,那句已被下面那段推翻,
+    //  留着两句相反的话等于让下一个人自己跑一遍才知道哪句算数。)
     const ereAll = ereHitSet(PATTERN, tracked);
     if (ereAll) {
         const jsAll = new Set(tracked.filter((f) => rx.test(f)));
@@ -502,8 +504,10 @@ if (tracked === null) {
         for (const f of onlyEre2)
             engineRot.push(`只有 grep -E 命中,本门禁判据失真: ${f}`);
         if (engineRot.length === 0)
+            // 前缀自带归属,不用 `└`:这行打在 ④ 的汇总行**之前**,树形子项会挂到上一条
+            // 打印(`③ 删除式验证`)上,而它其实是引擎对拍那一档的延伸(复审第 3 轮)。
             console.log(
-                `   └ 全仓路径对拍: ${tracked.length} 条真实路径,两个引擎命中集合一致。`,
+                `②b(全仓路径): ${tracked.length} 条真实路径,JS 与 grep -E 命中集合一致。`,
             );
     } else {
         // **跳过要出声**:②b 的 WARN 原话是「跳过『JS ↔ grep -E 命中集合一致』这一档」,
@@ -519,12 +523,26 @@ if (tracked === null) {
     //    而 `listRot` 在那道判负里被消费掉。放到判负之后 = 塞进去的东西没有任何人再看,
     //    门禁照绿 —— 本卡初稿就是这么写的,复审第 1 轮的注入实测把它逮出来了。
     if (unclassified.length || listRot.length || engineRot.length) {
-        console.error(
-            "check-native-paths: **顶层条目分类不全** —— detect-native 靠 NATIVE_RE 决定子 PR 编不编,",
-        );
-        console.error(
-            "  没被分类的顶层条目会**静默**落到 native=false 那一侧(改它不编译,CI 照样全绿)。",
-        );
+        // 抬头是最响、也是最先被读到的一行,它必须说对是哪一类问题(复审第 3 轮)。
+        // 之前不管哪种红都打「顶层条目分类不全」:僵尸条目不是分类不全,引擎分叉更不是 ——
+        // 人会照着抬头去翻 NON_NATIVE_TOP 找一条根本不存在的错行,正是这道门要消除的动作。
+        if (unclassified.length) {
+            console.error(
+                "check-native-paths: **顶层条目分类不全** —— detect-native 靠 NATIVE_RE 决定子 PR 编不编,",
+            );
+            console.error(
+                "  没被分类的顶层条目会**静默**落到 native=false 那一侧(改它不编译,CI 照样全绿)。",
+            );
+        } else if (listRot.length) {
+            console.error(
+                "check-native-paths: **清单与仓库现状对不上** —— 顶层条目一条不缺,是三张清单自己过期了。",
+            );
+        } else {
+            console.error(
+                "check-native-paths: **两个引擎对 NATIVE_RE 的理解不一致** —— 这里(JS RegExp)与 CI(grep -E)命中面不同。",
+            );
+            console.error("  与三张清单无关,别去翻 NON_NATIVE_TOP。");
+        }
         for (const [t, n, h] of unclassified) {
             console.error(
                 `  [FAIL] 未分类顶层条目: ${t}(${n} 个文件,${h} 个命中 NATIVE_RE)`,
@@ -545,7 +563,10 @@ if (tracked === null) {
             console.error(`  [FAIL] 两个引擎对同一条正则理解不一致: ${msg}`);
         if (engineRot.length)
             console.error(
-                "         典型成因:`\d` / `\s` / `\b` 这类 JS 认、ERE 当字面量的转义。与三张清单无关。",
+                // ⚠ 这里必须是**双**反斜杠:普通 JS 字符串里 "\d" 是 `d`、"\b` 是 U+0008 BACKSPACE。
+                //    第 2 轮抄 ②b 那句话时漏了一层,于是这条**讲转义陷阱的报错自己踩了转义陷阱** ——
+                //    实测打出来是 「`d` / `s` / `^H`」。失败路径专属,没有任何机器会替你发现(复审第 3 轮)。
+                "         典型成因:`\\d` / `\\s` / `\\b` 这类 JS 认、ERE 当字面量的转义。与三张清单无关。",
             );
         process.exit(1);
     }
