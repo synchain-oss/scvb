@@ -128,7 +128,8 @@ export const T = {
         "out.master.writeConfirm":
             "写入自动化 {v} · 范围 {x}–{y} · 30 条车道;若 DAW 侧已 arm Latch/Write,播放本范围将覆盖该范围已有自动化;未 arm 则仅试听、不落盘",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的,别照 05 §5 加回「小节」**。
-        // app.js:1540-1544 把这两个占位符一律填 **mm:ss.mmm**(桥面 §1.8/§0.2 第 3 条:
+        // app.js 里 footer 的填值处(`secondsToTimecode(range.start_s)`)把这两个占位符
+        // 一律填 **mm:ss.mmm**(桥面 §1.8/§0.2 第 3 条:
         // UI 只收秒);而**桥面没有宿主 tempo map 入口**(A17),小节值算不出来 ——
         // 05 §5 那句「{x}–{y} 小节」是一条**尚未兑现的前置**,不是词条漂移。
         // 加回单位词的后果是 footer 显示「写入自动化 V1 · 00:12.000–01:36.000 小节」:
@@ -1074,11 +1075,14 @@ export const T = {
         "out.master.writeConfirm":
             "Write automation {v} · range {x}–{y} · 30 lanes. If Latch/Write is armed in your DAW, playing this range will overwrite existing automation there; if not armed, this is monitoring only.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
-        //   05 §5 的 en/fr 列**逐字写着 `BARS` / `MESURES`**,照着加回去就会显示
-        //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js:1540-1544 把这两个
-        //   占位符填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
+        //   05 §5 的 en 列**逐字写着 `BARS`**,照着加回去就会显示
+        //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js 里 footer 的
+        //   填值处(`fillKeyed($("footer-print-status"), …, { x: secondsToTimecode(range.start_s) })`)
+        //   填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
         //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
         //   tempo map 后再回填,三语一起动。
+        //   **同一个填值点还填着 `footer.printDone`**(下一行 `fillKeyed($("footer-print-done"), …)`,
+        //   同一对 `secondsToTimecode`),它三语也带 `{x}–{y}` 且本就在推迟的 4 条里 —— 同理,别给它加单位词。
         "footer.printing": "WRITE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
@@ -1890,11 +1894,14 @@ export const T = {
         "out.master.writeConfirm":
             "Écriture d'automation {v} · plage {x}–{y} · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
-        //   05 §5 的 en/fr 列**逐字写着 `BARS` / `MESURES`**,照着加回去就会显示
-        //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js:1540-1544 把这两个
-        //   占位符填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
+        //   05 §5 的 fr 列**逐字写着 `MESURES`**,照着加回去就会显示
+        //   `ÉCRITURE AUTOMATION V1 · 00:12.000–01:36.000 MESURES` —— 因为 app.js 里 footer 的
+        //   填值处(`fillKeyed($("footer-print-status"), …, { x: secondsToTimecode(range.start_s) })`)
+        //   填的是 **mm:ss.mmm**,而桥面没有宿主 tempo map 入口(A17),小节值算不出来。
         //   不带单位是不精确但不撒谎,带上就是**明确错标**。待 deviations A26 裁定 + T33 拿到
         //   tempo map 后再回填,三语一起动。
+        //   **同一个填值点还填着 `footer.printDone`**(下一行 `fillKeyed($("footer-print-done"), …)`,
+        //   同一对 `secondsToTimecode`),它三语也带 `{x}–{y}` 且本就在推迟的 4 条里 —— 同理,别给它加单位词。
         "footer.printing": "ÉCRITURE AUTOMATION {v} · {x}–{y}",
         "footer.printDone":
             "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
