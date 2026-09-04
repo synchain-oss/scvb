@@ -105,36 +105,68 @@ jobs:
       - name: Linux 侧残留 Chrome 计数(只打印,不判负)
         # [SL-311] `scripts/gates.ps1` 的残留判据只在 Windows 上跑,而 SL-305 实测:
         # **Windows 上 node 一退就把它 spawn 的 Chrome 收走**,连把某套的 `chrome.kill()`
-        # 全注释掉都留不下东西 —— 也就是说那条判据在本机**做不出**「teardown 漏收」的形态。
+        # 全注释掉都留不下东西 —— 那条判据在本机**做不出**「teardown 漏收」的形态。
         # POSIX 不给这个保证(父进程退出不会带走子进程),而这个 job 正好跑在 ubuntu。
         #
         # 所以这一步是**观测,不是门禁**:每次 CI 免费拿一次 Linux 侧真实数据。
         # 哪天不是 0 再立卡加固 —— 在拿到数据之前加超时兜底代码,就是给一个复现不出的
         # 形态写没被验证过的收尾逻辑。
         #
-        # 判据与 gates 那边**同源**:按 `--user-data-dir` 里各套源码自己声明的 `scvb-` 前缀
-        # 归属。前缀不写死在这里,从 `*-page.mjs` 的双引号字面量读 —— 抄一份就会漂。
+        # **套集合与 `Test-ScvbPageSuite` 同构**(复审【重要】:上一版只用 `*-page.mjs`
+        # 一条 glob,而那个函数的头注明写着「只认单一写法会被静默绕过 —— 那正是危险的
+        # 那一侧」,这一步恰好只认了那单一写法)。四条并集逐条照搬:
+        #   文件名 `-page.mjs` / `function cdpConnect` / `--headless` / `.on|.once` 挂 error。
+        # 前缀同样不写死,从各套自己的 `mkdtempSync(join(tmpdir(), "scvb-…-"))` 字面量读;
+        # 并且**照抄 gates 那边的自检**:判出来的套里有解析不出前缀的,出声。
         if: always() # 冒烟红了才更该看有没有残留,别让 `exit $fail` 把这一步跳过去
         run: |
           set -u
-          prefixes=$(grep -ho '"scvb-[A-Za-z0-9_-]*-"' web-preview/tests/*-page.mjs | tr -d '"' | sort -u)
+          shopt -s nullglob
+          page=()
+          for f in web-preview/tests/smoke-*.mjs; do
+            case "$f" in
+              *-page.mjs) page+=("$f"); continue ;;
+            esac
+            if grep -qE 'function cdpConnect|--headless|[.](on|once)[(][[:space:]]*'"'"'error' "$f"; then
+              page+=("$f")
+            fi
+          done
+          if [ ${#page[@]} -eq 0 ]; then
+            echo "::warning::按四条并集判据没判出任何页面级套 —— 本步无从归属(应与 gates 的 Test-ScvbPageSuite 同构)"
+            exit 0
+          fi
+          echo "页面级套(四条并集判据):${#page[@]} 套"
+          prefixes=""
+          missing=""
+          for f in "${page[@]}"; do
+            pf=$(grep -ho '"scvb-[A-Za-z0-9_-]*-"' "$f" | tr -d '"' | sort -u)
+            if [ -z "$pf" ]; then
+              missing="$missing $f"
+            else
+              prefixes="$prefixes $pf"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::这几套解析不出 scvb- 前缀,归属层对它们失效:$missing"
+          fi
+          prefixes=$(echo $prefixes | tr ' ' '\n' | sort -u)
           if [ -z "$prefixes" ]; then
-            echo "::warning::解析不出任何 scvb- 前缀,本步无从归属(判据靠各套的 mkdtempSync 双引号字面量)"
+            echo "::warning::一个前缀都没解析出来,本步无从归属"
             exit 0
           fi
           pat=$(printf '%s|' $prefixes | sed 's/|$//')
           # 先把进程快照取下来再 grep:直接 `ps | grep` 会把 grep 自己也扫进去,
           # 那是「扫描器扫到自己」的经典假阳性。
           snap=$(ps -eo pid=,args= || true)
-          hits=$(printf '%s\n' "$snap" | grep -E -- "--user-data-dir=[^ ]*(${pat})" || true)
-          n=$(printf '%s' "$hits" | grep -c . || true)
+          hits=$(echo "$snap" | grep -E -- "--user-data-dir=[^ ]*(${pat})" || true)
+          n=$(echo "$hits" | grep -c . || true)
           echo "Linux 侧:归属到本仓页面级冒烟的残留 chrome 进程数 = $n"
           if [ "$n" -gt 0 ]; then
-            printf '%s\n' "$hits" | head -20
+            echo "$hits" | head -20
             echo "::warning::ubuntu runner 上 web-smoke 跑完仍有 $n 个归属到本仓冒烟的 chrome 进程 —— 只观测不判负,数字持续非 0 请立卡"
           fi
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-            echo "web-smoke 残留(Linux 侧,只观测):$n 个 chrome 进程" >>"$GITHUB_STEP_SUMMARY"
+            echo "web-smoke 残留(Linux 侧,只观测):$n 个 chrome 进程,页面级套 ${#page[@]}" >>"$GITHUB_STEP_SUMMARY"
           fi
 
   docs-truth:

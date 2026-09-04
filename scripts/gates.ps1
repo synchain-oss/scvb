@@ -128,6 +128,26 @@ function New-ScvbMutex {
 # 或 `.on(`/`.once(` 挂 error 的浏览器句柄、或命令行里出现 `--headless`、或文件名 `-page.mjs`。
 # 只认单一写法(比如只认 `chrome.on("error"`)会被 prettier 换引号、或新冒烟写成
 # `browser.once('error'` 静默绕过 —— 那正是危险的那一侧。
+
+function Test-ScvbPageSuite {
+  param([string]$Path)
+  if ($Path -like '*-page.mjs') { return $true }
+  $t = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+  if ($null -eq $t) {
+    # **读不到就当页面级**(复审指出:上一版这里 `return $false`,恰好倒向我自己在头注里
+    # 点名的危险侧 —— 读不到文件时把它判成纯 node ⇒ **无锁跑起浏览器**,而且完全静默)。
+    # 兜底必须与判据同向:多判只是多串几十秒,漏判是本卡白做。出声,别让它静默生效。
+    Write-Host ("  [ipc-lock] 读不到 {0},保守当作页面级(持锁跑)" -f (Split-Path $Path -Leaf)) -ForegroundColor Yellow
+    return $true
+  }
+  # 四条任一命中即算「起浏览器」。`cdpConnect` 与 gate 3i 的 check-smoke-hygiene 同判据,
+  # 故本集合 ⊇ 它那一族;其余三条是往「宁可多判」偏的保险。
+  if ($t -match 'function cdpConnect') { return $true }
+  if ($t -match '--headless') { return $true }
+  if ($t -match '\.(on|once)\(\s*["'']error') { return $true }
+  return $false
+}
+
 # [SL-311] 本机上还活着的 `scvb_*` 测试二进制,附「父进程还在不在」。
 #
 # **为什么按进程名判是安全的**:`scvb_*_tests.exe` 是本仓的构建产物,不会撞到用户自己的
@@ -148,7 +168,17 @@ function New-ScvbMutex {
 function Get-ScvbTestLeftover {
   $out = @()
   try {
-    $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -like 'scvb_*' })
+    # 判据与头注**同口径**:只认 `tests` 那一族。原来的 `scvb_*` 比头注承诺的宽,而这条
+    # 判据后面接的是 `Stop-Process -Force` —— 将来任何 `scvb_tool.exe` / `scvb_daemon.exe`
+    # 都会被它连带命中并杀掉,而头注那句「是本仓构建产物所以安全」并不覆盖它们。
+    #
+    # 两段筛:WQL 只支持 `%`(`\_` 转义在 Win32_Process 上会被拒:「查询参数无效」),
+    # 所以 CIM 侧只做**粗筛**少拉数据,精确判据交给 PowerShell 的 `-like`(它把 `_`
+    # 当字面量)。`scvb_*tests*` 覆盖现有七套(scvb_tests / scvb_params_tests /
+    # scvb_monitor_tests / scvb_plugin_common_tests / scvb_input_bridge_tests /
+    # scvb_host_tests / scvb_ipc_tests),排除 scvb_tool / scvb_daemon / scvbtests。
+    $all = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'scvb%tests%'" -ErrorAction Stop |
+      Where-Object { $_.Name -like 'scvb_*tests*' })
   }
   catch {
     # 取不到就**不猜**:返回 $null 让调用处报「未知」,而不是拿空数组冒充「没有残留」。
@@ -157,34 +187,37 @@ function Get-ScvbTestLeftover {
   foreach ($pr in $all) {
     $par = $null
     try { $par = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pr.ParentProcessId) -ErrorAction Stop } catch {}
+    # **「这个 pid 上有进程」≠「它就是父」**(复审【重要】):Windows 的 pid 回收很快,
+    # 而本卡要收的孤儿,其父恰恰是 `ctest.exe` / `pwsh.exe` 这类**短命高频**、pid 最容易
+    # 被立刻复用的进程。误判的代价是一条**自我延续且指错人**的假红:复用一发生 ⇒ 判成
+    # 「有人绕开互斥在跑」⇒ gate 6 判负且不执行 ⇒ 这个残留一个都不收 ⇒ 下一轮同样判负。
+    #
+    # 真父必然**早于**子进程存在;晚于子进程起来的那个一定是复用者。所以只有
+    # 「父的 CreationDate ≤ 子的 CreationDate」才算活父,其余(含任一侧时间取不到)
+    # 一律按孤儿处理 —— 统筹裁定「否则按孤儿收」。
+    $parentReal = $false
+    $parentWhy = ''
+    if ($null -ne $par) {
+      if ($null -eq $par.CreationDate -or $null -eq $pr.CreationDate) {
+        $parentWhy = '父子任一方的启动时刻取不到,无法排除 pid 复用'
+      }
+      elseif ($par.CreationDate -le $pr.CreationDate) {
+        $parentReal = $true
+      }
+      else {
+        $parentWhy = ('pid {0} 上那个进程({1})起于 {2},**晚于**本进程 {3} —— 是 pid 复用,不是它的父' -f $pr.ParentProcessId, $par.Name, $par.CreationDate, $pr.CreationDate)
+      }
+    }
     $out += [pscustomobject]@{
       ProcId     = $pr.ProcessId
       Name       = $pr.Name
       ParentId   = $pr.ParentProcessId
-      ParentName = if ($null -ne $par) { $par.Name } else { $null }
+      ParentName = if ($parentReal) { $par.Name } else { $null }
+      ParentWhy  = $parentWhy
       Started    = $pr.CreationDate
     }
   }
   return , $out
-}
-
-function Test-ScvbPageSuite {
-  param([string]$Path)
-  if ($Path -like '*-page.mjs') { return $true }
-  $t = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
-  if ($null -eq $t) {
-    # **读不到就当页面级**(复审指出:上一版这里 `return $false`,恰好倒向我自己在头注里
-    # 点名的危险侧 —— 读不到文件时把它判成纯 node ⇒ **无锁跑起浏览器**,而且完全静默)。
-    # 兜底必须与判据同向:多判只是多串几十秒,漏判是本卡白做。出声,别让它静默生效。
-    Write-Host ("  [ipc-lock] 读不到 {0},保守当作页面级(持锁跑)" -f (Split-Path $Path -Leaf)) -ForegroundColor Yellow
-    return $true
-  }
-  # 四条任一命中即算「起浏览器」。`cdpConnect` 与 gate 3i 的 check-smoke-hygiene 同判据,
-  # 故本集合 ⊇ 它那一族;其余三条是往「宁可多判」偏的保险。
-  if ($t -match 'function cdpConnect') { return $true }
-  if ($t -match '--headless') { return $true }
-  if ($t -match '\.(on|once)\(\s*["'']error') { return $true }
-  return $false
 }
 
 # 等锁**必须有上界**(PR#176 复审采纳)。这把锁现在包着 gate 8 的 GUI pluginval,
@@ -875,7 +908,11 @@ finally {
         # `Win32_Process.CreationDate` 也是 Local —— 相等**是个隐式约定**,不是保证。
         # 夏令时切换或 CIM 换成 UTC 口径时,这个比较会静默偏一小时:偏一边漏判(残留归不到套),
         # 偏另一边把上一轮的算成这一轮的假红。写死 `.ToUniversalTime()` 就与两边的 Kind 无关。
-        if ($null -ne $owner -and $null -ne $Since -and
+        # `CreationDate` 取不到时**不能调方法**(复审【重要】,是我上一轮改出来的回归):
+        # 旧写法 `$null -ge [datetime]` 求值为 `$false`,安全落进 `$other`(只报不判负);
+        # 改成 `.ToUniversalTime()` 之后空值会抛 RuntimeException,把**整段残留核对**
+        # 掀掉,而且报错指向「枚举失败」这个错误的原因。先判空,再比。
+        if ($null -ne $owner -and $null -ne $Since -and $null -ne $pr.CreationDate -and
           $pr.CreationDate.ToUniversalTime() -ge $Since.ToUniversalTime()) {
           $mine += [pscustomobject]@{ Suite = $owner; ProcId = $pr.ProcessId }
         }
@@ -1367,7 +1404,16 @@ else {
         $ctestBlocked = $true
       }
       if ($ctestBlocked) {
-        Write-Host '         我们持着 Local\SCVB-ipc-tests,对方却在跑 —— 它绕开了互斥。两边会抢全机唯一的 viz 共享段,谁先红都不算数。' -ForegroundColor Red
+        # **责任要指对**(复审【建议】):`-NoIpcLock` 下 `$script:IpcLock` 是 `$null`,
+        # 本进程**根本没持锁**,却照样走到这里。此时对方可能是**老老实实持着锁**在跑,
+        # 绕开互斥的是我们自己 —— 照写「对方绕开了互斥」就把责任指反了。
+        if ($NoIpcLock) {
+          Write-Host '         注意:本次是 -NoIpcLock,**我们自己没持锁**。对方很可能是正常持锁在跑 —— 该让路的是我们。' -ForegroundColor Yellow
+          Write-Host '         -NoIpcLock 的前提是「确认本机没有第二个 agent」,这一条现在不成立。' -ForegroundColor Yellow
+        }
+        else {
+          Write-Host '         我们持着 Local\SCVB-ipc-tests,对方却在跑 —— 它绕开了互斥。两边会抢全机唯一的 viz 共享段,谁先红都不算数。' -ForegroundColor Red
+        }
         Write-Host '         手跑测试请走 `pwsh scripts/with-ipc-lock.ps1 -Command ''ctest ...''`(与 gates 同一把锁)。' -ForegroundColor Yellow
       }
     }
@@ -1393,6 +1439,15 @@ else {
       }
       else {
         $postOrphans = @($ctestPost | Where-Object { $null -eq $_.ParentName })
+        # **非孤儿也要出声**(复审【重要】):只收孤儿、把其余的直接丢掉,就是静默漏收。
+        # 而这个时刻的先验比起跑前更强:ctest 已经返回、`ctest.exe` 已经退出,所以此刻
+        # 还挂着「活父」的 `scvb_*_tests`,要么真是别人在跑,要么是判据没排除干净 ——
+        # 两种都该有人看一眼,不能一声不吭地放过(放过的代价由下一位承担:他的前扫会
+        # 看到它,判成「有人绕开互斥」,吃一次查不出的红)。
+        $postAdopted = @($ctestPost | Where-Object { $null -ne $_.ParentName })
+        foreach ($a in $postAdopted) {
+          Write-Host ("  [ctest] 跑完仍有 {0} pid={1},父 {2} pid={3} 仍活着 —— **未收**,请人工确认是不是别人在跑" -f $a.Name, $a.ProcId, $a.ParentName, $a.ParentId) -ForegroundColor Yellow
+        }
         foreach ($o in $postOrphans) {
           Write-Host ("  [ctest] 本轮跑完仍有孤儿残留:{0} pid={1}(父 pid={2} 已不在)—— 现在收掉,免得毒到下一位" -f $o.Name, $o.ProcId, $o.ParentId) -ForegroundColor Yellow
           try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
