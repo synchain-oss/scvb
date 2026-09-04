@@ -128,6 +128,42 @@ function New-ScvbMutex {
 # 或 `.on(`/`.once(` 挂 error 的浏览器句柄、或命令行里出现 `--headless`、或文件名 `-page.mjs`。
 # 只认单一写法(比如只认 `chrome.on("error"`)会被 prettier 换引号、或新冒烟写成
 # `browser.once('error'` 静默绕过 —— 那正是危险的那一侧。
+# [SL-311] 本机上还活着的 `scvb_*` 测试二进制,附「父进程还在不在」。
+#
+# **为什么按进程名判是安全的**:`scvb_*_tests.exe` 是本仓的构建产物,不会撞到用户自己的
+# 程序。这与 gate 3e 的 Chrome 残留判据**故意相反** —— 那边绝不能按名字判(会杀掉用户
+# 正开着的浏览器),只能按命令行。两处判据不同不是不一致,是「名字够不够独占」不同。
+#
+# **为什么要分「父进程还在不在」**:
+#   · 父进程**已死** ⇒ 真孤儿,多半是上一次 `ctest --timeout` 到点后留下的
+#     ——`--timeout` 只放弃等待,**不杀被测进程**(实测:留一个就让之后每次同名测试
+#     都撞满上界,3/3;清掉后同一条命令 221s 通过)。这种可以放心收掉。
+#   · 父进程**还活着** ⇒ 有人正在跑测试。我们此刻持着 IPC 互斥,所以那一定是**绕开互斥
+#     裸跑**的(见 scripts/with-ipc-lock.ps1 的头注:裸跑会抢全机唯一的 viz 段)。
+#     这种**不能杀** —— 杀掉是在破坏别人正在跑的东西;点名并判负,让人去处理。
+function Get-ScvbTestLeftover {
+  $out = @()
+  try {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -like 'scvb_*' })
+  }
+  catch {
+    # 取不到就**不猜**:返回 $null 让调用处报「未知」,而不是拿空数组冒充「没有残留」。
+    return $null
+  }
+  foreach ($pr in $all) {
+    $par = $null
+    try { $par = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pr.ParentProcessId) -ErrorAction Stop } catch {}
+    $out += [pscustomobject]@{
+      ProcId     = $pr.ProcessId
+      Name       = $pr.Name
+      ParentId   = $pr.ParentProcessId
+      ParentName = if ($null -ne $par) { $par.Name } else { $null }
+      Started    = $pr.CreationDate
+    }
+  }
+  return , $out
+}
+
 function Test-ScvbPageSuite {
   param([string]$Path)
   if ($Path -like '*-page.mjs') { return $true }
@@ -645,7 +681,21 @@ else {
       try { $proc.Kill($true) }
       catch {
         $killedTree = $false
-        Write-Host '         [WARN] 本机 pwsh 不支持 Kill($true)(需 .NET Core 3.0+),回退成只杀 node —— 它起的 Chrome 可能留下,手动查一下' -ForegroundColor Yellow
+        # 异常要分类([SL-311] 并入 #198 的建议):上一版把**所有**异常都说成
+        # 「本机 pwsh 不支持 Kill($true)」—— 而这个重载自 .NET Core 3.0 就有,现实里
+        # 更常见的是「进程刚好已经自己退了」和「拒绝访问」。把后两者报成「不支持」,
+        # 会让人去查一个不存在的环境问题,而真正的原因(比如权限)反而看不见。
+        $exName = $_.Exception.GetType().Name
+        if ($_.Exception -is [System.MissingMethodException] -or $exName -eq 'MethodException') {
+          Write-Host '         [WARN] 本机 pwsh 不支持 Kill($true)(需 .NET Core 3.0+),回退成只杀 node —— 它起的 Chrome 可能留下,手动查一下' -ForegroundColor Yellow
+        }
+        elseif ($_.Exception -is [System.InvalidOperationException]) {
+          # 进程已退出:这一支其实是**好消息**(树也就没了),但仍然不能声称「连树杀过了」。
+          Write-Host '         [WARN] 连进程树杀时该进程已退出(InvalidOperationException)—— 没能连树收,残留请以放锁前那次核对为准' -ForegroundColor Yellow
+        }
+        else {
+          Write-Host ("         [WARN] 连进程树杀失败({0}:{1}),回退成只杀 node —— 它起的 Chrome 可能留下" -f $exName, $_.Exception.Message) -ForegroundColor Yellow
+        }
         try { $proc.Kill() } catch {}
       }
       # `Kill` 是**异步**的:句柄未必已关,紧跟着读重定向文件可能读到截断的输出 ——
@@ -809,11 +859,20 @@ finally {
       $mine = @(); $other = @()
       foreach ($pr in $all) {
         $owner = $null
-        foreach ($pref in $Owners.Keys) {
+        # **最长前缀优先**([SL-311] 并入 #198 的建议):Hashtable 的 `.Keys` 枚举顺序
+        # **不保证**,而前缀之间可以互为前缀(今天没有,但改个套名就会有 —— 比如
+        # `scvb-output-` 与 `scvb-output-dist-`)。那时先枚举到短的就会**点错套名**,
+        # 而点错的名字看起来和点对了一模一样。按长度降序取,匹配唯一且与顺序无关。
+        foreach ($pref in ($Owners.Keys | Sort-Object -Property Length -Descending)) {
           if ($pr.CommandLine -like ('*--user-data-dir=*{0}*' -f $pref)) { $owner = $Owners[$pref]; break }
         }
         # 起于本段之前的一律不算自己的:同一个前缀上一轮也用过,时间是唯一能分开两轮的东西。
-        if ($null -ne $owner -and $null -ne $Since -and $pr.CreationDate -ge $Since) {
+        # **两边都归一到 UTC 再比**([SL-311] 并入 #198 的建议):`Get-Date` 给的是 Local,
+        # `Win32_Process.CreationDate` 也是 Local —— 相等**是个隐式约定**,不是保证。
+        # 夏令时切换或 CIM 换成 UTC 口径时,这个比较会静默偏一小时:偏一边漏判(残留归不到套),
+        # 偏另一边把上一轮的算成这一轮的假红。写死 `.ToUniversalTime()` 就与两边的 Kind 无关。
+        if ($null -ne $owner -and $null -ne $Since -and
+          $pr.CreationDate.ToUniversalTime() -ge $Since.ToUniversalTime()) {
           $mine += [pscustomobject]@{ Suite = $owner; ProcId = $pr.ProcessId }
         }
         else { $other += $pr }
@@ -1279,9 +1338,61 @@ else {
     Set-Gate '6 ctest' $false
   }
   else {
-    $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error 2>&1)
-    if ($LASTEXITCODE -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
-    Set-Gate '6 ctest' ($LASTEXITCODE -eq 0)
+    # [SL-311] **起跑前先看有没有同名残留**。上一次 `ctest --timeout` 到点只放弃等待、
+    # 不杀被测进程,留下的那个会让这一轮的同名测试必挂 —— 实测连挂 3/3、全部撞满上界,
+    # 清掉后同一条命令 221s 通过。不看就跑,等来的是一次「代码没改却次次红」的假回归,
+    # 而且要等满整个上界才知道。
+    $ctestPre = Get-ScvbTestLeftover
+    $ctestBlocked = $false
+    if ($null -eq $ctestPre) {
+      Write-Host '  [ctest] 无法枚举进程,起跑前的残留核对**未知**(不是「没有」)' -ForegroundColor Yellow
+    }
+    elseif ($ctestPre.Count -gt 0) {
+      $orphans = @($ctestPre | Where-Object { $null -eq $_.ParentName })
+      $adopted = @($ctestPre | Where-Object { $null -ne $_.ParentName })
+      foreach ($o in $orphans) {
+        Write-Host ("  [ctest] 起跑前发现**孤儿**残留:{0} pid={1}(父 pid={2} 已不在,起于 {3})—— 多半是上一次 ctest 超时留下的,现在收掉" -f $o.Name, $o.ProcId, $o.ParentId, $o.Started) -ForegroundColor Yellow
+        try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
+        catch { Write-Host ("         收不掉({0}),它会继续毒到本轮" -f $_.Exception.GetType().Name) -ForegroundColor Red }
+      }
+      foreach ($a in $adopted) {
+        # 父进程还活着 = 有人正在跑测试。而我们此刻**持着 IPC 互斥**,所以那一定是绕开
+        # 互斥裸跑的。杀它是在破坏别人正在跑的东西,所以只点名 + 判负。
+        Write-Host ("  [ctest] 起跑前发现**别人正在跑**的测试:{0} pid={1},父进程 {2} pid={3}(起于 {4})" -f $a.Name, $a.ProcId, $a.ParentName, $a.ParentId, $a.Started) -ForegroundColor Red
+        $ctestBlocked = $true
+      }
+      if ($ctestBlocked) {
+        Write-Host '         我们持着 Local\SCVB-ipc-tests,对方却在跑 —— 它绕开了互斥。两边会抢全机唯一的 viz 共享段,谁先红都不算数。' -ForegroundColor Red
+        Write-Host '         手跑测试请走 `pwsh scripts/with-ipc-lock.ps1 -Command ''ctest ...''`(与 gates 同一把锁)。' -ForegroundColor Yellow
+      }
+    }
+
+    if ($ctestBlocked) {
+      # 不跑:跑了也是抢共享段抢出来的结果,红绿都不可信。判负比给一个不可信的绿好。
+      Set-Gate '6 ctest(有人绕开互斥在跑测试,未执行)' $false
+    }
+    else {
+      $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error 2>&1)
+      $ctestRc = $LASTEXITCODE
+      if ($ctestRc -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
+      Set-Gate '6 ctest' ($ctestRc -eq 0)
+
+      # [SL-311] **跑完再扫一次,把这一轮自己留下的孤儿收掉**。ctest 的超时不杀被测进程,
+      # 不收就等着毒下一轮 —— 而下一轮多半是**别人**的 gates,他会看到一次查不出的红。
+      # 只收孤儿(父进程已死);父进程还活着的不动,理由同起跑前那一段。
+      $ctestPost = Get-ScvbTestLeftover
+      if ($null -eq $ctestPost) {
+        Write-Host '  [ctest] 跑完后无法枚举进程,本轮残留**未知**(不是「没有」)' -ForegroundColor Yellow
+      }
+      else {
+        $postOrphans = @($ctestPost | Where-Object { $null -eq $_.ParentName })
+        foreach ($o in $postOrphans) {
+          Write-Host ("  [ctest] 本轮跑完仍有孤儿残留:{0} pid={1}(父 pid={2} 已不在)—— ctest 的超时不杀被测进程,现在收掉,免得毒到下一位" -f $o.Name, $o.ProcId, $o.ParentId) -ForegroundColor Yellow
+          try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
+          catch { Write-Host ("         收不掉({0}),下一轮同名测试大概率会挂,手动查 pid {1}" -f $_.Exception.GetType().Name, $o.ProcId) -ForegroundColor Red }
+        }
+      }
+    }
   }
 
 # ==================================================================
