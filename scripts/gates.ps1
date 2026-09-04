@@ -136,21 +136,20 @@ function New-ScvbMutex {
 # 手写常数还吃不到另一个变量:`SCVB_SMOKE_TIMEOUT_SEC` 只有 >=30 的下界、**没有上界**,
 # 有人设成 600 就把账翻一倍,而写死的 45 完全不知道。算出来就自动跟上。
 # 取 1.5 倍余量,再与 45 取大(6/7/8 段本身也要等,历史持锁 9-10 分钟)。
-$script:ScvbSmokeTimeoutSecForBudget = 300
-if ($env:SCVB_SMOKE_TIMEOUT_SEC) {
-  $parsedBudget = 0
-  if ([int]::TryParse($env:SCVB_SMOKE_TIMEOUT_SEC, [ref]$parsedBudget) -and $parsedBudget -ge 30) {
-    $script:ScvbSmokeTimeoutSecForBudget = $parsedBudget
+# 上界跟着**段预算**走(裁定 (a) 落地之后,持锁方最坏就是这个预算,不再是「套数 × 每套上界」)。
+# 默认 480s ⇒ ceil(480×1.5/60)=12,与 30 取大 ⇒ **30 分钟**,正是统筹裁定要留的值;
+# 有人把预算调大,这个上界会自动跟上,不必再手改一个字面量。
+$script:ScvbSmokeSegmentBudgetSecForWait = 480
+if ($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) {
+  $parsedWaitBudget = 0
+  if ([int]::TryParse($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC, [ref]$parsedWaitBudget) -and $parsedWaitBudget -ge 10) {
+    $script:ScvbSmokeSegmentBudgetSecForWait = $parsedWaitBudget
   }
 }
-$script:ScvbPageSuiteCount = @(
-  Get-ChildItem -Path (Join-Path $RepoRoot 'web-preview\tests') -Filter 'smoke-*.mjs' -ErrorAction SilentlyContinue |
-  Where-Object { (Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'chrome\.on\("error"' }
-).Count
 $script:ScvbMutexWaitMinutes =
   if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES }
   else {
-    [Math]::Max(45, [Math]::Ceiling($script:ScvbPageSuiteCount * $script:ScvbSmokeTimeoutSecForBudget * 1.5 / 60))
+    [Math]::Max(30, [Math]::Ceiling($script:ScvbSmokeSegmentBudgetSecForWait * 1.5 / 60))
   }
 
 function Wait-ScvbMutex {
@@ -176,6 +175,9 @@ function Wait-ScvbMutex {
     $waitSw.Stop()
     Write-Host ("  [{0}] {1:HH:mm:ss.fff}Z 等待 Local\{2} 超过 {3} 分钟仍未获得(实等 {4:N1} 秒),判负" -f $Tag, (Get-Date).ToUniversalTime(), $Name, $TimeoutMinutes, $waitSw.Elapsed.TotalSeconds) -ForegroundColor Red
     Write-Host ("  [{0}] 提示:多半有卡死的 pluginval / ctest 进程还占着锁,查一下再重跑。" -f $Tag) -ForegroundColor Yellow
+    # [SL-301 裁定] 持锁方也可能在 3e 的页面级段(它现在也持这把锁)。等锁方的日志里
+    # 看不到对方是谁,所以要指路 —— 否则又变成「查不到原因在别人的 web smoke 上」。
+    Write-Host ("  [{0}] 也可能是持锁方正在 3e 的页面级段:看它日志里的 `[ipc-lock] … gate 3e(页面级)` 行" -f $Tag) -ForegroundColor Yellow
     return $false
   }
   $waitSw.Stop()
@@ -405,6 +407,22 @@ else {
 $script:SmokeLock = $null
 $script:SmokeLockTaken = $false
 $script:SmokeLockOk = $true   # 没到页面级就一直是「不需要锁」
+$script:SmokeSegSw = $null    # 持锁段计时,取到锁那一刻才起
+# [SL-301 裁定(a)] **持锁段整体预算**(秒)。默认 480:健康时页面级那几套合计约 149s,
+# 3.2 倍余量,且 ≪ 等锁上界 —— 于是「病态 3e」的代价被关回**它自己**,
+# 而不是让全机其他 agent 干等。非法值钳住(照 SCVB_SMOKE_TIMEOUT_SEC 的先例):
+# 转换失败或 <60 一律回落默认,并出声 —— 静默回落会让人以为自己设的值生效了。
+$smokeSegBudgetSec = 480
+if ($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) {
+  $parsedBudget = 0
+  if ([int]::TryParse($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC, [ref]$parsedBudget) -and $parsedBudget -ge 10) {
+    $smokeSegBudgetSec = $parsedBudget
+  }
+  else {
+    Write-Host ("  [WARN] SCVB_SMOKE_SEGMENT_BUDGET_SEC='{0}' 不是 >=10 的整数,回落到默认 480s" -f $env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) -ForegroundColor Yellow
+  }
+}
+$smokeBudgetHit = $false
 
 # ==================================================================
 Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
@@ -521,6 +539,21 @@ else {
         $smokeOk = $false
         break
       }
+      # [SL-301 裁定(a)] **持锁段整体预算**从拿到锁的那一刻开始计。
+      $script:SmokeSegSw = [System.Diagnostics.Stopwatch]::StartNew()
+    }
+    # [SL-301 裁定(a)] 预算兜的是**持锁方**,等锁上界兜的是**等锁方**,两者并存、不可互相替代:
+    # 上界只保证「等的人不会被判负」,**不保证「等的人不用干等满」** —— 病态 3e 持锁
+    # 6 × 每套上界时,全机其他 agent 照样干等。所以持锁方自己要有封顶。
+    if ($script:SmokeLockTaken -and $script:SmokeLockOk -and $null -ne $script:SmokeSegSw) {
+      $usedSec = [int]$script:SmokeSegSw.Elapsed.TotalSeconds
+      if ($usedSec -ge $smokeSegBudgetSec) {
+        # 预算已耗尽:**余套一律判负且不跑**,立刻跳出 —— 锁在 finally 里当场释放。
+        Write-Host ("  [ipc-lock] 3e 页面级段超预算({0}s ≥ {1}s):余下的套不再执行,整段判负,立即放锁" -f $usedSec, $smokeSegBudgetSec) -ForegroundColor Red
+        $smokeOk = $false
+        $smokeBudgetHit = $true
+        break
+      }
     }
     $soPath = [System.IO.Path]::GetTempFileName()
     $sePath = [System.IO.Path]::GetTempFileName()
@@ -530,7 +563,14 @@ else {
     # 报的还是「找不到文件」,不会有人想到是 gates 这一行的锅。
     $proc = Start-Process -FilePath $nodeCmd.Source -ArgumentList ('"{0}"' -f $f.FullName) `
       -NoNewWindow -PassThru -RedirectStandardOutput $soPath -RedirectStandardError $sePath
-    if ($proc.WaitForExit($smokeTimeoutSec * 1000)) {
+    # 单套的等待上界 = min(每套上界, 预算剩余)。这样「杀当前套」由同一条 WaitForExit 承担,
+    # 不必另起一套超时机制;非持锁段(纯 node 那 18 套)不受预算约束,取值仍是每套上界。
+    $waitSec = $smokeTimeoutSec
+    if ($script:SmokeLockTaken -and $script:SmokeLockOk -and $null -ne $script:SmokeSegSw) {
+      $remain = $smokeSegBudgetSec - [int]$script:SmokeSegSw.Elapsed.TotalSeconds
+      if ($remain -lt $waitSec) { $waitSec = [Math]::Max(1, $remain) }
+    }
+    if ($proc.WaitForExit($waitSec * 1000)) {
       $rc = $proc.ExitCode
     }
     else {
@@ -548,8 +588,15 @@ else {
       $rc = -1
       $smokeHung++
       $smokeOk = $false
-      Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,已连进程树杀掉并判红" -f $f.Name, $smokeTimeoutSec) -ForegroundColor Red
-      Write-Host '         (这一套内部的 CDP 截止时间没能兜住 ⇒ 多半卡在 CDP 之外:Chrome 没起来 / WebSocket 没连上 / 页面永不 load)' -ForegroundColor Yellow
+      # 杀因要分清:**预算截断**与**真挂死**是两回事,而两者都走这条 kill 路径。
+      # 只写「超时被杀」会让人去追一套其实没挂的冒烟(它只是被段预算腰斩了)。
+      if ($waitSec -lt $smokeTimeoutSec) {
+        Write-Host ("  [HUNG] {0}:被**段预算**腰斩(只等了 {1}s,每套上界是 {2}s)——它未必挂死,是 3e 页面级段的 {3}s 预算见底了" -f $f.Name, $waitSec, $smokeTimeoutSec, $smokeSegBudgetSec) -ForegroundColor Red
+      }
+      else {
+        Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,已连进程树杀掉并判红" -f $f.Name, $smokeTimeoutSec) -ForegroundColor Red
+        Write-Host '         (这一套内部的 CDP 截止时间没能兜住 ⇒ 多半卡在 CDP 之外:Chrome 没起来 / WebSocket 没连上 / 页面永不 load)' -ForegroundColor Yellow
+      }
     }
     $out = @()
     foreach ($fp in @($soPath, $sePath)) {
@@ -599,6 +646,10 @@ else {
   if ($smokeHung -gt 0) {
     $smokeLabel = '{0}(!{1} 套超时被杀)' -f $smokeLabel, $smokeHung
   }
+  # [SL-301 裁定(a)] 超预算同理必须进摘要 —— 「余套没跑」与「都跑过了」不能长得一样。
+  if ($smokeBudgetHit) {
+    $smokeLabel = '{0}(!页面级段超 {1}s 预算,余套未跑)' -f $smokeLabel, $smokeSegBudgetSec
+  }
   Set-Gate $smokeLabel $smokeOk
 }
 
@@ -628,7 +679,9 @@ finally {
       Write-Host ("  [ipc-lock] 无法枚举 chrome 命令行({0}),跳过残留核对" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
       $headless = $null
     }
-    if ($null -ne $headless -and $headless.Count -gt 0) {
+    # 超预算那条路径上**不再多睡 3 秒**:此刻要的是尽快把锁交出去,
+    # 让等锁的人少等 —— 残留核对是诊断信息,不该拖慢放锁。
+    if ($null -ne $headless -and $headless.Count -gt 0 -and -not $smokeBudgetHit) {
       Start-Sleep -Seconds 3
       $headless = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
