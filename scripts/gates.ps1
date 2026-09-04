@@ -106,6 +106,30 @@ $runGate8 = -not ($Quick -or $PluginOnly)
 # 去掉那一档,混合作用域的洞就不存在了。
 # 建不出来时**判负**(见调用处的 Set-Gate),绝不静默继续 —— 并发假红最难查的
 # 就是「以为有锁,其实没有」。
+# [SL-301 复审] **「这一套起不起浏览器」只有一份判据**,两处共用(算等锁预算、实际分类)。
+# 此前写了两遍同一条正则、靠人工同步 —— 漂了不会报错,只会让上界按错的套数算。
+#
+# 判据**有意取并集、偏向多判**,因为两种漂法的代价严重不对称:
+#   · 多判(纯 node 被当成页面级)⇒ 多串行几十秒,**无害**;
+#   · **漏判**(真起 Chrome 的被当成纯 node)⇒ **无锁跑起浏览器**,正是本卡要根除的形态,
+#     而且**完全静默**。
+# 所以宁可宽:`cdpConnect`(与 gate 3i 的 check-smoke-hygiene 同一判据,故本集合 ⊇ 它那一族)
+# 或 `.on(`/`.once(` 挂 error 的浏览器句柄、或命令行里出现 `--headless`、或文件名 `-page.mjs`。
+# 只认单一写法(比如只认 `chrome.on("error"`)会被 prettier 换引号、或新冒烟写成
+# `browser.once('error'` 静默绕过 —— 那正是危险的那一侧。
+function Test-ScvbPageSuite {
+  param([string]$Path)
+  if ($Path -like '*-page.mjs') { return $true }
+  $t = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+  if ($null -eq $t) { return $false }
+  # 四条任一命中即算「起浏览器」。`cdpConnect` 与 gate 3i 的 check-smoke-hygiene 同判据,
+  # 故本集合 ⊇ 它那一族;其余三条是往「宁可多判」偏的保险。
+  if ($t -match 'function cdpConnect') { return $true }
+  if ($t -match '--headless') { return $true }
+  if ($t -match '\.(on|once)\(\s*["'']error') { return $true }
+  return $false
+}
+
 function New-ScvbMutex {
   param([string]$Name, [string]$Tag)
   try { return New-Object System.Threading.Mutex($false, "Local\$Name") }
@@ -483,8 +507,11 @@ else {
   # 时间 gate 1–5 完全不持锁,那时「一套挂死」的代价收窄成「**本轮** gates 停死」、不连累别人。
   # **现在 3e 自己持锁**(它的 Chrome 负载会把同机别人的 gate 6 拖红),所以「一套挂死」
   # **重新会堵住全场** —— 这条超时因此比那时更要紧,不是「照加」而是**承重**。
-  # 最坏账要算清:6 个页面级 × 300s ≈ 31 分钟,这就是别人可能等锁的上限,
-  # 也是等锁上界从 30 抬到 45 分钟的原因(见 :131 的算术)。
+  # 最坏账现在由**段预算**封顶,不再是「套数 × 每套上界」:见 `$smokeSegBudgetSec` 的头注
+  # (默认 480s)。别人可能等锁的上限 = 那个预算,而不是这条 300s 乘出来的数。
+  #(此处原先写「6 × 300s ≈ 31 分钟、上界从 30 抬到 45」—— 两句都随裁定 (a) 作废:
+  # 上界留 30 且改成跟着预算算,持锁方由预算封顶。**引章节名不引行号**:行号一改就漂,
+  # 这正是上一轮被点名的那个失效形态。)
   # 页面级冒烟内部现在有 CDP 截止时间兜住「响应不回来」那一类,但兜不住「Chrome 根本没起来」
   # 「WebSocket 没连上」「页面永不 load」——那些卡在 CDP 之外,只有这一层能收。
   #
@@ -496,7 +523,8 @@ else {
   # 一起收,否则被杀的只是 node,它起的 Chrome 会留下来(正是 SL-274 压住锁的那个形态)。
   $smokeOk = $true
   $smokeSkipped = 0
-  $smokeFlaky = 0
+  $smokeFlaky = 0      # [SL-297] rc=3:浏览器在但没连上
+  $smokeRanCount = 0   # [SL-301 复审] 实际跑到的套数(break 之后 < 总数,汇总不能说谎)
   $smokeHung = 0
   # `SCVB_SMOKE_TIMEOUT_SEC` 是给慢机器的口子(照 SCVB_MUTEX_WAIT_MINUTES 的先例),
   # 平时不用设。调大不会削弱任何判据 —— 超时只负责兜住挂死,不参与判对错。
@@ -516,14 +544,13 @@ else {
   # [SL-301 复审] **持锁面收窄到真正起浏览器的那几套。**
   # 24 套里只有 6 套起无头 Chrome,另外 18 套是纯 node、零共享状态 —— 把它们也串行化
   # 是「持锁面比论据宽」:论据是「Chrome 负载拖红别人的 gate 6」,那 18 套一个 Chrome 都不起。
-  # 判据用**内容**(`chrome.on("error"` = 它自己起浏览器)而不是文件名里有没有 `-page`:
-  # 后者是命名约定,前者是事实,加一套新冒烟会被自动归类。
+  # 分类判据见 `Test-ScvbPageSuite`(单一真源,有意取并集偏向多判 —— 漏判的代价是
+  # 「无锁跑起浏览器」且完全静默,多判只是多串几十秒)。
   # 排序把纯 node 的排前面,**跑到第一套页面级时才取锁**,循环结束在 finally 里放 ——
   # 于是无锁那 18 套可以与别的 agent 并行,而持锁段的最坏账变成「6 × 上界」,
   # 与 :126 那笔算术**真的**对得上(此前那笔漏算了这 18 套,复审点出:24×300s = 120 分钟)。
-  $pageSuites = @($smokeFiles | Where-Object {
-      (Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'chrome\.on\("error"'
-    })
+  # 判据只有一份:`Test-ScvbPageSuite`(见它的头注:有意取并集、偏向多判)。
+  $pageSuites = @($smokeFiles | Where-Object { Test-ScvbPageSuite -Path $_.FullName })
   $pageNames = @($pageSuites | ForEach-Object { $_.Name })
   $smokeFiles = @($smokeFiles | Where-Object { $pageNames -notcontains $_.Name }) + $pageSuites
   Write-Host ("  [ipc-lock] 本轮 {0} 套里 {1} 套起浏览器(仅这几套持锁,其余 {2} 套无锁先跑)" -f $smokeFiles.Count, $pageSuites.Count, ($smokeFiles.Count - $pageSuites.Count)) -ForegroundColor Cyan
@@ -603,6 +630,7 @@ else {
       if (Test-Path $fp) { $out += (Get-Content -LiteralPath $fp -ErrorAction SilentlyContinue) }
     }
     Remove-Item -LiteralPath $soPath, $sePath -Force -ErrorAction SilentlyContinue
+    $smokeRanCount++
     if ($rc -eq 2) {
       $smokeSkipped++
       Write-Host ("  [SKIP] {0}:缺可选外部依赖(见该脚本文件头)" -f $f.Name) -ForegroundColor Yellow
@@ -632,9 +660,15 @@ else {
       ForEach-Object { Write-Host ("  " + $_) }
     }
   }
-  $smokeLabel = '3e web smoke({0} 套,node {1})' -f $smokeFiles.Count, $nv
+  # [SL-301 复审] **汇总不能说谎**:拿不到锁或超预算时会 `break`,实际跑到的套数 < 总数,
+  # 而原来无论如何都写「24 套」—— 与本 gate 自己「降级要显形」的口径冲突。
+  # 跑满时保持原样(不给正常路径添噪声),没跑满才写成 `N/总数 套跑到`。
+  $smokeCountText =
+    if ($smokeRanCount -lt $smokeFiles.Count) { '{0}/{1} 套跑到' -f $smokeRanCount, $smokeFiles.Count }
+    else { '{0} 套' -f $smokeFiles.Count }
+  $smokeLabel = '3e web smoke({0},node {1})' -f $smokeCountText, $nv
   if ($smokeSkipped -gt 0) {
-    $smokeLabel = '3e web smoke({0} 套 −{1} SKIP,node {2})' -f $smokeFiles.Count, $smokeSkipped, $nv
+    $smokeLabel = '3e web smoke({0} −{1} SKIP,node {2})' -f $smokeCountText, $smokeSkipped, $nv
   }
   # [SL-297] FLAKY-SKIP **必须进汇总标签**:跑完 gates 的人看的是这张表,不是往回滚屏。
   # 这一条正是本卡要堵的洞 —— 只在滚屏里打一行 `[FLAKY-SKIP]`、汇总仍写「24 套」,
@@ -683,9 +717,18 @@ finally {
     # 让等锁的人少等 —— 残留核对是诊断信息,不该拖慢放锁。
     if ($null -ne $headless -and $headless.Count -gt 0 -and -not $smokeBudgetHit) {
       Start-Sleep -Seconds 3
-      $headless = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
-      if ($headless.Count -gt 0) {
+      # 第二次枚举也要守「不猜就出声」那条口径(复审指出第一版这里丢了它):
+      # 用 SilentlyContinue 的话,CIM 这一刻恰好失败会静默变成「0 个残留」——
+      # 那是**把查不到当成没有**,与本卡治的「降级不可见」是同一个毛病。
+      try {
+        $headless = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
+          Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
+      }
+      catch {
+        Write-Host ("  [ipc-lock] 复核残留时枚举失败({0}),这一轮的残留数**未知**(不是 0)" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
+        $headless = $null
+      }
+      if ($null -ne $headless -and $headless.Count -gt 0) {
         # 措辞要能经得起追问(复审逐条点过):
         #   · 数的是**进程**不是浏览器实例 —— renderer / GPU / utility 子进程同样带 `--headless`,
         #     一个实例通常对应好几个进程;写成「N 个浏览器」会让人据此去推「漏了几套没收」而推错。
