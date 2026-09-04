@@ -50,7 +50,9 @@
 // 用法:node web-preview/tests/smoke-seg-diff-fold-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
 // 退出码:0 = 全绿;1 = 有断言失败;**2 = 环境里没有 Chrome/Edge**(口径同
-//   smoke-monitor-page.mjs 与 CLAUDE.md 的可选依赖档:缺席不判红,但也绝不算通过)。
+//   smoke-monitor-page.mjs 与 CLAUDE.md 的可选依赖档:缺席不判红,但也绝不算通过);
+//   **3 = 浏览器在,但这一次没起来 / 没连上**([SL-297],见 `browserFailed()`)——
+//   同样不判红,但在 gates 汇总里打 `[FLAKY-SKIP]`,免得「没跑成」被读成「跑过了」。
 //
 // CDP 那 30 行与 smoke-seg-restore-page.mjs / smoke-output-dist-page.mjs 同源
 // (node 内置 fetch + WebSocket,零依赖 —— 仓库红线是不引 puppeteer)。同样不抽公共
@@ -293,6 +295,35 @@ function noBrowser(msg) {
     process.exit(2);
 }
 
+// [SL-297] **浏览器在,但没起来 / 没连上** —— 与 `noBrowser()` 分开走 **退出码 3**。
+// 为什么必须分开:gates 3e 与 CI 都把 **2 读成「本机没有浏览器」** 并按可选依赖记 SKIP、
+// 照算 PASS。而「装着 Chrome、这一次没连上」是**一次失败的运行**,不是缺依赖 ——
+// 压成同一个码之后,一台装着 Chrome 的机器上一次瞬时超时就会让整套判据**无声消失**,
+// 汇总行还写着全 PASS(SL-293 实测撞到三次,每次掉的套件还不一样)。
+// **仍然不判红**(理由见调用点):判红会把每个 PR 卡在与改动无关的环境抖动上。
+// 3 的语义就是「这一轮没跑成,而且不是因为没装浏览器」——由 gates 打成 [FLAKY-SKIP]。
+function browserFailed(msg) {
+    // 与本文件的 `noBrowser()` 同款走**同步写**:这条也紧跟 `process.exit()`,而 gate 3e
+    // 判 rc=3 时同样按 `^❌` 抓解释行 —— 被截断就只剩一行 [FLAKY-SKIP]、说不出没跑成的原因。
+    // (本文件特意用 `writeSync` 而不是 `console.error` 的理由见 noBrowser 处;
+    //  新出口沿用同一层加固,别因为是「新写的」就退回 console.error。)
+    try {
+        writeSync(
+            2,
+            `❌ ${msg}\n` +
+                "   页面级冒烟**没跑成**(退出码 3):浏览器是在的,但这一次没起来 / 没连上。" +
+                "这**不是**通过,也**不是**「本机没装浏览器」——重跑一次通常就好;" +
+                "连续复现请查 CDP 端口占用、机器负载或 Chrome 版本。\n",
+        );
+    } catch {
+        console.error(`❌ ${msg}`);
+    }
+    try {
+        server.close();
+    } catch {}
+    process.exit(3);
+}
+
 function chromePath() {
     if (argv.has("chrome")) {
         const p = argv.get("chrome");
@@ -328,7 +359,7 @@ const chrome = spawn(
     ],
     { stdio: "ignore" },
 );
-chrome.on("error", (e) => noBrowser(`浏览器启动失败:${e.message}`));
+chrome.on("error", (e) => browserFailed(`浏览器启动失败:${e.message}`));
 
 let cdp = null;
 const errors = [];
@@ -481,7 +512,7 @@ for (let i = 0; i < CDP_WAIT_TRIES && !targets; i++) {
     }
 }
 if (!targets) {
-    noBrowser(
+    browserFailed(
         `Chrome 未在 ${Math.round((CDP_WAIT_TRIES * CDP_WAIT_STEP_MS) / 1000)}s 内开出 CDP 端口`,
     );
 }
