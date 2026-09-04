@@ -163,17 +163,20 @@ function New-ScvbMutex {
 # 上界跟着**段预算**走(裁定 (a) 落地之后,持锁方最坏就是这个预算,不再是「套数 × 每套上界」)。
 # 默认 480s ⇒ ceil(480×1.5/60)=12,与 30 取大 ⇒ **30 分钟**,正是统筹裁定要留的值;
 # 有人把预算调大,这个上界会自动跟上,不必再手改一个字面量。
-$script:ScvbSmokeSegmentBudgetSecForWait = 480
+$script:ScvbSmokeSegmentBudgetSec = 480
 if ($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) {
-  $parsedWaitBudget = 0
-  if ([int]::TryParse($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC, [ref]$parsedWaitBudget) -and $parsedWaitBudget -ge 10) {
-    $script:ScvbSmokeSegmentBudgetSecForWait = $parsedWaitBudget
+  $parsedSegBudget = 0
+  if ([int]::TryParse($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC, [ref]$parsedSegBudget) -and $parsedSegBudget -ge 10) {
+    $script:ScvbSmokeSegmentBudgetSec = $parsedSegBudget
+  }
+  else {
+    Write-Host ("  [WARN] SCVB_SMOKE_SEGMENT_BUDGET_SEC='{0}' 不是 >=10 的整数,回落到默认 480s" -f $env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) -ForegroundColor Yellow
   }
 }
 $script:ScvbMutexWaitMinutes =
   if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES }
   else {
-    [Math]::Max(30, [Math]::Ceiling($script:ScvbSmokeSegmentBudgetSecForWait * 1.5 / 60))
+    [Math]::Max(30, [Math]::Ceiling($script:ScvbSmokeSegmentBudgetSec * 1.5 / 60))
   }
 
 function Wait-ScvbMutex {
@@ -432,21 +435,11 @@ $script:SmokeLock = $null
 $script:SmokeLockTaken = $false
 $script:SmokeLockOk = $true   # 没到页面级就一直是「不需要锁」
 $script:SmokeSegSw = $null    # 持锁段计时,取到锁那一刻才起
-# [SL-301 裁定(a)] **持锁段整体预算**(秒)。默认 480:健康时页面级那几套合计约 149s,
-# 3.2 倍余量,且 ≪ 等锁上界 —— 于是「病态 3e」的代价被关回**它自己**,
-# 而不是让全机其他 agent 干等。非法值钳住(照 SCVB_SMOKE_TIMEOUT_SEC 的先例):
-# 转换失败或 <60 一律回落默认,并出声 —— 静默回落会让人以为自己设的值生效了。
-$smokeSegBudgetSec = 480
-if ($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) {
-  $parsedBudget = 0
-  if ([int]::TryParse($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC, [ref]$parsedBudget) -and $parsedBudget -ge 10) {
-    $smokeSegBudgetSec = $parsedBudget
-  }
-  else {
-    Write-Host ("  [WARN] SCVB_SMOKE_SEGMENT_BUDGET_SEC='{0}' 不是 >=10 的整数,回落到默认 480s" -f $env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) -ForegroundColor Yellow
-  }
-}
+# 段预算只解析一份(见脚本顶部 `$script:ScvbSmokeSegmentBudgetSec` 的头注),这里直接用 ——
+# 两份解析漂了会让「等锁上界」与「实际预算」脱钩,而且上一版两份的行为还不一致(一份出声一份静默)。
+$smokeSegBudgetSec = $script:ScvbSmokeSegmentBudgetSec
 $smokeBudgetHit = $false
+$smokeNoLock = $false
 
 # ==================================================================
 Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
@@ -564,10 +557,19 @@ else {
         # 与 6/7/8 同款:拿不到锁 = 没有并发保护,页面级那几套**不执行**、整段判负。
         Write-Host '  [ipc-lock] 拿不到锁 ⇒ 页面级冒烟不执行(无锁硬跑会去抢隔壁持锁 agent 的机器)' -ForegroundColor Red
         $smokeOk = $false
+        # 与超预算那条 break **同型,待遇要一致**:两条都让余套没跑,都必须在摘要里显形。
+        # 复审点出上一版只有超预算进了标签 —— 同一个 commit 里两条同型路径不同待遇,
+        # 正是「降级不可见」换个入口又回来。
+        $smokeNoLock = $true
         break
       }
       # [SL-301 裁定(a)] **持锁段整体预算**从拿到锁的那一刻开始计。
-      $script:SmokeSegSw = [System.Diagnostics.Stopwatch]::StartNew()
+      # ⚠ 只在**真的持着锁**时计:`-NoIpcLock` 下 `Enter` 返回 $null、根本没有锁,
+      # 那就不存在「占着锁不放」这回事 —— 再用预算腰斩就是一条**凭空的假红**,
+      # 而且超预算那行还会说一句不存在的「立即放锁」(复审点出)。
+      if ($null -ne $script:SmokeLock) {
+        $script:SmokeSegSw = [System.Diagnostics.Stopwatch]::StartNew()
+      }
     }
     # [SL-301 裁定(a)] 预算兜的是**持锁方**,等锁上界兜的是**等锁方**,两者并存、不可互相替代:
     # 上界只保证「等的人不会被判负」,**不保证「等的人不用干等满」** —— 病态 3e 持锁
@@ -684,6 +686,9 @@ else {
   if ($smokeBudgetHit) {
     $smokeLabel = '{0}(!页面级段超 {1}s 预算,余套未跑)' -f $smokeLabel, $smokeSegBudgetSec
   }
+  if ($smokeNoLock) {
+    $smokeLabel = '{0}(!拿不到 IPC 锁,页面级未跑)' -f $smokeLabel
+  }
   Set-Gate $smokeLabel $smokeOk
 }
 
@@ -713,10 +718,11 @@ finally {
       Write-Host ("  [ipc-lock] 无法枚举 chrome 命令行({0}),跳过残留核对" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
       $headless = $null
     }
-    # 超预算那条路径上**不再多睡 3 秒**:此刻要的是尽快把锁交出去,
-    # 让等锁的人少等 —— 残留核对是诊断信息,不该拖慢放锁。
-    if ($null -ne $headless -and $headless.Count -gt 0 -and -not $smokeBudgetHit) {
-      Start-Sleep -Seconds 3
+    # 超预算那条路径上**照样核残留,只是不多睡那 3 秒** —— 复审点出我上一版把整块跳过了,
+    # 而那恰恰是**残留最可能存在**的一条路径(套被腰斩,它自己的 teardown 没跑完)。
+    # 「尽快交锁」省的是 3 秒的等待,不是省掉诊断。
+    if ($null -ne $headless -and $headless.Count -gt 0) {
+      if (-not $smokeBudgetHit) { Start-Sleep -Seconds 3 }
       # 第二次枚举也要守「不猜就出声」那条口径(复审指出第一版这里丢了它):
       # 用 SilentlyContinue 的话,CIM 这一刻恰好失败会静默变成「0 个残留」——
       # 那是**把查不到当成没有**,与本卡治的「降级不可见」是同一个毛病。
