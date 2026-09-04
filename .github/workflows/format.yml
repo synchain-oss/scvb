@@ -199,6 +199,13 @@ jobs:
         # 「块里真没有漏搬」和「判据被改坏了」。自测拿 `d8ef5b9` 的**真标题**做删除式
         # (压缩写法 `SL-204/205/207`:朴素模式必须漏掉 205/207,展开式必须抓到),
         # 把后一种可能单独照出来。
+        # ⚠ 这一步**也要**透传 base:自测最后一组用的是**真 CHANGELOG + 真提交标题**
+        # (「从未合并的 #83 必须恒绿」那条),同样会走「解析不出 base ref ⇒ 判负」。
+        # 不给的话它会退回脚本里写死的 `origin/feature/v1` —— 于是同一个 job 里两步量的是
+        # 两个 base,而且等 v1 收口、该分支被删,这一步会对每个 PR 硬红在 required check 上
+        # (#197 复审第 3 轮【重要】:第 1 轮那条建议原先只落实到了两步中的一步)。
+        env:
+          SCVB_CHANGELOG_BASE: origin/${{ github.base_ref || github.ref_name }}
         run: node scripts/check-changelog-drafts.mjs --self-test
       - name: Changelog drafts not stranded (合了就得把预写条目搬进正文)
         # [SL-295] `CHANGELOG.md` 末尾注释块里的「合并时把自己那条搬上去」此前**没有执行者**,
