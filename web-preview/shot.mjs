@@ -26,6 +26,10 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// PNG 的八字节魔数。放顶层与 CHROME_CANDIDATES 同档,不是性能考虑 —— 它和用它那处的
+// 注释是一条纪律(落盘前认一次,别写出伪证据),埋在热路径中段容易被下次重构顺手挪没。
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 const CHROME_CANDIDATES = [
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -68,6 +72,8 @@ if (args.has("help")) {
             "  --port=9333             CDP 端口",
             "  --out=<路径>            PNG 落点,默认 web-preview/.shots/<tab>-<时间>.png",
             "  --console               把页面 console 打到 stdout(排障用)",
+            "",
+            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 导航没成功(连不上、错误页、非 2xx)",
         ].join("\n"),
     );
     process.exit(0);
@@ -267,6 +273,26 @@ try {
             if (m.method === "Page.loadEventFired") resolve();
         });
     });
+
+    // [SL-290 复审] **第三道:HTTP 状态码**。前两道只覆盖「连不上」——
+    // serve 起着但 URL 拼错时(404/500),`Page.navigate` **不带** errorText
+    // (HTTP 错误不是导航失败),`location.href` 也**不是** chrome-error://,
+    // 于是 404 白屏照样被拍成 PNG 并报 ✅ —— 与本卡要治的伪证据**完全同一类**。
+    // 不是假想:PREVIEW-GUIDE §5 排障表第一行就是「页面 404 | URL 写成了 /output/」;
+    // 本文件上面 `opt("role","")` 那段注释记的事故,形态正是「拍出白屏图并报成功」。
+    // 实测:`--url=…/nope.html` 修复前落盘 7550 字节且 exit=0。
+    // 主 frame 的文档响应只有一条,记下它的 status;子资源(js/css/字体)不参与判定。
+    let mainStatus = null;
+    cdp.on((m) => {
+        if (
+            m.method === "Network.responseReceived" &&
+            m.params.type === "Document" &&
+            mainStatus === null
+        ) {
+            mainStatus = m.params.response.status;
+        }
+    });
+    await cdp.send("Network.enable");
     // [SL-290] **导航结果必须校验** —— 这是本脚本最贵的一课:
     // `Page.navigate` 对连不上的目标**照样 resolve**,`Page.loadEventFired` 也照样来
     // (Chrome 把错误页当一个正常文档加载完),于是下面一路走到 captureScreenshot,
@@ -293,11 +319,28 @@ try {
 
     // ② 二道:errorText 只覆盖「这一次 navigate 自己失败」。重定向到错误页、
     //    或首次导航成功但随后被换成错误页,都还得靠落地后的 URL 认。
-    const landed = await evaluate(cdp, "location.href");
+    // ⚠ 这里用 try 包住:`evaluate` 抛的是普通 `Error`,直接冒上去会让 finally 的
+    //    `instanceof NavigationError` 不成立 ⇒ 退 1 而不是 2,且屏幕上打印「页内求值抛错」
+    //    把人指向错误方向。而「在落地页上连 location.href 都求不到」几乎只可能是页面
+    //    没正常起来 —— 正是 2 该覆盖的语义(复审指出)。
+    let landed;
+    try {
+        landed = await evaluate(cdp, "location.href");
+    } catch (e) {
+        throw new NavigationError(
+            `落地页无法求值(${e.message}),目标 ${URL_} 大概率没打开`,
+        );
+    }
     if (typeof landed === "string" && landed.startsWith("chrome-error://")) {
         throw new NavigationError(
             `落到浏览器错误页(${landed}),目标 ${URL_} 没打开
 ` + "   预览页要先起服务:pwsh web-preview/serve.ps1",
+        );
+    }
+    // ③ 主文档非 2xx ⇒ 拍下来的是错误页/白屏,不是要看的页面。
+    if (mainStatus !== null && (mainStatus < 200 || mainStatus > 299)) {
+        throw new NavigationError(
+            `主文档 HTTP ${mainStatus},目标 ${URL_} 没正常返回(多半是 URL 拼错,见 PREVIEW-GUIDE §5 排障表)`,
         );
     }
 
@@ -349,9 +392,6 @@ try {
     const png = Buffer.from(shot.data, "base64");
     // 落盘前认一下这确实是 PNG:空/截断的 capture 也会 resolve,而写出一个 0 字节的
     // .png 同样是伪证据。八字节魔数比「尺寸下界」稳 —— 尺寸下界会把合法的小截图误杀。
-    const PNG_MAGIC = Buffer.from([
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    ]);
     if (png.length < 8 || !png.subarray(0, 8).equals(PNG_MAGIC)) {
         throw new Error(`captureScreenshot 返回的不是 PNG(${png.length} 字节)`);
     }
