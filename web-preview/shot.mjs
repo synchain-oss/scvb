@@ -121,6 +121,13 @@ function chromePath() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// [SL-290] 「没拍到」与「拍到的是错误页」要能被调用方分开:前者多半是环境/参数问题,
+// 后者说明**目标服务没起**——同样是失败,但排障方向完全不同,退出码就该不同。
+// 退出码:0 = 拍到了;1 = 其它失败;2 = 导航没成功(含错误页)。
+// 注:本脚本不被 gates / CI 调用(只在 PREVIEW-GUIDE 与 E2E-journey 里给人用),
+// 所以 2 不会撞上 gate 3e 那条「退 2 当缺可选依赖打 SKIP」的读法。
+class NavigationError extends Error {}
+
 // ---------------------------------------------------------------- CDP 小客户端
 function cdpConnect(wsUrl) {
     const ws = new WebSocket(wsUrl);
@@ -260,9 +267,39 @@ try {
             if (m.method === "Page.loadEventFired") resolve();
         });
     });
-    await cdp.send("Page.navigate", { url: URL_ });
+    // [SL-290] **导航结果必须校验** —— 这是本脚本最贵的一课:
+    // `Page.navigate` 对连不上的目标**照样 resolve**,`Page.loadEventFired` 也照样来
+    // (Chrome 把错误页当一个正常文档加载完),于是下面一路走到 captureScreenshot,
+    // 把「无法访问此网站」那张图存成 PNG 并打印 ✅。实测(serve 没起时)两次出图
+    // **sha256 逐字相同、均 23767 字节** —— 而截图是「肉眼验过」这类结论的唯一证据载体,
+    // 工具谎报成功等于**产出伪证据**(v5.6.6 出包自测差一点把两张错误页当验证结果上报)。
+    //
+    // 判据取**与页面级冒烟同一套**(`web-preview/tests/smoke-*-page.mjs`:导航之后看
+    // 「页面到底成没成」),不自造第三份;这里用 CDP 自己给的两个信号,都与语言无关:
+    //   ① `Page.navigate` 的返回值带 `errorText`(如 `net::ERR_CONNECTION_REFUSED`);
+    //   ② 错误页的 `location.href` 是 `chrome-error://chromewebdata/`。
+    // 两条都测过(见本卡 PR 描述里的探针输出)。**不按 body 文案判**:错误页文案随
+    // 浏览器界面语言变(本机实测是中文「无法访问此网站」),按文案判就是给自己埋 locale 坑。
+    const nav = await cdp.send("Page.navigate", { url: URL_ });
+    if (nav && nav.errorText) {
+        throw new NavigationError(
+            `导航失败:${nav.errorText}
+   目标:${URL_}
+` + "   预览页要先起服务:pwsh web-preview/serve.ps1",
+        );
+    }
     await Promise.race([loaded, sleep(15000)]);
     await sleep(WAIT_MS); // mock 注入 + 首帧事件 + 首绘
+
+    // ② 二道:errorText 只覆盖「这一次 navigate 自己失败」。重定向到错误页、
+    //    或首次导航成功但随后被换成错误页,都还得靠落地后的 URL 认。
+    const landed = await evaluate(cdp, "location.href");
+    if (typeof landed === "string" && landed.startsWith("chrome-error://")) {
+        throw new NavigationError(
+            `落到浏览器错误页(${landed}),目标 ${URL_} 没打开
+` + "   预览页要先起服务:pwsh web-preview/serve.ps1",
+        );
+    }
 
     await evaluate(cdp, DOC_PRELUDE); // 之后一切选择器走 __D(iframe 内的真源文档)
 
@@ -309,8 +346,17 @@ try {
     });
     const { mkdirSync } = await import("node:fs");
     const { dirname } = await import("node:path");
+    const png = Buffer.from(shot.data, "base64");
+    // 落盘前认一下这确实是 PNG:空/截断的 capture 也会 resolve,而写出一个 0 字节的
+    // .png 同样是伪证据。八字节魔数比「尺寸下界」稳 —— 尺寸下界会把合法的小截图误杀。
+    const PNG_MAGIC = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+    if (png.length < 8 || !png.subarray(0, 8).equals(PNG_MAGIC)) {
+        throw new Error(`captureScreenshot 返回的不是 PNG(${png.length} 字节)`);
+    }
     mkdirSync(dirname(OUT), { recursive: true });
-    writeFileSync(OUT, Buffer.from(shot.data, "base64"));
+    writeFileSync(OUT, png);
     console.log(`✅ ${URL_}${TAB ? "  (tab=" + TAB + ")" : ""}\n   → ${OUT}`);
 } catch (e) {
     failed = e;
@@ -324,5 +370,5 @@ try {
     try {
         rmSync(userDataDir, { recursive: true, force: true });
     } catch {}
-    process.exit(failed ? 1 : 0);
+    process.exit(failed ? (failed instanceof NavigationError ? 2 : 1) : 0);
 }
