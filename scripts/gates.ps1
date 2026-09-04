@@ -962,6 +962,16 @@ else {
       # 两者都按**方括号标记**匹配,不按文案匹配:挂在散文上的话,一次很自然的措辞编辑就会让
       # 这行回显静默失效(#197 复审第 5 轮【建议】)。
       # 不并进 $parityWarn:它数的是「某档没跑」,放行与 base 戳都不是降级。
+      # ⚠ 待办(#197 复审第 5/6 轮,卡号待统筹分配 —— 分到后把这行的「卡号待分配」换成真卡号):
+      #   `[ALLOW]` 目前**只到滚屏,没进汇总标签**,而本文件里有两条相反的先例
+      #   (gate 3e 的 $smokeFlaky → $smokeLabel、本圈的 $parityWarn → $parityLabel),
+      #   理由逐字写在上面那段:「看汇总表的概率远高于往回滚二十屏找黄字」。
+      #   要做就一次做完三件:另起一个 $draftsAllow 计数 → 拼进 $parityLabel(只报行数,
+      #   不冒充「有几个号被豁免」)→ 扩 `check-gates-visibility.mjs` 断言这条接线
+      #   (与它今天守 $smokeFlaky → $smokeLabel 那条逐字同构)。只做前两件的话,下一次
+      #   就是「标签加了但没人守着」—— 正是 SL-297 立的那条纪律要防的形态。
+      #   写在这里而不是只写在 commit message 里:读这段代码的人不会去 git log 找它,
+      #   而「规矩只写在别处、没有执行者」正是 SL-295 这张卡自己的病灶(第 6 轮复审点名)。
       @($out | Where-Object { $_ -match '\[ALLOW\]|\[BASE\]' }) |
         ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
     }

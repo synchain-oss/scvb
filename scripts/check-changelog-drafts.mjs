@@ -39,7 +39,9 @@
 //     所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
 //   · **本地跑时 base 可能是陈旧的** remote-tracking ref(谁也不保证跑 gates 之前 fetch 过),
 //     陈旧 ⇒ 已上线集合变小 ⇒ **静默变绿**。在 gates 里联网去挡不合适,所以改为**显形**:
-//     成功时单独打一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题`(#197 复审 gates【建议】①)。
+//     **红绿都打**一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题;判定面内 M 个待合并的号`
+//     (#197 复审 gates【建议】①、第 6 轮【建议】)。判红时它回答「这次拿哪天的 base 比的」,
+//     绿时它回答「判定面是不是近乎空转」。
 //     **挂方括号标记而不是挂散文**:gates 3i 按标记回显它,挂在成功消息的措辞上的话,一次
 //     很自然的文案编辑就会让那条回显静默失效(#197 复审第 5 轮【建议】)。
 //   · **浅克隆下 fail-closed 退 1**,不静默放行:`git log` 在 `fetch-depth: 1` 的 checkout 上
@@ -545,6 +547,24 @@ try {
     for (const [token, why] of allowList(block))
         console.log("  [ALLOW] #" + token + " 放行 —— " + why);
 
+    // [BASE] 也是**红绿都打**,而且**排在判红之前**:
+    //   · 判红时它回答「这次是拿哪天的 base 比的」—— base 陈旧时报出来的漏搬表只是真集合的
+    //     子集,而话术又叫人去 `git show <sha>` 核,那时正需要这条信息;
+    //   · `tokens.size`(判定面里有几个号)并进这一行,否则它只活在成功消息里、而 gates 3i
+    //     按标记回显、成功消息不带标记 ⇒ 本地看不见「判定面是不是近乎空转」——
+    //     那与本轮修的 base 戳是同一族(#197 复审第 6 轮【建议】)。
+    console.log(
+        "  [BASE] " +
+            base +
+            "@" +
+            baseStamp(base) +
+            " —— " +
+            titles.length +
+            " 条提交标题;判定面内 " +
+            tokens.size +
+            " 个待合并的号",
+    );
+
     if (found.length) {
         console.error(
             "check-changelog-drafts 失败(" + found.length + " 条预写条目漏搬):",
@@ -578,19 +598,6 @@ try {
         );
         process.exit(1);
     }
-    // base 戳单独一行、**挂方括号标记**:gates 3i 要按标记回显它(本仓的 [WARN] / [SKIP] /
-    // [FLAKY-SKIP] / [ALLOW] 都是标记)。挂在成功消息的散文上的话,一次很自然的文案编辑
-    // (「取自」改「来自」)就会让那条回显静默失效,而它修的正是「陈旧 base 静默变绿」——
-    // 失效之后回到的就是那个状态(#197 复审第 5 轮【建议】)。
-    console.log(
-        "  [BASE] " +
-            base +
-            "@" +
-            baseStamp(base) +
-            " —— " +
-            titles.length +
-            " 条提交标题",
-    );
     console.log(
         "check-changelog-drafts 通过:注释块里 " +
             tokens.size +
