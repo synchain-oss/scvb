@@ -53,7 +53,10 @@
 //     `(#N)`,那个号从此不出现在主线任何一条标题里,对应条目会**永远判绿**(不是假红,
 //     是这道门禁最反对的那种「永远绿」)。卡号 / 裁定号两支不受影响 —— 它们写在标题正文里,
 //     与合并方式无关。这条不改判据(该禁掉的是 rebase 合并,不是脚本能管的事)。
-//   · 它**不校验搬过去的位置对不对**(小节挑错了它看不见),也不看正文里 `(#TBD)` 这类占位。
+//   · 它**不校验搬过去的位置对不对**(小节挑错了它看不见)。
+//   · [SL-316] 起**正文也在判定面内**:每个 `(#N)` 必须在主线落过地、`(#TBD)` 即红 ——
+//     与上面那半共用同一条 `prsLanded`(见 BODY_GROUP_RE 那一段)。它判不出「这个号是不是
+//     **这条**改动的落地位」,那仍要人逐条比对。
 //   · 块尾「尚未开 PR 的在途卡」那几行没有 `pending #…` 标记,**不在判定面内**。
 //
 // 用法:
@@ -127,6 +130,33 @@ function draftBlock(md) {
 // 所以**不要**把右括号写进模式 —— 写进去就会漏掉后一种(它正是本次 37 条里的一条)。
 const pendingTokens = (block) =>
     [...block.matchAll(PENDING_RE)].map((m) => m[1]);
+
+// ---- 正文侧([SL-316])----------------------------------------------------
+// 上面那半守的是「合了却没搬」;这半守的是**搬上来之后号对不对**。两个方向同一个真源
+// (base 分支的落地位集合),所以复用同一条 `prsLanded`,不另写第二份引擎。
+//
+// 病灶(SL-316 清点):正文里 **4 条**挂着 `(#TBD)` —— 发版清单第 1 步「每条带 PR 号」
+// 当场卡住,而它们其实都早已落地(3 条随 `e83d138`/#164、1 条随 `b91cc11`/#166);
+// 另 **2 条**写着 `(#106)`,而 **PR #106 从未合并** —— 那件事实际落在 `6af6653`/#111
+// (它的标题就写着「接替 #106」)。也就是本卡这一族的**反方向**:块里那半是「合了没搬」,
+// 正文这半是「搬了但号是错的」,而此前**只有人眼在看**。
+//
+// ⚠ 边界:它只判「这个号在主线落过地」,判不出「这个号是不是**这条**改动的落地位」——
+// 后者仍要人逐条比对(SL-316 那 6 条就是这么核的:先找哪次提交把这条**加进 CHANGELOG**,
+// 再回去核提交内容对不对)。
+const BODY_TBD_RE = /\(#TBD\)/g;
+// 正文里引用 PR 的两种形态:`(#123)` 结尾,以及 `(#65、#69、#76)` 这种一括号多号。
+// 取法:先把每个括号组抓出来,再从组里抠所有 `#\d+` —— 直接全文抓 `#\d+` 会把
+// 「#1770 标准」这类非 PR 引用也收进来。
+const BODY_GROUP_RE = /\((#\d+(?:[、,,\s]*#\d+)*)\)/g;
+
+function bodyPrRefs(body) {
+    const out = [];
+    for (const g of body.matchAll(BODY_GROUP_RE))
+        for (const m of g[1].matchAll(/#(\d+)/g))
+            out.push({ num: m[1], at: g.index });
+    return out;
+}
 
 // ---- 放行口(#197 复审【重要】)-------------------------------------------
 // 「号出现在合并标题里」≠「它上线了」:`32e52a3` 的标题里那句 `SL-189 权威链定谳(接线完好)`
@@ -557,9 +587,12 @@ if (selfTest) {
 
 // ---- 实跑 -----------------------------------------------------------------
 try {
-    const block = draftBlock(fs.readFileSync(CHANGELOG, "utf8"));
+    const md = fs.readFileSync(CHANGELOG, "utf8");
+    const block = draftBlock(md);
     const titles = shippedTitles(base);
     const tokens = new Set(pendingTokens(block));
+    // 正文 = 注释块**之前**那一段:块里的 `pending #…` 归上面那半判据,别两头都算。
+    const body = md.slice(0, md.indexOf(block));
 
     // [BASE] / [ALLOW] 都排在 `leaks()` **之前**:`leaks()` 自己会为「放行写法不对 / 理由留空 /
     // 放行的号已没有对应条目」三种情形**抛错**,排在它后面的话那三条红路径上一行都不显 ——
@@ -587,6 +620,44 @@ try {
     // 放行**永远打出来**(红绿都打):豁免不显形就等于没有豁免纪律。
     for (const [token, why] of allowList(block))
         console.log("  [ALLOW] #" + token + " 放行 —— " + why);
+
+    // ---- 正文侧([SL-316]):`#TBD` 即红;每个 `(#N)` 必须在主线落过地 ----------
+    // 与上面那半共用同一条 `prsLanded`(落地位 = 尾部 `(#N)` 或老式 merge commit),
+    // 所以「块里判漏搬」与「正文判错号」量的是同一个集合,不会互相打架。
+    const landed = new Set();
+    for (const t of titles)
+        for (const n of FORMS.PR.extract(t.title)) landed.add(n);
+    const bodyBad = [];
+    const tbd = [...body.matchAll(BODY_TBD_RE)].length;
+    if (tbd)
+        bodyBad.push(
+            "正文里还有 " +
+                tbd +
+                " 处 `(#TBD)` —— 发版清单第 1 步「每条带 PR 号」会当场卡住;" +
+                "回溯到把这条**加进 CHANGELOG** 的那次提交、拿它的落地位补号(查不到就删条目或标「未落地」)",
+        );
+    for (const r of bodyPrRefs(body))
+        if (!landed.has(r.num))
+            bodyBad.push(
+                "正文引用了 `(#" +
+                    r.num +
+                    ")`,但主线没有任何提交以它落地(既不是尾部 `(#" +
+                    r.num +
+                    ")`,也不是 `Merge pull request #" +
+                    r.num +
+                    " from`)—— " +
+                    "多半是引了一个**关掉没合**的 PR;去找真正落地的那个号(例:#106 从未合并," +
+                    "那件事落在 `6af6653` / #111,标题写着「接替 #106」)",
+            );
+    if (bodyBad.length) {
+        console.error(
+            "check-changelog-drafts 失败(正文 " +
+                bodyBad.length +
+                " 处号不对):",
+        );
+        for (const b of bodyBad) console.error("  [FAIL] " + b);
+        process.exit(1);
+    }
 
     const found = leaks(block, titles);
     if (found.length) {
