@@ -604,7 +604,8 @@ else {
 
 }
 finally {
-  # [SL-301] **放锁前先确认本段起的浏览器已经归零**。放了锁而 Chrome 还活着,
+  # [SL-301] **放锁前核一眼机器上还有没有无头 Chrome**(注意:核的是**机器状态**,
+  # 不是「本段起的那些」—— 判据数不出父进程,见下面那条措辞注)。放了锁而 Chrome 还活着,
   # 下一个 agent 拿到锁开始跑 6/7/8,机器上却仍有上一份的 6 个 Chrome 在吃核 ——
   # 「放了锁但资源还占着」等于没放,本卡的不变式当场失效。
   # 正常路径下 3e 自己会收干净(每套跑完即退,超时那支走 `Kill($true)` 连进程树);
@@ -617,22 +618,29 @@ finally {
     # 而那 8 个多半是人在用的窗口:一条永远为真的警告等于没有警告。
     # 判据用**命令行**(`--headless` / 临时 user-data-dir 名里的 `scvb-`),不是进程名 ——
     # 与 SL-301 测量期清理残留时踩到的是同一条:按进程名一把抓会误伤用户的浏览器。
-    $mine = @()
+    $headless = @()
     try {
-      $mine = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
+      $headless = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
         Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
     }
     catch {
       # 取不到命令行(权限/CIM 不可用)时**不猜**:宁可不报,也不要拿「所有 chrome」冒充。
       Write-Host ("  [ipc-lock] 无法枚举 chrome 命令行({0}),跳过残留核对" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
-      $mine = $null
+      $headless = $null
     }
-    if ($null -ne $mine -and $mine.Count -gt 0) {
+    if ($null -ne $headless -and $headless.Count -gt 0) {
       Start-Sleep -Seconds 3
-      $mine = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+      $headless = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
-      if ($mine.Count -gt 0) {
-        Write-Host ("  [ipc-lock] 放 3e 锁时仍有 {0} 个**本套的**无头 chrome 没退 —— 某套冒烟没收干净(见 SL-287 的 teardown 纪律);下一个拿到锁的 agent 会在被占着核的机器上跑 6/7/8" -f $mine.Count) -ForegroundColor Yellow
+      if ($headless.Count -gt 0) {
+        # 措辞要能经得起追问(复审逐条点过):
+        #   · 数的是**进程**不是浏览器实例 —— renderer / GPU / utility 子进程同样带 `--headless`,
+        #     一个实例通常对应好几个进程;写成「N 个浏览器」会让人据此去推「漏了几套没收」而推错。
+        #   · **不能断言是本轮哪一套**:这个判据数的是「全机所有带 `--headless`/`scvb-` 的 chrome」,
+        #     它数不出父进程 —— 数到的完全可能是**上一个 agent 或前几轮**漏下来的。
+        #     要真的只数自己起的,得从 `$proc.Id` 沿 `ParentProcessId` 递归收进程树;不做,
+        #     但那就不能把话说死。(`*scvb-*` 还会匹配到别人 worktree 路径,同一回事。)
+        Write-Host ("  [ipc-lock] 放 3e 锁时机器上仍有 {0} 个无头 chrome **进程**(含 renderer 等子进程,不等于 {0} 个浏览器实例;也可能含前几轮/别的 agent 的残留)—— 下一个拿到锁的 agent 会在仍被占着核的机器上跑 6/7/8。残留归 SL-287 那族的 teardown,本卡只报不判负" -f $headless.Count) -ForegroundColor Yellow
       }
     }
   }
