@@ -540,6 +540,9 @@ else {
   $smokeFlaky = 0      # [SL-297] rc=3:浏览器在但没连上
   $smokeRanCount = 0   # [SL-301 复审] 实际跑到的套数(break 之后 < 总数,汇总不能说谎)
   $smokeHungByBudget = 0  # [SL-301 复审] `$smokeHung` 里属于「被段预算腰斩」的那部分
+  # [SL-305 复审] 被**我们自己** kill 掉的套。它的 teardown 按定义没跑完,
+  # 残留不能记在「该套漏收」头上 —— 那是把我们杀出来的后果归给被杀者。
+  $killedSuites = @{}
   $smokeHung = 0
   # `SCVB_SMOKE_TIMEOUT_SEC` 是给慢机器的口子(照 SCVB_MUTEX_WAIT_MINUTES 的先例),
   # 平时不用设。调大不会削弱任何判据 —— 超时只负责兜住挂死,不参与判对错。
@@ -650,6 +653,7 @@ else {
       try { $null = $proc.WaitForExit(5000) } catch {}
       $rc = -1
       $smokeHung++
+      $killedSuites[$f.Name] = $true
       $smokeOk = $false
       # 杀因要分清:**预算截断**与**真挂死**是两回事,而两者都走这条 kill 路径。
       # 只写「超时被杀」会让人去追一套其实没挂的冒烟(它只是被段预算腰斩了)。
@@ -777,12 +781,25 @@ finally {
   # 而漂了之后判据只会**静默地归不到套** —— 又一条「降级不可见」。
   if ($script:SmokeLockTaken -and $script:SmokeLockOk -and -not $NoIpcLock) {
     $uddOwner = @{}
+    $uddParsed = @{}
     foreach ($ps in $pageSuites) {
       $srcText = Get-Content -LiteralPath $ps.FullName -Raw -ErrorAction SilentlyContinue
       if ($null -eq $srcText) { continue }
       foreach ($mm in [regex]::Matches($srcText, '"(scvb-[A-Za-z0-9_-]*?-)"')) {
         $uddOwner[$mm.Groups[1].Value] = $ps.Name
+        $uddParsed[$ps.Name] = $true
       }
+    }
+    # **判据自检**(复审指出):`Test-ScvbPageSuite` 是并集判据,完全可以判出一个**没有**
+    # `mkdtempSync(join(tmpdir(), "scvb-…-"))` 双引号字面量的页面级套(有人把 udd 构造抽进
+    # 共享 helper、或改写成单引号)。真发生时 `$uddOwner` 里就少了那一套,归属层**对它整个
+    # 失效**,它的残留会悄悄落进兜底层的「只报不判负」—— 正是本卡要治的「静默归不到套」。
+    # 「六套各恰好一个前缀」是**当下事实,不是不变式**:两边现在相等,分叉时没人会发现。
+    $uddMissing = @($pageSuites | Where-Object { -not $uddParsed.ContainsKey($_.Name) } |
+      ForEach-Object { $_.Name })
+    if ($uddMissing.Count -gt 0) {
+      Write-Host ("  [ipc-lock] ⚠ 这几套解析不出 scvb- 前缀,归属层对它们失效(残留只会落进「只报不判负」):{0}" -f ($uddMissing -join '、')) -ForegroundColor Yellow
+      Write-Host '         判据靠的是各套源码里的 mkdtempSync(join(tmpdir(), "scvb-…-")) 双引号字面量;改写法就要同步改这里的正则。' -ForegroundColor Yellow
     }
     # 枚举写成一份(两次核对共用):第一次看有没有,睡 3 秒后再核一次定论。
     $enumLeftover = {
@@ -822,15 +839,43 @@ finally {
         $lo = $null
       }
     }
+    # **判负前再等一次**(复审指出的假红入口):超预算那条路径跳过了上面的 3 秒宽限,
+    # 而 Windows 回收「被杀 node 的子 Chrome」不是同步的 —— `WaitForExit(5000)` 等的是
+    # node 自己,不是它的 Chrome 树。快照撞进回收窗口,旧代码只多一句不准的黄字,
+    # 新代码的代价升级成**整条 gates 判负**。这 2 秒只在**真数到东西时**才花。
     if ($null -ne $lo -and $lo.Mine.Count -gt 0) {
-      $bySuite = @($lo.Mine | Group-Object Suite | Sort-Object Name |
-        ForEach-Object { '{0}({1} 个进程)' -f $_.Name, $_.Count })
-      Write-Host ("  [ipc-lock] 放 3e 锁前仍有**本轮自己**的无头 chrome 未退:{0}" -f ($bySuite -join '、')) -ForegroundColor Red
-      Write-Host '         判据:--user-data-dir 带该套源码里自己声明的 scvb- 前缀,且进程起于本持锁段之后 —— 归不到别的 agent 头上。' -ForegroundColor Red
-      Write-Host '         后果:锁放了但核还占着,下一个 agent 的 6/7/8 在被占的机器上跑,SL-301 的隔离当场打折。' -ForegroundColor Red
-      # 单独一行判定,不改 3e 自己的红绿:3e 的断言全过是事实,漏收是另一回事,
-      # 混进同一行会让「哪个坏了」说不清。这一行红 ⇒ 整条 gates 判负。
-      Set-Gate ('3e 收尾:页面级 Chrome 归零({0})' -f ($bySuite -join '、')) $false
+      Start-Sleep -Seconds 2
+      try { $lo = & $enumLeftover $uddOwner $script:SmokeSegStart }
+      catch {
+        Write-Host ("  [ipc-lock] 判负前复核枚举失败({0}),这一轮的残留数**未知**(不是 0),不判负" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
+        $lo = $null
+      }
+    }
+    if ($null -ne $lo -and $lo.Mine.Count -gt 0) {
+      # 归因要分两支(复审指出上一版把两者混了):
+      #   · **被我们自己 kill 掉的套**:它的 teardown 按定义没跑完(超时/腰斩走的就是那支
+      #     `Kill`,回退分支还刚打印过「它起的 Chrome 可能留下」)。把这份残留写成
+      #     「该套 teardown 漏收」是把我们杀出来的后果归给被杀者,而且与同一次运行里那句
+      #     [HUNG] 自相矛盾 —— 与本 PR 顺手修掉的 `$killedTree` 是同族问题。
+      #     它那一套**已经因超时/腰斩判红**,这里只据实说明,不再叠一条判负。
+      #   · **没被杀、自己跑完的套**:残留才真是它 teardown 漏收 ⇒ 判负并点名。
+      $mineKilled = @($lo.Mine | Where-Object { $killedSuites.ContainsKey($_.Suite) })
+      $mineOwn = @($lo.Mine | Where-Object { -not $killedSuites.ContainsKey($_.Suite) })
+      if ($mineKilled.Count -gt 0) {
+        $k = @($mineKilled | Group-Object Suite | Sort-Object Name |
+          ForEach-Object { '{0}({1} 个进程)' -f $_.Name, $_.Count })
+        Write-Host ("  [ipc-lock] 放 3e 锁前仍有残留,但归属到**本轮被我们杀掉**的套:{0} —— 它的 teardown 按定义没跑完,不记作它漏收(那一套已因超时/腰斩判红)" -f ($k -join '、')) -ForegroundColor Yellow
+      }
+      if ($mineOwn.Count -gt 0) {
+        $bySuite = @($mineOwn | Group-Object Suite | Sort-Object Name |
+          ForEach-Object { '{0}({1} 个进程)' -f $_.Name, $_.Count })
+        Write-Host ("  [ipc-lock] 放 3e 锁前仍有**本轮自己**的无头 chrome 未退:{0}" -f ($bySuite -join '、')) -ForegroundColor Red
+        Write-Host '         判据:--user-data-dir 带该套源码里自己声明的 scvb- 前缀,进程起于本持锁段之后,且该套**没有被我们杀过** —— 归不到别的 agent、也不是我们杀出来的。' -ForegroundColor Red
+        Write-Host '         后果:锁放了但核还占着,下一个 agent 的 6/7/8 在被占的机器上跑,SL-301 的隔离当场打折。' -ForegroundColor Red
+        # 单独一行判定,不改 3e 自己的红绿:3e 的断言全过是事实,漏收是另一回事,
+        # 混进同一行会让「哪个坏了」说不清。这一行红 ⇒ 整条 gates 判负。
+        Set-Gate ('3e 收尾:页面级 Chrome 归零({0})' -f ($bySuite -join '、')) $false
+      }
     }
     if ($null -ne $lo -and $lo.Other.Count -gt 0) {
       # 措辞要经得起追问:数的是**进程**不是浏览器实例(renderer / GPU / utility 同样带
