@@ -1003,6 +1003,7 @@ if (-not $nodeCmd) {
 else {
   $parityOk = $true
   $parityWarn = 0
+  $draftsAllow = 0   # [SL-315] check-changelog-drafts 打出的放行行数(只认行首标记)
   # [SL-295] 自测单独一条:实跑绿有两种可能 ——「块里真没有漏搬」和「判据被改坏了」,
   # 自测把后一种单独照出来。与 format.yml 的 docs-truth 两步逐字同款。
   $draftsSelfTest = (& node (Join-Path 'scripts' 'check-changelog-drafts.mjs') --self-test 2>&1)
@@ -1045,18 +1046,16 @@ else {
       # 两者都按**方括号标记**匹配,不按文案匹配:挂在散文上的话,一次很自然的措辞编辑就会让
       # 这行回显静默失效(#197 复审第 5 轮【建议】)。
       # 不并进 $parityWarn:它数的是「某档没跑」,放行与 base 戳都不是降级。
-      # ⚠ 待办 SL-TBD(#197 复审第 5/6/7 轮;卡号由统筹分配,分到后把 `SL-TBD` 换成真号)。
-      #   占位写成 `SL-TBD` 这个**固定标记**而不是一句中文,是为了让下一个人 grep 得到它 ——
-      #   挂在散文上的东西会静默失效,这一点第 5 轮刚在本文件里判过一次。
-      #   `[ALLOW]` 目前**只到滚屏,没进汇总标签**,而本文件里有两条相反的先例
-      #   (gate 3e 的 $smokeFlaky → $smokeLabel、本圈的 $parityWarn → $parityLabel),
-      #   理由逐字写在上面那段:「看汇总表的概率远高于往回滚二十屏找黄字」。
-      #   要做就一次做完三件:另起一个 $draftsAllow 计数 → 拼进 $parityLabel(只报行数,
-      #   不冒充「有几个号被豁免」)→ 扩 `check-gates-visibility.mjs` 断言这条接线
-      #   (与它今天守 $smokeFlaky → $smokeLabel 那条逐字同构)。只做前两件的话,下一次
-      #   就是「标签加了但没人守着」—— 正是 SL-297 立的那条纪律要防的形态。
-      #   写在这里而不是只写在 commit message 里:读这段代码的人不会去 git log 找它,
-      #   而「规矩只写在别处、没有执行者」正是 SL-295 这张卡自己的病灶(第 6 轮复审点名)。
+      # [SL-315] 放行**还要进汇总标签**,不能只到滚屏 —— 本文件里有两条同向先例(gate 3e 的
+      # $smokeFlaky → $smokeLabel、本圈的 $parityWarn → $parityLabel),理由逐字写在上面那段:
+      # 「跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字」。一个烂在注释块里的放行,
+      # 若只在滚屏里闪一行,本地看到的形态与「没有任何放行」完全一样。
+      # 计数**只认行首、且吃掉前导空格** `^\s*\[ALLOW\]` —— 放行行是 `"  [ALLOW] #…"`,带两个
+      # 空格,写成 `^\[ALLOW\]` 会**有放行也恒报 0**;而按裸 `\[ALLOW\]` 数的话,成功消息里
+      # 提到这两个信号的名字也会被数进去,**0 条放行也会数出 1**(SL-313 那轮 gates 在主线上
+      # 实测到回显 2 行,就是这个)。两个方向一样坏,`check-gates-visibility` 各配了一格夹具。
+      # 回显仍按裸标记匹配(要把两类都打出来),只有**计数**收紧到行首 —— 两者判据不同,别合并。
+      $draftsAllow += @($out | Where-Object { $_ -match '^\s*\[ALLOW\]' }).Count
       @($out | Where-Object { $_ -match '\[ALLOW\]|\[BASE\]' }) |
         ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
     }
@@ -1091,6 +1090,12 @@ else {
   $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍'
   if ($parityWarn -gt 0) {
     $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+  }
+  # [SL-315] 放行数另拼一段,与上面 [WARN] 那句同形、同口径:**只报行数**,不冒充「有几个号
+  # 被豁免」——「一个号一行」是注释块的写法约定,不是这里数得出来的事实。0 条时整句不出现,
+  # 于是「有放行」与「没有放行」在汇总表里就不同形(这正是本卡要立的那一点)。
+  if ($draftsAllow -gt 0) {
+    $parityLabel = '{0}(上方 {1} 处 [ALLOW] 放行,逐条看理由还成不成立)' -f $parityLabel, $draftsAllow
   }
   Set-Gate $parityLabel $parityOk
 }
