@@ -114,6 +114,20 @@ jobs:
     # 末步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # [SL-295] check-changelog-drafts 要读 base 分支的**提交标题**来判「这个号上线没有」。
+          # 默认的 fetch-depth: 1 只给一条提交 ⇒ 已上线集合近乎为空 ⇒ 那道门禁永远绿。
+          # 脚本自己在浅克隆上 fail-closed 退 1(不静默放行),所以这里必须给全历史。
+          # 本仓历史只有两百来条提交,全拉的代价在这个 job 里可以忽略。
+          #
+          # ⚠ 这一行还有**第二个**作用,而且不写出来没人猜得到:它决定 `origin/<base_ref>`
+          # 这个 remote-tracking ref **存不存在**。actions/checkout 只有在 depth=0 时才用
+          # `+refs/heads/*:refs/remotes/origin/*`;给任何正数(含 50)时,PR 事件只拉
+          # `refs/remotes/pull/<n>/merge`,仓里**根本不会有** `refs/remotes/origin/feature/v1`,
+          # 下面那步的 SCVB_CHANGELOG_BASE 会直接解析不出来。也就是说这一行不是「拉深一点」,
+          # 是「**拉到别的分支**」。嫌慢的人最可能改成 `fetch-depth: 50` —— 那会先撞浅克隆那道
+          # 判据(红);要是有人把浅克隆判据也一起放宽,就会掉进这第二个坑(#197 复审【建议】)。
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
@@ -180,6 +194,35 @@ jobs:
         # **且计数接进了汇总标签**。与本地 gate 3i 跑同一条命令 —— 本仓的纪律是
         # 「只挂本地等于没有执行者」,反过来同样成立。
         run: node scripts/check-gates-visibility.mjs
+      - name: Changelog drafts gate self-test
+        # [SL-295] 先自测再实跑,口径同 compliance.yml 的隐私门禁:实跑绿有两种可能 ——
+        # 「块里真没有漏搬」和「判据被改坏了」。自测拿 `d8ef5b9` 的**真标题**做删除式
+        # (压缩写法 `SL-204/205/207`:朴素模式必须漏掉 205/207,展开式必须抓到),
+        # 把后一种可能单独照出来。
+        # ⚠ 这一步**也要**透传 base:自测最后一组用的是**真 CHANGELOG + 真提交标题**
+        # (「从未合并的 #83 必须恒绿」那条),同样会走「解析不出 base ref ⇒ 判负」。
+        # 不给的话它会退回脚本里写死的 `origin/feature/v1` —— 于是同一个 job 里两步量的是
+        # 两个 base,而且等 v1 收口、该分支被删,这一步会对每个 PR 硬红在 required check 上
+        # (#197 复审第 3 轮【重要】:第 1 轮那条建议原先只落实到了两步中的一步)。
+        env:
+          SCVB_CHANGELOG_BASE: origin/${{ github.base_ref || github.ref_name }}
+        run: node scripts/check-changelog-drafts.mjs --self-test
+      - name: Changelog drafts not stranded (合了就得把预写条目搬进正文)
+        # [SL-295] `CHANGELOG.md` 末尾注释块里的「合并时把自己那条搬上去」此前**没有执行者**,
+        # 于是攒下 24 条早已上线却还留在注释里的条目。注释块渲染不出来,发版清单第 1 步
+        # 「每条带 PR 号」查的是正文 —— 没有任何既有门禁看得见这一族。
+        # 本步要**全历史**(见本 job checkout 的 fetch-depth: 0):它按 base 分支的提交标题
+        # 判「这张卡上线没有」,浅克隆会让已上线集合近乎为空 ⇒ 假绿;脚本自己 fail-closed。
+        # 零依赖(仓内脚本 + 本 job 已有的 node),不联网、无 secrets ⇒ fork PR 也跑得动。
+        # 与 scripts/gates.ps1 的 Gate 3i 跑**同一条命令**(自测那步同理),纪律同该 gate 头注:
+        # 只挂 CI 不挂本地,改判据的人本地全绿、推上去才红;反过来也一样。
+        # base 从事件里取,不写死分支名:本 job 也挂 `pull_request → dev` 与
+        # `push → dev / feature/**`,而把 `origin/feature/v1` 写进判据的话,等 v1 收口、
+        # 该分支被删,所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
+        # `base_ref` 只在 pull_request 事件上有值,push 事件回落 `ref_name`(即被推的分支)。
+        env:
+          SCVB_CHANGELOG_BASE: origin/${{ github.base_ref || github.ref_name }}
+        run: node scripts/check-changelog-drafts.mjs
       - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
         # 与 scripts/gates.ps1 的 Gate 3h **同一条命令**。web/fonts/README.md 自己写着
         # 「不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」—— 那句话在 2026-08 被兑现:

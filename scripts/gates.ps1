@@ -889,7 +889,7 @@ else {
 }
 
 # ==================================================================
-Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法 对拍(scripts/check-*)==='
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目 对拍(scripts/check-*)==='
 # ==================================================================
 # [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
 # 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
@@ -908,14 +908,27 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法 对�
 # [SL-286] 起那是**两档**(30 条手写用例 / 全仓真实路径);另外**没有 git 时**
 # 「顶层条目全覆盖」**与「全仓路径引擎对拍」两档**一起降级(后者嵌在前者的代码块里,
 # 拿不到全仓文件清单就无从对拍)。所以本地绿不等于这几档验过,它们以 CI(ubuntu)为准。
+# [SL-295] 第七条 check-changelog-drafts.mjs:断言 CHANGELOG.md 注释块里没有「卡已经合了、
+# 预写条目却还留着」的条目。它是这一圈里**唯一要读 git 历史**的一条 —— 已上线集合取自
+# base 分支的提交标题(默认 `origin/feature/v1`,可用 SCVB_CHANGELOG_BASE 改)。取不到那个
+# ref、或仓库是浅克隆时它**判负而不是跳过**:近乎空的已上线集合会让门禁永远绿,正是本仓
+# 「SKIP 吞掉判据」那一族的形态。它的**自测**要单独跑一条(下面那圈只跑裸命令)。
 if (-not $nodeCmd) {
   Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
-  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍' $false
+  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍' $false
 }
 else {
   $parityOk = $true
   $parityWarn = 0
-  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs')) {
+  # [SL-295] 自测单独一条:实跑绿有两种可能 ——「块里真没有漏搬」和「判据被改坏了」,
+  # 自测把后一种单独照出来。与 format.yml 的 docs-truth 两步逐字同款。
+  $draftsSelfTest = (& node (Join-Path 'scripts' 'check-changelog-drafts.mjs') --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  check-changelog-drafts.mjs --self-test:' -ForegroundColor Red
+    $draftsSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs', 'check-changelog-drafts.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
       $parityOk = $false
@@ -939,6 +952,30 @@ else {
         $parityWarn += $warnLines.Count
         $warnLines | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
       }
+      # [SL-295] check-changelog-drafts 有两行**只在成功路径上**、却必须显形的输出,
+      # 这一圈默认只回显 [WARN],会把它们整段吞掉:
+      #   · `[ALLOW] #<号> 放行 —— <理由>` —— 豁免不显形就等于没有豁免纪律(脚本头注口径);
+      #   · `[BASE] <base>@<sha> (<date>) —— N 条提交标题` —— 陈旧的 remote-tracking ref 会让
+      #     门禁**静默变绿**,而这条降级**只在本地发生**(CI 那边每次都从远端重新 fetch,
+      #     `fetch-depth: 0`;「新 clone」本身并不保证 base 新,保证它的是「这一次就是拉来的」)。
+      #     放进成功消息又被成功分支吞掉,等于修在了唯一用不到的地方。
+      # 两者都按**方括号标记**匹配,不按文案匹配:挂在散文上的话,一次很自然的措辞编辑就会让
+      # 这行回显静默失效(#197 复审第 5 轮【建议】)。
+      # 不并进 $parityWarn:它数的是「某档没跑」,放行与 base 戳都不是降级。
+      # ⚠ 待办 SL-TBD(#197 复审第 5/6/7 轮;卡号由统筹分配,分到后把 `SL-TBD` 换成真号)。
+      #   占位写成 `SL-TBD` 这个**固定标记**而不是一句中文,是为了让下一个人 grep 得到它 ——
+      #   挂在散文上的东西会静默失效,这一点第 5 轮刚在本文件里判过一次。
+      #   `[ALLOW]` 目前**只到滚屏,没进汇总标签**,而本文件里有两条相反的先例
+      #   (gate 3e 的 $smokeFlaky → $smokeLabel、本圈的 $parityWarn → $parityLabel),
+      #   理由逐字写在上面那段:「看汇总表的概率远高于往回滚二十屏找黄字」。
+      #   要做就一次做完三件:另起一个 $draftsAllow 计数 → 拼进 $parityLabel(只报行数,
+      #   不冒充「有几个号被豁免」)→ 扩 `check-gates-visibility.mjs` 断言这条接线
+      #   (与它今天守 $smokeFlaky → $smokeLabel 那条逐字同构)。只做前两件的话,下一次
+      #   就是「标签加了但没人守着」—— 正是 SL-297 立的那条纪律要防的形态。
+      #   写在这里而不是只写在 commit message 里:读这段代码的人不会去 git log 找它,
+      #   而「规矩只写在别处、没有执行者」正是 SL-295 这张卡自己的病灶(第 6 轮复审点名)。
+      @($out | Where-Object { $_ -match '\[ALLOW\]|\[BASE\]' }) |
+        ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
     }
   }
   # 标签只说**数出来的东西**,不替别人的 `[WARN]` 下定义(PR#180 复审采纳)。
@@ -968,9 +1005,9 @@ else {
   # 「某档没跑」——今天这四处恰好都是「跳过」,谁哪天拿它发一条纯提示,写死「−N 档降级」
   # 就会对着提示喊降级。这个信号刚建立起来就是要让人信它,喊错一次,下次真降级也会被当噪声。
   # 所以这半句只能是「上方有几处 WARN,自己看」,不能冒充「降级档数」的权威计数。
-  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍'
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍'
   if ($parityWarn -gt 0) {
-    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
   }
   Set-Gate $parityLabel $parityOk
 }
