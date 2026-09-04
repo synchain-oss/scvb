@@ -281,15 +281,23 @@ try {
     // 不是假想:PREVIEW-GUIDE §5 排障表第一行就是「页面 404 | URL 写成了 /output/」;
     // 本文件上面 `opt("role","")` 那段注释记的事故,形态正是「拍出白屏图并报成功」。
     // 实测:`--url=…/nope.html` 修复前落盘 7550 字节且 exit=0。
-    // 主 frame 的文档响应只有一条,记下它的 status;子资源(js/css/字体)不参与判定。
-    let mainStatus = null;
+    //
+    // ⚠ **Document 响应不止一条**:壳页给 iframe 赋的是**真实 src**(shell.js `frame.src = url`),
+    //    子 frame 的文档导航在 CDP 里同样是 `type === "Document"`。所以这里**按主 frame 的
+    //    frameId 挑**,而不是「取首条」——「主文档必先于 iframe 到」是个**到达顺序假设**,
+    //    把它当成「只有一条」写进注释,下一个人重构时就会静默拿到 iframe 的状态码
+    //    (复审第 2 轮指出:上一版正是这么写的,结论碰巧对、理由是假的)。
+    const docResponses = [];
     cdp.on((m) => {
         if (
             m.method === "Network.responseReceived" &&
-            m.params.type === "Document" &&
-            mainStatus === null
+            m.params.type === "Document"
         ) {
-            mainStatus = m.params.response.status;
+            docResponses.push({
+                frameId: m.params.frameId,
+                status: m.params.response.status,
+                url: m.params.response.url,
+            });
         }
     });
     await cdp.send("Network.enable");
@@ -300,8 +308,13 @@ try {
     // **sha256 逐字相同、均 23767 字节** —— 而截图是「肉眼验过」这类结论的唯一证据载体,
     // 工具谎报成功等于**产出伪证据**(v5.6.6 出包自测差一点把两张错误页当验证结果上报)。
     //
-    // 判据取**与页面级冒烟同一套**(`web-preview/tests/smoke-*-page.mjs`:导航之后看
-    // 「页面到底成没成」),不自造第三份;这里用 CDP 自己给的两个信号,都与语言无关:
+    // **思路**与页面级冒烟同一档(`web-preview/tests/smoke-*-page.mjs`:导航之后必须验
+    // 「页面到底成没成」),但**机制并不同源** —— 那边用**正向断言**(`waitFor(READY)`、
+    // `querySelector("#card")`),这边用 CDP 的**导航/HTTP 信号**。
+    // 上一版这里写的是「取与页面级冒烟同一套判据」,那是假话:全仓核过,
+    // `smoke-*-page.mjs` 里 `errorText` / `chrome-error` / `responseReceived` **零命中**
+    // (复审第 2 轮指出)。按字面读会让下一个人以为两边共用一套,改一边时去对拍另一边。
+    // 下面两个信号都与界面语言无关:
     //   ① `Page.navigate` 的返回值带 `errorText`(如 `net::ERR_CONNECTION_REFUSED`);
     //   ② 错误页的 `location.href` 是 `chrome-error://chromewebdata/`。
     // 两条都测过(见本卡 PR 描述里的探针输出)。**不按 body 文案判**:错误页文案随
@@ -338,6 +351,9 @@ try {
         );
     }
     // ③ 主文档非 2xx ⇒ 拍下来的是错误页/白屏,不是要看的页面。
+    //    按 `Page.navigate` 回的 frameId 认主 frame,不依赖到达顺序。
+    const mainDoc = docResponses.find((d) => d.frameId === nav.frameId);
+    const mainStatus = mainDoc ? mainDoc.status : null;
     if (mainStatus !== null && (mainStatus < 200 || mainStatus > 299)) {
         throw new NavigationError(
             `主文档 HTTP ${mainStatus},目标 ${URL_} 没正常返回(多半是 URL 拼错,见 PREVIEW-GUIDE §5 排障表)`,
@@ -345,6 +361,31 @@ try {
     }
 
     await evaluate(cdp, DOC_PRELUDE); // 之后一切选择器走 __D(iframe 内的真源文档)
+
+    // ④ [SL-290 复审第 2/3 轮] **第三道只看主文档,iframe 那半还漏着**:壳页自己没有 UI
+    //    (`output.html` 除工具条外画面 100% 来自 iframe 里的 `web/<role>/index.html`),
+    //    所以真源页被挪走/改名时,壳页照样 **200** ⇒ 上面那道放行 ⇒ 拍下一张**空舞台**报 ✅
+    //    —— 与开头那张 404 白屏是同一类伪证据,只是位置从主文档挪到了 iframe。
+    //
+    //    **不自造判据:壳页自己已经算出过这个结论,读它就行。** `shell.js` 的 `setStatus()`
+    //    把 `.pv-status` 的 `data-ok` 写成 1/0/wait,`"0"` 只在**真失败**时出现
+    //    (注入重试耗尽、或 mock 后端不可用两条路径)。
+    //    也不会误杀 `--url` 指向的非预览页:那些页面没有 `.pv-status`,取到 null ⇒ 放行。
+    //    (没选「断言 [data-tab-btn] 存在」正是因为它会把合法的 --url 用法误杀。)
+    const shellOk = await evaluate(
+        cdp,
+        `(() => { const e = document.querySelector(".pv-status"); return e ? e.getAttribute("data-ok") : null; })()`,
+    );
+    if (shellOk === "0") {
+        const why = await evaluate(
+            cdp,
+            `(() => { const e = document.querySelector(".pv-status"); return e ? e.textContent : ""; })()`,
+        );
+        throw new NavigationError(
+            `壳页报注入失败(.pv-status data-ok="0":${why})—— 主文档 200 但舞台是空的,` +
+                `多半是 web/${ROLE}/index.html 取不到`,
+        );
+    }
 
     const clickIn = (sel) =>
         evaluate(
