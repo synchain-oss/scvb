@@ -20,9 +20,16 @@
 // ⚠ 边界(照实说,别让人以为它更严):
 //   · 它查得出「**合了却没搬**」,查不出「**搬了但内容不对**」。后者只有人逐条比对合并提交
 //     才验得出来 —— SL-295 那 24 条就是这么核的(对照表在 PR 描述里)。
-//   · 已上线集合取自 **base 分支**(默认 `origin/feature/v1`),**不含当前 PR 自己的提交** ——
-//     否则一个 PR 给自己的卡写预写条目,就会被自己判成漏搬。代价是「本 PR 合并时没搬」这件事
-//     要等**下一个** PR 的 CI 才照得出来;要更早照出来得在合并那一刻跑,本仓没有那个钩子。
+//   · **「卡号出现在合并标题里」≠「这张卡上线了」**:`32e52a3` 的标题里那句
+//     `SL-189 权威链定谳(接线完好)` 说的是「查完了,接线没问题,不改代码」——
+//     SL-189 至今没有任何交付,可它照样进已上线集合。这类假红由注释块里的「门禁放行」
+//     解除(必须写理由,每次运行连理由一起打出来)—— 见下面 ALLOW_HEAD 那一段。
+//   · 已上线集合取自 **base 分支**,**不含当前 PR 自己的提交** —— 否则一个 PR 给自己的卡写
+//     预写条目,就会被自己判成漏搬。代价是「本 PR 合并时没搬」要等**下一次** run 才照得出来
+//     (`push` 到 `dev` / `feature/**` 也跑这个 job,所以合并后那一次 push 就会照出来)。
+//     base 由 CI 透传 `SCVB_CHANGELOG_BASE=origin/<base_ref 或 ref_name>`;脚本里的默认值
+//     `origin/feature/v1` 只作本地兜底 —— 把分支名写死在判据里的话,等 v1 收口、该分支被删,
+//     所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
 //   · **浅克隆下 fail-closed 退 1**,不静默放行:`git log` 在 `fetch-depth: 1` 的 checkout 上
 //     只看得见一条提交 ⇒ 已上线集合近乎为空 ⇒ 门禁永远绿。这正是本仓「SKIP 吞掉判据」那一族
 //     的形态,所以宁可红着叫人去加 `fetch-depth: 0`。
@@ -41,7 +48,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CHANGELOG = path.join(ROOT, "CHANGELOG.md");
 const DEFAULT_BASE = "origin/feature/v1";
 // 删除式夹具:压缩写法的**真标题**,不手抄(手抄的夹具会跟着真源漂,漂完还一直绿)。
-const FIXTURE_SHA = "d8ef5b9";
+// 写满 40 位而不写缩写:`git log -1 <缩写>` 在缩写歧义时会直接失败,而那条红的原因与被守护的
+// 判据毫无关系,排查成本全落在下一个人身上(#197 复审【建议】②)。
+const FIXTURE_SHA = "d8ef5b95ffefd7130dc56588603cc72b91ae8b3d";
 const FIXTURE_EXPECT = ["204", "205", "207", "211", "213", "214"];
 
 // ---- 卡号抽取:生产用展开式,朴素式只作自测的反例 -------------------------
@@ -75,6 +84,44 @@ function draftBlock(md) {
 
 const pendingSl = (block) =>
     [...block.matchAll(PENDING_SL_RE)].map((m) => m[1]);
+
+// ---- 放行口(#197 复审【重要】)-------------------------------------------
+// 「卡号出现在合并标题里」≠「这张卡上线了」:`32e52a3` 的标题里那句
+// `SL-189 权威链定谳(接线完好)` 说的是「查完了不用改」,SL-189 至今没有任何交付,
+// 可它照样会被收进已上线集合。等 SL-189 真要落地时,它的 PR 一在块里写预写条目就会当场红,
+// 而 CI 那两步是裸调用、改不动判据来源 —— 那是一条**解除不掉的假红**。所以给一个口子,
+// 但**必须写理由、且每次运行都把放行连理由打出来**:静默豁免正是本卡自己反对的那类形态。
+//
+// 写法(在注释块里,`门禁放行` 那一段之下,一张卡一行):
+//     - SL-189 —— 只在 32e52a3 的标题里被「定谳(接线完好)」提到,这张卡本身没有交付
+// 失效方向都是**红**,不是放行:段落写在空行之后 ⇒ 解析不到 ⇒ 那张卡照样判漏搬;
+// 理由留空 ⇒ 判负;放行的卡在块里已经没有预写条目(条目搬走了、放行忘了删)⇒ 判负。
+const ALLOW_HEAD = "门禁放行";
+const ALLOW_LINE_RE = /^-\s*SL-(\d+)\s*——\s*(.*)$/;
+
+function allowList(block) {
+    const lines = block.split("\n");
+    const head = lines.findIndex((l) => l.startsWith(ALLOW_HEAD));
+    const out = new Map();
+    if (head < 0) return out;
+    const noReason = [];
+    for (let j = head + 1; j < lines.length; j++) {
+        if (!lines[j].trim()) break; // 空行收尾
+        const m = ALLOW_LINE_RE.exec(lines[j]);
+        if (!m) continue; // 说明行 / 占位行
+        if (!m[2].trim()) noReason.push(m[1]);
+        else out.set(m[1], m[2].trim());
+    }
+    if (noReason.length)
+        throw new Error(
+            "「" +
+                ALLOW_HEAD +
+                "」里这几张卡没写理由:SL-" +
+                noReason.join(" / SL-") +
+                " —— 放行必须写理由,不写就是静默豁免",
+        );
+    return out;
+}
 
 // ---- git ------------------------------------------------------------------
 function git(args, { allowFail = false } = {}) {
@@ -125,12 +172,24 @@ function shippedTitles(base) {
 
 // ---- 核心判定(纯函数,自测直接喂它)--------------------------------------
 function leaks(block, titles, extract = cardsExpanded) {
+    const allow = allowList(block);
+    const pending = new Set(pendingSl(block));
+    const dead = [...allow.keys()].filter((c) => !pending.has(c));
+    if (dead.length)
+        throw new Error(
+            "「" +
+                ALLOW_HEAD +
+                "」里这几张卡在块里已经没有预写条目:SL-" +
+                dead.join(" / SL-") +
+                " —— 条目搬走了就把放行一起删掉,别留着一个没人用的豁免口",
+        );
     const shipped = new Map(); // 卡号 -> 最新一条带它的提交
     for (const t of titles)
         for (const c of extract(t.title))
             if (!shipped.has(c)) shipped.set(c, t);
     const out = [];
-    for (const card of new Set(pendingSl(block))) {
+    for (const card of pending) {
+        if (allow.has(card)) continue;
         const hit = shipped.get(card);
         if (hit) out.push({ card, sha: hit.sha, title: hit.title });
     }
@@ -243,6 +302,69 @@ if (selfTest) {
                 leaks(semi, titles).length === 1,
                 "分号收尾的 pending 标记没被认出来 —— 模式把右括号写死了?",
             );
+
+            // ---- 放行口(#197 复审【重要】)------------------------------
+            // 反例取夹具标题里**不属于交付集**的那个号(`SL-206 定谳报统筹` 的 206):
+            // 这里验的是「标题提到 ⇒ 照样进已上线集合」这个机制,与 206 后来有没有真上线无关
+            // (它后来确实随 `ae43d06` / #151 上线了,所以正文里的例子改用至今没交付的 SL-189)。
+            const falsePositive = cardsExpanded(fixtureTitle).find(
+                (c) => !FIXTURE_EXPECT.includes(c),
+            );
+            check(
+                Boolean(falsePositive),
+                "夹具标题里已经没有「提到但没上线」的卡号了 —— 放行口那一组用例失去了真反例",
+            );
+            if (falsePositive) {
+                const fpBlock = (allowTail) =>
+                    "<!-- =====\n修复\n- 条目" +
+                    mark(falsePositive) +
+                    "\n\n" +
+                    ALLOW_HEAD +
+                    "(卡号 —— 理由)\n" +
+                    allowTail +
+                    "\n===== -->";
+                // ① 没有放行 ⇒ 照样判漏搬(这条先坐实假红真的存在,否则下面两条无从谈起)。
+                check(
+                    leaks(fpBlock("- (无)"), titles).length === 1,
+                    "没写放行时 SL-" +
+                        falsePositive +
+                        " 没被判成漏搬 —— 那这一组用例守的不是真反例",
+                );
+                // ② 写了理由 ⇒ 放行。
+                check(
+                    leaks(
+                        fpBlock("- SL-" + falsePositive + " —— 标题里提到而已"),
+                        titles,
+                    ).length === 0,
+                    "写了理由的放行没生效 —— 假红解除不掉",
+                );
+                // ③ 理由留空 ⇒ 判负(不能变成「写个横杠就豁免」)。
+                let emptyThrew = false;
+                try {
+                    leaks(fpBlock("- SL-" + falsePositive + " —— "), titles);
+                } catch {
+                    emptyThrew = true;
+                }
+                check(emptyThrew, "理由留空的放行被放过了 —— 静默豁免口");
+                // ④ 放行的卡在块里已经没有预写条目 ⇒ 判负(别留没人用的豁免)。
+                let deadThrew = false;
+                try {
+                    leaks(
+                        "<!-- =====\n" +
+                            ALLOW_HEAD +
+                            "(卡号 —— 理由)\n- SL-" +
+                            falsePositive +
+                            " —— 条目早搬走了\n===== -->",
+                        titles,
+                    );
+                } catch {
+                    deadThrew = true;
+                }
+                check(
+                    deadThrew,
+                    "没有对应预写条目的放行被留着了 —— 豁免口会烂在这里",
+                );
+            }
         }
     }
     // 块首尾被改坏时必须 fail-closed,而不是「找不到块 ⇒ 没有泄漏 ⇒ 绿」。
@@ -280,6 +402,10 @@ try {
     const found = leaks(block, titles);
     const slCount = new Set(pendingSl(block)).size;
     const otherCount = [...block.matchAll(PENDING_OTHER_RE)].length;
+
+    // 放行**永远打出来**(红绿都打):豁免不显形就等于没有豁免纪律。
+    for (const [card, why] of allowList(block))
+        console.log("  [ALLOW] SL-" + card + " 放行 —— " + why);
 
     if (found.length) {
         console.error(

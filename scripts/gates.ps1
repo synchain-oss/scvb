@@ -908,6 +908,11 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法 对�
 # [SL-286] 起那是**两档**(30 条手写用例 / 全仓真实路径);另外**没有 git 时**
 # 「顶层条目全覆盖」**与「全仓路径引擎对拍」两档**一起降级(后者嵌在前者的代码块里,
 # 拿不到全仓文件清单就无从对拍)。所以本地绿不等于这几档验过,它们以 CI(ubuntu)为准。
+# [SL-295] 第七条 check-changelog-drafts.mjs:断言 CHANGELOG.md 注释块里没有「卡已经合了、
+# 预写条目却还留着」的条目。它是这一圈里**唯一要读 git 历史**的一条 —— 已上线集合取自
+# base 分支的提交标题(默认 `origin/feature/v1`,可用 SCVB_CHANGELOG_BASE 改)。取不到那个
+# ref、或仓库是浅克隆时它**判负而不是跳过**:近乎空的已上线集合会让门禁永远绿,正是本仓
+# 「SKIP 吞掉判据」那一族的形态。它的**自测**要单独跑一条(下面那圈只跑裸命令)。
 if (-not $nodeCmd) {
   Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍' $false
@@ -915,7 +920,15 @@ if (-not $nodeCmd) {
 else {
   $parityOk = $true
   $parityWarn = 0
-  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs')) {
+  # [SL-295] 自测单独一条:实跑绿有两种可能 ——「块里真没有漏搬」和「判据被改坏了」,
+  # 自测把后一种单独照出来。与 format.yml 的 docs-truth 两步逐字同款。
+  $draftsSelfTest = (& node scripts\check-changelog-drafts.mjs --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  check-changelog-drafts.mjs --self-test:' -ForegroundColor Red
+    $draftsSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs', 'check-changelog-drafts.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
       $parityOk = $false
