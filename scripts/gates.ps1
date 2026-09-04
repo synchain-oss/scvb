@@ -955,11 +955,14 @@ else {
       # [SL-295] check-changelog-drafts 有两行**只在成功路径上**、却必须显形的输出,
       # 这一圈默认只回显 [WARN],会把它们整段吞掉:
       #   · `[ALLOW] #<号> 放行 —— <理由>` —— 豁免不显形就等于没有豁免纪律(脚本头注口径);
-      #   · `已上线集合取自 <base>@<sha> (<date>)` —— 陈旧的 remote-tracking ref 会让门禁
-      #     **静默变绿**,而这条降级**只在本地发生**(CI 每次都是新 clone)。放进成功消息又被
-      #     成功分支吞掉,等于修在了唯一用不到的地方。
+      #   · `[BASE] <base>@<sha> (<date>) —— N 条提交标题` —— 陈旧的 remote-tracking ref 会让
+      #     门禁**静默变绿**,而这条降级**只在本地发生**(CI 那边每次都从远端重新 fetch,
+      #     `fetch-depth: 0`;「新 clone」本身并不保证 base 新,保证它的是「这一次就是拉来的」)。
+      #     放进成功消息又被成功分支吞掉,等于修在了唯一用不到的地方。
+      # 两者都按**方括号标记**匹配,不按文案匹配:挂在散文上的话,一次很自然的措辞编辑就会让
+      # 这行回显静默失效(#197 复审第 5 轮【建议】)。
       # 不并进 $parityWarn:它数的是「某档没跑」,放行与 base 戳都不是降级。
-      @($out | Where-Object { $_ -match '\[ALLOW\]|已上线集合取自' }) |
+      @($out | Where-Object { $_ -match '\[ALLOW\]|\[BASE\]' }) |
         ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
     }
   }

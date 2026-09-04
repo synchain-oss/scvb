@@ -39,7 +39,9 @@
 //     所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
 //   · **本地跑时 base 可能是陈旧的** remote-tracking ref(谁也不保证跑 gates 之前 fetch 过),
 //     陈旧 ⇒ 已上线集合变小 ⇒ **静默变绿**。在 gates 里联网去挡不合适,所以改为**显形**:
-//     通过消息连 base 的 tip sha 与提交日期一起打出来(#197 复审 gates【建议】①)。
+//     成功时单独打一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题`(#197 复审 gates【建议】①)。
+//     **挂方括号标记而不是挂散文**:gates 3i 按标记回显它,挂在成功消息的措辞上的话,一次
+//     很自然的文案编辑就会让那条回显静默失效(#197 复审第 5 轮【建议】)。
 //   · **浅克隆下 fail-closed 退 1**,不静默放行:`git log` 在 `fetch-depth: 1` 的 checkout 上
 //     只看得见一条提交 ⇒ 已上线集合近乎为空 ⇒ 门禁永远绿。这正是本仓「SKIP 吞掉判据」那一族
 //     的形态,所以宁可红着叫人去加 `fetch-depth: 0`。
@@ -491,7 +493,11 @@ if (selfTest) {
                 FIXTURE_UNMERGED_PR +
                 "` 了 —— 那是「命中 ≠ 已上线」的天然反例,它一走这条用例就失去牙齿。" +
                 "**出路**:若确实要把它搬走/删掉,请另挑一个**从未合并**的 PR 号" +
-                "(主线没有任何 subject 带 `(#N)`,`git log --format=%s <base> | grep '(#N)'` 零命中)" +
+                "(判据是**主线没有任何 subject 带 `(#N)`**;pwsh:" +
+                "`git log --format=%s <base> | Select-String '(#N)' -SimpleMatch` 零命中," +
+                "bash:`git log --format=%s <base> | grep -F '(#N)'`。" +
+                "**别用 `git log --grep`** —— 它搜的是整条 message,而 #83 就有一条正文提到它的" +
+                "提交(`ec53300`,自己的 subject 是 `(#87)`),用 --grep 会得出「已合并」的反结论)" +
                 "写进 FIXTURE_UNMERGED_PR,并在注释块里给它留一条预写条目 —— " +
                 "**不要直接把这条断言删掉**,那正是它要防的动作",
         );
@@ -572,16 +578,24 @@ try {
         );
         process.exit(1);
     }
+    // base 戳单独一行、**挂方括号标记**:gates 3i 要按标记回显它(本仓的 [WARN] / [SKIP] /
+    // [FLAKY-SKIP] / [ALLOW] 都是标记)。挂在成功消息的散文上的话,一次很自然的文案编辑
+    // (「取自」改「来自」)就会让那条回显静默失效,而它修的正是「陈旧 base 静默变绿」——
+    // 失效之后回到的就是那个状态(#197 复审第 5 轮【建议】)。
     console.log(
-        "check-changelog-drafts 通过:注释块里 " +
-            tokens.size +
-            " 个待合并的号都还没上线(已上线集合取自 " +
+        "  [BASE] " +
             base +
             "@" +
             baseStamp(base) +
-            " 的 " +
+            " —— " +
             titles.length +
-            " 条提交标题;SL 卡号 / PR 号 / J 裁定号三种形态全在判定面内)。",
+            " 条提交标题",
+    );
+    console.log(
+        "check-changelog-drafts 通过:注释块里 " +
+            tokens.size +
+            " 个待合并的号都还没上线(已上线集合见上面那行 BASE 戳;" +
+            "SL 卡号 / PR 号 / J 裁定号三种形态全在判定面内)。",
     );
     process.exit(0);
 } catch (e) {
