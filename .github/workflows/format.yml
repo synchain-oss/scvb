@@ -114,6 +114,12 @@ jobs:
     # 末步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # [SL-295] check-changelog-drafts 要读 base 分支的**提交标题**来判「这张卡上线没有」。
+          # 默认的 fetch-depth: 1 只给一条提交 ⇒ 已上线集合近乎为空 ⇒ 那道门禁永远绿。
+          # 脚本自己在浅克隆上 fail-closed 退 1(不静默放行),所以这里必须给全历史。
+          # 本仓历史只有两百来条提交,全拉的代价在这个 job 里可以忽略。
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
@@ -180,6 +186,21 @@ jobs:
         # **且计数接进了汇总标签**。与本地 gate 3i 跑同一条命令 —— 本仓的纪律是
         # 「只挂本地等于没有执行者」,反过来同样成立。
         run: node scripts/check-gates-visibility.mjs
+      - name: Changelog drafts gate self-test
+        # [SL-295] 先自测再实跑,口径同 compliance.yml 的隐私门禁:实跑绿有两种可能 ——
+        # 「块里真没有漏搬」和「判据被改坏了」。自测拿 `d8ef5b9` 的**真标题**做删除式
+        # (压缩写法 `SL-204/205/207`:朴素模式必须漏掉 205/207,展开式必须抓到),
+        # 把后一种可能单独照出来。
+        run: node scripts/check-changelog-drafts.mjs --self-test
+      - name: Changelog drafts not stranded (合了就得把预写条目搬进正文)
+        # [SL-295] `CHANGELOG.md` 末尾注释块里的「合并时把自己那条搬上去」此前**没有执行者**,
+        # 于是攒下 24 条早已上线却还留在注释里的条目。注释块渲染不出来,发版清单第 1 步
+        # 「每条带 PR 号」查的是正文 —— 没有任何既有门禁看得见这一族。
+        # 本步要**全历史**(见本 job checkout 的 fetch-depth: 0):它按 base 分支的提交标题
+        # 判「这张卡上线没有」,浅克隆会让已上线集合近乎为空 ⇒ 假绿;脚本自己 fail-closed。
+        # 零依赖(仓内脚本 + 本 job 已有的 node),不联网、无 secrets ⇒ fork PR 也跑得动。
+        # 本地 gates 暂未接:gate 3i 的脚本清单正被 #195 改着,等它合了另起一卡接进去。
+        run: node scripts/check-changelog-drafts.mjs
       - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
         # 与 scripts/gates.ps1 的 Gate 3h **同一条命令**。web/fonts/README.md 自己写着
         # 「不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」—— 那句话在 2026-08 被兑现:
