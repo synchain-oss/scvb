@@ -136,8 +136,12 @@ function New-ScvbMutex {
 #
 # **为什么要分「父进程还在不在」**:
 #   · 父进程**已死** ⇒ 真孤儿,多半是上一次 `ctest --timeout` 到点后留下的
-#     ——`--timeout` 只放弃等待,**不杀被测进程**(实测:留一个就让之后每次同名测试
-#     都撞满上界,3/3;清掉后同一条命令 221s 通过)。这种可以放心收掉。
+#     ——**残留确实出现过一次**(实测:它在时,同名测试连挂 3/3、全部撞满上界;
+#     `Stop-Process` 掉它之后同一条命令 221s 通过)。这种可以放心收掉。
+#     ⚠ **别把「ctest 超时必留残留」当定论**:受控复现里(注入永不返回的用例 + `TIMEOUT 30`)
+#     ctest 到点**杀掉了**被测进程 —— 返回后立刻数与 5 秒后再数都是 0。也就是说
+#     那次残留的成因**还没查清**,只知道它真的会发生。这两次扫描因此是**便宜的保险**:
+#     没有残留时零成本,有残留时省掉别人一次查不出的红。
 #   · 父进程**还活着** ⇒ 有人正在跑测试。我们此刻持着 IPC 互斥,所以那一定是**绕开互斥
 #     裸跑**的(见 scripts/with-ipc-lock.ps1 的头注:裸跑会抢全机唯一的 viz 段)。
 #     这种**不能杀** —— 杀掉是在破坏别人正在跑的东西;点名并判负,让人去处理。
@@ -1338,10 +1342,11 @@ else {
     Set-Gate '6 ctest' $false
   }
   else {
-    # [SL-311] **起跑前先看有没有同名残留**。上一次 `ctest --timeout` 到点只放弃等待、
-    # 不杀被测进程,留下的那个会让这一轮的同名测试必挂 —— 实测连挂 3/3、全部撞满上界,
-    # 清掉后同一条命令 221s 通过。不看就跑,等来的是一次「代码没改却次次红」的假回归,
-    # 而且要等满整个上界才知道。
+    # [SL-311] **起跑前先看有没有同名残留**。残留在时,同名测试会必挂 —— 实测连挂 3/3、
+    # 全部撞满上界,`Stop-Process` 掉之后同一条命令 221s 通过。不看就跑,等来的是一次
+    # 「代码没改却次次红」的假回归,而且要等满整个上界才知道。
+    # (成因未定:受控复现里 ctest 超时**是**杀掉了被测进程的;所以这里治的是**现象**,
+    #  不是某条已证实的机制 —— 扫描没有残留时零成本,有残留时省掉别人一次查不出的红。)
     $ctestPre = Get-ScvbTestLeftover
     $ctestBlocked = $false
     if ($null -eq $ctestPre) {
@@ -1377,8 +1382,10 @@ else {
       if ($ctestRc -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
       Set-Gate '6 ctest' ($ctestRc -eq 0)
 
-      # [SL-311] **跑完再扫一次,把这一轮自己留下的孤儿收掉**。ctest 的超时不杀被测进程,
-      # 不收就等着毒下一轮 —— 而下一轮多半是**别人**的 gates,他会看到一次查不出的红。
+      # [SL-311] **跑完再扫一次,把这一轮可能留下的孤儿收掉**。不收就等着毒下一轮 ——
+      # 而下一轮多半是**别人**的 gates,他会看到一次查不出的红。
+      # (同上:受控复现里 ctest 到点会杀,所以这一扫多数时候数到 0;它防的是那个
+      #  已经真实发生过、但成因还没查清的形态。)
       # 只收孤儿(父进程已死);父进程还活着的不动,理由同起跑前那一段。
       $ctestPost = Get-ScvbTestLeftover
       if ($null -eq $ctestPost) {
@@ -1387,7 +1394,7 @@ else {
       else {
         $postOrphans = @($ctestPost | Where-Object { $null -eq $_.ParentName })
         foreach ($o in $postOrphans) {
-          Write-Host ("  [ctest] 本轮跑完仍有孤儿残留:{0} pid={1}(父 pid={2} 已不在)—— ctest 的超时不杀被测进程,现在收掉,免得毒到下一位" -f $o.Name, $o.ProcId, $o.ParentId) -ForegroundColor Yellow
+          Write-Host ("  [ctest] 本轮跑完仍有孤儿残留:{0} pid={1}(父 pid={2} 已不在)—— 现在收掉,免得毒到下一位" -f $o.Name, $o.ProcId, $o.ParentId) -ForegroundColor Yellow
           try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
           catch { Write-Host ("         收不掉({0}),下一轮同名测试大概率会挂,手动查 pid {1}" -f $_.Exception.GetType().Name, $o.ProcId) -ForegroundColor Red }
         }
