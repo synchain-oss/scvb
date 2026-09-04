@@ -39,9 +39,10 @@
 //     所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
 //   · **本地跑时 base 可能是陈旧的** remote-tracking ref(谁也不保证跑 gates 之前 fetch 过),
 //     陈旧 ⇒ 已上线集合变小 ⇒ **静默变绿**。在 gates 里联网去挡不合适,所以改为**显形**:
-//     **红绿都打**一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题;判定面内 M 个待合并的号`
-//     (#197 复审 gates【建议】①、第 6 轮【建议】)。判红时它回答「这次拿哪天的 base 比的」,
-//     绿时它回答「判定面是不是近乎空转」。
+//     **红绿都打**一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题;块里 M 个待合并的号`
+//     (#197 复审 gates【建议】①、第 6/7 轮【建议】)。判红时它回答「这次拿哪天的 base 比的」,
+//     绿时它回答「块里是不是近乎空转」。它与 [ALLOW] 都排在 `leaks()` **之前** —— leaks 会为
+//     放行写法不对 / 理由留空 / 放行无对应条目三种情形抛错,排在它后面就不是「红绿都打」了。
 //     **挂方括号标记而不是挂散文**:gates 3i 按标记回显它,挂在成功消息的措辞上的话,一次
 //     很自然的文案编辑就会让那条回显静默失效(#197 复审第 5 轮【建议】)。
 //   · **浅克隆下 fail-closed 退 1**,不静默放行:`git log` 在 `fetch-depth: 1` 的 checkout 上
@@ -540,19 +541,19 @@ if (selfTest) {
 try {
     const block = draftBlock(fs.readFileSync(CHANGELOG, "utf8"));
     const titles = shippedTitles(base);
-    const found = leaks(block, titles);
     const tokens = new Set(pendingTokens(block));
 
-    // 放行**永远打出来**(红绿都打):豁免不显形就等于没有豁免纪律。
-    for (const [token, why] of allowList(block))
-        console.log("  [ALLOW] #" + token + " 放行 —— " + why);
-
-    // [BASE] 也是**红绿都打**,而且**排在判红之前**:
+    // [BASE] / [ALLOW] 都排在 `leaks()` **之前**:`leaks()` 自己会为「放行写法不对 / 理由留空 /
+    // 放行的号已没有对应条目」三种情形**抛错**,排在它后面的话那三条红路径上一行都不显 ——
+    // 而头注 §边界 承诺的是「红绿都打」(#197 复审第 7 轮【建议】)。
+    // [BASE] 排在最前:它只要 titles 与 tokens,而 allowList 本身就可能抛。
     //   · 判红时它回答「这次是拿哪天的 base 比的」—— base 陈旧时报出来的漏搬表只是真集合的
     //     子集,而话术又叫人去 `git show <sha>` 核,那时正需要这条信息;
-    //   · `tokens.size`(判定面里有几个号)并进这一行,否则它只活在成功消息里、而 gates 3i
-    //     按标记回显、成功消息不带标记 ⇒ 本地看不见「判定面是不是近乎空转」——
-    //     那与本轮修的 base 戳是同一族(#197 复审第 6 轮【建议】)。
+    //   · 号数并进这一行,否则它只活在成功消息里、而 gates 3i 按标记回显、成功消息不带标记
+    //     ⇒ 本地看不见「块里是不是近乎空转」(#197 复审第 6 轮【建议】)。
+    //   · 说的是**块里有几个 `pending #…` 标记**,不是「判定面内几个」—— 被放行的号走
+    //     `continue`,恰恰不在判定面内,写成「判定面内」会高报(#197 复审第 7 轮【建议】)。
+    //     放行了哪几个由紧跟其后的 [ALLOW] 行逐条说,不在这里做减法。
     console.log(
         "  [BASE] " +
             base +
@@ -560,11 +561,16 @@ try {
             baseStamp(base) +
             " —— " +
             titles.length +
-            " 条提交标题;判定面内 " +
+            " 条提交标题;块里 " +
             tokens.size +
             " 个待合并的号",
     );
 
+    // 放行**永远打出来**(红绿都打):豁免不显形就等于没有豁免纪律。
+    for (const [token, why] of allowList(block))
+        console.log("  [ALLOW] #" + token + " 放行 —— " + why);
+
+    const found = leaks(block, titles);
     if (found.length) {
         console.error(
             "check-changelog-drafts 失败(" + found.length + " 条预写条目漏搬):",
