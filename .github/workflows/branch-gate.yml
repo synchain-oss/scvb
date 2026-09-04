@@ -118,10 +118,23 @@ jobs:
       # (§7.2 把 required_pull_request_reviews 设为 null,理由见该节),所以冻结文档需要一条
       # 真正机器可验的守卫,与 §3.2 的三条 golden 测试互补。
       - name: Frozen-contract change guard
+        # 与上面 DCO 步同一套加固(SCVB 线 SL-310,与 SL-308 同族):显式 bash + pipefail;端点只调一次落盘;
+        # API 回 [] 或分页掉页时 files 为空 ⇒ touched 为空 ⇒ 守卫会静默放行,故文件数 < 1 直接 fail
+        # (PR 至少改 1 个文件,与「至少 1 个 commit」同强度)。判据本身不变。
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          files=$(gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
+          set -euo pipefail
+          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" > files.raw.json
+          jq -s 'add' files.raw.json > files.json
+          nfiles=$(jq 'length' files.json)
+          if [ "$nfiles" -lt 1 ]; then
+            echo "::error::files API returned $nfiles changed files for this PR; refusing to pass the frozen-contract guard on an empty list"
+            exit 1
+          fi
+          echo "frozen-contract guard: checked $nfiles files"
+          files=$(jq -r '.[].filename' files.json)
           touched=$(printf '%s\n' "$files" | grep -E '^(docs/PARAMETERS\.md|docs/IPC_CONTRACT\.md|docs/STATE_SCHEMA\.md|docs/SCVB_CONTRACT\.md|tests/golden/)' || true)
           if [ -n "$touched" ]; then
             doc=$(printf '%s\n' "$files" | grep -E '^docs/contract-changes/[0-9]{8}-.+\.md$' || true)
