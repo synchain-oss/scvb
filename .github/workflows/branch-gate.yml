@@ -83,9 +83,15 @@ jobs:
           # 端点只调**一次**并落盘,计数与筛选读同一份快照:两次调用之间若有人 push,total 与 dco-bad.txt
           # 会来自不同的 commit 列表;且任一次失败都必须让 step 失败(fail-closed),不能各自静默。
           # --paginate 不带 --jq 时每页输出一个 JSON 数组首尾相接,jq -s add 合成一个数组。
-          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" > commits.raw.json
-          jq -s 'add' commits.raw.json > commits.json
-          total=$(jq 'length' commits.json)
+          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" > "$RUNNER_TEMP/commits.raw.json"
+          jq -s 'add' "$RUNNER_TEMP/commits.raw.json" > "$RUNNER_TEMP/commits.json"
+          total=$(jq 'length' "$RUNNER_TEMP/commits.json")
+          # 先证明它是十进制整数再比较:`set -e` 不覆盖 if 条件,`[ "" -lt 1 ]` 只会报 integer expected
+          # 然后条件为假、落到放行路径(SCVB 线 SL-313)。
+          if ! [[ "$total" =~ ^[0-9]+$ ]]; then
+            echo "::error::commits API count is not an integer ('$total'); refusing to pass the DCO check"
+            exit 1
+          fi
           # /pulls/{n}/commits 有 250 条硬上限,--paginate 也不会突破:超过的 commit 不会进下面的
           # 筛选,门禁会静默半程放行。主支线累积多个子 PR 后整体晋升 dev 的模式下 commit 数随支线
           # 长度单调增长,故超限直接 fail(许可证门禁不能半程有效),让维护者拆 PR(采纳 #24 review)。
@@ -105,11 +111,11 @@ jobs:
           # commit 列表里(首次触发:#24,feature/macos 含 #19-#21 的三个网页 merge)。merge commit 本身
           # 不引入新贡献内容(冲突解决除外,维护者手工 merge 时仍应 `git merge -s` / `--amend -s`),
           # 每个非 merge commit 仍逐个受检 —— 与 DCO GitHub App 的默认行为一致。
-          jq -r '.[] | select((.parents | length) < 2) | select((.commit.message | test("(?im)^Signed-off-by: .+ <.+@.+>$")) | not) | .sha' commits.json > dco-bad.txt
-          if [ -s dco-bad.txt ]; then
+          jq -r '.[] | select((.parents | length) < 2) | select((.commit.message | test("(?im)^Signed-off-by: .+ <.+@.+>$")) | not) | .sha' "$RUNNER_TEMP/commits.json" > "$RUNNER_TEMP/dco-bad.txt"
+          if [ -s "$RUNNER_TEMP/dco-bad.txt" ]; then
             while read -r sha; do
               echo "::error::commit $sha 缺少 Signed-off-by(提交时用 git commit -s;补救:git commit -s --amend 或 git rebase --signoff)"
-            done < dco-bad.txt
+            done < "$RUNNER_TEMP/dco-bad.txt"
             exit 1
           fi
           echo "DCO ok"
@@ -126,15 +132,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" > files.raw.json
-          jq -s 'add' files.raw.json > files.json
-          nfiles=$(jq 'length' files.json)
+          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" > "$RUNNER_TEMP/files.raw.json"
+          jq -s 'add' "$RUNNER_TEMP/files.raw.json" > "$RUNNER_TEMP/files.json"
+          nfiles=$(jq 'length' "$RUNNER_TEMP/files.json")
+          # 先证明它是十进制整数再比较:`set -e` 不覆盖 if 条件,`[ "" -lt 1 ]` 只会报 integer expected
+          # 然后条件为假、落到放行路径(SCVB 线 SL-313)。
+          if ! [[ "$nfiles" =~ ^[0-9]+$ ]]; then
+            echo "::error::files API count is not an integer ('$nfiles'); refusing to pass the frozen-contract guard"
+            exit 1
+          fi
           if [ "$nfiles" -lt 1 ]; then
             echo "::error::files API returned $nfiles changed files for this PR; refusing to pass the frozen-contract guard on an empty list"
             exit 1
           fi
+          # /pulls/{n}/files 有 3000 条硬上限(与 DCO 步的 250 同理):截断时后面的文件根本不在列表里,
+          # 守卫会静默半程放行,故触顶直接 fail,让维护者拆 PR。
+          if [ "$nfiles" -ge 3000 ]; then
+            echo "::error::PR touches $nfiles files (>= 3000): the files API truncates and the frozen-contract guard would silently skip the rest; split the PR"
+            exit 1
+          fi
           echo "frozen-contract guard: checked $nfiles files"
-          files=$(jq -r '.[].filename' files.json)
+          # 重命名也算触碰:只看 .filename 会让 `git mv docs/IPC_CONTRACT.md docs/ipc-v2.md` 不触发守卫、
+          # 不需要变更文档就过 —— 比就地改一行更危险。status=="renamed" 的条目带 previous_filename,一并纳入。
+          files=$(jq -r '.[] | (.filename, (.previous_filename // empty))' "$RUNNER_TEMP/files.json")
           touched=$(printf '%s\n' "$files" | grep -E '^(docs/PARAMETERS\.md|docs/IPC_CONTRACT\.md|docs/STATE_SCHEMA\.md|docs/SCVB_CONTRACT\.md|tests/golden/)' || true)
           if [ -n "$touched" ]; then
             doc=$(printf '%s\n' "$files" | grep -E '^docs/contract-changes/[0-9]{8}-.+\.md$' || true)
