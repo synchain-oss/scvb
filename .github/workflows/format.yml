@@ -222,6 +222,11 @@ jobs:
         # `base_ref` 只在 pull_request 事件上有值,push 事件回落 `ref_name`(即被推的分支)。
         env:
           SCVB_CHANGELOG_BASE: origin/${{ github.base_ref || github.ref_name }}
+          # [SL-316] 本 PR 自己的号也透传:正文侧要求每条 (#N) 都在主线落过地,而搬运规矩③
+          # 要求作者在合并**前**就把条目写成 (#<本 PR 号>) —— 那一刻它当然还没落地。不透传的话,
+          # 每个按规矩搬条目的 PR 都会被 required check 硬红,而 (#TBD) 那条退路也已被本卡封死。
+          # push 事件上没有 pull_request 对象,取到空串 ⇒ 脚本回落到「大于最大落地号只 WARN」。
+          SCVB_CHANGELOG_SELF_PR: ${{ github.event.pull_request.number }}
         run: node scripts/check-changelog-drafts.mjs
       - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
         # 与 scripts/gates.ps1 的 Gate 3h **同一条命令**。web/fonts/README.md 自己写着

@@ -144,19 +144,36 @@ const pendingTokens = (block) =>
 // ⚠ 边界:它只判「这个号在主线落过地」,判不出「这个号是不是**这条**改动的落地位」——
 // 后者仍要人逐条比对(SL-316 那 6 条就是这么核的:先找哪次提交把这条**加进 CHANGELOG**,
 // 再回去核提交内容对不对)。
-const BODY_TBD_RE = /\(#TBD\)/g;
-// 正文里引用 PR 的两种形态:`(#123)` 结尾,以及 `(#65、#69、#76)` 这种一括号多号。
-// 取法:先把每个括号组抓出来,再从组里抠所有 `#\d+` —— 直接全文抓 `#\d+` 会把
-// 「#1770 标准」这类非 PR 引用也收进来。
-const BODY_GROUP_RE = /\((#\d+(?:[、,,\s]*#\d+)*)\)/g;
+// `#TBD` **不要求带括号**:第一版写的是逐字 `(#TBD)`,于是 `(#TBD;等合并后补)` 或
+// 裸的 `— #TBD` 就是零命中 —— 绕过成本一个分号(#203 复审【重要】)。
+const BODY_TBD_RE = /#TBD/g;
+// 正文里的 PR 引用:**凡是括号里出现 `#\d+` 就算一个引用**。
+// 第一版要求号串之后紧接 `)`,于是这五种库里现成的写法整组静默逃逸:
+//   `(认领 / 接管 / 心跳 / 代际,#38)`、`(逐声道残差…,#4)`、`(段陈旧保活…,#66)`、
+//   `(#116;起跳的柔化随后由 #123 补上,见「变更」)`、`([SL-239] v5.6.2 实测,#146 之后)`
+// —— 「只扫我以为它会出现的形态」又一次。实测:放宽后收到 96 个不同号,**零误报**
+// (全部在落地位集合里),而放宽前有 5 个括号里的号根本没进判定面。
+const BODY_PAREN_RE = /\([^)]*#\d+[^)]*\)/g;
 
 function bodyPrRefs(body) {
     const out = [];
-    for (const g of body.matchAll(BODY_GROUP_RE))
-        for (const m of g[1].matchAll(/#(\d+)/g))
+    for (const g of body.matchAll(BODY_PAREN_RE))
+        for (const m of g[0].matchAll(/#(\d+)/g))
             out.push({ num: m[1], at: g.index });
     return out;
 }
+
+// 报错要能一眼走到现场:正文里有 96 个号,只说「引用了 (#106)」而不说哪一行,
+// 同一个错号出现两次就会打出两条逐字相同的 [FAIL](#203 复审【建议】)。
+const lineOf = (text, at) => text.slice(0, at).split("\n").length;
+
+// 落地位集合:与 `leaks()` 内部的 `shipped.PR` 是同一件东西,抽出来给两边用,
+// 少一处「将来只改一边」的机会(#203 复审【建议】)。
+const landedPrs = (titles) => {
+    const s = new Set();
+    for (const t of titles) for (const n of FORMS.PR.extract(t.title)) s.add(n);
+    return s;
+};
 
 // ---- 放行口(#197 复审【重要】)-------------------------------------------
 // 「号出现在合并标题里」≠「它上线了」:`32e52a3` 的标题里那句 `SL-189 权威链定谳(接线完好)`
@@ -622,41 +639,64 @@ try {
         console.log("  [ALLOW] #" + token + " 放行 —— " + why);
 
     // ---- 正文侧([SL-316]):`#TBD` 即红;每个 `(#N)` 必须在主线落过地 ----------
-    // 与上面那半共用同一条 `prsLanded`(落地位 = 尾部 `(#N)` 或老式 merge commit),
+    // 与上面那半共用 `landedPrs`(落地位 = 尾部 `(#N)` 或老式 merge commit),
     // 所以「块里判漏搬」与「正文判错号」量的是同一个集合,不会互相打架。
-    const landed = new Set();
-    for (const t of titles)
-        for (const n of FORMS.PR.extract(t.title)) landed.add(n);
+    //
+    // ⚠ **本 PR 自己的号还没落地** —— 这是第一版的阻断级缺陷(#203 复审【重要】):
+    // `landed` 取自 base 分支、不含本 PR 的提交,而搬运规矩③ 要求作者在合并**前**把条目写成
+    // `(#<本 PR 号>)`;`(#TBD)` 这条退路又被本卡封了 ⇒ **按规矩搬条目的 PR 没有任何合法写法**,
+    // 而且红会落在下一个搬条目的 PR 上(本 PR 自己不搬,所以侥幸绿)。
+    // 处置:CI 透传 `SCVB_CHANGELOG_SELF_PR`(见 format.yml)并入放行;本地没有这个变量时,
+    // 对**大于当前最大落地号**的号打 [WARN] 而不判红 —— PR 号单调递增,本 PR 号必然大于任何
+    // 已落地号;而 `#106 < #111` 这类**关掉没合**的号仍落在 ≤ max 一侧、照样判红,不丢牙齿。
+    const landed = landedPrs(titles);
+    const selfPr = (process.env.SCVB_CHANGELOG_SELF_PR || "").trim();
+    const maxLanded = Math.max(0, ...[...landed].map(Number));
     const bodyBad = [];
-    const tbd = [...body.matchAll(BODY_TBD_RE)].length;
-    if (tbd)
+    for (const m of body.matchAll(BODY_TBD_RE))
         bodyBad.push(
-            "正文里还有 " +
-                tbd +
-                " 处 `(#TBD)` —— 发版清单第 1 步「每条带 PR 号」会当场卡住;" +
-                "回溯到把这条**加进 CHANGELOG** 的那次提交、拿它的落地位补号(查不到就删条目或标「未落地」)",
+            "CHANGELOG.md:" +
+                lineOf(body, m.index) +
+                " 还挂着 `#TBD` —— 发版清单第 1 步「每条带 PR 号」会当场卡住;" +
+                "回溯到把这条**加进 CHANGELOG** 的那次提交、拿它的落地位补号" +
+                "(查不到就删条目或标「未落地」)",
         );
-    for (const r of bodyPrRefs(body))
-        if (!landed.has(r.num))
-            bodyBad.push(
-                "正文引用了 `(#" +
+    for (const r of bodyPrRefs(body)) {
+        if (landed.has(r.num) || r.num === selfPr) continue;
+        const where = "CHANGELOG.md:" + lineOf(body, r.at);
+        if (!selfPr && Number(r.num) > maxLanded) {
+            console.log(
+                "  [WARN] " +
+                    where +
+                    " 的 `#" +
                     r.num +
-                    ")`,但主线没有任何提交以它落地(既不是尾部 `(#" +
-                    r.num +
-                    ")`,也不是 `Merge pull request #" +
-                    r.num +
-                    " from`)—— " +
-                    "多半是引了一个**关掉没合**的 PR;去找真正落地的那个号(例:#106 从未合并," +
-                    "那件事落在 `6af6653` / #111,标题写着「接替 #106」)",
+                    "` 还没落地,但它大于当前最大落地号 #" +
+                    maxLanded +
+                    " —— 本地跑按「多半是本 PR 自己的号」放过;CI 上由 SCVB_CHANGELOG_SELF_PR 精确判定",
             );
+            continue;
+        }
+        bodyBad.push(
+            where +
+                " 引用了 `#" +
+                r.num +
+                "`,但主线没有任何提交以它落地(既不是尾部 `(#" +
+                r.num +
+                ")`,也不是 `Merge pull request #" +
+                r.num +
+                " from`)—— 多半是引了一个**关掉没合**的 PR;" +
+                "去找真正落地的那个号(例:#106 从未合并,那件事落在 `6af6653` / #111,标题写着「接替 #106」)",
+        );
+    }
+    // 只打不退:与 `leaks()` 的结果**一起**在末尾判退出码 —— 在这里直接 exit 会把漏搬清单
+    // 整段吞掉,让人「改号 → 重跑 → 又冒出一批漏搬」跑两轮(#203 复审【建议】)。
+    // 打印排在 `leaks()` **之前**:`leaks()` 自己会抛(放行写法不对那三种),排在它后面的话
+    // 这段在那条抛错路径上一个字都不显 —— 与 [BASE] / [ALLOW] 那条同一个理由。
     if (bodyBad.length) {
         console.error(
-            "check-changelog-drafts 失败(正文 " +
-                bodyBad.length +
-                " 处号不对):",
+            "check-changelog-drafts:正文 " + bodyBad.length + " 处号不对:",
         );
         for (const b of bodyBad) console.error("  [FAIL] " + b);
-        process.exit(1);
     }
 
     const found = leaks(block, titles);
@@ -691,8 +731,9 @@ try {
                 ALLOW_SAMPLE +
                 "\n  放行会在每次运行时连理由一起打进输出。**不要靠删条目躲开**(规矩⑤)。",
         );
-        process.exit(1);
     }
+    // 两半一起判退出码,一次把两边的清单都给全。
+    if (bodyBad.length || found.length) process.exit(1);
     // 不再重复报号数,也不说「都还没上线」:被放行的号**恰恰在**已上线集合里(那正是它要放行
     // 的原因),把它算进「都还没上线」在有放行时就是一句假话 —— 与上面 [BASE] 那处
     // 「判定面内 → 块里」是同一句断言的两半,第 7 轮只改了一半(#197 复审第 8 轮【建议】)。
