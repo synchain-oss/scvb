@@ -5,6 +5,14 @@ on:
   workflow_dispatch:
 jobs:
   release:
+    # [SL-307] **刻意禁用**,让下面那句「T01 只落 release 骨架并保持 disable」成为真话 ——
+    # 在此之前它只是注释里那么写,而 `on.push.tags: ["v*"]` 是 armed 的:推一个 v* tag 会真的
+    # 把这个 job 跑起来,并在 `Package` 步撞上**本仓不存在**的 `scripts/package.ps1`(T40 交付物)。
+    # 用 `if: false` 而不是摘掉 `on.push.tags`:两条触发路径(tag push 与手动 dispatch)要**一起**
+    # 禁掉才对得上「disable」;只摘 tags 的话手动 dispatch 仍会跑进那个不存在的脚本。触发面原样
+    # 留着,当作「T40 之后该长什么样」的记录。
+    # **解除条件:T40 交付 `scripts/package.ps1` 时删掉本行 `if: false`。**
+    if: false
     runs-on: windows-2022
     permissions: { contents: write }
     steps:
