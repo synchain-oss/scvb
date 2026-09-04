@@ -26,6 +26,10 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// PNG 的八字节魔数。放顶层与 CHROME_CANDIDATES 同档,不是性能考虑 —— 它和用它那处的
+// 注释是一条纪律(落盘前认一次,别写出伪证据),埋在热路径中段容易被下次重构顺手挪没。
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 const CHROME_CANDIDATES = [
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -68,6 +72,8 @@ if (args.has("help")) {
             "  --port=9333             CDP 端口",
             "  --out=<路径>            PNG 落点,默认 web-preview/.shots/<tab>-<时间>.png",
             "  --console               把页面 console 打到 stdout(排障用)",
+            "",
+            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败)",
         ].join("\n"),
     );
     process.exit(0);
@@ -120,6 +126,13 @@ function chromePath() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// [SL-290] 「没拍到」与「拍到的是错误页」要能被调用方分开:前者多半是环境/参数问题,
+// 后者说明**目标服务没起**——同样是失败,但排障方向完全不同,退出码就该不同。
+// 退出码:0 = 拍到了;1 = 其它失败;2 = 目标页面没能真的呈现(含错误页、非 2xx、壳页报注入失败)。
+// 注:本脚本不被 gates / CI 调用(只在 PREVIEW-GUIDE 与 E2E-journey 里给人用),
+// 所以 2 不会撞上 gate 3e 那条「退 2 当缺可选依赖打 SKIP」的读法。
+class NavigationError extends Error {}
 
 // ---------------------------------------------------------------- CDP 小客户端
 function cdpConnect(wsUrl) {
@@ -260,11 +273,142 @@ try {
             if (m.method === "Page.loadEventFired") resolve();
         });
     });
-    await cdp.send("Page.navigate", { url: URL_ });
+
+    // [SL-290 复审] **第三道:HTTP 状态码**。前两道只覆盖「连不上」——
+    // serve 起着但 URL 拼错时(404/500),`Page.navigate` **不带** errorText
+    // (HTTP 错误不是导航失败),`location.href` 也**不是** chrome-error://,
+    // 于是 404 白屏照样被拍成 PNG 并报 ✅ —— 与本卡要治的伪证据**完全同一类**。
+    // 不是假想:PREVIEW-GUIDE §5 排障表第一行就是「页面 404 | URL 写成了 /output/」;
+    // 本文件上面 `opt("role","")` 那段注释记的事故,形态正是「拍出白屏图并报成功」。
+    // 实测:`--url=…/nope.html` 修复前落盘 7550 字节且 exit=0。
+    //
+    // ⚠ **Document 响应不止一条**:壳页给 iframe 赋的是**真实 src**(shell.js `frame.src = url`),
+    //    子 frame 的文档导航在 CDP 里同样是 `type === "Document"`。所以这里**按主 frame 的
+    //    frameId 挑**,而不是「取首条」——「主文档必先于 iframe 到」是个**到达顺序假设**,
+    //    把它当成「只有一条」写进注释,下一个人重构时就会静默拿到 iframe 的状态码
+    //    (复审第 2 轮指出:上一版正是这么写的,结论碰巧对、理由是假的)。
+    const docResponses = [];
+    cdp.on((m) => {
+        if (
+            m.method === "Network.responseReceived" &&
+            m.params.type === "Document"
+        ) {
+            docResponses.push({
+                frameId: m.params.frameId,
+                status: m.params.response.status,
+                url: m.params.response.url,
+            });
+        }
+    });
+    await cdp.send("Network.enable");
+    // [SL-290] **导航结果必须校验** —— 这是本脚本最贵的一课:
+    // `Page.navigate` 对连不上的目标**照样 resolve**,`Page.loadEventFired` 也照样来
+    // (Chrome 把错误页当一个正常文档加载完),于是下面一路走到 captureScreenshot,
+    // 把「无法访问此网站」那张图存成 PNG 并打印 ✅。实测(serve 没起时)两次出图
+    // **sha256 逐字相同、均 23767 字节** —— 而截图是「肉眼验过」这类结论的唯一证据载体,
+    // 工具谎报成功等于**产出伪证据**(v5.6.6 出包自测差一点把两张错误页当验证结果上报)。
+    //
+    // **思路**与页面级冒烟同一档(`web-preview/tests/smoke-*-page.mjs`:导航之后必须验
+    // 「页面到底成没成」),但**机制并不同源** —— 那边用**正向断言**(`waitFor(READY)`、
+    // `querySelector("#card")`),这边用 CDP 的**导航/HTTP 信号**。
+    // 上一版这里写的是「取与页面级冒烟同一套判据」,那是假话:全仓核过,
+    // `smoke-*-page.mjs` 里 `errorText` / `chrome-error` / `responseReceived` **零命中**
+    // (复审第 2 轮指出)。按字面读会让下一个人以为两边共用一套,改一边时去对拍另一边。
+    // 下面两个信号都与界面语言无关:
+    //   ① `Page.navigate` 的返回值带 `errorText`(如 `net::ERR_CONNECTION_REFUSED`);
+    //   ② 错误页的 `location.href` 是 `chrome-error://chromewebdata/`。
+    // 两条都测过(见本卡 PR 描述里的探针输出)。**不按 body 文案判**:错误页文案随
+    // 浏览器界面语言变(本机实测是中文「无法访问此网站」),按文案判就是给自己埋 locale 坑。
+    const nav = await cdp.send("Page.navigate", { url: URL_ });
+    if (nav && nav.errorText) {
+        throw new NavigationError(
+            `导航失败:${nav.errorText}
+   目标:${URL_}
+` + "   预览页要先起服务:pwsh web-preview/serve.ps1",
+        );
+    }
     await Promise.race([loaded, sleep(15000)]);
     await sleep(WAIT_MS); // mock 注入 + 首帧事件 + 首绘
 
+    // ② 二道:errorText 只覆盖「这一次 navigate 自己失败」。重定向到错误页、
+    //    或首次导航成功但随后被换成错误页,都还得靠落地后的 URL 认。
+    // ⚠ 这里用 try 包住:`evaluate` 抛的是普通 `Error`,直接冒上去会让 finally 的
+    //    `instanceof NavigationError` 不成立 ⇒ 退 1 而不是 2,且屏幕上打印「页内求值抛错」
+    //    把人指向错误方向。而「在落地页上连 location.href 都求不到」几乎只可能是页面
+    //    没正常起来 —— 正是 2 该覆盖的语义(复审指出)。
+    let landed;
+    try {
+        landed = await evaluate(cdp, "location.href");
+    } catch (e) {
+        throw new NavigationError(
+            `落地页无法求值(${e.message}),目标 ${URL_} 大概率没打开`,
+        );
+    }
+    if (typeof landed === "string" && landed.startsWith("chrome-error://")) {
+        throw new NavigationError(
+            `落到浏览器错误页(${landed}),目标 ${URL_} 没打开
+` + "   预览页要先起服务:pwsh web-preview/serve.ps1",
+        );
+    }
+    // ③ 主文档非 2xx ⇒ 拍下来的是错误页/白屏,不是要看的页面。
+    //    按 `Page.navigate` 回的 frameId 认主 frame,不依赖到达顺序。
+    let mainDoc = docResponses.find((d) => d.frameId === nav.frameId);
+    // ⚠ `frameId` 在 CDP 里是 **optional**:拿不到时上面的 find 返回 undefined ⇒ mainStatus
+    //    为 null ⇒ 下面那道 `!== null` 短路 ⇒ **第三道整条静默消失**,404 又会被拍成 ✅。
+    //    上一版「取首条」虽然理由是假的,但判据一定带电;换成 frameId 精确匹配反而多了一个
+    //    fail-open 前提。所以退回「首条 Document」兜底,并**出声**——判据可以降精度,
+    //    但不能悄悄不在(复审第 4 轮;这正是本卡开头那句「工具没报错不等于验过」)。
+    if (!mainDoc && docResponses.length === 0) {
+        console.warn("⚠ 本次没收到任何 Document 响应,第三道未生效");
+    }
+    if (!mainDoc && docResponses.length > 0) {
+        mainDoc = docResponses[0];
+        console.warn(
+            "⚠ responseReceived 未带 frameId,第三道退回「取首条 Document」(精度降一档,判据仍在)",
+        );
+    }
+    const mainStatus = mainDoc ? mainDoc.status : null;
+    if (mainStatus !== null && (mainStatus < 200 || mainStatus > 299)) {
+        throw new NavigationError(
+            `主文档 HTTP ${mainStatus},目标 ${URL_} 没正常返回(多半是 URL 拼错,见 PREVIEW-GUIDE §5 排障表)`,
+        );
+    }
+
     await evaluate(cdp, DOC_PRELUDE); // 之后一切选择器走 __D(iframe 内的真源文档)
+
+    // ④ [SL-290 复审第 2/3/4 轮] **第三道只看主文档,iframe 那半还漏着**:壳页自己没有 UI
+    //    (`output.html` 除工具条外画面 100% 来自 iframe 里的 `web/<role>/index.html`),
+    //    所以真源页被挪走/改名时,壳页照样 **200** ⇒ 上面那道放行 ⇒ 拍下一张**空舞台**报 ✅
+    //    —— 与开头那张 404 白屏是同一类伪证据,只是位置从主文档挪到了 iframe。
+    //
+    //    **不自造判据:壳页自己已经算出过这个结论,读它就行。** `shell.js` 的 `setStatus()`
+    //    把 `.pv-status` 的 `data-ok` 写成 1/0/wait,`"0"` 只在**真失败**时出现 —— 现有三条
+    //    路径(`grep -n "ok: false" web-preview/shell.js`:注入重试耗尽 / mock 后端不可用 /
+    //    `driver.start()` 抛错)。**别在消息里猜是哪一条**:第三条是在 `wired > 0` 之后触发的,
+    //    也就是注入其实成功了、真源页也取到了 —— 猜「index.html 取不到」会把人指反方向。
+    //    壳页的 `textContent` 已经把它自己的原话带出来了,让它说话就够(复审第 4 轮)。
+    //    也不会误杀 `--url` 指向的非预览页:那些页面没有 `.pv-status`,取到 null ⇒ 放行。
+    //
+    //    ⚠ 两个属性**一次读回**并包 try:`evaluate` 抛的是普通 `Error`,不包就退 1 不退 2;
+    //    而分两次读时,第二次(取原话)是在**已经判负之后**跑的 —— 它一抛错,
+    //    `throw new NavigationError` 就再也执行不到,**判负的证据在手里却打印不出来**。
+    let shell = null;
+    try {
+        shell = await evaluate(
+            cdp,
+            `(() => { const e = document.querySelector(".pv-status");
+                      return e ? { ok: e.getAttribute("data-ok"), why: e.textContent } : null; })()`,
+        );
+    } catch (e) {
+        throw new NavigationError(
+            `落地页读不到壳页状态(${e.message}),目标 ${URL_} 大概率没正常起来`,
+        );
+    }
+    if (shell && shell.ok === "0") {
+        throw new NavigationError(
+            `壳页报注入失败 —— 主文档 ${mainStatus ?? "状态未取到"} 但舞台是空的。壳页原话:${shell.why}`,
+        );
+    }
 
     const clickIn = (sel) =>
         evaluate(
@@ -309,8 +453,14 @@ try {
     });
     const { mkdirSync } = await import("node:fs");
     const { dirname } = await import("node:path");
+    const png = Buffer.from(shot.data, "base64");
+    // 落盘前认一下这确实是 PNG:空/截断的 capture 也会 resolve,而写出一个 0 字节的
+    // .png 同样是伪证据。八字节魔数比「尺寸下界」稳 —— 尺寸下界会把合法的小截图误杀。
+    if (png.length < 8 || !png.subarray(0, 8).equals(PNG_MAGIC)) {
+        throw new Error(`captureScreenshot 返回的不是 PNG(${png.length} 字节)`);
+    }
     mkdirSync(dirname(OUT), { recursive: true });
-    writeFileSync(OUT, Buffer.from(shot.data, "base64"));
+    writeFileSync(OUT, png);
     console.log(`✅ ${URL_}${TAB ? "  (tab=" + TAB + ")" : ""}\n   → ${OUT}`);
 } catch (e) {
     failed = e;
@@ -324,5 +474,5 @@ try {
     try {
         rmSync(userDataDir, { recursive: true, force: true });
     } catch {}
-    process.exit(failed ? 1 : 0);
+    process.exit(failed ? (failed instanceof NavigationError ? 2 : 1) : 0);
 }
