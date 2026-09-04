@@ -113,6 +113,53 @@ public:
 };
 
 // 一台「机器」:两个插件 + 一个 playhead + 缓冲。
+// [SL-314] **同机只允许一份 host 测试进程**,拿不到就当场判负并说清原因。
+//
+// 为什么需要:本套用**固定组号**(`kTestGroup` / `kTestChannel`),段名
+// `SynchainSCVB.v1.g7.audio.ch3` 是**全机唯一**的。第二份进来 = 两个 Input 抢同一个槽位、
+// 两个 Output 绑同一个写方。实测:
+//     空闲 1 份            0/50 红
+//     CPU 压满 100%,1 份   0/50 红      ← CPU 争用一次都不触发
+//     2 份并跑             29/30 红
+//     6 份并跑             88/90 红      ← 2 份与 6 份没有量级差别
+// **冲突的是段,不是 CPU**;复现率对负载不单调,正是资源冲突的签名。
+//
+// 不加这道守卫时,红掉在三秒后的 `CHECK(raised)` 上,看起来像时序 flaky —— SL-305 与
+// SL-311 两张卡都为此绕过弯路,本卡自己也照「墙钟窗口」白改过一版。这里当场点名,
+// 让这条红自己解释自己。
+//
+// 形态:**命名互斥,0 等待**。三条边界都是有意的 ——
+//   · **不排队**:排队会把冲突藏起来,而且与 gates 的 `Local\SCVB-ipc-tests` 形成锁序风险;
+//   · **不碰 IPC 段**:`Registry::open()` 是 `createOrOpen` + `allowOverwrite=true`,
+//     拿它当探针会创建、甚至覆盖式重初始化别人正在用的 registry —— 比它要治的问题更坏;
+//   · **不看槽位**:「槽位活跃且 pid 非我」会被崩溃进程留下的**陈旧槽位**误报。
+// 也不手动释放:内核对象随进程退出自动回收,测试里放反而多一条出错路径。
+struct HostTestsExclusive
+{
+    HostTestsExclusive()
+    {
+        handle = ::CreateMutexW(nullptr, TRUE, L"Local\\SCVB-host-tests");
+        // `GetLastError()` 必须**紧挨着**取:中间插任何一个 Win32 调用都可能把它冲掉。
+        const DWORD err = ::GetLastError();
+        owned = (handle != nullptr && err != ERROR_ALREADY_EXISTS);
+    }
+
+    HANDLE handle = nullptr;
+    bool owned = false;
+};
+
+inline void requireHostTestsExclusive()
+{
+    static HostTestsExclusive guard; // 进程内只探一次;句柄活到进程退出
+    if (!guard.owned)
+    {
+        FAIL("同机已有另一份 host 测试进程在跑 —— 本套用固定组号 g"
+             << kTestGroup << "/ch" << kTestChannel << ",段名全机唯一,两份同跑必红(实测 2 份 29/30、6 份 88/90)。"
+             << "手跑请走:pwsh scripts/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C Release -R "
+                "scvb_host_tests'");
+    }
+}
+
 struct Rig
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager(Timer 要它)
@@ -125,6 +172,8 @@ struct Rig
 
     Rig()
     {
+        // [SL-314] 第一件事:确认同机没有第二份 host 测试(见上面的头注)。
+        requireHostTestsExclusive();
         out.setGroupId(kTestGroup);
         in.setGroupId(kTestGroup);
         in.setChannelId(kTestChannel);
