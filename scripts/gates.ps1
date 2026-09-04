@@ -12,7 +12,8 @@
   [SL-267] gate 3k(check-font-names)= 字体保留名门禁(OFL-1.1 §3),与 3c/3j 同属合规族:
   断言分发的 woff2 `name` 表与进包文本资源的字体栈都不含上游 RFN;
   CI 侧同样落在 compliance.yml(自测 + 扫描两步)。
-  [SL-277/J96] **锁纪律**:gate 1-5 完全不持锁,多个 agent 可以同时 configure/build;
+  [SL-277/J96] + [SL-301] **锁纪律**:gate 1-5 里**只有 3e 的页面级冒烟那一趟持锁**,
+  configure/build 完全不持锁(多个 agent 可以同时编译);
   gate 3e 与 gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行
   ——**两段分别持、之间放开**([SL-301];3f..5 的 configure/build 不持锁,可并行)。
   调用方**不要**再在外面把整条 gates 包进目录锁 —— 那会把编译也串起来,正是本卡要拆掉的。
@@ -123,13 +124,34 @@ function New-ScvbMutex {
 # `SCVB_MUTEX_WAIT_MINUTES` 只为**验证这条判据**而存在(反向验证:外面另起一个进程占住
 # 互斥体,把上界调到 1 分钟,就能在一分钟内看到 6/7/8 判负而不是等半小时)。平时不要设 ——
 # 调小不会削弱互斥(拿不到锁一律判负 + 跳过,绝不无锁跑),只会让正常排队更容易被判负。
-# [SL-301] 上界由 30 抬到 45。算术:3e 进锁之后,**病态**的 3e 段最坏能持锁
-# 6 × 300s(每套上界,SL-287)≈ 31 分钟 —— 与原来的 30 分钟上界擦边,于是
-# 「隔壁那份 3e 慢了一点」就会把**所有**等锁的 agent 判负,而他们日志里只看到
-# 「等锁超过 30 分钟」,查不到原因在别人的 web smoke 上。那是本卡引入的新失效形态。
-# 45 给了 ~1.5 倍余量;**没有**改成「超时就无锁硬跑」——拿不到锁仍一律判负。
-# 另一条路(给 3e 段一个整体预算、超了中止判负)会改红绿判定,本卡明确不动判定,故不取。
-$script:ScvbMutexWaitMinutes = if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES } else { 45 }
+# [SL-301] 等锁上界**由 3e 的实际预算推出来,不写字面量**。
+#
+# 为什么不能写死:病态情况下持锁方最坏占住「页面级套数 × 每套上界」。我第一版写的是
+# 「6 × 300s ≈ 31 分钟,45 给 1.5 倍余量」—— **那笔账是错的**:当时锁包的是**整个 3e**
+#(24 套),真实上界是 24 × 300s = **120 分钟**,45 一样会被击穿,而且不需要全病态
+#(6 套页面级全挂 30min + 另外 18 套里挂 4 套 20min 就已经 50min > 45)。复审点出后改了两处:
+# ①持锁面收窄到**只有起浏览器的那几套**(见 gate 3e 里的惰性取锁),最坏账才真的是
+#「页面级套数 × 上界」;②这个上界**跟着那笔账算**,不再手写常数。
+#
+# 手写常数还吃不到另一个变量:`SCVB_SMOKE_TIMEOUT_SEC` 只有 >=30 的下界、**没有上界**,
+# 有人设成 600 就把账翻一倍,而写死的 45 完全不知道。算出来就自动跟上。
+# 取 1.5 倍余量,再与 45 取大(6/7/8 段本身也要等,历史持锁 9-10 分钟)。
+$script:ScvbSmokeTimeoutSecForBudget = 300
+if ($env:SCVB_SMOKE_TIMEOUT_SEC) {
+  $parsedBudget = 0
+  if ([int]::TryParse($env:SCVB_SMOKE_TIMEOUT_SEC, [ref]$parsedBudget) -and $parsedBudget -ge 30) {
+    $script:ScvbSmokeTimeoutSecForBudget = $parsedBudget
+  }
+}
+$script:ScvbPageSuiteCount = @(
+  Get-ChildItem -Path (Join-Path $RepoRoot 'web-preview\tests') -Filter 'smoke-*.mjs' -ErrorAction SilentlyContinue |
+  Where-Object { (Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'chrome\.on\("error"' }
+).Count
+$script:ScvbMutexWaitMinutes =
+  if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES }
+  else {
+    [Math]::Max(45, [Math]::Ceiling($script:ScvbPageSuiteCount * $script:ScvbSmokeTimeoutSecForBudget * 1.5 / 60))
+  }
 
 function Wait-ScvbMutex {
   param($Mutex, [string]$Name, [string]$Tag, [int]$TimeoutMinutes = $script:ScvbMutexWaitMinutes)
@@ -378,8 +400,11 @@ else {
 #
 # 拿不到锁的处置与 6/7/8 **逐字同款**:判负 + 不执行。理由也同款 —— 无锁硬跑就是去抢
 # 隔壁持锁 agent 的资源,让那一侧收到一个自己日志里查不到原因的假红。
-$smokeLock = Enter-ScvbIpcLock -Segment 'gate 3e'
-$smokeLockOk = ($null -ne $smokeLock) -or $NoIpcLock
+# 惰性取锁:实际的 Enter 在下面循环里「跑到第一套页面级之前」才做,
+# 于是纯 node 的那 18 套无锁先跑、可与别的 agent 并行。这三个变量是段内状态。
+$script:SmokeLock = $null
+$script:SmokeLockTaken = $false
+$script:SmokeLockOk = $true   # 没到页面级就一直是「不需要锁」
 
 # ==================================================================
 Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
@@ -404,14 +429,7 @@ $smokeDir = Join-Path $RepoRoot 'web-preview\tests'
 $smokeFiles = @(Get-ChildItem -Path $smokeDir -Filter 'smoke-*.mjs' -ErrorAction SilentlyContinue)
 try {
 
-if (-not $smokeLockOk) {
-  # 与 gate 6/7/8 同款:拿不到锁 = 没有并发保护,**不执行**而不是无锁硬跑。
-  # 无锁跑 3e 会起 6 个 Chrome 去抢隔壁持锁 agent 的机器,让那一侧的 gate 6 收到假红 ——
-  # 那正是本卡要根除的形态,自己这一份反正注定 exit 1。
-  Write-Host '=== Gate 3e: 跳过执行,直接判负(没有 IPC 测试锁 = 没有并发保护)===' -ForegroundColor Red
-  Set-Gate '3e web smoke' $false
-}
-elseif (-not $nodeCmd) {
+if (-not $nodeCmd) {
   # 用到 node 内建 fetch 与全局 WebSocket,故要求 ≥ 22(与 CI 的 node-version 一致)
   Write-Host '  node 未找到(要求 >= 22)' -ForegroundColor Red
   Set-Gate '3e web smoke' $false
@@ -477,7 +495,33 @@ else {
       Write-Host ("  [WARN] SCVB_SMOKE_TIMEOUT_SEC='{0}' 不是 >=30 的整数,回落到默认 300s" -f $env:SCVB_SMOKE_TIMEOUT_SEC) -ForegroundColor Yellow
     }
   }
+  # [SL-301 复审] **持锁面收窄到真正起浏览器的那几套。**
+  # 24 套里只有 6 套起无头 Chrome,另外 18 套是纯 node、零共享状态 —— 把它们也串行化
+  # 是「持锁面比论据宽」:论据是「Chrome 负载拖红别人的 gate 6」,那 18 套一个 Chrome 都不起。
+  # 判据用**内容**(`chrome.on("error"` = 它自己起浏览器)而不是文件名里有没有 `-page`:
+  # 后者是命名约定,前者是事实,加一套新冒烟会被自动归类。
+  # 排序把纯 node 的排前面,**跑到第一套页面级时才取锁**,循环结束在 finally 里放 ——
+  # 于是无锁那 18 套可以与别的 agent 并行,而持锁段的最坏账变成「6 × 上界」,
+  # 与 :126 那笔算术**真的**对得上(此前那笔漏算了这 18 套,复审点出:24×300s = 120 分钟)。
+  $pageSuites = @($smokeFiles | Where-Object {
+      (Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'chrome\.on\("error"'
+    })
+  $pageNames = @($pageSuites | ForEach-Object { $_.Name })
+  $smokeFiles = @($smokeFiles | Where-Object { $pageNames -notcontains $_.Name }) + $pageSuites
+  Write-Host ("  [ipc-lock] 本轮 {0} 套里 {1} 套起浏览器(仅这几套持锁,其余 {2} 套无锁先跑)" -f $smokeFiles.Count, $pageSuites.Count, ($smokeFiles.Count - $pageSuites.Count)) -ForegroundColor Cyan
   foreach ($f in $smokeFiles) {
+    # 第一套页面级之前才取锁(惰性取锁);`$smokeLock` 在段外声明,finally 负责放。
+    if (($pageNames -contains $f.Name) -and (-not $script:SmokeLockTaken)) {
+      $script:SmokeLockTaken = $true
+      $script:SmokeLock = Enter-ScvbIpcLock -Segment 'gate 3e(页面级)'
+      $script:SmokeLockOk = ($null -ne $script:SmokeLock) -or $NoIpcLock
+      if (-not $script:SmokeLockOk) {
+        # 与 6/7/8 同款:拿不到锁 = 没有并发保护,页面级那几套**不执行**、整段判负。
+        Write-Host '  [ipc-lock] 拿不到锁 ⇒ 页面级冒烟不执行(无锁硬跑会去抢隔壁持锁 agent 的机器)' -ForegroundColor Red
+        $smokeOk = $false
+        break
+      }
+    }
     $soPath = [System.IO.Path]::GetTempFileName()
     $sePath = [System.IO.Path]::GetTempFileName()
     # 路径要**自己加引号**(PR#182 复审):`Start-Process` 把 `-ArgumentList` 按空格拼成
@@ -567,7 +611,7 @@ finally {
   # 这里只做**核对与兜底**:仍有残留就等一小会儿再报,让读日志的人看得见。
   # 只按「本机所有 chrome」计数,不去杀 —— 杀掉用户自己的浏览器是更坏的副作用,
   # 而 3e 的临时 user-data-dir 已由各套自己的 teardown 负责([SL-287])。
-  if ($smokeLockOk -and -not $NoIpcLock) {
+  if ($script:SmokeLockTaken -and $script:SmokeLockOk -and -not $NoIpcLock) {
     # **只数本套起的那些**,不数「本机所有 chrome」。第一版数了全部,于是把
     # **用户自己开着的浏览器**也算进来 —— 首次并发验收就打出「仍有 8 个 chrome」,
     # 而那 8 个多半是人在用的窗口:一条永远为真的警告等于没有警告。
@@ -592,7 +636,7 @@ finally {
       }
     }
   }
-  Exit-ScvbIpcLock -Mutex $smokeLock -Segment 'gate 3e'
+  Exit-ScvbIpcLock -Mutex $script:SmokeLock -Segment 'gate 3e(页面级)'
 }
 # ===== 持锁段①终点:3f..5(configure/build)**不持锁**,可与别的 agent 并行 =====
 
