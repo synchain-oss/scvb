@@ -1003,7 +1003,7 @@ if (-not $nodeCmd) {
 else {
   $parityOk = $true
   $parityWarn = 0
-  $draftsAllow = 0   # [SL-315] check-changelog-drafts 打出的放行行数(只认行首 [ALLOW])
+  $draftsAllow = 0   # [SL-315] check-changelog-drafts 打出的放行行数(只认行首标记)
   # [SL-295] 自测单独一条:实跑绿有两种可能 ——「块里真没有漏搬」和「判据被改坏了」,
   # 自测把后一种单独照出来。与 format.yml 的 docs-truth 两步逐字同款。
   $draftsSelfTest = (& node (Join-Path 'scripts' 'check-changelog-drafts.mjs') --self-test 2>&1)
@@ -1050,8 +1050,10 @@ else {
       # $smokeFlaky → $smokeLabel、本圈的 $parityWarn → $parityLabel),理由逐字写在上面那段:
       # 「跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字」。一个烂在注释块里的放行,
       # 若只在滚屏里闪一行,本地看到的形态与「没有任何放行」完全一样。
-      # 计数**只认行首** `^\[ALLOW\]`:成功消息里也会提到这两个信号的名字,按裸 `\[ALLOW\]`
-      # 数的话 **0 条放行也会数出 1**(SL-313 那轮 gates 在主线上实测到回显 2 行,就是这个)。
+      # 计数**只认行首、且吃掉前导空格** `^\s*\[ALLOW\]` —— 放行行是 `"  [ALLOW] #…"`,带两个
+      # 空格,写成 `^\[ALLOW\]` 会**有放行也恒报 0**;而按裸 `\[ALLOW\]` 数的话,成功消息里
+      # 提到这两个信号的名字也会被数进去,**0 条放行也会数出 1**(SL-313 那轮 gates 在主线上
+      # 实测到回显 2 行,就是这个)。两个方向一样坏,`check-gates-visibility` 各配了一格夹具。
       # 回显仍按裸标记匹配(要把两类都打出来),只有**计数**收紧到行首 —— 两者判据不同,别合并。
       $draftsAllow += @($out | Where-Object { $_ -match '^\s*\[ALLOW\]' }).Count
       @($out | Where-Object { $_ -match '\[ALLOW\]|\[BASE\]' }) |
