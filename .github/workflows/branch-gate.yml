@@ -72,25 +72,40 @@ jobs:
       # 一条无 sign-off 的外部 commit 就会让后续修改例外条款必须逐一联系贡献者。
       # 用内联 gh api 实现,不引第三方 action(org 的 allowed_actions 是白名单,第三方 DCO action 会被拦)。
       - name: DCO check (all commits must be signed off)
+        # 显式 shell: bash ⇒ Actions 以 `bash --noprofile --norc -eo pipefail` 执行;默认 shell 只有 -e、
+        # 没有 pipefail,管道尾的 wc/tr 会把 gh api 的限流/5xx 吞成退出码 0,total=0 让 250 守卫静默放行
+        # (SCVB 线 SL-308 发现)。下面再显式 set -euo pipefail 一次,不依赖 runner 的默认参数。
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # fork PR 下也可用(只读足够)
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # fork PR 下也可用(只读足够)
         run: |
+          set -euo pipefail
+          # 端点只调**一次**并落盘,计数与筛选读同一份快照:两次调用之间若有人 push,total 与 dco-bad.txt
+          # 会来自不同的 commit 列表;且任一次失败都必须让 step 失败(fail-closed),不能各自静默。
+          # --paginate 不带 --jq 时每页输出一个 JSON 数组首尾相接,jq -s add 合成一个数组。
+          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" > commits.raw.json
+          jq -s 'add' commits.raw.json > commits.json
+          total=$(jq 'length' commits.json)
+          # /pulls/{n}/commits 有 250 条硬上限,--paginate 也不会突破:超过的 commit 不会进下面的
+          # 筛选,门禁会静默半程放行。主支线累积多个子 PR 后整体晋升 dev 的模式下 commit 数随支线
+          # 长度单调增长,故超限直接 fail(许可证门禁不能半程有效),让维护者拆 PR(采纳 #24 review)。
+          # 计数为 0 同样 fail:PR 至少有 1 个 commit,0 只可能是 API 回了空响应或分页拼接出错。
+          if [ "$total" -lt 1 ]; then
+            echo "::error::commits API returned $total commits for this PR; refusing to pass the DCO check on an empty list"
+            exit 1
+          fi
+          if [ "$total" -ge 250 ]; then
+            echo "::error::PR has $total commits (>= 250): the commits API truncates and the DCO check would silently skip the rest; split the PR"
+            exit 1
+          fi
+          echo "DCO: checked $total commits"
           # 用 jq 直接筛出"消息里没有 Signed-off-by 行"的 commit,避免在 shell 里切多行 message。
           # merge commit(parents > 1)豁免:GitHub 网页「Merge pull request」生成的 merge commit 无法带
           # sign-off,而主支线(feature/*)按子 PR 逐个合并后再晋升 dev 时,这些 merge 必然出现在 PR 的
           # commit 列表里(首次触发:#24,feature/macos 含 #19-#21 的三个网页 merge)。merge commit 本身
           # 不引入新贡献内容(冲突解决除外,维护者手工 merge 时仍应 `git merge -s` / `--amend -s`),
           # 每个非 merge commit 仍逐个受检 —— 与 DCO GitHub App 的默认行为一致。
-          gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits"             --jq '.[] | select((.parents | length) < 2) | select((.commit.message | test("(?im)^Signed-off-by: .+ <.+@.+>$")) | not) | .sha' > dco-bad.txt
-          # /pulls/{n}/commits 有 250 条硬上限,--paginate 也不会突破:超过的 commit 不会进上面的
-          # 筛选,门禁会静默半程放行。主支线累积多个子 PR 后整体晋升 dev 的模式下 commit 数随支线
-          # 长度单调增长,故超限直接 fail(许可证门禁不能半程有效),让维护者拆 PR(采纳 #24 review)。
-          total=$(gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" --jq '.[].sha' | wc -l | tr -d '[:space:]')
-          if [ "$total" -ge 250 ]; then
-            echo "::error::PR has $total commits (>= 250): the commits API truncates and the DCO check would silently skip the rest; split the PR"
-            exit 1
-          fi
-          echo "DCO: checked $total commits"
+          jq -r '.[] | select((.parents | length) < 2) | select((.commit.message | test("(?im)^Signed-off-by: .+ <.+@.+>$")) | not) | .sha' commits.json > dco-bad.txt
           if [ -s dco-bad.txt ]; then
             while read -r sha; do
               echo "::error::commit $sha 缺少 Signed-off-by(提交时用 git commit -s;补救:git commit -s --amend 或 git rebase --signoff)"
