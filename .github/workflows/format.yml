@@ -116,6 +116,11 @@ jobs:
         # 一条 glob,而那个函数的头注明写着「只认单一写法会被静默绕过 —— 那正是危险的
         # 那一侧」,这一步恰好只认了那单一写法)。四条并集逐条照搬:
         #   文件名 `-page.mjs` / `function cdpConnect` / `--headless` / `.on|.once` 挂 error。
+        # ⚠ error 那条的引号**两种都要认**:gates 侧是 `["']error`,本仓这 6 套现在**全是
+        # 双引号**(`chrome.on("error"`)。上一版这里只写了单引号,于是第四条判据一次也
+        # 没命中过 —— 它今天「碰巧正确」只是因为那 6 套的文件名都是 `-page.mjs`,
+        # 第一条 glob 兜住了。这正是 `Test-ScvbPageSuite` 头注点名的那个形态:
+        # 「只认单一写法会被 prettier 换引号静默绕过」。
         # 前缀同样不写死,从各套自己的 `mkdtempSync(join(tmpdir(), "scvb-…-"))` 字面量读;
         # 并且**照抄 gates 那边的自检**:判出来的套里有解析不出前缀的,出声。
         if: always() # 冒烟红了才更该看有没有残留,别让 `exit $fail` 把这一步跳过去
@@ -127,7 +132,7 @@ jobs:
             case "$f" in
               *-page.mjs) page+=("$f"); continue ;;
             esac
-            if grep -qE 'function cdpConnect|--headless|[.](on|once)[(][[:space:]]*'"'"'error' "$f"; then
+            if grep -qE 'function cdpConnect|--headless|[.](on|once)[(][[:space:]]*["'"'"']error' "$f"; then
               page+=("$f")
             fi
           done

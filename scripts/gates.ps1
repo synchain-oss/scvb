@@ -1393,7 +1393,11 @@ else {
       $orphans = @($ctestPre | Where-Object { $null -eq $_.ParentName })
       $adopted = @($ctestPre | Where-Object { $null -ne $_.ParentName })
       foreach ($o in $orphans) {
-        Write-Host ("  [ctest] 起跑前发现**孤儿**残留:{0} pid={1}(父 pid={2} 已不在,起于 {3})—— 多半是上一次 ctest 超时留下的,现在收掉" -f $o.Name, $o.ProcId, $o.ParentId, $o.Started) -ForegroundColor Yellow
+        # 「父 pid 已不在」只对**查不到父**那一档成立;pid 复用那一档里那个 pid 上
+        # **明明有进程**。照写会给排障的人假证据:他去任务管理器一查,发现 pid 活得好好的,
+        # 于是开始怀疑判据坏了 —— 而真相是判据这次做对了。`$parentWhy` 就是为这句话准备的。
+        $whyText = if ([string]::IsNullOrEmpty($o.ParentWhy)) { ('父 pid={0} 已不在' -f $o.ParentId) } else { $o.ParentWhy }
+        Write-Host ("  [ctest] 起跑前发现**孤儿**残留:{0} pid={1}({2},起于 {3})—— 现在收掉" -f $o.Name, $o.ProcId, $whyText, $o.Started) -ForegroundColor Yellow
         try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
         catch { Write-Host ("         收不掉({0}),它会继续毒到本轮" -f $_.Exception.GetType().Name) -ForegroundColor Red }
       }
@@ -1423,7 +1427,12 @@ else {
       Set-Gate '6 ctest(有人绕开互斥在跑测试,未执行)' $false
     }
     else {
-      $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error 2>&1)
+      # [SL-311] `--timeout` 给**没有 TIMEOUT 属性**的测试定默认上界;有属性的不受影响
+      # (实测:`--timeout 5` 跑 `scvb_monitor_tests`(属性 600、实际 16s)照样 Passed 16.25s)。
+      # 此前七套里只有 monitor(600)与 ipc(900)有属性,另外四套吃 ctest 默认的 **1500s** ——
+      # 挂死只要落在那四套里,本卡要治的形态就原封不动地复现,而别人的等锁上界只有 30 分钟。
+      # 那四套实测极快(CI runner 上 2.72 / 0.37 / 0.12 / 0.01 秒),300s 已是百倍余量。
+      $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error --timeout 300 2>&1)
       $ctestRc = $LASTEXITCODE
       if ($ctestRc -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
       Set-Gate '6 ctest' ($ctestRc -eq 0)
@@ -1433,7 +1442,16 @@ else {
       # (同上:受控复现里 ctest 到点会杀,所以这一扫多数时候数到 0;它防的是那个
       #  已经真实发生过、但成因还没查清的形态。)
       # 只收孤儿(父进程已死);父进程还活着的不动,理由同起跑前那一段。
+      # 两段式(与 gate 3e 的残留核对同款):这一扫紧跟在 ctest 返回之后,正是
+      # 「刚被 ctest 杀掉、还在退出」的窗口最宽的时刻。不等就定论,会把一个**正在消失**的
+      # pid 点名成孤儿,`Stop-Process -ErrorAction Stop` 对它抛异常,于是打出红字
+      # 「收不掉,下一轮同名测试大概率会挂」—— 而下一轮什么事都没有。那句断言在这条
+      # 路径上站不住。这 3 秒只在**第一次真数到东西时**才花。
       $ctestPost = Get-ScvbTestLeftover
+      if ($null -ne $ctestPost -and $ctestPost.Count -gt 0) {
+        Start-Sleep -Seconds 3
+        $ctestPost = Get-ScvbTestLeftover
+      }
       if ($null -eq $ctestPost) {
         Write-Host '  [ctest] 跑完后无法枚举进程,本轮残留**未知**(不是「没有」)' -ForegroundColor Yellow
       }
@@ -1449,7 +1467,8 @@ else {
           Write-Host ("  [ctest] 跑完仍有 {0} pid={1},父 {2} pid={3} 仍活着 —— **未收**,请人工确认是不是别人在跑" -f $a.Name, $a.ProcId, $a.ParentName, $a.ParentId) -ForegroundColor Yellow
         }
         foreach ($o in $postOrphans) {
-          Write-Host ("  [ctest] 本轮跑完仍有孤儿残留:{0} pid={1}(父 pid={2} 已不在)—— 现在收掉,免得毒到下一位" -f $o.Name, $o.ProcId, $o.ParentId) -ForegroundColor Yellow
+          $whyText2 = if ([string]::IsNullOrEmpty($o.ParentWhy)) { ('父 pid={0} 已不在' -f $o.ParentId) } else { $o.ParentWhy }
+          Write-Host ("  [ctest] 本轮跑完仍有孤儿残留:{0} pid={1}({2})—— 现在收掉,免得毒到下一位" -f $o.Name, $o.ProcId, $whyText2) -ForegroundColor Yellow
           try { Stop-Process -Id $o.ProcId -Force -ErrorAction Stop }
           catch { Write-Host ("         收不掉({0}),下一轮同名测试大概率会挂,手动查 pid {1}" -f $_.Exception.GetType().Name, $o.ProcId) -ForegroundColor Red }
         }
