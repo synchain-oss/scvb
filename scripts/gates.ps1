@@ -1131,7 +1131,21 @@ else {
       # 一次」会长得一模一样,而跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字。
       # 与 Gate 3e 同款处理(见那段 **但绝不静默** —— SKIP 计数要带进总结):把降级计数拼进
       # gate 名,让「有一档没跑」在汇总表里就与「跑过了」不同形。
-      $warnLines = @($out | Where-Object { $_ -match '\[WARN\]' })
+      # [SL-318] 匹配**只认行首、且吃掉前导空格** `^\s*\[WARN\]`,与下面 ALLOW 的计数同一份口径
+      # (三个标记一份判据,别一处紧一处松)。这里的风险比 ALLOW 那条**高一档**:ALLOW 的裸匹配
+      # 只多回显一行,而 WARN 是**直接进 $parityLabel 的计数** —— 任一脚本在成功路径的散文里
+      # 提一句「见 [WARN] 那档」,汇总表当场多报一档降级,正撞下面那段自己写的
+      # 「喊错一次,下次真降级也会被当噪声」。真警告行是 `"  [WARN] …"`(带两个前导空格,
+      # 见 check-native-paths / check-bridge-parity 的写法),所以 `^\s*` 那半不能省 ——
+      # 写成 `^\[WARN\]` 会**有降级也恒报 0**,而「恒 0」连删除式都照不出来(0 == 0)。
+      # 与 ALLOW 那条不同的是:WARN 的**计数与回显共用这一份匹配**(同一个数组),
+      # 收紧计数的同时回显也一并收紧 —— 散文本来就不该冒充一行警告。
+      # 散文侧另有执行者:check-gates-visibility 对 gate 3i 这一圈脚本禁「散文里出现方括号标记」,
+      # ALLOW / BASE / WARN 三个标记同一条守卫。
+      # 边界:gate 3g 也回显 [WARN],但那一处**不进任何计数**(只把「文档未标注、机检覆盖不到」
+      # 的项透出来),散文多一行的代价止于滚屏;它读的脚本也不在上面那道守卫的执行面里。
+      # 所以本卡只收紧这一处,不顺手改 3g。
+      $warnLines = @($out | Where-Object { $_ -match '^\s*\[WARN\]' })
       if ($warnLines.Count -gt 0) {
         $parityWarn += $warnLines.Count
         $warnLines | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
@@ -1155,6 +1169,9 @@ else {
       # 提到这两个信号的名字也会被数进去,**0 条放行也会数出 1**(SL-313 那轮 gates 在主线上
       # 实测到回显 2 行,就是这个)。两个方向一样坏,`check-gates-visibility` 各配了一格夹具。
       # 回显仍按裸标记匹配(要把两类都打出来),只有**计数**收紧到行首 —— 两者判据不同,别合并。
+      # [SL-318] 这一条**只对 ALLOW / BASE 成立**:它俩的回显不进任何计数,多打一行的代价止于
+      # 滚屏。上面 WARN 那条不一样(计数与回显共用一份匹配、且计数直接进标签),所以那里两半
+      # 一起收到了行首。别把这句「回显按裸标记」推广过去。
       $draftsAllow += @($out | Where-Object { $_ -match '^\s*\[ALLOW\]' }).Count
       @($out | Where-Object { $_ -match '\[ALLOW\]|\[BASE\]' }) |
         ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
