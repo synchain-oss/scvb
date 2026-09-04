@@ -73,7 +73,7 @@ if (args.has("help")) {
             "  --out=<路径>            PNG 落点,默认 web-preview/.shots/<tab>-<时间>.png",
             "  --console               把页面 console 打到 stdout(排障用)",
             "",
-            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 导航没成功(连不上、错误页、非 2xx)",
+            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败)",
         ].join("\n"),
     );
     process.exit(0);
@@ -129,7 +129,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // [SL-290] 「没拍到」与「拍到的是错误页」要能被调用方分开:前者多半是环境/参数问题,
 // 后者说明**目标服务没起**——同样是失败,但排障方向完全不同,退出码就该不同。
-// 退出码:0 = 拍到了;1 = 其它失败;2 = 导航没成功(含错误页)。
+// 退出码:0 = 拍到了;1 = 其它失败;2 = 目标页面没能真的呈现(含错误页、非 2xx、壳页报注入失败)。
 // 注:本脚本不被 gates / CI 调用(只在 PREVIEW-GUIDE 与 E2E-journey 里给人用),
 // 所以 2 不会撞上 gate 3e 那条「退 2 当缺可选依赖打 SKIP」的读法。
 class NavigationError extends Error {}
@@ -358,6 +358,9 @@ try {
     //    上一版「取首条」虽然理由是假的,但判据一定带电;换成 frameId 精确匹配反而多了一个
     //    fail-open 前提。所以退回「首条 Document」兜底,并**出声**——判据可以降精度,
     //    但不能悄悄不在(复审第 4 轮;这正是本卡开头那句「工具没报错不等于验过」)。
+    if (!mainDoc && docResponses.length === 0) {
+        console.warn("⚠ 本次没收到任何 Document 响应,第三道未生效");
+    }
     if (!mainDoc && docResponses.length > 0) {
         mainDoc = docResponses[0];
         console.warn(
@@ -403,7 +406,7 @@ try {
     }
     if (shell && shell.ok === "0") {
         throw new NavigationError(
-            `壳页报注入失败 —— 主文档 ${mainStatus ?? "2xx"} 但舞台是空的。壳页原话:${shell.why}`,
+            `壳页报注入失败 —— 主文档 ${mainStatus ?? "状态未取到"} 但舞台是空的。壳页原话:${shell.why}`,
         );
     }
 
