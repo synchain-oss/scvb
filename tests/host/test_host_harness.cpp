@@ -1479,6 +1479,10 @@ struct MonoMultiRig
     }
 
     // 采一段有声有静的素材,返回覆盖到的秒数。
+    // ⚠ 返回的是覆盖**时长**,不是覆盖的**结束时刻** —— 别拿它当分析窗右端。
+    //   本 rig 的采集是在 `waitUntilInjected()` 把播放头推出去之后才打开的,所以覆盖区
+    //   **不从 0 起**;`[0, coveredS)` 与真实覆盖区只是部分相交,相交多少取决于机器负载。
+    //   要分析窗请用 `coverageWindow()`(见下)。[SL-292]
     double capture()
     {
         out.setCaptureEnabled(true);
@@ -1490,6 +1494,41 @@ struct MonoMultiRig
         }
         pump(400);
         return out.coverageOf(1, 0.0, 30.0).coveredS;
+    }
+
+    // [SL-292] 真实覆盖区间 → 分析窗 `[startS, endS)`。
+    // `HOST SL263` 因 #171 复审【重要】已经这么取窗,那段口径抽成 helper 放这儿,
+    // 免得每个新用例都要重新想一遍「coveredS 是时长不是时刻」——同族判例复发过一次
+    // (SL-284 写这台 rig 的新用例时又拿 coveredS 当了右端),抽出来才不会再复发。
+    struct Window
+    {
+        double startS = 0.0;
+        double endS = 0.0;
+    };
+    // ⚠ 窗口取自 **`ch` 这一轨**的覆盖区,不是多轨并集;`MonoMultiRig` 有三轨,默认按 ch1 定窗。
+    //   (三轨是同一次 `runBlocks` 一起喂的,覆盖区实质同步,所以按 ch1 定窗对本 rig 成立;
+    //    哪天有用例让某一轨单独起停,就得显式传 `ch` 或改成并集,别默认它还成立。)
+    // `probeEndS` 只是**探测窗**,与 `capture()` 里写死的 30.0 是两个口径:
+    // `capture()` 返回的 `coveredS` 是被那个 30 s 查询窗**截断过**的时长,
+    // 而这里默认探到 600 s,为的是别把覆盖区右端截掉。两个数不必相等,但别把它们读成同一个。
+    Window coverageWindow(int ch = 1, double probeEndS = 600.0)
+    {
+        const auto cov = out.coverageOf(ch, 0.0, probeEndS);
+        if (cov.ranges.empty())
+        {
+            // 出声再回 {0,0}:否则调用处只红出 `0.0 > 0.0`,读不出「压根没采到覆盖」——
+            // 正是本卡要治的「红错原因」。
+            // ⚠ **必须是 `UNSCOPED_INFO` 不能是 `INFO`**:`INFO` 展开成栈上的
+            // `Catch::ScopedMessage`,析构即 `popScopedMessage`(见 catch_message.cpp),
+            // `return` 一走消息就被弹掉,**到不了调用处**——上一版就是这么写的,实测红出来
+            // 仍只有 `0.0 > 0.0`,等于没加。`UNSCOPED_INFO` 留到**下一条断言**为止,
+            // 而调用处紧跟着的就是那条 `REQUIRE(win.endS > win.startS)`,窗口正好对上。
+            UNSCOPED_INFO("coverageWindow: ch=" << ch << " 在 [0, " << probeEndS << ") 内没有任何覆盖区间");
+            return {}; // 调用处用 `REQUIRE(w.endS > w.startS)` 接住:没采到东西就该红在那儿
+        }
+        const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+        return {static_cast<double>(cov.ranges.front().begin) * hopS,
+                static_cast<double>(cov.ranges.back().end) * hopS};
     }
 
     // [#152 复审【建议】1] 只采**纯静音**:覆盖区有,但一句人声都没有 —— 分析零产出。
@@ -6929,13 +6968,13 @@ TEST_CASE("HOST SL263:换 loudness_mode → 重分析产出真变(钉住 startAn
 
     // 分析窗取**真实覆盖区间**,不能拿 `coveredS`(它是覆盖**时长**)当结束时刻 ——
     // 采集是在播放头已经走出去一段之后才打开的,`[0, coveredS)` 与真实覆盖区只是部分相交,
-    // 相交多少取决于机器负载(#171 复审【重要】;与下一条用例里那个坑逐字同款)。
-    const auto cov = r.out.coverageOf(1, 0.0, 600.0);
-    REQUIRE_FALSE(cov.ranges.empty());
-    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
-    const double startS = static_cast<double>(cov.ranges.front().begin) * hopS;
-    const double endS = static_cast<double>(cov.ranges.back().end) * hopS;
-    REQUIRE(endS > startS);
+    // 相交多少取决于机器负载(#171 复审【重要】)。
+    // [SL-292] 这七行原本写在这儿,现已抽成 `MonoMultiRig::coverageWindow()` ——
+    // 抽出来的当轮就把这里回填掉,否则同一口径两个落点,改 helper 时这边不会跟着走。
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    const double startS = win.startS;
+    const double endS = win.endS;
 
     // [SL-284] 连 fallback level 一起带回来:下面要**先断前提再断推论**。
     struct Run
@@ -7041,9 +7080,33 @@ TEST_CASE("HOST SL284:高能量轨冻结硬左 → 首趟不收敛,回退级报�
     const double coveredS = r.capture();
     REQUIRE(coveredS > 0.0);
 
+    // [SL-292] 分析窗取**真实覆盖区间**,不能拿 `capture()` 的返回值当结束时刻 ——
+    // 它是覆盖**时长**,而本 rig 的采集在播放头走出去之后才打开,覆盖区不从 0 起。
+    // `[0, coveredS)` 与真实覆盖区只是部分相交,相交多少取决于机器负载:慢机 corner 下
+    // 窗口可能几乎不含素材 ⇒ 下面那条基线 `REQUIRE(level == 1)` 会红在 0(压根没跑分析),
+    // **红错原因**。与 `HOST SL263` 那段逐字同款(#171 复审【重要】)。
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    // [SL-292] **把「时长 ≠ 时刻」这件事本身钉成断言**,而不是只写在注释里。
+    // 造不出慢机 corner(本机台素材充足,拿错窗口照样能跑出 level 1),所以退一层,
+    // 钉住让旧写法出错的那个**前提**:采集在播放头走出去之后才开 ⇒ 覆盖区不从 0 起
+    // ⇒ `startS > 0` ⇒ `endS`(时刻)必然大于 `coveredS`(时长)。
+    // 这两条一旦不成立,说明 rig 的采集时序变了,那时 `[0, coveredS)` 与真实覆盖区的
+    // 关系也跟着变,本条注释与上面的取窗都要重新想一遍 —— 所以它们是判据不是装饰。
+    // `startS > 0` 的余量只有**一个 hop 出头**,它依赖这个前提:
+    //   `waitUntilInjected()` 每轮至少跑一次 `runBlocks(2, …)` ⇒ 开采集前播放头已走
+    //   `2 × kBlock / kSr = 2 × 512 / 48000 ≈ 21.3 ms`,而 `featHopSeconds() = 10 ms`
+    //   ⇒ 首个覆盖 hop 索引 ≥ 2 ⇒ `startS ≥ 0.02`。
+    // **`kBlock` 若降到 128,2 块只有 5.3 ms < 10 ms,首个覆盖 hop 落在索引 0,这条直接红**
+    // —— 而红出来看着像「rig 采集时序变了」,其实只是块长变了。红在这里先看这个前提。
+    INFO("覆盖区 = [" << win.startS << ", " << win.endS << ") 秒;coveredS(时长)= " << coveredS);
+    REQUIRE(win.startS > 0.0);
+    REQUIRE(win.endS > coveredS);
+
     // ① 基线:不动任何东西,本机台素材首趟就收敛。
     //    这一半同样重要 —— 它证明下面的 >=2 是**冻结造成的**,不是这台机台本来就不收敛。
-    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/true));
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
     INFO("基线(无冻结)回退级 = " << r.fallbackLevel());
     REQUIRE(r.fallbackLevel() == 1);
 
@@ -7072,7 +7135,7 @@ TEST_CASE("HOST SL284:高能量轨冻结硬左 → 首趟不收敛,回退级报�
     }
 
     // ③ 保留手动/冻结重分析 ⇒ 首趟解被那两条硬左的响轨拽偏,收不进容差。
-    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
 
     // ⚠ **先证明冻结真的进了管线**:若冻结没生效,那两条轨会被当自由轨重新指派,
     // 不平衡根本不存在 —— 那样下面的 level 断言即使红也是**红错了原因**。
