@@ -889,7 +889,7 @@ else {
 }
 
 # ==================================================================
-Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法 对拍(scripts/check-*)==='
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目 对拍(scripts/check-*)==='
 # ==================================================================
 # [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
 # 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
@@ -915,14 +915,14 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法 对�
 # 「SKIP 吞掉判据」那一族的形态。它的**自测**要单独跑一条(下面那圈只跑裸命令)。
 if (-not $nodeCmd) {
   Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
-  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍' $false
+  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍' $false
 }
 else {
   $parityOk = $true
   $parityWarn = 0
   # [SL-295] 自测单独一条:实跑绿有两种可能 ——「块里真没有漏搬」和「判据被改坏了」,
   # 自测把后一种单独照出来。与 format.yml 的 docs-truth 两步逐字同款。
-  $draftsSelfTest = (& node scripts\check-changelog-drafts.mjs --self-test 2>&1)
+  $draftsSelfTest = (& node (Join-Path 'scripts' 'check-changelog-drafts.mjs') --self-test 2>&1)
   if ($LASTEXITCODE -ne 0) {
     $parityOk = $false
     Write-Host '  check-changelog-drafts.mjs --self-test:' -ForegroundColor Red
@@ -981,9 +981,9 @@ else {
   # 「某档没跑」——今天这四处恰好都是「跳过」,谁哪天拿它发一条纯提示,写死「−N 档降级」
   # 就会对着提示喊降级。这个信号刚建立起来就是要让人信它,喊错一次,下次真降级也会被当噪声。
   # 所以这半句只能是「上方有几处 WARN,自己看」,不能冒充「降级档数」的权威计数。
-  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍'
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍'
   if ($parityWarn -gt 0) {
-    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
   }
   Set-Gate $parityLabel $parityOk
 }

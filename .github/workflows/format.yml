@@ -115,10 +115,18 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # [SL-295] check-changelog-drafts 要读 base 分支的**提交标题**来判「这张卡上线没有」。
+          # [SL-295] check-changelog-drafts 要读 base 分支的**提交标题**来判「这个号上线没有」。
           # 默认的 fetch-depth: 1 只给一条提交 ⇒ 已上线集合近乎为空 ⇒ 那道门禁永远绿。
           # 脚本自己在浅克隆上 fail-closed 退 1(不静默放行),所以这里必须给全历史。
           # 本仓历史只有两百来条提交,全拉的代价在这个 job 里可以忽略。
+          #
+          # ⚠ 这一行还有**第二个**作用,而且不写出来没人猜得到:它决定 `origin/<base_ref>`
+          # 这个 remote-tracking ref **存不存在**。actions/checkout 只有在 depth=0 时才用
+          # `+refs/heads/*:refs/remotes/origin/*`;给任何正数(含 50)时,PR 事件只拉
+          # `refs/remotes/pull/<n>/merge`,仓里**根本不会有** `refs/remotes/origin/feature/v1`,
+          # 下面那步的 SCVB_CHANGELOG_BASE 会直接解析不出来。也就是说这一行不是「拉深一点」,
+          # 是「**拉到别的分支**」。嫌慢的人最可能改成 `fetch-depth: 50` —— 那会先撞浅克隆那道
+          # 判据(红);要是有人把浅克隆判据也一起放宽,就会掉进这第二个坑(#197 复审【建议】)。
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
