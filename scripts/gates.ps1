@@ -17,7 +17,8 @@
   gate 3e 与 gate 6/7/8 由本脚本自己用命名互斥体 `SCVB-ipc-tests` 全机串行
   ——**两段分别持、之间放开**([SL-301];3f..5 的 configure/build 不持锁,可并行)。
   调用方**不要**再在外面把整条 gates 包进目录锁 —— 那会把编译也串起来,正是本卡要拆掉的。
-  等锁有 45 分钟上界:超时(或互斥体建不出来)→ 锁那一行判负,该段 **一概不执行**
+  等锁上界**由 3e 的段预算推出、不写字面量**(默认预算 480s ⇒ 30 分钟;见 `$script:ScvbMutexWaitMinutes`
+  处的推导)。超时(或互斥体建不出来)→ 锁那一行判负,该段 **一概不执行**
   (本档位下本来要跑的记 FAIL、本来就跳过的仍记 SKIP),整条 gates 以 1 退出。
   绝不无锁硬跑 —— 无锁跑会去抢隔壁持锁 agent 的共享内存段,让那一侧收到查不出的假红。
   逃生口 `-NoIpcLock` 只在确认无并行 agent 时用。
@@ -121,7 +122,13 @@ function Test-ScvbPageSuite {
   param([string]$Path)
   if ($Path -like '*-page.mjs') { return $true }
   $t = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
-  if ($null -eq $t) { return $false }
+  if ($null -eq $t) {
+    # **读不到就当页面级**(复审指出:上一版这里 `return $false`,恰好倒向我自己在头注里
+    # 点名的危险侧 —— 读不到文件时把它判成纯 node ⇒ **无锁跑起浏览器**,而且完全静默)。
+    # 兜底必须与判据同向:多判只是多串几十秒,漏判是本卡白做。出声,别让它静默生效。
+    Write-Host ("  [ipc-lock] 读不到 {0},保守当作页面级(持锁跑)" -f (Split-Path $Path -Leaf)) -ForegroundColor Yellow
+    return $true
+  }
   # 四条任一命中即算「起浏览器」。`cdpConnect` 与 gate 3i 的 check-smoke-hygiene 同判据,
   # 故本集合 ⊇ 它那一族;其余三条是往「宁可多判」偏的保险。
   if ($t -match 'function cdpConnect') { return $true }
@@ -150,19 +157,20 @@ function New-ScvbMutex {
 # 调小不会削弱互斥(拿不到锁一律判负 + 跳过,绝不无锁跑),只会让正常排队更容易被判负。
 # [SL-301] 等锁上界**由 3e 的实际预算推出来,不写字面量**。
 #
-# 为什么不能写死:病态情况下持锁方最坏占住「页面级套数 × 每套上界」。我第一版写的是
-# 「6 × 300s ≈ 31 分钟,45 给 1.5 倍余量」—— **那笔账是错的**:当时锁包的是**整个 3e**
-#(24 套),真实上界是 24 × 300s = **120 分钟**,45 一样会被击穿,而且不需要全病态
-#(6 套页面级全挂 30min + 另外 18 套里挂 4 套 20min 就已经 50min > 45)。复审点出后改了两处:
-# ①持锁面收窄到**只有起浏览器的那几套**(见 gate 3e 里的惰性取锁),最坏账才真的是
-#「页面级套数 × 上界」;②这个上界**跟着那笔账算**,不再手写常数。
+# 为什么不能写死:等锁上界要盖住**持锁方最坏占住多久**,而那个量在本卡里改过两次口径,
+# 每改一次,写死的常数就悄悄失配一次 —— 所以它必须是算出来的。
 #
-# 手写常数还吃不到另一个变量:`SCVB_SMOKE_TIMEOUT_SEC` 只有 >=30 的下界、**没有上界**,
-# 有人设成 600 就把账翻一倍,而写死的 45 完全不知道。算出来就自动跟上。
-# 取 1.5 倍余量,再与 45 取大(6/7/8 段本身也要等,历史持锁 9-10 分钟)。
-# 上界跟着**段预算**走(裁定 (a) 落地之后,持锁方最坏就是这个预算,不再是「套数 × 每套上界」)。
-# 默认 480s ⇒ ceil(480×1.5/60)=12,与 30 取大 ⇒ **30 分钟**,正是统筹裁定要留的值;
-# 有人把预算调大,这个上界会自动跟上,不必再手改一个字面量。
+# 现在的口径(裁定 (a) 落地之后,**唯一有效的那个**):持锁方最坏就是 **3e 的段预算**
+# (`$script:ScvbSmokeSegmentBudgetSec`,默认 480s)。到点即杀当前套、其余记 FAIL、立即放锁,
+# 所以「页面级套数」与「每套上界 `SCVB_SMOKE_TIMEOUT_SEC`」**都不再决定持锁上限** —— 谁把
+# 每套上界调到 600s 也撑不破这个封顶,因为先到的是预算。
+#
+# 于是:`ceil(段预算 × 1.5 / 60)`,再与 30 取大(6/7/8 段本身也要排队,历史持锁 9-10 分钟)。
+# 默认 480s ⇒ ceil(12)=12,取大后 **30 分钟**,正是统筹裁定要留的值;把预算调大,上界自动跟上。
+#
+# (历史,仅供追溯、勿据以推理:(a) 之前这里算的是「页面级套数 × 每套上界」,
+#  更早一版锁包着**整个 3e** 的 24 套、把 6×300s≈31 分钟错当上界写死了 45 —— 真值是
+#  24×300s=120 分钟。两版口径都已被段预算取代。)
 $script:ScvbSmokeSegmentBudgetSec = 480
 if ($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) {
   $parsedSegBudget = 0
@@ -173,11 +181,21 @@ if ($env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) {
     Write-Host ("  [WARN] SCVB_SMOKE_SEGMENT_BUDGET_SEC='{0}' 不是 >=10 的整数,回落到默认 480s" -f $env:SCVB_SMOKE_SEGMENT_BUDGET_SEC) -ForegroundColor Yellow
   }
 }
-$script:ScvbMutexWaitMinutes =
-  if ($env:SCVB_MUTEX_WAIT_MINUTES) { [int]$env:SCVB_MUTEX_WAIT_MINUTES }
-  else {
-    [Math]::Max(30, [Math]::Ceiling($script:ScvbSmokeSegmentBudgetSec * 1.5 / 60))
+# 解析与段预算那份**同形**(先给出默认、再试解析、坏值出声回落),不要两套风格:
+# 裸 `[int]$env:...` 在 `=abc` 时抛在脚本顶层、**整条 gates 当场挂**,而 `=0` / 负数会被
+# 悄悄收下,把等锁上界压成「几乎不等」—— 拿不到锁一律判负,于是并发时人人假红。
+# `[ref]` 只能作用在**已存在**的变量上,所以这一行的 `= 0` 不是多余的初始化:
+# 去掉它,设了这个环境变量的那一跑会以「[ref] cannot be applied…」在顶层直接死掉。
+$script:ScvbMutexWaitMinutes = [Math]::Max(30, [Math]::Ceiling($script:ScvbSmokeSegmentBudgetSec * 1.5 / 60))
+if ($env:SCVB_MUTEX_WAIT_MINUTES) {
+  $parsedWaitMin = 0
+  if ([int]::TryParse($env:SCVB_MUTEX_WAIT_MINUTES, [ref]$parsedWaitMin) -and $parsedWaitMin -ge 1) {
+    $script:ScvbMutexWaitMinutes = $parsedWaitMin
   }
+  else {
+    Write-Host ("  [WARN] SCVB_MUTEX_WAIT_MINUTES='{0}' 不是 >=1 的整数,回落到推导值 {1} 分钟" -f $env:SCVB_MUTEX_WAIT_MINUTES, $script:ScvbMutexWaitMinutes) -ForegroundColor Yellow
+  }
+}
 
 function Wait-ScvbMutex {
   param($Mutex, [string]$Name, [string]$Tag, [int]$TimeoutMinutes = $script:ScvbMutexWaitMinutes)
@@ -540,9 +558,9 @@ else {
   # 分类判据见 `Test-ScvbPageSuite`(单一真源,有意取并集偏向多判 —— 漏判的代价是
   # 「无锁跑起浏览器」且完全静默,多判只是多串几十秒)。
   # 排序把纯 node 的排前面,**跑到第一套页面级时才取锁**,循环结束在 finally 里放 ——
-  # 于是无锁那 18 套可以与别的 agent 并行,而持锁段的最坏账变成「6 × 上界」,
-  # 与 :126 那笔算术**真的**对得上(此前那笔漏算了这 18 套,复审点出:24×300s = 120 分钟)。
-  # 判据只有一份:`Test-ScvbPageSuite`(见它的头注:有意取并集、偏向多判)。
+  # 于是无锁那 18 套可以与别的 agent 并行。持锁段占住多久由**段预算**封顶
+  # (`$script:ScvbSmokeSegmentBudgetSec`),不再是「套数 × 每套上界」——
+  # 等锁上界正是从那个预算推出来的,两处口径同源。
   $pageSuites = @($smokeFiles | Where-Object { Test-ScvbPageSuite -Path $_.FullName })
   $pageNames = @($pageSuites | ForEach-Object { $_.Name })
   $smokeFiles = @($smokeFiles | Where-Object { $pageNames -notcontains $_.Name }) + $pageSuites
@@ -621,6 +639,10 @@ else {
       # 只写「超时被杀」会让人去追一套其实没挂的冒烟(它只是被段预算腰斩了)。
       if ($waitSec -lt $smokeTimeoutSec) {
         Write-Host ("  [HUNG] {0}:被**段预算**腰斩(只等了 {1}s,每套上界是 {2}s)——它未必挂死,是 3e 页面级段的 {3}s 预算见底了" -f $f.Name, $waitSec, $smokeTimeoutSec, $smokeSegBudgetSec) -ForegroundColor Red
+        # **在这里也置位**(复审第 5 轮):`$smokeBudgetHit` 原本只在循环**顶部**的预算检查里置真,
+        # 而被腰斩的若是**最后一套**页面级,循环就此结束、那个检查再也不会执行 ⇒ 汇总把
+        # 「预算被击穿」报成一次普通挂死。滚屏里说对了、摘要里说错了 —— 正是本卡在治的形态。
+        $smokeBudgetHit = $true
       }
       else {
         Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,已连进程树杀掉并判红" -f $f.Name, $smokeTimeoutSec) -ForegroundColor Red
@@ -684,7 +706,11 @@ else {
   }
   # [SL-301 裁定(a)] 超预算同理必须进摘要 —— 「余套没跑」与「都跑过了」不能长得一样。
   if ($smokeBudgetHit) {
-    $smokeLabel = '{0}(!页面级段超 {1}s 预算,余套未跑)' -f $smokeLabel, $smokeSegBudgetSec
+    # 「余套未跑」只在**真的还有剩下的套**时才成立:预算若是在**最后一套**上见底,
+    # 24 套全都起过跑,写「余套未跑」就是汇总说谎的另一个方向(把它说得比实际更糟)。
+    # 两种形态共用一个后缀,但措辞跟着 `$smokeRanCount` 走。
+    $budgetTail = if ($smokeRanCount -lt $smokeFiles.Count) { '余套未跑' } else { '末套被腰斩' }
+    $smokeLabel = '{0}(!页面级段超 {1}s 预算,{2})' -f $smokeLabel, $smokeSegBudgetSec, $budgetTail
   }
   if ($smokeNoLock) {
     $smokeLabel = '{0}(!拿不到 IPC 锁,页面级未跑)' -f $smokeLabel
