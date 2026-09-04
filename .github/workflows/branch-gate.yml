@@ -85,6 +85,12 @@ jobs:
           # --paginate 不带 --jq 时每页输出一个 JSON 数组首尾相接,jq -s add 合成一个数组。
           gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" > "$RUNNER_TEMP/commits.raw.json"
           jq -s 'add' "$RUNNER_TEMP/commits.raw.json" > "$RUNNER_TEMP/commits.json"
+          # 响应体必须是数组:错误体 {"message":…} 经 `length` 得到的是键数、也是合法整数,下面两道计数
+          # 守卫都会放过,只能靠更下游的 .parents 报错偶然 fail —— 在这里显式断言类型(SCVB 线 SL-317)。
+          if ! jq -e 'type == "array"' "$RUNNER_TEMP/commits.json" > /dev/null; then
+            echo "::error::commits API did not return a JSON array (got: $(jq -c 'if type == "object" then {message} else type end' "$RUNNER_TEMP/commits.json")); refusing to pass the DCO check"
+            exit 1
+          fi
           total=$(jq 'length' "$RUNNER_TEMP/commits.json")
           # 先证明它是十进制整数再比较:`set -e` 不覆盖 if 条件,`[ "" -lt 1 ]` 只会报 integer expected
           # 然后条件为假、落到放行路径(SCVB 线 SL-313)。
@@ -134,6 +140,11 @@ jobs:
           set -euo pipefail
           gh api --paginate "/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" > "$RUNNER_TEMP/files.raw.json"
           jq -s 'add' "$RUNNER_TEMP/files.raw.json" > "$RUNNER_TEMP/files.json"
+          # 响应体必须是数组(同 DCO 步,SCVB 线 SL-317):错误体是对象,length 得键数照样是整数。
+          if ! jq -e 'type == "array"' "$RUNNER_TEMP/files.json" > /dev/null; then
+            echo "::error::files API did not return a JSON array (got: $(jq -c 'if type == "object" then {message} else type end' "$RUNNER_TEMP/files.json")); refusing to pass the frozen-contract guard"
+            exit 1
+          fi
           nfiles=$(jq 'length' "$RUNNER_TEMP/files.json")
           # 先证明它是十进制整数再比较:`set -e` 不覆盖 if 条件,`[ "" -lt 1 ]` 只会报 integer expected
           # 然后条件为假、落到放行路径(SCVB 线 SL-313)。
@@ -157,7 +168,12 @@ jobs:
           files=$(jq -r '.[] | (.filename, (.previous_filename // empty))' "$RUNNER_TEMP/files.json")
           touched=$(printf '%s\n' "$files" | grep -E '^(docs/PARAMETERS\.md|docs/IPC_CONTRACT\.md|docs/STATE_SCHEMA\.md|docs/SCVB_CONTRACT\.md|tests/golden/)' || true)
           if [ -n "$touched" ]; then
-            doc=$(printf '%s\n' "$files" | grep -E '^docs/contract-changes/[0-9]{8}-.+\.md$' || true)
+            # 凭据面与触碰面分开取:触碰面尽量宽(含 renamed 旧路径),凭据面尽量严 —— 只认 status 为
+            # added / modified 且落在 docs/contract-changes/ 下的文档。若共用上面的 $files,把一份旧变更文档
+            # `git mv` 走(previous_filename 命中)或 `git rm` 掉(filename 仍在列表)都会被当成「已交变更文档」
+            # 放行(SCVB 线 SL-317 实证)。renamed 而来的文档也不算数:改名不等于为本次触碰写了说明。
+            doc=$(jq -r '.[] | select(.status == "added" or .status == "modified") | .filename' "$RUNNER_TEMP/files.json" \
+              | grep -E '^docs/contract-changes/[0-9]{8}-.+\.md$' || true)
             if [ -z "$doc" ]; then
               echo "::error::本 PR 触碰了冻结契约文件:"; printf '  %s\n' $touched
               echo "::error::必须在同一个 PR 里新增 docs/contract-changes/<YYYYMMDD>-<slug>.md(模板见 docs/contract-changes/TEMPLATE.md),并挂 status/frozen-contract 标签由用户批准。"
