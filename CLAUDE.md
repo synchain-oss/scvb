@@ -42,7 +42,7 @@
 - **本地 gates 与 CI 的生成器不同,不是等价关系**([J96] 起):CI 是 `Ninja Multi-Config` + sccache,本地 gate 4 默认用 CMake 在 Windows 上的默认生成器(Visual Studio)。两者会在不同的地方红 —— `add_custom_command` 漏声明的隐式依赖(MSBuild 靠工程内顺序兜住、Ninja 并行到炸)、生成物时序、PCH 行为。以前无所谓,因为 push→`feature/**` 每次都在 CI 上编一遍;那条触发撤掉之后,**Ninja 侧的错第一次被看见就是出包前那次 dispatch**。所以:改到 `CMakeLists.txt` / 构建脚本 / 依赖的 PR,**[SL-283] 起会自动照编**(这些路径都在 `NATIVE_RE` 里,不用再打 `ci:full`);想在本地先对一遍,就在 Developer Command Prompt 里跑 `pwsh scripts/gates.ps1 -Generator "Ninja Multi-Config"`(该参数默认空 = 保持旧行为;**不做自动探测**,`ninja` 在 PATH 上但 shell 里没有 vcvars 时会把所有人的 gate 4 一起变红)。
 - 子 PR 至少 `-PluginOnly`;feature→dev 收口 PR 必须全量。**[J96] 之后这条从「建议」变成第一道编译门**:子 PR 默认不跑 `build-vst3`。**[SL-283] 起收窄**:碰了 native 路径的子 PR 在 CI 上照跑全量,所以「没有任何机器会看见」现在**只对纯文档 / 脚本子 PR 成立**(而那类 PR 本来也不该有编译错)。即便如此本地 gates 仍是第一道也是最快的一道 —— CI 那道要等 7 分钟,而且它只在你碰了 native 路径时才醒。
 - 并行 agent 必须各用独立 git worktree 与 `-BuildDir`;GUI pluginval 全局串行。
-- **锁纪律([SL-277]/[J96] 拆锁,2026-09-02)**:`gates.ps1` 自己在 gate 6/7/8 外面套一把命名互斥体 `Local\SCVB-ipc-tests`,gate 1–5 **完全不持锁**。
+- **锁纪律([SL-277]/[J96] 拆锁,2026-09-02)**:`gates.ps1` 自己用一把命名互斥体 `Local\SCVB-ipc-tests` 串行**两段**:**gate 3e**([SL-301] 纳入——它起 6 个无头 Chrome,实测会把同机别人的 gate 6 拖红)与 **gate 6/7/8**;**两段分别持、之间放开**,所以 `3f..5`(含 configure/build)**不持锁**、可与别的 agent 并行。
   - 拆锁的理由:要互斥的是**跨进程共享内存段**(段名前缀 `SynchainSCVB.v1.` 全机唯一,ctest 的 ipc 套件与 pluginval 都会开同名段),而 configure/build 只动各自的 `-BuildDir`。旧做法把整条 gates 包进一把外部目录锁,连 20 分钟的编译一起串行,四个 agent 排队等一个人编译。
   - **调用方不要再在 `gates.ps1` 外面套目录锁** —— 那会把刚拆开的编译重新串起来。手跑 `ctest` / `pluginval`(不经 gates.ps1)时才需要自备互斥。
   - 互斥体是内核对象,进程被 kill 或崩溃时**必然**释放:没有 owner 文件、没有孤儿判定、也没有「等超时后覆写别人的锁」这条路径。
