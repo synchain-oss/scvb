@@ -454,6 +454,7 @@ $script:SmokeLock = $null
 $script:SmokeLockTaken = $false
 $script:SmokeLockOk = $true   # 没到页面级就一直是「不需要锁」
 $script:SmokeSegSw = $null    # 持锁段计时,取到锁那一刻才起
+$script:SmokeSegStart = $null # [SL-305] 取到锁的**时刻**,用来把残留进程按「起于本段之后」筛出来
 # 段预算只解析一份(见脚本顶部 `$script:ScvbSmokeSegmentBudgetSec` 的头注),这里直接用 ——
 # 两份解析漂了会让「等锁上界」与「实际预算」脱钩,而且上一版两份的行为还不一致(一份出声一份静默)。
 $smokeSegBudgetSec = $script:ScvbSmokeSegmentBudgetSec
@@ -597,6 +598,7 @@ else {
       # 而且超预算那行还会说一句不存在的「立即放锁」(复审点出)。
       if ($null -ne $script:SmokeLock) {
         $script:SmokeSegSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $script:SmokeSegStart = Get-Date
       }
     }
     # [SL-301 裁定(a)] 预算兜的是**持锁方**,等锁上界兜的是**等锁方**,两者并存、不可互相替代:
@@ -634,8 +636,12 @@ else {
       # 连进程树一起收:只杀 node 的话,它起的无头 Chrome 会活下来继续占资源。
       # `Kill($true)`(连进程树)是 .NET Core 3.0+ 的重载。回退到 `Kill()` 时**只杀 node,
       # 它起的 Chrome 会留下** —— 正是本段要根除的形态,所以回退必须出声,不能静默。
+      # [SL-305] 记下**到底走了哪条 kill**:回退路径只杀 node,底下那行 [HUNG] 不能照旧
+      # 写「已连进程树杀掉」—— 同一次运行里 WARN 说回退了、HUNG 说连树杀了,读的人只能信一个。
+      $killedTree = $true
       try { $proc.Kill($true) }
       catch {
+        $killedTree = $false
         Write-Host '         [WARN] 本机 pwsh 不支持 Kill($true)(需 .NET Core 3.0+),回退成只杀 node —— 它起的 Chrome 可能留下,手动查一下' -ForegroundColor Yellow
         try { $proc.Kill() } catch {}
       }
@@ -658,7 +664,8 @@ else {
         $smokeHungByBudget++
       }
       else {
-        Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,已连进程树杀掉并判红" -f $f.Name, $smokeTimeoutSec) -ForegroundColor Red
+        $killWord = if ($killedTree) { '已连进程树杀掉' } else { '**只杀掉了 node**(连树杀不可用,它起的 Chrome 可能还在)' }
+        Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,{2}并判红" -f $f.Name, $smokeTimeoutSec, $killWord) -ForegroundColor Red
         Write-Host '         (这一套内部的 CDP 截止时间没能兜住 ⇒ 多半卡在 CDP 之外:Chrome 没起来 / WebSocket 没连上 / 页面永不 load)' -ForegroundColor Yellow
       }
     }
@@ -755,50 +762,81 @@ finally {
   # 「放了锁但资源还占着」等于没放,本卡的不变式当场失效。
   # 正常路径下 3e 自己会收干净(每套跑完即退,超时那支走 `Kill($true)` 连进程树);
   # 这里只做**核对与兜底**:仍有残留就等一小会儿再报,让读日志的人看得见。
-  # 只按「本机所有 chrome」计数,不去杀 —— 杀掉用户自己的浏览器是更坏的副作用,
-  # 而 3e 的临时 user-data-dir 已由各套自己的 teardown 负责([SL-287])。
+  # 不去杀 —— 杀掉用户自己的浏览器是更坏的副作用;3e 的临时 user-data-dir 由各套自己的
+  # teardown 负责([SL-287])。
+  #
+  # [SL-305] 判据分两层,**只有归得到套的那一层判负**:
+  #   · **归属层**:命令行里的 `--user-data-dir` 带某一套**自己声明**的 `scvb-<套>-` 前缀,
+  #     且进程**起于本持锁段之后** ⇒ 只可能是本轮这一套漏下的 ⇒ **判负并点名**。
+  #   · **兜底层**:其余带 `--headless` / `scvb-` 但归不到套的 ⇒ 照旧只报不判负 ——
+  #     它们可能是别的 agent、别的 worktree、或用户自己的无头进程。拿它们判负就是
+  #     「一条可能永远为真的警告」,与 SL-301 第一版把用户浏览器算进来是同一个毛病。
+  #
+  # 前缀**不写死在这里**:从各套源码自己的 `mkdtempSync(join(tmpdir(), "scvb-…-"))`
+  # 字面量里读出来(单一真源)。套改了自己的前缀,这里自动跟上;抄一份写死就会漂,
+  # 而漂了之后判据只会**静默地归不到套** —— 又一条「降级不可见」。
   if ($script:SmokeLockTaken -and $script:SmokeLockOk -and -not $NoIpcLock) {
-    # **只数本套起的那些**,不数「本机所有 chrome」。第一版数了全部,于是把
-    # **用户自己开着的浏览器**也算进来 —— 首次并发验收就打出「仍有 8 个 chrome」,
-    # 而那 8 个多半是人在用的窗口:一条永远为真的警告等于没有警告。
-    # 判据用**命令行**(`--headless` / 临时 user-data-dir 名里的 `scvb-`),不是进程名 ——
-    # 与 SL-301 测量期清理残留时踩到的是同一条:按进程名一把抓会误伤用户的浏览器。
-    $headless = @()
-    try {
-      $headless = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
-        Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
+    $uddOwner = @{}
+    foreach ($ps in $pageSuites) {
+      $srcText = Get-Content -LiteralPath $ps.FullName -Raw -ErrorAction SilentlyContinue
+      if ($null -eq $srcText) { continue }
+      foreach ($mm in [regex]::Matches($srcText, '"(scvb-[A-Za-z0-9_-]*?-)"')) {
+        $uddOwner[$mm.Groups[1].Value] = $ps.Name
+      }
     }
+    # 枚举写成一份(两次核对共用):第一次看有没有,睡 3 秒后再核一次定论。
+    $enumLeftover = {
+      param($Owners, $Since)
+      $all = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
+        Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
+      $mine = @(); $other = @()
+      foreach ($pr in $all) {
+        $owner = $null
+        foreach ($pref in $Owners.Keys) {
+          if ($pr.CommandLine -like ('*--user-data-dir=*{0}*' -f $pref)) { $owner = $Owners[$pref]; break }
+        }
+        # 起于本段之前的一律不算自己的:同一个前缀上一轮也用过,时间是唯一能分开两轮的东西。
+        if ($null -ne $owner -and $null -ne $Since -and $pr.CreationDate -ge $Since) {
+          $mine += [pscustomobject]@{ Suite = $owner; ProcId = $pr.ProcessId }
+        }
+        else { $other += $pr }
+      }
+      [pscustomobject]@{ Mine = $mine; Other = $other; Total = $all.Count }
+    }
+    $lo = $null
+    try { $lo = & $enumLeftover $uddOwner $script:SmokeSegStart }
     catch {
       # 取不到命令行(权限/CIM 不可用)时**不猜**:宁可不报,也不要拿「所有 chrome」冒充。
       Write-Host ("  [ipc-lock] 无法枚举 chrome 命令行({0}),跳过残留核对" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
-      $headless = $null
+      $lo = $null
     }
-    # 超预算那条路径上**照样核残留,只是不多睡那 3 秒** —— 复审点出我上一版把整块跳过了,
-    # 而那恰恰是**残留最可能存在**的一条路径(套被腰斩,它自己的 teardown 没跑完)。
-    # 「尽快交锁」省的是 3 秒的等待,不是省掉诊断。
-    if ($null -ne $headless -and $headless.Count -gt 0) {
+    # 超预算那条路径上**照样核残留,只是不多睡那 3 秒** —— 那恰恰是残留最可能存在的一条路径
+    # (套被腰斩,它自己的 teardown 没跑完)。「尽快交锁」省的是 3 秒等待,不是省掉诊断。
+    if ($null -ne $lo -and $lo.Total -gt 0) {
       if (-not $smokeBudgetHit) { Start-Sleep -Seconds 3 }
-      # 第二次枚举也要守「不猜就出声」那条口径(复审指出第一版这里丢了它):
-      # 用 SilentlyContinue 的话,CIM 这一刻恰好失败会静默变成「0 个残留」——
-      # 那是**把查不到当成没有**,与本卡治的「降级不可见」是同一个毛病。
-      try {
-        $headless = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction Stop |
-          Where-Object { $_.CommandLine -like '*--headless*' -or $_.CommandLine -like '*scvb-*' })
-      }
+      try { $lo = & $enumLeftover $uddOwner $script:SmokeSegStart }
       catch {
+        # 第二次枚举同样守「不猜就出声」:用 SilentlyContinue 的话,CIM 这一刻恰好失败
+        # 会静默变成「0 个残留」—— 那是把查不到当成没有,与本卡治的毛病同源。
         Write-Host ("  [ipc-lock] 复核残留时枚举失败({0}),这一轮的残留数**未知**(不是 0)" -f $_.Exception.GetType().Name) -ForegroundColor Yellow
-        $headless = $null
+        $lo = $null
       }
-      if ($null -ne $headless -and $headless.Count -gt 0) {
-        # 措辞要能经得起追问(复审逐条点过):
-        #   · 数的是**进程**不是浏览器实例 —— renderer / GPU / utility 子进程同样带 `--headless`,
-        #     一个实例通常对应好几个进程;写成「N 个浏览器」会让人据此去推「漏了几套没收」而推错。
-        #   · **不能断言是本轮哪一套**:这个判据数的是「全机所有带 `--headless`/`scvb-` 的 chrome」,
-        #     它数不出父进程 —— 数到的完全可能是**上一个 agent 或前几轮**漏下来的。
-        #     要真的只数自己起的,得从 `$proc.Id` 沿 `ParentProcessId` 递归收进程树;不做,
-        #     但那就不能把话说死。(`*scvb-*` 还会匹配到别人 worktree 路径,同一回事。)
-        Write-Host ("  [ipc-lock] 放 3e 锁时机器上仍有 {0} 个无头 chrome **进程**(含 renderer 等子进程,不等于 {0} 个浏览器实例;也可能含前几轮/别的 agent 的残留)—— 下一个拿到锁的 agent 会在仍被占着核的机器上跑 6/7/8。残留归 SL-287 那族的 teardown,本卡只报不判负" -f $headless.Count) -ForegroundColor Yellow
-      }
+    }
+    if ($null -ne $lo -and $lo.Mine.Count -gt 0) {
+      $bySuite = @($lo.Mine | Group-Object Suite | Sort-Object Name |
+        ForEach-Object { '{0}({1} 个进程)' -f $_.Name, $_.Count })
+      Write-Host ("  [ipc-lock] 放 3e 锁前仍有**本轮自己**的无头 chrome 未退:{0}" -f ($bySuite -join '、')) -ForegroundColor Red
+      Write-Host '         判据:--user-data-dir 带该套源码里自己声明的 scvb- 前缀,且进程起于本持锁段之后 —— 归不到别的 agent 头上。' -ForegroundColor Red
+      Write-Host '         后果:锁放了但核还占着,下一个 agent 的 6/7/8 在被占的机器上跑,SL-301 的隔离当场打折。' -ForegroundColor Red
+      # 单独一行判定,不改 3e 自己的红绿:3e 的断言全过是事实,漏收是另一回事,
+      # 混进同一行会让「哪个坏了」说不清。这一行红 ⇒ 整条 gates 判负。
+      Set-Gate ('3e 收尾:页面级 Chrome 归零({0})' -f ($bySuite -join '、')) $false
+    }
+    if ($null -ne $lo -and $lo.Other.Count -gt 0) {
+      # 措辞要经得起追问:数的是**进程**不是浏览器实例(renderer / GPU / utility 同样带
+      # `--headless`,一套通常对应 8-9 个进程);而且这一层归不到套,可能是别的 agent、
+      # 别的 worktree、或起于本段之前 —— 所以只报不判负。
+      Write-Host ("  [ipc-lock] 另有 {0} 个带 --headless/scvb- 的 chrome **进程**归不到本轮任何一套(别的 agent / 别的 worktree / 起于本段之前)—— 只报不判负" -f $lo.Other.Count) -ForegroundColor Yellow
     }
   }
   Exit-ScvbIpcLock -Mutex $script:SmokeLock -Segment 'gate 3e(页面级)'
