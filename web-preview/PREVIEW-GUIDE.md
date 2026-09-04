@@ -148,6 +148,7 @@ DOM 定位约定:一切可测节点都带 `data-gb="…"` 锚点(如 `wave-lane-
 | `shot.mjs` 说找不到 Chrome | 非默认安装路径 | `--chrome=<chrome.exe 路径>` |
 | `shot.mjs` **退 2**,报「导航失败:net::ERR_CONNECTION_REFUSED」 | 预览服务没起 | 先 `pwsh web-preview/serve.ps1` |
 | `shot.mjs` **退 2**,报「主文档 HTTP 404」 | URL 拼错(同本表第一行) | 用 `/web-preview/<role>.html` |
+| `shot.mjs` **退 2**,报「壳页报注入失败」 | 主文档 200,但 iframe 里的真源页没起来(`web/<role>/index.html` 挪走/改名,或 mock 后端抛错、driver.start() 抛错) | 按消息里壳页带出的**原话**查;`--console` 看页面 console |
 | 截图是白屏/半截 | 首帧未画完 | 加 `--wait=3000`,或 `--settle` 调大 |
 | 真机截图/注入连续超时 | 扩展或该标签页坏了 | 先用已知好的 commit 做对照实验,再怀疑代码 |
 

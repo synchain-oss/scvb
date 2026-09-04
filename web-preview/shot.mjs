@@ -352,7 +352,18 @@ try {
     }
     // ③ 主文档非 2xx ⇒ 拍下来的是错误页/白屏,不是要看的页面。
     //    按 `Page.navigate` 回的 frameId 认主 frame,不依赖到达顺序。
-    const mainDoc = docResponses.find((d) => d.frameId === nav.frameId);
+    let mainDoc = docResponses.find((d) => d.frameId === nav.frameId);
+    // ⚠ `frameId` 在 CDP 里是 **optional**:拿不到时上面的 find 返回 undefined ⇒ mainStatus
+    //    为 null ⇒ 下面那道 `!== null` 短路 ⇒ **第三道整条静默消失**,404 又会被拍成 ✅。
+    //    上一版「取首条」虽然理由是假的,但判据一定带电;换成 frameId 精确匹配反而多了一个
+    //    fail-open 前提。所以退回「首条 Document」兜底,并**出声**——判据可以降精度,
+    //    但不能悄悄不在(复审第 4 轮;这正是本卡开头那句「工具没报错不等于验过」)。
+    if (!mainDoc && docResponses.length > 0) {
+        mainDoc = docResponses[0];
+        console.warn(
+            "⚠ responseReceived 未带 frameId,第三道退回「取首条 Document」(精度降一档,判据仍在)",
+        );
+    }
     const mainStatus = mainDoc ? mainDoc.status : null;
     if (mainStatus !== null && (mainStatus < 200 || mainStatus > 299)) {
         throw new NavigationError(
@@ -362,28 +373,37 @@ try {
 
     await evaluate(cdp, DOC_PRELUDE); // 之后一切选择器走 __D(iframe 内的真源文档)
 
-    // ④ [SL-290 复审第 2/3 轮] **第三道只看主文档,iframe 那半还漏着**:壳页自己没有 UI
+    // ④ [SL-290 复审第 2/3/4 轮] **第三道只看主文档,iframe 那半还漏着**:壳页自己没有 UI
     //    (`output.html` 除工具条外画面 100% 来自 iframe 里的 `web/<role>/index.html`),
     //    所以真源页被挪走/改名时,壳页照样 **200** ⇒ 上面那道放行 ⇒ 拍下一张**空舞台**报 ✅
     //    —— 与开头那张 404 白屏是同一类伪证据,只是位置从主文档挪到了 iframe。
     //
     //    **不自造判据:壳页自己已经算出过这个结论,读它就行。** `shell.js` 的 `setStatus()`
-    //    把 `.pv-status` 的 `data-ok` 写成 1/0/wait,`"0"` 只在**真失败**时出现
-    //    (注入重试耗尽、或 mock 后端不可用两条路径)。
+    //    把 `.pv-status` 的 `data-ok` 写成 1/0/wait,`"0"` 只在**真失败**时出现 —— 现有三条
+    //    路径(`grep -n "ok: false" web-preview/shell.js`:注入重试耗尽 / mock 后端不可用 /
+    //    `driver.start()` 抛错)。**别在消息里猜是哪一条**:第三条是在 `wired > 0` 之后触发的,
+    //    也就是注入其实成功了、真源页也取到了 —— 猜「index.html 取不到」会把人指反方向。
+    //    壳页的 `textContent` 已经把它自己的原话带出来了,让它说话就够(复审第 4 轮)。
     //    也不会误杀 `--url` 指向的非预览页:那些页面没有 `.pv-status`,取到 null ⇒ 放行。
-    //    (没选「断言 [data-tab-btn] 存在」正是因为它会把合法的 --url 用法误杀。)
-    const shellOk = await evaluate(
-        cdp,
-        `(() => { const e = document.querySelector(".pv-status"); return e ? e.getAttribute("data-ok") : null; })()`,
-    );
-    if (shellOk === "0") {
-        const why = await evaluate(
+    //
+    //    ⚠ 两个属性**一次读回**并包 try:`evaluate` 抛的是普通 `Error`,不包就退 1 不退 2;
+    //    而分两次读时,第二次(取原话)是在**已经判负之后**跑的 —— 它一抛错,
+    //    `throw new NavigationError` 就再也执行不到,**判负的证据在手里却打印不出来**。
+    let shell = null;
+    try {
+        shell = await evaluate(
             cdp,
-            `(() => { const e = document.querySelector(".pv-status"); return e ? e.textContent : ""; })()`,
+            `(() => { const e = document.querySelector(".pv-status");
+                      return e ? { ok: e.getAttribute("data-ok"), why: e.textContent } : null; })()`,
         );
+    } catch (e) {
         throw new NavigationError(
-            `壳页报注入失败(.pv-status data-ok="0":${why})—— 主文档 200 但舞台是空的,` +
-                `多半是 web/${ROLE}/index.html 取不到`,
+            `落地页读不到壳页状态(${e.message}),目标 ${URL_} 大概率没正常起来`,
+        );
+    }
+    if (shell && shell.ok === "0") {
+        throw new NavigationError(
+            `壳页报注入失败 —— 主文档 ${mainStatus ?? "2xx"} 但舞台是空的。壳页原话:${shell.why}`,
         );
     }
 
