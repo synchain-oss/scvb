@@ -952,6 +952,15 @@ else {
         $parityWarn += $warnLines.Count
         $warnLines | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
       }
+      # [SL-295] check-changelog-drafts 有两行**只在成功路径上**、却必须显形的输出,
+      # 这一圈默认只回显 [WARN],会把它们整段吞掉:
+      #   · `[ALLOW] #<号> 放行 —— <理由>` —— 豁免不显形就等于没有豁免纪律(脚本头注口径);
+      #   · `已上线集合取自 <base>@<sha> (<date>)` —— 陈旧的 remote-tracking ref 会让门禁
+      #     **静默变绿**,而这条降级**只在本地发生**(CI 每次都是新 clone)。放进成功消息又被
+      #     成功分支吞掉,等于修在了唯一用不到的地方。
+      # 不并进 $parityWarn:它数的是「某档没跑」,放行与 base 戳都不是降级。
+      @($out | Where-Object { $_ -match '\[ALLOW\]|已上线集合取自' }) |
+        ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
     }
   }
   # 标签只说**数出来的东西**,不替别人的 `[WARN]` 下定义(PR#180 复审采纳)。

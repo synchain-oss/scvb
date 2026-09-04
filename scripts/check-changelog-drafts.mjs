@@ -489,7 +489,11 @@ if (selfTest) {
             pendingTokens(realBlock).includes(FIXTURE_UNMERGED_PR),
             "真 CHANGELOG.md 的注释块里已经没有 `pending #" +
                 FIXTURE_UNMERGED_PR +
-                "` 了 —— 那是「命中 ≠ 已上线」的天然反例,它一走这条用例就失去牙齿",
+                "` 了 —— 那是「命中 ≠ 已上线」的天然反例,它一走这条用例就失去牙齿。" +
+                "**出路**:若确实要把它搬走/删掉,请另挑一个**从未合并**的 PR 号" +
+                "(主线没有任何 subject 带 `(#N)`,`git log --format=%s <base> | grep '(#N)'` 零命中)" +
+                "写进 FIXTURE_UNMERGED_PR,并在注释块里给它留一条预写条目 —— " +
+                "**不要直接把这条断言删掉**,那正是它要防的动作",
         );
         check(
             !leaks(realBlock, shippedTitles(base)).some(
@@ -539,15 +543,21 @@ try {
         console.error(
             "check-changelog-drafts 失败(" + found.length + " 条预写条目漏搬):",
         );
+        // 措辞只说判据**知道**的那件事。`shipped` 是先到先留、而 `git log` 是新→旧,所以
+        // 这个 sha 是**最近一次在标题里提到这个号**的提交,不一定是把它带上线的那一条
+        // (例:SL-301 落在 `c8e3140`/#190,而 `e51c2e9`/#195 的标题也提到它,报的会是后者)。
+        // 写成「已随 <sha> 上线」就等于把本卡通篇强调的「标题提到 ≠ 上线」在自己的输出里说反了,
+        // 而撞上红的人第一件事就是 `git show <sha>` 去核 —— 核出一条与落地无关的提交,结论会
+        // 滑向「机检乱报」,下一步就是删条目(规矩⑤明禁)或滥用放行口(#197 复审第 4 轮【建议】)。
         for (const f of found)
             console.error(
                 "  [FAIL] #" +
                     f.token +
                     "(" +
                     FORMS[f.form].label +
-                    ")已随 " +
+                    ")在主线标题里出现过,预写条目却还留在注释块里;最近一次提到它的是 " +
                     f.sha +
-                    " 上线,预写条目却还留在注释块里 —— " +
+                    " —— " +
                     f.title,
             );
         console.error(
