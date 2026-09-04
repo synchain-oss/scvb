@@ -55,8 +55,12 @@
 //     与合并方式无关。这条不改判据(该禁掉的是 rebase 合并,不是脚本能管的事)。
 //   · 它**不校验搬过去的位置对不对**(小节挑错了它看不见)。
 //   · [SL-316] 起**正文也在判定面内**:每个 `(#N)` 必须在主线落过地、`(#TBD)` 即红 ——
-//     与上面那半共用同一条 `prsLanded`(见 BODY_GROUP_RE 那一段)。它判不出「这个号是不是
+//     与上面那半共用同一条 `landedPrs`(取号见 BODY_PAREN_RE 那一段)。它判不出「这个号是不是
 //     **这条**改动的落地位」,那仍要人逐条比对。
+//     判定面覆盖**整份文件**(块被原地抹白,不是切掉)—— 块之后的小节也在内。
+//   · 正文侧**只判括号里的号**:裸的「见 #83」不进判定面(躲开「#1770 标准」这类非 PR 引用)。
+//      则**不要求括号** —— 两条口径不对称,是有意的,别从  推断裸号也在判定面内。
+//   · 正文侧的假红走注释块里的「正文放行」(与门禁放行同一套解析、同样理由必填)。
 //   · 块尾「尚未开 PR 的在途卡」那几行没有 `pending #…` 标记,**不在判定面内**。
 //
 // 用法:
@@ -209,9 +213,16 @@ const ALLOW_LOOKS_LIKE_RE = /^-\s*#?\s*(?:SL-?\d+|J-?\d+|\d+)/;
 const ALLOW_SAMPLE =
     "- #SL189 —— 只在 32e52a3 的标题里被顺带提到,这张卡本身没有交付";
 
-function allowList(block) {
+// [SL-316] 正文侧也要一个放行口:块那半有「门禁放行」,正文那半此前一个都没有,于是两种
+// **改不动的红**没有出路 —— ① 那个号永远不会落地(rebase 合并不产生 `(#N)`,或维护者手改掉了
+// squash 标题里的号);② 历史条目引的号来自别的仓 / 别的时期。而唯一的「出路」会变成改数据
+// 迁就门禁、甚至删条目 —— 那正是本脚本自己明禁的动作(规矩⑤)。
+// 复用**同一套**解析:同一个函数、同一种行形态、同样理由必填、同样每次运行打出来。
+const BODY_ALLOW_HEAD = "正文放行";
+
+function allowList(block, headText = ALLOW_HEAD) {
     const lines = block.split("\n");
-    const head = lines.findIndex((l) => l.startsWith(ALLOW_HEAD));
+    const head = lines.findIndex((l) => l.startsWith(headText));
     const out = new Map();
     if (head < 0) return out;
     const noReason = [];
@@ -232,7 +243,7 @@ function allowList(block) {
     if (malformed.length)
         throw new Error(
             "「" +
-                ALLOW_HEAD +
+                headText +
                 "」里这几行像放行行、写法却不对(一行要写成 `- #<号> —— <理由>`,号与 `pending #…` 里同形):\n    " +
                 malformed.join("\n    ") +
                 "\n  正确写法:" +
@@ -241,7 +252,7 @@ function allowList(block) {
     if (noReason.length)
         throw new Error(
             "「" +
-                ALLOW_HEAD +
+                headText +
                 "」里这几个号没写理由:#" +
                 noReason.join(" / #") +
                 " —— 放行必须写理由,不写就是静默豁免",
@@ -579,6 +590,63 @@ if (selfTest) {
             "(#197 第 5 轮在 BASE 上踩过、`379de23` 在 ALLOW 上又踩一次);提到它们时去掉方括号",
     );
 
+    // ---- [SL-316] 正文侧的四条分支要有断言 ------------------------------
+    // 本卡合并之后正文里**再没有活体**(4 条 `#TBD` 全补掉了),于是实跑对「取号退回严格组
+    // 模式」「`#TBD` 退回要求带括号」这类退化一律照绿 —— 判据会静默失去牙齿而没人看得见
+    // (#203 复审【重要】)。夹具**现成、就在库里**,不造合成数据。
+    try {
+        const realMd = fs.readFileSync(CHANGELOG, "utf8");
+        // 两条真夹具:一括号两个号 + 分号;号在括号尾但前面是散文。
+        const FIX_SEMI = "(#116;起跳的柔化随后由 #123 补上,见「变更」)";
+        const FIX_PROSE = "(认领 / 接管 / 心跳 / 代际,#38)";
+        for (const f of [FIX_SEMI, FIX_PROSE])
+            check(
+                realMd.includes(f),
+                "CHANGELOG.md 里已经没有夹具「" +
+                    f.slice(0, 18) +
+                    "…」了 —— 它一走,下面那条删除式就失去区分度",
+            );
+        // ★ 删除式:宽模式必须抓到,**第一版的严格组模式必须漏** —— 否则这一格证明不了
+        //   放宽是必需的(与 cardsExpanded / cardsNaive 那对同款)。
+        const naiveBody = (b) =>
+            [...b.matchAll(/\(#(\d+)\)/g)].map((m) => m[1]);
+        for (const f of [FIX_SEMI, FIX_PROSE]) {
+            check(
+                bodyPrRefs(f).length > 0,
+                "宽模式抓不到夹具「" + f.slice(0, 18) + "…」里的号 —— 判据没牙",
+            );
+            check(
+                naiveBody(f).length === 0,
+                "严格组模式**也**抓到了「" +
+                    f.slice(0, 18) +
+                    "…」—— 这一格没有区分度,证明不了放宽是必需的",
+            );
+        }
+        // 一个括号里两个号都要收(第一版只要求号串紧接 `)`,这条会掉一个)。
+        check(
+            bodyPrRefs(FIX_SEMI)
+                .map((r) => r.num)
+                .join(",") === "116,123",
+            "一个括号里的多个号没有全收 —— 实得 " +
+                bodyPrRefs(FIX_SEMI)
+                    .map((r) => r.num)
+                    .join(","),
+        );
+        // `#TBD` 三种写法都要认(第一版只认逐字 `(#TBD)`,绕过成本一个分号)。
+        for (const t of ["(#TBD)", "(#TBD;等合并后补)", "改动摘要 — #TBD"])
+            check(
+                [...t.matchAll(BODY_TBD_RE)].length === 1,
+                "`#TBD` 的这种写法没被认出来:" + t,
+            );
+        // 行号要真算得对(报错里没有位置的话,同一个错号会打出两条逐字相同的话)。
+        check(
+            lineOf("a\nb\nc", 4) === 3,
+            "lineOf 算错行号 —— 实得 " + lineOf("a\nb\nc", 4),
+        );
+    } catch (e) {
+        bad.push("正文侧那一组跑不起来:" + e.message);
+    }
+
     // 块首尾被改坏时必须 fail-closed,而不是「找不到块 ⇒ 没有泄漏 ⇒ 绿」。
     check(
         threw(() => draftBlock("# Changelog\n\n没有注释块\n")),
@@ -608,8 +676,16 @@ try {
     const block = draftBlock(md);
     const titles = shippedTitles(base);
     const tokens = new Set(pendingTokens(block));
-    // 正文 = 注释块**之前**那一段:块里的 `pending #…` 归上面那半判据,别两头都算。
-    const body = md.slice(0, md.indexOf(block));
+    // 正文 = **整份文件**,只把注释块原地抹成同长空白(`[^\n]` 保住所有换行,行号照旧准确)。
+    // 第一版切成「块之前那一段」,于是块**之后**的小节(`## [0.1.0]` 在 326-333 行)一个字都
+    // 不看 —— 今天不漏(那节里没有 `(#N)`),但发版时若按 Keep-a-Changelog 把 `## [Unreleased]`
+    // 改名再在上面开新的,块就被留在旧小节里,块之下的东西会越攒越多而没有任何提示
+    // (#203 复审【建议】)。抹白比切片多零行代码,却把「覆盖的是正文的一半」这个静默边界去掉。
+    const bi = md.indexOf(block);
+    const body =
+        md.slice(0, bi) +
+        block.replace(/[^\n]/g, " ") +
+        md.slice(bi + block.length);
 
     // [BASE] / [ALLOW] 都排在 `leaks()` **之前**:`leaks()` 自己会为「放行写法不对 / 理由留空 /
     // 放行的号已没有对应条目」三种情形**抛错**,排在它后面的话那三条红路径上一行都不显 ——
@@ -661,10 +737,18 @@ try {
                 "回溯到把这条**加进 CHANGELOG** 的那次提交、拿它的落地位补号" +
                 "(查不到就删条目或标「未落地」)",
         );
+    const bodyAllow = allowList(block, BODY_ALLOW_HEAD);
+    for (const [num, why] of bodyAllow)
+        console.log("  [ALLOW] 正文 #" + num + " 放行 —— " + why);
     for (const r of bodyPrRefs(body)) {
-        if (landed.has(r.num) || r.num === selfPr) continue;
+        if (landed.has(r.num) || r.num === selfPr || bodyAllow.has(r.num))
+            continue;
         const where = "CHANGELOG.md:" + lineOf(body, r.at);
-        if (!selfPr && Number(r.num) > maxLanded) {
+        // 这条**不看 `selfPr` 在不在**:同批交叉引用(规矩③ 要求写出来的「随后由 #123 补上」)
+        // 在 CI 与本地都还没落地,若只在没有 selfPr 时才 WARN,就成了「本地绿、推上去才红」——
+        // 正是 format.yml 那步注释明禁的分叉(#203 复审【重要】)。两边同判:大于最大落地号
+        // 一律 WARN;`#106 < #111` 这类关掉没合的号仍落在 ≤ max 一侧、照样红。
+        if (Number(r.num) > maxLanded) {
             console.log(
                 "  [WARN] " +
                     where +
