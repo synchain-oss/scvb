@@ -571,7 +571,8 @@ else {
   # 判出 0 套页面级 ⇒ **整个 3e 无锁跑完**。四条判据取并集,归零几乎不可能,
   # 但「几乎不可能」正是不会有人盯着的那一格:真发生时唯一的痕迹是上面那行 Cyan,
   # 混在正常输出里没人会觉得不对。出声,与 `Test-ScvbPageSuite` 的兜底同向。
-  if ($pageSuites.Count -eq 0) {
+  $smokeZeroPage = ($pageSuites.Count -eq 0)
+  if ($smokeZeroPage) {
     Write-Host '  [ipc-lock] ⚠ 判出 0 套页面级 —— 本轮 3e 将全程无锁。冒烟改名 / 判据失效都会长这样,先去核 Test-ScvbPageSuite 再信这个结果' -ForegroundColor Yellow
   }
   foreach ($f in $smokeFiles) {
@@ -719,16 +720,26 @@ else {
   if ($smokeHungReal -gt 0) {
     $smokeLabel = '{0}(!{1} 套超时被杀)' -f $smokeLabel, $smokeHungReal
   }
-  if ($smokeHungByBudget -gt 0) {
-    $smokeLabel = '{0}(!{1} 套被段预算腰斩)' -f $smokeLabel, $smokeHungByBudget
-  }
   # [SL-301 裁定(a)] 超预算同理必须进摘要 —— 「余套没跑」与「都跑过了」不能长得一样。
   if ($smokeBudgetHit) {
-    # 「余套未跑」只在**真的还有剩下的套**时才成立:预算若是在**最后一套**上见底,
-    # 24 套全都起过跑,写「余套未跑」就是汇总说谎的另一个方向(把它说得比实际更糟)。
-    # 两种形态共用一个后缀,但措辞跟着 `$smokeRanCount` 走。
-    $budgetTail = if ($smokeRanCount -lt $smokeFiles.Count) { '余套未跑' } else { '末套被腰斩' }
-    $smokeLabel = '{0}(!页面级段超 {1}s 预算,{2})' -f $smokeLabel, $smokeSegBudgetSec, $budgetTail
+    # 预算被击穿有两种后果,可能同时发生,也可能只发生一种:
+    #   · 当前那一套被**腰斩**(kill 分支,`$smokeHungByBudget`);
+    #   · 后面的套**根本没跑到**(循环顶部 break,`$smokeRanCount < 总数`)。
+    # 一句话把发生了的都说出来。**「腰斩」只说一次** —— 早先拆成两个后缀连写会变成
+    # 「(!1 套被段预算腰斩)(!……,末套被腰斩)」,同一件事说两遍。
+    # 也不能写死「余套未跑」:预算若在**最后一套**上见底,24 套全都起过跑,
+    # 那句话是往更糟的方向说谎。所以两半都由计数决定,一半不成立就不写。
+    $budgetParts = @()
+    if ($smokeHungByBudget -gt 0) { $budgetParts += ('{0} 套被腰斩' -f $smokeHungByBudget) }
+    if ($smokeRanCount -lt $smokeFiles.Count) { $budgetParts += ('余 {0} 套未跑' -f ($smokeFiles.Count - $smokeRanCount)) }
+    if ($budgetParts.Count -eq 0) { $budgetParts += '余套未跑' }
+    $smokeLabel = '{0}(!页面级段超 {1}s 预算,{2})' -f $smokeLabel, $smokeSegBudgetSec, ($budgetParts -join '、')
+  }
+  # 地板也要进摘要,理由与上面三个降级逐字相同:跑完 gates 的人看的是这张表。
+  # 而这一格是**汇总看起来最正常**的那一格 —— 全绿、无 SKIP、无 HUNG、无预算后缀,
+  # 只有一行黄字。既然承认没人会盯滚屏,就不该把唯一的痕迹留在滚屏里。
+  if ($smokeZeroPage) {
+    $smokeLabel = '{0}(!0 套页面级,全程无锁)' -f $smokeLabel
   }
   if ($smokeNoLock) {
     $smokeLabel = '{0}(!拿不到 IPC 锁,页面级未跑)' -f $smokeLabel
