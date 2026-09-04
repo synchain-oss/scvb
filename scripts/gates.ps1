@@ -107,6 +107,16 @@ $runGate8 = -not ($Quick -or $PluginOnly)
 # 去掉那一档,混合作用域的洞就不存在了。
 # 建不出来时**判负**(见调用处的 Set-Gate),绝不静默继续 —— 并发假红最难查的
 # 就是「以为有锁,其实没有」。
+
+function New-ScvbMutex {
+  param([string]$Name, [string]$Tag)
+  try { return New-Object System.Threading.Mutex($false, "Local\$Name") }
+  catch {
+    Write-Host ("  [{0}] 互斥体 Local\{1} 创建失败({2}):{3}" -f $Tag, $Name, $_.Exception.GetType().Name, $_.Exception.Message) -ForegroundColor Red
+    return $null
+  }
+}
+
 # [SL-301 复审] **「这一套起不起浏览器」只有一份判据**,两处共用(算等锁预算、实际分类)。
 # 此前写了两遍同一条正则、靠人工同步 —— 漂了不会报错,只会让上界按错的套数算。
 #
@@ -135,15 +145,6 @@ function Test-ScvbPageSuite {
   if ($t -match '--headless') { return $true }
   if ($t -match '\.(on|once)\(\s*["'']error') { return $true }
   return $false
-}
-
-function New-ScvbMutex {
-  param([string]$Name, [string]$Tag)
-  try { return New-Object System.Threading.Mutex($false, "Local\$Name") }
-  catch {
-    Write-Host ("  [{0}] 互斥体 Local\{1} 创建失败({2}):{3}" -f $Tag, $Name, $_.Exception.GetType().Name, $_.Exception.Message) -ForegroundColor Red
-    return $null
-  }
 }
 
 # 等锁**必须有上界**(PR#176 复审采纳)。这把锁现在包着 gate 8 的 GUI pluginval,
@@ -431,7 +432,7 @@ else {
 }
 
 # ==================================================================
-# ===== 持锁段①起点:gate 3e 全程持 IPC 测试锁([SL-301])=====
+# ===== 持锁段①起点:gate 3e **页面级冒烟**持 IPC 测试锁(惰性取锁,[SL-301])=====
 # ==================================================================
 # **为什么 3e 也要这把锁**([SL-301] 实测):3e 起 6 个无头 Chrome(单跑峰值 15 个进程、
 # 吃掉约 11 个核),而这份负载会**把同机另一个 agent 的 gate 6 拖红** —— 实测一次:
@@ -465,7 +466,8 @@ Write-Host '=== Gate 3e: web smoke(web-preview/tests/*.mjs)==='
 # web-preview/tests 是 UI 侧**唯一**的行为门禁(纯函数 + mock 端到端 + 源码级
 # 纪律断言),T31–T36 六张卡的回归保护全压在上面。与 .github/workflows/format.yml
 # 的 web-smoke job 同口径。零依赖:不装 npm 包直接 node 跑;每套退出码 0 = 全绿,
-# 非 0 会逐条打印 [FAIL]。不提前 break —— 一次跑完好看全所有红项。
+# 非 0 会逐条打印 [FAIL]。**单套判红不 break**,一次跑完看全所有红项;整段中止只有
+# 两个出口,都不是「某一套红了」:拿不到 IPC 锁、以及 [SL-301] 的页面级段预算见底。
 #
 # ⚠ **必须先判 node 在不在**(PR#64 评审【重要】):PowerShell 找不到外部命令时抛
 # CommandNotFoundException,默认 ErrorActionPreference=Continue 下**不更新**
@@ -528,14 +530,15 @@ else {
   #
   # 上界取 300s:实测最慢的一套(seg-diff-fold)健康时跑 57s,其余 5–34s,**5 倍余量**;
   # 而代价上限从 75 分钟降到 5 分钟。
-  # 超时后**判红并继续下一套**,不整段中止 —— 一次跑完看全所有红项,与本 gate 既有的
-  # 「不提前 break」口径一致。
+  # 超时后**判红并继续下一套**,不整段中止 —— 一次跑完看全所有红项。
+  # (整段中止的两个出口在别处:拿不到锁、段预算见底;「某一套超时」从来不是其中之一。)
   # 用 Start-Process + WaitForExit 而不是 `&`:`&` 没有超时可言;`Kill($true)` 连子进程树
   # 一起收,否则被杀的只是 node,它起的 Chrome 会留下来(正是 SL-274 压住锁的那个形态)。
   $smokeOk = $true
   $smokeSkipped = 0
   $smokeFlaky = 0      # [SL-297] rc=3:浏览器在但没连上
   $smokeRanCount = 0   # [SL-301 复审] 实际跑到的套数(break 之后 < 总数,汇总不能说谎)
+  $smokeHungByBudget = 0  # [SL-301 复审] `$smokeHung` 里属于「被段预算腰斩」的那部分
   $smokeHung = 0
   # `SCVB_SMOKE_TIMEOUT_SEC` 是给慢机器的口子(照 SCVB_MUTEX_WAIT_MINUTES 的先例),
   # 平时不用设。调大不会削弱任何判据 —— 超时只负责兜住挂死,不参与判对错。
@@ -565,6 +568,13 @@ else {
   $pageNames = @($pageSuites | ForEach-Object { $_.Name })
   $smokeFiles = @($smokeFiles | Where-Object { $pageNames -notcontains $_.Name }) + $pageSuites
   Write-Host ("  [ipc-lock] 本轮 {0} 套里 {1} 套起浏览器(仅这几套持锁,其余 {2} 套无锁先跑)" -f $smokeFiles.Count, $pageSuites.Count, ($smokeFiles.Count - $pageSuites.Count)) -ForegroundColor Cyan
+  # 判出 0 套页面级 ⇒ **整个 3e 无锁跑完**。四条判据取并集,归零几乎不可能,
+  # 但「几乎不可能」正是不会有人盯着的那一格:真发生时唯一的痕迹是上面那行 Cyan,
+  # 混在正常输出里没人会觉得不对。出声,与 `Test-ScvbPageSuite` 的兜底同向。
+  $smokeZeroPage = ($pageSuites.Count -eq 0)
+  if ($smokeZeroPage) {
+    Write-Host '  [ipc-lock] ⚠ 判出 0 套页面级 —— 本轮 3e 将全程无锁。冒烟改名 / 判据失效都会长这样,先去核 Test-ScvbPageSuite 再信这个结果' -ForegroundColor Yellow
+  }
   foreach ($f in $smokeFiles) {
     # 第一套页面级之前才取锁(惰性取锁);`$smokeLock` 在段外声明,finally 负责放。
     if (($pageNames -contains $f.Name) -and (-not $script:SmokeLockTaken)) {
@@ -643,6 +653,9 @@ else {
         # 而被腰斩的若是**最后一套**页面级,循环就此结束、那个检查再也不会执行 ⇒ 汇总把
         # 「预算被击穿」报成一次普通挂死。滚屏里说对了、摘要里说错了 —— 正是本卡在治的形态。
         $smokeBudgetHit = $true
+        # 杀因分档要做全:并进 `$smokeHung` 一个数,摘要就只会写「N 套超时被杀」,
+        # 与上面这行滚屏刚说的「它未必挂死」自相矛盾 —— 同一次运行里两个口径。
+        $smokeHungByBudget++
       }
       else {
         Write-Host ("  [HUNG] {0}:超过 {1}s 未结束,已连进程树杀掉并判红" -f $f.Name, $smokeTimeoutSec) -ForegroundColor Red
@@ -701,16 +714,32 @@ else {
     $smokeLabel = '{0}(!{1} 套没跑成:浏览器在但没连上)' -f $smokeLabel, $smokeFlaky
   }
   # 挂死也要进摘要:跑完 gates 的人看的是汇总表,不是往回滚屏找那行 [HUNG]。
-  if ($smokeHung -gt 0) {
-    $smokeLabel = '{0}(!{1} 套超时被杀)' -f $smokeLabel, $smokeHung
+  # 两种杀因分开写:「真挂死」要有人去查,「被段预算腰斩」不用 —— 那一套多半没病,
+  # 是这一段的时间用完了。合成一个数就是把前者的紧迫性摊薄、把后者的无辜抹掉。
+  $smokeHungReal = $smokeHung - $smokeHungByBudget
+  if ($smokeHungReal -gt 0) {
+    $smokeLabel = '{0}(!{1} 套超时被杀)' -f $smokeLabel, $smokeHungReal
   }
   # [SL-301 裁定(a)] 超预算同理必须进摘要 —— 「余套没跑」与「都跑过了」不能长得一样。
   if ($smokeBudgetHit) {
-    # 「余套未跑」只在**真的还有剩下的套**时才成立:预算若是在**最后一套**上见底,
-    # 24 套全都起过跑,写「余套未跑」就是汇总说谎的另一个方向(把它说得比实际更糟)。
-    # 两种形态共用一个后缀,但措辞跟着 `$smokeRanCount` 走。
-    $budgetTail = if ($smokeRanCount -lt $smokeFiles.Count) { '余套未跑' } else { '末套被腰斩' }
-    $smokeLabel = '{0}(!页面级段超 {1}s 预算,{2})' -f $smokeLabel, $smokeSegBudgetSec, $budgetTail
+    # 预算被击穿有两种后果,可能同时发生,也可能只发生一种:
+    #   · 当前那一套被**腰斩**(kill 分支,`$smokeHungByBudget`);
+    #   · 后面的套**根本没跑到**(循环顶部 break,`$smokeRanCount < 总数`)。
+    # 一句话把发生了的都说出来。**「腰斩」只说一次** —— 早先拆成两个后缀连写会变成
+    # 「(!1 套被段预算腰斩)(!……,末套被腰斩)」,同一件事说两遍。
+    # 也不能写死「余套未跑」:预算若在**最后一套**上见底,24 套全都起过跑,
+    # 那句话是往更糟的方向说谎。所以两半都由计数决定,一半不成立就不写。
+    $budgetParts = @()
+    if ($smokeHungByBudget -gt 0) { $budgetParts += ('{0} 套被腰斩' -f $smokeHungByBudget) }
+    if ($smokeRanCount -lt $smokeFiles.Count) { $budgetParts += ('余 {0} 套未跑' -f ($smokeFiles.Count - $smokeRanCount)) }
+    if ($budgetParts.Count -eq 0) { $budgetParts += '余套未跑' }
+    $smokeLabel = '{0}(!页面级段超 {1}s 预算,{2})' -f $smokeLabel, $smokeSegBudgetSec, ($budgetParts -join '、')
+  }
+  # 地板也要进摘要,理由与上面三个降级逐字相同:跑完 gates 的人看的是这张表。
+  # 而这一格是**汇总看起来最正常**的那一格 —— 全绿、无 SKIP、无 HUNG、无预算后缀,
+  # 只有一行黄字。既然承认没人会盯滚屏,就不该把唯一的痕迹留在滚屏里。
+  if ($smokeZeroPage) {
+    $smokeLabel = '{0}(!0 套页面级,全程无锁)' -f $smokeLabel
   }
   if ($smokeNoLock) {
     $smokeLabel = '{0}(!拿不到 IPC 锁,页面级未跑)' -f $smokeLabel
