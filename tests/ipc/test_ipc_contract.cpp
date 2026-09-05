@@ -11,11 +11,14 @@
 #include <windows.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -49,6 +52,126 @@ using scvb::ipctest::RingWriterState;
 using scvb::ipctest::TimelineModel;
 
 using namespace scvb;
+
+// [SL-323] **同机只允许一份 ipc 测试进程** —— 在整轮开始前判定,拿不到就整轮不跑。
+//
+// 为什么需要:本套用**固定组号**,段名 `SynchainSCVB.v1.g{G}.…` 是**全机唯一**的。
+// 用到的组(**不写行号** —— 那种注释必然随插入腐坏,复审抓到我上一版六个行号整体偏 82 行,
+// 正好是这个插入块自身的长度;下面一律引用可 grep 的名字):
+//     g1  `resetRegistry(backend, 1)` 与大量 `spawnPeer(--group=1)`(默认组,最常用)
+//     g2  `Registry regG2(...)` 与 `spawnPeer(--group=2)`(跨组隔离那几条)
+//     g3  `test_ipc_viz.cpp` 的 `kGroup`,及 `spawnPeer(--group=3)`
+//     g6  `test_registry_probe.cpp` 的 `kProbeGroup`
+//     g7  `test_ipc_viz.cpp` 的 VIZ-2(`VizPlane(backend, 7)`)
+//     g8  `spawnPeer({"--role=claimer", "--group=8", "--ch=15"})`
+// **枚举方式很重要 —— 有三条通道,少查一条这张表就不可信**:
+//   ① 构造实参:`Registry(backend, N)` / `VizPlane(backend, N)` / `resetRegistry(backend, N)`;
+//   ② 命令行字符串:`spawnPeer(--group=N)`,交给对端进程去建段;
+//   ③ **直接按段名** `createOrOpen`:`segmentRegistryName(3)`、`segmentAudioName(1, 4/5/6)`
+//      —— 它既不是构造实参、也不含 `--group=`,前两条 grep 都扫不到它。
+// 我第一版只查了 ①(漏了 g8),第二版补了 ②(仍漏 ③,复审点出)。**每漏一条,
+// 这张表就多一个「那个组没人用」的错印象** —— 而守卫的全部说服力就在这张表上。
+// (③ 这次没带来新组号:`segmentAudioName(1, …)` 的首参是**组**=1,`segmentRegistryName(3)`=g3。)
+// 第二份进来 = 两个进程在同一批段上互相清、互相建。
+//
+// 形态与 [SL-314] / #204 的 host 侧守卫**逐条同形**,那边已量清楚这个形态的代价:
+//     空闲 / CPU 压满 100%,1 份   0/50 红      ← CPU 争用一次都不触发
+//     2 份并跑                    29/30 红
+//     6 份并跑                    88/90 红      ← 2 份与 6 份没有量级差别
+// **冲突的是段,不是 CPU**;复现率对负载不单调,正是资源冲突的签名。
+//
+// **判定必须在整轮开始前**(#204 复审的结论):Catch2 的 `FAIL` 用
+// `ResultDisposition::Normal` —— 只中止当前用例,不中止整轮。守卫若挂在某个 fixture 上,
+// 第二个进程仍会跑完整轮、照常建段,**它仍在主动加害对方**。只有在 `testRunStarting` 里判、
+// 拿不到就 `std::exit`,才能保证**一个段都不建**。
+//
+// 互斥名与 gates 那把**区分**:gates 的 `Local\SCVB-ipc-tests` 串行的是它自己的
+// gate 3e 与 gate 6/7/8 两段;这把 `Local\SCVB-ipc-tests-proc` 管的是
+// 「ipc 测试进程同机独占」。两者语义不同、生命周期不同,共用一把会互相阻塞。
+//
+// ⚠ **这把互斥的边界:只管 ipc-vs-ipc,挡不住跨套件冲突。**
+// 同一个 g7 在三个**不同的测试二进制**里都有占用者,它们各自有各自的进程,这把锁管不到:
+//   · `tests/host/test_host_harness.cpp` 的 `kTestGroup = 7`(host 整套主组);
+//   · `tests/core/test_monitor_harness.cpp` 的 `kGroup = 7`,还会 spawn
+//     `viz-publisher --group=7` **真建 `g7.viz`** —— 与 VIZ-2 争的正是同一个段;
+//   · 本套 `test_ipc_viz.cpp` 的 VIZ-2,它把 g7 当作「没有写方的组」。
+// 所以 host 或 monitor 一跑,VIZ-2 的前提当场失效(现场实测过:它红时机器上正跑着
+// host 套件)。**那不是本守卫能挡的**,组号重排 / 两套共用一把互斥归 SL-324。
+//
+// 0 等待、**不排队**:排队会把冲突藏起来,而且与 gates 那把形成锁序风险。
+// 不碰任何 IPC 段(不 open、不建 registry),不看槽位(陈旧槽位会误报)。
+// 不手动释放:内核对象随进程退出自动回收。
+namespace
+{
+struct IpcTestsExclusiveListener : Catch::EventListenerBase
+{
+    using Catch::EventListenerBase::EventListenerBase;
+
+    void testRunStarting(Catch::TestRunInfo const&) override
+    {
+        HANDLE handle = ::CreateMutexW(nullptr, TRUE, L"Local\\SCVB-ipc-tests-proc");
+        // `GetLastError()` 必须**紧挨着**取:中间插任何一个 Win32 调用都可能把它冲掉。
+        const DWORD err = ::GetLastError();
+
+        if (handle != nullptr && err != ERROR_ALREADY_EXISTS)
+        {
+            return; // 独占到手;句柄故意不关,活到进程退出
+        }
+
+        // **两种失败要分开说**(#204 复审):处方完全不同,合成一句会把人送错方向。
+        if (handle == nullptr)
+        {
+            // 建不出来是**另一件事**:DACL 拒绝 / 句柄耗尽 / 同名非互斥对象占位。
+            // 判负是对的(CLAUDE.md §2:建不出来判负,绝不静默继续),但这时**没有**
+            // 「另一份在跑」,排队或走 with-ipc-lock.ps1 都救不了。
+            //
+            // ⚠ **本文件里新加的运行期文案请写 ASCII**,中文解释留注释。
+            // 这是一条**实测得出的局部约束,不是已查清的机制** —— 如实记下测到什么:
+            //     无本守卫的基线            C4819 = 0
+            //     本守卫用中文 fprintf      C4819 = 2(gate 5 判负,ADR-011 要求零 warning)
+            //     加 UTF-8 BOM              仍 = 2
+            //     去掉 `…`/`←` 等非 CJK 字符 仍 = 2
+            //     本守卫改 ASCII fprintf    C4819 = 0
+            // **没查清的部分要说清楚**:本 TU 里早就有几十条中文字符串字面量(如
+            // `TEST_CASE("IPC-1 布局冻结 …")`)却不触发,而本目标**本来就带 `/utf-8`**
+            // (`tests/ipc/CMakeLists.txt`)。所以「中文字面量必触发」**不成立**,
+            // 真正的触发条件我没定位到。别把这条当通则用;要在这里加中文运行期文案,
+            // 就重新跑一次 gate 5 自己量。
+            std::fprintf(stderr,
+                         "[SL-323] CreateMutexW(Local"
+                         "\\SCVB-ipc-tests-proc) failed, GetLastError=%lu."
+                         " This is NOT 'another run in progress' -- likely DACL denial, handle"
+                         " exhaustion, or the name taken by a non-mutex object."
+                         " This suite uses fixed IPC group ids (g1/g2/g3/g6/g7/g8) whose segment"
+                         " names are machine-wide, so it must not run without proven exclusivity."
+                         "\n",
+                         static_cast<unsigned long>(err));
+        }
+        else
+        {
+            std::fprintf(stderr, "[SL-323] Another ipc test process is already running on this machine."
+                                 " This suite uses fixed IPC group ids (g1/g2/g3/g6/g7/g8); their segment"
+                                 " names are machine-wide, so two runs clobber each other's segments."
+                                 "\n  Run it through the wrapper instead:"
+                                 " pwsh scripts/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C"
+                                 " Release -R scvb_ipc_tests'"
+                                 "\n  (That wrapper takes gates' Local"
+                                 "\\SCVB-ipc-tests, NOT the mutex refused here -- with both runs"
+                                 " behind it they are serialised, so this -proc mutex is then free.)"
+                                 "\n  If nobody is running: look for a leftover scvb_ipc_tests.exe --"
+                                 " a zombie keeps holding this mutex"
+                                 " (see the orphan scans around gate 6 in gates.ps1)."
+                                 "\n");
+        }
+
+        std::fflush(stderr);
+        // 整轮不跑:再往下走就会建段,那正是要避免的加害。
+        std::exit(2);
+    }
+};
+} // namespace
+
+CATCH_REGISTER_LISTENER(IpcTestsExclusiveListener);
 
 namespace
 {
