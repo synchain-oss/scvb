@@ -322,7 +322,12 @@ target_include_directories(scvb_host_tests PRIVATE
 target_compile_definitions(scvb_host_tests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
 
 if(MSVC)
-  # [SL-325 / 顺手修,归属 #204] `/wd4819`:只关这一条、只关这一个目标。
+  # [SL-325 / 顺手修,归属 #204] `/wd4819`:只关这一条、**只关这一个 TU**。
+  # 落点是下面的 `set_source_files_properties`(文件级),不是 `target_compile_options`(目标级)——
+  # 本目标一共编 9 个 TU,除本文件外那 8 个是 `src/` 下的**产线源码**
+  # (OutputProcessor / OutputParams / OutputAuthority / AutomationPrinter / UiDefaultsStore /
+  # InputProcessor / InputBridgeLogic / BridgeBase)。目标级会把它们的 C4819 一并关掉,
+  # 与本段「只关这一个」的说法对不上(复审【建议】)。文件级之后,作用面与这句话逐字一致。
   #
   # 症状:在**中文 Windows(CP936)**上,这个 TU 报两条
   #   `C4819: 该文件包含不能在当前代码页(0)中表示的字符`(行号指向 :174 / :186),
@@ -339,13 +344,22 @@ if(MSVC)
   #   · **加 BOM 能否消除**:**不能** —— 用 .NET 写入 BOM、`Format-Hex` 确认前三字节是
   #     `EF BB BF`、删 obj 强制重编、确认 obj 时间戳变了,C4819 **仍是 2 条**;已还原(sha256 复核)。
   # 反向对照:全仓 95 个源文件含「CP936 表示不了的字符」、**没有一个**带 BOM,
-  # 56 个 `.cpp` 在窄字符串字面量里写中文 —— 它们全都编译干净。同样的写法只有这一个 TU 报,
-  # 而它恰好是最大的一个(7000+ 行,唯一开 `/bigobj` 的测试目标)。
+  # 56 个 `.cpp` 在窄字符串字面量里写中文 —— 它们全都编译干净。同样的写法只有这一个 TU 报。
+  # 它与别的 TU 唯一量得出来的差别是**体量**:实测 7282 行,第二大的测试 TU 是
+  # `tests/ipc/test_ipc_contract.cpp` 1584 行,差 4.6 倍。
+  # (上一版这里还写过「唯一开 `/bigobj` 的测试目标」——**假的**,复审指出后实测:`/bigobj`
+  # 由 JUCE 的模块 INTERFACE 带进来(`JUCEModuleSupport.cmake`),五个测试目标都有,
+  # 只有 JUCE-free 的 `scvb_tests` 没有。仓里的 CMakeLists 一个字都没写过它。
+  # 记在这里是因为那半句曾是「这个 TU 特殊」这条推断的支柱之一,现在支柱只剩体量一条。)
   #
   # 所以这里关的是**一条已确认的误报**,不是把真问题盖住:文件真是 UTF-8、开关真在命令行上。
   # 根治(找到 MSVC 为何在本 TU 上无视 `/utf-8`,或拆分该文件)记在 **SL-325**;
-  # 那张卡落地后**请把这行删掉**,并用删除式确认删掉后本机 gate 5 仍绿。
-  target_compile_options(scvb_host_tests PRIVATE /W4 /utf-8 /EHsc /wd4819)
+  # 那张卡落地后**请把下面那行删掉**,并用删除式确认删掉后本机 gate 5 仍绿。
+  # 给 SL-325 留的线索:报出来的 `:174` / `:186` 两行**本身是纯 ASCII**(是两处 `fprintf`
+  # 实参那一行),而该区段的中文全部在 CP936 表示得出来 —— 行号与「哪个字符不可表示」对不上,
+  # 所以别照着行号去找「那个字符」。
+  target_compile_options(scvb_host_tests PRIVATE /W4 /utf-8 /EHsc)
+  set_source_files_properties(host/test_host_harness.cpp PROPERTIES COMPILE_OPTIONS "/wd4819")
 else()
   target_compile_options(scvb_host_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
