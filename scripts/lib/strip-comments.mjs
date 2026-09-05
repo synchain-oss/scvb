@@ -64,17 +64,20 @@ const REGEX_AFTER_KEYWORD = new Set([
 
 const lineOf = (text, at) => text.slice(0, at).split("\n").length;
 
-// 注释的替身:**只留换行**。行号、行首锚、行数三样都不变。
-const blanksFor = (chunk) => chunk.replace(/[^\n]/g, "");
+// 注释的替身:**只留换行**,不产生任何空白。行号、行首锚、行数三样都不变。
+const newlinesOf = (chunk) => chunk.replace(/[^\n]/g, "");
 
-const unterminated = (where, what, text, at) => {
-    throw new Error(
+// **返回** Error 而不是抛:调用点写成 `throw unterminatedError(…)`,「扫不下去就必须终止」
+// 由控制流本身保证,拆不掉。写成「函数内部抛」的那一版是**本卡自己踩过的形态** ——
+// 把那句 throw 拆掉之后,扫描器不是安静地返回半份文本,而是原地空转到
+// `Invalid array length` 才崩,自测那几格照绿(见 --self-test 里 throwsClear 的注释)。
+const unterminatedError = (where, what, text, at) =>
+    new Error(
         `${where}:第 ${lineOf(text, at)} 行开始的${what}扫到文件尾都没有收尾。` +
             "这多半不是源文件的问题,而是 scripts/lib/strip-comments.mjs 在前面某处配错了" +
             "(把除号读成正则、或引号配错)。别绕过这条错:剥不干净的文本会让调用它的判据" +
             "无声缩水。",
     );
-};
 
 /**
  * 剥掉 JS 源码里的注释(`//` 与 `/* … *\/`),字符串/模板串/正则字面量原样保留。
@@ -147,8 +150,8 @@ export function stripJsComments(text, where = "js") {
         }
         if (c === "/" && text[i + 1] === "*") {
             const end = text.indexOf("*/", i + 2);
-            if (end < 0) unterminated(where, "块注释", text, i);
-            out.push(blanksFor(text.slice(i, end + 2)));
+            if (end < 0) throw unterminatedError(where, "块注释", text, i);
+            out.push(newlinesOf(text.slice(i, end + 2)));
             i = end + 2;
             continue;
         }
@@ -156,7 +159,7 @@ export function stripJsComments(text, where = "js") {
         // ── 字面量:原样保留 ───────────────────────────────────────────────────
         if (c === '"' || c === "'") {
             const end = scanJsString(text, i, c);
-            if (end < 0) unterminated(where, "字符串", text, i);
+            if (end < 0) throw unterminatedError(where, "字符串", text, i);
             out.push(text.slice(i, end + 1));
             i = end + 1;
             afterLiteral(c);
@@ -200,7 +203,7 @@ export function stripJsComments(text, where = "js") {
     }
 
     if (mode === "tpl" || braces.length)
-        unterminated(where, "模板串", text, tplAt);
+        throw unterminatedError(where, "模板串", text, tplAt);
     return out.join("");
 }
 
@@ -270,8 +273,8 @@ export function stripPsComments(text, where = "ps") {
         // 引号串里的 `<#` 不会走到这里:下面的串分支先把整串吃掉了。
         if (c === "<" && text[i + 1] === "#") {
             const end = text.indexOf("#>", i + 2);
-            if (end < 0) unterminated(where, "块注释 <#", text, i);
-            out.push(blanksFor(text.slice(i, end + 2)));
+            if (end < 0) throw unterminatedError(where, "块注释 <#", text, i);
+            out.push(newlinesOf(text.slice(i, end + 2)));
             i = end + 2;
             continue;
         }
@@ -289,14 +292,14 @@ export function stripPsComments(text, where = "ps") {
         ) {
             const term = "\n" + text[i + 1] + "@";
             const end = text.indexOf(term, i + 2);
-            if (end < 0) unterminated(where, "here-string", text, i);
+            if (end < 0) throw unterminatedError(where, "here-string", text, i);
             out.push(text.slice(i, end + term.length));
             i = end + term.length;
             continue;
         }
         if (c === "'" || c === '"') {
             const end = scanPsString(text, i, c);
-            if (end < 0) unterminated(where, "引号串", text, i);
+            if (end < 0) throw unterminatedError(where, "引号串", text, i);
             out.push(text.slice(i, end + 1));
             i = end + 1;
             continue;
@@ -376,9 +379,12 @@ function selfTest() {
     const ps = (s) => stripPsComments(s, "自测");
     const nl = (s) => s.split("\n").length;
     // 钉的**不是「抛了」,是「抛出来的话认得出是本模块下的判断」**。反向验证实测:
-    // 把 `unterminated` 的 throw 拆掉之后,扫描器会在同一个位置原地空转、一路把 `out`
-    // 撑到 `Invalid array length` 才崩 —— **照样是抛**,只写 `throws()` 的话这几格全绿,
-    // 而人拿到的是一句什么都指不出来的引擎错。所以对一句话:失败要**报得出人话**。
+    // 早先那一版把 throw 写在 `unterminated()` **函数内部**,拆掉它之后扫描器会在同一个
+    // 位置原地空转、一路把 `out` 撑到 `Invalid array length` 才崩 —— **照样是抛**,
+    // 只写 `throws()` 的话这几格全绿,而人拿到的是一句什么都指不出来的引擎错。
+    // 所以对一句话:失败要**报得出人话**。
+    // (复审第 1 轮起结构也换了:工厂函数**返回** Error、由调用点 `throw`,「必须终止」
+    // 不再靠约定;这几格照留 —— 它们钉的是**话**,与用哪种结构无关。)
     const throwsClear = (fn) => {
         try {
             fn();
