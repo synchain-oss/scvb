@@ -1303,7 +1303,14 @@ else {
     Write-Host '  check-source-encoding.mjs --self-test:' -ForegroundColor Red
     $encSelfTest | ForEach-Object { Write-Host ("  " + $_) }
   }
-  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs', 'check-changelog-drafts.mjs', 'check-source-encoding.mjs')) {
+  # [SL-335] 同款:实跑绿有两种可能(文案真在表里 / 判据被改坏),自测把后一种单独照出来。
+  $msgSelfTest = (& node (Join-Path 'scripts' 'check-preview-messages.mjs') --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  check-preview-messages.mjs --self-test:' -ForegroundColor Red
+    $msgSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs', 'check-changelog-drafts.mjs', 'check-source-encoding.mjs', 'check-preview-messages.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
       $parityOk = $false
