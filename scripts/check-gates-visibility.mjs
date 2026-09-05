@@ -82,9 +82,15 @@ const errors = [];
 const fail = (m) => errors.push(m);
 const read = (p) => fs.readFileSync(p, "utf8");
 
-// PowerShell 整行注释:行首(允许缩进)是 `#`。剥掉它们再匹配。
+// PowerShell 注释:**块注释 `<# … #>` 整段剥掉**,再剥行首(允许缩进)是 `#` 的整行注释。
+// [SL-322 复审第 5 轮] 块注释那一半原来漏着,而它比行注释更危险:`gates.ps1:1-27` 的
+// `.SYNOPSIS` / `.DESCRIPTION` 帮助块里,`<#` 那行以 `<` 起头、body 各行以 `.` 或空格起头,
+// **一行都不匹配 `/^\s*#/`**(只有收尾的 `#>` 被剥),于是整段原样留在 `ps` 里 —— 而且
+// **每一行都在行首**,上一轮刚加的行首锚对它无效。把一条赋值抄进帮助块就能顶替真接线。
+// 这一半修在**共用的过滤器**上,本文件 PowerShell 侧的每一条断言一起受益,不只是标签那三条。
 const stripPsComments = (text) =>
     text
+        .replace(/<#[\s\S]*?#>/g, "")
         .split("\n")
         .filter((l) => !/^\s*#/.test(l))
         .join("\n");
