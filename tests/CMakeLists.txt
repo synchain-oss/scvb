@@ -348,8 +348,14 @@ if(MSVC)
   # 它与别的 TU 唯一量得出来的差别是**体量**:实测 7282 行,第二大的测试 TU 是
   # `tests/ipc/test_ipc_contract.cpp` 1584 行,差 4.6 倍。
   # (上一版这里还写过「唯一开 `/bigobj` 的测试目标」——**假的**,复审指出后实测:`/bigobj`
-  # 由 JUCE 的模块 INTERFACE 带进来(`JUCEModuleSupport.cmake`),五个测试目标都有,
-  # 只有 JUCE-free 的 `scvb_tests` 没有。仓里的 CMakeLists 一个字都没写过它。
+  # 由 JUCE 的模块 INTERFACE 带进来(`JUCEModuleSupport.cmake`),**链 juce:: 的那五个**
+  # 测试目标都有;两个 JUCE-free 的没有 —— `scvb_tests` 与 `scvb_ipc_tests`
+  # (后者见 `tests/ipc/CMakeLists.txt:12`,只链 `scvb_core` + `Catch2::Catch2WithMain`)。
+  # 仓里的 CMakeLists 一个字都没写过它。
+  # ⚠ 「只有 scvb_tests 没有」是这句话的**上一版**,又把 ipc 漏了 —— 那是 `scvb_ipc_tests`
+  # 在本卡里**第三次**从我写的枚举里掉出去(前两次:gates 的属性表、上界排序)。
+  # 三次同一个原因:清单照着**本文件**写,而 ipc 在隔壁。写「N 个目标怎样」这类全称句,
+  # 扫 `tests/**`,别扫本文件。
   # 记在这里是因为那半句曾是「这个 TU 特殊」这条推断的支柱之一,现在支柱只剩体量一条。)
   #
   # 所以这里关的是**一条已确认的误报**,不是把真问题盖住:文件真是 UTF-8、开关真在命令行上。
