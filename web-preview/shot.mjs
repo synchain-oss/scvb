@@ -203,7 +203,16 @@ const DOC_PRELUDE = `window.__D = (() => {
  *
  * ⚠ 裸包装 `evaluateRaw` **关在这个闭包里**,外面拿不到它。放在顶层时它仍是个名字更短、
  *   签名更少一个参数的函数,下一个人加第六处求值时它依然是最顺手的写法 ——「少一个能忘
- *   的地方」就只做了一半。词法上够不着,才是真的只剩一条路(复审第 1 轮【建议】2 的 ②)。
+ *   的地方」就只做了一半。
+ *
+ *   **射程仅此:堵死的是最顺手的那条歧路,不是全称保证。** `cdp` 是模块级 `let`,
+ *   文件里任何位置都写得出
+ *   `cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })`,
+ *   它一样绕过分档,只是比调 `evaluateRaw` 多打二十来个字符 —— 那已经是要绕的人自己
+ *   动手写,不叫顺手了。别把这一段读成「只剩一条路」(与 `CLAUDE.md` 里
+ *   `check-native-paths.mjs` 那段同一口径:边界要写成边界)。
+ *   [SL-332] **这件事全文件只在这里说一次**,调用点不复述 —— 原来两处各写一遍,
+ *   改一处就会在另一处留个旧副本,而那正是这条改动自己要治的毛病。
  *
  * 唯一例外是 `--eval`:表达式是人现给的,抛错是这句表达式自己的锅、不是页面没起来,
  * 退 1 才对。这个例外由 `userExpr: true` **显式声明**,而不是靠调用点绕开本函数 ——
@@ -380,8 +389,8 @@ try {
     // ② 二道:errorText 只覆盖「这一次 navigate 自己失败」。重定向到错误页、
     //    或首次导航成功但随后被换成错误页,都还得靠落地后的 URL 认。
     // ⚠ 走 `evalLanded`(见其函数头):「在落地页上连 location.href 都求不到」几乎
-    //    只可能是页面没正常起来,该退 2;裸包装(现名 `evaluateRaw`,关在 `evalLanded`
-    //    的闭包里)不分档、直接用会退 1 —— 也正因为够不着,这里没有第二条路可走。
+    //    只可能是页面没正常起来,该退 2。为什么这里不该自己去调裸包装、以及那道收口的
+    //    射程到哪为止,写在 `evalLanded` 的函数头,本处不复述。
     const landed = await evalLanded(cdp, "location.href", "落地页无法求值");
     if (typeof landed === "string" && landed.startsWith("chrome-error://")) {
         throw new NavigationError(
@@ -452,6 +461,15 @@ try {
     //    `querySelector` 对非法选择器抛的是 name 为 `SyntaxError` 的 DOMException,只截这
     //    一种回传标记(退 1);`__D` 没注入那种是 `TypeError`,原样抛出去让 `evalLanded` 接
     //    (退 2)。**别整段 catch** —— 那会把「页面没起来」也误报成「选择器写错了」。
+    //
+    //    [SL-332] **按 `e.name` 判,不是写得不够严谨,是非如此不可**:`__D` 是 iframe 的
+    //    文档,异常对象产在 **iframe 那个 realm** 里,而这段代码跑在顶层 realm。本机
+    //    实测(`--eval` 探针,预览页 output.html):`e.name === "SyntaxError"` 成立,而
+    //    `e instanceof DOMException` = **false**、`e instanceof Error` 也 = **false**、
+    //    `e.constructor === DOMException` = false;换成
+    //    `e instanceof window.__D.defaultView.DOMException` 才是 true。所以把这句「改严谨」
+    //    成 `instanceof DOMException`(或 `instanceof Error`)会让判据恒假 ⇒ 选择器语法错
+    //    掉回退 2,正好退回本卡刚修掉的那个形态。
     //    另:`--tab` 选择器合法但没命中时下面是 `throw new Error`(退 1),语法错也落 1,
     //    同一个参数的两种打字错这才在同一个码上(复审第 1 轮)。
     const clickIn = async (sel) => {
