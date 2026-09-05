@@ -1113,13 +1113,42 @@ if (selfTest) {
         //     把那行写回 `new RegExp("^" + …source + "$")`,比 source 那条照绿(实测过)。
         //     所以另加一条**源码级**断言,钉住调用点确实引用了这个常量。
         //     needle 拼装,免得这条断言把自己数进去(本仓「扫描器入库才炸」那一族)。
+        // [SL-328] 计数 `=== 1`,不是 `.includes`(即 `>= 1`)—— 与 ⑨g 同一条纪律的**另一半**:
+        //   · 拼装 needle 解决「别把这条断言自己数进去」;
+        //   · 计数解决「别被第三处冒名顶替」。
+        // 上一版只带了前一半:哪天自测里再添一格写成同样的字面量(照 ⑨e 造一条 `m` 命名的
+        // 夹具最自然),生产调用点写回内联时这一格**照绿**(#212 第 5 轮【建议】)。
         const anchoredCallSite = "BODY_REF_ANCHORED_RE" + ".test(m[1])";
+        // 判别串也**拼装**:写成连续字面量的话,它会命中本格自己的注释与话术,
+        // 于是 0 次那一支永远选「needle 过期」——「扫描器扫到自己」那一族(实测踩过)。
+        const anchoredConstCall = "BODY_REF_ANCHORED_RE" + ".test(";
+        const anchoredHits = selfSrc.split(anchoredCallSite).length - 1;
+        // 话术按命中数**分三支**:三种失效的真因不同,报同一句就是「第二次红指错方向」。
+        //   · 0 次、而那个常量名后面跟 `.test(` 的写法还在 —— **needle 过期**。它钉的是
+        //     `.test(m[1])` 这种逐字写法,而 `allowList` 里那个 `m` 是循环内的局部变量,
+        //     重构改名 `m` → `match` 很自然;那时调用点**没坏**,报「被写回内联」会把人
+        //     指到不存在的问题上。
+        //   · 0 次且那个常量名也没了 —— 才是真的**被写回内联**。
+        //   · ≥2 次 —— 有第三处也这么写(多半是自测夹具),这一格从此量不到生产那一处。
         check(
-            fs
-                .readFileSync(fileURLToPath(import.meta.url), "utf8")
-                .includes(anchoredCallSite),
-            "正文放行的收窄没走 BODY_REF_ANCHORED_RE(被写回内联 new RegExp?)—— " +
-                "常量再对也管不到调用点,真源放宽那天它不会跟着动",
+            anchoredHits === 1,
+            anchoredHits === 0
+                ? // 0 次还分得开两种真因,别让人自己猜:常量名还在、只是实参变了 ⇒ needle
+                  // 过期(`m` 被改名),调用点其实**没坏**;两个都没了才是真被写回内联。
+                  selfSrc.includes(anchoredConstCall)
+                    ? "这条 needle 过期了:`" +
+                      anchoredCallSite +
+                      "` 找不到,但 `" +
+                      anchoredConstCall +
+                      "` 还在 —— 多半是 `allowList` 里那个局部变量 `m` 被改名了。" +
+                      "**调用点没坏**,把本格的 needle 跟着改即可"
+                    : "正文放行的收窄被写回内联 `new RegExp(...)` 了 —— 常量再对也管不到调用点,真源放宽那天它不会跟着动"
+                : "`" +
+                      anchoredCallSite +
+                      "` 在本文件里出现了 " +
+                      anchoredHits +
+                      " 次(应当只有生产那一处)—— 多出来的那处(自测夹具?)会替生产那一处顶着," +
+                      "调用点写回内联时这一格就照绿了",
         );
         check(
             BODY_REF_ANCHORED_RE.source === bodyRefAnchored().source,
