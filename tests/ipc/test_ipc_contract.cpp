@@ -121,7 +121,7 @@ struct IpcTestsExclusiveListener : Catch::EventListenerBase
         else
         {
             std::fprintf(stderr, "[SL-323] 同机已有另一份 ipc 测试进程在跑 —— 本套用固定组号"
-                                 "(g1/g2/g3/g6/g7),段名全机唯一,两份同跑会互相清段。"
+                                 "(g1/g2/g3/g6/g7/g8),段名全机唯一,两份同跑会互相清段。"
                                  "\n  手跑请走:pwsh scripts"
                                  "/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C Release -R scvb_ipc_tests'"
                                  "\n  (它拿的是 gates 那把 Local"
