@@ -374,12 +374,6 @@ function Get-GatesGuardReport {
     #   因此**无解**(除非拆行)。这是**有意的取舍**:做配对就要定义「哪条本来给哪处」,
     #   而那个意图在文本里根本不存在 —— 宁可当场点出来让人拆行。
     #   方向 fail-closed(出红不漏);这一选择由 ㊱g 钉住。
-    # ⚠ **边界:按行匹配,不做二部图配对**(#230 复审第 2 轮点出)。同一行里有**多处**
-    #   调用、且本行行尾与上一行各有一条标记时,上一版会按顺序「一处配一条」把两处都豁免,
-    #   本版则在第一处就判歧义、并把两条一起记成已用 => 第二处掉进 `Unguarded`,那一段
-    #   因此**无解**(除非拆行)。这是**有意的取舍**:做配对就要定义「哪条本来给哪处」,
-    #   而那个意图在文本里根本不存在 —— 宁可当场点出来让人拆行。
-    #   方向 fail-closed(出红不漏);这一选择由 ㊱g 钉住。
     # 这一档是真会发生的:行尾标记绑本行、独占行标记绑下一行,一处调用点同时被上一行的
     # 独占标记与本行的行尾标记覆盖,两条都成立。谁该留、留哪条,只有写的人知道 ——
     # 判据能做的是**当场点出来**,而不是替他选一条再把另一条报成别的毛病。
@@ -842,6 +836,10 @@ if ($SelfTest) {
   $f26g = $mkExempt + [Environment]::NewLine + 'cmake --version; ninja --version   ' + $mkExempt
   $r26g = Get-GatesGuardReport -Source $f26g
   & $check '㊱g 同行多处调用配多条标记时没当场判歧义(静默做了配对)' (@($r26g.Ambiguous).Count -eq 1)
+  # ㊱h 这一刀的**代价**也要有格:第二处一条候选都没剩 ⇒ 连它一起落在 `Unguarded` 里,
+  #     那一段除非拆行否则无解。只钉「判了歧义」等于只钉了注释里那句断言的**前半** ——
+  #     而后半才是这一刀唯一有机械后果的那部分(#230 复审第 3 轮)。
+  & $check '㊱h 同行第二处调用没跟着落在 Unguarded 里(「无解」那半边断言不成立)' (@($r26g.Unguarded).Count -eq 2)
   # ㊱d **不误报**:只有一条候选时照旧走豁免
   $r26d = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version')
   & $check '㊱d 只有一条候选时误报了歧义' ((@($r26d.Ambiguous).Count -eq 0) -and (@($r26d.Exempted).Count -eq 1))
@@ -1073,8 +1071,6 @@ if (@($report.Ambiguous).Count -gt 0) {
   }
   Write-Host '    多条标记在争同一处 —— 谁该留只有写的人知道,判据不替你选。' -ForegroundColor Yellow
   Write-Host '    修法:删掉多余的那条,或把该留的那条挪到它要豁免的调用点旁。' -ForegroundColor Yellow
-  Write-Host '    若是**同一行里多处调用**各配一条标记:本判据按行匹配、不做配对,请**拆行** ——' -ForegroundColor Yellow
-  Write-Host '    「哪条本来给哪处」这个意图在文本里不存在,判据不猜。' -ForegroundColor Yellow
   Write-Host '    若是**同一行里多处调用**各配一条标记:本判据按行匹配、不做配对,请**拆行** ——' -ForegroundColor Yellow
   Write-Host '    「哪条本来给哪处」这个意图在文本里不存在,判据不猜。' -ForegroundColor Yellow
   Write-Host '    这一处还会在下面「无守卫调用点」那段里**再出一次** —— 那是对的:争端未定,' -ForegroundColor Yellow
