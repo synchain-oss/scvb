@@ -368,6 +368,18 @@ function Get-GatesGuardReport {
     # 上一版这里静默取 `$mk[0]`,落选那条留成 `Used = $false` ⇒ 被下面那圈报成「孤悬标记」,
     # 而孤悬的文案说的是「附近已经没有无守卫的外部调用了」—— **成因说反了**:那处调用还在,
     # 是两条标记在争它。照那句话去查的人会去找一处**不存在**的代码。
+    # ⚠ **边界:按行匹配,不做二部图配对**(#230 复审第 2 轮点出)。同一行里有**多处**
+    #   调用、且本行行尾与上一行各有一条标记时,上一版会按顺序「一处配一条」把两处都豁免,
+    #   本版则在第一处就判歧义、并把两条一起记成已用 => 第二处掉进 `Unguarded`,那一段
+    #   因此**无解**(除非拆行)。这是**有意的取舍**:做配对就要定义「哪条本来给哪处」,
+    #   而那个意图在文本里根本不存在 —— 宁可当场点出来让人拆行。
+    #   方向 fail-closed(出红不漏);这一选择由 ㊱g 钉住。
+    # ⚠ **边界:按行匹配,不做二部图配对**(#230 复审第 2 轮点出)。同一行里有**多处**
+    #   调用、且本行行尾与上一行各有一条标记时,上一版会按顺序「一处配一条」把两处都豁免,
+    #   本版则在第一处就判歧义、并把两条一起记成已用 => 第二处掉进 `Unguarded`,那一段
+    #   因此**无解**(除非拆行)。这是**有意的取舍**:做配对就要定义「哪条本来给哪处」,
+    #   而那个意图在文本里根本不存在 —— 宁可当场点出来让人拆行。
+    #   方向 fail-closed(出红不漏);这一选择由 ㊱g 钉住。
     # 这一档是真会发生的:行尾标记绑本行、独占行标记绑下一行,一处调用点同时被上一行的
     # 独占标记与本行的行尾标记覆盖,两条都成立。谁该留、留哪条,只有写的人知道 ——
     # 判据能做的是**当场点出来**,而不是替他选一条再把另一条报成别的毛病。
@@ -823,6 +835,13 @@ if ($SelfTest) {
   #     (方向 fail-closed)。这一条以前只是实现的副作用、没有任何一格钉着(#230 复审),
   #     而本卡自己刚立的规矩就是「可验证断言要有格」。
   & $check '㊱f 歧义那一处没落在 Unguarded 里(争端未定却静默放行)' (@($r26.Unguarded).Count -eq 1)
+  # ㊱g **按行匹配、不做二部图配对**(#230 复审第 2 轮):同一行两处调用
+  #     + 上一行一条标记 + 本行行尾一条标记 ⇒ 上一版按顺序一处配一条、两处都豁免;
+  #     本版当场判歧义。这是有意的取舍(意图在文本里不存在,宁可让人拆行),
+  #     但它不能只是实现的副作用 —— 本卡自己立的规矩就是「可验证断言要有格」。
+  $f26g = $mkExempt + [Environment]::NewLine + 'cmake --version; ninja --version   ' + $mkExempt
+  $r26g = Get-GatesGuardReport -Source $f26g
+  & $check '㊱g 同行多处调用配多条标记时没当场判歧义(静默做了配对)' (@($r26g.Ambiguous).Count -eq 1)
   # ㊱d **不误报**:只有一条候选时照旧走豁免
   $r26d = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version')
   & $check '㊱d 只有一条候选时误报了歧义' ((@($r26d.Ambiguous).Count -eq 0) -and (@($r26d.Exempted).Count -eq 1))
@@ -831,10 +850,13 @@ if ($SelfTest) {
   #     不给它一格,它就只能靠人手推 —— 本仓「边界记账最容易漂」那一族。
   #     钉住它的是 #217 那一刀(解析不到 + 形如 cmdlet 就排掉),`Set` 在批准动词表里。
   #     ⚠ 走**注入解析器** `$fakeNone`(同 ⑭):用真 `Get-Command` 的话,这一格只是
-    #       **碰巧**钉住 #217 那一刀 —— 哪天本文件里真出现一个 `function Set-Gate`
-    #       (名字就是 gates.ps1 里那个、夹具字符串里一直躺着),`CommandType = 'Function'`
-    #       那一支会**先** continue,`Sites` 照样是 0 ⇒ 格照绿,而反向验证不再复现
-    #       (#230 复审;同族形态见 ⑮c 旁那条 ⚠)。
+  #       **碰巧**钉住 #217 那一刀 —— 哪天本文件里真出现一个 `function Set-Gate`
+  #       (名字就是 gates.ps1 里那个、夹具字符串里一直躺着),`CommandType = 'Function'`
+  #       那一支会**先** continue,`Sites` 照样是 0 ⇒ 格照绿,而反向验证不再复现
+  #       (#230 复审;同族形态见 ⑮c 旁那条 ⚠)。
+  #     ⚠ 上面那句断言是**双向**的(定不定义都不进判据面),而这一格只钉「不定义」那半边;
+  #       另半边(夹具里定义了 => 走 `$localFuncs -contains` 那一支)由上面那批带
+  #       `$defSetGate` 的夹具**间接**兜住 —— 明说它是间接的,别读成这一格把两半边都钉了。
   $r26e = Get-GatesGuardReport -Source "Set-Gate 'x' `$ok" -Resolver $fakeNone
   & $check '㊱e 不定义 Set-Gate 时它竟然进了判据面(那句「没有机械后果」不成立)' (@($r26e.Sites).Count -eq 0)
 
@@ -1051,6 +1073,10 @@ if (@($report.Ambiguous).Count -gt 0) {
   }
   Write-Host '    多条标记在争同一处 —— 谁该留只有写的人知道,判据不替你选。' -ForegroundColor Yellow
   Write-Host '    修法:删掉多余的那条,或把该留的那条挪到它要豁免的调用点旁。' -ForegroundColor Yellow
+  Write-Host '    若是**同一行里多处调用**各配一条标记:本判据按行匹配、不做配对,请**拆行** ——' -ForegroundColor Yellow
+  Write-Host '    「哪条本来给哪处」这个意图在文本里不存在,判据不猜。' -ForegroundColor Yellow
+  Write-Host '    若是**同一行里多处调用**各配一条标记:本判据按行匹配、不做配对,请**拆行** ——' -ForegroundColor Yellow
+  Write-Host '    「哪条本来给哪处」这个意图在文本里不存在,判据不猜。' -ForegroundColor Yellow
   Write-Host '    这一处还会在下面「无守卫调用点」那段里**再出一次** —— 那是对的:争端未定,' -ForegroundColor Yellow
   Write-Host '    它确实还没被豁免(方向 fail-closed)。但那段的收尾让你「加一条带理由的标记」,' -ForegroundColor Yellow
   Write-Host '    对已经写了两条的人是错的指路 —— **以本段为准**。(双报由 ㊱f 钉住。)' -ForegroundColor Yellow
