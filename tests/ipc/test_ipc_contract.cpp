@@ -110,27 +110,38 @@ struct IpcTestsExclusiveListener : Catch::EventListenerBase
             // 建不出来是**另一件事**:DACL 拒绝 / 句柄耗尽 / 同名非互斥对象占位。
             // 判负是对的(CLAUDE.md §2:建不出来判负,绝不静默继续),但这时**没有**
             // 「另一份在跑」,排队或走 with-ipc-lock.ps1 都救不了。
+            //
+            // ⚠ 运行期文案一律 **ASCII**:本文件带中文的**字符串字面量**会触发 MSVC C4819
+            //(「不能在当前代码页表示的字符」),而 ADR-011 要求 /W4 零 warning ——
+            // 实测基线 0 条、加上中文 fprintf 后 2 条,`/utf-8` 与 BOM 都压不掉。
+            // 中文解释留在注释里(注释不触发),运行期只输出 ASCII。
             std::fprintf(stderr,
-                         "[SL-323] 无法创建命名互斥 Local"
-                         "\\SCVB-ipc-tests-proc(GetLastError=%lu)——**不是**「有人在跑」。"
-                         "可能是 DACL 拒绝、句柄耗尽,或同名对象被非互斥类型占位。"
-                         "本套用固定组号、段名全机唯一,判不出独占就不能跑。"
+                         "[SL-323] CreateMutexW(Local"
+                         "\\SCVB-ipc-tests-proc) failed, GetLastError=%lu."
+                         " This is NOT 'another run in progress' -- likely DACL denial, handle"
+                         " exhaustion, or the name taken by a non-mutex object."
+                         " This suite uses fixed IPC group ids (g1/g2/g3/g6/g7/g8) whose segment"
+                         " names are machine-wide, so it must not run without proven exclusivity."
                          "\n",
                          static_cast<unsigned long>(err));
         }
         else
         {
-            std::fprintf(stderr, "[SL-323] 同机已有另一份 ipc 测试进程在跑 —— 本套用固定组号"
-                                 "(g1/g2/g3/g6/g7/g8),段名全机唯一,两份同跑会互相清段。"
-                                 "\n  手跑请走:pwsh scripts"
-                                 "/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C Release -R scvb_ipc_tests'"
-                                 "\n  (它拿的是 gates 那把 Local"
-                                 "\\SCVB-ipc-tests,**不是**这里被拒的这把 —— 两份都经它就被串行了,"
-                                 "于是这把 -proc 自然拿得到。)"
-                                 "\n  若确认没人在跑:查**残留**的 scvb_ipc_tests.exe —— 僵尸进程会一直持着这把互斥"
-                                 "(见 gates.ps1 gate 6 前后的孤儿扫描)。"
+            std::fprintf(stderr, "[SL-323] Another ipc test process is already running on this machine."
+                                 " This suite uses fixed IPC group ids (g1/g2/g3/g6/g7/g8); their segment"
+                                 " names are machine-wide, so two runs clobber each other's segments."
+                                 "\n  Run it through the wrapper instead:"
+                                 " pwsh scripts/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C"
+                                 " Release -R scvb_ipc_tests'"
+                                 "\n  (That wrapper takes gates' Local"
+                                 "\\SCVB-ipc-tests, NOT the mutex refused here -- with both runs"
+                                 " behind it they are serialised, so this -proc mutex is then free.)"
+                                 "\n  If nobody is running: look for a leftover scvb_ipc_tests.exe --"
+                                 " a zombie keeps holding this mutex"
+                                 " (see the orphan scans around gate 6 in gates.ps1)."
                                  "\n");
         }
+
         std::fflush(stderr);
         // 整轮不跑:再往下走就会建段,那正是要避免的加害。
         std::exit(2);
