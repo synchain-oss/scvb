@@ -127,6 +127,8 @@ pwsh scripts/gates.ps1 -Quick -BuildDir build-mine   # 跳过 pluginval,快速�
 | --- | --- |
 | `JUCE_PATH must be set` | 没设 `-JucePath` 也没设 `JUCE_PATH` 环境变量,见 §2 |
 | `JUCE tag 'x' 与 .juce-version 不一致` | JUCE 检出的 tag 不对:`git -C ..\juce fetch --tags && git -C ..\juce checkout <.juce-version 的值>` |
+| `git 不在 PATH —— 无法核对 JUCE tag 与 .juce-version` | gate 1 **判负**(不是跳过)。装 Git 并让 `git` 进 PATH:`winget install Git.Git`。没有 git 时那条「tag 与 `.juce-version` 一致」的判据**根本没跑**,所以不能算过 |
+| `git 问不出 JUCE tag(浅克隆或无 tag?)` | gate 1 **判负**。`git describe --tags` 在 JUCE 目录里答不出来,常见于**用 zip 解压装的 JUCE**(压根不是 git 仓)或**不带 tag 的克隆**。处理:按 §2 用 `git clone --branch <.juce-version 的值> --depth 1` 重新检出;已有克隆则 `git -C ..\juce fetch --tags` 后 checkout 那个 tag |
 | `nuget.exe not found` | 装 NuGet CLI,或把 WebView2 包预放到 `<BuildDir>/packages/` |
 | WebView2 NuGet 拉不下来 | 多为代理/网络问题。包会缓存在构建目录,拉过一次后离线可用;换 `-BuildDir` 会重新拉 |
 | 链接期报 CRT 冲突(`MT_StaticRelease` vs `MD_DynamicRelease`) | 本项目全程静态 CRT `/MT`。任何手工加进来的第三方库都必须用静态 CRT 变体重新编 |
