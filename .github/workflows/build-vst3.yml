@@ -508,7 +508,7 @@ jobs:
       #   所在文件,而它已经漂过一次(SL-325:原先写「前六套在 `tests/CMakeLists.txt`」——
       #   文件是对的、**六**是错的)。要问「谁有属性、各是多少」,读 ctest 真正吃的那份
       #   `build*/**/CTestTestfile.cmake`;要问「有没有人漏写属性」,那是本 workflow 里
-      #   `check-ctest-timeouts.ps1` 那两步(与本机 gate 5b 同一条命令)当门禁在判的事。
+      #   `check-ctest-timeouts.ps1`(与本机 gate 5b 同一条命令)当门禁在判的事。
       #   ([SL-338 复审] 不写「上面/下面」:方位词与行号同族,这一段插一步、挪一步它就静默变假。)
       # 此前这里**不带** `--timeout`,于是没有属性的套件在**出包硬门**上吃 ctest 默认的 1500s、
       # 本机吃 gates 的 300 —— 同一个「上界」两个真源、差 5 倍。两边都写上之后,
