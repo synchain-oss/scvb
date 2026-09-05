@@ -98,6 +98,55 @@ private:
     std::function<void()> rebuild_;
 };
 
+// [SL-279] 「上次全量分析所用口径」的撤销动作。**与段表事务分开一个 action、但压在同一条
+// 撤销步里** —— juce::UndoManager 把 `beginNewTransaction` 之后的每一次 `perform` 归到当前
+// 这一条事务,所以在 `commitCrvsTransaction` 返回之后、下一次 `beginNewTransaction` 之前
+// 再 perform 一个本动作,一次 Ctrl+Z 就同时还原段表与基线,一次 Ctrl+Y 又把两者一起前移。
+//
+// 为什么不把这两个字符串塞进 `CrvsTransactionAction`:那个类有 5 个调用点(改版本名 / 复制版本 /
+// setTrackManual / setPanCurve / 分析),其中 4 个与「分析所用口径」毫无关系,给它们加两个
+// 恒等的快照字段只会让每条事务都多背一份无关状态,而 `getSizeInUnits` 的字节账也要跟着改。
+class AppliedAnalysisAction : public juce::UndoableAction
+{
+public:
+    AppliedAnalysisAction(juce::String& loudness, juce::String& center, juce::String oldLoudness,
+                          juce::String oldCenter, juce::String newLoudness, juce::String newCenter)
+        : loudness_(loudness)
+        , center_(center)
+        , oldLoudness_(std::move(oldLoudness))
+        , oldCenter_(std::move(oldCenter))
+        , newLoudness_(std::move(newLoudness))
+        , newCenter_(std::move(newCenter))
+    {
+    }
+
+    bool perform() override
+    {
+        loudness_ = newLoudness_;
+        center_ = newCenter_;
+        return true;
+    }
+
+    bool undo() override
+    {
+        loudness_ = oldLoudness_;
+        center_ = oldCenter_;
+        return true;
+    }
+
+    // 两对短字符串。给 1 而不是 0:0 会让本动作在撤销栈的容量账上「不存在」
+    // (与 CrvsTransactionAction 下限同一条理由)。
+    int getSizeInUnits() override { return 1; }
+
+private:
+    juce::String& loudness_;
+    juce::String& center_;
+    juce::String oldLoudness_;
+    juce::String oldCenter_;
+    juce::String newLoudness_;
+    juce::String newCenter_;
+};
+
 // ---------------------------------------------------------------------------
 // [#152 复审【重要】①②] CRVS 撤销栈的显式预算 —— 不吃 juce::UndoManager 的默认 (30000, 30)。
 //

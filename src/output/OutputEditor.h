@@ -63,6 +63,12 @@ private:
         std::uint16_t tracksMask = 0; // 0 = 不限轨
         double startS = 0.0;
         double endS = 0.0;
+        // [SL-279] 桥面 scope 字面是不是 `"all"`。**「全量」只此一处真源** ——
+        // 下游 markApplied 要它,而它在 finishAnalysis 里推不出来:那里只拿得到采样范围,
+        // 「范围恰好覆盖整条时间线」与「用户点了『分析(全部)』」不是一回事
+        // (follow 档下前者随已采集长度漂)。在 finishAnalysis 里现算等于把 scope 语义
+        // 抄成第二份,而它已经在 AnalyzeScopeMath.h 里了。
+        bool fullScope = false;
     };
     AnalyzeScope parseAnalyzeScope(const ArgList& a) const;
 

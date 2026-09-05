@@ -709,6 +709,15 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     const auto analysisCfg = processor_.analysisConfigSnapshot();
     put(analysis, "loudness_mode", analysisCfg.first);
     put(analysis, "center_slot_policy", analysisCfg.second);
+    // [SL-279] 「上次全量分析所用」那一份也发给 web:stale 由 web 自己按「当前 ≠ applied」派生,
+    // **逐项判**(两枚徽标挂在两个控件旁,合成一个布尔会让它们同亮同灭)。
+    // 此前 web 拿「设置页 mount 那一刻的本地快照」当基线,而 mount 早于首次 state 到达 ——
+    // 存成非默认档的工程一进 Tab4 就误报,把口径切回 mount 默认值时又漏报。两条同根。
+    const auto appliedCfg = processor_.appliedAnalysisConfigSnapshot();
+    juce::var applied = obj();
+    put(applied, "loudness_mode", appliedCfg.first);
+    put(applied, "center_slot_policy", appliedCfg.second);
+    put(analysis, "applied", applied);
     put(o, "analysis", analysis);
 
     juce::var channels = mkArray();
@@ -1115,6 +1124,7 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
     // 抽出去的理由见那个头文件:它是 P1-F 的唯一修复点,埋在私有成员里 harness 够不着,
     // 回归用例只能绕开它 —— 改回旧写法照样绿(评审 I1)。
     s.tracksMask = 0; // 0 = 不限轨
+    s.fullScope = true; // [SL-279] 只有这一条路是「全部」;对象形 scope 一律 false
     const AnalyzeRange r =
         analyzeAllRange(rt.rangeMode, rt.rangeStartS, rt.rangeEndS, processor_.capturedExtentSeconds());
     s.startS = r.startS;
@@ -1158,7 +1168,7 @@ void OutputEditor::handleAnalyze(const ArgList& a, Completion c)
         strictBool(a[1].getProperty("clearManual", false), clearManual);
     }
 
-    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS, clearManual);
+    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS, clearManual, sc.fullScope);
 
     if (!accepted.ok)
     {
