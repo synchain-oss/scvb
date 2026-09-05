@@ -144,14 +144,17 @@ DOM 定位约定:一切可测节点都带 `data-gb="…"` 锚点(如 `wave-lane-
 | 页面 404 | URL 写成了 `/output/` | 用 `/web-preview/output.html` |
 | 起服报「端口被占」 | 8823 已有服务器 | 那就是它,直接用;要重启先关掉旧进程 |
 | 页面空白 / 工具条显示 mock 未注入 | 走了 `file://`,或 iframe 跨源 | 必须经 8823 打开 |
-| `shot.mjs` 说「找不到 tab 按钮」 | 选择器落在了壳页顶层 | 脚本已自动跨 iframe;若自写脚本,取 `iframe.contentDocument` |
-| `shot.mjs` 说找不到 Chrome | 非默认安装路径 | `--chrome=<chrome.exe 路径>` |
-| `shot.mjs` **退 2**,报「导航失败:net::ERR_CONNECTION_REFUSED」 | 预览服务没起 | 先 `pwsh web-preview/serve.ps1` |
-| `shot.mjs` **退 2**,报「主文档 HTTP 404」 | URL 拼错(同本表第一行) | 用 `/web-preview/<role>.html` |
-| `shot.mjs` **退 2**,报「壳页报注入失败」 | 主文档 200,但 iframe 里的真源页没起来(`web/<role>/index.html` 挪走/改名,或 mock 后端抛错、driver.start() 抛错) | 按消息里壳页带出的**原话**查;`--console` 看页面 console |
-| `shot.mjs` **退 2**,报「壳页 … 内没离开『未就绪』态(data-ok=wait)」(消息里带实际预算秒数) | 壳页的 `.pv-status` 一直停在 `wait`(初始值就是它):注入还在重试、或壳页从头到尾没起来。**拍下去只会是中间态**,所以判负而不是放行 | 看消息里壳页带出的**原话**;`--console` 看页面 console。若确是慢而不是坏,`shell.js` 的重试预算(`PUMP_DEADLINE_MS` / `maxRetries`)才是该调的地方 |
-| `shot.mjs` **退 2**,报「壳页 … 上找不到 `.pv-status` —— 第四道判据失去着力点」 | **只要目标 URL 指向壳页(`/web-preview/{output,input,monitor}.html`)就判负,给不给 `--url` 都一样**:`.pv-status` 是壳页 HTML 里写死的静态节点,取不到只可能是**壳页自己变了**(class 改名、工具条被重构掉)。与下一行那条不同:这条是求值**成功**但结果是 `null`,不是求值抛错 | 去看 `web-preview/<role>.html` 里那个 `.pv-status` 还在不在。要拿本脚本打**非**壳页,把 `--url` 指向壳页以外的路径(如 `/web/output/index.html`)即可放行 —— 只加 `--url` 但仍指壳页**不会**放行 |
-| `shot.mjs` **退 2**,报「注入 `__D`(真源文档)失败 / 落地页无法求值 / 落地页读不到壳页状态 / 页内点击 … 失败」(括号里带页内异常原文) | 落地之后本脚本自己的探针求不出值 —— 页面多半没真的起来(执行上下文没了、被换成错误页) | 消息前半句说的就是哪一步;`--console` 看页面 console,再确认服务与 `web/<role>/index.html` 都在 |
+| `shot.mjs` **退 1**,报「页面上找不到 tab 按钮:…」 | 选择器落在了壳页顶层 | 脚本已自动跨 iframe;若自写脚本,取 `iframe.contentDocument` |
+| `shot.mjs` **退 1**,报「找不到 Chrome/Edge 可执行文件 —— 用 `--chrome=<路径>` 显式指定」 | 非默认安装路径 | `--chrome=<chrome.exe 路径>` |
+| `shot.mjs` **退 1**,报「Chrome 未在 12s 内开出 CDP 端口」 | 浏览器起了但没开出调试端口(端口被占、被安全软件拦、机器过载) | 换 `--port=<别的端口>` 重试;仍旧则先手工起一次同参数的 Chrome 看它报什么 |
+| `shot.mjs` **退 1**,报「captureScreenshot 返回的不是 PNG(…)」 | 抓屏返回了空/截断的数据(落盘前按八字节魔数认过) | 重跑一次;连续复现就带 `--console` 看页面是不是在持续报错 |
+| `shot.mjs` **退 2**,报「导航失败:… 目标:…」(第一段是 `net::ERR_CONNECTION_REFUSED` 之类) | 预览服务没起 | 先 `pwsh web-preview/serve.ps1` |
+| `shot.mjs` **退 2**,报「落到浏览器错误页(…),目标 … 没打开」 | 这一次 `navigate` 自己没报错,但落地后的 URL 是 `chrome-error://` —— 被重定向到错误页,或首次成功随后被换掉 | 同上,先确认服务在跑;`--console` 看页面 console |
+| `shot.mjs` **退 2**,报「主文档 HTTP …,目标 … 没正常返回(多半是 URL 拼错,见 PREVIEW-GUIDE §5 排障表)」 | URL 拼错(同本表第一行) | 用 `/web-preview/<role>.html` |
+| `shot.mjs` **退 2**,报「壳页报注入失败 —— 主文档 … 但舞台是空的。壳页原话:…」 | 主文档 200,但 iframe 里的真源页没起来(`web/<role>/index.html` 挪走/改名,或 mock 后端抛错、driver.start() 抛错) | 按消息里壳页带出的**原话**查;`--console` 看页面 console |
+| `shot.mjs` **退 2**,报「壳页 …s 内没离开「未就绪」态(data-ok=…)」(消息里带实际预算秒数) | 壳页的 `.pv-status` 一直停在 `wait`(初始值就是它):注入还在重试、或壳页从头到尾没起来。**拍下去只会是中间态**,所以判负而不是放行 | 看消息里壳页带出的**原话**;`--console` 看页面 console。若确是慢而不是坏,`shell.js` 的重试预算(`PUMP_DEADLINE_MS` / `maxRetries`)才是该调的地方 |
+| `shot.mjs` **退 2**,报「壳页 … 上找不到 `.pv-status` —— 第四道判据失去着力点(壳页 HTML 变了?)」 | **只要目标 URL 指向壳页(`/web-preview/{output,input,monitor}.html`)就判负,给不给 `--url` 都一样**:`.pv-status` 是壳页 HTML 里写死的静态节点,取不到只可能是**壳页自己变了**(class 改名、工具条被重构掉)。与下一行那条不同:这条是求值**成功**但结果是 `null`,不是求值抛错 | 去看 `web-preview/<role>.html` 里那个 `.pv-status` 还在不在。要拿本脚本打**非**壳页,把 `--url` 指向壳页以外的路径(如 `/web/output/index.html`)即可放行 —— 只加 `--url` 但仍指壳页**不会**放行 |
+| `shot.mjs` **退 2**,报「注入 `__D`(真源文档)失败 / **重新**注入 `__D`(真源文档)失败 / 落地页无法求值 / 落地页读不到壳页状态 / 页内点击 … 失败」,括号里是「页内求值抛错:…」的原文,句尾是「…,目标 … 大概率没正常起来」 | 落地之后本脚本自己的探针求不出值 —— 页面多半没真的起来(执行上下文没了、被换成错误页)。「**重新**注入」那一种是壳页状态落定之后补拍 `__D` 快照时失败,位置在第四道判据之后 | 消息前半句说的就是哪一步;`--console` 看页面 console,再确认服务与 `web/<role>/index.html` 都在 |
 | `shot.mjs` **退 1**,报「--eval 表达式抛错」或「选择器语法错:…」 | 抛错源自你给的输入(`--eval` 的表达式、`--click`/`--lang`/`--tab` 的选择器),与页面起没起无关 | 照括号里的页内异常改那个参数;`--lang` / `--tab` 的值是**原样插进选择器**的,带引号会拼出非法选择器。退 1 不退 2 就是为了把「你写错了」和「页面没起来」分开 |
 | 截图是白屏/半截 | 首帧未画完 | 加 `--wait=3000`,或 `--settle` 调大 |
 | 真机截图/注入连续超时 | 扩展或该标签页坏了 | 先用已知好的 commit 做对照实验,再怀疑代码 |
