@@ -64,6 +64,21 @@ const norm = (s) => s.replace(/[`*]/g, "").replace(/\s+/g, " ").trim();
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/**
+ * 把 §5 正文切成**单元格**并归一化 —— 匹配单位是单元格,不是整节、也不是整行。
+ * [复审第 3 轮] 这一步原来内联在 `run()` 里,于是它**自己没有常驻执行者**:
+ * 自测全打在另外两个导出的纯函数上,没有一格碰得到它;把它整理回「按行切」之后,
+ * 实跑与自测**两边都绿**(实测过)。而它恰恰是第 2 轮的核心判据 ——
+ * 本卡的立论是「没有机器守着就会漂」,这句话当时原样复发在了判据自己身上。
+ * 抽成导出的纯函数,下面的自测才够得着它。
+ */
+export const guideCells = (section) =>
+    section
+        .split("\n")
+        .flatMap((line) => line.split("|"))
+        .map(norm)
+        .filter(Boolean);
+
 /** 从源码里收「用户可见失败文案」。两条执行面各自带上出处,报错时能指到人。 */
 export function collectMessages(code) {
     const out = [];
@@ -161,11 +176,7 @@ function run() {
     // 人打开表一看它明明在。所以按 `|` 切到单元格再匹配。
     const rest = guide.slice(at + SECTION.length);
     const next = rest.search(/\n## /);
-    const cells = (next < 0 ? rest : rest.slice(0, next))
-        .split("\n")
-        .flatMap((line) => line.split("|"))
-        .map(norm)
-        .filter(Boolean);
+    const cells = guideCells(next < 0 ? rest : rest.slice(0, next));
 
     const messages = collectMessages(code);
     if (messages.length < MIN_MESSAGES)
@@ -245,6 +256,25 @@ function selfTest() {
             "async function evalLanded(cdp, expression, what) {\n  return 1;\n}",
         ).length === 0,
         "collectMessages 把函数声明当成了调用",
+    );
+    // [复审第 3 轮] 这两格钉住**第 2 轮的核心判据**:匹配单位是单元格,通配不许跨 `|`。
+    // 夹具用的正是当时的病灶形态 —— 症状列只写到 `选择器语法错:…`,而那对括号在隔壁
+    // 「原因」列里;整行拼得出来,单元格拼不出来。
+    // 反向验证做在先:把 `guideCells` 退回按行切(去掉 `.flatMap(...split("|"))`),
+    // **恰好这两格红、其余格全绿**;确认之后才写下这两条断言。
+    const crossCol = headPattern("选择器语法错:" + D + "(" + D + ")");
+    const borrowRow =
+        "| 报「选择器语法错:…」 | 抛错源自你给的输入(--eval 的表达式)与页面无关 |";
+    t(
+        !!crossCol && !guideCells(borrowRow).some((c) => crossCol.re.test(c)),
+        "通配跨过了 `|` —— 单元格口径失守(第 2 轮病灶:那对括号是从原因列借的)",
+    );
+    t(
+        !!crossCol &&
+            guideCells("| 报「选择器语法错:…(…)」 | 原因列 |").some((c) =>
+                crossCol.re.test(c),
+            ),
+        "症状列把括号写全了反而不命中 —— 单元格切法把该留的也切没了",
     );
     const h = headPattern("壳页 " + D + " 上找不到 .pv-status —— 第四道判据");
     t(!!h, "headPattern 把插值开头的消息判成了没有锚点");
