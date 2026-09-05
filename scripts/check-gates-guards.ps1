@@ -865,6 +865,13 @@ if ($SelfTest) {
   $l35 = Get-GatesLastListReport -Source ('# 一条注释' + [Environment]::NewLine + '& some-tool --version')
   & $check '㈟ 对「没有 Set-Gate 的非默认目标」假红了' ($null -eq (Test-GatesLastFloor -Report $l35))
   & $check '㈟b 默认目标上档号塔成 0 却没红' ($null -ne (Test-GatesLastFloor -Report $l35 -DefaultTarget))
+  # ㈟c **只有档号下界能挡住的那一档**：注释很多、档号为 0。
+  #    ⚠ 没有这一格，拆掉档号下界也不会红 —— 上面那几格的夹具注释数本就 < 200，
+  #      注释下界替它兼了底。这是反向注入实测出来的（删除式第 ⑤ 格当时是绿的）。
+  $manyComments = (1..250 | ForEach-Object { '# 第 ' + $_ + ' 条' }) -join [Environment]::NewLine
+  $l35c = Get-GatesLastListReport -Source $manyComments
+  & $check '㈟c 档号塔成 0 而注释不少时，没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35c -DefaultTarget))
+  & $check '㈟d 同一输入在非默认目标上不该假红' ($null -eq (Test-GatesLastFloor -Report $l35c))
 
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
