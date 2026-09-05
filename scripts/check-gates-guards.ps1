@@ -12,14 +12,18 @@
   两次漏的方式不同 —— 所以问题不是「下次更仔细」,而是**按名字列清单这件事本身不可靠**。
   本脚本就是那份清单的执行者:清单不再由人维护,由 AST 现算。
 
-  判据(三条,任一不满足即判负):
+  判据(任一不满足即判负;**不写条数** —— 手抄的数在本卡里已经漂过三次):
     · **每个外部命令调用点**都要落在**针对同一个命令**的存在性守卫的 if/else 作用域内;
     · **豁免必须显式且带理由**。首选形态是**行内标记** —— 贴在被检文件的调用点旁,跟着代码走;
       行尾标记只绑本行,独占一行的标记只绑下一行,一条标记只豁免一处,理由不得为空。
       外部 `$Exemptions` 清单是**兼容通道**(给不便改的被检文件),按文本指纹 + 钉命中数,今天为空。
     · **豁免不得孤悬/陈旧**:标记附近已经没有「无守卫的外部调用」即判负;清单条目命中数对不上
       (0 处=陈旧、多于预期=被撑宽)同样判负 —— 否则豁免会随代码漂移而悄悄失去精度。
-    · **每次运行把被豁免的那几处逐条打出来**:不查的东西最该显形,只报一个数等于把它们藏起来。
+
+  **输出纪律(不是判据,不影响退出码)**:每次运行把**被豁免的那几处逐条打出来**。
+  不查的东西最该显形 —— 只报一个数的话,谁悄悄多加一条标记就多一处不查,而输出上只是数字加一。
+  这条写在判据表外,是因为那段 `Write-Host` 从不影响 `$bad`,「任一不满足即判负」对它不成立
+  (#219 第 3 轮:我把它写进判据表,同时让「三条」变成了四条 —— 在修头注漂移的那个 commit 里)。
 
   「外部命令」怎么认(**不靠名字清单**):
     · 名字式调用 —— `Get-Command` 解析成 `Application` / `ExternalScript` 的,或**根本解析不到**的。
@@ -160,7 +164,9 @@ function Get-GatesGuardReport {
 
   # 行内豁免标记。形态(必须**紧跟注释起头**,不能夹在句子中间):
   #     # 后接方括号 gates-guard-exempt 方括号,再接非空理由
-  # 位置:与调用点**同一行**,或**紧邻上一行**。
+  # 位置**互斥**,不是「两个都随便」:**行尾标记(该行还有代码)只绑本行**,
+  # **独占一行的标记只绑下一行**。写成「同一行或紧邻上一行」会让人以为可以随手选一个,
+  # 而那正是 #219 形态 B 的来处(一条行尾标记有两个候选,工具静默挑一个)。
   # 「紧跟注释起头」这条不是排版洁癖 —— 本脚本的头注、以及别处的散文都会**提到**这个标记名,
   # 若允许它出现在句子中间,任何一句解释都会变成一条豁免(本仓「扫描器入库才炸」那一族:
   # 判据被自己的文档喂出假绿)。所以头注里提到它时一律不放在注释开头。
@@ -346,7 +352,9 @@ function Get-GatesGuardReport {
   # ---- 行内标记(首选形态)----
   # 标记贴在调用点旁,于是它**跟着代码走**:调用行被改、被挪、被删,标记跟着一起动,
   # 不会像外部清单那样「指纹失配 ⇒ 报陈旧豁免」而不是「你改了一处豁免点」。
-  # 一个标记只豁免**一处**(天然没有「一条吞两处」的问题,不必再钉 Hits)。
+  # 一个标记只豁免**一处** —— 这不是「天然」的,是**两条保证换来的**:`Id` 用 extent 偏移
+  # (治同行同文本的键撞车)+ `Standalone` 归属(治行尾/独占行的候选歧义)。有这两条才不必再钉
+  # `Hits`;把它写成「天然」会让下一个人拿它当现成理由,而那两条一旦被改掉,理由就没了。
   foreach ($u in $unguarded) {
     $mk = @($markers | Where-Object {
         -not $_.Used -and (
@@ -564,13 +572,26 @@ if ($SelfTest) {
   $r21 = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version; cmake --version')
   & $check '㉑ 同一行的第二处调用跟着白拿了豁免(去重键撞了)' (@($r21.Unguarded).Count -eq 1)
 
-  # ㉒ **行尾标记只绑本行**:下一行那处必须仍判负(#219 复审形态 B —— 原来「同行或下一行」
-  #    对一条行尾标记是两个候选,工具静默挑一个,作者若写给下一行,本行那处就被悄悄豁免)。
+  # ㉒ **正向格**:行尾标记绑本行、下一行那处判负。
+  #    ⚠ 这一格与 ㉒b **钉不住** `Standalone` 那一刀(旧的 `-or` 逻辑在这两个输入上输出相同)——
+  #    真正钉住它的是下面的 ㉓/㉓b。留着它们是为了「不误报」这一侧:改动不该让正常写法变红。
   $r22 = Get-GatesGuardReport -Source ('cmake --version   ' + $mkExempt + [Environment]::NewLine + 'ctest --preset x')
   & $check '㉒ 行尾标记绑错了行(下一行那处该判负)' (@($r22.Unguarded).Count -eq 1)
   # ㉒b **独占一行的标记只绑下一行**:本行没有调用点,不该白白孤悬判负
   $r22b = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'ctest --preset x')
   & $check '㉒b 独占行标记没绑到下一行' ((@($r22b.Unguarded).Count -eq 0) -and (@($r22b.StaleExemptions).Count -eq 0))
+
+  # ㉓ **真正钉住 `Standalone` 那一刀的一格**(#219 第 3 轮:原 ㉒/㉒b 没牙 —— 把那一刀改回旧的
+  #    `-or` 逻辑,31 格仍全绿)。能区分新旧两套规则的输入,关键是让**行尾标记所在行的调用是
+  #    「有守卫」的** —— 它因此不进 $unguarded,旧逻辑于是让**下一行**那处命中
+  #    `$_.Line -eq ($u.Line - 1)`、白拿这条标记被静默豁免;新逻辑下行尾标记只绑本行,
+  #    下一行拿不到 ⇒ 标记判为孤悬。旧逻辑 rc=0 / 新逻辑 rc=1,两侧实跑对过。
+  $f23 = '$toolCmd = Get-Command tool -ErrorAction SilentlyContinue' + [Environment]::NewLine +
+  'if ($toolCmd) { & tool --version }   ' + $mkExempt + [Environment]::NewLine +
+  '& toolB --version'
+  $r23 = Get-GatesGuardReport -Source $f23
+  & $check '㉓ 行尾标记被下一行白拿了(旧的「同行或上一行」二选一逻辑)' (@($r23.Exempted).Count -eq 0)
+  & $check '㉓b 该行尾标记本行无可豁免对象时应判孤悬' (@($r23.StaleExemptions).Count -eq 1)
 
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
@@ -674,7 +695,8 @@ if (@($report.Unguarded).Count -gt 0) {
   }
   Write-Host '    修法:在调用外面加 `if (-not $<命令>Cmd) { Set-Gate … $false } else { … }`,' -ForegroundColor Yellow
   Write-Host '    并在调用前 `$global:LASTEXITCODE = 1`。' -ForegroundColor Yellow
-  Write-Host '    确属「缺席即判负」(输出判据)的,在调用点上一行或行尾加一条带理由的行内豁免标记' -ForegroundColor Yellow
+  Write-Host '    确属「缺席即判负」(输出判据)的,加一条带理由的行内豁免标记:写在调用行**行尾**,' -ForegroundColor Yellow
+  Write-Host '    或**独占上一行**(两种位置互斥:行尾绑本行、独占行绑下一行)。' -ForegroundColor Yellow
   Write-Host '    (形态见本脚本头注;理由不能空,标记孤悬会判负)。' -ForegroundColor Yellow
 }
 if ($bad) { exit 1 }
