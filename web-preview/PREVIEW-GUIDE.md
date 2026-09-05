@@ -149,6 +149,7 @@ DOM 定位约定:一切可测节点都带 `data-gb="…"` 锚点(如 `wave-lane-
 | `shot.mjs` **退 2**,报「导航失败:net::ERR_CONNECTION_REFUSED」 | 预览服务没起 | 先 `pwsh web-preview/serve.ps1` |
 | `shot.mjs` **退 2**,报「主文档 HTTP 404」 | URL 拼错(同本表第一行) | 用 `/web-preview/<role>.html` |
 | `shot.mjs` **退 2**,报「壳页报注入失败」 | 主文档 200,但 iframe 里的真源页没起来(`web/<role>/index.html` 挪走/改名,或 mock 后端抛错、driver.start() 抛错) | 按消息里壳页带出的**原话**查;`--console` 看页面 console |
+| `shot.mjs` **退 2**,报「壳页 16s 内没离开『未就绪』态(data-ok=wait)」 | 壳页的 `.pv-status` 一直停在 `wait`(初始值就是它):注入还在重试、或壳页从头到尾没起来。**拍下去只会是中间态**,所以判负而不是放行 | 看消息里壳页带出的**原话**;`--console` 看页面 console。若确是慢而不是坏,`shell.js` 的重试预算(`PUMP_DEADLINE_MS` / `maxRetries`)才是该调的地方 |
 | `shot.mjs` **退 2**,报「注入 `__D`(真源文档)失败 / 落地页无法求值 / 落地页读不到壳页状态 / 页内点击 … 失败」(括号里带页内异常原文) | 落地之后本脚本自己的探针求不出值 —— 页面多半没真的起来(执行上下文没了、被换成错误页) | 消息前半句说的就是哪一步;`--console` 看页面 console,再确认服务与 `web/<role>/index.html` 都在 |
 | `shot.mjs` **退 1**,报「--eval 表达式抛错」或「选择器语法错:…」 | 抛错源自你给的输入(`--eval` 的表达式、`--click`/`--lang`/`--tab` 的选择器),与页面起没起无关 | 照括号里的页内异常改那个参数;`--lang` / `--tab` 的值是**原样插进选择器**的,带引号会拼出非法选择器。退 1 不退 2 就是为了把「你写错了」和「页面没起来」分开 |
 | 截图是白屏/半截 | 首帧未画完 | 加 `--wait=3000`,或 `--settle` 调大 |

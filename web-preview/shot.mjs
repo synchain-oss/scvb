@@ -73,8 +73,8 @@ if (args.has("help")) {
             "  --out=<路径>            PNG 落点,默认 web-preview/.shots/<tab>-<时间>.png",
             "  --console               把页面 console 打到 stdout(排障用)",
             "",
-            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败,",
-            "        以及落地后页内求值抛错)。分界是「谁的锅」:抛错源自你给的输入算 1 不算 2 ——",
+            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败、",
+            "        壳页一直没离开「未就绪」态,以及落地后页内求值抛错)。分界是「谁的锅」:抛错源自你给的输入算 1 不算 2 ——",
             "        --eval 的表达式抛错、--click/--lang/--tab 的选择器语法错,都归 1。",
         ].join("\n"),
     );
@@ -132,7 +132,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // [SL-290] 「没拍到」与「拍到的是错误页」要能被调用方分开:前者多半是环境/参数问题,
 // 后者说明**目标服务没起**——同样是失败,但排障方向完全不同,退出码就该不同。
 // 退出码:0 = 拍到了;1 = 其它失败;2 = 目标页面没能真的呈现(含错误页、非 2xx、壳页报
-// 注入失败,以及落地后的页内求值抛错)。落地后那半的分界是**谁的锅**:源自命令行给进来的
+// 注入失败、壳页一直没离开「未就绪」态([SL-333]),以及落地后的页内求值抛错)。
+// 落地后那半的分界是**谁的锅**:源自命令行给进来的
 // 输入(`--eval` 表达式、`--click`/`--lang`/`--tab` 的选择器语法)算 1,其余算 2;
 // 收口在 `evalLanded` 与 `clickIn`。
 // 注:本脚本不被 gates / CI 调用(只在 PREVIEW-GUIDE 与 E2E-journey 里给人用),
@@ -442,13 +443,45 @@ try {
     //    ⚠ 两个属性**一次读回**:分两次读时,第二次(取原话)是在**已经判负之后**跑的
     //    —— 它一抛错,`throw new NavigationError` 就再也执行不到,**判负的证据在手里
     //    却打印不出来**。求值本身走 `evalLanded`(退 2,见其函数头)。
-    const shell = await evalLanded(
-        cdp,
-        `(() => { const e = document.querySelector(".pv-status");
+    //    ⚠ [SL-333] **只拦 `"0"` 是不够的:壳页还有个「未就绪」态,而它是默认值。**
+    //    `setStatus()` 把 `ok === null` 写成 `data-ok="wait"`,三个壳页的 HTML 里
+    //    `.pv-status` **初始就带 `data-ok="wait"`**(文案「初始化…」)。所以「还没就绪」
+    //    与「就绪且成功」在旧判据下**长得一样**:两者都不是 `"0"`,一律放行 ⇒ 拍下一张
+    //    中间态(甚至是壳页从头到尾没起来的那张)报 ✅ —— 又一张伪证据。
+    //    `shell.js` 的注入重试(`wired === 0` ⇒ 重导航 iframe)期间同样停在这一档。
+    //
+    //    修法是**等它落定再判**,不是一见 `"wait"` 就判负:重试窗口本来就是设计的一部分,
+    //    立刻判负会把一次正常的慢注入变成红。落定 = `data-ok` 变成 `"1"` 或 `"0"`。
+    //    预算取 `shell.js` 的 `PUMP_DEADLINE_MS`(15s)再加 1s 余量 —— 覆盖**默认那一次**
+    //    重试(`maxRetries` 默认 1)。**边界照实说**:把 `maxRetries` 调大、或真需要第二次
+    //    重试时会超出这个预算,那时按超时判负,消息里写明是「一直没离开未就绪态」而不是
+    //    「注入失败」,免得把人指向 `shell.js` 的失败路径去查。
+    const SHELL_SETTLE_MS = 16000;
+    const readShell = () =>
+        evalLanded(
+            cdp,
+            `(() => { const e = document.querySelector(".pv-status");
                   return e ? { ok: e.getAttribute("data-ok"), why: e.textContent } : null; })()`,
-        "落地页读不到壳页状态",
-    );
-    if (shell && shell.ok === "0") {
+            "落地页读不到壳页状态",
+        );
+    // 落定判据写成「是不是那两个终态之一」而不是「是不是 wait」:属性缺失(取到 null)、
+    // 或将来多出一档新状态,都该继续等而不是当成成功放行。
+    const settled = (s) => !s || s.ok === "1" || s.ok === "0";
+    let shell = await readShell();
+    const settleBy = Date.now() + SHELL_SETTLE_MS;
+    while (!settled(shell) && Date.now() < settleBy) {
+        await sleep(250);
+        shell = await readShell();
+    }
+    if (shell && !settled(shell)) {
+        throw new NavigationError(
+            `壳页 ${SHELL_SETTLE_MS / 1000}s 内没离开「未就绪」态(data-ok=${shell.ok})——` +
+                `拍下去只会是中间态。壳页原话:${shell.why}`,
+        );
+    }
+    // 到这里只剩 `"1"` / `"0"` / 非预览页(null)三种。**判负写成「不是 "1"」而不是「是 "0"」**:
+    // 上面已经把非终态挡在外面,剩下的任何非 `"1"` 值都不该放行。
+    if (shell && shell.ok !== "1") {
         throw new NavigationError(
             `壳页报注入失败 —— 主文档 ${mainStatus ?? "状态未取到"} 但舞台是空的。壳页原话:${shell.why}`,
         );
