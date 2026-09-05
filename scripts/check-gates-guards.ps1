@@ -444,7 +444,9 @@ function Get-GatesGuardReport {
 # 提到标记名不算 —— 否则本脚本的头注、以及任何解释这个标记的散文都能喂出一条假绿
 # (本仓「扫描器入库才炸」那一族,见自测 ⑳)。
 #
-# 返回:@{ Comments; GateIds; Sanctioned; Offending }
+# 返回:一个哈希表,键见函数末尾的 `return`。
+# ⚠ 别在这里抄一份键名清单:上一版就是加了 `Stale` 而这行没跟(#225 复审)——
+#   同一个 commit 既加了字段又留着旧枚举,正是 SL-337 在治的那一族。
 # ─────────────────────────────────────────────────────────────────────────────
 function Get-GatesLastListReport {
   param([Parameter(Mandatory)][string]$Source)
@@ -869,12 +871,17 @@ if ($SelfTest) {
   #      注释下界替它兼了底。这是反向注入实测出来的(删除式第 ⑤ 格当时是绿的)。
   $manyComments = (1..250 | ForEach-Object { '# 第 ' + $_ + ' 条' }) -join [Environment]::NewLine
   $l35c = Get-GatesLastListReport -Source $manyComments
-  & $check '㉟c 档号塌成 0 而注释不少时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35c -DefaultTarget))
+  & $check '㉟c 档号塌成 0 而注释不少时,挡住它的不是档号那一刀' ((Test-GatesLastFloor -Report $l35c -DefaultTarget) -match '档号')
   & $check '㉟d 同一输入在非默认目标上不该假红' ($null -eq (Test-GatesLastFloor -Report $l35c))
 
   # ㉟e **只有注释下界能挡住的那一档**:档号够多、注释几乎没有。
   #    ⚠ 没有这一格,把注释下界整刀删掉自测也不会红 —— 上面每一格的档号数都 < 5,
   #      在 -DefaultTarget 上档号那一刀总是先返回,替它兼了底。
+  #      ⚠ 断言钉的是**哪一刀返回的**,不是「返回了非空」(#225 复审第 3 轮):
+  #        夹具给的是**不多不少 5 个**档号,而档号那一刀是 `-lt 5`,**零余量** ——
+  #        谁把下界从 5 收到 6(gates.ps1 今天能取到 11 个,收到 8 完全合理),
+  #        档号刀就会抢先返回,这一格静默退回空过格。`-match` 对 `$null` 为 `$false`,
+  #        所以「整刀被删」照旧红,而「另一刀抢先返回」现在也当场红。
   #      与 ㉟c 是**同一个洞的两个方向**:那一格没有档号、这一格没有注释,
   #      两格各自只能被一条下界拦住。注释提取一旦被改坏,`$commentByLine` 为空
   #      ⇒ `Offending` 恒为 0、判据静默全绿,而档号那一半走 AST 照样能取到十几个,
@@ -882,7 +889,7 @@ if ($SelfTest) {
   $sgFive = @('3b gitleaks', '3c reuse lint', '3d 设计盒真源', '3e web smoke', '3f 文档真源') |
   ForEach-Object { "Set-Gate '$_' `$ok" }
   $l35e = Get-GatesLastListReport -Source (($sgFive -join [Environment]::NewLine) + [Environment]::NewLine + '# 一条注释')
-  & $check '㉟e 档号够多但注释塌成个位数时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35e -DefaultTarget))
+  & $check '㉟e 注释塌成个位数时,挡住它的不是注释那一刀' ((Test-GatesLastFloor -Report $l35e -DefaultTarget) -match '注释')
   & $check '㉟f 同一输入在非默认目标上假红了' ($null -eq (Test-GatesLastFloor -Report $l35e))
 
   if ($fails.Count -gt 0) {
