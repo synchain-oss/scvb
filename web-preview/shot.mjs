@@ -208,8 +208,8 @@ const DOC_PRELUDE = `window.__D = (() => {
  *   **射程仅此:堵死的是最顺手的那条歧路,不是全称保证。** `cdp` 是模块级 `let`,
  *   文件里任何位置都写得出
  *   `cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })`,
- *   它一样绕过分档,只是比调 `evaluateRaw` 多打二十来个字符 —— 那已经是要绕的人自己
- *   动手写,不叫顺手了。别把这一段读成「只剩一条路」(与 `CLAUDE.md` 里
+ *   它一样绕过分档 —— 但那要把 `Runtime.evaluate` 的三个选项连着手抄一遍,已经是
+ *   要绕的人自己动手写,不叫顺手了。别把这一段读成「只剩一条路」(与 `CLAUDE.md` 里
  *   `check-native-paths.mjs` 那段同一口径:边界要写成边界)。
  *   [SL-332] **这件事全文件只在这里说一次**,调用点不复述 —— 原来两处各写一遍,
  *   改一处就会在另一处留个旧副本,而那正是这条改动自己要治的毛病。
@@ -462,14 +462,21 @@ try {
     //    一种回传标记(退 1);`__D` 没注入那种是 `TypeError`,原样抛出去让 `evalLanded` 接
     //    (退 2)。**别整段 catch** —— 那会把「页面没起来」也误报成「选择器写错了」。
     //
-    //    [SL-332] **按 `e.name` 判,不是写得不够严谨,是非如此不可**:`__D` 是 iframe 的
-    //    文档,异常对象产在 **iframe 那个 realm** 里,而这段代码跑在顶层 realm。本机
-    //    实测(`--eval` 探针,预览页 output.html):`e.name === "SyntaxError"` 成立,而
-    //    `e instanceof DOMException` = **false**、`e instanceof Error` 也 = **false**、
-    //    `e.constructor === DOMException` = false;换成
-    //    `e instanceof window.__D.defaultView.DOMException` 才是 true。所以把这句「改严谨」
-    //    成 `instanceof DOMException`(或 `instanceof Error`)会让判据恒假 ⇒ 选择器语法错
-    //    掉回退 2,正好退回本卡刚修掉的那个形态。
+    //    [SL-332] **按 `e.name` 判,不是写得不够严谨,是非如此不可 —— 它是唯一在
+    //    `DOC_PRELUDE` 两条分支下都成立的写法。** `DOC_PRELUDE` 有兜底:有 iframe 且
+    //    `contentDocument` 取得到时 `__D` 是**iframe 的文档**,否则(`--url` 打的是非预览
+    //    页,或取不到)回落成**顶层 document**。异常对象产在 `__D` 所属的那个 realm,而
+    //    这段代码跑在顶层 —— 于是 `instanceof` 的真假**随分支翻转**。本机 `--eval` 探针
+    //    实测两条分支:
+    //      预览页 output.html(`__D === document` 为 false):
+    //        name = "SyntaxError";instanceof DOMException = **false**;
+    //        instanceof Error = **false**;`__D.defaultView.DOMException` 那个才 true。
+    //      `--url=…/web/output/index.html`(页面无 iframe,`__D === document` 为 true):
+    //        name = "SyntaxError";instanceof DOMException = **true**;instanceof Error = true。
+    //    所以把这句「改严谨」成 `instanceof DOMException`(或 `instanceof Error`)拿到的不是
+    //    恒假、而是**时灵时不灵**的判据:预览页上失效(语法错掉回退 2,正好退回 #215 刚修掉
+    //    的形态),而拿 `--url` 打个普通页面去复现时它又是 true —— 复现不出来的人会以为
+    //    这条注释写错了。看情况假的判据比恒假的更难查,这才是不能用它的理由。
     //    另:`--tab` 选择器合法但没命中时下面是 `throw new Error`(退 1),语法错也落 1,
     //    同一个参数的两种打字错这才在同一个码上(复审第 1 轮)。
     const clickIn = async (sel) => {
