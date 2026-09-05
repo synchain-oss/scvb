@@ -462,8 +462,8 @@ try {
     //    一种回传标记(退 1);`__D` 没注入那种是 `TypeError`,原样抛出去让 `evalLanded` 接
     //    (退 2)。**别整段 catch** —— 那会把「页面没起来」也误报成「选择器写错了」。
     //
-    //    [SL-332] **按 `e.name` 判,不是写得不够严谨,是非如此不可 —— 它是唯一在
-    //    `DOC_PRELUDE` 两条分支下都成立的写法。** `DOC_PRELUDE` 有兜底:有 iframe 且
+    //    [SL-332] **按 `e.name` 判,不是写得不够严谨,而是这里成本最低的那条。**
+    //    `DOC_PRELUDE` 有兜底:有 iframe 且
     //    `contentDocument` 取得到时 `__D` 是**iframe 的文档**,否则(`--url` 打的是非预览
     //    页,或取不到)回落成**顶层 document**。异常对象产在 `__D` 所属的那个 realm,而
     //    这段代码跑在顶层 —— 于是 `instanceof` 的真假**随分支翻转**。本机 `--eval` 探针
@@ -477,6 +477,12 @@ try {
     //    恒假、而是**时灵时不灵**的判据:预览页上失效(语法错掉回退 2,正好退回 #215 刚修掉
     //    的形态),而拿 `--url` 打个普通页面去复现时它又是 true —— 复现不出来的人会以为
     //    这条注释写错了。看情况假的判据比恒假的更难查,这才是不能用它的理由。
+    //    **别把上面读成「只有 name 这一条可用」**:`e instanceof __D.defaultView.DOMException`
+    //    两条分支下也都成立(兜底时 `__D.defaultView === window`,就是顶层那个)。不选它是因为
+    //    它得先摸到对端 realm,而 `defaultView` 在文档被 detach 后是 `null` —— 实测把 iframe
+    //    `remove()` 掉之后,`__D.defaultView` 从 window 变成 null,那一句当场
+    //    `TypeError: Cannot read properties of null (reading 'DOMException')`,**在 catch 里
+    //    再抛一次,比原来那个病还难查**。所以是「成本最低」,不是「唯一」。
     //    另:`--tab` 选择器合法但没命中时下面是 `throw new Error`(退 1),语法错也落 1,
     //    同一个参数的两种打字错这才在同一个码上(复审第 1 轮)。
     const clickIn = async (sel) => {
