@@ -176,7 +176,24 @@ const BODY_TBD_RE = /#TBD/g;
 // 一边在旁边又造了一个。两侧都从这里派生之后,「放宽了取号却忘了放宽收窄 ⇒ 放行静默拒」
 // 这条路结构上不存在,不必再靠一格夹具替它站岗(#210 复审第 1/2 轮【建议】)。
 const BODY_REF_NUM_RE = /\d+/;
-const BODY_PAREN_RE = /\([^)]*#\d+[^)]*\)/g;
+// [SL-327] 粗筛也从 `BODY_REF_NUM_RE` 派生。它是取号的**前置粗筛**(先挑出括号组,再在组内
+// 取号),所以它自己也是一份号形态 —— 真源放宽而它没跟上的话,`(见 #SL189)` 这样的括号
+// **根本不进候选**,组内那一轮再宽也没机会跑 ⇒ 引用静默不进判定面。它比收窄那处更钝:
+// 不报错、不判红,只是少收几个号(#210 复审第 3 轮【建议】)。
+// 非捕获分组不能省:真源一旦带 `|`,`#\d+|SL\d+` 会在这里错位结合。
+// 两处构造都走 helper,且都带**默认参数** —— 自测因此能喂一个「放宽了的」真源,
+// 把「真源带 `|` 时分组对不对」当场量出来,而不必真去改那个常量(#210 第 3 轮【建议】)。
+const bodyRefAnchored = (src = BODY_REF_NUM_RE.source) =>
+    new RegExp("^(?:" + src + ")$");
+const bodyParenRe = (src = BODY_REF_NUM_RE.source) =>
+    new RegExp("\\([^)]*#(?:" + src + ")[^)]*\\)", "g");
+// [SL-327 复审第 4 轮] 收窄侧也要一个**生产常量**,理由与 BODY_PAREN_RE 逐字相同:
+// ⑨j 比的是「生产那份东西的 source」,而收窄此前是**内联调用** —— 没有可比的对象,
+// 于是「helper 还在、调用点写回字面量」这条路在这一侧没人守(实测:那样退回去
+// 自测与实跑**双绿**)。而这条路正是我给 BODY_PAREN_RE 立 ⑨j 时自己点名的那一条。
+// 无 `g` 标志,`.test` 没有 lastIndex 漂移,提到模块级安全。
+const BODY_REF_ANCHORED_RE = bodyRefAnchored();
+const BODY_PAREN_RE = bodyParenRe();
 
 function bodyPrRefs(body) {
     const out = [];
@@ -369,10 +386,7 @@ function allowList(block, headText = ALLOW_HEAD) {
         // 这条路比「照抄报错样例」更好走:CHANGELOG 里「正文放行」自己写着「写法与门禁放行
         // 相同」,而上面那段的说明与样例全是 `#SL189`,隔几行照抄最自然(#208 第 4 轮【建议】)。
         // 所以在这里**当场判负并说清真因**,不留到下游变成一句指错方向的红。
-        if (
-            headText === BODY_ALLOW_HEAD &&
-            !new RegExp("^" + BODY_REF_NUM_RE.source + "$").test(m[1])
-        ) {
+        if (headText === BODY_ALLOW_HEAD && !BODY_REF_ANCHORED_RE.test(m[1])) {
             wrongForm.push(m[1]);
             continue;
         }
@@ -383,44 +397,48 @@ function allowList(block, headText = ALLOW_HEAD) {
             noReason.push(m[1]);
         else out.set(m[1], m[2].trim());
     }
+    // [SL-327] 三类问题**一次报完**,不再先到先抛。与本文件 `bodyBad` / `leaks()` 那处
+    // 同一条纪律(那段注释写着「在这里直接 exit 会…让人跑两轮」):一段里同时写了形态不对的号
+    // 和写坏的破折号时,先到先抛会让作者改完一种、重跑才第一次看见下一种,连撞几次红。
+    // 样例只在末尾给一次,并按**段**选(正文段给纯数字形态,块那半给 SL 形态)。
+    const problems = [];
     if (wrongForm.length)
-        throw new Error(
-            "「" +
-                BODY_ALLOW_HEAD +
-                "」只吃**纯数字 PR 号**,这几个不是:#" +
+        problems.push(
+            "· 这几个号不是**纯数字 PR 号**:#" +
                 wrongForm.join(" / #") +
                 " —— SL 卡号 / J 裁定号是**块里那半**(「" +
                 ALLOW_HEAD +
-                "」)的形态;正文里的引用只可能是 PR 号。" +
-                "写在这里放行不掉;这道拦截若不在,它还会接着被当成「已经不需要的放行」判负。" +
-                "正文放行照这个写:" +
-                allowSampleFor("111"),
+                "」)的形态;正文里的引用只可能是 PR 号。写在这里放行不掉;" +
+                "这道拦截若不在,它还会接着被当成「已经不需要的放行」判负",
         );
     if (malformed.length)
-        throw new Error(
-            "「" +
-                headText +
-                "」里这几行像放行行、写法却不对(一行要写成 `- #<号> —— <理由>`,号与 `pending #…` 里同形):\n    " +
-                malformed.join("\n    ") +
-                "\n  正确写法:" +
-                // [SL-319] 样例要跟着**段**走:正文放行下给 SL 形态的话,照抄的人
-                // 会拿到 `#SL189` —— `ALLOW_LINE_RE` 收得下,但 `bodyPrRefs` 只产纯
-                // 数字,于是 `deadBody` 当场判负,话术还说成「正文里没有引用它 / 它
-                // 已经落地」,两条都不是真因(真因是 SL 形态在正文侧根本不合法)。
-                // 连撞两次红、第二次还指错方向(复审【建议】)。
-                (headText === BODY_ALLOW_HEAD
-                    ? allowSampleFor("111")
-                    : ALLOW_SAMPLE),
+        problems.push(
+            "· 这几行像放行行、写法却不对(一行要写成 `- #<号> —— <理由>`,号与 `pending #…` 里同形):\n      " +
+                malformed.join("\n      "),
         );
     if (noReason.length)
-        throw new Error(
-            "「" +
-                headText +
-                "」里这几个号没写理由:#" +
+        problems.push(
+            "· 这几个号没写理由:#" +
                 noReason.join(" / #") +
                 " —— 放行必须写理由,不写就是静默豁免;样例里的占位符 `" +
                 ALLOW_REASON_PLACEHOLDER +
                 "` **不算理由**,要换成真的",
+        );
+    if (problems.length)
+        throw new Error(
+            "「" +
+                headText +
+                "」有 " +
+                problems.length +
+                " 类问题:\n    " +
+                problems.join("\n    ") +
+                "\n  正确写法:" +
+                // 样例按**段**选:正文放行下给 SL 形态的话,照抄的人会拿到 `#SL189` ——
+                // `ALLOW_LINE_RE` 收得下,但正文侧只认纯数字,于是他会**再撞一次红**
+                // (而且是上面第一类),第二次红还指错方向([SL-319] / [SL-326] 判例)。
+                (headText === BODY_ALLOW_HEAD
+                    ? allowSampleFor("111")
+                    : ALLOW_SAMPLE),
         );
     return out;
 }
@@ -1047,6 +1065,93 @@ if (selfTest) {
                 : "「最大落地号」的推导式在本文件里出现了 " +
                       rawHits +
                       " 次(应当只有 maxLandedOf 一处)—— 基线与判据一旦不同源,基线比没有更坏",
+        );
+        // ⑨h [SL-327] **真源带 `|` 时,两处构造的分组要绑对**。这两条是「放宽那一天」才显形的,
+        //     所以不能等到那天:helper 带默认参数,这里直接喂一个放宽了的真源量它。
+        //     没有非捕获分组的话,`"^" + src + "$"` 拼出来是 `^SL\d+|\d+$` ≡ `(^SL\d+)|(\d+$)`,
+        //     于是 `J189` 走第二支命中 ⇒ `wrongForm` 对 J 形态不再触发 ⇒ 放行放不掉 ⇒ 撞 deadBody,
+        //     报出本卡一路在根除的那句指错方向的红(#210 第 3 轮【建议】)。
+        // 放宽了的真源**从真源本身派生**,不手写转义(手写 `"\\d+"` 这一步本会话已经
+        // 被工具层折叠过好几次;派生既免转义,又保证真源改了这个夹具跟着改)。
+        const WIDE =
+            "SL" + BODY_REF_NUM_RE.source + "|" + BODY_REF_NUM_RE.source;
+        check(
+            bodyRefAnchored(WIDE).test("SL189") &&
+                bodyRefAnchored(WIDE).test("111") &&
+                !bodyRefAnchored(WIDE).test("J189") &&
+                !bodyRefAnchored(WIDE).test("xx111"),
+            "真源带 `|` 时收窄的锚点绑错了(缺非捕获分组)—— J189 / xx111 会被放过," +
+                "而它们本该落进 wrongForm",
+        );
+        // ⑨i 粗筛同理:真源放宽之后,`(见 #SL189)` 必须**进候选**,否则组内那一轮再宽也没机会跑,
+        //     引用静默不进判定面 —— 不报错、不判红,只是少收几个号。
+        check(
+            // 断的是**匹配到的整段**,不是「匹配没匹配上」:去掉非捕获分组时
+            // `\([^)]*#SL\d+|\d+[^)]*\)` 的第一支照样能命中 `(见 #SL189` 这个**前缀**,
+            // `.test()` 因此照样为真 —— 只有比整段才分得开(实测:上一版用 .test 时这一格无牙)。
+            bodyParenRe(WIDE).exec("(见 #SL189)")?.[0] === "(见 #SL189)" &&
+                // 用**生产那份常量**,不是再调一次 helper —— 否则「helper 还在、
+                // 但 BODY_PAREN_RE 被写回字面量」这条路没人守(实测过:那样注入时本格照绿)。
+                new RegExp(BODY_PAREN_RE.source).test("(见 #111)") &&
+                !new RegExp(BODY_PAREN_RE.source).test("(见 #SL189)"),
+            "粗筛没跟着真源走 —— 放宽后 `(见 #SL189)` 仍不进候选(或收窄时反而收多了)",
+        );
+        // ⑨j 生产那份常量必须**真的由 helper 生成**。行为上验不出来:今天真源是 `\d+`,
+        //     写回字面量 `/\([^)]*#\d+[^)]*\)/g` 与派生版**等价**,任何输入都分不开
+        //     (实测:那样注入时上一格照绿)。所以这里比的是**构造出来的 source 串** ——
+        //     派生版带 `(?:…)`,手写字面量没有,一比就分得开。
+        check(
+            BODY_PAREN_RE.source === bodyParenRe().source,
+            "BODY_PAREN_RE 不是由 bodyParenRe() 生成的(被写回字面量?)—— 真源放宽那天它不会跟着动;" +
+                "实得 " +
+                BODY_PAREN_RE.source,
+        );
+        // 收窄侧要**两条**才守得住,这是与粗筛侧的结构差别:
+        //   · 粗筛的调用点**就是**那个常量(`bodyPrRefs` 直接用 `BODY_PAREN_RE`),
+        //     所以比 source 一条就够;
+        //   · 收窄的调用点是 `allowList` 里的一个**独立表达式**,常量再对也管不到它 ——
+        //     把那行写回 `new RegExp("^" + …source + "$")`,比 source 那条照绿(实测过)。
+        //     所以另加一条**源码级**断言,钉住调用点确实引用了这个常量。
+        //     needle 拼装,免得这条断言把自己数进去(本仓「扫描器入库才炸」那一族)。
+        const anchoredCallSite = "BODY_REF_ANCHORED_RE" + ".test(m[1])";
+        check(
+            fs
+                .readFileSync(fileURLToPath(import.meta.url), "utf8")
+                .includes(anchoredCallSite),
+            "正文放行的收窄没走 BODY_REF_ANCHORED_RE(被写回内联 new RegExp?)—— " +
+                "常量再对也管不到调用点,真源放宽那天它不会跟着动",
+        );
+        check(
+            BODY_REF_ANCHORED_RE.source === bodyRefAnchored().source,
+            "BODY_REF_ANCHORED_RE 不是由 bodyRefAnchored() 生成的(被写回字面量?)—— 真源放宽那天它不会跟着动;" +
+                "实得 " +
+                BODY_REF_ANCHORED_RE.source,
+        );
+        // ⑨k [SL-327] 三类问题**一次报完**:回退成「先到先抛」时这一格必须红。
+        //     这是本卡四条里唯一差夹具的一条 —— PR 描述里那句「实测一次报出 3 类」是**手跑**的,
+        //     合并之后就没有执行者了,与本文件一路在根除的「注释比判据强」同形(复审【重要】)。
+        //     现有的 ⑨b / ⑨d / ⑨e 每格只走一类,谁也量不到「一次报完」。
+        let threeErr = "";
+        try {
+            allowList(
+                bodyAllowBlock(
+                    "- #SL189 —— 形态不对" +
+                        "\n" +
+                        "- #111 -- 破折号写坏" +
+                        "\n" +
+                        "- #222 —— ",
+                ),
+                BODY_ALLOW_HEAD,
+            );
+        } catch (e) {
+            threeErr = e.message;
+        }
+        check(
+            threeErr.includes("SL189") &&
+                threeErr.includes("破折号写坏") &&
+                threeErr.includes("222"),
+            "三类问题没有一次报完(回退成先到先抛?)—— 作者会改完一种、重跑才看见下一种,连撞几次红;实得:" +
+                threeErr.slice(0, 70),
         );
         check(
             phErr.includes(ALLOW_REASON_PLACEHOLDER),
