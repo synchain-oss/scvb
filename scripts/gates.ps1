@@ -1484,6 +1484,28 @@ else {
       Write-Host '  check-gates-guards.ps1:' -ForegroundColor Red
       $ggOut | ForEach-Object { Write-Host ("  " + $_) }
     }
+    # ---- [SL-330c] check-gates-visibility.ps1(降级/放行的计数必须接进汇总标签)----
+    # 与上面同一段、同一套写法(先自测再实扫、两者并列、每次调用前把退出码置 1)。
+    # 它判的是本文件里「`$smokeLabel` / `$parityLabel` 的赋值右侧是不是 `-f` 表达式、
+    # 实参里有没有那个计数」—— 那是**语法**问题,此前在 `check-gates-visibility.mjs` 里
+    # 用文本级正则逼近,压了四层补丁(只认单行/格式串不跨引号/尾部排 `#`/行首锚)。
+    # ⚠ 两个脚本合起来才是完整的一段:分支与计数器的**存在性**仍在那个 `.mjs` 里,
+    #   跑一个不等于守住了这一段。
+    $gvScript = Join-Path 'scripts' 'check-gates-visibility.ps1'
+    $global:LASTEXITCODE = 1
+    $gvSelf = (& pwsh -NoProfile -File $gvScript -SelfTest 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-visibility.ps1 -SelfTest:' -ForegroundColor Red
+      $gvSelf | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    $global:LASTEXITCODE = 1
+    $gvOut = (& pwsh -NoProfile -File $gvScript 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-visibility.ps1:' -ForegroundColor Red
+      $gvOut | ForEach-Object { Write-Host ("  " + $_) }
+    }
   }
 
   $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备对拍'

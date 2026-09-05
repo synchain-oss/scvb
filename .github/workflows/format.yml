@@ -312,6 +312,21 @@ jobs:
         # 写出来是为了让读的人一眼看见被检对象是谁。
         shell: pwsh
         run: pwsh -NoProfile -File scripts/check-gates-guards.ps1 -Path scripts/gates.ps1
+      - name: Gates visibility PS-side gate self-test (计数必须接进汇总标签)
+        # [SL-330c] 与上面那对同款(先自测再实扫、各自独立一步)。这一族此前在
+        # `check-gates-visibility.mjs` 里用文本级正则判,四层补丁都在逼近同一个**语法**问题;
+        # 现在交给 PowerShell 自己的语法分析器。**不在这里写格数** —— 脚本每次运行自己会打。
+        # 自测的夹具全部拼装、喂给生产路径同一个函数,把「判据被改坏了」单独照出来。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-visibility.ps1 -SelfTest
+      - name: Gates visibility PS-side (计数必须接进汇总标签)
+        # [SL-330c] 同一条纪律:只挂本地 gate 3i 等于没有执行者。这一步与本 job 里
+        # `check-gates-visibility.mjs` 那一步**合起来**才守住整条链 —— 分支与计数器的存在性
+        # 在那个 `.mjs`,「计数拼进标签」「口径一处定义 + 实跑正反例」「匹配一律大小写敏感」
+        # 三族在这个 `.ps1`。少跑一个就等于少守一半。
+        # 显式传 `-Path`,理由同上面那条:让读的人一眼看见被检对象是谁。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-visibility.ps1 -Path scripts/gates.ps1
       - name: Changelog drafts gate self-test
         # [SL-295] 先自测再实跑,口径同 compliance.yml 的隐私门禁:实跑绿有两种可能 ——
         # 「块里真没有漏搬」和「判据被改坏了」。自测拿 `d8ef5b9` 的**真标题**做删除式
