@@ -356,6 +356,7 @@ function Get-GatesGuardReport {
   # 一个标记只豁免**一处** —— 这不是「天然」的,是**两条保证换来的**:`Id` 用 extent 偏移
   # (治同行同文本的键撞车)+ `Standalone` 归属(治行尾/独占行的候选歧义)。有这两条才不必再钉
   # `Hits`;把它写成「天然」会让下一个人拿它当现成理由,而那两条一旦被改掉,理由就没了。
+  $ambiguous = @()
   foreach ($u in $unguarded) {
     $mk = @($markers | Where-Object {
         -not $_.Used -and (
@@ -363,6 +364,25 @@ function Get-GatesGuardReport {
           ($_.Standalone -and $_.Line -eq ($u.Line - 1))        # 独占行标记:只绑下一行
         )
       })
+    # [SL-334] **一处调用点匹配到两条候选标记 ⇒ 显式判负,点名两条**。
+    # 上一版这里静默取 `$mk[0]`,落选那条留成 `Used = $false` ⇒ 被下面那圈报成「孤悬标记」,
+    # 而孤悬的文案说的是「附近已经没有无守卫的外部调用了」—— **成因说反了**:那处调用还在,
+    # 是两条标记在争它。照那句话去查的人会去找一处**不存在**的代码。
+    # 这一档是真会发生的:行尾标记绑本行、独占行标记绑下一行,一处调用点同时被上一行的
+    # 独占标记与本行的行尾标记覆盖,两条都成立。谁该留、留哪条,只有写的人知道 ——
+    # 判据能做的是**当场点出来**,而不是替他选一条再把另一条报成别的毛病。
+    if ($mk.Count -gt 1) {
+      $ambiguous += , [pscustomobject]@{
+        Line    = $u.Line
+        Text    = $u.Text
+        Markers = @($mk | Sort-Object Line | ForEach-Object {
+            [pscustomobject]@{ Line = $_.Line; Standalone = $_.Standalone; Reason = $_.Reason }
+          })
+      }
+      # 两条都记成已用:否则它们还会再被报一次「孤悬」,同一件事出两种文案。
+      foreach ($x in $mk) { $x.Used = $true }
+      continue
+    }
     if ($mk.Count -gt 0) {
       $mk[0].Used = $true
       [void]$exemptedKeys.Add([string]$u.Id)
@@ -402,6 +422,7 @@ function Get-GatesGuardReport {
     Sites           = $sitesArr
     Guarded         = @($sitesArr | Where-Object { $_.Guarded })
     Unguarded       = $stillUnguarded
+    Ambiguous       = @($ambiguous)
     Exempted        = $exempted
     StaleExemptions = @($stale)
     LocalFuncs      = @($localFuncs)
@@ -602,9 +623,12 @@ if ($SelfTest) {
   }
   # 夹具里凡是用到 `Set-Gate` 的,都要**在夹具里定义它** —— 真 gates.ps1 里它是本文件
   # 定义的函数,夹具里也该长成同一个形态,否则夹具与被测对象对不上。
-  # ⚠ [SL-338 复审] 上一版这里写着「夹具不定义,判据就会把它当成一处没有守卫的
-  #   外部命令」—— 那句今天不成立:`Set` 是 `Get-Verb` 里的批准动词,未定义的
-  #   `Set-Gate` 会被「解析不到 + 形如 cmdlet」那一刀(#217 加的)排掉,根本不会进判据面。
+  # ⚠ [SL-338 复审] 上一版这里写着「夹具不定义,判据就会把它当成一处没有
+  #   守卫的外部命令」—— 那句今天不成立。理由(以及它对夹具命名的约束)
+  #   写在 ⑮c 夹具旁那条 ⚠ 里,这里不拄第二份 —— 那一刀哪天被改,两份会一起变假,
+  #   而改的人只会经过判据本体。
+  # 顺带:收掉那句之后,「夹具必须定义 `Set-Gate`」已经没有**机械后果**
+  # (定不定义,那个调用点都不进判据面),纯粹是夹具保真 —— 别再当成一条会红的约束。
   $defSetGate = 'function Set-Gate { param($a, $b) }' + [Environment]::NewLine
 
   # ① 无守卫的外部调用 ⇒ 必须被抓
@@ -785,6 +809,25 @@ if ($SelfTest) {
   $r23 = Get-GatesGuardReport -Source $f23
   & $check '㉓ 行尾标记被下一行白拿了(旧的「同行或上一行」二选一逻辑)' (@($r23.Exempted).Count -eq 0)
   & $check '㉓b 该行尾标记本行无可豁免对象时应判孤悬' (@($r23.StaleExemptions).Count -eq 1)
+
+  # ㊱ [SL-334] **一处调用点同时被两条候选标记覆盖 ⇒ 显式判负、点名两条**。
+  #    上一行的独占标记绑下一行、本行的行尾标记绑本行 —— 同一处调用点两条都落得上。
+  #    上一版静默取 `$mk[0]`,落选那条被报成「孤悬标记」—— 而孤悬的文案说的是
+  #    「附近已经没有无守卫的外部调用了」,**成因说反了**:那处调用还在,是两条标记在争它。
+  $f26 = $mkExempt + [Environment]::NewLine + 'cmake --version   ' + $mkExempt
+  $r26 = Get-GatesGuardReport -Source $f26
+  & $check '㊱ 两条标记争同一处时没有显式判负' (@($r26.Ambiguous).Count -eq 1)
+  & $check '㊱b 歧义那一处还被重复报成孤悬(同一件事两种文案)' (@($r26.StaleExemptions).Count -eq 0)
+  & $check '㊱c 歧义时没把两条候选都点名' (@($r26.Ambiguous[0].Markers).Count -eq 2)
+  # ㊱d **不误报**:只有一条候选时照旧走豁免
+  $r26d = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version')
+  & $check '㊱d 只有一条候选时误报了歧义' ((@($r26d.Ambiguous).Count -eq 0) -and (@($r26d.Exempted).Count -eq 1))
+  # ㊱e [SL-334] 给上面那句「夹具必须定义 `Set-Gate` 已经没有**机械后果**」配一格。
+  #     那是一句**可验证的断言**(定不定义,那个调用点都不进判据面),而写下断言却
+  #     不给它一格,它就只能靠人手推 —— 本仓「边界记账最容易漂」那一族。
+  #     钉住它的是 #217 那一刀(解析不到 + 形如 cmdlet 就排掉),`Set` 在批准动词表里。
+  $r26e = Get-GatesGuardReport -Source "Set-Gate 'x' `$ok"
+  & $check '㊱e 不定义 Set-Gate 时它竟然进了判据面(那句「没有机械后果」不成立)' (@($r26e.Sites).Count -eq 0)
 
   # ─── [SL-337] 第二道判据「注释里不得复述截断值名单」的自测格 ───────────────
   # 夹具全部**拼装**,零自我豁免:本文件自己的散文里也提这些字面量,若拿本文件当夹具,
@@ -984,6 +1027,21 @@ if (@($report.Sites).Count -lt $floor) {
 }
 
 $bad = $false
+if (@($report.Ambiguous).Count -gt 0) {
+  $bad = $true
+  Write-Host ('  [FAIL] {0} 处调用点同时被**两条**行内标记覆盖:' -f @($report.Ambiguous).Count) -ForegroundColor Red
+  foreach ($amb in $report.Ambiguous) {
+    Write-Host ('    {0}:{1}  {2}' -f (Split-Path -Leaf $Path), $amb.Line, $amb.Text) -ForegroundColor Red
+    foreach ($mm in $amb.Markers) {
+      $where = if ($mm.Standalone) { '独占一行(绑下一行)' } else { '行尾(绑本行)' }
+      Write-Host ('      候选标记 @{0}  {1}  理由:{2}' -f $mm.Line, $where, $mm.Reason) -ForegroundColor DarkGray
+    }
+  }
+  Write-Host '    两条标记在争同一处 —— 谁该留只有写的人知道,判据不替你选。' -ForegroundColor Yellow
+  Write-Host '    修法:删掉多余的那条,或把该留的那条挪到它要豁免的调用点旁。' -ForegroundColor Yellow
+  Write-Host '    (上一版静默取第一条、把另一条报成「孤悬标记」—— 而孤悬的文案说的是' -ForegroundColor Yellow
+  Write-Host '     「附近已经没有无守卫的外部调用了」,成因说反了,会把人送去找一处不存在的代码。)' -ForegroundColor Yellow
+}
 if (@($report.StaleExemptions).Count -gt 0) {
   $bad = $true
   Write-Host '  [FAIL] 豁免与代码对不上:' -ForegroundColor Red
