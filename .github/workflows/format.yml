@@ -277,6 +277,25 @@ jobs:
         # 而是**唯一**能在合并前拦住它的地方 —— 本地 gates gate 5 确实会红,但那要等有人在
         # 中文机器上跑;PR 作者未必是那个人(#204 就是这么合进去的,红的是别人的 gate 5)。
         run: node scripts/check-source-encoding.mjs
+      - name: Gates guards gate self-test (外部命令调用点必须有存在性守卫)
+        # [SL-331] 先自测再实扫,口径与上面两条一致:实扫绿有两种可能 ——「gates.ps1 里真的
+        # 每处都有守卫」和「判据被改坏了」。自测 18 格全部拼装夹具、喂给生产路径同一个函数,
+        # 把后一种单独照出来。
+        # 这一步跑在 **ubuntu** 上:被检文件路径用 `/`(带反斜杠在 Linux 上是字面文件名),
+        # 而「谁是外部命令」由 `Get-Command` 现算 —— 解析类型随平台变(Linux 上 pwsh 不定义
+        # `ls`/`cat` 这些别名),但两个方向都是 fail-closed,判据面只会变宽不会变窄。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-guards.ps1 -SelfTest
+      - name: Gates guards (外部命令调用点必须有存在性守卫)
+        # [SL-331] **必须挂在这里,只挂本地 gates 3i 等于没有执行者。** 子 PR(base=`feature/**`)
+        # 在 CI 上只有 format(含本 job)/ compliance / review bot —— 只挂 gate 3i 的话,
+        # 「谁把 gates.ps1 的某个守卫删了」这件事在 PR 上**没有任何机器看得见**,还得指望
+        # 有人跑本地 gates,而本判据的立论正是「靠人不可靠」。那样它自己就成了本仓
+        # 「只挂本地等于没有执行者」的下一个例子(gate 3g / 3i 那一族都为这条栽过)。
+        # 显式传 `-Path`:与不传等价(脚本按 Resolve-Path 后的全路径判是不是默认目标),
+        # 写出来是为了让读的人一眼看见被检对象是谁。
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-gates-guards.ps1 -Path scripts/gates.ps1
       - name: Changelog drafts gate self-test
         # [SL-295] 先自测再实跑,口径同 compliance.yml 的隐私门禁:实跑绿有两种可能 ——
         # 「块里真没有漏搬」和「判据被改坏了」。自测拿 `d8ef5b9` 的**真标题**做删除式
