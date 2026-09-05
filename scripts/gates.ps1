@@ -345,6 +345,35 @@ if (-not $PluginvalExe) {
   if (Test-Path $candidate) { $PluginvalExe = $candidate }
 }
 
+# ---- [SL-329] 外部命令存在性:一处解析,各 gate 复用 ----
+# 病灶(#211 复审在 gate 5b 上点出、本卡按「同族整族收」扫全文件):PowerShell 找不到外部命令时
+# 抛 CommandNotFoundException,默认 `ErrorActionPreference=Continue` 下**不更新** `$LASTEXITCODE`
+# —— 它保留**上一条外部命令**的值。于是任何「跑完看 `$LASTEXITCODE` 判 PASS/FAIL」的调用点,
+# 在命令缺席时都会**沿用上一条的 0 判绿**:判据一行没跑过,汇总表却写着 PASS。
+# **误报绿比硬失败危险得多** —— 这句话本文件早就为 node(gate 3e)/ gitleaks(3b)写过,
+# 本卡只是把它补齐到剩下的调用点上。
+#
+# 全文件扫过一遍,分三类(分类依据是**判法**,不是命令名):
+#   ① 退出码判据 + 无守卫 ⇒ 静默变绿,**本卡要修**:
+#      gate 1 的 check-constitution-sync(pwsh)、gate 2 的 clang-format、
+#      check-spdx(pwsh)、gate 3f 的 check-readme-parity(pwsh)。
+#   ② 输出判据 + 缺席时**不判负** ⇒ 也是静默变绿,本卡一并修:
+#      gate 1 里用 `git describe` 核 JUCE tag —— 没有 git 时 `$juceTag` 为空,
+#      原来直接走 else 打印版本号,那条「tag 与 .juce-version 一致」的判据等于没跑。
+#   ③ 输出判据 + 缺席时**已经判负** ⇒ 方向偏红,不动(动了反而多一层壳):
+#      `cmake --version`(空输出即 `$ok = $false`)、`clang-format --version`
+#      (空串不匹配 `18.1.8` 即判负)、`git ls-files`(空集合即 gate 2 判负)。
+#   已有守卫的不重复:node(`$nodeCmd`)、gitleaks、reuse、python、pluginval、cmake/ctest。
+#
+# 两半一起用,缺一半都不够:
+#   · `Get-Command` 守卫 —— 缺席时显式 `Set-Gate … $false`,并说清「不是跳过,是判负」;
+#   · 调用前 `$global:LASTEXITCODE = 1` —— 万一守卫被绕过(例如日后有人在守卫外面新加一处调用),
+#     「没写退出码」也等价于判负。实测:`cmd /c exit 0` 之后调不存在的命令,`$LASTEXITCODE`
+#     仍是 0;预置 1 之后调不存在的命令,值保持 1。
+$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+$clangFormatCmd = Get-Command clang-format -ErrorAction SilentlyContinue
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+
 # ==================================================================
 Write-Host '=== Gate 1: 依赖预检 ==='
 # ==================================================================
@@ -363,10 +392,21 @@ else { Write-Host ("  MSVC {0}" -f $msvc) }
 if (-not $JucePath -or -not (Test-Path (Join-Path $JucePath 'CMakeLists.txt'))) {
   Write-Host '  JUCE_PATH 未设置或无效' -ForegroundColor Red; $ok = $false
 }
+elseif (-not $gitCmd) {
+  # [SL-329] 第②类:没有 git 时 `$juceTag` 为空,原来直接走 else 打印版本号 ——「tag 与
+  # .juce-version 一致」这条判据**一次没跑却记 PASS**。缺工具判负,不静默跳过。
+  Write-Host '  git 不在 PATH —— 无法核对 JUCE tag 与 .juce-version(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  $ok = $false
+}
 else {
   $juceTag = (& git -C $JucePath describe --tags 2>$null)
   if ($juceTag -and ($juceTag.Trim() -ne $juceVersion)) {
     Write-Host ("  JUCE tag '{0}' 与 .juce-version '{1}' 不一致" -f $juceTag, $juceVersion) -ForegroundColor Red
+    $ok = $false
+  }
+  elseif (-not $juceTag) {
+    # git 在,但这个目录问不出 tag(浅克隆 / 无 tag / 不是 git 仓)。同样不能当「一致」。
+    Write-Host ("  git 问不出 JUCE tag(浅克隆或无 tag?)—— 无法与 .juce-version '{0}' 对拍" -f $juceVersion) -ForegroundColor Red
     $ok = $false
   }
   else { Write-Host ("  JUCE {0}" -f $juceVersion) }
@@ -385,8 +425,17 @@ if (-not $PluginvalExe -or -not (Test-Path $PluginvalExe)) {
 else { Write-Host ("  pluginval {0}(要求 {1})" -f $PluginvalExe, $pluginvalVersion) }
 
 # 宪法只读副本同步(06 §3.4 / 07 T01,进 gate 1)
-& pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-constitution-sync.ps1') -RepoRoot $RepoRoot
-if ($LASTEXITCODE -ne 0) { $ok = $false }
+# [SL-329] 第①类:这一行按退出码判,没有 pwsh 时**沿用上一条外部命令**的值 ——
+# 上一条是 `clang-format --version`,它成功时留下 0 ⇒ 冻结契约的同步对拍一次没跑却记 PASS。
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— 宪法只读副本同步无法核对(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  $ok = $false
+}
+else {
+  $global:LASTEXITCODE = 1
+  & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-constitution-sync.ps1') -RepoRoot $RepoRoot
+  if ($LASTEXITCODE -ne 0) { $ok = $false }
+}
 
 Set-Gate '1 依赖预检' $ok
 
@@ -396,10 +445,19 @@ Write-Host '=== Gate 2: clang-format (18.1.8) ==='
 $files = @(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | Where-Object { $_ -notmatch '^third_party/' })
 $cf = $true
 if ($files.Count -eq 0) {
-  Write-Host '  未发现 C++ 源文件' -ForegroundColor Red
+  # 没有 git 时这里也会是空集合 —— 那条路已经判负,方向偏红,所以第③类不再加壳。
+  Write-Host '  未发现 C++ 源文件(没有 git 时也会走到这里)' -ForegroundColor Red
+  $cf = $false
+}
+elseif (-not $clangFormatCmd) {
+  # [SL-329] 第①类:这一格按退出码判。没有 clang-format 时上一条外部命令是 `git ls-files`,
+  # 它成功留下 0 ⇒ 「全仓格式没问题」一次没查却记 PASS。gate 1 那边确实也会红,但两道
+  # 各判各的,不能拿别人的红替这道判负 —— 何况 gates 不会因为 gate 1 红就停下。
+  Write-Host '  clang-format 不在 PATH —— gate 2 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   $cf = $false
 }
 else {
+  $global:LASTEXITCODE = 1
   $cfOut = (& clang-format --dry-run --Werror --style=file $files 2>&1)
   if ($LASTEXITCODE -ne 0) {
     Write-Host '  clang-format 差异:' -ForegroundColor Red
@@ -482,8 +540,17 @@ Set-Gate '3c reuse lint' ($reuseExit -eq 0)
 # ==================================================================
 Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
 # ==================================================================
-& pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-spdx.ps1')
-Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
+# [SL-329] 第①类:`Set-Gate` 直接吃 `$LASTEXITCODE`,没有 pwsh 时吃到的是上一条
+# (`reuse lint`)留下的值 —— SPDX 头一个文件没查却记 PASS。
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— check-spdx 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Set-Gate 'check-spdx' $false
+}
+else {
+  $global:LASTEXITCODE = 1
+  & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-spdx.ps1')
+  Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
+}
 
 # ==================================================================
 Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)==='
@@ -1019,11 +1086,22 @@ else {
     $i18nOut | ForEach-Object { Write-Host ("  " + $_) }
   }
 
-  $parityOut = (& pwsh -NoProfile -File scripts\check-readme-parity.ps1 2>&1)
-  if ($LASTEXITCODE -ne 0) {
+  # [SL-329] 第①类,也是本卡点名的那一处:没有 pwsh 时上一条外部命令是
+  # `node scripts\check-i18n.mjs`,它成功留下 0 ⇒ 双语结构对拍一次没跑却不影响 `$docsOk`,
+  # gate 3f 照打 PASS。gate 3f 的另外两条(gen-hard-rules / check-i18n)由 `$nodeCmd` 守着,
+  # 唯独这一条没有 —— 同一道门里两种待遇,本卡把它补齐。
+  if (-not $pwshCmd) {
     $docsOk = $false
-    Write-Host '  check-readme-parity:' -ForegroundColor Red
-    $parityOut | ForEach-Object { Write-Host ("  " + $_) }
+    Write-Host '  pwsh 不在 PATH —— check-readme-parity 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  }
+  else {
+    $global:LASTEXITCODE = 1
+    $parityOut = (& pwsh -NoProfile -File scripts\check-readme-parity.ps1 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $docsOk = $false
+      Write-Host '  check-readme-parity:' -ForegroundColor Red
+      $parityOut | ForEach-Object { Write-Host ("  " + $_) }
+    }
   }
 
   Set-Gate '3f 文档真源' $docsOk
@@ -1419,7 +1497,8 @@ Write-Host '=== Gate 5b: ctest 上界属性完备(读生成物 CTestTestfile.cma
 # 这条路不是假想:gates 的调用口径是 `pwsh scripts/gates.ps1`,但从 Windows PowerShell 5.1
 # (`powershell.exe`)起跑是本仓真实存在的一条路,那条路上 `pwsh` 未必在 PATH 上。
 # 双保险:除 Get-Command 守卫外,每次调用前把 $LASTEXITCODE 显式置 1 —— 「没写」等价于判负。
-$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+# [SL-329] `$pwshCmd` 已经提到文件开头**一处解析**(见那段的三类清单),这里不再各解析一次:
+# 两处 `Get-Command pwsh` 就会变成两份口径,而「只改一份」在汇总表上看不出任何差别。
 if (-not $pwshCmd) {
   Write-Host '  pwsh 不在 PATH —— gate 5b 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   Write-Host '  提示:本 gate 的两条命令都要 PowerShell 7+;从 powershell.exe(5.1)起跑时请先把 pwsh 加进 PATH。' -ForegroundColor Yellow
