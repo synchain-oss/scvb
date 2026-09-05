@@ -39,7 +39,10 @@
 //     所有 run 会一起硬红在「解析不出 base ref」上(#197 复审【建议】①)。
 //   · **本地跑时 base 可能是陈旧的** remote-tracking ref(谁也不保证跑 gates 之前 fetch 过),
 //     陈旧 ⇒ 已上线集合变小 ⇒ **静默变绿**。在 gates 里联网去挡不合适,所以改为**显形**:
-//     **红绿都打**一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题;块里 M 个待合并的号`
+//     **红绿都打**一行 `[BASE] <base>@<sha> (<date>) —— N 条提交标题(落地位 K 个,最大 #M);
+//     块里 T 个待合并的号`。[SL-319] 起中间那段是**落地位基线**:下面那道 fail-closed 只挡
+//     「集合为空」,挡不住「集合被缩小」,而缩小的失效形态一样(maxLanded 变小 ⇒ 正文几乎
+//     每个号都走 WARN)。基线绿时也报,下次不对劲才有对照
 //     (#197 复审 gates【建议】①、第 6/7 轮【建议】)。判红时它回答「这次拿哪天的 base 比的」,
 //     绿时它回答「块里是不是近乎空转」。它与 [ALLOW] 都排在 `leaks()` **之前** —— leaks 会为
 //     放行写法不对 / 理由留空 / 放行无对应条目三种情形抛错,排在它后面就不是「红绿都打」了。
@@ -190,6 +193,13 @@ const landedPrs = (titles) => {
     return s;
 };
 
+// [SL-326] 「最大落地号」的推导**只此一份**。此前 `judgeBody` 与 `[BASE]` 各写了一遍同一个
+// 式子:集合是共享的、推导不是,哪天判据那半改了口径(排除某类号、或把 0 兜底改掉),
+// `[BASE]` 会继续按老式子报一个**判据并不使用**的数 —— 而那一行的全部价值就是「给人一个
+// 可对照的基线」,基线与判据不同源比没有基线更坏:它会让人确信自己核过了(#208 第 4 轮
+// 【建议】)。这与本卡从 `allowSampleFor` 那里拿掉的是同一个形态,只是从「样例」挪到「基线」。
+const maxLandedOf = (landed) => Math.max(0, ...[...landed].map(Number));
+
 // ---- 正文判定层(纯函数,[SL-319])------------------------------------------
 // 抽成纯函数的理由是**可测**,不是好看:在此之前这一层直接长在 run() 里,输入要靠
 // 真 CHANGELOG + 真 git 历史凑,于是「今天量不到的退化」就没有夹具 —— #203 复审注入
@@ -208,7 +218,7 @@ const landedPrs = (titles) => {
 function judgeBody(body, landed, selfPr, bodyAllow) {
     const fails = [];
     const warns = [];
-    const maxLanded = Math.max(0, ...[...landed].map(Number));
+    const maxLanded = maxLandedOf(landed);
     for (const m of body.matchAll(BODY_TBD_RE))
         fails.push(
             "CHANGELOG.md:" +
@@ -334,6 +344,7 @@ function allowList(block, headText = ALLOW_HEAD) {
     if (head < 0) return out;
     const noReason = [];
     const malformed = [];
+    const wrongForm = [];
     for (let j = head + 1; j < lines.length; j++) {
         if (!lines[j].trim()) break; // 空行收尾
         const m = ALLOW_LINE_RE.exec(lines[j]);
@@ -344,6 +355,17 @@ function allowList(block, headText = ALLOW_HEAD) {
                 malformed.push(lines[j].trim());
             continue;
         }
+        // [SL-326] **正文放行只吃纯数字 PR 号**。`ALLOW_LINE_RE` 是两段共用的,也收
+        // `SL<号>` / `J<号>`;而正文侧的引用只可能是纯数字(`bodyPrRefs` 出自 `/#(\d+)/`),
+        // 于是在这一段写 `- #SL189 —— 真理由` 会**静默不生效**,而且紧接着撞 `deadBody`
+        // 判负、话术还说成「正文里没有引用它 / 它已经落地」——**两条都不是真因**。
+        // 这条路比「照抄报错样例」更好走:CHANGELOG 里「正文放行」自己写着「写法与门禁放行
+        // 相同」,而上面那段的说明与样例全是 `#SL189`,隔几行照抄最自然(#208 第 4 轮【建议】)。
+        // 所以在这里**当场判负并说清真因**,不留到下游变成一句指错方向的红。
+        if (headText === BODY_ALLOW_HEAD && !/^\d+$/.test(m[1])) {
+            wrongForm.push(m[1]);
+            continue;
+        }
         // [SL-319] 占位符 `<理由>` **不算理由**:它 `.trim()` 非空,于是照抄样例行
         // 粘上去就是一条合法放行 —— 写的人不必编理由,而「不写理由就是静默豁免」
         // 正是这道口子要堵的。样例行的受众就是照抄的人,样例本身不能成为绕过。
@@ -351,6 +373,19 @@ function allowList(block, headText = ALLOW_HEAD) {
             noReason.push(m[1]);
         else out.set(m[1], m[2].trim());
     }
+    if (wrongForm.length)
+        throw new Error(
+            "「" +
+                BODY_ALLOW_HEAD +
+                "」只吃**纯数字 PR 号**,这几个不是:#" +
+                wrongForm.join(" / #") +
+                " —— SL 卡号 / J 裁定号是**块里那半**(「" +
+                ALLOW_HEAD +
+                "」)的形态;正文里的引用只可能是 PR 号。" +
+                "写在这里既放行不掉、又会被当成「已经不需要的放行」判负。" +
+                "正文放行照这个写:" +
+                allowSampleFor("111"),
+        );
     if (malformed.length)
         throw new Error(
             "「" +
@@ -936,6 +971,49 @@ if (selfTest) {
         } catch (e) {
             phErr = e.message;
         }
+        // ⑨e [SL-326] **正文放行只吃纯数字 PR 号**:写 SL / J 形态要当场判负并说清真因。
+        //     不拦的话它**静默不生效**(`bodyAllow` 的 key 是 `"SL189"`,而 `r.num` 只有纯数字),
+        //     紧接着又撞 `deadBody` 判负、话术说成「正文里没有引用它 / 它已经落地」——
+        //     两条都不是真因。反向:门禁那半照旧收 SL / J 形态。
+        const bodyAllowBlock = (line) =>
+            "<!-- ===\n" + BODY_ALLOW_HEAD + "\n" + line + "\n\n=== -->";
+        let formErr = "";
+        try {
+            allowList(bodyAllowBlock("- #SL189 —— 真理由"), BODY_ALLOW_HEAD);
+        } catch (e) {
+            formErr = e.message;
+        }
+        check(
+            formErr.includes("SL189") && formErr.includes(BODY_ALLOW_HEAD),
+            "正文放行收下了 SL 形态的号 —— 它放行不掉,还会被 deadBody 当成「不需要的放行」判负,话术指错方向;实得:" +
+                (formErr || "(没抛)").slice(0, 60),
+        );
+        check(
+            allowList(bodyAllowBlock("- #111 —— 真理由"), BODY_ALLOW_HEAD).get(
+                "111",
+            ) === "真理由",
+            "正文放行连纯数字号也收不下了 —— 收窄收过头,正当的放行没法写",
+        );
+        // ⑨f [SL-326] 「最大落地号」的推导**只此一份**。语义先钉住:空集合 ⇒ 0;
+        //     比的是**数**不是字典序(否则 "9" 会大过 "10",基线与判据一起错)。
+        check(
+            maxLandedOf(new Set()) === 0 &&
+                maxLandedOf(L("9", "10", "207")) === 207,
+            "maxLandedOf 算错 —— 实得 " +
+                maxLandedOf(new Set()) +
+                " / " +
+                maxLandedOf(L("9", "10", "207")),
+        );
+        // ⑨g 再钉「只有一份式子」:两处调用共用一个函数才谈得上基线与判据同源。
+        //     搜索串**拼装**,免得这条断言自己被数进去(本仓「扫描器入库才炸」那一族)。
+        const rawExpr = "Math.max(0, ..." + "[...landed].map(Number))";
+        const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+        check(
+            selfSrc.split(rawExpr).length - 1 === 1,
+            "「最大落地号」的推导式在本文件里出现了 " +
+                (selfSrc.split(rawExpr).length - 1) +
+                " 次(应当只有 maxLandedOf 一处)—— 基线与判据一旦不同源,基线比没有更坏",
+        );
         check(
             phErr.includes(ALLOW_REASON_PLACEHOLDER),
             "「理由留空」的话术没点名占位符 —— 照抄样例的人会被告知「没写理由」,而他确实照着写了",
@@ -1031,7 +1109,7 @@ try {
     // 话术里),但要有人在一片 WARN 里觉得那个号偏小 —— **正常态没有基线就没有对照**。
     // 所以基线放在这里:绿的时候也报,下次不对劲一眼看得出来。
     const landed = landedPrs(titles);
-    const maxLanded = Math.max(0, ...[...landed].map(Number));
+    const maxLanded = maxLandedOf(landed);
     console.log(
         "  [BASE] " +
             base +
