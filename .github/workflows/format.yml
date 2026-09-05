@@ -266,6 +266,17 @@ jobs:
         # **且计数接进了汇总标签**。与本地 gate 3i 跑同一条命令 —— 本仓的纪律是
         # 「只挂本地等于没有执行者」,反过来同样成立。
         run: node scripts/check-gates-visibility.mjs
+      - name: Source encoding gate self-test (printf 族字面量必须 ASCII)
+        # [SL-325] 先自测再实跑,口径同下面的 changelog drafts:实跑绿有两种可能 ——
+        # 「真没有中文运行期文案」和「判据被改坏了」。自测拿 #204 / #206 两次事故的**真实形态**
+        # (跨行相邻窄字面量拼接的 `fprintf`)做删除式,把后一种单独照出来。
+        run: node scripts/check-source-encoding.mjs --self-test
+      - name: Source encoding (printf 族字面量必须 ASCII)
+        # [SL-325] 这一条治的缺陷**在 CI 上是隐形的**:中文窄字面量触发的 MSVC `C4819`
+        # 只在中文 Windows(CP936)上报,runner 零命中。所以这一步不是「顺手也在 CI 跑一遍」,
+        # 而是**唯一**能在合并前拦住它的地方 —— 本地 gates gate 5 确实会红,但那要等有人在
+        # 中文机器上跑;PR 作者未必是那个人(#204 就是这么合进去的,红的是别人的 gate 5)。
+        run: node scripts/check-source-encoding.mjs
       - name: Changelog drafts gate self-test
         # [SL-295] 先自测再实跑,口径同 compliance.yml 的隐私门禁:实跑绿有两种可能 ——
         # 「块里真没有漏搬」和「判据被改坏了」。自测拿 `d8ef5b9` 的**真标题**做删除式

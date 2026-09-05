@@ -1072,7 +1072,7 @@ else {
 }
 
 # ==================================================================
-Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目 对拍(scripts/check-*)==='
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码 对拍(scripts/check-*)==='
 # ==================================================================
 # [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
 # 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
@@ -1098,7 +1098,7 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预�
 # 「SKIP 吞掉判据」那一族的形态。它的**自测**要单独跑一条(下面那圈只跑裸命令)。
 if (-not $nodeCmd) {
   Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
-  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍' $false
+  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码对拍' $false
 }
 else {
   $parityOk = $true
@@ -1130,7 +1130,16 @@ else {
     Write-Host '  check-changelog-drafts.mjs --self-test:' -ForegroundColor Red
     $draftsSelfTest | ForEach-Object { Write-Host ("  " + $_) }
   }
-  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs', 'check-changelog-drafts.mjs')) {
+  # [SL-325] 第二条自测,理由与上面那条逐字同款。这一条尤其需要:它的实跑今天基线是
+  # **0 处违规**,而「0 处」与「判据面被改空了」在输出上长得一模一样(脚本自己另有一道
+  # 「一处族内调用都没扫到就判负」的守卫,但那只挡得住极端形态)。
+  $encSelfTest = (& node (Join-Path 'scripts' 'check-source-encoding.mjs') --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  check-source-encoding.mjs --self-test:' -ForegroundColor Red
+    $encSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  foreach ($sc in @('check-bridge-parity.mjs', 'check-curve-parity.mjs', 'check-design-box.mjs', 'check-native-paths.mjs', 'check-smoke-hygiene.mjs', 'check-gates-visibility.mjs', 'check-changelog-drafts.mjs', 'check-source-encoding.mjs')) {
     $out = (& node (Join-Path 'scripts' $sc) 2>&1)
     if ($LASTEXITCODE -ne 0) {
       $parityOk = $false
@@ -1228,9 +1237,9 @@ else {
   # 「某档没跑」——今天这四处恰好都是「跳过」,谁哪天拿它发一条纯提示,写死「−N 档降级」
   # 就会对着提示喊降级。这个信号刚建立起来就是要让人信它,喊错一次,下次真降级也会被当噪声。
   # 所以这半句只能是「上方有几处 WARN,自己看」,不能冒充「降级档数」的权威计数。
-  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍'
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码对拍'
   if ($parityWarn -gt 0) {
-    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
   }
   # [SL-315] 放行数另拼一段,与上面 [WARN] 那句同形、同口径:**只报行数**,不冒充「有几个号
   # 被豁免」——「一个号一行」是注释块的写法约定,不是这里数得出来的事实。0 条时整句不出现,
@@ -1324,6 +1333,9 @@ if (-not $cmakeCmd) {
   Write-Host '  提示:仓库自带 cmake 在 ..\tools\cmake-*-windows-x86_64\bin,加进 PATH 后重跑。' -ForegroundColor Yellow
   Set-Gate '4 配置' $false
   Set-Gate '5 构建' $false
+  # [SL-325] 5b 读的是 configure 的**生成物**,没有 cmake 就没有那份文件。这里必须显式判负
+  # 而不是不写:`Set-Gate` 没被调用过的道在汇总表里**根本不出现**,读表的人看不出它没跑。
+  Set-Gate '5b ctest 上界属性完备' $false
 }
 else {
 
@@ -1381,6 +1393,31 @@ if ($w.Count -gt 0) {
   $buildOk = $false
 }
 Set-Gate '5 构建' $buildOk
+
+# ==================================================================
+Write-Host '=== Gate 5b: ctest 上界属性完备(读生成物 CTestTestfile.cmake)==='
+# ==================================================================
+# [SL-325] SL-320 把七套的上界全部写进了 TIMEOUT 属性,于是下面 gate 6 的 `--timeout 300`
+# 与 build-vst3.yml 的那个 300「今天一套都管不到」。这句话是**当下事实,没有执行者** ——
+# 新加一个测试目标、忘了写 `set_tests_properties(... TIMEOUT ...)`,它会静默退回 CTest
+# 默认的 **1500s**,而这条退化在本机与 CI 上**都不会红**:它看起来「有上界」,只是那个
+# 上界在两条路上又分叉了(gates 300 / 出包硬门 1500),正是 SL-320 修掉的那个洞的复发形态。
+#
+# **为什么放在这里、不放进 gate 3 那一圈**:判据读的是**生成物**,configure 之后才有。
+# 放进 3i 就得读手边的 `tests/CMakeLists.txt` —— 而属性可以写在任何一个 CMakeLists 里
+# (`scvb_ipc_tests` 的 900 就在 `tests/ipc/CMakeLists.txt`),也可以由 `SCVB_BUILD_IPC_TESTS`
+# 这类开关决定进不进集合。本文件的注释在 SL-320 里为这件事栽过一次(只 grep 了一个文件、
+# 把 ipc 写成「没有属性」),所以这一条从设计上就只认 ctest 真正吃的那份。
+# 不持锁:纯读文件,不起任何进程。
+$timeoutSelfTest = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -SelfTest 2>&1)
+$timeoutOk = ($LASTEXITCODE -eq 0)
+$timeoutSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+if ($timeoutOk) {
+  $timeoutOut = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -BuildDir $BuildDir 2>&1)
+  $timeoutOk = ($LASTEXITCODE -eq 0)
+  $timeoutOut | ForEach-Object { Write-Host ("  " + $_) }
+}
+Set-Gate '5b ctest 上界属性完备' $timeoutOk
 
 } # end gate 4/5 守卫 else
 
@@ -1476,8 +1513,12 @@ else {
       #                               scvb_plugin_common_tests / scvb_input_bridge_tests → 30
       #                               scvb_monitor_tests → 600      scvb_host_tests → 900
       #     tests/ipc/CMakeLists.txt  scvb_ipc_tests → 900   ← **不在上面那个文件里**
-      # 口径真源是 `tests/CMakeLists.txt` 里 `scvb_tests` 上方那段(只管前六套;ipc 那条
-      # 由 `SCVB_BUILD_IPC_TESTS` 控制,默认 ON,本机与 CI 都真的进 ctest 集合)。
+      # 口径真源是 `tests/CMakeLists.txt` 里 `scvb_tests` 上方那段,它**只管上面这四套**
+      # (那段自称的就是「四套的口径真源」);`scvb_monitor_tests` 的 600 与
+      # `scvb_host_tests` 的 900 各写在**自己 add_test 旁**、不由那段管,`scvb_ipc_tests` 的
+      # 900 在另一个文件、由 `SCVB_BUILD_IPC_TESTS` 控制(默认 ON,本机与 CI 都真的进集合)。
+      # ([SL-325] 这里原先写「只管前六套」:多算了 monitor 与 host 两套。上面那张表是对的,
+      #  错的是这一句 —— 照它去改 30s 会以为顺手也改了 monitor / host。)
       # 属性跟着**测试**走,所以本机与出包硬门(build-vst3.yml)吃的是同一份;此前那四套没有
       # 属性,本机吃这里的 300、CI 吃 ctest 默认的 1500,同一个「上界」两个真源、差 5 倍。
       # 所以这里剩下的职责只有一条:**给新加的、还没写属性的测试兜一个底**,免得它悄悄
