@@ -323,50 +323,7 @@ target_include_directories(scvb_host_tests PRIVATE
 target_compile_definitions(scvb_host_tests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
 
 if(MSVC)
-  # [SL-325 / 顺手修,归属 #204] `/wd4819`:只关这一条、**只关这一个 TU**。
-  # 落点是下面的 `set_source_files_properties`(文件级),不是 `target_compile_options`(目标级)——
-  # 本目标一共编 9 个 TU,除本文件外那 8 个是 `src/` 下的**产线源码**
-  # (OutputProcessor / OutputParams / OutputAuthority / AutomationPrinter / UiDefaultsStore /
-  # InputProcessor / InputBridgeLogic / BridgeBase)。目标级会把它们的 C4819 一并关掉,
-  # 与本段「只关这一个」的说法对不上(复审【建议】)。文件级之后,作用面与这句话逐字一致。
-  #
-  # 症状:在**中文 Windows(CP936)**上,这个 TU 报两条
-  #   `C4819: 该文件包含不能在当前代码页(0)中表示的字符`(行号指向 :174 / :186),
-  # 于是 gates gate 5「/W4 零 warning」判红 —— 而 **CI 上零命中**(runner 的代码页不同),
-  # 也就是说这条对 CI 隐形、只打本机,而 gates 才是收口判据。`13392a2`(#204)给本文件
-  # 加了 80 行之后开始出现;`9f9a527` 那会儿还是绿的。
-  #
-  # 关掉它之前,按仓里的三条惯例逐条核过,**都不成立**(所以判定它是工具误报,不是真编码问题):
-  #   · **文件编码**:整份是合法 UTF-8(逐字节解码通过);
-  #   · **`/utf-8` 是否真作用于本 TU**:是 —— 从 MSBuild 的
-  #     `scvb_host_tests.tlog/CL.command.1.tlog` 里取该源文件对应的那条命令行,
-  #     实测含 `/utf-8`(不是「vcxproj 里出现过几次」那种间接证据),且无
-  #     `/source-charset` / `/execution-charset` 覆盖;
-  #   · **加 BOM 能否消除**:**不能** —— 用 .NET 写入 BOM、`Format-Hex` 确认前三字节是
-  #     `EF BB BF`、删 obj 强制重编、确认 obj 时间戳变了,C4819 **仍是 2 条**;已还原(sha256 复核)。
-  # 反向对照:全仓 95 个源文件含「CP936 表示不了的字符」、**没有一个**带 BOM,
-  # 56 个 `.cpp` 在窄字符串字面量里写中文 —— 它们全都编译干净。同样的写法只有这一个 TU 报。
-  # 它与别的 TU 唯一量得出来的差别是**体量**:实测 7282 行,第二大的测试 TU 是
-  # `tests/ipc/test_ipc_contract.cpp` 1584 行,差 4.6 倍。
-  # (上一版这里还写过「唯一开 `/bigobj` 的测试目标」——**假的**,复审指出后实测:`/bigobj`
-  # 由 JUCE 的模块 INTERFACE 带进来(`JUCEModuleSupport.cmake`),**链 juce:: 的那五个**
-  # 测试目标都有;两个 JUCE-free 的没有 —— `scvb_tests` 与 `scvb_ipc_tests`
-  # (后者见 `tests/ipc/CMakeLists.txt:12`,只链 `scvb_core` + `Catch2::Catch2WithMain`)。
-  # 仓里的 CMakeLists 一个字都没写过它。
-  # ⚠ 「只有 scvb_tests 没有」是这句话的**上一版**,又把 ipc 漏了 —— 那是 `scvb_ipc_tests`
-  # 在本卡里**第三次**从我写的枚举里掉出去(前两次:gates 的属性表、上界排序)。
-  # 三次同一个原因:清单照着**本文件**写,而 ipc 在隔壁。写「N 个目标怎样」这类全称句,
-  # 扫 `tests/**`,别扫本文件。
-  # 记在这里是因为那半句曾是「这个 TU 特殊」这条推断的支柱之一,现在支柱只剩体量一条。)
-  #
-  # 所以这里关的是**一条已确认的误报**,不是把真问题盖住:文件真是 UTF-8、开关真在命令行上。
-  # 根治(找到 MSVC 为何在本 TU 上无视 `/utf-8`,或拆分该文件)记在 **SL-325**;
-  # 那张卡落地后**请把下面那行删掉**,并用删除式确认删掉后本机 gate 5 仍绿。
-  # 给 SL-325 留的线索:报出来的 `:174` / `:186` 两行**本身是纯 ASCII**(是两处 `fprintf`
-  # 实参那一行),而该区段的中文全部在 CP936 表示得出来 —— 行号与「哪个字符不可表示」对不上,
-  # 所以别照着行号去找「那个字符」。
   target_compile_options(scvb_host_tests PRIVATE /W4 /utf-8 /EHsc)
-  set_source_files_properties(host/test_host_harness.cpp PROPERTIES COMPILE_OPTIONS "/wd4819")
 else()
   target_compile_options(scvb_host_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
