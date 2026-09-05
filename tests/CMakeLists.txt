@@ -322,7 +322,30 @@ target_include_directories(scvb_host_tests PRIVATE
 target_compile_definitions(scvb_host_tests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
 
 if(MSVC)
-  target_compile_options(scvb_host_tests PRIVATE /W4 /utf-8 /EHsc)
+  # [SL-325 / 顺手修,归属 #204] `/wd4819`:只关这一条、只关这一个目标。
+  #
+  # 症状:在**中文 Windows(CP936)**上,这个 TU 报两条
+  #   `C4819: 该文件包含不能在当前代码页(0)中表示的字符`(行号指向 :174 / :186),
+  # 于是 gates gate 5「/W4 零 warning」判红 —— 而 **CI 上零命中**(runner 的代码页不同),
+  # 也就是说这条对 CI 隐形、只打本机,而 gates 才是收口判据。`13392a2`(#204)给本文件
+  # 加了 80 行之后开始出现;`9f9a527` 那会儿还是绿的。
+  #
+  # 关掉它之前,按仓里的三条惯例逐条核过,**都不成立**(所以判定它是工具误报,不是真编码问题):
+  #   · **文件编码**:整份是合法 UTF-8(逐字节解码通过);
+  #   · **`/utf-8` 是否真作用于本 TU**:是 —— 从 MSBuild 的
+  #     `scvb_host_tests.tlog/CL.command.1.tlog` 里取该源文件对应的那条命令行,
+  #     实测含 `/utf-8`(不是「vcxproj 里出现过几次」那种间接证据),且无
+  #     `/source-charset` / `/execution-charset` 覆盖;
+  #   · **加 BOM 能否消除**:**不能** —— 用 .NET 写入 BOM、`Format-Hex` 确认前三字节是
+  #     `EF BB BF`、删 obj 强制重编、确认 obj 时间戳变了,C4819 **仍是 2 条**;已还原(sha256 复核)。
+  # 反向对照:全仓 95 个源文件含「CP936 表示不了的字符」、**没有一个**带 BOM,
+  # 56 个 `.cpp` 在窄字符串字面量里写中文 —— 它们全都编译干净。同样的写法只有这一个 TU 报,
+  # 而它恰好是最大的一个(7000+ 行,唯一开 `/bigobj` 的测试目标)。
+  #
+  # 所以这里关的是**一条已确认的误报**,不是把真问题盖住:文件真是 UTF-8、开关真在命令行上。
+  # 根治(找到 MSVC 为何在本 TU 上无视 `/utf-8`,或拆分该文件)记在 **SL-325**;
+  # 那张卡落地后**请把这行删掉**,并用删除式确认删掉后本机 gate 5 仍绿。
+  target_compile_options(scvb_host_tests PRIVATE /W4 /utf-8 /EHsc /wd4819)
 else()
   target_compile_options(scvb_host_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
