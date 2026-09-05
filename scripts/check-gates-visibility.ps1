@@ -23,12 +23,16 @@
 
   判据(任一不满足即判负;**不写条数** —— 手抄的数在这一族里已经漂过四次):
     · 每一对(标签, 计数)都要有**至少一处赋值**,其右侧是 `-f`(Format)二元表达式,
-      且 `-f` 的实参里出现那个计数变量;
+      且 `-f` 的实参里出现那个计数变量,**并且格式串里有对应下标的 `{N}`** ——
+      PowerShell 对多余实参静默忽略,少了这一半,「拼进去了但不显形」会全绿(复审第 1 轮);
     · 计数口径 `$markerCount` 有**一处定义**,模式里除 `{0}` 外不得有花括号
       (`-f` 会把 `{0,2}` 读成格式规格,得到一条永不命中的正则 ⇒ 有降级也恒报 0);
     · 该口径**实跑正反例**:真信号行(带前导空格的标记行)必须命中,成功路径的散文必须不命中;
+    · **承接计数的那条赋值**(`$draftsAllow +=` / `$warnLines =`)里要用那份口径,
+      不是「源码里某处用过就行」—— 后者在多一个用点之后就会被别处撑绿(复审第 1 轮);
     · 凡是拿这份口径或裸标记去匹配的地方,运算符必须是**大小写敏感**的那一支;
-      `Select-String` 要带 `-CaseSensitive`。
+      `Select-String` 的 `-CaseSensitive` 按 **AST 参数**判(认前缀缩写 `-Case`,
+      也认 `-CaseSensitive:$false`),不按文本找。
 
   边界(照实说):
     · 本脚本只管 **PowerShell 那一侧**。`smoke-*.mjs` 的出口(① 段)、`format.yml` 的 rc=3 分支
@@ -53,13 +57,23 @@ $script:MarkOpen = [char]91   # [
 $script:MarkClose = [char]93  # ]
 function New-Mark { param([string]$Name) $script:MarkOpen + $Name + $script:MarkClose }
 
+# 单引号。**定义在脚本顶部**,不在 -SelfTest 块里:生产路径的失败文案也要拼它,
+# 而那条路径只有判负才走到、自测又不覆盖它 —— 第一版定义在自测块里,生产文案里的引号
+# 被吞成空串,没有 StrictMode 所以连报错都没有(复审第 1 轮实测点出)。
+$script:Quote = [char]39
+
 # 大小写**敏感**的匹配类运算符。AST 把敏感性放进枚举名里(`C…` / `I…`),
 # 所以这里列的是枚举值,不是源码里的写法 —— 文本级那版要穷举 `-i?(?:not)?match` 之类的
 # 拼写变体,而拼写变体列不全正是它栽过的地方。
-$script:CaseSensitiveOps = @('Cmatch', 'Cnotmatch', 'Creplace', 'Csplit')
+$script:CaseSensitiveOps = @('Cmatch', 'Cnotmatch', 'Creplace', 'Csplit', 'Clike', 'Cnotlike')
 $script:MatchFamilyOps = @(
   'Imatch', 'Cmatch', 'Inotmatch', 'Cnotmatch',
-  'Ireplace', 'Creplace', 'Isplit', 'Csplit'
+  'Ireplace', 'Creplace', 'Isplit', 'Csplit',
+  # [SL-330c 复审第 1 轮] `-like` 一族。AST 消掉的是「**拼写变体**列不全」那一类
+  # (`-imatch` 与 `-match` 在这里是同一个枚举名),消不掉「**运算符家族**列不全」那一类 ——
+  # 后者正是自测 ㉕ 找出来的洞(当时漏的是 `-split`)。`$_ -like "*[WARN]*"` 是很自然的
+  # 下一个写法(不用写转义的方括号,比 `-cmatch '\[WARN\]'` 顺手),漏掉它就等于这条边没收。
+  'Ilike', 'Clike', 'Inotlike', 'Cnotlike'
 )
 
 function Get-VisibilityReport {
@@ -72,8 +86,8 @@ function Get-VisibilityReport {
     [string]$ScriptPath,
     # 要断言的(标签, 计数)对。生产路径传三对;自测按格传。
     [object[]]$Pairs = @(),
-    # 要断言的标记名(计数口径按它实例化)。
-    [string[]]$Marks = @()
+    # 要断言的「标记 → 承接计数的变量」对。生产路径传两对;自测按格传。
+    [object[]]$MarkerSinks = @()
   )
 
   $tokens = $null
@@ -95,7 +109,8 @@ function Get-VisibilityReport {
     EchoFound    = $false
     EchoCaseOk   = $false
     Offenders    = @()   # 大小写不敏感地匹配标记的地方
-    SelectString = @()   # Select-String -Pattern 且没带 -CaseSensitive
+    SelectString = @()   # Select-String 的模式碰了标记却不是大小写敏感的那一支
+    MissingPlaceholder = @() # 计数进了 -f 的实参,但格式串里没有对应的 {N}(实参被静默忽略)
   }
   if (@($errors).Count -gt 0) { return [pscustomobject]$rep }
 
@@ -125,10 +140,43 @@ function Get-VisibilityReport {
       if ($expr -is [System.Management.Automation.Language.CommandExpressionAst]) { $expr = $expr.Expression }
       if ($expr -isnot [System.Management.Automation.Language.BinaryExpressionAst]) { continue }
       if ("$($expr.Operator)" -ne 'Format') { continue }
-      $vars = @($expr.Right.FindAll({
-            param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst]
-          }, $true) | ForEach-Object { $_.VariablePath.UserPath })
-      if ($vars -contains $count) { $sites += $a.Extent.StartLineNumber }
+      # 实参按**顶层元素**取:`-f` 的实参列表是 ArrayLiteralAst 的 Elements
+      # (只有一个实参时它不是数组,那就是它自己)。要的是「计数是第几个实参」,
+      # 而不只是「计数出现在子树里」—— 下面那条占位符判据要拿这个下标去对。
+      $items = @()
+      if ($expr.Right -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+        $items = @($expr.Right.Elements)
+      }
+      else { $items = @($expr.Right) }
+      $idx = -1
+      for ($i = 0; $i -lt $items.Count; $i++) {
+        $hasCount = @($items[$i].FindAll({
+              param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and
+              $n.VariablePath.UserPath -eq $count
+            }, $true)).Count -gt 0
+        if ($hasCount) { $idx = $i; break }
+      }
+      if ($idx -lt 0) { continue }
+      # ⚠ [SL-330c 复审第 1 轮] 光有实参**不够**:PowerShell 的 `-f` 对**多余实参静默忽略**
+      #   (实测 `'{0}(x)' -f 'A','B'` → `A(x)`,不报错;反过来占位多于实参才抛)。于是
+      #     `$smokeLabel = '{0}(没跑成)' -f $smokeLabel, $smokeFlaky`   ← `{1}` 被删了
+      #   让计数**根本不显形**,而只问「实参里有没有它」的判据全绿 —— 与「计数退回滚屏」
+      #   是同一个失效形态,触发它只需要有人重写文案时顺手删掉 `{1}` 而没删实参。
+      #   所以还要问:格式串里**有没有 `{<这个实参的下标>}`**。
+      $fmt = ''
+      if ($expr.Left -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+        $expr.Left -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+        $fmt = $expr.Left.Value
+      }
+      $placeholders = @([regex]::Matches($fmt, '\{(\d+)') | ForEach-Object { [int]$_.Groups[1].Value })
+      if ($placeholders -notcontains $idx) {
+        $rep.MissingPlaceholder += [pscustomobject]@{
+          Label = $label; Count = $count; Index = $idx
+          Line  = $a.Extent.StartLineNumber; Format = $fmt
+        }
+        continue
+      }
+      $sites += $a.Extent.StartLineNumber
     }
     $rep.Pairs += [pscustomobject]@{
       Label = $label; Count = $count; Ok = (@($sites).Count -gt 0); Sites = $sites
@@ -167,21 +215,39 @@ function Get-VisibilityReport {
         }, $true)).Count -gt 0
   }
 
-  foreach ($mark in $Marks) {
+  # ⚠ [SL-330c 复审第 1 轮] 钉的是「**承接计数的那条语句**里走了共享口径」,不是
+  #   「源码里**某处**有一个敏感匹配用了它」。第一版写成了后者 —— 那比它替掉的文本级判据
+  #   (`/\$draftsAllow\s*\+=[^\n]*\$markerCount\s+-f\s+'ALLOW'/`)**弱一档**,是搬家路上掉的牙:
+  #   今天每个标记恰好只有一个用点,所以实扫结果一样;可只要将来多出第二个用点,把真正
+  #   计数那一行改回裸字面量(`$draftsAllow += @($out | ? { $_ -cmatch '\[ALLOW\]' }).Count`),
+  #   `Found` / `CaseSensitive` 仍由另一个用点撑着 ⇒ 判据全绿,而它数的是散文 ⇒ **0 条也报 1**。
+  #   所以沿用 `Pairs` 那套「左边必须是那个变量」的做法:从**那条赋值语句的右子树**里找。
+  foreach ($sink in $MarkerSinks) {
+    $mark = [string]$sink.Mark
+    $var = [string]$sink.Sink
     $found = $false
     $caseOk = $false
-    foreach ($b in $binaries) {
-      if ("$($b.Operator)" -notin $script:MatchFamilyOps) { continue }
-      if (-not (& $mentionsMarker $b.Right)) { continue }
-      # 实例化的是哪个标记:`-f` 的实参里那个字符串常量。
-      $args1 = @($b.Right.FindAll({
-            param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]
-          }, $true) | ForEach-Object { $_.Value })
-      if ($args1 -notcontains $mark) { continue }
-      $found = $true
-      if ("$($b.Operator)" -in $script:CaseSensitiveOps) { $caseOk = $true }
+    foreach ($a in $assignments) {
+      $left = $a.Left
+      if ($left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { continue }
+      if ($left.VariablePath.UserPath -ne $var) { continue }
+      foreach ($b in @($a.FindAll({
+              param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst]
+            }, $true))) {
+        if ("$($b.Operator)" -notin $script:MatchFamilyOps) { continue }
+        if (-not (& $mentionsMarker $b.Right)) { continue }
+        # 实例化的是哪个标记:`-f` 的实参里那个字符串常量。
+        $args1 = @($b.Right.FindAll({
+              param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]
+            }, $true) | ForEach-Object { $_.Value })
+        if ($args1 -notcontains $mark) { continue }
+        $found = $true
+        if ("$($b.Operator)" -in $script:CaseSensitiveOps) { $caseOk = $true }
+      }
     }
-    $rep.MarkerUses += [pscustomobject]@{ Mark = $mark; Found = $found; CaseSensitive = $caseOk }
+    $rep.MarkerUses += [pscustomobject]@{
+      Mark = $mark; Sink = $var; Found = $found; CaseSensitive = $caseOk
+    }
   }
 
   # 裸标记回显那一处:它**不走** `$markerCount`(是字面量),所以按标记名生成的断言钉不住它。
@@ -233,7 +299,34 @@ function Get-VisibilityReport {
     #   本卡的面是「把同一批判据从文本级搬到语法级」。要不要连它一起收紧是另一张卡。
     #   下面自测有一格钉着这条边界,免得它退化成一句没人验的散文。
     if (-not (& $mentionsMarker $c)) { continue }
-    if ($txt -notmatch '-CaseSensitive') {
+    # ⚠ [SL-330c 复审第 1 轮] 这里原来是 `$txt -notmatch '-CaseSensitive'` ——
+    #   **整份「上 AST」的脚本里唯一剩下的文本级判据**,而且正好栽在本文件头注嘲笑文本级的
+    #   那个点上(拼写变体列不全),两个方向都漏,两条都实测过:
+    #     · **假绿**:`-CaseSensitive:$false` 里含着 `-CaseSensitive` 这几个字 ⇒ 判据说它敏感,
+    #       实际不敏感;
+    #     · **假红**:PowerShell 允许**参数名前缀缩写**,`Select-String` 的参数里 `Ca` 开头只有
+    #       `CaseSensitive`,所以 `-Case` 在运行时完全等价 ⇒ 文本判据判红一个正确写法。
+    #   AST 里两件事都是现成的:`CommandParameterAst.ParameterName` 给的是**写下的那个前缀**
+    #   (`-Case` → `Case`),`.Argument` 给的是冒号形态的实参(`-CaseSensitive:$false` → `$false`)。
+    $csParam = $null
+    foreach ($el in $c.CommandElements) {
+      if ($el -isnot [System.Management.Automation.Language.CommandParameterAst]) { continue }
+      $pn = $el.ParameterName
+      if ($pn.Length -eq 0) { continue }
+      # 前缀匹配:写下的名字要是 `CaseSensitive` 的前缀(大小写不敏感 —— 参数名本身就不敏感)。
+      if ('CaseSensitive'.StartsWith($pn, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $csParam = $el
+        break
+      }
+    }
+    $sensitive = $false
+    if ($null -ne $csParam) {
+      # 没有冒号实参 = 开关打开;有实参则要它不是 `$false`。
+      $arg = $csParam.Argument
+      if ($null -eq $arg) { $sensitive = $true }
+      elseif ($arg.Extent.Text -notmatch '^\$false$') { $sensitive = $true }
+    }
+    if (-not $sensitive) {
       $rep.SelectString += [pscustomobject]@{ Line = $c.Extent.StartLineNumber; Text = $txt }
     }
   }
@@ -270,7 +363,7 @@ if ($SelfTest) {
     if (-not $Ok) { $script:fails += $Name }
   }
   $nl = [Environment]::NewLine
-  $q = [char]39   # 单引号
+  $q = $script:Quote   # 自测里的简写,真源在脚本顶部(生产路径也要用它)
   $pair = @(@{ Label = 'lbl'; Count = 'cnt' })
   $goodPat = '^\s*\[{0}\]'
 
@@ -330,9 +423,10 @@ if ($SelfTest) {
   # ⑫ 只写 `^`(不吃前导空格)⇒ 实跑必须判负(有降级也恒报 0)
   & $check '⑫ 不吃前导空格的口径没被实跑判负(有降级也恒报 0)' ($null -ne (Test-MarkerPattern -Pattern '^\[{0}\]' -Mark 'WARN' -Good $goodLine -Bad $badLine))
 
-  # ⑬ 用点走口径且大小写敏感 ⇒ 认得出
-  $f13 = '$x | Where-Object { $_ -cmatch ($markerCount -f ' + $q + 'WARN' + $q + ') }'
-  $r13 = Get-VisibilityReport -Source $f13 -Marks @('WARN')
+  # ⑬ 用点走口径且大小写敏感,而且**长在承接计数的那条赋值里** ⇒ 认得出
+  $sinkW = @(@{ Mark = 'WARN'; Sink = 'warnLines' })
+  $f13 = '$warnLines = @($out | Where-Object { $_ -cmatch ($markerCount -f ' + $q + 'WARN' + $q + ') })'
+  $r13 = Get-VisibilityReport -Source $f13 -MarkerSinks $sinkW
   & $check '⑬ -cmatch 的用点没被认出来' ($r13.MarkerUses[0].Found -and $r13.MarkerUses[0].CaseSensitive)
 
   # ⑭ 用点退回 `-match` ⇒ 反向判据必须抓到(AST 里它是另一个枚举值)
@@ -404,6 +498,46 @@ if ($SelfTest) {
   $r25 = Get-VisibilityReport -Source $f25 -Marks @('WARN')
   & $check '㉕ -split 没被抓到(匹配家族的枚举清单漏了一项)' (@($r25.Offenders).Count -eq 1)
 
+  # ── 下面五格是**复审第 1 轮**逼出来的,每格对应一条新判据或一处补齐 ──
+  # 26. `-f` 的实参里有计数,但**格式串里没有对应的 `{N}`** ⇒ 判负。
+  #     实测:PowerShell 对多余实参静默忽略(`'{0}(x)' -f 'A','B'` → `A(x)`),
+  #     所以这个写法让计数根本不显形,而只问「实参里有没有」的判据全绿。
+  $f26 = '$lbl = ' + $q + '{0}(没跑成)' + $q + ' -f $lbl, $cnt'
+  $r26 = Get-VisibilityReport -Source $f26 -Pairs $pair
+  & $check '㉖ 格式串里删掉了 {1} 却留着实参,仍被算作「落进标签」' (-not $r26.Pairs[0].Ok)
+
+  # 27. 承接计数的那条赋值**没走**共享口径(改回裸字面量),而别处有一个合规用点
+  #     ⇒ 必须判负。第一版写成「源码里某处有就行」,这一格当时是绿的(搬家掉的牙)。
+  $f27 = '$warnLines = @($out | Where-Object { $_ -cmatch ' + $q + '\[WARN\]' + $q + ' })' + $nl +
+  '$other = @($out | Where-Object { $_ -cmatch ($markerCount -f ' + $q + 'WARN' + $q + ') })'
+  $r27 = Get-VisibilityReport -Source $f27 -MarkerSinks $sinkW
+  & $check '㉗ 承接计数那条改回裸字面量,却被别处的合规用点撑绿了' (-not $r27.MarkerUses[0].Found)
+
+  # 28. `Select-String -CaseSensitive:$false` ⇒ 必须抓到(文本级那版会因为字面含
+  #     `-CaseSensitive` 而**假绿**)。
+  $f28 = '$x | Select-String -CaseSensitive:$false -Pattern ($markerCount -f ' + $q + 'WARN' + $q + ')'
+  $r28 = Get-VisibilityReport -Source $f28
+  & $check '㉘ -CaseSensitive:$false 被当成了大小写敏感' (@($r28.SelectString).Count -eq 1)
+
+  # 29. `Select-String -Case`(参数名前缀缩写,运行时等价)⇒ 不得误报。
+  #     文本级那版会因为 `-notmatch '-CaseSensitive'` 命中而**假红**一个正确写法。
+  $f29 = '$x | Select-String -Case -Pattern ($markerCount -f ' + $q + 'WARN' + $q + ')'
+  $r29 = Get-VisibilityReport -Source $f29
+  & $check '㉙ -Case(合法的前缀缩写)被误报成不敏感' (@($r29.SelectString).Count -eq 0)
+
+  # 30. `-like` 一族也要被反向判据抓到(㉕ 同款:枚举清单漏一项就漏一族)。
+  $f30 = '$x = $y -like ($markerCount -f ' + $q + 'WARN' + $q + ')'
+  $r30 = Get-VisibilityReport -Source $f30
+  & $check '㉚ -like 没被抓到(匹配家族的枚举清单漏了一族)' (@($r30.Offenders).Count -eq 1)
+
+  # 31. 右侧是**字符串拼接**而不是 `-f`,但左边那截长得像格式串 ⇒ 仍要判负。
+  #     ⑥ 那一格(`$lbl = $lbl + $cnt`)挡不住这个:它的左截不是字符串常量,
+  #     于是占位符那一半会替 `-f` 那一半把它拦下,`-f` 判据被**兜住而不是被验证**。
+  #     删除式里「拆掉 Format 检查」这一注入原来因此全绿 —— 这一格专门区分那两半。
+  $f31 = '$lbl = ' + $q + '{0}(!{1})' + $q + ' + $cnt'
+  $r31 = Get-VisibilityReport -Source $f31 -Pairs $pair
+  & $check '㉛ 字符串拼接(不是 -f)也被算作「落进标签」' (-not $r31.Pairs[0].Ok)
+
   if (@($fails).Count -gt 0) {
     Write-Host 'check-gates-visibility.ps1 --self-test 失败:' -ForegroundColor Red
     foreach ($f in $fails) { Write-Host ('  ' + $f) -ForegroundColor Red }
@@ -427,9 +561,14 @@ $PAIRS = @(
   @{ Label = 'parityLabel'; Count = 'draftsAllow'; Why = 'gate 3i 的 ALLOW 放行' },
   @{ Label = 'parityLabel'; Count = 'parityWarn'; Why = 'gate 3i 的 WARN 降级' }
 )
-$MARKS = @('ALLOW', 'WARN')
+# 标记 → **承接计数的那个变量**。判据钉的是那条赋值语句,不是「源码里某处」——
+# 理由写在 Get-VisibilityReport 里那段 ⚠ 旁边(复审第 1 轮:搬家掉了这颗牙)。
+$MARKER_SINKS = @(
+  @{ Mark = 'ALLOW'; Sink = 'draftsAllow' },
+  @{ Mark = 'WARN'; Sink = 'warnLines' }
+)
 
-$rep = Get-VisibilityReport -ScriptPath $Path -Pairs $PAIRS -Marks $MARKS
+$rep = Get-VisibilityReport -ScriptPath $Path -Pairs $PAIRS -MarkerSinks $MARKER_SINKS
 $bad = @()
 
 if (@($rep.ParseErrors).Count -gt 0) {
@@ -441,10 +580,19 @@ if (@($rep.ParseErrors).Count -gt 0) {
 foreach ($p in $rep.Pairs) {
   $why = (@($PAIRS | Where-Object { $_.Label -eq $p.Label -and $_.Count -eq $p.Count })[0]).Why
   if (-not $p.Ok) {
-    $bad += ('`${0}` 没有落在任何一处 `${1} = ' + $q + '…' + $q + ' -f …` 的实参里({2})—— ' +
+    $bad += ('`${0}` 没有落在任何一处 `${1} = ' + $script:Quote + '…' + $script:Quote + ' -f …` 的实参里({2})—— ' +
       '计数只会出现在滚屏里,而跑完 gates 的人看的是汇总表:这正是 SL-297 要堵的那个洞原样复现。') -f
     $p.Count, $p.Label, $why
   }
+}
+
+# 计数进了实参、格式串里却没有对应的占位符 —— 单独一条,别并进上面那句:
+# 上面那句说的是「没拼进标签」,而这里是「拼进去了但不显形」,两种真因不同、修法也不同。
+foreach ($m in $rep.MissingPlaceholder) {
+  $bad += ('第 {0} 行:`${1}` 是 `-f` 的第 {2} 个实参,而格式串 /{3}/ 里没有 `{{{2}}}` —— ' +
+    'PowerShell 对多余实参**静默忽略**,所以这个计数根本不会出现在汇总标签里。' +
+    '要么把占位符加回去,要么把这个实参删掉(别留一个不显形的计数)。') -f
+  $m.Line, $m.Count, $m.Index, $m.Format
 }
 
 if ($rep.PatternDefs -ne 1) {
@@ -457,7 +605,7 @@ elseif ($null -ne $rep.BraceLeft) {
     '于是有降级也恒报 0;要写量词请改用不带花括号的等价形态') -f $rep.BraceLeft
 }
 else {
-  foreach ($mark in $MARKS) {
+  foreach ($mark in @($MARKER_SINKS | ForEach-Object { $_.Mark })) {
     $good = '  ' + (New-Mark $mark) + ' 真信号行'
     $prose = '成功路径的散文里提了一嘴 ' + (New-Mark $mark) + ' 那一档'
     $msg = Test-MarkerPattern -Pattern $rep.Pattern -Mark $mark -Good $good -Bad $prose
@@ -468,7 +616,7 @@ else {
 foreach ($u in $rep.MarkerUses) {
   if (-not $u.Found) {
     $bad += ('没有一处按 `$markerCount -f {1}{0}{1}` 实例化的匹配 —— 口径又被抄了一份字面量,' +
-      '两份就会只改一份') -f $u.Mark, $q
+      '两份就会只改一份') -f $u.Mark, $script:Quote
   }
   elseif (-not $u.CaseSensitive) {
     $bad += ('`{0}` 的匹配不是大小写敏感的那一支 —— 小写标记会被 gates 数进去而守卫扫不到,' +
@@ -497,5 +645,5 @@ if (@($bad).Count -gt 0) {
   exit 1
 }
 
-Write-Host ('  gates 显形接线(PowerShell 侧)通过:{0} 对计数都落在 -f 实参里,计数口径一处定义、实跑正反例通过,标记匹配一律大小写敏感。' -f @($rep.Pairs).Count)
+Write-Host ('  gates 显形接线(PowerShell 侧)通过:{0} 对计数都落在 -f 实参里**且格式串有对应占位符**,计数口径一处定义、实跑正反例通过,承接计数的那两条赋值都走那份口径,标记匹配一律大小写敏感(Select-String 按 AST 参数判)。' -f @($rep.Pairs).Count)
 exit 0
