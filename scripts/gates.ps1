@@ -535,11 +535,16 @@ if (-not $npxCmd) {
   Set-Gate '3 prettier' $false
 }
 else {
-  # 注:`$pp` 捕了输出却从不回显 —— 这一道红的时候滚屏上没有任何线索,得另跑一次 prettier
-  # 才知道是哪个文件。那是**回显**问题,不是本卡三判据里的任何一条,所以这里逐字保持原状,
-  # 不顺手改(要改请另立卡,与 3b/3c 的 `Select-Object -Last 30` 口径对齐)。
+  # [SL-309 后半] **红时回显**。此前 `$pp` 捕了输出却从不打出来,于是这一道红的时候滚屏上
+  # 没有任何线索 —— 得另跑一次 `prettier --check .` 才知道是哪个文件(我自己在 SL-325 那一轮
+  # 就这么跑过一次)。口径与 3b(gitleaks)/ 3c(reuse)**逐字相同**:`Select-Object -Last 30`。
+  # 不另造截断规则:同一个仓里两套「留多少行」会让人以为它们有不同理由,而其实没有。
+  # prettier 的失败输出本来就是**一行一个文件**(`[warn] path/to/file`),末尾一行是
+  # 「Code style issues found in the above file(s)」—— 所以留末 30 行正好覆盖文件清单的尾部;
+  # 文件多到 30 行装不下时,尾部那句仍在,读的人知道还有更多、可以自己跑一次拿全量。
   $global:LASTEXITCODE = 1
   $pp = (npx --yes prettier@3.9.6 --check . 2>&1)
+  if ($LASTEXITCODE -ne 0) { $pp | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
   Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
 }
 
@@ -1760,8 +1765,44 @@ else {
       # 生成物 `build*/**/CTestTestfile.cmake` —— 那才是 ctest 真正吃的那份。
       $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error --timeout 300 2>&1)
       $ctestRc = $LASTEXITCODE
-      if ($ctestRc -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
-      Set-Gate '6 ctest' ($ctestRc -eq 0)
+
+      # [SL-309 后半] **失败用例名要完整,而且要进汇总表**。此前这里只有 `-Last 40` 一刀 ——
+      # 汇总表那行永远是「6 ctest」,滚屏上的失败清单又可能被这一刀切掉(七套里几套一起红、
+      # 或某套的 `--output-on-failure` 正文很长时,末尾那个 `The following tests FAILED:` 块
+      # 会被挤出 40 行)。于是「哪一套红了」这个最该一眼看见的信息,反而要往回滚二十屏找。
+      #
+      # 名字从 ctest 尾部那个块里抠(形如 `	  3 - scvb_host_tests (Timeout)`),**不截断**:
+      # 七套顶天七行,而这几行正是全部信息量所在。抠不到时**明说**抠不到,不假装没有失败
+      # —— 那样会让人以为 gate 6 是因为别的原因红的(本仓「SKIP 吞掉判据」的同族形态)。
+      $ctestFailed = @()
+      if ($ctestRc -ne 0) {
+        $inFailBlock = $false
+        foreach ($line in $ct) {
+          $t = [string]$line
+          if ($t -match 'The following tests FAILED:') { $inFailBlock = $true; continue }
+          if (-not $inFailBlock) { continue }
+          $m = [regex]::Match($t, '^\s*\d+\s*-\s*(\S+)\s*\((.+)\)\s*$')
+          if ($m.Success) { $ctestFailed += ('{0}({1})' -f $m.Groups[1].Value, $m.Groups[2].Value) }
+          else { $inFailBlock = $false }
+        }
+        if ($ctestFailed.Count -gt 0) {
+          Write-Host ('  [ctest] 失败 {0} 套:' -f $ctestFailed.Count) -ForegroundColor Red
+          $ctestFailed | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
+        }
+        else {
+          Write-Host '  [ctest] 退出码非 0,但输出里找不到 `The following tests FAILED:` 块 —— 失败用例名未知(不是「没有失败」)' -ForegroundColor Yellow
+        }
+        # 尾部照旧回显,口径与 3b/3c/gate 5 **逐字相同**(`-Last 30`)。此前这里是 `-Last 40`,
+        # 那是同一个仓里的第二份截断规则,而它没有任何独立理由。
+        $ct | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) }
+      }
+      # 汇总表那行带上失败用例名:跑完 gates 的人看汇总表的概率远高于往回滚屏
+      # (同款先例:gate 3e 的 `$smokeLabel`、gate 3i 的 `$parityLabel`)。
+      $ctestLabel = '6 ctest'
+      if ($ctestRc -ne 0 -and $ctestFailed.Count -gt 0) {
+        $ctestLabel = '6 ctest(失败:{0})' -f ($ctestFailed -join '、')
+      }
+      Set-Gate $ctestLabel ($ctestRc -eq 0)
 
       # [SL-311] **跑完再扫一次,把这一轮可能留下的孤儿收掉**。不收就等着毒下一轮 ——
       # 而下一轮多半是**别人**的 gates,他会看到一次查不出的红。
