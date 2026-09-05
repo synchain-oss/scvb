@@ -190,27 +190,10 @@ const DOC_PRELUDE = `window.__D = (() => {
     try { return (f && f.contentDocument) || document; } catch { return document; }
 })(), 1`;
 
-/** 页内求值(返回 JSON 可序列化值);抛错时把页面异常原样冒上来。 */
-async function evaluate(cdp, expression) {
-    const r = await cdp.send("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-    });
-    if (r.exceptionDetails) {
-        throw new Error(
-            "页内求值抛错:" +
-                (r.exceptionDetails.exception?.description ||
-                    r.exceptionDetails.text),
-        );
-    }
-    return r.result?.value;
-}
-
 /**
- * [SL-312] **落地之后的页内求值,一律走这里**。
+ * [SL-312] **页内求值的唯一入口**(落地之后的求值一律走这里)。
  *
- * 为什么要收成一个函数:`evaluate` 抛的是普通 `Error`,冒到 finally 时
+ * 为什么要收成一个函数:裸的 `Runtime.evaluate` 包装抛的是普通 `Error`,冒到 finally 时
  * `instanceof NavigationError` 不成立 ⇒ 退 1 而不是 2,屏幕上还打印「页内求值抛错」
  * 把人指向错误方向;而落地页上连求值都跑不了,几乎只可能是页面没正常起来 —— 正是
  * 2 该覆盖的语义。同一条纪律在 #194 里补过两轮(第 1 轮补 `location.href`、第 4 轮
@@ -218,25 +201,53 @@ async function evaluate(cdp, expression) {
  * 点名的位置,漏的那处就一直漏着。所以修法不是「再补第三处」,而是**把包法收进
  * 唯一入口**,调用点只给一句「这一步在做什么」,少一个能忘的地方。
  *
+ * ⚠ 裸包装 `evaluateRaw` **关在这个闭包里**,外面拿不到它。放在顶层时它仍是个名字更短、
+ *   签名更少一个参数的函数,下一个人加第六处求值时它依然是最顺手的写法 ——「少一个能忘
+ *   的地方」就只做了一半。词法上够不着,才是真的只剩一条路(复审第 1 轮【建议】2 的 ②)。
+ *
  * 唯一例外是 `--eval`:表达式是人现给的,抛错是这句表达式自己的锅、不是页面没起来,
  * 退 1 才对。这个例外由 `userExpr: true` **显式声明**,而不是靠调用点绕开本函数 ——
  * 绕开就又回到「有人会忘」的老形态,声明则会在调用点上留下痕迹。
  */
-async function evalLanded(cdp, expression, what, { userExpr = false } = {}) {
-    try {
-        return await evaluate(cdp, expression);
-    } catch (e) {
-        // 两支只差**错误类**(它决定退 1 还是退 2);`what` 两支都带上 —— 否则 `--eval`
-        // 抛错时打印的文案与探针抛错一字不差,读的人分不出这是谁的锅。
-        // `cause` 两支都挂:打印路径只用 `e.message`,一字不变;但页内异常的完整
-        // description 从此还在手里,不用再开 `--console` 重跑一次(复审第 1 轮)。
-        const why = `${what}(${e.message})`;
-        if (userExpr) throw new Error(why, { cause: e });
-        throw new NavigationError(`${why},目标 ${URL_} 大概率没正常起来`, {
-            cause: e,
+const evalLanded = (() => {
+    /** 页内求值(返回 JSON 可序列化值);抛错时把页面异常原样冒上来。 */
+    async function evaluateRaw(cdp, expression) {
+        const r = await cdp.send("Runtime.evaluate", {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
         });
+        if (r.exceptionDetails) {
+            throw new Error(
+                "页内求值抛错:" +
+                    (r.exceptionDetails.exception?.description ||
+                        r.exceptionDetails.text),
+            );
+        }
+        return r.result?.value;
     }
-}
+
+    return async function evalLanded(
+        cdp,
+        expression,
+        what,
+        { userExpr = false } = {},
+    ) {
+        try {
+            return await evaluateRaw(cdp, expression);
+        } catch (e) {
+            // 两支只差**错误类**(它决定退 1 还是退 2);`what` 两支都带上 —— 否则
+            // `--eval` 抛错时打印的文案与探针抛错一字不差,读的人分不出这是谁的锅。
+            // `cause` 两支都挂:打印路径只用 `e.message`,一字不变;但页内异常的完整
+            // description 从此还在手里,不用再开 `--console` 重跑一次(复审第 1 轮)。
+            const why = `${what}(${e.message})`;
+            if (userExpr) throw new Error(why, { cause: e });
+            throw new NavigationError(`${why},目标 ${URL_} 大概率没正常起来`, {
+                cause: e,
+            });
+        }
+    };
+})();
 
 // ---------------------------------------------------------------- 主流程
 const userDataDir = mkdtempSync(join(tmpdir(), "scvb-shot-"));
