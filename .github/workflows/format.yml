@@ -295,9 +295,15 @@ jobs:
         env:
           SCVB_CHANGELOG_BASE: origin/${{ github.base_ref || github.ref_name }}
           # [SL-316] 本 PR 自己的号也透传:正文侧要求每条 (#N) 都在主线落过地,而搬运规矩③
-          # 要求作者在合并**前**就把条目写成 (#<本 PR 号>) —— 那一刻它当然还没落地。不透传的话,
-          # 每个按规矩搬条目的 PR 都会被 required check 硬红,而 (#TBD) 那条退路也已被本卡封死。
-          # push 事件上没有 pull_request 对象,取到空串 ⇒ 脚本回落到「大于最大落地号只 WARN」。
+          # 要求作者在合并**前**就把条目写成 (#<本 PR 号>) —— 那一刻它当然还没落地。
+          # [SL-319] 这段原先写的是「不透传的话,每个按规矩搬条目的 PR 都会被 required check
+          # 硬红」——**那是第一版的行为,现在不成立**:#203 第 3 轮之后,脚本对**大于当前最大
+          # 落地号**的号一律只打 [WARN] 不判红,而本 PR 号必然大于任何已落地号。
+          # 所以透传买到的**不是「红变绿」,是精度**:
+          #   · 有它   ⇒ 逐字精确放过本 PR 号,别的未落地号照旧 WARN;
+          #   · 没有它 ⇒ 回落到「> 最大落地号」这个粗判据,本 PR 号与同批交叉引用一起 WARN。
+          # 两种都不判红,差的只是输出噪声与判据精度。push 事件上没有 pull_request 对象、
+          # 取到空串,走的就是后一种 —— 与本地跑 gates 时同形,两边同判。
           SCVB_CHANGELOG_SELF_PR: ${{ github.event.pull_request.number }}
         run: node scripts/check-changelog-drafts.mjs
       - name: Font subset coverage (UI text <-> web/fonts/*.woff2)
