@@ -33,19 +33,27 @@
     ⚠ **边界:名字式判定依赖 `Get-Command` 的解析结果,而解析结果与机器/平台有关。** 判成外部的是
       「Application / ExternalScript / 解析不到」——于是 Windows 上同时解析出 Alias + Application 的
       短名(`sort` / `where` / `more` / `tee`)算**入面**,而 Linux 上 pwsh 不定义 `ls`/`cat` 这些别名,
-      同名调用会从 Alias 变成 Application、同样入面。两个方向都是 fail-closed。
+      同名调用会从 Alias 变成 Application、同样入面。两个方向都是 fail-closed,
+      而 `gates.ps1` 今天并没有用到这些短名,所以这条边界对判据面没有实际影响
+      (不写具体处数:那种数会随 `gates.ps1` 漂,而脚本每次运行都会自己打出来)。
       ⚠ **但 fail-closed 到了 CI 上就是硬红**:`Get-CimInstance` 这类 Windows-only cmdlet 在
       Linux 的 pwsh 上解析不到,曾把 docs-truth 判红(#217)。所以「解析不到」那一档再切一刀:
       `<批准动词>-<名词>`(按 `Get-Verb` 这张**机器自带**的表)当 cmdlet 排掉;
       `clang-format` / `npx` / `pipx` 不受影响 —— `clang` 不是批准动词。
+      ⚠ **这一刀的另一侧是 fail-open,必须写出来**:批准动词表里有 `Update` / `Install` / `Add` /
+      `Select` / `Start` / `Test` / `New` / `Set` / `Copy` / `Move` / `Sync` / `Format` / `Search` /
+      `Send` / `Split` / `Join` / `Merge` / `Push` / `Register` / `Restart` …… 于是任何**外部可执行体**
+      只要名字长成 `<这些动词>-<名词>`、且在当前机器上解析不到,就会被当 cmdlet **排出判据面**。
+      `gates.ps1` 今天没有这种调用,但别把这一刀读成「只排 cmdlet」——它排的是「形态像 cmdlet 的、
+      解析不到的名字」,两者不是一回事。
     ⚠ **边界:脚本块/路径这两处判定是启发式**(前者认 `ScriptBlockExpressionAst` 的文本形态,后者认
       `Join-Path`/`.exe`/盘符/斜杠)。裸 `/` 偏宽,任何 RHS 带斜杠的赋值都会被记成 pathLike ——
       只在 `& $var` 时起作用,方向偏红。另有一处 fail-open:同名变量若**先**赋成脚本块、**后**赋成
       路径,`scriptBlockVars` 会优先命中、那处 `& $var` 被静默排除;`gates.ps1` 今天没有这种写法。
     ⚠ **边界:豁免清单与判据面下界都只对默认目标(`gates.ps1`)生效。** 三条豁免的指纹全指向
-      它的 ③ 类调用点,下界 20 也是按它的体量取的;`-Path` 指别的文件时豁免关掉、下界降为 1,并打一行 INFO ——
-      `-Path` 指别的文件时**豁免不生效、下界从 20 降为 1**(只挡「一处都没扫到」),
-      那时本脚本只回答「这个文件里的外部调用有没有守卫」,不回答「豁免是否还准」。
+      它的 ③ 类调用点,下界 20 也是按它的体量取的;`-Path` 指别的文件时**豁免不生效、下界从
+      20 降为 1**(只挡「一处都没扫到」),并打一行 INFO —— 那时本脚本只回答「这个文件里的
+      外部调用有没有守卫」,不回答「豁免是否还准」。
       「是不是默认目标」按**解析后的路径**比,所以 `-Path scripts/gates.ps1` 与不传 `-Path` 等价。
     ⚠ **边界:经 cmdlet 间接启动的外部命令不在面内。** `Start-Process -FilePath $nodeCmd.Source`
       (`gates.ps1:836`)这种由 cmdlet 代启的,AST 里是一次 `Start-Process` 调用、不是外部命令调用点,
@@ -241,8 +249,14 @@ function Get-GatesGuardReport {
       $first = $c.CommandElements[0]
       if ($first -isnot [System.Management.Automation.Language.VariableExpressionAst]) { continue }
       $vn = $first.VariablePath.UserPath
-      if ($scriptBlockVars.Contains($vn)) { continue }          # 本文件自己的闭包,不是外部命令
-      if (-not $pathLikeVars.Contains($vn)) { continue }        # 认不出是可执行体,不判
+      # ⚠ 顺序:**先看 pathLike,再看脚本块**(#217 复审指出的一处 fail-open)。同名变量若
+      #   先被赋成脚本块、后被赋成路径,旧写法让 `scriptBlockVars` 先命中,那处 `& $var`
+      #   被**静默排除** —— 判据面悄悄少一处,而这正是本卡在治的方向。两边都命中时按外部算
+      #   (fail-closed:顶多多一条红,不会漏)。
+      if (-not $pathLikeVars.Contains($vn)) {
+        if ($scriptBlockVars.Contains($vn)) { continue }        # 只当过闭包,不是外部命令
+        continue                                                # 认不出是可执行体,不判
+      }
       $need = '$' + $vn
       $label = '$' + $vn
     }
@@ -447,6 +461,17 @@ if ($SelfTest) {
   # ⑭b 反向:解析不到的**外部命令**必须仍在面内,别把 ⑭ 改成「带连字符就放过」
   $r14b = Get-GatesGuardReport -Source 'clang-format --dry-run --Werror x.cpp' -Resolver $fakeNone
   & $check '⑭b 解析不到的外部命令(clang-format)被放过了 —— 判据面缩水' (@($r14b.Sites).Count -eq 1)
+
+  # ⑮ **同名变量先赋脚本块、后赋路径**:那处 `& $var` 必须仍在判据面内(#217 复审指出的
+  #    一处 fail-open —— 旧写法让 scriptBlockVars 先命中,调用点被静默排除)。
+  $f15 = '$x = { param($a) $a }' + [Environment]::NewLine +
+  '$x = Join-Path $root ' + "'tool.exe'" + [Environment]::NewLine + '& $x --version'
+  $r15 = Get-GatesGuardReport -Source $f15
+  & $check '⑮ 先脚本块后路径的同名变量被静默排出判据面(fail-open)' (@($r15.Sites).Count -eq 1)
+  # ⑮b 反向:只当过闭包、从未赋成路径的变量仍**不得**入面,别把 ⑮ 改成「所有 & $var 都算外部」
+  $f15b = '$cb = { param($a) $a }' + [Environment]::NewLine + '& $cb 1'
+  $r15b = Get-GatesGuardReport -Source $f15b
+  & $check '⑮b 纯闭包被当成外部命令(判据面被撑宽)' (@($r15b.Sites).Count -eq 0)
 
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
