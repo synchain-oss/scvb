@@ -20,9 +20,13 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -113,6 +117,82 @@ public:
 };
 
 // 一台「机器」:两个插件 + 一个 playhead + 缓冲。
+// [SL-314] **同机只允许一份 host 测试进程** —— 在**整轮开始前**判定,拿不到就整轮不跑。
+//
+// 为什么需要:本文件用**固定组号**(`kTestGroup=7` / `kNoWriterGroup=8` /
+// `MonoMultiRig::kGroup=9`,还有若干处直接写 4/5/6),段名 `SynchainSCVB.v1.g{G}.…`
+// 是**全机唯一**的。第二份进来 = 两个 Input 抢同一个槽位、两个 Output 绑同一个写方。实测:
+//     空闲 1 份            0/50 红
+//     CPU 压满 100%,1 份   0/50 红      ← CPU 争用一次都不触发
+//     2 份并跑             29/30 红
+//     6 份并跑             88/90 红      ← 2 份与 6 份没有量级差别
+// **冲突的是段,不是 CPU**;复现率对负载不单调,正是资源冲突的签名。
+//
+// 不加这道守卫时,红掉在三秒后的 `CHECK(raised)` 上,看起来像时序 flaky —— SL-305 与
+// SL-311 两张卡都为此绕过弯路,本卡自己也照「墙钟窗口」白改过一版。
+//
+// **为什么判定必须在整轮开始前,而不是挂在某个 Rig 的构造上**(复审【重要】):
+// Catch2 的 `FAIL` 用 `ResultDisposition::Normal` —— **只中止当前用例,不中止整轮**。
+// 守卫若只挂在 `Rig`,第二个进程 B 被点名后仍会跑完整轮:`MonoMultiRig` 那 24 处用例照常
+// `setGroupId(9)` + `prepareToPlay`,建出 `g9.*` 段 —— **B 仍在主动加害 A**,而 A 那批 g9
+// 用例的红长得还是像 flaky。逐个 Rig 挂守卫也永远补不全(本文件还用到 4/5/6/8)。
+// 只有在 `testRunStarting` 里判、拿不到就 `std::exit`,才能保证**一个段都不建**。
+//
+// 形态:**命名互斥,0 等待**。三条边界都是有意的 ——
+//   · **不排队**:排队会把冲突藏起来,而且与 gates 的 `Local\SCVB-ipc-tests` 形成锁序风险;
+//   · **不碰 IPC 段**:`Registry::open()` 是 `createOrOpen` + `allowOverwrite=true`,
+//     拿它当探针会创建、甚至覆盖式重初始化别人正在用的 registry —— 比它要治的问题更坏;
+//   · **不看槽位**:「槽位活跃且 pid 非我」会被崩溃进程留下的**陈旧槽位**误报。
+// 也不手动释放:内核对象随进程退出自动回收,测试里放反而多一条出错路径。
+struct HostTestsExclusiveListener : Catch::EventListenerBase
+{
+    using Catch::EventListenerBase::EventListenerBase;
+
+    void testRunStarting(Catch::TestRunInfo const&) override
+    {
+        HANDLE handle = ::CreateMutexW(nullptr, TRUE, L"Local\\SCVB-host-tests");
+        // `GetLastError()` 必须**紧挨着**取:中间插任何一个 Win32 调用都可能把它冲掉。
+        const DWORD err = ::GetLastError();
+
+        if (handle != nullptr && err != ERROR_ALREADY_EXISTS)
+        {
+            return; // 独占到手;句柄故意不关,活到进程退出
+        }
+
+        // **两种失败要分开说**(复审【重要】):它们的处方完全不同,合成一句会把人送错方向。
+        if (handle == nullptr)
+        {
+            // 建不出来是**另一件事**:DACL 拒绝 / 句柄耗尽 / 同名非互斥对象占位。
+            // 判负是对的(CLAUDE.md §2 对 gates 那把锁写死「建不出来判负,绝不静默继续」),
+            // 但这时**没有**「另一份在跑」,排队或走 with-ipc-lock.ps1 都救不了。
+            std::fprintf(stderr,
+                         "[SL-314] 无法创建命名互斥 Local"
+                         "\\SCVB-host-tests(GetLastError=%lu)——**不是**「有人在跑」。"
+                         "可能是 DACL 拒绝、句柄耗尽,或同名对象被非互斥类型占位。"
+                         "本套用固定组号、段名全机唯一,判不出独占就不能跑。"
+                         "\n",
+                         static_cast<unsigned long>(err));
+        }
+        else
+        {
+            std::fprintf(stderr,
+                         "[SL-314] 同机已有另一份 host 测试进程在跑 —— 本套用固定组号"
+                         "(g%d/ch%d 等),段名全机唯一,两份同跑必红(实测 2 份 29/30、6 份 88/90)。"
+                         "\n  手跑请走:pwsh scripts"
+                         "/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C Release -R scvb_host_tests'"
+                         "\n  若确认没人在跑:查**残留**的 scvb_host_tests.exe —— 僵尸进程会一直持着这把互斥"
+                         "(见 tests/CMakeLists.txt 的 TIMEOUT 头注与 gates.ps1 gate 6 前后的孤儿扫描)。"
+                         "\n",
+                         kTestGroup, kTestChannel);
+        }
+        std::fflush(stderr);
+        // 整轮不跑:再往下走就会建段,那正是要避免的加害。
+        std::exit(2);
+    }
+};
+
+CATCH_REGISTER_LISTENER(HostTestsExclusiveListener);
+
 struct Rig
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager(Timer 要它)
