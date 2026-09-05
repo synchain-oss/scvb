@@ -383,18 +383,32 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
         /call\("setAnalysisConfig", \{ \[field\]: value \}\)/.test(ts),
         "两设置块经 setAnalysisConfig(§1.21)落 state",
     );
+    // [SL-279] 基线的真源换了:从本地 `analysisConfigBaseline` 快照换成工程 state 的
+    // `analysis.applied.*`。这一格跟着换 —— 钉「本地快照那条路真的没了」+「新真源真的在用」,
+    // 两半都要:只钉后者的话,谁把旧快照加回来当兜底,这一格照绿。
     check(
-        ts.includes("analysisConfigBaseline") &&
+        !ts.includes("local.analysisConfigBaseline") &&
+            ts.includes("appliedAnalysisConfigOf(") &&
             ts.includes("analysisConfigStale("),
-        "改后需重分析由「当前值 vs 基线」派生(仅响度口径)",
+        "改后需重分析由「当前值 vs state.analysis.applied.*」派生,本地基线快照已删",
     );
     check(
         /set.reanalyze/.test(html) && /settings-loudnessmode-stale/.test(html),
-        "「改后需重分析」提示落点(三语 key set.reanalyze,只在响度块)",
+        "「改后需重分析」提示落点(三语 key set.reanalyze,响度块)",
     );
+    // [SL-278] **口径反转**:中心槽策略与响度档同在分析派生式里(02 §5.6),改后段表就与
+    // 设置对不上了 —— 此前这一块没有任何失效标记,本卡给它同形的琥珀徽标 + 影响面说明。
+    // 徽标 key 与响度块**共用** set.reanalyze(两处一致由结构保证);影响面各一条。
     check(
-        !/settings-centerslot-stale/.test(html),
-        "中心槽策略块不弹「改后需重分析」提示",
+        /settings-centerslot-stale/.test(html) &&
+            /set\.centerSlot\.scopeNote/.test(html),
+        "中心槽策略块有「改后需重分析」徽标 + 自己的影响面说明",
+    );
+    // 弹窗仍**只由响度档承载**(SL-276 的用户 preview 口径,SL-278 不改):
+    // 中心槽只上徽标。这一格钉住「没顺手把弹窗也铺开」。
+    check(
+        /const stale = loudnessStale;/.test(ts),
+        "中心槽策略只上徽标:弹窗判据仍只读响度那一项(改成 loudnessStale || centerStale 即红)",
     );
 
     // 九条 = 读取 guide.rule* 生成物,零手抄

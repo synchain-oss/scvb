@@ -629,6 +629,11 @@ export const T = {
         "set.centerSlot.title": "多轨争抢中心位时的优先级",
         "set.centerSlot.note":
             "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
+        // [SL-278] 与 set.reanalyze.scopeNote 同一口径:说清"改了会动什么"再说"要重分析"。
+        // 影响面按 02 §5.6:奇数轨数下这三档决定中心位归谁、槽位数是 n 还是 n+1,
+        // 进而改变自动指派解 —— 所以是分析派生式的一项,不是纯显示设置。
+        "set.centerSlot.scopeNote":
+            "切换中心槽策略会改变奇数轨数下中心位的归属与槽位数,自动指派出的声像位置随之变化;改后需重新分析。",
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
@@ -1516,6 +1521,8 @@ export const T = {
             "Priority when tracks compete for the center slot",
         "set.centerSlot.note":
             "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
+        "set.centerSlot.scopeNote":
+            "Changing the center-slot policy changes who takes the center position when the track count is odd, and whether there are n or n+1 slots. The pan placement produced by auto-assign changes with it. Re-analysis is required afterwards.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
 
@@ -2348,6 +2355,8 @@ export const T = {
             "Priorité quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
             "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
+        "set.centerSlot.scopeNote":
+            "Changer la politique de position centrale modifie qui occupe le centre lorsque le nombre de pistes est impair, ainsi que le nombre de positions (n ou n+1). Le panoramique produit par l'assignation automatique change en conséquence. Une ré-analyse est ensuite nécessaire.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
 

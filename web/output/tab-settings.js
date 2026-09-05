@@ -117,8 +117,31 @@ export function analysisConfigOf(state) {
 }
 
 /**
- * 响度口径「改后需重分析」判定:当前值 !== 基线值。
+ * [SL-279] 「上次全量分析所用」的那一份(契约 §1.1/§2.1 的 `analysis.applied`)。
+ * 缺字段时回落到**当前值**而不是默认值 —— 那正是 native 侧两级长度回退的语义,
+ * 两边取同一个口径,旧插件(不发 applied)下 stale 恒假、行为与本卡之前一致。
+ */
+export function appliedAnalysisConfigOf(state) {
+    const a = (state && state.analysis) || {};
+    const applied = a.applied || {};
+    const cur = analysisConfigOf(state);
+    return {
+        loudness_mode: applied.loudness_mode || cur.loudness_mode,
+        center_slot_policy:
+            applied.center_slot_policy || cur.center_slot_policy,
+    };
+}
+
+/**
+ * 「改后需重分析」判定:当前值 !== 基线值。**逐项判**,响度档与中心槽策略各调一次 ——
+ * 两枚徽标挂在两个控件旁,合成一个布尔会让它们同亮同灭。
  * 改走 → true(提示出现);改回基线值 → false(提示立即消失)。纯函数供 node 断言。
+ *
+ * [SL-279] 基线的**真源已经换了**:从「设置页 mount 那一刻的本地快照」换成工程 state 里的
+ * `analysis.applied.*`(上次全量分析所用)。旧真源派生出一对方向相反的偏差,同根:
+ * mount 早于首次 state 到达 —— 存成非默认档的工程一进 Tab4 就误报;同一会话里把口径切回
+ * mount 默认值时又漏报(段表其实还是按旧档分析的)。补一次本地同步只是把误报换成漏报,
+ * 所以改的是真源,不是补丁。
  */
 export function analysisConfigStale(currentMode, baselineMode) {
     return currentMode !== baselineMode;
@@ -191,6 +214,7 @@ export function createTabSettings(opts) {
         loudnessSeg: $("settings-loudnessmode-seg"),
         centerSeg: $("settings-centerslot-seg"),
         loudnessStale: $("settings-loudnessmode-stale"),
+        centerStale: $("settings-centerslot-stale"), // [SL-278]
         // [SL-276] 重分析提示弹窗(卡片层单例,不在 Tab4 子树里 —— 见 index.html 那段注释)
         reanalyzeAsk: $("reanalyze-ask"),
         reanalyzeAskLater: $("reanalyze-ask-later"),
@@ -213,41 +237,36 @@ export function createTabSettings(opts) {
         scaleSelect: $("settings-scale-select"),
     };
 
-    // 页面内一次性状态(不属 state chunk,重开面板即重置):
-    //   analysisConfigBaseline —— 响度口径的「基线值」= 分析已应用的口径。03 §6.3 把
-    //   analysis_settings_stale 定义为 (当前 ≠ applied.*) 的派生字段,但 T25 冻结契约
-    //   §1.1/§2.1 未暴露 applied.* / analysis_settings_stale,故 UI 以本地基线承载同语义:
-    //   mount 时快照当前值(mock 环境即初值);真插件下由分析完成事件(onSegments)同步;
-    //   stale = 当前值 !== 基线值 —— 改走提示出现,改回基线值立即消失。
+    // 页面内一次性状态(不属 state chunk,重开面板即重置)。
     //
-    //   **已知边界,归 [SL-279],本卡不动**:mount() 早于 bootInner() 的
-    //   requestInitialState,所以这里快照到的是空 store 的默认档,不是工程存的那个值。
-    //   由此派生出一对方向相反的偏差 —— 存成非默认档的工程一进 Tab4 琥珀 badge 就亮
-    //   (误报);同一会话里把口径切回 mount 默认值时 stale 立刻归假、badge 灭,而段表
-    //   其实还是按旧档分析的(漏报)。两条同根,都是「基线在 state 到达前快照」。
-    //   看着像顺手能修(初始快照落地后补一次 syncBaseline),实际是**产品取舍不是清理**:
-    //   契约没暴露 applied.*,UI 分不出「工程存的就是这个档且已按它分析过」与「上次改了档
-    //   没重分析就存盘」,补同步等于把误报换成漏报。故整条留给 SL-279 评估,不在本卡顺手做。
-    //   注意弹窗**不吃这条**:它另有 askOnNextStale 一次性闸(见下),三条误报路径都不弹框。
+    // [SL-279] **`analysisConfigBaseline` 没有了**。它曾是「响度口径的基线值」的本地承载:
+    // mount 时快照当前值、由分析完成事件(onSegments)同步。契约当时没暴露 `applied.*`,
+    // 只能这么凑。那条路派生出一对方向相反的偏差,同根 ——「基线在 state 到达前快照」:
+    // 存成非默认档的工程一进 Tab4 就误报;同一会话里把口径切回 mount 默认值时又漏报。
+    // 现在基线的真源是**工程 state 里的 `analysis.applied.*`**(上次全量分析所用),
+    // 由 native 落盘、随撤销一起回退。判据面、两级回退语义与 abi 升格写在
+    // `docs/contract-changes/20260905-sl279-applied-analysis-settings.md`,这里不复述。
     const local = {
-        analysisConfigBaseline: null,
         // [SL-276] 已就哪个口径值弹过框。**按值记而不是按布尔记**:改走 → 弹一次;
         // 点「稍后」后继续在别的档之间来回切,每换到一个新的脏值都该再弹一次;
         // 改回基线(stale 归 false)时清空,下次再改走照弹。
         reanalyzeAskedFor: null,
         // [SL-276 复审] 弹窗的触发面是**用户点击**,不是派生的 stale 位。
-        // 琥珀 badge 可以纯派生(多一枚小标记的代价很小),模态框不行 —— stale 有三条
-        // 「用户什么都没做也为真」的路径,升级成框之后每条都变成一次要点掉的打断:
-        //   ① 开工程即真:mount() 在 app.js 里同步跑,那时 store.state 还是 {},基线取到的是
-        //      ANALYSIS_CONFIG_DEFAULTS.loudness_mode;工程真值要等 bootInner() 的
-        //      requestInitialState 落地。存成 rms/peak_dbfs 的工程一进 Tab4 就 stale 恒真,
-        //      而首帧 scvb.segments 的 reason 是 "snapshot",onSegments 不认、纠不回来。
-        //   ② 只读观察态(J69):主实例改档,观察实例经 scvb.state 收到新值也会 stale ——
-        //      框里那枚「重新分析」是写控件,契约 §5.6 要求只读态下写控件一律不可操作。
-        //   ③ 切版本 / 快照恢复:基线刻意不随这两条同步(见 analysisConfigBaseline 那段),
-        //      而那个版本的段表与它自己的口径本来就是对齐的。
+        // 琥珀 badge 可以纯派生(多一枚小标记的代价很小),模态框不行 —— stale 有几条
+        // 「用户什么都没做也为真」的路径,升级成框之后每条都变成一次要点掉的打断。
+        //
+        // [SL-279] **原来列在这里的第 ① 条已经不存在了**,本卡把它修掉了:那一条是
+        // 「开工程即真」——mount() 早于首次 state 到达,基线取到的是默认档,于是存成
+        // rms/peak_dbfs 的工程一进 Tab4 就 stale 恒真。基线换成工程 state 里的
+        // `analysis.applied.*` 之后,这条路没有了(那正是 SL-279 的卡面)。
+        // 还在的是:
+        //   · **只读观察态(J69)**:主实例改档,观察实例经 scvb.state 收到新值也会 stale ——
+        //     框里那枚「重新分析」是写控件,契约 §5.6 要求只读态下写控件一律不可操作。
+        //   · **撤销 / 重做**:分析可撤销(SL-209),而 applied.* 随分析结果一起回退
+        //     ([SL-279] 同一条撤销步),所以 Ctrl+Z 之后 stale 可能翻转 —— 那不是用户在改档。
+        // `applied.*` 落在 CFGS(**工程级**,不分版本),所以切版本不会让它变。
         // 本位只由 wireSeg 里 loudness_mode **写成功**的回调置起,syncStale 之外无人写它。
-        // ①②③ 三条因此一次性关掉,而琥珀 badge 的既有语义一个字节没动。
+        // 上面这几条因此一次性关掉,而琥珀 badge 的既有语义一个字节没动。
         // **一次性**:syncStale 真开框那一下就地清掉(见那处注释)。留着的话「稍后」
         // 关框之后本位仍为真,后续任何非用户驱动的口径变化都能再弹一次 —— ①②③ 换个
         // 入口又漏回来。下一次要弹,得由 wireSeg 里新的一次写成功重新置位。
@@ -443,8 +462,6 @@ export function createTabSettings(opts) {
         renderOptions(el.centerSeg, CENTER_SLOT_POLICIES);
         wireSeg(el.loudnessSeg, "loudness_mode");
         wireSeg(el.centerSeg, "center_slot_policy");
-        // 基线 = mount 时当前响度口径(mock 环境即初值;真插件下由 onSegments 同步)
-        local.analysisConfigBaseline = config().loudness_mode;
         if (el.guideExpand)
             el.guideExpand.addEventListener("click", toggleNine);
         if (el.reopenTour) el.reopenTour.addEventListener("click", reopenTour);
@@ -628,15 +645,28 @@ export function createTabSettings(opts) {
     }
 
     function syncStale() {
-        const stale =
-            local.analysisConfigBaseline !== null &&
-            analysisConfigStale(
-                config().loudness_mode,
-                local.analysisConfigBaseline,
-            );
-        show(el.loudnessStale, stale);
+        // [SL-279] 基线来自 state 的 `analysis.applied.*`(上次全量分析所用),不再是本地快照。
+        // [SL-278] **逐项判**:两枚徽标各挂各的控件,合成一个布尔会让它们同亮同灭。
+        const cur = config();
+        const applied = appliedAnalysisConfigOf(store.state);
+        const loudnessStale = analysisConfigStale(
+            cur.loudness_mode,
+            applied.loudness_mode,
+        );
+        const centerStale = analysisConfigStale(
+            cur.center_slot_policy,
+            applied.center_slot_policy,
+        );
+        show(el.loudnessStale, loudnessStale);
         if (el.loudnessStale)
-            attr(el.loudnessStale, "data-stale", stale ? "1" : "0");
+            attr(el.loudnessStale, "data-stale", loudnessStale ? "1" : "0");
+        show(el.centerStale, centerStale);
+        if (el.centerStale)
+            attr(el.centerStale, "data-stale", centerStale ? "1" : "0");
+
+        // 弹窗那一档仍**只由响度档承载**(SL-276 的用户 preview 口径,本卡不改):
+        // 中心槽策略只上徽标,不弹框。改这条要连 SL-276 的用例一起改。
+        const stale = loudnessStale;
 
         // 琥珀 badge 是**常驻状态位**(点过「稍后」之后还看得见口径是脏的),纯派生;
         // 弹窗在同一判据之上**再加一道 askOnNextStale 闸**(只由用户点档写成功置起) ——
@@ -776,13 +806,15 @@ export function createTabSettings(opts) {
      * (这条不一致是本卡新引入的:此前这条路根本不存在。)
      */
     function onSegments(seg) {
+        // [SL-279] 这里原来还顺手同步一次本地基线 —— 基线现在由 native 落在
+        // `analysis.applied.*` 里,随 `scvb.state` 到达,不再需要(也不该)由段表事件推。
+        // 段表回推仍要重渲染:徽标读的是 state,而这一帧的 state 可能刚随分析完成更新。
         if (
             seg &&
             (seg.reason === "analyze" ||
                 seg.reason === "vad" ||
                 seg.reason === "segmentation")
         ) {
-            local.analysisConfigBaseline = config().loudness_mode;
             requestRender();
         }
     }
