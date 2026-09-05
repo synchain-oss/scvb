@@ -242,8 +242,15 @@ else {
     //   旧形态 `\$<标签>\s*=[^\n]*\$<计数>\b` 放得过单行的
     //     `if ($smokeFlaky -gt 0) { $smokeLabel = '{0}(…)' -f $smokeLabel }`
     //   —— 计数只在**条件**里被读了一次,真正拼进标签的是个不带计数的串,而断言照绿。
-    //   收成:`=` 之后先要有 `-f`,计数出现在 `-f` 之后。三条共用下面这一个构造器,
-    //   不是各写各的字面量(一族三条最容易漂的就是「只升级了一条」)。
+    //   收成:`=` 之后**直接跟一个单引号格式串,再跟 `-f`**,计数出现在其后。三条共用下面
+    //   这一个构造器,不是各写各的字面量(一族三条最容易漂的就是「只升级了一条」)。
+    //
+    //   为什么不能只写「`=` 之后有个 `-f`,计数在它后面」(复审第 1 轮【重要】,实测):
+    //   `-f` 是**裸子串**,那只证明「计数在同一行某个 `-f` 之后」。把分支顺序换一下就重新变绿 ——
+    //     `$smokeLabel = if ($true) { '{0}(…)' -f $smokeLabel } elseif ($smokeFlaky -gt 0) { … }`
+    //   `-f` 在前、计数在后 ⇒ 命中,而标签里一样没有计数。所以要把「RHS 是个条件表达式」
+    //   整族挡在门外:要求 `=` 后**直接**是格式串。今天三个用点的 RHS 都以 `'` 开头,零代价。
+    //   方向是**假红**(改用双引号或 `($base) -f …` 会红回来读这段),按本文件的不对称原则可接受。
     //
     //   ⚠ **单行边界**:`[^\n]*` 把这三条锁在**一行**里。PowerShell 允许把赋值拆成多行
     //   (反引号续行、或逗号后换行),那时这条会红 —— 而红的原因**不是**「没拼进标签」,
@@ -251,10 +258,16 @@ else {
     //   把两处不相干的赋值粘成一条命中,判据当场没牙。真要拆行,改这条判据、别删它。
     //   失败文案里点了这一条,免得下一个人照着「没拼进标签」去查一个不存在的问题。
     const labelTakesCount = (label, count) =>
-        new RegExp("\\$" + label + "\\s*=[^\\n]*-f[^\\n]*\\$" + count + "\\b");
+        new RegExp(
+            "\\$" +
+                label +
+                "\\s*=\\s*'[^\\n]*'\\s*-f\\s[^\\n]*\\$" +
+                count +
+                "\\b",
+        );
     if (!labelTakesCount("smokeLabel", "smokeFlaky").test(ps))
         fail(
-            "`$smokeFlaky` 没有落在 `$smokeLabel = … -f …` 的实参里 —— [FLAKY-SKIP] 只会" +
+            "`$smokeFlaky` 没有落在 `$smokeLabel = '…' -f …` 的实参里 —— [FLAKY-SKIP] 只会" +
                 "出现在滚屏里,而跑完 gates 的人看的是汇总表:这正是 SL-297 要堵的那个洞原样复现。" +
                 "(本判据只认**单行**赋值;若你把它拆成了多行,那不是这句文案说的问题,改判据。)",
         );
@@ -279,7 +292,7 @@ else {
     //   末尾 `\b` 是本卡删除式第 15 格照出来的:改名成 `$draftsAllowX` 时旧写法命中前缀、照样绿。
     if (!labelTakesCount("parityLabel", "draftsAllow").test(ps))
         fail(
-            "`$draftsAllow` 没有落在 `$parityLabel = … -f …` 的实参里 —— ALLOW 行只会出现在" +
+            "`$draftsAllow` 没有落在 `$parityLabel = '…' -f …` 的实参里 —— ALLOW 行只会出现在" +
                 "滚屏里,而跑完 gates 的人看的是汇总表:与 SL-297 在 3e 上堵的是同一个洞。" +
                 "(本判据只认**单行**赋值,理由与边界见 3e 那条旁边。)",
         );
@@ -402,10 +415,32 @@ else {
                     "]` 会被 gates 数进去而守卫扫不到,两边各自绿、数对不上",
             );
     }
-    if (/-match\s*\(\s*\$markerCount/.test(ps))
+    // 第三处用点是 **ALLOW+BASE 的裸回显**,它不走 `$markerCount`(是字面量),所以上面
+    // 那圈按标记名生成的断言钉不住它。退回 `-match` 后的形态是「小写标记**回显了、但不计数**」——
+    // 滚屏里有一行、汇总表里 0 处,正是这一族一直在堵的「滚屏与汇总分家」。给它一条自己的断言,
+    // 别让人以为三处都上了机检(复审第 1 轮)。用 `includes` 不用正则:这串里全是方括号与
+    // 反斜杠,正则里再转义一遍只会多一层看不懂的字符。
+    const ECHO_ARG = " '\\[ALLOW\\]|\\[BASE\\]'";
+    if (!ps.includes("-cmatch" + ECHO_ARG))
         fail(
-            "还有一处用 `-match ($markerCount …)` —— 标记计数一律走 `-cmatch`," +
-                "留一处不区分大小写就等于这条边没收",
+            "ALLOW+BASE 的回显没用 `-cmatch` —— 小写标记会被回显却不计数," +
+                "滚屏里有一行、汇总表里 0 处,正是这一族要堵的「滚屏与汇总分家」",
+        );
+    // 反向:大小写不敏感的运算符不止 `-match`。PowerShell 里 `-notmatch` / `-replace` /
+    // `-split` 默认同样不区分大小写(对应 `-cnotmatch` / `-creplace` / `-csplit`)。今天没有
+    // 用点,但 `-notmatch ($markerCount -f 'WARN')`(反过来滤掉标记行)是很自然的下一个写法,
+    // 会**同时**绕过上面的正条与这条反条 —— 那这条边就白收了(复审第 1 轮)。
+    // `-cmatch` / `-cnotmatch` 不会被误伤:`-` 后面接的是 `c`。
+    if (
+        /-(?:not)?match\s*\(\s*\$markerCount|-(?:replace|split)\s*\(\s*\$markerCount/.test(
+            ps,
+        ) ||
+        ps.includes("-match" + ECHO_ARG) ||
+        ps.includes("-notmatch" + ECHO_ARG)
+    )
+        fail(
+            "还有一处拿大小写不敏感的运算符匹配标记(`-match` / `-notmatch` / `-replace` / `-split`)" +
+                " —— 标记一律走 `-c…` 形态,留一处不区分大小写就等于这条边没收",
         );
 
     // ---- [SL-318] gate 3i 的 WARN 降级计数:与上面 ALLOW 那条**同构**,风险高一档 ----
@@ -430,7 +465,7 @@ else {
     //       而行为完全正确。现在这条对两种形态都命中,且真的钉住了「落进标签」。
     if (!labelTakesCount("parityLabel", "parityWarn").test(ps))
         fail(
-            "`$parityWarn` 没有落在 `$parityLabel = … -f …` 的实参里 —— 降级只会出现在滚屏里," +
+            "`$parityWarn` 没有落在 `$parityLabel = '…' -f …` 的实参里 —— 降级只会出现在滚屏里," +
                 "而跑完 gates 的人看的是汇总表:与 SL-297 在 3e 上堵的是同一个洞。" +
                 "(本判据只认**单行**赋值,理由与边界见 3e 那条旁边。)",
         );
