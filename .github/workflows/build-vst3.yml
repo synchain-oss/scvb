@@ -500,8 +500,16 @@ jobs:
           retention-days: 7
 
       # 6) Catch2 单测(ADR-011:scvb_core 全离线可测)
+      # [SL-320] `--timeout 300` 与 `scripts/gates.ps1` gate 6 **逐字同值**,职责也同一条:
+      # 只给**没有 TIMEOUT 属性**的测试兜底。各套真正的上界写在 TIMEOUT 属性里 ——
+      # 前六套在 `tests/CMakeLists.txt`(口径真源在那边 `scvb_tests` 上方那段),
+      # `scvb_ipc_tests` 那条在 `tests/ipc/CMakeLists.txt`,**不在同一个文件**。
+      # 属性跟着测试走,两边同吃一份;本 PR 之后七套全部有属性,这个数今天一套都管不到。
+      # 此前这里**不带** `--timeout`,于是没有属性的套件在**出包硬门**上吃 ctest 默认的 1500s、
+      # 本机吃 gates 的 300 —— 同一个「上界」两个真源、差 5 倍。两边都写上之后,
+      # 「新加的测试忘了写属性」在两条路上的行为也一致,不会再一边宽一边紧。
       - name: Unit tests (ctest)
-        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error --timeout 300
 
       # 7) pluginval —— 三个 bundle 都必须过
       - name: Download pluginval

@@ -1465,9 +1465,22 @@ else {
     else {
       # [SL-311] `--timeout` 给**没有 TIMEOUT 属性**的测试定默认上界;有属性的不受影响
       # (实测:`--timeout 5` 跑 `scvb_monitor_tests`(属性 600、实际 16s)照样 Passed 16.25s)。
-      # 此前七套里只有 monitor(600)与 ipc(900)有属性,另外四套吃 ctest 默认的 **1500s** ——
-      # 挂死只要落在那四套里,本卡要治的形态就原封不动地复现,而别人的等锁上界只有 30 分钟。
-      # 那四套实测极快(CI runner 上 2.72 / 0.37 / 0.12 / 0.01 秒),300s 已是百倍余量。
+      #
+      # [SL-320] 这个数**今天一套都管不到,纯粹是兜底**。七套的上界全部由 TIMEOUT 属性给:
+      #     tests/CMakeLists.txt      scvb_tests / scvb_params_tests /
+      #                               scvb_plugin_common_tests / scvb_input_bridge_tests → 30
+      #                               scvb_monitor_tests → 600      scvb_host_tests → 900
+      #     tests/ipc/CMakeLists.txt  scvb_ipc_tests → 900   ← **不在上面那个文件里**
+      # 口径真源是 `tests/CMakeLists.txt` 里 `scvb_tests` 上方那段(只管前六套;ipc 那条
+      # 由 `SCVB_BUILD_IPC_TESTS` 控制,默认 ON,本机与 CI 都真的进 ctest 集合)。
+      # 属性跟着**测试**走,所以本机与出包硬门(build-vst3.yml)吃的是同一份;此前那四套没有
+      # 属性,本机吃这里的 300、CI 吃 ctest 默认的 1500,同一个「上界」两个真源、差 5 倍。
+      # 所以这里剩下的职责只有一条:**给新加的、还没写属性的测试兜一个底**,免得它悄悄
+      # 退回 1500s。新加测试请去 CMake 里写属性,不要靠这个数。
+      # ⚠ 别照着这张表推「谁还落在兜底上」——本卡第 1 轮复审就是这么栽的:我只 grep 了
+      # `tests/CMakeLists.txt` 一个文件、没扫 `tests/**`,于是把 ipc 写成「没有属性」,
+      # 而它的属性一直在 `tests/ipc/CMakeLists.txt`。要问「谁有属性」请扫全树,或直接读
+      # 生成物 `build*/**/CTestTestfile.cmake` —— 那才是 ctest 真正吃的那份。
       $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error --timeout 300 2>&1)
       $ctestRc = $LASTEXITCODE
       if ($ctestRc -ne 0) { $ct | Select-Object -Last 40 | ForEach-Object { Write-Host ("  " + $_) } }
