@@ -33,8 +33,11 @@
     ⚠ **边界:名字式判定依赖 `Get-Command` 的解析结果,而解析结果与机器/平台有关。** 判成外部的是
       「Application / ExternalScript / 解析不到」——于是 Windows 上同时解析出 Alias + Application 的
       短名(`sort` / `where` / `more` / `tee`)算**入面**,而 Linux 上 pwsh 不定义 `ls`/`cat` 这些别名,
-      同名调用会从 Alias 变成 Application、同样入面。两个方向都是 fail-closed(顶多多一条红),
-      `gates.ps1` 今天一个都没用到,所以 33/13 这个数不受影响。
+      同名调用会从 Alias 变成 Application、同样入面。两个方向都是 fail-closed。
+      ⚠ **但 fail-closed 到了 CI 上就是硬红**:`Get-CimInstance` 这类 Windows-only cmdlet 在
+      Linux 的 pwsh 上解析不到,曾把 docs-truth 判红(#217)。所以「解析不到」那一档再切一刀:
+      `<批准动词>-<名词>`(按 `Get-Verb` 这张**机器自带**的表)当 cmdlet 排掉;
+      `clang-format` / `npx` / `pipx` 不受影响 —— `clang` 不是批准动词。
     ⚠ **边界:脚本块/路径这两处判定是启发式**(前者认 `ScriptBlockExpressionAst` 的文本形态,后者认
       `Join-Path`/`.exe`/盘符/斜杠)。裸 `/` 偏宽,任何 RHS 带斜杠的赋值都会被记成 pathLike ——
       只在 `& $var` 时起作用,方向偏红。另有一处 fail-open:同名变量若**先**赋成脚本块、**后**赋成
@@ -65,6 +68,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# PowerShell 自带的批准动词表(约 100 个)。用它把「解析不到的 cmdlet/函数」与「解析不到的
+# 外部命令」分开 —— 见 Get-GatesGuardReport 里那段 ⚠。**这是机器提供的表,不是手写清单**;
+# 手写清单正是本卡在根除的东西。
+$script:ApprovedVerbs = @((Get-Verb).Verb)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 豁免清单。**按文本指纹匹配,不按命令名** —— 按名字豁免的话,同名的新调用点会跟着白拿豁免。
@@ -212,6 +220,19 @@ function Get-GatesGuardReport {
       if ($resolved.Count -gt 0 -and
         -not ($resolved.CommandType -contains 'Application') -and
         -not ($resolved.CommandType -contains 'ExternalScript')) { continue }
+      # ⚠ 「解析不到 ⇒ 算外部」这一档是 fail-closed(`pipx` / `reuse` 没装的机器上正靠它把它们
+      #   留在判据面里),但**跨平台时它会反咬**:`Get-CimInstance` 是 Windows-only cmdlet,
+      #   Linux 的 pwsh 解析不到 ⇒ 被判成「没有守卫的外部命令」⇒ **docs-truth 当场红**
+      #   (#217 实测:`gates.ps1:180/189/1031` 三处)。本机绿、CI 红,而 CI 上一条误报红
+      #   就是门禁坏了 —— 边界段原来写「顶多多一条误报的红」,那句话轻描淡写了。
+      #   切法**不引名字清单**(那正是本卡的立意):用 PowerShell **自带**的批准动词表
+      #   `Get-Verb`,把 `<批准动词>-<名词>` 形态的当 cmdlet 排掉。实测切得干净:
+      #   Get-CimInstance / Start-Process / Set-Gate 是;clang-format / npx / pipx 不是
+      #   (`clang` 不在批准动词表里),所以判据面不缩水。
+      if ($resolved.Count -eq 0) {
+        $parts = $name -split '-', 2
+        if ($parts.Count -eq 2 -and $script:ApprovedVerbs -contains $parts[0]) { continue }
+      }
       $need = $name
       $label = $name
     }
@@ -416,6 +437,16 @@ if ($SelfTest) {
   'if (Get-Command -ErrorAction:SilentlyContinue -Name:reuse) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
   $r13b = Get-GatesGuardReport -Source $f13b
   & $check '⑬b 冒号形式的非 Name 参数把值吃错了' (@($r13b.Unguarded).Count -eq 0)
+
+  # ⑭ **跨平台**:解析不到的 Windows-only cmdlet 不得入面,而解析不到的外部命令仍要入面。
+  #    用「什么都解析不到」的假解析器模拟 Linux 上跑 —— #217 就是在 ubuntu 的 docs-truth 上
+  #    被 `Get-CimInstance` 三处照红的,本机永远复现不出来。
+  $fakeNone = { param($n) @() }
+  $r14 = Get-GatesGuardReport -Source 'Get-CimInstance Win32_Process -Filter "x"' -Resolver $fakeNone
+  & $check '⑭ 解析不到的 <批准动词>-<名词>(Windows-only cmdlet)被当成外部命令 —— 跨平台会假红' (@($r14.Sites).Count -eq 0)
+  # ⑭b 反向:解析不到的**外部命令**必须仍在面内,别把 ⑭ 改成「带连字符就放过」
+  $r14b = Get-GatesGuardReport -Source 'clang-format --dry-run --Werror x.cpp' -Resolver $fakeNone
+  & $check '⑭b 解析不到的外部命令(clang-format)被放过了 —— 判据面缩水' (@($r14b.Sites).Count -eq 1)
 
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
