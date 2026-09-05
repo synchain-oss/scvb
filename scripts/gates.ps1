@@ -354,8 +354,9 @@ if (-not $PluginvalExe) {
 # 本卡只是把它补齐到剩下的调用点上。
 #
 # 全文件扫过一遍,分三类(分类依据是**判法**,不是命令名):
-#   ① 退出码判据 + 无守卫 ⇒ 静默变绿,**本卡要修**:
+#   ① 退出码判据 + 无守卫 ⇒ 静默变绿,**本卡要修(6 处)**:
 #      gate 1 的 check-constitution-sync(pwsh)、gate 2 的 clang-format、
+#      **gate 3 的 prettier(npx)**、**gate 3c 的 reuse 回退分支(pipx)**、
 #      check-spdx(pwsh)、gate 3f 的 check-readme-parity(pwsh)。
 #   ② 输出判据 + 缺席时**不判负** ⇒ 也是静默变绿,本卡一并修:
 #      gate 1 里用 `git describe` 核 JUCE tag —— 没有 git 时 `$juceTag` 为空,
@@ -363,7 +364,31 @@ if (-not $PluginvalExe) {
 #   ③ 输出判据 + 缺席时**已经判负** ⇒ 方向偏红,不动(动了反而多一层壳):
 #      `cmake --version`(空输出即 `$ok = $false`)、`clang-format --version`
 #      (空串不匹配 `18.1.8` 即判负)、`git ls-files`(空集合即 gate 2 判负)。
-#   已有守卫的不重复:node(`$nodeCmd`)、gitleaks、reuse、python、pluginval、cmake/ctest。
+#   已有守卫的不重复:node(`$nodeCmd`)、gitleaks、python、pluginval、cmake/ctest,
+#   以及 `reuse` **本身**(注意:守着的只是 `reuse`,它的 `pipx` 回退分支原来是裸的)。
+#
+# ⚠ **npx / pipx 两处是本卡第一版漏掉的**(#214 复审补上)。漏因值得记,因为两次漏的方式不同:
+#   · 第一遍扫的是 `& <命令>` 那个**语法形态** —— 而这两处是**裸调用**
+#     (`npx --yes prettier@… --check .` / `pipx run reuse lint`),不带 `&`,整族落在扫描面外;
+#   · 第二遍补扫裸调用时,用的是一份**手打的命令名清单**
+#     (git|node|python|cmake|ctest|pwsh|clang-format|reuse|gitleaks)—— npx / pipx
+#     两个名字压根不在清单里,于是同一族又漏了同样两处。
+#   结论不是「下次更仔细」:**按名字列清单这件事本身不可靠**,而这份清单又会成为下一个人的依据
+#   ——「清单不准」比「少修两处」更麻烦。要问「谁是外部命令、谁有守卫」应当由机器扫
+#   (`check-gates-visibility.mjs` 已经在读本文件,是天然落点),那条已转卡,不在本卡范围。
+#
+# 在那条机检落地之前,**要复核这份清单请跑下面这段**(读 AST,不靠正则也不靠名字清单):
+#     $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+#              (Resolve-Path 'scripts/gates.ps1').Path, [ref]$null, [ref]$null)
+#     $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+#       ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $_ -notlike '$*' } |
+#       Sort-Object -Unique |
+#       Where-Object { $g = Get-Command $_ -EA SilentlyContinue
+#                      -not $g -or $g.CommandType -in 'Application','ExternalScript' }
+#   ⚠ `ExternalScript` 那一档不能省:本机 `npx` 解析到的是 `npx.ps1`(**不是** Application),
+#     只按 Application 过滤的话它会从清单里消失 —— 我第一次跑这段就是这么把它又漏了一次。
+#   本卡收口时这段的输出是 **10 个名字、26 处调用**:clang-format / cmake / ctest / git /
+#   node / npx / pipx / pwsh / python / reuse,每一处都落在某个守卫的 if/else 里。
 #
 # 两半一起用,缺一半都不够:
 #   · `Get-Command` 守卫 —— 缺席时显式 `Set-Gate … $false`,并说清「不是跳过,是判负」;
@@ -373,6 +398,8 @@ if (-not $PluginvalExe) {
 $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
 $clangFormatCmd = Get-Command clang-format -ErrorAction SilentlyContinue
 $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+$npxCmd = Get-Command npx -ErrorAction SilentlyContinue
+$pipxCmd = Get-Command pipx -ErrorAction SilentlyContinue
 
 # ==================================================================
 Write-Host '=== Gate 1: 依赖预检 ==='
@@ -474,8 +501,23 @@ Write-Host '=== Gate 3: prettier (--check .) ==='
 # prettier --write **三处同步改**(后者是本 gate 的配对写入器):`@3` 是浮动
 # major,本地与 CI 会在不同时间各自解析出不同的 prettier —— 同一份代码「本地绿、CI 红」,
 # 而中间没有任何东西变过。
-$pp = (npx --yes prettier@3.9.6 --check . 2>&1)
-Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
+# [SL-329] 第①类。这一处是**裸调用**(不带 `&`),第一版的扫描形态没盖到 —— 没有 npx 时
+# `Set-Gate` 吃到的是上一条外部命令(gate 2 的 `clang-format`)留下的 0 ⇒ **全仓 prettier
+# 一个文件没检却记 PASS**。`npx` 随 node 装,但 `$nodeCmd` 是 gate 3e 才解析的、也不等价于
+# 「npx 在」(有人只装了 node 而 npm 的 shim 没进 PATH),所以这里单独判 `npx`。
+if (-not $npxCmd) {
+  Write-Host '  npx 不在 PATH —— gate 3 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:npx 随 Node.js 一起装;只装了 node 而 npm shim 没进 PATH 时也会走到这里。' -ForegroundColor Yellow
+  Set-Gate '3 prettier' $false
+}
+else {
+  # 注:`$pp` 捕了输出却从不回显 —— 这一道红的时候滚屏上没有任何线索,得另跑一次 prettier
+  # 才知道是哪个文件。那是**回显**问题,不是本卡三判据里的任何一条,所以这里逐字保持原状,
+  # 不顺手改(要改请另立卡,与 3b/3c 的 `Select-Object -Last 30` 口径对齐)。
+  $global:LASTEXITCODE = 1
+  $pp = (npx --yes prettier@3.9.6 --check . 2>&1)
+  Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
+}
 
 # ==================================================================
 Write-Host '=== Gate 3b: gitleaks (密钥扫描) ==='
@@ -526,13 +568,25 @@ Set-Gate '3j check-privacy' $privacyOk
 # ==================================================================
 Write-Host '=== Gate 3c: reuse lint (REUSE 合规) ==='
 # ==================================================================
+# [SL-329] 第①类,且是**两条命令都缺**才触发的那一档:`reuse` 有守卫,但它的 `pipx` 回退分支
+# 是**裸调用**、没有守卫 —— 两者都不在 PATH 时(Windows 上不装 Python 就没有 pipx,而 gate 3c
+# 正是 CI `compliance` 的本地对应物),`$reuseExit` 沿用上一条外部命令
+# (`node scripts/check-privacy.mjs`)留下的 0 ⇒ **REUSE 合规一条没查却记 PASS**。
 if (Get-Command reuse -ErrorAction SilentlyContinue) {
+  $global:LASTEXITCODE = 1
   $rl = (& reuse lint 2>&1)
   $reuseExit = $LASTEXITCODE
 }
-else {
+elseif ($pipxCmd) {
+  $global:LASTEXITCODE = 1
   $rl = (pipx run reuse lint 2>&1)
   $reuseExit = $LASTEXITCODE
+}
+else {
+  Write-Host '  reuse 与 pipx 都不在 PATH —— gate 3c 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:装 reuse(pipx install reuse)或让 pipx 进 PATH;Windows 上不装 Python 就没有 pipx。' -ForegroundColor Yellow
+  $rl = @()
+  $reuseExit = 1
 }
 if ($reuseExit -ne 0) { $rl | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
 Set-Gate '3c reuse lint' ($reuseExit -eq 0)
