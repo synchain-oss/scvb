@@ -389,6 +389,21 @@ if ($SelfTest) {
   $r23 = Get-VisibilityReport -Source $f23
   & $check '㉓ 裸字面量的 Select-String 被管了 —— 那超出本判据的面(见 Select-String 那段注释)' (@($r23.SelectString).Count -eq 0)
 
+  # ── 下面两格是**删除式扫出来的**:拆掉判据里对应的那一处,上面 23 格一格都没红 ──
+  #   记在这里不只是补两格,也是记一次「自测看着齐、其实有洞」。两个洞同一个形状:
+  #   **判据里有一个条件,而没有任何夹具区分它在与不在**。
+  # 24. 计数确实拼进了某个 `-f`,但**赋给的是别的变量** ⇒ 必须判负。
+  #     拆掉「左边必须是那个标签」那一行之后,上面 23 格全绿。
+  $f24 = '$other = ' + $q + '{0}(!{1})' + $q + ' -f $lbl, $cnt'
+  $r24 = Get-VisibilityReport -Source $f24 -Pairs $pair
+  & $check '㉔ 计数拼进了别的变量,也被算作「落进标签」' (-not $r24.Pairs[0].Ok)
+
+  # 25. `-split` 一族也要被反向判据抓到。匹配家族在这里是**一张枚举清单**,
+  #     清单漏一项就漏一族;拆掉 `Isplit`/`Csplit` 之后上面 23 格全绿(⑰ 只钉了 `-replace`)。
+  $f25 = '$x = $y -split ($markerCount -f ' + $q + 'WARN' + $q + ')'
+  $r25 = Get-VisibilityReport -Source $f25 -Marks @('WARN')
+  & $check '㉕ -split 没被抓到(匹配家族的枚举清单漏了一项)' (@($r25.Offenders).Count -eq 1)
+
   if (@($fails).Count -gt 0) {
     Write-Host 'check-gates-visibility.ps1 --self-test 失败:' -ForegroundColor Red
     foreach ($f in $fails) { Write-Host ('  ' + $f) -ForegroundColor Red }
