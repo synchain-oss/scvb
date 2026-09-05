@@ -493,7 +493,7 @@ else {
     const src = read(DRAFTS);
     // 真拼装:`"  [BASE] " + base + "@" + … + " 条提交标题(落地位 " + …` ——
     // 取那一段里所有双引号字面量,留下**有汉字或标点**的那些(纯符号的 `@` 之类不具区分度)。
-    const asm = /"\s*\[BASE\][\s\S]{0,600}?个待合并的号"/.exec(src);
+    const asm = /"\s*\[BASE\][\s\S]{0,2000}?个待合并的号"/.exec(src);
     if (!asm)
         fail(
             "check-changelog-drafts.mjs 里找不到 [" +
@@ -511,13 +511,23 @@ else {
         // ⚠ 头注那份摘录**只能拿头注去比**:它与真拼装同在一个文件里,拿整份文件比的话,
         //    片段总能在真拼装那一行找到 ⇒ 摘录被改坏了也照绿(实测过:那样注入时本段无牙)。
         //    头注到 `import` 为止,切在那里最稳。
-        const headNote = src.slice(0, src.indexOf("import fs"));
+        // 切点找不到时**判负**,不能落到 `slice(0, -1)`(= 整份文件少一个字符)——
+        // 那样片段总能在真拼装那行找到,这一格无声退化成永远绿(与下面 frags 为空同族)。
+        // `import fs` 只是那个文件的实现细节:合并 import、改成 `import * as fs` 都会让
+        // 切点消失,而那时**没有任何红**告诉你判据已经没了(复审【重要】)。
+        const headEnd = src.indexOf("import fs");
+        if (headEnd < 0)
+            fail(
+                "check-changelog-drafts.mjs 里找不到头注的切点 `import fs` —— 摘录对拍无从下手,故 fail-closed(落到整份文件比的话这一格会永远绿)",
+            );
+        const headNote = headEnd < 0 ? "" : src.slice(0, headEnd);
         const excerpts = [
             ["check-changelog-drafts.mjs 头注 §边界", headNote],
-            [
-                "gates.ps1 gate 3i 的回显那段",
-                fs.existsSync(GATES) ? read(GATES) : "",
-            ],
+            // gates.ps1 不在的话**跳过**这条:§② 已经报过真因,这里再报四条「对不上」
+            // 只会把人指到假因上(复审【建议】,与本卡在修的「第二次红指错方向」同族)。
+            ...(fs.existsSync(GATES)
+                ? [["gates.ps1 gate 3i 的回显那段", read(GATES)]]
+                : []),
         ];
         // 摘录是**会换行的散文**:头注那份就断在 `);` 与「块里」之间,而真拼装里它们相连。
         // 所以两边都**去掉所有空白**再比 —— 代价是不再钉空格与缩进(那本来也不该由这道判据管),

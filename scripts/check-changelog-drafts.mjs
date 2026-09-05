@@ -1100,6 +1100,32 @@ if (selfTest) {
                 "实得 " +
                 BODY_PAREN_RE.source,
         );
+        // ⑨k [SL-327] 三类问题**一次报完**:回退成「先到先抛」时这一格必须红。
+        //     这是本卡四条里唯一差夹具的一条 —— PR 描述里那句「实测一次报出 3 类」是**手跑**的,
+        //     合并之后就没有执行者了,与本文件一路在根除的「注释比判据强」同形(复审【重要】)。
+        //     现有的 ⑨b / ⑨d / ⑨e 每格只走一类,谁也量不到「一次报完」。
+        let threeErr = "";
+        try {
+            allowList(
+                bodyAllowBlock(
+                    "- #SL189 —— 形态不对" +
+                        "\n" +
+                        "- #111 -- 破折号写坏" +
+                        "\n" +
+                        "- #222 —— ",
+                ),
+                BODY_ALLOW_HEAD,
+            );
+        } catch (e) {
+            threeErr = e.message;
+        }
+        check(
+            threeErr.includes("SL189") &&
+                threeErr.includes("破折号写坏") &&
+                threeErr.includes("222"),
+            "三类问题没有一次报完(回退成先到先抛?)—— 作者会改完一种、重跑才看见下一种,连撞几次红;实得:" +
+                threeErr.slice(0, 70),
+        );
         check(
             phErr.includes(ALLOW_REASON_PLACEHOLDER),
             "「理由留空」的话术没点名占位符 —— 照抄样例的人会被告知「没写理由」,而他确实照着写了",
