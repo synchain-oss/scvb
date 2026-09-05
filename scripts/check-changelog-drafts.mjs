@@ -194,7 +194,11 @@ const landedPrs = (titles) => {
 // 抽成纯函数的理由是**可测**,不是好看:在此之前这一层直接长在 run() 里,输入要靠
 // 真 CHANGELOG + 真 git 历史凑,于是「今天量不到的退化」就没有夹具 —— #203 复审注入
 // 四种退化(取号退回严格括号组 / `#TBD` 退回要求带括号 / 放行清单不生效 / 落地位集合空),
-// **自测与实跑全绿**。现在输入全是普通值,四种退化在自测里各有一格。
+// **自测与实跑全绿**。收成入参之后,前三种退化在自测里各有一格。
+// ⚠ **第四种(落地位集合空)不是被这次抽取夹住的;恰恰相反,「收成入参」正是造出那个
+// 盲区的原因** —— 本函数每一格都自带 `landed`,压根问不到「landed 是不是真抽出来了」。
+// 夹它的是自测里钉 `landedPrs` 的第 ⑧ 格,以及 run() 里那道「集合为空即 fail-closed」。
+// 别顺着「输入全是普通值」推出「这一族退化都在本函数的格子里」—— 上一轮复审踩的正是这个。
 //
 // 输入:body(把注释块抹白之后的正文)、landed(落地位号集合)、selfPr(本 PR 号,可为空)、
 //       bodyAllow(正文放行清单 Map<号, 理由>)
@@ -313,7 +317,9 @@ const ALLOW_SAMPLE =
 // (逐字复刻了 `ALLOW_LINE_RE` 要求的那个「 —— 」)。破折号形态哪天改了,门禁那半跟着
 // `ALLOW_SAMPLE` 走、正文这半会继续教人写旧写法 —— 而正文这条话术恰恰是给「第一次找放行口」
 // 的人看的,教错的代价更大(复审【建议】)。自测里有一格断言它自己过得了 `ALLOW_LINE_RE`。
-const allowSampleFor = (num) => "- #" + num + " —— <理由>";
+const ALLOW_REASON_PLACEHOLDER = "<理由>";
+const allowSampleFor = (num) =>
+    "- #" + num + " —— " + ALLOW_REASON_PLACEHOLDER + "";
 
 // [SL-316] 正文侧也要一个放行口:块那半有「门禁放行」,正文那半此前一个都没有,于是两种
 // **改不动的红**没有出路 —— ① 那个号永远不会落地(rebase 合并不产生 `(#N)`,或维护者手改掉了
@@ -339,7 +345,11 @@ function allowList(block, headText = ALLOW_HEAD) {
                 malformed.push(lines[j].trim());
             continue;
         }
-        if (!m[2].trim()) noReason.push(m[1]);
+        // [SL-319] 占位符 `<理由>` **不算理由**:它 `.trim()` 非空,于是照抄样例行
+        // 粘上去就是一条合法放行 —— 写的人不必编理由,而「不写理由就是静默豁免」
+        // 正是这道口子要堵的。样例行的受众就是照抄的人,样例本身不能成为绕过。
+        if (!m[2].trim() || m[2].trim() === ALLOW_REASON_PLACEHOLDER)
+            noReason.push(m[1]);
         else out.set(m[1], m[2].trim());
     }
     if (malformed.length)
@@ -349,7 +359,14 @@ function allowList(block, headText = ALLOW_HEAD) {
                 "」里这几行像放行行、写法却不对(一行要写成 `- #<号> —— <理由>`,号与 `pending #…` 里同形):\n    " +
                 malformed.join("\n    ") +
                 "\n  正确写法:" +
-                ALLOW_SAMPLE,
+                // [SL-319] 样例要跟着**段**走:正文放行下给 SL 形态的话,照抄的人
+                // 会拿到 `#SL189` —— `ALLOW_LINE_RE` 收得下,但 `bodyPrRefs` 只产纯
+                // 数字,于是 `deadBody` 当场判负,话术还说成「正文里没有引用它 / 它
+                // 已经落地」,两条都不是真因(真因是 SL 形态在正文侧根本不合法)。
+                // 连撞两次红、第二次还指错方向(复审【建议】)。
+                (headText === BODY_ALLOW_HEAD
+                    ? allowSampleFor("111")
+                    : ALLOW_SAMPLE),
         );
     if (noReason.length)
         throw new Error(
@@ -578,6 +595,22 @@ if (selfTest) {
                 check(
                     threw(() => leaks(fpBlock("- #SL" + fp + " —— "), titles)),
                     "理由留空的放行被放过了 —— 静默豁免口",
+                );
+                // [SL-319] 占位理由**照抄即过**也要判负:样例行的受众就是照抄的人,
+                // 样例本身不能成为绕过「理由必填」的路(复审【建议】)。
+                check(
+                    threw(() =>
+                        leaks(
+                            fpBlock(
+                                "- #SL" +
+                                    fp +
+                                    " —— " +
+                                    ALLOW_REASON_PLACEHOLDER,
+                            ),
+                            titles,
+                        ),
+                    ),
+                    "占位理由原样粘上去被当成了合法理由 —— 写的人不必编理由,静默豁免口又开了",
                 );
                 // 三种写错都必须判负(#197 复审第 3 轮:前两版只堵了破折号那一种)。
                 // `- SL-189 —— 理由` 是最可能写出来的一种:放行段上面那几行说明文字里,号一律
@@ -858,6 +891,25 @@ if (selfTest) {
             ALLOW_LINE_RE.test(allowSampleFor("500")),
             "判红话术里的样例行过不了 ALLOW_LINE_RE:" + allowSampleFor("500"),
         );
+        // ⑨b 写坏一行**正文放行**时,报错里给的样例必须是**纯数字**形态。给 SL 形态的话,
+        //     照抄的人拿到 `#SL189`:`ALLOW_LINE_RE` 收得下,但 `bodyPrRefs` 只产纯数字,
+        //     于是 `deadBody` 当场判负、话术还说成「正文里没有引用它 / 它已经落地」——
+        //     两条都不是真因,连撞两次红且第二次指错方向(复审【建议】)。
+        const badBodyBlock =
+            "<!-- ===\n" +
+            BODY_ALLOW_HEAD +
+            "\n- SL-189 —— 照抄了标题形态\n\n=== -->";
+        let bodySampleErr = "";
+        try {
+            allowList(badBodyBlock, BODY_ALLOW_HEAD);
+        } catch (e) {
+            bodySampleErr = e.message;
+        }
+        check(
+            bodySampleErr.includes(allowSampleFor("111")),
+            "正文放行写坏时给的样例不是纯数字形态 —— 照抄它会再撞一次红,且话术指错方向;实得:" +
+                bodySampleErr.slice(-60),
+        );
         // ⑩ 过期的正文放行要判负(与门禁那半的 `dead` 同一条纪律)。两种过期形态各一格。
         check(
             judgeBody(
@@ -960,6 +1012,20 @@ try {
     // 对**大于当前最大落地号**的号打 [WARN] 而不判红 —— PR 号单调递增,本 PR 号必然大于任何
     // 已落地号;而 `#106 < #111` 这类**关掉没合**的号仍落在 ≤ max 一侧、照样判红,不丢牙齿。
     const landed = landedPrs(titles);
+    // [SL-319 复审第 2 轮] 第 ⑧ 格钉住的是 `landedPrs` **这个函数**,钉不住**这次调用**:
+    // 把实参换成 `[]`(或 titles 被谁过滤/切片成空)⇒ ⑧ 自己喂假标题照绿、①–⑦ 自带 landed
+    // 照绿、实跑 `maxLanded = 0` 让正文每个号都走 WARN ⇒ `fails` 恒空 ⇒ rc=0。
+    // 与「函数体被掏空」那次逐字同形,只是注入点挪到了调用处;`[BASE]` 行报的是标题条数与
+    // 块里的号数,**不报落地位集合大小**,所以输出上也照不出来。
+    // 这一档有一条无争议的判据(不像「> 最大落地号」那档要拍常数):**有历史的仓库里,
+    // 落地位集合不可能为空**。与 `shippedTitles` 的浅克隆那道同一条纪律,fail-closed。
+    if (!landed.size)
+        throw new Error(
+            titles.length +
+                " 条提交标题里一个落地位都抽不出来(尾部 `(#N)` 与老式 merge commit 全零命中)——" +
+                "正常仓库不可能如此。落地位集合为空 ⇒ 最大落地号 = 0 ⇒ 正文里每个号都会被当成" +
+                "「尚未合并」只打 WARN,整片正文判据静默失效,所以这里 fail-closed 而不是放行",
+        );
     const selfPr = (process.env.SCVB_CHANGELOG_SELF_PR || "").trim();
     const bodyAllow = allowList(block, BODY_ALLOW_HEAD);
     for (const [num, why] of bodyAllow)
