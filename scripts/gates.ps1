@@ -345,6 +345,78 @@ if (-not $PluginvalExe) {
   if (Test-Path $candidate) { $PluginvalExe = $candidate }
 }
 
+# ---- [SL-329] 外部命令存在性:一处解析,各 gate 复用 ----
+# 病灶(#211 复审在 gate 5b 上点出、本卡按「同族整族收」扫全文件):PowerShell 找不到外部命令时
+# 抛 CommandNotFoundException,默认 `ErrorActionPreference=Continue` 下**不更新** `$LASTEXITCODE`
+# —— 它保留**上一条外部命令**的值。于是任何「跑完看 `$LASTEXITCODE` 判 PASS/FAIL」的调用点,
+# 在命令缺席时都会**沿用上一条的 0 判绿**:判据一行没跑过,汇总表却写着 PASS。
+# **误报绿比硬失败危险得多** —— 这句话本文件早就为 node(gate 3e)/ gitleaks(3b)写过,
+# 本卡只是把它补齐到剩下的调用点上。
+#
+# 全文件扫过一遍,分三类(分类依据是**判法**,不是命令名):
+#   ① 退出码判据 + 无守卫 ⇒ 静默变绿,**本卡要修(6 处)**:
+#      gate 1 的 check-constitution-sync(pwsh)、gate 2 的 clang-format、
+#      **gate 3 的 prettier(npx)**、**gate 3c 的 reuse 回退分支(pipx)**、
+#      check-spdx(pwsh)、gate 3f 的 check-readme-parity(pwsh)。
+#   ② 输出判据 + 缺席时**不判负** ⇒ 也是静默变绿,本卡一并修:
+#      gate 1 里用 `git describe` 核 JUCE tag —— 没有 git 时 `$juceTag` 为空,
+#      原来直接走 else 打印版本号,那条「tag 与 .juce-version 一致」的判据等于没跑。
+#   ③ 输出判据 + 缺席时**已经判负** ⇒ 方向偏红,不动(动了反而多一层壳):
+#      `cmake --version`(空输出即 `$ok = $false`)、`clang-format --version`
+#      (空串不匹配 `18.1.8` 即判负)、`git ls-files`(空集合即 gate 2 判负)。
+#   已有守卫的不重复:node(`$nodeCmd`)、gitleaks、python、pluginval、cmake/ctest,
+#   以及 `reuse` **本身**(注意:守着的只是 `reuse`,它的 `pipx` 回退分支原来是裸的)。
+#
+# ⚠ **npx / pipx 两处是本卡第一版漏掉的**(#214 复审补上)。漏因值得记,因为两次漏的方式不同:
+#   · 第一遍扫的是 `& <命令>` 那个**语法形态** —— 而这两处是**裸调用**
+#     (`npx --yes prettier@… --check .` / `pipx run reuse lint`),不带 `&`,整族落在扫描面外;
+#   · 第二遍补扫裸调用时,用的是一份**手打的命令名清单**
+#     (git|node|python|cmake|ctest|pwsh|clang-format|reuse|gitleaks)—— npx / pipx
+#     两个名字压根不在清单里,于是同一族又漏了同样两处。
+#   结论不是「下次更仔细」:**按名字列清单这件事本身不可靠**,而这份清单又会成为下一个人的依据
+#   ——「清单不准」比「少修两处」更麻烦。要问「谁是外部命令、谁有守卫」应当由机器扫
+#   (`check-gates-visibility.mjs` 已经在读本文件,是天然落点),那条已转卡,不在本卡范围。
+#
+# 在那条机检落地之前,**要复核这份清单请跑下面这段**(读 AST,不靠正则也不靠名字清单):
+#     $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+#              (Resolve-Path 'scripts/gates.ps1').Path, [ref]$null, [ref]$null)
+#     # 先收本文件自己定义的函数名,下面排掉 —— 否则它们也会进清单(见下面第一条 ⚠)。
+#     $defined = @($ast.FindAll({ param($n)
+#                  $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+#                  ForEach-Object { $_.Name })
+#     $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+#       ForEach-Object { $_.GetCommandName() } |
+#       Where-Object { $_ -and $_ -notlike '$*' -and $defined -notcontains $_ } |
+#       Sort-Object -Unique |
+#       Where-Object { $g = Get-Command $_ -EA SilentlyContinue
+#                      -not $g -or $g.CommandType -in 'Application','ExternalScript' }
+#   ⚠ `-not $g` 那一支**必须留着**(`pipx` / `reuse` 没装时正靠它留在清单里,那正是本卡的核心场景),
+#     但它同样放行**任何解析不到的名字** —— 包括本文件自己定义的那 8 个函数。所以要靠上面
+#     那句 `FunctionDefinitionAst` 从**同一棵 AST** 里排,不能靠收紧 `-not $g` 来排。
+#   ⚠ `ExternalScript` 那一档不能省:本机 `npx` 解析到的是 `npx.ps1`(**不是** Application),
+#     只按 Application 过滤的话它会从清单里消失 —— 我第一次跑这段就是这么把它又漏了一次。
+#   ⚠ 拿**本段注释文本**当锚点写补丁脚本时,别用 `-like`:PowerShell 的 `-like` 走 WildcardPattern,
+#     而**反引号是它的转义字符** —— 模式里带反引号(本文件注释里到处都是)会去转义下一个字符、
+#     并把反引号本身从模式里去掉,于是对含反引号的行**恒不命中且不报错**。用 `.Contains()` 字面匹配,
+#     反引号用 `[char]96` 拼。写本段这个补丁时头两次就是这么静默失效的(4 个锚点只命中 2 个)。
+#   本卡收口时这段的输出是 **10 个名字**:clang-format / cmake / ctest / git /
+#   node / npx / pipx / pwsh / python / reuse,每一处都落在某个守卫的 if/else 里。
+#   ⚠ 这段末尾有 `Sort-Object -Unique`,**只出名字、不出处数**。要数处数得改成按 `CommandAst`
+#     分组数,今天是 **29 处**(clang-format 2 / cmake 3 / ctest 1 / git 2 / node 9 /
+#     npx 1 / pipx 1 / pwsh 5 / python 4 / reuse 1)。上一版这里写的「26 处」是**我自己造的假数**:
+#     那个数来自一次跑挂了的审计脚本(哈希表累加抛异常、每个名字只剩一行),我拿坏输出的行数当了结论。
+#
+# 两半一起用,缺一半都不够:
+#   · `Get-Command` 守卫 —— 缺席时显式 `Set-Gate … $false`,并说清「不是跳过,是判负」;
+#   · 调用前 `$global:LASTEXITCODE = 1` —— 万一守卫被绕过(例如日后有人在守卫外面新加一处调用),
+#     「没写退出码」也等价于判负。实测:`cmd /c exit 0` 之后调不存在的命令,`$LASTEXITCODE`
+#     仍是 0;预置 1 之后调不存在的命令,值保持 1。
+$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+$clangFormatCmd = Get-Command clang-format -ErrorAction SilentlyContinue
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+$npxCmd = Get-Command npx -ErrorAction SilentlyContinue
+$pipxCmd = Get-Command pipx -ErrorAction SilentlyContinue
+
 # ==================================================================
 Write-Host '=== Gate 1: 依赖预检 ==='
 # ==================================================================
@@ -363,10 +435,21 @@ else { Write-Host ("  MSVC {0}" -f $msvc) }
 if (-not $JucePath -or -not (Test-Path (Join-Path $JucePath 'CMakeLists.txt'))) {
   Write-Host '  JUCE_PATH 未设置或无效' -ForegroundColor Red; $ok = $false
 }
+elseif (-not $gitCmd) {
+  # [SL-329] 第②类:没有 git 时 `$juceTag` 为空,原来直接走 else 打印版本号 ——「tag 与
+  # .juce-version 一致」这条判据**一次没跑却记 PASS**。缺工具判负,不静默跳过。
+  Write-Host '  git 不在 PATH —— 无法核对 JUCE tag 与 .juce-version(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  $ok = $false
+}
 else {
   $juceTag = (& git -C $JucePath describe --tags 2>$null)
   if ($juceTag -and ($juceTag.Trim() -ne $juceVersion)) {
     Write-Host ("  JUCE tag '{0}' 与 .juce-version '{1}' 不一致" -f $juceTag, $juceVersion) -ForegroundColor Red
+    $ok = $false
+  }
+  elseif (-not $juceTag) {
+    # git 在,但这个目录问不出 tag(浅克隆 / 无 tag / 不是 git 仓)。同样不能当「一致」。
+    Write-Host ("  git 问不出 JUCE tag(浅克隆或无 tag?)—— 无法与 .juce-version '{0}' 对拍" -f $juceVersion) -ForegroundColor Red
     $ok = $false
   }
   else { Write-Host ("  JUCE {0}" -f $juceVersion) }
@@ -385,8 +468,17 @@ if (-not $PluginvalExe -or -not (Test-Path $PluginvalExe)) {
 else { Write-Host ("  pluginval {0}(要求 {1})" -f $PluginvalExe, $pluginvalVersion) }
 
 # 宪法只读副本同步(06 §3.4 / 07 T01,进 gate 1)
-& pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-constitution-sync.ps1') -RepoRoot $RepoRoot
-if ($LASTEXITCODE -ne 0) { $ok = $false }
+# [SL-329] 第①类:这一行按退出码判,没有 pwsh 时**沿用上一条外部命令**的值 ——
+# 上一条是 `clang-format --version`,它成功时留下 0 ⇒ 冻结契约的同步对拍一次没跑却记 PASS。
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— 宪法只读副本同步无法核对(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  $ok = $false
+}
+else {
+  $global:LASTEXITCODE = 1
+  & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-constitution-sync.ps1') -RepoRoot $RepoRoot
+  if ($LASTEXITCODE -ne 0) { $ok = $false }
+}
 
 Set-Gate '1 依赖预检' $ok
 
@@ -396,10 +488,19 @@ Write-Host '=== Gate 2: clang-format (18.1.8) ==='
 $files = @(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | Where-Object { $_ -notmatch '^third_party/' })
 $cf = $true
 if ($files.Count -eq 0) {
-  Write-Host '  未发现 C++ 源文件' -ForegroundColor Red
+  # 没有 git 时这里也会是空集合 —— 那条路已经判负,方向偏红,所以第③类不再加壳。
+  Write-Host '  未发现 C++ 源文件(没有 git 时也会走到这里)' -ForegroundColor Red
+  $cf = $false
+}
+elseif (-not $clangFormatCmd) {
+  # [SL-329] 第①类:这一格按退出码判。没有 clang-format 时上一条外部命令是 `git ls-files`,
+  # 它成功留下 0 ⇒ 「全仓格式没问题」一次没查却记 PASS。gate 1 那边确实也会红,但两道
+  # 各判各的,不能拿别人的红替这道判负 —— 何况 gates 不会因为 gate 1 红就停下。
+  Write-Host '  clang-format 不在 PATH —— gate 2 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   $cf = $false
 }
 else {
+  $global:LASTEXITCODE = 1
   $cfOut = (& clang-format --dry-run --Werror --style=file $files 2>&1)
   if ($LASTEXITCODE -ne 0) {
     Write-Host '  clang-format 差异:' -ForegroundColor Red
@@ -416,8 +517,23 @@ Write-Host '=== Gate 3: prettier (--check .) ==='
 # prettier --write **三处同步改**(后者是本 gate 的配对写入器):`@3` 是浮动
 # major,本地与 CI 会在不同时间各自解析出不同的 prettier —— 同一份代码「本地绿、CI 红」,
 # 而中间没有任何东西变过。
-$pp = (npx --yes prettier@3.9.6 --check . 2>&1)
-Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
+# [SL-329] 第①类。这一处是**裸调用**(不带 `&`),第一版的扫描形态没盖到 —— 没有 npx 时
+# `Set-Gate` 吃到的是上一条外部命令(gate 2 的 `clang-format`)留下的 0 ⇒ **全仓 prettier
+# 一个文件没检却记 PASS**。`npx` 随 node 装,但 `$nodeCmd` 是 gate 3e 才解析的、也不等价于
+# 「npx 在」(有人只装了 node 而 npm 的 shim 没进 PATH),所以这里单独判 `npx`。
+if (-not $npxCmd) {
+  Write-Host '  npx 不在 PATH —— gate 3 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:npx 随 Node.js 一起装;只装了 node 而 npm shim 没进 PATH 时也会走到这里。' -ForegroundColor Yellow
+  Set-Gate '3 prettier' $false
+}
+else {
+  # 注:`$pp` 捕了输出却从不回显 —— 这一道红的时候滚屏上没有任何线索,得另跑一次 prettier
+  # 才知道是哪个文件。那是**回显**问题,不是本卡三判据里的任何一条,所以这里逐字保持原状,
+  # 不顺手改(要改请另立卡,与 3b/3c 的 `Select-Object -Last 30` 口径对齐)。
+  $global:LASTEXITCODE = 1
+  $pp = (npx --yes prettier@3.9.6 --check . 2>&1)
+  Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
+}
 
 # ==================================================================
 Write-Host '=== Gate 3b: gitleaks (密钥扫描) ==='
@@ -468,13 +584,25 @@ Set-Gate '3j check-privacy' $privacyOk
 # ==================================================================
 Write-Host '=== Gate 3c: reuse lint (REUSE 合规) ==='
 # ==================================================================
+# [SL-329] 第①类,且是**两条命令都缺**才触发的那一档:`reuse` 有守卫,但它的 `pipx` 回退分支
+# 是**裸调用**、没有守卫 —— 两者都不在 PATH 时(Windows 上不装 Python 就没有 pipx,而 gate 3c
+# 正是 CI `compliance` 的本地对应物),`$reuseExit` 沿用上一条外部命令
+# (`node scripts/check-privacy.mjs`)留下的 0 ⇒ **REUSE 合规一条没查却记 PASS**。
 if (Get-Command reuse -ErrorAction SilentlyContinue) {
+  $global:LASTEXITCODE = 1
   $rl = (& reuse lint 2>&1)
   $reuseExit = $LASTEXITCODE
 }
-else {
+elseif ($pipxCmd) {
+  $global:LASTEXITCODE = 1
   $rl = (pipx run reuse lint 2>&1)
   $reuseExit = $LASTEXITCODE
+}
+else {
+  Write-Host '  reuse 与 pipx 都不在 PATH —— gate 3c 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:装 reuse(pipx install reuse)或让 pipx 进 PATH;Windows 上不装 Python 就没有 pipx。' -ForegroundColor Yellow
+  $rl = @()
+  $reuseExit = 1
 }
 if ($reuseExit -ne 0) { $rl | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
 Set-Gate '3c reuse lint' ($reuseExit -eq 0)
@@ -482,8 +610,17 @@ Set-Gate '3c reuse lint' ($reuseExit -eq 0)
 # ==================================================================
 Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
 # ==================================================================
-& pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-spdx.ps1')
-Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
+# [SL-329] 第①类:`Set-Gate` 直接吃 `$LASTEXITCODE`,没有 pwsh 时吃到的是上一条
+# (gate 3c 实际跑的那一支:`reuse` 或 `pipx`)留下的值 —— SPDX 头一个文件没查却记 PASS。
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— check-spdx 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Set-Gate 'check-spdx' $false
+}
+else {
+  $global:LASTEXITCODE = 1
+  & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts\check-spdx.ps1')
+  Set-Gate 'check-spdx' ($LASTEXITCODE -eq 0)
+}
 
 # ==================================================================
 Write-Host '=== Gate 3d: 设计盒真源(design-box.js -> DesignBox.h 对拍)==='
@@ -1019,11 +1156,22 @@ else {
     $i18nOut | ForEach-Object { Write-Host ("  " + $_) }
   }
 
-  $parityOut = (& pwsh -NoProfile -File scripts\check-readme-parity.ps1 2>&1)
-  if ($LASTEXITCODE -ne 0) {
+  # [SL-329] 第①类,也是本卡点名的那一处:没有 pwsh 时上一条外部命令是
+  # `node scripts\check-i18n.mjs`,它成功留下 0 ⇒ 双语结构对拍一次没跑却不影响 `$docsOk`,
+  # gate 3f 照打 PASS。gate 3f 的另外两条(gen-hard-rules / check-i18n)由 `$nodeCmd` 守着,
+  # 唯独这一条没有 —— 同一道门里两种待遇,本卡把它补齐。
+  if (-not $pwshCmd) {
     $docsOk = $false
-    Write-Host '  check-readme-parity:' -ForegroundColor Red
-    $parityOut | ForEach-Object { Write-Host ("  " + $_) }
+    Write-Host '  pwsh 不在 PATH —— check-readme-parity 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  }
+  else {
+    $global:LASTEXITCODE = 1
+    $parityOut = (& pwsh -NoProfile -File scripts\check-readme-parity.ps1 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $docsOk = $false
+      Write-Host '  check-readme-parity:' -ForegroundColor Red
+      $parityOut | ForEach-Object { Write-Host ("  " + $_) }
+    }
   }
 
   Set-Gate '3f 文档真源' $docsOk
@@ -1419,7 +1567,8 @@ Write-Host '=== Gate 5b: ctest 上界属性完备(读生成物 CTestTestfile.cma
 # 这条路不是假想:gates 的调用口径是 `pwsh scripts/gates.ps1`,但从 Windows PowerShell 5.1
 # (`powershell.exe`)起跑是本仓真实存在的一条路,那条路上 `pwsh` 未必在 PATH 上。
 # 双保险:除 Get-Command 守卫外,每次调用前把 $LASTEXITCODE 显式置 1 —— 「没写」等价于判负。
-$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+# [SL-329] `$pwshCmd` 已经提到文件开头**一处解析**(见那段的三类清单),这里不再各解析一次:
+# 两处 `Get-Command pwsh` 就会变成两份口径,而「只改一份」在汇总表上看不出任何差别。
 if (-not $pwshCmd) {
   Write-Host '  pwsh 不在 PATH —— gate 5b 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   Write-Host '  提示:本 gate 的两条命令都要 PowerShell 7+;从 powershell.exe(5.1)起跑时请先把 pwsh 加进 PATH。' -ForegroundColor Yellow
