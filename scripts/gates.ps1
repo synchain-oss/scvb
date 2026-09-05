@@ -406,9 +406,10 @@ if (-not $PluginvalExe) {
 #   if/else 里」,那是个**全称从句**,与上面第③条自相矛盾(#214 第 4 轮点出,当时不在破冻范围)。
 #   别照那句去给这三处加壳:它们各自带着一条写着理由的豁免标记(见下面 ③ 类三处的行内注记)。
 #   ⚠ 这段末尾有 `Sort-Object -Unique`,**只出名字、不出处数**。要数处数得改成按 `CommandAst`
-#     分组数,今天是 **29 处**(clang-format 2 / cmake 3 / ctest 1 / git 2 / node 9 /
-#     npx 1 / pipx 1 / pwsh 5 / python 4 / reuse 1)。上一版这里写的「26 处」是**我自己造的假数**:
-#     那个数来自一次跑挂了的审计脚本(哈希表累加抛异常、每个名字只剩一行),我拿坏输出的行数当了结论。
+#     分组数 —— **这里不写具体数**。写过两次都错:一次是「26 处」(来自一次跑挂了的审计脚本,
+#     我拿坏输出的行数当了结论),一次是「29 处 / pwsh 5」,而**同一个 commit** 在下面 gate 3i
+#     新接了两处 `& pwsh`,当场把它变成 31 / pwsh 7。手抄的数活不过下一次改动,而
+#     `scripts/check-gates-guards.ps1` 每次运行都会把当下的分布打出来 —— 要数就去看它。
 #
 # 两半一起用,缺一半都不够:
 #   · `Get-Command` 守卫 —— 缺席时显式 `Set-Gate … $false`,并说清「不是跳过,是判负」;
@@ -1419,6 +1420,10 @@ else {
     # **嵌套数组**(实测 `$a.Count -eq 1`、内容是 `System.Object[]`),splat 出去就不是原意了。
     # 与 gate 5b 一样两句写清楚,读的人也一眼看得出「先自测、再实扫」。
     $ggScript = Join-Path 'scripts' 'check-gates-guards.ps1'
+    # 自测与实扫**并列**,不把实扫塞进自测的 else —— 与同圈 check-changelog-drafts /
+    # check-source-encoding 的口径一致,也与 CI 侧的两个独立 step 一致。塞进 else 的话,
+    # 「判据被改坏」与「gates.ps1 真的多了一处无守卫调用」这两个信号在一次运行里只看得到
+    # 前一个,而这一圈的注释反复在讲「两种可能要分开照出来」(#219 复审)。
     $global:LASTEXITCODE = 1
     $ggSelf = (& pwsh -NoProfile -File $ggScript -SelfTest 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -1426,14 +1431,12 @@ else {
       Write-Host '  check-gates-guards.ps1 -SelfTest:' -ForegroundColor Red
       $ggSelf | ForEach-Object { Write-Host ("  " + $_) }
     }
-    else {
-      $global:LASTEXITCODE = 1
-      $ggOut = (& pwsh -NoProfile -File $ggScript 2>&1)
-      if ($LASTEXITCODE -ne 0) {
-        $parityOk = $false
-        Write-Host '  check-gates-guards.ps1:' -ForegroundColor Red
-        $ggOut | ForEach-Object { Write-Host ("  " + $_) }
-      }
+    $global:LASTEXITCODE = 1
+    $ggOut = (& pwsh -NoProfile -File $ggScript 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-guards.ps1:' -ForegroundColor Red
+      $ggOut | ForEach-Object { Write-Host ("  " + $_) }
     }
   }
 

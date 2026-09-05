@@ -50,11 +50,13 @@
       `Join-Path`/`.exe`/盘符/斜杠)。裸 `/` 偏宽,任何 RHS 带斜杠的赋值都会被记成 pathLike ——
       只在 `& $var` 时起作用,方向偏红。另有一处 fail-open:同名变量若**先**赋成脚本块、**后**赋成
       路径,`scriptBlockVars` 会优先命中、那处 `& $var` 被静默排除;`gates.ps1` 今天没有这种写法。
-    ⚠ **边界:豁免清单与判据面下界都只对默认目标(`gates.ps1`)生效。** 三条豁免的指纹全指向
-      它的 ③ 类调用点,下界 20 也是按它的体量取的;`-Path` 指别的文件时**豁免不生效、下界从
-      20 降为 1**(只挡「一处都没扫到」),并打一行 INFO —— 那时本脚本只回答「这个文件里的
-      外部调用有没有守卫」,不回答「豁免是否还准」。
-      「是不是默认目标」按**解析后的路径**比,所以 `-Path scripts/gates.ps1` 与不传 `-Path` 等价。
+    ⚠ **边界:只有判据面下界对默认目标(`gates.ps1`)特殊,豁免不再特殊。** 豁免现在是**行内标记**,
+      贴在被检文件的调用点旁,于是**跟着文件走** —— `-Path` 指哪个文件就读哪个文件的标记,不需要
+      「只对默认目标生效」那一档(那是外部清单时代的补丁:清单为 `gates.ps1` 写,套到别的文件上会
+      整份判成陈旧)。外部 `$Exemptions` 清单今天是**空的**,通道留着给不便改的被检文件。
+      下界仍然特殊:20 是按 `gates.ps1` 的体量取的,`-Path` 指别的文件时降为 1(只挡「一处都没扫到」),
+      并打一行 INFO。「是不是默认目标」按**解析后的路径**比,所以 `-Path scripts/gates.ps1`
+      与不传 `-Path` 等价。
     ⚠ **边界:经 cmdlet 间接启动的外部命令不在面内。** `Start-Process -FilePath $nodeCmd.Source`
       (`gates.ps1:836`)这种由 cmdlet 代启的,AST 里是一次 `Start-Process` 调用、不是外部命令调用点,
       本判据看不见。那一处本身没问题(`$nodeCmd` 已有守卫),但「不靠名字清单」这个卖点在这条上
@@ -148,8 +150,11 @@ function Get-GatesGuardReport {
     [scriptblock]$Resolver = { param($n) @(Get-Command $n -ErrorAction SilentlyContinue) }
   )
 
-  $tokens = $null
-  $ast = [System.Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$null)
+  # 变量名用 `$psTokens`:同一函数里 `$tokens` 已经是「守卫记号数组」(见下面 $condTokens 那段)。
+  # 撞名今天靠语句顺序活着 —— 标记收集恰好在守卫循环之前跑完;谁把它挪到后面,
+  # `$_.Kind -eq 'Comment'` 就恒不命中 ⇒ **所有行内标记静默失效**(#219 复审)。
+  $psTokens = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseInput($Source, [ref]$psTokens, [ref]$null)
 
   # 行内豁免标记。形态(必须**紧跟注释起头**,不能夹在句子中间):
   #     # 后接方括号 gates-guard-exempt 方括号,再接非空理由
@@ -159,7 +164,7 @@ function Get-GatesGuardReport {
   # 判据被自己的文档喂出假绿)。所以头注里提到它时一律不放在注释开头。
   $markerRe = '^\s*#\s*\[gates-guard-exempt\]\s*(\S.*)$'
   $markers = @()
-  foreach ($t in @($tokens | Where-Object { $_.Kind -eq 'Comment' })) {
+  foreach ($t in @($psTokens | Where-Object { $_.Kind -eq 'Comment' })) {
     $m = [regex]::Match($t.Text, $markerRe)
     if ($m.Success) {
       $markers += , [pscustomobject]@{
@@ -307,6 +312,11 @@ function Get-GatesGuardReport {
     }
 
     $sites.Add([pscustomobject]@{
+        # ⚠ `Id` 用 AST 的 **extent 起始偏移**,每个调用点唯一。原来拿 `行号|文本` 当键,
+        #   **同一行、同文本**的两处调用(`cmake --version; cmake --version`)键会撞:
+        #   第一处消费掉标记并把键写进集合,第二处虽然没拿到标记,却因为键已在集合里而
+        #   一并被滤出 Unguarded ⇒ **一个标记吞两处**。#219 复审实测(rc 本该是 1,实得 0)。
+        Id      = $c.Extent.StartOffset
         Name    = $label
         Line    = $c.Extent.StartLineNumber
         Text    = ($c.Extent.Text -replace '\s+', ' ')
@@ -315,7 +325,7 @@ function Get-GatesGuardReport {
       })
   }
 
-  # 豁免匹配(按文本指纹)。用 `行号|文本` 当键去重,不靠对象同一性 ——
+  # 豁免匹配。用**调用点的 extent 偏移**当键去重(每处唯一),不靠对象同一性 ——
   # PSCustomObject 的 `-contains` 走类型比较,在这里会抛 "Argument types do not match"。
   $exemptedKeys = New-Object 'System.Collections.Generic.HashSet[string]'
   $stale = @()
@@ -332,14 +342,14 @@ function Get-GatesGuardReport {
     $mk = @($markers | Where-Object { -not $_.Used -and ($_.Line -eq $u.Line -or $_.Line -eq ($u.Line - 1)) })
     if ($mk.Count -gt 0) {
       $mk[0].Used = $true
-      [void]$exemptedKeys.Add(('{0}|{1}' -f $u.Line, $u.Text))
+      [void]$exemptedKeys.Add([string]$u.Id)
     }
   }
   # 孤悬标记 = 那一处要么已经加了守卫、要么被删/挪走了 —— 两种都该把标记一起处理掉。
   # 不判负的话,标记会随代码漂成一句无人负责的注释(与外部清单的「陈旧豁免」同一条理由)。
   foreach ($mk in @($markers | Where-Object { -not $_.Used })) {
     $stale += , [pscustomobject]@{
-      Snippet = ('行内标记 @{0}' -f $mk.Line); Reason = $mk.Reason; Want = 1; Got = 0
+      Kind = 'marker'; Snippet = ('行内标记 @{0}' -f $mk.Line); Reason = $mk.Reason; Want = 1; Got = 0
     }
   }
 
@@ -350,16 +360,16 @@ function Get-GatesGuardReport {
     $want = if ($null -ne $ex.Hits) { [int]$ex.Hits } else { 1 }
     $hit = @($unguarded | Where-Object { $_.Text -like ('*' + $ex.Snippet + '*') })
     if ($hit.Count -ne $want) {
-      $stale += , [pscustomobject]@{ Snippet = $ex.Snippet; Reason = $ex.Reason; Want = $want; Got = $hit.Count }
+      $stale += , [pscustomobject]@{ Kind = 'list'; Snippet = $ex.Snippet; Reason = $ex.Reason; Want = $want; Got = $hit.Count }
       continue
     }
-    foreach ($h in $hit) { [void]$exemptedKeys.Add(('{0}|{1}' -f $h.Line, $h.Text)) }
+    foreach ($h in $hit) { [void]$exemptedKeys.Add([string]$h.Id) }
   }
   # ⚠ 键要显式转 [string] 再喂 HashSet.Contains:PowerShell 会把 `-f` 的结果按 PSObject 传进去,
   #   `HashSet[string].Contains` 于是抛 "Argument types do not match"(而且报在下面构造对象那一行,
   #   与真正出错的表达式对不上,查起来很费劲)。
-  $stillUnguarded = @($unguarded | Where-Object { -not $exemptedKeys.Contains([string]('{0}|{1}' -f $_.Line, $_.Text)) })
-  $exempted = @($unguarded | Where-Object { $exemptedKeys.Contains([string]('{0}|{1}' -f $_.Line, $_.Text)) })
+  $stillUnguarded = @($unguarded | Where-Object { -not $exemptedKeys.Contains([string]$_.Id) })
+  $exempted = @($unguarded | Where-Object { $exemptedKeys.Contains([string]$_.Id) })
 
   # ⚠ `List[object]` 要先 `.ToArray()`:直接把 `@($list)` 放进 `[pscustomobject]@{}` 会抛
   #   "Argument types do not match",而错误报在构造那一行、不指向真正出问题的字段。
@@ -535,6 +545,11 @@ if ($SelfTest) {
   $r20 = Get-GatesGuardReport -Source ('# 说明:标记形态是 [gates-guard-exempt] 理由' + [Environment]::NewLine + 'cmake --version')
   & $check '⑳ 句子中间提到标记名也被当成了豁免(文档能喂出假绿)' (@($r20.Unguarded).Count -eq 1)
 
+  # ㉑ **一个标记只豁免一处**在「同一行两处同文本」上也要成立(#219 复审实测:旧的
+  #    `行号|文本` 去重键在这里会撞,一个标记吞两处,rc 本该 1 却是 0)。
+  $r21 = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version; cmake --version')
+  & $check '㉑ 同一行的第二处调用跟着白拿了豁免(去重键撞了)' (@($r21.Unguarded).Count -eq 1)
+
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
@@ -609,8 +624,15 @@ if (@($report.Sites).Count -lt $floor) {
 $bad = $false
 if (@($report.StaleExemptions).Count -gt 0) {
   $bad = $true
-  Write-Host '  [FAIL] 豁免命中数与清单对不上:' -ForegroundColor Red
-  $report.StaleExemptions | ForEach-Object {
+  Write-Host '  [FAIL] 豁免与代码对不上:' -ForegroundColor Red
+  # 分两套文案:行内标记既没有「清单」也没有 `Hits`,照搬外部清单那句「请改准 Hits」
+  # 会指向一个**不存在的旋钮**(#219 复审)。同一把尺子本文件下面为 Got=0 的两种成因用过。
+  @($report.StaleExemptions | Where-Object { $_.Kind -eq 'marker' }) | ForEach-Object {
+    Write-Host ('    {0}:孤悬的行内豁免标记 —— 附近已经没有「无守卫的外部调用」了' -f $_.Snippet) -ForegroundColor Red
+    Write-Host ('      理由:' + $_.Reason) -ForegroundColor DarkGray
+    Write-Host '      多半是那一处已经加上守卫、或被删/挪走了:把这条标记一并删掉或跟着挪。' -ForegroundColor Yellow
+  }
+  @($report.StaleExemptions | Where-Object { $_.Kind -ne 'marker' }) | ForEach-Object {
     # `$hit` 是从**无守卫**的调用点里筛的,所以 Got=0 有两个成因,而「被加上守卫了」在这个仓里
     # 更常见(谁给 `cmake --version` 包一层 if 就会触发)。只写「已经没有对应调用点」会让人
     # 去 gates.ps1 里找一行**还在**的代码。
@@ -618,7 +640,9 @@ if (@($report.StaleExemptions).Count -gt 0) {
     Write-Host ('    {0}  期望 {1} 处、实得 {2} 处({3})' -f $_.Snippet, $_.Want, $_.Got, $why) -ForegroundColor Red
     Write-Host ('      理由:' + $_.Reason) -ForegroundColor DarkGray
   }
-  Write-Host '    豁免随代码漂移而失效(变陈旧或被撑宽)正是本判据要防的:请改准 Hits,或给新调用点加守卫。' -ForegroundColor Yellow
+  if (@($report.StaleExemptions | Where-Object { $_.Kind -ne 'marker' }).Count -gt 0) {
+    Write-Host '    (外部清单那几条)豁免随代码漂移而失效正是本判据要防的:请改准 Hits,或给新调用点加守卫。' -ForegroundColor Yellow
+  }
 }
 if (@($report.Unguarded).Count -gt 0) {
   $bad = $true
