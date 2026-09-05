@@ -1186,9 +1186,12 @@ if (selfTest) {
                 anchoredDelta === 1,
                 anchoredDelta === 0
                     ? "收窄调用点没有读 BODY_REF" +
-                          "_ANCHORED_RE(增量 0)—— 多半是那行被写回了内联字面量," +
-                          "或写回了 new RegExp 重建版:两者都不经过 anchoredRe()," +
-                          "于是真源放宽那天收窄不会跟着动"
+                          "_ANCHORED_RE(增量 0)。三种真因,按可能性从高到低:" +
+                          "① 有人把 anchoredRe() 顺手简化回了直接引用常量" +
+                          "(它看着像层多余的间接)—— 那种写法本意没错,但读不到就计不到," +
+                          "改回 anchoredRe() 即可;" +
+                          "② 那行被写回了内联字面量;③ 或写回了 new RegExp 重建版 ——" +
+                          "后两种都不经过 anchoredRe(),真源放宽那天收窄不会跟着动"
                     : "读取者不止一个(增量 " +
                           anchoredDelta +
                           ")—— 多出来的那个会替生产那一处顶着:" +
