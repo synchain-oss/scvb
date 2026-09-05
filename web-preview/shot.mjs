@@ -480,9 +480,13 @@ try {
     //    **别把上面读成「只有 name 这一条可用」**:`e instanceof __D.defaultView.DOMException`
     //    两条分支下也都成立(兜底时 `__D.defaultView === window`,就是顶层那个)。不选它是因为
     //    它得先摸到对端 realm,而 `defaultView` 在文档被 detach 后是 `null` —— 实测把 iframe
-    //    `remove()` 掉之后,`__D.defaultView` 从 window 变成 null,那一句当场
-    //    `TypeError: Cannot read properties of null (reading 'DOMException')`,**在 catch 里
-    //    再抛一次,比原来那个病还难查**。所以是「成本最低」,不是「唯一」。
+    //    `remove()` 掉之后,`__D.defaultView` 从 **iframe 的那个 window** 变成 null,
+    //    那一句当场 `TypeError: Cannot read properties of null (reading 'DOMException')`。
+    //    ⚠ **这不是本脚本的活风险**:`shot.mjs` 自身没有任何路径会 detach 那个 iframe
+    //    (上面那次是手工用 `--eval` 造出来的),别顺着这句去查一个不存在的 bug。它只是
+    //    那条备选写法多担的一份前提。真撞上时退码仍是 2(`TypeError` 照样被 `evalLanded`
+    //    收成 `NavigationError`),难查的是**报错文案指向 `DOMException` 这个和病因无关的
+    //    名字**。所以是「成本最低」,不是「唯一」。
     //    另:`--tab` 选择器合法但没命中时下面是 `throw new Error`(退 1),语法错也落 1,
     //    同一个参数的两种打字错这才在同一个码上(复审第 1 轮)。
     const clickIn = async (sel) => {
