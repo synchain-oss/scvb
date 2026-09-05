@@ -547,8 +547,13 @@ else {
   # 文件多到 30 行装不下时,尾部那句仍在,读的人知道还有更多、可以自己跑一次拿全量。
   $global:LASTEXITCODE = 1
   $pp = (npx --yes prettier@3.9.6 --check . 2>&1)
-  if ($LASTEXITCODE -ne 0) { $pp | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
-  Set-Gate '3 prettier' ($LASTEXITCODE -eq 0)
+  # **立刻捕获**,别让中间那条回显管道夹在两次读 `$LASTEXITCODE` 之间。今天安全
+  # (`Select-Object` / `ForEach-Object` / `Write-Host` 都是 cmdlet,不写 `$LASTEXITCODE`),
+  # 但本文件的既定写法就是立刻捕获 —— 3c 的 `$reuseExit`、gate 6 的 `$ctestRc` 都是这个形,
+  # 而 SL-329 治的正是「隔了几条语句再读 `$LASTEXITCODE`」那一族(#222 复审)。
+  $prettierRc = $LASTEXITCODE
+  if ($prettierRc -ne 0) { $pp | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) } }
+  Set-Gate '3 prettier' ($prettierRc -eq 0)
 }
 
 # ==================================================================
@@ -1778,6 +1783,7 @@ else {
       # 七套顶天七行,而这几行正是全部信息量所在。抠不到时**明说**抠不到,不假装没有失败
       # —— 那样会让人以为 gate 6 是因为别的原因红的(本仓「SKIP 吞掉判据」的同族形态)。
       $ctestFailed = @()
+      $ctestReported = $null   # 在 if 外声明:下面拼汇总标签时要用
       if ($ctestRc -ne 0) {
         # ⚠ **不在首个不匹配行上关掉块态**(#222 复审):`2>&1` 会把 ctest 自己的 stderr 行
         #   插进块中间(顺序不保证),用例名带空格时 `(\S+)` 也抓不住 —— 早退会把后面的失败行
@@ -1794,7 +1800,6 @@ else {
         # 与 ctest **自己报的失败数**对拍(尾部那行 `X% tests passed, N tests failed out of M`)。
         # 对不上就明说清单不全 —— 一个抠了一半却打成「失败 k 套」的计数,比不打更糟:
         # 它看起来是权威的(本仓「假计数」那一族,gate 3i 的 WARN 计数为同样的理由收过口径)。
-        $ctestReported = $null
         foreach ($line in $ct) {
           $mc = [regex]::Match([string]$line, '(\d+)\s+tests?\s+failed\s+out\s+of\s+\d+')
           if ($mc.Success) { $ctestReported = [int]$mc.Groups[1].Value }
@@ -1803,8 +1808,13 @@ else {
           Write-Host ('  [ctest] 失败 {0} 套:' -f $ctestFailed.Count) -ForegroundColor Red
           $ctestFailed | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
           if ($null -ne $ctestReported -and $ctestReported -ne $ctestFailed.Count) {
-            Write-Host ('  [ctest] ⚠ 上面这份清单**不全**:ctest 自己报失败 {0} 套,这里只抠到 {1} 套 —— 尾部原文为准' -f
-              $ctestReported, $ctestFailed.Count) -ForegroundColor Yellow
+            # **两个方向都要说准**(#222 复审):去掉早退之后「多抠」也成了可能 ——
+            # `$inFailBlock` 一旦置真就不复位,某个用例的 `--output-on-failure` 正文里若回显了
+            # 块起点那句话,其后任何形如 `N - name (status)` 的行都会被收进来 ⇒ 抠到的比自报的多。
+            # 只写「不全」会把方向说反,读的人会去找「少了哪一套」。
+            $ctestDir = if ($ctestFailed.Count -lt $ctestReported) { '**不全**' } else { '**多收了**(可能把用例正文里的同形行也收了进来)' }
+            Write-Host ('  [ctest] ⚠ 上面这份清单{0}:ctest 自己报失败 {1} 套,这里抠到 {2} 套 —— 尾部原文为准' -f
+              $ctestDir, $ctestReported, $ctestFailed.Count) -ForegroundColor Yellow
           }
         }
         else {
@@ -1818,9 +1828,29 @@ else {
       }
       # 汇总表那行带上失败用例名:跑完 gates 的人看汇总表的概率远高于往回滚屏
       # (同款先例:gate 3e 的 `$smokeLabel`、gate 3i 的 `$parityLabel`)。
+      # [#222 复审] **「抠一半」这件事也要进汇总表**,不能只在滚屏闪一次 —— 本卡的立论就是
+      # 「跑完 gates 的人看汇总表的概率远高于往回滚屏」,只修滚屏等于修了不看的那一半。
+      # 三档都要在标签上分得开:
+      #   · 清单与 ctest 自报数一致 ⇒ 直接列名字(看起来穷举,而它确实穷举);
+      #   · 对不上          ⇒ 标签里就写明「k/N,清单不可信」,别给一个看起来穷举的清单;
+      #   · 一条都没抠到    ⇒ 标签写「失败用例名未知」,而不是干净的 `6 ctest`
+      #     (那一档此前只有滚屏说了一句,汇总表上与「没失败」长得一样)。
       $ctestLabel = '6 ctest'
-      if ($ctestRc -ne 0 -and $ctestFailed.Count -gt 0) {
-        $ctestLabel = '6 ctest(失败:{0})' -f ($ctestFailed -join '、')
+      if ($ctestRc -ne 0) {
+        if ($ctestFailed.Count -eq 0) {
+          $ctestLabel = if ($null -ne $ctestReported) {
+            '6 ctest(失败 {0} 套,用例名未抠到 —— 看滚屏尾部原文)' -f $ctestReported
+          }
+          else { '6 ctest(失败用例名未知 —— 看滚屏尾部原文)' }
+        }
+        elseif ($null -ne $ctestReported -and $ctestReported -ne $ctestFailed.Count) {
+          # 措辞**方向中立**:去掉早退之后「多抠」也可能发生,写「只列出 k 套」在那一档上是反的。
+          $ctestLabel = '6 ctest(ctest 自报失败 {0} 套、这份清单 {1} 套,对不上不可信:{2})' -f
+          $ctestReported, $ctestFailed.Count, ($ctestFailed -join '、')
+        }
+        else {
+          $ctestLabel = '6 ctest(失败:{0})' -f ($ctestFailed -join '、')
+        }
       }
       Set-Gate $ctestLabel ($ctestRc -eq 0)
 
