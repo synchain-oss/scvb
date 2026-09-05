@@ -318,8 +318,7 @@ const ALLOW_SAMPLE =
 // `ALLOW_SAMPLE` 走、正文这半会继续教人写旧写法 —— 而正文这条话术恰恰是给「第一次找放行口」
 // 的人看的,教错的代价更大(复审【建议】)。自测里有一格断言它自己过得了 `ALLOW_LINE_RE`。
 const ALLOW_REASON_PLACEHOLDER = "<理由>";
-const allowSampleFor = (num) =>
-    "- #" + num + " —— " + ALLOW_REASON_PLACEHOLDER + "";
+const allowSampleFor = (num) => "- #" + num + " —— " + ALLOW_REASON_PLACEHOLDER;
 
 // [SL-316] 正文侧也要一个放行口:块那半有「门禁放行」,正文那半此前一个都没有,于是两种
 // **改不动的红**没有出路 —— ① 那个号永远不会落地(rebase 合并不产生 `(#N)`,或维护者手改掉了
@@ -374,7 +373,9 @@ function allowList(block, headText = ALLOW_HEAD) {
                 headText +
                 "」里这几个号没写理由:#" +
                 noReason.join(" / #") +
-                " —— 放行必须写理由,不写就是静默豁免",
+                " —— 放行必须写理由,不写就是静默豁免;样例里的占位符 `" +
+                ALLOW_REASON_PLACEHOLDER +
+                "` **不算理由**,要换成真的",
         );
     return out;
 }
@@ -905,6 +906,45 @@ if (selfTest) {
         } catch (e) {
             bodySampleErr = e.message;
         }
+        // ⑨c 三元的**另一边**也要钉:把它改成恒 `allowSampleFor("111")`,⑨b 照绿,而门禁那半
+        //     从此教人写纯数字号 —— 那一段的号是 SL / J 形态,照抄写出 `#111`,`ALLOW_LINE_RE`
+        //     收得下、块里却没有对应的 `pending #111` ⇒ 撞 `leaks()` 的 `dead`。与 ⑨b 完全对称,
+        //     方向反过来(复审第 3 轮【建议】)。
+        let gateSampleErr = "";
+        try {
+            allowList(
+                "<!-- ===\n" +
+                    ALLOW_HEAD +
+                    "\n- SL-189 —— 照抄了标题形态\n\n=== -->",
+            );
+        } catch (e) {
+            gateSampleErr = e.message;
+        }
+        // ⑨d 「理由留空」那条红的话术要**点名占位符**:照抄样例的人写的就是 `<理由>`,
+        //     被判负时话术却说「没写理由」—— 他明明照着「正确写法」原样写了。这与 ⑨b/⑨c
+        //     同一族(第二次红指错方向),入口就是上一条红给的那行样例(复审第 3 轮【建议】)。
+        let phErr = "";
+        try {
+            allowList(
+                "<!-- ===\n" +
+                    ALLOW_HEAD +
+                    "\n" +
+                    "- #SL189 —— " +
+                    ALLOW_REASON_PLACEHOLDER +
+                    "\n\n=== -->",
+            );
+        } catch (e) {
+            phErr = e.message;
+        }
+        check(
+            phErr.includes(ALLOW_REASON_PLACEHOLDER),
+            "「理由留空」的话术没点名占位符 —— 照抄样例的人会被告知「没写理由」,而他确实照着写了",
+        );
+        check(
+            gateSampleErr.includes(ALLOW_SAMPLE),
+            "门禁放行写坏时给的样例不是 SL 形态 —— 样例按段选的三元被改成恒一边也没人红;实得:" +
+                gateSampleErr.slice(-60),
+        );
         check(
             bodySampleErr.includes(allowSampleFor("111")),
             "正文放行写坏时给的样例不是纯数字形态 —— 照抄它会再撞一次红,且话术指错方向;实得:" +
@@ -984,6 +1024,14 @@ try {
     //   · 说的是**块里有几个 `pending #…` 标记**,不是「判定面内几个」—— 被放行的号走
     //     `continue`,恰恰不在判定面内,写成「判定面内」会高报(#197 复审第 7 轮【建议】)。
     //     放行了哪几个由紧跟其后的 [ALLOW] 行逐条说,不在这里做减法。
+    // [SL-319 复审第 3 轮] 落地位集合的**大小与最大号**也报出来。下面那道 fail-closed 只挡
+    // `size === 0`,而「集合被**缩小**」(`landedPrs(titles.slice(0, 3))`)失效形态一模一样:
+    // maxLanded 变小 ⇒ 正文里几乎每个号都 `> max` 走 WARN ⇒ fails 恒空 ⇒ rc=0,而 ⑧ 喂自己的
+    // 假标题、①–⑦ 自带 landed,都照绿。那一档**不是全静默**(会打上百行 WARN,小的那个号就在
+    // 话术里),但要有人在一片 WARN 里觉得那个号偏小 —— **正常态没有基线就没有对照**。
+    // 所以基线放在这里:绿的时候也报,下次不对劲一眼看得出来。
+    const landed = landedPrs(titles);
+    const maxLanded = Math.max(0, ...[...landed].map(Number));
     console.log(
         "  [BASE] " +
             base +
@@ -991,7 +1039,11 @@ try {
             baseStamp(base) +
             " —— " +
             titles.length +
-            " 条提交标题;块里 " +
+            " 条提交标题(落地位 " +
+            landed.size +
+            " 个,最大 #" +
+            maxLanded +
+            ");块里 " +
             tokens.size +
             " 个待合并的号",
     );
@@ -1011,7 +1063,6 @@ try {
     // 处置:CI 透传 `SCVB_CHANGELOG_SELF_PR`(见 format.yml)并入放行;本地没有这个变量时,
     // 对**大于当前最大落地号**的号打 [WARN] 而不判红 —— PR 号单调递增,本 PR 号必然大于任何
     // 已落地号;而 `#106 < #111` 这类**关掉没合**的号仍落在 ≤ max 一侧、照样判红,不丢牙齿。
-    const landed = landedPrs(titles);
     // [SL-319 复审第 2 轮] 第 ⑧ 格钉住的是 `landedPrs` **这个函数**,钉不住**这次调用**:
     // 把实参换成 `[]`(或 titles 被谁过滤/切片成空)⇒ ⑧ 自己喂假标题照绿、①–⑦ 自带 landed
     // 照绿、实跑 `maxLanded = 0` 让正文每个号都走 WARN ⇒ `fails` 恒空 ⇒ rc=0。
