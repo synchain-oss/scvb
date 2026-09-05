@@ -569,16 +569,16 @@ function Get-GatesLastListReport {
 # ─────────────────────────────────────────────────────────────────────────────
 function Test-GatesLastFloor {
   param([Parameter(Mandatory)]$Report, [switch]$DefaultTarget)
-  # ⚠ **档号下界只对默认目标生效**。`-Path` 是公开参数，而「一个 `Set-Gate` 都没有」
-  #   对别的脚本是**合法状态**、不是塔方—— 无条件套一个下界，犯的就是隔壁那道
-  #   自己写过的「判据把自己的适用面写宽了，却按最宽那份的体量收口」。
-  #   注释下界两边都留：非默认目标只挡「一条注释都没扫到」，而那多半是文件传错了。
+  # ⚠ **档号下界只对默认目标生效**。`-Path` 是公开参数,而「一个 `Set-Gate` 都没有」
+  #   对别的脚本是**合法状态**、不是塌方—— 无条件套一个下界,犯的就是隔壁那道
+  #   自己写过的「判据把自己的适用面写宽了,却按最宽那份的体量收口」。
+  #   注释下界两边都留:非默认目标只挡「一条注释都没扫到」,而那多半是文件传错了。
   $cmFloor = if ($DefaultTarget) { 200 } else { 1 }
   if ($DefaultTarget -and @($Report.GateIds).Count -lt 5) {
-    return ('只提取到 {0} 个档号(下界 5)—— Set-Gate 的形态多半被改了，判据面塔了' -f @($Report.GateIds).Count)
+    return ('只提取到 {0} 个档号(下界 5)—— Set-Gate 的形态多半被改了,判据面塌了' -f @($Report.GateIds).Count)
   }
   if ($Report.Comments -lt $cmFloor) {
-    return ('只扫到 {0} 条注释(下界 {1})—— 注释提取多半被改坏了，判据面塔了' -f $Report.Comments, $cmFloor)
+    return ('只扫到 {0} 条注释(下界 {1})—— 注释提取多半被改坏了,判据面塌了' -f $Report.Comments, $cmFloor)
   }
   return $null
 }
@@ -790,9 +790,9 @@ if ($SelfTest) {
   # ㉕b `gate <数>` 形态同样算档号(纯数字 3/5 不算,否则满地都是)
   $l25b = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 与 gate 5(构建)同值,取 -Last 30')
   & $check '㉕b 「gate N」形态的档号没被认出来' (@($l25b.Offending).Count -eq 1)
-  # ⚠ 夹具里必须真的有**纯数字档号的闸**（`3 prettier` / `5 构建`），否则这一格没牙：
-  #   夹具里只放带字母的闸时，把「只认带字母档号」那一刀放宽掉，档号集合根本不会变，
-  #   本格照样绿。这是反向注入实测出来的，不是想出来的（同族教训：#219 那两格无牙用例）。
+  # ⚠ 夹具里必须真的有**纯数字档号的闸**(`3 prettier` / `5 构建`),否则这一格没牙:
+  #   夹具里只放带字母的闸时,把「只认带字母档号」那一刀放宽掉,档号集合根本不会变,
+  #   本格照样绿。这是反向注入实测出来的,不是想出来的(同族教训:#219 那两格无牙用例)。
   $sgNum = $sg + [Environment]::NewLine + "Set-Gate '3 prettier' `$ok" + [Environment]::NewLine + "Set-Gate '5 构建' `$ok"
   $l25c = Get-GatesLastListReport -Source ($sgNum + [Environment]::NewLine + '# 第 3 版把上界从 5 改成 -Last 30')
   & $check '㉕c 散文里的纯数字被当成了档号(噪音判据)' (@($l25c.Offending).Count -eq 0)
@@ -816,14 +816,13 @@ if ($SelfTest) {
   $l28 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '$msg = "# 3b 是 -Last 20"')
   & $check '㉘ 字符串里的井号被当成了注释' (@($l28.Offending).Count -eq 0)
 
-  # ㉙ 档号确实是**从 Set-Gate 提取的**,不是硬编码:抽掉 Set-Gate,同一条注释不再判负
-  # ㉙ 档号确实是**从 Set-Gate 提取的**，不是硬编码：抽掉 Set-Gate，同一条注释不再判负。
-  #    ⚠ 这一格把**塔缩形态写成了期望值**（#225 复审）—— 它钉的「不是硬编码」是对的，
-  #      但单有它等于给「档号集合塔了 ⇒ 整道判据恢复静默」背书。所以必须与
-  #      ㉙b（下界）成对出现：一格证明不硬编码，另一格证明塔了会被拭出来。
-  $l29 = Get-GatesLastListReport -Source ('# 与 3b 同值：这里也取 -Last 20')
-  & $check '㉙ 档号是硬编码的（抽掉 Set-Gate 后仍判负）' ((@($l29.Offending).Count -eq 0) -and (@($l29.GateIds).Count -eq 0))
-  & $check '㉙b 档号集合塔掉了却没被下界拦住（判据静默恒真）' ($null -ne (Test-GatesLastFloor -Report $l29 -DefaultTarget))
+  # ㉙ 档号确实是**从 Set-Gate 提取的**,不是硬编码:抽掉 Set-Gate,同一条注释不再判负。
+  #    ⚠ 这一格把**塌缩形态写成了期望值**(#225 复审)—— 它钉的「不是硬编码」是对的,
+  #      但单有它等于给「档号集合塌了 ⇒ 整道判据恢复静默」背书。所以必须与
+  #      ㉙b(下界)成对出现:一格证明不硬编码,另一格证明塌了会被照出来。
+  $l29 = Get-GatesLastListReport -Source ('# 与 3b 同值:这里也取 -Last 20')
+  & $check '㉙ 档号是硬编码的(抽掉 Set-Gate 后仍判负)' ((@($l29.Offending).Count -eq 0) -and (@($l29.GateIds).Count -eq 0))
+  & $check '㉙b 档号集合塌掉了却没被下界拦住(判据静默恒真)' ($null -ne (Test-GatesLastFloor -Report $l29 -DefaultTarget))
 
   # ─── [#225 复审第 1 轮] 补的格 ────────────────────────────────────────────
   # ㉚ **裸标记不该豁免**:`[gates-guard-exempt]` 那一族强制非空理由(自测 ⑰),两个标记同款。
@@ -860,18 +859,31 @@ if ($SelfTest) {
   & $check '㉞ 字符串里的 Set-Gate 注入了幻影档号' (@($l34.Offending).Count -eq 0)
 
   # ㉟ 下界:非默认目标降为 1,别对小脚本假红(与隔壁 $floor 同一条理由)
-  # ⚠ 夹具里**不能有 Set-Gate**，否则这一格没牙：带上 `$sg` 时档号本就≥ 2，
+  # ⚠ 夹具里**不能有 Set-Gate**,否则这一格没牙:带上 `$sg` 时档号本就≥ 2,
   #   下界怎么写都不会红。能区分新旧两套的输入恰恰是「一个 Set-Gate 都没有」。
   $l35 = Get-GatesLastListReport -Source ('# 一条注释' + [Environment]::NewLine + '& some-tool --version')
-  & $check '㈟ 对「没有 Set-Gate 的非默认目标」假红了' ($null -eq (Test-GatesLastFloor -Report $l35))
-  & $check '㈟b 默认目标上档号塔成 0 却没红' ($null -ne (Test-GatesLastFloor -Report $l35 -DefaultTarget))
-  # ㈟c **只有档号下界能挡住的那一档**：注释很多、档号为 0。
-  #    ⚠ 没有这一格，拆掉档号下界也不会红 —— 上面那几格的夹具注释数本就 < 200，
-  #      注释下界替它兼了底。这是反向注入实测出来的（删除式第 ⑤ 格当时是绿的）。
+  & $check '㉟ 对「没有 Set-Gate 的非默认目标」假红了' ($null -eq (Test-GatesLastFloor -Report $l35))
+  & $check '㉟b 默认目标上档号塌成 0 却没红' ($null -ne (Test-GatesLastFloor -Report $l35 -DefaultTarget))
+  # ㉟c **只有档号下界能挡住的那一档**:注释很多、档号为 0。
+  #    ⚠ 没有这一格,拆掉档号下界也不会红 —— 上面那几格的夹具注释数本就 < 200,
+  #      注释下界替它兼了底。这是反向注入实测出来的(删除式第 ⑤ 格当时是绿的)。
   $manyComments = (1..250 | ForEach-Object { '# 第 ' + $_ + ' 条' }) -join [Environment]::NewLine
   $l35c = Get-GatesLastListReport -Source $manyComments
-  & $check '㈟c 档号塔成 0 而注释不少时，没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35c -DefaultTarget))
-  & $check '㈟d 同一输入在非默认目标上不该假红' ($null -eq (Test-GatesLastFloor -Report $l35c))
+  & $check '㉟c 档号塌成 0 而注释不少时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35c -DefaultTarget))
+  & $check '㉟d 同一输入在非默认目标上不该假红' ($null -eq (Test-GatesLastFloor -Report $l35c))
+
+  # ㉟e **只有注释下界能挡住的那一档**:档号够多、注释几乎没有。
+  #    ⚠ 没有这一格,把注释下界整刀删掉自测也不会红 —— 上面每一格的档号数都 < 5,
+  #      在 -DefaultTarget 上档号那一刀总是先返回,替它兼了底。
+  #      与 ㉟c 是**同一个洞的两个方向**:那一格没有档号、这一格没有注释,
+  #      两格各自只能被一条下界拦住。注释提取一旦被改坏,`$commentByLine` 为空
+  #      ⇒ `Offending` 恒为 0、判据静默全绿,而档号那一半走 AST 照样能取到十几个,
+  #      档号下界拦不住。
+  $sgFive = @('3b gitleaks', '3c reuse lint', '3d 设计盒真源', '3e web smoke', '3f 文档真源') |
+  ForEach-Object { "Set-Gate '$_' `$ok" }
+  $l35e = Get-GatesLastListReport -Source (($sgFive -join [Environment]::NewLine) + [Environment]::NewLine + '# 一条注释')
+  & $check '㉟e 档号够多但注释塌成个位数时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35e -DefaultTarget))
+  & $check '㉟f 同一输入在非默认目标上假红了' ($null -eq (Test-GatesLastFloor -Report $l35e))
 
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
@@ -999,7 +1011,8 @@ $lastRep = Get-GatesLastListReport -Source $src
 $lastFloorMsg = Test-GatesLastFloor -Report $lastRep -DefaultTarget:$isDefaultPath
 if ($null -ne $lastFloorMsg) {
   Write-Host ('  [FAIL] 截断值名单判据:{0}' -f $lastFloorMsg) -ForegroundColor Red
-  Write-Host '    判据面塌了不是「注释变干净了」:档号集合一空,这道判据当场恒真且完全静默。' -ForegroundColor Yellow
+  Write-Host '    判据面塌了不是「注释变干净了」 —— 档号集合与注释提取任一半塌掉,' -ForegroundColor Yellow
+  Write-Host '    这道判据都会当场恒真且完全静默。塌的是哪一半,上面那句已经点名了。' -ForegroundColor Yellow
   exit 1
 }
 if (@($lastRep.Stale).Count -gt 0) {
