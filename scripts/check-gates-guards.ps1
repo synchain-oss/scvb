@@ -26,6 +26,19 @@
         所以下面先用 `FunctionDefinitionAst` 把它们从**同一棵 AST** 里排掉,而不是收紧这一档。
     · 变量式调用(`& $var`)—— 变量赋值右值里含 `Get-Command`、或是路径/字符串的,算外部;
       右值是**脚本块**(`$enumLeftover = { … }`)的不算,那是本文件自己的闭包。
+    ⚠ **边界:守卫只判「有没有」,不判极性、也不判调用点落在哪一支。** 只要祖先 `if` 的**任一分支
+      条件**提到了这个命令/变量就算守住 —— 所以本判据保证的是「调用点周围有针对同一命令的存在性
+      判断」,**不保证「它落在命令存在的那一支」**。有意取宽:极性分析(`-not $x` / `$null -eq $x`
+      / 落在 ElseClause)容易误报,而误报会让人关掉门禁。要收紧就得连「从哪个 clause 上来的」一起记。
+    ⚠ **边界:名字式判定依赖 `Get-Command` 的解析结果,而解析结果与机器/平台有关。** 判成外部的是
+      「Application / ExternalScript / 解析不到」——于是 Windows 上同时解析出 Alias + Application 的
+      短名(`sort` / `where` / `more` / `tee`)算**入面**,而 Linux 上 pwsh 不定义 `ls`/`cat` 这些别名,
+      同名调用会从 Alias 变成 Application、同样入面。两个方向都是 fail-closed(顶多多一条红),
+      `gates.ps1` 今天一个都没用到,所以 33/13 这个数不受影响。
+    ⚠ **边界:脚本块/路径这两处判定是启发式**(前者认 `ScriptBlockExpressionAst` 的文本形态,后者认
+      `Join-Path`/`.exe`/盘符/斜杠)。裸 `/` 偏宽,任何 RHS 带斜杠的赋值都会被记成 pathLike ——
+      只在 `& $var` 时起作用,方向偏红。另有一处 fail-open:同名变量若**先**赋成脚本块、**后**赋成
+      路径,`scriptBlockVars` 会优先命中、那处 `& $var` 被静默排除;`gates.ps1` 今天没有这种写法。
     ⚠ **边界:经 cmdlet 间接启动的外部命令不在面内。** `Start-Process -FilePath $nodeCmd.Source`
       (`gates.ps1:836`)这种由 cmdlet 代启的,AST 里是一次 `Start-Process` 调用、不是外部命令调用点,
       本判据看不见。那一处本身没问题(`$nodeCmd` 已有守卫),但「不靠名字清单」这个卖点在这条上
@@ -65,6 +78,29 @@ $Exemptions = @(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 从一次 `Get-Command …` 调用里取出**它在问哪个命令**。
+# 只认两种形态:`-Name <x>`,以及第一个**位置**参数;跳过所有「参数 + 它的值」对。
+# 认不出就返回 $null —— 调用方据此不记守卫(宁可多报一条红,也不记成一个错的名字)。
+# ─────────────────────────────────────────────────────────────────────────────
+function Get-GcTargetName {
+  param($GcAst)
+  $els = @($GcAst.CommandElements | Select-Object -Skip 1)
+  for ($i = 0; $i -lt $els.Count; $i++) {
+    $el = $els[$i]
+    if ($el -is [System.Management.Automation.Language.CommandParameterAst]) {
+      if ($el.ParameterName -like 'Name*' -and $i + 1 -lt $els.Count) {
+        $v = $els[$i + 1]
+        if ($v -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return $v.Value }
+      }
+      $i++   # 跳过这个参数的值(`-ErrorAction SilentlyContinue` 的第二段)
+      continue
+    }
+    if ($el -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return $el.Value }
+  }
+  return $null
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 判据本体。**生产路径与 -SelfTest 共用这一个函数** —— 自测若走另一份实现,
 # 它证明的是那一份能用,而不是门禁能用。
 # 返回:@{ Sites = @(每个外部调用点); Guarded / Unguarded / Exempted / StaleExemptions }
@@ -101,11 +137,12 @@ function Get-GatesGuardReport {
           $n -is [System.Management.Automation.Language.CommandAst] -and
           $n.GetCommandName() -eq 'Get-Command' }, $true))
     if ($gc.Count -gt 0) {
-      $target = $null
-      foreach ($el in $gc[0].CommandElements | Select-Object -Skip 1) {
-        if ($el -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
-          $el.Value -notmatch '^-') { $target = $el.Value; break }
-      }
+      # ⚠ 取「第一个不以 `-` 开头的字符串常量」会把**参数值**也算进候选:`-ErrorAction` 自己是
+      #   `CommandParameterAst`(躲过了),但它的值 `SilentlyContinue` 是个 StringConstantExpressionAst。
+      #   于是 `Get-Command -ErrorAction SilentlyContinue reuse` 会被记成 reuse 守卫盯着
+      #   「SilentlyContinue」,真正的 `reuse lint` 判无守卫 —— 方向偏红,但报错会指向一处
+      #   **明明写了守卫**的调用点。所以跳过紧跟在参数后面的那个值。
+      $target = Get-GcTargetName $gc[0]
       if ($target) { $guardVarToCmd[$name] = $target }
       [void]$pathLikeVars.Add($name)
       continue
@@ -130,10 +167,8 @@ function Get-GatesGuardReport {
       foreach ($c in $cond.FindAll({ param($n)
             $n -is [System.Management.Automation.Language.CommandAst] -and
             $n.GetCommandName() -eq 'Get-Command' }, $true)) {
-        foreach ($el in $c.CommandElements | Select-Object -Skip 1) {
-          if ($el -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
-            $el.Value -notmatch '^-') { $out += $el.Value; break }
-        }
+        $t = Get-GcTargetName $c
+        if ($t) { $out += $t }
       }
     }
     return , @($out)
@@ -328,17 +363,34 @@ if ($SelfTest) {
   if (@($r11.StaleExemptions).Count -ne 1) { $fails += '⑪ 同文本第二处白拿了豁免(豁免必须钉命中数)' }
   if (@($r11.Exempted).Count -ne 0) { $fails += '⑪b 命中数对不上时不该再豁免任何一处' }
 
+  # ⑫ `Get-Command` 的**参数值**不得被当成命令名(#217 复审【建议】)。
+  #    `-ErrorAction SilentlyContinue reuse` 这种写法下,旧的「第一个不以 - 开头的字符串常量」
+  #    会把守卫记成盯着「SilentlyContinue」,于是真正的 `reuse lint` 判无守卫 —— 报错指向一处
+  #    明明写了守卫的调用点。
+  $f12 = $defSetGate +
+  'if (Get-Command -ErrorAction SilentlyContinue reuse) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
+  $r12 = Get-GatesGuardReport -Source $f12
+  if (@($r12.Unguarded).Count -ne 0) { $fails += '⑫ Get-Command 的参数值被当成了命令名(守卫认不出来)' }
+  # ⑫b `-Name` 具名形态也要认
+  $f12b = $defSetGate +
+  'if (Get-Command -Name reuse -ErrorAction SilentlyContinue) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
+  $r12b = Get-GatesGuardReport -Source $f12b
+  if (@($r12b.Unguarded).Count -ne 0) { $fails += '⑫b -Name 具名形态的守卫认不出来' }
+
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
     exit 1
   }
-  Write-Host '  check-gates-guards -SelfTest:13 格全过(抓无守卫 / 两种守卫形态不误报 / 别人的守卫不算数 / 本地函数与脚本块不入面 / 变量式守卫 / 豁免按指纹 + 陈旧判负 / 同名不白拿 / 多结果仍算外部 / Cmdlet 不入面 / 同文本两处判负)'
+  Write-Host '  check-gates-guards -SelfTest:15 格全过(抓无守卫 / 两种守卫形态不误报 / 别人的守卫不算数 / 本地函数与脚本块不入面 / 变量式守卫 / 豁免按指纹 + 陈旧判负 / 同名不白拿 / 多结果仍算外部 / Cmdlet 不入面 / 同文本两处判负 / Get-Command 参数值不当命令名)'
   exit 0
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-if (-not $Path) { $Path = Join-Path $RepoRoot 'scripts\gates.ps1' }
+# 分隔符用 `/`:接进 CI 的 docs-truth(ubuntu)之后,`'scripts\gates.ps1'` 在 Linux 上是一个
+# **带反斜杠的字面文件名**,`Test-Path` 直接不成立 —— 判据一行没跑就退 1(方向偏红,但报的是
+# 「找不到被检文件」,查起来会以为是路径传错)。`/` 在 Windows 上同样可用。
+if (-not $Path) { $Path = Join-Path $RepoRoot 'scripts/gates.ps1' }
 if (-not (Test-Path $Path)) {
   Write-Host ('  [FAIL] 找不到被检文件:{0}' -f $Path) -ForegroundColor Red
   exit 1
@@ -354,10 +406,16 @@ foreach ($ex in $Exemptions) {
 
 $report = Get-GatesGuardReport -Source $src -Exemptions $Exemptions
 
-if (@($report.Sites).Count -eq 0) {
-  # 判据面为空 = 判据恒真。今天是 29 处;掉到 0 只可能是分析被改坏了,
-  # 而「恒绿」连删除式都照不出来(0 == 0),所以这里判负,不安静通过。
-  Write-Host '  [FAIL] 一个外部命令调用点都没扫到 —— 判据面为空即恒真' -ForegroundColor Red
+# 判据面塌了 = 判据近乎恒真。只挡 0 是不够的:分析被改坏到只剩三五处也照样绿,
+# 而删除式测的是「拆掉守卫会红」,**测不出「面缩水了」**。所以钉一个下界。
+# 数不写死成「今天几处」——那种数会过期,而且会成为下一个人的依据(本卡上一版就把
+# `gates.ps1` 旧注释里的 29 抄了过来,而本脚本实际收 33 处:多的 4 处是变量式调用)。
+# 下界取一个**明显低于现状、又高于「分析塌掉」**的数,只用来照出塌方,不用来对账。
+$floor = 20
+if (@($report.Sites).Count -lt $floor) {
+  Write-Host ('  [FAIL] 只扫到 {0} 处外部命令调用点(下界 {1})—— 判据面塌了,不是代码变干净了' -f
+    @($report.Sites).Count, $floor) -ForegroundColor Red
+  Write-Host '    多半是 AST 分析或分类被改坏:判据面一小,门禁就近乎恒真,而删除式照不出来。' -ForegroundColor Yellow
   exit 1
 }
 
@@ -366,7 +424,10 @@ if (@($report.StaleExemptions).Count -gt 0) {
   $bad = $true
   Write-Host '  [FAIL] 豁免命中数与清单对不上:' -ForegroundColor Red
   $report.StaleExemptions | ForEach-Object {
-    $why = if ($_.Got -eq 0) { '陈旧 —— 代码里已经没有对应调用点' } else { '被撑宽 —— 代码里多出了同文本的调用点,新的那处会白拿豁免' }
+    # `$hit` 是从**无守卫**的调用点里筛的,所以 Got=0 有两个成因,而「被加上守卫了」在这个仓里
+    # 更常见(谁给 `cmake --version` 包一层 if 就会触发)。只写「已经没有对应调用点」会让人
+    # 去 gates.ps1 里找一行**还在**的代码。
+    $why = if ($_.Got -eq 0) { '陈旧 —— 那处调用点要么被删了,要么**已经加上守卫**(两种都该删掉这条豁免)' } else { '被撑宽 —— 代码里多出了同文本的调用点,新的那处会白拿豁免' }
     Write-Host ('    {0}  期望 {1} 处、实得 {2} 处({3})' -f $_.Snippet, $_.Want, $_.Got, $why) -ForegroundColor Red
     Write-Host ('      理由:' + $_.Reason) -ForegroundColor DarkGray
   }
