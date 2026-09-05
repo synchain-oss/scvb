@@ -408,6 +408,182 @@ function Get-GatesGuardReport {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [SL-337] 第二道判据:**注释里不得复述截断值名单**。
+#
+# 它防的形态(#222 复审第 4 轮实证):`gates.ps1` 里「哪几道闸用 `-Last 30`、哪道用 20」
+# 这份事实,曾同时躺在**三处**注释里。三份当时全为真 —— 而只要有人调一个截断值,
+# 改漏哪一份都不会有人发现,因为注释不会被执行。同一张卡上这句话已经被咬过三轮:
+# 先是「与 3b 逐字相同」本身是假的,再是「三处」被那张卡自己的改动作废,最后才看清
+# 病根不是某个字面量写错,而是**它在复述一份分散的事实**。
+#
+# 判据形态:**一条注释里同时出现 `-Last <数>` 与「另一道闸的档号」⇒ 判负。**
+#   · 只判「值 × 闸」这个**组合**,不是见 `-Last` 就红 —— 单说一个值(「此前这里是
+#     `-Last 40`」)是本地事实,不是名单;单提一道闸更不是。会漂的恰恰是把两者绑起来的
+#     那句话,因为它断言的是**别处**代码今天取什么值。
+#   · 档号**从被检文件自己的 `Set-Gate` 字面量里取**,不写手写清单 —— 手写清单正是本族
+#     缺陷本身(同 `$script:ApprovedVerbs` 用 `Get-Verb` 那一处的理由)。只认带字母的
+#     档号(`3b`/`3c`/`5b`…)与 `gate <数>` 两种形态:纯数字的 `3`、`5` 在散文里满地都是,
+#     拿它当档号会把判据变成噪音源,而**噪音判据等于没有判据**。
+#   · 注释从 **PowerShell 自己的 tokenizer** 取,不按行首 `#` 切:字符串里的 `#` 不是注释,
+#     行尾注释也要收得上。档号同样走 AST(`Set-Gate` 调用的字面量实参)—— 两半必须同源,
+#     否则字符串里一句 `Set-Gate '9z …'` 就能注入一个幻影档号(#225 复审)。
+#
+# ⚠ **这一刀的另一侧是 fail-open,必须写出来**(照本文件隔壁那道的规矩):
+#   ① **只认 `-Last` 这个字面 token**。被复述的事实是「哪道闸截到多少行」,它完全可以不带
+#      `-Last` 写出来(「与 3c 同值,末 30 行」),那样这道判据看不见。收得更宽要付的代价是
+#      「30」这种裸数字满地都是 ⇒ 噪音判据等于没有判据,所以这一档**有意留在 fail-open 侧**,
+#      靠真源那一段把名单收成一份来兜。
+#   ② **档号取不到的 `Set-Gate` 形态**:变量标签(`Set-Gate $smokeLabel`)与表达式实参
+#      (`Set-Gate ("3e …" -f …)`)都拿不到字面量,那几道闸的档号不在判据面里。
+#   两条都靠 `Test-GatesLastFloor` 的下界兜底 —— 下界挡不住「少了一个档号」,但挡得住
+#   「档号集合整体塌掉」那一档,而后者才是让判据静默恒真的那种失效。
+#
+# 豁免:**唯一真源那一段**在自己的注释里挂 `[gates-last-source]`,豁免范围是**它所在的
+# 那一整段连续注释**。与本文件 `[gates-guard-exempt]` 同款:豁免长在被豁免的东西旁边,
+# 不另立清单;而且标记必须**紧跟注释起头**(允许前置 `[SL-xxx]` 这类标签),句子中间
+# 提到标记名不算 —— 否则本脚本的头注、以及任何解释这个标记的散文都能喂出一条假绿
+# (本仓「扫描器入库才炸」那一族,见自测 ⑳)。
+#
+# 返回:@{ Comments; GateIds; Sanctioned; Offending }
+# ─────────────────────────────────────────────────────────────────────────────
+function Get-GatesLastListReport {
+  param([Parameter(Mandatory)][string]$Source)
+
+  $tokens = $null
+  $errs = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$errs)
+  $srcLines = $Source -split "`r?`n"
+
+  # 行号 -> @{ Text; WholeLine }。**行尾注释与整行注释要分开**(#225 复审):下面「一整段
+  # 连续注释」的爬行只认整行注释,否则形如 `$x = 1   # 说明` 的代码行会把它两侧的注释**桥接**
+  # 成一段,豁免范围凭空跨过一段代码 —— 而 gates.ps1 里行尾注释很常见。
+  $commentByLine = @{}
+  foreach ($t in $tokens) {
+    if ($t.Kind -ne [System.Management.Automation.Language.TokenKind]::Comment) { continue }
+    $ln = $t.Extent.StartLineNumber
+    $before = ''
+    if ($ln -ge 1 -and $ln -le $srcLines.Count) {
+      $col = $t.Extent.StartColumnNumber
+      $line = [string]$srcLines[$ln - 1]
+      if ($col -ge 1 -and ($col - 1) -le $line.Length) { $before = $line.Substring(0, $col - 1) }
+    }
+    $commentByLine[$ln] = @{ Text = [string]$t.Text; WholeLine = [string]::IsNullOrWhiteSpace($before) }
+  }
+
+  # 档号:从 **AST 里的 `Set-Gate` 调用**取第一个字面量实参,不走原始文本正则(#225 复审:
+  # 注释走 tokenizer、档号走裸正则是**两条不同源的路** —— 字符串或注释里写一句
+  # `Set-Gate '9z …'` 会注入一个幻影档号)。只留**带字母**的档号,理由见头注。
+  # ⚠ **取不到的形态**:`Set-Gate $someLabel`(变量标签)与 `Set-Gate ("3e …" -f …)`(表达式)
+  #   都拿不到字面量。这是**已知的 fail-open**:某道闸若只用变量标签设,它的档号就悄悄退出
+  #   判据面。挡这一档的不是这里,而是调用点那条**下界**(见 Test-GatesLastFloor)。
+  $gateIds = New-Object System.Collections.Generic.HashSet[string]
+  if ($null -ne $ast) {
+    $setGateCalls = @($ast.FindAll({ param($n)
+          $n -is [System.Management.Automation.Language.CommandAst] -and
+          $n.GetCommandName() -eq 'Set-Gate'
+        }, $true))
+    foreach ($c in $setGateCalls) {
+      if ($c.CommandElements.Count -lt 2) { continue }
+      $arg = $c.CommandElements[1]
+      if ($arg -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) { continue }
+      $lead = [regex]::Match([string]$arg.Value, '^\s*(\d+[a-zA-Z])(?![0-9A-Za-z])')
+      if ($lead.Success) { [void]$gateIds.Add($lead.Groups[1].Value.ToLowerInvariant()) }
+    }
+  }
+
+  # 标记 -> 它所在的那一整段**整行**注释。
+  # 与 `[gates-guard-exempt]` **同款的两条硬要求**(#225 复审指出原先都没有):
+  #   · 标记后面必须跟**非空理由** —— 裸一行标记不该豁免整段;
+  #   · 标记**大小写敏感**(那一族走 `[regex]::Match` 默认敏感,两个标记不该两种口径)。
+  # 标记必须紧跟注释起头(允许前置 `[SL-xxx]` 这类标签),句子中间提到不算。
+  $markedLines = @()
+  foreach ($ln in $commentByLine.Keys) {
+    if (-not $commentByLine[$ln].WholeLine) { continue }
+    $body = ([string]$commentByLine[$ln].Text).TrimStart('#').Trim()
+    while ($body -match '^\[([^\]]+)\]\s*') {
+      $tag = $Matches[1]
+      $rest = $body.Substring($Matches[0].Length)
+      if ($tag -ceq 'gates-last-source') {
+        if (-not [string]::IsNullOrWhiteSpace($rest)) { $markedLines += $ln }
+        break
+      }
+      $body = $rest
+    }
+  }
+  $blocks = @()
+  foreach ($ln in ($markedLines | Sort-Object -Unique)) {
+    $lo = $ln
+    while ($commentByLine.ContainsKey($lo - 1) -and $commentByLine[$lo - 1].WholeLine) { $lo-- }
+    $hi = $ln
+    while ($commentByLine.ContainsKey($hi + 1) -and $commentByLine[$hi + 1].WholeLine) { $hi++ }
+    $blocks += [pscustomobject]@{ Marker = [int]$ln; Lo = [int]$lo; Hi = [int]$hi }
+  }
+  $sanctionedLines = New-Object System.Collections.Generic.HashSet[int]
+  foreach ($b in $blocks) { for ($i = $b.Lo; $i -le $b.Hi; $i++) { [void]$sanctionedLines.Add([int]$i) } }
+
+  $offending = @()
+  $sanctioned = @()
+  foreach ($ln in ($commentByLine.Keys | Sort-Object)) {
+    $text = [string]$commentByLine[$ln].Text
+    if (-not [regex]::IsMatch($text, '-Last\s+\d+')) { continue }
+    $hits = @()
+    foreach ($g in $gateIds) {
+      # ⚠ **不用 `\b`**(#225 复审):.NET 的 `\w` 覆盖 `\p{L}`,汉字是词字符,于是 `\b3b\b`
+      #   在「与3b同值」上**不匹配** —— 判据会静默依赖「拉丁 token 两侧留空格」这条没人管的
+      #   排版约定。改成只排拉丁数字与字母的环视,和中日韩字符相邻时照样成立。
+      if ([regex]::IsMatch($text, ('(?i)(?<![0-9A-Za-z])' + [regex]::Escape($g) + '(?![0-9A-Za-z])'))) { $hits += $g }
+    }
+    if ([regex]::IsMatch($text, '(?i)(?<![0-9A-Za-z])gate\s*\d+')) { $hits += 'gate N' }
+    if ($hits.Count -eq 0) { continue }
+    $row = [pscustomobject]@{ Line = [int]$ln; Text = $text.Trim(); Gates = (($hits | Sort-Object -Unique) -join '/') }
+    if ($sanctionedLines.Contains([int]$ln)) { $sanctioned += $row } else { $offending += $row }
+  }
+
+  # **孤悬的标记要判负**(#225 复审):守卫那道对 `StaleExemptions` 判红,理由是「豁免会随
+  # 代码漂移而悄悄失去精度」。这道没有对偶的话,真源名单哪天被挪走/删掉,标记还留在原地,
+  # 它所在那一整段就成了一块**永久免检区**,谁往里补一句复述都照绿。
+  $stale = @()
+  foreach ($b in $blocks) {
+    $covered = @($sanctioned | Where-Object { $_.Line -ge $b.Lo -and $_.Line -le $b.Hi })
+    if ($covered.Count -eq 0) {
+      $stale += [pscustomobject]@{ Line = $b.Marker; Text = ([string]$commentByLine[$b.Marker].Text).Trim() }
+    }
+  }
+
+  return @{
+    Comments   = $commentByLine.Count
+    GateIds    = @($gateIds)
+    Sanctioned = @($sanctioned)
+    Offending  = @($offending)
+    Stale      = @($stale)
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [SL-337 / #225 复审] **判据面下界**。与隔壁 `$floor` 同一条理由:判据面一小,门禁就近乎
+# 恒真,而删除式照不出来 —— 它测的是「拆掉判据会红」,测不出「面缩水了」。
+# 这道判据的塌缩路径比隔壁多:`Set-Gate` 改名、多包一层 helper、某道闸只用变量标签设、
+# 或者档号提取被改坏,`$gateIds` 一空,整道判据当场恒真且**完全静默**。
+# 两个下界都取「明显低于现状、又高于塌方」的数,只用来照出塌方,不用来对账。
+# 返回 $null 表示没塌;否则返回一句可直接打给人看的话。
+# ─────────────────────────────────────────────────────────────────────────────
+function Test-GatesLastFloor {
+  param([Parameter(Mandatory)]$Report, [switch]$DefaultTarget)
+  # ⚠ **档号下界只对默认目标生效**。`-Path` 是公开参数,而「一个 `Set-Gate` 都没有」
+  #   对别的脚本是**合法状态**、不是塌方—— 无条件套一个下界,犯的就是隔壁那道
+  #   自己写过的「判据把自己的适用面写宽了,却按最宽那份的体量收口」。
+  #   注释下界两边都留:非默认目标只挡「一条注释都没扫到」,而那多半是文件传错了。
+  $cmFloor = if ($DefaultTarget) { 200 } else { 1 }
+  if ($DefaultTarget -and @($Report.GateIds).Count -lt 5) {
+    return ('只提取到 {0} 个档号(下界 5)—— Set-Gate 的形态多半被改了,判据面塌了' -f @($Report.GateIds).Count)
+  }
+  if ($Report.Comments -lt $cmFloor) {
+    return ('只扫到 {0} 条注释(下界 {1})—— 注释提取多半被改坏了,判据面塌了' -f $Report.Comments, $cmFloor)
+  }
+  return $null
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 if ($SelfTest) {
   # 夹具一律**拼装**,并且喂给**生产路径同一个函数**。
   $q = [char]34
@@ -593,6 +769,122 @@ if ($SelfTest) {
   & $check '㉓ 行尾标记被下一行白拿了(旧的「同行或上一行」二选一逻辑)' (@($r23.Exempted).Count -eq 0)
   & $check '㉓b 该行尾标记本行无可豁免对象时应判孤悬' (@($r23.StaleExemptions).Count -eq 1)
 
+  # ─── [SL-337] 第二道判据「注释里不得复述截断值名单」的自测格 ───────────────
+  # 夹具全部**拼装**,零自我豁免:本文件自己的散文里也提这些字面量,若拿本文件当夹具,
+  # 判据就会被自己的文档喂出结论(本仓「扫描器入库才炸」那一族)。
+  $sg = "Set-Gate '3b gitleaks' `$ok" + [Environment]::NewLine + "Set-Gate '3c reuse lint' `$ok"
+  $mkLast = '# [gates-last-source] 名单真源'
+
+  # ㉔ **不误报**:注释里只有值、没有别的闸 ⇒ 不判负(单说本地事实不是名单)
+  $l24 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 此前这里是 -Last 40,没有独立理由')
+  & $check '㉔ 只提一个值也被判成了名单(判据成了噪音源)' (@($l24.Offending).Count -eq 0)
+
+  # ㉔b **代码不是注释**:真正的 `Select-Object -Last 30` 调用不该被算进来
+  $l24b = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '$x | Select-Object -Last 30   # 3b 同款')
+  & $check '㉔b 代码行里的 -Last 被当成了注释复述' (@($l24b.Offending).Count -eq 0)
+
+  # ㉕ **正向**:值 × 带字母档号 同现 ⇒ 判负
+  $l25 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 与 3b 同值:这里也取 -Last 20')
+  & $check '㉕ 值与档号同现没被判负(本判据的正主)' (@($l25.Offending).Count -eq 1)
+
+  # ㉕b `gate <数>` 形态同样算档号(纯数字 3/5 不算,否则满地都是)
+  $l25b = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 与 gate 5(构建)同值,取 -Last 30')
+  & $check '㉕b 「gate N」形态的档号没被认出来' (@($l25b.Offending).Count -eq 1)
+  # ⚠ 夹具里必须真的有**纯数字档号的闸**(`3 prettier` / `5 构建`),否则这一格没牙:
+  #   夹具里只放带字母的闸时,把「只认带字母档号」那一刀放宽掉,档号集合根本不会变,
+  #   本格照样绿。这是反向注入实测出来的,不是想出来的(同族教训:#219 那两格无牙用例)。
+  $sgNum = $sg + [Environment]::NewLine + "Set-Gate '3 prettier' `$ok" + [Environment]::NewLine + "Set-Gate '5 构建' `$ok"
+  $l25c = Get-GatesLastListReport -Source ($sgNum + [Environment]::NewLine + '# 第 3 版把上界从 5 改成 -Last 30')
+  & $check '㉕c 散文里的纯数字被当成了档号(噪音判据)' (@($l25c.Offending).Count -eq 0)
+
+  # ㉖ **豁免**:带标记那一整段连续注释内不判负
+  $l26 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + $mkLast + [Environment]::NewLine + '# 3b 是 -Last 20,其余四处 30')
+  & $check '㉖ 带标记的真源段仍被判负' ((@($l26.Offending).Count -eq 0) -and (@($l26.Sanctioned).Count -eq 1))
+
+  # ㉖b 豁免**只覆盖标记所在的那一段**:空行断开之后的第二处照样判负
+  $l26b = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + $mkLast + [Environment]::NewLine +
+    '# 3b 是 -Last 20,其余四处 30' + [Environment]::NewLine + '$x = 1' + [Environment]::NewLine +
+    '# 抄一份:3c 也取 -Last 30')
+  & $check '㉖b 标记把它那一段之外的复述也豁免了' (@($l26b.Offending).Count -eq 1)
+
+  # ㉗ 句子中间提到标记名**不算**豁免(与 ⑳ 同族:文档不许喂出假绿)
+  $l27 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine +
+    '# 说明:真源段的标记形态是 [gates-last-source]' + [Environment]::NewLine + '# 3b 是 -Last 20')
+  & $check '㉗ 句子中间提到标记名也豁免了(文档能喂出假绿)' (@($l27.Offending).Count -eq 1)
+
+  # ㉘ **字符串里的井号不是注释**:tokenizer 与「行首 #」在这里分道扬镳
+  $l28 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '$msg = "# 3b 是 -Last 20"')
+  & $check '㉘ 字符串里的井号被当成了注释' (@($l28.Offending).Count -eq 0)
+
+  # ㉙ 档号确实是**从 Set-Gate 提取的**,不是硬编码:抽掉 Set-Gate,同一条注释不再判负。
+  #    ⚠ 这一格把**塌缩形态写成了期望值**(#225 复审)—— 它钉的「不是硬编码」是对的,
+  #      但单有它等于给「档号集合塌了 ⇒ 整道判据恢复静默」背书。所以必须与
+  #      ㉙b(下界)成对出现:一格证明不硬编码,另一格证明塌了会被照出来。
+  $l29 = Get-GatesLastListReport -Source ('# 与 3b 同值:这里也取 -Last 20')
+  & $check '㉙ 档号是硬编码的(抽掉 Set-Gate 后仍判负)' ((@($l29.Offending).Count -eq 0) -and (@($l29.GateIds).Count -eq 0))
+  & $check '㉙b 档号集合塌掉了却没被下界拦住(判据静默恒真)' ($null -ne (Test-GatesLastFloor -Report $l29 -DefaultTarget))
+
+  # ─── [#225 复审第 1 轮] 补的格 ────────────────────────────────────────────
+  # ㉚ **裸标记不该豁免**:`[gates-guard-exempt]` 那一族强制非空理由(自测 ⑰),两个标记同款。
+  $l30 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# [gates-last-source]' + [Environment]::NewLine + '# 3b 是 -Last 20')
+  & $check '㉚ 没写理由的裸标记也豁免了整段' (@($l30.Offending).Count -eq 1)
+
+  # ㉚b **孤悬标记判负**:标记还在、它那段里已经没有需要豁免的东西 ⇒ 一块永久免检区
+  $l30b = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + $mkLast + [Environment]::NewLine + '# 这段已经不列名单了')
+  & $check '㉚b 孤悬的真源标记没被判负(留下一块永久免检区)' (@($l30b.Stale).Count -eq 1)
+  & $check '㉚b2 真源段还在用时被误判成孤悬' (@($l26.Stale).Count -eq 0)
+
+  # ㉛ **行尾注释不该桥接两段**:`$x = 1   # 说明` 这样的代码行必须断开豁免范围。
+  #    ⚠ ㉖b 用的是**不带**行尾注释的 `$x = 1`,照不出这一条(#225 复审实测)——
+  #      两格的差别只有那句行尾注释,留着两格是因为它们分别钉「代码行断开」与「带注释的代码行也断开」。
+  $l31 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + $mkLast + [Environment]::NewLine +
+    '# 3b 是 -Last 20,其余四处 30' + [Environment]::NewLine + '$x = 1   # 顺带说明' + [Environment]::NewLine +
+    '# 抄一份:3c 也取 -Last 30')
+  & $check '㉛ 带行尾注释的代码行把两段注释桥接成了一段(豁免凭空跨过代码)' (@($l31.Offending).Count -eq 1)
+
+  # ㉜ **标记大小写敏感**:与 [gates-guard-exempt] 同口径(SL-322 为标记族的大小写正反各钉过一格)
+  $l32 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# [Gates-Last-Source] 名单真源' + [Environment]::NewLine + '# 3b 是 -Last 20')
+  & $check '㉜ 大小写不同的标记也生效(与另一个标记两种口径)' (@($l32.Offending).Count -eq 1)
+
+  # ㉝ **档号与汉字相邻时也要认出来**:.NET 的 \w 覆盖 \p{L},`\b3b\b` 在「与3b同值」上不匹配 ⇒
+  #    判据会静默依赖「拉丁 token 两侧留空格」这条没人管的排版约定(#225 复审)。
+  $l33 = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 与3b同值,取 -Last 20')
+  & $check '㉝ 档号与汉字相邻时没被认出来(判据靠排版约定活着)' (@($l33.Offending).Count -eq 1)
+  # ㉝b 反侧仍要成立:`13b` 这种前后粘着数字/字母的不算档号
+  $l33b = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 版本 13b 的上界是 -Last 20')
+  & $check '㉝b 粘在别的字母数字里的片段被当成了档号' (@($l33b.Offending).Count -eq 0)
+
+  # ㉞ **档号走 AST,不走裸正则**:字符串里写一句 Set-Gate 不该注入幻影档号(#225 复审)
+  $l34 = Get-GatesLastListReport -Source ('$msg = "Set-Gate ''9z 幻影'' $ok"' + [Environment]::NewLine + '# 与 9z 同值,取 -Last 20')
+  & $check '㉞ 字符串里的 Set-Gate 注入了幻影档号' (@($l34.Offending).Count -eq 0)
+
+  # ㉟ 下界:非默认目标降为 1,别对小脚本假红(与隔壁 $floor 同一条理由)
+  # ⚠ 夹具里**不能有 Set-Gate**,否则这一格没牙:带上 `$sg` 时档号本就≥ 2,
+  #   下界怎么写都不会红。能区分新旧两套的输入恰恰是「一个 Set-Gate 都没有」。
+  $l35 = Get-GatesLastListReport -Source ('# 一条注释' + [Environment]::NewLine + '& some-tool --version')
+  & $check '㉟ 对「没有 Set-Gate 的非默认目标」假红了' ($null -eq (Test-GatesLastFloor -Report $l35))
+  & $check '㉟b 默认目标上档号塌成 0 却没红' ($null -ne (Test-GatesLastFloor -Report $l35 -DefaultTarget))
+  # ㉟c **只有档号下界能挡住的那一档**:注释很多、档号为 0。
+  #    ⚠ 没有这一格,拆掉档号下界也不会红 —— 上面那几格的夹具注释数本就 < 200,
+  #      注释下界替它兼了底。这是反向注入实测出来的(删除式第 ⑤ 格当时是绿的)。
+  $manyComments = (1..250 | ForEach-Object { '# 第 ' + $_ + ' 条' }) -join [Environment]::NewLine
+  $l35c = Get-GatesLastListReport -Source $manyComments
+  & $check '㉟c 档号塌成 0 而注释不少时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35c -DefaultTarget))
+  & $check '㉟d 同一输入在非默认目标上不该假红' ($null -eq (Test-GatesLastFloor -Report $l35c))
+
+  # ㉟e **只有注释下界能挡住的那一档**:档号够多、注释几乎没有。
+  #    ⚠ 没有这一格,把注释下界整刀删掉自测也不会红 —— 上面每一格的档号数都 < 5,
+  #      在 -DefaultTarget 上档号那一刀总是先返回,替它兼了底。
+  #      与 ㉟c 是**同一个洞的两个方向**:那一格没有档号、这一格没有注释,
+  #      两格各自只能被一条下界拦住。注释提取一旦被改坏,`$commentByLine` 为空
+  #      ⇒ `Offending` 恒为 0、判据静默全绿,而档号那一半走 AST 照样能取到十几个,
+  #      档号下界拦不住。
+  $sgFive = @('3b gitleaks', '3c reuse lint', '3d 设计盒真源', '3e web smoke', '3f 文档真源') |
+  ForEach-Object { "Set-Gate '$_' `$ok" }
+  $l35e = Get-GatesLastListReport -Source (($sgFive -join [Environment]::NewLine) + [Environment]::NewLine + '# 一条注释')
+  & $check '㉟e 档号够多但注释塌成个位数时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35e -DefaultTarget))
+  & $check '㉟f 同一输入在非默认目标上假红了' ($null -eq (Test-GatesLastFloor -Report $l35e))
+
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
@@ -711,4 +1003,42 @@ Write-Host ('    分布:{0}' -f $byName)
 foreach ($e in @($report.Exempted | Sort-Object Line)) {
   Write-Host ('    [豁免] {0}:{1}  {2}' -f (Split-Path -Leaf $Path), $e.Line, $e.Text) -ForegroundColor DarkGray
 }
+# ─────────────────────────────────────────────────────────────────────────────
+# [SL-337] 第二道判据:注释里不得复述截断值名单(形态与理由见上面那段头注)。
+# 与守卫完备那道**分开报**:两道判的是两件事,压成一行会让人以为红的是守卫。
+# ─────────────────────────────────────────────────────────────────────────────
+$lastRep = Get-GatesLastListReport -Source $src
+$lastFloorMsg = Test-GatesLastFloor -Report $lastRep -DefaultTarget:$isDefaultPath
+if ($null -ne $lastFloorMsg) {
+  Write-Host ('  [FAIL] 截断值名单判据:{0}' -f $lastFloorMsg) -ForegroundColor Red
+  Write-Host '    判据面塌了不是「注释变干净了」 —— 档号集合与注释提取任一半塌掉,' -ForegroundColor Yellow
+  Write-Host '    这道判据都会当场恒真且完全静默。塌的是哪一半,上面那句已经点名了。' -ForegroundColor Yellow
+  exit 1
+}
+if (@($lastRep.Stale).Count -gt 0) {
+  Write-Host ('  [FAIL] {0} 条孤悬的 [gates-last-source] 标记:' -f @($lastRep.Stale).Count) -ForegroundColor Red
+  foreach ($st in $lastRep.Stale) {
+    Write-Host ('    {0}:{1}  {2}' -f (Split-Path -Leaf $Path), $st.Line, $st.Text) -ForegroundColor Red
+  }
+  Write-Host '    它那一整段里已经没有需要豁免的东西了 —— 留着就是一块永久免检区,' -ForegroundColor Yellow
+  Write-Host '    谁往这段里补一句复述都照绿。名单挪走了就把标记跟着挪,或删掉。' -ForegroundColor Yellow
+  exit 1
+}
+if (@($lastRep.Offending).Count -gt 0) {
+  Write-Host ('  [FAIL] {0} 条注释在复述截断值名单(值 × 别的闸号同现):' -f @($lastRep.Offending).Count) -ForegroundColor Red
+  foreach ($o in $lastRep.Offending) {
+    Write-Host ('    {0}:{1}  {2}' -f (Split-Path -Leaf $Path), $o.Line, $o.Text) -ForegroundColor Red
+    Write-Host ('      点到的闸:{0}' -f $o.Gates) -ForegroundColor DarkGray
+  }
+  Write-Host '    修法:名单只留真源那一份(挂 [gates-last-source] 的那段),这里改成指路回去;' -ForegroundColor Yellow
+  Write-Host '    或者干脆不提别的闸 —— 本地取什么值,读者看紧邻的那行代码即可。' -ForegroundColor Yellow
+  Write-Host '    (为什么要有这道:同一份名单曾在本文件里躺着三份,#222 复审第 4 轮。)' -ForegroundColor Yellow
+  exit 1
+}
+Write-Host ('  gates 注释未复述截断值名单:扫 {0} 条注释、{1} 个档号,真源段 {2} 条豁免。' -f
+  $lastRep.Comments, @($lastRep.GateIds).Count, @($lastRep.Sanctioned).Count)
+foreach ($sa in @($lastRep.Sanctioned)) {
+  Write-Host ('    [真源] {0}:{1}  {2}' -f (Split-Path -Leaf $Path), $sa.Line, $sa.Text) -ForegroundColor DarkGray
+}
+
 exit 0
