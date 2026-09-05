@@ -474,8 +474,7 @@ private:
                                std::int64_t rangeEndSample, bool clearManual);
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
                         std::int64_t rangeEndSample, bool clearManual, bool fullScope,
-                        AnalysisDoneReason resegmentReason,
-                        std::uint16_t analyzedTracks);
+                        AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
     void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。

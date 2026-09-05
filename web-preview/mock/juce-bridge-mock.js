@@ -1112,6 +1112,21 @@ function buildOutputBackend(ctx) {
                     },
                 );
                 emitRecomputedSegments("analyze", a.channels, frame);
+                // [SL-279] 一次**全量**分析完成 ⇒ 基线前移到当前档(stale 归假、徽标灭)。
+                // 「全量」= scope 是 `"all"`(与 native 的 fullScope 同一条判据):只重分析
+                // 一段时基线不动,其余段仍按旧口径。
+                if (scope === "all") {
+                    patchState({
+                        analysis: {
+                            applied: {
+                                loudness_mode:
+                                    model.snapshot.analysis.loudness_mode,
+                                center_slot_policy:
+                                    model.snapshot.analysis.center_slot_policy,
+                            },
+                        },
+                    });
+                }
                 patchState({ analysis_run: { running: false, progress: 1 } });
             });
             return { ok: true, affected };
@@ -1517,6 +1532,9 @@ function buildOutputBackend(ctx) {
                 next.center_slot_policy = patch.center_slot_policy;
             }
             if (Object.keys(next).length === 0) return BAD_ARG();
+            // [SL-279] **只改当前值,不动 applied.\*** —— 「上次全量分析所用」只由一次
+            // 全量 analyze 前移(见 analyze() 收尾处)。这正是 stale 的来处:改档 ⇒ 两者
+            // 不等 ⇒ 设置页亮琥珀徽标。与 native 的 setAnalysisConfig 同口径。
             patchState({ analysis: next });
             return OK();
         },

@@ -1086,18 +1086,48 @@ try {
     await sleep(600);
     const sol = await evaluate(ASK_PROBE);
     if (check(sol, "C8 探针取到锚点")) {
+        // [SL-279] **这一条反转了**。本档的语义是「工程存 rms 且**按 rms 分析过**」——
+        // 从前 UI 拿 mount 快照当基线,加载完就误报「需重新分析」,那时这里断言 badge 亮。
+        // 基线换成 state 的 `analysis.applied.*` 之后,这一档**不该再亮** ——
+        // 它正是 SL-279 要修的那条误报的可达用例:谁把基线改回本地快照,这一条当场红。
         check(
-            sol.badgeShown,
-            "C8 琥珀 badge 亮着(纯派生的常驻状态位,语义不变)",
+            !sol.badgeShown,
+            "C8 琥珀 badge **不亮**(存的档就是上次分析用的档,不是「需重新分析」)",
         );
-        check(
-            !sol.open,
-            "C8 但弹窗**没有**弹 —— 用户什么都没改,不该被模态框打断",
-        );
+        check(!sol.open, "C8 弹窗也没有弹 —— 用户什么都没改,不该被模态框打断");
     }
     // 同一张页上再确认这道闸没有把功能一起关掉:用户真去改档,照样弹。
     check(await setLoudness("peak_dbfs"), "C8 在这张页上改档可点");
     check(await waitFor(askOpen, 4000), "C8 用户真改档 ⇒ 照样弹");
+
+    // C8s [SL-279] **真的**在加载时 stale 的那一档:工程存 rms、上次分析用的是 kw_integrated
+    // (用户改了档没重分析就存盘)。badge **该亮**,而弹窗**仍不该弹**(不是用户此刻改的)。
+    // C8 与 C8s 是一对:少了 C8s,把 stale 判据改成「恒假」也能全绿;少了 C8,
+    // 把基线改回 mount 本地快照也能全绿。两档方向相反,各钉一半。
+    newBucket("stale-on-load-real");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=loudness-stale-on-load`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C8s 「改了档没重分析」的工程装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+    const solReal = await evaluate(ASK_PROBE);
+    if (check(solReal, "C8s 探针取到锚点")) {
+        check(
+            solReal.badgeShown,
+            "C8s 琥珀 badge 亮着(当前档 ≠ 上次分析所用档)",
+        );
+        check(
+            !solReal.open,
+            "C8s 但弹窗**没有**弹 —— stale 为真也不该由派生位驱动模态框",
+        );
+    }
     assertClean("stale-on-load");
 
     // C9 [SL-276 二轮复审] askOnNextStale 是**一次性**的:弹过就得清掉。

@@ -1836,13 +1836,13 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // [SL-279] applied.*:codec 已按两级长度回退处理(abi=2 的旧工程取当前值而非默认值)。
     runtime_.appliedLoudnessMode =
         juce::String::fromUTF8(s.appliedLoudnessMode.c_str(), static_cast<int>(s.appliedLoudnessMode.size()));
-    runtime_.appliedCenterSlotPolicy = juce::String::fromUTF8(s.appliedCenterSlotPolicy.c_str(),
-                                                             static_cast<int>(s.appliedCenterSlotPolicy.size()));
+    runtime_.appliedCenterSlotPolicy =
+        juce::String::fromUTF8(s.appliedCenterSlotPolicy.c_str(), static_cast<int>(s.appliedCenterSlotPolicy.size()));
     if (report.appliedLoudnessModeFallbacks > 0 || report.appliedCenterSlotPolicyFallbacks > 0)
     {
         DBG("SCVB Output: analysis.applied 枚举未知值回落默认(loudness_mode="
-            << report.appliedLoudnessModeFallbacks
-            << ", center_slot_policy=" << report.appliedCenterSlotPolicyFallbacks << ")");
+            << report.appliedLoudnessModeFallbacks << ", center_slot_policy=" << report.appliedCenterSlotPolicyFallbacks
+            << ")");
     }
     if (report.loudnessModeFallbacks > 0 || report.centerSlotPolicyFallbacks > 0)
     {
@@ -2856,9 +2856,9 @@ void ScvbOutputAudioProcessor::tickResegmentDebounce(std::int64_t nowMs)
         pendingResegmentReason_ = AnalysisDoneReason::None; // 没起来就别留着脏 reason
 }
 
-ScvbOutputAudioProcessor::AnalyzeAccepted
-ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual,
-                                        bool fullScope)
+ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask,
+                                                                                  double startS, double endS,
+                                                                                  bool clearManual, bool fullScope)
 {
     AnalyzeAccepted a;
     if (analysisRunning_.load(std::memory_order_acquire))

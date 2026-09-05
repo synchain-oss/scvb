@@ -648,7 +648,7 @@ export function createTabSettings(opts) {
         // [SL-279] 基线来自 state 的 `analysis.applied.*`(上次全量分析所用),不再是本地快照。
         // [SL-278] **逐项判**:两枚徽标各挂各的控件,合成一个布尔会让它们同亮同灭。
         const cur = config();
-        const applied = appliedAnalysisConfigOf(store.state);
+        const applied = appliedAnalysisConfigOf(getStore().state);
         const loudnessStale = analysisConfigStale(
             cur.loudness_mode,
             applied.loudness_mode,

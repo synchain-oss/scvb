@@ -111,12 +111,8 @@ class AppliedAnalysisAction : public juce::UndoableAction
 public:
     AppliedAnalysisAction(juce::String& loudness, juce::String& center, juce::String oldLoudness,
                           juce::String oldCenter, juce::String newLoudness, juce::String newCenter)
-        : loudness_(loudness)
-        , center_(center)
-        , oldLoudness_(std::move(oldLoudness))
-        , oldCenter_(std::move(oldCenter))
-        , newLoudness_(std::move(newLoudness))
-        , newCenter_(std::move(newCenter))
+        : loudness_(loudness), center_(center), oldLoudness_(std::move(oldLoudness)), oldCenter_(std::move(oldCenter)),
+          newLoudness_(std::move(newLoudness)), newCenter_(std::move(newCenter))
     {
     }
 

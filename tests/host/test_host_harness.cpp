@@ -995,8 +995,7 @@ TEST_CASE("HOST P0-1:采集 → 分析 → 出段表(全链,不卡死)", "[host]
     CHECK(preview3.manualKept == 0);
 }
 
-TEST_CASE("HOST SL-278/SL-279:全量分析前移基线,撤销/重做两向都跟着走",
-          "[host][t37][analyze][sl278][sl279]")
+TEST_CASE("HOST SL-278/SL-279:全量分析前移基线,撤销/重做两向都跟着走", "[host][t37][analyze][sl278][sl279]")
 {
     Rig r;
     r.ph.playing = true;

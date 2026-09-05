@@ -76,7 +76,6 @@ struct SegmentLoudnessReadings
 // `loudnessMode` 一个成员,收窄之后本文件不必再认识那个结构(否则就是上面说的那个环)。
 // 生产侧零调用点(这条「第二指标读数」的路尚未落地,见本文件上方 [SL-252] 那段),
 // 调用点只有 `tests/core/test_vad.cpp` 两处。
-SegmentLoudnessReadings computeSegmentLoudness(LoudnessMode mode, const float* kwMs, const float* peak,
-                                               std::size_t n);
+SegmentLoudnessReadings computeSegmentLoudness(LoudnessMode mode, const float* kwMs, const float* peak, std::size_t n);
 
 } // namespace scvb::analysis

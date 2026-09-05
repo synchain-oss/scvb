@@ -476,8 +476,7 @@ TEST_CASE("OutputStateCodec:[SL-279] applied.* 往返 + 与当前值互不串", 
     REQUIRE(b == b2); // 逐字节往返
 }
 
-TEST_CASE("OutputStateCodec:[SL-279] abi=2 旧 payload ⇒ applied := 当前值(不是默认值)",
-          "[output][state][sl279]")
+TEST_CASE("OutputStateCodec:[SL-279] abi=2 旧 payload ⇒ applied := 当前值(不是默认值)", "[output][state][sl279]")
 {
     // 这一格钉的是本卡的产品取舍:旧工程视为「已经按它存着的那档分析过」。
     // 回落默认会让一个存了非默认档的工程一打开就报「需重新分析」—— 那正是 SL-279 要修的误报。

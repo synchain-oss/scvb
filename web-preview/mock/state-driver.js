@@ -128,6 +128,12 @@ export const SCENARIO_MAP = Object.freeze({
     // 覆盖不到真正危险的那条 ——「stale 一上来就为真(基线在 state 到达前快照的),
     // 用户什么都没做,框却弹了」。有了本档,那条误报路径在冒烟里才可达。
     "loudness-nondefault": "fifteen-tracks",
+    // [SL-279] 「改了档、没重分析就存盘」——工程存 rms 而 applied 仍是 kw_integrated。
+    // 这是 stale **真的**在加载时为真的那一档(用户什么都没做、提示该亮),
+    // 与上面那档正好相反:上面那档是 SL-279 修掉的**误报**(存 rms 且按 rms 分析过 ⇒ 不该亮)。
+    // 两档一起才钉得住「徽标读的是 applied 而不是本地快照」:少了本档,把判据改成
+    // 「恒不亮」也能全绿。
+    "loudness-stale-on-load": "fifteen-tracks",
     // [SL-280] 分布图柱高映射的回归场景:DEMO_TRACKS 的推子行程最高 0.62(= −1.7 dB),
     // 全部落在旧公式的**饱和点之下**,所以「−1.82 dB 以上一律画成 88%」这条缺陷在
     // preview 里三个月都没露过面 —— mock 数据恰好避开了缺陷区间。本场景把若干轨顶到
@@ -509,11 +515,36 @@ export function buildWorld(opts = {}) {
         };
     }
     if (opts.scenario === "loudness-nondefault" && outputSnapshot) {
-        // 只改工程存的口径,别的一律不动 —— 要复现的正是「加载完就与 UI 基线不一致」。
-        // 段表照旧(它本来就是按 rms 分析出来的),所以「结果其实是新的」这一点也对得上。
+        // 工程存的口径不是出厂默认(用户用过 rms **并按 rms 分析过**)。
+        // [SL-279] `applied` 跟着一起是 rms —— 这一档的语义从头就是「按它存的档分析过」,
+        // 段表也是按 rms 出来的。此前 UI 拿 mount 快照当基线,加载完就误报「需重新分析」;
+        // 换成 state 的 applied.* 之后**不该再报**,而这一档正是那条误报路径的可达用例:
+        // 谁把基线改回本地快照,`smoke-ui-layout-page` 的「初始不弹」当场红。
         outputSnapshot = {
             ...outputSnapshot,
-            analysis: { ...outputSnapshot.analysis, loudness_mode: "rms" },
+            analysis: {
+                ...outputSnapshot.analysis,
+                loudness_mode: "rms",
+                applied: {
+                    ...(outputSnapshot.analysis.applied || {}),
+                    loudness_mode: "rms",
+                },
+            },
+        };
+    }
+    if (opts.scenario === "loudness-stale-on-load" && outputSnapshot) {
+        // [SL-279] 当前档 rms、上次分析用的还是 kw_integrated ⇒ stale 为真且**不是用户改的**。
+        // 段表照旧(它是按 kw_integrated 出来的),与「结果其实是旧的」对得上。
+        outputSnapshot = {
+            ...outputSnapshot,
+            analysis: {
+                ...outputSnapshot.analysis,
+                loudness_mode: "rms",
+                applied: {
+                    ...(outputSnapshot.analysis.applied || {}),
+                    loudness_mode: "kw_integrated",
+                },
+            },
         };
     }
     if (opts.scenario === "first-run" && outputSnapshot) {
