@@ -382,7 +382,7 @@ function allowList(block, headText = ALLOW_HEAD) {
                 " —— SL 卡号 / J 裁定号是**块里那半**(「" +
                 ALLOW_HEAD +
                 "」)的形态;正文里的引用只可能是 PR 号。" +
-                "写在这里既放行不掉、又会被当成「已经不需要的放行」判负。" +
+                "写在这里放行不掉;这道拦截若不在,它还会接着被当成「已经不需要的放行」判负。" +
                 "正文放行照这个写:" +
                 allowSampleFor("111"),
         );
@@ -994,6 +994,20 @@ if (selfTest) {
             ) === "真理由",
             "正文放行连纯数字号也收不下了 —— 收窄收过头,正当的放行没法写",
         );
+        // ⑨e2 收窄谓词与 `bodyPrRefs` 必须**同口径**。这里的 `/^\d+$/` 与 `bodyPrRefs` 的
+        //     `/#(\d+)/` 是两份写法,哪天后者放宽(正文也开始收别的形态),这一格会**静默继续拒**
+        //     —— 失效方向恰是本卡要防的「放行放不掉」(复审【建议】)。所以把两侧钉在一起:
+        //     `bodyPrRefs` 真产出的号,必须过得了这条收窄。
+        const refNum = bodyPrRefs("- 正文条目 (#111)")[0];
+        check(
+            !!refNum &&
+                allowList(
+                    bodyAllowBlock("- #" + refNum.num + " —— 真理由"),
+                    BODY_ALLOW_HEAD,
+                ).has(refNum.num),
+            "`bodyPrRefs` 产出的号过不了正文放行的收窄 —— 两处口径已经分叉,放行会静默失效;实得号 " +
+                (refNum && refNum.num),
+        );
         // ⑨f [SL-326] 「最大落地号」的推导**只此一份**。语义先钉住:空集合 ⇒ 0;
         //     比的是**数**不是字典序(否则 "9" 会大过 "10",基线与判据一起错)。
         check(
@@ -1008,11 +1022,18 @@ if (selfTest) {
         //     搜索串**拼装**,免得这条断言自己被数进去(本仓「扫描器入库才炸」那一族)。
         const rawExpr = "Math.max(0, ..." + "[...landed].map(Number))";
         const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+        // ⚠ 边界:这一格只认**这一种字面写法**。抄成 `Math.max(0, ...Array.from(landed, Number))`
+        //    照样过 —— 它挡的是「复制粘贴出第二份」,不是「另写一个等价实现」。
+        //    两侧话术分开报:0 次的真因是**搜索串过期**(推导被改名/改写),不是「不同源」,
+        //    对着 0 去找第二份推导是找不到的(复审【建议】,与本卡 ② 同一个毛病)。
+        const rawHits = selfSrc.split(rawExpr).length - 1;
         check(
-            selfSrc.split(rawExpr).length - 1 === 1,
-            "「最大落地号」的推导式在本文件里出现了 " +
-                (selfSrc.split(rawExpr).length - 1) +
-                " 次(应当只有 maxLandedOf 一处)—— 基线与判据一旦不同源,基线比没有更坏",
+            rawHits === 1,
+            rawHits === 0
+                ? "⑨g 的搜索串对不上了(推导式被改名 / 改写?)—— 这一格已经量不到任何东西,要么同步 rawExpr,要么换一种钉法"
+                : "「最大落地号」的推导式在本文件里出现了 " +
+                      rawHits +
+                      " 次(应当只有 maxLandedOf 一处)—— 基线与判据一旦不同源,基线比没有更坏",
         );
         check(
             phErr.includes(ALLOW_REASON_PLACEHOLDER),
