@@ -724,6 +724,13 @@ if ($SelfTest) {
   $r15b = Get-GatesGuardReport -Source $f15b
   & $check '⑮b 纯闭包被当成外部命令(判据面被撑宽)' (@($r15b.Sites).Count -eq 0)
 
+  # ⑮c 本文件**自己定义的函数**不得入判据面 —— 靠 `FunctionDefinitionAst` 从**同一棵 AST**
+  #    里排掉,而不是靠收紧「解析不到」那一档(那一档是故意 fail-closed 的)。
+  #    ⚠ 这一刀此前只被**隐式**钉在别的夹具上:把它删掉,红的是「有守卫的调用
+  #      被误判成无守卫」那一格 —— 话术指向另一件事(#228 复审)。配一格明的。
+  $r15c = Get-GatesGuardReport -Source ('function Invoke-Foo { }' + [Environment]::NewLine + 'Invoke-Foo')
+  & $check '⑮c 本文件定义的函数被当成外部命令(判据面被撑宽,且报错会指向别处)' (@($r15c.Sites).Count -eq 0)
+
   # ---- 行内豁免标记(SL-331 后续批把 ③ 类那几处从外部清单搬进了 gates.ps1 调用点旁)----
   $mkExempt = '# [gates-guard-exempt] 理由写在这里'
   # ⑯ 标记在**紧邻上一行** ⇒ 豁免
@@ -878,6 +885,10 @@ if ($SelfTest) {
   # ㉟e **只有注释下界能挡住的那一档**:档号够多、注释几乎没有。
   #    ⚠ 没有这一格,把注释下界整刀删掉自测也不会红 —— 上面每一格的档号数都 < 5,
   #      在 -DefaultTarget 上档号那一刀总是先返回,替它兼了底。
+  #    ⚠ 夹具的档号数取得与 gates.ps1 今天能取到的**同阶**,不是恰好卡在下界上
+  #      (#228 复审):卡在下界上的话,谁把档号下界抬高一点(注释里自己写着
+  #      「收到 8 完全合理」),这一格就会红在**夹具**上,而报错话术说的是
+  #      「挡住它的不是注释那一刀」,把人指向判据而不是夹具。格名里也写了出路。
   #      ⚠ 断言钉的是**哪一刀返回的**,不是「返回了非空」(#225 复审第 3 轮):
   #        夹具给的是**不多不少 5 个**档号,而档号那一刀是 `-lt 5`,**零余量** ——
   #        谁把下界从 5 收到 6(gates.ps1 今天能取到 11 个,收到 8 完全合理),
@@ -887,10 +898,12 @@ if ($SelfTest) {
   #      两格各自只能被一条下界拦住。注释提取一旦被改坏,`$commentByLine` 为空
   #      ⇒ `Offending` 恒为 0、判据静默全绿,而档号那一半走 AST 照样能取到十几个,
   #      档号下界拦不住。
-  $sgFive = @('3b gitleaks', '3c reuse lint', '3d 设计盒真源', '3e web smoke', '3f 文档真源') |
+  $sgMany = @('3b gitleaks', '3c reuse lint', '3d 设计盒真源', '3e web smoke', '3f 文档真源',
+    '3g IPC 契约文档对拍', '3h 字体子集覆盖', '3i 守卫完备对拍', '3j check-privacy',
+    '3k 字体保留名', '5b ctest 上界属性完备') |
   ForEach-Object { "Set-Gate '$_' `$ok" }
-  $l35e = Get-GatesLastListReport -Source (($sgFive -join [Environment]::NewLine) + [Environment]::NewLine + '# 一条注释')
-  & $check '㉟e 注释塌成个位数时,挡住它的不是注释那一刀' ((Test-GatesLastFloor -Report $l35e -DefaultTarget) -match '注释')
+  $l35e = Get-GatesLastListReport -Source (($sgMany -join [Environment]::NewLine) + [Environment]::NewLine + '# 一条注释')
+  & $check '㉟e 注释塌成个位数时,挡住它的不是注释那一刀(若红在这里,先看夹具的档号数够不够)' ((Test-GatesLastFloor -Report $l35e -DefaultTarget) -match '注释')
   & $check '㉟f 同一输入在非默认目标上假红了' ($null -eq (Test-GatesLastFloor -Report $l35e))
 
   if ($fails.Count -gt 0) {

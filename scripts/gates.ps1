@@ -376,13 +376,15 @@ if (-not $PluginvalExe) {
 #   见 `scripts/check-gates-guards.ps1` 的 `.DESCRIPTION`。[SL-338] 这里不抄第二份:
 #   它是那道判据存在的理由,理应长在判据旁边,而不是在被判据扫的这个文件里再躺一份。
 #
-# [SL-338] **那条机检已经落地了** —— 是 `scripts/check-gates-guards.ps1`(读 AST 现算,
-#   由 gate 3i 跑、并接进 CI 的 docs-truth),不是上一版这里写的 `check-gates-visibility.mjs`。
+# [SL-338] **那条机检已经落地了** —— 落点最后没选 `check-gates-visibility.mjs`(上一版这里
+#   写的是一句**选址提案**,不是「判据在那儿」的断言;那个文件今天是 gate 3e 可见性那条链的
+#   真门禁,「它在读本文件」这句今天也仍然成立),而是新写了 `scripts/check-gates-guards.ps1`
+#   —— 读 AST 现算,由 gate 3i 跑、并接进 CI 的 docs-truth。
 #   所以「复核这份清单请手跑下面这段 AST 片段」这条操作手册**连同那份 AST 配方一起删掉了**:
 #   一份被自己的执行者取代、却还留在原地的手册,只会让下一个人去手跑一件机器每轮都在做的事,
 #   而且那份手册里的三条 ⚠(`ExternalScript` 那一档不能省 / 「解析不到」要 fail-closed /
 #   本文件自己的函数要用 `FunctionDefinitionAst` 从同一棵 AST 里排掉)今天都写在执行者的
-#   头注里,并且**有自测格钉着** —— 手册那份没有。
+#   头注里,而且各有**明确的自测格**钉着 —— 手册那份没有。
 #
 #   ⚠ 只有一条与那份配方无关、留在这里:拿**本段注释文本**当锚点写补丁脚本时别用 `-like`。
 #     PowerShell 的 `-like` 走 WildcardPattern,而**反引号是它的转义字符** —— 模式里带反引号
@@ -1161,9 +1163,11 @@ Write-Host '=== Gate 3f: 文档真源(九条红字生成物 + 双语结构对等
 # 12 §3.4 第 5 条把 gen-hard-rules --check 挂在「与 check-i18n.mjs 同一 gates 档」。
 # 手抄必漂,而既有的那几道机检只查得出**数量与标题**、查不出条目**文本**漂移 ——
 # 逐字节比对生成物是唯一查得出的那道,所以这一格跑的是 `gen-hard-rules --check`。
-# [SL-338] 落地面有几处、既有机检具体是哪几道,**只写在 `scripts/gen-hard-rules.mjs` 的头注**
-#   (那两道机检里有两道就实现在它自己文件里,它离机制最近)。这里不抄第二份:上一版这句话
-#   在本文件、`gen-hard-rules.mjs`、`.github/workflows/format.yml` 三处近乎逐字各躺一份。
+# [SL-338] 落地面有几处、既有机检具体是哪几道,详见 `scripts/gen-hard-rules.mjs` 的头注
+#   (它离机制最近:被描述的机检里有两道就实现在它自己文件里)。这里不抄第二份:上一版这句话
+#   在本文件、`gen-hard-rules.mjs`、`format.yml` 三处近乎逐字各躺一份。
+#   ⚠ 不写「只写在那里」—— `CLAUDE.md` 的法条里也写着同一份事实,排他性断言是最强的一类
+#     复述:任何第四份出现它就变假,而那第四份已经在了(#228 复审)。
 # node 守卫同 Gate 3e:找不到 node 时 $LASTEXITCODE 会保留上一条外部命令的 0,
 # 「一条都没跑」会被判成全绿,而误报绿比硬失败危险得多。
 if (-not $nodeCmd) {
