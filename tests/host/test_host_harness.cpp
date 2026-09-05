@@ -995,6 +995,65 @@ TEST_CASE("HOST P0-1:采集 → 分析 → 出段表(全链,不卡死)", "[host]
     CHECK(preview3.manualKept == 0);
 }
 
+TEST_CASE("HOST SL-278/SL-279:全量分析前移基线,撤销/重做两向都跟着走",
+          "[host][t37][analyze][sl278][sl279]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 6; ++burst)
+    {
+        r.runBlocks(60, 0.5f, 4, 4);
+        r.runBlocks(40, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 20.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    const auto waitDone = [&r] {
+        bool finished = false;
+        for (int waited = 0; waited < 20000 && !finished; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            finished = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+        }
+        REQUIRE(finished);
+    };
+
+    // 前置:先跑一次全量分析,把基线钉在默认档上(否则下面分不清「本来就相等」与「前移了」)。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, false, /*fullScope=*/true).ok);
+    waitDone();
+    REQUIRE(r.out.appliedAnalysisConfigSnapshot().first == r.out.analysisConfigSnapshot().first);
+
+    // ① 改档 ⇒ 基线不动(只有分析才前移它),于是 stale。
+    REQUIRE(r.out.setAnalysisConfig("rms", juce::String(), true, false));
+    CHECK(r.out.analysisConfigSnapshot().first == "rms");
+    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "kw_integrated");
+
+    // ② **局部**分析(fullScope=false)**不得**前移基线 —— 其余段仍按旧口径。
+    //    这一条是 [SL-279] 「只在全量分析时 markApplied」的执行者:去掉那个条件就红在这里。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS / 2.0, false, /*fullScope=*/false).ok);
+    waitDone();
+    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "kw_integrated");
+
+    // ③ 全量分析 ⇒ 基线前移到 rms。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, false, /*fullScope=*/true).ok);
+    waitDone();
+    REQUIRE(r.out.appliedAnalysisConfigSnapshot().first == "rms");
+
+    // ④ **撤销**:段表与基线在**同一条撤销步**里,一次 Ctrl+Z 两者一起回退。
+    //    去掉那个 AppliedAnalysisAction、或把它压到另一条事务里,这一条就红。
+    REQUIRE(r.out.undo());
+    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "kw_integrated");
+
+    // ⑤ **重做**:再前移回去。只钉 undo 不钉 redo 的话,perform() 写反了也照绿。
+    REQUIRE(r.out.redo());
+    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "rms");
+}
+
 TEST_CASE("HOST P0-1:无采集数据时分析被拒,不会挂起", "[host][t37][v4][analyze]")
 {
     Rig r;
