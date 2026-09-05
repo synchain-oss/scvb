@@ -26,6 +26,10 @@
         所以下面先用 `FunctionDefinitionAst` 把它们从**同一棵 AST** 里排掉,而不是收紧这一档。
     · 变量式调用(`& $var`)—— 变量赋值右值里含 `Get-Command`、或是路径/字符串的,算外部;
       右值是**脚本块**(`$enumLeftover = { … }`)的不算,那是本文件自己的闭包。
+    ⚠ **边界:经 cmdlet 间接启动的外部命令不在面内。** `Start-Process -FilePath $nodeCmd.Source`
+      (`gates.ps1:836`)这种由 cmdlet 代启的,AST 里是一次 `Start-Process` 调用、不是外部命令调用点,
+      本判据看不见。那一处本身没问题(`$nodeCmd` 已有守卫),但「不靠名字清单」这个卖点在这条上
+      **确有缺口** —— 照实写出来,别让读者以为它是全称保证。
 
   「守卫」怎么认:某个祖先 `IfStatementAst` 的**任一分支条件**里
     · 出现 `Get-Command <本命令>`(内联形态,如 gate 3c 的 `if (Get-Command reuse …)`),或
@@ -55,9 +59,9 @@ $ErrorActionPreference = 'Stop'
 # ⚠ 这份清单**暂居本文件**:豁免标记本该写在 `gates.ps1` 各调用点旁,但本卡与 seg-r4 的 SL-322
 #   同文件冲突,统筹要求本卡先不动 `gates.ps1`。SL-322 合入后把标记搬进那边、这份清单相应缩短。
 $Exemptions = @(
-  @{ Snippet = 'cmake --version'; Reason = '③类:输出判据 —— 空输出即 $ok = $false(gate 1),缺席方向偏红' }
-  @{ Snippet = 'clang-format --version'; Reason = '③类:输出判据 —— 空串不匹配 18.1.8 即判负(gate 1),缺席方向偏红' }
-  @{ Snippet = 'git ls-files'; Reason = '③类:输出判据 —— 空集合即 gate 2 判负,缺席方向偏红' }
+  @{ Snippet = 'cmake --version'; Hits = 1; Reason = '③类:输出判据 —— 空输出即 $ok = $false(gate 1),缺席方向偏红' }
+  @{ Snippet = 'clang-format --version'; Hits = 1; Reason = '③类:输出判据 —— 空串不匹配 18.1.8 即判负(gate 1),缺席方向偏红' }
+  @{ Snippet = 'git ls-files'; Hits = 1; Reason = '③类:输出判据 —— 空集合即 gate 2 判负,缺席方向偏红' }
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +70,14 @@ $Exemptions = @(
 # 返回:@{ Sites = @(每个外部调用点); Guarded / Unguarded / Exempted / StaleExemptions }
 # ─────────────────────────────────────────────────────────────────────────────
 function Get-GatesGuardReport {
-  param([string]$Source, [object[]]$Exemptions = @())
+  # `$Resolver` 把「名字 -> 命令类型集合」这一层**注入进来**:生产路径用 Get-Command,
+  # 自测可以喂一个返回多结果的假解析器 —— 否则「多结果」这一格只能靠本机 PATH 碰运气,
+  # 而本判据的卖点之一正是「结论不随机器漂移」。
+  param(
+    [string]$Source,
+    [object[]]$Exemptions = @(),
+    [scriptblock]$Resolver = { param($n) @(Get-Command $n -ErrorAction SilentlyContinue) }
+  )
 
   $ast = [System.Management.Automation.Language.Parser]::ParseInput($Source, [ref]$null, [ref]$null)
 
@@ -137,8 +148,16 @@ function Get-GatesGuardReport {
 
     if ($name) {
       if ($localFuncs -contains $name) { continue }
-      $resolved = Get-Command $name -ErrorAction SilentlyContinue
-      if ($resolved -and $resolved.CommandType -notin 'Application', 'ExternalScript') { continue }
+      # ⚠ 这里**不能**写 `$resolved.CommandType -notin 'Application','ExternalScript'`(#217 复审【重要】):
+      #   `-in` / `-notin` 的左操作数是集合时,PowerShell **不做逐元素比较**,而是拿整个数组
+      #   去和右侧每个元素 `-eq` —— 实测 `@('ExternalScript','Application') -notin
+      #   'Application','ExternalScript'` 是 **True**。于是某台机器上 `npx` 同时解析出
+      #   `npx.ps1` 与 `npx.cmd` 时,这个调用点会被**静默移出判据面**,而汇总照打「守卫完备」:
+      #   判据没跑却记 PASS,正是本卡要根除的那一族,只是换了个位置。逐元素判。
+      $resolved = @(& $Resolver $name)
+      if ($resolved.Count -gt 0 -and
+        -not ($resolved.CommandType -contains 'Application') -and
+        -not ($resolved.CommandType -contains 'ExternalScript')) { continue }
       $need = $name
       $label = $name
     }
@@ -194,9 +213,17 @@ function Get-GatesGuardReport {
   $exemptedKeys = New-Object 'System.Collections.Generic.HashSet[string]'
   $stale = @()
   $unguarded = @($sites.ToArray() | Where-Object { -not $_.Guarded })
+  # ⚠ 豁免要钉**命中几处**,不能只钉「至少一处」(#217 复审【重要】):只钉「至少一处」的话,
+  #   明天谁在别处再写一处**同文本、无守卫**的调用,`-like` 会把它一并吞掉 —— 新调用点白拿豁免、
+  #   门禁全绿,而它恰恰会踩回 `$LASTEXITCODE` 沿用上一条的老坑。豁免会随代码**自动变宽**,
+  #   而这正是本卡开篇批判的「清单悄悄失去精度、还成为下一个人的依据」。
   foreach ($ex in $Exemptions) {
+    $want = if ($null -ne $ex.Hits) { [int]$ex.Hits } else { 1 }
     $hit = @($unguarded | Where-Object { $_.Text -like ('*' + $ex.Snippet + '*') })
-    if ($hit.Count -eq 0) { $stale += , $ex; continue }
+    if ($hit.Count -ne $want) {
+      $stale += , [pscustomobject]@{ Snippet = $ex.Snippet; Reason = $ex.Reason; Want = $want; Got = $hit.Count }
+      continue
+    }
     foreach ($h in $hit) { [void]$exemptedKeys.Add(('{0}|{1}' -f $h.Line, $h.Text)) }
   }
   # ⚠ 键要显式转 [string] 再喂 HashSet.Contains:PowerShell 会把 `-f` 的结果按 PSObject 传进去,
@@ -268,22 +295,45 @@ if ($SelfTest) {
 
   # ⑧ 豁免要按**文本指纹**、且陈旧条目判负
   $f8 = 'cmake --version'
-  $r8 = Get-GatesGuardReport -Source $f8 -Exemptions @(@{ Snippet = 'cmake --version'; Reason = 'x' })
+  $r8 = Get-GatesGuardReport -Source $f8 -Exemptions @(@{ Snippet = 'cmake --version'; Hits = 1; Reason = 'x' })
   if (@($r8.Unguarded).Count -ne 0 -or @($r8.Exempted).Count -ne 1) { $fails += '⑧ 豁免没生效' }
   $r8b = Get-GatesGuardReport -Source $f8 -Exemptions @(@{ Snippet = 'ctest --preset'; Reason = 'x' })
   if (@($r8b.StaleExemptions).Count -ne 1) { $fails += '⑧b 陈旧豁免没被抓出来' }
 
   # ⑨ 豁免不按名字:同名但**另一处**调用不得白拿豁免
   $f9 = 'cmake --version' + [Environment]::NewLine + 'cmake --build $dir'
-  $r9 = Get-GatesGuardReport -Source $f9 -Exemptions @(@{ Snippet = 'cmake --version'; Reason = 'x' })
+  $r9 = Get-GatesGuardReport -Source $f9 -Exemptions @(@{ Snippet = 'cmake --version'; Hits = 1; Reason = 'x' })
   if (@($r9.Unguarded).Count -ne 1) { $fails += '⑨ 同名的另一处调用跟着白拿了豁免(豁免必须按文本指纹)' }
+
+  # ⑩ **多结果解析仍须算外部**(#217 复审【重要】1)。喂一个返回两条结果的假解析器 ——
+  #    旧写法 `$resolved.CommandType -notin …` 在这一格上恒真、会把调用点静默移出判据面。
+  $fakeMulti = {
+    param($n)
+    @(
+      [pscustomobject]@{ CommandType = 'ExternalScript' }
+      [pscustomobject]@{ CommandType = 'Application' }
+    )
+  }
+  $r10 = Get-GatesGuardReport -Source 'npx --yes prettier --check .' -Resolver $fakeMulti
+  if (@($r10.Sites).Count -ne 1) { $fails += '⑩ 多结果解析时调用点被静默移出判据面(fail-open)' }
+  # ⑩b 反向:解析成 Cmdlet(单结果)仍要被排除,别把上面那条改成「什么都算外部」
+  $fakeCmdlet = { param($n) @([pscustomobject]@{ CommandType = 'Cmdlet' }) }
+  $r10b = Get-GatesGuardReport -Source 'Write-Host hi' -Resolver $fakeCmdlet
+  if (@($r10b.Sites).Count -ne 0) { $fails += '⑩b Cmdlet 被当成外部命令(判据面被撑宽)' }
+
+  # ⑪ **豁免要钉命中数**(#217 复审【重要】2):同一段文本出现两处时必须判负,
+  #    否则新写的第二处会白拿豁免。
+  $f11 = 'cmake --version' + [Environment]::NewLine + 'cmake --version'
+  $r11 = Get-GatesGuardReport -Source $f11 -Exemptions @(@{ Snippet = 'cmake --version'; Hits = 1; Reason = 'x' })
+  if (@($r11.StaleExemptions).Count -ne 1) { $fails += '⑪ 同文本第二处白拿了豁免(豁免必须钉命中数)' }
+  if (@($r11.Exempted).Count -ne 0) { $fails += '⑪b 命中数对不上时不该再豁免任何一处' }
 
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
     exit 1
   }
-  Write-Host '  check-gates-guards -SelfTest:9 格全过(抓无守卫 / 两种守卫形态不误报 / 别人的守卫不算数 / 本地函数与脚本块不入面 / 变量式守卫 / 豁免按指纹 + 陈旧判负 / 同名不白拿)'
+  Write-Host '  check-gates-guards -SelfTest:13 格全过(抓无守卫 / 两种守卫形态不误报 / 别人的守卫不算数 / 本地函数与脚本块不入面 / 变量式守卫 / 豁免按指纹 + 陈旧判负 / 同名不白拿 / 多结果仍算外部 / Cmdlet 不入面 / 同文本两处判负)'
   exit 0
 }
 
@@ -314,9 +364,13 @@ if (@($report.Sites).Count -eq 0) {
 $bad = $false
 if (@($report.StaleExemptions).Count -gt 0) {
   $bad = $true
-  Write-Host '  [FAIL] 陈旧豁免(清单里有,代码里已经没有对应调用点):' -ForegroundColor Red
-  $report.StaleExemptions | ForEach-Object { Write-Host ('    ' + $_.Snippet + '  —— ' + $_.Reason) -ForegroundColor Red }
-  Write-Host '    豁免随代码漂移而失效正是本判据要防的:请删掉或改准这一条。' -ForegroundColor Yellow
+  Write-Host '  [FAIL] 豁免命中数与清单对不上:' -ForegroundColor Red
+  $report.StaleExemptions | ForEach-Object {
+    $why = if ($_.Got -eq 0) { '陈旧 —— 代码里已经没有对应调用点' } else { '被撑宽 —— 代码里多出了同文本的调用点,新的那处会白拿豁免' }
+    Write-Host ('    {0}  期望 {1} 处、实得 {2} 处({3})' -f $_.Snippet, $_.Want, $_.Got, $why) -ForegroundColor Red
+    Write-Host ('      理由:' + $_.Reason) -ForegroundColor DarkGray
+  }
+  Write-Host '    豁免随代码漂移而失效(变陈旧或被撑宽)正是本判据要防的:请改准 Hits,或给新调用点加守卫。' -ForegroundColor Yellow
 }
 if (@($report.Unguarded).Count -gt 0) {
   $bad = $true
