@@ -52,10 +52,16 @@
 //     ASCII 是这条链路上唯一不会烂的编码。
 //
 // 边界(照实说,别让人以为它更严):
-//   · `std::cout` / `std::cerr` 的 `<<` 链**不在面内**。`tests/tools/` 下的三个 CLI
-//     (scvb_bench / scvb_diag / scvb_nulltest)有 14 处中文 `<<` 输出,那是给人看的中文界面、
-//     且从未触发 C4819。把它们纳入等于顺手改掉三个工具的界面语言,不是本卡的事。
-//     哪天要收,先立卡改文案,再把 `cout|cerr|clog` 加进 FAMILY —— 判据本身不用动。
+//   · **本判据只盖 C 族(printf/fprintf/vprintf/vfprintf/fputs/puts/perror),iostream 未盖。**
+//     `std::cout` / `std::cerr` / `std::clog` 的 `<<` 链同样直接进控制台,本来该一起收;
+//     不收的**唯一理由是基线不干净**(统筹裁定:基线 0 就一并纳入,不是 0 就写清边界与数)。
+//     实测(剥注释走本文件的 `blankComments`,再沿 `<<` 链走到分号收字面量):全仓
+//     `src/**` + `tests/**` 共 **50 条 iostream 链、23 处**字面量含非 ASCII,全部落在
+//     `tests/tools/` 的三个 CLI —— scvb_bench 10 处 / scvb_diag 8 处 / scvb_nulltest 5 处。
+//     那是给人看的中文界面、且从未触发 C4819;纳入等于顺手改掉三个工具的界面语言,不是本卡的事。
+//     ⚠ 别照着「23」去推「改完这 23 处就能纳入」——那个数是**今天**的,要收的时候重测一遍。
+//     收的做法:先立卡把那些文案改掉,再把 `cout|cerr|clog` 加进 FAMILY,并给 `<<` 链另写一小段
+//     取值范围(它没有括号可配对,走到分号为止)—— 括号配对那部分不用动。
 //   · 宽字面量(`L"…"`)落在族内**照样判红**:族里没有 `fwprintf`,所以宽字面量出现在
 //     `fprintf` 实参上本来就是错的。族外的宽字面量(如 `SegmentBackendWin32.cpp` 那条
 //     `OutputDebugString` 用的 `L"… 失败 …"`)不在面内。
