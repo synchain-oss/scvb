@@ -187,6 +187,12 @@ const bodyRefAnchored = (src = BODY_REF_NUM_RE.source) =>
     new RegExp("^(?:" + src + ")$");
 const bodyParenRe = (src = BODY_REF_NUM_RE.source) =>
     new RegExp("\\([^)]*#(?:" + src + ")[^)]*\\)", "g");
+// [SL-327 复审第 4 轮] 收窄侧也要一个**生产常量**,理由与 BODY_PAREN_RE 逐字相同:
+// ⑨j 比的是「生产那份东西的 source」,而收窄此前是**内联调用** —— 没有可比的对象,
+// 于是「helper 还在、调用点写回字面量」这条路在这一侧没人守(实测:那样退回去
+// 自测与实跑**双绿**)。而这条路正是我给 BODY_PAREN_RE 立 ⑨j 时自己点名的那一条。
+// 无 `g` 标志,`.test` 没有 lastIndex 漂移,提到模块级安全。
+const BODY_REF_ANCHORED_RE = bodyRefAnchored();
 const BODY_PAREN_RE = bodyParenRe();
 
 function bodyPrRefs(body) {
@@ -380,7 +386,7 @@ function allowList(block, headText = ALLOW_HEAD) {
         // 这条路比「照抄报错样例」更好走:CHANGELOG 里「正文放行」自己写着「写法与门禁放行
         // 相同」,而上面那段的说明与样例全是 `#SL189`,隔几行照抄最自然(#208 第 4 轮【建议】)。
         // 所以在这里**当场判负并说清真因**,不留到下游变成一句指错方向的红。
-        if (headText === BODY_ALLOW_HEAD && !bodyRefAnchored().test(m[1])) {
+        if (headText === BODY_ALLOW_HEAD && !BODY_REF_ANCHORED_RE.test(m[1])) {
             wrongForm.push(m[1]);
             continue;
         }
@@ -1099,6 +1105,27 @@ if (selfTest) {
             "BODY_PAREN_RE 不是由 bodyParenRe() 生成的(被写回字面量?)—— 真源放宽那天它不会跟着动;" +
                 "实得 " +
                 BODY_PAREN_RE.source,
+        );
+        // 收窄侧要**两条**才守得住,这是与粗筛侧的结构差别:
+        //   · 粗筛的调用点**就是**那个常量(`bodyPrRefs` 直接用 `BODY_PAREN_RE`),
+        //     所以比 source 一条就够;
+        //   · 收窄的调用点是 `allowList` 里的一个**独立表达式**,常量再对也管不到它 ——
+        //     把那行写回 `new RegExp("^" + …source + "$")`,比 source 那条照绿(实测过)。
+        //     所以另加一条**源码级**断言,钉住调用点确实引用了这个常量。
+        //     needle 拼装,免得这条断言把自己数进去(本仓「扫描器入库才炸」那一族)。
+        const anchoredCallSite = "BODY_REF_ANCHORED_RE" + ".test(m[1])";
+        check(
+            fs
+                .readFileSync(fileURLToPath(import.meta.url), "utf8")
+                .includes(anchoredCallSite),
+            "正文放行的收窄没走 BODY_REF_ANCHORED_RE(被写回内联 new RegExp?)—— " +
+                "常量再对也管不到调用点,真源放宽那天它不会跟着动",
+        );
+        check(
+            BODY_REF_ANCHORED_RE.source === bodyRefAnchored().source,
+            "BODY_REF_ANCHORED_RE 不是由 bodyRefAnchored() 生成的(被写回字面量?)—— 真源放宽那天它不会跟着动;" +
+                "实得 " +
+                BODY_REF_ANCHORED_RE.source,
         );
         // ⑨k [SL-327] 三类问题**一次报完**:回退成「先到先抛」时这一格必须红。
         //     这是本卡四条里唯一差夹具的一条 —— PR 描述里那句「实测一次报出 3 类」是**手跑**的,
