@@ -74,7 +74,8 @@ if (args.has("help")) {
             "  --console               把页面 console 打到 stdout(排障用)",
             "",
             "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败、",
-            "        壳页一直没离开「未就绪」态,以及落地后页内求值抛错)。分界是「谁的锅」:抛错源自你给的输入算 1 不算 2 ——",
+            "        壳页一直没离开「未就绪」态、壳页上找不到 .pv-status(没给 --url 时),以及落地后页内求值抛错)。",
+            "        分界是「谁的锅」:抛错源自你给的输入算 1 不算 2 ——",
             "        --eval 的表达式抛错、--click/--lang/--tab 的选择器语法错,都归 1。",
         ].join("\n"),
     );
@@ -132,7 +133,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // [SL-290] 「没拍到」与「拍到的是错误页」要能被调用方分开:前者多半是环境/参数问题,
 // 后者说明**目标服务没起**——同样是失败,但排障方向完全不同,退出码就该不同。
 // 退出码:0 = 拍到了;1 = 其它失败;2 = 目标页面没能真的呈现(含错误页、非 2xx、壳页报
-// 注入失败、壳页一直没离开「未就绪」态([SL-333]),以及落地后的页内求值抛错)。
+// 注入失败、壳页一直没离开「未就绪」态、壳页上找不到 `.pv-status`(没给 `--url` 时)——
+// 后两种是 [SL-333] 加的 —— 以及落地后的页内求值抛错)。
 // 落地后那半的分界是**谁的锅**:源自命令行给进来的
 // 输入(`--eval` 表达式、`--click`/`--lang`/`--tab` 的选择器语法)算 1,其余算 2;
 // 收口在 `evalLanded` 与 `clickIn`。
@@ -461,28 +463,35 @@ try {
     //    判负,消息里写明是「一直没离开未就绪态」而不是「注入失败」,免得把人指向
     //    `shell.js` 的失败路径去查。
     const SHELL_SETTLE_MS = 16000;
-    const readShell = () =>
-        evalLanded(
-            cdp,
-            `(() => { const e = document.querySelector(".pv-status");
-                  return e ? { ok: e.getAttribute("data-ok"), why: e.textContent } : null; })()`,
-            "落地页读不到壳页状态",
-        );
-    // 落定判据写成「是不是那两个终态之一」而不是「是不是 wait」:属性缺失(取到 null)、
-    // 或将来多出一档新状态,都该继续等而不是当成成功放行。
-    const settled = (s) => !s || s.ok === "1" || s.ok === "0";
-    let shell = await readShell();
     // ⚠ [SL-333 复审第 1 轮] `null` 那一支要**分档**,不能一律当「这不是预览页」放行。
     //    没给 `--url` 时 URL 一定是 `buildUrl()` 拼的壳页,而 `.pv-status` 是壳页 HTML 里
     //    **写死的静态节点** —— 这时取不到它,只可能是壳页自己变了(class 改名、工具条被重构
     //    掉、或这个路径被喂了别的东西),那是**第四道整条被拆掉**,不是「不是预览页」。
     //    照本文件第三道立的规矩:判据可以降精度,但不能悄悄不在。
     //    给了 `--url` 才是合法的「打非预览页」,继续放行(本卡的 ⑤ 号格守的就是它)。
-    if (!shell && !args.has("url")) {
-        throw new NavigationError(
-            `壳页 ${URL_} 上找不到 .pv-status —— 第四道判据失去着力点(壳页 HTML 变了?)`,
+    //    [复审第 2 轮] 这道守卫挂在 **`readShell()` 自己**身上,不是挂在「第一次读」上:
+    //    `settled(null)` 为真,所以轮询中途任何一次读回 `null` 都会**立刻退出循环**,下面两道
+    //    判据的 `shell &&` 双双短路 ⇒ 静默放行 —— 与这道守卫要堵的是同一个形态,只换了时刻。
+    //    今天走不到(等待期间重导航的是 iframe,顶层文档不动),但那是**时序巧合**,不是结构:
+    //    把首次读并进循环、或将来在等待期间加一次顶层重载,不对称就会无声失效。
+    const readShell = async () => {
+        const s = await evalLanded(
+            cdp,
+            `(() => { const e = document.querySelector(".pv-status");
+                  return e ? { ok: e.getAttribute("data-ok"), why: e.textContent } : null; })()`,
+            "落地页读不到壳页状态",
         );
-    }
+        if (!s && !args.has("url")) {
+            throw new NavigationError(
+                `壳页 ${URL_} 上找不到 .pv-status —— 第四道判据失去着力点(壳页 HTML 变了?)`,
+            );
+        }
+        return s;
+    };
+    // 落定判据写成「是不是那两个终态之一」而不是「是不是 wait」:属性缺失(取到 null)、
+    // 或将来多出一档新状态,都该继续等而不是当成成功放行。
+    const settled = (s) => !s || s.ok === "1" || s.ok === "0";
+    let shell = await readShell();
     const settleBy = Date.now() + SHELL_SETTLE_MS;
     while (!settled(shell) && Date.now() < settleBy) {
         await sleep(250);
