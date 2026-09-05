@@ -210,7 +210,12 @@ const BODY_PAREN_RE = bodyParenRe();
 //   · 计数是模块级的,自测里要**先取基线再比增量**,别写成「等于 1」——同一个进程里
 //     实跑路径也可能已经读过。
 let anchoredReads = 0;
-/** 收窄侧读取 `BODY_REF_ANCHORED_RE` 的**唯一入口**(读一次计一次,见上)。 */
+/**
+ * 收窄侧读取 `BODY_REF_ANCHORED_RE` 的入口(读一次计一次,见上)。
+ * ⚠ 「只此一个调用者」**由自测那一格的增量 `=== +1` 兜住,不是靠这句注释**
+ *   ([SL-330a] 复审第 1 轮)—— 再加第二个落在夹具路径上的读取者,那一格会红,
+ *   那是有意的:多一个读取者就会替生产那一处顶着,而增量仍 > 0。
+ */
 const anchoredRe = () => {
     anchoredReads += 1;
     return BODY_REF_ANCHORED_RE;
@@ -1151,9 +1156,26 @@ if (selfTest) {
         //   同族记在 SL-330c,不在本卡。取基线比增量、不写「等于 1」:同一进程里实跑路径
         //   也可能已经读过(本文件自测与实跑同进程)。
         const anchoredBefore = anchoredReads;
-        allowList(bodyAllowBlock("- #111 —— 真理由"), BODY_ALLOW_HEAD);
+        // [复审第 1 轮] **先断言夹具真的走到了那一支,再看计数** —— 否则这一格换个方式
+        // 复发本卡开题那句「第二次红指错方向」:计数增量成立要先满足一整条链
+        // (`bodyAllowBlock` 拼出的块 → 找得到放行头 → `ALLOW_LINE_RE` 命中 → 才走到调用点),
+        // 链上任一环被改(最现实的是 `ALLOW_LINE_RE` 的破折号形态)⇒ `m` 为 null ⇒ `continue`
+        // ⇒ 一次都不调 ⇒ 这一格红,而话术说「被写回内联」,可调用点一点没动。
+        // 旧的源码 needle 版对这条路免疫(它不跑代码)—— 换成行为判据就得自己把这半补上。
+        const anchoredProbe = allowList(
+            bodyAllowBlock("- #111 —— 真理由"),
+            BODY_ALLOW_HEAD,
+        );
         check(
-            anchoredReads > anchoredBefore,
+            anchoredProbe.has("111"),
+            "探针夹具没走到正文放行的收窄支(块形态 / ALLOW_LINE_RE 改了?)——" +
+                "下面那条计数判据这一轮量的是空气:先修夹具,别去看调用点",
+        );
+        // 增量**恰好 +1**,不是 `>`:`>` 只守「有人读过」,守不住「别被第二个读取者顶替」——
+        // 那正是旧版 `=== 1` 计数守的另一半。多一个落在夹具路径上的读取者,生产那一处写回
+        // 内联时增量仍 > 0 ⇒ 照绿。收成 `=== +1` 就把这半闭合,不必再造一层守卫。
+        check(
+            anchoredReads === anchoredBefore + 1,
             "收窄调用点没有读 BODY_REF" +
                 "_ANCHORED_RE(计数没动)—— 多半是那行被写回了内联字面量," +
                 "或写回了 new RegExp 重建版:两者都不经过 anchoredRe()," +
