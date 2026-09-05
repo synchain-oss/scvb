@@ -86,6 +86,42 @@ endif()
 
 add_test(NAME scvb_tests COMMAND scvb_tests)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [SL-320] **四套快套件的显式上界**(scvb_tests / scvb_params_tests /
+# scvb_plugin_common_tests / scvb_input_bridge_tests)。本段是这四套的口径真源,
+# 另外三处只留一行属性 + 指回这里 —— 同一份事实抄四处,改一处就是三句假注释。
+#
+# 病灶:上界此前**一分为二**。`scripts/gates.ps1` 的 ctest 命令行带 `--timeout 300`,
+# 只有本机吃得到;而**出包硬门** `.github/workflows/build-vst3.yml` 的 ctest **不带**
+# `--timeout`,这四套在那条路上吃的是 CTest 默认的 **1500s**。同一个「上界」两个真源、
+# 差 5 倍:本机 300s 就拦下的挂死,出包那条路要占住 runner 25 分钟。
+# 属性跟着**测试**走,不跟着**谁来跑**走 —— 写进这里,两边同吃一份。
+#
+# **观测**(全部实测,`Passed` 那一列;本机 = 开发机空载连跑 5 轮,CI = build-and-validate):
+#     套件                        本机 5 轮(s)                        CI 两轮(s)
+#     scvb_tests                  2.14 2.14 2.05 2.10 2.06            2.57 2.52
+#     scvb_params_tests           0.27 0.30 0.26 0.25 0.28            0.27 0.33
+#     scvb_plugin_common_tests    0.19 0.19 0.17 0.25 0.19            0.13 0.12
+#     scvb_input_bridge_tests     0.08 0.04 0.03 0.03 0.04            0.01 0.01
+# 跨两侧最慢的一次:2.57 / 0.33 / 0.25 / 0.08。
+#
+# **为什么四套同取 30s,而不是「稳态 × 3」**:这四套是**亚秒级**的,× 3 会得到
+# 7.7 / 1.0 / 0.75 / 0.24 秒 —— 那不是「拦挂死」的线,是**性能预算**,而且紧到一次冷启动、
+# 一次杀毒扫描、一次 runner 被抢就会把**正常通过**的跑判成 Timeout,让出包硬门常红。
+# 本文件下面 `scvb_host_tests` 那段已经写过同一句话:「拦挂死不等于 police 慢」。
+# 所以规则是 **`max(最慢观测 × 3, 30s)`**,今天四套都落在 30s 这一档:
+#   · 对最慢的 `scvb_tests`(2.57s)是 ~12 倍余量,对另外三套是 100 倍以上;
+#   · 又比它取代的 1500s 小 50 倍 —— 真挂死半分钟内拦下,不再占住机器 25 分钟;
+#   · 排序也合理:30 < 600(monitor,实测 16s)< 900(host,实测 223–372s)。
+# 哪天某一套真的变慢到逼近 30s,**先去查它为什么变慢**,不要顺手抬这个数 ——
+# 抬数是把信号调低,和 host 那段的告诫同源。
+#
+# ⚠ 与 `--timeout` 的关系:命令行的 `--timeout` 只对**没有 TIMEOUT 属性**的测试生效,
+# 有属性的以属性为准(gates.ps1 gate 6 那段有实测记录)。所以这四套从此**不再受**
+# 任何一侧命令行开关的影响;命令行那个数退化为「新加的、还没写属性的测试」的兜底。
+# ─────────────────────────────────────────────────────────────────────────────
+set_tests_properties(scvb_tests PROPERTIES TIMEOUT 30)
+
 # scvb_params_tests:L0 参数层 golden 测试(链接 JUCE,离线 Catch2)。
 # ADR-001 三主目标之外的辅助目标(J22);scvb_tests 保持 JUCE-free(ADR-011)。
 # 03 §8 P-1/P-2/P-3:遍历 makeOutputLayout 的实际 getParameters() 对拍 tests/golden/params_v0.tsv。
@@ -122,6 +158,8 @@ else()
 endif()
 
 add_test(NAME scvb_params_tests COMMAND scvb_params_tests)
+# [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
+set_tests_properties(scvb_params_tests PROPERTIES TIMEOUT 30)
 
 # scvb_monitor_tests:T45 Monitor 三铁律的 L0 断言(0 参数 / 直通按位相等 / 共享段零写入)。
 # 只编 MonitorProcessor.cpp,并定义 SCVB_MONITOR_HEADLESS —— MonitorEditor 依赖 WebViewHost 的
@@ -197,6 +235,8 @@ else()
 endif()
 
 add_test(NAME scvb_plugin_common_tests COMMAND scvb_plugin_common_tests)
+# [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
+set_tests_properties(scvb_plugin_common_tests PROPERTIES TIMEOUT 30)
 
 # scvb_input_bridge_tests:T30 Input 桥 L0 单测(claim 六值/载荷形状/拒绝语义;链接 JUCE,离线 Catch2)。
 # 只编可离线单测的 TU:InputBridgeLogic + BridgeBase(InputEditor 依赖 WebViewHost 真 WebView2
@@ -225,6 +265,8 @@ else()
 endif()
 
 add_test(NAME scvb_input_bridge_tests COMMAND scvb_input_bridge_tests)
+# [SL-320] 上界与理由见上面 `scvb_tests` 那段(四套同一份口径,不在这里抄一遍)。
+set_tests_properties(scvb_input_bridge_tests PROPERTIES TIMEOUT 30)
 
 # scvb_ipc_tests:L1 双进程 IPC 契约测试骨架(仅 WIN32;实现由 T07b 填充)。
 if(SCVB_BUILD_IPC_TESTS AND WIN32)
@@ -295,10 +337,19 @@ add_test(NAME scvb_host_tests COMMAND scvb_host_tests)
 # 失败的跑**比通过的跑慢**:`HOST L-6b` 是「等报警不来」的形态,失败路径要等满内部截止。
 #
 # 所以上界必须**同时**满足两条:
-#   · 高过稳态 372s 且留出负载余量 —— 台账记过这一套在负载下从 378s 拖到「跑不完」,
-#     上界压到 372s 附近会把**正常通过**的跑判成 Timeout,gate 6 变成常红;
+#   · 高过最慢的正常观测且留出负载余量 —— 台账记过这一套在负载下从 378s 拖到「跑不完」,
+#     上界压到那个数附近会把**正常通过**的跑判成 Timeout,gate 6 变成常红;
 #   · 远低于 1500s,让真挂死早点被拦下。
-# 取 900s:对稳态 372s 有 2.4 倍余量,同时把 25 分钟的等待砍掉四成。
+# 取 900s。
+#
+# ⚠ [SL-320] **口径先后**,写清楚免得下一个人照着一个已经作废的前提去调这个数:
+#   · **裁定 900 的当时**,依据是「372s = 稳态」——2.4 倍余量是**照那个前提**算出来的;
+#   · **事后才知道**那三轮 372s 是同机有别的 agent 在跑时量的,**含负载**;
+#     干净基线是 221–224s(本机 221.1s、CI 223.56s / 223.63s / 223.41s)。
+#   · 所以按今天的干净基线,900 的真实余量是 **4 倍**,不是 2.4 倍。
+# **数字不改**:900 仍然同时满足上面两条,而且余量比当初以为的更宽,不是更窄;
+# 改的只是「它是怎么来的」这句话 —— 留着旧口径,下一个人会拿 372 当基线去推别的结论。
+# (这也是 SL-314 那条判例的来处:同机并发会把观测值整体推高,量之前先确认没有别人在跑。)
 #
 # ⚠ 拦挂死不等于 police 慢:900 只是「明显不对劲」的线,不是性能预算。这一套变慢了
 # 该由别的手段发现,不是靠把这个数字调紧 —— 调紧的代价是把 `HOST L-6b` 那类**慢的失败**
