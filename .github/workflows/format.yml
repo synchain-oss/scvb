@@ -261,6 +261,11 @@ jobs:
         # 手抄两边会各自漂移,而漂移方向恰好是「测试还绿着,CI 已经不编了」。
         # 零依赖(仓内脚本 + 本 job 已有的 node),不联网、无 secrets ⇒ fork PR 也跑得动。
         run: node scripts/check-native-paths.mjs
+      - name: Strip-comments gate self-test (剥注释的扫描器 = 共用判据面)
+        # [SL-330b] `lib/strip-comments.mjs` 是下面几条判据**共用的判据面**:剥多了
+        # (把串里的东西当注释删掉)判据无声缩水,剥少了(注释冒充代码)判据变哑弹 ——
+        # 两个方向在实跑里都长得像「全绿」。它是库不是门禁,只有 --self-test 一个入口。
+        run: node scripts/lib/strip-comments.mjs --self-test
       - name: Check gates degradation visibility
         # [SL-297] 断言 gates.ps1 的 Gate 3e 里 rc=3(浏览器在但没连上)有独立计数
         # **且计数接进了汇总标签**。与本地 gate 3i 跑同一条命令 —— 本仓的纪律是

@@ -1322,6 +1322,16 @@ else {
     Write-Host '  check-source-encoding.mjs --self-test:' -ForegroundColor Red
     $encSelfTest | ForEach-Object { Write-Host ("  " + $_) }
   }
+  # [SL-330b] 剥注释的那份扫描器自己也要有自测:它是**下面这一圈判据共用的判据面** ——
+  # 剥多了(把串里的东西当注释删掉)判据无声缩水,剥少了(注释冒充代码)判据变哑弹,
+  # 两个方向在实跑里都长得像「全绿」。它是库不是门禁,只有 --self-test 一个入口,
+  # 所以不进下面那个 foreach。
+  $stripSelfTest = (& node (Join-Path 'scripts' (Join-Path 'lib' 'strip-comments.mjs')) --self-test 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    $parityOk = $false
+    Write-Host '  lib/strip-comments.mjs --self-test:' -ForegroundColor Red
+    $stripSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  }
   # [SL-335] 同款:实跑绿有两种可能(文案真在表里 / 判据被改坏),自测把后一种单独照出来。
   $msgSelfTest = (& node (Join-Path 'scripts' 'check-preview-messages.mjs') --self-test 2>&1)
   if ($LASTEXITCODE -ne 0) {
