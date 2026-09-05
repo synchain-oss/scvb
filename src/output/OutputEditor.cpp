@@ -705,7 +705,7 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(analysis, "segmentation", segmentation);
     put(analysis, "transition_ramp_ms", rt.transitionRampMs);
     // [J69/U24] 持锁快照读(复评重要②):loudnessMode/centerSlotPolicy 由 setAnalysisConfig 持锁写、
-    // getStateInformation 持锁读,emitState 必须同锁读(经 analysisConfigSnapshot)消除剩余竞态。
+    // getStateInformation 持锁读,emitState 必须同锁读(经 analysisConfigWithApplied)消除剩余竞态。
     // [SL-279] **一次取锁读全四个**(当前 + applied):分两次读会在两把锁之间放开,
     // 那一帧可能发出半新半旧的一对,web 的 stale 派生式当场算错、徽标闪一下。
     const auto analysisCfg = processor_.analysisConfigWithApplied();

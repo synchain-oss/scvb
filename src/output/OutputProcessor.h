@@ -63,8 +63,8 @@ struct OutputRuntimeState
     juce::String loudnessMode = "kw_integrated";
     juce::String centerSlotPolicy = "priority_queue";
     // [SL-279] 上次**全量分析**所用的那一档(03 §6.3 stale 派生式的另一半)。
-    // 与上面两项同锁协议:setAnalysisConfig / markAnalysisApplied 持锁写,
-    // getStateInformation / analysisConfigSnapshot 持锁读。
+    // 与上面两项同锁协议:setAnalysisConfig / finishAnalysis / 撤销动作持锁写,
+    // getStateInformation / analysisConfigWithApplied 持锁读。
     juce::String appliedLoudnessMode = "kw_integrated";
     juce::String appliedCenterSlotPolicy = "priority_queue";
 
@@ -267,10 +267,6 @@ public:
     // prepareToPlay/setStateInformation 的 CRVS 写竞争 —— PR#55 重要1)。
     scvb::state::CrvsData crvsSnapshot();
 
-    // [J69/U24] analysis.loudness_mode/center_slot_policy 快照(持 lifecycleMutex_;与 setAnalysisConfig /
-    // getStateInformation 同锁读,消除 emitState 无锁读 runtime_ 的剩余竞态 —— 复评重要②)。
-    std::pair<juce::String, juce::String> analysisConfigSnapshot();
-
     // [SL-279] 当前 + 「上次全量分析所用」**四个值一次锁读全**。
     // 分成两个入口读会在两次 ScopedLock 之间放开锁 —— 那时「一次读全」只是一句注释,
     // 真正让它不出错的是「四个写者与 emitTick 都在消息线程上」,不是这把锁(复审第 1 轮)。
@@ -293,8 +289,9 @@ public:
     int lastMaxFallbackLevel() const noexcept { return lastMaxFallbackLevel_.load(std::memory_order_relaxed); }
 
     // 运行时 state(消息线程独占;仅桥 native function 写 / emitTick 读,宿主不触,无需锁)。
-    // 例外:loudnessMode/centerSlotPolicy 由 setAnalysisConfig 持锁写、getStateInformation 持锁读,
-    // emitState 必须经 analysisConfigSnapshot() 持锁读 —— 其余字段仍消息线程独占。
+    // 例外:loudnessMode/centerSlotPolicy 与 [SL-279] 的 applied.* 由 setAnalysisConfig /
+    // finishAnalysis / 撤销动作持锁写、getStateInformation 持锁读,
+    // emitState 必须经 analysisConfigWithApplied() **一次读全四个** —— 其余字段仍消息线程独占。
     OutputRuntimeState& runtime() { return runtime_; }
     const OutputRuntimeState& runtime() const { return runtime_; }
 

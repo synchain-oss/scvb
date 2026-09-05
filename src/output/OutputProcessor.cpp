@@ -2380,18 +2380,10 @@ scvb::state::CrvsData ScvbOutputAudioProcessor::crvsSnapshot()
     return crvsData_;
 }
 
-std::pair<juce::String, juce::String> ScvbOutputAudioProcessor::analysisConfigSnapshot()
-{
-    // 复评重要②:loudnessMode/centerSlotPolicy 的读写锁协议 —— setAnalysisConfig(写)、
-    // getStateInformation(读)、本快照(读)三方均持 lifecycleMutex_,emitState 经此读,消除剩余竞态。
-    const juce::ScopedLock lock(lifecycleMutex_);
-    return {runtime_.loudnessMode, runtime_.centerSlotPolicy};
-}
-
 ScvbOutputAudioProcessor::AnalysisConfigPair ScvbOutputAudioProcessor::analysisConfigWithApplied()
 {
     // [SL-279] **一次取锁读全四个**。分成两个入口读的话,两次 ScopedLock 之间锁是放开的,
-    // 「一次读全」就只是一句注释 —— 那正是当初给 analysisConfigSnapshot 上锁时要根除的
+    // 「一次读全」就只是一句注释 —— 那正是当初给这两个值上锁时要根除的
     // 「看着有保护、其实没有」(复审第 1 轮点出)。半新半旧的一对会让 stale 派生式在那一帧
     // 算错(当前是新的、applied 还是旧的 ⇒ 徽标闪一下)。
     const juce::ScopedLock lock(lifecycleMutex_);

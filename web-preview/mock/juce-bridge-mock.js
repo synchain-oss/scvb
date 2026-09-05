@@ -993,6 +993,18 @@ function buildOutputBackend(ctx) {
                 reanalysis: true,
             });
             emitRecomputedSegments(reason, allChannels(), frame);
+            // [SL-279 复审第 2 轮] 松手档是**整条时间线**的重算(全轨、无范围),与 native 的
+            // `tickResegmentDebounce` 传 `fullScope=true` 对齐 ⇒ 基线跟着前移。
+            // 漏了它,mock 里会出现「整表按新档重算完、徽标还亮着」——真桥产不出来的组合。
+            patchState({
+                analysis: {
+                    applied: {
+                        loudness_mode: model.snapshot.analysis.loudness_mode,
+                        center_slot_policy:
+                            model.snapshot.analysis.center_slot_policy,
+                    },
+                },
+            });
         });
     }
 
@@ -1115,7 +1127,11 @@ function buildOutputBackend(ctx) {
                 // [SL-279] 一次**全量**分析完成 ⇒ 基线前移到当前档(stale 归假、徽标灭)。
                 // 「全量」= scope 是 `"all"`(与 native 的 fullScope 同一条判据):只重分析
                 // 一段时基线不动,其余段仍按旧口径。
-                if (scope === "all") {
+                // scope 归一化与本文件 `affectedOf` 同款:真桥的 `parseAnalyzeScope` 是
+                // 「不是对象形 ⇒ 全量」,所以 `analyze()` / `analyze(null)` / `analyze(undefined)`
+                // 在真桥上**都**前移基线。只认字面 `"all"` 会造出一个真桥产不出来的组合:
+                // 全轨全范围重算、基线却不前移(复审第 1 轮)。
+                if (scope === "all" || scope === undefined || scope === null) {
                     patchState({
                         analysis: {
                             applied: {

@@ -1026,7 +1026,10 @@ TEST_CASE("HOST SL-278/SL-279:全量分析前移基线,撤销/重做两向都跟
     // 前置:先跑一次全量分析,把基线钉在默认档上(否则下面分不清「本来就相等」与「前移了」)。
     REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, false, /*fullScope=*/true).ok);
     waitDone();
-    REQUIRE(r.out.analysisConfigWithApplied().appliedLoudnessMode == r.out.analysisConfigWithApplied().loudnessMode);
+    // 取局部变量:连调两次 = 两次 ScopedLock,正是本轮要根除的形态。这一行是新入口最显眼的
+    // 示范用法,照抄的人会把「一次读全」又拆开(复审第 2 轮)。
+    const auto cfgAfterFirst = r.out.analysisConfigWithApplied();
+    REQUIRE(cfgAfterFirst.appliedLoudnessMode == cfgAfterFirst.loudnessMode);
 
     // ① 改档 ⇒ 基线不动(只有分析才前移它),于是 stale。
     REQUIRE(r.out.setAnalysisConfig("rms", juce::String(), true, false));
