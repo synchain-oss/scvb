@@ -151,9 +151,21 @@ function run() {
     // [复审第 1 轮] **只切 §5 这一节**,不能一路切到文件末尾:`## 6. 红线`(以及将来的 §7)
     // 会一并进判据面,于是「在 §5 里查得到」静默退化成「在 §5 到文末里查得到」——
     // 而这种放行**零输出**。这正是本卡要根除的那一族的镜像:判据面比宣称的宽。
+    // [复审第 2 轮] **匹配单位是「单元格」,不是整节、也不是整行**。原来把整节折成一行再匹配,
+    // 于是 `.{0,40}?` 里的 `.` 不受任何边界约束,可以跨着去拼一个命中。
+    // 复审说的是「不许跨行」,**实测下来真正的边界是单元格**:markdown 里一个表行就是一行,
+    // 按行切根本挡不住 —— `选择器语法错:…(…)` 那条打在整行上为真、打在症状列上为假,
+    // 它命中的那对括号是从隔壁「原因」列的散文里借的(`你给的输入(` … `的选择器)`),
+    // 40 的预算只剩 3 个字符。两个方向都不好:判据没在钉它宣称的东西(症状列里根本没那对
+    // 括号),而且往那句原因里再加一个参数名就会顶过 40 变成红,报的还是「查不到」——
+    // 人打开表一看它明明在。所以按 `|` 切到单元格再匹配。
     const rest = guide.slice(at + SECTION.length);
     const next = rest.search(/\n## /);
-    const section = norm(next < 0 ? rest : rest.slice(0, next));
+    const cells = (next < 0 ? rest : rest.slice(0, next))
+        .split("\n")
+        .flatMap((line) => line.split("|"))
+        .map(norm)
+        .filter(Boolean);
 
     const messages = collectMessages(code);
     if (messages.length < MIN_MESSAGES)
@@ -184,7 +196,7 @@ function run() {
             );
             continue;
         }
-        if (!head.re.test(section))
+        if (!cells.some((cell) => head.re.test(cell)))
             fail(
                 `失败文案在 §5 排障表里查不到(来源:${where}):\n` +
                     `      消息:${norm(raw).slice(0, 60)}\n` +
@@ -204,7 +216,11 @@ function run() {
 
 function selfTest() {
     const bad = [];
+    // [复审第 2 轮] 格数**由 `t()` 累加**,不写死:加一格忘了改数字就会印错数,
+    // 而「印错数」正是本仓「注释/输出比实现强」那一族最轻也最常见的一种。
+    let cases = 0;
     const t = (ok, why) => {
+        cases += 1;
         if (!ok) bad.push(why);
     };
     // 夹具里的标记与文案一律**拼装**,别写成连续字面量 —— 本文件自己也在被
@@ -250,7 +266,7 @@ function selfTest() {
         for (const b of bad) console.error("  " + b);
         process.exit(1);
     }
-    console.log("check-preview-messages --self-test 通过:" + 8 + " 格");
+    console.log("check-preview-messages --self-test 通过:" + cases + " 格");
 }
 
 if (process.argv.includes("--self-test")) {
