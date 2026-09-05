@@ -171,12 +171,19 @@ const BODY_TBD_RE = /#TBD/g;
 //   `(#116;起跳的柔化随后由 #123 补上,见「变更」)`、`([SL-239] v5.6.2 实测,#146 之后)`
 // —— 「只扫我以为它会出现的形态」又一次。实测:放宽后收到 96 个不同号,**零误报**
 // (全部在落地位集合里),而放宽前有 5 个括号里的号根本没进判定面。
+// [SL-326] **正文侧号形态的唯一真源**。此前它有两份写法:`bodyPrRefs` 里的 `#(\d+)`
+// 与正文放行收窄用的 `^\d+$` —— 正是本卡 §3 从 `maxLanded` 那里拿掉的形态,而我一边治它
+// 一边在旁边又造了一个。两侧都从这里派生之后,「放宽了取号却忘了放宽收窄 ⇒ 放行静默拒」
+// 这条路结构上不存在,不必再靠一格夹具替它站岗(#210 复审第 1/2 轮【建议】)。
+const BODY_REF_NUM_RE = /\d+/;
 const BODY_PAREN_RE = /\([^)]*#\d+[^)]*\)/g;
 
 function bodyPrRefs(body) {
     const out = [];
     for (const g of body.matchAll(BODY_PAREN_RE))
-        for (const m of g[0].matchAll(/#(\d+)/g))
+        for (const m of g[0].matchAll(
+            new RegExp("#(" + BODY_REF_NUM_RE.source + ")", "g"),
+        ))
             out.push({ num: m[1], at: g.index });
     return out;
 }
@@ -362,7 +369,10 @@ function allowList(block, headText = ALLOW_HEAD) {
         // 这条路比「照抄报错样例」更好走:CHANGELOG 里「正文放行」自己写着「写法与门禁放行
         // 相同」,而上面那段的说明与样例全是 `#SL189`,隔几行照抄最自然(#208 第 4 轮【建议】)。
         // 所以在这里**当场判负并说清真因**,不留到下游变成一句指错方向的红。
-        if (headText === BODY_ALLOW_HEAD && !/^\d+$/.test(m[1])) {
+        if (
+            headText === BODY_ALLOW_HEAD &&
+            !new RegExp("^" + BODY_REF_NUM_RE.source + "$").test(m[1])
+        ) {
             wrongForm.push(m[1]);
             continue;
         }
@@ -994,10 +1004,13 @@ if (selfTest) {
             ) === "真理由",
             "正文放行连纯数字号也收不下了 —— 收窄收过头,正当的放行没法写",
         );
-        // ⑨e2 收窄谓词与 `bodyPrRefs` 必须**同口径**。这里的 `/^\d+$/` 与 `bodyPrRefs` 的
-        //     `/#(\d+)/` 是两份写法,哪天后者放宽(正文也开始收别的形态),这一格会**静默继续拒**
-        //     —— 失效方向恰是本卡要防的「放行放不掉」(复审【建议】)。所以把两侧钉在一起:
-        //     `bodyPrRefs` 真产出的号,必须过得了这条收窄。
+        // ⑨e2 取号与收窄现在都从 `BODY_REF_NUM_RE` 派生,「放宽了取号却忘了放宽收窄」这条路
+        //     **结构上不存在**。这一格钉的是**接线**:两侧确实都走了那一份真源 ——
+        //     `bodyPrRefs` 真产出的号,必须过得了正文放行的收窄。
+        //     ⚠ 上一版这里写的是「把两侧钉在一起」,而夹具输入写死 `(#111)`:真放宽 `bodyPrRefs`
+        //     时它照样绿 —— **注释比判据强**,与本卡反复在修的「话术宣称的和实际发生的不是一回事」
+        //     同形,只是从红时话术挪到了绿时注释(#210 第 2 轮【建议】)。现在改的是判据本身,
+        //     不是把注释写软。
         const refNum = bodyPrRefs("- 正文条目 (#111)")[0];
         check(
             !!refNum &&
