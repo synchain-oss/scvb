@@ -452,10 +452,14 @@ try {
     //
     //    修法是**等它落定再判**,不是一见 `"wait"` 就判负:重试窗口本来就是设计的一部分,
     //    立刻判负会把一次正常的慢注入变成红。落定 = `data-ok` 变成 `"1"` 或 `"0"`。
-    //    预算取 `shell.js` 的 `PUMP_DEADLINE_MS`(15s)再加 1s 余量 —— 覆盖**默认那一次**
-    //    重试(`maxRetries` 默认 1)。**边界照实说**:把 `maxRetries` 调大、或真需要第二次
-    //    重试时会超出这个预算,那时按超时判负,消息里写明是「一直没离开未就绪态」而不是
-    //    「注入失败」,免得把人指向 `shell.js` 的失败路径去查。
+    //    预算是**经验值,量级对齐** `shell.js` 的 `PUMP_DEADLINE_MS`(15s)—— **不是推导出来的
+    //    上界**(复审第 1 轮纠正,我核过):`PUMP_DEADLINE_MS` 管的只是注入泵,泵到点**只停泵、
+    //    不写状态**;终态是在 iframe 的 `load` 处理器里设的,而 `load` 一直不来时 `shell.js`
+    //    **没有超时兜底**,`.pv-status` 会永久停在 `wait`。所以别把这个数读成「照
+    //    `PUMP_DEADLINE_MS` 调就一定够」。
+    //    **边界照实说**:把 `maxRetries` 调大、或真需要第二次重试时会超出这个预算,那时按超时
+    //    判负,消息里写明是「一直没离开未就绪态」而不是「注入失败」,免得把人指向
+    //    `shell.js` 的失败路径去查。
     const SHELL_SETTLE_MS = 16000;
     const readShell = () =>
         evalLanded(
@@ -468,6 +472,17 @@ try {
     // 或将来多出一档新状态,都该继续等而不是当成成功放行。
     const settled = (s) => !s || s.ok === "1" || s.ok === "0";
     let shell = await readShell();
+    // ⚠ [SL-333 复审第 1 轮] `null` 那一支要**分档**,不能一律当「这不是预览页」放行。
+    //    没给 `--url` 时 URL 一定是 `buildUrl()` 拼的壳页,而 `.pv-status` 是壳页 HTML 里
+    //    **写死的静态节点** —— 这时取不到它,只可能是壳页自己变了(class 改名、工具条被重构
+    //    掉、或这个路径被喂了别的东西),那是**第四道整条被拆掉**,不是「不是预览页」。
+    //    照本文件第三道立的规矩:判据可以降精度,但不能悄悄不在。
+    //    给了 `--url` 才是合法的「打非预览页」,继续放行(本卡的 ⑤ 号格守的就是它)。
+    if (!shell && !args.has("url")) {
+        throw new NavigationError(
+            `壳页 ${URL_} 上找不到 .pv-status —— 第四道判据失去着力点(壳页 HTML 变了?)`,
+        );
+    }
     const settleBy = Date.now() + SHELL_SETTLE_MS;
     while (!settled(shell) && Date.now() < settleBy) {
         await sleep(250);
