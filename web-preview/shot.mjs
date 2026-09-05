@@ -380,7 +380,8 @@ try {
     // ② 二道:errorText 只覆盖「这一次 navigate 自己失败」。重定向到错误页、
     //    或首次导航成功但随后被换成错误页,都还得靠落地后的 URL 认。
     // ⚠ 走 `evalLanded`(见其函数头):「在落地页上连 location.href 都求不到」几乎
-    //    只可能是页面没正常起来,该退 2;直接用 `evaluate` 会退 1。
+    //    只可能是页面没正常起来,该退 2;裸包装(现名 `evaluateRaw`,关在 `evalLanded`
+    //    的闭包里)不分档、直接用会退 1 —— 也正因为够不着,这里没有第二条路可走。
     const landed = await evalLanded(cdp, "location.href", "落地页无法求值");
     if (typeof landed === "string" && landed.startsWith("chrome-error://")) {
         throw new NavigationError(
@@ -463,7 +464,13 @@ try {
             `页内点击 ${sel} 失败`,
         );
         // 只有语法错这一支会回传对象,当场抛掉 —— 所以调用点拿到的仍只有 true/false。
-        if (r && r.badSel) throw new Error(`选择器语法错:${sel}(${r.badSel})`);
+        // ⚠ 按**有没有这个键**判,不按值真不真:`e.message` 万一是空串,真值判断会放行,
+        //    而放行交出去的是 `{ badSel: "" }` 这个**恒真的对象** —— `if (!hit)` / `if (!ok)`
+        //    读它都成立,于是 tab 根本没点成却照样截图退 0。现实里 Chrome 的选择器
+        //    DOMException 是固定模板、不会空,但这正是本文件 §③ 那句「判据可以降精度,
+        //    不能悄悄不在」说的形状(复审第 2 轮)。
+        if (r && typeof r === "object" && "badSel" in r)
+            throw new Error(`选择器语法错:${sel}(${r.badSel})`);
         return r;
     };
 
