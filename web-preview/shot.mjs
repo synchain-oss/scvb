@@ -74,7 +74,8 @@ if (args.has("help")) {
             "  --console               把页面 console 打到 stdout(排障用)",
             "",
             "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败,",
-            "        以及落地后本脚本自己的任何一次页内求值抛错;--eval 是你给的表达式,它抛错算 1 不算 2)",
+            "        以及落地后页内求值抛错)。分界是「谁的锅」:抛错源自你给的输入算 1 不算 2 ——",
+            "        --eval 的表达式抛错、--click/--lang/--tab 的选择器语法错,都归 1。",
         ].join("\n"),
     );
     process.exit(0);
@@ -131,7 +132,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // [SL-290] 「没拍到」与「拍到的是错误页」要能被调用方分开:前者多半是环境/参数问题,
 // 后者说明**目标服务没起**——同样是失败,但排障方向完全不同,退出码就该不同。
 // 退出码:0 = 拍到了;1 = 其它失败;2 = 目标页面没能真的呈现(含错误页、非 2xx、壳页报
-// 注入失败,以及落地后本脚本自己的页内求值抛错 —— 后者的收口见 `evalLanded`)。
+// 注入失败,以及落地后的页内求值抛错)。落地后那半的分界是**谁的锅**:源自命令行给进来的
+// 输入(`--eval` 表达式、`--click`/`--lang`/`--tab` 的选择器语法)算 1,其余算 2;
+// 收口在 `evalLanded` 与 `clickIn`。
 // 注:本脚本不被 gates / CI 调用(只在 PREVIEW-GUIDE 与 E2E-journey 里给人用),
 // 所以 2 不会撞上 gate 3e 那条「退 2 当缺可选依赖打 SKIP」的读法。
 class NavigationError extends Error {}
@@ -225,9 +228,13 @@ async function evalLanded(cdp, expression, what, { userExpr = false } = {}) {
     } catch (e) {
         // 两支只差**错误类**(它决定退 1 还是退 2);`what` 两支都带上 —— 否则 `--eval`
         // 抛错时打印的文案与探针抛错一字不差,读的人分不出这是谁的锅。
+        // `cause` 两支都挂:打印路径只用 `e.message`,一字不变;但页内异常的完整
+        // description 从此还在手里,不用再开 `--console` 重跑一次(复审第 1 轮)。
         const why = `${what}(${e.message})`;
-        if (userExpr) throw new Error(why);
-        throw new NavigationError(`${why},目标 ${URL_} 大概率没正常起来`);
+        if (userExpr) throw new Error(why, { cause: e });
+        throw new NavigationError(`${why},目标 ${URL_} 大概率没正常起来`, {
+            cause: e,
+        });
     }
 }
 
@@ -426,13 +433,28 @@ try {
         );
     }
 
-    // 点击也在落地之后:`window.__D` 没注入成功时这句会抛,同样属于「页面没起来」。
-    const clickIn = (sel) =>
-        evalLanded(
+    // 点击也在落地之后:`window.__D` 没注入成功时这句会抛,那属于「页面没起来」⇒ 退 2。
+    // ⚠ 但**选择器语法错是人给的输入**,与 `--eval` 同类,不该算页面没起来。三个入口都能
+    //    喂进非法选择器:`--click='div['` 直接透传,`--lang` / `--tab` 下面两处是原样插值
+    //    (`--tab=a"b` ⇒ `[data-tab-btn="a"b"]`)。所以在**页内**就把这一种分出来:
+    //    `querySelector` 对非法选择器抛的是 name 为 `SyntaxError` 的 DOMException,只截这
+    //    一种回传标记(退 1);`__D` 没注入那种是 `TypeError`,原样抛出去让 `evalLanded` 接
+    //    (退 2)。**别整段 catch** —— 那会把「页面没起来」也误报成「选择器写错了」。
+    //    另:`--tab` 选择器合法但没命中时下面是 `throw new Error`(退 1),语法错也落 1,
+    //    同一个参数的两种打字错这才在同一个码上(复审第 1 轮)。
+    const clickIn = async (sel) => {
+        const r = await evalLanded(
             cdp,
-            `(() => { const el = window.__D.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true; })()`,
+            `(() => { let el;
+                      try { el = window.__D.querySelector(${JSON.stringify(sel)}); }
+                      catch (e) { if (e && e.name === "SyntaxError") return { badSel: String(e.message) }; throw e; }
+                      if (!el) return false; el.click(); return true; })()`,
             `页内点击 ${sel} 失败`,
         );
+        // 只有语法错这一支会回传对象,当场抛掉 —— 所以调用点拿到的仍只有 true/false。
+        if (r && r.badSel) throw new Error(`选择器语法错:${sel}(${r.badSel})`);
+        return r;
+    };
 
     if (args.has("lang")) {
         await clickIn(`[data-lang="${args.get("lang")}"]`);
