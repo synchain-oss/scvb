@@ -538,8 +538,14 @@ else {
   # [SL-309 后半] **红时回显**。此前 `$pp` 捕了输出却从不打出来,于是这一道红的时候滚屏上
   # 没有任何线索 —— 得另跑一次 `prettier --check .` 才知道是哪个文件(我自己在 SL-325 那一轮
   # 就这么跑过一次)。取 `Select-Object -Last 30`,与 **3c(reuse)与 gate 5(构建)** 同值。
-  # ⚠ 别写成「与 3b/3c 逐字相同」——**3b(gitleaks)是 `-Last 20`**,本仓这个数今天不是铁板一块
-  # (30 三处、20 一处)。本卡只保证**新加的两处**取仓里的多数值 30,不顺手去动 3b 那个 20
+  # ⚠ 别写成「与 3b/3c 逐字相同」——**3b(gitleaks)是 `-Last 20`**,本仓这个数今天不是铁板一块:
+  # **含本处共四处 30**(`3 prettier` / `3c reuse lint` / `5 构建` / `6 ctest`),**一处 20**
+  # (`3b gitleaks`)。这里点闸名不点行号 —— 行号会被上面任何一次插入改掉,而闸名是
+  # `Set-Gate` 的字面量,活得久。**这个数上一轮写的是「三处」,是本卡自己把 gate 6 从 40 收成
+  # 30 之后作废的**:同一个 commit 既改了事实又留着旧数,正是本仓「自己的 commit 把自己写的
+  # 数字作废」那一族(#222 复审第 3 轮)。
+  # 本卡只保证**新加/改动的这几处**取仓里的多数值 30(prettier 是新加、gate 6 是 40→30 的改动
+  # —— 与下面 gate 6 处那句同口径),不顺手去动 3b 那个 20
   # (那是另一处的判断,不在本卡范围)。这句话本身就被 #222 复审抓过一次:注释里说「逐字相同」
   # 而代码不同,正是本仓「假注释成为下一个人的依据」那一族。
   # prettier 的失败输出本来就是**一行一个文件**(`[warn] path/to/file`),末尾一行是
@@ -1816,9 +1822,17 @@ else {
             Write-Host ('  [ctest] ⚠ 上面这份清单{0}:ctest 自己报失败 {1} 套,这里抠到 {2} 套 —— 尾部原文为准' -f
               $ctestDir, $ctestReported, $ctestFailed.Count) -ForegroundColor Yellow
           }
+          elseif ($null -eq $ctestReported) {
+            # **对拍本身没跑成**也是一档降级(#222 复审第 3 轮):找不到 `N tests failed out of M`
+            # 那行,就没有第二个来源可比,这份清单是**未经对拍**的。不说破的话,滚屏与汇总表
+            # 都与「对拍通过」长得一模一样 —— 而本卡两轮论证的正是「降级要说破」。
+            Write-Host '  [ctest] ⚠ 未找到 ctest 自报失败数(`N tests failed out of M`),上面这份清单**未经对拍** —— 尾部原文为准' -ForegroundColor Yellow
+          }
         }
         else {
-          $why = if ($null -ne $ctestReported) { ('ctest 自己报失败 {0} 套' -f $ctestReported) } else { '连失败计数行也没找到' }
+          $why = if ($null -eq $ctestReported) { '连失败计数行也没找到' }
+          elseif ($ctestReported -gt 0) { ('ctest 自己报失败 {0} 套' -f $ctestReported) }
+          else { 'ctest 自己报 0 套失败 —— 退出码非 0 多半不是用例判负,而是 ctest 自身出错' }
           Write-Host ('  [ctest] 退出码非 0,但抠不出失败用例名({0})—— 用例名未知(不是「没有失败」),看下面尾部原文' -f $why) -ForegroundColor Yellow
         }
         # 尾部照旧回显,取 `-Last 30` —— 与 3c(reuse)、gate 5(构建)、gate 3(prettier)同值。
@@ -1835,15 +1849,31 @@ else {
       #   · 对不上          ⇒ 标签里就写明「k/N,清单不可信」,别给一个看起来穷举的清单;
       #   · 一条都没抠到    ⇒ 标签写「失败用例名未知」,而不是干净的 `6 ctest`
       #     (那一档此前只有滚屏说了一句,汇总表上与「没失败」长得一样)。
+      # [#222 复审第 3 轮] 再拆两档:
+      #   · 清单非空但**对拍没跑成**(找不到自报数)—— 此前落进最后那个 `else`,标签与
+      #     「对拍通过」**逐字相同**,读不出这份清单没经过校验;
+      #   · 清单为空而自报数**恰为 0**(rc≠0 但 ctest 说 0 失败,例如 ctest 自身出错而用例全过)
+      #     —— 此前会打成「失败 **0** 套,用例名未抠到」,字面自相矛盾,读的人会以为脚本算错了。
       $ctestLabel = '6 ctest'
       if ($ctestRc -ne 0) {
         if ($ctestFailed.Count -eq 0) {
-          $ctestLabel = if ($null -ne $ctestReported) {
+          # `-gt 0` 而不是 `-ne $null`:自报 0 时带数字那支会写出「失败 **0** 套」。
+          # 自报 0 也不并进「未知」—— 「退出码非 0 而 ctest 说没有用例失败」是**另一件事**
+          # (多半是 ctest 自身出错、或一条用例都没跑起来),并进去就把这条线索丢了。
+          $ctestLabel = if ($null -eq $ctestReported) {
+            '6 ctest(失败用例名未知 —— 看滚屏尾部原文)'
+          }
+          elseif ($ctestReported -gt 0) {
             '6 ctest(失败 {0} 套,用例名未抠到 —— 看滚屏尾部原文)' -f $ctestReported
           }
-          else { '6 ctest(失败用例名未知 —— 看滚屏尾部原文)' }
+          else {
+            '6 ctest(退出码非 0,但 ctest 自报 0 套失败 —— 看滚屏尾部原文)'
+          }
         }
-        elseif ($null -ne $ctestReported -and $ctestReported -ne $ctestFailed.Count) {
+        elseif ($null -eq $ctestReported) {
+          $ctestLabel = '6 ctest(失败:{0};未找到 ctest 自报失败数,清单未经对拍)' -f ($ctestFailed -join '、')
+        }
+        elseif ($ctestReported -ne $ctestFailed.Count) {
           # 措辞**方向中立**:去掉早退之后「多抠」也可能发生,写「只列出 k 套」在那一档上是反的。
           $ctestLabel = '6 ctest(ctest 自报失败 {0} 套、这份清单 {1} 套,对不上不可信:{2})' -f
           $ctestReported, $ctestFailed.Count, ($ctestFailed -join '、')
