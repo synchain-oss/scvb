@@ -14,8 +14,12 @@
 
   判据(三条,任一不满足即判负):
     · **每个外部命令调用点**都要落在**针对同一个命令**的存在性守卫的 if/else 作用域内;
-    · **豁免必须显式且带理由**(见下面 $Exemptions),按调用点的**文本指纹**匹配,不按名字;
-    · **豁免不得陈旧**:清单里有一条匹配不到任何调用点,即判负(否则守卫会随代码漂移而失效)。
+    · **豁免必须显式且带理由**。首选形态是**行内标记** —— 贴在被检文件的调用点旁,跟着代码走;
+      行尾标记只绑本行,独占一行的标记只绑下一行,一条标记只豁免一处,理由不得为空。
+      外部 `$Exemptions` 清单是**兼容通道**(给不便改的被检文件),按文本指纹 + 钉命中数,今天为空。
+    · **豁免不得孤悬/陈旧**:标记附近已经没有「无守卫的外部调用」即判负;清单条目命中数对不上
+      (0 处=陈旧、多于预期=被撑宽)同样判负 —— 否则豁免会随代码漂移而悄悄失去精度。
+    · **每次运行把被豁免的那几处逐条打出来**:不查的东西最该显形,只报一个数等于把它们藏起来。
 
   「外部命令」怎么认(**不靠名字清单**):
     · 名字式调用 —— `Get-Command` 解析成 `Application` / `ExternalScript` 的,或**根本解析不到**的。
@@ -92,8 +96,6 @@ $script:ApprovedVerbs = @((Get-Verb).Verb)
 #   · `cmake --version`        —— 空输出 ⇒ `$ok = $false`;
 #   · `clang-format --version` —— 空串不匹配 `18.1.8` ⇒ 判负;
 #   · `git ls-files`           —— 空集合 ⇒ gate 2 判负。
-# ⚠ 这份清单**暂居本文件**:豁免标记本该写在 `gates.ps1` 各调用点旁,但本卡与 seg-r4 的 SL-322
-#   同文件冲突,统筹要求本卡先不动 `gates.ps1`。SL-322 合入后把标记搬进那边、这份清单相应缩短。
 # 今天是**空的**:三条 ③ 类豁免已搬进 `gates.ps1` 各调用点旁的行内标记(SL-331 后续批)。
 # 留着这条通道是因为 `-Path` 可以指别的文件,而那些文件未必方便改;用法见上面。
 $Exemptions = @()
@@ -162,15 +164,22 @@ function Get-GatesGuardReport {
   # 「紧跟注释起头」这条不是排版洁癖 —— 本脚本的头注、以及别处的散文都会**提到**这个标记名,
   # 若允许它出现在句子中间,任何一句解释都会变成一条豁免(本仓「扫描器入库才炸」那一族:
   # 判据被自己的文档喂出假绿)。所以头注里提到它时一律不放在注释开头。
+  $srcLines = $Source -split "`r?`n"
   $markerRe = '^\s*#\s*\[gates-guard-exempt\]\s*(\S.*)$'
   $markers = @()
   foreach ($t in @($psTokens | Where-Object { $_.Kind -eq 'Comment' })) {
     $m = [regex]::Match($t.Text, $markerRe)
     if ($m.Success) {
+      # `Standalone` = 这条注释**独占一行**(行首到注释起点之间只有空白)。
+      # 归属因此没有歧义:**行尾标记只绑本行,独占行标记只绑下一行**。
+      # 不这么分的话,「同一行或下一行」对一条行尾标记是**两个候选**,工具会静默挑一个 ——
+      # 作者若是写给下一行的,本行那处就被悄悄豁免了(#219 复审的形态 B,实测复现)。
+      $lineText = ($srcLines[$t.Extent.StartLineNumber - 1])
       $markers += , [pscustomobject]@{
-        Line   = $t.Extent.StartLineNumber
-        Reason = $m.Groups[1].Value.Trim()
-        Used   = $false
+        Line       = $t.Extent.StartLineNumber
+        Reason     = $m.Groups[1].Value.Trim()
+        Standalone = ($lineText -match '^\s*#')
+        Used       = $false
       }
     }
   }
@@ -339,7 +348,12 @@ function Get-GatesGuardReport {
   # 不会像外部清单那样「指纹失配 ⇒ 报陈旧豁免」而不是「你改了一处豁免点」。
   # 一个标记只豁免**一处**(天然没有「一条吞两处」的问题,不必再钉 Hits)。
   foreach ($u in $unguarded) {
-    $mk = @($markers | Where-Object { -not $_.Used -and ($_.Line -eq $u.Line -or $_.Line -eq ($u.Line - 1)) })
+    $mk = @($markers | Where-Object {
+        -not $_.Used -and (
+          ((-not $_.Standalone) -and $_.Line -eq $u.Line) -or   # 行尾标记:只绑本行
+          ($_.Standalone -and $_.Line -eq ($u.Line - 1))        # 独占行标记:只绑下一行
+        )
+      })
     if ($mk.Count -gt 0) {
       $mk[0].Used = $true
       [void]$exemptedKeys.Add([string]$u.Id)
@@ -550,6 +564,14 @@ if ($SelfTest) {
   $r21 = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version; cmake --version')
   & $check '㉑ 同一行的第二处调用跟着白拿了豁免(去重键撞了)' (@($r21.Unguarded).Count -eq 1)
 
+  # ㉒ **行尾标记只绑本行**:下一行那处必须仍判负(#219 复审形态 B —— 原来「同行或下一行」
+  #    对一条行尾标记是两个候选,工具静默挑一个,作者若写给下一行,本行那处就被悄悄豁免)。
+  $r22 = Get-GatesGuardReport -Source ('cmake --version   ' + $mkExempt + [Environment]::NewLine + 'ctest --preset x')
+  & $check '㉒ 行尾标记绑错了行(下一行那处该判负)' (@($r22.Unguarded).Count -eq 1)
+  # ㉒b **独占一行的标记只绑下一行**:本行没有调用点,不该白白孤悬判负
+  $r22b = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'ctest --preset x')
+  & $check '㉒b 独占行标记没绑到下一行' ((@($r22b.Unguarded).Count -eq 0) -and (@($r22b.StaleExemptions).Count -eq 0))
+
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
@@ -662,4 +684,9 @@ $byName = ($report.Sites | Group-Object Name | Sort-Object Name |
 Write-Host ('  gates 外部命令守卫完备:{0} 处调用、{1} 个名字,{2} 处按行内标记/清单豁免。' -f
   @($report.Sites).Count, @($report.Sites | Group-Object Name).Count, @($report.Exempted).Count)
 Write-Host ('    分布:{0}' -f $byName)
+# 把**被豁免的那几处逐条打出来**。豁免的本质是「这一处不查了」,而不查的东西最该显形 ——
+# 只报一个数的话,谁悄悄多加一条标记就多一处不查,而输出上只是数字加一(#219 复审)。
+foreach ($e in @($report.Exempted | Sort-Object Line)) {
+  Write-Host ('    [豁免] {0}:{1}  {2}' -f (Split-Path -Leaf $Path), $e.Line, $e.Text) -ForegroundColor DarkGray
+}
 exit 0
