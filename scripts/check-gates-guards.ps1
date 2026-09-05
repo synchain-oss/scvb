@@ -707,7 +707,11 @@ if ($SelfTest) {
   # ㉕b `gate <数>` 形态同样算档号(纯数字 3/5 不算,否则满地都是)
   $l25b = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 与 gate 5(构建)同值,取 -Last 30')
   & $check '㉕b 「gate N」形态的档号没被认出来' (@($l25b.Offending).Count -eq 1)
-  $l25c = Get-GatesLastListReport -Source ($sg + [Environment]::NewLine + '# 第 3 版把上界从 5 改成 -Last 30')
+  # ⚠ 夹具里必须真的有**纯数字档号的闸**（`3 prettier` / `5 构建`），否则这一格没牙：
+  #   夹具里只放带字母的闸时，把「只认带字母档号」那一刀放宽掉，档号集合根本不会变，
+  #   本格照样绿。这是反向注入实测出来的，不是想出来的（同族教训：#219 那两格无牙用例）。
+  $sgNum = $sg + [Environment]::NewLine + "Set-Gate '3 prettier' `$ok" + [Environment]::NewLine + "Set-Gate '5 构建' `$ok"
+  $l25c = Get-GatesLastListReport -Source ($sgNum + [Environment]::NewLine + '# 第 3 版把上界从 5 改成 -Last 30')
   & $check '㉕c 散文里的纯数字被当成了档号(噪音判据)' (@($l25c.Offending).Count -eq 0)
 
   # ㉖ **豁免**:带标记那一整段连续注释内不判负
