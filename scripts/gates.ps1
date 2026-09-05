@@ -380,15 +380,31 @@ if (-not $PluginvalExe) {
 # 在那条机检落地之前,**要复核这份清单请跑下面这段**(读 AST,不靠正则也不靠名字清单):
 #     $ast = [System.Management.Automation.Language.Parser]::ParseFile(
 #              (Resolve-Path 'scripts/gates.ps1').Path, [ref]$null, [ref]$null)
+#     # 先收本文件自己定义的函数名,下面排掉 —— 否则它们也会进清单(见下面第一条 ⚠)。
+#     $defined = @($ast.FindAll({ param($n)
+#                  $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+#                  ForEach-Object { $_.Name })
 #     $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
-#       ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $_ -notlike '$*' } |
+#       ForEach-Object { $_.GetCommandName() } |
+#       Where-Object { $_ -and $_ -notlike '$*' -and $defined -notcontains $_ } |
 #       Sort-Object -Unique |
 #       Where-Object { $g = Get-Command $_ -EA SilentlyContinue
 #                      -not $g -or $g.CommandType -in 'Application','ExternalScript' }
+#   ⚠ `-not $g` 那一支**必须留着**(`pipx` / `reuse` 没装时正靠它留在清单里,那正是本卡的核心场景),
+#     但它同样放行**任何解析不到的名字** —— 包括本文件自己定义的那 8 个函数。所以要靠上面
+#     那句 `FunctionDefinitionAst` 从**同一棵 AST** 里排,不能靠收紧 `-not $g` 来排。
 #   ⚠ `ExternalScript` 那一档不能省:本机 `npx` 解析到的是 `npx.ps1`(**不是** Application),
 #     只按 Application 过滤的话它会从清单里消失 —— 我第一次跑这段就是这么把它又漏了一次。
-#   本卡收口时这段的输出是 **10 个名字、26 处调用**:clang-format / cmake / ctest / git /
+#   ⚠ 拿**本段注释文本**当锚点写补丁脚本时,别用 `-like`:PowerShell 的 `-like` 走 WildcardPattern,
+#     而**反引号是它的转义字符** —— 模式里带反引号(本文件注释里到处都是)会去转义下一个字符、
+#     并把反引号本身从模式里去掉,于是对含反引号的行**恒不命中且不报错**。用 `.Contains()` 字面匹配,
+#     反引号用 `[char]96` 拼。写本段这个补丁时头两次就是这么静默失效的(4 个锚点只命中 2 个)。
+#   本卡收口时这段的输出是 **10 个名字**:clang-format / cmake / ctest / git /
 #   node / npx / pipx / pwsh / python / reuse,每一处都落在某个守卫的 if/else 里。
+#   ⚠ 这段末尾有 `Sort-Object -Unique`,**只出名字、不出处数**。要数处数得改成按 `CommandAst`
+#     分组数,今天是 **29 处**(clang-format 2 / cmake 3 / ctest 1 / git 2 / node 9 /
+#     npx 1 / pipx 1 / pwsh 5 / python 4 / reuse 1)。上一版这里写的「26 处」是**我自己造的假数**:
+#     那个数来自一次跑挂了的审计脚本(哈希表累加抛异常、每个名字只剩一行),我拿坏输出的行数当了结论。
 #
 # 两半一起用,缺一半都不够:
 #   · `Get-Command` 守卫 —— 缺席时显式 `Set-Gate … $false`,并说清「不是跳过,是判负」;
@@ -595,7 +611,7 @@ Set-Gate '3c reuse lint' ($reuseExit -eq 0)
 Write-Host '=== check-spdx(源文件 SPDX 头,06 §5.1 gate 3c 注)==='
 # ==================================================================
 # [SL-329] 第①类:`Set-Gate` 直接吃 `$LASTEXITCODE`,没有 pwsh 时吃到的是上一条
-# (`reuse lint`)留下的值 —— SPDX 头一个文件没查却记 PASS。
+# (gate 3c 实际跑的那一支:`reuse` 或 `pipx`)留下的值 —— SPDX 头一个文件没查却记 PASS。
 if (-not $pwshCmd) {
   Write-Host '  pwsh 不在 PATH —— check-spdx 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
   Set-Gate 'check-spdx' $false
