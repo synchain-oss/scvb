@@ -1104,6 +1104,11 @@ try {
     // (用户改了档没重分析就存盘)。badge **该亮**,而弹窗**仍不该弹**(不是用户此刻改的)。
     // C8 与 C8s 是一对:少了 C8s,把 stale 判据改成「恒假」也能全绿;少了 C8,
     // 把基线改回 mount 本地快照也能全绿。两档方向相反,各钉一半。
+    // [复审第 1 轮] **先收 C8 这一档的桶再开新桶** —— `newBucket` 是覆盖式的,
+    // 不收就把 `loudness-nondefault` 那一整页(导航 → 切 Tab4 → 探针 → 改档弹框)攒下的
+    // errors/exceptions 整个丢掉,再没有任何一处断言它们为空。
+    // 这在本卡上格外要紧:上一轮的病灶正是 `store is not defined`,就是靠这类断言照出来的。
+    assertClean("stale-on-load");
     newBucket("stale-on-load-real");
     await cdp.send("Page.navigate", {
         url: `${base}/web-preview/output.html?scenario=loudness-stale-on-load`,
@@ -1128,7 +1133,7 @@ try {
             "C8s 但弹窗**没有**弹 —— stale 为真也不该由派生位驱动模态框",
         );
     }
-    assertClean("stale-on-load");
+    assertClean("stale-on-load-real"); // 标签对上桶名(复审第 1 轮:原来两处同名)
 
     // C9 [SL-276 二轮复审] askOnNextStale 是**一次性**的:弹过就得清掉。
     // C8 管「从没被置位过」,C9 管「置位过、已经用掉了」—— 后者是 C8 的改法留下的口子:

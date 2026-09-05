@@ -106,7 +106,7 @@ private:
 // 为什么不把这两个字符串塞进 `CrvsTransactionAction`:那个类有 5 个调用点(改版本名 / 复制版本 /
 // setTrackManual / setPanCurve / 分析),其中 4 个与「分析所用口径」毫无关系,给它们加两个
 // 恒等的快照字段只会让每条事务都多背一份无关状态,而 `getSizeInUnits` 的字节账也要跟着改。
-class AppliedAnalysisAction : public juce::UndoableAction
+class AppliedAnalysisAction final : public juce::UndoableAction
 {
 public:
     AppliedAnalysisAction(juce::String& loudness, juce::String& center, juce::String oldLoudness,

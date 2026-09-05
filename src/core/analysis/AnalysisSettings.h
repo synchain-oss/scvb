@@ -20,6 +20,13 @@ namespace scvb::analysis
 //   中央槽策略两个控件旁边(T35 设置页)。合成一个 stale 位会让两枚徽标同亮同灭 ——
 //   用户改了响度档,中央槽那枚也亮,而那一项其实与上次分析一致。`stale()` 留着是给
 //   「要不要整体重分析」那个问题用的,它是两项的或。
+// ⚠ [SL-279 复审] **本结构今天在生产侧零消费者**,别把它读成这条派生式的真源。
+//   实际落地的是另外两份:native 在 `OutputProcessor::finishAnalysis` 里拿 `runtime_` 的两对
+//   `juce::String` 手写了一遍(那里要与落盘 / 撤销 / 桥面载荷同型,用不上本结构);
+//   web 在 `tab-settings.js` 里 `analysisConfigStale(cur, applied)` 逐项调两次。
+//   本结构是**给尚未落地的「第二响度指标读数」那条路准备的形状**(见 LoudnessMode.h 里
+//   [SL-252] 那段),连同它的用例一起留着 —— 那条路落地时它就是现成的载体。
+//   同一条派生式眼下有三份写法,是**已知负债**;要收敛请连三处一起收,别只改一处。
 struct AnalysisSettingsStale
 {
     LoudnessMode loudnessMode = LoudnessMode::KIntegrated; // 当前(用户设置)

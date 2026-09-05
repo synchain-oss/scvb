@@ -117,7 +117,8 @@ export function analysisConfigOf(state) {
 }
 
 /**
- * [SL-279] 「上次全量分析所用」的那一份(契约 §1.1/§2.1 的 `analysis.applied`)。
+ * [SL-279] 「上次全量分析所用」的那一份(契约 §1.1/§2.1 载荷的 `analysis.applied`,
+ * 语义与前移条件见 §1.21;落盘见 STATE_SCHEMA §三 CFGS)。
  * 缺字段时回落到**当前值**而不是默认值 —— 那正是 native 侧两级长度回退的语义,
  * 两边取同一个口径,旧插件(不发 applied)下 stale 恒假、行为与本卡之前一致。
  */

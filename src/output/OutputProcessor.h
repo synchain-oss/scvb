@@ -271,8 +271,17 @@ public:
     // getStateInformation 同锁读,消除 emitState 无锁读 runtime_ 的剩余竞态 —— 复评重要②)。
     std::pair<juce::String, juce::String> analysisConfigSnapshot();
 
-    // [SL-279] 「上次全量分析所用」那一份的持锁快照(与上面同一把锁,供 emitState 一次读全)。
-    std::pair<juce::String, juce::String> appliedAnalysisConfigSnapshot();
+    // [SL-279] 当前 + 「上次全量分析所用」**四个值一次锁读全**。
+    // 分成两个入口读会在两次 ScopedLock 之间放开锁 —— 那时「一次读全」只是一句注释,
+    // 真正让它不出错的是「四个写者与 emitTick 都在消息线程上」,不是这把锁(复审第 1 轮)。
+    struct AnalysisConfigPair
+    {
+        juce::String loudnessMode;
+        juce::String centerSlotPolicy;
+        juce::String appliedLoudnessMode;
+        juce::String appliedCenterSlotPolicy;
+    };
+    AnalysisConfigPair analysisConfigWithApplied();
 
     // [SL-284] 最近一次**落地**的分析里最坏的平衡回退级(§6.4 回退链):1..4;从未落地过 = 0。
     //

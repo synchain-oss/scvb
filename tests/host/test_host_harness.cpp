@@ -37,6 +37,7 @@
 
 #include "BridgeArgs.h"
 #include "analysis/HopMath.h" // [SL-263] 采样点→hop 的唯一换算口径(与实现同源)
+#include "output/SegmentDiff.h" // [SL-279] segmentsIdentical(撤销「同一条步」那格比段表用)
 #include "BridgeBase.h" // [SL-234] Min/MaxUiScale + clampUiScalePercent(档位边界真源)
 #include "InputBridgeLogic.h"
 #include "UiDefaultsStore.h" // [SL-208] 缩放档位全局默认
@@ -1025,32 +1026,47 @@ TEST_CASE("HOST SL-278/SL-279:全量分析前移基线,撤销/重做两向都跟
     // 前置:先跑一次全量分析,把基线钉在默认档上(否则下面分不清「本来就相等」与「前移了」)。
     REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, false, /*fullScope=*/true).ok);
     waitDone();
-    REQUIRE(r.out.appliedAnalysisConfigSnapshot().first == r.out.analysisConfigSnapshot().first);
+    REQUIRE(r.out.analysisConfigWithApplied().appliedLoudnessMode == r.out.analysisConfigWithApplied().loudnessMode);
 
     // ① 改档 ⇒ 基线不动(只有分析才前移它),于是 stale。
     REQUIRE(r.out.setAnalysisConfig("rms", juce::String(), true, false));
-    CHECK(r.out.analysisConfigSnapshot().first == "rms");
-    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "kw_integrated");
+    CHECK(r.out.analysisConfigWithApplied().loudnessMode == "rms");
+    CHECK(r.out.analysisConfigWithApplied().appliedLoudnessMode == "kw_integrated");
 
     // ② **局部**分析(fullScope=false)**不得**前移基线 —— 其余段仍按旧口径。
     //    这一条是 [SL-279] 「只在全量分析时 markApplied」的执行者:去掉那个条件就红在这里。
     REQUIRE(r.out.startAnalysis(0, 0.0, coveredS / 2.0, false, /*fullScope=*/false).ok);
     waitDone();
-    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "kw_integrated");
+    CHECK(r.out.analysisConfigWithApplied().appliedLoudnessMode == "kw_integrated");
 
     // ③ 全量分析 ⇒ 基线前移到 rms。
     REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, false, /*fullScope=*/true).ok);
     waitDone();
-    REQUIRE(r.out.appliedAnalysisConfigSnapshot().first == "rms");
+    REQUIRE(r.out.analysisConfigWithApplied().appliedLoudnessMode == "rms");
 
     // ④ **撤销**:段表与基线在**同一条撤销步**里,一次 Ctrl+Z 两者一起回退。
-    //    去掉那个 AppliedAnalysisAction、或把它压到另一条事务里,这一条就红。
+    //    ⚠ [复审第 1 轮] 只断基线**钉不住「同一条」**:若 AppliedAnalysisAction 落进另一条
+    //    事务(最现实的回归形态 —— 有人在 commitCrvsTransaction 尾部补一句 beginNewTransaction
+    //    收口),④⑤ 两格照样绿,而真实体验是「按一次 Ctrl+Z 段表纹丝不动」。
+    //    所以**同时断段表**:一次 undo 必须两样都动。
+    const auto segsAfterAnalyze = r.out.crvsSnapshot();
     REQUIRE(r.out.undo());
-    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "kw_integrated");
+    CHECK(r.out.analysisConfigWithApplied().appliedLoudnessMode == "kw_integrated");
+    const auto segsAfterUndo = r.out.crvsSnapshot();
+    bool tableMoved = false;
+    for (std::size_t v = 0; v < segsAfterAnalyze.versions.size() && !tableMoved; ++v)
+    {
+        for (std::size_t t = 0; t < segsAfterAnalyze.versions[v].tracks.size() && !tableMoved; ++t)
+        {
+            tableMoved = !scvb::output::segmentsIdentical(segsAfterAnalyze.versions[v].tracks[t].segments,
+                                                          segsAfterUndo.versions[v].tracks[t].segments);
+        }
+    }
+    CHECK(tableMoved); // ← 同一条撤销步的证据:基线回退的**那一次** undo 也动了段表
 
     // ⑤ **重做**:再前移回去。只钉 undo 不钉 redo 的话,perform() 写反了也照绿。
     REQUIRE(r.out.redo());
-    CHECK(r.out.appliedAnalysisConfigSnapshot().first == "rms");
+    CHECK(r.out.analysisConfigWithApplied().appliedLoudnessMode == "rms");
 }
 
 TEST_CASE("HOST P0-1:无采集数据时分析被拒,不会挂起", "[host][t37][v4][analyze]")

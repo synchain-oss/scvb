@@ -1933,9 +1933,15 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
 
     // 加载 state 后 CRVS 已整体替换 → 清空 UndoManager,否则 undo() 会恢复加载前的旧 CRVS 快照,
     // 静默丢弃刚加载的段数据(PR#55 第12轮;关闭 #48 tech-debt「fromState 清 undo」的桥面同款)。
-    // 桥的 UndoManager 只含 CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve/
-    // 分析回落([J89]),
-    // 均写 crvsData_),无其它事务类别 → 全清口径安全(在 lifecycleMutex_ 内)。
+    // 桥的 UndoManager 含**两类**动作(在 lifecycleMutex_ 内全清,口径安全):
+    //   · CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve/
+    //     分析回落([J89]))—— 写 `crvsData_`;
+    //   · [SL-279] `AppliedAnalysisAction` —— **不写 `crvsData_`**,写 `runtime_` 的
+    //     `appliedLoudnessMode` / `appliedCenterSlotPolicy` 两个字符串。
+    // 安全性的理由因此**不是**「都写 crvsData_」(那句话随本卡失效),而是:
+    // **两类动作写的面都刚被 setStateInformation 从新 blob 里整体覆盖过** ——
+    // CRVS 整体替换、applied.* 也刚从 CFGS 读回,留着旧动作只会把它们撤回加载前。
+    // 再加新动作类时按这条判:它写的面是不是也被本函数覆盖了。
     authority_.undoManager().clearUndoHistory();
 
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
@@ -2382,12 +2388,15 @@ std::pair<juce::String, juce::String> ScvbOutputAudioProcessor::analysisConfigSn
     return {runtime_.loudnessMode, runtime_.centerSlotPolicy};
 }
 
-std::pair<juce::String, juce::String> ScvbOutputAudioProcessor::appliedAnalysisConfigSnapshot()
+ScvbOutputAudioProcessor::AnalysisConfigPair ScvbOutputAudioProcessor::analysisConfigWithApplied()
 {
-    // [SL-279] 与上面同一把锁、同一条理由:emitState 要一次读全四个值,读到半新半旧的一对
-    // 会让 stale 派生式在那一帧算错(当前是新的、applied 还是旧的 ⇒ 徽标闪一下)。
+    // [SL-279] **一次取锁读全四个**。分成两个入口读的话,两次 ScopedLock 之间锁是放开的,
+    // 「一次读全」就只是一句注释 —— 那正是当初给 analysisConfigSnapshot 上锁时要根除的
+    // 「看着有保护、其实没有」(复审第 1 轮点出)。半新半旧的一对会让 stale 派生式在那一帧
+    // 算错(当前是新的、applied 还是旧的 ⇒ 徽标闪一下)。
     const juce::ScopedLock lock(lifecycleMutex_);
-    return {runtime_.appliedLoudnessMode, runtime_.appliedCenterSlotPolicy};
+    return {runtime_.loudnessMode, runtime_.centerSlotPolicy, runtime_.appliedLoudnessMode,
+            runtime_.appliedCenterSlotPolicy};
 }
 
 scvb::engine::PlayheadPod ScvbOutputAudioProcessor::playheadSnapshot() const
@@ -2851,7 +2860,13 @@ void ScvbOutputAudioProcessor::tickResegmentDebounce(std::int64_t nowMs)
     // —— applyAnalysisSegments 在 false 档的保留判据(locked || origin != Auto)正是这一条,
     // 逐字同义。传 true 会连用户段一起铲掉,还会写 freeze 参数(带 host gesture),两条都违约。
     pendingResegmentReason_ = reason;
-    const auto accepted = startAnalysis(0, r.startS, r.endS, /*clearManual=*/false);
+    // [SL-279 复审] `fullScope=true`:本路径与 `parseAnalyzeScope` 的 `"all"` 分支**调的是同一个
+    // 纯函数、传的是同一组实参**(`analyzeAllRange(rangeMode, rangeStart, rangeEnd, capturedExtent)`
+    // + `tracksMask=0`),旁边那句「范围与『点分析』的 "all" 档同一把尺子」说的就是它 ——
+    // 所以它同样是一次**全量**重算,基线该跟着前移。
+    // 漏了它的话残留一条与本卡同类的误报:改档 ⇒ 徽标亮 ⇒ 拖 VAD/分段滑杆松手 ⇒ 用新档把整条
+    // 时间线整表重算替换 ⇒ 段表已经全是新口径,徽标却还亮着,用户点「重新分析」产出一个字节不变。
+    const auto accepted = startAnalysis(0, r.startS, r.endS, /*clearManual=*/false, /*fullScope=*/true);
     if (!accepted.ok)
         pendingResegmentReason_ = AnalysisDoneReason::None; // 没起来就别留着脏 reason
 }

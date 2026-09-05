@@ -5,7 +5,14 @@
 - [ ] docs/PARAMETERS.md(自动化参数)
 - [ ] docs/IPC_CONTRACT.md(共享内存段名/布局)
 - [x] docs/STATE_SCHEMA.md(state schema)—— abi 2→3 + migrate_2_to_3 + CFGS 行尾扩 applied.\* + state payload 加 `analysis.applied.*`
-- [x] tests/golden/(golden 快照)—— **新增** abi3.bin,abi1.bin / abi2.bin **保留**作迁移基线(三份并存,不是替换)
+- [x] docs/SCVB_CONTRACT.md(桥面契约)—— §1.1 `requestInitialState` 返回值与 §2.1 `scvb.state` 载荷的 `analysis` 组加 `applied:{loudness_mode, center_slot_policy}`(**载荷字段只增不改**,CLAUDE.md §7.4);§1.21 补 `applied.*` 的语义、写入面与前移条件
+- [x] tests/golden/(golden 快照)—— **新增** abi3.bin,abi1.bin / abi2.bin **保留**作迁移基线(三份并存,不是替换)。
+      ⚠ **金样锁的是容器头**(magic / abi / flags / chunkCount / TLV 框):夹具的 CFGS 载荷是
+      `opaque("CONFIG")` 字面量,不是 `encodeOutputState` 的产物 —— 所以 `abi3.bin` 与 `abi2.bin`
+      只差 abi 那一个字节是**必然**而非巧合,`applied.*` 那 8 个字节它一次都没见过。
+      CFGS 载荷的 wire 布局由 `test_output_session.cpp` 的长度断言(`42u` / `24u+5u+16u`)与
+      本卡新增的四格(往返 / 两级回退 / 半截拒载 / 回落计数)承担。改 `applied` 的编码顺序
+      **不会**让金样红,别去金样那里找原因。
 
 ## 变更内容
 
@@ -44,6 +51,8 @@ web 侧 state payload 的 `analysis` 组加 `applied` 子对象(两字段,与上
 - `src/core/state/OutputStateCodec.{h,cpp}`(尾扩 u32×2、两级长度回退、applied 专属回落计数)
 - `src/core/analysis/AnalysisSettings.h`(新文件:失效标记结构;`LoudnessMode.h` 只留指路)
 - `docs/STATE_SCHEMA.md`(abi 2→3 + migrate_2_to_3 + CFGS 行 + payload `analysis.applied.*`)
+- `docs/SCVB_CONTRACT.md`(§1.1 / §2.1 载荷字段 + §1.21 语义)
+- `docs/contract-changes/TEMPLATE.md`(清单缺 `docs/SCVB_CONTRACT.md` 一格,而 `branch-gate.yml` 的 path guard 管着**五条** —— 照模板走必漏勾,本卡即是实例)
 - `tests/golden/state/abi3.bin`(新增;abi1/abi2 保留)
 
 ## 审批
