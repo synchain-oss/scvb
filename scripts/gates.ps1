@@ -162,9 +162,12 @@ function Test-ScvbPageSuite {
 #     ctest 到点**杀掉了**被测进程 —— 返回后立刻数与 5 秒后再数都是 0。也就是说
 #     那次残留的成因**还没查清**,只知道它真的会发生。这两次扫描因此是**便宜的保险**:
 #     没有残留时零成本,有残留时省掉别人一次查不出的红。
-#   · 父进程**还活着** ⇒ 有人正在跑测试。我们此刻持着 IPC 互斥,所以那一定是**绕开互斥
-#     裸跑**的(见 scripts/with-ipc-lock.ps1 的头注:裸跑会抢全机唯一的 viz 段)。
-#     这种**不能杀** —— 杀掉是在破坏别人正在跑的东西;点名并判负,让人去处理。
+#   · 父进程**还活着** ⇒ 有人正在跑测试。这种**不能杀** —— 杀掉是在破坏别人正在跑的
+#     东西;点名并判负,让人去处理。
+#     ⚠ **别在这里断言「那一定是绕开互斥裸跑的」**:本函数不知道调用方此刻持没持锁。
+#     `-NoIpcLock` 下没持锁的是**我们自己**,对方很可能正老老实实持着锁。责任怎么指、
+#     两种情形各打什么话,由调用点判(搜「责任要指对」)—— 那里才有 `$NoIpcLock`。
+#     (裸跑为什么危险见 scripts/with-ipc-lock.ps1 的头注。)
 function Get-ScvbTestLeftover {
   $out = @()
   try {
@@ -174,9 +177,10 @@ function Get-ScvbTestLeftover {
     #
     # 两段筛:WQL 只支持 `%`(`\_` 转义在 Win32_Process 上会被拒:「查询参数无效」),
     # 所以 CIM 侧只做**粗筛**少拉数据,精确判据交给 PowerShell 的 `-like`(它把 `_`
-    # 当字面量)。`scvb_*tests*` 覆盖现有七套(scvb_tests / scvb_params_tests /
-    # scvb_monitor_tests / scvb_plugin_common_tests / scvb_input_bridge_tests /
-    # scvb_host_tests / scvb_ipc_tests),排除 scvb_tool / scvb_daemon / scvbtests。
+    # 当字面量)。`scvb_*tests*` 按**形态**收,不按名单收:它覆盖 `tests/**` 里所有
+    # `scvb_<...>tests` 目标,排除 scvb_tool / scvb_daemon / scvbtests 这类形态不合的。
+    # 要问「今天有哪几套」请读生成物(`ctest -N` 或 `build*/**/CTestTestfile.cmake`),
+    # 别在这里抄一份名单 —— 名单会随 tests/** 的增删悄悄变假,而这个 glob 不会。
     $all = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'scvb%tests%'" -ErrorAction Stop |
       Where-Object { $_.Name -like 'scvb_*tests*' })
   }
@@ -537,13 +541,20 @@ if (-not $npxCmd) {
 else {
   # [SL-309 后半] **红时回显**。此前 `$pp` 捕了输出却从不打出来,于是这一道红的时候滚屏上
   # 没有任何线索 —— 得另跑一次 `prettier --check .` 才知道是哪个文件(我自己在 SL-325 那一轮
-  # 就这么跑过一次)。取 `Select-Object -Last 30`,与 **3c(reuse)与 gate 5(构建)** 同值。
+  # 就这么跑过一次)。取 `Select-Object -Last 30`,名单见下。
   # ⚠ 别写成「与 3b/3c 逐字相同」——**3b(gitleaks)是 `-Last 20`**,本仓这个数今天不是铁板一块:
   # **含本处共四处 30**(`3 prettier` / `3c reuse lint` / `5 构建` / `6 ctest`),**一处 20**
   # (`3b gitleaks`)。这里点闸名不点行号 —— 行号会被上面任何一次插入改掉,而闸名是
   # `Set-Gate` 的字面量,活得久。**这个数上一轮写的是「三处」,是本卡自己把 gate 6 从 40 收成
   # 30 之后作废的**:同一个 commit 既改了事实又留着旧数,正是本仓「自己的 commit 把自己写的
   # 数字作废」那一族(#222 复审第 3 轮)。
+  # [SL-337] [gates-last-source] **本文件里这份名单只此一份**,别处一律指路回来 —— 上一版
+  # 它在本文件里躺着三份(这里、上面那行、gate 6 回显处),而只要有人调一个截断值,
+  # 三份里改漏哪份都不会有人发现,因为没有任何机器在看。
+  # 现在有了:`scripts/check-gates-guards.ps1` 的第二道判据(与守卫完备那道同时跑,无需开关)
+  # 判「一条注释里 `-Last <数>` 与另一道闸的档号同现」,唯一豁免是**带上面那个标记的
+  # 这一整段连续注释**(它是真源)。
+  # 标记形态与本文件 `[gates-guard-exempt]` 同款:豁免长在被豁免的东西旁边,不另立清单。
   # 本卡只保证**新加/改动的这几处**取仓里的多数值 30(prettier 是新加、gate 6 是 40→30 的改动
   # —— 与下面 gate 6 处那句同口径),不顺手去动 3b 那个 20
   # (那是另一处的判断,不在本卡范围)。这句话本身就被 #222 复审抓过一次:注释里说「逐字相同」
@@ -686,7 +697,7 @@ else {
 # 拿不到锁的处置与 6/7/8 **逐字同款**:判负 + 不执行。理由也同款 —— 无锁硬跑就是去抢
 # 隔壁持锁 agent 的资源,让那一侧收到一个自己日志里查不到原因的假红。
 # 惰性取锁:实际的 Enter 在下面循环里「跑到第一套页面级之前」才做,
-# 于是纯 node 的那 18 套无锁先跑、可与别的 agent 并行。这三个变量是段内状态。
+# 于是纯 node 的那些无锁先跑、可与别的 agent 并行。下面这几个 `$script:Smoke*` 是段内状态。
 $script:SmokeLock = $null
 $script:SmokeLockTaken = $false
 $script:SmokeLockOk = $true   # 没到页面级就一直是「不需要锁」
@@ -741,12 +752,9 @@ else {
   # 2 与 3 都**不判红**,区别只在摘要里怎么显形:2 = `[SKIP]`,3 = `[FLAKY-SKIP]` + 单独计数。
   # 分这两档的代价是实测出来的:压成一个码时,一台装着 Chrome 的机器上一次瞬时超时会让
   # 整套判据无声消失,而汇总行照写全 PASS(SL-293 多轮 gates 撞到三次,掉的套件每次不同)。
-  # 会回 2 的是**六套**页面级冒烟(都要一个无头 Chrome/Edge):smoke-monitor-page.mjs、
-  # smoke-output-stale-page.mjs(SL-177 过期提示,04 §4.5)、smoke-output-dist-page.mjs
-  # (SL-203 分布图补间)、smoke-seg-restore-page.mjs(SL-242 段级「恢复自动」的作用域)、
-  # smoke-ui-layout-page.mjs(SL-272/275/276/273 header 几何、建议表留白、重分析弹窗)
-  # 与 smoke-seg-diff-fold-page.mjs(SL-274 diff 摘要折叠 + 泳道保底)。
-  # 执行面按 glob 自动收,加一套不必改这里 —— 这行只是给人读的。
+  # 会回 2 的是**页面级**那几套(都要一个无头 Chrome/Edge)。**哪几套由 `Test-ScvbPageSuite`
+  # 判**(单一真源),套数由下面那行 Cyan 当场打出来 —— 这里既不抄名单也不写数:
+  # 执行面按 glob 自动收,加一套不必改这里,而抄一份名单在这里只会在下次加套时变假。
   # 为什么单列一档:
   # 把「本机没装浏览器」和「页面真的坏了」都判成红,等于逼每个只改 C++ 的人装浏览器,
   # 或者反过来诱导谁把这套从门禁里摘掉 —— 两条都比一条 SKIP 差。**但绝不静默**:
@@ -797,12 +805,13 @@ else {
     }
   }
   # [SL-301 复审] **持锁面收窄到真正起浏览器的那几套。**
-  # 24 套里只有 6 套起无头 Chrome,另外 18 套是纯 node、零共享状态 —— 把它们也串行化
-  # 是「持锁面比论据宽」:论据是「Chrome 负载拖红别人的 gate 6」,那 18 套一个 Chrome 都不起。
+  # 只有一部分套件起无头 Chrome,其余是纯 node、零共享状态 —— 把它们也串行化
+  # 是「持锁面比论据宽」:论据是「Chrome 负载拖红别人的 gate 6」,纯 node 那些一个 Chrome 都不起。
+  # (三个数**不写在这里**:下面那行 Cyan 每轮当场打出「本轮 N 套里 M 套起浏览器」。)
   # 分类判据见 `Test-ScvbPageSuite`(单一真源,有意取并集偏向多判 —— 漏判的代价是
   # 「无锁跑起浏览器」且完全静默,多判只是多串几十秒)。
   # 排序把纯 node 的排前面,**跑到第一套页面级时才取锁**,循环结束在 finally 里放 ——
-  # 于是无锁那 18 套可以与别的 agent 并行。持锁段占住多久由**段预算**封顶
+  # 于是无锁那些可以与别的 agent 并行。持锁段占住多久由**段预算**封顶
   # (`$script:ScvbSmokeSegmentBudgetSec`),不再是「套数 × 每套上界」——
   # 等锁上界正是从那个预算推出来的,两处口径同源。
   $pageSuites = @($smokeFiles | Where-Object { Test-ScvbPageSuite -Path $_.FullName })
@@ -1255,18 +1264,18 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预�
 # (exportSuggestions 与 setGuideSeen:契约齐全、常量在、web 真调用,唯独没注册 handler),
 # **即便门禁当时已经写好也照样栽**。判级理由与 Gate 3g 逐字同款:门禁没有执行者等于没有门禁。
 # 三条本地实跑均 exit=0 后才接线(curve 最坏偏差 9.6e-5 dB / 容差 0.01 dB)。
-# [SL-283] 第四条 check-native-paths.mjs 同理接进来:它与 format.yml 的 docs-truth 跑
+# [SL-283] check-native-paths.mjs 同理接进来:它与 format.yml 的 docs-truth 跑
 # **逐字同一条命令**。本仓的纪律是「只挂在本地 gates 上等于没有执行者」,反过来同样成立 ——
 # 只挂在 CI 上,改 NATIVE_RE 的人本地全绿、推上去才红。
-# [SL-297] 第六条 check-gates-visibility.mjs:它读的是 **gates.ps1 自己**,断言 Gate 3e 的
+# [SL-297] check-gates-visibility.mjs:它读的是 **gates.ps1 自己**,断言 Gate 3e 的
 # rc=3(浏览器在但没连上)有独立计数**且计数接进了汇总标签**。本卡修的洞就是「降级了但
 # 摘要里看不见」,而那个修复自己也会被人删回去 —— 删掉标签里那段插值,`[FLAKY-SKIP]`
 # 退回只在滚屏出现一行,洞原样复现而所有现有用例照绿。所以钉的是**接线**不是常量。
 # 注意它在**没有 grep 的机器上**(Windows 裸装)会把引擎对拍降级成警告仍返回 0。
-# [SL-286] 起那是**两档**(30 条手写用例 / 全仓真实路径);另外**没有 git 时**
+# [SL-286] 起那是**两档**(手写用例 / 全仓真实路径);另外**没有 git 时**
 # 「顶层条目全覆盖」**与「全仓路径引擎对拍」两档**一起降级(后者嵌在前者的代码块里,
 # 拿不到全仓文件清单就无从对拍)。所以本地绿不等于这几档验过,它们以 CI(ubuntu)为准。
-# [SL-295] 第七条 check-changelog-drafts.mjs:断言 CHANGELOG.md 注释块里没有「卡已经合了、
+# [SL-295] check-changelog-drafts.mjs:断言 CHANGELOG.md 注释块里没有「卡已经合了、
 # 预写条目却还留着」的条目。它是这一圈里**唯一要读 git 历史**的一条 —— 已上线集合取自
 # base 分支的提交标题(默认 `origin/feature/v1`,可用 SCVB_CHANGELOG_BASE 改)。取不到那个
 # ref、或仓库是浅克隆时它**判负而不是跳过**:近乎空的已上线集合会让门禁永远绿,正是本仓
@@ -1339,7 +1348,7 @@ else {
     else {
       # [SL-283] **成功时也要把 [WARN] 行回显,并把「降级了几档」带进汇总表**。
       # check-native-paths 在没有 grep 的机器上会把引擎对拍降级成警告并**仍返回 0** ——
-      # [SL-286] 起那是**两档**(30 条手写用例 / 全仓真实路径),各打一行;没有 git 时
+      # [SL-286] 起那是**两档**(手写用例 / 全仓真实路径),各打一行;没有 git 时
       # 掉的是「顶层条目全覆盖」**与「全仓路径引擎对拍」两档,但只打一行**(后者嵌在
       # 前者的代码块里)—— 这就是下面那段说「行数是档数的下界」的来处。
       # 而 Windows 上 `grep` 通常不在 PATH 上
@@ -1382,8 +1391,8 @@ else {
       # 两者都按**方括号标记**匹配,不按文案匹配:挂在散文上的话,一次很自然的措辞编辑就会让
       # 这行回显静默失效(#197 复审第 5 轮【建议】)。
       # 不并进 $parityWarn:它数的是「某档没跑」,放行与 base 戳都不是降级。
-      # [SL-315] 放行**还要进汇总标签**,不能只到滚屏 —— 本文件里有两条同向先例(gate 3e 的
-      # $smokeFlaky → $smokeLabel、本圈的 $parityWarn → $parityLabel),理由逐字写在上面那段:
+      # [SL-315] 放行**还要进汇总标签**,不能只到滚屏 —— 本文件里这是常规做法
+      # (搜 `$smokeLabel` / `$parityLabel` / `$ctestLabel` 三个拼装点),理由逐字写在上面那段:
       # 「跑完 gates 的人看汇总表的概率远高于往回滚二十屏找黄字」。一个烂在注释块里的放行,
       # 若只在滚屏里闪一行,本地看到的形态与「没有任何放行」完全一样。
       # 计数走上面那份**一处定义**的 $markerCount(行首 + 吃掉前导空格)—— 放行行带两个前导
@@ -1404,7 +1413,7 @@ else {
   # 这里数的单位是**行**,不是「档」。
   # [SL-286] 这段论证原先举的两个例子**都已被 SL-286 改掉**,留着会把人带向不存在的东西:
   #   · 原文说「check-native-paths 的降级是单次单行 console.warn」——它现在有**三个**降级点:
-  #     ①「没 grep ⇒ 跳过 30 条手写用例对拍」②「没 grep ⇒ 全仓路径对拍也一并跳过」
+  #     ①「没 grep ⇒ 跳过手写用例对拍」②「没 grep ⇒ 全仓路径对拍也一并跳过」
   #     ③「没 git ⇒ 跳过顶层条目全覆盖」。但**单次运行最多打两行**:② 落在「git 可用」
   #     那一支里,与 ③ 互斥(没 git 时 ④ 整档不进,② 根本走不到)。**四种组合实测**
   #     (上一版只列了三种 —— 一张不完整却看着像穷举的表,和写死行号是同一类账):
@@ -1422,7 +1431,7 @@ else {
   #     helper 自己那一处,反例没了。
   #     ⚠ 这里**故意不写行号**:上一版那两个数就是这么失效的,而换成四个新数只是把时钟
   #     归零、耦合原样留着 —— 且它们指向**另一个文件**,那边任何增删都会让四个数一起漂,
-  #     不会有人发现。同一条规矩见 check-smoke-hygiene.mjs 头注「别写死位置」。
+  #     不会有人发现。同一条规矩 check-smoke-hygiene.mjs 的头注也写过(那边管的是格数)。
   # 但**结论不变**,理由换成仍然成立的那条:`warn()` 的语义是「**通过但有提示**」,不等于
   # 「某档没跑」——今天这四处恰好都是「跳过」,谁哪天拿它发一条纯提示,写死「−N 档降级」
   # 就会对着提示喊降级。这个信号刚建立起来就是要让人信它,喊错一次,下次真降级也会被当噪声。
@@ -1484,7 +1493,7 @@ Write-Host '=== Gate 3h: 字体子集覆盖(文案字符 <-> web/fonts/*.woff2 �
 # ==================================================================
 # [F12] web/fonts/README.md 早就写着「新增文案不重跑 fetch_fonts.py 就会上屏方块,而 CI 查不出」。
 # 那句话在 2026-08-17 → 08-25 之间被兑现:i18n.js 连改四批词条、子集一次没重跑,feature/v1
-# 主线带着几百个无字形字符(含「卡箍」这种正经词条)一路合入,八道门禁没有一道看得见。
+# 主线带着几百个无字形字符(含「卡箍」这种正经词条)一路合入,当时的门禁没有一道看得见。
 # 人审 PR diff 永远发现不了「这个新汉字字体里没有」—— 只有逐字比对字符集与 cmap 查得出。
 #
 # CI 侧跑**同一条命令**:.github/workflows/format.yml 的 docs-truth job(与 3f/3g 同档)。
@@ -1639,8 +1648,8 @@ Write-Host '=== Gate 5b: ctest 上界属性完备(读生成物 CTestTestfile.cma
 # 把 ipc 写成「没有属性」),所以这一条从设计上就只认 ctest 真正吃的那份。
 # 不持锁:纯读文件,不起任何进程。
 #
-# ⚠ **必须先判 pwsh 在不在**(#211 复审【重要】),口径与本文件 546–550 行为 node 写的那条
-# 同源:PowerShell 找不到外部命令时抛 CommandNotFoundException,默认
+# ⚠ **必须先判 pwsh 在不在**(#211 复审【重要】),口径与 gate 3e 为 `node` 写的那条守卫
+# 同源(搜「必须先判 node 在不在」):PowerShell 找不到外部命令时抛 CommandNotFoundException,默认
 # ErrorActionPreference=Continue 下**不更新** $LASTEXITCODE —— 它会保留上一条外部命令的值,
 # 而这里上一条正是 gate 5 的 `cmake --build`。构建成功 ⇒ 0 ⇒ $timeoutOk 为真 ⇒ 汇总表打出
 # 「5b PASS」,**而判据一行都没跑过**。5b 恰恰是唯一一道「不跑就恒绿」的门(它的实跑输出与
@@ -1736,7 +1745,7 @@ else {
         $ctestBlocked = $true
       }
       if ($ctestBlocked) {
-        # **责任要指对**(复审【建议】):`-NoIpcLock` 下 `$script:IpcLock` 是 `$null`,
+        # **责任要指对**(复审【建议】):`-NoIpcLock` 下 `$ipcLock` 是 `$null`,
         # 本进程**根本没持锁**,却照样走到这里。此时对方可能是**老老实实持着锁**在跑,
         # 绕开互斥的是我们自己 —— 照写「对方绕开了互斥」就把责任指反了。
         if ($NoIpcLock) {
@@ -1758,25 +1767,20 @@ else {
       # [SL-311] `--timeout` 给**没有 TIMEOUT 属性**的测试定默认上界;有属性的不受影响
       # (实测:`--timeout 5` 跑 `scvb_monitor_tests`(属性 600、实际 16s)照样 Passed 16.25s)。
       #
-      # [SL-320] 这个数**今天一套都管不到,纯粹是兜底**。七套的上界全部由 TIMEOUT 属性给:
-      #     tests/CMakeLists.txt      scvb_tests / scvb_params_tests /
-      #                               scvb_plugin_common_tests / scvb_input_bridge_tests → 30
-      #                               scvb_monitor_tests → 600      scvb_host_tests → 900
-      #     tests/ipc/CMakeLists.txt  scvb_ipc_tests → 900   ← **不在上面那个文件里**
-      # 口径真源是 `tests/CMakeLists.txt` 里 `scvb_tests` 上方那段,它**只管上面这四套**
-      # (那段自称的就是「四套的口径真源」);`scvb_monitor_tests` 的 600 与
-      # `scvb_host_tests` 的 900 各写在**自己 add_test 旁**、不由那段管,`scvb_ipc_tests` 的
-      # 900 在另一个文件、由 `SCVB_BUILD_IPC_TESTS` 控制(默认 ON,本机与 CI 都真的进集合)。
-      # ([SL-325] 这里原先写「只管前六套」:多算了 monitor 与 host 两套。上面那张表是对的,
-      #  错的是这一句 —— 照它去改 30s 会以为顺手也改了 monitor / host。)
+      # [SL-320] 这个数**今天一套都管不到,纯粹是兜底**:每一套的上界都由自己的 TIMEOUT
+      # 属性给,而「是否每一套都有属性」由 **gate 5b(`scripts/check-ctest-timeouts.ps1`)**
+      # 当门禁判 —— 它读的是生成物 `CTestTestfile.cmake`,也就是 ctest 真正吃的那份。
+      # [SL-337] **具体哪套多少秒不抄在这里**:那份值表的真源在 `tests/**/CMakeLists.txt`
+      # (不止 `tests/CMakeLists.txt` 一个文件),抄过来就是一份会随对面增删悄悄变假的副本。
+      # 本卡之前这里就躺着一整张七套的值表 —— 而同一段里还写着「别照着这张表推谁落在兜底上」,
+      # 一边给表一边叫人别用,那张表存在的唯一作用就是等着变假。要看今天的值请读生成物。
       # 属性跟着**测试**走,所以本机与出包硬门(build-vst3.yml)吃的是同一份;此前那四套没有
       # 属性,本机吃这里的 300、CI 吃 ctest 默认的 1500,同一个「上界」两个真源、差 5 倍。
       # 所以这里剩下的职责只有一条:**给新加的、还没写属性的测试兜一个底**,免得它悄悄
       # 退回 1500s。新加测试请去 CMake 里写属性,不要靠这个数。
-      # ⚠ 别照着这张表推「谁还落在兜底上」——本卡第 1 轮复审就是这么栽的:我只 grep 了
-      # `tests/CMakeLists.txt` 一个文件、没扫 `tests/**`,于是把 ipc 写成「没有属性」,
-      # 而它的属性一直在 `tests/ipc/CMakeLists.txt`。要问「谁有属性」请扫全树,或直接读
-      # 生成物 `build*/**/CTestTestfile.cmake` —— 那才是 ctest 真正吃的那份。
+      # ⚠ 别只 grep `tests/CMakeLists.txt` 一个文件就下结论 —— SL-320 第 1 轮复审就是这么栽的:
+      # 漏扫 `tests/**` 于是把 ipc 写成「没有属性」,而它的属性一直在 `tests/ipc/CMakeLists.txt`。
+      # 要问「谁有属性」请扫全树,或直接读生成物 `build*/**/CTestTestfile.cmake`。
       $ct = (& ctest --test-dir $BuildDir -C $Config --output-on-failure --no-tests=error --timeout 300 2>&1)
       $ctestRc = $LASTEXITCODE
 
@@ -1835,9 +1839,9 @@ else {
           else { 'ctest 自己报 0 套失败 —— 退出码非 0 多半不是用例判负,而是 ctest 自身出错' }
           Write-Host ('  [ctest] 退出码非 0,但抠不出失败用例名({0})—— 用例名未知(不是「没有失败」),看下面尾部原文' -f $why) -ForegroundColor Yellow
         }
-        # 尾部照旧回显,取 `-Last 30` —— 与 3c(reuse)、gate 5(构建)、gate 3(prettier)同值。
-        # 此前这里是 `-Last 40`,那是又一份没有独立理由的截断规则。
-        # (3b 是 `-Last 20`,本仓这个数不是铁板一块;本卡只把新加/改动的这几处收到多数值 30。)
+        # 尾部照旧回显。**取值、名单与理由都只写在 gate 3(prettier)那一处**,这里连数都不抄
+        # (抄两处就是下一句待漂的注释 —— #222 复审第 4 轮点的正是这个,那时同一份名单在
+        # 本文件里躺着三份)。此前这里是另一个数,没有独立理由。
         $ct | Select-Object -Last 30 | ForEach-Object { Write-Host ("  " + $_) }
       }
       # 汇总表那行带上失败用例名:跑完 gates 的人看汇总表的概率远高于往回滚屏
