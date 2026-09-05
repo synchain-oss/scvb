@@ -1174,13 +1174,27 @@ if (selfTest) {
         // 增量**恰好 +1**,不是 `>`:`>` 只守「有人读过」,守不住「别被第二个读取者顶替」——
         // 那正是旧版 `=== 1` 计数守的另一半。多一个落在夹具路径上的读取者,生产那一处写回
         // 内联时增量仍 > 0 ⇒ 照绿。收成 `=== +1` 就把这半闭合,不必再造一层守卫。
-        check(
-            anchoredReads === anchoredBefore + 1,
-            "收窄调用点没有读 BODY_REF" +
-                "_ANCHORED_RE(计数没动)—— 多半是那行被写回了内联字面量," +
-                "或写回了 new RegExp 重建版:两者都不经过 anchoredRe()," +
-                "于是真源放宽那天收窄不会跟着动",
-        );
+        // ⚠ 两件事都是实测逼出来的(注入跑完才发现):
+        //   · **只在夹具成立时才断言计数** —— 否则夹具一断,这一格也跟着红,而它的话术说
+        //     「被写回内联」,与上面那格给的真因**同时打印、方向相反**。这里不算「静默跳过」:
+        //     上面那格已经大声说了真因;
+        //   · **话术按真因分两支**(增量 0 / 增量 > 1)—— 第一版两支共用「计数没动」,
+        //     而加第二个读取者时增量是 2,报出来却是「没动」,又是一句指错方向的红。
+        if (anchoredProbe.has("111")) {
+            const anchoredDelta = anchoredReads - anchoredBefore;
+            check(
+                anchoredDelta === 1,
+                anchoredDelta === 0
+                    ? "收窄调用点没有读 BODY_REF" +
+                          "_ANCHORED_RE(增量 0)—— 多半是那行被写回了内联字面量," +
+                          "或写回了 new RegExp 重建版:两者都不经过 anchoredRe()," +
+                          "于是真源放宽那天收窄不会跟着动"
+                    : "读取者不止一个(增量 " +
+                          anchoredDelta +
+                          ")—— 多出来的那个会替生产那一处顶着:" +
+                          "它写回内联时增量仍然大于 0,这一格就再也拦不住了",
+            );
+        }
         check(
             BODY_REF_ANCHORED_RE.source === bodyRefAnchored().source,
             "BODY_REF_ANCHORED_RE 不是由 bodyRefAnchored() 生成的(被写回字面量?)—— 真源放宽那天它不会跟着动;" +
