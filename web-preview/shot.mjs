@@ -203,7 +203,16 @@ const DOC_PRELUDE = `window.__D = (() => {
  *
  * ⚠ 裸包装 `evaluateRaw` **关在这个闭包里**,外面拿不到它。放在顶层时它仍是个名字更短、
  *   签名更少一个参数的函数,下一个人加第六处求值时它依然是最顺手的写法 ——「少一个能忘
- *   的地方」就只做了一半。词法上够不着,才是真的只剩一条路(复审第 1 轮【建议】2 的 ②)。
+ *   的地方」就只做了一半。
+ *
+ *   **射程仅此:堵死的是最顺手的那条歧路,不是全称保证。** `cdp` 是模块级 `let`,
+ *   文件里任何位置都写得出
+ *   `cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })`,
+ *   它一样绕过分档 —— 但那要把 `Runtime.evaluate` 的三个选项连着手抄一遍,已经是
+ *   要绕的人自己动手写,不叫顺手了。别把这一段读成「只剩一条路」(与 `CLAUDE.md` 里
+ *   `check-native-paths.mjs` 那段同一口径:边界要写成边界)。
+ *   [SL-332] **这件事全文件只在这里说一次**,调用点不复述 —— 原来两处各写一遍,
+ *   改一处就会在另一处留个旧副本,而那正是这条改动自己要治的毛病。
  *
  * 唯一例外是 `--eval`:表达式是人现给的,抛错是这句表达式自己的锅、不是页面没起来,
  * 退 1 才对。这个例外由 `userExpr: true` **显式声明**,而不是靠调用点绕开本函数 ——
@@ -380,8 +389,8 @@ try {
     // ② 二道:errorText 只覆盖「这一次 navigate 自己失败」。重定向到错误页、
     //    或首次导航成功但随后被换成错误页,都还得靠落地后的 URL 认。
     // ⚠ 走 `evalLanded`(见其函数头):「在落地页上连 location.href 都求不到」几乎
-    //    只可能是页面没正常起来,该退 2;裸包装(现名 `evaluateRaw`,关在 `evalLanded`
-    //    的闭包里)不分档、直接用会退 1 —— 也正因为够不着,这里没有第二条路可走。
+    //    只可能是页面没正常起来,该退 2。为什么这里不该自己去调裸包装、以及那道收口的
+    //    射程到哪为止,写在 `evalLanded` 的函数头,本处不复述。
     const landed = await evalLanded(cdp, "location.href", "落地页无法求值");
     if (typeof landed === "string" && landed.startsWith("chrome-error://")) {
         throw new NavigationError(
@@ -452,6 +461,35 @@ try {
     //    `querySelector` 对非法选择器抛的是 name 为 `SyntaxError` 的 DOMException,只截这
     //    一种回传标记(退 1);`__D` 没注入那种是 `TypeError`,原样抛出去让 `evalLanded` 接
     //    (退 2)。**别整段 catch** —— 那会把「页面没起来」也误报成「选择器写错了」。
+    //
+    //    [SL-332] **按 `e.name` 判,不是写得不够严谨,而是这里成本最低的那条。**
+    //    `DOC_PRELUDE` 有兜底:有 iframe 且
+    //    `contentDocument` 取得到时 `__D` 是**iframe 的文档**,否则(`--url` 打的是非预览
+    //    页,或取不到)回落成**顶层 document**。异常对象产在 `__D` 所属的那个 realm,而
+    //    这段代码跑在顶层 —— 于是 `instanceof` 的真假**随分支翻转**。本机 `--eval` 探针
+    //    实测两条分支:
+    //      预览页 output.html(`__D === document` 为 false):
+    //        name = "SyntaxError";instanceof DOMException = **false**;
+    //        instanceof Error = **false**;`__D.defaultView.DOMException` 那个才 true。
+    //      `--url=…/web/output/index.html`(页面无 iframe,`__D === document` 为 true):
+    //        name = "SyntaxError";instanceof DOMException = **true**;instanceof Error = true。
+    //    所以把这句「改严谨」成 `instanceof DOMException`(或 `instanceof Error`)拿到的不是
+    //    恒假、而是**时灵时不灵**的判据:预览页上失效(语法错掉回退 2,正好退回 #215 刚修掉
+    //    的形态),而拿 `--url` 打个普通页面去复现时它又是 true —— 复现不出来的人会以为
+    //    这条注释写错了。看情况假的判据比恒假的更难查,这才是不能用它的理由。
+    //    **别把上面读成「只有 name 这一条可用」**:`e instanceof __D.defaultView.DOMException`
+    //    两条分支下也都成立(兜底时 `__D.defaultView === window`,就是顶层那个)。不选它是因为
+    //    它得先摸到对端 realm,而 `defaultView` 在文档被 detach 后是 `null` —— 实测把 iframe
+    //    `remove()` 掉之后,`__D.defaultView` 从 **iframe 的那个 window** 变成 null,
+    //    那一句当场 `TypeError: Cannot read properties of null (reading 'DOMException')`。
+    //    ⚠ **这一段说的是那条备选写法多担的一份前提,不是在报告本脚本的已知缺陷** ——
+    //    别顺着它去 diff 里找 bug。这里**不去穷举「有没有路径能走到 detach」**:入口不止
+    //    一个(上面那次是手工 `--eval` 造的;壳页自己的注入重试也算 —— `shell.js` 的
+    //    `navigate()` 走 `frame.src = url`,导航同样 discard 掉旧 Document),
+    //    而穷举出来的「没有任何路径」正是本卡前几轮反复写错的那种全称句。
+    //    真撞上时退码仍是 2(`TypeError` 照样被 `evalLanded`
+    //    收成 `NavigationError`),难查的是**报错文案指向 `DOMException` 这个和病因无关的
+    //    名字**。所以是「成本最低」,不是「唯一」。
     //    另:`--tab` 选择器合法但没命中时下面是 `throw new Error`(退 1),语法错也落 1,
     //    同一个参数的两种打字错这才在同一个码上(复审第 1 轮)。
     const clickIn = async (sel) => {
