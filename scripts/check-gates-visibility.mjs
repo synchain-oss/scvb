@@ -238,10 +238,25 @@ else {
     //       照样绿。同段的 `= 0` 与 `+=` 两类后面还要求一个非词字符,天然没这问题,不动。
     //   **三条一起改**是有意的:第一轮我只升级了 `$parityWarn`,于是「一族三条不留一条没补的」
     //   这句话在同一个 PR 内当场变成假的 —— 复审第 2 轮点的正是这个。
-    if (!/\$smokeLabel\s*=[^\n]*\$smokeFlaky\b/.test(ps))
+    //   [SL-322] 再收一格:计数要落在 **`-f` 的实参**里,不只是「出现在赋值那一行」。
+    //   旧形态 `\$<标签>\s*=[^\n]*\$<计数>\b` 放得过单行的
+    //     `if ($smokeFlaky -gt 0) { $smokeLabel = '{0}(…)' -f $smokeLabel }`
+    //   —— 计数只在**条件**里被读了一次,真正拼进标签的是个不带计数的串,而断言照绿。
+    //   收成:`=` 之后先要有 `-f`,计数出现在 `-f` 之后。三条共用下面这一个构造器,
+    //   不是各写各的字面量(一族三条最容易漂的就是「只升级了一条」)。
+    //
+    //   ⚠ **单行边界**:`[^\n]*` 把这三条锁在**一行**里。PowerShell 允许把赋值拆成多行
+    //   (反引号续行、或逗号后换行),那时这条会红 —— 而红的原因**不是**「没拼进标签」,
+    //   是本判据只认单行。这是有意的:放开跨行,`[\s\S]*` 会一路吃过注释与下一条赋值,
+    //   把两处不相干的赋值粘成一条命中,判据当场没牙。真要拆行,改这条判据、别删它。
+    //   失败文案里点了这一条,免得下一个人照着「没拼进标签」去查一个不存在的问题。
+    const labelTakesCount = (label, count) =>
+        new RegExp("\\$" + label + "\\s*=[^\\n]*-f[^\\n]*\\$" + count + "\\b");
+    if (!labelTakesCount("smokeLabel", "smokeFlaky").test(ps))
         fail(
-            "`$smokeFlaky` 没有被拼进 `$smokeLabel` —— [FLAKY-SKIP] 只会出现在滚屏里," +
-                "而跑完 gates 的人看的是汇总表:这正是 SL-297 要堵的那个洞原样复现。",
+            "`$smokeFlaky` 没有落在 `$smokeLabel = … -f …` 的实参里 —— [FLAKY-SKIP] 只会" +
+                "出现在滚屏里,而跑完 gates 的人看的是汇总表:这正是 SL-297 要堵的那个洞原样复现。" +
+                "(本判据只认**单行**赋值;若你把它拆成了多行,那不是这句文案说的问题,改判据。)",
         );
     // 反向:rc=2 那一档要还在,且自增的仍是 $smokeSkipped(两类不能共用一个计数器)
     if (!/\$rc\s+-eq\s+2\b/.test(ps))
@@ -262,10 +277,11 @@ else {
     // ★ 与 3e 那条**同形态**:`\$<标签>\s*=[^\n]*\$<计数>\b`,两半各修掉一个方向。
     //   完整理由写在上面 3e 那条旁边,这里不抄一遍(抄两处就是下一句待漂的注释)。
     //   末尾 `\b` 是本卡删除式第 15 格照出来的:改名成 `$draftsAllowX` 时旧写法命中前缀、照样绿。
-    if (!/\$parityLabel\s*=[^\n]*\$draftsAllow\b/.test(ps))
+    if (!labelTakesCount("parityLabel", "draftsAllow").test(ps))
         fail(
-            "`$draftsAllow` 没有被拼进 `$parityLabel` —— ALLOW 行只会出现在滚屏里," +
-                "而跑完 gates 的人看的是汇总表:与 SL-297 在 3e 上堵的是同一个洞。",
+            "`$draftsAllow` 没有落在 `$parityLabel = … -f …` 的实参里 —— ALLOW 行只会出现在" +
+                "滚屏里,而跑完 gates 的人看的是汇总表:与 SL-297 在 3e 上堵的是同一个洞。" +
+                "(本判据只认**单行**赋值,理由与边界见 3e 那条旁边。)",
         );
     // ★ 本卡特有的第二条:计数模式要**对真信号行命中、对成功散文不命中**。
     //   断的是**行为**,不是拼写:从 gates.ps1 里把那条口径**抽出来实跑正反例**。
@@ -362,6 +378,35 @@ else {
             "`$warnLines` 的匹配没走 `$markerCount -f 'WARN'` —— 口径又被抄了一份字面量," +
                 "两份就会只改一份",
         );
+    // ★ [SL-322] **两引擎的第三条边:大小写**。前面那圈夹具用 JS 正则代跑 PowerShell 的
+    //   模式,靠的是「同一条模式在两个引擎里同义」。量词与转义那两条边前几卡已经钉过,
+    //   剩下的这条不在**模式**里、在**运算符**里:PowerShell 的 `-match` 默认不区分大小写,
+    //   JS 的 `RegExp.test` 默认区分 —— 于是 `  [warn] …` 会被 gates 数进降级档,而守卫和
+    //   它的夹具全都扫不到(实测 `-match` True / `-cmatch` False)。两边各自绿,数对不上。
+    //   收法:凡是拿 `$markerCount` 去匹配的地方一律 `-cmatch`;这里**正反两条都钉**——
+    //   既要求 `-cmatch` 在,也要求没有任何一处 `-match` 还挂在 `$markerCount` 上
+    //   (只钉前者时,再抄一处 `-match ($markerCount …)` 照样绿)。
+    for (const c of [
+        { who: "$draftsAllow", mark: "ALLOW" },
+        { who: "$warnLines", mark: "WARN" },
+    ]) {
+        const re = new RegExp(
+            "-cmatch\\s*\\(\\s*\\$markerCount\\s+-f\\s+'" + c.mark + "'",
+        );
+        if (!re.test(ps))
+            fail(
+                c.who +
+                    " 的匹配没用 `-cmatch` —— PowerShell 的 `-match` 不区分大小写," +
+                    "`[" +
+                    c.mark.toLowerCase() +
+                    "]` 会被 gates 数进去而守卫扫不到,两边各自绿、数对不上",
+            );
+    }
+    if (/-match\s*\(\s*\$markerCount/.test(ps))
+        fail(
+            "还有一处用 `-match ($markerCount …)` —— 标记计数一律走 `-cmatch`," +
+                "留一处不区分大小写就等于这条边没收",
+        );
 
     // ---- [SL-318] gate 3i 的 WARN 降级计数:与上面 ALLOW 那条**同构**,风险高一档 ----
     // 同构在两层:行为上都是「脚本成功路径打出来的标记行 → 数出来 → 拼进汇总标签」;
@@ -383,10 +428,11 @@ else {
     //     · **假红**:哪天有人把这两行规范成同一形态(`$parityLabel = '{0}…{1}…' -f $parityLabel,
     //       $parityWarn`,一个很自然的整理),`-f` 后面跟的就成了 `$parityLabel`,旧写法当场假红
     //       而行为完全正确。现在这条对两种形态都命中,且真的钉住了「落进标签」。
-    if (!/\$parityLabel\s*=[^\n]*\$parityWarn\b/.test(ps))
+    if (!labelTakesCount("parityLabel", "parityWarn").test(ps))
         fail(
-            "`$parityWarn` 没有被拼进 `$parityLabel` —— 降级只会出现在滚屏里," +
-                "而跑完 gates 的人看的是汇总表:与 SL-297 在 3e 上堵的是同一个洞。",
+            "`$parityWarn` 没有落在 `$parityLabel = … -f …` 的实参里 —— 降级只会出现在滚屏里," +
+                "而跑完 gates 的人看的是汇总表:与 SL-297 在 3e 上堵的是同一个洞。" +
+                "(本判据只认**单行**赋值,理由与边界见 3e 那条旁边。)",
         );
     // 计数口径的正反例夹具与「用点走的是一处定义」两条断言,都在上面 ALLOW 那圈里
     // 按标记跑了一遍 —— 两处计数一份判据,不在这里再抄一份。
