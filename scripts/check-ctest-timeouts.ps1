@@ -20,6 +20,14 @@
 
   排除 `_deps/`:那是 FetchContent 拉下来的第三方(Catch2),它有没有 TIMEOUT 不归本仓管,
   也改不动。今天它一个 add_test 都没有;写死排除是为了「哪天它有了」不会变成一条改不掉的红。
+  ⚠ 这条排除**第一版是死的**(#211 复审【重要】):写的是正则 `-notmatch '[\/]_deps[\/]'`,
+  而 .NET 正则里 `[\/]` 是**转义过的 `/`**、字符类里根本没有反斜杠,`Get-ChildItem` 在
+  Windows 上给的 `FullName` 偏偏是反斜杠 —— 于是它恒为真、`_deps` 照样被读进来。
+  今天无害(Catch2 没有 add_test),但那正是上面这句话想避免的那一天,而注释会让人以为它管用。
+  现在不走正则:**先把分隔符统一成 `/` 再用 `-like` 匹配**,把整类转义坑绕开
+  (`[char]92` 拼反斜杠也是同一条纪律:本仓工具链会把字面的双反斜杠折成一个)。
+  判据抽成 `Test-ScvbThirdPartyPath`,`--SelfTest` 里有四格钉它(两种分隔符各一格、
+  正常路径一格、`my_deps_here` 这种**不带分隔符**的同名子串一格)。
 .EXAMPLE    pwsh scripts/check-ctest-timeouts.ps1 -BuildDir build
 .EXAMPLE    pwsh scripts/check-ctest-timeouts.ps1 -SelfTest
 #>
@@ -30,6 +38,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 第三方(FetchContent 拉下来的 `_deps/`)路径判定。**故意不用正则**:见文件头注那段
+# ——「反斜杠 vs 转义」这一类坑在本仓已经吃过两次(还有一次是双反斜杠被工具链折成一个)。
+# 先把两种分隔符统一成 `/`,再用 `-like` 的裸通配,整类转义问题就不存在了。
+# 两侧都要求分隔符:`my_deps_here` 这种同名子串**不算**第三方,不能被排除掉。
+# ─────────────────────────────────────────────────────────────────────────────
+function Test-ScvbThirdPartyPath {
+  param([string]$FullName)
+  $norm = $FullName.Replace([char]92, '/')
+  return ($norm -like '*/_deps/*')
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 判据本体。**生产路径与 --SelfTest 共用这一个函数** —— 自测若走另一份实现,
@@ -98,12 +118,27 @@ if ($SelfTest) {
   $r4 = Get-CtestTimeoutReport -Contents @($fixOk, $fixMissing)
   if (($r4.Missing -join ',') -ne 'fix_no_timeout') { $failures += ('混合夹具的缺失集合不对:[{0}]' -f ($r4.Missing -join ', ')) }
 
+  # ---- 第三方路径排除的四格(#211 复审【重要】:第一版是条死守卫,没有任何自测兜着)----
+  # 反斜杠那一格就是当初漏掉的那一格:`-notmatch '[\/]_deps[\/]'` 在它上面恒为真。
+  # 路径串**拼装**,不从磁盘读 —— 判据要能在没有 `_deps` 目录的机器上照样被验。
+  $bs = [char]92
+  $pathCases = @(
+    @{ p = ('C:' + $bs + 'x' + $bs + 'build' + $bs + '_deps' + $bs + 'catch2-build' + $bs + 'CTestTestfile.cmake'); want = $true; why = '反斜杠路径下的 _deps 必须被排除' },
+    @{ p = 'C:/x/build/_deps/catch2-build/CTestTestfile.cmake'; want = $true; why = '正斜杠路径下的 _deps 必须被排除' },
+    @{ p = ('C:' + $bs + 'x' + $bs + 'build' + $bs + 'tests' + $bs + 'CTestTestfile.cmake'); want = $false; why = '本仓自己的测试目录不得被当成第三方排除' },
+    @{ p = ('C:' + $bs + 'x' + $bs + 'my_deps_here' + $bs + 'CTestTestfile.cmake'); want = $false; why = '同名子串(两侧无分隔符)不得被当成第三方排除' }
+  )
+  foreach ($c in $pathCases) {
+    $got = Test-ScvbThirdPartyPath $c.p
+    if ($got -ne $c.want) { $failures += ('第三方路径判定错:{0}(期望 {1},实得 {2})—— {3}' -f $c.p, $c.want, $got, $c.why) }
+  }
+
   if ($failures.Count -gt 0) {
     Write-Host '  [FAIL] check-ctest-timeouts --self-test:' -ForegroundColor Red
     $failures | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
     exit 1
   }
-  Write-Host '  check-ctest-timeouts --self-test:4 格全过(有属性不误报 / 缺属性抓得到 / 值里的 TIMEOUT 不算 / 混合只红该红的)'
+  Write-Host '  check-ctest-timeouts --self-test:8 格全过(有属性不误报 / 缺属性抓得到 / 值里的 TIMEOUT 不算 / 混合只红该红的 / _deps 两种分隔符都排除 / 本仓目录与同名子串都不排除)'
   exit 0
 }
 
@@ -115,7 +150,7 @@ if (-not (Test-Path $buildPath)) {
 }
 
 $files = @(Get-ChildItem -Path $buildPath -Filter 'CTestTestfile.cmake' -Recurse -File -ErrorAction SilentlyContinue |
-  Where-Object { $_.FullName -notmatch '[\/]_deps[\/]' })
+  Where-Object { -not (Test-ScvbThirdPartyPath $_.FullName) })
 if ($files.Count -eq 0) {
   Write-Host ('  [FAIL] {0} 下找不到 CTestTestfile.cmake —— 先跑 configure(gate 4)' -f $buildPath) -ForegroundColor Red
   exit 1

@@ -25,22 +25,29 @@
 //     三段长中文拼接、无格式符无实参                                       1
 //     同上 + `%d` + 实参                                               1
 //     #204 原文两处(四段拼接 + `%lu` + 实参)                            2
+//   [#211 复审后补测的三格 —— 复审指出 17 个探针全是 `fprintf`,推不出「printf 族」的全称]
+//     `std::snprintf(b, n, "中" "%d", 1);`                             1
+//     `std::sprintf(b, "中" "%d", 1);`                                 1
+//     `std::snprintf(b, n, "%s", "主唱 A");`(单段,仓里现有那处的形态)      0
 //   **观察到的必要条件**(每一个报警形态都同时满足这三条,反例各有一格):
 //     ① 非 ASCII 字面量落在 **printf 族调用的实参位**上(族外一律 0 条);
 //     ② 是**相邻字面量拼接**(单段一律 0 条);
 //     ③ 拼接的**首段**含非 ASCII(首段 ASCII 的两格都是 0 条)。
 //   **充分条件没有钉死**:`"中文-" "ascii"` 三条都满足却不报,而它加上一个变参、或再多两段
 //   长中文就报。所以别把上面三条当成「符合就一定报」——那句话没量出来。
-//   本判据只用**必要条件的第 ①条**,因此它的面**严格宽于**已知的每一个报警形态:
-//   凡是会报 C4819 的写法,它都拦得住;拦下的一些写法今天并不报 C4819(那些也该是 ASCII,
+//   本判据只用**必要条件的第 ①条**,所以在**判据面之内**它严格宽于已知的每一个报警形态:
+//   面内会报 C4819 的写法它都拦得住,面内一些今天不报的写法它也拦(那些也该是 ASCII,
 //   理由见下面第三条)。
+//   ⚠ **不写「凡是会报的都拦得住」**:那是全称句,而 `snprintf` 就在面外并且**实测会报**
+//   (上面 S1 那一格)。这是一条量过的、有名有姓的缺口,理由与将来怎么补见「边界」小节。
 //   顺带解掉一个旧疑点:警告的行列指向**整条调用语句的末尾**(实测 `(53,57)` 落在
 //   `static_cast<unsigned long>(err));` 那一行的行尾),不指向那个不可表示的字符 ——
 //   #207 头注里「报出来的 `:174` / `:186` 两行本身是纯 ASCII、行号与字符对不上」就是这个。
 //
 // 判据面(**故意窄**,窄的理由在下面「边界」里):`src/**` 与 `tests/**` 的 C/C++ 源码里,
 //   C 标准输出族的调用实参中,任何字符串字面量不得含非 ASCII 字符(码点 > 127)。
-//   族 = printf / fprintf / vprintf / vfprintf / fputs / puts / perror(可带 `std::` 前缀)。
+//   族 = printf / fprintf / sprintf / vprintf / vfprintf / vsprintf / vsnprintf /
+//        fputs / puts / perror(可带 `std::` 前缀)。**`snprintf` 不在里面**,见「边界」。
 //
 // 为什么是这一族、而不是「所有字符串字面量」:
 //   · **按字面全仓做不了**:实测 `src/**` + `tests/**` 里 80 个源文件在双引号字面量里有中文,
@@ -52,7 +59,16 @@
 //     ASCII 是这条链路上唯一不会烂的编码。
 //
 // 边界(照实说,别让人以为它更严):
-//   · **本判据只盖 C 族(printf/fprintf/vprintf/vfprintf/fputs/puts/perror),iostream 未盖。**
+//   · **`snprintf` 是一条量过的缺口,不是遗漏。** 它**会**触发 C4819(头注 S1 那格实测 1 条),
+//     但它是面外的唯一一个 printf 族成员,理由:仓里唯一一处 `snprintf` 的非 ASCII 字面量是
+//     `tests/core/test_input_bridge_ipc.cpp:549` 的 `"主唱 A"`,那是**载荷数据**——同一个用例
+//     下面就断言 `std::string(in.labels[2]) == "主唱 A"`,测的正是 UTF-8 标签过 ctrl 面的往返。
+//     纳入它只有两条路:改坏那个用例,或者给一道新门禁在**第一天**就配一份豁免名单。
+//     两条都比「记一条有名有姓、有测量、有补法的缺口」更坏。
+//     补法(将来某张卡):先把那处载荷换成不依赖字面量的构造(例如 `char[]` 常量 + 注释说明
+//     它是被测数据),再把 `snprintf` 加进 FAMILY —— `--self-test` 里那一格会提醒你顺序。
+//     `sprintf` / `vsprintf` / `vsnprintf` 没有这个问题(仓里零命中),已经在面内。
+//   · **本判据只盖 C 族,iostream 未盖。**
 //     `std::cout` / `std::cerr` / `std::clog` 的 `<<` 链同样直接进控制台,本来该一起收;
 //     不收的**唯一理由是基线不干净**(统筹裁定:基线 0 就一并纳入,不是 0 就写清边界与数)。
 //     实测(剥注释走本文件的 `blankComments`,再沿 `<<` 链走到分号收字面量):全仓
@@ -81,8 +97,15 @@ const EXTS = [".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".mm"];
 // 反斜杠一律走 fromCharCode:本仓工具链里字面的双反斜杠会被折成一个,写进正则或字符比较后
 // **静默失效**(CLAUDE 记过的教训)。这个文件里不留任何字面反斜杠。
 const BS = String.fromCharCode(92);
+// `snprintf` **故意不在里面**,不是 `\b` 顺带排掉的(#211 复审指出这一点当时没写明)。
+// 它确实会触发 C4819(实测见头注 S1),但仓里唯一一处 `snprintf` 的非 ASCII 字面量是
+// `tests/core/test_input_bridge_ipc.cpp:549` 的 `"主唱 A"` —— 那是**载荷数据**,同一个用例
+// 下面就断言 `std::string(in.labels[2]) == "主唱 A"`(测的正是 UTF-8 标签过 ctrl 面的往返)。
+// 纳入 snprintf 只有两条路:改坏那个用例,或者给一道**新门禁**在第一天就配豁免名单。
+// 两条都比「记一条量过的、有名有姓的缺口」更坏。`--self-test` 里有一格钉住这条边界,
+// 顺手把 snprintf 加回来的人会拿到一条写着理由的红。
 const FAMILY =
-    /\b(?:std::)?(printf|fprintf|vprintf|vfprintf|fputs|puts|perror)\s*\(/g;
+    /\b(?:std::)?(printf|fprintf|sprintf|vprintf|vfprintf|vsprintf|vsnprintf|fputs|puts|perror)\s*\(/g;
 
 // ── 注释剥离:换空格、保留换行,长度与原文逐字符对齐(行号才对得上)──────────────
 export function blankComments(src) {
@@ -271,6 +294,20 @@ function selfTest() {
         `fprintf(stderr, "%d ${cjk}", static_cast<int>(f(1, 2)));`,
         1,
     );
+    // `sprintf` 在面内(仓里零命中,白拿的覆盖)。
+    expect("cjk-sprintf", `std::sprintf(buf, "${cjk}" "%d", 1);`, 1);
+    // `snprintf` **故意在面外**,理由写在 FAMILY 上方。这一格不是「顺带如此」,是钉住它:
+    // 谁把 snprintf 加回 FAMILY,这一格就红,红的消息里带着理由和那处载荷数据的位置。
+    if (
+        findViolations(`std::snprintf(b, n, "${cjk}" "%d", 1);`, "snprintf")
+            .length !== 0
+    ) {
+        fails.push(
+            "snprintf 被纳入了判据面 —— 这是**故意**排除的:仓里唯一一处非 ASCII 的 snprintf 字面量是 " +
+                "tests/core/test_input_bridge_ipc.cpp:549 的载荷数据(同一用例断言它原样往返)。" +
+                "要纳入就得先解决那处,否则会逼出一份第一天就存在的豁免名单。",
+        );
+    }
     // 行号要落在**字面量那一行**,不是调用起始行(排障靠它)。
     const multi = `int x = 1;\nfprintf(stderr,\n  "${cjk}");`;
     const got = findViolations(multi, "lineno");
@@ -286,7 +323,7 @@ function selfTest() {
         process.exit(1);
     }
     console.log(
-        "  check-source-encoding --self-test:9 格全过(ASCII 不误报 / 中文抓得到 / 注释与族外放行 / 跨行拼接 / 行号对位)",
+        "  check-source-encoding --self-test:11 格全过(ASCII 不误报 / 中文抓得到 / 注释与族外放行 / 跨行拼接 / 行号对位 / sprintf 在面内 / snprintf 故意在面外)",
     );
     process.exit(0);
 }

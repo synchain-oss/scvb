@@ -1409,15 +1409,35 @@ Write-Host '=== Gate 5b: ctest 上界属性完备(读生成物 CTestTestfile.cma
 # 这类开关决定进不进集合。本文件的注释在 SL-320 里为这件事栽过一次(只 grep 了一个文件、
 # 把 ipc 写成「没有属性」),所以这一条从设计上就只认 ctest 真正吃的那份。
 # 不持锁:纯读文件,不起任何进程。
-$timeoutSelfTest = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -SelfTest 2>&1)
-$timeoutOk = ($LASTEXITCODE -eq 0)
-$timeoutSelfTest | ForEach-Object { Write-Host ("  " + $_) }
-if ($timeoutOk) {
-  $timeoutOut = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -BuildDir $BuildDir 2>&1)
-  $timeoutOk = ($LASTEXITCODE -eq 0)
-  $timeoutOut | ForEach-Object { Write-Host ("  " + $_) }
+#
+# ⚠ **必须先判 pwsh 在不在**(#211 复审【重要】),口径与本文件 546–550 行为 node 写的那条
+# 同源:PowerShell 找不到外部命令时抛 CommandNotFoundException,默认
+# ErrorActionPreference=Continue 下**不更新** $LASTEXITCODE —— 它会保留上一条外部命令的值,
+# 而这里上一条正是 gate 5 的 `cmake --build`。构建成功 ⇒ 0 ⇒ $timeoutOk 为真 ⇒ 汇总表打出
+# 「5b PASS」,**而判据一行都没跑过**。5b 恰恰是唯一一道「不跑就恒绿」的门(它的实跑输出与
+# 「没跑」在汇总表里同形),所以这个失效方向正是本卡要根治的那一族。
+# 这条路不是假想:gates 的调用口径是 `pwsh scripts/gates.ps1`,但从 Windows PowerShell 5.1
+# (`powershell.exe`)起跑是本仓真实存在的一条路,那条路上 `pwsh` 未必在 PATH 上。
+# 双保险:除 Get-Command 守卫外,每次调用前把 $LASTEXITCODE 显式置 1 —— 「没写」等价于判负。
+$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+if (-not $pwshCmd) {
+  Write-Host '  pwsh 不在 PATH —— gate 5b 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  Write-Host '  提示:本 gate 的两条命令都要 PowerShell 7+;从 powershell.exe(5.1)起跑时请先把 pwsh 加进 PATH。' -ForegroundColor Yellow
+  Set-Gate '5b ctest 上界属性完备' $false
 }
-Set-Gate '5b ctest 上界属性完备' $timeoutOk
+else {
+  $global:LASTEXITCODE = 1
+  $timeoutSelfTest = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -SelfTest 2>&1)
+  $timeoutOk = ($LASTEXITCODE -eq 0)
+  $timeoutSelfTest | ForEach-Object { Write-Host ("  " + $_) }
+  if ($timeoutOk) {
+    $global:LASTEXITCODE = 1
+    $timeoutOut = (& pwsh -NoProfile -File (Join-Path 'scripts' 'check-ctest-timeouts.ps1') -BuildDir $BuildDir 2>&1)
+    $timeoutOk = ($LASTEXITCODE -eq 0)
+    $timeoutOut | ForEach-Object { Write-Host ("  " + $_) }
+  }
+  Set-Gate '5b ctest 上界属性完备' $timeoutOk
+}
 
 } # end gate 4/5 守卫 else
 
