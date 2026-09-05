@@ -477,6 +477,68 @@ else {
     }
 }
 
+// ---------------------------------------------------------------- §⑤ 摘录对拍
+// [SL-327] `[BASE]` 那一行的格式在**三个地方**写着:`check-changelog-drafts.mjs` 里**真正的
+// 拼装**(唯一真源),以及两处**手抄摘录** —— 该文件头注 §边界、`gates.ps1` gate 3i 的回显那段。
+// SL-319 改了输出格式,两处摘录当轮都没跟上,直到 SL-326 才回扫补上 —— **同一个洞修了两次,
+// 机器一次都没醒**。它比别的漂移更钝:不同源时**什么都不会发生**,只在有人照着摘录去核输出时
+// 才害人,那正是「基线与判据不同源比没有基线更坏」那句话的形态(#210 复审【建议】)。
+//
+// 判据:从真拼装里抠出**字面片段**(`+` 之间那些字符串常量),要求两处摘录都逐字含着它们。
+// 钉片段而不是钉整行:摘录里的 `<base>` / `N` / `K` 是占位符,与运行时的变量对不上,
+// 整行比对只会得到一条永远红的判据。
+const DRAFTS = path.join(ROOT, "scripts", "check-changelog-drafts.mjs");
+if (!fs.existsSync(DRAFTS)) fail("找不到 scripts/check-changelog-drafts.mjs");
+else {
+    const src = read(DRAFTS);
+    // 真拼装:`"  [BASE] " + base + "@" + … + " 条提交标题(落地位 " + …` ——
+    // 取那一段里所有双引号字面量,留下**有汉字或标点**的那些(纯符号的 `@` 之类不具区分度)。
+    const asm = /"\s*\[BASE\][\s\S]{0,600}?个待合并的号"/.exec(src);
+    if (!asm)
+        fail(
+            "check-changelog-drafts.mjs 里找不到 [" +
+                "BASE] 那行的拼装 —— 判据锚点变了,回来同步本段",
+        );
+    else {
+        const frags = [...asm[0].matchAll(/"([^"]*)"/g)]
+            .map((m) => m[1])
+            .filter((t) => /[一-鿿]/.test(t));
+        if (frags.length === 0)
+            fail(
+                "从 [" +
+                    "BASE] 拼装里抠不出任何带汉字的字面片段 —— 这一格会退化成永远通过",
+            );
+        // ⚠ 头注那份摘录**只能拿头注去比**:它与真拼装同在一个文件里,拿整份文件比的话,
+        //    片段总能在真拼装那一行找到 ⇒ 摘录被改坏了也照绿(实测过:那样注入时本段无牙)。
+        //    头注到 `import` 为止,切在那里最稳。
+        const headNote = src.slice(0, src.indexOf("import fs"));
+        const excerpts = [
+            ["check-changelog-drafts.mjs 头注 §边界", headNote],
+            [
+                "gates.ps1 gate 3i 的回显那段",
+                fs.existsSync(GATES) ? read(GATES) : "",
+            ],
+        ];
+        // 摘录是**会换行的散文**:头注那份就断在 `);` 与「块里」之间,而真拼装里它们相连。
+        // 所以两边都**去掉所有空白**再比 —— 代价是不再钉空格与缩进(那本来也不该由这道判据管),
+        // 换来的是「换个地方折行」不会假红。汉字片段本身仍然足够有区分度。
+        // 先剥掉行首的注释符(`//` 与 `#`)再去空白 —— 不剥的话折行处会挤出 `);//块里`
+        // 这种伪片段,判据当场假红(实测到过)。
+        const squeeze = (t) =>
+            t.replace(/^[ \t]*(?:\/\/|#)[ \t]?/gm, "").replace(/\s+/g, "");
+        for (const [where, text] of excerpts)
+            for (const f of frags)
+                if (!squeeze(text).includes(squeeze(f)))
+                    fail(
+                        where +
+                            " 的 [" +
+                            "BASE] 摘录与真拼装对不上:缺片段「" +
+                            f.trim() +
+                            "」—— 摘录是手抄的第二份真源,改了输出格式就要回扫它(SL-319 漏过一轮,SL-326 才补)",
+                    );
+    }
+}
+
 if (errors.length) {
     console.error("check-gates-visibility 失败(" + errors.length + " 项):");
     for (const e of errors) console.error("  [FAIL] " + e);
