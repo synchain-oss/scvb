@@ -371,44 +371,33 @@ if (-not $PluginvalExe) {
 #   已有守卫的不重复:node(`$nodeCmd`)、gitleaks、python、pluginval、cmake/ctest,
 #   以及 `reuse` **本身**(注意:守着的只是 `reuse`,它的 `pipx` 回退分支原来是裸的)。
 #
-# ⚠ **npx / pipx 两处是本卡第一版漏掉的**(#214 复审补上)。漏因值得记,因为两次漏的方式不同:
-#   · 第一遍扫的是 `& <命令>` 那个**语法形态** —— 而这两处是**裸调用**
-#     (`npx --yes prettier@… --check .` / `pipx run reuse lint`),不带 `&`,整族落在扫描面外;
-#   · 第二遍补扫裸调用时,用的是一份**手打的命令名清单**
-#     (git|node|python|cmake|ctest|pwsh|clang-format|reuse|gitleaks)—— npx / pipx
-#     两个名字压根不在清单里,于是同一族又漏了同样两处。
-#   结论不是「下次更仔细」:**按名字列清单这件事本身不可靠**,而这份清单又会成为下一个人的依据
-#   ——「清单不准」比「少修两处」更麻烦。要问「谁是外部命令、谁有守卫」应当由机器扫
-#   (`check-gates-visibility.mjs` 已经在读本文件,是天然落点),那条已转卡,不在本卡范围。
+# ⚠ **npx / pipx 两处是本卡第一版漏掉的**(#214 复审补上),两次漏的方式还不同 ——
+#   这段故事连同它的结论(**按名字列清单这件事本身不可靠**)写在那道机检的头注里,
+#   见 `scripts/check-gates-guards.ps1` 的 `.DESCRIPTION`。[SL-338] 这里不抄第二份:
+#   它是那道判据存在的理由,理应长在判据旁边,而不是在被判据扫的这个文件里再躺一份。
 #
-# 在那条机检落地之前,**要复核这份清单请跑下面这段**(读 AST,不靠正则也不靠名字清单):
-#     $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-#              (Resolve-Path 'scripts/gates.ps1').Path, [ref]$null, [ref]$null)
-#     # 先收本文件自己定义的函数名,下面排掉 —— 否则它们也会进清单(见下面第一条 ⚠)。
-#     $defined = @($ast.FindAll({ param($n)
-#                  $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-#                  ForEach-Object { $_.Name })
-#     $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
-#       ForEach-Object { $_.GetCommandName() } |
-#       Where-Object { $_ -and $_ -notlike '$*' -and $defined -notcontains $_ } |
-#       Sort-Object -Unique |
-#       Where-Object { $g = Get-Command $_ -EA SilentlyContinue
-#                      -not $g -or $g.CommandType -in 'Application','ExternalScript' }
-#   ⚠ `-not $g` 那一支**必须留着**(`pipx` / `reuse` 没装时正靠它留在清单里,那正是本卡的核心场景),
-#     但它同样放行**任何解析不到的名字** —— 包括本文件自己定义的那 8 个函数。所以要靠上面
-#     那句 `FunctionDefinitionAst` 从**同一棵 AST** 里排,不能靠收紧 `-not $g` 来排。
-#   ⚠ `ExternalScript` 那一档不能省:本机 `npx` 解析到的是 `npx.ps1`(**不是** Application),
-#     只按 Application 过滤的话它会从清单里消失 —— 我第一次跑这段就是这么把它又漏了一次。
-#   ⚠ 拿**本段注释文本**当锚点写补丁脚本时,别用 `-like`:PowerShell 的 `-like` 走 WildcardPattern,
-#     而**反引号是它的转义字符** —— 模式里带反引号(本文件注释里到处都是)会去转义下一个字符、
-#     并把反引号本身从模式里去掉,于是对含反引号的行**恒不命中且不报错**。用 `.Contains()` 字面匹配,
-#     反引号用 `[char]96` 拼。写本段这个补丁时头两次就是这么静默失效的(4 个锚点只命中 2 个)。
-#   本卡收口时这段的输出是 **10 个名字**:clang-format / cmake / ctest / git /
-#   node / npx / pipx / pwsh / python / reuse。其中 **①②类每一处**都落在守卫的 if/else 里;
-#   **③类那三处不在**(`cmake --version` / `clang-format --version` / `git ls-files`)——
-#   它们按「空输出即判负」,包进守卫反而多一层壳。上一版这里写的是「每一处都落在某个守卫的
-#   if/else 里」,那是个**全称从句**,与上面第③条自相矛盾(#214 第 4 轮点出,当时不在破冻范围)。
-#   别照那句去给这三处加壳:它们各自带着一条写着理由的豁免标记(见下面 ③ 类三处的行内注记)。
+# [SL-338] **那条机检已经落地了** —— 是 `scripts/check-gates-guards.ps1`(读 AST 现算,
+#   由 gate 3i 跑、并接进 CI 的 docs-truth),不是上一版这里写的 `check-gates-visibility.mjs`。
+#   所以「复核这份清单请手跑下面这段 AST 片段」这条操作手册**连同那份 AST 配方一起删掉了**:
+#   一份被自己的执行者取代、却还留在原地的手册,只会让下一个人去手跑一件机器每轮都在做的事,
+#   而且那份手册里的三条 ⚠(`ExternalScript` 那一档不能省 / 「解析不到」要 fail-closed /
+#   本文件自己的函数要用 `FunctionDefinitionAst` 从同一棵 AST 里排掉)今天都写在执行者的
+#   头注里,并且**有自测格钉着** —— 手册那份没有。
+#
+#   ⚠ 只有一条与那份配方无关、留在这里:拿**本段注释文本**当锚点写补丁脚本时别用 `-like`。
+#     PowerShell 的 `-like` 走 WildcardPattern,而**反引号是它的转义字符** —— 模式里带反引号
+#     (本文件注释里到处都是)会去转义下一个字符、并把反引号本身从模式里去掉,于是对含反引号
+#     的行**恒不命中且不报错**。用 `.Contains()` 字面匹配,反引号用 `[char]96` 拼。
+#     写 SL-329 那个补丁时头两次就是这么静默失效的(4 个锚点只命中 2 个)。
+#
+# [SL-338] **今天有几处调用、几个名字、哪几处被豁免,由那道机检每轮当场打出来**(它把被豁免
+#   的逐条列名,不只报数)。上一版这里手抄了一份「10 个名字」的快照和一份「③类那三处」的清单
+#   —— 两份今天都还对,但它们是快照,而快照会在没人注意的时候变成假清单;真要对账,读那道
+#   机检的输出,或直接看下面各调用点旁的 `[gates-guard-exempt]` 标记(**那些标记才是真源**:
+#   它们贴着被豁免的调用点、带着各自的理由,而且被机检当数据读、孤悬即判负)。
+#   ⚠ 别把③类那几处「包进守卫」:它们按「空输出即判负」,方向已经偏红,加壳只是多一层。
+#     上一版这里还写过一句全称从句「每一处都落在某个守卫的 if/else 里」,与第③条自相矛盾
+#     (#214 第 4 轮点出)—— 现在不写全称,由机检去说。
 #   ⚠ 这段末尾有 `Sort-Object -Unique`,**只出名字、不出处数**。要数处数得改成按 `CommandAst`
 #     分组数 —— **这里不写具体数**。写过两次都错:一次是「26 处」(来自一次跑挂了的审计脚本,
 #     我拿坏输出的行数当了结论),一次是「29 处 / pwsh 5」,而**同一个 commit** 在下面 gate 3i
@@ -1170,9 +1159,11 @@ finally {
 Write-Host '=== Gate 3f: 文档真源(九条红字生成物 + 双语结构对等)==='
 # ==================================================================
 # 12 §3.4 第 5 条把 gen-hard-rules --check 挂在「与 check-i18n.mjs 同一 gates 档」。
-# 九条红字要落到 7 处(markdown ×4 + i18n ×3),手抄必漂,而条目数 == 9、grep「六条」、
-# check-i18n 的 key 全等这三道既有机检只查得出**数量与标题**,查不出条目**文本**漂移
-# —— 逐字节比对生成物是唯一查得出的那道。
+# 手抄必漂,而既有的那几道机检只查得出**数量与标题**、查不出条目**文本**漂移 ——
+# 逐字节比对生成物是唯一查得出的那道,所以这一格跑的是 `gen-hard-rules --check`。
+# [SL-338] 落地面有几处、既有机检具体是哪几道,**只写在 `scripts/gen-hard-rules.mjs` 的头注**
+#   (那两道机检里有两道就实现在它自己文件里,它离机制最近)。这里不抄第二份:上一版这句话
+#   在本文件、`gen-hard-rules.mjs`、`.github/workflows/format.yml` 三处近乎逐字各躺一份。
 # node 守卫同 Gate 3e:找不到 node 时 $LASTEXITCODE 会保留上一条外部命令的 0,
 # 「一条都没跑」会被判成全绿,而误报绿比硬失败危险得多。
 if (-not $nodeCmd) {
@@ -1771,7 +1762,8 @@ else {
     }
     else {
       # [SL-311] `--timeout` 给**没有 TIMEOUT 属性**的测试定默认上界;有属性的不受影响
-      # (实测:`--timeout 5` 跑 `scvb_monitor_tests`(属性 600、实际 16s)照样 Passed 16.25s)。
+      # (实测:`--timeout 5` 跑 `scvb_monitor_tests`(**测量当时**属性 600、实际 16s)
+      #  照样 Passed 16.25s。这个 600 是那次观测的一部分,不是对今天的断言 —— 今天的值读生成物。)
       #
       # [SL-320] 这个数**今天一套都管不到,纯粹是兜底**:每一套的上界都由自己的 TIMEOUT
       # 属性给,而「是否每一套都有属性」由 **gate 5b(`scripts/check-ctest-timeouts.ps1`)**

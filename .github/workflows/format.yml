@@ -177,10 +177,11 @@ jobs:
   docs-truth:
     name: docs-truth # required check context
     runs-on: ubuntu-latest # [R3] V-4 确认前一律 latest(§3.0 口径注)
-    # 九条硬约束红字的唯一真源 = docs/USER_GUIDE.zh-CN.md 的 `## 硬约束` 小节,它要落到
-    # markdown ×4 + i18n ×3 共 7 处(12 §3.4)。手抄必漂,而条目数 == 9 / grep「六条」/
-    # check-i18n 的 key 全等这三道既有机检只查得出数量与标题,查不出条目**文本**漂移 ——
-    # 逐字节比对生成物是唯一查得出的那道,所以它必须在 CI 里,不能只靠本地 gates。
+    # 九条硬约束红字有唯一真源,手抄必漂,而既有的那几道机检只查得出数量与标题、查不出条目
+    # **文本**漂移 —— 逐字节比对生成物是唯一查得出的那道,所以它必须在 CI 里,不能只靠本地
+    # gates。[SL-338] 真源是哪个文件、落地面有几处、既有机检是哪几道,**只写在
+    # `scripts/gen-hard-rules.mjs` 的头注**;这里不抄第二份(上一版这段与本地 gates 里那段、
+    # 以及那个脚本的头注三处近乎逐字)。
     # 无 secrets ⇒ fork PR 也跑得动。前三步与 scripts/gates.ps1 的 Gate 3f 同口径,
     # 其后 IPC 对拍 = Gate 3g、字体覆盖 = Gate 3h,各与本地同一条命令;
     # 末步(markdown-link-check)只在 CI 跑 —— 它要联网,不该拖慢本地 gates 的回环。
