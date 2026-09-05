@@ -71,6 +71,15 @@
 
 #include <windows.h>
 
+// [SL-324] 把上面那条顺序约束**变成机器保证**(复审建议):走到这里时,`min`/`max` 只可能
+// 由**更早的、未禁宏的** `<windows.h>` 定义 —— 我们自己那次包含已被上面的 NOMINMAX 挡住。
+// 与其让它稍后在 `src/output/BridgeArgs.h` 那种**别人的文件**上报 C2062,不如在**这里**报,
+// 错误信息直接给出处方。
+#if defined(min) || defined(max)
+#error \
+    "[SL-324] windows.h min/max macros already defined: include support/exclusive_guard.h before any header that pulls in <windows.h>, or #define NOMINMAX in this TU first (see tests/ipc/test_ipc_contract.cpp)."
+#endif
+
 #include <catch2/reporters/catch_reporter_event_listener.hpp>
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 
