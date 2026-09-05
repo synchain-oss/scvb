@@ -39,6 +39,9 @@
       `Join-Path`/`.exe`/盘符/斜杠)。裸 `/` 偏宽,任何 RHS 带斜杠的赋值都会被记成 pathLike ——
       只在 `& $var` 时起作用,方向偏红。另有一处 fail-open:同名变量若**先**赋成脚本块、**后**赋成
       路径,`scriptBlockVars` 会优先命中、那处 `& $var` 被静默排除;`gates.ps1` 今天没有这种写法。
+    ⚠ **边界:豁免清单与判据面下界都只对默认目标(`gates.ps1`)生效。** 三条豁免的指纹全指向
+      它的 ③ 类调用点,下界 20 也是按它的体量取的;`-Path` 指别的文件时两者都关掉并打一行 INFO ——
+      那时本脚本只回答「这个文件里的外部调用有没有守卫」,不回答「豁免是否还准」。
     ⚠ **边界:经 cmdlet 间接启动的外部命令不在面内。** `Start-Process -FilePath $nodeCmd.Source`
       (`gates.ps1:836`)这种由 cmdlet 代启的,AST 里是一次 `Start-Process` 调用、不是外部命令调用点,
       本判据看不见。那一处本身没问题(`$nodeCmd` 已有守卫),但「不靠名字清单」这个卖点在这条上
@@ -286,6 +289,15 @@ if ($SelfTest) {
   # 夹具一律**拼装**,并且喂给**生产路径同一个函数**。
   $q = [char]34
   $fails = @()
+  # 格数**由机器自己数**,不再手写:同一个数我在 SL-329 写错过一次(「26 处」),这里又写错一次
+  # (13 → 15 是拍脑袋加出来的,真实断言 16 条)。凡是「加一格却忘了改数」都不该有机会发生 ——
+  # 走这个 helper 就不可能漏计。
+  $cells = 0
+  $check = {
+    param([string]$Name, [bool]$Ok)
+    $script:cells++
+    if (-not $Ok) { $script:fails += $Name }
+  }
   # 夹具里凡是用到 `Set-Gate` 的,都要**在夹具里定义它** —— 真 gates.ps1 里它是本文件定义的函数,
   # 夹具不定义,判据就会(正确地)把它当成一处没有守卫的外部命令,于是自测红在夹具而不是判据上。
   $defSetGate = 'function Set-Gate { param($a, $b) }' + [Environment]::NewLine
@@ -293,52 +305,52 @@ if ($SelfTest) {
   # ① 无守卫的外部调用 ⇒ 必须被抓
   $f1 = "npx --yes prettier --check ." + [Environment]::NewLine
   $r1 = Get-GatesGuardReport -Source $f1
-  if (@($r1.Unguarded).Count -ne 1) { $fails += ('① 无守卫的 npx 没被抓到(实得 {0} 条)' -f @($r1.Unguarded).Count) }
+  & $check ('① 无守卫的 npx 没被抓到(实得 {0} 条)' -f @($r1.Unguarded).Count) (@($r1.Unguarded).Count -eq 1)
 
   # ② 有守卫(变量形态)⇒ 不得误报
   $f2 = $defSetGate + '$npxCmd = Get-Command npx -ErrorAction SilentlyContinue' + [Environment]::NewLine +
   'if (-not $npxCmd) { Set-Gate ' + "'x'" + ' $false } else { npx --yes prettier --check . }'
   $r2 = Get-GatesGuardReport -Source $f2
-  if (@($r2.Unguarded).Count -ne 0) { $fails += ('② 有守卫的 npx 被误判成无守卫') }
+  & $check '② 有守卫的 npx 被误判成无守卫' (@($r2.Unguarded).Count -eq 0)
 
   # ③ 有守卫(内联形态)⇒ 不得误报
   $f3 = $defSetGate + 'if (Get-Command reuse -ErrorAction SilentlyContinue) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
   $r3 = Get-GatesGuardReport -Source $f3
-  if (@($r3.Unguarded).Count -ne 0) { $fails += '③ 内联 Get-Command 守卫没被认出来' }
+  & $check '③ 内联 Get-Command 守卫没被认出来' (@($r3.Unguarded).Count -eq 0)
 
   # ④ **别人的守卫不算数**:npx 落在 $nodeCmd 的 if 里必须仍判无守卫
   $f4 = '$nodeCmd = Get-Command node -ErrorAction SilentlyContinue' + [Environment]::NewLine +
   'if ($nodeCmd) { npx --yes prettier --check . }'
   $r4 = Get-GatesGuardReport -Source $f4
-  if (@($r4.Unguarded).Count -ne 1) { $fails += '④ npx 借用 $nodeCmd 的守卫被放过了(命令名没对上就不该算)' }
+  & $check '④ npx 借用 $nodeCmd 的守卫被放过了(命令名没对上就不该算)' (@($r4.Unguarded).Count -eq 1)
 
   # ⑤ 本文件自己定义的函数不得混进外部清单
   $f5 = 'function Set-Gate { param($a, $b) }' + [Environment]::NewLine + 'Set-Gate ' + "'x'" + ' $true'
   $r5 = Get-GatesGuardReport -Source $f5
-  if (@($r5.Sites).Count -ne 0) { $fails += ('⑤ 本地函数被当成外部命令(实得 {0} 处)' -f @($r5.Sites).Count) }
+  & $check ('⑤ 本地函数被当成外部命令(实得 {0} 处)' -f @($r5.Sites).Count) (@($r5.Sites).Count -eq 0)
 
   # ⑥ 脚本块变量的 `& $var` 不是外部命令
   $f6 = '$cb = { param($x) $x }' + [Environment]::NewLine + '& $cb 1'
   $r6 = Get-GatesGuardReport -Source $f6
-  if (@($r6.Sites).Count -ne 0) { $fails += '⑥ 脚本块闭包被当成外部命令' }
+  & $check '⑥ 脚本块闭包被当成外部命令' (@($r6.Sites).Count -eq 0)
 
   # ⑦ 变量式外部调用要认守卫(Test-Path $var 形态)
   $f7 = $defSetGate + '$exe = Join-Path $root ' + "'x.exe'" + [Environment]::NewLine +
   'if (Test-Path $exe) { & $exe --version } else { Set-Gate ' + "'x'" + ' $false }'
   $r7 = Get-GatesGuardReport -Source $f7
-  if (@($r7.Unguarded).Count -ne 0) { $fails += '⑦ 变量式调用的 Test-Path 守卫没被认出来' }
+  & $check '⑦ 变量式调用的 Test-Path 守卫没被认出来' (@($r7.Unguarded).Count -eq 0)
 
   # ⑧ 豁免要按**文本指纹**、且陈旧条目判负
   $f8 = 'cmake --version'
   $r8 = Get-GatesGuardReport -Source $f8 -Exemptions @(@{ Snippet = 'cmake --version'; Hits = 1; Reason = 'x' })
-  if (@($r8.Unguarded).Count -ne 0 -or @($r8.Exempted).Count -ne 1) { $fails += '⑧ 豁免没生效' }
+  & $check '⑧ 豁免没生效(该处应从 Unguarded 移进 Exempted)' ((@($r8.Unguarded).Count -eq 0) -and (@($r8.Exempted).Count -eq 1))
   $r8b = Get-GatesGuardReport -Source $f8 -Exemptions @(@{ Snippet = 'ctest --preset'; Reason = 'x' })
-  if (@($r8b.StaleExemptions).Count -ne 1) { $fails += '⑧b 陈旧豁免没被抓出来' }
+  & $check '⑧b 陈旧豁免没被抓出来' (@($r8b.StaleExemptions).Count -eq 1)
 
   # ⑨ 豁免不按名字:同名但**另一处**调用不得白拿豁免
   $f9 = 'cmake --version' + [Environment]::NewLine + 'cmake --build $dir'
   $r9 = Get-GatesGuardReport -Source $f9 -Exemptions @(@{ Snippet = 'cmake --version'; Hits = 1; Reason = 'x' })
-  if (@($r9.Unguarded).Count -ne 1) { $fails += '⑨ 同名的另一处调用跟着白拿了豁免(豁免必须按文本指纹)' }
+  & $check '⑨ 同名的另一处调用跟着白拿了豁免(豁免必须按文本指纹)' (@($r9.Unguarded).Count -eq 1)
 
   # ⑩ **多结果解析仍须算外部**(#217 复审【重要】1)。喂一个返回两条结果的假解析器 ——
   #    旧写法 `$resolved.CommandType -notin …` 在这一格上恒真、会把调用点静默移出判据面。
@@ -350,18 +362,18 @@ if ($SelfTest) {
     )
   }
   $r10 = Get-GatesGuardReport -Source 'npx --yes prettier --check .' -Resolver $fakeMulti
-  if (@($r10.Sites).Count -ne 1) { $fails += '⑩ 多结果解析时调用点被静默移出判据面(fail-open)' }
+  & $check '⑩ 多结果解析时调用点被静默移出判据面(fail-open)' (@($r10.Sites).Count -eq 1)
   # ⑩b 反向:解析成 Cmdlet(单结果)仍要被排除,别把上面那条改成「什么都算外部」
   $fakeCmdlet = { param($n) @([pscustomobject]@{ CommandType = 'Cmdlet' }) }
   $r10b = Get-GatesGuardReport -Source 'Write-Host hi' -Resolver $fakeCmdlet
-  if (@($r10b.Sites).Count -ne 0) { $fails += '⑩b Cmdlet 被当成外部命令(判据面被撑宽)' }
+  & $check '⑩b Cmdlet 被当成外部命令(判据面被撑宽)' (@($r10b.Sites).Count -eq 0)
 
   # ⑪ **豁免要钉命中数**(#217 复审【重要】2):同一段文本出现两处时必须判负,
   #    否则新写的第二处会白拿豁免。
   $f11 = 'cmake --version' + [Environment]::NewLine + 'cmake --version'
   $r11 = Get-GatesGuardReport -Source $f11 -Exemptions @(@{ Snippet = 'cmake --version'; Hits = 1; Reason = 'x' })
-  if (@($r11.StaleExemptions).Count -ne 1) { $fails += '⑪ 同文本第二处白拿了豁免(豁免必须钉命中数)' }
-  if (@($r11.Exempted).Count -ne 0) { $fails += '⑪b 命中数对不上时不该再豁免任何一处' }
+  & $check '⑪ 同文本第二处白拿了豁免(豁免必须钉命中数)' (@($r11.StaleExemptions).Count -eq 1)
+  & $check '⑪b 命中数对不上时不该再豁免任何一处' (@($r11.Exempted).Count -eq 0)
 
   # ⑫ `Get-Command` 的**参数值**不得被当成命令名(#217 复审【建议】)。
   #    `-ErrorAction SilentlyContinue reuse` 这种写法下,旧的「第一个不以 - 开头的字符串常量」
@@ -370,19 +382,19 @@ if ($SelfTest) {
   $f12 = $defSetGate +
   'if (Get-Command -ErrorAction SilentlyContinue reuse) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
   $r12 = Get-GatesGuardReport -Source $f12
-  if (@($r12.Unguarded).Count -ne 0) { $fails += '⑫ Get-Command 的参数值被当成了命令名(守卫认不出来)' }
+  & $check '⑫ Get-Command 的参数值被当成了命令名(守卫认不出来)' (@($r12.Unguarded).Count -eq 0)
   # ⑫b `-Name` 具名形态也要认
   $f12b = $defSetGate +
   'if (Get-Command -Name reuse -ErrorAction SilentlyContinue) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
   $r12b = Get-GatesGuardReport -Source $f12b
-  if (@($r12b.Unguarded).Count -ne 0) { $fails += '⑫b -Name 具名形态的守卫认不出来' }
+  & $check '⑫b -Name 具名形态的守卫认不出来' (@($r12b.Unguarded).Count -eq 0)
 
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
     exit 1
   }
-  Write-Host '  check-gates-guards -SelfTest:15 格全过(抓无守卫 / 两种守卫形态不误报 / 别人的守卫不算数 / 本地函数与脚本块不入面 / 变量式守卫 / 豁免按指纹 + 陈旧判负 / 同名不白拿 / 多结果仍算外部 / Cmdlet 不入面 / 同文本两处判负 / Get-Command 参数值不当命令名)'
+  Write-Host ('  check-gates-guards -SelfTest:{0} 格全过(抓无守卫 / 两种守卫形态不误报 / 别人的守卫不算数 / 本地函数与脚本块不入面 / 变量式守卫 / 豁免按指纹 + 陈旧判负 / 同名不白拿 / 多结果仍算外部 / Cmdlet 不入面 / 同文本两处判负 / Get-Command 参数值不当命令名)' -f $cells)
   exit 0
 }
 
@@ -390,6 +402,7 @@ if ($SelfTest) {
 # 分隔符用 `/`:接进 CI 的 docs-truth(ubuntu)之后,`'scripts\gates.ps1'` 在 Linux 上是一个
 # **带反斜杠的字面文件名**,`Test-Path` 直接不成立 —— 判据一行没跑就退 1(方向偏红,但报的是
 # 「找不到被检文件」,查起来会以为是路径传错)。`/` 在 Windows 上同样可用。
+$isDefaultPath = (-not $Path)
 if (-not $Path) { $Path = Join-Path $RepoRoot 'scripts/gates.ps1' }
 if (-not (Test-Path $Path)) {
   Write-Host ('  [FAIL] 找不到被检文件:{0}' -f $Path) -ForegroundColor Red
@@ -404,15 +417,24 @@ foreach ($ex in $Exemptions) {
   }
 }
 
-$report = Get-GatesGuardReport -Source $src -Exemptions $Exemptions
+# 豁免清单是**为 gates.ps1 写的**(三条指纹全指向它的 ③ 类调用点)。`-Path` 指别的文件时
+# 无条件套上去,三条会**全部**判成「陈旧」——文档说 `-Path` 可指别的文件,而实际一用就假红。
+# 所以豁免与下界一样,只在检默认文件时生效;检别的文件时**明说**这一点,别让人以为已经全查了。
+$activeExemptions = if ($isDefaultPath) { $Exemptions } else { @() }
+if (-not $isDefaultPath) {
+  Write-Host ('  [INFO] -Path 指向 {0}:豁免清单与判据面下界都**不生效**(两者都是为 gates.ps1 写的)。' -f (Split-Path -Leaf $Path)) -ForegroundColor Yellow
+}
+$report = Get-GatesGuardReport -Source $src -Exemptions $activeExemptions
 
 # 判据面塌了 = 判据近乎恒真。只挡 0 是不够的:分析被改坏到只剩三五处也照样绿,
 # 而删除式测的是「拆掉守卫会红」,**测不出「面缩水了」**。所以钉一个下界。
 # 数不写死成「今天几处」——那种数会过期,而且会成为下一个人的依据(本卡上一版就把
 # `gates.ps1` 旧注释里的 29 抄了过来,而本脚本实际收 33 处:多的 4 处是变量式调用)。
 # 下界取一个**明显低于现状、又高于「分析塌掉」**的数,只用来照出塌方,不用来对账。
-$floor = 20
-if (@($report.Sites).Count -lt $floor) {
+# ⚠ 下界**只在检默认文件(gates.ps1)时生效**。`-Path` 是公开参数、边界里也写了「可指别的文件」,
+#   对一个更小的脚本无条件套 20 会假红 —— 判据把自己的适用面写宽了,却按最宽那份的体量收口。
+$floor = if ($isDefaultPath) { 20 } else { 0 }
+if ($floor -gt 0 -and @($report.Sites).Count -lt $floor) {
   Write-Host ('  [FAIL] 只扫到 {0} 处外部命令调用点(下界 {1})—— 判据面塌了,不是代码变干净了' -f
     @($report.Sites).Count, $floor) -ForegroundColor Red
   Write-Host '    多半是 AST 分析或分类被改坏:判据面一小,门禁就近乎恒真,而删除式照不出来。' -ForegroundColor Yellow
