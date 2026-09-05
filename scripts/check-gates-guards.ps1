@@ -91,11 +91,25 @@ function Get-GcTargetName {
   for ($i = 0; $i -lt $els.Count; $i++) {
     $el = $els[$i]
     if ($el -is [System.Management.Automation.Language.CommandParameterAst]) {
-      if ($el.ParameterName -like 'Name*' -and $i + 1 -lt $els.Count) {
-        $v = $els[$i + 1]
-        if ($v -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return $v.Value }
+      # 冒号形式 `-Name:reuse` 的值挂在 `.Argument` 上、**不占独立元素**。不认它的话,
+      # `-Name:` 那一支会走空、落回后面的位置扫描,把 `-ErrorAction` 的值 `SilentlyContinue`
+      # 当成命令名返回 —— 正是 ⑫ 要根除的形态换了个入口,而且**违反本函数自己写的不变量**
+      # (认不出要返回 $null,不记错名字)。#217 复审指出。
+      if ($el.ParameterName -like 'Name*') {
+        if ($el.Argument -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+          return $el.Argument.Value
+        }
+        if ($null -eq $el.Argument -and $i + 1 -lt $els.Count -and
+          $els[$i + 1] -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+          return $els[$i + 1].Value
+        }
+        return $null   # 明明写了 -Name 却认不出它的值:不猜
       }
-      $i++   # 跳过这个参数的值(`-ErrorAction SilentlyContinue` 的第二段)
+      # 非 Name 的参数:冒号形式自带值,不吃下一个元素;分离形式吃掉下一个元素。
+      # ⚠ 开关参数(`-All npx`)在分离形式下会把位置参数误吃掉 ⇒ 返回 $null ⇒ 守卫认不出 ⇒
+      #   多一条红。方向 fail-closed、符合本函数的不变量,代价是排查成本;要分辨开关与
+      #   取值参数就得引一份参数名清单,而「不靠名字清单」正是本卡的立意。
+      if ($null -eq $el.Argument) { $i++ }
       continue
     }
     if ($el -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return $el.Value }
@@ -389,6 +403,18 @@ if ($SelfTest) {
   $r12b = Get-GatesGuardReport -Source $f12b
   & $check '⑫b -Name 具名形态的守卫认不出来' (@($r12b.Unguarded).Count -eq 0)
 
+  # ⑬ 冒号形式 `-Name:reuse`(#217 复审):旧写法在这条路径上返回 'SilentlyContinue',
+  #    守卫认不出、且记了一个**错的名字** —— 违反 Get-GcTargetName 自己写的不变量。
+  $f13 = $defSetGate +
+  'if (Get-Command -Name:reuse -ErrorAction SilentlyContinue) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
+  $r13 = Get-GatesGuardReport -Source $f13
+  & $check '⑬ 冒号形式 -Name:reuse 的守卫认不出来(且会记成错的名字)' (@($r13.Unguarded).Count -eq 0)
+  # ⑬b 认不出时必须**返回 $null / 不记守卫**,而不是记一个错名字后放行别的调用点。
+  $f13b = $defSetGate +
+  'if (Get-Command -ErrorAction:SilentlyContinue -Name:reuse) { reuse lint } else { Set-Gate ' + "'x'" + ' $false }'
+  $r13b = Get-GatesGuardReport -Source $f13b
+  & $check '⑬b 冒号形式的非 Name 参数把值吃错了' (@($r13b.Unguarded).Count -eq 0)
+
   if ($fails.Count -gt 0) {
     Write-Host '  [FAIL] check-gates-guards --self-test:' -ForegroundColor Red
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
@@ -433,8 +459,8 @@ $report = Get-GatesGuardReport -Source $src -Exemptions $activeExemptions
 # 下界取一个**明显低于现状、又高于「分析塌掉」**的数,只用来照出塌方,不用来对账。
 # ⚠ 下界**只在检默认文件(gates.ps1)时生效**。`-Path` 是公开参数、边界里也写了「可指别的文件」,
 #   对一个更小的脚本无条件套 20 会假红 —— 判据把自己的适用面写宽了,却按最宽那份的体量收口。
-$floor = if ($isDefaultPath) { 20 } else { 0 }
-if ($floor -gt 0 -and @($report.Sites).Count -lt $floor) {
+$floor = if ($isDefaultPath) { 20 } else { 1 }   # 非默认目标也至少要有 1 处,否则空集合恒真
+if (@($report.Sites).Count -lt $floor) {
   Write-Host ('  [FAIL] 只扫到 {0} 处外部命令调用点(下界 {1})—— 判据面塌了,不是代码变干净了' -f
     @($report.Sites).Count, $floor) -ForegroundColor Red
   Write-Host '    多半是 AST 分析或分类被改坏:判据面一小,门禁就近乎恒真,而删除式照不出来。' -ForegroundColor Yellow
