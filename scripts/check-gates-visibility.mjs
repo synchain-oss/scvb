@@ -497,7 +497,8 @@ else {
     if (!asm)
         fail(
             "check-changelog-drafts.mjs 里找不到 [" +
-                "BASE] 那行的拼装 —— 判据锚点变了,回来同步本段",
+                "BASE] 那行的拼装 —— 要么判据锚点变了,**要么这段拼装长过了匹配窗口**" +
+                "(中间插了长注释?),先确认是哪一种再回来同步本段",
         );
     else {
         const frags = [...asm[0].matchAll(/"([^"]*)"/g)]
@@ -516,13 +517,19 @@ else {
         // `import fs` 只是那个文件的实现细节:合并 import、改成 `import * as fs` 都会让
         // 切点消失,而那时**没有任何红**告诉你判据已经没了(复审【重要】)。
         const headEnd = src.indexOf("import fs");
-        if (headEnd < 0)
+        if (headEnd <= 0)
             fail(
                 "check-changelog-drafts.mjs 里找不到头注的切点 `import fs` —— 摘录对拍无从下手,故 fail-closed(落到整份文件比的话这一格会永远绿)",
             );
-        const headNote = headEnd < 0 ? "" : src.slice(0, headEnd);
+        // 切点没了就**跳过**这条 excerpt:上面那条 fail 已经是真因,再把 `""` 喂进去会让
+        // 四个片段各报一条「摘录与真拼装对不上」,而摘录一个字都没坏 —— 1 条真因 + 4 条
+        // 假因,假因还教人去回扫摘录。与下面 gates.ps1 不在时跳过是同一条(复审【建议】)。
+        // `<= 0` 而不是 `< 0`:`headEnd === 0` 时切出来是空串,同样落到那 4 条假因上。
+        const headNote = headEnd > 0 ? src.slice(0, headEnd) : null;
         const excerpts = [
-            ["check-changelog-drafts.mjs 头注 §边界", headNote],
+            ...(headNote !== null
+                ? [["check-changelog-drafts.mjs 头注 §边界", headNote]]
+                : []),
             // gates.ps1 不在的话**跳过**这条:§② 已经报过真因,这里再报四条「对不上」
             // 只会把人指到假因上(复审【建议】,与本卡在修的「第二次红指错方向」同族)。
             ...(fs.existsSync(GATES)
