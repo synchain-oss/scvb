@@ -53,9 +53,18 @@
 
 // windows.h 的 min/max 宏会污染 `std::max` / `std::numeric_limits<T>::min()`;先禁再包含
 //(与 `src/output/OutputProcessor.h`、`src/core/ipc/RegistryProbe.cpp` 同款)。
-// **本头必须自带这道防护**:它会被包含进各测试 TU,而那些 TU 里的项目头(如
-// `src/output/BridgeArgs.h` 的 `std::max`)可能排在本头之后 —— 实测不加就是
-// `error C2062: 意外的类型「unknown-type」`,报在别人的文件上,极难联想到这里。
+//
+// ⚠ **这道 `#ifndef NOMINMAX` 是包含顺序相关的,它兜不住所有情况** ——
+// 同 TU 里只要有**更早**的 `<windows.h>`,宏污染已经既成事实,这里再 define 也来不及。
+// 所以本头的使用约束是:
+//   · **把它排在任何会拉入 `<windows.h>` 的头之前**(host 侧就是这么放的:
+//     守卫头在 `BridgeArgs.h` 之前);
+//   · 若该 TU **自己更早**包含了 `<windows.h>`,则须由**它自己** `#define NOMINMAX`
+//     —— `tests/ipc/test_ipc_contract.cpp` 正是这一种(它在文件顶部自定义了 NOMINMAX
+//     再包含 windows.h,本头排在其后;那边没出事是**因为它自己定义了**,不是本头兜住的)。
+// 这条顺序约束**没有机器保证**:把本头的 include 往下挪一行、或上面某个头开始拉
+// windows.h,就会复现 `error C2062: 意外的类型「unknown-type」`,而且报在
+// `src/output/BridgeArgs.h` 那种**别人的文件**上,极难联想到是这里引起的(实测过)。
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
