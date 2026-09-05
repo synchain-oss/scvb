@@ -1269,6 +1269,14 @@ else {
   #   `log(prefix + "  [WARN] …")` 这种写法能过 check-gates-visibility 的散文守卫
   #   (标记确实紧跟引号),但输出行不以标记起头 ⇒ 在这里**既不回显也不计数**,
   #   静默漏一档降级。同一条要求的散文版见 check-bridge-parity 的「一律走 warn() helper」。
+  #
+  # ⚠ [SL-322] 用它的地方一律走 **`-cmatch`,不是 `-match`**:PowerShell 的 `-match` 默认
+  #   **不区分大小写**,`[warn]` / `[allow]` 会被这里数进去,而守卫(JS 正则,默认区分大小写)
+  #   与它的夹具都只认大写 —— 于是「gates 数到一档降级」和「守卫看得见那一档」在小写标记上
+  #   分家,两边各自都是绿的。实测:`'  [warn] x' -match '^\s*\[WARN\]'` 为 True,
+  #   `-cmatch` 为 False。**没有任何生产者打小写标记** —— 这一圈脚本的真信号一律是大写起头的
+  #   输出行;注释里为了讲清这条边会出现小写字样,那是散文、不进任何输出行。所以收紧没有反向
+  #   代价。别把这句写成「全仓零命中」:本次提交自己就让那条 grep 有了命中(复审第 1 轮)。
   $markerCount = '^\s*\[{0}\]'
   # [SL-295] 自测单独一条:实跑绿有两种可能 ——「块里真没有漏搬」和「判据被改坏了」,
   # 自测把后一种单独照出来。与 format.yml 的 docs-truth 两步逐字同款。
@@ -1320,7 +1328,7 @@ else {
       # 边界:gate 3g 也回显 [WARN],但那一处**不进任何计数**(只把「文档未标注、机检覆盖不到」
       # 的项透出来),散文多一行的代价止于滚屏;它读的脚本也不在上面那道守卫的执行面里。
       # 所以本卡只收紧这一处,不顺手改 3g。
-      $warnLines = @($out | Where-Object { $_ -match ($markerCount -f 'WARN') })
+      $warnLines = @($out | Where-Object { $_ -cmatch ($markerCount -f 'WARN') })
       if ($warnLines.Count -gt 0) {
         $parityWarn += $warnLines.Count
         $warnLines | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
@@ -1353,8 +1361,8 @@ else {
       # [SL-318] 这一条**只对 ALLOW / BASE 成立**:它俩的回显不进任何计数,多打一行的代价止于
       # 滚屏。上面 WARN 那条不一样(计数与回显共用一份匹配、且计数直接进标签),所以那里两半
       # 一起收到了行首。别把这句「回显按裸标记」推广过去。
-      $draftsAllow += @($out | Where-Object { $_ -match ($markerCount -f 'ALLOW') }).Count
-      @($out | Where-Object { $_ -match '\[ALLOW\]|\[BASE\]' }) |
+      $draftsAllow += @($out | Where-Object { $_ -cmatch ($markerCount -f 'ALLOW') }).Count
+      @($out | Where-Object { $_ -cmatch '\[ALLOW\]|\[BASE\]' }) |
         ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Yellow }
     }
   }
