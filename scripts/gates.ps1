@@ -400,7 +400,11 @@ if (-not $PluginvalExe) {
 #     并把反引号本身从模式里去掉,于是对含反引号的行**恒不命中且不报错**。用 `.Contains()` 字面匹配,
 #     反引号用 `[char]96` 拼。写本段这个补丁时头两次就是这么静默失效的(4 个锚点只命中 2 个)。
 #   本卡收口时这段的输出是 **10 个名字**:clang-format / cmake / ctest / git /
-#   node / npx / pipx / pwsh / python / reuse,每一处都落在某个守卫的 if/else 里。
+#   node / npx / pipx / pwsh / python / reuse。其中 **①②类每一处**都落在守卫的 if/else 里;
+#   **③类那三处不在**(`cmake --version` / `clang-format --version` / `git ls-files`)——
+#   它们按「空输出即判负」,包进守卫反而多一层壳。上一版这里写的是「每一处都落在某个守卫的
+#   if/else 里」,那是个**全称从句**,与上面第③条自相矛盾(#214 第 4 轮点出,当时不在破冻范围)。
+#   别照那句去给这三处加壳:它们各自带着一条写着理由的豁免标记(见下面 ③ 类三处的行内注记)。
 #   ⚠ 这段末尾有 `Sort-Object -Unique`,**只出名字、不出处数**。要数处数得改成按 `CommandAst`
 #     分组数,今天是 **29 处**(clang-format 2 / cmake 3 / ctest 1 / git 2 / node 9 /
 #     npx 1 / pipx 1 / pwsh 5 / python 4 / reuse 1)。上一版这里写的「26 处」是**我自己造的假数**:
@@ -422,6 +426,7 @@ Write-Host '=== Gate 1: 依赖预检 ==='
 # ==================================================================
 $ok = $true
 
+# [gates-guard-exempt] ③类:输出判据 —— 空输出即 $ok = $false(见下一行的 if),缺席方向偏红,包守卫反而多一层壳
 $cmakeVer = ((& cmake --version 2>$null | Select-Object -First 1) -replace 'cmake version ', '')
 if (-not $cmakeVer) { Write-Host '  cmake 未找到' -ForegroundColor Red; $ok = $false }
 else { Write-Host ("  cmake {0}" -f $cmakeVer) }
@@ -455,6 +460,7 @@ else {
   else { Write-Host ("  JUCE {0}" -f $juceVersion) }
 }
 
+# [gates-guard-exempt] ③类:输出判据 —— 空串不匹配 18.1.8 即判负(见下一行的 if),缺席方向偏红
 $cfVer = ((& clang-format --version 2>$null) -join ' ')
 if ($cfVer -notmatch '18\.1\.8') {
   Write-Host ("  clang-format 18.1.8 未找到(当前: {0})" -f $cfVer) -ForegroundColor Red
@@ -485,6 +491,7 @@ Set-Gate '1 依赖预检' $ok
 # ==================================================================
 Write-Host '=== Gate 2: clang-format (18.1.8) ==='
 # ==================================================================
+# [gates-guard-exempt] ③类:输出判据 —— 没有 git 时集合为空,下面 $files.Count -eq 0 那支即判负,缺席方向偏红
 $files = @(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | Where-Object { $_ -notmatch '^third_party/' })
 $cf = $true
 if ($files.Count -eq 0) {
@@ -1220,7 +1227,7 @@ else {
 }
 
 # ==================================================================
-Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码 对拍(scripts/check-*)==='
+Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备 对拍(scripts/check-*)==='
 # ==================================================================
 # [SL-258] 这三个脚本此前**没有任何执行者** —— 不在 CI、不在本 gates、不在 package.json。
 # 于是 [SL-256] 给 check-bridge-parity 加的「已注册 handler ↔ manifest」断言,以及本卡把它
@@ -1246,7 +1253,7 @@ Write-Host '=== Gate 3i: 桥面/曲线/设计盒/native 路径/冒烟写法/预�
 # 「SKIP 吞掉判据」那一族的形态。它的**自测**要单独跑一条(下面那圈只跑裸命令)。
 if (-not $nodeCmd) {
   Write-Host '  node 不在 PATH —— 本 gate 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
-  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码对拍' $false
+  Set-Gate '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备对拍' $false
 }
 else {
   $parityOk = $true
@@ -1393,9 +1400,46 @@ else {
   # 「某档没跑」——今天这四处恰好都是「跳过」,谁哪天拿它发一条纯提示,写死「−N 档降级」
   # 就会对着提示喊降级。这个信号刚建立起来就是要让人信它,喊错一次,下次真降级也会被当噪声。
   # 所以这半句只能是「上方有几处 WARN,自己看」,不能冒充「降级档数」的权威计数。
-  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码对拍'
+  # ---- [SL-331 后续批] check-gates-guards.ps1(外部命令调用点必须有存在性守卫)----
+  # **不进上面那圈 foreach**:那一圈是 `& node (Join-Path 'scripts' $sc)`,而本判据是 `.ps1`,
+  # 要走 pwsh。口径照 gate 5b:先判 `$pwshCmd` 在不在(找不到外部命令时 PowerShell 抛
+  # CommandNotFoundException 且**不更新** `$LASTEXITCODE`),每次调用前再把它显式置 1。
+  # CI 侧已在 `.github/workflows/format.yml` 的 docs-truth 接好(#217);这里补的是**本地**
+  # 执行者 —— 改本文件的人应当在自己机器上就看见它红,而不是推上去才知道。
+  # ⚠ `check-gates-visibility.mjs` 的执行面是从上面那圈 `foreach` 的字面量里读的,所以它
+  #   **扫不到这一段**。这是预期,不是漏接:本判据不是 `.mjs`、也不打 ALLOW/BASE/WARN 标记,
+  #   不在那道散文守卫的题域内。要让可见性判据也覆盖 `.ps1` 这一族是**另一张卡**的事,
+  #   别为了这一句去改它的执行面。
+  if (-not $pwshCmd) {
+    $parityOk = $false
+    Write-Host '  pwsh 不在 PATH —— check-gates-guards 无法执行(不是跳过,是判负:工具缺失不得计为通过)' -ForegroundColor Red
+  }
+  else {
+    # 两次调用写开、不绕数组嵌套:`foreach ($a in @(,@('-SelfTest')), @(,@()))` 每轮拿到的是
+    # **嵌套数组**(实测 `$a.Count -eq 1`、内容是 `System.Object[]`),splat 出去就不是原意了。
+    # 与 gate 5b 一样两句写清楚,读的人也一眼看得出「先自测、再实扫」。
+    $ggScript = Join-Path 'scripts' 'check-gates-guards.ps1'
+    $global:LASTEXITCODE = 1
+    $ggSelf = (& pwsh -NoProfile -File $ggScript -SelfTest 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      $parityOk = $false
+      Write-Host '  check-gates-guards.ps1 -SelfTest:' -ForegroundColor Red
+      $ggSelf | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    else {
+      $global:LASTEXITCODE = 1
+      $ggOut = (& pwsh -NoProfile -File $ggScript 2>&1)
+      if ($LASTEXITCODE -ne 0) {
+        $parityOk = $false
+        Write-Host '  check-gates-guards.ps1:' -ForegroundColor Red
+        $ggOut | ForEach-Object { Write-Host ("  " + $_) }
+      }
+    }
+  }
+
+  $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备对拍'
   if ($parityWarn -gt 0) {
-    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
+    $parityLabel = '3i 桥面/曲线/设计盒/native 路径/冒烟写法/预写条目/源码编码/守卫完备对拍(上方 {0} 处 [WARN],逐条看清是不是「某档没跑」)' -f $parityWarn
   }
   # [SL-315] 放行数另拼一段,与上面 [WARN] 那句同形、同口径:**只报行数**,不冒充「有几个号
   # 被豁免」——「一个号一行」是注释块的写法约定,不是这里数得出来的事实。0 条时整句不出现,
