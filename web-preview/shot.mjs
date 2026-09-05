@@ -73,7 +73,9 @@ if (args.has("help")) {
             "  --out=<路径>            PNG 落点,默认 web-preview/.shots/<tab>-<时间>.png",
             "  --console               把页面 console 打到 stdout(排障用)",
             "",
-            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败)",
+            "退出码:0 = 拍到了 / 1 = 其它失败 / 2 = 目标页面没能真的呈现(连不上、错误页、非 2xx、壳页报注入失败,",
+            "        以及落地后页内求值抛错)。分界是「谁的锅」:抛错源自你给的输入算 1 不算 2 ——",
+            "        --eval 的表达式抛错、--click/--lang/--tab 的选择器语法错,都归 1。",
         ].join("\n"),
     );
     process.exit(0);
@@ -129,7 +131,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // [SL-290] 「没拍到」与「拍到的是错误页」要能被调用方分开:前者多半是环境/参数问题,
 // 后者说明**目标服务没起**——同样是失败,但排障方向完全不同,退出码就该不同。
-// 退出码:0 = 拍到了;1 = 其它失败;2 = 目标页面没能真的呈现(含错误页、非 2xx、壳页报注入失败)。
+// 退出码:0 = 拍到了;1 = 其它失败;2 = 目标页面没能真的呈现(含错误页、非 2xx、壳页报
+// 注入失败,以及落地后的页内求值抛错)。落地后那半的分界是**谁的锅**:源自命令行给进来的
+// 输入(`--eval` 表达式、`--click`/`--lang`/`--tab` 的选择器语法)算 1,其余算 2;
+// 收口在 `evalLanded` 与 `clickIn`。
 // 注:本脚本不被 gates / CI 调用(只在 PREVIEW-GUIDE 与 E2E-journey 里给人用),
 // 所以 2 不会撞上 gate 3e 那条「退 2 当缺可选依赖打 SKIP」的读法。
 class NavigationError extends Error {}
@@ -185,22 +190,64 @@ const DOC_PRELUDE = `window.__D = (() => {
     try { return (f && f.contentDocument) || document; } catch { return document; }
 })(), 1`;
 
-/** 页内求值(返回 JSON 可序列化值);抛错时把页面异常原样冒上来。 */
-async function evaluate(cdp, expression) {
-    const r = await cdp.send("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-    });
-    if (r.exceptionDetails) {
-        throw new Error(
-            "页内求值抛错:" +
-                (r.exceptionDetails.exception?.description ||
-                    r.exceptionDetails.text),
-        );
+/**
+ * [SL-312] **页内求值的唯一入口**(落地之后的求值一律走这里)。
+ *
+ * 为什么要收成一个函数:裸的 `Runtime.evaluate` 包装抛的是普通 `Error`,冒到 finally 时
+ * `instanceof NavigationError` 不成立 ⇒ 退 1 而不是 2,屏幕上还打印「页内求值抛错」
+ * 把人指向错误方向;而落地页上连求值都跑不了,几乎只可能是页面没正常起来 —— 正是
+ * 2 该覆盖的语义。同一条纪律在 #194 里补过两轮(第 1 轮补 `location.href`、第 4 轮
+ * 补壳页状态那两处),夹在中间的 `DOC_PRELUDE` 那次三轮都没被看见:每轮只补复审
+ * 点名的位置,漏的那处就一直漏着。所以修法不是「再补第三处」,而是**把包法收进
+ * 唯一入口**,调用点只给一句「这一步在做什么」,少一个能忘的地方。
+ *
+ * ⚠ 裸包装 `evaluateRaw` **关在这个闭包里**,外面拿不到它。放在顶层时它仍是个名字更短、
+ *   签名更少一个参数的函数,下一个人加第六处求值时它依然是最顺手的写法 ——「少一个能忘
+ *   的地方」就只做了一半。词法上够不着,才是真的只剩一条路(复审第 1 轮【建议】2 的 ②)。
+ *
+ * 唯一例外是 `--eval`:表达式是人现给的,抛错是这句表达式自己的锅、不是页面没起来,
+ * 退 1 才对。这个例外由 `userExpr: true` **显式声明**,而不是靠调用点绕开本函数 ——
+ * 绕开就又回到「有人会忘」的老形态,声明则会在调用点上留下痕迹。
+ */
+const evalLanded = (() => {
+    /** 页内求值(返回 JSON 可序列化值);抛错时把页面异常原样冒上来。 */
+    async function evaluateRaw(cdp, expression) {
+        const r = await cdp.send("Runtime.evaluate", {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+        });
+        if (r.exceptionDetails) {
+            throw new Error(
+                "页内求值抛错:" +
+                    (r.exceptionDetails.exception?.description ||
+                        r.exceptionDetails.text),
+            );
+        }
+        return r.result?.value;
     }
-    return r.result?.value;
-}
+
+    return async function evalLanded(
+        cdp,
+        expression,
+        what,
+        { userExpr = false } = {},
+    ) {
+        try {
+            return await evaluateRaw(cdp, expression);
+        } catch (e) {
+            // 两支只差**错误类**(它决定退 1 还是退 2);`what` 两支都带上 —— 否则
+            // `--eval` 抛错时打印的文案与探针抛错一字不差,读的人分不出这是谁的锅。
+            // `cause` 两支都挂:打印路径只用 `e.message`,一字不变;但页内异常的完整
+            // description 从此还在手里,不用再开 `--console` 重跑一次(复审第 1 轮)。
+            const why = `${what}(${e.message})`;
+            if (userExpr) throw new Error(why, { cause: e });
+            throw new NavigationError(`${why},目标 ${URL_} 大概率没正常起来`, {
+                cause: e,
+            });
+        }
+    };
+})();
 
 // ---------------------------------------------------------------- 主流程
 const userDataDir = mkdtempSync(join(tmpdir(), "scvb-shot-"));
@@ -332,18 +379,10 @@ try {
 
     // ② 二道:errorText 只覆盖「这一次 navigate 自己失败」。重定向到错误页、
     //    或首次导航成功但随后被换成错误页,都还得靠落地后的 URL 认。
-    // ⚠ 这里用 try 包住:`evaluate` 抛的是普通 `Error`,直接冒上去会让 finally 的
-    //    `instanceof NavigationError` 不成立 ⇒ 退 1 而不是 2,且屏幕上打印「页内求值抛错」
-    //    把人指向错误方向。而「在落地页上连 location.href 都求不到」几乎只可能是页面
-    //    没正常起来 —— 正是 2 该覆盖的语义(复审指出)。
-    let landed;
-    try {
-        landed = await evaluate(cdp, "location.href");
-    } catch (e) {
-        throw new NavigationError(
-            `落地页无法求值(${e.message}),目标 ${URL_} 大概率没打开`,
-        );
-    }
+    // ⚠ 走 `evalLanded`(见其函数头):「在落地页上连 location.href 都求不到」几乎
+    //    只可能是页面没正常起来,该退 2;裸包装(现名 `evaluateRaw`,关在 `evalLanded`
+    //    的闭包里)不分档、直接用会退 1 —— 也正因为够不着,这里没有第二条路可走。
+    const landed = await evalLanded(cdp, "location.href", "落地页无法求值");
     if (typeof landed === "string" && landed.startsWith("chrome-error://")) {
         throw new NavigationError(
             `落到浏览器错误页(${landed}),目标 ${URL_} 没打开
@@ -374,7 +413,9 @@ try {
         );
     }
 
-    await evaluate(cdp, DOC_PRELUDE); // 之后一切选择器走 __D(iframe 内的真源文档)
+    // 之后一切选择器走 __D(iframe 内的真源文档)。这一处正是 #194 三轮都没被看见的
+    // 那个漏包点(SL-312):它夹在两个已包 try 的调用中间,抛错时退 1 不退 2。
+    await evalLanded(cdp, DOC_PRELUDE, "注入 __D(真源文档)失败");
 
     // ④ [SL-290 复审第 2/3/4 轮] **第三道只看主文档,iframe 那半还漏着**:壳页自己没有 UI
     //    (`output.html` 除工具条外画面 100% 来自 iframe 里的 `web/<role>/index.html`),
@@ -389,32 +430,49 @@ try {
     //    壳页的 `textContent` 已经把它自己的原话带出来了,让它说话就够(复审第 4 轮)。
     //    也不会误杀 `--url` 指向的非预览页:那些页面没有 `.pv-status`,取到 null ⇒ 放行。
     //
-    //    ⚠ 两个属性**一次读回**并包 try:`evaluate` 抛的是普通 `Error`,不包就退 1 不退 2;
-    //    而分两次读时,第二次(取原话)是在**已经判负之后**跑的 —— 它一抛错,
-    //    `throw new NavigationError` 就再也执行不到,**判负的证据在手里却打印不出来**。
-    let shell = null;
-    try {
-        shell = await evaluate(
-            cdp,
-            `(() => { const e = document.querySelector(".pv-status");
-                      return e ? { ok: e.getAttribute("data-ok"), why: e.textContent } : null; })()`,
-        );
-    } catch (e) {
-        throw new NavigationError(
-            `落地页读不到壳页状态(${e.message}),目标 ${URL_} 大概率没正常起来`,
-        );
-    }
+    //    ⚠ 两个属性**一次读回**:分两次读时,第二次(取原话)是在**已经判负之后**跑的
+    //    —— 它一抛错,`throw new NavigationError` 就再也执行不到,**判负的证据在手里
+    //    却打印不出来**。求值本身走 `evalLanded`(退 2,见其函数头)。
+    const shell = await evalLanded(
+        cdp,
+        `(() => { const e = document.querySelector(".pv-status");
+                  return e ? { ok: e.getAttribute("data-ok"), why: e.textContent } : null; })()`,
+        "落地页读不到壳页状态",
+    );
     if (shell && shell.ok === "0") {
         throw new NavigationError(
             `壳页报注入失败 —— 主文档 ${mainStatus ?? "状态未取到"} 但舞台是空的。壳页原话:${shell.why}`,
         );
     }
 
-    const clickIn = (sel) =>
-        evaluate(
+    // 点击也在落地之后:`window.__D` 没注入成功时这句会抛,那属于「页面没起来」⇒ 退 2。
+    // ⚠ 但**选择器语法错是人给的输入**,与 `--eval` 同类,不该算页面没起来。三个入口都能
+    //    喂进非法选择器:`--click='div['` 直接透传,`--lang` / `--tab` 下面两处是原样插值
+    //    (`--tab=a"b` ⇒ `[data-tab-btn="a"b"]`)。所以在**页内**就把这一种分出来:
+    //    `querySelector` 对非法选择器抛的是 name 为 `SyntaxError` 的 DOMException,只截这
+    //    一种回传标记(退 1);`__D` 没注入那种是 `TypeError`,原样抛出去让 `evalLanded` 接
+    //    (退 2)。**别整段 catch** —— 那会把「页面没起来」也误报成「选择器写错了」。
+    //    另:`--tab` 选择器合法但没命中时下面是 `throw new Error`(退 1),语法错也落 1,
+    //    同一个参数的两种打字错这才在同一个码上(复审第 1 轮)。
+    const clickIn = async (sel) => {
+        const r = await evalLanded(
             cdp,
-            `(() => { const el = window.__D.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true; })()`,
+            `(() => { let el;
+                      try { el = window.__D.querySelector(${JSON.stringify(sel)}); }
+                      catch (e) { if (e && e.name === "SyntaxError") return { badSel: String(e.message) }; throw e; }
+                      if (!el) return false; el.click(); return true; })()`,
+            `页内点击 ${sel} 失败`,
         );
+        // 只有语法错这一支会回传对象,当场抛掉 —— 所以调用点拿到的仍只有 true/false。
+        // ⚠ 按**有没有这个键**判,不按值真不真:`e.message` 万一是空串,真值判断会放行,
+        //    而放行交出去的是 `{ badSel: "" }` 这个**恒真的对象** —— `if (!hit)` / `if (!ok)`
+        //    读它都成立,于是 tab 根本没点成却照样截图退 0。现实里 Chrome 的选择器
+        //    DOMException 是固定模板、不会空,但这正是本文件 §③ 那句「判据可以降精度,
+        //    不能悄悄不在」说的形状(复审第 2 轮)。
+        if (r && typeof r === "object" && "badSel" in r)
+            throw new Error(`选择器语法错:${sel}(${r.badSel})`);
+        return r;
+    };
 
     if (args.has("lang")) {
         await clickIn(`[data-lang="${args.get("lang")}"]`);
@@ -431,7 +489,11 @@ try {
         await sleep(SETTLE_MS);
     }
     if (args.has("eval")) {
-        const v = await evaluate(cdp, args.get("eval"));
+        // `--eval` 是人现给的表达式:抛错是这句表达式的锅,不是页面没起来 ⇒ 保持退 1。
+        // 走 `evalLanded` 而不是绕开它,是为了把这个例外**写在调用点上**(见其函数头)。
+        const v = await evalLanded(cdp, args.get("eval"), "--eval 表达式抛错", {
+            userExpr: true,
+        });
         console.log("eval →", JSON.stringify(v));
         await sleep(SETTLE_MS);
     }
