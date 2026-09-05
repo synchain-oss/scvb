@@ -11,11 +11,14 @@
 #include <windows.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -49,6 +52,85 @@ using scvb::ipctest::RingWriterState;
 using scvb::ipctest::TimelineModel;
 
 using namespace scvb;
+
+// [SL-323] **同机只允许一份 ipc 测试进程** —— 在整轮开始前判定,拿不到就整轮不跑。
+//
+// 为什么需要:本套用**固定组号**,段名 `SynchainSCVB.v1.g{G}.…` 是**全机唯一**的 ——
+//     g1(`resetRegistry(backend, 1)`,:954/:973/:993/:1013/:1284)
+//     g2(`Registry regG2(backend, 2)`,:1580)
+//     g3(`test_ipc_viz.cpp` 的 `kGroup`)
+//     g6(`test_registry_probe.cpp` 的 `kProbeGroup`,注释写着「测试进程独占」——
+//        **声称独占却没有强制**,本守卫就是来补这句话的)
+//     g7(`test_ipc_viz.cpp` 的 VIZ-2)
+// 第二份进来 = 两个进程在同一批段上互相清、互相建。
+//
+// 形态与 [SL-314] / #204 的 host 侧守卫**逐条同形**,那边已量清楚这个形态的代价:
+//     空闲 / CPU 压满 100%,1 份   0/50 红      ← CPU 争用一次都不触发
+//     2 份并跑                    29/30 红
+//     6 份并跑                    88/90 红      ← 2 份与 6 份没有量级差别
+// **冲突的是段,不是 CPU**;复现率对负载不单调,正是资源冲突的签名。
+//
+// **判定必须在整轮开始前**(#204 复审的结论):Catch2 的 `FAIL` 用
+// `ResultDisposition::Normal` —— 只中止当前用例,不中止整轮。守卫若挂在某个 fixture 上,
+// 第二个进程仍会跑完整轮、照常建段,**它仍在主动加害对方**。只有在 `testRunStarting` 里判、
+// 拿不到就 `std::exit`,才能保证**一个段都不建**。
+//
+// 互斥名与 gates 那把**区分**:gates 的 `Local\SCVB-ipc-tests` 串行的是它自己的
+// gate 3e 与 gate 6/7/8 两段;这把 `Local\SCVB-ipc-tests-proc` 管的是
+// 「ipc 测试进程同机独占」。两者语义不同、生命周期不同,共用一把会互相阻塞。
+//
+// 0 等待、**不排队**:排队会把冲突藏起来,而且与 gates 那把形成锁序风险。
+// 不碰任何 IPC 段(不 open、不建 registry),不看槽位(陈旧槽位会误报)。
+// 不手动释放:内核对象随进程退出自动回收。
+namespace
+{
+struct IpcTestsExclusiveListener : Catch::EventListenerBase
+{
+    using Catch::EventListenerBase::EventListenerBase;
+
+    void testRunStarting(Catch::TestRunInfo const&) override
+    {
+        HANDLE handle = ::CreateMutexW(nullptr, TRUE, L"Local\\SCVB-ipc-tests-proc");
+        // `GetLastError()` 必须**紧挨着**取:中间插任何一个 Win32 调用都可能把它冲掉。
+        const DWORD err = ::GetLastError();
+
+        if (handle != nullptr && err != ERROR_ALREADY_EXISTS)
+        {
+            return; // 独占到手;句柄故意不关,活到进程退出
+        }
+
+        // **两种失败要分开说**(#204 复审):处方完全不同,合成一句会把人送错方向。
+        if (handle == nullptr)
+        {
+            // 建不出来是**另一件事**:DACL 拒绝 / 句柄耗尽 / 同名非互斥对象占位。
+            // 判负是对的(CLAUDE.md §2:建不出来判负,绝不静默继续),但这时**没有**
+            // 「另一份在跑」,排队或走 with-ipc-lock.ps1 都救不了。
+            std::fprintf(stderr,
+                         "[SL-323] 无法创建命名互斥 Local"
+                         "\\SCVB-ipc-tests-proc(GetLastError=%lu)——**不是**「有人在跑」。"
+                         "可能是 DACL 拒绝、句柄耗尽,或同名对象被非互斥类型占位。"
+                         "本套用固定组号、段名全机唯一,判不出独占就不能跑。"
+                         "\n",
+                         static_cast<unsigned long>(err));
+        }
+        else
+        {
+            std::fprintf(stderr, "[SL-323] 同机已有另一份 ipc 测试进程在跑 —— 本套用固定组号"
+                                 "(g1/g2/g3/g6/g7),段名全机唯一,两份同跑会互相清段。"
+                                 "\n  手跑请走:pwsh scripts"
+                                 "/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C Release -R scvb_ipc_tests'"
+                                 "\n  若确认没人在跑:查**残留**的 scvb_ipc_tests.exe —— 僵尸进程会一直持着这把互斥"
+                                 "(见 gates.ps1 gate 6 前后的孤儿扫描)。"
+                                 "\n");
+        }
+        std::fflush(stderr);
+        // 整轮不跑:再往下走就会建段,那正是要避免的加害。
+        std::exit(2);
+    }
+};
+} // namespace
+
+CATCH_REGISTER_LISTENER(IpcTestsExclusiveListener);
 
 namespace
 {
