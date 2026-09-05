@@ -69,7 +69,7 @@ add_executable(scvb_tests
 )
 
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
-target_include_directories(scvb_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+target_include_directories(scvb_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/tests)
 target_compile_definitions(scvb_tests PRIVATE SCVB_TEST_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 
 if(SCVB_TESTS_WITH_EBUR128)
@@ -315,6 +315,7 @@ target_include_directories(scvb_host_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/src/output
   ${CMAKE_SOURCE_DIR}/src/input
   ${CMAKE_SOURCE_DIR}/src/plugin-common
+  ${CMAKE_SOURCE_DIR}/tests # [SL-324] support/exclusive_guard.h
 )
 
 # harness 要扮演宿主的消息线程:runDispatchLoopUntil 让两侧的 25Hz Timer 真实触发。

@@ -12,6 +12,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+// [SL-324] 同机独占守卫(四套共用一把 `Local\SCVB-tests-proc`)——本套也建段:
+// 见该头注的组号重叠表。每个二进制只需在任意一个 TU 里包含它。
+#include "support/exclusive_guard.h"
+
 #include <memory>
 
 #include "MonitorProcessor.h"

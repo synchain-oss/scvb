@@ -33,6 +33,8 @@
 #include <utility> // [SL-273] std::make_pair(pan/vol 两路快照)
 #include <vector>
 
+#include "support/exclusive_guard.h"
+
 #include "BridgeArgs.h"
 #include "analysis/HopMath.h" // [SL-263] 采样点→hop 的唯一换算口径(与实现同源)
 #include "BridgeBase.h" // [SL-234] Min/MaxUiScale + clampUiScalePercent(档位边界真源)
@@ -117,81 +119,10 @@ public:
 };
 
 // 一台「机器」:两个插件 + 一个 playhead + 缓冲。
-// [SL-314] **同机只允许一份 host 测试进程** —— 在**整轮开始前**判定,拿不到就整轮不跑。
-//
-// 为什么需要:本文件用**固定组号**(`kTestGroup=7` / `kNoWriterGroup=8` /
-// `MonoMultiRig::kGroup=9`,还有若干处直接写 4/5/6),段名 `SynchainSCVB.v1.g{G}.…`
-// 是**全机唯一**的。第二份进来 = 两个 Input 抢同一个槽位、两个 Output 绑同一个写方。实测:
-//     空闲 1 份            0/50 红
-//     CPU 压满 100%,1 份   0/50 红      ← CPU 争用一次都不触发
-//     2 份并跑             29/30 红
-//     6 份并跑             88/90 红      ← 2 份与 6 份没有量级差别
-// **冲突的是段,不是 CPU**;复现率对负载不单调,正是资源冲突的签名。
-//
-// 不加这道守卫时,红掉在三秒后的 `CHECK(raised)` 上,看起来像时序 flaky —— SL-305 与
-// SL-311 两张卡都为此绕过弯路,本卡自己也照「墙钟窗口」白改过一版。
-//
-// **为什么判定必须在整轮开始前,而不是挂在某个 Rig 的构造上**(复审【重要】):
-// Catch2 的 `FAIL` 用 `ResultDisposition::Normal` —— **只中止当前用例,不中止整轮**。
-// 守卫若只挂在 `Rig`,第二个进程 B 被点名后仍会跑完整轮:`MonoMultiRig` 那 24 处用例照常
-// `setGroupId(9)` + `prepareToPlay`,建出 `g9.*` 段 —— **B 仍在主动加害 A**,而 A 那批 g9
-// 用例的红长得还是像 flaky。逐个 Rig 挂守卫也永远补不全(本文件还用到 4/5/6/8)。
-// 只有在 `testRunStarting` 里判、拿不到就 `std::exit`,才能保证**一个段都不建**。
-//
-// 形态:**命名互斥,0 等待**。三条边界都是有意的 ——
-//   · **不排队**:排队会把冲突藏起来,而且与 gates 的 `Local\SCVB-ipc-tests` 形成锁序风险;
-//   · **不碰 IPC 段**:`Registry::open()` 是 `createOrOpen` + `allowOverwrite=true`,
-//     拿它当探针会创建、甚至覆盖式重初始化别人正在用的 registry —— 比它要治的问题更坏;
-//   · **不看槽位**:「槽位活跃且 pid 非我」会被崩溃进程留下的**陈旧槽位**误报。
-// 也不手动释放:内核对象随进程退出自动回收,测试里放反而多一条出错路径。
-struct HostTestsExclusiveListener : Catch::EventListenerBase
-{
-    using Catch::EventListenerBase::EventListenerBase;
-
-    void testRunStarting(Catch::TestRunInfo const&) override
-    {
-        HANDLE handle = ::CreateMutexW(nullptr, TRUE, L"Local\\SCVB-host-tests");
-        // `GetLastError()` 必须**紧挨着**取:中间插任何一个 Win32 调用都可能把它冲掉。
-        const DWORD err = ::GetLastError();
-
-        if (handle != nullptr && err != ERROR_ALREADY_EXISTS)
-        {
-            return; // 独占到手;句柄故意不关,活到进程退出
-        }
-
-        // **两种失败要分开说**(复审【重要】):它们的处方完全不同,合成一句会把人送错方向。
-        if (handle == nullptr)
-        {
-            // 建不出来是**另一件事**:DACL 拒绝 / 句柄耗尽 / 同名非互斥对象占位。
-            // 判负是对的(CLAUDE.md §2 对 gates 那把锁写死「建不出来判负,绝不静默继续」),
-            // 但这时**没有**「另一份在跑」,排队或走 with-ipc-lock.ps1 都救不了。
-            std::fprintf(stderr,
-                         "[SL-314] 无法创建命名互斥 Local"
-                         "\\SCVB-host-tests(GetLastError=%lu)——**不是**「有人在跑」。"
-                         "可能是 DACL 拒绝、句柄耗尽,或同名对象被非互斥类型占位。"
-                         "本套用固定组号、段名全机唯一,判不出独占就不能跑。"
-                         "\n",
-                         static_cast<unsigned long>(err));
-        }
-        else
-        {
-            std::fprintf(stderr,
-                         "[SL-314] 同机已有另一份 host 测试进程在跑 —— 本套用固定组号"
-                         "(g%d/ch%d 等),段名全机唯一,两份同跑必红(实测 2 份 29/30、6 份 88/90)。"
-                         "\n  手跑请走:pwsh scripts"
-                         "/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C Release -R scvb_host_tests'"
-                         "\n  若确认没人在跑:查**残留**的 scvb_host_tests.exe —— 僵尸进程会一直持着这把互斥"
-                         "(见 tests/CMakeLists.txt 的 TIMEOUT 头注与 gates.ps1 gate 6 前后的孤儿扫描)。"
-                         "\n",
-                         kTestGroup, kTestChannel);
-        }
-        std::fflush(stderr);
-        // 整轮不跑:再往下走就会建段,那正是要避免的加害。
-        std::exit(2);
-    }
-};
-
-CATCH_REGISTER_LISTENER(HostTestsExclusiveListener);
+// [SL-324] 同机独占守卫已抽成四套共用的 `tests/support/exclusive_guard.h`
+//(原 [SL-314] 的 host 专用版在那里,锁名由 `Local\SCVB-host-tests` 改为
+// `Local\SCVB-tests-proc`)。改共用的理由:固定组号在四套之间大面积重叠,
+// 每套一把锁挡得住同套并发、挡不住跨套件 —— 详见该头的头注。
 
 struct Rig
 {
@@ -207,6 +138,8 @@ struct Rig
     {
         out.setGroupId(kTestGroup);
         in.setGroupId(kTestGroup);
+        REQUIRE(out.groupId() == kTestGroup); // [SL-324] 读回断言,见 MonoMultiRig::kGroup 的头注
+
         in.setChannelId(kTestChannel);
         out.setPlayHead(&ph);
         in.setPlayHead(&ph);
@@ -675,6 +608,7 @@ TEST_CASE("HOST I1/I2 换组:新组广播区被重写,Input 不再显示上一�
     // 两侧一起改到新组(用户在 UI 上改组的等效动作)。
     constexpr int kOtherGroup = 6;
     r.out.setGroupId(kOtherGroup);
+    REQUIRE(r.out.groupId() == kOtherGroup); // [SL-324] 读回断言
     r.in.setGroupId(kOtherGroup);
     Rig::pumpMessages(200);
     r.runBlocks(20, 0.25f, 1, 20);
@@ -698,6 +632,7 @@ TEST_CASE("HOST I1/I2 换组:新组广播区被重写,Input 不再显示上一�
 
     // I2:改回旧组后,Input 的缓存不得把新组那份当成旧组的(缓存按组作废)。
     r.out.setGroupId(kTestGroup);
+    REQUIRE(r.out.groupId() == kTestGroup); // [SL-324] 读回断言
     r.in.setGroupId(kTestGroup);
     Rig::pumpMessages(200);
     r.runBlocks(20, 0.25f, 1, 20);
@@ -752,6 +687,7 @@ TEST_CASE("HOST I4:换组后不继承上一组的采集覆盖", "[host][t37][cha
     // 改组:frameStore 按 channel 索引存、没有 group 维度 —— 不清的话新组 ch3 会继承旧组 ch3 的
     // CoverageMap,并把两组特征并进同一张表。
     r.out.setGroupId(6);
+    REQUIRE(r.out.groupId() == 6); // [SL-324] 读回断言
     Rig::pumpMessages(200);
     CHECK(r.out.coverageOf(kTestChannel, 0.0, 4.0).coveredS == 0.0); // ← 修复前继承旧组覆盖
 }
@@ -1386,7 +1322,20 @@ namespace
 // 是因为它就是真机上一条人声/贝斯轨的样子,顺带让 source_channels 有个确定值。
 struct MonoMultiRig
 {
-    static constexpr int kGroup = 9;
+    // [SL-324] 原为 **9 —— 一个不存在的组**。契约把组号钉死在 G=1..8
+    // (`kMaxGroups = 8`,`docs/IPC_CONTRACT.md`「§1 registry:G=1..8」与冻结那节),
+    // 而 `Input/OutputSession::setGroupId` 对越界值**不报错、静默回落到默认组 1**:
+    //     groupId_ = (g >= 1 && g <= kMaxGroups) ? g : kOutputDefaultGroup;  // 默认 = 1
+    // 所以这 24 个用例一直跑在 **g1** 上 —— 而 g1 是 ipc 套件砸得最狠的组
+    // (`--group=1` 三十余处 + `resetRegistry(backend, 1)` 六处,后者**重置 registry**),
+    // 也是 `scvb_tests` 的 lifecycle 用例和**真 DAW 实例**的默认组。代码、注释、日志
+    // 三处都会告诉你它在 g9,只有读回 `groupId()` 才看得见真相 —— 见下面的读回断言。
+    //
+    // 改用 **g3**:host 套件自己不用 g3(它用 4/5/6/7/8),所以**同一进程内无同组用例**;
+    // 跨进程的重叠(ipc 也用 g3)由本卡的共用互斥 `Local\SCVB-tests-proc` 兜住。
+    // 拆卸依据:本 rig 的析构对 Output 与每个 Input 都调 `releaseResources()`,
+    // 段随最后一个句柄关闭而销毁,所以同一进程内下一个用例拿到的是干净的 g3。
+    static constexpr int kGroup = 3;
     static constexpr int kCount = 3;
 
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -1400,6 +1349,8 @@ struct MonoMultiRig
     MonoMultiRig()
     {
         out.setGroupId(kGroup);
+        // [SL-324] **读回断言**:越界会静默回落到默认组,写了什么不等于用了什么。
+        REQUIRE(out.groupId() == kGroup);
         out.setPlayHead(&ph);
         out.prepareToPlay(kSr, kBlock);
         for (int i = 0; i < kCount; ++i)
@@ -1414,6 +1365,15 @@ struct MonoMultiRig
             p->setPlayHead(&ph);
             p->prepareToPlay(kSr, kBlock);
             ins.push_back(std::move(p));
+        }
+        // [SL-324] Input 侧也读回一次。**为什么不像 Output 那样紧跟 setGroupId 断言**:
+        // `ScvbInputAudioProcessor` 没有无副作用的组号访问器,唯一能读到的是
+        // `bridgeTickSnapshot()`,而它会**懒打开 ctrl 段** —— 在构造中途调它会改变
+        // 本 rig 所测的东西。所以放在三个 Input 都 `prepareToPlay` 之后统一读一次;
+        // 越界回落若发生,这里同样会红。
+        for (auto& p : ins)
+        {
+            REQUIRE(p->bridgeTickSnapshot().groupId == kGroup);
         }
     }
 
@@ -1960,6 +1920,7 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
     FakePlayHead ph;
     out.setPlayHead(&ph);
     out.setGroupId(static_cast<int>(kFromGroup));
+    REQUIRE(out.groupId() == static_cast<int>(kFromGroup)); // [SL-324] 读回断言
     out.prepareToPlay(kSr, kBlock); // ← 宿主先激活
     juce::MessageManager::getInstance()->runDispatchLoopUntil(300);
 
@@ -1975,6 +1936,7 @@ TEST_CASE("HOST P0-5:prepare 后再加载工程 state,viz 段随组重开", "[ho
     {
         ScvbOutputAudioProcessor donor;
         donor.setGroupId(static_cast<int>(kToGroup));
+        REQUIRE(donor.groupId() == static_cast<int>(kToGroup)); // [SL-324] 读回断言
         donor.getStateInformation(blob);
     }
     out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
@@ -3658,6 +3620,7 @@ TEST_CASE("HOST SL-210:同 bus 第二个 Output 进只读观察,不抢主实例"
     // 同一条总线上再挂一个 Output:同组、同进程(pid 相同)。
     auto second = std::make_unique<ScvbOutputAudioProcessor>();
     second->setGroupId(kTestGroup);
+    REQUIRE(second->groupId() == kTestGroup); // [SL-324] 读回断言
     second->setPlayHead(&r.ph);
     second->prepareToPlay(kSr, kBlock);
     Rig::pumpMessages(300);
@@ -4373,6 +4336,7 @@ TEST_CASE("HOST SL-226:反向 —— 特征清空后保存,重开不得捞回旧
         r.out.getStateInformation(withFeat);
 
         r.out.setGroupId(6); // 改组 → frameStore 整店作废
+        REQUIRE(r.out.groupId() == 6); // [SL-324] 读回断言
         Rig::pumpMessages(300);
         REQUIRE(r.out.coverageOf(kTestChannel, 0.0, 30.0).coveredS == 0.0);
         r.out.getStateInformation(cleared);
@@ -4418,6 +4382,7 @@ TEST_CASE("HOST SL-226:回归 —— 换组加载时波形不被 changeGroup 抹
     // 新实例**先 prepareToPlay 在另一个组**,再灌工程 chunk —— 于是加载末尾必然走 changeGroup。
     ScvbOutputAudioProcessor out2;
     out2.setGroupId(4); // 与工程里的组 7 不同
+    REQUIRE(out2.groupId() == 4); // [SL-324] 读回断言
     FakePlayHead ph;
     out2.setPlayHead(&ph);
     out2.prepareToPlay(kSr, kBlock);
