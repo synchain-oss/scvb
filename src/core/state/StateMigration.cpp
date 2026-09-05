@@ -16,6 +16,17 @@ bool migrate_1_to_2(StateChunks& chunks) noexcept
     return true;
 }
 
+// abi 2→3:[SL-278/SL-279] CFGS 再尾扩 applied.{loudness_mode,center_slot_policy}。同样是 no-op ——
+// abi=2 的 CFGS 无这两个尾字段,而 decodeOutputState 按「长度回退」令 **applied := 当前值**
+// (**不是**回落默认:旧工程视为「已经按它存着的那档分析过」,回落默认会让存了非默认档的工程
+// 一打开就误报「需重新分析」)。旧版读到新(abi=3)blob 仍走 RejectedNewer → preservedOriginal
+// 原样回写,绝不静默降级。
+bool migrate_2_to_3(StateChunks& chunks) noexcept
+{
+    (void)chunks;
+    return true;
+}
+
 StateLoadResult loadState(const std::uint8_t* data, std::size_t size, StateChunks& out)
 {
     StateLoadResult res;

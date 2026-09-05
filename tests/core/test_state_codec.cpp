@@ -395,7 +395,7 @@ TEST_CASE("STATE-CRVS-VALIDATE-4 nameBytes 超上限 → 拒解", "[state][crvs]
 // golden:abi1.bin 兼容 + 格式锁
 // ============================================================================
 
-TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1.bin 迁移 + abi2.bin 格式锁", "[state][golden]")
+TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2 迁移 + abi3.bin 格式锁", "[state][golden]")
 {
     // abi1.bin:历史 abi=1,经 no-op migrate_1_to_2 迁移后字段语义正确(CRVS 不丢字段)。
     {
@@ -421,9 +421,24 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1.bin 迁移 + abi2.bin 格式锁", "[
         REQUIRE(data.versions[1].tracks[5].excludedRanges.size() == 2u);
     }
 
-    // abi2.bin:当前 abi=2 格式锁。
+    // abi2.bin:[SL-279] abi 升到 3 之后,它从「格式锁」变成**第二条迁移基线**。
+    // 旧金样保留不动(与 abi1.bin 同待遇)—— 迁移用例要跑在**真的旧文件**上,
+    // 而不是拿当前 codec 现造一个「假装是旧版」的字节串。
     {
         std::ifstream in(goldenPath("abi2.bin"), std::ios::binary);
+        REQUIRE(in.good());
+        std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        REQUIRE_FALSE(fileBytes.empty());
+
+        StateChunks chunks;
+        StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=2 → 3
+        REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
+    }
+
+    // abi3.bin:当前 abi=3 格式锁。
+    {
+        std::ifstream in(goldenPath("abi3.bin"), std::ios::binary);
         REQUIRE(in.good());
         std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         REQUIRE_FALSE(fileBytes.empty());
@@ -433,7 +448,7 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1.bin 迁移 + abi2.bin 格式锁", "[
         REQUIRE(res.status == StateLoadStatus::Ok);
         REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
 
-        // 格式锁:当前 codec 重编码同一夹具必须与提交的 abi2.bin 逐字节一致(改 wire 格式即红)。
+        // 格式锁:当前 codec 重编码同一夹具必须与提交的 abi3.bin 逐字节一致(改 wire 格式即红)。
         std::vector<std::uint8_t> reencoded;
         REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), reencoded));
         REQUIRE(reencoded == fileBytes);

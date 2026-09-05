@@ -11,6 +11,8 @@ namespace
 {
 constexpr std::size_t kHeaderBytes = 24; // 6 个 u32
 constexpr std::size_t kEnumBytes = 8; // 2 个 u32(loudness_mode + center_slot_policy)
+// [SL-279] 第二级尾扩:applied.{loudness_mode,center_slot_policy}(abi 2→3)。
+constexpr std::size_t kAppliedBytes = 8; // 2 个 u32
 
 void putU32(std::vector<std::uint8_t>& out, std::uint32_t v)
 {
@@ -86,7 +88,7 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     const std::size_t langBytes = std::min<std::size_t>(s.uiLanguage.size(), kOutputLanguageMaxBytes);
     try
     {
-        out.reserve(kHeaderBytes + langBytes + kEnumBytes + s.unknownTail.size());
+        out.reserve(kHeaderBytes + langBytes + kEnumBytes + kAppliedBytes + s.unknownTail.size());
     }
     catch (...)
     {
@@ -101,6 +103,8 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     out.insert(out.end(), s.uiLanguage.begin(), s.uiLanguage.begin() + static_cast<std::ptrdiff_t>(langBytes));
     putU32(out, loudnessModeOrdinal(s.loudnessMode));
     putU32(out, centerSlotPolicyOrdinal(s.centerSlotPolicy));
+    putU32(out, loudnessModeOrdinal(s.appliedLoudnessMode)); // [SL-279]
+    putU32(out, centerSlotPolicyOrdinal(s.appliedCenterSlotPolicy)); // [SL-278/SL-279]
     out.insert(out.end(), s.unknownTail.begin(), s.unknownTail.end()); // 未知尾部原样回写
     return true;
 }
@@ -150,6 +154,12 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     {
         return false; // 0 < remaining < 8:枚举字段被截断 → 拒载(不可信字节)
     }
+    // [SL-279] 第二级:applied 那两个 u32 要么齐、要么整段没有 —— 半截同样拒载。
+    const bool hasApplied = (remaining >= kEnumBytes + kAppliedBytes);
+    if (hasEnums && remaining > kEnumBytes && !hasApplied)
+    {
+        return false; // 8 < remaining < 16:applied 字段被截断 → 拒载(不可信字节)
+    }
 
     // 兼容:旧版(abi=1)payload 无末两个 u32 → 两字段回落默认,不计未知回落。
     std::uint32_t loudnessOrdinal = 0;
@@ -189,10 +199,43 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     }
     parsed.loudnessMode = loudnessModeString(loudnessOrdinal);
     parsed.centerSlotPolicy = centerSlotPolicyString(centerOrdinal);
-    if (hasEnums && remaining > kEnumBytes)
+
+    // [SL-279] applied.*:**缺席时取当前值,不取默认值**。旧工程(abi=2)没有这两个字段,
+    // 语义是「它存着的那档就是上次分析用的那档」—— 取默认会让存了非默认档的工程一打开就
+    // 误报「需重新分析」。越界值单独计数(见 OutputDecodeReport 那两个新字段的注释)。
+    std::uint32_t appliedLoudnessOrdinal = loudnessOrdinal;
+    std::uint32_t appliedCenterOrdinal = centerOrdinal;
+    if (hasApplied)
+    {
+        if (!readU32(data + base + kEnumBytes, remaining - kEnumBytes, appliedLoudnessOrdinal) ||
+            !readU32(data + base + kEnumBytes + 4, remaining - kEnumBytes - 4, appliedCenterOrdinal))
+        {
+            return false;
+        }
+        if (appliedLoudnessOrdinal > kOutputLoudnessModeMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->appliedLoudnessModeFallbacks;
+            }
+            appliedLoudnessOrdinal = 0;
+        }
+        if (appliedCenterOrdinal > kOutputCenterSlotPolicyMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->appliedCenterSlotPolicyFallbacks;
+            }
+            appliedCenterOrdinal = 0;
+        }
+    }
+    parsed.appliedLoudnessMode = loudnessModeString(appliedLoudnessOrdinal);
+    parsed.appliedCenterSlotPolicy = centerSlotPolicyString(appliedCenterOrdinal);
+
+    if (hasApplied && remaining > kEnumBytes + kAppliedBytes)
     {
         // 未知尾部(未来小版本追加字段)保留,编码时原样回写,防静默丢字段。
-        parsed.unknownTail.assign(data + base + kEnumBytes, data + size);
+        parsed.unknownTail.assign(data + base + kEnumBytes + kAppliedBytes, data + size);
     }
 
     out = std::move(parsed);

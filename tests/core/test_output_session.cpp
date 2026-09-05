@@ -391,7 +391,7 @@ TEST_CASE("OutputStateCodec:[J69/U24] 未知序号回落默认并计数", "[outp
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 34u); // 24 头 + "en" 2 + 2×u32
+    REQUIRE(b.size() == 42u); // 24 头 + "en" 2 + 4×u32([SL-279] 当前 2 + applied 2)
     auto put = [&](std::size_t off, std::uint32_t v) {
         b[off] = static_cast<std::uint8_t>(v & 0xFF);
         b[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
@@ -414,7 +414,9 @@ TEST_CASE("OutputStateCodec:旧版 payload(无枚举字段)回落默认且不计
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    b.resize(b.size() - 8); // 去掉末尾 2 个枚举 u32 → 旧版 24+langBytes
+    // [SL-279] 砍 16 而不是 8:尾部现在是**两级**(当前 2×u32 + applied 2×u32),
+    // 「abi=1 的旧版」= 两级都没有。只砍 8 得到的是 abi=2,那是下面另一格。
+    b.resize(b.size() - 16); // 去掉末尾 4 个 u32 → 旧版 24+langBytes
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -444,10 +446,87 @@ TEST_CASE("OutputStateCodec:枚举字段截断(0<remaining<8)→ 拒载", "[outp
 {
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
-    REQUIRE(scvb::state::encodeOutputState(s, b)); // 34 字节 = 24 头 + "en" 2 + 2×u32
-    b.pop_back(); // 砍掉 1 字节 → remaining = 7,落在 (0,8) → 拒载
+    REQUIRE(scvb::state::encodeOutputState(s, b)); // 42 字节 = 24 头 + "en" 2 + 4×u32([SL-279] 两级尾部)
+    b.resize(b.size() - 9); // 砍到 remaining = 7,落在 (0,8) → 拒载
     scvb::state::OutputState d;
     REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+}
+
+TEST_CASE("OutputStateCodec:[SL-279] applied.* 往返 + 与当前值互不串", "[output][state][sl279]")
+{
+    scvb::state::OutputState s;
+    s.loudnessMode = "rms";
+    s.centerSlotPolicy = "lead_exclusive";
+    s.appliedLoudnessMode = "peak_dbfs";
+    s.appliedCenterSlotPolicy = "even_spread";
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    // 四个字段各走各的 —— 写反顺序或共用一个槽,这四条里至少一条会红。
+    REQUIRE(d.loudnessMode == "rms");
+    REQUIRE(d.centerSlotPolicy == "lead_exclusive");
+    REQUIRE(d.appliedLoudnessMode == "peak_dbfs");
+    REQUIRE(d.appliedCenterSlotPolicy == "even_spread");
+    REQUIRE(r.appliedLoudnessModeFallbacks == 0);
+    REQUIRE(r.appliedCenterSlotPolicyFallbacks == 0);
+    std::vector<std::uint8_t> b2;
+    REQUIRE(scvb::state::encodeOutputState(d, b2));
+    REQUIRE(b == b2); // 逐字节往返
+}
+
+TEST_CASE("OutputStateCodec:[SL-279] abi=2 旧 payload ⇒ applied := 当前值(不是默认值)",
+          "[output][state][sl279]")
+{
+    // 这一格钉的是本卡的产品取舍:旧工程视为「已经按它存着的那档分析过」。
+    // 回落默认会让一个存了非默认档的工程一打开就报「需重新分析」—— 那正是 SL-279 要修的误报。
+    scvb::state::OutputState s;
+    s.loudnessMode = "rms";
+    s.centerSlotPolicy = "even_spread";
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    b.resize(b.size() - 8); // 只砍 applied 那两个 u32 → abi=2 形态
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.loudnessMode == "rms");
+    REQUIRE(d.centerSlotPolicy == "even_spread");
+    REQUIRE(d.appliedLoudnessMode == "rms"); // ← 取当前值;回落默认时这条红
+    REQUIRE(d.appliedCenterSlotPolicy == "even_spread"); // ← 同上
+    REQUIRE(r.appliedLoudnessModeFallbacks == 0); // 缺席不算回落
+    REQUIRE(r.appliedCenterSlotPolicyFallbacks == 0);
+}
+
+TEST_CASE("OutputStateCodec:[SL-279] applied 字段截断(8<remaining<16)→ 拒载", "[output][state][sl279]")
+{
+    scvb::state::OutputState s;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    b.pop_back(); // remaining = 15,落在 (8,16) → 半截 applied,拒载
+    scvb::state::OutputState d;
+    REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+}
+
+TEST_CASE("OutputStateCodec:[SL-279] applied 越界序号回落默认并**单独**计数", "[output][state][sl279]")
+{
+    scvb::state::OutputState s;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    // 末 8 字节 = applied 两个 u32;把它们改成越界序号 9。
+    const std::size_t appliedAt = b.size() - 8;
+    b[appliedAt] = 9;
+    b[appliedAt + 4] = 9;
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.appliedLoudnessMode == "kw_integrated");
+    REQUIRE(d.appliedCenterSlotPolicy == "priority_queue");
+    REQUIRE(r.appliedLoudnessModeFallbacks == 1);
+    REQUIRE(r.appliedCenterSlotPolicyFallbacks == 1);
+    // **不与「当前」那两个计数器合并** —— 合并之后诊断行会把人指到错的字段上。
+    REQUIRE(r.loudnessModeFallbacks == 0);
+    REQUIRE(r.centerSlotPolicyFallbacks == 0);
 }
 
 TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[output][state]")
@@ -480,7 +559,7 @@ TEST_CASE("OutputStateCodec:非 en 的 uiLanguage 偏移(base=24+langBytes)推�
     s.centerSlotPolicy = "lead_exclusive";
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 24u + 5u + 8u); // 24 头 + 5 语言 + 2×u32
+    REQUIRE(b.size() == 24u + 5u + 16u); // 24 头 + 5 语言 + 4×u32([SL-279] 当前 2 + applied 2)
     scvb::state::OutputState d;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d));
     REQUIRE(d.uiLanguage == "zh-CN");

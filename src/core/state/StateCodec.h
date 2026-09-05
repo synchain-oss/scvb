@@ -40,7 +40,7 @@ namespace scvb::state
 // 0x42564353):小端写盘后前 4 字节字面拼出 "SCVB",与 tests/golden/ipc-layout.txt 的 magic 0x42564353 一致。
 inline constexpr std::uint32_t kStateMagic = 0x42564353u; // 'SCVB'(小端内存序,与 SegmentLayout.h 同源)
 inline constexpr std::uint32_t kCurrentAbi =
-    2u; // abi 1→2:CFGS 尾扩 loudness_mode/center_slot_policy(见 StateMigration migrate_1_to_2)
+    3u; // abi 2→3:[SL-279] CFGS 再尾扩 applied.{loudness_mode,center_slot_policy}(见 migrate_2_to_3)
 
 inline constexpr std::uint32_t kFourccPrms = 0x534D5250u; // 'PRMS'
 inline constexpr std::uint32_t kFourccCfgs = 0x53474643u; // 'CFGS'
