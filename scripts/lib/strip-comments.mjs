@@ -27,7 +27,23 @@
 //     (`"$($x -replace '"','')"`)会让配对错位。今天 gates.ps1 里没有这种写法,
 //     真出现时的方向多半是**少剥**(与换本扫描器之前同向);兜底见下一条。
 //   · PowerShell 的 `#` 只在**行首或前面是空白/`;{}()|&,`** 时才当注释开头 ——
-//     贴着一个词写的 `#`(`foo#bar`)按裸词的一部分留着。方向是**少剥**,与旧实现同向。
+//     贴着一个词写的 `#`(`foo#bar`)按裸词的一部分留着。
+//     [SL-339 复审] 这条原来只写一句「方向是少剥」,而**举的例子恰好是它做对的那一个**。
+//     **测量口径**:下面每个夹具都是拿 pwsh 7 的 `Parser::ParseInput` **裸串直接喂入**
+//     (不外套任何上下文)数出来的 Comment token —— 换了上下文结论会变,见最后一条。
+//       · **一致**(真 PS 不开注释,本模块也不剥):`foo#bar` / `a+#c` / `.\a#c` / `-Force#c`
+//         整个是**一个 Generic token**;
+//       · **少剥**(真 PS 开注释,本模块不剥):`$a#c` / `1#c` / `'x'#c` / `"x"#c` /
+//         `$a = 1#c` / `$a = 'x'#c` / `$a = $b#c` / `$a[0]#c` / `$a =#c` —— 那才是少剥的实处;
+//       · **假红**(方向相反,会出声):裸词里含 `<#`(`a<#c`,真 PS 是一个 Generic token)
+//         会被本模块当块注释开头 ⇒ 扫到文件尾抛错。
+//     真 PowerShell 判的是**这个 `#` 落在哪个 token 里**,而那取决于**解析模式**,不是前一个
+//     字符:`1#c` 在语句开头是 `Number` + `Comment`,而 `Write-Host 1#c` 里 `1#c` 整个是
+//     一个 Generic token(命令/参数模式)—— **同一串两种结论**。所以字符级近似不是「少补了
+//     几个字符」,是**维度不够**,要根治只能上真词法器,那正是 SL-330c 的方向。
+//     [SL-339 复审第 2 轮] 上一版这里写的是 `x =#c` / `y]#c`,**实测下来那两个是 Generic
+//     token、根本不开注释** —— 我当初测的是 `$a =#c` 与裸 `]#c`,写进注释时换了串却没重测。
+//     这张表里「少剥」与「假红」各有一格自测钉着(见 `--self-test`),改宽那行字符集会红。
 //   · 扫到文件尾还停在串/块注释里(说明上面某处配错了)就**抛错**,不静默返回半份文本:
 //     半份文本会让判据面无声缩水,而那正是本仓最贵的那一类失效。
 //
@@ -64,17 +80,20 @@ const REGEX_AFTER_KEYWORD = new Set([
 
 const lineOf = (text, at) => text.slice(0, at).split("\n").length;
 
-// 注释的替身:**只留换行**。行号、行首锚、行数三样都不变。
-const blanksFor = (chunk) => chunk.replace(/[^\n]/g, "");
+// 注释的替身:**只留换行**,不产生任何空白。行号、行首锚、行数三样都不变。
+const newlinesOf = (chunk) => chunk.replace(/[^\n]/g, "");
 
-const unterminated = (where, what, text, at) => {
-    throw new Error(
+// **返回** Error 而不是抛:调用点写成 `throw unterminatedError(…)`,「扫不下去就必须终止」
+// 由控制流本身保证,拆不掉。写成「函数内部抛」的那一版是**本卡自己踩过的形态** ——
+// 把那句 throw 拆掉之后,扫描器不是安静地返回半份文本,而是原地空转到
+// `Invalid array length` 才崩,自测那几格照绿(见 --self-test 里 throwsClear 的注释)。
+const unterminatedError = (where, what, text, at) =>
+    new Error(
         `${where}:第 ${lineOf(text, at)} 行开始的${what}扫到文件尾都没有收尾。` +
             "这多半不是源文件的问题,而是 scripts/lib/strip-comments.mjs 在前面某处配错了" +
             "(把除号读成正则、或引号配错)。别绕过这条错:剥不干净的文本会让调用它的判据" +
             "无声缩水。",
     );
-};
 
 /**
  * 剥掉 JS 源码里的注释(`//` 与 `/* … *\/`),字符串/模板串/正则字面量原样保留。
@@ -147,8 +166,8 @@ export function stripJsComments(text, where = "js") {
         }
         if (c === "/" && text[i + 1] === "*") {
             const end = text.indexOf("*/", i + 2);
-            if (end < 0) unterminated(where, "块注释", text, i);
-            out.push(blanksFor(text.slice(i, end + 2)));
+            if (end < 0) throw unterminatedError(where, "块注释", text, i);
+            out.push(newlinesOf(text.slice(i, end + 2)));
             i = end + 2;
             continue;
         }
@@ -156,7 +175,7 @@ export function stripJsComments(text, where = "js") {
         // ── 字面量:原样保留 ───────────────────────────────────────────────────
         if (c === '"' || c === "'") {
             const end = scanJsString(text, i, c);
-            if (end < 0) unterminated(where, "字符串", text, i);
+            if (end < 0) throw unterminatedError(where, "字符串", text, i);
             out.push(text.slice(i, end + 1));
             i = end + 1;
             afterLiteral(c);
@@ -200,7 +219,7 @@ export function stripJsComments(text, where = "js") {
     }
 
     if (mode === "tpl" || braces.length)
-        unterminated(where, "模板串", text, tplAt);
+        throw unterminatedError(where, "模板串", text, tplAt);
     return out.join("");
 }
 
@@ -270,8 +289,8 @@ export function stripPsComments(text, where = "ps") {
         // 引号串里的 `<#` 不会走到这里:下面的串分支先把整串吃掉了。
         if (c === "<" && text[i + 1] === "#") {
             const end = text.indexOf("#>", i + 2);
-            if (end < 0) unterminated(where, "块注释 <#", text, i);
-            out.push(blanksFor(text.slice(i, end + 2)));
+            if (end < 0) throw unterminatedError(where, "块注释 <#", text, i);
+            out.push(newlinesOf(text.slice(i, end + 2)));
             i = end + 2;
             continue;
         }
@@ -289,14 +308,14 @@ export function stripPsComments(text, where = "ps") {
         ) {
             const term = "\n" + text[i + 1] + "@";
             const end = text.indexOf(term, i + 2);
-            if (end < 0) unterminated(where, "here-string", text, i);
+            if (end < 0) throw unterminatedError(where, "here-string", text, i);
             out.push(text.slice(i, end + term.length));
             i = end + term.length;
             continue;
         }
         if (c === "'" || c === '"') {
             const end = scanPsString(text, i, c);
-            if (end < 0) unterminated(where, "引号串", text, i);
+            if (end < 0) throw unterminatedError(where, "引号串", text, i);
             out.push(text.slice(i, end + 1));
             i = end + 1;
             continue;
@@ -376,9 +395,12 @@ function selfTest() {
     const ps = (s) => stripPsComments(s, "自测");
     const nl = (s) => s.split("\n").length;
     // 钉的**不是「抛了」,是「抛出来的话认得出是本模块下的判断」**。反向验证实测:
-    // 把 `unterminated` 的 throw 拆掉之后,扫描器会在同一个位置原地空转、一路把 `out`
-    // 撑到 `Invalid array length` 才崩 —— **照样是抛**,只写 `throws()` 的话这几格全绿,
-    // 而人拿到的是一句什么都指不出来的引擎错。所以对一句话:失败要**报得出人话**。
+    // 早先那一版把 throw 写在 `unterminated()` **函数内部**,拆掉它之后扫描器会在同一个
+    // 位置原地空转、一路把 `out` 撑到 `Invalid array length` 才崩 —— **照样是抛**,
+    // 只写 `throws()` 的话这几格全绿,而人拿到的是一句什么都指不出来的引擎错。
+    // 所以对一句话:失败要**报得出人话**。
+    // (复审第 1 轮起结构也换了:工厂函数**返回** Error、由调用点 `throw`,「必须终止」
+    // 不再靠约定;这几格照留 —— 它们钉的是**话**,与用哪种结构无关。)
     const throwsClear = (fn) => {
         try {
             fn();
@@ -610,7 +632,34 @@ function selfTest() {
     t(
         () =>
             ps("$a = 'x'\nfoo" + HASH + "bar\n").includes("foo" + HASH + "bar"),
-        "PS 贴着词写的 " + HASH + " 被当成注释开头(方向应为少剥)",
+        "PS 贴着词写的 " +
+            HASH +
+            " 被当成注释开头 —— 真 PowerShell 把 foo" +
+            HASH +
+            "bar 整个读成一个 Generic token" +
+            "(pwsh 7 的 Parser 实测),这一格钉的是「与真词法器一致」,不是「宽松放过」",
+    );
+    // [SL-339 复审第 2 轮] 头注那张 `#` 边界表把**十来个具体形态**写成了事实,而它只由
+    // `psCommentStarts` 里**一行字符集**决定 —— 谁「顺手补全」把 `]` 或 `=` 加进去,
+    // 那张表当场变假而没有一格会红。下面两格分别钉住表里**方向相反**的两档:
+    // 「少剥」那一档(真 PS 开注释、本模块留着)与「假红」那一档(裸词里的 `<#` 抛错)。
+    // 夹具**特意挑前一个字符是 `]` 与 `=` 的那两种**:它们正是「顺手把字符集补全」时最可能
+    // 被加进去的两个,而 `$a` 那种(前一个字符是词字符)挡不住这种改法 —— 上面 `foo#bar`
+    // 那一格已经覆盖它了。三种在真 PowerShell 里都开注释、本模块都留着。
+    t(
+        () =>
+            ps("$a[0]" + HASH + "c\n").includes("]" + HASH + "c") &&
+            ps("$a =" + HASH + "c\n").includes("=" + HASH + "c") &&
+            ps("$a" + HASH + "c\n").includes("$a" + HASH + "c"),
+        "PS 表达式里紧跟 `]` / `=` / 变量名的 " +
+            HASH +
+            " 被剥了 —— 头注边界表里「少剥」那一档已不成立,回去改那张表",
+    );
+    t(
+        () => throwsClear(() => ps("a<" + HASH + "c\n")),
+        "PS 裸词里的 `<" +
+            HASH +
+            "` 不再抛错 —— 头注边界表末尾那档「假红、会出声」已不成立,回去改那张表",
     );
     t(() => {
         const out = ps("$a = " + BQ + "'\n$b = 2  " + HASH + " 尾注释");
