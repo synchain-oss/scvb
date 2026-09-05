@@ -13,6 +13,7 @@ using Catch::Approx;
 
 #include "analysis/EnergyVad.h"
 #include "analysis/FeatureExtractor.h"
+#include "analysis/AnalysisSettings.h"
 #include "analysis/LoudnessMode.h"
 
 namespace
@@ -346,9 +347,7 @@ TEST_CASE("J69-2: L_seg 主口径在任意 mode 下逐位不变(反向断言)", 
     const LoudnessMode modes[3] = {LoudnessMode::KIntegrated, LoudnessMode::Rms, LoudnessMode::PeakDbfs};
     for (const LoudnessMode m : modes)
     {
-        AnalysisSettingsStale settings;
-        settings.loudnessMode = m;
-        const auto r = scvb::analysis::computeSegmentLoudness(settings, kw1.data(), peak, 2);
+        const auto r = scvb::analysis::computeSegmentLoudness(m, kw1.data(), peak, 2);
 
         INFO("mode=" << scvb::analysis::loudnessModeToString(m));
         REQUIRE(r.lseg == l1); // 主口径逐位不变
@@ -373,9 +372,7 @@ TEST_CASE("J69-2: L_seg 主口径在任意 mode 下逐位不变(反向断言)", 
     REQUIRE(l4 == Approx(-3.01).margin(0.05));
     for (const LoudnessMode m : modes)
     {
-        AnalysisSettingsStale settings;
-        settings.loudnessMode = m;
-        REQUIRE(scvb::analysis::computeSegmentLoudness(settings, kwFrames.data(), nullptr, kwFrames.size()).lseg == l4);
+        REQUIRE(scvb::analysis::computeSegmentLoudness(m, kwFrames.data(), nullptr, kwFrames.size()).lseg == l4);
     }
 }
 
@@ -437,6 +434,39 @@ TEST_CASE("J69-4: 改 mode 触发全局 stale 标志", "[loudness][mode]")
     REQUIRE(s.stale());
 
     s.markApplied();
+    REQUIRE(!s.stale());
+}
+
+TEST_CASE("SL-278: 改 center_slot_policy 触发 stale,且两项各判各的", "[loudness][mode][sl278]")
+{
+    using scvb::analysis::CenterSlotPolicy;
+    AnalysisSettingsStale s;
+    REQUIRE(!s.stale());
+    REQUIRE(!s.loudnessStale());
+    REQUIRE(!s.centerSlotStale());
+
+    // 只改中央槽策略 ⇒ 只有它那一项脏。**两项分开判**是 UI 的硬需求:
+    // 两枚「需重新分析」徽标挂在两个控件旁,合成一个布尔会让它们同亮同灭。
+    s.centerSlotPolicy = CenterSlotPolicy::LeadExclusive;
+    REQUIRE(s.centerSlotStale());
+    REQUIRE(!s.loudnessStale()); // ← 分开判的证据;合成一个位时这一条会红
+    REQUIRE(s.stale()); // 整体 = 两项的或
+
+    // 反过来:只改响度档,中央槽那项不受影响。
+    s.markApplied();
+    s.loudnessMode = LoudnessMode::Rms;
+    REQUIRE(s.loudnessStale());
+    REQUIRE(!s.centerSlotStale());
+    REQUIRE(s.stale());
+
+    // markApplied() 要把**两项**一起清掉 —— 只清一项的话,一次全量分析之后另一枚徽标
+    // 会一直亮着,而段表其实已经按新设置算过了。
+    s.centerSlotPolicy = CenterSlotPolicy::EvenOffset;
+    REQUIRE(s.loudnessStale());
+    REQUIRE(s.centerSlotStale());
+    s.markApplied();
+    REQUIRE(!s.loudnessStale());
+    REQUIRE(!s.centerSlotStale());
     REQUIRE(!s.stale());
 }
 
