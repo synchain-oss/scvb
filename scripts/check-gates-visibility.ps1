@@ -41,6 +41,19 @@
       它们从没因为文本级而失效过,搬过来只是换个地方数。**哪几条在哪一侧**以本段为准。
     · 它**不验证运行时真打出了那行**;那由 SL-297 的删除式实跑覆盖。本脚本只保证**接线还在**。
     · 只用 **pwsh 7** 校验:Windows PowerShell 5.1 的分析器在这份源码上会报假错。
+    · **三处盲区**(复审第 1–3 轮点出,今天 `gates.ps1` 里都没有用点,所以都不是现存红 ——
+      写在这里是因为「判据看不见什么」不写下来就没人知道):
+        · **`switch -Regex` / `-Wildcard` 整族看不见**。`Offenders` 与 `MarkerUses` 只看
+          `BinaryExpressionAst`,而 switch 是**语句节点**。这和 `-like`(㉚)、`-split`(㉕)
+          是同一个形状的下一项,只是漏的从「运算符枚举」换成了「语句节点」;
+          `Select-String` 当初也正是因为「它是命令不是运算符」才单列一条。
+          真要收:`SwitchStatementAst.Flags` 里有 `CaseSensitive` 位,判法与 `CommandParameterAst`
+          那段同构,不必回文本级。
+        · **间接写法看不见**:`$pat = $markerCount -f 'WARN'` 再 `$_ -match $pat` ——
+          `Offenders` / `MarkerUses` / `SelectString` 三处都只看**直接子树**,不做变量追踪。
+        · **格式串不是字面量时**(`$lbl = $fmtVar -f $lbl, $cnt`):`$fmt` 落空 ⇒ 走
+          `MissingPlaceholder` 判负,**方向安全但文案会指错** ——它会说「格式串 // 里没有 {1}」,
+          而真因是「格式串是个变量,本判据读不出它」。
 .EXAMPLE   pwsh scripts/check-gates-visibility.ps1
 .EXAMPLE   pwsh scripts/check-gates-visibility.ps1 -SelfTest
 #>
@@ -249,7 +262,16 @@ function Get-VisibilityReport {
         $args1 = @($b.Right.FindAll({
               param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]
             }, $true) | ForEach-Object { $_.Value })
-        if ($args1 -notcontains $mark) { continue }
+        # ⚠ [SL-330c 复审第 3 轮] **`-cnotcontains`,不是 `-notcontains`** —— `-contains`
+        #   一族默认**不区分大小写**,而这里比的正是**源码里写下的标记字面量**。实测:
+        #     @('allow') -notcontains 'ALLOW'                    →  False(于是当成命中)
+        #     '  [ALLOW] x' -cmatch ('^\s*\[{0}\]' -f 'allow')   →  False(运行时数不到)
+        #   于是把标记实例化成小写时,本脚本四条判据全绿而 gates **有放行也恒报 0** ——
+        #   正是 gates.ps1 那段自己写下的失效形态,而「恒 0」是这一族里最难照出来的一种。
+        #   **这一轴正是本文件头注说要靠 AST 关掉的那一轴**,上一版却漏在了判据自己用的
+        #   比较运算符上。同族核过:本文件其余 `-in` / `-notin` 比的是写死的运算符枚举名,
+        #   `$placeholders -notcontains $idx` 比的是 int,两者都与大小写无关。
+        if ($args1 -cnotcontains $mark) { continue }
         $found = $true
         if ("$($b.Operator)" -in $script:CaseSensitiveOps) { $caseOk = $true }
       }
@@ -559,6 +581,13 @@ if ($SelfTest) {
   $r32 = Get-VisibilityReport -Source $f32 -Pairs $pair
   & $check '㉜ 被 {{ }} 转义掉的占位符仍被算作「显形了」' (-not $r32.Pairs[0].Ok)
 
+  # 33. [复审第 3 轮] 承接计数那条把标记**实例化成小写** ⇒ 必须判负。
+  #     `-contains` 一族默认不区分大小写,所以 `-notcontains` 会把 `'allow'` 当成 `'ALLOW'`
+  #     的命中 ⇒ 四条判据全绿,而运行时那条正则数不到任何一行(有放行也恒报 0)。
+  $f33 = '$warnLines = @($out | Where-Object { $_ -cmatch ($markerCount -f ' + $q + 'warn' + $q + ') })'
+  $r33 = Get-VisibilityReport -Source $f33 -MarkerSinks $sinkW
+  & $check '㉝ 标记被实例化成小写,仍被算作「用点走了共享口径」' (-not $r33.MarkerUses[0].Found)
+
   if (@($fails).Count -gt 0) {
     Write-Host 'check-gates-visibility.ps1 --self-test 失败:' -ForegroundColor Red
     foreach ($f in $fails) { Write-Host ('  ' + $f) -ForegroundColor Red }
@@ -636,8 +665,12 @@ else {
 
 foreach ($u in $rep.MarkerUses) {
   if (-not $u.Found) {
-    $bad += ('没有一处按 `$markerCount -f {1}{0}{1}` 实例化的匹配 —— 口径又被抄了一份字面量,' +
-      '两份就会只改一份') -f $u.Mark, $script:Quote
+    # 文案要跟着判据的口径走:第 1 轮把判据从「源码里某处」收成「承接计数的那条赋值里」,
+    # 文案却还写着「没有一处」—— 那时读的人会去找「口径被抄了一份字面量」,而真因可能是
+    # **那个承接变量改了名 / 那条赋值搬走了**(复审第 3 轮)。`Sink` 是现成的,拼进去。
+    $bad += ('`${2}` 的赋值里没有一处按 `$markerCount -f {1}{0}{1}` 实例化的匹配 —— ' +
+      '要么口径被抄了一份字面量(两份就会只改一份),要么承接计数的那个变量改了名、' +
+      '或那条赋值整个搬走了') -f $u.Mark, $script:Quote, $u.Sink
   }
   elseif (-not $u.CaseSensitive) {
     $bad += ('`{0}` 的匹配不是大小写敏感的那一支 —— 小写标记会被 gates 数进去而守卫扫不到,' +
