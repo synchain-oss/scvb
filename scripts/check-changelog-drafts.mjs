@@ -62,6 +62,16 @@
 //     而 `#TBD` 则**不要求括号** —— 两条口径不对称,是有意的,
 //     别从 `#TBD` 那条推断裸号也在判定面内。
 //   · 正文侧的假红走注释块里的「正文放行」(与门禁放行同一套解析、同样理由必填)。
+//   · **[SL-319] 已知的洞:大于「当前最大落地号」的号只 WARN,不判红。** 于是一个**打错的
+//     未来号**(把 `(#166)` 敲成 `(#1660)`)会被放过,而 `#106 < #111` 那种关掉没合的号
+//     照旧判红 —— 牙齿只在 ≤ max 那一侧。
+//     **保留 WARN 而不改判红,理由是这一档没有可靠的判据**:合并前按规矩③ 写自己的号、
+//     以及规矩③ 明确要求写出来的同批交叉引用(「随后由 #123 补上」),在 CI 与本地都
+//     **还没落地**,判红会让「按规矩写」变成必红。想收紧只有两条路,都更坏:
+//       · 卡一个「离 max 多远算离谱」的窗口 ⇒ 又一个拍脑袋的常数,而本仓的判例是别写死数;
+//       · 只在没有 selfPr 时才 WARN ⇒ 「本地绿、推上去才红」的分叉,format.yml 那步明禁。
+//     所以这一档**明写成边界而不是假装守住了**:真要挡打错的号,靠的是 PR 里人眼看那行
+//     `[WARN]`(CI 上还带 `file=,line=` 锚到 CHANGELOG 那一行),不是靠这道门禁。
 //   · 块尾「尚未开 PR 的在途卡」那几行没有 `pending #…` 标记,**不在判定面内**。
 //
 // 用法:
@@ -180,6 +190,93 @@ const landedPrs = (titles) => {
     return s;
 };
 
+// ---- 正文判定层(纯函数,[SL-319])------------------------------------------
+// 抽成纯函数的理由是**可测**,不是好看:在此之前这一层直接长在 run() 里,输入要靠
+// 真 CHANGELOG + 真 git 历史凑,于是「今天量不到的退化」就没有夹具 —— #203 复审注入
+// 四种退化(取号退回严格括号组 / `#TBD` 退回要求带括号 / 放行清单不生效 / 落地位集合空),
+// **自测与实跑全绿**。收成入参之后,前三种退化在自测里各有一格。
+// ⚠ **第四种(落地位集合空)不是被这次抽取夹住的;恰恰相反,「收成入参」正是造出那个
+// 盲区的原因** —— 本函数每一格都自带 `landed`,压根问不到「landed 是不是真抽出来了」。
+// 夹它的是自测里钉 `landedPrs` 的第 ⑧ 格,以及 run() 里那道「集合为空即 fail-closed」。
+// 别顺着「输入全是普通值」推出「这一族退化都在本函数的格子里」—— 上一轮复审踩的正是这个。
+//
+// 输入:body(把注释块抹白之后的正文)、landed(落地位号集合)、selfPr(本 PR 号,可为空)、
+//       bodyAllow(正文放行清单 Map<号, 理由>)
+// 输出:{ fails: string[], warns: [{ line, text }] } —— **只算不打**:`console.log` /
+//       `::warning::` / 退出码都留在 run() 里。否则自测要去截 stdout 才能断言,
+//       那又是一层「量不到」。
+function judgeBody(body, landed, selfPr, bodyAllow) {
+    const fails = [];
+    const warns = [];
+    const maxLanded = Math.max(0, ...[...landed].map(Number));
+    for (const m of body.matchAll(BODY_TBD_RE))
+        fails.push(
+            "CHANGELOG.md:" +
+                lineOf(body, m.index) +
+                " 还挂着 `#TBD` —— 发版清单第 1 步「每条带 PR 号」会当场卡住;" +
+                "回溯到把这条**加进 CHANGELOG** 的那次提交、拿它的落地位补号" +
+                "(查不到就删条目或标「未落地」)",
+        );
+    for (const r of bodyPrRefs(body)) {
+        if (landed.has(r.num) || r.num === selfPr || bodyAllow.has(r.num))
+            continue;
+        const line = lineOf(body, r.at);
+        const where = "CHANGELOG.md:" + line;
+        // 大于最大落地号 ⇒ 只 WARN。两边同判(不看 selfPr 在不在):同批交叉引用
+        // (规矩③ 要求写出来的「随后由 #123 补上」)在 CI 与本地都还没落地,只在没有
+        // selfPr 时才 WARN 就成了「本地绿、推上去才红」——正是 format.yml 那步明禁的分叉。
+        if (Number(r.num) > maxLanded) {
+            warns.push({
+                line,
+                text:
+                    where +
+                    " 的 `#" +
+                    r.num +
+                    "` 还没落地,但它大于当前最大落地号 #" +
+                    maxLanded +
+                    " —— 按「多半是尚未合并的号(本 PR 自己的 / 同批交叉引用的)」放过;" +
+                    "这一档 CI 与本地同判,都不判红(这个洞与它为什么留着,见头注 §边界)",
+            });
+            continue;
+        }
+        fails.push(
+            where +
+                " 引用了 `#" +
+                r.num +
+                "`,但主线没有任何提交以它落地(既不是尾部 `(#" +
+                r.num +
+                ")`,也不是 `Merge pull request #" +
+                r.num +
+                " from`)—— 多半是引了一个**关掉没合**的 PR;" +
+                "去找真正落地的那个号(例:#106 从未合并,那件事落在 `6af6653` / #111,标题写着「接替 #106」);" +
+                "确认这个号是对的、机检判错了,就去 CHANGELOG 注释块的「" +
+                BODY_ALLOW_HEAD +
+                "」段写一行 `" +
+                allowSampleFor(r.num) +
+                "` 放行,别改条目躲开",
+        );
+    }
+    // [SL-319] 过期的正文放行 ⇒ 判负,与 `leaks()` 里 `dead` 那段**同一条纪律**:
+    // 别留着一个没人用的豁免口。两种过期形态都收:那个号在正文里已经没有引用了(条目被删),
+    // 或者它后来真落地了(放行从此多余,却还在替一个不需要豁免的号挡着)。
+    // 门禁那半一直有这一环,正文这半此前没有 —— 两边不对称,而失效方向正是本文件反复在防的
+    // 「静默豁免」(复审【建议】;趁清单还空的时候补最便宜)。
+    const refNums = new Set(bodyPrRefs(body).map((r) => r.num));
+    const deadBody = [...bodyAllow.keys()].filter(
+        (n) => !refNums.has(n) || landed.has(n),
+    );
+    if (deadBody.length)
+        fails.push(
+            "「" +
+                BODY_ALLOW_HEAD +
+                "」里这几个号已经不需要放行了:#" +
+                deadBody.join(" / #") +
+                " —— 要么正文里已经没有引用它(条目改了或删了),要么它后来真落地了;" +
+                "把这几行删掉,别留着没人用的豁免口",
+        );
+    return { fails, warns };
+}
+
 // ---- 放行口(#197 复审【重要】)-------------------------------------------
 // 「号出现在合并标题里」≠「它上线了」:`32e52a3` 的标题里那句 `SL-189 权威链定谳(接线完好)`
 // 说的是「查完了不用改」,SL-189 至今没有任何交付,可它照样会被收进已上线集合。等它真要落地
@@ -216,6 +313,12 @@ const ALLOW_LINE_RE = /^-\s*#(SL\d+|J\d+|\d+)\s*——\s*(.*)$/;
 const ALLOW_LOOKS_LIKE_RE = /^-\s*#?\s*(?:SL-?\d+|J-?\d+|\d+)/;
 const ALLOW_SAMPLE =
     "- #SL189 —— 只在 32e52a3 的标题里被顺带提到,这张卡本身没有交付";
+// [SL-319] 放行行的形态**只此一份**:判红话术里那句「照着写一行」原先是手拼的第二份真源
+// (逐字复刻了 `ALLOW_LINE_RE` 要求的那个「 —— 」)。破折号形态哪天改了,门禁那半跟着
+// `ALLOW_SAMPLE` 走、正文这半会继续教人写旧写法 —— 而正文这条话术恰恰是给「第一次找放行口」
+// 的人看的,教错的代价更大(复审【建议】)。自测里有一格断言它自己过得了 `ALLOW_LINE_RE`。
+const ALLOW_REASON_PLACEHOLDER = "<理由>";
+const allowSampleFor = (num) => "- #" + num + " —— " + ALLOW_REASON_PLACEHOLDER;
 
 // [SL-316] 正文侧也要一个放行口:块那半有「门禁放行」,正文那半此前一个都没有,于是两种
 // **改不动的红**没有出路 —— ① 那个号永远不会落地(rebase 合并不产生 `(#N)`,或维护者手改掉了
@@ -241,7 +344,11 @@ function allowList(block, headText = ALLOW_HEAD) {
                 malformed.push(lines[j].trim());
             continue;
         }
-        if (!m[2].trim()) noReason.push(m[1]);
+        // [SL-319] 占位符 `<理由>` **不算理由**:它 `.trim()` 非空,于是照抄样例行
+        // 粘上去就是一条合法放行 —— 写的人不必编理由,而「不写理由就是静默豁免」
+        // 正是这道口子要堵的。样例行的受众就是照抄的人,样例本身不能成为绕过。
+        if (!m[2].trim() || m[2].trim() === ALLOW_REASON_PLACEHOLDER)
+            noReason.push(m[1]);
         else out.set(m[1], m[2].trim());
     }
     if (malformed.length)
@@ -251,7 +358,14 @@ function allowList(block, headText = ALLOW_HEAD) {
                 "」里这几行像放行行、写法却不对(一行要写成 `- #<号> —— <理由>`,号与 `pending #…` 里同形):\n    " +
                 malformed.join("\n    ") +
                 "\n  正确写法:" +
-                ALLOW_SAMPLE,
+                // [SL-319] 样例要跟着**段**走:正文放行下给 SL 形态的话,照抄的人
+                // 会拿到 `#SL189` —— `ALLOW_LINE_RE` 收得下,但 `bodyPrRefs` 只产纯
+                // 数字,于是 `deadBody` 当场判负,话术还说成「正文里没有引用它 / 它
+                // 已经落地」,两条都不是真因(真因是 SL 形态在正文侧根本不合法)。
+                // 连撞两次红、第二次还指错方向(复审【建议】)。
+                (headText === BODY_ALLOW_HEAD
+                    ? allowSampleFor("111")
+                    : ALLOW_SAMPLE),
         );
     if (noReason.length)
         throw new Error(
@@ -259,7 +373,9 @@ function allowList(block, headText = ALLOW_HEAD) {
                 headText +
                 "」里这几个号没写理由:#" +
                 noReason.join(" / #") +
-                " —— 放行必须写理由,不写就是静默豁免",
+                " —— 放行必须写理由,不写就是静默豁免;样例里的占位符 `" +
+                ALLOW_REASON_PLACEHOLDER +
+                "` **不算理由**,要换成真的",
         );
     return out;
 }
@@ -481,6 +597,22 @@ if (selfTest) {
                     threw(() => leaks(fpBlock("- #SL" + fp + " —— "), titles)),
                     "理由留空的放行被放过了 —— 静默豁免口",
                 );
+                // [SL-319] 占位理由**照抄即过**也要判负:样例行的受众就是照抄的人,
+                // 样例本身不能成为绕过「理由必填」的路(复审【建议】)。
+                check(
+                    threw(() =>
+                        leaks(
+                            fpBlock(
+                                "- #SL" +
+                                    fp +
+                                    " —— " +
+                                    ALLOW_REASON_PLACEHOLDER,
+                            ),
+                            titles,
+                        ),
+                    ),
+                    "占位理由原样粘上去被当成了合法理由 —— 写的人不必编理由,静默豁免口又开了",
+                );
                 // 三种写错都必须判负(#197 复审第 3 轮:前两版只堵了破折号那一种)。
                 // `- SL-189 —— 理由` 是最可能写出来的一种:放行段上面那几行说明文字里,号一律
                 // 写成 `SL-189` 这个**标题形态**,照着最近的字样抄就会落到这里。
@@ -653,6 +785,194 @@ if (selfTest) {
         bad.push("正文侧那一组跑不起来:" + e.message);
     }
 
+    // ---- [SL-319] 判定层本身的断言(此前**零覆盖**)---------------------------
+    // 上面那组测的是**取号器**(BODY_PAREN_RE / BODY_TBD_RE / lineOf),测不到「取到号之后
+    // 怎么判」。#203 复审往判定层注入四种退化,自测与实跑**全绿** —— 因为这一层当时长在
+    // run() 里,输入要靠真 CHANGELOG + 真 git 历史凑,自测够不着。抽成纯函数就是为了这几格:
+    // 每一格对应一种退化,注入那种退化时**必须是这一格红**。
+    // ⚠ 「把 landed 收成入参」本身带来一个新盲区:①–⑦ 都自带 `landed`,于是「集合被抽空」
+    // 这种退化它们一格都照不出来。那一格在 ⑧,钉的是 `landedPrs` 本身。上一版这段写
+    // 「四种退化各有一格」是**假的** —— 复审实测:注入 `landedPrs = () => new Set()` 之后
+    // 自测与实跑**双绿**。抽纯函数把输入变干净的同时,也把「输入是怎么来的」挪出了判定面。
+    try {
+        const L = (...ns) => new Set(ns.map(String));
+        const NOALLOW = new Map();
+        // ① 落地位集合要真被查:在集合里 ⇒ 不红。退化「跳过 landed.has」⇒ 本格红。
+        check(
+            judgeBody("- 改了点东西 (#500)", L("1000", "500"), "", NOALLOW)
+                .fails.length === 0,
+            "落地位集合里的号被判红了 —— `landed.has` 那一支没生效",
+        );
+        // ② 不在集合、且小于最大落地号 ⇒ 红(这是 `#106` 那一族的形态)。
+        const miss = judgeBody("- 改了点东西 (#500)", L("1000"), "", NOALLOW);
+        check(
+            miss.fails.length === 1 && miss.warns.length === 0,
+            "关掉没合的号没被判红 —— 实得 fails=" +
+                miss.fails.length +
+                " warns=" +
+                miss.warns.length,
+        );
+        // ③ 报错话术要给出**放行口**(撞永久假红的人得知道往哪走)。
+        check(
+            !!miss.fails[0] && miss.fails[0].includes(BODY_ALLOW_HEAD),
+            "正文判红的话术里没提放行口 —— 撞上永久假红的人没有指引",
+        );
+        // ④ 正文放行清单要真生效。退化「忽略 bodyAllow」⇒ 本格红。
+        check(
+            judgeBody(
+                "- 改了点东西 (#500)",
+                L("1000"),
+                "",
+                new Map([["500", "理由"]]),
+            ).fails.length === 0,
+            "正文放行清单没生效 —— 写了放行还是判红,那个口子等于不存在",
+        );
+        // ⑤ 本 PR 自己的号要放过(搬运规矩③ 要求这么写)。退化「忽略 selfPr」⇒ 本格红。
+        check(
+            judgeBody("- 改了点东西 (#500)", L("1000"), "500", NOALLOW).fails
+                .length === 0,
+            "selfPr 没生效 —— 按规矩③ 写成本 PR 号的条目会被判红,那条规矩就没法执行",
+        );
+        // ⑥ 大于最大落地号 ⇒ **WARN 不是 FAIL**,且要带得出行号(annotation 靠它锚)。
+        const fut = judgeBody(
+            "第一行\n- 同批交叉引用 (#9001)",
+            L("1000"),
+            "",
+            NOALLOW,
+        );
+        check(
+            fut.fails.length === 0 && fut.warns.length === 1,
+            "大于最大落地号那一档判错了 —— 实得 fails=" +
+                fut.fails.length +
+                " warns=" +
+                fut.warns.length,
+        );
+        check(
+            !!fut.warns[0] && fut.warns[0].line === 2,
+            "warn 没带对行号 —— `::warning file=,line=` 会锚到错的行;实得 " +
+                (fut.warns[0] && fut.warns[0].line),
+        );
+        // ⑦ 裸 `#TBD`(不带括号)也要判红,且行号要对。
+        const tbd = judgeBody(
+            "第一行\n- 改动摘要 — #TBD",
+            L("1000"),
+            "",
+            NOALLOW,
+        );
+        check(
+            tbd.fails.length === 1 && tbd.fails[0].startsWith("CHANGELOG.md:2"),
+            "裸 `#TBD` 没被判红或行号不对 —— 实得 " +
+                tbd.fails.length +
+                " 条,首条:" +
+                (tbd.fails[0] || "").slice(0, 40),
+        );
+        // ⑧ **落地位集合本身要真抽得出来**。上面七格都自带 `landed`,所以「集合空」这种退化
+        //    它们一格都照不出来:注入 `const landedPrs = () => new Set()` 之后 `maxLanded = 0`
+        //    ⇒ 正文里**每一个**号都 `> 0` 走 WARN ⇒ `fails` 恒空 ⇒ **自测与实跑双绿**
+        //    (实测 rc 都是 0、134 行 WARN)。整片正文判据能被一行注入静默摘掉,与 #203 那次
+        //    逐字同形 —— 而上一版注释还写着「四种退化各有一格」(复审【重要】,那句已改)。
+        //    顺带夹住「裸 `#N` 当落地位」:标题里的 `#124` 是**引用**,不该进集合。
+        const lp = landedPrs([
+            { title: "feat: x (#500)" },
+            { title: "Merge pull request #501 from a/b" },
+            { title: "补 #124 评审的 5 处 (#131)" },
+        ]);
+        check(
+            lp.has("500") && lp.has("501") && lp.has("131"),
+            "landedPrs 抽不出落地位 —— 集合变小 ⇒ maxLanded 变小 ⇒ 正文侧整片走 WARN、判据静默失效;实得 " +
+                [...lp].join(","),
+        );
+        check(
+            !lp.has("124"),
+            "landedPrs 把标题里的**引用** `#124` 当成了落地位 —— 一句「见 #83」就能把从未合并的 PR 判成已上线",
+        );
+        // ⑨ 判红话术里给的样例行,自己要过得了 `ALLOW_LINE_RE` —— 否则照抄它的人会再撞一次
+        //    「写法不对」,而这条话术恰恰是给第一次找放行口的人看的。
+        check(
+            ALLOW_LINE_RE.test(allowSampleFor("500")),
+            "判红话术里的样例行过不了 ALLOW_LINE_RE:" + allowSampleFor("500"),
+        );
+        // ⑨b 写坏一行**正文放行**时,报错里给的样例必须是**纯数字**形态。给 SL 形态的话,
+        //     照抄的人拿到 `#SL189`:`ALLOW_LINE_RE` 收得下,但 `bodyPrRefs` 只产纯数字,
+        //     于是 `deadBody` 当场判负、话术还说成「正文里没有引用它 / 它已经落地」——
+        //     两条都不是真因,连撞两次红且第二次指错方向(复审【建议】)。
+        const badBodyBlock =
+            "<!-- ===\n" +
+            BODY_ALLOW_HEAD +
+            "\n- SL-189 —— 照抄了标题形态\n\n=== -->";
+        let bodySampleErr = "";
+        try {
+            allowList(badBodyBlock, BODY_ALLOW_HEAD);
+        } catch (e) {
+            bodySampleErr = e.message;
+        }
+        // ⑨c 三元的**另一边**也要钉:把它改成恒 `allowSampleFor("111")`,⑨b 照绿,而门禁那半
+        //     从此教人写纯数字号 —— 那一段的号是 SL / J 形态,照抄写出 `#111`,`ALLOW_LINE_RE`
+        //     收得下、块里却没有对应的 `pending #111` ⇒ 撞 `leaks()` 的 `dead`。与 ⑨b 完全对称,
+        //     方向反过来(复审第 3 轮【建议】)。
+        let gateSampleErr = "";
+        try {
+            allowList(
+                "<!-- ===\n" +
+                    ALLOW_HEAD +
+                    "\n- SL-189 —— 照抄了标题形态\n\n=== -->",
+            );
+        } catch (e) {
+            gateSampleErr = e.message;
+        }
+        // ⑨d 「理由留空」那条红的话术要**点名占位符**:照抄样例的人写的就是 `<理由>`,
+        //     被判负时话术却说「没写理由」—— 他明明照着「正确写法」原样写了。这与 ⑨b/⑨c
+        //     同一族(第二次红指错方向),入口就是上一条红给的那行样例(复审第 3 轮【建议】)。
+        let phErr = "";
+        try {
+            allowList(
+                "<!-- ===\n" +
+                    ALLOW_HEAD +
+                    "\n" +
+                    "- #SL189 —— " +
+                    ALLOW_REASON_PLACEHOLDER +
+                    "\n\n=== -->",
+            );
+        } catch (e) {
+            phErr = e.message;
+        }
+        check(
+            phErr.includes(ALLOW_REASON_PLACEHOLDER),
+            "「理由留空」的话术没点名占位符 —— 照抄样例的人会被告知「没写理由」,而他确实照着写了",
+        );
+        check(
+            gateSampleErr.includes(ALLOW_SAMPLE),
+            "门禁放行写坏时给的样例不是 SL 形态 —— 样例按段选的三元被改成恒一边也没人红;实得:" +
+                gateSampleErr.slice(-60),
+        );
+        check(
+            bodySampleErr.includes(allowSampleFor("111")),
+            "正文放行写坏时给的样例不是纯数字形态 —— 照抄它会再撞一次红,且话术指错方向;实得:" +
+                bodySampleErr.slice(-60),
+        );
+        // ⑩ 过期的正文放行要判负(与门禁那半的 `dead` 同一条纪律)。两种过期形态各一格。
+        check(
+            judgeBody(
+                "- 没有任何引用",
+                L("1000"),
+                "",
+                new Map([["500", "理由"]]),
+            ).fails.length === 1,
+            "正文里已经没有引用的放行没被判负 —— 留着一个没人用的豁免口",
+        );
+        check(
+            judgeBody(
+                "- 改了点东西 (#500)",
+                L("1000", "500"),
+                "",
+                new Map([["500", "理由"]]),
+            ).fails.length === 1,
+            "号都已经落地了、放行还留着,没被判负 —— 它此后替一个不需要豁免的号挡着",
+        );
+    } catch (e) {
+        bad.push("判定层那一组跑不起来:" + e.message);
+    }
+
     // 块首尾被改坏时必须 fail-closed,而不是「找不到块 ⇒ 没有泄漏 ⇒ 绿」。
     check(
         threw(() => draftBlock("# Changelog\n\n没有注释块\n")),
@@ -704,6 +1024,14 @@ try {
     //   · 说的是**块里有几个 `pending #…` 标记**,不是「判定面内几个」—— 被放行的号走
     //     `continue`,恰恰不在判定面内,写成「判定面内」会高报(#197 复审第 7 轮【建议】)。
     //     放行了哪几个由紧跟其后的 [ALLOW] 行逐条说,不在这里做减法。
+    // [SL-319 复审第 3 轮] 落地位集合的**大小与最大号**也报出来。下面那道 fail-closed 只挡
+    // `size === 0`,而「集合被**缩小**」(`landedPrs(titles.slice(0, 3))`)失效形态一模一样:
+    // maxLanded 变小 ⇒ 正文里几乎每个号都 `> max` 走 WARN ⇒ fails 恒空 ⇒ rc=0,而 ⑧ 喂自己的
+    // 假标题、①–⑦ 自带 landed,都照绿。那一档**不是全静默**(会打上百行 WARN,小的那个号就在
+    // 话术里),但要有人在一片 WARN 里觉得那个号偏小 —— **正常态没有基线就没有对照**。
+    // 所以基线放在这里:绿的时候也报,下次不对劲一眼看得出来。
+    const landed = landedPrs(titles);
+    const maxLanded = Math.max(0, ...[...landed].map(Number));
     console.log(
         "  [BASE] " +
             base +
@@ -711,7 +1039,11 @@ try {
             baseStamp(base) +
             " —— " +
             titles.length +
-            " 条提交标题;块里 " +
+            " 条提交标题(落地位 " +
+            landed.size +
+            " 个,最大 #" +
+            maxLanded +
+            ");块里 " +
             tokens.size +
             " 个待合并的号",
     );
@@ -731,59 +1063,44 @@ try {
     // 处置:CI 透传 `SCVB_CHANGELOG_SELF_PR`(见 format.yml)并入放行;本地没有这个变量时,
     // 对**大于当前最大落地号**的号打 [WARN] 而不判红 —— PR 号单调递增,本 PR 号必然大于任何
     // 已落地号;而 `#106 < #111` 这类**关掉没合**的号仍落在 ≤ max 一侧、照样判红,不丢牙齿。
-    const landed = landedPrs(titles);
-    const selfPr = (process.env.SCVB_CHANGELOG_SELF_PR || "").trim();
-    const maxLanded = Math.max(0, ...[...landed].map(Number));
-    const bodyBad = [];
-    for (const m of body.matchAll(BODY_TBD_RE))
-        bodyBad.push(
-            "CHANGELOG.md:" +
-                lineOf(body, m.index) +
-                " 还挂着 `#TBD` —— 发版清单第 1 步「每条带 PR 号」会当场卡住;" +
-                "回溯到把这条**加进 CHANGELOG** 的那次提交、拿它的落地位补号" +
-                "(查不到就删条目或标「未落地」)",
+    // [SL-319 复审第 2 轮] 第 ⑧ 格钉住的是 `landedPrs` **这个函数**,钉不住**这次调用**:
+    // 把实参换成 `[]`(或 titles 被谁过滤/切片成空)⇒ ⑧ 自己喂假标题照绿、①–⑦ 自带 landed
+    // 照绿、实跑 `maxLanded = 0` 让正文每个号都走 WARN ⇒ `fails` 恒空 ⇒ rc=0。
+    // 与「函数体被掏空」那次逐字同形,只是注入点挪到了调用处;`[BASE]` 行报的是标题条数与
+    // 块里的号数,**不报落地位集合大小**,所以输出上也照不出来。
+    // 这一档有一条无争议的判据(不像「> 最大落地号」那档要拍常数):**有历史的仓库里,
+    // 落地位集合不可能为空**。与 `shippedTitles` 的浅克隆那道同一条纪律,fail-closed。
+    if (!landed.size)
+        throw new Error(
+            titles.length +
+                " 条提交标题里一个落地位都抽不出来(尾部 `(#N)` 与老式 merge commit 全零命中)——" +
+                "正常仓库不可能如此。落地位集合为空 ⇒ 最大落地号 = 0 ⇒ 正文里每个号都会被当成" +
+                "「尚未合并」只打 WARN,整片正文判据静默失效,所以这里 fail-closed 而不是放行",
         );
+    const selfPr = (process.env.SCVB_CHANGELOG_SELF_PR || "").trim();
     const bodyAllow = allowList(block, BODY_ALLOW_HEAD);
     for (const [num, why] of bodyAllow)
         console.log("  [ALLOW] 正文 #" + num + " 放行 —— " + why);
-    for (const r of bodyPrRefs(body)) {
-        if (landed.has(r.num) || r.num === selfPr || bodyAllow.has(r.num))
-            continue;
-        const where = "CHANGELOG.md:" + lineOf(body, r.at);
-        // 这条**不看 `selfPr` 在不在**:同批交叉引用(规矩③ 要求写出来的「随后由 #123 补上」)
-        // 在 CI 与本地都还没落地,若只在没有 selfPr 时才 WARN,就成了「本地绿、推上去才红」——
-        // 正是 format.yml 那步注释明禁的分叉(#203 复审【重要】)。两边同判:大于最大落地号
-        // 一律 WARN;`#106 < #111` 这类关掉没合的号仍落在 ≤ max 一侧、照样红。
-        if (Number(r.num) > maxLanded) {
-            // 话术只说**事实**:能走到这里就说明它既不在落地位集合里、也不等于 selfPr,
-            // 所以 CI 和本地一样只是放过 —— 上一版结尾那句「CI 上由 SCVB_CHANGELOG_SELF_PR
-            // 精确判定」在 CI 上打出来就是假的(#203 复审第 3 轮【重要】)。
-            const line =
-                where +
-                " 的 `#" +
-                r.num +
-                "` 还没落地,但它大于当前最大落地号 #" +
-                maxLanded +
-                " —— 按「多半是尚未合并的号(本 PR 自己的 / 同批交叉引用的)」放过;" +
-                "这一档 CI 与本地同判,都不判红";
-            console.log("  [WARN] " + line);
-            // 在 CI 上(有 selfPr 才说明跑在 pull_request 事件里)再用 `::warning::` 打一遍:
-            // 普通 stdout 不进 annotation、不进 run summary,翻日志才看得见 —— 而本地那边
-            // gates 3i 会把 `[WARN]` 抓进汇总标签,不补这一行的话 CI 反而比本地更弱。
-            if (selfPr) console.log("::warning::" + line);
-            continue;
-        }
-        bodyBad.push(
-            where +
-                " 引用了 `#" +
-                r.num +
-                "`,但主线没有任何提交以它落地(既不是尾部 `(#" +
-                r.num +
-                ")`,也不是 `Merge pull request #" +
-                r.num +
-                " from`)—— 多半是引了一个**关掉没合**的 PR;" +
-                "去找真正落地的那个号(例:#106 从未合并,那件事落在 `6af6653` / #111,标题写着「接替 #106」)",
-        );
+    // 判定层是纯函数(见上面 judgeBody):这里只负责**打**与**退**。
+    const { fails: bodyBad, warns } = judgeBody(
+        body,
+        landed,
+        selfPr,
+        bodyAllow,
+    );
+    for (const w of warns) {
+        console.log("  [WARN] " + w.text);
+        // [SL-319] 「跑在 CI 上」的判据是 `GITHUB_ACTIONS`,不是「selfPr 恰好有值」。
+        // 旧写法拿一个**业务变量有没有值**当运行环境的代理:`docs-truth` 同挂
+        // `push → dev/feature/**`,push 事件下 `github.event.pull_request.number` 是空的,
+        // 于是 push 那半根本不打 annotation —— 而那正是「本地绿、推上去才发现」最容易漏的一侧。
+        // GitHub Actions 上 `GITHUB_ACTIONS` 恒为 "true",与事件类型无关。
+        // `file=,line=`:裸 `::warning::` 只会挂在 workflow 顶上,点进去落不到具体文件;
+        // 带锚点才会渲染成 CHANGELOG.md 那一行旁边的批注(#203 复审第 5 轮【建议】)。
+        if (process.env.GITHUB_ACTIONS === "true")
+            console.log(
+                "::warning file=CHANGELOG.md,line=" + w.line + "::" + w.text,
+            );
     }
     // 只打不退:与 `leaks()` 的结果**一起**在末尾判退出码 —— 在这里直接 exit 会把漏搬清单
     // 整段吞掉,让人「改号 → 重跑 → 又冒出一批漏搬」跑两轮(#203 复审【建议】)。
