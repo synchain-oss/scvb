@@ -77,6 +77,11 @@ $script:MatchFamilyOps = @(
 )
 
 function Get-VisibilityReport {
+  # [SL-330c 复审第 2 轮] `[CmdletBinding()]` 是**结构性**的:没有它,这是个简单函数,
+  # 未知的具名参数会连同实参一起落进 `$args` 被**静默丢掉**(实测 `T -Marks @('WARN')` ⇒
+  # `MarkerSinks 个数=0`,不报错)。上一轮我把 `-Marks` 改名成 `-MarkerSinks`,五处调用点
+  # 没跟着改,于是那五格实际是在**空参数**下跑的 —— 加上它,下次改名当场抛错。
+  [CmdletBinding()]
   <#
     生产路径与 -SelfTest **共用这一个函数**。自测若走另一份实现,绿的就只是那一份。
     入参给 -Source(字符串)或 -ScriptPath(文件),两条路都走同一个分析器。
@@ -168,7 +173,11 @@ function Get-VisibilityReport {
         $expr.Left -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
         $fmt = $expr.Left.Value
       }
-      $placeholders = @([regex]::Matches($fmt, '\{(\d+)') | ForEach-Object { [int]$_.Groups[1].Value })
+      # ⚠ [SL-330c 复审第 2 轮] 先剔掉成对的 `{{` / `}}`:格式串里它们输出的是**字面**花括号,
+      #   `'{{0}} 之后:{1}' -f $cnt, $other` 实测得到 `{0} 之后:OTHER` —— 第一个实参**根本不出现**,
+      #   与 ㉖ 挡的是同一个失效形态(计数进了实参却不显形),只是换了个自由度。
+      $fmtEsc = $fmt -creplace '\{\{|\}\}', ''
+      $placeholders = @([regex]::Matches($fmtEsc, '\{(\d+)') | ForEach-Object { [int]$_.Groups[1].Value })
       if ($placeholders -notcontains $idx) {
         $rep.MissingPlaceholder += [pscustomobject]@{
           Label = $label; Count = $count; Index = $idx
@@ -429,24 +438,29 @@ if ($SelfTest) {
   $r13 = Get-VisibilityReport -Source $f13 -MarkerSinks $sinkW
   & $check '⑬ -cmatch 的用点没被认出来' ($r13.MarkerUses[0].Found -and $r13.MarkerUses[0].CaseSensitive)
 
-  # ⑭ 用点退回 `-match` ⇒ 反向判据必须抓到(AST 里它是另一个枚举值)
-  $f14 = '$x | Where-Object { $_ -match ($markerCount -f ' + $q + 'WARN' + $q + ') }'
-  $r14 = Get-VisibilityReport -Source $f14 -Marks @('WARN')
-  & $check '⑭ -match 的用点没被反向判据抓到' (@($r14.Offenders).Count -eq 1 -and -not $r14.MarkerUses[0].CaseSensitive)
+  # ⑭ 用点退回 `-match` ⇒ 反向判据必须抓到(AST 里它是另一个枚举值),
+  #   **而且 `CaseSensitive` 要真的判成 false**。夹具写成**承接计数的赋值**形态。
+  #   [SL-330c 复审第 2 轮] 上一版这里传的是**已经不存在的** `-Marks`,而简单函数会把未知
+  #   具名参数连同实参静默丢进 `$args` ⇒ `MarkerUses` 是空数组 ⇒ `@()[0].CaseSensitive`
+  #   是 `$null` ⇒ `-not $null` 恒真。于是这一格的后半截**根本没在断言**,
+  #   而它是**唯一**钉那一侧的格子(⑬ 只钉了 true 那一侧)。
+  $f14 = '$warnLines = @($out | Where-Object { $_ -match ($markerCount -f ' + $q + 'WARN' + $q + ') })'
+  $r14 = Get-VisibilityReport -Source $f14 -MarkerSinks $sinkW
+  & $check '⑭ -match 的用点没被反向判据抓到,或 CaseSensitive 没判成 false' (@($r14.Offenders).Count -eq 1 -and $r14.MarkerUses[0].Found -and -not $r14.MarkerUses[0].CaseSensitive)
 
   # ⑮ 显式不敏感形态 `-imatch` ⇒ 同样抓到(文本级那版要专门补一条 `-i?` 才挡得住)
   $f15 = '$x | Where-Object { $_ -imatch ($markerCount -f ' + $q + 'WARN' + $q + ') }'
-  $r15 = Get-VisibilityReport -Source $f15 -Marks @('WARN')
+  $r15 = Get-VisibilityReport -Source $f15
   & $check '⑮ -imatch 没被抓到' (@($r15.Offenders).Count -eq 1)
 
   # ⑯ `-notmatch`(反过来滤掉标记行)⇒ 同样抓到
   $f16 = '$x | Where-Object { $_ -notmatch ($markerCount -f ' + $q + 'WARN' + $q + ') }'
-  $r16 = Get-VisibilityReport -Source $f16 -Marks @('WARN')
+  $r16 = Get-VisibilityReport -Source $f16
   & $check '⑯ -notmatch 没被抓到' (@($r16.Offenders).Count -eq 1)
 
   # ⑰ `-replace` / `-split` 一族 ⇒ 同样抓到
   $f17 = '$x = $y -replace ($markerCount -f ' + $q + 'WARN' + $q + ')'
-  $r17 = Get-VisibilityReport -Source $f17 -Marks @('WARN')
+  $r17 = Get-VisibilityReport -Source $f17
   & $check '⑰ -replace 没被抓到' (@($r17.Offenders).Count -eq 1)
 
   # ⑱ 裸标记回显那一处:大小写敏感 ⇒ 认得出
@@ -495,7 +509,7 @@ if ($SelfTest) {
   # 25. `-split` 一族也要被反向判据抓到。匹配家族在这里是**一张枚举清单**,
   #     清单漏一项就漏一族;拆掉 `Isplit`/`Csplit` 之后上面 23 格全绿(⑰ 只钉了 `-replace`)。
   $f25 = '$x = $y -split ($markerCount -f ' + $q + 'WARN' + $q + ')'
-  $r25 = Get-VisibilityReport -Source $f25 -Marks @('WARN')
+  $r25 = Get-VisibilityReport -Source $f25
   & $check '㉕ -split 没被抓到(匹配家族的枚举清单漏了一项)' (@($r25.Offenders).Count -eq 1)
 
   # ── 下面五格是**复审第 1 轮**逼出来的,每格对应一条新判据或一处补齐 ──
@@ -537,6 +551,13 @@ if ($SelfTest) {
   $f31 = '$lbl = ' + $q + '{0}(!{1})' + $q + ' + $cnt'
   $r31 = Get-VisibilityReport -Source $f31 -Pairs $pair
   & $check '㉛ 字符串拼接(不是 -f)也被算作「落进标签」' (-not $r31.Pairs[0].Ok)
+
+  # 32. [复审第 2 轮] 格式串里的 `{{` 是**转义**,输出的是字面花括号 ——
+  #     实测 `'{{0}} 之后:{1}' -f 'CNT','OTHER'` → `{0} 之后:OTHER`,第一个实参**根本不出现**。
+  #     与 ㉖ 是同一个失效形态(计数进了实参却不显形),只是换了个自由度。
+  $f32 = '$lbl = ' + $q + '{{0}} 之后:{1}' + $q + ' -f $cnt, $other'
+  $r32 = Get-VisibilityReport -Source $f32 -Pairs $pair
+  & $check '㉜ 被 {{ }} 转义掉的占位符仍被算作「显形了」' (-not $r32.Pairs[0].Ok)
 
   if (@($fails).Count -gt 0) {
     Write-Host 'check-gates-visibility.ps1 --self-test 失败:' -ForegroundColor Red
