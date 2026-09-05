@@ -55,13 +55,18 @@ using namespace scvb;
 
 // [SL-323] **同机只允许一份 ipc 测试进程** —— 在整轮开始前判定,拿不到就整轮不跑。
 //
-// 为什么需要:本套用**固定组号**,段名 `SynchainSCVB.v1.g{G}.…` 是**全机唯一**的 ——
-//     g1(`resetRegistry(backend, 1)`,:954/:973/:993/:1013/:1284)
-//     g2(`Registry regG2(backend, 2)`,:1580)
-//     g3(`test_ipc_viz.cpp` 的 `kGroup`)
-//     g6(`test_registry_probe.cpp` 的 `kProbeGroup`,注释写着「测试进程独占」——
-//        **声称独占却没有强制**,本守卫就是来补这句话的)
-//     g7(`test_ipc_viz.cpp` 的 VIZ-2)
+// 为什么需要:本套用**固定组号**,段名 `SynchainSCVB.v1.g{G}.…` 是**全机唯一**的。
+// 用到的组(**不写行号** —— 那种注释必然随插入腐坏,复审抓到我上一版六个行号整体偏 82 行,
+// 正好是这个插入块自身的长度;下面一律引用可 grep 的名字):
+//     g1  `resetRegistry(backend, 1)` 与大量 `spawnPeer(--group=1)`(默认组,最常用)
+//     g2  `Registry regG2(...)` 与 `spawnPeer(--group=2)`(跨组隔离那几条)
+//     g3  `test_ipc_viz.cpp` 的 `kGroup`,及 `spawnPeer(--group=3)`
+//     g6  `test_registry_probe.cpp` 的 `kProbeGroup`
+//     g7  `test_ipc_viz.cpp` 的 VIZ-2(`VizPlane(backend, 7)`)
+//     g8  `spawnPeer({"--role=claimer", "--group=8", "--ch=15"})`
+// **枚举方式很重要**:组号既有构造实参(`Registry(backend, N)`),也有**命令行字符串**
+// (`--group=N`,交给 spawnPeer 起的对端进程去建段)。只 grep 前一种会漏掉后一种 ——
+// 我上一版就漏了 g8,而漏一个就等于给后来人一个错的「那个组没人用」的印象。
 // 第二份进来 = 两个进程在同一批段上互相清、互相建。
 //
 // 形态与 [SL-314] / #204 的 host 侧守卫**逐条同形**,那边已量清楚这个形态的代价:
@@ -119,6 +124,9 @@ struct IpcTestsExclusiveListener : Catch::EventListenerBase
                                  "(g1/g2/g3/g6/g7),段名全机唯一,两份同跑会互相清段。"
                                  "\n  手跑请走:pwsh scripts"
                                  "/with-ipc-lock.ps1 -Command 'ctest --test-dir build -C Release -R scvb_ipc_tests'"
+                                 "\n  (它拿的是 gates 那把 Local"
+                                 "\\SCVB-ipc-tests,**不是**这里被拒的这把 —— 两份都经它就被串行了,"
+                                 "于是这把 -proc 自然拿得到。)"
                                  "\n  若确认没人在跑:查**残留**的 scvb_ipc_tests.exe —— 僵尸进程会一直持着这把互斥"
                                  "(见 gates.ps1 gate 6 前后的孤儿扫描)。"
                                  "\n");
