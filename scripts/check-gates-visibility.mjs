@@ -88,12 +88,31 @@ const read = (p) => fs.readFileSync(p, "utf8");
 // **一行都不匹配 `/^\s*#/`**(只有收尾的 `#>` 被剥),于是整段原样留在 `ps` 里 —— 而且
 // **每一行都在行首**,上一轮刚加的行首锚对它无效。把一条赋值抄进帮助块就能顶替真接线。
 // 这一半修在**共用的过滤器**上,本文件 PowerShell 侧的每一条断言一起受益,不只是标签那三条。
-const stripPsComments = (text) =>
-    text
-        .replace(/<#[\s\S]*?#>/g, "")
-        .split("\n")
-        .filter((l) => !/^\s*#/.test(l))
-        .join("\n");
+// ⚠ [SL-322 复审第 6 轮] 剥块注释走**逐行状态机**,不走跨行扫描。第一版写的是
+// `replace(/<#[\s\S]*?#>/g, "")`,它让**任何位置**的 `<#` 都能开块 —— 行尾注释里、
+// 单引号串里、正则串里的那两个字符都算,然后配到文件后面任意一处 `#>`,把中间的真代码
+// 整段删掉(方向是假红:接线还在,判据却找不到它,报的还是「没拼进标签」)。这不是假想形态:
+// 本卡这一路就在**注释里逐字引用 PowerShell 词法**。逐行状态机只认「整行以 `<#` 起头」,
+// 引用一段词法不会开块。
+const stripPsComments = (text) => {
+    const out = [];
+    let inBlock = false;
+    for (const line of text.split("\n")) {
+        if (inBlock) {
+            if (line.includes("#>")) inBlock = false;
+            continue;
+        }
+        const opens = /^\s*<#/.exec(line);
+        if (opens) {
+            // 同一行就收尾的单行块(`<# … #>`)不进块态。
+            if (!line.slice(opens[0].length).includes("#>")) inBlock = true;
+            continue;
+        }
+        if (/^\s*#/.test(line)) continue;
+        out.push(line);
+    }
+    return out.join("\n");
+};
 
 // JS 整行注释:`//` **与**块注释的三种行形态(`/*` 开头、` * ` 中间、`*/` 收尾)。
 // ① 段与 §④ 用的是**同一份**过滤器 —— 此前是两份逐字相同的拷贝([SL-318] 合一),
