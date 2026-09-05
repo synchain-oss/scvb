@@ -819,6 +819,10 @@ if ($SelfTest) {
   & $check '㊱ 两条标记争同一处时没有显式判负' (@($r26.Ambiguous).Count -eq 1)
   & $check '㊱b 歧义那一处还被重复报成孤悬(同一件事两种文案)' (@($r26.StaleExemptions).Count -eq 0)
   & $check '㊱c 歧义时没把两条候选都点名' (@($r26.Ambiguous[0].Markers).Count -eq 2)
+  # ㊱f **双报是有意的**:争端未定 ⇒ 那一处确实还没被豁免,它仍该落在 `Unguarded` 里
+  #     (方向 fail-closed)。这一条以前只是实现的副作用、没有任何一格钉着(#230 复审),
+  #     而本卡自己刚立的规矩就是「可验证断言要有格」。
+  & $check '㊱f 歧义那一处没落在 Unguarded 里(争端未定却静默放行)' (@($r26.Unguarded).Count -eq 1)
   # ㊱d **不误报**:只有一条候选时照旧走豁免
   $r26d = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version')
   & $check '㊱d 只有一条候选时误报了歧义' ((@($r26d.Ambiguous).Count -eq 0) -and (@($r26d.Exempted).Count -eq 1))
@@ -826,7 +830,12 @@ if ($SelfTest) {
   #     那是一句**可验证的断言**(定不定义,那个调用点都不进判据面),而写下断言却
   #     不给它一格,它就只能靠人手推 —— 本仓「边界记账最容易漂」那一族。
   #     钉住它的是 #217 那一刀(解析不到 + 形如 cmdlet 就排掉),`Set` 在批准动词表里。
-  $r26e = Get-GatesGuardReport -Source "Set-Gate 'x' `$ok"
+  #     ⚠ 走**注入解析器** `$fakeNone`(同 ⑭):用真 `Get-Command` 的话,这一格只是
+    #       **碰巧**钉住 #217 那一刀 —— 哪天本文件里真出现一个 `function Set-Gate`
+    #       (名字就是 gates.ps1 里那个、夹具字符串里一直躺着),`CommandType = 'Function'`
+    #       那一支会**先** continue,`Sites` 照样是 0 ⇒ 格照绿,而反向验证不再复现
+    #       (#230 复审;同族形态见 ⑮c 旁那条 ⚠)。
+  $r26e = Get-GatesGuardReport -Source "Set-Gate 'x' `$ok" -Resolver $fakeNone
   & $check '㊱e 不定义 Set-Gate 时它竟然进了判据面(那句「没有机械后果」不成立)' (@($r26e.Sites).Count -eq 0)
 
   # ─── [SL-337] 第二道判据「注释里不得复述截断值名单」的自测格 ───────────────
@@ -1029,7 +1038,10 @@ if (@($report.Sites).Count -lt $floor) {
 $bad = $false
 if (@($report.Ambiguous).Count -gt 0) {
   $bad = $true
-  Write-Host ('  [FAIL] {0} 处调用点同时被**两条**行内标记覆盖:' -f @($report.Ambiguous).Count) -ForegroundColor Red
+  # [#230 复审] 条件是 `-gt 1`,文案就不能硬写「两条」—— 把数交给 `-f`。
+  # (候选上限结构上就是 2:一行至多一个注释 token ⇒ 至多 1 条行尾 + 至多 1 条
+  #  独占上一行。但这条推理得**写下来**,否则它就是一个没有机械后果撑着的数。)
+  Write-Host ('  [FAIL] {0} 处调用点同时被多条行内标记覆盖:' -f @($report.Ambiguous).Count) -ForegroundColor Red
   foreach ($amb in $report.Ambiguous) {
     Write-Host ('    {0}:{1}  {2}' -f (Split-Path -Leaf $Path), $amb.Line, $amb.Text) -ForegroundColor Red
     foreach ($mm in $amb.Markers) {
@@ -1037,8 +1049,11 @@ if (@($report.Ambiguous).Count -gt 0) {
       Write-Host ('      候选标记 @{0}  {1}  理由:{2}' -f $mm.Line, $where, $mm.Reason) -ForegroundColor DarkGray
     }
   }
-  Write-Host '    两条标记在争同一处 —— 谁该留只有写的人知道,判据不替你选。' -ForegroundColor Yellow
+  Write-Host '    多条标记在争同一处 —— 谁该留只有写的人知道,判据不替你选。' -ForegroundColor Yellow
   Write-Host '    修法:删掉多余的那条,或把该留的那条挪到它要豁免的调用点旁。' -ForegroundColor Yellow
+  Write-Host '    这一处还会在下面「无守卫调用点」那段里**再出一次** —— 那是对的:争端未定,' -ForegroundColor Yellow
+  Write-Host '    它确实还没被豁免(方向 fail-closed)。但那段的收尾让你「加一条带理由的标记」,' -ForegroundColor Yellow
+  Write-Host '    对已经写了两条的人是错的指路 —— **以本段为准**。(双报由 ㊱f 钉住。)' -ForegroundColor Yellow
   Write-Host '    (上一版静默取第一条、把另一条报成「孤悬标记」—— 而孤悬的文案说的是' -ForegroundColor Yellow
   Write-Host '     「附近已经没有无守卫的外部调用了」,成因说反了,会把人送去找一处不存在的代码。)' -ForegroundColor Yellow
 }
