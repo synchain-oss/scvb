@@ -1123,6 +1123,24 @@ if (selfTest) {
         // 于是 0 次那一支永远选「needle 过期」——「扫描器扫到自己」那一族(实测踩过)。
         const anchoredConstCall = "BODY_REF_ANCHORED_RE" + ".test(";
         const anchoredHits = selfSrc.split(anchoredCallSite).length - 1;
+        // 判别串**也计数**,不是 `.includes` —— 那正是本卡在补的半条纪律,写成 `>= 1`
+        // 等于把它挪进话术分支再犯一次:将来某格自测写 `…test("111")`(不是 `m[1]`,
+        // 所以上面的计数不受影响、无人察觉),此后生产那处被写回内联 ⇒ 0 命中,而判别串
+        // 仍命中 ⇒ 报「needle 过期,调用点没坏」—— 真因是写回内联,话术却明确劝人
+        // 别去看调用点,比原状更坏(复审【建议】)。
+        // 判别串**要看位置**,不只是「有没有」甚至「有几处」:计数挡不住这一条 ——
+        // 自测里写一处 `…test("111")`(不是 `m[1]`,上面那个计数不受影响),生产那处
+        // 写回内联 ⇒ 判别串仍恰好命中 1 次 ⇒ 报「needle 过期,调用点没坏」,而真因是
+        // 写回内联,话术还明确劝人别去看调用点(实测:只加计数时那一格仍报错方向)。
+        // 所以判据是「那一处落在**自测块之前**」= 它真是生产调用点。
+        const constCallAt = selfSrc.indexOf(anchoredConstCall);
+        // `=== 1` 只保「全文件恰一次」,保不了「那一次在生产侧」:同一个 PR 里
+        // 自测加一处、生产写回内联,命中数仍是 1 ⇒ 照绿。门禁只看合并后那棵树,
+        // 中间态没有执行者。所以再断一次**位置**:那唯一一次要落在自测块之前。
+        const selfTestHead = "if (self" + "Test) {";
+        const callSiteAt = selfSrc.indexOf(anchoredCallSite);
+        const selfTestAt = selfSrc.indexOf(selfTestHead);
+
         // 话术按命中数**分三支**:三种失效的真因不同,报同一句就是「第二次红指错方向」。
         //   · 0 次、而那个常量名后面跟 `.test(` 的写法还在 —— **needle 过期**。它钉的是
         //     `.test(m[1])` 这种逐字写法,而 `allowList` 里那个 `m` 是循环内的局部变量,
@@ -1135,7 +1153,7 @@ if (selfTest) {
             anchoredHits === 0
                 ? // 0 次还分得开两种真因,别让人自己猜:常量名还在、只是实参变了 ⇒ needle
                   // 过期(`m` 被改名),调用点其实**没坏**;两个都没了才是真被写回内联。
-                  selfSrc.includes(anchoredConstCall)
+                  constCallAt > 0 && constCallAt < selfTestAt
                     ? "这条 needle 过期了:`" +
                       anchoredCallSite +
                       "` 找不到,但 `" +
@@ -1149,6 +1167,14 @@ if (selfTest) {
                       anchoredHits +
                       " 次(应当只有生产那一处)—— 多出来的那处(自测夹具?)会替生产那一处顶着," +
                       "调用点写回内联时这一格就照绿了",
+        );
+        check(
+            anchoredHits !== 1 ||
+                (callSiteAt > 0 && selfTestAt > 0 && callSiteAt < selfTestAt),
+            "那唯一一处 `" +
+                anchoredCallSite +
+                "` 落在自测块之内(或找不到自测块锚点)—— `=== 1` 只保「全文件恰一次」," +
+                "保不了「那一次在生产侧」:同一个 PR 里自测加一处、生产写回内联,命中数仍是 1",
         );
         check(
             BODY_REF_ANCHORED_RE.source === bodyRefAnchored().source,
