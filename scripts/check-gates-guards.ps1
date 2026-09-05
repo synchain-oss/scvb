@@ -40,8 +40,10 @@
       只在 `& $var` 时起作用,方向偏红。另有一处 fail-open:同名变量若**先**赋成脚本块、**后**赋成
       路径,`scriptBlockVars` 会优先命中、那处 `& $var` 被静默排除;`gates.ps1` 今天没有这种写法。
     ⚠ **边界:豁免清单与判据面下界都只对默认目标(`gates.ps1`)生效。** 三条豁免的指纹全指向
-      它的 ③ 类调用点,下界 20 也是按它的体量取的;`-Path` 指别的文件时两者都关掉并打一行 INFO ——
+      它的 ③ 类调用点,下界 20 也是按它的体量取的;`-Path` 指别的文件时豁免关掉、下界降为 1,并打一行 INFO ——
+      `-Path` 指别的文件时**豁免不生效、下界从 20 降为 1**(只挡「一处都没扫到」),
       那时本脚本只回答「这个文件里的外部调用有没有守卫」,不回答「豁免是否还准」。
+      「是不是默认目标」按**解析后的路径**比,所以 `-Path scripts/gates.ps1` 与不传 `-Path` 等价。
     ⚠ **边界:经 cmdlet 间接启动的外部命令不在面内。** `Start-Process -FilePath $nodeCmd.Source`
       (`gates.ps1:836`)这种由 cmdlet 代启的,AST 里是一次 `Start-Process` 调用、不是外部命令调用点,
       本判据看不见。那一处本身没问题(`$nodeCmd` 已有守卫),但「不靠名字清单」这个卖点在这条上
@@ -420,7 +422,10 @@ if ($SelfTest) {
     $fails | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor Red }
     exit 1
   }
-  Write-Host ('  check-gates-guards -SelfTest:{0} 格全过(抓无守卫 / 两种守卫形态不误报 / 别人的守卫不算数 / 本地函数与脚本块不入面 / 变量式守卫 / 豁免按指纹 + 陈旧判负 / 同名不白拿 / 多结果仍算外部 / Cmdlet 不入面 / 同文本两处判负 / Get-Command 参数值不当命令名)' -f $cells)
+  # 只报**数**,不再手抄一份「都测了些什么」的枚举:上一版那份枚举漏了新加的 ⑬/⑬b,
+  # 而更上一版是格数漂了 —— 同一个病第三次。要知道测了哪几格,读上面那些 `& $check` 的名字,
+  # 那是唯一真源。
+  Write-Host ('  check-gates-guards -SelfTest:{0} 格全过(逐格名字见本脚本 selfTest 段的 $check 调用)' -f $cells)
   exit 0
 }
 
@@ -428,11 +433,20 @@ if ($SelfTest) {
 # 分隔符用 `/`:接进 CI 的 docs-truth(ubuntu)之后,`'scripts\gates.ps1'` 在 Linux 上是一个
 # **带反斜杠的字面文件名**,`Test-Path` 直接不成立 —— 判据一行没跑就退 1(方向偏红,但报的是
 # 「找不到被检文件」,查起来会以为是路径传错)。`/` 在 Windows 上同样可用。
-$isDefaultPath = (-not $Path)
 if (-not $Path) { $Path = Join-Path $RepoRoot 'scripts/gates.ps1' }
 if (-not (Test-Path $Path)) {
   Write-Host ('  [FAIL] 找不到被检文件:{0}' -f $Path) -ForegroundColor Red
   exit 1
+}
+# ⚠ 「是不是默认目标」要按**解析后的路径**比,不能按「有没有传 `-Path`」判(#217 复审【重要】):
+#   `-Path scripts/gates.ps1` 指的就是默认那个文件,而按前者判会把豁免整份关掉 ⇒ 三处 ③ 类
+#   调用点变成 Unguarded ⇒ 对**默认目标本身**假红,还点名让人去给它们加守卫,而它们本来就是
+#   清单里写着理由的豁免。接 CI 时在 workflow 里显式写 `-Path scripts/gates.ps1` 是很自然的写法,
+#   这条路径下一个 commit 就会踩到。
+$defaultTarget = Join-Path $RepoRoot 'scripts/gates.ps1'
+$isDefaultPath = $false
+if (Test-Path $defaultTarget) {
+  $isDefaultPath = ((Resolve-Path -LiteralPath $Path).Path -eq (Resolve-Path -LiteralPath $defaultTarget).Path)
 }
 
 $src = Get-Content -LiteralPath $Path -Raw
@@ -448,22 +462,30 @@ foreach ($ex in $Exemptions) {
 # 所以豁免与下界一样,只在检默认文件时生效;检别的文件时**明说**这一点,别让人以为已经全查了。
 $activeExemptions = if ($isDefaultPath) { $Exemptions } else { @() }
 if (-not $isDefaultPath) {
-  Write-Host ('  [INFO] -Path 指向 {0}:豁免清单与判据面下界都**不生效**(两者都是为 gates.ps1 写的)。' -f (Split-Path -Leaf $Path)) -ForegroundColor Yellow
+  Write-Host ('  [INFO] -Path 指向 {0}(非默认目标):豁免清单**不生效**,判据面下界从 20 降为 1(只挡「一处都没扫到」)。' -f (Split-Path -Leaf $Path)) -ForegroundColor Yellow
 }
 $report = Get-GatesGuardReport -Source $src -Exemptions $activeExemptions
 
 # 判据面塌了 = 判据近乎恒真。只挡 0 是不够的:分析被改坏到只剩三五处也照样绿,
 # 而删除式测的是「拆掉守卫会红」,**测不出「面缩水了」**。所以钉一个下界。
 # 数不写死成「今天几处」——那种数会过期,而且会成为下一个人的依据(本卡上一版就把
-# `gates.ps1` 旧注释里的 29 抄了过来,而本脚本实际收 33 处:多的 4 处是变量式调用)。
+# `gates.ps1` 旧注释里的名字式处数抄了过来,而本脚本还多收了变量式调用那一族)。
 # 下界取一个**明显低于现状、又高于「分析塌掉」**的数,只用来照出塌方,不用来对账。
 # ⚠ 下界**只在检默认文件(gates.ps1)时生效**。`-Path` 是公开参数、边界里也写了「可指别的文件」,
 #   对一个更小的脚本无条件套 20 会假红 —— 判据把自己的适用面写宽了,却按最宽那份的体量收口。
 $floor = if ($isDefaultPath) { 20 } else { 1 }   # 非默认目标也至少要有 1 处,否则空集合恒真
 if (@($report.Sites).Count -lt $floor) {
-  Write-Host ('  [FAIL] 只扫到 {0} 处外部命令调用点(下界 {1})—— 判据面塌了,不是代码变干净了' -f
-    @($report.Sites).Count, $floor) -ForegroundColor Red
-  Write-Host '    多半是 AST 分析或分类被改坏:判据面一小,门禁就近乎恒真,而删除式照不出来。' -ForegroundColor Yellow
+  if ($isDefaultPath) {
+    Write-Host ('  [FAIL] 只扫到 {0} 处外部命令调用点(下界 {1})—— 判据面塌了,不是代码变干净了' -f
+      @($report.Sites).Count, $floor) -ForegroundColor Red
+    Write-Host '    多半是 AST 分析或分类被改坏:判据面一小,门禁就近乎恒真,而删除式照不出来。' -ForegroundColor Yellow
+  }
+  else {
+    # 非默认目标只挡「一处都没扫到」,而那多半是**文件传错了**,不是判据坏了 ——
+    # 照搬默认目标那句「判据面塌了」会让人去查判据,查错方向。
+    Write-Host ('  [FAIL] {0} 里一处外部命令调用点都没有 —— 确认是不是传错了文件' -f (Split-Path -Leaf $Path)) -ForegroundColor Red
+    Write-Host '    (空集合会让「每处都有守卫」恒真,所以这里判负而不是安静通过。)' -ForegroundColor Yellow
+  }
   exit 1
 }
 
