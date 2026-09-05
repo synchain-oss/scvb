@@ -501,15 +501,15 @@ jobs:
 
       # 6) Catch2 单测(ADR-011:scvb_core 全离线可测)
       # [SL-320] `--timeout 300` 与 `scripts/gates.ps1` gate 6 **逐字同值**,职责也同一条:
-      # 只给**没有 TIMEOUT 属性**的测试兜底。各套真正的上界写在 TIMEOUT 属性里 ——
-      # **四套**(scvb_tests / scvb_params_tests / scvb_plugin_common_tests /
-      # scvb_input_bridge_tests)的 30s 在 `tests/CMakeLists.txt`,口径真源是那边
-      # `scvb_tests` 上方那段 —— 它自称的就是「四套的口径真源」。`scvb_monitor_tests` 的 600
-      # 与 `scvb_host_tests` 的 900 各写在**自己 add_test 旁**、不由那段管,`scvb_ipc_tests`
-      # 的 900 在 `tests/ipc/CMakeLists.txt`、**不在同一个文件**。
-      # ([SL-325] 这里原先写「前六套在 tests/CMakeLists.txt」:文件是对的,**六**是错的 ——
-      #  那段只给四套定数,monitor / host 各自为政。照它去推「谁的上界归谁管」会指错文件。)
-      # 属性跟着测试走,两边同吃一份;SL-320 之后七套全部有属性,这个数今天一套都管不到。
+      # 只给**没有 TIMEOUT 属性**的测试兜底。各套真正的上界写在自己的 TIMEOUT 属性里,
+      # 属性跟着测试走,两边同吃一份;**每一套**都有属性,所以这个数今天一套都管不到
+      # (写「每一套」而不是写套数:套数是个跨文件计数,第八套一落地,写着套数的每一处一起变假)。
+      # [SL-338] ⚠ **哪套多少秒、写在哪个文件,不抄在这里**。上一版这段抄了整张值表 + 每个值的
+      #   所在文件,而它已经漂过一次(SL-325:原先写「前六套在 `tests/CMakeLists.txt`」——
+      #   文件是对的、**六**是错的)。要问「谁有属性、各是多少」,读 ctest 真正吃的那份
+      #   `build*/**/CTestTestfile.cmake`;要问「有没有人漏写属性」,那是本 workflow 里
+      #   `check-ctest-timeouts.ps1` 那两步(与本机 gate 5b 同一条命令)当门禁在判的事。
+      #   ([SL-338 复审] 不写「上面/下面」:方位词与行号同族,这一段插一步、挪一步它就静默变假。)
       # 此前这里**不带** `--timeout`,于是没有属性的套件在**出包硬门**上吃 ctest 默认的 1500s、
       # 本机吃 gates 的 300 —— 同一个「上界」两个真源、差 5 倍。两边都写上之后,
       # 「新加的测试忘了写属性」在两条路上的行为也一致,不会再一边宽一边紧。

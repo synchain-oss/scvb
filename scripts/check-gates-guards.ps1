@@ -96,11 +96,12 @@ $script:ApprovedVerbs = @((Get-Verb).Verb)
 # 豁免清单。**按文本指纹匹配,不按命令名** —— 按名字豁免的话,同名的新调用点会跟着白拿豁免。
 # 每条必须有非空 `Reason`;匹配不到任何调用点的陈旧条目**判负**。
 #
-# 这三处是 #214 分类里的**③类:输出判据 + 缺席时已经判负**,方向偏红,包一层壳反而多余:
-#   · `cmake --version`        —— 空输出 ⇒ `$ok = $false`;
-#   · `clang-format --version` —— 空串不匹配 `18.1.8` ⇒ 判负;
-#   · `git ls-files`           —— 空集合 ⇒ gate 2 判负。
-# 今天是**空的**:三条 ③ 类豁免已搬进 `gates.ps1` 各调用点旁的行内标记(SL-331 后续批)。
+# 今天是**空的**:③类(输出判据 + 缺席时已经判负)那几处的豁免已搬进 `gates.ps1` 各调用点旁的
+# 行内标记(SL-331 后续批)。
+# [SL-338] ⚠ **不在这里抄那几处是谁、各自靠什么判负** —— 上一版抄了一份逐条清单,而它描述的是
+#   **另一个文件里的**调用点,底下这个变量早已经空了:清单与它旁边的代码从此各走各的,
+#   对面一改这里就成了假注释。要看今天有哪几处被豁免、理由是什么,跑本脚本 —— 它每轮把被豁免
+#   的逐条打出来;或直接读 `gates.ps1` 里那几条 `[gates-guard-exempt]` 标记,那才是真源。
 # 留着这条通道是因为 `-Path` 可以指别的文件,而那些文件未必方便改;用法见上面。
 $Exemptions = @()
 
@@ -444,7 +445,9 @@ function Get-GatesGuardReport {
 # 提到标记名不算 —— 否则本脚本的头注、以及任何解释这个标记的散文都能喂出一条假绿
 # (本仓「扫描器入库才炸」那一族,见自测 ⑳)。
 #
-# 返回:@{ Comments; GateIds; Sanctioned; Offending }
+# 返回:一个哈希表,键见函数末尾的 `return`。
+# ⚠ 别在这里抄一份键名清单:上一版就是加了 `Stale` 而这行没跟(#225 复审)——
+#   同一个 commit 既加了字段又留着旧枚举,正是 SL-337 在治的那一族。
 # ─────────────────────────────────────────────────────────────────────────────
 function Get-GatesLastListReport {
   param([Parameter(Mandatory)][string]$Source)
@@ -597,8 +600,11 @@ if ($SelfTest) {
     $script:cells++
     if (-not $Ok) { $script:fails += $Name }
   }
-  # 夹具里凡是用到 `Set-Gate` 的,都要**在夹具里定义它** —— 真 gates.ps1 里它是本文件定义的函数,
-  # 夹具不定义,判据就会(正确地)把它当成一处没有守卫的外部命令,于是自测红在夹具而不是判据上。
+  # 夹具里凡是用到 `Set-Gate` 的,都要**在夹具里定义它** —— 真 gates.ps1 里它是本文件
+  # 定义的函数,夹具里也该长成同一个形态,否则夹具与被测对象对不上。
+  # ⚠ [SL-338 复审] 上一版这里写着「夹具不定义,判据就会把它当成一处没有守卫的
+  #   外部命令」—— 那句今天不成立:`Set` 是 `Get-Verb` 里的批准动词,未定义的
+  #   `Set-Gate` 会被「解析不到 + 形如 cmdlet」那一刀(#217 加的)排掉,根本不会进判据面。
   $defSetGate = 'function Set-Gate { param($a, $b) }' + [Environment]::NewLine
 
   # ① 无守卫的外部调用 ⇒ 必须被抓
@@ -721,7 +727,18 @@ if ($SelfTest) {
   $r15b = Get-GatesGuardReport -Source $f15b
   & $check '⑮b 纯闭包被当成外部命令(判据面被撑宽)' (@($r15b.Sites).Count -eq 0)
 
-  # ---- 行内豁免标记(SL-331 后续批把 ③ 类三处从外部清单搬进了 gates.ps1 调用点旁)----
+  # ⑮c 本文件**自己定义的函数**不得入判据面 —— 靠 `FunctionDefinitionAst` 从**同一棵 AST**
+  #    里排掉,而不是靠收紧「解析不到」那一档(那一档是故意 fail-closed 的)。
+  #    ⚠ 这一刀此前只被**隐式**钉在别的夹具上:把它删掉,红的是「有守卫的调用
+  #      被误判成无守卫」那一格 —— 话术指向另一件事(#228 复审)。配一格明的。
+  #    ⚠ 夹具名的动词**不能在 `Get-Verb` 表里**(`Invoke-` / `Set-` 都在):否则
+  #      「解析不到 ⇒ 形如 cmdlet 就排掉」那一刀会替这一格兼底 —— 把
+  #      `FunctionDefinitionAst` 整刀删掉也不红。上一版用的就是 `Invoke-Foo`,空过
+  #      一轮(#228 复审第 2 轮)。`Ensure` 不在表里(批准形态是 `Confirm` / `Assert`)。
+  $r15c = Get-GatesGuardReport -Source ('function Ensure-ScvbThing { }' + [Environment]::NewLine + 'Ensure-ScvbThing')
+  & $check '⑮c 本文件定义的函数被当成外部命令(判据面被撑宽,且报错会指向别处)' (@($r15c.Sites).Count -eq 0)
+
+  # ---- 行内豁免标记(SL-331 后续批把 ③ 类那几处从外部清单搬进了 gates.ps1 调用点旁)----
   $mkExempt = '# [gates-guard-exempt] 理由写在这里'
   # ⑯ 标记在**紧邻上一行** ⇒ 豁免
   $r16 = Get-GatesGuardReport -Source ($mkExempt + [Environment]::NewLine + 'cmake --version')
@@ -869,20 +886,30 @@ if ($SelfTest) {
   #      注释下界替它兼了底。这是反向注入实测出来的(删除式第 ⑤ 格当时是绿的)。
   $manyComments = (1..250 | ForEach-Object { '# 第 ' + $_ + ' 条' }) -join [Environment]::NewLine
   $l35c = Get-GatesLastListReport -Source $manyComments
-  & $check '㉟c 档号塌成 0 而注释不少时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35c -DefaultTarget))
+  & $check '㉟c 档号塌成 0 而注释不少时,挡住它的不是档号那一刀' ((Test-GatesLastFloor -Report $l35c -DefaultTarget) -match '档号')
   & $check '㉟d 同一输入在非默认目标上不该假红' ($null -eq (Test-GatesLastFloor -Report $l35c))
 
   # ㉟e **只有注释下界能挡住的那一档**:档号够多、注释几乎没有。
   #    ⚠ 没有这一格,把注释下界整刀删掉自测也不会红 —— 上面每一格的档号数都 < 5,
   #      在 -DefaultTarget 上档号那一刀总是先返回,替它兼了底。
+  #    ⚠ 夹具的档号数取得与 gates.ps1 今天能取到的**同阶**,不是恰好卡在下界上
+  #      (#228 复审):卡在下界上的话,谁把档号下界抬高一点(注释里自己写着
+  #      「收到 8 完全合理」),这一格就会红在**夹具**上,而报错话术说的是
+  #      「挡住它的不是注释那一刀」,把人指向判据而不是夹具。格名里也写了出路。
+  #      ⚠ 断言钉的是**哪一刀返回的**,不是「返回了非空」(#225 复审第 3 轮):
+  #        `-match` 对 `$null` 为 `$false`,所以「这一刀被整刀删掉」照旧红;
+  #        而「另一刀抢先返回」会让话术变成另一半、`-match` 当场为假,也红 ——
+  #        两个方向都拦得住。(夹具的档号余量见上一条 ⚠。)
   #      与 ㉟c 是**同一个洞的两个方向**:那一格没有档号、这一格没有注释,
   #      两格各自只能被一条下界拦住。注释提取一旦被改坏,`$commentByLine` 为空
   #      ⇒ `Offending` 恒为 0、判据静默全绿,而档号那一半走 AST 照样能取到十几个,
   #      档号下界拦不住。
-  $sgFive = @('3b gitleaks', '3c reuse lint', '3d 设计盒真源', '3e web smoke', '3f 文档真源') |
+  $sgMany = @('3b gitleaks', '3c reuse lint', '3d 设计盒真源', '3e web smoke', '3f 文档真源',
+    '3g IPC 契约文档对拍', '3h 字体子集覆盖', '3i 守卫完备对拍', '3j check-privacy',
+    '3k 字体保留名', '5b ctest 上界属性完备') |
   ForEach-Object { "Set-Gate '$_' `$ok" }
-  $l35e = Get-GatesLastListReport -Source (($sgFive -join [Environment]::NewLine) + [Environment]::NewLine + '# 一条注释')
-  & $check '㉟e 档号够多但注释塌成个位数时,没有任何下界挡住' ($null -ne (Test-GatesLastFloor -Report $l35e -DefaultTarget))
+  $l35e = Get-GatesLastListReport -Source (($sgMany -join [Environment]::NewLine) + [Environment]::NewLine + '# 一条注释')
+  & $check '㉟e 注释塌成个位数时,挡住它的不是注释那一刀(若红在这里,先看夹具的档号数够不够)' ((Test-GatesLastFloor -Report $l35e -DefaultTarget) -match '注释')
   & $check '㉟f 同一输入在非默认目标上假红了' ($null -eq (Test-GatesLastFloor -Report $l35e))
 
   if ($fails.Count -gt 0) {
@@ -907,7 +934,7 @@ if (-not (Test-Path $Path)) {
   exit 1
 }
 # ⚠ 「是不是默认目标」要按**解析后的路径**比,不能按「有没有传 `-Path`」判(#217 复审【重要】):
-#   `-Path scripts/gates.ps1` 指的就是默认那个文件,而按前者判会把豁免整份关掉 ⇒ 三处 ③ 类
+#   `-Path scripts/gates.ps1` 指的就是默认那个文件,而按前者判会把豁免整份关掉 ⇒ ③ 类那几处
 #   调用点变成 Unguarded ⇒ 对**默认目标本身**假红,还点名让人去给它们加守卫,而它们本来就是
 #   清单里写着理由的豁免。接 CI 时在 workflow 里显式写 `-Path scripts/gates.ps1` 是很自然的写法,
 #   这条路径下一个 commit 就会踩到。

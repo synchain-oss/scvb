@@ -8,10 +8,12 @@
   同一个「上界」再次分叉成两个真源,正是 SL-320 修掉的那个洞的复发形态。
 
   **为什么读生成物,不读 CMakeLists**:属性可以写在任何一个 `CMakeLists.txt` 里
-  (`scvb_ipc_tests` 的 900 就在 `tests/ipc/CMakeLists.txt`,不在 `tests/CMakeLists.txt`),
+  (ipc 那一套的属性就写在 `tests/ipc/CMakeLists.txt`,**不在** `tests/CMakeLists.txt`),
   也可以由 `SCVB_BUILD_IPC_TESTS` 这类开关决定进不进集合。手边那个 CMakeLists 回答不了
-  「谁有属性」——`build*/**/CTestTestfile.cmake` 才是 ctest 真正吃的那份。本仓在
-  `tests/CMakeLists.txt` 与 `scripts/gates.ps1` 两处注释里都写过这句话,这个脚本是它的执行者。
+  「谁有属性」——`build*/**/CTestTestfile.cmake` 才是 ctest 真正吃的那份。
+  [SL-338] ⚠ **具体秒数不写在这里**,也不数「这句话在仓里躺着几份」:前者是别处的值、
+  后者是一个会随下一次改动变假的计数。这个脚本就是这条纪律的执行者 —— 要看今天的值,
+  跑它、或直接读生成物。
 
   判负口径(三条都要,缺一条门禁就会静默变绿):
     · 有 add_test 没有 TIMEOUT   ⇒ 判负,点名;
