@@ -29,14 +29,17 @@
 //   · 它只保证「表里查得到这句话」,**不保证那一行的处置是对的**。处置写反过一次
 //     (#220 第 4 轮),那种错只有人能看出来;
 //   · 它不管退出码分档对不对 —— 那是 `shot.mjs` 自己的事;
-//   · **只剥整行注释**带来的两个方向,都在「文本级」这条边界之内,记在这里免得下一个人
-//     重新推一遍(复审第 1 轮):
-//       — **假红**:行尾注释没剥,`const x = 1; // 旧写法是 throw new Error("…")` 会被当成
+//   · 剥注释走**逐字符扫描器** `lib/strip-comments.mjs`(与 check-gates-visibility 同一份)。
+//     [SL-330b] 之前这里是行过滤器,复审第 1 轮记过它带来的两个方向,**两个都随这次换实现关掉了**,
+//     留在这里是因为它们说明了「为什么剥法本身也算判据面」:
+//       — **假红**:行尾注释当年没剥,`const x = 1; // 旧写法是 throw new Error("…")` 会被当成
 //         实现里的一条文案收走。`shot.mjs` 注释密度高、正文里就在大段引用旧文案,
 //         今天那些恰好没写成 `throw` + `new` + `Error(` 连着的形态,所以没撞上;
-//       — **漏判**:剥注释的行形态会连**模板串里**以 `*` 或 `//` 起头的续行一起删掉,
-//         将来某条多行消息里写一条 `* 先看服务在不在` 的列表项,那行会被静默删,
-//         拼出来的开头就和真消息对不上。
+//       — **漏判**:行过滤会连**模板串里**以 `*` 或 `//` 起头的续行一起删掉,
+//         某条多行消息里写一条 `* 先看服务在不在` 的列表项,那行会被静默删,
+//         拼出来的开头就和真消息对不上。逐字符扫描认得出那是串的内容,原样留着。
+//   · 换来的**新边界**:模板串里的注释不再剥 —— 往 `shot.mjs` 注入页面的那段模板代码里
+//     写一句 `throw new Error("…")` 形态的注释,会被当成一条真文案收走(**假红**,会出声)。
 //   · **匹配单位是「症状列的单元格」**,不是整节、也不是整行(复审第 2/4 轮定的,
 //     [SL-336] 补进本表 —— 此前只写在 `guideSymptomCells` 与 `run()` 的内联注释里):
 //       — 通配 `.{0,40}?` **不跨 `|`、也不跨行**,否则能从隔壁「原因」列的散文里借字符
@@ -54,6 +57,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripJsComments } from "./lib/strip-comments.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SHOT = path.join(ROOT, "web-preview", "shot.mjs");
@@ -65,14 +69,6 @@ const MIN_MESSAGES = 12;
 
 const errors = [];
 const fail = (m) => errors.push(m);
-
-// JS 整行注释(`//` 与块注释的三种行形态)。与 check-gates-visibility 同口径:
-// 不剥的话,注释里引用一句旧文案就能冒充实现(本仓 ① 段栽过的那个哑弹)。
-const stripJsComments = (text) =>
-    text
-        .split("\n")
-        .filter((l) => !/^\s*(\/\/|\/?\*)/.test(l))
-        .join("\n");
 
 const norm = (s) => s.replace(/[`*]/g, "").replace(/\s+/g, " ").trim();
 
@@ -171,7 +167,10 @@ function run() {
     if (!fs.existsSync(GUIDE)) fail("找不到 web-preview/PREVIEW-GUIDE.md");
     if (errors.length) return;
 
-    const code = stripJsComments(fs.readFileSync(SHOT, "utf8"));
+    const code = stripJsComments(
+        fs.readFileSync(SHOT, "utf8"),
+        "web-preview/shot.mjs",
+    );
     const guide = fs.readFileSync(GUIDE, "utf8");
     const at = guide.indexOf(SECTION);
     if (at < 0) {
