@@ -47,11 +47,15 @@ namespace scvb::webview
 //   少了才是命中本条。[SL-376] 之后还多了一条更直白的指标:放行原因里只要出现
 //   `timeout`,就说明这一次开窗的首帧信号缺席(那一行会自带 `navFinished seen|not seen`
 //   帮着分「页面 load 完了但信号没发」与「导航压根没走完」)。
-//   本机 pluginval(真 WebView2 宿主)`--repeat 10` 实测:**10 次开窗,10 次都收到了
-//   `first-frame signal`** ⇒ rAF 在挪出可视区之后**仍在跑**,本条**未命中**。
-//   SL-370 当时的放行原因是 6 firstFrame / 4 navFinished / 0 timeout(那 4 次信号只晚了
-//   3–6 ms,是两条路的正常竞速);[SL-376] 拿掉 navFinished 这条路之后复测为
-//   **10 firstFrame / 0 navFinished / 0 timeout**,数表见 PR 描述。
+//   本机 pluginval(真 WebView2 宿主)`--repeat 10` 实测:**Input / Output 各 10 次开窗,
+//   每次都收到了 `first-frame signal`,且到达时闸门都还 `still parked`** ⇒ rAF 在挪出可视区
+//   之后**仍在跑**,本条**未命中**。放行原因两侧都是 **10 firstFrame / 0 navFinished /
+//   0 timeout**([SL-376] 之后 navFinished 本就不再放行)。
+//   ⚠ 同一次实测也量到了**这两条回调的先后本来就不稳**:Input 上 `navFinished` 每次都比
+//   首帧信号早 7–16 ms(10/10),Output 上反过来,首帧信号早约 21 ms(10 次里 8 次)。
+//   SL-370 当时量到的 6 firstFrame / 4 navFinished 是同一件事的另一个样本。
+//   **这正是不能拿 navFinished 放行的理由**:它赢不赢是掷骰子,而它赢的那几次露的就是白。
+//   数表见 PR 描述。
 //   ⚠ 这是**pluginval 宿主上的实测**,不等于所有 DAW —— 别把它读成「这条风险已经消失」,
 //   验收指标(每开一次窗就该有一行 `first-frame signal`)照留。
 //   真命中之后的出路不是回到隐藏(它更糟),而是「不挪 WebView、在它上面盖一层原生占位窗」;
@@ -212,7 +216,8 @@ private:
 // 统筹裁定(#241 15:49 ②)**不在本卡补判据**,改由真机项兜:验收按**正向**指标判 ——
 // 「开窗应看见一段约 1 秒的浅紫占位,再切到内容」;**仍见白/黑就说明位移没生效**。
 // 不按「没有黑」判,因为闸门空转时(底色已改浅)那条照样满足。
-// 本机 pluginval 实测的占位时长(revealed 的绝对 after 值)是 895~1220 ms,肉眼足够看清。
+// 本机 pluginval 实测的占位时长(revealed 的绝对 after 值):Input 827~978 ms、
+// Output 943~1115 ms([SL-376] 复测;SL-370 当时是 895~1220 ms),肉眼足够看清。
 // 宽度为 0(还没 resizeToDesignBox)时退一步用 1,保证平移量恒为正、不会原地不动。
 inline juce::Rectangle<int> parkedBounds(juce::Rectangle<int> visible) noexcept
 {
