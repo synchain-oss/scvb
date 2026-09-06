@@ -1535,12 +1535,13 @@ try {
     assertClean("range-follow-reanalyze");
 
     // C10 [SL-354] 用户 v5.6.7 真机四条 + 一道兜底闸,分三张页跑:
-    //     · C10a/b/d/e:`scenario=slow-state-echo`(写的回执先到、状态帧后到一拍,中间还夹
+    //     · C10a/b/e:`scenario=slow-state-echo`(写的回执先到、状态帧后到一拍,中间还夹
     //       一帧内容早于写、送达晚于写的全量快照)。默认 mock 是同步 emit 的,①② 在它上面
     //       **一条都复现不出来** —— 那正是 preview 三个月没照出这些缺陷的原因;
     //     · C10c:同一场景**另开一张干净页**(理由见那处);
-    //     · C10f:`scenario=applied-echo-drop`(写落地后补一帧缺 `analysis.applied` 的全量
-    //       快照)—— 与时序无关的另一条路,故不与上面几格共页。
+    //     · C10f + C10d:`scenario=applied-echo-drop`(写落地后补一帧缺 `analysis.applied`
+    //       的全量快照)—— 与时序无关的另一条路,故不与上面几格共页;字号那一格搭在这里,
+    //       理由是它只需要「框开着」,不该被 ①② 的守卫带红(见那处)。
     newBucket("sl354-real-cadence");
     await cdp.send("Page.navigate", {
         url: `${base}/web-preview/output.html?scenario=slow-state-echo`,
@@ -1607,29 +1608,6 @@ try {
         check(c10.badgeShown, "C10b 琥珀徽标也还在");
     }
 
-    // C10d ④「这些字有点小」。
-    //   钉的是**用了哪条刻度变量**,不是像素数:写死数值等于把设计值抄成第二份。
-    //   量在框**开着**的时候(接着 C10b 那一格,不先关框):display:none 下 getComputedStyle
-    //   的 font-size 照样解析得出,但那样量到的就不是用户眼前那一段了。
-    //   ← 把那条 font-size 规则删掉(退回 --fs-95),这一格红。
-    const c10d = await evaluate(
-        IN(`const p = gb("reanalyze-ask-scopenote");
-            if (!p) return null;
-            const root = d.documentElement;
-            const token = w.getComputedStyle(root).getPropertyValue("--fs-110").trim();
-            return { got: w.getComputedStyle(p).fontSize, token, shown: vis(p) };`),
-    );
-    if (check(c10d, "C10d 取到弹窗说明段与刻度变量")) {
-        check(
-            c10d.shown,
-            "C10d 量的是框开着时的那一段(不是 display:none 下的解析值)",
-        );
-        check(
-            !!c10d.token && c10d.got === c10d.token,
-            `C10d 弹窗说明段用的是 --fs-110 这条刻度(实得 ${c10d && c10d.got},刻度 ${c10d && c10d.token})`,
-        );
-    }
-
     // C10e 「用户自己改回去了」那条路 —— ①② 的修法把「写还没回来」和「改回原值」两个
     //   长得一样的形态分开了,这一格钉的是**分对了的那一半**:改回基线 ⇒ 框该关、闸该清。
     //   三步各钉 `!stale` 那支里的一件事。**每条删除式都有一格只由它变红**:
@@ -1691,6 +1669,8 @@ try {
     //   (实测过:那一刀当场空了)。一格判据的有效性取决于它前面几格留下的状态 ——
     //   本卡第二次栽在这上面,所以这里单开一页、只动中央槽这一项。
     //   ← 把开闸点改回只认 loudness_mode,或把判据改回只读 loudnessStale,这一格红。
+    //   本格跑在同一个异步回声场景上,所以 ① 那道守卫被拆掉时它**也会**红(第一下就
+    //   弹不出来)——那是超集,不是本格的判据失效;本格自己的两条删除式是上面两条。
     newBucket("sl354-centerslot");
     await cdp.send("Page.navigate", {
         url: `${base}/web-preview/output.html?scenario=slow-state-echo`,
@@ -1753,6 +1733,39 @@ try {
         check(
             c10fPre.badgeShown,
             "C10f 前置:缺字段那一帧还没到,徽标是亮的(下一格的对照点)",
+        );
+    }
+
+    // C10d ④「这些字有点小」。钉的是**用了哪条刻度变量**,不是像素数:写死数值等于把
+    //   设计值抄成第二份。
+    //   ⚠ 搭在**这张页**上而不是 slow-state-echo 那张:那张页上「框开着」本身是 ①② 的
+    //   修法挣来的,拆掉那道守卫会把本格一起带红,红的原因就跟字号无关了。这张页走同步
+    //   路径,弹框与 ①② 的守卫无关。
+    //   ⚠ 「框开着」用**盒高**判,不用 `vis(说明段)`:`vis` 只看元素自己的 hidden 属性,
+    //   而 hidden 挂在外层遮罩上 —— 拿它判这一段等于写了条恒真断言(初稿如此,D1 注入
+    //   时框根本没开、这一格照绿才发现)。display:none 的元素 getComputedStyle 仍解析得出
+    //   font-size,所以不加这一格的话,量到的可能压根不是用户眼前那一段。
+    //   ← 把 index.html 里 `.sc-modal--reanalyze` 那条 font-size 规则删掉(退回全局的
+    //     `.sc-modal__note`,即 --fs-95),这一格红。
+    const c10d = await evaluate(
+        IN(`const p = gb("reanalyze-ask-scopenote");
+            if (!p) return null;
+            const root = d.documentElement;
+            const token = w.getComputedStyle(root).getPropertyValue("--fs-110").trim();
+            return {
+                got: w.getComputedStyle(p).fontSize,
+                token,
+                boxH: Math.round(p.getBoundingClientRect().height),
+            };`),
+    );
+    if (check(c10d, "C10d 取到弹窗说明段与刻度变量")) {
+        check(
+            c10d.boxH > 0,
+            `C10d 量的是框开着时真上屏的那一段(盒高 ${c10d && c10d.boxH}px > 0)`,
+        );
+        check(
+            !!c10d.token && c10d.got === c10d.token,
+            `C10d 弹窗说明段用的是 --fs-110 这条刻度(实得 ${c10d && c10d.got},刻度 ${c10d && c10d.token})`,
         );
     }
     await sleep(1200); // 等那一帧缺 applied 的全量快照(300ms)送达并渲染完
