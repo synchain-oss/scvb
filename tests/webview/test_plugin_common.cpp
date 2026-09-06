@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 
 #include <BridgeBase.h>
@@ -196,6 +198,64 @@ TEST_CASE("FallbackPanel shows the diagnostics line when one is supplied")
     CHECK(panel.getLocalBounds().contains(panel.findChildWithID("fallback.retry")->getBounds()));
 }
 
+namespace
+{
+// WCAG 2.x 的相对亮度与对比度(sRGB)。只放在测试侧:产品代码需要的只是几个固定取值,
+// 需要「算得对」的是这条断言本身。公式逐字来自 WCAG 2.1 定义(relative luminance /
+// contrast ratio),不是近似式。
+double srgbLinear(double c)
+{
+    return c <= 0.03928 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+double relativeLuminance(juce::Colour c)
+{
+    return 0.2126 * srgbLinear(c.getFloatRed()) + 0.7152 * srgbLinear(c.getFloatGreen()) +
+           0.0722 * srgbLinear(c.getFloatBlue());
+}
+
+double contrastRatio(juce::Colour a, juce::Colour b)
+{
+    const auto la = relativeLuminance(a);
+    const auto lb = relativeLuminance(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+} // namespace
+
+// [SL-370] shellBackdrop() 从深色改成浅色之后,兜底面板的三行标签必须跟着变深墨。
+// 这块面板是 WebView2 起不来时**唯一**还能告诉用户发生了什么的东西:配色一旦同明暗,
+// 用户看到的就是一块什么都没有的浅色板,而这正是本卡改底色带出来的风险面。
+// 判据钉的是**对比度**,不是某个具体色值 —— 底色或字色任一侧改了都由它兜住,
+// 且不会因为换一个同样可读的色号就假红。
+TEST_CASE("FallbackPanel label colours stay readable on shellBackdrop()")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    scvb::webview::FallbackPanel::Options options;
+    options.title = "SCVB Output";
+    options.message = "WebView2 runtime missing";
+    options.details = "waited 15003 ms  |  no nav";
+
+    scvb::webview::FallbackPanel panel(std::move(options));
+    const auto bg = scvb::webview::shellBackdrop();
+
+    // 三行标签都画在 FallbackPanel::paint 的 fillAll(shellBackdrop()) 上。
+    // 4.5:1 = WCAG AA 正文档;诊断行 11px 比正文更小,同样按 4.5 判(不放宽到 3:1)。
+    for (const auto* id : {"fallback.title", "fallback.message", "fallback.details"})
+    {
+        auto* label = dynamic_cast<juce::Label*>(panel.findChildWithID(id));
+        REQUIRE(label != nullptr);
+        const auto fg = label->findColour(juce::Label::textColourId);
+        const auto ratio = contrastRatio(fg, bg);
+        INFO("id=" << id << " fg=" << fg.toDisplayString(true).toStdString()
+                   << " bg=" << bg.toDisplayString(true).toStdString() << " ratio=" << ratio);
+        CHECK(ratio >= 4.5);
+    }
+
+    // 反向哨兵:白字在这块浅底上远远不够 —— 这一行同时证明上面那三格不是恒真
+    // (SL-370 之前 title 用的正是 Colours::white)。
+    CHECK(contrastRatio(juce::Colours::white, bg) < 4.5);
+}
+
 TEST_CASE("majorVersionOf parses the WebView2 runtime version string")
 {
     using scvb::webview::PlatformWebView;
@@ -328,7 +388,10 @@ TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFold
     CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
     CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == in1);
 
-    // [SL-253] WebView2 在所有 web 内容**之下**铺的那一层必须是**不透明暗色**。
+    // [SL-253] WebView2 在所有 web 内容**之下**铺的那一层必须是**不透明**的 shellBackdrop()。
+    // [SL-370] 原话是「不透明暗色」——「暗」已经不对了(那正是用户看见的那段黑),
+    // 现在这一层与成品外壳同明暗;本断言从来只钉「等于 shellBackdrop() 且不透明」,取值本身
+    // 由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c 对着 --page-gradient 判。
     // 不设的话它是默认构造的 juce::Colour = ARGB 0x00000000(全透明),JUCE 会把这个值
     // 原样 put 进 put_DefaultBackgroundColor —— 于是从控制器建好到 tokens.css/base.css
     // 解析完为止这一层什么都不挡,露的是窗口的白(用户实测「开窗一瞬全白」)。

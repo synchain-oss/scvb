@@ -165,7 +165,11 @@ public:
     //     ⇒ 无标题栏的窗口连默认擦除都不走,而 VST3 编辑器正是这一类:
     //     detail::PluginUtilities::getDesktopFlags 只可能给出 0 或
     //     windowRequiresSynchronousCoreGraphicsRendering,两者都不含 windowHasTitleBar;
-    //   • 我方三层底色都是 shellBackdrop() = kShellBackdropArgb(暗色),画不出浅灰。
+    //   • (SL-355 当时)我方三层底色都是 shellBackdrop() = kShellBackdropArgb,那时它是暗色,
+    //     画不出浅灰。⚠ [SL-370] **这第三条证据已经不成立**:kShellBackdropArgb 现在是浅色
+    //     #d9cadb,和「浅灰」在肉眼上分不开。前两条(hbrBackground 为 0、WM_ERASEBKGND 不走)
+    //     不依赖取值,仍然成立,所以结论没变;但从今往后**不能再拿颜色去区分**第一段是宿主的
+    //     还是我方的 —— 而那正是本卡想要的结果(两边都浅 ⇒ 用户看不出交接)。
     //   ⇒ 浅灰只可能来自**宿主自己的插件窗容器** —— 它在我们的 HWND 上屏之前就在那儿。
     //   插件侧无从覆盖。**这一条只有真机能最终确认**(各 DAW 的容器底色不同)。
     //
@@ -191,7 +195,7 @@ public:
     //        Chromium 对 <head> 里的 <link rel="stylesheet"> 是**渲染阻塞**的:外链的 CSSOM
     //        就绪之前文档整体不进正常绘制路径,那一段屏上仍然是视图的 base background color
     //        (即 ①-b)。所以这条内联声明**确定**兜住的只有两条路:
-    //          · 外链**取不到 / 加载失败** —— 阻塞随之解除,画出来的是这条暗底而不是白。
+    //          · 外链**取不到 / 加载失败** —— 阻塞随之解除,画出来的是这条内联底色而不是白。
     //            本仓栽过三次的「web 资源没进包 ⇒ 空白窗口」正是这一类;
     //          · 外链到达之后与 base.css 的 body 底色同值,稳态零差异(所以它无副作用)。
     //        而「正常路径上它到底缩不缩得短那段白」取决于 Blink 在阻塞期间用不用根元素样式,
@@ -200,6 +204,46 @@ public:
     //   runtime 画,JUCE 不暴露它(只在 createWebView 里遍历子窗口找到后交给
     //   AccessibilityHandler::setNativeChildForComponent)。它是不是白闪的剩余来源,
     //   **只有真机能判**。
+    //
+    // -------------------------------------------------------------------------
+    // [SL-370] v5.6.8 真机反馈:「先白然后黑然后再白,最后内容,每次打开都固定复现,
+    // 冷热启动没区别」。上面那张地图没错,错的是它铺的**颜色**。
+    //
+    // 【定谳】成品首屏真正铺满窗口的是 `.sc-shell` 的 `--page-gradient`(浅色玻璃拟态;
+    //   web/shared/base.css 是这个 token 的唯一消费者;`#card` 的宽高 = 设计盒,而窗口尺寸
+    //   由 resizeToDesignBox 按同一个设计盒设,所以外壳几乎铺满窗口,只有它的圆角之外那一圈
+    //   露出 --page-backdrop)。
+    //   而 SL-253/271/355 一路铺的预绘底色是深色 #191820 —— 也就是说**那段黑是我们自己画的**。
+    //
+    // 【三段各自的归因】
+    //   · 白(第一段)= 同上面【灰】那一节:宿主自己的插件窗容器,在我方 HWND 上屏之前。
+    //     插件侧无从覆盖;v5.6.7 用户读成「灰」、v5.6.8 读成「白」,都是这一节(各 DAW/主题不同)。
+    //   · 黑(第二段)= 我方 ①-a/①-b/①-c 三层预绘底色,取值 kShellBackdropArgb。
+    //     **这是一条排除法结论,不是猜**:开窗路径上我方只有这一个深色值 —— JUCE 的
+    //     fallbackPaint 画白、外壳与 body 稳态都走浅色渐变、宿主容器是浅的,窗口里能出现
+    //     一整块黑的来源只剩它。(全仓求证:`grep -rn "shellBackdrop|page-backdrop" src web`。)
+    //   · 白(第三段)= 我方三层**盖不到**的那一节,即上面已登记的两条:①-b 缺席时
+    //     (JUCE 用 QueryInterface 取 ICoreWebView2Controller2,取不到就静默跳过)露出的
+    //     WebView2 默认白,以及 runtime 自己那个宿主 HWND 首帧之前的那一段。
+    //     ⚠ 顺序上它必然排在黑之后:JUCE 在控制器建好的完成回调里是先 addEventHandlers()
+    //     + setWebViewPreferences()(这里面才 put_DefaultBackgroundColor)、**再** Navigate
+    //     (juce_WebBrowserComponent_windows.cpp 的 createWebView 完成回调),所以 ①-b 一旦
+    //     在场就从控制器建好一路管到首帧;看得见白 ⇒ 这一层不在(或白来自 runtime 的 HWND)。
+    //     **插件侧没有 API 能盖它**,SL-370 也没有新增手段 —— 只有真机能判。
+    //
+    // 【本卡的修法】把预绘底色的三处同源(tokens.css 的 --page-backdrop / 三份 index.html 的
+    //   <head> 内联 / 本文件用的 kShellBackdropArgb)**整体换成浅色**:取
+    //   `--page-gradient` 的渐变轴中点色,现值 #d9cadb(本渐变四段斜率几乎一致,取整后它与
+    //   「沿轴等权均值」同为 #d9cadb;⑥c 判的是**中点色**这一条,不判均值)。
+    //   于是序列从「白 → 黑 → 白 → 内容」变成「白 → 浅底 → (白) → 内容」,黑那一段被彻底
+    //   拿掉,剩下的交接都发生在浅色之间。
+    //   ⚠ **别把它读成「第三段白也没了」** —— 那一节的来源在我们的 API 之外,本卡只是让它
+    //   两侧的邻居都变浅,肉眼上不再是黑白跳变。真机验收看的是「有没有黑」,不是「有没有白」。
+    //   ⚠ 连带面:kShellBackdropArgb 同时是 FallbackPanel 的面板底色,三行标签因此从浅字
+    //   改成深墨(判据 = tests/webview/test_plugin_common.cpp 的对比度断言);
+    //   --page-backdrop 也是外壳圆角之外那一圈的颜色,窗口四角由深变浅是**有意的**。
+    //   机检:⑥/⑥b 只保证三处彼此同值,「和成品可见底色是不是一个明暗」由
+    //   web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c 从 --page-gradient 现算现对。
     //
     // 【评估过、本卡没做的那条】「控制器建好 / 首帧到达之前先 setVisible(false)」:
     //   • 机制上不是死路:checkWindowAssociation 末尾那句
@@ -212,7 +256,7 @@ public:
     //     控制器就再也建不起来 —— 而我们还在等「首帧」才 setVisible(true),互相等死,
     //     表现是 15s 后兜底面板。
     //   • 何况 JUCE 根本没有「首帧」信号:最早只有 pageFinishedLoading(导航完成),
-    //     晚于 WebView2 的首帧,拿它当开关反而把暗屏拉长。
+    //     晚于 WebView2 的首帧,拿它当开关反而把「还没出内容」那一段拉长。
     //   ⇒ 拿开窗路径上的死锁风险去换一个观感问题不划算,故只做 ①-c。
     // -------------------------------------------------------------------------
     void paint(juce::Graphics& g) override

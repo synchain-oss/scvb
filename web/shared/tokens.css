@@ -82,7 +82,15 @@
         #e3d2e0 64%,
         #fde8ed 100%
     );
-    --page-backdrop: #191820; /* 外壳之外的兜底底色(设计稿 body 16 行);插件内外壳铺满,仅防露白 */
+    /* 外壳之外的兜底底色 + 开窗预绘底色(同一个值,三处同源:本条 / 三份 index.html 的
+     <head> 内联 / src/plugin-common/PlatformWebView.h 的 kShellBackdropArgb)。
+     [SL-370] 由设计稿 body 16 行的深色 #191820 改为**上面 --page-gradient 的渐变轴中点色**
+     —— 成品首屏真正铺满窗口的是 .sc-shell 的那道浅色渐变(base.css 里 --page-gradient 的唯一
+     消费者),预绘用深色等于自己在开窗序列里插一段黑(用户 v5.6.8 实测「白→黑→白→内容」)。
+     **有意偏离设计稿**,理由与三段归因只写在 src/plugin-common/WebViewHost.cpp 的
+     HostWebView::paint 头注一处。取值由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c
+     从 --page-gradient 现算现对,改了渐变而不改这里即红。 */
+    --page-backdrop: #d9cadb;
     --shell-border: rgba(255, 255, 255, 0.42);
     --shell-shadow:
         0 32px 70px rgba(14, 10, 22, 0.45),

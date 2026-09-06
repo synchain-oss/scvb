@@ -20,6 +20,8 @@
 //   ⑥ [SL-355] index.html 里**恰好一条**根元素底色、内联、排在外链 css 之前,取值与 C++ 侧
 //      kShellBackdropArgb 逐字一致(开窗白闪的第三段);⑥b 同值对拍 tokens.css 的
 //      --page-backdrop。
+//   ⑥c [SL-370] 那个 C++ 真源本身 == tokens.css 的 --page-gradient 渐变轴中点色
+//      —— ⑥/⑥b 只管三处彼此同值,同时写成深色时照样全绿,而那就是用户看见的那段黑。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -409,6 +411,85 @@ function checkTokensBackdrop() {
     console.log(`  --page-backdrop ${m[1]} = C++ 真源`);
 }
 
+/**
+ * `--page-gradient` 的**渐变轴中点色**(`#rrggbb`;解析不出返回 null)。
+ *
+ * 这是「成品首屏真正可见的底色」在 tokens.css 里唯一算得出来的锚:`--page-gradient` 是
+ * `.sc-shell` 的底(web/shared/base.css 是它的唯一消费者),而外壳几乎铺满整个插件窗口。
+ * 单色盖不住渐变,取中点色是**明确选定的**代表值(本渐变四段斜率几乎一致,它与沿轴等权
+ * 均值取整后同为一个值);⑥c 判的就是这一条,不判均值。
+ *
+ * **解析不出就 fail-closed**(返回 null ⇒ ⑥c 判负),不悄悄跳过:一条「算不出来所以不判」
+ * 的判据和没有这条判据是一回事,而它还会顶着「有判据」的名义。要求每个停靠点都带百分号
+ * 也是同一个取舍 —— 现值四个停靠点全都带,少写一个宁可红。
+ */
+function pageGradientMidHex() {
+    const tok = readFileSync(join(ROOT, "web/shared/tokens.css"), "utf8");
+    // 不钉排版:`[\s\S]*?` 跨行,prettier 把 linear-gradient 折成几行都命中。
+    const decl = tok.match(/--page-gradient:\s*linear-gradient\(([\s\S]*?)\);/);
+    if (!decl) return null;
+    const stops = [
+        ...decl[1].matchAll(/#([0-9a-fA-F]{6})\s+(\d+(?:\.\d+)?)%/g),
+    ].map((m) => ({
+        rgb: [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)),
+        pos: parseFloat(m[2]),
+    }));
+    if (stops.length < 2) return null;
+    if (stops[0].pos !== 0 || stops[stops.length - 1].pos !== 100) return null;
+    for (let i = 0; i < stops.length - 1; i++) {
+        const a = stops[i];
+        const b = stops[i + 1];
+        if (b.pos <= a.pos) return null;
+        if (a.pos <= 50 && 50 <= b.pos) {
+            const t = (50 - a.pos) / (b.pos - a.pos);
+            const mid = a.rgb.map((v, k) => Math.round(v + t * (b.rgb[k] - v)));
+            return (
+                "#" + mid.map((v) => v.toString(16).padStart(2, "0")).join("")
+            );
+        }
+    }
+    return null;
+}
+
+/**
+ * ⑥c [SL-370] 预绘底色必须与**成品首屏真正可见的底色**是同一个,而不只是三处彼此同值。
+ *
+ * ⑥ 与 ⑥b 对拍的是「三处预绘底色彼此一致」—— 三处一起写成深色时它们全绿,而用户看到的
+ * 正是这一段黑(v5.6.8:「先白然后黑然后再白,最后内容」)。少的那一条就是本格:把预绘
+ * 底色钉到**外壳渐变**上,让「预绘 ≠ 成品」这件事有东西会红。
+ *
+ * 对拍对象是 C++ 真源 kShellBackdropArgb(⑥/⑥b 已把 index.html 与 --page-backdrop 钉到它),
+ * 所以本格只需要一条边:C++ 真源 == --page-gradient 的中点色。
+ */
+function checkBackdropMatchesShell() {
+    console.log("\n--- 预绘底色 vs 外壳渐变(⑥c)---");
+    const backdrop = shellBackdropHex();
+    if (backdrop === null) {
+        bad(
+            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗底色的 C++ 真源)",
+        );
+        return;
+    }
+    const mid = pageGradientMidHex();
+    if (mid === null) {
+        bad(
+            "web/shared/tokens.css 的 --page-gradient 解析不出「#rrggbb <n>% × ≥2,首尾 0%/100%」的停靠点表" +
+                "(改了渐变写法就把 pageGradientMidHex() 一起改;这里宁可红也不跳过)",
+        );
+        return;
+    }
+    if (backdrop !== mid) {
+        bad(
+            `开窗预绘底色 ${backdrop} 与外壳渐变中点色 ${mid} 不一致 —— 成品首屏铺满窗口的是 ` +
+                `.sc-shell 的 --page-gradient,预绘与它差一个明暗,用户开窗就会看见多出来的一段` +
+                `(SL-370:「白 → 黑 → 白 → 内容」)。把 kShellBackdropArgb 改成 0xff${mid.slice(1)},` +
+                `并同步三份 index.html 的 <head> 内联与 tokens.css 的 --page-backdrop(⑥/⑥b 会跟着核)`,
+        );
+        return;
+    }
+    console.log(`  ${backdrop} = --page-gradient 中点色`);
+}
+
 function checkBootGuard(role, entry) {
     // ④ boot 守卫在场且事件名与 C++ 真源一致
     const header = readFileSync(
@@ -464,6 +545,7 @@ checkRole("input");
 // ④⑤ 那组守卫断言按 BOOT_GUARD_PENDING 暂缓,理由与自我删除条件见那里。
 checkRole("monitor");
 checkTokensBackdrop(); // ⑥b 与角色无关,只跑一次
+checkBackdropMatchesShell(); // ⑥c 同上
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);
