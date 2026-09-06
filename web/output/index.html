@@ -5274,6 +5274,14 @@
                             >{m}
                             轨的上游音频与已采集特征不一致,建议重新采集</span
                         >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-staleCapture-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
                     </div>
                     <!-- ⑨ [SL-239] 采集开着 ⇒ 上面那条上游改动提示整条是哑的。
                          不是错误、不阻断任何操作。**判据五项**,真源在 app.js 的 renderBanners ⑨,
@@ -5304,6 +5312,14 @@
                             data-gb="banner-fpPausedByCapture-text"
                             >采集开着时不比对上游改动(这一秒的特征正被写成新基线)——要检查上游有没有动过,先关掉采集再播放</span
                         >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-fpPausedByCapture-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
                     </div>
                     <!-- ⑩ [SL-247 / J92a] 布防还在、采集却已关 ⇒ 本次重采集不会记录任何东西。
                          判据 = §2.1 recapture.armed ∧ !capture_enabled(两个现成字段,不新增契约字段)。
@@ -5333,6 +5349,14 @@
                             data-gb="banner-recaptureVoided-text"
                             >重采集布防还在,但采集已关——这次重采集不会记录任何东西;重新打开采集,或撤销布防</span
                         >
+                        <button
+                            type="button"
+                            class="sc-banner__dismiss"
+                            data-gb="banner-recaptureVoided-dismiss"
+                            data-t-aria="banner.dismiss"
+                        >
+                            ✕
+                        </button>
                     </div>
                     <!-- ⑦ 加载守卫:写入自动化状态随工程恢复 -->
                     <div class="sc-banner" data-gb="banner-printGuard" hidden>
@@ -8788,25 +8812,37 @@
 
                 <!-- ====================== [SL-276] 「分析口径已更改」重分析提示 ======================
                      触发面 = Tab4 的响度口径与基线不一致(tab-settings.js syncStale 的同一判据,
-                     即旧的琥珀 badge 那一条)。琥珀 badge 保留为**常驻状态位**(点「稍后」之后
-                     还看得见口径是脏的),本框只负责把这件事推到用户眼前一次。
+                     即旧的琥珀 badge 那一条)。琥珀 badge 是**常驻状态位**,本框只负责把这件事
+                     推到用户眼前一次。
                      「重新分析」= 契约 §1.6 analyze("all")(不新增桥函数、不改契约);
-                     「稍后」/ Esc / 点遮罩 = 关闭,不写任何 state。 -->
+                     [SL-371] 另一枚钮从「稍后 = 只关框」改成**「撤销更改」= 一次写**:
+                     把刚改的那一项 setAnalysisConfig 回 `analysis.applied.*` 的值(用户
+                     v5.6.8 原话「直接强制回退到原来的方案吧,这样用户完全知道自己在干什么」)。
+                     写受理之后当前值回到基线 ⇒ 派生的徽标随下一帧自己灭 —— 所以
+                     「点完这枚钮徽标还亮着」不再是设计内的形态。
+                     **Esc / 点遮罩仍旧只关框、不写任何 state**:这两条是「关掉这个框」的
+                     通用手势,不是对内容的裁定;绑上写操作的话一次误按就改了工程状态,
+                     而且桥缺失 / 只读被拒时它们是唯一还能把框收掉的出口。 -->
                 <div class="sc-scrim" data-gb="reanalyze-ask" hidden>
                     <!-- role="alertdialog" 必须有可访问名,否则读屏只念出「对话框」三个字。
                          两条 aria 都指向框里已有的段落,不新增词条(复审【建议】)。
 
                          [SL-279 复审第 7 轮] 下面那条 aria-describedby 是**默认值**:范围档下
-                         tab-settings 的 syncReanalyzeRangeNote() 会把它改写成两个 id
-                         (scopenote + rangenote)。**不在这里静态并两个** —— describedby 直接
-                         引用的节点即使 hidden 也会被念,follow 档下那就成了把范围提示这句
-                         假话念给读屏用户,比不念更糟。 -->
+                         tab-settings 的 syncReanalyzeRangeNote() 会在末尾追加 rangenote 那个 id。
+                         **范围提示那一条不在这里静态并进来** —— describedby 直接引用的节点
+                         即使 hidden 也会被念,follow 档下那就成了把范围提示这句假话念给
+                         读屏用户,比不念更糟。
+                         [SL-371] 默认值里现在有**两个** id(scopenote + reverthint)。
+                         新加的那一段与上面那条禁令不冲突,判据是**它恒可见**:没有任何
+                         分支会把 reverthint 隐藏起来,所以不存在「念了却看不见」的形态。
+                         照抄这一行往里加第三个 id 之前,先回答同一个问题:那一段会不会
+                         在某些档位下被 hidden。 -->
                     <div
                         class="sc-modal sc-modal--reanalyze"
                         role="alertdialog"
                         aria-modal="true"
                         aria-labelledby="reanalyze-ask-body"
-                        aria-describedby="reanalyze-ask-scopenote"
+                        aria-describedby="reanalyze-ask-scopenote reanalyze-ask-reverthint"
                         data-gb="reanalyze-ask-panel"
                     >
                         <p
@@ -8821,6 +8857,18 @@
                             class="sc-modal__note"
                             data-gb="reanalyze-ask-scopenote"
                             data-t="set.reanalyze.scopeNote"
+                        ></p>
+                        <!-- [SL-371] 「撤销更改」这枚钮的后果说明。**必须有这一段** ——
+                             钮面只有四个字,而它现在会真的写一次 state;不说清楚的话,
+                             用户点下去看到档位自己跳回去,会读成「界面出 bug 了」。
+                             同时是 aria-describedby 的第二个目标(见 tab-settings.js 的
+                             syncReanalyzeRangeNote:那处按范围档在末尾追加第三个 id)——
+                             本段**恒可见**,不存在「hidden 却被念出来」那个坑。 -->
+                        <p
+                            id="reanalyze-ask-reverthint"
+                            class="sc-modal__note"
+                            data-gb="reanalyze-ask-reverthint"
+                            data-t="set.reanalyzeAsk.revertHint"
                         ></p>
                         <!-- [SL-279 复审第 6 轮] 范围档(§1.8 daw_loop / manual)专用:
                              那两档下「分析(全部)」只重算 global.range,契约 §1.21 规定
@@ -8863,7 +8911,7 @@
                                 type="button"
                                 class="sc-btn sc-btn--dark"
                                 data-gb="reanalyze-ask-later"
-                                data-t="set.reanalyzeAsk.later"
+                                data-t="set.reanalyzeAsk.revert"
                             ></button>
                             <button
                                 type="button"

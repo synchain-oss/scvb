@@ -697,6 +697,56 @@ input[type="range"] {
     stroke: var(--sem-amber-icon);
 }
 
+/* [SL-373] 建议类横幅(Output ⑧⑨⑩)右端的关闭钮。
+   **只挂这三条**:它们的数据源是 §2.8 段表 / §2.1 state,不是 §5.1 错误码;
+   横幅 ①-⑥ 是 SCVB_CONTRACT §5.1 降级纪律② 明令「不可手动关闭」的持续性条件,
+   给它们加这枚钮就是改冻结契约的行为面 —— 不加。
+
+   颜色走 `color: inherit`:三个色系(琥珀 / --red / --violet)的 ink 都在
+   `.sc-banner` 那一层,继承下来即可,不必为每系各写一条。
+
+   ★ 几何是**贴着横幅自己的内边距**量出来的,不是随手取的数:
+   `.sc-banner` 的 padding 是 10px(--sp-10)/ 13px(--sp-13),行高 11.5×1.45 ≈ 16.7px。
+     · 钮面 16px 高 —— 与那一行文字等高,**加了这枚钮横幅一个像素都不长**
+       (长了就会顶到固定设计盒里下面的 tab 条);
+     · ::after 的四个方向各自扩到**横幅的边框**为止:上下 −10px = 上下内边距,
+       左右 −17/−13px。于是命中区 ≈ 48 × 36 CSS px,纵向**恰好等于横幅自己的盒**。
+   为什么纵向不再撑到 48(RE-06 的 ≥24 物理 px @0.5 档 = ≥48 CSS px):⑧ 与 ⑩ 可以
+   同时在场,两条横幅之间只隔 9px(--sp-9),纵向再扩就会盖住相邻横幅的同名钮 ——
+   那正是 `web/shared/hit.js` 头注禁止的「靠抢邻件的事件来凑靶区」。
+   所以**横轴达标(48 CSS px = 0.5 档 24 物理 px)、纵轴只有 36 CSS px(18 物理 px)**,
+   这是一处**明知的欠达标**,不是忘了 —— 要补只能先把横幅整体加高,那是版式改动。 */
+.sc-banner__dismiss {
+    flex: none;
+    position: relative;
+    margin-left: auto;
+    min-width: 18px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-tag);
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: var(--fs-115);
+    line-height: 1;
+    opacity: 0.6;
+    cursor: pointer;
+}
+
+.sc-banner__dismiss:hover {
+    opacity: 1;
+}
+
+.sc-banner__dismiss::after {
+    content: "";
+    position: absolute;
+    left: -17px;
+    right: -13px;
+    top: -10px;
+    bottom: -10px;
+}
+
 .sc-banner--red {
     background: rgba(var(--sem-red), 0.15);
     border-color: rgba(var(--sem-red), 0.42);

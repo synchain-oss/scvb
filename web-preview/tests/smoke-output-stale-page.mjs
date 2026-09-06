@@ -747,6 +747,180 @@ try {
         );
         assertClean("scenario=connected(写入确认板序列)");
     }
+
+    // =========================================================================
+    // [SL-373] ⑦ 建议类横幅的 ✕:关得掉、本会话内同一条不再出现、条件变了要能再出现。
+    //
+    // 用户 v5.6.8 原话:「上方的黄色警告横幅加一个 x 可以关掉,不然一直在很烦」。
+    //
+    // 为什么必须页面级:这条链是「点击 → 会话记忆 → 下一帧 renderBanners 重算显隐」,
+    // 而 renderBanners 每帧都跑 —— 只把 hidden 设一次的实现在源码级看得见、在页面上
+    // 下一帧就被打回来。三段里只有最后一段是肉眼可见的那一段。
+    //
+    // 夹具:直接改 mock 的段表并补发一帧 `scvb.segments`,reason 取 `snapshot`
+    // ——**不取 `analyze`**:那个 reason 在 `UNDOABLE_REASONS` 里,会把 header 的撤销钮
+    // 置亮,给本档掺进一个与判据无关的副作用。
+    // `__SCVB_PREVIEW__` 挂在**壳页**上(shell.js:session),所以这几条不走 IN()。
+    log("=== ⑦ scenario=stale:横幅 ✕ 的三条判据(SL-373)===");
+    {
+        const p0 = await open("stale");
+        check(p0 !== null, "取到页内 DOM 快照");
+        check(p0.banner, "⑦ 前置:横幅 ⑧ 可见(有东西可关)");
+        check(p0.tabDot, "⑦ 前置:tab 导航琥珀点亮着");
+        check(
+            p0.lanesShown.join(",") === STALE_CHANNELS.join(","),
+            `⑦ 前置:泳道 ⚠ 在 ${STALE_CHANNELS.join("/")} 三条上(实得 ${p0.lanesShown.join("/")})`,
+        );
+
+        const DISMISS = IN(`
+            const b = gb("banner-staleCapture-dismiss");
+            if (!b) return null;
+            const r = b.getBoundingClientRect();
+            return {
+                name: b.getAttribute("aria-label") || "",
+                w: Math.round(r.width),
+                h: Math.round(r.height),
+            };
+        `);
+        const bannerShown = IN(
+            `const n = gb("banner-staleCapture"); return !!n && !n.hidden;`,
+        );
+        const bannerHidden = IN(
+            `const n = gb("banner-staleCapture"); return !!n && n.hidden;`,
+        );
+        const bannerText = IN(`
+            const n = gb("banner-staleCapture-text");
+            return n ? n.textContent.trim() : null;
+        `);
+        // 段表就地改 stale 位 + 补发一帧 §2.8。返回**这一帧真的带了几条 stale**,
+        // 用它当正证据:没有它的话「横幅没出现」分不清「判据挡住了」与「夹具没生效」。
+        const setStale = (chs) =>
+            evaluate(`(() => {
+                const s = window.__SCVB_PREVIEW__;
+                if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.segByCh) return null;
+                const want = ${JSON.stringify(chs)};
+                const all = [];
+                for (const [ch, entry] of s.ctl.model.segByCh) {
+                    entry.stale = want.indexOf(ch) >= 0;
+                    all.push(ch);
+                }
+                all.sort((a, b) => a - b);
+                const frame = s.ctl.segmentsPayload("snapshot", all);
+                s.ctl.emit("scvb.segments", frame);
+                return frame.channels.filter((c) => c.stale).length;
+            })()`);
+
+        // ---- ⑦a ✕ 在、有可访问名,且三语各不相同(data-t-aria 真的被 applyI18n 刷到)
+        const dz = await evaluate(DISMISS);
+        if (check(dz, "⑦a 横幅 ⑧ 上有 ✕ 钮")) {
+            check(
+                dz.name.length > 0 && !dz.name.startsWith("banner."),
+                `⑦a ✕ 的无障碍名取自字典(实得 ${JSON.stringify(dz.name)})`,
+            );
+            // 几何:横轴按 RE-06 补到 48 CSS px(= 0.5 档 24 物理 px),纵轴受横幅自身
+            // 高度所限只有 36 —— 这是 base.css 里写明的**明知欠达标**,本格钉住横轴那一半
+            // 别被顺手改小。命中区在 ::after 上,量的是钮面 + 两侧扩展。
+            check(
+                dz.w > 0 && dz.h > 0,
+                `⑦a ✕ 真的上屏了(${dz.w}×${dz.h} CSS px)`,
+            );
+        }
+        const names = { zh: dz ? dz.name : "" };
+        for (const lang of ["en", "fr"]) {
+            await evaluate(
+                IN(
+                    `const b = gb("header-lang-${lang}"); if (b) b.click(); return true;`,
+                ),
+            );
+            await sleep(300);
+            const d2 = await evaluate(DISMISS);
+            names[lang] = d2 ? d2.name : "";
+            check(
+                names[lang].length > 0 && !names[lang].startsWith("banner."),
+                `⑦a ${lang} 的无障碍名非空且取自字典(实得 ${JSON.stringify(names[lang])})`,
+            );
+        }
+        // 三语两两不等 —— 只断「非空」的话,fr 整块缺失回退到 en / zh 也会全绿。
+        check(
+            names.zh !== names.en &&
+                names.en !== names.fr &&
+                names.zh !== names.fr,
+            `⑦a 三语无障碍名两两不同(zh/en/fr = ${JSON.stringify([names.zh, names.en, names.fr])})`,
+        );
+        await evaluate(
+            IN(
+                `const b = gb("header-lang-zh"); if (b) b.click(); return true;`,
+            ),
+        );
+        await sleep(300);
+
+        // ---- ⑦b 点 ✕ ⇒ 横幅收起,而**同条件的另外两处提示照旧**
+        //   ← 把 showDismissible() 里那句 `show(node, seen.get(gb) !== sig)` 改回
+        //     `show(node, true)`(= 拆掉「关过没有」这道查表),本格与 ⑦c 一起红。
+        await evaluate(
+            IN(
+                `const b = gb("banner-staleCapture-dismiss"); if (b) b.click(); return true;`,
+            ),
+        );
+        check(await waitFor(bannerHidden, 3000), "⑦b 点 ✕ ⇒ 横幅 ⑧ 收起");
+        const after = await evaluate(PROBE);
+        if (check(after, "⑦b 关掉之后取到页内快照")) {
+            // 正证据:条件本身**一点没变**(⚠ 还在三条泳道上、tab 点还亮着),
+            // 所以「横幅没了」只可能是这枚 ✕ 干的,不是条件消失了。
+            check(after.tabDot, "⑦b tab 导航琥珀点**不受影响**(仍亮着)");
+            check(
+                after.lanesShown.join(",") === STALE_CHANNELS.join(","),
+                `⑦b 泳道 ⚠ **不受影响**(仍是 ${STALE_CHANNELS.join("/")};实得 ${after.lanesShown.join("/")})`,
+            );
+        }
+
+        // ---- ⑦c 之后每一帧都不再出现(renderBanners 每帧重算显隐,不是设一次 hidden)
+        await sleep(900);
+        check(
+            await evaluate(bannerHidden),
+            "⑦c 近 1s 的多帧渲染之后仍不出现(本会话内同一条不再弹回来)",
+        );
+
+        // ---- ⑦d **内容签名变了 ⇒ 再出现**:3 轨 → 2 轨,这是另一句话。
+        //   ← 把 renderBanners ⑧ 传给 showDismissible 的 `String(staleTracks)` 改成 `""`
+        //     (= 签名不带轨数),本格红,而 ⑦b/⑦c/⑦e 照绿。
+        const n2 = await setStale([2, 5]);
+        check(n2 === 2, `⑦d 夹具生效:这一帧带 2 条 stale(实得 ${n2})`);
+        check(
+            await waitFor(bannerShown, 3000),
+            "⑦d 轨数从 3 变 2 ⇒ 横幅**再次出现**(签名变了 = 另一句话)",
+        );
+        const t2 = await evaluate(bannerText);
+        check(
+            /(^|[^0-9])2([^0-9]|$)/.test(t2 || ""),
+            `⑦d 横幅文案写的是 2 轨(实得「${t2}」)`,
+        );
+
+        // ---- ⑦e **条件消失 ⇒ 记录清掉 ⇒ 同样的签名也要能再出现**
+        //   序列:再关一次(记下签名「2」)→ 清光 stale(条件为假)→ 摆回**同样那 2 条**。
+        //   最后一步必须再出现;记录不清的话签名逐字相同 ⇒ 永远不再出现。
+        //   ← 把 showDismissible() 里 `!on` 那支的 `seen.delete(gb)` 删掉,只红本格最后一条
+        //     (⑦b/⑦c/⑦d 全绿 —— 那正是「永久关闭」这个错误实现的样子)。
+        await evaluate(
+            IN(
+                `const b = gb("banner-staleCapture-dismiss"); if (b) b.click(); return true;`,
+            ),
+        );
+        check(await waitFor(bannerHidden, 3000), "⑦e 再关一次(记下签名「2」)");
+        const n0 = await setStale([]);
+        check(n0 === 0, `⑦e 夹具生效:这一帧零 stale(实得 ${n0})`);
+        check(
+            await waitFor(bannerHidden, 3000),
+            "⑦e 条件消失 ⇒ 横幅收起(这一帧同时把关掉记录删了)",
+        );
+        const n2b = await setStale([2, 5]);
+        check(n2b === 2, `⑦e 夹具生效:又摆回同样的 2 条(实得 ${n2b})`);
+        check(
+            await waitFor(bannerShown, 3000),
+            "⑦e 条件重新成立 ⇒ **同一个签名照样再出现**(关掉是这一次,不是永久)",
+        );
+        assertClean("scenario=stale(SL-373 ✕)");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

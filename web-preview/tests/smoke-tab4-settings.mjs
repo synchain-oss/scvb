@@ -507,6 +507,52 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
         );
     }
 
+    // [SL-371] 「稍后」→「撤销更改」的**接线格**。行为面由页面级的 C2 / C2b 承担
+    // (smoke-ui-layout-page),但那一套依赖无头浏览器、缺依赖时整套 SKIP —— 所以
+    // 「这枚钮到底挂了谁 / 它到底发不发写」必须留一份在这个永不 SKIP 的 node 套里。
+    // 剥注释再匹配:本卡在这两处写了大量解释性注释,不剥就会被自己的注释喂饱
+    // (SL-358 记的那个坑,同一个文件上刚栽过)。
+    {
+        const bare = stripComments(ts);
+        // ← 把 handler 改回 closeReanalyzeAsk,本格红。
+        check(
+            /el\.reanalyzeAskLater\.addEventListener\(\s*"click",\s*revertFromAsk\s*\)/.test(
+                bare,
+            ),
+            "[SL-371] 框里那枚次要钮挂的是 revertFromAsk(挂回 closeReanalyzeAsk 即红)",
+        );
+        // ← Esc 那条分支若也被改成 revertFromAsk,本格红(它断的是「只有一处接了撤销」)。
+        //   页面级 C2b 断的是同一件事的行为面,这里断的是接线面 —— 那一套会 SKIP。
+        check(
+            (bare.match(/revertFromAsk/g) || []).length === 2,
+            "[SL-371] 全文件只有两处 revertFromAsk(一处定义 + 一处接线)—— Esc / 遮罩没被接上写操作",
+        );
+        const from = bare.indexOf("async function revertFromAsk()");
+        const to = bare.indexOf("async function doReanalyzeFromAsk()");
+        check(
+            from >= 0 && to > from,
+            "[SL-371] 取到 revertFromAsk 的函数体(取不到就说明下面三格在空跑)",
+        );
+        const body = from >= 0 && to > from ? bare.slice(from, to) : "";
+        // ← 把这一次写删掉(退回「只关框」),本格红。
+        check(
+            /call\(\s*"setAnalysisConfig"/.test(body),
+            "[SL-371] 撤销那一路真的发了一次 setAnalysisConfig(不是只关框)",
+        );
+        // ← 把 baseline 改成别的来源(如硬写默认档),本格红:写回去的必须是
+        //   「上次全量分析真正用过的那一档」,那才是用户说的「原来的方案」。
+        check(
+            /appliedAnalysisConfigOf\(st\)\[pending\.field\]/.test(body),
+            "[SL-371] 写回去的是 analysis.applied.* 那一份(基线),不是默认档、也不是「上一个值」",
+        );
+        // ← 删掉这道闸,本格红:state 没带 applied 时上面那个取值会**回落到当前值**,
+        //   拿回落值去写就是一次骗人的空写(与 syncStale 里同名的兜底闸同一条理由)。
+        check(
+            /hasAppliedAnalysisConfig\(st\)/.test(body),
+            "[SL-371] 读不到基线时不发写(回落值只许渲染,不许写回去)",
+        );
+    }
+
     // 九条 = 读取 guide.rule* 生成物,零手抄
     check(
         ts.includes("GUIDE_RULE_KEYS") && ts.includes('"guide.rule" + (i + 1)'),
