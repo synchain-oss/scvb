@@ -2007,6 +2007,10 @@ window.__SCVB_OUTPUT__ = {
         return {
             at: (s.params && s.params.hostEchoAt) || 0,
             playingAt: s.playingAt || 0,
+            // 页面此刻手上的走带态是不是「**明确**停走」(与 hostEchoUseWideWindow 第一条
+            // 分支同一条判据)。冒烟拿它证明「采样窗里真的出现过停走帧」——
+            // 靠「我刚发了 setTransport(false)」推断的话,那一帧到没到页面并不知道。
+            stopped: !!(s.playhead && s.playhead.isPlaying === false),
             wide,
             on: hostEchoOn(s.params, undefined, wide),
         };
