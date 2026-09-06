@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // strip-comments.mjs —— JS / PowerShell 的**逐字符**注释剥离器(零依赖,Node >= 18,ESM)。
 //
-// 谁在用:`check-gates-visibility.mjs`(①段六套页面级冒烟、§④ gate 3i 脚本圈、②段 gates.ps1)
+// 谁在用:`check-gates-visibility.mjs`(①段各套页面级冒烟、§④ gate 3i 脚本圈、②段 gates.ps1)
 // 与 `check-preview-messages.mjs`(shot.mjs)。此前**每个文件各带一份行过滤器**,
 // 两份 `stripJsComments` 逐字相同 —— 而两份拷贝的坏处不是重复,是**只改一份**。
 //
