@@ -32,6 +32,9 @@ body {
     font-family: var(--ff-sans);
     font-size: var(--fs-120);
     color: var(--txt-2);
+    /* 外圈色:.sc-shell 几乎铺满窗口,肉眼能看到的只有它圆角之外那一圈与投影落的那个面。
+     [SL-377] 用户裁定这一圈取深色 —— 它**不是**开窗占位色(那个在 C++ 的 kShellBackdropArgb
+     与三份 index.html 的 <head> 内联里,仍是浅色)。两角色的边界写在 tokens.css 该条注释处。 */
     background: var(--page-backdrop);
     /* 排版精修照 Bridge styles.css 32-41 行:抗锯齿走灰阶(更清透,配玻璃拟态);
      禁止伪粗/伪斜合成 —— 子集每族仅内嵌单一字重,缺字重时宁可字体栈回退也不合成,

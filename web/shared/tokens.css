@@ -82,15 +82,19 @@
         #e3d2e0 64%,
         #fde8ed 100%
     );
-    /* 外壳之外的兜底底色 + 开窗预绘底色(同一个值,三处同源:本条 / 三份 index.html 的
-     <head> 内联 / src/plugin-common/PlatformWebView.h 的 kShellBackdropArgb)。
-     [SL-370] 由设计稿 body 16 行的深色 #191820 改为**上面 --page-gradient 的渐变轴中点色**
-     —— 成品首屏真正铺满窗口的是 .sc-shell 的那道浅色渐变(base.css 里 --page-gradient 的唯一
-     消费者),预绘用深色等于自己在开窗序列里插一段黑(用户 v5.6.8 实测「白→黑→白→内容」)。
-     **有意偏离设计稿**,理由与三段归因只写在 src/plugin-common/WebViewHost.cpp 的
-     HostWebView::paint 头注一处。取值由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c
-     从 --page-gradient 现算现对,改了渐变而不改这里即红。 */
-    --page-backdrop: #d9cadb;
+    /* **外圈色** —— 外壳圆角之外那一圈(base.css 的 body 底,也是外壳投影落的那个面)。
+     [SL-377] 用户裁定改回设计稿 body 16 行的深色 #191820。
+
+     ⚠ **本条与「开窗预绘底色」是两个角色,取值不同,不要再合成一个。**
+     SL-253→SL-370 期间两者一直同值,注释里也写着「三处同源」;SL-377 把它们拆开了:
+       · **占位色** = 遮挡闸期间铺满窗口的那块底(C++ 的 kShellBackdropArgb + 三份
+         index.html <head> 内联的 html 底),必须与成品外壳渐变的中点色一致才不跳阶,
+         现值 #d9cadb —— **不是本条**;
+       · **外圈色** = 本条,只在外壳圆角之外那一圈可见,深色让窗口四角收边。
+     判据 = web-preview/tests/smoke-embedded-resources.mjs:⑥/⑥c 钉占位色那一族,
+     ⑥b 钉本条(对拍 docs/design 设计稿的 body 底,并断言它**不等于**占位色 ——
+     两个角色一旦又被写成同值就红)。 */
+    --page-backdrop: #191820;
     --shell-border: rgba(255, 255, 255, 0.42);
     --shell-shadow:
         0 32px 70px rgba(14, 10, 22, 0.45),

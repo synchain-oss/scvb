@@ -22,8 +22,10 @@
           对 <head> 里的外链样式表是渲染阻塞的。这条声明确定兜住的是哪两条路、哪一条只有
           真机能判,连同「灰 / 白 / 内容」三段的来源与代码证据,只写在一处:
           src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注。别在这里复述。
-          这一条**必须是字面量**:--page-backdrop 定义在 tokens.css 里,写成 var() 就又回到
-          「等外链」那条路上。取值 = src/plugin-common/PlatformWebView.h 的
+          这一条**必须是字面量**:自定义属性一律定义在 tokens.css 里,写成 var() 就又回到
+          「等外链」那条路上。⚠ [SL-377] 尤其不要写成 var(--page-backdrop):那个变量已改作
+          **外圈色**(外壳圆角之外那一圈,深色),与本条的**占位色**是两个角色、取值不同。
+          取值 = src/plugin-common/PlatformWebView.h 的
           kShellBackdropArgb 低 24 位,由 web-preview/tests/smoke-embedded-resources.mjs
           的 ⑥ 与 C++ 真源逐字对拍(改一边不改另一边即红),
           故此处是本页「零裸 hex」纪律的**唯一**例外。

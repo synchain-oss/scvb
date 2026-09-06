@@ -9,7 +9,7 @@ namespace scvb::webview
 {
 
 // -----------------------------------------------------------------------------
-// [SL-370] 开窗遮挡闸 —— 「WebView 子窗口此刻该不该待在可视区之外」的**唯一判定处**。
+// [SL-370 / SL-376] 开窗遮挡闸 —— 「WebView 子窗口此刻该不该待在可视区之外」的**唯一判定处**。
 //
 // 【为什么需要它】把预绘底色换成成品浅色(本卡第一段)只是兜底:用户机的 WebView2 Runtime
 // 是 152.0.4191.66(ICoreWebView2Controller2 / DefaultBackgroundColor 全可用),仍固定看到
@@ -35,25 +35,28 @@ namespace scvb::webview
 //   widget 同样会停 BeginFrame,rAF 随之停摆 —— 与被否掉的 `put_IsVisible(false)` 殊途同归,
 //   而我们挪的正是被 Windows 裁到零可见面积的那个 WebView2 宿主 HWND。**本机验不了**
 //   (要真 WebView2 宿主),所以这条是**已知风险,不是已排除项**。
-//   命中时的形态是**静默降级,不是崩/卡**:`firstFrame` 永不到达 ⇒ 每次开窗改由 `navFinished`
-//   或 3s 超时放行。屏上仍然是「浅底 → 内容」(放回来那一刻 WebView2 铺的是
-//   DefaultBackgroundColor,现在也是同一个浅色),但**「等到首帧已绘再放」这条保证没了**,
-//   放回来之后可能还要几帧才出内容 —— 而这件事**没有任何一格判据会红**。
+//   命中时的形态是**静默降级,不是崩/卡**:`firstFrame` 永不到达 ⇒ 每次开窗都吃满 3s 超时
+//   兜底。[SL-376] 之后 `navFinished` 不再放行,所以这条降级的代价从「早放几毫秒」变成
+//   「每次开窗多按住 3 秒占位」—— 屏上仍然是「粉底 → 内容」,不会白也不会卡,但
+//   **「等到首帧已绘再放」这条保证没了**,而这件事**没有任何一格判据会红**。
 //   探针有两行,**必须一起读**:`WebViewHost::handleFirstFrame()` 的
 //   `first-frame signal after <n> ms (still parked|already revealed)`(信号**到没到**),
 //   与 `noteRevealed()` 的 `webview revealed (<reason>) after <n> ms`(**谁**放的行)。
 //   只看后者会把「信号来晚了」误读成「信号没来」—— 而这两者的处置完全不同。
 //   真机验收的硬指标是**前者的条数**:开 N 次窗就该有 N 行 `first-frame signal`;
-//   少了才是命中本条。放行原因是 `navFinished` 占多数**不算**命中(它只说明 load 事件
-//   在这台机器上跑赢了两层 rAF)。
+//   少了才是命中本条。[SL-376] 之后还多了一条更直白的指标:放行原因里只要出现
+//   `timeout`,就说明这一次开窗的首帧信号缺席(那一行会自带 `navFinished seen|not seen`
+//   帮着分「页面 load 完了但信号没发」与「导航压根没走完」)。
 //   本机 pluginval(真 WebView2 宿主)`--repeat 10` 实测:**10 次开窗,10 次都收到了
-//   `first-frame signal`**(6 次「still parked」+ 4 次「already revealed」)⇒ rAF 在挪出
-//   可视区之后**仍在跑**,本条**未命中**。放行原因 6 firstFrame / 4 navFinished / 0 timeout;
-//   那 4 次里信号只晚了 3–6 ms,是两条路的正常竞速,不是信号缺席。
+//   `first-frame signal`** ⇒ rAF 在挪出可视区之后**仍在跑**,本条**未命中**。
+//   SL-370 当时的放行原因是 6 firstFrame / 4 navFinished / 0 timeout(那 4 次信号只晚了
+//   3–6 ms,是两条路的正常竞速);[SL-376] 拿掉 navFinished 这条路之后复测为
+//   **10 firstFrame / 0 navFinished / 0 timeout**,数表见 PR 描述。
 //   ⚠ 这是**pluginval 宿主上的实测**,不等于所有 DAW —— 别把它读成「这条风险已经消失」,
 //   验收指标(每开一次窗就该有一行 `first-frame signal`)照留。
-//   真命中之后的出路不是回到隐藏(它更糟),而是「不挪 WebView、在它上面盖一层原生占位窗」,
-//   或者接受 `navFinished` 放行 —— 那时再立卡,别在这里预先写死结论。
+//   真命中之后的出路不是回到隐藏(它更糟),而是「不挪 WebView、在它上面盖一层原生占位窗」;
+//   **不要再退回「navFinished 也放行」**—— 那正是 SL-376 定谳掉的那段白(见下面【只认首帧】)。
+//   那时再立卡,别在这里预先写死结论。
 //
 // 【为什么等到 onNavigationStarted 才挪】SL-271 的重试泵挂在 `HostWebView::paint` 上,而挪出
 // 可视区之后 JUCE 不再画它 ⇒ 泵停。导航开始 = WebView2 控制器已经建好 —— JUCE 在
@@ -63,9 +66,30 @@ namespace scvb::webview
 // `if (! hasBrowserBeenCreated())` —— 控制器建好之后它本来就是空调用。所以「控制器建好之前
 // 一直可见」既保住了泵,又没有放过任何一帧白:那一段屏上是我方 paint 的 shellBackdrop()。
 //
-// 【三条放行路,谁先到算谁】firstFrame(前端 rAF 信号)/ navFinished(JUCE 的
-// pageFinishedLoading,信号丢了也不会卡住)/ timeout(kRevealFallbackMs,前两条都没来时兜底,
-// 绝不允许「永远不放行」)。
+// 【[SL-376] 只认首帧 —— 放行路从三条减到两条】
+// v5.6.10 真机(用户)是「粉色占位 → **白一瞬** → 内容」:黑没了(SL-370 的颜色那一段生效),
+// 白挪到了**放行之后、页面首帧上屏之前**。定谳靠的是 SL-370 自己留下的那张数表 ——
+// pluginval `--repeat 10` 里有 **4/10 次是 navFinished 抢在 firstFrame 前 3–6 ms 放的行**。
+// `pageFinishedLoading`(= WebView2 的 NavigationCompleted)只说明「文档下载完、load 事件发了」,
+// 它**不保证任何一帧已经合成**;此刻把 WebView 挪回可视区,露出来的就是 WebView2 那个宿主
+// HWND 在首帧之前画的东西(DefaultBackgroundColor 缺席时即白,见 SL-364)。
+// pluginval 上只差 3–6 ms 所以肉眼看不见,用户机上差距更大,于是白了一瞬。
+// ⇒ `navFinished` **不再放行**,只记账(`navigationFinishedSeen()`,进超时那一行诊断);
+//   放行只认 `firstFrame`(前端在 DOMContentLoaded 后嵌套两层 rAF 才发,⇒ 前一帧确已合成),
+//   外加 `timeout` 兜底与 `fallback` 顶替。
+//
+// 【为什么首帧信号到了还要再等一个 tick】两层 rAF 保证的是「前一帧已经**提交**给合成器」,
+// 从提交到**上屏**还差一拍(合成器要拿到帧、Windows 要把那块位图推到桌面)。信号一到就立刻
+// 挪回来,仍然可能在这一拍里露出 WebView2 的底 —— 那正是用户看到的「白一瞬」。
+// 所以 `onFirstFrame()` 只**武装**,真正放行落在下一个 25Hz tick 上
+// (`kRevealSettleTicks`,一格 ≤40 ms,肉眼无感,而合成那一拍在 60Hz 上约 16 ms)。
+// ⚠ 这一拍是**按 tick 数**等的,不是按毫秒 —— 宿主 timer 被卡住时它会跟着变长,但那种情形下
+//   整个界面本来就不动,不构成新风险。
+//
+// 【放行路一览】firstFrame(前端 rAF 信号,**唯一的正常路**,武装后下一个 tick 生效)/
+// timeout(kRevealFallbackMs,信号没来时兜底,绝不允许「永远不放行」)/
+// fallback(看门狗切了兜底面板,面板自己铺满本组件,这不算「放行」)。
+// navFinished **不在此列**,它只被记下来供诊断。
 //
 // 本类是**纯逻辑**、不碰 JUCE 组件:WebViewHost.cpp 不进任何测试目标,把判定收在这里才有
 // 单测(tests/webview/test_plugin_common.cpp)。几何那一半见下面的 parkedBounds()。
@@ -73,15 +97,22 @@ namespace scvb::webview
 class RevealGate
 {
 public:
-    // 前两条放行路都没来时的兜底上界。取 3s:比 kAfterNavBudgetMs(5s)短,
+    // 首帧信号没来时的兜底上界。取 3s:比 kAfterNavBudgetMs(5s)短,
     // 保证「宁可早放行看见一点白」也不会拖到看门狗兜底面板那一步。
     static constexpr int kRevealFallbackMs = 3000;
+
+    // [SL-376] 首帧信号到达后还要压住几个 tick 才放行(宿主 25Hz ⇒ 一格 ≤40 ms)。
+    // 理由见头注【为什么首帧信号到了还要再等一个 tick】。
+    static constexpr int kRevealSettleTicks = 1;
 
     // 一次新的加载尝试开始(构造 / retry 共用):重新武装,允许下一次导航再挪一次。
     void beginLoadAttempt() noexcept
     {
         parked_ = false;
         revealed_ = false;
+        settling_ = false;
+        settleTicksSeen_ = 0;
+        navFinishedSeen_ = false;
         revealReason_ = "";
     }
 
@@ -95,19 +126,44 @@ public:
         parkedAtMs_ = nowMs;
     }
 
-    // 前端「首帧已绘」信号(__scvb__firstFrame)。**即使还没挪走也要记账**:
-    // 记成已放行之后,后面那次 onNavigationStarted 就不会再把已经画好的页面挪走。
-    void onFirstFrame() noexcept { reveal("firstFrame"); }
+    // 前端「首帧已绘」信号(__scvb__firstFrame)。**这里不放行**,只武装 —— 真正放行在
+    // 下一个 onTick(kRevealSettleTicks),理由见头注。
+    // 还没挪走时**也要记账**:记成已放行之后,后面那次 onNavigationStarted 就不会再把
+    // 已经画好的页面挪走。
+    void onFirstFrame() noexcept
+    {
+        if (!parked_)
+        {
+            revealed_ = true;
+            return;
+        }
+        if (!settling_)
+        {
+            settling_ = true;
+            settleTicksSeen_ = 0;
+        }
+    }
 
-    // JUCE 的 pageFinishedLoading。信号那条路断了(前端脚本整体没跑起来)时由它兜。
-    void onNavigationFinished() noexcept { reveal("navFinished"); }
+    // JUCE 的 pageFinishedLoading。[SL-376] **不放行**:它只保证文档下载完,不保证任何一帧
+    // 已经合成 —— 拿它放行正是 v5.6.10 那一瞬白的来源(头注【只认首帧】)。只记账,
+    // 供超时那一行诊断区分「页面 load 完了但首帧信号没发」与「导航压根没走完」。
+    void onNavigationFinished() noexcept { navFinishedSeen_ = true; }
 
-    // 25Hz tick 的超时兜底。差值走 uint32 → int32:getMillisecondCounter 每 ~49 天回绕,
-    // 直接比大小会在回绕点把「刚挪走」算成「早该放行」(或反过来永不放行)。
+    // 25Hz tick:先结算首帧信号的那一拍,再看超时兜底。差值走 uint32 → int32:
+    // getMillisecondCounter 每 ~49 天回绕,直接比大小会在回绕点把「刚挪走」算成
+    // 「早该放行」(或反过来永不放行)。
     void onTick(std::uint32_t nowMs) noexcept
     {
         if (!parked_)
             return;
+        if (settling_)
+        {
+            // 首帧信号已到:压满 kRevealSettleTicks 个 tick 再放。**这一段必须先于超时判定**,
+            // 否则信号踩着 3s 线到达时会被记成 timeout,数表里就凭空多出一次「信号缺席」。
+            if (++settleTicksSeen_ >= kRevealSettleTicks)
+                reveal("firstFrame");
+            return;
+        }
         if (static_cast<std::int32_t>(nowMs - parkedAtMs_) >= kRevealFallbackMs)
             reveal("timeout");
     }
@@ -118,11 +174,14 @@ public:
     bool parked() const noexcept { return parked_; }
     // 最近一次放行的原因(诊断行用;从未放行过是空串)。
     const char* lastRevealReason() const noexcept { return revealReason_; }
+    // [SL-376] pageFinishedLoading 到过没有。**与放行无关**,只进 timeout 那一行诊断。
+    bool navigationFinishedSeen() const noexcept { return navFinishedSeen_; }
 
 private:
     void reveal(const char* why) noexcept
     {
         revealed_ = true;
+        settling_ = false;
         if (!parked_)
             return;
         parked_ = false;
@@ -131,6 +190,9 @@ private:
 
     bool parked_ = false;
     bool revealed_ = false;
+    bool settling_ = false; // [SL-376] 首帧信号已到、正在压那一拍
+    bool navFinishedSeen_ = false;
+    int settleTicksSeen_ = 0;
     std::uint32_t parkedAtMs_ = 0;
     const char* revealReason_ = "";
 };

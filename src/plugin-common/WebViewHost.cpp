@@ -113,7 +113,9 @@ public:
     //      clipObscuredRegions:isOpaque() ⇒ excludeClipRegion)。父的 fillAll 净效果为 0。
     //   ② WebView2 的 DefaultBackgroundColor —— 要等**控制器建好**才有意义,而白闪正是
     //      控制器建好之前那一段。
-    //   ③ tokens.css 的 --page-backdrop —— 更晚,要等页面解析。
+    //   ③ 页面自己的底色 —— 更晚,要等页面解析。(SL-253 当时这一层是 tokens.css 的
+    //      --page-backdrop;[SL-355] 之后由三份 index.html <head> 里那条内联的 html 底承担,
+    //      而 [SL-377] 起 --page-backdrop 已改作**外圈色**,不再是这条链上的一环。)
     // 而这一段真正在画的是 JUCE 自己:WebBrowserComponent::paint 转给后端的 fallbackPaint,
     // WebView2 后端那份**每帧无条件** fillAll(Colours::white)
     // (juce_WebBrowserComponent_windows.cpp:492)。白的来源就是它。
@@ -185,6 +187,11 @@ public:
     //        取不到就静默跳过;而 PlatformWebView.h 的 kMinRuntimeMajor 注释①自己就把
     //        ICoreWebView2Controller2 归为「只经 QueryInterface 取、取不到就跳过、不构成
     //        下限」的那一类。取不到时,这一节露的就是 WebView2 自己的默认白。
+    //        [SL-376] 这一条从「无从观测」变成**每次加载尝试打一行**:
+    //        `webview2 default background: available|UNAVAILABLE|unknown ...`
+    //        (WebViewHost::logBackgroundColourSupport,判定见 PlatformWebView.h 的
+    //        backgroundColourSupport 头注 —— 它证的是「运行时有没有这个接口」,**不是**
+    //        「JUCE 那次 QueryInterface 真成功了」,别读过头)。
     //   ①-c 文档已提交、外链 css 还没到 —— 页面自己没有任何底色,露的是 ①-b
     //        (①-b 缺席时就是白)。tokens.css 与 base.css 各要经一次 ResourceProvider 的
     //        WebResourceRequested 回到消息线程才拿得到。[SL-355] 因此在三份 index.html 的
@@ -221,8 +228,9 @@ public:
     //   · 黑(第二段)= 我方 ①-a/①-b/①-c 三层预绘底色,取值 kShellBackdropArgb。
     //     **这是一条排除法结论,不是猜**:开窗路径上我方只有这一个深色值 —— JUCE 的
     //     fallbackPaint 画白、外壳与 body 稳态都走浅色渐变、宿主容器是浅的,窗口里能出现
-    //     一整块黑的来源只剩它。(全仓求证:预绘底色的全部落点 = ⑥/⑥b/⑥c 三格读的那几个
-    //     路径,见 web-preview/tests/smoke-embedded-resources.mjs。)
+    //     一整块黑的来源只剩它。(全仓求证:预绘底色的全部落点 = ⑥ 与 ⑥c 读的那几个路径,
+    //     见 web-preview/tests/smoke-embedded-resources.mjs;[SL-377] 起 ⑥b 读的是外圈色,
+    //     不在这条链上。)
     //   · 白(第三段)= 我方三层**盖不到**的那一节,即上面已登记的两条:①-b 缺席时
     //     (JUCE 用 QueryInterface 取 ICoreWebView2Controller2,取不到就静默跳过)露出的
     //     WebView2 默认白,以及 runtime 自己那个宿主 HWND 首帧之前的那一段。
@@ -232,32 +240,44 @@ public:
     //     在场就从控制器建好一路管到首帧;看得见白 ⇒ 这一层不在(或白来自 runtime 的 HWND)。
     //     **插件侧没有 API 能盖它**,SL-370 也没有新增手段 —— 只有真机能判。
     //
-    // 【本卡的修法 · 第一段:颜色(兜底)】把预绘底色的三处同源(tokens.css 的
-    //   --page-backdrop / 三份 index.html 的 <head> 内联 / 本文件用的 kShellBackdropArgb)
+    // 【SL-370 的修法 · 第一段:颜色(兜底)】把预绘底色(tokens.css 的 --page-backdrop /
+    //   三份 index.html 的 <head> 内联 / 本文件用的 kShellBackdropArgb,SL-370 当时这三处同源)
     //   **整体换成浅色**:取 `--page-gradient` 的渐变轴中点色,现值 #d9cadb(本渐变四段斜率
     //   几乎一致,取整后它与「沿轴等权均值」同为 #d9cadb;⑥c 判的是**中点色**这一条,不判均值)。
     //   黑那一段就此彻底拿掉。
     //   ⚠ 连带面:kShellBackdropArgb 同时是 FallbackPanel 的面板底色,三行标签因此从浅字
-    //   改成深墨(判据 = tests/webview/test_plugin_common.cpp 的对比度断言);
-    //   --page-backdrop 也是外壳圆角之外那一圈的颜色,窗口四角由深变浅是**有意的**。
-    //   机检:⑥/⑥b 只保证三处彼此同值,「和成品可见底色是不是一个明暗」由
-    //   web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c 从 --page-gradient 现算现对。
+    //   改成深墨(判据 = tests/webview/test_plugin_common.cpp 的对比度断言)。
+    //   ⚠ [SL-377] **上面那个「三处同源」已经拆成两个角色**:用户裁定窗口四角
+    //   (= --page-backdrop,外壳圆角之外那一圈)**改回深色 #191820**,而占位色
+    //   (kShellBackdropArgb + 三份 index.html 内联)保持浅色不动。SL-370 时四角跟着变浅是
+    //   顺带效果、当时留给用户终验,终验结论就是这一条。
+    //   机检:⑥ 保证占位色那几处彼此同值,⑥c 从 --page-gradient 现算现对「和成品可见底色
+    //   是不是一个明暗」,⑥b 单独钉外圈色(对拍设计稿 body 底,并断言它 != 占位色)。
     //
-    // 【本卡的修法 · 第二段:根本不让 WebView 上屏(主修法)】统筹裁定(#241 评论):
+    // 【SL-370 的修法 · 第二段:根本不让 WebView 上屏(主修法)】统筹裁定(#241 评论):
     //   **光换颜色盖不住第三段白**。用户机的 Runtime 是 152.0.4191.66,ICoreWebView2Controller2
     //   与 DefaultBackgroundColor 全都可用(即 ①-b 这一层确定在场、且已经是浅色),仍然固定
     //   看得见白 ⇒ 那几帧白不由我方任何一层底色决定,而是 WebView2 自己那个宿主 HWND 在合成
     //   首帧之前画的,插件侧没有 API 管得到它的颜色。
     //   于是改成管**它在不在屏上**:导航开始 → 页面「首帧已绘」之间,把 WebView 子窗口整块
     //   挪到宿主客户区之外,那块地方由 WebViewHost::paint 铺 shellBackdrop() 当占位;
-    //   三条放行路(前端 __scvb__firstFrame / pageFinishedLoading / 3s 超时)谁先到算谁。
-    //   判定收在 WebViewRevealGate.h(纯逻辑、有单测),**为什么是「挪走」而不是
+    //   SL-370 当时是三条放行路(前端 __scvb__firstFrame / pageFinishedLoading / 3s 超时)
+    //   谁先到算谁。判定收在 WebViewRevealGate.h(纯逻辑、有单测),**为什么是「挪走」而不是
     //   setVisible(false) 或零尺寸、为什么必须等到导航开始**,只写在那份头注一处,别在这里复述。
     //   ⇒ 目标序列:「白(宿主容器)→ 浅色占位 → 内容」。
     //   ⚠ 仍然只有真机能判:①-b 之前(控制器建好那一瞬)那几帧不在闸门覆盖范围内 ——
     //   闸门要等 NavigationStarting 才动,而那之前 WebView2 已经建好控制器。这一段是否还看得见
     //   白,20 次开关的真机验收说了算;真看得见,下一步只能往「控制器建好之前先零尺寸」走,
     //   而那条路会拆掉 SL-271 的重试泵(风险见下面【评估过、本卡没做的那条】)。
+    //
+    // -------------------------------------------------------------------------
+    // [SL-376] v5.6.10 真机反馈:「粉色占位 → **白一瞬** → 内容」,黑已消、冷热无差。
+    //   ⇒ SL-370 的两段修法都生效了,剩下的白落在**放行之后、页面首帧上屏之前**。
+    //   定谳与修法(放行只认 firstFrame + 信号到后再压一个 tick)只写在
+    //   WebViewRevealGate.h 头注一处,这里不复述。这里只记它对上面那张地图的影响:
+    //   目标序列变成「白(宿主容器)→ 粉色占位 → 内容」,占位段从「首帧信号与 load 事件
+    //   竞速的结果」变成「一定等到首帧已合成并上屏」。
+    // -------------------------------------------------------------------------
     //
     // 【SL-355 评估过、当时没做的那条】「控制器建好 / 首帧到达之前先 setVisible(false)」。
     // ⚠ [SL-370] 这一段仍然成立、且**仍然是被否掉的那个方案** —— 本卡做的不是它:
@@ -425,6 +445,8 @@ void WebViewHost::beginLoadAttempt()
             juce::String(warm ? kWarmLoadBudgetMs : kColdLoadBudgetMs) + " ms, udf " +
             userDataFolder_.getFullPathName());
 
+    logBackgroundColourSupport();
+
     // 必须在任何 emit 之前完成首个 goToURL(前端脚本随后加载并注册监听)。
     webView_->setVisible(true);
     webView_->goToURL(entryUrl());
@@ -506,11 +528,45 @@ void WebViewHost::applyRevealGate()
     repaint(); // 挪走的那一刻要让占位底色立刻补上,别等下一次自然重绘
 }
 
-// 放行诊断行。**读表的人要知道的两件事**(#241 复审),都写在这里一处:
-//   · `reason` 有**四**种而不是三种:除三条放行路外,还有 `fallback` —— 遮挡期内看门狗到点
-//     切了兜底面板(RevealGate::onFallbackShown),随后 pageFinishedLoading 才到,于是在面板
-//     已经铺满窗口时打出一行 `webview revealed (fallback)`。它**不是**「放行」,是被面板顶掉;
-//     真机数表时把它单独归一类,别塞进三条放行路里。
+// [SL-376 / SL-364] 「DefaultBackgroundColor 这一层在不在」的诊断行。
+//
+// 判定与它证到哪一步(以及为什么插件侧做不到直接观测)只写在
+// PlatformWebView.h 的 backgroundColourSupport() 头注一处,这里不复述。
+// 三种结局各一条,措辞互不相同,便于在 DebugView / 宿主日志里直接 grep:
+//   available   —— 正常;这一层在,控制器建好到首帧之间铺的是我方 argb。
+//   UNAVAILABLE —— SL-364 命中;那一段露的是 WebView2 默认白。**本卡不修**(遮挡闸已经让
+//                  那一段不上屏),但要如实说出来,别再让下一个人从零查一遍。
+//   unknown     —— 版本串没解析出来;不猜。
+// 文案一律 ASCII:运行期字面量走 printf 族拼接时,含非 ASCII 的相邻窄字面量会触发 MSVC C4819。
+void WebViewHost::logBackgroundColourSupport() const
+{
+    using Support = PlatformWebView::BackgroundColourSupport;
+    const auto support = PlatformWebView::backgroundColourSupport(runtime_);
+    const juce::String version = runtime_.version.isNotEmpty() ? runtime_.version : juce::String("unknown");
+    const juce::String argb =
+        juce::String::toHexString(static_cast<int>(scvb::webview::kShellBackdropArgb)).paddedLeft('0', 8);
+
+    if (support == Support::available)
+        logDiag("webview2 default background: available (runtime " + version + " >= major " +
+                juce::String(PlatformWebView::kBackgroundColourMinRuntimeMajor) +
+                "), ICoreWebView2Controller2 present, JUCE puts argb " + argb);
+    else if (support == Support::unavailable)
+        logDiag("webview2 default background: UNAVAILABLE (runtime " + version + " < major " +
+                juce::String(PlatformWebView::kBackgroundColourMinRuntimeMajor) +
+                "), ICoreWebView2Controller2 absent, JUCE drops argb " + argb + " silently");
+    else
+        logDiag("webview2 default background: unknown (runtime version " + version + " not parsable)");
+}
+
+// 放行诊断行。**读表的人要知道的三件事**,都写在这里一处:
+//   · `reason` 有**三**种(#241 复审时是四种,[SL-376] 拿掉了 `navFinished` 那一种):
+//     `firstFrame` = 正常路;`timeout` = 首帧信号没来、3s 兜底;`fallback` = 遮挡期内看门狗
+//     到点切了兜底面板(RevealGate::onFallbackShown)。**`fallback` 不是「放行」**,是被面板
+//     顶掉;真机数表时把它单独归一类,别塞进放行路里。
+//   · [SL-376] `timeout` 这条**必须当异常读**:正常开窗一次都不该出现它。所以它自带后缀
+//     `first-frame signal never arrived (navFinished seen|not seen)` —— `seen` = 页面 load
+//     完了但前端没发信号(查前端 boot / rAF 那一段),`not seen` = 导航压根没走完(查
+//     WebView2 环境与网络那一段)。两者的排查方向完全不同,别只看 `timeout` 三个字。
 //   · `after N ms` 一律从 **startMs_**(本次加载尝试的起点)算,而 kRevealFallbackMs 的 3s
 //     是从**导航开始**算的 —— 所以 `timeout` 那条打出来会是「3000 + 导航前耗时」而不是 3000。
 //     两个起点不同是有意的:这一行是给人看「从点开窗口算起等了多久」。
@@ -521,8 +577,13 @@ void WebViewHost::noteRevealed()
     if (revealLogged_ || revealGate_.parked() || juce::String(revealGate_.lastRevealReason()).isEmpty())
         return;
     revealLogged_ = true;
-    logDiag(juce::String("webview revealed (") + revealGate_.lastRevealReason() + ") after " +
-            juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms");
+    const juce::String reason(revealGate_.lastRevealReason());
+    juce::String line = "webview revealed (" + reason + ") after " +
+                        juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms";
+    if (reason == "timeout")
+        line << " -- first-frame signal never arrived (navFinished "
+             << (revealGate_.navigationFinishedSeen() ? "seen" : "not seen") << ")";
+    logDiag(line);
 }
 
 // -----------------------------------------------------------------------------
@@ -724,10 +785,16 @@ void WebViewHost::onNavigationFinished(const juce::String& url)
     // 页面已下载完 ≠ 桥已就绪:前端还要跑模块图并调 requestInitialState。看门狗继续跑,
     // 但状态记下来 —— 「finished 却超时」精确指向前端 boot 失败,与「压根没导航」判然不同。
     navState_ = NavState::finished;
-    // [SL-370] 第二条放行路:前端的 __scvb__firstFrame 丢了(脚本整体没跑起来)也不会卡住。
+    // [SL-376] **这一条不再放行**,只记账。理由:pageFinishedLoading 只说明文档下载完、load
+    // 事件发了,不保证任何一帧已经合成;SL-370 的 pluginval 数表里它有 4/10 次抢在首帧信号前
+    // 3–6 ms 放行,放回来露出的就是 WebView2 宿主 HWND 首帧之前的底 —— 用户 v5.6.10 看到的
+    // 「粉 → 白一瞬 → 内容」。完整定谳只写在 WebViewRevealGate.h 头注一处,别在这里复述。
+    // 记下的这一位只进 noteRevealed() 的 timeout 那一行,帮着分「页面 load 完了但信号没发」
+    // 与「导航压根没走完」。原先跟在后面的 applyRevealGate() / noteRevealed() 一并删掉:
+    // 本函数已经不改闸门状态,那两句无论闸门开着还是关着都是空调用(还 parked ⇒ 位置本就在
+    // 停车位、放行行不写;已放行 ⇒ 位置本就在原位、放行行早写过),留着只会让读者以为
+    // 这里还有一条放行路。
     revealGate_.onNavigationFinished();
-    applyRevealGate();
-    noteRevealed();
     logDiag("navigation finished: " + url);
 }
 
@@ -778,14 +845,18 @@ void WebViewHost::handleBootError(const juce::var& payload)
 // 载荷不看:这条信号只有「到了」这一个信息量,前端也只发一次。
 void WebViewHost::handleFirstFrame()
 {
-    // [SL-370] **先记「信号到了」,再谈放行** —— 这是两件必须分开数的事。放行可能已经被
-    // pageFinishedLoading 抢先做掉,那时 noteRevealed() 一个字都不写;只看放行原因就会把
+    // [SL-370] **先记「信号到了」,再谈放行** —— 这是两件必须分开数的事:信号可能在 3s 兜底
+    // 或兜底面板之后才姗姗来迟,那时 noteRevealed() 一个字都不写;只看放行原因就会把
     // 「信号来晚了」误读成「信号没来」,而后者正是本卡唯一那条静默降级
     // (挪出可视区 ⇒ 合成器停 BeginFrame ⇒ rAF 停 ⇒ 信号永不到达,见 WebViewRevealGate.h)。
     // 真机验收数的就是这一行与下面那行放行行的**条数比**。
     logDiag(juce::String("first-frame signal after ") +
             juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms" +
             (revealGate_.parked() ? " (still parked)" : " (already revealed)"));
+    // [SL-376] onFirstFrame() **只武装,不放行** —— 真正挪回可视区在下一个 25Hz tick
+    // (kRevealSettleTicks,理由见 WebViewRevealGate.h 头注)。所以下面两句在这条路上是空调用,
+    // 留着是为了「闸门状态一变就落地」这条不变式只有 applyRevealGate 一个出口:
+    // 信号在兜底面板之后才到时,onFirstFrame 会把 revealed_ 记上,那两句照旧无副作用。
     revealGate_.onFirstFrame();
     applyRevealGate();
     noteRevealed();
@@ -894,8 +965,13 @@ void WebViewHost::timerCallback()
     // 回绕点把「还没到点」算成「早就超时」,把好好的窗口砸成兜底面板。
     // (这四行说的是**下面第二个** if;紧跟的第一个 if 是 [SL-370] 遮挡闸,方向相反 ——
     //  这里到点=把界面放出来,那里到点=换成兜底面板。两段不要读串。)
-    // [SL-370] 遮挡闸的第三条放行路(兜底):前两条都没来时到点强制放行,
-    // 绝不允许出现「永远挪在外面」——那会是一块彻底不动的浅色板,比白闪坏得多。
+    // [SL-370/SL-376] 遮挡闸在这个 tick 上做**两件**事,都收在 onTick 里:
+    //   · 首帧信号已到时结算那一拍(kRevealSettleTicks)——「信号 = 帧已提交」,提交到上屏
+    //     还差一拍,所以放行落在这里而不是 handleFirstFrame 里;
+    //   · 信号没来时到点强制放行(kRevealFallbackMs),绝不允许出现「永远挪在外面」——
+    //     那会是一块彻底不动的粉色板,比白闪坏得多。
+    // 正因为**放行现在只可能发生在这个 tick 上**,这个 if 是唯一会把闸门从 parked 翻过来的
+    // 地方(fallback 那条除外);别把它读成「只是超时兜底」。
     if (revealGate_.parked())
     {
         revealGate_.onTick(juce::Time::getMillisecondCounter());

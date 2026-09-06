@@ -127,4 +127,20 @@ int PlatformWebView::majorVersionOf(const juce::String& version)
     return head.getIntValue();
 }
 
+PlatformWebView::BackgroundColourSupport PlatformWebView::backgroundColourSupport(const RuntimeInfo& info)
+{
+    // 没探到运行时 = 这一层无从谈起(这条路上根本不会去建控制器,调用方直接切兜底面板)。
+    if (info.status == RuntimeStatus::missing)
+        return BackgroundColourSupport::unknown;
+
+    // 版本串解析不出:**不猜**。runtimeInfo() 在这种情况下刻意放行走正常加载路径
+    // (宁可让看门狗兜底也不误判 tooOld),这里同样不许拿一个猜来的结论顶替「不知道」。
+    const int major = majorVersionOf(info.version);
+    if (major < 0)
+        return BackgroundColourSupport::unknown;
+
+    return major >= kBackgroundColourMinRuntimeMajor ? BackgroundColourSupport::available
+                                                     : BackgroundColourSupport::unavailable;
+}
+
 } // namespace scvb::webview
