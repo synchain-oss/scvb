@@ -651,6 +651,14 @@ const ASK_PROBE = IN(`
             const n = gb("reanalyze-ask-rangedone");
             return n ? n.textContent : null;
         })(),
+        // [SL-348 复审第 3 轮] 分隔那条 ::before 到底生没生效。初稿写成 #id 选择器,
+        // 而那个 span 没有 id —— 匹配零元素、**静默失效**,没有任何东西会红,而分隔
+        // 就退回只靠两个 span 之间的行间空白(下一次格式化就吃掉)。读 computed content。
+        rangeDoneBefore: (() => {
+            const n = gb("reanalyze-ask-rangedone");
+            if (!n) return null;
+            return w.getComputedStyle(n, "::before").content;
+        })(),
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1309,6 +1317,15 @@ try {
                 rmAfter.rangeDoneRaw === rmAfter.rangeDoneRaw.trim(),
             "C8r 播报句词条本身不带前导/尾随空白(分隔交给样式)",
         );
+        // ← 把那条规则的选择器改回 `#id`(或删掉),这一格红:分隔真的没了,而上面那格
+        //   仍然绿 —— 两格合起来才说得出「空白从词条里挪到了样式上」,少任何一格都是
+        //   「拆了旧的没装新的」也能全绿。
+        check(
+            typeof rmAfter.rangeDoneBefore === "string" &&
+                rmAfter.rangeDoneBefore.includes(" ") &&
+                rmAfter.rangeDoneBefore !== "none",
+            "C8r 分隔那条 ::before 真的生效了(选择器没写空)",
+        );
         // [复审第 8 轮] 读屏那一侧的反馈:点之前这段是空的(开框时清掉),受理回来写入一句
         // 真话 ⇒ live region 有变化可念。少了这一格,「aria 加上了但点下去零反馈」照样全绿。
         check(
@@ -1351,6 +1368,27 @@ try {
             "C8r 切到 en 之后**两半都不含中文**(不会前半英文后半中文)",
         );
     }
+    // [SL-348 复审第 3 轮] **前导空白那一格要覆盖三语,不能只钉 zh。**
+    //   上一版只在 zh 下断过一次:en / fr 的词条串首把空格加回来,本卡新增的任何一格都不红
+    //   ——「断言只覆盖三分之一的数据面」,与本卡记账里那一族(否定断言在空值上恒真)同源,
+    //   都是「写下了可验证的行为,给出的判据却只钉住其中一部分」。这里每切一次语言就断一次
+    //   **未 trim** 的那份。fr 也走一遍:这个桶原本 zh → en → zh,fr 一次都没出现过。
+    const noPad = (probe, lang) =>
+        check(
+            typeof probe.rangeDoneRaw === "string" &&
+                probe.rangeDoneRaw !== "" &&
+                probe.rangeDoneRaw === probe.rangeDoneRaw.trim(),
+            `C8r ${lang} 的播报句词条也不带前导/尾随空白`,
+        );
+    if (rmEn) noPad(rmEn, "en");
+    check(await switchLangOutput("fr"), "C8r 切到 fr 可点(框仍开着)");
+    await sleep(400);
+    const rmFr = await evaluate(ASK_PROBE);
+    if (check(rmFr, "C8r fr 下探针取到锚点")) {
+        check(!!rmFr.rangeDone, "C8r fr 下播报句仍在");
+        noPad(rmFr, "fr");
+    }
+
     check(await switchLangOutput("zh"), "C8r 切回 zh(不影响后面的桶)");
     await sleep(400);
 

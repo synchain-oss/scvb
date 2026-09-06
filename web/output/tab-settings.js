@@ -632,8 +632,11 @@ export function createTabSettings(opts) {
         if (!node) return;
         const key = local.reanalyzeRangeDoneKey;
         const t = getT() || {};
-        const next =
-            key && Object.prototype.hasOwnProperty.call(t, key) ? t[key] : "";
+        // 兜底**有意与本文件其余各处相反**:别处是 `hasOwn(t, k) ? t[k] : k`(漏词条时把 key
+        // 本身显出来,一眼看得见);这半是 live region,把 `set.reanalyzeAsk.rangeDone` 这串
+        // 机器 key 念给读屏用户,比什么都不念更糟 —— 所以取不到就写空串。
+        // **做「统一兜底」时别顺手把这里改成 fallback-to-key**(复审第 3 轮点名)。
+        const next = key && hasOwn(t, key) ? t[key] : "";
         // 同值不写:`role="status"` 是 live region,每次 render 都重写一遍同一句会让
         // 部分 AT 反复播报。只有真变化才落笔 —— 这也正是「清空 → 写入」能被念到的原因。
         if (node.textContent !== next) node.textContent = next;

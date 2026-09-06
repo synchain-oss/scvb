@@ -4718,7 +4718,12 @@
                更要紧的是没有任何机器守着它:check-i18n 只拦全空串,冒烟探针又 trim 过,
                谁把某一语的前导空格删掉都不会红。分隔是**呈现**,不该由译者维护。
                `:not(:empty)` 保证空态下不产生任何东西,也不进 textContent、不进播报串。 */
-            #reanalyze-ask-rangedone:not(:empty)::before {
+            /* ⚠ 走 `[data-gb=…]`,**不要写 `#id`**:那个 span 身上只有 data-gb 与 role,
+               没有 id(有 id 的是外层 <p>)。初稿写成 `#reanalyze-ask-rangedone`,全仓唯一
+               一条 `#` 开头的选择器,匹配零元素、静默失效 —— 而它一失效,分隔就退回只靠
+               两个 span 之间那个行间空白,正是本条要避开的东西。本文件其余几十处一律
+               `[data-gb=…]`,偏离寻址约定的那一条正好落空。 */
+            [data-gb="reanalyze-ask-rangedone"]:not(:empty)::before {
                 content: " ";
             }
             /* 正文段的 UA 默认 margin 在本框里归零 —— 两段之间的距离全由上面那条
