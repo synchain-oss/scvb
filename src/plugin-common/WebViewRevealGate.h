@@ -20,17 +20,22 @@ namespace scvb::webview
 //
 // 【为什么挪走而不是 setVisible(false) / 零尺寸】三条,缺一不可:
 //   • `setVisible(false)` 会走 JUCE 的 componentVisibilityChanged → checkWindowAssociation
-//     的 else 分支,而 `Options::keepPageLoadedWhenBrowserIsHidden` **默认 false**
-//     (juce_WebBrowserComponent.h:432)⇒ `unloadPageWhenHidden` 为真 ⇒ JUCE 会把页面
-//     `goToURL("about:blank")` 顶掉。隐藏一下就把正在加载的页面弄没了。
-//   • `put_IsVisible(false)` 让 Chromium 把页面判成不可见,`requestAnimationFrame` 随之停摆
-//     —— 而我们等的正是前端在 rAF 里发的「首帧已绘」信号,会互相等死。
+//     的 else 分支,而 `Options` 里那个 `keepPageLoadedWhenBrowserIsHidden` 成员的**默认值
+//     就是 false**(在 juce_WebBrowserComponent.h 里 grep 这个名字,声明处带着 `= false`)
+//     ⇒ `unloadPageWhenHidden` 为真 ⇒ JUCE 会把页面 `goToURL("about:blank")` 顶掉。
+//     隐藏一下就把正在加载的页面弄没了。**这一条是读实现读出来的,不是推断。**
+//   • `put_IsVisible(false)`:WebView2 文档对这个属性的说法是「不可见时 WebView **停止渲染**」。
+//     渲染停了之后 `requestAnimationFrame` 还发不发,**本机没条件实测**(要真 WebView2 宿主)
+//     —— 但它一旦不发,就与「等 rAF 里的首帧信号」互相等死,3s 兜底会变成每次开窗都吃满。
+//     **这一条是风险不是已证事实**;挪 bounds 根本不用去赌它,所以没有为它做实验的必要。
 //   • 零尺寸会把视口压成 0×0,页面按 0 宽布局、放回来时整页 reflow。
 //   挪走则三条都不沾:尺寸不变、`owner.isShowing()` 不变、Chromium 仍认为自己可见。
 //
 // 【为什么等到 onNavigationStarted 才挪】SL-271 的重试泵挂在 `HostWebView::paint` 上,而挪出
-// 可视区之后 JUCE 不再画它 ⇒ 泵停。导航开始 = WebView2 控制器已经建好(JUCE 是在控制器创建
-// 完成回调里先 setWebViewPreferences 再 Navigate),而泵的条件正是
+// 可视区之后 JUCE 不再画它 ⇒ 泵停。导航开始 = WebView2 控制器已经建好 —— JUCE 在
+// `CreateCoreWebView2Controller` 的完成回调里是先 `addEventHandlers()` + `setWebViewPreferences()`
+// 再 `Navigate`(juce_WebBrowserComponent_windows.cpp 的 createWebView,读实现核过),
+// 而泵的条件正是
 // `if (! hasBrowserBeenCreated())` —— 控制器建好之后它本来就是空调用。所以「控制器建好之前
 // 一直可见」既保住了泵,又没有放过任何一帧白:那一段屏上是我方 paint 的 shellBackdrop()。
 //
