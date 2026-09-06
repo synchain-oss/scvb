@@ -2006,7 +2006,11 @@ window.__SCVB_OUTPUT__ = {
     // 只读、零写入口,与上面 distMotion 同一口径。
     hostEcho: () => {
         const s = viewStore();
-        const wide = hostEchoUseWideWindow(s);
+        // [#236 复审] `wide` 与 `on` 必须按**同一个** now 结算:两次 `Date.now()` 之间
+        // 跨过去抖窗或释放窗边界的话,这份快照会自相矛盾(`wide` 是旧那一刻的、`on` 是
+        // 新那一刻的),而 smoke-output-dist-page ⑪(a) 正是拿它当权威读数去对齐徽标属性的。
+        const now = Date.now();
+        const wide = hostEchoUseWideWindow(s, now);
         return {
             at: (s.params && s.params.hostEchoAt) || 0,
             playingAt: s.playingAt || 0,
@@ -2015,7 +2019,7 @@ window.__SCVB_OUTPUT__ = {
             // 靠「我刚发了 setTransport(false)」推断的话,那一帧到没到页面并不知道。
             stopped: !!(s.playhead && s.playhead.isPlaying === false),
             wide,
-            on: hostEchoOn(s.params, undefined, wide),
+            on: hostEchoOn(s.params, now, wide),
         };
     },
 };

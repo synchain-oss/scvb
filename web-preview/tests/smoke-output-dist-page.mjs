@@ -1818,11 +1818,17 @@ try {
                 //    上来就掐信号 + 定长等待的话,at 有多旧完全看运气 —— 第一版就是这么
                 //    写的,实测 ageAtStop=2513ms(闩锁其实已经走完播放档),量到的 21ms
                 //    是「本来就该熄了」而不是「停走后及时熄」。
+                // ⚠ [#236 复审] 页内三段预算之和**必须小于外层 evaluate 的 30s CDP 超时**:
+                //    10s(waitFresh)+ 0.6s + 12s(step)= 22.6s。超了的话超时从 CDP 那头
+                //    抛出去,被文件末尾的 catch 吞成一句「冒烟过程抛错」,
+                //    err:"no-fresh-echo" / offAfterStop:-2 这两个**专为诊断留的**返回值
+                //    永远看不到 —— 而失败路径正是最需要读得懂的时候。
+                //    10s 对「等一帧新写入」有 3 倍余量(本文件 ④(g) 实测最长间隔 3362ms)。
                 const t0 = w.Date.now();
                 const waitFresh = () => {
                     const dg = hook.hostEcho();
                     if (dg.at > 0 && w.Date.now() - dg.at <= 150) return armed();
-                    if (w.Date.now() - t0 > 20000) return res({ err: "no-fresh-echo" });
+                    if (w.Date.now() - t0 > 10000) return res({ err: "no-fresh-echo" });
                     w.setTimeout(waitFresh, 20);
                 };
                 const armed = () => {
