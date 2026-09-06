@@ -5543,8 +5543,9 @@
                                 <span
                                     class="master-flow__desc"
                                     data-t="master.step1.desc"
-                                    >开关打开后播放本范围,插件记录响度特征——这一步不写任何自动化</span
                                 >
+                                    开关打开后播放本范围以记录响度特征
+                                </span>
                                 <!-- [T3x] bridge.setCaptureEnabled(on) —— 契约 §1.2 -->
                             </div>
 
@@ -5714,11 +5715,11 @@
                                 class="master-write-confirm__text"
                                 data-t="out.master.writeConfirm"
                                 data-gb="master-write-confirm-text"
-                                >写入自动化 {v} · 范围 {x}–{y} · 30 条车道;若
-                                DAW 侧已 arm
-                                Latch/Write,播放本范围将覆盖该范围已有自动化;未
-                                arm 则仅试听、不落盘</span
                             >
+                                写入自动化 {v} · 范围 {x}–{y} · 30 条轨道;若 DAW
+                                侧已激活
+                                Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存
+                            </span>
                             <button
                                 class="sc-btn sc-btn--cta"
                                 data-glow="1"
@@ -5869,8 +5870,7 @@
                                     class="sc-hint"
                                     data-t="master.widthAngleHint"
                                 >
-                                    左右各摆到最外时的角度;0–90°(自动化参数
-                                    width 0–150%)
+                                    最外层人声的角度。0–90°
                                 </p>
                                 <!-- [T3x] bridge.beginParamGesture("width") / setParam("width", v) / endParamGesture("width") —— 契约 §1.12-1.14 -->
                             </div>
@@ -5946,8 +5946,7 @@
                                     <div class="sc-slider__knob"></div>
                                 </div>
                                 <p class="sc-hint" data-t="master.msHint">
-                                    −100 偏 Mid / +100 偏 Side,双击回
-                                    0——拖动看下方曲线
+                                    −100 偏 Mid / +100 偏 Side
                                 </p>
                                 <!-- [T3x] bridge.beginParamGesture("ms_balance") / setParam("ms_balance", v) / endParamGesture("ms_balance") —— 契约 §1.12-1.14 -->
                             </div>
@@ -6044,7 +6043,7 @@
                                     data-gb="master-leadselect-hint"
                                     data-t="master.leadSelectHint"
                                 >
-                                    该轨强制居中;是否参与音量调节为独立开关,不随此联动
+                                    该轨设置为 Lead 并强制居中
                                 </p>
                                 <!-- [T3x] bridge.beginParamGesture("lead_select") / setParam("lead_select", v) / endParamGesture("lead_select") —— 契约 §1.12-1.14 -->
                             </div>
@@ -6331,7 +6330,7 @@
                                     class="sc-hint"
                                     data-t="master.transitionHint"
                                 >
-                                    段与段之间参数不瞬切,走完这段斜坡才到下一段的值。太短交界会「跳」,太长声像糊在两处之间。
+                                    段与段之间参数切换的过渡时间
                                 </p>
                                 <!-- [T3x] bridge.setTransitionRamp(ms) —— 契约 §1.20 -->
                             </div>
