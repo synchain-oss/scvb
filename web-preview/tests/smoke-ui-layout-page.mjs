@@ -55,21 +55,31 @@
 //         `?scenario=loudness-nondefault` 的工程存的是 rms(不是出厂默认档),于是
 //         一进 Tab4 stale 就为真 —— 琥珀 badge **该亮**(它是纯派生的常驻状态位),
 //         而弹窗**不该弹**(用户一个字都没改)。这是三条误报路径里最容易复现的一条,
-//         另两条(只读观察态 / 切版本)同一道 askOnNextStale 闸一并挡住。
-//         把 syncStale 里的 `if (!local.askOnNextStale) return;` 删掉,本条即红。
+//         另两条(只读观察态 / 切版本)同一道闸一并挡住。
+//         [SL-354] 那道闸从布尔位换成了「用户刚写成功的字段与值」,判据形态没变:
+//         把 syncStale 里那句「没有待观察的写就只留 badge、不弹框」的早退删掉,本条即红。
 //         改完档之后照样弹(C1 覆盖),所以这道闸没有把功能一起关掉。
 //      C9 [SL-276 二轮复审] 那道闸是**一次性**的:用户改档弹过、点「稍后」关掉之后,
 //         再来一次**非用户驱动**的口径变化(这里直接调 mock 的 setAnalysisConfig,
 //         绕开 UI 写入路径 —— 与只读观察态收 scvb.state / 切版本走的是同一条「值从
 //         后端来」的路)不得再弹。C8 管的是「从没被置位过」,C9 管的是「置位过、已经
-//         用掉了」;不补 C9 的话,askOnNextStale 弹完不清也全绿。
-//         把 syncStale 里那行 `local.askOnNextStale = false;`(openReanalyzeAsk 之前
-//         那一行)删掉,本条即红。末尾再由用户真改一次档确认框照样弹。
+//         用掉了」。
+//         [SL-354] **这一条的删除式换了目标**:一次性不再靠「开框时就地清掉开闸位」
+//         实现(那一行没了 —— 开闸位现在还要继续当「这一帧新不新」的尺子,见 C10a),
+//         改由 `reanalyzeAskedFor` 记下「字段=值」承担。所以现在是:把 syncStale 里
+//         **记 token 的那一行**删掉,本条即红(每一帧都会重新开框)。
+//         末尾再由用户真改一次档确认框照样弹。
 //      C7 [SL-273] 换档影响面这句话在**两处**都写着,且逐字同一句:设置页响度卡第二行
 //         与弹窗第二段共用词条 set.reanalyze.scopeNote。断言取两处的 textContent 做
 //         全等比较 —— 拿掉任一处的 data-t(或把它换成另一条词条)即红,三语各验一次;
 //         同批一条排版断言:弹窗正文段的上下 margin 为 0(两段间距只由 .sc-modal__note
-//         的 margin-top 决定),删掉 `.sc-modal--reanalyze .sc-modal__body{margin:0}` 即红。
+//         的 margin-top 决定),删掉 `.sc-modal--reanalyze .sc-modal__body{margin:0}` 即红;
+//      C10 [SL-354] 用户 v5.6.7 真机四条 + 一道兜底闸。前四条**必须跑在异步回声场景上**
+//         (`scenario=slow-state-echo`):默认 mock 同步 emit `scvb.state`,写回执到达时
+//         store 已是新值,①② 那两条链在它上面根本不存在 —— C10a 因此先量一次「点击 →
+//         徽标亮」的页内耗时,把「这个场景真的还有牙齿」也钉住。逐格与删除式见那一段的
+//         行内注释:a 第一下就弹 / b 过期全量帧不关框 / c 中央槽同样弹 / d 说明段字号走
+//         --fs-110 / e 改回基线三件事 / f 缺 applied 的全量帧不许清闸关框。
 //
 // 章节在下面的执行顺序是 A → E → B → C(E 紧跟 A,因为两段用的是同一张 Input 页)。
 //
@@ -700,6 +710,14 @@ const askClosed = IN(`const n = gb("reanalyze-ask"); return !!n && n.hidden;`);
 const badgeGone = IN(
     `const n = gb("settings-loudnessmode-stale"); return !!n && n.hidden;`,
 );
+
+// [SL-354] 中央槽策略也要能点 —— 本卡把弹窗铺到它身上。
+async function setCenterSlot(value) {
+    return await evaluate(
+        IN(`const btn = q('[data-gb="settings-centerslot-seg"] [data-value="${value}"]');
+            if (!btn) return false; btn.click(); return true;`),
+    );
+}
 
 async function setLoudness(value) {
     return await evaluate(
@@ -1421,7 +1439,7 @@ try {
     //     ← 删掉 openReanalyzeAsk 里那句 setRangeDoneText(""),只红这一格。
     check(await click("reanalyze-ask-later"), "C8r 「稍后」可点(收框以便重开)");
     check(await waitFor(askClosed, 3000), "C8r 框已关");
-    check(await setLoudness("rms"), "C8r 再改一次档(重新置位 askOnNextStale)");
+    check(await setLoudness("rms"), "C8r 再改一次档(重新置起开闸位)");
     check(await waitFor(askOpen, 4000), "C8r 框重开");
     const rmReopen = await evaluate(ASK_PROBE);
     if (check(rmReopen, "C8r 重开后探针取到锚点")) {
@@ -1516,10 +1534,249 @@ try {
     );
     assertClean("range-follow-reanalyze");
 
-    // C9 [SL-276 二轮复审] askOnNextStale 是**一次性**的:弹过就得清掉。
+    // C10 [SL-354] 用户 v5.6.7 真机四条 + 一道兜底闸,分三张页跑:
+    //     · C10a/b/d/e:`scenario=slow-state-echo`(写的回执先到、状态帧后到一拍,中间还夹
+    //       一帧内容早于写、送达晚于写的全量快照)。默认 mock 是同步 emit 的,①② 在它上面
+    //       **一条都复现不出来** —— 那正是 preview 三个月没照出这些缺陷的原因;
+    //     · C10c:同一场景**另开一张干净页**(理由见那处);
+    //     · C10f:`scenario=applied-echo-drop`(写落地后补一帧缺 `analysis.applied` 的全量
+    //       快照)—— 与时序无关的另一条路,故不与上面几格共页。
+    newBucket("sl354-real-cadence");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=slow-state-echo`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C10 真机时序场景装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+
+    // C10a ①「第一下只出横幅、第二次切换才出弹窗」。
+    //   根因:开闸位原来是布尔,点档回执到达时 state 还没回来 ⇒ 派生 stale 为假 ⇒
+    //   `!stale` 分支把刚置起的闸当场清掉。**这一格断的是「第一下就弹」**。
+    //   ← 把 syncStale 里那句「待观察的写还没露面 ⇒ 什么都不做」删掉,这一格红。
+    // ★ 先钉住**这个复现场景真的还有牙齿**:量「点下去 → 状态帧真正到达 UI」的耗时。
+    //   真机是 4Hz,一帧 250ms,①② 两条缺陷都活在这个差里。没有这一格的话,谁把 mock 的
+    //   回声延时「优化」回 0,下面几格照样全绿 —— **缺陷压根没被造出来,判据看着接住了
+    //   其实什么也没接**。本卡实测:那一刀当场空了,才补的这一格。
+    //   量的是**页内**的时间,不是 node 侧的 —— node 侧还夹着 CDP 往返,分辨率不够。
+    //   徽标是纯派生的(state 到了才亮),所以它变亮的那一刻就是状态帧到达 UI 的那一刻。
+    //   mock 的快照是**同步**更新的、延后的只是事件,所以不能拿 requestInitialState() 判
+    //   (初稿这么写,当场读到新值 —— 读错了对象)。
+    //   ← 把 `later(250, …)` 改回 `later(0, …)`,这一格红。
+    const c10lag = await evaluate(
+        IN(`const btn = q('[data-gb="settings-loudnessmode-seg"] [data-value="rms"]');
+            if (!btn) return null;
+            const t0 = w.performance.now();
+            btn.click();
+            return new Promise((resolve) => {
+                const poll = () => {
+                    const b = gb("settings-loudnessmode-stale");
+                    if (b && vis(b)) return resolve({ ms: w.performance.now() - t0 });
+                    if (w.performance.now() - t0 > 3000) return resolve({ ms: -1 });
+                    w.requestAnimationFrame(poll);
+                };
+                poll();
+            });`),
+    );
+    check(!!c10lag, "C10a 第一次改响度档可点");
+    check(
+        !!c10lag && c10lag.ms >= 100,
+        `C10a 状态帧确实滞后于写回执(徽标 ${c10lag && Math.round(c10lag.ms)}ms 后才亮;同步 mock 下是一帧内)`,
+    );
+    check(
+        await waitFor(askOpen, 4000),
+        "C10a **第一次**改档就弹窗(不是只出琥珀徽标、要等第二次)",
+    );
+
+    // C10b ②「弹窗出来一下就闪现消失了」。
+    //   扳机是上面那一帧过期全量快照(旧 current + 旧 applied ⇒ 两者相等 ⇒ stale 假)。
+    //   等它跑完再看框还在不在:旧实现会在那一帧上关框且此后不再弹。
+    //   ← 同上那句守卫删掉,这一格也红(两格一起红是设计内:同一个根因)。
+    await sleep(1200);
+    check(
+        await evaluate(askOpen),
+        "C10b 过期全量帧过去之后**框还在**(不被一帧旧快照关掉)",
+    );
+    const c10 = await evaluate(ASK_PROBE);
+    if (check(c10, "C10 探针取到锚点")) {
+        check(c10.badgeShown, "C10b 琥珀徽标也还在");
+    }
+
+    // C10d ④「这些字有点小」。
+    //   钉的是**用了哪条刻度变量**,不是像素数:写死数值等于把设计值抄成第二份。
+    //   量在框**开着**的时候(接着 C10b 那一格,不先关框):display:none 下 getComputedStyle
+    //   的 font-size 照样解析得出,但那样量到的就不是用户眼前那一段了。
+    //   ← 把那条 font-size 规则删掉(退回 --fs-95),这一格红。
+    const c10d = await evaluate(
+        IN(`const p = gb("reanalyze-ask-scopenote");
+            if (!p) return null;
+            const root = d.documentElement;
+            const token = w.getComputedStyle(root).getPropertyValue("--fs-110").trim();
+            return { got: w.getComputedStyle(p).fontSize, token, shown: vis(p) };`),
+    );
+    if (check(c10d, "C10d 取到弹窗说明段与刻度变量")) {
+        check(
+            c10d.shown,
+            "C10d 量的是框开着时的那一段(不是 display:none 下的解析值)",
+        );
+        check(
+            !!c10d.token && c10d.got === c10d.token,
+            `C10d 弹窗说明段用的是 --fs-110 这条刻度(实得 ${c10d && c10d.got},刻度 ${c10d && c10d.token})`,
+        );
+    }
+
+    // C10e 「用户自己改回去了」那条路 —— ①② 的修法把「写还没回来」和「改回原值」两个
+    //   长得一样的形态分开了,这一格钉的是**分对了的那一半**:改回基线 ⇒ 框该关、闸该清。
+    //   三步各钉 `!stale` 那支里的一件事。**每条删除式都有一格只由它变红**:
+    //     e1 框关     ← 拆掉那支里的 closeReanalyzeAsk() ⇒ e1 红(e2 断的是同一个
+    //                   「框是关着的」DOM 状态,会**连带**红 —— 反过来不成立,见 e2);
+    //     e2 不误弹   ← 拆掉那支里清 `askPending` 的那一行 ⇒ **只有 e2** 红:留着这条
+    //                   旧记录的话,此后**另一项**由后端改动会被当成「用户刚改的」再弹
+    //                   一次框(而 e1 此时已经正常关过框,照绿);
+    //     e3 能再弹   ← 拆掉那支里清 `reanalyzeAskedFor` 的那一行 ⇒ **只有 e3** 红:
+    //                   下面特意改回 **rms** 这个 C10a 用过的同一个值,token 逐字相同,
+    //                   只有被清掉才可能再弹。
+    check(await setLoudness("kw_integrated"), "C10e 改回基线可点");
+    check(
+        await waitFor(askClosed, 4000),
+        "C10e1 改回基线 ⇒ 框关(当前 == 基线,这一帧是真读数不是回落值)",
+    );
+    check(await waitFor(badgeGone, 4000), "C10e1 琥珀徽标同时灭掉");
+    // e2:非 UI 路径改**另一项**(中央槽),绕开 wireSeg ⇒ 不该重新置闸。
+    // 走 loudness 那一项验不到本条:那一项的当前值恰好等于旧记录里的值,会被
+    // 「写还没露面」那把尺子先挡下,红不了。
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m || typeof m.setAnalysisConfig !== "function") return false;
+                const r = m.setAnalysisConfig({ center_slot_policy: "lead_exclusive" });
+                return !!r && r.ok !== false;`),
+        ),
+        "C10e2 mock 侧改中央槽被受理(非 UI 写入路径)",
+    );
+    check(
+        await waitFor(
+            IN(`const b = q('[data-gb="settings-centerslot-seg"] [data-value="lead_exclusive"]');
+                return !!b && b.getAttribute("aria-pressed") === "true";`),
+            5000,
+        ),
+        "C10e2 新口径经 scvb.state 落到 UI(证明这一轮 syncStale 真跑过)",
+    );
+    await sleep(600); // 让 slow-state-echo 那三帧(250/300/350ms)全部走完
+    check(
+        await evaluate(askClosed),
+        "C10e2 后端改的另一项**不弹框**(改回基线时那条待观察记录已清掉)",
+    );
+    // e3:用户真改一次,而且改回 C10a 用过的同一个值 —— token 逐字相同。
+    check(await setLoudness("rms"), "C10e3 用户再改走可点");
+    check(
+        await waitFor(askOpen, 4000),
+        "C10e3 改回基线之后再改走 ⇒ **照样弹**(哪怕是刚弹过的同一个值)",
+    );
+    check(await click("reanalyze-ask-later"), "C10e 「稍后」收框");
+    check(await waitFor(askClosed, 3000), "C10e 框已关");
+    assertClean("sl354-real-cadence");
+
+    // C10c ③「B3(中央槽策略)完全没有弹出弹窗,应该和前面一样」。
+    //   原来 wireSeg 只给 loudness_mode 置闸、syncStale 只读 loudnessStale —— 那是 SL-276
+    //   按当时的用户口径**有意**做的,本卡按用户新口径翻面。
+    //
+    //   ⚠ **必须开一张干净的页**:接在上面那几格后面的话,响度档已经是 rms 而基线还是
+    //   kw_integrated ⇒ `loudnessStale` 恒真 ⇒ 就算把判据改回「只读响度」这一格照样绿
+    //   (实测过:那一刀当场空了)。一格判据的有效性取决于它前面几格留下的状态 ——
+    //   本卡第二次栽在这上面,所以这里单开一页、只动中央槽这一项。
+    //   ← 把开闸点改回只认 loudness_mode,或把判据改回只读 loudnessStale,这一格红。
+    newBucket("sl354-centerslot");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=slow-state-echo`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-centerslot-seg"); return !!n;`),
+        ),
+        "C10c 干净页装载(响度档未动 ⇒ loudnessStale 为假)",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+    const c10cPre = await evaluate(ASK_PROBE);
+    if (check(c10cPre, "C10c 前置探针")) {
+        check(
+            !c10cPre.badgeShown && !c10cPre.open,
+            "C10c 前置:响度那半不 stale、框也没开(否则本格会被撑成恒真)",
+        );
+    }
+    check(await setCenterSlot("lead_exclusive"), "C10c 改中央槽策略可点");
+    check(
+        await waitFor(askOpen, 4000),
+        "C10c 改中央槽策略**同样弹窗**(与响度档一视同仁)",
+    );
+    assertClean("sl354-centerslot");
+
+    // C10f 兜底闸:**回落值只许渲染,不许做破坏性判断**。
+    //   `appliedAnalysisConfigOf` 在 state 缺 `analysis.applied` 时回落到当前值(SL-279 的
+    //   设计,为的是旧插件下徽标不误亮),回落之后派生的 stale 恒假 —— 与「基线真的等于
+    //   当前值」逐字节相同。拿它去清闸 + 关框,就是用户报的 ② 的**缺字段变体**。
+    //   夹具 = `scenario=applied-echo-drop`:写走同步路径(框正常弹),300ms 后补一帧
+    //   **只摘掉 applied 这一支**的全量快照;全量帧在 UI 侧是整体替换,于是 store 里的
+    //   applied 被抹掉。与 slow-state-echo 分成两个场景,免得两条路互相顶替。
+    //
+    //   ★ 这一格自带**正证据**:徽标是纯派生的,回落之后它会当场灭掉 —— 徽标灭 = 那一帧
+    //   确实到了、也确实被渲染了。所以「框还在」不可能是「什么都没发生」冒充的。
+    //   ← 把 syncStale 里 `!stale` 那支开头的「没带 applied ⇒ 什么都不做」删掉,
+    //     「框还在」那一格红,而「徽标灭了」那一格照绿(它验的是回落仍在渲染面生效)。
+    //
+    //   真桥今天恒发这两个字段,所以本格守的是类别不是当前可达路径(见 tab-settings.js
+    //   里 hasAppliedAnalysisConfig 的头注)。
+    newBucket("sl354-applied-drop");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=applied-echo-drop`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C10f 缺字段场景装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+    check(await setLoudness("rms"), "C10f 改响度档可点");
+    check(await waitFor(askOpen, 4000), "C10f 改档 ⇒ 弹窗(同步路径,先立起来)");
+    const c10fPre = await evaluate(ASK_PROBE);
+    if (check(c10fPre, "C10f 前置探针")) {
+        check(
+            c10fPre.badgeShown,
+            "C10f 前置:缺字段那一帧还没到,徽标是亮的(下一格的对照点)",
+        );
+    }
+    await sleep(1200); // 等那一帧缺 applied 的全量快照(300ms)送达并渲染完
+    const c10f = await evaluate(ASK_PROBE);
+    if (check(c10f, "C10f 探针取到锚点")) {
+        check(
+            !c10f.badgeShown,
+            "C10f 正证据:缺 applied 的全量帧确实到了 —— 回落成「基线 = 当前值」,徽标当场灭",
+        );
+        check(
+            c10f.open,
+            "C10f **框还在** —— 回落算出来的 stale 假不作数,不许拿它清闸关框",
+        );
+    }
+    assertClean("sl354-applied-drop");
+
+    // C9 [SL-276 二轮复审] 开闸位是**一次性**的:弹过就不许再自己弹一次。
     // C8 管「从没被置位过」,C9 管「置位过、已经用掉了」—— 后者是 C8 的改法留下的口子:
     // 本位原来只有 stale 归假才灭,于是「改档 → 弹 → 稍后」之后它仍为真,再来一次
     // 非用户驱动的换档照样能把框推到眼前。
+    // [SL-354] 一次性的**承担者换了**:开闸位从布尔换成「刚写成功的字段与值」,开框时
+    // 不再就地清掉它(它还要继续当「这一帧新不新」的尺子,见 C10a),改由
+    // `reanalyzeAskedFor` 记下的那个 token 挡住重弹。本条的删除式因此改成「删掉记
+    // token 的那一行」,见文件头 C9 那段。
     newBucket("reanalyze-ask-oneshot");
     await cdp.send("Page.navigate", {
         url: `${base}/web-preview/output.html?fixture=fifteen-tracks`,
@@ -1541,7 +1798,7 @@ try {
     check(await waitFor(askClosed, 3000), "C9 「稍后」关框");
 
     // ② 非用户驱动的口径变化:直接调 mock 后端的 setAnalysisConfig,**绕开 UI 的写入
-    //    路径**(wireSeg 那条),所以 askOnNextStale 不会被重新置位。这与只读观察态收
+    //    路径**(wireSeg 那条),所以开闸位不会被重新置起。这与只读观察态收
     //    scvb.state、切版本、快照恢复是同一条「新值从后端来」的路。换到 rms —— 与上一步
     //    记下的 peak_dbfs 是不同值,于是 reanalyzeAskedFor !== mode 成立,**唯一**还能挡住
     //    这一框的就是被清掉的那一位。
