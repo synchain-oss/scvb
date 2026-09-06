@@ -152,6 +152,20 @@ const store = {
         rejectedPrintingUntil: 0,
         // B-04:布防期内输出开关 ON 过的粘滞位(footer 琥珀警告的「或被打开」半边)
         recapOutputOpened: false,
+        // [SL-373] 用户手动关掉过的**建议类横幅**(⑧⑨⑩),key = 横幅锚点名,
+        // value = 关掉那一刻的**内容签名**。用户 v5.6.8 原话:「上方的黄色警告横幅
+        // 加一个 x 可以关掉,不然一直在很烦」。
+        //
+        // 为什么记签名而不是记一个布尔:「关掉」要管的是**这一条**,不是这一类。
+        // 记布尔 = 永久关闭 ⇒ 三条轨过期时关掉它,之后又有五条轨过期,用户再也收不到
+        // 提醒 —— 把「烦」修成了「瞎」。签名一变就重新出现;签名里放什么见
+        // `showDismissible()` 的 `sig` 形参说明,谁来填见 `bannerSignature` 的头注。
+        //
+        // 另一半在 `showDismissible()`:**条件为假的那一帧把记录删掉**。没有这一半的话
+        // 签名不变的那几条(⑨⑩ 文案里没有占位符,签名恒为空串)一旦被关掉就永远不再
+        // 出现 —— 卡面点名的「条件消失再出现要能再显示」正是这一格。
+        // 落在 session 里 = 只活到本插件会话结束,不入 state chunk、不落盘、不进契约。
+        dismissedBanners: new Map(),
         // [D1] header 撤销/重做两钮的可用性(契约无 canUndo/canRedo 信号 ⇒ 回执驱动;
         // 判据与两条不变式见 tab-master.js 的 historyAfterCall / historyAfterSegments)
         history: HISTORY_AVAIL_INIT,
@@ -1363,6 +1377,20 @@ function renderHeader() {
  * 横幅落点逐字照契约 §5.1「UI 落点」列。
  * 降级纪律(§5.1):①未知 code 不静默 —— 原样入 Tab4 诊断区;
  * ②持续性条件(①-⑥)不可手动关闭,`active:false` 才撤下(所以显隐一律从 store.errors 算)。
+ *
+ * [SL-373] ⑧⑨⑩ 三条**建议类**横幅带一枚 ✕(见 showDismissible)。这不与上面第 ② 条
+ * 冲突,判据是**契约那句话点的是哪几条**:§5.1 写的是「持续性条件(横幅①-⑥)」——
+ * 那是**本页的横幅编号**,不是九码表的行号。①-⑥ 里 ②-⑥ 各对应九码表一行
+ * (secondOutput / srMismatch / newerState / sidecarMissing / noTimeline),
+ * 而 ① 路由失准**不是 code**,它由 `scvb.conn` 的 misalignCount 派生(见 ① 自己那段注)——
+ * 契约那句话按本页编号把它一并收进「持续性条件」,所以它同样不给 ✕。
+ * [复审第 1 轮] 上一版把这一段写成「①-⑥ 正好是九码表里有 UI 落点的那几个」,那是**错的**:
+ * ① 不在表里。结论(①-⑥ 一条都不加 ✕)没变,但归因错了会误导后人判断「哪条能加 ✕」。
+ * ⑦⑧⑨⑩ 则连本页那句话的编号范围都不在:⑦ 读 §2.1 `print_guard`、⑧ 读 §2.8
+ * `segments.channels[].stale`、⑨⑩ 读 §2.1 的两个布尔位 —— 四条都不是 `scvb.error` 的
+ * code,`active:false` 这条撤下机制对它们根本不适用。
+ * ⑦ 同样不给 ✕:它自带一枚「继续写入自动化」的动作钮(§1.34),关掉横幅等于把一个
+ * **待办**藏起来;⑧⑨⑩ 是纯提示,关掉只少一句话。
  */
 function renderBanners() {
     const vs = viewStore();
@@ -1421,7 +1449,12 @@ function renderBanners() {
     // ⑧ 上游改动 → 采集数据过期(04 §4.5 fingerprint watchdog;数据源 = §2.8
     //    segments.channels[].stale,不是 error code)。只提示,不 disable 任何控件。
     const staleTracks = staleTrackCount(vs.segments);
-    show($("banner-staleCapture"), staleTracks > 0);
+    // [SL-373] 签名带上轨数:三条过期时关掉它、之后变成五条 ⇒ 这是**另一句话**,要再出来。
+    showDismissible(
+        "banner-staleCapture",
+        staleTracks > 0,
+        String(staleTracks),
+    );
     if (staleTracks > 0)
         fill($("banner-staleCapture-text"), "banner.staleCapture", {
             m: staleTracks,
@@ -1466,13 +1499,17 @@ function renderBanners() {
     //     与本卡要修的「说不清为什么」是同一种毛病、只是换了一格。
     //   · 这一态可达:工程已有段表 + 换一个不给时间线的宿主打开。
     // `vs.noTimeline` 就在本函数上方(⑥ 那一段)刚赋过值,零额外读取。
-    show(
-        $("banner-fpPausedByCapture"),
+    // [SL-373] 本条文案里没有占位符 ⇒ 签名恒为空串。它「关掉之后还能再出现」全靠
+    // showDismissible 里「条件为假就删记录」那一半:关掉 ⇒ 用户去关采集(条件变假、
+    // 记录清掉)⇒ 下次又忘了关采集,提示照常回来。
+    showDismissible(
+        "banner-fpPausedByCapture",
         !!(s.global && s.global.capture_enabled) &&
             !vs.noTimeline &&
             staleTracks === 0 &&
             !(s.recapture && s.recapture.armed) &&
             hasSegmentedMaterial(vs.segments),
+        "",
     );
 
     // ⑩ [SL-247 / J92a] 布防还在、采集却已经关了 ⇒ **这次重采集不会记录任何东西**。
@@ -1487,10 +1524,12 @@ function renderBanners() {
     //      而此前界面上一个字都没有,用户只会觉得「布防着却什么都没采到」。
     //
     // 醒目但**非阻塞**:不弹确认框、不 disable 任何控件(沿 [J85] 口径)。
-    show(
-        $("banner-recaptureVoided"),
+    // [SL-373] 同 ⑨:无占位符 ⇒ 签名恒空,靠「条件为假就删记录」重新出现。
+    showDismissible(
+        "banner-recaptureVoided",
         !!(s.recapture && s.recapture.armed) &&
             !(s.global && s.global.capture_enabled),
+        "",
     );
 
     // toast:一次性提示(§5.1 降级纪律②:可关闭)
@@ -1512,6 +1551,118 @@ function renderBanners() {
 
 function show(node, on) {
     if (node) node.hidden = !on;
+}
+
+/**
+ * [SL-373] 建议类横幅的**当前**内容签名 —— renderBanners 每帧写、✕ 的 handler 读。
+ *
+ * 为什么要这一格而不是让 handler 自己算:签名的成分(⑧ 的轨数)只在 renderBanners
+ * 里算得出来;让 handler 重算就是把那几组判据抄第二份,两份必然漂。
+ * 为什么不是读 DOM 里那句话:那句话跟着语言变 ⇒ 切个语言就把关掉的横幅弹回来。
+ * 只活在本会话(与 store.session.dismissedBanners 成对),不入 state、不落盘、不进契约。
+ */
+const bannerSignature = new Map();
+
+/**
+ * [SL-373] 建议类横幅的显隐:条件之外再过一道「用户关过这一条没有」。
+ *
+ * @param {string} gb   横幅锚点名(同时是两个 Map 的 key)
+ * @param {boolean} on  条件本身成不成立(与 show() 的第二参逐字同义)
+ * @param {string} sig  **内容签名** —— 只放会改变这句话意思的量(⑧ 是轨数;⑨⑩ 文案里
+ *                      没有占位符,传空串)。
+ *
+ * 三条分支,每条各有一格钉着(见 web-preview/tests/smoke-output-stale-page.mjs ⑥):
+ *   · 条件不成立 ⇒ **连记录一起删**。这一句是「条件消失再出现要能再显示」的全部实现:
+ *     ⑨⑩ 的签名恒空,不删的话它们一旦被关掉就永远不再出现;
+ *   · 条件成立且签名与关掉那一刻**逐字相同** ⇒ 不显(用户已经把这句话打发过了);
+ *   · 其余(含「签名变了」)⇒ 照常显。
+ *
+ * ⚠ [复审第 2 轮] **两个 store 不许混着用** —— 上一版读写分家,而「条件不成立」在导览期
+ * 恒真,于是每帧都把真会话的记录删一条。判据 ⑦-tour 钉住它,理由见函数体内注。
+ */
+function showDismissible(gb, on, sig) {
+    const node = $(gb);
+    // [SL-373 复审第 2 轮] **记忆必须跟着「正在渲染的那份 store」走。**
+    // 上一版读的是**真** `store.session`,而 `on`/`sig` 由调用方从 `viewStore()` 算 ——
+    // 导览期那是 demo store,里面 ⑧⑨⑩ 三条**全部**不成立(`mock-data.js` 的
+    // `stale:false` / `capture_enabled:false` / `recapture.armed:false`),于是每一帧都走
+    // 下面 `!on` 那一支,把**真会话**里用户关掉的记录一条条删掉 ⇒ 开一次导览,
+    // 关掉的横幅全部弹回来。上一轮我在头注里把这条写成了「今天走不到」,**正好写反**:
+    // 条件不成立恰恰就是 `!on` 那一支,而它是有副作用的那一支。
+    // 改成读 `viewStore().session` 之后,导览里的关闭写进 demo session、随导览一起丢掉,
+    // 真会话一个字节不动 —— 这也正是 tour.js 那份 demo session 头注写的「与真 store 同形」。
+    // 判据 = smoke-output-stale-page ⑦-tour(开一次导览再退出,横幅仍关着)。
+    const sess = viewStore().session || {};
+    const seen = sess.dismissedBanners;
+    // 缺这一格 = 有人新造了一份 store 却没照「与真 store 同形」补上。退化成**不记忆**
+    // (横幅照常显),不静默崩:关不掉比整页白掉好,而且横幅还在就看得出不对劲。
+    if (!seen) {
+        show(node, on);
+        return;
+    }
+    if (!on) {
+        seen.delete(gb);
+        bannerSignature.delete(gb);
+        show(node, false);
+        return;
+    }
+    bannerSignature.set(gb, sig);
+    show(node, seen.get(gb) !== sig);
+}
+
+// [SL-373] ✕ 的接线。只挂 ⑧⑨⑩ 三条(理由见 renderBanners 头注:①-⑥ 是 §5.1
+// 降级纪律② 明令不可手动关闭的持续性条件,⑦ 自带一枚待办动作钮)。
+// 记的是**这一帧 renderBanners 算出的签名**,不是 DOM 里那句话 —— 见 bannerSignature 头注。
+// 钮只在横幅可见时点得到,所以走到这里 bannerSignature 一定有值;真取不到就记空串
+// (与 ⑨⑩ 的常态签名同一个值,行为退化成「这一条关掉了」,不会误判成别的条)。
+// 三条锚点名收成**一份**:接线循环与 moveFocusOffDismiss() 都读它,
+// 两份名单迟早漂(而漂掉的那一条会静默失去焦点交接)。
+const DISMISSIBLE_BANNERS = [
+    "banner-staleCapture",
+    "banner-fpPausedByCapture",
+    "banner-recaptureVoided",
+];
+for (const gb of DISMISSIBLE_BANNERS) {
+    const btn = $(gb + "-dismiss");
+    if (!btn) continue;
+    btn.addEventListener("click", () => {
+        // 与 showDismissible 读同一份 —— 读写分家正是上一版那个缺陷的形状。
+        const seen = (viewStore().session || {}).dismissedBanners;
+        if (!seen) return;
+        seen.set(gb, bannerSignature.has(gb) ? bannerSignature.get(gb) : "");
+        // [SL-373 复审第 1 轮,统筹裁定] **先把焦点交出去,再让下一帧把横幅藏起来。**
+        // 不交的话:下一帧 `showDismissible` 给横幅 `div` 挂 `hidden`,而焦点正落在它里面
+        // 这枚钮上 ⇒ Chromium 把焦点丢回 `<body>`,键盘用户得从卡片开头重走一遍 Tab。
+        // 与 `doReanalyzeFromAsk` 头注 ② 记的是同一类(隐藏/禁用一个正持焦的元素)。
+        // 交给谁:优先**另一条仍开着的建议类横幅的 ✕**(用户多半接着关下一条);
+        // 都没有就退到当前那枚 tab —— 它在 DOM 里紧跟横幅区、恒可见、恒可聚焦,
+        // 是「横幅区之后的下一个可聚焦件」。两条都取不到就什么都不做(总比抛错强)。
+        moveFocusOffDismiss(gb);
+        requestRender();
+    });
+}
+
+/**
+ * [SL-373 复审第 1 轮] 把焦点从**即将被藏起来**的那枚 ✕ 上挪走。
+ * 只在焦点确实在这枚钮上时动手 —— 用鼠标点的时候焦点未必在它身上(Chromium 对
+ * `<button>` 会聚焦,但别的入口不保证),那种情形下抢焦点是平白打断用户。
+ */
+function moveFocusOffDismiss(gb) {
+    const btn = $(gb + "-dismiss");
+    const doc = btn && btn.ownerDocument;
+    if (!btn || !doc || doc.activeElement !== btn) return;
+    for (const other of DISMISSIBLE_BANNERS) {
+        if (other === gb) continue;
+        const banner = $(other);
+        const b = $(other + "-dismiss");
+        if (banner && !banner.hidden && b && typeof b.focus === "function") {
+            b.focus({ preventScroll: true });
+            return;
+        }
+    }
+    const tab = doc.querySelector('[role="tab"][aria-selected="true"]');
+    if (tab && typeof tab.focus === "function")
+        tab.focus({ preventScroll: true });
 }
 
 /** disabled 类 tooltip:词条为空就移除 title(空 title 在部分 WebView 里仍弹空气泡)。 */

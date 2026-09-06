@@ -1609,6 +1609,126 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         );
     }
 
+    // (a21) [SL-373] 建议类横幅的 ✕ —— **哪几条有、哪几条一定不能有**。
+    // 行为面(关得掉 / 不再出现 / 条件变了再出现)由 smoke-output-stale-page ⑦ 承担,
+    // 而那一套依赖无头浏览器、缺依赖时整套 SKIP;这里留下**不会 SKIP** 的那一半:
+    // ⑧⑨⑩ 走 showDismissible、①-⑥ 一律仍走裸 show()。
+    // 后半条是**契约面**:SCVB_CONTRACT §5.1 降级纪律② 写着「持续性条件(横幅①-⑥)
+    // 不可手动关闭」—— 给它们中任何一条接上 ✕ 都是在改冻结契约的行为面,必须当场红。
+    {
+        const { stripJsComments } = await import(
+            u("scripts/lib/strip-comments.mjs")
+        );
+        const appCode = stripJsComments(
+            readFileSync(join(ROOT, "web/output/app.js"), "utf8"),
+            "web/output/app.js",
+        );
+        const html = readFileSync(join(ROOT, "web/output/index.html"), "utf8");
+        // 判据**不钉排版**:prettier 会按行宽把 `showDismissible("x", …)` 折成多行,
+        // 钉在「同一行」上的话一次 reflow 就假红(本卡第一版就是这么红的)。
+        // 先把空白全去掉再找子串 —— 于是折不折行都一样。
+        const flat = appCode.replace(/\s+/g, "");
+        // ✕ 接线名单那个数组的**字面文本**(切到 `]` 为止)。理由见下面用它那一格:
+        // 全文件找锚点名会被 `showDismissible("x",` 喂饱。
+        const listStart = flat.indexOf("DISMISSIBLE_BANNERS=[");
+        const listEnd = flat.indexOf("]", listStart);
+        const listSrc =
+            listStart >= 0 && listEnd > listStart
+                ? flat.slice(listStart, listEnd)
+                : "";
+        check(
+            listSrc.length > 0,
+            "(a21) 取到 DISMISSIBLE_BANNERS 那个数组(取不到就说明下面三格在空跑)",
+        );
+        for (const gb of [
+            "banner-staleCapture",
+            "banner-fpPausedByCapture",
+            "banner-recaptureVoided",
+        ]) {
+            // ← 把任一条改回裸 show($(...), 条件),本格红。
+            check(
+                flat.includes(`showDismissible("${gb}"`),
+                `(a21) ${gb} 走 showDismissible(带 ✕ 的那条路)`,
+            );
+            // ← 删掉 index.html 里对应的那枚钮,本格红(接线在,钮没了 ⇒ 页面上关不掉)。
+            check(
+                html.includes(`data-gb="${gb}-dismiss"`),
+                `(a21) ${gb} 的 ✕ 钮在模板里`,
+            );
+            // 接线名单里也要有它:`showDismissible` 那一侧管「显不显」,这一侧管
+            // 「✕ 有没有 handler」+「关掉之后焦点交给谁」(moveFocusOffDismiss 读同一份)。
+            // 漏一条的话:钮在、横幅会按签名收起、但点它什么都不发生 —— 而 ⑦ 那套只点
+            // ⑧ 那一枚,漏掉 ⑨⑩ 里任一条它照样全绿。
+            // ← 从 DISMISSIBLE_BANNERS 里删掉任一条,本格红。
+            // ⚠ 判据**必须切到那个数组里面再找**:锚点名在 `showDismissible("x",` 那一侧
+            // 也逐字出现,全文件找的话渲染那一侧会把它喂饱(第一版就是这么写的,无牙)。
+            check(
+                listSrc.includes(`"${gb}"`),
+                `(a21) ${gb} 在 DISMISSIBLE_BANNERS 接线名单里`,
+            );
+        }
+        // ①-⑥:契约明令不可手动关闭 —— 既不许走 showDismissible,也不许有 ✕ 钮。
+        // [复审第 1 轮] §5.1 那句「横幅①-⑥」用的是**本页的横幅编号**,不是九码表行号:
+        // ②-⑥ 各对应表里一行,而 ① 路由失准由 `scvb.conn` 的 misalignCount 派生、
+        // **不是 code** —— 契约按本页编号把它一并收进持续性条件,所以它同样在这份名单里。
+        // 名单没变,改的是理由(app.js renderBanners 头注同批订正)。
+        // ⑦ printGuard 同样不给(它自带一枚「继续写入自动化」的待办动作钮,
+        // 关掉横幅等于把待办藏起来)。
+        for (const gb of [
+            "banner-misaligned",
+            "banner-secondOutput",
+            "banner-srMismatch",
+            "banner-versionMismatch",
+            "banner-sidecarMissing",
+            "banner-noTimeline",
+            "banner-printGuard",
+        ]) {
+            // [复审第 2 轮] **先断这条横幅还在,再断它没有 ✕。**
+            // 下面那格是两个**纯否定**项:锚点名拼错 / 横幅被改名 / 横幅被删,三种情形
+            // 它都自动为真 —— 契约边界从此无人守而没有任何东西会红。上面 ⑧⑨⑩ 那三格是
+            // 正向 `includes`,名字一漂当场红,这一档缺的正是那个对称的锚。
+            // ← 把这份名单里任一个名字改错一个字,本格红(而下面那格照绿 —— 那正是
+            //   本格要补的洞;实测改成 `banner-versionMismatchX`,只红本格)。
+            check(
+                html.includes(`data-gb="${gb}"`),
+                `(a21) ${gb} 这条横幅还在(锚点名漂了的话下面那格会恒真)`,
+            );
+            check(
+                !flat.includes(`showDismissible("${gb}"`) &&
+                    !html.includes(`data-gb="${gb}-dismiss"`),
+                `(a21) ${gb} **没有** ✕(§5.1 降级纪律②:持续性条件不可手动关闭)`,
+            );
+        }
+        // 「关过没有」这道查表真的在显隐上生效(不是只记了个 Map 没人读)。
+        // ← 把 `show(node, seen.get(gb) !== sig)` 改回 `show(node, true)`,本格红。
+        check(
+            /show\(\s*node,\s*seen\.get\(gb\)\s*!==\s*sig\s*\)/.test(appCode),
+            "(a21) ★ 显隐真的过了「这一条关过没有」那道查表",
+        );
+        // 「条件为假就把记录删掉」—— 卡面点名的「条件消失再出现要能再显示」全靠这一句;
+        // 没有它,⑨⑩ 那种无占位符文案(签名恒空)一关就永远不再出现。
+        // ← 删掉 `seen.delete(gb)`,本格红(smoke-output-stale-page ⑦e 是它的行为面)。
+        check(
+            /seen\.delete\(gb\)/.test(appCode),
+            "(a21) ★ 条件为假的那一帧连关掉记录一起删(「关掉」是这一次,不是永久)",
+        );
+        // 签名带轨数 —— 三条过期时关掉、之后变成五条要能再提醒。
+        // ← 把它改成 `""`,本格红(行为面见 ⑦d)。
+        check(
+            /showDismissible\(\s*"banner-staleCapture",[\s\S]{0,120}?String\(staleTracks\)/.test(
+                appCode,
+            ),
+            "(a21) ★ ⑧ 的内容签名带上了 stale 轨数(轨数变了 = 另一句话,要重新出现)",
+        );
+        for (const lang of ["zh", "en", "fr"]) {
+            check(
+                typeof T[lang]["banner.dismiss"] === "string" &&
+                    T[lang]["banner.dismiss"].trim() !== "",
+                `(a21) ✕ 的无障碍名 ${lang}.banner.dismiss 非空`,
+            );
+        }
+    }
+
     // ---- (b) 源码级不变式:图表卡摘出 + 两 tab 共用同一条判据
     const tmSrc = readFileSync(join(ROOT, "web/output/tab-master.js"), "utf8");
     const ttSrc = readFileSync(join(ROOT, "web/output/tab-tracks.js"), "utf8");

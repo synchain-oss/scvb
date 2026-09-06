@@ -697,11 +697,25 @@ export const T = {
         "set.diag.colGen": "GEN",
         "set.diag.colSeq": "SEQ",
         "set.reanalyze": "改后需重分析",
+        // [SL-375] 用户 2026-09-06 裁定:范围档(§1.8 daw_loop / manual)下点完「重新分析」
+        // 之后,契约 §1.21 规定基线不前移 ⇒ 这枚徽标不灭。此前它继续写着「改后需重分析」,
+        // 而用户**刚刚就重新分析过了** —— 那是一句叫他再做一遍已经做过的事的话。
+        // 改成陈述当前状态:范围内已经按新口径重算了,范围外还是旧的。
+        // 与弹窗里 set.reanalyzeAsk.rangeNote / rangeDone(SL-348)说的是同一件事。
+        "set.reanalyze.partialRange": "只更新了部分范围",
         // [SL-276] 分析口径改动后的弹窗(用户 2026-09-01 裁定):旧的一条小琥珀 badge
         // (set.reanalyze)看不清,改由本框推到眼前;badge 作为常驻状态位保留。
         "set.reanalyzeAsk.body": "分析口径已更改,建议重新分析",
         "set.reanalyzeAsk.primary": "重新分析",
-        "set.reanalyzeAsk.later": "稍后",
+        // [SL-371] 用户 v5.6.8 实测:「如果点击『稍后』的话,直接强制回退到原来的方案吧,
+        // 这样用户完全知道自己在干什么」。这枚钮因此从「只关框」变成**一次写**(把刚改的
+        // 那一项写回上次分析用的值),key 跟着从 `.later` 改名成 `.revert` —— 留着旧名字
+        // 的话,下一个读字典的人会照名字以为它还是「先放着」。
+        "set.reanalyzeAsk.revert": "撤销更改",
+        // 说清这枚钮的后果。框里两枚钮现在都是**动作**(一个重算、一个回退),没有一枚是
+        // 「什么都不做」——「什么都不做」留给 Esc / 点遮罩,那两条出口不写任何 state。
+        "set.reanalyzeAsk.revertHint":
+            "撤销更改会把这一项改回上次分析时用的设置;要先放着不动,按 Esc 关掉本框。",
         // [SL-279 复审第 6 轮] 范围档下这枚钮只重算 global.range 内(契约 §1.21),
         // 基线不前移、徽标不灭。不把这句说出来,用户看到的就是「框关了、灯还亮着」。
         "set.reanalyzeAsk.rangeNote":
@@ -833,6 +847,11 @@ export const T = {
         // 文案不说「谁把它关的」,只说**现在是什么状态 + 怎么办**,两条路才都读得通。
         "banner.recaptureVoided":
             "重采集布防还在,但采集已关——这次重采集不会记录任何东西;重新打开采集,或撤销布防",
+        // [SL-373] 用户 v5.6.8 实测:「上方的黄色警告横幅加一个 x 可以关掉,不然一直在很烦」。
+        // 这枚 x 只挂在**建议类**横幅 ⑧⑨⑩ 上(数据源是 §2.8 段表 / §2.1 state,不是 §5.1
+        // 错误码);①-⑥ 那六条是 SCVB_CONTRACT §5.1 降级纪律② 明令「不可手动关闭」的
+        // 持续性条件,不加、也不许加。钮面是字形 ✕,可访问名走本词条。
+        "banner.dismiss": "关掉这条提示",
         "wave.staleTrack": "该轨上游音频与已采集特征不一致,建议重新采集",
         // ARMED 轻确认(05 §2.1 ③ 版本 chip 行逐字):FOLLOW 直接切、PRINT 硬拒绝,只有 ARMED 弹这条
         "master.versionArmedConfirm": "引擎输出将平滑切至新版本,是否继续?",
@@ -1592,7 +1611,10 @@ export const T = {
         "set.reanalyzeAsk.body":
             "Analysis settings changed — re-analysis is recommended",
         "set.reanalyzeAsk.primary": "Re-analyze",
-        "set.reanalyzeAsk.later": "Later",
+        "set.reanalyzeAsk.revert": "Undo change",
+        "set.reanalyzeAsk.revertHint":
+            "Undo change puts this setting back to the one the last analysis used; to leave it as it is, press Esc to close this dialog.",
+        "set.reanalyze.partialRange": "Only part of the range updated",
         "set.reanalyzeAsk.rangeNote":
             "A range is active: only the range you set will be recomputed. Segments outside it keep the previous settings, so this notice stays. To recompute the whole timeline, switch the range back to follow first.",
         "set.reanalyzeAsk.rangeDone":
@@ -1712,6 +1734,7 @@ export const T = {
             "Upstream-change detection is paused while capture is on (these features are being rewritten as the new baseline) — turn capture off, then play, to check whether upstream changed",
         "banner.recaptureVoided":
             "Re-capture is still armed but capture is off — this re-capture will record nothing. Turn capture back on, or disarm.",
+        "banner.dismiss": "Dismiss this notice",
         "wave.staleTrack":
             "Upstream audio no longer matches the captured features on this track — re-capture recommended",
         "master.versionArmedConfirm":
@@ -2430,7 +2453,11 @@ export const T = {
         "set.reanalyzeAsk.body":
             "Les réglages d'analyse ont changé — une ré-analyse est conseillée",
         "set.reanalyzeAsk.primary": "Ré-analyser",
-        "set.reanalyzeAsk.later": "Plus tard",
+        "set.reanalyzeAsk.revert": "Annuler la modification",
+        "set.reanalyzeAsk.revertHint":
+            "Annuler la modification rétablit ce réglage à celui utilisé lors de la dernière analyse ; pour le laisser tel quel, appuyez sur Échap pour fermer cette boîte.",
+        "set.reanalyze.partialRange":
+            "Seule une partie de la plage a été mise à jour",
         "set.reanalyzeAsk.rangeNote":
             "Une plage est active : seule la plage définie sera recalculée. Les segments en dehors gardent les réglages précédents, donc cet avis reste affiché. Pour recalculer toute la timeline, repassez d'abord la plage en suivi.",
         "set.reanalyzeAsk.rangeDone":
@@ -2554,6 +2581,7 @@ export const T = {
             "La détection des changements en amont est suspendue tant que la capture est active (ces caractéristiques sont réécrites comme nouvelle référence) — désactivez la capture, puis lancez la lecture, pour vérifier si l'amont a changé",
         "banner.recaptureVoided":
             "La recapture est toujours armée mais la capture est désactivée — cette recapture n'enregistrera rien. Réactivez la capture, ou désarmez.",
+        "banner.dismiss": "Masquer cet avis",
         "wave.staleTrack":
             "L'audio en amont ne correspond plus aux caractéristiques capturées sur cette piste — recapture recommandée",
         "master.versionArmedConfirm":

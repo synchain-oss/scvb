@@ -254,6 +254,10 @@ export function createTabSettings(opts) {
         reanalyzeAskScopenote: $("reanalyze-ask-scopenote"),
         reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
         reanalyzeAskRangedone: $("reanalyze-ask-rangedone"),
+        // [SL-371] **名字沿旧、钮面已换**:锚点仍是 `reanalyze-ask-later`、本位仍叫
+        // `reanalyzeAskLater`,而这枚钮现在写着「撤销更改」、点下去会**发一次写**
+        // (revertFromAsk)。锚点不改是为了不动 C4d 那几格已经钉住的焦点圈闭断言;
+        // 照名字读逻辑会读反,所以在取元素这一处就说清楚。
         reanalyzeAskLater: $("reanalyze-ask-later"),
         reanalyzeAskPrimary: $("reanalyze-ask-primary"),
         guideBox: $("settings-guideblock-rules"),
@@ -315,8 +319,11 @@ export function createTabSettings(opts) {
         // `applied.*` 落在 CFGS(**工程级**,不分版本),所以切版本不会让它变。
         // 本位只由 wireSeg 里**写成功**的回调置起,syncStale 之外无人写它。
         // 上面这几条因此一次性关掉,而琥珀 badge 的既有语义一个字节没动。
-        // **一次性**:弹过一次就不许再自己弹第二次。留着不管的话「稍后」关框之后本位仍
+        // **一次性**:弹过一次就不许再自己弹第二次。留着不管的话关框之后本位仍
         // 有效,后续任何非用户驱动的口径变化都能再弹一次 —— 上面这几条换个入口又漏回来。
+        // [SL-371] 「关框」现在有三条各不相同的路:撤销更改(写受理后清 pending + token)/
+        // Esc / 点遮罩(只关框,两位一个都不动)。本段说的是后两条 —— 撤销那条已经把
+        // 两位都清掉了,不会留下「本位仍有效」这个形态。
         // [SL-354] **承担者换了,别照旧文找那一行**:原来靠「syncStale 真开框那一下就地
         // 清掉本位」实现,那一行**已经没有了** —— 本位开框之后还要继续当「这一帧新不新」
         // 的尺子(见下一段)。接替它的是 `reanalyzeAskedFor` 记下的 `字段=值`:同一次写
@@ -337,10 +344,27 @@ export function createTabSettings(opts) {
         //   · 「用户自己改回去了」(当前值 == 基线)⇒ 该清、该关。
         // 布尔位没有这个信息,所以只能把两者当同一件事 —— 那正是 ① 的成因。
         askPending: null,
-        // 开框前的焦点落点,关框时还回去(「稍后」/ 遮罩 / Esc 三个出口都走 closeReanalyzeAsk)。
+        // 开框前的焦点落点,关框时还回去(三个出口都会经过 closeReanalyzeAsk:遮罩 / Esc
+        // 直接走它,[SL-371] 的「撤销更改」在写受理之后走它)。
         reanalyzeReturnFocus: null,
-        // analyze("all") 在途:主钮置灰 + 早退,防连点打出第二发(见 doReanalyzeFromAsk)。
-        reanalyzeInFlight: false,
+        // 框里**任一枚钮**发出去的调用在途:`null` / `"analyze"` / `"revert"`。
+        // [SL-371 复审第 1 轮,统筹裁定] 原来是两个各管各的布尔(`reanalyzeInFlight` /
+        // `revertInFlight`),**互不相认** —— 撤销这枚钮故意不挂 `disabled`(理由见下),
+        // 于是两个方向的竞态都可达,而且都产生说反话的状态:
+        //   · 「先点重新分析、在途时点撤销」:分析拿改动后那一档跑,撤销的写落在它后面
+        //     ⇒ 跑完 `applied.*` 前移到那一档、当前值已撤回基线 ⇒ **徽标反向亮起**;
+        //   · 「先点撤销、在途时点重新分析」:分析拿**即将被撤掉**的那一档跑起来。
+        // 合成一位之后「任一在途 ⇒ 另一枚早退」是一句话的事,不必两处各记一遍。
+        // 存的是**哪一路**而不是布尔:真红时看得出在途的是谁(诊断成本为零)。
+        askInFlight: null,
+        // [SL-375] 上一次**范围档**部分重算所用的那份口径快照(`{loudness_mode,
+        // center_slot_policy}`)。为空 = 还没做过、或做过但口径之后又变了。
+        // 只影响两枚徽标念哪条词条,不碰 stale 判定本身(见 syncStale 里 STALE_KEY 那段)。
+        partialRangeFor: null,
+        // [SL-371] 撤销这一路**只早退、不置灰** —— 上面 Tab 圈闭那段的护栏写着
+        // 「置灰的只可能是主钮」,给这一枚也挂 disabled 会把那条推理变成假话
+        // (而它正是回卷目标怎么选的依据)。所以它的防连点全压在 `askInFlight` 上,
+        // 不像主钮那样有 `disabled` 当第二道。
         nineOpen: false,
         diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
@@ -454,7 +478,7 @@ export function createTabSettings(opts) {
                 //     `local.askPending` 那段:布尔位分不开「写还没回来」与「用户改回去了」。
                 local.askPending = { field, value };
                 // [SL-354 复审第 2 轮] **一次新的用户写就重新开闸。**
-                // 复审给的可复现序列(默认同步页即可):改档 → 弹 → 稍后 ⇒
+                // 复审给的可复现序列(默认同步页即可):改档 → 弹 → Esc 关框 ⇒
                 // 非 UI 路径把这一项改回基线 ⇒ 上面那把尺子(当前值 != 刚写的值)
                 // 早退,`!stale` 那支一次都没跑到,于是 reanalyzeAskedFor 里那个 token
                 // 留着 ⇒ 用户**再点同一个值**时 token 逐字相同 ⇒ 不弹,只亮徽标。
@@ -581,9 +605,21 @@ export function createTabSettings(opts) {
         if (el.diagChevron)
             el.diagChevron.addEventListener("click", toggleDiag);
         if (el.diagCopy) el.diagCopy.addEventListener("click", copyDiag);
-        // [SL-276] 弹窗三个出口:「稍后」/ 点遮罩本身 / Esc —— 都只关框,不写任何 state。
+        // [SL-276] 弹窗三个出口:框里那枚次要钮 / 点遮罩本身 / Esc。
+        // [SL-371] **三个出口不再同义**:次要钮从「稍后 = 只关框」改成「撤销更改 =
+        // 把刚改的那一项写回基线」(用户 v5.6.8 原话「直接强制回退到原来的方案吧,
+        // 这样用户完全知道自己在干什么」);遮罩与 Esc **仍旧一个字节都不写**。
+        // 三条理由,缺一条我都会把它们并回去:
+        //   · Esc / 点遮罩是「关掉这个框」的通用手势,不是对内容的裁定 —— 绑上写操作,
+        //     一次误按就改了工程状态,而且没有任何提示;
+        //   · 撤销那一路会被桥拒(桥缺失 / 只读 observer / badArg),按主钮同一口径
+        //     **拒了不关框**;此时遮罩与 Esc 是唯一还能把框收掉的出口。两条路都写的话,
+        //     用户会被关在框里;
+        //   · 钮面现在写着「撤销更改」,它不再是「什么都不做」那一枚 —— 框里两枚钮都是
+        //     动作,「什么都不做」这个第三种结果只能由 Esc / 遮罩承担(说明段有一句
+        //     写明这件事,见 set.reanalyzeAsk.revertHint)。
         if (el.reanalyzeAskLater)
-            el.reanalyzeAskLater.addEventListener("click", closeReanalyzeAsk);
+            el.reanalyzeAskLater.addEventListener("click", revertFromAsk);
         if (el.reanalyzeAskPrimary)
             el.reanalyzeAskPrimary.addEventListener(
                 "click",
@@ -619,18 +655,20 @@ export function createTabSettings(opts) {
             // [SL-276 二轮复审] 回卷目标要避开 disabled 的那枚:主钮在 analyze 在途期间
             // 会被置灰(见 doReanalyzeFromAsk),而 focus() 对 disabled 元素是空操作 ——
             // 直接回卷过去的话,preventDefault() 已经吃掉了这次 Tab、焦点却原地不动,
-            // Tab 在那一小段时间里等于失灵。置灰的只可能是主钮,故退到「稍后」。
+            // Tab 在那一小段时间里等于失灵。置灰的只可能是主钮,故退到次要钮
+            // (reanalyze-ask-later;[SL-371] 钮面已改成「撤销更改」,**没有**跟着挂
+            // disabled —— 见 local.askInFlight 那段,那正是为了让这句话继续成立)。
             //
             // [SL-276 四轮复审] `focusable` 不能只用在「回卷**进来**」那两条,**正向 Tab
-            // 出去**那条的比较对象也得换成它 —— 否则圈闭在「稍后」这一格上是**开口**的:
+            // 出去**那条的比较对象也得换成它 —— 否则圈闭在次要钮这一格上是**开口**的:
             // 主钮置灰时焦点停在 first,正向 Tab 三条分支一条都不命中 ⇒ 不 preventDefault
             // ⇒ 浏览器按 DOM 顺序接着走。主钮可点时下一个正好是它(index.html 里 later 在前、
             // primary 在后),所以平时看不出来;而在途期间它 disabled、会被跳过,焦点直接
             // 落到遮罩背后的响度胶囊 / 诊断区 —— 正是上面那段说要拦住的东西。
             // 这条路正是「在途置灰」那条修补引出来的,而且走得到:置灰把焦点掉回 <body>
-            // → 一次 Tab 命中第三分支被送到「稍后」→ 再一次就出框了。
+            // → 一次 Tab 命中第三分支被送到次要钮 → 再一次就出框了。
             // 换成「实际生效的末位」之后:主钮可点时 focusable(last, first) === last,
-            // 行为与从前逐字相同;置灰时它等于 first,于是从「稍后」正向 Tab 就地回卷到
+            // 行为与从前逐字相同;置灰时它等于 first,于是从次要钮正向 Tab 就地回卷到
             // 自己,焦点出不去。
             const focusable = (pref, alt) =>
                 pref && pref.disabled !== true ? pref : alt;
@@ -741,13 +779,18 @@ export function createTabSettings(opts) {
         //
         // 与显隐**共用同一个 `limited`**,不另起第二个条件:两个条件迟早分叉,而「同一件事
         // 两处各判一次」正是这张卡在收的那一族。
+        //
+        // [SL-371] 两档的**共同前缀**里多了 `reanalyze-ask-reverthint`(「撤销更改」
+        // 那枚钮的后果说明)。它与上面那条禁令不冲突,判据是**它恒可见** —— 没有任何
+        // 分支会把它 hidden,所以不存在「念了却看不见」的形态;`index.html` 里的静态
+        // 默认值与这里的前缀**必须逐字同一串**(那份是首帧、这份是每次 render 覆盖,
+        // 两处漂开的话首帧念一套、之后念另一套)。
         const panel = el.reanalyzeAskPanel;
         if (panel && typeof panel.setAttribute === "function") {
+            const base = "reanalyze-ask-scopenote reanalyze-ask-reverthint";
             panel.setAttribute(
                 "aria-describedby",
-                limited
-                    ? "reanalyze-ask-scopenote reanalyze-ask-rangenote"
-                    : "reanalyze-ask-scopenote",
+                limited ? base + " reanalyze-ask-rangenote" : base,
             );
         }
     }
@@ -805,6 +848,79 @@ export function createTabSettings(opts) {
             el.reanalyzeAskPrimary.focus({ preventScroll: true });
     }
 
+    /**
+     * [SL-371] 「撤销更改」= 把**刚改的那一项**写回 `analysis.applied.*` 的值。
+     *
+     * 用户 v5.6.8 原话:「如果点击『稍后』的话,直接强制回退到原来的方案吧,这样用户
+     * 完全知道自己在干什么」。原来这枚钮只关框,于是点完之后当前值仍是新档、徽标还
+     * 亮着 —— 用户手上是一个「我没决定,但设置已经改了」的中间态,而框已经没了。
+     *
+     * 写的是**基线值**,不是「上一个值」:基线 = 上次全量分析真正用过的那一档
+     * (`appliedAnalysisConfigOf`,SL-279 的真源),这才是「原来的方案」。
+     *
+     * 四条早退,各自的理由:
+     *   ① 框里任一路在途 —— 连点两下只准打出一发,且与主钮互斥(见 local.askInFlight);
+     *   ② **没有待观察的写** —— 那说明这个框不是被一次用户改档推出来的(理论上
+     *      openReanalyzeAsk 走不到,但 `pending` 是可空的),此时「原来的方案」是哪一项
+     *      根本无从谈起,退化成纯关框,别把用户困在框里;
+     *   ③ **这份 state 没带 `applied`** —— `appliedAnalysisConfigOf` 会回落到当前值
+     *      (见它的头注),拿回落值去写就是把「读不到基线」当成「基线 = 当前值」,
+     *      写出去是一次骗人的空写。同 syncStale 那道兜底闸的口径:回落值只许渲染。
+     *      这一支同样退化成纯关框;
+     *   ④ **当前值已经等于基线** —— 没什么可撤的(`wireSeg` 里那句「点已选中档不重复写」
+     *      的同族),直接清闸关框,不发一次必然无效的写。
+     *
+     * 拒绝态**不关框**,与主钮逐字同一条理由(见下面 doReanalyzeFromAsk 的头注):
+     * 桥缺失 / observer 拒 / badArg 时框留着 = 这一下没生效、可以再点;框没了、档位没变、
+     * 又没有任何别的反馈,看起来就是「这枚钮坏了」。要放弃就按 Esc / 点遮罩。
+     *
+     * 受理之后**闸与 token 一起清**:这一次 ask 已经被用户处置完了。清了之后
+     * syncStale 走 `if (!pending) return;` 那支 —— 于是「写还没回来」的那几帧只会让
+     * 徽标继续亮着,不会再弹一次框;等状态帧到了,当前 == 基线 ⇒ 徽标自己灭。
+     * 徽标不在这里就地熄:它是纯派生的,就地写会被下一帧按旧 state 抹回去。
+     */
+    async function revertFromAsk() {
+        // [SL-371 复审第 1 轮,统筹裁定] **框里任一路在途,这枚钮就早退**(claude 与
+        // pr-agent 各自独立指出同一条)。两位合成 `local.askInFlight` 的理由与两个方向的
+        // 后果写在那一位的声明处,这里不复述。
+        if (local.askInFlight) return;
+        const pending = local.askPending;
+        if (!pending) {
+            closeReanalyzeAsk();
+            return;
+        }
+        const st = getStore().state;
+        if (!hasAppliedAnalysisConfig(st)) {
+            local.askPending = null;
+            local.reanalyzeAskedFor = null;
+            closeReanalyzeAsk();
+            return;
+        }
+        const baseline = appliedAnalysisConfigOf(st)[pending.field];
+        if (config()[pending.field] === baseline) {
+            local.askPending = null;
+            local.reanalyzeAskedFor = null;
+            closeReanalyzeAsk();
+            return;
+        }
+        local.askInFlight = "revert";
+        try {
+            const res = await call("setAnalysisConfig", {
+                [pending.field]: baseline,
+            });
+            if (!res || res.observer || res.ok === false) {
+                requestRender();
+                return;
+            }
+            local.askPending = null;
+            local.reanalyzeAskedFor = null;
+            closeReanalyzeAsk();
+            requestRender();
+        } finally {
+            local.askInFlight = null;
+        }
+    }
+
     // 「重新分析」= 契约 §1.6 analyze("all")(全轨;设置页没有选区概念)。
     // **时间维不一定是全时长**:§1.8 范围档下 `"all"` 推出来的是 `global.range` —— 契约 §1.21
     // 规定那种重算不前移 `applied.*`,所以徽标不灭。follow 档下才是整条已采集时间线,
@@ -837,12 +953,14 @@ export function createTabSettings(opts) {
     //      (框马上关,closeReanalyzeAsk 把焦点还回响度胶囊);但 busy / observer 这条路
     //      **框是留着的**,焦点却已经在框外 —— 键盘用户再按 Enter 什么都不会发生,想重试
     //      反而更难。故 finally 里框还开着就把焦点还给主钮。
-    //   ③ 防连点由 `reanalyzeInFlight` 早退与 `disabled` 两道**各自独立**挡住。冒烟 C4c
+    //   ③ 防连点由 `askInFlight` 早退与 `disabled` 两道**各自独立**挡住。冒烟 C4c
     //      钉的是「连点两下只打出一发 analyze」,**两道都拆掉才会红**(留一道仍守得住);
     //      C4b 钉的是另一件事 —— 跑完一定解锁(finally 丢了就永久停在 disabled)。
     async function doReanalyzeFromAsk() {
-        if (local.reanalyzeInFlight) return;
-        local.reanalyzeInFlight = true;
+        // [SL-371 复审第 1 轮] 判据从 `reanalyzeInFlight` 换成共用的 `askInFlight`:
+        // 撤销那一路在途时点这枚钮同样要早退(见 askInFlight 声明处列的两个方向)。
+        if (local.askInFlight) return;
+        local.askInFlight = "analyze";
         const btn = el.reanalyzeAskPrimary;
         if (btn) {
             btn.disabled = true;
@@ -860,6 +978,12 @@ export function createTabSettings(opts) {
             if (rangeLimited()) {
                 // 受理了,但只重算范围内 ⇒ `applied.*` 不前移、徽标不灭(§1.21)。
                 // 与拒绝态同口径:不关框,让范围提示继续摆在眼前。
+                // [SL-375] 记下**这次部分重算是按哪一份口径跑的**。徽标此后改说
+                // 「只更新了部分范围」而不是「改后需重分析」—— 用户刚刚就重新分析过了,
+                // 再叫他做一遍是句废话(用户 2026-09-06 裁定)。
+                // 记的是**配置快照**而不是一个布尔:口径再改一次,这次部分重算就与新口径
+                // 无关了,快照对不上 ⇒ 自动退回「改后需重分析」,不必再找地方清它。
+                local.partialRangeFor = { ...config() };
                 syncReanalyzeRangeNote();
                 // [复审第 8 轮] **视觉与读屏两侧要对称**:视觉用户按下去看到「框没关」本身
                 // 就是反馈,读屏用户不会被自动告知「什么都没发生」—— 所以这里必须往
@@ -872,13 +996,53 @@ export function createTabSettings(opts) {
             closeReanalyzeAsk();
             requestRender();
         } finally {
-            local.reanalyzeInFlight = false;
+            local.askInFlight = null;
             if (btn) {
                 btn.disabled = false;
                 btn.removeAttribute("data-disabled");
                 if (el.reanalyzeAsk && !el.reanalyzeAsk.hidden)
                     btn.focus({ preventScroll: true });
             }
+        }
+    }
+
+    /**
+     * [SL-375] 两枚徽标**念哪条词条**。用户 2026-09-06 裁定:范围档下点完「重新分析」
+     * 之后徽标不该再写「改后需重分析」—— 契约 §1.21 规定那种重算不前移 `applied.*`,
+     * 所以徽标必然还亮着,而用户**刚刚就重新分析过了**,那句话是叫他再做一遍已经做过的事。
+     * 改成陈述状态:「只更新了部分范围」(范围外仍按旧口径)。
+     *
+     * **stale 判定本身一个字节没动** —— 亮不亮还是 `当前值 !== applied`,本函数只换文本。
+     *
+     * 三个合取项,各自的理由:
+     *   · `rangeLimited()` —— 与弹窗里范围提示**共用同一个谓词**(不另起第二个条件,
+     *     那正是本文件立过的纪律)。切回 follow 档之后「重新分析」这条建议重新可执行,
+     *     文案就该退回去叫他做;
+     *   · 快照非空 —— 这一档下**做过**一次部分重算(没做过就还是「改后需重分析」);
+     *   · 快照 == 当前口径 —— 那次部分重算算的就是眼前这一份。口径之后又改了的话
+     *     快照对不上,自动退回,不必再找地方清它。
+     *
+     * 每次 render 都按当前字典重填(与 syncReanalyzeScopeNote 同一条理由:切语言时
+     * `applyI18n` 只认写在 DOM 上的 `data-t`,所以 `data-t` 与 textContent 一起换)。
+     */
+    const STALE_KEY_PLAIN = "set.reanalyze";
+    const STALE_KEY_PARTIAL = "set.reanalyze.partialRange";
+    function staleBadgeKey() {
+        const snap = local.partialRangeFor;
+        if (!rangeLimited() || !snap) return STALE_KEY_PLAIN;
+        const cur = config();
+        return snap.loudness_mode === cur.loudness_mode &&
+            snap.center_slot_policy === cur.center_slot_policy
+            ? STALE_KEY_PARTIAL
+            : STALE_KEY_PLAIN;
+    }
+    function renderStaleBadges() {
+        const key = staleBadgeKey();
+        const t = getT() || {};
+        for (const node of [el.loudnessStale, el.centerStale]) {
+            if (!node) continue;
+            attr(node, "data-t", key);
+            text(node, hasOwn(t, key) ? t[key] : key);
         }
     }
 
@@ -912,6 +1076,7 @@ export function createTabSettings(opts) {
         show(el.centerStale, centerStale);
         if (el.centerStale)
             attr(el.centerStale, "data-stale", centerStale ? "1" : "0");
+        renderStaleBadges();
 
         // [SL-354] 弹窗判据由「只读响度」改成**两项都算**。用户 v5.6.7 实测:「B3(中央槽
         // 策略)完全没有弹出弹窗,应该和前面一样」。原来只读响度是 SL-276 按当时的用户
@@ -935,7 +1100,7 @@ export function createTabSettings(opts) {
         // 改到了别的值。它与「写还没回来」在这一帧上逐字节相同,没有第二个信号能区分。
         // 代价是:框正开着时来这么一下,框不会自动关(旧实现会关)。取这一侧是因为
         // 反过来的代价是用户报的 ①②(该弹不弹 / 弹了就没),而这一侧用户随手可解 ——
-        // 「稍后」/ Esc / 遮罩三个出口照常关框,再改一次档也会重新置闸。
+        // 撤销更改 / Esc / 遮罩三个出口照常关框,再改一次档也会重新置闸。
         // 写落地之后**本位也不清** —— 它此后充当「这一帧新不新」的尺子,一直留到
         // 「改回基线」那一支(下面 `!stale` 里)或者用户下一次写成功把它换掉为止。
         // 用户报的第 ② 条「弹窗出来一下就闪现消失了」不需要 applied 缺席就能发生 ——
@@ -944,7 +1109,9 @@ export function createTabSettings(opts) {
         // ⇒ 派生 stale 当场为假 ⇒ 旧实现关框 + 清闸,而且此后不再弹。有了这把尺子,
         // 那一帧因为「没显示出用户写的值」被直接判为不作数,上面那句 return 就挡住了。
 
-        // 琥珀 badge 是**常驻状态位**(点过「稍后」之后还看得见口径是脏的),纯派生;
+        // 琥珀 badge 是**常驻状态位**(Esc / 点遮罩关掉框之后还看得见口径是脏的),纯派生;
+        // [SL-371] 走「撤销更改」那条出口时它会灭 —— 那不是本位变了,是当前值真的回到了
+        // 基线、派生结果跟着为假。别把「关了框徽标还亮」写成三条出口共通的性质。
         // 弹窗在同一判据之上**再加一道 askPending 闸**(只由用户点档写成功置起) ——
         // 理由见 local.askPending 那段列的那几条「用户什么都没做也为真」的路径。
         // reanalyzeAskedFor 则挡住每帧重弹。
@@ -967,6 +1134,11 @@ export function createTabSettings(opts) {
             //     `pendingStale` 管「要弹的是刚改走的那一项」,两条独立成立,都留。
             local.reanalyzeAskedFor = null;
             local.askPending = null;
+            // [SL-375] 徽标已经灭了,那份部分重算快照也没有消费者了。清它是卫生,
+            // **不是判据**:`staleBadgeKey()` 的「快照 == 当前口径」那一项本来就兜得住
+            // (走到这里当前 == 基线,而快照记的是改动后的那一份)。别把这一行
+            // 当成 SL-375 的牙齿 —— 删掉它本套一格都不红(实测)。
+            local.partialRangeFor = null;
             closeReanalyzeAsk();
             return;
         }
@@ -989,7 +1161,7 @@ export function createTabSettings(opts) {
         if (local.reanalyzeAskedFor !== token) {
             local.reanalyzeAskedFor = token;
             // **一次置位只换一次弹框**。要挡的形态([SL-276 二轮复审]立的):
-            // 「改档 → 弹 → 稍后」之后,只读观察态收 scvb.state / 切版本 / 快照恢复把
+            // 「改档 → 弹 → Esc 关框」之后,只读观察态收 scvb.state / 切版本 / 快照恢复把
             // 口径换到**另一个**脏值 —— 框照弹,而用户这一轮什么都没点。上一轮【重要】
             // 关掉的正是这类打断,换个入口又漏了回来。
             //

@@ -747,6 +747,372 @@ try {
         );
         assertClean("scenario=connected(写入确认板序列)");
     }
+
+    // =========================================================================
+    // [SL-373] ⑦ 建议类横幅的 ✕:关得掉、本会话内同一条不再出现、条件变了要能再出现。
+    //
+    // 用户 v5.6.8 原话:「上方的黄色警告横幅加一个 x 可以关掉,不然一直在很烦」。
+    //
+    // 为什么必须页面级:这条链是「点击 → 会话记忆 → 下一帧 renderBanners 重算显隐」,
+    // 而 renderBanners 每帧都跑 —— 只把 hidden 设一次的实现在源码级看得见、在页面上
+    // 下一帧就被打回来。三段里只有最后一段是肉眼可见的那一段。
+    //
+    // 夹具:直接改 mock 的段表并补发一帧 `scvb.segments`,reason 取 `snapshot`
+    // ——**不取 `analyze`**:那个 reason 在 `UNDOABLE_REASONS` 里,会把 header 的撤销钮
+    // 置亮,给本档掺进一个与判据无关的副作用。
+    // `__SCVB_PREVIEW__` 挂在**壳页**上(shell.js:session),所以这几条不走 IN()。
+    log("=== ⑦ scenario=stale:横幅 ✕ 的三条判据(SL-373)===");
+    {
+        const p0 = await open("stale");
+        check(p0 !== null, "取到页内 DOM 快照");
+        // 首启遮挡(引导页 / tour 询问框)必须先点掉:本档有一格用 `elementFromPoint`
+        // 问「这一点命中的是谁」,而 `.sc-scrim` 盖在整页之上 —— 不点掉的话命中的永远是
+        // 遮罩,那一格恒红且红得与它要守的东西无关(实测第一版就是 `tour-ask`)。
+        // 前面几档只读 hidden 属性,遮罩不碍事,所以 open() 里没有这一步。
+        await evaluate(
+            IN(`for (const n of ["guide-overlay-start", "tour-ask-later"]) {
+                    const b = gb(n);
+                    if (b && !b.disabled) b.click();
+                }
+                return true;`),
+        );
+        await sleep(300);
+        check(
+            await evaluate(
+                IN(`for (const n of ["guide-overlay", "tour-ask"]) {
+                        const o = gb(n);
+                        if (o && !o.hidden) return false;
+                    }
+                    return true;`),
+            ),
+            "⑦ 前置:首启遮挡都收掉了(elementFromPoint 那一格才问得到真正的命中者)",
+        );
+        check(p0.banner, "⑦ 前置:横幅 ⑧ 可见(有东西可关)");
+        check(p0.tabDot, "⑦ 前置:tab 导航琥珀点亮着");
+        check(
+            p0.lanesShown.join(",") === STALE_CHANNELS.join(","),
+            `⑦ 前置:泳道 ⚠ 在 ${STALE_CHANNELS.join("/")} 三条上(实得 ${p0.lanesShown.join("/")})`,
+        );
+
+        // [复审第 1 轮] 几何那半原来读 `getBoundingClientRect()` —— 取的是 button 的
+        // **border box**(≈18×16),绝对定位的 `::after` **不计入**,而注释却声称
+        // 「量的是钮面 + 两侧扩展」「钉住横轴那一半」:把 `::after` 的 left/right 改成 0、
+        // RE-06 的横轴 48px 当场破,那一格照绿。改成拿 `elementFromPoint` 在**钮面左侧
+        // 15px**(落在 `::after` 的 −17px 扩展里、还没到钮面)问一句「这一点命中的是谁」——
+        // 命中扩展没了就返回横幅正文的 span,当场红。
+        // 坐标取 iframe 内文档坐标(`elementFromPoint` 就是这个坐标系),y 取钮面竖中线。
+        const DISMISS = IN(`
+            const b = gb("banner-staleCapture-dismiss");
+            if (!b) return null;
+            const r = b.getBoundingClientRect();
+            const probeX = r.left - 15;
+            const probeY = r.top + r.height / 2;
+            const hit = d.elementFromPoint(probeX, probeY);
+            return {
+                name: b.getAttribute("aria-label") || "",
+                w: Math.round(r.width),
+                h: Math.round(r.height),
+                probeX: Math.round(probeX),
+                probeY: Math.round(probeY),
+                hitIsDismiss: hit === b,
+                hitGb: hit ? hit.getAttribute("data-gb") || hit.tagName : null,
+            };
+        `);
+        const bannerShown = IN(
+            `const n = gb("banner-staleCapture"); return !!n && !n.hidden;`,
+        );
+        const bannerHidden = IN(
+            `const n = gb("banner-staleCapture"); return !!n && n.hidden;`,
+        );
+        const tabDotOff = IN(
+            `const n = gb("tabnav-wave-stale-dot"); return !!n && n.hidden;`,
+        );
+        const bannerText = IN(`
+            const n = gb("banner-staleCapture-text");
+            return n ? n.textContent.trim() : null;
+        `);
+        // ★ **每换一次夹具,先等一个与本卡无关的「这一帧真到了 UI」信号,再看横幅。**
+        // 理由是实测出来的(D6 那次注入照出来的):横幅此刻**本来就是收起的**,于是
+        // `waitFor(bannerHidden)` 当场返回 true、一次都没等,下一条 setStale 就可能抢在
+        // 上一帧渲染之前发出去 —— 「条件为假」那一帧根本没被渲染过,`seen.delete` 也就
+        // 没跑,本档随机变红。取的信号是**泳道 ⚠ 集合**与 **tab 导航琥珀点**:两者同样
+        // 由 §2.8 的 stale 位派生,但渲染在别的函数里(tab-wave / app.js 的 tab 点那行),
+        // 与 showDismissible 这条路无关 —— 它们变了 = 这一帧确实到了 UI。
+        const lanesNow = IN(`
+            const out = [];
+            for (let ch = 1; ch <= 15; ch++) {
+                const n = gb("wave-lane-" + ch + "-stale");
+                if (n && !n.hidden) out.push(ch);
+            }
+            return out.join(",");
+        `);
+        const lanesAre = async (chs, label) => {
+            const want = chs.join(",");
+            const ok = await waitFor(
+                IN(`
+                    const out = [];
+                    for (let ch = 1; ch <= 15; ch++) {
+                        const n = gb("wave-lane-" + ch + "-stale");
+                        if (n && !n.hidden) out.push(ch);
+                    }
+                    return out.join(",") === ${JSON.stringify(want)};
+                `),
+                3000,
+            );
+            check(ok, `${label}(实得 ${await evaluate(lanesNow)})`);
+            return ok;
+        };
+        // 段表就地改 stale 位 + 补发一帧 §2.8。返回**这一帧真的带了几条 stale**,
+        // 用它当正证据:没有它的话「横幅没出现」分不清「判据挡住了」与「夹具没生效」。
+        const setStale = (chs) =>
+            evaluate(`(() => {
+                const s = window.__SCVB_PREVIEW__;
+                if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.segByCh) return null;
+                const want = ${JSON.stringify(chs)};
+                const all = [];
+                for (const [ch, entry] of s.ctl.model.segByCh) {
+                    entry.stale = want.indexOf(ch) >= 0;
+                    all.push(ch);
+                }
+                all.sort((a, b) => a - b);
+                const frame = s.ctl.segmentsPayload("snapshot", all);
+                s.ctl.emit("scvb.segments", frame);
+                return frame.channels.filter((c) => c.stale).length;
+            })()`);
+
+        // ---- ⑦a ✕ 在、有可访问名,且三语各不相同(data-t-aria 真的被 applyI18n 刷到)
+        const dz = await evaluate(DISMISS);
+        if (check(dz, "⑦a 横幅 ⑧ 上有 ✕ 钮")) {
+            check(
+                dz.name.length > 0 && !dz.name.startsWith("banner."),
+                `⑦a ✕ 的无障碍名取自字典(实得 ${JSON.stringify(dz.name)})`,
+            );
+            check(
+                dz.w > 0 && dz.h > 0,
+                `⑦a ✕ 真的上屏了(钮面 ${dz.w}×${dz.h} CSS px —— 这是 border box,不含命中扩展)`,
+            );
+            // 横轴命中扩展**真的生效**:钮面左 15px 那一点仍命中这枚钮。
+            // 横轴合计 = 17(左扩)+ 18(钮面)+ 13(右扩)= 48 CSS px = 0.5 档 24 物理 px;
+            // 纵轴只有 36(18 物理 px),是 base.css 里写明的**明知欠达标**(纵向再扩会盖住
+            // 相邻横幅的同名钮),本格只钉横轴那一半。
+            // ← 把 base.css 里 `.sc-banner__dismiss::after` 的 left/right 改成 0,本格红。
+            check(
+                dz.hitIsDismiss,
+                `⑦a 钮面左 15px 仍命中这枚 ✕(命中扩展生效;实得命中 ${JSON.stringify(dz.hitGb)} @ ${dz.probeX},${dz.probeY})`,
+            );
+        }
+        const names = { zh: dz ? dz.name : "" };
+        for (const lang of ["en", "fr"]) {
+            await evaluate(
+                IN(
+                    `const b = gb("header-lang-${lang}"); if (b) b.click(); return true;`,
+                ),
+            );
+            await sleep(300);
+            const d2 = await evaluate(DISMISS);
+            names[lang] = d2 ? d2.name : "";
+            check(
+                names[lang].length > 0 && !names[lang].startsWith("banner."),
+                `⑦a ${lang} 的无障碍名非空且取自字典(实得 ${JSON.stringify(names[lang])})`,
+            );
+        }
+        // 三语两两不等 —— 只断「非空」的话,fr 整块缺失回退到 en / zh 也会全绿。
+        check(
+            names.zh !== names.en &&
+                names.en !== names.fr &&
+                names.zh !== names.fr,
+            `⑦a 三语无障碍名两两不同(zh/en/fr = ${JSON.stringify([names.zh, names.en, names.fr])})`,
+        );
+        await evaluate(
+            IN(
+                `const b = gb("header-lang-zh"); if (b) b.click(); return true;`,
+            ),
+        );
+        await sleep(300);
+
+        // ---- ⑦b 点 ✕ ⇒ 横幅收起,而**同条件的另外两处提示照旧**
+        //   ← 把 showDismissible() 里那句 `show(node, seen.get(gb) !== sig)` 改回
+        //     `show(node, true)`(= 拆掉「关过没有」这道查表),本格与 ⑦c 一起红。
+        //   ⚠ 这里**先 focus 再 click**:焦点在钮上是「下一帧把它藏起来」这一幕的前提,
+        //   ⑦b-f 那一格断的正是焦点被交出去了。纯 `b.click()` 不走焦。
+        await evaluate(
+            IN(
+                `const b = gb("banner-staleCapture-dismiss");
+                 if (b) { b.focus(); b.click(); }
+                 return true;`,
+            ),
+        );
+        check(await waitFor(bannerHidden, 3000), "⑦b 点 ✕ ⇒ 横幅 ⑧ 收起");
+        const after = await evaluate(PROBE);
+        if (check(after, "⑦b 关掉之后取到页内快照")) {
+            // 正证据:条件本身**一点没变**(⚠ 还在三条泳道上、tab 点还亮着),
+            // 所以「横幅没了」只可能是这枚 ✕ 干的,不是条件消失了。
+            check(after.tabDot, "⑦b tab 导航琥珀点**不受影响**(仍亮着)");
+            check(
+                after.lanesShown.join(",") === STALE_CHANNELS.join(","),
+                `⑦b 泳道 ⚠ **不受影响**(仍是 ${STALE_CHANNELS.join("/")};实得 ${after.lanesShown.join("/")})`,
+            );
+        }
+
+        // ---- ⑦b-f [复审第 1 轮,统筹裁定] **焦点不许掉回 `<body>`。**
+        //   下一帧 showDismissible 给横幅挂 hidden,而焦点正落在它里面这枚钮上 ⇒
+        //   Chromium 把焦点丢给 `<body>`,键盘用户得从卡片开头重走一遍 Tab
+        //   (与 tab-settings.js `doReanalyzeFromAsk` 头注 ② 记的是同一类)。
+        //   本档只有 ⑧ 一条建议类横幅在场(⑨ 让位、⑩ 条件不成立),所以交接目标落在
+        //   「当前那枚 tab」——它在 DOM 里紧跟横幅区、恒可见、恒可聚焦。
+        //   ← 把 app.js 里那句 `moveFocusOffDismiss(gb);` 删掉,本格红
+        //     (`activeElement` 变成 `BODY`)。
+        const c7f = await evaluate(
+            IN(`const a = d.activeElement;
+                if (!a) return null;
+                return {
+                    tag: a.tagName,
+                    gb: a.getAttribute("data-gb") || null,
+                    role: a.getAttribute("role") || null,
+                };`),
+        );
+        if (check(c7f, "⑦b-f 取到 activeElement")) {
+            check(
+                c7f.tag !== "BODY",
+                `⑦b-f 关掉横幅之后焦点没有掉回 <body>(实得 ${JSON.stringify(c7f)})`,
+            );
+            check(
+                c7f.role === "tab",
+                `⑦b-f 焦点落在横幅区之后那枚当前 tab 上(实得 role=${JSON.stringify(c7f.role)})`,
+            );
+        }
+
+        // ---- ⑦c 之后每一帧都不再出现(renderBanners 每帧重算显隐,不是设一次 hidden)
+        await sleep(900);
+        check(
+            await evaluate(bannerHidden),
+            "⑦c 近 1s 的多帧渲染之后仍不出现(本会话内同一条不再弹回来)",
+        );
+
+        // ---- ⑦d **内容签名变了 ⇒ 再出现**:3 轨 → 2 轨,这是另一句话。
+        //   ← 把 renderBanners ⑧ 传给 showDismissible 的 `String(staleTracks)` 改成 `""`
+        //     (= 签名不带轨数),本格红,而 ⑦b/⑦c/⑦e 照绿。
+        const n2 = await setStale([2, 5]);
+        check(n2 === 2, `⑦d 夹具生效:这一帧带 2 条 stale(实得 ${n2})`);
+        await lanesAre(
+            [2, 5],
+            "⑦d 正证据:这一帧真的到了 UI —— 泳道 ⚠ 只剩 2/5",
+        );
+        check(
+            await waitFor(bannerShown, 3000),
+            "⑦d 轨数从 3 变 2 ⇒ 横幅**再次出现**(签名变了 = 另一句话)",
+        );
+        const t2 = await evaluate(bannerText);
+        check(
+            /(^|[^0-9])2([^0-9]|$)/.test(t2 || ""),
+            `⑦d 横幅文案写的是 2 轨(实得「${t2}」)`,
+        );
+
+        // ---- ⑦e **条件消失 ⇒ 记录清掉 ⇒ 同样的签名也要能再出现**
+        //   序列:再关一次(记下签名「2」)→ 清光 stale(条件为假)→ 摆回**同样那 2 条**。
+        //   最后一步必须再出现;记录不清的话签名逐字相同 ⇒ 永远不再出现。
+        //   ← 把 showDismissible() 里 `!on` 那支的 `seen.delete(gb)` 删掉,只红本格最后一条
+        //     (⑦b/⑦c/⑦d 全绿 —— 那正是「永久关闭」这个错误实现的样子)。
+        await evaluate(
+            IN(
+                `const b = gb("banner-staleCapture-dismiss"); if (b) b.click(); return true;`,
+            ),
+        );
+        check(await waitFor(bannerHidden, 3000), "⑦e 再关一次(记下签名「2」)");
+        const n0 = await setStale([]);
+        check(n0 === 0, `⑦e 夹具生效:这一帧零 stale(实得 ${n0})`);
+        // ★ 这两条**必须在下一次 setStale 之前**把「零 stale 那一帧渲染过了」钉死:
+        // 横幅此刻已经收着,拿 bannerHidden 等于没等(见上面 lanesAre 那段注释)。
+        check(
+            await waitFor(tabDotOff, 3000),
+            "⑦e 正证据:零 stale 那一帧真的渲染过了(tab 导航琥珀点灭)—— 于是关掉记录也删了",
+        );
+        await lanesAre([], "⑦e 正证据:泳道 ⚠ 全部收起");
+        check(
+            await evaluate(bannerHidden),
+            "⑦e 条件消失 ⇒ 横幅收起(这一帧同时把关掉记录删了)",
+        );
+        const n2b = await setStale([2, 5]);
+        check(n2b === 2, `⑦e 夹具生效:又摆回同样的 2 条(实得 ${n2b})`);
+        await lanesAre([2, 5], "⑦e 正证据:这一帧也到了 UI —— 泳道 ⚠ 回到 2/5");
+        check(
+            await waitFor(bannerShown, 3000),
+            "⑦e 条件重新成立 ⇒ **同一个签名照样再出现**(关掉是这一次,不是永久)",
+        );
+        // ---- ⑦-tour [复审第 2 轮] **开一次导览不许把关掉的横幅弹回来。**
+        //   导览期 `viewStore()` 换成 demo store,而 demo 世界里 ⑧⑨⑩ 三条条件**全是假**
+        //   (`mock-data.js` 的 stale:false / capture_enabled:false / recapture.armed:false)
+        //   ⇒ 每一帧都走 `showDismissible` 里「条件为假就删记录」那一支。上一版那一支删的是
+        //   **真** `store.session` 的记录,于是开一次导览 = 用户关掉的横幅全部弹回来。
+        //   ← 把 showDismissible / ✕ handler 里的 `viewStore().session` 改回 `store.session`
+        //     (= 上一版),本格最后一条红:退出导览后横幅又出现了。
+        //   ⚠ 判据取**退出导览之后**,不取导览进行中:导览期条件本来就假、横幅本来就该收着,
+        //   那一刻两种实现长得一模一样(记录已被删,但还没有哪一帧的条件为真去把它显出来)。
+        // 前置:⑦e 结束时横幅是**显着**的(那一格断的就是「再出现」),先关掉一次,
+        // 否则本格测的是「本来就没关过」——两种实现下都不会红。
+        await evaluate(
+            IN(
+                `const b = gb("banner-staleCapture-dismiss"); if (b) b.click(); return true;`,
+            ),
+        );
+        check(
+            await waitFor(bannerHidden, 3000),
+            "⑦-tour 前置:横幅已被关掉(有一条真会话记录可供导览去误删)",
+        );
+        const tourStarted = await evaluate(
+            IN(
+                `const b = gb("tabnav-settings"); if (b) b.click(); return true;`,
+            ),
+        );
+        check(tourStarted, "⑦-tour 切到设置页");
+        await sleep(300);
+        check(
+            await evaluate(
+                IN(
+                    `const b = gb("settings-reopentour"); if (!b) return false; b.click(); return true;`,
+                ),
+            ),
+            "⑦-tour 点「重看引导」开导览",
+        );
+        // 导览的 DOM 是 tour.js 自己 append 的,没有 data-gb 锚点 —— 判据走它的
+        // `[data-tour-overlay]`(overlay 本体)与 header 那枚 demo chip:后者是
+        // 「viewStore() 真的换成 demo store 了」的独立信号,不是同一个东西的两种读法。
+        check(
+            await waitFor(
+                IN(`const o = q("[data-tour-overlay]");
+                    const chip = gb("header-demo-chip");
+                    return !!o && !o.hidden && !!chip && !chip.hidden;`),
+                6000,
+            ),
+            "⑦-tour 正证据:导览真的起来了(overlay 上屏 + demo chip 亮 ⇒ viewStore() 已换 demo store)",
+        );
+        await sleep(800); // 让导览期真的跑过若干帧 renderBanners
+        check(
+            await evaluate(
+                IN(`const b = q('[data-tour-btn="skip"]');
+                    if (!b) return false; b.click(); return true;`),
+            ),
+            "⑦-tour 点「跳过」退出导览",
+        );
+        check(
+            await waitFor(
+                IN(`const o = q("[data-tour-overlay]");
+                    const chip = gb("header-demo-chip");
+                    return !!o && o.hidden && !!chip && chip.hidden;`),
+                6000,
+            ),
+            "⑦-tour 导览已退出(viewStore() 换回真 store)",
+        );
+        await evaluate(
+            IN(`const b = gb("tabnav-wave"); if (b) b.click(); return true;`),
+        );
+        await sleep(600);
+        check(
+            await evaluate(bannerHidden),
+            "⑦-tour 退出导览后横幅**仍然是关着的**(导览没有动真会话里那条关闭记录)",
+        );
+        assertClean("scenario=stale(SL-373 ✕)");
+    }
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

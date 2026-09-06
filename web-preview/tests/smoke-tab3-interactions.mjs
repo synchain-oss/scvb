@@ -838,9 +838,19 @@ log("=== ① 纯函数(视口换算 / 夹取 / 命中 / 弹道基建)===");
                 "hasSegmentedMaterial:空段表 / 零轨 ⇒ 假(反向)",
             );
             // 接线面:两个判据都在,缺一个横幅就会在错误的时候出现或永不出现。
-            const bat = appSrc.indexOf('$("banner-fpPausedByCapture")');
+            // [SL-373] 锚点从 `$("banner-fpPausedByCapture")` 换成**裸的锚点名字符串**:
+            // ⑨ 现在走 `showDismissible(锚点名, 条件, 签名)`(带 ✕ 的那条路),
+            // 名字不再经 `$()`。窗口同时收窄到 260 —— 400 会越过 `);` 吃进 ⑩ 那段注释,
+            // 而那段注释里逐字写着 `recapture.armed` / `capture_enabled`,足以把下面
+            // 两格喂饱(判据被自己的注释顶替,SL-297/SL-358 同族)。
+            const bat = appSrc.indexOf('"banner-fpPausedByCapture",');
             check(bat > 0, "找得到横幅 ⑨ 的接线块");
-            const blk = bat > 0 ? appSrc.slice(bat, bat + 400) : "";
+            const blk = bat > 0 ? appSrc.slice(bat, bat + 260) : "";
+            // 窗口没有越界的正证据:它必须在本次调用的 `);` 处收住,不含下一段注释的起头。
+            check(
+                blk.includes(");") && !blk.includes("[SL-247 / J92a]"),
+                "横幅 ⑨ 的判据窗口收在本次调用内(没吃进下一段注释)",
+            );
             check(
                 /capture_enabled/.test(blk),
                 "横幅 ⑨ 的判据含 capture_enabled(§2.1)",

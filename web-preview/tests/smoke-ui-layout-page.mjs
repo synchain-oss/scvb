@@ -31,7 +31,12 @@
 //      B3 标题卡整卡 ≤ 70px(改前 108px,改后实测 61px);
 //   C. `output.html` Tab4 「分析口径已更改」弹窗(SL-276):
 //      C1 初始不弹;切响度档 ⇒ 弹出,正文/两枚钮的文案取自字典(不是 key 字面量);
-//      C2 「稍后」关框,而琥珀 badge **仍在**(它是常驻状态位,不随关框消失);
+//      C2 [SL-371] 次要钮 = **撤销更改**:把刚改的那一项写回 `analysis.applied.*`。
+//         三件事一起断(当前值回基线 / 框关 / 徽标灭)—— 只断「框关了」是无牙的,
+//         旧实现(只关框)也让它绿。**与 SL-276 的旧口径正好相反**:那时这枚钮只关框,
+//         徽标作为常驻状态位故意留着,C2 断的就是「badge 仍在」;
+//      C2b [SL-371] Esc / 点遮罩这两条出口**仍旧一个字节都不写**:关框之后当前值没变、
+//         徽标还亮着。少了这一格,把 Esc 也接成撤销不会有任何东西红;
 //      C3 换到另一个脏值 ⇒ 再弹一次(按值记,不是一次性开关);
 //      C4 「重新分析」= 关框 + 真的跑完一次 analyze —— 判据是**琥珀 badge 自己灭掉**
 //         (基线由 scvb.segments 的 analyze 帧同步),而不是「按钮被点到了」。
@@ -40,11 +45,11 @@
 //         删掉 doReanalyzeFromAsk 的 finally 即红(钮永久停在 disabled,其余条目照样绿);
 //      C4c [SL-276 三轮复审] 锁**本身**有没有牙:给 mock 的 analyze 套「慢回执 + 计数」
 //         垫片,同一同步回合里连点两下主钮 ⇒ 只准打出一发。C4b 断的是「跑完解得开」,
-//         两道锁一起删掉它照样绿,所以必须另立本条。两道锁(reanalyzeInFlight 早退 /
+//         两道锁一起删掉它照样绿,所以必须另立本条。两道锁(askInFlight 早退 /
 //         btn.disabled)各自独立挡得住第二下,故本条是**两道都拆掉才红**。
 //         同批断言在途期间主钮挂着 `data-disabled="1"` —— 本仓禁用视觉走这个属性钩子,
 //         光设 `.disabled` 一个像素都不会变(没有对应的 `:disabled` 规则);
-//      C4d [SL-276 四轮复审] 在途 + 键盘的**组合**面:主钮置灰时从「稍后」正向 Tab 不许
+//      C4d [SL-276 四轮复审] 在途 + 键盘的**组合**面:主钮置灰时从次要钮正向 Tab 不许
 //         出框。判据是 `defaultPrevented`(这次 Tab 有没有被框吃掉),**不是**「焦点还在
 //         框里」—— 合成 KeyboardEvent 不触发原生走焦,后者修好前后都成立,是条无牙断言。
 //         把 Tab 圈闭正向分支的 `here === focusable(last, first)` 改回 `here === last`
@@ -69,7 +74,7 @@
 //         闸没了以后模态框会在别的段里乱弹,扰动那边的点击与焦点。连带红不是本条的
 //         判据面,别据它读结论。
 //         改完档之后照样弹(C1 覆盖),所以这道闸没有把功能一起关掉。
-//      C9 [SL-276 二轮复审] 那道闸是**一次性**的:用户改档弹过、点「稍后」关掉之后,
+//      C9 [SL-276 二轮复审] 那道闸是**一次性**的:用户改档弹过、关掉框之后,
 //         再来一次**非用户驱动**的口径变化(这里直接调 mock 的 setAnalysisConfig,
 //         绕开 UI 写入路径 —— 与只读观察态收 scvb.state / 切版本走的是同一条「值从
 //         后端来」的路)不得再弹。C8 管的是「从没被置位过」,C9 管的是「置位过、已经
@@ -633,6 +638,8 @@ const ASK_PROBE = IN(`
     // [SL-273] 同一条词条的两个渲染点:弹窗第二段 / 设置页响度卡第二行。
     const askNote = gb("reanalyze-ask-scopenote");
     const setNote = gb("settings-loudnessmode-scopenote");
+    // [SL-371] 「撤销更改」的后果说明段。三语各验一次(C6),形态与 body/primary 同族。
+    const revertHint = gb("reanalyze-ask-reverthint");
     const panel = gb("reanalyze-ask-panel");
     if (!ask || !body || !later || !primary) return null;
     const bs = w.getComputedStyle(body);
@@ -641,7 +648,25 @@ const ASK_PROBE = IN(`
         body: body.textContent.trim(),
         later: later.textContent.trim(),
         primary: primary.textContent.trim(),
+        revertHint: revertHint ? revertHint.textContent.trim() : null,
+        // [SL-371] 读屏那一半:describedby 必须把后果说明带上,否则 alertdialog 只念
+        // 影响面那一段,「点了会改回去」这件事在 AT 侧完全不存在。
+        describedByHasRevert: (() => {
+            const dbid = panel ? panel.getAttribute("aria-describedby") : "";
+            return (dbid || "").includes("reanalyze-ask-reverthint");
+        })(),
+        // [SL-371] 当前响度档(读 aria-pressed,不读内部状态)—— 「撤销更改」那一格要断
+        // 「值真的回到基线了」,只断「框关了」旧实现也绿。
+        loudnessNow: (() => {
+            const seg = gb("settings-loudnessmode-seg");
+            if (!seg) return null;
+            const on = seg.querySelector('[aria-pressed="true"]');
+            return on ? on.getAttribute("data-value") : null;
+        })(),
         badgeShown: vis(badge),
+        // [SL-375] 徽标**念的是哪条词条** —— 范围档下点完主钮之后必须从「改后需重分析」
+        // 换成「只更新了部分范围」。取渲染文本,不取 key 字面(与 C10c2 同一条纪律)。
+        badgeText: badge ? badge.textContent.trim() : null,
         askNote: askNote ? askNote.textContent.trim() : null,
         setNote: setNote ? setNote.textContent.trim() : null,
         noteInPanel: !!(panel && askNote && panel.contains(askNote)),
@@ -1032,7 +1057,20 @@ try {
         );
         check(
             c.later.length > 0 && !c.later.startsWith("set."),
-            `C1 「稍后」钮取自字典(实得 ${JSON.stringify(c.later)})`,
+            `C1 次要钮取自字典(实得 ${JSON.stringify(c.later)})`,
+        );
+        // [SL-371] 后果说明段:钮面只有四个字,而这枚钮现在会真的写一次 state。
+        // ← 删掉 index.html 里 `reanalyze-ask-reverthint` 那个 <p>,本格红。
+        check(
+            typeof c.revertHint === "string" &&
+                c.revertHint.length > 0 &&
+                !c.revertHint.startsWith("set."),
+            `C1 「撤销更改」的后果说明段取自字典(实得 ${JSON.stringify((c.revertHint || "").slice(0, 20))})`,
+        );
+        // ← 把 index.html 里 aria-describedby 改回只写 scopenote,本格红(视觉那格照绿)。
+        check(
+            c.describedByHasRevert,
+            "C1 aria-describedby 带上了后果说明(读屏也听得到「点了会改回去」)",
         );
         // C7 [SL-273] 换档影响面这句在**两处**都写着,且逐字同一句。
         assertScopeNote(c, "zh");
@@ -1044,14 +1082,56 @@ try {
         check(c.noteInPanel, "C7 影响面这段落在弹窗面板里(不是被遮罩截在框外)");
     }
 
-    // C2 「稍后」关框,但琥珀 badge 仍在
-    check(await click("reanalyze-ask-later"), "「稍后」可点");
-    check(await waitFor(askClosed, 3000), "C2 「稍后」关框");
+    // C2 [SL-371] 次要钮 = **撤销更改**(用户 v5.6.8 原话:「如果点击『稍后』的话,直接
+    //   强制回退到原来的方案吧,这样用户完全知道自己在干什么」)。
+    //   点之前的态:当前档 = rms(C1 刚改的)、基线 applied = kw_integrated、徽标亮、框开。
+    //   点之后**三件事一起断**:① 当前档回到基线;② 框关;③ 徽标灭。
+    //   ⚠ 只断 ② 是无牙的 —— 旧实现(handler = closeReanalyzeAsk)也关框。三件里
+    //     ①③ 才是本卡改出来的。
+    //   ⚠ ③ 与 SL-276 的旧口径**正好相反**:那时这枚钮只关框,琥珀徽标作为「常驻状态位」
+    //     故意留着,本格断的就是 `badgeShown`。别照旧文推。
+    //   ← 把 mount() 里这枚钮的 handler 改回 closeReanalyzeAsk ⇒ ①③ 红、② 绿。
+    check(await click("reanalyze-ask-later"), "「撤销更改」可点");
+    check(await waitFor(askClosed, 3000), "C2 撤销更改之后框关");
+    check(
+        await waitFor(badgeGone, 4000),
+        "C2 琥珀徽标灭(当前值已经回到基线,派生结果为假)",
+    );
     c = await evaluate(ASK_PROBE);
-    check(c && c.badgeShown, "C2 关框后琥珀 badge 仍在(常驻状态位)");
+    if (check(c, "C2 探针取到锚点")) {
+        check(
+            c.loudnessNow === "kw_integrated",
+            `C2 当前档真的写回了基线 kw_integrated(实得 ${JSON.stringify(c.loudnessNow)})`,
+        );
+    }
+
+    // C2b [SL-371] **Esc 这条出口一个字节都不写。** 框里两枚钮现在都是动作,「什么都不做」
+    //   只由 Esc / 点遮罩承担;把它们也接成撤销的话,一次误按就改了工程状态,而且撤销被桥
+    //   拒时用户会被关在框里(见 tab-settings.js 那三条理由)。
+    //   ← 把 Esc 分支从 closeReanalyzeAsk 改成 revertFromAsk,下面两格红(框关那格照绿)。
+    // ⚠ 这里取 **peak_dbfs** 是有讲究的:C2 修好时当前档是 kw_integrated、C2 被拆掉时
+    // 当前档停在 rms —— 只有 peak_dbfs 在**两种实现下都是一次真改动**,本格才不会因为
+    // 「上一格红了」被连带成假红(C2 的删除式实测过:取 rms 时本格会跟着红一次,
+    // 红的原因是「点已选中档不重复写」,与 Esc 写不写 state 无关)。
+    check(await setLoudness("peak_dbfs"), "C2b 再改一次档以便开框");
+    check(await waitFor(askOpen, 4000), "C2b 框已开");
+    await pressEscape();
+    check(await waitFor(askClosed, 3000), "C2b Esc 关框");
+    const c2b = await evaluate(ASK_PROBE);
+    if (check(c2b, "C2b 探针取到锚点")) {
+        check(
+            c2b.loudnessNow === "peak_dbfs",
+            `C2b Esc 之后当前档**没有**被改回去(实得 ${JSON.stringify(c2b.loudnessNow)})`,
+        );
+        check(
+            c2b.badgeShown,
+            "C2b 琥珀徽标仍亮(Esc 只关框,口径还是脏的 —— 常驻状态位那半没变)",
+        );
+    }
 
     // C3 换到另一个脏值 ⇒ 再弹
-    check(await setLoudness("peak_dbfs"), "切到 peak_dbfs 可点");
+    // [SL-371] 前置态由 C2b 留下:当前 peak_dbfs、基线 kw_integrated、框已被 Esc 关掉。
+    check(await setLoudness("rms"), "切到另一个脏值 rms 可点");
     check(await waitFor(askOpen, 4000), "C3 换脏值 ⇒ 再弹一次");
 
     // C4 「重新分析」= 关框 + 真的跑完一次 analyze(判据 = badge 自己灭)
@@ -1076,7 +1156,7 @@ try {
     // C4c [SL-276 三轮复审] 钉**锁本身**。C4b 只断言「跑完解得开」,把两道锁一起删掉它
     // 照样全绿 —— 所以另立一条:给 mock 的 analyze 套一层「慢回执 + 计数」垫片,在同一个
     // 同步回合里连点两下主钮,断言只打出**一发**。
-    // 两道锁(reanalyzeInFlight 早退 / btn.disabled)各自都能独立挡住第二下,所以本条是
+    // 两道锁(askInFlight 早退 / btn.disabled)各自都能独立挡住第二下,所以本条是
     // 「两道都拆掉才红」;单拆一道仍绿是设计如此,不是判据没牙。
     check(
         await evaluate(
@@ -1088,14 +1168,20 @@ try {
                 m.analyze = function (scope) {
                     w.__uir7Calls++;
                     return new Promise((res) => {
-                        w.setTimeout(() => res(orig.call(m, scope)), 1500);
+                        // [SL-371 复审第 1 轮] 1500 → 3000:在途窗口里现在要跑完 C4d(合成
+                        // Tab)**和** C4e(探针 + 点撤销 + 再探针),1500ms 余量已经不够,
+                        // 滑过去的话 C4d/C4e 会红在「analyze 早就跑完了」上 —— 与它们要守的
+                        // 东西无关的假红。上限那侧不变(下面等解锁给的是 8000ms)。
+                        w.setTimeout(() => res(orig.call(m, scope)), 3000);
                     });
                 };
                 return true;`),
         ),
         "C4c 慢回执 analyze 计数垫片装上",
     );
-    check(await setLoudness("rms"), "C4c 再改档以重新开框");
+    // [SL-371] 取 peak_dbfs:C4 那次 analyze 把基线前移到了 C3 改成的 rms,
+    // 再点 rms 会撞上 wireSeg 的「点已选中档不重复写」,框根本不会开。
+    check(await setLoudness("peak_dbfs"), "C4c 再改档以重新开框");
     check(await waitFor(askOpen, 4000), "C4c 框已开");
     // 同一回合里连点两下:第一下同步置起两道锁,第二下必须打不出第二发。
     check(
@@ -1137,6 +1223,43 @@ try {
         ),
         "C4d 在途置灰时从「稍后」正向 Tab 被弹窗吃掉(圈闭没有开口,焦点逃不到遮罩背后)",
     );
+    // C4e [SL-371 复审第 1 轮] **analyze 在途时点「撤销更改」必须打不出那一次写。**
+    //   claude 与 pr-agent 各自独立指出同一条:撤销这枚钮**故意不挂 disabled**
+    //   (为保住「置灰的只可能是主钮」那条推理),所以 analyze("all") 在途的整段时间里
+    //   它照样可点。走到那条路的后果是**状态错**:分析拿改动后的那一档发出去了,撤销的
+    //   写落在它后面 ⇒ 分析跑完 applied.* 前移到那一档、当前值已被撤回基线 ⇒ 徽标反向
+    //   亮起,用户看到「我刚撤销完,却告诉我需要重新分析」。
+    //   夹具就用 C4c 装的那层慢回执垫片(1500ms),此刻主钮正 disabled、analyze 在途。
+    //   判据取**当前档没被改回去**(行为面),不取「函数早退了」(那不可观测)。
+    //   ← 把 revertFromAsk 开头的 `if (local.askInFlight)` 换回只看自己那一位,本格红。
+    const c4ePre = await evaluate(ASK_PROBE);
+    if (check(c4ePre, "C4e 探针取到锚点(点撤销前)")) {
+        check(
+            c4ePre.loudnessNow === "peak_dbfs",
+            `C4e 前置:当前档是刚改走的 peak_dbfs(实得 ${JSON.stringify(c4ePre.loudnessNow)})`,
+        );
+        // 正证据:analyze 真的还在途(主钮挂着仓内禁用口径),否则本格只是在测一次
+        // 普通的撤销、与「在途」无关。
+        check(
+            await evaluate(
+                IN(`const b = gb("reanalyze-ask-primary");
+                    return !!b && b.getAttribute("data-disabled") === "1";`),
+            ),
+            "C4e 正证据:analyze 确实还在途(主钮仍挂着 data-disabled)",
+        );
+    }
+    check(
+        await click("reanalyze-ask-later"),
+        "C4e 在途期间点「撤销更改」(钮没被置灰,点得到)",
+    );
+    await sleep(400);
+    const c4e = await evaluate(ASK_PROBE);
+    if (check(c4e, "C4e 探针取到锚点(点撤销后)")) {
+        check(
+            c4e.loudnessNow === "peak_dbfs",
+            `C4e 在途期间的撤销**没有打出写**(当前档仍是 peak_dbfs,实得 ${JSON.stringify(c4e.loudnessNow)})`,
+        );
+    }
     check(
         await waitFor(
             IN(`const b = gb("reanalyze-ask-primary");
@@ -1156,6 +1279,98 @@ try {
         ),
         "C4c 垫片已摘(analyze 回到原型上的真实现)",
     );
+
+    // C4f [SL-371 复审第 1 轮,统筹裁定] **反方向:撤销在途时点「重新分析」不许发出去。**
+    //   C4e 断的是「analyze 在途 → 点撤销」,本格断另一头。两头各自可达、后果不同,
+    //   而**合成一位 `askInFlight` 之后它们是同一句话的两半** —— 只改一侧的话本格红。
+    //   夹具:把 mock 的 `setAnalysisConfig` 换成慢回执(2000ms),让撤销停在在途里;
+    //   同时给 `analyze` 套一层**计数**垫片(不改时序),断它一次都没被调到。
+    //   判据取「analyze 调用数 == 0」这一**正数**,不取「框还开着」——后者在修与不修
+    //   两侧都成立(撤销在途时框本来就没关),是条无牙断言。
+    //   ← 把 doReanalyzeFromAsk 开头的 `if (local.askInFlight)` 换回 `reanalyzeInFlight`
+    //     那种各管各的写法,本格红(实得 analyze 调用数 1)。
+    // ★ 先等 C4c 那一发 analyze 的**整条流水线**跑完(徽标灭 = 基线前移落地)。
+    //   mock 的 `finishAnalysis` 是 `later(800, …)` 异步的,**回执早于基线前移** ——
+    //   不等就改档的话,前移那一刻读到的是 C4f 刚改成的那一档,`applied` 被推到 rms,
+    //   于是 C4f 的框根本不会开。第一版实测正是红在这一幕上(前置探针读到
+    //   `badge:true / now:peak_dbfs` —— 当前档已经是 peak_dbfs 而基线还是 rms)。
+    check(
+        await waitFor(badgeGone, 8000),
+        "C4f 前置:C4c 那次分析的基线前移已落地(徽标灭)",
+    );
+    // 目标档**按当前值现算**,不写死:上一格(C4e)的删除式会改变走到这里时的当前档,
+    // 写死的话本格会被那一刀**连带**成假红(红在「点已选中档不重复写」上,与本格判据
+    // 无关)。同一条教训 C2b 已经吃过一次,这里直接算。
+    // 走到这里徽标是灭的(上面那格断过)⇒ 当前档 == 基线,所以它同时就是撤销的目标值。
+    const c4fPre = await evaluate(ASK_PROBE);
+    check(c4fPre, "C4f 前置探针取到锚点");
+    const c4fBase = c4fPre ? c4fPre.loudnessNow : null;
+    const c4fNext = c4fBase === "rms" ? "peak_dbfs" : "rms";
+    check(
+        await setLoudness(c4fNext),
+        `C4f 改档以重新开框(基线 ${JSON.stringify(c4fBase)} → 改成 ${c4fNext})`,
+    );
+    check(await waitFor(askOpen, 4000), "C4f 框已开");
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m) return false;
+                const proto = Object.getPrototypeOf(m);
+                if (typeof proto.setAnalysisConfig !== "function") return false;
+                if (typeof proto.analyze !== "function") return false;
+                w.__uir8Analyze = 0;
+                m.analyze = function (scope) {
+                    w.__uir8Analyze++;
+                    return proto.analyze.call(m, scope);
+                };
+                m.setAnalysisConfig = function (patch) {
+                    return new Promise((res) => {
+                        w.setTimeout(() => res(proto.setAnalysisConfig.call(m, patch)), 2000);
+                    });
+                };
+                return true;`),
+        ),
+        "C4f 慢回执 setAnalysisConfig + analyze 计数垫片装上",
+    );
+    check(await click("reanalyze-ask-later"), "C4f 点「撤销更改」(写在途 2s)");
+    await sleep(300);
+    // 正证据:撤销确实还在途 —— 值还没回到基线(基线此刻是 peak_dbfs,C4 那次 analyze
+    // 前移过去的)。取不到这一条的话,下面那格可能是在「撤销早就落地了」的态上跑的。
+    const c4fMid = await evaluate(ASK_PROBE);
+    if (check(c4fMid, "C4f 探针取到锚点(撤销在途)")) {
+        check(
+            c4fMid.loudnessNow === c4fNext,
+            `C4f 正证据:撤销的写还没落地(当前档仍是 ${c4fNext},实得 ${JSON.stringify(c4fMid.loudnessNow)})`,
+        );
+        check(c4fMid.open, "C4f 正证据:框还开着(撤销在途,主钮点得到)");
+    }
+    check(await click("reanalyze-ask-primary"), "C4f 在途期间点「重新分析」");
+    await sleep(300);
+    const c4fCalls = await evaluate(IN(`return w.__uir8Analyze;`));
+    check(
+        c4fCalls === 0,
+        `C4f 撤销在途时那一下**一发 analyze 都没打出去**(实得 ${c4fCalls})`,
+    );
+    check(
+        await waitFor(
+            IN(`const b = q('[data-gb="settings-loudnessmode-seg"] [data-value="${c4fBase}"]');
+                return !!b && b.getAttribute("aria-pressed") === "true";`),
+            6000,
+        ),
+        `C4f 慢回执落地后当前档回到基线 ${c4fBase}(撤销本身没被这道闸弄坏)`,
+    );
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m) return false;
+                delete m.analyze;
+                delete m.setAnalysisConfig;
+                return typeof m.analyze === "function"
+                    && typeof m.setAnalysisConfig === "function";`),
+        ),
+        "C4f 两层垫片已摘(回到原型上的真实现)",
+    );
+    check(await waitFor(askClosed, 4000), "C4f 撤销落地后框关掉了");
 
     // C8 [SL-276 复审] stale 一上来就为真的工程:badge 亮、框不弹。
     // 与 C1 的分工:C1 是「stale 为假 ⇒ 不弹」(弱),C8 是「stale 为真但不是用户改的
@@ -1383,6 +1598,34 @@ try {
             rmAfter.badgeShown,
             "C8r 琥珀 badge **仍亮**(范围外的段还是旧口径,这是真话)",
         );
+        // C8r-p [SL-375] 用户 2026-09-06 裁定:**徽标不能再写「改后需重分析」**。
+        //   它必然还亮着(§1.21 基线不前移),而用户**刚刚就重新分析过了** —— 那句话是
+        //   叫他把已经做过的事再做一遍。改成陈述状态:「只更新了部分范围」。
+        //   判据是**同一枚徽标在这一次分析前后念的不是同一句话**,不钉词条 key 字面
+        //   (与 C10c2 同一条纪律):点主钮前是通用那句、点完换成部分范围那句。
+        //   两侧都先断非空且不是 key 字面 —— 否则「整段不显」或「词条缺失」会让
+        //   「两句不相等」自动成真(本仓 `!x` 恒真那一族的同形)。
+        //   ← 把 syncStale 里那句 `renderStaleBadges()` 删掉,或把 staleBadgeKey() 改回
+        //     恒返 "set.reanalyze",本格红(而「badge 仍亮」那格照绿 —— 亮不亮和念什么
+        //     是两件事,少了本格没有任何东西看得见文案退回去了)。
+        const before = (rmOpen || {}).badgeText;
+        const after = rmAfter.badgeText;
+        check(
+            typeof before === "string" &&
+                before.length > 0 &&
+                !before.startsWith("set."),
+            `C8r-p 点主钮前徽标念的是通用那句(实得 ${JSON.stringify(before)})`,
+        );
+        check(
+            typeof after === "string" &&
+                after.length > 0 &&
+                !after.startsWith("set."),
+            `C8r-p 点主钮后徽标仍有话可念(实得 ${JSON.stringify(after)})`,
+        );
+        check(
+            before !== after,
+            `C8r-p 范围档下重分析完成 ⇒ 徽标换了一句话(前 ${JSON.stringify(before)} / 后 ${JSON.stringify(after)})`,
+        );
     }
 
     // ②c [SL-348 复审第 1 轮] **框开着切语言,两半必须一起换。**
@@ -1459,8 +1702,11 @@ try {
     //     这一次他什么都还没点。那是一句**当下为假**的话,而且 live region 只在文本变化时
     //     播报,不清还会让第二次点击变成零变化、读屏什么也不念(回到本轮要修的原点)。
     //     ← 删掉 openReanalyzeAsk 里那句 setRangeDoneText(""),只红这一格。
-    check(await click("reanalyze-ask-later"), "C8r 「稍后」可点(收框以便重开)");
-    check(await waitFor(askClosed, 3000), "C8r 框已关");
+    // [SL-371] 这里要的是**纯关框**(收掉再重开,当前档不许被动过)—— 次要钮现在会把
+    // 当前档写回基线,所以改走 Esc。下同:凡是「只想把框收掉」的地方一律 Esc,
+    // 只有 C2 那一格才点次要钮(那一格断的正是「点它会改回去」)。
+    await pressEscape();
+    check(await waitFor(askClosed, 3000), "C8r Esc 收框(不动当前档,以便重开)");
     check(await setLoudness("rms"), "C8r 再改一次档(重新置起开闸位)");
     check(await waitFor(askOpen, 4000), "C8r 框重开");
     const rmReopen = await evaluate(ASK_PROBE);
@@ -1684,8 +1930,9 @@ try {
         await waitFor(askOpen, 4000),
         "C10e3 改回基线之后再改走 ⇒ **照样弹**(哪怕是刚弹过的同一个值)",
     );
-    check(await click("reanalyze-ask-later"), "C10e 「稍后」收框");
-    check(await waitFor(askClosed, 3000), "C10e 框已关");
+    // [SL-371] 纯关框走 Esc(见 C8r 那处的理由)。
+    await pressEscape();
+    check(await waitFor(askClosed, 3000), "C10e Esc 收框");
     assertClean("sl354-real-cadence");
 
     // C10c ③「B3(中央槽策略)完全没有弹出弹窗,应该和前面一样」。
@@ -1763,11 +2010,16 @@ try {
     //   那支(另一项还脏),token 却换了 ⇒ 框又弹、焦点被抢到主钮上。用户刚**撤销**了
     //   自己的一个改动却收到一个 alertdialog,与 SL-276 的口径对不上。
     //   ← 把 syncStale 里「待观察的那一项自己得是脏的」那句早退删掉,本格红。
-    check(await click("reanalyze-ask-later"), "C10g 先收掉中央槽那一框");
-    check(await waitFor(askClosed, 3000), "C10g 框已关");
+    // [SL-371] ⚠ 这两处**必须**走 Esc:本格要造的是「两项同时脏」,而次要钮会把刚改的
+    // 那一项写回基线 —— 点它就永远凑不出两项都脏,本格会退化成一条恒真断言。
+    await pressEscape();
+    check(
+        await waitFor(askClosed, 3000),
+        "C10g 先收掉中央槽那一框(Esc,中央槽保持脏)",
+    );
     check(await setLoudness("rms"), "C10g 再把响度也改走(两项同时脏)");
     check(await waitFor(askOpen, 4000), "C10g 响度那一下照常弹");
-    check(await click("reanalyze-ask-later"), "C10g 再收掉");
+    await pressEscape();
     check(
         await waitFor(askClosed, 3000),
         "C10g 框已关(两项都脏,两枚徽标都亮着)",
@@ -1906,8 +2158,10 @@ try {
     //    [SL-354] token 带字段名,不再是裸值)。
     check(await setLoudness("peak_dbfs"), "C9 用户改档 peak_dbfs 可点");
     check(await waitFor(askOpen, 4000), "C9 用户改档 ⇒ 弹框");
-    check(await click("reanalyze-ask-later"), "C9 「稍后」可点");
-    check(await waitFor(askClosed, 3000), "C9 「稍后」关框");
+    // [SL-371] 纯关框走 Esc:本格接下来要的是「当前档停在 peak_dbfs、闸已用掉」,
+    // 点次要钮会把它写回基线,后面「非用户驱动换到 rms」就不再是同一条路了。
+    await pressEscape();
+    check(await waitFor(askClosed, 3000), "C9 Esc 关框(当前档仍是 peak_dbfs)");
 
     // ② 非用户驱动的口径变化:直接调 mock 后端的 setAnalysisConfig,**绕开 UI 的写入
     //    路径**(wireSeg 那条),所以开闸位不会被重新置起。这与只读观察态收
@@ -1954,7 +2208,7 @@ try {
     // C10h [SL-354 复审第 2 轮] **非 UI 路径把口径改回基线之后,用户重选同一个值仍要弹。**
     //   复审给的可复现序列,逐字照做(接着 C9 的状态往下走,框正开着、记着
     //   `loudness_mode=rms` 这个 token):
-    //     ① 「稍后」收框;
+    //     ① 收框([SL-371] 走 Esc:这一步要的是纯关框,当前档必须停在 rms);
     //     ② **非 UI 路径**把响度改回基线 —— 那一帧 `当前值 != 刚写的值`,被「这一帧不
     //        作数」的尺子早退挡住,`!stale` 那支一次都跑不到 ⇒ 旧 token 留在位上;
     //     ③ 用户**再点 rms**(与 ① 之前那次逐字同一个值)⇒ 必须弹。
@@ -1963,8 +2217,8 @@ try {
     //   ② 里断「徽标灭了」是**正证据**:证明那一帧真的到了、也真的渲染了,于是 ③ 的红
     //   不可能是「什么都没发生」冒充的。
     //   ← 拆掉 wireSeg 里「一次新的用户写就清 reanalyzeAskedFor」那一行,本格 ③ 红。
-    check(await click("reanalyze-ask-later"), "C10h ① 「稍后」收框");
-    check(await waitFor(askClosed, 3000), "C10h ① 框已关");
+    await pressEscape();
+    check(await waitFor(askClosed, 3000), "C10h ① Esc 收框(当前档仍是 rms)");
     check(
         await evaluate(
             IN(`const m = w.__SCVB_MOCK__;
@@ -2040,7 +2294,14 @@ try {
             );
             check(
                 t.later.length > 0 && !t.later.startsWith("set."),
-                `${lang}:「稍后」已翻(实得 ${JSON.stringify(t.later)})`,
+                `${lang}:次要钮已翻(实得 ${JSON.stringify(t.later)})`,
+            );
+            // [SL-371] 后果说明段三语各验一次 —— 它是新词条,漏译只有这一格看得见。
+            check(
+                typeof t.revertHint === "string" &&
+                    t.revertHint.length > 0 &&
+                    !t.revertHint.startsWith("set."),
+                `${lang}:「撤销更改」后果说明已翻(实得 ${JSON.stringify((t.revertHint || "").slice(0, 20))})`,
             );
             assertScopeNote(t, lang);
         }

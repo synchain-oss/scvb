@@ -59,7 +59,9 @@ ALL_FONTS = LATIN_FONTS + [CJK_FONT]
 #   · 条目已不再被任何文案用到 → 必须删条目。
 KNOWN_ABSENT_UPSTREAM = {
     "⇕": "纵向缩放读数(tab-wave.js 的「⇕ 34」);建议换 ↕ U+2195",
-    "✕": "选区 chip / 面板标题栏的关闭键(output/index.html);建议换 × U+00D7",
+    # [SL-373] 原文逐条列了它出现在哪几处 —— 那是会漂的记账(本卡又给横幅 ⑧⑨⑩ 添了三处),
+    # 改成指路:出处一律 `grep -n "✕" web/output/index.html`。
+    "✕": "output/index.html 里各处关闭键;建议换 × U+00D7",
 }
 
 
