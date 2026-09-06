@@ -779,11 +779,6 @@ window.__SCVB_MONITOR__ = {
         // 每轨的折线段数 —— 断线是本页最核心的语义,截图之外还要有个数字面
         seriesRuns: store.series.map((s) => s.runs.length),
         distTracks: vizDistRows(visibleFrame()).map((r) => r.ch),
-        // [SL-362] 全局「最大角度」**实际喂给几何的那个值**。为什么必须暴露它:这一跳
-        // (`getGlobalWidthPct` 读哪个对象)在 DOM 上只体现为柱位偏移几个像素,而初版把它
-        // 写成了 `store.viz`(**不存在的键**)⇒ 每帧回落 100 ⇒ 段里全做对了、页面上一格没修,
-        // **且不报错、看起来完全正常**。有了这一条,那一跳才有机器看得见的证据。
-
         legendTracks: vizLegendRows(visibleFrame()).map((r) => r.ch),
         // 分布图补间的只读诊断(SL-192)。`frames` 是 rAF 循环的帧计数 ——
         // **事件驱动的实现里它恒为 0**,这是「rAF 驱动 vs 收到帧才画」最干脆的分界,
