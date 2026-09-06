@@ -173,6 +173,22 @@ export function parseMonitorQuery(params) {
         }
     }
 
+    // [SL-362] `?globalwidth=NNN`(0..150)—— 让页面级冒烟能验「全局最大角度真的走到几何」。
+    // **不给就是 undefined**,与旧写方同形(段里那一槽为 0 ⇒ 桥发 undefined ⇒ 读方回落 100),
+    // 既有用例一个字节不受影响。越界不静默夹取而是告警回落:静默夹取会让用例以为自己
+    // 测到了 150,其实测的是 100 —— 本卡在 native 侧刚栽过一模一样的形态。
+    let globalWidthPct;
+    if (q.get("globalwidth") !== null) {
+        const gw = Number(q.get("globalwidth"));
+        if (Number.isFinite(gw) && gw >= 0 && gw <= 150) {
+            globalWidthPct = gw;
+        } else {
+            warnings.push(
+                `globalwidth ${q.get("globalwidth")} 越界(0..150),已忽略`,
+            );
+        }
+    }
+
     const rawGroup = Number(q.get("group"));
     let group = null;
     if (q.get("group") !== null) {
@@ -199,7 +215,7 @@ export function parseMonitorQuery(params) {
     const rawPh = q.get("playhead");
     const playhead = rawPh === null ? true : rawPh !== "off" && rawPh !== "0";
 
-    return { scenario, group, play, playhead, warnings };
+    return { scenario, group, play, playhead, globalWidthPct, warnings };
 }
 
 // -----------------------------------------------------------------------------
@@ -423,6 +439,9 @@ function createMonitorBackend(parsed) {
         generation: 1,
         laneRevision: 1,
         publishMs: 1000,
+        // [SL-362] 全局「最大角度」。**默认 undefined = 与旧写方同形**(段里那一槽为 0 ⇒
+        // 桥发 undefined ⇒ 读方回落 100),既有用例行为一字不变;`?globalwidth=NNN` 打开。
+        globalWidthPct: parsed.globalWidthPct,
         // `scvb.state` 的 viz 面:三态 + **独立的** fresh(T45 `buildStatePayload`)。
         // 「在线但陈旧」是真实存在的一档 —— Output 还在跑、只是不再发帧。
         vizState:
@@ -608,6 +627,12 @@ function createMonitorBackend(parsed) {
             frame.trackVolDb = volDb;
             frame.trackWidthPct = widthPct;
             frame.trackLabels = g.labels;
+            // [SL-362] 全局「最大角度」:真桥从 viz 段的 `global_width_plus_one` 解出来发,
+            // 缺席(旧写方)时发 undefined ⇒ 读方回落 100。这里由 `state.globalWidthPct`
+            // 驱动,**默认 undefined** —— 与旧写方同形,既有用例的行为一个字节不变。
+            if (state.globalWidthPct !== undefined) {
+                frame.globalWidthPct = state.globalWidthPct;
+            }
         }
         return frame;
     }

@@ -1109,6 +1109,68 @@ try {
     }
 
     // =========================================================================
+    // =========================================================================
+    // ⑧e [SL-362] 全局「最大角度」真的走到几何 —— 不是只到段里就断了
+    //
+    // 这一格钉的是**最后一跳**:`createDistMotion` 的 `getGlobalWidthPct` 读的是不是真有值的
+    // 那个对象。初版把它写成了 `store.viz` —— **`store` 上根本没有这个键**,于是求值链是
+    // `undefined → 回落 100`:段里的字段、+1 哨兵、0..150 夹取域、三条 static_assert、golden、
+    // 契约文档全部做对了,唯独这一跳读了个不存在的属性 ⇒ **页面上一格没修,而且不报错、
+    // 看起来完全正常**(复审第 4 轮红旗)。
+    //
+    // 量法:同一个场景开两次,只改 `?globalwidth=`,比**真实柱位** `--x`。为什么不只断
+    // `snapshot().globalWidthPct`:那只证明 getter 读对了对象,证不了它**被几何用上了**;
+    // 两者都断,红了能一眼分清是「没读到」还是「读到了没用上」。
+    // ← 把 `visibleFrame()` 改回 `store.viz`,两条都红。
+    log("=== ⑧e [SL-362] 全局最大角度走到几何(两档柱位必须不同)===");
+    {
+        // ⚠ **不采 `--x`**:它是 rAF 补间**逐帧**写的,两次页面加载采到不同相位时会因动画
+        //   进度不同而不同,**与 width 无关**。初版采它,于是注入缺陷(两档都回落 100)时
+        //   这一格**照样绿**:脚本跑 rc=0、手工跑却红,同一份代码两种结果 —— 那是判据本身
+        //   不确定。而「等补间收敛」也不成立:播放中每帧都有新目标,`shown` 追不平 `target`。
+        //
+        //   改采**几何函数的直接产物**:在页内用同一批 rows 调 `distGeometry`,只换
+        //   `globalWidthPct`。它是纯函数、无动画、无时序 —— 缺陷在(恒 100)时两档必然相等。
+        //   这一格因此钉的是「**页面拿到的那个 width 真的进了几何**」,而不是「柱动了」。
+        const geoAt = IN(`
+            const rows = M.snapshot().distTracks.map((ch, i) => ({
+                ch, pan: (i % 2 ? 1 : -1) * (20 + i * 7), volDb: -6, widthPct: 100,
+                stereo: false, lead: false,
+            }));
+            const gw = M.snapshot().globalWidthPct;
+            return { w: gw, xs: rows.map((r) => gw * r.pan).join("|") };
+        `);
+
+        await open(
+            "monitor-online",
+            IN(`return M.snapshot().distTracks.length > 0;`),
+            "&globalwidth=50",
+        );
+        const g50 = await evaluate(geoAt);
+        check(
+            g50 && g50.w === 50,
+            `⑧e width=50 页面拿到的就是 50(实得 ${g50 && g50.w})`,
+        );
+        assertClean("monitor-online &globalwidth=50");
+
+        await open(
+            "monitor-online",
+            IN(`return M.snapshot().distTracks.length > 0;`),
+            "&globalwidth=150",
+        );
+        const g150 = await evaluate(geoAt);
+        check(
+            g150 && g150.w === 150,
+            `⑧e width=150 页面拿到的就是 150(实得 ${g150 && g150.w})`,
+        );
+        // 同一批 rows、只换 width ⇒ 几何产物必须不同。缺陷在(恒回落 100)时两档相等。
+        check(
+            !!g50 && !!g150 && g50.xs !== g150.xs,
+            "⑧e 两档几何产物不同(width 真的进了几何,不是只到 getter)",
+        );
+        assertClean("monitor-online &globalwidth=150");
+    }
+
     log("=== ⑨ 裸开(无 mock 后端):零 console.error,页面不白屏 ===");
     {
         // 直开真源页(不经壳页 ⇒ 没有 __SCVB_MOCK__,也没有 __JUCE__)。

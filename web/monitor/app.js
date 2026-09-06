@@ -274,7 +274,14 @@ const distMotion = createDistMotion({
     // [SL-362] 全局「最大角度」现在**随 viz 段带过来了**(此前段里没有这个值、恒按 100 画,
     // 于是用户把它调离 100 时两页的柱位当场对不上)。拿不到时 `vizGlobalWidthPct` 回落 100,
     // 与 `distGeometry` 的缺省一致 —— 旧写方(段内槽为 0)因此与本卡之前的表现完全相同。
-    getGlobalWidthPct: () => vizGlobalWidthPct(store.viz),
+    // ⚠ 读的是 `visibleFrame()`,**不是 `store.viz`** —— `store` 上根本没有 `viz` 这个键
+    //   (字面量见本文件顶部:`frame` / `accepts` / `vizStatus` / …)。初版写成 `store.viz`,
+    //   求值链是 `undefined → vizGlobalWidthPct(undefined) → 回落 100`,**恒 100**:段里的
+    //   字段、+1 哨兵、0..150 夹取域、三条 static_assert、golden、契约全做对了,唯独最后
+    //   这一跳读了个不存在的属性,于是页面上一格没修,而且**不报错、看起来完全正常**。
+    //   `visibleFrame()` 与下面 `distMotion.push(vizDistRows(viz), …)` 读的是**同一帧**,
+    //   两者口径必须一致:柱位与缩放取自不同帧的话,放大档下会对不上。
+    getGlobalWidthPct: () => vizGlobalWidthPct(visibleFrame()),
 });
 
 // ------------------------------------------------------------- 图例 hover 联动
@@ -772,6 +779,13 @@ window.__SCVB_MONITOR__ = {
         // 每轨的折线段数 —— 断线是本页最核心的语义,截图之外还要有个数字面
         seriesRuns: store.series.map((s) => s.runs.length),
         distTracks: vizDistRows(visibleFrame()).map((r) => r.ch),
+        // [SL-362] 全局「最大角度」**实际喂给几何的那个值**。为什么必须暴露它:这一跳
+        // (`getGlobalWidthPct` 读哪个对象)在 DOM 上只体现为柱位偏移几个像素,而初版把它
+        // 写成了 `store.viz`(**不存在的键**)⇒ 每帧回落 100 ⇒ 段里全做对了、页面上一格没修,
+        // **且不报错、看起来完全正常**。有了这一条,那一跳才有机器看得见的证据。
+        // 取自 `distMotion.diag()` —— **与几何用的是同一次求值**,不在这里另算一份:
+        // 另算的话证据面与被测面是两条独立表达式,坏了被测那条、这条照样对(本卡实测)。
+        globalWidthPct: distMotion.diag().globalWidthPct,
         legendTracks: vizLegendRows(visibleFrame()).map((r) => r.ch),
         // 分布图补间的只读诊断(SL-192)。`frames` 是 rAF 循环的帧计数 ——
         // **事件驱动的实现里它恒为 0**,这是「rAF 驱动 vs 收到帧才画」最干脆的分界,
