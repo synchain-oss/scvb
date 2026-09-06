@@ -1031,41 +1031,56 @@ const KNOWN_UNMAPPED = new Set([
     const table = rest.slice(0, end > 0 ? end : 0);
     const litOf = (txt) =>
         (txt.match(NAME_LITERAL) || []).map((x) => x.slice(1, -1));
-    const listed = new Set(litOf(table)); // = output ∪ input 两列的字面量
-    // ⚠ **并集认列不认角色**:运行时是 `allowedOr(scenario, SCENARIO_NAMES[role])`
-    //   (shell.js:537),**按 role 取列**。所以名字登记错列(MAP 里有、却只在另一列)
-    //   照样印 `unknown`,而本格判不出来 —— 这不是将来时:今天 `connected` 就是这一态
-    //   (MAP 有、只在 input 列,`output.html?scenario=connected` 印 unknown),
-    //   同态的还有 occupied / no-output / passthrough / abi-mismatch / sr-mismatch /
-    //   group-mismatch / input-first-run 共 8 个,全是 input 侧场景登在 input 列、
-    //   而 `SCENARIO_MAP` 不带 role 信息,分不出「该在哪一列」。
-    //   `smoke-output-dist-page.mjs:566-570` 记的两次栽法里,本格接住的是第一次
-    //   (`printing` 形态,由反向 + `KNOWN_UNMAPPED` 接),**第二次(`connected` 形态)
-    //   仍然没有判据**。要覆盖它得让 `SCENARIO_MAP` 带上 role,不在本卡范围内。
+    // [统筹 2026-09-06 裁定]**按 role 逐列判**:运行时是
+    // `allowedOr(scenario, SCENARIO_NAMES[role])`(shell.js:537),按角色取列 ——
+    // 拿并集判会漏掉「登记错列」那一态。下面把两列拆开各判各的。
+    const cut = table.indexOf("input:");
+    check(
+        cut > 0,
+        "SCENARIO_NAMES 分得出 output / input 两列(找不到 input: ⇒ 判据退化成并集)",
+    );
+    const outCol = new Set(litOf(table.slice(table.indexOf("output:"), cut)));
+    const inCol = new Set(litOf(table.slice(cut)));
+    const listed = new Set([...outCol, ...inCol]);
     const mapped = new Set(Object.keys(driver.SCENARIO_MAP));
 
-    // 正向:MAP 里有、白名单里没有 ⇒ 工具条印 unknown。
-    const missingInShell = [...mapped].filter((n) => !listed.has(n));
-    // 反向:白名单里有、MAP 里没有 ⇒ 伪警告「待 T31-T36 接线」+ fixture 回默认。
-    const unmapped = [...listed].filter((n) => !mapped.has(n));
-    const extra = unmapped.filter((n) => !KNOWN_UNMAPPED.has(n));
+    // 反向,**逐列**:某一列里有、MAP 里没有 ⇒ `?scenario=` 报「待 T31-T36 接线」
+    // 伪警告。今天 6 个全在 output 列(实测),input 列干净 —— 所以 input 列这条
+    // 是**空集断言**:哪天往 input 列加个没接线的名字,它立刻红。
+    const outUnmapped = [...outCol].filter((n) => !mapped.has(n));
+    const inUnmapped = [...inCol].filter((n) => !mapped.has(n));
+    const extraOut = outUnmapped.filter((n) => !KNOWN_UNMAPPED.has(n));
     const stale = [...KNOWN_UNMAPPED].filter((n) => mapped.has(n));
+    // 正向:MAP 里有、两列都没有 ⇒ 两个 role 下都印 unknown。
+    const missingInShell = [...mapped].filter((n) => !listed.has(n));
 
     log(
-        `  场景名表:MAP ${mapped.size} 个 / 白名单 output+input ${listed.size} 个;已知未接线 ${unmapped.length} 个`,
+        `  场景名表:MAP ${mapped.size} 个 / output 列 ${outCol.size} 个(未接线 ${outUnmapped.length})/ input 列 ${inCol.size} 个(未接线 ${inUnmapped.length})`,
     );
     check(
         missingInShell.length === 0,
-        `MAP 的场景都登记进了 shell.js 的 output/input 两列**之一**(缺 ${JSON.stringify(missingInShell)});注意「之一」不等于「工具条不会印 unknown」——运行时按 role 取列,见上面那条 ⚠`,
+        `MAP 的场景在 shell.js 两列里至少登记了一处(缺 ${JSON.stringify(missingInShell)})`,
     );
     check(
-        extra.length === 0,
-        `白名单里没有「有名无实」的新场景(未登记在案的 ${JSON.stringify(extra)} —— 要么补进 SCENARIO_MAP,要么写进 KNOWN_UNMAPPED 并说明理由)`,
+        extraOut.length === 0,
+        `output 列里没有「有名无实」的新场景(未登记在案的 ${JSON.stringify(extraOut)} —— 要么补进 SCENARIO_MAP,要么写进 KNOWN_UNMAPPED 并说明理由)`,
+    );
+    check(
+        inUnmapped.length === 0,
+        `input 列里没有「有名无实」的场景(实得 ${JSON.stringify(inUnmapped)})`,
     );
     check(
         stale.length === 0,
         `KNOWN_UNMAPPED 里没有已经接上线的名字(${JSON.stringify(stale)} 该从表里删掉)`,
     );
+    // ⚠ **仍然判不出来的那一半:名字登记错列。**`SCENARIO_MAP` 不带 role 信息,
+    //   所以「这个名字该在 output 列还是 input 列」本格无从判断。今天 `connected`
+    //   就是这一态(MAP 有、只在 input 列,`output.html?scenario=connected` 照样印
+    //   `unknown`),同态的还有 occupied / no-output / passthrough / abi-mismatch /
+    //   sr-mismatch / group-mismatch / input-first-run 共 8 个。
+    //   `smoke-output-dist-page.mjs:566-570` 记的两次栽法里,本格接住第一次
+    //   (`printing` 形态),**第二次(`connected` 形态)仍无判据** —— 要覆盖它得让
+    //   `SCENARIO_MAP` 带上 role,不在本卡范围内。
 }
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
