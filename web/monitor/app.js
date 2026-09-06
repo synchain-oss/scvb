@@ -783,9 +783,7 @@ window.__SCVB_MONITOR__ = {
         // (`getGlobalWidthPct` 读哪个对象)在 DOM 上只体现为柱位偏移几个像素,而初版把它
         // 写成了 `store.viz`(**不存在的键**)⇒ 每帧回落 100 ⇒ 段里全做对了、页面上一格没修,
         // **且不报错、看起来完全正常**。有了这一条,那一跳才有机器看得见的证据。
-        // 取自 `distMotion.diag()` —— **与几何用的是同一次求值**,不在这里另算一份:
-        // 另算的话证据面与被测面是两条独立表达式,坏了被测那条、这条照样对(本卡实测)。
-        globalWidthPct: distMotion.diag().globalWidthPct,
+
         legendTracks: vizLegendRows(visibleFrame()).map((r) => r.ch),
         // 分布图补间的只读诊断(SL-192)。`frames` 是 rAF 循环的帧计数 ——
         // **事件驱动的实现里它恒为 0**,这是「rAF 驱动 vs 收到帧才画」最干脆的分界,

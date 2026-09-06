@@ -499,6 +499,20 @@ export function createDistMotion(opts) {
             // 独立的表达式**,坏了被测那条、证据那条照样对 —— 判据钉不到被测面(本卡实测:
             // Monitor 的 getter 读错了对象,而页面测试面另算一份,删除式两次都不红)。
             globalWidthPct: getGlobalWidthPct(),
+            // [SL-362] **几何的确定性产物**:拿当前 target 行 + 当前 width 现算一次拼串,
+            // 取每根柱的 `--x`。为什么不去读 DOM 上的 `--x`:那是 rAF 补间**逐帧**写的插值
+            // 中间态,两次采样落在不同动画相位就会不同 —— **与 width 无关**,拿它做判据
+            // 是不确定的(本卡实测:同一份代码脚本跑绿、手工跑红)。
+            // 这里走的是**生产同一条** `distBarsHtml`,只是喂 target 而不是补间中的 shown,
+            // 所以它无动画、无时序,且**确实经过了几何**(不是把 width 乘一遍冒充)。
+            geometryXs: (() => {
+                const html = distBarsHtml(target, hi, getGlobalWidthPct());
+                const out = [];
+                const re = /--x:\s*([-\d.]+)%/g;
+                let m;
+                while ((m = re.exec(html)) !== null) out.push(m[1]);
+                return out.join("|");
+            })(),
         }),
     };
 }

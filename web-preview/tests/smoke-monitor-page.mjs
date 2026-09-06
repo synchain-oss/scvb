@@ -1133,12 +1133,8 @@ try {
         //   `globalWidthPct`。它是纯函数、无动画、无时序 —— 缺陷在(恒 100)时两档必然相等。
         //   这一格因此钉的是「**页面拿到的那个 width 真的进了几何**」,而不是「柱动了」。
         const geoAt = IN(`
-            const rows = M.snapshot().distTracks.map((ch, i) => ({
-                ch, pan: (i % 2 ? 1 : -1) * (20 + i * 7), volDb: -6, widthPct: 100,
-                stereo: false, lead: false,
-            }));
-            const gw = M.snapshot().globalWidthPct;
-            return { w: gw, xs: rows.map((r) => gw * r.pan).join("|") };
+            const dg = M.snapshot().dist;
+            return { w: dg.globalWidthPct, xs: dg.geometryXs };
         `);
 
         await open(
