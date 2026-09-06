@@ -67,6 +67,12 @@ export const T = {
         participateAutoPan: "参与自动声像",
         trackWidth: "轨道宽度",
         "tracks.monoWidthNoop": "mono 源无法调整宽度",
+        // ⚠ **本条现在回到了 v5.6.6 的原句**(J97 / 用户裁定 2026-09-06):
+        //   用户实测 v5.6.7 后明确说「是否参与音量调节为独立开关,不随此联动」这句**不要加**。
+        //   下面那段 2026-08-21 的口径警示对「参与语义」本身仍然成立(列头那一侧看
+        //   `tracks.colLegend`,它**没有**被本次裁定动),但**不再适用于本条** ——
+        //   这句提示只说「强制居中」,独立开关那层意思由列头说明承担。
+        //   两条用户裁定在这一处相抵时,**晚的那条赢**。
         // ⚠ [SL-293] 后半句用**参与语义**,**别照 05 §5 写成「音量豁免为独立选项」**。
         // 同 `tracks.colLegend`:那一列的显示层已按**用户裁定 2026-08-21** 取反为「参与音量调节」
         // (`tab-tracks.js` 的头注「豁免改参与语义开关」、同文件 `volPart: cfg.lead_vol_exempt ? 0 : 1`
@@ -74,8 +80,7 @@ export const T = {
         // en 侧尤其硬:`Vol Exempt` 是**界面上不存在的标签**(列头是 `Vol`,无障碍名是
         // `Volume participation`)。J58 要保的是「这个开关独立、不随 Lead 联动」这层意思,
         // 不是「豁免」这个词 —— 本卡第一版照规格抄,把 base 里本来就对的内联改坏了。
-        "master.leadSelectHint":
-            "该轨强制居中;是否参与音量调节为独立开关,不随此联动",
+        "master.leadSelectHint": "该轨设置为 Lead 并强制居中",
         pair: "配对",
         threshold: "阈值",
         sensitivity: "灵敏度",
@@ -127,7 +132,7 @@ export const T = {
         "banner.printGuard": "输出开关处于写入自动化状态(随工程恢复)",
         "banner.printGuard.confirm": "继续写入自动化",
         "out.master.writeConfirm":
-            "写入自动化 {v} · 范围 {x}–{y} · 30 条车道;若 DAW 侧已 arm Latch/Write,播放本范围将覆盖该范围已有自动化;未 arm 则仅试听、不落盘",
+            "写入自动化 {v} · 范围 {x}–{y} · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放本范围将覆盖该范围已有自动化;未激活则仅试听、不保存",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的,别照 05 §5 加回「小节」**。
         // app.js 里 footer 的填值处(`secondsToTimecode(range.start_s)`)把这两个占位符
         // 一律填 **mm:ss.mmm**(桥面 §1.8/§0.2 第 3 条:
@@ -144,13 +149,18 @@ export const T = {
         "footer.printing": "写入自动化 {v} · {x}–{y}",
         "footer.printDone":
             "本次录制覆盖 {x}–{y};若在录制自动化,建议切回跟随宿主试听核对",
-        // [SL-293] follow 变体与上面 `out.master.writeConfirm` **措辞刻意保持一致**
-        //(arm / 不落盘):05 §5 两条原文用的就是同一套词,而这是「会覆盖 DAW 已有
-        // 自动化」的那句警告 —— 用户在两种范围模式间切一下,不该看到它换说法。
-        // 本卡改前 follow 侧写的是「已激活 / 不保存」(en `active` / fr `actif`),已按
-        // 规格对齐;en/fr 三处同理。别再让两条分家。
+        // follow 变体与上面 `out.master.writeConfirm` **措辞刻意保持一致** —— 这是「会覆盖
+        // DAW 已有自动化」的那句警告,用户在两种范围模式间切一下,不该看到它换说法。
+        // 两条同动,en/fr 三语同理。
+        //
+        // ⚠ **真源是用户裁定,不是 05 §5**(J97 / 用户裁定 2026-09-06):
+        //   用词是「轨道 / 已激活 / 不保存」(en `active`、fr `actif`),**不是**「车道 / arm /
+        //   落盘」。SL-293 曾按 05 §5 把两条改成后者,用户实测 v5.6.7 后明确退回:
+        //   「不如以前的,保留轨道、激活和保存」。05-ui-spec 对应句子已随本裁定改。
+        //   **别再照规格改回去** —— 那正是本卡在修的那次(「晚出的用户裁定没有 J 号」那一族:
+        //   规格停在裁定之前,照规格改等于把用户已经拍过的板推翻)。
         "out.master.writeConfirm.follow":
-            "写入自动化 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条车道;若 DAW 侧已 arm Latch/Write,播放已分析区域将覆盖其已有自动化;未 arm 则仅试听、不落盘",
+            "写入自动化 {v} · 范围 = 全部已分析区域(全曲跟随,共 {n} 段 · 合计 {t}) · 30 条轨道;若 DAW 侧已激活 Latch/Write,播放已分析区域将覆盖其已有自动化;未激活则仅试听、不保存",
         "footer.printing.follow": "写入自动化 {v} · 全曲跟随(已分析区域内)",
         "footer.printDone.follow":
             "本次录制覆盖已分析区域;若在录制自动化,建议切回跟随宿主试听核对",
@@ -431,11 +441,9 @@ export const T = {
         "range.followShort": "全曲",
         "master.rangeFollowHint":
             "跟随播放,自动扩展范围。已分析区域共 {n} 段 · 合计 {t}",
-        "master.step1.desc":
-            "开关打开后播放本范围,插件记录响度特征——这一步不写任何自动化",
-        "master.widthAngleHint":
-            "左右各摆到最外时的角度;0–90°(自动化参数 width 0–150%)",
-        "master.msHint": "−100 偏 Mid / +100 偏 Side,双击回 0——拖动看下方曲线",
+        "master.step1.desc": "开关打开后播放本范围以记录响度特征",
+        "master.widthAngleHint": "最外层人声的角度。0–90°",
+        "master.msHint": "−100 偏 Mid / +100 偏 Side",
         // [SL-280] 图里现在有**两种**横线:短的是立体声张开度(只有 half×2 那么宽),
         // 通栏那条是 0 dB 基准。原文只说「横线 = 立体声源张开度」,而新增那条更醒目
         // (left:0/right:0),用户照提示读图第一眼看到的正好不是提示说的那条 —— 本卡修的
@@ -527,8 +535,7 @@ export const T = {
             "监视数据版本不匹配,已停止读取(本机 {a} / 数据 {b})——请把两个插件升到同一版本",
         "monitor.footerHint": "只读窗口:这里改不了任何设置,也不写回工程",
 
-        "master.transitionHint":
-            "段与段之间参数不瞬切,走完这段斜坡才到下一段的值。太短交界会「跳」,太长声像糊在两处之间。",
+        "master.transitionHint": "段与段之间参数切换的过渡时间",
         "master.copyConfirmWarn":
             "目标已有数据将被覆盖——{name} 的 15 轨 pan / vol、全部分段结果与手动编辑标记将被整体替换。可撤销(Ctrl+Z)。",
         // ⚠ [SL-293] 「音量」段是**参与语义**,**别照 05 §5 改成「音量豁免…不进平衡计算」**。
@@ -1039,11 +1046,12 @@ export const T = {
         participateAutoPan: "Auto-Pan Participate",
         trackWidth: "Track Width",
         "tracks.monoWidthNoop": "Mono source cannot adjust width",
-        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):这里用**参与语义**,
-        //   **别照 05 §5 改成 `Vol Exempt` / `l'exemption de volume`** —— 那个标签界面上不存在。
-        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
+        // ⚠ [SL-293 → J97] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):本条已按
+        //   J97(用户裁定 2026-09-06)**整体退回**「设为 Lead 并强制居中」,句里不再有参与/豁免成分;
+        //   参与语义那层意思由列头 `tracks.colLegend` 承担。**别照 05 §5 加回 `Vol Exempt` /
+        //   `l'exemption de volume`** —— 那个标签界面上仍然不存在。三语各留一份指针。
         "master.leadSelectHint":
-            "Track forced to center; Volume participation is an independent switch and is not affected",
+            "This track is set as Lead and forced to center",
         pair: "Pair",
         threshold: "Threshold",
         sensitivity: "Sensitivity",
@@ -1097,7 +1105,7 @@ export const T = {
             "Output is in WRITE AUTOMATION (restored with project)",
         "banner.printGuard.confirm": "Continue write automation",
         "out.master.writeConfirm":
-            "Write automation {v} · range {x}–{y} · 30 lanes. If Latch/Write is armed in your DAW, playing this range will overwrite existing automation there; if not armed, this is monitoring only.",
+            "Write automation {v} · range {x}–{y} · 30 tracks. If Latch/Write is active in your DAW, playing this range will overwrite existing automation there; if not active, this is monitoring only.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
         //   05 §5 的 en 列**逐字写着 `BARS`**,照着加回去就会显示
         //   `WRITE AUTOMATION V1 · 00:12.000–01:36.000 BARS` —— 因为 app.js 里 footer 的
@@ -1111,7 +1119,7 @@ export const T = {
         "footer.printDone":
             "This pass covered {x}–{y}. If you were recording automation, switch back to Follow Host to check.",
         "out.master.writeConfirm.follow":
-            "Write automation {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 lanes. If Latch/Write is armed in your DAW, playing analyzed areas will overwrite existing automation there; if not armed, this is monitoring only.",
+            "Write automation {v} · range = all analyzed areas (follow, {n} segments · total {t}) · 30 tracks. If Latch/Write is active in your DAW, playing analyzed areas will overwrite existing automation there; if not active, this is monitoring only.",
         "footer.printing.follow":
             "WRITE AUTOMATION {v} · FOLLOW (ANALYZED AREAS)",
         "footer.printDone.follow":
@@ -1388,11 +1396,9 @@ export const T = {
         "master.rangeFollowHint":
             "Follows playback, range extends automatically. {n} analyzed segments · {t} total",
         "master.step1.desc":
-            "Turn it on and play this range; the plug-in records loudness features — nothing is written to automation",
-        "master.widthAngleHint":
-            "Angle at the outermost position on each side; 0–90° (automation parameter width 0–150%)",
-        "master.msHint":
-            "−100 toward Mid / +100 toward Side; double-click to reset — drag to preview on the curve below",
+            "Turn it on and play this range to record loudness features",
+        "master.widthAngleHint": "The angle of the outermost vocals. 0–90°",
+        "master.msHint": "−100 toward Mid / +100 toward Side",
         "master.distHint":
             "Bar height = level, horizontal position = pan; short line = stereo source width, full-width line = 0 dB reference",
         "master.distAxis": "L · −50 · C · +50 · R",
@@ -1472,7 +1478,7 @@ export const T = {
             "Read-only window: nothing here changes settings or is written back to the project",
 
         "master.transitionHint":
-            "Values ramp between segments instead of jumping. Too short and the seam clicks; too long and the image smears between two spots.",
+            "How fast parameters transition between segments.",
         "master.copyConfirmWarn":
             "Existing data will be overwritten — all 15 tracks' pan/vol, segment results and manual-edit marks of {name} are replaced. Undoable (Ctrl+Z).",
         // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `tracks.colLegend` 上方):「音量」段是**参与语义**,
@@ -1866,11 +1872,12 @@ export const T = {
         trackWidth: "Largeur de piste",
         "tracks.monoWidthNoop":
             "Une source mono ne peut pas ajuster la largeur",
-        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):这里用**参与语义**,
-        //   **别照 05 §5 改成 `Vol Exempt` / `l'exemption de volume`** —— 那个标签界面上不存在。
-        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
+        // ⚠ [SL-293 → J97] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):本条已按
+        //   J97(用户裁定 2026-09-06)**整体退回**「设为 Lead 并强制居中」,句里不再有参与/豁免成分;
+        //   参与语义那层意思由列头 `tracks.colLegend` 承担。**别照 05 §5 加回 `Vol Exempt` /
+        //   `l'exemption de volume`** —— 那个标签界面上仍然不存在。三语各留一份指针。
         "master.leadSelectHint":
-            "Piste forcée au centre ; la participation au volume est un réglage indépendant, non lié à ce choix",
+            "Cette piste est définie comme Lead et forcée au centre",
         pair: "Paire",
         threshold: "Seuil",
         sensitivity: "Sensibilité",
@@ -1922,7 +1929,7 @@ export const T = {
             "La sortie est en ÉCRITURE AUTOMATION (restauré avec le projet)",
         "banner.printGuard.confirm": "Continuer l'écriture d'automation",
         "out.master.writeConfirm":
-            "Écriture d'automation {v} · plage {x}–{y} · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
+            "Écriture d'automation {v} · plage {x}–{y} · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture de cette plage écrasera l'automation existante ; sinon, écoute seule.",
         // ⚠ [SL-293] `{x}–{y}` **不带单位词是有意的**(完整依据在 zh 侧 `footer.printing` 上方)。
         //   05 §5 的 fr 列**逐字写着 `MESURES`**,照着加回去就会显示
         //   `ÉCRITURE AUTOMATION V1 · 00:12.000–01:36.000 MESURES` —— 因为 app.js 里 footer 的
@@ -1936,7 +1943,7 @@ export const T = {
         "footer.printDone":
             "Cette passe a couvert {x}–{y}. Si vous enregistriez l'automation, repassez en Suivi hôte pour vérifier.",
         "out.master.writeConfirm.follow":
-            "Écriture d'automation {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 voies. Si Latch/Write est armé dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
+            "Écriture d'automation {v} · plage = toutes les zones analysées (suivi, {n} segments · total {t}) · 30 pistes. Si Latch/Write est actif dans votre DAW, la lecture des zones analysées écrasera l'automation existante ; sinon, écoute seule.",
         "footer.printing.follow":
             "ÉCRITURE AUTOMATION {v} · SUIVI (ZONES ANALYSÉES)",
         "footer.printDone.follow":
@@ -2219,11 +2226,9 @@ export const T = {
         "master.rangeFollowHint":
             "Suit la lecture, la plage s'étend automatiquement. {n} segments analysés · {t} au total",
         "master.step1.desc":
-            "Activez et lisez cette plage ; le plug-in enregistre les caractéristiques de loudness — rien n'est écrit dans l'automation",
-        "master.widthAngleHint":
-            "Angle à la position la plus extérieure de chaque côté ; 0–90° (paramètre d'automation width 0–150 %)",
-        "master.msHint":
-            "−100 vers Mid / +100 vers Side ; double-clic pour réinitialiser — glissez pour voir la courbe ci-dessous",
+            "Activez et lisez cette plage pour enregistrer les caractéristiques de loudness",
+        "master.widthAngleHint": "L'angle des voix les plus externes. 0–90°",
+        "master.msHint": "−100 vers Mid / +100 vers Side",
         "master.distHint":
             "Hauteur = volume, position horizontale = panoramique ; trait court = largeur de la source stéréo, trait pleine largeur = référence 0 dB",
         "master.distAxis": "G · −50 · C · +50 · D",
@@ -2307,7 +2312,7 @@ export const T = {
             "Fenêtre en lecture seule : rien ici ne modifie les réglages ni n'est réécrit dans le projet",
 
         "master.transitionHint":
-            "Les valeurs suivent une rampe entre segments au lieu de sauter. Trop court, la jointure « saute » ; trop long, l'image se brouille entre deux positions.",
+            "Durée de transition des paramètres entre segments.",
         "master.copyConfirmWarn":
             "Les données existantes seront écrasées — pan/vol des 15 pistes, résultats de segmentation et marques d'édition manuelle de {name} sont remplacés. Annulable (Ctrl+Z).",
         // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `tracks.colLegend` 上方):「音量」段是**参与语义**,
