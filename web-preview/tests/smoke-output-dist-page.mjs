@@ -2313,8 +2313,8 @@ try {
                         parseFloat(b.afterTop) + parseFloat(b.afterH) === 0,
                         `(c) ★ ${name} 轨 ${b.ch}(lead):帽底边贴住柱顶` +
                             `(top + height === 0,实得 ${b.afterTop} + ${b.afterH})—— ` +
-                            `悬空的帽会让那一格空档被分隔晕填成浅色带,` +
-                            `lead 轨柱顶恒常读成三段`,
+                            `悬空的帽会让那一格空档露出背后的东西(两柱重合时是后一根的` +
+                            `轨色,没有重合时是图底),lead 轨柱顶恒常读成三段`,
                     );
                 } else {
                     eq(
@@ -2664,6 +2664,17 @@ try {
                 ),
                 `(前提)${name} 裸开装载完成(不白屏)`,
             );
+            // 撤沙箱:浮层带 z-index:99999,留在页上会盖住后面任何一格。
+            // 抽成函数是因为**下面有两条早退**(探针没建起来 / 截图解不开),
+            // 早退那条第一版忘了撤(复审点名)—— 眼下本节是文件最末一节、下一轮
+            // `Page.navigate` 会把它冲掉,所以无实害,但下一个往后面加 ⑭ 的人会踩到。
+            const dropSandbox = async () => {
+                try {
+                    await evaluate(
+                        'const n = document.getElementById("sl372-px-sandbox"); if (n) n.remove(); 1',
+                    );
+                } catch {}
+            };
             const g = await evaluate(PX_PROBE);
             if (
                 !check(
@@ -2675,6 +2686,7 @@ try {
                     })`,
                 )
             ) {
+                await dropSandbox();
                 continue;
             }
             const shot = await cdp.send("Page.captureScreenshot", {
@@ -2682,10 +2694,7 @@ try {
                 clip: { x: 0, y: 0, width: WRAP_W, height: WRAP_H, scale: 1 },
                 captureBeyondViewport: true,
             });
-            // 沙箱是浮层,量完立刻撤掉:它盖着整页,留着会污染后面任何一格。
-            await evaluate(
-                'document.getElementById("sl372-px-sandbox").remove(), 1',
-            );
+            await dropSandbox();
             let img = null;
             try {
                 img = decodePng(Buffer.from(shot.data, "base64"));

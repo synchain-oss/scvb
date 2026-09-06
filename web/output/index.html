@@ -1355,7 +1355,9 @@
                再叠一条 inset 浅色线反而把 lead 柱顶读成「绿帽 / 浅色带 / 轨色」三段 ——
                那正是 SL-353 把帽从 `-3px` 改成 `-2px` 要消掉的那一幕,只不过换了个位置。
                左右两格外扩晕照留,与非 lead 柱一致(帽的 `left/right: -1px` 正是盖它两侧的)。
-               判据 = smoke-output-dist-page ⑬(c3):lead 柱的阴影里没有 inset 段。 */
+               判据两处:规则面在 smoke-output-dist-page ⑫(d)「lead 柱柱内没有浅色顶边线」,
+               像素面在 ⑬(c)「绿帽底下紧挨着的两行仍是轨色」。(第一版这里写的 ⑬(c3)
+               在文件里根本不存在 —— 引判据名要能 grep 到,复审点名过一次。) */
             .dist-bar[data-lead="1"] {
                 box-shadow:
                     1px 0 0 var(--dist-bar-halo),
@@ -1784,8 +1786,11 @@
             /* ☠ 选择器写成 `.master-grid > .sc-card[data-gb=...]`（而不是光一个
                属性选择器）是因为 `.master-grid > .sc-card { gap: var(--sp-8) }`
                比单属性选择器**更特定** —— 第一版写 `[data-gb=...] { row-gap }`
-               本机实测根本没生效（computed 仍是 8px），而卡子确实矮了一点，
-               很容易读成“改到了”。改动这一段时别把它降回去。 */
+               本机实测根本没生效（computed 仍是各自的旧值：GROUP 那张 9px，
+               另四张 8px —— GROUP 在它自己那条规则里另写了 `gap: var(--sp-9)`，
+               所以“行距 8→5”只对四张成立，对 GROUP 是 9→5），
+               而卡子确实矮了一点（内距那两条生效了），很容易读成“改到了”。
+               改动这一段时别把它降回去。 */
             .master-grid > .sc-card[data-gb="master-group-selector"],
             .master-grid > .sc-card[data-gb="master-width"],
             .master-grid > .sc-card[data-gb="master-msbalance"],

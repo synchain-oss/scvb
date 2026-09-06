@@ -536,7 +536,9 @@
                再叠一条 inset 浅色线反而把 lead 柱顶读成「绿帽 / 浅色带 / 轨色」三段 ——
                那正是 SL-353 把帽从 `-3px` 改成 `-2px` 要消掉的那一幕,只不过换了个位置。
                左右两格外扩晕照留,与非 lead 柱一致(帽的 `left/right: -1px` 正是盖它两侧的)。
-               判据 = smoke-output-dist-page ⑬(c3):lead 柱的阴影里没有 inset 段。 */
+               判据两处:规则面在 smoke-output-dist-page ⑫(d)「lead 柱柱内没有浅色顶边线」,
+               像素面在 ⑬(c)「绿帽底下紧挨着的两行仍是轨色」。(第一版这里写的 ⑬(c3)
+               在文件里根本不存在 —— 引判据名要能 grep 到,复审点名过一次。) */
             .dist-bar[data-lead="1"] {
                 box-shadow:
                     1px 0 0 var(--dist-bar-halo),
