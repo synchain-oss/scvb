@@ -128,7 +128,9 @@ struct alignas(64) VizFrame
     // [SL-362] 全局「最大角度」。**取自原 _reserved[0]**:尺寸与所有既有字段偏移**零变化**,
     // 故不属 §5 意义上的「布局改动」—— 不升 abi、不改段名(裁定见 change doc)。
     //
-    // 编码 = **定点值 + 1**(`vizPackFixed(w, kVizWidthMin, kVizWidthMax) + 1`),而 **0 = 写方
+    // 编码 = **定点值 + 1**(`vizPackFixed(w, kVizGlobalWidthMin, kVizGlobalWidthMax) + 1`
+    // —— 域是**全局那对 0..150**,不是 per-track 的 0..100,理由见上面那段常量注释),
+    // 而 **0 = 写方
     // 未提供**。为什么要 +1 而不是直接存定点值:旧写方(本卡之前的 Output)覆盖式初始化时
     // 把这一槽清成 **0**,而 0 在定点编码里是**合法值**(width=0,全收拢到中央)——直接存的话
     // 新读方配旧写方会把「没这个字段」读成「用户把最大角度调到了 0」,分布图当场把 15 根柱
@@ -307,7 +309,9 @@ inline double vizUnpackPan(std::int16_t v) noexcept
 }
 
 // 通用定点(volDb / widthPct 共用 kVizPanScale)。**先按工程量纲夹取再定点** ——
-// lo/hi 就是 kVizVolDbMin/Max 与 kVizWidthMin/Max;不这么用的话那几个常量只是摆设,
+// lo/hi 就是 kVizVolDbMin/Max、kVizWidthMin/Max(per-track)与 kVizGlobalWidthMin/Max
+// (全局 width,0..150);**用错域会被静默夹取**,别拿 per-track 那对去编全局值。
+// 不这么用的话那几个常量只是摆设,
 // 而读者会以为段内值已被夹到文档声明的域。最后再夹到 int16 可表示范围,绝不撞哨兵。
 inline std::int16_t vizPackFixed(double v, double lo, double hi) noexcept
 {

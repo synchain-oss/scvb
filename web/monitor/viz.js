@@ -445,21 +445,6 @@ export function vizSeries(viz) {
  * → 参数当前值;其余 → 哨兵),口径真源见 `docs/IPC_CONTRACT.md` §6.1 那条 ⚠。反过来写会让分布图的柱与轨迹图的播放头在放大档下对不上,
  * 而那是「看起来完全正常」的那类错。
  */
-/**
- * [SL-362] 全局「最大角度」——喂 `distBarsHtml` 的第三个参数,两页共用 `distGeometry`
- * 才能画得一样(有效 pan = 名义 pan × globalWidth/100,张开半宽同缩放)。
- *
- * 拿不到就回落 **100**(不缩放),三种情形都走这一支:桥没带(旧写方 ⇒ 段内槽为 0)、
- * 值不是有限数、段整块缺失。**回落值必须是 100 而不是 0** —— 0 是合法宽度(全收拢到中央),
- * 拿它当「不知道」会把 15 根柱全挤到中线,而那看起来像一张正常的图。
- */
-export function vizGlobalWidthPct(viz) {
-    const v = viz && viz.globalWidthPct;
-    return typeof v === "number" && Number.isFinite(v)
-        ? v
-        : VIZ_GLOBAL_WIDTH_FALLBACK;
-}
-
 export function vizDistRows(viz) {
     if (!Array.isArray(viz && viz.trackVolDb)) return [];
     const at = playheadColumn(viz);
@@ -489,6 +474,21 @@ export function vizDistRows(viz) {
         });
     }
     return out.sort((a, b) => a.ch - b.ch);
+}
+
+/**
+ * [SL-362] 全局「最大角度」——喂 `distBarsHtml` 的第三个参数,两页共用 `distGeometry`
+ * 才能画得一样(有效 pan = 名义 pan × globalWidth/100,张开半宽同缩放)。
+ *
+ * 拿不到就回落 **100**(不缩放),三种情形都走这一支:桥没带(旧写方 ⇒ 段内槽为 0)、
+ * 值不是有限数、段整块缺失。**回落值必须是 100 而不是 0** —— 0 是合法宽度(全收拢到中央),
+ * 拿它当「不知道」会把 15 根柱全挤到中线,而那看起来像一张正常的图。
+ */
+export function vizGlobalWidthPct(viz) {
+    const v = viz && viz.globalWidthPct;
+    return typeof v === "number" && Number.isFinite(v)
+        ? v
+        : VIZ_GLOBAL_WIDTH_FALLBACK;
 }
 
 /**
