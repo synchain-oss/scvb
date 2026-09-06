@@ -96,7 +96,8 @@
 //         行内注释:a 第一下就弹 / b 过期全量帧不关框 / c 中央槽同样弹 /
 //         c2 框内说明段说的是被改的那一项(复审第 1 轮)/ d 说明段字号走 --fs-110 /
 //         e 改回基线三件事 / f 缺 applied 的全量帧不许清闸关框 /
-//         g 两项都脏时把其中一项改回基线不该再弹(复审第 1 轮)。
+//         g 两项都脏时把其中一项改回基线不该再弹(复审第 1 轮)/
+//         h 非 UI 改回基线后重选同一个值仍要弹(复审第 2 轮,接在 C9 那段后面跑)。
 //
 // 章节在下面的执行顺序是 A → E → B → C(E 紧跟 A,因为两段用的是同一张 Input 页)。
 //
@@ -1555,7 +1556,7 @@ try {
     //     · C10a/b/e:`scenario=slow-state-echo`(写的回执先到、状态帧后到一拍,中间还夹
     //       一帧内容早于写、送达晚于写的全量快照)。默认 mock 是同步 emit 的,①② 在它上面
     //       **一条都复现不出来** —— 那正是 preview 三个月没照出这些缺陷的原因;
-    //     · C10c:同一场景**另开一张干净页**(理由见那处);
+    //     · C10c / C10c2 / C10g:同一场景**另开一张干净页**(理由见 C10c 那处);
     //     · C10f + C10d:`scenario=applied-echo-drop`(写落地后补一帧缺 `analysis.applied`
     //       的全量快照)—— 与时序无关的另一条路,故不与上面几格共页;字号那一格搭在这里,
     //       理由是它只需要「框开着」,不该被 ①② 的守卫带红(见那处)。
@@ -1633,9 +1634,12 @@ try {
     //     e2 不误弹   ← 拆掉那支里清 `askPending` 的那一行 ⇒ **只有 e2** 红:留着这条
     //                   旧记录的话,此后**另一项**由后端改动会被当成「用户刚改的」再弹
     //                   一次框(而 e1 此时已经正常关过框,照绿);
-    //     e3 能再弹   ← 拆掉那支里清 `reanalyzeAskedFor` 的那一行 ⇒ **只有 e3** 红:
-    //                   下面特意改回 **rms** 这个 C10a 用过的同一个值,token 逐字相同,
-    //                   只有被清掉才可能再弹。
+    //     e3 能再弹   ← [SL-354 复审第 2 轮] 这一格的承担者**换了**:拆掉 wireSeg 里
+    //                   「一次新的用户写就清 `reanalyzeAskedFor`」那一行 ⇒ **只有 e3**
+    //                   与 C10h 红。下面特意改回 **rms** 这个 C10a 用过的同一个值,
+    //                   token 逐字相同,只有被清掉才可能再弹。
+    //                   ⚠ `!stale` 那支里同名的那一行现在是**冗余**的:单删它,本套
+    //                   一格都不红(实测)—— 别照它写删除式,也别把它当牙齿引用。
     check(await setLoudness("kw_integrated"), "C10e 改回基线可点");
     check(
         await waitFor(askClosed, 4000),
@@ -1891,7 +1895,8 @@ try {
     await click("tabnav-settings");
     await sleep(400);
 
-    // ① 用户真改一次档 ⇒ 置位 + 弹框(此后 reanalyzeAskedFor = peak_dbfs)。
+    // ① 用户真改一次档 ⇒ 置位 + 弹框(此后 reanalyzeAskedFor = "loudness_mode=peak_dbfs";
+    //    [SL-354] token 带字段名,不再是裸值)。
     check(await setLoudness("peak_dbfs"), "C9 用户改档 peak_dbfs 可点");
     check(await waitFor(askOpen, 4000), "C9 用户改档 ⇒ 弹框");
     check(await click("reanalyze-ask-later"), "C9 「稍后」可点");
@@ -1929,14 +1934,49 @@ try {
     }
 
     // ③ 这道「一次性」没有把功能一起关掉:用户再真改一次档,照样弹。
-    //    先回基线(stale 归假 ⇒ 连同 reanalyzeAskedFor 一起清),再改走 —— 直接点
-    //    peak_dbfs 的话会撞上 wireSeg 的「点击已选中档不重复写」与按值去重两道,
-    //    验不到本条想验的东西。
+    //    先回基线再改走 —— 直接点 peak_dbfs 的话会撞上 wireSeg 的「点击已选中档不
+    //    重复写」,验不到本条想验的东西。
+    //    [SL-354 复审第 2 轮] 这里「照样弹」的承担者是 **wireSeg 里那次新用户写清掉
+    //    reanalyzeAskedFor**;`!stale` 那支里同名的那一行是冗余的(见 C10e3 注释)。
     check(await setLoudness("kw_integrated"), "C9 回基线可点");
     check(await waitFor(badgeGone, 4000), "C9 回基线 ⇒ stale 归假(badge 灭)");
     check(await evaluate(askClosed), "C9 回基线不弹框");
     check(await setLoudness("rms"), "C9 用户再改走可点");
     check(await waitFor(askOpen, 4000), "C9 用户再改走 ⇒ 照样弹");
+
+    // C10h [SL-354 复审第 2 轮] **非 UI 路径把口径改回基线之后,用户重选同一个值仍要弹。**
+    //   复审给的可复现序列,逐字照做(接着 C9 的状态往下走,框正开着、记着
+    //   `loudness_mode=rms` 这个 token):
+    //     ① 「稍后」收框;
+    //     ② **非 UI 路径**把响度改回基线 —— 那一帧 `当前值 != 刚写的值`,被「这一帧不
+    //        作数」的尺子早退挡住,`!stale` 那支一次都跑不到 ⇒ 旧 token 留在位上;
+    //     ③ 用户**再点 rms**(与 ① 之前那次逐字同一个值)⇒ 必须弹。
+    //   不修的话这一格红在 ③:token 逐字相同 ⇒ 只亮徽标不弹框 —— 那正是用户报的 ①
+    //   换了个入口,而旧的布尔实现在这条序列上是会弹的(本卡引入的静默行为变化)。
+    //   ② 里断「徽标灭了」是**正证据**:证明那一帧真的到了、也真的渲染了,于是 ③ 的红
+    //   不可能是「什么都没发生」冒充的。
+    //   ← 拆掉 wireSeg 里「一次新的用户写就清 reanalyzeAskedFor」那一行,本格 ③ 红。
+    check(await click("reanalyze-ask-later"), "C10h ① 「稍后」收框");
+    check(await waitFor(askClosed, 3000), "C10h ① 框已关");
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m || typeof m.setAnalysisConfig !== "function") return false;
+                const r = m.setAnalysisConfig({ loudness_mode: "kw_integrated" });
+                return !!r && r.ok !== false;`),
+        ),
+        "C10h ② mock 侧改回基线被受理(非 UI 写入路径)",
+    );
+    check(
+        await waitFor(badgeGone, 5000),
+        "C10h ② 正证据:徽标灭了 —— 那一帧确实到了 UI(当前值已回到基线)",
+    );
+    check(await evaluate(askClosed), "C10h ② 这一下不该把框弹出来");
+    check(await setLoudness("rms"), "C10h ③ 用户再点同一个值可点");
+    check(
+        await waitFor(askOpen, 4000),
+        "C10h ③ 重选同一个值**照样弹**(一次新的用户写就重新开闸)",
+    );
     assertClean("reanalyze-ask-oneshot");
 
     // C5 Esc 关框
