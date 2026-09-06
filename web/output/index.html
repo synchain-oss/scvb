@@ -8766,18 +8766,33 @@
                             id="reanalyze-ask-rangenote"
                             class="sc-modal__note sc-modal__note--warn"
                             data-gb="reanalyze-ask-rangenote"
-                            role="status"
                             hidden
                         >
-                            <!-- [SL-279 复审第 8 轮] 本段是 role="status"(隐含 aria-live=polite),
-                                 所以 data-t **不能挂在 <p> 上**:applyI18n 写的是 textContent,
-                                 会把下面两个 span 一起抹掉。静态那半挂在自己的 span 上。 -->
-                            <span data-t="set.reanalyzeAsk.rangeNote"></span>
+                            <!-- [SL-279 复审第 8 轮] `data-t` **不能挂在 <p> 上**:applyI18n 写的是
+                                 textContent,会把下面两个 span 一起抹掉。静态那半挂在自己的 span 上。 -->
+                            <span
+                                data-gb="reanalyze-ask-rangehint"
+                                data-t="set.reanalyzeAsk.rangeNote"
+                            ></span>
                             <!-- 受理回来之后由 tab-settings 填这一段:范围档下点主钮不关框,
                                  视觉用户看得到「框没关」,读屏用户需要这一句被播报出来,
                                  否则 AT 那一侧仍是零反馈。开框时清空、受理后写入 ⇒ 每次点击
-                                 都是一次真变化,live region 才会念。 -->
-                            <span data-gb="reanalyze-ask-rangedone"></span>
+                                 都是一次真变化,live region 才会念。
+
+                                 [SL-348 复审第 1 轮] `role="status"` 挂在**这个 span** 上,不挂在
+                                 外层 <p> 上,两个理由:
+                                 ① 外层 <p> 同时是 aria-describedby 的目标。开框时它由 hidden 变
+                                    可见 —— live region 在订阅期内由隐藏转可见,不少浏览器/AT 组合
+                                    会把整段念一遍,而 alertdialog 的 description 又念一遍,**双读**。
+                                    挂在这个 span 上,开框那一刻它是**空的**,不产生播报,
+                                    describedby 那一遍照旧。
+                                 ② `role="status"` 隐含 `aria-atomic="true"`:挂在 <p> 上,受理后会把
+                                    整段(70 多字的范围提示 + 新增那句)重读一遍,而真正变的只有
+                                    后半句。挂在这里只念新增那一句。 -->
+                            <span
+                                data-gb="reanalyze-ask-rangedone"
+                                role="status"
+                            ></span>
                         </p>
                         <div class="sc-modal__foot">
                             <button

@@ -255,6 +255,8 @@ export function createTabSettings(opts) {
         // 点「稍后」后继续在别的档之间来回切,每换到一个新的脏值都该再弹一次;
         // 改回基线(stale 归 false)时清空,下次再改走照弹。
         reanalyzeAskedFor: null,
+        // [SL-348] 播报句存 **key**(不是文本),每次 render 按当前字典重填 —— 见 renderRangeDone()。
+        reanalyzeRangeDoneKey: null,
         // [SL-276 复审] 弹窗的触发面是**用户点击**,不是派生的 stale 位。
         // 琥珀 badge 可以纯派生(多一枚小标记的代价很小),模态框不行 —— stale 有几条
         // 「用户什么都没做也为真」的路径,升级成框之后每条都变成一次要点掉的打断。
@@ -604,23 +606,48 @@ export function createTabSettings(opts) {
      * 在别处(Tab3 工具条)改范围档,只在开框时算一次的话提示会停在旧档位上。
      */
     /**
-     * 写 `role="status"` 段里那半动态文本(§ 见 index.html 那两段注释)。
+     * 写 `role="status"` 那半动态文本(结构见 index.html 那两段注释)。
      *
-     * 为什么单拎一个函数:文本必须**只从字典取**,不能在这里拼串 —— 拼串就是把用户可见文案
-     * 写进逻辑层,i18n 门禁扫不到、切语言也不跟着变(CLAUDE.md:新增用户可见文案必须有 key)。
+     * **存的是 key,不是文本** —— 这是本函数与 `renderRangeDone()` 分家的全部理由:
+     * 文本必须只从字典取,不能在逻辑层拼串(i18n 门禁扫不到、也是「新增用户可见文案必须
+     * 有 key」那条),而且**存文本会在切语言时当场变成中英混排** ——
+     *
+     * [SL-348 复审第 1 轮] 原实现直接写当前语言的字面文本,没有留刷新钩子,两个可达形态:
+     *   ① 框开着切语言:`refreshI18n()` = `applyI18n(document, lang)` + `render()`;
+     *      `applyI18n` 只认 `data-t`,所以静态那半换成新语言、这半停在旧语言 ——
+     *      同一个 `<p>` 里前半英文后半中文。与 `tab-wave.js` 的 `renderReidentifyBody()`
+     *      同一族(那边是「框可见就在 render 里补填」),这里走同一条路;
+     *   ② `limited` 真→假→真:`syncReanalyzeRangeNote()` 原来只开合 `<p>`,里面那句
+     *      不动 —— 切回范围档时上一轮那句会随 `<p>` 重新显出来,而它当下已经为假。
+     *      所以 `limited` 为假时**连 key 一起清掉**。
      */
-    function setRangeDoneText(key) {
+    function setRangeDoneKey(key) {
+        local.reanalyzeRangeDoneKey = key || null;
+        renderRangeDone();
+    }
+
+    /** 按当前字典重填那半文本。每次 render 都会被 `syncReanalyzeRangeNote()` 叫到。 */
+    function renderRangeDone() {
         const node = el.reanalyzeAskRangedone;
         if (!node) return;
+        const key = local.reanalyzeRangeDoneKey;
         const t = getT() || {};
-        node.textContent =
+        const next =
             key && Object.prototype.hasOwnProperty.call(t, key) ? t[key] : "";
+        // 同值不写:`role="status"` 是 live region,每次 render 都重写一遍同一句会让
+        // 部分 AT 反复播报。只有真变化才落笔 —— 这也正是「清空 → 写入」能被念到的原因。
+        if (node.textContent !== next) node.textContent = next;
     }
 
     function syncReanalyzeRangeNote() {
         if (!el.reanalyzeAskRangenote) return;
         const limited = rangeLimited();
         show(el.reanalyzeAskRangenote, limited);
+        // [SL-348 复审第 1 轮] 切出范围档就把播报句连 key 一起清掉:不清的话,再切回来时
+        // 上一轮那句会随 `<p>` 重新显出来,而它描述的那次分析早已不是「当前范围」。
+        if (!limited) local.reanalyzeRangeDoneKey = null;
+        // 每次 render 都按当前字典重填 —— 框开着切语言时靠的就是这一句(见 renderRangeDone)。
+        renderRangeDone();
         // [SL-279 复审第 7 轮] **`aria-describedby` 跟着一起动** —— 否则读屏用户拿到的仍是
         // 「框不关、什么也没说」:本框是 role="alertdialog",描述只念 describedby 指到的节点。
         //
@@ -653,7 +680,7 @@ export function createTabSettings(opts) {
         show(el.reanalyzeAsk, true);
         // [SL-279 复审第 8 轮] 每次开框先清掉上一轮的播报文本:live region 只在**文本变化**时
         // 播报,不清的话第二次点主钮写入同一句话 = 零变化 = 读屏什么也不念。
-        setRangeDoneText("");
+        setRangeDoneKey(null);
         syncReanalyzeRangeNote();
         if (
             el.reanalyzeAskPrimary &&
@@ -708,7 +735,7 @@ export function createTabSettings(opts) {
         try {
             // 清在**发请求之前**:这样「受理后写入」必定是一次真变化,live region 才会念。
             // 放在受理之后清再写,同一帧内 textContent 一去一回,AT 可能一次都不播报。
-            setRangeDoneText("");
+            setRangeDoneKey(null);
             const res = await call("analyze", "all");
             if (!res || res.observer || res.ok === false) {
                 requestRender();
@@ -722,7 +749,7 @@ export function createTabSettings(opts) {
                 // 就是反馈,读屏用户不会被自动告知「什么都没发生」—— 所以这里必须往
                 // live region 里写一句真话,否则 AT 那一侧仍是零反馈(上一轮只做了
                 // aria-describedby 那半,把这半漏了)。
-                setRangeDoneText("set.reanalyzeAsk.rangeDone");
+                setRangeDoneKey("set.reanalyzeAsk.rangeDone");
                 requestRender();
                 return;
             }
