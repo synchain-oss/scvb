@@ -50,8 +50,12 @@ import {
     // 否则它会把「播放中根本不会让徽标灭」的间隔也报成一次眨眼。
     // 两档的常量都要:退出定时器**两拍各排一个**(见 scvb.params 订阅)。
     HOST_ECHO_RELEASE_PLAYING_MS,
+    // [SL-356] 走带态去抖:停走边沿要按它排一拍 render(见 scvb.playhead 订阅)。
+    HOST_ECHO_TRANSPORT_HOLD_MS,
     hostEchoReleaseMs,
+    hostEchoOn,
     hostEchoUseWideWindow,
+    transportPlayingAt,
 } from "./tab-master.js";
 import {
     createTabTracks,
@@ -112,6 +116,11 @@ const store = {
     conn: null, // §2.3
     groups: 0, // §2.4 groups_online 位图(事件缺失 = 0 ⇒ 绿点全灭)
     playhead: null, // §2.6
+    // [SL-356] 走带态去抖的记账:最近一次「**不是**明确停走」的那一帧的时刻(ms)。
+    // 0 = 本会话还没观测到过这样的一帧。只由 `scvb.playhead` 订阅经 `transportPlayingAt()`
+    // 推进,消费者只有 `hostEchoUseWideWindow()`。为什么需要它:见 host-echo.js 的
+    // `HOST_ECHO_TRANSPORT_HOLD_MS` 头注(播放中一帧 false 会把徽标当拍打掉)。
+    playingAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
     // §2.9 errorStoreKey(e) → payload(active:false 即删)。键 = 裸 code,**唯
@@ -736,6 +745,10 @@ let scaleTimer = 0;
 // 哪一档先到期都得有人来 render,漏排哪一个都会让徽标滞留。
 let hostEchoTimer = 0;
 let hostEchoTimerWide = 0;
+// [SL-356] 走带态去抖到期的那一拍 render(见 scvb.playhead 订阅的停走**边沿**分支)。
+// 与上面两个句柄分开:那两个挂在「最后一帧 hostEcho:true」上,这个挂在「停走边沿」上,
+// 两个锚点各走各的时间线,合用一个句柄会互相取消。
+let hostEchoTimerTransport = 0;
 // footer「打印结束」提示的 8 秒窗到点补一拍(见 renderFooter)。
 let printDoneTimer = 0;
 let scalePrev = 1;
@@ -1687,6 +1700,8 @@ if (bridge) {
             // [SL-270] 门限取**当时那一档**窗口:播放中是 2500ms、停走是 900ms。
             // 写死一个数的话,播放中 1200ms 的间隔会被报成一次眨眼(它不是),而停走时
             // 1000ms 的间隔会被漏掉(它是)—— 两个方向都会把用户贴回来的读数带偏。
+            // [SL-356] 「当时那一档」现在含走带态去抖(刚停走还没满 500ms 仍算宽档),
+            // 与徽标实际用的是同一次调用的同一条判据 —— 读数与所见继续对得上。
             const releaseMs = hostEchoReleaseMs(hostEchoUseWideWindow(store));
             if (prevHostEchoAt && gap >= releaseMs) {
                 // 纯 ASCII:①它只进开发者控制台,不上屏;②`scripts/check-font-coverage.py`
@@ -1759,7 +1774,29 @@ if (bridge) {
         // 同样的输出。走带停住而宿主照旧按 30Hz 重发同一位置时,这一条把 30 次/秒的
         // 空转整页渲染削成 0。
         const same = samePlayhead(store.playhead, p);
+        // [SL-356] 停走**边沿**判定要在覆写之前取上一帧的走带态(与上面 scvb.params 里
+        // `prevHostEchoAt` 同一个坑:整体覆写之后再去比,永远比不出边沿)。
+        const wasStopped =
+            !!store.playhead && store.playhead.isPlaying === false;
         store.playhead = p;
+        // [SL-356] 走带态去抖的记账(判据与理由见 host-echo.js 的 transportPlayingAt)。
+        store.playingAt = transportPlayingAt(store.playingAt, p);
+        const nowStopped = !!p && p.isPlaying === false;
+        if (nowStopped && !wasStopped) {
+            // 停走边沿:排一拍 render 到去抖窗到期之后。**停走之后没有任何东西会来
+            // render** —— `scvb.playhead` 逐帧逐字相同(timeS 不再走)被上面的
+            // `samePlayhead` 挡掉、`scvb.conn` 走 emitIfChanged、打印头停了就不再发
+            // `scvb.params`。而窄档要到去抖窗到期才生效,那一刻正是徽标该熄的时刻之一
+            // (另一种是 `hostEchoAt + 900` 更晚,由上面 hostEchoTimer 那一拍接住)。
+            // 少了这一拍,「宿主先停写、用户后停走」这条路上徽标会一直挂着 ——
+            // 删除式实测见 smoke-output-dist-page ⑪(b)。
+            // ⚠ 只在**边沿**排:每一帧停走都重排的话,30Hz 会把它无限推后、永不触发。
+            clearTimeout(hostEchoTimerTransport);
+            hostEchoTimerTransport = setTimeout(
+                requestRender,
+                HOST_ECHO_TRANSPORT_HOLD_MS + 50,
+            );
+        }
         // §2.6:循环区经 loopStartS/loopEndS 出现,缺字段 = 此刻没有可用循环区。
         // 循环区一旦回来,同时解除 setRange 的 noLoop 置灰 —— 否则档位会一直卡在不可选。
         const hasLoop =
@@ -1958,4 +1995,20 @@ async function bootInner() {
 // 事件驱动的实现里那个数恒为 0。靠采样撞动画中段的覆盖等于没有覆盖(SL-192 教训)。
 window.__SCVB_OUTPUT__ = {
     distMotion: () => tabMaster.distDiag(),
+    // [SL-356] hostEcho 闩锁的只读快照。为什么需要它:页面级冒烟要断「快速起停时徽标
+    // 全程不灭」,而这条断言只有在**采样窗真的跨过了停走档 900ms** 时才有牙 —— 不然
+    // 修前修后都绿。窗口跨没跨过去取决于「最后一帧 hostEcho:true 到底什么时候来的」,
+    // 那个时刻页外量不到(只能拿 CDP 往返去估,本仓记过好几次「按帧率/节奏判红」的假红)。
+    // 有了这一格,非空绿就是**测出来的**而不是估出来的。
+    // 只读、零写入口,与上面 distMotion 同一口径。
+    hostEcho: () => {
+        const s = viewStore();
+        const wide = hostEchoUseWideWindow(s);
+        return {
+            at: (s.params && s.params.hostEchoAt) || 0,
+            playingAt: s.playingAt || 0,
+            wide,
+            on: hostEchoOn(s.params, undefined, wide),
+        };
+    },
 };

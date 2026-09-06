@@ -132,9 +132,12 @@ export {
     HOST_ECHO_RELEASE_STOPPED_MS,
     // [SL-270] 播放中另有一档释放窗口;两个 tab 与 app.js 的 console 读数都要用到。
     HOST_ECHO_RELEASE_PLAYING_MS,
+    // [SL-356] 走带态去抖:常量与记账函数,app.js 的 scvb.playhead 订阅要用。
+    HOST_ECHO_TRANSPORT_HOLD_MS,
     hostEchoReleaseMs,
     hostEchoOn,
     hostEchoUseWideWindow,
+    transportPlayingAt,
 } from "../shared/host-echo.js";
 
 /**
@@ -1962,8 +1965,11 @@ export function createTabMaster(opts) {
         // [SL-251/J93] 判据换成共享的**非对称闩锁**(亮立刻、熄延迟),不再看
         // `params.hostEcho` 那一位 —— 详见 web/shared/host-echo.js 头注。
         // [SL-270] 第三个参数 = 走带态。停走用短窗口(徽标不滞留),播放中用长窗口
-        // (盖住宿主两次写之间的秒级间隔)。少了它,按停之后残余的那一截会在用户
-        // 立刻重按播放时于**播放中途**走完 —— 那正是用户报的「图标在播放中消失」。
+        // (盖住宿主两次写之间的秒级间隔)。少了它,停走之后徽标要挂着近两秒。
+        // [SL-356] 「用户报的『图标在播放中消失』就此修掉」是 SL-270 当时写在这里的话,
+        // 实测**没修掉**(v5.6.7 用户原话:停播后及时熄灭没问题,快速起停几次播放中
+        // 还是会中途消失)。那半句已删,别再照它推论。真正治它的是
+        // `hostEchoUseWideWindow` 里的走带态去抖 —— 这一行照旧只传 store,去抖在函数内。
         const echo = hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st))
             ? "1"
             : "0";

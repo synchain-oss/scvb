@@ -146,7 +146,7 @@ export function shouldAutoShowTourAsk(state, snapshot, answeredThisSession) {
  * 激活期把它当作唯一渲染源,结束即切回真实 store。纯 UI 展示层,不触引擎、不写 state。
  *
  * @returns {object} 与 app.js store 同形:{ ready, state, snapshot, params, conn,
- *   groups, playhead, segments, coverage, errors, unknownCodes, readOnly,
+ *   groups, playhead, playingAt, segments, coverage, errors, unknownCodes, readOnly,
  *   noTimeline, loopMissing, session }
  */
 export function buildDemoStore(getT) {
@@ -202,6 +202,11 @@ export function buildDemoStore(getT) {
         conn: snap.conn,
         groups: FIFTEEN_TRACKS.groups.groups_online,
         playhead: { ...FIFTEEN_TRACKS.playhead },
+        // [SL-356] 与真 store 同形。demo 里 `playhead.isPlaying === true`,
+        // `hostEchoUseWideWindow` 第一条分支就返回宽档、根本读不到这一格;
+        // 留 0 是为了「同形」这句话继续为真(下一个人照 demo store 写消费面时不至于
+        // 拿到 undefined),不是为了让某条判据靠它。
+        playingAt: 0,
         segments: FIFTEEN_TRACKS.segments,
         coverage,
         errors: new Map(),
