@@ -1056,6 +1056,13 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     // 既然已经在锁内,直接读 `session_.channelConn(...)`(那正是 `connSnapshot()` 在锁内做的),
     // 取锁次数回到一次。**钉住理由,而不是钉住风险。**
     {
+        // ⚠ 时钟**重新采**,不用形参 `nowMs`:后者是 `vizTimer_` 的 lambda 在**取锁之前**采的
+        // (`:161-163`),拿它算心跳年龄会把「等 `lifecycleMutex_` 的时长」算进去 ——
+        // `releaseResources` / `setStateInformation` 都持这把锁做慢活,那时一轨会被误判成失联。
+        // `connSnapshot()` 的口径也是「取锁前采样」,但它那次采样发生在**已持锁之后**,
+        // 对 conn 判据而言是新鲜值;这里在锁内重采,与它等价。
+        // 所以本函数里两个时间基准是**有意的**:`due(nowMs)` 用形参(发布节拍要的是进入这一拍
+        // 的时刻),conn 判据用 `nowConn`。**别顺手「简化」成一个。**
         const auto nowConn = scvb::steadyNowMs();
         for (int ch = 0; ch < 15; ++ch)
         {

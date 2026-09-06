@@ -65,9 +65,14 @@ struct ChannelConnInfo
 // VizPublisher 加连接闸时抄的第三份 —— **三份之间没有任何门禁对拍**,谁改了一份另外两份
 // 不会红。C++ 这两处改调本函数之后,漂移面收成「C++ 一份 ↔ web 一份」,与既有的桥面镜像同档。
 //
-// ⚠ 名字里的 **ForDisplay** 是有意的:这是**给人看**的口径(2000ms 只驱动「失联」显示),
-// **不是**接管判据 —— 接管走 `kTakeoverMs=5000` **且** pid 存活探测([J10] 双阈值)。
-// 别拿它去决定写方归属。
+// ⚠ 名字里的 **ForDisplay** 是有意的:**本函数**是给人看的口径,**不是**接管判据 ——
+// 接管走 `kTakeoverMs=5000` **且** pid 存活探测([J10] 双阈值)。别拿它去决定写方归属。
+//
+// 但别把这句读成「`kStaleDisplayMs` 只驱动显示」——那比事实宽半格:同一个阈值另有一处
+// **功能性**消费面,IPC_CONTRACT §J12 的「健康 Output 判定」(`InputSession::outputOnline`:
+// `OutputSlot.state == kSlotActive ∧ 心跳新鲜`),它驱动的是 Input 侧**直通↔静音仲裁**。
+// 准确的说法是:**在 `ChannelConnInfo` 这个结构体上**,这个阈值只驱动显示。
+// 两处形状同构、作用对象不同(`OutputSlot` vs `ChannelConnInfo`),**不要互相搬**。
 // 前半:契约 §2.3 的 `heartbeatFresh` 字段本身(桥面**只发这一半**,字段形状不变)。
 inline bool isHeartbeatFreshForDisplay(const ChannelConnInfo& info) noexcept
 {
