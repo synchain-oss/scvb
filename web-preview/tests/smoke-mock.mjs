@@ -997,12 +997,13 @@ const KNOWN_UNMAPPED = new Set([
 // 反向那侧的**已知例外登记在下面这张表**里,不是豁免:每加一个都要写清为什么。
 // 名字加进白名单却不进 MAP ⇒ 反向集合变大 ⇒ 本格红,这正是要拦的。
 {
-    // monitor 那一列在 shell.js 里是 `monitor: MONITOR_SCENARIOS`(标识符引用,
-    // 不产生字符串字面量),文本剥法够不着 —— 直接从真源导入并入,免得哪天
-    // monitor 场景进了 SCENARIO_MAP 时本格**假红**并把人指向不存在的缺陷。
-    const { MONITOR_SCENARIOS } = await import(
-        u("web-preview/mock/monitor-mock.js")
-    );
+    // ⚠ **本格只覆盖 output / input 两列的字面量**(统筹 2026-09-06 裁定:不扩)。
+    //   monitor 那一列在 shell.js 里写作 `monitor: MONITOR_SCENARIOS`(标识符引用,
+    //   不产生字符串字面量),文本剥法够不着它 —— 今天无害,因为 `SCENARIO_MAP` 里
+    //   没有 monitor 场景。**哪天 monitor 场景进了 `SCENARIO_MAP`,本格会假红**,
+    //   而且报错文案会说「缺登记」,把人指向一个不存在的缺陷。到那时的修法是
+    //   从 `web-preview/mock/monitor-mock.js` 导入 `MONITOR_SCENARIOS` 并入下面的
+    //   `listed`,不是放宽判据。
     const { stripJsComments } = await import(
         u("scripts/lib/strip-comments.mjs")
     );
@@ -1024,20 +1025,18 @@ const KNOWN_UNMAPPED = new Set([
     const table = stripJsComments(rest.slice(0, end > 0 ? end : 0), "js");
     const litOf = (txt) =>
         (txt.match(NAME_LITERAL) || []).map((x) => x.slice(1, -1));
-    const outIn = new Set(litOf(table));
-    const listed = new Set([...outIn, ...MONITOR_SCENARIOS]);
+    const listed = new Set(litOf(table)); // = output ∪ input 两列的字面量
     const mapped = new Set(Object.keys(driver.SCENARIO_MAP));
 
     // 正向:MAP 里有、白名单里没有 ⇒ 工具条印 unknown。
     const missingInShell = [...mapped].filter((n) => !listed.has(n));
     // 反向:白名单里有、MAP 里没有 ⇒ 伪警告「待 T31-T36 接线」+ fixture 回默认。
-    // monitor 那一列不参与反向 —— 它走 monitor-mock 自己那套,本来就不进 SCENARIO_MAP。
-    const unmapped = [...outIn].filter((n) => !mapped.has(n));
+    const unmapped = [...listed].filter((n) => !mapped.has(n));
     const extra = unmapped.filter((n) => !KNOWN_UNMAPPED.has(n));
     const stale = [...KNOWN_UNMAPPED].filter((n) => mapped.has(n));
 
     log(
-        `  场景名表:MAP ${mapped.size} 个 / 白名单 ${listed.size} 个(含 monitor ${MONITOR_SCENARIOS.length});已知未接线 ${unmapped.length} 个`,
+        `  场景名表:MAP ${mapped.size} 个 / 白名单 output+input ${listed.size} 个;已知未接线 ${unmapped.length} 个`,
     );
     check(
         missingInShell.length === 0,
