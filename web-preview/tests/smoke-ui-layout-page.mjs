@@ -614,12 +614,54 @@ const ASK_PROBE = IN(`
         setNote: setNote ? setNote.textContent.trim() : null,
         noteInPanel: !!(panel && askNote && panel.contains(askNote)),
         // [SL-279 复审第 6 轮] 范围档专用提示:范围档下点主钮不会灭徽标,得把这句摆出来。
+        // [SL-348 复审第 1 轮] 本格问的是「范围提示这条词条在不在」,所以读的是装它的那个
+        // span,不是外层段落 —— 段落里现在还有 live region 那半,读段落的 textContent 拿到
+        // 的是两句拼串。今天四处引用都是真值判断,拼串不出错;但探针名与注释都说它是范围
+        // 提示,下一个人照 assertScopeNote 加一条**全等**断言就会莫名其妙红,而且红的原因
+        // 与他改的东西无关。可见性仍看外层段落(hidden 挂在它身上)。
+        //
+        // ⚠ 本段在模板字符串里:**不要写反引号**,会当场把 IN() 的模板截断(初稿栽过)。
         rangeNote: (() => {
-            const n = gb("reanalyze-ask-rangenote");
-            return n && vis(n) ? n.textContent.trim() : null;
+            const p = gb("reanalyze-ask-rangenote");
+            const hint = gb("reanalyze-ask-rangehint");
+            return p && vis(p) && hint ? hint.textContent.trim() : null;
         })(),
         // [SL-279 复审第 7 轮] 读屏用户拿到的那一半:describedby 有没有把范围提示带上。
         describedBy: panel ? panel.getAttribute("aria-describedby") : null,
+        // [SL-348 复审第 1 轮] live region 挂在**哪个节点**上。
+        // 说清这一格钉的是什么:它钉**结构**,不钉 AT 行为 —— 双读与 aria-atomic 整段重读
+        // 都发生在读屏软件里,无头 Chrome 的 DOM 看不见。能被机器看见的只有「role=status
+        // 在谁身上」,而那正是两种行为的唯一分叉点,所以这一格是这条论证唯一拿得到的判据。
+        statusOnDone: (() => {
+            const n = gb("reanalyze-ask-rangedone");
+            return !!n && n.getAttribute("role") === "status";
+        })(),
+        statusOnNote: (() => {
+            const n = gb("reanalyze-ask-rangenote");
+            return !!n && n.getAttribute("role") === "status";
+        })(),
+        // [SL-279 复审第 8 轮] live region 里那半动态文本:范围档下点主钮之后要有话可念。
+        rangeDone: (() => {
+            const n = gb("reanalyze-ask-rangedone");
+            return n ? n.textContent.trim() : null;
+        })(),
+        // [SL-348 复审第 2 轮] **不 trim 的那一份**:分隔交给 CSS ::before 之后,词条里不该
+        // 再留前导空格,而 trim 过的探针看不见它 —— 三语任一处把空格加回来都不会红。
+        rangeDoneRaw: (() => {
+            const n = gb("reanalyze-ask-rangedone");
+            return n ? n.textContent : null;
+        })(),
+        // [SL-348 复审第 3 轮] 分隔那条 ::before 到底生没生效。初稿写成 #id 选择器,
+        // 而那个 span 没有 id —— 匹配零元素、**静默失效**,没有任何东西会红,而分隔
+        // 就退回只靠两个 span 之间的行间空白(下一次格式化就吃掉)。读 computed content。
+        rangeDoneBefore: (() => {
+            const n = gb("reanalyze-ask-rangedone");
+            if (!n) return null;
+            return w.getComputedStyle(n, "::before").content;
+        })(),
+        // [SL-348 复审第 4 轮] applyI18n 结尾会写 documentElement.lang —— 「语言真的切过去了」
+        // 的第二条独立证据,与「两条译文不相等」互不依赖。
+        docLang: d.documentElement ? d.documentElement.lang : null,
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1181,11 +1223,20 @@ try {
             (rmOpen.describedBy || "").includes("reanalyze-ask-rangenote"),
             "C8r aria-describedby 带上了范围提示(读屏念得到)",
         );
+        // [SL-348 复审第 1 轮] live region 必须挂在**播报句那个 span** 上,不能挂在外层段落:
+        //   ① 外层段落同时是 aria-describedby 的目标,开框时由 hidden 变可见会被念一遍、
+        //      description 又念一遍 ⇒ 双读;挂在 span 上,开框那一刻它是空的,不产生播报;
+        //   ② role=status 隐含 aria-atomic=true,挂在段落上会把 70 多字的范围提示连同新增
+        //      那句整段重读,而真正变的只有后半句。
+        // ← 把 role="status" 挪回外层段落,这一格红。
+        check(
+            rmOpen.statusOnDone && !rmOpen.statusOnNote,
+            "C8r live region 挂在播报句那个 span 上,不在外层段落上",
+        );
     }
 
     // ② 点主钮 ⇒ 后端受理(ok:true),但基线不前移 ⇒ **框仍开、提示仍在、徽标仍亮**。
     check(await click("reanalyze-ask-primary"), "C8r 主钮可点");
-    await sleep(1200); // mock 的 analyze 流水线 800ms + 一轮 render
 
     // [复审第 7 轮] **先证「这一轮真的跑过分析」,再谈「跑了却没前移」。**
     //
@@ -1198,6 +1249,21 @@ try {
     //
     // 正信号取 `analysis_run.progress`:装载时该字段**根本不存在**(mock-data 的初值是
     // `{running:false}`),只有跑完一轮流水线才被写成 1;被拒时它一动不动。
+    // [复审第 8 轮] **轮询,不用固定 sleep。** 原来写的是 `sleep(1200)`,而 mock 的收尾是裸
+    // `later(800, …)` —— 余量只有 400ms,而 gate 3e 会同时起 6 个无头 Chrome。一旦滑过去,
+    // `progress` 仍是 undefined,下面那格会打印「分析真的跑完了一轮 失败」——**与它要证伪的
+    // 东西完全同形**,读日志的人会去查一个不存在的回归。假红伪装成真红比单纯 flaky 贵得多。
+    // 轮到就走、超时才判负,快路径还更快(同一段 ③ 对照组用的就是这个写法)。
+    const RUN_DONE = IN(`const m = w.__SCVB_MOCK__;
+        if (!m || typeof m.requestInitialState !== "function") return false;
+        return Promise.resolve(m.requestInitialState()).then(
+            (st) => (st.analysis_run || {}).progress === 1 && !(st.analysis_run || {}).running,
+        );`);
+    check(
+        await waitFor(RUN_DONE, 6000),
+        "C8r 分析在 6s 内跑完一轮(轮询,不靠固定等待)",
+    );
+
     const rmRun = await evaluate(
         IN(`const m = w.__SCVB_MOCK__;
             if (!m || typeof m.requestInitialState !== "function") return null;
@@ -1211,7 +1277,12 @@ try {
             }));`),
     );
     if (check(rmRun, "C8r 取到 mock 快照")) {
-        // ← 让 mock 的 analyze 回 {ok:false},这一格红(而下面三格照样绿)。
+        // ← 让 mock 的 analyze 回 {ok:false}:**本格与上面那格轮询会一起红**(轮询先走满
+        //   6s 超时,再红这一格),而「框仍开 / 提示仍在 / 徽标仍亮」三格照样绿 —— 那三格
+        //   分不开「受理了但判据挡住」与「压根被拒」,这两格才是拆开它们的那把刀。
+        //   [SL-348 复审第 1 轮] 换轮询之后本格已被上面那格**严格蕴含**;留着是因为它是
+        //   文档化的锚点(点名 `progress` 这个正信号取得到、且顺带钉住 applied/current 的
+        //   取值),单独删掉不会让任何形态漏网。
         check(
             rmRun.progress === 1 && !rmRun.running,
             "C8r 分析**真的跑完了一轮**(受理了,不是被拒)",
@@ -1231,9 +1302,177 @@ try {
             "C8r 点完主钮**框仍开** —— 受理成功 ≠ 达成了用户点它的目的",
         );
         check(rmAfter.rangeNote, "C8r 范围提示仍摆在眼前");
+        // [SL-348 复审第 1 轮] 两个探针必须**互不包含**:段落里现在有两个 span,若 rangeNote
+        // 读的是整段 textContent,它就会把播报句一起吞进来 —— 那时探针名与它实际测的东西
+        // 对不上,下一个人加一条全等断言会红在无关的地方。
+        // ← 把 rangeNote 探针改回读整段,这一格红。
+        check(
+            !!rmAfter.rangeDone &&
+                !(rmAfter.rangeNote || "").includes(rmAfter.rangeDone),
+            "C8r rangeNote 探针只读静态那半(不含播报句)",
+        );
+        // [SL-348 复审第 2 轮] 词条里**不留前导/尾随空白**:分隔由 CSS ::before 给。
+        // 读的是没 trim 过的那一份,否则探针自己把要查的东西擦掉了。
+        // ← zh(本格)/ en / fr(下面 noPad 那两格)任一处把前导空格加回来,**对应那一格**红。
+        //   本格只读得到 zh:rmAfter 是在 zh 下取的。
+        check(
+            typeof rmAfter.rangeDoneRaw === "string" &&
+                rmAfter.rangeDoneRaw !== "" &&
+                rmAfter.rangeDoneRaw === rmAfter.rangeDoneRaw.trim(),
+            "C8r 播报句词条本身不带前导/尾随空白(分隔交给样式)",
+        );
+        // ← 把那条规则的选择器改回 `#id`(或删掉),这一格红:分隔真的没了,而上面那格
+        //   仍然绿 —— 两格合起来才说得出「空白从词条里挪到了样式上」,少任何一格都是
+        //   「拆了旧的没装新的」也能全绿。
+        // 规则不匹配时 Chrome 的 computed content 是 "none" / "normal",两者都不含空格,
+        // 所以 `.includes(" ")` 一条就够 —— 原来那个 `!== "none"` 合取项**恒真**,留着只会让
+        // 人以为它在守什么(复审第 4 轮)。
+        check(
+            typeof rmAfter.rangeDoneBefore === "string" &&
+                rmAfter.rangeDoneBefore.includes(" "),
+            "C8r 分隔那条 ::before 真的生效了(选择器没写空)",
+        );
+        // [复审第 8 轮] 读屏那一侧的反馈:点之前这段是空的(开框时清掉),受理回来写入一句
+        // 真话 ⇒ live region 有变化可念。少了这一格,「aria 加上了但点下去零反馈」照样全绿。
+        check(
+            !!rmAfter.rangeDone &&
+                rmAfter.rangeDone !== (rmOpen || {}).rangeDone,
+            "C8r 点主钮后 live region 里多出一句可播报的话(点之前是空的)",
+        );
         check(
             rmAfter.badgeShown,
             "C8r 琥珀 badge **仍亮**(范围外的段还是旧口径,这是真话)",
+        );
+    }
+
+    // ②c [SL-348 复审第 1 轮] **框开着切语言,两半必须一起换。**
+    //
+    //     播报句是由 JS 写进去的,`applyI18n` 只认 `data-t` —— 若把**文本**存起来,切语言时
+    //     静态那半换成新语言、这半停在旧语言,同一个段落里前半英文后半中文。所以实现存的是
+    //     **key**,每次 render 按当前字典重填(与 tab-wave 的 renderReidentifyBody 同一族)。
+    //     ← 把 renderRangeDone() 从 syncReanalyzeRangeNote() 里摘掉(= 退回「只在写入那一刻
+    //       填一次」),这一格红。
+    //
+    //     判据写成「两半是不是同一种文字」而不是比对具体字串:比字串就得把三语原文抄进用例,
+    //     词条一改就红在无关的地方(本仓 assertScopeNote 那条教训)。
+    check(await switchLangOutput("en"), "C8r 切到 en 可点(框开着)");
+    await sleep(400);
+    const rmEn = await evaluate(ASK_PROBE);
+    if (check(rmEn, "C8r 切语言后探针取到锚点")) {
+        const CJK = /[一-鿿]/;
+        check(
+            !!rmEn.rangeDone,
+            "C8r 切语言后播报句仍在(不是被 applyI18n 抹掉)",
+        );
+        // [SL-348 复审第 2 轮] 前半必须先断**非空** —— `!CJK.test(null || "")` 恒真,
+        // 「静态那半在 en 下整段不显」这个形态本来会空跑成绿。纯否定断言在空值上自动成真,
+        // 是本卡反复栽的同一族;每写一条 `!x` 就机械地问一句「x 为空时这句是不是自动真」。
+        check(
+            !!rmEn.rangeNote &&
+                !CJK.test(rmEn.rangeNote) &&
+                !CJK.test(rmEn.rangeDone || ""),
+            "C8r 切到 en 之后**两半都不含中文**(不会前半英文后半中文)",
+        );
+    }
+    // [SL-348 复审第 3 轮] **前导空白那一格要覆盖三语,不能只钉 zh。**
+    //   上一版只在 zh 下断过一次:en / fr 的词条串首把空格加回来,本卡新增的任何一格都不红
+    //   ——「断言只覆盖三分之一的数据面」,与本卡记账里那一族(否定断言在空值上恒真)同源,
+    //   都是「写下了可验证的行为,给出的判据却只钉住其中一部分」。这里每切一次语言就断一次
+    //   **未 trim** 的那份。fr 也走一遍:这个桶原本 zh → en → zh,fr 一次都没出现过。
+    const noPad = (probe, lang) =>
+        check(
+            typeof probe.rangeDoneRaw === "string" &&
+                probe.rangeDoneRaw !== "" &&
+                probe.rangeDoneRaw === probe.rangeDoneRaw.trim(),
+            `C8r ${lang} 的播报句词条也不带前导/尾随空白`,
+        );
+    if (rmEn) noPad(rmEn, "en");
+    check(await switchLangOutput("fr"), "C8r 切到 fr 可点(框仍开着)");
+    await sleep(400);
+    const rmFr = await evaluate(ASK_PROBE);
+    if (check(rmFr, "C8r fr 下探针取到锚点")) {
+        check(!!rmFr.rangeDone, "C8r fr 下播报句仍在");
+        noPad(rmFr, "fr");
+        // [SL-348 复审第 4 轮] **这一趟必须证得出它取的是 fr。**
+        //   en 那侧有 `!CJK.test(...)` 兜着(zh→en 换了字符集);fr 与 en 同为拉丁字母,
+        //   `noPad` 与 `!!rangeDone` 在「fr 字典整块缺失 / 回退到 en」时**全绿** ——
+        //   那样这一趟只是多跑了一遍 en 的形态。而 `switchLangOutput("fr")` 那格只保证
+        //   胶囊**可点**(click 里 n.click(),节点在就回 true),不保证语言真切过去。
+        //   ← 让 fr 字典缺这条 / 回退到 en,下面第一格红。
+        //   断「与 en 那条不相等」而不是比对译文:不用把任何一句 fr 原文抄进用例,
+        //   词条改写也不会红在无关的地方。
+        check(
+            !!(rmEn && rmEn.rangeDone) && rmFr.rangeDone !== rmEn.rangeDone,
+            "C8r fr 的播报句与 en 的**不相等**(真的换到了 fr,不是回退)",
+        );
+        check(
+            rmFr.docLang === "fr",
+            "C8r documentElement.lang 也切到了 fr(applyI18n 结尾写的那一处)",
+        );
+    }
+
+    check(await switchLangOutput("zh"), "C8r 切回 zh(不影响后面的桶)");
+    await sleep(400);
+
+    // ②b [复审第 8 轮] **重开框时那句播报必须已经清掉。**
+    //     不清的话,用户下次在范围档下开框,框里一上来就写着「已按当前范围重新分析」——
+    //     这一次他什么都还没点。那是一句**当下为假**的话,而且 live region 只在文本变化时
+    //     播报,不清还会让第二次点击变成零变化、读屏什么也不念(回到本轮要修的原点)。
+    //     ← 删掉 openReanalyzeAsk 里那句 setRangeDoneText(""),只红这一格。
+    check(await click("reanalyze-ask-later"), "C8r 「稍后」可点(收框以便重开)");
+    check(await waitFor(askClosed, 3000), "C8r 框已关");
+    check(await setLoudness("rms"), "C8r 再改一次档(重新置位 askOnNextStale)");
+    check(await waitFor(askOpen, 4000), "C8r 框重开");
+    const rmReopen = await evaluate(ASK_PROBE);
+    if (check(rmReopen, "C8r 重开后探针取到锚点")) {
+        check(
+            rmReopen.rangeDone === "",
+            "C8r 重开时上一轮的播报文本已清空(这一次用户还没点任何东西)",
+        );
+        check(!!rmReopen.rangeNote, "C8r 重开后范围提示仍在(档位没变)");
+    }
+
+    // ②d [SL-348 复审第 1 轮] **框开着切出范围档再切回来,上一轮那句不得复活。**
+    //
+    //     `syncReanalyzeRangeNote()` 只开合外层段落,里面那句原来不动 —— 切回范围档时
+    //     上一轮的播报句会随段落重新显出来,而它描述的那次分析早已不是「当前范围」。
+    //     所以实现在 `limited` 为假时**连 key 一起清掉**。
+    //     ← 把那句 `if (!limited) …= null` 删掉,这一格红。
+    //
+    //     经桥直接改档位(不是点 UI):Tab3 的范围控件不在设置页上,而这条链要的正是
+    //     「框开着、用户在别处改了档位」这个形态。
+    // ★ 先把 key 重新置上:上一格(②b)重开框时已经把它清掉了,不重置的话本格
+    //   变成「本来就是空的 ⇒ 恒绿」,钉不住任何东西(初稿正是这么滑过去的)。
+    check(
+        await click("reanalyze-ask-primary"),
+        "C8r 再点一次主钮(重新置上播报句)",
+    );
+    check(await waitFor(RUN_DONE, 6000), "C8r 第二轮分析也跑完了");
+    const rmAgain = await evaluate(ASK_PROBE);
+    check(!!(rmAgain && rmAgain.rangeDone), "C8r 前置:播报句确实被重新置上了");
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m || typeof m.setRange !== "function") return false;
+                return Promise.resolve(m.setRange("follow", 0, 0)).then(() => true);`),
+        ),
+        "C8r 框开着切到 follow 档",
+    );
+    await sleep(400);
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                return Promise.resolve(m.setRange("manual", 5, 9)).then(() => true);`),
+        ),
+        "C8r 再切回 manual 档",
+    );
+    await sleep(400);
+    const rmBack = await evaluate(ASK_PROBE);
+    if (check(rmBack, "C8r 档位来回切之后探针取到锚点")) {
+        check(!!rmBack.rangeNote, "C8r 切回范围档后范围提示回来了");
+        check(
+            rmBack.rangeDone === "",
+            "C8r 但上一轮的播报句**没有**跟着复活(它描述的已不是当前范围)",
         );
     }
 
@@ -1259,6 +1498,15 @@ try {
         check(
             !flOpen.rangeNote,
             "C8r follow 档**不**显示范围提示(它只在范围档下才是真话)",
+        );
+        // [复审第 8 轮] **显隐断了不等于读屏断了。** AccName/Description 计算对
+        // aria-describedby **直接引用**的节点是「即使 hidden 也纳入」的 —— 把两个 id
+        // 静态并进 index.html、再删掉 tab-settings 里那段 setAttribute,上面那格照样绿
+        // (那个 <p> 确实 hidden),而 follow 档的读屏用户会被念到范围提示这句假话。
+        // 本仓两处注释花了整段论证这一点,却一直没有机器守着它 —— 这一格就是。
+        check(
+            !(flOpen.describedBy || "").includes("reanalyze-ask-rangenote"),
+            "C8r follow 档的 aria-describedby **不**带范围提示(hidden 也会被读屏念到)",
         );
     }
     check(await click("reanalyze-ask-primary"), "C8r 对照组主钮可点");
