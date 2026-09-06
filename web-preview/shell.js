@@ -139,6 +139,16 @@ const SCENARIO_NAMES = {
         "hot-levels", // [SL-280] 若干轨 vol 顶到 0 dB 及以上(柱高映射回归场景)
         "chart-trajectory", // T43([J75] A)分布图轨迹档 + 断线缺口
         "loudness-nondefault", // [SL-276 复审] 工程存的响度口径非默认档(rms)
+        // [SL-354] 下面五个是**补登**:它们早就在 `SCENARIO_MAP` 里、页面级冒烟也一直在
+        // 用,只是历次实施卡各自漏了往这张白名单里登记一笔。两张表不齐的后果 =
+        // 壳页工具条把场景名印成 `scenario=unknown`(`allowedOr` 对表外值的字面输出),
+        // 「参数拼错了」那条肉眼信号就此失灵 —— `smoke-output-dist-page` 那一格记的正是
+        // 这两种漏法(它自己只钉了 `curve-editor` 一个名字,钉不住其余的)。
+        "loudness-stale-on-load", // [SL-276 复审] 装载即 stale(基线读的是 applied 不是本地快照)
+        "range-manual", // [SL-279 复审第 6 轮] 范围档装载:重新分析受理但基线不前移
+        "diff-flood", // [SL-274] diff 摘要顶到 changed[] 封顶(200)的那一帧
+        "slow-state-echo", // [SL-354] 真桥时序:写回执先到、scvb.state 后到一拍
+        "applied-echo-drop", // [SL-354] 写落地后补一帧缺 analysis.applied 的全量快照
     ],
     input: [
         "occupied",

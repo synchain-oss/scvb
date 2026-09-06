@@ -134,6 +134,37 @@ export function appliedAnalysisConfigOf(state) {
 }
 
 /**
+ * [SL-354] 上面那个回落**看不出来**:回落之后 `applied.x === cur.x`,派生的 stale 恒假,
+ * 与「基线真的等于当前值」逐字节一样。渲染上这没问题(旧插件下徽标不亮,正是设计),
+ * 但拿它去做**破坏性判断**(清开闸位、关掉已经弹出来的框)就是把一次「读不到」当成
+ * 一次「读到了相等」—— 与用户报的 ②「弹窗闪一下就没了」同一族(那一条的形态是过期
+ * 快照,这一条的形态是缺字段快照,两条都会让 stale 假装归假)。
+ *
+ * 本函数因此只回答一件事:**这份 state 自己带了 `applied` 那两个字段吗**。
+ * 两个都要有:弹窗判据现在是「响度 || 中央槽」,只带一半时另一半仍是回落值。
+ * 读的是 store 里合并后的 state,不是单帧 —— `full:false` 增量帧走深合并,上一帧的
+ * `applied` 会留下来;能把它整个抹掉的只有 `full:true` 全量帧(app.js 的 scvb.state
+ * 订阅对全量帧做的是**整体替换**、对增量帧才做深合并)。
+ *
+ * 今天的真桥恒发这两个字段(`OutputEditor::buildStateSubtree` 里那一段无条件写
+ * `analysis.applied`,契约 §1.1/§2.1 的载荷列里也有),所以这道闸在真机上是**兜底**、
+ * 不是当前可达路径;它守的是「回落值被当权威」这个类别本身。
+ */
+export function hasAppliedAnalysisConfig(state) {
+    const a = (state && state.analysis) || {};
+    const applied = a.applied;
+    if (!applied || typeof applied !== "object") return false;
+    // 逐字段断非空字符串:`appliedAnalysisConfigOf` 的回落是 `applied.x || cur.x`,
+    // 空串 / undefined 都会触发回落,所以这里的判据要与那个 `||` 同口径。
+    return (
+        typeof applied.loudness_mode === "string" &&
+        applied.loudness_mode !== "" &&
+        typeof applied.center_slot_policy === "string" &&
+        applied.center_slot_policy !== ""
+    );
+}
+
+/**
  * 「改后需重分析」判定:当前值 !== 基线值。**逐项判**,响度档与中心槽策略各调一次 ——
  * 两枚徽标挂在两个控件旁,合成一个布尔会让它们同亮同灭。
  * 改走 → true(提示出现);改回基线值 → false(提示立即消失)。纯函数供 node 断言。
@@ -219,6 +250,8 @@ export function createTabSettings(opts) {
         // [SL-276] 重分析提示弹窗(卡片层单例,不在 Tab4 子树里 —— 见 index.html 那段注释)
         reanalyzeAsk: $("reanalyze-ask"),
         reanalyzeAskPanel: $("reanalyze-ask-panel"),
+        // [SL-354] 框里的影响面说明段:内容**按触发它的那一项**换词条(见 syncReanalyzeScopeNote)。
+        reanalyzeAskScopenote: $("reanalyze-ask-scopenote"),
         reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
         reanalyzeAskRangedone: $("reanalyze-ask-rangedone"),
         reanalyzeAskLater: $("reanalyze-ask-later"),
@@ -251,9 +284,18 @@ export function createTabSettings(opts) {
     // 由 native 落盘、随撤销一起回退。判据面、两级回退语义与 abi 升格写在
     // `docs/contract-changes/20260905-sl279-applied-analysis-settings.md`,这里不复述。
     const local = {
-        // [SL-276] 已就哪个口径值弹过框。**按值记而不是按布尔记**:改走 → 弹一次;
-        // 点「稍后」后继续在别的档之间来回切,每换到一个新的脏值都该再弹一次;
-        // 改回基线(stale 归 false)时清空,下次再改走照弹。
+        // [SL-276] 已就哪个口径值弹过框:开框那一下记下来,此后同一次 ask 的每一帧都被它挡住。
+        // [SL-354] 记的从「值」变成 **`字段=值`** 的串:两个设置项现在都能弹,只按值记的话
+        // 「响度改成 X」与「中央槽改成 X」会互相冒充(两边枚举值域不同,今天撞不上,但那是
+        // 巧合不是判据)。同一轮里它还接下了「一次性」那半职责 —— 见下面 askPending 那段。
+        //
+        // [SL-354 复审第 2 轮] **清空点只有一个:wireSeg 里的一次新用户写。**
+        // 原话「改回基线(stale 归 false)时清空,下次再改走照弹」在新尺子下**不成立**:
+        // 「当前值 != 刚写的值」那句早退排在 `!stale` 那支之前,非 UI 路径把口径改回基线时
+        // 那一支一次都跑不到,本位于是留着旧 token、把用户下一次重选同值挡成不弹。
+        // 所以清空改由 wireSeg 承担(见那处);`!stale` 那支里同名的那一行留着,管的是
+        // 「先经那一支清过」的另一条入口。两道**各自独立兜得住**,单删任一道本套都不红,
+        // 两道一起拆才红(C10e3 / C10h,实测记在那两段注释里)—— 别把任一行单独当牙齿。
         reanalyzeAskedFor: null,
         // [SL-348] 播报句存 **key**(不是文本),每次 render 按当前字典重填 —— 见 renderRangeDone()。
         reanalyzeRangeDoneKey: null,
@@ -271,12 +313,30 @@ export function createTabSettings(opts) {
         //   · **撤销 / 重做**:分析可撤销(SL-209),而 applied.* 随分析结果一起回退
         //     ([SL-279] 同一条撤销步),所以 Ctrl+Z 之后 stale 可能翻转 —— 那不是用户在改档。
         // `applied.*` 落在 CFGS(**工程级**,不分版本),所以切版本不会让它变。
-        // 本位只由 wireSeg 里 loudness_mode **写成功**的回调置起,syncStale 之外无人写它。
+        // 本位只由 wireSeg 里**写成功**的回调置起,syncStale 之外无人写它。
         // 上面这几条因此一次性关掉,而琥珀 badge 的既有语义一个字节没动。
-        // **一次性**:syncStale 真开框那一下就地清掉(见那处注释)。留着的话「稍后」
-        // 关框之后本位仍为真,后续任何非用户驱动的口径变化都能再弹一次 —— ①②③ 换个
-        // 入口又漏回来。下一次要弹,得由 wireSeg 里新的一次写成功重新置位。
-        askOnNextStale: false,
+        // **一次性**:弹过一次就不许再自己弹第二次。留着不管的话「稍后」关框之后本位仍
+        // 有效,后续任何非用户驱动的口径变化都能再弹一次 —— 上面这几条换个入口又漏回来。
+        // [SL-354] **承担者换了,别照旧文找那一行**:原来靠「syncStale 真开框那一下就地
+        // 清掉本位」实现,那一行**已经没有了** —— 本位开框之后还要继续当「这一帧新不新」
+        // 的尺子(见下一段)。接替它的是 `reanalyzeAskedFor` 记下的 `字段=值`:同一次写
+        // 算出来的 token 逐字相同,于是不会重开。下一次要弹,仍得由 wireSeg 里新的一次
+        // 写成功把本位换掉(或先改回基线让 `!stale` 那支把两者一起清)。
+        //
+        // [SL-354] **从布尔改成「用户刚写成功的那一次是什么」**(`{field, value}`)。
+        // 用户 v5.6.7 实测:「第一下会出老版本的那种横幅,第二次切换才会出弹窗」。
+        // 根因就在这一位是布尔:点档 → 回执到 → 置位 → `requestRender()`,而**真桥上
+        // 这一刻 state 还没回来**,`config()` 仍是旧值 ⇒ 派生的 stale 为假 ⇒ syncStale
+        // 走 `!stale` 分支,**把刚置起的这一位当场清掉**。之后 state 到了,徽标亮(纯派生)
+        // 而闸没了 ⇒ 不弹。第二次点时 stale 因第一次的改动本来就是真,不进那个分支,
+        // 闸活下来 ⇒ 才弹。mock 侧看不到这条:它的 `patchState` 是**同步** emit 的,
+        // `.then()` 跑到时 state 已是新值(登记在案的时序口径分叉,见本卡 PR)。
+        //
+        // 记住值之后,syncStale 就能区分**两个长得一模一样的形态**:
+        //   · 「写还没回来」(当前值 ≠ 刚写的值)⇒ 这一帧的读数不作数,什么都不做;
+        //   · 「用户自己改回去了」(当前值 == 基线)⇒ 该清、该关。
+        // 布尔位没有这个信息,所以只能把两者当同一件事 —— 那正是 ① 的成因。
+        askPending: null,
         // 开框前的焦点落点,关框时还回去(「稍后」/ 遮罩 / Esc 三个出口都走 closeReanalyzeAsk)。
         reanalyzeReturnFocus: null,
         // analyze("all") 在途:主钮置灰 + 早退,防连点打出第二发(见 doReanalyzeFromAsk)。
@@ -379,13 +439,34 @@ export function createTabSettings(opts) {
                     requestRender();
                     return;
                 }
-                // 不做乐观 dirty —— syncStale 按「当前值 vs 基线」派生提示;
-                // 且该提示只由 loudness_mode 承载(center_slot_policy 不弹,用户 preview 口径)。
+                // 不做乐观 dirty —— syncStale 按「当前值 vs 基线」派生提示。
                 //
                 // [SL-276 复审] **这里是弹窗唯一的开闸点**:写真的被受理了,才允许下一次
                 // syncStale 把框推到眼前。放在 res 判定之后 —— 桥缺失 / observer 拒 / badArg
                 // 上面已经早退,走到这儿就是「用户刚改了档且改成了」。
-                if (field === "loudness_mode") local.askOnNextStale = true;
+                //
+                // [SL-354] 两处改动:
+                //   · **中央槽策略同样开闸**。原来只有 `loudness_mode` 置位,所以改中央槽
+                //     完全不弹(用户 v5.6.7 实测「B3 完全没有弹出弹窗,应该和前面一样」)。
+                //     那不是缺陷而是 SL-276 当时按用户口径有意做的 —— 用户这次改了口径,
+                //     所以连同 syncStale 里的判据、两处注释、SL-276 那格用例一起翻面。
+                //   · **记住写的是哪个字段的哪个值**,而不是置一个布尔 —— 理由见
+                //     `local.askPending` 那段:布尔位分不开「写还没回来」与「用户改回去了」。
+                local.askPending = { field, value };
+                // [SL-354 复审第 2 轮] **一次新的用户写就重新开闸。**
+                // 复审给的可复现序列(默认同步页即可):改档 → 弹 → 稍后 ⇒
+                // 非 UI 路径把这一项改回基线 ⇒ 上面那把尺子(当前值 != 刚写的值)
+                // 早退,`!stale` 那支一次都没跑到,于是 reanalyzeAskedFor 里那个 token
+                // 留着 ⇒ 用户**再点同一个值**时 token 逐字相同 ⇒ 不弹,只亮徽标。
+                // 那正是用户报的 ①(该弹不弹)换了个入口,而旧的布尔实现在这条序列上
+                // 是会弹的 —— 是本卡引入的静默行为变化,所以修。
+                //
+                // 修在这里而不是去改那把尺子:尺子看不出「非 UI 改回基线」与「过期帧」
+                // 的差别(两者在那一帧上逐字节相同),但**一次新的用户写**是尺子之外的
+                // 另一个信号 —— 而 reanalyzeAskedFor 要挡的本来就只是「同一次 ask 被
+                // 每帧重弹」,不是挡用户的下一次点击。上面那句 `value === config()[field]`
+                // 的去重保证了「点已选中档」根本走不到这里,所以不会因为空点重开框。
+                local.reanalyzeAskedFor = null;
                 requestRender();
             });
         });
@@ -671,6 +752,38 @@ export function createTabSettings(opts) {
         }
     }
 
+    /**
+     * [SL-354 复审第 1 轮] 框里的影响面说明段**跟着触发它的那一项走**。
+     *
+     * 本卡把弹窗铺到中央槽策略之后,这一段仍恒是响度口径专用的那条词条 ——
+     * 只改了中央槽的用户,看到的框在解释另一件事;而这个 `<p>` 同时是本框
+     * `aria-describedby` 的目标(见 index.html 那段与 syncReanalyzeRangeNote()),
+     * 读屏用户听到的描述同样是错的那一条。
+     *
+     * 两条词条**都已存在、三语齐、也都已经渲染在各自的设置卡上**(响度卡第二行 /
+     * 中央槽卡第二行),这里只是按字段取其一,**零新增词条**。
+     * 做法与 syncReanalyzeRangeNote() 改写 `aria-describedby` 同源:每次 render 都按
+     * 当前字典重填,框开着切语言才不会停在旧语言上。
+     *
+     * 没有待观察的写时回落到响度那条 —— 与 index.html 里写死的静态默认值同一条,
+     * 免得「框还没被任何一次改档触发过」时这里与 HTML 各说各的。
+     */
+    const ASK_SCOPE_NOTE_KEY = {
+        loudness_mode: "set.reanalyze.scopeNote",
+        center_slot_policy: "set.centerSlot.scopeNote",
+    };
+    function syncReanalyzeScopeNote() {
+        const node = el.reanalyzeAskScopenote;
+        if (!node) return;
+        const pending = local.askPending;
+        const key =
+            (pending && ASK_SCOPE_NOTE_KEY[pending.field]) ||
+            ASK_SCOPE_NOTE_KEY.loudness_mode;
+        attr(node, "data-t", key);
+        const t = getT() || {};
+        text(node, hasOwn(t, key) ? t[key] : key);
+    }
+
     function openReanalyzeAsk() {
         // [SL-276 复审] 只读观察态一律不弹:框里那枚「重新分析」是写控件,
         // 契约 §5.6 要求只读态下写控件不可操作(后端另有 {observer:true} 兜底,
@@ -773,10 +886,18 @@ export function createTabSettings(opts) {
         // [SL-279 复审第 6 轮] 框开着时用户仍可能在 Tab3 改范围档,提示要跟着当前 state 走 ——
         // 只在开框那一下算一次的话,提示会停在开框时的档位上。
         syncReanalyzeRangeNote();
+        // [SL-354 复审第 1 轮] 影响面说明段按触发字段换词条。**放在所有早退之前**:
+        // 下面几支会在「这一帧不作数」「不是用户刚改的档」等情形早退,而框开着切语言
+        // 时靠的就是每次 render 都重填这一段(与 renderRangeDone 同一个理由)。
+        syncReanalyzeScopeNote();
         // [SL-279] 基线来自 state 的 `analysis.applied.*`(上次全量分析所用),不再是本地快照。
         // [SL-278] **逐项判**:两枚徽标各挂各的控件,合成一个布尔会让它们同亮同灭。
         const cur = config();
         const applied = appliedAnalysisConfigOf(getStore().state);
+        // [SL-354] `applied` 缺字段时上面那个取值会**回落到当前值**(见它的头注),回落之后
+        // 派生的 stale 恒假,与「基线真的等于当前值」长得一模一样。徽标照回落值渲染是设计
+        // (旧插件下不亮),但下面那支破坏性分支不许吃回落值 —— 见它自己那段注释。
+        const hasApplied = hasAppliedAnalysisConfig(getStore().state);
         const loudnessStale = analysisConfigStale(
             cur.loudness_mode,
             applied.loudness_mode,
@@ -792,31 +913,95 @@ export function createTabSettings(opts) {
         if (el.centerStale)
             attr(el.centerStale, "data-stale", centerStale ? "1" : "0");
 
-        // 弹窗那一档仍**只由响度档承载**(SL-276 的用户 preview 口径,本卡不改):
-        // 中心槽策略只上徽标,不弹框。改这条要连 SL-276 的用例一起改。
-        const stale = loudnessStale;
+        // [SL-354] 弹窗判据由「只读响度」改成**两项都算**。用户 v5.6.7 实测:「B3(中央槽
+        // 策略)完全没有弹出弹窗,应该和前面一样」。原来只读响度是 SL-276 按当时的用户
+        // preview 口径**有意**做的(不是缺陷),这次用户改了口径 ⇒ 连同 wireSeg 的开闸点、
+        // 这两处注释、以及 SL-276 那格钉住旧判据字面的用例一起翻面。
+        //
+        // ⚠ **不要在注释里逐字引用被判据钉住的那行代码。** 本卡实测:我第一版在这里把旧
+        // 写法原样引了一遍,`smoke-tab4-settings` 那格源码级正则**当场被注释喂饱** ——
+        // 判据该红没红。那格不剥注释(与 SL-297 记的「文本级判据先剥注释」同一族),
+        // 要引就描述它,别抄它。
+        const stale = loudnessStale || centerStale;
+
+        // [SL-354] **待观察的那次写还没在 state 里露面 ⇒ 这一帧的读数不作数,什么都不做。**
+        // 这一句同时修掉用户报的第 ① 条(「第一下只出横幅、第二下才弹」):点档 → 回执 →
+        // 置闸 → requestRender(),而真桥上这时 state 还没回来,派生的 stale 为假,下面
+        // `!stale` 那支会把刚置起的闸清掉。区分「写没回来」与「用户改回去了」靠的就是
+        // `askPending` 里记的那个值 —— 布尔位没有这个信息。
+        const pending = local.askPending;
+        if (pending && cur[pending.field] !== pending.value) return;
+        // ⚠ 这把尺子分不出第三种形态:**非用户路径**(撤销 / 切版本 / 快照恢复)把这一项
+        // 改到了别的值。它与「写还没回来」在这一帧上逐字节相同,没有第二个信号能区分。
+        // 代价是:框正开着时来这么一下,框不会自动关(旧实现会关)。取这一侧是因为
+        // 反过来的代价是用户报的 ①②(该弹不弹 / 弹了就没),而这一侧用户随手可解 ——
+        // 「稍后」/ Esc / 遮罩三个出口照常关框,再改一次档也会重新置闸。
+        // 写落地之后**本位也不清** —— 它此后充当「这一帧新不新」的尺子,一直留到
+        // 「改回基线」那一支(下面 `!stale` 里)或者用户下一次写成功把它换掉为止。
+        // 用户报的第 ② 条「弹窗出来一下就闪现消失了」不需要 applied 缺席就能发生 ——
+        // 只要有一帧**内容早于这次写、送达晚于这次写**的全量快照(4Hz 下这一帧正常存在:
+        // 快照在写落地前组装、写落地后送达),它带的 current 与 applied 都是旧值 ⇒ 两者相等
+        // ⇒ 派生 stale 当场为假 ⇒ 旧实现关框 + 清闸,而且此后不再弹。有了这把尺子,
+        // 那一帧因为「没显示出用户写的值」被直接判为不作数,上面那句 return 就挡住了。
 
         // 琥珀 badge 是**常驻状态位**(点过「稍后」之后还看得见口径是脏的),纯派生;
-        // 弹窗在同一判据之上**再加一道 askOnNextStale 闸**(只由用户点档写成功置起) ——
-        // 理由见 local.askOnNextStale 那段的 ①②③。reanalyzeAskedFor 则挡住每帧重弹。
+        // 弹窗在同一判据之上**再加一道 askPending 闸**(只由用户点档写成功置起) ——
+        // 理由见 local.askPending 那段列的那几条「用户什么都没做也为真」的路径。
+        // reanalyzeAskedFor 则挡住每帧重弹。
         if (!stale) {
+            // [SL-354] **回落值只许渲染,不许做破坏性判断。** 这份 state 根本没带
+            // `applied` 的话,上面的 stale 是拿「基线 := 当前值」算出来的,它为假只
+            // 说明**读不到基线**,不说明两者相等 —— 拿它来清闸 + 关框,就是 ② 的
+            // 缺字段变体。真桥今天恒发这两个字段(见 hasAppliedAnalysisConfig 头注),
+            // 所以这里是兜底闸:什么都不做,把框和闸原样留着,等一帧带得全的。
+            if (!hasApplied) return;
+            // 走到这里 = 这一帧**确实是新的**(上面那把尺子已经放行)、基线读得到,
+            // 且当前 == 基线,也就是「用户自己改回去了」或「分析跑完把基线前移了」
+            // —— 这才该清、该关。
+            // ⚠ [SL-354 复审第 2 轮] 下面**两行各自都有一条搭档**,单删任一行本套都不红
+            // (实测),所以别照单行写删除式:
+            //   · `reanalyzeAskedFor = null` 的搭档 = wireSeg 里「一次新的用户写就清它」;
+            //     两道一起拆 ⇒ C10e3 与 C10h 红。这一行管「先经本支清过」那条入口。
+            //   · `askPending = null` 的搭档 = 下面那句 `if (!pendingStale) return;`;
+            //     两道一起拆 ⇒ C10e2 与 C10g 红。这一行管「这条待观察记录该作废了」,
+            //     `pendingStale` 管「要弹的是刚改走的那一项」,两条独立成立,都留。
             local.reanalyzeAskedFor = null;
-            local.askOnNextStale = false;
+            local.askPending = null;
             closeReanalyzeAsk();
             return;
         }
-        if (!local.askOnNextStale) return; // 不是用户刚改的档 ⇒ 只留 badge,不弹框
-        const mode = config().loudness_mode;
-        if (local.reanalyzeAskedFor !== mode) {
-            local.reanalyzeAskedFor = mode;
-            // [SL-276 二轮复审] **弹之前就地消费掉这一位**,一次置位只换一次弹框。
-            // 不清的话它要等 stale 归假才灭,于是「改档 → 弹 → 稍后」之后本位仍为真;
-            // 此后 ②(只读观察态收 scvb.state)或 ③(切版本 / 快照恢复)把口径换到
-            // **另一个**脏值,reanalyzeAskedFor !== mode 就成立 —— 框照弹,而用户这一
-            // 轮什么都没点。上一轮【重要】关掉的正是这类打断,换个入口又漏了回来。
-            // 清在 openReanalyzeAsk() 之前:只读早退那条路也算消费掉(那次 asked 已按
-            // 本值记下,转成可写态后同值不会补弹),免得本位在只读实例里一直挂着。
-            local.askOnNextStale = false;
+        if (!pending) return; // 不是用户刚改的档 ⇒ 只留 badge,不弹框
+        // [SL-354 复审第 1 轮] **要弹的是「用户刚改走的那一项」自己脏**,不是「两项里随便
+        // 哪一项脏」。上面的 stale 现在是两项取或,于是「两项都脏 → 把其中一项改回基线」
+        // 会走不进 `!stale` 那支(另一项还脏),而 token 换了 ⇒ 框又弹一次,并把焦点抢到
+        // 主钮上。用户刚**撤销**了自己的一个改动却收到一个 alertdialog —— 与 SL-276 立的
+        // 「弹窗 = 用户刚把某一档改走了」对不上,也不在本卡四条用户反馈里。
+        // 未知字段一律**不弹**(失效方向倒向安静):本位只由 wireSeg 的两个设置块写,
+        // 出现第三种字段说明是别处写进来的,那更不该弹框。
+        const pendingStale =
+            pending.field === "loudness_mode"
+                ? loudnessStale
+                : pending.field === "center_slot_policy"
+                  ? centerStale
+                  : false;
+        if (!pendingStale) return;
+        const token = pending.field + "=" + pending.value;
+        if (local.reanalyzeAskedFor !== token) {
+            local.reanalyzeAskedFor = token;
+            // **一次置位只换一次弹框**。要挡的形态([SL-276 二轮复审]立的):
+            // 「改档 → 弹 → 稍后」之后,只读观察态收 scvb.state / 切版本 / 快照恢复把
+            // 口径换到**另一个**脏值 —— 框照弹,而用户这一轮什么都没点。上一轮【重要】
+            // 关掉的正是这类打断,换个入口又漏了回来。
+            //
+            // [SL-354] **承担者从 askPending 换成了本行这个 token**。SL-276 当时是在这里
+            // 就地把开闸位清掉,现在**不能清** —— 它开框之后还要继续当「这一帧新不新」的
+            // 尺子(见上面那段),清了 ② 就又漏回来。改成:token 里带上**字段名 + 值**,
+            // 同一次写第二次走到这儿算出来的串逐字相同,于是不重开。
+            // 带字段名是因为两个字段现在都能弹,只按值记的话「响度改成 X」与「中央槽改成
+            // X」会互相冒充(两边枚举值域不同,今天撞不上,但那是**巧合**不是判据)。
+            //
+            // 记在 openReanalyzeAsk() **之前**:只读早退那条路也算消费掉(那次 asked 已按
+            // 本值记下,转成可写态后同值不会补弹)。
             openReanalyzeAsk();
         }
     }

@@ -527,10 +527,22 @@ function makeContext(role, world) {
         } else {
             mergeDeep(model.snapshot, patch);
         }
-        emit(
-            "scvb.state",
-            role === "output" ? { full: false, ...patch } : patch,
-        );
+        const frame = role === "output" ? { full: false, ...patch } : patch;
+        // [SL-354] 默认**同步** emit —— 几十套既有冒烟依赖「桥函数返回时 store 已是新值」。
+        // `caps.slowStateEcho`(scenario=slow-state-echo)把它延后一拍,与真桥同形:
+        // 写的回执先到,状态由后续的 `scvb.state` 帧带回来。UI 在收到回执那一刻读到的
+        // 仍是**旧值** —— 用户 v5.6.7 报的「第一下只出横幅、第二下才弹窗」就活在这个差里。
+        // 延后走本文件统一的定时器入口 `later(…)`(受 driver 的时钟控制),
+        // 不用 queueMicrotask:微任务会在同一个 await 链里跑完,差就又没了。
+        if (model.caps && model.caps.slowStateEcho) {
+            // 延时取 **250ms = 4Hz 的一帧**,不是 0。app.js 的 `requestRender()` 是 rAF
+            // 合帧的,`later(0)` 会**赶在那一帧之前**把新值送到 —— 那样「UI 在
+            // 收到写回执时读到的是旧值」这个差就不存在了,①② 又复现不出来。本卡实测:
+            // 用 0 时删除式全绿(判据看着接住了,其实是缺陷压根没被造出来)。
+            later(250, () => emit("scvb.state", frame));
+            return;
+        }
+        emit("scvb.state", frame);
     }
 
     // ---- 段表(§2.8)-----------------------------------------------------------
@@ -873,6 +885,12 @@ function buildOutputBackend(ctx) {
         isPrinting,
         loopWindow,
         allChannels,
+        // [SL-354] 真机时序场景要发一帧「过期的全量快照」,所以这里要拿得到它。
+        // ⚠ 漏掉这一项的表现是**静默的**:`fullStatePayload is not defined` 在桥函数里抛,
+        // 被 `call()` 的 try/catch 吞成 `console.warn` + 返回 null,UI 早退 —— 页面级冒烟
+        // 只断 console.error 与未捕获异常,warn 不算,于是「写根本没落地」看起来像
+        // 「判据没接住」。本卡实测栽过一次。
+        fullStatePayload,
     } = ctx;
 
     const OK = () => ({ ok: true });
@@ -1574,6 +1592,39 @@ function buildOutputBackend(ctx) {
                 next.center_slot_policy = patch.center_slot_policy;
             }
             if (Object.keys(next).length === 0) return BAD_ARG();
+            // [SL-354] 真机时序模型(仅 `scenario=slow-state-echo`)。默认路径一个字节不变。
+            //
+            // 复现用户 v5.6.7 报的第 ② 条「弹窗出来一下就闪现消失了」:4Hz 的全量快照里,
+            // 总有一帧**内容在这次写落地之前组装、送达在之后** —— 它带的 `loudness_mode`
+            // 与 `applied.loudness_mode` 都是旧值,两者相等 ⇒ UI 派生的 stale 当场为假。
+            // 旧实现在那一帧上关框 + 清闸,于是「闪一下没了,而且之后不再弹」。
+            // 这不是契约违规、也不需要 `applied` 缺席 —— 它是正常节奏下必然出现的一帧。
+            //
+            // 编排:延后一拍的增量帧(新值,由 patchState 发)→ 过期全量帧(旧值)→
+            // 追平的全量帧(新值)。中间那一帧就是 ② 的扳机。
+            if (model.caps && model.caps.slowStateEcho) {
+                const staleFull = fullStatePayload(); // ← 取在 patchState **之前**:旧值
+                patchState({ analysis: next }); // 增量帧延后 250ms(见 patchState)
+                later(300, () => emit("scvb.state", staleFull)); // 过期全量帧
+                later(350, () => emit("scvb.state", fullStatePayload())); // 追平
+                return OK();
+            }
+            // [SL-354] 缺字段模型(仅 `scenario=applied-echo-drop`)。默认路径同样不受影响。
+            //
+            // 这一条**不是**真桥形态(真桥恒发 `analysis.applied`),它是 UI 侧那道兜底闸
+            // 的夹具:全量帧在 UI 侧是整体替换,一帧不带 applied 就把 store 里的 applied
+            // 抹掉了,于是 UI 派生基线时回落到当前值、stale 假装归假。写走**同步**路径
+            // (不开时序开关),所以这一格里唯一能救框的只有那道兜底闸。
+            if (model.caps && model.caps.dropAppliedEcho) {
+                patchState({ analysis: next }); // 同步:store 立刻是新值,框正常弹
+                later(300, () => {
+                    const bare = fullStatePayload();
+                    // 只摘 applied 这一支,其余字段照旧 —— 摘多了红的就可能是别的原因。
+                    if (bare.analysis) delete bare.analysis.applied;
+                    emit("scvb.state", bare);
+                });
+                return OK();
+            }
             // [SL-279] **只改当前值,不动 applied.\*** —— 「上次分析所用」只由一次覆盖整条
             // 时间线的全轨重算前移,今天两条路:`analyze` 的全量档(见 analyze() 收尾处)与
             // 松手自动重分段(见 debounce 那处),两条都读 `wholeTimelineNow()`。这正是 stale

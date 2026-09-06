@@ -12,7 +12,8 @@
 //     analysisConfigOf / diagRowsOf / diagText;
 //   ③ mock 端到端:setAnalysisConfig 写入 + badArg(含 02/03 拼写不互认)+ save/load 往返不丢;
 //   ④ 词条:T35 新增 set.* key 三语齐、占位符三语一致、05 §5 禁词零命中;
-//   ⑤ 源码级:改 loudness_mode → 置「改后需重分析」stale(center_slot_policy 不弹);九条 = 读取 guide.rule* 生成物零手抄;
+//   ⑤ 源码级:改任一设置项 → 置「改后需重分析」stale,且**两项都会弹**重新分析询问框
+//     ([SL-354] 用户 2026-09-06 改口径;SL-276 的「中央槽只上徽标」已作废);九条 = 读取 guide.rule* 生成物零手抄;
 //     「查看全部九条」= 块内展开;J45 措辞零命中;
 //   ⑥ native 落点(T37 真机回归):setLang/commitUiScale 落 processor、首启已读位两级落盘、
 //     scvb.conn 读 registry 实况 —— 这三件 mock 天然自洽,只能在源码级拦。
@@ -24,6 +25,11 @@
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
+// [SL-354] 源码级判据**必须先剥注释**:否则作者在实现里逐字引一遍旧写法,判据就被
+// 喂饱了(本卡实测过一次:代码改了、这一格照绿)。用 SL-330b 那个共享的字符级扫描器,
+// 不在这里再手写一份 —— 手写的那种只丢弃整行注释,块注释中间那几行漏得干干净净。
+import { stripJsComments } from "../../scripts/lib/strip-comments.mjs";
+const stripComments = (text) => stripJsComments(text, "smoke-tab4-settings");
 
 const ROOT =
     process.argv[2] ||
@@ -145,6 +151,49 @@ log("=== ② 纯函数 ===");
         TS.analysisConfigStale("peak_dbfs", "rms"),
         true,
         "再次改走 → 提示再出现",
+    );
+    // [SL-354] `appliedAnalysisConfigOf` 缺字段时**回落到当前值**,回落之后派生的 stale
+    // 恒假 —— 与「基线真的等于当前值」在读数上无法区分。`hasAppliedAnalysisConfig` 就是
+    // 那个区分器:回答「这份 state 自己带了 applied 那两个字段吗」。
+    // 下面四格钉的是**它与那个回落同口径**(`applied.x || cur.x`:空串 / 缺字段 / 整支
+    // 缺席都会触发回落),以及「只带一半不算带」—— 弹窗判据是两项取或,半份仍有一项在吃
+    // 回落值。删掉实现里任一半的字段判断,对应那一格红。
+    eq(
+        TS.hasAppliedAnalysisConfig({
+            analysis: {
+                loudness_mode: "rms",
+                applied: {
+                    loudness_mode: "kw_integrated",
+                    center_slot_policy: "priority_queue",
+                },
+            },
+        }),
+        true,
+        "两个字段都带 → 基线是真读数",
+    );
+    eq(
+        TS.hasAppliedAnalysisConfig({ analysis: { loudness_mode: "rms" } }),
+        false,
+        "整支 applied 缺席 → 基线是回落值",
+    );
+    eq(
+        TS.hasAppliedAnalysisConfig({
+            analysis: { applied: { loudness_mode: "rms" } },
+        }),
+        false,
+        "只带一半 → 另一半仍在吃回落值,不算带",
+    );
+    eq(
+        TS.hasAppliedAnalysisConfig({
+            analysis: {
+                applied: {
+                    loudness_mode: "",
+                    center_slot_policy: "priority_queue",
+                },
+            },
+        }),
+        false,
+        "空串与缺字段同口径(回落用的就是 `||`)",
     );
     eq(
         TS.diagRowsOf({
@@ -377,8 +426,9 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
     const ts = src("web/output/tab-settings.js");
     const html = src("web/output/index.html");
 
-    // 「改后需重分析」只在 loudness_mode 变化时出现(用户 preview 口径);
-    // center_slot_policy 变化不弹该提示 + setAnalysisConfig 落 state
+    // 两设置块的写入口:改档经 setAnalysisConfig(§1.21)落 state。
+    // ([SL-354] 原来这里还写着「弹窗只在 loudness_mode 变化时出现、中央槽不弹」——
+    //  那是 SL-276 的旧口径,用户 2026-09-06 已改成两项同形,见下面翻面的那两格。)
     check(
         /call\("setAnalysisConfig", \{ \[field\]: value \}\)/.test(ts),
         "两设置块经 setAnalysisConfig(§1.21)落 state",
@@ -404,12 +454,58 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
             /set\.centerSlot\.scopeNote/.test(html),
         "中心槽策略块有「改后需重分析」徽标 + 自己的影响面说明",
     );
-    // 弹窗仍**只由响度档承载**(SL-276 的用户 preview 口径,SL-278 不改):
-    // 中心槽只上徽标。这一格钉住「没顺手把弹窗也铺开」。
+    // [SL-354] **口径翻面**:弹窗从「只由响度档承载」改成两项都弹(用户 v5.6.7 实测
+    // 「B3 完全没有弹出弹窗,应该和前面一样」)。SL-276 当时只读响度是**按当时的用户口径
+    // 有意做的**,不是缺陷 —— 所以这里连同判据一起翻,而不是留着两处反向断言。
+    //
+    // ⚠ 这一格原来钉的是**源码字面**(`/const stale = loudnessStale;/`),本卡实测它有个
+    // 大洞:作者在 tab-settings 的注释里**逐字引一遍旧写法**,这格就当场被喂饱 —— 代码
+    // 已经改了、判据照绿。本格不剥注释(与 SL-297 记的「文本级判据先剥注释」同族)。
+    // 所以这里改成**两条都钉、且都不是可被注释冒充的字面**:开闸点不再按字段名分叉、
+    // 弹窗判据两项都读。真正的行为由页面级那几格(smoke-ui-layout-page 的 C10)承担。
     check(
-        /const stale = loudnessStale;/.test(ts),
-        "中心槽策略只上徽标:弹窗判据仍只读响度那一项(改成 loudnessStale || centerStale 即红)",
+        /const stale = loudnessStale \|\| centerStale;/.test(stripComments(ts)),
+        "[SL-354] 弹窗判据两项都读(改回只读响度即红;注释冒充不了 —— 本格剥过注释)",
     );
+    // [SL-354] 「开闸点不再按字段名分叉」这条断言**必须只看 wireSeg 的函数体**。
+    // 全文件扫的话会误报:复审第 1 轮补的 `pendingStale` 选择器在 syncStale 里按字段名
+    // 分叉是**对的**(要判「刚改走的那一项自己脏不脏」),而它与本格要拦的东西无关 ——
+    // 全文件版当场把它判成回归(实测栽过一次)。取函数体 = 从 `function wireSeg(` 到
+    // 下一个同层 `function `,并先断真的取到了(取不到就是下面那格在空跑)。
+    {
+        const bare = stripComments(ts);
+        const from = bare.indexOf("function wireSeg(");
+        const to = bare.indexOf("function toggleNine(");
+        check(
+            from >= 0 && to > from,
+            "[SL-354] 取到 wireSeg 的函数体(取不到就说明下面那格在空跑)",
+        );
+        const body = from >= 0 && to > from ? bare.slice(from, to) : "";
+        check(
+            !/field === "loudness_mode"/.test(body) &&
+                /local\.askPending = \{ field, value \}/.test(body),
+            "[SL-354] 开闸点不再按字段名分叉:两个设置块写成功都置闸,且记的是「哪个字段的哪个值」",
+        );
+    }
+    // [SL-354] **接线格**:纯函数 ②(上面四格)只回答「拿到 state 之后怎么判」,答不了
+    // 「这条判断有人跑吗」。行为面由页面级的 C10f 承担,但那一套依赖无头浏览器、缺依赖时
+    // 整套 SKIP —— 所以这条**最起码的接线**必须留一份在这个永不 SKIP 的 node 套里:
+    // syncStale 的函数体内真的调了它。剥注释,免得被头注里的函数名喂饱。
+    // ← 把 syncStale 里那次调用删掉(哪怕保留 export 与四格纯函数用例),本格红。
+    {
+        const bare = stripComments(ts);
+        const from = bare.indexOf("function syncStale()");
+        const to = bare.indexOf("function renderGuideRules()");
+        check(
+            from >= 0 && to > from,
+            "[SL-354] 取到 syncStale 的函数体(取不到就说明下面那格在空跑)",
+        );
+        const body = from >= 0 && to > from ? bare.slice(from, to) : "";
+        check(
+            body.includes("hasAppliedAnalysisConfig("),
+            "[SL-354] syncStale 真的调了 hasAppliedAnalysisConfig(回落值不许做破坏性判断的那道兜底闸)",
+        );
+    }
 
     // 九条 = 读取 guide.rule* 生成物,零手抄
     check(

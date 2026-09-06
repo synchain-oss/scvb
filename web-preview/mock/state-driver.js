@@ -138,6 +138,15 @@ export const SCENARIO_MAP = Object.freeze({
     // 范围档下它拿到 ok:true,却**不**前移 applied.*(契约 §1.21)⇒ 徽标不灭。所以框不能关,
     // 且要把范围提示摆出来。没有本场景,那条链在冒烟里根本不可达(默认档恒 follow)。
     "range-manual": "fifteen-tracks",
+    // [SL-354] 真桥时序:`setAnalysisConfig` 的回执先到、`scvb.state` 后到一拍。
+    // 用来复现用户 v5.6.7 报的「第一下只出横幅、第二次切换才出弹窗」——默认同步的 mock
+    // 里那条链根本不存在(回执到时 state 已经是新值了)。
+    "slow-state-echo": "fifteen-tracks",
+    // [SL-354] 写落地之后补一帧**不带 `analysis.applied`** 的全量快照(全量帧在 UI 侧是
+    // 整体替换,于是 store 里的 applied 被抹掉)。用来钉「回落值只许渲染、不许做破坏性
+    // 判断」:UI 派生基线时缺 applied 会回落到当前值 ⇒ stale 假装归假。与 slow-state-echo
+    // **有意分成两个场景**:那边验的是时序,这边验的是缺字段,两条路各自单独可红。
+    "applied-echo-drop": "fifteen-tracks",
     // [SL-280] 分布图柱高映射的回归场景:DEMO_TRACKS 的推子行程最高 0.62(= −1.7 dB),
     // 全部落在旧公式的**饱和点之下**,所以「−1.82 dB 以上一律画成 88%」这条缺陷在
     // preview 里三个月都没露过面 —— mock 数据恰好避开了缺陷区间。本场景把若干轨顶到
@@ -362,6 +371,23 @@ export function buildWorld(opts = {}) {
         groupConflict: false,
         ringFull: false,
         noTimeline: false,
+        // [SL-354] 「状态回声延后一拍」—— 只有开了它,mock 的时序才与真桥同形。
+        //
+        // 默认 mock 的 `patchState` 是**同步** emit `scvb.state` 的:`setAnalysisConfig`
+        // 还没返回,UI 的 store 就已经是新值了。真桥不是 —— 写要过 WebView 桥、状态由
+        // 后续的 `scvb.state` 帧带回来,所以 UI 在收到写回执的**那一刻读到的仍是旧值**。
+        // 用户 v5.6.7 报的「第一下只出横幅、第二下才弹窗」整条链就活在这个时间差里,
+        // 而 preview 永远看不到它。开关默认 **false**(既有几十套冒烟依赖同步语义),
+        // 由 `scenario=slow-state-echo` 打开,新增的判据格跑在那个场景上。
+        //
+        // ⚠ 这是一处**登记在案的时序口径分叉**:默认同步 ≠ 真桥。要不要把异步变成默认,
+        // 是「把这一整类缺陷从 preview 看不见变成 preview 拦得住」的另一张卡,不在本卡。
+        slowStateEcho: false,
+        // [SL-354] 「写落地之后补一帧缺 `analysis.applied` 的全量快照」。同样默认 **false**
+        // (真桥恒发那两个字段,这是**兜底闸**的夹具,不是真桥形态),由
+        // `scenario=applied-echo-drop` 打开。与上面那个开关**互不启用**:一个造时序、
+        // 一个造缺字段,两条路各自单独可红,合在一个场景里就分不清是哪一刀在拦。
+        dropAppliedEcho: false,
     };
     const errors = { output: [], input: [] };
     let transport = { timeS: 42, isPlaying: true };
@@ -801,6 +827,10 @@ export function buildWorld(opts = {}) {
     }
 
     // ---- 查询参数覆写 ----------------------------------------------------------
+    // [SL-354] 真机时序场景:状态回声延后一拍 + 一帧过期的全量帧。
+    if (opts.scenario === "slow-state-echo") caps.slowStateEcho = true;
+    // [SL-354] 缺 applied 的全量帧场景(兜底闸的夹具)。
+    if (opts.scenario === "applied-echo-drop") caps.dropAppliedEcho = true;
     if (opts.loop === "none") caps.loopAvailable = false;
     if (opts.loop === "host") caps.loopAvailable = true;
     if (typeof opts.play === "boolean") transport.isPlaying = opts.play;
