@@ -1034,12 +1034,19 @@ const KNOWN_UNMAPPED = new Set([
     // [统筹 2026-09-06 裁定]**按 role 逐列判**:运行时是
     // `allowedOr(scenario, SCENARIO_NAMES[role])`(shell.js:537),按角色取列 ——
     // 拿并集判会漏掉「登记错列」那一态。下面把两列拆开各判各的。
+    const head = table.indexOf("output:");
     const cut = table.indexOf("input:");
+    // 本格第三个 `indexOf` 也要断言命中(复审第 3 轮点出:上面刚立了这条规矩,
+    // 新加的这个没跟上)。两种失效形态都**往红掉、但红在错的那条断言上**:
+    //   · `output:` 找不到 ⇒ `slice(-1, cut)` 的 start > end ⇒ `""` ⇒ `outCol` 空
+    //     ⇒ **output 列那条反向判据静默失效**,而红出来的是正向那条(缺一大串名字);
+    //   · 两列换序(input 写在前)⇒ `head > cut` ⇒ 同样是 `""`,红在 input 列那条。
+    // 两种都会把人指到不存在的缺陷上,所以断言要钉「切得对」,不只钉「切得出」。
     check(
-        cut > 0,
-        "SCENARIO_NAMES 分得出 output / input 两列(找不到 input: ⇒ 判据退化成并集)",
+        head >= 0 && cut > head,
+        `SCENARIO_NAMES 分得出 output / input 两列且 output 在前(实得 output:${head} input:${cut})`,
     );
-    const outCol = new Set(litOf(table.slice(table.indexOf("output:"), cut)));
+    const outCol = new Set(litOf(table.slice(head, cut)));
     const inCol = new Set(litOf(table.slice(cut)));
     const listed = new Set([...outCol, ...inCol]);
     const mapped = new Set(Object.keys(driver.SCENARIO_MAP));
@@ -1072,6 +1079,15 @@ const KNOWN_UNMAPPED = new Set([
     check(
         stale.length === 0,
         `KNOWN_UNMAPPED 里没有已经接上线的名字(${JSON.stringify(stale)} 该从表里删掉)`,
+    );
+    // 台账腐坏有**两个**方向,上面那条只兜了一个(名字接上线了、账没销)。
+    // 另一个:名字从 shell.js 白名单里整个删掉 ⇒ 既不在白名单也不在 MAP ⇒ 这一行
+    // 成了死条目,而表头自称「每一个都会让 `?scenario=<名字>` 报一条伪警告(实测过)」
+    // **当场变成假话,且没有任何一格会红**(复审第 3 轮点出)。
+    const gone = [...KNOWN_UNMAPPED].filter((n) => !listed.has(n));
+    check(
+        gone.length === 0,
+        `KNOWN_UNMAPPED 里没有已经从白名单删掉的死条目(${JSON.stringify(gone)} 该从表里删掉 —— 表头自称「每一个都会报一条伪警告」,留着就是假话)`,
     );
     // ⚠ **仍然判不出来的那一半:名字登记错列。**`SCENARIO_MAP` 不带 role 信息,
     //   所以「这个名字该在 output 列还是 input 列」本格无从判断。今天 `connected`
