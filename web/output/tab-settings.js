@@ -293,9 +293,9 @@ export function createTabSettings(opts) {
         // 原话「改回基线(stale 归 false)时清空,下次再改走照弹」在新尺子下**不成立**:
         // 「当前值 != 刚写的值」那句早退排在 `!stale` 那支之前,非 UI 路径把口径改回基线时
         // 那一支一次都跑不到,本位于是留着旧 token、把用户下一次重选同值挡成不弹。
-        // 所以清空改由 wireSeg 承担(见那处),`!stale` 那支里的清空**已经是冗余**,
-        // 留着只当「一次都没弹过」这个更早状态的复位 —— 删掉它没有任何用例会红,
-        // 本卡实测过(见 smoke-ui-layout-page 的 C10e3 / C10h 两段注释)。
+        // 所以清空改由 wireSeg 承担(见那处);`!stale` 那支里同名的那一行留着,管的是
+        // 「先经那一支清过」的另一条入口。两道**各自独立兜得住**,单删任一道本套都不红,
+        // 两道一起拆才红(C10e3 / C10h,实测记在那两段注释里)—— 别把任一行单独当牙齿。
         reanalyzeAskedFor: null,
         // [SL-348] 播报句存 **key**(不是文本),每次 render 按当前字典重填 —— 见 renderRangeDone()。
         reanalyzeRangeDoneKey: null,
@@ -958,10 +958,13 @@ export function createTabSettings(opts) {
             // 走到这里 = 这一帧**确实是新的**(上面那把尺子已经放行)、基线读得到,
             // 且当前 == 基线,也就是「用户自己改回去了」或「分析跑完把基线前移了」
             // —— 这才该清、该关。
-            // ⚠ [SL-354 复审第 2 轮] 下面这一行**是冗余的**,别把它当判据引用:
-            // reanalyzeAskedFor 真正的清空点在 wireSeg(一次新的用户写),那一条才是
-            // 「改回基线之后再改走照样弹」的承担者。删掉这一行没有任何用例会红(实测)。
-            // 留着的理由只是「回到一次都没弹过的状态」这层语义上的对称,不是牙齿。
+            // ⚠ [SL-354 复审第 2 轮] 下面**两行各自都有一条搭档**,单删任一行本套都不红
+            // (实测),所以别照单行写删除式:
+            //   · `reanalyzeAskedFor = null` 的搭档 = wireSeg 里「一次新的用户写就清它」;
+            //     两道一起拆 ⇒ C10e3 与 C10h 红。这一行管「先经本支清过」那条入口。
+            //   · `askPending = null` 的搭档 = 下面那句 `if (!pendingStale) return;`;
+            //     两道一起拆 ⇒ C10e2 与 C10g 红。这一行管「这条待观察记录该作废了」,
+            //     `pendingStale` 管「要弹的是刚改走的那一项」,两条独立成立,都留。
             local.reanalyzeAskedFor = null;
             local.askPending = null;
             closeReanalyzeAsk();
