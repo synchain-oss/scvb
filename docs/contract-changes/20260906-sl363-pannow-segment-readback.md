@@ -67,6 +67,8 @@
 
 ## 审批
 
+**2026-09-06 18:2x UTC 用户批准**(原话「批」,统筹会话转达);`status/frozen-contract` 已挂;本次提交把 `docs/IPC_CONTRACT.md` §6.1 两处正文与 `docs/constitution/ipc-contract-v0.md` 的对应两处(从 `masterPlan/constitution/` 真源同步)一并落地。本变更**接续并改写 [SL-361] 的档①**(曲线精确时刻求值 → 段读回链),档②(已连接回落参数值)原样保留为上表 ⑤。
+
 挂 `status/frozen-contract` 标签,待用户批准后再把 `docs/IPC_CONTRACT.md` §6.1 的两处正文落地
 (06 §3.7)。同一份文本还要同步到 `docs/constitution/ipc-contract-v0.md` 的对应两处
 (`:183` / `:201`)—— 那是 `masterPlan/constitution/` 的**只读副本**,须从真源同步下来,

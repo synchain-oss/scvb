@@ -7525,6 +7525,7 @@ TEST_CASE("HOST SL-363:viz 段的每轨当前值走 Output 的读回链(段值/�
         const auto rb = scvb::output::readbackSegsOf(live, /*freezeBits=*/0,
                                                      /*outputOn=*/true, sl363Samples(16.0));
         REQUIRE(rb.pan != nullptr);
+        REQUIRE(rb.vol != nullptr);
         CHECK(rb.pan->pan == -60.0f);
         CHECK(viz->panNow[idx] == scvb::vizPackPan(static_cast<double>(rb.pan->pan))); // 两侧相等
         CHECK(viz->volDb[idx] ==
