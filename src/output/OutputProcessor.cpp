@@ -1043,16 +1043,30 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.playhead = playheadSnapshot();
 
     const int v = juce::jlimit(1, kVersionMax, versionActive_);
-    // [SL-361 复审第 1 轮] 已连接轨掩码 —— 判据与 Output UI 的 `connectedChannels` **逐字同源**
-    // (`slotState == 2 ∧ heartbeatAgeMs <= kStaleDisplayMs`,数据源同为 connSnapshot());
-    // 发布器只对这些轨做参数回落,否则会把 15 条 enabled 轨全喂给 Monitor(见那处注释)。
+    // [SL-361 复审第 1 轮] 已连接轨掩码 —— 发布器只对这些轨做参数回落,否则会把 15 条
+    // enabled 轨全喂给 Monitor(理由见 VizPublishInput::connectedMask 那段)。
+    // [SL-367] 判据走 `isConnectedForDisplay`,与桥面 `buildConnPayload` 的 `heartbeatFresh`
+    // **共用同一个函数**(前者比后者多一个 `slotState == kSlotActive`),不再各拼一份字面量。
+    //
+    // ⚠ [SL-367] **这里不调 `connSnapshot()`** —— 本函数的调用方(`vizTimer_` 的 lambda)
+    // **已经持着 `lifecycleMutex_`**,而 `connSnapshot()` 自己还要再取一次同一把锁。
+    // `juce::CriticalSection` 可重入,所以那样写今天也不死锁;但那是全仓第一处嵌套取它,
+    // 等于把安全建立在「这把锁恰好可重入」上 —— 哪天有人换成非递归的 `std::mutex`,
+    // 这里就直接死锁在**消息线程**上 = 宿主 UI 冻结,而且没有任何门禁会拦。
+    // 既然已经在锁内,直接读 `session_.channelConn(...)`(那正是 `connSnapshot()` 在锁内做的),
+    // 取锁次数回到一次。**钉住理由,而不是钉住风险。**
     {
-        const auto conn = connSnapshot();
+        // ⚠ 时钟**重新采**,不用形参 `nowMs`:后者是 `vizTimer_` 的 lambda 在**取锁之前**采的
+        // (`:161-163`),拿它算心跳年龄会把「等 `lifecycleMutex_` 的时长」算进去 ——
+        // `releaseResources` / `setStateInformation` 都持这把锁做慢活,那时一轨会被误判成失联。
+        // `connSnapshot()` 的口径也是「取锁前采样」,但它那次采样发生在**已持锁之后**,
+        // 对 conn 判据而言是新鲜值;这里在锁内重采,与它等价。
+        // 所以本函数里两个时间基准是**有意的**:`due(nowMs)` 用形参(发布节拍要的是进入这一拍
+        // 的时刻),conn 判据用 `nowConn`。**别顺手「简化」成一个。**
+        const auto nowConn = scvb::steadyNowMs();
         for (int ch = 0; ch < 15; ++ch)
         {
-            const auto& info = conn.channels[static_cast<std::size_t>(ch)];
-            if (static_cast<int>(info.slotState) == 2 &&
-                info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs))
+            if (scvb::output::isConnectedForDisplay(session_.channelConn(static_cast<scvb::u32>(ch + 1), nowConn)))
             {
                 in.connectedMask |= (1u << ch);
             }

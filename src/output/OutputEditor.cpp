@@ -829,7 +829,10 @@ juce::var OutputEditor::buildConnPayload() const
         put(ch, "slotState", static_cast<int>(info.slotState));
         put(ch, "heartbeatAgeMs", static_cast<juce::int64>(info.heartbeatAgeMs));
         // §2.3:heartbeatFresh 是 heartbeatAgeMs ≤ 2000 的派生布尔(哨兵 0xFFFFFFFF 自然为 false)。
-        put(ch, "heartbeatFresh", info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs));
+        // [SL-367] 判据走 `isHeartbeatFreshForDisplay` —— 与 C++ 侧「已连接」判据的**前半是
+        // 同一个函数**,不再各写一份 `<= kStaleDisplayMs`。载荷字段形状一字未变(仍只发这一半;
+        // 「已连接」= 本字段 ∧ `slotState === 2`,由消费方按 §2.3 两条一起判)。
+        put(ch, "heartbeatFresh", scvb::output::isHeartbeatFreshForDisplay(info));
         put(ch, "capturing", info.capturing);
         // 本次失准发作内的缺口数(非进程累计):恢复健康 1s 后归零,横幅/行内 ⚠ 随之撤下。
         // **只数真失准**(走带推进中的时间线缺口);写方停着走 suspended,见下。
