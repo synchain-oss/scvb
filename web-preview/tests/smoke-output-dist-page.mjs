@@ -1949,11 +1949,17 @@ try {
     //     真的多了一条分隔线」—— 后者要数像素(得解 PNG),留给真机肉眼;
     //   · 两页真实数据面的一致性(轨集 / pan / vol 从哪来)不在这里,见 PR 描述。
     //
-    // ★ 删除式(本机实测,四条各红各的格,记录在 PR 描述里):
-    //   · 删掉 monitor/index.html 的 `box-shadow: … var(--dist-bar-halo)` ⇒ (d) 与 (e5) 红;
-    //   · 把 monitor 的 `.dist-bar { bottom: 15px }` 改 17px ⇒ 只有 (e2) 红;
-    //   · 把 monitor 的 `.dist-plot__zero { bottom: calc(15px + …) }` 改 18px ⇒ 只有 (e3) 红;
-    //   · 把 output 的柱体渐变第二档换成 `rgba(var(--track-color-2), .55)` ⇒ 只有 (b) 红。
+    // ★ 删除式八格(本机实测,逐格的实得 FAIL 清单记录在 PR 描述里)。
+    //   **单页注入**验的是跨页对拍有牙,**两页同时注入**验的是单页那几格自己有牙 ——
+    //   两页一起改的话 (e) 全绿,红的只可能是 (a)-(d);只改一页则 (e) 也跟着红。
+    //   · D1 monitor 删掉 `box-shadow: … var(--dist-bar-halo)`  ⇒ (d) + (e5)
+    //   · D2 monitor `.dist-bar { bottom: 15px }` → 17px        ⇒ (e2)
+    //   · D3 monitor `.dist-plot__zero { bottom: calc(15px + …) }` → 18px ⇒ (e3)
+    //   · D4 output  柱体渐变第二档换成 `rgba(var(--track-color-2), .55)` ⇒ (b) + (e5)
+    //   · D5 两页    晕改 `0 0 3px 1px`(模糊光晕)            ⇒ 只有 (d)
+    //   · D6 两页    晕改 `inset 0 0 0 1px`(晕跑到柱内侧)     ⇒ 只有 (d)
+    //   · D7 两页    lead 帽 `top` 退回 `-3px`(帽悬空)        ⇒ 只有 (c)
+    //   · D8 tokens.css 把 `--dist-bar-halo` 改成有色差的红      ⇒ 只有 (d)
     // =========================================================================
     {
         // 同一批 rows 喂两页。刻意造出**两轨同声像**(轨 7 / 轨 9,pan 都是 40)——
@@ -2062,6 +2068,7 @@ try {
             radius: cs.borderRadius,
             before: bf.content,
             after: af.content,
+            afterTop: af.top,
             afterBg: af.backgroundImage,
             afterRgb: rgbOf(af.backgroundImage),
         });
@@ -2148,6 +2155,13 @@ try {
                         `(c) ${name} 轨 ${b.ch}(lead):帽色 = --dist-bar-lead 的绿` +
                             `(实得 ${JSON.stringify(b.afterRgb)})`,
                     );
+                    eq(
+                        b.afterTop,
+                        "-2px",
+                        `(c) ★ ${name} 轨 ${b.ch}(lead):帽底边贴住柱顶(top = −帽高)—— ` +
+                            `悬空的帽会让那 1px 空档被分隔晕填成浅色带，` +
+                            `lead 轨柱顶恒常读成三段(实得「${b.afterTop}」)`,
+                    );
                 } else {
                     eq(
                         b.after,
@@ -2184,6 +2198,28 @@ try {
                 p.zero.h > 0 && p.zero.w > 0,
                 `(前提)${name}:0 dB 线有非零矩形(实得 ${JSON.stringify(p.zero)})`,
             );
+
+            // ---- 量 token 本身(上面那几格量的是消费端的计算值)
+            const haloRgb = String(p.halo).startsWith("rgb")
+                ? String(p.halo)
+                      .slice(String(p.halo).indexOf("(") + 1)
+                      .split(",")
+                      .slice(0, 3)
+                      .map((x) => x.trim())
+                : [];
+            check(
+                haloRgb.length === 3,
+                `(d) ★ ${name}：tokens.css 的 --dist-bar-halo 解得出来(实得「${p.halo}」)` +
+                    ` —— token 没了的话 box-shadow 整条声明失效，晕直接不画`,
+            );
+            check(
+                haloRgb.length === 3 && new Set(haloRgb).size === 1,
+                `(d) ★ ${name}：--dist-bar-halo 本身无色差(r=g=b，实得 ${JSON.stringify(haloRgb)})`,
+            );
+
+            // 裸开两页的页内异常 / console.error 各断各的：循环第二圈的
+            // `newBucket` 会盖掉第一圈的记录，放到循环外只看得见 Monitor 那一页。
+            assertClean(`SL-353 ${name} 裸开`);
         }
 
         // ---- (e) 两页逐项对拍
@@ -2245,6 +2281,11 @@ try {
                     b.afterBg,
                     a.afterBg,
                     `(e5) 第 ${i + 1} 根柱(轨 ${a.ch})的柱顶帽两页一致`,
+                );
+                eq(
+                    b.afterTop,
+                    a.afterTop,
+                    `(e5) 第 ${i + 1} 根柱(轨 ${a.ch})的柱顶帽纵位两页一致`,
                 );
             }
             check(
