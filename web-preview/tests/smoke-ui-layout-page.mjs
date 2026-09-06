@@ -1298,7 +1298,18 @@ try {
         await waitFor(badgeGone, 8000),
         "C4f 前置:C4c 那次分析的基线前移已落地(徽标灭)",
     );
-    check(await setLoudness("rms"), "C4f 改档以重新开框");
+    // 目标档**按当前值现算**,不写死:上一格(C4e)的删除式会改变走到这里时的当前档,
+    // 写死的话本格会被那一刀**连带**成假红(红在「点已选中档不重复写」上,与本格判据
+    // 无关)。同一条教训 C2b 已经吃过一次,这里直接算。
+    // 走到这里徽标是灭的(上面那格断过)⇒ 当前档 == 基线,所以它同时就是撤销的目标值。
+    const c4fPre = await evaluate(ASK_PROBE);
+    check(c4fPre, "C4f 前置探针取到锚点");
+    const c4fBase = c4fPre ? c4fPre.loudnessNow : null;
+    const c4fNext = c4fBase === "rms" ? "peak_dbfs" : "rms";
+    check(
+        await setLoudness(c4fNext),
+        `C4f 改档以重新开框(基线 ${JSON.stringify(c4fBase)} → 改成 ${c4fNext})`,
+    );
     check(await waitFor(askOpen, 4000), "C4f 框已开");
     check(
         await evaluate(
@@ -1328,8 +1339,8 @@ try {
     const c4fMid = await evaluate(ASK_PROBE);
     if (check(c4fMid, "C4f 探针取到锚点(撤销在途)")) {
         check(
-            c4fMid.loudnessNow === "rms",
-            `C4f 正证据:撤销的写还没落地(当前档仍是 rms,实得 ${JSON.stringify(c4fMid.loudnessNow)})`,
+            c4fMid.loudnessNow === c4fNext,
+            `C4f 正证据:撤销的写还没落地(当前档仍是 ${c4fNext},实得 ${JSON.stringify(c4fMid.loudnessNow)})`,
         );
         check(c4fMid.open, "C4f 正证据:框还开着(撤销在途,主钮点得到)");
     }
@@ -1342,11 +1353,11 @@ try {
     );
     check(
         await waitFor(
-            IN(`const b = q('[data-gb="settings-loudnessmode-seg"] [data-value="peak_dbfs"]');
+            IN(`const b = q('[data-gb="settings-loudnessmode-seg"] [data-value="${c4fBase}"]');
                 return !!b && b.getAttribute("aria-pressed") === "true";`),
             6000,
         ),
-        "C4f 慢回执落地后当前档回到基线 peak_dbfs(撤销本身没被这道闸弄坏)",
+        `C4f 慢回执落地后当前档回到基线 ${c4fBase}(撤销本身没被这道闸弄坏)`,
     );
     check(
         await evaluate(
