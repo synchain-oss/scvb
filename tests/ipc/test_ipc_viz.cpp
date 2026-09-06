@@ -236,8 +236,19 @@ TEST_CASE("VIZ-4 真 VizPublisher 发布 → 读侧看到降采样数据与断�
     REQUIRE(csvLL(m, "now_vol1") == scvb::vizPackFixed(0.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
     REQUIRE(csvLL(m, "now_width1") == scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
     REQUIRE(csvLL(m, "now_pan1") != static_cast<long long>(scvb::kVizPanNone));
-    // 无分段轨:当前值仍是哨兵(不是 0 —— 0 是合法 pan)。
-    REQUIRE(csvLL(m, "now_pan3") == static_cast<long long>(scvb::kVizPanNone));
+    // [SL-361] **口径翻面**:这一格原来钉的是「无分段轨的当前值**仍是哨兵**」——那是
+    // 发布器只在「有分段 ∧ 有曲线」时才写 panNow/volDb 的旧行为,而它正是用户 v5.6.7 实测
+    // 「同工程 Output 10 根 / Monitor 只有 7 根」的真因:Monitor 见哨兵就整根不画,而 Output
+    // 那侧走「段回读 → 没段就退参数当前值」(tab-master.js 的 renderDist),两侧口径分叉。
+    // 新口径:**有参数值就回落到参数值**,没有(NaN)才留哨兵。
+    //
+    // 原注释那半「(不是 0 —— 0 是合法 pan)」的意思**没有丢**,搬到下面轨4 那两条上了:
+    // 0 对 pan 是正中、对 vol 是 0 dB,都是合法值,所以「不知道」不能长得像「填了 0」。
+    REQUIRE(csvLL(m, "now_pan3") == scvb::vizPackPan(-25.0));
+    REQUIRE(csvLL(m, "now_vol3") == scvb::vizPackFixed(-6.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    // 两样都没有的轨(对端不给参数值 ⇒ 默认 NaN):仍是哨兵,**不是 0**。
+    REQUIRE(csvLL(m, "now_pan4") == static_cast<long long>(scvb::kVizPanNone));
+    REQUIRE(csvLL(m, "now_vol4") == static_cast<long long>(scvb::kVizPanNone));
     // lead_mask 经**发布器**落段(VIZ-1 验的是手搓快照那条路)。
     REQUIRE(csvLL(m, "lead_mask") == 0x0001);
     // 轨名同理走发布器。

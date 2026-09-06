@@ -1028,6 +1028,11 @@ int runVizReader(const Args& a)
     csv += "now_vol1 " + std::to_string(static_cast<long long>(snap->volDb[0])) + "\n";
     csv += "now_width1 " + std::to_string(static_cast<long long>(snap->widthPct[0])) + "\n";
     csv += "now_pan3 " + std::to_string(static_cast<long long>(snap->panNow[2])) + "\n";
+    // [SL-361] 轨3 有参数值(回落生效)、轨4 两样都没有(仍哨兵)—— 两条一起才说得出
+    // 「回落是按参数值来的」而不是「无脑填了个数」。vol 同理各出一条。
+    csv += "now_vol3 " + std::to_string(static_cast<long long>(snap->volDb[2])) + "\n";
+    csv += "now_pan4 " + std::to_string(static_cast<long long>(snap->panNow[3])) + "\n";
+    csv += "now_vol4 " + std::to_string(static_cast<long long>(snap->volDb[3])) + "\n";
     csv += "label1 " + snap->label[0] + "\n";
     csv += "label2 " + snap->label[1] + "\n";
     csv += "cov_t1_0 " + std::to_string(snap->covered(0, 0) ? 1 : 0) + "\n";
