@@ -528,13 +528,13 @@ function makeContext(role, world) {
             mergeDeep(model.snapshot, patch);
         }
         const frame = role === "output" ? { full: false, ...patch } : patch;
-        // [SL-354] 默认**同步** emit —— 几十套既有冒烟依赖「桥函数返回时 store 已是新值」。
-        // `caps.slowStateEcho`(scenario=slow-state-echo)把它延后一拍,与真桥同形:
-        // 写的回执先到,状态由后续的 `scvb.state` 帧带回来。UI 在收到回执那一刻读到的
-        // 仍是**旧值** —— 用户 v5.6.7 报的「第一下只出横幅、第二下才弹窗」就活在这个差里。
+        // [SL-357] **默认异步** —— 与真桥同形:写的回执先到,状态由后续的 `scvb.state`
+        // 帧带回来。`caps.syncStateEcho`(scenario=sync-state-echo)是逃生口,给确实要旧
+        // 语义的套用,禁忌写在 state-driver.js 那个 cap 旁边。(SL-354 时默认是同步、
+        // `slowStateEcho` 才异步 —— 本卡把默认翻了过来。)真桥同形的含义:
         // 延后走本文件统一的定时器入口 `later(…)`(受 driver 的时钟控制),
         // 不用 queueMicrotask:微任务会在同一个 await 链里跑完,差就又没了。
-        if (model.caps && model.caps.slowStateEcho) {
+        if (model.caps && !model.caps.syncStateEcho) {
             // 延时取 **250ms = 4Hz 的一帧**,不是 0。app.js 的 `requestRender()` 是 rAF
             // 合帧的,`later(0)` 会**赶在那一帧之前**把新值送到 —— 那样「UI 在
             // 收到写回执时读到的是旧值」这个差就不存在了,①② 又复现不出来。本卡实测:
@@ -1602,7 +1602,15 @@ function buildOutputBackend(ctx) {
             //
             // 编排:延后一拍的增量帧(新值,由 patchState 发)→ 过期全量帧(旧值)→
             // 追平的全量帧(新值)。中间那一帧就是 ② 的扳机。
-            if (model.caps && model.caps.slowStateEcho) {
+            // [SL-357] 增量帧的延后由 `patchState` 统一做(默认异步),这里只管**过期全量帧**
+            // 那一档:它是偶发的,按 `staleFullEchoEvery` 每 N 次写插一帧。
+            // 计数放在这一处而不是 `patchState` 里 —— 这一档的扳机是「写分析设置」,
+            // 不是「任何一次 patch」;放宽到每次 patch 会把它变成比真桥更严苛的节奏。
+            const every = model.caps ? model.caps.staleFullEchoEvery : 0;
+            model.staleEchoWrites = (model.staleEchoWrites || 0) + 1;
+            const injectStale =
+                every > 0 && model.staleEchoWrites % every === 0;
+            if (injectStale && !(model.caps && model.caps.syncStateEcho)) {
                 const staleFull = fullStatePayload(); // ← 取在 patchState **之前**:旧值
                 patchState({ analysis: next }); // 增量帧延后 250ms(见 patchState)
                 later(300, () => emit("scvb.state", staleFull)); // 过期全量帧
@@ -1613,10 +1621,19 @@ function buildOutputBackend(ctx) {
             //
             // 这一条**不是**真桥形态(真桥恒发 `analysis.applied`),它是 UI 侧那道兜底闸
             // 的夹具:全量帧在 UI 侧是整体替换,一帧不带 applied 就把 store 里的 applied
-            // 抹掉了,于是 UI 派生基线时回落到当前值、stale 假装归假。写走**同步**路径
-            // (不开时序开关),所以这一格里唯一能救框的只有那道兜底闸。
+            // 抹掉了,于是 UI 派生基线时回落到当前值、stale 假装归假。
+            //
+            // ⚠ [SL-357] 这一档**必须走同步**:它测的是「缺字段那一帧到达之前,徽标是亮的」
+            //   这个**对照点**,而默认异步会让写落地本身也晚一拍 —— 前置就不成立
+            //   (实测:`smoke-ui-layout-page` 的 C10f 前置格当场红)。所以这里显式同步,
+            //   不吃默认那条异步路。这是「那一格测的就是同步语义本身」的**唯一一例** ——
+            //   它造的是缺字段、不是造时序;时序得让位,否则两刀混在一格里,红了分不清。
             if (model.caps && model.caps.dropAppliedEcho) {
+                // [SL-357] 显式同步(默认已异步),理由见上面那条 ⚠。
+                const wasSync = model.caps.syncStateEcho;
+                model.caps.syncStateEcho = true;
                 patchState({ analysis: next }); // 同步:store 立刻是新值,框正常弹
+                model.caps.syncStateEcho = wasSync;
                 later(300, () => {
                     const bare = fullStatePayload();
                     // 只摘 applied 这一支,其余字段照旧 —— 摘多了红的就可能是别的原因。

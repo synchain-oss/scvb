@@ -666,6 +666,19 @@ log("=== ⑤ mock 端到端:视图态往返 ===");
     );
 
     let lastState = null;
+    // [SL-357] 等状态回声到位(默认异步);超时上界 3s,报错带最后读到的值。
+    const untilState = async (ok, label, timeoutMs = 3000) => {
+        const t0 = Date.now();
+        for (;;) {
+            if (ok()) return;
+            if (Date.now() - t0 > timeoutMs)
+                throw new Error(
+                    `[untilState] 等 ${label} 超时;最后:` +
+                        JSON.stringify(lastState && lastState.ui),
+                );
+            await new Promise((r) => setTimeout(r, 25));
+        }
+    };
     bridge.on("scvb.state", (st) => {
         lastState = st;
     });
@@ -678,6 +691,15 @@ log("=== ⑤ mock 端到端:视图态往返 ===");
 
     const ok = await bridge.setMasterChartMode("trajectory");
     eq(ok, { ok: true }, "合法值受理(形制照 §1.31 setActiveTab)");
+    // [SL-357] 状态回声默认异步 —— 等那一帧再断言。
+    // 轮询而不写死等待:写死的值会被 mock 延迟常数的下一次改动打羻。
+    await untilState(
+        () =>
+            lastState &&
+            lastState.ui &&
+            lastState.ui.master_chart_mode === "trajectory",
+        "master_chart_mode 回推为 trajectory",
+    );
     check(
         lastState &&
             lastState.ui &&
@@ -695,6 +717,13 @@ log("=== ⑤ mock 端到端:视图态往返 ===");
     eq(bad, { ok: false, reason: "badArg" }, "枚举外的值回 badArg");
     const back = await bridge.setMasterChartMode("distribution");
     eq(back, { ok: true }, "切回默认档");
+    await untilState(
+        () =>
+            lastState &&
+            lastState.ui &&
+            lastState.ui.master_chart_mode === "distribution",
+        "切回后 master_chart_mode 回推为 distribution",
+    );
     eq(
         lastState.ui.master_chart_mode,
         "distribution",

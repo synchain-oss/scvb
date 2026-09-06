@@ -19,6 +19,7 @@
 
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { awaitSeen } from "./lib/await-state.mjs";
 
 const ROOT =
     process.argv[2] ||
@@ -197,7 +198,13 @@ await withInput("scenario=connected", async (b, seen) => {
         r.ok === true,
         `setGroupId(2) 应 {ok:true},实得 ${JSON.stringify(r)}`,
     );
-    const st = seen.get("scvb.state:last");
+    // [SL-357] 状态回声默认异步 —— 等那一帧再读,别在写回执那一刻读(读到的是旧值)。
+    const st = await awaitSeen(
+        seen,
+        "scvb.state",
+        (v) => v.group_id === 2,
+        "切组后的 scvb.state",
+    );
     check(
         st && st.group_id === 2,
         `切组后 group_id 应 2,实得 ${st && st.group_id}`,

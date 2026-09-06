@@ -377,17 +377,35 @@ export function buildWorld(opts = {}) {
         // 还没返回,UI 的 store 就已经是新值了。真桥不是 —— 写要过 WebView 桥、状态由
         // 后续的 `scvb.state` 帧带回来,所以 UI 在收到写回执的**那一刻读到的仍是旧值**。
         // 用户 v5.6.7 报的「第一下只出横幅、第二下才弹窗」整条链就活在这个时间差里,
-        // 而 preview 永远看不到它。开关默认 **false**(既有几十套冒烟依赖同步语义),
-        // 由 `scenario=slow-state-echo` 打开,新增的判据格跑在那个场景上。
+        // 而 preview 永远看不到它。
         //
-        // ⚠ 这是一处**登记在案的时序口径分叉**:默认同步 ≠ 真桥。要不要把异步变成默认,
-        // 是「把这一整类缺陷从 preview 看不见变成 preview 拦得住」的另一张卡,不在本卡。
-        slowStateEcho: false,
+        // [SL-357] **默认翻成 `true`** —— SL-354 留下的那处「登记在案的时序口径分叉」
+        // (默认同步 ≠ 真桥)本身就是缺陷的藏身处:凡是「写完立刻读 store」的产品代码,
+        // 在同步 mock 上永远绿,到真桥上才炸。用户 v5.6.7 报的「第一下只出横幅、
+        // 第二下才弹窗」就活在那个差里,而当时**没有任何一套冒烟拦得住**。
+        //
+        // 现在默认异步,于是:**冒烟套里凡是依赖「桥函数返回时 store 已是新值」的断言
+        // 都会红** —— 那正是本卡要照出来的东西。逐套的判定见下面 `syncStateEcho`。
+        slowStateEcho: true,
+        // [SL-357] **同步回声逃生口**。给「确实需要旧行为」的套用:`scenario=sync-state-echo`,
+        // 或 driver 内部构造时显式传。**它不是「让红的用例变绿」的通用开关** ——
+        // 用它之前必须先判清那一格红的是哪一类:
+        //   ① 判据本来就靠同步撑着(断言写完立刻读)⇒ 改判据去等那一帧,**不要**开这个开关;
+        //   ② 那一格测的就是「同步语义本身」(极少)⇒ 才开这个开关,并在格旁写明为什么。
+        // 分不清就别开:开关一开,这一套就退回「preview 看不见真桥时序」的老状态。
+        syncStateEcho: false,
         // [SL-354] 「写落地之后补一帧缺 `analysis.applied` 的全量快照」。同样默认 **false**
         // (真桥恒发那两个字段,这是**兜底闸**的夹具,不是真桥形态),由
         // `scenario=applied-echo-drop` 打开。与上面那个开关**互不启用**:一个造时序、
         // 一个造缺字段,两条路各自单独可红,合在一个场景里就分不清是哪一刀在拦。
         dropAppliedEcho: false,
+        // [SL-357] **过期全量帧的注入节奏**:每 N 次写插一帧(0 = 关掉,1 = 每次都插)。
+        // 真桥上「内容在写落地之前组装、送达在之后」的那一帧是**偶发**的 —— 写死成每次都插
+        // 会让冒烟去适应一个比真桥更严苛的节奏,写成 0 又等于这一档不存在。
+        // ⚠ 用**计数**不用随机数:driver 里没有确定性随机源(我查过,没有 `rngUnit` 那类东西),
+        //   拿 `Math.random()` 会让冒烟变成随机红 —— 那比这一档不存在更糟。
+        //   默认 4:第 4、8、12… 次写各插一帧,可复现、可数。
+        staleFullEchoEvery: 4,
     };
     const errors = { output: [], input: [] };
     let transport = { timeS: 42, isPlaying: true };
@@ -828,7 +846,20 @@ export function buildWorld(opts = {}) {
 
     // ---- 查询参数覆写 ----------------------------------------------------------
     // [SL-354] 真机时序场景:状态回声延后一拍 + 一帧过期的全量帧。
+    // [SL-357] 默认已是这个行为,本场景保留为**显式写法**(既有套子用着,也便于读 URL 就知道)。
     if (opts.scenario === "slow-state-echo") caps.slowStateEcho = true;
+    // [SL-357] 同步回声逃生口 —— 用法与禁忌见 caps 里 `syncStateEcho` 那段。
+    if (opts.scenario === "sync-state-echo") {
+        caps.syncStateEcho = true;
+        caps.slowStateEcho = false;
+    }
+    // [SL-357] 过期全量帧节奏可从 URL 覆写:`staleFullEvery=0`(关掉)/ `=1`(每次都插)。
+    // 判据格用 `=1` 取确定性,删除式用 `=0` 证明这一档确实是它在造。
+    if (opts.staleFullEvery !== undefined) {
+        const v = Number(opts.staleFullEvery);
+        if (Number.isFinite(v) && v >= 0)
+            caps.staleFullEchoEvery = Math.floor(v);
+    }
     // [SL-354] 缺 applied 的全量帧场景(兜底闸的夹具)。
     if (opts.scenario === "applied-echo-drop") caps.dropAppliedEcho = true;
     if (opts.loop === "none") caps.loopAvailable = false;

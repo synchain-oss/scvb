@@ -853,5 +853,54 @@ log("=== [SL-274] changed[] 封顶三处同值(native / web / mock)===");
     log(`  native ${nativeCap} / web ${webCap} / mock ${mockCap}`);
 }
 
+log("");
+log("=== [SL-357] 状态回声默认异步(与真桥同形)===");
+
+// 这一格钉的是本卡的核心断言:**写的回执先到、`scvb.state` 后到一拍**。
+// 量的是「桥函数 resolve 那一刻」到「带新值的 state 帧到达」的间隔。
+// 下界取 **120ms** 而不是 250:钉的是「确实隔了一拍」,不是把判据钉在 mock 当前的
+// 延迟常数上 —— 常数改成 200 或 300 这一格都该继续绿,改成 0 才该红。
+await withSession("output", "fixture=fifteen-tracks", async (b, seen) => {
+    const before = seen.get("scvb.state:last");
+    const t0 = Date.now();
+    await b.setAnalysisConfig({ loudness_mode: "rms" });
+    const tAck = Date.now() - t0;
+    const atAck = seen.get("scvb.state:last");
+    check(
+        atAck === before ||
+            !(
+                atAck &&
+                atAck.analysis &&
+                atAck.analysis.loudness_mode === "rms"
+            ),
+        `回执那一刻 state 仍是旧值(实得 ${JSON.stringify(atAck && atAck.analysis && atAck.analysis.loudness_mode)})`,
+    );
+    const t1 = Date.now();
+    for (;;) {
+        const st = seen.get("scvb.state:last");
+        if (st && st.analysis && st.analysis.loudness_mode === "rms") break;
+        if (Date.now() - t1 > 3000) break;
+        await new Promise((r) => setTimeout(r, 10));
+    }
+    const gap = Date.now() - t0 - tAck;
+    log(`  回执耗时 ${tAck}ms;回执→state 间隔 ${gap}ms`);
+    check(gap >= 120, `写→state 至少隔一拍(实得 ${gap}ms,下界 120ms)`);
+});
+
+// 对照格:同步逃生口一开,同一条路径当场变回同步。
+// 没有这一格的话,上面那格只能证明「慢」,不能证明「是那个开关在控」。
+await withSession(
+    "output",
+    "fixture=fifteen-tracks&scenario=sync-state-echo",
+    async (b, seen) => {
+        await b.setAnalysisConfig({ loudness_mode: "rms" });
+        const st = seen.get("scvb.state:last");
+        check(
+            st && st.analysis && st.analysis.loudness_mode === "rms",
+            "同步逃生口(scenario=sync-state-echo)下,回执那一刻 store 已是新值",
+        );
+    },
+);
+
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);
