@@ -80,6 +80,7 @@ import {
     VIZ_PAN_SCALE,
     VIZ_TRACK_STATE_RANGE,
     VIZ_TRACKS,
+    VIZ_GLOBAL_WIDTH_FALLBACK,
 } from "./viz-contract.js";
 
 export {
@@ -473,6 +474,21 @@ export function vizDistRows(viz) {
         });
     }
     return out.sort((a, b) => a.ch - b.ch);
+}
+
+/**
+ * [SL-362] 全局「最大角度」——喂 `distBarsHtml` 的第三个参数,两页共用 `distGeometry`
+ * 才能画得一样(有效 pan = 名义 pan × globalWidth/100,张开半宽同缩放)。
+ *
+ * 拿不到就回落 **100**(不缩放),三种情形都走这一支:桥没带(旧写方 ⇒ 段内槽为 0)、
+ * 值不是有限数、段整块缺失。**回落值必须是 100 而不是 0** —— 0 是合法宽度(全收拢到中央),
+ * 拿它当「不知道」会把 15 根柱全挤到中线,而那看起来像一张正常的图。
+ */
+export function vizGlobalWidthPct(viz) {
+    const v = viz && viz.globalWidthPct;
+    return typeof v === "number" && Number.isFinite(v)
+        ? v
+        : VIZ_GLOBAL_WIDTH_FALLBACK;
 }
 
 /**

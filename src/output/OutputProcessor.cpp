@@ -1043,6 +1043,11 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.playhead = playheadSnapshot();
 
     const int v = juce::jlimit(1, kVersionMax, versionActive_);
+    // [SL-362] 全局「最大角度」的参数当前值 —— Monitor 的分布图要它才能与 Output 同款缩放
+    // (两页共用 distGeometry,有效 pan = 名义 pan × globalWidth/100)。取法与 rawTrkW 同款:
+    // 句柄未就绪 → NaN → 段内留哨兵 → 读方回落 100。**全局参数不分版本**,故不带 [v-1]。
+    in.globalWidthPct = handles_.rawWidth != nullptr ? handles_.rawWidth->load(std::memory_order_relaxed)
+                                                     : std::numeric_limits<float>::quiet_NaN();
     // [SL-361 复审第 1 轮] 已连接轨掩码 —— 发布器只对这些轨做参数回落,否则会把 15 条
     // enabled 轨全喂给 Monitor(理由见 VizPublishInput::connectedMask 那段)。
     // [SL-367] 判据走 `isConnectedForDisplay`,与桥面 `buildConnPayload` 的 `heartbeatFresh`

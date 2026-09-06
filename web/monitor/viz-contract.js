@@ -123,6 +123,14 @@ export const VIZ_FIELDS = Object.freeze([
     // 本表只记**名字与顺序**,不记偏移,故那次挪动对镜像是无感的;golden 侧的
     // `_reserved offset 88` 是预期变化,不是漂移。
     { struct: "VizFrame", name: "track_lead_mask", json: "leadMask" },
+    // [SL-362] 全局「最大角度」。段内是 **`定点值 + 1`,0 = 写方未提供**(旧写方把这一槽
+    // 清成 0,而 0 在定点编码里是合法宽度 —— 不 +1 的话「没这个字段」会被读成「宽度 0」,
+    // 分布图把 15 根柱全挤到中线)。桥在哨兵时发 **undefined**,读方回落 100 = 不缩放。
+    {
+        struct: "VizFrame",
+        name: "global_width_plus_one",
+        json: "globalWidthPct",
+    },
     { struct: "VizFrame", name: "_reserved", json: null },
     // ---- VizTrackColors(64 B)
     { struct: "VizTrackColors", name: "index", json: "colorIndex" },
@@ -221,6 +229,17 @@ export const VIZ_TRACK_STATE_RANGE = Object.freeze({
 });
 
 /**
+ * [SL-362] 全局「最大角度」的值域(0..150)—— 与每轨 `widthPct`(0..100)**不同**,
+ * 它是 `width` 参数的工程量域。段内编码用 **`kVizGlobalWidthMin/Max`(0..150)**,
+ * **不是** per-track 的 `kVizWidthMin/Max`(0..100):两者共用 ×100 的定点标度,但
+ * **夹取域不同** —— 用错会把 101..150 静默夹到 100,而那正是用户报的档位区间
+ * (复审第 1 轮红旗)。段内再**多一层 +1**(0 = 未提供)。
+ * 读方拿不到时回落 **100**(= `distGeometry` 的缺省,不缩放)。
+ */
+export const VIZ_GLOBAL_WIDTH_RANGE = Object.freeze({ lo: 0, hi: 150 });
+export const VIZ_GLOBAL_WIDTH_FALLBACK = 100;
+
+/**
  * **`panNow` 的取值优先级**(T44 2026-08-25 对表信明确的一条口径)。
  *
  * `VizTrackState.panNow` 是**播放头所在时刻**的曲线求值(精确时刻);
@@ -262,6 +281,7 @@ export const VIZ_PROMISED_FIELDS = Object.freeze([
     "trackWidthPct",
     "trackLabels",
     "leadMask",
+    "globalWidthPct",
 ]);
 
 /** `scvb.state.viz` 的三态(T45 `vizStateName`)。 */

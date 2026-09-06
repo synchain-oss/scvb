@@ -47,6 +47,7 @@ import {
     vizLegendRows,
     vizPlayheadEvent,
     vizSeries,
+    vizGlobalWidthPct,
 } from "./viz.js";
 
 // ------------------------------------------------------------- 设计盒(05 §1.2)
@@ -270,7 +271,17 @@ function renderTrajAxis() {
 const distMotion = createDistMotion({
     container: $("monitor-dist-bars"),
     isVisible: () => store.accepts.ok,
-    // viz 段只带每轨 width,不带全局「最大角度」—— 沿用 distGeometry 的 100 缺省。
+    // [SL-362] 全局「最大角度」现在**随 viz 段带过来了**(此前段里没有这个值、恒按 100 画,
+    // 于是用户把它调离 100 时两页的柱位当场对不上)。拿不到时 `vizGlobalWidthPct` 回落 100,
+    // 与 `distGeometry` 的缺省一致 —— 旧写方(段内槽为 0)因此与本卡之前的表现完全相同。
+    // ⚠ 读的是 `visibleFrame()`,**不是 `store.viz`** —— `store` 上根本没有 `viz` 这个键
+    //   (字面量见本文件顶部:`frame` / `accepts` / `vizStatus` / …)。初版写成 `store.viz`,
+    //   求值链是 `undefined → vizGlobalWidthPct(undefined) → 回落 100`,**恒 100**:段里的
+    //   字段、+1 哨兵、0..150 夹取域、三条 static_assert、golden、契约全做对了,唯独最后
+    //   这一跳读了个不存在的属性,于是页面上一格没修,而且**不报错、看起来完全正常**。
+    //   `visibleFrame()` 与下面 `distMotion.push(vizDistRows(viz), …)` 读的是**同一帧**,
+    //   两者口径必须一致:柱位与缩放取自不同帧的话,放大档下会对不上。
+    getGlobalWidthPct: () => vizGlobalWidthPct(visibleFrame()),
 });
 
 // ------------------------------------------------------------- 图例 hover 联动

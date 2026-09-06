@@ -432,8 +432,12 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
             "trackWidthPct",
             "trackLabels",
             "leadMask",
+            // [SL-362] 第六条:全局「最大角度」。本格钉的是**这张清单的字面内容**,
+            // 所以往 VIZ_PROMISED_FIELDS 里加字段必须同步改这里 —— 我加字段时漏了,
+            // 被它当场红出来。这正是它存在的意义:清单是给 parity 用的,不能悄悄长。
+            "globalWidthPct",
         ],
-        "T44/T45 依两轮对表新增、尚未合入 feature/v1 的五条",
+        "T44/T45 依两轮对表新增、尚未合入 feature/v1 的六条(含 [SL-362] 全局最大角度)",
     );
     eq(
         VC.VIZ_PENDING_FIELDS.slice(),
@@ -1058,6 +1062,40 @@ function paint(frame, ch, from, to, pan) {
     eq(rows[0].lead, true, "柱顶绿帽来自 leadMask");
     eq(rows[1].lead, false, "非 lead 轨不戴帽");
     eq(rows[1].stereo, true, "立体声位来自 stereoMask");
+
+    // [SL-362] 全局「最大角度」:此前 viz 段**根本不带这个值**,Monitor 恒按 100 画,
+    // 于是用户把它调离 100 时两页柱位当场对不上(用户 2026-09-06 实测)。
+    // 三格分别钉:真值读得到 / 缺席回落 100 / **回落值不是 0**。
+    // ← 实跑(不是推演):把回落改成 0 ⇒ 红「缺席回落 100」+「回落值不是 0」**两格**;
+    //   改成恒回落 100(不读段)⇒ 红「取自 viz 段」+「真 0% 读得出来」**两格**。
+    //   初版这句写的是「各只红一格」——**是假句**,而我自己那次实跑的输出里就摆着
+    //   各红两格。删除式的结论要照抄实得,不能照推演写(复审第 5 轮点名)。
+    f.globalWidthPct = 150;
+    eq(
+        VIZ.vizGlobalWidthPct(f),
+        150,
+        "[SL-362] 全局最大角度取自 viz 段(150,不是恒 100)",
+    );
+    // 缺席(旧写方:段内槽为 0 ⇒ 桥发 undefined)⇒ 回落 100 = 不缩放,与本卡之前一致。
+    f.globalWidthPct = undefined;
+    eq(
+        VIZ.vizGlobalWidthPct(f),
+        100,
+        "[SL-362] 写方未提供 ⇒ 回落 100(旧写方行为不变)",
+    );
+    // **回落值必须是 100 不是 0**:0 是合法宽度(全收拢到中央),拿它当「不知道」会把
+    // 15 根柱全挤到中线 —— 而那看起来像一张正常的图,没有任何东西会报错。
+    check(
+        VIZ.vizGlobalWidthPct(f) !== 0,
+        "[SL-362] 回落值不是 0(0 是合法宽度,会把柱全挤到中线且看起来正常)",
+    );
+    // 真的 0% 必须读得出来,不被当成「未提供」—— 少了这条,「恒回落 100」也能让上面全绿。
+    f.globalWidthPct = 0;
+    eq(
+        VIZ.vizGlobalWidthPct(f),
+        0,
+        "[SL-362] 真的 0%(全收拢)读得出来,不被当成未提供",
+    );
 
     // 标量缺席 ⇒ 回落到播放头所在列的车道点采样
     const sentinelPan = { ...f, trackPanNow: fill15([[2, 55]]) }; // 轨 1 缺席
@@ -1716,6 +1754,45 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     check(w.warnings.length === 1, "并留一条 warning(不假装支持)");
     eq(MMOCK.parseMonitorQuery("?group=99").group, null, "组号越界 ⇒ 忽略");
     eq(MMOCK.parseMonitorQuery("?group=5").group, 5, "合法组号原样");
+    // [SL-362] `?globalwidth=` 的三档。**空值必须按「不给」处理,不能算 0** ——
+    // `Number("")` 是 0,而 0 在这里是**合法宽度**(全收拢到中央):算成 0 的话,手拼 URL
+    // 或 harness 在值为空时吐出 `&globalwidth=`,拿到的是柱全挤在中线的图,**而那看起来
+    // 像一张正常的图**。这正是本卡在 native 侧用 `+1` 哨兵专门防的形态,mock 这侧漏过一次
+    // (复审第 7 轮)。← 把 `rawGw.trim() !== ""` 去掉,只红第一格。
+    eq(
+        MMOCK.parseMonitorQuery("?globalwidth=").globalWidthPct,
+        undefined,
+        "[SL-362] 空值 = 不给(不是 0 —— 0 是合法宽度)",
+    );
+    eq(
+        MMOCK.parseMonitorQuery("").globalWidthPct,
+        undefined,
+        "[SL-362] 不带该参数 = 不给(与旧写方同形)",
+    );
+    eq(
+        MMOCK.parseMonitorQuery("?globalwidth=0").globalWidthPct,
+        0,
+        "[SL-362] 显式 0 是**合法值**,要原样透传(与「不给」区分开)",
+    );
+    eq(
+        MMOCK.parseMonitorQuery("?globalwidth=150").globalWidthPct,
+        150,
+        "[SL-362] 150 原样(全局域 0..150,不是 per-track 的 0..100)",
+    );
+    // 「告警回落」是**两半**:回落 + 留下 warning。只断回落的话,把 `warnings.push` 整行
+    // 删掉(= 变成**静默忽略**)这一格照样绿 —— 而「不静默」正是本格自己声明要保的东西
+    // (复审第 8 轮点名)。同块上面 `?scenario=nope` 那格就是两半都断的写法,照它。
+    // ← 删掉那行 push,只红下面第二条。
+    const gwOob = MMOCK.parseMonitorQuery("?globalwidth=151");
+    eq(
+        gwOob.globalWidthPct,
+        undefined,
+        "[SL-362] 越界**回落**,不静默夹取(夹取会让用例以为测到了 151)",
+    );
+    check(
+        gwOob.warnings.some((x) => x.includes("globalwidth")),
+        "[SL-362] 越界还要留一条 warning(**告警**那半;不是静默忽略)",
+    );
     eq(MMOCK.parseMonitorQuery("?play=0").play, false, "play=0 ⇒ 走带停住");
     // 场景表与壳页白名单同源(壳页 import 本表,不抄第二份)
     const shell = src("web-preview/shell.js");

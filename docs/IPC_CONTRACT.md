@@ -244,7 +244,8 @@ struct VizFrame {                  // size 128 align 64(seqlock 临界区起点)
   atomic<u32> track_stereo_mask;   // 76   bit{N−1} = 该轨立体声源
   atomic<u32> lane_revision;       // 80   车道/位图内容版本;只在重算车道时 +1
   atomic<u32> track_lead_mask;     // 84   bit{N−1} = 该轨 lead_lock
-  u32 _reserved[10];               // 88..128
+  atomic<u32> global_width_plus_one; // 88 全局「最大角度」:0 = 写方未提供;否则 = 定点值+1
+  u32 _reserved[9];                // 92..128
 };
 struct VizTrackColors {            // size 64 align 64
   atomic<u32> index[15];           // 0    调色板槽位(1..15;0=未指定),v1 恒等于轨号
@@ -306,4 +307,8 @@ struct VizTrackLabels {            // size 512 align 64
 - **新增段不触发 abi+1**:「加一个新段」不改任何既有段的一个字节,新旧进程对 registry/audio/feat/ctrl 的互认完全不变。降级路径优雅 —— 旧版 Output 不建 viz 段 → Monitor `attachReadOnly()` 得 `kFailed` → 空态;abi 不符则得 `kAbiMismatch` → 拒连横幅,两者可区分
 - **不设独立 `viz_abi`**:独立版本号会造出「registry 认、viz 不认」的半兼容态,正是 J40 要禁的
 - **viz 段自身**将来的布局改动与其余各段同规(§5):**abi+1 且段名 v2**
+- **[SL-362] `global_width_plus_one`(偏移 88)取自原 `_reserved[0]`,不升 abi、不改段名。** 判定依据:**尺寸与所有既有字段偏移零变化**(`sizeof(VizFrame)` 仍 128,88 之前的字段一个字节没动,`_reserved` 起点由 88 顺延到 92),故不构成 §5 意义上的「布局改动」——§6.1 的尾部留白本就是「后续增补不改既有偏移」的用途。三条 `static_assert`(新字段 == 88、`_reserved` == 92、`sizeof == 128`)是这个判定的机检。
+  - **编码**:`vizPackFixed(width, kVizGlobalWidthMin, kVizGlobalWidthMax) + 1`(域是**全局那对 0..150**,**不是** per-track 的 `kVizWidthMin/Max` 0..100 —— 用错会把 101..150 静默夹到 100,见下一条);**`0` = 该写方未提供**。为什么 +1:旧写方覆盖式初始化把这一槽清成 `0`,而 `0` 在定点编码里是**合法宽度**(0% = 全收拢到中央)——直接存定点值的话,新读方配旧写方会把「没这个字段」读成「用户把最大角度调到了 0」,分布图把 15 根柱全挤到中线,**而那看起来像一张正常的图**。
+  - **两向降级**(都不拒连、都不半兼容):旧读方把该槽当填充忽略 ⇒ 分布图照 100 画,与本卡之前逐字一致;新读方读到 `0` ⇒ 回落 **100**(= 不缩放,`distGeometry` 的缺省)。
+  - **值域 0..150**(`width` 参数的工程量域),与 `VizTrackState.widthPct` 的 0..100 **不是同一个域**。两者**共用 ×100 的定点标度**,但**夹取域必须各用各的**(`kVizGlobalWidthMin/Max` vs `kVizWidthMin/Max`)—— `vizPackFixed` 的第一步就是按量纲夹取,拿 per-track 那对去编全局值会把 **101..150 静默夹到 100**,而那正是用户报的档位区间。**本卡初版就是这么写的**,于是「修了 bug」其实只修了 0..100 那半(复审第 1 轮红旗)。「共用同一套定点标度」这句话不带上「夹取域不同」的限定,就是把人引下去的那句。
 - 额外一道几何自检:段内 `column_count`/`track_count`/`pan_scale` 与读方编译期常量不一致时,`attachReadOnly()` 返回 `kAbiMismatch` —— **与 abi 不符刻意同码,不为几何漂移单设返回值**。三条理由:① 同 abi 下的几何漂移是**构建异常,理论不应发生**(它意味着两个二进制用同一个 abi 号编出了不同的编译期常量,属构建/分发出错,不是版本演进的正常态);② **用户可见处置完全相同** —— 两者都是「拒连 + 升级指引横幅」(J40),没有任何一条分支会因病因不同而走不同的恢复路径;③ **区分对用户无行动价值** —— 用户能做的只有换一个匹配的版本,多一个返回码不会让这件事更容易,却要在**全段共用**的 `InitResult` 上加值(五类段的所有调用点都得跟着过一遍)。若将来确有诊断需要,增设 `InitResult::kGeometryMismatch` 已记入 v1.6 修订节的 **abi+1 增补清单**

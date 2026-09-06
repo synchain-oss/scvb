@@ -3,6 +3,7 @@
 // 零写入、以及 VizPublisher 的降采样口径(断线 = 无分段覆盖)与 4Hz 分频节拍。
 // 跨进程部分(只读 attach / abi 拒连 / 一致性读)另见 tests/ipc/test_ipc_contract.cpp 的 VIZ-1/2。
 
+#include <limits>
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
@@ -164,6 +165,9 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     in->panNow[0] = scvb::vizPackPan(-12.5);
     in->volDb[0] = scvb::vizPackFixed(-6.25, scvb::kVizVolDbMin, scvb::kVizVolDbMax);
     in->widthPct[0] = scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
+    // [SL-362] 全局「最大角度」:值域 **0..150**,取 150 —— 一是 >100 才与「回落 100」分得开,
+    // 二是它落在**只有全局域才够得着**的那一半(per-track 域是 0..100)。
+    in->globalWidthPct = scvb::vizPackFixed(150.0, scvb::kVizGlobalWidthMin, scvb::kVizGlobalWidthMax);
     in->label[0] = "Lead";
     in->label[1] = "主唱"; // 主唱(多字节,验往返不乱码)
 
@@ -194,6 +198,18 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     REQUIRE(out->label[0] == "Lead");
     REQUIRE(out->label[1] == "主唱");
     REQUIRE(out->panNow[2] == scvb::kVizPanNone); // 未填 = 哨兵
+    // [SL-362] 全局「最大角度」往返。
+    //
+    // ⚠ 期望值**不用被测代码的同一个表达式算**(复审第 1 轮【重要】):初版写成
+    // `vizPackFixed(150.0, kVizWidthMin, kVizWidthMax)`,与被测处逐字同式 ⇒ 它只断言了
+    // 「两侧用同一条编码」,**夹取错了照样绿**;而那个表达式的值恰好就是 fixed(100),
+    // 于是「取 >100 免得与回落 100 撞车」这个理由**当场落空**——往返值就是 100。
+    // 现在两条一起钉:① 解出来的工程量是 150;② packed 是 **15000** 这个裸字面量
+    // (夹到 100 时是 10000,当场红)。判据必须**独立于被测物**,否则测的是自洽不是对。
+    // 定点数是精确的(150 × 100 = 15000),不需要 Approx —— 用精确比较更硬:
+    // Approx 会把「差一点」也放过,而这里任何偏差都意味着标度或夹取出了问题。
+    REQUIRE(scvb::vizUnpackFixed(out->globalWidthPct) == 150.0);
+    REQUIRE(out->globalWidthPct == 15000);
 
     // writeLanes=false:只刷帧头,车道内容原样保留(4Hz 刷 playhead / 车道按需重算的分频口径)。
     in->playheadSamples = 54321;
@@ -381,6 +397,85 @@ TEST_CASE("VizPublisher:发布 → 读侧看到降采样数据与断线", "[viz]
     // 轨色索引 = 轨号。
     REQUIRE(out->trackColor[0] == 1);
     REQUIRE(out->trackColor[14] == 15);
+}
+
+// [SL-362] **旧写方兼容**:本卡之前的 Output 不写 `global_width_plus_one`,覆盖式初始化
+// 把那一槽留成 **0**。新读方必须把 0 读成「未提供」(哨兵),**不是**「宽度 0%」——
+// 0 在定点编码里是合法宽度(全收拢到中央),读错的表现是分布图把 15 根柱全挤到中线,
+// **而那看起来像一张正常的图**,没有任何东西会报错。这一格就是为它写的。
+//
+// 造「旧写方」的方式:发布一帧**不设** globalWidthPct 的快照(默认即哨兵),写方那边会
+// 存 0 —— 与旧写方留下的 0 逐字节同形。
+// ← 把编码处的 `+1` 与解码处的 `-1` 同时去掉(往返仍自洽,上面那格照绿),**只红这一格**。
+TEST_CASE("VizPlane:[SL-362] 槽为 0 = 写方未提供 ⇒ 解码回哨兵,不是宽度 0", "[viz][plane][sl362]")
+{
+    scvb::SegmentBackendInProcess backend;
+    scvb::VizPlane writer(backend, 3);
+    REQUIRE(writer.open() == scvb::InitResult::kOk);
+    scvb::VizPlane reader(backend, 3);
+    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+
+    auto in = std::make_unique<scvb::VizSnapshot>();
+    auto out = std::make_unique<scvb::VizSnapshot>();
+    // 默认构造即哨兵 —— 明写一次,免得将来有人改了默认值而本格悄悄失去前提。
+    REQUIRE(in->globalWidthPct == scvb::kVizPanNone);
+
+    writer.publish(*in, /*writeLanes=*/true);
+    REQUIRE(reader.read(*out));
+    REQUIRE(out->globalWidthPct == scvb::kVizPanNone);
+    // 且**不是** 0:0 是合法宽度,两者混淆正是本格要挡的。
+    REQUIRE(out->globalWidthPct != 0);
+
+    // 反向:写一个真的 0%(全收拢)必须**能**往返出来,不被当成「未提供」。
+    // 少了这一条,把编码写成「恒存 0」也能让上面两格全绿。
+    in->globalWidthPct = scvb::vizPackFixed(0.0, scvb::kVizGlobalWidthMin, scvb::kVizGlobalWidthMax);
+    writer.publish(*in, /*writeLanes=*/true);
+    REQUIRE(reader.read(*out));
+    REQUIRE(out->globalWidthPct == 0); // 真的 0%:packed 就是 0(裸字面量,不经被测编码)
+    REQUIRE(out->globalWidthPct != scvb::kVizPanNone);
+}
+
+// [SL-362 复审第 5 轮] **打包点**那一格 —— 经真 `VizPublisher::tick` 喂工程量、从段里读回。
+//
+// 为什么单独要它:上面那两格喂的是**已经打好包的定点值**(`in->globalWidthPct` 是 int16),
+// 它们钉住的是 `VizPlane` 的编解码,**钉不到 `VizPublisher` 里那次 `vizPackFixed` 调用**。
+// 复核实证:把 `VizPublisher.cpp` 里那行的域换回 `kVizWidthMin/Max`、乃至把整块打包删掉,
+// 上面两格**全绿** —— 打包点当时没有任何判据。而红旗恰恰就出在那一行的域上。
+//
+// 期望值 **15000 是裸字面量**,不经被测编码(150 × kVizPanScale;夹到 100 时是 10000)。
+TEST_CASE("VizPublisher:[SL-362] 全局 width 经打包点落段(150 ⇒ 15000)", "[viz][publisher][sl362]")
+{
+    scvb::SegmentBackendInProcess backend;
+    scvb::output::VizPublisher pub(backend, 2);
+    REQUIRE(pub.open() == scvb::InitResult::kOk);
+    scvb::VizPlane reader(backend, 2);
+    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+
+    auto crvs = std::make_unique<scvb::state::CrvsData>();
+    crvs->versions[0].tracks[0].segments = {makeSeg(0.0, 10.0, 0.0f)};
+    scvb::CurveEvaluator c0;
+    buildCurve(c0, crvs->versions[0].tracks[0].segments);
+
+    scvb::output::VizPublishInput in;
+    in.crvs = crvs.get();
+    in.curves[0] = &c0;
+    in.versionActive = 1;
+    in.sampleRate = kSr;
+    in.crvsRevision = 1;
+    in.globalWidthPct = 150.0f; // ← **工程量**,由发布器负责打包
+
+    REQUIRE(pub.tick(0, in));
+    auto out = std::make_unique<scvb::VizSnapshot>();
+    REQUIRE(reader.read(*out));
+    // 150 × 100 = 15000。用 per-track 的 0..100 域会夹成 10000(红旗那个缺陷)。
+    REQUIRE(out->globalWidthPct == 15000);
+    REQUIRE(scvb::vizUnpackFixed(out->globalWidthPct) == 150.0);
+
+    // 不给(NaN,句柄未就绪)⇒ 段里留哨兵,读方回落 100。
+    in.globalWidthPct = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE(pub.tick(scvb::output::VizPublisher::kPublishIntervalMs, in));
+    REQUIRE(reader.read(*out));
+    REQUIRE(out->globalWidthPct == scvb::kVizPanNone);
 }
 
 TEST_CASE("VizPublisher:发布分频与车道按需重算", "[viz][publisher][cadence]")

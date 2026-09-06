@@ -62,6 +62,15 @@ inline constexpr double kVizVolDbMin = -24.0;
 inline constexpr double kVizVolDbMax = 12.0;
 inline constexpr double kVizWidthMin = 0.0;
 inline constexpr double kVizWidthMax = 100.0;
+// [SL-362] **全局**「最大角度」的夹取域 —— 与上面那对**不是一回事**,别互相搬。
+// per-track `widthPct` 是 0..100;全局 `width` 参数的域是 **0..150**
+// (`OutputParams.cpp` 的 `NormalisableRange<float>(0, 150)`,`docs/PARAMETERS.md` index 0)。
+// 两者**共用 ×100 的定点标度**(`vizPackFixed` 的 lo/hi 只做夹取,不改标度),但**夹取域不同**
+// —— 拿 per-track 那对去编全局值,101..150 会被静默夹到 100,而那正是用户报的档位区间
+// (复审第 1 轮红旗:本卡一度就是这么写的,于是「修了 bug」其实只修了 0..100 那半)。
+// 容量:150 × 100 = 15000,int16 上限 32767;段内再 +1 存 15001,同样安全。
+inline constexpr double kVizGlobalWidthMin = 0.0;
+inline constexpr double kVizGlobalWidthMax = 150.0;
 
 // 轨名:每轨 32 字节 UTF-8(8 个 u32 字),NUL 补齐;超长按 **UTF-8 字符边界**截断
 // —— 绝不切出半个多字节序列(半个汉字到了 web 侧就是一个替换字符)。
@@ -116,7 +125,21 @@ struct alignas(64) VizFrame
     std::atomic<u32> track_stereo_mask; // 76  bit{N-1} = 该轨立体声源
     std::atomic<u32> lane_revision; // 80  车道/位图内容版本(仅重算车道时 +1;读方可据此跳过重解析)
     std::atomic<u32> track_lead_mask; // 84  bit{N-1} = 该轨 lead_lock(分布图柱顶绿帽,同 Tab1 规格)
-    u32 _reserved[10]; // 88..128
+    // [SL-362] 全局「最大角度」。**取自原 _reserved[0]**:尺寸与所有既有字段偏移**零变化**,
+    // 故不属 §5 意义上的「布局改动」—— 不升 abi、不改段名(裁定见 change doc)。
+    //
+    // 编码 = **定点值 + 1**(`vizPackFixed(w, kVizGlobalWidthMin, kVizGlobalWidthMax) + 1`
+    // —— 域是**全局那对 0..150**,不是 per-track 的 0..100,理由见上面那段常量注释),
+    // 而 **0 = 写方
+    // 未提供**。为什么要 +1 而不是直接存定点值:旧写方(本卡之前的 Output)覆盖式初始化时
+    // 把这一槽清成 **0**,而 0 在定点编码里是**合法值**(width=0,全收拢到中央)——直接存的话
+    // 新读方配旧写方会把「没这个字段」读成「用户把最大角度调到了 0」,分布图当场把 15 根柱
+    // 全挤到中线。+1 之后 0 成了不可能出现的真值,可以安全地当「未提供」的哨兵。
+    //
+    // 两向降级:旧读方把它当填充忽略 ⇒ 照 100 画(与本卡之前一致);
+    //           新读方读到 0 ⇒ 回落 100(= `distGeometry` 的缺省,不缩放)。
+    std::atomic<u32> global_width_plus_one; // 88  0 = 未提供;否则 = 定点值 + 1
+    u32 _reserved[9]; // 92..128
 };
 
 // 轨色索引:调色板槽位(1..15;0 = 未指定)。v1 恒 = 轨号(web 侧 --track-color-{n} 顺序即轨号),
@@ -201,6 +224,15 @@ struct VizSnapshot
     std::array<std::int16_t, kMaxChannels> panNow{};
     std::array<std::int16_t, kMaxChannels> volDb{};
     std::array<std::int16_t, kMaxChannels> widthPct{};
+    // [SL-362] 全局「最大角度」(engineering 0..150,与 per-track widthPct 同一套定点编码)。
+    // 哨兵 kVizPanNone = **该写方没提供**(不是「0%」——0 是合法值,意为全收拢到中央)。
+    // 读方拿到哨兵时回落 100(= 不缩放),与 `distGeometry` 的缺省一致。
+    //
+    // 为什么 Monitor 需要它:两页共用 `distGeometry(pan, volDb, widthPct, globalWidthPct)`,
+    // 有效 pan = 名义 pan × globalWidth/100、张开半宽同缩放。Output 那侧传的是本进程的
+    // width 参数当前值,Monitor 此前**拿不到这个值、恒按 100 画** —— 于是用户把「最大角度」
+    // 调离 100 时两页的柱位当场对不上(用户 2026-09-06 报,批进 v5.6.9)。
+    std::int16_t globalWidthPct = kVizPanNone;
     // 轨名(已按 UTF-8 边界截断到 ≤kVizLabelBytes-1 字节)。
     std::array<std::string, kMaxChannels> label{};
 
@@ -237,6 +269,9 @@ struct VizSnapshot
         panNow.fill(kVizPanNone);
         volDb.fill(kVizPanNone);
         widthPct.fill(kVizPanNone);
+        // [SL-362] 全局 width 与每轨当前值同族:清成哨兵而不是 0 —— 0 是合法宽度(全收拢),
+        // 清成 0 会让读方把「没数据」画成「柱全挤在中央」,比留空态更难发现。
+        globalWidthPct = kVizPanNone;
     }
 
     // 位图取位(列越界返回 false)。
@@ -274,7 +309,9 @@ inline double vizUnpackPan(std::int16_t v) noexcept
 }
 
 // 通用定点(volDb / widthPct 共用 kVizPanScale)。**先按工程量纲夹取再定点** ——
-// lo/hi 就是 kVizVolDbMin/Max 与 kVizWidthMin/Max;不这么用的话那几个常量只是摆设,
+// lo/hi 就是 kVizVolDbMin/Max、kVizWidthMin/Max(per-track)与 kVizGlobalWidthMin/Max
+// (全局 width,0..150);**用错域会被静默夹取**,别拿 per-track 那对去编全局值。
+// 不这么用的话那几个常量只是摆设,
 // 而读者会以为段内值已被夹到文档声明的域。最后再夹到 int16 可表示范围,绝不撞哨兵。
 inline std::int16_t vizPackFixed(double v, double lo, double hi) noexcept
 {
@@ -428,6 +465,10 @@ static_assert(alignof(VizHeader) == 64);
 
 // VizFrame
 static_assert(sizeof(VizFrame) == 128, "VizFrame 必须 128 字节");
+// [SL-362] 新具名字段必须**恰好落在原 _reserved[0] 的位置**(88)——这一条与
+// `sizeof(VizFrame) == 128` 合起来,就是「尺寸与既有偏移零变化」那个论证的机检。
+// 谁把它挪到别处、或往前插字段,这两条里必有一条红。
+static_assert(offsetof(VizFrame, global_width_plus_one) == 88);
 static_assert(offsetof(VizFrame, seq) == 0);
 static_assert(offsetof(VizFrame, playhead_flags) == 4);
 static_assert(offsetof(VizFrame, publish_ms) == 8);
@@ -444,7 +485,10 @@ static_assert(offsetof(VizFrame, track_covered_mask) == 72);
 static_assert(offsetof(VizFrame, track_stereo_mask) == 76);
 static_assert(offsetof(VizFrame, lane_revision) == 80);
 static_assert(offsetof(VizFrame, track_lead_mask) == 84);
-static_assert(offsetof(VizFrame, _reserved) == 88);
+// [SL-362] 原 `_reserved` 起点是 88;它的第一个 u32 现已具名为 `global_width_plus_one`,
+// 剩余留白从 92 起。**两条都留着**:上面那条钉新字段落在原留白的起点(= 既有偏移零变化),
+// 这一条钉剩余留白的新起点 —— 谁再从这里往前插字段,两条里必有一条红。
+static_assert(offsetof(VizFrame, _reserved) == 92);
 static_assert(alignof(VizFrame) == 64);
 
 // VizTrackColors / VizCoverage / VizLanes
