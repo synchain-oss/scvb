@@ -3389,6 +3389,153 @@ log("=== ⑬ [SL-363] 分布图数据面同源:mock 的 panNow ↔ Output 读回
 }
 
 // =============================================================================
+log("=== ⑭ [SL-362 × SL-363] 全局宽度 0/100/150 三档:两页柱位逐字对拍 ===");
+// -----------------------------------------------------------------------------
+// 这一格是 #240(SL-362,全局「最大角度」进 viz 段)与本卡(SL-363,每轨当前值改走段读回)
+// 的**交叉面**。柱位 = `distGeometry(pan, volDb, per-track width, globalWidth)` 四元的函数;
+// 其中 `pan`/`volDb` 的两页同源由 ⑬ 钉住,**第四项 `globalWidth` 的两条取值链**由本节钉。
+// (`per-track width` 两侧本来就**不同源** —— mock 那三条与 Output 的取法不同,登记在
+//  `monitor-mock.js` 里;所以它不进本节的判定面,本节两侧喂的是**同一份字面量**。)
+//
+// 两条链(逐字取自生产源码,不是复述):
+//   · Monitor:`vizGlobalWidthPct(visibleFrame())` → `createDistMotion` 的 getter → `distGeometry`
+//   · Output :`readParam("width")`               → `createDistMotion` 的 getter → `distGeometry`
+// 本节对**同一组** (pan, volDb, per-track width) 与 globalWidth ∈ {0, 100, 150},要求两侧
+// 算出的 `x` / `half` **逐字相同**。
+//
+// 为什么必须三档而不是一档:两条链在 **100** 那一档是恒等的 —— Monitor 拿不到值时回落 100、
+// Output 的参数缺省也是 100,于是「接线整个断掉」在 100 上**照样绿**。0 与 150 才分得出来:
+// 0 是**合法宽度**(全收拢到中央,不是「不知道」),150 在 per-track 的 0..100 域之外
+// (误用那个域会被静默夹到 100)。这两个坑 #240 在 native 侧与 mock 侧各栽过一次。
+//
+// **本节量不到什么**(别读成它也钉住了):
+//   · 页面上真的重合 —— 那要真 DAW;机器侧只到「两条链喂进几何的是同一个数」。
+//   · `getGlobalWidthPct` 在页面里被**每帧**调用的时序面 —— 那是 ⑨ 与
+//     `smoke-monitor-page.mjs` 的事(后者要无头 Chrome,缺依赖时会 SKIP;本节不依赖它)。
+//   · native 发布器往段里写的 `global_width_plus_one` 哨兵与夹取域 —— 那是
+//     `tests/core/test_viz_plane.cpp` 的 `[sl362]`(标签是小写的,别写成 `[SL-362]`)。
+//
+// ★ 删除式(本机实测,实得条数记在 PR 描述里):
+//   · D-G1 `web/monitor/viz.js` 的 `vizGlobalWidthPct` 改成 `return 100`(Monitor 侧接线回常量);
+//   · D-G2 `web/monitor/app.js` 的 `getGlobalWidthPct: () => vizGlobalWidthPct(visibleFrame())`
+//     改成 `() => 100`(页面那一跳回常量)。
+{
+    const appSrc = src("web/monitor/app.js");
+    const tmSrc2 = src("web/output/tab-master.js");
+
+    // (a) 两侧「globalWidth 从哪来」各有一条源码锚。Output 那条 ① 节也有一份,这里再钉一次
+    //     是为了让两条链在同一段里并排可读(两处同形,改一处另一处照样红)。
+    //     Monitor 这条此前**只有**页面级冒烟守着(`smoke-monitor-page.mjs`),而那一套在没装
+    //     无头 Chrome 的机器上整套 SKIP —— 接线被改回常量时,本文件一条都不会红。
+    check(
+        /getGlobalWidthPct:\s*\(\)\s*=>\s*vizGlobalWidthPct\(visibleFrame\(\)\)/.test(
+            appSrc,
+        ),
+        "Monitor 的 getGlobalWidthPct 读的是 vizGlobalWidthPct(visibleFrame()),不是常量",
+    );
+    check(
+        /getGlobalWidthPct:\s*\(\)\s*=>\s*readParam\("width"\)/.test(tmSrc2),
+        'Output 的 getGlobalWidthPct 读的是 readParam("width"),不是常量',
+    );
+
+    // 被测行:**两页共用同一组** (pan, volDb, per-track width)。挑值的两条要求:
+    //   ① pan 经三档缩放后落到三个不同的 x(否则本节恒真);
+    //   ② 带**立体声**行 —— `half` 本身由下面逐行的 `distGeometry` 对拍钉住(单声道行也钉),
+    //      而只有立体声行会让它在**生产拼串**里真的被写出来(`--w`),下面那条整串对拍才盖得到它。
+    const parityRows = [
+        {
+            ch: 1,
+            pan: -40,
+            volDb: -6,
+            widthPct: 100,
+            stereo: false,
+            lead: false,
+        },
+        { ch: 2, pan: 70, volDb: 0, widthPct: 80, stereo: true, lead: false },
+        { ch: 3, pan: 0, volDb: -12, widthPct: 60, stereo: true, lead: false },
+    ];
+    const mkMotion = (getter) => {
+        // 只给 innerHTML(与 ⑨ 同款容器桩):`diag()` 的 `geometryXs` 走的是生产同一条
+        // `distBarsHtml`,不需要真 DOM。
+        const m = DM.createDistMotion({
+            container: { innerHTML: "" },
+            getGlobalWidthPct: getter,
+        });
+        m.push(parityRows, 0, 1000); // 结构变 ⇒ 首帧直接落位,target 即被测值,无补间中间态
+        return m;
+    };
+
+    const sigs = [];
+    for (const gw of [0, 100, 150]) {
+        const s2 = MMOCK.createPreviewSession({
+            params: `?scenario=monitor-online&globalwidth=${gw}`,
+        });
+        const bridge2 = MBRIDGE.createMonitorBridge({ mockBackend: s2.mock });
+        const snap2 = await bridge2.requestInitialState();
+
+        // Monitor 侧:viz 帧 → vizGlobalWidthPct(生产函数本身,不是抄一份)。
+        const gwMon = VIZ.vizGlobalWidthPct(snap2.viz);
+        // Output 侧:`readParam("width")` 的芯就是 `getStore().params.values[id]`
+        // (`tab-master.js` 的 `readParam` 三档:乐观回声 `local.paramEcho` → params 值 → `PARAM_DEFAULTS`)。
+        const outStore = { params: { values: { width: gw } } };
+        const gwOut = outStore.params.values.width;
+
+        eq(gwMon, gw, `gw=${gw}:Monitor 侧从 viz 帧解出的全局宽度`);
+        eq(gwMon, gwOut, `gw=${gw}:两侧喂进几何的是同一个数`);
+
+        const mMon = mkMotion(() => VIZ.vizGlobalWidthPct(snap2.viz));
+        const mOut = mkMotion(() => outStore.params.values.width);
+        eq(
+            mMon.diag().globalWidthPct,
+            mOut.diag().globalWidthPct,
+            `gw=${gw}:两侧补间器**实际在用的**全局宽度相同`,
+        );
+        eq(
+            mMon.diag().geometryXs,
+            mOut.diag().geometryXs,
+            `gw=${gw}:两侧经生产 distBarsHtml 算出的柱位串逐字相同`,
+        );
+        // `geometryXs` 只挑出 `--x`;`half` 写进段落的是立体声张开线的 `--w`,
+        // 所以再拿**整串**对一次字节 —— 这一条才盖得到 `half` 的写入面。
+        eq(
+            DC.distBarsHtml(parityRows, null, mMon.diag().globalWidthPct),
+            DC.distBarsHtml(parityRows, null, mOut.diag().globalWidthPct),
+            `gw=${gw}:两页共用的拼串器产出逐字节同款(含张开线的 --w)`,
+        );
+
+        // 逐行 x / half 逐字相同(`half` 只有立体声行画得出来,故上面那两条盖不住它)。
+        const geoOf = (m) =>
+            parityRows.map((r) => {
+                const g = DC.distGeometry(
+                    r.pan,
+                    r.volDb,
+                    r.widthPct,
+                    m.diag().globalWidthPct,
+                );
+                return [g.x, g.half];
+            });
+        const gMon = geoOf(mMon);
+        const gOut = geoOf(mOut);
+        for (let i = 0; i < parityRows.length; i++) {
+            eq(
+                gMon[i],
+                gOut[i],
+                `gw=${gw} 轨 ${parityRows[i].ch}:x/half 两页逐字相同`,
+            );
+        }
+        sigs.push(JSON.stringify(gMon));
+
+        mMon.destroy();
+        mOut.destroy();
+        s2.stop();
+    }
+
+    // 三档必须真的画出三份不同的几何 —— 否则上面每一条都是恒真的(把两边一起钉死在 100
+    // 也能全绿)。这一条就是本节的**非退化前提**,也是 D-G1 的红点之一。
+    eq(new Set(sigs).size, 3, "0 / 100 / 150 三档算出三份互不相同的几何");
+}
+
+// =============================================================================
 if (fail > 0) {
     console.error(`\n=== 失败 ${fail} 条 ===`);
     process.exit(1);
