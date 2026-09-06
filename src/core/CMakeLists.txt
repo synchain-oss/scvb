@@ -72,6 +72,7 @@ add_library(scvb_core STATIC
   output/BusXfade.h
   output/OutputSession.cpp
   output/OutputSession.h
+  output/DistReadback.h
   output/VizPublisher.cpp
   output/VizPublisher.h
   state/StateCodec.cpp

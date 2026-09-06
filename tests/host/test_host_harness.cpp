@@ -45,6 +45,7 @@
 #include "OutputProcessor.h"
 #include "ipc/SegmentBackendWin32.h"
 #include "ipc/VizPlane.h"
+#include "output/DistReadback.h" // [SL-363] 分布图读回链(与 Output 前端同源)
 #include "state/FeaturesCodec.h" // [SL-215] isValidSessionGuid
 #include "state/InputStateCodec.h" // [SL-234] Input 侧 CFGS 同一处夹取缺口
 #include "state/OutputStateCodec.h"
@@ -7399,4 +7400,149 @@ TEST_CASE("HOST SL263:segmentLoudnessLufs 早退分支回 −120 且不越界", 
                                                   static_cast<std::int64_t>(cr.end) * hopSamples);
     CHECK(std::isfinite(real));
     CHECK(real > kSilent); // 恒回静音替身(例如整型换算写错成恒 0 窗)时必红
+}
+
+// ===========================================================================
+// [SL-363] Monitor 的 viz 段每轨当前值 ↔ Output 分布图的读回值:**接线**格
+// ===========================================================================
+// 口径本身的判据在 `tests/core/test_viz_plane.cpp` 的 `[SL-363]` 两个用例里(纯函数 +
+// 发布器)。本用例守的是那三条输入**真的被 OutputProcessor 填进去了** —— 段表、
+// `outputEnabled`、`freezeParam` 任缺一条,纯函数用例照样全绿而真机上两页仍对不上
+// (「测接线不只测零件」)。
+//
+// 手法:拿 processor 自己的 state 出来,只把 CRVS 那一块换成手工造的两段带空隙的段表,
+// 再灌回去 —— 于是段的位置由用例说了算(走分析拿不到可控的空隙),而链路是真的:
+// state → rebuildAllCurves → publishVizFrame → viz 段 → Monitor 侧读到的就是这份。
+//
+// ★ 删除式(本机实测;数是**实得** FAIL 条数):
+//   · `in.freezeParam[...]` 恒填 0(接线拆掉)     ⇒ 1 条 —— 只有 (b) 的 pan 那格
+//   · `in.outputEnabled` 恒填 true(接线拆掉)     ⇒ 2 条 —— 只有 (c) 两格
+//   · 发布器改回 `curve->panAt/volAt`(整卡撤掉)  ⇒ 7 条 —— (a)(b)(c) 全族
+// ---------------------------------------------------------------------------
+namespace
+{
+std::int64_t sl363Samples(double sec)
+{
+    return static_cast<std::int64_t>(sec * kSr);
+}
+
+scvb::state::Segment sl363Seg(double t0Sec, double t1Sec, float pan, float volDb)
+{
+    scvb::state::Segment s;
+    s.t0 = sl363Samples(t0Sec);
+    s.t1 = sl363Samples(t1Sec);
+    s.pan = pan;
+    s.volDb = volDb;
+    s.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+    return s;
+}
+
+// 只读 attach 本组 viz 段并读一帧;段不在 / 撕裂读满次数 ⇒ false。
+bool sl363ReadViz(scvb::u32 group, scvb::VizSnapshot& out)
+{
+    scvb::SegmentBackendWin32 backend;
+    scvb::VizPlane probe(backend, group);
+    if (probe.attachReadOnly() != scvb::InitResult::kOk)
+    {
+        return false;
+    }
+    return probe.read(out);
+}
+
+// 把该轨的段表换成 segs(其余 state 原样回灌)。
+void sl363LoadSegments(ScvbOutputAudioProcessor& out, int ch, const std::vector<scvb::state::Segment>& segs)
+{
+    juce::MemoryBlock blob;
+    out.getStateInformation(blob);
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(blob.getData()), blob.getSize(), chunks) ==
+            scvb::state::DecodeStatus::Ok);
+
+    // **在现有 CRVS 上改**,不是造一份新的:版本名 / 另一版的曲线 / pan 曲线点都要留着,
+    // 否则灌回去的是一份「只有这一轨有东西」的工程,红起来会指向与本卡无关的地方。
+    scvb::state::CrvsData crvs;
+    if (const auto* prev = chunks.find(scvb::state::kFourccCrvs); prev != nullptr && !prev->payload.empty())
+    {
+        REQUIRE(scvb::state::decodeCrvs(prev->payload.data(), prev->payload.size(), crvs));
+    }
+    const auto v = static_cast<std::size_t>(out.versionActive() - 1);
+    crvs.versions[v].tracks[static_cast<std::size_t>(ch - 1)].segments = segs;
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeCrvs(crvs, payload));
+    chunks.set(scvb::state::kFourccCrvs, payload);
+
+    std::vector<std::uint8_t> blob2;
+    REQUIRE(scvb::state::encodeContainer(chunks, blob2));
+    out.setStateInformation(blob2.data(), static_cast<int>(blob2.size()));
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(300);
+}
+
+// 一次性写一个参数(gesture 三段式,同 setFreezeBits)。
+void sl363SetParam(ScvbOutputAudioProcessor& out, const juce::String& id, float engineering)
+{
+    auto* p = out.getAPVTS().getParameter(id);
+    REQUIRE(p != nullptr);
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(engineering));
+    p->endChangeGesture();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(120);
+}
+} // namespace
+
+TEST_CASE("HOST SL-363:viz 段的每轨当前值走 Output 的读回链(段值/冻结维/输出档)", "[host][t37][v56][SL363]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected()); // 参数回落只对**已连接轨**生效([SL-361] 那道闸)
+    r.out.setOutputEnabled(true);
+
+    // 段表:[0,10) pan=-60/vol=-3,**空隙 [10,20)**,[20,30) pan=+60/vol=+6。
+    const std::vector<scvb::state::Segment> segs = {sl363Seg(0.0, 10.0, -60.0f, -3.0f),
+                                                    sl363Seg(20.0, 30.0, 60.0f, 6.0f)};
+    sl363LoadSegments(r.out, kTestChannel, segs);
+    REQUIRE(segmentsOfTrack(r.out, kTestChannel).size() == 2); // 前置:段表真的换了
+
+    // 播放头钉在空隙里的 16s(playing=false ⇒ runBlocks 不再推进它,但 processBlock
+    // 仍在发布 playhead 快照 —— 那才是发布器读的那一份)。
+    r.ph.playing = false;
+    r.ph.timeSamples = sl363Samples(16.0);
+    r.runBlocks(24, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    REQUIRE(r.out.playheadSnapshot().timeSamples == sl363Samples(16.0));
+    REQUIRE(r.waitUntilInjected());
+
+    const std::size_t idx = static_cast<std::size_t>(kTestChannel - 1);
+    auto viz = std::make_unique<scvb::VizSnapshot>();
+
+    // ---- (a) 空隙:两侧都保持**前一段** ----------------------------------
+    REQUIRE(sl363ReadViz(static_cast<scvb::u32>(kTestGroup), *viz));
+    {
+        // Output 那一页此刻会显示什么:同一条读回链,吃的是 processor 自己的段表。
+        const auto rb = scvb::output::readbackSegsOf(segmentsOfTrack(r.out, kTestChannel), /*freezeBits=*/0,
+                                                     /*outputOn=*/true, sl363Samples(16.0));
+        REQUIRE(rb.pan != nullptr);
+        CHECK(rb.pan->pan == -60.0f);
+        CHECK(viz->panNow[idx] == scvb::vizPackPan(static_cast<double>(rb.pan->pan))); // 两侧相等
+        CHECK(viz->volDb[idx] ==
+              scvb::vizPackFixed(static_cast<double>(rb.vol->volDb), scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    }
+    // 反向:曲线求值在 16s 给的是**后一段**(+60)。改回曲线求值时这一格红。
+    CHECK(viz->panNow[idx] != scvb::vizPackPan(60.0));
+
+    // ---- (b) 冻结 pan ⇒ 该维读参数面,vol 仍读段 -------------------------
+    setFreezeBits(r.out, kTestChannel, 1);
+    sl363SetParam(r.out, scvb::params::panId(r.out.versionActive(), kTestChannel), 25.0f);
+    r.runBlocks(12, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    REQUIRE(sl363ReadViz(static_cast<scvb::u32>(kTestGroup), *viz));
+    CHECK(viz->panNow[idx] == scvb::vizPackPan(25.0)); // ← freezeParam 没接线时红(仍是 -60)
+    CHECK(viz->volDb[idx] == scvb::vizPackFixed(-3.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+
+    // ---- (c) 输出 OFF(跟随宿主)⇒ 两维都读参数面 ------------------------
+    setFreezeBits(r.out, kTestChannel, 0);
+    r.out.setOutputEnabled(false);
+    sl363SetParam(r.out, scvb::params::panId(r.out.versionActive(), kTestChannel), -40.0f);
+    sl363SetParam(r.out, scvb::params::volId(r.out.versionActive(), kTestChannel), 4.0f);
+    r.runBlocks(12, 0.25f, /*pumpEveryN=*/2, /*pumpMs=*/12);
+    REQUIRE(sl363ReadViz(static_cast<scvb::u32>(kTestGroup), *viz));
+    CHECK(viz->panNow[idx] == scvb::vizPackPan(-40.0)); // ← outputEnabled 没接线时红(仍是 -60)
+    CHECK(viz->volDb[idx] == scvb::vizPackFixed(4.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
 }

@@ -1053,7 +1053,7 @@ function paint(frame, ch, from, to, pan) {
 
     const rows = VIZ.vizDistRows(f);
     eq(rows.length, 2, "两轨都画柱");
-    // T44 对表信定的口径:panNow 是**播放头精确时刻**的求值,车道是列中心点采样。
+    // [SL-363] 口径:panNow 是**播放头所在段**的段值(读回链),车道是列中心点采样。
     // 分布图要「此刻」⇒ 标量优先。写反了在放大档下柱与播放头对不上,而且看起来正常。
     eq(rows[0].pan, -25, "横位取 trackPanNow(−25),**不是**车道第 7 列的 −30");
     eq(rows[1].pan, 55, "轨 2 同理:标量 55 而非车道 60");
@@ -3240,6 +3240,152 @@ log("=== ⑨ 分布图帧间补间(SL-192;web/shared/dist-motion.js)===");
             `P2-13 该卡内不再有生效的红色声明(紫底红字);实得 ${reds.join(" | ")}`,
         );
     }
+}
+
+// =============================================================================
+log("=== ⑬ [SL-363] 分布图数据面同源:mock 的 panNow ↔ Output 读回链 ===");
+// -----------------------------------------------------------------------------
+// 用户 v5.6.8 实测:Monitor 与 Output 的柱位「一些片段对齐、一些不对」。真因是两侧对
+// **同一个量**各走一条链 —— Output 走段读回(`web/shared/readback.js`),Monitor 侧的
+// native 发布器走 `CurveEvaluator` 的精确时刻求值。SL-363 把发布器换成同一条链。
+//
+// **本节量得到什么**:JS 这一侧的两个消费点(Monitor 的 mock 投影 / Output 的读回链)
+// 在同一份世界、同一个播放头上给出**同一个段**。mock 现在直接调 `curveSegmentAt`,所以
+// 这一节钉的是「mock 真的走了那条链」这段接线,外加把「空隙 ⇒ 前一段」这条口径在 JS 侧
+// 留一份可执行的记录。
+//
+// **本节量不到什么**(别读成它也钉住了):
+//   · native 发布器的口径 —— 那是 C++ 的事,判据在 `tests/core/test_viz_plane.cpp` 的
+//     `[SL-363]` 两个用例与 `tests/host/test_host_harness.cpp` 的 HOST SL-363;
+//   · 冻结维 / 输出档 / 手动段 / 参数回落四档 —— mock 不造它们(那两条近似登记在
+//     `monitor-mock.js` 的 `VizTrackState` 段注释里),真桥走的是完整 `readbackSegsOf`;
+//   · 两页的**渲染**面 —— 那是 `smoke-output-dist-page.mjs` 的 ⑫ [SL-353]。
+//
+// ★ 删除式(本机实测,实得条数记在 PR 描述里):
+//   · D-M2 mock 在空隙里改取**后一段**(= 曲线求值的做法)     ⇒ 实得 21 条:(b)(c) 各 5 轨 × 2 格
+//     加 (e) 的拼串器对拍 1 格,(d) 与本文件其余各节全绿;
+//   · D-M1 mock 退回本卡之前那份本地 `segmentAt`(首段之前给 null)⇒ **只有 (d) 红**。
+//     (实得 15 条,15 轨各一格。)
+//     D-M1 单独立一格的理由:它与新链的唯一分叉就在「播放头在首段之前」这一档,而 fixture
+//     的走带位置(42s)在每一轨的首段之后 —— (b)(c) 对它全绿。**一条删除式只红在它自己那格**,
+//     所以「首段之前」必须自己有一格,不能指望 (b) 顺带钉住(那正是 SL-363 第一版漏掉的)。
+{
+    const SD = await import(u("web-preview/mock/state-driver.js"));
+    const RB = await import(u("web/shared/readback.js"));
+    // monitor-mock 内部就是拿这一行造世界的(见该文件的 `buildWorld(...)` 调用)。
+    const world = SD.buildWorld({ role: "output", fixture: "fifteen-tracks" });
+    const segChannels = (world.output.segments || {}).channels || [];
+
+    const s = MMOCK.createPreviewSession({
+        params: "?scenario=monitor-online",
+    });
+    const bridge = MBRIDGE.createMonitorBridge({ mockBackend: s.mock });
+    const snap = await bridge.requestInitialState();
+    const v = snap.viz;
+    const tS = v.playheadS;
+    near(tS, 42, 0.01, "播放头 = 42s(与 ④ 那节同一份 fixture)");
+
+    // (a) 前置:这份世界在 42s 上**确实有轨落在空隙里**。没有的话本节等于什么都没量 ——
+    //     段内那一档两条链本来就同值,只有空隙与 ramp 才分叉。
+    const gapChs = segChannels
+        .filter(
+            (c) =>
+                !(c.segments || []).some((g) => g.t0S <= tS && tS < g.t1S) &&
+                RB.curveSegmentAt(c, tS) !== null,
+        )
+        .map((c) => c.ch);
+    check(
+        gapChs.length >= 3,
+        `fixture 在 ${tS}s 上至少 3 轨落在段间空隙里(实得 ${gapChs.length} 轨:${gapChs.join(",")})`,
+    );
+
+    // (b) 逐轨:mock 发出的标量 == Output 读回链在同一时刻选中的那一段。
+    for (const c of segChannels) {
+        const seg = RB.curveSegmentAt(c, tS);
+        const got = v.trackPanNow[c.ch - 1];
+        eq(
+            got,
+            seg ? seg.pan : null,
+            `轨 ${c.ch}:trackPanNow == 读回链选中段的 pan(${seg ? seg.pan : "null"})`,
+        );
+        eq(
+            v.trackVolDb[c.ch - 1],
+            seg ? seg.volDb : null,
+            `轨 ${c.ch}:trackVolDb 同源`,
+        );
+    }
+
+    // (c) 空隙那几轨:值必须是**前一段**,而不是后一段 —— 这一格是本卡口径的正身。
+    //     (曲线求值给的正是「过了空隙中点就切后一段」,所以反向断言钉的就是它。)
+    for (const ch of gapChs) {
+        const c = segChannels.find((x) => x.ch === ch);
+        const prev = (c.segments || []).filter((g) => g.t1S <= tS).pop();
+        const next = (c.segments || []).find((g) => g.t0S > tS);
+        check(!!prev && !!next, `轨 ${ch}:空隙两侧都有段(判据的前提)`);
+        eq(
+            v.trackPanNow[ch - 1],
+            prev.pan,
+            `轨 ${ch}:空隙里保持**前一段** ${prev.pan}`,
+        );
+        check(
+            prev.pan !== next.pan,
+            `轨 ${ch}:前后两段 pan 不同(${prev.pan} vs ${next.pan}),这一格才分得出前后`,
+        );
+        check(
+            v.trackPanNow[ch - 1] !== next.pan,
+            `轨 ${ch}:**不是**后一段 ${next.pan}(曲线求值会给这个数)`,
+        );
+    }
+
+    // (d) **首段之前**这一档:走带回到 0s,读回链回填**首段**(不是 null)。
+    //     `ctl.vizFrame` 是 mock 造帧的那个函数本身,直接按任意 tS 要一帧 —— fixture 的
+    //     走带位置固定在 42s,不这么要就永远走不到这条分支。
+    {
+        const atZero = s.ctl.vizFrame(1, 0, true);
+        for (const c of segChannels) {
+            const first = (c.segments || [])[0];
+            check(
+                !!first && first.t0S > 0,
+                `轨 ${c.ch}:首段起点 ${first && first.t0S} > 0(这一格的前提)`,
+            );
+            eq(
+                atZero.trackPanNow[c.ch - 1],
+                first.pan,
+                `轨 ${c.ch}:0s 在首段之前 ⇒ 回填**首段** ${first.pan}(不是 null)`,
+            );
+        }
+    }
+
+    // (e) 同一批 pan/volDb 喂进两页共用的拼串器 ⇒ 逐字节同款。
+    //     rows 的其余维(宽度 / 立体声 / lead)不在本节的判定面内:mock 那三条与 Output
+    //     的取法本来就不同源(登记在 monitor-mock.js 里),硬拿来对拍会红在与本卡无关的地方。
+    const monRows = VIZ.vizDistRows(v).map((r) => ({
+        ch: r.ch,
+        pan: r.pan,
+        volDb: r.volDb,
+        widthPct: 100,
+        stereo: false,
+        lead: false,
+    }));
+    const outRows = segChannels.map((c) => {
+        const seg = RB.curveSegmentAt(c, tS);
+        return {
+            ch: c.ch,
+            pan: seg ? seg.pan : 0,
+            volDb: seg ? seg.volDb : 0,
+            widthPct: 100,
+            stereo: false,
+            lead: false,
+        };
+    });
+    eq(monRows.length, outRows.length, "两侧轨数一致");
+    eq(
+        DC.distBarsHtml(monRows, null),
+        DC.distBarsHtml(outRows, null),
+        "同一批 pan/volDb ⇒ 两页共用的拼串器产出逐字节同款",
+    );
+
+    s.stop();
 }
 
 // =============================================================================

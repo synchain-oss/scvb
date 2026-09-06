@@ -440,10 +440,11 @@ export function vizSeries(viz) {
  * 与 Tab1「空闲轨无参数值,vol=0 会被画成幽灵柱」是同一条纪律的不同判据面。
  *
  * **横位的取值优先级**照 `PAN_NOW_PRIORITY`:`trackPanNow` 优先,它是哨兵时才回落到播放头
- * 所在**列**的车道点采样(列中心,与精确时刻差半列),都拿不到才 0。
- * [SL-361] `trackPanNow` 本身现在是三档(有段有曲线 → 精确时刻求值;无段/无曲线且**已连接**
- * → 参数当前值;其余 → 哨兵),口径真源见 `docs/IPC_CONTRACT.md` §6.1 那条 ⚠。反过来写会让分布图的柱与轨迹图的播放头在放大档下对不上,
- * 而那是「看起来完全正常」的那类错。
+ * 所在**列**的车道点采样(列中心,与「此刻」差半列),都拿不到才 0。
+ * [SL-363] `trackPanNow` 本身是**分布图读回链**的结果 —— 播放头所在段的段值 + 参数回落,
+ * 与 Output 那张图逐条同源(不是 `CurveEvaluator` 的精确时刻求值:段边界的 ramp 只在车道上有)。
+ * 口径真源见 `docs/IPC_CONTRACT.md` §6.1 那条 ⚠ 与 `src/core/output/DistReadback.h`。
+ * 反过来写会让分布图的柱与轨迹图的播放头在放大档下对不上,而那是「看起来完全正常」的那类错。
  */
 export function vizDistRows(viz) {
     if (!Array.isArray(viz && viz.trackVolDb)) return [];

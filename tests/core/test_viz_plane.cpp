@@ -15,6 +15,7 @@
 
 #include "ipc/SegmentBackendInProcess.h"
 #include "ipc/VizPlane.h"
+#include "output/DistReadback.h"
 #include "output/VizPublisher.h"
 
 using scvb::u32;
@@ -627,4 +628,219 @@ TEST_CASE("VizPublisher:驱动周期 == 闸门时,抖动会周期性丢帧(故�
 
     // 出厂配置(60Hz 驱动 + 夹在一拍与两拍之间的闸门)在同样的抖动下毫发无伤。
     REQUIRE(publishedInOneSecond(shipped, 2) >= 28);
+}
+
+// ===========================================================================
+// [SL-363] 分布图「每轨当前值」的读回口径 —— Monitor 与 Output 同源
+// ===========================================================================
+// 用户 v5.6.8 真机原话:「柱子位置明显不对……不过在一些地方是对齐的,一些片段不对。」
+// 定谳:两侧画的是同一个量,却各走各的链 ——
+//   · Output(`web/output/tab-master.js` renderDist → `web/shared/readback.js`)= 播放头
+//     **所在段**的段值(空隙里保持前一段)+ 冻结 / 输出档 / 手动段三档回落;
+//   · Monitor(本文件测的 `VizPublisher`)原来 = `CurveEvaluator` 在播放头**精确时刻**的求值。
+// 于是「段内对齐、空隙与段边界不对」。SL-363 把发布器换成同一条读回链(`DistReadback.h`)。
+//
+// 每一格都同时钉**新值**与**旧值**:只断「等于段值」的话,把实现改回曲线求值时,段内那些格
+// 照样绿 —— 真正分叉的是空隙与 ramp 窗口这两处,所以那两处显式断「不等于曲线给的那个数」,
+// 并把曲线给的数**量出来**(那是分叉幅度的实测,不是推断)。
+//
+// ★ 删除式(本机实测;下面每条后面的数是**实得** FAIL 条数,不是预期):
+//   · D1 发布器改回 `curve->panAt/volAt`(整条读回链被短路)      ⇒ 11 条 —— (a)(b)(c)(d)(e) 全族。
+//     D1 是「把本卡整个撤掉」,所以它**不是**一条精准注入:它红得比下面四条都宽,
+//     真正证明「每一格各钉各的」的是 D2-D5 那四条各自只红自己那一格。
+//   · D2 发布器不解 freeze(恒传 0)                              ⇒ 1 条 —— 只有 (c)
+//   · D3 发布器恒传 outputEnabled = true                          ⇒ 4 条 —— (d) 两格 + (e) 两格
+//     ((e) 跟着红是对的:轨1 有段,输出档一旦被写死成 ON,未连接轨也会拿到段值而不是哨兵)
+//   · D4 `readbackSegsOf` 去掉 manual 优先(只留 curveSegmentAt)  ⇒ 2 条 —— 纯函数那格 + (d) 的手动段格
+//   · D5 `curveSegmentAt` 空隙改取**后一段**                      ⇒ 6 条 —— 纯函数空隙格 + (a) 四格 + (b) 里轨1 那格;
+//     **(b) 的 ramp 两格不红** —— 那两格钉的是「段内取该段」,与空隙分支是两条路
+namespace
+{
+scvb::state::Segment makeSegV(double t0Sec, double t1Sec, float pan, float volDb,
+                              scvb::state::SegmentOrigin origin = scvb::state::SegmentOrigin::Auto)
+{
+    scvb::state::Segment s;
+    s.t0 = static_cast<std::int64_t>(t0Sec * kSr);
+    s.t1 = static_cast<std::int64_t>(t1Sec * kSr);
+    s.pan = pan;
+    s.volDb = volDb;
+    s.flags = scvb::state::makeSegmentFlags(origin, false);
+    return s;
+}
+
+std::int64_t atSec(double sec)
+{
+    return static_cast<std::int64_t>(sec * kSr);
+}
+
+// 手动接管常值段的右端:`SegmentEditService.h` 写的是 1<<40 样本。这里按秒给同一个数量级的
+// 「远大于任何播放位置」,免得测试里再抄一遍那个哨兵字面量。
+constexpr double kFarEndSec = 4294967296.0;
+} // namespace
+
+TEST_CASE("DistReadback:段选择口径逐条对齐 web/shared/readback.js", "[viz][publisher][SL-363][readback]")
+{
+    const std::vector<scvb::state::Segment> gap = {makeSegV(0.0, 10.0, -60.0f, -3.0f),
+                                                   makeSegV(20.0, 30.0, 60.0f, 6.0f)};
+    const std::vector<scvb::state::Segment> manual = {
+        makeSegV(0.0, kFarEndSec, -80.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited)};
+
+    // 首段之前 → 首段;末段之后 → 末段。这两档两侧**本来就一致**(曲线求值也这么回填),
+    // 不是病灶 —— 卡面把「段外」列成疑似分叉族,实测下来分叉的只有**段间空隙**。
+    REQUIRE(scvb::output::curveSegmentAt(gap, atSec(-1.0))->pan == -60.0f);
+    REQUIRE(scvb::output::curveSegmentAt(gap, atSec(99.0))->pan == 60.0f);
+    // 段内。
+    REQUIRE(scvb::output::curveSegmentAt(gap, atSec(5.0))->pan == -60.0f);
+    REQUIRE(scvb::output::curveSegmentAt(gap, atSec(25.0))->pan == 60.0f);
+    // **空隙 → 前一段**,整个空隙都是,不因过了中点就切后段(那正是曲线求值的做法)。
+    REQUIRE(scvb::output::curveSegmentAt(gap, atSec(10.0))->pan == -60.0f);
+    REQUIRE(scvb::output::curveSegmentAt(gap, atSec(16.0))->pan == -60.0f);
+    REQUIRE(scvb::output::curveSegmentAt(gap, atSec(19.9))->pan == -60.0f);
+    // 空表 → nullptr(调用方回落参数面)。
+    const std::vector<scvb::state::Segment> none;
+    REQUIRE(scvb::output::curveSegmentAt(none, 0) == nullptr);
+
+    // 手动常值段:判据只看「段数 == 1 ∧ origin == UserEdited」。
+    REQUIRE(scvb::output::manualConstantOf(manual) != nullptr);
+    REQUIRE(scvb::output::manualConstantOf(gap) == nullptr);
+    {
+        auto notManual = manual;
+        notManual.front().flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+        REQUIRE(scvb::output::manualConstantOf(notManual) == nullptr);
+    }
+
+    // 优先级链四档。
+    const auto onNoFreeze = scvb::output::readbackSegsOf(gap, 0, /*outputOn=*/true, atSec(16.0));
+    REQUIRE(onNoFreeze.pan != nullptr);
+    REQUIRE(onNoFreeze.pan->pan == -60.0f);
+    REQUIRE(onNoFreeze.vol->volDb == -3.0f);
+    // 输出 OFF(跟随宿主)⇒ 两维都回落参数面。
+    const auto off = scvb::output::readbackSegsOf(gap, 0, /*outputOn=*/false, atSec(16.0));
+    REQUIRE(off.pan == nullptr);
+    REQUIRE(off.vol == nullptr);
+    // 手动常值段**不看输出档**。
+    const auto manOff = scvb::output::readbackSegsOf(manual, 0, /*outputOn=*/false, atSec(500.0));
+    REQUIRE(manOff.pan != nullptr);
+    REQUIRE(manOff.pan->pan == -80.0f);
+    REQUIRE(manOff.manual == manOff.pan);
+    // 冻结**逐维**:冻 pan 只让 pan 回落,vol 仍读段(写成「一冻全冻」会在这里红)。
+    const auto frzPan = scvb::output::readbackSegsOf(manual, 1, /*outputOn=*/true, atSec(500.0));
+    REQUIRE(frzPan.pan == nullptr);
+    REQUIRE(frzPan.vol != nullptr);
+    REQUIRE(frzPan.vol->volDb == -9.0f);
+    const auto frzVol = scvb::output::readbackSegsOf(manual, 2, /*outputOn=*/true, atSec(500.0));
+    REQUIRE(frzVol.pan != nullptr);
+    REQUIRE(frzVol.vol == nullptr);
+    const auto frzBoth = scvb::output::readbackSegsOf(manual, 3, /*outputOn=*/true, atSec(500.0));
+    REQUIRE(frzBoth.pan == nullptr);
+    REQUIRE(frzBoth.vol == nullptr);
+}
+
+TEST_CASE("VizPublisher:panNow/volDb 走段读回,不再是曲线求值", "[viz][publisher][SL-363]")
+{
+    scvb::SegmentBackendInProcess backend;
+    scvb::output::VizPublisher pub(backend, 3);
+    REQUIRE(pub.open() == scvb::InitResult::kOk);
+    scvb::VizPlane reader(backend, 3);
+    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+
+    auto crvs = std::make_unique<scvb::state::CrvsData>();
+    // 轨1:**空隙**族 —— [0,10) 与 [20,30),空隙 [10,20)。
+    crvs->versions[0].tracks[0].segments = {makeSegV(0.0, 10.0, -60.0f, -3.0f), makeSegV(20.0, 30.0, 60.0f, 6.0f)};
+    // 轨2:**相邻段**族(gap = 0)—— 边界 10s 上有一条 ramp。
+    crvs->versions[0].tracks[1].segments = {makeSegV(0.0, 10.0, -60.0f, 0.0f), makeSegV(10.0, 20.0, 60.0f, 0.0f)};
+    // 轨3:手动接管常值段(单段 UserEdited)。
+    crvs->versions[0].tracks[2].segments = {
+        makeSegV(0.0, kFarEndSec, -80.0f, -9.0f, scvb::state::SegmentOrigin::UserEdited)};
+
+    std::vector<scvb::CurveEvaluator> curves(3);
+    for (std::size_t t = 0; t < curves.size(); ++t)
+    {
+        std::vector<scvb::CurveSegment> cs;
+        for (const auto& s : crvs->versions[0].tracks[t].segments)
+        {
+            scvb::CurveSegment c;
+            c.startSec = static_cast<double>(s.t0) / kSr;
+            c.endSec = static_cast<double>(s.t1) / kSr;
+            c.pan = s.pan;
+            c.volDb = s.volDb;
+            cs.push_back(c);
+        }
+        curves[t].build(cs, scvb::TransitionConfig{});
+    }
+
+    scvb::output::VizPublishInput in;
+    in.crvs = crvs.get();
+    for (std::size_t t = 0; t < curves.size(); ++t)
+    {
+        in.curves[t] = &curves[t];
+    }
+    in.versionActive = 1;
+    in.enabledMask = 0x7FFF;
+    in.connectedMask = 0x7FFF;
+    in.sampleRate = kSr;
+    in.crvsRevision = 1;
+    in.panParam.fill(33.0f); // 参数面刻意与任何段值都不同 —— 回落一旦误触发就看得见
+    in.volDbParam.fill(11.0f);
+
+    auto out = std::make_unique<scvb::VizSnapshot>();
+    constexpr auto kGate = scvb::output::VizPublisher::kPublishIntervalMs;
+    scvb::u64 now = 0;
+    const auto publishAt = [&](double headSec) {
+        in.playhead.timeSamples = atSec(headSec);
+        REQUIRE(pub.tick(now, in));
+        now += kGate;
+        REQUIRE(reader.read(*out));
+    };
+
+    // ---- (a) [gap] 空隙:播放头 16s 落在 [10,20) 里 ------------------------
+    publishAt(16.0);
+    // 曲线求值在这里给的是**后一段**(ramp 中心 = 空隙中点 15s,80ms 窗口在 16s 之前就走完了)。
+    // 把它量出来:这是「两侧差多少」的实测,也是下面那条反向断言的依据。
+    INFO("curve panAt(16) = " << curves[0].panAt(16.0));
+    CHECK(curves[0].panAt(16.0) == 60.0);
+    CHECK(out->panNow[0] == scvb::vizPackPan(-60.0)); // 新口径:保持前一段
+    CHECK(out->panNow[0] != scvb::vizPackPan(60.0)); // ← D1 / D5 在这里红
+    CHECK(out->volDb[0] == scvb::vizPackFixed(-3.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    CHECK(out->volDb[0] != scvb::vizPackFixed(6.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    // 车道**不跟着改** —— 轨迹图画的就是曲线本身,那条线该有 ramp。
+    CHECK(out->pan[0][0] == scvb::vizPackPan(-60.0));
+    CHECK(out->coveredMask == 0x0007);
+
+    // ---- (b) [ramp] 过渡斜坡中点:播放头 10s 落在轨2 的 ramp 窗口正中 -------
+    publishAt(10.0);
+    // gap=0 那一支的 T_eff 由限速反推:|ΔP| = 120 ⇒ 1.5 × 120/15 = 12s,夹到 6s 上限,
+    // 再被重叠防护夹到 0.9 × 10s = 9s ⇒ 6s。窗口 [7,13],中点求值 = 两段中值 0。
+    // **不是「80ms 一闪」**:这一族在真机上能连着好几秒对不上。
+    INFO("curve panAt(10) = " << curves[1].panAt(10.0));
+    CHECK(curves[1].panAt(10.0) == 0.0);
+    CHECK(out->panNow[1] == scvb::vizPackPan(60.0)); // 新口径:段内 ⇒ 该段的段值
+    CHECK(out->panNow[1] != scvb::vizPackPan(0.0)); // ← D1 在这里也红
+    // 同一帧里轨1 仍在空隙(10s 是 [10,20) 的左端)⇒ 前一段。
+    CHECK(out->panNow[0] == scvb::vizPackPan(-60.0));
+    // [manual] 手动常值段:与播放头无关,恒是它自己。
+    CHECK(out->panNow[2] == scvb::vizPackPan(-80.0));
+    CHECK(out->volDb[2] == scvb::vizPackFixed(-9.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+
+    // ---- (c) [freeze] 冻结维度读参数面,**逐维独立** -----------------------
+    in.freezeParam[2] = 1.0f; // 只冻 pan
+    publishAt(10.0);
+    CHECK(out->panNow[2] == scvb::vizPackPan(33.0)); // ← D2 在这里红(冻结位没解出来)
+    CHECK(out->volDb[2] == scvb::vizPackFixed(-9.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax)); // vol 仍读段
+    in.freezeParam[2] = 0.0f;
+
+    // ---- (d) [outputoff] 输出 OFF ⇒ 读参数面;手动段那一档**不受影响** -----
+    in.outputEnabled = false;
+    publishAt(16.0);
+    CHECK(out->panNow[0] == scvb::vizPackPan(33.0)); // ← D3 在这里红
+    CHECK(out->volDb[0] == scvb::vizPackFixed(11.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+    CHECK(out->panNow[2] == scvb::vizPackPan(-80.0)); // ← D4 在这里红(手动段被降级成普通段)
+    in.outputEnabled = true;
+
+    // ---- (e) 未连接轨:回落被闸住,仍是哨兵(SL-361 那道闸没被本卡挪走)-----
+    in.connectedMask = 0;
+    in.outputEnabled = false;
+    publishAt(16.0);
+    CHECK(out->panNow[0] == scvb::kVizPanNone);
+    CHECK(out->volDb[0] == scvb::kVizPanNone);
 }

@@ -42,6 +42,7 @@
 // =============================================================================
 
 import { buildWorld } from "./state-driver.js";
+import { curveSegmentAt } from "../../web/shared/readback.js";
 import {
     CHANNEL_COUNT,
     DEMO_DURATION_S,
@@ -404,16 +405,6 @@ export function truncateUtf8(s, maxBytes) {
     return out;
 }
 
-/** 段表里覆盖住 `tS` 的那一段;没有就取最近一段(引擎在段间 hold)。 */
-function segmentAt(segs, tS) {
-    let hold = null;
-    for (const s of segs || []) {
-        if (s.t0S <= tS && tS < s.t1S) return s;
-        if (s.t1S <= tS && (!hold || s.t1S > hold.t1S)) hold = s;
-    }
-    return hold;
-}
-
 // -----------------------------------------------------------------------------
 // 3. mock 后端
 // -----------------------------------------------------------------------------
@@ -605,10 +596,18 @@ function createMonitorBackend(parsed) {
         // **每帧都发**:它们是「当前值」,随播放头逐帧变,不进 `lane_revision` 的
         // 按需重发(那条管的是 15×1024 的车道)。三条各 15 项 = 45 个数,便宜。
         //
-        // `panNow` 按 **T44 对表信定的口径**:播放头**所在时刻**的曲线求值,
-        // **不是** lane 在播放头列的采样(列中心,差半列)。mock 这里用「覆盖住 tS
-        // 的那一段的 pan」当作精确时刻求值 —— 段内 pan 恒定,与引擎 CurveEvaluator
-        // 在段内的取值一致。
+        // `panNow` 按 **[SL-363] 的口径**:播放头**所在段**的段值,**不是** lane 在播放头列
+        // 的采样(列中心,差半列),也**不再是** CurveEvaluator 的精确时刻求值 —— 段边界的
+        // ramp 与空隙的切换只留在车道上。段选择直接调 `web/shared/readback.js` 的
+        // `curveSegmentAt`(Output 分布图用的就是它),于是 JS 侧这条链只有一份实现。
+        //
+        // ⚠ **登记两条 mock 与真桥的既有近似**(改前就在,不是 SL-363 引入的):
+        //   ① mock 不造 freeze / 输出档 / 手动常值段这三档 —— 真桥走的是完整的
+        //      `readbackSegsOf`(冻结维读参数面、输出 OFF 读参数面、手动段优先);
+        //   ② mock 没有「取不到段值 ⇒ 退该轨参数当前值」的 [SL-361] 回落:这里没有段的轨
+        //      直接给 null(= 段里的哨兵)。
+        // 两条都只影响 preview 里看到的**数值**,不影响本文件要替身的那件事(段的形状与
+        // 按需重发节拍);真桥那三档的判据面在 native 侧(test_viz_plane / HOST SL-363)。
         if (state.withTracks) {
             const panNow = [];
             const volDb = [];
@@ -623,7 +622,7 @@ function createMonitorBackend(parsed) {
                     widthPct.push(null);
                     continue;
                 }
-                const seg = segmentAt(meta.segs, tS);
+                const seg = curveSegmentAt({ segments: meta.segs }, tS);
                 panNow.push(seg ? seg.pan : null);
                 volDb.push(seg ? seg.volDb : null);
                 widthPct.push(meta.cfg.source_channels === 2 ? 82 : 100);
