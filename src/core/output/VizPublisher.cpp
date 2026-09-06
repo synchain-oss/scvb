@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
+
+#include "DistReadback.h"
 
 namespace scvb::output
 {
@@ -231,14 +234,19 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
     // 每轨当前值(分布图数据面)。**每帧都刷**,不受车道分频影响 —— 它们是「此刻」。
     // 位置在 rebuildLanes **之后**:clearLanes() 现在已不碰这三个值(名副其实了),
     // 但顺序上仍排后面当第二道保险 —— R2 就是「先算后清」栽的。
-    // panNow/volDb 走播放头**精确时刻**求值(不是车道在播放头所在列的采样:那是列中心点采样,
-    // 列宽 = span/1024,分布图要的是此刻);widthPct 直接来自参数。
+    //
+    // [SL-363] panNow/volDb 走的是**分布图读回链**(`DistReadback.h`),不再是 `CurveEvaluator`
+    // 在播放头精确时刻的求值。改的理由与两条链此前各自算出什么,见那个头文件的头注;一句话:
+    // 空隙里 Output 保持前一段、曲线求值过了 ramp 中点就切后一段,而段只在已分析区域上产生
+    // —— 真工程里播放头落在空隙里的时刻比落在段内多。车道(轨迹图)**不变** —— 它画的就是
+    // 曲线本身,那条线该有 ramp。
+    // widthPct 直接来自参数,与本卡无关。
     {
-        const double headSec =
-            (in.sampleRate > 0.0 && p.timeSamples >= 0) ? static_cast<double>(p.timeSamples) / in.sampleRate : 0.0;
+        const std::int64_t headSamples = p.timeSamples >= 0 ? p.timeSamples : 0;
         const std::size_t vIdx = (in.versionActive >= 1 && in.versionActive <= scvb::state::kNumVersions)
                                      ? static_cast<std::size_t>(in.versionActive - 1)
                                      : 0;
+        const std::vector<scvb::state::Segment> kNoSegments; // in.crvs == nullptr 时的空表(零分配)
         for (scvb::u32 t = 0; t < scvb::kMaxChannels; ++t)
         {
             s.panNow[t] = scvb::kVizPanNone;
@@ -248,38 +256,40 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
             {
                 continue;
             }
-            const bool hasSegments = in.crvs != nullptr && !in.crvs->versions[vIdx].tracks[t].segments.empty();
-            const scvb::CurveEvaluator* curve = in.curves[t];
-            if (hasSegments && curve != nullptr)
+            const std::vector<scvb::state::Segment>& segs =
+                in.crvs != nullptr ? in.crvs->versions[vIdx].tracks[t].segments : kNoSegments;
+            // 冻结位的解码走**唯一口径** `freezeBitsOf`(见 FreezeBits.h 的头注)。
+            const auto rb = scvb::output::readbackSegsOf(segs, scvb::engine::freezeBitsOf(in.freezeParam[t]),
+                                                         in.outputEnabled, headSamples);
+            // [SL-361] 读回链说「回落参数面」时才取参数当前值,且**只对已连接轨**回落。
+            // 原实现在无段那一支什么都不写,于是 panNow/volDb 留着 kVizPanNone 哨兵,
+            // Monitor 把那一轨整根跳过 —— 用户 v5.6.7 实测「同工程 Output 10 根 /
+            // Monitor 7 根」就是这么来的。
+            //
+            // 句柄未就绪时参数值是 NaN —— 那种情况**仍留哨兵**(不知道就别编),
+            // 与 widthPct 那一行的既有口径一致。
+            // [SL-361 复审第 1 轮] 那道 connected 闸的理由见 VizPublishInput::connectedMask
+            // 那段:不加它,Monitor 会把 15 条 enabled 轨全画出来(它的逐轨闸只有
+            // 「enabled ∧ 非哨兵」),而 Output 只画已连接的那几根,变成过冲。
+            const bool connected = (in.connectedMask & (1u << t)) != 0u;
+            const float pv = connected ? in.panParam[t] : std::numeric_limits<float>::quiet_NaN();
+            const float vv = connected ? in.volDbParam[t] : std::numeric_limits<float>::quiet_NaN();
+            if (rb.pan != nullptr)
             {
-                s.panNow[t] = scvb::vizPackPan(curve->panAt(headSec));
-                s.volDb[t] = scvb::vizPackFixed(curve->volAt(headSec), scvb::kVizVolDbMin, scvb::kVizVolDbMax);
+                s.panNow[t] = scvb::vizPackPan(static_cast<double>(rb.pan->pan));
             }
-            else
+            else if (pv == pv) // 非 NaN
             {
-                // [SL-361] **无分段 / 无曲线时回落到参数当前值**,与 Output 侧同口径。
-                // 原实现在这一支什么都不写,于是 panNow/volDb 留着 kVizPanNone 哨兵,
-                // Monitor 把那一轨整根跳过 —— 用户 v5.6.7 实测「同工程 Output 10 根 /
-                // Monitor 7 根」就是这么来的。Output 那侧(tab-master.js 的 renderDist)
-                // 走的是「段回读 → 没有段就取 v{v}_t{ch}_pan / _vol 参数值」,所以这里
-                // 照抄那一半:两侧从此读同一口径,而不是各自画各自的。
-                //
-                // 句柄未就绪时参数值是 NaN —— 那种情况**仍留哨兵**(不知道就别编),
-                // 与 widthPct 那一行的既有口径一致。
-                // [SL-361 复审第 1 轮] **只对已连接轨回落** —— 理由见 VizPublishInput::connectedMask
-                // 那段:不加这道闸,Monitor 会把 15 条 enabled 轨全画出来(它的逐轨闸只有
-                // 「enabled ∧ 非哨兵」),而 Output 只画已连接的那几根,变成过冲。
-                const bool connected = (in.connectedMask & (1u << t)) != 0u;
-                const float pv = connected ? in.panParam[t] : std::numeric_limits<float>::quiet_NaN();
-                const float vv = connected ? in.volDbParam[t] : std::numeric_limits<float>::quiet_NaN();
-                if (pv == pv) // 非 NaN
-                {
-                    s.panNow[t] = scvb::vizPackPan(static_cast<double>(pv));
-                }
-                if (vv == vv)
-                {
-                    s.volDb[t] = scvb::vizPackFixed(static_cast<double>(vv), scvb::kVizVolDbMin, scvb::kVizVolDbMax);
-                }
+                s.panNow[t] = scvb::vizPackPan(static_cast<double>(pv));
+            }
+            if (rb.vol != nullptr)
+            {
+                s.volDb[t] =
+                    scvb::vizPackFixed(static_cast<double>(rb.vol->volDb), scvb::kVizVolDbMin, scvb::kVizVolDbMax);
+            }
+            else if (vv == vv)
+            {
+                s.volDb[t] = scvb::vizPackFixed(static_cast<double>(vv), scvb::kVizVolDbMin, scvb::kVizVolDbMax);
             }
             const float w = in.widthPct[t];
             if (w == w) // 非 NaN

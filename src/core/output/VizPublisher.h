@@ -49,7 +49,9 @@ inline std::array<float, scvb::state::kNumTracks> makeUnknownParams()
 struct VizPublishInput
 {
     const scvb::state::CrvsData* crvs = nullptr; // 分段真源(覆盖位图口径)
-    std::array<const scvb::CurveEvaluator*, scvb::state::kNumTracks> curves{}; // 活动版本曲线(pan 求值)
+    // 活动版本曲线。[SL-363] 起**只给车道(轨迹图)用** —— 每轨当前值(分布图)改走
+    // `DistReadback.h` 的段读回链,不再对曲线求值。
+    std::array<const scvb::CurveEvaluator*, scvb::state::kNumTracks> curves{};
     scvb::u32 versionActive = 1; // 1|2
     scvb::u32 enabledMask = 0; // bit{N-1} = 该轨启用
     scvb::u32 stereoMask = 0; // bit{N-1} = 该轨立体声源
@@ -88,14 +90,30 @@ struct VizPublishInput
     // 加上之后两侧对齐:已连接 + 无段 ⇒ 两边都画(**正是用户 v5.6.7 报的那一幕**);
     // 未连接 + 无段 ⇒ 两边都不画。
     //
-    // ⚠ 登记一条**本卡不碰的既有分叉**:「未连接**但有段**」的轨,Monitor 画、Output 不画。
-    // 那条改前就在(走的是曲线求值那一支,与本卡的回落无关),不是本卡引入的。
+    // ⚠ 登记一条**既有分叉**(SL-361 与 SL-363 都不碰):「未连接**但有段**」的轨,
+    // Monitor 画、Output 不画 —— 那一支走的是段读回(SL-363 之前是曲线求值),两卡改的都是
+    // 「往里写什么值」,不是「画不画」。已另立 SL-365。
     scvb::u32 connectedMask = 0;
     // [SL-362] 全局「最大角度」参数当前值(engineering 0..150,来自 `rawWidth` atomic)。
     // 与 `panParam`/`volDbParam` 同族:**句柄未就绪 → NaN → 段内留哨兵**,读方回落 100。
     // 默认 NaN 而不是 0 的理由同上:0 是合法宽度(全收拢到中央),默认成 0 会让忘了填的
     // 调用方把「不知道」发成一个**看起来正常**的值。
     float globalWidthPct = std::numeric_limits<float>::quiet_NaN();
+    // [SL-363] 「写入自动化」开关(= Output state 的 `global.output_enabled`)。
+    // 读回链拿它分「引擎按曲线驱动 ⇒ 显示段值」与「跟随宿主 ⇒ 显示参数面」两档;
+    // 手动常值段那一档**不看它**(理由见 DistReadback.h 的优先级链)。
+    //
+    // 默认 `true`,与 `ScvbOutputAudioProcessor::outputEnabled_` 的默认同款 —— 不填它的调用方
+    // (`scvb_ipc_peer` / 各 harness)因此仍走「按段值显示」那一档,而不是齐刷刷退到参数面。
+    bool outputEnabled = true;
+    // [SL-363] 每轨 `v{v}_t{tt}_freeze` 的**参数原值**(engineering 0..3;句柄未就绪填 0)。
+    // 发布器用 `scvb::engine::freezeBitsOf` 解码 —— 那是全仓唯一的解码口径(FreezeBits.h 头注)。
+    // 要它是因为**冻结维度的权威是参数面而不是曲线**([J85]),Output 分布图就是这么读的:
+    // 不看这一位的话,冻结一维之后 Output 显示参数值、Monitor 仍显示段值,又是一处分叉。
+    //
+    // 默认 0 = 未冻结,与 JS 侧 `freezeBits(undefined)` 的回落逐条同值(那边是 `num(v, 0)`);
+    // NaN 经 `freezeBitsOf` 同样解成 0,所以「句柄未就绪」填 0 还是填 NaN 都不改结果。
+    std::array<float, scvb::state::kNumTracks> freezeParam{};
     // 每轨轨名(UTF-8;发布器按 UTF-8 边界截断到 kVizLabelBytes-1)。图例要它。
     std::array<std::string, scvb::state::kNumTracks> label{};
     // 轨名/宽度不进 crvsRevision,单独给一个修订号驱动「车道块」重写(轨名随车道一起落段)。

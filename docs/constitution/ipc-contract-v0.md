@@ -180,7 +180,7 @@ struct VizLanes {                  // size 30720 align 64
   atomic<int16_t> pan[15][1024];   // 0    定点 ±10000;哨兵 −32768 = 该轨整条无数据
 };
 struct VizTrackState {             // size 128 align 64
-  atomic<int16_t> panNow[16];      // 0    播放头精确时刻的曲线求值(不是车道采样)
+  atomic<int16_t> panNow[16];      // 0    播放头**所在段**的段值(读回链,非车道采样)
   atomic<int16_t> volDb[16];       // 32   −24..+12 dB(×100)
   atomic<int16_t> widthPct[16];    // 64   0..100 %(×100)
   int16_t _reserved[16];           // 96   索引 15 空置,只为让每个数组按 32 字节对齐
@@ -198,7 +198,7 @@ struct VizTrackLabels {            // size 512 align 64
 - `VizTrackLabels`:每轨 **32 字节 UTF-8**,NUL 补齐;超长按 **UTF-8 字符边界**截断到 ≤31 字节,绝不切出半个多字节序列
 - 所有跨进程字段一律 `std::atomic`(§0 总则),含 15×1024 的车道元素 —— relaxed 存取在 x86 上即普通 `mov`,零额外开销,同时消除 seqlock 载荷的形式化数据竞争
 
-⚠ **`panNow` 口径**:是**播放头精确时刻**的曲线求值,**不是** pan 车道在播放头所在列的采样(后者是列中心点采样)。分布图要的是「此刻」,轨迹图的线才走车道。
+⚠ **`panNow` / `volDb` 口径**([SL-363] 起 = **分布图读回链**;**布局未动**,换的是取值方式):这两个标量 = **Output 分布图那一页显示的同一个数**,逐条即 `web/shared/readback.js` 的 `readbackSegsOf`(native 侧同一份口径在 `src/core/output/DistReadback.h`):① 该维**已冻结**(`v{v}_t{tt}_freeze` 的对应位)→ 该版本该轨的**参数当前值**([J85]);② 该轨是**手动接管常值段**(单段 `user_edited`)→ 该段的值,**不看输出档**;③ 否则 `output_enabled` 为 **ON** → 播放头**所在段**的段值 —— 首段之前回填首段、末段之后保持末段、**段间空隙保持前一段**;④ 否则(输出 OFF,跟随宿主)→ 参数当前值;⑤ 上面取不到段值、而该轨**已连接**(`slotState=2 ∧ heartbeat 新鲜`,§2.3 同款判据)→ 参数当前值([SL-361]);⑥ 其余(未连接,或参数句柄未就绪)= 哨兵 `−32768`。**①/④ 里的「参数当前值」同样过 ⑥ 那道闸**(`connectedMask` 位为 1 且句柄就绪才取参数面;否则同样是哨兵),与 ⑤ 一致 —— 见 `VizPublisher.cpp` 里 `connected ? panParam : NaN` 那一处。<br>⚠ **不再是** `CurveEvaluator` 在播放头精确时刻的求值([SL-363] 之前是)。换掉的理由:曲线求值在**段间空隙**里过了 ramp 中点就切到后一段,而 Output 那一页保持前一段;段边界的 ramp 窗口 `T_eff` 在 gap=0 那一支由限速反推、**最长 6 秒**。用户 v5.6.8 实测「柱子位置明显不对、但一些片段是对齐的」就是这两处。**车道(`VizLanes`)不变** —— 轨迹图画的就是曲线本身,那条线该有 ramp。
 
 ### 6.2 降采样口径(冻结语义,读写两侧必须一致)
 

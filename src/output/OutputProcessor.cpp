@@ -1041,6 +1041,9 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.crvsRevision = curvesRevision_.load(std::memory_order_acquire);
     in.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     in.playhead = playheadSnapshot();
+    // [SL-363] 「写入自动化」开关进读回链:输出 OFF = 跟随宿主,该显示的是参数面而不是曲线段值。
+    // 与 `tab-master.js` renderDist 里的 `outputOn` 同一个量(state 的 `global.output_enabled`)。
+    in.outputEnabled = outputEnabled_;
 
     const int v = juce::jlimit(1, kVersionMax, versionActive_);
     // [SL-362] 全局「最大角度」的参数当前值 —— Monitor 的分布图要它才能与 Output 同款缩放
@@ -1104,7 +1107,7 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
         in.widthPct[static_cast<std::size_t>(ch)] =
             raw != nullptr ? raw->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
         // [SL-361] 每轨 pan / vol 的参数当前值,同法取活动版本的 raw atomic。
-        // 发布器在「无分段 / 无曲线」那一支拿它回落 —— 不给的话那两个值留哨兵,
+        // 发布器在读回链说「回落参数面」的那些档拿它 —— 不给的话那两个值留哨兵,
         // Monitor 整根不画(用户 v5.6.7 实测 Output 10 根 / Monitor 7 根)。
         const auto* rawP = handles_.rawPan[v - 1][ch];
         const auto* rawV = handles_.rawVol[v - 1][ch];
@@ -1112,6 +1115,11 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
             rawP != nullptr ? rawP->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
         in.volDbParam[static_cast<std::size_t>(ch)] =
             rawV != nullptr ? rawV->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
+        // [SL-363] 每轨 freeze 的参数原值:冻结维度的权威是参数面而不是曲线([J85]),
+        // 发布器要拿它才判得出「这一维该显示段值还是参数值」。句柄未就绪填 0 = 未冻结
+        // (`freezeBitsOf` 对 NaN 也解成 0,两种填法同结果;这里取 0 与 JS 侧的 `num(v, 0)` 同形)。
+        const auto* rawF = handles_.rawFrz[v - 1][ch];
+        in.freezeParam[static_cast<std::size_t>(ch)] = rawF != nullptr ? rawF->load(std::memory_order_relaxed) : 0.0f;
         for (const char byte : label)
         {
             fnv(static_cast<unsigned char>(byte));
