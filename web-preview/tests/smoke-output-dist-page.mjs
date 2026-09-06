@@ -2808,12 +2808,43 @@ try {
             {
                 const b = g.bars["12"];
                 const cx = Math.round((b.left + b.right) / 2);
-                const capRow = b.top - 1;
-                const cap = img.px(cx, capRow);
-                const body = img.px(cx, b.top + 5);
+                // ⚠ 顺序要紧:**先断对齐、再取样**。第一版把 `img.px()` 写在
+                // 「柱顶已对齐到整像素」那一格**之前**,于是对齐一旦失效就是这样一条链:
+                //   小数 y → `(y * w + x) * ch` 得小数下标 → `out[i]` 是 `undefined`
+                //   → `dmax` 得 NaN → 下面 `if (d > worst)` 恒假 → `worst` 停在 0
+                //   → `check(worst <= 12, …)` **判绿**。
+                // 主格空绿 + 前提红,正是本文件在 ⑫(d) 那里专门先断 `segs.length > 0`
+                // 才 `every` 要避的同一族形态(复审第 2 轮点名)。
+                const top = Math.round(b.top);
                 check(
                     Number.isInteger(b.top),
                     `(c 前提0)★ ${name} 轨 12:柱顶已对齐到整像素(实得 ${b.top})`,
+                );
+                const capRow = top - 1;
+                const cap = img.px(cx, capRow);
+                const body = img.px(cx, top + 5);
+                // (c 前提1)取样点都落在图内、且取回来的是三个有限数 —— 不断这一条的话,
+                // 「什么都没量到」与「量到了、没有浅色带」在下面那一格里长得一模一样。
+                const inImg = (x, y) =>
+                    Number.isInteger(x) &&
+                    Number.isInteger(y) &&
+                    x >= 0 &&
+                    y >= 0 &&
+                    x < img.w &&
+                    y < img.h;
+                const realPx = (c) =>
+                    Array.isArray(c) &&
+                    c.length === 3 &&
+                    c.every(Number.isFinite);
+                check(
+                    [capRow, top, top + 1, top + 5].every((r) =>
+                        inImg(cx, r),
+                    ) &&
+                        realPx(cap) &&
+                        realPx(body),
+                    `(c 前提1)★ ${name} 轨 12:四个取样点都在图内且取回三个有限数` +
+                        `(cx=${cx} rows=${JSON.stringify([capRow, top, top + 1, top + 5])} ` +
+                        `图 ${img.w}x${img.h};帽 ${JSON.stringify(cap)} 柱色 ${JSON.stringify(body)})`,
                 );
                 // 前提:柱顶之上确实是那道绿帽(绿分量明显高过红蓝)。
                 check(
@@ -2823,13 +2854,23 @@ try {
                 );
                 let worst = 0;
                 let worstRow = capRow;
-                for (const r of [b.top, b.top + 1]) {
+                let sampled = 0;
+                for (const r of [top, top + 1]) {
                     const d = dmax(img.px(cx, r), body);
+                    // 逐格断 `Number.isFinite(d)`:NaN 在 `d > worst` 下恒假,
+                    // 不显式接住就会被读成「这一行没有色差」。
+                    if (Number.isFinite(d)) sampled += 1;
                     if (d > worst) {
                         worst = d;
                         worstRow = r;
                     }
                 }
+                eq(
+                    sampled,
+                    2,
+                    `(c 前提2)★ ${name} 轨 12:绿帽底下那两行都真的量到了色差数` +
+                        `(不是 NaN;NaN 在 \`d > worst\` 下恒假,会把主格顶成空绿)`,
+                );
                 check(
                     worst <= 12,
                     `(c) ★ ${name} 轨 12(lead):绿帽底下紧挨着的两行仍是轨色,没有浅色带` +
