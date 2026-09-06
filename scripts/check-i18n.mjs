@@ -238,7 +238,8 @@ for (const file of htmlFiles) {
 //              `out.master.writeConfirm`;**这 5 条在 SL-352(J97)已全部退回 v5.6.6 措辞**,
 //              05 规格也随 J97 改成用户措辞 —— 下面这笔分账记的是 SL-293 当时的落地,不是现状;
 //   **2 改** —— **按更晚的用户裁定、明确不回 05 规格**:`tracks.colLegend` / `master.leadSelectHint`
-//              (依据见这两条词条正上方的警示注释);
+//              (依据见这两条词条正上方的警示注释);其中 `master.leadSelectHint` **已随 J97 整体退回**
+//              v5.6.6 措辞(只剩 `tracks.colLegend` 属 08-21 裁定存活);
 //   **1 撤回** —— `footer.printing` 的单位词是尚未兑现的前置(A17 无 tempo map / deviations A26),
 //              两侧都回到无单位。注意**只有词条那一侧对 base 净零**:base 的内联本来就带
 //              「小节」(`git show origin/feature/v1:web/output/index.html` 里那条
@@ -250,7 +251,7 @@ for (const file of htmlFiles) {
 //              `wave.trackPickHint`),词条不动、内联先同步成现行词条。
 // 另有 2 条**不在这 12 处之内**也改了:`out.master.writeConfirm.follow`(与兄弟条目对齐措辞;
 // **同样已随 J97 退回**)、`tour.step11.body`(指着界面上不存在的档名;J97 未动,保留)。
-// 故 SL-293 当时词典净改动 = 5+2+2 = **9 条 key × 3 语**;SL-352 之后其中 6 条已退回,
+// 故 SL-293 当时词典净改动 = 5+2+2 = **9 条 key × 3 语**;SL-352 之后其中 **7 条**已退回(5 改全部 + `leadSelectHint` + `.follow`,存活的只有 `colLegend` 与 `tour.step11.body`),
 // 现行词典以 `i18n.js` 为准,别按本段分账反推。
 //
 // 判据方向:**以 zh 词条为准**(它是上屏那一份),内联必须逐字等于它。
