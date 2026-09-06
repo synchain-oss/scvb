@@ -2058,6 +2058,7 @@ try {
             bgRgb: rgbOf(cs.backgroundImage),
             shadow: cs.boxShadow,
             shadowRgb: rgbOf(cs.boxShadow),
+            shadowGeom: String(cs.boxShadow).split(")").slice(-1)[0].trim(),
             radius: cs.borderRadius,
             before: bf.content,
             after: af.content,
@@ -2164,6 +2165,12 @@ try {
                         new Set(b.shadowRgb[0].split(",")).size === 1,
                     `(d) ★ ${name} 轨 ${b.ch}:晕色无色差(r=g=b)—— 有色差的描边会把` +
                         `「柱顶有一段别的颜色」从偶发变成恒常(实得 ${JSON.stringify(b.shadowRgb)})`,
+                );
+                eq(
+                    b.shadowGeom,
+                    "0px 0px 0px 1px",
+                    `(d) ★ ${name} 轨 ${b.ch}:晕是零偏移零模糊的 1px **实边**(实得「${b.shadowGeom}」)` +
+                        `—— 模糊的光晕分不开两根重合的柱`,
                 );
             }
 
