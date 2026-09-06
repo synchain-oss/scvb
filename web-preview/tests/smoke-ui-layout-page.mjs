@@ -2072,12 +2072,14 @@ try {
     //   · E1 `.master-grid` 的 `grid-template-rows` 退回 `auto auto 1fr`
     //        ⇒ 只有 F1@T4(地板)红:曲线卡从 150px 掉到 14px
     //   · E2 删掉 `.master-grid > .sc-card[data-gb=…]` 那条内距/行距覆盖
-    //        ⇒ 只有 F2 红(上排卡回到 134px)
-    //   · E3 删掉 RANGE 卡的三条内距/行距覆盖
-    //        ⇒ 只有 F3@T2 红(手动档回到 178px)
-    //     E3 必须量在 **T2(无横幅)**:T3 有横幅时地板已经在压第二行,RANGE 被压到
-    //     150px 出头,反而落在上限之内 —— 那一格会被 E1 加的地板**兜绿**。
-    //     (「加一条判据可能让另一条判据失去它的删除式」,本仓吃过这个亏。)
+    //        ⇒ 只有 F2 红(上排卡的自然高度回到 128px)
+    //   · E3 删掉 RANGE 卡的四条内距/行距/行高覆盖
+    //        ⇒ 只有 F3(手动档)红(自然高度回到 177.59px)
+    //     ⚠ E3 这一格**第一版一条都没红**,是补出来的:当时 F3 量的是「网格给了
+    //       RANGE 多高」,而 E1 加的地板一咬住就把 RANGE 压到 141px —— 正好落在
+    //       上限 160 之内。判据被自己 PR 里另一条判据兜绿了(「加一条判据可能让
+    //       另一条判据失去它的删除式」)。改法:F2 / F3 改量**自然高度**
+    //       (探针里临时 `align-items: start`),把「轨道给多少」这一维拿掉。
     // =========================================================================
     log("F. SL-374 整体调整页版式:曲线窗地板 + 上排控件卡改矮");
     newBucket("sl374-layout");
@@ -2124,6 +2126,27 @@ try {
                 row1: row1.map((n) => (gb(n) ? R(gb(n)).h : -1)),
             });
         }
+        // ---- 另量一遍**自然高度**(卡自己的内容高,不受网格拉伸/压缩影响)----
+        // 为什么必须单独量:F2 / F3 问的是「这张卡自己有没有变矮」,而网格里量到的
+        // 是**轨道给了它多高**。地板一咬住,RANGE 就被压到上限之内 —— 本机实测:
+        // 把 RANGE 的四条内距/行距/行高覆盖删掉(删除式 E3),自然高度从 152.69 退回 177.59,
+        // 而 T2 那一档量到的仍是 141(地板把它压进去了)⇒ 那一格一条都不红。
+        // 临时把网格改成 align-items:start,让每张卡按自己的内容取高,
+        // 把「轨道给多少」这一维拿掉。(本段在页内探针的模板串里,不能出现反引号。)
+        card.style.height = cardH0;
+        banner.hidden = true;
+        grid.style.alignItems = "start";
+        const nat = {};
+        for (const mode of ["follow", "manual"]) {
+            range.setAttribute("data-range", mode);
+            void grid.offsetHeight;
+            nat[mode] = {
+                rangeH: R(range).h,
+                row1: row1.map((n) => (gb(n) ? R(gb(n)).h : -1)),
+            };
+        }
+        grid.style.alignItems = "";
+        out.natural = nat;
         card.style.height = cardH0;
         range.setAttribute("data-range", range0);
         banner.hidden = bannerHidden0;
@@ -2151,23 +2174,32 @@ try {
         for (const t of lay.tiers) {
             ge(t.curvePlot, 80, `F1 ★ ${t.name}:曲线窗高度`);
         }
-        // ---- F2 ★ 上排四张控件卡都要矮下来 -----------------------------------
-        // 上限 120px:改前四张卡的行高由 LEAD SELECT 顶到 134px,改后 116px。
-        // 量在 T1/T2 —— T3/T4 上排已经被地板压过,量不出「自然高度有没有收」。
-        for (const t of lay.tiers.slice(0, 2)) {
-            for (let i = 0; i < t.row1.length; i++) {
+        // ---- F2 / F3 量的是**自然高度**,不是轨道给了多高 ---------------------
+        // (理由与实测见探针里那段注释:地板一咬住,轨道量到的数会把「卡没变矮」兜绿。)
+        if (
+            check(
+                !!lay.natural && !!lay.natural.follow && !!lay.natural.manual,
+                "SL-374 版式探针取到自然高度读数",
+            )
+        ) {
+            log(
+                `  自然高度:RANGE 全曲 ${lay.natural.follow.rangeH} / 手动 ${lay.natural.manual.rangeH} / 上排 ${JSON.stringify(lay.natural.follow.row1)}`,
+            );
+            // F2 ★ 上排四张控件卡都要矮下来。
+            // 上限 120px:改前行高由最高的 LEAD SELECT 顶到 134px(GROUP 80 /
+            // WIDTH 97 / MS BALANCE 97 三张本来就构不成上限),改后 116px。
+            for (let i = 0; i < lay.natural.follow.row1.length; i++) {
                 le(
-                    t.row1[i],
+                    lay.natural.follow.row1[i],
                     120,
-                    `F2 ★ ${t.name}:上排第 ${i + 1} 张控件卡高度`,
+                    `F2 ★ 上排第 ${i + 1} 张控件卡的自然高度`,
                 );
             }
+            // F3 ★ RANGE 卡限高:「全曲」档改前 139.5 → 改后 125.5;
+            //     「手动」档改前 177.59 → 改后 152.69。
+            le(lay.natural.follow.rangeH, 135, "F3 ★ RANGE 卡(全曲档)自然高度");
+            le(lay.natural.manual.rangeH, 160, "F3 ★ RANGE 卡(手动档)自然高度");
         }
-        // ---- F3 ★ RANGE 卡限高 -----------------------------------------------
-        // 「全曲」档改前 139.5 → 改后 125.5;「手动」档改前 177.6 → 改后 152.7。
-        // 手动档那一格**只量 T2**,理由见上面删除式 E3 的说明。
-        le(lay.tiers[0].rangeH, 135, "F3 ★ T1:RANGE 卡(全曲档)高度");
-        le(lay.tiers[1].rangeH, 160, "F3 ★ T2:RANGE 卡(手动档)高度");
         // ---- F4 ★ 地板真的接得住(压力档)-------------------------------------
         // 读的是 `.master-grid` 上那个自定义属性本身,不手抄数字:真源只有 CSS 一处。
         // 先断它解得出、且不是个形同虚设的小数 —— 属性被改成 0 时上面 F1 会跟着塌,
