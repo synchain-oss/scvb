@@ -14,6 +14,9 @@
 //   ⑥ `?scenario=` / `?fixture=` 的回落与 warning;
 //   ⑦ **[J83] `participate_in_auto_pan` 默认档**:未显式设置一律 true(含 stereo 轨),
 //      显式设置经 `setChannelConfig` 仍然说了算,且 §4.3 Input 只读镜像与 Output 真源同值。
+//   ⑧ **[SL-357] 回声时序那一档**:写→`scvb.state` 至少隔一拍(带「那一帧确实到了」
+//      的到达标记,否则超时会假绿)、同步逃生口作对照、过期全量帧的注入节奏;
+//      外加**两张场景名表双向对齐**(`SCENARIO_MAP` ↔ shell.js 的 `SCENARIO_NAMES`)。
 //
 // 用法:node web-preview/tests/smoke-mock.mjs [仓库根绝对路径]
 //   不给参数就按本脚本位置推仓库根(<repo>/web-preview/tests/ → <repo>)。
@@ -961,6 +964,139 @@ await withSession(
         off.world.caps.staleFullEchoEvery === 0,
         "staleFullEvery=0 能关掉这一档(删除式要靠它)",
     );
+}
+
+const NAME_LITERAL = new RegExp(
+    String.fromCharCode(34) + "[a-z0-9-]+" + String.fromCharCode(34),
+    "g",
+);
+// [SL-357 补] `SCENARIO_NAMES` 里**有名字、`SCENARIO_MAP` 里没接线**的已知项。
+// 这不是豁免表,是**账**:每一个都会让 `?scenario=<名字>` 报一条「待 T31-T36 接线」
+// 的伪警告并落回默认 fixture(实测过)。它们是历次实施卡留下的,本卡不动;
+// 新增场景不许往这里加 —— 加名字进白名单就要同时进 SCENARIO_MAP。
+const KNOWN_UNMAPPED = new Set([
+    "printing", // 打印守卫那档,只在白名单里(smoke-output-dist-page:568 记过同形态)
+    "newer-state", // 05 正文里的场景,mock 侧从未接线
+    "sidecar-missing",
+    "project-copy",
+    "sidecar-switched",
+    "low-sample",
+]);
+
+// [SL-357 补 · 复审第 1 轮] **两张场景名表必须双向对齐。**
+// `SCENARIO_MAP`(state-driver:场景走哪个 fixture)与 `SCENARIO_NAMES`(shell.js:
+// 壳页工具条印场景名还是印 `unknown`)是两张手工同步的表,漏登记不报错。
+//
+// ⚠ **两个方向都要判,而且更常栽的是反向那个**。第一版只判了 `MAP ∖ 白名单`,
+//   复审当场指出:本卡修的那次漏登记恰好是**反向**(白名单有、MAP 没有),
+//   所以那一版钉不住自己要修的缺陷。本仓这一形态至少栽过四次 ——
+//   `stale`(state-driver 的注释里记着)、`no-timeline`、`printing`、
+//   以及本卡的 `sync-state-echo`。后果是 `parsePreviewQuery` 判它「待接线」、
+//   报一条伪警告,而白名单里有名字,看上去一切正常。
+//
+// 反向那侧的**已知例外登记在下面这张表**里,不是豁免:每加一个都要写清为什么。
+// 名字加进白名单却不进 MAP ⇒ 反向集合变大 ⇒ 本格红,这正是要拦的。
+{
+    // ⚠ **本格只覆盖 output / input 两列的字面量**(统筹 2026-09-06 裁定:不扩)。
+    //   monitor 那一列在 shell.js 里写作 `monitor: MONITOR_SCENARIOS`(标识符引用,
+    //   不产生字符串字面量),文本剥法够不着它 —— 今天无害,因为 `SCENARIO_MAP` 里
+    //   没有 monitor 场景。**哪天 monitor 场景进了 `SCENARIO_MAP`,本格会假红**,
+    //   而且报错文案会说「缺登记」,把人指向一个不存在的缺陷。到那时的修法是
+    //   从 `web-preview/mock/monitor-mock.js` 导入 `MONITOR_SCENARIOS` 并入下面的
+    //   `listed`,不是放宽判据。
+    const { stripJsComments } = await import(
+        u("scripts/lib/strip-comments.mjs")
+    );
+    // 走 `ROOT`(= `process.argv[2]` 或脚本推出来的根),与本文件既有的那处文件读取
+    // 同一个基准(:836 的 `join(ROOT, "src/core/output/SegmentDiff.h")`)。
+    // 用 `new URL("../shell.js", import.meta.url)` 会绑到**脚本自己所在的树**,
+    // 与头注写明的「可传仓库根」用法对不上:传了别的根时,判据读的是这棵树的
+    // shell.js、却拿那棵树的 SCENARIO_MAP 比,两边不是同一份源(复审第 2 轮点出)。
+    const shellSrc = readFileSync(join(ROOT, "web-preview/shell.js"), "utf8");
+    // ⚠ 两个 `indexOf` 都要断言命中:第二个失手是**往假绿方向掉**的 ——
+    //   `indexOf("};")` 返回 -1 时 `slice(0, -1)` 会一路切到文件末尾,于是
+    //   shell.js 后半个文件里所有小写双引号串都被收进白名单,判据近乎恒真且不吭声。
+    //   今天靠「`};` 恰好第一次出现在这张表末尾」成立,那是排版巧合,不是判据。
+    // ⚠ **先剥注释再切**,顺序反了会留下另一种「排版巧合」:两个 `indexOf` 若跑在
+    //   原文上,`};` 落进**注释里**(而不是没找到)时 `check(end > 0)` 照样绿、表被
+    //   提前截断,而截断点之后「不在 MAP 里」的名字会从 `unmapped` 一并掉出 ⇒
+    //   反向那条变空 ⇒ **往假绿掉**(复审第 2 轮点出)。剥完再切,注释里的
+    //   `};` 与 `"名字"` 一起消失,两条锚点断言判的才是真结构。
+    const clean = stripJsComments(shellSrc, "js");
+    const at = clean.indexOf("const SCENARIO_NAMES");
+    check(at >= 0, "shell.js 里找得到 SCENARIO_NAMES(锚点还在)");
+    const rest = clean.slice(at);
+    const end = rest.indexOf("};");
+    check(end > 0, "SCENARIO_NAMES 这张表切得出结尾(找不到 };⇒ 判据会恒真)");
+    const table = rest.slice(0, end > 0 ? end : 0);
+    const litOf = (txt) =>
+        (txt.match(NAME_LITERAL) || []).map((x) => x.slice(1, -1));
+    // [统筹 2026-09-06 裁定]**按 role 逐列判**:运行时是
+    // `allowedOr(scenario, SCENARIO_NAMES[role])`(shell.js:537),按角色取列 ——
+    // 拿并集判会漏掉「登记错列」那一态。下面把两列拆开各判各的。
+    const head = table.indexOf("output:");
+    const cut = table.indexOf("input:");
+    // 本格第三个 `indexOf` 也要断言命中(复审第 3 轮点出:上面刚立了这条规矩,
+    // 新加的这个没跟上)。两种失效形态都**往红掉、但红在错的那条断言上**:
+    //   · `output:` 找不到 ⇒ `slice(-1, cut)` 的 start > end ⇒ `""` ⇒ `outCol` 空
+    //     ⇒ **output 列那条反向判据静默失效**,而红出来的是正向那条(缺一大串名字);
+    //   · 两列换序(input 写在前)⇒ `head > cut` ⇒ 同样是 `""`,红在 input 列那条。
+    // 两种都会把人指到不存在的缺陷上,所以断言要钉「切得对」,不只钉「切得出」。
+    check(
+        head >= 0 && cut > head,
+        `SCENARIO_NAMES 分得出 output / input 两列且 output 在前(实得 output:${head} input:${cut})`,
+    );
+    const outCol = new Set(litOf(table.slice(head, cut)));
+    const inCol = new Set(litOf(table.slice(cut)));
+    const listed = new Set([...outCol, ...inCol]);
+    const mapped = new Set(Object.keys(driver.SCENARIO_MAP));
+
+    // 反向,**逐列**:某一列里有、MAP 里没有 ⇒ `?scenario=` 报「待 T31-T36 接线」
+    // 伪警告。今天 6 个全在 output 列(实测),input 列干净 —— 所以 input 列这条
+    // 是**空集断言**:哪天往 input 列加个没接线的名字,它立刻红。
+    const outUnmapped = [...outCol].filter((n) => !mapped.has(n));
+    const inUnmapped = [...inCol].filter((n) => !mapped.has(n));
+    const extraOut = outUnmapped.filter((n) => !KNOWN_UNMAPPED.has(n));
+    const stale = [...KNOWN_UNMAPPED].filter((n) => mapped.has(n));
+    // 正向:MAP 里有、两列都没有 ⇒ 两个 role 下都印 unknown。
+    const missingInShell = [...mapped].filter((n) => !listed.has(n));
+
+    log(
+        `  场景名表:MAP ${mapped.size} 个 / output 列 ${outCol.size} 个(未接线 ${outUnmapped.length})/ input 列 ${inCol.size} 个(未接线 ${inUnmapped.length})`,
+    );
+    check(
+        missingInShell.length === 0,
+        `MAP 的场景在 shell.js 两列里至少登记了一处(缺 ${JSON.stringify(missingInShell)})`,
+    );
+    check(
+        extraOut.length === 0,
+        `output 列里没有「有名无实」的新场景(未登记在案的 ${JSON.stringify(extraOut)} —— 要么补进 SCENARIO_MAP,要么写进 KNOWN_UNMAPPED 并说明理由)`,
+    );
+    check(
+        inUnmapped.length === 0,
+        `input 列里没有「有名无实」的场景(实得 ${JSON.stringify(inUnmapped)})`,
+    );
+    check(
+        stale.length === 0,
+        `KNOWN_UNMAPPED 里没有已经接上线的名字(${JSON.stringify(stale)} 该从表里删掉)`,
+    );
+    // 台账腐坏有**两个**方向,上面那条只兜了一个(名字接上线了、账没销)。
+    // 另一个:名字从 shell.js 白名单里整个删掉 ⇒ 既不在白名单也不在 MAP ⇒ 这一行
+    // 成了死条目,而表头自称「每一个都会让 `?scenario=<名字>` 报一条伪警告(实测过)」
+    // **当场变成假话,且没有任何一格会红**(复审第 3 轮点出)。
+    const gone = [...KNOWN_UNMAPPED].filter((n) => !listed.has(n));
+    check(
+        gone.length === 0,
+        `KNOWN_UNMAPPED 里没有已经从白名单删掉的死条目(${JSON.stringify(gone)} 该从表里删掉 —— 表头自称「每一个都会报一条伪警告」,留着就是假话)`,
+    );
+    // ⚠ **仍然判不出来的那一半:名字登记错列。**`SCENARIO_MAP` 不带 role 信息,
+    //   所以「这个名字该在 output 列还是 input 列」本格无从判断。今天 `connected`
+    //   就是这一态(MAP 有、只在 input 列,`output.html?scenario=connected` 照样印
+    //   `unknown`),同态的还有 occupied / no-output / passthrough / abi-mismatch /
+    //   sr-mismatch / group-mismatch / input-first-run 共 8 个。
+    //   `smoke-output-dist-page.mjs:566-570` 记的两次栽法里,本格接住第一次
+    //   (`printing` 形态),**第二次(`connected` 形态)仍无判据** —— 要覆盖它得让
+    //   `SCENARIO_MAP` 带上 role,不在本卡范围内。
 }
 
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
