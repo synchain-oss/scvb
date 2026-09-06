@@ -184,9 +184,18 @@ public:
     //   ①-c 文档已提交、外链 css 还没到 —— 页面自己没有任何底色,露的是 ①-b
     //        (①-b 缺席时就是白)。tokens.css 与 base.css 各要经一次 ResourceProvider 的
     //        WebResourceRequested 回到消息线程才拿得到。[SL-355] 因此在三份 index.html 的
-    //        <head> 里内联一条 `html { background-color: … }`(排在两条
-    //        <link rel="stylesheet"> 之前),把这一节与外链解耦 —— 也顺带把 ①-b 缺席那条
-    //        路兜住。判据 = web-preview/tests/smoke-embedded-resources.mjs 的 ⑥。
+    //        <head> 里内联一条 `html { background-color: … }`,排在两条
+    //        <link rel="stylesheet"> 之前;判据 = web-preview/tests/smoke-embedded-resources.mjs
+    //        的 ⑥。
+    //        ⚠ **「排在外链之前」是排序事实,不是时序保证** —— 别把它读成「已经堵住」。
+    //        Chromium 对 <head> 里的 <link rel="stylesheet"> 是**渲染阻塞**的:外链的 CSSOM
+    //        就绪之前文档整体不进正常绘制路径,那一段屏上仍然是视图的 base background color
+    //        (即 ①-b)。所以这条内联声明**确定**兜住的只有两条路:
+    //          · 外链**取不到 / 加载失败** —— 阻塞随之解除,画出来的是这条暗底而不是白。
+    //            本仓栽过三次的「web 资源没进包 ⇒ 空白窗口」正是这一类;
+    //          · 外链到达之后与 base.css 的 body 底色同值,稳态零差异(所以它无副作用)。
+    //        而「正常路径上它到底缩不缩得短那段白」取决于 Blink 在阻塞期间用不用根元素样式,
+    //        本机没有任何手段能验证 —— **只有真机能判**,验收步骤见 PR #234 描述。
     //   还有一节在我们的 API 之外:WebView2 runtime 自己那个宿主 HWND,在首帧合成之前由
     //   runtime 画,JUCE 不暴露它(只在 createWebView 里遍历子窗口找到后交给
     //   AccessibilityHandler::setNativeChildForComponent)。它是不是白闪的剩余来源,

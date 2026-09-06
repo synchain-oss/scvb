@@ -15,9 +15,11 @@
 //   ① 每侧打包集合内 basename 全局唯一(重名会让其中一个永远取不到);
 //   ② 从 index.html 出发,模块图 / 样式表 / 图片 / 字体的每个引用都能按 basename 命中;
 //   ③ 同一个文件不会被两个不同的服务 URL 取到(ES module 按 URL 定身份,会被实例化两次);
-//   ④ index.html 里的 boot 守卫存在,且事件名与 C++ 侧 kBootErrorEventId 逐字一致。
-//   ⑥ [SL-355] index.html 里有一条**内联在外链 css 之前**的根元素底色,取值与 C++ 侧
-//      kShellBackdropArgb 逐字一致(开窗白闪的第三段)。
+//   ④ index.html 里的 boot 守卫存在,且事件名与 C++ 侧 kBootErrorEventId 逐字一致;
+//   ⑤ 该 boot 守卫是 ES5、且落在非 module 的 <script> 里(解析期错误才接得住)。
+//   ⑥ [SL-355] index.html 里**恰好一条**根元素底色、内联、排在外链 css 之前,取值与 C++ 侧
+//      kShellBackdropArgb 逐字一致(开窗白闪的第三段);⑥b 同值对拍 tokens.css 的
+//      --page-backdrop。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -263,6 +265,24 @@ function checkRole(role) {
 }
 
 /**
+ * 开窗底色的 C++ 真源(`#rrggbb`;读不到返回 null)。
+ *
+ * **锚到定义行**(`inline constexpr …`),不是全文件第一处命中:`kShellBackdropArgb`
+ * 这个标识符在同文件的注释里出现好几次,哪天有人在定义**之前**的注释里写一句示例赋值,
+ * 不锚定的正则就会拿注释当真源。
+ */
+function shellBackdropHex() {
+    const hdr = readFileSync(
+        join(ROOT, "src/plugin-common/PlatformWebView.h"),
+        "utf8",
+    );
+    const m = hdr.match(
+        /inline\s+constexpr[^;=]*\bkShellBackdropArgb\s*=\s*0x([0-9a-fA-F]{8})/,
+    );
+    return m ? "#" + m[1].toLowerCase().slice(2) : null; // 低 24 位 = css 的 #rrggbb
+}
+
+/**
  * ⑥ [SL-355] 开窗底色内联在外链 css 之前,且与 C++ 真源同值。
  *
  * 守的是「开窗先灰、再全白、才出内容」里的**白**那一段最后一节:文档已经提交、
@@ -270,29 +290,29 @@ function checkRole(role) {
  * 页面自己没有任何底色。此时露出来的是 WebView2 的 DefaultBackgroundColor;而那一层
  * **可能整层不在** —— JUCE 是 QueryInterface 取 ICoreWebView2Controller2、取不到就静默
  * 跳过(juce 的 WebView2::setWebViewPreferences),取不到时露的就是白。
- * 分层全貌与各段证据只写在 src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注。
+ * 分层全貌与各段证据只写在 src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注 ——
+ * **包括「排在外链之前」只是排序事实、不是时序保证**那一条,别从本函数的 (c) 反推出
+ * 「白闪已经堵住」。
  *
- * 三条断言各自独立,报错文案互不相同(删任一条都只红它自己那句):
- *   (a) 存在一条作用在**根元素**上的 background / background-color;
+ * 三条断言各自独立,报错文案互不相同(拆任一条都只红它自己那句):
+ *   (a) **恰好一条**作用在根元素上的 background / background-color。要求「恰好一条」而不是
+ *       「至少一条」,是因为 smoke-monitor.mjs 的「零裸 hex」豁免按同一形态**全局**剥除:
+ *       多出来的第二条会被那边一并剥掉,又不是这里取的 hits[0],两道门就都看不见它;
  *   (b) 取值是**字面量**且等于 kShellBackdropArgb 的低 24 位 —— 写成 var(--page-backdrop)
  *       单列一句,因为自定义属性定义在 tokens.css 里,那等于又回到「等外链」;
- *   (c) 它排在第一个 <link rel="stylesheet"> **之前**。
+ *   (c) 它排在第一个 <link rel="stylesheet"> **之前**(纪律:这条声明的**生效**不依赖任何
+ *       外链请求的结果)。
  * 颜色**不透明**这一条不在这里重复:tests/webview/test_plugin_common.cpp 已经
  * CHECK(bg.isOpaque()),同一件事只留一份判据。
  */
 function checkShellBackdropInline(role, entry) {
-    const hdr = readFileSync(
-        join(ROOT, "src/plugin-common/PlatformWebView.h"),
-        "utf8",
-    );
-    const m = hdr.match(/kShellBackdropArgb\s*=\s*0x([0-9a-fA-F]{8})/);
-    if (!m) {
+    const expect = shellBackdropHex();
+    if (expect === null) {
         bad(
-            "PlatformWebView.h 里找不到 kShellBackdropArgb(开窗底色的 C++ 真源)",
+            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗底色的 C++ 真源)",
         );
         return;
     }
-    const expect = "#" + m[1].toLowerCase().slice(2); // 低 24 位 = css 的 #rrggbb
 
     // **先剥 HTML 注释再匹配**:这三个 index.html 的 <!-- --> 里写满中文说明,其中就有一段
     // 在解释本条声明 —— 不剥的话注释里的一句话就足以顶替真声明,判据当场失去牙齿。
@@ -311,6 +331,13 @@ function checkShellBackdropInline(role, entry) {
         bad(
             `${role}:index.html 里没有作用在根元素上的内联底色(html { background-color: … })` +
                 ` —— 外链 css 到达之前这一页没有任何底色,开窗会露白`,
+        );
+        return;
+    }
+    if (hits.length > 1) {
+        bad(
+            `${role}:根元素底色声明有 ${hits.length} 条,只允许一条 ——` +
+                ` 多出来的那条会被 smoke-monitor.mjs 的「零裸 hex」豁免一并剥掉,两道门都看不见它`,
         );
         return;
     }
@@ -340,9 +367,46 @@ function checkShellBackdropInline(role, entry) {
     if (firstLink >= 0 && hit.index > firstLink) {
         bad(
             `${role}:内联底色声明排在第一个外链 <link rel="stylesheet"> 之后 ——` +
-                ` 它要挡的正是「外链还没到」那一段,排在后面就晚了`,
+                ` 这条声明的生效不该依赖任何外链请求的结果`,
         );
     }
+}
+
+/**
+ * ⑥b [SL-355] `tokens.css` 的 `--page-backdrop` 也钉到同一个 C++ 真源。
+ *
+ * PlatformWebView.h 的头注第一句就是「取值与 web/shared/tokens.css 的 --page-backdrop 对齐」——
+ * 那是一句**跨文件的实现断言**,在此之前没有任何东西会因为它变假而红。⑥ 已经把 C++ 真源
+ * 读进来了,顺手多对一次即可闭环:否则三份 index.html 被钉住、稳态底色那一份反而落单,
+ * 「外链到达之后与 base.css 同色」这条无副作用性就没人守。
+ * 只跑一次(不进 checkRole 的角色循环)—— 它与角色无关。
+ */
+function checkTokensBackdrop() {
+    console.log("\n--- tokens.css ---");
+    const expect = shellBackdropHex();
+    if (expect === null) {
+        bad(
+            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗底色的 C++ 真源)",
+        );
+        return;
+    }
+    const tok = readFileSync(join(ROOT, "web/shared/tokens.css"), "utf8");
+    const m = tok.match(/--page-backdrop:\s*(#[0-9a-fA-F]{3,8})\b/);
+    if (!m) {
+        bad(
+            "web/shared/tokens.css 里找不到 --page-backdrop 的字面量取值" +
+                "(PlatformWebView.h 头注声称本常量与它对齐,对不上就无从核)",
+        );
+        return;
+    }
+    if (m[1].toLowerCase() !== expect) {
+        bad(
+            `tokens.css 的 --page-backdrop ${m[1]} 与 C++ 真源 kShellBackdropArgb 的 ${expect} 不一致` +
+                `(PlatformWebView.h 头注第一句声称两者对齐)`,
+        );
+        return;
+    }
+    console.log(`  --page-backdrop ${m[1]} = C++ 真源`);
 }
 
 function checkBootGuard(role, entry) {
@@ -399,6 +463,7 @@ checkRole("input");
 // (`web/shared/trajectory-chart.js` -> `../output/canvas/{timeline,hidpi,layers,playhead}.js`)。
 // ④⑤ 那组守卫断言按 BOOT_GUARD_PENDING 暂缓,理由与自我删除条件见那里。
 checkRole("monitor");
+checkTokensBackdrop(); // ⑥b 与角色无关,只跑一次
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);
