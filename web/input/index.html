@@ -4,7 +4,8 @@
   真源:masterPlan/plan/05-ui-spec.md §3(Input 全表)/ §1.1(卡片通用骨架)/ §1.2(设计盒)。
   契约:docs/SCVB_CONTRACT.md §3-§4(Input native functions / events)。
   字典:web/shared/i18n.js —— 页内 data-t / data-t-aria 全部引用其现有 key;新增 in.* 词条见 T36。
-  锚点纪律:每个节点带 data-gb="<语义 id>"(app.js 消费);视觉零裸 hex,颜色/圆角/阴影一律 tokens.css。
+  锚点纪律:每个节点带 data-gb="<语义 id>"(app.js 消费);视觉零裸 hex,颜色/圆角/阴影一律 tokens.css;
+  唯一例外 = <head> 里 [SL-355] 那条开窗底色内联声明(必须早于外链 css 生效)。
 -->
 <!doctype html>
 <html lang="zh">
@@ -15,6 +16,23 @@
             content="width=device-width, initial-scale=1, viewport-fit=cover"
         />
         <title>SCVB Input</title>
+        <!--
+          [SL-355] 开窗白闪第 ③ 段:根元素底色**内联在首字节**,不等外链 css。
+          三段白闪(灰 / 白 / 内容)各自的来源与代码证据只写在一处 ——
+          src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注,别在这里复述。
+          这里只留结论:tokens.css 与 base.css 要各经一次 ResourceProvider 的
+          WebResourceRequested 回到消息线程才拿得到,在那之前文档自己没有任何底色。
+          故这一条**必须是字面量且内联**:--page-backdrop 定义在 tokens.css 里,
+          写成 var() 等于又回到「等外链」那条路上。
+          取值 = src/plugin-common/PlatformWebView.h 的 kShellBackdropArgb 低 24 位,
+          由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥ 与 C++ 真源逐字对拍
+          (改一边不改另一边即红),故此处是本页「零裸 hex」纪律的**唯一**例外。
+        -->
+        <style>
+            html {
+                background-color: #191820;
+            }
+        </style>
         <!--
           boot 守卫 —— 前端起不来时主动告诉 native,别让宿主干等看门狗超时。
           必须是 <head> 里的**普通 script**(非 module)且排在所有资源之前:module 自身

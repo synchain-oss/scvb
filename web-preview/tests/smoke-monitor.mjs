@@ -1894,7 +1894,20 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
         "轨迹图卡 flex:1(拿走剩余全部高度)",
     );
 
-    const hex = mon
+    // [SL-355] 唯一豁免:<head> 里那条开窗底色。它**必须**是字面量 —— tokens.css 还没到
+    // 的那一段正是它要盖的,写成 var(--page-backdrop) 就又回到「等外链」。豁免面只有
+    // `html { background-color: #rrggbb; }` 这一条规则本身,同一个 <style> 块里的其它 hex
+    // 照样被下面这行逮住;取值是否等于 C++ 的 kShellBackdropArgb 由
+    // web-preview/tests/smoke-embedded-resources.mjs 的 ⑥ 管,这里不重复第二份。
+    const monNoBackdrop = mon.replace(
+        /html\s*\{\s*background-color:\s*#[0-9a-fA-F]{3,8};?\s*\}/g,
+        "",
+    );
+    check(
+        monNoBackdrop !== mon,
+        "[SL-355] <head> 里那条开窗底色内联声明还在(它被删掉就没有豁免可言了)",
+    );
+    const hex = monNoBackdrop
         .replace(/data:image\/[^"')]+/g, "")
         .match(/#[0-9a-fA-F]{3,8}\b/g);
     check(!hex, `Monitor 页零裸 hex(实得 ${JSON.stringify(hex)})`);

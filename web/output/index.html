@@ -19,6 +19,7 @@
     • 字典缺 key 的概念仍用中文明文占位 + data-gb-todo="词条待立"(门禁/grep 口径),
       原因写在紧邻上方的 HTML 注释「词条待立:<原因>」里,并记入 scratchpad/t31/deviations.md。
     • 零裸 hex:颜色一律 var(--x) / rgba(var(--分量), a),见页内 <style> 头注。
+      唯一例外 = <head> 里 [SL-355] 那条开窗底色内联声明(必须早于外链 css 生效)。
   15 轨行 / 15 泳道 / 八组胶囊 / 分布图柱体由 app.js 用 web/shared/mock-data.js 生成。
 -->
 <!doctype html>
@@ -27,6 +28,23 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>SCVB Output</title>
+        <!--
+          [SL-355] 开窗白闪第 ③ 段:根元素底色**内联在首字节**,不等外链 css。
+          三段白闪(灰 / 白 / 内容)各自的来源与代码证据只写在一处 ——
+          src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注,别在这里复述。
+          这里只留结论:tokens.css 与 base.css 要各经一次 ResourceProvider 的
+          WebResourceRequested 回到消息线程才拿得到,在那之前文档自己没有任何底色。
+          故这一条**必须是字面量且内联**:--page-backdrop 定义在 tokens.css 里,
+          写成 var() 等于又回到「等外链」那条路上。
+          取值 = src/plugin-common/PlatformWebView.h 的 kShellBackdropArgb 低 24 位,
+          由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥ 与 C++ 真源逐字对拍
+          (改一边不改另一边即红),故此处是本页「零裸 hex」纪律的**唯一**例外。
+        -->
+        <style>
+            html {
+                background-color: #191820;
+            }
+        </style>
         <!--
           boot 守卫 —— 前端起不来时主动告诉 native,别让宿主干等看门狗超时。
           必须是 <head> 里的**普通 script**(非 module)且排在所有资源之前:module 自身

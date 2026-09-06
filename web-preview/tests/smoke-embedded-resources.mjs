@@ -16,6 +16,8 @@
 //   ② 从 index.html 出发,模块图 / 样式表 / 图片 / 字体的每个引用都能按 basename 命中;
 //   ③ 同一个文件不会被两个不同的服务 URL 取到(ES module 按 URL 定身份,会被实例化两次);
 //   ④ index.html 里的 boot 守卫存在,且事件名与 C++ 侧 kBootErrorEventId 逐字一致。
+//   ⑥ [SL-355] index.html 里有一条**内联在外链 css 之前**的根元素底色,取值与 C++ 侧
+//      kShellBackdropArgb 逐字一致(开窗白闪的第三段)。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -254,6 +256,91 @@ function checkRole(role) {
     } else {
         console.log(
             `  boot 守卫断言暂缓(BOOT_GUARD_PENDING:等 ${role} 页补上守卫的那个 PR 删掉本条)`,
+        );
+    }
+
+    checkShellBackdropInline(role, entry);
+}
+
+/**
+ * ⑥ [SL-355] 开窗底色内联在外链 css 之前,且与 C++ 真源同值。
+ *
+ * 守的是「开窗先灰、再全白、才出内容」里的**白**那一段最后一节:文档已经提交、
+ * `../shared/tokens.css` 与 `../shared/base.css` 还没经 ResourceProvider 取回来时,
+ * 页面自己没有任何底色。此时露出来的是 WebView2 的 DefaultBackgroundColor;而那一层
+ * **可能整层不在** —— JUCE 是 QueryInterface 取 ICoreWebView2Controller2、取不到就静默
+ * 跳过(juce 的 WebView2::setWebViewPreferences),取不到时露的就是白。
+ * 分层全貌与各段证据只写在 src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注。
+ *
+ * 三条断言各自独立,报错文案互不相同(删任一条都只红它自己那句):
+ *   (a) 存在一条作用在**根元素**上的 background / background-color;
+ *   (b) 取值是**字面量**且等于 kShellBackdropArgb 的低 24 位 —— 写成 var(--page-backdrop)
+ *       单列一句,因为自定义属性定义在 tokens.css 里,那等于又回到「等外链」;
+ *   (c) 它排在第一个 <link rel="stylesheet"> **之前**。
+ * 颜色**不透明**这一条不在这里重复:tests/webview/test_plugin_common.cpp 已经
+ * CHECK(bg.isOpaque()),同一件事只留一份判据。
+ */
+function checkShellBackdropInline(role, entry) {
+    const hdr = readFileSync(
+        join(ROOT, "src/plugin-common/PlatformWebView.h"),
+        "utf8",
+    );
+    const m = hdr.match(/kShellBackdropArgb\s*=\s*0x([0-9a-fA-F]{8})/);
+    if (!m) {
+        bad(
+            "PlatformWebView.h 里找不到 kShellBackdropArgb(开窗底色的 C++ 真源)",
+        );
+        return;
+    }
+    const expect = "#" + m[1].toLowerCase().slice(2); // 低 24 位 = css 的 #rrggbb
+
+    // **先剥 HTML 注释再匹配**:这三个 index.html 的 <!-- --> 里写满中文说明,其中就有一段
+    // 在解释本条声明 —— 不剥的话注释里的一句话就足以顶替真声明,判据当场失去牙齿。
+    const html = readFileSync(join(ROOT, entry), "utf8").replace(
+        /<!--[\s\S]*?-->/g,
+        "",
+    );
+
+    // 选择器必须以 `html` 起头(前面只允许行首或 `}` / `;` / `>` 这三种边界),这样
+    // `.foo html { … }` 那种后代选择器不会被当成根元素底色。**不钉排版**:`m` 标志下 `^`
+    // 认的是行首,`[};>]` 认的是同一行里紧挨着的边界,prettier 怎么折行都命中。
+    const hits = [
+        ...html.matchAll(/(?:^|[};>])[ \t]*html\s*\{([^}]*)\}/gm),
+    ].filter((h) => /background(?:-color)?\s*:/.test(h[1]));
+    if (hits.length === 0) {
+        bad(
+            `${role}:index.html 里没有作用在根元素上的内联底色(html { background-color: … })` +
+                ` —— 外链 css 到达之前这一页没有任何底色,开窗会露白`,
+        );
+        return;
+    }
+    const hit = hits[0];
+    const val = /background(?:-color)?\s*:\s*([^;}]+)/
+        .exec(hit[1])[1]
+        .trim()
+        .toLowerCase();
+
+    if (val.includes("var(")) {
+        bad(
+            `${role}:内联底色写成了 ${val} —— 自定义属性定义在 web/shared/tokens.css 里,` +
+                `用 var() 等于又回到「等外链」那条路上,本声明就白写了`,
+        );
+    } else if (val !== expect) {
+        bad(
+            `${role}:内联底色 ${val} 与 C++ 真源 kShellBackdropArgb 的 ${expect} 不一致` +
+                `(两边同值才谈得上「盖住的和露出来的是同一个颜色」)`,
+        );
+    } else {
+        console.log(
+            `  开窗底色内联在场:html{background-color:${val}} = C++ 真源`,
+        );
+    }
+
+    const firstLink = html.search(/<link\b[^>]*\brel="stylesheet"/i);
+    if (firstLink >= 0 && hit.index > firstLink) {
+        bad(
+            `${role}:内联底色声明排在第一个外链 <link rel="stylesheet"> 之后 ——` +
+                ` 它要挡的正是「外链还没到」那一段,排在后面就晚了`,
         );
     }
 }
