@@ -467,11 +467,26 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
         /const stale = loudnessStale \|\| centerStale;/.test(stripComments(ts)),
         "[SL-354] 弹窗判据两项都读(改回只读响度即红;注释冒充不了 —— 本格剥过注释)",
     );
-    check(
-        !/field === "loudness_mode"/.test(stripComments(ts)) &&
-            /local\.askPending = \{ field, value \}/.test(stripComments(ts)),
-        "[SL-354] 开闸点不再按字段名分叉:两个设置块写成功都置闸,且记的是「哪个字段的哪个值」",
-    );
+    // [SL-354] 「开闸点不再按字段名分叉」这条断言**必须只看 wireSeg 的函数体**。
+    // 全文件扫的话会误报:复审第 1 轮补的 `pendingStale` 选择器在 syncStale 里按字段名
+    // 分叉是**对的**(要判「刚改走的那一项自己脏不脏」),而它与本格要拦的东西无关 ——
+    // 全文件版当场把它判成回归(实测栽过一次)。取函数体 = 从 `function wireSeg(` 到
+    // 下一个同层 `function `,并先断真的取到了(取不到就是下面那格在空跑)。
+    {
+        const bare = stripComments(ts);
+        const from = bare.indexOf("function wireSeg(");
+        const to = bare.indexOf("function toggleNine(");
+        check(
+            from >= 0 && to > from,
+            "[SL-354] 取到 wireSeg 的函数体(取不到就说明下面那格在空跑)",
+        );
+        const body = from >= 0 && to > from ? bare.slice(from, to) : "";
+        check(
+            !/field === "loudness_mode"/.test(body) &&
+                /local\.askPending = \{ field, value \}/.test(body),
+            "[SL-354] 开闸点不再按字段名分叉:两个设置块写成功都置闸,且记的是「哪个字段的哪个值」",
+        );
+    }
     // [SL-354] **接线格**:纯函数 ②(上面四格)只回答「拿到 state 之后怎么判」,答不了
     // 「这条判断有人跑吗」。行为面由页面级的 C10f 承担,但那一套依赖无头浏览器、缺依赖时
     // 整套 SKIP —— 所以这条**最起码的接线**必须留一份在这个永不 SKIP 的 node 套里:

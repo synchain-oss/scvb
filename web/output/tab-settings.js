@@ -250,6 +250,8 @@ export function createTabSettings(opts) {
         // [SL-276] 重分析提示弹窗(卡片层单例,不在 Tab4 子树里 —— 见 index.html 那段注释)
         reanalyzeAsk: $("reanalyze-ask"),
         reanalyzeAskPanel: $("reanalyze-ask-panel"),
+        // [SL-354] 框里的影响面说明段:内容**按触发它的那一项**换词条(见 syncReanalyzeScopeNote)。
+        reanalyzeAskScopenote: $("reanalyze-ask-scopenote"),
         reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
         reanalyzeAskRangedone: $("reanalyze-ask-rangedone"),
         reanalyzeAskLater: $("reanalyze-ask-later"),
@@ -730,6 +732,38 @@ export function createTabSettings(opts) {
         }
     }
 
+    /**
+     * [SL-354 复审第 1 轮] 框里的影响面说明段**跟着触发它的那一项走**。
+     *
+     * 本卡把弹窗铺到中央槽策略之后,这一段仍恒是响度口径专用的那条词条 ——
+     * 只改了中央槽的用户,看到的框在解释另一件事;而这个 `<p>` 同时是本框
+     * `aria-describedby` 的目标(见 index.html 那段与 syncReanalyzeRangeNote()),
+     * 读屏用户听到的描述同样是错的那一条。
+     *
+     * 两条词条**都已存在、三语齐、也都已经渲染在各自的设置卡上**(响度卡第二行 /
+     * 中央槽卡第二行),这里只是按字段取其一,**零新增词条**。
+     * 做法与 syncReanalyzeRangeNote() 改写 `aria-describedby` 同源:每次 render 都按
+     * 当前字典重填,框开着切语言才不会停在旧语言上。
+     *
+     * 没有待观察的写时回落到响度那条 —— 与 index.html 里写死的静态默认值同一条,
+     * 免得「框还没被任何一次改档触发过」时这里与 HTML 各说各的。
+     */
+    const ASK_SCOPE_NOTE_KEY = {
+        loudness_mode: "set.reanalyze.scopeNote",
+        center_slot_policy: "set.centerSlot.scopeNote",
+    };
+    function syncReanalyzeScopeNote() {
+        const node = el.reanalyzeAskScopenote;
+        if (!node) return;
+        const pending = local.askPending;
+        const key =
+            (pending && ASK_SCOPE_NOTE_KEY[pending.field]) ||
+            ASK_SCOPE_NOTE_KEY.loudness_mode;
+        attr(node, "data-t", key);
+        const t = getT() || {};
+        text(node, hasOwn(t, key) ? t[key] : key);
+    }
+
     function openReanalyzeAsk() {
         // [SL-276 复审] 只读观察态一律不弹:框里那枚「重新分析」是写控件,
         // 契约 §5.6 要求只读态下写控件不可操作(后端另有 {observer:true} 兜底,
@@ -832,6 +866,10 @@ export function createTabSettings(opts) {
         // [SL-279 复审第 6 轮] 框开着时用户仍可能在 Tab3 改范围档,提示要跟着当前 state 走 ——
         // 只在开框那一下算一次的话,提示会停在开框时的档位上。
         syncReanalyzeRangeNote();
+        // [SL-354 复审第 1 轮] 影响面说明段按触发字段换词条。**放在所有早退之前**:
+        // 下面几支会在「这一帧不作数」「不是用户刚改的档」等情形早退,而框开着切语言
+        // 时靠的就是每次 render 都重填这一段(与 renderRangeDone 同一个理由)。
+        syncReanalyzeScopeNote();
         // [SL-279] 基线来自 state 的 `analysis.applied.*`(上次全量分析所用),不再是本地快照。
         // [SL-278] **逐项判**:两枚徽标各挂各的控件,合成一个布尔会让它们同亮同灭。
         const cur = config();
@@ -906,6 +944,20 @@ export function createTabSettings(opts) {
             return;
         }
         if (!pending) return; // 不是用户刚改的档 ⇒ 只留 badge,不弹框
+        // [SL-354 复审第 1 轮] **要弹的是「用户刚改走的那一项」自己脏**,不是「两项里随便
+        // 哪一项脏」。上面的 stale 现在是两项取或,于是「两项都脏 → 把其中一项改回基线」
+        // 会走不进 `!stale` 那支(另一项还脏),而 token 换了 ⇒ 框又弹一次,并把焦点抢到
+        // 主钮上。用户刚**撤销**了自己的一个改动却收到一个 alertdialog —— 与 SL-276 立的
+        // 「弹窗 = 用户刚把某一档改走了」对不上,也不在本卡四条用户反馈里。
+        // 未知字段一律**不弹**(失效方向倒向安静):本位只由 wireSeg 的两个设置块写,
+        // 出现第三种字段说明是别处写进来的,那更不该弹框。
+        const pendingStale =
+            pending.field === "loudness_mode"
+                ? loudnessStale
+                : pending.field === "center_slot_policy"
+                  ? centerStale
+                  : false;
+        if (!pendingStale) return;
         const token = pending.field + "=" + pending.value;
         if (local.reanalyzeAskedFor !== token) {
             local.reanalyzeAskedFor = token;

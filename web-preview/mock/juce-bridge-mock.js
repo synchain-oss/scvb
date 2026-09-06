@@ -532,11 +532,11 @@ function makeContext(role, world) {
         // `caps.slowStateEcho`(scenario=slow-state-echo)把它延后一拍,与真桥同形:
         // 写的回执先到,状态由后续的 `scvb.state` 帧带回来。UI 在收到回执那一刻读到的
         // 仍是**旧值** —— 用户 v5.6.7 报的「第一下只出横幅、第二下才弹窗」就活在这个差里。
-        // 延后用 `later(0, …)`(本文件统一的定时器入口,受 driver 的时钟控制),
+        // 延后走本文件统一的定时器入口 `later(…)`(受 driver 的时钟控制),
         // 不用 queueMicrotask:微任务会在同一个 await 链里跑完,差就又没了。
         if (model.caps && model.caps.slowStateEcho) {
-            // 延时取 **250ms = 4Hz 的一帧**,不是 0。`requestRender` 是 rAF 合帧的
-            // (app.js:1199),`later(0)` 会**赶在那一帧之前**把新值送到 —— 那样「UI 在
+            // 延时取 **250ms = 4Hz 的一帧**,不是 0。app.js 的 `requestRender()` 是 rAF
+            // 合帧的,`later(0)` 会**赶在那一帧之前**把新值送到 —— 那样「UI 在
             // 收到写回执时读到的是旧值」这个差就不存在了,①② 又复现不出来。本卡实测:
             // 用 0 时删除式全绿(判据看着接住了,其实是缺陷压根没被造出来)。
             later(250, () => emit("scvb.state", frame));

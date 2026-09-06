@@ -84,14 +84,19 @@
 //      C7 [SL-273] 换档影响面这句话在**两处**都写着,且逐字同一句:设置页响度卡第二行
 //         与弹窗第二段共用词条 set.reanalyze.scopeNote。断言取两处的 textContent 做
 //         全等比较 —— 拿掉任一处的 data-t(或把它换成另一条词条)即红,三语各验一次;
+//         [SL-354 复审第 1 轮] 这条耦合现在是**按触发字段**的:框里那一段改中央槽时换成
+//         `set.centerSlot.scopeNote`。本条走的全是响度那条路(C1 起就一直改响度档),
+//         所以断言形态不变;中央槽那一侧由 C10c2 断,两格合起来才是完整口径;
 //         同批一条排版断言:弹窗正文段的上下 margin 为 0(两段间距只由 .sc-modal__note
 //         的 margin-top 决定),删掉 `.sc-modal--reanalyze .sc-modal__body{margin:0}` 即红;
 //      C10 [SL-354] 用户 v5.6.7 真机四条 + 一道兜底闸。前四条**必须跑在异步回声场景上**
 //         (`scenario=slow-state-echo`):默认 mock 同步 emit `scvb.state`,写回执到达时
 //         store 已是新值,①② 那两条链在它上面根本不存在 —— C10a 因此先量一次「点击 →
 //         徽标亮」的页内耗时,把「这个场景真的还有牙齿」也钉住。逐格与删除式见那一段的
-//         行内注释:a 第一下就弹 / b 过期全量帧不关框 / c 中央槽同样弹 / d 说明段字号走
-//         --fs-110 / e 改回基线三件事 / f 缺 applied 的全量帧不许清闸关框。
+//         行内注释:a 第一下就弹 / b 过期全量帧不关框 / c 中央槽同样弹 /
+//         c2 框内说明段说的是被改的那一项(复审第 1 轮)/ d 说明段字号走 --fs-110 /
+//         e 改回基线三件事 / f 缺 applied 的全量帧不许清闸关框 /
+//         g 两项都脏时把其中一项改回基线不该再弹(复审第 1 轮)。
 //
 // 章节在下面的执行顺序是 A → E → B → C(E 紧跟 A,因为两段用的是同一张 Input 页)。
 //
@@ -1708,6 +1713,75 @@ try {
         await waitFor(askOpen, 4000),
         "C10c 改中央槽策略**同样弹窗**(与响度档一视同仁)",
     );
+
+    // C10c2 [SL-354 复审第 1 轮] 框里的说明段**说的是被改的那一项**。
+    //   弹窗铺到中央槽之后,这一段原本恒是响度口径专用的那条词条 —— 只改中央槽的用户
+    //   看到的框在解释另一件事;而这个 `<p>` 同时是本框 aria-describedby 的目标,读屏
+    //   用户听到的描述同样错。判据取**三处 textContent 全等/不等**,不钉词条 key 字面:
+    //     · 框内说明段 == 中央槽卡第二行(逐字);
+    //     · 且 != 响度卡第二行(否则「两条词条恰好一样」也能蒙混过关)。
+    //   ← 把 syncReanalyzeScopeNote() 里按字段取 key 那一句改回恒取响度那条,本格红。
+    const c10c2 = await evaluate(
+        IN(`const a = gb("reanalyze-ask-scopenote");
+            const c = gb("settings-centerslot-scopenote");
+            const l = gb("settings-loudnessmode-scopenote");
+            if (!a || !c || !l) return null;
+            return {
+                ask: a.textContent.trim(),
+                center: c.textContent.trim(),
+                loud: l.textContent.trim(),
+            };`),
+    );
+    if (check(c10c2, "C10c2 取到三处说明段")) {
+        check(
+            c10c2.center.length > 0 && c10c2.loud.length > 0,
+            "C10c2 两条对照词条都非空(空串会把下面两格撑成恒真/恒假)",
+        );
+        check(
+            c10c2.center !== c10c2.loud,
+            "C10c2 两条词条本来就不一样(不然下面那格分不出取的是哪条)",
+        );
+        check(
+            c10c2.ask === c10c2.center,
+            `C10c2 框内说明段 = 中央槽卡那条(实得 ${JSON.stringify(c10c2.ask.slice(0, 24))})`,
+        );
+    }
+
+    // C10g [SL-354 复审第 1 轮] **两项都脏时,把其中一项改回基线不该再弹一次框。**
+    //   `stale` 是两项取或,而 token 只按待观察的那一项算 —— 改回基线时走不进 `!stale`
+    //   那支(另一项还脏),token 却换了 ⇒ 框又弹、焦点被抢到主钮上。用户刚**撤销**了
+    //   自己的一个改动却收到一个 alertdialog,与 SL-276 的口径对不上。
+    //   ← 把 syncStale 里「待观察的那一项自己得是脏的」那句早退删掉,本格红。
+    check(await click("reanalyze-ask-later"), "C10g 先收掉中央槽那一框");
+    check(await waitFor(askClosed, 3000), "C10g 框已关");
+    check(await setLoudness("rms"), "C10g 再把响度也改走(两项同时脏)");
+    check(await waitFor(askOpen, 4000), "C10g 响度那一下照常弹");
+    check(await click("reanalyze-ask-later"), "C10g 再收掉");
+    check(
+        await waitFor(askClosed, 3000),
+        "C10g 框已关(两项都脏,两枚徽标都亮着)",
+    );
+    check(await setLoudness("kw_integrated"), "C10g 把响度改回基线可点");
+    check(
+        await waitFor(badgeGone, 4000),
+        "C10g 响度那枚徽标灭(改回基线生效了)",
+    );
+    const c10g = await evaluate(
+        IN(`const ask = gb("reanalyze-ask");
+            const cb = gb("settings-centerslot-stale");
+            if (!ask || !cb) return null;
+            return { open: vis(ask), centerBadge: vis(cb) };`),
+    );
+    if (check(c10g, "C10g 探针取到锚点")) {
+        check(
+            c10g.centerBadge,
+            "C10g 正证据:中央槽那枚徽标**还亮着** —— 确实处在「另一项仍脏」这个形态里",
+        );
+        check(
+            !c10g.open,
+            "C10g 撤销自己的一个改动**不弹框**(弹的判据是「刚改走的那一项自己脏」)",
+        );
+    }
     assertClean("sl354-centerslot");
 
     // C10f 兜底闸:**回落值只许渲染,不许做破坏性判断**。
