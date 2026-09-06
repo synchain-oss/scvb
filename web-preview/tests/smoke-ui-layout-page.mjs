@@ -2046,6 +2046,146 @@ try {
         }
         assertClean(`ask/${lang}`);
     }
+
+    // =========================================================== F. SL-374
+    // 「基于角度的音量调整 ±12 dB」曲线窗被压扁 / 上排控件卡太高(用户 v5.6.8 实测)。
+    //
+    // ★ 为什么是页面级:这一条全是**网格轨道之间怎么分高度**——
+    //   `.master-grid` 是 `auto auto 1fr` 三行,第三行(曲线卡)吃剩余,于是**任何长在
+    //   上面的东西**都直接从曲线窗身上扣。谁长了多少、扣掉之后还剩几个像素,只有排完版
+    //   才知道,CSS 文件里没有一行可以 grep。
+    //
+    // ★ 三个「档」不是窗口高度,是**上面吃掉多少**——这一点与卡面的字面写法有出入,
+    //   照实说明:Output 的设计盒**固定 1180x780**(web/shared/design-box.js),窗口
+    //   变大变小走的是 CSS zoom 整体缩放,版式一个像素都不重排。所以真正会变的两件事是:
+    //     ① 顶部横幅出不出来(本机实测:一条横幅吃掉 38.7px);
+    //     ② RANGE 卡在哪一档(「手动」档的面板比「全曲」档高 27px)。
+    //   T4 那一档另外把设计盒本身压到 580px,用来验**地板真的接得住**——它是纯合成条件,
+    //   产品里到不了,注释里就写明它是压力档,别读成「窗口 580 时的真实版式」。
+    //
+    // ★ 本节只量版式,**不走交互路径**:RANGE 档位靠直接写 `data-range` 属性切
+    //   (那正是本页 CSS 读的状态钩子,文件头「状态钩子一览」里逐字写着),
+    //   横幅靠直接切 `hidden`。点真按钮会连带触发 SL-354 的「口径已改」弹窗,
+    //   把版式量成弹窗盖住的样子;档位切换的**真行为**归上面 C 节与 range-manual-* 那几节。
+    //
+    // ★ 删除式(本机实测,实得清单在 PR 描述里):
+    //   · E1 `.master-grid` 的 `grid-template-rows` 退回 `auto auto 1fr`
+    //        ⇒ 只有 F1@T4(地板)红:曲线卡从 150px 掉到 14px
+    //   · E2 删掉 `.master-grid > .sc-card[data-gb=…]` 那条内距/行距覆盖
+    //        ⇒ 只有 F2 红(上排卡回到 134px)
+    //   · E3 删掉 RANGE 卡的三条内距/行距覆盖
+    //        ⇒ 只有 F3@T2 红(手动档回到 178px)
+    //     E3 必须量在 **T2(无横幅)**:T3 有横幅时地板已经在压第二行,RANGE 被压到
+    //     150px 出头,反而落在上限之内 —— 那一格会被 E1 加的地板**兜绿**。
+    //     (「加一条判据可能让另一条判据失去它的删除式」,本仓吃过这个亏。)
+    // =========================================================================
+    log("F. SL-374 整体调整页版式:曲线窗地板 + 上排控件卡改矮");
+    newBucket("sl374-layout");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?fixture=fifteen-tracks`,
+    });
+    check(
+        await waitFor(IN(`const n = gb("master-grid"); return !!n;`)),
+        "Output 页装载(整体调整页)",
+    );
+    await dismissOverlays();
+    await sleep(300);
+    const LAYOUT_PROBE = IN(`
+        const grid = gb("master-grid");
+        const card = q("#card");
+        const range = gb("master-range");
+        const banner = gb("banner-staleCapture");
+        const curve = gb("master-pancurve");
+        const plot = q(".curve-plot");
+        const row1 = ["master-group-selector", "master-width", "master-msbalance", "master-leadselect"];
+        if (!grid || !card || !range || !banner || !curve || !plot) return null;
+        const cardH0 = card.style.height;
+        const range0 = range.getAttribute("data-range") || "follow";
+        const bannerHidden0 = banner.hidden;
+        const floorRaw = String(w.getComputedStyle(grid).getPropertyValue("--master-curve-min-h") || "").trim();
+        const TIERS = [
+            { name: "T1 设计盒原高 / 无横幅 / RANGE 全曲", h: 0, range: "follow", bannerHidden: true },
+            { name: "T2 设计盒原高 / 无横幅 / RANGE 手动", h: 0, range: "manual", bannerHidden: true },
+            { name: "T3 设计盒原高 / 有横幅 / RANGE 手动", h: 0, range: "manual", bannerHidden: false },
+            { name: "T4 设计盒压到 580 / 有横幅 / RANGE 手动", h: 580, range: "manual", bannerHidden: false },
+        ];
+        const out = { floorRaw, tiers: [] };
+        for (const t of TIERS) {
+            card.style.height = t.h > 0 ? t.h + "px" : cardH0;
+            range.setAttribute("data-range", t.range);
+            banner.hidden = t.bannerHidden;
+            void grid.offsetHeight;
+            out.tiers.push({
+                name: t.name,
+                gridH: R(grid).h,
+                curveCard: R(curve).h,
+                curvePlot: plot.clientHeight,
+                rangeH: R(range).h,
+                row1: row1.map((n) => (gb(n) ? R(gb(n)).h : -1)),
+            });
+        }
+        card.style.height = cardH0;
+        range.setAttribute("data-range", range0);
+        banner.hidden = bannerHidden0;
+        void grid.offsetHeight;
+        return out;
+    `);
+    const lay = await evaluate(LAYOUT_PROBE);
+    if (
+        check(
+            !!lay && Array.isArray(lay.tiers) && lay.tiers.length === 4,
+            "SL-374 版式探针取到四档读数",
+        )
+    ) {
+        for (const t of lay.tiers) {
+            log(
+                `  ${t.name}:grid ${t.gridH} / 曲线卡 ${t.curveCard} / 曲线窗 ${t.curvePlot} / RANGE ${t.rangeH} / 上排 ${JSON.stringify(t.row1)}`,
+            );
+        }
+        // ---- F1 ★ 四档下曲线窗都不许被压扁 -----------------------------------
+        // 下限 80px。这条是用户那句「压缩到基本什么都看不见」的判据,取值来路:
+        //   本夹具(fifteen-tracks,与用户截图同量级的紧)改前实测 全曲档 70 /
+        //   手动档 **32**;改后 T1 101 / T2 86 / T3 86 / T4 86(T2 起由地板兜)。
+        //   80 卡在「改后的最小值 86」与「改前的全曲档 70」之间 —— 两侧都留了余量,
+        //   而任何一次退回旧版式都会掉到 70 以下。
+        for (const t of lay.tiers) {
+            ge(t.curvePlot, 80, `F1 ★ ${t.name}:曲线窗高度`);
+        }
+        // ---- F2 ★ 上排四张控件卡都要矮下来 -----------------------------------
+        // 上限 120px:改前四张卡的行高由 LEAD SELECT 顶到 134px,改后 116px。
+        // 量在 T1/T2 —— T3/T4 上排已经被地板压过,量不出「自然高度有没有收」。
+        for (const t of lay.tiers.slice(0, 2)) {
+            for (let i = 0; i < t.row1.length; i++) {
+                le(
+                    t.row1[i],
+                    120,
+                    `F2 ★ ${t.name}:上排第 ${i + 1} 张控件卡高度`,
+                );
+            }
+        }
+        // ---- F3 ★ RANGE 卡限高 -----------------------------------------------
+        // 「全曲」档改前 139.5 → 改后 125.5;「手动」档改前 177.6 → 改后 152.7。
+        // 手动档那一格**只量 T2**,理由见上面删除式 E3 的说明。
+        le(lay.tiers[0].rangeH, 135, "F3 ★ T1:RANGE 卡(全曲档)高度");
+        le(lay.tiers[1].rangeH, 160, "F3 ★ T2:RANGE 卡(手动档)高度");
+        // ---- F4 ★ 地板真的接得住(压力档)-------------------------------------
+        // 读的是 `.master-grid` 上那个自定义属性本身,不手抄数字:真源只有 CSS 一处。
+        // 先断它解得出、且不是个形同虚设的小数 —— 属性被改成 0 时上面 F1 会跟着塌,
+        // 但报错会指向「曲线窗太矮」而不是「地板没了」,这一格负责把真因指出来。
+        const floorPx = parseFloat(lay.floorRaw);
+        check(
+            Number.isFinite(floorPx) && floorPx >= 130,
+            `F4 ★ --master-curve-min-h 解得出且 >= 130px(实得 ${JSON.stringify(lay.floorRaw)})`,
+        );
+        if (Number.isFinite(floorPx)) {
+            ge(
+                lay.tiers[3].curveCard,
+                Math.round(floorPx) - 1,
+                "F4 ★ T4 压力档:曲线卡不低于地板 —— 空间不够时先压上排控件卡,不压图",
+            );
+        }
+    }
+    assertClean("sl374-layout");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟自身抛错:${e && e.stack ? e.stack : e}`);
@@ -2066,7 +2206,7 @@ try {
 
 if (fail === 0) {
     console.log(
-        "✅ smoke-ui-layout-page:SL-272 / SL-275 / SL-276 / SL-273 全绿",
+        "✅ smoke-ui-layout-page:SL-272 / SL-275 / SL-276 / SL-273 / SL-374 全绿",
     );
     process.exit(0);
 }

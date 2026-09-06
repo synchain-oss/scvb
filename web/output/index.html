@@ -883,7 +883,36 @@
                 min-height: 0;
                 display: grid;
                 grid-template-columns: 352px 1fr 1fr 196px;
-                grid-template-rows: auto auto 1fr;
+                /* [SL-374] 第三行(角度域曲线卡 + 分布图卡的下半)带**下限**。
+                   原来是 `auto auto 1fr`:前两行按内容取高、第三行吃掉全部剩余,
+                   于是任何**长在上面**的东西都直接从曲线图身上扣。本机实测两组:
+                     · bare Output(网格可用高 479px):第三行 181.5 / 曲线窗 127.5;
+                       顶部横幅一出 → 142.8 / 88.8;RANGE 切「手动」档(那一档的面板
+                       比「全曲」档高 38px)→ 104.7 / **50.7**;
+                     · web-preview + fifteen-tracks 夹具(可用高 420px,流程行的文案
+                       多绕一行、上方又占掉一截 —— 与用户截图里那一幕同量级):
+                       全曲档 122.5 / 70,手动档 84.4 / **32**。
+                   后者就是用户 v5.6.8 实测的「压缩到基本什么都看不见」。
+                   `minmax(var(--master-curve-min-h), 1fr)` 给它一个地板:空间够时
+                   行为一字不变(1fr 照吃剩余),空间不够时**先压上面两行** ——
+                   前两行的 min 由 `.master-grid > *` 的 `min-height: 0` 决定
+                   (基准尺寸 0、增长上限 = max-content),所以缺的那几像素从
+                   控件卡里出,而不是从图里出。这条只定「谁先让」,把上面两行真正
+                   变矮的是下面 [SL-374] 那一段(控件卡与 RANGE 卡的内距/行距)。
+                   ⚠ **地板取 140 不取更大**,这是一个有代价的折中,别顺手调高:
+                   地板一咬住,让出来的像素是从 RANGE 卡的**内容**里出的(网格的
+                   「maximize tracks」把剩余空间在前两行之间**均分**,上排先顶到
+                   自己的 max-content 就停,于是多出来的压力落在 RANGE 那一行)。
+                   140 在上面那个最紧的真实档位上只从 RANGE 手动面板身上拿走 12px
+                   (= 底部那句「小节为估算值」的行高,面板里最不吃紧的一件);
+                   实测把地板抬到 150 会拿走 22px —— 那就啃到「设为播放头 / ±4」
+                   那一排按钮了。**改这个数之前先量一遍手动档被压掉多少。**
+                   ⚠ 地板值写在变量里:判据(smoke-ui-layout-page F 节)读的是同一个
+                   自定义属性,不再手抄一份数字。 */
+                --master-curve-min-h: 140px;
+                grid-template-rows:
+                    auto auto
+                    minmax(var(--master-curve-min-h), 1fr);
                 gap: var(--sp-12);
             }
             .master-grid > * {
@@ -1248,8 +1277,28 @@
                    tokens.css 第 22 组(两页共用一份,不各写一份)。
                    放 box-shadow 不放 border:base.css 的 reset 是 `box-sizing: border-box`,
                    加 border 会从 `width: 7px` 里吃掉两侧各 1px,柱身当场变窄两像素;
-                   box-shadow 不进盒模型,几何一个字节不动。 */
-                box-shadow: 0 0 0 1px var(--dist-bar-halo);
+                   box-shadow 不进盒模型,几何一个字节不动。
+                   [SL-372] 上侧那一格从**外扩**改成**内描**(`inset 0 1px 0`)。
+                   原来的 `0 0 0 1px` 是一圈外扩晕,它的上侧那 1px 落在**柱顶之上**:
+                   背后真有另一根柱时它就是分隔线(SL-353 要的),而**背后没柱**时它就是
+                   一条画在图底上的 1px 浅色短线 —— 每一根柱头上都有一条,正是用户 v5.6.8
+                   实测的「白线会出现在柱子的上方」(截图里那一行逐像素算得出来:
+                   白 55% 叠在图底上,与 --dist-bar-halo 逐分量对得上)。
+                   换成 inset 之后,那条 1px 浅色线改落在**柱自己的顶部第一行**:
+                     · 两根重合时,色块分界就在前一根(矮的、后画的)的柱顶,浅色线仍恰好
+                       压在那条分界上 —— SL-353 要的分隔观感一字未变,只是从分界上方 1px
+                       挪到了下方 1px;
+                     · 背后没柱时,这条线在柱体内部,柱顶之上一行像素干净。
+                   左右两格仍是外扩(`±1px 0 0`):两轨声像差不到一根柱宽、只错开几像素时,
+                   靠的就是左右这两格;它们不越过柱顶,不参与本卡的病灶。
+                   下侧不补:柱底固定在 `bottom: 15px`、永远压在底轴基线上,那里不存在
+                   「两根柱的分界」。
+                   判据 = smoke-output-dist-page ⑬:像素级地数「柱顶上方那一行」与
+                   「两柱分界那一行」,两格各自有删除式。 */
+                box-shadow:
+                    inset 0 1px 0 var(--dist-bar-halo),
+                    1px 0 0 var(--dist-bar-halo),
+                    -1px 0 0 var(--dist-bar-halo);
                 background: linear-gradient(
                     180deg,
                     rgba(var(--tc), 0.95),
@@ -1300,6 +1349,18 @@
                 will-change: transform;
                 transform: translateZ(0);
             }
+            /* [SL-372] lead 柱**不要**那条柱内浅色线。
+               lead 柱的柱顶上方本就压着一道 2px 绿帽(下面那条 `::after`,top:-2px),
+               它自己就是分界:两根重合时绿帽画在后一根的柱面上,一眼就能把两段分开。
+               再叠一条 inset 浅色线反而把 lead 柱顶读成「绿帽 / 浅色带 / 轨色」三段 ——
+               那正是 SL-353 把帽从 `-3px` 改成 `-2px` 要消掉的那一幕,只不过换了个位置。
+               左右两格外扩晕照留,与非 lead 柱一致(帽的 `left/right: -1px` 正是盖它两侧的)。
+               判据 = smoke-output-dist-page ⑬(c3):lead 柱的阴影里没有 inset 段。 */
+            .dist-bar[data-lead="1"] {
+                box-shadow:
+                    1px 0 0 var(--dist-bar-halo),
+                    -1px 0 0 var(--dist-bar-halo);
+            }
             /* lead 轨原本整根染绿(--dist-bar-lead);轨色进来之后那条通道被占用,
                绿色语义改挂**柱顶 2px 帽**——身份色(轨)与语义色(lead)各占一处,
                不再互相覆盖。--dist-bar-lead 的绿渐变原样复用为帽色。 */
@@ -1309,10 +1370,13 @@
                 left: -1px;
                 right: -1px;
                 /* [SL-353] `-2px` 而不是原来的 `-3px`:帽高 2px,`-2px` 让它的下边缘正好
-                   压在柱顶(`y=0`)上。原来的 `-3px` 在帽与柱之间留 1px 空档,而那 1px 现在
-                   正是外扩 1px 分隔晕占的位置 —— 悬空的帽会让 lead 轨柱顶**恒常**读成
-                   「绿帽 / 浅色带 / 轨色」三段,那正是本卡在治的观感(只不过从偶发变成每帧都在)。
-                   帽贴住柱顶之后,晕的那一格被帽盖住,三段又变回两段。
+                   压在柱顶(`y=0`)上。原来的 `-3px` 在帽与柱之间留 1px 空档,悬空的帽会让
+                   lead 轨柱顶**恒常**读成「绿帽 / 浅色带 / 轨色」三段,那正是 SL-353 在治的
+                   观感(只不过从偶发变成每帧都在)。帽贴住柱顶之后,三段又变回两段。
+                   ⚠ [SL-372] 这条不变量的**理由换了一半**,别照旧说法读:SL-353 当时那 1px
+                   空档里填的是**外扩晕的上侧那一格**,而 SL-372 已经把上侧那一格改成 inset,
+                   柱顶之上不再有晕。今天让「悬空的帽」仍然错的是**背后的东西会从那 1px 里
+                   透出来** —— 两柱重合时透出后一根的轨色,没有重合时透出图底。
                    帽本身仍是 2px、仍只挂 `data-lead="1"`,语义与 [J75] 一字未改。
                    判据 = smoke-output-dist-page ⑫(c) 的「帽底边贴住柱顶」那一格。 */
                 top: -2px;
@@ -1699,6 +1763,82 @@
                 line-height: 1.4;
                 font-style: italic;
                 color: var(--txt-est);
+            }
+
+            /* =====================================================================
+               [SL-374] 上排四张控件卡 + RANGE 卡“改矮”。
+               用户 v5.6.8 实测：「GROUP / WIDTH 最大角度 / MS BALANCE / LEAD SELECT
+               这几个纵向可以矮一点，不用那么高；RANGE 范围看看怎么控制一下高度，
+               这样下面的图位置多一点」。
+               只动**内距 / 行距 / 行高**：一个控件不删、一句文案不改、一个参数语义不变。
+               计量跟到哪儿（本机 bare Output 实测，各卡自然高）：
+                 · 第一行的行高由**最高的那张**定，实测是 LEAD SELECT（134.05px）；
+                   GROUP 80.25 / WIDTH 97.25 / MS BALANCE 97.25 三张都构不成上限。
+                   所以“四张一起改矮”里真正能腾出空间的是 LEAD SELECT 那张；
+                   另三张同改是为了四张内距一致（它们并排，不一致一眼就看得出来）。
+                 · 第二行由 RANGE 定：「全曲」档 139.5px、「手动」档 177.59px。
+               不动 LEAD SELECT 里那枚 hostEcho 徽标的位置：它是卡内独占一行的
+               常驻占位块（J93 裁定③，只切 visibility），把它挑到别处能再省 22px，
+               但那是改它的版面语义、不在本卡范围。
+               ===================================================================== */
+            /* ☠ 选择器写成 `.master-grid > .sc-card[data-gb=...]`（而不是光一个
+               属性选择器）是因为 `.master-grid > .sc-card { gap: var(--sp-8) }`
+               比单属性选择器**更特定** —— 第一版写 `[data-gb=...] { row-gap }`
+               本机实测根本没生效（computed 仍是 8px），而卡子确实矮了一点，
+               很容易读成“改到了”。改动这一段时别把它降回去。 */
+            .master-grid > .sc-card[data-gb="master-group-selector"],
+            .master-grid > .sc-card[data-gb="master-width"],
+            .master-grid > .sc-card[data-gb="master-msbalance"],
+            .master-grid > .sc-card[data-gb="master-leadselect"],
+            .master-grid > .sc-card[data-gb="master-range"] {
+                padding-top: var(--sp-8);
+                padding-bottom: var(--sp-8);
+                row-gap: var(--sp-5);
+            }
+            /* 下拉触发器本体也矮 2px（上下各 1px）；字号与命中区不变。 */
+            [data-gb="master-leadselect"] .lead-select {
+                padding-top: var(--sp-5);
+                padding-bottom: var(--sp-5);
+            }
+            /* 说明小字的行高从 1.5 收到 1.35：四张卡各一行，字号一字未改。 */
+            [data-gb="master-group-selector"] .sc-hint,
+            [data-gb="master-width"] .sc-hint,
+            [data-gb="master-msbalance"] .sc-hint,
+            [data-gb="master-leadselect"] .sc-hint {
+                line-height: 1.35;
+            }
+            /* RANGE 卡：三档分段控件与「手动」面板各收一道。
+               手动档里的两个时码输入、三个按钮、换算行、估算注一个都没少，
+               只是行与行之间、控件内上下各紧一格。 */
+            [data-gb="master-range"] .range-seg__item {
+                padding-top: var(--sp-4);
+                padding-bottom: var(--sp-4);
+            }
+            [data-gb="master-range"] .range-body {
+                gap: var(--sp-6);
+            }
+            [data-gb="master-range"] .range-manual {
+                gap: var(--sp-4);
+            }
+            [data-gb="master-range"] .range-manual__tc,
+            [data-gb="master-range"] .range-manual__btn {
+                padding-top: var(--sp-3);
+                padding-bottom: var(--sp-3);
+            }
+            [data-gb="master-range"] .range-manual__note {
+                line-height: 1.3;
+            }
+            /* [SL-374] 只有 RANGE 这一张卡加 `overflow: hidden`。
+               上面那条地板咬住时,让出来的像素是从这一行的内容里出的(理由写在
+               `.master-grid` 的注释里),不加这一条的话被挤出来的那截会画到卡的
+               圆角**外面**、盖在下面的曲线卡上,看着像坏掉了;加上之后它规规矩矩
+               在卡内被裁掉,从下往上先没的是「小节为估算值」那句注。
+               ⚠ **别顺手把这条抄给上排四张卡**:LEAD SELECT 卡里那个自定义下拉的
+               面板(`.lead-select__panel`)是绝对定位、向卡外向下展开的,给那张卡
+               加 overflow 会把整个选项列表剪掉;WIDTH / MS BALANCE 的滑轨中点
+               (`.ms-track__mid` 上下各出 3px)同理会被削掉两头。 */
+            .master-grid > .sc-card[data-gb="master-range"] {
+                overflow: hidden;
             }
 
             /* ---- ④ 角度域曲线编辑器:深色雕刻窗外框(设计稿 L475-534;窗内曲线交互归 T34) ---- */
