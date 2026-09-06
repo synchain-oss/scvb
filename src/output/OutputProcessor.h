@@ -375,9 +375,13 @@ public:
     // tracksMask=0 表示不限轨;[startS,endS) 为分析范围(follow 档由调用方折算)。
     // clearManual(§1.6 opts):true = 「重新识别(含手动段)」,连用户段一并重算;
     // false(默认)= ADR-008 语义,用户段一律保留。
-    // [SL-279] `fullScope` = 桥面 scope 字面是 `"all"`(全时间线全轨)。**「全量」只此一处真源** ——
+    // [SL-279] `fullScope` = **这一轮真的重算了「全轨 × 整条已采集时间线」吗**,不是「桥面 scope
+    // 字面是不是 `"all"`」—— 字面 `"all"` 在 `daw_loop`/`manual` 档下只重算 `global.range`。
+    // 判据只此一处:`AnalyzeRange::wholeTimeline`(AnalyzeScopeMath.h)∧ 调用方传 `tracksMask=0`;
+    // 调用方**读**它,别各自现算。今天两条路会置真,都要求 `rangeMode == 0`:§1.6 `analyze` 的
+    // `"all"` 档(含无参)、§1.18/§1.19 的松手自动重分段;加第三条路时按判据判,别数调用点。
     // 它一路随作业走到 finishAnalysis,那里据它决定要不要 markApplied(把「上次分析所用口径」
-    // 前移)。只重分析了一段之后不该把「需重新分析」提示灭掉:其余段仍按旧口径。
+    // 前移)。只重分析了一部分之后不该把「需重新分析」提示灭掉:没算到的段仍按旧口径。
     AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual = false,
                                   bool fullScope = false);
     void cancelAnalysis();

@@ -1555,6 +1555,89 @@ log("=== ⑥ mock 端到端(两段式 / 五 op / 布防 / 清除 / setRange)==="
         eq(seen[1].reason, "segmentation", "reason = segmentation");
     });
 
+    // ---- [SL-279] `analysis.applied.*`(§1.21)的**第二个**前移来源:松手自动重分段。
+    //      上一版这一条在 mock 侧零判据 —— 把 debounce 里那句前移整块删掉,冒烟全绿。
+    //      后半段钉同一轮裁定:范围档下这条路**不**前移(重算只覆盖 global.range)。
+    await withOutput("fixture=fifteen-tracks", async (b) => {
+        const vad = {
+            threshold_db: -40,
+            hysteresis_db: 6,
+            hangover_ms: 180,
+            padding_pre_ms: 120,
+            padding_post_ms: 200,
+        };
+        const appliedNow = async () =>
+            (await b.requestInitialState()).analysis.applied.loudness_mode;
+        const currentNow = async () =>
+            (await b.requestInitialState()).analysis.loudness_mode;
+
+        const base = await appliedNow();
+        eq(
+            await currentNow(),
+            base,
+            "前置:装载时当前档 = 上次分析所用档(不 stale)",
+        );
+
+        // ① follow 档:改档 ⇒ stale;松手重分段跑完 ⇒ 基线前移 ⇒ 徽标该灭。
+        eq(
+            (await b.setAnalysisConfig({ loudness_mode: "rms" })).ok,
+            true,
+            "改 loudness_mode = rms 受理",
+        );
+        eq(await appliedNow(), base, "改档本身不前移基线(stale 的来处)");
+        eq((await b.setVadParams(vad)).ok, true, "松手一发 setVadParams");
+        await sleep(420); // 防抖 300ms + 流水线
+        // ← 删掉 debounce 里那句 `if (wholeTimelineNow()) advanceAppliedAnalysis()`,只红这里。
+        eq(await appliedNow(), "rms", "① follow 档松手重分段 ⇒ 基线前移到 rms");
+
+        // ② manual 档:同一条路只重算 global.range,范围外仍是旧口径 ⇒ **不**前移,徽标仍亮。
+        eq((await b.setRange("manual", 5, 9)).ok, true, "设 manual 范围 [5,9)");
+        eq(
+            (await b.setAnalysisConfig({ loudness_mode: "peak_dbfs" })).ok,
+            true,
+            "再改档 = peak_dbfs",
+        );
+        eq(
+            (await b.setVadParams({ ...vad, threshold_db: -44 })).ok,
+            true,
+            "范围档下再松手一发",
+        );
+        await sleep(420);
+        // ← 去掉 `wholeTimelineNow()` 这个条件(恒前移),只红这里。
+        eq(await appliedNow(), "rms", "② 范围档下松手重分段 **不**前移基线");
+        eq(
+            await currentNow(),
+            "peak_dbfs",
+            "② 当前档确实改到了 peak_dbfs(仍 stale,徽标仍亮)",
+        );
+
+        // ③ 同一条判据在 `analyze` 那条路上 —— 统筹裁定点名的那一格:
+        //    设范围 → 改档 → 点「分析(全部)」⇒ applied 不变、徽标仍亮。
+        //    真桥那半(`parseAnalyzeScope` 里 `s.fullScope = r.wholeTimeline`)是私有成员、
+        //    构造要 WebView,harness 够不着 —— 判据本身在 core 那格钉,端到端在这里钉。
+        eq((await b.analyze("all")).ok, true, '范围档下 analyze("all") 受理');
+        await sleep(900); // mock 的 [W] 退化成 800ms
+        eq(
+            await appliedNow(),
+            "rms",
+            '③ 范围档下 analyze("all") **不**前移基线',
+        );
+
+        // ④ 切回 follow ⇒ 同一个调用就前移了。少了这一格,「恒不前移」也能全绿。
+        eq((await b.setRange("follow", 0, 0)).ok, true, "切回 follow 档");
+        eq(
+            (await b.analyze("all")).ok,
+            true,
+            'follow 档下 analyze("all") 受理',
+        );
+        await sleep(900);
+        eq(
+            await appliedNow(),
+            "peak_dbfs",
+            '④ follow 档下 analyze("all") 前移到 peak_dbfs',
+        );
+    });
+
     // ---- editSegment 五 op(§1.22/§5.4)+ notAdjacent + 布防 + 清除 + setRange
     await withOutput("fixture=fifteen-tracks", async (b, seen, s) => {
         const st = await b.requestInitialState();

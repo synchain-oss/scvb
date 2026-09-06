@@ -19,6 +19,13 @@ struct AnalyzeRange
 {
     double startS = 0.0;
     double endS = 0.0;
+    // 这个范围**覆盖整条已采集时间线**吗 —— `applied.*`(§1.21「上次分析所用口径」)前移的判据。
+    // 判据只此一处:由 analyzeAllRange 在选分支时置,调用方**读**它,不各自按 rangeMode 现算
+    // (现算就是第二把尺子,两把尺子迟早分叉)。默认 false = 除非明确算出来是整条,否则不是。
+    //
+    // 它只答「时间维」。`fullScope`(startAnalysis 的形参)= 本字段 ∧ 全轨;轨维那一半由
+    // 「只有 tracksMask=0 的两条路读它」兑现,对象形 scope 在 analyzeScopeRange 里显式清零。
+    bool wholeTimeline = false;
     bool valid() const { return endS > startS; }
 };
 
@@ -36,10 +43,12 @@ inline AnalyzeRange analyzeAllRange(int rangeMode, double rangeStartS, double ra
     {
         r.startS = rangeStartS;
         r.endS = rangeEndS;
+        r.wholeTimeline = false; // ← 显式:范围档只重算 global.range,范围外仍是旧口径
         return r;
     }
     r.startS = 0.0;
     r.endS = capturedExtentS > 0.0 ? capturedExtentS : 0.0;
+    r.wholeTimeline = true;
     return r;
 }
 
@@ -96,6 +105,9 @@ inline AnalyzeRange analyzeScopeRange(unsigned int tracksMask, bool hasStartS, d
     {
         r.endS = endS;
     }
+    // 对象形 scope 走到这里必然 `tracksMask != 0`(上面那个守卫)= **指名了轨**,轨维就不全,
+    // 无论时间维取到什么都不是一次全量重算 —— 借来的 wholeTimeline 必须在这里还掉。
+    r.wholeTimeline = false;
     return r;
 }
 

@@ -1125,11 +1125,15 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
     // 抽出去的理由见那个头文件:它是 P1-F 的唯一修复点,埋在私有成员里 harness 够不着,
     // 回归用例只能绕开它 —— 改回旧写法照样绿(评审 I1)。
     s.tracksMask = 0; // 0 = 不限轨
-    s.fullScope = true; // [SL-279] 只有这一条路是「全部」;对象形 scope 一律 false
     const AnalyzeRange r =
         analyzeAllRange(rt.rangeMode, rt.rangeStartS, rt.rangeEndS, processor_.capturedExtentSeconds());
     s.startS = r.startS;
     s.endS = r.endS;
+    // [SL-279] `fullScope` **读**范围推导算出来的那一位,不在这里按 scope 字面现算:
+    // 字面是 `"all"` 不等于真的重算了整条时间线 —— `daw_loop`/`manual` 档下 `analyzeAllRange`
+    // 取的是 `global.range`,范围外的段仍是旧口径,前移基线会把徽标灭掉(= 本卡要杀的漏报的
+    // 反向孪生:漏报)。轨维这一半由上一行的 `tracksMask = 0` 兑现。
+    s.fullScope = r.wholeTimeline;
     return s;
 }
 

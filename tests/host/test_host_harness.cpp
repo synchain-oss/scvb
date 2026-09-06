@@ -1072,6 +1072,84 @@ TEST_CASE("HOST SL-278/SL-279:全量分析前移基线,撤销/重做两向都跟
     CHECK(r.out.analysisConfigWithApplied().appliedLoudnessMode == "rms");
 }
 
+// ---------------------------------------------------------------------------
+// [SL-279 复审第 5 轮] `applied.*` 的**第二个**前移来源:§1.18/§1.19 的松手自动重分段。
+//
+// 为什么必须单独钉:它不经桥面 scope,上一版两侧**零判据** —— 把
+// `tickResegmentDebounce` 那句 `fullScope` 拿掉,两套 C++ 用例全绿(上一格走的是
+// `startAnalysis(..., fullScope=true)` 直调,一次都没碰 `armResegment`)。
+// 而它是本卡新加的产品行为,没有机器守着就会漂回去。
+//
+// 后半格钉的是同一轮的裁定:范围档下这条路**也不**前移(重算只覆盖 global.range)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-279:松手重分段前移基线;范围档下不前移", "[host][t37][analyze][sl279]")
+{
+    Rig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.out.setCaptureEnabled(true);
+    Rig::pumpMessages(400);
+    for (int burst = 0; burst < 6; ++burst)
+    {
+        r.runBlocks(60, 0.5f, 4, 4);
+        r.runBlocks(40, 0.0f, 4, 4);
+    }
+    Rig::pumpMessages(400);
+    const double coveredS = r.out.coverageOf(kTestChannel, 0.0, 20.0).coveredS;
+    REQUIRE(coveredS > 0.0);
+
+    const auto waitDone = [&r] {
+        bool finished = false;
+        for (int waited = 0; waited < 20000 && !finished; waited += 50)
+        {
+            Rig::pumpMessages(50);
+            finished = !r.out.analysisRunning() && !r.out.runtime().analysisRunning;
+        }
+        REQUIRE(finished);
+    };
+
+    // 前置:跑一次全量分析把基线钉在默认档(否则分不清「本来就相等」与「前移了」)。
+    REQUIRE(r.out.startAnalysis(0, 0.0, coveredS, false, /*fullScope=*/true).ok);
+    waitDone();
+    REQUIRE(r.out.analysisConfigWithApplied().appliedLoudnessMode == "kw_integrated");
+
+    // ★ 走带停下来:PRINT 态是 §1.18 的抑制条件之一,不停的话重分段会被合法地抑制掉
+    //   —— 那样这一格会「因为流水线没跑」而绿,测不到前移(SL-255 :6780 的同款前置)。
+    r.ph.playing = false;
+    Rig::pumpMessages(100);
+
+    // ① follow 档(rangeMode=0)下松手重分段 ⇒ 整表按新档重算 ⇒ 基线前移。
+    REQUIRE(r.out.runtime().rangeMode == 0);
+    REQUIRE(r.out.setAnalysisConfig("rms", juce::String(), true, false));
+    REQUIRE(r.out.analysisConfigWithApplied().appliedLoudnessMode == "kw_integrated"); // 改档不前移
+    r.out.runtime().vadThresholdDb = 12.0f; // 与默认差得远,保证真的重分段
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    Rig::pumpMessages(600); // 防抖 300ms(25Hz tick 分辨率 40ms ⇒ 实际 300~340ms)
+    waitDone();
+    // ← 删掉 tickResegmentDebounce 那句 fullScope(或恒传 false),只红这一格。
+    CHECK(r.out.analysisConfigWithApplied().appliedLoudnessMode == "rms");
+    // 且流水线**真的跑过**:reason 一路带到了 editor 那一层。缺了这条,上面那格在
+    // 「重分段根本没起来、而基线恰好本来就等于 rms」时也能绿。
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+
+    // ② manual 档 + 有效范围:同一条路只重算 [0, coveredS/2),范围外仍是旧口径 ⇒ **不**前移。
+    //    注记保留是真话,前移才是漏报(§1.21 产品决定)。
+    REQUIRE(r.out.setAnalysisConfig("kw_integrated", juce::String(), true, false));
+    r.out.runtime().rangeMode = 2; // manual
+    r.out.runtime().rangeStartS = 0.0;
+    r.out.runtime().rangeEndS = coveredS / 2.0;
+    r.out.runtime().vadThresholdDb = 4.0f; // 再动一次,保证这一轮也真的重分段
+    r.out.armResegment(ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+    Rig::pumpMessages(600);
+    waitDone();
+    // ← 去掉 analyzeAllRange 里的 rangeMode 条件(恒置 wholeTimeline=true),只红这一格。
+    CHECK(r.out.analysisConfigWithApplied().appliedLoudnessMode == "rms");
+    CHECK(r.out.analysisConfigWithApplied().loudnessMode == "kw_integrated"); // 仍 stale,注记仍亮
+    // 同样要证「这一轮真的跑了」—— 否则「没跑 ⇒ 没前移」会冒充「跑了 ⇒ 判据挡住了」。
+    CHECK(r.out.takeAnalysisDone() == ScvbOutputAudioProcessor::AnalysisDoneReason::Vad);
+}
+
 TEST_CASE("HOST P0-1:无采集数据时分析被拒,不会挂起", "[host][t37][v4][analyze]")
 {
     Rig r;

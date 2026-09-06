@@ -2852,13 +2852,14 @@ void ScvbOutputAudioProcessor::tickResegmentDebounce(std::int64_t nowMs)
     // —— applyAnalysisSegments 在 false 档的保留判据(locked || origin != Auto)正是这一条,
     // 逐字同义。传 true 会连用户段一起铲掉,还会写 freeze 参数(带 host gesture),两条都违约。
     pendingResegmentReason_ = reason;
-    // [SL-279 复审] `fullScope=true`:本路径与 `parseAnalyzeScope` 的 `"all"` 分支**调的是同一个
-    // 纯函数、传的是同一组实参**(`analyzeAllRange(rangeMode, rangeStart, rangeEnd, capturedExtent)`
-    // + `tracksMask=0`),旁边那句「范围与『点分析』的 "all" 档同一把尺子」说的就是它 ——
-    // 所以它同样是一次**全量**重算,基线该跟着前移。
-    // 漏了它的话残留一条与本卡同类的误报:改档 ⇒ 徽标亮 ⇒ 拖 VAD/分段滑杆松手 ⇒ 用新档把整条
-    // 时间线整表重算替换 ⇒ 段表已经全是新口径,徽标却还亮着,用户点「重新分析」产出一个字节不变。
-    const auto accepted = startAnalysis(0, r.startS, r.endS, /*clearManual=*/false, /*fullScope=*/true);
+    // [SL-279 复审] `fullScope` 与 `parseAnalyzeScope` 的 `"all"` 分支**读同一个字段**:两条路
+    // 调的是同一个纯函数、传的是同一组实参(`analyzeAllRange(rangeMode, rangeStart, rangeEnd,
+    // capturedExtent)` + `tracksMask=0`),旁边那句「范围与『点分析』的 "all" 档同一把尺子」说的
+    // 就是它 —— 所以「这一轮算不算全量」也该由那把尺子答,而不是各自现算。
+    // 松手重分段必须能前移:漏了它就残留一条与本卡同类的误报 —— 改档 ⇒ 徽标亮 ⇒ 拖 VAD/分段滑杆
+    // 松手 ⇒ 用新档把整条时间线整表重算替换 ⇒ 段表已全是新口径,徽标却还亮,用户点「重新分析」
+    // 产出一个字节不变。而范围档下 `wholeTimeline` 为假,这里同样不前移(§1.21)。
+    const auto accepted = startAnalysis(0, r.startS, r.endS, /*clearManual=*/false, /*fullScope=*/r.wholeTimeline);
     if (!accepted.ok)
         pendingResegmentReason_ = AnalysisDoneReason::None; // 没起来就别留着脏 reason
 }
@@ -3310,11 +3311,16 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                                                                 liveTracks[static_cast<std::size_t>(t)].segments);
             }
 
-            // [SL-279] 「上次全量分析所用口径」前移:**只在全量分析**那一轮。
-            // 只重分析了一段之后不该把「需重新分析」提示灭掉 —— 其余段仍按旧口径。
-            // `fullScope` 是桥面 scope 字面为 `"all"` 时置的,一路随作业走到这里
-            // (「全量」只此一处真源,不在这里按范围现算 —— 那会把 scope 语义抄成第二份)。
-            const bool markApplied = fullScope && !result.cancelled;
+            // [SL-279] 「上次全量分析所用口径」前移:**只在一次覆盖整条已采集时间线的全轨重算**
+            // 那一轮。只重分析了一部分之后不该把「需重新分析」提示灭掉 —— 没算到的段仍按旧口径。
+            // `fullScope` 由 `AnalyzeRange::wholeTimeline` 定(判据只此一处,见 AnalyzeScopeMath.h),
+            // 一路随作业走到这里 —— 不在这里按范围现算,那会把判据抄成第二份。
+            // 今天有两条路会置真,都要求 `rangeMode == 0`(follow):§1.6 `analyze` 的 `"all"` 档
+            // (含无参)与 §1.18/§1.19 的松手自动重分段。加第三条路时**按这个判据判,别数调用点**。
+            // 不再 `&& !result.cancelled`([SL-279] 复审第 5 轮):这一整块就在本函数上方那个
+            // `if (!result.cancelled)`(:3182)里面,那个合取项**恒真** —— 写着它像是在这里
+            // 处理取消,其实没有,读者会去找一个不存在的判据。取消档要在 :3182 那里读。
+            const bool markApplied = fullScope;
             const juce::String appliedLoudnessBefore = runtime_.appliedLoudnessMode;
             const juce::String appliedCenterBefore = runtime_.appliedCenterSlotPolicy;
             const juce::String appliedLoudnessAfter = markApplied ? runtime_.loudnessMode : appliedLoudnessBefore;
