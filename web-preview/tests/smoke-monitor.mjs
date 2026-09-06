@@ -432,8 +432,12 @@ log("=== ② viz 契约 parity(JS 镜像 ↔ T44 golden)===");
             "trackWidthPct",
             "trackLabels",
             "leadMask",
+            // [SL-362] 第六条:全局「最大角度」。本格钉的是**这张清单的字面内容**,
+            // 所以往 VIZ_PROMISED_FIELDS 里加字段必须同步改这里 —— 我加字段时漏了,
+            // 被它当场红出来。这正是它存在的意义:清单是给 parity 用的,不能悄悄长。
+            "globalWidthPct",
         ],
-        "T44/T45 依两轮对表新增、尚未合入 feature/v1 的五条",
+        "T44/T45 依两轮对表新增、尚未合入 feature/v1 的六条(含 [SL-362] 全局最大角度)",
     );
     eq(
         VC.VIZ_PENDING_FIELDS.slice(),
@@ -1058,6 +1062,37 @@ function paint(frame, ch, from, to, pan) {
     eq(rows[0].lead, true, "柱顶绿帽来自 leadMask");
     eq(rows[1].lead, false, "非 lead 轨不戴帽");
     eq(rows[1].stereo, true, "立体声位来自 stereoMask");
+
+    // [SL-362] 全局「最大角度」:此前 viz 段**根本不带这个值**,Monitor 恒按 100 画,
+    // 于是用户把它调离 100 时两页柱位当场对不上(用户 2026-09-06 实测)。
+    // 三格分别钉:真值读得到 / 缺席回落 100 / **回落值不是 0**。
+    // ← 把 `vizGlobalWidthPct` 的回落改成 0,只红第三格;改成恒回落 100(不读段),只红第一格。
+    f.globalWidthPct = 150;
+    eq(
+        VIZ.vizGlobalWidthPct(f),
+        150,
+        "[SL-362] 全局最大角度取自 viz 段(150,不是恒 100)",
+    );
+    // 缺席(旧写方:段内槽为 0 ⇒ 桥发 undefined)⇒ 回落 100 = 不缩放,与本卡之前一致。
+    f.globalWidthPct = undefined;
+    eq(
+        VIZ.vizGlobalWidthPct(f),
+        100,
+        "[SL-362] 写方未提供 ⇒ 回落 100(旧写方行为不变)",
+    );
+    // **回落值必须是 100 不是 0**:0 是合法宽度(全收拢到中央),拿它当「不知道」会把
+    // 15 根柱全挤到中线 —— 而那看起来像一张正常的图,没有任何东西会报错。
+    check(
+        VIZ.vizGlobalWidthPct(f) !== 0,
+        "[SL-362] 回落值不是 0(0 是合法宽度,会把柱全挤到中线且看起来正常)",
+    );
+    // 真的 0% 必须读得出来,不被当成「未提供」—— 少了这条,「恒回落 100」也能让上面全绿。
+    f.globalWidthPct = 0;
+    eq(
+        VIZ.vizGlobalWidthPct(f),
+        0,
+        "[SL-362] 真的 0%(全收拢)读得出来,不被当成未提供",
+    );
 
     // 标量缺席 ⇒ 回落到播放头所在列的车道点采样
     const sentinelPan = { ...f, trackPanNow: fill15([[2, 55]]) }; // 轨 1 缺席

@@ -233,9 +233,9 @@ juce::var MonitorEditor::buildVizPayload(bool includeLanes) const
     // [SL-362] 全局「最大角度」:哨兵(= 写方未提供,含旧写方)时**发 undefined**,与每轨那三个
     // 同一条口径 —— 让 web 侧一处判「有没有」,而不是拿一个魔数在两侧各判一次。
     // 读方收到 undefined 就回落 100(`distGeometry` 的缺省 = 不缩放)。
-    obj->setProperty("globalWidthPct",
-                     scvb::vizPanIsNone(v.globalWidthPct) ? juce::var()
-                                                          : juce::var(scvb::vizUnpackFixed(v.globalWidthPct)));
+    obj->setProperty("globalWidthPct", scvb::vizPanIsNone(v.globalWidthPct)
+                                           ? juce::var()
+                                           : juce::var(scvb::vizUnpackFixed(v.globalWidthPct)));
 
     // 车道 + 位图:只在 lane_revision 变化(或首帧/换组)时带。稳态帧只有上面那些标量 ——
     // 15×1024 个数逐帧走 juce::var 会在 4Hz 上白烧消息线程。
