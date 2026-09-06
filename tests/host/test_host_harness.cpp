@@ -7517,7 +7517,12 @@ TEST_CASE("HOST SL-363:viz 段的每轨当前值走 Output 的读回链(段值/�
     REQUIRE(sl363ReadViz(static_cast<scvb::u32>(kTestGroup), *viz));
     {
         // Output 那一页此刻会显示什么:同一条读回链,吃的是 processor 自己的段表。
-        const auto rb = scvb::output::readbackSegsOf(segmentsOfTrack(r.out, kTestChannel), /*freezeBits=*/0,
+        // ⚠ 段表必须**具名持有**:`readbackSegsOf` 回的是指进这个 vector 的裸指针,而
+        // `segmentsOfTrack` 是**按值返回**的 —— 直接把它的临时量传进去,`rb.pan`/`rb.vol`
+        // 在本条完整表达式结束时就悬垂,下面三次解引用全是释放后读取(#245 第 1 轮复审
+        // 【重要】1;现在同一个误用已被 DistReadback.h 的 `= delete` 右值重载挡在编译期)。
+        const std::vector<scvb::state::Segment> live = segmentsOfTrack(r.out, kTestChannel);
+        const auto rb = scvb::output::readbackSegsOf(live, /*freezeBits=*/0,
                                                      /*outputOn=*/true, sl363Samples(16.0));
         REQUIRE(rb.pan != nullptr);
         CHECK(rb.pan->pan == -60.0f);

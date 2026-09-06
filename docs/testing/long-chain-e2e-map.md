@@ -97,7 +97,7 @@ op 全集(`docs/IPC_CONTRACT.md:149`,v1 冻结)= `{kSetPriority, kFpReport}`;`kN
 |---|---|---|---|
 | C1a | 真 Output 装配 `VizPublishInput` —— **已断言的字段**:轨名 `toStdString`、`leadMask`、`stereoMask`、`enabledMask`(落段为 `onlineMask`)、`widthPct`(取**活动版本**的参数句柄)、`versionActive`、`playheadSnapshot`、车道(经 `activeCurves`);[SL-363] 起再加 `outputEnabled`、每轨 `freezeParam`、以及它们决定出来的 `panNow`/`volDb` | **✅ e2e** | **`HOST SL-231:真 Output 的配置与曲线经 viz 段发布,只读方逐字段读回`**(SL-231 之前这一跳是 **❌ 零**,详见 §2);每轨当前值那三条走 **`HOST SL-363:viz 段的每轨当前值走 Output 的读回链`** |
 | C1b | 装配里**未被直接断言**的部分:`metaRevision`(轨名 FNV,只驱动车道重算、不落段;间接体现为「改了轨名之后车道与 label 确实刷新了」)、`coveredMask`/`trackColor` | 🟡 间接 | `metaRevision` 的分频/重算语义由 `test_viz_plane.cpp` 的 `[cadence]` 用例覆盖(假段);其余字段由 `VIZ-1`/`VIZ-4`/`MON-CHAIN` 在 **peer 写方**一侧覆盖,**不经过真 Output 的装配**([SL-363] 把 `panNow`/`volDb` 从本行移到 C1a) |
-| C2 | `VizPublisher` 降采样 / 车道重算 / 30Hz 分频闸 | 🟡 单测 | `test_viz_plane.cpp` 的 `[viz][publisher]` 四个用例 —— 降采样与断线 / `[cadence]` 分频与车道重算 / `[rate]` 帧数下界与同频异相反向(真 `VizPublisher`,**假段**;含最完整的反向验证范式) |
+| C2 | `VizPublisher` 降采样 / 车道重算 / 30Hz 分频闸 | 🟡 单测 | `test_viz_plane.cpp` 里 `VizPublisher:` 开头的那几条 —— 降采样与断线、`[cadence]`(分频与车道重算)、`[rate]`(帧数下界 + 同频异相反向);每轨当前值那条另见 C1a。真 `VizPublisher`,**假段**;含最完整的反向验证范式。**有意不写条数** —— `[viz][publisher]` 是会随新用例增长的宽标签([SL-363] 就给它加了两条),写死数字下一卡就假(#245 第 1 轮复审建议 4) |
 | C3 | viz 段跨进程 + 生命周期 | ✅ | `VIZ-1`/`VIZ-3`/`VIZ-4`(真 peer);反向 `VIZ-2`(段不存在拿空态、绝不建段) |
 | C4 | Monitor attach + read + 陈旧判定 | ✅ | `MON-CHAIN`×3(真 Monitor processor + 跨进程 peer;含「段还在但写方停摆 → 不假装在线」反向) |
 | C5 | Monitor 桥面 → 页面 | 🟡 mock | `web-preview/tests/smoke-monitor-page.mjs`(真页面 + **mock 桥**,不经真段) |

@@ -51,6 +51,9 @@ inline const scvb::state::Segment* manualConstantOf(const std::vector<scvb::stat
 // 钳位口径逐条对齐 JS `curveSegmentAt`(它自己又对齐 `CurveEvaluator::valueAt` 的段选择):
 //   · 首段之前 → 首段;末段之后 → 末段;段内 → 该段;段间空隙 → **前一段**。
 // `t1 <= t0` 的**退化段**按开放尾段处理:`!(t1 > t0)` 那一支让「t ≥ t0」就算段内。
+// ⚠ 循环**有意保持全表线性扫描、不加 `s.t0 > t` 的提前退出**,与 JS 那份逐条同形
+// (#245 第 1 轮复审建议 3)。这个头文件靠「两侧逐字同形」维系,单边优化会让下一个人
+// 对不上账;真要加就两侧一起加。量级上也不值当:15 轨 × 30Hz × 段数,段表是有序小表。
 // ⚠ `setTrackManual` 的 `1<<40` 哨兵**不走**这一支 —— 它的 t1 远大于任何播放位置,
 // `t < t1` 本来就成立,落在普通的「段内」那一支;「末段之后」那道闸同理够不着它。
 // 两条路在这里同结果,但别把它们读成同一个分支。
@@ -86,6 +89,11 @@ inline const scvb::state::Segment* curveSegmentAt(const std::vector<scvb::state:
 }
 
 // 一条轨的读回结果:pan / vol 两维各自该读的段;nullptr = 该维回落参数面。
+//
+// ⚠ **生命周期契约**:这三个指针指进**调用方那个 `segs` 容器**,本结构体不持有任何东西。
+// 于是 `segs` 必须活得比这个结果久 —— 把一个按值返回段表的函数直接塞进调用参数里,
+// 指针在那条完整表达式结束时就悬垂(#245 第 1 轮复审在 HOST SL-363 上抓到的正是这一幕)。
+// 下面三个 `= delete` 的右值重载把这类误用从「运行期 UB」变成**编译期错误**,零运行期成本。
 struct DistReadback
 {
     const scvb::state::Segment* pan = nullptr;
@@ -111,5 +119,13 @@ inline DistReadback readbackSegsOf(const std::vector<scvb::state::Segment>& segs
     out.vol = scvb::engine::freezeHasDim(freezeBits, /*isPan=*/false) ? nullptr : seg;
     return out;
 }
+
+// **绑临时量一律编译期拒绝**(#245 第 1 轮复审建议 2)。三个函数回的都是指进 `segs` 的裸指针,
+// 生命周期契约此前只写在注释里,而第一个踩到它的正是本卡自己的 HOST SL-363 用例
+// (`readbackSegsOf(segmentsOfTrack(...), …)` —— 按值返回的临时量当场析构)。
+// 反向验证:把那一行改回传临时量,MSVC 报 C2280「尝试引用已删除的函数」,编译不过。
+const scvb::state::Segment* manualConstantOf(std::vector<scvb::state::Segment>&&) = delete;
+const scvb::state::Segment* curveSegmentAt(std::vector<scvb::state::Segment>&&, std::int64_t) = delete;
+DistReadback readbackSegsOf(std::vector<scvb::state::Segment>&&, int, bool, std::int64_t) = delete;
 
 } // namespace scvb::output
