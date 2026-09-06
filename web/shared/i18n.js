@@ -695,6 +695,10 @@ export const T = {
         "set.reanalyzeAsk.body": "分析口径已更改,建议重新分析",
         "set.reanalyzeAsk.primary": "重新分析",
         "set.reanalyzeAsk.later": "稍后",
+        // [SL-279 复审第 6 轮] 范围档下这枚钮只重算 global.range 内(契约 §1.21),
+        // 基线不前移、徽标不灭。不把这句说出来,用户看到的就是「框关了、灯还亮着」。
+        "set.reanalyzeAsk.rangeNote":
+            "当前是范围档:只会重算你设定的范围,范围外的段仍按旧口径,提示会保留。要整条重算,请先把范围切回跟随播放头。",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "直通中:未对本轨做任何处理",
@@ -1579,6 +1583,8 @@ export const T = {
             "Analysis settings changed — re-analysis is recommended",
         "set.reanalyzeAsk.primary": "Re-analyze",
         "set.reanalyzeAsk.later": "Later",
+        "set.reanalyzeAsk.rangeNote":
+            "A range is active: only the range you set will be recomputed. Segments outside it keep the previous settings, so this notice stays. To recompute the whole timeline, switch the range back to follow first.",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Passthrough: no processing on this track",
@@ -2414,6 +2420,8 @@ export const T = {
             "Les réglages d'analyse ont changé — une ré-analyse est conseillée",
         "set.reanalyzeAsk.primary": "Ré-analyser",
         "set.reanalyzeAsk.later": "Plus tard",
+        "set.reanalyzeAsk.rangeNote":
+            "Une plage est active : seule la plage définie sera recalculée. Les segments en dehors gardent les réglages précédents, donc cet avis reste affiché. Pour recalculer toute la timeline, repassez d'abord la plage en suivi.",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Direct : aucun traitement sur cette piste",

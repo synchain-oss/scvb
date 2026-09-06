@@ -378,8 +378,12 @@ public:
     // [SL-279] `fullScope` = **这一轮真的重算了「全轨 × 整条已采集时间线」吗**,不是「桥面 scope
     // 字面是不是 `"all"`」—— 字面 `"all"` 在 `daw_loop`/`manual` 档下只重算 `global.range`。
     // 判据只此一处:`AnalyzeRange::wholeTimeline`(AnalyzeScopeMath.h)∧ 调用方传 `tracksMask=0`;
-    // 调用方**读**它,别各自现算。今天两条路会置真,都要求 `rangeMode == 0`:§1.6 `analyze` 的
-    // `"all"` 档(含无参)、§1.18/§1.19 的松手自动重分段;加第三条路时按判据判,别数调用点。
+    // 调用方**读**它,别各自现算。判据是**走没走「整条已采集时间线」那条分支**,不是「档位字面
+    // 是不是 follow」—— `rangeMode != 0` 但范围空/倒挂时也走整条那一支(core 用例 ⑤ 钉了这一格)。
+    // 桥面上两者今天等价:`handleSetRange` 挡掉 `manual` 的倒挂范围、`hostLoopSeconds` 挡掉空
+    // `daw_loop`,所以「范围档 + 无效范围」进不来 —— 等价是**这两道校验给的**,不是判据自带的。
+    // 今天两条路会置真:§1.6 `analyze` 的 `"all"` 档(含无参)、§1.18/§1.19 的松手自动重分段;
+    // 加第三条路时按判据判,别数调用点。
     // 它一路随作业走到 finishAnalysis,那里据它决定要不要 markApplied(把「上次分析所用口径」
     // 前移)。只重分析了一部分之后不该把「需重新分析」提示灭掉:没算到的段仍按旧口径。
     AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual = false,

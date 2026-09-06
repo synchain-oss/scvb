@@ -218,6 +218,7 @@ export function createTabSettings(opts) {
         centerStale: $("settings-centerslot-stale"), // [SL-278]
         // [SL-276] 重分析提示弹窗(卡片层单例,不在 Tab4 子树里 —— 见 index.html 那段注释)
         reanalyzeAsk: $("reanalyze-ask"),
+        reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
         reanalyzeAskLater: $("reanalyze-ask-later"),
         reanalyzeAskPrimary: $("reanalyze-ask-primary"),
         guideBox: $("settings-guideblock-rules"),
@@ -309,6 +310,23 @@ export function createTabSettings(opts) {
 
     function config(st) {
         return analysisConfigOf((st || getStore()).state);
+    }
+
+    /**
+     * [SL-279] 当前是**范围档**吗(§1.8 `daw_loop` / `manual`)。
+     *
+     * 为什么这一页要关心它:范围档下「分析(全部)」推出来的范围是 `global.range`,
+     * 不是整条时间线 —— 契约 §1.21 规定这种重算**不前移** `applied.*`,于是徽标不灭。
+     * 这枚钮照样拿到 `ok:true`(后端确实受理并重算了范围内),所以**不能靠回执判**:
+     * 受理成功不等于达成了用户点它的目的。
+     *
+     * 判据与 native 的 `analyzeAllRange` 同口径:「非 follow」即有显式范围,不枚举档名 ——
+     * §1.8 将来多一档时,漏枚举会静默倒向「当成 follow」,那是把提示藏起来的方向。
+     */
+    function rangeLimited(st) {
+        const g = ((st || getStore()).state || {}).global || {};
+        const mode = (g.range || {}).mode;
+        return !!mode && mode !== "follow";
     }
 
     /** 只读观察态(second-output / conn.outputReadOnly):J69 两设置块整组不可操作。 */
@@ -573,6 +591,15 @@ export function createTabSettings(opts) {
             back.focus({ preventScroll: true });
     }
 
+    /**
+     * 范围档提示随档位开合。**开框那一下要同步、状态更新也要同步** —— 框开着时用户仍可能
+     * 在别处(Tab3 工具条)改范围档,只在开框时算一次的话提示会停在旧档位上。
+     */
+    function syncReanalyzeRangeNote() {
+        if (!el.reanalyzeAskRangenote) return;
+        show(el.reanalyzeAskRangenote, rangeLimited());
+    }
+
     function openReanalyzeAsk() {
         // [SL-276 复审] 只读观察态一律不弹:框里那枚「重新分析」是写控件,
         // 契约 §5.6 要求只读态下写控件不可操作(后端另有 {observer:true} 兜底,
@@ -583,6 +610,7 @@ export function createTabSettings(opts) {
             local.reanalyzeReturnFocus = doc && doc.activeElement;
         }
         show(el.reanalyzeAsk, true);
+        syncReanalyzeRangeNote();
         if (
             el.reanalyzeAskPrimary &&
             typeof el.reanalyzeAskPrimary.focus === "function"
@@ -590,13 +618,20 @@ export function createTabSettings(opts) {
             el.reanalyzeAskPrimary.focus({ preventScroll: true });
     }
 
-    // 「重新分析」= 契约 §1.6 analyze("all")(全轨全时长;设置页没有选区概念)。
-    // 受理回执之外什么都不做:结果经 §2.8 回推,基线由 onSegments 同步、琥珀 badge 自己灭。
+    // 「重新分析」= 契约 §1.6 analyze("all")(全轨;设置页没有选区概念)。
+    // **时间维不一定是全时长**:§1.8 范围档下 `"all"` 推出来的是 `global.range` —— 契约 §1.21
+    // 规定那种重算不前移 `applied.*`,所以徽标不灭。follow 档下才是整条已采集时间线,
+    // 结果经 §2.8 回推、基线由 `applied.*` 同步、琥珀 badge 自己灭。
     //
     // [SL-276 复审] **拒绝态不关框**。§1.6 会回 {ok:false, reason:"busy"}(已有分析在跑),
     // §5.6 会回 {observer:true};先关框再发请求的话,这两种情况下框没了、琥珀 badge 还挂着、
     // 也没有任何别的反馈 —— 看起来就是「这枚钮坏了」。框留着 = 这一下没生效、可以再点,
     // 与 wireSeg 里「被拒就只 requestRender、不落乐观值」是同一口径(本仓不用 toast)。
+    //
+    // [SL-279 复审第 6 轮] **范围档也不关框**,理由与上面**逐字同一条**:范围档下回执是
+    // `ok:true`(后端确实重算了范围内),但徽标不灭 —— 关框就正好落进上一段说的那个形态。
+    // 所以判据不能是回执,得是「这一下有没有可能达成用户点它的目的」。框留着 + 范围提示
+    // 亮着,用户下一步是去把范围切回 follow,而不是对着一枚「坏钮」再点几次。
     //
     // [SL-276 二轮复审] **在途期间锁主钮**。「拒绝态不关框」之后框在 await 期间是开着的、
     // 主钮也还可点,连点两下就打出第二发 analyze(第二发被 §1.6 的 busy 拒掉 —— 但那是
@@ -632,6 +667,13 @@ export function createTabSettings(opts) {
                 requestRender();
                 return;
             }
+            if (rangeLimited()) {
+                // 受理了,但只重算范围内 ⇒ `applied.*` 不前移、徽标不灭(§1.21)。
+                // 与拒绝态同口径:不关框,让范围提示继续摆在眼前。
+                syncReanalyzeRangeNote();
+                requestRender();
+                return;
+            }
             closeReanalyzeAsk();
             requestRender();
         } finally {
@@ -646,6 +688,9 @@ export function createTabSettings(opts) {
     }
 
     function syncStale() {
+        // [SL-279 复审第 6 轮] 框开着时用户仍可能在 Tab3 改范围档,提示要跟着当前 state 走 ——
+        // 只在开框那一下算一次的话,提示会停在开框时的档位上。
+        syncReanalyzeRangeNote();
         // [SL-279] 基线来自 state 的 `analysis.applied.*`(上次全量分析所用),不再是本地快照。
         // [SL-278] **逐项判**:两枚徽标各挂各的控件,合成一个布尔会让它们同亮同灭。
         const cur = config();

@@ -613,6 +613,11 @@ const ASK_PROBE = IN(`
         askNote: askNote ? askNote.textContent.trim() : null,
         setNote: setNote ? setNote.textContent.trim() : null,
         noteInPanel: !!(panel && askNote && panel.contains(askNote)),
+        // [SL-279 复审第 6 轮] 范围档专用提示:范围档下点主钮不会灭徽标,得把这句摆出来。
+        rangeNote: (() => {
+            const n = gb("reanalyze-ask-rangenote");
+            return n && vis(n) ? n.textContent.trim() : null;
+        })(),
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1134,6 +1139,89 @@ try {
         );
     }
     assertClean("stale-on-load-real"); // 标签对上桶名(复审第 1 轮:原来两处同名)
+
+    // C8r [SL-279 复审第 6 轮] **范围档下点「重新分析」不是死路。**
+    //
+    // 统筹裁 B(范围档下不前移基线)之后冒出来的形态:范围档下 `analyze("all")` 只重算
+    // `global.range`,契约 §1.21 规定不前移 `applied.*` ⇒ 徽标不灭。而后端回的是 `ok:true`,
+    // 原实现照 `ok` 关框 —— 框关了、徽标还挂着、没有任何别的反馈,逐字就是 `doReanalyzeFromAsk`
+    // 头注为拒绝态写的那句要避免的东西。
+    //
+    // 为什么必须页面级:这条链的三段(回执判据 / 关不关框 / 提示显不显)分别在 JS、DOM
+    // 和 i18n 三处,源码级断言逐条都能绿而链子仍然断。
+    newBucket("range-manual-reanalyze");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=range-manual`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C8r 范围档工程装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+
+    // ① 用户真改一次档 ⇒ 弹框(与 C9 同一条路,这里只借它把框打开)。
+    check(await setLoudness("peak_dbfs"), "C8r 范围档下改档可点");
+    check(await waitFor(askOpen, 4000), "C8r 改档 ⇒ 弹框");
+    const rmOpen = await evaluate(ASK_PROBE);
+    if (check(rmOpen, "C8r 探针取到锚点(点主钮前)")) {
+        // ← 去掉 index.html 那段 rangenote,或去掉 tab-settings 里的开合,这一格红。
+        check(
+            !!rmOpen.rangeNote,
+            "C8r 框一开就带范围提示(范围档下这枚钮达不成用户要的结果)",
+        );
+    }
+
+    // ② 点主钮 ⇒ 后端受理(ok:true),但基线不前移 ⇒ **框仍开、提示仍在、徽标仍亮**。
+    check(await click("reanalyze-ask-primary"), "C8r 主钮可点");
+    await sleep(1200); // mock 的 analyze 流水线 800ms + 一轮 render
+    const rmAfter = await evaluate(ASK_PROBE);
+    if (check(rmAfter, "C8r 探针取到锚点(点主钮后)")) {
+        // ← 把 doReanalyzeFromAsk 里那段 `if (rangeLimited()) { … return; }` 删掉,这一格红。
+        check(
+            rmAfter.open,
+            "C8r 点完主钮**框仍开** —— 受理成功 ≠ 达成了用户点它的目的",
+        );
+        check(rmAfter.rangeNote, "C8r 范围提示仍摆在眼前");
+        check(
+            rmAfter.badgeShown,
+            "C8r 琥珀 badge **仍亮**(范围外的段还是旧口径,这是真话)",
+        );
+    }
+
+    // ③ 对照组:follow 档下同一枚主钮**必须**关框 —— 少了这一格,把「恒不关框」写死也全绿。
+    assertClean("range-manual-reanalyze");
+    newBucket("range-follow-reanalyze");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=loudness-stale-on-load`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C8r 对照组(follow 档)装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+    check(await setLoudness("peak_dbfs"), "C8r 对照组改档可点");
+    check(await waitFor(askOpen, 4000), "C8r 对照组 ⇒ 弹框");
+    const flOpen = await evaluate(ASK_PROBE);
+    if (check(flOpen, "C8r 对照组探针取到锚点")) {
+        check(
+            !flOpen.rangeNote,
+            "C8r follow 档**不**显示范围提示(它只在范围档下才是真话)",
+        );
+    }
+    check(await click("reanalyze-ask-primary"), "C8r 对照组主钮可点");
+    check(
+        await waitFor(askClosed, 4000),
+        "C8r follow 档下点完主钮**框关掉** —— 这一下真的达成了用户的目的",
+    );
+    assertClean("range-follow-reanalyze");
 
     // C9 [SL-276 二轮复审] askOnNextStale 是**一次性**的:弹过就得清掉。
     // C8 管「从没被置位过」,C9 管「置位过、已经用掉了」—— 后者是 C8 的改法留下的口子:

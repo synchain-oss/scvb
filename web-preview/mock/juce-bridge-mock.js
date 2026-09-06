@@ -904,40 +904,6 @@ function buildOutputBackend(ctx) {
      * (鸡生蛋),而 native 那侧 `tracks` 一直是照覆盖数的 —— 两边对不齐。
      * 拆开后与 `OutputProcessor::previewAnalysis` 逐条同口径。
      */
-    /**
-     * 这一轮「全部」重算覆盖**整条时间线**吗 —— `analysis.applied.*`(§1.21)前移的判据,
-     * 与 native 的 `AnalyzeRange::wholeTimeline`(`src/output/AnalyzeScopeMath.h`)同一条:
-     * follow 档才是整条;`daw_loop`/`manual` 有**有效**范围时只重算范围内,范围外仍是旧口径,
-     * 前移基线会把徽标灭掉 ⇒ 那是漏报(SL-279 复审第 5 轮裁定)。范围空/无效时 native 落回
-     * `[0, 已采集末端]` 那条分支,这里跟着回 true。
-     *
-     * ⚠ 这只对齐**前移判据**这一条,不是把 :917 登记的「mock 不按 range 档重推 all 范围」
-     * 那笔差消掉 —— 那笔仍在,仍另开卡。
-     */
-    function wholeTimelineNow() {
-        const range = model.snapshot.global.range;
-        if (range.mode === "follow") return true;
-        const w =
-            range.mode === "daw_loop"
-                ? loopWindow()
-                : { startS: range.start_s, endS: range.end_s };
-        if (!w) return true; // 宿主 loop 瞬态缺失:与 inRangeAt 同口径,当无界处理
-        return !(w.endS > w.startS);
-    }
-
-    /** 基线前移到当前档(§1.21):stale 归假、徽标灭。两条前移路径共用这一处。 */
-    function advanceAppliedAnalysis() {
-        patchState({
-            analysis: {
-                applied: {
-                    loudness_mode: model.snapshot.analysis.loudness_mode,
-                    center_slot_policy:
-                        model.snapshot.analysis.center_slot_policy,
-                },
-            },
-        });
-    }
-
     function affectedOf(scope) {
         const mask =
             scope === "all" || scope === undefined || scope === null
@@ -998,6 +964,41 @@ function buildOutputBackend(ctx) {
             startS,
             endS,
         };
+    }
+
+    /**
+     * 这一轮「全部」重算覆盖**整条时间线**吗 —— `analysis.applied.*`(§1.21)前移的判据,
+     * 与 native 的 `AnalyzeRange::wholeTimeline`(`src/output/AnalyzeScopeMath.h`)同一条:
+     * follow 档才是整条;`daw_loop`/`manual` 有**有效**范围时只重算范围内,范围外仍是旧口径,
+     * 前移基线会把徽标灭掉 ⇒ 那是漏报(SL-279 复审第 5 轮裁定)。范围空/无效时 native 落回
+     * `[0, 已采集末端]` 那条分支,这里跟着回 true。
+     *
+     * ⚠ 这只对齐**前移判据**这一条,不是把 `affectedOf` 内登记的那张「与真桥的**已知**口径差」
+     * 清单里「mock 不按 range 档重推 all 范围」那一笔消掉 —— 那笔仍在,仍另开卡。
+     * (原文写的是行号,而插一段代码就把它指废了 —— 注释里记别处的行号没有任何机器会红。)
+     */
+    function wholeTimelineNow() {
+        const range = model.snapshot.global.range;
+        if (range.mode === "follow") return true;
+        const w =
+            range.mode === "daw_loop"
+                ? loopWindow()
+                : { startS: range.start_s, endS: range.end_s };
+        if (!w) return true; // 宿主 loop 瞬态缺失:与 inRangeAt 同口径,当无界处理
+        return !(w.endS > w.startS);
+    }
+
+    /** 基线前移到当前档(§1.21):stale 归假、徽标灭。两条前移路径共用这一处。 */
+    function advanceAppliedAnalysis() {
+        patchState({
+            analysis: {
+                applied: {
+                    loudness_mode: model.snapshot.analysis.loudness_mode,
+                    center_slot_policy:
+                        model.snapshot.analysis.center_slot_policy,
+                },
+            },
+        });
     }
 
     function pushSegments(reason, chList) {

@@ -3315,8 +3315,11 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // 那一轮。只重分析了一部分之后不该把「需重新分析」提示灭掉 —— 没算到的段仍按旧口径。
             // `fullScope` 由 `AnalyzeRange::wholeTimeline` 定(判据只此一处,见 AnalyzeScopeMath.h),
             // 一路随作业走到这里 —— 不在这里按范围现算,那会把判据抄成第二份。
-            // 今天有两条路会置真,都要求 `rangeMode == 0`(follow):§1.6 `analyze` 的 `"all"` 档
-            // (含无参)与 §1.18/§1.19 的松手自动重分段。加第三条路时**按这个判据判,别数调用点**。
+            // 今天有两条路会置真:§1.6 `analyze` 的 `"all"` 档(含无参)与 §1.18/§1.19 的松手自动
+            // 重分段;两者都只在**走了「整条已采集时间线」那条分支**时为真 —— 判据是分支,不是档位
+            // 字面(范围空/倒挂时 `rangeMode != 0` 也走整条,见 AnalyzeScopeMath.h 与 core 用例 ⑤;
+            // 桥面上进不来那个组合,靠的是 handleSetRange / hostLoopSeconds 两道校验)。
+            // 加第三条路时**按这个判据判,别数调用点**。
             // 不再 `&& !result.cancelled`([SL-279] 复审第 5 轮):这一整块就在本函数上方那个
             // `if (!result.cancelled)`(:3182)里面,那个合取项**恒真** —— 写着它像是在这里
             // 处理取消,其实没有,读者会去找一个不存在的判据。取消档要在 :3182 那里读。

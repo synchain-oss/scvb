@@ -4703,6 +4703,15 @@
                 color: var(--txt-dark-4);
                 text-wrap: pretty;
             }
+            /* [SL-279 复审第 6 轮] 范围档提示:它说的是「这一下不会达成你要的结果」,
+               比 scopeNote 那条背景说明重一级,所以走上一档文字色(--txt-dark-3,与
+               .sc-modal__body 同级)+ 左侧琥珀细边 —— 与常驻琥珀徽标同一族语义色。
+               不用 --sem-amber-ink:那是浅色面上的墨色,落到深色玻璃模态上对比度不够。 */
+            .sc-modal__note--warn {
+                color: var(--txt-dark-3);
+                border-left: 2px solid rgba(var(--sem-amber), 0.55);
+                padding-left: var(--sp-9);
+            }
             /* 正文段的 UA 默认 margin 在本框里归零 —— 两段之间的距离全由上面那条
                `.sc-modal__note` 的 margin-top 说了算(否则相邻兄弟外边距折叠成
                max(1em, --sp-9),间距变成「看运气」)。只圈到 --reanalyze:
@@ -8742,6 +8751,17 @@
                             class="sc-modal__note"
                             data-gb="reanalyze-ask-scopenote"
                             data-t="set.reanalyze.scopeNote"
+                        ></p>
+                        <!-- [SL-279 复审第 6 轮] 范围档(§1.8 daw_loop / manual)专用:
+                             那两档下「分析(全部)」只重算 global.range,契约 §1.21 规定
+                             基线不前移 ⇒ 徽标不灭。不说这一句,用户看到的就是「框关了、
+                             灯还亮着、什么也没发生」。默认 hidden,由 tab-settings 按档位开合。 -->
+                        <p
+                            id="reanalyze-ask-rangenote"
+                            class="sc-modal__note sc-modal__note--warn"
+                            data-gb="reanalyze-ask-rangenote"
+                            data-t="set.reanalyzeAsk.rangeNote"
+                            hidden
                         ></p>
                         <div class="sc-modal__foot">
                             <button

@@ -134,6 +134,10 @@ export const SCENARIO_MAP = Object.freeze({
     // 两档一起才钉得住「徽标读的是 applied 而不是本地快照」:少了本档,把判据改成
     // 「恒不亮」也能全绿。
     "loudness-stale-on-load": "fifteen-tracks",
+    // [SL-279 复审第 6 轮] 范围档(§1.8 manual)下装载。用来钉设置页那枚「重新分析」:
+    // 范围档下它拿到 ok:true,却**不**前移 applied.*(契约 §1.21)⇒ 徽标不灭。所以框不能关,
+    // 且要把范围提示摆出来。没有本场景,那条链在冒烟里根本不可达(默认档恒 follow)。
+    "range-manual": "fifteen-tracks",
     // [SL-280] 分布图柱高映射的回归场景:DEMO_TRACKS 的推子行程最高 0.62(= −1.7 dB),
     // 全部落在旧公式的**饱和点之下**,所以「−1.82 dB 以上一律画成 88%」这条缺陷在
     // preview 里三个月都没露过面 —— mock 数据恰好避开了缺陷区间。本场景把若干轨顶到
@@ -537,6 +541,26 @@ export function buildWorld(opts = {}) {
         // 段表照旧(它是按 kw_integrated 出来的),与「结果其实是旧的」对得上。
         outputSnapshot = {
             ...outputSnapshot,
+            analysis: {
+                ...outputSnapshot.analysis,
+                loudness_mode: "rms",
+                applied: {
+                    ...(outputSnapshot.analysis.applied || {}),
+                    loudness_mode: "kw_integrated",
+                },
+            },
+        };
+    }
+    if (opts.scenario === "range-manual" && outputSnapshot) {
+        // [SL-279 复审第 6 轮] manual 档 + 一段有效范围;同时把档改成 rms 而 applied 留
+        // kw_integrated ⇒ 一上来就 stale(徽标亮、框可被用户点开),这样「点了主钮之后
+        // 徽标**仍**亮」才是一条可断言的状态,而不是「本来就没亮」。
+        outputSnapshot = {
+            ...outputSnapshot,
+            global: {
+                ...outputSnapshot.global,
+                range: { mode: "manual", start_s: 5, end_s: 9 },
+            },
             analysis: {
                 ...outputSnapshot.analysis,
                 loudness_mode: "rms",
