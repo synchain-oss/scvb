@@ -347,17 +347,24 @@ export function createTabSettings(opts) {
         // 开框前的焦点落点,关框时还回去(三个出口都会经过 closeReanalyzeAsk:遮罩 / Esc
         // 直接走它,[SL-371] 的「撤销更改」在写受理之后走它)。
         reanalyzeReturnFocus: null,
-        // analyze("all") 在途:主钮置灰 + 早退,防连点打出第二发(见 doReanalyzeFromAsk)。
-        reanalyzeInFlight: false,
+        // 框里**任一枚钮**发出去的调用在途:`null` / `"analyze"` / `"revert"`。
+        // [SL-371 复审第 1 轮,统筹裁定] 原来是两个各管各的布尔(`reanalyzeInFlight` /
+        // `revertInFlight`),**互不相认** —— 撤销这枚钮故意不挂 `disabled`(理由见下),
+        // 于是两个方向的竞态都可达,而且都产生说反话的状态:
+        //   · 「先点重新分析、在途时点撤销」:分析拿改动后那一档跑,撤销的写落在它后面
+        //     ⇒ 跑完 `applied.*` 前移到那一档、当前值已撤回基线 ⇒ **徽标反向亮起**;
+        //   · 「先点撤销、在途时点重新分析」:分析拿**即将被撤掉**的那一档跑起来。
+        // 合成一位之后「任一在途 ⇒ 另一枚早退」是一句话的事,不必两处各记一遍。
+        // 存的是**哪一路**而不是布尔:真红时看得出在途的是谁(诊断成本为零)。
+        askInFlight: null,
         // [SL-375] 上一次**范围档**部分重算所用的那份口径快照(`{loudness_mode,
         // center_slot_policy}`)。为空 = 还没做过、或做过但口径之后又变了。
         // 只影响两枚徽标念哪条词条,不碰 stale 判定本身(见 syncStale 里 STALE_KEY 那段)。
         partialRangeFor: null,
-        // [SL-371] 「撤销更改」在途:同一回合连点两下只准打出一发 setAnalysisConfig。
-        // **只早退,不置灰** —— 上面 Tab 圈闭那段的护栏写着「置灰的只可能是主钮」,
-        // 给这一枚也挂 disabled 会把那条推理变成假话(而它正是回卷目标怎么选的依据)。
-        // 写是幂等的(同一个值写两遍等于写一遍),所以这里不需要第二道锁。
-        revertInFlight: false,
+        // [SL-371] 撤销这一路**只早退、不置灰** —— 上面 Tab 圈闭那段的护栏写着
+        // 「置灰的只可能是主钮」,给这一枚也挂 disabled 会把那条推理变成假话
+        // (而它正是回卷目标怎么选的依据)。所以它的防连点全压在 `askInFlight` 上,
+        // 不像主钮那样有 `disabled` 当第二道。
         nineOpen: false,
         diagOpen: true, // 诊断区初始展开(用户 preview:避免下方空一块)
         copyDoneUntil: 0,
@@ -650,7 +657,7 @@ export function createTabSettings(opts) {
             // 直接回卷过去的话,preventDefault() 已经吃掉了这次 Tab、焦点却原地不动,
             // Tab 在那一小段时间里等于失灵。置灰的只可能是主钮,故退到次要钮
             // (reanalyze-ask-later;[SL-371] 钮面已改成「撤销更改」,**没有**跟着挂
-            // disabled —— 见 local.revertInFlight 那段,那正是为了让这句话继续成立)。
+            // disabled —— 见 local.askInFlight 那段,那正是为了让这句话继续成立)。
             //
             // [SL-276 四轮复审] `focusable` 不能只用在「回卷**进来**」那两条,**正向 Tab
             // 出去**那条的比较对象也得换成它 —— 否则圈闭在次要钮这一格上是**开口**的:
@@ -852,7 +859,7 @@ export function createTabSettings(opts) {
      * (`appliedAnalysisConfigOf`,SL-279 的真源),这才是「原来的方案」。
      *
      * 四条早退,各自的理由:
-     *   ① 在途 —— 连点两下只准打出一发(见 local.revertInFlight);
+     *   ① 框里任一路在途 —— 连点两下只准打出一发,且与主钮互斥(见 local.askInFlight);
      *   ② **没有待观察的写** —— 那说明这个框不是被一次用户改档推出来的(理论上
      *      openReanalyzeAsk 走不到,但 `pending` 是可空的),此时「原来的方案」是哪一项
      *      根本无从谈起,退化成纯关框,别把用户困在框里;
@@ -873,15 +880,10 @@ export function createTabSettings(opts) {
      * 徽标不在这里就地熄:它是纯派生的,就地写会被下一帧按旧 state 抹回去。
      */
     async function revertFromAsk() {
-        // [SL-371 复审第 1 轮] **`reanalyzeInFlight` 也要挡**(claude 与 pr-agent 各自独立
-        // 指出,同一条):撤销这枚钮**故意不挂 `disabled`**(见 local.revertInFlight),
-        // 所以 analyze("all") 在途的那一整段时间里它照样可点。走到那条路的后果不是崩,
-        // 是**状态错**:分析是拿改动后的那一档发出去的,撤销的写落在它后面,分析跑完
-        // `applied.*` 前移到那一档、而当前值已被撤回基线 ⇒ 徽标反向亮起,用户看到
-        // 「我刚撤销完,却告诉我需要重新分析」。
-        // 挡在这里而不是给钮挂 disabled:挂了就把「置灰的只可能是主钮」那条推理弄假,
-        // 而焦点圈闭的回卷目标正是照那条推理选的。
-        if (local.revertInFlight || local.reanalyzeInFlight) return;
+        // [SL-371 复审第 1 轮,统筹裁定] **框里任一路在途,这枚钮就早退**(claude 与
+        // pr-agent 各自独立指出同一条)。两位合成 `local.askInFlight` 的理由与两个方向的
+        // 后果写在那一位的声明处,这里不复述。
+        if (local.askInFlight) return;
         const pending = local.askPending;
         if (!pending) {
             closeReanalyzeAsk();
@@ -901,7 +903,7 @@ export function createTabSettings(opts) {
             closeReanalyzeAsk();
             return;
         }
-        local.revertInFlight = true;
+        local.askInFlight = "revert";
         try {
             const res = await call("setAnalysisConfig", {
                 [pending.field]: baseline,
@@ -915,7 +917,7 @@ export function createTabSettings(opts) {
             closeReanalyzeAsk();
             requestRender();
         } finally {
-            local.revertInFlight = false;
+            local.askInFlight = null;
         }
     }
 
@@ -951,12 +953,14 @@ export function createTabSettings(opts) {
     //      (框马上关,closeReanalyzeAsk 把焦点还回响度胶囊);但 busy / observer 这条路
     //      **框是留着的**,焦点却已经在框外 —— 键盘用户再按 Enter 什么都不会发生,想重试
     //      反而更难。故 finally 里框还开着就把焦点还给主钮。
-    //   ③ 防连点由 `reanalyzeInFlight` 早退与 `disabled` 两道**各自独立**挡住。冒烟 C4c
+    //   ③ 防连点由 `askInFlight` 早退与 `disabled` 两道**各自独立**挡住。冒烟 C4c
     //      钉的是「连点两下只打出一发 analyze」,**两道都拆掉才会红**(留一道仍守得住);
     //      C4b 钉的是另一件事 —— 跑完一定解锁(finally 丢了就永久停在 disabled)。
     async function doReanalyzeFromAsk() {
-        if (local.reanalyzeInFlight) return;
-        local.reanalyzeInFlight = true;
+        // [SL-371 复审第 1 轮] 判据从 `reanalyzeInFlight` 换成共用的 `askInFlight`:
+        // 撤销那一路在途时点这枚钮同样要早退(见 askInFlight 声明处列的两个方向)。
+        if (local.askInFlight) return;
+        local.askInFlight = "analyze";
         const btn = el.reanalyzeAskPrimary;
         if (btn) {
             btn.disabled = true;
@@ -992,7 +996,7 @@ export function createTabSettings(opts) {
             closeReanalyzeAsk();
             requestRender();
         } finally {
-            local.reanalyzeInFlight = false;
+            local.askInFlight = null;
             if (btn) {
                 btn.disabled = false;
                 btn.removeAttribute("data-disabled");

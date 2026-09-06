@@ -45,7 +45,7 @@
 //         删掉 doReanalyzeFromAsk 的 finally 即红(钮永久停在 disabled,其余条目照样绿);
 //      C4c [SL-276 三轮复审] 锁**本身**有没有牙:给 mock 的 analyze 套「慢回执 + 计数」
 //         垫片,同一同步回合里连点两下主钮 ⇒ 只准打出一发。C4b 断的是「跑完解得开」,
-//         两道锁一起删掉它照样绿,所以必须另立本条。两道锁(reanalyzeInFlight 早退 /
+//         两道锁一起删掉它照样绿,所以必须另立本条。两道锁(askInFlight 早退 /
 //         btn.disabled)各自独立挡得住第二下,故本条是**两道都拆掉才红**。
 //         同批断言在途期间主钮挂着 `data-disabled="1"` —— 本仓禁用视觉走这个属性钩子,
 //         光设 `.disabled` 一个像素都不会变(没有对应的 `:disabled` 规则);
@@ -1156,7 +1156,7 @@ try {
     // C4c [SL-276 三轮复审] 钉**锁本身**。C4b 只断言「跑完解得开」,把两道锁一起删掉它
     // 照样全绿 —— 所以另立一条:给 mock 的 analyze 套一层「慢回执 + 计数」垫片,在同一个
     // 同步回合里连点两下主钮,断言只打出**一发**。
-    // 两道锁(reanalyzeInFlight 早退 / btn.disabled)各自都能独立挡住第二下,所以本条是
+    // 两道锁(askInFlight 早退 / btn.disabled)各自都能独立挡住第二下,所以本条是
     // 「两道都拆掉才红」;单拆一道仍绿是设计如此,不是判据没牙。
     check(
         await evaluate(
@@ -1231,7 +1231,7 @@ try {
     //   亮起,用户看到「我刚撤销完,却告诉我需要重新分析」。
     //   夹具就用 C4c 装的那层慢回执垫片(1500ms),此刻主钮正 disabled、analyze 在途。
     //   判据取**当前档没被改回去**(行为面),不取「函数早退了」(那不可观测)。
-    //   ← 把 revertFromAsk 开头的 `|| local.reanalyzeInFlight` 去掉,本格红。
+    //   ← 把 revertFromAsk 开头的 `if (local.askInFlight)` 换回只看自己那一位,本格红。
     const c4ePre = await evaluate(ASK_PROBE);
     if (check(c4ePre, "C4e 探针取到锚点(点撤销前)")) {
         check(
@@ -1279,6 +1279,87 @@ try {
         ),
         "C4c 垫片已摘(analyze 回到原型上的真实现)",
     );
+
+    // C4f [SL-371 复审第 1 轮,统筹裁定] **反方向:撤销在途时点「重新分析」不许发出去。**
+    //   C4e 断的是「analyze 在途 → 点撤销」,本格断另一头。两头各自可达、后果不同,
+    //   而**合成一位 `askInFlight` 之后它们是同一句话的两半** —— 只改一侧的话本格红。
+    //   夹具:把 mock 的 `setAnalysisConfig` 换成慢回执(2000ms),让撤销停在在途里;
+    //   同时给 `analyze` 套一层**计数**垫片(不改时序),断它一次都没被调到。
+    //   判据取「analyze 调用数 == 0」这一**正数**,不取「框还开着」——后者在修与不修
+    //   两侧都成立(撤销在途时框本来就没关),是条无牙断言。
+    //   ← 把 doReanalyzeFromAsk 开头的 `if (local.askInFlight)` 换回 `reanalyzeInFlight`
+    //     那种各管各的写法,本格红(实得 analyze 调用数 1)。
+    // ★ 先等 C4c 那一发 analyze 的**整条流水线**跑完(徽标灭 = 基线前移落地)。
+    //   mock 的 `finishAnalysis` 是 `later(800, …)` 异步的,**回执早于基线前移** ——
+    //   不等就改档的话,前移那一刻读到的是 C4f 刚改成的那一档,`applied` 被推到 rms,
+    //   于是 C4f 的框根本不会开。第一版实测正是红在这一幕上(前置探针读到
+    //   `badge:true / now:peak_dbfs` —— 当前档已经是 peak_dbfs 而基线还是 rms)。
+    check(
+        await waitFor(badgeGone, 8000),
+        "C4f 前置:C4c 那次分析的基线前移已落地(徽标灭)",
+    );
+    check(await setLoudness("rms"), "C4f 改档以重新开框");
+    check(await waitFor(askOpen, 4000), "C4f 框已开");
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m) return false;
+                const proto = Object.getPrototypeOf(m);
+                if (typeof proto.setAnalysisConfig !== "function") return false;
+                if (typeof proto.analyze !== "function") return false;
+                w.__uir8Analyze = 0;
+                m.analyze = function (scope) {
+                    w.__uir8Analyze++;
+                    return proto.analyze.call(m, scope);
+                };
+                m.setAnalysisConfig = function (patch) {
+                    return new Promise((res) => {
+                        w.setTimeout(() => res(proto.setAnalysisConfig.call(m, patch)), 2000);
+                    });
+                };
+                return true;`),
+        ),
+        "C4f 慢回执 setAnalysisConfig + analyze 计数垫片装上",
+    );
+    check(await click("reanalyze-ask-later"), "C4f 点「撤销更改」(写在途 2s)");
+    await sleep(300);
+    // 正证据:撤销确实还在途 —— 值还没回到基线(基线此刻是 peak_dbfs,C4 那次 analyze
+    // 前移过去的)。取不到这一条的话,下面那格可能是在「撤销早就落地了」的态上跑的。
+    const c4fMid = await evaluate(ASK_PROBE);
+    if (check(c4fMid, "C4f 探针取到锚点(撤销在途)")) {
+        check(
+            c4fMid.loudnessNow === "rms",
+            `C4f 正证据:撤销的写还没落地(当前档仍是 rms,实得 ${JSON.stringify(c4fMid.loudnessNow)})`,
+        );
+        check(c4fMid.open, "C4f 正证据:框还开着(撤销在途,主钮点得到)");
+    }
+    check(await click("reanalyze-ask-primary"), "C4f 在途期间点「重新分析」");
+    await sleep(300);
+    const c4fCalls = await evaluate(IN(`return w.__uir8Analyze;`));
+    check(
+        c4fCalls === 0,
+        `C4f 撤销在途时那一下**一发 analyze 都没打出去**(实得 ${c4fCalls})`,
+    );
+    check(
+        await waitFor(
+            IN(`const b = q('[data-gb="settings-loudnessmode-seg"] [data-value="peak_dbfs"]');
+                return !!b && b.getAttribute("aria-pressed") === "true";`),
+            6000,
+        ),
+        "C4f 慢回执落地后当前档回到基线 peak_dbfs(撤销本身没被这道闸弄坏)",
+    );
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m) return false;
+                delete m.analyze;
+                delete m.setAnalysisConfig;
+                return typeof m.analyze === "function"
+                    && typeof m.setAnalysisConfig === "function";`),
+        ),
+        "C4f 两层垫片已摘(回到原型上的真实现)",
+    );
+    check(await waitFor(askClosed, 4000), "C4f 撤销落地后框关掉了");
 
     // C8 [SL-276 复审] stale 一上来就为真的工程:badge 亮、框不弹。
     // 与 C1 的分工:C1 是「stale 为假 ⇒ 不弹」(弱),C8 是「stale 为真但不是用户改的

@@ -1600,11 +1600,14 @@ function showDismissible(gb, on, sig) {
 // 记的是**这一帧 renderBanners 算出的签名**,不是 DOM 里那句话 —— 见 bannerSignature 头注。
 // 钮只在横幅可见时点得到,所以走到这里 bannerSignature 一定有值;真取不到就记空串
 // (与 ⑨⑩ 的常态签名同一个值,行为退化成「这一条关掉了」,不会误判成别的条)。
-for (const gb of [
+// 三条锚点名收成**一份**:接线循环与 moveFocusOffDismiss() 都读它,
+// 两份名单迟早漂(而漂掉的那一条会静默失去焦点交接)。
+const DISMISSIBLE_BANNERS = [
     "banner-staleCapture",
     "banner-fpPausedByCapture",
     "banner-recaptureVoided",
-]) {
+];
+for (const gb of DISMISSIBLE_BANNERS) {
     const btn = $(gb + "-dismiss");
     if (!btn) continue;
     btn.addEventListener("click", () => {
@@ -1612,8 +1615,39 @@ for (const gb of [
             gb,
             bannerSignature.has(gb) ? bannerSignature.get(gb) : "",
         );
+        // [SL-373 复审第 1 轮,统筹裁定] **先把焦点交出去,再让下一帧把横幅藏起来。**
+        // 不交的话:下一帧 `showDismissible` 给横幅 `div` 挂 `hidden`,而焦点正落在它里面
+        // 这枚钮上 ⇒ Chromium 把焦点丢回 `<body>`,键盘用户得从卡片开头重走一遍 Tab。
+        // 与 `doReanalyzeFromAsk` 头注 ② 记的是同一类(隐藏/禁用一个正持焦的元素)。
+        // 交给谁:优先**另一条仍开着的建议类横幅的 ✕**(用户多半接着关下一条);
+        // 都没有就退到当前那枚 tab —— 它在 DOM 里紧跟横幅区、恒可见、恒可聚焦,
+        // 是「横幅区之后的下一个可聚焦件」。两条都取不到就什么都不做(总比抛错强)。
+        moveFocusOffDismiss(gb);
         requestRender();
     });
+}
+
+/**
+ * [SL-373 复审第 1 轮] 把焦点从**即将被藏起来**的那枚 ✕ 上挪走。
+ * 只在焦点确实在这枚钮上时动手 —— 用鼠标点的时候焦点未必在它身上(Chromium 对
+ * `<button>` 会聚焦,但别的入口不保证),那种情形下抢焦点是平白打断用户。
+ */
+function moveFocusOffDismiss(gb) {
+    const btn = $(gb + "-dismiss");
+    const doc = btn && btn.ownerDocument;
+    if (!btn || !doc || doc.activeElement !== btn) return;
+    for (const other of DISMISSIBLE_BANNERS) {
+        if (other === gb) continue;
+        const banner = $(other);
+        const b = $(other + "-dismiss");
+        if (banner && !banner.hidden && b && typeof b.focus === "function") {
+            b.focus({ preventScroll: true });
+            return;
+        }
+    }
+    const tab = doc.querySelector('[role="tab"][aria-selected="true"]');
+    if (tab && typeof tab.focus === "function")
+        tab.focus({ preventScroll: true });
 }
 
 /** disabled 类 tooltip:词条为空就移除 title(空 title 在部分 WebView 里仍弹空气泡)。 */

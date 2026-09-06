@@ -933,9 +933,13 @@ try {
         // ---- ⑦b 点 ✕ ⇒ 横幅收起,而**同条件的另外两处提示照旧**
         //   ← 把 showDismissible() 里那句 `show(node, seen.get(gb) !== sig)` 改回
         //     `show(node, true)`(= 拆掉「关过没有」这道查表),本格与 ⑦c 一起红。
+        //   ⚠ 这里**先 focus 再 click**:焦点在钮上是「下一帧把它藏起来」这一幕的前提,
+        //   ⑦b-f 那一格断的正是焦点被交出去了。纯 `b.click()` 不走焦。
         await evaluate(
             IN(
-                `const b = gb("banner-staleCapture-dismiss"); if (b) b.click(); return true;`,
+                `const b = gb("banner-staleCapture-dismiss");
+                 if (b) { b.focus(); b.click(); }
+                 return true;`,
             ),
         );
         check(await waitFor(bannerHidden, 3000), "⑦b 点 ✕ ⇒ 横幅 ⑧ 收起");
@@ -947,6 +951,34 @@ try {
             check(
                 after.lanesShown.join(",") === STALE_CHANNELS.join(","),
                 `⑦b 泳道 ⚠ **不受影响**(仍是 ${STALE_CHANNELS.join("/")};实得 ${after.lanesShown.join("/")})`,
+            );
+        }
+
+        // ---- ⑦b-f [复审第 1 轮,统筹裁定] **焦点不许掉回 `<body>`。**
+        //   下一帧 showDismissible 给横幅挂 hidden,而焦点正落在它里面这枚钮上 ⇒
+        //   Chromium 把焦点丢给 `<body>`,键盘用户得从卡片开头重走一遍 Tab
+        //   (与 tab-settings.js `doReanalyzeFromAsk` 头注 ② 记的是同一类)。
+        //   本档只有 ⑧ 一条建议类横幅在场(⑨ 让位、⑩ 条件不成立),所以交接目标落在
+        //   「当前那枚 tab」——它在 DOM 里紧跟横幅区、恒可见、恒可聚焦。
+        //   ← 把 app.js 里那句 `moveFocusOffDismiss(gb);` 删掉,本格红
+        //     (`activeElement` 变成 `BODY`)。
+        const c7f = await evaluate(
+            IN(`const a = d.activeElement;
+                if (!a) return null;
+                return {
+                    tag: a.tagName,
+                    gb: a.getAttribute("data-gb") || null,
+                    role: a.getAttribute("role") || null,
+                };`),
+        );
+        if (check(c7f, "⑦b-f 取到 activeElement")) {
+            check(
+                c7f.tag !== "BODY",
+                `⑦b-f 关掉横幅之后焦点没有掉回 <body>(实得 ${JSON.stringify(c7f)})`,
+            );
+            check(
+                c7f.role === "tab",
+                `⑦b-f 焦点落在横幅区之后那枚当前 tab 上(实得 role=${JSON.stringify(c7f.role)})`,
             );
         }
 

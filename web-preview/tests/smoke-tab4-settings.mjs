@@ -551,13 +551,29 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
             /hasAppliedAnalysisConfig\(st\)/.test(body),
             "[SL-371] 读不到基线时不发写(回落值只许渲染,不许写回去)",
         );
-        // [SL-371 复审第 1 轮] analyze 在途时也不许发这一次写(claude 与 pr-agent 各自
-        // 独立指出)。行为面由页面级 C4e 钉住,这里守接线 —— 那一套会 SKIP。
-        // ← 去掉 `|| local.reanalyzeInFlight`,本格红。
+        // [SL-371 复审第 1 轮,统筹裁定] 两枚钮**共用一位** `askInFlight`,任一在途另一枚
+        // 早退。行为面由页面级 C4e(analyze 在途 → 点撤销)与 C4f(撤销在途 → 点重新分析)
+        // 两格钉住,这里守接线 —— 那一套会 SKIP。
+        // ← 把 `local.askInFlight` 换回各管各的 `local.revertInFlight`,本格红。
         check(
-            /local\.reanalyzeInFlight/.test(body),
-            "[SL-371] analyze 在途时撤销早退(钮故意不置灰,所以只能在这儿挡)",
+            /local\.askInFlight/.test(body),
+            "[SL-371] 撤销这一路读的是共用的 askInFlight(不是各管各的布尔)",
         );
+        // 另一半:主钮那一路也读同一位(只改一侧的话「撤销在途 → 点重新分析」照样可达)。
+        {
+            const f2 = bare.indexOf("async function doReanalyzeFromAsk()");
+            const t2 = bare.indexOf("function syncStale()");
+            check(
+                f2 >= 0 && t2 > f2,
+                "[SL-371] 取到 doReanalyzeFromAsk 的函数体",
+            );
+            const b2 = f2 >= 0 && t2 > f2 ? bare.slice(f2, t2) : "";
+            check(
+                /local\.askInFlight/.test(b2) &&
+                    !/local\.reanalyzeInFlight/.test(b2),
+                "[SL-371] 主钮那一路也读同一位(旧的 reanalyzeInFlight 已全部换掉)",
+            );
+        }
     }
 
     // [SL-375] 范围档下重分析完成后,两枚徽标改念「只更新了部分范围」。

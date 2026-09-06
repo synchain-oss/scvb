@@ -1628,6 +1628,18 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         // 钉在「同一行」上的话一次 reflow 就假红(本卡第一版就是这么红的)。
         // 先把空白全去掉再找子串 —— 于是折不折行都一样。
         const flat = appCode.replace(/\s+/g, "");
+        // ✕ 接线名单那个数组的**字面文本**(切到 `]` 为止)。理由见下面用它那一格:
+        // 全文件找锚点名会被 `showDismissible("x",` 喂饱。
+        const listStart = flat.indexOf("DISMISSIBLE_BANNERS=[");
+        const listEnd = flat.indexOf("]", listStart);
+        const listSrc =
+            listStart >= 0 && listEnd > listStart
+                ? flat.slice(listStart, listEnd)
+                : "";
+        check(
+            listSrc.length > 0,
+            "(a21) 取到 DISMISSIBLE_BANNERS 那个数组(取不到就说明下面三格在空跑)",
+        );
         for (const gb of [
             "banner-staleCapture",
             "banner-fpPausedByCapture",
@@ -1642,6 +1654,17 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             check(
                 html.includes(`data-gb="${gb}-dismiss"`),
                 `(a21) ${gb} 的 ✕ 钮在模板里`,
+            );
+            // 接线名单里也要有它:`showDismissible` 那一侧管「显不显」,这一侧管
+            // 「✕ 有没有 handler」+「关掉之后焦点交给谁」(moveFocusOffDismiss 读同一份)。
+            // 漏一条的话:钮在、横幅会按签名收起、但点它什么都不发生 —— 而 ⑦ 那套只点
+            // ⑧ 那一枚,漏掉 ⑨⑩ 里任一条它照样全绿。
+            // ← 从 DISMISSIBLE_BANNERS 里删掉任一条,本格红。
+            // ⚠ 判据**必须切到那个数组里面再找**:锚点名在 `showDismissible("x",` 那一侧
+            // 也逐字出现,全文件找的话渲染那一侧会把它喂饱(第一版就是这么写的,无牙)。
+            check(
+                listSrc.includes(`"${gb}"`),
+                `(a21) ${gb} 在 DISMISSIBLE_BANNERS 接线名单里`,
             );
         }
         // ①-⑥:契约明令不可手动关闭 —— 既不许走 showDismissible,也不许有 ✕ 钮。
