@@ -1240,6 +1240,16 @@
                 margin-left: -3.5px;
                 height: var(--h, 30%);
                 border-radius: 3px 3px 1px 1px;
+                /* [SL-353] **重叠分隔晕**。两轨声像相同(或差不到一根柱宽)时柱体完全
+                   重合,后画的那根盖住前一根的下半截,只在顶端露出前一根的颜色 ——
+                   屏幕上像「一根柱的顶端换了个颜色」(v5.6.7 用户实测)。柱本身只有
+                   一个元素、只取一个色号(`distBarsHtml`),分段取色这件事不存在。
+                   1px 浅色晕让重合处出现一条分隔线,读成两根柱。色值真源 =
+                   tokens.css 第 22 组(两页共用一份,不各写一份)。
+                   放 box-shadow 不放 border:base.css 的 reset 是 `box-sizing: border-box`,
+                   加 border 会从 `width: 7px` 里吃掉两侧各 1px,柱身当场变窄两像素;
+                   box-shadow 不进盒模型,几何一个字节不动。 */
+                box-shadow: 0 0 0 1px var(--dist-bar-halo);
                 background: linear-gradient(
                     180deg,
                     rgba(var(--tc), 0.95),
@@ -1298,7 +1308,14 @@
                 position: absolute;
                 left: -1px;
                 right: -1px;
-                top: -3px;
+                /* [SL-353] `-2px` 而不是原来的 `-3px`:帽高 2px,`-2px` 让它的下边缘正好
+                   压在柱顶(`y=0`)上。原来的 `-3px` 在帽与柱之间留 1px 空档,而那 1px 现在
+                   正是外扩 1px 分隔晕占的位置 —— 悬空的帽会让 lead 轨柱顶**恒常**读成
+                   「绿帽 / 浅色带 / 轨色」三段,那正是本卡在治的观感(只不过从偶发变成每帧都在)。
+                   帽贴住柱顶之后,晕的那一格被帽盖住,三段又变回两段。
+                   帽本身仍是 2px、仍只挂 `data-lead="1"`,语义与 [J75] 一字未改。
+                   判据 = smoke-output-dist-page ⑫(c) 的「帽底边贴住柱顶」那一格。 */
+                top: -2px;
                 height: 2px;
                 border-radius: 1px;
                 background: var(--dist-bar-lead);
