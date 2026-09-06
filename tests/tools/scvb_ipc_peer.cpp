@@ -933,6 +933,12 @@ int runVizPublisher(const Args& a)
     //     用来钉「有段时曲线求值优先,回落不许盖掉它」。只钉轨3 的话,把两支写反也全绿。
     //   · 轨4(索引 3):**两样都不给**(参数留默认 NaN)⇒ 仍是哨兵。钉「不知道就别编」:
     //     0 对 pan 是正中、对 vol 是 0 dB,都是合法值,默认成 0 会凭空画出居中柱。
+    // [SL-361 复审第 1 轮] 连接掩码:回落**只对已连接轨**生效。这里让轨1/轨3 已连接、
+    // **轨5 未连接但给了参数值** —— 后者用来钉那道闸:没有它,Monitor 会把 15 条 enabled 轨
+    // 全画出来,而 Output 只画已连接的那几根(过冲,比原缺陷更糟)。
+    in.connectedMask = (1u << 0) | (1u << 2);
+    in.panParam[4] = 33.0f; // ← 未连接轨:给了值也**不该**被写出去
+    in.volDbParam[4] = 3.0f;
     in.panParam[0] = 77.0f; // ← 有段轨:这个值**不该**出现在 panNow[0] 里
     in.volDbParam[0] = 9.0f;
     in.panParam[2] = -25.0f;
@@ -1033,6 +1039,8 @@ int runVizReader(const Args& a)
     csv += "now_vol3 " + std::to_string(static_cast<long long>(snap->volDb[2])) + "\n";
     csv += "now_pan4 " + std::to_string(static_cast<long long>(snap->panNow[3])) + "\n";
     csv += "now_vol4 " + std::to_string(static_cast<long long>(snap->volDb[3])) + "\n";
+    csv += "now_pan5 " + std::to_string(static_cast<long long>(snap->panNow[4])) + "\n";
+    csv += "now_vol5 " + std::to_string(static_cast<long long>(snap->volDb[4])) + "\n";
     csv += "label1 " + snap->label[0] + "\n";
     csv += "label2 " + snap->label[1] + "\n";
     csv += "cov_t1_0 " + std::to_string(snap->covered(0, 0) ? 1 : 0) + "\n";

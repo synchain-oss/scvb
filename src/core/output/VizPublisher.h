@@ -76,6 +76,21 @@ struct VizPublishInput
     // 那比留哨兵(整根不画)更糟 —— 少画看得出来,画错看不出来。
     std::array<float, scvb::state::kNumTracks> panParam = makeUnknownParams();
     std::array<float, scvb::state::kNumTracks> volDbParam = makeUnknownParams();
+    // [SL-361 复审第 1 轮] **回落只对「已连接轨」生效**,判据与 Output 那侧逐字同源:
+    // `slotState == 2 ∧ heartbeatAgeMs <= kStaleDisplayMs`(web 侧的 `connectedChannels`)。
+    //
+    // 不加这道闸的话本卡会**过冲**:Monitor 的逐轨闸只有「`onlineMask` 有位 ∧ volDb 非哨兵」
+    // (`web/monitor/viz.js` 的 `vizDistRows`),而 `onlineMask` = `enabledMask` =
+    // `Channel::enabled`,**默认全 true**、且没有「Input 未连接 ⇒ 自动 disable」的耦合。
+    // 于是把哨兵换成参数回落之后,**每一条 enabled 轨都会有值**,Monitor 15 根全画,
+    // 而 Output 只画已连接的那几根 —— 从「少画 3 根」变成「多画」,方向反了、幅度更大。
+    //
+    // 加上之后两侧对齐:已连接 + 无段 ⇒ 两边都画(**正是用户 v5.6.7 报的那一幕**);
+    // 未连接 + 无段 ⇒ 两边都不画。
+    //
+    // ⚠ 登记一条**本卡不碰的既有分叉**:「未连接**但有段**」的轨,Monitor 画、Output 不画。
+    // 那条改前就在(走的是曲线求值那一支,与本卡的回落无关),不是本卡引入的。
+    scvb::u32 connectedMask = 0;
     // 每轨轨名(UTF-8;发布器按 UTF-8 边界截断到 kVizLabelBytes-1)。图例要它。
     std::array<std::string, scvb::state::kNumTracks> label{};
     // 轨名/宽度不进 crvsRevision,单独给一个修订号驱动「车道块」重写(轨名随车道一起落段)。

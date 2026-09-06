@@ -1043,6 +1043,21 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.playhead = playheadSnapshot();
 
     const int v = juce::jlimit(1, kVersionMax, versionActive_);
+    // [SL-361 复审第 1 轮] 已连接轨掩码 —— 判据与 Output UI 的 `connectedChannels` **逐字同源**
+    // (`slotState == 2 ∧ heartbeatAgeMs <= kStaleDisplayMs`,数据源同为 connSnapshot());
+    // 发布器只对这些轨做参数回落,否则会把 15 条 enabled 轨全喂给 Monitor(见那处注释)。
+    {
+        const auto conn = connSnapshot();
+        for (int ch = 0; ch < 15; ++ch)
+        {
+            const auto& info = conn.channels[static_cast<std::size_t>(ch)];
+            if (static_cast<int>(info.slotState) == 2 &&
+                info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs))
+            {
+                in.connectedMask |= (1u << ch);
+            }
+        }
+    }
     // [N1] metaRevision **只哈希轨名**。width 走帧头段、每帧都刷,与 writeLanes 无关 ——
     // 把它掺进来会让「width 被自动化」变成 needLanes 恒真,每秒 15360 次曲线求值。
     // FNV-1a 64 位:碰撞概率可忽略,不再靠时间兜底兜住碰撞(见 kLaneRefreshMaxMs)。

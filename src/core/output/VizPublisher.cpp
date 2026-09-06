@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace scvb::output
 {
@@ -265,8 +266,12 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
                 //
                 // 句柄未就绪时参数值是 NaN —— 那种情况**仍留哨兵**(不知道就别编),
                 // 与 widthPct 那一行的既有口径一致。
-                const float pv = in.panParam[t];
-                const float vv = in.volDbParam[t];
+                // [SL-361 复审第 1 轮] **只对已连接轨回落** —— 理由见 VizPublishInput::connectedMask
+                // 那段:不加这道闸,Monitor 会把 15 条 enabled 轨全画出来(它的逐轨闸只有
+                // 「enabled ∧ 非哨兵」),而 Output 只画已连接的那几根,变成过冲。
+                const bool connected = (in.connectedMask & (1u << t)) != 0u;
+                const float pv = connected ? in.panParam[t] : std::numeric_limits<float>::quiet_NaN();
+                const float vv = connected ? in.volDbParam[t] : std::numeric_limits<float>::quiet_NaN();
                 if (pv == pv) // 非 NaN
                 {
                     s.panNow[t] = scvb::vizPackPan(static_cast<double>(pv));

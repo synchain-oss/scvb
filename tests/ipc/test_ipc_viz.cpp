@@ -249,6 +249,10 @@ TEST_CASE("VIZ-4 真 VizPublisher 发布 → 读侧看到降采样数据与断�
     // 两样都没有的轨(对端不给参数值 ⇒ 默认 NaN):仍是哨兵,**不是 0**。
     REQUIRE(csvLL(m, "now_pan4") == static_cast<long long>(scvb::kVizPanNone));
     REQUIRE(csvLL(m, "now_vol4") == static_cast<long long>(scvb::kVizPanNone));
+    // [SL-361 复审第 1 轮] 未连接轨(轨5:有参数值、不在 connectedMask 里)**仍是哨兵** ——
+    // 回落只对已连接轨生效,否则 Monitor 会把 15 条 enabled 轨全画出来(见发布器那处注释)。
+    REQUIRE(csvLL(m, "now_pan5") == static_cast<long long>(scvb::kVizPanNone));
+    REQUIRE(csvLL(m, "now_vol5") == static_cast<long long>(scvb::kVizPanNone));
     // lead_mask 经**发布器**落段(VIZ-1 验的是手搓快照那条路)。
     REQUIRE(csvLL(m, "lead_mask") == 0x0001);
     // 轨名同理走发布器。

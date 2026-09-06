@@ -130,6 +130,13 @@ TEST_CASE("MON-CHAIN 全数据链:发布→读到→组切换→退出空态→�
         // 比整根不画更难发现。
         REQUIRE(v.panNow[3] == scvb::kVizPanNone);
         REQUIRE(v.volDb[3] == scvb::kVizPanNone);
+        // [SL-361 复审第 1 轮] **未连接轨即使有参数值也仍是哨兵。**
+        // Monitor 的逐轨闸只有「enabled ∧ 非哨兵」,而 enabled 默认全 true;Output 那侧却按
+        // 「已连接轨」过滤。少了这道闸,本卡会把 15 条全喂出去 —— 从「少画 3 根」变成「多画」,
+        // 方向反了、幅度更大。对端给轨5(索引 4)参数值 33 / +3 但**不在 connectedMask 里**。
+        // ← 去掉发布器里那道 connected 闸,只红这两格。
+        REQUIRE(v.panNow[4] == scvb::kVizPanNone);
+        REQUIRE(v.volDb[4] == scvb::kVizPanNone);
         REQUIRE(v.widthPct[0] == scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
         REQUIRE(v.label[0] == "Lead");
         REQUIRE(v.trackColor[14] == 15);
