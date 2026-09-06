@@ -124,12 +124,11 @@ double computeLoudnessMetric(LoudnessMode mode, const float* kwMs, const float* 
     return computeLseg(kwMs, n);
 }
 
-SegmentLoudnessReadings computeSegmentLoudness(const AnalysisSettingsStale& settings, const float* kwMs,
-                                               const float* peak, std::size_t n)
+SegmentLoudnessReadings computeSegmentLoudness(LoudnessMode mode, const float* kwMs, const float* peak, std::size_t n)
 {
     SegmentLoudnessReadings r;
     r.lseg = computeLseg(kwMs, n);
-    r.lmode = computeLoudnessMetric(settings.loudnessMode, kwMs, peak, n);
+    r.lmode = computeLoudnessMetric(mode, kwMs, peak, n);
     return r;
 }
 

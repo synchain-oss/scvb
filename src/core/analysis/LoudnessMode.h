@@ -53,20 +53,14 @@ double computeLseg(const float* kwMs, std::size_t n);
 // ---------------------------------------------------------------------------
 double computeLoudnessMetric(LoudnessMode mode, const float* kwMs, const float* peak, std::size_t n);
 
-// 分析设置失效标记(03 §6.3):analysis_settings_stale := loudness_mode ≠ applied.loudness_mode。
-// 置位 = 用户改 mode;清零 = 一次全量分析完成后 markApplied()。只提示、不自动重算(UI 归 T35)。
-// T09 承载 loudness_mode 一项;center_slot_policy 由 T13 追加到同一派生式。
-struct AnalysisSettingsStale
-{
-    LoudnessMode loudnessMode = LoudnessMode::KIntegrated; // 当前(用户设置)
-    LoudnessMode appliedLoudnessMode = LoudnessMode::KIntegrated; // 上次全量分析所用
+// 分析设置失效标记(03 §6.3)**已搬到 `analysis/AnalysisSettings.h`**。
+// [SL-278/SL-279] 这里原来写着「T09 承载 loudness_mode 一项;center_slot_policy 由 T13 追加到
+// 同一派生式」—— **本卡就是那笔追加的兑现方**,所以那句宣称连同结构一起不留在这里。
+// 搬走的理由:结构现在要同时装 `LoudnessMode` 与 `CenterSlotPolicy`,而 `CenterSlotPolicy`
+// 的家 `AutoAssign.h` 已经 include 了本文件 —— 留在这里就成环。
+// 为什么单开一个头、两项为什么各判各的,都写在那个头里,这里不抄第二份。
 
-    bool stale() const { return loudnessMode != appliedLoudnessMode; }
-
-    void markApplied() { appliedLoudnessMode = loudnessMode; }
-};
-
-// 分析链段响度口径求值:读 settings 决定第二指标口径;主口径恒为 computeLseg(不随 settings 变)。
+// 分析链段响度口径求值:按 mode 决定第二指标口径;主口径恒为 computeLseg(不随 mode 变)。
 //
 // [SL-262] 本类型原名 `SegmentLoudness`,与 `analysis/Loudness.h` 里**同名同命名空间**但
 // **成员完全不同**的另一个结构并存(那个是 `{LoudnessValue main; peakMax; MomentaryStats}`)
@@ -75,10 +69,13 @@ struct AnalysisSettingsStale
 struct SegmentLoudnessReadings
 {
     double lseg = 0.0; // 主口径 L_seg(ADR-009/[J18] 冻结),恒等于 computeLseg(kwMs, n)
-    double lmode = 0.0; // 第二指标,依 settings.loudnessMode(02 §4.3)
+    double lmode = 0.0; // 第二指标,依 mode(02 §4.3)
 };
 
-SegmentLoudnessReadings computeSegmentLoudness(const AnalysisSettingsStale& settings, const float* kwMs,
-                                               const float* peak, std::size_t n);
+// [SL-279] 入参从 `const AnalysisSettingsStale&` **收成 `LoudnessMode`**:本函数只读那个结构的
+// `loudnessMode` 一个成员,收窄之后本文件不必再认识那个结构(否则就是上面说的那个环)。
+// 生产侧零调用点(这条「第二指标读数」的路尚未落地,见本文件上方 [SL-252] 那段),
+// 调用点只有 `tests/core/test_vad.cpp` 两处。
+SegmentLoudnessReadings computeSegmentLoudness(LoudnessMode mode, const float* kwMs, const float* peak, std::size_t n);
 
 } // namespace scvb::analysis

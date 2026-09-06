@@ -966,6 +966,41 @@ function buildOutputBackend(ctx) {
         };
     }
 
+    /**
+     * 这一轮「全部」重算覆盖**整条时间线**吗 —— `analysis.applied.*`(§1.21)前移的判据,
+     * 与 native 的 `AnalyzeRange::wholeTimeline`(`src/output/AnalyzeScopeMath.h`)同一条:
+     * follow 档才是整条;`daw_loop`/`manual` 有**有效**范围时只重算范围内,范围外仍是旧口径,
+     * 前移基线会把徽标灭掉 ⇒ 那是漏报(SL-279 复审第 5 轮裁定)。范围空/无效时 native 落回
+     * `[0, 已采集末端]` 那条分支,这里跟着回 true。
+     *
+     * ⚠ 这只对齐**前移判据**这一条,不是把 `affectedOf` 内登记的那张「与真桥的**已知**口径差」
+     * 清单里「mock 不按 range 档重推 all 范围」那一笔消掉 —— 那笔仍在,仍另开卡。
+     * (原文写的是行号,而插一段代码就把它指废了 —— 注释里记别处的行号没有任何机器会红。)
+     */
+    function wholeTimelineNow() {
+        const range = model.snapshot.global.range;
+        if (range.mode === "follow") return true;
+        const w =
+            range.mode === "daw_loop"
+                ? loopWindow()
+                : { startS: range.start_s, endS: range.end_s };
+        if (!w) return true; // 宿主 loop 瞬态缺失:与 inRangeAt 同口径,当无界处理
+        return !(w.endS > w.startS);
+    }
+
+    /** 基线前移到当前档(§1.21):stale 归假、徽标灭。两条前移路径共用这一处。 */
+    function advanceAppliedAnalysis() {
+        patchState({
+            analysis: {
+                applied: {
+                    loudness_mode: model.snapshot.analysis.loudness_mode,
+                    center_slot_policy:
+                        model.snapshot.analysis.center_slot_policy,
+                },
+            },
+        });
+    }
+
     function pushSegments(reason, chList) {
         emit("scvb.segments", segmentsPayload(reason, chList));
     }
@@ -993,6 +1028,11 @@ function buildOutputBackend(ctx) {
                 reanalysis: true,
             });
             emitRecomputedSegments(reason, allChannels(), frame);
+            // [SL-279] 松手档是全轨重算,与 native 的 `tickResegmentDebounce` 对齐:那边传的
+            // 是 `r.wholeTimeline`,所以这里也读同款判据 —— follow 档前移,范围档不前移。
+            // 漏了前移这一半,mock 里会出现「整表按新档重算完、徽标还亮着」;漏了范围档
+            // 这一半,则是范围外还没重算就把徽标灭掉。两个方向都是真桥产不出来的组合。
+            if (wholeTimelineNow()) advanceAppliedAnalysis();
         });
     }
 
@@ -1112,6 +1152,23 @@ function buildOutputBackend(ctx) {
                     },
                 );
                 emitRecomputedSegments("analyze", a.channels, frame);
+                // [SL-279] 一次**全量**分析完成 ⇒ 基线前移到当前档(stale 归假、徽标灭)。
+                // 「全量」两个维度都要满足,与 native 的 `fullScope` 逐条对应:
+                //   · 轨维:scope 不是对象形 ⇒ 全轨(见下);
+                //   · 时间维:`wholeTimelineNow()` ⇒ 覆盖整条时间线(范围档下为假)。
+                // 只重分析一部分时基线不动 —— 没算到的段仍按旧口径。
+                //
+                // 轨维的判据是**「不是对象形」**,不是「等于这三个值之一」:真桥
+                // `parseAnalyzeScope`(`src/output/OutputEditor.cpp`)的分支条件逐字是
+                // `a.size() > 0 && a[0].isObject()`,**否则**一律走 "all" 档 —— 所以不只
+                // `analyze()` / `analyze(null)` / `analyze(undefined)`,连字面 `"all"` 之外的
+                // 字符串、数字也都走全量。原先在这里列三个值是把「否则」抄成了枚举,少一格
+                // 就造出一个真桥产不出来的组合:全轨全范围重算、基线却不前移(复审第 5 轮)。
+                // (JS 的 `typeof null === "object"`,所以 null 要单独排除。)
+                const objectForm = scope !== null && typeof scope === "object";
+                if (!objectForm && wholeTimelineNow()) {
+                    advanceAppliedAnalysis();
+                }
                 patchState({ analysis_run: { running: false, progress: 1 } });
             });
             return { ok: true, affected };
@@ -1517,6 +1574,10 @@ function buildOutputBackend(ctx) {
                 next.center_slot_policy = patch.center_slot_policy;
             }
             if (Object.keys(next).length === 0) return BAD_ARG();
+            // [SL-279] **只改当前值,不动 applied.\*** —— 「上次分析所用」只由一次覆盖整条
+            // 时间线的全轨重算前移,今天两条路:`analyze` 的全量档(见 analyze() 收尾处)与
+            // 松手自动重分段(见 debounce 那处),两条都读 `wholeTimelineNow()`。这正是 stale
+            // 的来处:改档 ⇒ 两者不等 ⇒ 设置页亮琥珀徽标。与 native 的 setAnalysisConfig 同口径。
             patchState({ analysis: next });
             return OK();
         },

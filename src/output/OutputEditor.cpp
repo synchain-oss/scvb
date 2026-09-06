@@ -705,10 +705,20 @@ juce::var OutputEditor::buildStateSubtree(bool /*full*/) const
     put(analysis, "segmentation", segmentation);
     put(analysis, "transition_ramp_ms", rt.transitionRampMs);
     // [J69/U24] 持锁快照读(复评重要②):loudnessMode/centerSlotPolicy 由 setAnalysisConfig 持锁写、
-    // getStateInformation 持锁读,emitState 必须同锁读(经 analysisConfigSnapshot)消除剩余竞态。
-    const auto analysisCfg = processor_.analysisConfigSnapshot();
-    put(analysis, "loudness_mode", analysisCfg.first);
-    put(analysis, "center_slot_policy", analysisCfg.second);
+    // getStateInformation 持锁读,emitState 必须同锁读(经 analysisConfigWithApplied)消除剩余竞态。
+    // [SL-279] **一次取锁读全四个**(当前 + applied):分两次读会在两把锁之间放开,
+    // 那一帧可能发出半新半旧的一对,web 的 stale 派生式当场算错、徽标闪一下。
+    const auto analysisCfg = processor_.analysisConfigWithApplied();
+    put(analysis, "loudness_mode", analysisCfg.loudnessMode);
+    put(analysis, "center_slot_policy", analysisCfg.centerSlotPolicy);
+    // [SL-279] 「上次全量分析所用」那一份也发给 web:stale 由 web 自己按「当前 ≠ applied」派生,
+    // **逐项判**(两枚徽标挂在两个控件旁,合成一个布尔会让它们同亮同灭)。
+    // 此前 web 拿「设置页 mount 那一刻的本地快照」当基线,而 mount 早于首次 state 到达 ——
+    // 存成非默认档的工程一进 Tab4 就误报,把口径切回 mount 默认值时又漏报。两条同根。
+    juce::var applied = obj();
+    put(applied, "loudness_mode", analysisCfg.appliedLoudnessMode);
+    put(applied, "center_slot_policy", analysisCfg.appliedCenterSlotPolicy);
+    put(analysis, "applied", applied);
     put(o, "analysis", analysis);
 
     juce::var channels = mkArray();
@@ -1119,6 +1129,11 @@ OutputEditor::AnalyzeScope OutputEditor::parseAnalyzeScope(const ArgList& a) con
         analyzeAllRange(rt.rangeMode, rt.rangeStartS, rt.rangeEndS, processor_.capturedExtentSeconds());
     s.startS = r.startS;
     s.endS = r.endS;
+    // [SL-279] `fullScope` **读**范围推导算出来的那一位,不在这里按 scope 字面现算:
+    // 字面是 `"all"` 不等于真的重算了整条时间线 —— `daw_loop`/`manual` 档下 `analyzeAllRange`
+    // 取的是 `global.range`,范围外的段仍是旧口径,前移基线会把徽标灭掉(= 本卡要杀的漏报的
+    // 反向孪生:漏报)。轨维这一半由上一行的 `tracksMask = 0` 兑现。
+    s.fullScope = r.wholeTimeline;
     return s;
 }
 
@@ -1158,7 +1173,7 @@ void OutputEditor::handleAnalyze(const ArgList& a, Completion c)
         strictBool(a[1].getProperty("clearManual", false), clearManual);
     }
 
-    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS, clearManual);
+    const auto accepted = processor_.startAnalysis(sc.tracksMask, sc.startS, sc.endS, clearManual, sc.fullScope);
 
     if (!accepted.ok)
     {

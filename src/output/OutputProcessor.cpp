@@ -1283,6 +1283,9 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // [J69/U24] analysis 配置落盘(T35 #62 评审遗留):loudness_mode / center_slot_policy。
     s.loudnessMode = runtime_.loudnessMode.toStdString();
     s.centerSlotPolicy = runtime_.centerSlotPolicy.toStdString();
+    // [SL-279] 「上次全量分析所用」那一份也落盘 —— stale 派生式的另一半。
+    s.appliedLoudnessMode = runtime_.appliedLoudnessMode.toStdString();
+    s.appliedCenterSlotPolicy = runtime_.appliedCenterSlotPolicy.toStdString();
     s.unknownTail = preservedCfgsTail_; // 未来小版本追加字段原样回写(防静默丢字段)
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
@@ -1830,6 +1833,17 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     runtime_.loudnessMode = juce::String::fromUTF8(s.loudnessMode.c_str(), static_cast<int>(s.loudnessMode.size()));
     runtime_.centerSlotPolicy =
         juce::String::fromUTF8(s.centerSlotPolicy.c_str(), static_cast<int>(s.centerSlotPolicy.size()));
+    // [SL-279] applied.*:codec 已按两级长度回退处理(abi=2 的旧工程取当前值而非默认值)。
+    runtime_.appliedLoudnessMode =
+        juce::String::fromUTF8(s.appliedLoudnessMode.c_str(), static_cast<int>(s.appliedLoudnessMode.size()));
+    runtime_.appliedCenterSlotPolicy =
+        juce::String::fromUTF8(s.appliedCenterSlotPolicy.c_str(), static_cast<int>(s.appliedCenterSlotPolicy.size()));
+    if (report.appliedLoudnessModeFallbacks > 0 || report.appliedCenterSlotPolicyFallbacks > 0)
+    {
+        DBG("SCVB Output: analysis.applied 枚举未知值回落默认(loudness_mode="
+            << report.appliedLoudnessModeFallbacks << ", center_slot_policy=" << report.appliedCenterSlotPolicyFallbacks
+            << ")");
+    }
     if (report.loudnessModeFallbacks > 0 || report.centerSlotPolicyFallbacks > 0)
     {
         DBG("SCVB Output: analysis 枚举未知值回落默认(loudness_mode="
@@ -1919,9 +1933,15 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
 
     // 加载 state 后 CRVS 已整体替换 → 清空 UndoManager,否则 undo() 会恢复加载前的旧 CRVS 快照,
     // 静默丢弃刚加载的段数据(PR#55 第12轮;关闭 #48 tech-debt「fromState 清 undo」的桥面同款)。
-    // 桥的 UndoManager 只含 CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve/
-    // 分析回落([J89]),
-    // 均写 crvsData_),无其它事务类别 → 全清口径安全(在 lifecycleMutex_ 内)。
+    // 桥的 UndoManager 含**两类**动作(在 lifecycleMutex_ 内全清,口径安全):
+    //   · CRVS 事务(editSegment/setVersionName/copyVersion/setTrackManual/setPanCurve/
+    //     分析回落([J89]))—— 写 `crvsData_`;
+    //   · [SL-279] `AppliedAnalysisAction` —— **不写 `crvsData_`**,写 `runtime_` 的
+    //     `appliedLoudnessMode` / `appliedCenterSlotPolicy` 两个字符串。
+    // 安全性的理由因此**不是**「都写 crvsData_」(那句话随本卡失效),而是:
+    // **两类动作写的面都刚被 setStateInformation 从新 blob 里整体覆盖过** ——
+    // CRVS 整体替换、applied.* 也刚从 CFGS 读回,留着旧动作只会把它们撤回加载前。
+    // 再加新动作类时按这条判:它写的面是不是也被本函数覆盖了。
     authority_.undoManager().clearUndoHistory();
 
     // 绑定时序(03 §7.2):setStateInformation 后 claim;样本率等 prepareToPlay 提供。
@@ -2360,12 +2380,15 @@ scvb::state::CrvsData ScvbOutputAudioProcessor::crvsSnapshot()
     return crvsData_;
 }
 
-std::pair<juce::String, juce::String> ScvbOutputAudioProcessor::analysisConfigSnapshot()
+ScvbOutputAudioProcessor::AnalysisConfigPair ScvbOutputAudioProcessor::analysisConfigWithApplied()
 {
-    // 复评重要②:loudnessMode/centerSlotPolicy 的读写锁协议 —— setAnalysisConfig(写)、
-    // getStateInformation(读)、本快照(读)三方均持 lifecycleMutex_,emitState 经此读,消除剩余竞态。
+    // [SL-279] **一次取锁读全四个**。分成两个入口读的话,两次 ScopedLock 之间锁是放开的,
+    // 「一次读全」就只是一句注释 —— 那正是当初给这两个值上锁时要根除的
+    // 「看着有保护、其实没有」(复审第 1 轮点出)。半新半旧的一对会让 stale 派生式在那一帧
+    // 算错(当前是新的、applied 还是旧的 ⇒ 徽标闪一下)。
     const juce::ScopedLock lock(lifecycleMutex_);
-    return {runtime_.loudnessMode, runtime_.centerSlotPolicy};
+    return {runtime_.loudnessMode, runtime_.centerSlotPolicy, runtime_.appliedLoudnessMode,
+            runtime_.appliedCenterSlotPolicy};
 }
 
 scvb::engine::PlayheadPod ScvbOutputAudioProcessor::playheadSnapshot() const
@@ -2618,6 +2641,7 @@ public:
             owner_.pendingAnalysis_.rangeEndSample = config_.rangeEndSample;
             owner_.pendingAnalysis_.generation = generation_;
             owner_.pendingAnalysis_.clearManual = owner_.analysisClearManual_;
+            owner_.pendingAnalysis_.fullScope = owner_.analysisFullScope_;
             owner_.pendingAnalysis_.resegmentReason = owner_.analysisResegmentReason_;
             owner_.pendingAnalysis_.analyzedTracks = owner_.analysisTracksMask_;
             owner_.pendingAnalysis_.valid = true;
@@ -2678,7 +2702,7 @@ void ScvbOutputAudioProcessor::handleAsyncUpdate()
         return;
     }
     finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.clearManual,
-                   pending.resegmentReason, pending.analyzedTracks);
+                   pending.fullScope, pending.resegmentReason, pending.analyzedTracks);
 }
 
 ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnalysis(std::uint16_t tracksMask,
@@ -2828,13 +2852,21 @@ void ScvbOutputAudioProcessor::tickResegmentDebounce(std::int64_t nowMs)
     // —— applyAnalysisSegments 在 false 档的保留判据(locked || origin != Auto)正是这一条,
     // 逐字同义。传 true 会连用户段一起铲掉,还会写 freeze 参数(带 host gesture),两条都违约。
     pendingResegmentReason_ = reason;
-    const auto accepted = startAnalysis(0, r.startS, r.endS, /*clearManual=*/false);
+    // [SL-279 复审] `fullScope` 与 `parseAnalyzeScope` 的 `"all"` 分支**读同一个字段**:两条路
+    // 调的是同一个纯函数、传的是同一组实参(`analyzeAllRange(rangeMode, rangeStart, rangeEnd,
+    // capturedExtent)` + `tracksMask=0`),旁边那句「范围与『点分析』的 "all" 档同一把尺子」说的
+    // 就是它 —— 所以「这一轮算不算全量」也该由那把尺子答,而不是各自现算。
+    // 松手重分段必须能前移:漏了它就残留一条与本卡同类的误报 —— 改档 ⇒ 徽标亮 ⇒ 拖 VAD/分段滑杆
+    // 松手 ⇒ 用新档把整条时间线整表重算替换 ⇒ 段表已全是新口径,徽标却还亮,用户点「重新分析」
+    // 产出一个字节不变。而范围档下 `wholeTimeline` 为假,这里同样不前移(§1.21)。
+    const auto accepted = startAnalysis(0, r.startS, r.endS, /*clearManual=*/false, /*fullScope=*/r.wholeTimeline);
     if (!accepted.ok)
         pendingResegmentReason_ = AnalysisDoneReason::None; // 没起来就别留着脏 reason
 }
 
-ScvbOutputAudioProcessor::AnalyzeAccepted
-ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual)
+ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask,
+                                                                                  double startS, double endS,
+                                                                                  bool clearManual, bool fullScope)
 {
     AnalyzeAccepted a;
     if (analysisRunning_.load(std::memory_order_acquire))
@@ -3089,6 +3121,7 @@ ScvbOutputAudioProcessor::startAnalysis(std::uint16_t tracksMask, double startS,
 
     const std::uint32_t gen = analysisGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
     analysisClearManual_ = clearManual;
+    analysisFullScope_ = fullScope; // [SL-279] 随作业走
     analysisTracksMask_ = analyzedTracks;
     // [SL-255 复审①] 作业真造出来了才把 reason **取走**(取走即清):早退的那几支不消费它,
     // 留给调用方(tickResegmentDebounce 的 !accepted.ok 分支)清。此后 reason 随作业走。
@@ -3139,7 +3172,7 @@ void ScvbOutputAudioProcessor::cancelAnalysis()
 }
 
 void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
-                                              std::int64_t rangeEndSample, bool clearManual,
+                                              std::int64_t rangeEndSample, bool clearManual, bool fullScope,
                                               AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks)
 {
     {
@@ -3278,6 +3311,26 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                                                                 liveTracks[static_cast<std::size_t>(t)].segments);
             }
 
+            // [SL-279] 「上次全量分析所用口径」前移:**只在一次覆盖整条已采集时间线的全轨重算**
+            // 那一轮。只重分析了一部分之后不该把「需重新分析」提示灭掉 —— 没算到的段仍按旧口径。
+            // `fullScope` 由 `AnalyzeRange::wholeTimeline` 定(判据只此一处,见 AnalyzeScopeMath.h),
+            // 一路随作业走到这里 —— 不在这里按范围现算,那会把判据抄成第二份。
+            // 今天有两条路会置真:§1.6 `analyze` 的 `"all"` 档(含无参)与 §1.18/§1.19 的松手自动
+            // 重分段;两者都只在**走了「整条已采集时间线」那条分支**时为真 —— 判据是分支,不是档位
+            // 字面(范围空/倒挂时 `rangeMode != 0` 也走整条,见 AnalyzeScopeMath.h 与 core 用例 ⑤;
+            // 桥面上进不来那个组合,靠的是 handleSetRange / hostLoopSeconds 两道校验)。
+            // 加第三条路时**按这个判据判,别数调用点**。
+            // 不再 `&& !result.cancelled`([SL-279] 复审第 5 轮):这一整块就在本函数上方那个
+            // `if (!result.cancelled)`(:3182)里面,那个合取项**恒真** —— 写着它像是在这里
+            // 处理取消,其实没有,读者会去找一个不存在的判据。取消档要在 :3182 那里读。
+            const bool markApplied = fullScope;
+            const juce::String appliedLoudnessBefore = runtime_.appliedLoudnessMode;
+            const juce::String appliedCenterBefore = runtime_.appliedCenterSlotPolicy;
+            const juce::String appliedLoudnessAfter = markApplied ? runtime_.loudnessMode : appliedLoudnessBefore;
+            const juce::String appliedCenterAfter = markApplied ? runtime_.centerSlotPolicy : appliedCenterBefore;
+            const bool appliedChanged =
+                (appliedLoudnessAfter != appliedLoudnessBefore) || (appliedCenterAfter != appliedCenterBefore);
+
             if (tableChanged)
             {
                 // 还原,让事务拿到正确的「改前」快照,再由 mutator 重放同一次合并。
@@ -3289,10 +3342,24 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                     authority_.undoManager(), crvsData_, txnName,
                     [&] { applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual); },
                     [this] { rebuildAllCurves(); });
+                // [SL-279] **同一条撤销步**:commitCrvsTransaction 内部刚 beginNewTransaction 过,
+                // 这里再 perform 一个动作会归进同一条事务(juce 语义)—— 一次 Ctrl+Z 同时还原
+                // 段表与基线,一次 Ctrl+Y 又把两者一起前移。恒等的那一轮不压(空动作不入栈)。
+                if (appliedChanged)
+                {
+                    authority_.undoManager().perform(new scvb::output::AppliedAnalysisAction(
+                        runtime_.appliedLoudnessMode, runtime_.appliedCenterSlotPolicy, appliedLoudnessBefore,
+                        appliedCenterBefore, appliedLoudnessAfter, appliedCenterAfter));
+                }
             }
             else
             {
                 rebuildAllCurves();
+                // 段表逐字节没变 ⇒ 没有要撤的东西,不压撤销步(既有规矩)。但分析**确实**
+                // 按当前设置跑过了,基线照样前移 —— 否则「需重新分析」提示会一直亮着,
+                // 而用户已经重分析过了。
+                runtime_.appliedLoudnessMode = appliedLoudnessAfter;
+                runtime_.appliedCenterSlotPolicy = appliedCenterAfter;
             }
 
             // 应用完再比:改后的段表就是即将发出去的那一份。

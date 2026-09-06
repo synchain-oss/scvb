@@ -564,6 +564,14 @@ export function makeOutputState(overrides = {}) {
             transition_ramp_ms: 80,
             loudness_mode: "kw_integrated", // §1.21 默认档
             center_slot_policy: "priority_queue", // §1.21 默认档
+            // [SL-279] 「上次全量分析所用」那一份。默认与当前值相同 = 「这份工程已经按它
+            // 存着的那档分析过」—— 与 native 侧 abi=2 旧工程的长度回退取同一口径。
+            // mock 桥与真桥必须同契约(CLAUDE.md §10):真桥发了 applied.*,mock 也要发,
+            // 否则 preview 里这条链根本走不通(设置页的 stale 判据吃的就是它)。
+            applied: {
+                loudness_mode: "kw_integrated",
+                center_slot_policy: "priority_queue",
+            },
         },
         channels: allChannels().map(() => makeChannelConfig()),
         versions: Array.from({ length: VERSION_COUNT }, (_, i) => ({

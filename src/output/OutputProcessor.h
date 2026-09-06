@@ -62,6 +62,11 @@ struct OutputRuntimeState
     float transitionRampMs = 80.0f;
     juce::String loudnessMode = "kw_integrated";
     juce::String centerSlotPolicy = "priority_queue";
+    // [SL-279] 上次**全量分析**所用的那一档(03 §6.3 stale 派生式的另一半)。
+    // 与上面两项同锁协议:setAnalysisConfig / finishAnalysis / 撤销动作持锁写,
+    // getStateInformation / analysisConfigWithApplied 持锁读。
+    juce::String appliedLoudnessMode = "kw_integrated";
+    juce::String appliedCenterSlotPolicy = "priority_queue";
 
     // channels[15](§1.15;index = ch-1)
     struct Channel
@@ -262,9 +267,17 @@ public:
     // prepareToPlay/setStateInformation 的 CRVS 写竞争 —— PR#55 重要1)。
     scvb::state::CrvsData crvsSnapshot();
 
-    // [J69/U24] analysis.loudness_mode/center_slot_policy 快照(持 lifecycleMutex_;与 setAnalysisConfig /
-    // getStateInformation 同锁读,消除 emitState 无锁读 runtime_ 的剩余竞态 —— 复评重要②)。
-    std::pair<juce::String, juce::String> analysisConfigSnapshot();
+    // [SL-279] 当前 + 「上次全量分析所用」**四个值一次锁读全**。
+    // 分成两个入口读会在两次 ScopedLock 之间放开锁 —— 那时「一次读全」只是一句注释,
+    // 真正让它不出错的是「四个写者与 emitTick 都在消息线程上」,不是这把锁(复审第 1 轮)。
+    struct AnalysisConfigPair
+    {
+        juce::String loudnessMode;
+        juce::String centerSlotPolicy;
+        juce::String appliedLoudnessMode;
+        juce::String appliedCenterSlotPolicy;
+    };
+    AnalysisConfigPair analysisConfigWithApplied();
 
     // [SL-284] 最近一次**落地**的分析里最坏的平衡回退级(§6.4 回退链):1..4;从未落地过 = 0。
     //
@@ -276,8 +289,9 @@ public:
     int lastMaxFallbackLevel() const noexcept { return lastMaxFallbackLevel_.load(std::memory_order_relaxed); }
 
     // 运行时 state(消息线程独占;仅桥 native function 写 / emitTick 读,宿主不触,无需锁)。
-    // 例外:loudnessMode/centerSlotPolicy 由 setAnalysisConfig 持锁写、getStateInformation 持锁读,
-    // emitState 必须经 analysisConfigSnapshot() 持锁读 —— 其余字段仍消息线程独占。
+    // 例外:loudnessMode/centerSlotPolicy 与 [SL-279] 的 applied.* 由 setAnalysisConfig /
+    // finishAnalysis / 撤销动作持锁写、getStateInformation 持锁读,
+    // emitState 必须经 analysisConfigWithApplied() **一次读全四个** —— 其余字段仍消息线程独占。
     OutputRuntimeState& runtime() { return runtime_; }
     const OutputRuntimeState& runtime() const { return runtime_; }
 
@@ -361,7 +375,19 @@ public:
     // tracksMask=0 表示不限轨;[startS,endS) 为分析范围(follow 档由调用方折算)。
     // clearManual(§1.6 opts):true = 「重新识别(含手动段)」,连用户段一并重算;
     // false(默认)= ADR-008 语义,用户段一律保留。
-    AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual = false);
+    // [SL-279] `fullScope` = **这一轮真的重算了「全轨 × 整条已采集时间线」吗**,不是「桥面 scope
+    // 字面是不是 `"all"`」—— 字面 `"all"` 在 `daw_loop`/`manual` 档下只重算 `global.range`。
+    // 判据只此一处:`AnalyzeRange::wholeTimeline`(AnalyzeScopeMath.h)∧ 调用方传 `tracksMask=0`;
+    // 调用方**读**它,别各自现算。判据是**走没走「整条已采集时间线」那条分支**,不是「档位字面
+    // 是不是 follow」—— `rangeMode != 0` 但范围空/倒挂时也走整条那一支(core 用例 ⑤ 钉了这一格)。
+    // 桥面上两者今天等价:`handleSetRange` 挡掉 `manual` 的倒挂范围、`hostLoopSeconds` 挡掉空
+    // `daw_loop`,所以「范围档 + 无效范围」进不来 —— 等价是**这两道校验给的**,不是判据自带的。
+    // 今天两条路会置真:§1.6 `analyze` 的 `"all"` 档(含无参)、§1.18/§1.19 的松手自动重分段;
+    // 加第三条路时按判据判,别数调用点。
+    // 它一路随作业走到 finishAnalysis,那里据它决定要不要 markApplied(把「上次分析所用口径」
+    // 前移)。只重分析了一部分之后不该把「需重新分析」提示灭掉:没算到的段仍按旧口径。
+    AnalyzeAccepted startAnalysis(std::uint16_t tracksMask, double startS, double endS, bool clearManual = false,
+                                  bool fullScope = false);
     void cancelAnalysis();
     bool analysisRunning() const { return analysisRunning_.load(std::memory_order_acquire); }
     // [SL-255] 这一轮流水线是**谁触发的** —— 决定段表以哪个 §2.8 `reason` 发出。
@@ -461,8 +487,8 @@ private:
     void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
                                std::int64_t rangeEndSample, bool clearManual);
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
-                        std::int64_t rangeEndSample, bool clearManual, AnalysisDoneReason resegmentReason,
-                        std::uint16_t analyzedTracks);
+                        std::int64_t rangeEndSample, bool clearManual, bool fullScope,
+                        AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
     void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
@@ -690,6 +716,7 @@ private:
         // 见 pendingResegmentReason_ 的头注。
         AnalysisDoneReason resegmentReason = AnalysisDoneReason::None;
         std::uint16_t analyzedTracks = 0;
+        bool fullScope = false; // [SL-279] 与 clearManual 同款:随作业走,取消那条路一起丢掉
     };
     PendingAnalysis pendingAnalysis_;
     // 分析刚完成([M] 置位 / editor 取走)。§2.8 的 reason 要落 "analyze" —— web 有两处认它:
@@ -715,6 +742,9 @@ private:
     static constexpr std::int64_t kResegmentDebounceMs = 300; // 契约 §1.18 逐字
     // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
     bool analysisClearManual_ = false;
+    // [SL-279] 本轮是不是「分析(全部)」。与 analysisClearManual_ 同款:startAnalysis 受理时写、
+    // 随 PendingAnalysis 走到 finishAnalysis。
+    bool analysisFullScope_ = false;
     // 同上,本次作业的触发档与真参与分析的轨集合([M] 写,交接时随结果走)。
     AnalysisDoneReason analysisResegmentReason_ = AnalysisDoneReason::None;
     std::uint16_t analysisTracksMask_ = 0;

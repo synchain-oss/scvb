@@ -20,10 +20,22 @@
 //   24.. languageBytes 个 UTF-8 字节
 //   24+languageBytes  u32 loudnessMode(0=kw_integrated,1=rms,2=peak_dbfs)
 //   28+languageBytes  u32 centerSlotPolicy(0=priority_queue,1=lead_exclusive,2=even_spread)
-//   32+languageBytes.. 未知尾部(未来小版本追加字段;解码保留、编码原样回写,防静默丢字段)
+//   32+languageBytes  u32 appliedLoudnessMode([SL-279] 上次全量分析所用,同一套序号)
+//   36+languageBytes  u32 appliedCenterSlotPolicy([SL-278/SL-279] 同上)
+//   40+languageBytes.. 未知尾部(未来小版本追加字段;解码保留、编码原样回写,防静默丢字段)
 //
-// 兼容:旧版(abi=1)payload 无末两个 u32(24+languageBytes 即止)→ 两字段回落默认且不计未知回落
-// (经 migrate_1_to_2 no-op + 本 codec 长度回退)。
+// 兼容:**两级长度回退**,各对应一次 abi 升格 ——
+//   · 旧版(abi=1)payload 无「当前」那两个 u32(24+languageBytes 即止)→ 两字段回落默认
+//     且不计未知回落(经 migrate_1_to_2 no-op + 本 codec 长度回退);
+//   · 旧版(abi=2)payload 有「当前」、无 applied 那两个 u32 → [SL-279] **applied := 当前值**,
+//     **不是回落默认**。语义是「这份旧工程视为已经按它存着的那档分析过」——
+//     回落默认会让一个存了非默认档的旧工程一打开就报「需重新分析」,那是误报,
+//     而 applied := 当前正是今天 UI 的意图。migrate_2_to_3 因此同样是 no-op,不重写 payload。
+// ⚠ [SL-279 复审] **两级回退把 `unknownTail` 的前向兼容粒度收窄了**,记在这里免得下一个人
+//   踩到自己写的门上:尾部长度只接受 0 / 8 / 16+ 三档,**落在 (0,8) 或 (8,16) 一律整块拒载**。
+//   也就是「未来小版本追加字段」只能按**整级**(每级两个 u32)追加 —— 想只尾扩一个 u32
+//   而不升 abi 是做不到的,那份 blob 会被自己拒掉。上面那句「解码保留、编码原样回写、
+//   防静默丢字段」说的是**尾字段齐了之后**的未知尾部,不是「任意长度都容忍」。
 // **不可就地追加字段破坏既有偏移** —— 24B 定长 header(6×u32)之后才允许经长度回退追加尾部;
 // 要加字段:① 升容器 abi 走迁移链(本次 [J69/U24] 即 abi=1→2),或
 // ② 放 PRMS 的 ValueTree(天生容忍字段增删,STATE_SCHEMA §三 的 ui 组即登记在 PRMS 名下)。
@@ -66,6 +78,11 @@ struct OutputState
     std::string uiLanguage = "en";
     std::string loudnessMode = "kw_integrated"; // [J69/U24①] 段响度口径,默认 kw_integrated
     std::string centerSlotPolicy = "priority_queue"; // [J69/U24④] 中心槽策略,默认 priority_queue
+    // [SL-279] 「上次全量分析所用」的那一份 —— stale 派生式的另一半(03 §6.3)。
+    // 落盘在这里而不是留在内存:UI 此前拿「设置页 mount 时的本地快照」当基线,而 mount 早于
+    // 首次 state 到达,于是存了非默认档的工程一进设置页就误报「需重新分析」。
+    std::string appliedLoudnessMode = "kw_integrated";
+    std::string appliedCenterSlotPolicy = "priority_queue";
     std::vector<std::uint8_t> unknownTail; // 已知字段之后的未知尾部(未来小版本追加;解码保留、编码回写)
     // masterChartMode 不属 CFGS:由独立 UICF chunk(kFourccUiConfig)承载,见 encodeUiConfig/decodeUiConfig。
 };
@@ -75,6 +92,10 @@ struct OutputDecodeReport
 {
     std::uint32_t loudnessModeFallbacks = 0; // 未知/越界 loudness_mode → 默认 次数
     std::uint32_t centerSlotPolicyFallbacks = 0; // 未知/越界 center_slot_policy → 默认 次数
+    // [SL-279] applied.* 单独计数,**不与上面两个合并** —— 合并之后 DBG 那行会说
+    // 「loudness_mode 回落了 1 次」,而实际回落的是 applied 那一份,把人指到错的字段上。
+    std::uint32_t appliedLoudnessModeFallbacks = 0;
+    std::uint32_t appliedCenterSlotPolicyFallbacks = 0;
 };
 
 // 编码;语言超长截断(≤kOutputLanguageMaxBytes)。返回 false = 无法分配。

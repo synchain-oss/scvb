@@ -321,6 +321,51 @@ TEST_CASE("analyzeAllRange:follow 档取已采集时间线,与播放头无关", 
 // startAnalysis 在 `!(endS > startS)` 处当场回 {ok:false},一段都不重算 ——「点了没什么作用」。
 // mock 桥对同一形状取的是 ±∞,web smoke 因此从来没报过 —— 这条用例钉的就是真桥这一侧。
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// [SL-279 复审第 5 轮] `applied.*`(§1.21「上次分析所用口径」)前移的判据本身。
+//
+// 为什么钉在这里:判据只此一处 —— `AnalyzeRange::wholeTimeline`,由范围推导在**选分支**时
+// 置,两个调用方(`parseAnalyzeScope` 的 "all" 档、`tickResegmentDebounce`)读它。判据在
+// 纯函数里,scvb_tests 够得着;而两个调用方一个埋在私有成员里、一个要跑完整条流水线。
+//
+// 它守的是一条**产品语义**:`daw_loop`/`manual` 档下点「分析(全部)」只重算 `global.range`,
+// 范围外的段仍是旧口径 —— 前移基线会把「需重新分析」注记灭掉,那是漏报。
+// ---------------------------------------------------------------------------
+TEST_CASE("analyzeAllRange:wholeTimeline 只在真的覆盖整条时间线时为真", "[output][analyze][sl279]")
+{
+    using scvb::output::analyzeAllRange;
+    using scvb::output::analyzeScopeRange;
+
+    // ① follow 档:范围 = [0, 已采集末端] ⇒ 整条,前移。
+    CHECK(analyzeAllRange(0, 0.0, 0.0, 12.5).wholeTimeline);
+    // ② follow 档下 range 字段有残值也不看(§1.8:follow 忽略起止)⇒ 仍是整条。
+    //    ← 若把判据写成「rangeEndS > rangeStartS 就不算整条」(漏了 rangeMode 那一半),这格红。
+    CHECK(analyzeAllRange(0, 3.0, 9.0, 12.5).wholeTimeline);
+
+    // ③ manual 档 + 有效范围:只重算 [3,9) ⇒ **不**前移。
+    //    ← 这格就是本轮裁定的执行者:去掉 `rangeMode != 0` 那个条件、恒置 true,只红这里。
+    CHECK_FALSE(analyzeAllRange(2, 3.0, 9.0, 12.5).wholeTimeline);
+    // ④ daw_loop 档同理(非 0 即「有显式范围」)。
+    CHECK_FALSE(analyzeAllRange(1, 1.0, 4.0, 12.5).wholeTimeline);
+
+    // ⑤ 显式档但范围**无效**(倒挂):推导落回 [0, 已采集末端] 那条分支 ⇒ 算整条。
+    //    钉的是「wholeTimeline 跟着**实际走的分支**,不是跟着档位字面」——两者在这里分叉。
+    const auto bad = analyzeAllRange(2, 9.0, 3.0, 12.5);
+    CHECK(bad.startS == 0.0);
+    CHECK(bad.endS == 12.5);
+    CHECK(bad.wholeTimeline);
+
+    // ⑥ 一帧没采到:范围空、分析会被 §1.6 拒掉;判据仍按分支答(拒了就没人读它)。
+    CHECK(analyzeAllRange(0, 0.0, 0.0, 0.0).wholeTimeline);
+
+    // ⑦ 对象形 scope **一律**为假 —— 它必然指名了轨(tracksMask != 0 的守卫),轨维就不全。
+    //    ← 删掉 analyzeScopeRange 末尾那句 `r.wholeTimeline = false;` 只红这两格:
+    //      它借的是 analyzeAllRange 的返回值,follow 档下会把 true 一路带出去。
+    constexpr unsigned int kOneTrack = 1u << 2;
+    CHECK_FALSE(analyzeScopeRange(kOneTrack, false, 0.0, false, 0.0, 0, 0.0, 0.0, 12.5).wholeTimeline);
+    CHECK_FALSE(analyzeScopeRange(kOneTrack, true, 1.0, true, 5.0, 0, 0.0, 0.0, 12.5).wholeTimeline);
+}
+
 TEST_CASE("analyzeScopeRange:对象形 scope 缺省范围 = \"all\" 同款推导,不是 [0,0]", "[output][analyze][v54]")
 {
     using scvb::output::analyzeAllRange;

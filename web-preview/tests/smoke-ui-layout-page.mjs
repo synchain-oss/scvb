@@ -613,6 +613,13 @@ const ASK_PROBE = IN(`
         askNote: askNote ? askNote.textContent.trim() : null,
         setNote: setNote ? setNote.textContent.trim() : null,
         noteInPanel: !!(panel && askNote && panel.contains(askNote)),
+        // [SL-279 复审第 6 轮] 范围档专用提示:范围档下点主钮不会灭徽标,得把这句摆出来。
+        rangeNote: (() => {
+            const n = gb("reanalyze-ask-rangenote");
+            return n && vis(n) ? n.textContent.trim() : null;
+        })(),
+        // [SL-279 复审第 7 轮] 读屏用户拿到的那一半:describedby 有没有把范围提示带上。
+        describedBy: panel ? panel.getAttribute("aria-describedby") : null,
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1086,19 +1093,180 @@ try {
     await sleep(600);
     const sol = await evaluate(ASK_PROBE);
     if (check(sol, "C8 探针取到锚点")) {
+        // [SL-279] **这一条反转了**。本档的语义是「工程存 rms 且**按 rms 分析过**」——
+        // 从前 UI 拿 mount 快照当基线,加载完就误报「需重新分析」,那时这里断言 badge 亮。
+        // 基线换成 state 的 `analysis.applied.*` 之后,这一档**不该再亮** ——
+        // 它正是 SL-279 要修的那条误报的可达用例:谁把基线改回本地快照,这一条当场红。
         check(
-            sol.badgeShown,
-            "C8 琥珀 badge 亮着(纯派生的常驻状态位,语义不变)",
+            !sol.badgeShown,
+            "C8 琥珀 badge **不亮**(存的档就是上次分析用的档,不是「需重新分析」)",
         );
-        check(
-            !sol.open,
-            "C8 但弹窗**没有**弹 —— 用户什么都没改,不该被模态框打断",
-        );
+        check(!sol.open, "C8 弹窗也没有弹 —— 用户什么都没改,不该被模态框打断");
     }
     // 同一张页上再确认这道闸没有把功能一起关掉:用户真去改档,照样弹。
     check(await setLoudness("peak_dbfs"), "C8 在这张页上改档可点");
     check(await waitFor(askOpen, 4000), "C8 用户真改档 ⇒ 照样弹");
+
+    // C8s [SL-279] **真的**在加载时 stale 的那一档:工程存 rms、上次分析用的是 kw_integrated
+    // (用户改了档没重分析就存盘)。badge **该亮**,而弹窗**仍不该弹**(不是用户此刻改的)。
+    // C8 与 C8s 是一对:少了 C8s,把 stale 判据改成「恒假」也能全绿;少了 C8,
+    // 把基线改回 mount 本地快照也能全绿。两档方向相反,各钉一半。
+    // [复审第 1 轮] **先收 C8 这一档的桶再开新桶** —— `newBucket` 是覆盖式的,
+    // 不收就把 `loudness-nondefault` 那一整页(导航 → 切 Tab4 → 探针 → 改档弹框)攒下的
+    // errors/exceptions 整个丢掉,再没有任何一处断言它们为空。
+    // 这在本卡上格外要紧:上一轮的病灶正是 `store is not defined`,就是靠这类断言照出来的。
     assertClean("stale-on-load");
+    newBucket("stale-on-load-real");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=loudness-stale-on-load`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C8s 「改了档没重分析」的工程装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+    const solReal = await evaluate(ASK_PROBE);
+    if (check(solReal, "C8s 探针取到锚点")) {
+        check(
+            solReal.badgeShown,
+            "C8s 琥珀 badge 亮着(当前档 ≠ 上次分析所用档)",
+        );
+        check(
+            !solReal.open,
+            "C8s 但弹窗**没有**弹 —— stale 为真也不该由派生位驱动模态框",
+        );
+    }
+    assertClean("stale-on-load-real"); // 标签对上桶名(复审第 1 轮:原来两处同名)
+
+    // C8r [SL-279 复审第 6 轮] **范围档下点「重新分析」不是死路。**
+    //
+    // 统筹裁 B(范围档下不前移基线)之后冒出来的形态:范围档下 `analyze("all")` 只重算
+    // `global.range`,契约 §1.21 规定不前移 `applied.*` ⇒ 徽标不灭。而后端回的是 `ok:true`,
+    // 原实现照 `ok` 关框 —— 框关了、徽标还挂着、没有任何别的反馈,逐字就是 `doReanalyzeFromAsk`
+    // 头注为拒绝态写的那句要避免的东西。
+    //
+    // 为什么必须页面级:这条链的三段(回执判据 / 关不关框 / 提示显不显)分别在 JS、DOM
+    // 和 i18n 三处,源码级断言逐条都能绿而链子仍然断。
+    newBucket("range-manual-reanalyze");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=range-manual`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C8r 范围档工程装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+
+    // ① 用户真改一次档 ⇒ 弹框(与 C9 同一条路,这里只借它把框打开)。
+    check(await setLoudness("peak_dbfs"), "C8r 范围档下改档可点");
+    check(await waitFor(askOpen, 4000), "C8r 改档 ⇒ 弹框");
+    const rmOpen = await evaluate(ASK_PROBE);
+    if (check(rmOpen, "C8r 探针取到锚点(点主钮前)")) {
+        // ← 去掉 index.html 那段 rangenote,或去掉 tab-settings 里的开合,这一格红。
+        check(
+            !!rmOpen.rangeNote,
+            "C8r 框一开就带范围提示(范围档下这枚钮达不成用户要的结果)",
+        );
+        // [复审第 7 轮] 读屏那一半:describedby 必须把范围提示带上,否则 AT 用户拿到的
+        // 仍是「框不关、什么也没说」—— 视觉修好了、读屏没修,是这一族的经典漏法。
+        check(
+            (rmOpen.describedBy || "").includes("reanalyze-ask-rangenote"),
+            "C8r aria-describedby 带上了范围提示(读屏念得到)",
+        );
+    }
+
+    // ② 点主钮 ⇒ 后端受理(ok:true),但基线不前移 ⇒ **框仍开、提示仍在、徽标仍亮**。
+    check(await click("reanalyze-ask-primary"), "C8r 主钮可点");
+    await sleep(1200); // mock 的 analyze 流水线 800ms + 一轮 render
+
+    // [复审第 7 轮] **先证「这一轮真的跑过分析」,再谈「跑了却没前移」。**
+    //
+    // 为什么必须有这一格:`doReanalyzeFromAsk` 的拒绝态(`ok:false` / `observer` / call 抛了)
+    // 走的**也是**「不关框 + requestRender」,而 rangeNote 在开框那一下就显出来了、badge 本来
+    // 就亮 —— 下面那三格在「受理了但判据挡住前移」与「压根没跑起来」两种情形下取值完全相同。
+    // 那样「mock 的 analyze 根本没起来」就会冒充「跑了、判据挡住了」,和 host 侧用
+    // `takeAnalysisDone()` 堵掉的是同一个形态(commit `16261a0` 的 message 里写过这条规矩,
+    // web 侧上一轮漏了)。
+    //
+    // 正信号取 `analysis_run.progress`:装载时该字段**根本不存在**(mock-data 的初值是
+    // `{running:false}`),只有跑完一轮流水线才被写成 1;被拒时它一动不动。
+    const rmRun = await evaluate(
+        IN(`const m = w.__SCVB_MOCK__;
+            if (!m || typeof m.requestInitialState !== "function") return null;
+            // IN() 包出来的不是 async 函数,所以返回 promise 让 Runtime.evaluate
+            // 的 awaitPromise 去解(:423),不要在这里写 await。
+            return Promise.resolve(m.requestInitialState()).then((st) => ({
+                progress: (st.analysis_run || {}).progress,
+                running: !!(st.analysis_run || {}).running,
+                applied: ((st.analysis || {}).applied || {}).loudness_mode,
+                current: (st.analysis || {}).loudness_mode,
+            }));`),
+    );
+    if (check(rmRun, "C8r 取到 mock 快照")) {
+        // ← 让 mock 的 analyze 回 {ok:false},这一格红(而下面三格照样绿)。
+        check(
+            rmRun.progress === 1 && !rmRun.running,
+            "C8r 分析**真的跑完了一轮**(受理了,不是被拒)",
+        );
+        // 跑完了却没前移 —— 这才是判据挡住的证据,不是「没跑所以没变」。
+        check(
+            rmRun.applied === "kw_integrated" && rmRun.current === "peak_dbfs",
+            "C8r 跑完仍 stale:applied 停在 kw_integrated、当前是 peak_dbfs",
+        );
+    }
+
+    const rmAfter = await evaluate(ASK_PROBE);
+    if (check(rmAfter, "C8r 探针取到锚点(点主钮后)")) {
+        // ← 把 doReanalyzeFromAsk 里那段 `if (rangeLimited()) { … return; }` 删掉,这一格红。
+        check(
+            rmAfter.open,
+            "C8r 点完主钮**框仍开** —— 受理成功 ≠ 达成了用户点它的目的",
+        );
+        check(rmAfter.rangeNote, "C8r 范围提示仍摆在眼前");
+        check(
+            rmAfter.badgeShown,
+            "C8r 琥珀 badge **仍亮**(范围外的段还是旧口径,这是真话)",
+        );
+    }
+
+    // ③ 对照组:follow 档下同一枚主钮**必须**关框 —— 少了这一格,把「恒不关框」写死也全绿。
+    assertClean("range-manual-reanalyze");
+    newBucket("range-follow-reanalyze");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=loudness-stale-on-load`,
+    });
+    check(
+        await waitFor(
+            IN(`const n = gb("settings-loudnessmode-seg"); return !!n;`),
+        ),
+        "C8r 对照组(follow 档)装载",
+    );
+    await dismissOverlays();
+    await click("tabnav-settings");
+    await sleep(600);
+    check(await setLoudness("peak_dbfs"), "C8r 对照组改档可点");
+    check(await waitFor(askOpen, 4000), "C8r 对照组 ⇒ 弹框");
+    const flOpen = await evaluate(ASK_PROBE);
+    if (check(flOpen, "C8r 对照组探针取到锚点")) {
+        check(
+            !flOpen.rangeNote,
+            "C8r follow 档**不**显示范围提示(它只在范围档下才是真话)",
+        );
+    }
+    check(await click("reanalyze-ask-primary"), "C8r 对照组主钮可点");
+    check(
+        await waitFor(askClosed, 4000),
+        "C8r follow 档下点完主钮**框关掉** —— 这一下真的达成了用户的目的",
+    );
+    assertClean("range-follow-reanalyze");
 
     // C9 [SL-276 二轮复审] askOnNextStale 是**一次性**的:弹过就得清掉。
     // C8 管「从没被置位过」,C9 管「置位过、已经用掉了」—— 后者是 C8 的改法留下的口子:

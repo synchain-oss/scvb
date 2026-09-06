@@ -629,6 +629,16 @@ export const T = {
         "set.centerSlot.title": "多轨争抢中心位时的优先级",
         "set.centerSlot.note":
             "主唱锁与 Lead Select 之外的兜底规则;不影响音量豁免。",
+        // [SL-278] 与 set.reanalyze.scopeNote 同一口径:说清"改了会动什么"再说"要重分析"。
+        // 影响面按 02 §5.6:轨数为单数时这三档决定中心位归谁、槽位数是 n 还是 n+1,
+        // 措辞用「单数」而非「奇数」:写这条时字体子集里没有「奇」的字形,gate 3h 会红。
+        // ⚠ 这**不是**一条长期纪律:那个字不在 `web/fonts/README.md` 的 KNOWN_ABSENT_UPSTREAM
+        // 白名单里(那里是 ⇕ / ✕ 那种上游家族本身就没有的),它只是**当时没有词条用到它**、
+        // 所以没进子集。哪天有词条正当地需要它,跑一次 `scripts/fetch_fonts.py` 重生成子集即可,
+        // 不必绕着写。
+        // 进而改变自动指派解 —— 所以是分析派生式的一项,不是纯显示设置。
+        "set.centerSlot.scopeNote":
+            "切换中心槽策略会改变轨数为单数时中心位的归属与槽位数,自动指派出的声像位置随之变化;改后需重新分析。",
         // 05 §3(463 行)以短名 `in.chHint` 引用同一条,§5.2(658 行)印作本长名;
         // 实施一律用本 key —— applyI18n 对未命中的 key 不报错也不回退,写成 in.chHint 会静默留占位原文。
         "in.chHint.groupEmpty": "该组尚无 Output,通道表为空",
@@ -685,6 +695,10 @@ export const T = {
         "set.reanalyzeAsk.body": "分析口径已更改,建议重新分析",
         "set.reanalyzeAsk.primary": "重新分析",
         "set.reanalyzeAsk.later": "稍后",
+        // [SL-279 复审第 6 轮] 范围档下这枚钮只重算 global.range 内(契约 §1.21),
+        // 基线不前移、徽标不灭。不把这句说出来,用户看到的就是「框关了、灯还亮着」。
+        "set.reanalyzeAsk.rangeNote":
+            "当前是范围档:只会重算你设定的范围,范围外的段仍按旧口径,提示会保留。要整条重算,请先把范围切回跟随播放头。",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "直通中:未对本轨做任何处理",
@@ -1516,6 +1530,8 @@ export const T = {
             "Priority when tracks compete for the center slot",
         "set.centerSlot.note":
             "Fallback rule beyond Lead Lock and Lead Select; it does not affect Vol Exempt.",
+        "set.centerSlot.scopeNote":
+            "Changing the center-slot policy changes who takes the center position when the track count is odd, and whether there are n or n+1 slots. The pan placement produced by auto-assign changes with it. Re-analysis is required afterwards.",
         "in.chHint.groupEmpty":
             "This group has no Output yet — the channel table is empty",
 
@@ -1567,6 +1583,8 @@ export const T = {
             "Analysis settings changed — re-analysis is recommended",
         "set.reanalyzeAsk.primary": "Re-analyze",
         "set.reanalyzeAsk.later": "Later",
+        "set.reanalyzeAsk.rangeNote":
+            "A range is active: only the range you set will be recomputed. Segments outside it keep the previous settings, so this notice stays. To recompute the whole timeline, switch the range back to follow first.",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Passthrough: no processing on this track",
@@ -2348,6 +2366,8 @@ export const T = {
             "Priorité quand plusieurs pistes se disputent le centre",
         "set.centerSlot.note":
             "Règle de repli au-delà du verrou lead et de Lead Select ; sans effet sur l'exemption de volume.",
+        "set.centerSlot.scopeNote":
+            "Changer la politique de position centrale modifie qui occupe le centre lorsque le nombre de pistes est impair, ainsi que le nombre de positions (n ou n+1). Le panoramique produit par l'assignation automatique change en conséquence. Une ré-analyse est ensuite nécessaire.",
         "in.chHint.groupEmpty":
             "Ce groupe n'a pas encore d'Output — la table des canaux est vide",
 
@@ -2400,6 +2420,8 @@ export const T = {
             "Les réglages d'analyse ont changé — une ré-analyse est conseillée",
         "set.reanalyzeAsk.primary": "Ré-analyser",
         "set.reanalyzeAsk.later": "Plus tard",
+        "set.reanalyzeAsk.rangeNote":
+            "Une plage est active : seule la plage définie sera recalculée. Les segments en dehors gardent les réglages précédents, donc cet avis reste affiché. Pour recalculer toute la timeline, repassez d'abord la plage en suivi.",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Direct : aucun traitement sur cette piste",

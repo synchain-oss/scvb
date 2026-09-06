@@ -34,11 +34,17 @@ struct StateLoadResult
 // in-place 升格 abi=n → n+1(chunks.abi 由框架在链末设为 kCurrentAbi,迁移函数不得依赖其入参值)。
 using MigrateFn = bool (*)(StateChunks& chunks);
 
-// kMigrators[i] 将 abi=i+1 升到 abi=i+2。当前 abi=2:abi=1 的 CFGS 无 loudness_mode/center_slot_policy
-// 两个尾字段,但 OutputStateCodec 解码按「长度回退」把缺失尾字段回落默认,故 migrate_1_to_2 为 no-op
-// (不重写 CFGS payload)。未来升 abi 时在此追加 migrate_2_to_3 等,并同步 tests/golden/state/abi{N}.bin。
+// kMigrators[i] 将 abi=i+1 升到 abi=i+2。当前 abi=3,两级都靠 OutputStateCodec 的**长度回退**,
+// 故两个迁移函数都是 no-op(不重写 CFGS payload):
+//   · abi=1 的 CFGS 无 loudness_mode/center_slot_policy 两个尾字段 → 解码回落默认;
+//   · abi=2 的 CFGS 无 applied.{loudness_mode,center_slot_policy} → [SL-279] 解码令 **applied := 当前值**
+//     (不是回落默认 —— 理由写在 OutputStateCodec.h 的兼容段:回落默认会让存了非默认档的旧工程
+//     一打开就误报「需重新分析」)。
+// 再升 abi 时在此追加 migrate_3_to_4 等,并**新增** tests/golden/state/abi{N}.bin ——
+// 旧的 abi{N-1}.bin **保留**作迁移基线,不是替换(abi1/abi2 就是这么并存的)。
 bool migrate_1_to_2(StateChunks& chunks) noexcept;
-inline constexpr std::array<MigrateFn, 1> kMigrators{&migrate_1_to_2};
+bool migrate_2_to_3(StateChunks& chunks) noexcept;
+inline constexpr std::array<MigrateFn, 2> kMigrators{&migrate_1_to_2, &migrate_2_to_3};
 
 // 完整加载:校验 magic/长度 → abi 判读 →(低版本)迁移链 → 逐 TLV 解析(未知 fourcc 保留)。
 StateLoadResult loadState(const std::uint8_t* data, std::size_t size, StateChunks& out);
