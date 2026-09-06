@@ -1007,25 +1007,41 @@ const KNOWN_UNMAPPED = new Set([
     const { stripJsComments } = await import(
         u("scripts/lib/strip-comments.mjs")
     );
-    const shellSrc = readFileSync(
-        new URL("../shell.js", import.meta.url),
-        "utf8",
-    );
+    // 走 `ROOT`(= `process.argv[2]` 或脚本推出来的根),与本文件既有的那处文件读取
+    // 同一个基准(:836 的 `join(ROOT, "src/core/output/SegmentDiff.h")`)。
+    // 用 `new URL("../shell.js", import.meta.url)` 会绑到**脚本自己所在的树**,
+    // 与头注写明的「可传仓库根」用法对不上:传了别的根时,判据读的是这棵树的
+    // shell.js、却拿那棵树的 SCENARIO_MAP 比,两边不是同一份源(复审第 2 轮点出)。
+    const shellSrc = readFileSync(join(ROOT, "web-preview/shell.js"), "utf8");
     // ⚠ 两个 `indexOf` 都要断言命中:第二个失手是**往假绿方向掉**的 ——
     //   `indexOf("};")` 返回 -1 时 `slice(0, -1)` 会一路切到文件末尾,于是
     //   shell.js 后半个文件里所有小写双引号串都被收进白名单,判据近乎恒真且不吭声。
     //   今天靠「`};` 恰好第一次出现在这张表末尾」成立,那是排版巧合,不是判据。
-    const at = shellSrc.indexOf("const SCENARIO_NAMES");
+    // ⚠ **先剥注释再切**,顺序反了会留下另一种「排版巧合」:两个 `indexOf` 若跑在
+    //   原文上,`};` 落进**注释里**(而不是没找到)时 `check(end > 0)` 照样绿、表被
+    //   提前截断,而截断点之后「不在 MAP 里」的名字会从 `unmapped` 一并掉出 ⇒
+    //   反向那条变空 ⇒ **往假绿掉**(复审第 2 轮点出)。剥完再切,注释里的
+    //   `};` 与 `"名字"` 一起消失,两条锚点断言判的才是真结构。
+    const clean = stripJsComments(shellSrc, "js");
+    const at = clean.indexOf("const SCENARIO_NAMES");
     check(at >= 0, "shell.js 里找得到 SCENARIO_NAMES(锚点还在)");
-    const rest = shellSrc.slice(at);
+    const rest = clean.slice(at);
     const end = rest.indexOf("};");
     check(end > 0, "SCENARIO_NAMES 这张表切得出结尾(找不到 };⇒ 判据会恒真)");
-    // 词法级剥注释:手写的行注释正则漏块注释,`/* "foo" */` 照样能冒充登记;
-    // 仓里已有这个工具(串与注释分得清),别再手写一份。
-    const table = stripJsComments(rest.slice(0, end > 0 ? end : 0), "js");
+    const table = rest.slice(0, end > 0 ? end : 0);
     const litOf = (txt) =>
         (txt.match(NAME_LITERAL) || []).map((x) => x.slice(1, -1));
     const listed = new Set(litOf(table)); // = output ∪ input 两列的字面量
+    // ⚠ **并集认列不认角色**:运行时是 `allowedOr(scenario, SCENARIO_NAMES[role])`
+    //   (shell.js:537),**按 role 取列**。所以名字登记错列(MAP 里有、却只在另一列)
+    //   照样印 `unknown`,而本格判不出来 —— 这不是将来时:今天 `connected` 就是这一态
+    //   (MAP 有、只在 input 列,`output.html?scenario=connected` 印 unknown),
+    //   同态的还有 occupied / no-output / passthrough / abi-mismatch / sr-mismatch /
+    //   group-mismatch / input-first-run 共 8 个,全是 input 侧场景登在 input 列、
+    //   而 `SCENARIO_MAP` 不带 role 信息,分不出「该在哪一列」。
+    //   `smoke-output-dist-page.mjs:566-570` 记的两次栽法里,本格接住的是第一次
+    //   (`printing` 形态,由反向 + `KNOWN_UNMAPPED` 接),**第二次(`connected` 形态)
+    //   仍然没有判据**。要覆盖它得让 `SCENARIO_MAP` 带上 role,不在本卡范围内。
     const mapped = new Set(Object.keys(driver.SCENARIO_MAP));
 
     // 正向:MAP 里有、白名单里没有 ⇒ 工具条印 unknown。
@@ -1040,7 +1056,7 @@ const KNOWN_UNMAPPED = new Set([
     );
     check(
         missingInShell.length === 0,
-        `MAP 的场景都登记进了 shell.js 白名单(缺 ${JSON.stringify(missingInShell)})`,
+        `MAP 的场景都登记进了 shell.js 的 output/input 两列**之一**(缺 ${JSON.stringify(missingInShell)});注意「之一」不等于「工具条不会印 unknown」——运行时按 role 取列,见上面那条 ⚠`,
     );
     check(
         extra.length === 0,
