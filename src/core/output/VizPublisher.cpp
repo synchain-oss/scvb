@@ -290,13 +290,16 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
     }
 
     // [SL-362] 全局「最大角度」——**每帧都刷**,与每轨当前值同族(它是「此刻」的参数值)。
-    // 编码与 per-track widthPct 逐字同一条(`vizPackFixed` + kVizWidthMin/Max),两者同源才
-    // 保证读方一套解码走到底;NaN(句柄未就绪)留哨兵,读方回落 100 = 不缩放。
+    // 标度与 per-track widthPct 同一条(`vizPackFixed` 的 ×100),**但夹取域必须用全局那对**
+    // `kVizGlobalWidthMin/Max`(0..150)—— 用 per-track 的 0..100 会把 101..150 静默夹到 100,
+    // 而那正是用户报的档位区间(复审第 1 轮红旗)。**函数同不代表域同**,域就是这个函数的
+    // 头两个参数。NaN(句柄未就绪)留哨兵,读方回落 100 = 不缩放。
     {
         const float gw = in.globalWidthPct;
-        s.globalWidthPct = (gw == gw) // 非 NaN
-                               ? scvb::vizPackFixed(static_cast<double>(gw), scvb::kVizWidthMin, scvb::kVizWidthMax)
-                               : scvb::kVizPanNone;
+        s.globalWidthPct =
+            (gw == gw) // 非 NaN
+                ? scvb::vizPackFixed(static_cast<double>(gw), scvb::kVizGlobalWidthMin, scvb::kVizGlobalWidthMax)
+                : scvb::kVizPanNone;
     }
 
     plane_.publish(s, needLanes);

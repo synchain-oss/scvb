@@ -164,9 +164,9 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     in->panNow[0] = scvb::vizPackPan(-12.5);
     in->volDb[0] = scvb::vizPackFixed(-6.25, scvb::kVizVolDbMin, scvb::kVizVolDbMax);
     in->widthPct[0] = scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
-    // [SL-362] 全局「最大角度」:值域 0..150,取一个 **>100** 的值 —— 100 以内的话
-    // 「回落 100」那条路与真值撞在一起,下面那格就分不出「真的读到了」和「回落了」。
-    in->globalWidthPct = scvb::vizPackFixed(150.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
+    // [SL-362] 全局「最大角度」:值域 **0..150**,取 150 —— 一是 >100 才与「回落 100」分得开,
+    // 二是它落在**只有全局域才够得着**的那一半(per-track 域是 0..100)。
+    in->globalWidthPct = scvb::vizPackFixed(150.0, scvb::kVizGlobalWidthMin, scvb::kVizGlobalWidthMax);
     in->label[0] = "Lead";
     in->label[1] = "主唱"; // 主唱(多字节,验往返不乱码)
 
@@ -197,9 +197,18 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     REQUIRE(out->label[0] == "Lead");
     REQUIRE(out->label[1] == "主唱");
     REQUIRE(out->panNow[2] == scvb::kVizPanNone); // 未填 = 哨兵
-    // [SL-362] 全局「最大角度」往返。← 把编码那一处的 `+1` 去掉(两侧同时去),本格仍绿
-    //   (往返自洽),红的是下面那格 —— 所以两格必须都在。
-    REQUIRE(out->globalWidthPct == scvb::vizPackFixed(150.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
+    // [SL-362] 全局「最大角度」往返。
+    //
+    // ⚠ 期望值**不用被测代码的同一个表达式算**(复审第 1 轮【重要】):初版写成
+    // `vizPackFixed(150.0, kVizWidthMin, kVizWidthMax)`,与被测处逐字同式 ⇒ 它只断言了
+    // 「两侧用同一条编码」,**夹取错了照样绿**;而那个表达式的值恰好就是 fixed(100),
+    // 于是「取 >100 免得与回落 100 撞车」这个理由**当场落空**——往返值就是 100。
+    // 现在两条一起钉:① 解出来的工程量是 150;② packed 是 **15000** 这个裸字面量
+    // (夹到 100 时是 10000,当场红)。判据必须**独立于被测物**,否则测的是自洽不是对。
+    // 定点数是精确的(150 × 100 = 15000),不需要 Approx —— 用精确比较更硬:
+    // Approx 会把「差一点」也放过,而这里任何偏差都意味着标度或夹取出了问题。
+    REQUIRE(scvb::vizUnpackFixed(out->globalWidthPct) == 150.0);
+    REQUIRE(out->globalWidthPct == 15000);
 
     // writeLanes=false:只刷帧头,车道内容原样保留(4Hz 刷 playhead / 车道按需重算的分频口径)。
     in->playheadSamples = 54321;
@@ -418,10 +427,10 @@ TEST_CASE("VizPlane:[SL-362] 槽为 0 = 写方未提供 ⇒ 解码回哨兵,不�
 
     // 反向:写一个真的 0%(全收拢)必须**能**往返出来,不被当成「未提供」。
     // 少了这一条,把编码写成「恒存 0」也能让上面两格全绿。
-    in->globalWidthPct = scvb::vizPackFixed(0.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
+    in->globalWidthPct = scvb::vizPackFixed(0.0, scvb::kVizGlobalWidthMin, scvb::kVizGlobalWidthMax);
     writer.publish(*in, /*writeLanes=*/true);
     REQUIRE(reader.read(*out));
-    REQUIRE(out->globalWidthPct == scvb::vizPackFixed(0.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
+    REQUIRE(out->globalWidthPct == 0); // 真的 0%:packed 就是 0(裸字面量,不经被测编码)
     REQUIRE(out->globalWidthPct != scvb::kVizPanNone);
 }
 

@@ -62,6 +62,15 @@ inline constexpr double kVizVolDbMin = -24.0;
 inline constexpr double kVizVolDbMax = 12.0;
 inline constexpr double kVizWidthMin = 0.0;
 inline constexpr double kVizWidthMax = 100.0;
+// [SL-362] **全局**「最大角度」的夹取域 —— 与上面那对**不是一回事**,别互相搬。
+// per-track `widthPct` 是 0..100;全局 `width` 参数的域是 **0..150**
+// (`OutputParams.cpp` 的 `NormalisableRange<float>(0, 150)`,`docs/PARAMETERS.md` index 0)。
+// 两者**共用 ×100 的定点标度**(`vizPackFixed` 的 lo/hi 只做夹取,不改标度),但**夹取域不同**
+// —— 拿 per-track 那对去编全局值,101..150 会被静默夹到 100,而那正是用户报的档位区间
+// (复审第 1 轮红旗:本卡一度就是这么写的,于是「修了 bug」其实只修了 0..100 那半)。
+// 容量:150 × 100 = 15000,int16 上限 32767;段内再 +1 存 15001,同样安全。
+inline constexpr double kVizGlobalWidthMin = 0.0;
+inline constexpr double kVizGlobalWidthMax = 150.0;
 
 // 轨名:每轨 32 字节 UTF-8(8 个 u32 字),NUL 补齐;超长按 **UTF-8 字符边界**截断
 // —— 绝不切出半个多字节序列(半个汉字到了 web 侧就是一个替换字符)。
