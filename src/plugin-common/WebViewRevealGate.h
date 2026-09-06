@@ -138,6 +138,19 @@ private:
 // 遮挡期间 WebView 子窗口该占的矩形:**尺寸一字不改**(页面不 reflow、Chromium 仍按真实
 // 视口出帧),整块平移到本组件右侧一个窗口宽之外。JUCE 会把它换算成宿主 HWND 客户区坐标喂给
 // ICoreWebView2Controller::put_Bounds,而子窗口恒被 Windows 裁到父窗口客户区内 ⇒ 屏上看不见。
+//
+// ⚠ 上面这句依赖一条**没有任何用例守着**的前提,写在这里免得下一个人排查空转时白走一圈
+// (#241 复审):**JUCE 必须把一次「只改 x、宽高不变」的 setBounds 也转发到 put_Bounds**。
+// 读实现核过,成立:`ComponentMovementWatcher::componentMovedOrResized` 会按
+// **顶层坐标**重算 `wasMoved`(纯位移 ⇒ 位置变了 ⇒ 为真),然后调虚函数;而 WebView2 后端
+// 那份覆写(juce_WebBrowserComponent_windows.cpp)**两个标志都不看**,一律
+// `setControlBounds(peer->getAreaCoveredBy(owner))`。
+// 为什么值得写下来:这一环真断了的话,`parked_` 照样翻、诊断行照样打、C++ 用例照样绿,
+// 而 WebView 从头到尾没挪过 —— 主修法完全空转且**一格都不会红**。
+// 统筹裁定(#241 15:49 ②)**不在本卡补判据**,改由真机项兜:验收按**正向**指标判 ——
+// 「开窗应看见一段约 1 秒的浅紫占位,再切到内容」;**仍见白/黑就说明位移没生效**。
+// 不按「没有黑」判,因为闸门空转时(底色已改浅)那条照样满足。
+// 本机 pluginval 实测的占位时长(revealed 的绝对 after 值)是 895~1220 ms,肉眼足够看清。
 // 宽度为 0(还没 resizeToDesignBox)时退一步用 1,保证平移量恒为正、不会原地不动。
 inline juce::Rectangle<int> parkedBounds(juce::Rectangle<int> visible) noexcept
 {

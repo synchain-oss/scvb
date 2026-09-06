@@ -506,6 +506,14 @@ void WebViewHost::applyRevealGate()
     repaint(); // 挪走的那一刻要让占位底色立刻补上,别等下一次自然重绘
 }
 
+// 放行诊断行。**读表的人要知道的两件事**(#241 复审),都写在这里一处:
+//   · `reason` 有**四**种而不是三种:除三条放行路外,还有 `fallback` —— 遮挡期内看门狗到点
+//     切了兜底面板(RevealGate::onFallbackShown),随后 pageFinishedLoading 才到,于是在面板
+//     已经铺满窗口时打出一行 `webview revealed (fallback)`。它**不是**「放行」,是被面板顶掉;
+//     真机数表时把它单独归一类,别塞进三条放行路里。
+//   · `after N ms` 一律从 **startMs_**(本次加载尝试的起点)算,而 kRevealFallbackMs 的 3s
+//     是从**导航开始**算的 —— 所以 `timeout` 那条打出来会是「3000 + 导航前耗时」而不是 3000。
+//     两个起点不同是有意的:这一行是给人看「从点开窗口算起等了多久」。
 void WebViewHost::noteRevealed()
 {
     // `lastRevealReason()` 为空 = 这一轮从来没挪走过(例如运行时缺失直接切了兜底面板),

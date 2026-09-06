@@ -595,7 +595,14 @@ function checkFirstFrameSignal(role, entry) {
                 `(文档还在解析时发出的信号早于首帧)`,
         );
 
-    if (nested.test(block) && /DOMContentLoaded/.test(block))
+    // PASS 行的条件必须与上面两处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
+    // 断言已经判负,而这行还在写「在场且形态正确」。(#241 复审:收紧 (c) 时漏了 readyState;
+    // A/B 实测 —— 把 output 页收敛成纯 DOMContentLoaded 之后,修前打 3 行「在场」、修后打 2 行。)
+    if (
+        nested.test(block) &&
+        /DOMContentLoaded/.test(block) &&
+        /readyState/.test(block)
+    )
         console.log(`  ${eventId} 在场:DOMContentLoaded 后嵌套两层 rAF 才发`);
 }
 
