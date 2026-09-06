@@ -551,6 +551,43 @@ log("=== ⑤ 源码级:stale / 九条零手抄 / 块内展开 / J45 ===");
             /hasAppliedAnalysisConfig\(st\)/.test(body),
             "[SL-371] 读不到基线时不发写(回落值只许渲染,不许写回去)",
         );
+        // [SL-371 复审第 1 轮] analyze 在途时也不许发这一次写(claude 与 pr-agent 各自
+        // 独立指出)。行为面由页面级 C4e 钉住,这里守接线 —— 那一套会 SKIP。
+        // ← 去掉 `|| local.reanalyzeInFlight`,本格红。
+        check(
+            /local\.reanalyzeInFlight/.test(body),
+            "[SL-371] analyze 在途时撤销早退(钮故意不置灰,所以只能在这儿挡)",
+        );
+    }
+
+    // [SL-375] 范围档下重分析完成后,两枚徽标改念「只更新了部分范围」。
+    // 行为面由页面级 C8r-p 钉住(点主钮前后同一枚徽标念的不是同一句话);这里守
+    // node 断得到的两件:①词条三语齐;②syncStale 真的每帧重填徽标文本(接线)。
+    // ← 把 syncStale 里那句 renderStaleBadges() 删掉,②当场红。
+    {
+        const bare = stripComments(ts);
+        const from = bare.indexOf("function syncStale()");
+        const to = bare.indexOf("function renderGuideRules()");
+        check(
+            from >= 0 && to > from,
+            "[SL-375] 取到 syncStale 的函数体(取不到就说明下面那格在空跑)",
+        );
+        const body = from >= 0 && to > from ? bare.slice(from, to) : "";
+        check(
+            body.includes("renderStaleBadges()"),
+            "[SL-375] syncStale 每帧重填两枚徽标的文案(不重填就停在 index.html 的静态词条上)",
+        );
+        for (const lang of ["zh", "en", "fr"]) {
+            const v = T[lang]["set.reanalyze.partialRange"];
+            check(
+                typeof v === "string" && v.trim() !== "",
+                `[SL-375] 词条 ${lang}.set.reanalyze.partialRange 非空`,
+            );
+            check(
+                v !== T[lang]["set.reanalyze"],
+                `[SL-375] ${lang} 的两条徽标词条不相等(相等的话 C8r-p 那格永远分不出来)`,
+            );
+        }
     }
 
     // 九条 = 读取 guide.rule* 生成物,零手抄

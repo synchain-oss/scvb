@@ -697,6 +697,12 @@ export const T = {
         "set.diag.colGen": "GEN",
         "set.diag.colSeq": "SEQ",
         "set.reanalyze": "改后需重分析",
+        // [SL-375] 用户 2026-09-06 裁定:范围档(§1.8 daw_loop / manual)下点完「重新分析」
+        // 之后,契约 §1.21 规定基线不前移 ⇒ 这枚徽标不灭。此前它继续写着「改后需重分析」,
+        // 而用户**刚刚就重新分析过了** —— 那是一句叫他再做一遍已经做过的事的话。
+        // 改成陈述当前状态:范围内已经按新口径重算了,范围外还是旧的。
+        // 与弹窗里 set.reanalyzeAsk.rangeNote / rangeDone(SL-348)说的是同一件事。
+        "set.reanalyze.partialRange": "只更新了部分范围",
         // [SL-276] 分析口径改动后的弹窗(用户 2026-09-01 裁定):旧的一条小琥珀 badge
         // (set.reanalyze)看不清,改由本框推到眼前;badge 作为常驻状态位保留。
         "set.reanalyzeAsk.body": "分析口径已更改,建议重新分析",
@@ -1608,6 +1614,7 @@ export const T = {
         "set.reanalyzeAsk.revert": "Undo change",
         "set.reanalyzeAsk.revertHint":
             "Undo change puts this setting back to the one the last analysis used; to leave it as it is, press Esc to close this dialog.",
+        "set.reanalyze.partialRange": "Only part of the range updated",
         "set.reanalyzeAsk.rangeNote":
             "A range is active: only the range you set will be recomputed. Segments outside it keep the previous settings, so this notice stays. To recompute the whole timeline, switch the range back to follow first.",
         "set.reanalyzeAsk.rangeDone":
@@ -2449,6 +2456,8 @@ export const T = {
         "set.reanalyzeAsk.revert": "Annuler la modification",
         "set.reanalyzeAsk.revertHint":
             "Annuler la modification rétablit ce réglage à celui utilisé lors de la dernière analyse ; pour le laisser tel quel, appuyez sur Échap pour fermer cette boîte.",
+        "set.reanalyze.partialRange":
+            "Seule une partie de la plage a été mise à jour",
         "set.reanalyzeAsk.rangeNote":
             "Une plage est active : seule la plage définie sera recalculée. Les segments en dehors gardent les réglages précédents, donc cet avis reste affiché. Pour recalculer toute la timeline, repassez d'abord la plage en suivi.",
         "set.reanalyzeAsk.rangeDone":

@@ -664,6 +664,9 @@ const ASK_PROBE = IN(`
             return on ? on.getAttribute("data-value") : null;
         })(),
         badgeShown: vis(badge),
+        // [SL-375] 徽标**念的是哪条词条** —— 范围档下点完主钮之后必须从「改后需重分析」
+        // 换成「只更新了部分范围」。取渲染文本,不取 key 字面(与 C10c2 同一条纪律)。
+        badgeText: badge ? badge.textContent.trim() : null,
         askNote: askNote ? askNote.textContent.trim() : null,
         setNote: setNote ? setNote.textContent.trim() : null,
         noteInPanel: !!(panel && askNote && panel.contains(askNote)),
@@ -1165,7 +1168,11 @@ try {
                 m.analyze = function (scope) {
                     w.__uir7Calls++;
                     return new Promise((res) => {
-                        w.setTimeout(() => res(orig.call(m, scope)), 1500);
+                        // [SL-371 复审第 1 轮] 1500 → 3000:在途窗口里现在要跑完 C4d(合成
+                        // Tab)**和** C4e(探针 + 点撤销 + 再探针),1500ms 余量已经不够,
+                        // 滑过去的话 C4d/C4e 会红在「analyze 早就跑完了」上 —— 与它们要守的
+                        // 东西无关的假红。上限那侧不变(下面等解锁给的是 8000ms)。
+                        w.setTimeout(() => res(orig.call(m, scope)), 3000);
                     });
                 };
                 return true;`),
@@ -1216,6 +1223,43 @@ try {
         ),
         "C4d 在途置灰时从「稍后」正向 Tab 被弹窗吃掉(圈闭没有开口,焦点逃不到遮罩背后)",
     );
+    // C4e [SL-371 复审第 1 轮] **analyze 在途时点「撤销更改」必须打不出那一次写。**
+    //   claude 与 pr-agent 各自独立指出同一条:撤销这枚钮**故意不挂 disabled**
+    //   (为保住「置灰的只可能是主钮」那条推理),所以 analyze("all") 在途的整段时间里
+    //   它照样可点。走到那条路的后果是**状态错**:分析拿改动后的那一档发出去了,撤销的
+    //   写落在它后面 ⇒ 分析跑完 applied.* 前移到那一档、当前值已被撤回基线 ⇒ 徽标反向
+    //   亮起,用户看到「我刚撤销完,却告诉我需要重新分析」。
+    //   夹具就用 C4c 装的那层慢回执垫片(1500ms),此刻主钮正 disabled、analyze 在途。
+    //   判据取**当前档没被改回去**(行为面),不取「函数早退了」(那不可观测)。
+    //   ← 把 revertFromAsk 开头的 `|| local.reanalyzeInFlight` 去掉,本格红。
+    const c4ePre = await evaluate(ASK_PROBE);
+    if (check(c4ePre, "C4e 探针取到锚点(点撤销前)")) {
+        check(
+            c4ePre.loudnessNow === "peak_dbfs",
+            `C4e 前置:当前档是刚改走的 peak_dbfs(实得 ${JSON.stringify(c4ePre.loudnessNow)})`,
+        );
+        // 正证据:analyze 真的还在途(主钮挂着仓内禁用口径),否则本格只是在测一次
+        // 普通的撤销、与「在途」无关。
+        check(
+            await evaluate(
+                IN(`const b = gb("reanalyze-ask-primary");
+                    return !!b && b.getAttribute("data-disabled") === "1";`),
+            ),
+            "C4e 正证据:analyze 确实还在途(主钮仍挂着 data-disabled)",
+        );
+    }
+    check(
+        await click("reanalyze-ask-later"),
+        "C4e 在途期间点「撤销更改」(钮没被置灰,点得到)",
+    );
+    await sleep(400);
+    const c4e = await evaluate(ASK_PROBE);
+    if (check(c4e, "C4e 探针取到锚点(点撤销后)")) {
+        check(
+            c4e.loudnessNow === "peak_dbfs",
+            `C4e 在途期间的撤销**没有打出写**(当前档仍是 peak_dbfs,实得 ${JSON.stringify(c4e.loudnessNow)})`,
+        );
+    }
     check(
         await waitFor(
             IN(`const b = gb("reanalyze-ask-primary");
@@ -1461,6 +1505,34 @@ try {
         check(
             rmAfter.badgeShown,
             "C8r 琥珀 badge **仍亮**(范围外的段还是旧口径,这是真话)",
+        );
+        // C8r-p [SL-375] 用户 2026-09-06 裁定:**徽标不能再写「改后需重分析」**。
+        //   它必然还亮着(§1.21 基线不前移),而用户**刚刚就重新分析过了** —— 那句话是
+        //   叫他把已经做过的事再做一遍。改成陈述状态:「只更新了部分范围」。
+        //   判据是**同一枚徽标在这一次分析前后念的不是同一句话**,不钉词条 key 字面
+        //   (与 C10c2 同一条纪律):点主钮前是通用那句、点完换成部分范围那句。
+        //   两侧都先断非空且不是 key 字面 —— 否则「整段不显」或「词条缺失」会让
+        //   「两句不相等」自动成真(本仓 `!x` 恒真那一族的同形)。
+        //   ← 把 syncStale 里那句 `renderStaleBadges()` 删掉,或把 staleBadgeKey() 改回
+        //     恒返 "set.reanalyze",本格红(而「badge 仍亮」那格照绿 —— 亮不亮和念什么
+        //     是两件事,少了本格没有任何东西看得见文案退回去了)。
+        const before = (rmOpen || {}).badgeText;
+        const after = rmAfter.badgeText;
+        check(
+            typeof before === "string" &&
+                before.length > 0 &&
+                !before.startsWith("set."),
+            `C8r-p 点主钮前徽标念的是通用那句(实得 ${JSON.stringify(before)})`,
+        );
+        check(
+            typeof after === "string" &&
+                after.length > 0 &&
+                !after.startsWith("set."),
+            `C8r-p 点主钮后徽标仍有话可念(实得 ${JSON.stringify(after)})`,
+        );
+        check(
+            before !== after,
+            `C8r-p 范围档下重分析完成 ⇒ 徽标换了一句话(前 ${JSON.stringify(before)} / 后 ${JSON.stringify(after)})`,
         );
     }
 

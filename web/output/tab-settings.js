@@ -254,6 +254,10 @@ export function createTabSettings(opts) {
         reanalyzeAskScopenote: $("reanalyze-ask-scopenote"),
         reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
         reanalyzeAskRangedone: $("reanalyze-ask-rangedone"),
+        // [SL-371] **名字沿旧、钮面已换**:锚点仍是 `reanalyze-ask-later`、本位仍叫
+        // `reanalyzeAskLater`,而这枚钮现在写着「撤销更改」、点下去会**发一次写**
+        // (revertFromAsk)。锚点不改是为了不动 C4d 那几格已经钉住的焦点圈闭断言;
+        // 照名字读逻辑会读反,所以在取元素这一处就说清楚。
         reanalyzeAskLater: $("reanalyze-ask-later"),
         reanalyzeAskPrimary: $("reanalyze-ask-primary"),
         guideBox: $("settings-guideblock-rules"),
@@ -345,6 +349,10 @@ export function createTabSettings(opts) {
         reanalyzeReturnFocus: null,
         // analyze("all") 在途:主钮置灰 + 早退,防连点打出第二发(见 doReanalyzeFromAsk)。
         reanalyzeInFlight: false,
+        // [SL-375] 上一次**范围档**部分重算所用的那份口径快照(`{loudness_mode,
+        // center_slot_policy}`)。为空 = 还没做过、或做过但口径之后又变了。
+        // 只影响两枚徽标念哪条词条,不碰 stale 判定本身(见 syncStale 里 STALE_KEY 那段)。
+        partialRangeFor: null,
         // [SL-371] 「撤销更改」在途:同一回合连点两下只准打出一发 setAnalysisConfig。
         // **只早退,不置灰** —— 上面 Tab 圈闭那段的护栏写着「置灰的只可能是主钮」,
         // 给这一枚也挂 disabled 会把那条推理变成假话(而它正是回卷目标怎么选的依据)。
@@ -865,7 +873,15 @@ export function createTabSettings(opts) {
      * 徽标不在这里就地熄:它是纯派生的,就地写会被下一帧按旧 state 抹回去。
      */
     async function revertFromAsk() {
-        if (local.revertInFlight) return;
+        // [SL-371 复审第 1 轮] **`reanalyzeInFlight` 也要挡**(claude 与 pr-agent 各自独立
+        // 指出,同一条):撤销这枚钮**故意不挂 `disabled`**(见 local.revertInFlight),
+        // 所以 analyze("all") 在途的那一整段时间里它照样可点。走到那条路的后果不是崩,
+        // 是**状态错**:分析是拿改动后的那一档发出去的,撤销的写落在它后面,分析跑完
+        // `applied.*` 前移到那一档、而当前值已被撤回基线 ⇒ 徽标反向亮起,用户看到
+        // 「我刚撤销完,却告诉我需要重新分析」。
+        // 挡在这里而不是给钮挂 disabled:挂了就把「置灰的只可能是主钮」那条推理弄假,
+        // 而焦点圈闭的回卷目标正是照那条推理选的。
+        if (local.revertInFlight || local.reanalyzeInFlight) return;
         const pending = local.askPending;
         if (!pending) {
             closeReanalyzeAsk();
@@ -958,6 +974,12 @@ export function createTabSettings(opts) {
             if (rangeLimited()) {
                 // 受理了,但只重算范围内 ⇒ `applied.*` 不前移、徽标不灭(§1.21)。
                 // 与拒绝态同口径:不关框,让范围提示继续摆在眼前。
+                // [SL-375] 记下**这次部分重算是按哪一份口径跑的**。徽标此后改说
+                // 「只更新了部分范围」而不是「改后需重分析」—— 用户刚刚就重新分析过了,
+                // 再叫他做一遍是句废话(用户 2026-09-06 裁定)。
+                // 记的是**配置快照**而不是一个布尔:口径再改一次,这次部分重算就与新口径
+                // 无关了,快照对不上 ⇒ 自动退回「改后需重分析」,不必再找地方清它。
+                local.partialRangeFor = { ...config() };
                 syncReanalyzeRangeNote();
                 // [复审第 8 轮] **视觉与读屏两侧要对称**:视觉用户按下去看到「框没关」本身
                 // 就是反馈,读屏用户不会被自动告知「什么都没发生」—— 所以这里必须往
@@ -977,6 +999,46 @@ export function createTabSettings(opts) {
                 if (el.reanalyzeAsk && !el.reanalyzeAsk.hidden)
                     btn.focus({ preventScroll: true });
             }
+        }
+    }
+
+    /**
+     * [SL-375] 两枚徽标**念哪条词条**。用户 2026-09-06 裁定:范围档下点完「重新分析」
+     * 之后徽标不该再写「改后需重分析」—— 契约 §1.21 规定那种重算不前移 `applied.*`,
+     * 所以徽标必然还亮着,而用户**刚刚就重新分析过了**,那句话是叫他再做一遍已经做过的事。
+     * 改成陈述状态:「只更新了部分范围」(范围外仍按旧口径)。
+     *
+     * **stale 判定本身一个字节没动** —— 亮不亮还是 `当前值 !== applied`,本函数只换文本。
+     *
+     * 三个合取项,各自的理由:
+     *   · `rangeLimited()` —— 与弹窗里范围提示**共用同一个谓词**(不另起第二个条件,
+     *     那正是本文件立过的纪律)。切回 follow 档之后「重新分析」这条建议重新可执行,
+     *     文案就该退回去叫他做;
+     *   · 快照非空 —— 这一档下**做过**一次部分重算(没做过就还是「改后需重分析」);
+     *   · 快照 == 当前口径 —— 那次部分重算算的就是眼前这一份。口径之后又改了的话
+     *     快照对不上,自动退回,不必再找地方清它。
+     *
+     * 每次 render 都按当前字典重填(与 syncReanalyzeScopeNote 同一条理由:切语言时
+     * `applyI18n` 只认写在 DOM 上的 `data-t`,所以 `data-t` 与 textContent 一起换)。
+     */
+    const STALE_KEY_PLAIN = "set.reanalyze";
+    const STALE_KEY_PARTIAL = "set.reanalyze.partialRange";
+    function staleBadgeKey() {
+        const snap = local.partialRangeFor;
+        if (!rangeLimited() || !snap) return STALE_KEY_PLAIN;
+        const cur = config();
+        return snap.loudness_mode === cur.loudness_mode &&
+            snap.center_slot_policy === cur.center_slot_policy
+            ? STALE_KEY_PARTIAL
+            : STALE_KEY_PLAIN;
+    }
+    function renderStaleBadges() {
+        const key = staleBadgeKey();
+        const t = getT() || {};
+        for (const node of [el.loudnessStale, el.centerStale]) {
+            if (!node) continue;
+            attr(node, "data-t", key);
+            text(node, hasOwn(t, key) ? t[key] : key);
         }
     }
 
@@ -1010,6 +1072,7 @@ export function createTabSettings(opts) {
         show(el.centerStale, centerStale);
         if (el.centerStale)
             attr(el.centerStale, "data-stale", centerStale ? "1" : "0");
+        renderStaleBadges();
 
         // [SL-354] 弹窗判据由「只读响度」改成**两项都算**。用户 v5.6.7 实测:「B3(中央槽
         // 策略)完全没有弹出弹窗,应该和前面一样」。原来只读响度是 SL-276 按当时的用户
@@ -1067,6 +1130,11 @@ export function createTabSettings(opts) {
             //     `pendingStale` 管「要弹的是刚改走的那一项」,两条独立成立,都留。
             local.reanalyzeAskedFor = null;
             local.askPending = null;
+            // [SL-375] 徽标已经灭了,那份部分重算快照也没有消费者了。清它是卫生,
+            // **不是判据**:`staleBadgeKey()` 的「快照 == 当前口径」那一项本来就兜得住
+            // (走到这里当前 == 基线,而快照记的是改动后的那一份)。别把这一行
+            // 当成 SL-375 的牙齿 —— 删掉它本套一格都不红(实测)。
+            local.partialRangeFor = null;
             closeReanalyzeAsk();
             return;
         }

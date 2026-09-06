@@ -1379,11 +1379,16 @@ function renderHeader() {
  * ②持续性条件(①-⑥)不可手动关闭,`active:false` 才撤下(所以显隐一律从 store.errors 算)。
  *
  * [SL-373] ⑧⑨⑩ 三条**建议类**横幅带一枚 ✕(见 showDismissible)。这不与上面第 ② 条
- * 冲突,判据是**契约那句话点的是哪几条**:§5.1 写的是「持续性条件(横幅①-⑥)」,
- * 而 ①-⑥ 正好是那张九码表里有 UI 落点的那几个(路由失准 / secondOutput / srMismatch /
- * newerState / sidecarMissing / noTimeline)。⑦⑧⑨⑩ 不在那张表里:⑦ 读 §2.1
- * `print_guard`、⑧ 读 §2.8 `segments.channels[].stale`、⑨⑩ 读 §2.1 的两个布尔位 ——
- * 四条都不是 `scvb.error` 的 code,`active:false` 这条撤下机制对它们根本不适用。
+ * 冲突,判据是**契约那句话点的是哪几条**:§5.1 写的是「持续性条件(横幅①-⑥)」——
+ * 那是**本页的横幅编号**,不是九码表的行号。①-⑥ 里 ②-⑥ 各对应九码表一行
+ * (secondOutput / srMismatch / newerState / sidecarMissing / noTimeline),
+ * 而 ① 路由失准**不是 code**,它由 `scvb.conn` 的 misalignCount 派生(见 ① 自己那段注)——
+ * 契约那句话按本页编号把它一并收进「持续性条件」,所以它同样不给 ✕。
+ * [复审第 1 轮] 上一版把这一段写成「①-⑥ 正好是九码表里有 UI 落点的那几个」,那是**错的**:
+ * ① 不在表里。结论(①-⑥ 一条都不加 ✕)没变,但归因错了会误导后人判断「哪条能加 ✕」。
+ * ⑦⑧⑨⑩ 则连本页那句话的编号范围都不在:⑦ 读 §2.1 `print_guard`、⑧ 读 §2.8
+ * `segments.channels[].stale`、⑨⑩ 读 §2.1 的两个布尔位 —— 四条都不是 `scvb.error` 的
+ * code,`active:false` 这条撤下机制对它们根本不适用。
  * ⑦ 同样不给 ✕:它自带一枚「继续写入自动化」的动作钮(§1.34),关掉横幅等于把一个
  * **待办**藏起来;⑧⑨⑩ 是纯提示,关掉只少一句话。
  */
@@ -1571,6 +1576,11 @@ const bannerSignature = new Map();
  *     ⑨⑩ 的签名恒空,不删的话它们一旦被关掉就永远不再出现;
  *   · 条件成立且签名与关掉那一刻**逐字相同** ⇒ 不显(用户已经把这句话打发过了);
  *   · 其余(含「签名变了」)⇒ 照常显。
+ *
+ * ⚠ [复审第 1 轮] **本函数横跨两个 store**:`on`/`sig` 由调用方从 `viewStore()` 算出来
+ * (导览期那是 demo store),而「关过没有」读的是**真** `store.session`。今天走不到:
+ * `tour.js` 的 demo 世界里没有 stale 轨、没开采集、也没布防,⑧⑨⑩ 三条一条都不成立。
+ * 将来给导览加这类夹具的话,先在这里决定:导览里的关闭要不要写进真会话(多半不要)。
  */
 function showDismissible(gb, on, sig) {
     const node = $(gb);

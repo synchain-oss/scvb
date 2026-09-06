@@ -765,6 +765,28 @@ try {
     {
         const p0 = await open("stale");
         check(p0 !== null, "取到页内 DOM 快照");
+        // 首启遮挡(引导页 / tour 询问框)必须先点掉:本档有一格用 `elementFromPoint`
+        // 问「这一点命中的是谁」,而 `.sc-scrim` 盖在整页之上 —— 不点掉的话命中的永远是
+        // 遮罩,那一格恒红且红得与它要守的东西无关(实测第一版就是 `tour-ask`)。
+        // 前面几档只读 hidden 属性,遮罩不碍事,所以 open() 里没有这一步。
+        await evaluate(
+            IN(`for (const n of ["guide-overlay-start", "tour-ask-later"]) {
+                    const b = gb(n);
+                    if (b && !b.disabled) b.click();
+                }
+                return true;`),
+        );
+        await sleep(300);
+        check(
+            await evaluate(
+                IN(`for (const n of ["guide-overlay", "tour-ask"]) {
+                        const o = gb(n);
+                        if (o && !o.hidden) return false;
+                    }
+                    return true;`),
+            ),
+            "⑦ 前置:首启遮挡都收掉了(elementFromPoint 那一格才问得到真正的命中者)",
+        );
         check(p0.banner, "⑦ 前置:横幅 ⑧ 可见(有东西可关)");
         check(p0.tabDot, "⑦ 前置:tab 导航琥珀点亮着");
         check(
@@ -772,14 +794,28 @@ try {
             `⑦ 前置:泳道 ⚠ 在 ${STALE_CHANNELS.join("/")} 三条上(实得 ${p0.lanesShown.join("/")})`,
         );
 
+        // [复审第 1 轮] 几何那半原来读 `getBoundingClientRect()` —— 取的是 button 的
+        // **border box**(≈18×16),绝对定位的 `::after` **不计入**,而注释却声称
+        // 「量的是钮面 + 两侧扩展」「钉住横轴那一半」:把 `::after` 的 left/right 改成 0、
+        // RE-06 的横轴 48px 当场破,那一格照绿。改成拿 `elementFromPoint` 在**钮面左侧
+        // 15px**(落在 `::after` 的 −17px 扩展里、还没到钮面)问一句「这一点命中的是谁」——
+        // 命中扩展没了就返回横幅正文的 span,当场红。
+        // 坐标取 iframe 内文档坐标(`elementFromPoint` 就是这个坐标系),y 取钮面竖中线。
         const DISMISS = IN(`
             const b = gb("banner-staleCapture-dismiss");
             if (!b) return null;
             const r = b.getBoundingClientRect();
+            const probeX = r.left - 15;
+            const probeY = r.top + r.height / 2;
+            const hit = d.elementFromPoint(probeX, probeY);
             return {
                 name: b.getAttribute("aria-label") || "",
                 w: Math.round(r.width),
                 h: Math.round(r.height),
+                probeX: Math.round(probeX),
+                probeY: Math.round(probeY),
+                hitIsDismiss: hit === b,
+                hitGb: hit ? hit.getAttribute("data-gb") || hit.tagName : null,
             };
         `);
         const bannerShown = IN(
@@ -851,12 +887,18 @@ try {
                 dz.name.length > 0 && !dz.name.startsWith("banner."),
                 `⑦a ✕ 的无障碍名取自字典(实得 ${JSON.stringify(dz.name)})`,
             );
-            // 几何:横轴按 RE-06 补到 48 CSS px(= 0.5 档 24 物理 px),纵轴受横幅自身
-            // 高度所限只有 36 —— 这是 base.css 里写明的**明知欠达标**,本格钉住横轴那一半
-            // 别被顺手改小。命中区在 ::after 上,量的是钮面 + 两侧扩展。
             check(
                 dz.w > 0 && dz.h > 0,
-                `⑦a ✕ 真的上屏了(${dz.w}×${dz.h} CSS px)`,
+                `⑦a ✕ 真的上屏了(钮面 ${dz.w}×${dz.h} CSS px —— 这是 border box,不含命中扩展)`,
+            );
+            // 横轴命中扩展**真的生效**:钮面左 15px 那一点仍命中这枚钮。
+            // 横轴合计 = 17(左扩)+ 18(钮面)+ 13(右扩)= 48 CSS px = 0.5 档 24 物理 px;
+            // 纵轴只有 36(18 物理 px),是 base.css 里写明的**明知欠达标**(纵向再扩会盖住
+            // 相邻横幅的同名钮),本格只钉横轴那一半。
+            // ← 把 base.css 里 `.sc-banner__dismiss::after` 的 left/right 改成 0,本格红。
+            check(
+                dz.hitIsDismiss,
+                `⑦a 钮面左 15px 仍命中这枚 ✕(命中扩展生效;实得命中 ${JSON.stringify(dz.hitGb)} @ ${dz.probeX},${dz.probeY})`,
             );
         }
         const names = { zh: dz ? dz.name : "" };
