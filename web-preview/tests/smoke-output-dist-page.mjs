@@ -44,6 +44,7 @@ import {
     statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { inflateSync } from "node:zlib";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FALLBACK_TRACK_COLORS } from "../../web/shared/track-colors.js";
@@ -84,6 +85,102 @@ function check(cond, msg) {
     console.log(`  [FAIL] ${msg}`);
     return false;
 }
+// ---------------------------------------------------------------- PNG 解码
+// [SL-372] 本文件此前所有断言读的都是**计算样式与矩形**;⑬ 要数的是「柱顶上方那一行
+// 到底有没有浅色像素」—— 那是渲染面的问题,计算样式答不了(box-shadow 的几何合法、
+// 颜色也合法,病灶恰恰是它落在了柱顶之上)。所以这里落一个**最小 PNG 解码器**:
+// `Page.captureScreenshot` 回来的是 base64 PNG,zlib 是 node 内置,不引任何依赖
+// (仓库红线:不引 puppeteer / pngjs 之类)。
+// 只认 **8bit + 非隔行 + 真彩(color type 2/6)** —— headless Chrome 的截图恒是这一种;
+// 遇到别的形态**抛错而不猜**:猜错会把一张解错的图当成「像素干净」,那正好是本卡在治的
+// 那类假绿。IHDR/IDAT 之外的块(pHYs/sRGB/…)整块跳过。
+function decodePng(buf) {
+    const SIG = [137, 80, 78, 71, 13, 10, 26, 10];
+    for (let i = 0; i < SIG.length; i++) {
+        if (buf[i] !== SIG[i]) throw new Error("不是 PNG(签名对不上)");
+    }
+    let pos = 8;
+    let ihdr = null;
+    const idat = [];
+    while (pos + 8 <= buf.length) {
+        const len = buf.readUInt32BE(pos);
+        const type = buf.toString("ascii", pos + 4, pos + 8);
+        const data = buf.subarray(pos + 8, pos + 8 + len);
+        if (type === "IHDR") {
+            ihdr = {
+                w: data.readUInt32BE(0),
+                h: data.readUInt32BE(4),
+                depth: data[8],
+                color: data[9],
+                interlace: data[12],
+            };
+        } else if (type === "IDAT") {
+            idat.push(data);
+        } else if (type === "IEND") {
+            break;
+        }
+        pos += 12 + len;
+    }
+    if (!ihdr) throw new Error("PNG 里没有 IHDR");
+    if (ihdr.depth !== 8 || ihdr.interlace !== 0) {
+        throw new Error(
+            `本解码器只认 8bit 非隔行 PNG(实得 depth=${ihdr.depth} interlace=${ihdr.interlace})`,
+        );
+    }
+    if (ihdr.color !== 2 && ihdr.color !== 6) {
+        throw new Error(`本解码器只认真彩 PNG(实得 color type=${ihdr.color})`);
+    }
+    const ch = ihdr.color === 6 ? 4 : 3;
+    const raw = inflateSync(Buffer.concat(idat));
+    const stride = ihdr.w * ch;
+    const out = Buffer.alloc(ihdr.h * stride);
+    let p = 0;
+    for (let y = 0; y < ihdr.h; y++) {
+        const f = raw[p];
+        p += 1;
+        const line = raw.subarray(p, p + stride);
+        p += stride;
+        const cur = out.subarray(y * stride, (y + 1) * stride);
+        const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null;
+        for (let x = 0; x < stride; x++) {
+            const a = x >= ch ? cur[x - ch] : 0;
+            const b = prev ? prev[x] : 0;
+            const c = prev && x >= ch ? prev[x - ch] : 0;
+            let v = line[x];
+            if (f === 1) v += a;
+            else if (f === 2) v += b;
+            else if (f === 3) v += (a + b) >> 1;
+            else if (f === 4) {
+                const pa = Math.abs(b - c);
+                const pb = Math.abs(a - c);
+                const pc = Math.abs(a + b - 2 * c);
+                v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+            } else if (f !== 0) {
+                throw new Error(`未知的 PNG 行滤波器 ${f}(第 ${y} 行)`);
+            }
+            cur[x] = v & 255;
+        }
+    }
+    return {
+        w: ihdr.w,
+        h: ihdr.h,
+        px(x, y) {
+            const i = (y * ihdr.w + x) * ch;
+            return [out[i], out[i + 1], out[i + 2]];
+        },
+    };
+}
+// 亮度:只用来比「谁更浅」,不做色彩管理,取 Rec.601 权重即可。
+const luma = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+// 逐分量最大差:判「这一格与图底是不是同一个颜色」——比亮度更严
+// (亮度相等而色相不同的像素也要判成「不一样」)。
+const dmax = (c1, c2) =>
+    Math.max(
+        Math.abs(c1[0] - c2[0]),
+        Math.abs(c1[1] - c2[1]),
+        Math.abs(c1[2] - c2[2]),
+    );
+
 function eq(got, want, msg) {
     const a = JSON.stringify(got);
     const b = JSON.stringify(want);
@@ -1965,6 +2062,12 @@ try {
     //   · D7 两页    lead 帽 `top` 退回 `-3px`(帽悬空)        ⇒ 只有 (c)
     //   · D8 tokens.css 把 `--dist-bar-halo` 改成有色差的红      ⇒ 只有 (d)
     //   · D10 两页    lead 帽高改 `1px`(帽又悬空)          ⇒ 只有 (c)
+    //   [SL-372] 晕的形态变了(见下),D1/D5/D6 三条的**注入文本**随之改口径:
+    //   · D1 = 删掉整条 `box-shadow`(三段一起)              ⇒ (d) + (e5)
+    //   · D5 = 把左右两段改成 `0 0 3px 1px`(模糊外扩)       ⇒ 只有 (d)
+    //   · D6 = 把三段整体退回旧的 `0 0 0 1px`                ⇒ (d) + ⑬(a)
+    //     ——(d) 的那一格是新加的「外扩段上沿不得越过柱顶」,⑬(a) 是同一件事的像素面;
+    //     两格**故意重叠**:一格钉规则、一格钉屏幕,规则那格改得动、屏幕那格改不动。
     //   (统筹裁定 2026-09-06,#235 第 1 轮 PR 评论)复审建议的「晕色亮度护栏 + D9」**不做**。
     //     备忘：单断 `r=g=b` 只钉住「无色差」，`rgb(96,96,96)` 这类中灰同样全绿，
     //     却会给**每一根**独立的柱描一圈可见深色圈；当前值是白 55%，离那一带很远。
@@ -2050,6 +2153,32 @@ try {
                 if (i < 0 || j < 0) return "?";
                 return seg.slice(i + 1, j).split(",").slice(0, 3).map((x) => x.trim()).join(",");
             });
+    // [SL-372] 把 box-shadow 的计算值拆成段。**不用正则**(理由同上面的 rgbOf:
+    // 反斜杠经工具链会被折掉一层,静默失效)。序列化形态恒是
+    //   rgba(r, g, b, a) <dx> <dy> <blur> <spread>[ inset][, 下一段…]
+    // 按 "rgb" 切开之后每段的几何量就是纯数字串,逗号换空格再按空格切即可。
+    // ⚠ 本段落在页内探针的模板串里,**不能出现反引号**(会当场截断整个模板)。
+    const segsOf = (s) =>
+        String(s == null ? "" : s)
+            .split("rgb")
+            .slice(1)
+            .map((seg) => {
+                const i = seg.indexOf("(");
+                const j = seg.indexOf(")");
+                if (i < 0 || j < 0) return null;
+                const rgb = seg.slice(i + 1, j).split(",").slice(0, 3).map((x) => x.trim()).join(",");
+                const parts = seg.slice(j + 1).split(",").join(" ").split(" ").filter((x) => x.length > 0);
+                const nums = parts.filter((x) => x !== "inset").map((x) => parseFloat(x));
+                return {
+                    rgb,
+                    inset: parts.indexOf("inset") >= 0,
+                    dx: nums.length > 0 ? nums[0] : NaN,
+                    dy: nums.length > 1 ? nums[1] : NaN,
+                    blur: nums.length > 2 ? nums[2] : 0,
+                    spread: nums.length > 3 ? nums[3] : 0,
+                };
+            })
+            .filter((g) => g !== null);
     const zeroEl = host.querySelector(".dist-plot__zero");
     const out = {
         zeroH: DC.zeroDbLinePct(),
@@ -2072,7 +2201,7 @@ try {
             bgRgb: rgbOf(cs.backgroundImage),
             shadow: cs.boxShadow,
             shadowRgb: rgbOf(cs.boxShadow),
-            shadowGeom: String(cs.boxShadow).split(")").slice(-1)[0].trim(),
+            shadowSegs: segsOf(cs.boxShadow),
             radius: cs.borderRadius,
             before: bf.content,
             after: af.content,
@@ -2166,9 +2295,12 @@ try {
                     );
                     // 断的是**不变量**「帽底边贴住柱顶」= `top + height === 0`,
                     // 不是两个字面量:只钉 `top` 的话,`top:-2px; height:1px` 照绿,
-                    // 而那 1px 空档正是外扩 1px 分隔晕占的位置 —— 浅色带回来、
-                    // lead 轨柱顶恒常读成三段,正是本卡这一轮刚修掉的那一幕
-                    // (复审第 2 轮【重要】)。
+                    // 而那 1px 空档会**露出背后的东西** —— 两柱重合时露后一根的轨色、
+                    // 没有重合时露图底,lead 轨柱顶恒常读成三段(SL-353 复审第 2 轮
+                    // 【重要】治的那一幕)。
+                    // ⚠ [SL-372] 这句的**理由换过一次**:SL-353 时那 1px 空档里填的是
+                    // 外扩晕的上侧那一格,而 SL-372 已把上侧那格改成 inset、柱顶之上不再
+                    // 有晕 —— 结论(帽必须贴住柱顶)没变,别照旧理由复述。
                     // 先断两个量都**取得到**:取不到时 `parseFloat` 得 NaN、
                     // 比较恒 false,那会把下面那一格变成一个**永远红**的格——
                     // 与「永远绿」是同一族的另一半,报错也指不到真因。
@@ -2181,8 +2313,8 @@ try {
                         parseFloat(b.afterTop) + parseFloat(b.afterH) === 0,
                         `(c) ★ ${name} 轨 ${b.ch}(lead):帽底边贴住柱顶` +
                             `(top + height === 0,实得 ${b.afterTop} + ${b.afterH})—— ` +
-                            `悬空的帽会让那一格空档被分隔晕填成浅色带,` +
-                            `lead 轨柱顶恒常读成三段`,
+                            `悬空的帽会让那一格空档露出背后的东西(两柱重合时是后一根的` +
+                            `轨色,没有重合时是图底),lead 轨柱顶恒常读成三段`,
                     );
                 } else {
                     eq(
@@ -2191,23 +2323,73 @@ try {
                         `(c) ★ ${name} 轨 ${b.ch}(非 lead):没有柱顶帽`,
                     );
                 }
-                // ---- (d) 重叠分隔晕在,且**无色差**
+                // ---- (d) 重叠分隔晕在、无色差,且[SL-372]**外扩的那几段一律不越过柱顶**
                 check(
                     b.shadow !== "none" && b.shadow !== "",
-                    `(d) ★ ${name} 轨 ${b.ch}:柱描了 1px 分隔晕(实得「${b.shadow}」)`,
+                    `(d) ★ ${name} 轨 ${b.ch}:柱描了分隔晕(实得「${b.shadow}」)`,
+                );
+                // ⚠ 先断「段数不为零」再断「每一段如何」:`every` 在**空数组**上恒真,
+                // 少了这一格,晕整条被删掉时下面三格会一起空绿(本文件立过这条纪律)。
+                const segs = Array.isArray(b.shadowSegs) ? b.shadowSegs : [];
+                const outs = segs.filter((g) => !g.inset);
+                const ins = segs.filter((g) => g.inset);
+                check(
+                    segs.length > 0,
+                    `(d) ★ ${name} 轨 ${b.ch}:分隔晕拆得出至少一段(实得 ${JSON.stringify(segs)})`,
                 );
                 check(
-                    b.shadowRgb.length === 1 &&
-                        new Set(b.shadowRgb[0].split(",")).size === 1,
-                    `(d) ★ ${name} 轨 ${b.ch}:晕色无色差(r=g=b)—— 有色差的描边会把` +
-                        `「柱顶有一段别的颜色」从偶发变成恒常(实得 ${JSON.stringify(b.shadowRgb)})`,
+                    segs.length > 0 &&
+                        segs.every((g) => new Set(g.rgb.split(",")).size === 1),
+                    `(d) ★ ${name} 轨 ${b.ch}:每一段的晕色都无色差(r=g=b)—— 有色差的描边会把` +
+                        `「柱顶有一段别的颜色」从偶发变成恒常(实得 ${JSON.stringify(segs.map((g) => g.rgb))})`,
                 );
-                eq(
-                    b.shadowGeom,
-                    "0px 0px 0px 1px",
-                    `(d) ★ ${name} 轨 ${b.ch}:晕是零偏移零模糊、且**外扩**的 1px 实边` +
-                        `(实得「${b.shadowGeom}」)—— 模糊的光晕与 inset 的内描边都分不开两根重合的柱`,
+                check(
+                    segs.length > 0 &&
+                        segs.every((g) => g.blur === 0 && g.spread === 0),
+                    `(d) ★ ${name} 轨 ${b.ch}:每一段都是零模糊零外扩的 1px 实边` +
+                        `(实得 ${JSON.stringify(segs)})—— 模糊的光晕分不开两根重合的柱`,
                 );
+                // ★ [SL-372] 本卡的不变量:**外扩段的上沿不得越过柱顶**。
+                //   `dy - blur - spread >= 0` 是「阴影矩形的上边缘不高于柱顶」的逐字写法;
+                //   旧的 `0 0 0 1px` 在这里得 `0 - 0 - 1 = -1` ⇒ 红。
+                //   左右两段本身就是这条不变量的合法解(dy=0、blur=spread=0)。
+                check(
+                    outs.length === 2,
+                    `(d) ★ ${name} 轨 ${b.ch}:外扩晕恰好两段(左右各一,实得 ${outs.length} 段:` +
+                        `${JSON.stringify(outs)})`,
+                );
+                check(
+                    outs.length === 2 &&
+                        outs.every((g) => g.dy - g.blur - g.spread >= 0),
+                    `(d) ★ ${name} 轨 ${b.ch}:没有任何外扩段的上沿越过柱顶` +
+                        `(每段 dy - blur - spread >= 0,实得 ${JSON.stringify(outs)})—— ` +
+                        `越过柱顶的那 1px 在「背后没有别的柱」时就是画在图底上的白线`,
+                );
+                check(
+                    outs.length === 2 &&
+                        outs
+                            .map((g) => g.dx)
+                            .sort((x, y) => x - y)
+                            .join(",") === "-1,1",
+                    `(d) ${name} 轨 ${b.ch}:外扩的两段是左右各外扩 1px` +
+                        `(实得 ${JSON.stringify(outs.map((g) => g.dx))})`,
+                );
+                // ★ [SL-372] 柱内那条顶边线:非 lead 柱有且只有一条,lead 柱一条都没有
+                //   (lead 柱顶压着 2px 绿帽,再叠一条就读成三段 —— SL-353 治过的那一幕)。
+                if (b.lead === "1") {
+                    eq(
+                        ins.length,
+                        0,
+                        `(d) ★ ${name} 轨 ${b.ch}(lead):柱内没有浅色顶边线` +
+                            `(实得 ${JSON.stringify(ins)})`,
+                    );
+                } else {
+                    check(
+                        ins.length === 1 && ins[0].dx === 0 && ins[0].dy === 1,
+                        `(d) ★ ${name} 轨 ${b.ch}(非 lead):柱内顶边有且只有一条 1px 浅色线` +
+                            `(inset 0 1px 0,实得 ${JSON.stringify(ins)})—— 两根重合时靠它分隔`,
+                    );
+                }
             }
 
             // ---- 0 dB 基准线在沙箱里确实显示(下面 (e3) 量的是它的矩形)
@@ -2328,6 +2510,378 @@ try {
                         `Output ${JSON.stringify(A.spans[i])} / Monitor ${JSON.stringify(B.spans[i])}`,
                 );
             }
+        }
+    }
+
+    // =========================================================================
+    // ⑬ [SL-372] **柱顶上方那一行像素**(两页各一遍;像素面,不是计算样式面)
+    // -------------------------------------------------------------------------
+    // 用户 v5.6.8 真机原话:「好像有的时候白线会出现在柱子的上方,一般情况下没有,
+    // 可能在上限很接近的时候会出现」。定谳(截图逐像素算出来的,记在 PR 描述里):
+    // 那条线 = [SL-353] 那圈**外扩** 1px 分隔晕的**上侧那一格**。它落在柱顶之上,
+    // 背后有另一根柱时它是分隔线(SL-353 要的),背后没柱时它就是画在图底上的一条
+    // 1px 浅色短线 —— 每一根柱头上都有一条。修法见两页 index.html 的 `.dist-bar`:
+    // 上侧那格改成 inset(落进柱内的第一行),左右两格照旧外扩。
+    //
+    // ★ 为什么这一节要解 PNG:⑫(d) 断的是**规则**(阴影的段与几何),而「屏幕上那一行
+    //   到底有没有浅色像素」是**渲染结果**。两者可以同时为真也可以背离 —— 比如 lead 帽、
+    //   0 dB 线、将来某个 ::before 都能在柱顶之上留下浅色,而它们一个都不在 (d) 的判定面里。
+    //   本节故意与 (d) **重叠**:(d) 改得动(改一行 CSS 就能让它绿),本节改不动。
+    //
+    // ★ 沙箱:一块**不透明黑底**的浮层 + 600x200 的 `.dist-plot`。不透明是必需的 ——
+    //   `.dist-plot` 的底色是半透明白(--w-10),压在真实页面上时图底逐像素随背后内容变,
+    //   「与图底一致」这件事就无从断起。黑底之下图底恒为同一个值。
+    //   本节**不打** `has-zero-line`:0 dB 基准线是一条通栏浅色横线,它会横穿被测行,
+    //   把「柱顶上方那一行干不干净」和「那一行上有没有基准线」混成一件事(基准线归 ⑪/⑫)。
+    //
+    // ★ 用 +12 dB(= `BAR_H_MAX_PCT` 88%)当「贴上沿」的那一根,不是卡面字面写的
+    //   「柱高 100%」:柱高的**上限就是 88%**(distribution-chart.js 的 BAR_H_MAX_PCT),
+    //   100% 在产品里到不了;而真把 `--h` 写成 100% 时柱顶会被 `.dist-plot { overflow: hidden }`
+    //   剪掉、图内根本不存在「柱顶上方那一行」,那一格测的是空气。下面 (前提2) 显式断
+    //   「这根柱的柱顶离图内上沿还有 >= 2px」,免得哪天版式一改就悄悄退化成测空气。
+    //
+    // ★ 删除式(本机实测,实得清单在 PR 描述里):
+    //   · DA 两页 `.dist-bar` 的 box-shadow 整体退回 `0 0 0 1px var(--dist-bar-halo)`
+    //        并删掉 `.dist-bar[data-lead="1"]` 那条覆盖  ⇒ (a1)(a2) 红 + ⑫(d) 红,(b)(c) 绿
+    //     ⚠ 这一格是**改过一版**才有牙的:第一版不对齐柱高、(b) 又钉死了分隔线的侧别,
+    //       DA 实测只红了 (a1)(b) —— (a2)(满格那根,top=29.766)照绿,因为浏览器把那条
+    //       外扩晕吸附到了 floor(top) 那一行、被测的 floor(top)-1 仍是干净图底;
+    //       而 (b) 红是假红(分隔线还在,只是在分界上侧)。两处都已改掉,别退回去。
+    //   · DB 两页只删 `inset 0 1px 0 var(--dist-bar-halo)` 那一段(左右两段留着)
+    //        ⇒ (b) 红 ×2 + ⑫(d)「非 lead 柱柱内有且只有一条 inset」红 ×10,(a)(c) 绿
+    //   · DC 两页删掉 `.dist-bar[data-lead="1"]` 那条覆盖(lead 柱也吃到 inset)
+    //        ⇒ (c) 红 ×2 + ⑫(d)「lead 柱没有 inset」红 ×2,(a)(b) 绿
+    //   DB / DC 都是「规则那格 + 像素那格」一起红:两格本就是同一件事的两面
+    //   (见上面「本节故意与 (d) 重叠」),不是漏网。
+    // =========================================================================
+    {
+        const PX_ROWS = [
+            {
+                ch: 3,
+                pan: -60,
+                volDb: 3,
+                widthPct: 0,
+                stereo: false,
+                lead: false,
+            },
+            {
+                ch: 5,
+                pan: -30,
+                volDb: 12,
+                widthPct: 0,
+                stereo: false,
+                lead: false,
+            },
+            {
+                ch: 7,
+                pan: 0,
+                volDb: 6,
+                widthPct: 0,
+                stereo: false,
+                lead: false,
+            },
+            {
+                ch: 9,
+                pan: 0,
+                volDb: -2,
+                widthPct: 0,
+                stereo: false,
+                lead: false,
+            },
+            {
+                ch: 12,
+                pan: 60,
+                volDb: 3,
+                widthPct: 0,
+                stereo: false,
+                lead: true,
+            },
+        ];
+        const WRAP_W = 640;
+        const WRAP_H = 240;
+        const PAD = 20;
+        // 图底取样列:20(浮层内边距)+ 40。四根柱分别落在 x≈140 / 230 / 320 / 500,
+        // 离它最近的一根也有 80px,取不到任何柱或它的外扩晕。
+        const GROUND_X = PAD + 40;
+        // 页内探针用**字符串拼接**而不是模板串:本文件的模板串里已经有一层 ${},
+        // 再嵌一层容易把页内的 ${} 当成 node 侧的插值(静默取到 undefined)。
+        const PX_PROBE =
+            "(async () => {" +
+            '  const DC = await import("/web/shared/distribution-chart.js");' +
+            "  window.scrollTo(0, 0);" +
+            "  const ROWS = " +
+            JSON.stringify(PX_ROWS) +
+            ";" +
+            '  const wrap = document.createElement("div");' +
+            '  wrap.id = "sl372-px-sandbox";' +
+            '  wrap.style.cssText = "position:fixed;left:0;top:0;width:' +
+            WRAP_W +
+            "px;height:" +
+            WRAP_H +
+            "px;background:#000;padding:" +
+            PAD +
+            'px;box-sizing:border-box;z-index:99999;";' +
+            '  const host = document.createElement("div");' +
+            '  host.className = "dist-plot";' +
+            '  host.style.cssText = "position:relative;width:600px;height:200px;";' +
+            '  host.innerHTML = String.fromCharCode(60) + "div class=" + JSON.stringify("dist-bars") + String.fromCharCode(62) + String.fromCharCode(60) + "/div" + String.fromCharCode(62);' +
+            "  wrap.appendChild(host);" +
+            "  document.body.appendChild(wrap);" +
+            '  host.querySelector(".dist-bars").innerHTML = DC.distBarsHtml(ROWS, 0, 100);' +
+            "  const r2 = (v) => Math.round(v * 1000) / 1000;" +
+            "  const hr = host.getBoundingClientRect();" +
+            // 把每根柱的**柱顶就近对齐到整像素**(改的是 height,柱底不动):
+            // 柱高是带两位小数的百分比,柱顶因此落在亚像素上,而浏览器会把 box-shadow
+            // 按自己的规则吸附到整行 —— 同一条晕,柱顶 .375 时落在上一行、柱顶 .766 时
+            // 落在下一行。不对齐的话「柱顶上方那一行」这句话本身是有歧义的:本机实测
+            // 满格那根(top=29.766)在**没修**的版本上,floor(top)-1 那行仍是干净图底,
+            // 于是那一格拿不到删除式(而普通高度那根 top=69.375 就红了)。
+            // 位移上界 0.5px,不改变任何一根柱的档位;对齐后下面显式断柱顶是整数,
+            // 断不住就整节判负,免得又悄悄退回「测的是哪一行说不清」。
+            '  for (const b of host.querySelectorAll(".dist-bar")) {' +
+            "    const r0 = b.getBoundingClientRect();" +
+            '    b.style.height = (r0.bottom - Math.round(r0.top)) + "px";' +
+            "  }" +
+            "  const out = { plotTop: r2(hr.top), plotBottom: r2(hr.bottom), bars: {} };" +
+            '  for (const b of host.querySelectorAll(".dist-bar")) {' +
+            "    const r = b.getBoundingClientRect();" +
+            '    out.bars[b.getAttribute("data-ch")] = { left: r2(r.left), right: r2(r.right), top: r2(r.top) };' +
+            "  }" +
+            "  return out;" +
+            "})()";
+
+        for (const [name, url] of [
+            ["Output", `${base}/web/output/index.html`],
+            ["Monitor", `${base}/web/monitor/index.html`],
+        ]) {
+            newBucket(`sl372-px-${name}`);
+            await cdp.send("Page.navigate", { url: "about:blank" });
+            await sleep(120);
+            await cdp.send("Page.navigate", { url });
+            check(
+                await waitFor(
+                    `document.readyState === "complete" && !!document.querySelector("#card")`,
+                ),
+                `(前提)${name} 裸开装载完成(不白屏)`,
+            );
+            // 撤沙箱:浮层带 z-index:99999,留在页上会盖住后面任何一格。
+            // 抽成函数是因为**下面有两条早退**(探针没建起来 / 截图解不开),
+            // 早退那条第一版忘了撤(复审点名)—— 眼下本节是文件最末一节、下一轮
+            // `Page.navigate` 会把它冲掉,所以无实害,但下一个往后面加 ⑭ 的人会踩到。
+            const dropSandbox = async () => {
+                try {
+                    await evaluate(
+                        'const n = document.getElementById("sl372-px-sandbox"); if (n) n.remove(); 1',
+                    );
+                } catch {}
+            };
+            const g = await evaluate(PX_PROBE);
+            if (
+                !check(
+                    !!g &&
+                        !!g.bars &&
+                        Object.keys(g.bars).length === PX_ROWS.length,
+                    `(前提)${name} 像素沙箱建起来了(应有 ${PX_ROWS.length} 根柱,实得 ${
+                        g && g.bars ? Object.keys(g.bars).length : "null"
+                    })`,
+                )
+            ) {
+                await dropSandbox();
+                continue;
+            }
+            const shot = await cdp.send("Page.captureScreenshot", {
+                format: "png",
+                clip: { x: 0, y: 0, width: WRAP_W, height: WRAP_H, scale: 1 },
+                captureBeyondViewport: true,
+            });
+            await dropSandbox();
+            let img = null;
+            try {
+                img = decodePng(Buffer.from(shot.data, "base64"));
+            } catch (e) {
+                check(false, `(前提)${name} 截图解得开:${e.message}`);
+            }
+            if (!img) continue;
+            check(
+                img.w === WRAP_W && img.h === WRAP_H,
+                `(前提)${name} 截图尺寸 = 沙箱尺寸(实得 ${img.w}x${img.h},应为 ${WRAP_W}x${WRAP_H})`,
+            );
+            log(
+                `  ${name}(像素):plotTop=${g.plotTop} bars=${JSON.stringify(g.bars)}`,
+            );
+
+            // ---- (a) 柱顶上方那一行:逐像素与图底一致 ----------------------
+            // 取 `Math.floor(top) - 1`:柱顶落在亚像素上时,含柱顶的那一行(floor(top))
+            // 本来就会掺进柱体的抗锯齿,断它等于断浏览器的取整策略;而 floor(top)-1 这一行
+            // **整行都在柱顶之上**,修好之后必须与图底逐分量相同。
+            // 修前:外扩晕占 [top-1, top),正好压在这一行上 ⇒ 这一格红。
+            for (const [key, ch] of [
+                ["a1", 3],
+                ["a2", 5],
+            ]) {
+                const b = g.bars[String(ch)];
+                const row = Math.floor(b.top) - 1;
+                const x0 = Math.floor(b.left) - 3;
+                const x1 = Math.ceil(b.right) + 3;
+                const ground = img.px(GROUND_X, row);
+                let worst = 0;
+                let worstX = x0;
+                for (let x = x0; x <= x1; x++) {
+                    const d = dmax(img.px(x, row), ground);
+                    if (d > worst) {
+                        worst = d;
+                        worstX = x;
+                    }
+                }
+                const cx = Math.round((b.left + b.right) / 2);
+                // (前提0)柱顶确实被对齐到了整像素 —— 没对齐时「上方那一行」指哪一行
+                // 取决于浏览器怎么吸附阴影,这一格的删除式会时灵时不灵(实测过)。
+                check(
+                    Number.isInteger(b.top),
+                    `(${key} 前提0)★ ${name} 轨 ${ch}:柱顶已对齐到整像素(实得 ${b.top})`,
+                );
+                // (前提1)这根柱真的画出来了 —— 不然「上方那一行干净」是空绿。
+                check(
+                    dmax(img.px(cx, Math.round(b.top) + 4), ground) > 40,
+                    `(${key} 前提1)★ ${name} 轨 ${ch}:柱体确实画出来了` +
+                        `(柱内取样 ${JSON.stringify(
+                            img.px(cx, Math.round(b.top) + 4),
+                        )} 与图底 ${JSON.stringify(ground)} 差 > 40)`,
+                );
+                // (前提2)柱顶离图内上沿还有余量 —— 顶到上沿会被 overflow 剪掉,
+                // 那时「上方那一行」根本不在图内,这一格就成了测空气。
+                check(
+                    b.top - g.plotTop >= 2,
+                    `(${key} 前提2)★ ${name} 轨 ${ch}:柱顶离图内上沿 >= 2px` +
+                        `(实得 ${Math.round((b.top - g.plotTop) * 100) / 100}px)`,
+                );
+                check(
+                    worst <= 6,
+                    `(${key}) ★ ${name} 轨 ${ch}(${
+                        ch === 5 ? "+12 dB 满格" : "普通高度"
+                    }):柱顶上方那一行(y=${row})逐像素 = 图底,没有浅色` +
+                        `(最大分量差 ${worst} @ x=${worstX},实得 ${JSON.stringify(
+                            img.px(worstX, row),
+                        )} vs 图底 ${JSON.stringify(ground)})—— ` +
+                        `这一行有浅色就是用户看到的「柱子上方的白线」`,
+                );
+            }
+
+            // ---- (b) 两柱重合处仍有浅色分隔线(SL-353 要的那条,别修没了)----
+            {
+                const rear = g.bars["7"];
+                const front = g.bars["9"];
+                const cx = Math.round((front.left + front.right) / 2);
+                const seamRow = Math.round(front.top);
+                const rearBody = img.px(cx, seamRow - 3);
+                const frontBody = img.px(cx, seamRow + 3);
+                // 扫**分界前后三行**取最亮的一行。判据是「分界处有一条浅色线」,
+                // 不是「它在分界的哪一侧」—— 本卡做的正是把它从上侧挪到下侧,
+                // 钉死侧别的话这一格会把本卡自己的修法判成红(而且旧版式退回来时
+                // 它也会红,于是这一格分不清「分隔线没了」和「分隔线换了侧」)。
+                let seam = 0;
+                for (const r of [seamRow - 1, seamRow, seamRow + 1]) {
+                    seam = Math.max(seam, luma(img.px(cx, r)));
+                }
+                const floorL = Math.max(luma(rearBody), luma(frontBody));
+                // 前提:两根柱真的重合(同一个 x)且后画的那根更矮 —— 不重合的话
+                // 「分界那一行」不存在,下面那一格就没有被测对象。
+                check(
+                    Math.abs(rear.left - front.left) < 0.5 &&
+                        front.top > rear.top + 6,
+                    `(b 前提)★ ${name}:轨 7 / 轨 9 同声像完全重合、且后画的轨 9 更矮` +
+                        `(实得 left ${rear.left} vs ${front.left},top ${rear.top} vs ${front.top})`,
+                );
+                check(
+                    seam >= floorL + 25,
+                    `(b) ★ ${name}:两柱重合处(y=${seamRow}±1)仍有一条浅色分隔线 —— ` +
+                        `分界行亮度 ${Math.round(seam)} 应比上下两侧柱色(后 ${Math.round(
+                            luma(rearBody),
+                        )} / 前 ${Math.round(
+                            luma(frontBody),
+                        )})高出 >= 25;这是 [SL-353] 治「柱顶像换了个颜色」的那条线,` +
+                        `本卡只把它从分界上方 1px 挪到下方 1px,不许挪没了`,
+                );
+            }
+
+            // ---- (c) lead 柱顶之下没有浅色带(帽 / 浅色带 / 轨色 三段不许回来)----
+            {
+                const b = g.bars["12"];
+                const cx = Math.round((b.left + b.right) / 2);
+                // ⚠ 顺序要紧:**先断对齐、再取样**。第一版把 `img.px()` 写在
+                // 「柱顶已对齐到整像素」那一格**之前**,于是对齐一旦失效就是这样一条链:
+                //   小数 y → `(y * w + x) * ch` 得小数下标 → `out[i]` 是 `undefined`
+                //   → `dmax` 得 NaN → 下面 `if (d > worst)` 恒假 → `worst` 停在 0
+                //   → `check(worst <= 12, …)` **判绿**。
+                // 主格空绿 + 前提红,正是本文件在 ⑫(d) 那里专门先断 `segs.length > 0`
+                // 才 `every` 要避的同一族形态(复审第 2 轮点名)。
+                const top = Math.round(b.top);
+                check(
+                    Number.isInteger(b.top),
+                    `(c 前提0)★ ${name} 轨 12:柱顶已对齐到整像素(实得 ${b.top})`,
+                );
+                const capRow = top - 1;
+                const cap = img.px(cx, capRow);
+                const body = img.px(cx, top + 5);
+                // (c 前提1)取样点都落在图内、且取回来的是三个有限数 —— 不断这一条的话,
+                // 「什么都没量到」与「量到了、没有浅色带」在下面那一格里长得一模一样。
+                const inImg = (x, y) =>
+                    Number.isInteger(x) &&
+                    Number.isInteger(y) &&
+                    x >= 0 &&
+                    y >= 0 &&
+                    x < img.w &&
+                    y < img.h;
+                const realPx = (c) =>
+                    Array.isArray(c) &&
+                    c.length === 3 &&
+                    c.every(Number.isFinite);
+                check(
+                    [capRow, top, top + 1, top + 5].every((r) =>
+                        inImg(cx, r),
+                    ) &&
+                        realPx(cap) &&
+                        realPx(body),
+                    `(c 前提1)★ ${name} 轨 12:四个取样点都在图内且取回三个有限数` +
+                        `(cx=${cx} rows=${JSON.stringify([capRow, top, top + 1, top + 5])} ` +
+                        `图 ${img.w}x${img.h};帽 ${JSON.stringify(cap)} 柱色 ${JSON.stringify(body)})`,
+                );
+                // 前提:柱顶之上确实是那道绿帽(绿分量明显高过红蓝)。
+                check(
+                    cap[1] - cap[0] >= 15 && cap[1] - cap[2] >= 15,
+                    `(c 前提)★ ${name} 轨 12:柱顶之上是 lead 绿帽` +
+                        `(y=${capRow} 实得 ${JSON.stringify(cap)})`,
+                );
+                let worst = 0;
+                let worstRow = capRow;
+                let sampled = 0;
+                for (const r of [top, top + 1]) {
+                    const d = dmax(img.px(cx, r), body);
+                    // 逐格断 `Number.isFinite(d)`:NaN 在 `d > worst` 下恒假,
+                    // 不显式接住就会被读成「这一行没有色差」。
+                    if (Number.isFinite(d)) sampled += 1;
+                    if (d > worst) {
+                        worst = d;
+                        worstRow = r;
+                    }
+                }
+                eq(
+                    sampled,
+                    2,
+                    `(c 前提2)★ ${name} 轨 12:绿帽底下那两行都真的量到了色差数` +
+                        `(不是 NaN;NaN 在 \`d > worst\` 下恒假,会把主格顶成空绿)`,
+                );
+                check(
+                    worst <= 12,
+                    `(c) ★ ${name} 轨 12(lead):绿帽底下紧挨着的两行仍是轨色,没有浅色带` +
+                        `(最大分量差 ${worst} @ y=${worstRow},实得 ${JSON.stringify(
+                            img.px(cx, worstRow),
+                        )} vs 柱色 ${JSON.stringify(body)})—— ` +
+                        `浅色带回来 = 「绿帽 / 浅色带 / 轨色」三段,SL-353 治过的那一幕`,
+                );
+            }
+
+            assertClean(`SL-372 ${name} 像素沙箱`);
         }
     }
 } catch (e) {
