@@ -39,9 +39,19 @@ namespace scvb::webview
 //   或 3s 超时放行。屏上仍然是「浅底 → 内容」(放回来那一刻 WebView2 铺的是
 //   DefaultBackgroundColor,现在也是同一个浅色),但**「等到首帧已绘再放」这条保证没了**,
 //   放回来之后可能还要几帧才出内容 —— 而这件事**没有任何一格判据会红**。
-//   探针已经在:`WebViewHost::noteRevealed()` 每次开窗写一行
-//   `webview revealed (<reason>) after <n> ms`。真机验收的硬指标就是它 —— 20 次开关里
-//   `reason` 绝大多数必须是 `firstFrame`;长期是 `navFinished` / `timeout` 就说明命中了这一条。
+//   探针有两行,**必须一起读**:`WebViewHost::handleFirstFrame()` 的
+//   `first-frame signal after <n> ms (still parked|already revealed)`(信号**到没到**),
+//   与 `noteRevealed()` 的 `webview revealed (<reason>) after <n> ms`(**谁**放的行)。
+//   只看后者会把「信号来晚了」误读成「信号没来」—— 而这两者的处置完全不同。
+//   真机验收的硬指标是**前者的条数**:开 N 次窗就该有 N 行 `first-frame signal`;
+//   少了才是命中本条。放行原因是 `navFinished` 占多数**不算**命中(它只说明 load 事件
+//   在这台机器上跑赢了两层 rAF)。
+//   本机 pluginval(真 WebView2 宿主)`--repeat 10` 实测:**10 次开窗,10 次都收到了
+//   `first-frame signal`**(6 次「still parked」+ 4 次「already revealed」)⇒ rAF 在挪出
+//   可视区之后**仍在跑**,本条**未命中**。放行原因 6 firstFrame / 4 navFinished / 0 timeout;
+//   那 4 次里信号只晚了 3–6 ms,是两条路的正常竞速,不是信号缺席。
+//   ⚠ 这是**pluginval 宿主上的实测**,不等于所有 DAW —— 别把它读成「这条风险已经消失」,
+//   验收指标(每开一次窗就该有一行 `first-frame signal`)照留。
 //   真命中之后的出路不是回到隐藏(它更糟),而是「不挪 WebView、在它上面盖一层原生占位窗」,
 //   或者接受 `navFinished` 放行 —— 那时再立卡,别在这里预先写死结论。
 //

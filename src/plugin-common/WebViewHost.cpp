@@ -770,6 +770,14 @@ void WebViewHost::handleBootError(const juce::var& payload)
 // 载荷不看:这条信号只有「到了」这一个信息量,前端也只发一次。
 void WebViewHost::handleFirstFrame()
 {
+    // [SL-370] **先记「信号到了」,再谈放行** —— 这是两件必须分开数的事。放行可能已经被
+    // pageFinishedLoading 抢先做掉,那时 noteRevealed() 一个字都不写;只看放行原因就会把
+    // 「信号来晚了」误读成「信号没来」,而后者正是本卡唯一那条静默降级
+    // (挪出可视区 ⇒ 合成器停 BeginFrame ⇒ rAF 停 ⇒ 信号永不到达,见 WebViewRevealGate.h)。
+    // 真机验收数的就是这一行与下面那行放行行的**条数比**。
+    logDiag(juce::String("first-frame signal after ") +
+            juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms" +
+            (revealGate_.parked() ? " (still parked)" : " (already revealed)"));
     revealGate_.onFirstFrame();
     applyRevealGate();
     noteRevealed();
