@@ -230,8 +230,11 @@ export const VIZ_TRACK_STATE_RANGE = Object.freeze({
 
 /**
  * [SL-362] 全局「最大角度」的值域(0..150)—— 与每轨 `widthPct`(0..100)**不同**,
- * 它是 `width` 参数的工程量域。段内编码同一套 `kVizWidthMin/Max` 定点,但**多一层 +1**
- * (0 = 未提供)。读方拿不到时回落 **100**(= `distGeometry` 的缺省,不缩放)。
+ * 它是 `width` 参数的工程量域。段内编码用 **`kVizGlobalWidthMin/Max`(0..150)**,
+ * **不是** per-track 的 `kVizWidthMin/Max`(0..100):两者共用 ×100 的定点标度,但
+ * **夹取域不同** —— 用错会把 101..150 静默夹到 100,而那正是用户报的档位区间
+ * (复审第 1 轮红旗)。段内再**多一层 +1**(0 = 未提供)。
+ * 读方拿不到时回落 **100**(= `distGeometry` 的缺省,不缩放)。
  */
 export const VIZ_GLOBAL_WIDTH_RANGE = Object.freeze({ lo: 0, hi: 150 });
 export const VIZ_GLOBAL_WIDTH_FALLBACK = 100;
