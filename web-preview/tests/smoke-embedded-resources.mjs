@@ -415,6 +415,28 @@ function checkTokensBackdrop() {
 }
 
 /**
+ * 按**顶层**逗号切开一段 CSS 实参列表(括号内的逗号不算)。
+ * 只为 pageGradientMidHex() 数「渐变里到底写了几个停靠点」用 —— 不做别的 CSS 解析。
+ */
+function splitTopLevel(text) {
+    const out = [];
+    let depth = 0;
+    let cur = "";
+    for (const ch of text) {
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+        if (ch === "," && depth === 0) {
+            out.push(cur);
+            cur = "";
+            continue;
+        }
+        cur += ch;
+    }
+    out.push(cur);
+    return out.map((x) => x.trim()).filter((x) => x.length > 0);
+}
+
+/**
  * `--page-gradient` 的**渐变轴中点色**(`#rrggbb`;解析不出返回 null)。
  *
  * 这是「成品首屏真正可见的底色」在 tokens.css 里唯一算得出来的锚:`--page-gradient` 是
@@ -438,6 +460,16 @@ function pageGradientMidHex() {
         pos: parseFloat(m[2]),
     }));
     if (stops.length < 2) return null;
+    // **认全 vs 认一部分**([#241 复审]):上面那条正则只收 `#rrggbb <n>%`。中间某个停靠点
+    // 换成 `rgb()` / `#fff` / 漏了 `%` 时,它是**静默丢弃**而不是判负 —— 函数照样算得出
+    // 「少了一段的那条渐变」的中点,报出来是一句「与中点色 X 不一致」,把读者引去改
+    // kShellBackdropArgb(改完就真错了)。所以这里再数一次:按**顶层**逗号切开
+    // `linear-gradient(...)` 的实参,首段是角度/方向,其余每一段应当恰好对应一个被认出来的
+    // 停靠点。对不上 = 有一段没被认出来 ⇒ 与「解析不出」同一个出口(fail-closed)。
+    // 首段必须是角度:CSS 允许省略方向,省了就会数不上 —— 那同样走 fail-closed,
+    // 宁可红也不去猜。
+    const segs = splitTopLevel(decl[1]);
+    if (segs.length - 1 !== stops.length) return null;
     if (stops[0].pos !== 0 || stops[stops.length - 1].pos !== 100) return null;
     for (let i = 0; i < stops.length - 1; i++) {
         const a = stops[i];
@@ -503,7 +535,8 @@ function checkBackdropMatchesShell() {
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
  *       本帧提交**之前**,信号会早于首帧,C++ 放回来的仍是一块没画上东西的 WebView,
  *       正是本卡要治的病;
- *   (c) 武装挂在 DOMContentLoaded / readyState 之后,不在文档还在解析时就发。
+ *   (c) 武装挂在 DOMContentLoaded / readyState 之后(**两者任一**即可),不在文档还在
+ *       解析时就发。
  *
  * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名与 requestAnimationFrame,
  * 不剥的话注释自己就能把三条断言全顶替掉(#188 同族,连撞过三次)。
@@ -551,14 +584,16 @@ function checkFirstFrameSignal(role, entry) {
                 `C++ 放回来的仍是一块没画上东西的 WebView`,
         );
 
-    // (c) 文档还在解析时就发同样早于首帧;两种写法都认(监听 DOMContentLoaded / 读 readyState)。
-    if (!/DOMContentLoaded/.test(block) || !/readyState/.test(block))
+    // (c) 文档还在解析时就发同样早于首帧。**两种写法任一在场即放行**(监听 DOMContentLoaded /
+    // 读 readyState)—— 两者各自都足以满足「不在解析期发」,要求两个都在等于把判据钉死在
+    // 今天这一种写法上,收敛成其中一种时会红出一句指错方向的话([#241 复审])。
+    if (!/DOMContentLoaded|readyState/.test(block))
         bad(
             `${role}:${eventId} 的武装没挂在 DOMContentLoaded / readyState 之后` +
                 `(文档还在解析时发出的信号早于首帧)`,
         );
 
-    if (nested.test(block) && /DOMContentLoaded/.test(block))
+    if (nested.test(block) && /DOMContentLoaded|readyState/.test(block))
         console.log(`  ${eventId} 在场:DOMContentLoaded 后嵌套两层 rAF 才发`);
 }
 

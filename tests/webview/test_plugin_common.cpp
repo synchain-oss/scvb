@@ -228,6 +228,15 @@ double contrastRatio(juce::Colour a, juce::Colour b)
 // 用户看到的就是一块什么都没有的浅色板,而这正是本卡改底色带出来的风险面。
 // 判据钉的是**对比度**,不是某个具体色值 —— 底色或字色任一侧改了都由它兜住,
 // 且不会因为换一个同样可读的色号就假红。
+//
+// ⚠ **判定面只有三行 Label,两个按钮不在里面**(#241 复审;这里写清边界,别把本用例读成
+// 「兜底面板整体可读」的全称保证)。`fallback.install` / `fallback.retry` 都没有显式
+// setColour,吃的是 LookAndFeel 默认;而全仓 `grep -rn "setLookAndFeel" src/` 零命中
+// ⇒ 走 JUCE 默认的 LookAndFeel_V4(暗色配色),按钮底深、字浅,**今天**在这块浅底上看得见。
+// 也就是说「按钮可读」现在挂在「JUCE 默认 LNF 恰好是暗色」这条**隐性依赖**上:
+// 哪天给编辑器挂一套浅色 LookAndFeel,按钮会连着面板一起变浅,而本用例一格都不会红。
+// 没有把按钮纳进循环,是因为那样等于把 JUCE 默认配色钉成判据(升 .juce-version 就可能红,
+// 而红的原因与本卡无关);要收这条洞,该做的是给面板一套自己的显式配色,那是另一张卡。
 TEST_CASE("FallbackPanel label colours stay readable on shellBackdrop()")
 {
     juce::ScopedJuceInitialiser_GUI gui;

@@ -31,6 +31,20 @@ namespace scvb::webview
 //   • 零尺寸会把视口压成 0×0,页面按 0 宽布局、放回来时整页 reflow。
 //   挪走则三条都不沾:尺寸不变、`owner.isShowing()` 不变、Chromium 仍认为自己可见。
 //
+// ⚠ **挪走并没有把这一族风险全甩掉**(#241 复审【重要】①):Chromium 对「可视矩形为空」的
+//   widget 同样会停 BeginFrame,rAF 随之停摆 —— 与被否掉的 `put_IsVisible(false)` 殊途同归,
+//   而我们挪的正是被 Windows 裁到零可见面积的那个 WebView2 宿主 HWND。**本机验不了**
+//   (要真 WebView2 宿主),所以这条是**已知风险,不是已排除项**。
+//   命中时的形态是**静默降级,不是崩/卡**:`firstFrame` 永不到达 ⇒ 每次开窗改由 `navFinished`
+//   或 3s 超时放行。屏上仍然是「浅底 → 内容」(放回来那一刻 WebView2 铺的是
+//   DefaultBackgroundColor,现在也是同一个浅色),但**「等到首帧已绘再放」这条保证没了**,
+//   放回来之后可能还要几帧才出内容 —— 而这件事**没有任何一格判据会红**。
+//   探针已经在:`WebViewHost::noteRevealed()` 每次开窗写一行
+//   `webview revealed (<reason>) after <n> ms`。真机验收的硬指标就是它 —— 20 次开关里
+//   `reason` 绝大多数必须是 `firstFrame`;长期是 `navFinished` / `timeout` 就说明命中了这一条。
+//   真命中之后的出路不是回到隐藏(它更糟),而是「不挪 WebView、在它上面盖一层原生占位窗」,
+//   或者接受 `navFinished` 放行 —— 那时再立卡,别在这里预先写死结论。
+//
 // 【为什么等到 onNavigationStarted 才挪】SL-271 的重试泵挂在 `HostWebView::paint` 上,而挪出
 // 可视区之后 JUCE 不再画它 ⇒ 泵停。导航开始 = WebView2 控制器已经建好 —— JUCE 在
 // `CreateCoreWebView2Controller` 的完成回调里是先 `addEventHandlers()` + `setWebViewPreferences()`
