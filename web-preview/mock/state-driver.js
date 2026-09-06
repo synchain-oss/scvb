@@ -276,6 +276,20 @@ export function parsePreviewQuery(params) {
         );
     }
 
+    // [SL-357] 过期全量帧的注入节奏,可从 URL 覆写(判据格用 `=1` 取确定性,
+    // 删除式用 `=0` 证明这一档确实是它在造)。非法值**出警告**不静默吞:
+    // 拼错一个数就悄悄跑在默认档上,拿到的是「看起来像但不是你要的那档」。
+    const rawStale = q.get("staleFullEvery");
+    let staleFullEvery = null;
+    if (rawStale !== null) {
+        const v = Number(rawStale);
+        if (Number.isFinite(v) && v >= 0) staleFullEvery = Math.floor(v);
+        else
+            warnings.push(
+                `staleFullEvery=${rawStale} 非法(要 >=0 的数),已按默认档`,
+            );
+    }
+
     const rawPlay = q.get("play");
     const play =
         rawPlay === null ? null : rawPlay !== "0" && rawPlay !== "false";
@@ -285,6 +299,7 @@ export function parsePreviewQuery(params) {
         scenario: rawScenario,
         loop,
         play,
+        staleFullEvery,
         role: q.get("role"),
         warnings,
     };
@@ -386,7 +401,9 @@ export function buildWorld(opts = {}) {
         //
         // 现在默认异步,于是:**冒烟套里凡是依赖「桥函数返回时 store 已是新值」的断言
         // 都会红** —— 那正是本卡要照出来的东西。逐套的判定见下面 `syncStateEcho`。
-        slowStateEcho: true,
+        // (SL-354 的 `slowStateEcho` 已在 SL-357 删除:默认翻成异步之后**没有任何代码
+        //  再读它**,留着就是一个谁都不看却像在起作用的开关 —— 反向删除式当场照出来:
+        //  把它翻回 false,判据一格都不红。异步与否现在**只由下面这一个 cap 决定**。)
         // [SL-357] **同步回声逃生口**。给「确实需要旧行为」的套用:`scenario=sync-state-echo`,
         // 或 driver 内部构造时显式传。**它不是「让红的用例变绿」的通用开关** ——
         // 用它之前必须先判清那一格红的是哪一类:
@@ -845,17 +862,14 @@ export function buildWorld(opts = {}) {
     }
 
     // ---- 查询参数覆写 ----------------------------------------------------------
-    // [SL-354] 真机时序场景:状态回声延后一拍 + 一帧过期的全量帧。
-    // [SL-357] 默认已是这个行为,本场景保留为**显式写法**(既有套子用着,也便于读 URL 就知道)。
-    if (opts.scenario === "slow-state-echo") caps.slowStateEcho = true;
+    // [SL-354→SL-357] `scenario=slow-state-echo` 保留为**显式写法**(既有套子用着、
+    // 读 URL 就知道这一套在测时序),但它现在是**默认行为**,所以不需要置任何 cap ——
+    // 置一个没人读的 cap 才是上一版的毛病。
     // [SL-357] 同步回声逃生口 —— 用法与禁忌见 caps 里 `syncStateEcho` 那段。
-    if (opts.scenario === "sync-state-echo") {
-        caps.syncStateEcho = true;
-        caps.slowStateEcho = false;
-    }
+    if (opts.scenario === "sync-state-echo") caps.syncStateEcho = true;
     // [SL-357] 过期全量帧节奏可从 URL 覆写:`staleFullEvery=0`(关掉)/ `=1`(每次都插)。
     // 判据格用 `=1` 取确定性,删除式用 `=0` 证明这一档确实是它在造。
-    if (opts.staleFullEvery !== undefined) {
+    if (opts.staleFullEvery !== undefined && opts.staleFullEvery !== null) {
         const v = Number(opts.staleFullEvery);
         if (Number.isFinite(v) && v >= 0)
             caps.staleFullEchoEvery = Math.floor(v);
@@ -1148,6 +1162,10 @@ export function createPreviewSession(opts = {}) {
         loop,
         play,
         scenario: parsed.scenario,
+        // [SL-357] ⚠ 这一行是**接线**,不是装饰:`buildWorld` 只读它收到的字段,
+        // 上一版在 caps 里写了覆写逻辑却没往下传,那段代码一次都没执行过 ——
+        // 加参数时**同一个 commit 里就要有一格跑在非默认值上**,否则看不出没接上。
+        staleFullEvery: parsed.staleFullEvery,
     });
     const { backend, ctl } = createMockBackend({ role, world });
     const driver = makeDriver(ctl, world);

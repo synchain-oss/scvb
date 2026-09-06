@@ -902,5 +902,57 @@ await withSession(
     },
 );
 
+// [SL-357] **过期全量帧那一档也要有格** —— 它此前只有实现、没有判据:
+// 反向删除式把 `staleFullEchoEvery` 改成 0,一格都不红,说明那一档当时是「实现的副作用」。
+// 这里用 `staleFullEvery=1`(每次写都插)取确定性,断言那一帧**确实到达过**:
+// 它带的是**写落地之前**组装的旧值,所以序列里必然出现一次「新值 → 旧值 → 新值」。
+await withSession(
+    "output",
+    "fixture=fifteen-tracks&staleFullEvery=1",
+    async (b, seen) => {
+        const seq = [];
+        const t0 = Date.now();
+        await b.setAnalysisConfig({ loudness_mode: "rms" });
+        for (;;) {
+            const st = seen.get("scvb.state:last");
+            const v = st && st.analysis && st.analysis.loudness_mode;
+            if (v && seq[seq.length - 1] !== v) seq.push(v);
+            if (Date.now() - t0 > 1200) break;
+            await new Promise((r) => setTimeout(r, 10));
+        }
+        log(`  过期帧序列:${seq.join(" → ")}`);
+        check(
+            seq.length >= 3 && seq[seq.length - 1] === "rms",
+            `过期全量帧到达过(序列应含回退再追平,实得 ${JSON.stringify(seq)})`,
+        );
+    },
+);
+
+// [SL-357] 上一格跑在 `staleFullEvery=1` 的覆写上,所以它**钉不住默认档**:
+// 把默认值改成 0(= 这一档在 preview 里根本不存在)它照样绿。这里补两条:
+// 默认档必须是「开着的」,而 `=0` 必须真能关掉 —— 钉的是**这一档默认在不在**,
+// 不是钉在常数 4 上(把 4 调成 3 或 5 都不该红)。
+{
+    const dflt = driver.createPreviewSession({
+        role: "output",
+        params: "fixture=fifteen-tracks",
+    });
+    const off = driver.createPreviewSession({
+        role: "output",
+        params: "fixture=fifteen-tracks&staleFullEvery=0",
+    });
+    log(
+        `  过期帧节奏:默认 ${dflt.world.caps.staleFullEchoEvery} / 覆写关 ${off.world.caps.staleFullEchoEvery}`,
+    );
+    check(
+        dflt.world.caps.staleFullEchoEvery > 0,
+        "默认档就注入过期全量帧(为 0 = 这一档只在显式场景里存在,等于没有)",
+    );
+    check(
+        off.world.caps.staleFullEchoEvery === 0,
+        "staleFullEvery=0 能关掉这一档(删除式要靠它)",
+    );
+}
+
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

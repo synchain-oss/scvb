@@ -531,7 +531,7 @@ function makeContext(role, world) {
         // [SL-357] **默认异步** —— 与真桥同形:写的回执先到,状态由后续的 `scvb.state`
         // 帧带回来。`caps.syncStateEcho`(scenario=sync-state-echo)是逃生口,给确实要旧
         // 语义的套用,禁忌写在 state-driver.js 那个 cap 旁边。(SL-354 时默认是同步、
-        // `slowStateEcho` 才异步 —— 本卡把默认翻了过来。)真桥同形的含义:
+        // 上一版靠 `slowStateEcho` 才异步 —— 本卡把默认翻过来并删掉了那个开关。)真桥同形的含义:
         // 延后走本文件统一的定时器入口 `later(…)`(受 driver 的时钟控制),
         // 不用 queueMicrotask:微任务会在同一个 await 链里跑完,差就又没了。
         if (model.caps && !model.caps.syncStateEcho) {
