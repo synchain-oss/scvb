@@ -55,6 +55,32 @@ struct ChannelConnInfo
     bool suspended = false;
 };
 
+// [SL-367] 「这一轨算不算已连接」—— **UI 呈现口径**的唯一 C++ 真源。
+//
+// 判据逐字 = 契约 §2.3 的 `slotState === 2 ∧ heartbeatFresh`,而 `heartbeatFresh` 是
+// `heartbeatAgeMs <= kStaleDisplayMs` 的派生布尔(哨兵 0xFFFFFFFF 自然为 false)。
+//
+// 为什么要单拎出来:这条判据此前在仓里有**三份手抄件** —— `OutputEditor` 的桥面
+// `heartbeatFresh`、`web/output/tab-master.js` 的 `connectedChannels`、以及 SL-361 给
+// VizPublisher 加连接闸时抄的第三份 —— **三份之间没有任何门禁对拍**,谁改了一份另外两份
+// 不会红。C++ 这两处改调本函数之后,漂移面收成「C++ 一份 ↔ web 一份」,与既有的桥面镜像同档。
+//
+// ⚠ 名字里的 **ForDisplay** 是有意的:这是**给人看**的口径(2000ms 只驱动「失联」显示),
+// **不是**接管判据 —— 接管走 `kTakeoverMs=5000` **且** pid 存活探测([J10] 双阈值)。
+// 别拿它去决定写方归属。
+// 前半:契约 §2.3 的 `heartbeatFresh` 字段本身(桥面**只发这一半**,字段形状不变)。
+inline bool isHeartbeatFreshForDisplay(const ChannelConnInfo& info) noexcept
+{
+    return info.heartbeatAgeMs <= kStaleDisplayMs;
+}
+
+// 两半合起来才是「已连接」——与 web 侧 `connectedChannels` 的 `slotState === 2 ∧
+// heartbeatFresh` 逐条对位。C++ 侧凡是要「已连接」的地方调这个,别再自己拼两个字面量。
+inline bool isConnectedForDisplay(const ChannelConnInfo& info) noexcept
+{
+    return info.slotState == kSlotActive && isHeartbeatFreshForDisplay(info);
+}
+
 // 心跳年龄换算(纯函数,可离线断言):空闲槽 / 从未心跳 → 哨兵;时钟倒退 → 0;
 // 溢出钳到「哨兵-1」,免得真实的超长年龄被误读成「无数据」。
 inline u32 heartbeatAgeMsOf(u32 slotState, u64 heartbeatMs, u64 nowMs) noexcept

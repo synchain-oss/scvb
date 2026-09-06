@@ -311,6 +311,46 @@ TEST_CASE("OutputStateCodec:[J69/U24] loudness_mode/center_slot_policy 默认与
         REQUIRE(b1 == b2);
     }
 }
+// [SL-367] 「已连接」判据的真值表。这条判据此前在仓里有**三份手抄件**(桥面
+// `heartbeatFresh`、web 的 `connectedChannels`、SL-361 给 VizPublisher 加连接闸时抄的第三份),
+// **三份之间没有任何门禁对拍** —— 谁改了一份另外两份不会红。抽成函数之后 C++ 两处共用,
+// 这一格是那三份手抄件里的**第一道机检**。
+//
+// ⚠ 本格钉的是**判据本身**,钉不住「调用方真的调了它」。后者在 C++ 里没有便宜的机检手段;
+// 已在 PR 描述里写明,不假装钉住了。
+TEST_CASE("isConnectedForDisplay:两条都满足才算已连接", "[output][conn][sl367]")
+{
+    using scvb::output::ChannelConnInfo;
+    using scvb::output::isConnectedForDisplay;
+    using scvb::output::isHeartbeatFreshForDisplay;
+
+    const auto make = [](scvb::u32 state, scvb::u32 age) {
+        ChannelConnInfo i;
+        i.slotState = state;
+        i.heartbeatAgeMs = age;
+        return i;
+    };
+
+    // 活跃 + 心跳新鲜 ⇒ 已连接。
+    REQUIRE(isConnectedForDisplay(make(scvb::kSlotActive, 0)));
+    REQUIRE(isConnectedForDisplay(make(scvb::kSlotActive, static_cast<scvb::u32>(scvb::kStaleDisplayMs))));
+    // 边界:恰好超一毫秒即失联(阈值是 ≤,不是 <)。
+    REQUIRE_FALSE(isConnectedForDisplay(make(scvb::kSlotActive, static_cast<scvb::u32>(scvb::kStaleDisplayMs) + 1)));
+    // 槽位不活跃 ⇒ 不算,哪怕心跳是新的 —— **只钉后半的话这一格会漏**,而 SL-361 的
+    // 回落闸正是靠前半挡住「enabled 但未连接」的轨(默认 enabled 全 true)。
+    REQUIRE_FALSE(isConnectedForDisplay(make(scvb::kSlotFree, 0)));
+    REQUIRE_FALSE(isConnectedForDisplay(make(scvb::kSlotClaimed, 0)));
+    // 哨兵年龄(从未心跳)自然为假 —— 不需要额外分支,靠 0xFFFFFFFF > 2000 就成立。
+    REQUIRE_FALSE(isConnectedForDisplay(make(scvb::kSlotActive, scvb::output::kHeartbeatAgeUnknown)));
+
+    // 前半单独可用(桥面 §2.3 只发这一半):它**不看槽位**。
+    REQUIRE(isHeartbeatFreshForDisplay(make(scvb::kSlotFree, 0)));
+    REQUIRE_FALSE(isHeartbeatFreshForDisplay(make(scvb::kSlotActive, scvb::output::kHeartbeatAgeUnknown)));
+    // 两者的关系:已连接 ⇒ 心跳新鲜(反之不成立)。
+    REQUIRE(isConnectedForDisplay(make(scvb::kSlotActive, 10)) == true);
+    REQUIRE(isHeartbeatFreshForDisplay(make(scvb::kSlotActive, 10)) == true);
+}
+
 TEST_CASE("heartbeatAgeMsOf:哨兵 / 时钟倒退 / 溢出钳位", "[output][conn][t37]")
 {
     using scvb::output::heartbeatAgeMsOf;
