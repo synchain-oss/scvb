@@ -1106,14 +1106,18 @@ try {
     //   只由 Esc / 点遮罩承担;把它们也接成撤销的话,一次误按就改了工程状态,而且撤销被桥
     //   拒时用户会被关在框里(见 tab-settings.js 那三条理由)。
     //   ← 把 Esc 分支从 closeReanalyzeAsk 改成 revertFromAsk,下面两格红(框关那格照绿)。
-    check(await setLoudness("rms"), "C2b 再改一次档以便开框");
+    // ⚠ 这里取 **peak_dbfs** 是有讲究的:C2 修好时当前档是 kw_integrated、C2 被拆掉时
+    // 当前档停在 rms —— 只有 peak_dbfs 在**两种实现下都是一次真改动**,本格才不会因为
+    // 「上一格红了」被连带成假红(C2 的删除式实测过:取 rms 时本格会跟着红一次,
+    // 红的原因是「点已选中档不重复写」,与 Esc 写不写 state 无关)。
+    check(await setLoudness("peak_dbfs"), "C2b 再改一次档以便开框");
     check(await waitFor(askOpen, 4000), "C2b 框已开");
     await pressEscape();
     check(await waitFor(askClosed, 3000), "C2b Esc 关框");
     const c2b = await evaluate(ASK_PROBE);
     if (check(c2b, "C2b 探针取到锚点")) {
         check(
-            c2b.loudnessNow === "rms",
+            c2b.loudnessNow === "peak_dbfs",
             `C2b Esc 之后当前档**没有**被改回去(实得 ${JSON.stringify(c2b.loudnessNow)})`,
         );
         check(
@@ -1123,9 +1127,8 @@ try {
     }
 
     // C3 换到另一个脏值 ⇒ 再弹
-    // [SL-371] 前置态由 C2b 留下:当前 rms、基线 kw_integrated、框已被 Esc 关掉 ——
-    // 与本卡之前 C2 留下的态逐字相同,所以 C3 起的每一格都不必跟着改。
-    check(await setLoudness("peak_dbfs"), "切到 peak_dbfs 可点");
+    // [SL-371] 前置态由 C2b 留下:当前 peak_dbfs、基线 kw_integrated、框已被 Esc 关掉。
+    check(await setLoudness("rms"), "切到另一个脏值 rms 可点");
     check(await waitFor(askOpen, 4000), "C3 换脏值 ⇒ 再弹一次");
 
     // C4 「重新分析」= 关框 + 真的跑完一次 analyze(判据 = badge 自己灭)
@@ -1169,7 +1172,9 @@ try {
         ),
         "C4c 慢回执 analyze 计数垫片装上",
     );
-    check(await setLoudness("rms"), "C4c 再改档以重新开框");
+    // [SL-371] 取 peak_dbfs:C4 那次 analyze 把基线前移到了 C3 改成的 rms,
+    // 再点 rms 会撞上 wireSeg 的「点已选中档不重复写」,框根本不会开。
+    check(await setLoudness("peak_dbfs"), "C4c 再改档以重新开框");
     check(await waitFor(askOpen, 4000), "C4c 框已开");
     // 同一回合里连点两下:第一下同步置起两道锁,第二下必须打不出第二发。
     check(
