@@ -620,6 +620,11 @@ const ASK_PROBE = IN(`
         })(),
         // [SL-279 复审第 7 轮] 读屏用户拿到的那一半:describedby 有没有把范围提示带上。
         describedBy: panel ? panel.getAttribute("aria-describedby") : null,
+        // [SL-279 复审第 8 轮] live region 里那半动态文本:范围档下点主钮之后要有话可念。
+        rangeDone: (() => {
+            const n = gb("reanalyze-ask-rangedone");
+            return n ? n.textContent.trim() : null;
+        })(),
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1185,7 +1190,6 @@ try {
 
     // ② 点主钮 ⇒ 后端受理(ok:true),但基线不前移 ⇒ **框仍开、提示仍在、徽标仍亮**。
     check(await click("reanalyze-ask-primary"), "C8r 主钮可点");
-    await sleep(1200); // mock 的 analyze 流水线 800ms + 一轮 render
 
     // [复审第 7 轮] **先证「这一轮真的跑过分析」,再谈「跑了却没前移」。**
     //
@@ -1198,6 +1202,21 @@ try {
     //
     // 正信号取 `analysis_run.progress`:装载时该字段**根本不存在**(mock-data 的初值是
     // `{running:false}`),只有跑完一轮流水线才被写成 1;被拒时它一动不动。
+    // [复审第 8 轮] **轮询,不用固定 sleep。** 原来写的是 `sleep(1200)`,而 mock 的收尾是裸
+    // `later(800, …)` —— 余量只有 400ms,而 gate 3e 会同时起 6 个无头 Chrome。一旦滑过去,
+    // `progress` 仍是 undefined,下面那格会打印「分析真的跑完了一轮 失败」——**与它要证伪的
+    // 东西完全同形**,读日志的人会去查一个不存在的回归。假红伪装成真红比单纯 flaky 贵得多。
+    // 轮到就走、超时才判负,快路径还更快(同一段 ③ 对照组用的就是这个写法)。
+    const RUN_DONE = IN(`const m = w.__SCVB_MOCK__;
+        if (!m || typeof m.requestInitialState !== "function") return false;
+        return Promise.resolve(m.requestInitialState()).then(
+            (st) => (st.analysis_run || {}).progress === 1 && !(st.analysis_run || {}).running,
+        );`);
+    check(
+        await waitFor(RUN_DONE, 6000),
+        "C8r 分析在 6s 内跑完一轮(轮询,不靠固定等待)",
+    );
+
     const rmRun = await evaluate(
         IN(`const m = w.__SCVB_MOCK__;
             if (!m || typeof m.requestInitialState !== "function") return null;
@@ -1231,10 +1250,35 @@ try {
             "C8r 点完主钮**框仍开** —— 受理成功 ≠ 达成了用户点它的目的",
         );
         check(rmAfter.rangeNote, "C8r 范围提示仍摆在眼前");
+        // [复审第 8 轮] 读屏那一侧的反馈:点之前这段是空的(开框时清掉),受理回来写入一句
+        // 真话 ⇒ live region 有变化可念。少了这一格,「aria 加上了但点下去零反馈」照样全绿。
+        check(
+            !!rmAfter.rangeDone &&
+                rmAfter.rangeDone !== (rmOpen || {}).rangeDone,
+            "C8r 点主钮后 live region 里多出一句可播报的话(点之前是空的)",
+        );
         check(
             rmAfter.badgeShown,
             "C8r 琥珀 badge **仍亮**(范围外的段还是旧口径,这是真话)",
         );
+    }
+
+    // ②b [复审第 8 轮] **重开框时那句播报必须已经清掉。**
+    //     不清的话,用户下次在范围档下开框,框里一上来就写着「已按当前范围重新分析」——
+    //     这一次他什么都还没点。那是一句**当下为假**的话,而且 live region 只在文本变化时
+    //     播报,不清还会让第二次点击变成零变化、读屏什么也不念(回到本轮要修的原点)。
+    //     ← 删掉 openReanalyzeAsk 里那句 setRangeDoneText(""),只红这一格。
+    check(await click("reanalyze-ask-later"), "C8r 「稍后」可点(收框以便重开)");
+    check(await waitFor(askClosed, 3000), "C8r 框已关");
+    check(await setLoudness("rms"), "C8r 再改一次档(重新置位 askOnNextStale)");
+    check(await waitFor(askOpen, 4000), "C8r 框重开");
+    const rmReopen = await evaluate(ASK_PROBE);
+    if (check(rmReopen, "C8r 重开后探针取到锚点")) {
+        check(
+            rmReopen.rangeDone === "",
+            "C8r 重开时上一轮的播报文本已清空(这一次用户还没点任何东西)",
+        );
+        check(!!rmReopen.rangeNote, "C8r 重开后范围提示仍在(档位没变)");
     }
 
     // ③ 对照组:follow 档下同一枚主钮**必须**关框 —— 少了这一格,把「恒不关框」写死也全绿。
@@ -1259,6 +1303,15 @@ try {
         check(
             !flOpen.rangeNote,
             "C8r follow 档**不**显示范围提示(它只在范围档下才是真话)",
+        );
+        // [复审第 8 轮] **显隐断了不等于读屏断了。** AccName/Description 计算对
+        // aria-describedby **直接引用**的节点是「即使 hidden 也纳入」的 —— 把两个 id
+        // 静态并进 index.html、再删掉 tab-settings 里那段 setAttribute,上面那格照样绿
+        // (那个 <p> 确实 hidden),而 follow 档的读屏用户会被念到范围提示这句假话。
+        // 本仓两处注释花了整段论证这一点,却一直没有机器守着它 —— 这一格就是。
+        check(
+            !(flOpen.describedBy || "").includes("reanalyze-ask-rangenote"),
+            "C8r follow 档的 aria-describedby **不**带范围提示(hidden 也会被读屏念到)",
         );
     }
     check(await click("reanalyze-ask-primary"), "C8r 对照组主钮可点");

@@ -8766,9 +8766,19 @@
                             id="reanalyze-ask-rangenote"
                             class="sc-modal__note sc-modal__note--warn"
                             data-gb="reanalyze-ask-rangenote"
-                            data-t="set.reanalyzeAsk.rangeNote"
+                            role="status"
                             hidden
-                        ></p>
+                        >
+                            <!-- [SL-279 复审第 8 轮] 本段是 role="status"(隐含 aria-live=polite),
+                                 所以 data-t **不能挂在 <p> 上**:applyI18n 写的是 textContent,
+                                 会把下面两个 span 一起抹掉。静态那半挂在自己的 span 上。 -->
+                            <span data-t="set.reanalyzeAsk.rangeNote"></span>
+                            <!-- 受理回来之后由 tab-settings 填这一段:范围档下点主钮不关框,
+                                 视觉用户看得到「框没关」,读屏用户需要这一句被播报出来,
+                                 否则 AT 那一侧仍是零反馈。开框时清空、受理后写入 ⇒ 每次点击
+                                 都是一次真变化,live region 才会念。 -->
+                            <span data-gb="reanalyze-ask-rangedone"></span>
+                        </p>
                         <div class="sc-modal__foot">
                             <button
                                 type="button"

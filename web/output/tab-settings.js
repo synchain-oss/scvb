@@ -220,6 +220,7 @@ export function createTabSettings(opts) {
         reanalyzeAsk: $("reanalyze-ask"),
         reanalyzeAskPanel: $("reanalyze-ask-panel"),
         reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
+        reanalyzeAskRangedone: $("reanalyze-ask-rangedone"),
         reanalyzeAskLater: $("reanalyze-ask-later"),
         reanalyzeAskPrimary: $("reanalyze-ask-primary"),
         guideBox: $("settings-guideblock-rules"),
@@ -602,6 +603,20 @@ export function createTabSettings(opts) {
      * 范围档提示随档位开合。**开框那一下要同步、状态更新也要同步** —— 框开着时用户仍可能
      * 在别处(Tab3 工具条)改范围档,只在开框时算一次的话提示会停在旧档位上。
      */
+    /**
+     * 写 `role="status"` 段里那半动态文本(§ 见 index.html 那两段注释)。
+     *
+     * 为什么单拎一个函数:文本必须**只从字典取**,不能在这里拼串 —— 拼串就是把用户可见文案
+     * 写进逻辑层,i18n 门禁扫不到、切语言也不跟着变(CLAUDE.md:新增用户可见文案必须有 key)。
+     */
+    function setRangeDoneText(key) {
+        const node = el.reanalyzeAskRangedone;
+        if (!node) return;
+        const t = getT() || {};
+        node.textContent =
+            key && Object.prototype.hasOwnProperty.call(t, key) ? t[key] : "";
+    }
+
     function syncReanalyzeRangeNote() {
         if (!el.reanalyzeAskRangenote) return;
         const limited = rangeLimited();
@@ -636,6 +651,9 @@ export function createTabSettings(opts) {
             local.reanalyzeReturnFocus = doc && doc.activeElement;
         }
         show(el.reanalyzeAsk, true);
+        // [SL-279 复审第 8 轮] 每次开框先清掉上一轮的播报文本:live region 只在**文本变化**时
+        // 播报,不清的话第二次点主钮写入同一句话 = 零变化 = 读屏什么也不念。
+        setRangeDoneText("");
         syncReanalyzeRangeNote();
         if (
             el.reanalyzeAskPrimary &&
@@ -688,6 +706,9 @@ export function createTabSettings(opts) {
             btn.setAttribute("data-disabled", "1");
         }
         try {
+            // 清在**发请求之前**:这样「受理后写入」必定是一次真变化,live region 才会念。
+            // 放在受理之后清再写,同一帧内 textContent 一去一回,AT 可能一次都不播报。
+            setRangeDoneText("");
             const res = await call("analyze", "all");
             if (!res || res.observer || res.ok === false) {
                 requestRender();
@@ -697,6 +718,11 @@ export function createTabSettings(opts) {
                 // 受理了,但只重算范围内 ⇒ `applied.*` 不前移、徽标不灭(§1.21)。
                 // 与拒绝态同口径:不关框,让范围提示继续摆在眼前。
                 syncReanalyzeRangeNote();
+                // [复审第 8 轮] **视觉与读屏两侧要对称**:视觉用户按下去看到「框没关」本身
+                // 就是反馈,读屏用户不会被自动告知「什么都没发生」—— 所以这里必须往
+                // live region 里写一句真话,否则 AT 那一侧仍是零反馈(上一轮只做了
+                // aria-describedby 那半,把这半漏了)。
+                setRangeDoneText("set.reanalyzeAsk.rangeDone");
                 requestRender();
                 return;
             }
