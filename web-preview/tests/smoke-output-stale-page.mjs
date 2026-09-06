@@ -788,10 +788,44 @@ try {
         const bannerHidden = IN(
             `const n = gb("banner-staleCapture"); return !!n && n.hidden;`,
         );
+        const tabDotOff = IN(
+            `const n = gb("tabnav-wave-stale-dot"); return !!n && n.hidden;`,
+        );
         const bannerText = IN(`
             const n = gb("banner-staleCapture-text");
             return n ? n.textContent.trim() : null;
         `);
+        // ★ **每换一次夹具,先等一个与本卡无关的「这一帧真到了 UI」信号,再看横幅。**
+        // 理由是实测出来的(D6 那次注入照出来的):横幅此刻**本来就是收起的**,于是
+        // `waitFor(bannerHidden)` 当场返回 true、一次都没等,下一条 setStale 就可能抢在
+        // 上一帧渲染之前发出去 —— 「条件为假」那一帧根本没被渲染过,`seen.delete` 也就
+        // 没跑,本档随机变红。取的信号是**泳道 ⚠ 集合**与 **tab 导航琥珀点**:两者同样
+        // 由 §2.8 的 stale 位派生,但渲染在别的函数里(tab-wave / app.js 的 tab 点那行),
+        // 与 showDismissible 这条路无关 —— 它们变了 = 这一帧确实到了 UI。
+        const lanesNow = IN(`
+            const out = [];
+            for (let ch = 1; ch <= 15; ch++) {
+                const n = gb("wave-lane-" + ch + "-stale");
+                if (n && !n.hidden) out.push(ch);
+            }
+            return out.join(",");
+        `);
+        const lanesAre = async (chs, label) => {
+            const want = chs.join(",");
+            const ok = await waitFor(
+                IN(`
+                    const out = [];
+                    for (let ch = 1; ch <= 15; ch++) {
+                        const n = gb("wave-lane-" + ch + "-stale");
+                        if (n && !n.hidden) out.push(ch);
+                    }
+                    return out.join(",") === ${JSON.stringify(want)};
+                `),
+                3000,
+            );
+            check(ok, `${label}(实得 ${await evaluate(lanesNow)})`);
+            return ok;
+        };
         // 段表就地改 stale 位 + 补发一帧 §2.8。返回**这一帧真的带了几条 stale**,
         // 用它当正证据:没有它的话「横幅没出现」分不清「判据挡住了」与「夹具没生效」。
         const setStale = (chs) =>
@@ -886,6 +920,10 @@ try {
         //     (= 签名不带轨数),本格红,而 ⑦b/⑦c/⑦e 照绿。
         const n2 = await setStale([2, 5]);
         check(n2 === 2, `⑦d 夹具生效:这一帧带 2 条 stale(实得 ${n2})`);
+        await lanesAre(
+            [2, 5],
+            "⑦d 正证据:这一帧真的到了 UI —— 泳道 ⚠ 只剩 2/5",
+        );
         check(
             await waitFor(bannerShown, 3000),
             "⑦d 轨数从 3 变 2 ⇒ 横幅**再次出现**(签名变了 = 另一句话)",
@@ -909,12 +947,20 @@ try {
         check(await waitFor(bannerHidden, 3000), "⑦e 再关一次(记下签名「2」)");
         const n0 = await setStale([]);
         check(n0 === 0, `⑦e 夹具生效:这一帧零 stale(实得 ${n0})`);
+        // ★ 这两条**必须在下一次 setStale 之前**把「零 stale 那一帧渲染过了」钉死:
+        // 横幅此刻已经收着,拿 bannerHidden 等于没等(见上面 lanesAre 那段注释)。
         check(
-            await waitFor(bannerHidden, 3000),
+            await waitFor(tabDotOff, 3000),
+            "⑦e 正证据:零 stale 那一帧真的渲染过了(tab 导航琥珀点灭)—— 于是关掉记录也删了",
+        );
+        await lanesAre([], "⑦e 正证据:泳道 ⚠ 全部收起");
+        check(
+            await evaluate(bannerHidden),
             "⑦e 条件消失 ⇒ 横幅收起(这一帧同时把关掉记录删了)",
         );
         const n2b = await setStale([2, 5]);
         check(n2b === 2, `⑦e 夹具生效:又摆回同样的 2 条(实得 ${n2b})`);
+        await lanesAre([2, 5], "⑦e 正证据:这一帧也到了 UI —— 泳道 ⚠ 回到 2/5");
         check(
             await waitFor(bannerShown, 3000),
             "⑦e 条件重新成立 ⇒ **同一个签名照样再出现**(关掉是这一次,不是永久)",
