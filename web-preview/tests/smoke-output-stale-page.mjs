@@ -1039,6 +1039,78 @@ try {
             await waitFor(bannerShown, 3000),
             "⑦e 条件重新成立 ⇒ **同一个签名照样再出现**(关掉是这一次,不是永久)",
         );
+        // ---- ⑦-tour [复审第 2 轮] **开一次导览不许把关掉的横幅弹回来。**
+        //   导览期 `viewStore()` 换成 demo store,而 demo 世界里 ⑧⑨⑩ 三条条件**全是假**
+        //   (`mock-data.js` 的 stale:false / capture_enabled:false / recapture.armed:false)
+        //   ⇒ 每一帧都走 `showDismissible` 里「条件为假就删记录」那一支。上一版那一支删的是
+        //   **真** `store.session` 的记录,于是开一次导览 = 用户关掉的横幅全部弹回来。
+        //   ← 把 showDismissible / ✕ handler 里的 `viewStore().session` 改回 `store.session`
+        //     (= 上一版),本格最后一条红:退出导览后横幅又出现了。
+        //   ⚠ 判据取**退出导览之后**,不取导览进行中:导览期条件本来就假、横幅本来就该收着,
+        //   那一刻两种实现长得一模一样(记录已被删,但还没有哪一帧的条件为真去把它显出来)。
+        // 前置:⑦e 结束时横幅是**显着**的(那一格断的就是「再出现」),先关掉一次,
+        // 否则本格测的是「本来就没关过」——两种实现下都不会红。
+        await evaluate(
+            IN(
+                `const b = gb("banner-staleCapture-dismiss"); if (b) b.click(); return true;`,
+            ),
+        );
+        check(
+            await waitFor(bannerHidden, 3000),
+            "⑦-tour 前置:横幅已被关掉(有一条真会话记录可供导览去误删)",
+        );
+        const tourStarted = await evaluate(
+            IN(
+                `const b = gb("tabnav-settings"); if (b) b.click(); return true;`,
+            ),
+        );
+        check(tourStarted, "⑦-tour 切到设置页");
+        await sleep(300);
+        check(
+            await evaluate(
+                IN(
+                    `const b = gb("settings-reopentour"); if (!b) return false; b.click(); return true;`,
+                ),
+            ),
+            "⑦-tour 点「重看引导」开导览",
+        );
+        // 导览的 DOM 是 tour.js 自己 append 的,没有 data-gb 锚点 —— 判据走它的
+        // `[data-tour-overlay]`(overlay 本体)与 header 那枚 demo chip:后者是
+        // 「viewStore() 真的换成 demo store 了」的独立信号,不是同一个东西的两种读法。
+        check(
+            await waitFor(
+                IN(`const o = q("[data-tour-overlay]");
+                    const chip = gb("header-demo-chip");
+                    return !!o && !o.hidden && !!chip && !chip.hidden;`),
+                6000,
+            ),
+            "⑦-tour 正证据:导览真的起来了(overlay 上屏 + demo chip 亮 ⇒ viewStore() 已换 demo store)",
+        );
+        await sleep(800); // 让导览期真的跑过若干帧 renderBanners
+        check(
+            await evaluate(
+                IN(`const b = q('[data-tour-btn="skip"]');
+                    if (!b) return false; b.click(); return true;`),
+            ),
+            "⑦-tour 点「跳过」退出导览",
+        );
+        check(
+            await waitFor(
+                IN(`const o = q("[data-tour-overlay]");
+                    const chip = gb("header-demo-chip");
+                    return !!o && o.hidden && !!chip && chip.hidden;`),
+                6000,
+            ),
+            "⑦-tour 导览已退出(viewStore() 换回真 store)",
+        );
+        await evaluate(
+            IN(`const b = gb("tabnav-wave"); if (b) b.click(); return true;`),
+        );
+        await sleep(600);
+        check(
+            await evaluate(bannerHidden),
+            "⑦-tour 退出导览后横幅**仍然是关着的**(导览没有动真会话里那条关闭记录)",
+        );
         assertClean("scenario=stale(SL-373 ✕)");
     }
 } catch (e) {

@@ -1683,6 +1683,16 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             "banner-noTimeline",
             "banner-printGuard",
         ]) {
+            // [复审第 2 轮] **先断这条横幅还在,再断它没有 ✕。**
+            // 下面那格是两个**纯否定**项:锚点名拼错 / 横幅被改名 / 横幅被删,三种情形
+            // 它都自动为真 —— 契约边界从此无人守而没有任何东西会红。上面 ⑧⑨⑩ 那三格是
+            // 正向 `includes`,名字一漂当场红,这一档缺的正是那个对称的锚。
+            // ← 把这份名单里任一个名字改错一个字,本格红(而下面那格照绿 —— 那正是
+            //   本格要补的洞;实测改成 `banner-versionMismatchX`,只红本格)。
+            check(
+                html.includes(`data-gb="${gb}"`),
+                `(a21) ${gb} 这条横幅还在(锚点名漂了的话下面那格会恒真)`,
+            );
             check(
                 !flat.includes(`showDismissible("${gb}"`) &&
                     !html.includes(`data-gb="${gb}-dismiss"`),

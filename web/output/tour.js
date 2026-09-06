@@ -222,6 +222,12 @@ export function buildDemoStore(getT) {
             wasPrinting: false,
             guideClosed: true,
             rejectedPrintingUntil: 0,
+            // [SL-373 复审第 2 轮] **必须有这一格**,不是「同形」这句话的装饰:
+            // `app.js` 的 `showDismissible()` 读 `viewStore().session.dismissedBanners`,
+            // 而 demo 世界里 ⑧⑨⑩ 三条横幅的条件全是假 ⇒ 每帧都走「条件为假就删记录」
+            // 那一支。缺这一格的话它要么退化成不记忆、要么(上一版)去删**真会话**的记录,
+            // 开一次导览就把用户关掉的横幅全弹回来。给导览一份自己的、随导览一起丢掉。
+            dismissedBanners: new Map(),
         },
     };
 }

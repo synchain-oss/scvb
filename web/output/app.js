@@ -1577,14 +1577,29 @@ const bannerSignature = new Map();
  *   · 条件成立且签名与关掉那一刻**逐字相同** ⇒ 不显(用户已经把这句话打发过了);
  *   · 其余(含「签名变了」)⇒ 照常显。
  *
- * ⚠ [复审第 1 轮] **本函数横跨两个 store**:`on`/`sig` 由调用方从 `viewStore()` 算出来
- * (导览期那是 demo store),而「关过没有」读的是**真** `store.session`。今天走不到:
- * `tour.js` 的 demo 世界里没有 stale 轨、没开采集、也没布防,⑧⑨⑩ 三条一条都不成立。
- * 将来给导览加这类夹具的话,先在这里决定:导览里的关闭要不要写进真会话(多半不要)。
+ * ⚠ [复审第 2 轮] **两个 store 不许混着用** —— 上一版读写分家,而「条件不成立」在导览期
+ * 恒真,于是每帧都把真会话的记录删一条。判据 ⑦-tour 钉住它,理由见函数体内注。
  */
 function showDismissible(gb, on, sig) {
     const node = $(gb);
-    const seen = store.session.dismissedBanners;
+    // [SL-373 复审第 2 轮] **记忆必须跟着「正在渲染的那份 store」走。**
+    // 上一版读的是**真** `store.session`,而 `on`/`sig` 由调用方从 `viewStore()` 算 ——
+    // 导览期那是 demo store,里面 ⑧⑨⑩ 三条**全部**不成立(`mock-data.js` 的
+    // `stale:false` / `capture_enabled:false` / `recapture.armed:false`),于是每一帧都走
+    // 下面 `!on` 那一支,把**真会话**里用户关掉的记录一条条删掉 ⇒ 开一次导览,
+    // 关掉的横幅全部弹回来。上一轮我在头注里把这条写成了「今天走不到」,**正好写反**:
+    // 条件不成立恰恰就是 `!on` 那一支,而它是有副作用的那一支。
+    // 改成读 `viewStore().session` 之后,导览里的关闭写进 demo session、随导览一起丢掉,
+    // 真会话一个字节不动 —— 这也正是 tour.js 那份 demo session 头注写的「与真 store 同形」。
+    // 判据 = smoke-output-stale-page ⑦-tour(开一次导览再退出,横幅仍关着)。
+    const sess = viewStore().session || {};
+    const seen = sess.dismissedBanners;
+    // 缺这一格 = 有人新造了一份 store 却没照「与真 store 同形」补上。退化成**不记忆**
+    // (横幅照常显),不静默崩:关不掉比整页白掉好,而且横幅还在就看得出不对劲。
+    if (!seen) {
+        show(node, on);
+        return;
+    }
     if (!on) {
         seen.delete(gb);
         bannerSignature.delete(gb);
@@ -1611,10 +1626,10 @@ for (const gb of DISMISSIBLE_BANNERS) {
     const btn = $(gb + "-dismiss");
     if (!btn) continue;
     btn.addEventListener("click", () => {
-        store.session.dismissedBanners.set(
-            gb,
-            bannerSignature.has(gb) ? bannerSignature.get(gb) : "",
-        );
+        // 与 showDismissible 读同一份 —— 读写分家正是上一版那个缺陷的形状。
+        const seen = (viewStore().session || {}).dismissedBanners;
+        if (!seen) return;
+        seen.set(gb, bannerSignature.has(gb) ? bannerSignature.get(gb) : "");
         // [SL-373 复审第 1 轮,统筹裁定] **先把焦点交出去,再让下一帧把横幅藏起来。**
         // 不交的话:下一帧 `showDismissible` 给横幅 `div` 挂 `hidden`,而焦点正落在它里面
         // 这枚钮上 ⇒ Chromium 把焦点丢回 `<body>`,键盘用户得从卡片开头重走一遍 Tab。
