@@ -21,7 +21,8 @@
   纪律(与 Output 页同源):
     • 状态一律 data-* 属性 + CSS 选择器,不拼 class 字符串;
     • 词条一律走 data-t / data-t-aria 的 key,禁止硬写自由文案;
-    • 零裸 hex —— 颜色一律 var(--x) / rgba(var(--分量), a)。
+    • 零裸 hex —— 颜色一律 var(--x) / rgba(var(--分量), a);唯一例外 = <head> 里
+      [SL-355] 那条开窗底色内联声明(生效不依赖外链请求的结果)。
 
   预览:pwsh web-preview/serve.ps1 → http://127.0.0.1:8823/web-preview/monitor.html
   (裸开本文件不会炸:createMonitorBridge 失败只 warn 一句并在 footer 落一行提示。)
@@ -32,6 +33,23 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>SCVB Monitor</title>
+        <!--
+          [SL-355] 开窗白闪那一段的根元素底色:**内联、字面量、不依赖任何外链请求的结果**。
+          ⚠ 排在两条 <link rel="stylesheet"> 之前是**排序事实,不是时序保证** —— Chromium
+          对 <head> 里的外链样式表是渲染阻塞的。这条声明确定兜住的是哪两条路、哪一条只有
+          真机能判,连同「灰 / 白 / 内容」三段的来源与代码证据,只写在一处:
+          src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注。别在这里复述。
+          这一条**必须是字面量**:--page-backdrop 定义在 tokens.css 里,写成 var() 就又回到
+          「等外链」那条路上。取值 = src/plugin-common/PlatformWebView.h 的
+          kShellBackdropArgb 低 24 位,由 web-preview/tests/smoke-embedded-resources.mjs
+          的 ⑥ 与 C++ 真源逐字对拍(改一边不改另一边即红),
+          故此处是本页「零裸 hex」纪律的**唯一**例外。
+        -->
+        <style>
+            html {
+                background-color: #191820;
+            }
+        </style>
 
         <!--
           boot 守卫 —— 前端起不来时主动告诉 native,别让宿主干等看门狗超时。

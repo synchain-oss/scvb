@@ -1894,7 +1894,26 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
         "轨迹图卡 flex:1(拿走剩余全部高度)",
     );
 
-    const hex = mon
+    // [SL-355] 唯一豁免:<head> 里那条开窗底色。它**必须**是字面量 —— tokens.css 还没到
+    // 的那一段正是它要盖的,写成 var(--page-backdrop) 就又回到「等外链」。豁免面只有
+    // `html { background(-color)?: #rrggbb; }` 这一条规则本身,同块里的其它 hex 照样被
+    // 下面那行逮住;取值是否等于 C++ 的 kShellBackdropArgb 由
+    // web-preview/tests/smoke-embedded-resources.mjs 的 ⑥ 管,这里不重复第二份。
+    // `background(?:-color)?` 与 ⑥ 同口径:只认长写法的话,改成简写会让 ⑥ 绿而这里红出
+    // 两句指不到真因的文案(「声明没了」+「多了个裸 hex」)。
+    const backdropRule =
+        /html\s*\{\s*background(?:-color)?:\s*#[0-9a-fA-F]{3,8};?\s*\}/g;
+    // 自我删除断言跑在**剥掉 HTML 注释**之后:`mon` 是原文,把整个 <style> 块包进注释时
+    // 「还在」会照绿,而那正是 ⑥ 的删除式第 5 格所验的形态 —— 断言不能比它做到的说得多。
+    const live = mon.replace(/<!--[\s\S]*?-->/g, "").match(backdropRule) || [];
+    check(
+        live.length === 1,
+        `[SL-355] <head> 里那条开窗底色内联声明恰好在场一条(实得 ${live.length} 条;` +
+            `没有它就没有豁免可言,多一条则会被下面的全局剥除一并吞掉)`,
+    );
+    // 零裸 hex 的扫描面**保留注释**(它原本的口径就覆盖注释),只剥掉被豁免的那条规则。
+    const monNoBackdrop = mon.replace(backdropRule, "");
+    const hex = monNoBackdrop
         .replace(/data:image\/[^"')]+/g, "")
         .match(/#[0-9a-fA-F]{3,8}\b/g);
     check(!hex, `Monitor 页零裸 hex(实得 ${JSON.stringify(hex)})`);

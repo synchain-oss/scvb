@@ -152,6 +152,68 @@ public:
     //   —— 详见 static_assert 旁的实测记录。差别在**必守面从两处减到一处、且那一处显式**:
     //   基类签名一变就编译红,不会像复刻件那样静默失效。
     //   代价只是每次 paint 多一次纯色 fillAll(paint 本就极低频)。
+    //
+    // -------------------------------------------------------------------------
+    // [SL-355] 开窗那几帧的**分层地图**(v5.6.7 真机反馈:「先灰、然后全白、然后才出来」)。
+    // 这份地图**只写在这里一份**,web 侧三个 index.html 与 smoke-embedded-resources.mjs ⑥
+    // 都只留一句指路,不复述。
+    //
+    // 【灰】不是我方任何一层画的。三条证据:
+    //   • JUCE 注册插件子窗口类时 `WNDCLASSEX wcex = {};`(juce_Windowing_windows.cpp 的
+    //     WindowClassHolder)⇒ hbrBackground 为 0,系统不会拿系统色去擦背景;
+    //   • 同文件 windowProc 的 `case WM_ERASEBKGND: if (hasTitleBar()) break; return 1;`
+    //     ⇒ 无标题栏的窗口连默认擦除都不走,而 VST3 编辑器正是这一类:
+    //     detail::PluginUtilities::getDesktopFlags 只可能给出 0 或
+    //     windowRequiresSynchronousCoreGraphicsRendering,两者都不含 windowHasTitleBar;
+    //   • 我方三层底色都是 shellBackdrop() = kShellBackdropArgb(暗色),画不出浅灰。
+    //   ⇒ 浅灰只可能来自**宿主自己的插件窗容器** —— 它在我们的 HWND 上屏之前就在那儿。
+    //   插件侧无从覆盖。**这一条只有真机能最终确认**(各 DAW 的容器底色不同)。
+    //
+    // 【白】分三节,前两节此前已堵,第三节是 SL-355 补的:
+    //   ①-a 控制器建起来**之前** —— 就是本函数上面讲的那一层(JUCE 的 fallbackPaint
+    //        每帧无条件 fillAll(Colours::white)),由本 override 先调基类再整块盖住。
+    //   ①-b 控制器建好、文档还没提交 —— WebView2 的 DefaultBackgroundColor,由
+    //        PlatformWebView::makeWebViewOptions 的 withBackgroundColour(shellBackdrop())
+    //        铺上([SL-253];判据在 tests/webview/test_plugin_common.cpp)。
+    //        ⚠ **这一层可能整层不在**:JUCE 是
+    //        `webViewController->QueryInterface(controller2...)` 后 `if (controller2 != nullptr)`
+    //        才 put_DefaultBackgroundColor(juce 的 WebView2::setWebViewPreferences),
+    //        取不到就静默跳过;而 PlatformWebView.h 的 kMinRuntimeMajor 注释①自己就把
+    //        ICoreWebView2Controller2 归为「只经 QueryInterface 取、取不到就跳过、不构成
+    //        下限」的那一类。取不到时,这一节露的就是 WebView2 自己的默认白。
+    //   ①-c 文档已提交、外链 css 还没到 —— 页面自己没有任何底色,露的是 ①-b
+    //        (①-b 缺席时就是白)。tokens.css 与 base.css 各要经一次 ResourceProvider 的
+    //        WebResourceRequested 回到消息线程才拿得到。[SL-355] 因此在三份 index.html 的
+    //        <head> 里内联一条 `html { background-color: … }`,排在两条
+    //        <link rel="stylesheet"> 之前;判据 = web-preview/tests/smoke-embedded-resources.mjs
+    //        的 ⑥。
+    //        ⚠ **「排在外链之前」是排序事实,不是时序保证** —— 别把它读成「已经堵住」。
+    //        Chromium 对 <head> 里的 <link rel="stylesheet"> 是**渲染阻塞**的:外链的 CSSOM
+    //        就绪之前文档整体不进正常绘制路径,那一段屏上仍然是视图的 base background color
+    //        (即 ①-b)。所以这条内联声明**确定**兜住的只有两条路:
+    //          · 外链**取不到 / 加载失败** —— 阻塞随之解除,画出来的是这条暗底而不是白。
+    //            本仓栽过三次的「web 资源没进包 ⇒ 空白窗口」正是这一类;
+    //          · 外链到达之后与 base.css 的 body 底色同值,稳态零差异(所以它无副作用)。
+    //        而「正常路径上它到底缩不缩得短那段白」取决于 Blink 在阻塞期间用不用根元素样式,
+    //        本机没有任何手段能验证 —— **只有真机能判**,验收步骤见 PR #234 描述。
+    //   还有一节在我们的 API 之外:WebView2 runtime 自己那个宿主 HWND,在首帧合成之前由
+    //   runtime 画,JUCE 不暴露它(只在 createWebView 里遍历子窗口找到后交给
+    //   AccessibilityHandler::setNativeChildForComponent)。它是不是白闪的剩余来源,
+    //   **只有真机能判**。
+    //
+    // 【评估过、本卡没做的那条】「控制器建好 / 首帧到达之前先 setVisible(false)」:
+    //   • 机制上不是死路:checkWindowAssociation 末尾那句
+    //     `if (! hasBrowserBeenCreated()) createBrowser();` 不看 isShowing,
+    //     而 componentVisibilityChanged 会在我们改回 setVisible(true) 时补一次 put_IsVisible。
+    //   • 但风险恰好落在**开窗路径本身**:隐藏期间本 paint 不会被调用 ⇒ 上面那个重试泵
+    //     整段消失;而 createWebView 在 `getPeer()` 为空时直接 return,我们又恰恰在构造期
+    //     就 goToURL(见 beginLoadAttempt),那一刻还没有 peer。于是只剩
+    //     parentHierarchyChanged / visibilityChanged 两条路,它们若都赶在 peer 就绪之前跑完,
+    //     控制器就再也建不起来 —— 而我们还在等「首帧」才 setVisible(true),互相等死,
+    //     表现是 15s 后兜底面板。
+    //   • 何况 JUCE 根本没有「首帧」信号:最早只有 pageFinishedLoading(导航完成),
+    //     晚于 WebView2 的首帧,拿它当开关反而把暗屏拉长。
+    //   ⇒ 拿开窗路径上的死锁风险去换一个观感问题不划算,故只做 ①-c。
     // -------------------------------------------------------------------------
     void paint(juce::Graphics& g) override
     {

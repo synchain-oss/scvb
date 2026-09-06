@@ -11,8 +11,17 @@ namespace scvb::webview
 //
 // 取值与 `web/shared/tokens.css` 的 `--page-backdrop: #191820` 对齐 —— 那条注释原话就是
 // 「仅防露白」,只是它来得太晚。此前仓里这个深色有**两个**字面量(tokens 的 #191820 与
-// FallbackPanel 的 0xff18161d),现在三处共用这一个,免得以后再漂。
+// FallbackPanel 的 0xff18161d),收成本常量之后 C++ 侧不再各写各的。
+// **别在这里记「现在共有几处」**:`grep -rn "191820|shellBackdrop" src web` 一次就列全,
+// 而记在注释里的数一定会漂(SL-355 就又添了一批,见下条)。
 // ⚠ 必须**完全不透明**:JUCE 的 withBackgroundColour 只接受全不透明或全透明(见其头注断言)。
+//
+// [SL-355] 更正上面「HTML 的底色藏在两个外链 css 里」那半句:现在三份 index.html 的
+// <head> 里各内联了一条 `html { background-color: … }`,排在两条 <link rel="stylesheet">
+// 之前,取值与本常量的低 24 位逐字相同(判据 = web-preview/tests/smoke-embedded-resources.mjs
+// 的 ⑥,改一边不改另一边即红)。为什么必须写字面量而不是 var(--page-backdrop),以及
+// 「灰 → 白 → 内容」三段各自的来源与证据,只写在 src/plugin-common/WebViewHost.cpp 的
+// HostWebView::paint 头注一处。
 inline constexpr juce::uint32 kShellBackdropArgb = 0xff191820;
 inline juce::Colour shellBackdrop() noexcept
 {
