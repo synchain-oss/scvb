@@ -3,6 +3,7 @@
 // 零写入、以及 VizPublisher 的降采样口径(断线 = 无分段覆盖)与 4Hz 分频节拍。
 // 跨进程部分(只读 attach / abi 拒连 / 一致性读)另见 tests/ipc/test_ipc_contract.cpp 的 VIZ-1/2。
 
+#include <limits>
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
@@ -432,6 +433,49 @@ TEST_CASE("VizPlane:[SL-362] 槽为 0 = 写方未提供 ⇒ 解码回哨兵,不�
     REQUIRE(reader.read(*out));
     REQUIRE(out->globalWidthPct == 0); // 真的 0%:packed 就是 0(裸字面量,不经被测编码)
     REQUIRE(out->globalWidthPct != scvb::kVizPanNone);
+}
+
+// [SL-362 复审第 5 轮] **打包点**那一格 —— 经真 `VizPublisher::tick` 喂工程量、从段里读回。
+//
+// 为什么单独要它:上面那两格喂的是**已经打好包的定点值**(`in->globalWidthPct` 是 int16),
+// 它们钉住的是 `VizPlane` 的编解码,**钉不到 `VizPublisher` 里那次 `vizPackFixed` 调用**。
+// 复核实证:把 `VizPublisher.cpp` 里那行的域换回 `kVizWidthMin/Max`、乃至把整块打包删掉,
+// 上面两格**全绿** —— 打包点当时没有任何判据。而红旗恰恰就出在那一行的域上。
+//
+// 期望值 **15000 是裸字面量**,不经被测编码(150 × kVizPanScale;夹到 100 时是 10000)。
+TEST_CASE("VizPublisher:[SL-362] 全局 width 经打包点落段(150 ⇒ 15000)", "[viz][publisher][sl362]")
+{
+    scvb::SegmentBackendInProcess backend;
+    scvb::output::VizPublisher pub(backend, 2);
+    REQUIRE(pub.open() == scvb::InitResult::kOk);
+    scvb::VizPlane reader(backend, 2);
+    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+
+    auto crvs = std::make_unique<scvb::state::CrvsData>();
+    crvs->versions[0].tracks[0].segments = {makeSeg(0.0, 10.0, 0.0f)};
+    scvb::CurveEvaluator c0;
+    buildCurve(c0, crvs->versions[0].tracks[0].segments);
+
+    scvb::output::VizPublishInput in;
+    in.crvs = crvs.get();
+    in.curves[0] = &c0;
+    in.versionActive = 1;
+    in.sampleRate = kSr;
+    in.crvsRevision = 1;
+    in.globalWidthPct = 150.0f; // ← **工程量**,由发布器负责打包
+
+    REQUIRE(pub.tick(0, in));
+    auto out = std::make_unique<scvb::VizSnapshot>();
+    REQUIRE(reader.read(*out));
+    // 150 × 100 = 15000。用 per-track 的 0..100 域会夹成 10000(红旗那个缺陷)。
+    REQUIRE(out->globalWidthPct == 15000);
+    REQUIRE(scvb::vizUnpackFixed(out->globalWidthPct) == 150.0);
+
+    // 不给(NaN,句柄未就绪)⇒ 段里留哨兵,读方回落 100。
+    in.globalWidthPct = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE(pub.tick(scvb::output::VizPublisher::kPublishIntervalMs, in));
+    REQUIRE(reader.read(*out));
+    REQUIRE(out->globalWidthPct == scvb::kVizPanNone);
 }
 
 TEST_CASE("VizPublisher:发布分频与车道按需重算", "[viz][publisher][cadence]")
