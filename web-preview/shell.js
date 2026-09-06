@@ -149,6 +149,7 @@ const SCENARIO_NAMES = {
         "diff-flood", // [SL-274] diff 摘要顶到 changed[] 封顶(200)的那一帧
         "slow-state-echo", // [SL-354] 真桥时序:写回执先到、scvb.state 后到一拍
         "applied-echo-drop", // [SL-354] 写落地后补一帧缺 analysis.applied 的全量快照
+        "sync-state-echo", // [SL-357] 同步回声逃生口(默认异步之后的旧语义)
     ],
     input: [
         "occupied",

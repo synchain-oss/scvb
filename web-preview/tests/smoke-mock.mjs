@@ -853,5 +853,115 @@ log("=== [SL-274] changed[] 封顶三处同值(native / web / mock)===");
     log(`  native ${nativeCap} / web ${webCap} / mock ${mockCap}`);
 }
 
+log("");
+log("=== [SL-357] 状态回声默认异步(与真桥同形)===");
+
+// 这一格钉的是本卡的核心断言:**写的回执先到、`scvb.state` 后到一拍**。
+// 量的是「桥函数 resolve 那一刻」到「带新值的 state 帧到达」的间隔。
+// 下界取 **120ms** 而不是 250:钉的是「确实隔了一拍」,不是把判据钉在 mock 当前的
+// 延迟常数上 —— 常数改成 200 或 300 这一格都该继续绿,改成 0 才该红。
+await withSession("output", "fixture=fifteen-tracks", async (b, seen) => {
+    const before = seen.get("scvb.state:last");
+    const t0 = Date.now();
+    await b.setAnalysisConfig({ loudness_mode: "rms" });
+    const tAck = Date.now() - t0;
+    const atAck = seen.get("scvb.state:last");
+    check(
+        atAck === before ||
+            !(
+                atAck &&
+                atAck.analysis &&
+                atAck.analysis.loudness_mode === "rms"
+            ),
+        `回执那一刻 state 仍是旧值(实得 ${JSON.stringify(atAck && atAck.analysis && atAck.analysis.loudness_mode)})`,
+    );
+    const t1 = Date.now();
+    let arrived = false;
+    for (;;) {
+        const st = seen.get("scvb.state:last");
+        if (st && st.analysis && st.analysis.loudness_mode === "rms") {
+            arrived = true;
+            break;
+        }
+        if (Date.now() - t1 > 3000) break;
+        await new Promise((r) => setTimeout(r, 10));
+    }
+    const gap = Date.now() - t0 - tAck;
+    log(`  回执耗时 ${tAck}ms;回执→state 间隔 ${gap}ms`);
+    // 两个出口分开断:帧没到时 gap≈3000 也满足 >=120,「延后一拍」和「彻底丢帧」不能同绿。
+    check(arrived, "带新值的 state 帧确实到达(没到时下面那条会被超时撑成恒真)");
+    check(
+        arrived && gap >= 120,
+        `写→state 至少隔一拍(实得 ${gap}ms,下界 120ms)`,
+    );
+});
+
+// 对照格:同步逃生口一开,同一条路径当场变回同步。
+// 没有这一格的话,上面那格只能证明「慢」,不能证明「是那个开关在控」。
+await withSession(
+    "output",
+    "fixture=fifteen-tracks&scenario=sync-state-echo",
+    async (b, seen) => {
+        await b.setAnalysisConfig({ loudness_mode: "rms" });
+        const st = seen.get("scvb.state:last");
+        check(
+            st && st.analysis && st.analysis.loudness_mode === "rms",
+            "同步逃生口(scenario=sync-state-echo)下,回执那一刻 store 已是新值",
+        );
+    },
+);
+
+// [SL-357] **过期全量帧那一档也要有格** —— 它此前只有实现、没有判据:
+// 反向删除式把 `staleFullEchoEvery` 改成 0,一格都不红,说明那一档当时是「实现的副作用」。
+// 这里用 `staleFullEvery=1`(每次写都插)取确定性,断言那一帧**确实到达过**:
+// 它带的是**写落地之前**组装的旧值,所以序列里必然出现一次「新值 → 旧值 → 新值」。
+await withSession(
+    "output",
+    "fixture=fifteen-tracks&staleFullEvery=1",
+    async (b, seen) => {
+        const seq = [];
+        const t0 = Date.now();
+        await b.setAnalysisConfig({ loudness_mode: "rms" });
+        for (;;) {
+            const st = seen.get("scvb.state:last");
+            const v = st && st.analysis && st.analysis.loudness_mode;
+            if (v && seq[seq.length - 1] !== v) seq.push(v);
+            if (Date.now() - t0 > 1200) break;
+            await new Promise((r) => setTimeout(r, 10));
+        }
+        log(`  过期帧序列:${seq.join(" → ")}`);
+        check(
+            seq.length >= 3 && seq[seq.length - 1] === "rms",
+            `过期全量帧到达过(序列应含回退再追平,实得 ${JSON.stringify(seq)})`,
+        );
+    },
+);
+
+// [SL-357] 上一格跑在 `staleFullEvery=1` 的覆写上,所以它**钉不住默认档**:
+// 把默认值改成 0(= 这一档在 preview 里根本不存在)它照样绿。这里补两条:
+// 默认档必须是「开着的」,而 `=0` 必须真能关掉 —— 钉的是**这一档默认在不在**,
+// 不是钉在常数 4 上(把 4 调成 3 或 5 都不该红)。
+{
+    const dflt = driver.createPreviewSession({
+        role: "output",
+        params: "fixture=fifteen-tracks",
+    });
+    const off = driver.createPreviewSession({
+        role: "output",
+        params: "fixture=fifteen-tracks&staleFullEvery=0",
+    });
+    log(
+        `  过期帧节奏:默认 ${dflt.world.caps.staleFullEchoEvery} / 覆写关 ${off.world.caps.staleFullEchoEvery}`,
+    );
+    check(
+        dflt.world.caps.staleFullEchoEvery > 0,
+        "默认档就注入过期全量帧(为 0 = 这一档只在显式场景里存在,等于没有)",
+    );
+    check(
+        off.world.caps.staleFullEchoEvery === 0,
+        "staleFullEvery=0 能关掉这一档(删除式要靠它)",
+    );
+}
+
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);

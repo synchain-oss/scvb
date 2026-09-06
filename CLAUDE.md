@@ -120,5 +120,7 @@
 ## 10. UI / WebView 规范
 
 web 资源经 `juce_add_binary_data` 嵌入;JS↔C++ 契约真源 = `docs/SCVB_CONTRACT.md` + `src/input/InputBridgeApi.h` / `src/output/OutputBridgeApi.h`(**不存在** `WEB_UI_CONTRACT.md` 或 `ScvbApi.h`,见到这两个名字一律按笔误处理,不要据此再造第二份桥契约);缩放走「web 固定设计盒 + CSS zoom + setSize 同步 + 10 秒确认防呆」;`web-preview/` 的 mock 桥必须与真桥同契约,契约改动要同时改两侧。
+**同契约不够 —— 时序也要同形**(SL-357):mock 的**状态回声默认异步**,写的回执先到、`scvb.state` 后到一拍(250ms = 4Hz 一帧),并按 `staleFullEchoEvery` 每 N 次写插一帧**过期的全量帧**(默认 4,可用 URL `?staleFullEvery=` 覆写:`1` = 每次都插,判据格用它取确定性;`0` = 关掉)。同步与否**只由 `caps.syncStateEcho` 一个开关决定** —— 别再引入第二个「看起来在控时序」的 cap:SL-357 里 `slowStateEcho` 就是这么变成死开关的,翻它一格都不红,靠反向删除式才照出来。理由:同步 mock 会让「写完立刻读 store」的产品代码永远绿,到真桥才炸 —— 用户 v5.6.7 报的「第一下只出横幅、第二下才弹窗」就活在那个差里,而当时没有任何一套冒烟拦得住。
+写冒烟时:**写完要等那一帧再断言**(轮询到条件成立,见 `web-preview/tests/lib/await-state.mjs`),**不要写死 `sleep(N)`**(把判据钉在 mock 当前的延迟常数上,常数一改或机器一慢就偶发红),**也不要拿 `scenario=sync-state-echo` 把红的用例弄绿** —— 那等于把这一套退回「preview 看不见真桥时序」的老状态。逃生口只给「那一格测的就是同步语义本身」的极少数用（今天只有 `applied-echo-drop` 一例，格旁写明理由）。
 
 **用户可见硬约束文案的单一真源**:九条硬约束要落到 markdown ×4(`docs/USER_GUIDE.md` / `docs/USER_GUIDE.zh-CN.md` / 两份 README 的 Quick start)+ i18n ×3(`web/shared/i18n.js` 的 `guide.rule1..9`,zh/en/fr)共 **7 处**。唯一真源 = `docs/USER_GUIDE.zh-CN.md` 的 `#硬约束` 小节,另外 6 处由 `node scripts/gen-hard-rules.mjs` **生成**。**禁止在任何位置手抄**;提交前跑 `node scripts/gen-hard-rules.mjs --check`(哈希比对,不一致即非零退出)与 `node scripts/check-i18n.mjs`(三语 key 全等)。UI 引导页只负责展示与「不再显示」持久化,不得自己写条目文本。

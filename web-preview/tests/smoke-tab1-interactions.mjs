@@ -52,6 +52,19 @@ const eq = (a, b, msg) =>
         `${msg}: 实得 ${JSON.stringify(a)},期望 ${JSON.stringify(b)}`,
     );
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// [SL-357] 状态回声默认异步(与真桥同形:写回执先到、`scvb.state` 后到一拍)。
+// 本文件原有 8 处 `await sleep(60)` 是**写死的等待**,新延迟(250ms)下一律不够。
+// 不把 60 改成 300 —— 那只是把判据钉在 mock 当前的常数上,常数一改或机器一慢就偶发红。
+// 改成**轮询到条件成立**,并给明确上界;超时的报错里带最后读到的值,便于定位。
+const until = async (ok, label, timeoutMs = 3000) => {
+    const t0 = Date.now();
+    for (;;) {
+        if (ok()) return;
+        if (Date.now() - t0 > timeoutMs)
+            throw new Error(`[until] 等 ${label} 超时(${timeoutMs}ms)`);
+        await sleep(25);
+    }
+};
 
 // =============================================================================
 log("=== ① 契约映射的纯函数 ===");
@@ -575,7 +588,10 @@ async function openSession(params) {
 
     // 三件套上行:setCaptureEnabled → scvb.state 回推 → 四态判定翻到 armed
     await bridge.setCaptureEnabled(true);
-    await sleep(60);
+    await until(
+        () => store.state.global.capture_enabled === true,
+        "capture_enabled 回推为 true",
+    );
     eq(
         store.state.global.capture_enabled,
         true,
@@ -592,14 +608,24 @@ async function openSession(params) {
     // 于是预览世界里存在「采集 ON ∧ 输出 ON」这个真机上不可能的组合,而靠预览截图
     // 核对两页一致性的人会被它骗过去。这里把两个方向都钉住。
     await bridge.setOutputEnabled(true);
-    await sleep(60);
+    await until(
+        () =>
+            store.state.global.output_enabled === true &&
+            store.state.global.capture_enabled === false,
+        "output 开 ⇒ capture 被关(两个方向都到位)",
+    );
     eq(
         [store.state.global.output_enabled, store.state.global.capture_enabled],
         [true, false],
         "J92a:手动开跟随引擎 ⇒ 采集被关(上一步刚把采集开着,故这一条不是空转)",
     );
     await bridge.setCaptureEnabled(true);
-    await sleep(60);
+    await until(
+        () =>
+            store.state.global.capture_enabled === true &&
+            store.state.global.output_enabled === false,
+        "capture 开 ⇒ output 被关(两个方向都到位)",
+    );
     eq(
         [store.state.global.capture_enabled, store.state.global.output_enabled],
         [true, false],
@@ -644,7 +670,10 @@ async function openSession(params) {
         "manual 且 start ≥ end ⇒ badArg(UI 侧同条件不发调用)",
     );
     await bridge.setRange("manual", 12, 96);
-    await sleep(60);
+    await until(
+        () => store.state.global.range.mode === "manual",
+        "range.mode 回推为 manual",
+    );
     eq(store.state.global.range.mode, "manual", "manual 档回推");
     eq(
         TM.analyzeScope(store.state),
@@ -658,7 +687,10 @@ async function openSession(params) {
 
     // 版本:setVersionActive / setVersionName(≤16、空值回落)
     eq((await bridge.setVersionActive(2)).ok, true, "setVersionActive(2)");
-    await sleep(60);
+    await until(
+        () => store.state.global.version_active === 2,
+        "version_active 回推为 2",
+    );
     eq(store.state.global.version_active, 2, "version_active 回推");
     const named = await bridge.setVersionName(2, "  ");
     eq(named, { ok: true, name: "V2" }, "空白名回落默认 V{v}(§1.10)");
@@ -667,13 +699,16 @@ async function openSession(params) {
 
     // 组:setGroupId 成功后 group_id 回推
     eq((await bridge.setGroupId(3)).ok, true, "setGroupId(3)");
-    await sleep(60);
+    await until(() => store.state.group_id === 3, "group_id 回推为 3");
     eq(store.state.group_id, 3, "group_id 回推");
     eq(TM.GROUP_IDS[store.state.group_id - 1], "C", "组号 3 ⇒ 显示 C");
 
     // 过渡:越界夹取回推(§1.20)
     await bridge.setTransitionRamp(9999);
-    await sleep(60);
+    await until(
+        () => store.state.analysis.transition_ramp_ms === 300,
+        "transition_ramp_ms 夹取回推为 300",
+    );
     eq(
         store.state.analysis.transition_ramp_ms,
         300,
@@ -693,7 +728,10 @@ async function openSession(params) {
         true,
         "setGuideSeen(true, true)",
     );
-    await sleep(60);
+    await until(
+        () => store.state.ui.guide_seen === true,
+        "guide_seen 回推为 true",
+    );
     eq(
         store.state.ui.guide_seen,
         true,

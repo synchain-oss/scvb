@@ -98,10 +98,12 @@
 //         所以断言形态不变;中央槽那一侧由 C10c2 断,两格合起来才是完整口径;
 //         同批一条排版断言:弹窗正文段的上下 margin 为 0(两段间距只由 .sc-modal__note
 //         的 margin-top 决定),删掉 `.sc-modal--reanalyze .sc-modal__body{margin:0}` 即红;
-//      C10 [SL-354] 用户 v5.6.7 真机四条 + 一道兜底闸。前四条**必须跑在异步回声场景上**
-//         (`scenario=slow-state-echo`):默认 mock 同步 emit `scvb.state`,写回执到达时
-//         store 已是新值,①② 那两条链在它上面根本不存在 —— C10a 因此先量一次「点击 →
-//         徽标亮」的页内耗时,把「这个场景真的还有牙齿」也钉住。逐格与删除式见那一段的
+//      C10 [SL-354] 用户 v5.6.7 真机四条 + 一道兜底闸。前四条跑在异步回声场景上
+//         (`scenario=slow-state-echo`)。**[SL-357] 那已经是默认行为了** —— 场景名保留
+//         为显式写法(读 URL 就知道这几格在测时序);SL-354 时它才是非默认档,当时
+//         默认同步 emit `scvb.state`、写回执到达时 store 已是新值,①② 那两条链在
+//         默认档上根本不存在。C10a 因此先量一次「点击 → 徽标亮」的页内耗时,
+//         把「这个场景真的还有牙齿」也钉住。逐格与删除式见那一段的
 //         行内注释:a 第一下就弹 / b 过期全量帧不关框 / c 中央槽同样弹 /
 //         c2 框内说明段说的是被改的那一项(复审第 1 轮)/ d 说明段字号走 --fs-110 /
 //         e 改回基线三件事 / f 缺 applied 的全量帧不许清闸关框 /
@@ -1804,15 +1806,18 @@ try {
 
     // C10 [SL-354] 用户 v5.6.7 真机四条 + 一道兜底闸,分三张页跑:
     //     · C10a/b/e:`scenario=slow-state-echo`(写的回执先到、状态帧后到一拍,中间还夹
-    //       一帧内容早于写、送达晚于写的全量快照)。默认 mock 是同步 emit 的,①② 在它上面
-    //       **一条都复现不出来** —— 那正是 preview 三个月没照出这些缺陷的原因;
+    //       一帧内容早于写、送达晚于写的全量快照)。**[SL-357] 这已是默认行为**;在此之前
+    //       默认是同步 emit,①② 在默认档上**一条都复现不出来** —— 那正是 preview 三个月
+    //       没照出这些缺陷的原因,本卡把默认翻了过来;
     //     · C10c / C10c2 / C10g:同一场景**另开一张干净页**(理由见 C10c 那处);
     //     · C10f + C10d:`scenario=applied-echo-drop`(写落地后补一帧缺 `analysis.applied`
     //       的全量快照)—— 与时序无关的另一条路,故不与上面几格共页;字号那一格搭在这里,
     //       理由是它只需要「框开着」,不该被 ①② 的守卫带红(见那处)。
     newBucket("sl354-real-cadence");
     await cdp.send("Page.navigate", {
-        url: `${base}/web-preview/output.html?scenario=slow-state-echo`,
+        // [SL-357] 默认档每 4 次写才插一帧过期全量帧,本页只写一次拿不到它 ⇒ C10b
+        // 「过期全量帧过去之后框还在」会失去扳机;显式 staleFullEvery=1 让第 1 次写就插。
+        url: `${base}/web-preview/output.html?scenario=slow-state-echo&staleFullEvery=1`,
     });
     check(
         await waitFor(
@@ -2141,8 +2146,30 @@ try {
     // 那句早退 —— 两道各自独立挡得住,所以本条的删除式是**两道一起拆**(单拆任一道都
     // 照绿,实测过)。逐条见文件头 C9 那段。
     newBucket("reanalyze-ask-oneshot");
+    // [SL-357] **本页显式关掉「过期全量帧」那一档(`staleFullEvery=0`),异步回声照旧。**
+    // 关的是「乱序帧」这一个自由度,不是时序 —— 写回执先到、`scvb.state` 后到一拍仍然
+    // 生效(C9/C10h 要跑在真桥时序上),所以这**不是**拿逃生口把红的用例弄绿。
+    //
+    // 为什么非关不可:默认档是 `staleFullEchoEvery=4`(每 4 次写插一帧),而本页恰好在
+    // **第 4 次写**(C9 ③ 那次 `setLoudness("rms")`)上撞到它,于是紧接着的 C10h 起手时
+    // 还有两帧在途 —— 300ms 那帧是**写之前**的旧全量快照(当前值 = 基线),350ms 那帧
+    // 才追平回 rms。C10h ② 的「正证据:徽标灭了」读的是 **DOM**,而 300ms 那帧就能把
+    // 徽标打灭;等 350ms 追平帧把 store 的当前值放回 rms 时,渲染走的是 rAF、**DOM 还
+    // 慢一拍**,于是判据看到的仍是「灭着的徽标 + 按住的 kw_integrated」。这一刻 ③ 去点
+    // rms,`wireSeg` 的「点击已选中档不重复写」读的是 **store**(此刻正是 rms)⇒ 这一下
+    // 被正当地吞掉、一次写都没发出去 ⇒ 框当然不弹。本机用页内定时器把 ② 精确排在
+    // 352ms 复现过:探针读到 `{badgeHidden:true, pressedInDom:"kw_integrated"}` 而 ③ 不弹。
+    // 也就是说这一格红在**前置条件不成立**,不是「重新开闸」漏了 —— 把 ② 换成更强的
+    // DOM 断言也堵不住(那一帧连按钮的 aria-pressed 都是 kw_integrated)。
+    //
+    // 关掉之后本页每次写只剩「+250ms 一帧」,`badgeGone` 只可能由 ② 自己那一帧产生,
+    // 判据前置回到确定的。过期帧那一档由 `smoke-mock` 的两格钉(`staleFullEvery=1` 造、
+    // `=0` 关),**不靠这一页顺带**。
+    //
+    // C10a/b 那一页(`scenario=slow-state-echo`)只写一次、默认档拿不到过期帧,已在那页
+    // 显式 `&staleFullEvery=1`(见 sl354-real-cadence 桶)。
     await cdp.send("Page.navigate", {
-        url: `${base}/web-preview/output.html?fixture=fifteen-tracks`,
+        url: `${base}/web-preview/output.html?fixture=fifteen-tracks&staleFullEvery=0`,
     });
     check(
         await waitFor(
