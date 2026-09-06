@@ -147,11 +147,12 @@ export const SCENARIO_MAP = Object.freeze({
     // 判断」:UI 派生基线时缺 applied 会回落到当前值 ⇒ stale 假装归假。与 slow-state-echo
     // **有意分成两个场景**:那边验的是时序,这边验的是缺字段,两条路各自单独可红。
     "applied-echo-drop": "fifteen-tracks",
-    // [SL-357 补] 同步回声逃生口 —— 默认异步之后的**旧语义**。它也要在这张表里有一行:
-    // 不在的话 `parsePreviewQuery` 判它「待 T31-T36 接线」并报一条警告,单独用
-    // `?scenario=sync-state-echo` 会落进默认 fixture(在 a961b52 上实测过)。
-    // #242 复审只点出了 shell.js 白名单那半边;这半边是给那条修法配删除式时照出来的 ——
-    // 把白名单里那行删掉,下面那格对拍**不红**,因为名字压根不在本表里、判据够不着。
+    // [SL-357 补] 同步回声逃生口。**这一行不改变任何 fixture 的选择结果** ——
+    // 本表映射的目标就是 `DEFAULT_FIXTURE`,而 `caps.syncStateEcho` 由 `buildWorld`
+    // 按 `opts.scenario` 直接置(见下面那处),不经本表,逃生口此前一直是通的。
+    // 收益只有两条,别高估:① 消掉 `parsePreviewQuery` 那条「待 T31-T36 接线」的
+    // 伪警告(#242 合入树上实测有);② 让「场景名两张表都要在」这条纪律在本名字上
+    // 成立 —— 不在本表里,`smoke-mock` 那格双向对拍就够不着它。
     "sync-state-echo": "fifteen-tracks",
     // [SL-280] 分布图柱高映射的回归场景:DEMO_TRACKS 的推子行程最高 0.62(= −1.7 dB),
     // 全部落在旧公式的**饱和点之下**,所以「−1.82 dB 以上一律画成 88%」这条缺陷在

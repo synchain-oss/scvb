@@ -14,6 +14,9 @@
 //   ⑥ `?scenario=` / `?fixture=` 的回落与 warning;
 //   ⑦ **[J83] `participate_in_auto_pan` 默认档**:未显式设置一律 true(含 stereo 轨),
 //      显式设置经 `setChannelConfig` 仍然说了算,且 §4.3 Input 只读镜像与 Output 真源同值。
+//   ⑧ **[SL-357] 回声时序那一档**:写→`scvb.state` 至少隔一拍(带「那一帧确实到了」
+//      的到达标记,否则超时会假绿)、同步逃生口作对照、过期全量帧的注入节奏;
+//      外加**两张场景名表双向对齐**(`SCENARIO_MAP` ↔ shell.js 的 `SCENARIO_NAMES`)。
 //
 // 用法:node web-preview/tests/smoke-mock.mjs [仓库根绝对路径]
 //   不给参数就按本脚本位置推仓库根(<repo>/web-preview/tests/ → <repo>)。
@@ -963,44 +966,90 @@ await withSession(
     );
 }
 
-const NEWLINE = String.fromCharCode(10);
-const SLASH = String.fromCharCode(47);
-const LINE_COMMENT = new RegExp(SLASH + SLASH + ".*$");
-const DQ = String.fromCharCode(34);
-const NAME_LITERAL = new RegExp(DQ + "[a-z0-9-]+" + DQ, "g");
+const NAME_LITERAL = new RegExp(
+    String.fromCharCode(34) + "[a-z0-9-]+" + String.fromCharCode(34),
+    "g",
+);
+// [SL-357 补] `SCENARIO_NAMES` 里**有名字、`SCENARIO_MAP` 里没接线**的已知项。
+// 这不是豁免表,是**账**:每一个都会让 `?scenario=<名字>` 报一条「待 T31-T36 接线」
+// 的伪警告并落回默认 fixture(实测过)。它们是历次实施卡留下的,本卡不动;
+// 新增场景不许往这里加 —— 加名字进白名单就要同时进 SCENARIO_MAP。
+const KNOWN_UNMAPPED = new Set([
+    "printing", // 打印守卫那档,只在白名单里(smoke-output-dist-page:568 记过同形态)
+    "newer-state", // 05 正文里的场景,mock 侧从未接线
+    "sidecar-missing",
+    "project-copy",
+    "sidecar-switched",
+    "low-sample",
+]);
 
-// [SL-357 复审第 1 轮] **两张场景名表必须对齐** —— 这一条此前没有任何一格会红。
-// `SCENARIO_MAP`(state-driver,场景走哪个 fixture)与 `SCENARIO_NAMES`(shell.js,
-// 壳页工具条印场景名还是印 unknown)是两张手工同步的表。漏登记不会报错,后果是
-// **「参数拼错了」那条肉眼信号在新场景上失灵**;node 侧冒烟不经 shell.js,所以本卡
-// 加 sync-state-echo 时漏了一笔仍然全绿(复审点出),SL-354 一次补登过五个。
-// ⚠ 钉的是**名字集合的包含关系**,不是排版;剥出白名单时先去掉行注释,
-//   否则注释里出现同名字符串就能冒充登记。
+// [SL-357 补 · 复审第 1 轮] **两张场景名表必须双向对齐。**
+// `SCENARIO_MAP`(state-driver:场景走哪个 fixture)与 `SCENARIO_NAMES`(shell.js:
+// 壳页工具条印场景名还是印 `unknown`)是两张手工同步的表,漏登记不报错。
+//
+// ⚠ **两个方向都要判,而且更常栽的是反向那个**。第一版只判了 `MAP ∖ 白名单`,
+//   复审当场指出:本卡修的那次漏登记恰好是**反向**(白名单有、MAP 没有),
+//   所以那一版钉不住自己要修的缺陷。本仓这一形态至少栽过四次 ——
+//   `stale`(state-driver 的注释里记着)、`no-timeline`、`printing`、
+//   以及本卡的 `sync-state-echo`。后果是 `parsePreviewQuery` 判它「待接线」、
+//   报一条伪警告,而白名单里有名字,看上去一切正常。
+//
+// 反向那侧的**已知例外登记在下面这张表**里,不是豁免:每加一个都要写清为什么。
+// 名字加进白名单却不进 MAP ⇒ 反向集合变大 ⇒ 本格红,这正是要拦的。
 {
+    // monitor 那一列在 shell.js 里是 `monitor: MONITOR_SCENARIOS`(标识符引用,
+    // 不产生字符串字面量),文本剥法够不着 —— 直接从真源导入并入,免得哪天
+    // monitor 场景进了 SCENARIO_MAP 时本格**假红**并把人指向不存在的缺陷。
+    const { MONITOR_SCENARIOS } = await import(
+        u("web-preview/mock/monitor-mock.js")
+    );
+    const { stripJsComments } = await import(
+        u("scripts/lib/strip-comments.mjs")
+    );
     const shellSrc = readFileSync(
         new URL("../shell.js", import.meta.url),
         "utf8",
     );
-    // `SCENARIO_MAP` 是**不分角色**的平表,shell.js 那张分 output / input 两列 ——
-    // 所以判据对的是**两列的并集**,不是单看 output(单看 output 会把 occupied、
-    // abi-mismatch 那些 input 侧场景全判成缺登记,那是判据比宣称宽,不是真缺陷)。
-    const block = shellSrc.slice(shellSrc.indexOf("const SCENARIO_NAMES"));
-    const table = block.slice(0, block.indexOf("};"));
-    const stripped = table
-        .split(NEWLINE)
-        .map((l) => l.replace(LINE_COMMENT, ""))
-        .join(NEWLINE);
-    const listed = new Set(
-        (stripped.match(NAME_LITERAL) || []).map((x) => x.slice(1, -1)),
-    );
-    const mapped = Object.keys(driver.SCENARIO_MAP);
-    const missing = mapped.filter((n) => !listed.has(n));
+    // ⚠ 两个 `indexOf` 都要断言命中:第二个失手是**往假绿方向掉**的 ——
+    //   `indexOf("};")` 返回 -1 时 `slice(0, -1)` 会一路切到文件末尾,于是
+    //   shell.js 后半个文件里所有小写双引号串都被收进白名单,判据近乎恒真且不吭声。
+    //   今天靠「`};` 恰好第一次出现在这张表末尾」成立,那是排版巧合,不是判据。
+    const at = shellSrc.indexOf("const SCENARIO_NAMES");
+    check(at >= 0, "shell.js 里找得到 SCENARIO_NAMES(锚点还在)");
+    const rest = shellSrc.slice(at);
+    const end = rest.indexOf("};");
+    check(end > 0, "SCENARIO_NAMES 这张表切得出结尾(找不到 };⇒ 判据会恒真)");
+    // 词法级剥注释:手写的行注释正则漏块注释,`/* "foo" */` 照样能冒充登记;
+    // 仓里已有这个工具(串与注释分得清),别再手写一份。
+    const table = stripJsComments(rest.slice(0, end > 0 ? end : 0), "js");
+    const litOf = (txt) =>
+        (txt.match(NAME_LITERAL) || []).map((x) => x.slice(1, -1));
+    const outIn = new Set(litOf(table));
+    const listed = new Set([...outIn, ...MONITOR_SCENARIOS]);
+    const mapped = new Set(Object.keys(driver.SCENARIO_MAP));
+
+    // 正向:MAP 里有、白名单里没有 ⇒ 工具条印 unknown。
+    const missingInShell = [...mapped].filter((n) => !listed.has(n));
+    // 反向:白名单里有、MAP 里没有 ⇒ 伪警告「待 T31-T36 接线」+ fixture 回默认。
+    // monitor 那一列不参与反向 —— 它走 monitor-mock 自己那套,本来就不进 SCENARIO_MAP。
+    const unmapped = [...outIn].filter((n) => !mapped.has(n));
+    const extra = unmapped.filter((n) => !KNOWN_UNMAPPED.has(n));
+    const stale = [...KNOWN_UNMAPPED].filter((n) => mapped.has(n));
+
     log(
-        `  场景名表:SCENARIO_MAP ${mapped.length} 个 / shell 白名单(两列并集)${listed.size} 个`,
+        `  场景名表:MAP ${mapped.size} 个 / 白名单 ${listed.size} 个(含 monitor ${MONITOR_SCENARIOS.length});已知未接线 ${unmapped.length} 个`,
     );
     check(
-        missing.length === 0,
-        `SCENARIO_MAP 的场景都登记进了 shell.js 白名单(缺 ${JSON.stringify(missing)})`,
+        missingInShell.length === 0,
+        `MAP 的场景都登记进了 shell.js 白名单(缺 ${JSON.stringify(missingInShell)})`,
+    );
+    check(
+        extra.length === 0,
+        `白名单里没有「有名无实」的新场景(未登记在案的 ${JSON.stringify(extra)} —— 要么补进 SCENARIO_MAP,要么写进 KNOWN_UNMAPPED 并说明理由)`,
+    );
+    check(
+        stale.length === 0,
+        `KNOWN_UNMAPPED 里没有已经接上线的名字(${JSON.stringify(stale)} 该从表里删掉)`,
     );
 }
 
