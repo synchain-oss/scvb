@@ -17,7 +17,7 @@
 // 外加空闲零 rAF(05 §6.1):切到轨迹档 / 切走 Tab1 时一帧都不许跑 —— Output 的
 // `scvb.params` 仍以 25Hz 推着 render,少一道闸就是对着没人看的画面烧 60fps 循环。
 //
-// [SL-353] 末节 ⑪ 越出「Output 一页」的范围:它在 **Output 与 Monitor 两页各自的文档里**
+// [SL-353] 末节 ⑫ 越出「Output 一页」的范围:它在 **Output 与 Monitor 两页各自的文档里**
 // 造同一个沙箱、喂同一批 rows,把柱数/矩形/0 dB 线/计算色逐项对拍。放在本文件是因为
 // 被测面就是分布图的渲染面(本文件的主题),而两页的 `.dist-bar` / `.dist-plot__zero`
 // CSS 是**手抄两份**、此前没有任何东西比对过。
@@ -1915,7 +1915,7 @@ try {
     }
 
     // =========================================================================
-    // ⑪ [SL-353] 分布图渲染面:柱是**单色单元素** + Output↔Monitor 两页逐项对拍
+    // ⑫ [SL-353] 分布图渲染面:柱是**单色单元素** + Output↔Monitor 两页逐项对拍
     // -------------------------------------------------------------------------
     // 用户实测(v5.6.7)两条:①「竖条最上方一段颜色与其余部分不同,**有的时候**」;
     // ② Monitor 的分布图与 Output 对不上。
@@ -1964,6 +1964,7 @@ try {
     //   · D6 两页    晕改 `inset 0 0 0 1px`(晕跑到柱内侧)     ⇒ 只有 (d)
     //   · D7 两页    lead 帽 `top` 退回 `-3px`(帽悬空)        ⇒ 只有 (c)
     //   · D8 tokens.css 把 `--dist-bar-halo` 改成有色差的红      ⇒ 只有 (d)
+    //   · D10 两页    lead 帽高改 `1px`(帽又悬空)          ⇒ 只有 (c)
     //   (统筹裁定 2026-09-06,#235 第 1 轮 PR 评论)复审建议的「晕色亮度护栏 + D9」**不做**。
     //     备忘：单断 `r=g=b` 只钉住「无色差」，`rgb(96,96,96)` 这类中灰同样全绿，
     //     却会给**每一根**独立的柱描一圈可见深色圈；当前值是白 55%，离那一带很远。
@@ -2076,6 +2077,7 @@ try {
             before: bf.content,
             after: af.content,
             afterTop: af.top,
+            afterH: af.height,
             afterBg: af.backgroundImage,
             afterRgb: rgbOf(af.backgroundImage),
         });
@@ -2162,12 +2164,25 @@ try {
                         `(c) ${name} 轨 ${b.ch}(lead):帽色 = --dist-bar-lead 的绿` +
                             `(实得 ${JSON.stringify(b.afterRgb)})`,
                     );
-                    eq(
-                        b.afterTop,
-                        "-2px",
-                        `(c) ★ ${name} 轨 ${b.ch}(lead):帽底边贴住柱顶(top = −帽高)—— ` +
-                            `悬空的帽会让那 1px 空档被分隔晕填成浅色带，` +
-                            `lead 轨柱顶恒常读成三段(实得「${b.afterTop}」)`,
+                    // 断的是**不变量**「帽底边贴住柱顶」= `top + height === 0`,
+                    // 不是两个字面量:只钉 `top` 的话,`top:-2px; height:1px` 照绿,
+                    // 而那 1px 空档正是外扩 1px 分隔晕占的位置 —— 浅色带回来、
+                    // lead 轨柱顶恒常读成三段,正是本卡这一轮刚修掉的那一幕
+                    // (复审第 2 轮【重要】)。
+                    // 先断两个量都**取得到**:取不到时 `parseFloat` 得 NaN、
+                    // 比较恒 false,那会把下面那一格变成一个**永远红**的格——
+                    // 与「永远绿」是同一族的另一半,报错也指不到真因。
+                    check(
+                        /px$/.test(b.afterTop) && /px$/.test(b.afterH),
+                        `(c) ★ ${name} 轨 ${b.ch}(lead):帽的 top / height 两个量都取得到` +
+                            `(实得「${b.afterTop}」/「${b.afterH}」)`,
+                    );
+                    check(
+                        parseFloat(b.afterTop) + parseFloat(b.afterH) === 0,
+                        `(c) ★ ${name} 轨 ${b.ch}(lead):帽底边贴住柱顶` +
+                            `(top + height === 0,实得 ${b.afterTop} + ${b.afterH})—— ` +
+                            `悬空的帽会让那一格空档被分隔晕填成浅色带,` +
+                            `lead 轨柱顶恒常读成三段`,
                     );
                 } else {
                     eq(
@@ -2293,6 +2308,11 @@ try {
                     b.afterTop,
                     a.afterTop,
                     `(e5) 第 ${i + 1} 根柱(轨 ${a.ch})的柱顶帽纵位两页一致`,
+                );
+                eq(
+                    b.afterH,
+                    a.afterH,
+                    `(e5) 第 ${i + 1} 根柱(轨 ${a.ch})的柱顶帽高两页一致`,
                 );
             }
             check(
