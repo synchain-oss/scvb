@@ -2543,6 +2543,10 @@ try {
     // ★ 删除式(本机实测,实得清单在 PR 描述里):
     //   · DA 两页 `.dist-bar` 的 box-shadow 整体退回 `0 0 0 1px var(--dist-bar-halo)`
     //        并删掉 `.dist-bar[data-lead="1"]` 那条覆盖  ⇒ (a1)(a2) 红 + ⑫(d) 红,(b)(c) 绿
+    //     ⚠ 这一格是**改过一版**才有牙的:第一版不对齐柱高、(b) 又钉死了分隔线的侧别,
+    //       DA 实测只红了 (a1)(b) —— (a2)(满格那根,top=29.766)照绿,因为浏览器把那条
+    //       外扩晕吸附到了 floor(top) 那一行、被测的 floor(top)-1 仍是干净图底;
+    //       而 (b) 红是假红(分隔线还在,只是在分界上侧)。两处都已改掉,别退回去。
     //   · DB 两页只删 `inset 0 1px 0 var(--dist-bar-halo)` 那一段(左右两段留着)
     //                                                    ⇒ 只有 (b) 红
     //   · DC 两页删掉 `.dist-bar[data-lead="1"]` 那条覆盖(lead 柱也吃到 inset)
@@ -2624,6 +2628,18 @@ try {
             '  host.querySelector(".dist-bars").innerHTML = DC.distBarsHtml(ROWS, 0, 100);' +
             "  const r2 = (v) => Math.round(v * 1000) / 1000;" +
             "  const hr = host.getBoundingClientRect();" +
+            // 把每根柱的**柱顶就近对齐到整像素**(改的是 height,柱底不动):
+            // 柱高是带两位小数的百分比,柱顶因此落在亚像素上,而浏览器会把 box-shadow
+            // 按自己的规则吸附到整行 —— 同一条晕,柱顶 .375 时落在上一行、柱顶 .766 时
+            // 落在下一行。不对齐的话「柱顶上方那一行」这句话本身是有歧义的:本机实测
+            // 满格那根(top=29.766)在**没修**的版本上,floor(top)-1 那行仍是干净图底,
+            // 于是那一格拿不到删除式(而普通高度那根 top=69.375 就红了)。
+            // 位移上界 0.5px,不改变任何一根柱的档位;对齐后下面显式断柱顶是整数,
+            // 断不住就整节判负,免得又悄悄退回「测的是哪一行说不清」。
+            '  for (const b of host.querySelectorAll(".dist-bar")) {' +
+            "    const r0 = b.getBoundingClientRect();" +
+            '    b.style.height = (r0.bottom - Math.round(r0.top)) + "px";' +
+            "  }" +
             "  const out = { plotTop: r2(hr.top), plotBottom: r2(hr.bottom), bars: {} };" +
             '  for (const b of host.querySelectorAll(".dist-bar")) {' +
             "    const r = b.getBoundingClientRect();" +
@@ -2707,6 +2723,12 @@ try {
                     }
                 }
                 const cx = Math.round((b.left + b.right) / 2);
+                // (前提0)柱顶确实被对齐到了整像素 —— 没对齐时「上方那一行」指哪一行
+                // 取决于浏览器怎么吸附阴影,这一格的删除式会时灵时不灵(实测过)。
+                check(
+                    Number.isInteger(b.top),
+                    `(${key} 前提0)★ ${name} 轨 ${ch}:柱顶已对齐到整像素(实得 ${b.top})`,
+                );
                 // (前提1)这根柱真的画出来了 —— 不然「上方那一行干净」是空绿。
                 check(
                     dmax(img.px(cx, Math.round(b.top) + 4), ground) > 40,
@@ -2739,13 +2761,17 @@ try {
                 const rear = g.bars["7"];
                 const front = g.bars["9"];
                 const cx = Math.round((front.left + front.right) / 2);
-                const seamRow = Math.floor(front.top);
+                const seamRow = Math.round(front.top);
                 const rearBody = img.px(cx, seamRow - 3);
-                const frontBody = img.px(cx, seamRow + 4);
-                const seam = Math.max(
-                    luma(img.px(cx, seamRow)),
-                    luma(img.px(cx, seamRow + 1)),
-                );
+                const frontBody = img.px(cx, seamRow + 3);
+                // 扫**分界前后三行**取最亮的一行。判据是「分界处有一条浅色线」,
+                // 不是「它在分界的哪一侧」—— 本卡做的正是把它从上侧挪到下侧,
+                // 钉死侧别的话这一格会把本卡自己的修法判成红(而且旧版式退回来时
+                // 它也会红,于是这一格分不清「分隔线没了」和「分隔线换了侧」)。
+                let seam = 0;
+                for (const r of [seamRow - 1, seamRow, seamRow + 1]) {
+                    seam = Math.max(seam, luma(img.px(cx, r)));
+                }
                 const floorL = Math.max(luma(rearBody), luma(frontBody));
                 // 前提:两根柱真的重合(同一个 x)且后画的那根更矮 —— 不重合的话
                 // 「分界那一行」不存在,下面那一格就没有被测对象。
@@ -2757,7 +2783,7 @@ try {
                 );
                 check(
                     seam >= floorL + 25,
-                    `(b) ★ ${name}:两柱重合处(y=${seamRow})仍有一条浅色分隔线 —— ` +
+                    `(b) ★ ${name}:两柱重合处(y=${seamRow}±1)仍有一条浅色分隔线 —— ` +
                         `分界行亮度 ${Math.round(seam)} 应比上下两侧柱色(后 ${Math.round(
                             luma(rearBody),
                         )} / 前 ${Math.round(
@@ -2771,9 +2797,13 @@ try {
             {
                 const b = g.bars["12"];
                 const cx = Math.round((b.left + b.right) / 2);
-                const capRow = Math.floor(b.top) - 1;
+                const capRow = b.top - 1;
                 const cap = img.px(cx, capRow);
-                const body = img.px(cx, Math.floor(b.top) + 5);
+                const body = img.px(cx, b.top + 5);
+                check(
+                    Number.isInteger(b.top),
+                    `(c 前提0)★ ${name} 轨 12:柱顶已对齐到整像素(实得 ${b.top})`,
+                );
                 // 前提:柱顶之上确实是那道绿帽(绿分量明显高过红蓝)。
                 check(
                     cap[1] - cap[0] >= 15 && cap[1] - cap[2] >= 15,
@@ -2782,10 +2812,7 @@ try {
                 );
                 let worst = 0;
                 let worstRow = capRow;
-                for (const r of [
-                    Math.floor(b.top) + 1,
-                    Math.floor(b.top) + 2,
-                ]) {
+                for (const r of [b.top, b.top + 1]) {
                     const d = dmax(img.px(cx, r), body);
                     if (d > worst) {
                         worst = d;
