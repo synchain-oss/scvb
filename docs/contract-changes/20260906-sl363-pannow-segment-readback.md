@@ -1,9 +1,8 @@
 # 契约变更说明 —— 20260906-sl363-pannow-segment-readback
 
-> **状态:待用户批准。** 本 PR(#245)**只提交本文档,不改 `docs/IPC_CONTRACT.md` 正文**
-> —— 统筹裁定(#245 PR 评论,2026-09-06):变更文档先起草推上来,用户批准 + 挂
-> `status/frozen-contract` 标签之后,再把正文那两处落地。
-> 在正文落地之前,`docs/IPC_CONTRACT.md` §6.1 的 `panNow` 语义句与代码**已知不一致**。
+> **状态:已批准并落地。** 用户 2026-09-06 批准(见文末「审批」);同一 PR(#245)的 `e42000e`
+> 起把 `docs/IPC_CONTRACT.md` §6.1 两处正文与 `docs/constitution/ipc-contract-v0.md` 副本一并落地,
+> `status/frozen-contract` 已挂。本文档是这条契约变更的审计记录。
 
 ## 变更了哪个冻结契约
 
