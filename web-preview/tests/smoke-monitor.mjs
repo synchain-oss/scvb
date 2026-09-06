@@ -1779,10 +1779,19 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
         150,
         "[SL-362] 150 原样(全局域 0..150,不是 per-track 的 0..100)",
     );
+    // 「告警回落」是**两半**:回落 + 留下 warning。只断回落的话,把 `warnings.push` 整行
+    // 删掉(= 变成**静默忽略**)这一格照样绿 —— 而「不静默」正是本格自己声明要保的东西
+    // (复审第 8 轮点名)。同块上面 `?scenario=nope` 那格就是两半都断的写法,照它。
+    // ← 删掉那行 push,只红下面第二条。
+    const gwOob = MMOCK.parseMonitorQuery("?globalwidth=151");
     eq(
-        MMOCK.parseMonitorQuery("?globalwidth=151").globalWidthPct,
+        gwOob.globalWidthPct,
         undefined,
-        "[SL-362] 越界告警回落,**不静默夹取**(夹取会让用例以为测到了 151)",
+        "[SL-362] 越界**回落**,不静默夹取(夹取会让用例以为测到了 151)",
+    );
+    check(
+        gwOob.warnings.some((x) => x.includes("globalwidth")),
+        "[SL-362] 越界还要留一条 warning(**告警**那半;不是静默忽略)",
     );
     eq(MMOCK.parseMonitorQuery("?play=0").play, false, "play=0 ⇒ 走带停住");
     // 场景表与壳页白名单同源(壳页 import 本表,不抄第二份)
