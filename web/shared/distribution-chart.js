@@ -196,7 +196,7 @@ export function distSpanVars(geo) {
  * 之所以写下来:v5.6.7 用户把「柱顶一段是别的颜色」报成了取色缺陷,而真因是**两轨
  * 声像相同、柱体完全重合**(后画的矮柱盖住高柱的下半截,只露出顶端一小截),与本
  * 函数的取色无关。可读性由 CSS 的 1px 分隔晕(`--dist-bar-halo`)兜;判据在
- * `web-preview/tests/smoke-output-dist-page.mjs` ⑪(单色 + 无 `::before` + 帽只跟
+ * `web-preview/tests/smoke-output-dist-page.mjs` ⑫(单色 + 无 `::before` + 帽只跟
  * lead 走),**不是**源码正则。
  *
  * @param {{ch:number, pan:number, volDb:number, widthPct:number,

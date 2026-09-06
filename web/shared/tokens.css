@@ -592,7 +592,7 @@
      ⚠ 放在这里而不是各页 `:root`(`--dist-bar-fill` / `--dist-bar-lead` 那样):
      那两条是设计稿原值存档,各页一份是历史形态;本条要求**两页逐字相同**,
      写成两份就是本仓刚清过的那类漂移。跨页一致由
-     `web-preview/tests/smoke-output-dist-page.mjs` ⑪ 的计算样式对拍兜着。
+     `web-preview/tests/smoke-output-dist-page.mjs` ⑫ 的计算样式对拍兜着。
      ========================================================================= */
     --dist-bar-halo: rgba(255, 255, 255, 0.55);
 }
