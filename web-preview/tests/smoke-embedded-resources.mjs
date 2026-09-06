@@ -535,8 +535,8 @@ function checkBackdropMatchesShell() {
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
  *       本帧提交**之前**,信号会早于首帧,C++ 放回来的仍是一块没画上东西的 WebView,
  *       正是本卡要治的病;
- *   (c) 武装挂在 DOMContentLoaded / readyState 之后(**两者任一**即可),不在文档还在
- *       解析时就发。
+ *   (c) 武装挂在 DOMContentLoaded / readyState 之后(**两个关键词都要在场**,理由见该处),
+ *       不在文档还在解析时就发。
  *
  * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名与 requestAnimationFrame,
  * 不剥的话注释自己就能把三条断言全顶替掉(#188 同族,连撞过三次)。
@@ -584,16 +584,18 @@ function checkFirstFrameSignal(role, entry) {
                 `C++ 放回来的仍是一块没画上东西的 WebView`,
         );
 
-    // (c) 文档还在解析时就发同样早于首帧。**两种写法任一在场即放行**(监听 DOMContentLoaded /
-    // 读 readyState)—— 两者各自都足以满足「不在解析期发」,要求两个都在等于把判据钉死在
-    // 今天这一种写法上,收敛成其中一种时会红出一句指错方向的话([#241 复审])。
-    if (!/DOMContentLoaded|readyState/.test(block))
+    // (c) 文档还在解析时就发同样早于首帧。**两个关键词都必须在场**(读 readyState + 监听
+    // DOMContentLoaded)——这比 (c) 要守的语义严一格:纯 readyState 轮询、纯 DOMContentLoaded
+    // 监听各自都满足「不在解析期发」,却会被这一格判负。**有意如此**,统筹裁定(#241
+    // 2026-09-06 15:03 ②)取「改注释对齐实现」而不是放宽实现:三份页面此刻是同一种写法,
+    // 先把它钉住;真要收敛成单写法,由那张卡连同本注释一起改。
+    if (!/DOMContentLoaded/.test(block) || !/readyState/.test(block))
         bad(
             `${role}:${eventId} 的武装没挂在 DOMContentLoaded / readyState 之后` +
                 `(文档还在解析时发出的信号早于首帧)`,
         );
 
-    if (nested.test(block) && /DOMContentLoaded|readyState/.test(block))
+    if (nested.test(block) && /DOMContentLoaded/.test(block))
         console.log(`  ${eventId} 在场:DOMContentLoaded 后嵌套两层 rAF 才发`);
 }
 

@@ -872,11 +872,14 @@ void WebViewHost::handleCommitUiScale(const juce::Array<juce::var>&, WBC::Native
 // -----------------------------------------------------------------------------
 void WebViewHost::timerCallback()
 {
+    // WebView2 看门狗:预算由 beginLoadAttempt 定(冷 15s / 热 5s),首个导航事件到达后按
+    // kAfterNavBudgetMs 顺延。超时判定加载失败切兜底(可重试/重开窗口),文案不误报「运行时缺失」。
+    // 比较走 uint32 差值再转 int32:getMillisecondCounter 每 ~49 天回绕一次,直接比大小会在
+    // 回绕点把「还没到点」算成「早就超时」,把好好的窗口砸成兜底面板。
+    // (这四行说的是**下面第二个** if;紧跟的第一个 if 是 [SL-370] 遮挡闸,方向相反 ——
+    //  这里到点=把界面放出来,那里到点=换成兜底面板。两段不要读串。)
     // [SL-370] 遮挡闸的第三条放行路(兜底):前两条都没来时到点强制放行,
     // 绝不允许出现「永远挪在外面」——那会是一块彻底不动的浅色板,比白闪坏得多。
-    // ⚠ 它与下面那个看门狗**方向相反**(这里到点=把界面放出来,那里到点=换成兜底面板),
-    // 两段各自带注释,别把任一段的注释读成另一段的(#241 复审:本块曾插在看门狗注释之后,
-    // 把那四行推离了它解释的 if)。
     if (revealGate_.parked())
     {
         revealGate_.onTick(juce::Time::getMillisecondCounter());
@@ -887,10 +890,6 @@ void WebViewHost::timerCallback()
         }
     }
 
-    // WebView2 看门狗:预算由 beginLoadAttempt 定(冷 15s / 热 5s),首个导航事件到达后按
-    // kAfterNavBudgetMs 顺延。超时判定加载失败切兜底(可重试/重开窗口),文案不误报「运行时缺失」。
-    // 比较走 uint32 差值再转 int32:getMillisecondCounter 每 ~49 天回绕一次,直接比大小会在
-    // 回绕点把「还没到点」算成「早就超时」,把好好的窗口砸成兜底面板。
     if (!bridgeReady_ && fallback_ == nullptr &&
         static_cast<juce::int32>(juce::Time::getMillisecondCounter() - deadlineMs_) > 0)
     {
