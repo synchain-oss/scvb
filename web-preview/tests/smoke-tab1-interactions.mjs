@@ -1761,10 +1761,27 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         // 即便如此,app.js 那处头注也已经改成指路、不再逐字引旧写法(两道各自独立)。
         // ← 把 showDismissible / ✕ handler 里的 `viewStore().session` 改回直接读真 store,
         //   本格红(行为面见 smoke-output-stale-page ⑦-tour)。
+        // ⚠ **判据必须切到那一段里再找**:`viewStore()` 在 app.js 里另有五六处消费面
+        //   (history / rejectedPrintingUntil / guideClosed …),全文件断「有没有它」是条
+        //   恒真断言;而反向项写成 `store.session.dismissedBanners` 也拦不住 —— 真实的
+        //   退化写法是 `(store.session || {}).dismissedBanners`,那一串里根本没有这个
+        //   逐字形态。第一版两条都栽了(实测注入后照绿),所以改成:取
+        //   `showDismissible` 到 ✕ 接线循环末尾这一整段,断段内**只出现** viewStore()
+        //   那条路径、一处裸 `store.session` 都没有。
+        const memFrom = appCode.indexOf("function showDismissible(");
+        const memTo = appCode.indexOf("function moveFocusOffDismiss(");
         check(
-            /viewStore\(\)\.session/.test(appCode) &&
-                !/store\.session\.dismissedBanners/.test(appCode),
-            "(a21) ★ 关闭记忆读写都走 viewStore().session(导览不动真会话)",
+            memFrom >= 0 && memTo > memFrom,
+            "(a21) 取到「显隐 + ✕ 接线」那一整段(取不到就说明下面那格在空跑)",
+        );
+        const memSrc =
+            memFrom >= 0 && memTo > memFrom
+                ? appCode.slice(memFrom, memTo)
+                : "";
+        check(
+            /viewStore\(\)\.session/.test(memSrc) &&
+                !/store\.session/.test(memSrc),
+            "(a21) ★ 关闭记忆读写都走 viewStore().session、段内零裸 store.session(导览不动真会话)",
         );
         // 签名带轨数 —— 三条过期时关掉、之后变成五条要能再提醒。
         // ← 把它改成 `""`,本格红(行为面见 ⑦d)。
