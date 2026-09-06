@@ -1046,9 +1046,10 @@ export const T = {
         participateAutoPan: "Auto-Pan Participate",
         trackWidth: "Track Width",
         "tracks.monoWidthNoop": "Mono source cannot adjust width",
-        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):这里用**参与语义**,
-        //   **别照 05 §5 改成 `Vol Exempt` / `l'exemption de volume`** —— 那个标签界面上不存在。
-        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
+        // ⚠ [SL-293 → J97] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):本条已按
+        //   J97(用户裁定 2026-09-06)**整体退回**「设为 Lead 并强制居中」,句里不再有参与/豁免成分;
+        //   参与语义那层意思由列头 `tracks.colLegend` 承担。**别照 05 §5 加回 `Vol Exempt` /
+        //   `l'exemption de volume`** —— 那个标签界面上仍然不存在。三语各留一份指针。
         "master.leadSelectHint":
             "This track is set as Lead and forced to center",
         pair: "Pair",
@@ -1871,9 +1872,10 @@ export const T = {
         trackWidth: "Largeur de piste",
         "tracks.monoWidthNoop":
             "Une source mono ne peut pas ajuster la largeur",
-        // ⚠ [SL-293] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):这里用**参与语义**,
-        //   **别照 05 §5 改成 `Vol Exempt` / `l'exemption de volume`** —— 那个标签界面上不存在。
-        //   T32 的 EN/FR 人工审校最容易在这里「顺手对齐规格」,故三语各留一份指针。
+        // ⚠ [SL-293 → J97] 口径警示在 zh 侧(本文件 `master.leadSelectHint` 上方):本条已按
+        //   J97(用户裁定 2026-09-06)**整体退回**「设为 Lead 并强制居中」,句里不再有参与/豁免成分;
+        //   参与语义那层意思由列头 `tracks.colLegend` 承担。**别照 05 §5 加回 `Vol Exempt` /
+        //   `l'exemption de volume`** —— 那个标签界面上仍然不存在。三语各留一份指针。
         "master.leadSelectHint":
             "Cette piste est définie comme Lead et forcée au centre",
         pair: "Paire",
