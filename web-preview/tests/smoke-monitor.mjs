@@ -1754,6 +1754,36 @@ log("=== ⑤ mock 端到端(真桥 + mock 后端)===");
     check(w.warnings.length === 1, "并留一条 warning(不假装支持)");
     eq(MMOCK.parseMonitorQuery("?group=99").group, null, "组号越界 ⇒ 忽略");
     eq(MMOCK.parseMonitorQuery("?group=5").group, 5, "合法组号原样");
+    // [SL-362] `?globalwidth=` 的三档。**空值必须按「不给」处理,不能算 0** ——
+    // `Number("")` 是 0,而 0 在这里是**合法宽度**(全收拢到中央):算成 0 的话,手拼 URL
+    // 或 harness 在值为空时吐出 `&globalwidth=`,拿到的是柱全挤在中线的图,**而那看起来
+    // 像一张正常的图**。这正是本卡在 native 侧用 `+1` 哨兵专门防的形态,mock 这侧漏过一次
+    // (复审第 7 轮)。← 把 `rawGw.trim() !== ""` 去掉,只红第一格。
+    eq(
+        MMOCK.parseMonitorQuery("?globalwidth=").globalWidthPct,
+        undefined,
+        "[SL-362] 空值 = 不给(不是 0 —— 0 是合法宽度)",
+    );
+    eq(
+        MMOCK.parseMonitorQuery("").globalWidthPct,
+        undefined,
+        "[SL-362] 不带该参数 = 不给(与旧写方同形)",
+    );
+    eq(
+        MMOCK.parseMonitorQuery("?globalwidth=0").globalWidthPct,
+        0,
+        "[SL-362] 显式 0 是**合法值**,要原样透传(与「不给」区分开)",
+    );
+    eq(
+        MMOCK.parseMonitorQuery("?globalwidth=150").globalWidthPct,
+        150,
+        "[SL-362] 150 原样(全局域 0..150,不是 per-track 的 0..100)",
+    );
+    eq(
+        MMOCK.parseMonitorQuery("?globalwidth=151").globalWidthPct,
+        undefined,
+        "[SL-362] 越界告警回落,**不静默夹取**(夹取会让用例以为测到了 151)",
+    );
     eq(MMOCK.parseMonitorQuery("?play=0").play, false, "play=0 ⇒ 走带停住");
     // 场景表与壳页白名单同源(壳页 import 本表,不抄第二份)
     const shell = src("web-preview/shell.js");

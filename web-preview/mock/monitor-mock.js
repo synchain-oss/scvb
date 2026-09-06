@@ -177,15 +177,20 @@ export function parseMonitorQuery(params) {
     // **不给就是 undefined**,与旧写方同形(段里那一槽为 0 ⇒ 桥发 undefined ⇒ 读方回落 100),
     // 既有用例一个字节不受影响。越界不静默夹取而是告警回落:静默夹取会让用例以为自己
     // 测到了 150,其实测的是 100 —— 本卡在 native 侧刚栽过一模一样的形态。
+    //
+    // ⚠ **空值(`?globalwidth=`)按「不给」处理,不是 `0`**:`Number("")` 是 `0`,而 `0` 在这里
+    //   是**合法宽度**(全收拢到中央)—— 不排除空串的话,一个手拼 URL 或 harness 在值为空时
+    //   吐出 `&globalwidth=`,拿到的是柱全挤在中线的图,而**那看起来像一张正常的图**。
+    //   这恰好是本卡在 native 侧用 `+1` 哨兵专门防的形态(复审第 7 轮点名:mock 这侧漏了一次)。
+    //   同文件 `group` 那段没这个问题 —— 它的下界是 1,空串算出的 0 过不了。
     let globalWidthPct;
-    if (q.get("globalwidth") !== null) {
-        const gw = Number(q.get("globalwidth"));
+    const rawGw = q.get("globalwidth");
+    if (rawGw !== null && rawGw.trim() !== "") {
+        const gw = Number(rawGw);
         if (Number.isFinite(gw) && gw >= 0 && gw <= 150) {
             globalWidthPct = gw;
         } else {
-            warnings.push(
-                `globalwidth ${q.get("globalwidth")} 越界(0..150),已忽略`,
-            );
+            warnings.push(`globalwidth ${rawGw} 越界(0..150),已忽略`);
         }
     }
 
