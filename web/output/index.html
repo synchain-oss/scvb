@@ -4712,6 +4712,15 @@
                 border-left: 2px solid rgba(var(--sem-amber), 0.55);
                 padding-left: var(--sp-9);
             }
+            /* [SL-348 复审第 2 轮] 播报句与静态提示之间的分隔**交给样式**,不放在词条里。
+               原实现在三语串首各留一个空格 —— 冗余(两个 span 之间的行间空白本来就渲染成
+               一个空格),而且 role=status 隐含 aria-atomic,那个空格会跟着进播报串。
+               更要紧的是没有任何机器守着它:check-i18n 只拦全空串,冒烟探针又 trim 过,
+               谁把某一语的前导空格删掉都不会红。分隔是**呈现**,不该由译者维护。
+               `:not(:empty)` 保证空态下不产生任何东西,也不进 textContent、不进播报串。 */
+            #reanalyze-ask-rangedone:not(:empty)::before {
+                content: " ";
+            }
             /* 正文段的 UA 默认 margin 在本框里归零 —— 两段之间的距离全由上面那条
                `.sc-modal__note` 的 margin-top 说了算(否则相邻兄弟外边距折叠成
                max(1em, --sp-9),间距变成「看运气」)。只圈到 --reanalyze:

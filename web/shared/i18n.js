@@ -702,7 +702,7 @@ export const T = {
         // [SL-279 复审第 8 轮] 受理之后播报给读屏用户的那一句:范围档下框不关,视觉用户
         // 看得到「框没关」,读屏用户得靠这一句才知道刚才那下发生了什么。
         "set.reanalyzeAsk.rangeDone":
-            " 已按当前范围重新分析;范围外的段仍是旧口径,所以这条提示保留。",
+            "已按当前范围重新分析;范围外的段仍是旧口径,所以这条提示保留。",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "直通中:未对本轨做任何处理",
@@ -1590,7 +1590,7 @@ export const T = {
         "set.reanalyzeAsk.rangeNote":
             "A range is active: only the range you set will be recomputed. Segments outside it keep the previous settings, so this notice stays. To recompute the whole timeline, switch the range back to follow first.",
         "set.reanalyzeAsk.rangeDone":
-            " Re-analysis of the current range is done. Segments outside it still use the previous settings, so this notice stays.",
+            "Re-analysis of the current range is done. Segments outside it still use the previous settings, so this notice stays.",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Passthrough: no processing on this track",
@@ -2429,7 +2429,7 @@ export const T = {
         "set.reanalyzeAsk.rangeNote":
             "Une plage est active : seule la plage définie sera recalculée. Les segments en dehors gardent les réglages précédents, donc cet avis reste affiché. Pour recalculer toute la timeline, repassez d'abord la plage en suivi.",
         "set.reanalyzeAsk.rangeDone":
-            " La ré-analyse de la plage actuelle est terminée. Les segments en dehors gardent les réglages précédents, donc cet avis reste affiché.",
+            "La ré-analyse de la plage actuelle est terminée. Les segments en dehors gardent les réglages précédents, donc cet avis reste affiché.",
         // ---- T36 新增(Input 单页正式实现;05 §3 语义,词条真源 05 §5/§3)。
         // EN/FR 为 T36 自译,已入待人工审校清单(05 §5:fr 发布前须人工审校)。
         "in.pillSub.passthrough": "Direct : aucun traitement sur cette piste",

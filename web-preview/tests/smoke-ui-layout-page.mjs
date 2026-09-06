@@ -645,6 +645,12 @@ const ASK_PROBE = IN(`
             const n = gb("reanalyze-ask-rangedone");
             return n ? n.textContent.trim() : null;
         })(),
+        // [SL-348 复审第 2 轮] **不 trim 的那一份**:分隔交给 CSS ::before 之后,词条里不该
+        // 再留前导空格,而 trim 过的探针看不见它 —— 三语任一处把空格加回来都不会红。
+        rangeDoneRaw: (() => {
+            const n = gb("reanalyze-ask-rangedone");
+            return n ? n.textContent : null;
+        })(),
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1294,6 +1300,15 @@ try {
                 !(rmAfter.rangeNote || "").includes(rmAfter.rangeDone),
             "C8r rangeNote 探针只读静态那半(不含播报句)",
         );
+        // [SL-348 复审第 2 轮] 词条里**不留前导/尾随空白**:分隔由 CSS ::before 给。
+        // 读的是没 trim 过的那一份,否则探针自己把要查的东西擦掉了。
+        // ← 三语里任一处把前导空格加回来,这一格红。
+        check(
+            typeof rmAfter.rangeDoneRaw === "string" &&
+                rmAfter.rangeDoneRaw !== "" &&
+                rmAfter.rangeDoneRaw === rmAfter.rangeDoneRaw.trim(),
+            "C8r 播报句词条本身不带前导/尾随空白(分隔交给样式)",
+        );
         // [复审第 8 轮] 读屏那一侧的反馈:点之前这段是空的(开框时清掉),受理回来写入一句
         // 真话 ⇒ live region 有变化可念。少了这一格,「aria 加上了但点下去零反馈」照样全绿。
         check(
@@ -1326,8 +1341,13 @@ try {
             !!rmEn.rangeDone,
             "C8r 切语言后播报句仍在(不是被 applyI18n 抹掉)",
         );
+        // [SL-348 复审第 2 轮] 前半必须先断**非空** —— `!CJK.test(null || "")` 恒真,
+        // 「静态那半在 en 下整段不显」这个形态本来会空跑成绿。纯否定断言在空值上自动成真,
+        // 是本卡反复栽的同一族;每写一条 `!x` 就机械地问一句「x 为空时这句是不是自动真」。
         check(
-            !CJK.test(rmEn.rangeNote || "") && !CJK.test(rmEn.rangeDone || ""),
+            !!rmEn.rangeNote &&
+                !CJK.test(rmEn.rangeNote) &&
+                !CJK.test(rmEn.rangeDone || ""),
             "C8r 切到 en 之后**两半都不含中文**(不会前半英文后半中文)",
         );
     }
