@@ -1783,13 +1783,16 @@ if (bridge) {
         store.playingAt = transportPlayingAt(store.playingAt, p);
         const nowStopped = !!p && p.isPlaying === false;
         if (nowStopped && !wasStopped) {
-            // 停走边沿:排一拍 render 到去抖窗到期之后。**停走之后没有任何东西会来
-            // render** —— `scvb.playhead` 逐帧逐字相同(timeS 不再走)被上面的
-            // `samePlayhead` 挡掉、`scvb.conn` 走 emitIfChanged、打印头停了就不再发
-            // `scvb.params`。而窄档要到去抖窗到期才生效,那一刻正是徽标该熄的时刻之一
+            // 停走边沿:排一拍 render 到去抖窗到期之后。**停走之后没有事件会来 render**
+            // —— `scvb.playhead` 逐帧逐字相同(timeS 不再走)被上面的 `samePlayhead`
+            // 挡掉、`scvb.conn`/`scvb.groups` 走 emitIfChanged、`scvb.meters` 那条订阅
+            // 本来就不排 render、打印头停了就不再发 `scvb.params` ⇒ 只剩这几拍定时器。
+            // 而窄档要到去抖窗到期才生效,那一刻正是徽标该熄的时刻之一
             // (另一种是 `hostEchoAt + 900` 更晚,由上面 hostEchoTimer 那一拍接住)。
-            // 少了这一拍,「宿主先停写、用户后停走」这条路上徽标会一直挂着 ——
-            // 删除式实测见 smoke-output-dist-page ⑪(b)。
+            // 少了这一拍,「宿主先停写、用户后停走」这条路上熄灭会**退到播放档那一拍**
+            // (`hostEchoTimerWide`,排在 `hostEchoAt + 2550`):页面级实测 630ms → 1947ms,
+            // 也就是 SL-270 ① 的「停播后挂着近两秒」原样复活。删除式见
+            // smoke-output-dist-page ⑪(b)。
             // ⚠ 只在**边沿**排:每一帧停走都重排的话,30Hz 会把它无限推后、永不触发。
             clearTimeout(hostEchoTimerTransport);
             hostEchoTimerTransport = setTimeout(

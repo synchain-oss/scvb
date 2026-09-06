@@ -1773,7 +1773,8 @@ try {
             check(
                 jitter.offAtAge < 0,
                 `(a) ★ 快速起停(150ms 一档翻走带)期间徽标**全程不灭**` +
-                    `(实得首次熄灭于 age=${jitter.offAtAge}ms;拆掉去抖后它会落在 900 附近)`,
+                    `(实得首次熄灭于 age=${jitter.offAtAge}ms,-1 = 全程没灭;` +
+                    `拆掉去抖的那次注入实测 age=981ms —— 正是修前那一幕)`,
             );
         }
 
@@ -1782,9 +1783,12 @@ try {
         // 刻意让「宿主先停写 600ms、用户后停走」:这一档下熄灭时刻由**去抖窗到期**决定
         // (max(T+500, at+900) = T+500,因为 at ≈ T−600),而停走之后 `scvb.playhead`
         // 逐帧逐字相同被 `samePlayhead` 挡掉、`scvb.conn`/`scvb.groups` 走 emitIfChanged、
-        // 打印头已停 ⇒ **没有任何别的东西会来 render**。
+        // `scvb.meters` 那条订阅不排 render、打印头已停 ⇒ **只剩 app.js 那几拍定时器**。
         // ★ 删除式:去掉 app.js 停走边沿那一拍 `setTimeout(requestRender, 去抖+50)`,
-        //   本条读数从 5xx ms 变成 -2(12s 采到超时)当场红。
+        //   本条读数由 630ms 变成 **1947ms**(实测)⇒ 红。降级形态照实说:**不是**「永远
+        //   不熄」—— 兜底的是 `hostEchoTimerWide` 那一拍(排在 at+2550 ≈ T+1930),
+        //   于是「停播后近两秒才熄」= SL-270 ① 原样复活。所以 -2(12s 超时)是本条**另一种**
+        //   可能的红法,不是这一种的实测值。
         const armR2 = await setOutput356(true);
         check(
             typeof armR2 === "string" && !/rejected|"ok":\s*false/.test(armR2),
@@ -1865,8 +1869,9 @@ try {
             );
             check(
                 hardStop.offAfterStop >= 0 && hardStop.offAfterStop < 900,
-                `(b) ★ 真停之后 900ms 内熄灭(实得 ${hardStop.offAfterStop}ms;` +
-                    `-2 = 12s 内根本没熄 = 停走边沿那一拍 render 丢了)`,
+                `(b) ★ 真停之后 900ms 内熄灭(实得 ${hardStop.offAfterStop}ms)。` +
+                    `丢掉停走边沿那一拍 render 时实测 1947ms(退到播放档那一拍才熄);` +
+                    `-2 = 12s 内根本没熄,是另一种红法`,
             );
         }
 
