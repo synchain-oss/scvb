@@ -659,6 +659,9 @@ const ASK_PROBE = IN(`
             if (!n) return null;
             return w.getComputedStyle(n, "::before").content;
         })(),
+        // [SL-348 复审第 4 轮] applyI18n 结尾会写 documentElement.lang —— 「语言真的切过去了」
+        // 的第二条独立证据,与「两条译文不相等」互不依赖。
+        docLang: d.documentElement ? d.documentElement.lang : null,
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1310,7 +1313,8 @@ try {
         );
         // [SL-348 复审第 2 轮] 词条里**不留前导/尾随空白**:分隔由 CSS ::before 给。
         // 读的是没 trim 过的那一份,否则探针自己把要查的东西擦掉了。
-        // ← 三语里任一处把前导空格加回来,这一格红。
+        // ← zh(本格)/ en / fr(下面 noPad 那两格)任一处把前导空格加回来,**对应那一格**红。
+        //   本格只读得到 zh:rmAfter 是在 zh 下取的。
         check(
             typeof rmAfter.rangeDoneRaw === "string" &&
                 rmAfter.rangeDoneRaw !== "" &&
@@ -1320,10 +1324,12 @@ try {
         // ← 把那条规则的选择器改回 `#id`(或删掉),这一格红:分隔真的没了,而上面那格
         //   仍然绿 —— 两格合起来才说得出「空白从词条里挪到了样式上」,少任何一格都是
         //   「拆了旧的没装新的」也能全绿。
+        // 规则不匹配时 Chrome 的 computed content 是 "none" / "normal",两者都不含空格,
+        // 所以 `.includes(" ")` 一条就够 —— 原来那个 `!== "none"` 合取项**恒真**,留着只会让
+        // 人以为它在守什么(复审第 4 轮)。
         check(
             typeof rmAfter.rangeDoneBefore === "string" &&
-                rmAfter.rangeDoneBefore.includes(" ") &&
-                rmAfter.rangeDoneBefore !== "none",
+                rmAfter.rangeDoneBefore.includes(" "),
             "C8r 分隔那条 ::before 真的生效了(选择器没写空)",
         );
         // [复审第 8 轮] 读屏那一侧的反馈:点之前这段是空的(开框时清掉),受理回来写入一句
@@ -1387,6 +1393,22 @@ try {
     if (check(rmFr, "C8r fr 下探针取到锚点")) {
         check(!!rmFr.rangeDone, "C8r fr 下播报句仍在");
         noPad(rmFr, "fr");
+        // [SL-348 复审第 4 轮] **这一趟必须证得出它取的是 fr。**
+        //   en 那侧有 `!CJK.test(...)` 兜着(zh→en 换了字符集);fr 与 en 同为拉丁字母,
+        //   `noPad` 与 `!!rangeDone` 在「fr 字典整块缺失 / 回退到 en」时**全绿** ——
+        //   那样这一趟只是多跑了一遍 en 的形态。而 `switchLangOutput("fr")` 那格只保证
+        //   胶囊**可点**(click 里 n.click(),节点在就回 true),不保证语言真切过去。
+        //   ← 让 fr 字典缺这条 / 回退到 en,下面第一格红。
+        //   断「与 en 那条不相等」而不是比对译文:不用把任何一句 fr 原文抄进用例,
+        //   词条改写也不会红在无关的地方。
+        check(
+            !!(rmEn && rmEn.rangeDone) && rmFr.rangeDone !== rmEn.rangeDone,
+            "C8r fr 的播报句与 en 的**不相等**(真的换到了 fr,不是回退)",
+        );
+        check(
+            rmFr.docLang === "fr",
+            "C8r documentElement.lang 也切到了 fr(applyI18n 结尾写的那一处)",
+        );
     }
 
     check(await switchLangOutput("zh"), "C8r 切回 zh(不影响后面的桶)");
