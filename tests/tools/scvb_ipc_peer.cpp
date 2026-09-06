@@ -926,6 +926,23 @@ int runVizPublisher(const Args& a)
     in.label[0] = "Lead";
     in.leadMask = 0x0001;
     in.widthPct[0] = 80.0f;
+    // [SL-361] 参数当前值:发布器在「无分段 / 无曲线」那一支拿它回落。
+    //   · 轨3(索引 2):**没有分段、没有曲线**,但有参数值 ⇒ panNow/volDb 必须回落到它,
+    //     不再留哨兵。用户 v5.6.7 实测「Output 10 根 / Monitor 7 根」就是这一支不写造成的。
+    //   · 轨1(索引 0):**有分段**,而且参数值故意与段内值差得远(段内 pan=−50)——
+    //     用来钉「有段时曲线求值优先,回落不许盖掉它」。只钉轨3 的话,把两支写反也全绿。
+    //   · 轨4(索引 3):**两样都不给**(参数留默认 NaN)⇒ 仍是哨兵。钉「不知道就别编」:
+    //     0 对 pan 是正中、对 vol 是 0 dB,都是合法值,默认成 0 会凭空画出居中柱。
+    // [SL-361 复审第 1 轮] 连接掩码:回落**只对已连接轨**生效。这里让轨1/轨3 已连接、
+    // **轨5 未连接但给了参数值** —— 后者用来钉那道闸:没有它,Monitor 会把 15 条 enabled 轨
+    // 全画出来,而 Output 只画已连接的那几根(过冲,比原缺陷更糟)。
+    in.connectedMask = (1u << 0) | (1u << 2);
+    in.panParam[4] = 33.0f; // ← 未连接轨:给了值也**不该**被写出去
+    in.volDbParam[4] = 3.0f;
+    in.panParam[0] = 77.0f; // ← 有段轨:这个值**不该**出现在 panNow[0] 里
+    in.volDbParam[0] = 9.0f;
+    in.panParam[2] = -25.0f;
+    in.volDbParam[2] = -6.0f;
 
     // 至少发一帧;linger 期间按**生产同款节拍**续发,读方随时 attach 都能拿到一致帧。
     // 时钟用 steadyNowMs()(与生产路径 OutputProcessor 的 vizTimer_ 同源)——
@@ -1017,6 +1034,13 @@ int runVizReader(const Args& a)
     csv += "now_vol1 " + std::to_string(static_cast<long long>(snap->volDb[0])) + "\n";
     csv += "now_width1 " + std::to_string(static_cast<long long>(snap->widthPct[0])) + "\n";
     csv += "now_pan3 " + std::to_string(static_cast<long long>(snap->panNow[2])) + "\n";
+    // [SL-361] 轨3 有参数值(回落生效)、轨4 两样都没有(仍哨兵)—— 两条一起才说得出
+    // 「回落是按参数值来的」而不是「无脑填了个数」。vol 同理各出一条。
+    csv += "now_vol3 " + std::to_string(static_cast<long long>(snap->volDb[2])) + "\n";
+    csv += "now_pan4 " + std::to_string(static_cast<long long>(snap->panNow[3])) + "\n";
+    csv += "now_vol4 " + std::to_string(static_cast<long long>(snap->volDb[3])) + "\n";
+    csv += "now_pan5 " + std::to_string(static_cast<long long>(snap->panNow[4])) + "\n";
+    csv += "now_vol5 " + std::to_string(static_cast<long long>(snap->volDb[4])) + "\n";
     csv += "label1 " + snap->label[0] + "\n";
     csv += "label2 " + snap->label[1] + "\n";
     csv += "cov_t1_0 " + std::to_string(snap->covered(0, 0) ? 1 : 0) + "\n";

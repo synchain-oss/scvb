@@ -1043,6 +1043,21 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
     in.playhead = playheadSnapshot();
 
     const int v = juce::jlimit(1, kVersionMax, versionActive_);
+    // [SL-361 复审第 1 轮] 已连接轨掩码 —— 判据与 Output UI 的 `connectedChannels` **逐字同源**
+    // (`slotState == 2 ∧ heartbeatAgeMs <= kStaleDisplayMs`,数据源同为 connSnapshot());
+    // 发布器只对这些轨做参数回落,否则会把 15 条 enabled 轨全喂给 Monitor(见那处注释)。
+    {
+        const auto conn = connSnapshot();
+        for (int ch = 0; ch < 15; ++ch)
+        {
+            const auto& info = conn.channels[static_cast<std::size_t>(ch)];
+            if (static_cast<int>(info.slotState) == 2 &&
+                info.heartbeatAgeMs <= static_cast<std::uint32_t>(scvb::kStaleDisplayMs))
+            {
+                in.connectedMask |= (1u << ch);
+            }
+        }
+    }
     // [N1] metaRevision **只哈希轨名**。width 走帧头段、每帧都刷,与 writeLanes 无关 ——
     // 把它掺进来会让「width 被自动化」变成 needLanes 恒真,每秒 15360 次曲线求值。
     // FNV-1a 64 位:碰撞概率可忽略,不再靠时间兜底兜住碰撞(见 kLaneRefreshMaxMs)。
@@ -1069,6 +1084,15 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
         const auto* raw = handles_.rawTrkW[v - 1][ch];
         in.widthPct[static_cast<std::size_t>(ch)] =
             raw != nullptr ? raw->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
+        // [SL-361] 每轨 pan / vol 的参数当前值,同法取活动版本的 raw atomic。
+        // 发布器在「无分段 / 无曲线」那一支拿它回落 —— 不给的话那两个值留哨兵,
+        // Monitor 整根不画(用户 v5.6.7 实测 Output 10 根 / Monitor 7 根)。
+        const auto* rawP = handles_.rawPan[v - 1][ch];
+        const auto* rawV = handles_.rawVol[v - 1][ch];
+        in.panParam[static_cast<std::size_t>(ch)] =
+            rawP != nullptr ? rawP->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
+        in.volDbParam[static_cast<std::size_t>(ch)] =
+            rawV != nullptr ? rawV->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
         for (const char byte : label)
         {
             fnv(static_cast<unsigned char>(byte));

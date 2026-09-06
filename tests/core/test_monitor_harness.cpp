@@ -113,6 +113,30 @@ TEST_CASE("MON-CHAIN 全数据链:发布→读到→组切换→退出空态→�
         REQUIRE_FALSE(v.covered(2, 0));
         // 每轨当前值与轨名(T46 的分布图/图例数据面)。
         REQUIRE(v.panNow[0] == scvb::vizPackPan(-50.0)); // 播放头在 0s,轨1 段内 pan=-50
+        // [SL-361] **无分段轨也要有当前值**,回落到参数值 —— 不再留哨兵。
+        // 用户 v5.6.7 实测:同一工程 Output 画 10 根、Monitor 只画 7 根。真因在这里:
+        // 发布器原来只在「有分段 ∧ 有曲线」时写 panNow/volDb,否则留 kVizPanNone,
+        // Monitor 把那一轨整根跳过;而 Output 那侧走「段回读 → 没段就退参数值」
+        // (tab-master.js 的 renderDist),所以两边根数对不上。
+        // ← 删掉发布器里那个 else 分支(退回只在有段时写),这一格红。
+        REQUIRE(v.panNow[2] == scvb::vizPackPan(-25.0));
+        REQUIRE(v.volDb[2] == scvb::vizPackFixed(-6.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+        // 有段轨:曲线求值**优先**,回落不许盖掉它(对端给轨1 的参数值是 77 / +9,
+        // 与段内值差得远)。只钉上面那两条的话,把两支写反照样全绿。
+        REQUIRE(v.panNow[0] != scvb::vizPackPan(77.0));
+        REQUIRE(v.volDb[0] != scvb::vizPackFixed(9.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
+        // 两样都没有的轨(对端不给参数值,默认 NaN)**仍是哨兵** —— 「不知道就别编」:
+        // 0 对 pan 是正中、对 vol 是 0 dB,都是合法值,回落成 0 会凭空画出一根居中柱,
+        // 比整根不画更难发现。
+        REQUIRE(v.panNow[3] == scvb::kVizPanNone);
+        REQUIRE(v.volDb[3] == scvb::kVizPanNone);
+        // [SL-361 复审第 1 轮] **未连接轨即使有参数值也仍是哨兵。**
+        // Monitor 的逐轨闸只有「enabled ∧ 非哨兵」,而 enabled 默认全 true;Output 那侧却按
+        // 「已连接轨」过滤。少了这道闸,本卡会把 15 条全喂出去 —— 从「少画 3 根」变成「多画」,
+        // 方向反了、幅度更大。对端给轨5(索引 4)参数值 33 / +3 但**不在 connectedMask 里**。
+        // ← 去掉发布器里那道 connected 闸,只红这两格。
+        REQUIRE(v.panNow[4] == scvb::kVizPanNone);
+        REQUIRE(v.volDb[4] == scvb::kVizPanNone);
         REQUIRE(v.widthPct[0] == scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
         REQUIRE(v.label[0] == "Lead");
         REQUIRE(v.trackColor[14] == 15);
