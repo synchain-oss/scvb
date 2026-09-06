@@ -1738,7 +1738,10 @@ try {
                     if (age > maxAge) maxAge = age;
                     if (badge() === "0" && offAtAge < 0) offAtAge = age;
                     if (dg.stopped && age > ageWhenStopped) ageWhenStopped = age;
-                    if (age >= 1900 || samples > 400) {
+                    // 收尾门限取 1600 而不是贴着 2500:上界 (maxAge < 2500) 与下界
+                    // (ageWhenStopped >= 900) 两侧各留 ~700ms 余量,免得 CI runner
+                    // 抖一下就把「慢但合法」判红(本仓记过好几次这种假红)。
+                    if (age >= 1600 || samples > 400) {
                         w.clearInterval(flip);
                         s.ctl.setTransport({ isPlaying: true });
                         return res({ offAtAge, ageWhenStopped, maxAge, samples });
@@ -1838,9 +1841,25 @@ try {
                         s.ctl.setTransport({ isPlaying: false });
                         const step = () => {
                             if (badge() === "0") {
+                                // 熄灭那一刻的三个读数一并带出(**只作诊断,不作断言**)。
+                                // 为什么加:本机三轮 offAfterStop 实测 630 / 383 / 582ms,
+                                // 只看这一个数没法说清偏差从哪来。带上之后当场读到
+                                // (第三轮){ageAtOff:1199, sincePlayingAtOff:606,
+                                // wideAtOff:false} —— 熄灭发生在「页面收到最后一帧非停走
+                                // 载荷」之后 606ms(去抖窗 500 + 一拍 render),而
+                                // stopAt(壳页发指令的时刻)比它晚 24ms。也就是说真正的
+                                // 锚点是 playingAt 不是 stopAt,两者之间那段延迟
+                                // (30Hz 帧间隔 + 壳页 rAF 抖动)页外量不到。
+                                // 结论方向:playingAt <= stopAt 恒成立 ⇒ 实际熄灭比
+                                // 「停走后 900ms」这条上界更早,下面那格的余量是真的。
+                                const dg1 = hook.hostEcho();
                                 return res({
                                     offAfterStop: w.Date.now() - stopAt,
                                     ageAtStop,
+                                    ageAtOff: w.Date.now() - dg1.at,
+                                    sincePlayingAtOff:
+                                        w.Date.now() - dg1.playingAt,
+                                    wideAtOff: dg1.wide,
                                 });
                             }
                             if (w.Date.now() - stopAt > 12000) {
