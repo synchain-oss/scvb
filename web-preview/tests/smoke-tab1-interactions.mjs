@@ -1337,8 +1337,10 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
     // ---- (a8..a14) [SL-270] 释放窗口按**走带态**分两档
     //
     // 用户实测(v5.6.5):① 停走后徽标还挂着近两秒;② 快速起停会让徽标在**播放中途**
-    // 消失。② 是 ① 的另一面 —— 按停那一刻闩锁还剩一大截,立刻重按播放,这一截残余
-    // 在新的一段播放里走完。修法是停走用短窗口、播放中用长窗口。
+    // 消失。SL-270 当时判 ② 是 ① 的另一面(按停那一刻闩锁还剩一大截,立刻重按播放,
+    // 这一截残余在新的一段播放里走完),修法是停走用短窗口、播放中用长窗口。
+    // ⚠ [SL-356] 事后实测:① 修掉了,② **没有**(v5.6.7 用户原话见下面 (a15..a20) 那组)。
+    //   所以本组守的是「两档确实分开」这件事本身,别再把它读成「② 已经被本组钉住了」。
     //
     // 本组同时是**删除式判据**。哪条拦哪种退化,逐种写清(原先只写了「(a10)(a11) 必有
     // 一条红」,而那只对其中一种退化成立):
@@ -1373,9 +1375,11 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         false,
         "(a11) ★ 播放中越过**播放档**才熄 —— 不是「播放中永不熄」",
     );
-    // ② 的直接还原:按停的那一刻起,判据立刻切回短窗口,残余不会带进下一段播放。
-    // 这一条钉的是**用户可见结果**,不是实现:同一个 `at`,同一个 `now`,只因走带停了
-    // 就该熄 —— 一个窗口打天下的实现在这里必然给 true。
+    // 「取窄档就立刻按窄档结算」:同一个 `at`、同一个 `now`,只因取了窄档就该熄 ——
+    // 一个窗口打天下的实现在这里必然给 true。
+    // ⚠ [SL-356] 上一版这条写的是「② 的直接还原……残余不带进下一段播放」,**言过其实**:
+    //   它只断 `hostEchoOn` 拿到窄档之后怎么算,断不到「什么时候才该拿窄档」,而 ② 的
+    //   真因恰恰在后者(走带态零迟滞)。② 的用户可见结果归 (a18) / ⑪(a)。
     eq(
         HE.hostEchoOn(
             { hostEchoAt: T0 },
@@ -1383,7 +1387,7 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             false,
         ),
         false,
-        "(a12) ★ 快速起停:按停即回短窗口,残余不带进下一段播放",
+        "(a12) ★ 取到窄档就按窄档结算(越过 900ms 即熄)—— 一个窗口打天下的实现在这里给 true",
     );
     // [PR 178 复审【建议】3] 「不在播放」与「还不知道走带态」**不是同一件事**,不许压成
     // 同一个 false:`store.playhead` 的初值是 null,直接取 isPlaying 会让走带态未知时的
@@ -1404,7 +1408,10 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             HE.hostEchoUseWideWindow({ playhead: {} }),
         ],
         [true, false, true, true, true],
-        "(a13) ★ 走带态**未知**并进宽档(playhead 缺席/为空/无 isPlaying ⇒ true);只有明确停走才走窄档",
+        // [SL-356] 第二项(明确停走 ⇒ 窄档)在这里之所以仍是 false:store 里没有
+        // `playingAt`,语义 = 本会话从未观测到「非停走」的一帧 = 一直停着,窄档正是
+        // 对的那一档。「明确停走 + 刚停不到去抖窗」那一格另有 (a17) 钉着。
+        "(a13) ★ 走带态**未知**并进宽档(playhead 缺席/为空/无 isPlaying ⇒ true);明确停走(且已停满会话)才走窄档",
     );
     // (a13) 的用户可见后果:走带态还没到过页面时,徽标不会在 900ms 就熄。
     eq(
@@ -1416,6 +1423,191 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         true,
         "(a14) ★ 首帧 playhead 之前:越过停走档仍亮(未知不当停走处理)",
     );
+
+    // ---- (a15..a20) [SL-356] 走带态**去抖**
+    //
+    // 用户实测(v5.6.7)原话:「停播后徽标及时熄灭没问题;但快速起停几次,播放中徽标
+    // 还是会中途消失」—— SL-270 的两档只给了**熄侧**迟滞(亮立刻、熄延迟挂在
+    // `hostEchoAt` 上),**走带态那一头一点迟滞都没有**:`hostEchoUseWideWindow` 上一版是
+    // 「当前这一帧 isPlaying」的纯函数,一帧 false 就把释放窗口从 2500 瞬间收到 900。
+    // 而播放中「距最后一次宿主写入超过 900ms」完全正常(2500 那一档就是为它设的),
+    // 于是那一帧 false 到达的**当拍**徽标就熄 —— 与走带真的停没停无关。
+    //
+    // 本组的删除式(逐种退化各跑过一次,下面是**实测**读数,不是推断):
+    //   • 拆掉去抖(`hostEchoUseWideWindow` 退回 `!ph || ph.isPlaying !== false`):
+    //     (a17) 实得 [false,false,false]、(a18) 首次熄灭 **+924ms** ⇒ 两条红,别的全绿;
+    //   • 记账反向(`transportPlayingAt` 连停走帧也刷新时刻):(a16) 实得
+    //     [T0, T0+100, …] 第二项漂、(a19) 实得 2520 / 2220 / 1620ms ⇒ 两条红。
+    //     ⚠ 退化形态是「退回**播放档**才熄」,**不是**「永不熄」—— (a19) 消息里那句
+    //     「-1 = 一直没熄」说的是另一种可能的红法,别把它当成这一种的实测值。
+    //   • 去抖窗口放宽:**恰好 = 停走档(900)时只有 (a15) 红**,(a19) 三格算出来正好
+    //     卡在 `<= 900` 的等号上仍绿;放到 1000 才是 (a15)+(a19) 同红(实得 900 / 1020 /
+    //     1020ms)。所以 (a15) 不是 (a19) 的重复,它守的是 (a19) 守不到的那一个边界点。
+    check(
+        HE.HOST_ECHO_TRANSPORT_HOLD_MS < HE.HOST_ECHO_RELEASE_STOPPED_MS,
+        `(a15) ★ 去抖窗口必须**窄于**停走档 —— 这是「停播后仍及时熄灭」(用户已确认对的` +
+            `那一半)的算术保证:熄灭时刻 = max(停走时刻+去抖, 最后一次宿主写入+停走档)` +
+            ` <= 停走时刻+停走档(实得 ${HE.HOST_ECHO_TRANSPORT_HOLD_MS} vs ${HE.HOST_ECHO_RELEASE_STOPPED_MS})`,
+    );
+    eq(
+        [
+            HE.transportPlayingAt(0, { isPlaying: true }, T0),
+            HE.transportPlayingAt(T0, { isPlaying: false }, T0 + 100),
+            HE.transportPlayingAt(T0, null, T0 + 100),
+            HE.transportPlayingAt(T0, {}, T0 + 100),
+            HE.transportPlayingAt(0, { isPlaying: false }, T0),
+        ],
+        [T0, T0, T0 + 100, T0 + 100, 0],
+        "(a16) ★ 记账口径:非停走的一帧(播放中 / 走带态未知)刷新时刻,明确停走沿用旧值" +
+            "(与 hostEchoUseWideWindow 第一条分支同口径 —— 把「未知」算成停走会冻住时间戳)",
+    );
+    eq(
+        [
+            // 刚停走一帧(33ms):还在去抖窗内 ⇒ **仍取宽档**
+            HE.hostEchoUseWideWindow(
+                { playhead: { isPlaying: false }, playingAt: T0 },
+                T0 + 33,
+            ),
+            // 连续停走满去抖窗 ⇒ 收窄
+            HE.hostEchoUseWideWindow(
+                { playhead: { isPlaying: false }, playingAt: T0 },
+                T0 + HE.HOST_ECHO_TRANSPORT_HOLD_MS,
+            ),
+            // 记账为 0 = 本会话从未观测到非停走的一帧 = 一直停着 ⇒ 直接窄档
+            HE.hostEchoUseWideWindow(
+                { playhead: { isPlaying: false }, playingAt: 0 },
+                T0 + 33,
+            ),
+        ],
+        [true, false, false],
+        "(a17) ★ 明确停走要**连续满去抖窗口**才收窄(拆掉去抖 ⇒ 第一项变 false)",
+    );
+
+    // 逐帧模拟:把 app.js 那条链(scvb.playhead → transportPlayingAt → 存进 store →
+    // hostEchoUseWideWindow → hostEchoOn)在纯函数层原样跑一遍。
+    // ⚠ 只喂**走带帧**:`hostEchoAt` 停在 `at` 不动 = 「宿主这一段没再写」。这不是为了
+    //   省事 —— 播放档 2500 存在的全部理由就是盖住这一段,缺陷也只在这一段里显形。
+    //   宿主一直在写的话修前修后都亮,本组会变成空绿,所以下面 (a18) 专门有一格前置
+    //   把「采样窗真的跨过了停走档」测出来,而不是靠这段话推断。
+    function simulateBadge(at, frames) {
+        const st = { playhead: null, playingAt: 0 };
+        const params = { hostEchoAt: at };
+        let now = at;
+        let offAt = -1;
+        let crossedStoppedWhileStopped = false;
+        for (const f of frames) {
+            now += f.dt;
+            const ph = { isPlaying: f.isPlaying };
+            st.playingAt = HE.transportPlayingAt(st.playingAt, ph, now);
+            st.playhead = ph;
+            const on = HE.hostEchoOn(
+                params,
+                now,
+                HE.hostEchoUseWideWindow(st, now),
+            );
+            if (!on && offAt < 0) offAt = now;
+            if (
+                f.isPlaying === false &&
+                now - at >= HE.HOST_ECHO_RELEASE_STOPPED_MS
+            ) {
+                crossedStoppedWhileStopped = true;
+            }
+        }
+        return { offAt, crossedStoppedWhileStopped, endNow: now };
+    }
+
+    // (a18) 「快速起停」场景:~600ms 播放 → 8 段 150ms 的 false/true 交错 → 稳定播放。
+    {
+        const frames = [];
+        for (let i = 0; i < 18; i++) frames.push({ dt: 33, isPlaying: true });
+        for (let seg = 0; seg < 8; seg++) {
+            for (let k = 0; k < 5; k++) {
+                frames.push({
+                    dt: 30,
+                    isPlaying: seg % 2 === 0 ? false : true,
+                });
+            }
+        }
+        for (let i = 0; i < 18; i++) frames.push({ dt: 33, isPlaying: true });
+        const jit = simulateBadge(T0, frames);
+        check(
+            jit.crossedStoppedWhileStopped,
+            "(a18) 前置:采样窗里确实出现过「停走帧 ∧ 距最后一次宿主写入已过停走档」的帧" +
+                " —— 没有这一格,下面那条修前修后都绿(空绿)",
+        );
+        check(
+            jit.endNow - T0 < HE.HOST_ECHO_RELEASE_PLAYING_MS,
+            `(a18) 前置:整段仍落在播放档窗口内(实得 ${jit.endNow - T0}ms < ` +
+                `${HE.HOST_ECHO_RELEASE_PLAYING_MS}ms)—— 越过它熄灭就是「该熄」而不是缺陷`,
+        );
+        check(
+            jit.offAt < 0,
+            "(a18) ★ 快速起停(几帧 true/false 交错后稳定 true):徽标**全程不灭**" +
+                `(实得首次熄灭于 ${jit.offAt < 0 ? "从未" : "+" + (jit.offAt - T0) + "ms"};` +
+                "拆掉去抖后实测落在 +924ms)",
+        );
+    }
+
+    // (a19) 「真停」场景:三种「最后一次宿主写入距停走多远」,熄灭都必须在停走后 900ms 内。
+    // lead=0 是**上界那一格**(写入与停走同刻 ⇒ 熄灭恰好 = 停走档);另外两格钉的是
+    // 「去抖那一档当家时也不会更晚」。
+    {
+        const stopped = [];
+        for (const leadMs of [0, 300, 900]) {
+            const frames = [];
+            const leadFrames = Math.round(leadMs / 30);
+            for (let i = 0; i < leadFrames; i++) {
+                frames.push({ dt: 30, isPlaying: true });
+            }
+            for (let i = 0; i < 200; i++) {
+                frames.push({ dt: 30, isPlaying: false });
+            }
+            const stopAt = T0 + leadFrames * 30;
+            const r = simulateBadge(T0, frames);
+            stopped.push({
+                leadMs,
+                offAfterStop: r.offAt < 0 ? -1 : r.offAt - stopAt,
+            });
+        }
+        check(
+            stopped.every(
+                (s) =>
+                    s.offAfterStop >= 0 &&
+                    s.offAfterStop <= HE.HOST_ECHO_RELEASE_STOPPED_MS,
+            ),
+            `(a19) ★ 「真停」三格都在停走后 ${HE.HOST_ECHO_RELEASE_STOPPED_MS}ms 内熄灭` +
+                `(实得 ${JSON.stringify(stopped)})。两种红法各是什么:数值超上界 = 去抖` +
+                `把「停播后及时熄灭」拖慢了(记账反向时实测 2520/2220/1620ms);` +
+                `-1 = 压根没熄(窄档永远进不去,那是另一种退化,本卡没跑出来过)`,
+        );
+    }
+
+    // (a20) **接线**:纯函数全绿 ≠ app.js 真的在记账、真的在停走边沿排那一拍 render。
+    // 断的是行为落点(赋值 / setTimeout 的实参),不断排版:先剥注释再匹配 —— 本仓
+    // 已经为「注释里一句话顶替真调用」栽过三次(#188 同族),而本卡恰好在同一段里
+    // 写了大量解释性注释。剥注释走 `scripts/lib/strip-comments.mjs`(全仓唯一那一份)。
+    {
+        const { stripJsComments } = await import(
+            u("scripts/lib/strip-comments.mjs")
+        );
+        const appCode = stripJsComments(
+            readFileSync(join(ROOT, "web/output/app.js"), "utf8"),
+            "web/output/app.js",
+        );
+        check(
+            /store\.playingAt\s*=\s*transportPlayingAt\(/.test(appCode),
+            "(a20) ★ app.js 真的用 transportPlayingAt 推进 store.playingAt —— " +
+                "少了这一行,判据永远读到 playingAt=0,一帧 false 就收窄(缺陷原样复活)",
+        );
+        check(
+            /hostEchoTimerTransport\s*=\s*setTimeout\(\s*requestRender\s*,\s*HOST_ECHO_TRANSPORT_HOLD_MS\s*\+/.test(
+                appCode,
+            ),
+            "(a20) ★ 停走边沿排了一拍 render 到去抖窗到期之后 —— 停走之后 samePlayhead " +
+                "把 30Hz 帧全挡掉,没有这一拍就没人来把徽标熄掉(页面级删除式见 " +
+                "smoke-output-dist-page ⑪(b))",
+        );
+    }
 
     // ---- (b) 源码级不变式:图表卡摘出 + 两 tab 共用同一条判据
     const tmSrc = readFileSync(join(ROOT, "web/output/tab-master.js"), "utf8");

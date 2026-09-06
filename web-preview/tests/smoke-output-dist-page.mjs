@@ -1387,13 +1387,17 @@ try {
     // ⑩ [SL-270] hostEcho 徽标:释放窗口按走带态分两档
     // -------------------------------------------------------------------------
     // 用户实测(v5.6.5):① 停走之后徽标还挂着近两秒;② 快速起停会让徽标在**播放中途**
-    // 消失。② 是 ① 的另一面 —— 按停那一刻闩锁还剩一大截,立刻重按播放,这一截残余在新的
-    // 一段播放里走完。
+    // 消失。SL-270 当时判 ② 是 ① 的另一面 —— 按停那一刻闩锁还剩一大截,立刻重按播放,
+    // 这一截残余在新的一段播放里走完。
     //
     // ⚠ 同样先说清楚**证明不了**什么:② 的完整现象需要「宿主两次写之间隔着秒级」,而 mock
     //   的打印头一恢复就立刻推帧(本文件 SL-251 节已记过:mock 只有慢通道)。所以这里不去
-    //   赌那一幕,而是把**机理**钉在渲染面上:两档窗口各自真的在生效。② 的修复等价于
-    //   「按停即回短窗口」,那就是 (d)。
+    //   赌那一幕,而是把**机理**钉在渲染面上:两档窗口各自真的在生效。
+    // ⚠ [SL-356] 上一版这里还写着「② 的修复等价于『按停即回短窗口』,那就是 (d)」——
+    //   **按实测是错的**,已删。v5.6.7 用户原话:「停播后徽标及时熄灭没问题;但快速起停
+    //   几次,播放中徽标还是会中途消失」。② 的真因是走带态那一头零迟滞(一帧 false 就把
+    //   窗口收到 900),治它的是下面 ⑪ 的走带态去抖;本节 (a)-(e) 一格未动,守的仍是
+    //   「两档确实分开」,别再把本节读成「② 已经被钉住了」。
     // =========================================================================
     {
         newBucket("sl270-release-windows");
@@ -1555,8 +1559,9 @@ try {
             check(
                 playingMs - stoppedMs > 800,
                 `(c) ★ 两档确实分开(播放 ${playingMs}ms − 停走 ${stoppedMs}ms > 800ms)` +
-                    ` —— 这一条是「按停即回短窗口」的直接证据,也就是用户报的第二幕` +
-                    `(快速起停时残余在播放中途走完)被修掉的机理`,
+                    ` —— 这一条是「按停即回短窗口」的直接证据。[SL-356] 它**不**证明` +
+                    `用户报的第二幕(快速起停时徽标在播放中途消失)被修掉了:实测那一幕` +
+                    `没被治住,治它的是下面 ⑪ 的走带态去抖`,
             );
         }
 
@@ -1621,6 +1626,286 @@ try {
         await setHostTime(true);
 
         assertClean("SL-270 释放窗口");
+    }
+
+    // =========================================================================
+    // ⑪ [SL-356] hostEcho 徽标:走带态**去抖**
+    // -------------------------------------------------------------------------
+    // 用户实测(v5.6.7)原话:「停播后徽标及时熄灭没问题;但快速起停几次,播放中徽标
+    // 还是会中途消失」。SL-270 的两档只治了 ①(停走后滞留),② 没治住 —— 上面 ⑩ 的
+    // 头注按实测已经订正过一次,别再照 SL-270 当时那句「② 也就不存在了」推论。
+    //
+    // 定谳:SL-270 只给了**熄侧**迟滞(亮立刻、熄延迟挂在 `hostEchoAt` 上),走带态那一头
+    // 零迟滞 —— `hostEchoUseWideWindow` 上一版是「当前这一帧 `isPlaying`」的纯函数,
+    // 一帧 false 就把释放窗口从 2500 收到 900;而播放中「距最后一次宿主写入超过 900ms」
+    // 完全正常(2500 那一档就是为它设的),于是那一帧到达的**当拍**徽标就熄。
+    //
+    // 为什么必须页面级:纯函数层的判据在 smoke-tab1-interactions ⑧(a15..a20),
+    // 它断不到「渲染面真的按这条判据在写属性」,更断不到「停走之后还有人来 render」——
+    // 后者是 (b) 的删除式唯一能看见的那一段。
+    //
+    // 非空绿怎么保证:两条都不靠「我发指令时大概过了多久」去估,而是读页内的
+    // `__SCVB_OUTPUT__.hostEcho()`(只读快照:`at` / `playingAt` / `stopped` / `wide` / `on`)
+    // 当场量。本仓为「按帧率/节奏判红」栽过好几次,这里把那半条依赖直接去掉。
+    // =========================================================================
+    {
+        newBucket("sl356-transport-debounce");
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+        });
+        check(await waitFor(READY), "页面装载并吃到首帧");
+
+        const BADGE356 = `d.querySelector('[data-gb="master-width-hostbadge"]')`;
+        const badgeOn356 = IN(`
+            const n = ${BADGE356};
+            return !!n && n.getAttribute("data-on") === "1";
+        `);
+        const setOutput356 = (on) =>
+            evaluate(
+                IN(`
+            const mk = w.__SCVB_MOCK__;
+            if (!mk) return "no-mock";
+            return JSON.stringify(mk.setOutputEnabled(${on ? "true" : "false"}));
+        `),
+            );
+        const setPlaying356 = (on) =>
+            evaluate(`(() => {
+            const s = window.__SCVB_PREVIEW__;
+            if (!s || !s.ctl) return "no-session";
+            s.ctl.setTransport({ isPlaying: ${on ? "true" : "false"} });
+            return "ok";
+        })()`);
+
+        check(
+            (await setPlaying356(true)) === "ok",
+            "(前提) 壳页暴露了预览会话",
+        );
+        const armR = await setOutput356(true);
+        check(
+            typeof armR === "string" && !/rejected|"ok":\s*false/.test(armR),
+            `(前提) 打开打印头被接受(回执 ${armR})`,
+        );
+        check(
+            await waitFor(badgeOn356, 15000),
+            "(前提) 徽标先亮起来 —— 亮要等打印头写出一个**变化**的值,mock 上实测 2-3 秒",
+        );
+        check(
+            await evaluate(
+                IN(`
+            const m = w.__SCVB_OUTPUT__;
+            return !!(m && typeof m.hostEcho === "function" && m.hostEcho().at > 0);
+        `),
+            ),
+            "(前提) 页面挂出了 hostEcho 只读快照且已收到过 true 帧(__SCVB_OUTPUT__.hostEcho)",
+        );
+
+        // ---- (a) ★ 快速起停:徽标全程不灭
+        //
+        // 先掐掉信号源(关打印头 ⇒ 此后 `hostEchoAt` 不再前进),再按 150ms 一档翻走带,
+        // 逐样本记三件事:徽标属性、`Date.now() - at`(距最后一次宿主写入)、以及那一刻
+        // 页面手上的走带态是不是「明确停走」。采样**按 age 收尾**而不是按墙钟收尾:
+        // 这样窗口右端与 CDP 往返、rAF 节奏全都无关。
+        const jitter = await evaluate(
+            `(() => {
+            const s = window.__SCVB_PREVIEW__;
+            const f = document.querySelector("iframe");
+            const w = f && f.contentWindow;
+            const d = f && f.contentDocument;
+            if (!s || !s.ctl || !w || !d) return { err: "no-session" };
+            const mk = w.__SCVB_MOCK__;
+            const hook = w.__SCVB_OUTPUT__;
+            if (!mk || !hook || typeof hook.hostEcho !== "function") return { err: "no-hook" };
+            const rc = JSON.stringify(mk.setOutputEnabled(false));
+            if (/rejected|"ok":\\s*false/.test(rc)) return { err: "reject:" + rc };
+            const badge = () => {
+                const n = d.querySelector('[data-gb="master-width-hostbadge"]');
+                return n ? n.getAttribute("data-on") : "?";
+            };
+            return new Promise((res) => {
+                let playing = true;
+                let offAtAge = -1;      // 首次看到徽标灭时的 age
+                let ageWhenStopped = -1; // 「明确停走 ∧ age 最大」的那个 age
+                let maxAge = 0;
+                let samples = 0;
+                const flip = w.setInterval(() => {
+                    playing = !playing;
+                    s.ctl.setTransport({ isPlaying: playing });
+                }, 150);
+                const step = () => {
+                    const dg = hook.hostEcho();
+                    const age = w.Date.now() - dg.at;
+                    samples++;
+                    if (age > maxAge) maxAge = age;
+                    if (badge() === "0" && offAtAge < 0) offAtAge = age;
+                    if (dg.stopped && age > ageWhenStopped) ageWhenStopped = age;
+                    // 收尾门限取 1600 而不是贴着 2500,两侧余量都要留,免得 CI runner
+                    // 抖一下就把「慢但合法」判红(本仓记过好几次这种假红)。两侧**不等宽**,
+                    // 分开记(#236 复审第二轮订正:上一版写「各留 ~700ms」,上界那半是错的):
+                    //   • 上界 maxAge < 2500:maxAge 在退出判定之前更新,退出发生在
+                    //     首个 age >= 1600 的样本上 ⇒ maxAge ≈ 1600 + 一次 tick(20ms)
+                    //     ⇒ 余量 ≈ **880ms**,要冲破它得**单次** tick 卡满这么久;
+                    //   • 下界 ageWhenStopped >= 900:[900, 1600] 这 **700ms** 里约 35 个
+                    //     样本、跨 4-5 个 150ms 翻转周期,停走样本必然采得到。
+                    if (age >= 1600 || samples > 400) {
+                        w.clearInterval(flip);
+                        s.ctl.setTransport({ isPlaying: true });
+                        return res({ offAtAge, ageWhenStopped, maxAge, samples });
+                    }
+                    w.setTimeout(step, 20);
+                };
+                step();
+            });
+        })()`,
+            30000,
+        );
+        log(`  (a) 快速起停采样:${JSON.stringify(jitter)}`);
+        check(
+            !jitter || !jitter.err,
+            `(a) 前置:探针跑起来了(${jitter && jitter.err})`,
+        );
+        if (jitter && !jitter.err) {
+            // 非空绿的两条前置,都是**测出来的**:
+            //   ① 采样窗里真的出现过「页面手上是明确停走 ∧ 距最后一次宿主写入 ≥ 停走档」
+            //      —— 那一刻正是修前徽标被打掉的时刻;
+            //   ② 整段没越过播放档 —— 越过了就该熄,那就不是缺陷。
+            check(
+                jitter.ageWhenStopped >= 900,
+                `(a) 前置:采样窗里出现过「明确停走 ∧ age ≥ 900ms」的样本(实得 ${jitter.ageWhenStopped}ms)` +
+                    ` —— 没有它本条修前修后都绿`,
+            );
+            check(
+                jitter.maxAge < 2500,
+                `(a) 前置:整段没越过播放档 2500ms(实得 maxAge ${jitter.maxAge}ms)` +
+                    ` —— 越过了熄灭就是「该熄」`,
+            );
+            check(
+                jitter.offAtAge < 0,
+                `(a) ★ 快速起停(150ms 一档翻走带)期间徽标**全程不灭**` +
+                    `(实得首次熄灭于 age=${jitter.offAtAge}ms,-1 = 全程没灭;` +
+                    `拆掉去抖的那次注入实测 age=981ms —— 正是修前那一幕)`,
+            );
+        }
+
+        // ---- (b) ★ 真停:停走后仍在 900ms 内熄灭(用户已确认对的那一半,别修坏)
+        //
+        // 刻意让「宿主先停写 600ms、用户后停走」:这一档下熄灭时刻由**去抖窗到期**决定
+        // (max(T+500, at+900) = T+500,因为 at ≈ T−600),而停走之后 `scvb.playhead`
+        // 逐帧逐字相同被 `samePlayhead` 挡掉、`scvb.conn`/`scvb.groups` 走 emitIfChanged、
+        // `scvb.meters` 那条订阅不排 render、打印头已停 ⇒ **只剩 app.js 那几拍定时器**。
+        // ★ 删除式:去掉 app.js 停走边沿那一拍 `setTimeout(requestRender, 去抖+50)`,
+        //   本条读数由 630ms 变成 **1947ms**(实测)⇒ 红。降级形态照实说:**不是**「永远
+        //   不熄」—— 兜底的是 `hostEchoTimerWide` 那一拍(排在 at+2550 ≈ T+1930),
+        //   于是「停播后近两秒才熄」= SL-270 ① 原样复活。所以 -2(12s 超时)是本条**另一种**
+        //   可能的红法,不是这一种的实测值。
+        const armR2 = await setOutput356(true);
+        check(
+            typeof armR2 === "string" && !/rejected|"ok":\s*false/.test(armR2),
+            `(b) 前置:重新打开打印头被接受(回执 ${armR2})`,
+        );
+        check(await waitFor(badgeOn356, 15000), "(b) 前置:徽标重新亮起");
+        const hardStop = await evaluate(
+            `(() => {
+            const s = window.__SCVB_PREVIEW__;
+            const f = document.querySelector("iframe");
+            const w = f && f.contentWindow;
+            const d = f && f.contentDocument;
+            if (!s || !s.ctl || !w || !d) return { err: "no-session" };
+            const mk = w.__SCVB_MOCK__;
+            const hook = w.__SCVB_OUTPUT__;
+            if (!mk || !hook || typeof hook.hostEcho !== "function") return { err: "no-hook" };
+            const badge = () => {
+                const n = d.querySelector('[data-gb="master-width-hostbadge"]');
+                return n ? n.getAttribute("data-on") : "?";
+            };
+            return new Promise((res) => {
+                // ① 先等一帧**刚到的**宿主写入。为什么不能直接开始:mock 的打印头是
+                //    「值变了才发」,两帧之间实测能隔 3 秒多(本文件 ④(g) 捞到过 3362ms)。
+                //    上来就掐信号 + 定长等待的话,at 有多旧完全看运气 —— 第一版就是这么
+                //    写的,实测 ageAtStop=2513ms(闩锁其实已经走完播放档),量到的 21ms
+                //    是「本来就该熄了」而不是「停走后及时熄」。
+                // ⚠ [#236 复审] 页内三段预算之和**必须小于外层 evaluate 的 30s CDP 超时**:
+                //    10s(waitFresh)+ 0.6s + 12s(step)= 22.6s。超了的话超时从 CDP 那头
+                //    抛出去,被文件末尾的 catch 吞成一句「冒烟过程抛错」,
+                //    err:"no-fresh-echo" / offAfterStop:-2 这两个**专为诊断留的**返回值
+                //    永远看不到 —— 而失败路径正是最需要读得懂的时候。
+                //    10s 对「等一帧新写入」有 3 倍余量(本文件 ④(g) 实测最长间隔 3362ms)。
+                const t0 = w.Date.now();
+                const waitFresh = () => {
+                    const dg = hook.hostEcho();
+                    if (dg.at > 0 && w.Date.now() - dg.at <= 150) return armed();
+                    if (w.Date.now() - t0 > 10000) return res({ err: "no-fresh-echo" });
+                    w.setTimeout(waitFresh, 20);
+                };
+                const armed = () => {
+                    // ② 掐掉信号源:此后 at 冻住。走带**照旧在跑**,闩锁按播放档消耗。
+                    const rc = JSON.stringify(mk.setOutputEnabled(false));
+                    if (/rejected|"ok":\\s*false/.test(rc)) {
+                        return res({ err: "reject:" + rc });
+                    }
+                    // ③ 停写 600ms 之后再停走 —— 这一档下 at ≈ T-650,熄灭时刻由
+                    //    **去抖窗到期**(T+500)决定而不是由 at+900(T+250,已过)决定,
+                    //    正好是「停走边沿那一拍 render」唯一能被看见的那一段。
+                    w.setTimeout(() => {
+                        const dg0 = hook.hostEcho();
+                        const stopAt = w.Date.now();
+                        const ageAtStop = stopAt - dg0.at;
+                        s.ctl.setTransport({ isPlaying: false });
+                        const step = () => {
+                            if (badge() === "0") {
+                                // 熄灭那一刻的三个读数一并带出(**只作诊断,不作断言**)。
+                                // 为什么加:本机三轮 offAfterStop 实测 630 / 383 / 582ms,
+                                // 只看这一个数没法说清偏差从哪来。带上之后当场读到
+                                // (第三轮){ageAtOff:1199, sincePlayingAtOff:606,
+                                // wideAtOff:false} —— 熄灭发生在「页面收到最后一帧非停走
+                                // 载荷」之后 606ms(去抖窗 500 + 一拍 render),而
+                                // stopAt(壳页发指令的时刻)比它晚 24ms。也就是说真正的
+                                // 锚点是 playingAt 不是 stopAt,两者之间那段延迟
+                                // (30Hz 帧间隔 + 壳页 rAF 抖动)页外量不到。
+                                // 结论方向:playingAt <= stopAt 恒成立 ⇒ 实际熄灭比
+                                // 「停走后 900ms」这条上界更早,下面那格的余量是真的。
+                                const dg1 = hook.hostEcho();
+                                return res({
+                                    offAfterStop: w.Date.now() - stopAt,
+                                    ageAtStop,
+                                    ageAtOff: w.Date.now() - dg1.at,
+                                    sincePlayingAtOff:
+                                        w.Date.now() - dg1.playingAt,
+                                    wideAtOff: dg1.wide,
+                                });
+                            }
+                            if (w.Date.now() - stopAt > 12000) {
+                                return res({ offAfterStop: -2, ageAtStop });
+                            }
+                            w.setTimeout(step, 20);
+                        };
+                        step();
+                    }, 600);
+                };
+                waitFresh();
+            });
+        })()`,
+            30000,
+        );
+        log(`  (b) 真停读数:${JSON.stringify(hardStop)}`);
+        check(
+            !hardStop || !hardStop.err,
+            `(b) 前置:探针跑起来了(${hardStop && hardStop.err})`,
+        );
+        if (hardStop && !hardStop.err) {
+            check(
+                hardStop.ageAtStop > 0 && hardStop.ageAtStop < 2500,
+                `(b) 前置:停走那一刻徽标还亮着(距最后一次宿主写入 ${hardStop.ageAtStop}ms,` +
+                    `落在播放档 2500ms 内)—— 否则「停走后多久熄」量的是别的东西`,
+            );
+            check(
+                hardStop.offAfterStop >= 0 && hardStop.offAfterStop < 900,
+                `(b) ★ 真停之后 900ms 内熄灭(实得 ${hardStop.offAfterStop}ms)。` +
+                    `丢掉停走边沿那一拍 render 时实测 1947ms(退到播放档那一拍才熄);` +
+                    `-2 = 12s 内根本没熄,是另一种红法`,
+            );
+        }
+
+        assertClean("SL-356 走带态去抖");
     }
 } catch (e) {
     fail++;
