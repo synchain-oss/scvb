@@ -876,15 +876,24 @@ await withSession("output", "fixture=fifteen-tracks", async (b, seen) => {
         `回执那一刻 state 仍是旧值(实得 ${JSON.stringify(atAck && atAck.analysis && atAck.analysis.loudness_mode)})`,
     );
     const t1 = Date.now();
+    let arrived = false;
     for (;;) {
         const st = seen.get("scvb.state:last");
-        if (st && st.analysis && st.analysis.loudness_mode === "rms") break;
+        if (st && st.analysis && st.analysis.loudness_mode === "rms") {
+            arrived = true;
+            break;
+        }
         if (Date.now() - t1 > 3000) break;
         await new Promise((r) => setTimeout(r, 10));
     }
     const gap = Date.now() - t0 - tAck;
     log(`  回执耗时 ${tAck}ms;回执→state 间隔 ${gap}ms`);
-    check(gap >= 120, `写→state 至少隔一拍(实得 ${gap}ms,下界 120ms)`);
+    // 两个出口分开断:帧没到时 gap≈3000 也满足 >=120,「延后一拍」和「彻底丢帧」不能同绿。
+    check(arrived, "带新值的 state 帧确实到达(没到时下面那条会被超时撑成恒真)");
+    check(
+        arrived && gap >= 120,
+        `写→state 至少隔一拍(实得 ${gap}ms,下界 120ms)`,
+    );
 });
 
 // 对照格:同步逃生口一开,同一条路径当场变回同步。
