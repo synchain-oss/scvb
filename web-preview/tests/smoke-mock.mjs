@@ -963,5 +963,46 @@ await withSession(
     );
 }
 
+const NEWLINE = String.fromCharCode(10);
+const SLASH = String.fromCharCode(47);
+const LINE_COMMENT = new RegExp(SLASH + SLASH + ".*$");
+const DQ = String.fromCharCode(34);
+const NAME_LITERAL = new RegExp(DQ + "[a-z0-9-]+" + DQ, "g");
+
+// [SL-357 复审第 1 轮] **两张场景名表必须对齐** —— 这一条此前没有任何一格会红。
+// `SCENARIO_MAP`(state-driver,场景走哪个 fixture)与 `SCENARIO_NAMES`(shell.js,
+// 壳页工具条印场景名还是印 unknown)是两张手工同步的表。漏登记不会报错,后果是
+// **「参数拼错了」那条肉眼信号在新场景上失灵**;node 侧冒烟不经 shell.js,所以本卡
+// 加 sync-state-echo 时漏了一笔仍然全绿(复审点出),SL-354 一次补登过五个。
+// ⚠ 钉的是**名字集合的包含关系**,不是排版;剥出白名单时先去掉行注释,
+//   否则注释里出现同名字符串就能冒充登记。
+{
+    const shellSrc = readFileSync(
+        new URL("../shell.js", import.meta.url),
+        "utf8",
+    );
+    // `SCENARIO_MAP` 是**不分角色**的平表,shell.js 那张分 output / input 两列 ——
+    // 所以判据对的是**两列的并集**,不是单看 output(单看 output 会把 occupied、
+    // abi-mismatch 那些 input 侧场景全判成缺登记,那是判据比宣称宽,不是真缺陷)。
+    const block = shellSrc.slice(shellSrc.indexOf("const SCENARIO_NAMES"));
+    const table = block.slice(0, block.indexOf("};"));
+    const stripped = table
+        .split(NEWLINE)
+        .map((l) => l.replace(LINE_COMMENT, ""))
+        .join(NEWLINE);
+    const listed = new Set(
+        (stripped.match(NAME_LITERAL) || []).map((x) => x.slice(1, -1)),
+    );
+    const mapped = Object.keys(driver.SCENARIO_MAP);
+    const missing = mapped.filter((n) => !listed.has(n));
+    log(
+        `  场景名表:SCENARIO_MAP ${mapped.length} 个 / shell 白名单(两列并集)${listed.size} 个`,
+    );
+    check(
+        missing.length === 0,
+        `SCENARIO_MAP 的场景都登记进了 shell.js 白名单(缺 ${JSON.stringify(missing)})`,
+    );
+}
+
 log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);
