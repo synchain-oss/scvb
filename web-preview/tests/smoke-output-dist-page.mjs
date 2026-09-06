@@ -1738,9 +1738,14 @@ try {
                     if (age > maxAge) maxAge = age;
                     if (badge() === "0" && offAtAge < 0) offAtAge = age;
                     if (dg.stopped && age > ageWhenStopped) ageWhenStopped = age;
-                    // 收尾门限取 1600 而不是贴着 2500:上界 (maxAge < 2500) 与下界
-                    // (ageWhenStopped >= 900) 两侧各留 ~700ms 余量,免得 CI runner
-                    // 抖一下就把「慢但合法」判红(本仓记过好几次这种假红)。
+                    // 收尾门限取 1600 而不是贴着 2500,两侧余量都要留,免得 CI runner
+                    // 抖一下就把「慢但合法」判红(本仓记过好几次这种假红)。两侧**不等宽**,
+                    // 分开记(#236 复审第二轮订正:上一版写「各留 ~700ms」,上界那半是错的):
+                    //   • 上界 maxAge < 2500:maxAge 在退出判定之前更新,退出发生在
+                    //     首个 age >= 1600 的样本上 ⇒ maxAge ≈ 1600 + 一次 tick(20ms)
+                    //     ⇒ 余量 ≈ **880ms**,要冲破它得**单次** tick 卡满这么久;
+                    //   • 下界 ageWhenStopped >= 900:[900, 1600] 这 **700ms** 里约 35 个
+                    //     样本、跨 4-5 个 150ms 翻转周期,停走样本必然采得到。
                     if (age >= 1600 || samples > 400) {
                         w.clearInterval(flip);
                         s.ctl.setTransport({ isPlaying: true });
