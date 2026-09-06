@@ -254,6 +254,28 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
                 s.panNow[t] = scvb::vizPackPan(curve->panAt(headSec));
                 s.volDb[t] = scvb::vizPackFixed(curve->volAt(headSec), scvb::kVizVolDbMin, scvb::kVizVolDbMax);
             }
+            else
+            {
+                // [SL-361] **无分段 / 无曲线时回落到参数当前值**,与 Output 侧同口径。
+                // 原实现在这一支什么都不写,于是 panNow/volDb 留着 kVizPanNone 哨兵,
+                // Monitor 把那一轨整根跳过 —— 用户 v5.6.7 实测「同工程 Output 10 根 /
+                // Monitor 7 根」就是这么来的。Output 那侧(tab-master.js 的 renderDist)
+                // 走的是「段回读 → 没有段就取 v{v}_t{ch}_pan / _vol 参数值」,所以这里
+                // 照抄那一半:两侧从此读同一口径,而不是各自画各自的。
+                //
+                // 句柄未就绪时参数值是 NaN —— 那种情况**仍留哨兵**(不知道就别编),
+                // 与 widthPct 那一行的既有口径一致。
+                const float pv = in.panParam[t];
+                const float vv = in.volDbParam[t];
+                if (pv == pv) // 非 NaN
+                {
+                    s.panNow[t] = scvb::vizPackPan(static_cast<double>(pv));
+                }
+                if (vv == vv)
+                {
+                    s.volDb[t] = scvb::vizPackFixed(static_cast<double>(vv), scvb::kVizVolDbMin, scvb::kVizVolDbMax);
+                }
+            }
             const float w = in.widthPct[t];
             if (w == w) // 非 NaN
             {

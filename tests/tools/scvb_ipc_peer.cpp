@@ -926,6 +926,17 @@ int runVizPublisher(const Args& a)
     in.label[0] = "Lead";
     in.leadMask = 0x0001;
     in.widthPct[0] = 80.0f;
+    // [SL-361] 参数当前值:发布器在「无分段 / 无曲线」那一支拿它回落。
+    //   · 轨3(索引 2):**没有分段、没有曲线**,但有参数值 ⇒ panNow/volDb 必须回落到它,
+    //     不再留哨兵。用户 v5.6.7 实测「Output 10 根 / Monitor 7 根」就是这一支不写造成的。
+    //   · 轨1(索引 0):**有分段**,而且参数值故意与段内值差得远(段内 pan=−50)——
+    //     用来钉「有段时曲线求值优先,回落不许盖掉它」。只钉轨3 的话,把两支写反也全绿。
+    //   · 轨4(索引 3):**两样都不给**(参数留默认 NaN)⇒ 仍是哨兵。钉「不知道就别编」:
+    //     0 对 pan 是正中、对 vol 是 0 dB,都是合法值,默认成 0 会凭空画出居中柱。
+    in.panParam[0] = 77.0f; // ← 有段轨:这个值**不该**出现在 panNow[0] 里
+    in.volDbParam[0] = 9.0f;
+    in.panParam[2] = -25.0f;
+    in.volDbParam[2] = -6.0f;
 
     // 至少发一帧;linger 期间按**生产同款节拍**续发,读方随时 attach 都能拿到一致帧。
     // 时钟用 steadyNowMs()(与生产路径 OutputProcessor 的 vizTimer_ 同源)——

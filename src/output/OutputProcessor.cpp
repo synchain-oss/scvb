@@ -1069,6 +1069,15 @@ void ScvbOutputAudioProcessor::publishVizFrame(std::uint64_t nowMs)
         const auto* raw = handles_.rawTrkW[v - 1][ch];
         in.widthPct[static_cast<std::size_t>(ch)] =
             raw != nullptr ? raw->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
+        // [SL-361] 每轨 pan / vol 的参数当前值,同法取活动版本的 raw atomic。
+        // 发布器在「无分段 / 无曲线」那一支拿它回落 —— 不给的话那两个值留哨兵,
+        // Monitor 整根不画(用户 v5.6.7 实测 Output 10 根 / Monitor 7 根)。
+        const auto* rawP = handles_.rawPan[v - 1][ch];
+        const auto* rawV = handles_.rawVol[v - 1][ch];
+        in.panParam[static_cast<std::size_t>(ch)] =
+            rawP != nullptr ? rawP->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
+        in.volDbParam[static_cast<std::size_t>(ch)] =
+            rawV != nullptr ? rawV->load(std::memory_order_relaxed) : std::numeric_limits<float>::quiet_NaN();
         for (const char byte : label)
         {
             fnv(static_cast<unsigned char>(byte));

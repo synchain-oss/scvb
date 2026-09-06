@@ -20,6 +20,7 @@
 // 参与跨度计算,并在覆盖位图中一路覆盖到窗口末端。
 
 #include <array>
+#include <limits>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -35,6 +36,15 @@ namespace scvb::output
 // 「无末端」分段哨兵下界:CRVS 里 t1 = 1<<40 表示「覆盖到时间线末端」(真末端由宿主提供)。
 inline constexpr std::int64_t kVizOpenEndedT1 = static_cast<std::int64_t>(1) << 40;
 
+// [SL-361] 「未知」= NaN 的每轨数组。见 VizPublishInput::panParam 那段注释:0 是合法的
+// pan/vol 值,所以「没填」不能长得像「填了 0」。
+inline std::array<float, scvb::state::kNumTracks> makeUnknownParams()
+{
+    std::array<float, scvb::state::kNumTracks> a{};
+    a.fill(std::numeric_limits<float>::quiet_NaN());
+    return a;
+}
+
 // 发布器的一次输入快照(全部由调用方在 [M] 持锁期间填好;本类不持有任何指针跨调用)。
 struct VizPublishInput
 {
@@ -49,6 +59,23 @@ struct VizPublishInput
     double sampleRate = 0.0;
     // 每轨 width(engineering 0..100,来自参数 raw atomic)。分布图的张开横线要它。
     std::array<float, scvb::state::kNumTracks> widthPct{};
+    // [SL-361] 每轨 pan / vol 的**参数当前值**(engineering:pan −100..+100,vol dB),
+    // 同样来自参数 raw atomic;句柄未就绪 → NaN。
+    //
+    // 为什么发布器要它:`panNow`/`volDb` 原本**只在「有分段 ∧ 有曲线」时才写**,否则留
+    // `kVizPanNone` 哨兵 ⇒ Monitor 那一轨整根不画。用户 v5.6.7 实测的「同工程 Output 10 根 /
+    // Monitor 7 根」就是这么来的:Output 那侧走的是**段回读 + 参数回落**
+    // (`tab-master.js` 的 `renderDist`:`panSeg ? panSeg.pan : vals[v{v}_t{ch}_pan]`),
+    // 没有段就退到参数值照画;Monitor 侧只有曲线求值、**没有回落**,于是两边根数对不上。
+    // 本字段就是把 Output 的那一半回落搬到发布器里,让两侧同口径。
+    // **不动 IPC 段布局**:回落只改「往 panNow/volDb 里写什么」,字段与偏移一个字节没变。
+    //
+    // ⚠ 默认值是 **NaN,不是 0**(与 `widthPct{}` 那行有意不同):0 对 pan 是「正中」、
+    // 对 vol 是「0 dB」——**都是合法值**。默认成 0 的话,任何忘了填这两项的调用方会让
+    // 发布器把「不知道」当成「正中 / 0 dB」照发,Monitor 上就是一排凭空出现的居中柱;
+    // 那比留哨兵(整根不画)更糟 —— 少画看得出来,画错看不出来。
+    std::array<float, scvb::state::kNumTracks> panParam = makeUnknownParams();
+    std::array<float, scvb::state::kNumTracks> volDbParam = makeUnknownParams();
     // 每轨轨名(UTF-8;发布器按 UTF-8 边界截断到 kVizLabelBytes-1)。图例要它。
     std::array<std::string, scvb::state::kNumTracks> label{};
     // 轨名/宽度不进 crvsRevision,单独给一个修订号驱动「车道块」重写(轨名随车道一起落段)。
