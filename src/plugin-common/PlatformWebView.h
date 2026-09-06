@@ -5,24 +5,33 @@
 
 namespace scvb::webview
 {
-// [SL-253] 开窗底色的**唯一真源**。用户实测:插件窗口一开有一瞬间全白,然后才画出暗色 UI。
+// [SL-253] 开窗底色的**唯一真源**。用户实测:插件窗口一开有一瞬间全白,然后才画出 UI。
 // 成因是开窗路径上**三层都没有不透明底色**(编辑器组件无 paint、WebView2 的
 // DefaultBackgroundColor 默认全透明、HTML 的底色藏在两个外链 css 里),白的是窗口本身。
 //
-// 取值与 `web/shared/tokens.css` 的 `--page-backdrop: #191820` 对齐 —— 那条注释原话就是
-// 「仅防露白」,只是它来得太晚。此前仓里这个深色有**两个**字面量(tokens 的 #191820 与
-// FallbackPanel 的 0xff18161d),收成本常量之后 C++ 侧不再各写各的。
-// **别在这里记「现在共有几处」**:`grep -rn "191820|shellBackdrop" src web` 一次就列全,
-// 而记在注释里的数一定会漂(SL-355 就又添了一批,见下条)。
+// 取值与 `web/shared/tokens.css` 的 `--page-backdrop` 对齐 —— 那条注释原话就是「仅防露白」,
+// 只是它来得太晚。SL-253 当时仓里这个底色有**两个**字面量(tokens 与 FallbackPanel 各写一个),
+// 收成本常量之后 C++ 侧不再各写各的。
+// **别在这里记「现在共有几处」**:记在注释里的数一定会漂(SL-355 就又添了一批,见下条)。
+// 要找全落点就读 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥/⑥b/⑥c —— 那三格逐处
+// 对拍,它们读哪几个路径,预绘底色就落在哪几处。
 // ⚠ 必须**完全不透明**:JUCE 的 withBackgroundColour 只接受全不透明或全透明(见其头注断言)。
 //
 // [SL-355] 更正上面「HTML 的底色藏在两个外链 css 里」那半句:现在三份 index.html 的
 // <head> 里各内联了一条 `html { background-color: … }`,排在两条 <link rel="stylesheet">
 // 之前,取值与本常量的低 24 位逐字相同(判据 = web-preview/tests/smoke-embedded-resources.mjs
 // 的 ⑥,改一边不改另一边即红)。为什么必须写字面量而不是 var(--page-backdrop),以及
-// 「灰 → 白 → 内容」三段各自的来源与证据,只写在 src/plugin-common/WebViewHost.cpp 的
+// 开窗那几段各自的来源与证据,只写在 src/plugin-common/WebViewHost.cpp 的
 // HostWebView::paint 头注一处。
-inline constexpr juce::uint32 kShellBackdropArgb = 0xff191820;
+//
+// [SL-370] 取值由深色 #191820 改成**浅色** —— SL-253/355 一路把这一层当「防露白的暗底」,
+// 而成品首屏真正铺满窗口的是 .sc-shell 的浅色渐变(tokens.css 的 --page-gradient),于是
+// 预绘的暗底自己变成了用户看见的那段黑(v5.6.8 实测「白→黑→白→内容」)。现在的取值 =
+// --page-gradient 的渐变轴中点色,由上面那个 smoke 的 ⑥c 从渐变现算现对(⑥/⑥b 只对拍
+// 三处彼此同值,对拍不出「和成品差了一整个明暗」)。
+// ⚠ 本常量同时是 FallbackPanel 的面板底色:换浅色之后那三行标签必须是**深墨**才看得见,
+// 判据 = tests/webview/test_plugin_common.cpp 的对比度断言。
+inline constexpr juce::uint32 kShellBackdropArgb = 0xffd9cadb;
 inline juce::Colour shellBackdrop() noexcept
 {
     return juce::Colour(kShellBackdropArgb);

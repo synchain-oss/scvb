@@ -102,7 +102,10 @@ juce::WebBrowserComponent::Options PlatformWebView::makeWebViewOptions(juce::Web
     // [SL-253] WebView2 在**任何** web 内容之下铺的那一层。不设的话它是默认构造的
     // juce::Colour = ARGB 0x00000000 = **全透明**,JUCE 会把这个值原样 put 进
     // put_DefaultBackgroundColor —— 于是从控制器建好到 tokens.css/base.css 解析完为止,
-    // 这一层什么都不挡,露的是窗口的白。铺上暗色即可覆盖整段。
+    // 这一层什么都不挡,露的是窗口的白。铺上 shellBackdrop() 即可覆盖整段。
+    // [SL-370] 这个值现在是**浅色**(= 成品外壳渐变的中点色),不再是 SL-253 当时的暗底;
+    // 换句话说这一层也是「渲染阻塞那一段屏上到底是什么颜色」的决定者(见
+    // WebViewHost.cpp 的 HostWebView::paint 头注 ①-b / ①-c 两节)。
     wv2 = wv2.withBackgroundColour(shellBackdrop());
     options = options.withBackend(WBC::Options::Backend::webview2).withWinWebView2Options(wv2);
 #else

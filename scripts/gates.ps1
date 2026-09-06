@@ -1050,7 +1050,7 @@ finally {
     # `mkdtempSync(join(tmpdir(), "scvb-…-"))` 双引号字面量的页面级套(有人把 udd 构造抽进
     # 共享 helper、或改写成单引号)。真发生时 `$uddOwner` 里就少了那一套,归属层**对它整个
     # 失效**,它的残留会悄悄落进兜底层的「只报不判负」—— 正是本卡要治的「静默归不到套」。
-    # 「六套各恰好一个前缀」是**当下事实,不是不变式**:两边现在相等,分叉时没人会发现。
+    # 「每套各恰好一个前缀」是**当下事实,不是不变式**:两边现在相等,分叉时没人会发现。
     $uddMissing = @($pageSuites | Where-Object { -not $uddParsed.ContainsKey($_.Name) } |
       ForEach-Object { $_.Name })
     if ($uddMissing.Count -gt 0) {

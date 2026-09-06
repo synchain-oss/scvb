@@ -61,13 +61,10 @@ jobs:
         #   **3 = 浏览器在,但这一次没起来 / 没连上**(CDP 端口没开出来 / spawn 失败)。
         #   2 与 3 都不判红(见下),区别只在**摘要里怎么显形** —— 压成同一个码时,
         #   一台装着浏览器的机器上一次瞬时超时会让整套判据无声消失而摘要照写全绿。
-        #   (会回 2 的是**六套**页面级冒烟 —— smoke-monitor-page.mjs、
-        #   smoke-output-stale-page.mjs、smoke-output-dist-page.mjs、
-        #   smoke-seg-restore-page.mjs([SL-242] 段级「恢复自动」的作用域)、
-        #   smoke-ui-layout-page.mjs([SL-272/275/276/273] header 几何、建议表留白、
-        #   重分析弹窗)与 smoke-seg-diff-fold-page.mjs([SL-274] diff 摘要折叠 +
-        #   泳道保底),都要一个无头 Chrome/Edge。执行面按 glob 自动收,
-        #   加一套不必改这行)。
+        #   (会回 2 的是那一族**页面级**冒烟 —— 文件名带 `-page` 的那几套,都要一个无头
+        #   Chrome/Edge。**这里不列名单也不写套数**:执行面按 glob 自动收,加一套不必改这行,
+        #   而抄在注释里的名单/计数没有任何东西会让它变红([SL-370] 加第七套时它已经漏了。
+        #   要当下的名单就 `ls web-preview/tests/smoke-*-page.mjs`)。
         # 2 **与 3** 都记 ::warning:: 而**不**判红:这是 required check,一旦 runner 镜像哪天不再
         # 预装 Chrome,判红会把仓库里**每一个** PR 卡住,而它本来只是少跑一套。
         # 也绝不静默 —— warning 进 checks 摘要,长期没跑看得见。

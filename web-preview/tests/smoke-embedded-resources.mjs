@@ -20,6 +20,10 @@
 //   ⑥ [SL-355] index.html 里**恰好一条**根元素底色、内联、排在外链 css 之前,取值与 C++ 侧
 //      kShellBackdropArgb 逐字一致(开窗白闪的第三段);⑥b 同值对拍 tokens.css 的
 //      --page-backdrop。
+//   ⑥c [SL-370] 那个 C++ 真源本身 == tokens.css 的 --page-gradient 渐变轴中点色
+//      —— ⑥/⑥b 只管三处彼此同值,同时写成深色时照样全绿,而那就是用户看见的那段黑。
+//   ⑦ [SL-370] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的 kFirstFrameEventId
+//      逐字一致、武装是**嵌套两层** requestAnimationFrame、且挂在 DOMContentLoaded 之后。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -262,6 +266,7 @@ function checkRole(role) {
     }
 
     checkShellBackdropInline(role, entry);
+    checkFirstFrameSignal(role, entry);
 }
 
 /**
@@ -409,6 +414,198 @@ function checkTokensBackdrop() {
     console.log(`  --page-backdrop ${m[1]} = C++ 真源`);
 }
 
+/**
+ * 按**顶层**逗号切开一段 CSS 实参列表(括号内的逗号不算)。
+ * 只为 pageGradientMidHex() 数「渐变里到底写了几个停靠点」用 —— 不做别的 CSS 解析。
+ */
+function splitTopLevel(text) {
+    const out = [];
+    let depth = 0;
+    let cur = "";
+    for (const ch of text) {
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+        if (ch === "," && depth === 0) {
+            out.push(cur);
+            cur = "";
+            continue;
+        }
+        cur += ch;
+    }
+    out.push(cur);
+    return out.map((x) => x.trim()).filter((x) => x.length > 0);
+}
+
+/**
+ * `--page-gradient` 的**渐变轴中点色**(`#rrggbb`;解析不出返回 null)。
+ *
+ * 这是「成品首屏真正可见的底色」在 tokens.css 里唯一算得出来的锚:`--page-gradient` 是
+ * `.sc-shell` 的底(web/shared/base.css 是它的唯一消费者),而外壳几乎铺满整个插件窗口。
+ * 单色盖不住渐变,取中点色是**明确选定的**代表值(本渐变四段斜率几乎一致,它与沿轴等权
+ * 均值取整后同为一个值);⑥c 判的就是这一条,不判均值。
+ *
+ * **解析不出就 fail-closed**(返回 null ⇒ ⑥c 判负),不悄悄跳过:一条「算不出来所以不判」
+ * 的判据和没有这条判据是一回事,而它还会顶着「有判据」的名义。要求每个停靠点都带百分号
+ * 也是同一个取舍 —— 现值四个停靠点全都带,少写一个宁可红。
+ */
+function pageGradientMidHex() {
+    const tok = readFileSync(join(ROOT, "web/shared/tokens.css"), "utf8");
+    // 不钉排版:`[\s\S]*?` 跨行,prettier 把 linear-gradient 折成几行都命中。
+    const decl = tok.match(/--page-gradient:\s*linear-gradient\(([\s\S]*?)\);/);
+    if (!decl) return null;
+    const stops = [
+        ...decl[1].matchAll(/#([0-9a-fA-F]{6})\s+(\d+(?:\.\d+)?)%/g),
+    ].map((m) => ({
+        rgb: [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)),
+        pos: parseFloat(m[2]),
+    }));
+    if (stops.length < 2) return null;
+    // **认全 vs 认一部分**([#241 复审]):上面那条正则只收 `#rrggbb <n>%`。中间某个停靠点
+    // 换成 `rgb()` / `#fff` / 漏了 `%` 时,它是**静默丢弃**而不是判负 —— 函数照样算得出
+    // 「少了一段的那条渐变」的中点,报出来是一句「与中点色 X 不一致」,把读者引去改
+    // kShellBackdropArgb(改完就真错了)。所以这里再数一次:按**顶层**逗号切开
+    // `linear-gradient(...)` 的实参,首段是角度/方向,其余每一段应当恰好对应一个被认出来的
+    // 停靠点。对不上 = 有一段没被认出来 ⇒ 与「解析不出」同一个出口(fail-closed)。
+    // 首段必须是角度:CSS 允许省略方向,省了就会数不上 —— 那同样走 fail-closed,
+    // 宁可红也不去猜。
+    const segs = splitTopLevel(decl[1]);
+    if (segs.length - 1 !== stops.length) return null;
+    if (stops[0].pos !== 0 || stops[stops.length - 1].pos !== 100) return null;
+    for (let i = 0; i < stops.length - 1; i++) {
+        const a = stops[i];
+        const b = stops[i + 1];
+        if (b.pos <= a.pos) return null;
+        if (a.pos <= 50 && 50 <= b.pos) {
+            const t = (50 - a.pos) / (b.pos - a.pos);
+            const mid = a.rgb.map((v, k) => Math.round(v + t * (b.rgb[k] - v)));
+            return (
+                "#" + mid.map((v) => v.toString(16).padStart(2, "0")).join("")
+            );
+        }
+    }
+    return null;
+}
+
+/**
+ * ⑥c [SL-370] 预绘底色必须与**成品首屏真正可见的底色**是同一个,而不只是三处彼此同值。
+ *
+ * ⑥ 与 ⑥b 对拍的是「三处预绘底色彼此一致」—— 三处一起写成深色时它们全绿,而用户看到的
+ * 正是这一段黑(v5.6.8:「先白然后黑然后再白,最后内容」)。少的那一条就是本格:把预绘
+ * 底色钉到**外壳渐变**上,让「预绘 ≠ 成品」这件事有东西会红。
+ *
+ * 对拍对象是 C++ 真源 kShellBackdropArgb(⑥/⑥b 已把 index.html 与 --page-backdrop 钉到它),
+ * 所以本格只需要一条边:C++ 真源 == --page-gradient 的中点色。
+ */
+function checkBackdropMatchesShell() {
+    console.log("\n--- 预绘底色 vs 外壳渐变(⑥c)---");
+    const backdrop = shellBackdropHex();
+    if (backdrop === null) {
+        bad(
+            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗底色的 C++ 真源)",
+        );
+        return;
+    }
+    const mid = pageGradientMidHex();
+    if (mid === null) {
+        bad(
+            "web/shared/tokens.css 的 --page-gradient 解析不出「#rrggbb <n>% × ≥2,首尾 0%/100%」的停靠点表" +
+                "(改了渐变写法就把 pageGradientMidHex() 一起改;这里宁可红也不跳过)",
+        );
+        return;
+    }
+    if (backdrop !== mid) {
+        bad(
+            `开窗预绘底色 ${backdrop} 与外壳渐变中点色 ${mid} 不一致 —— 成品首屏铺满窗口的是 ` +
+                `.sc-shell 的 --page-gradient,预绘与它差一个明暗,用户开窗就会看见多出来的一段` +
+                `(SL-370:「白 → 黑 → 白 → 内容」)。把 kShellBackdropArgb 改成 0xff${mid.slice(1)},` +
+                `并同步三份 index.html 的 <head> 内联与 tokens.css 的 --page-backdrop(⑥/⑥b 会跟着核)`,
+        );
+        return;
+    }
+    console.log(`  ${backdrop} = --page-gradient 中点色`);
+}
+
+/**
+ * ⑦ [SL-370] 「首帧已绘」上行信号在场且形态正确。
+ *
+ * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
+ * 靠这条信号(或 pageFinishedLoading / 3s 超时)放回来。机理只写在
+ * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守三条形态:
+ *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
+ *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
+ *       本帧提交**之前**,信号会早于首帧,C++ 放回来的仍是一块没画上东西的 WebView,
+ *       正是本卡要治的病;
+ *   (c) 武装挂在 DOMContentLoaded / readyState 之后(**两个关键词都要在场**,理由见该处),
+ *       不在文档还在解析时就发。
+ *
+ * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名与 requestAnimationFrame,
+ * 不剥的话注释自己就能把三条断言全顶替掉(#188 同族,连撞过三次)。
+ * 三条报错文案互不相同,拆任一条只红它自己那句。
+ */
+function checkFirstFrameSignal(role, entry) {
+    const header = readFileSync(
+        join(ROOT, "src/plugin-common/WebViewHost.h"),
+        "utf8",
+    );
+    const idMatch = header.match(/kFirstFrameEventId\s*=\s*"([^"]+)"/);
+    if (!idMatch) {
+        bad(
+            "WebViewHost.h 里找不到 kFirstFrameEventId(开窗遮挡闸放行信号的 C++ 真源)",
+        );
+        return;
+    }
+    const eventId = idMatch[1];
+
+    const html = readFileSync(join(ROOT, entry), "utf8").replace(
+        /<!--[\s\S]*?-->/g,
+        "",
+    );
+
+    // 只在**含该事件名的那个 <script> 块**里判形态:整页扫会把别处的 rAF 算进来。
+    const block = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((mm) => mm[1])
+        .find((body) => body.includes('"' + eventId + '"'));
+    if (block === undefined) {
+        bad(
+            `${role}:index.html 里没有发 ${eventId} 的内联脚本 —— 开窗遮挡闸就只剩` +
+                ` pageFinishedLoading 与 3s 超时两条兜底,每次开窗都要等到那时才放回来`,
+        );
+        return;
+    }
+
+    // (b) 嵌套:外层 rAF 的回调体里直接再要一帧。`[^{}]*` 限定「同一层、无嵌套块」,
+    // 空白与 `window.` 前缀随便写都命中,不钉换行。
+    const nested =
+        /requestAnimationFrame\(\s*function\s*\([^)]*\)\s*{[^{}]*requestAnimationFrame\(/;
+    if (!nested.test(block))
+        bad(
+            `${role}:${eventId} 的武装不是**嵌套两层** requestAnimationFrame ——` +
+                ` 单层 rAF 的回调跑在本帧提交之前,信号会早于首帧,` +
+                `C++ 放回来的仍是一块没画上东西的 WebView`,
+        );
+
+    // (c) 文档还在解析时就发同样早于首帧。**两个关键词都必须在场**(读 readyState + 监听
+    // DOMContentLoaded)——这比 (c) 要守的语义严一格:纯 readyState 轮询、纯 DOMContentLoaded
+    // 监听各自都满足「不在解析期发」,却会被这一格判负。**有意如此**,统筹裁定(#241
+    // 2026-09-06 15:03 ②)取「改注释对齐实现」而不是放宽实现:三份页面此刻是同一种写法,
+    // 先把它钉住;真要收敛成单写法,由那张卡连同本注释一起改。
+    if (!/DOMContentLoaded/.test(block) || !/readyState/.test(block))
+        bad(
+            `${role}:${eventId} 的武装没挂在 DOMContentLoaded / readyState 之后` +
+                `(文档还在解析时发出的信号早于首帧)`,
+        );
+
+    // PASS 行的条件必须与上面两处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
+    // 断言已经判负,而这行还在写「在场且形态正确」。(#241 复审:收紧 (c) 时漏了 readyState;
+    // A/B 实测 —— 把 output 页收敛成纯 DOMContentLoaded 之后,修前打 3 行「在场」、修后打 2 行。)
+    if (
+        nested.test(block) &&
+        /DOMContentLoaded/.test(block) &&
+        /readyState/.test(block)
+    )
+        console.log(`  ${eventId} 在场:DOMContentLoaded 后嵌套两层 rAF 才发`);
+}
+
 function checkBootGuard(role, entry) {
     // ④ boot 守卫在场且事件名与 C++ 真源一致
     const header = readFileSync(
@@ -464,6 +661,7 @@ checkRole("input");
 // ④⑤ 那组守卫断言按 BOOT_GUARD_PENDING 暂缓,理由与自我删除条件见那里。
 checkRole("monitor");
 checkTokensBackdrop(); // ⑥b 与角色无关,只跑一次
+checkBackdropMatchesShell(); // ⑥c 同上
 
 console.log(`\n=== 结果:${fail === 0 ? "全部通过" : fail + " 项失败"} ===`);
 process.exit(fail === 0 ? 0 : 1);
