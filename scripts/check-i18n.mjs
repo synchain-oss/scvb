@@ -220,9 +220,12 @@ for (const file of htmlFiles) {
 // 别把后 12 处记成「内联反而是对的」—— 那句话至少在 3 处不成立:`footer.printing` 恰恰相反
 // (base 的**内联**才带「小节」、词条本来就不带,终裁改的是内联),`tracks.colLegend` 与
 // `master.leadSelectHint` 的裁判后来由更晚的用户裁定接管、「偏离规格」这个框根本不适用。
-// 举一个**站得住、无裁判层级争议**的例子:`out.master.writeConfirm` 把「30 条**车道**」写成
-// 「30 条**轨道**」—— 只有 15 轨,车道才是 30(15×pan/vol),纯事实错。
-// 这类错**用户看得见**,而首帧那一瞬还会闪一下另一份。
+// ⚠ 这里原先举 `out.master.writeConfirm`「30 条车道 vs 30 条轨道」当「纯事实错」的例子,
+//   **已被 J97(用户裁定 2026-09-06)推翻**:确认文案的用词由用户定(「轨道 / 已激活 / 不保存」),
+//   J59 的「30 条 pan/vol 车道」只是引擎侧的计数,不是给用户看的文案口径。别拿这段当
+//   「照规格把『轨道』改回『车道』」的授权 —— 本段立意只说明「内联与词条两份会漂」这件事,
+//   哪一份的措辞对,裁判是 `i18n.js` 词条正上方的用户裁定注释,不是本段。
+// 这类不一致**用户看得见**,而首帧那一瞬还会闪一下另一份。
 //
 // ⚠ 这段立意注释原先还举了 `tracks.colLegend`「语义写反」与 `master.leadSelectHint`「整句丢了
 //   『音量豁免为独立选项』」两例,**两个例子后来都被推翻了**:那两处的裁判不是 05 规格,而是
@@ -231,8 +234,9 @@ for (const file of htmlFiles) {
 //   正是本卡治了一整轮的那种漂移。
 //
 // 那 12 处最终的落地(加起来正好 12,别写成对不上的分账):
-//   **5 改** —— 按 05 规格:`msHint` / `step1.desc` / `transitionHint` / `widthAngleHint` /
-//              `out.master.writeConfirm`;
+//   **5 改** —— 当时按 05 规格改:`msHint` / `step1.desc` / `transitionHint` / `widthAngleHint` /
+//              `out.master.writeConfirm`;**这 5 条在 SL-352(J97)已全部退回 v5.6.6 措辞**,
+//              05 规格也随 J97 改成用户措辞 —— 下面这笔分账记的是 SL-293 当时的落地,不是现状;
 //   **2 改** —— **按更晚的用户裁定、明确不回 05 规格**:`tracks.colLegend` / `master.leadSelectHint`
 //              (依据见这两条词条正上方的警示注释);
 //   **1 撤回** —— `footer.printing` 的单位词是尚未兑现的前置(A17 无 tempo map / deviations A26),
@@ -244,8 +248,10 @@ for (const file of htmlFiles) {
 //               编辑就过期,这也是本卡治的同一个毛病。)
 //   **4 推迟** —— 纯措辞(`armedWaiting` / `footer.printDone` / `leadFollowAnalysis` /
 //              `wave.trackPickHint`),词条不动、内联先同步成现行词条。
-// 另有 2 条**不在这 12 处之内**也改了:`out.master.writeConfirm.follow`(与兄弟条目对齐措辞)、
-// `tour.step11.body`(指着界面上不存在的档名)。故词典净改动 = 5+2+2 = **9 条 key × 3 语**。
+// 另有 2 条**不在这 12 处之内**也改了:`out.master.writeConfirm.follow`(与兄弟条目对齐措辞;
+// **同样已随 J97 退回**)、`tour.step11.body`(指着界面上不存在的档名;J97 未动,保留)。
+// 故 SL-293 当时词典净改动 = 5+2+2 = **9 条 key × 3 语**;SL-352 之后其中 6 条已退回,
+// 现行词典以 `i18n.js` 为准,别按本段分账反推。
 //
 // 判据方向:**以 zh 词条为准**(它是上屏那一份),内联必须逐字等于它。
 //
