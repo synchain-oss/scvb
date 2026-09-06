@@ -289,6 +289,16 @@ bool VizPublisher::tick(scvb::u64 nowMs, const VizPublishInput& in)
         }
     }
 
+    // [SL-362] 全局「最大角度」——**每帧都刷**,与每轨当前值同族(它是「此刻」的参数值)。
+    // 编码与 per-track widthPct 逐字同一条(`vizPackFixed` + kVizWidthMin/Max),两者同源才
+    // 保证读方一套解码走到底;NaN(句柄未就绪)留哨兵,读方回落 100 = 不缩放。
+    {
+        const float gw = in.globalWidthPct;
+        s.globalWidthPct = (gw == gw) // 非 NaN
+                               ? scvb::vizPackFixed(static_cast<double>(gw), scvb::kVizWidthMin, scvb::kVizWidthMax)
+                               : scvb::kVizPanNone;
+    }
+
     plane_.publish(s, needLanes);
     lastPublishMs_ = nowMs;
     everPublished_ = true;

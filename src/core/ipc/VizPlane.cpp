@@ -215,6 +215,12 @@ void VizPlane::publish(const VizSnapshot& s, bool writeLanes)
     f->track_stereo_mask.store(s.stereoMask, std::memory_order_relaxed);
     f->lane_revision.store(s.laneRevision, std::memory_order_relaxed);
     f->track_lead_mask.store(s.leadMask, std::memory_order_relaxed);
+    // [SL-362] 全局 width:**存定点值 + 1**,0 留给「未提供」(哨兵 ⇒ 存 0)。
+    // 为什么不能直接存定点值:0 是合法宽度,而旧写方把这一槽清成 0 —— 见 VizPlane.h
+    // 那段注释。这里是唯一的编码点,解码在下面唯一的一处,两处必须成对改。
+    f->global_width_plus_one.store(
+        s.globalWidthPct == kVizPanNone ? 0u : static_cast<u32>(static_cast<int>(s.globalWidthPct) + 1),
+        std::memory_order_relaxed);
 
     // 每轨当前值(分布图数据面):随每帧刷新 —— 它们是「此刻」,不受 writeLanes 分频影响。
     auto* ts = trackState();
@@ -302,6 +308,11 @@ bool VizPlane::read(VizSnapshot& out) const
         out2.stereoMask = f->track_stereo_mask.load(std::memory_order_relaxed);
         out2.laneRevision = f->lane_revision.load(std::memory_order_relaxed);
         out2.leadMask = f->track_lead_mask.load(std::memory_order_relaxed);
+        // [SL-362] 全局 width 解码:0 = 写方未提供 ⇒ 留哨兵(读方据此回落 100)。
+        {
+            const u32 gw = f->global_width_plus_one.load(std::memory_order_relaxed);
+            out2.globalWidthPct = gw == 0u ? kVizPanNone : static_cast<std::int16_t>(static_cast<int>(gw) - 1);
+        }
         out2.seq = before;
         out2.generation = header()->generation.load(std::memory_order_acquire); // 与 generation() 同口径
 

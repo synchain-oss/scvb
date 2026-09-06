@@ -415,6 +415,9 @@ std::size_t fieldOffset(const std::string& s, const std::string& f)
             return offsetof(scvb::VizFrame, lane_revision);
         if (f == "track_lead_mask")
             return offsetof(scvb::VizFrame, track_lead_mask);
+        // [SL-362] 全局「最大角度」——取自原 _reserved[0],故 `_reserved` 的起点随之 88 → 92。
+        if (f == "global_width_plus_one")
+            return offsetof(scvb::VizFrame, global_width_plus_one);
         if (f == "_reserved")
             return offsetof(scvb::VizFrame, _reserved);
         return kNotFound;

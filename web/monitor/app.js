@@ -47,6 +47,7 @@ import {
     vizLegendRows,
     vizPlayheadEvent,
     vizSeries,
+    vizGlobalWidthPct,
 } from "./viz.js";
 
 // ------------------------------------------------------------- 设计盒(05 §1.2)
@@ -270,7 +271,10 @@ function renderTrajAxis() {
 const distMotion = createDistMotion({
     container: $("monitor-dist-bars"),
     isVisible: () => store.accepts.ok,
-    // viz 段只带每轨 width,不带全局「最大角度」—— 沿用 distGeometry 的 100 缺省。
+    // [SL-362] 全局「最大角度」现在**随 viz 段带过来了**(此前段里没有这个值、恒按 100 画,
+    // 于是用户把它调离 100 时两页的柱位当场对不上)。拿不到时 `vizGlobalWidthPct` 回落 100,
+    // 与 `distGeometry` 的缺省一致 —— 旧写方(段内槽为 0)因此与本卡之前的表现完全相同。
+    getGlobalWidthPct: () => vizGlobalWidthPct(store.viz),
 });
 
 // ------------------------------------------------------------- 图例 hover 联动

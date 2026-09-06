@@ -1602,7 +1602,9 @@ export function createTabMaster(opts) {
         // 与 Monitor 侧的**两处不同**,都源自数据面不同(Output 读本地 state,不走 viz 段):
         //   ① 没有 stale / 组切换语义 —— 那两条是 viz 段特有的(写方停摆、跨组数据面),
         //      Output 的 rows 直接来自本进程的 params/state,不存在「陈旧但仍显示」这一档;
-        //   ② 多一个全局「最大角度」入几何(Monitor 的 viz 段不带这个值,恒 100)。
+        //   ② 多一个全局「最大角度」入几何。[SL-362] **Monitor 现在也有这个值了**
+        //      (随 viz 段带过去,见 VizFrame::global_width_plus_one),两页因此同款缩放;
+        //      本行原文写的是「Monitor 的 viz 段不带这个值,恒 100」,已不成立。
         distMotion = createDistMotion({
             container: el.distBars,
             isVisible: () =>

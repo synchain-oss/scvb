@@ -91,6 +91,11 @@ struct VizPublishInput
     // ⚠ 登记一条**本卡不碰的既有分叉**:「未连接**但有段**」的轨,Monitor 画、Output 不画。
     // 那条改前就在(走的是曲线求值那一支,与本卡的回落无关),不是本卡引入的。
     scvb::u32 connectedMask = 0;
+    // [SL-362] 全局「最大角度」参数当前值(engineering 0..150,来自 `rawWidth` atomic)。
+    // 与 `panParam`/`volDbParam` 同族:**句柄未就绪 → NaN → 段内留哨兵**,读方回落 100。
+    // 默认 NaN 而不是 0 的理由同上:0 是合法宽度(全收拢到中央),默认成 0 会让忘了填的
+    // 调用方把「不知道」发成一个**看起来正常**的值。
+    float globalWidthPct = std::numeric_limits<float>::quiet_NaN();
     // 每轨轨名(UTF-8;发布器按 UTF-8 边界截断到 kVizLabelBytes-1)。图例要它。
     std::array<std::string, scvb::state::kNumTracks> label{};
     // 轨名/宽度不进 crvsRevision,单独给一个修订号驱动「车道块」重写(轨名随车道一起落段)。

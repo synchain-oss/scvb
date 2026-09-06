@@ -164,6 +164,9 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     in->panNow[0] = scvb::vizPackPan(-12.5);
     in->volDb[0] = scvb::vizPackFixed(-6.25, scvb::kVizVolDbMin, scvb::kVizVolDbMax);
     in->widthPct[0] = scvb::vizPackFixed(80.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
+    // [SL-362] 全局「最大角度」:值域 0..150,取一个 **>100** 的值 —— 100 以内的话
+    // 「回落 100」那条路与真值撞在一起,下面那格就分不出「真的读到了」和「回落了」。
+    in->globalWidthPct = scvb::vizPackFixed(150.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
     in->label[0] = "Lead";
     in->label[1] = "主唱"; // 主唱(多字节,验往返不乱码)
 
@@ -194,6 +197,9 @@ TEST_CASE("viz 段:写方发布 → 只读方一致性读", "[viz][ipc]")
     REQUIRE(out->label[0] == "Lead");
     REQUIRE(out->label[1] == "主唱");
     REQUIRE(out->panNow[2] == scvb::kVizPanNone); // 未填 = 哨兵
+    // [SL-362] 全局「最大角度」往返。← 把编码那一处的 `+1` 去掉(两侧同时去),本格仍绿
+    //   (往返自洽),红的是下面那格 —— 所以两格必须都在。
+    REQUIRE(out->globalWidthPct == scvb::vizPackFixed(150.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
 
     // writeLanes=false:只刷帧头,车道内容原样保留(4Hz 刷 playhead / 车道按需重算的分频口径)。
     in->playheadSamples = 54321;
@@ -381,6 +387,42 @@ TEST_CASE("VizPublisher:发布 → 读侧看到降采样数据与断线", "[viz]
     // 轨色索引 = 轨号。
     REQUIRE(out->trackColor[0] == 1);
     REQUIRE(out->trackColor[14] == 15);
+}
+
+// [SL-362] **旧写方兼容**:本卡之前的 Output 不写 `global_width_plus_one`,覆盖式初始化
+// 把那一槽留成 **0**。新读方必须把 0 读成「未提供」(哨兵),**不是**「宽度 0%」——
+// 0 在定点编码里是合法宽度(全收拢到中央),读错的表现是分布图把 15 根柱全挤到中线,
+// **而那看起来像一张正常的图**,没有任何东西会报错。这一格就是为它写的。
+//
+// 造「旧写方」的方式:发布一帧**不设** globalWidthPct 的快照(默认即哨兵),写方那边会
+// 存 0 —— 与旧写方留下的 0 逐字节同形。
+// ← 把编码处的 `+1` 与解码处的 `-1` 同时去掉(往返仍自洽,上面那格照绿),**只红这一格**。
+TEST_CASE("VizPlane:[SL-362] 槽为 0 = 写方未提供 ⇒ 解码回哨兵,不是宽度 0", "[viz][plane][sl362]")
+{
+    scvb::SegmentBackendInProcess backend;
+    scvb::VizPlane writer(backend, 3);
+    REQUIRE(writer.open() == scvb::InitResult::kOk);
+    scvb::VizPlane reader(backend, 3);
+    REQUIRE(reader.attachReadOnly() == scvb::InitResult::kOk);
+
+    auto in = std::make_unique<scvb::VizSnapshot>();
+    auto out = std::make_unique<scvb::VizSnapshot>();
+    // 默认构造即哨兵 —— 明写一次,免得将来有人改了默认值而本格悄悄失去前提。
+    REQUIRE(in->globalWidthPct == scvb::kVizPanNone);
+
+    writer.publish(*in, /*writeLanes=*/true);
+    REQUIRE(reader.read(*out));
+    REQUIRE(out->globalWidthPct == scvb::kVizPanNone);
+    // 且**不是** 0:0 是合法宽度,两者混淆正是本格要挡的。
+    REQUIRE(out->globalWidthPct != 0);
+
+    // 反向:写一个真的 0%(全收拢)必须**能**往返出来,不被当成「未提供」。
+    // 少了这一条,把编码写成「恒存 0」也能让上面两格全绿。
+    in->globalWidthPct = scvb::vizPackFixed(0.0, scvb::kVizWidthMin, scvb::kVizWidthMax);
+    writer.publish(*in, /*writeLanes=*/true);
+    REQUIRE(reader.read(*out));
+    REQUIRE(out->globalWidthPct == scvb::vizPackFixed(0.0, scvb::kVizWidthMin, scvb::kVizWidthMax));
+    REQUIRE(out->globalWidthPct != scvb::kVizPanNone);
 }
 
 TEST_CASE("VizPublisher:发布分频与车道按需重算", "[viz][publisher][cadence]")
