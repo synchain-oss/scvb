@@ -8730,7 +8730,13 @@
                      「稍后」/ Esc / 点遮罩 = 关闭,不写任何 state。 -->
                 <div class="sc-scrim" data-gb="reanalyze-ask" hidden>
                     <!-- role="alertdialog" 必须有可访问名,否则读屏只念出「对话框」三个字。
-                         两条 aria 都指向框里已有的段落,不新增词条(复审【建议】)。 -->
+                         两条 aria 都指向框里已有的段落,不新增词条(复审【建议】)。
+
+                         [SL-279 复审第 7 轮] 下面那条 aria-describedby 是**默认值**:范围档下
+                         tab-settings 的 syncReanalyzeRangeNote() 会把它改写成两个 id
+                         (scopenote + rangenote)。**不在这里静态并两个** —— describedby 直接
+                         引用的节点即使 hidden 也会被念,follow 档下那就成了把范围提示这句
+                         假话念给读屏用户,比不念更糟。 -->
                     <div
                         class="sc-modal sc-modal--reanalyze"
                         role="alertdialog"

@@ -618,6 +618,8 @@ const ASK_PROBE = IN(`
             const n = gb("reanalyze-ask-rangenote");
             return n && vis(n) ? n.textContent.trim() : null;
         })(),
+        // [SL-279 复审第 7 轮] 读屏用户拿到的那一半:describedby 有没有把范围提示带上。
+        describedBy: panel ? panel.getAttribute("aria-describedby") : null,
         bodyMt: bs.marginTop,
         bodyMb: bs.marginBottom,
     };
@@ -1173,11 +1175,54 @@ try {
             !!rmOpen.rangeNote,
             "C8r 框一开就带范围提示(范围档下这枚钮达不成用户要的结果)",
         );
+        // [复审第 7 轮] 读屏那一半:describedby 必须把范围提示带上,否则 AT 用户拿到的
+        // 仍是「框不关、什么也没说」—— 视觉修好了、读屏没修,是这一族的经典漏法。
+        check(
+            (rmOpen.describedBy || "").includes("reanalyze-ask-rangenote"),
+            "C8r aria-describedby 带上了范围提示(读屏念得到)",
+        );
     }
 
     // ② 点主钮 ⇒ 后端受理(ok:true),但基线不前移 ⇒ **框仍开、提示仍在、徽标仍亮**。
     check(await click("reanalyze-ask-primary"), "C8r 主钮可点");
     await sleep(1200); // mock 的 analyze 流水线 800ms + 一轮 render
+
+    // [复审第 7 轮] **先证「这一轮真的跑过分析」,再谈「跑了却没前移」。**
+    //
+    // 为什么必须有这一格:`doReanalyzeFromAsk` 的拒绝态(`ok:false` / `observer` / call 抛了)
+    // 走的**也是**「不关框 + requestRender」,而 rangeNote 在开框那一下就显出来了、badge 本来
+    // 就亮 —— 下面那三格在「受理了但判据挡住前移」与「压根没跑起来」两种情形下取值完全相同。
+    // 那样「mock 的 analyze 根本没起来」就会冒充「跑了、判据挡住了」,和 host 侧用
+    // `takeAnalysisDone()` 堵掉的是同一个形态(commit `16261a0` 的 message 里写过这条规矩,
+    // web 侧上一轮漏了)。
+    //
+    // 正信号取 `analysis_run.progress`:装载时该字段**根本不存在**(mock-data 的初值是
+    // `{running:false}`),只有跑完一轮流水线才被写成 1;被拒时它一动不动。
+    const rmRun = await evaluate(
+        IN(`const m = w.__SCVB_MOCK__;
+            if (!m || typeof m.requestInitialState !== "function") return null;
+            // IN() 包出来的不是 async 函数,所以返回 promise 让 Runtime.evaluate
+            // 的 awaitPromise 去解(:423),不要在这里写 await。
+            return Promise.resolve(m.requestInitialState()).then((st) => ({
+                progress: (st.analysis_run || {}).progress,
+                running: !!(st.analysis_run || {}).running,
+                applied: ((st.analysis || {}).applied || {}).loudness_mode,
+                current: (st.analysis || {}).loudness_mode,
+            }));`),
+    );
+    if (check(rmRun, "C8r 取到 mock 快照")) {
+        // ← 让 mock 的 analyze 回 {ok:false},这一格红(而下面三格照样绿)。
+        check(
+            rmRun.progress === 1 && !rmRun.running,
+            "C8r 分析**真的跑完了一轮**(受理了,不是被拒)",
+        );
+        // 跑完了却没前移 —— 这才是判据挡住的证据,不是「没跑所以没变」。
+        check(
+            rmRun.applied === "kw_integrated" && rmRun.current === "peak_dbfs",
+            "C8r 跑完仍 stale:applied 停在 kw_integrated、当前是 peak_dbfs",
+        );
+    }
+
     const rmAfter = await evaluate(ASK_PROBE);
     if (check(rmAfter, "C8r 探针取到锚点(点主钮后)")) {
         // ← 把 doReanalyzeFromAsk 里那段 `if (rangeLimited()) { … return; }` 删掉,这一格红。

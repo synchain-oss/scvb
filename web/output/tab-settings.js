@@ -218,6 +218,7 @@ export function createTabSettings(opts) {
         centerStale: $("settings-centerslot-stale"), // [SL-278]
         // [SL-276] 重分析提示弹窗(卡片层单例,不在 Tab4 子树里 —— 见 index.html 那段注释)
         reanalyzeAsk: $("reanalyze-ask"),
+        reanalyzeAskPanel: $("reanalyze-ask-panel"),
         reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
         reanalyzeAskLater: $("reanalyze-ask-later"),
         reanalyzeAskPrimary: $("reanalyze-ask-primary"),
@@ -320,8 +321,14 @@ export function createTabSettings(opts) {
      * 这枚钮照样拿到 `ok:true`(后端确实受理并重算了范围内),所以**不能靠回执判**:
      * 受理成功不等于达成了用户点它的目的。
      *
-     * 判据与 native 的 `analyzeAllRange` 同口径:「非 follow」即有显式范围,不枚举档名 ——
-     * §1.8 将来多一档时,漏枚举会静默倒向「当成 follow」,那是把提示藏起来的方向。
+     * 判据只能看**档位**:native 那边真正决定的是「`analyzeAllRange` 走没走整条那条分支」,
+     * 而 web 侧拿不到那个分支结果。桥面上「非 follow」⇒ 一定有**有效**范围 ⇒ 一定走范围支,
+     * 这个蕴含由 `handleSetRange`(挡掉 `manual` 的倒挂范围)与 `hostLoopSeconds`(挡掉空
+     * `daw_loop`)两道校验给,**不是判据自带的** —— 同一句话在 `OutputProcessor.h` 的
+     * `startAnalysis` 头注里,两处别再各写各的(复审第 7 轮:这已经是第三次)。
+     *
+     * 写成「非 follow」而不枚举 `daw_loop`/`manual`:§1.8 将来多一档时,漏枚举会静默倒向
+     * 「当成 follow」—— 那是把提示藏起来的方向,错要错在多显一次。
      */
     function rangeLimited(st) {
         const g = ((st || getStore()).state || {}).global || {};
@@ -597,7 +604,26 @@ export function createTabSettings(opts) {
      */
     function syncReanalyzeRangeNote() {
         if (!el.reanalyzeAskRangenote) return;
-        show(el.reanalyzeAskRangenote, rangeLimited());
+        const limited = rangeLimited();
+        show(el.reanalyzeAskRangenote, limited);
+        // [SL-279 复审第 7 轮] **`aria-describedby` 跟着一起动** —— 否则读屏用户拿到的仍是
+        // 「框不关、什么也没说」:本框是 role="alertdialog",描述只念 describedby 指到的节点。
+        //
+        // ⚠ **不能把两个 id 静态并进去**:AccName/Description 计算对 describedby **直接引用**
+        // 的节点是「即使 hidden 也纳入」的,静态并进去会让 follow 档下也念出那句范围提示 ——
+        // 那是把假话念给读屏用户,比不念更糟。
+        //
+        // 与显隐**共用同一个 `limited`**,不另起第二个条件:两个条件迟早分叉,而「同一件事
+        // 两处各判一次」正是这张卡在收的那一族。
+        const panel = el.reanalyzeAskPanel;
+        if (panel && typeof panel.setAttribute === "function") {
+            panel.setAttribute(
+                "aria-describedby",
+                limited
+                    ? "reanalyze-ask-scopenote reanalyze-ask-rangenote"
+                    : "reanalyze-ask-scopenote",
+            );
+        }
     }
 
     function openReanalyzeAsk() {
