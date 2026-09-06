@@ -1559,7 +1559,20 @@ function show(node, on) {
  * 为什么要这一格而不是让 handler 自己算:签名的成分(⑧ 的轨数)只在 renderBanners
  * 里算得出来;让 handler 重算就是把那几组判据抄第二份,两份必然漂。
  * 为什么不是读 DOM 里那句话:那句话跟着语言变 ⇒ 切个语言就把关掉的横幅弹回来。
- * 只活在本会话(与 store.session.dismissedBanners 成对),不入 state、不落盘、不进契约。
+ * 只活在本会话(与 `viewStore().session.dismissedBanners` 成对),不入 state、不落盘、
+ * 不进契约。
+ *
+ * ⚠ [复审第 3 轮] 上一版这里指的是**直接从真 store 上取**的那条路径 —— 第 2 轮把读写都
+ * 挪到了 `viewStore().session` 之后它已经不存在了。这里**有意不把那个旧写法再抄一遍**:
+ * 源码级判据(smoke-tab1 (a21))正拿它的字面形态当反向项,注释里引一遍就会把判据喂饱
+ * (与 tab-settings.js 记过的「别在注释里逐字引被钉住的代码」同族)。
+ *
+ * ⚠ **本位有意保持模块级、不进 session**,靠的是一个顺序:`showDismissible` 里
+ * `bannerSignature.set(gb, sig)` 排在 `show(node, seen.get(gb) !== sig)` **之前** ——
+ * 于是导览期被 demo 帧覆写 / 删掉之后,退出导览的第一次真渲染当帧就把它补回,比较用的
+ * 是新写进去的那一份。**改动那两行的顺序前先回来看这一段**;真要拆掉这个依赖,就把本位
+ * 一起挪进 `session`(与 `dismissedBanners` 同生同死)。今天无害是**这个顺序**给的,
+ * 不是「导览动不到它」——导览每帧都动得到。
  */
 const bannerSignature = new Map();
 

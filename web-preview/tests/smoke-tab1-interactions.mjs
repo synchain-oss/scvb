@@ -1750,6 +1750,22 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             /seen\.delete\(gb\)/.test(appCode),
             "(a21) ★ 条件为假的那一帧连关掉记录一起删(「关掉」是这一次,不是永久)",
         );
+        // [复审第 3 轮] **关闭记忆读写都跟着 `viewStore()` 走。**
+        // 上一轮修掉的行为错(导览期每帧把真会话的记录删一条 ⇒ 开一次「重看引导」,
+        // 用户关掉的横幅全部弹回来)**全部的牙齿只有页面级 ⑦-tour 一格**,而页面级整套
+        // 是可 SKIP 的(没装无头浏览器 ⇒ 退 2,gates 3e 与 CI web-smoke 都记 SKIP 不判红)。
+        // 于是在一台没装 Chrome 的机器上把它改回去,整条 gates 全绿 —— 正是本卡自己写的
+        // 「判据不能放在可 SKIP 的套件里」。这一格是它在 node 侧的那一份。
+        // 第二个**否定**项同时钉住「读写不许分家」:上一版那个缺陷的形状正是读一份、写另
+        // 一份。判据跑在 `appCode`(已剥注释)上,所以头注里解释那段历史不会喂饱它 ——
+        // 即便如此,app.js 那处头注也已经改成指路、不再逐字引旧写法(两道各自独立)。
+        // ← 把 showDismissible / ✕ handler 里的 `viewStore().session` 改回直接读真 store,
+        //   本格红(行为面见 smoke-output-stale-page ⑦-tour)。
+        check(
+            /viewStore\(\)\.session/.test(appCode) &&
+                !/store\.session\.dismissedBanners/.test(appCode),
+            "(a21) ★ 关闭记忆读写都走 viewStore().session(导览不动真会话)",
+        );
         // 签名带轨数 —— 三条过期时关掉、之后变成五条要能再提醒。
         // ← 把它改成 `""`,本格红(行为面见 ⑦d)。
         check(
