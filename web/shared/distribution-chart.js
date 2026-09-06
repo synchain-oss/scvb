@@ -190,6 +190,15 @@ export function distSpanVars(geo) {
  * 立体声那批横线**整体排在柱体之前** —— DOM 顺序即画序,横线先画才不会盖住柱顶
  * (提取前 `spans.concat(bars)` 就是这个语义,原样保留)。
  *
+ * [SL-353] **一行 = 一个 `.dist-bar`,一根柱只取一个色号**(`--tc` 一处写入,CSS 侧
+ * 的两档 alpha 换的只是同一色相的浓淡)。柱上唯一的第二个绘制片段是 lead 轨的
+ * `::after` 绿帽 —— 那是**语义色**,只在 `data-lead="1"` 上出现,与身份色各占一处。
+ * 之所以写下来:v5.6.7 用户把「柱顶一段是别的颜色」报成了取色缺陷,而真因是**两轨
+ * 声像相同、柱体完全重合**(后画的矮柱盖住高柱的下半截,只露出顶端一小截),与本
+ * 函数的取色无关。可读性由 CSS 的 1px 分隔晕(`--dist-bar-halo`)兜;判据在
+ * `web-preview/tests/smoke-output-dist-page.mjs` ⑪(单色 + 无 `::before` + 帽只跟
+ * lead 走),**不是**源码正则。
+ *
  * @param {{ch:number, pan:number, volDb:number, widthPct:number,
  *          stereo?:boolean, lead?:boolean}[]} rows 要画的轨(调用方已滤过)
  * @param {number} [highlightCh] 图例 hover 联动的轨号(0 = 无);非高亮轨 data-hi="0"

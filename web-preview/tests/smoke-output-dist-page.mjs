@@ -17,6 +17,11 @@
 // 外加空闲零 rAF(05 §6.1):切到轨迹档 / 切走 Tab1 时一帧都不许跑 —— Output 的
 // `scvb.params` 仍以 25Hz 推着 render,少一道闸就是对着没人看的画面烧 60fps 循环。
 //
+// [SL-353] 末节 ⑪ 越出「Output 一页」的范围:它在 **Output 与 Monitor 两页各自的文档里**
+// 造同一个沙箱、喂同一批 rows,把柱数/矩形/0 dB 线/计算色逐项对拍。放在本文件是因为
+// 被测面就是分布图的渲染面(本文件的主题),而两页的 `.dist-bar` / `.dist-plot__zero`
+// CSS 是**手抄两份**、此前没有任何东西比对过。
+//
 // 用法:node web-preview/tests/smoke-output-dist-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
 // 退出码:0 = 全绿;1 = 有断言失败;**2 = 环境里没有 Chrome/Edge**(口径同
@@ -41,6 +46,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FALLBACK_TRACK_COLORS } from "../../web/shared/track-colors.js";
 
 const ROOT =
     process.argv[2] && !process.argv[2].startsWith("--")
@@ -1906,6 +1912,348 @@ try {
         }
 
         assertClean("SL-356 走带态去抖");
+    }
+
+    // =========================================================================
+    // ⑪ [SL-353] 分布图渲染面:柱是**单色单元素** + Output↔Monitor 两页逐项对拍
+    // -------------------------------------------------------------------------
+    // 用户实测(v5.6.7)两条:①「竖条最上方一段颜色与其余部分不同,**有的时候**」;
+    // ② Monitor 的分布图与 Output 对不上。
+    //
+    // ★ 先说**定谳**,免得后来人照着卡面的猜测去改取色:
+    //   ① 的真因**不是**取色。柱由 `distBarsHtml` 一行拼一个 `.dist-bar`,颜色只有一处
+    //      写入(`--tc: var(--track-color-N)`),CSS 侧两档 alpha 换的是同一色相的浓淡。
+    //      屏幕上那一段异色是**两轨声像相同、柱体完全重合**:后画的矮柱盖住高柱的下半截,
+    //      只在顶端露出高柱的颜色。用户截图逐像素对上了 —— Output 侧轨 7 靛紫
+    //      (72,69,143)压在轨 9 橄榄(98,100,16)之上,Monitor 侧轨 4 芥黄压在轨 5 钢蓝
+    //      之上;两张图里其余每根柱都是一条干净的同色渐变。「有的时候」= 只在两轨声像
+    //      撞到一起的那些时刻。修法因此是**可读性**(1px 分隔晕),不是「改成单一取色」
+    //      ——它本来就是单一取色,本节 (a)-(d) 就是把这句话钉住。
+    //   ② 的渲染面**早已共用**:两页都走 `web/shared/distribution-chart.js` 的几何与拼串、
+    //      `web/shared/dist-motion.js` 的建器(`--zero-h` / `has-zero-line` 也由建器打)。
+    //      真正各写一份的是**两页 index.html 里那段 `.dist-bar` / `.dist-plot__zero` CSS**
+    //      ——手抄两份、没有任何东西比对过。本节 (e) 补的就是这道:同一批 rows 喂进两页
+    //      各自的样式表,柱数 / 每柱矩形 / 0 dB 线矩形 / 计算色逐项对拍。
+    //      **数据源的差异不在本节判定面内**(它们在 native 侧,列在 PR 描述里)。
+    //
+    // ★ 量法:在**每一页自己的文档里**造一个 600×200 的 `.dist-plot` 沙箱,喂同一份
+    //   rows、同一个 `--zero-h`,量 `getBoundingClientRect`。为什么不去量两页真实的图:
+    //   真实的图各由各的数据面驱动(Output 读 params/state、Monitor 读 viz 段),两边
+    //   的 rows 本来就不同,量出来的差分不清「样式漂了」还是「数据不同」。沙箱把数据
+    //   这一维钉死,剩下的差**只可能**来自两页的样式表。
+    //
+    // ★ 本节**证明不了**什么:
+    //   · 沙箱里的 `--zero-h` 与 `has-zero-line` 是本节自己打的,不是建器打的 ——
+    //     「建器有没有打」由 smoke-monitor.mjs 的接线格与本文件 ⑧ 钉,别读成这里也钉了;
+    //   · 1px 分隔晕在无头 Chrome 上量的是**计算样式**(晕在、且无色差),不是「重合处
+    //     真的多了一条分隔线」—— 后者要数像素(得解 PNG),留给真机肉眼;
+    //   · 两页真实数据面的一致性(轨集 / pan / vol 从哪来)不在这里,见 PR 描述。
+    //
+    // ★ 删除式(本机实测,四条各红各的格,记录在 PR 描述里):
+    //   · 删掉 monitor/index.html 的 `box-shadow: … var(--dist-bar-halo)` ⇒ (d) 与 (e5) 红;
+    //   · 把 monitor 的 `.dist-bar { bottom: 15px }` 改 17px ⇒ 只有 (e2) 红;
+    //   · 把 monitor 的 `.dist-plot__zero { bottom: calc(15px + …) }` 改 18px ⇒ 只有 (e3) 红;
+    //   · 把 output 的柱体渐变第二档换成 `rgba(var(--track-color-2), .55)` ⇒ 只有 (b) 红。
+    // =========================================================================
+    {
+        // 同一批 rows 喂两页。刻意造出**两轨同声像**(轨 7 / 轨 9,pan 都是 40)——
+        // 那正是用户那一幕的形状;顺带覆盖 lead 绿帽、立体声张开线与两端硬边。
+        const SL353_ROWS = [
+            {
+                ch: 1,
+                pan: -60,
+                volDb: 3,
+                widthPct: 100,
+                stereo: false,
+                lead: false,
+            },
+            {
+                ch: 3,
+                pan: -20,
+                volDb: -6,
+                widthPct: 100,
+                stereo: true,
+                lead: false,
+            },
+            {
+                ch: 7,
+                pan: 40,
+                volDb: 6,
+                widthPct: 100,
+                stereo: false,
+                lead: false,
+            },
+            {
+                ch: 9,
+                pan: 40,
+                volDb: -2,
+                widthPct: 100,
+                stereo: false,
+                lead: false,
+            },
+            {
+                ch: 12,
+                pan: 0,
+                volDb: 0,
+                widthPct: 60,
+                stereo: true,
+                lead: true,
+            },
+            {
+                ch: 15,
+                pan: 100,
+                volDb: -24,
+                widthPct: 100,
+                stereo: false,
+                lead: false,
+            },
+        ];
+        // 页内探针。**不用正则**:反斜杠经工具链会被折掉一层,静默失效(本仓有实伤记录),
+        // 而这里只需要从 `rgb(…)` / `rgba(…)` 里取前三个分量,indexOf 就够。
+        const PROBE = `(async () => {
+    const DC = await import("/web/shared/distribution-chart.js");
+    const ROWS = ${JSON.stringify(SL353_ROWS)};
+    const host = document.createElement("div");
+    host.className = "dist-plot has-zero-line";
+    host.style.cssText = "position:absolute;left:0;top:0;width:600px;height:200px;";
+    host.style.setProperty("--zero-h", DC.zeroDbLinePct() + "%");
+    host.innerHTML = '<div class="dist-plot__zero"></div><div class="dist-bars"></div>';
+    document.body.appendChild(host);
+    host.querySelector(".dist-bars").innerHTML = DC.distBarsHtml(ROWS, 0, 100);
+    const hr = host.getBoundingClientRect();
+    const r2 = (v) => Math.round(v * 100) / 100;
+    const rel = (n) => {
+        const r = n.getBoundingClientRect();
+        return { x: r2(r.left - hr.left), y: r2(r.top - hr.top), w: r2(r.width), h: r2(r.height) };
+    };
+    const rgbOf = (s) =>
+        String(s == null ? "" : s)
+            .split("rgb")
+            .slice(1)
+            .map((seg) => {
+                const i = seg.indexOf("(");
+                const j = seg.indexOf(")");
+                if (i < 0 || j < 0) return "?";
+                return seg.slice(i + 1, j).split(",").slice(0, 3).map((x) => x.trim()).join(",");
+            });
+    const zeroEl = host.querySelector(".dist-plot__zero");
+    const out = {
+        zeroH: DC.zeroDbLinePct(),
+        zeroDisplay: getComputedStyle(zeroEl).display,
+        zero: rel(zeroEl),
+        host: { w: r2(hr.width), h: r2(hr.height) },
+        halo: String(getComputedStyle(document.documentElement).getPropertyValue("--dist-bar-halo") || "").trim(),
+        bars: [],
+        spans: [],
+    };
+    for (const n of host.querySelectorAll(".dist-span")) out.spans.push(rel(n));
+    for (const b of host.querySelectorAll(".dist-bar")) {
+        const cs = getComputedStyle(b);
+        const bf = getComputedStyle(b, "::before");
+        const af = getComputedStyle(b, "::after");
+        out.bars.push({
+            ch: Number(b.getAttribute("data-ch")),
+            lead: b.getAttribute("data-lead"),
+            rect: rel(b),
+            bgRgb: rgbOf(cs.backgroundImage),
+            shadow: cs.boxShadow,
+            shadowRgb: rgbOf(cs.boxShadow),
+            radius: cs.borderRadius,
+            before: bf.content,
+            after: af.content,
+            afterBg: af.backgroundImage,
+            afterRgb: rgbOf(af.backgroundImage),
+        });
+    }
+    host.remove();
+    return out;
+})()`;
+
+        const NORM = (s) => String(s).replace(/\s+/g, "");
+        const seen = {};
+        for (const [name, url] of [
+            ["Output", `${base}/web/output/index.html`],
+            ["Monitor", `${base}/web/monitor/index.html`],
+        ]) {
+            newBucket(`sl353-${name}`);
+            await cdp.send("Page.navigate", { url: "about:blank" });
+            await sleep(120);
+            await cdp.send("Page.navigate", { url });
+            check(
+                await waitFor(
+                    `document.readyState === "complete" && !!document.querySelector("#card")`,
+                ),
+                `(前提)${name} 裸开装载完成(不白屏)`,
+            );
+            const p = await evaluate(PROBE);
+            seen[name] = p;
+            // 探针整体拿不到就别往下走:后面每一格都会因为「没有柱」而空绿。
+            if (
+                !check(
+                    !!p && Array.isArray(p.bars),
+                    `(前提)${name} 页内探针取到读数`,
+                )
+            ) {
+                continue;
+            }
+            log(
+                `  ${name}:host=${JSON.stringify(p.host)} 柱 ${p.bars.length} 根 ` +
+                    `张开线 ${p.spans.length} 条 zero=${JSON.stringify(p.zero)} halo=${p.halo}`,
+            );
+
+            // ---- (a) 一行 = 一个 `.dist-bar`(柱不是几个元素叠出来的)
+            eq(
+                p.bars.length,
+                SL353_ROWS.length,
+                `(a) ★ ${name}:${SL353_ROWS.length} 行 rows 出 ${SL353_ROWS.length} 根柱,一行一个元素`,
+            );
+            eq(
+                p.bars.map((b) => b.ch),
+                SL353_ROWS.map((r) => r.ch),
+                `(a) ${name}:柱的轨号与行序逐项对上`,
+            );
+            eq(
+                p.spans.length,
+                SL353_ROWS.filter((r) => r.stereo).length,
+                `(a) ${name}:立体声行才出张开线`,
+            );
+
+            for (const b of p.bars) {
+                // ---- (b) 同一根柱的所有色片同色(渐变两档只换浓淡,不换色相)
+                check(
+                    b.bgRgb.length >= 2 && new Set(b.bgRgb).size === 1,
+                    `(b) ★ ${name} 轨 ${b.ch}:柱体渐变的每一档取的是**同一个** rgb` +
+                        `(实得 ${JSON.stringify(b.bgRgb)})`,
+                );
+                eq(
+                    b.bgRgb[0],
+                    NORM(FALLBACK_TRACK_COLORS[b.ch - 1]),
+                    `(b) ${name} 轨 ${b.ch}:那个 rgb 就是本轨的调色板色号`,
+                );
+                // ---- (c) 柱上没有第二个绘制片段;帽只跟 lead 走
+                eq(
+                    b.before,
+                    "none",
+                    `(c) ★ ${name} 轨 ${b.ch}:柱没有 ::before 片段`,
+                );
+                if (b.lead === "1") {
+                    check(
+                        b.after !== "none",
+                        `(c) ★ ${name} 轨 ${b.ch}(lead):有柱顶帽 —— 语义色,身份色之外唯一的第二片`,
+                    );
+                    check(
+                        b.afterRgb.length > 0 &&
+                            b.afterRgb.every((c) => c === "120,176,142"),
+                        `(c) ${name} 轨 ${b.ch}(lead):帽色 = --dist-bar-lead 的绿` +
+                            `(实得 ${JSON.stringify(b.afterRgb)})`,
+                    );
+                } else {
+                    eq(
+                        b.after,
+                        "none",
+                        `(c) ★ ${name} 轨 ${b.ch}(非 lead):没有柱顶帽`,
+                    );
+                }
+                // ---- (d) 重叠分隔晕在,且**无色差**
+                check(
+                    b.shadow !== "none" && b.shadow !== "",
+                    `(d) ★ ${name} 轨 ${b.ch}:柱描了 1px 分隔晕(实得「${b.shadow}」)`,
+                );
+                check(
+                    b.shadowRgb.length === 1 &&
+                        new Set(b.shadowRgb[0].split(",")).size === 1,
+                    `(d) ★ ${name} 轨 ${b.ch}:晕色无色差(r=g=b)—— 有色差的描边会把` +
+                        `「柱顶有一段别的颜色」从偶发变成恒常(实得 ${JSON.stringify(b.shadowRgb)})`,
+                );
+            }
+
+            // ---- 0 dB 基准线在沙箱里确实显示(下面 (e3) 量的是它的矩形)
+            eq(
+                p.zeroDisplay,
+                "block",
+                `(前提)${name}:拿到 has-zero-line 的 0 dB 线是显示的`,
+            );
+            check(
+                p.zero.h > 0 && p.zero.w > 0,
+                `(前提)${name}:0 dB 线有非零矩形(实得 ${JSON.stringify(p.zero)})`,
+            );
+        }
+
+        // ---- (e) 两页逐项对拍
+        //
+        // 容差取 **0.5px**,比卡面给的 1px 更紧:两页在**同一个浏览器**里跑**同一份沙箱
+        // 尺寸**,合法差是 0,0.5 只用来吃浮点表示;留 1px 会正好放过「一页 15px 一页 16px」
+        // 这类真漂移 —— 而那恰是两份手抄 CSS 最容易漂出来的量级。
+        const A = seen.Output;
+        const B = seen.Monitor;
+        if (
+            check(
+                !!A && !!B && Array.isArray(A.bars) && Array.isArray(B.bars),
+                "(e) 前提:两页都取到了读数",
+            )
+        ) {
+            const TOL = 0.5;
+            const near = (x, y) => Math.abs(x - y) <= TOL;
+            const nearRect = (r1, r2) =>
+                near(r1.x, r2.x) &&
+                near(r1.y, r2.y) &&
+                near(r1.w, r2.w) &&
+                near(r1.h, r2.h);
+            eq(
+                B.bars.length,
+                A.bars.length,
+                "(e1) ★ 同一批 rows 下两页柱数相等",
+            );
+            eq(B.host, A.host, "(e) 前提:两页沙箱盒尺寸相同(否则百分比不可比)");
+            eq(
+                B.zeroH,
+                A.zeroH,
+                "(e) 前提:两页喂的 --zero-h 同值(同一个 zeroDbLinePct())",
+            );
+            for (let i = 0; i < Math.min(A.bars.length, B.bars.length); i++) {
+                const a = A.bars[i];
+                const b = B.bars[i];
+                eq(b.ch, a.ch, `(e2) 第 ${i + 1} 根柱的轨号两页一致`);
+                check(
+                    nearRect(a.rect, b.rect),
+                    `(e2) ★ 第 ${i + 1} 根柱(轨 ${a.ch})的横位/宽/顶/高两页相等(±${TOL}px)` +
+                        `—— Output ${JSON.stringify(a.rect)} / Monitor ${JSON.stringify(b.rect)}`,
+                );
+                eq(
+                    b.bgRgb,
+                    a.bgRgb,
+                    `(e5) 第 ${i + 1} 根柱(轨 ${a.ch})的计算色两页一致`,
+                );
+                eq(
+                    b.shadow,
+                    a.shadow,
+                    `(e5) ★ 第 ${i + 1} 根柱(轨 ${a.ch})的分隔晕两页一致`,
+                );
+                eq(
+                    b.radius,
+                    a.radius,
+                    `(e5) 第 ${i + 1} 根柱(轨 ${a.ch})的圆角两页一致`,
+                );
+                eq(
+                    b.afterBg,
+                    a.afterBg,
+                    `(e5) 第 ${i + 1} 根柱(轨 ${a.ch})的柱顶帽两页一致`,
+                );
+            }
+            check(
+                nearRect(A.zero, B.zero),
+                `(e3) ★ 0 dB 基准线的矩形两页相等(±${TOL}px)—— ` +
+                    `Output ${JSON.stringify(A.zero)} / Monitor ${JSON.stringify(B.zero)}`,
+            );
+            eq(B.spans.length, A.spans.length, "(e4) 张开线条数两页相等");
+            for (let i = 0; i < Math.min(A.spans.length, B.spans.length); i++) {
+                check(
+                    nearRect(A.spans[i], B.spans[i]),
+                    `(e4) ★ 第 ${i + 1} 条张开线的矩形两页相等(±${TOL}px)—— ` +
+                        `Output ${JSON.stringify(A.spans[i])} / Monitor ${JSON.stringify(B.spans[i])}`,
+                );
+            }
+        }
     }
 } catch (e) {
     fail++;

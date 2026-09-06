@@ -448,6 +448,16 @@
                 margin-left: -3.5px;
                 height: var(--h, 30%);
                 border-radius: 3px 3px 1px 1px;
+                /* [SL-353] **重叠分隔晕**。两轨声像相同(或差不到一根柱宽)时柱体完全
+                   重合,后画的那根盖住前一根的下半截,只在顶端露出前一根的颜色 ——
+                   屏幕上像「一根柱的顶端换了个颜色」(v5.6.7 用户实测)。柱本身只有
+                   一个元素、只取一个色号(`distBarsHtml`),分段取色这件事不存在。
+                   1px 浅色晕让重合处出现一条分隔线,读成两根柱。色值真源 =
+                   tokens.css 第 22 组(两页共用一份,不各写一份)。
+                   放 box-shadow 不放 border:base.css 的 reset 是 `box-sizing: border-box`,
+                   加 border 会从 `width: 7px` 里吃掉两侧各 1px,柱身当场变窄两像素;
+                   box-shadow 不进盒模型,几何一个字节不动。 */
+                box-shadow: 0 0 0 1px var(--dist-bar-halo);
                 background: linear-gradient(
                     180deg,
                     rgba(var(--tc), 0.95),
