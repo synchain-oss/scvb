@@ -103,6 +103,51 @@
                 window.__scvbReportBootError = report;
             })();
         </script>
+
+        <!--
+          [SL-370] 「首帧已绘」上行信号 —— 开窗遮挡闸的第一条放行路。
+          C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
+          收到这条信号(或 pageFinishedLoading / 3s 超时,谁先到算谁)才放回来。机理、为什么是
+          「挪走」而不是隐藏、为什么要等导航开始,只写在 src/plugin-common/WebViewRevealGate.h
+          一处,别在这里复述。
+          通道与上面的 boot 守卫同一条(JUCE 内建 __JUCE__.postMessage,不经 bridge.js、
+          不占契约 §7 名表);事件名真源 = src/plugin-common/WebViewHost.h 的 kFirstFrameEventId。
+          **必须嵌套两层 requestAnimationFrame**:第一层的回调跑在这一帧提交**之前**,只有在
+          它里面再要一帧,回调触发时前一帧才确实已经合成过。单层 rAF 发出的信号早于首帧,
+          放回来的会是一块还没画上东西的 WebView —— 那正是本卡要治的病。判据 = ⑦。
+          浏览器预览下没有 __JUCE__,静默返回。
+        -->
+        <script>
+            (function () {
+                function signal() {
+                    try {
+                        var juce = window.__JUCE__;
+                        if (!juce || typeof juce.postMessage !== "function")
+                            return;
+                        juce.postMessage(
+                            JSON.stringify({
+                                eventId: "__scvb__firstFrame",
+                                payload: {},
+                            }),
+                        );
+                    } catch (e) {
+                        // 发不出去也不许卡住:C++ 侧还有 pageFinishedLoading 与 3s 超时两条兜底
+                    }
+                }
+                function arm() {
+                    if (typeof window.requestAnimationFrame !== "function") {
+                        signal();
+                        return;
+                    }
+                    window.requestAnimationFrame(function () {
+                        window.requestAnimationFrame(signal);
+                    });
+                }
+                if (document.readyState === "loading")
+                    document.addEventListener("DOMContentLoaded", arm);
+                else arm();
+            })();
+        </script>
         <link rel="stylesheet" href="../shared/tokens.css" />
         <link rel="stylesheet" href="../shared/base.css" />
         <style>

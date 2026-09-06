@@ -119,9 +119,9 @@ public:
     // (juce_WebBrowserComponent_windows.cpp:492)。白的来源就是它。
     //
     // 修法:**先调基类,再把自己的底盖上去**。两次 fillAll 落在同一个 Graphics、同一次
-    // paint 里,先白后暗,中间不上屏 —— Windows 侧两条渲染路都是整帧画完才出:软件渲染
+    // paint 里,先白后 shellBackdrop(),中间不上屏 —— Windows 侧两条渲染路都是整帧画完才出:软件渲染
     // 画进 offscreenImage 再 blit(juce_Windowing_windows.cpp:4907),Direct2D 走
-    // startFrame/endFrame 成对包住整次 paint(同文件 :5144-5145)。上屏的只有暗的那一层。
+    // startFrame/endFrame 成对包住整次 paint(同文件 :5144-5145)。上屏的只有后盖的那一层。
     // WebViewHost::paint 保留不动:兜底面板路径下 webView_ 被 setVisible(false),
     // 那时父组件的 fillAll 才真的会画。
     //
@@ -221,7 +221,8 @@ public:
     //   · 黑(第二段)= 我方 ①-a/①-b/①-c 三层预绘底色,取值 kShellBackdropArgb。
     //     **这是一条排除法结论,不是猜**:开窗路径上我方只有这一个深色值 —— JUCE 的
     //     fallbackPaint 画白、外壳与 body 稳态都走浅色渐变、宿主容器是浅的,窗口里能出现
-    //     一整块黑的来源只剩它。(全仓求证:`grep -rn "shellBackdrop|page-backdrop" src web`。)
+    //     一整块黑的来源只剩它。(全仓求证:预绘底色的全部落点 = ⑥/⑥b/⑥c 三格读的那几个
+    //     路径,见 web-preview/tests/smoke-embedded-resources.mjs。)
     //   · 白(第三段)= 我方三层**盖不到**的那一节,即上面已登记的两条:①-b 缺席时
     //     (JUCE 用 QueryInterface 取 ICoreWebView2Controller2,取不到就静默跳过)露出的
     //     WebView2 默认白,以及 runtime 自己那个宿主 HWND 首帧之前的那一段。
@@ -231,21 +232,38 @@ public:
     //     在场就从控制器建好一路管到首帧;看得见白 ⇒ 这一层不在(或白来自 runtime 的 HWND)。
     //     **插件侧没有 API 能盖它**,SL-370 也没有新增手段 —— 只有真机能判。
     //
-    // 【本卡的修法】把预绘底色的三处同源(tokens.css 的 --page-backdrop / 三份 index.html 的
-    //   <head> 内联 / 本文件用的 kShellBackdropArgb)**整体换成浅色**:取
-    //   `--page-gradient` 的渐变轴中点色,现值 #d9cadb(本渐变四段斜率几乎一致,取整后它与
-    //   「沿轴等权均值」同为 #d9cadb;⑥c 判的是**中点色**这一条,不判均值)。
-    //   于是序列从「白 → 黑 → 白 → 内容」变成「白 → 浅底 → (白) → 内容」,黑那一段被彻底
-    //   拿掉,剩下的交接都发生在浅色之间。
-    //   ⚠ **别把它读成「第三段白也没了」** —— 那一节的来源在我们的 API 之外,本卡只是让它
-    //   两侧的邻居都变浅,肉眼上不再是黑白跳变。真机验收看的是「有没有黑」,不是「有没有白」。
+    // 【本卡的修法 · 第一段:颜色(兜底)】把预绘底色的三处同源(tokens.css 的
+    //   --page-backdrop / 三份 index.html 的 <head> 内联 / 本文件用的 kShellBackdropArgb)
+    //   **整体换成浅色**:取 `--page-gradient` 的渐变轴中点色,现值 #d9cadb(本渐变四段斜率
+    //   几乎一致,取整后它与「沿轴等权均值」同为 #d9cadb;⑥c 判的是**中点色**这一条,不判均值)。
+    //   黑那一段就此彻底拿掉。
     //   ⚠ 连带面:kShellBackdropArgb 同时是 FallbackPanel 的面板底色,三行标签因此从浅字
     //   改成深墨(判据 = tests/webview/test_plugin_common.cpp 的对比度断言);
     //   --page-backdrop 也是外壳圆角之外那一圈的颜色,窗口四角由深变浅是**有意的**。
     //   机检:⑥/⑥b 只保证三处彼此同值,「和成品可见底色是不是一个明暗」由
     //   web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c 从 --page-gradient 现算现对。
     //
-    // 【评估过、本卡没做的那条】「控制器建好 / 首帧到达之前先 setVisible(false)」:
+    // 【本卡的修法 · 第二段:根本不让 WebView 上屏(主修法)】统筹裁定(#241 评论):
+    //   **光换颜色盖不住第三段白**。用户机的 Runtime 是 152.0.4191.66,ICoreWebView2Controller2
+    //   与 DefaultBackgroundColor 全都可用(即 ①-b 这一层确定在场、且已经是浅色),仍然固定
+    //   看得见白 ⇒ 那几帧白不由我方任何一层底色决定,而是 WebView2 自己那个宿主 HWND 在合成
+    //   首帧之前画的,插件侧没有 API 管得到它的颜色。
+    //   于是改成管**它在不在屏上**:导航开始 → 页面「首帧已绘」之间,把 WebView 子窗口整块
+    //   挪到宿主客户区之外,那块地方由 WebViewHost::paint 铺 shellBackdrop() 当占位;
+    //   三条放行路(前端 __scvb__firstFrame / pageFinishedLoading / 3s 超时)谁先到算谁。
+    //   判定收在 WebViewRevealGate.h(纯逻辑、有单测),**为什么是「挪走」而不是
+    //   setVisible(false) 或零尺寸、为什么必须等到导航开始**,只写在那份头注一处,别在这里复述。
+    //   ⇒ 目标序列:「白(宿主容器)→ 浅色占位 → 内容」。
+    //   ⚠ 仍然只有真机能判:①-b 之前(控制器建好那一瞬)那几帧不在闸门覆盖范围内 ——
+    //   闸门要等 NavigationStarting 才动,而那之前 WebView2 已经建好控制器。这一段是否还看得见
+    //   白,20 次开关的真机验收说了算;真看得见,下一步只能往「控制器建好之前先零尺寸」走,
+    //   而那条路会拆掉 SL-271 的重试泵(风险见下面【评估过、本卡没做的那条】)。
+    //
+    // 【SL-355 评估过、当时没做的那条】「控制器建好 / 首帧到达之前先 setVisible(false)」。
+    // ⚠ [SL-370] 这一段仍然成立、且**仍然是被否掉的那个方案** —— 本卡做的不是它:
+    //   本卡挪的是 **bounds**(可见性一字未动、`owner.isShowing()` 恒真),而且要等
+    //   **导航开始之后**才挪(那时控制器已建好,泵本来就是空调用)。下面这三条针对的是
+    //   「隐藏 / 提前隐藏」,不要读成对本卡实现的描述;逐条对照见 WebViewRevealGate.h 头注。
     //   • 机制上不是死路:checkWindowAssociation 末尾那句
     //     `if (! hasBrowserBeenCreated()) createBrowser();` 不看 isShowing,
     //     而 componentVisibilityChanged 会在我们改回 setVisible(true) 时补一次 put_IsVisible。
@@ -257,7 +275,11 @@ public:
     //     表现是 15s 后兜底面板。
     //   • 何况 JUCE 根本没有「首帧」信号:最早只有 pageFinishedLoading(导航完成),
     //     晚于 WebView2 的首帧,拿它当开关反而把「还没出内容」那一段拉长。
-    //   ⇒ 拿开窗路径上的死锁风险去换一个观感问题不划算,故只做 ①-c。
+    //   ⇒ 拿开窗路径上的死锁风险去换一个观感问题不划算,SL-355 因此只做了 ①-c。
+    //   [SL-370] 第三条(「JUCE 根本没有首帧信号」)已经不成立:本卡在三份 index.html 的
+    //   boot 脚本里补了一条 __scvb__firstFrame 上行信号(嵌套两层 rAF ⇒ 前一帧确已合成),
+    //   走的是与 kBootErrorEventId 同一条 JUCE 内建通道。前两条(泵、死锁)仍成立,
+    //   本卡正是靠「挪 bounds + 等导航开始」绕开它们的。
     // -------------------------------------------------------------------------
     void paint(juce::Graphics& g) override
     {
@@ -377,6 +399,8 @@ void WebViewHost::beginLoadAttempt()
     navDetail_ = {};
     bootError_ = {};
     navBudgetApplied_ = false;
+    revealGate_.beginLoadAttempt(); // [SL-370] 重新武装:下一次导航开始时再挪一次
+    revealLogged_ = false;
     startMs_ = juce::Time::getMillisecondCounter(); // 先落起点:兜底面板的「已等待」也从这里算
     runtime_ = PlatformWebView::runtimeInfo();
 
@@ -453,18 +477,44 @@ juce::WebBrowserComponent& WebViewHost::webView()
 
 void WebViewHost::paint(juce::Graphics& g)
 {
-    // 见头文件注:webView_ 可见时本函数净效果为 0(不透明子组件已把这块从裁剪区剔掉),
-    // 开窗那一段由 HostWebView::paint 接住。留着它是为了兜底面板路径 —— 那时 webView_
-    // 被 setVisible(false),这块底才真的由本组件画。
+    // 见头文件注:webView_ **落在本组件里**时本函数净效果为 0(不透明子组件已把这块从裁剪区
+    // 剔掉),控制器建好之前那一段由 HostWebView::paint 接住。本函数真正会画的有两条路:
+    //   • 兜底面板路径 —— 那时 webView_ 被 setVisible(false);
+    //   • [SL-370] 遮挡期 —— webView_ 被挪到可视区之外(见 WebViewRevealGate.h),
+    //     整个窗口这时露的就是这一层。**它就是用户在「内容出来之前」看到的那块占位底色**,
+    //     取值 = shellBackdrop() = 成品外壳渐变的中点色,所以从占位切到内容不跳阶。
     g.fillAll(scvb::webview::shellBackdrop());
 }
 
 void WebViewHost::resized()
 {
+    // [SL-370] WebView 的落点由遮挡闸决定:遮挡期间整块挪到可视区之外(尺寸不变),
+    // 那块地方由上面的 paint 铺 shellBackdrop() 当占位。几何与理由见 WebViewRevealGate.h。
     if (webView_ != nullptr)
-        webView_->setBounds(getLocalBounds());
+        webView_->setBounds(revealGate_.parked() ? parkedBounds(getLocalBounds()) : getLocalBounds());
     if (fallback_ != nullptr)
         fallback_->setBounds(getLocalBounds());
+}
+
+// 把闸门的判定落到组件几何上。**只经这一个函数改 webView_ 的 bounds**,别在各个触发点
+// 各写一次 setBounds —— 那样闸门就有了第二个真源。
+void WebViewHost::applyRevealGate()
+{
+    if (webView_ == nullptr)
+        return;
+    resized();
+    repaint(); // 挪走的那一刻要让占位底色立刻补上,别等下一次自然重绘
+}
+
+void WebViewHost::noteRevealed()
+{
+    // `lastRevealReason()` 为空 = 这一轮从来没挪走过(例如运行时缺失直接切了兜底面板),
+    // 那就没有「放行」这回事,别写一行原因是空串的诊断。
+    if (revealLogged_ || revealGate_.parked() || juce::String(revealGate_.lastRevealReason()).isEmpty())
+        return;
+    revealLogged_ = true;
+    logDiag(juce::String("webview revealed (") + revealGate_.lastRevealReason() + ") after " +
+            juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms");
 }
 
 // -----------------------------------------------------------------------------
@@ -555,6 +605,9 @@ void WebViewHost::showFallback(FallbackReason reason)
 {
     if (fallback_ != nullptr)
         return;
+    // [SL-370] 面板自己铺满本组件,闸门不该再按住 WebView 的位置(否则 retry 回来时
+    // bounds 还停在可视区外,而那条路上不一定再有导航事件把它推回来)。
+    revealGate_.onFallbackShown();
     webView_->setVisible(false);
 
     const bool missing = (reason == FallbackReason::MissingRuntime);
@@ -650,6 +703,11 @@ void WebViewHost::onNavigationStarted(const juce::String& url)
             deadlineMs_ = extended;
     }
 
+    // [SL-370] 导航开始 = WebView2 控制器已建好 ⇒ SL-271 那个挂在 paint 上的重试泵已是空调用,
+    // 此刻才可以把 WebView 挪出可视区(挪走之后 JUCE 就不再画它,泵也就不再被驱动)。
+    revealGate_.onNavigationStarted(juce::Time::getMillisecondCounter());
+    applyRevealGate();
+
     logDiag("navigation started: " + url);
 }
 
@@ -658,6 +716,10 @@ void WebViewHost::onNavigationFinished(const juce::String& url)
     // 页面已下载完 ≠ 桥已就绪:前端还要跑模块图并调 requestInitialState。看门狗继续跑,
     // 但状态记下来 —— 「finished 却超时」精确指向前端 boot 失败,与「压根没导航」判然不同。
     navState_ = NavState::finished;
+    // [SL-370] 第二条放行路:前端的 __scvb__firstFrame 丢了(脚本整体没跑起来)也不会卡住。
+    revealGate_.onNavigationFinished();
+    applyRevealGate();
+    noteRevealed();
     logDiag("navigation finished: " + url);
 }
 
@@ -703,6 +765,16 @@ void WebViewHost::handleBootError(const juce::var& payload)
     showFallback(FallbackReason::BootError);
 }
 
+// [SL-370] 前端「首帧已绘」上报。通道与 kBootErrorEventId 同一条(JUCE 内建
+// __JUCE__.postMessage,不经 bridge.js、不占契约 §7 名表),理由见 handleBootError 的注释。
+// 载荷不看:这条信号只有「到了」这一个信息量,前端也只发一次。
+void WebViewHost::handleFirstFrame()
+{
+    revealGate_.onFirstFrame();
+    applyRevealGate();
+    noteRevealed();
+}
+
 // -----------------------------------------------------------------------------
 // WebView 装配(机制 1/2/4/5/6)
 // -----------------------------------------------------------------------------
@@ -741,6 +813,10 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
     // 诊断面(非契约):前端 boot 失败上行。理由与通道选择见 handleBootError 的注释。
     options = options.withEventListener(juce::Identifier(kBootErrorEventId),
                                         [this](const juce::var& payload) { handleBootError(payload); });
+
+    // [SL-370] 时序面(非契约):前端「首帧已绘」上行 —— 遮挡闸的第一条放行路。
+    options = options.withEventListener(juce::Identifier(kFirstFrameEventId),
+                                        [this](const juce::var&) { handleFirstFrame(); });
 
     if (config_.augmentOptions)
         config_.augmentOptions(options);
@@ -800,6 +876,18 @@ void WebViewHost::timerCallback()
     // kAfterNavBudgetMs 顺延。超时判定加载失败切兜底(可重试/重开窗口),文案不误报「运行时缺失」。
     // 比较走 uint32 差值再转 int32:getMillisecondCounter 每 ~49 天回绕一次,直接比大小会在
     // 回绕点把「还没到点」算成「早就超时」,把好好的窗口砸成兜底面板。
+    // [SL-370] 遮挡闸的第三条放行路(兜底):前两条都没来时到点强制放行,
+    // 绝不允许出现「永远挪在外面」——那会是一块彻底不动的浅色板,比白闪坏得多。
+    if (revealGate_.parked())
+    {
+        revealGate_.onTick(juce::Time::getMillisecondCounter());
+        if (!revealGate_.parked())
+        {
+            applyRevealGate();
+            noteRevealed();
+        }
+    }
+
     if (!bridgeReady_ && fallback_ == nullptr &&
         static_cast<juce::int32>(juce::Time::getMillisecondCounter() - deadlineMs_) > 0)
     {

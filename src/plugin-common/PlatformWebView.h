@@ -12,8 +12,9 @@ namespace scvb::webview
 // 取值与 `web/shared/tokens.css` 的 `--page-backdrop` 对齐 —— 那条注释原话就是「仅防露白」,
 // 只是它来得太晚。SL-253 当时仓里这个底色有**两个**字面量(tokens 与 FallbackPanel 各写一个),
 // 收成本常量之后 C++ 侧不再各写各的。
-// **别在这里记「现在共有几处」**:`grep -rn "shellBackdrop|page-backdrop" src web` 一次就列全,
-// 而记在注释里的数一定会漂(SL-355 就又添了一批,见下条)。
+// **别在这里记「现在共有几处」**:记在注释里的数一定会漂(SL-355 就又添了一批,见下条)。
+// 要找全落点就读 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥/⑥b/⑥c —— 那三格逐处
+// 对拍,它们读哪几个路径,预绘底色就落在哪几处。
 // ⚠ 必须**完全不透明**:JUCE 的 withBackgroundColour 只接受全不透明或全透明(见其头注断言)。
 //
 // [SL-355] 更正上面「HTML 的底色藏在两个外链 css 里」那半句:现在三份 index.html 的

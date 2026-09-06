@@ -11,6 +11,7 @@
 #include "FallbackPanel.h"
 #include "PlatformWebView.h"
 #include "ResourceProvider.h"
+#include "WebViewRevealGate.h"
 
 namespace scvb::webview
 {
@@ -38,10 +39,11 @@ public:
 
     void resized() override;
     // 铺满 shellBackdrop()。[SL-271] 更正 SL-253 时的说法:本函数**挡不住**开窗白闪。
-    // webView_ 可见时它铺满本组件且 setOpaque(true),JUCE 会把它的矩形从父组件的裁剪区里
-    // 剔掉,本 paint 净效果为 0(真正管那一段的是 HostWebView::paint,见 .cpp)。
-    // 它仍然有用,且只有一个用途:兜底面板路径 —— 那时 webView_ 被 setVisible(false),
-    // 本组件自己露出来,这一层就是面板四周那块底。
+    // webView_ 落在本组件里时它铺满本组件且 setOpaque(true),JUCE 会把它的矩形从父组件的
+    // 裁剪区里剔掉,本 paint 净效果为 0(那一段由 HostWebView::paint 管,见 .cpp)。
+    // 它会真的画出来的有两条路:兜底面板路径(webView_ 被 setVisible(false)),以及
+    // [SL-370] 遮挡期(webView_ 被挪到可视区之外)—— 后者正是用户在内容出来之前看到的
+    // 那块占位底色,机理见 WebViewRevealGate.h。
     void paint(juce::Graphics& g) override;
 
     // 缩放(机制 9):uiScale 实时预览(不落盘);commitUiScale 防呆确认后落盘全局默认。
@@ -76,6 +78,12 @@ public:
     // 不参与 check-bridge-parity;__scvb__ 前缀照 JUCE 自己的 __juce__ 惯例标明非契约面。
     // 真源在此,web 侧 index.html 的 boot 守卫逐字引用同一个名字。
     static constexpr const char* kBootErrorEventId = "__scvb__bootError";
+
+    // [SL-370] 前端「首帧已绘」上行信号的事件名(**同样是诊断/时序面,不属契约 §7 manifest**)。
+    // 与 kBootErrorEventId 共用同一条 JUCE 内建通道与同一条纪律,理由不再复述,见上一条。
+    // 真源在此,三份 index.html 的 <head> 内联脚本逐字引用同一个名字(判据 = ⑦)。
+    // 它守的是什么、为什么不能改成 setVisible(false)/零尺寸,只写在 WebViewRevealGate.h 一处。
+    static constexpr const char* kFirstFrameEventId = "__scvb__firstFrame";
 
 protected:
     // 子类覆写以落盘全局默认(宿主侧持久化由插件 Processor 实现;默认空实现)。
@@ -132,6 +140,12 @@ private:
     void onNavigationFinished(const juce::String& url);
     void onNavigationError(const juce::String& errorInfo);
     void handleBootError(const juce::var& payload); // 前端 boot 失败上报(非契约面,见 .cpp)
+    void handleFirstFrame(); // [SL-370] 前端「首帧已绘」上报(非契约面,同上)
+
+    // [SL-370] 遮挡闸的两个动作面。判定全在 revealGate_ 里(纯逻辑、可单测),
+    // 这两个函数只负责把判定落到组件几何上并写诊断行。
+    void applyRevealGate(); // 把 revealGate_.parked() 落到 webView_ 的 bounds 上
+    void noteRevealed(); // 放行时写一行诊断(reason + 用时)
 
     // 首页 URL = <provider root>/<role>/index.html。让服务 URL 空间与 web/ 的磁盘布局
     // 逐段对齐,从而保证 ES module 身份唯一(同一文件不会被两个 URL 各实例化一份)。
@@ -159,6 +173,8 @@ private:
     juce::File userDataFolder_; // 本插件的 WebView2 user-data 目录(per-plugin 固定,进程组据此复用)
     juce::String userDataFolderIssue_; // 构造期可写性探针结果;空 = 没问题
     bool countedAsReady_ = false; // 本实例是否已计入 readyBridgeCount(防重复加减)
+    RevealGate revealGate_; // [SL-370] 「WebView 该不该在可视区外」的唯一判定处(见其头注)
+    bool revealLogged_ = false; // 本次加载尝试是否已写过放行诊断行(只写第一次)
 
     std::unique_ptr<HostWebView> webView_;
     std::unique_ptr<FallbackPanel> fallback_;

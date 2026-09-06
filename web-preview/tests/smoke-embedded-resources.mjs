@@ -22,6 +22,8 @@
 //      --page-backdrop。
 //   ⑥c [SL-370] 那个 C++ 真源本身 == tokens.css 的 --page-gradient 渐变轴中点色
 //      —— ⑥/⑥b 只管三处彼此同值,同时写成深色时照样全绿,而那就是用户看见的那段黑。
+//   ⑦ [SL-370] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的 kFirstFrameEventId
+//      逐字一致、武装是**嵌套两层** requestAnimationFrame、且挂在 DOMContentLoaded 之后。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -264,6 +266,7 @@ function checkRole(role) {
     }
 
     checkShellBackdropInline(role, entry);
+    checkFirstFrameSignal(role, entry);
 }
 
 /**
@@ -488,6 +491,75 @@ function checkBackdropMatchesShell() {
         return;
     }
     console.log(`  ${backdrop} = --page-gradient 中点色`);
+}
+
+/**
+ * ⑦ [SL-370] 「首帧已绘」上行信号在场且形态正确。
+ *
+ * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
+ * 靠这条信号(或 pageFinishedLoading / 3s 超时)放回来。机理只写在
+ * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守三条形态:
+ *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
+ *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
+ *       本帧提交**之前**,信号会早于首帧,C++ 放回来的仍是一块没画上东西的 WebView,
+ *       正是本卡要治的病;
+ *   (c) 武装挂在 DOMContentLoaded / readyState 之后,不在文档还在解析时就发。
+ *
+ * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名与 requestAnimationFrame,
+ * 不剥的话注释自己就能把三条断言全顶替掉(#188 同族,连撞过三次)。
+ * 三条报错文案互不相同,拆任一条只红它自己那句。
+ */
+function checkFirstFrameSignal(role, entry) {
+    const header = readFileSync(
+        join(ROOT, "src/plugin-common/WebViewHost.h"),
+        "utf8",
+    );
+    const idMatch = header.match(/kFirstFrameEventId\s*=\s*"([^"]+)"/);
+    if (!idMatch) {
+        bad(
+            "WebViewHost.h 里找不到 kFirstFrameEventId(开窗遮挡闸放行信号的 C++ 真源)",
+        );
+        return;
+    }
+    const eventId = idMatch[1];
+
+    const html = readFileSync(join(ROOT, entry), "utf8").replace(
+        /<!--[\s\S]*?-->/g,
+        "",
+    );
+
+    // 只在**含该事件名的那个 <script> 块**里判形态:整页扫会把别处的 rAF 算进来。
+    const block = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((mm) => mm[1])
+        .find((body) => body.includes('"' + eventId + '"'));
+    if (block === undefined) {
+        bad(
+            `${role}:index.html 里没有发 ${eventId} 的内联脚本 —— 开窗遮挡闸就只剩` +
+                ` pageFinishedLoading 与 3s 超时两条兜底,每次开窗都要等到那时才放回来`,
+        );
+        return;
+    }
+
+    // (b) 嵌套:外层 rAF 的回调体里直接再要一帧。`[^{}]*` 限定「同一层、无嵌套块」,
+    // 空白与 `window.` 前缀随便写都命中,不钉换行。
+    const nested =
+        /requestAnimationFrame\(\s*function\s*\([^)]*\)\s*{[^{}]*requestAnimationFrame\(/;
+    if (!nested.test(block))
+        bad(
+            `${role}:${eventId} 的武装不是**嵌套两层** requestAnimationFrame ——` +
+                ` 单层 rAF 的回调跑在本帧提交之前,信号会早于首帧,` +
+                `C++ 放回来的仍是一块没画上东西的 WebView`,
+        );
+
+    // (c) 文档还在解析时就发同样早于首帧;两种写法都认(监听 DOMContentLoaded / 读 readyState)。
+    if (!/DOMContentLoaded/.test(block) || !/readyState/.test(block))
+        bad(
+            `${role}:${eventId} 的武装没挂在 DOMContentLoaded / readyState 之后` +
+                `(文档还在解析时发出的信号早于首帧)`,
+        );
+
+    if (nested.test(block) && /DOMContentLoaded/.test(block))
+        console.log(`  ${eventId} 在场:DOMContentLoaded 后嵌套两层 rAF 才发`);
 }
 
 function checkBootGuard(role, entry) {

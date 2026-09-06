@@ -8,6 +8,7 @@
 #include <BridgeBase.h>
 #include <FallbackPanel.h>
 #include <PlatformWebView.h>
+#include <WebViewRevealGate.h>
 #include <ResourceProvider.h>
 #include <WebViewHost.h> // 只取看门狗预算/事件名常量(全是 constexpr,不需要编 WebViewHost.cpp)
 
@@ -254,6 +255,129 @@ TEST_CASE("FallbackPanel label colours stay readable on shellBackdrop()")
     // 反向哨兵:白字在这块浅底上远远不够 —— 这一行同时证明上面那三格不是恒真
     // (SL-370 之前 title 用的正是 Colours::white)。
     CHECK(contrastRatio(juce::Colours::white, bg) < 4.5);
+}
+
+// -----------------------------------------------------------------------------
+// [SL-370] 开窗遮挡闸(RevealGate)。
+//
+// WebViewHost.cpp **不进任何测试目标**(它只在随插件 target 编译的 INTERFACE 库里),
+// 所以「WebView 此刻该不该待在可视区外」这个判定被抽成了纯逻辑的 RevealGate,
+// 才有下面这几格。接线那一半(谁调 onNavigationStarted / onFirstFrame / onTick)
+// 编译期与运行期都够不着,只能靠 WebViewHost.cpp 里的调用点与真机验收 —— 这是
+// 已登记的覆盖缺口(与 SL-282 同族),别把这几格读成「整条链都验过了」。
+// -----------------------------------------------------------------------------
+TEST_CASE("[SL-370] RevealGate parks on navigation start and reveals on the first-frame signal")
+{
+    scvb::webview::RevealGate gate;
+    gate.beginLoadAttempt();
+    CHECK_FALSE(gate.parked()); // 控制器建好之前必须留在原位:SL-271 的重试泵挂在 paint 上
+
+    gate.onNavigationStarted(1000);
+    CHECK(gate.parked());
+
+    gate.onFirstFrame();
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "firstFrame");
+}
+
+TEST_CASE("[SL-370] RevealGate reveals on navigation finished when the first-frame signal never arrives")
+{
+    scvb::webview::RevealGate gate;
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(1000);
+    REQUIRE(gate.parked());
+
+    gate.onNavigationFinished();
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "navFinished");
+}
+
+TEST_CASE("[SL-370] RevealGate reveals on the timeout fallback and never stays parked forever")
+{
+    scvb::webview::RevealGate gate;
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(1000);
+    REQUIRE(gate.parked());
+
+    // 上界前一毫秒仍然按住 —— 边界格:少了它,把判据写成 `> 0` 也照绿。
+    gate.onTick(1000 + scvb::webview::RevealGate::kRevealFallbackMs - 1);
+    CHECK(gate.parked());
+
+    gate.onTick(1000 + scvb::webview::RevealGate::kRevealFallbackMs);
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "timeout");
+}
+
+TEST_CASE("[SL-370] RevealGate timeout survives the millisecond counter wrapping around")
+{
+    // getMillisecondCounter 每 ~49 天回绕一次。回绕点上直接比大小会把「刚挪走」算成
+    // 「早该放行」(或反过来永不放行),故判据走 uint32 差值再转 int32。
+    scvb::webview::RevealGate gate;
+    const std::uint32_t nearWrap = 0xffffff00u;
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(nearWrap);
+    REQUIRE(gate.parked());
+
+    gate.onTick(nearWrap + static_cast<std::uint32_t>(scvb::webview::RevealGate::kRevealFallbackMs) - 1);
+    CHECK(gate.parked());
+    gate.onTick(nearWrap + static_cast<std::uint32_t>(scvb::webview::RevealGate::kRevealFallbackMs));
+    CHECK_FALSE(gate.parked());
+}
+
+TEST_CASE("[SL-370] RevealGate never re-parks after it has revealed once")
+{
+    // 页面自己再导航一次时重新挪走 = 把一个已经画好的界面换成占位底色,比那点白更难看。
+    scvb::webview::RevealGate gate;
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(1000);
+    gate.onFirstFrame();
+    REQUIRE_FALSE(gate.parked());
+
+    gate.onNavigationStarted(2000);
+    CHECK_FALSE(gate.parked());
+
+    // 只有一次新的加载尝试(构造 / retry)才重新武装。
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(3000);
+    CHECK(gate.parked());
+}
+
+TEST_CASE("[SL-370] RevealGate takes a first-frame signal that arrives before the navigation callback")
+{
+    // 信号先于 pageAboutToLoad 到达(消息线程投递顺序不由我们决定)时,不能反过来把
+    // 已经画好的页面挪走 —— onFirstFrame 即使在没挪走时也要记账。
+    scvb::webview::RevealGate gate;
+    gate.beginLoadAttempt();
+    gate.onFirstFrame();
+    gate.onNavigationStarted(1000);
+    CHECK_FALSE(gate.parked());
+}
+
+TEST_CASE("[SL-370] RevealGate releases when the fallback panel takes over")
+{
+    scvb::webview::RevealGate gate;
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(1000);
+    REQUIRE(gate.parked());
+
+    gate.onFallbackShown();
+    CHECK_FALSE(gate.parked()); // 面板铺满本组件,retry 回来时 bounds 不能还停在可视区外
+}
+
+TEST_CASE("[SL-370] parkedBounds keeps the size and lands outside the visible rectangle")
+{
+    const juce::Rectangle<int> visible{0, 0, 1180, 780};
+    const auto parked = scvb::webview::parkedBounds(visible);
+
+    // 尺寸一字不改:视口不变 ⇒ 页面不 reflow、Chromium 仍按真实尺寸出帧(rAF 照跑)。
+    CHECK(parked.getWidth() == visible.getWidth());
+    CHECK(parked.getHeight() == visible.getHeight());
+    // 真的挪出去了:与可视区零交集。删掉平移这一步,本行立刻红。
+    CHECK_FALSE(parked.intersects(visible));
+
+    // 宽度为 0(还没 resizeToDesignBox)时也必须挪得动,否则原地不动 = 遮挡完全失效。
+    const juce::Rectangle<int> empty{0, 0, 0, 40};
+    CHECK(scvb::webview::parkedBounds(empty).getX() > empty.getX());
 }
 
 TEST_CASE("majorVersionOf parses the WebView2 runtime version string")
