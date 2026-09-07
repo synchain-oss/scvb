@@ -18,10 +18,13 @@
 //   ④ index.html 里的 boot 守卫存在,且事件名与 C++ 侧 kBootErrorEventId 逐字一致;
 //   ⑤ 该 boot 守卫是 ES5、且落在非 module 的 <script> 里(解析期错误才接得住)。
 //   ⑥ [SL-355] index.html 里**恰好一条**根元素底色、内联、排在外链 css 之前,取值与 C++ 侧
-//      kShellBackdropArgb 逐字一致(开窗白闪的第三段);⑥b 同值对拍 tokens.css 的
-//      --page-backdrop。
-//   ⑥c [SL-370] 那个 C++ 真源本身 == tokens.css 的 --page-gradient 渐变轴中点色
-//      —— ⑥/⑥b 只管三处彼此同值,同时写成深色时照样全绿,而那就是用户看见的那段黑。
+//      kShellBackdropArgb 逐字一致(开窗白闪的第三段)。这一族是**占位色**:遮挡闸期间
+//      铺满整个窗口的那块底。
+//   ⑥b [SL-377] tokens.css 的 `--page-backdrop` 是**外圈色**(外壳圆角之外那一圈),
+//      与占位色**是两个角色**:钉它 == 设计稿 body 底色,且 **!=** 占位色。
+//      (SL-355→SL-370 期间这一格对拍的是「两者同值」,SL-377 用户裁定拆开后已整格重写。)
+//   ⑥c [SL-370] 占位色的 C++ 真源本身 == tokens.css 的 --page-gradient 渐变轴中点色
+//      —— ⑥ 只管占位色那几处彼此同值,同时写成深色时照样全绿,而那就是用户看见的那段黑。
 //   ⑦ [SL-370] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的 kFirstFrameEventId
 //      逐字一致、武装是**嵌套两层** requestAnimationFrame、且挂在 DOMContentLoaded 之后。
 //
@@ -305,6 +308,8 @@ function shellBackdropHex() {
  *       多出来的第二条会被那边一并剥掉,又不是这里取的 hits[0],两道门就都看不见它;
  *   (b) 取值是**字面量**且等于 kShellBackdropArgb 的低 24 位 —— 写成 var(--page-backdrop)
  *       单列一句,因为自定义属性定义在 tokens.css 里,那等于又回到「等外链」;
+ *       [SL-377] 起那个变量还**换了角色**(它是外圈色,不再是占位色),所以写成 var() 现在
+ *       连颜色都是错的 —— 但报错文案仍只说「等外链」那一条,因为那是它更根本的毛病;
  *   (c) 它排在第一个 <link rel="stylesheet"> **之前**(纪律:这条声明的**生效**不依赖任何
  *       外链请求的结果)。
  * 颜色**不透明**这一条不在这里重复:tests/webview/test_plugin_common.cpp 已经
@@ -378,40 +383,91 @@ function checkShellBackdropInline(role, entry) {
 }
 
 /**
- * ⑥b [SL-355] `tokens.css` 的 `--page-backdrop` 也钉到同一个 C++ 真源。
+ * 设计稿 `body` 的底色(`#rrggbb`;读不到返回 null)。
  *
- * PlatformWebView.h 的头注第一句就是「取值与 web/shared/tokens.css 的 --page-backdrop 对齐」——
- * 那是一句**跨文件的实现断言**,在此之前没有任何东西会因为它变假而红。⑥ 已经把 C++ 真源
- * 读进来了,顺手多对一次即可闭环:否则三份 index.html 被钉住、稳态底色那一份反而落单,
- * 「外链到达之后与 base.css 同色」这条无副作用性就没人守。
+ * `docs/design/SCVB 设计稿.dc.html` 是**外圈色的视觉真源**(tokens.css 头注:05 未列的值
+ * 取自设计稿)。全文件只有一条 `body { … }` 规则,且没有任何 HTML 注释;真要多出第二条,
+ * 下面按「恰好一条」判负,不去猜该拿哪一条。
+ */
+function designBodyBackgroundHex() {
+    const html = readFileSync(
+        join(ROOT, "docs/design/SCVB 设计稿.dc.html"),
+        "utf8",
+    ).replace(/<!--[\s\S]*?-->/g, "");
+    const rules = [
+        ...html.matchAll(/(?:^|[};>])[ \t]*body\s*\{([^}]*)\}/gm),
+    ].filter((h) => /background(?:-color)?\s*:/.test(h[1]));
+    if (rules.length !== 1) return null;
+    const m = /background(?:-color)?\s*:\s*(#[0-9a-fA-F]{3,8})\b/.exec(
+        rules[0][1],
+    );
+    return m ? m[1].toLowerCase() : null;
+}
+
+/**
+ * ⑥b [SL-377] `tokens.css` 的 `--page-backdrop` = **外圈色**,与占位色各钉各的。
+ *
+ * 【为什么这一格被整个重写】SL-355→SL-370 期间 `--page-backdrop` 与开窗预绘底色是同一个值,
+ * 本格当时对拍的就是「它 == C++ 真源 kShellBackdropArgb」。SL-377 用户裁定把两者拆成两个
+ * 角色(窗口四角改回深色、占位仍是粉),那条等式**从此是错的** —— 继续留着它就是把两个角色
+ * 焊死,谁也改不动其中一个。
+ *
+ * 两个角色现在各有各的边:
+ *   · **占位色**(kShellBackdropArgb + 三份 index.html <head> 内联)由 ⑥ 钉彼此同源、
+ *     由 ⑥c 钉它等于外壳渐变中点色;
+ *   · **外圈色**(本格)钉两条,**都不能少**:
+ *     (a) == 设计稿 `body` 的底色 —— 没有这一条,`--page-backdrop` 就成了一个谁都能随手改的
+ *         自由值,(b) 那条 `!=` 照样绿;
+ *     (b) != 占位色 —— 没有这一条,「两个角色」这件事就没有任何东西守着:把 tokens 与占位色
+ *         一起改回同值时 (a) 会红,但只把**占位色**改成 #191820 时 (a) 是绿的,而那正是
+ *         SL-377 要治的「四角与占位分不开」。
  * 只跑一次(不进 checkRole 的角色循环)—— 它与角色无关。
  */
 function checkTokensBackdrop() {
-    console.log("\n--- tokens.css ---");
-    const expect = shellBackdropHex();
-    if (expect === null) {
-        bad(
-            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗底色的 C++ 真源)",
-        );
-        return;
-    }
+    console.log("\n--- tokens.css 外圈色(⑥b)---");
     const tok = readFileSync(join(ROOT, "web/shared/tokens.css"), "utf8");
     const m = tok.match(/--page-backdrop:\s*(#[0-9a-fA-F]{3,8})\b/);
     if (!m) {
         bad(
             "web/shared/tokens.css 里找不到 --page-backdrop 的字面量取值" +
-                "(PlatformWebView.h 头注声称本常量与它对齐,对不上就无从核)",
+                "(它是外壳圆角之外那一圈的颜色,拿不到就无从核)",
         );
         return;
     }
-    if (m[1].toLowerCase() !== expect) {
+    const ring = m[1].toLowerCase();
+
+    const design = designBodyBackgroundHex();
+    if (design === null) {
         bad(
-            `tokens.css 的 --page-backdrop ${m[1]} 与 C++ 真源 kShellBackdropArgb 的 ${expect} 不一致` +
-                `(PlatformWebView.h 头注第一句声称两者对齐)`,
+            "docs/design/SCVB 设计稿.dc.html 里读不到唯一一条 body { background: #rrggbb }" +
+                "(外圈色的视觉真源;设计稿改了写法就把 designBodyBackgroundHex() 一起改,这里宁可红也不跳过)",
+        );
+    } else if (ring !== design) {
+        bad(
+            `tokens.css 的 --page-backdrop ${ring} 与设计稿 body 底色 ${design} 不一致 ——` +
+                ` 外圈色(外壳圆角之外那一圈)的视觉真源是设计稿,[SL-377] 用户裁定照它取深色`,
+        );
+    }
+
+    const placeholder = shellBackdropHex();
+    if (placeholder === null) {
+        bad(
+            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗占位底色的 C++ 真源)",
         );
         return;
     }
-    console.log(`  --page-backdrop ${m[1]} = C++ 真源`);
+    if (ring === placeholder) {
+        bad(
+            `tokens.css 的 --page-backdrop 与开窗占位底色 kShellBackdropArgb 又变成同一个值 ${ring} ——` +
+                ` [SL-377] 起这是**两个角色**:占位色铺满整窗、必须贴着外壳渐变中点色(⑥/⑥c),` +
+                ` 外圈色只在外壳圆角之外那一圈可见、照设计稿取深色。两者同值 = 四角跟着占位色跑,` +
+                ` 用户裁掉的正是这个`,
+        );
+        return;
+    }
+    console.log(
+        `  --page-backdrop ${ring} = 设计稿 body 底色, != 占位色 ${placeholder}`,
+    );
 }
 
 /**
@@ -487,17 +543,18 @@ function pageGradientMidHex() {
 }
 
 /**
- * ⑥c [SL-370] 预绘底色必须与**成品首屏真正可见的底色**是同一个,而不只是三处彼此同值。
+ * ⑥c [SL-370] 占位色必须与**成品首屏真正可见的底色**是同一个,而不只是几处彼此同值。
  *
- * ⑥ 与 ⑥b 对拍的是「三处预绘底色彼此一致」—— 三处一起写成深色时它们全绿,而用户看到的
- * 正是这一段黑(v5.6.8:「先白然后黑然后再白,最后内容」)。少的那一条就是本格:把预绘
- * 底色钉到**外壳渐变**上,让「预绘 ≠ 成品」这件事有东西会红。
+ * ⑥ 对拍的是「占位色那几处彼此一致」—— 它们一起写成深色时照样全绿,而用户看到的
+ * 正是这一段黑(v5.6.8:「先白然后黑然后再白,最后内容」)。少的那一条就是本格:把占位色
+ * 钉到**外壳渐变**上,让「占位 ≠ 成品」这件事有东西会红。
  *
- * 对拍对象是 C++ 真源 kShellBackdropArgb(⑥/⑥b 已把 index.html 与 --page-backdrop 钉到它),
+ * 对拍对象是 C++ 真源 kShellBackdropArgb(⑥ 已把三份 index.html 的内联钉到它),
  * 所以本格只需要一条边:C++ 真源 == --page-gradient 的中点色。
+ * ⚠ [SL-377] `--page-backdrop` **不在**本格的对拍链上了 —— 它现在是外圈色,由 ⑥b 单独钉。
  */
 function checkBackdropMatchesShell() {
-    console.log("\n--- 预绘底色 vs 外壳渐变(⑥c)---");
+    console.log("\n--- 开窗占位底色 vs 外壳渐变(⑥c)---");
     const backdrop = shellBackdropHex();
     if (backdrop === null) {
         bad(
@@ -515,10 +572,11 @@ function checkBackdropMatchesShell() {
     }
     if (backdrop !== mid) {
         bad(
-            `开窗预绘底色 ${backdrop} 与外壳渐变中点色 ${mid} 不一致 —— 成品首屏铺满窗口的是 ` +
-                `.sc-shell 的 --page-gradient,预绘与它差一个明暗,用户开窗就会看见多出来的一段` +
+            `开窗占位底色 ${backdrop} 与外壳渐变中点色 ${mid} 不一致 —— 成品首屏铺满窗口的是 ` +
+                `.sc-shell 的 --page-gradient,占位与它差一个明暗,用户开窗就会看见多出来的一段` +
                 `(SL-370:「白 → 黑 → 白 → 内容」)。把 kShellBackdropArgb 改成 0xff${mid.slice(1)},` +
-                `并同步三份 index.html 的 <head> 内联与 tokens.css 的 --page-backdrop(⑥/⑥b 会跟着核)`,
+                `并同步三份 index.html 的 <head> 内联(⑥ 会跟着核)。` +
+                `**不要**顺手去改 tokens.css 的 --page-backdrop:[SL-377] 起那是外圈色,另一个角色`,
         );
         return;
     }
@@ -529,7 +587,8 @@ function checkBackdropMatchesShell() {
  * ⑦ [SL-370] 「首帧已绘」上行信号在场且形态正确。
  *
  * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
- * 靠这条信号(或 pageFinishedLoading / 3s 超时)放回来。机理只写在
+ * 靠这条信号放回来(**[SL-376] 起它是唯一的正常放行路**;pageFinishedLoading 不再放行,
+ * 只剩 3s 超时兜底)。机理只写在
  * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守三条形态:
  *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
@@ -568,7 +627,8 @@ function checkFirstFrameSignal(role, entry) {
     if (block === undefined) {
         bad(
             `${role}:index.html 里没有发 ${eventId} 的内联脚本 —— 开窗遮挡闸就只剩` +
-                ` pageFinishedLoading 与 3s 超时两条兜底,每次开窗都要等到那时才放回来`,
+                ` 3s 超时这一条兜底([SL-376] 起 pageFinishedLoading 不再放行),` +
+                ` 每次开窗都要等满 3 秒才放回来`,
         );
         return;
     }

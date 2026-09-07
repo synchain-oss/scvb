@@ -9,12 +9,16 @@ namespace scvb::webview
 // 成因是开窗路径上**三层都没有不透明底色**(编辑器组件无 paint、WebView2 的
 // DefaultBackgroundColor 默认全透明、HTML 的底色藏在两个外链 css 里),白的是窗口本身。
 //
-// 取值与 `web/shared/tokens.css` 的 `--page-backdrop` 对齐 —— 那条注释原话就是「仅防露白」,
-// 只是它来得太晚。SL-253 当时仓里这个底色有**两个**字面量(tokens 与 FallbackPanel 各写一个),
-// 收成本常量之后 C++ 侧不再各写各的。
+// SL-253 当时取值与 `web/shared/tokens.css` 的 `--page-backdrop` 对齐 —— 那条注释原话就是
+// 「仅防露白」,只是它来得太晚;当时仓里这个底色有**两个**字面量(tokens 与 FallbackPanel
+// 各写一个),收成本常量之后 C++ 侧不再各写各的。
+// ⚠ [SL-377] **「与 --page-backdrop 对齐」这句已经不成立**:那个变量现在是**外圈色**
+// (外壳圆角之外那一圈,用户裁定改回深色 #191820),而本常量是**占位色**,两个角色取值不同。
+// 别再拿它俩互相对拍 —— 判据也已按两角色重写(⑥/⑥c 钉占位色,⑥b 钉外圈色并断言两者不等)。
 // **别在这里记「现在共有几处」**:记在注释里的数一定会漂(SL-355 就又添了一批,见下条)。
-// 要找全落点就读 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥/⑥b/⑥c —— 那三格逐处
-// 对拍,它们读哪几个路径,预绘底色就落在哪几处。
+// 要找全落点就读 web-preview/tests/smoke-embedded-resources.mjs 的 **⑥ 与 ⑥c** —— 那两格逐处
+// 对拍,它们读哪几个路径,占位底色就落在哪几处([SL-377] 起 ⑥b 读的是**外圈色**那条,
+// 不是本常量的落点)。
 // ⚠ 必须**完全不透明**:JUCE 的 withBackgroundColour 只接受全不透明或全透明(见其头注断言)。
 //
 // [SL-355] 更正上面「HTML 的底色藏在两个外链 css 里」那半句:现在三份 index.html 的
@@ -27,10 +31,13 @@ namespace scvb::webview
 // [SL-370] 取值由深色 #191820 改成**浅色** —— SL-253/355 一路把这一层当「防露白的暗底」,
 // 而成品首屏真正铺满窗口的是 .sc-shell 的浅色渐变(tokens.css 的 --page-gradient),于是
 // 预绘的暗底自己变成了用户看见的那段黑(v5.6.8 实测「白→黑→白→内容」)。现在的取值 =
-// --page-gradient 的渐变轴中点色,由上面那个 smoke 的 ⑥c 从渐变现算现对(⑥/⑥b 只对拍
-// 三处彼此同值,对拍不出「和成品差了一整个明暗」)。
+// --page-gradient 的渐变轴中点色,由上面那个 smoke 的 ⑥c 从渐变现算现对(⑥ 只对拍
+// 几处彼此同值,对拍不出「和成品差了一整个明暗」)。
 // ⚠ 本常量同时是 FallbackPanel 的面板底色:换浅色之后那三行标签必须是**深墨**才看得见,
 // 判据 = tests/webview/test_plugin_common.cpp 的对比度断言。
+//
+// [SL-377] 本常量**不动**(仍是浅色占位),动的是 tokens.css 的 --page-backdrop:
+// 用户裁定窗口四角(外壳圆角之外那一圈)改回深色。两者从此是两个角色,见上面 ⚠。
 inline constexpr juce::uint32 kShellBackdropArgb = 0xffd9cadb;
 inline juce::Colour shellBackdrop() noexcept
 {
@@ -118,6 +125,41 @@ public:
     // 版本串 → 主版本号;解析不出返回 -1。纯函数(不碰 loader),便于离线单测。
     // loader 可能返回 "137.0.3296.83" 或带通道后缀的 "137.0.3296.83 dev",只取首段数字。
     static int majorVersionOf(const juce::String& version);
+
+    // -------------------------------------------------------------------------
+    // [SL-376 / SL-364] `DefaultBackgroundColor` 这一层到底在不在。
+    //
+    // 【为什么需要判】makeWebViewOptions 里的 withBackgroundColour(shellBackdrop()) 最终落到
+    // JUCE 的 `WebView2::setWebViewPreferences`:它先
+    // `webViewController->QueryInterface(ICoreWebView2Controller2)`,**取不到就静默跳过**
+    // put_DefaultBackgroundColor(juce_WebBrowserComponent_windows.cpp,读实现核过 ——
+    // 那个 `if (controller2 != nullptr)` 没有 else、没有日志、HRESULT 也不看)。
+    // 于是「我方在控制器建好到首帧之间铺没铺上底色」这件事在真机上**完全不可观测**,
+    // SL-364 就卡在这里。本函数把它变成一行可抓的诊断。
+    //
+    // 【它证到哪一步 —— 别读过头】它判的是**运行时有没有这个接口**,不是「JUCE 那次
+    // QueryInterface 真的成功了」,更不是「那一帧屏上真是这个颜色」。插件侧拿不到 JUCE 私有的
+    // controller,做不到直接观测;接口在场是 QueryInterface 成功的**必要条件**,而 IID 一旦
+    // 随 SDK 发布就不再变,所以「运行时够新 ⇒ 接口在」这一步成立,反向不成立。
+    //
+    // 【纯函数】只吃 RuntimeInfo,便于离线单测(真 loader 与真 WebView2 都够不着)。
+    enum class BackgroundColourSupport
+    {
+        available, // 运行时够新 ⇒ ICoreWebView2Controller2 在 ⇒ JUCE 那句不会静默跳过
+        unavailable, // 运行时太旧 ⇒ 接口不在 ⇒ 这一层整层缺席,控制器建好到首帧之间露的是白
+        unknown // 没探到运行时 / 版本串解析不出 ⇒ 不猜,如实说不知道
+    };
+
+    // ICoreWebView2Controller2(即 DefaultBackgroundColor)的运行时主版本下限。
+    //
+    // ⚠ **这个数字是本条判定里唯一没有机检、也无法离线核实的一环**:它来自该接口首发的
+    // WebView2 SDK 1.0.774.44 所对应的 Edge 通道(87),而仓里没有任何东西能把这条映射钉住。
+    // 影响面被两头夹得很小:kMinRuntimeMajor = 86 已经把更低的运行时挡在兜底面板之后,
+    // 而 Evergreen Runtime 会自动升级,现实中不存在停在 86/87 这一档的机器。判错也只影响
+    // 这一行诊断的措辞,不改变任何行为。
+    static constexpr int kBackgroundColourMinRuntimeMajor = 87;
+
+    static BackgroundColourSupport backgroundColourSupport(const RuntimeInfo& info);
 };
 
 } // namespace scvb::webview

@@ -147,6 +147,9 @@ private:
     void applyRevealGate(); // 把 revealGate_.parked() 落到 webView_ 的 bounds 上
     void noteRevealed(); // 放行时写一行诊断(reason + 用时)
 
+    // [SL-376/SL-364] 「DefaultBackgroundColor 这一层在不在」的诊断行(每次加载尝试一条)。
+    void logBackgroundColourSupport() const;
+
     // 首页 URL = <provider root>/<role>/index.html。让服务 URL 空间与 web/ 的磁盘布局
     // 逐段对齐,从而保证 ES module 身份唯一(同一文件不会被两个 URL 各实例化一份)。
     // 完整理由见 .cpp 实现处 —— 这条是 Tab1/Tab3 播放头状态分裂那个 bug 的根子。

@@ -39,8 +39,10 @@
           对 <head> 里的外链样式表是渲染阻塞的。这条声明确定兜住的是哪两条路、哪一条只有
           真机能判,连同「灰 / 白 / 内容」三段的来源与代码证据,只写在一处:
           src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注。别在这里复述。
-          这一条**必须是字面量**:--page-backdrop 定义在 tokens.css 里,写成 var() 就又回到
-          「等外链」那条路上。取值 = src/plugin-common/PlatformWebView.h 的
+          这一条**必须是字面量**:自定义属性一律定义在 tokens.css 里,写成 var() 就又回到
+          「等外链」那条路上。⚠ [SL-377] 尤其不要写成 var(--page-backdrop):那个变量已改作
+          **外圈色**(外壳圆角之外那一圈,深色),与本条的**占位色**是两个角色、取值不同。
+          取值 = src/plugin-common/PlatformWebView.h 的
           kShellBackdropArgb 低 24 位,由 web-preview/tests/smoke-embedded-resources.mjs
           的 ⑥ 与 C++ 真源逐字对拍(改一边不改另一边即红),
           故此处是本页「零裸 hex」纪律的**唯一**例外。
@@ -113,7 +115,8 @@
         <!--
           [SL-370] 「首帧已绘」上行信号 —— 开窗遮挡闸的第一条放行路。
           C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
-          收到这条信号(或 pageFinishedLoading / 3s 超时,谁先到算谁)才放回来。机理、为什么是
+          收到这条信号(**[SL-376] 起它是唯一的正常放行路**;pageFinishedLoading 不再放行,
+          只剩 3s 超时兜底)才放回来。机理、为什么是
           「挪走」而不是隐藏、为什么要等导航开始,只写在 src/plugin-common/WebViewRevealGate.h
           一处,别在这里复述。
           通道与上面的 boot 守卫同一条(JUCE 内建 __JUCE__.postMessage,不经 bridge.js、
@@ -137,7 +140,10 @@
                             }),
                         );
                     } catch (e) {
-                        // 发不出去也不许卡住:C++ 侧还有 pageFinishedLoading 与 3s 超时两条兜底
+                        // 发不出去也不许卡住:C++ 侧还有 3s 超时兜底。
+                        // ⚠ [SL-376] 起兜底只剩这一条(pageFinishedLoading 不再放行,
+                        // 因为它不保证任何一帧已经合成)—— 所以这条信号丢了的代价是
+                        // 「每次开窗多等 3 秒占位」,不是「少等几毫秒」。别把它当可有可无。
                     }
                 }
                 function arm() {
