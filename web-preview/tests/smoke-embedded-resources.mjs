@@ -587,7 +587,8 @@ function checkBackdropMatchesShell() {
  * ⑦ [SL-370] 「首帧已绘」上行信号在场且形态正确。
  *
  * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
- * 靠这条信号(或 pageFinishedLoading / 3s 超时)放回来。机理只写在
+ * 靠这条信号放回来(**[SL-376] 起它是唯一的正常放行路**;pageFinishedLoading 不再放行,
+ * 只剩 3s 超时兜底)。机理只写在
  * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守三条形态:
  *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
@@ -626,7 +627,8 @@ function checkFirstFrameSignal(role, entry) {
     if (block === undefined) {
         bad(
             `${role}:index.html 里没有发 ${eventId} 的内联脚本 —— 开窗遮挡闸就只剩` +
-                ` pageFinishedLoading 与 3s 超时两条兜底,每次开窗都要等到那时才放回来`,
+                ` 3s 超时这一条兜底([SL-376] 起 pageFinishedLoading 不再放行),` +
+                ` 每次开窗都要等满 3 秒才放回来`,
         );
         return;
     }

@@ -204,7 +204,12 @@ public:
     //        (即 ①-b)。所以这条内联声明**确定**兜住的只有两条路:
     //          · 外链**取不到 / 加载失败** —— 阻塞随之解除,画出来的是这条内联底色而不是白。
     //            本仓栽过三次的「web 资源没进包 ⇒ 空白窗口」正是这一类;
-    //          · 外链到达之后与 base.css 的 body 底色同值,稳态零差异(所以它无副作用)。
+    //          · 外链到达之后稳态零差异(所以它无副作用)。⚠ [SL-377] **理由变了**:
+    //            SL-355 当时的理由是「与 base.css 的 body 底色同值」,而现在两者是两个角色、
+    //            **取值不同**(内联的 html 底 = 占位色 #d9cadb;body 底 = 外圈色 #191820)。
+    //            现在成立的理由是**覆盖**而不是同值:base.css 的 `html, body { height: 100% }`
+    //            让 body 盒铺满视口,深色 body 底整块盖在 html 画布底之上,稳态看不见接缝。
+    //            (`--page-backdrop` 全仓只有 base.css 的 body 一个消费者。)
     //        而「正常路径上它到底缩不缩得短那段白」取决于 Blink 在阻塞期间用不用根元素样式,
     //        本机没有任何手段能验证 —— **只有真机能判**,验收步骤见 PR #234 描述。
     //   还有一节在我们的 API 之外:WebView2 runtime 自己那个宿主 HWND,在首帧合成之前由
@@ -532,11 +537,16 @@ void WebViewHost::applyRevealGate()
 //
 // 判定与它证到哪一步(以及为什么插件侧做不到直接观测)只写在
 // PlatformWebView.h 的 backgroundColourSupport() 头注一处,这里不复述。
-// 三种结局各一条,措辞互不相同,便于在 DebugView / 宿主日志里直接 grep:
-//   available   —— 正常;这一层在,控制器建好到首帧之间铺的是我方 argb。
+// 四条形态,措辞互不相同,便于在 DebugView / 宿主日志里直接 grep:
+//   available   —— 正常;这一层**按版本推断**在,控制器建好到首帧之间铺的是我方 argb。
 //   UNAVAILABLE —— SL-364 命中;那一段露的是 WebView2 默认白。**本卡不修**(遮挡闸已经让
 //                  那一段不上屏),但要如实说出来,别再让下一个人从零查一遍。
-//   unknown     —— 版本串没解析出来;不猜。
+//   unknown ×2  —— 版本串没解析出来 / 压根没探到运行时;两种原因分开写,不猜。
+// ⚠ 措辞用 `inferred present|absent (from runtime ..., not directly observed)` 而不是
+//   `present|absent`(#247 复审【建议】3,统筹裁定按「inferred from runtime >= 87」落地):
+//   这一行是**按运行时主版本推断**出来的,不是对 JUCE 那次 QueryInterface 的直接观测。
+//   用户会把 DebugView 片段整段贴回来,而贴回来的人多半不会同时读 PlatformWebView.h 的
+//   头注 —— 所以「这是推断」必须写在**行里**,不能只写在注释里。
 // 文案一律 ASCII:运行期字面量走 printf 族拼接时,含非 ASCII 的相邻窄字面量会触发 MSVC C4819。
 void WebViewHost::logBackgroundColourSupport() const
 {
@@ -546,14 +556,20 @@ void WebViewHost::logBackgroundColourSupport() const
     const juce::String argb =
         juce::String::toHexString(static_cast<int>(scvb::webview::kShellBackdropArgb)).paddedLeft('0', 8);
 
+    const juce::String floor = juce::String(PlatformWebView::kBackgroundColourMinRuntimeMajor);
     if (support == Support::available)
-        logDiag("webview2 default background: available (runtime " + version + " >= major " +
-                juce::String(PlatformWebView::kBackgroundColourMinRuntimeMajor) +
-                "), ICoreWebView2Controller2 present, JUCE puts argb " + argb);
+        logDiag("webview2 default background: available -- ICoreWebView2Controller2 inferred present "
+                "(from runtime " +
+                version + " >= major " + floor + ", not directly observed), JUCE puts argb " + argb);
     else if (support == Support::unavailable)
-        logDiag("webview2 default background: UNAVAILABLE (runtime " + version + " < major " +
-                juce::String(PlatformWebView::kBackgroundColourMinRuntimeMajor) +
-                "), ICoreWebView2Controller2 absent, JUCE drops argb " + argb + " silently");
+        logDiag("webview2 default background: UNAVAILABLE -- ICoreWebView2Controller2 inferred absent "
+                "(from runtime " +
+                version + " < major " + floor + ", not directly observed), JUCE drops argb " + argb + " silently");
+    else if (runtime_.status == PlatformWebView::RuntimeStatus::missing)
+        // 当前调用点(beginLoadAttempt)在 missing 时已提前 return,走不到这里 —— 但把它写对
+        // 是为了将来挪调用点的人(#247 复审【建议】⑤):否则这条会打成
+        // "runtime version unknown not parsable",把原因指错。
+        logDiag("webview2 default background: unknown (no WebView2 runtime detected)");
     else
         logDiag("webview2 default background: unknown (runtime version " + version + " not parsable)");
 }
@@ -564,9 +580,14 @@ void WebViewHost::logBackgroundColourSupport() const
 //     到点切了兜底面板(RevealGate::onFallbackShown)。**`fallback` 不是「放行」**,是被面板
 //     顶掉;真机数表时把它单独归一类,别塞进放行路里。
 //   · [SL-376] `timeout` 这条**必须当异常读**:正常开窗一次都不该出现它。所以它自带后缀
-//     `first-frame signal never arrived (navFinished seen|not seen)` —— `seen` = 页面 load
-//     完了但前端没发信号(查前端 boot / rAF 那一段),`not seen` = 导航压根没走完(查
-//     WebView2 环境与网络那一段)。两者的排查方向完全不同,别只看 `timeout` 三个字。
+//     `no first-frame signal before the 3s deadline (navFinished seen|not seen)` ——
+//     `seen` = 页面 load 完了但前端没发信号(查前端 boot / rAF 那一段),`not seen` =
+//     导航压根没走完(查 WebView2 环境与网络那一段)。两者的排查方向完全不同,
+//     别只看 `timeout` 三个字。
+//     ⚠ 措辞是「3s 线之前没来」而**不是**「从没来过」(#247 复审【建议】2):信号落在
+//     「超时那个 tick 已经放行、下一个 tick 之前」这段 <40 ms 的窗口里时,它随后仍会到,
+//     并自己打一行 `first-frame signal ... (already revealed)`。数表上把这两行对齐读,
+//     就能把这一档与真正的「信号缺席」分开。
 //   · `after N ms` 一律从 **startMs_**(本次加载尝试的起点)算,而 kRevealFallbackMs 的 3s
 //     是从**导航开始**算的 —— 所以 `timeout` 那条打出来会是「3000 + 导航前耗时」而不是 3000。
 //     两个起点不同是有意的:这一行是给人看「从点开窗口算起等了多久」。
@@ -581,7 +602,7 @@ void WebViewHost::noteRevealed()
     juce::String line = "webview revealed (" + reason + ") after " +
                         juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms";
     if (reason == "timeout")
-        line << " -- first-frame signal never arrived (navFinished "
+        line << " -- no first-frame signal before the 3s deadline (navFinished "
              << (revealGate_.navigationFinishedSeen() ? "seen" : "not seen") << ")";
     logDiag(line);
 }
@@ -676,7 +697,13 @@ void WebViewHost::showFallback(FallbackReason reason)
         return;
     // [SL-370] 面板自己铺满本组件,闸门不该再按住 WebView 的位置(否则 retry 回来时
     // bounds 还停在可视区外,而那条路上不一定再有导航事件把它推回来)。
+    // [SL-376] `noteRevealed()` 必须**在这里**调(#247 复审【建议】③):拿掉 navFinished
+    // 那条路之后,唯一还会调它的地方只剩 handleFirstFrame(),而「走到兜底面板」的典型场景
+    // 恰恰是首帧信号根本不会来 ⇒ `webview revealed (fallback)` 这一行会从此消失,
+    // 而 noteRevealed() 的头注仍把 fallback 列成读表的人会看到的三种 reason 之一。
+    // 这里也本来就是更自然的落点:面板一切,就该当场记下闸门是被谁顶掉的。
     revealGate_.onFallbackShown();
+    noteRevealed();
     webView_->setVisible(false);
 
     const bool missing = (reason == FallbackReason::MissingRuntime);
@@ -853,11 +880,13 @@ void WebViewHost::handleFirstFrame()
     logDiag(juce::String("first-frame signal after ") +
             juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms" +
             (revealGate_.parked() ? " (still parked)" : " (already revealed)"));
-    // [SL-376] onFirstFrame() **只武装,不放行** —— 真正挪回可视区在下一个 25Hz tick
-    // (kRevealSettleTicks,理由见 WebViewRevealGate.h 头注)。所以下面两句在这条路上是空调用,
-    // 留着是为了「闸门状态一变就落地」这条不变式只有 applyRevealGate 一个出口:
-    // 信号在兜底面板之后才到时,onFirstFrame 会把 revealed_ 记上,那两句照旧无副作用。
-    revealGate_.onFirstFrame();
+    // [SL-376] onFirstFrame() **只武装,不放行** —— 真正挪回可视区在后面的 25Hz tick 上
+    // (kRevealSettleTicks ∧ kRevealSettleMs,理由见 WebViewRevealGate.h 头注)。所以下面两句
+    // 在**正常那条路**上是空调用,留着是为了「闸门状态一变就落地」这条不变式只有
+    // applyRevealGate 一个出口。信号在兜底面板之后才到时它们同样无副作用:那时
+    // showFallback() 已经写过放行行(revealLogged_ 为真),noteRevealed() 直接返回。
+    // 传 nowMs 是因为毫秒下界要从**信号到达那一刻**起算,不是从下一个 tick 起算。
+    revealGate_.onFirstFrame(juce::Time::getMillisecondCounter());
     applyRevealGate();
     noteRevealed();
 }

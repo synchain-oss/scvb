@@ -109,7 +109,8 @@
         <!--
           [SL-370] 「首帧已绘」上行信号 —— 开窗遮挡闸的第一条放行路。
           C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
-          收到这条信号(或 pageFinishedLoading / 3s 超时,谁先到算谁)才放回来。机理、为什么是
+          收到这条信号(**[SL-376] 起它是唯一的正常放行路**;pageFinishedLoading 不再放行,
+          只剩 3s 超时兜底)才放回来。机理、为什么是
           「挪走」而不是隐藏、为什么要等导航开始,只写在 src/plugin-common/WebViewRevealGate.h
           一处,别在这里复述。
           通道与上面的 boot 守卫同一条(JUCE 内建 __JUCE__.postMessage,不经 bridge.js、
@@ -133,7 +134,10 @@
                             }),
                         );
                     } catch (e) {
-                        // 发不出去也不许卡住:C++ 侧还有 pageFinishedLoading 与 3s 超时两条兜底
+                        // 发不出去也不许卡住:C++ 侧还有 3s 超时兜底。
+                        // ⚠ [SL-376] 起兜底只剩这一条(pageFinishedLoading 不再放行,
+                        // 因为它不保证任何一帧已经合成)—— 所以这条信号丢了的代价是
+                        // 「每次开窗多等 3 秒占位」,不是「少等几毫秒」。别把它当可有可无。
                     }
                 }
                 function arm() {

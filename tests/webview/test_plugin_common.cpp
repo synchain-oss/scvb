@@ -279,9 +279,9 @@ TEST_CASE("[SL-370] RevealGate parks on navigation start and reveals on the firs
     gate.onNavigationStarted(1000);
     CHECK(gate.parked());
 
-    // [SL-376] 信号本身只武装,放行落在下一个 tick 上 —— 那一格单独在下面钉。
-    gate.onFirstFrame();
-    gate.onTick(1010);
+    // [SL-376] 信号本身只武装,放行落在后面的 tick 上(tick 数 ∧ 毫秒下界)—— 那两格单独在下面钉。
+    gate.onFirstFrame(1000);
+    gate.onTick(1000 + scvb::webview::RevealGate::kRevealSettleMs);
     CHECK_FALSE(gate.parked());
     CHECK(juce::String(gate.lastRevealReason()) == "firstFrame");
 }
@@ -312,27 +312,92 @@ TEST_CASE("[SL-376] RevealGate never reveals on navigation finished, it only rec
     CHECK(gate.parked());
 }
 
-// [SL-376] 首帧信号到达后要再压 kRevealSettleTicks 个 tick 才放行。
+// [SL-376] 首帧信号到达后要再压一拍才放行 —— **tick 数**那一半。
 //
 // 两层 rAF 保证的是「帧已提交给合成器」,提交到上屏还差一拍 —— 信号一到就挪回来,
 // 露出的仍是 WebView2 的底(用户看到的那一瞬白)。
 // 删除式:让 onFirstFrame() 直接 reveal("firstFrame"),第一条 CHECK 立刻红。
-TEST_CASE("[SL-376] RevealGate holds one more tick after the first-frame signal before revealing")
+TEST_CASE("[SL-376] RevealGate holds at least one more tick after the first-frame signal")
 {
     scvb::webview::RevealGate gate;
     gate.beginLoadAttempt();
     gate.onNavigationStarted(1000);
     REQUIRE(gate.parked());
 
-    gate.onFirstFrame();
+    gate.onFirstFrame(1000);
     CHECK(gate.parked()); // ← 那一拍:信号到了,还没放
     CHECK(juce::String(gate.lastRevealReason()).isEmpty());
 
+    // 毫秒下界早已满足(每个 tick 都远在其后),所以这里量的纯粹是 tick 数那一半。
     for (int i = 0; i < scvb::webview::RevealGate::kRevealSettleTicks; ++i)
     {
         CHECK(gate.parked());
-        gate.onTick(1010 + i);
+        gate.onTick(1000 + scvb::webview::RevealGate::kRevealSettleMs + i);
     }
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "firstFrame");
+}
+
+// [SL-376] 那一拍的**毫秒下界**那一半(#247 复审【重要】②)。
+//
+// 只数 tick 是不够的:信号到达点相对 25Hz tick 的相位是随机的,「下一个 tick」离信号可以只有
+// 1 ms —— 本卡自己的 pluginval 数表里最小一次就是 4 ms,**小于**一个 60Hz 合成帧。那样一来
+// 头注承诺的「等出合成那一拍」在相当一部分开窗上根本没兑现,而没有任何判据会红。
+// 删除式:把 onTick 里那个 msDone 条件删掉(只留 ticksDone),本格第一条 CHECK 立刻红。
+TEST_CASE("[SL-376] RevealGate holds the first-frame settle for a millisecond floor, not just a tick")
+{
+    scvb::webview::RevealGate gate;
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(1000);
+    REQUIRE(gate.parked());
+
+    gate.onFirstFrame(2000);
+
+    // 紧跟着就来一个 tick(只差 1 ms):tick 数够了,毫秒下界还差得远 ⇒ **不许放**。
+    gate.onTick(2001);
+    CHECK(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()).isEmpty());
+
+    // 下界前一毫秒仍然按住 —— 边界格:少了它,把判据写成 `> 0` 也照绿。
+    gate.onTick(2000 + scvb::webview::RevealGate::kRevealSettleMs - 1);
+    CHECK(gate.parked());
+
+    // 到点才放。
+    gate.onTick(2000 + scvb::webview::RevealGate::kRevealSettleMs);
+    CHECK_FALSE(gate.parked());
+    CHECK(juce::String(gate.lastRevealReason()) == "firstFrame");
+}
+
+// [SL-376] 毫秒下界也要**回绕安全**(与 kRevealFallbackMs 的差值同一手法)。
+//
+// 信号时刻取 **2^32 - 8** —— 距回绕点只有 8 ms,**比 kRevealSettleMs 还近**。这一条是本格
+// 能不能钉住东西的全部:回绕点再远一点(比如 0xffffff00),写成加法式 settleAtMs_ + 下界
+// 也不会溢出,两种写法的结果处处相同,本格就成了一个永远绿的摆设(第一版正是如此,
+// 反向注入跑出来是绿的才发现)。
+// 删除式:把 msDone 改成加法式
+//   nowMs >= settleAtMs_ + (uint32)kRevealSettleMs
+// —— 那时 settleAtMs_ + 32 溢出成一个极小的数,下面「信号后 1 ms 就来一个 tick」那一格
+// 会当场放行 ⇒ 红。
+TEST_CASE("[SL-376] RevealGate settle floor survives the millisecond counter wrapping around")
+{
+    using Gate = scvb::webview::RevealGate;
+    Gate gate;
+    const std::uint32_t nearWrap = 0xfffffff8u; // 距回绕点 8 ms < kRevealSettleMs
+    gate.beginLoadAttempt();
+    gate.onNavigationStarted(nearWrap - 1000); // 离超时线还远,不会被 timeout 抢走
+    REQUIRE(gate.parked());
+
+    gate.onFirstFrame(nearWrap);
+
+    // 信号后 1 ms 就来一个 tick:真差值是 1,远不到下界 ⇒ **不许放**。
+    // 加法式在这里会算成「早就够了」,因为 settleAtMs_ + 32 已经溢出回绕。
+    gate.onTick(nearWrap + 1);
+    CHECK(gate.parked());
+
+    // 跨过回绕点之后仍要按同一个下界判(边界前一毫秒按住、到点才放)。
+    gate.onTick(nearWrap + static_cast<std::uint32_t>(Gate::kRevealSettleMs) - 1);
+    CHECK(gate.parked());
+    gate.onTick(nearWrap + static_cast<std::uint32_t>(Gate::kRevealSettleMs));
     CHECK_FALSE(gate.parked());
     CHECK(juce::String(gate.lastRevealReason()) == "firstFrame");
 }
@@ -347,9 +412,11 @@ TEST_CASE("[SL-376] RevealGate settle tick beats the timeout when the signal lan
     gate.onNavigationStarted(1000);
     REQUIRE(gate.parked());
 
-    gate.onFirstFrame(); // 信号在超时线之前一瞬到达
+    gate.onFirstFrame(1000 + scvb::webview::RevealGate::kRevealFallbackMs - 1); // 信号在超时线之前一瞬到达
     for (int i = 0; i < scvb::webview::RevealGate::kRevealSettleTicks; ++i)
-        gate.onTick(1000 + scvb::webview::RevealGate::kRevealFallbackMs + i); // 已经过了超时线
+        // 已经过了超时线,且毫秒下界也已满足 —— 唯一还能决定 reason 的就是分支序。
+        gate.onTick(1000 + scvb::webview::RevealGate::kRevealFallbackMs + scvb::webview::RevealGate::kRevealSettleMs +
+                    i);
 
     CHECK_FALSE(gate.parked());
     CHECK(juce::String(gate.lastRevealReason()) == "firstFrame");
@@ -395,8 +462,8 @@ TEST_CASE("[SL-370] RevealGate never re-parks after it has revealed once")
     scvb::webview::RevealGate gate;
     gate.beginLoadAttempt();
     gate.onNavigationStarted(1000);
-    gate.onFirstFrame();
-    gate.onTick(1010); // [SL-376] 放行在信号之后那一拍
+    gate.onFirstFrame(1000);
+    gate.onTick(1000 + scvb::webview::RevealGate::kRevealSettleMs); // [SL-376] 放行在信号之后那一拍(tick 数 ∧ 毫秒下界)
     REQUIRE_FALSE(gate.parked());
 
     gate.onNavigationStarted(2000);
@@ -414,7 +481,7 @@ TEST_CASE("[SL-370] RevealGate takes a first-frame signal that arrives before th
     // 已经画好的页面挪走 —— onFirstFrame 即使在没挪走时也要记账。
     scvb::webview::RevealGate gate;
     gate.beginLoadAttempt();
-    gate.onFirstFrame();
+    gate.onFirstFrame(900);
     gate.onNavigationStarted(1000);
     CHECK_FALSE(gate.parked());
 }

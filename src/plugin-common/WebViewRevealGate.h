@@ -77,18 +77,28 @@ namespace scvb::webview
 // `pageFinishedLoading`(= WebView2 的 NavigationCompleted)只说明「文档下载完、load 事件发了」,
 // 它**不保证任何一帧已经合成**;此刻把 WebView 挪回可视区,露出来的就是 WebView2 那个宿主
 // HWND 在首帧之前画的东西(DefaultBackgroundColor 缺席时即白,见 SL-364)。
-// pluginval 上只差 3–6 ms 所以肉眼看不见,用户机上差距更大,于是白了一瞬。
+// ⚠ **「谁先到」是掷骰子,不是常数** —— 本卡复测(见上面那段实测记录)量到 Input 上
+// navFinished 每次都早 7–16 ms、Output 上反过来晚约 21 ms。所以别去纠结「差几毫秒」:
+// 修法是把这条路整个拿掉,而不是去调它的胜负。用户机上白每次都在,只说明那台机器上
+// navFinished 稳定赢;**这一点本机复现不了,也不需要复现**。
 // ⇒ `navFinished` **不再放行**,只记账(`navigationFinishedSeen()`,进超时那一行诊断);
 //   放行只认 `firstFrame`(前端在 DOMContentLoaded 后嵌套两层 rAF 才发,⇒ 前一帧确已合成),
 //   外加 `timeout` 兜底与 `fallback` 顶替。
 //
-// 【为什么首帧信号到了还要再等一个 tick】两层 rAF 保证的是「前一帧已经**提交**给合成器」,
+// 【为什么首帧信号到了还要再等一拍】两层 rAF 保证的是「前一帧已经**提交**给合成器」,
 // 从提交到**上屏**还差一拍(合成器要拿到帧、Windows 要把那块位图推到桌面)。信号一到就立刻
 // 挪回来,仍然可能在这一拍里露出 WebView2 的底 —— 那正是用户看到的「白一瞬」。
-// 所以 `onFirstFrame()` 只**武装**,真正放行落在下一个 25Hz tick 上
-// (`kRevealSettleTicks`,一格 ≤40 ms,肉眼无感,而合成那一拍在 60Hz 上约 16 ms)。
-// ⚠ 这一拍是**按 tick 数**等的,不是按毫秒 —— 宿主 timer 被卡住时它会跟着变长,但那种情形下
-//   整个界面本来就不动,不构成新风险。
+// 所以 `onFirstFrame()` 只**武装**,真正放行落在后面的 25Hz tick 上。
+//
+// ⚠ 这一拍是 **tick 数 ∧ 毫秒下界**两个条件,缺一不可 —— #247 复审【重要】② 点出的正是
+//   「只数 tick」那一版名不副实:信号到达点相对 tick 相位是随机的,只等「下一个 tick」时
+//   实际等待落在 (0, 40 ms] 上,**下界是 0**;本卡自己的 pluginval 数表里最小一次只有 4 ms,
+//   **小于**一个 60Hz 合成帧。也就是说头注承诺的「等出那一拍」在相当一部分开窗上没兑现。
+//   现在两个条件:
+//     · `kRevealSettleTicks`  —— 至少再回一次消息循环(闸门状态的翻转只发生在 tick 上);
+//     · `kRevealSettleMs`     —— 至少 32 ms,即 60Hz 上两个合成帧,把上面那个 0 下界堵死。
+//   两者都满足才放。tick 被卡住时只会更晚,不会更早(那种情形下整个界面本来就不动)。
+//   代价上界:tick 粒度 40 ms + 下界 32 ms ⇒ 最坏约 80 ms,而占位段本身约 0.9 秒。
 //
 // 【放行路一览】firstFrame(前端 rAF 信号,**唯一的正常路**,武装后下一个 tick 生效)/
 // timeout(kRevealFallbackMs,信号没来时兜底,绝不允许「永远不放行」)/
@@ -105,9 +115,10 @@ public:
     // 保证「宁可早放行看见一点白」也不会拖到看门狗兜底面板那一步。
     static constexpr int kRevealFallbackMs = 3000;
 
-    // [SL-376] 首帧信号到达后还要压住几个 tick 才放行(宿主 25Hz ⇒ 一格 ≤40 ms)。
-    // 理由见头注【为什么首帧信号到了还要再等一个 tick】。
-    static constexpr int kRevealSettleTicks = 1;
+    // [SL-376] 首帧信号到达后压住的**两个**条件,`onTick` 里必须同时满足才放行。
+    // 为什么不能只有 tick 数(它的下界是 0),见头注【为什么首帧信号到了还要再等一拍】。
+    static constexpr int kRevealSettleTicks = 1; // 至少再回一次消息循环
+    static constexpr int kRevealSettleMs = 32; // 至少两个 60Hz 合成帧
 
     // 一次新的加载尝试开始(构造 / retry 共用):重新武装,允许下一次导航再挪一次。
     void beginLoadAttempt() noexcept
@@ -116,6 +127,7 @@ public:
         revealed_ = false;
         settling_ = false;
         settleTicksSeen_ = 0;
+        settleAtMs_ = 0;
         navFinishedSeen_ = false;
         revealReason_ = "";
     }
@@ -130,11 +142,15 @@ public:
         parkedAtMs_ = nowMs;
     }
 
-    // 前端「首帧已绘」信号(__scvb__firstFrame)。**这里不放行**,只武装 —— 真正放行在
-    // 下一个 onTick(kRevealSettleTicks),理由见头注。
+    // 前端「首帧已绘」信号(__scvb__firstFrame)。**这里不放行**,只武装 —— 真正放行在后面的
+    // onTick 上,要同时满足 kRevealSettleTicks 与 kRevealSettleMs,理由见头注。
     // 还没挪走时**也要记账**:记成已放行之后,后面那次 onNavigationStarted 就不会再把
     // 已经画好的页面挪走。
-    void onFirstFrame() noexcept
+    //
+    // 取 `nowMs` 是为了那条毫秒下界:信号到达的时刻只有调用方知道(它在消息线程上,
+    // 与 25Hz tick 不同相),不传进来就只能拿「下一个 tick 的时刻」当起点,那等于把要量的
+    // 那段时间自己抹掉。
+    void onFirstFrame(std::uint32_t nowMs) noexcept
     {
         if (!parked_)
         {
@@ -145,6 +161,7 @@ public:
         {
             settling_ = true;
             settleTicksSeen_ = 0;
+            settleAtMs_ = nowMs;
         }
     }
 
@@ -162,9 +179,12 @@ public:
             return;
         if (settling_)
         {
-            // 首帧信号已到:压满 kRevealSettleTicks 个 tick 再放。**这一段必须先于超时判定**,
+            // 首帧信号已到:tick 数与毫秒下界**同时**满足才放。**这一段必须先于超时判定**,
             // 否则信号踩着 3s 线到达时会被记成 timeout,数表里就凭空多出一次「信号缺席」。
-            if (++settleTicksSeen_ >= kRevealSettleTicks)
+            // 毫秒差同样走 uint32 → int32(回绕安全),与下面的超时判定同一手法。
+            const bool ticksDone = (++settleTicksSeen_ >= kRevealSettleTicks);
+            const bool msDone = (static_cast<std::int32_t>(nowMs - settleAtMs_) >= kRevealSettleMs);
+            if (ticksDone && msDone)
                 reveal("firstFrame");
             return;
         }
@@ -197,6 +217,7 @@ private:
     bool settling_ = false; // [SL-376] 首帧信号已到、正在压那一拍
     bool navFinishedSeen_ = false;
     int settleTicksSeen_ = 0;
+    std::uint32_t settleAtMs_ = 0; // [SL-376] 首帧信号到达的时刻(毫秒下界的起点)
     std::uint32_t parkedAtMs_ = 0;
     const char* revealReason_ = "";
 };
