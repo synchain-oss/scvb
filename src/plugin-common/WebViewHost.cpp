@@ -278,7 +278,7 @@ public:
     // -------------------------------------------------------------------------
     // [SL-376] v5.6.10 真机反馈:「粉色占位 → **白一瞬** → 内容」,黑已消、冷热无差。
     //   ⇒ SL-370 的两段修法都生效了,剩下的白落在**放行之后、页面首帧上屏之前**。
-    //   定谳与修法(放行只认 firstFrame + 信号到后再压一个 tick)只写在
+    //   定谳与修法(放行只认 firstFrame + 信号到后再压一拍:tick 数 ∧ 32 ms 毫秒下界)只写在
     //   WebViewRevealGate.h 头注一处,这里不复述。这里只记它对上面那张地图的影响:
     //   目标序列变成「白(宿主容器)→ 粉色占位 → 内容」,占位段从「首帧信号与 load 事件
     //   竞速的结果」变成「一定等到首帧已合成并上屏」。
@@ -576,9 +576,13 @@ void WebViewHost::logBackgroundColourSupport() const
 
 // 放行诊断行。**读表的人要知道的三件事**,都写在这里一处:
 //   · `reason` 有**三**种(#241 复审时是四种,[SL-376] 拿掉了 `navFinished` 那一种):
-//     `firstFrame` = 正常路;`timeout` = 首帧信号没来、3s 兜底;`fallback` = 遮挡期内看门狗
-//     到点切了兜底面板(RevealGate::onFallbackShown)。**`fallback` 不是「放行」**,是被面板
-//     顶掉;真机数表时把它单独归一类,别塞进放行路里。
+//     `firstFrame` = 正常路;`timeout` = 首帧信号没来、3s 兜底;`fallback` = 遮挡期内被兜底
+//     面板顶掉(RevealGate::onFallbackShown)。**`fallback` 不是「放行」**,是被面板顶掉;
+//     真机数表时把它单独归一类,别塞进放行路里。
+//     ⚠ `fallback` **实际只由前端 boot 失败那一条路打得出来**(它能在 3s 之内到)——
+//     看门狗那条路上预算恒大于 kRevealFallbackMs,闸门早已自己记了 `timeout`;
+//     运行时缺失那条路上闸门从未 parked。逐条见 showFallback() 处的注释。
+//     所以**表里没有 `fallback` 是正常的**,别据此去查接线。
 //   · [SL-376] `timeout` 这条**必须当异常读**:正常开窗一次都不该出现它。所以它自带后缀
 //     `no first-frame signal before the 3s deadline (navFinished seen|not seen)` ——
 //     `seen` = 页面 load 完了但前端没发信号(查前端 boot / rAF 那一段),`not seen` =
@@ -702,6 +706,15 @@ void WebViewHost::showFallback(FallbackReason reason)
     // 恰恰是首帧信号根本不会来 ⇒ `webview revealed (fallback)` 这一行会从此消失,
     // 而 noteRevealed() 的头注仍把 fallback 列成读表的人会看到的三种 reason 之一。
     // 这里也本来就是更自然的落点:面板一切,就该当场记下闸门是被谁顶掉的。
+    //
+    // ⚠ **但它真正打得出来的只有一条路**(#247 复审第 2 轮:三个调用点各走一遍状态):
+    //   · missing / tooOld —— 在 beginLoadAttempt 里,还没导航 ⇒ 闸门从未 parked,
+    //     reveal() 因 `!parked_` 提前返回、reason 留空 ⇒ **不打**(也不该打);
+    //   · LoadTimeout —— 看门狗预算(热 5s / 冷 15s,导航后还按 kAfterNavBudgetMs=5s 顺延)
+    //     **恒大于** 闸门的 kRevealFallbackMs=3s,所以闸门早就自己按 timeout 放行并写过行了
+    //     ⇒ revealLogged_ 为真,**不打**(那次开窗的表里是一行 timeout,信息没丢);
+    //   · BootError —— 前端 boot 挂了,可以在 3s 之内到 ⇒ **只有这一条打得出 fallback**。
+    //   读表的人据此就不会因为「看不到 fallback」去查接线。
     revealGate_.onFallbackShown();
     noteRevealed();
     webView_->setVisible(false);

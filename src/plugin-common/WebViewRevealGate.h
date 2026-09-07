@@ -50,7 +50,9 @@ namespace scvb::webview
 //   本机 pluginval(真 WebView2 宿主)`--repeat 10` 实测:**Input / Output 各 10 次开窗,
 //   每次都收到了 `first-frame signal`,且到达时闸门都还 `still parked`** ⇒ rAF 在挪出可视区
 //   之后**仍在跑**,本条**未命中**。放行原因两侧都是 **10 firstFrame / 0 navFinished /
-//   0 timeout**([SL-376] 之后 navFinished 本就不再放行)。
+//   0 timeout**([SL-376] 之后 navFinished 本就不再放行)。同一次实测里「信号 → 挪回」那一拍
+//   落在 **32~72 ms**(下界 32 = kRevealSettleMs,上界 ≈ 32 + 一个 25Hz tick)—— 加下界之前
+//   是 4~42 ms,最小那次比一个合成帧还短,正是复审点出的「注释比实现强」。
 //   ⚠ 同一次实测也量到了**这两条回调的先后本来就不稳**:Input 上 `navFinished` 每次都比
 //   首帧信号早 7–16 ms(10/10),Output 上反过来,首帧信号早约 21 ms(10 次里 8 次)。
 //   SL-370 当时量到的 6 firstFrame / 4 navFinished 是同一件事的另一个样本。
@@ -96,7 +98,9 @@ namespace scvb::webview
 //   **小于**一个 60Hz 合成帧。也就是说头注承诺的「等出那一拍」在相当一部分开窗上没兑现。
 //   现在两个条件:
 //     · `kRevealSettleTicks`  —— 至少再回一次消息循环(闸门状态的翻转只发生在 tick 上);
-//     · `kRevealSettleMs`     —— 至少 32 ms,即 60Hz 上两个合成帧,把上面那个 0 下界堵死。
+//     · `kRevealSettleMs`     —— 至少 32 ms,把上面那个 0 下界堵死。32 ms = 一个 60Hz 合成帧
+//                                (16.7 ms)**再加约一帧余量**;它**不是**「两个合成帧」
+//                                (那是 33.3 ms,#247 复审第 2 轮抓到过这句写过头)。
 //   两者都满足才放。tick 被卡住时只会更晚,不会更早(那种情形下整个界面本来就不动)。
 //   代价上界:tick 粒度 40 ms + 下界 32 ms ⇒ 最坏约 80 ms,而占位段本身约 0.9 秒。
 //
@@ -118,7 +122,7 @@ public:
     // [SL-376] 首帧信号到达后压住的**两个**条件,`onTick` 里必须同时满足才放行。
     // 为什么不能只有 tick 数(它的下界是 0),见头注【为什么首帧信号到了还要再等一拍】。
     static constexpr int kRevealSettleTicks = 1; // 至少再回一次消息循环
-    static constexpr int kRevealSettleMs = 32; // 至少两个 60Hz 合成帧
+    static constexpr int kRevealSettleMs = 32; // 一个 60Hz 合成帧(16.7 ms)再加约一帧余量
 
     // 一次新的加载尝试开始(构造 / retry 共用):重新武装,允许下一次导航再挪一次。
     void beginLoadAttempt() noexcept
@@ -237,8 +241,11 @@ private:
 // 统筹裁定(#241 15:49 ②)**不在本卡补判据**,改由真机项兜:验收按**正向**指标判 ——
 // 「开窗应看见一段约 1 秒的浅紫占位,再切到内容」;**仍见白/黑就说明位移没生效**。
 // 不按「没有黑」判,因为闸门空转时(底色已改浅)那条照样满足。
-// 本机 pluginval 实测的占位时长(revealed 的绝对 after 值):Input 827~978 ms、
-// Output 943~1115 ms([SL-376] 复测;SL-370 当时是 895~1220 ms),肉眼足够看清。
+// 本机 pluginval 实测的占位时长(revealed 的绝对 after 值):Input 925~1179 ms、
+// Output 895~1165 ms,肉眼足够看清。
+// ⚠ 这是**加了 kRevealSettleMs 下界之后**用最终代码重跑的数(#247 复审第 2 轮点名要重测:
+//   下界改的正是被测的那一段,拿旧数当「实测」就是假句)。加下界之前是 Input 827~978 /
+//   Output 943~1115 ms,SL-370 当时是 895~1220 ms —— 三组量级相同,都是约 1 秒。
 // 宽度为 0(还没 resizeToDesignBox)时退一步用 1,保证平移量恒为正、不会原地不动。
 inline juce::Rectangle<int> parkedBounds(juce::Rectangle<int> visible) noexcept
 {
