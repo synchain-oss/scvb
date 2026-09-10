@@ -22,7 +22,10 @@
 //      宽度留边。`min` 写成 `max` 的实现只在这一格红,前三格全绿 —— 故它必须在;
 //   ④ 档位那条路仍然活着:走真 UI 选一档 → 壳页(扮宿主)把 iframe 改成设计盒 × 档位
 //      → 页内倍率跟到该档位。壳页少接这一层的话,预览里档位就是哑的;
-//   ⑤ 全程零 console.error、零未捕获异常。
+//   ⑤ 全程零 console.error、零未捕获异常;
+//   ⑥(仅 Monitor)**先停掉帧流再改窗口**:轨迹图画布的后备存储 k 必须跟上。
+//      ⚠ 这一格钉的是**不变量**(画布后备存储跟着外壳倍率走),**不是** installShellFit
+//      那个 onChange 的删除式 —— 去掉 onChange 它照样绿,实测见文件末尾的说明。
 //
 // 用法:node web-preview/tests/smoke-shell-fit-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -387,6 +390,19 @@ const IN = (js) => `(() => {
     ${js}
 })()`;
 
+/** 轨迹图画布的后备存储比值(见 ⑥ 的注释)。 */
+const CANVAS_K = IN(`
+    const c = gb("monitor-traj-canvas");
+    if (!c) return null;
+    const r = c.getBoundingClientRect();
+    if (!(r.width > 0)) return null;
+    return {
+        ratio: c.width / r.width,
+        dpr: w.devicePixelRatio || 1,
+        zoom: (q("#card") || {}).style ? q("#card").style.zoom : "",
+    };
+`);
+
 /** 一次往返把「有没有溢出 / 倍率是多少 / 外壳落在哪」全取回来。 */
 const GEOM = (sel) =>
     IN(`
@@ -414,6 +430,16 @@ const GEOM = (sel) =>
 const { DESIGN } = await import(
     new URL("../../web/shared/design-box.js", import.meta.url)
 );
+// 期望倍率**现算**,不写死成档位数字:宿主给的窗口是 `round(设计盒 × 档位)`
+// (原生 designBoxWindowSize 与壳页 sizeFrame 同口径),不整除的档位下 fit 本来就
+// 不等于档位 —— 例如 Input 的 0.33 档真机上是 152×185,fit = 0.3303。那不是回归,
+// 「刚好装进实际窗口」才是正确行为。今天三个 STEP 恰好整除,写死也绿,但换一档就
+// 会变成假红,而失败文案会指着一个不存在的问题。
+const { fitFactor } = await import(
+    new URL("../../web/shared/shell-fit.js", import.meta.url)
+);
+const expectedZoom = (box, f) =>
+    fitFactor(Math.round(box.w * f), Math.round(box.h * f), box.w, box.h);
 
 const ROLES = [
     {
@@ -663,13 +689,17 @@ try {
             `${role}:壳页(扮宿主)把窗口改成设计盒 × ${f0} = ${wantW}px 宽`,
         );
 
+        const wantZoom = String(expectedZoom(box, f0));
         const followed = await waitFor(
             IN(
-                `return q(${JSON.stringify(sel)}).style.zoom === ${JSON.stringify(String(f0))};`,
+                `return q(${JSON.stringify(sel)}).style.zoom === ${JSON.stringify(wantZoom)};`,
             ),
             4000,
         );
-        check(followed, `${role}:页内倍率跟到 ${f0}`);
+        check(
+            followed,
+            `${role}:页内倍率跟到窗口(${pct}% 档 ⇒ ${wantZoom},实得 ${await evaluate(IN(`return q(${JSON.stringify(sel)}).style.zoom;`))})`,
+        );
 
         const m2 = await evaluate(GEOM(sel));
         if (m2) {
@@ -697,6 +727,74 @@ try {
             4000,
         );
         check(back, `${role}:回到 100% 档`);
+
+        // ---- ⑥ 停帧之后改窗口:后备存储 k 必须跟上(只在 Monitor 跑)----------
+        // 05 §6.1:`canvas.width = 本地 px × k`,`k = 外壳缩放 × dpr`。包围盒量的是
+        // **视觉 px**(已含 zoom),两边的 zoom 正好约掉 ⇒ `canvas.width ÷ 包围盒宽`
+        // 恒等于 dpr。倍率变了而 k 没跟上,这个比值立刻变成 `dpr ÷ 倍率`。
+        //
+        // **必须先把帧流停掉再量**:Monitor 每收到一帧 viz 都会 `traj.invalidate()`
+        // 一次,25Hz 的帧流下「有没有那次显式重绘」在任何时刻都测不出差别 —— 我第一版
+        // 正是在帧流开着的时候量的,量到「都一样」就把那句 invalidate 删了。判据不可
+        // 分辨 ≠ 代码不需要。停帧靠壳页挂出来的 driver session(见 shell.js 的测试面),
+        // 停的是 mock 的事件循环,页面侧一行都没动 —— 组仍在线、图仍在版面上,
+        // 正是真机上「宿主侧门控把帧挡掉、而组还连着」的那一段。
+        if (role === "monitor") {
+            const stopped = await evaluate(
+                `(() => {
+                    const s = window.__SCVB_PREVIEW_SESSION__;
+                    if (!s || typeof s.stop !== "function") return false;
+                    s.stop();
+                    return true;
+                })()`,
+            );
+            check(stopped, "monitor:停掉预览 driver(帧流不再推 invalidate)");
+
+            // 停帧后再等一会,确保在途的那几帧都落完
+            await sleep(400);
+            await twoFrames();
+
+            const before = await evaluate(CANVAS_K);
+            check(
+                before && Math.abs(before.ratio - before.dpr) < 0.05,
+                `monitor:停帧后基线 k 正确(实得 ${before ? before.ratio.toFixed(3) : "(缺)"},应为 ${before ? before.dpr : "?"})`,
+            );
+
+            const vw = Math.round(box.w * 0.6);
+            const vh = Math.round(box.h * 0.6);
+            await evaluate(
+                OUT(`
+                f.style.width = ${vw} + "px";
+                f.style.height = ${vh} + "px";
+                return true;
+            `),
+            );
+            await waitFor(
+                IN(`return d.documentElement.clientWidth === ${vw};`),
+            );
+            // 重建排在 invalidate 之后的下一帧,给它几帧;等不到就往下走,
+            // 断言照样报实得值(不靠 waitFor 判红)。
+            await twoFrames();
+            await twoFrames();
+            await sleep(300);
+
+            // ⚠ 去掉 installShellFit 的 onChange,这一格**仍然绿**(实测:停帧 + 拆
+            // onChange,resize 后 +300/+800/+2000ms 三次量到的比值都还是 dpr)。原因不是
+            // 「不需要那个回调」,而是轨迹图父盒的 clientWidth 在 zoom 下**顺带**变了一点
+            // (Chrome 152 实测 822 → 818:不是按倍率缩,是亚像素取整的偏移),于是它自己
+            // 那个 `if (measure())` 的 ResizeObserver 恰好被叫醒。那是**取整的巧合**,不是
+            // 不变量 —— 换一个恰好取整到同一个整数的版面就没有了,而那时画布会一直用旧 k。
+            // 所以 onChange 留着(构造上正确),但这一格不冒充它的删除式。
+            const after = await evaluate(CANVAS_K);
+            if (check(after, "monitor:停帧改窗口后量到轨迹图画布")) {
+                check(
+                    Math.abs(after.ratio - after.dpr) < 0.05,
+                    `monitor:停帧改窗口后 k 跟上了` +
+                        `(canvas.width ÷ 包围盒宽 = ${after.ratio.toFixed(3)},应为 dpr ${after.dpr};` +
+                        `倍率 ${after.zoom})—— 去掉 installShellFit 的 onChange 必红`,
+                );
+            }
+        }
 
         // ⑤
         assertClean(role);

@@ -60,16 +60,35 @@ export function fitFactor(vw, vh, boxW, boxH) {
  *
  * 为什么是模块级单例:一个文档里只有一个设计盒外壳(Output/Monitor 的 `#card`、
  * Input 的 `#ipt-shell`),这是页面结构本身的不变量。后备存储倍率
- * (`k = 外壳缩放 × dpr`,05 §6.1)的几个读方(output/tab-wave.js 的 backingK、
- * monitor/app.js 给轨迹图的 getUiScale)从前读的是 `state.ui.scale`;档位不再是
+ * (`k = 外壳缩放 × dpr`,05 §6.1)的读方从前读的是 `state.ui.scale`;档位不再是
  * 缩放的**来源**之后,那个数字与画面上的实际倍率会在宿主改窗口时分家 —— 它们要读的
  * 一直都是「画面实际被放大了多少」,所以改读这里。
+ *
+ * **读方清单不写在注释里**:第一版把它写成一句「tab-wave 的 backingK 与 monitor 的
+ * getUiScale」,结果漏了 `output/tab-master.js` 的两处(Tab1 轨迹图的 getUiScale 与
+ * 它的倍率账),而漏掉的那两处**没有任何东西会红**。清单改由
+ * `web-preview/tests/smoke-shell-fit.mjs` 的扫描判据现算 —— 那份扫描自己读文件,
+ * 不走 shell 的 grep(`tab-master.js` 里有一个真的 NUL 字节,grep 会把整个文件当二进制
+ * 跳过、只印一行 "Binary file matches" —— 那正是当初漏掉它的原因之一)。
  */
 let current = 1;
 
-/** 见 `current` 的注释:读方要的是实际倍率,不是档位数字。 */
+/** 见 `current` 的注释:读方要的是实际倍率,不是档位数字。**画面缩放**用这个精值。 */
 export function shellFitFactor() {
     return current;
+}
+
+/**
+ * **后备存储**(`k = 外壳缩放 × dpr`,05 §6.1)专用的**粗量化**倍率。
+ *
+ * 画面倍率必须精(量化到 1e-4),否则就是本卡在修的那半个像素溢出。但 `k` 不必跟着
+ * 一像素一跳:宿主拖着窗口边框走时,精值几乎每个像素都是新数,拿它当「后备存储要不要
+ * 重建」的判据 = 每帧把 15 条泳道的 canvas 全部重新分配一次。
+ *
+ * 量化到 0.01:1% 的后备存储误差在屏幕上看不出来,而拖拽整程只会跨过有限几档。
+ */
+export function backingFitFactor() {
+    return Math.round(current * 100) / 100;
 }
 
 /**
@@ -78,18 +97,26 @@ export function shellFitFactor() {
  * @param {object} o
  * @param {HTMLElement} o.el 设计盒外壳元素
  * @param {{w:number,h:number}} o.box 设计盒尺寸(真源 web/shared/design-box.js)
+ * @param {(f:number)=>void} [o.onChange] 倍率**变了**才回调。
+ *   **安装时那一次不回调**:页面通常在文档顶部就装上本模块,而回调里要摸的东西
+ *   (Monitor 的轨迹图)往往是后面几十行才 `const` 出来的 —— 安装时就回调会撞 TDZ。
+ *   首帧的后备存储由各画布自己 mount 时读 backingFitFactor() 得到,不需要这一次回调。
+ *
+ *   为什么非要有这个钩子(我一度把它删了,是错的):倍率变了之后,**没有任何一条自发
+ *   路径**会去重算 `k` —— CSS zoom 改的是 used value,不改后代元素自己的 `clientWidth`,
+ *   所以轨迹图 `measure()` 判不出「尺寸变了」,它的 ResizeObserver 与 observeResolution
+ *   也都不会响。我当时量到「有没有这次回调都一样」,是因为量的时候 mock 正以 25Hz 推
+ *   viz 帧、而每来一帧 Monitor 都会 `traj.invalidate()` 一次 —— **那是判据不可分辨,
+ *   不是不需要**。真实缺口 = 帧流停顿而组仍在线的那一段里宿主改了窗口尺寸:画布会带着
+ *   旧 k 一直被上采样。判据见 smoke-shell-fit-page.mjs 的「停帧后改窗口」那一格。
  * @param {Window} [o.win] 注入用(默认 globalThis)
  * @returns {{factor:()=>number, refresh:()=>void, destroy:()=>void}}
- *
- * 这里**没有** onChange 之类的「倍率变了通知我」钩子,别急着补:三处消费方都不需要它。
- * Output 的泳道画布由 25Hz 的 render 顺带比对 shellFitFactor() 重建;Monitor 的轨迹图
- * 自己就跟得上(实测过,见 monitor/app.js 安装点的注释);Input 没有画布。而钩子是有
- * 代价的 —— 页面在文档顶部就装本模块,回调里要摸的东西往往是后面几十行才 `const`
- * 出来的,安装时那一次回调会直接撞 TDZ。
  */
 export function installShellFit(o) {
     const el = o && o.el;
     const box = (o && o.box) || {};
+    const onChange =
+        typeof (o && o.onChange) === "function" ? o.onChange : null;
     const win = (o && o.win) || globalThis;
     if (!el || !win) {
         return { factor: () => 1, refresh: () => {}, destroy: () => {} };
@@ -97,6 +124,7 @@ export function installShellFit(o) {
 
     let last = 0;
     let raf = 0;
+    let rafIsTimeout = false; // raf 里存的是 timeout id 还是 rAF id(destroy 按类型取消)
 
     function viewport() {
         const de = win.document && win.document.documentElement;
@@ -107,7 +135,8 @@ export function installShellFit(o) {
         };
     }
 
-    function apply() {
+    // silent = 安装时那一次:只落样式,不回调(理由见 onChange 的参数注释)。
+    function apply(silent) {
         raf = 0;
         const v = viewport();
         const f = fitFactor(v.w, v.h, box.w, box.h);
@@ -116,19 +145,26 @@ export function installShellFit(o) {
         current = f;
         // String(1) === "1":档位 1x 时读回的仍是裸 "1",不是 "1.0000"。
         el.style.zoom = String(f);
+        if (onChange && silent !== true) onChange(f);
     }
 
     function schedule() {
         if (raf) return;
         // 包一层箭头而不是直接把 apply 交出去:rAF 会把时间戳当第一个实参塞进来,
-        // 现在 apply 不吃参数所以无害,但哪天它吃了参数,这里就会静默传错。
-        raf =
-            typeof win.requestAnimationFrame === "function"
-                ? win.requestAnimationFrame(() => apply())
-                : win.setTimeout(() => apply(), 0);
+        // 而 apply 的第一个形参是 `silent` —— 直接传就等于拿一个时间戳当布尔用。
+        if (typeof win.requestAnimationFrame === "function") {
+            rafIsTimeout = false;
+            raf = win.requestAnimationFrame(() => apply(false));
+        } else {
+            // 回退到 setTimeout 时**句柄类型也变了**:destroy() 里必须按类型取消,
+            // 否则 cancelAnimationFrame 取消不掉一个 timeout id —— 那次待跑的 apply()
+            // 会在 destroy 之后再写一次 style.zoom,并把模块级 current 改回去。
+            rafIsTimeout = true;
+            raf = win.setTimeout(() => apply(false), 0);
+        }
     }
 
-    apply(); // 首帧同步落一次:等 rAF 会先闪一帧未缩放的画面
+    apply(true); // 首帧同步落一次:等 rAF 会先闪一帧未缩放的画面
 
     win.addEventListener("resize", schedule);
     const vv = win.visualViewport || null;
@@ -145,15 +181,24 @@ export function installShellFit(o) {
 
     return {
         factor: () => last,
-        refresh: apply,
+        refresh: () => apply(false),
         destroy() {
             win.removeEventListener("resize", schedule);
             if (vv) vv.removeEventListener("resize", schedule);
             if (ro) ro.disconnect();
-            if (raf && typeof win.cancelAnimationFrame === "function") {
-                win.cancelAnimationFrame(raf);
+            // 按**句柄类型**取消:schedule() 在没有 rAF 的环境里回退到 setTimeout,
+            // 那时 raf 里存的是 timeout id,cancelAnimationFrame 取消不掉它 ——
+            // 那次待跑的 apply() 会在 destroy 之后再写一次 style.zoom、并改回 current。
+            if (raf) {
+                if (rafIsTimeout) win.clearTimeout(raf);
+                else if (typeof win.cancelAnimationFrame === "function")
+                    win.cancelAnimationFrame(raf);
             }
             raf = 0;
+            // 「拆完等于没装过」:模块级 current 是给后备存储读的,留着上一个文档的
+            // 倍率会让热重挂之后的第一批画布按僵值分配。
+            current = 1;
+            last = 0;
         },
     };
 }

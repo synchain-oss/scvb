@@ -541,6 +541,15 @@ export async function mountPreview({ role: pageRole }) {
         return null;
     }
 
+    // ---- 测试面:把 driver session 挂到壳页 window 上([SL-380])------------
+    // 页面级冒烟需要制造「帧流停了、但组还在线」那一段 —— 真机上它由宿主侧的
+    // `emitEventIfBrowserIsVisible` 门控造成,而 mock 的场景表里没有这一档
+    // (`monitor-stalled` 只冻时刻、事件照发;`monitor-stall-then-gone` 会连带翻成
+    // offline,图就不在版面上了)。没有它,「倍率变了要不要显式重绘」这条判据在
+    // 25Hz 帧流下**不可分辨** —— 那正是本卡一度据此删错代码的原因。
+    // 只挂在壳页(web-preview 本身就是测试装置),真源页面拿不到、也不知道它存在。
+    window.__SCVB_PREVIEW_SESSION__ = session;
+
     // ---- 工具条元信息(白名单 + textContent,理由见 FIXTURE_NAMES 上方注释)----
     const info = session.info || {};
     metaEl.textContent = "";

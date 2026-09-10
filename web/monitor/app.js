@@ -32,7 +32,7 @@ import {
     panTickText,
 } from "../shared/trajectory-chart.js";
 import { MONITOR_DESIGN } from "./monitor-box.js";
-import { installShellFit, shellFitFactor } from "../shared/shell-fit.js";
+import { backingFitFactor, installShellFit } from "../shared/shell-fit.js";
 import { createMonitorBridge } from "./monitor-bridge.js";
 import { GROUPS_JSON_KEY, VIZ_ABI } from "./viz-contract.js";
 import {
@@ -60,11 +60,34 @@ card.style.setProperty("--box-h", MONITOR_DESIGN.h + "px");
 
 // [SL-380] 画面倍率 = 「设计盒装进视口」的唯一写方(公式与理由见 shell-fit.js 文件头)。
 //
-// 这里**故意没有**「倍率变了就显式 traj.invalidate() 一次」那一步,别照着 applyScale
-// 的旧注释补回来。那句话(不显式重绘的话画布一直用着旧 k、画面持续糊)实测是假的:
-// 无头量过轨迹图画布的 `canvas.width ÷ 包围盒宽`,100% 与 60% 两档下、有没有那次重绘
-// 都恒等于 dpr —— 轨迹图自己会跟上。留着它就是留一段理由不成立的代码。
-installShellFit({ el: card, box: MONITOR_DESIGN });
+// 倍率变了必须显式让轨迹图失效:轨迹图**没有任何一条为此准备的**自发路径 —— CSS zoom
+// 改的是 used value,`measure()` 比的 `parentElement.clientWidth` 不按倍率缩,它那个
+// `if (measure())` 的 ResizeObserver 于是判不出「尺寸变了」。
+//
+// (我一度把这一句删了,理由写成「实测轨迹图自己会跟上」。那次测量是在 mock 以 25Hz 推
+// viz 帧的条件下做的,而每来一帧下面的 onViz 都会 `traj.invalidate()` 一次 —— 量到的
+// 「有没有都一样」是**判据不可分辨**,不是不需要。停掉帧流再量,画布**仍然**跟上了 ——
+// 但那是另一回事:Chrome 152 实测 `clientWidth` 在 zoom 下顺带偏了几个像素
+// (822 → 818,不是按倍率缩,是亚像素取整),恰好把那个 ResizeObserver 叫醒了。
+// 取整的巧合不是不变量:换一个恰好取整到同一个整数的版面就没有了,那时画布会一直用旧 k。
+// 所以这一句留着 —— 它是构造上正确的那条路径,不指望巧合。)
+//
+// `trajRef` 而不是直接摸 `traj`:后者是本文件后面几十行才 `const` 出来的,安装时若回调
+// 就撞 TDZ。installShellFit 安装时不回调,这里再加一层 null 兜底。
+// 只在**粗量化**倍率变化时才失效(backingFitFactor 量化到 0.01):宿主拖着窗口边框走时
+// 精值几乎每像素一个新数,拿它当判据等于每帧重分配一次画布。
+let trajRef = null;
+let lastBackingFit = backingFitFactor();
+installShellFit({
+    el: card,
+    box: MONITOR_DESIGN,
+    onChange: () => {
+        const f = backingFitFactor();
+        if (f === lastBackingFit) return;
+        lastBackingFit = f;
+        if (trajRef) trajRef.invalidate();
+    },
+});
 
 // ------------------------------------------------------------- 桥
 let bridge = null;
@@ -231,7 +254,9 @@ const traj = trajCanvas
           getDurationS: () => vizDurationS(visibleFrame()),
           // [SL-380] k = 外壳缩放 × dpr(05 §6.1)。读实际倍率而不是档位数字:
           // 宿主自己改窗口尺寸时 store.scale 一动不动,而 k 已经变了。
-          getUiScale: () => shellFitFactor(),
+          // [SL-380] k = 外壳缩放 × dpr(05 §6.1)。读**实际倍率**而不是档位数字:
+          // 宿主自己改窗口尺寸时 store.scale 一动不动,而 k 已经变了。
+          getUiScale: () => backingFitFactor(),
           // 组不在线时两张卡整体 display:none —— 画布量不到舞台,也不该起 rAF
           // (05 §6.1「空闲零 rAF」)。这是本页唯一的可见性闸:Monitor 没有 tab。
           isVisible: () => store.accepts.ok,
@@ -242,6 +267,10 @@ const traj = trajCanvas
           },
       })
     : null;
+
+// [SL-380] 接上 installShellFit 的 onChange 用的转发引用(见上面安装点的注释:
+// 直接摸 `traj` 会在安装时撞 TDZ,故走一个先声明后赋值的 let)。
+trajRef = traj;
 
 /**
  * y 刻度列。轨迹图推来 `{pan, y, side}`,方位词在这里按字典补上 ——
@@ -425,8 +454,8 @@ addEventListener("pagehide", stopScaleCountdown); // 关窗回退,不污染新�
  * [SL-380] 这里**不再**写 `card.style.zoom`:画面倍率的唯一写方是 installShellFit,
  * 它按实际视口算(宿主 setUiScale 会把窗口变成 960F×720F,于是算出来就是 F)。
  * 档位与倍率一旦各写各的,宿主自作主张改窗口尺寸时两边立刻分家 —— 那正是本卡的病根。
- * 也**不再**在这里 `traj.invalidate()`:那一句原来的理由(不重绘画布就用着旧 k)实测
- * 不成立,轨迹图自己会跟上(实测口径见本文件 installShellFit 安装点的注释)。
+ * 也**不在这里** `traj.invalidate()`:重绘的触发点跟着**倍率**走(installShellFit 的
+ * onChange),不跟着档位走 —— 宿主自己改窗口时档位一动不动,而 k 已经变了。
  */
 function applyScale(f) {
     if (!Number.isFinite(f) || f <= 0) return;

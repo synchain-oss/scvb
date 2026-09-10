@@ -189,21 +189,77 @@ for (const p of PAGES) {
     );
 }
 
-// 后备存储 k 的读方改读实际倍率,不读档位数字([SL-380])
-for (const f of ["web/output/tab-wave.js", "web/monitor/app.js"]) {
-    const body = stripComments(src(f));
+// ---- 后备存储 k 的读方:清单**现算**,不手写 --------------------------------
+// 第一版这里是一句手写清单(`["web/output/tab-wave.js", "web/monitor/app.js"]`),于是
+// 同族的第三个文件 `web/output/tab-master.js` 整个漏掉了 —— 那里有**两处**逐字同款的读点
+// (Tab1 轨迹图的 getUiScale、它的倍率账),漏了之后没有任何东西会红。
+//
+// ⚠ 这份扫描**自己读文件**,不能改写成 shell 的 `grep`:`web/output/tab-master.js` 里有
+// 一个真的 NUL 字节(那句 `join` 拿它当分隔符),`grep` 会把整个文件判成二进制、只印一行
+// "Binary file matches" 而不印命中行 —— 当初漏掉那两处,这是原因之一。下面第一条断言
+// 实际验证「这个文件确实被读进来了」,免得哪天扫描静默跳过它。
+{
+    const files = jsFiles(join(ROOT, "web"));
+    const rel = (abs) =>
+        abs
+            .slice(ROOT.length + 1)
+            .split("\\")
+            .join("/");
     check(
-        /shellFitFactor\(\)/.test(body),
-        `${f}:后备存储倍率读 shellFitFactor()`,
+        files.some((f) => rel(f) === "web/output/tab-master.js"),
+        "扫描面覆盖 web/output/tab-master.js(含 NUL 字节,shell grep 会跳过它)",
     );
+
+    // 「谁在给后备存储供倍率」的两种形态,逐个要求供的是 backingFitFactor()。
+    // 钉的是**状态**(所有供给点都读粗量化倍率),不是某一行长什么样。
+    const SUPPLY = [
+        { re: /getUiScale\s*:\s*([^,\n]*)/g, what: "getUiScale 回调" },
+        { re: /backingScale\(\s*([^,]*)/g, what: "backingScale 的倍率实参" },
+    ];
+    const offenders = [];
+    for (const abs of files) {
+        const body = stripComments(readFileSync(abs, "utf8"));
+        for (const { re, what } of SUPPLY) {
+            re.lastIndex = 0;
+            let m;
+            while ((m = re.exec(body))) {
+                const arg = m[1];
+                // 函数**声明**不是供给点:`export function backingScale(uiScale, dpr)`
+                // 里的 `uiScale` 是形参名。按前文是不是 `function ` 判,不走文件白名单。
+                if (/function\s*$/.test(body.slice(0, m.index))) continue;
+                // 形参默认值同理(trajectory-chart 自己那两行)
+                if (/^\s*$/.test(arg)) continue;
+                if (/typeof|function|=>\s*1\b/.test(arg)) continue;
+                if (!/backingFitFactor\(\)|getUiScale\(\)/.test(arg)) {
+                    offenders.push(`${rel(abs)}:${what} → ${arg.trim()}`);
+                }
+            }
+        }
+    }
+    eq(offenders, [], "后备存储的倍率供给点全部读 backingFitFactor()");
+
+    // 反向:记「倍率账」的地方(`local.lastUiScale` 与它比的那个值)也必须来自
+    // backingFitFactor()。判据钉在**每一处赋值**上,不是「这个文件里出现过就算」——
+    // 后者是第一版的形态,而 tab-master.js 里有两处同款读点:改回去一处、留下另一处,
+    // 文件级判据照样绿(删除式实测到的第二个洞)。
+    // `uiScale` 与 `lastUiScale` 首字母大小写不同,\b + 大小写敏感足以分开两者。
+    const accounts = [];
+    for (const abs of files) {
+        const body = stripComments(readFileSync(abs, "utf8"));
+        if (!/lastUiScale/.test(body)) continue;
+        const re = /\buiScale\s*=\s*([^;]*);/g;
+        let m;
+        let seen = 0;
+        while ((m = re.exec(body))) {
+            seen++;
+            if (!/backingFitFactor\(\)/.test(m[1])) {
+                accounts.push(`${rel(abs)}: uiScale = ${m[1].trim()}`);
+            }
+        }
+        if (seen === 0) accounts.push(`${rel(abs)}: 有倍率账却找不到赋值点`);
+    }
+    eq(accounts, [], "倍率账的每一处赋值都取自 backingFitFactor()");
 }
-// tab-wave 里**一处**档位读法都不许剩:它有两个读点(backingK 与 lastUiScale 账),
-// 只断「shellFitFactor 在场」的话,改回去一个、留下另一个,判据照样绿(删除式实测)。
-// Monitor 不在此列 —— 它的 syncUiFromState 读 `ui.scale` 是为了对齐下拉选中项,合法。
-check(
-    !/\.ui\b.*\.scale\b/.test(stripComments(src("web/output/tab-wave.js"))),
-    "web/output/tab-wave.js:不再从 state 读档位数字当倍率",
-);
 
 // ---------------------------------------------------------------- ④ 壳页扮宿主
 log("\n=== ④ 预览壳扮宿主 ===");

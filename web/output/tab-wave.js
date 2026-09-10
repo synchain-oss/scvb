@@ -57,7 +57,7 @@ import {
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 import { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX } from "../shared/wheel.js";
 import { isEditableTarget } from "../shared/context-menu.js";
-import { shellFitFactor } from "../shared/shell-fit.js";
+import { backingFitFactor } from "../shared/shell-fit.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
 import {
     CHANNEL_COUNT,
@@ -1372,11 +1372,12 @@ export function createTabWave(opts) {
      *
      * [SL-380] 从前这里读 `state.ui.scale`(档位数字)。档位不再是画面倍率的来源之后,
      * 那个数字与屏幕上实际的放大倍数会在宿主自己改窗口尺寸时分家 —— 要的一直是「画面
-     * 实际被放大了多少」,所以改读 shellFitFactor()。
+     * 实际被放大了多少」,所以改读 backingFitFactor()(粗量化的那支:后备存储不必
+     * 跟着拖窗口一像素一跳地重分配)。
      */
     function backingK() {
         const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
-        return backingScale(num(shellFitFactor(), 1), dpr);
+        return backingScale(num(backingFitFactor(), 1), dpr);
     }
 
     // ---------------------------------------------------------------- 小工具
@@ -3560,7 +3561,7 @@ export function createTabWave(opts) {
         // dpr 侧的同款触发走 mount 里的 observeResolution。
         // [SL-380] 触发源从档位数字换成实际倍率:窗口被宿主改小/改大时档位一动不动,
         // 而 k 已经变了 —— 盯着档位的话画布会一直用着旧 k(画面持续糊)。
-        const uiScale = num(shellFitFactor(), 1);
+        const uiScale = num(backingFitFactor(), 1);
         if (local.lastUiScale !== uiScale) {
             local.lastUiScale = uiScale;
             local.staticDirty = true;
