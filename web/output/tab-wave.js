@@ -848,6 +848,43 @@ export const DIFF_HIDE_MS = 6000;
 export const DIFF_CHANGED_CAP = 200;
 
 /**
+ * [SL-391] A-02 折叠头该印哪一条词条 —— 抽成**纯函数**是为了让它在 node 侧可断
+ * (渲染那一行要 DOM,`smoke-tab3-interactions.mjs` 够不着)。
+ *
+ * 三数**全 0** 走 `wave.diffSummaryNone`。旧写法只有一条模板,会印成
+ * 「0 段有改动 · 新增 0 段 · 移除 0 段」—— 而本横幅只在**真跑过一次重分段之后**才弹,
+ * 却当场自称「有改动 0 段」,自相矛盾(用户 v5.6.12 回验逐字报的就是这一串)。
+ *
+ * ⚠ 判据必须是**三个都为 0**,不是「changed 为 0」:只看 changed 的话,
+ *   「加了 3 段但 pan/vol 一点没动」也会走进「无变化」那句 —— 那才是真的假话。
+ *   `smoke-tab3-interactions.mjs` 里专门有一格钉这个反例。
+ *
+ * 措辞只敢说「段数不变、声像/音量无变化」,不敢说「什么都没变」:diff 的 `changed[]`
+ * **只承载 pan/volDb**(判同口径见 `src/core/output/SegmentDiff.h` 头注),
+ * **段边界挪动它根本表达不了** —— 写成「无变化」会是第二次许空头承诺。
+ *
+ * @param {{changed?: unknown[], added?: number, removed?: number}} diff
+ * @returns {{key: string, args: object}}
+ */
+export function diffSummaryChoice(diff) {
+    const d = diff || {};
+    const nChanged = (d.changed || []).length;
+    const nAdded = Number.isFinite(d.added) ? d.added : 0;
+    const nRemoved = Number.isFinite(d.removed) ? d.removed : 0;
+    if (nChanged === 0 && nAdded === 0 && nRemoved === 0) {
+        return { key: "wave.diffSummaryNone", args: {} };
+    }
+    return {
+        key: "wave.diffSummary",
+        args: {
+            c: nChanged >= DIFF_CHANGED_CAP ? `${nChanged}+` : String(nChanged),
+            a: nAdded,
+            r: nRemoved,
+        },
+    };
+}
+
+/**
  * [SL-274] 明细**展开**时的自动收起时长(ms)。见 `armDiffHide` 头注:
  * 读明细要比瞥一眼计数久得多,但这块仍是一次性反馈、且没有关闭钮,所以有上限而不是不收。
  */
@@ -3812,18 +3849,8 @@ export function createTabWave(opts) {
             // 那一侧 —— 下界永真,只是这一帧偏保守。要分开得让 native 多发一个「是否截断」
             // 的字段,那是契约变更,不在本卡范围。
             if (els.diffSummary) {
-                const nChanged = (local.diff.changed || []).length;
-                text(
-                    els.diffSummary,
-                    fmtKey("wave.diffSummary", {
-                        c:
-                            nChanged >= DIFF_CHANGED_CAP
-                                ? `${nChanged}+`
-                                : String(nChanged),
-                        a: num(local.diff.added, 0),
-                        r: num(local.diff.removed, 0),
-                    }),
-                );
+                const pick = diffSummaryChoice(local.diff);
+                text(els.diffSummary, fmtKey(pick.key, pick.args));
             }
             renderDiffItems(local.diff);
             show(els.diff, true);
