@@ -97,13 +97,53 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
 
         // 超长段按谷切分(§3.2):只对超过 maxSegment 的段做,短段原样保留。
         const std::int64_t maxHops = static_cast<std::int64_t>(std::llround(cfg.segmentation.maxSegmentS / hopSec));
+        // [SL-382] **ℓ 必须是 dB** —— `splitValleys` / `detectValleys` 的入参契约
+        // (`Segmentation.h` 逐字「l 指向 ℓ[0..N)(dB…)」)与 02 §3.2 的输入定义都是 ℓ[k],
+        // 而 `f.kwMs` 是**线性** K 加权均方。此前这里直接传 `f.kwMs.data()`,后果不是「钝」:
+        //   `detectValleys` 的 `depth = min(左侧峰,右侧峰) − bottom` 是**裸差值**,喂线性能量
+        //   时 depth 落在 1e-2 量级,而 `minDepth = 6·2^((50−s)/50)` 的值域是 [3,12]
+        //   ⇒ `v.depthDb <= minDepth` 对**任意 s ∈ 0..100 恒真** ⇒ 候选谷永远为空
+        //   ⇒ `noNaturalCut` 恒成立、S1 一次都没切过、灵敏度整个量程零效果
+        //   (用户 v5.6.11 实测 B14 的**灵敏度那一半**;同条报告里的「最短段长」是好的 ——
+        //    它走 VAD 后处理 P1,与本行无关,判据见 `test_analysis_pipeline.cpp` 的 [SL382])。
+        // 换算走 `frameLoudnessDb`(`EnergyVad.h`,ℓ 的唯一口径)—— **不是** `lufsFromMeanKw`。
+        // [#251 bot 复审采纳] 两者只差一个**能量下限**,而那个下限恰恰是本处的要害:
+        //   `lufsFromMeanKw` 对 m<=0 回 −120、对极小正数不设下限(10·log10(1e−30) = −300)。
+        //   任一种落进 §3.2 第 1 步的 `movingAverage(ℓ, 5 hop)`,**单个 kw==0 的 hop** 就会被
+        //   摊成 (−120 − 平台)/5 ≈ 20 dB 的假谷 —— 越过任何 minDepth(值域 [3,12])⇒ 凭空
+        //   切一刀,而且与 VAD 自己那份 ℓ 的下限口径不一致(它一直是先夹 1e−12 再取对数)。
+        // 用例:`test_analysis_pipeline.cpp` 的
+        //   ·「[SL382] 谷切分的 ℓ 带 1e-12 能量下限(上报口径不带,故不得复用)」
+        //   ·「[SL382] 已知缺口:单个零 hop 仍会造出一个 50ms 宽的假谷,两条 dB 口径都拦不住」
+        // ⚠ 下限**没有**把上面那一刀消掉,别读成「换了口径就不切了」:实测夹后 depth
+        //   **21.398 dB**、夹前 21.260 dB,只差 0.14,而 minDepth 值域只有 [3,12] ⇒ 照切。
+        //   下限做到的是**把最坏情况从无界收敛到 21.4 dB**(不夹时 kw=1e−30 给 57 dB)
+        //   并与 VAD 对齐口径。要真正不切得加**最小谷宽门槛**(假谷宽恒 = 平滑窗
+        //   5 hop = 50 ms,而 §3.3 认为真实换气谷在 [80,600] ms)—— 行为改动,
+        //   已记 **SL-388**,不在本卡。
+        // ⚠ **修好本行之后用户仍然看不到任何变化**:S1 切出来的边界被 02 §3.4 步骤 4
+        //   「相邻同活跃集合合并」原样合回去,`PipelineResult::warnings` 又没有生产侧消费者
+        //   (`grep -rn warnings src/output/` 只命中一条注释)。本行是前置修复,不是终点 ——
+        //   「段表按区间成形」那一层要单独裁定,别看到这段注释就以为灵敏度已经能用了。
+        // ⚠ 这里**不做** §2.2 第 1 步那种 2-hop 预平滑:那是 VAD 状态机自己的口径;
+        //   §3.2 第 1 步的平滑是 `movingAverage(ℓ, 5 hop)`,已在 `smoothEnvelope` 里做过。
+        // 惰性构建:只有真出现超长段时才转一遍(典型乐句 1–4s,大多数轨一次都不进这个分支)。
+        std::vector<float> envDb;
         std::vector<VadSegment> hopSegs;
         for (const auto& vs : vad.segments)
         {
             if (maxHops > 0 && (vs.endHop - vs.startHop) > maxHops)
             {
+                if (envDb.empty())
+                {
+                    envDb.reserve(f.kwMs.size());
+                    for (const float kw : f.kwMs)
+                    {
+                        envDb.push_back(frameLoudnessDb(static_cast<double>(kw)));
+                    }
+                }
                 const ValleySplitResult split =
-                    splitValleys(f.kwMs.data(), vs.startHop - firstHop, vs.endHop - firstHop, cfg.segmentation);
+                    splitValleys(envDb.data(), vs.startHop - firstHop, vs.endHop - firstHop, cfg.segmentation);
                 if (!split.segments.empty())
                 {
                     for (const auto& sub : split.segments)

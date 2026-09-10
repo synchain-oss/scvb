@@ -61,6 +61,17 @@ struct VadResult
 VadResult runEnergyVad(const float* kwMs, std::size_t n, int64_t firstHop, const VadParams& p,
                        float* posteriorOut = nullptr);
 
+// 帧响度 ℓ(02 §0.2):ℓ = −0.691 + 10·log10(max(z, 1e−12)) [LUFS];z = 线性 K 加权均方能量。
+//
+// [SL-382] **这是 ℓ 的唯一口径** —— VAD 状态机(§2.2 第 1 步)与谷切分(§3.2 的 ℓ 输入)
+// 共用这一份,不是「各写一份差不多的」。要害在**能量下限 1e−12**:它决定「一个 kw==0 的
+// hop 到底有多深」。`AnalysisPipeline.cpp` 的 `lufsFromMeanKw` 是**上报口径**(§2.8),
+// 对 m<=0 回 −120、对极小正数**不设下限**(10·log10(1e−30) = −300)。任一种落进 §3.2
+// 第 1 步的 `movingAverage(ℓ, 5 hop)`,单个数字静音 hop 都会被摊成一个几十 dB 的**假谷** ——
+// 足以越过任何 minDepth(值域 [3,12])⇒ 凭空切一刀。所以谷切分**不得**复用上报口径。
+// (`lufsFromMeanKw` 保持不动:它的 −120 地板是 §2.8 的上报语义,[SL-257] 已按它对拍。)
+float frameLoudnessDb(double meanSquareEnergy);
+
 // EnergyVad:IVadBackend 的 v1 实现(能量域,离线)。
 class EnergyVad : public IVadBackend
 {

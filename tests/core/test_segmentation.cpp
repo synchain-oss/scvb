@@ -161,6 +161,66 @@ TEST_CASE("SEG-9: 三谷深浅交错,两遍法 prominence 筛除浅谷且不影�
     CHECK(valleys2[1].depthDb == Approx(7.0).margin(1e-6));
 }
 
+// ---------------------------------------------------------------------------
+// [SL-382] sensitivity → 段数 的**单调性**(用户 v5.6.11 实测 B14「灵敏度好像没用」)。
+//
+// 为什么要造三层谷树、而不是一条 10s 里放几个深浅不同的谷:`splitValleys` 的递归在
+// `seg.t1 - seg.t0 <= maxHops` 处**无条件停**(§3.2 步骤 4 第一行)。所以一段 10s 素材
+// 无论灵敏度多高都只切一刀 —— 切完两半都 ≤8s,浅谷再多也轮不到。段数要真的随灵敏度变,
+// 必须让**每一层切完之后的半段仍然 >maxSegment**,即:
+//   64s ──12dB──> 32s ×2 ──7dB──> 16s ×4 ──4dB──> 8s ×8(恰好 = maxHops,停)
+// 三档 minDepth = 6·2^((50−s)/50) 各自吃到第几层,段数就停在第几层:
+//   s=5  → 11.20:只有 12dB 过线 → 2 段(32s 半段里找不到自然切点 ⇒ noNaturalCut)
+//   s=50 → 6.00 :12/7dB 过线   → 4 段(16s 四分段里 4dB 谷不过线 ⇒ 仍 noNaturalCut)
+//   s=95 → 3.22 :全部过线      → 8 段(每片恰好 8s = maxHops,递归无条件停 ⇒ 无 noNaturalCut)
+// 谷宽固定 20 hop(200ms),与 SEG-1/SEG-9 同款:5 hop 移动平均后谷底仍保住全深。
+//
+// ⚠ 本用例喂的是 **ℓ(dB)**,与 `Segmentation.h` 的入参契约一致。生产侧曾经喂**线性
+//   kw**,那时 depth 落在 1e-2 量级,而本用例三档里**最小**的 minDepth 也有 3.22
+//   (映射在 s=100 处的下确界是 3.0,同样够不到)⇒ 三档全是 1 段;
+//   钉住那一跳的是 `test_analysis_pipeline.cpp` 的 `[SL382]` 流水线格,不是这里。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL382] sensitivity 5/50/95 → 段数 2/4/8 严格单调", "[segmentation][valley][SL382]")
+{
+    // 64s 三层谷树:深 12dB @32s;7dB @16s/48s;4dB @8s/24s/40s/56s。
+    const auto l = makeLoudness(6400, -20.0,
+                                {{3200, 10, 12.0},
+                                 {1600, 10, 7.0},
+                                 {4800, 10, 7.0},
+                                 {800, 10, 4.0},
+                                 {2400, 10, 4.0},
+                                 {4000, 10, 4.0},
+                                 {5600, 10, 4.0}});
+
+    struct Expect
+    {
+        double sensitivity;
+        std::size_t segments;
+        bool noNaturalCut;
+    };
+    // 段数与 noNaturalCut 都写死:只断「单调」的话,三档一起退化成 1 段(= 生产侧
+    // 喂线性 kw 的那个形态)照样满足「非严格单调」,那种绿是假的。
+    const Expect grid[] = {{5.0, 2u, true}, {50.0, 4u, true}, {95.0, 8u, false}};
+
+    std::vector<std::size_t> counts;
+    for (const Expect& e : grid)
+    {
+        SegmentationParams p;
+        p.maxSegmentS = 8.0;
+        p.sensitivity = e.sensitivity;
+        INFO("sensitivity=" << e.sensitivity << " minDepth=" << p.minDepthDb());
+        const auto r = scvb::analysis::splitValleys(l.data(), 0, 6400, p);
+        CHECK(r.segments.size() == e.segments);
+        CHECK(r.noNaturalCut == e.noNaturalCut);
+        counts.push_back(r.segments.size());
+    }
+
+    // 严格单调递增(灵敏度越高越容易切,02 §3.2 逐字「越灵敏越容易切」)。
+    REQUIRE(counts.size() == 3u);
+    CHECK(counts[0] < counts[1]);
+    CHECK(counts[1] < counts[2]);
+}
+
 // ============================================================================
 // S2 全局区间划分
 // ============================================================================
