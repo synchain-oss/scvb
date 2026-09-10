@@ -27,7 +27,8 @@
 // 用法:node web-preview/tests/smoke-shell-fit-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
 // 退出码:0 = 全绿;1 = 有断言失败;**2 = 环境里没有 Chrome/Edge**(口径同
-//   smoke-monitor-page.mjs 与 CLAUDE.md §6:可选依赖缺席不判红,但也绝不算通过)。
+//   smoke-monitor-page.mjs 与 CLAUDE.md §6:可选依赖缺席不判红,但也绝不算通过);
+//   **3 = 浏览器在、但这一次没起来 / 没连上**([SL-297] 那一档不许并进 2)。
 // =============================================================================
 
 import { spawn } from "node:child_process";
@@ -143,13 +144,39 @@ function cdpConnect(wsUrl) {
             once: true,
         });
     });
+    // [SL-287] 每条 CDP 调用都要有截止时间:把 resolve 塞进 pending 就返回的原版,
+    // 响应不来就**永远不 resolve**(SL-274 实测挂过 75 分钟零输出,Chrome 与 node 都还
+    // 活着)。gate 3e 的页面级那一趟是持 `Local\SCVB-ipc-tests` 的 ⇒ 一套挂死堵住全场;
+    // CI 上则一路烧到 job 超时。超时**抛错不重试** —— 响应不来说明渲染器已经不对了,
+    // 重试只是把一个确定的红拖成一个更慢的红。错误里带 method 与 id,直接指到哪一条卡住。
+    const CDP_DEFAULT_TIMEOUT_MS = 20000;
     return {
         ready,
         on: (fn) => listeners.push(fn),
-        send(method, params) {
+        send(method, params, timeoutMs) {
             const mid = ++id;
+            const budget = timeoutMs || CDP_DEFAULT_TIMEOUT_MS;
             return new Promise((ok, no) => {
-                pending.set(mid, { resolve: ok, reject: no });
+                const timer = setTimeout(() => {
+                    pending.delete(mid);
+                    no(
+                        new Error(
+                            `CDP 调用超时 ${budget}ms:${method}(id=${mid})—— ` +
+                                "响应没回来。多半是这一步之前的导航把渲染器换掉了;" +
+                                "**不要**改成重试或调大超时,那只是把红拖慢",
+                        ),
+                    );
+                }, budget);
+                pending.set(mid, {
+                    resolve: (v) => {
+                        clearTimeout(timer);
+                        ok(v);
+                    },
+                    reject: (e) => {
+                        clearTimeout(timer);
+                        no(e);
+                    },
+                });
                 ws.send(
                     JSON.stringify({ id: mid, method, params: params || {} }),
                 );
@@ -169,6 +196,25 @@ function noBrowser(msg) {
         server.close();
     } catch {}
     process.exit(2);
+}
+
+// [SL-297] 三档要分开,别把中间那一档并进「缺依赖」:
+//   2 = 本机根本没有 Chrome/Edge(可选依赖缺席,gates 打 SKIP);
+//   3 = **浏览器是在的**,但这一次没起来 / 没连上(端口被占、机器负载、版本不对);
+//   1 = 跑起来了但断言红。
+// 把 3 并进 2 的后果是静默的:CI 与 gates 会把「这一套压根没验」当成「环境没有,跳过」。
+function browserFailed(msg) {
+    console.error(
+        `❌ ${msg}
+` +
+            "   页面级冒烟**没跑成**(退出码 3):浏览器是在的,但这一次没起来 / 没连上。" +
+            "这**不是**通过,也**不是**「本机没装浏览器」—— 重跑一次通常就好;" +
+            "连续复现请查 CDP 端口占用、机器负载或 Chrome 版本。",
+    );
+    try {
+        server.close();
+    } catch {}
+    process.exit(3);
 }
 
 function chromePath() {
@@ -208,7 +254,7 @@ const chrome = spawn(
     ],
     { stdio: "ignore" },
 );
-chrome.on("error", (e) => noBrowser(`浏览器启动失败:${e.message}`));
+chrome.on("error", (e) => browserFailed(`浏览器启动失败:${e.message}`));
 
 let cdp = null;
 let bucket = { label: "启动", errors: [], exceptions: [] };
@@ -216,12 +262,60 @@ const newBucket = (label) => {
     bucket = { label, errors: [], exceptions: [] };
 };
 
-async function evaluate(expression) {
-    const r = await cdp.send("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
+// [SL-287] 收尾必须走**所有**退出路径,不只 happy path:漏掉的那些路径会把无头 Chrome
+// 与临时 user-data 目录留在机器上(本机曾攒下近千个 scvb-* 残留目录),而且**没有任何
+// 用例会因此变红** —— 所以钉成机检(scripts/check-smoke-hygiene.mjs)。
+// 幂等:`exit` 与信号处理器可能都到,重复收尾不许炸。
+const CDP_WAIT_TRIES = 300;
+const CDP_WAIT_STEP_MS = 200;
+
+let tornDown = false;
+function teardown() {
+    if (tornDown) return;
+    tornDown = true;
+    try {
+        cdp?.close();
+    } catch {}
+    try {
+        chrome?.kill();
+    } catch {}
+    try {
+        server.close();
+    } catch {}
+    try {
+        rmSync(userDataDir, { recursive: true, force: true });
+    } catch {}
+}
+// `exit` 处理器只能同步收尾(Node 规范):不等句柄、不重试 rmSync —— 留一个空壳目录
+// 是可接受的残渣(系统会清),而**跑着的 headless Chrome 不是**。
+process.on("exit", teardown);
+for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+        teardown();
+        process.exit(130);
     });
+}
+// 未捕获异常 / 未处理拒绝:先打印再收尾,否则 Chrome 跟着一起漏。上面新加的 CDP 超时是
+// **定时器里 reject**,那条 promise 当时若没人 await 就会以 unhandledRejection 到这里 ——
+// 这一支不是摆设。
+for (const ev of ["uncaughtException", "unhandledRejection"]) {
+    process.on(ev, (e) => {
+        console.error(`  [FATAL] ${ev}:`, e && e.message ? e.message : e);
+        teardown();
+        process.exit(1);
+    });
+}
+
+async function evaluate(expression, timeoutMs) {
+    const r = await cdp.send(
+        "Runtime.evaluate",
+        {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+        },
+        timeoutMs,
+    );
     if (r.exceptionDetails) {
         throw new Error(
             "页内求值抛错:" +
@@ -259,7 +353,13 @@ async function waitFor(expr, ms = 8000) {
     for (;;) {
         let v = null;
         try {
-            v = await evaluate(expr);
+            // 上界 = **本次 waitFor 还剩多少预算**(留 250ms 收尾),不是一个写死的常数:
+            // 写死会把「耗时落在常数与预算之间」的**合法**调用从过变成必红,等于凭空
+            // 多出一类红。按剩余预算取则不改变任何原本能过的行为,真挂死仍被砍断。
+            v = await evaluate(
+                expr,
+                Math.max(1000, ms - (Date.now() - t0) - 250),
+            );
         } catch {
             v = null;
         }
@@ -359,19 +459,22 @@ try {
     // --- 连上 CDP ---
     // 要的是**页面 target** 的 ws 端点:浏览器级端点(/json/version)上没有
     // Runtime/Page 域,`Runtime.enable` 会直接回「wasn't found」。
-    let wsUrl = null;
-    for (let i = 0; i < 60 && !wsUrl; i++) {
+    let targets = null;
+    for (let i = 0; i < CDP_WAIT_TRIES && !targets; i++) {
         try {
-            const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
-            const targets = await r.json();
-            const page = targets.find((t) => t.type === "page");
-            if (page) wsUrl = page.webSocketDebuggerUrl;
+            const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
+            const list = await res.json();
+            targets = list.find((t) => t.type === "page") ? list : null;
         } catch {
-            /* 还没起来,下一轮再试 */
+            await sleep(CDP_WAIT_STEP_MS);
         }
-        if (!wsUrl) await sleep(150);
     }
-    if (!wsUrl) noBrowser("浏览器起来了但 CDP 端口没响应");
+    if (!targets) {
+        browserFailed(
+            `Chrome 未在 ${Math.round((CDP_WAIT_TRIES * CDP_WAIT_STEP_MS) / 1000)}s 内开出 CDP 端口`,
+        );
+    }
+    const wsUrl = targets.find((t) => t.type === "page").webSocketDebuggerUrl;
     cdp = cdpConnect(wsUrl);
     await cdp.ready;
     cdp.on((msg) => {
@@ -602,18 +705,7 @@ try {
     fail++;
     console.log(`  [FAIL] 跑挂了:${e && e.stack ? e.stack : e}`);
 } finally {
-    try {
-        if (cdp) cdp.close();
-    } catch {}
-    try {
-        chrome.kill();
-    } catch {}
-    try {
-        server.close();
-    } catch {}
-    try {
-        rmSync(userDataDir, { recursive: true, force: true });
-    } catch {}
+    teardown();
 }
 
 log("");
