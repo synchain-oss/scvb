@@ -611,7 +611,7 @@ check(
                         s.t0S,
                         s.t1S,
                         s.pan,
-                        s.vol_db,
+                        s.volDb,
                         s.origin,
                         s.locked ? 1 : 0,
                     ]);
@@ -852,6 +852,21 @@ if (analyzePush.length >= 1) {
         for (const [ch, segs] of Object.entries(p.byCh || {})) base[ch] = segs;
     }
     const after = analyzePush[analyzePush.length - 1].byCh || {};
+
+    // ⚠ 先断**取到的字段真有值**,再谈「逐字段相同」。
+    // 键名写错时(本轮就写错过一个:桥面是 `volDb`,`vol_db` 只是 CSV 导出的列名)
+    // 两侧都会取到 `undefined` → 序列化成 `null` → 这一列在比对里恒等,
+    // 于是这一格**静默变空**:轴还叫「逐字段」,实际少比了一列,而且少的正好是
+    // 用户症状的另一半(音量变成 0.0)。这条守卫让「键名写错」当场红,而不是变绿。
+    {
+        const sample = (after[String(pickedCh)] || [])[0];
+        check(
+            Array.isArray(sample) &&
+                sample.length === 6 &&
+                sample.every((v) => v !== undefined && v !== null),
+            `⑦ 前提:段快照六列都取到了值(键名写错会让某列恒为 null 而比对变空;实得 ${JSON.stringify(sample)})`,
+        );
+    }
     const drifted = [];
     for (const [ch, segs] of Object.entries(after)) {
         if (Number(ch) === pickedCh) continue;
