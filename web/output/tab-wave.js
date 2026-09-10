@@ -57,6 +57,7 @@ import {
 import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 import { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX } from "../shared/wheel.js";
 import { isEditableTarget } from "../shared/context-menu.js";
+import { shellFitFactor } from "../shared/shell-fit.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
 import {
     CHANNEL_COUNT,
@@ -1129,7 +1130,7 @@ export function createTabWave(opts) {
         marksDirty: true, // 段角标 DOM 需重建(舞台量不到宽时保留脏位)
         lastDict: null, // 上一帧的词典对象(恒等比较 = 切语言检测,见 render)
         repaintQueued: false,
-        lastUiScale: NaN, // ui.scale 档位账(变化 = 后备存储重建,05 §6.1)
+        lastUiScale: NaN, // 外壳倍率账([SL-380];变化 = 后备存储重建,05 §6.1)
         gutterPx: -1, // 泳道区纵向滚动条宽账(标尺/刻度列对基用)
         lanes: new Map(), // ch → 节点缓存(15 行 × 事件频率下不逐帧 querySelector)
         // ---- Wave 2 交互态 ----
@@ -1366,11 +1367,16 @@ export function createTabWave(opts) {
         }
     }
 
-    /** 后备存储倍率(05 §6.1:k = uiScale × dpr)。 */
+    /**
+     * 后备存储倍率(05 §6.1:k = 外壳缩放 × dpr)。
+     *
+     * [SL-380] 从前这里读 `state.ui.scale`(档位数字)。档位不再是画面倍率的来源之后,
+     * 那个数字与屏幕上实际的放大倍数会在宿主自己改窗口尺寸时分家 —— 要的一直是「画面
+     * 实际被放大了多少」,所以改读 shellFitFactor()。
+     */
     function backingK() {
-        const ui = ((getStore().state || {}).ui || {}).scale;
         const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
-        return backingScale(num(ui, 1), dpr);
+        return backingScale(num(shellFitFactor(), 1), dpr);
     }
 
     // ---------------------------------------------------------------- 小工具
@@ -3550,9 +3556,11 @@ export function createTabWave(opts) {
         const stageW = stageWidth();
         syncScrollGutter();
 
-        // ui.scale 档位变化 = 后备存储 k 变(05 §6.1)→ 全 canvas 标脏重建;
+        // 外壳缩放变化 = 后备存储 k 变(05 §6.1)→ 全 canvas 标脏重建;
         // dpr 侧的同款触发走 mount 里的 observeResolution。
-        const uiScale = num(((store.state || {}).ui || {}).scale, 1);
+        // [SL-380] 触发源从档位数字换成实际倍率:窗口被宿主改小/改大时档位一动不动,
+        // 而 k 已经变了 —— 盯着档位的话画布会一直用着旧 k(画面持续糊)。
+        const uiScale = num(shellFitFactor(), 1);
         if (local.lastUiScale !== uiScale) {
             local.lastUiScale = uiScale;
             local.staticDirty = true;

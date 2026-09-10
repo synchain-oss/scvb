@@ -31,7 +31,7 @@
             <span class="pv-warn"></span>
             <button type="button" class="pv-reload">重载</button>
         </header>
-        <!-- iframe 由 shell.js 建并按 design-box.js 的设计盒给最小尺寸,故此处只留舞台容器 -->
+        <!-- iframe 由 shell.js 建,尺寸 = design-box.js 的设计盒 × 当前档位(壳页扮宿主,[SL-380]),故此处只留舞台容器 -->
         <main class="pv-stage"></main>
         <script type="module">
             import { mountPreview } from "./shell.js";

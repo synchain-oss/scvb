@@ -32,6 +32,7 @@ import {
     panTickText,
 } from "../shared/trajectory-chart.js";
 import { MONITOR_DESIGN } from "./monitor-box.js";
+import { installShellFit, shellFitFactor } from "../shared/shell-fit.js";
 import { createMonitorBridge } from "./monitor-bridge.js";
 import { GROUPS_JSON_KEY, VIZ_ABI } from "./viz-contract.js";
 import {
@@ -56,6 +57,14 @@ import {
 const card = document.getElementById("card");
 card.style.setProperty("--box-w", MONITOR_DESIGN.w + "px");
 card.style.setProperty("--box-h", MONITOR_DESIGN.h + "px");
+
+// [SL-380] 画面倍率 = 「设计盒装进视口」的唯一写方(公式与理由见 shell-fit.js 文件头)。
+//
+// 这里**故意没有**「倍率变了就显式 traj.invalidate() 一次」那一步,别照着 applyScale
+// 的旧注释补回来。那句话(不显式重绘的话画布一直用着旧 k、画面持续糊)实测是假的:
+// 无头量过轨迹图画布的 `canvas.width ÷ 包围盒宽`,100% 与 60% 两档下、有没有那次重绘
+// 都恒等于 dpr —— 轨迹图自己会跟上。留着它就是留一段理由不成立的代码。
+installShellFit({ el: card, box: MONITOR_DESIGN });
 
 // ------------------------------------------------------------- 桥
 let bridge = null;
@@ -220,7 +229,9 @@ const traj = trajCanvas
           zoomEl: $("monitor-traj-zoom"),
           getSeries: () => store.series,
           getDurationS: () => vizDurationS(visibleFrame()),
-          getUiScale: () => store.scale,
+          // [SL-380] k = 外壳缩放 × dpr(05 §6.1)。读实际倍率而不是档位数字:
+          // 宿主自己改窗口尺寸时 store.scale 一动不动,而 k 已经变了。
+          getUiScale: () => shellFitFactor(),
           // 组不在线时两张卡整体 display:none —— 画布量不到舞台,也不该起 rAF
           // (05 §6.1「空闲零 rAF」)。这是本页唯一的可见性闸:Monitor 没有 tab。
           isVisible: () => store.accepts.ok,
@@ -408,16 +419,19 @@ if (scaleUi.keep) {
 if (scaleUi.revert) scaleUi.revert.addEventListener("click", revertScale);
 addEventListener("pagehide", stopScaleCountdown); // 关窗回退,不污染新实例
 
-/** CSS zoom 应用点(设计盒 + zoom + 宿主 setSize 同步,05 §1.2 机制同款)。 */
+/**
+ * 档位就地记账(设计盒 + zoom + 宿主 setSize 同步,05 §1.2 机制同款)。
+ *
+ * [SL-380] 这里**不再**写 `card.style.zoom`:画面倍率的唯一写方是 installShellFit,
+ * 它按实际视口算(宿主 setUiScale 会把窗口变成 960F×720F,于是算出来就是 F)。
+ * 档位与倍率一旦各写各的,宿主自作主张改窗口尺寸时两边立刻分家 —— 那正是本卡的病根。
+ * 也**不再**在这里 `traj.invalidate()`:那一句原来的理由(不重绘画布就用着旧 k)实测
+ * 不成立,轨迹图自己会跟上(实测口径见本文件 installShellFit 安装点的注释)。
+ */
 function applyScale(f) {
     if (!Number.isFinite(f) || f <= 0) return;
     store.scale = f;
-    card.style.zoom = String(f);
     if (scaleUi.select) scaleUi.select.value = String(f);
-    // 后备存储的 k = uiScale × dpr 变了(CSS zoom 不动 dpr、也不动父盒的 CSS px
-    // 尺寸,ResizeObserver 与 observeResolution 都不会响)—— 必须显式请求一次重绘,
-    // 否则画布一直用着旧 k,画面持续糊。与 Tab1 的 lastUiScale 同款理由。
-    if (traj) traj.invalidate();
 }
 
 /**

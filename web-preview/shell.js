@@ -82,7 +82,7 @@ const MOCK_MODULE = {
     monitor: "./mock/monitor-mock.js",
 };
 
-/** 各侧设计盒(iframe 的最小尺寸;唯一真源 `web/shared/design-box.js`,壳页不写死数字)。 */
+/** 各侧设计盒(iframe 尺寸 = 它 × 当前档位;唯一真源 `web/shared/design-box.js`,壳页不写死数字)。 */
 // [T46] Monitor 那一条曾经取自页面侧的 `monitor-box.js`(当时 shared 里还没有 monitor 键,
 // 加键要同批动 gen-design-box.py / check-design-box.mjs / BridgeBase.h,而那四处属 T45)。
 // T45(PR #94)合入后三侧同源,这里不再多引一个模块。
@@ -240,6 +240,9 @@ body {
  * @param {string}   o.targetUrl       真源页面 URL
  * @param {object}   o.session         { mock, start(), stop(), info } —— 见 mock/state-driver.js
  * @param {(s:{ok:boolean|null,text:string})=>void} [o.onStatus] 状态回调(工具条/探针共用)
+ * @param {(f:number)=>void} [o.hostResize] **壳页扮演宿主**的那一半:档位被接受之后按
+ *   设计盒 × 档位改 iframe 尺寸,与原生 `WebViewHost::setUiScale → resizeToDesignBox`
+ *   逐条对应([SL-380])。缺省不接 —— 桩 session 的单测不需要一个真 iframe。
  * @param {number}   [o.maxRetries=1]  wired===0 时的自动重试次数
  * @returns {Promise<object>} 诊断对象(wired / injectCount / committedInject / …)
  */
@@ -249,6 +252,7 @@ export function injectAndMount({
     targetUrl,
     session,
     onStatus = () => {},
+    hostResize = null,
     maxRetries = 1,
 }) {
     // ---- 探针:非侵入式包一层 addEventListener,用来判定「bridge 是否真的接上了它」----
@@ -260,6 +264,24 @@ export function injectAndMount({
         wired += 1;
         return session.mock.addEventListener(name, cb);
     };
+
+    // ---- 壳页 = 宿主([SL-380])-------------------------------------------------
+    // 真机上「档位」两件事各有其主:mock 后端记 `state.ui.scale`(那是 Processor 的活),
+    // **窗口尺寸由宿主改**(`WebViewHost::setUiScale → setSize(设计盒 × F)`)。壳页里的
+    // 「窗口」就是这个 iframe,所以这一层必须由壳页补上 —— 否则预览里改档位只动数字不动
+    // 视口,而页面的倍率是从视口反算的,档位在预览里就成了哑的(而真机上是活的)。
+    // 拒绝态(不在档位表 → `{ok:false}`)不改尺寸,与原生的 clamp/校验顺序一致。
+    if (typeof session.mock.setUiScale === "function" && hostResize) {
+        probeMock.setUiScale = function (f) {
+            const r = session.mock.setUiScale(f);
+            Promise.resolve(r)
+                .then((res) => {
+                    if (!res || res.ok !== false) hostResize(f);
+                })
+                .catch(() => {});
+            return r; // 同步/异步形态原样透传,不改桥口语义
+        };
+    }
 
     // ---- 方案 C(serve.ps1 -Inject)的取件口 ----
     // 服务器在传输途中往真源 HTML 的 </head> 前塞一段 classic script(磁盘上的 web/ 零改动、
@@ -544,17 +566,22 @@ export async function mountPreview({ role: pageRole }) {
     );
     warnEl.textContent = (info.warnings || []).join(" / ");
 
-    // ---- iframe:按设计盒给最小尺寸,壳页负责滚动 --------------------------
-    // 真源页面自己 overflow:hidden 且把卡片居中,iframe 小于设计盒就会裁切;
-    // 故 iframe 至少给到设计盒尺寸(真源 web/shared/design-box.js,不写死数字),
-    // 视口不够时由 .pv-stage 滚动,不改真源的任何布局。
+    // ---- iframe = 宿主窗口:尺寸**就是**设计盒 × 档位([SL-380])--------------
+    // 从前这里给的是「100% + 设计盒当最小值」,于是浏览器窗口一大,iframe 就比设计盒大
+    // 一圈。真机上不存在那种视口:`WebViewHost` 把 WebView 铺满编辑器,而编辑器恰是
+    // `setSize(设计盒 × 档位)`。页面的倍率现在是从视口反算的(web/shared/shell-fit.js),
+    // 视口对不上就等于预览与插件的画面倍率对不上 —— 故这里改成实打实的设计盒尺寸,
+    // 档位变化时由 hostResize 同步(数字仍全部来自 web/shared/design-box.js)。
+    // 视口装不下时照旧由 .pv-stage 滚动,真源的布局一行不动。
     const box = DESIGN_BOX[role];
     const frame = document.createElement("iframe");
     frame.title = `SCVB ${role} 灰模预览(真源 web/${role}/index.html)`;
-    frame.style.width = "100%";
-    frame.style.height = "100%";
-    frame.style.minWidth = box.w + "px";
-    frame.style.minHeight = box.h + "px";
+    const sizeFrame = (f) => {
+        const s = typeof f === "number" && Number.isFinite(f) && f > 0 ? f : 1;
+        frame.style.width = Math.round(box.w * s) + "px";
+        frame.style.height = Math.round(box.h * s) + "px";
+    };
+    sizeFrame(1);
     stage.appendChild(frame);
 
     reloadBtn.addEventListener("click", () => location.reload());
@@ -565,5 +592,6 @@ export async function mountPreview({ role: pageRole }) {
         targetUrl: TARGET_PAGE[role],
         session,
         onStatus: setStatus,
+        hostResize: sizeFrame,
     });
 }
