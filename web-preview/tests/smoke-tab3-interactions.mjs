@@ -4702,6 +4702,90 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
 }
 
 // =============================================================================
+// [SL-391] A-02 折叠头:三数全 0 时不得再印「0 段有改动 · 新增 0 段 · 移除 0 段」
+// -----------------------------------------------------------------------------
+// 用户 v5.6.12 回验逐字报的就是那一串:横幅只在**真跑过一次重分段之后**才弹,却当场
+// 自称「有改动 0 段」—— 自相矛盾。现在三数全 0 走 `wave.diffSummaryNone`。
+//
+// 断的是纯函数 `diffSummaryChoice`(渲染那一行要 DOM,本套够不着,所以那一步专门抽了
+// 纯函数出来)。**第 3 格是要害**:判据必须是「三个都为 0」而不是「changed 为 0」——
+// 只看 changed 的话,「加了 3 段但 pan/vol 一点没动」也会印成「无变化」,那才是真的假话。
+//
+// 删除式:把 `diffSummaryChoice` 的判据从三项与改成只看 `nChanged === 0`
+// ⇒ 第 3 格必红(它会返回 diffSummaryNone)。
+{
+    log("\n=== ⑮ [SL-391] diff 折叠头:三数全 0 换词条 ===");
+
+    const pickNone = TW.diffSummaryChoice({
+        changed: [],
+        added: 0,
+        removed: 0,
+    });
+    eq(
+        pickNone.key,
+        "wave.diffSummaryNone",
+        "(a) 三数全 0 → 走 diffSummaryNone",
+    );
+
+    const pickChanged = TW.diffSummaryChoice({
+        changed: [1, 2],
+        added: 0,
+        removed: 0,
+    });
+    eq(pickChanged.key, "wave.diffSummary", "(b) 有 changed → 走原模板");
+    eq(pickChanged.args.c, "2", "(b) c 取 changed 条数");
+
+    // ★ 反例格:changed 为 0,但真的加了段 —— 绝不能印成「无变化」。
+    const pickAdded = TW.diffSummaryChoice({
+        changed: [],
+        added: 3,
+        removed: 0,
+    });
+    eq(
+        pickAdded.key,
+        "wave.diffSummary",
+        "(c) ★ changed=0 但 added=3 → 仍走原模板(判据是三项与,不是只看 changed)",
+    );
+    eq(pickAdded.args.a, 3, "(c) a 如实带出 added");
+
+    const pickRemoved = TW.diffSummaryChoice({
+        changed: [],
+        added: 0,
+        removed: 5,
+    });
+    eq(pickRemoved.key, "wave.diffSummary", "(d) 只有 removed 也走原模板");
+
+    // 封顶仍按 [SL-274] 印下界「N+」。
+    const capped = TW.diffSummaryChoice({
+        changed: new Array(TW.DIFF_CHANGED_CAP).fill(0),
+        added: 0,
+        removed: 0,
+    });
+    eq(capped.args.c, `${TW.DIFF_CHANGED_CAP}+`, "(e) 顶到封顶仍印「N+」下界");
+
+    // 缺字段 / 非数:按 0 记,不得抛。
+    eq(
+        TW.diffSummaryChoice({}).key,
+        "wave.diffSummaryNone",
+        "(f) 空 diff 按三数全 0 记,不抛",
+    );
+    eq(
+        TW.diffSummaryChoice(undefined).key,
+        "wave.diffSummaryNone",
+        "(f) undefined 同上",
+    );
+
+    // 三语都得有这条 key(check-i18n 另有全量对拍,这里只钉本卡新加的这一条)。
+    const I18N = await import(u("web/shared/i18n.js"));
+    for (const lang of I18N.LANGS) {
+        const v = I18N.dict(lang)["wave.diffSummaryNone"];
+        check(
+            typeof v === "string" && v.length > 0,
+            `(g) ${lang} 有 wave.diffSummaryNone`,
+        );
+    }
+}
+
 if (fail) {
     console.error(`\n${fail} 处断言失败`);
     process.exit(1);
