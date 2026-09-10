@@ -189,4 +189,24 @@ inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS
     return w;
 }
 
+// [SL-393] 轨在不在**写回集**里。
+//
+// `tracksMask == 0` 的语义是「全轨」(§1.6 的 `"all"` 与不带 mask 的对象形都落到这里),
+// 不是「一条都不写」—— 这一条判错的方向是**静默不写**:分析跑完、回执 ok、段表纹丝不动。
+//
+// 单拎成纯函数是为了让它可被 scvb_tests 直接断言:它现在是「计算集 ⊋ 写回集」这条新
+// 不变量的唯一判据点,埋在 startAnalysis 的循环里就只能靠 host harness 间接测。
+inline bool inWriteMask(std::uint16_t tracksMask, int trackIndex)
+{
+    if (trackIndex < 0 || trackIndex >= 15)
+    {
+        return false;
+    }
+    if (tracksMask == 0)
+    {
+        return true; // 全轨
+    }
+    return (tracksMask & static_cast<std::uint16_t>(1u << trackIndex)) != 0;
+}
+
 } // namespace scvb::output

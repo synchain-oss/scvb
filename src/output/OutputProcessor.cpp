@@ -2954,15 +2954,27 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     const std::size_t numHops = static_cast<std::size_t>(lastHop - firstHop);
 
     // 取样:把范围内每轨的 kw/peak 拷成线程私有快照(30s × 15 轨 ≈ 180KB,量级可忽略)。
+    //
+    // [SL-393] **计算集与写回集是两回事**,这里取的是**计算集**:范围内所有 enabled 且有
+    // 覆盖的轨,不按 `tracksMask` 筛。
+    //
+    // 为什么:pan 是**指派**出来的,不是逐轨算出来的 —— 一个区间里活跃轨只有一条时,
+    // `generateSlots` 的多轨分支整个跳过、唯一的槽就是正中(AutoAssign.cpp:200-208,
+    // reason 逐字写着「独唱段居中」),而单轨居中又让左右系数相等 ⇒ 平衡解首轮收敛、
+    // 修正量恒 0(AutoAssign.cpp:675-682)。于是「只喂一条轨」的重算必然产出 (0, 0)。
+    // 那是引擎的**设计行为**(tests/core/test_assign.cpp:120 逐字钉着),不是失败路径 ——
+    // 病在入口只把一条轨交给它。用户实测 SL-393:段级「恢复自动」之后声像回正中、
+    // 音量变 0.0;Tab2 的单轨「重新识别」同根因、同现象。
+    //
+    // `tracksMask` 因此降级为**写回掩码**(见下面的 writeMask 与 applyAnalysisSegments):
+    // 参与计算的轨可以更多,但**被改写段表的轨仍然只有掩码内那些**,契约 §1.6
+    // 「仅把目标段 origin 重置为 auto 后重算」逐字仍成立(可观测面没变)。
     std::array<scvb::analysis::PipelineTrackFeatures, 15> features;
     std::uint16_t analyzedTracks = 0;
+    const std::uint16_t writeMask = tracksMask;
     for (int t = 0; t < 15; ++t)
     {
         auto& f = features[static_cast<std::size_t>(t)];
-        if (tracksMask != 0 && (tracksMask & (1u << t)) == 0)
-        {
-            continue;
-        }
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
         {
             continue;
@@ -2988,19 +3000,23 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
             f.covered[i] = 1u;
             f.anyCovered = true;
         }
-        if (f.anyCovered)
+        if (f.anyCovered && scvb::output::inWriteMask(writeMask, t))
         {
             ++a.tracks;
             // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 范围内有覆盖)——
             // 与 previewAnalysis 计 tracks/manualKept 的三条判据逐字同款。diff 的 kept
             // 按这个集合筛轨,两个 {k} 才在同一把尺子上。
+            //
+            // [SL-393] 这里刻意**仍按写回集**统计:回执 `affected.tracks` 与拒绝态
+            // 「range ∩ coverage = ∅」说的都是「有几条轨的段被改了」,计算集变宽不该让
+            // 这两个数跟着变宽 —— 那会让 §1.6 的回执语义漂掉。
             analyzedTracks = static_cast<std::uint16_t>(analyzedTracks | (1u << t));
         }
     }
 
     if (a.tracks == 0)
     {
-        return a; // 范围 ∩ 覆盖 = ∅
+        return a; // 写回集 ∩ 覆盖 = ∅(计算集里可能还有别的轨,但没有轨会被改写)
     }
 
     // 配置:VAD/分段参数取 runtime state(桥面 setVadParams/setSegmentation 写的那份)。
@@ -3064,6 +3080,13 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     {
         for (int t = 0; t < 15; ++t)
         {
+            // [SL-393] 计算集变宽之后,这里**必须**再按写回集筛一道:清 freeze 是对
+            // 用户参数面的写入(还带 gesture),而计算集里那些轨只是来当上下文的,
+            // 用户没要求动它们。少这一道 = 恢复一段就把别的轨的冻结一并解掉。
+            if (!scvb::output::inWriteMask(writeMask, t))
+            {
+                continue;
+            }
             if (!features[static_cast<std::size_t>(t)].anyCovered)
             {
                 continue;
@@ -3101,9 +3124,12 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
             c.sourceChannels == 2 ? scvb::analysis::SourceChannels::Stereo : scvb::analysis::SourceChannels::Mono;
         const auto* frz = handles_.rawFrz[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
         tc.freeze = frz != nullptr ? scvb::engine::freezeBitsOf(frz->load(std::memory_order_relaxed)) : 0;
-        if (clearManual && features[static_cast<std::size_t>(t)].anyCovered)
+        if (clearManual && features[static_cast<std::size_t>(t)].anyCovered && scvb::output::inWriteMask(writeMask, t))
         {
-            tc.freeze = 0; // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值
+            // 上面刚清过位;不靠参数原子的回读时序,直接照本次意图取值。
+            // [SL-393] 同样按写回集筛:计算集里的上下文轨,冻结位要**照实**喂给指派器,
+            // 假装它们没冻结会把别人的手动值当成可自由指派的槽位算进来。
+            tc.freeze = 0;
         }
         // 「现值」在 AutoAssign 里服务**两个分支**(AutoAssign.cpp:235-244),两者的权威面不同,
         // 必须**分开取源** —— 一视同仁会把另一个分支的权威顶掉:
@@ -3338,7 +3364,7 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // (整个函数唯一的赋值目标),所以「应用 → 还原 → 在事务里重放」与「直接在
             // 事务里跑一次」逐字节等价;代价是多跑一遍纯内存的合并循环,相对整条流水线
             // 可忽略。
-            applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual);
+            applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual, analyzedTracks);
 
             // 判据从「有没有产出」升级成「段表到底变没变」([SL-255] 复审②的连带)。
             //
@@ -3391,7 +3417,9 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                 const char* txnName = (resegmentReason != AnalysisDoneReason::None) ? "Resegment" : "Analyze";
                 scvb::output::commitCrvsTransaction(
                     authority_.undoManager(), crvsData_, txnName,
-                    [&] { applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual); },
+                    [&] {
+                        applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual, analyzedTracks);
+                    },
                     [this] { rebuildAllCurves(); });
                 // [SL-279] **同一条撤销步**:commitCrvsTransaction 内部刚 beginNewTransaction 过,
                 // 这里再 perform 一个动作会归进同一条事务(juce 语义)—— 一次 Ctrl+Z 同时还原
@@ -3453,12 +3481,20 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 // commitCrvsTransaction 的 mutator)。调用方须已持 lifecycleMutex_。
 void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::PipelineResult& result,
                                                      std::int64_t rangeStartSample, std::int64_t rangeEndSample,
-                                                     bool clearManual)
+                                                     bool clearManual, std::uint16_t writeMask)
 {
     auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
 
     for (int t = 0; t < 15; ++t)
     {
+        // [SL-393] 掩码外的轨**只是上下文**:它们进了计算集(否则单轨会被判成「独唱」而
+        // 按到正中,见 startAnalysis 的头注),但用户要改的只有掩码内那些。这一道不加,
+        // 「恢复这一段」就会顺手把同范围内别的轨的段一并重写 —— 那与确认文案许诺的
+        // 「只重算选中的这一段」正好相反,而且没有任何提示。
+        if (!scvb::output::inWriteMask(writeMask, t))
+        {
+            continue;
+        }
         const auto& src = result.segments[static_cast<std::size_t>(t)];
         if (src.empty())
         {

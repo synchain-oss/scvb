@@ -567,6 +567,57 @@ TEST_CASE("SERVICE-12 大段数工程(2000 段)撤销深度:预算够用 + 封�
 }
 
 // ---------------------------------------------------------------------------
+// [SL-393] inWriteMask —— `tracksMask` 降级成**写回掩码**之后的唯一判据点。
+//
+// 计算集(参与指派的轨)现在比写回集宽:只喂一条轨会让引擎判成「独唱」而按到正中
+// (AutoAssign.cpp:200-208 / tests/core/test_assign.cpp:120),那正是 SL-393 的病根。
+// 于是「哪些轨的段表可以被改写」不再等于「哪些轨参与了计算」,需要一条独立判据。
+//
+// `mask == 0` 必须是**全轨**(§1.6 的 "all" 与不带 mask 的对象形都落到这里)。这一位
+// 判反的方向是**静默不写**:分析跑完、回执 ok、段表纹丝不动,屏幕上与「点了没反应」
+// 一模一样。
+//
+// 反向验证:把 `tracksMask == 0` 那一支删掉(回落成逐位判),SECTION「0 = 全轨」必红。
+// ---------------------------------------------------------------------------
+TEST_CASE("inWriteMask:0 = 全轨,其余按位;越界一律假", "[output][analyze][SL393]")
+{
+    using scvb::output::inWriteMask;
+
+    SECTION("0 = 全轨")
+    {
+        for (int t = 0; t < 15; ++t)
+        {
+            CHECK(inWriteMask(0, t));
+        }
+    }
+
+    SECTION("单轨掩码只放行那一位")
+    {
+        const std::uint16_t only3 = static_cast<std::uint16_t>(1u << 2); // 第 3 轨
+        for (int t = 0; t < 15; ++t)
+        {
+            CHECK(inWriteMask(only3, t) == (t == 2));
+        }
+    }
+
+    SECTION("多位掩码逐位放行")
+    {
+        const std::uint16_t m = static_cast<std::uint16_t>((1u << 0) | (1u << 14));
+        CHECK(inWriteMask(m, 0));
+        CHECK(inWriteMask(m, 14));
+        CHECK_FALSE(inWriteMask(m, 1));
+        CHECK_FALSE(inWriteMask(m, 13));
+    }
+
+    SECTION("越界下标一律假(含 mask=0 —— 全轨也只有 15 条)")
+    {
+        CHECK_FALSE(inWriteMask(0, -1));
+        CHECK_FALSE(inWriteMask(0, 15));
+        CHECK_FALSE(inWriteMask(0xFFFFu, 15));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [SL-242] analyzeHopWindow —— 范围 → hop 窗必须**向内取整**。
 //
 // 靶子:`firstHop` 修复前是截断(向 0 取整),于是非 hop 对齐的范围起点会把
