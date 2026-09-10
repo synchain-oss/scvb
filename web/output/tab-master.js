@@ -59,8 +59,8 @@ import { format } from "../shared/i18n.js";
 import { backingFitFactor } from "../shared/shell-fit.js";
 import { paramIdOf, readbackVersion } from "../shared/param-id.js";
 // ⚠ 下面那条 `export { … } from` 只是**再导出**,不会把名字带进本模块作用域 ——
-// renderParams 要用 hostEchoOn,必须另外 import 一次(同 readbackSegsOf 的写法)。
-import { hostEchoOn, hostEchoUseWideWindow } from "../shared/host-echo.js";
+// renderParams 要用 hostEchoVisible,必须另外 import 一次(同 readbackSegsOf 的写法)。
+import { hostEchoVisible } from "../shared/host-echo.js";
 // [SL-241] 未冻结维度的读回真源与 Tab2 **同一条链**(SL-211 只修在 tab-tracks.js
 // 里,分布图这边一直只读参数面 —— 详见 web/shared/readback.js 头注)。
 import {
@@ -131,14 +131,15 @@ export const RAMP_MS = Object.freeze({ min: 20, max: 300, def: 80 });
 export {
     HOST_ECHO_FRESH_MS,
     HOST_ECHO_RELEASE_STOPPED_MS,
-    // [SL-270] 播放中另有一档释放窗口;两个 tab 与 app.js 的 console 读数都要用到。
-    HOST_ECHO_RELEASE_PLAYING_MS,
     // [SL-356] 走带态去抖:常量与记账函数,app.js 的 scvb.playhead 订阅要用。
+    // [SL-394] `HOST_ECHO_RELEASE_PLAYING_MS` 已随播放档窗口一起删除,不在此列。
     HOST_ECHO_TRANSPORT_HOLD_MS,
     hostEchoReleaseMs,
-    hostEchoOn,
+    hostEchoVisible,
     hostEchoUseWideWindow,
     transportPlayingAt,
+    // [SL-394] 本次播放起点的记账函数,app.js 的 scvb.playhead 订阅要用。
+    playbackStartedAt,
 } from "../shared/host-echo.js";
 
 /**
@@ -2015,9 +2016,13 @@ export function createTabMaster(opts) {
         // 实测**没修掉**(v5.6.7 用户原话:停播后及时熄灭没问题,快速起停几次播放中
         // 还是会中途消失)。那半句已删,别再照它推论。真正治它的是
         // `hostEchoUseWideWindow` 里的走带态去抖 —— 这一行照旧只传 store,去抖在函数内。
-        const echo = hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st))
-            ? "1"
-            : "0";
+        // [SL-394] 改调 `hostEchoVisible(store)` —— 播放期闩锁取代了「窗口到期就熄」。
+        // 用户 v5.6.12 回验 B29:自动化一整句基本平直时徽标中途不显示,因为 native
+        // 值没变就不发帧、窗口必然到期(详见 host-echo.js 里那段墓志铭)。
+        // 传的是**整个 store**(不再是 `st.params` + 单独算一次走带态):新判据要同时
+        // 读 `params.hostEchoAt`、`playhead`、`playingAt`、`playbackStartedAt` 四样,
+        // 在调用点拆开取就又是「同一个判断各存一份」。
+        const echo = hostEchoVisible(st) ? "1" : "0";
         // 灰显之外还要**说清楚为什么** —— 光变淡用户只会当成又一个「调了没反应」。
         // 契约的优先级表(宿主自动化 > 冻结手动值 > 手动微调 > 引擎曲线)是设计,
         // 缺的一直是「让用户看见自己在跟谁抢方向盘」(v5.1 实测 P1-D)。
