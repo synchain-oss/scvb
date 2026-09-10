@@ -50,8 +50,7 @@ import {
 // format = 词条 {x} 占位填充(labelPlaceholder 用;漏导入曾致空轨名行 ReferenceError,
 // PR #60 红旗)。
 import {
-    hostEchoOn,
-    hostEchoUseWideWindow,
+    hostEchoVisible,
     format,
     lowSampleChannels,
     secondsToTimecode,
@@ -2059,14 +2058,17 @@ export function createTabTracks(opts) {
             // 这一份原先是 Tab1 那条的逐字副本,所以同一个闪烁 Tab2 也有 —— 用户只是
             // 当时人在 Tab1 没看见。灰显本身(`data-host-echo` + 那条 CSS)一字未动:
             // J93 只裁了整体调整页的三张参数卡改徽标,轨道页不在裁定范围内。
-            // [SL-270] 走带态同样要传:两个 tab 用同一份判据,窗口分档也必须同步,
-            // 否则 Tab1 的徽标灭了而 Tab2 的灰显还挂着(SL-251 病灶的又一种形态)。
-            // [SL-356] 走带态去抖同样在 `hostEchoUseWideWindow` 内部,这一行不必改 ——
-            // 但它现在也读 `st.playingAt`,所以喂进来的 store 必须是 app.js 那一份
-            // (由 `scvb.playhead` 订阅逐帧记账),缺这一格就退回「一帧 false 就收窄」。
-            echo: hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st))
-                ? "1"
-                : "0",
+            // [SL-270 / SL-356] 走带态与它的去抖都在判据内部,这一行不必自己算 ——
+            // 但判据要读 `st.playhead` / `st.playingAt` / `st.playbackStartedAt`,
+            // 所以喂进来的 store 必须是 app.js 那一份(由 `scvb.playhead` 订阅逐帧记账),
+            // 缺任一格都会退化(缺 playingAt ⇒ 一帧 false 就收窄;缺 playbackStartedAt
+            // ⇒ 播放期闩锁进不去,退回纯窗口 = SL-394 那一幕)。
+            // ⚠ [SL-394] SL-270 原话是「**窗口分档**也必须同步」—— 那句已失效:
+            // 播放档窗口整条删了,现在只剩 900ms 一档 + 播放期闩锁。
+            // [SL-394] 与 Tab1 徽标同一条判据(统筹裁 ①(a):改共用判据、不另立第二份
+            // —— 那是 SL-251 那个病灶的第五次)。灰显语义上也更准:宿主在这一段
+            // 持有车道期间「你动了会被盖掉」一直为真,哪怕这几秒值是平的。
+            echo: hostEchoVisible(st) ? "1" : "0",
         };
     }
 

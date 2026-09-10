@@ -458,6 +458,16 @@ async function evaluate(expression, timeoutMs) {
     return r.result?.value;
 }
 
+// 走带开关在**壳页**上:走带是宿主的东西,`__SCVB_MOCK__` 只有桥面的上行函数。
+// [SL-394] 提到模块级:⑪ 的两个块各自是独立作用域,两边都要用它。
+const setPlaying = (on) =>
+    evaluate(`(() => {
+    const s = window.__SCVB_PREVIEW__;
+    if (!s || !s.ctl) return "no-session";
+    s.ctl.setTransport({ isPlaying: ${on ? "true" : "false"} });
+    return "ok";
+})()`);
+
 async function waitFor(expr, ms = 15000) {
     const t0 = Date.now();
     while (Date.now() - t0 < ms) {
@@ -1195,10 +1205,9 @@ try {
             typeof offR === "string" && !/rejected|"ok":\s*false/.test(offR),
             `(h) 关输出被接受(回执 ${offR})—— 丢返回值的话下面整段会在「没真关掉」上空绿`,
         );
-        // [SL-270] 这一节里走带**仍在跑**(?play=1),所以此刻生效的是**播放档**
-        // (HOST_ECHO_RELEASE_PLAYING_MS = 2500),不是停走档的 900。静置必须越过播放档,
-        // 否则下面 (h) 会在「还没到该熄的时候」判红。留足余量:2500 + 900,不卡在边界上
-        // (本仓记过一次「按帧率/节奏判红」的假红)。
+        // [SL-394] 这一节里走带**仍在跑**(?play=1)。旧口径下静置越过播放档窗口徽标就该熄,
+        // 新口径下**不该** —— 播放期闩锁一旦扣上就亮到停止。所以这里静置的用途从
+        // 「等它熄」变成「证明它不熄」:3.4s 远超停走档 900,任何窗口制实现都会在此熄掉。
         await sleep(3400);
 
         // ---- (h) 顺带把**熄侧**钉一下:静置超过释放窗口之后,徽标必须已经灭了。
@@ -1219,13 +1228,44 @@ try {
         // 别再照上一版那句话推论「conn 心跳还在,所以 (e) 也会空绿」—— 那条推论错在
         // 前提上,而它已经真的误导过一个审查端点。
         const quiet = await evaluate(readState);
+        // [SL-394] **语义换了,这一格跟着换,并且是有意钉住新语义**:
+        // 播放中宿主停写(这里是关掉输出让打印头停)之后,徽标**仍然亮**——闩锁扣在
+        // 「本次播放里写过」上,不再问「最近一次写有多久了」。
+        // 这正是用户裁定选的那一面:插件分不出「自动化平直」与「自动化结束」
+        // (桥面上都是「不再有 scvb.params 帧」),宁可多亮,不可在播放中途消失。
+        // ⚠ 上一版这里断的是相反的事(静置越过播放档后三张卡与徽标都已熄)。那条随
+        // 播放档窗口一起作废;别照它推论「停写就该熄」。
         check(
-            quiet.width === "0" &&
-                quiet.widthBadge === "0" &&
-                quiet.ms === "0" &&
-                quiet.lead === "0",
-            `(h) ★ 静置 3.4s(> 播放档释放窗口)后三张卡与徽标都已熄(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})`,
+            quiet.width === "1" &&
+                quiet.widthBadge === "1" &&
+                quiet.ms === "1" &&
+                quiet.lead === "1",
+            `(h) ★ 播放中宿主停写 3.4s(远超停走档 900ms)⇒ 徽标与三张卡**仍亮**` +
+                `(实得 ${quiet.width}/${quiet.ms}/${quiet.lead},徽标 ${quiet.widthBadge})` +
+                ` —— 退回任何窗口制实现,这一格当场红`,
         );
+        // (h2) 熄侧改由**停走**触发:这才是新口径下徽标唯一的熄灭路径,也是用户裁定里
+        // 「停止后 ≤1s 熄灭」那一条的页面级落点。量的是**停走指令之后**多久熄
+        //(停走边沿那一拍 render + 停走档窗口,上界 = 去抖 500 + 50 与 at+900 的较大者)。
+        await setPlaying(false);
+        const stopT0 = Date.now();
+        let offMs = -1;
+        for (let i = 0; i < 40; i++) {
+            const st = await evaluate(readState);
+            if (st.widthBadge === "0") {
+                offMs = Date.now() - stopT0;
+                break;
+            }
+            await sleep(50);
+        }
+        check(
+            offMs >= 0 && offMs <= 1500,
+            `(h2) ★ 停走后徽标在 ≤1s(判据留 1.5s 余量给页面轮询)内熄灭` +
+                `(实得 ${offMs < 0 ? "2s 内从未熄" : offMs + "ms"})`,
+        );
+        // 收尾:把走带放回播放,后面的段落沿用 `?play=1` 的前提。
+        await setPlaying(true);
+        await sleep(200);
 
         const onR = await evaluate(
             IN(`
@@ -1530,14 +1570,9 @@ try {
             return JSON.stringify(mk.setOutputEnabled(${on ? "true" : "false"}));
         `),
             );
-        // 走带开关在**壳页**上:走带是宿主的东西,`__SCVB_MOCK__` 只有桥面的上行函数。
-        const setPlaying = (on) =>
-            evaluate(`(() => {
-            const s = window.__SCVB_PREVIEW__;
-            if (!s || !s.ctl) return "no-session";
-            s.ctl.setTransport({ isPlaying: ${on ? "true" : "false"} });
-            return "ok";
-        })()`);
+        // [SL-394] `setPlaying` 已提到模块级 —— ⑪ 的两个块是**各自独立的作用域**,
+        // 而 (h2) 在前一个块里也要用它;留在这里的话前一个块拿到的是 TDZ 报错,
+        // 而 `node --check` 看不出来(它只查语法)。
 
         // ---- 量法:从**徽标亮起那一刻**量到它熄灭,而不是从「我发了指令」那一刻量。
         //
@@ -1583,14 +1618,20 @@ try {
 
         // 一次完整测量:打灭 → 装边沿探针 → 开打印头 → 等 0→1 跳变 → 掐掉信号源 → 采到熄。
         async function measureRelease(label, killSignal) {
+            // [SL-394] **打灭必须连走带一起停**:播放期闩锁之下,只关打印头是灭不掉的
+            // (那正是本卡要的行为,也是 (a)(h) 两格钉的东西)。上一版这里只 `setOutput(false)`,
+            // 于是这一句前置在新口径下永远等不到灭 —— 本卡首跑就红在这里,而红出来的
+            // 行文是「先把徽标打灭」,真因却是「新语义下它不该灭」。
             await setOutput(false);
+            await setPlaying(false);
             if (
                 !check(
                     await waitFor(badgeOff, 12000),
-                    `(${label}) 前置:先把徽标打灭`,
+                    `(${label}) 前置:先把徽标打灭(需连走带一起停 —— 闩锁只认停走)`,
                 )
             )
                 return null;
+            await setPlaying(true); // 重新起播,下面量的是「这一段播放里写过之后停走」
             await evaluate(armOnEdge);
             const r = await setOutput(true);
             if (
@@ -1619,54 +1660,65 @@ try {
             "(前提) 壳页暴露了预览会话(window.__SCVB_PREVIEW__.ctl)—— 没有它整节都测不了",
         );
 
-        // ---- (a) **播放档**:关掉打印头,但走带**继续跑**。
-        const playingMs = await measureRelease("a 播放档", () =>
-            setOutput(false),
-        );
+        // ---- (a) [SL-394] **播放期闩锁**:关掉打印头,但走带**继续跑** ⇒ 徽标不该熄。
+        // 旧版这里量的是「播放档窗口有多宽(≈2500ms)」;播放档已删,量它没有意义了,
+        // 而**它不熄**这件事本身正是本卡要钉的东西。所以改成:先等徽标亮起(起点由
+        // 0→1 的跳变钉死,与旧版同一条纪律),再停写 5 秒,全程采样必须一直是 1。
+        // 5000ms 远超停走档 900,也超过被删掉的播放档 2500 —— 任何窗口制实现都会在此熄。
+        const litThroughFlat = await (async () => {
+            // 前置照 measureRelease 的 preamble:先灭 → 开打印头 → 等 0→1 那一次跳变。
+            // 上一节 (h) 把输出关掉了,不重新打开的话徽标永远亮不起来 —— 本卡首跑就是
+            // 这么红的,而红出来的行文是「徽标先亮起来」,真因却在上一节的收尾状态。
+            await setPlaying(true);
+            await setOutput(false);
+            if (
+                !check(await waitFor(badgeOff, 12000), "(a) 前置:先把徽标打灭")
+            ) {
+                return null;
+            }
+            await evaluate(armOnEdge);
+            await setOutput(true);
+            if (
+                !check(
+                    await waitFor(onEdgeSeen, 15000),
+                    "(a) 前置:观察到徽标 0 → 1 的那一次跳变",
+                )
+            ) {
+                return null;
+            }
+            await setOutput(false); // 打印头停 ⇒ 不再有 hostEcho 帧(= 自动化平直/结束)
+            const samples = [];
+            for (let i = 0; i < 20; i++) {
+                await sleep(250);
+                samples.push(await evaluate(badge));
+            }
+            return samples;
+        })();
+        if (litThroughFlat) {
+            const lit = litThroughFlat.filter((v) => v === "1").length;
+            check(
+                lit === litThroughFlat.length,
+                `(a) ★ 播放中宿主停写 5s ⇒ 徽标全程不灭(实得 ${lit}/${litThroughFlat.length} 次采样为亮)` +
+                    ` —— 这是 B29 的页面级落点:退回任何窗口制实现,这一格当场红`,
+            );
+        }
         // ---- (b) **停走档**:打印头开着,直接停走带(mock 的 PRINT 是三与,停走即停印)。
         const stoppedMs = await measureRelease("b 停走档", () =>
             setPlaying(false),
         );
 
         check(
-            typeof playingMs === "number" && playingMs > 0,
-            `(a) 播放档测到了有效读数(实得 ${playingMs})`,
-        );
-        check(
             typeof stoppedMs === "number" && stoppedMs > 0,
             `(b) 停走档测到了有效读数(实得 ${stoppedMs})`,
         );
         // 判据写成**区间**而不是等号:读数里含一次 CDP 往返 + 采样步长 + 一拍 render,
-        // 上下各留 600ms。这两条各自都是删除式判据 ——
-        //   • 退回「一个窗口打天下」:两个读数会挤到同一个数上,(c) 必红;
-        //   • 调用方忘了把走带态传进 hostEchoOn:播放档掉到停走档上,(a) 必红。
-        if (typeof playingMs === "number" && playingMs > 0) {
-            check(
-                playingMs > 1500 && playingMs < 4000,
-                `(a) ★ 播放中的释放窗口落在播放档量级(实得 ${playingMs}ms,期望 ≈2500)`,
-            );
-        }
-        if (typeof stoppedMs === "number" && stoppedMs > 0) {
-            check(
-                stoppedMs < 1600,
-                `(b) ★ 停走后的释放窗口落在停走档量级(实得 ${stoppedMs}ms,期望 ≈900)` +
-                    ` —— 用户报的「停走之后图标停留过久」就是这个数原先是 2000`,
-            );
-        }
-        if (
-            typeof playingMs === "number" &&
-            typeof stoppedMs === "number" &&
-            playingMs > 0 &&
-            stoppedMs > 0
-        ) {
-            check(
-                playingMs - stoppedMs > 800,
-                `(c) ★ 两档确实分开(播放 ${playingMs}ms − 停走 ${stoppedMs}ms > 800ms)` +
-                    ` —— 这一条是「按停即回短窗口」的直接证据。[SL-356] 它**不**证明` +
-                    `用户报的第二幕(快速起停时徽标在播放中途消失)被修掉了:实测那一幕` +
-                    `没被治住,治它的是下面 ⑪ 的走带态去抖`,
-            );
-        }
+        // 上下留足余量。
+        // [SL-394] 这一段原先写的是「两条各自都是删除式判据:退回一个窗口打天下 ⇒ (c) 红;
+        // 调用方忘了传走带态 ⇒ 播放档掉到停走档上 ⇒ (a) 红」——**两条都随播放档作废**:
+        // (c) 已删,而「传没传走带态」这个形状也不存在了(判据改吃整个 store)。
+        // 现在这两条这样分工,比原来的差值判据更强(差值判据在「两档同比例放大」时是绿的):
+        //   • (a) 播放中停写 5s 不熄 —— 退回**任何**窗口制实现即红;
+        //   • (b) 停走后落在停走档量级 —— 把停走档也换成闩锁(「永不熄」)即红。
 
         // ---- (d) 重按播放之后徽标必须**能回来**:短窗口是给停走用的,不能把重新开始的
         // 那一段播放也一起摁死。这一条守的是「修第一幕别修出一个新的第二幕」。
@@ -1705,28 +1757,64 @@ try {
             s.ctl.setHostTimeAvailable(${on ? "true" : "false"});
             return "ok";
         })()`);
-        const frozenMs = await measureRelease(
-            "e 播放中·宿主不给走带位置",
-            async () => {
-                await setOutput(false);
-                check(
-                    (await setHostTime(false)) === "ok",
-                    "(e) 前提:预览会话认得 setHostTimeAvailable(没有它这一幕造不出来)",
-                );
-            },
-        );
+        // [SL-394] 旧版这里量的是「播放期一次 render 都不排时,徽标仍按播放档熄灭
+        // (≈2500ms,靠播放档那一拍定时器)」。播放档与那一拍都已删除,而新口径下
+        // **播放中本来就不该熄** —— 所以这一格反过来钉:即便没有任何 render 源,
+        // 徽标也必须保持亮着,不会被别的定时器误熄。
+        // ★ 删除式:让停走档那一拍定时器在播放中也去熄徽标(或把闩锁去掉),本格当场红。
+        await setOutput(false);
         check(
-            typeof frozenMs === "number" && frozenMs > 0,
-            `(e) 测到了有效读数(实得 ${frozenMs};-2 = 12s 内**根本没熄**,正是回归的形状)`,
+            (await setHostTime(false)) === "ok",
+            "(e) 前提:预览会话认得 setHostTimeAvailable(没有它这一幕造不出来)",
         );
-        if (typeof frozenMs === "number" && frozenMs > 0) {
-            check(
-                frozenMs > 1500 && frozenMs < 4000,
-                `(e) ★ 播放期一次 render 都不排时,徽标仍按播放档熄灭` +
-                    `(实得 ${frozenMs}ms,期望 ≈2500)—— 靠的是播放档那一拍定时器`,
-            );
+        const frozen = [];
+        for (let i = 0; i < 16; i++) {
+            await sleep(250);
+            frozen.push(await evaluate(badge));
         }
+        const frozenLit = frozen.filter((v) => v === "1").length;
+        check(
+            frozenLit === frozen.length,
+            `(e) ★ 播放期一次 render 都不排 + 宿主停写 4s ⇒ 徽标仍亮` +
+                `(实得 ${frozenLit}/${frozen.length} 次采样为亮)`,
+        );
         await setHostTime(true);
+
+        // ---- (f) [SL-394] **播放中途一帧裸 `isPlaying:false` 不得结束本次播放窗**。
+        //
+        // 卡面点名的第三格,也是本卡与 SL-356 的交界处:SL-356 治的是「一帧假停走把
+        // 释放窗口收窄、当拍熄灭」,本卡新增的是「一帧假停走把**本次播放的起点**推到
+        // 宿主那次写之后,于是闩锁失效」。**两条路不同、落点也不同**,所以单独一格。
+        //
+        // 造法:走带在播放 → 等徽标亮起(= 本次播放里已经写过)→ 打印头停(不再有新的
+        // hostEcho 帧)→ 发**一帧** `isPlaying:false` 紧接着立刻恢复播放(远小于去抖窗)
+        // → 再静置到远超停走档。徽标全程必须是亮的。
+        //
+        // ★ 删除式(两条,各红各的):
+        //   • 把 `playbackStartedAt` 的记账改成「每帧都刷新起点」⇒ 起点跑到那次写之后,
+        //     闩锁失效 ⇒ 本格红;
+        //   • 把 `hostEchoUseWideWindow` 的去抖拆掉 ⇒ 那一帧当拍收窄到停走档 ⇒ 本格红。
+        {
+            await setPlaying(true);
+            await setOutput(true);
+            if (check(await waitFor(badgeOn, 15000), "(f) 前置:徽标先亮起来")) {
+                await setOutput(false); // 之后不会再有 hostEcho 帧
+                await setPlaying(false);
+                await sleep(60); // 远小于走带去抖窗(500ms)
+                await setPlaying(true);
+                const after = [];
+                for (let i = 0; i < 12; i++) {
+                    await sleep(250);
+                    after.push(await evaluate(badge));
+                }
+                const lit = after.filter((v) => v === "1").length;
+                check(
+                    lit === after.length,
+                    `(f) ★ 播放中途一帧假停走(60ms)之后,徽标全程仍亮` +
+                        `(实得 ${lit}/${after.length} 次采样为亮)`,
+                );
+            }
+        }
 
         assertClean("SL-270 释放窗口");
     }

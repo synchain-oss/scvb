@@ -1472,32 +1472,51 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
     //   • 退回**任何比停走档宽**的单窗口(播放档 2500、或 SL-251 的历史值 2000):
     //     (a12) 红 —— 停走时越过 900 却还亮着;(a10)(a11) 在 2000 这一档下都是绿的;
     //   • 退化成「播放中永不熄」:(a11) 红。
-    check(
-        HE.HOST_ECHO_RELEASE_PLAYING_MS > HE.HOST_ECHO_RELEASE_STOPPED_MS,
-        `(a8) 播放档必须比停走档宽(实得 ${HE.HOST_ECHO_RELEASE_PLAYING_MS} vs ${HE.HOST_ECHO_RELEASE_STOPPED_MS})`,
-    );
+    // ⚠ [SL-394] (a8)(a9)(a10)(a11) 这四条钉的是**播放档窗口**,而那一档已整条删除。
+    // 用户 v5.6.12 回验 B29:自动化一整句基本平直时徽标中途不显示 —— 根因不是窗口不够宽,
+    // 是「窗口」这条思路的前提被 native 否掉了(`emitParams` 值没变就不发帧,窗口取多宽
+    // 都会到期)。所以判据换成**播放期闩锁**,下面按新口径重写这四条。
+    // **没有删断言**:每一条都有等价或更强的新形态,一一对位见各条的编号后缀。
     eq(
         [HE.hostEchoReleaseMs(false), HE.hostEchoReleaseMs(true)],
-        [HE.HOST_ECHO_RELEASE_STOPPED_MS, HE.HOST_ECHO_RELEASE_PLAYING_MS],
-        "(a9) hostEchoReleaseMs 是两档的唯一真源(app.js 的 console 读数同取这一份)",
+        [HE.HOST_ECHO_RELEASE_STOPPED_MS, HE.HOST_ECHO_RELEASE_STOPPED_MS],
+        "(a8/a9) ★ 释放窗口只剩**一档**:`wide` 已是有意的恒等,两档制不得复活",
     );
+    check(
+        HE.HOST_ECHO_RELEASE_PLAYING_MS === undefined,
+        "(a9b) ★ 播放档常量必须**不存在** —— 留一个没人读的窗口常量就是 SL-357 `slowStateEcho` 那种死开关",
+    );
+    // (a10) 的新形态:播放中越过停走档仍亮,但**理由换了** —— 靠闩锁,不靠更宽的窗口。
+    // 时间取 `T0 + 停走档 × 10`(9 秒):旧的播放档 2500 也早就到期了,所以这一条现在
+    // 同时钉住「不是偷偷换了个更大的窗口」。
     eq(
-        HE.hostEchoOn(
-            { hostEchoAt: T0 },
-            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS,
-            true,
+        HE.hostEchoVisible(
+            {
+                params: { hostEchoAt: T0 },
+                playhead: { isPlaying: true },
+                playingAt: T0,
+                playbackStartedAt: T0 - 1,
+            },
+            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 10,
         ),
         true,
-        "(a10) ★ 播放中越过**停走档**仍亮(退回单窗口即红)",
+        "(a10) ★ 播放中 + 本次播放里写过 ⇒ 越过停走档 10 倍仍亮(靠闩锁,不靠宽窗口)",
     );
+    // (a11) 的新形态:闩锁**不是**「播放中永不亮」的免死金牌 —— 本次播放**没**写过就不亮。
+    // 旧 (a11) 断的是「播放中越过 2500 才熄」,那条随窗口一起没了;
+    // 它防的退化(「播放中永不熄」)由这一条接住:同样在播放中,只把写入时刻挪到本次播放**之前**。
     eq(
-        HE.hostEchoOn(
-            { hostEchoAt: T0 },
-            T0 + HE.HOST_ECHO_RELEASE_PLAYING_MS,
-            true,
+        HE.hostEchoVisible(
+            {
+                params: { hostEchoAt: T0 },
+                playhead: { isPlaying: true },
+                playingAt: T0 + 5000,
+                playbackStartedAt: T0 + 5000, // 本次播放晚于那次写
+            },
+            T0 + 5000 + HE.HOST_ECHO_RELEASE_STOPPED_MS,
         ),
         false,
-        "(a11) ★ 播放中越过**播放档**才熄 —— 不是「播放中永不熄」",
+        "(a11) ★ 播放中但**本次播放没写过** ⇒ 越过停走档即熄(闩锁不是「播放中永不熄」)",
     );
     // 「取窄档就立刻按窄档结算」:同一个 `at`、同一个 `now`,只因取了窄档就该熄 ——
     // 一个窗口打天下的实现在这里必然给 true。
@@ -1538,15 +1557,124 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         "(a13) ★ 走带态**未知**并进宽档(playhead 缺席/为空/无 isPlaying ⇒ true);明确停走(且已停满会话)才走窄档",
     );
     // (a13) 的用户可见后果:走带态还没到过页面时,徽标不会在 900ms 就熄。
+    // [SL-394] 这一档此前靠「未知取宽档(2500ms)」实现,宽档删掉之后由
+    // `hostEchoVisible` 里那条显式的 ⓪ 分支接住 —— 少了它,未知态会**静默**退到 900ms,
+    // 正是 PR 178【建议】3 提防的那一幕。★ 删除式:删掉 ⓪ 分支,本条当场红。
     eq(
-        HE.hostEchoOn(
-            { hostEchoAt: T0 },
-            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS,
-            HE.hostEchoUseWideWindow({}),
+        HE.hostEchoVisible(
+            { params: { hostEchoAt: T0 } }, // 一帧 playhead 都还没到
+            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 10,
         ),
         true,
-        "(a14) ★ 首帧 playhead 之前:越过停走档仍亮(未知不当停走处理)",
+        "(a14) ★ 首帧 playhead 之前:越过停走档 10 倍仍亮(未知不当停走处理)",
     );
+    // (a14) 的反面:从未收到过宿主写 ⇒ 无论走带态如何都不亮。
+    // 少了这一条,「⓪ 分支恒 true」这种退化会让徽标在**任何**未知态下常亮。
+    eq(
+        HE.hostEchoVisible({ params: { hostEchoAt: 0 } }, T0),
+        false,
+        "(a14b) ★ 从未观测到宿主写 ⇒ 不亮(⓪ 分支不得恒真)",
+    );
+
+    // ---- (a21..a25) [SL-394] 播放期闩锁:B29 的新口径 -------------------------
+    //
+    // 用户 v5.6.12 回验 B29 原话:整体调整页卡头的宿主自动化小图标**有时不显示** ——
+    // 自动化长时间基本无变化(比如一整句)时,靠回声驱动的保持期一过就熄灭。
+    // 用户裁定(2026-09-10):「改成跟变暗那里一样的思路,播放就出现」。
+    //
+    // ⚠ 本组与 (a15..a20) 的分工:那一组守「走带态去抖」(SL-356),本组守「播放期闩锁」
+    // (SL-394)。两者都能让徽标在播放中不灭,但**治的是不同的路**:去抖治「一帧假的
+    // isPlaying:false」,闩锁治「宿主一整句不写」。删除式各删各的,互不顶替 —— 这一点
+    // 下面 (a25) 专门钉住。
+    {
+        const play = (startedAt, atMs, playingAt) => ({
+            params: { hostEchoAt: atMs },
+            playhead: { isPlaying: true },
+            playingAt,
+            playbackStartedAt: startedAt,
+        });
+        // (a21) 核心:播放中 + 本次播放里写过一次 ⇒ **5 秒平直不灭**(卡面点名的那一格)。
+        // 5000ms 远超停走档 900,也超过被删掉的播放档 2500 —— 任何窗口制实现都会在此熄灭。
+        const flat = [];
+        for (let t = 0; t <= 5000; t += 250) {
+            flat.push(HE.hostEchoVisible(play(T0, T0 + 10, T0 + t), T0 + t));
+        }
+        check(
+            flat.every(Boolean),
+            `(a21) ★ 播放中 + 一次写 ⇒ 5s 平直全程不灭(实得 ${flat.filter(Boolean).length}/${flat.length} 帧亮)`,
+        );
+        // (a22) 停止 ⇒ ≤1s 熄灭(卡面点名)。这里直接算**上界**:熄灭时刻 =
+        // max(停走+去抖, 写入+停走档),两项都 ≤ 停走+900,故恒 ≤ 1s。
+        check(
+            HE.HOST_ECHO_TRANSPORT_HOLD_MS <= 1000 &&
+                HE.HOST_ECHO_RELEASE_STOPPED_MS <= 1000,
+            `(a22) ★ 停止后 ≤1s 熄灭的算术保证:去抖 ${HE.HOST_ECHO_TRANSPORT_HOLD_MS}ms 与` +
+                ` 停走档 ${HE.HOST_ECHO_RELEASE_STOPPED_MS}ms 都必须 ≤1000ms`,
+        );
+        // (a23) 事件流先后不保证:写入比本段播放起点**早一点**也算「本次播放里写过」,
+        // 否则每次起播都会先灭一下(用户裁定里「不闪」当场破)。
+        eq(
+            [
+                // 早 1ms:在宽限内 ⇒ 亮
+                HE.hostEchoVisible(
+                    play(T0, T0 - 1, T0),
+                    T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 3,
+                ),
+                // 早 (去抖-1)ms:仍在宽限内 ⇒ 亮
+                HE.hostEchoVisible(
+                    play(T0, T0 - (HE.HOST_ECHO_TRANSPORT_HOLD_MS - 1), T0),
+                    T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 3,
+                ),
+                // 早 (去抖+1)ms:出宽限 ⇒ 回落窗口 ⇒ 该熄
+                HE.hostEchoVisible(
+                    play(T0, T0 - (HE.HOST_ECHO_TRANSPORT_HOLD_MS + 1), T0),
+                    T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 3,
+                ),
+            ],
+            [true, true, false],
+            "(a23) ★ 起点宽限恰为去抖窗:早于它算本次播放、超出即不算(两侧边界各一格)",
+        );
+        // (a24) 记账口径:新的一段播放才刷新起点,同一段里的抖动**不**刷新。
+        // 记反了(每帧都刷新)⇒ `at >= start` 恒假 ⇒ 闩锁永不生效,(a21) 会红。
+        eq(
+            [
+                // 本会话第一帧非停走 ⇒ 开新段
+                HE.playbackStartedAt(0, 0, { isPlaying: true }, T0),
+                // 同一段里继续播(距上次非停走仅 33ms)⇒ 沿用
+                HE.playbackStartedAt(T0, T0 + 33, { isPlaying: true }, T0 + 66),
+                // 明确停走 ⇒ 沿用(不清零,否则「停→立刻再播」会闪)
+                HE.playbackStartedAt(T0, T0, { isPlaying: false }, T0 + 100),
+                // 连续停走满去抖窗后再播 ⇒ 开新段
+                HE.playbackStartedAt(
+                    T0,
+                    T0,
+                    { isPlaying: true },
+                    T0 + HE.HOST_ECHO_TRANSPORT_HOLD_MS,
+                ),
+                // 走带态未知(无 isPlaying)⇒ 不算停走,与 transportPlayingAt 同口径
+                HE.playbackStartedAt(T0, T0 + 33, {}, T0 + 66),
+            ],
+            [T0, T0, T0, T0 + HE.HOST_ECHO_TRANSPORT_HOLD_MS, T0],
+            "(a24) ★ 本次播放起点的记账:新段才刷新、同段沿用、停走不清零、未知不当停走",
+        );
+        // (a25) 闩锁与去抖**互不顶替**:把去抖拆掉(playingAt 记成 0 = 从未非停走)之后,
+        // 一帧明确停走就该按停走结算 —— 闩锁不该把它救回来。
+        // 少了这一格,「闩锁在停走时也生效」这种过宽实现会让 (a19)「真停 ≤900ms 熄灭」
+        // 变成永不熄,而那一半是用户已经确认对的。
+        eq(
+            HE.hostEchoVisible(
+                {
+                    params: { hostEchoAt: T0 },
+                    playhead: { isPlaying: false },
+                    playingAt: 0,
+                    playbackStartedAt: T0,
+                },
+                T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS,
+            ),
+            false,
+            "(a25) ★ 明确停走(且已停满会话)⇒ 闩锁不生效,按停走档熄灭",
+        );
+    }
 
     // ---- (a15..a20) [SL-356] 走带态**去抖**
     //
@@ -1614,21 +1742,30 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
     //   宿主一直在写的话修前修后都亮,本组会变成空绿,所以下面 (a18) 专门有一格前置
     //   把「采样窗真的跨过了停走档」测出来,而不是靠这段话推断。
     function simulateBadge(at, frames) {
-        const st = { playhead: null, playingAt: 0 };
-        const params = { hostEchoAt: at };
+        const st = {
+            playhead: null,
+            playingAt: 0,
+            playbackStartedAt: 0,
+            params: { hostEchoAt: at },
+        };
         let now = at;
         let offAt = -1;
         let crossedStoppedWhileStopped = false;
         for (const f of frames) {
             now += f.dt;
             const ph = { isPlaying: f.isPlaying };
+            // [SL-394] 顺序照 app.js:起点用**覆写前**的 playingAt 算,再覆写 playingAt。
+            // 两行调换的话「隔了超过去抖窗」恒不成立 ⇒ 永远开不出新的一段播放,
+            // (a20) 会红 —— 那正是这两行顺序的删除式。
+            st.playbackStartedAt = HE.playbackStartedAt(
+                st.playbackStartedAt,
+                st.playingAt,
+                ph,
+                now,
+            );
             st.playingAt = HE.transportPlayingAt(st.playingAt, ph, now);
             st.playhead = ph;
-            const on = HE.hostEchoOn(
-                params,
-                now,
-                HE.hostEchoUseWideWindow(st, now),
-            );
+            const on = HE.hostEchoVisible(st, now);
             if (!on && offAt < 0) offAt = now;
             if (
                 f.isPlaying === false &&
@@ -1659,10 +1796,14 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             "(a18) 前置:采样窗里确实出现过「停走帧 ∧ 距最后一次宿主写入已过停走档」的帧" +
                 " —— 没有这一格,下面那条修前修后都绿(空绿)",
         );
+        // [SL-394] 原先这一格断的是「整段仍落在**播放档窗口**内」,而播放档已删。
+        // 它当时的作用是「别让采样窗长到连正确实现都该熄」——闩锁之下不再有这种上界,
+        // 于是反过来断**下界**:采样窗必须**远超**停走档,这样任何退回窗口制的实现
+        // 都会在这一段里熄掉。同一个「不空绿」的目的,换成对着仍然存在的常量说话。
         check(
-            jit.endNow - T0 < HE.HOST_ECHO_RELEASE_PLAYING_MS,
-            `(a18) 前置:整段仍落在播放档窗口内(实得 ${jit.endNow - T0}ms < ` +
-                `${HE.HOST_ECHO_RELEASE_PLAYING_MS}ms)—— 越过它熄灭就是「该熄」而不是缺陷`,
+            jit.endNow - T0 > HE.HOST_ECHO_RELEASE_STOPPED_MS * 2,
+            `(a18) 前置:采样窗远超停走档(实得 ${jit.endNow - T0}ms > ` +
+                `${HE.HOST_ECHO_RELEASE_STOPPED_MS * 2}ms)—— 退回窗口制的实现必然在此段熄灭`,
         );
         check(
             jit.offAt < 0,
@@ -1856,6 +1997,33 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
     // ---- (b) 源码级不变式:图表卡摘出 + 两 tab 共用同一条判据
     const tmSrc = readFileSync(join(ROOT, "web/output/tab-master.js"), "utf8");
     const ttSrc = readFileSync(join(ROOT, "web/output/tab-tracks.js"), "utf8");
+    const appSrc = readFileSync(join(ROOT, "web/output/app.js"), "utf8");
+
+    // [SL-394] **接线**判据:两处记账的**先后**必须是「先算起点、后覆写 playingAt」。
+    // 这是零件测不到的那一层 —— `playbackStartedAt()` 本身是纯函数、怎么测都对,
+    // 而 app.js 里两行一调换,`prevPlayingAt` 永远是本帧时刻 ⇒「隔了超过去抖窗」恒不
+    // 成立 ⇒ **永远开不出新的一段播放**,此后每段播放都拿上一段的写当成「本次写过」。
+    // ⚠ 这一条是**删除式实跑逼出来的**:把 app.js 那两行调换之后,⑧ 组连同逐帧模拟
+    // 全绿(模拟器有自己的一份顺序,替生产代码把这件事做对了)—— 典型的「测了零件、
+    // 没测接线」。所以判据必须落在 app.js 的源码顺序上。
+    {
+        const iStart = appSrc.indexOf(
+            "store.playbackStartedAt = playbackStartedAt(",
+        );
+        const iPlaying = appSrc.indexOf(
+            "store.playingAt = transportPlayingAt(",
+        );
+        check(
+            iStart >= 0 && iPlaying >= 0,
+            `(b0) app.js 里两处记账都在(起点 ${iStart} / 走带 ${iPlaying})`,
+        );
+        check(
+            iStart >= 0 && iPlaying >= 0 && iStart < iPlaying,
+            "(b0) ★ app.js 必须**先**算本次播放起点、**后**覆写 playingAt" +
+                `(实得起点@${iStart} < 走带@${iPlaying} = ${iStart < iPlaying})` +
+                " —— 调换两行 ⇒ 闩锁永不生效,而纯函数用例全绿",
+        );
+    }
     check(
         /for \(const node of \[el\.widthCard, el\.msCard, el\.leadCard\]\)/.test(
             tmSrc,
@@ -1889,18 +2057,20 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         ["tab-master", tmSrc],
         ["tab-tracks", ttSrc],
     ]) {
+        // [SL-394] 调用形状变了:两个 tab 现在调 `hostEchoVisible(st)`,把**整个 store**
+        // 交给判据,不再在调用点拆成 `st.params` + 单独算一次走带态。
         check(
-            /hostEchoOn\(\s*st\.params[,)]/.test(src),
-            `(b6) ${name} 用的是共享判据 hostEchoOn(两处曾各存一份逐字副本)`,
+            /hostEchoVisible\(\s*st\s*\)/.test(src),
+            `(b6) ${name} 用的是共享判据 hostEchoVisible(两处曾各存一份逐字副本)`,
         );
-        // [SL-270] **接线**判据,不是零件判据:`hostEchoOn` 支持走带分档不等于调用方
-        // 真把走带态传进去了。少了第三个实参,分档就是死代码,而纯函数用例照样全绿
-        // —— 本仓记过一次「测接线不只测零件」,这条就是那条教训的落点。
+        // [SL-270 → SL-394] **接线**判据,不是零件判据。SL-270 那一版断的是「第三个实参
+        // 传了没有」(少了它分档就是死代码,而纯函数用例照样全绿)。分档已删,但同一类
+        // 断线换了个形态**照样可能发生**:调用点若退回 `hostEchoOn(st.params, …)`,
+        // 播放期闩锁读不到 `playbackStartedAt`,SL-394 的缺陷原样复发而纯函数用例全绿。
+        // 所以这一条改成钉「旧入口不得再出现在调用点」。
         check(
-            /hostEchoOn\(\s*st\.params,\s*undefined,\s*hostEchoUseWideWindow\(st\)\s*\)/.test(
-                src,
-            ),
-            `(b6) ★ ${name} 把走带态传进判据(hostEchoOn(st.params, undefined, hostEchoUseWideWindow(st)))`,
+            !/hostEchoOn\(/.test(src),
+            `(b6) ★ ${name} 不得再调旧入口 hostEchoOn(它读不到 playbackStartedAt ⇒ 闩锁失效)`,
         );
         check(
             !/hostEcho &&\s*$|hostEcho &&\n/.test(src),
