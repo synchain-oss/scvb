@@ -35,7 +35,7 @@ jobs:
           # 该 id 名字里带失效日期(expires-on-0910);失效后本 job 会报 model not found(本 job 无 fallback),
           # 届时按下面逐行回退到 v4 flash 基线(勿全局替换):
           #   ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_SONNET_MODEL = deepseek-v4-flash[1M]
-          #   ANTHROPIC_DEFAULT_HAIKU_MODEL                    = deepseek-v4-flash   (无 [1M],曾实测报 model not found)
+          #   ANTHROPIC_DEFAULT_HAIKU_MODEL                    = deepseek-v4-flash   (无 [1M];原基线即如此,勿加后缀)
           #   claude_args --model(文件末尾)                    = deepseek-v4-flash[1M]
           ANTHROPIC_MODEL: deepseek-v4.1-flash-expires-on-0910
           ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4.1-flash-expires-on-0910
