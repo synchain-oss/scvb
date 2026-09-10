@@ -112,7 +112,15 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         //   任一种落进 §3.2 第 1 步的 `movingAverage(ℓ, 5 hop)`,**单个 kw==0 的 hop** 就会被
         //   摊成 (−120 − 平台)/5 ≈ 20 dB 的假谷 —— 越过任何 minDepth(值域 [3,12])⇒ 凭空
         //   切一刀,而且与 VAD 自己那份 ℓ 的下限口径不一致(它一直是先夹 1e−12 再取对数)。
-        // 用例:`test_analysis_pipeline.cpp` 的「单个零 hop 不制造切点」+ 其删除式。
+        // 用例:`test_analysis_pipeline.cpp` 的
+        //   ·「[SL382] 谷切分的 ℓ 带 1e-12 能量下限(上报口径不带,故不得复用)」
+        //   ·「[SL382] 已知缺口:单个零 hop 仍会造出一个 50ms 宽的假谷,两条 dB 口径都拦不住」
+        // ⚠ 下限**没有**把上面那一刀消掉,别读成「换了口径就不切了」:实测夹后 depth
+        //   **21.398 dB**、夹前 21.260 dB,只差 0.14,而 minDepth 值域只有 [3,12] ⇒ 照切。
+        //   下限做到的是**把最坏情况从无界收敛到 21.4 dB**(不夹时 kw=1e−30 给 57 dB)
+        //   并与 VAD 对齐口径。要真正不切得加**最小谷宽门槛**(假谷宽恒 = 平滑窗
+        //   5 hop = 50 ms,而 §3.3 认为真实换气谷在 [80,600] ms)—— 行为改动,
+        //   已记 **SL-388**,不在本卡。
         // ⚠ **修好本行之后用户仍然看不到任何变化**:S1 切出来的边界被 02 §3.4 步骤 4
         //   「相邻同活跃集合合并」原样合回去,`PipelineResult::warnings` 又没有生产侧消费者
         //   (`grep -rn warnings src/output/` 只命中一条注释)。本行是前置修复,不是终点 ——
