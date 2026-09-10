@@ -78,7 +78,7 @@ node web-preview/tests/smoke-ready-race.mjs
 | `fifteen-tracks` | 健康满配:15 轨全连、4 stereo、327 段、覆盖 84–92%。**`range.mode=follow`(默认档代表)** |
 | `misaligned` | 路由失准:2–3 轨 `misalignCount>0` → 琥珀横幅① + Tab2 对应轨 ⚠ 计数(横幅①由 UI 按 `scvb.conn` 渲染,无独立 error code) |
 | `channel-conflict` | Input 侧:`claim="conflict"` + `channelConflict` 错误 + `occupiedMask` 含目标位;Output 侧不受影响 |
-| `second-output` | `outputReadOnly=true` + `secondOutput` 错误 + 全写控件 disabled。**`range.mode=daw_loop` 且宿主提供 loop(daw_loop 代表档)** |
+| `second-output` | `outputReadOnly=true` + `secondOutput` 错误 + 写控件 disabled，**但 [SL-381] 起 ⓪ GROUP 卡除外**(改组是这一态唯一的出口；组卡的唯一锁面是 PRINT，见契约 §1.4 拒绝态行)。`setGroupId` 按**目标组**判 `{ok}`/`{observer:true}`：本 fixture 的 `caps.occupiedOutputGroup=1`，改到别的组即接管为主实例、只读解除。**`range.mode=daw_loop` 且宿主提供 loop(daw_loop 代表档)** |
 | `stereo-mixed` | mono+stereo 混存:stereo 轨带 ST、该轨在 **Output 真源与 Input §4.3 只读镜像两侧都**显式设 `participate_in_auto_pan=false`([J83] 起默认一律 `true`,本 fixture 要的是「用户手动排除某轨」的渲染面;只写一侧会造出真机不可能的组合)、每轨 width 旋钮可用。**降级变体 `&loop=none`** 见上 |
 
 **[J04] `range.mode` 一律三值枚举 `follow` / `daw_loop` / `manual`,默认 `follow`**;

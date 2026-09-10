@@ -235,6 +235,15 @@ async function withSession(role, params, fn) {
 log("\n=== ③ 场景化拒绝行为 ===");
 
 // second-output:写函数回 observer
+//
+// [SL-381] `setGroupId` **不在这一族里**,所以它从 rows 里摘出来单走一段:
+//   · 依据:§5.6 把 `{observer:true}` 的两种出处**并列**写 ——「Output `setGroupId`
+//     (新组已有主 Output)」与「只读观察态下的一切写函数」。前者的判据在**目标组**
+//     (§1.4 返回行括号里那句「新组 OutputSlot 已被占」),不是「本实例当下是不是观察者」。
+//   · 而且它必须排在**最后**:改到空组会把只读观察态解除掉,排在前面会让它后面每一条的
+//     拒绝分支**静默走不到**。本卡实测撞到过:`setGroupId` 原先排在 `recaptureArm` 之前,
+//     改完之后 `recaptureArm` 从「被拒」变成「受理」,而红出来的行文是 recaptureArm 的
+//     ——真因却在上一行。顺序在这里是判据的一部分,别按字母序或契约节号重排。
 await withSession("output", "fixture=second-output", async (b) => {
     const rows = [
         ["setChannelConfig", await b.setChannelConfig(1, { priority: 3 })],
@@ -244,7 +253,18 @@ await withSession("output", "fixture=second-output", async (b) => {
             await b.editSegment(1, "set_locked", { segIdx: 0, locked: true }),
         ],
         ["clearCoverage", await b.clearCoverage(1, 1, 5)],
-        ["setGroupId", await b.setGroupId(2)],
+        // [SL-381 第 2 轮] `setAnalysisConfig`(§1.21)本来就在只读观察这一族里,
+        // 却**从来没有判据看着它** —— 于是 juce-bridge-mock.js 那份「唯一真源」枚举
+        // 两版都把它漏了(初版多列 setGroupId、订正版少列它),两次都没有任何东西变红。
+        // 补这一行不是凑数:它是那条枚举唯一的护栏。**必须排在下面 setGroupId 那段之前**
+        // —— 它不解除只读,所以放这里安全;放到 setGroupId 之后就会读到已经解除的世界。
+        // 载荷刻意用**合法**值(`loudness_mode` 的三值枚举之一):只读闸排在 badArg 校验
+        // 之前,所以随便塞个非法键也会回 observer —— 那样这一格就分不清红的是哪一道。
+        // 用合法载荷则「拆掉只读闸」时它会回 {ok:true} 而不是 badArg,红得对得上因果。
+        [
+            "setAnalysisConfig",
+            await b.setAnalysisConfig({ loudness_mode: "rms" }),
+        ],
         ["recaptureArm", await b.recaptureArm(1, 1, 5)],
     ];
     for (const [n, r] of rows) {
@@ -255,6 +275,30 @@ await withSession("output", "fixture=second-output", async (b) => {
         check(good, `second-output ${n} 未拒绝:${JSON.stringify(r)}`);
         log(`  second-output ${n.padEnd(18)} → ${JSON.stringify(r)}`);
     }
+
+    // [SL-381] 出口这一条:改到**空组**(2)⇒ `{ok:true}`,这是只读观察态唯一的退路。
+    const out = await b.setGroupId(2);
+    check(
+        out.ok === true,
+        `second-output setGroupId(空组 2) 应受理:${JSON.stringify(out)}`,
+    );
+    log(`  second-output setGroupId(2)      → ${JSON.stringify(out)}`);
+
+    // 反向:改回**已有主 Output 的那一组**(1)⇒ `{observer:true}`。
+    // 少了这一格,「setGroupId 恒回 ok」这种错实现也能让上面那条全绿。
+    const back = await b.setGroupId(1);
+    check(
+        back.observer === true,
+        `second-output setGroupId(被占组 1) 应回 observer:${JSON.stringify(back)}`,
+    );
+    log(`  second-output setGroupId(1)      → ${JSON.stringify(back)}`);
+
+    // 回到只读观察之后,写函数那一族**仍然**被拒 —— 证明这个出口没有把整个只读面放开。
+    const again = await b.setTrackManual(1, "pan", 20);
+    check(
+        again.observer === true,
+        `改回被占组后 setTrackManual 应仍被拒:${JSON.stringify(again)}`,
+    );
 });
 
 // stereo-mixed&loop=none:daw_loop → noLoop
