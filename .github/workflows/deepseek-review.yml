@@ -31,15 +31,14 @@ jobs:
       - uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126   # v1
         env:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-          # ── 模型切换口 ── 当前 = 用户 2026-09-10 决定试用的 v4.1 flash 预览 id(裸名,不带 [1M] 后缀)。
-          # 该 id 名字里带失效日期(expires-on-0910);失效后本 job 会报 model not found(本 job 无 fallback),
-          # 届时按下面逐行回退到 v4 flash 基线(勿全局替换):
+          # ── 模型切换口 ── 当前 = deepseek-flash(用户 2026-09-10 查证为永久可用的 id;裸名,不带 [1M] 后缀)。
+          # 本 job 无 fallback;若要回退到 v4 flash 基线,按下面逐行改(勿全局替换):
           #   ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_SONNET_MODEL = deepseek-v4-flash[1M]
           #   ANTHROPIC_DEFAULT_HAIKU_MODEL                    = deepseek-v4-flash   (无 [1M];原基线即如此,勿加后缀)
           #   claude_args --model(文件末尾)                    = deepseek-v4-flash[1M]
-          ANTHROPIC_MODEL: deepseek-v4.1-flash-expires-on-0910
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4.1-flash-expires-on-0910
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4.1-flash-expires-on-0910
+          ANTHROPIC_MODEL: deepseek-flash
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-flash
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-flash
         with:
           anthropic_api_key: ${{ secrets.DEEPSEEK_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -165,7 +164,7 @@ jobs:
             你只做代码审查:不改文件、不建 commit、不推分支、不运行未授权命令、不输出任何 secret 或环境变量。
             无论有无严重问题都必须留中文结论。
           claude_args: |
-            --model deepseek-v4.1-flash-expires-on-0910
+            --model deepseek-flash
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Glob,Grep"
 
 # 默认停用(与 claude-review 二选一,沿用 Synchain 运维习惯):
