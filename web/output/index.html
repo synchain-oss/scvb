@@ -188,7 +188,8 @@
          [data-gb="footer"]          data-mode="default|print|printDone|follow"
          [data-gb="footer-scale"]    data-open="0|1";档位项 data-current/data-over
        ---- Wave 2 追加的 data 属性(由事件/交互写,DevTools 里改同样生效)----
-         [data-gb="master-group-selector"] data-disabled="0|1"(PRINT / 只读观察态整组不可操作)
+         [data-gb="master-group-selector"] data-disabled="0|1"(**只有** PRINT 态整组不可操作;
+                                     [SL-381] 只读观察态**不锁**——改组是那一态唯一的出口)
          [data-gb="master-width|master-msbalance|master-leadselect|master-distchart"]
                                      data-host-echo="0|1"(§0.5 hostEcho 灰显,只更新显示不回写)
          .range-manual__tc           data-invalid="0|1"(manual 起止校验失败)
@@ -5002,7 +5003,9 @@
                 margin-top: var(--sp-16);
             }
 
-            /* ---- PRINT 态 / 只读观察态:组胶囊整组不可操作(05 §2.1 ⓪;契约 §1.4)---- */
+            /* ---- PRINT 态:组胶囊整组不可操作(05 §2.1 ⓪;契约 §1.4 拒绝态行)----
+               [SL-381] 只读观察态**不在这里**:那一态下改组是唯一的出口,判据见
+               tab-master.js 的 `groupSelectorDisabled()` 头注。 */
             [data-gb="master-group-selector"][data-disabled="1"] .group-pills {
                 opacity: 0.45;
                 pointer-events: none;

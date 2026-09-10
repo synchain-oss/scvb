@@ -3835,6 +3835,83 @@ TEST_CASE("HOST SL-210:同 bus 第二个 Output 进只读观察,不抢主实例"
 }
 
 // ---------------------------------------------------------------------------
+// [SL-381] 用户 v5.6.11 实测 B22:同组第二个 Output 之后**改到别的组**这条出口。
+//
+// 用户原话:「B22 第二个组打开之后,GROUP · 分组 / 本实例只属于一个组 / A B C D E F G H
+// 会警告,但是所有界面都被锁死导致无法切换成别的组,这个要修。」
+//
+// 缺陷本体在 web 侧(`tab-master.js` 的组卡把 `isWriteBlocked()` 也算进 disabled 面),
+// 由页面级冒烟 `smoke-group-lock-page.mjs` 钉。本用例钉的是它下面那一层:**native 这条
+// 出口本来就是通的,而且改组之后只读观察态真的会解除** —— 修 web 那一刀才有落点。
+// 两半分开钉的理由:web 那一刀绿了但 native 若不解除只读,用户点完组还是全灰,
+// 症状一模一样、根因换了一层(SL-381 定谳时把这两条当成两个独立假设各查了一遍)。
+//
+// 契约依据:§1.4 `setGroupId` 的「拒绝态」行只列 PRINT,C++ 侧不新增 `rejected` 码;
+// §5.6 把 `{observer:true}` 的两种出处并列写(「Output setGroupId(新组已有主 Output)」
+// 与「只读观察态下的一切写函数」)—— 前者是结果播报,所以 `handleSetGroupId` 不查
+// `isReadOnly()`,而是先落地再按**新组**的 claim 结果回值。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-381:只读观察的第二个 Output 改到空组后只读即解除,改回即恢复", "[host][v56][SL381]")
+{
+    // kTestGroup(7)= 主实例占着的组;kFreeGroup(6)= 本文件里没有别的 Output 在的组。
+    // 不用 kNoWriterGroup(8):本文件恒不在那一组建任何段([SL-231] 保留组),
+    // 而这里要真让一个 Output 在目标组 claim 成主实例、真建段。
+    constexpr int kFreeGroup = 6;
+
+    Rig r; // r.out = 第一个 Output(主实例,kTestGroup)
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE_FALSE(r.out.connSnapshot().readOnly);
+
+    // ---- B22 步骤①:同一组里再开第二个 Output ⇒ 只读观察 ----------------------
+    auto second = std::make_unique<ScvbOutputAudioProcessor>();
+    second->setGroupId(kTestGroup);
+    REQUIRE(second->groupId() == kTestGroup); // [SL-324] 读回断言
+    second->setPlayHead(&r.ph);
+    second->prepareToPlay(kSr, kBlock);
+    Rig::pumpMessages(300);
+
+    // 两个读点都要断:`connSnapshot().readOnly` 是**桥面 §2.3 `outputReadOnly` 的数据源**
+    // (横幅② 与 web 侧写控件闸读的是它),`isReadOnly()` 是**桥函数回 `{observer:true}`
+    // 的判据**。同一个 claim 态的两个出口,漏一个就分不清「横幅对了但回执错」。
+    REQUIRE(second->connSnapshot().readOnly);
+    REQUIRE(second->isReadOnly());
+    REQUIRE_FALSE(r.out.connSnapshot().readOnly); // 主实例没被挤下去
+
+    // ---- B22 步骤②:把其中一个 Output 改到别的组 ⇒ 只读解除 -------------------
+    // 这一步在**只读观察态里**调 setGroupId —— 它必须照走(§1.4 拒绝态只列 PRINT)。
+    second->setGroupId(kFreeGroup);
+    REQUIRE(second->groupId() == kFreeGroup); // 读回:改组真的落地了,不是被拒掉
+    Rig::pumpMessages(300);
+
+    // 解除是**同步**的:`setGroupId` 里 `changeGroup()` 当场重走 `claimOutput`,
+    // 不等心跳。所以这里不是「等到了就算过」——上面那一次 pump 只是给 Timer 一个
+    // 机会把桥面刷一遍,判据本身不依赖它。
+    CHECK_FALSE(second->connSnapshot().readOnly); // ← 用户报的「冲突不解除」若成立,这条红
+    CHECK_FALSE(second->isReadOnly());
+    CHECK(second->connSnapshot().readOnly == second->isReadOnly()); // 两个出口不许各说一套
+    // 「两者互不干扰」(B22 预期后半):主实例仍是主实例。
+    CHECK_FALSE(r.out.connSnapshot().readOnly);
+
+    // ---- 反向:再改回主实例那一组 ⇒ 重新进只读观察 ---------------------------
+    // 少了这一格,「改组后恒为主实例」这种错实现也能让上面全绿。
+    second->setGroupId(kTestGroup);
+    REQUIRE(second->groupId() == kTestGroup);
+    Rig::pumpMessages(300);
+    CHECK(second->connSnapshot().readOnly);
+    CHECK(second->isReadOnly());
+    CHECK_FALSE(r.out.connSnapshot().readOnly);
+
+    // ---- 收尾:观察者退场,主实例不受影响(slot 没被同 pid 的观察者释放掉)-----
+    second->releaseResources();
+    second.reset();
+    Rig::pumpMessages(300);
+    CHECK_FALSE(r.out.connSnapshot().readOnly);
+    r.runBlocks(4, 0.25f, 1, 20);
+    CHECK(r.injected());
+}
+
+// ---------------------------------------------------------------------------
 // [SL-215] 会话 GUID:非全零、随工程往返稳定。
 // 修复前桥面快照里是一串写死的全零字面量,设置页恒显示
 // 「session 00000000-0000-0000-0000-000000000000」;GUID 是 sidecar 文件名隔离的根基,

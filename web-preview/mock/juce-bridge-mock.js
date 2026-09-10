@@ -1102,11 +1102,43 @@ function buildOutputBackend(ctx) {
         },
 
         // ---- §1.4(返回行只有 {ok} | {observer:true} ⇒ 非法 g 走夹取,不发 badArg)--
+        //
+        // [SL-381] `{observer:true}` 在本函数是**改组的结果播报**,不是拒绝 —— 三条依据:
+        //   ① §1.4「返回」行括号里写的是「**新组** OutputSlot 已被占」,判据落在目标组;
+        //   ② §1.4「拒绝态」行只列 PRINT(且注明那是 UI 侧整组 disabled、C++ 不加 rejected 码);
+        //   ③ §5.6 把两种出处**并列**写:「Output `setGroupId`(新组已有主 Output)」与
+        //      「只读观察态下的一切写函数」—— 前者不属于后者。
+        // 真桥 `OutputEditor::handleSetGroupId` 正是这个顺序:先 `processor_.setGroupId(g)`
+        // 落地(它自己不查 `isReadOnly()`),再按新组的 claim 结果回 `{ok}` / `{observer:true}`。
+        //
+        // 修复前这里第一行是 `if (readOnly()) return OBSERVER();` —— 一进只读观察就再也
+        // 改不了组,连 `group_id` 都不写。于是 SL-381 的用户症状(同组第二个 Output 之后
+        // 无路可退)在 preview 上**既重现不出来、也验不了修法**:仓内「mock 说谎」一族。
         setGroupId(g) {
-            if (readOnly()) return OBSERVER();
             const next = clampInt(g, 1, 8, model.snapshot.group_id);
+            // 目标组已有主 Output ⇒ 本实例(继续)只读观察;否则接管为主实例。
+            // `occupiedOutputGroup` 0 = 全机没有别的主 Output(健康满配默认)。
+            const occupied = model.caps.occupiedOutputGroup || 0;
+            const observer = occupied > 0 && next === occupied;
             patchState({ group_id: next });
-            return OK();
+            // §1.4 语义行:「成功后 `scvb.state.group_id` 与 `scvb.conn` 一并刷新」。
+            // 只读位翻了才推 —— 同组内重复点同一枚胶囊上面已经早退不到这里。
+            if (readOnly() !== observer) {
+                model.caps.readOnly = observer;
+                mergeDeep(model.conn, { outputReadOnly: observer });
+                emit("scvb.conn", clone(model.conn));
+                // §2.9:持续性条件解除走 `active:false`(横幅② 据此撤下);
+                // 重新成立时按 §5.1 带上新组号的 detail。
+                emit(
+                    "scvb.error",
+                    observer
+                        ? makeError("secondOutput", {
+                              detail: { groupId: next },
+                          })
+                        : { code: "secondOutput", active: false },
+                );
+            }
+            return observer ? OBSERVER() : OK();
         },
 
         // ---- §1.5 -------------------------------------------------------------

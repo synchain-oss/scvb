@@ -25,6 +25,8 @@
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
+// [SL-381] 写完等那一帧 —— mock 的状态回声默认异步(CLAUDE.md §10),不写死 sleep。
+import { awaitState } from "./lib/await-state.mjs";
 
 const ROOT =
     process.argv[2] ||
@@ -772,6 +774,16 @@ async function openSession(params) {
 }
 
 // 只读观察态:写控件全 disabled,C++ 侧回 {observer:true} 且不改 state(§5.1 secondOutput)
+//
+// [SL-381] 这一格连着改了两件事,别把它读成「放宽了只读观察」:
+//   ① `setGroupId` **不属于**「只读观察态下的一切写函数」那一档(§5.6 把两种 observer
+//      出处并列写),它的 observer 判据在**目标组**(§1.4 返回行:「新组 OutputSlot
+//      已被占」)。原先这一格断的是「只读观察态 setGroupId ⇒ {observer:true}」,那是
+//      把「本实例当下是不是观察者」当成了判据 —— 按那个读法,进了只读观察就再也改不了组,
+//      正是用户 v5.6.11 实测 B22 报的「界面全锁死、无法切换成别的组」。
+//   ② 其余写函数(setChannelConfig / setTrackManual / editSegment / clearCoverage)
+//      照旧回 `{observer:true}` 且不改 state —— 下面第三段反向钉住,免得这一刀把
+//      整个只读观察面一起放开。
 {
     const { session, bridge, store } = await openSession(
         "fixture=second-output",
@@ -780,12 +792,86 @@ async function openSession(params) {
         store.errors.has("secondOutput"),
         "second-output fixture 发 secondOutput 错误码",
     );
+
+    // ---- 改到**空组**(组 5)⇒ 接管为主实例:{ok:true} + 只读解除 + 横幅② 撤下 ----
     eq(
         await bridge.setGroupId(5),
+        { ok: true },
+        "只读观察态改到空组 ⇒ {ok:true}(§1.4:observer 判据在目标组)",
+    );
+    await awaitState(
+        () => store.state.group_id,
+        (g) => g === 5,
+        "setGroupId(5) 的 group_id 回声",
+    );
+    check(
+        store.conn.outputReadOnly === false,
+        "改到空组后 scvb.conn.outputReadOnly 翻 false(§1.4 语义行:conn 一并刷新)",
+    );
+    check(
+        !store.errors.has("secondOutput"),
+        "改到空组后 secondOutput 经 active:false 撤下(§2.9)⇒ 横幅② 不再显示",
+    );
+
+    // ---- 反向:改回**已被占的那一组**(组 1)⇒ 重新进只读观察 ----
+    // 少了这一格,「改组后恒 {ok:true} 且恒清只读」这种错实现也能让上面全绿。
+    eq(
+        await bridge.setGroupId(1),
         { observer: true },
-        "只读观察态 setGroupId ⇒ {observer:true}",
+        "改回已有主 Output 的组 ⇒ {observer:true}(§1.4 返回行)",
+    );
+    await awaitState(
+        () => store.state.group_id,
+        (g) => g === 1,
+        "setGroupId(1) 的 group_id 回声",
+    );
+    check(
+        store.conn.outputReadOnly === true,
+        "改回被占组后 outputReadOnly 翻回 true",
+    );
+    check(
+        store.errors.has("secondOutput"),
+        "改回被占组后 secondOutput 重新成立(横幅② 回来)",
+    );
+
+    // ---- 其余写函数仍被只读观察挡住(这一刀没有把整个只读面放开)----
+    eq(
+        await bridge.setChannelConfig(1, { label: "x" }),
+        { observer: true },
+        "只读观察态 setChannelConfig 仍 ⇒ {observer:true}",
+    );
+    eq(
+        await bridge.setTrackManual(1, "pan", 0.2),
+        { observer: true },
+        "只读观察态 setTrackManual 仍 ⇒ {observer:true}",
     );
     session.stop();
+}
+
+// [SL-381] 组选择器的禁用判据:**只有 PRINT 态**(05 §2.1 ⓪ / 契约 §1.4 拒绝态行)。
+//
+// 这一格钉的是「哪几种态锁组卡」这张真值表本身。三行缺一都不行,删除式实跑过:
+//   · 判据改成恒 `true` ⇒ FOLLOW / ARMED 两行红(只留 PRINT 行的话它能蒙混过去);
+//   · 判据改成恒 `false` ⇒ PRINT 行红。
+// 而「把 readOnly / noTimeline 并回判据」必须**改签名**,那时最后那行 `.length === 1` 红 ——
+// 真值表管值、入参数管形,两者合起来才封得住,别只留其中一半。
+{
+    const playing = { isPlaying: true, inRange: true };
+    const printState = { global: { output_enabled: true } };
+    eq(
+        TM.groupSelectorDisabled(TM.outputPhase(printState, playing)),
+        true,
+        "PRINT 态 ⇒ 组卡整组 disabled(唯一的锁面)",
+    );
+    eq(TM.groupSelectorDisabled("follow"), false, "FOLLOW 态 ⇒ 组卡可操作");
+    eq(TM.groupSelectorDisabled("armed"), false, "ARMED 态 ⇒ 组卡可操作");
+    // 判据的**入参只有 phase**:只读观察 / 无时间线两态根本进不来,所以「改组是那两态
+    // 唯一的出口」这句话在类型上就成立,不靠调用点自觉。这一行断的就是这件事。
+    eq(
+        TM.groupSelectorDisabled.length,
+        1,
+        "groupSelectorDisabled 只吃 phase 一个入参(readOnly/noTimeline 进不来)",
+    );
 }
 
 // 路由失准:横幅① 的 {m} 由 scvb.conn.misalignCount 数出来

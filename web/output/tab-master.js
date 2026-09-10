@@ -592,6 +592,30 @@ export function outputPhase(state, playhead) {
 }
 
 /**
+ * [SL-381] 组选择器(⓪ GROUP 卡)的禁用判据 —— **只有 PRINT 态**。
+ *
+ * 两处真源都只列 PRINT,一个字也没提只读观察:05 §2.1 ⓪ 逐字写「PRINT 态八胶囊整组
+ * disabled + tooltip『打印中不可切组』」,契约 §1.4 `setGroupId` 的「拒绝态」一行写
+ * 「PRINT 态由 UI 侧整组 disabled…C++ 侧不新增 `rejected` 码」。
+ *
+ * 所以本函数**刻意不并进 `isWriteBlocked()`**(那是 `readOnly || noTimeline`)。改组在
+ * 这两态下必须照走 —— 它是这两态**唯一的出口**:
+ *   · 只读观察(§5.1 `secondOutput`):契约 §5.6 把 `{observer:true}` 的两种出处**分开**写,
+ *     「Output `setGroupId`(新组已有主 Output)」与「只读观察态下的一切写函数」并列 ——
+ *     前者是**改组的结果播报**而不是拒绝。C++ 侧 `OutputEditor::handleSetGroupId` 也确实
+ *     不查 `isReadOnly()`:先 `processor_.setGroupId(g)` 落地,再按新组的 claim 结果回
+ *     `{ok}` 或 `{observer:true}`。把组卡一起锁掉,等于让 §1.4 那个返回值从 UI 上永远走不到。
+ *   · 无时间线(§5.1 `noTimeline`):该行的 UI 落点逐字是「采集/输出开关 disabled」,
+ *     没有组卡。
+ *
+ * 用户 v5.6.11 实测 B22 报的就是前者:同组第二个 Output 进只读观察后「所有界面都被锁死
+ * 导致无法切换成别的组」—— 无路可退。
+ */
+export function groupSelectorDisabled(phase) {
+    return phase === "print";
+}
+
+/**
  * 分析影响面(master.step2.desc 的 {n}/{m}/{k})。
  * 首选 `previewAnalyze()` 的返回(契约 §1.5 `{intervals, tracks, manualKept}`);
  * 拿不到时从 `scvb.segments`(契约 §2.8)兜底出同一组数,避免影响预览行留裸大括号。
@@ -1157,7 +1181,13 @@ export function createTabMaster(opts) {
         render();
     }
 
-    /** 只读观察态(契约 §5.1 `secondOutput`)与无时间线(§5.1 `noTimeline`)下全写控件失效。 */
+    /**
+     * 只读观察态(契约 §5.1 `secondOutput`)与无时间线(§5.1 `noTimeline`)下全写控件失效。
+     *
+     * **[SL-381] ⓪ GROUP 卡不在这道闸下面**,别再把它接回来:改组是这两态**唯一的出口**,
+     * 锁掉它用户就无路可退(用户 v5.6.11 实测 B22 报的正是这个)。组卡的判据是
+     * `groupSelectorDisabled(phase)`,依据与反例都写在那个函数的头注里。
+     */
     function isWriteBlocked() {
         const st = getStore();
         return !!(st.readOnly || st.noTimeline);
@@ -1172,7 +1202,9 @@ export function createTabMaster(opts) {
                         ? e.target.closest("[data-group]")
                         : null;
                 if (!btn) return;
-                // PRINT 态整组 disabled(05 §2.1 ⓪);只读观察态同样不可写。
+                // 整卡 disabled 时不受理(判据见 `groupSelectorDisabled()`:只有 PRINT 态)。
+                // [SL-381] 这道闸读的是**渲染写下的属性**而不是自己再算一遍 —— 两处各算
+                // 一份正是「显形那半边也会连环」的起点。
                 if (
                     el.groupCard &&
                     el.groupCard.getAttribute("data-disabled") === "1"
@@ -1818,11 +1850,17 @@ export function createTabMaster(opts) {
             }
         }
         if (el.groupCard) {
-            // PRINT 态整组 disabled(05 §2.1 ⓪);只读观察态同理。
-            const off = phase === "print" || isWriteBlocked();
+            // 禁用面只有 PRINT 态(05 §2.1 ⓪ / 契约 §1.4 拒绝态行);判据抽在
+            // `groupSelectorDisabled()`,理由(为什么不并进 isWriteBlocked)见那里的头注。
+            // [SL-381] 这里原先写的是 `phase === "print" || isWriteBlocked()`,
+            // 而那句注释「只读观察态同理」在两处真源里都查不到 —— 用户实测 B22 的
+            // 「界面全锁死、无法切成别的组」就是它。
+            const off = groupSelectorDisabled(phase);
             el.groupCard.setAttribute("data-disabled", off ? "1" : "0");
             // 已展开的改组确认条随禁用一并收起(PR #52 bot 建议):否则确认钮
-            // 仍可在 PRINT/只读态下提交 setGroupId,绕过整卡 disabled。
+            // 仍可在 PRINT 态下提交 setGroupId,绕过整卡 disabled。
+            // [SL-381] 收起面跟着 `off` 走,于是也只剩 PRINT —— 只读观察态下确认条
+            // 必须留得住,否则用户点完胶囊、下一帧渲染就把它抹掉,照样切不了组。
             if (off) local.pendingGroup = 0;
             // 05 §2.1 ⓪ 逐字要求 disabled **+ tooltip**;词条 master.printLock.group(T31 新增)。
             // title 不走 applyI18n(它只刷 data-t / data-t-aria),故每次渲染按当前字典重写。

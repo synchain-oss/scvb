@@ -387,6 +387,11 @@ export function buildWorld(opts = {}) {
     // ---- 默认值(健康满配 15 轨)-------------------------------------------------
     const caps = {
         readOnly: false,
+        // [SL-381] **哪个组已经有主 Output**(0 = 一个都没有)。`readOnly` 只说本实例
+        // 当下是不是观察者,说不出「改到别的组之后还是不是」—— 而 §1.4 的判据恰恰在
+        // 目标组。两个 cap 各管一件事:这一个是世界的事实,`readOnly` 是本实例的当下态,
+        // 由 `setGroupId` 按目标组重算(见 juce-bridge-mock.js §1.4)。
+        occupiedOutputGroup: 0,
         loopAvailable: true,
         loop: { ...HOST_LOOP },
         occupiedMask: ALL_CHANNELS_MASK,
@@ -515,6 +520,10 @@ export function buildWorld(opts = {}) {
         outputSegments = makeTourDemoSegments(1, "snapshot");
         inputSnapshot = connectedInputSnapshot(1); // Input 视角正常
         caps.readOnly = true;
+        // [SL-381] 占着主 Output 的是**组 1**(= 本 fixture 的 group_id,也是下面
+        // secondOutput 错误 detail 里那个组号)。改到别的组 ⇒ 接管为主实例、只读解除;
+        // 改回组 1 ⇒ 重新进只读观察。这一格是 B22「两者互不干扰」的预览面真源。
+        caps.occupiedOutputGroup = 1;
         errors.output.push(
             makeError("secondOutput", { detail: { groupId: 1 } }),
         );
