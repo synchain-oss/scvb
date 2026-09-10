@@ -33,7 +33,7 @@ jobs:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
           # ── 模型切换口 ── 默认 flash(性能优于 pro 且便宜);[1M] 为网关上下文标注,
           # 与 pro 同格式(官方称 V4 默认 1M,标注属保险;报 model not found 则去后缀)。
-          # 切回 v4 flash:三行改 deepseek-v4.1-flash-expires-on-0910,并同步 claude_args 的 --model(用户 2026-09-10 决定试用 v4.1 flash 预览 id)
+          # 回退:三行改回 v4 flash 的 id(带 [1M] 后缀),并同步 claude_args 的 --model;当前是用户 2026-09-10 决定试用的 v4.1 flash 预览 id
           ANTHROPIC_MODEL: deepseek-v4.1-flash-expires-on-0910
           ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4.1-flash-expires-on-0910
           ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4.1-flash-expires-on-0910
