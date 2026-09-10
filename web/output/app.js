@@ -1948,21 +1948,27 @@ if (bridge) {
         const same = samePlayhead(store.playhead, p);
         // [SL-356] 停走**边沿**判定要在覆写之前取上一帧的走带态(与上面 scvb.params 里
         // `prevHostEchoAt` 同一个坑:整体覆写之后再去比,永远比不出边沿)。
-        const wasStopped =
-            !!store.playhead && store.playhead.isPlaying === false;
+        // [SL-394 复审 —— 行为错] **上一帧只能在覆写之前捞一次,捞出来存成局部变量。**
+        // 上一版把第三实参写成 `store.playhead`,而 `store.playhead = p` 就在它**上面**
+        // 几行 —— 传进去的其实是**本帧**。于是 `prevPlayhead === playhead`,而函数第一句
+        // 已经把「本帧明确停走」早退掉了,走到 `wasStopped` 那一步它必然不是明确停走
+        // ⇒ `wasStopped` **恒 false** ⇒ 起点一个会话只写一次,闩锁退化成
+        // 「自第一段播放起一直亮」:停走再播、整段没有任何宿主写,徽标照样亮。
+        // (更糟的是当时那句注释还写着「这一行紧挨着下面那句 `store.playhead = p`」——
+        //  那句 `store.playhead = p` 在**上面**,注释与代码打对台,而没有任何东西会红。)
+        const prevPlayhead = store.playhead;
+        const wasStopped = !!prevPlayhead && prevPlayhead.isPlaying === false;
         store.playhead = p;
-        // [SL-394] **顺序有讲究**:本次播放起点要拿**覆写前**的 `playingAt` 算 ——
-        // 先覆写再算的话 `prevPlayingAt` 永远是本帧时刻,「隔了超过去抖窗」恒不成立,
-        // 于是永远开不出新的一段播放,此后每段播放都会拿上一段的宿主写当成「本次写过」。
-        // 与本文件里 `prevHostEchoAt` / `wasStopped` 是同一个坑。
-        // [SL-394 复审] 第三个实参是**覆写前**的 `store.playhead` —— 新的一段只能由
-        // 「明确停走 → 播放」这个**转换**开启,而转换只有拿上一帧才看得出来。
-        // 这一行紧挨着下面那句 `store.playhead = p`,顺序同样不能调换(与 `wasStopped`
-        // 那一处、以及 `prevHostEchoAt` 是同一个坑:整体覆写之后再比,永远比不出边沿)。
+        // [SL-394] **顺序有讲究**:本次播放起点要拿**覆写前**的 `playingAt` 与
+        // **覆写前**的 `playhead` 一起算 ——
+        //   · `playingAt` 先覆写再算 ⇒ `prevPlayingAt` 永远是本帧时刻,「停满去抖窗」恒不成立;
+        //   · `playhead` 先覆写再算 ⇒ 上一帧丢了,「停走 → 播放」这个**转换**永远看不出来。
+        // 两者都与本文件里 `prevHostEchoAt` / `wasStopped` 是同一个坑。
+        // 所以这里用的是上面那个 `prevPlayhead` 局部变量,**不是** `store.playhead`。
         store.playbackStartedAt = playbackStartedAt(
             store.playbackStartedAt,
             store.playingAt,
-            store.playhead,
+            prevPlayhead,
             p,
         );
         // [SL-356] 走带态去抖的记账(判据与理由见 host-echo.js 的 transportPlayingAt)。

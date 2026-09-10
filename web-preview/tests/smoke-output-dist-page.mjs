@@ -48,6 +48,8 @@ import { inflateSync } from "node:zlib";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FALLBACK_TRACK_COLORS } from "../../web/shared/track-colors.js";
+// [SL-394 复审] (h3) 要按真常量停满去抖窗,不在这里写第二份数字。
+import { HOST_ECHO_TRANSPORT_HOLD_MS } from "../../web/shared/host-echo.js";
 
 const ROOT =
     process.argv[2] && !process.argv[2].startsWith("--")
@@ -1855,6 +1857,54 @@ try {
                     `(g) ★ 播放中 playhead 断流 2s ⇒ 断流期间(实得 ${midStall})与恢复供帧之后` +
                         `(实得 ${lit}/${after.length} 次采样为亮)徽标都仍亮 —— 时间空洞不得开新段`,
                 );
+            }
+        }
+
+        // ---- (h3) [SL-394 复审【行为错】①] **新的一段播放没有宿主写 ⇒ 不亮。**
+        //
+        // 这一格钉的是**接线**,不是零件:上一版把 `playbackStartedAt()` 的第三实参写成
+        // `store.playhead`,而 `store.playhead = p` 就在它上面几行 —— 传进去的其实是本帧,
+        // 于是 `wasStopped` 恒 false、起点一个会话只写一次,闩锁退化成「自第一段播放起
+        // 一直亮」。那时**两处纯函数用例(含逐帧模拟)全绿**,页面级也没有一格看得见它。
+        //
+        // 造法:播放 + 让宿主写一次(徽标亮)→ 停走并**停满去抖窗**(徽标灭)→ 再按播放,
+        // 但**整段不让宿主写**(输出保持关)⇒ 越过停走档之后必须**仍然不亮**。
+        // 起点没跟着新段走的话,`at >= start` 仍成立,徽标会在第二段里亮着 —— 本格当场红。
+        //
+        // ★ 删除式:把实参换回 `store.playhead`,本格与 node 侧 (b0b)(b0c) 一起红。
+        {
+            await setPlaying(true);
+            await setOutput(true);
+            if (
+                check(
+                    await waitFor(badgeOn, 15000),
+                    "(h3) 前置:第一段里徽标亮起",
+                )
+            ) {
+                await setOutput(false); // 之后整程不再有 hostEcho 帧
+                await setPlaying(false);
+                if (
+                    check(
+                        await waitFor(badgeOff, 6000),
+                        "(h3) 前置:停走后徽标先灭(第一段结束)",
+                    )
+                ) {
+                    // 停满去抖窗再起播 —— 这才算「新的一段」
+                    await sleep(HOST_ECHO_TRANSPORT_HOLD_MS + 200);
+                    await setPlaying(true);
+                    const seen = [];
+                    for (let i = 0; i < 8; i++) {
+                        await sleep(250);
+                        seen.push(await evaluate(badge));
+                    }
+                    const litCount = seen.filter((v) => v === "1").length;
+                    check(
+                        litCount === 0,
+                        `(h3) ★ 新的一段播放里没有任何宿主写 ⇒ 全程不亮` +
+                            `(实得 ${litCount}/${seen.length} 次采样为亮;` +
+                            `>0 = 起点没跟着新段走,闩锁把上一段的写算进来了)`,
+                    );
+                }
             }
         }
 

@@ -2075,6 +2075,28 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
                 `(实得起点@${iStart} < 走带@${iPlaying} = ${iStart < iPlaying})` +
                 " —— 调换两行 ⇒ 闩锁永不生效,而纯函数用例全绿",
         );
+        // [SL-394 复审【行为错】①] **上一帧必须是覆写前捞的局部变量,不能是 `store.playhead`。**
+        // 上一版第三实参写的是 `store.playhead`,而 `store.playhead = p` 就在它上面几行,
+        // 传进去的其实是本帧 ⇒ `prevPlayhead === playhead` ⇒ `wasStopped` 恒 false ⇒
+        // 起点一个会话只写一次,闩锁退化成「自第一段播放起一直亮」。
+        // 上面 (b0) 那一格**拦不住**它:它只钉「起点 vs playingAt」的先后,这条错在**另一个**
+        // 实参上,而两处纯函数用例(含逐帧模拟)当时全绿 —— 又一次「测了零件、没测接线」。
+        const iPrevCapture = appSrc.indexOf(
+            "const prevPlayhead = store.playhead;",
+        );
+        const iPhOverwrite = appSrc.indexOf("store.playhead = p;");
+        check(
+            iPrevCapture >= 0 &&
+                iPhOverwrite >= 0 &&
+                iPrevCapture < iPhOverwrite,
+            "(b0b) ★ `prevPlayhead` 必须在 `store.playhead = p` **之前**捞" +
+                `(实得捞@${iPrevCapture} < 覆写@${iPhOverwrite} = ${iPrevCapture < iPhOverwrite})`,
+        );
+        check(
+            /playbackStartedAt\([\s\S]{0,160}?prevPlayhead/.test(appSrc),
+            "(b0c) ★ `playbackStartedAt()` 的上一帧实参必须是 `prevPlayhead`,不得是 `store.playhead`" +
+                "(那时它已被覆写成本帧 ⇒ 转换永远看不出来)",
+        );
     }
     check(
         /for \(const node of \[el\.widthCard, el\.msCard, el\.leadCard\]\)/.test(
