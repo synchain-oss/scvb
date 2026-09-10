@@ -3257,7 +3257,11 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 
         if (!result.cancelled)
         {
-            // [SL-284] 平衡回退级记账 —— 与本次真正落地的那批段同源。
+            // [SL-284] 平衡回退级记账 —— 与本轮**计算集**同源。
+            // [SL-393] 原话是「与本次真正落地的那批段同源」,计算集放宽之后那句不再成立:
+            // `maxFallbackLevel` 是跨**整个计算集**取的最坏值,而计算集里的上下文轨这一轮
+            // 根本不写回段表 —— 最坏那一级完全可能来自一条没落地的轨。目前没有产品消费方
+            // (只在诊断里读),故只订正这句话、不改取值口径;真要改成「只统计写回集」是另一件事。
             // 放在 `!result.cancelled` 里面:取消的那份结果整份丢弃,不该污染诊断值
             // (口径逐字见 `lastMaxFallbackLevel_` 的声明处)。
             lastMaxFallbackLevel_.store(result.maxFallbackLevel, std::memory_order_relaxed);
@@ -3271,7 +3275,9 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // `p>0.5` 只表示「过了双阈值中点」,不等于经过迟滞 + 丢短 + padding + 并段之后的判决;
             // 守卫分支(LoudRegion 判全段有声)下后验甚至可能整体 <0.5。记在这里,免得下次
             // 「绿线和段块对不齐」被当成 bug 再查一轮。
-            // 只写**本次真参与分析**的轨与 hop(posterior 为空的轨跳过),绝不碰范围外的账;
+            // 只写**本轮写回集**的轨与 hop(掩码外的轨、posterior 为空的轨都跳过),绝不碰
+            // 范围外的账。[SL-393] 原话是「本次真参与分析的轨」——计算集放宽之后那句就漂了:
+            // 参与分析的轨现在包含只来当上下文的那些,而它们的 vadP 一个字节都不该被动;
             // 量化口径(0..1 → 0..255,与读侧 `vadP(h) > 127` 同侧)见 `quantizeVadPosterior`。
             //
             // [SL-232] 走**批量**入口 `setVadPosteriorRange`:逐 hop 的老写法是每个 hop 两次
@@ -3283,6 +3289,15 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                 auto& store = session_.frameStore();
                 for (int t = 0; t < 15; ++t)
                 {
+                    // [SL-393] **按写回集筛**。计算集放宽之后,`result.vadPosterior` 里会带着
+                    // 上下文轨的后验 —— 那些轨这一轮只是来给指派器当上下文的,用户没要求动它们。
+                    // 不筛的话「恢复这一段」会把别的轨的 FrameStore vadP(§1.27 瓦片 vad 列、
+                    // 泳道绿线的唯一数据源)静默重写;而 vadP 写回**在 CRVS 事务之外**
+                    // (见下方合并注),撤销的语义面只有段表 —— 也就是说**撤销救不回来**。
+                    if (!scvb::output::inWriteMask(analyzedTracks, t))
+                    {
+                        continue;
+                    }
                     const auto& post = result.vadPosterior[static_cast<std::size_t>(t)];
                     if (post.empty())
                     {

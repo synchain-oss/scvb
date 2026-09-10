@@ -2043,6 +2043,58 @@ TEST_CASE("HOST SL-393:单轨掩码的重算走多轨上下文,不再把该轨�
 }
 
 // ---------------------------------------------------------------------------
+// [SL-393] 写回集也管着 **VAD 后验(vadP)写回 FrameStore** 那一步。
+//
+// 段表那一半有 `applyAnalysisSegments` 的掩码守着,vadP 那一半没有:`finishAnalysis` 里
+// 那个循环原来是 `for (t : 0..14)` 无条件写。计算集放宽之后,`result.vadPosterior` 里会
+// 带着**上下文轨**的后验 —— 于是「恢复这一段」会把别的轨的 vadP(§1.27 瓦片 vad 列、
+// 泳道绿线的唯一数据源)静默重写。
+//
+// 比段表那一半更要紧的一点:vadP 写回**在 CRVS 事务之外**(它写的是 FrameStore,不在
+// commitCrvsTransaction 的快照口径里),所以**撤销救不回来**。
+//
+// 判据要一对正反:先改 VAD 阈值,让「重算一次」必然产出与现存不同的后验,再做单轨恢复 ——
+// 掩码外那一轨的 vad 列必须逐列不变(否则就是被静默重写了),掩码内那一轨必须变
+// (否则「没写」也能让前一条绿,那是把整步写回都判没了)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-393:单轨恢复不得重写掩码外轨的 vadP", "[host][sl393][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCols = 96;
+    const int target = 1;
+    const int other = 2;
+    auto vadColsOf = [&](int ch) {
+        const auto tile = r.out.waveformOf(ch, 0.0, coveredS, kCols);
+        return std::vector<std::uint8_t>(tile.vad.begin(), tile.vad.end());
+    };
+
+    const auto beforeOther = vadColsOf(other);
+    const auto beforeTarget = vadColsOf(target);
+    // 前置:分析真的产出过后验,否则「没变」与「本来就空」分不开。
+    REQUIRE(std::any_of(beforeOther.begin(), beforeOther.end(), [](std::uint8_t v) { return v != 0; }));
+    REQUIRE(std::any_of(beforeTarget.begin(), beforeTarget.end(), [](std::uint8_t v) { return v != 0; }));
+
+    // 把 VAD 阈值挪远,让下一次重算必然算出**不一样**的后验(与本文件既有那几处同款手法)。
+    r.out.runtime().vadThresholdDb = 12.0f;
+    MonoMultiRig::pump(120);
+
+    const auto mask = static_cast<std::uint16_t>(1u << (target - 1));
+    REQUIRE(r.runAnalysisMasked(mask, 0.0, coveredS, /*clearManual=*/true));
+
+    // ★ 掩码外:vad 列逐列不变(修复前这里会被上下文轨的后验静默盖掉)
+    CHECK(vadColsOf(other) == beforeOther);
+    // ★ 正对照 —— 掩码内确实被重写了(否则上一条会被「整步都没写」蒙混过去)
+    CHECK(vadColsOf(target) != beforeTarget);
+}
+
+// ---------------------------------------------------------------------------
 // [SL-393] 计算集变宽了,**写回集不许跟着变宽**:确认文案许诺「只重算选中的这一段」,
 // 掩码外的轨只是拿来当上下文的,它们的段表一个字段都不许动。
 //
@@ -3334,7 +3386,15 @@ TEST_CASE("HOST SL-202:单轨 clearManual 重新识别不得动他轨段表", "[
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, -80.0f, replaced, replacedLocked));
     setFreezeBits(r.out, kCh, 0);
+
+    // [SL-393] 掩码**内外**各留一个冻结位,给下面那对断言当正反对照。
+    // 计算集放宽之后,`clearManual` 清 freeze 的那个循环会看见上下文轨(它们现在也
+    // `anyCovered`),不按写回集筛就会把**别人的**冻结一并解掉 —— 那是带 gesture 的
+    // 用户参数面写入,而用户只点了「恢复这一段」。
+    setFreezeBits(r.out, kCh, 1); // 掩码内:本轮该被清成 0
+    setFreezeBits(r.out, 2, 1); // 掩码外:一位都不许动
     MonoMultiRig::pump(120);
+    REQUIRE(paramValueOf(r.out, scvb::params::freezeId(r.out.versionActive(), 2)) == Catch::Approx(1.0f));
 
     const auto accepted = r.out.startAnalysis(static_cast<std::uint16_t>(1u << (kCh - 1)), 0.0, coveredS,
                                               /*clearManual=*/true);
@@ -3357,6 +3417,11 @@ TEST_CASE("HOST SL-202:单轨 clearManual 重新识别不得动他轨段表", "[
     // 本轨:重算出了 auto 段,曲线在,不是空表。
     CHECK(activeCurveOf(r.out, kCh) != nullptr);
     CHECK(allAutoSegments(r.out, kCh));
+
+    // ★ [SL-393] 冻结位:掩码外原样保留、掩码内被清 —— 一对正反对照。
+    // 只断前者会被「一位都没清」蒙混过去(那样 clearManual 的语义反而被收窄了)。
+    CHECK(paramValueOf(r.out, scvb::params::freezeId(r.out.versionActive(), 2)) == Catch::Approx(1.0f));
+    CHECK(paramValueOf(r.out, scvb::params::freezeId(r.out.versionActive(), kCh)) == Catch::Approx(0.0f));
 }
 
 // ---------------------------------------------------------------------------
