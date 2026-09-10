@@ -49,11 +49,11 @@ import {
     // [SL-270] 释放窗口按走带态分档;下面那行 console 读数必须用**当时那一档**,
     // 否则它会把「播放中根本不会让徽标灭」的间隔也报成一次眨眼。
     // 两档的常量都要:退出定时器**两拍各排一个**(见 scvb.params 订阅)。
-    HOST_ECHO_RELEASE_PLAYING_MS,
     // [SL-356] 走带态去抖:停走边沿要按它排一拍 render(见 scvb.playhead 订阅)。
     HOST_ECHO_TRANSPORT_HOLD_MS,
     hostEchoReleaseMs,
-    hostEchoOn,
+    hostEchoVisible,
+    playbackStartedAt,
     hostEchoUseWideWindow,
     transportPlayingAt,
 } from "./tab-master.js";
@@ -128,6 +128,11 @@ const store = {
     // 推进,消费者只有 `hostEchoUseWideWindow()`。为什么需要它:见 host-echo.js 的
     // `HOST_ECHO_TRANSPORT_HOLD_MS` 头注(播放中一帧 false 会把徽标当拍打掉)。
     playingAt: 0,
+    // [SL-394] **本次播放的起点**(ms);0 = 本会话还没开始过一段播放。
+    // 只由 `scvb.playhead` 订阅经 `playbackStartedAt()` 推进,消费者只有
+    // `hostEchoVisible()`。它回答的是「宿主这一次写,是不是发生在当前这一段播放里」
+    // —— 徽标常亮判据的另一半(详见 host-echo.js 的 `hostEchoVisible` 头注)。
+    playbackStartedAt: 0,
     segments: null, // §2.8(合并后的全轨段表视图)
     coverage: {}, // ch → coveragePct(§2.7)
     // §2.9 errorStoreKey(e) → payload(active:false 即删)。键 = 裸 code,**唯
@@ -761,11 +766,12 @@ const scaleUi = {
     revert: $("scale-confirm-revert"),
 };
 let scaleTimer = 0;
-// hostEcho 灰显的退出定时器(批次停发后补一拍 render;见 scvb.params 订阅)。
-// [SL-270] 两个句柄:短的按停走档、长的按播放档 —— 走带态在窗口里翻转时,
-// 哪一档先到期都得有人来 render,漏排哪一个都会让徽标滞留。
+// hostEcho 徽标 / 灰显的退出定时器(批次停发后补一拍 render;见 scvb.params 订阅)。
+// [SL-394] 只剩**一个**句柄:播放档窗口连同它那一拍(原 `hostEchoTimerWide`)一起删了。
+// 播放中该不该亮改由**播放期闩锁**回答(不会到期,所以没有「到期那一刻要 render」),
+// 而闩锁的开灯边沿本身就带着一帧 `scvb.params`(它自己会 requestRender)。
+// SL-270 原话「两个句柄:短的按停走档、长的按播放档」已随之失效。
 let hostEchoTimer = 0;
-let hostEchoTimerWide = 0;
 // [SL-356] 走带态去抖到期的那一拍 render(见 scvb.playhead 订阅的停走**边沿**分支)。
 // 与上面两个句柄分开:那两个挂在「最后一帧 hostEcho:true」上,这个挂在「停走边沿」上,
 // 两个锚点各走各的时间线,合用一个句柄会互相取消。
@@ -1864,13 +1870,23 @@ if (bridge) {
             // [SL-356] 「当时那一档」现在含走带态去抖(刚停走还没满 500ms 仍算宽档),
             // 与徽标实际用的是同一次调用的同一条判据 —— 读数与所见继续对得上。
             const releaseMs = hostEchoReleaseMs(hostEchoUseWideWindow(store));
+            // [SL-394] 这行读数原先说的是「这个间隔会让徽标灭一下再亮」—— 播放期闩锁
+            // 生效时它**不会**灭,那句话成了假话。**措辞改真**,但**不加门**:
+            // 我第一版给它加了 `&& !latched`,结果这行在 mock 上**永远不可达**
+            // (停走时打印头不写 ⇒ 根本没有 hostEcho 帧来触发它),等于把它变回死代码
+            // —— 而 smoke-output-dist-page ⑩(g) 正是为「它别再变成死代码」立的那一格,
+            // 首跑当场红。所以照旧无条件打印,只把话说准:间隔本身是有用的读数,
+            // 至于「会不会灭」分播放/停走两种,一句写清。
             if (prevHostEchoAt && gap >= releaseMs) {
+                // ⚠ 标签保持  不变:页面级冒烟 ⑩(g) 按这个前缀抓它,
+                // 而且用户被告知过「把这几行贴回来」—— 换标签会同时打断判据与那条指引。
+                // 变的只有措辞(见上一段)。
                 // 纯 ASCII:①它只进开发者控制台,不上屏;②`scripts/check-font-coverage.py`
                 // 扫的是 web/ 下**全部 .js 的字符串字面量**,这里写中文会把新字形塞进字体
                 // 子集(实测「徽/灭/眨/隔」四个字四款字体都没有,gate 3h 直接红);
                 // ③用户要把这几行贴回来给我们,ASCII 复制粘贴不会乱码。
                 console.debug(
-                    `[SCVB][SL-251] hostEcho gap ${gap}ms >= release window ${releaseMs}ms; the host-driven badge blinks off and back on across this gap.`,
+                    `[SCVB][SL-251] hostEcho gap ${gap}ms >= release window ${releaseMs}ms. While the transport is playing the playback latch keeps the badge lit across this gap; while stopped the badge goes dark before the next write.`,
                 );
             }
             // ⚠ 定时器必须跟着**释放窗口**走,不是新鲜度窗口:闩锁到 RELEASE_MS 才熄,
@@ -1896,11 +1912,6 @@ if (bridge) {
             hostEchoTimer = setTimeout(
                 requestRender,
                 HOST_ECHO_RELEASE_STOPPED_MS + 50,
-            );
-            clearTimeout(hostEchoTimerWide);
-            hostEchoTimerWide = setTimeout(
-                requestRender,
-                HOST_ECHO_RELEASE_PLAYING_MS + 50,
             );
         }
         // 本地乐观值让位给引擎回推(必须排在 render 之前;规则见 tab-master.js nextParamEcho):
@@ -1937,9 +1948,29 @@ if (bridge) {
         const same = samePlayhead(store.playhead, p);
         // [SL-356] 停走**边沿**判定要在覆写之前取上一帧的走带态(与上面 scvb.params 里
         // `prevHostEchoAt` 同一个坑:整体覆写之后再去比,永远比不出边沿)。
-        const wasStopped =
-            !!store.playhead && store.playhead.isPlaying === false;
+        // [SL-394 复审 —— 行为错] **上一帧只能在覆写之前捞一次,捞出来存成局部变量。**
+        // 上一版把第三实参写成 `store.playhead`,而 `store.playhead = p` 就在它**上面**
+        // 几行 —— 传进去的其实是**本帧**。于是 `prevPlayhead === playhead`,而函数第一句
+        // 已经把「本帧明确停走」早退掉了,走到 `wasStopped` 那一步它必然不是明确停走
+        // ⇒ `wasStopped` **恒 false** ⇒ 起点一个会话只写一次,闩锁退化成
+        // 「自第一段播放起一直亮」:停走再播、整段没有任何宿主写,徽标照样亮。
+        // (更糟的是当时那句注释还写着「这一行紧挨着下面那句 `store.playhead = p`」——
+        //  那句 `store.playhead = p` 在**上面**,注释与代码打对台,而没有任何东西会红。)
+        const prevPlayhead = store.playhead;
+        const wasStopped = !!prevPlayhead && prevPlayhead.isPlaying === false;
         store.playhead = p;
+        // [SL-394] **顺序有讲究**:本次播放起点要拿**覆写前**的 `playingAt` 与
+        // **覆写前**的 `playhead` 一起算 ——
+        //   · `playingAt` 先覆写再算 ⇒ `prevPlayingAt` 永远是本帧时刻,「停满去抖窗」恒不成立;
+        //   · `playhead` 先覆写再算 ⇒ 上一帧丢了,「停走 → 播放」这个**转换**永远看不出来。
+        // 两者都与本文件里 `prevHostEchoAt` / `wasStopped` 是同一个坑。
+        // 所以这里用的是上面那个 `prevPlayhead` 局部变量,**不是** `store.playhead`。
+        store.playbackStartedAt = playbackStartedAt(
+            store.playbackStartedAt,
+            store.playingAt,
+            prevPlayhead,
+            p,
+        );
         // [SL-356] 走带态去抖的记账(判据与理由见 host-echo.js 的 transportPlayingAt)。
         store.playingAt = transportPlayingAt(store.playingAt, p);
         const nowStopped = !!p && p.isPlaying === false;
@@ -1950,10 +1981,12 @@ if (bridge) {
             // 本来就不排 render、打印头停了就不再发 `scvb.params` ⇒ 只剩这几拍定时器。
             // 而窄档要到去抖窗到期才生效,那一刻正是徽标该熄的时刻之一
             // (另一种是 `hostEchoAt + 900` 更晚,由上面 hostEchoTimer 那一拍接住)。
-            // 少了这一拍,「宿主先停写、用户后停走」这条路上熄灭会**退到播放档那一拍**
-            // (`hostEchoTimerWide`,排在 `hostEchoAt + 2550`):页面级实测 630ms → 1947ms,
-            // 也就是 SL-270 ① 的「停播后挂着近两秒」原样复活。删除式见
-            // smoke-output-dist-page ⑪(b)。
+            // 少了这一拍,「宿主先停写、用户后停走」这条路上就没有任何东西来 render,
+            // 徽标与 Tab2 灰显会一直挂到下一次偶然的 render —— SL-270 ① 的
+            // 「停播后挂着近两秒」原样复活。删除式见 smoke-output-dist-page ⑪(b)。
+            // ⚠ [SL-394] 原文说的是「退到播放档那一拍(`hostEchoTimerWide`,排在
+            // `hostEchoAt + 2550`),实测 630ms → 1947ms」—— 那个句柄与播放档窗口
+            // 都已删除,数字不再成立;这一拍现在是停走后**唯一**的熄灭触发。
             // ⚠ 只在**边沿**排:每一帧停走都重排的话,30Hz 会把它无限推后、永不触发。
             clearTimeout(hostEchoTimerTransport);
             hostEchoTimerTransport = setTimeout(
@@ -2175,12 +2208,18 @@ window.__SCVB_OUTPUT__ = {
         return {
             at: (s.params && s.params.hostEchoAt) || 0,
             playingAt: s.playingAt || 0,
+            // [SL-394 复审] 这里原先还报 `playbackStartedAt` 与 `latched` 两格。
+            // **两格都删掉**:①全仓零消费者(冒烟一条都没读);②`latched` 是把
+            // `hostEchoVisible` 的 ① 分支**又抄了一遍**——第二份分叉实现,正是这一族
+            // 缺陷反复复发的形状,而且它抄的那一版已经与真判据不同步(缺 `- 宽限`那一项)。
+            // 真要分辨「亮是因为闩锁还是因为窗口」,该加的是判据自己导出的一个理由值,
+            // 不是在探针里重算一份。
             // 页面此刻手上的走带态是不是「**明确**停走」(与 hostEchoUseWideWindow 第一条
             // 分支同一条判据)。冒烟拿它证明「采样窗里真的出现过停走帧」——
             // 靠「我刚发了 setTransport(false)」推断的话,那一帧到没到页面并不知道。
             stopped: !!(s.playhead && s.playhead.isPlaying === false),
             wide,
-            on: hostEchoOn(s.params, now, wide),
+            on: hostEchoVisible(s, now),
         };
     },
 };
