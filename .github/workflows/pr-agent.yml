@@ -38,8 +38,8 @@ jobs:
           ANTHROPIC_API_BASE: https://api.deepseek.com/anthropic
           GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # C05 实测补:v0.39.0 容器同时读标准名;与点号键同值双写
-          # 模型基线(用户决策 2026-08-10 默认 flash;2026-09-10 改试 v4.1 flash 预览 id,回退用 v4 flash):litellm 不认 [1M] 括号,永远用裸名
-          config.model: anthropic/deepseek-v4.1-flash-expires-on-0910
+          # 模型基线(用户决策 2026-08-10 默认 flash;2026-09-10 改为 deepseek-flash(永久 id),回退用 v4 flash):litellm 不认 [1M] 括号,永远用裸名
+          config.model: anthropic/deepseek-flash
           config.fallback_models: anthropic/deepseek-v4-flash
           config.custom_model_max_tokens: 1000000 # 1M 档;换成不带 1M 上下文的 id 时改回 131072
           config.max_model_tokens: 900000 # 同上;届时改回 120000
