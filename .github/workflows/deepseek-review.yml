@@ -31,9 +31,12 @@ jobs:
       - uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126   # v1
         env:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-          # ── 模型切换口 ── 默认 flash(性能优于 pro 且便宜);[1M] 为网关上下文标注,
-          # 与 pro 同格式(官方称 V4 默认 1M,标注属保险;报 model not found 则去后缀)。
-          # 回退:三行改回 v4 flash 的 id(带 [1M] 后缀),并同步 claude_args 的 --model;当前是用户 2026-09-10 决定试用的 v4.1 flash 预览 id
+          # ── 模型切换口 ── 当前 = 用户 2026-09-10 决定试用的 v4.1 flash 预览 id(裸名,不带 [1M] 后缀)。
+          # 该 id 名字里带失效日期(expires-on-0910);失效后本 job 会报 model not found(本 job 无 fallback),
+          # 届时按下面逐行回退到 v4 flash 基线(勿全局替换):
+          #   ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_SONNET_MODEL = deepseek-v4-flash[1M]
+          #   ANTHROPIC_DEFAULT_HAIKU_MODEL                    = deepseek-v4-flash   (无 [1M],曾实测报 model not found)
+          #   claude_args --model(文件末尾)                    = deepseek-v4-flash[1M]
           ANTHROPIC_MODEL: deepseek-v4.1-flash-expires-on-0910
           ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4.1-flash-expires-on-0910
           ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4.1-flash-expires-on-0910
