@@ -8,6 +8,8 @@
 #include <algorithm> // [SL-273] std::max(两路 maxAbsDiff)
 #include <cmath>
 #include <cstdint>
+#include <string> // [SL-382] hasWarning 的入参
+#include <utility> // [SL-382] std::pair(段数/区间数一起带回)
 #include <vector>
 
 #include "analysis/AnalysisPipeline.h"
@@ -645,4 +647,265 @@ TEST_CASE("[SL-284] maxFallbackLevel 取逐区间最坏值,不被末个收敛区
 
     // 改成末值口径 ⇒ 末段收敛 ⇒ 这里读到 1 ⇒ 红。
     CHECK(res.maxFallbackLevel >= 2);
+}
+
+// ===========================================================================
+// [SL-382] 分段参数真接到分段器 —— 用户 v5.6.11 实测 B14「灵敏度 / 最短段长好像没用」
+// ===========================================================================
+
+namespace
+{
+
+// 一条**连续有声**的 kw 序列,内含三层深浅递进的能量谷(形状与
+// `test_segmentation.cpp` 的 `[SL382]` 用例逐点同构,只是这里表达成**线性 kw** ——
+// 流水线拿到的就是线性 kw,dB 换算是被测对象自己的事)。
+// 谷深 depthDb 在线性域即 `plateau · 10^(−depth/10)`(能量域,10·log10 口径)。
+PipelineTrackFeatures valleyTreeFeatures(float plateauKw, double scale)
+{
+    std::vector<float> kw(6400, plateauKw);
+    const std::vector<std::pair<int, double>> valleys{{3200, 12.0}, {1600, 7.0}, {4800, 7.0}, {800, 4.0},
+                                                      {2400, 4.0},  {4000, 4.0}, {5600, 4.0}};
+    for (const auto& v : valleys)
+    {
+        const double bottom = static_cast<double>(plateauKw) * std::pow(10.0, -v.second / 10.0);
+        for (int k = v.first - 10; k < v.first + 10; ++k)
+        {
+            kw[static_cast<std::size_t>(k)] = static_cast<float>(bottom);
+        }
+    }
+
+    PipelineTrackFeatures f;
+    f.kwMs.reserve(kw.size());
+    f.peak.reserve(kw.size());
+    for (const float v : kw)
+    {
+        const double e = static_cast<double>(v) * scale;
+        f.kwMs.push_back(static_cast<float>(e));
+        f.peak.push_back(static_cast<float>(std::sqrt(e)));
+    }
+    f.covered.assign(f.kwMs.size(), 1u);
+    f.anyCovered = true;
+    return f;
+}
+
+bool hasWarning(const PipelineResult& r, const std::string& w)
+{
+    return std::find(r.warnings.begin(), r.warnings.end(), w) != r.warnings.end();
+}
+
+// 「有声爆发 + 静音」交替。静音段取 200 hop(2s):远大于 padding_pre+post(120+200ms)
+// 与 mergeGap(150ms)之和,保证 P2/P3/P4 不会把相邻爆发并成一段 —— 否则本用例测到的
+// 就是「合并阈值」而不是「丢短阈值」。
+PipelineTrackFeatures burstFeatures(const std::vector<int>& loudHops, int quietHops, float loudKw)
+{
+    PipelineTrackFeatures f;
+    const auto pushQuiet = [&f, quietHops]() {
+        for (int i = 0; i < quietHops; ++i)
+        {
+            f.kwMs.push_back(1e-9f);
+            f.peak.push_back(1e-5f);
+        }
+    };
+    pushQuiet(); // 首尾都留静音,免得首/末爆发被选区边界截断
+    for (const int lh : loudHops)
+    {
+        for (int i = 0; i < lh; ++i)
+        {
+            f.kwMs.push_back(loudKw);
+            f.peak.push_back(std::sqrt(loudKw));
+        }
+        pushQuiet();
+    }
+    f.covered.assign(f.kwMs.size(), 1u);
+    f.anyCovered = true;
+    return f;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// [SL-382] **流水线级**:`splitValleys` 必须收到 ℓ(**dB**),不是线性 kw。
+//
+// 这条守的是「那一跳」,不是零件 —— 零件(sensitivity → minDepth → 段数)由
+// `test_segmentation.cpp` 的 `[SL382]` 用例守着,而那条用例**守不住本卡真正断掉的地方**:
+// `AnalysisPipeline.cpp` 把 `f.kwMs.data()` 直接递给 `splitValleys`,而后者的入参契约
+// (`Segmentation.h` 逐字)与 02 §3.2 的输入定义都是 ℓ[k] **dB**。
+// `detectValleys` 的 `depth = min(左侧峰,右侧峰) − bottom` 是裸差值:喂线性能量时 depth
+// 落在 1e-2 量级,而 `minDepth = 6·2^((50−s)/50)` 的值域是 [3,12] ⇒ 判据对**任意
+// s ∈ 0..100 恒真** ⇒ 候选谷永远为空 ⇒ S1 一次都没切过、灵敏度整个量程零效果。
+//
+// **为什么断的是 `noNaturalCut` 警告而不是段数**:S1 切出来的边界进不了 `result.segments`
+// —— 02 §3.4 步骤 4「相邻同活跃集合合并」会把它们原样合回去(切一条轨的长段不改变任何
+// 区间的活跃集合),末尾「相邻同值段合并」再补一刀。所以修完单位之后,**流水线唯一
+// 随灵敏度变化的可观察量就是这条警告**。段数那一层是独立的规格洞(PR 描述里单列,
+// 未在本卡改)—— 别把这条用例读成「段数会变」。
+//
+// 删除式:把 `AnalysisPipeline.cpp` 里的 `envDb.data()` 换回 `f.kwMs.data()`
+// ⇒ s=95 这档也带上 `segmentation.noNaturalCut` ⇒ 下面第三段 CHECK 必红。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL382] 流水线:谷切分收到的是 dB 域包络,故 noNaturalCut 随 sensitivity 变",
+          "[analysis][pipeline][segmentation][SL382]")
+{
+    const auto feat = valleyTreeFeatures(0.05f, 1.0);
+    const std::size_t n = feat.kwMs.size();
+
+    const auto run = [&feat, n](double sensitivity) {
+        std::array<PipelineTrackFeatures, kPipelineTracks> features;
+        features[0] = feat;
+        auto cfg = makeConfig(n, 1);
+        cfg.segmentation.sensitivity = sensitivity;
+        return runAnalysisPipeline(features, cfg);
+    };
+
+    // 前提:这条素材真的产出了一个 >maxSegment(8s)的 VAD 段,否则 S1 分支压根不进,
+    // 三档「都没警告」也会让下面的断言假绿。64s 全程有声 ⇒ 必然进。
+    const auto lo = run(5.0);
+    REQUIRE(lo.tracksTouched == 1);
+    REQUIRE_FALSE(lo.segments[0].empty());
+
+    // s=5 → minDepth 11.20:32s 半段里最深的谷只有 7dB,找不到自然切点。
+    INFO("s=5 warnings 数 = " << lo.warnings.size());
+    CHECK(hasWarning(lo, "segmentation.noNaturalCut"));
+
+    // s=50 → minDepth 6.00:切到 16s 四分段,4dB 谷仍不过线 ⇒ 仍有警告。
+    CHECK(hasWarning(run(50.0), "segmentation.noNaturalCut"));
+
+    // s=95 → minDepth 3.22:三层全过线,每片恰好 8s = maxSegment,递归无条件停。
+    // ★ 这一条就是删除式的落点:喂线性 kw 时 depth 约 1e-2,连 3.22 都够不到 ⇒ 必有警告 ⇒ 红。
+    const auto hi = run(95.0);
+    INFO("s=95 warnings 数 = " << hi.warnings.size());
+    CHECK_FALSE(hasWarning(hi, "segmentation.noNaturalCut"));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-382] **流水线级**:`min_segment_ms` 真接到 VAD 后处理 P1(丢短)。
+//
+// 与灵敏度那条相反,这一项是**真的会改段数**的:P1 丢掉的是整个 core 段,活跃集合随之
+// 变化,§3.4 步骤 4 就没得合并了。所以本条断的是**段数**本身,不是警告。
+//
+// 素材:30 / 80 / 200 / 450 / 800ms 五个爆发。三档门限各自吃掉前几个:
+//   50ms  → 只丢 30ms 那个
+//   120ms → 再丢 80ms 那个
+//   500ms → 只剩 800ms 那个
+// 断言写成**严格递减**:非严格的话「三档全丢光只剩 1 段」也满足,那种绿是假的。
+//
+// 删除式:去掉 `EnergyVad.cpp` P1 的 `if (c.endHop - c.startHop >= minHops)` 判据
+// ⇒ 三档段数立刻相等 ⇒ 必红。(注:删 `OutputProcessor.cpp` 里
+// `cfg.vad.minSegmentMs = runtime_.segmentationMinSegmentMs` 那一跳**不会**让本条红 ——
+// 本条测的是流水线入参;那一跳属于 host 面。)
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL382] 流水线:min_segment_ms 50/120/500 → 段数严格递减", "[analysis][pipeline][segmentation][SL382]")
+{
+    const std::vector<int> loud{3, 8, 20, 45, 80}; // 30/80/200/450/800ms
+    std::array<PipelineTrackFeatures, kPipelineTracks> proto;
+    proto[0] = burstFeatures(loud, 200, 0.05f);
+    // 第二条轨(能量不同)是为了让指派解逐区间不同 —— 单轨时末尾「相邻同值段合并」会把
+    // 全部区间并成一段,段数这个观察量当场失效。
+    proto[1] = burstFeatures(loud, 200, 0.02f);
+    const std::size_t n = proto[0].kwMs.size();
+
+    const auto countAt = [&proto, n](int minSegmentMs) {
+        std::array<PipelineTrackFeatures, kPipelineTracks> features = proto;
+        auto cfg = makeConfig(n, 2);
+        cfg.vad.minSegmentMs = minSegmentMs;
+        cfg.segmentation.minSegmentMs = static_cast<double>(minSegmentMs);
+        const auto res = runAnalysisPipeline(features, cfg);
+        return std::make_pair(res.intervals, res.segments[0].size());
+    };
+
+    const auto a = countAt(50);
+    const auto b = countAt(120);
+    const auto c = countAt(500);
+
+    INFO("intervals 50/120/500 = " << a.first << "/" << b.first << "/" << c.first);
+    INFO("segments[0] 50/120/500 = " << a.second << "/" << b.second << "/" << c.second);
+
+    // 前提:最松那档真的收到了多个段,否则下面的递减是「从 1 递减」的空过。
+    REQUIRE(a.second > 1u);
+
+    CHECK(a.first > b.first);
+    CHECK(b.first > c.first);
+    CHECK(a.second > b.second);
+    CHECK(b.second > c.second);
+}
+
+// ===========================================================================
+// [SL-383] 响度档:RMS 与 K 加权积分「看不出区别」是**预期**,不是断链
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 用户 v5.6.11 实测 B15:切 `rms` 与 `kw_integrated` 两档,结果看不出区别;
+// 切 `peak_dbfs` 有明显区别。**定谳:预期行为**,本卡零行为改动,只补下面这两格判据。
+//
+// 为什么是预期 —— 三档 z 的定义(`BalanceBasis.h`,ADR-009 v2.2 澄清 ②):
+//   · kw_integrated = mean(kw)        —— 能量域算术平均
+//   · rms           = (mean(sqrt kw))^2 —— 幅度域算术平均,再回能量域
+//   · peak_dbfs     = max(peak)^2     —— **未加权**样本峰值
+// 前两档**读的是同一条 K 加权序列 `kw`**(`LoudnessMode.h` 逐字:「RMS 平均(幅度域
+// 算术平均,**仍带 K 加权**)」),只差一个 Jensen 间隙 —— 而这个间隙由**段内 crest
+// factor** 决定,与频谱倾斜无关。恒定电平段上两档**逐位相等**;起伏越大间隙越大。
+// 再加上 z 的下游是 `zHat = z / zSum`(**跨轨比值**,`AutoAssign`),各轨 crest 相近时
+// 比值几乎不动 ⇒ 人声素材上两档看不出差别,是数学上的必然。峰值档换的是完全不同的
+// 统计量(还去掉了 K 加权),所以肉眼可见。
+//
+// ⚠ **不要用「频谱倾斜的合成信号」证这件事**:100Hz 与 3kHz 等 RMS 的两段在本仓会
+//   **同时**改变 kw_integrated 与 rms 两档(两档都吃 K 加权后的 kw),那种用例证不出
+//   任何东西,红绿都不说明问题。判别量是 crest,不是频谱。
+//
+// 「K 加权到底在不在算」由别处守着,本用例不重复:滤波器系数对 BS.1770 表值 =
+// `test_kweighting.cpp` KW-1/KW-2;「切档真的传到产出」那一跳 =
+// `tests/host/test_host_harness.cpp` 的 `HOST SL263`(变 crest 素材上 volDb 必须真变)。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL383] 恒定电平段:rms 与 kw_integrated 逐位相等(用户看不出区别 = 预期)",
+          "[analysis][balance][loudness][SL383]")
+{
+    // 0.25 与 8 都取二进制精确值:mean = 2.0/8 = 0.25、sqrt 0.25 = 0.5、0.5^2 = 0.25,
+    // 全程无舍入 ⇒ 可以断 `==` 而不是 Approx。换成 0.3 之类会差出 ULP,那时红的是
+    // 浮点表示不是实现 —— 别把这个常数「顺手改得更真实」。
+    const std::vector<float> flatKw(8, 0.25f);
+    const std::vector<float> peak(8, 0.5f);
+
+    const double zK = balanceBasisZ(LoudnessMode::KIntegrated, flatKw, peak, 0, 8);
+    const double zR = balanceBasisZ(LoudnessMode::Rms, flatKw, peak, 0, 8);
+
+    CHECK(zK == 0.25);
+    CHECK(zR == zK); // ← 用户观察的直接解释:平段上两档就是同一个数
+}
+
+TEST_CASE("[SL383] rms 与 kw_integrated 的间隙由段内 crest 决定,不由频谱决定", "[analysis][balance][loudness][SL383]")
+{
+    // 三份素材**平均能量完全相同**(mean(kw) = 0.25),只有 crest 不同:
+    //   A 恒定             → crest 1     → zR/zK = 1
+    //   B 半占空(0.5/0)   → crest sqrt2 → zR/zK = 0.5
+    //   C 四分之一占空     → crest 2     → zR/zK = 0.25
+    const std::vector<float> a{0.25f, 0.25f, 0.25f, 0.25f};
+    const std::vector<float> b{0.5f, 0.0f, 0.5f, 0.0f};
+    const std::vector<float> c{1.0f, 0.0f, 0.0f, 0.0f};
+    const std::vector<float> peak(4, 1.0f);
+
+    const double zKa = balanceBasisZ(LoudnessMode::KIntegrated, a, peak, 0, 4);
+    const double zKb = balanceBasisZ(LoudnessMode::KIntegrated, b, peak, 0, 4);
+    const double zKc = balanceBasisZ(LoudnessMode::KIntegrated, c, peak, 0, 4);
+    const double zRa = balanceBasisZ(LoudnessMode::Rms, a, peak, 0, 4);
+    const double zRb = balanceBasisZ(LoudnessMode::Rms, b, peak, 0, 4);
+    const double zRc = balanceBasisZ(LoudnessMode::Rms, c, peak, 0, 4);
+
+    // ① K 档只看平均能量 ⇒ 三份逐位相同。这条同时是下面那条的**对照**:zR 的差
+    //    只可能来自 crest,不可能来自「素材总能量不一样」。
+    CHECK(zKa == 0.25);
+    CHECK(zKb == zKa);
+    CHECK(zKc == zKa);
+
+    // ② rms 档随 crest 严格单调下降 ⇒ 它**确实**是另一条路径,不是 KIntegrated 的别名。
+    //    删除式:把 `BalanceBasis.h` 的 Rms 支改成 `return meanKw(...)` ⇒ 本条三个都变
+    //    0.25 ⇒ 严格不等式全红。
+    INFO("zR: A=" << zRa << " B=" << zRb << " C=" << zRc);
+    // A 与 C 断 `==`:两者的 sqrt 都落在二进制精确值上(sqrt 0.25 = 0.5、sqrt 1.0 = 1.0),
+    // 全链无舍入。B 不行 —— sqrt 0.5 是无理数,`(mean)^2` 实测 0.12500000000000003,
+    // 打印出来仍显示 "0.125"(**别据打印值把它改回 `==`**,那正是本行第一版红掉的原因)。
+    CHECK(zRa == 0.25);
+    CHECK(std::abs(zRb - 0.125) < 1e-15);
+    CHECK(zRc == 0.0625);
+    CHECK(zRa > zRb);
+    CHECK(zRb > zRc);
 }

@@ -97,13 +97,40 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
 
         // 超长段按谷切分(§3.2):只对超过 maxSegment 的段做,短段原样保留。
         const std::int64_t maxHops = static_cast<std::int64_t>(std::llround(cfg.segmentation.maxSegmentS / hopSec));
+        // [SL-382] **ℓ 必须是 dB** —— `splitValleys` / `detectValleys` 的入参契约
+        // (`Segmentation.h` 逐字「l 指向 ℓ[0..N)(dB…)」)与 02 §3.2 的输入定义都是 ℓ[k],
+        // 而 `f.kwMs` 是**线性** K 加权均方。此前这里直接传 `f.kwMs.data()`,后果不是「钝」:
+        //   `detectValleys` 的 `depth = min(左侧峰,右侧峰) − bottom` 是**裸差值**,喂线性能量
+        //   时 depth 落在 1e-2 量级,而 `minDepth = 6·2^((50−s)/50)` 的值域是 [3,12]
+        //   ⇒ `v.depthDb <= minDepth` 对**任意 s ∈ 0..100 恒真** ⇒ 候选谷永远为空
+        //   ⇒ `noNaturalCut` 恒成立、S1 一次都没切过、灵敏度整个量程零效果
+        //   (用户 v5.6.11 实测 B14 的**灵敏度那一半**;同条报告里的「最短段长」是好的 ——
+        //    它走 VAD 后处理 P1,与本行无关,判据见 `test_analysis_pipeline.cpp` 的 [SL382])。
+        // 换算复用 `lufsFromMeanKw`(§2.8 的唯一口径):depth 是**差值**,−0.691 偏置逐项抵消,
+        // 所以选它不改变任何 depth,只是不在这里另起第二份 kw→dB。
+        // ⚠ **修好本行之后用户仍然看不到任何变化**:S1 切出来的边界被 02 §3.4 步骤 4
+        //   「相邻同活跃集合合并」原样合回去,`PipelineResult::warnings` 又没有生产侧消费者
+        //   (`grep -rn warnings src/output/` 只命中一条注释)。本行是前置修复,不是终点 ——
+        //   「段表按区间成形」那一层要单独裁定,别看到这段注释就以为灵敏度已经能用了。
+        // ⚠ 这里**不做** §2.2 第 1 步那种 2-hop 预平滑:那是 VAD 状态机自己的口径;
+        //   §3.2 第 1 步的平滑是 `movingAverage(ℓ, 5 hop)`,已在 `smoothEnvelope` 里做过。
+        // 惰性构建:只有真出现超长段时才转一遍(典型乐句 1–4s,大多数轨一次都不进这个分支)。
+        std::vector<float> envDb;
         std::vector<VadSegment> hopSegs;
         for (const auto& vs : vad.segments)
         {
             if (maxHops > 0 && (vs.endHop - vs.startHop) > maxHops)
             {
+                if (envDb.empty())
+                {
+                    envDb.reserve(f.kwMs.size());
+                    for (const float kw : f.kwMs)
+                    {
+                        envDb.push_back(static_cast<float>(lufsFromMeanKw(static_cast<double>(kw))));
+                    }
+                }
                 const ValleySplitResult split =
-                    splitValleys(f.kwMs.data(), vs.startHop - firstHop, vs.endHop - firstHop, cfg.segmentation);
+                    splitValleys(envDb.data(), vs.startHop - firstHop, vs.endHop - firstHop, cfg.segmentation);
                 if (!split.segments.empty())
                 {
                     for (const auto& sub : split.segments)
