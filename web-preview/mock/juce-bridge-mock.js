@@ -39,16 +39,20 @@
 //   锁定的段会在下一次重分析里凭空消失,而契约的 locked 保护恰恰要靠这条建模在 UI 侧预演。
 //
 // 场景化拒绝(fixture 定义见 state-driver.js,`caps` 由 world 传入):
-//   • `second-output`:`caps.readOnly=true` → **四个**写函数(setChannelConfig /
-//     setTrackManual / editSegment / clearCoverage)一律回 `{observer:true}` 且不改 state;
-//     `recaptureArm` 回 `reason:"readOnly"`。
+//   • `second-output`:`caps.readOnly=true` → **五个**写函数一律回 `{observer:true}` 且不改
+//     state —— setChannelConfig(§1.15)/ setTrackManual(§1.16)/ **setAnalysisConfig(§1.21)** /
+//     editSegment(§2.8)/ clearCoverage(§1.24);`recaptureArm` 回 `reason:"readOnly"`(§1.23)。
 //     **`setGroupId` 不在这一族里**([SL-381]):契约 §5.6 把 `{observer:true}` 的两种出处
 //     并列写,它那一种的判据在**目标组**(§1.4 返回行:「新组 OutputSlot 已被占」),
 //     不是「本实例当下是不是观察者」。所以它**先落地** `group_id`,再按
 //     `caps.occupiedOutputGroup` 判目标组回 `{ok}` / `{observer:true}` —— 详见 §1.4 那段。
-//     ⚠ 这一段原先逐字写着「五个写函数…一律回 observer 且不改 state」,是修复前的行为;
-//     它是全仓唯一一处「五个写函数」的出处,照它把 `if (readOnly()) return OBSERVER();`
-//     加回去,SL-381 用户报的「界面全锁死、无法切成别的组」就原样复发。
+//     ⚠ 这张枚举**两次都数错过**,而且没有任何东西会让它变红,所以改它先 grep 一遍实现:
+//     初版把 `setGroupId` 列了进来(错在**多一个**,那是修复前的行为);[SL-381] 删掉它时
+//     又没发现初版**同时少列了** `setAnalysisConfig`(错在**少一个**)。它是全仓唯一一处
+//     这份枚举的出处:照它把 `if (readOnly()) return OBSERVER();` 加回 `setGroupId`,
+//     SL-381 用户报的「界面全锁死、无法切成别的组」原样复发;照它少读一个,则会得出
+//     「`setAnalysisConfig` 本来就不该有 readOnly 闸」—— 同一形状的错读,换个落点。
+//     现在 `smoke-mock.mjs` 的 second-output 那族逐个断言这五个,枚举第一次有判据看着它。
 //   • `channel-conflict`:Input `setChannelId(n)` 命中 `caps.occupiedMask` 的位 →
 //     `{conflict:true}` + 推 `scvb.error{code:"channelConflict"}`。
 //   • `stereo-mixed&loop=none`:`caps.loopAvailable=false` → `setRange("daw_loop", …)`

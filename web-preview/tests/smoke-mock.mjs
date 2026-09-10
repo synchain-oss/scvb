@@ -253,6 +253,18 @@ await withSession("output", "fixture=second-output", async (b) => {
             await b.editSegment(1, "set_locked", { segIdx: 0, locked: true }),
         ],
         ["clearCoverage", await b.clearCoverage(1, 1, 5)],
+        // [SL-381 第 2 轮] `setAnalysisConfig`(§1.21)本来就在只读观察这一族里,
+        // 却**从来没有判据看着它** —— 于是 juce-bridge-mock.js 那份「唯一真源」枚举
+        // 两版都把它漏了(初版多列 setGroupId、订正版少列它),两次都没有任何东西变红。
+        // 补这一行不是凑数:它是那条枚举唯一的护栏。**必须排在下面 setGroupId 那段之前**
+        // —— 它不解除只读,所以放这里安全;放到 setGroupId 之后就会读到已经解除的世界。
+        // 载荷刻意用**合法**值(`loudness_mode` 的三值枚举之一):只读闸排在 badArg 校验
+        // 之前,所以随便塞个非法键也会回 observer —— 那样这一格就分不清红的是哪一道。
+        // 用合法载荷则「拆掉只读闸」时它会回 {ok:true} 而不是 badArg,红得对得上因果。
+        [
+            "setAnalysisConfig",
+            await b.setAnalysisConfig({ loudness_mode: "rms" }),
+        ],
         ["recaptureArm", await b.recaptureArm(1, 1, 5)],
     ];
     for (const [n, r] of rows) {
