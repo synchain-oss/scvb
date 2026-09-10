@@ -1028,6 +1028,14 @@ export const T = {
         // [SL-274] diffSummary = 折叠头,**默认态只出这一行**(计数);明细在它下面,
         // 展开才渲染。改前明细逐条平铺,一次全量重分段几十上百条会把泳道窗挤没。
         "wave.diffSummary": "{c} 段有改动 · 新增 {a} 段 · 移除 {r} 段",
+        // [SL-391] 三数**全 0** 时改用这一条。原来那句会印成「0 段有改动 · 新增 0 段 ·
+        // 移除 0 段」—— 横幅只在「真跑过一次重分段」之后才弹,却当场自称「有改动 0 段」,
+        // 读起来自相矛盾(用户 v5.6.12 回验逐字报的就是这一串)。
+        // **不是把 0 藏起来**:这一句说的是同一件事,只是把「三个计数都为 0」翻成人话,
+        // 并且**点明它只覆盖这三项** —— diff 的 `changed[]` 只承载 pan/volDb
+        // (判同口径见 `src/core/output/SegmentDiff.h` 头注),**段边界挪动它表达不了**,
+        // 所以这句只能说「段数不变、声像/音量无变化」,不能写成「什么都没变」。
+        "wave.diffSummaryNone": "段数不变,声像/音量无变化",
         // [SL-274 复审] 明细区是 max-height 封顶的滚动区,补了 `tabindex=0` 才键盘可达;
         // 可聚焦容器必须有名,否则读屏只念出一串条目、说不出这是什么(走 data-t-aria)。
         "wave.diffItemsLabel": "本次改动明细",
@@ -1860,6 +1868,9 @@ export const T = {
         "wave.btnMerge": "Merge selected pair",
         "wave.recaptureOverlap": "Will overwrite {k} segments of existing data",
         "wave.diffSummary": "{c} changed · {a} added · {r} removed",
+        // [SL-391] All three counts zero -> this line instead (see the zh entry for why).
+        "wave.diffSummaryNone":
+            "Segment count unchanged; no pan/volume changes",
         "wave.diffItemsLabel": "Change details",
         "wave.diffItem": "Track {ch} · seg {i}: pan {pf}→{pt} · vol {vf}→{vt}",
         "wave.clearedCoverage": "Cleared {s} s of captured data",
@@ -2712,6 +2723,9 @@ export const T = {
         "wave.btnMerge": "Fusionner la paire sélectionnée",
         "wave.recaptureOverlap": "Écrasera {k} segments de données existantes",
         "wave.diffSummary": "{c} modifiés · {a} ajoutés · {r} supprimés",
+        // [SL-391] Les trois compteurs à zéro -> cette ligne (motif : voir l’entrée zh).
+        "wave.diffSummaryNone":
+            "Nombre de segments inchangé ; aucun changement de panoramique/volume",
         "wave.diffItemsLabel": "Détail des modifications",
         "wave.diffItem": "Piste {ch} · seg {i} : pan {pf}→{pt} · vol {vf}→{vt}",
         "wave.clearedCoverage": "{s} s de données capturées effacées",

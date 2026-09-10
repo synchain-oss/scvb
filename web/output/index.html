@@ -2946,16 +2946,21 @@
                 border: 1px solid var(--card-border);
                 box-shadow: var(--card-inset);
             }
-            /* 7 滑杆一排(655-668):七等分弹性宽,顺序 = §1.18 五字段 + §1.19 两字段 */
+            /* 滑杆一排(655-668):等分弹性宽,顺序 = §1.18 五字段 + §1.19 两字段。
+               ⚠ 上面这半句说的是**契约字段**顺序(5+2),不是屏幕上几根杆 —— 别一起改。
+               [SL-392] 屏幕上现在是 **6 根**:灵敏度那根被 [SL-382] 藏了(`hidden`,
+               不产生布局盒)。等宽的记账口径见下面那段。 */
             .wave-toolbar__sliders {
                 display: flex;
                 align-items: center;
                 gap: var(--sp-16);
             }
             /* 两个参数组是真实盒(不用 display:contents —— tour spotlight 量不到 0×0 盒);
-               grow 比 = 组内滑杆数(5:2),但纯 grow 会把组内 gap 数差(4:1)也
-               按 5:2 摊掉 → 两组杆宽差一档;flex-basis 先行垫掉各组内 gap 总宽,
-               剩余空间再按杆数分 —— 七杆等宽(图谱 §3「七等分弹性宽」) */
+               grow 比 = 组内**可见**滑杆数,但纯 grow 会把组内 gap 数差也按同一比例摊掉
+               → 两组杆宽差一档;flex-basis 先行垫掉各组内 gap 总宽,剩余空间再按杆数分
+               —— 全部可见滑杆等宽(图谱 §3「等分弹性宽」)。
+               [SL-392] 灵敏度藏掉之后现在是 **5:1**、gap 数差 **4:0**、**六杆**等宽;
+               藏之前是 5:2 / 4:1 / 七杆。具体数字与推导见下面 `--seg` 那条的注释。 */
             .wave-toolbar__group {
                 display: flex;
                 align-items: center;

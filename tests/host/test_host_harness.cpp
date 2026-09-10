@@ -7654,10 +7654,13 @@ TEST_CASE("HOST SL-363:viz 段的每轨当前值走 Output 的读回链(段值/�
 //      并成一段,连「有几段」都测不出来。
 // 所以这里自造:爆发 3/8/20/45/80 block(≈ 32 / 85 / 213 / 480 / 853 ms,
 // 1 block = 512/48000 s ≈ 10.67ms),中间垫 60 block(≈ 640ms)静音 —— 640 > 320 + 150,
-// 三条后处理都不会把它们并回去。三档门限各自吃掉前几个:
-//   50ms  → 只丢 32ms 那个        → 4 段
-//   120ms → 再丢 85ms 那个        → 3 段
-//   500ms → 只剩 853ms 那个       → 1 段
+// 三条后处理都不会把它们并回去。三档门限各自吃掉前几个,**实测段数**:
+//   50ms  → 只丢 32ms 那个   → **5 段**(理想值 4;padding 之后段边界与理论切点不重合,
+//   120ms → 再丢 85ms 那个   → **3 段**   最终段表是**全局区间**成形的,不是「几个爆发」
+//   500ms → 只剩 853ms 那个  → **2 段**   的直接计数 —— 所以别拿理想值当基准去「修」实现)
+// 数字取自本用例 `SL391-COUNTS` 那行 `UNSCOPED_INFO` 的实跑输出(`-s` 可见),不是推的。
+// 断言只要求**严格递减**,不写死这三个数:素材一动它们就会变,而本用例要钉的是
+// 「这个参数到底有没有传下去」,不是「这份素材恰好切出几段」。
 //
 // ⚠ 断言写成**严格递减**,不是「不相等」:三档一起塌成 1 段(= 接线断掉、恒取默认值
 // 的那种形态之一)也满足「有变化」,那种绿是假的。
@@ -7673,9 +7676,18 @@ TEST_CASE("HOST SL391:改 min_segment_ms 重分析 → 段数随之变(钉 start
     REQUIRE(r.waitUntilInjected());
 
     // ---- 自造分级爆发素材(理由见头注)--------------------------------------
+    // ⚠ 这 240 块静音必须跑在 `setCaptureEnabled(true)` **之前**,口径与本文件
+    // `captureSilence()` 同源(理由逐字见其头注,这里不抄第二份):`waitUntilInjected()`
+    // 那段 0.25f 正弦会在 Input 的 **K 加权 IIR 与 hop 累加器**里留残余能量(采集 OFF 期间
+    // 不写帧,但滤波与累加**在播放中恒跑**),开采集那一刻头几个 hop 带残余响度,
+    // VAD 会真检出一小段**幽灵头段**。那条已有判例:「同一份 C++ 换个构建就翻面」。
+    // 本用例断的是严格递减,多一个幽灵头段三档会一起 +1、**不至于红** —— 但
+    // `SL391-COUNTS` 打出来的数会与头注对不上,下次照那个数排查的人要先怀疑错地方。
+    // 所以按判例冲干净,别把「现在不会红」当成不用管。
+    r.runBlocks(240, 0.0f); // 采集**关闭**下空跑:衰掉 IIR / hop 累加器里的残余能量
     r.out.setCaptureEnabled(true);
     r.pump(400);
-    r.runBlocks(60, 0.0f); // 打头静音,免得首个爆发贴着覆盖区左边界被截断
+    r.runBlocks(20, 0.0f); // 开采集后再垫一小段:首个爆发别贴着覆盖区左边界被截断
     for (const int blocks : {3, 8, 20, 45, 80})
     {
         r.runBlocks(blocks, 0.5f);
@@ -7687,8 +7699,15 @@ TEST_CASE("HOST SL391:改 min_segment_ms 重分析 → 段数随之变(钉 start
     REQUIRE(win.endS > win.startS);
 
     // ---- 逐档重分析,数段 ----------------------------------------------------
-    // 直接写 `runtime()` 而不是走桥:本用例钉的是 `startAnalysis` 读不读这个字段,
-    // 桥面那一跳(`setSegmentation` → runtime)另有 `smoke-tab3-interactions.mjs` 守着。
+    // 直接写 `runtime()` 而不是走桥:本用例钉的是 `startAnalysis` 读不读这个字段。
+    // ⚠ **别把这句读成「桥面那一跳有人守着」** —— 它今天**没有任何机检**:
+    //   · `smoke-tab3-interactions.mjs` 只到 **JS + mock**,断的是页面把
+    //     {mode, sensitivity, min_segment_ms} **整包发得出去**,看不到 native handler;
+    //   · 而 native 那半(`OutputEditor.cpp` 的 `p.getProperty("min_segment_ms")`
+    //     → `rt.segmentationMinSegmentMs`)**不在 host 套件的 TU 清单里** ——
+    //     `tests/CMakeLists.txt` 的 `scvb_host_tests` 只编 `host/test_host_harness.cpp`,
+    //     editor 依赖 WebView2,只在 gate 8 真机 pluginval 里编。
+    // 所以「桥面 → runtime」是**离线不可达**的一跳,现状是缺口不是覆盖(#253 复审指出)。
     const auto countAt = [&r, &win](int minSegmentMs) {
         r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
         REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
