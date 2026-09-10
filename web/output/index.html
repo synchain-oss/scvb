@@ -7209,9 +7209,26 @@
                                     >
                                         <!-- [Wave 2] bridge.setSegmentation({mode, sensitivity,
                                              min_segment_ms} 整包,契约 §1.19;两段式同上 -->
+                                        <!-- [SL-382] 用户裁定(2026-09-10):**分段灵敏度暂时不做这个功能**,
+                                             先把杆藏起来。藏的是**控件**,不是字段 ——
+                                             `setSegmentation` 仍按契约 §1.19 整包下发
+                                             {mode, sensitivity, min_segment_ms} 三个字段,
+                                             state / 冻结契约 / i18n 词条一个都没动
+                                             (`SLIDERS` 里那条也留着:它同时是整包缓存的底账)。
+                                             为什么藏:谷切分的切点进不了曲线(02 §3.4 步骤 4
+                                             「相邻同活跃集合合并」把 S1 边界原样合回去),
+                                             所以这条杆拖了段数也不会变 —— 留着就是一句假话。
+                                             待 v1.1「S1 边界是否活到曲线里」定谳后再决定放不放回来。
+                                             ⚠ `hidden` 在本页真的管用,靠的是第 351 行那条
+                                             `[hidden]{display:none !important}` 兜底 ——
+                                             `.wave-slider` 自己设了 `display:flex`,
+                                             光靠 UA 表的 `[hidden]{display:none}` 压不过它。
+                                             判据:`web-preview/tests/smoke-tab3-interactions.mjs`
+                                             的「[SL-382] 灵敏度滑杆已隐藏」一节(页面级真跑)。 -->
                                         <div
                                             class="wave-slider"
                                             data-gb="wave-seg-sensitivity"
+                                            hidden
                                         >
                                             <div class="wave-slider__head">
                                                 <span

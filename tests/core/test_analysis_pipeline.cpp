@@ -909,3 +909,116 @@ TEST_CASE("[SL383] rms 与 kw_integrated 的间隙由段内 crest 决定,不由�
     CHECK(zRa > zRb);
     CHECK(zRb > zRc);
 }
+
+// ---------------------------------------------------------------------------
+// [SL-382 / #251 bot 复审采纳] 谷切分的 ℓ 必须走**带能量下限**的 `frameLoudnessDb`
+// (`EnergyVad.h`,与 VAD 状态机同一份),不得复用上报口径 `lufsFromMeanKw`。
+//
+// 两者只差一个下限,而下限决定「一个数字静音 hop 有多深」:
+//   · `lufsFromMeanKw` 对 m<=0 回 −120、对极小正数**不设下限**(1e−30 → −300.691);
+//   · `frameLoudnessDb` 先夹 1e−12 再取对数 ⇒ 任何低于下限的值一律 −120.691。
+// 不夹的话,ℓ 的下界由**素材里最小的那个非零数**决定 —— 那是浮点尾巴,不是信号。
+//
+// ⚠ **本用例不宣称「单个零 hop 不制造切点」** —— 那句话在当前实现下是假的,而假的判据
+//   比没有判据更坏。算一遍就知道:§3.2 第 1 步是 `movingAverage(ℓ, 5 hop)`,平台 ℓ = P、
+//   零 hop 的 ℓ = F,平滑后谷底 = (4P + F)/5 ⇒ depth = (P − F)/5。取生产上常见的
+//   P ≈ −13.7(kw = 0.05)、F = −120.691 ⇒ depth ≈ **21.4 dB**,而 minDepth 的整个值域
+//   只有 [3, 12] —— 夹不夹下限,这一刀都照切。夹下限**只把最坏情况从无界收敛到 21.4 dB**
+//   (不夹时 kw = 1e−30 给 57 dB,kw 再小还能更深),并不能让它不切。
+//   要真正做到「单个零 hop 不制造切点」,得给候选谷加**最小谷宽**判据(§3.2 现在只把
+//   valleyWidthMs 以 w2 = 0.3 计进 score,没有任何宽度**门槛**)—— 那是行为改动,
+//   需要单独裁定,不在本卡。已报统筹。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL382] 谷切分的 ℓ 带 1e-12 能量下限(上报口径不带,故不得复用)", "[analysis][pipeline][segmentation][SL382]")
+{
+    // ① 下限确实生效:两个相差 **17 个数量级**的「数字静音」值,夹过之后逐位相同。
+    //    删掉 `clampedEnergy` ⇒ 两者相差 170 dB ⇒ 本条红。
+    CHECK(frameLoudnessDb(1e-13) == frameLoudnessDb(1e-30));
+    CHECK(frameLoudnessDb(0.0) == frameLoudnessDb(1e-30));
+
+    // ② 上报口径**不夹** —— 这正是不能在谷切分里复用它的原因(不是「差不多」)。
+    //    若哪天有人给 `lufsFromMeanKw` 也加上下限,本条会红:那时请**先想清楚**
+    //    §2.8 的上报语义(−120 地板,[SL-257] 已按它对拍)是不是真要跟着改,
+    //    而不是顺手把本条删掉。
+    INFO("lufsFromMeanKw(1e-13) = " << lufsFromMeanKw(1e-13) << "  lufsFromMeanKw(1e-30) = " << lufsFromMeanKw(1e-30));
+    CHECK(std::abs(lufsFromMeanKw(1e-13) - lufsFromMeanKw(1e-30)) > 100.0);
+
+    // ③ **下限之上两条口径同值** —— 所以本卡换用 `frameLoudnessDb` 没有动任何正常电平的
+    //    depth,`[SL382] sensitivity 5/50/95 → 段数 2/4/8` 那条网格逐值不变。
+    //    容差 1e-4:一边 float 一边 double,差的是表示不是口径。
+    for (const double kw : {0.05, 0.01, 3.155e-3, 1e-6})
+    {
+        INFO("kw = " << kw);
+        CHECK(std::abs(static_cast<double>(frameLoudnessDb(kw)) - lufsFromMeanKw(kw)) < 1e-4);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-382 / #251] **把「单个零 hop 仍然会切」这个已知缺口钉成可执行的事实。**
+//
+// 统筹转来的 bot 裁定要求补一格「单个零 hop 不制造切点」。**那句话现在是假的**,所以
+// 这里钉的是真实数字,而不是那句宣称 —— 假的判据比没有判据更坏。
+//
+// 实测(本用例自己算出来的,不是注释里的推导):平台 kw = 0.05、正中放**一个** kw = 0 的
+// hop,§3.2 第 1 步 `movingAverage(ℓ, 5 hop)` 之后:
+//   · 走 `frameLoudnessDb`(夹 1e−12):depth = **21.398 dB**,谷宽 **50 ms**
+//   · 走 `lufsFromMeanKw`(−120 地板):depth = **21.260 dB**,谷宽 **50 ms**
+// 两者只差 0.14 dB,而 minDepth 的整个值域是 [3, 12] —— **两条口径都照切**。
+// 换句话说:统一下限**没有**、也不可能消除这一刀;它做到的是把最坏情况从**无界**收敛到
+// 21.4 dB(不夹时 kw = 1e−30 给 57 dB,kw 再小还能更深)。
+//
+// 真正能消除它的是**最小谷宽门槛**:这个假谷的宽度恒等于平滑窗本身(5 hop = 50 ms),
+// 而 §3.3 的 `durationFit` 认为真实换气谷落在 [80, 600] ms。§3.2 现在只把 valleyWidthMs
+// 以 w2 = 0.3 计进 score,**没有任何宽度门槛**。加门槛是行为改动,需单独裁定,不在本卡。
+//
+// ⚠ 那条门槛落地的当天,本用例会红 —— **这是设计好的**。届时请把它改写成
+//   「单个零 hop 不产生候选谷」(REQUIRE(cands.empty())),而不是把断言调松。
+// ---------------------------------------------------------------------------
+TEST_CASE("[SL382] 已知缺口:单个零 hop 仍会造出一个 50ms 宽的假谷,两条 dB 口径都拦不住",
+          "[analysis][pipeline][segmentation][SL382]")
+{
+    const std::size_t n = 6400;
+    std::vector<float> kw(n, 0.05f);
+    kw[3200] = 0.0f; // 一个数字静音 hop(未覆盖 hop 由调用方填 0,是真实形态)
+
+    SegmentationParams sp;
+    sp.maxSegmentS = 8.0;
+    sp.sensitivity = 50.0; // minDepth = 6
+    REQUIRE(sp.minDepthDb() == 6.0);
+
+    const auto valleysOf = [&](bool clampFloor) {
+        std::vector<float> env(n);
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const double e = static_cast<double>(kw[i]);
+            env[i] = clampFloor ? frameLoudnessDb(e) : static_cast<float>(lufsFromMeanKw(e));
+        }
+        return detectValleys(env.data(), 0, static_cast<std::int64_t>(n), sp);
+    };
+
+    const auto clamped = valleysOf(true);
+    const auto reported = valleysOf(false);
+
+    // 两条口径都只造出**一个**候选谷,都在那个零 hop 上。
+    REQUIRE(clamped.size() == 1u);
+    REQUIRE(reported.size() == 1u);
+    CHECK(clamped[0].hop == 3200);
+    CHECK(reported[0].hop == 3200);
+
+    INFO("clamped depth = " << clamped[0].depthDb << " dB,width = " << clamped[0].widthMs
+                            << " ms;reported depth = " << reported[0].depthDb << " dB");
+
+    // ① 谷宽恒等于平滑窗(5 hop = 50 ms)—— 这是「它是平滑产物、不是信号」的签名,
+    //    也是将来那条最小谷宽门槛的抓手。
+    CHECK(clamped[0].widthMs == 50.0);
+    CHECK(reported[0].widthMs == 50.0);
+
+    // ② 两条口径的 depth 只差 0.14 dB 上下 —— 统一下限**不是**为了消除这一刀。
+    CHECK(std::abs(clamped[0].depthDb - reported[0].depthDb) < 0.5);
+
+    // ③ 而它们都远超 minDepth ⇒ 都会切。这就是那句「单个零 hop 不制造切点」为什么是假的。
+    CHECK(clamped[0].depthDb > sp.minDepthDb());
+    CHECK(reported[0].depthDb > sp.minDepthDb());
+    CHECK(clamped[0].depthDb > 20.0);
+    CHECK(clamped[0].depthDb < 23.0);
+}

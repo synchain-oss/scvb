@@ -106,8 +106,13 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         //   ⇒ `noNaturalCut` 恒成立、S1 一次都没切过、灵敏度整个量程零效果
         //   (用户 v5.6.11 实测 B14 的**灵敏度那一半**;同条报告里的「最短段长」是好的 ——
         //    它走 VAD 后处理 P1,与本行无关,判据见 `test_analysis_pipeline.cpp` 的 [SL382])。
-        // 换算复用 `lufsFromMeanKw`(§2.8 的唯一口径):depth 是**差值**,−0.691 偏置逐项抵消,
-        // 所以选它不改变任何 depth,只是不在这里另起第二份 kw→dB。
+        // 换算走 `frameLoudnessDb`(`EnergyVad.h`,ℓ 的唯一口径)—— **不是** `lufsFromMeanKw`。
+        // [#251 bot 复审采纳] 两者只差一个**能量下限**,而那个下限恰恰是本处的要害:
+        //   `lufsFromMeanKw` 对 m<=0 回 −120、对极小正数不设下限(10·log10(1e−30) = −300)。
+        //   任一种落进 §3.2 第 1 步的 `movingAverage(ℓ, 5 hop)`,**单个 kw==0 的 hop** 就会被
+        //   摊成 (−120 − 平台)/5 ≈ 20 dB 的假谷 —— 越过任何 minDepth(值域 [3,12])⇒ 凭空
+        //   切一刀,而且与 VAD 自己那份 ℓ 的下限口径不一致(它一直是先夹 1e−12 再取对数)。
+        // 用例:`test_analysis_pipeline.cpp` 的「单个零 hop 不制造切点」+ 其删除式。
         // ⚠ **修好本行之后用户仍然看不到任何变化**:S1 切出来的边界被 02 §3.4 步骤 4
         //   「相邻同活跃集合合并」原样合回去,`PipelineResult::warnings` 又没有生产侧消费者
         //   (`grep -rn warnings src/output/` 只命中一条注释)。本行是前置修复,不是终点 ——
@@ -126,7 +131,7 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
                     envDb.reserve(f.kwMs.size());
                     for (const float kw : f.kwMs)
                     {
-                        envDb.push_back(static_cast<float>(lufsFromMeanKw(static_cast<double>(kw))));
+                        envDb.push_back(frameLoudnessDb(static_cast<double>(kw)));
                     }
                 }
                 const ValleySplitResult split =

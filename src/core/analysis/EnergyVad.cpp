@@ -29,9 +29,12 @@ double clampedEnergy(double e)
     return e < kEnergyFloor ? kEnergyFloor : e;
 }
 
+// [SL-382] 本函数**只是转调导出的那一份**(`frameLoudnessDb`,见 EnergyVad.h 头注)。
+// 别把公式抄回这里 —— 谷切分与 VAD 必须共用同一条下限口径,两份「差不多的」实现正是
+// 本卡要根除的东西。
 float frameLoudness(double energy)
 {
-    return static_cast<float>(kLufsOffset + 10.0 * std::log10(clampedEnergy(energy)));
+    return frameLoudnessDb(energy);
 }
 
 // 02 §2.2 第 1 步:2-hop 滑动平均平滑 + 转 dB。k=0 用自身(无前 hop)。
@@ -109,6 +112,14 @@ VadModel buildModel(const float* kwMs, std::size_t n, const VadParams& p)
 }
 
 } // namespace
+
+// [SL-382] ℓ 的唯一口径(判据与理由逐字见 EnergyVad.h 的头注)。定义放在匿名命名空间
+// **之后**:它要用里面的 `kLufsOffset` / `clampedEnergy`,而那两个只对本 TU 可见 ——
+// 这正是「一份实现、两个调用方」的落法,别为了让别人也能抄而把常量搬进头文件。
+float frameLoudnessDb(double meanSquareEnergy)
+{
+    return static_cast<float>(kLufsOffset + 10.0 * std::log10(clampedEnergy(meanSquareEnergy)));
+}
 
 const char* VadResult::warningMessage() const
 {
