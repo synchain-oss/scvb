@@ -392,6 +392,15 @@ export const SLIDERS = Object.freeze(
         { key: "paddingpre", field: "padding_pre_ms", api: "vad", gb: "wave-vad-paddingpre", t: "wave.sldPadPre", tip: "wave.tipPadPre", min: 0, max: 500, def: 120, unit: "ms", dp: 0 },
         // prettier-ignore
         { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 0, max: 500, def: 200, unit: "ms", dp: 0 },
+        // [SL-382] 用户裁定(2026-09-10):**分段灵敏度这个功能暂时不做**,控件已在
+        // `web/output/index.html` 那个 `data-gb="wave-seg-sensitivity"` 的 div 上挂 `hidden`
+        // 藏起来(为什么藏、v1.1 待裁什么,写在那条 HTML 注释里,这里不抄第二份)。
+        // **本条目留着不删** —— 它不只是「渲染哪根杆」的定义,还是 §1.19 **整包**下发的底账:
+        // `sendParams("seg")` 要把 {mode, sensitivity, min_segment_ms} 三个字段一起发出去,
+        // 少一条整个 `setSegmentation` 直接 badArg、三个字段一个都进不去。
+        // 词条 `wave.sldSensitivity` / `wave.tipSensitivity` 同理保留(三语)。
+        // 判据:`web-preview/tests/smoke-seg-restore-page.mjs` 里「[SL-382] 分段灵敏度滑杆
+        // 不产生布局盒」那一节 —— 量的是**真实布局盒**,不是 `hidden` 属性。
         // prettier-ignore
         { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", tip: "wave.tipSensitivity", min: 0, max: 100, def: 50, unit: "", dp: 0 },
         // prettier-ignore

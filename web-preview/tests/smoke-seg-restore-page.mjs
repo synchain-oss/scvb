@@ -476,6 +476,53 @@ await evaluate(
 );
 await sleep(500);
 
+// ---- [SL-382] 分段灵敏度滑杆不产生布局盒(节点还在,但不渲染)-----------------
+//
+// 节名与下面 `check()` 的断言文本**逐字相同**,别再起第二个叫法:别处(HTML / tab-wave.js)
+// 的判据指针就是拿这句话去 grep 的,改了名那些指针当场失效(#251 复审就抓到过一次
+// 指错文件的假句)。用户裁定 2026-09-10:分段灵敏度这个功能暂时不做,先把杆藏起来。
+//
+// 搭本套的车而不另开一套:这条判据要的前置条件与本套完全一样(输出页装载 + 切到
+// 「波形与分段」页),而那段 CDP/无头 Chrome 的脚手架是本套里最贵的部分。
+//
+// **为什么必须页面级、不能在 smoke-tab3-interactions.mjs 里断**:那套断的是纯函数与
+// 源码字面,`getClientRects()` 在无 DOM 环境里根本不存在。而这条缺陷的落点恰恰在
+// 布局引擎上 —— `.wave-slider` 自己设了 `display:flex`,**UA 表的 `[hidden]{display:none}`
+// 压不过它**;本页能藏住,靠的是 output/index.html 第 351 行那条作者层
+// `[hidden]{display:none !important}` 兜底。只断 `el.hidden === true`(本文件的 `vis()`
+// 就是这么写的)会在「属性挂上了但样式没生效」时**全绿**,那正是要防的那一种。
+// 所以这里量的是**真实布局盒**:`getClientRects().length`。
+//
+// 两条一起断,`minlen` 那条是**对照**:证明我藏的是灵敏度那一根,而不是把整个
+// `wave-toolbar__group--seg` 组连坐了(只断前者的话,把整组删掉也照样绿)。
+//
+// 删除式:拿掉 output/index.html 里 `data-gb="wave-seg-sensitivity"` 那个 div 上的
+// `hidden` ⇒ 灵敏度杆量到非零盒 ⇒ 第一条红。
+const SEG_SLIDER_BOXES = IN(`
+    const box = (n) => {
+        const el = gb(n);
+        if (!el) return -1;                       // -1 = 节点根本不在(与「藏起来」区分开)
+        return el.getClientRects().length;        // 0 = 不产生布局盒(display:none)
+    };
+    return JSON.stringify({ sens: box("wave-seg-sensitivity"), minlen: box("wave-seg-minlen") });
+`);
+{
+    const raw = await evaluate(SEG_SLIDER_BOXES);
+    const boxes = JSON.parse(raw || "{}");
+    log(
+        `  [SL-382] 滑杆布局盒:sensitivity=${boxes.sens} / min_segment=${boxes.minlen}`,
+    );
+    // 节点仍在 DOM 里(隐藏 ≠ 删除:契约 §1.19 仍整包下发 sensitivity 字段)。
+    check(
+        boxes.sens === 0,
+        "[SL-382] 分段灵敏度滑杆不产生布局盒(节点还在,但不渲染)",
+    );
+    check(
+        boxes.minlen > 0,
+        "[SL-382] 对照:最短段长滑杆照常渲染(没有把整个分段组连坐)",
+    );
+}
+
 // ---- 装 analyze 探针 ------------------------------------------------------
 // 包在 `window.__SCVB_MOCK__` 上(壳页注进 iframe 的 mock 后端就是它)。用自有属性
 // 遮蔽原型上的实现,原实现照常执行 —— 页面的行为一个字节不改,只是把入参留个底。
