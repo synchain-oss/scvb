@@ -484,8 +484,10 @@ private:
     class AnalysisJob;
     friend class AnalysisJob;
     // [SL-209] 分析产物合入段表(finishAnalysis 的 mutator;须持 lifecycleMutex_)。
+    // [SL-393] `writeMask` = **写回集**(mask ∩ enabled ∩ 范围内有覆盖,即 analyzedTracks):
+    // 计算集比它宽(见 startAnalysis 的头注),掩码外的轨只当上下文,段表一个字节都不许动。
     void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
-                               std::int64_t rangeEndSample, bool clearManual);
+                               std::int64_t rangeEndSample, bool clearManual, std::uint16_t writeMask);
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
                         std::int64_t rangeEndSample, bool clearManual, bool fullScope,
                         AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks);

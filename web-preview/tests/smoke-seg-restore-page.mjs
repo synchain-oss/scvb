@@ -596,8 +596,32 @@ check(
                     scope: JSON.parse(JSON.stringify(scope === undefined ? null : scope)),
                     opts: JSON.parse(JSON.stringify(opts === undefined ? null : opts)),
                 });
-                return inner(scope, opts);
+                    return inner(scope, opts);
             };
+        }
+        // [SL-393] 顺带记下重算之后推回来的 scvb.segments 里**点名了哪几条轨** ——
+        // (这段跑在页面里,注释里不能出现反引号 —— 它会把外层模板串就地截断。)
+        // 那是「只重算选中的这一段」这句承诺在事件面上的形状(见本文件 ⑦)。
+        if (!w.__SCVB_SEG_PUSH__) {
+            w.__SCVB_SEG_PUSH__ = [];
+            w.__SCVB_MOCK__.addEventListener("scvb.segments", (p) => {
+                const byCh = {};
+                for (const c of (p && p.channels) || []) {
+                    byCh[c.ch] = (c.segments || []).map((s) => [
+                        s.t0S,
+                        s.t1S,
+                        s.pan,
+                        s.volDb,
+                        s.origin,
+                        s.locked ? 1 : 0,
+                    ]);
+                }
+                w.__SCVB_SEG_PUSH__.push({
+                    reason: p && p.reason,
+                    chs: ((p && p.channels) || []).map((c) => c.ch),
+                    byCh,
+                });
+            });
         }
         return true;
     `),
@@ -729,6 +753,24 @@ check(st.restoreBtnShown, "②「恢复自动」按钮出现");
 near(parseTimeMs(st.startTxt), segStartS, 1e-9, "② 起点没被这两步动过");
 near(parseTimeMs(st.endTxt), segEndS, 1e-9, "② 终点没被这两步动过");
 
+// ---- ⑦ 前置:在**另一条轨**上按一个引擎绝不会算出来的手动值 ----------------
+// 光靠「重算前后比段值」测不出写回集变宽:别的轨此刻的段本来就是同一套 mock 生成器
+// 按同一段素材算出来的 —— 写回集就算变宽、把它们原样重算一遍,结果**逐字节相同**,
+// 断言照样绿(第一版实测:放宽成两轨,⑦ 不红)。与 host 侧那格同一个手法:
+// `setTrackManual` 写的是覆盖全时间线的 `origin=user_edited` 常值段,而 `clearManual`
+// 恰好会放开这种段重算 —— 于是「有没有多写一条轨」才有可分辨的痕迹。
+const otherCh = pickedCh === 1 ? 2 : 1;
+check(
+    await evaluate(
+        IN(`
+        const r = w.__SCVB_MOCK__.setTrackManual(${otherCh}, "pan", 77);
+        return !!(r && r.ok !== false);
+    `),
+    ),
+    `⑦ 前置:在第 ${otherCh} 轨按下手动 pan=77`,
+);
+await sleep(300);
+
 // ---- ③ 点「恢复自动」→「继续」,拦下页面真发出去的 analyze ----------------
 await evaluate(
     IN(`const b = gb("inspector-restore-btn"); if (b) b.click(); return true;`),
@@ -773,6 +815,76 @@ check(
 near(scope.startS, segStartS, 0.0006, "④ startS = 检查器写着的「起」");
 near(scope.endS, segEndS, 0.0006, "④ endS = 检查器写着的「止」");
 check(scope.endS - scope.startS < 3600, "④ 范围是一个段的量级,不是整条时间线");
+
+// ---- ⑦ [SL-393] 写回集不许变宽:推回来的段只点名选中的那一条轨 --------------
+// 确认文案许诺「只重算选中的这一段」。④ 钉的是**发出去的请求**长什么样,这一格钉的是
+// **回来的那一帧**作用到了谁 —— 两者不是同一件事:请求的 `tracksMask` 是窄的,后端
+// 仍可能把同范围内别的轨一并重写(native 侧 SL-393 的修法正是在 applyAnalysisSegments
+// 上补了这道写回掩码)。
+//
+// ⚠ 轴选的是「**段值有没有变**」,不是「这一帧点名了哪几条轨」。后者是 **mock 独有**的
+// 语义:真桥的分析帧恒以 `kAllTracksMask` 全量推(`OutputEditor.cpp:266`),按「只点名
+// 选中轨」去断,真桥这一侧永远为假 —— 那样的判据只证明 mock 长什么样,证明不了产品。
+// 「除选中轨外其余轨的段值与重算前逐字段相同」在两侧是同一个形状。
+//
+// 为什么值得单钉:SL-393 的 native 修法把**计算集**放宽成了「范围内所有有覆盖的轨」
+// (只喂一条轨会被引擎判成「独唱」而按到正中,那正是本卡的病根)。计算集一宽,
+// 「写回集跟着宽了」就成了一个真实的、静默的失效方向 —— 屏幕上别的轨悄悄换了值,
+// 而确认文案说的是只动这一段。
+// mock 的重算排在 `later(800, ...)` 上,③ 之后只睡了 600ms —— 等它到,别按固定睡眠赌。
+const pushed = await waitFor(
+    IN(
+        `return (w.__SCVB_SEG_PUSH__ || []).some((p) => p.reason === "analyze");`,
+    ),
+    6000,
+);
+const pushes = await evaluate(IN(`return w.__SCVB_SEG_PUSH__ || [];`));
+const analyzePush = (pushes || []).filter((p) => p.reason === "analyze");
+check(
+    pushed && analyzePush.length >= 1,
+    `⑦ 重算之后确实推回了 scvb.segments(reason=analyze,实得 ${analyzePush.length} 帧)`,
+);
+if (analyzePush.length >= 1) {
+    // 基线 = 重算**之前**每条轨最后一次被推上来的段值(首帧全量 dump 起就有)。
+    const base = {};
+    for (const p of pushes) {
+        if (p.reason === "analyze") break; // 只取重算之前的
+        for (const [ch, segs] of Object.entries(p.byCh || {})) base[ch] = segs;
+    }
+    const after = analyzePush[analyzePush.length - 1].byCh || {};
+
+    // ⚠ 先断**取到的字段真有值**,再谈「逐字段相同」。
+    // 键名写错时(本轮就写错过一个:桥面是 `volDb`,`vol_db` 只是 CSV 导出的列名)
+    // 两侧都会取到 `undefined` → 序列化成 `null` → 这一列在比对里恒等,
+    // 于是这一格**静默变空**:轴还叫「逐字段」,实际少比了一列,而且少的正好是
+    // 用户症状的另一半(音量变成 0.0)。这条守卫让「键名写错」当场红,而不是变绿。
+    {
+        const sample = (after[String(pickedCh)] || [])[0];
+        check(
+            Array.isArray(sample) &&
+                sample.length === 6 &&
+                sample.every((v) => v !== undefined && v !== null),
+            `⑦ 前提:段快照六列都取到了值(键名写错会让某列恒为 null 而比对变空;实得 ${JSON.stringify(sample)})`,
+        );
+    }
+    const drifted = [];
+    for (const [ch, segs] of Object.entries(after)) {
+        if (Number(ch) === pickedCh) continue;
+        const b = base[ch];
+        if (!b) continue; // 这一轨重算前没被推过 ⇒ 无从比对,不算证据
+        if (JSON.stringify(b) !== JSON.stringify(segs))
+            drifted.push(Number(ch));
+    }
+    eq(
+        drifted,
+        [],
+        `⑦ 除选中轨外,其余轨的段值与重算前逐字段相同(漂了的:[${drifted.join(",")}])`,
+    );
+    check(
+        Object.prototype.hasOwnProperty.call(after, String(pickedCh)),
+        `⑦ 正对照:选中的那一轨确实在这一帧里(否则「都没推」也能让上一条绿)`,
+    );
+}
 
 // ---- ⑤ 反向:工具条那条(选区/全量)不受本卡影响 --------------------------
 // 不这么钉的话,「把每个 analyze 都改成段级」也能让 ④ 全绿 —— 那会把 Tab3

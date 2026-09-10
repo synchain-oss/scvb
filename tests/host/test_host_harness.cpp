@@ -25,6 +25,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <array> // [SL-393] segTableOf 的逐字段快照
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -1762,6 +1763,26 @@ struct MonoMultiRig
 
     bool runAnalysisToCompletion(double endS, bool clearManual) { return runAnalysisIn(0.0, endS, clearManual); }
 
+    // [SL-393] 带**写回掩码**的版本 —— 段级「恢复自动」与 Tab2 单轨「重新识别」走的就是
+    // 这个形状(`tracksMask` 只置一位)。上面那个恒传 0(全轨),测不到本卡的面。
+    bool runAnalysisMasked(std::uint16_t mask, double startS, double endS, bool clearManual)
+    {
+        const auto accepted = out.startAnalysis(mask, startS, endS, clearManual);
+        if (!accepted.ok)
+        {
+            return false;
+        }
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            pump(50);
+            if (!out.analysisRunning() && !out.runtime().analysisRunning)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // 显式起点版(#152 复审:captureSilence 的覆盖不再从 0 起,区间得跟着走 ——
     // 否则排空块数一调大,startAnalysis 会直接拒受,红在这里而错误指不到真原因)。
     bool runAnalysisIn(double startS, double endS, bool clearManual)
@@ -1824,6 +1845,34 @@ struct MonoMultiRig
                                .tracks[static_cast<std::size_t>(ch - 1)]
                                .segments;
         return segs.empty() ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(segs.front().pan);
+    }
+
+    // [SL-393] 该轨段表里第一个段的 volDb(无段回 NaN)。
+    double firstVolDb(int ch)
+    {
+        const auto crvs = out.crvsSnapshot();
+        const auto& segs = crvs.versions[static_cast<std::size_t>(out.versionActive() - 1)]
+                               .tracks[static_cast<std::size_t>(ch - 1)]
+                               .segments;
+        return segs.empty() ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(segs.front().volDb);
+    }
+
+    // [SL-393] 单轨段表的可比对快照(t0/t1/pan/volDb/flags 全带上)——
+    // 「掩码外的轨一个字节不动」那条断言要的是**整表**逐字段相等,只比第一个段的 pan
+    // 会放过「段被重新切了但首段恰好同值」这一类改写。
+    std::vector<std::array<double, 5>> segTableOf(int ch)
+    {
+        std::vector<std::array<double, 5>> v;
+        const auto crvs = out.crvsSnapshot();
+        const auto& segs = crvs.versions[static_cast<std::size_t>(out.versionActive() - 1)]
+                               .tracks[static_cast<std::size_t>(ch - 1)]
+                               .segments;
+        for (const auto& sg : segs)
+        {
+            v.push_back({static_cast<double>(sg.t0), static_cast<double>(sg.t1), static_cast<double>(sg.pan),
+                         static_cast<double>(sg.volDb), static_cast<double>(sg.flags)});
+        }
+        return v;
     }
 };
 
@@ -1931,6 +1980,186 @@ TEST_CASE("HOST P0-1:多轨分析后段表 pan 非全零且轨间有差异", "[h
     const double lo = *std::min_element(pans.begin(), pans.end());
     const double hi = *std::max_element(pans.begin(), pans.end());
     CHECK(hi - lo > 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-393] 段级「恢复自动」/ Tab2 单轨「重新识别」发的是**只置一位**的 tracksMask。
+//
+// 用户实测(v5.6.12 B17):点「恢复自动」之后被恢复段的声像回到正中、音量变 0.0 ——
+// 而确认文案许诺的是「只重算选中的这一段」,该回到引擎算出来的自动值。
+//
+// 病根不是哪一步失败了,是**只喂一条轨**:一个区间里活跃轨只有一条时,`generateSlots`
+// 的多轨分支整个跳过、唯一的槽就是正中(AutoAssign.cpp:200-208,reason 逐字写着
+// 「独唱段居中」),单轨居中又让左右系数相等 ⇒ 平衡解首轮收敛、修正量恒 0。
+// 那是引擎的**设计行为**(tests/core/test_assign.cpp:120 已逐字钉着),不是失败路径。
+//
+// 修法:计算集(范围内全部 enabled + 有覆盖的轨)与写回集(tracksMask)分开。
+// 这条用例钉「写回集那一轨拿到的是**多轨上下文**下的值」——
+// **必须用多轨**,单轨 rig 本就该居中,那样这条断言恒真(P0-1 ② 的头注同款理由)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-393:单轨掩码的重算走多轨上下文,不再把该轨按到正中", "[host][sl393][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+
+    // 先跑一遍全轨分析,拿到「引擎在多轨上下文下给每条轨的自动值」当参照系。
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    // 挑一条参照值**两个维度都不在原点**的轨:恢复到 (0,0) 与恢复到正确值,只有在
+    // `|pan| > 1` **且** `|volDb| > 0.5` 的轨上才同时区分得开。
+    // 三轨的槽位本就是「左 / 中 / 右」,居中那条挑出来测不到 pan 那一半;
+    // 而只按 pan 挑的话,若该轨的 volDb 恰好 ≈ 0,下面那条
+    // `gotVol == Approx(wantVol).margin(0.5)` 就**恒真** —— 用户症状的另一半
+    // (音量变成 0.0)在这条用例里就白测了(第 2 轮 bot 指出)。
+    int ch = 0;
+    double wantPan = 0.0;
+    double wantVol = 0.0;
+    for (int c = 1; c <= MonoMultiRig::kCount; ++c)
+    {
+        const double p = r.firstPan(c);
+        const double v = r.firstVolDb(c);
+        if (std::isfinite(p) && std::abs(p) > 1.0 && std::isfinite(v) && std::abs(v) > 0.5)
+        {
+            ch = c;
+            wantPan = p;
+            wantVol = v;
+            break;
+        }
+    }
+    if (ch == 0)
+    {
+        // 挑不到就**明说跳过**,不许静默过:这一轮的素材没给出「两维都离原点」的轨,
+        // 那么本用例判别不了,报出来比让它绿着更有用(口径同本文件既有那条 WARN)。
+        WARN("[SL-393] 本轮没有 |pan|>1 且 |volDb|>0.5 的参照轨:本用例未做断言");
+        SUCCEED("SL-393:无可判别的参照轨,已跳过(见上方 WARN)");
+        return;
+    }
+
+    // 再单独对这一条轨发一次带写回掩码的重算 —— 段级「恢复自动」的形状。
+    const auto mask = static_cast<std::uint16_t>(1u << (ch - 1));
+    REQUIRE(r.runAnalysisMasked(mask, 0.0, coveredS, /*clearManual=*/true));
+
+    const double gotPan = r.firstPan(ch);
+    const double gotVol = r.firstVolDb(ch);
+    REQUIRE(std::isfinite(gotPan));
+    REQUIRE(std::isfinite(gotVol));
+
+    // ← 核心断言:修复前这两个数是 0.0 / 0.0(「独唱段居中」+ 平衡修正量恒 0)
+    CHECK(std::abs(gotPan) > 1.0);
+    CHECK(gotPan == Catch::Approx(wantPan).margin(1.0));
+    CHECK(gotVol == Catch::Approx(wantVol).margin(0.5));
+}
+
+// ---------------------------------------------------------------------------
+// [SL-393] 写回集也管着 **VAD 后验(vadP)写回 FrameStore** 那一步。
+//
+// 段表那一半有 `applyAnalysisSegments` 的掩码守着,vadP 那一半没有:`finishAnalysis` 里
+// 那个循环原来是 `for (t : 0..14)` 无条件写。计算集放宽之后,`result.vadPosterior` 里会
+// 带着**上下文轨**的后验 —— 于是「恢复这一段」会把别的轨的 vadP(§1.27 瓦片 vad 列、
+// 泳道绿线的唯一数据源)静默重写。
+//
+// 比段表那一半更要紧的一点:vadP 写回**在 CRVS 事务之外**(它写的是 FrameStore,不在
+// commitCrvsTransaction 的快照口径里),所以**撤销救不回来**。
+//
+// 判据要一对正反:先改 VAD 阈值,让「重算一次」必然产出与现存不同的后验,再做单轨恢复 ——
+// 掩码外那一轨的 vad 列必须逐列不变(否则就是被静默重写了),掩码内那一轨必须变
+// (否则「没写」也能让前一条绿,那是把整步写回都判没了)。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-393:单轨恢复不得重写掩码外轨的 vadP", "[host][sl393][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    constexpr int kCols = 96;
+    const int target = 1;
+    const int other = 2;
+    auto vadColsOf = [&](int ch) {
+        // ⚠ 逐字沿用 `WaveformTile::vad` 的类型(`std::vector<int>`)。
+        // 写成 `std::vector<std::uint8_t>(begin, end)` 会在 MSVC 的 <xmemory> 里触发
+        // C4244(int → 窄类型可能丢数据),而 ADR-011 要求 /W4 **零 warning** ⇒ gate 5 判负。
+        // 这里只是要一份可比对的快照,没有任何理由换宽度。
+        const auto tile = r.out.waveformOf(ch, 0.0, coveredS, kCols);
+        return tile.vad;
+    };
+
+    const auto beforeOther = vadColsOf(other);
+    const auto beforeTarget = vadColsOf(target);
+    // 前置:分析真的产出过后验,否则「没变」与「本来就空」分不开。
+    REQUIRE(std::any_of(beforeOther.begin(), beforeOther.end(), [](int v) { return v != 0; }));
+    REQUIRE(std::any_of(beforeTarget.begin(), beforeTarget.end(), [](int v) { return v != 0; }));
+
+    // 把 VAD 阈值挪远,让下一次重算必然算出**不一样**的后验(与本文件既有那几处同款手法)。
+    r.out.runtime().vadThresholdDb = 12.0f;
+    MonoMultiRig::pump(120);
+
+    const auto mask = static_cast<std::uint16_t>(1u << (target - 1));
+    REQUIRE(r.runAnalysisMasked(mask, 0.0, coveredS, /*clearManual=*/true));
+
+    // ★ 掩码外:vad 列逐列不变(修复前这里会被上下文轨的后验静默盖掉)
+    CHECK(vadColsOf(other) == beforeOther);
+    // ★ 正对照 —— 掩码内确实被重写了(否则上一条会被「整步都没写」蒙混过去)
+    CHECK(vadColsOf(target) != beforeTarget);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-393] 计算集变宽了,**写回集不许跟着变宽**:确认文案许诺「只重算选中的这一段」,
+// 掩码外的轨只是拿来当上下文的,它们的段表一个字段都不许动。
+//
+// 比的是**整表**(t0/t1/pan/volDb/flags),不是首段的 pan:只比首段会放过「段被重新
+// 切过、恰好首段同值」这一类改写。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL-393:掩码外的轨段表一个字节不动", "[host][sl393][v5][analyze]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    const double coveredS = r.capture();
+    REQUIRE(coveredS > 0.0);
+    REQUIRE(r.runAnalysisToCompletion(coveredS, /*clearManual=*/false));
+
+    const int target = 1;
+    const int other = 2;
+
+    // ⚠ 光靠「全轨分析之后再单轨重算」是**测不出**这条的:掩码外那些轨此刻的值,本来就是
+    // 同一段音频、同一套上下文算出来的 —— 少了写回掩码、把它们原样重算一遍,结果**逐字节
+    // 相同**,断言照样绿(第一版删除式实测:拆掉掩码 host 仍绿)。
+    // 所以先在**掩码外**的一条轨上按一个引擎绝不会算出来的手动值:`setTrackManual` 写的是
+    // 覆盖全时间线的 `origin=user_edited` 常值段,而 `clearManual` 恰好会把这种段放开重算。
+    // 于是「写回集有没有变宽」就有了可分辨的痕迹:掩码在 ⇒ 77 还在;掩码没了 ⇒ 被 auto 值顶掉。
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(other, /*isPan=*/true, 77.0f, replaced, replacedLocked));
+    r.pump(200);
+    REQUIRE(r.firstPan(other) == Catch::Approx(77.0).margin(0.01));
+
+    std::vector<std::vector<std::array<double, 5>>> before;
+    for (int c = 1; c <= MonoMultiRig::kCount; ++c)
+    {
+        before.push_back(r.segTableOf(c));
+    }
+    REQUIRE_FALSE(before[0].empty()); // 前提:分析真的产出了段,否则「没变」毫无意义
+
+    const auto mask = static_cast<std::uint16_t>(1u << (target - 1));
+    REQUIRE(r.runAnalysisMasked(mask, 0.0, coveredS, /*clearManual=*/true));
+
+    for (int c = 1; c <= MonoMultiRig::kCount; ++c)
+    {
+        if (c == target)
+        {
+            continue;
+        }
+        CHECK(r.segTableOf(c) == before[static_cast<std::size_t>(c - 1)]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3173,7 +3402,15 @@ TEST_CASE("HOST SL-202:单轨 clearManual 重新识别不得动他轨段表", "[
     int replacedLocked = 0;
     REQUIRE(r.out.setTrackManual(kCh, /*isPan=*/true, -80.0f, replaced, replacedLocked));
     setFreezeBits(r.out, kCh, 0);
+
+    // [SL-393] 掩码**内外**各留一个冻结位,给下面那对断言当正反对照。
+    // 计算集放宽之后,`clearManual` 清 freeze 的那个循环会看见上下文轨(它们现在也
+    // `anyCovered`),不按写回集筛就会把**别人的**冻结一并解掉 —— 那是带 gesture 的
+    // 用户参数面写入,而用户只点了「恢复这一段」。
+    setFreezeBits(r.out, kCh, 1); // 掩码内:本轮该被清成 0
+    setFreezeBits(r.out, 2, 1); // 掩码外:一位都不许动
     MonoMultiRig::pump(120);
+    REQUIRE(paramValueOf(r.out, scvb::params::freezeId(r.out.versionActive(), 2)) == Catch::Approx(1.0f));
 
     const auto accepted = r.out.startAnalysis(static_cast<std::uint16_t>(1u << (kCh - 1)), 0.0, coveredS,
                                               /*clearManual=*/true);
@@ -3196,6 +3433,11 @@ TEST_CASE("HOST SL-202:单轨 clearManual 重新识别不得动他轨段表", "[
     // 本轨:重算出了 auto 段,曲线在,不是空表。
     CHECK(activeCurveOf(r.out, kCh) != nullptr);
     CHECK(allAutoSegments(r.out, kCh));
+
+    // ★ [SL-393] 冻结位:掩码外原样保留、掩码内被清 —— 一对正反对照。
+    // 只断前者会被「一位都没清」蒙混过去(那样 clearManual 的语义反而被收窄了)。
+    CHECK(paramValueOf(r.out, scvb::params::freezeId(r.out.versionActive(), 2)) == Catch::Approx(1.0f));
+    CHECK(paramValueOf(r.out, scvb::params::freezeId(r.out.versionActive(), kCh)) == Catch::Approx(0.0f));
 }
 
 // ---------------------------------------------------------------------------
