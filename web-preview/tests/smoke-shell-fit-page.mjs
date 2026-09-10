@@ -24,8 +24,13 @@
 //      → 页内倍率跟到该档位。壳页少接这一层的话,预览里档位就是哑的;
 //   ⑤ 全程零 console.error、零未捕获异常;
 //   ⑥(仅 Monitor)**先停掉帧流再改窗口**:轨迹图画布的后备存储 k 必须跟上。
-//      ⚠ 这一格钉的是**不变量**(画布后备存储跟着外壳倍率走),**不是** installShellFit
-//      那个 onChange 的删除式 —— 去掉 onChange 它照样绿,实测见文件末尾的说明。
+//      ⚠ 这一格钉的是**不变量**(画布后备存储跟着外壳倍率走),**不是** onChange 的
+//      删除式 —— 去掉 onChange 它照样绿(画布那一侧被 clientWidth 的取整巧合掩盖了);
+//   ⑧(仅 Output,仅 60% 那一格)四个 tab 各查一遍零溢出 —— 缩得最小的那一档最容易
+//      暴露「内容比框大」;不做四格视口 × 四 tab 的全乘,那只翻时长不换失效模式;
+//   ⑦ **开窗即非 1 档**(`?scale=0.5`)→ 停帧 → 拉回设计尺寸:轨迹图必须失效一次。
+//      读的是 Monitor 测试面的**失效计数**,不受 ⑥ 那条取整巧合掩盖 ⇒ 这一格才是
+//      「onChange 在不在」与「倍率账初值取早了」两件事的删除式,两者都必红。
 //
 // 用法:node web-preview/tests/smoke-shell-fit-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -624,6 +629,53 @@ try {
                     `(${Math.round(m.left)},${Math.round(m.top)} ${Math.round(m.width)}×${Math.round(m.height)} vs ${m.vw}×${m.vh})`,
             );
 
+            // ⑧ Output 的四个 tab 各查一遍零溢出 —— **只在 60% 这一格**做。
+            // 理由:溢出是「内容比框大」,最容易在缩得最小的那一档暴露;而四格视口
+            // × 四个 tab 全乘等于把这一套的时长翻两番,换不来新的失效模式。
+            // 四面板同在 DOM、靠 `#content[data-tab]` 切换,所以别的 tab 的内容在别的
+            // 格里其实也参与了 body 的 scrollWidth —— 这里补的是「切过去之后各自的
+            // 版面在 0.6 档下也不撑破」。
+            if (role === "output" && g.want === 0.6 && g.bind === "both") {
+                for (const tab of ["master", "tracks", "wave", "settings"]) {
+                    const clicked = await evaluate(
+                        IN(`
+                        const t = gb("tabnav-${tab}");
+                        if (!t) return false;
+                        t.click();
+                        return true;
+                    `),
+                    );
+                    if (!check(clicked, `output / 60% / ${tab}:切到该 tab`)) {
+                        continue;
+                    }
+                    await twoFrames();
+                    const tm = await evaluate(GEOM(sel));
+                    if (!check(tm, `output / 60% / ${tab}:量到几何`)) continue;
+                    check(
+                        tm.docScrollW <= tm.vw && tm.bodyScrollW <= tm.vw,
+                        `output / 60% / ${tab}:无横向溢出` +
+                            `(doc ${tm.docScrollW} / body ${tm.bodyScrollW} ≤ ${tm.vw})`,
+                    );
+                    check(
+                        tm.docScrollH <= tm.vh && tm.bodyScrollH <= tm.vh,
+                        `output / 60% / ${tab}:无纵向溢出` +
+                            `(doc ${tm.docScrollH} / body ${tm.bodyScrollH} ≤ ${tm.vh})`,
+                    );
+                    eq(
+                        tm.zoom,
+                        String(g.want),
+                        `output / 60% / ${tab}:切 tab 不改倍率`,
+                    );
+                }
+                // 收尾切回第一个 tab,后面几格量的仍是同一个版面
+                await evaluate(
+                    IN(
+                        `const t = gb("tabnav-master"); if (t) t.click(); return true;`,
+                    ),
+                );
+                await twoFrames();
+            }
+
             // ③ 贴边:短边**必须**贴满,否则「不会自动放大」原样复发
             if (g.bind === "both") {
                 check(
@@ -784,20 +836,122 @@ try {
             // (Chrome 152 实测 822 → 818:不是按倍率缩,是亚像素取整的偏移),于是它自己
             // 那个 `if (measure())` 的 ResizeObserver 恰好被叫醒。那是**取整的巧合**,不是
             // 不变量 —— 换一个恰好取整到同一个整数的版面就没有了,而那时画布会一直用旧 k。
-            // 所以 onChange 留着(构造上正确),但这一格不冒充它的删除式。
+            // 所以 onChange 留着(构造上正确),但**这一格**不冒充它的删除式 ——
+            // 真正钉住 onChange 的是下面 ⑦:它读的是失效**计数**,不是画布像素,
+            // 于是不受这条取整巧合的掩盖(拆掉 onChange,⑦ 必红)。
             const after = await evaluate(CANVAS_K);
             if (check(after, "monitor:停帧改窗口后量到轨迹图画布")) {
                 check(
                     Math.abs(after.ratio - after.dpr) < 0.05,
                     `monitor:停帧改窗口后 k 跟上了` +
                         `(canvas.width ÷ 包围盒宽 = ${after.ratio.toFixed(3)},应为 dpr ${after.dpr};` +
-                        `倍率 ${after.zoom})—— 去掉 installShellFit 的 onChange 必红`,
+                        `倍率 ${after.zoom})`,
                 );
             }
         }
 
         // ⑤
         assertClean(role);
+    }
+
+    // ---- ⑦ 开窗即非 1 档:第一次拉回设计尺寸也必须让轨迹图失效 -----------------
+    // 真机路径:`commitUiScale` 把档位落成系统级默认 ⇒ 用户存过 0.5 之后,下一次开窗
+    // 宿主**一上来**给的就是设计盒×0.5。此时 installShellFit 的首帧 `apply` 是静默的
+    // (只落样式、不回调),模块级倍率直接就是 0.5 —— 于是「倍率账的初值在安装**之前**
+    // 取」这个写法会把账钉死在 1,而**第一次**把窗口拉回设计尺寸(量化后正好 1.00)就被
+    // `f === lastBackingFit` 吞掉:轨迹图不失效,画布带着 0.5 的旧 k 被上采样。
+    //
+    // 判据读的是 `__SCVB_MONITOR__.snapshot().shellFitInvalidations`(onChange 真的失效了
+    // 几次),**不是**画布像素:后者在这里测不出来 —— 轨迹图父盒的 clientWidth 在 zoom 下
+    // 会顺带偏几个像素(Chrome 152 实测 822 → 818,亚像素取整),把它自己那个
+    // `if (measure())` 的 ResizeObserver 恰好叫醒,于是「有没有这次失效」不可分辨。
+    // 把初值那一行挪回安装之前,这一格必红。
+    {
+        newBucket("monitor 开窗即 0.5 档");
+        const box = DESIGN.monitor;
+        const F0 = 0.5; // 必须在 design-box.js 的 monitor 档位表内,否则壳页回落 1
+        await cdp.send("Page.navigate", { url: "about:blank" });
+        await sleep(120);
+        await cdp.send("Page.navigate", {
+            url: `${base}/web-preview/monitor.html?scale=${F0}`,
+        });
+        const ready = await waitFor(
+            `(() => {
+                const st = document.querySelector(".pv-status");
+                const f = document.querySelector("iframe");
+                const d = f && f.contentDocument;
+                return !!(
+                    st &&
+                    st.getAttribute("data-ok") === "1" &&
+                    d &&
+                    d.querySelector("#card") &&
+                    d.defaultView.__SCVB_MONITOR__
+                );
+            })()`,
+            15000,
+        );
+        check(ready, "monitor?scale=0.5:装载完成");
+        await twoFrames();
+
+        const wantW = Math.round(box.w * F0);
+        const framed = await evaluate(
+            OUT(`return Math.round(f.getBoundingClientRect().width);`),
+        );
+        eq(framed, wantW, `monitor?scale=0.5:壳页开窗就给 ${wantW}px 宽`);
+        eq(
+            await evaluate(IN(`return q("#card").style.zoom;`)),
+            String(F0),
+            "monitor?scale=0.5:开窗倍率就是 0.5(首帧静默落的那一次)",
+        );
+
+        // 停帧:让「有没有 onChange」成为唯一变量
+        check(
+            await evaluate(
+                `(() => {
+                    const s = window.__SCVB_PREVIEW_SESSION__;
+                    if (!s || typeof s.stop !== "function") return false;
+                    s.stop();
+                    return true;
+                })()`,
+            ),
+            "monitor?scale=0.5:停掉预览 driver",
+        );
+        await sleep(300);
+
+        const before = await evaluate(
+            IN(`return w.__SCVB_MONITOR__.snapshot().shellFitInvalidations;`),
+        );
+
+        // 拉回设计尺寸 —— 量化后正好 1.00,正是被吞掉的那一次
+        await evaluate(
+            OUT(`
+            f.style.width = ${box.w} + "px";
+            f.style.height = ${box.h} + "px";
+            return true;
+        `),
+        );
+        await waitFor(IN(`return d.documentElement.clientWidth === ${box.w};`));
+        await twoFrames();
+        await twoFrames();
+
+        eq(
+            await evaluate(IN(`return q("#card").style.zoom;`)),
+            "1",
+            "monitor?scale=0.5:拉回设计尺寸后倍率 = 1",
+        );
+        const after = await evaluate(
+            IN(`return w.__SCVB_MONITOR__.snapshot().shellFitInvalidations;`),
+        );
+        check(
+            typeof before === "number" && typeof after === "number",
+            `monitor?scale=0.5:读到失效计数(前 ${before} 后 ${after})`,
+        );
+        check(
+            after > before,
+            `monitor?scale=0.5:第一次拉回设计尺寸让轨迹图失效了` +
+                `(计数 ${before} → ${after};倍率账初值若在安装前取,这一格必红)`,
+        );
+        assertClean("monitor 开窗即 0.5 档");
     }
 } catch (e) {
     fail++;

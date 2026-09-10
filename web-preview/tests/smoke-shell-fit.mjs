@@ -49,8 +49,113 @@ function eq(got, want, msg) {
 const src = (rel) => readFileSync(join(ROOT, rel), "utf8");
 const url = (rel) => pathToFileURL(join(ROOT, rel)).href;
 
-const { fitFactor } = await import(url("web/shared/shell-fit.js"));
+const { fitFactor, backingFitFactor, installShellFit, shellFitFactor } =
+    await import(url("web/shared/shell-fit.js"));
 const { DESIGN } = await import(url("web/shared/design-box.js"));
+
+/**
+ * 一套**假 window**,用来在 node 里驱动 installShellFit。
+ *
+ * 为什么要它:`backingFitFactor()` 与 `destroy()` 读写的是模块级倍率,而那个值只由
+ * 安装里的 `apply()` 落 —— 不进这条路就只能测到初值 1,两条判据都会变成恒真式。
+ *
+ * @param {object} o
+ * @param {number} o.vw 初始视口宽 / @param {number} o.vh 初始视口高
+ * @param {boolean} [o.withRaf] 给不给 requestAnimationFrame(不给就走 setTimeout 回退)
+ */
+function fakeEnv(o) {
+    const listeners = new Map();
+    const timers = [];
+    const clearedTimeouts = [];
+    const clearedRafs = [];
+    let nextId = 1;
+    const de = { clientWidth: o.vw, clientHeight: o.vh };
+    const win = {
+        document: { documentElement: de },
+        addEventListener: (n, cb) => listeners.set(n, cb),
+        removeEventListener: (n) => listeners.delete(n),
+        setTimeout: (fn) => {
+            const id = nextId++;
+            timers.push({ id, fn, kind: "timeout" });
+            return id;
+        },
+        clearTimeout: (id) => clearedTimeouts.push(id),
+    };
+    if (o.withRaf) {
+        win.requestAnimationFrame = (fn) => {
+            const id = nextId++;
+            timers.push({ id, fn, kind: "raf" });
+            return id;
+        };
+        win.cancelAnimationFrame = (id) => clearedRafs.push(id);
+    }
+    return {
+        el: { style: {} },
+        win,
+        timers,
+        clearedTimeouts,
+        clearedRafs,
+        setViewport(w, h) {
+            de.clientWidth = w;
+            de.clientHeight = h;
+        },
+        fire(name) {
+            const cb = listeners.get(name);
+            if (cb) cb();
+        },
+    };
+}
+
+// ---------------------------------------------------------------- ①b 粗量化
+log("\n=== ①b backingFitFactor 的 0.01 量化 ===");
+{
+    // 设计盒取 10000 是为了让 1e-4 的精值刻度落在整数视口上,断言里不出现浮点凑数。
+    const BOX = { w: 10000, h: 10000 };
+    const env = fakeEnv({ vw: 6039, vh: 6039 });
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    eq(shellFitFactor(), 0.6039, "画面倍率保持 1e-4 精值(0.6039)");
+    eq(backingFitFactor(), 0.6, "后备存储倍率量化到 0.01(0.6039 ⇒ 0.6)");
+
+    // 相邻的 1e-4 刻度必须映射到**同一个**粗值 —— 这正是「拖窗口时不必每帧重分配」
+    // 那条收益的可判据形态。量化删掉的话,这一格与上一格都红。
+    env.setViewport(6040, 6040);
+    h.refresh();
+    eq(shellFitFactor(), 0.604, "相邻刻度:精值确实变了(0.604)");
+    eq(backingFitFactor(), 0.6, "相邻刻度:粗值不变(0.604 ⇒ 0.6)");
+
+    // 越过 0.005 的边界才准变
+    env.setViewport(6050, 6050);
+    h.refresh();
+    eq(backingFitFactor(), 0.61, "越过半档边界后粗值才跳(0.605 ⇒ 0.61)");
+    h.destroy();
+}
+
+// ---------------------------------------------------------------- ①c destroy
+log("\n=== ①c destroy():按句柄类型取消 + 复位 ===");
+{
+    // 不给 requestAnimationFrame ⇒ schedule() 必须走 setTimeout 回退,
+    // 于是 raf 里存的是 timeout id,destroy() 只用 cancelAnimationFrame 就取消不掉它。
+    const BOX = { w: 100, h: 100 };
+    const env = fakeEnv({ vw: 60, vh: 60, withRaf: false });
+    const h = installShellFit({ el: env.el, box: BOX, win: env.win });
+    eq(shellFitFactor(), 0.6, "安装时的静默首帧把倍率落成 0.6");
+
+    env.setViewport(100, 100);
+    env.fire("resize");
+    eq(
+        env.timers.map((t) => t.kind),
+        ["timeout"],
+        "没有 rAF 时 schedule() 走 setTimeout 回退",
+    );
+
+    h.destroy();
+    eq(
+        env.clearedTimeouts,
+        [env.timers[0].id],
+        "destroy() 按句柄类型 clearTimeout(用 cancelAnimationFrame 取消不掉它)",
+    );
+    eq(shellFitFactor(), 1, "destroy() 把模块级倍率复位成 1(拆完等于没装过)");
+}
 
 // ---------------------------------------------------------------- ① 算术面
 log("\n=== ① fitFactor ===");

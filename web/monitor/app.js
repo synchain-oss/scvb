@@ -77,7 +77,17 @@ card.style.setProperty("--box-h", MONITOR_DESIGN.h + "px");
 // 只在**粗量化**倍率变化时才失效(backingFitFactor 量化到 0.01):宿主拖着窗口边框走时
 // 精值几乎每像素一个新数,拿它当判据等于每帧重分配一次画布。
 let trajRef = null;
-let lastBackingFit = backingFitFactor();
+// **初值必须在 installShellFit 之后取**,不能在之前:安装里的首帧 `apply` 是静默的
+// (只落样式、不回调),它会把模块级倍率直接置成开窗时的真实倍率 f0。在它之前取,这里
+// 就钉死在模块初值 1 —— 于是「开窗即非 1 档」(用户存过 0.5,下次开窗宿主直接给
+// 设计盒×0.5)之后,**第一次**把窗口拉回设计尺寸(量化后正好 1.00)会被下面
+// `f === lastBackingFit` 吞掉,轨迹图不失效、画布带着 0.5 的旧 k 被上采样。
+// 判据:smoke-shell-fit-page.mjs 的「开窗即 0.6 档」那一格;把这一行挪回安装前必红。
+// 先置 null 而不是 1:万一 onChange 在赋值之前就到(今天到不了,rAF 排在后面),
+// `f === null` 恒假 ⇒ 多失效一次,方向是安全的那边。
+let lastBackingFit = null;
+/** 测试面计数:onChange 真的让轨迹图失效了几次(见 __SCVB_MONITOR__.snapshot)。 */
+let shellFitInvalidations = 0;
 installShellFit({
     el: card,
     box: MONITOR_DESIGN,
@@ -85,9 +95,11 @@ installShellFit({
         const f = backingFitFactor();
         if (f === lastBackingFit) return;
         lastBackingFit = f;
+        shellFitInvalidations += 1;
         if (trajRef) trajRef.invalidate();
     },
 });
+lastBackingFit = backingFitFactor();
 
 // ------------------------------------------------------------- 桥
 let bridge = null;
@@ -252,8 +264,6 @@ const traj = trajCanvas
           zoomEl: $("monitor-traj-zoom"),
           getSeries: () => store.series,
           getDurationS: () => vizDurationS(visibleFrame()),
-          // [SL-380] k = 外壳缩放 × dpr(05 §6.1)。读实际倍率而不是档位数字:
-          // 宿主自己改窗口尺寸时 store.scale 一动不动,而 k 已经变了。
           // [SL-380] k = 外壳缩放 × dpr(05 §6.1)。读**实际倍率**而不是档位数字:
           // 宿主自己改窗口尺寸时 store.scale 一动不动,而 k 已经变了。
           getUiScale: () => backingFitFactor(),
@@ -814,6 +824,11 @@ window.__SCVB_MONITOR__ = {
         // 是「种子那一支没跑」还是「25Hz 那一路已经先到了」。
         seededFromFrame,
         playheadSeen,
+        // [SL-380] installShellFit 的 onChange 真的让轨迹图失效了几次。
+        // 与 `seededFromFrame` 同款用途:那条路径**有没有被走到**,只有页面级看得见 ——
+        // 画布像素那一侧测不出来(轨迹图父盒的 clientWidth 在 zoom 下会顺带偏几个像素,
+        // 把它自己那个 ResizeObserver 恰好叫醒,于是「有没有这次失效」不可分辨)。
+        shellFitInvalidations,
         laneRevision: store.frame ? store.frame.laneRevision : null,
         generation: store.frame ? store.frame.generation : null,
         durationS: vizDurationS(visibleFrame()),

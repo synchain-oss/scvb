@@ -108,7 +108,8 @@ export function backingFitFactor() {
  *   也都不会响。我当时量到「有没有这次回调都一样」,是因为量的时候 mock 正以 25Hz 推
  *   viz 帧、而每来一帧 Monitor 都会 `traj.invalidate()` 一次 —— **那是判据不可分辨,
  *   不是不需要**。真实缺口 = 帧流停顿而组仍在线的那一段里宿主改了窗口尺寸:画布会带着
- *   旧 k 一直被上采样。判据见 smoke-shell-fit-page.mjs 的「停帧后改窗口」那一格。
+ *   旧 k 一直被上采样。删除式判据 = smoke-shell-fit-page.mjs 的「开窗即 0.5 档」那一格
+ *   (⑦):它读 Monitor 测试面的失效计数,拆掉本回调计数就不涨 ⇒ 必红。
  * @param {Window} [o.win] 注入用(默认 globalThis)
  * @returns {{factor:()=>number, refresh:()=>void, destroy:()=>void}}
  */

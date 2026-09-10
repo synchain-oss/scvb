@@ -590,7 +590,15 @@ export async function mountPreview({ role: pageRole }) {
         frame.style.width = Math.round(box.w * s) + "px";
         frame.style.height = Math.round(box.h * s) + "px";
     };
-    sizeFrame(1);
+    // `?scale=` —— **开窗时就不是 1 档**。这不是为测试造的场景:`commitUiScale` 会把档位
+    // 落成系统级默认,于是用户存过 0.5 之后,下一次开窗宿主**一上来**给的就是设计盒×0.5。
+    // 预览从前只会以 1 档开窗,这条路径整个进不来。取值必须在该侧的档位表内,表外一律回落 1
+    // (拼错参数该落回默认档,不是白屏)。
+    const askedScale = Number(params.get("scale"));
+    const initialScale = (DESIGN_BOX[role].presets || []).includes(askedScale)
+        ? askedScale
+        : 1;
+    sizeFrame(initialScale);
     stage.appendChild(frame);
 
     reloadBtn.addEventListener("click", () => location.reload());
