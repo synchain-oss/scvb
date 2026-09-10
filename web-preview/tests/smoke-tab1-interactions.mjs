@@ -1575,6 +1575,29 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         false,
         "(a14b) ★ 从未观测到宿主写 ⇒ 不亮(⓪ 分支不得恒真)",
     );
+    // (a14c) [SL-394 复审⑤] ⓪ 的「未知」必须与 `hostEchoUseWideWindow` **同一条判据**:
+    // `playhead` **在场却没有 `isPlaying`** 也算未知(契约面不可达,但头注是这么写的,
+    // 代码要与它逐字相符)。上一版 ⓪ 只判 `!store.playhead`,比头注窄一格 —— 这一档会
+    // 静默落到 900ms 窗口。★ 删除式:把 `transportUnknown` 退回 `!ph`,本格当场红。
+    eq(
+        [
+            HE.transportUnknown({}),
+            HE.transportUnknown({ playhead: null }),
+            HE.transportUnknown({ playhead: {} }),
+            HE.transportUnknown({ playhead: { isPlaying: false } }),
+            HE.transportUnknown({ playhead: { isPlaying: true } }),
+        ],
+        [true, true, true, false, false],
+        "(a14c) ★ transportUnknown:缺席 / null / 无 isPlaying ⇒ 未知;有布尔 isPlaying ⇒ 已知",
+    );
+    eq(
+        HE.hostEchoVisible(
+            { params: { hostEchoAt: T0 }, playhead: {} },
+            T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 10,
+        ),
+        true,
+        "(a14d) ★ playhead 在场但无 isPlaying(未知)⇒ 越过停走档 10 倍仍亮",
+    );
 
     // ---- (a21..a25) [SL-394] 播放期闩锁:B29 的新口径 -------------------------
     //
@@ -1620,42 +1643,70 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
                     play(T0, T0 - 1, T0),
                     T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 3,
                 ),
-                // 早 (去抖-1)ms:仍在宽限内 ⇒ 亮
+                // 早 (停走档-1)ms:仍在宽限内 ⇒ 亮
                 HE.hostEchoVisible(
-                    play(T0, T0 - (HE.HOST_ECHO_TRANSPORT_HOLD_MS - 1), T0),
+                    play(T0, T0 - (HE.HOST_ECHO_RELEASE_STOPPED_MS - 1), T0),
                     T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 3,
                 ),
-                // 早 (去抖+1)ms:出宽限 ⇒ 回落窗口 ⇒ 该熄
+                // 早 (停走档+1)ms:出宽限 ⇒ 回落窗口 ⇒ 该熄
                 HE.hostEchoVisible(
-                    play(T0, T0 - (HE.HOST_ECHO_TRANSPORT_HOLD_MS + 1), T0),
+                    play(T0, T0 - (HE.HOST_ECHO_RELEASE_STOPPED_MS + 1), T0),
                     T0 + HE.HOST_ECHO_RELEASE_STOPPED_MS * 3,
                 ),
             ],
             [true, true, false],
-            "(a23) ★ 起点宽限恰为去抖窗:早于它算本次播放、超出即不算(两侧边界各一格)",
+            // [SL-394 复审②] 宽限量与 `HOST_ECHO_RELEASE_STOPPED_MS` **取齐**(同一个常量),
+            // 不再用走带去抖那一档:两个量回答的是不同的问题(一个是「走带抖动该吸收多久」,
+            // 一个是「一笔写多久之内还算数」),而这里问的是后者。取齐之后,
+            // 「起播前那一笔写还算不算本次播放」与「停走后它还亮多久」用的是同一把尺子。
+            "(a23) ★ 起点宽限恰为停走档:早于它算本次播放、超出即不算(两侧边界各一格)",
         );
         // (a24) 记账口径:新的一段播放才刷新起点,同一段里的抖动**不**刷新。
         // 记反了(每帧都刷新)⇒ `at >= start` 恒假 ⇒ 闩锁永不生效,(a21) 会红。
+        // [SL-394 复审] 签名多了 `prevPlayhead`(第三参):新的一段只能由**明确停走 → 播放**
+        // 这个转换开启,而转换只有拿上一帧才看得出来。
+        const PLAY = { isPlaying: true };
+        const STOP = { isPlaying: false };
         eq(
             [
-                // 本会话第一帧非停走 ⇒ 开新段
-                HE.playbackStartedAt(0, 0, { isPlaying: true }, T0),
-                // 同一段里继续播(距上次非停走仅 33ms)⇒ 沿用
-                HE.playbackStartedAt(T0, T0 + 33, { isPlaying: true }, T0 + 66),
+                // 本会话第一段(prevStartedAt=0)⇒ 开新段
+                HE.playbackStartedAt(0, 0, null, PLAY, T0),
+                // 同一段里继续播 ⇒ 沿用
+                HE.playbackStartedAt(T0, T0 + 33, PLAY, PLAY, T0 + 66),
                 // 明确停走 ⇒ 沿用(不清零,否则「停→立刻再播」会闪)
-                HE.playbackStartedAt(T0, T0, { isPlaying: false }, T0 + 100),
-                // 连续停走满去抖窗后再播 ⇒ 开新段
+                HE.playbackStartedAt(T0, T0, PLAY, STOP, T0 + 100),
+                // 明确停走**满去抖窗**后再播 ⇒ 开新段
                 HE.playbackStartedAt(
                     T0,
                     T0,
-                    { isPlaying: true },
+                    STOP,
+                    PLAY,
                     T0 + HE.HOST_ECHO_TRANSPORT_HOLD_MS,
                 ),
+                // 停走但**没满**去抖窗就回来(SL-356 那一幕)⇒ 同一段
+                HE.playbackStartedAt(T0, T0 + 400, STOP, PLAY, T0 + 460),
                 // 走带态未知(无 isPlaying)⇒ 不算停走,与 transportPlayingAt 同口径
-                HE.playbackStartedAt(T0, T0 + 33, {}, T0 + 66),
+                HE.playbackStartedAt(T0, T0 + 33, PLAY, {}, T0 + 66),
             ],
-            [T0, T0, T0, T0 + HE.HOST_ECHO_TRANSPORT_HOLD_MS, T0],
-            "(a24) ★ 本次播放起点的记账:新段才刷新、同段沿用、停走不清零、未知不当停走",
+            [T0, T0, T0, T0 + HE.HOST_ECHO_TRANSPORT_HOLD_MS, T0, T0],
+            "(a24) ★ 起点记账:第一段开、同段沿用、停走不清零、停满去抖再播才开新段、假停走不开、未知不当停走",
+        );
+        // (a24b) ★ **时间空洞不得开新段**(复审【行为错】①)。`scvb.playhead` 断流的路子
+        // 有好几条且都与走带无关(面板切走整帧丢弃 / 载荷逐帧相同被两道去重挡掉 /
+        // 消息线程堵住几帧挤着晚到)。按「距上次非停走多久」判的话,断流之后那一帧
+        // `isPlaying:true` 会开出新段 ⇒ 起点跑到宿主那次写之后 ⇒ 闩锁当场掉。
+        // ★ 删除式:把判据退回「!prev || now - prev >= HOLD ⇒ now」,本格当场红。
+        eq(
+            [
+                // 断流 2s(上一帧仍是**播放**)⇒ 同一段,起点不动
+                HE.playbackStartedAt(T0, T0, PLAY, PLAY, T0 + 2000),
+                // 断流 30s 也一样
+                HE.playbackStartedAt(T0, T0, PLAY, PLAY, T0 + 30000),
+                // 上一帧是**未知**(不是明确停走)⇒ 同样不开新段
+                HE.playbackStartedAt(T0, T0, {}, PLAY, T0 + 2000),
+            ],
+            [T0, T0, T0],
+            "(a24b) ★ playhead 断流(2s / 30s / 上一帧未知)**不得**开新段 —— 断流期间保持闩锁",
         );
         // (a25) 闩锁与去抖**互不顶替**:把去抖拆掉(playingAt 记成 0 = 从未非停走)之后,
         // 一帧明确停走就该按停走结算 —— 闩锁不该把它救回来。
@@ -1760,6 +1811,7 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
             st.playbackStartedAt = HE.playbackStartedAt(
                 st.playbackStartedAt,
                 st.playingAt,
+                st.playhead, // [SL-394 复审] 覆写前的上一帧 —— 转换只有拿它才看得出来
                 ph,
                 now,
             );

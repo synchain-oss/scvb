@@ -1579,7 +1579,8 @@ try {
         // 这一条是本节能不能算数的关键。闩锁量的是「距最后一帧 hostEcho:true 多久」,
         // 而那一帧什么时候来我们并不知道 —— mock 的打印头是「值变了才发」,实测两帧之间
         // 能隔两三秒。从指令时刻起算的话,测出来的间隔里混着一段未知的「上一帧有多旧」,
-        // 只能给上界、给不出下界,于是「播放档确实更宽」这半条根本证明不了(本仓记过
+        // 只能给上界、给不出下界。[SL-394] 「播放档确实更宽」这半条已随播放档一起作废,
+        // 但**量法本身照旧要紧**:(b) 量的停走档仍靠它才有下界(本仓记过
         // 「按帧率/节奏判红」的假红,这里是同一个坑的另一面)。
         //
         // 改成:先把徽标打灭,再打开打印头,**在页内**盯住 0 → 1 那一次跳变并落一个
@@ -1741,7 +1742,7 @@ try {
         // 却不给 `timeInSamples` 时 timeS 恒 0.0,载荷逐帧逐字相同,native 的
         // `emitIfChanged` 与页面的 `samePlayhead` 两道去重都判「没变」,整个播放期
         // **一次 render 都不排**。那时能把徽标熄掉的只剩定时器,而只排停走档那一拍的话
-        // 它在 950ms 就烧完了(闩锁还亮着,950 < 2500),之后再没有东西来 render ——
+        // 它在 950ms 就烧完了(那一版闩锁还亮着,950 < 当时的播放档),之后再没有东西来 render ——
         // 徽标与 Tab2 灰显**永久滞留**。
         //
         // `ctl.setHostTimeAvailable(false)` 复现的就是这类宿主(预览专用开关,见
@@ -1749,7 +1750,8 @@ try {
         // 已经把 capture 关了,所以 `scvb.captureProgress` 这条 2Hz 的 render 源本来就
         // 不在场 —— 本节量到的熄灭只可能来自定时器。
         //
-        // ★ 删除式:去掉播放档那一拍 setTimeout,(e) 会一路采到 12s 超时(-2)当场红。
+        // ⚠ [SL-394] 以上是**旧口径的追述**(播放档 + 它那一拍定时器都已删除)。
+        // 新口径下 (e) 断的是反面:播放期一次 render 都不排时徽标**仍亮**,见下面那一段。
         const setHostTime = (on) =>
             evaluate(`(() => {
             const s = window.__SCVB_PREVIEW__;
@@ -1816,6 +1818,46 @@ try {
             }
         }
 
+        // ---- (g) [SL-394 复审【行为错】①] **播放中 playhead 断流之后,徽标仍亮**。
+        //
+        // `scvb.playhead` 断流的路子有好几条,每一条都与「走带停了」无关:面板切走整帧
+        // 丢弃、载荷逐帧逐字相同被两道去重挡掉、消息线程堵住几帧挤着晚到。
+        // 若「本次播放的起点」按**时间空洞**判(距上次非停走 ≥ 去抖窗就算新段),断流之后
+        // 那一帧 `isPlaying:true` 会开出一段新播放 ⇒ 起点跑到宿主那次写之后 ⇒ 闩锁当场掉,
+        // 徽标在播放中途熄灭 —— 本卡要治的那一幕换了个触发条件又回来。
+        //
+        // 造法:用 `setHostTimeAvailable(false)` 把 playhead 载荷钉成逐帧逐字相同
+        //(native 那条真实分支的预览等价物),两道去重于是把整段都挡掉 = 断流;
+        // 静置 2s 之后再恢复,期间与之后徽标都必须一直亮。
+        //
+        // ★ 删除式:把 `playbackStartedAt()` 退回「!prev || now - prev >= HOLD ⇒ now」,
+        //   本格与 node 侧 (a24b) 一起红。
+        {
+            await setPlaying(true);
+            await setOutput(true);
+            if (check(await waitFor(badgeOn, 15000), "(g) 前置:徽标先亮起来")) {
+                await setOutput(false); // 之后不会再有 hostEcho 帧
+                check(
+                    (await setHostTime(false)) === "ok",
+                    "(g) 前置:预览会话认得 setHostTimeAvailable(断流靠它造)",
+                );
+                await sleep(2000); // 断流 2s(远超走带去抖窗 500ms)
+                const midStall = await evaluate(badge);
+                await setHostTime(true); // 恢复供帧:下一帧就是 isPlaying:true
+                const after = [];
+                for (let i = 0; i < 8; i++) {
+                    await sleep(250);
+                    after.push(await evaluate(badge));
+                }
+                const lit = after.filter((v) => v === "1").length;
+                check(
+                    midStall === "1" && lit === after.length,
+                    `(g) ★ 播放中 playhead 断流 2s ⇒ 断流期间(实得 ${midStall})与恢复供帧之后` +
+                        `(实得 ${lit}/${after.length} 次采样为亮)徽标都仍亮 —— 时间空洞不得开新段`,
+                );
+            }
+        }
+
         assertClean("SL-270 释放窗口");
     }
 
@@ -1828,8 +1870,10 @@ try {
     //
     // 定谳:SL-270 只给了**熄侧**迟滞(亮立刻、熄延迟挂在 `hostEchoAt` 上),走带态那一头
     // 零迟滞 —— `hostEchoUseWideWindow` 上一版是「当前这一帧 `isPlaying`」的纯函数,
-    // 一帧 false 就把释放窗口从 2500 收到 900;而播放中「距最后一次宿主写入超过 900ms」
-    // 完全正常(2500 那一档就是为它设的),于是那一帧到达的**当拍**徽标就熄。
+    // 一帧 false 就把释放窗口从当时的播放档收到 900;而播放中「距最后一次宿主写入超过 900ms」
+    // 完全正常,于是那一帧到达的**当拍**徽标就熄。
+    // ⚠ [SL-394] 播放档窗口已删,上面这段是**当时的判断记录**;今天播放中该不该亮由
+    // 播放期闩锁回答,去抖仍在(它治的是另一条路:一帧假停走)。
     //
     // 为什么必须页面级:纯函数层的判据在 smoke-tab1-interactions ⑧(a15..a20),
     // 它断不到「渲染面真的按这条判据在写属性」,更断不到「停走之后还有人来 render」——
@@ -1929,12 +1973,12 @@ try {
                     if (age > maxAge) maxAge = age;
                     if (badge() === "0" && offAtAge < 0) offAtAge = age;
                     if (dg.stopped && age > ageWhenStopped) ageWhenStopped = age;
-                    // 收尾门限取 1600 而不是贴着 2500,两侧余量都要留,免得 CI runner
+                    // 收尾门限取 1600(当时贴着播放档留的余量,现照旧用),两侧余量都要留,免得 CI runner
                     // 抖一下就把「慢但合法」判红(本仓记过好几次这种假红)。两侧**不等宽**,
                     // 分开记(#236 复审第二轮订正:上一版写「各留 ~700ms」,上界那半是错的):
-                    //   • 上界 maxAge < 2500:maxAge 在退出判定之前更新,退出发生在
-                    //     首个 age >= 1600 的样本上 ⇒ maxAge ≈ 1600 + 一次 tick(20ms)
-                    //     ⇒ 余量 ≈ **880ms**,要冲破它得**单次** tick 卡满这么久;
+                    //   • 上界:[SL-394] 原先是「maxAge < 2500(播放档)」,播放档已删,
+                    //     该前置现改为「maxAge > 900(越过停走档)」—— 方向反过来了,
+                    //     它要的不再是「别越界」而是「必须越界,否则窗口制实现也绿」;
                     //   • 下界 ageWhenStopped >= 900:[900, 1600] 这 **700ms** 里约 35 个
                     //     样本、跨 4-5 个 150ms 翻转周期,停走样本必然采得到。
                     if (age >= 1600 || samples > 400) {
@@ -1958,22 +2002,25 @@ try {
             // 非空绿的两条前置,都是**测出来的**:
             //   ① 采样窗里真的出现过「页面手上是明确停走 ∧ 距最后一次宿主写入 ≥ 停走档」
             //      —— 那一刻正是修前徽标被打掉的时刻;
-            //   ② 整段没越过播放档 —— 越过了就该熄,那就不是缺陷。
+            //   ② [SL-394] 原先第二条是「整段没越过**播放档 2500** —— 越过了就该熄」。
+            //      播放档已删,而闩锁之下越过多久都**不该**熄,所以这条前置反过来:
+            //      采样窗必须**远超停走档**,这样任何窗口制实现都会在这一段里熄掉。
             check(
                 jitter.ageWhenStopped >= 900,
                 `(a) 前置:采样窗里出现过「明确停走 ∧ age ≥ 900ms」的样本(实得 ${jitter.ageWhenStopped}ms)` +
                     ` —— 没有它本条修前修后都绿`,
             );
             check(
-                jitter.maxAge < 2500,
-                `(a) 前置:整段没越过播放档 2500ms(实得 maxAge ${jitter.maxAge}ms)` +
-                    ` —— 越过了熄灭就是「该熄」`,
+                jitter.maxAge > 900,
+                `(a) 前置:采样窗越过了停走档 900ms(实得 maxAge ${jitter.maxAge}ms)` +
+                    ` —— 退回窗口制的实现必然在此段熄灭`,
             );
             check(
                 jitter.offAtAge < 0,
                 `(a) ★ 快速起停(150ms 一档翻走带)期间徽标**全程不灭**` +
                     `(实得首次熄灭于 age=${jitter.offAtAge}ms,-1 = 全程没灭;` +
-                    `拆掉去抖的那次注入实测 age=981ms —— 正是修前那一幕)`,
+                    `[SL-394] 删除式实证:**拆掉播放期闩锁**那次注入,本格与 ⑩(f) 一起红 ——` +
+                    `别再照旧注释把它读成「拆掉去抖」那一次的读数)`,
             );
         }
 
@@ -2084,9 +2131,11 @@ try {
         );
         if (hardStop && !hardStop.err) {
             check(
-                hardStop.ageAtStop > 0 && hardStop.ageAtStop < 2500,
-                `(b) 前置:停走那一刻徽标还亮着(距最后一次宿主写入 ${hardStop.ageAtStop}ms,` +
-                    `落在播放档 2500ms 内)—— 否则「停走后多久熄」量的是别的东西`,
+                hardStop.ageAtStop > 0,
+                `(b) 前置:停走那一刻徽标还亮着(距最后一次宿主写入 ${hardStop.ageAtStop}ms)` +
+                    ` —— 否则「停走后多久熄」量的是别的东西。` +
+                    `[SL-394] 上界「落在播放档 2500ms 内」已去掉:播放期由闩锁托着,` +
+                    `距上次写多久都还亮,再设上界就是拿一个不存在的窗口当前提`,
             );
             check(
                 hardStop.offAfterStop >= 0 && hardStop.offAfterStop < 900,

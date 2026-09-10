@@ -121,6 +121,21 @@ export function hostEchoReleaseMs(wide) {
 }
 
 /**
+ * [SL-394 复审] 走带态**未知**吗 —— 「未知」的唯一定义,两个消费者共用。
+ *
+ * 未知 = 还没有一帧 `scvb.playhead` 到过页面(`store.playhead` 为 null),**或者**
+ * 到了却没带 `isPlaying`(契约面上不可达 —— native 两侧与 mock 都无条件写该字段 ——
+ * 但它是「未知」不是「停走」,判据要与这句话逐字相符)。
+ *
+ * 抽出来的理由:`hostEchoUseWideWindow` 与 `hostEchoVisible` 的 ⓪ 分支**都**要问这件事,
+ * 而两处各写一遍就是这一族缺陷五次复发的形状(同一个判断各存一份)。
+ */
+export function transportUnknown(store) {
+    const ph = store && store.playhead;
+    return !ph || typeof ph.isPlaying !== "boolean";
+}
+
+/**
  * [SL-394] 徽标 / 灰显此刻该不该显示 —— **两个 tab 唯一的消费入口**。
  *
  * 三段口径(用户 2026-09-10 裁定,理由见 `HOST_ECHO_RELEASE_PLAYING_MS` 那段的墓志铭):
@@ -158,7 +173,7 @@ export function hostEchoVisible(store, nowMs) {
     // —— 旧实现是亮 2500ms。这一档在契约面上近乎不可达(noTimeline 时输出直通、
     // 打印头不写,`hostEcho` 不会为真),但它**不是**「不可能」,别把注释写成保证。
     // 实际时长由第一帧 30Hz `scvb.playhead` 终结(约 33ms)。
-    if (!(store && store.playhead)) return true;
+    if (transportUnknown(store)) return true;
     const start = (store && store.playbackStartedAt) || 0;
     // ① 本次播放里写过 ⇒ 常亮(无窗口)。
     //
@@ -170,7 +185,7 @@ export function hostEchoVisible(store, nowMs) {
     // 宽限量复用 `HOST_ECHO_TRANSPORT_HOLD_MS`(走带去抖那一档)而不是新造一个数:
     // 它量的正是同一件事 —— 走带态附近这点抖动该被吸收掉。别把它读成「窗口回来了」:
     // 它只挪动**这一段播放的左边界**,不给徽标任何到期时间。
-    const inThisPlayback = at >= start - HOST_ECHO_TRANSPORT_HOLD_MS;
+    const inThisPlayback = at >= start - HOST_ECHO_RELEASE_STOPPED_MS;
     if (start && inThisPlayback && hostEchoUseWideWindow(store, now)) {
         return true;
     }
@@ -245,7 +260,9 @@ export function hostEchoOn(params, nowMs, wide) {
 export function hostEchoUseWideWindow(store, nowMs) {
     const ph = store && store.playhead;
     // 缺席/未知一律宽档;只有 isPlaying === false 这一种「明确停走」才有资格进窄档。
-    if (!ph || ph.isPlaying !== false) return true;
+    // [SL-394 复审] 「未知」这半条抽成 `transportUnknown()`,与 `hostEchoVisible` 的 ⓪
+    // 分支**共用同一份**;两处各写一遍正是这一族缺陷反复复发的形状。
+    if (transportUnknown(store) || ph.isPlaying !== false) return true;
     // [SL-356] 有资格 ≠ 就收窄:还要连续停走满去抖窗口。
     const at = (store && store.playingAt) || 0;
     if (!at) return false; // 从未观测到非停走的一帧 ⇒ 一直停着 ⇒ 窄档
@@ -307,13 +324,33 @@ export function transportPlayingAt(prevAt, playhead, nowMs) {
 export function playbackStartedAt(
     prevStartedAt,
     prevPlayingAt,
+    prevPlayhead,
     playhead,
     nowMs,
 ) {
     if (playhead && playhead.isPlaying === false) return prevStartedAt || 0;
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+    // 本会话还没有过任何一段 ⇒ 这一帧就是第一段的起点。
+    if (!prevStartedAt) return now;
+    // [SL-394 复审 —— 行为错] **新的一段只能由「明确停走 → 播放」这个转换开启,
+    // 绝不能由「两帧之间隔了多久」推断。**
+    //
+    // 上一版写的是「距上次非停走 ≥ 去抖窗 ⇒ 新段」,那等于把**时间空洞**当成了一段播放
+    // 的结束。而 `scvb.playhead` 断流的路子有好几条,每一条都与「走带停了」无关:
+    //   · 面板切走 / 不可见 —— `emitEventIfBrowserIsVisible` 整帧丢弃;
+    //   · 载荷逐帧逐字相同(宿主给 `isPlaying` 却不给 `timeInSamples`,`timeS` 恒 0.0)
+    //     —— native 的 `emitIfChanged` 与页面侧的 `samePlayhead` 两道去重都判「没变」;
+    //   · 消息线程被别的活儿堵住,几帧挤在一起晚到。
+    // 断流之后那一帧 `isPlaying:true` 一到,旧写法就开出一段**新**播放,起点跑到宿主
+    // 那次写之后 ⇒ `at >= start` 变假 ⇒ **闩锁当场掉**,徽标在播放中途熄灭 ——
+    // 正是本卡要治的那一幕,只是触发条件从「自动化平直」换成了「帧断流」。
+    //
+    // 所以断流期间**保持闩锁**:上一次观测到的不是明确停走,就还是同一段。
+    const wasStopped = !!prevPlayhead && prevPlayhead.isPlaying === false;
+    if (!wasStopped) return prevStartedAt;
+    // 确实是从「明确停走」回来的:再要求那次停走**满去抖窗**才算新段 ——
+    // 否则播放中途一帧假停走(SL-356 的那一幕)会被当成一次真的停→播。
     const prev = prevPlayingAt || 0;
-    // 从未观测到非停走的一帧,或已连续停走超过去抖窗 ⇒ 新的一段。
     if (!prev || now - prev >= HOST_ECHO_TRANSPORT_HOLD_MS) return now;
-    return prevStartedAt || now;
+    return prevStartedAt;
 }

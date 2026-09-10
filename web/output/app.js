@@ -1955,9 +1955,14 @@ if (bridge) {
         // 先覆写再算的话 `prevPlayingAt` 永远是本帧时刻,「隔了超过去抖窗」恒不成立,
         // 于是永远开不出新的一段播放,此后每段播放都会拿上一段的宿主写当成「本次写过」。
         // 与本文件里 `prevHostEchoAt` / `wasStopped` 是同一个坑。
+        // [SL-394 复审] 第三个实参是**覆写前**的 `store.playhead` —— 新的一段只能由
+        // 「明确停走 → 播放」这个**转换**开启,而转换只有拿上一帧才看得出来。
+        // 这一行紧挨着下面那句 `store.playhead = p`,顺序同样不能调换(与 `wasStopped`
+        // 那一处、以及 `prevHostEchoAt` 是同一个坑:整体覆写之后再比,永远比不出边沿)。
         store.playbackStartedAt = playbackStartedAt(
             store.playbackStartedAt,
             store.playingAt,
+            store.playhead,
             p,
         );
         // [SL-356] 走带态去抖的记账(判据与理由见 host-echo.js 的 transportPlayingAt)。
@@ -2197,14 +2202,12 @@ window.__SCVB_OUTPUT__ = {
         return {
             at: (s.params && s.params.hostEchoAt) || 0,
             playingAt: s.playingAt || 0,
-            // [SL-394] 播放期闩锁的另一半:冒烟要能分辨「亮是因为闩锁」还是「亮是因为
-            // 还在 900ms 窗口里」—— 只报一个布尔的话,两条路的绿分不开。
-            playbackStartedAt: s.playbackStartedAt || 0,
-            latched: !!(
-                s.playbackStartedAt &&
-                (s.params && s.params.hostEchoAt) >= s.playbackStartedAt &&
-                wide
-            ),
+            // [SL-394 复审] 这里原先还报 `playbackStartedAt` 与 `latched` 两格。
+            // **两格都删掉**:①全仓零消费者(冒烟一条都没读);②`latched` 是把
+            // `hostEchoVisible` 的 ① 分支**又抄了一遍**——第二份分叉实现,正是这一族
+            // 缺陷反复复发的形状,而且它抄的那一版已经与真判据不同步(缺 `- 宽限`那一项)。
+            // 真要分辨「亮是因为闩锁还是因为窗口」,该加的是判据自己导出的一个理由值,
+            // 不是在探针里重算一份。
             // 页面此刻手上的走带态是不是「**明确**停走」(与 hostEchoUseWideWindow 第一条
             // 分支同一条判据)。冒烟拿它证明「采样窗里真的出现过停走帧」——
             // 靠「我刚发了 setTransport(false)」推断的话,那一帧到没到页面并不知道。
