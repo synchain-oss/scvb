@@ -74,6 +74,7 @@ import {
 import { createLangStart, shouldShowLangStart } from "../shared/lang-start.js";
 import { disableNativeContextMenu } from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
+import { installShellFit } from "../shared/shell-fit.js";
 
 // ------------------------------------------------------------- 设计盒尺寸(05 §1.2)
 // 真源 = web/shared/design-box.js DESIGN.output;index.html 里不写第二份数字
@@ -81,6 +82,12 @@ import { suppressBareAltMenu } from "../shared/alt-menu.js";
 const card = document.getElementById("card");
 card.style.setProperty("--box-w", DESIGN.output.w + "px");
 card.style.setProperty("--box-h", DESIGN.output.h + "px");
+
+// [SL-380] 机制 9 的「CSS zoom」那一半,本页从前**一行都没有**:改档位时宿主把窗口
+// 变成了 1180F×780F,而 #card 恒 1180×780 —— F<1 画面超出窗口(用户实测 B13 的
+// 「超出框」),F>1 窗口空一圈而画面不长(「还得手动 Ctrl+滚轮」)。倍率改由实际视口
+// 决定,档位那条路一字未动(理由与公式见 shell-fit.js 文件头)。
+installShellFit({ el: card, box: DESIGN.output });
 
 // ------------------------------------------------------------- createBridge(T28 附桥)
 // 浏览器直开走 web-preview 才有 window.__SCVB_MOCK__;裸开本文件时两者皆无,
@@ -809,6 +816,9 @@ function renderScaleConfirm() {
 }
 
 async function previewScale(f) {
+    // 档位只负责**请求窗口尺寸**(原生 setUiScale → setSize(1180F, 780F));页面倍率
+    // 由 installShellFit 从视口反算,故这里不需要、也不许再自己写一次 zoom —— 写了
+    // 就成了两个真源,宿主真去改窗口尺寸时两边立刻分家([SL-380])。
     // **嵌套预览**:倒计时还在跑时再选一档,回退目标必须仍是「进入本次预览**前**」的档位。
     // currentScale() 此刻读到的是上一次预览值(state 已回推),重新采样会把回退终点钉在
     // 中途那一档 —— 05 §1.2「取消/超时/关窗都回退」说的是回到用户改档前的样子。

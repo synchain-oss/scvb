@@ -18,6 +18,7 @@ import { createInputTour, shouldShowInputGuide } from "./tour-in.js";
 import { sourceKind } from "../shared/source-kind.js";
 import { disableNativeContextMenu } from "../shared/context-menu.js";
 import { suppressBareAltMenu } from "../shared/alt-menu.js";
+import { installShellFit } from "../shared/shell-fit.js";
 
 // ------------------------------------------------------------- 单一真源常量
 // 契约 §0.2:g = 1..8,UI 显示 A-H;ch = 1..15(J59)。
@@ -29,6 +30,10 @@ const CHANNEL_COUNT = 15;
 const shell = document.getElementById("ipt-shell");
 shell.style.setProperty("--ipt-w", DESIGN.input.w + "px");
 shell.style.setProperty("--ipt-h", DESIGN.input.h + "px");
+
+// [SL-380] 页面缩放 = 「设计盒装进视口」,不再直接读档位数字(理由见 shell-fit.js 文件头)。
+// 档位那条路没变:setUiScale → 原生 setSize(460×F, 560×F) → 视口变成 460F×560F → 下式算出 F。
+installShellFit({ el: shell, box: DESIGN.input });
 
 // ------------------------------------------------------------- createBridge
 // 浏览器直开走 web-preview 才有 window.__SCVB_MOCK__;裸开时两者皆无 → 只 warn。
@@ -973,7 +978,8 @@ function syncUiFromState() {
         setLang(ui.language, { push: false });
     }
     if (ui.scale && Number.isFinite(ui.scale)) {
-        shell.style.zoom = String(ui.scale);
+        // [SL-380] 这里**不再**写 shell.style.zoom:画面倍率由 installShellFit 按实际
+        // 视口算(宿主 setSize 之后视口就是 460F×560F)。回推只负责把下拉选中项对齐。
         if (scaleUi.select) scaleUi.select.value = String(ui.scale);
     }
 }

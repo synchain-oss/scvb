@@ -92,6 +92,9 @@ node web-preview/shot.mjs --tab=tracks --out=web-preview/.shots/tab2.png
 node web-preview/shot.mjs --tab=wave --scenario=recapture-armed --out=shots/armed.png
 
 # 看细节:裁一块放大 3 倍(x,y,w,h 用整屏图上量的 CSS 坐标)
+# ⚠ [SL-380] 起 iframe 的尺寸**就是设计盒 × 当前档位**、贴在舞台左上角(从前是铺满
+#   窗口、卡片浮在中间)。所以裁切坐标要在**新的**整屏图上重新量,老坐标会偏掉
+#   卡片从前那个居中偏移量。
 node web-preview/shot.mjs --tab=wave --clip=180,320,560,180 --scale=3 --out=shots/zoom.png
 
 # 点开某个东西再拍(选择器落在真源页文档里,脚本已自动跨进 iframe)

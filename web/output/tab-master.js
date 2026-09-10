@@ -56,6 +56,7 @@ import {
 // Output,这一卡把同一件接过来。
 import { createDistMotion } from "../shared/dist-motion.js";
 import { format } from "../shared/i18n.js";
+import { backingFitFactor } from "../shared/shell-fit.js";
 import { paramIdOf, readbackVersion } from "../shared/param-id.js";
 // ⚠ 下面那条 `export { … } from` 只是**再导出**,不会把名字带进本模块作用域 ——
 // renderParams 要用 hostEchoOn,必须另外 import 一次(同 readbackSegsOf 的写法)。
@@ -1631,8 +1632,10 @@ export function createTabMaster(opts) {
                 zoomEl: el.trajZoom,
                 getSeries: () => local.trajSeries,
                 getDurationS: () => chartDurationS(getStore()),
-                getUiScale: () =>
-                    num(((getStore().state || {}).ui || {}).scale, 1),
+                // [SL-380] k = 外壳缩放 × dpr(05 §6.1)。读**实际倍率**而不是档位
+                // 数字:宿主自己改窗口尺寸时 state.ui.scale 一动不动,而 k 已经变了。
+                // (本行是本卡第一版漏掉的第三个读点,见 shell-fit.js 里 current 的注释。)
+                getUiScale: () => backingFitFactor(),
                 // 不画不起 rAF 的两道闸(05 §6.1 空闲零 rAF):视图切到分布档,
                 // 或 Tab1 根本不是当前页(四面板同在 DOM,#content[data-tab] 切换)。
                 isVisible: () =>
@@ -2217,12 +2220,13 @@ export function createTabMaster(opts) {
             return;
         }
         if (el.trajEmpty) el.trajEmpty.hidden = local.trajSeries.length > 0;
-        // ui.scale 档位变化 = 后备存储 k 变(05 §6.1 `k = uiScale × dpr`)→ 标脏重建。
+        // 外壳倍率变化 = 后备存储 k 变(05 §6.1 `k = 外壳缩放 × dpr`)→ 标脏重建。
         // 与 Tab3 的 render 逐字同款(tab-wave.js 的 local.lastUiScale)。
         // 这一笔非记不可:CSS zoom 换档**不动** dpr(observeResolution 不响),也不动
         // 父盒的 CSS px 尺寸(ResizeObserver 不响)—— 没有任何既有信号会来敲门,
         // 而 backingScale() 只在 paintStatic 里算,不重绘就一直用着旧 k,画面持续糊。
-        const uiScale = num((s.ui || {}).scale, 1);
+        // [SL-380] 触发源从档位数字换成实际倍率(粗量化,拖窗口时不必一像素一跳)。
+        const uiScale = backingFitFactor();
         if (local.lastUiScale !== uiScale) {
             local.lastUiScale = uiScale;
             local.trajDirty = true;
