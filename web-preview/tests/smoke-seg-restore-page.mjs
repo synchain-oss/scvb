@@ -523,6 +523,64 @@ const SEG_SLIDER_BOXES = IN(`
     );
 }
 
+// ---- [SL-392] 波形与分段页那排滑杆:六根可见的必须逐像素等宽 -------------------
+//
+// 用户 v5.6.12 回验:灵敏度那根被 [SL-382] 藏掉之后,MIN SEG **撑成一整行**,与左边
+// 五根 VAD 明显不齐。根因是纯 CSS 记账:`.wave-toolbar__group--seg` 的
+// `flex: 2 1 var(--sp-16)` 是按**两根**滑杆写的(grow = 根数、basis = 内部间隙总宽),
+// 藏掉一根之后组里只剩 1 根、0 个内部间隙,那份 `2` 就成了独吞两份。
+// 实测(修前):五根 VAD 各 **106.28px**,MIN SEG **228.58px**。
+//
+// **为什么必须页面级**:这条判据的全部内容就是布局引擎算出来的宽度。node 侧那套
+// (smoke-tab3-interactions.mjs)断的是纯函数与源码字面,`getBoundingClientRect()` 在
+// 无 DOM 环境里根本不存在 —— 与 [SL-382] 那一节同理由,判例见本文件上方那段。
+//
+// **容差 1px 的来历**:实测六根是 126.66 / 126.67 交替,差 0.01px,那是分数像素舍入,
+// 不是不齐。取 1px 既盖得住舍入,又离缺陷态(差 **122.3px**)有两个数量级的余量 ——
+// 别因为哪天差了 0.02 就把它调大,那说明真的有东西变了。
+//
+// **先断根数再断等宽**:只断「max−min ≤ 1」的话,哪天有人把 MIN SEG 也藏了、只剩五根
+// VAD,那五根天然等宽 ⇒ 照样绿,而工具条已经少了一半。所以 `visible.length === 6` 是
+// 前提断言,不是装饰。
+//
+// 删除式:把 `web/output/index.html` 的 `.wave-toolbar__group--seg` 改回
+// `flex: 2 1 var(--sp-16)` ⇒ MIN SEG 回到 228.58px ⇒ 本节红。
+const SLIDER_WIDTHS = IN(`
+    const names = ["wave-vad-threshold", "wave-vad-hysteresis", "wave-vad-hangover",
+                   "wave-vad-paddingpre", "wave-vad-paddingpost", "wave-seg-minlen"];
+    const out = [];
+    for (const n of names) {
+        const el = gb(n);
+        if (!el) continue;
+        // 只收真的在渲染的那些(藏起来的不占布局盒,宽度恒 0,不该拉低 min)。
+        if (el.getClientRects().length === 0) continue;
+        out.push({ n: n, w: el.getBoundingClientRect().width });
+    }
+    return JSON.stringify(out);
+`);
+{
+    const visible = JSON.parse((await evaluate(SLIDER_WIDTHS)) || "[]");
+    const widths = visible.map((v) => Math.round(v.w * 100) / 100);
+    log(`  [SL-392] 六根可见滑杆宽度 = ${JSON.stringify(widths)}`);
+
+    // 前提:可见的正好六根(五根 VAD + MIN SEG)。少了任何一根都要红 —— 否则「剩下的
+    // 恰好等宽」会把「工具条少了一半」读成通过。
+    check(
+        visible.length === 6,
+        `[SL-392] 前提:波形与分段页可见滑杆恰为 6 根(实得 ${visible.length} 根)`,
+    );
+
+    if (visible.length === 6) {
+        const max = Math.max(...widths);
+        const min = Math.min(...widths);
+        check(
+            max - min <= 1.0,
+            `[SL-392] 六根可见滑杆逐像素等宽(极差 ${Math.round((max - min) * 100) / 100}px,` +
+                `上界 1px;修前 MIN SEG 228.58 / VAD 106.28,极差 122.3px)`,
+        );
+    }
+}
+
 // ---- 装 analyze 探针 ------------------------------------------------------
 // 包在 `window.__SCVB_MOCK__` 上(壳页注进 iframe 的 mock 后端就是它)。用自有属性
 // 遮蔽原型上的实现,原实现照常执行 —— 页面的行为一个字节不改,只是把入参留个底。

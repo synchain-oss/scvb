@@ -7629,3 +7629,82 @@ TEST_CASE("HOST SL-363:viz 段的每轨当前值走 Output 的读回链(段值/�
     CHECK(viz->panNow[idx] == scvb::vizPackPan(-40.0)); // ← outputEnabled 没接线时红(仍是 -60)
     CHECK(viz->volDb[idx] == scvb::vizPackFixed(4.0, scvb::kVizVolDbMin, scvb::kVizVolDbMax));
 }
+
+// ---------------------------------------------------------------------------
+// [SL-391] **改 MIN SEG 再重分析,段数必须跟着变** —— 钉的是那一跳,不是零件。
+//
+// 用户 v5.6.12 在 Cubase 真素材上改 `min_segment_ms` 后重分析,每次都报
+// 「0 段有改动 · 新增 0 段 · 移除 0 段」。定谳:**接线是通的,没有任何 VAD 缓存** ——
+//   `setSegmentation` 写 `runtime_.segmentationMinSegmentMs`
+//   → `armResegment` → `tickResegmentDebounce` → `startAnalysis`
+//   → `OutputProcessor.cpp` `cfg.vad.minSegmentMs = runtime_.segmentationMinSegmentMs`
+//   → `AnalysisJob::run()` → `runAnalysisPipeline` → `runEnergyVad` **从原始特征重跑**
+//   → `EnergyVad` 后处理 P1 丢短。
+// 本用例把这条链**端到端**钉住,免得下次再有人问「是不是复用了采集期的 VAD 段」。
+//
+// **为什么 core 侧那格不够**:`test_analysis_pipeline.cpp` 的 `[SL382] min_segment_ms
+// 50/120/500 → 段数严格递减` 直接构造 `PipelineConfig`,**绕过了 `startAnalysis` 装配
+// 那一跳**。删掉 `cfg.vad.minSegmentMs = runtime_.segmentationMinSegmentMs` 这一行,
+// 那条 core 用例照样全绿 —— 本仓对这类「守得住零件、守不住那一跳」有判例
+// (`HOST SL263` 头注逐字)。本用例就是补那一跳。
+//
+// **素材是设计出来的**:机台默认的 `capture()` 是 640ms 爆发 + 427ms 间隙,
+//   ① 640ms 远大于本参数的整个值域上界(500ms)⇒ 三档一段都丢不掉;
+//   ② 427ms 间隙经 padding(120+200)之后只剩 107ms < mergeGap(150)⇒ P4 会把相邻爆发
+//      并成一段,连「有几段」都测不出来。
+// 所以这里自造:爆发 3/8/20/45/80 block(≈ 32 / 85 / 213 / 480 / 853 ms,
+// 1 block = 512/48000 s ≈ 10.67ms),中间垫 60 block(≈ 640ms)静音 —— 640 > 320 + 150,
+// 三条后处理都不会把它们并回去。三档门限各自吃掉前几个:
+//   50ms  → 只丢 32ms 那个        → 4 段
+//   120ms → 再丢 85ms 那个        → 3 段
+//   500ms → 只剩 853ms 那个       → 1 段
+//
+// ⚠ 断言写成**严格递减**,不是「不相等」:三档一起塌成 1 段(= 接线断掉、恒取默认值
+// 的那种形态之一)也满足「有变化」,那种绿是假的。
+//
+// 删除式:删掉 `OutputProcessor.cpp` 里 `cfg.vad.minSegmentMs = runtime_.segmentationMinSegmentMs`
+// ⇒ 三档恒取 `VadParams` 的默认 120 ⇒ 段数三档相等 ⇒ 本用例红。
+// ---------------------------------------------------------------------------
+TEST_CASE("HOST SL391:改 min_segment_ms 重分析 → 段数随之变(钉 startAnalysis 那一跳)",
+          "[host][analyze][segmentation][SL391]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // ---- 自造分级爆发素材(理由见头注)--------------------------------------
+    r.out.setCaptureEnabled(true);
+    r.pump(400);
+    r.runBlocks(60, 0.0f); // 打头静音,免得首个爆发贴着覆盖区左边界被截断
+    for (const int blocks : {3, 8, 20, 45, 80})
+    {
+        r.runBlocks(blocks, 0.5f);
+        r.runBlocks(60, 0.0f);
+    }
+    r.pump(400);
+
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    // ---- 逐档重分析,数段 ----------------------------------------------------
+    // 直接写 `runtime()` 而不是走桥:本用例钉的是 `startAnalysis` 读不读这个字段,
+    // 桥面那一跳(`setSegmentation` → runtime)另有 `smoke-tab3-interactions.mjs` 守着。
+    const auto countAt = [&r, &win](int minSegmentMs) {
+        r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+        return segmentsOfTrack(r.out, kTestChannel).size();
+    };
+
+    const std::size_t n50 = countAt(50);
+    const std::size_t n120 = countAt(120);
+    const std::size_t n500 = countAt(500);
+
+    UNSCOPED_INFO("SL391-COUNTS 段数 50/120/500 = " << n50 << " / " << n120 << " / " << n500);
+
+    // 前提:最松那档真的切出了多段,否则下面的递减是「从 1 递减」的空过
+    // (素材没进去 / VAD 一段都没出,都会落在这儿,红得出原因)。
+    REQUIRE(n50 > 1u);
+
+    CHECK(n50 > n120);
+    CHECK(n120 > n500);
+}
