@@ -39,10 +39,16 @@
 //   锁定的段会在下一次重分析里凭空消失,而契约的 locked 保护恰恰要靠这条建模在 UI 侧预演。
 //
 // 场景化拒绝(fixture 定义见 state-driver.js,`caps` 由 world 传入):
-//   • `second-output`:`caps.readOnly=true` → 「返回」行登记了 `{observer:true}` 的
-//     五个写函数(setGroupId / setChannelConfig / setTrackManual / editSegment /
-//     clearCoverage)一律回 `{observer:true}` 且不改 state;`recaptureArm` 回
-//     `reason:"readOnly"`。
+//   • `second-output`:`caps.readOnly=true` → **四个**写函数(setChannelConfig /
+//     setTrackManual / editSegment / clearCoverage)一律回 `{observer:true}` 且不改 state;
+//     `recaptureArm` 回 `reason:"readOnly"`。
+//     **`setGroupId` 不在这一族里**([SL-381]):契约 §5.6 把 `{observer:true}` 的两种出处
+//     并列写,它那一种的判据在**目标组**(§1.4 返回行:「新组 OutputSlot 已被占」),
+//     不是「本实例当下是不是观察者」。所以它**先落地** `group_id`,再按
+//     `caps.occupiedOutputGroup` 判目标组回 `{ok}` / `{observer:true}` —— 详见 §1.4 那段。
+//     ⚠ 这一段原先逐字写着「五个写函数…一律回 observer 且不改 state」,是修复前的行为;
+//     它是全仓唯一一处「五个写函数」的出处,照它把 `if (readOnly()) return OBSERVER();`
+//     加回去,SL-381 用户报的「界面全锁死、无法切成别的组」就原样复发。
 //   • `channel-conflict`:Input `setChannelId(n)` 命中 `caps.occupiedMask` 的位 →
 //     `{conflict:true}` + 推 `scvb.error{code:"channelConflict"}`。
 //   • `stereo-mixed&loop=none`:`caps.loopAvailable=false` → `setRange("daw_loop", …)`
@@ -1121,23 +1127,53 @@ function buildOutputBackend(ctx) {
             const occupied = model.caps.occupiedOutputGroup || 0;
             const observer = occupied > 0 && next === occupied;
             patchState({ group_id: next });
-            // §1.4 语义行:「成功后 `scvb.state.group_id` 与 `scvb.conn` 一并刷新」。
-            // 只读位翻了才推 —— 同组内重复点同一枚胶囊上面已经早退不到这里。
-            if (readOnly() !== observer) {
-                model.caps.readOnly = observer;
-                mergeDeep(model.conn, { outputReadOnly: observer });
-                emit("scvb.conn", clone(model.conn));
+            // §1.4 语义行:「成功后 `scvb.state.group_id` 与 `scvb.conn` 一并刷新」——
+            // **不带条件**,所以这一帧无条件推(#252 复审:原先只在只读位翻转时推,
+            // 空组 → 另一个空组时一帧 conn 都不发。今天载荷确实没别的字段会变、无观测差,
+            // 但「同形」值这一行:条件留给下面的 `scvb.error`,别拿它兼管 conn)。
+            const wasReadOnly = readOnly();
+            model.caps.readOnly = observer;
+            mergeDeep(model.conn, { outputReadOnly: observer });
+            emit("scvb.conn", clone(model.conn));
+            if (wasReadOnly !== observer) {
                 // §2.9:持续性条件解除走 `active:false`(横幅② 据此撤下);
                 // 重新成立时按 §5.1 带上新组号的 detail。
-                emit(
-                    "scvb.error",
-                    observer
-                        ? makeError("secondOutput", {
-                              detail: { groupId: next },
-                          })
-                        : { code: "secondOutput", active: false },
+                //
+                // **两处都要改**(#252 复审【建议】3):`emit` 只喂给 UI,而 mock 自己的
+                // `model.errors` 是 `pendingErrors()` 的数据源,`state-driver.js` 的
+                // `firstFrames()` 在 ready 时把它逐条重放。只发事件不改它,就是
+                // 「世界的事实」存了两份且对不上 —— 今天不暴雷仅因 `markReady()` 幂等、
+                // `firstFrames` 只跑一次;将来加「重连 / 二次 requestInitialState」的场景,
+                // 一条已经撤下的横幅会凭空回来。那正是本卡要根除的「mock 说谎」同族。
+                const idx = model.errors.findIndex(
+                    (e) => e && e.code === "secondOutput",
                 );
+                if (observer) {
+                    const err = makeError("secondOutput", {
+                        detail: { groupId: next },
+                    });
+                    if (idx >= 0) model.errors[idx] = err;
+                    else model.errors.push(err);
+                    emit("scvb.error", err);
+                } else {
+                    if (idx >= 0) model.errors.splice(idx, 1);
+                    // 撤下事件**不走 `makeError()`**:那个生成器按 §5.1 给每个 code 配一份
+                    // `detail` 默认值,而 §2.9 的解除帧只需要 `{code, active:false}` ——
+                    // 塞一份 detail 进去反而是在说「条件仍成立且组号是 X」。代价是绕过了
+                    // `assertEnum(code)`,所以 code 在这里是字面量,与上面那次 `makeError`
+                    // 用的是同一个串(改名要一起改)。
+                    emit("scvb.error", {
+                        code: "secondOutput",
+                        active: false,
+                    });
+                }
             }
+            // ⚠ **已知简化,别当成真机**(#252 复审【建议】3):真机按 §1.4 语义行还要
+            // 「释放旧组 OutputSlot → Unmap 旧组全部段 → 新组 claim」,所以接管一个空组之后
+            // `conn.channels` 应当回到全空闲、段表应当为空。这里只翻了 `group_id` 与只读位,
+            // 15 轨连接与旧组段表原样留着。本卡的判据面(锁面 / 只读位 / 横幅②)不碰这两样,
+            // 而把它们做真要连带 `segByCh` / `coveragePct` 一起按组重置,超出本卡范围 ——
+            // 已单列备忘。**拿本 fixture 截图或验收「改组后的连接数 / 段表」时,那是假的。**
             return observer ? OBSERVER() : OK();
         },
 

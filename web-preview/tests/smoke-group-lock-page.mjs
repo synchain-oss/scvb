@@ -50,7 +50,14 @@ import {
     statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, resolve } from "node:path";
+import {
+    dirname,
+    extname,
+    isAbsolute,
+    join,
+    relative,
+    resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 // [SL-381] PRINT 态 tooltip 的判据直接对**词条真源**,不在这里手抄一句中文 ——
 // 手抄的那句会随 U17 审校漂走,而漂走时这一格是绿的(第一版就抄错了:按 05 §2.1 ⓪ 的
@@ -71,6 +78,9 @@ const argv = new Map(
             return i < 0 ? [a.slice(2), "1"] : [a.slice(2, i), a.slice(i + 1)];
         }),
 );
+
+// 站点根的绝对形态 —— 目录包含判定拿它当基准(见静态服务里的 `relative()` 那段)。
+const ROOT_ABS = resolve(ROOT);
 
 const CHROME_CANDIDATES = [
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -117,7 +127,14 @@ const server = createServer((req, res) => {
     let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
     if (p.endsWith("/")) p += "index.html";
     const abs = resolve(join(ROOT, p));
-    if (!abs.startsWith(resolve(ROOT))) {
+    // 目录包含判定走 `relative()`,**不是** `startsWith(ROOT)`(#252 pr-agent 抓到)。
+    // 裸前缀比较有两个口子:①不带分隔符时,`/x/repo` 会把兄弟目录 `/x/repo-x/...` 也算进来;
+    // ②`p` 是**先 URL 归一化、后百分号解码**的,所以 `/%2e%2e%2frepo-x/f` 解出 `/../repo-x/f`,
+    // `join` 归一化后正好落在兄弟目录里、前缀检查还放行。改判「相对路径不以 `..` 起头且非绝对」
+    // 一次堵住两条。影响本来就低(只监听回环、随本套件起停、只服务本仓静态文件),
+    // 但这是本 PR 新增的代码,按新代码的标准收。
+    const rel = relative(ROOT_ABS, abs);
+    if (rel !== "" && (rel.startsWith("..") || isAbsolute(rel))) {
         res.writeHead(403).end("nope");
         return;
     }
@@ -507,8 +524,16 @@ try {
             const list = await res.json();
             targets = list.find((t) => t.type === "page") ? list : null;
         } catch {
-            await sleep(CDP_WAIT_STEP_MS);
+            targets = null;
         }
+        // ⚠ 等待**必须在循环体末尾无条件做**,不能只挂在 catch 上(#252 pr-agent 抓到)。
+        // 挂在 catch 上时有一条路径完全不等:Chrome 的调试端点**已经能应答** `/json/list`,
+        // 但 `about:blank` 的 page target 还没建出来 —— 那时 try 成功、`targets` 仍是 null、
+        // 没有异常,于是 300 次迭代在几百毫秒内一口气烧完,而不是按注释说的轮询 60 秒。
+        // 接着落进 `browserFailed()` 退 3,而 gates 与 CI 把 3 记成 `[FLAKY-SKIP]` ——
+        // 净效果是**本 PR 唯一那条端到端判据被静默跳过,汇总还写着 PASS**(仓内
+        // 「SKIP 会吞掉判据」那一族)。放在末尾则两条路径共用同一份预算。
+        if (!targets) await sleep(CDP_WAIT_STEP_MS);
     }
     if (!targets) {
         browserFailed(
@@ -557,9 +582,12 @@ try {
         "0",
         "只读观察态下组卡**不**整组 disabled(用户必须有路可退)",
     );
+    // ⚠ 先断**取到了**再比值(#252 pr-agent 抓到):`.group-pills` 找不到时 PROBE 回 null,
+    // 而 `null !== "none"` 恒真 —— 模板里把胶囊容器改名或删掉,这条「CSS 闸」断言会
+    // **真空通过**,而它恰恰是本文件声称要守住的那一层。③ 段那一处同款,一起改。
     check(
-        p1.pillsPointerEvents !== "none",
-        `组胶囊的 computed pointer-events 不是 none(实得 ${p1.pillsPointerEvents})`,
+        p1.pillsPointerEvents !== null && p1.pillsPointerEvents !== "none",
+        `组胶囊存在且 computed pointer-events 不是 none(实得 ${p1.pillsPointerEvents})`,
     );
     // ---- 互不串台:其余锁面一个都没被放开 ----
     eq(p1.captureBlocked, true, "只读观察态:采集开关仍 disabled");
@@ -636,8 +664,8 @@ try {
     eq(p3.captureBlocked, true, "重新进只读观察:采集开关又锁上");
     eq(p3.cardDisabled, "0", "重新进只读观察后组卡**仍然**可操作(不是单向门)");
     check(
-        p3.pillsPointerEvents !== "none",
-        `回到冲突态后胶囊 pointer-events 仍不是 none(实得 ${p3.pillsPointerEvents})`,
+        p3.pillsPointerEvents !== null && p3.pillsPointerEvents !== "none",
+        `回到冲突态后胶囊仍在且 pointer-events 不是 none(实得 ${p3.pillsPointerEvents})`,
     );
     assertClean("③ 改回被占组");
 
@@ -695,7 +723,32 @@ try {
     // 点胶囊**不**展开确认条 —— JS 那一层的闸也还在(CSS 挡不住程序化 click)。
     eq(p4.confirmOpen, "0", "PRINT 态:确认条是收起的");
     check(await evaluate(clickPill("B")), "PRINT 态下点了组 B 胶囊");
-    await sleep(400);
+    // 否定断言(「点了不该有反应」)要等一个**确定的后续信号**,不写死 sleep(#252 复审
+    // 【建议】5:原先是 `sleep(400)`,而 mock 的状态回声是 250ms —— 只差 1.6 倍,机器一慢
+    // 这一格就变成「还没渲染所以确认条当然是关的」的真空通过)。
+    //
+    // 这里借**切走再切回**当信号:它既可观测(`#content` 的 `data-tab` 属性),又刚好
+    // 强制 master 面重渲染一次。于是这一格断的不再是「点完那一刹那」,而是
+    // **「熬过了一次完整渲染之后确认条仍是关的」** —— 正是 `renderGroup` 里
+    // `if (off) local.pendingGroup = 0` 那条路径要保证的事,判据比原来更硬。
+    const tabIs = (name) =>
+        IN(`const c = d.getElementById("content");
+            return !!c && c.getAttribute("data-tab") === "${name}";`);
+    await evaluate(
+        IN(
+            `const b = q('[data-tab-btn="tracks"]'); if (b) b.click(); return true;`,
+        ),
+    );
+    check(await waitFor(tabIs("tracks"), 6000), "切到「轨道」页");
+    await evaluate(
+        IN(
+            `const b = q('[data-tab-btn="master"]'); if (b) b.click(); return true;`,
+        ),
+    );
+    check(
+        await waitFor(tabIs("master"), 6000),
+        "切回「总览」页(master 面已重渲染一次)",
+    );
     const p4b = await evaluate(PROBE);
     eq(p4b.confirmOpen, "0", "PRINT 态:点胶囊**不**展开确认条(JS 闸也在)");
     eq(p4b.pending, [], "PRINT 态:没有胶囊被预亮");

@@ -1864,10 +1864,12 @@ export function createTabMaster(opts) {
             if (off) local.pendingGroup = 0;
             // 05 §2.1 ⓪ 逐字要求 disabled **+ tooltip**;词条 master.printLock.group(T31 新增)。
             // title 不走 applyI18n(它只刷 data-t / data-t-aria),故每次渲染按当前字典重写。
-            setTitle(
-                el.groupCard,
-                phase === "print" ? t["master.printLock.group"] : "",
-            );
+            //
+            // [SL-381 复审] 这里读 `off` 而**不是**再手算一遍 `phase === "print"`:两者今天恒等,
+            // 但「两处各算一份」正是本文件 click handler 注释里点名的那条纪律。将来
+            // `groupSelectorDisabled` 若多一条锁面,手算那份会漏,于是出现「整组灰了却没有
+            // tooltip」—— 而 05 §2.1 ⓪ 要的是 disabled **加** tooltip,不是二选一。
+            setTitle(el.groupCard, off ? t["master.printLock.group"] : "");
             el.groupCard.setAttribute(
                 "data-confirm",
                 local.pendingGroup ? "1" : "0",
