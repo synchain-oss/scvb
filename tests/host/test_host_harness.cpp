@@ -2071,15 +2071,19 @@ TEST_CASE("HOST SL-393:单轨恢复不得重写掩码外轨的 vadP", "[host][sl
     const int target = 1;
     const int other = 2;
     auto vadColsOf = [&](int ch) {
+        // ⚠ 逐字沿用 `WaveformTile::vad` 的类型(`std::vector<int>`)。
+        // 写成 `std::vector<std::uint8_t>(begin, end)` 会在 MSVC 的 <xmemory> 里触发
+        // C4244(int → 窄类型可能丢数据),而 ADR-011 要求 /W4 **零 warning** ⇒ gate 5 判负。
+        // 这里只是要一份可比对的快照,没有任何理由换宽度。
         const auto tile = r.out.waveformOf(ch, 0.0, coveredS, kCols);
-        return std::vector<std::uint8_t>(tile.vad.begin(), tile.vad.end());
+        return tile.vad;
     };
 
     const auto beforeOther = vadColsOf(other);
     const auto beforeTarget = vadColsOf(target);
     // 前置:分析真的产出过后验,否则「没变」与「本来就空」分不开。
-    REQUIRE(std::any_of(beforeOther.begin(), beforeOther.end(), [](std::uint8_t v) { return v != 0; }));
-    REQUIRE(std::any_of(beforeTarget.begin(), beforeTarget.end(), [](std::uint8_t v) { return v != 0; }));
+    REQUIRE(std::any_of(beforeOther.begin(), beforeOther.end(), [](int v) { return v != 0; }));
+    REQUIRE(std::any_of(beforeTarget.begin(), beforeTarget.end(), [](int v) { return v != 0; }));
 
     // 把 VAD 阈值挪远,让下一次重算必然算出**不一样**的后验(与本文件既有那几处同款手法)。
     r.out.runtime().vadThresholdDb = 12.0f;
