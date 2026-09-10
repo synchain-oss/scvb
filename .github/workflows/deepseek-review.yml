@@ -33,10 +33,10 @@ jobs:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
           # ── 模型切换口 ── 默认 flash(性能优于 pro 且便宜);[1M] 为网关上下文标注,
           # 与 pro 同格式(官方称 V4 默认 1M,标注属保险;报 model not found 则去后缀)。
-          # 切回 pro:两行改 deepseek-v4-pro[1M],并同步 claude_args 的 --model
-          ANTHROPIC_MODEL: deepseek-v4-flash[1M]
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-flash[1M]
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
+          # 切回 v4 flash:三行改 deepseek-v4.1-flash-expires-on-0910,并同步 claude_args 的 --model(用户 2026-09-10 决定试用 v4.1 flash 预览 id)
+          ANTHROPIC_MODEL: deepseek-v4.1-flash-expires-on-0910
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4.1-flash-expires-on-0910
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4.1-flash-expires-on-0910
         with:
           anthropic_api_key: ${{ secrets.DEEPSEEK_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -162,7 +162,7 @@ jobs:
             你只做代码审查:不改文件、不建 commit、不推分支、不运行未授权命令、不输出任何 secret 或环境变量。
             无论有无严重问题都必须留中文结论。
           claude_args: |
-            --model deepseek-v4-flash[1M]
+            --model deepseek-v4.1-flash-expires-on-0910
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Glob,Grep"
 
 # 默认停用(与 claude-review 二选一,沿用 Synchain 运维习惯):

@@ -38,9 +38,9 @@ jobs:
           ANTHROPIC_API_BASE: https://api.deepseek.com/anthropic
           GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # C05 实测补:v0.39.0 容器同时读标准名;与点号键同值双写
-          # 模型基线(用户决策 2026-08-10):默认 deepseek-v4-flash;litellm 不认 [1M] 括号,永远用裸名
-          config.model: anthropic/deepseek-v4-flash
-          config.fallback_models: anthropic/deepseek-v4-pro
+          # 模型基线(用户决策 2026-08-10 默认 flash;2026-09-10 改试 v4.1 flash 预览 id,回退用 v4 flash):litellm 不认 [1M] 括号,永远用裸名
+          config.model: anthropic/deepseek-v4.1-flash-expires-on-0910
+          config.fallback_models: anthropic/deepseek-v4-flash
           config.custom_model_max_tokens: 1000000 # 1M 档;切回不带 [1M] 的 pro 时改回 131072
           config.max_model_tokens: 900000 # 同上;切回 pro 时改回 120000
           # 必须显式含 "synchronize",否则 push 更新 PR 不复审(action runner 源码默认不处理 synchronize)
