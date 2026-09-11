@@ -38,6 +38,20 @@
 //      C2b [SL-371] Esc / 点遮罩这两条出口**仍旧一个字节都不写**:关框之后当前值没变、
 //         徽标还亮着。少了这一格,把 Esc 也接成撤销不会有任何东西红;
 //      C3 换到另一个脏值 ⇒ 再弹一次(按值记,不是一次性开关);
+//      C9-0…C9-5 [SL-396] analyze **受理回执被拒**时,这个框里必须多出一句用户看得见的
+//         提示(⚠ 与文件后面那一组也叫 `C9` 的格 —— SL-276「一次置位只换一次弹框」——
+//         是**两组**,别按前缀混读):
+//         C9-0 合成回执钩子(FORCE_ANALYZE)装上,ok 档**透传**真实现(见那处头注);
+//         C9-1 范围 ∩ 覆盖 = ∅(`{ok:false, affected:{…0}}`,**不带 reason**)⇒ 逐字出
+//              `analyze.refused`、外层 <p> 可见、静态那句 rangehint 仍 hidden、
+//              aria-describedby 带上它、**不关框**;
+//         C9-2 `reason:"busy"` ⇒ 逐字换成 `analyze.busy`(两句分开断 —— 合并成一句必红);
+//         C9-3 切到范围档再切回 follow:拒回执**不被范围档门控抹掉**,rangehint 随档位开合
+//              (控件在 Tab3,本夹具下可点 ⇒ 走真控件那条路,不是 mock 直改字段);
+//         C9-4 Esc 关框 + 改到另一个脏值 ⇒ 框重开时播报句已清(不带着上一轮的结论);
+//         C9-5 受理成功(ok 透传,基线照常前移)⇒ 拒回执撤掉,并把「框开着」的前置态交还 C4。
+//         删除式三条(那组注释里逐条写明):范围 <p> 的判据退回只看 limited ⇒ C9-1 红;
+//         开框时不清拒回执 ⇒ C9-4 红;删掉 rangehint 那半的 show ⇒ C9-1 的 hidden 那格红。
 //      C4 「重新分析」= 关框 + 真的跑完一次 analyze —— 判据是**琥珀 badge 自己灭掉**
 //         (基线由 scvb.segments 的 analyze 帧同步),而不是「按钮被点到了」。
 //         把 tab-settings.js 里的 `call("analyze", "all")` 删掉,本条即红;
@@ -760,6 +774,80 @@ const badgeGone = IN(
     `const n = gb("settings-loudnessmode-stale"); return !!n && n.hidden;`,
 );
 
+// ---- C9-* [SL-396] 拒回执提示的探针 ----------------------------------------
+// 三段一起读才是「用户看得见一句提示」:承载它的 <p> 显隐 / 里面静态那句 rangehint 的显隐 /
+// role=status 那半(rangedone)的**逐字文本**。少任何一段,「写了 key 但没显出来」与
+// 「显出来了但文案没写上」都能冒充全绿。
+const REFUSAL_PROBE = IN(`
+    const done = gb("reanalyze-ask-rangedone");
+    const note = gb("reanalyze-ask-rangenote");
+    const hint = gb("reanalyze-ask-rangehint");
+    const panel = gb("reanalyze-ask-panel");
+    const ask = gb("reanalyze-ask");
+    if (!done || !note || !hint || !panel || !ask) return null;
+    return {
+        // 逐字那一份**不 trim**:词条里若混进前导/尾随空白,这里当场看得见。
+        doneText: done.textContent,
+        noteHidden: !!note.hidden,
+        // 隐藏形态就是 tab-settings 的 show():它写的是 node.hidden(即 hidden **属性**,
+        // IDL 反射),不是某个 class —— 所以判据钉 .hidden,不钉类名。
+        // 哪天改成 class 隐藏,这一格会红(而那正是它该红的时候:探针的语义跟着变)。
+        // ⚠ 本段在模板字符串里:**不要写反引号**,会当场把 IN() 的模板截断(初稿栽过)。
+        hintHidden: !!hint.hidden,
+        open: !ask.hidden,
+    };
+`);
+
+// ---- C9-0 [SL-396] analyze **受理回执**的合成钩子 --------------------------
+// 与 `smoke-seg-restore-page.mjs` ⑧ 节同源(同一手法、同一份判据源)。
+// 为什么要合成回执:§1.6 的两条拒绝态在真 mock / 真桥上要看素材与并发才出得来,而本组问的是
+// 「回执被拒 ⇒ 屏上有没有那句提示」,与「这份 fixture 恰好会被拒」无关。
+// 挂法:hook 挂在 `__SCVB_MOCK__.analyze` 上(own property 遮住原型上的真实现 ——
+// shell.js 那份是 `Object.create(session.mock)` 造的,真后端在**原型**上),与 C4c / C4f
+// 的垫片同形;还原用 `delete`(同 C4c 的 idiom),此后解析回原型,后面几格照旧拿得到原函数。
+//
+// ⚠ 与本文件其它垫片**唯一的不同**:`ok` 档必须**透传原函数**。C9-5 要断的是「受理成功之后
+// 拒回执被撤掉」,而受理成功的完整形态还包括**基线前移 ⇒ 琥珀徽标自己灭** —— 那一整条
+// 是真 mock 的 800ms 流水线干的活(`advanceAppliedAnalysis`),合成一个 `{ok:true}` 就把它
+// 整个跳过,C4 的 badge 自灭链路会跟着失去扳机。
+const FORCE_ANALYZE = (mode) =>
+    IN(`
+    if (!w.__SCVB_MOCK__) return false;
+    if (!w.__SCVB_ANALYZE_FORCE_WRAPPED__) {
+        w.__SCVB_ANALYZE_FORCE_WRAPPED__ = true;
+        const prev = w.__SCVB_MOCK__.analyze.bind(w.__SCVB_MOCK__);
+        w.__SCVB_MOCK__.analyze = function (scope, opts) {
+            // [R3] 计数:合成回执**不会**走到真正的 mock(所以调用方的 spy 记不到),本组
+            // 要一个「这一次 analyze 真被调过」的可观测点,用它等,不写 sleep 常数。
+            w.__SCVB_ANALYZE_FORCED_N__ = (w.__SCVB_ANALYZE_FORCED_N__ || 0) + 1;
+            const force = w.__SCVB_ANALYZE_FORCE__;
+            if (force === "refused") {
+                return Promise.resolve({
+                    ok: false,
+                    affected: { tracks: 0, intervals: 0, manualKept: 0 },
+                });
+            }
+            if (force === "busy")
+                return Promise.resolve({ ok: false, reason: "busy" });
+            // ok / null 都透传(见上:受理成功的完整形态只能由真实现给)。
+            return prev(scope, opts);
+        };
+    }
+    w.__SCVB_ANALYZE_FORCE__ = ${JSON.stringify(mode)};
+    return true;
+`);
+
+// C9-5 收尾:摘钩子。删的是 **own property**,删掉之后 `m.analyze` 又解析回原型上的真实现
+// —— C4c / C4f 那两处拿 `Object.getPrototypeOf(m).analyze` 当原函数的写法因此不受本组影响。
+const UNINSTALL_ANALYZE_FORCE = IN(`
+    const m = w.__SCVB_MOCK__;
+    if (!m) return false;
+    w.__SCVB_ANALYZE_FORCE__ = null;
+    w.__SCVB_ANALYZE_FORCE_WRAPPED__ = false;
+    delete m.analyze;
+    return typeof m.analyze === "function";
+`);
+
 // [SL-354] 中央槽策略也要能点 —— 本卡把弹窗铺到它身上。
 async function setCenterSlot(value) {
     return await evaluate(
@@ -1135,6 +1223,296 @@ try {
     // [SL-371] 前置态由 C2b 留下:当前 peak_dbfs、基线 kw_integrated、框已被 Esc 关掉。
     check(await setLoudness("rms"), "切到另一个脏值 rms 可点");
     check(await waitFor(askOpen, 4000), "C3 换脏值 ⇒ 再弹一次");
+
+    // ==================================================== C9-* [SL-396] 拒回执
+    // ⚠ 这一组叫 **C9-0…C9-5**([SL-396] 的拒回执提示);文件后面另有一组也叫 `C9` 的格
+    //   (SL-276 二轮复审「一次置位只换一次弹框」)。两组不是一回事,别按前缀混读。
+    //
+    // 断什么:analyze 的**受理回执被拒**时,这个框里必须多出一句用户看得见的提示。§1.6 的
+    // 两条拒绝态是:范围 ∩ 覆盖 = ∅ 回 `{ok:false, affected:{…0}}`(**不带 reason**)、
+    // 已有分析在跑回 `{ok:false, reason:"busy"}`。修前两种在屏上都与「受理了」逐字相同
+    // (框不关、也没多一个字)⇒ 用户读到的就是「点了没反应」。
+    // 为什么必须页面级:判据(`web/shared/analyze-note.js`)在一处、承载它的 <p> 显隐与
+    // `aria-describedby`(tab-settings.js 的 syncReanalyzeRangeNote)在另一处、逐字文案
+    // (字典)在第三处 —— 三段分居三处,任何一段单独绿都还能留下一条断链。
+    // 与 `smoke-seg-restore-page.mjs` ⑧ 的分工:那边断工具条上那几处调用点,这边断设置页
+    // 这个框;同一份判据源的两个消费面各守一格。
+    // 回执靠**合成**驱动(见 FORCE_ANALYZE 头注),不依赖这份 fixture 恰好会被拒。
+    // 删除式(实测结论写在提交信息与本文件头注里,不在注释里复述数字):
+    //   · syncReanalyzeRangeNote() 里那半 `<p>` 的判据退回只看 `limited` ⇒ C9-1 红;
+    //   · openReanalyzeAsk() 里不清拒回执那个 key ⇒ C9-4 红;
+    //   · syncReanalyzeRangeNote() 里删掉 rangehint 那半的 show ⇒ C9-1 的 hidden 那格红。
+    // 读的是**真源页**(iframe 里的 `d`)的 lang,不是壳页的 —— IN() 的包装壳已经把
+    // `d` 取好了;applyI18n 结尾写的就是它(C8r 那格也读这一处)。
+    const c9Lang = await evaluate(
+        IN(`return (d.documentElement && d.documentElement.lang) || "";`),
+    );
+    check(
+        c9Lang.startsWith("zh"),
+        `C9-0 前置:页面语言是 zh(实得 "${c9Lang}")—— 下面两句按 zh 词条逐字对`,
+    );
+    const ZH = (
+        await import(
+            `file:///${join(ROOT, "web/shared/i18n.js").replace(/\\/g, "/")}`
+        )
+    ).dict("zh");
+    check(
+        await evaluate(FORCE_ANALYZE(null)),
+        "C9-0 analyze 回执合成钩子装上(此刻 mode=null ⇒ 原样透传)",
+    );
+    check(
+        await evaluate(
+            IN(`const m = w.__SCVB_MOCK__;
+                return !!m && w.__SCVB_ANALYZE_FORCE_WRAPPED__ === true
+                    && Object.prototype.hasOwnProperty.call(m, "analyze")
+                    && typeof m.analyze === "function";`),
+        ),
+        "C9-0 钩子确实挂在 __SCVB_MOCK__.analyze 上(own property 遮住原型上的真实现)",
+    );
+
+    // C9-1 [SL-396] 拒回执(范围 ∩ 覆盖 = ∅,不带 reason)⇒ 框里逐字出提示,且**不关框**。
+    //   断言分三段,缺一段就有一种失效形态漏网:
+    //     ① 文本**逐字**(词条真取到了字典,不是 key 字面量、也不是空串);
+    //     ② 外层 <p> **可见** —— renderRangeDone() 不看显隐照写 DOM,`<p>` hidden 时文本
+    //        照样躺在里面 ⇒ 只断文本会全绿,而屏上什么都没有;
+    //     ③ 静态那句 rangehint **仍 hidden** —— 它写的是「当前是范围档,请先切回跟随播放头」,
+    //        follow 档下它是一句假话(第一版就是让它跟着 <p> 一起显出来的,被复审点名)。
+    check(
+        await evaluate(FORCE_ANALYZE("refused")),
+        "C9-1 合成回执已切到 refused",
+    );
+    const c9Calls0 = await evaluate(
+        IN(`return w.__SCVB_ANALYZE_FORCED_N__ || 0;`),
+    );
+    check(await click("reanalyze-ask-primary"), "C9-1 主钮可点");
+    // 正证据:这一下真的打到了 analyze —— 合成回执不走进真 mock,所以看钩子自己的计数,
+    // 不用 sleep 常数(与 seg-restore ⑧ 同一手法)。
+    check(
+        await waitFor(
+            IN(`return (w.__SCVB_ANALYZE_FORCED_N__ || 0) > ${c9Calls0};`),
+            8000,
+        ),
+        "C9-1 正证据:这一下真的打到了 analyze(合成钩子计数 +1)",
+    );
+    check(
+        await waitFor(
+            // ⚠ 变量名**不能叫 `d`**:IN() 的包装壳里已经有 `const d = f.contentDocument`
+            // (同理 `f` / `w` / `q` / `gb` / `vis` / `R`)—— 重名会让整段表达式抛
+            // SyntaxError,而 waitFor 把页内抛错统一吞成「这一轮不成立」(它只 `catch {}`),
+            // 于是本格会以「文本没等到」的面貌红 8 秒,红因却写在别处。
+            IN(`const done = gb("reanalyze-ask-rangedone");
+                const note = gb("reanalyze-ask-rangenote");
+                if (!done || !note) return false;
+                return (
+                    done.textContent === ${JSON.stringify(ZH["analyze.refused"])} &&
+                    !note.hidden
+                );`),
+            8000,
+        ),
+        "C9-1 拒回执 ⇒ rangenote 那个 <p> 可见,且 rangedone 逐字等于词条 analyze.refused",
+    );
+    // 读屏那一半要**再等一拍**:上面那两件事是 setAnalyzeRefusalKey() 同步做的,而
+    // `aria-describedby` 要等下一次 render 的 syncReanalyzeRangeNote() 才改写 ——
+    // 不单独等的话这一格会红在一帧的差上(首轮实测:探针读到的是改写前的旧值)。
+    check(
+        await waitFor(
+            IN(`const panel = gb("reanalyze-ask-panel");
+                const db = panel ? panel.getAttribute("aria-describedby") || "" : "";
+                return db.includes("reanalyze-ask-rangenote");`),
+            8000,
+        ),
+        "C9-1 aria-describedby 带上了 rangenote(读屏也听得到这一句)",
+    );
+    let c9 = await evaluate(REFUSAL_PROBE);
+    if (check(c9, "C9-1 探针取到锚点")) {
+        check(
+            c9.doneText === ZH["analyze.refused"],
+            `C9-1 rangedone 逐字 == analyze.refused(实得 ${JSON.stringify(c9.doneText)};期望 ${JSON.stringify(ZH["analyze.refused"])})`,
+        );
+        check(
+            !c9.noteHidden,
+            "C9-1 承载它的外层 <p> 可见(只把文本写进 hidden 的 <p> = 用户仍看不到)",
+        );
+        check(
+            c9.hintHidden,
+            "C9-1 静态那句 rangehint 仍 hidden(它讲的是范围档,此刻是 follow 档 = 假话)",
+        );
+        check(
+            c9.open,
+            "C9-1 拒绝**不关框**(关掉就成了「点了没反应」的另一副面孔)",
+        );
+    }
+
+    // C9-2 [SL-396] 「已有分析在跑」的回执(带 reason)⇒ 换另一句,同样不关框。
+    //   两句**必须分开断**:判据是 `reason === "busy" ? busy : refused`,只断一句的话,
+    //   把两条拒绝态合并成一句(或把 reason 那一支删掉)不会有任何东西红。
+    check(await evaluate(FORCE_ANALYZE("busy")), "C9-2 合成回执已切到 busy");
+    check(await click("reanalyze-ask-primary"), "C9-2 主钮可点");
+    check(
+        await waitFor(
+            // ⚠ 同 C9-1:变量名不能叫 `d`(IN() 包装壳里已有一个)。
+            IN(`const done = gb("reanalyze-ask-rangedone");
+                return !!done && done.textContent === ${JSON.stringify(ZH["analyze.busy"])};`),
+            8000,
+        ),
+        `C9-2 busy 回执 ⇒ rangedone 逐字等于词条 analyze.busy(期望 ${JSON.stringify(ZH["analyze.busy"])})`,
+    );
+    c9 = await evaluate(REFUSAL_PROBE);
+    if (check(c9, "C9-2 探针取到锚点")) {
+        check(
+            c9.doneText === ZH["analyze.busy"],
+            `C9-2 逐字复核(实得 ${JSON.stringify(c9.doneText)})`,
+        );
+        check(c9.open, "C9-2 busy 也不关框");
+    }
+
+    // C9-3 [SL-396] **切档不抹**:拒回执说的是「这一下没生效」,与当前是不是范围档无关,
+    //   所以档位来回切不许把它抹掉(反过来,静态那句 rangehint 是**范围**的解释,必须跟着
+    //   `limited` 开合 —— 两条各自的显隐判据都在这格里).
+    //
+    //   rangeLimited() 读的是 `state.global.range.mode !== "follow"`(tab-settings.js),
+    //   页面上改它的控件在 **Tab3「整体调整」**:`master-range-seg-loop` /
+    //   `master-range-seg-follow`(data-range-mode 枚举 loop|follow)。本夹具
+    //   (fifteen-tracks,loop=host)下「循环区」那枚**可点**(data-disabled="0"),
+    //   所以本格走的是**真控件**这条路,不是 mock 直改字段 —— 与文件后面 ②d 那格不同,
+    //   那格要的形态是「框开着、用户在别处改了档位」,用 mock 直改是它的有意选择。
+    check(await click("tabnav-master"), "C9-3 切到 Tab3(范围控件在那一页)");
+    check(
+        await waitFor(
+            IN(`const b = gb("master-range-seg-loop");
+                return !!b && b.getAttribute("data-disabled") !== "1";`),
+            8000,
+        ),
+        "C9-3 前置:「循环区」档可点(本夹具 loop=host,不是 noLoop 置灰态)",
+    );
+    check(
+        await click("master-range-seg-loop"),
+        "C9-3 点「循环区」⇒ 切到范围档",
+    );
+    check(
+        await waitFor(
+            IN(`const b = gb("master-range-seg-loop");
+                return !!b && b.getAttribute("aria-pressed") === "true";`),
+            8000,
+        ),
+        "C9-3 正证据:range.mode 真的变成 daw_loop(控件 aria-pressed 转真,不是只点了一下)",
+    );
+    check(await click("tabnav-settings"), "C9-3 切回 Tab4");
+    check(
+        await waitFor(
+            IN(`const h = gb("reanalyze-ask-rangehint");
+                const p = gb("reanalyze-ask-rangenote");
+                return !!h && !!p && !h.hidden && !p.hidden;`),
+            8000,
+        ),
+        "C9-3 范围档下 rangehint 可见(静态那句随档位开)",
+    );
+    c9 = await evaluate(REFUSAL_PROBE);
+    if (check(c9, "C9-3 探针取到锚点(范围档)")) {
+        check(
+            c9.doneText === ZH["analyze.busy"],
+            `C9-3 切到范围档**没有**抹掉拒回执文本(实得 ${JSON.stringify(c9.doneText)})`,
+        );
+        check(c9.open, "C9-3 切档期间框一直开着");
+    }
+    check(await click("tabnav-master"), "C9-3 再切到 Tab3");
+    check(
+        await click("master-range-seg-follow"),
+        "C9-3 点「全曲」⇒ 切回 follow 档",
+    );
+    check(
+        await waitFor(
+            IN(`const b = gb("master-range-seg-follow");
+                return !!b && b.getAttribute("aria-pressed") === "true";`),
+            8000,
+        ),
+        "C9-3 正证据:range.mode 真的回到 follow",
+    );
+    check(await click("tabnav-settings"), "C9-3 切回 Tab4");
+    check(
+        await waitFor(
+            IN(
+                `const h = gb("reanalyze-ask-rangehint"); return !!h && h.hidden;`,
+            ),
+            8000,
+        ),
+        "C9-3 回 follow 后 rangehint 又 hidden(那句在 follow 档是假话)",
+    );
+    c9 = await evaluate(REFUSAL_PROBE);
+    if (check(c9, "C9-3 探针取到锚点(follow 档)")) {
+        check(
+            c9.doneText === ZH["analyze.busy"],
+            `C9-3 回 follow 后拒回执文本仍在(不是被范围档门控吞掉;实得 ${JSON.stringify(c9.doneText)})`,
+        );
+    }
+
+    // C9-4 [SL-396] **关框重开先清**:上一次的拒回执与 rangeDone 是同一条 live region 的
+    //   两个来源,只清一个 ⇒ 用户这次什么都没点,框里却写着上一轮的结论;而 live region 只在
+    //   文本变化时播报,不清还会让下一次写入变成零变化、读屏什么也不念。
+    //   ← 删掉 openReanalyzeAsk() 里那句 clear ⇒ 本格红(其余格照绿)。
+    await pressEscape();
+    check(await waitFor(askClosed, 8000), "C9-4 Esc 关框");
+    // 当前档是 C3 写下的 rms(基线 kw_integrated)⇒ 改到 peak_dbfs 是一次**新的脏写**,
+    // 闸会重新置起(token 与上一次不同)。
+    check(await setLoudness("peak_dbfs"), "C9-4 改到另一个脏值 peak_dbfs 可点");
+    check(await waitFor(askOpen, 8000), "C9-4 框重新弹出");
+    c9 = await evaluate(REFUSAL_PROBE);
+    if (check(c9, "C9-4 探针取到锚点")) {
+        check(
+            c9.doneText === "",
+            `C9-4 重开框时上一轮的拒回执**已清空**(实得 ${JSON.stringify(c9.doneText)})`,
+        );
+    }
+
+    // C9-5 [SL-396] **受理成功撤掉**,并把 C4 的前置态交还给它。
+    //   ok 档透传真实现(见 FORCE_ANALYZE 头注)⇒ 走的是与正常受理逐字同一条路:
+    //   基线前移 ⇒ 徽标自己灭、follow 档下关框。
+    //   本格同时是 C4 的**前置态供给**:C4 断的是「点主钮 ⇒ 关框 + 徽标灭」,若把框关着、
+    //   徽标灭着交给它,那三格会在**没有框**的页面上空跑成绿(点一个 hidden 钮照样派发
+    //   事件,waitFor(askClosed) 立刻为真)—— 所以末尾重新改一次档把框打开再交棒。
+    check(
+        await evaluate(FORCE_ANALYZE("ok")),
+        "C9-5 合成回执已切到 ok(透传真实现,基线照常前移)",
+    );
+    check(await click("reanalyze-ask-primary"), "C9-5 主钮可点");
+    check(await waitFor(askClosed, 8000), "C9-5 follow 档受理成功 ⇒ 关框");
+    check(
+        await waitFor(badgeGone, 8000),
+        "C9-5 这一次分析真的跑完(琥珀 badge 由段表帧自己灭)",
+    );
+    // ⚠ 上面那格读的是 **DOM**,而默认档每 4 次写会插一帧**过期的全量帧**(SL-357),
+    //   它也能把徽标打灭 ⇒ 「徽标灭了」不等于「分析跑完了」。C4 那一下必须打在真 mock 上
+    //   (此刻如果再点一次,`analysis_run.running` 还为真就回 `{ok:false,reason:"busy"}`,
+    //   C4 会假红在「框没关」上),所以这里另取一个**不受 DOM 帧序影响**的正信号:
+    //   mock 自己的 `analysis_run`。
+    check(
+        await waitFor(
+            IN(`const m = w.__SCVB_MOCK__;
+                if (!m || typeof m.requestInitialState !== "function") return false;
+                return Promise.resolve(m.requestInitialState()).then(
+                    (st) => (st.analysis_run || {}).progress === 1
+                        && !(st.analysis_run || {}).running,
+                );`),
+            8000,
+        ),
+        "C9-5 收尾:这一次分析在 mock 侧真的收尾了(running=false,不是被过期帧打灭的 DOM)",
+    );
+    c9 = await evaluate(REFUSAL_PROBE);
+    if (check(c9, "C9-5 探针取到锚点")) {
+        check(
+            c9.doneText === "",
+            `C9-5 受理成功后拒回执文本已清(实得 ${JSON.stringify(c9.doneText)})`,
+        );
+    }
+    check(
+        await evaluate(UNINSTALL_ANALYZE_FORCE),
+        "C9-5 钩子已摘(own property 删掉 ⇒ 解析回原型上的真实现)",
+    );
+    check(await setLoudness("rms"), "C9-5 收尾:再改一次档,把框重新打开交给 C4");
+    check(
+        await waitFor(askOpen, 8000),
+        "C9-5 收尾:框已重新打开(C4 三格的前置态)",
+    );
 
     // C4 「重新分析」= 关框 + 真的跑完一次 analyze(判据 = badge 自己灭)
     check(await click("reanalyze-ask-primary"), "「重新分析」可点");
@@ -2538,7 +2916,7 @@ try {
 
 if (fail === 0) {
     console.log(
-        "✅ smoke-ui-layout-page:SL-272 / SL-275 / SL-276 / SL-273 / SL-374 全绿",
+        "✅ smoke-ui-layout-page:SL-272 / SL-275 / SL-276 / SL-273 / SL-374 / SL-396 全绿",
     );
     process.exit(0);
 }
