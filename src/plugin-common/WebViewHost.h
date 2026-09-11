@@ -73,6 +73,26 @@ public:
     // 前端 boot。从该时刻重新起算,避免环境启动慢吃掉页面加载的额度。
     static constexpr int kAfterNavBudgetMs = 5000;
 
+    // [SL-378] 这条不等式的**两个半边**各守什么、以及它靠什么成立,写在这里一处:
+    //   · 半边一(常量关系):遮挡闸首帧信号缺席时的 timeout 兜底(RevealGate 的
+    //     kRevealFallbackMs,3s)必须**早于**看门狗切兜底面板。否则按住占位那 3s 会被
+    //     面板顶掉 —— 形态不是「多按一会儿占位」,而是**直接进兜底**,那一档的真机表现
+    //     与处置见 WebViewRevealGate.h 头注。这一半由下面那句 static_assert 在**每一次
+    //     编译**上守(含 CI 的 build-vst3,不需要任何测试目标)。
+    //   · 半边二(前提):上面那个「早于」比较的是**同一时刻起算的两个预算**。看门狗这边
+    //     的起算点是 `beginLoadAttempt()`(.cpp),而导航事件到达时那次顺延
+    //     (extendDeadlineAfterNav)只在**本次加载尝试的首次**导航事件上生效 —— 靠的是
+    //     `beginLoadAttempt()` 把 `navBudgetApplied_` 复位。复位一旦被删/被挪到别处,
+    //     第二个导航事件之后的窗口里看门狗就会**早于**闸门到期,而上面那句 static_assert
+    //     照样绿(它只看两个常量)。
+    //     ⚠ **这一半今天没有用例守**:WebViewHost.cpp 不进任何测试目标(见
+    //     WebViewRevealGate.h 头注对同一件事的说明),本机可跑的只有真机验收项。
+    //     把看门狗预算算术抽成不碰 JUCE 组件的纯逻辑类、再用用例钉住复位语义,是**另一张
+    //     卡**的事(v1.1 备忘),不在本卡。
+    static_assert(RevealGate::kRevealFallbackMs < kAfterNavBudgetMs,
+                  "遮挡闸的 timeout 兜底(kRevealFallbackMs)必须早于看门狗预算"
+                  "(kAfterNavBudgetMs),否则占位段会被兜底面板顶掉");
+
     // 前端 boot 失败上行的事件名(**诊断面,不属契约 §7 manifest**)。走 JUCE 内建的
     // window.__JUCE__.postMessage ←→ Options::withEventListener 通道,不经 bridge.js、
     // 不参与 check-bridge-parity;__scvb__ 前缀照 JUCE 自己的 __juce__ 惯例标明非契约面。
