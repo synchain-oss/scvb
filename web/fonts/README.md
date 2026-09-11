@@ -46,6 +46,11 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 >          scripts/check-font-coverage.py | 4 +++-   (3 insertions, 1 deletion)
 > ```
 >
+> ⇒ **尺子没动。** `git show 3639bce -- scripts/check-font-coverage.py` 实得:那一次只改了
+> `KNOWN_ABSENT_UPSTREAM` 里 `✕` 那一条的**说明文字**(把逐条出处改成指路,外加一句注释),
+> 计数逻辑一个字没动(该 commit 也没碰 `fetch_fonts.py`)。所以 772→767 / 925→920 这个差值
+> 只来自**被量的 `web/`**(两次扫描之间文案的增删),不是量具换了刻度。
+>
 > 本次实跑 **拉丁 153 / CJK 767 / 合计 920**;2026-09-02 那段记的是**当次读数** 772 / 925,
 > 差值来自两次扫描之间 `web/` 文案的增删。**本文件只记当次实跑,以每次 gate 3h 为准。**
 

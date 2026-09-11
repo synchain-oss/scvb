@@ -2987,10 +2987,14 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features;
     std::uint16_t analyzedTracks = 0;
     const std::uint16_t writeMask = tracksMask;
+    // [#256 R10(复审 3-2)] **这三处(取样 / 清冻结 / 写回)走的是同一条轨维度**:上界与上面
+    // `features` 的声明同源(`scvb::engine::kNumTracks`)—— 三处一起换。
+    // 本卡只收这三处;其余 15 容量容器一律挂账(本次核:`startAnalysis` 里除这三处已无
+    // `t < 15` 的循环,剩下那几处都在别的函数里 —— 所以这句是**范围声明**,不是「还有几处没换」的记账)。
+    // ⚠ 上一版把这句写成「本节三处循环**只用来索引 `features`**」是**假话**:三处各自还索引
+    // 别的容器(取样 / 清冻结 / 写回各读各的),复审 3-2 点名。别再往回收窄成那句话。
+    // (引函数名与变量名,不引行号 —— 行号一改就漂。)
     for (int t = 0; t < scvb::engine::kNumTracks; ++t)
-    // [#256 R4(复审 2-5)] 本节三处循环(取样 / 判覆盖 / 写回)**只用来索引 `features`**,上界与
-    // 数组声明同源。本卡只收与该数组绑定的上界;本文件其余 `t < 15` 索引的是别的容器,不碰。
-    // (引章节名与变量名,不引行号 —— 行号一改就漂。)
     {
         auto& f = features[static_cast<std::size_t>(t)];
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)

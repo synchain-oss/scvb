@@ -755,7 +755,7 @@ check(st.restoreBtnShown, "②「恢复自动」按钮出现");
 near(parseTimeMs(st.startTxt), segStartS, 1e-9, "② 起点没被这两步动过");
 near(parseTimeMs(st.endTxt), segEndS, 1e-9, "② 终点没被这两步动过");
 
-// ---- ⑥ 前置:在**另一条轨**上按一个引擎绝不会算出来的手动值 ----------------
+// ---- ⑦ 前置:在**另一条轨**上按一个引擎绝不会算出来的手动值 ----------------
 // 光靠「重算前后比段值」测不出写回集变宽:别的轨此刻的段本来就是同一套 mock 生成器
 // 按同一段素材算出来的 —— 写回集就算变宽、把它们原样重算一遍,结果**逐字节相同**,
 // 断言照样绿(第一版实测:放宽成两轨,⑦ 不红)。与 host 侧那格同一个手法:
@@ -769,7 +769,7 @@ check(
         return !!(r && r.ok !== false);
     `),
     ),
-    `⑥ 前置:在第 ${otherCh} 轨按下手动 pan=77`,
+    `⑦ 前置:在第 ${otherCh} 轨按下手动 pan=77`,
 );
 await sleep(300);
 
@@ -1006,12 +1006,18 @@ async function reidentifyWithReceipt(mode, label) {
     // [#256 R3(复审 2-3)] **点之前**先等上一格的提示真灭(`n.hidden || t === ""`)。
     // 不这么做的话:上一格的 busy 提示还挂在屏上,而本格受理成功时 `setToolbarNote` 只
     // 「有 note 才写」⇒ 什么都不写 ⇒ (c) 会靠「5s 自撤还没到、恰好读到的不是那两句」蒙过去。
-    await waitFor(
-        IN(`
+    // [#256 R8(复审 3-4)] **这一句的返回值必须接住**:`waitFor` 只回 true/false,不接的话
+    // 超时是静悄悄地不成立,红会掉在**下一格**上(用下一格的措辞),读日志的人会去查一个
+    // 不存在的原因。下面三处 `waitFor` 一律这样接住(等上一格提示灭 / 等计数 +1 / 等期望文本)。
+    check(
+        await waitFor(
+            IN(`
         const n = gb("wave-arm-note");
         return !n || n.hidden || (n.textContent || "").trim() === "";
     `),
-        8000,
+            8000,
+        ),
+        `⑧ 前置:${label} —— 上一格的提示位在 8s 内真灭(等超时)`,
     );
     const before = await evaluate(
         IN(`return w.__SCVB_ANALYZE_FORCED_N__ || 0;`),
@@ -1023,24 +1029,51 @@ async function reidentifyWithReceipt(mode, label) {
     );
     // 等到**这一次 analyze 真被调过**:合成回执不走进真 mock,所以用上面那个计数当可观测点
     // (而不是 sleep 常数,也不是「等提示自己消失」)。
-    await waitFor(
-        IN(`return (w.__SCVB_ANALYZE_FORCED_N__ || 0) > ${before};`),
-        8000,
+    check(
+        await waitFor(
+            IN(`return (w.__SCVB_ANALYZE_FORCED_N__ || 0) > ${before};`),
+            8000,
+        ),
+        `⑧ 前置:${label} —— 这一次 analyze 在 8s 内真被调过(等超时)`,
     );
     if (mode === "ok") {
-        // 受理成功那一档:**立刻读一次** —— 判的是「本次没写那两句」,不是「它已经消失了」。
+        // [#256 R9(复审 3-1 前半)] **受理成功那一档改成反向等待**,不再「计数 +1 之后立刻读一次」。
+        // 那样读在 rAF 渲染**之前**是竞态:计数 +1 只证明 `analyze` 被调到,提示位的写入与重绘
+        // 都还在后面 —— D-d 注入那次撞巧红了,不等于这一格有牙(判据没接住 = 换个时序就假绿)。
+        // 现在盯住提示位 1.5s:只要它**出现**这两句就判负;测的是「这 1.5s 里始终没出现」,
+        // 而不是「某一瞬间恰好不是」。
+        const appeared = await waitFor(
+            IN(`
+        const n = gb("wave-arm-note");
+        if (!n || n.hidden) return false;
+        const t = (n.textContent || "").trim();
+        return t === ${JSON.stringify(ZH["analyze.refused"])}
+            || t === ${JSON.stringify(ZH["analyze.busy"])};
+    `),
+            1500,
+        );
+        check(
+            !appeared,
+            "⑧ (c) 受理成功 ⇒ 1.5s 内提示位始终没出现那两句" +
+                `(实得 appeared=${appeared})`,
+        );
+        // 下面那条 (c) 断言(在调用点)**保留**:反向等待管「中途有没有闪过」,
+        // 它管「这一格结束时屏上留的是什么」,两件事。
         return evaluate(ARM_NOTE);
     }
     const wantText = JSON.stringify(
         mode === "busy" ? ZH["analyze.busy"] : ZH["analyze.refused"],
     );
-    await waitFor(
-        IN(`
+    check(
+        await waitFor(
+            IN(`
         const n = gb("wave-arm-note");
         if (!n) return false;
         return !n.hidden && (n.textContent || "").trim() === ${wantText};
     `),
-        8000,
+            8000,
+        ),
+        `⑧ 前置:${label} —— 期望的提示在 8s 内上屏(等超时)`,
     );
     return evaluate(ARM_NOTE);
 }
