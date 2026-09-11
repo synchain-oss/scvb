@@ -2080,11 +2080,13 @@ try {
         // (max(T+500, at+900) = T+500,因为 at ≈ T−600),而停走之后 `scvb.playhead`
         // 逐帧逐字相同被 `samePlayhead` 挡掉、`scvb.conn`/`scvb.groups` 走 emitIfChanged、
         // `scvb.meters` 那条订阅不排 render、打印头已停 ⇒ **只剩 app.js 那几拍定时器**。
-        // ★ 删除式:去掉 app.js 停走边沿那一拍 `setTimeout(requestRender, 去抖+50)`,
-        //   本条读数由 630ms 变成 **1947ms**(实测)⇒ 红。降级形态照实说:**不是**「永远
-        //   不熄」—— 兜底的是 `hostEchoTimerWide` 那一拍(排在 at+2550 ≈ T+1930),
-        //   于是「停播后近两秒才熄」= SL-270 ① 原样复活。所以 -2(12s 超时)是本条**另一种**
-        //   可能的红法,不是这一种的实测值。
+        // ★ 删除式(**SL-394 复测实得,旧数已作废**):去掉 app.js 停走边沿那一拍
+        //   `setTimeout(requestRender, 去抖+50)` ⇒ 本条读数由 583ms 变成 **7755ms** ⇒ 红
+        //   (同一次注入下 (h2)/(h3) 也红)。**旧注释写的 1947ms 是错的** —— 那是
+        //   `hostEchoTimerWide`(排在 at+2550 的**播放档**兜底拍)接住的结果,而那个定时器
+        //   随 SL-394 一起删了。现在这一拍是停走后**唯一**的熄灭触发,没了它只能等下一次
+        //   偶然的 render,于是从「近两秒」变成「近八秒」。降级形态照实说:**不是**「永远
+        //   不熄」—— -2(12s 超时)是本条**另一种**红法,不是这一种的实测值。
         const armR2 = await setOutput356(true);
         check(
             typeof armR2 === "string" && !/rejected|"ok":\s*false/.test(armR2),
@@ -2190,7 +2192,8 @@ try {
             check(
                 hardStop.offAfterStop >= 0 && hardStop.offAfterStop < 900,
                 `(b) ★ 真停之后 900ms 内熄灭(实得 ${hardStop.offAfterStop}ms)。` +
-                    `丢掉停走边沿那一拍 render 时实测 1947ms(退到播放档那一拍才熄);` +
+                    `丢掉停走边沿那一拍 render 时实测 7755ms(SL-394 复测;旧注释的 1947ms ` +
+                    `是已删除的播放档兜底拍接住的数,别再照抄);` +
                     `-2 = 12s 内根本没熄,是另一种红法`,
             );
         }
