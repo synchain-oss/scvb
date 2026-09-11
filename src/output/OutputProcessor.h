@@ -98,10 +98,13 @@ struct OutputRuntimeState
         // docs/contract-changes/20260826-j83-participate-default.md。
         bool participatesInAutoPan() const { return participateAutoPanSet ? participateAutoPan : true; }
     };
-    // [#256 R10(复审 3-2)] 上界取 `scvb::engine::kNumTracks`(经本文件已 include 的
-    // OutputAuthority.h → engine/DspArbiter.h 可见,不必新加 include),与 `startAnalysis`
-    // 里那三处循环同源:常量整体漂到 16 时声明与循环一起跟上,不会出现「数组 15 / 循环 16」
-    // 这种越界。声明不算挂账,所以这一处换掉。
+    // [#256 R10(复审 3-2;B1 更正)] 上界取 `scvb::engine::kNumTracks` —— 真源是
+    // `src/core/engine/VersionStore.h` 里**namespace 作用域**的 `inline constexpr int kNumTracks = 15`
+    // (⚠ **不是** `engine/DspArbiter.h` 那个同名常量:它是 `DspArbiter` 的**类作用域**成员,
+    // 给不出 `scvb::engine::kNumTracks` 这个限定名),经本文件已 include 的 `OutputAuthority.h`
+    // → `engine/VersionStore.h` 可见,不必新加 include。与 `startAnalysis` 里那三处循环同源:
+    // 常量整体漂到 16 时声明与循环一起跟上,不会出现「数组 15 / 循环 16」这种越界。
+    // 声明不算挂账,所以这一处换掉。
     std::array<Channel, scvb::engine::kNumTracks> channels;
 
     // ui(active_tab/guide_seen/tour_seen;scale/language 由 Processor 成员承载)

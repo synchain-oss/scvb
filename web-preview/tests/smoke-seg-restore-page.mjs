@@ -26,7 +26,11 @@
 //      相符、`opts.clearManual === true`;**并且 scope 不是轨级**(不带范围那种);
 //   ⑤ 反向:同一页上点 Tab3 工具条的「重新识别(含手动段)」走的是选区/全量那条,
 //      不受本卡影响 —— 证明 ④ 的绿不是「页面把每个 analyze 都改成段级」蒙的;
-//   ⑥ 全程零未捕获异常、零 console.error。
+//   ⑦ [SL-393] 写回集不许变宽:推回来的段只点名选中的那一条轨
+//      (其前置「另一条轨按手动 pan=77」排在 ③ 之前跑);
+//   ⑧ [SL-396] analyze 拒回执必须有提示(页面级:refused / busy 逐字上屏,
+//      受理成功 1.5s 内不出);
+//   ⑨ 全程零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-seg-restore-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
