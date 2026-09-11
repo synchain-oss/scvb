@@ -972,6 +972,18 @@ export function createTabSettings(opts) {
             setRangeDoneKey(null);
             const res = await call("analyze", "all");
             if (!res || res.observer || res.ok === false) {
+                // [SL-396] **拒回执要说出来**。此前这里静默 `requestRender()` 就返回,屏上
+                // 与受理成功一模一样(框不关、也没多一个字)⇒ 用户读到的就是「点了没反应」。
+                // 文案复用波形页那两条 key(同一件事、同一份判据,不另起第二份)。
+                // `!res`(桥没回话)与 `observer`(只读观察态)不在这里出提示 —— 与
+                // tab-wave 的 `analyzeRefusalNote` 同一口径,理由见那份头注。
+                setRangeDoneKey(
+                    res && res.ok === false
+                        ? res.reason === "busy"
+                            ? "analyze.busy"
+                            : "analyze.refused"
+                        : null,
+                );
                 requestRender();
                 return;
             }

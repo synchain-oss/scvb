@@ -4341,15 +4341,31 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
         // [SL-242] 作用面从整轨收成**这一段**:钮长在段检查器里,发的 scope 就得带
         // 这一段的区间。接线是「先算 scope,算不出就不发」——**不许**退回轨级兜底,
         // 那正是本卡要修掉的行为,拿它当兜底等于留一条后门。
+        //
+        // [SL-396 复审] 第三句原先写死**单行**形态 `await call("analyze", scope, { clearManual: true });`。
+        // SL-396 给这一处补了回执处理、prettier 又把实参表拆成多行 ⇒ 判据被**一次换行**
+        // 打红(实测:本卡在 4a6d66e 上 (b5) 红,而代码语义一字未变)。现在先**剥注释 +
+        // 压平空白**再按真调用形态断 —— **不是放松**:变量名、实参顺序、`clearManual: true`
+        // 一个都没少,只是不再要求它们挤在同一行。
+        // 删除式实得(**两次注入,读数不同,照实记**):
+        //   · 只把 scope 那一行换回 `{ tracksMask: 1 << (cur.ch - 1) }` ⇒ **本格红、(b5b)
+        //     仍绿** —— (b5b) 断的是旧写法**连写**的形态,单改一行不触发它;
+        //   · 整段退回旧的轨级连写形态(scope 内联进 call、与 `{clearManual:true}` 挨着)
+        //     ⇒ **本格与 (b5b) 同红**。
+        //   两次复原后两条都回绿。(别把这两次读成一回事 —— 它们在(b5b)上结论相反。)
+        const twFlat = (await import(u("scripts/lib/strip-comments.mjs")))
+            .stripJsComments(tw, "web/output/tab-wave.js")
+            .replace(/\s+/g, " ");
         check(
             /const scope = segmentRestoreScope\(cur\.ch, cur\.seg\);/.test(
-                tw,
+                twFlat,
             ) &&
-                /if \(!scope\) return requestRender\(\);/.test(tw) &&
-                /await call\("analyze", scope, \{ clearManual: true \}\);/.test(
-                    tw,
+                /if \(!scope\) return requestRender\(\);/.test(twFlat) &&
+                /await call\("analyze", scope, \{ clearManual: true,? \}\);/.test(
+                    twFlat,
                 ),
-            "(b5)检查器入口走段级 scope(segmentRestoreScope)",
+            "(b5)检查器入口走段级 scope(segmentRestoreScope)" +
+                "(删除式实得:整段退回旧的轨级连写形态 ⇒ 本格与 (b5b) 同红)",
         );
         check(
             !/\{ tracksMask: 1 << \(cur\.ch - 1\) \},\s*\n?\s*\{ clearManual: true \}/.test(

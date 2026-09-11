@@ -934,6 +934,107 @@ check(
     `⑤ 反向护栏真的跑到了(工具条钮可点;实得 ${toolbarState})`,
 );
 
+// ---- ⑦ [SL-396] analyze **拒回执**必须有提示(页面级)------------------------
+// 断什么:§1.6 的两条拒绝回执 —— 范围 ∩ 覆盖 = ∅ 的 `{ok:false, affected:{…0}}`
+// (**不带 reason**)与「已有分析在跑」的 `{ok:false, reason:"busy"}` —— 在工具条上都必须变成
+// 一条**看得见**的行内提示(`wave-arm-note`);而受理成功(`ok:true`)那一次不许出现这两句。
+// 修前形态:这五处调用点把回执整个丢掉,两种拒绝在屏上都与「受理了」一模一样 —— 用户报的
+// 就是「点了没反应」。
+// 为什么必须页面级:「回执有没有被读、提示有没有真的上屏」node 侧断不到(那边只能断
+// 「mock 会回拒绝」,见 smoke-tab2)。本节全程走**真 DOM 事件**:点「重新识别(含手动段)」
+// → 确认框主钮 → `doReidentify` → `analyze`。
+// ⚠ 三格都用**合成的回执**驱动(见 FORCE_ANALYZE),不依赖本 fixture 的覆盖情况 ——
+// 判据是「提示由回执决定」,不是「这份素材恰好会被拒」。
+// 删除式:把 tab-wave.js 里那句 `setToolbarNote(analyzeRefusalNote(res))` 注掉(或让
+// `analyzeRefusalNote` 恒返回 null)⇒ (a)(b) 两格必红、(c) 仍绿。
+const FORCE_ANALYZE = (mode) =>
+    IN(`
+    if (!w.__SCVB_ANALYZE_FORCE_WRAPPED__) {
+        w.__SCVB_ANALYZE_FORCE_WRAPPED__ = true;
+        const prev = w.__SCVB_MOCK__.analyze.bind(w.__SCVB_MOCK__);
+        w.__SCVB_MOCK__.analyze = function (scope, opts) {
+            const mode = w.__SCVB_ANALYZE_FORCE__;
+            if (mode === "refused") {
+                return Promise.resolve({
+                    ok: false,
+                    affected: { tracks: 0, intervals: 0, manualKept: 0 },
+                });
+            }
+            if (mode === "busy") return Promise.resolve({ ok: false, reason: "busy" });
+            if (mode === "ok") return Promise.resolve({ ok: true });
+            return prev(scope, opts);
+        };
+    }
+    w.__SCVB_ANALYZE_FORCE__ = ${JSON.stringify(mode)};
+    return true;
+`);
+const ARM_NOTE = IN(`
+    const n = gb("wave-arm-note");
+    return n ? { hidden: !!n.hidden, text: (n.textContent || "").trim() } : null;
+`);
+const REIDENTIFY_FLOW = IN(`
+    const b = gb("wave-btn-reidentify");
+    if (!b || b.disabled) return "disabled";
+    b.click();
+    const box = gb("wave-confirm-reidentify");
+    if (!box || box.hidden) return "no-modal";
+    const ok = gb("wave-confirm-reidentify-ok");
+    if (!ok) return "no-ok";
+    ok.click();
+    return "clicked";
+`);
+const pageLang = await evaluate(
+    IN(`return document.documentElement.lang || "";`),
+);
+check(
+    pageLang.startsWith("zh"),
+    `⑦ 前置:页面语言是 zh(实得 "${pageLang}")—— 下面两句按 zh 词条逐字对`,
+);
+const ZH = (
+    await import(
+        `file:///${join(ROOT, "web/shared/i18n.js").replace(/\\/g, "/")}`
+    )
+).dict("zh");
+
+async function reidentifyWithReceipt(mode, label) {
+    await evaluate(FORCE_ANALYZE(mode));
+    const st = await evaluate(REIDENTIFY_FLOW);
+    check(
+        st === "clicked",
+        `⑦ 前置:${label} —— 「重新识别(含手动段)」这条链真走到了主钮(实得 ${st})`,
+    );
+    await sleep(300);
+    return evaluate(ARM_NOTE);
+}
+
+const noteRefused = await reidentifyWithReceipt("refused", "拒回执");
+check(
+    !!noteRefused &&
+        !noteRefused.hidden &&
+        noteRefused.text === ZH["analyze.refused"],
+    `⑦ (a) 范围 ∩ 覆盖 = ∅(不带 reason 的 {ok:false})⇒ 行内提示逐字出词条 analyze.refused` +
+        `(实得 ${JSON.stringify(noteRefused)};期望文本 ${JSON.stringify(ZH["analyze.refused"])})`,
+);
+
+const noteBusy = await reidentifyWithReceipt("busy", "busy 回执");
+check(
+    !!noteBusy && !noteBusy.hidden && noteBusy.text === ZH["analyze.busy"],
+    `⑦ (b) reason:"busy" ⇒ 行内提示逐字出词条 analyze.busy` +
+        `(实得 ${JSON.stringify(noteBusy)};期望文本 ${JSON.stringify(ZH["analyze.busy"])})`,
+);
+
+const noteOk = await reidentifyWithReceipt("ok", "受理回执");
+check(
+    !!noteOk &&
+        (noteOk.hidden ||
+            (noteOk.text !== ZH["analyze.refused"] &&
+                noteOk.text !== ZH["analyze.busy"])),
+    `⑦ (c) 受理成功 ⇒ **不出**这两句(实得 ${JSON.stringify(noteOk)})` +
+        ` —— 少了这一格,(a)(b) 的绿可以由「无脑弹提示」蒙出来`,
+);
+
+await evaluate(FORCE_ANALYZE(null)); // 复原:后面还有别的断言在跑
+
 // ---- ⑥ 零异常 -------------------------------------------------------------
 check(
     exceptions.length === 0,

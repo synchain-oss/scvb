@@ -1505,6 +1505,24 @@ export function createTabWave(opts) {
         return running || outputPhase(st.state, st.playhead) === "print";
     }
 
+    /**
+     * [SL-396] analyze **受理回执** → 该弹哪一条行内提示(`null` = 受理了,不必弹)。
+     *
+     * 为什么要有这一处:此前**五处**调用点都不看回执 —— §1.6 的两条拒绝态(范围 ∩ 覆盖 = ∅
+     * 回 `{ok:false, affected:{0,0,0}}`,**不带 reason**;已有分析在跑回
+     * `{ok:false, reason:"busy"}`)在屏上都与「受理了」一模一样,用户看到的是「点了没反应」。
+     * 判定只此一份:同一个判断各存一份正是这一族缺陷反复复发的形状(同款头注见
+     * `web/shared/host-echo.js` 的 `hostEchoUseWideWindow`)。
+     *
+     * ⚠ 只认 `ok === false`。回执缺席(`!res`)与 `observer`(**只读观察态**)不在这里出提示:
+     * 前者是「桥没回话」,后者 §5.1 已有它自己的面,且两页的这些钮本来就被 `isWriteBlocked()`
+     * 挡着 —— 本卡不顺手扩面,要扩另立卡。
+     */
+    function analyzeRefusalNote(res) {
+        if (!res || res.ok !== false) return null;
+        return res.reason === "busy" ? "analyze.busy" : "analyze.refused";
+    }
+
     /** 工具条行内反馈(布防拒绝 §5.5 / notAdjacent / 清除回执;5s 自撤)。 */
     function setToolbarNote(key, vals) {
         if (local.toolbarNoteTimer) clearTimeout(local.toolbarNoteTimer);
@@ -1956,7 +1974,9 @@ export function createTabWave(opts) {
         if (btnDisabled(els.btnReanalyze) || isWriteBlocked()) return;
         const scope = currentScope();
         if (!scope) return;
-        await call("analyze", scope); // 受理回执;结果经 §2.8 回推,运行态经 §2.1
+        // 受理回执;结果经 §2.8 回推,运行态经 §2.1。[SL-396] 拒回执不再丢:拒绝态出行内提示。
+        const res = await call("analyze", scope);
+        setToolbarNote(analyzeRefusalNote(res));
         requestRender();
     }
 
@@ -1998,7 +2018,8 @@ export function createTabWave(opts) {
     async function doReidentify() {
         show(els.confirmReidentify, false);
         if (isWriteBlocked()) return;
-        await call("analyze", scopeOrAll(), { clearManual: true });
+        const res = await call("analyze", scopeOrAll(), { clearManual: true });
+        setToolbarNote(analyzeRefusalNote(res)); // [SL-396]
         requestRender();
     }
 
@@ -2034,9 +2055,11 @@ export function createTabWave(opts) {
     }
 
     async function doApplySegments() {
-        // A-03:抑制期显式应用 = analyze(scope)(J47);分析进行中回 busy,忽略
+        // A-03:抑制期显式应用 = analyze(scope)(J47)。[SL-396] 原文写「分析进行中回 busy,
+        // 忽略」—— 「忽略」的代价就是用户点了没反应,现在照实出行内提示。
         if (isWriteBlocked()) return;
-        await call("analyze", scopeOrAll());
+        const res = await call("analyze", scopeOrAll());
+        setToolbarNote(analyzeRefusalNote(res));
         requestRender();
     }
 
@@ -3434,7 +3457,11 @@ export function createTabWave(opts) {
                     if (!scope) return requestRender(); // 段没有可用的 t0S:不发轨级请求
                     local.inspRestoreBusy = true;
                     try {
-                        await call("analyze", scope, { clearManual: true });
+                        // [SL-396] 拒回执也走行内提示(与工具条那几处同一份判据)
+                        const res = await call("analyze", scope, {
+                            clearManual: true,
+                        });
+                        setToolbarNote(analyzeRefusalNote(res));
                     } finally {
                         local.inspRestoreBusy = false;
                     }
