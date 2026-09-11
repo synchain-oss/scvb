@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include "state/StateCodec.h" // scvb::state::kNumTracks(轨数的单一真源;本头仍无 JUCE)
+
 // analyze/previewAnalyze 的「全部」范围推导(§1.5/§1.6 的 "all" 分支)。
 //
 // 单拎成纯函数的理由:它是 v5.1 P1-F 的**唯一**修复点,而它原先埋在
@@ -196,9 +198,17 @@ inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS
 //
 // 单拎成纯函数是为了让它可被 scvb_tests 直接断言:它现在是「计算集 ⊋ 写回集」这条新
 // 不变量的唯一判据点,埋在 startAnalysis 的循环里就只能靠 host harness 间接测。
+//
+// [SL-393 复审【建议】⑥] 上界原来是裸字面量 `15`。本仓 `kNumTracks` 有四五处定义,
+// §6 的「单一真源」纪律对版本号之外的技术常量同样适用,而这里判错的后果(越界一律假)
+// 恰好又是那一族**静默不写**。现在吃 state 层那一个(`scvb::state::kNumTracks`)——
+// 选它是因为 `AnalyzeScopeMath.h` 必须是纯 C++(它只做窗口算术),而 `StateCodec.h`
+// 自述「纯 C++17,无 JUCE」;`params` 那份要拖进 juce_audio_processors,不适合这里。
+// 比较前显式转 `std::size_t`:直接拿 `int` 比无符号量在 /W4 下会报 C4018,而 gate 5 是
+// 零 warning 门禁。
 inline bool inWriteMask(std::uint16_t tracksMask, int trackIndex)
 {
-    if (trackIndex < 0 || trackIndex >= 15)
+    if (trackIndex < 0 || static_cast<std::size_t>(trackIndex) >= scvb::state::kNumTracks)
     {
         return false;
     }

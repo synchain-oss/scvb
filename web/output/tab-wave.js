@@ -58,6 +58,8 @@ import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 import { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX } from "../shared/wheel.js";
 import { isEditableTarget } from "../shared/context-menu.js";
 import { backingFitFactor } from "../shared/shell-fit.js";
+// [SL-396 复审②] 拒回执判据的唯一一份实现(设置页也用同一份,见该文件头注)
+import { analyzeRefusalNote as sharedAnalyzeRefusalNote } from "../shared/analyze-note.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
 import {
     CHANNEL_COUNT,
@@ -1505,6 +1507,15 @@ export function createTabWave(opts) {
         return running || outputPhase(st.state, st.playhead) === "print";
     }
 
+    /**
+     * [SL-396] analyze **受理回执** → 该弹哪一条行内提示(`null` = 受理了,不必弹)。
+     *
+     * 判定本体在 `web/shared/analyze-note.js` —— 设置页那份也要用同一份,而两个 tab 都是
+     * **工厂函数**、内部函数 `export` 不出去(第一版那么写直接 `SyntaxError`,整页起不来,
+     * 见那份文件头注)。这里只做一次本地转引,免得四处调用点各 import 一遍。
+     */
+    const analyzeRefusalNote = sharedAnalyzeRefusalNote;
+
     /** 工具条行内反馈(布防拒绝 §5.5 / notAdjacent / 清除回执;5s 自撤)。 */
     function setToolbarNote(key, vals) {
         if (local.toolbarNoteTimer) clearTimeout(local.toolbarNoteTimer);
@@ -1956,7 +1967,11 @@ export function createTabWave(opts) {
         if (btnDisabled(els.btnReanalyze) || isWriteBlocked()) return;
         const scope = currentScope();
         if (!scope) return;
-        await call("analyze", scope); // 受理回执;结果经 §2.8 回推,运行态经 §2.1
+        // 受理回执;结果经 §2.8 回推,运行态经 §2.1。[SL-396] 拒回执不再丢:拒绝态出行内提示。
+        const res = await call("analyze", scope);
+        // [SL-396 复审④] 同 doReanalyze:成功态不清别人的提示。
+        const note = analyzeRefusalNote(res);
+        if (note) setToolbarNote(note);
         requestRender();
     }
 
@@ -1998,7 +2013,11 @@ export function createTabWave(opts) {
     async function doReidentify() {
         show(els.confirmReidentify, false);
         if (isWriteBlocked()) return;
-        await call("analyze", scopeOrAll(), { clearManual: true });
+        const res = await call("analyze", scopeOrAll(), { clearManual: true });
+        // [SL-396 复审④] **只在有拒回执时才动提示位**:无条件 `setToolbarNote(note)` 会在
+        // 受理成功那一路顺手清掉别人刚留的提示(布防拒绝 / notAdjacent / 清除回执都共用这一位)。
+        const note = analyzeRefusalNote(res);
+        if (note) setToolbarNote(note);
         requestRender();
     }
 
@@ -2034,9 +2053,13 @@ export function createTabWave(opts) {
     }
 
     async function doApplySegments() {
-        // A-03:抑制期显式应用 = analyze(scope)(J47);分析进行中回 busy,忽略
+        // A-03:抑制期显式应用 = analyze(scope)(J47)。[SL-396] 原文写「分析进行中回 busy,
+        // 忽略」—— 「忽略」的代价就是用户点了没反应,现在照实出行内提示。
         if (isWriteBlocked()) return;
-        await call("analyze", scopeOrAll());
+        const res = await call("analyze", scopeOrAll());
+        // [SL-396 复审④] 同 doReanalyze:成功态不清别人的提示。
+        const note = analyzeRefusalNote(res);
+        if (note) setToolbarNote(note);
         requestRender();
     }
 
@@ -3434,7 +3457,13 @@ export function createTabWave(opts) {
                     if (!scope) return requestRender(); // 段没有可用的 t0S:不发轨级请求
                     local.inspRestoreBusy = true;
                     try {
-                        await call("analyze", scope, { clearManual: true });
+                        // [SL-396] 拒回执也走行内提示(与工具条那几处同一份判据)
+                        const res = await call("analyze", scope, {
+                            clearManual: true,
+                        });
+                        // [SL-396 复审④] 同 doReanalyze:成功态不清别人的提示。
+                        const note = analyzeRefusalNote(res);
+                        if (note) setToolbarNote(note);
                     } finally {
                         local.inspRestoreBusy = false;
                     }

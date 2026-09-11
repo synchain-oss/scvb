@@ -2662,7 +2662,8 @@ bool ScvbOutputAudioProcessor::redo()
 class ScvbOutputAudioProcessor::AnalysisJob final : public juce::Thread
 {
 public:
-    AnalysisJob(ScvbOutputAudioProcessor& owner, std::array<scvb::analysis::PipelineTrackFeatures, 15> features,
+    AnalysisJob(ScvbOutputAudioProcessor& owner,
+                std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features,
                 scvb::analysis::PipelineConfig config, std::uint32_t generation)
         : juce::Thread("scvb-analysis"), owner_(owner), features_(std::move(features)), config_(config),
           generation_(generation)
@@ -2702,7 +2703,7 @@ public:
 
 private:
     ScvbOutputAudioProcessor& owner_;
-    std::array<scvb::analysis::PipelineTrackFeatures, 15> features_;
+    std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features_;
     scvb::analysis::PipelineConfig config_;
     std::uint32_t generation_ = 0;
 };
@@ -2969,10 +2970,31 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // `tracksMask` 因此降级为**写回掩码**(见下面的 writeMask 与 applyAnalysisSegments):
     // 参与计算的轨可以更多,但**被改写段表的轨仍然只有掩码内那些**,契约 §1.6
     // 「仅把目标段 origin 重置为 auto 后重算」逐字仍成立(可观测面没变)。
-    std::array<scvb::analysis::PipelineTrackFeatures, 15> features;
+    //
+    // ⚠ [SL-393 复审【建议】⑦] **成本口径**:上面那句「30s × 15 轨 ≈ 180KB,量级可忽略」
+    // 是**按全轨**估的,而计算集放宽之后它对**窄 scope 同样成立**(窄 scope 现在也按
+    // 「范围内全部 enabled + 有覆盖的轨」重算,不再只算掩码内那几条)。所以:
+    //   · 别拿「单轨重识别应该很便宜」当前提做优化判断 —— 它现在是 15 轨全量 VAD + 分段
+    //     的价(走 `analyzeAllRange` 时更是整条已采集时间线);
+    //   · `finishAnalysis` 的 vadP 写回在**消息线程**、持 `lifecycleMutex_`
+    //     (:3283-3318 那一段),量级已由 SL-232 的批量入口兜住,但仍是这笔账的一部分。
+    //   这是 SL-393 有意换回来的代价(修的是「只喂一条轨 ⇒ 恒 (0,0)」),不是漏算。
+    // [#256 复审⑤] 15 换成单一真源。本仓 `kNumTracks` 有四五处定义,§6 的「单一真源」纪律对
+    // 版本号之外的技术常量同样适用,而这里判错的后果恰好是「静默少算/多算一条轨」那一族。
+    // 选 `scvb::engine` 那一份(不是新造),与 OutputAuthority.h 的 `kNumTracks` 同源。
+    // 注:本文件另外两处同型声明(AnalysisJob 的构造参数与成员,`:2665` / `:2705`)一并换掉 ——
+    // 同一个类型三处两种写法,下一个人只会照最近的那一处抄。
+    std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features;
     std::uint16_t analyzedTracks = 0;
     const std::uint16_t writeMask = tracksMask;
-    for (int t = 0; t < 15; ++t)
+    // [#256 R10(复审 3-2)] **这三处(取样 / 清冻结 / 写回)走的是同一条轨维度**:上界与上面
+    // `features` 的声明同源(`scvb::engine::kNumTracks`)—— 三处一起换。
+    // 本卡只收这三处;其余 15 容量容器一律挂账(本次核:`startAnalysis` 里除这三处已无
+    // `t < 15` 的循环,剩下那几处都在别的函数里 —— 所以这句是**范围声明**,不是「还有几处没换」的记账)。
+    // ⚠ 上一版把这句写成「本节三处循环**只用来索引 `features`**」是**假话**:三处各自还索引
+    // 别的容器(取样 / 清冻结 / 写回各读各的),复审 3-2 点名。别再往回收窄成那句话。
+    // (引函数名与变量名,不引行号 —— 行号一改就漂。)
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
     {
         auto& f = features[static_cast<std::size_t>(t)];
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
@@ -3078,7 +3100,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // (需用户拍板),不是这里顺手改的事。
     if (clearManual)
     {
-        for (int t = 0; t < 15; ++t)
+        for (int t = 0; t < scvb::engine::kNumTracks; ++t)
         {
             // [SL-393] 计算集变宽之后,这里**必须**再按写回集筛一道:清 freeze 是对
             // 用户参数面的写入(还带 gesture),而计算集里那些轨只是来当上下文的,
@@ -3110,7 +3132,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         }
     }
 
-    for (int t = 0; t < 15; ++t)
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
     {
         const auto& c = runtime_.channels[static_cast<std::size_t>(t)];
         auto& tc = cfg.tracks[static_cast<std::size_t>(t)];

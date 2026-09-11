@@ -26,7 +26,11 @@
 //      相符、`opts.clearManual === true`;**并且 scope 不是轨级**(不带范围那种);
 //   ⑤ 反向:同一页上点 Tab3 工具条的「重新识别(含手动段)」走的是选区/全量那条,
 //      不受本卡影响 —— 证明 ④ 的绿不是「页面把每个 analyze 都改成段级」蒙的;
-//   ⑥ 全程零未捕获异常、零 console.error。
+//   ⑦ [SL-393] 写回集不许变宽:除选中轨外,其余轨的段值与重算前逐字段相同
+//      (其前置「另一条轨按手动 pan=77」排在 ③ 之前跑);
+//   ⑧ [SL-396] analyze 拒回执必须有提示(页面级:refused / busy 逐字上屏,
+//      受理成功 1.5s 内不出);
+//   ⑨ 全程零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-seg-restore-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -599,9 +603,12 @@ check(
                     return inner(scope, opts);
             };
         }
-        // [SL-393] 顺带记下重算之后推回来的 scvb.segments 里**点名了哪几条轨** ——
+        // 记下重算之后推回来的 scvb.segments 的**段值快照**,按 ch 分桶 —— 本文件 ⑦ 拿它
+        // 逐字段比对(重算这一段的 pan/vol 必须回到引擎算出来的自动值)。
         // (这段跑在页面里,注释里不能出现反引号 —— 它会把外层模板串就地截断。)
-        // 那是「只重算选中的这一段」这句承诺在事件面上的形状(见本文件 ⑦)。
+        // [SL-393] 原先这里还记了一个 chs(push 里点名了哪几条轨)—— 那是**旧轴**:SL-393
+        // 定谳把「计算集」与「写回集」分开了,一条 push 里出现的轨不再等于「被重算的轨」,
+        // 那个字段既没有消费者、留着还会把下一个人引回旧口径,故删。
         if (!w.__SCVB_SEG_PUSH__) {
             w.__SCVB_SEG_PUSH__ = [];
             w.__SCVB_MOCK__.addEventListener("scvb.segments", (p) => {
@@ -618,7 +625,6 @@ check(
                 }
                 w.__SCVB_SEG_PUSH__.push({
                     reason: p && p.reason,
-                    chs: ((p && p.channels) || []).map((c) => c.ch),
                     byCh,
                 });
             });
@@ -816,7 +822,7 @@ near(scope.startS, segStartS, 0.0006, "④ startS = 检查器写着的「起」"
 near(scope.endS, segEndS, 0.0006, "④ endS = 检查器写着的「止」");
 check(scope.endS - scope.startS < 3600, "④ 范围是一个段的量级,不是整条时间线");
 
-// ---- ⑦ [SL-393] 写回集不许变宽:推回来的段只点名选中的那一条轨 --------------
+// ---- ⑦ [SL-393] 写回集不许变宽:除选中轨外其余轨的段值与重算前逐字段相同 ------
 // 确认文案许诺「只重算选中的这一段」。④ 钉的是**发出去的请求**长什么样,这一格钉的是
 // **回来的那一帧**作用到了谁 —— 两者不是同一件事:请求的 `tracksMask` 是窄的,后端
 // 仍可能把同范围内别的轨一并重写(native 侧 SL-393 的修法正是在 applyAnalysisSegments
@@ -825,7 +831,13 @@ check(scope.endS - scope.startS < 3600, "④ 范围是一个段的量级,不是�
 // ⚠ 轴选的是「**段值有没有变**」,不是「这一帧点名了哪几条轨」。后者是 **mock 独有**的
 // 语义:真桥的分析帧恒以 `kAllTracksMask` 全量推(`OutputEditor.cpp:266`),按「只点名
 // 选中轨」去断,真桥这一侧永远为假 —— 那样的判据只证明 mock 长什么样,证明不了产品。
-// 「除选中轨外其余轨的段值与重算前逐字段相同」在两侧是同一个形状。
+// ⚠ **preview 侧的覆盖边界**(#256 复审第 6 轮点名,如实记):mock 的分析帧轨集是由**请求 mask**
+// 机械推出的(`affectedOf()` → `channelsOfMask(scope.tracksMask)` → `emitRecomputedSegments` →
+// `segmentsPayload()` 只映射那份 chList),单轨请求下这一帧里根本没有「其余轨」可比 ⇒ 本格在
+// preview 上**只覆盖「请求变宽」这一支**(`drifted` 在正常路径恒为空,下面那条逐字段比对此时
+// 是空集上的真);「请求窄、后端把同范围别的轨一并重写」那一支由 host 侧 SL-393 的 ①/② 用例
+// 覆盖。把 mock 的帧轨集对齐真桥(全量 / 计算集)归 SL-399 的 mock 同步项,届时本格才真正
+// 量得到写回集。
 //
 // 为什么值得单钉:SL-393 的 native 修法把**计算集**放宽成了「范围内所有有覆盖的轨」
 // (只喂一条轨会被引擎判成「独唱」而按到正中,那正是本卡的病根)。计算集一宽,
@@ -934,14 +946,184 @@ check(
     `⑤ 反向护栏真的跑到了(工具条钮可点;实得 ${toolbarState})`,
 );
 
-// ---- ⑥ 零异常 -------------------------------------------------------------
+// ---- ⑧ [SL-396] analyze **拒回执**必须有提示(页面级)------------------------
+// 断什么:§1.6 的两条拒绝回执 —— 范围 ∩ 覆盖 = ∅ 的 `{ok:false, affected:{…0}}`
+// (**不带 reason**)与「已有分析在跑」的 `{ok:false, reason:"busy"}` —— 在工具条上都必须变成
+// 一条**看得见**的行内提示(`wave-arm-note`);而受理成功(`ok:true`)那一次不许出现这两句。
+// 修前形态:这五处调用点把回执整个丢掉,两种拒绝在屏上都与「受理了」一模一样 —— 用户报的
+// 就是「点了没反应」。
+// 为什么必须页面级:「回执有没有被读、提示有没有真的上屏」node 侧断不到(那边只能断
+// 「mock 会回拒绝」,见 smoke-tab2)。本节全程走**真 DOM 事件**:点「重新识别(含手动段)」
+// → 确认框主钮 → `doReidentify` → `analyze`。
+// ⚠ 三格都用**合成的回执**驱动(见 FORCE_ANALYZE),不依赖本 fixture 的覆盖情况 ——
+// 判据是「提示由回执决定」,不是「这份素材恰好会被拒」。
+// 删除式:让 `analyzeRefusalNote` 恒返回 null(四处调用点现在是 `const note = …; if (note)
+// setToolbarNote(note);`,恒 null 即一处都不写)⇒ (a)(b) 两格必红、(c) 仍绿。
+const FORCE_ANALYZE = (mode) =>
+    IN(`
+    if (!w.__SCVB_ANALYZE_FORCE_WRAPPED__) {
+        w.__SCVB_ANALYZE_FORCE_WRAPPED__ = true;
+        const prev = w.__SCVB_MOCK__.analyze.bind(w.__SCVB_MOCK__);
+        w.__SCVB_MOCK__.analyze = function (scope, opts) {
+            // [R3] 计数:合成回执**不会**走到真正的 mock(所以 spy 记不到),本套要一个
+            // 「这一次 analyze 真被调过」的可观测点,用它等,不写 sleep 常数。
+            w.__SCVB_ANALYZE_FORCED_N__ = (w.__SCVB_ANALYZE_FORCED_N__ || 0) + 1;
+            const mode = w.__SCVB_ANALYZE_FORCE__;
+            if (mode === "refused") {
+                return Promise.resolve({
+                    ok: false,
+                    affected: { tracks: 0, intervals: 0, manualKept: 0 },
+                });
+            }
+            if (mode === "busy") return Promise.resolve({ ok: false, reason: "busy" });
+            if (mode === "ok") return Promise.resolve({ ok: true });
+            return prev(scope, opts);
+        };
+    }
+    w.__SCVB_ANALYZE_FORCE__ = ${JSON.stringify(mode)};
+    return true;
+`);
+const ARM_NOTE = IN(`
+    const n = gb("wave-arm-note");
+    return n ? { hidden: !!n.hidden, text: (n.textContent || "").trim() } : null;
+`);
+const REIDENTIFY_FLOW = IN(`
+    const b = gb("wave-btn-reidentify");
+    if (!b || b.disabled) return "disabled";
+    b.click();
+    const box = gb("wave-confirm-reidentify");
+    if (!box || box.hidden) return "no-modal";
+    const ok = gb("wave-confirm-reidentify-ok");
+    if (!ok) return "no-ok";
+    ok.click();
+    return "clicked";
+`);
+const pageLang = await evaluate(
+    IN(`return document.documentElement.lang || "";`),
+);
+check(
+    pageLang.startsWith("zh"),
+    `⑧ 前置:页面语言是 zh(实得 "${pageLang}")—— 下面两句按 zh 词条逐字对`,
+);
+const ZH = (
+    await import(
+        `file:///${join(ROOT, "web/shared/i18n.js").replace(/\\/g, "/")}`
+    )
+).dict("zh");
+
+async function reidentifyWithReceipt(mode, label) {
+    await evaluate(FORCE_ANALYZE(mode));
+    // [#256 R3(复审 2-3)] **点之前**先等上一格的提示真灭(`n.hidden || t === ""`)。
+    // 不这么做的话:上一格的 busy 提示还挂在屏上,而本格受理成功时 `setToolbarNote` 只
+    // 「有 note 才写」⇒ 什么都不写 ⇒ (c) 会靠「5s 自撤还没到、恰好读到的不是那两句」蒙过去。
+    // [#256 R8(复审 3-4)] **这一句的返回值必须接住**:`waitFor` 只回 true/false,不接的话
+    // 超时是静悄悄地不成立,红会掉在**下一格**上(用下一格的措辞),读日志的人会去查一个
+    // 不存在的原因。下面三处 `waitFor` 一律这样接住(等上一格提示灭 / 等计数 +1 / 等期望文本)。
+    check(
+        await waitFor(
+            IN(`
+        const n = gb("wave-arm-note");
+        return !n || n.hidden || (n.textContent || "").trim() === "";
+    `),
+            8000,
+        ),
+        `⑧ 前置:${label} —— 上一格的提示位在 8s 内真灭(等超时)`,
+    );
+    const before = await evaluate(
+        IN(`return w.__SCVB_ANALYZE_FORCED_N__ || 0;`),
+    );
+    const st = await evaluate(REIDENTIFY_FLOW);
+    check(
+        st === "clicked",
+        `⑧ 前置:${label} —— 「重新识别(含手动段)」这条链真走到了主钮(实得 ${st})`,
+    );
+    // 等到**这一次 analyze 真被调过**:合成回执不走进真 mock,所以用上面那个计数当可观测点
+    // (而不是 sleep 常数,也不是「等提示自己消失」)。
+    check(
+        await waitFor(
+            IN(`return (w.__SCVB_ANALYZE_FORCED_N__ || 0) > ${before};`),
+            8000,
+        ),
+        `⑧ 前置:${label} —— 这一次 analyze 在 8s 内真被调过(等超时)`,
+    );
+    if (mode === "ok") {
+        // [#256 R9(复审 3-1 前半)] **受理成功那一档改成反向等待**,不再「计数 +1 之后立刻读一次」。
+        // 那样读在 rAF 渲染**之前**是竞态:计数 +1 只证明 `analyze` 被调到,提示位的写入与重绘
+        // 都还在后面 —— D-d 注入那次撞巧红了,不等于这一格有牙(判据没接住 = 换个时序就假绿)。
+        // 现在盯住提示位 1.5s:只要它**出现**这两句就判负;测的是「这 1.5s 里始终没出现」,
+        // 而不是「某一瞬间恰好不是」。
+        const appeared = await waitFor(
+            IN(`
+        const n = gb("wave-arm-note");
+        if (!n || n.hidden) return false;
+        const t = (n.textContent || "").trim();
+        return t === ${JSON.stringify(ZH["analyze.refused"])}
+            || t === ${JSON.stringify(ZH["analyze.busy"])};
+    `),
+            1500,
+        );
+        check(
+            !appeared,
+            "⑧ (c) 受理成功 ⇒ 1.5s 内提示位始终没出现那两句" +
+                `(实得 appeared=${appeared})`,
+        );
+        // 下面那条 (c) 断言(在调用点)**保留**:反向等待管「中途有没有闪过」,
+        // 它管「这一格结束时屏上留的是什么」,两件事。
+        return evaluate(ARM_NOTE);
+    }
+    const wantText = JSON.stringify(
+        mode === "busy" ? ZH["analyze.busy"] : ZH["analyze.refused"],
+    );
+    check(
+        await waitFor(
+            IN(`
+        const n = gb("wave-arm-note");
+        if (!n) return false;
+        return !n.hidden && (n.textContent || "").trim() === ${wantText};
+    `),
+            8000,
+        ),
+        `⑧ 前置:${label} —— 期望的提示在 8s 内上屏(等超时)`,
+    );
+    return evaluate(ARM_NOTE);
+}
+
+const noteRefused = await reidentifyWithReceipt("refused", "拒回执");
+check(
+    !!noteRefused &&
+        !noteRefused.hidden &&
+        noteRefused.text === ZH["analyze.refused"],
+    `⑧ (a) 范围 ∩ 覆盖 = ∅(不带 reason 的 {ok:false})⇒ 行内提示逐字出词条 analyze.refused` +
+        `(实得 ${JSON.stringify(noteRefused)};期望文本 ${JSON.stringify(ZH["analyze.refused"])})`,
+);
+
+const noteBusy = await reidentifyWithReceipt("busy", "busy 回执");
+check(
+    !!noteBusy && !noteBusy.hidden && noteBusy.text === ZH["analyze.busy"],
+    `⑧ (b) reason:"busy" ⇒ 行内提示逐字出词条 analyze.busy` +
+        `(实得 ${JSON.stringify(noteBusy)};期望文本 ${JSON.stringify(ZH["analyze.busy"])})`,
+);
+
+const noteOk = await reidentifyWithReceipt("ok", "受理回执");
+check(
+    !!noteOk &&
+        (noteOk.hidden ||
+            (noteOk.text !== ZH["analyze.refused"] &&
+                noteOk.text !== ZH["analyze.busy"])),
+    `⑧ (c) 受理成功 ⇒ **不出**这两句(实得 ${JSON.stringify(noteOk)})` +
+        ` —— 少了这一格,(a)(b) 的绿可以由「无脑弹提示」蒙出来`,
+);
+
+await evaluate(FORCE_ANALYZE(null)); // 复原:后面还有别的断言在跑
+
+// ---- ⑨ 零异常 -------------------------------------------------------------
 check(
     exceptions.length === 0,
-    `⑥ 零未捕获异常(实得 ${exceptions.length}:${exceptions[0] || ""})`,
+    `⑨ 零未捕获异常(实得 ${exceptions.length}:${exceptions[0] || ""})`,
 );
 check(
     errors.length === 0,
-    `⑥ 零 console.error(实得 ${errors.length}:${errors[0] || ""})`,
+    `⑨ 零 console.error(实得 ${errors.length}:${errors[0] || ""})`,
 );
 
 await finish();

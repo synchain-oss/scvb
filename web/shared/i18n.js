@@ -1042,6 +1042,14 @@ export const T = {
         "wave.diffItem": "轨 {ch} · 段 {i}:pan {pf}→{pt} · vol {vf}→{vt}",
         // clearCoverage 回执反馈(契约 §1.24 的 clearedS)
         "wave.clearedCoverage": "已清除 {s} s 采集数据",
+        // [SL-396] analyze **受理失败**的两条行内提示。此前五处调用点都不看回执(§1.6:
+        // 范围 ∩ 覆盖 = ∅ 回 `{ok:false, affected:{0,0,0}}` 不带 reason;已有分析在跑回
+        // `{ok:false, reason:"busy"}`),两种拒绝在屏上都与「受理了」一模一样 —— 用户看到的
+        // 是「点了没反应」。文案给的是**下一步动作**,不是「失败了」:这两件事用户都能自己解。
+        // 跨页共用(波形与分段页 + 设置页的重分析确认框),所以不放 `wave.` 前缀。
+        "analyze.refused":
+            "所选范围没有采集数据,先采集这段,或换一个有数据的范围再重分析",
+        "analyze.busy": "已有分析在进行,等它跑完再试",
     },
 
     en: {
@@ -1874,6 +1882,12 @@ export const T = {
         "wave.diffItemsLabel": "Change details",
         "wave.diffItem": "Track {ch} · seg {i}: pan {pf}→{pt} · vol {vf}→{vt}",
         "wave.clearedCoverage": "Cleared {s} s of captured data",
+        // [SL-396] analyze refusals (see the zh block for the why). Copy states the next
+        // action rather than "failed": both are things the user can resolve themselves.
+        "analyze.refused":
+            "No captured data in the selected range — capture this part first, or pick a range that has data",
+        "analyze.busy":
+            "An analysis is already running — try again once it finishes",
     },
 
     fr: {
@@ -2729,6 +2743,11 @@ export const T = {
         "wave.diffItemsLabel": "Détail des modifications",
         "wave.diffItem": "Piste {ch} · seg {i} : pan {pf}→{pt} · vol {vf}→{vt}",
         "wave.clearedCoverage": "{s} s de données capturées effacées",
+        // [SL-396] refus d'analyze (voir le bloc zh pour le pourquoi).
+        "analyze.refused":
+            "Aucune donnée capturée dans la plage choisie — capturez d'abord cette partie, ou choisissez une plage qui en contient",
+        "analyze.busy":
+            "Une analyse est déjà en cours — réessayez quand elle sera terminée",
     },
 };
 

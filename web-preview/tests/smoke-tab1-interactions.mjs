@@ -1740,9 +1740,14 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
     //   • 拆掉去抖(`hostEchoUseWideWindow` 退回 `!ph || ph.isPlaying !== false`):
     //     (a17) 实得 [false,false,false]、(a18) 首次熄灭 **+924ms** ⇒ 两条红,别的全绿;
     //   • 记账反向(`transportPlayingAt` 连停走帧也刷新时刻):(a16) 实得
-    //     [T0, T0+100, …] 第二项漂、(a19) 实得 2520 / 2220 / 1620ms ⇒ 两条红。
-    //     ⚠ 退化形态是「退回**播放档**才熄」,**不是**「永不熄」—— (a19) 消息里那句
-    //     「-1 = 一直没熄」说的是另一种可能的红法,别把它当成这一种的实测值。
+    //     [T0, T0+100, …] 第二项漂、(a19) 实得 **[900, -1, -1]** ⇒ 两条红。
+    //     ⚠ **[SL-394 复测:这一条的读数与形态都翻了向。]** 旧记录写「2520 / 2220 / 1620ms
+    //     ⇒ 退回**播放档**才熄,不是永不熄」—— 那是**播放档窗口还在**的年代量的:兜底那一拍
+    //     (`hostEchoTimerWide`,排在 at+2550)把它接住了,所以只是「熄得晚」。那个窗口随
+    //     SL-394 一起删掉之后没有那一拍了,退化形态变成**永不熄**(后两格的 -1);第一格恰好
+    //     卡在 `<= 900` 的等号上仍绿。**别再照旧把 -1 读成「另一种可能的红法」** —— 现在它
+    //     就是这一种的实测值。(复测:注入 `transportPlayingAt` 恒刷新 → 实得上面那三个数,
+    //     复原后本组回绿。)
     //   • 去抖窗口放宽:**恰好 = 停走档(900)时只有 (a15) 红**,(a19) 三格算出来正好
     //     卡在 `<= 900` 的等号上仍绿;放到 1000 才是 (a15)+(a19) 同红(实得 900 / 1020 /
     //     1020ms)。所以 (a15) 不是 (a19) 的重复,它守的是 (a19) 守不到的那一个边界点。
@@ -2049,7 +2054,23 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
     // ---- (b) 源码级不变式:图表卡摘出 + 两 tab 共用同一条判据
     const tmSrc = readFileSync(join(ROOT, "web/output/tab-master.js"), "utf8");
     const ttSrc = readFileSync(join(ROOT, "web/output/tab-tracks.js"), "utf8");
-    const appSrc = readFileSync(join(ROOT, "web/output/app.js"), "utf8");
+    // [SL-394 复审④] (b6) 那两条也是**源码级**判据,而且方向各一个:正例
+    // 「必须出现 `hostEchoVisible(st)`」能被一句注释蒙绿,负例「不得出现 `hostEchoOn(`」
+    // 又会被一句解释性注释**误判红**(本卡给这两处都写了长注释)。两个方向都得剥注释再判。
+    const { stripJsComments: stripTab } = await import(
+        u("scripts/lib/strip-comments.mjs")
+    );
+    const tmCode = stripTab(tmSrc, "web/output/tab-master.js");
+    const ttCode = stripTab(ttSrc, "web/output/tab-tracks.js");
+    // [SL-394 复审④] 下面三条判的是 app.js 的**源码顺序 / 形状**(indexOf + 正则),而注释里
+    // 一句形似的话就能满足它们 —— 本卡恰好在同一段里写了大量解释性注释(「注释顶替真调用」
+    // 这一族本仓已栽过三次)。所以先剥注释再判,与上面 (a20) 那一组同一手法、同一份实现。
+    const appSrc = (
+        await import(u("scripts/lib/strip-comments.mjs"))
+    ).stripJsComments(
+        readFileSync(join(ROOT, "web/output/app.js"), "utf8"),
+        "web/output/app.js",
+    );
 
     // [SL-394] **接线**判据:两处记账的**先后**必须是「先算起点、后覆写 playingAt」。
     // 这是零件测不到的那一层 —— `playbackStartedAt()` 本身是纯函数、怎么测都对,
@@ -2128,8 +2149,8 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
         "(b5) Tab2 的 data-host-echo 灰显原样保留(J93 未裁轨道页)",
     );
     for (const [name, src] of [
-        ["tab-master", tmSrc],
-        ["tab-tracks", ttSrc],
+        ["tab-master", tmCode],
+        ["tab-tracks", ttCode],
     ]) {
         // [SL-394] 调用形状变了:两个 tab 现在调 `hostEchoVisible(st)`,把**整个 store**
         // 交给判据,不再在调用点拆成 `st.params` + 单独算一次走带态。

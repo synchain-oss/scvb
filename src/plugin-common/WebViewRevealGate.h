@@ -117,6 +117,12 @@ class RevealGate
 public:
     // 首帧信号没来时的兜底上界。取 3s:比 kAfterNavBudgetMs(5s)短,
     // 保证「宁可早放行看见一点白」也不会拖到看门狗兜底面板那一步。
+    // ⚠ [SL-378] 这个「短」有**两个半边**,缺一不成立:
+    //   · **常量关系**:由 WebViewHost.h 里那句 static_assert 在每次编译上守;
+    //   · **前提**:两个预算要**同时起算** —— 看门狗那 5s 是导航事件到达时顺延出来的,
+    //     而顺延只在本次加载尝试的**首次**导航事件上生效,靠 `beginLoadAttempt()` 复位
+    //     `navBudgetApplied_`。这一半今天**没有用例守**(WebViewHost.cpp 不进任何测试目标),
+    //     完整说明与「另立卡」的去向见 WebViewHost.h 那句 static_assert 上方的注释。
     static constexpr int kRevealFallbackMs = 3000;
 
     // [SL-376] 首帧信号到达后压住的**两个**条件,`onTick` 里必须同时满足才放行。
