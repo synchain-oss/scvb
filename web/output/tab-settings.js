@@ -1022,7 +1022,8 @@ export function createTabSettings(opts) {
             if (!res || res.observer || res.ok === false) {
                 // [SL-396] **拒回执要说出来**。此前这里静默 `requestRender()` 就返回,屏上
                 // 与受理成功一模一样(框不关、也没多一个字)⇒ 用户读到的就是「点了没反应」。
-                // [SL-396 复审②] 判据用 tab-wave 导出的那一份(`analyzeRefusalNote`),
+                // [SL-396 复审②] 判据用 `web/shared/analyze-note.js` 那一份(`analyzeRefusalNote`,
+                // 本文件顶部 import;tab-wave 自己也只是转引它、并不导出),
                 // 不在这里内联复刻 ——「同一个判断各存一份」正是这一族缺陷复发的形状。
                 // `!res`(桥没回话)与 `observer`(只读观察态)它一律回 null,与右侧两页同口径。
                 setAnalyzeRefusalKey(analyzeRefusalNote(res));

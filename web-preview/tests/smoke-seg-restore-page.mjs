@@ -957,8 +957,8 @@ check(
 // → 确认框主钮 → `doReidentify` → `analyze`。
 // ⚠ 三格都用**合成的回执**驱动(见 FORCE_ANALYZE),不依赖本 fixture 的覆盖情况 ——
 // 判据是「提示由回执决定」,不是「这份素材恰好会被拒」。
-// 删除式:把 tab-wave.js 里那句 `setToolbarNote(analyzeRefusalNote(res))` 注掉(或让
-// `analyzeRefusalNote` 恒返回 null)⇒ (a)(b) 两格必红、(c) 仍绿。
+// 删除式:让 `analyzeRefusalNote` 恒返回 null(四处调用点现在是 `const note = …; if (note)
+// setToolbarNote(note);`,恒 null 即一处都不写)⇒ (a)(b) 两格必红、(c) 仍绿。
 const FORCE_ANALYZE = (mode) =>
     IN(`
     if (!w.__SCVB_ANALYZE_FORCE_WRAPPED__) {
