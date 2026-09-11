@@ -2987,7 +2987,10 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features;
     std::uint16_t analyzedTracks = 0;
     const std::uint16_t writeMask = tracksMask;
-    for (int t = 0; t < 15; ++t)
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+    // [#256 R4(复审 2-5)] 本节三处循环(取样 / 判覆盖 / 写回)**只用来索引 `features`**,上界与
+    // 数组声明同源。本卡只收与该数组绑定的上界;本文件其余 `t < 15` 索引的是别的容器,不碰。
+    // (引章节名与变量名,不引行号 —— 行号一改就漂。)
     {
         auto& f = features[static_cast<std::size_t>(t)];
         if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
@@ -3093,7 +3096,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // (需用户拍板),不是这里顺手改的事。
     if (clearManual)
     {
-        for (int t = 0; t < 15; ++t)
+        for (int t = 0; t < scvb::engine::kNumTracks; ++t)
         {
             // [SL-393] 计算集变宽之后,这里**必须**再按写回集筛一道:清 freeze 是对
             // 用户参数面的写入(还带 gesture),而计算集里那些轨只是来当上下文的,
@@ -3125,7 +3128,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         }
     }
 
-    for (int t = 0; t < 15; ++t)
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
     {
         const auto& c = runtime_.channels[static_cast<std::size_t>(t)];
         auto& tc = cfg.tracks[static_cast<std::size_t>(t)];

@@ -755,7 +755,7 @@ check(st.restoreBtnShown, "②「恢复自动」按钮出现");
 near(parseTimeMs(st.startTxt), segStartS, 1e-9, "② 起点没被这两步动过");
 near(parseTimeMs(st.endTxt), segEndS, 1e-9, "② 终点没被这两步动过");
 
-// ---- ⑦ 前置:在**另一条轨**上按一个引擎绝不会算出来的手动值 ----------------
+// ---- ⑥ 前置:在**另一条轨**上按一个引擎绝不会算出来的手动值 ----------------
 // 光靠「重算前后比段值」测不出写回集变宽:别的轨此刻的段本来就是同一套 mock 生成器
 // 按同一段素材算出来的 —— 写回集就算变宽、把它们原样重算一遍,结果**逐字节相同**,
 // 断言照样绿(第一版实测:放宽成两轨,⑦ 不红)。与 host 侧那格同一个手法:
@@ -769,7 +769,7 @@ check(
         return !!(r && r.ok !== false);
     `),
     ),
-    `⑦ 前置:在第 ${otherCh} 轨按下手动 pan=77`,
+    `⑥ 前置:在第 ${otherCh} 轨按下手动 pan=77`,
 );
 await sleep(300);
 
@@ -936,7 +936,7 @@ check(
     `⑤ 反向护栏真的跑到了(工具条钮可点;实得 ${toolbarState})`,
 );
 
-// ---- ⑦ [SL-396] analyze **拒回执**必须有提示(页面级)------------------------
+// ---- ⑧ [SL-396] analyze **拒回执**必须有提示(页面级)------------------------
 // 断什么:§1.6 的两条拒绝回执 —— 范围 ∩ 覆盖 = ∅ 的 `{ok:false, affected:{…0}}`
 // (**不带 reason**)与「已有分析在跑」的 `{ok:false, reason:"busy"}` —— 在工具条上都必须变成
 // 一条**看得见**的行内提示(`wave-arm-note`);而受理成功(`ok:true`)那一次不许出现这两句。
@@ -955,6 +955,9 @@ const FORCE_ANALYZE = (mode) =>
         w.__SCVB_ANALYZE_FORCE_WRAPPED__ = true;
         const prev = w.__SCVB_MOCK__.analyze.bind(w.__SCVB_MOCK__);
         w.__SCVB_MOCK__.analyze = function (scope, opts) {
+            // [R3] 计数:合成回执**不会**走到真正的 mock(所以 spy 记不到),本套要一个
+            // 「这一次 analyze 真被调过」的可观测点,用它等,不写 sleep 常数。
+            w.__SCVB_ANALYZE_FORCED_N__ = (w.__SCVB_ANALYZE_FORCED_N__ || 0) + 1;
             const mode = w.__SCVB_ANALYZE_FORCE__;
             if (mode === "refused") {
                 return Promise.resolve({
@@ -990,7 +993,7 @@ const pageLang = await evaluate(
 );
 check(
     pageLang.startsWith("zh"),
-    `⑦ 前置:页面语言是 zh(实得 "${pageLang}")—— 下面两句按 zh 词条逐字对`,
+    `⑧ 前置:页面语言是 zh(实得 "${pageLang}")—— 下面两句按 zh 词条逐字对`,
 );
 const ZH = (
     await import(
@@ -1000,17 +1003,34 @@ const ZH = (
 
 async function reidentifyWithReceipt(mode, label) {
     await evaluate(FORCE_ANALYZE(mode));
+    // [#256 R3(复审 2-3)] **点之前**先等上一格的提示真灭(`n.hidden || t === ""`)。
+    // 不这么做的话:上一格的 busy 提示还挂在屏上,而本格受理成功时 `setToolbarNote` 只
+    // 「有 note 才写」⇒ 什么都不写 ⇒ (c) 会靠「5s 自撤还没到、恰好读到的不是那两句」蒙过去。
+    await waitFor(
+        IN(`
+        const n = gb("wave-arm-note");
+        return !n || n.hidden || (n.textContent || "").trim() === "";
+    `),
+        8000,
+    );
+    const before = await evaluate(
+        IN(`return w.__SCVB_ANALYZE_FORCED_N__ || 0;`),
+    );
     const st = await evaluate(REIDENTIFY_FLOW);
     check(
         st === "clicked",
-        `⑦ 前置:${label} —— 「重新识别(含手动段)」这条链真走到了主钮(实得 ${st})`,
+        `⑧ 前置:${label} —— 「重新识别(含手动段)」这条链真走到了主钮(实得 ${st})`,
     );
-    // [SL-396 复审③] 这里原来是 `await sleep(300)` —— 那是把判据钉在「提示多久出现」的常数上,
-    // 机器一慢就偶发红,而且它测的是**时间**不是**结果**。改成轮询到提示位真变成期望值:
-    // 受理成功那一档期望「不是那两句」(可能为空、也可能是别人留下的提示)。
-    const refusedText = JSON.stringify(ZH["analyze.refused"]);
-    const busyText = JSON.stringify(ZH["analyze.busy"]);
-    const okMode = mode === "ok" ? "true" : "false";
+    // 等到**这一次 analyze 真被调过**:合成回执不走进真 mock,所以用上面那个计数当可观测点
+    // (而不是 sleep 常数,也不是「等提示自己消失」)。
+    await waitFor(
+        IN(`return (w.__SCVB_ANALYZE_FORCED_N__ || 0) > ${before};`),
+        8000,
+    );
+    if (mode === "ok") {
+        // 受理成功那一档:**立刻读一次** —— 判的是「本次没写那两句」,不是「它已经消失了」。
+        return evaluate(ARM_NOTE);
+    }
     const wantText = JSON.stringify(
         mode === "busy" ? ZH["analyze.busy"] : ZH["analyze.refused"],
     );
@@ -1018,11 +1038,9 @@ async function reidentifyWithReceipt(mode, label) {
         IN(`
         const n = gb("wave-arm-note");
         if (!n) return false;
-        const t = (n.textContent || "").trim();
-        if (${okMode}) return n.hidden || t === "" || (t !== ${refusedText} && t !== ${busyText});
-        return !n.hidden && t === ${wantText};
+        return !n.hidden && (n.textContent || "").trim() === ${wantText};
     `),
-        5000,
+        8000,
     );
     return evaluate(ARM_NOTE);
 }
@@ -1032,14 +1050,14 @@ check(
     !!noteRefused &&
         !noteRefused.hidden &&
         noteRefused.text === ZH["analyze.refused"],
-    `⑦ (a) 范围 ∩ 覆盖 = ∅(不带 reason 的 {ok:false})⇒ 行内提示逐字出词条 analyze.refused` +
+    `⑧ (a) 范围 ∩ 覆盖 = ∅(不带 reason 的 {ok:false})⇒ 行内提示逐字出词条 analyze.refused` +
         `(实得 ${JSON.stringify(noteRefused)};期望文本 ${JSON.stringify(ZH["analyze.refused"])})`,
 );
 
 const noteBusy = await reidentifyWithReceipt("busy", "busy 回执");
 check(
     !!noteBusy && !noteBusy.hidden && noteBusy.text === ZH["analyze.busy"],
-    `⑦ (b) reason:"busy" ⇒ 行内提示逐字出词条 analyze.busy` +
+    `⑧ (b) reason:"busy" ⇒ 行内提示逐字出词条 analyze.busy` +
         `(实得 ${JSON.stringify(noteBusy)};期望文本 ${JSON.stringify(ZH["analyze.busy"])})`,
 );
 
@@ -1049,20 +1067,20 @@ check(
         (noteOk.hidden ||
             (noteOk.text !== ZH["analyze.refused"] &&
                 noteOk.text !== ZH["analyze.busy"])),
-    `⑦ (c) 受理成功 ⇒ **不出**这两句(实得 ${JSON.stringify(noteOk)})` +
+    `⑧ (c) 受理成功 ⇒ **不出**这两句(实得 ${JSON.stringify(noteOk)})` +
         ` —— 少了这一格,(a)(b) 的绿可以由「无脑弹提示」蒙出来`,
 );
 
 await evaluate(FORCE_ANALYZE(null)); // 复原:后面还有别的断言在跑
 
-// ---- ⑥ 零异常 -------------------------------------------------------------
+// ---- ⑨ 零异常 -------------------------------------------------------------
 check(
     exceptions.length === 0,
-    `⑥ 零未捕获异常(实得 ${exceptions.length}:${exceptions[0] || ""})`,
+    `⑨ 零未捕获异常(实得 ${exceptions.length}:${exceptions[0] || ""})`,
 );
 check(
     errors.length === 0,
-    `⑥ 零 console.error(实得 ${errors.length}:${errors[0] || ""})`,
+    `⑨ 零 console.error(实得 ${errors.length}:${errors[0] || ""})`,
 );
 
 await finish();

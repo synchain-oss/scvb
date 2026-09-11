@@ -259,6 +259,8 @@ export function createTabSettings(opts) {
         // [SL-354] 框里的影响面说明段:内容**按触发它的那一项**换词条(见 syncReanalyzeScopeNote)。
         reanalyzeAskScopenote: $("reanalyze-ask-scopenote"),
         reanalyzeAskRangenote: $("reanalyze-ask-rangenote"),
+        // [#256 R1(复审 2-1)] 那枚静态范围解释 span —— 它只随「范围档」显隐,与拒回执无关。
+        reanalyzeAskRangehint: $("reanalyze-ask-rangehint"),
         reanalyzeAskRangedone: $("reanalyze-ask-rangedone"),
         // [SL-371] **名字沿旧、钮面已换**:锚点仍是 `reanalyze-ask-later`、本位仍叫
         // `reanalyzeAskLater`,而这枚钮现在写着「撤销更改」、点下去会**发一次写**
@@ -761,6 +763,12 @@ export function createTabSettings(opts) {
     /** [SL-396 复审①] 拒回执提示的写入位(与 rangeDone 分开,见 local 那边的头注)。 */
     function setAnalyzeRefusalKey(key) {
         local.reanalyzeRefusalKey = key || null;
+        // [#256 R1(b)(复审 2-1)] **先把承载它的 `<p>` 显出来,再写文本** —— live region 只在
+        // **可见态**下发生文本变化才会被播报;在 hidden 时写进去,读屏用户什么也听不到,
+        // 而那正是这一格要修的东西。`syncReanalyzeRangeNote()` 下一次 render 会按同一条判据再同步。
+        if (local.reanalyzeRefusalKey && el.reanalyzeAskRangenote) {
+            show(el.reanalyzeAskRangenote, true);
+        }
         renderRangeDone();
     }
 
@@ -787,6 +795,11 @@ export function createTabSettings(opts) {
         // [SL-396 复审①] 有拒回执时**无论哪个档位都要显出来** —— 否则 follow 档下这句被
         // `hidden` 吃掉,用户在屏上什么都看不到(等于没提示)。范围那句仍然只随 `limited` 走。
         show(el.reanalyzeAskRangenote, limited || !!local.reanalyzeRefusalKey);
+        // [#256 R1(复审 2-1,假句)] **里面那枚静态 span 仍然只随 `limited` 走**。
+        // 它写的是「当前是范围档,请先把范围切回跟随播放头」—— 那是**范围**这件事的解释,
+        // 与拒回执无关;第一版把它跟着 `<p>` 一起显出来,于是 follow 档下用户看到一句
+        // 「请先把范围切回跟随播放头」,而他本来就是跟随播放头:一句假话。
+        if (el.reanalyzeAskRangehint) show(el.reanalyzeAskRangehint, limited);
         // [SL-348 复审第 1 轮] 切出范围档就把**播报句**连 key 一起清掉:不清的话,再切回来时
         // 上一轮那句会随 `<p>` 重新显出来,而它描述的那次分析早已不是「当前范围」。
         // ⚠ 只清 rangeDone 那一句:**拒回执不清**(它说的不是范围口径,清了就是 #256 bot ①)。
@@ -811,9 +824,15 @@ export function createTabSettings(opts) {
         const panel = el.reanalyzeAskPanel;
         if (panel && typeof panel.setAttribute === "function") {
             const base = "reanalyze-ask-scopenote reanalyze-ask-reverthint";
+            // [#256 R1(a)(复审 2-1)] 「要不要把 `<p>` 挂进描述」必须与**它的显隐**同一条判据:
+            // 拒回执把 `<p>` 显出来之后,它就不再是「hidden 也被念」的那一类了(它有内容要念),
+            // 所以这里跟着一起放开;而 `<p>` 里面的范围解释 span 仍只随 `limited` 走,
+            // 描述里念到的是拒回执那句本身。
             panel.setAttribute(
                 "aria-describedby",
-                limited ? base + " reanalyze-ask-rangenote" : base,
+                limited || local.reanalyzeRefusalKey
+                    ? base + " reanalyze-ask-rangenote"
+                    : base,
             );
         }
     }
@@ -863,6 +882,9 @@ export function createTabSettings(opts) {
         // [SL-279 复审第 8 轮] 每次开框先清掉上一轮的播报文本:live region 只在**文本变化**时
         // 播报,不清的话第二次点主钮写入同一句话 = 零变化 = 读屏什么也不念。
         setRangeDoneKey(null);
+        // [#256 R2(复审 2-2)] **拒回执同样要清**:它与 rangeDone 是同一条 live region 的两个来源,
+        // 只清一个 ⇒ 上一次的拒回执留在屏上,用户这次看到的是上一轮的结论(与上面那条同一个病)。
+        setAnalyzeRefusalKey(null);
         syncReanalyzeRangeNote();
         if (
             el.reanalyzeAskPrimary &&

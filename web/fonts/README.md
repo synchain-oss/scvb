@@ -36,11 +36,18 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 > 原子集没有的字形 —— gate 3h 当场报缺 `跑` U+8DD1):`python scripts/fetch_fonts.py` 重生成
 > `ScvbSans.woff2` **20624** / `ScvbMono.woff2` **12236** / `NotoSansSC.woff2` **258452** 字节
 > (`SpaceGrotesk.woff2` 未变,**没有手改 woff2**)。
-> ⚠ **两段的数字不是同一把尺子,别互相改**:上面那段 2026-09-02 的「772 / 925」是**当时那一版**
-> 的扫描结果;本次同一份脚本实报的是 **拉丁 153 / CJK 767 / 合计 920**。以
-> `scripts/check-font-coverage.py`(gate 3h)的实跑为准 —— 本次:**所需 920 全部有字形**,
-> 四款合计 1011(SpaceGrotesk 238 / ScvbSans 232 / ScvbMono 232 / NotoSansSC 918),
-> 白名单 2 个(`⇕` `✕` 四款上游都没有,由宿主系统字体上屏)。
+>
+> 与上一段那组数(772 / 925)为什么不同,先看脚本动没动
+> (`git log --oneline --since=2026-09-02 -- scripts/fetch_fonts.py scripts/check-font-coverage.py`):
+>
+> ```
+> 3639bce 2026-09-06 fix(ui): [SL-371/SL-373] 「稍后」改成「撤销更改」(写回基线);
+>                          建议类横幅加可关闭的 ✕ (#244)
+>          scripts/check-font-coverage.py | 4 +++-   (3 insertions, 1 deletion)
+> ```
+>
+> 本次实跑 **拉丁 153 / CJK 767 / 合计 920**;2026-09-02 那段记的是**当次读数** 772 / 925,
+> 差值来自两次扫描之间 `web/` 文案的增删。**本文件只记当次实跑,以每次 gate 3h 为准。**
 
 > **拉丁那一栏的 152 → 153 不是本批新增的字**,是把上一版写岔的计数补正回来。
 > 上一版正文写「拉丁 152 / 合计 920」,而拿同一份 `fetch_fonts.py`(本批未改动它)
