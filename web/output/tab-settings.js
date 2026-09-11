@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// [SL-396 复审②] `analyzeRefusalNote` 的**唯一**一份实现在 `web/shared/analyze-note.js`
+// (波形与分段页那份也用它),这里 import 同一份 —— 内联复刻「同一个判断各存一份」正是这一族
+// 缺陷反复复发的形状(见 host-echo.js 的同款头注)。
+// ⚠ 第一版写成 `from "./tab-wave.js"`:tab-wave 是**工厂函数**,内部函数 export 不出去,
+// 那是一个 `SyntaxError`(整页起不来)。别再那样指。
+import { analyzeRefusalNote } from "../shared/analyze-note.js";
 // =============================================================================
 // SCVB Output · Tab4「设置」—— 状态机与桥接线(T35 交付物)。
 // -----------------------------------------------------------------------------
@@ -303,6 +309,13 @@ export function createTabSettings(opts) {
         reanalyzeAskedFor: null,
         // [SL-348] 播报句存 **key**(不是文本),每次 render 按当前字典重填 —— 见 renderRangeDone()。
         reanalyzeRangeDoneKey: null,
+        // [SL-396 复审①] analyze **拒回执**(refused / busy)的提示 key。与上面那条**分开存**:
+        // rangeDone 那句是「这次部分重算按哪份口径跑的」,只在范围档有意义,切出范围档就该清;
+        // 而拒回执是「你这一下没生效、下一步该怎么办」,**任何档位都得留着**。
+        // 合成一个字段的后果实测过:follow 档下 `syncReanalyzeRangeNote()` 的
+        // `if (!limited) key = null` 会把它当场抹掉,而承载它的 `<p>` 在 follow 档还是 hidden
+        // ⇒ 用户点了主钮依旧「什么也没发生」(#256 第 1 轮 bot ①)。
+        reanalyzeRefusalKey: null,
         // [SL-276 复审] 弹窗的触发面是**用户点击**,不是派生的 stale 位。
         // 琥珀 badge 可以纯派生(多一枚小标记的代价很小),模态框不行 —— stale 有几条
         // 「用户什么都没做也为真」的路径,升级成框之后每条都变成一次要点掉的打断。
@@ -745,11 +758,18 @@ export function createTabSettings(opts) {
         renderRangeDone();
     }
 
+    /** [SL-396 复审①] 拒回执提示的写入位(与 rangeDone 分开,见 local 那边的头注)。 */
+    function setAnalyzeRefusalKey(key) {
+        local.reanalyzeRefusalKey = key || null;
+        renderRangeDone();
+    }
+
     /** 按当前字典重填那半文本。每次 render 都会被 `syncReanalyzeRangeNote()` 叫到。 */
     function renderRangeDone() {
         const node = el.reanalyzeAskRangedone;
         if (!node) return;
-        const key = local.reanalyzeRangeDoneKey;
+        // [SL-396 复审①] **拒回执优先**:两条同时在场时,用户更该看到的是「这一下没生效」。
+        const key = local.reanalyzeRefusalKey || local.reanalyzeRangeDoneKey;
         const t = getT() || {};
         // 兜底**有意与本文件其余各处相反**:别处是 `hasOwn(t, k) ? t[k] : k`(漏词条时把 key
         // 本身显出来,一眼看得见);这半是 live region,把 `set.reanalyzeAsk.rangeDone` 这串
@@ -764,9 +784,12 @@ export function createTabSettings(opts) {
     function syncReanalyzeRangeNote() {
         if (!el.reanalyzeAskRangenote) return;
         const limited = rangeLimited();
-        show(el.reanalyzeAskRangenote, limited);
-        // [SL-348 复审第 1 轮] 切出范围档就把播报句连 key 一起清掉:不清的话,再切回来时
+        // [SL-396 复审①] 有拒回执时**无论哪个档位都要显出来** —— 否则 follow 档下这句被
+        // `hidden` 吃掉,用户在屏上什么都看不到(等于没提示)。范围那句仍然只随 `limited` 走。
+        show(el.reanalyzeAskRangenote, limited || !!local.reanalyzeRefusalKey);
+        // [SL-348 复审第 1 轮] 切出范围档就把**播报句**连 key 一起清掉:不清的话,再切回来时
         // 上一轮那句会随 `<p>` 重新显出来,而它描述的那次分析早已不是「当前范围」。
+        // ⚠ 只清 rangeDone 那一句:**拒回执不清**(它说的不是范围口径,清了就是 #256 bot ①)。
         if (!limited) local.reanalyzeRangeDoneKey = null;
         // 每次 render 都按当前字典重填 —— 框开着切语言时靠的就是这一句(见 renderRangeDone)。
         renderRangeDone();
@@ -970,20 +993,17 @@ export function createTabSettings(opts) {
             // 清在**发请求之前**:这样「受理后写入」必定是一次真变化,live region 才会念。
             // 放在受理之后清再写,同一帧内 textContent 一去一回,AT 可能一次都不播报。
             setRangeDoneKey(null);
+            // [SL-396 复审①] 拒回执走**自己那一位**,与 rangeDone 分开:它不受范围档门控、
+            // 也不会被 `syncReanalyzeRangeNote()` 的「切出范围档就清」抹掉。新一次尝试先撤旧的。
+            setAnalyzeRefusalKey(null);
             const res = await call("analyze", "all");
             if (!res || res.observer || res.ok === false) {
                 // [SL-396] **拒回执要说出来**。此前这里静默 `requestRender()` 就返回,屏上
                 // 与受理成功一模一样(框不关、也没多一个字)⇒ 用户读到的就是「点了没反应」。
-                // 文案复用波形页那两条 key(同一件事、同一份判据,不另起第二份)。
-                // `!res`(桥没回话)与 `observer`(只读观察态)不在这里出提示 —— 与
-                // tab-wave 的 `analyzeRefusalNote` 同一口径,理由见那份头注。
-                setRangeDoneKey(
-                    res && res.ok === false
-                        ? res.reason === "busy"
-                            ? "analyze.busy"
-                            : "analyze.refused"
-                        : null,
-                );
+                // [SL-396 复审②] 判据用 tab-wave 导出的那一份(`analyzeRefusalNote`),
+                // 不在这里内联复刻 ——「同一个判断各存一份」正是这一族缺陷复发的形状。
+                // `!res`(桥没回话)与 `observer`(只读观察态)它一律回 null,与右侧两页同口径。
+                setAnalyzeRefusalKey(analyzeRefusalNote(res));
                 requestRender();
                 return;
             }

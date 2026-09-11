@@ -1005,7 +1005,25 @@ async function reidentifyWithReceipt(mode, label) {
         st === "clicked",
         `⑦ 前置:${label} —— 「重新识别(含手动段)」这条链真走到了主钮(实得 ${st})`,
     );
-    await sleep(300);
+    // [SL-396 复审③] 这里原来是 `await sleep(300)` —— 那是把判据钉在「提示多久出现」的常数上,
+    // 机器一慢就偶发红,而且它测的是**时间**不是**结果**。改成轮询到提示位真变成期望值:
+    // 受理成功那一档期望「不是那两句」(可能为空、也可能是别人留下的提示)。
+    const refusedText = JSON.stringify(ZH["analyze.refused"]);
+    const busyText = JSON.stringify(ZH["analyze.busy"]);
+    const okMode = mode === "ok" ? "true" : "false";
+    const wantText = JSON.stringify(
+        mode === "busy" ? ZH["analyze.busy"] : ZH["analyze.refused"],
+    );
+    await waitFor(
+        IN(`
+        const n = gb("wave-arm-note");
+        if (!n) return false;
+        const t = (n.textContent || "").trim();
+        if (${okMode}) return n.hidden || t === "" || (t !== ${refusedText} && t !== ${busyText});
+        return !n.hidden && t === ${wantText};
+    `),
+        5000,
+    );
     return evaluate(ARM_NOTE);
 }
 

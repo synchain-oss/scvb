@@ -2662,7 +2662,8 @@ bool ScvbOutputAudioProcessor::redo()
 class ScvbOutputAudioProcessor::AnalysisJob final : public juce::Thread
 {
 public:
-    AnalysisJob(ScvbOutputAudioProcessor& owner, std::array<scvb::analysis::PipelineTrackFeatures, 15> features,
+    AnalysisJob(ScvbOutputAudioProcessor& owner,
+                std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features,
                 scvb::analysis::PipelineConfig config, std::uint32_t generation)
         : juce::Thread("scvb-analysis"), owner_(owner), features_(std::move(features)), config_(config),
           generation_(generation)
@@ -2702,7 +2703,7 @@ public:
 
 private:
     ScvbOutputAudioProcessor& owner_;
-    std::array<scvb::analysis::PipelineTrackFeatures, 15> features_;
+    std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features_;
     scvb::analysis::PipelineConfig config_;
     std::uint32_t generation_ = 0;
 };
@@ -2978,7 +2979,12 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     //   · `finishAnalysis` 的 vadP 写回在**消息线程**、持 `lifecycleMutex_`
     //     (:3283-3318 那一段),量级已由 SL-232 的批量入口兜住,但仍是这笔账的一部分。
     //   这是 SL-393 有意换回来的代价(修的是「只喂一条轨 ⇒ 恒 (0,0)」),不是漏算。
-    std::array<scvb::analysis::PipelineTrackFeatures, 15> features;
+    // [#256 复审⑤] 15 换成单一真源。本仓 `kNumTracks` 有四五处定义,§6 的「单一真源」纪律对
+    // 版本号之外的技术常量同样适用,而这里判错的后果恰好是「静默少算/多算一条轨」那一族。
+    // 选 `scvb::engine` 那一份(不是新造),与 OutputAuthority.h 的 `kNumTracks` 同源。
+    // 注:本文件另外两处同型声明(AnalysisJob 的构造参数与成员,`:2665` / `:2705`)一并换掉 ——
+    // 同一个类型三处两种写法,下一个人只会照最近的那一处抄。
+    std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features;
     std::uint16_t analyzedTracks = 0;
     const std::uint16_t writeMask = tracksMask;
     for (int t = 0; t < 15; ++t)

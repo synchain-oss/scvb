@@ -11,6 +11,7 @@
 #include "OutputParams.h"
 #include "engine/DspArbiter.h"
 #include "engine/VersionStore.h"
+#include "state/StateCodec.h" // [#256 复审⑥] scvb::state::kNumTracks(下面那条 static_assert)
 
 // OutputAuthority:Output 侧调用点(T16)。把 T15 的 ParamHandles(123 参数 raw atomic)绑定到
 // T16 的 DspArbiter(核心仲裁 + 统一平滑),并把活动版本的曲线真身(CurveEvaluator)注入快照。
@@ -40,6 +41,11 @@ public:
 
     static_assert(kNumVersions == scvb::params::kNumVersions, "engine/params 版本数漂移");
     static_assert(kNumTracks == scvb::params::kNumTracks, "engine/params 轨数漂移");
+    // [#256 复审⑥] **state 那一份**也要绑住。`scvb::state::kNumTracks`(StateCodec.h,CRVS 容器
+    // 头用)与本文件/params 是各自独立写的字面量,三处任意一处被改错都不会有人报错 —— 而它们的
+    // 失效方向是「段表按 15 条轨解码、引擎按 16 条轨发布」这类静默错位。
+    // 显式转 `int`:state 那份是 `std::size_t`,直接比在 /W4 下是 C4389(有符号/无符号比较)。
+    static_assert(static_cast<int>(scvb::state::kNumTracks) == scvb::params::kNumTracks, "state/params 轨数漂移");
 
     // [#152 复审【重要】①②] 构造时给 m_undoManager 装上 CRVS 撤销预算(见 SegmentEditService.h 的
     // `configureCrvsUndoBudget` / `kCrvsUndoBudgetBytes`)。不能吃 juce::UndoManager 的默认

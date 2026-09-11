@@ -58,6 +58,8 @@ import { nearestHit, BOUNDARY_HIT_PX } from "../shared/hit.js";
 import { wheelPx, WHEEL_LINE_PX, WHEEL_PAGE_PX } from "../shared/wheel.js";
 import { isEditableTarget } from "../shared/context-menu.js";
 import { backingFitFactor } from "../shared/shell-fit.js";
+// [SL-396 复审②] 拒回执判据的唯一一份实现(设置页也用同一份,见该文件头注)
+import { analyzeRefusalNote as sharedAnalyzeRefusalNote } from "../shared/analyze-note.js";
 // Tab2 已锤实的口径直接复用(状态灯五态 / 轨号零填充 / vol 行程映射 / 段表取轨)
 import {
     CHANNEL_COUNT,
@@ -1508,20 +1510,11 @@ export function createTabWave(opts) {
     /**
      * [SL-396] analyze **受理回执** → 该弹哪一条行内提示(`null` = 受理了,不必弹)。
      *
-     * 为什么要有这一处:此前**五处**调用点都不看回执 —— §1.6 的两条拒绝态(范围 ∩ 覆盖 = ∅
-     * 回 `{ok:false, affected:{0,0,0}}`,**不带 reason**;已有分析在跑回
-     * `{ok:false, reason:"busy"}`)在屏上都与「受理了」一模一样,用户看到的是「点了没反应」。
-     * 判定只此一份:同一个判断各存一份正是这一族缺陷反复复发的形状(同款头注见
-     * `web/shared/host-echo.js` 的 `hostEchoUseWideWindow`)。
-     *
-     * ⚠ 只认 `ok === false`。回执缺席(`!res`)与 `observer`(**只读观察态**)不在这里出提示:
-     * 前者是「桥没回话」,后者 §5.1 已有它自己的面,且两页的这些钮本来就被 `isWriteBlocked()`
-     * 挡着 —— 本卡不顺手扩面,要扩另立卡。
+     * 判定本体在 `web/shared/analyze-note.js` —— 设置页那份也要用同一份,而两个 tab 都是
+     * **工厂函数**、内部函数 `export` 不出去(第一版那么写直接 `SyntaxError`,整页起不来,
+     * 见那份文件头注)。这里只做一次本地转引,免得四处调用点各 import 一遍。
      */
-    function analyzeRefusalNote(res) {
-        if (!res || res.ok !== false) return null;
-        return res.reason === "busy" ? "analyze.busy" : "analyze.refused";
-    }
+    const analyzeRefusalNote = sharedAnalyzeRefusalNote;
 
     /** 工具条行内反馈(布防拒绝 §5.5 / notAdjacent / 清除回执;5s 自撤)。 */
     function setToolbarNote(key, vals) {
@@ -1976,7 +1969,9 @@ export function createTabWave(opts) {
         if (!scope) return;
         // 受理回执;结果经 §2.8 回推,运行态经 §2.1。[SL-396] 拒回执不再丢:拒绝态出行内提示。
         const res = await call("analyze", scope);
-        setToolbarNote(analyzeRefusalNote(res));
+        // [SL-396 复审④] 同 doReanalyze:成功态不清别人的提示。
+        const note = analyzeRefusalNote(res);
+        if (note) setToolbarNote(note);
         requestRender();
     }
 
@@ -2019,7 +2014,10 @@ export function createTabWave(opts) {
         show(els.confirmReidentify, false);
         if (isWriteBlocked()) return;
         const res = await call("analyze", scopeOrAll(), { clearManual: true });
-        setToolbarNote(analyzeRefusalNote(res)); // [SL-396]
+        // [SL-396 复审④] **只在有拒回执时才动提示位**:无条件 `setToolbarNote(note)` 会在
+        // 受理成功那一路顺手清掉别人刚留的提示(布防拒绝 / notAdjacent / 清除回执都共用这一位)。
+        const note = analyzeRefusalNote(res);
+        if (note) setToolbarNote(note);
         requestRender();
     }
 
@@ -2059,7 +2057,9 @@ export function createTabWave(opts) {
         // 忽略」—— 「忽略」的代价就是用户点了没反应,现在照实出行内提示。
         if (isWriteBlocked()) return;
         const res = await call("analyze", scopeOrAll());
-        setToolbarNote(analyzeRefusalNote(res));
+        // [SL-396 复审④] 同 doReanalyze:成功态不清别人的提示。
+        const note = analyzeRefusalNote(res);
+        if (note) setToolbarNote(note);
         requestRender();
     }
 
@@ -3461,7 +3461,9 @@ export function createTabWave(opts) {
                         const res = await call("analyze", scope, {
                             clearManual: true,
                         });
-                        setToolbarNote(analyzeRefusalNote(res));
+                        // [SL-396 复审④] 同 doReanalyze:成功态不清别人的提示。
+                        const note = analyzeRefusalNote(res);
+                        if (note) setToolbarNote(note);
                     } finally {
                         local.inspRestoreBusy = false;
                     }
