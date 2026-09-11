@@ -2969,6 +2969,15 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     // `tracksMask` 因此降级为**写回掩码**(见下面的 writeMask 与 applyAnalysisSegments):
     // 参与计算的轨可以更多,但**被改写段表的轨仍然只有掩码内那些**,契约 §1.6
     // 「仅把目标段 origin 重置为 auto 后重算」逐字仍成立(可观测面没变)。
+    //
+    // ⚠ [SL-393 复审【建议】⑦] **成本口径**:上面那句「30s × 15 轨 ≈ 180KB,量级可忽略」
+    // 是**按全轨**估的,而计算集放宽之后它对**窄 scope 同样成立**(窄 scope 现在也按
+    // 「范围内全部 enabled + 有覆盖的轨」重算,不再只算掩码内那几条)。所以:
+    //   · 别拿「单轨重识别应该很便宜」当前提做优化判断 —— 它现在是 15 轨全量 VAD + 分段
+    //     的价(走 `analyzeAllRange` 时更是整条已采集时间线);
+    //   · `finishAnalysis` 的 vadP 写回在**消息线程**、持 `lifecycleMutex_`
+    //     (:3283-3318 那一段),量级已由 SL-232 的批量入口兜住,但仍是这笔账的一部分。
+    //   这是 SL-393 有意换回来的代价(修的是「只喂一条轨 ⇒ 恒 (0,0)」),不是漏算。
     std::array<scvb::analysis::PipelineTrackFeatures, 15> features;
     std::uint16_t analyzedTracks = 0;
     const std::uint16_t writeMask = tracksMask;

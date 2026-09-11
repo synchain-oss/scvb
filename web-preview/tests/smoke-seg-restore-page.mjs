@@ -599,9 +599,12 @@ check(
                     return inner(scope, opts);
             };
         }
-        // [SL-393] 顺带记下重算之后推回来的 scvb.segments 里**点名了哪几条轨** ——
+        // 记下重算之后推回来的 scvb.segments 的**段值快照**,按 ch 分桶 —— 本文件 ⑦ 拿它
+        // 逐字段比对(重算这一段的 pan/vol 必须回到引擎算出来的自动值)。
         // (这段跑在页面里,注释里不能出现反引号 —— 它会把外层模板串就地截断。)
-        // 那是「只重算选中的这一段」这句承诺在事件面上的形状(见本文件 ⑦)。
+        // [SL-393] 原先这里还记了一个 chs(push 里点名了哪几条轨)—— 那是**旧轴**:SL-393
+        // 定谳把「计算集」与「写回集」分开了,一条 push 里出现的轨不再等于「被重算的轨」,
+        // 那个字段既没有消费者、留着还会把下一个人引回旧口径,故删。
         if (!w.__SCVB_SEG_PUSH__) {
             w.__SCVB_SEG_PUSH__ = [];
             w.__SCVB_MOCK__.addEventListener("scvb.segments", (p) => {
@@ -618,7 +621,6 @@ check(
                 }
                 w.__SCVB_SEG_PUSH__.push({
                     reason: p && p.reason,
-                    chs: ((p && p.channels) || []).map((c) => c.ch),
                     byCh,
                 });
             });
