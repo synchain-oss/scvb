@@ -631,8 +631,8 @@ function makeContext(role, world) {
      *   · 保留 = 受保护(用户段 ∪ 锁定段)**或**完全落在范围外(`t1S <= startS ||
      *     t0S >= endS`,半开区间,与 native 的 `sg.t1 <= rangeStart || sg.t0 >= rangeEnd`
      *     逐字同形);
-     *   · 新段只取**完全落在范围内**的那些。[SL-399 后**已知 deviation**] native 现在按**写回窗
-     *     **裁切**跨窗的产出段(`OutputProcessor.cpp` 的 `clippedT0/clippedT1`),而这里只收
+     *   · 新段只取**完全落在范围内**的那些。[SL-399 后**已知 deviation**] native 现在按**写回窗裁切**
+     *     跨窗的产出段(`OutputProcessor.cpp` 的 `clippedT0/clippedT1`),而这里只收
      *     **完全落在范围内**的整段、跨窗的整段丢弃 ⇒ 选区边缘那一小截 preview 与真桥**不同形**
      *     (preview-only;要同形得在这里也裁,连带 `smoke-mock` 的段数期望一起动,末推不开,
      *     登记为已知差异)。生成器不知道范围,所以这道夹取仍然必要。

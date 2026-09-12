@@ -221,27 +221,33 @@ export function segmentRestoreScope(ch, seg) {
 export const FEAT_HOP_S = 0.01;
 
 /**
- * [SL-242] 段级「恢复自动」在这一段里**必然**产不出新段吗(纯函数,node 侧可断言)。
+ * [SL-242 / SL-399 R31] 段短于最小分段时长时,**不提供**「恢复自动」(纯函数,node 侧可断言)。
  *
- * 判据链(与 native 逐环同源):
- *   · `analyzeHopWindow` 向内取整 ⇒ 窗宽
- *     `N = floor(t1S/hop + ε) − ceil(t0S/hop − ε)`(hop 数);
- *   · `EnergyVad.cpp` 的 P1「丢短」**先于** padding 执行:`minHops = minSegmentMs / 10`
- *     (C++ 里是 int 除法),`endHop − startHop >= minHops` 才留;
- *   · 核心段被 `selStart/selEnd` 夹在窗内 ⇒ 最长也就是 N;
+ * **这条闸现在问的是产品口径,不再是「与真跑同源的必空判据」**(SL-399 起,见下面的作废标注):
+ * 自动识别自己不会产出短于 `min_segment_ms` 的段,所以不给这么短的段提供入口 —— 点下去只会
+ * 在段表里留下一条裁出来的残段。闸本身(返回 true ⇒ 入口收起)与实现一字未改,换的是**理由**。
+ *
+ * ~~判据链(与 native 逐环同源)~~ **[SL-399 起已作废]**:旧链是
+ *   · `analyzeHopWindow` 向内取整 ⇒ 窗宽 `N = floor(t1S/hop + ε) − ceil(t0S/hop − ε)`;
+ *   · `EnergyVad.cpp` 的 P1「丢短」:`minHops = minSegmentMs / 10`,`endHop − startHop >= minHops` 才留;
  *   · ⇒ `N < minHops` 时该轨产出**必为空** ⇒ `applyAnalysisSegments` 的
- *     `if (src.empty()) continue;` ⇒ 段表逐字节不动,而 `startAnalysis` 早已回
- *     `ok:true` ⇒ 用户点完零变化、零提示。
- *     ⚠ **[SL-399 起这一环断了]**:计算窗已放宽到整条时间线,`src` 覆盖整条 ⇒ 只要该轨
- *     别处有一句人声它就非空,那道空判**走不到**;窗内既有段于是被清掉(见
- *     `OutputProcessor.cpp` 的 R16/R22 注释)。这一格**今天没有用户可见后果**(判据为真
- *     时钮就不出),但**闸漏一格的失效方向变了**:以前是「点了没反应」,现在是「段没了」。
+ *     `if (src.empty()) continue;` ⇒ 段表逐字节不动 ⇒ 用户点完零变化、零提示。
+ * **它断在哪儿**:SL-399 把计算窗放宽到整条时间线之后,P1「丢短」跑在**整条时间线**的 kw 上
+ * (`AnalysisPipeline.cpp` 的 `firstHop = cfg.rangeStartSample / hopSamples` 恒 0、
+ * `runEnergyVad(…, firstHop, …)` 覆盖整条),所以**窗窄不再让整轨产出为空**;而且
+ * `src.empty()` 那道早退在窄 scope 下**走不到**(`src` 覆盖整条)。实得是**两支**:
+ *   · 窗落在**更长的人声**里 ⇒ 整条 run 的产出被 `OutputProcessor.cpp` 的
+ *     `clippedT0/clippedT1` **裁到窗内** ⇒ 旧段被一条**更短的 auto 段取代**;
+ *   · 窗内**确实无产出**(静音)⇒ 旧段**被清掉**。
+ * 两支都是「旧段没了」,方向与旧链相反 —— 而**闸漏一格的失效方向**也跟着变了:
+ * 以前是「点了没反应」,现在是「段没了 / 变成一条残段」。
+ * (旧文那句「这一格今天没有用户可见后果」已删:`wave.restoreSegTooShort` 那句文案就是它的后果。)
  *
  * **必须按量化后的窗宽判,不能按 `t1S - t0S` 判**(#161 复审二轮【重要】):两者最多
- * 差两个 hop(20ms),那一格里不再是无操作 —— SL-399 之后同上,是**窗内段被清**。
+ * 差两个 hop(20ms),那一格里同样不再是「无操作」—— 是被裁出的短段取代、或被清。
  * 反例(min_segment_ms = 420):
  * 段 `[0.0035, 0.4235)` 的 `segMs` 恰是 420 ⇒ 按毫秒判**放行**;而
- * `firstHop = ceil(0.35) = 1`、`lastHop = floor(42.35) = 42` ⇒ `N = 41 < 42` ⇒ 产出为空。
+ * `firstHop = ceil(0.35) = 1`、`lastHop = floor(42.35) = 42` ⇒ `N = 41 < 42`。
  * 而非 hop 对齐的边界正是 `split` / `move_boundary` 造出来的,与本卡另一条成因
  * 是同一批段 —— 这个 20ms 的盲带恰好落在最容易踩到的地方。
  *
@@ -251,19 +257,20 @@ export const FEAT_HOP_S = 0.01;
  * ⚠ 本判据只覆盖「窗太窄 ⇒ 必然空产出」这一条**确定性**通路,已知三个缺口,都不改:
  *   · 「窗够宽但区间内 VAD 判静音 ⇒ 产出也空」那条路它拦不住 —— 要靠「零变化时给一条
  *     反馈」通用收口,不是前置拦截能穷举的(已立 SL-244 同批的另一张卡 SL-248);
- *     ⚠ **[SL-399 起这一条的实得反了]**:原结论是「手动段原样留着」,现在是**被清掉**
- *     (窗内无产出 ⇒ 窗内既有段被清,host 判据 H5c);SL-248 的立卡前提「零变化」对这条
- *     路也不再成立;
+ *     ⚠ **[SL-399 起这一条的实得也变了]**:原结论是「手动段原样留着」,现在窗内是静音时
+ *     **被清掉**(host 判据 H5c),窗落在更长的人声里时**被一条裁到窗内的短段取代**;
+ *     SL-248 的立卡前提「零变化」对这条路不再成立;
  *   · 未镜像 `analyzeHopWindow` 的 `kMaxHop = 1e7`(>27.8 小时的段真跑判空窗拒绝、
  *     本闸放行)。**理论可达性为零** —— 非 openEnded 段来自对采集环(分钟量级)的 VAD,
  *     段身不可能跨 27.8 小时;登记在此,免得「判据与真跑同源」这句话留下未记的缺口;
+ *     ⚠ [SL-399 起这句已不作数] —— 本闸不再是「与真跑同源」的判据,见文件头那段作废标注;
  *   · ~~缓存初值 420 vs native runtime 默认 120 的分叉~~ —— **[SL-251 同批已消除]**:
  *     UI 默认已照 02-dsp-spec §0.3 改成 120,与 native runtime 默认同值,首帧 state
  *     回推前后不再有这一格差异。
  *
  * @param {{t0S?:number, t1S?:number, openEnded?:boolean}|null} seg §2.8 的段对象
  * @param {number} minSegmentMs 当前 `analysis.segmentation.min_segment_ms`
- * @returns {boolean} true = 引擎在这一窗里必然产不出段(入口该收起)
+ * @returns {boolean} true = 这一段短于最小分段时长(按量化窗宽判),入口该收起
  */
 export function restoreWindowTooShort(seg, minSegmentMs) {
     const s = seg || {};
@@ -4322,10 +4329,10 @@ export function createTabWave(opts) {
         }
         // **窗太窄的段:只说不做**(#161 复审【重要】② + 二轮口径订正)。
         // 判据按**量化后的窗宽**算,不是 `t1S - t0S` —— 两者最多差两个 hop,那一格里
-        // 不再是无操作(SL-399 之后那条路上窗内段会被清,见 `restoreWindowTooShort` 头注;
-        // 反例与完整判据链也在那里)。
+        // 同样不是「无操作」:SL-399 之后那条路上窗内段会被一条裁出的短段取代、或被清
+        // (见 `restoreWindowTooShort` 头注的作废标注;反例与判据链也在那里)。
         // 处理口径与上面的锁定段逐字一致:说清楚 + 给出路(合并相邻段,或把「最小分段」
-        // 调小),不给一枚点了什么都不会发生的钮。
+        // 调小),不给一枚点了会留下一条残段的钮。
         // 入参**照 native 的夹取来**(#161 复审四轮):`local.segmentation` 是本地缓存,
         // 滑杆值域 0..1500,而真桥收进来时 `OutputEditor.cpp` 夹成 [50,500]。不夹的话
         // 拧到 1500 而 state 回显未到时,`minHops = 150` ⇒ 900ms 的段被判「太短」而整行

@@ -3748,7 +3748,14 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             // [SL-399 R16] 这道空判今天**只**挡「整条时间线上一段都没有」的轨(计算窗已经放到
             // 整条时间线,`src` 覆盖的就是它)。它**不再是**「scope 内无产出」的逃生口 ——
             // 改造前它挡的正是后者,于是「选区落在静音里」那一发对该轨是 **no-op**;计算窗放宽
-            // 之后那句描述不再成立:**窗内没有产出 ⇒ 窗内既有的 auto 段被清掉**。
+            // 之后那句描述不再成立。窗内旧段的实得是**两支**([SL-399 R31] 补齐另一支):
+            //   · 窗落在**更长的人声**里 ⇒ 整条 run 的产出被下面的 `clippedT0/clippedT1`
+            //     **裁到窗内** ⇒ 旧段被一条**更短的 auto 段取代**(这是主路径:段多是从整条 run
+            //     里 `split` 出来的,run 还在);
+            //   · 窗内**确实无产出**(静音)⇒ 旧段被清掉、无替代。
+            // 两支都是「旧段没了」,而且**两支都不归这个空判管** —— 它只挡整轨零段;两支的结局都由
+            // 下面的 `kept`(与窗相交的 auto 段不保留)+ 裁剪循环(窗内有产出就写、没有就不写)
+            // 一起决定,窄 scope 下这里一律走不到。
             // [SL-399 R22] ⚠ 「用户段免疫」只在 `clearManual=false` 档成立:**`clearManual=true`
             // 档下只有锁定段免疫**(`isUser = isLocked || (!clearManual && origin != Auto)`,
             // 见下面的 `kept`;这是 §1.6「重新识别(含手动段)」的既有语义,与本卡无关)。
@@ -3757,10 +3764,12 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             // ⚠ [SL-399 R26] 走这条 `clearManual=true` 路的**有两个入口**,别只想到工具条那颗:
             //   · 选区「重新识别」(`tab-wave.js` 的 `doReidentify` / `analyze(scope,{clearManual:true})`);
             //   · **段检查器的「恢复自动」**(`tab-wave.js` 的 `segmentRestoreScope` + 同一个
-            //     `clearManual:true`)—— 而它**出钮的充要条件**正是「未锁定的手编段」
+            //     `clearManual:true`)—— 而它**出钮条件的四条**正是「未锁定的手编段」
             //     (`renderInspectorRestore`:`origin != auto` ∧ `!seg.locked` ∧ `editable`
-            //     ∧ `!restoreWindowTooShort`),所以上面那个组合在这颗钮上是**主路径**,不是边角。
-            //     同一张卡里 `restoreWindowTooShort` 头注的两处推导也因本卡成了假话,已在那边按实情改。
+            //     ∧ `!restoreWindowTooShort`;另有 `segmentRestoreScope` 回 null 时整行收起,
+            //     与 smoke 的 b16b 同一条),所以上面那个组合在这颗钮上是**主路径**,不是边角。
+            //     [SL-399 R31] 上一推的补记把这条路的结论写成了「被清掉」,本推改成**两支并列**
+            //     (被裁出的短段取代 / 被清),`restoreWindowTooShort` 头注也按同一实情重写。
             // 用户可见的那一面写在 `CHANGELOG.md` 的 SL-399 条目里(作用面已放宽到两颗钮)。
             //
             // 这是**有意**的产品语义(裁定 b″ 逐字):写回窗内的段表 == 全量分析在该窗内的样子;
