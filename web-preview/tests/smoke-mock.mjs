@@ -472,6 +472,57 @@ await withSession(
             frame.diff.kept === wantKept,
             `clearManual:false 的 diff.kept 应 = ${wantKept},实得 ${frame.diff.kept}`,
         );
+        // ---- [R1] 帧轨集恒全量,diff 三件套只算**写回集**(与真桥同形) -------------------
+        // #256 复审第 6 轮把 mock 的分析帧轨集对齐了真桥(`regenerateSegments` 的
+        // `writeChannels`:帧恒全量推、写回集才是请求 mask),但 `diff` 那一半当时没跟着对齐:
+        // `changed[]` 由生成器在**全量**产物上无条件登记、`added`/`removed` 是 `total`
+        // (帧内段数)的哈希 ⇒ 窄 scope 的每一帧都会为**一个字节都没被写回**的上下文轨报改动。
+        // 真桥那侧 `emitSegments(…, kAllTracksMask)` 走真 diff(`changedAtDisplayPrecision`),
+        // 上下文轨没动 ⇒ 一条都不报。受影响的是工具栏那个「N 处改动」的读数。
+        //
+        // 反向验证(D7):把 `regenerateSegments` 里 `writeChannels` 那段过滤整个删掉
+        // ⇒ 下面第 4 条(越界点名)与第 5 条(added/removed)当场红,第 1/2/3 条(两条前提 +
+        // 正对照)照绿 —— 这正是本格要的形态:红的是「越界点名」,不是「帧里没东西」。
+        // (本机 D7 实得原文:`越界的:[2,3,…,15]` 与 `实得 3/0,写回集口径 3/1`。)
+        check(
+            frame.channels.length === 15,
+            `R1 前提:分析帧的轨集仍是**全量** 15 条(实得 ${frame.channels.length} 条)`,
+        );
+        check(
+            frame.diff.changed.length > 0,
+            `R1 前提:这一帧有改动条目可比(否则下一条在空集上恒真;实得 ${frame.diff.changed.length} 条)`,
+        );
+        check(
+            frame.diff.changed.some((c) => c.ch === CH),
+            "R1 正对照:写回集那一轨的条目还在(全滤光也能让下一条绿)",
+        );
+        {
+            const offMask = [
+                ...new Set(
+                    frame.diff.changed
+                        .filter((c) => c.ch !== CH)
+                        .map((c) => c.ch),
+                ),
+            ];
+            check(
+                offMask.length === 0,
+                `R1 diff.changed[] 只点名写回集内的轨(越界的:[${offMask.join(",")}])`,
+            );
+        }
+        {
+            // `added`/`removed` 的期望值从**只含写回集**的那一趟生成器现算(而不是复刻
+            // `hash32` 的式子)—— 断言的是「这一帧用的就是写回集那一份」,不是「哈希自洽」。
+            const MD = await import(u("web/shared/mock-data.js"));
+            const writeOnly = MD.makeSegments(frame.version, frame.reason, [
+                CH,
+            ]);
+            check(
+                frame.diff.added === writeOnly.diff.added &&
+                    frame.diff.removed === writeOnly.diff.removed,
+                `R1 diff.added/removed 按写回集算(实得 ${frame.diff.added}/${frame.diff.removed},` +
+                    `写回集口径 ${writeOnly.diff.added}/${writeOnly.diff.removed})`,
+            );
+        }
         // 合并后:按 t0S 有序 + segIdx 0 基重编号(§2.8 字段纪律)
         check(
             after.every((s, i) => s.segIdx === i),

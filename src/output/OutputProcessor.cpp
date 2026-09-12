@@ -493,6 +493,9 @@ ScvbOutputAudioProcessor::WaveformTile ScvbOutputAudioProcessor::waveformOf(int 
 
 double ScvbOutputAudioProcessor::capturedExtentSeconds()
 {
+    // [SL-399 R7] 这里自己取 `lifecycleMutex_`,而 `startAnalysis` / `tickResegmentDebounce`
+    // 都是**持锁**调它的 —— `juce::CriticalSection` 可重入,所以不死锁。这一句是显式记账
+    // (与 `tickResegmentDebounce` 头注那条同款):哪天把它换成非重入的锁,这两处会死锁。
     const juce::ScopedLock lock(lifecycleMutex_);
     const double hopS = featHopSeconds();
     std::uint64_t lastHop = 0;
@@ -2664,9 +2667,9 @@ class ScvbOutputAudioProcessor::AnalysisJob final : public juce::Thread
 public:
     AnalysisJob(ScvbOutputAudioProcessor& owner,
                 std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features,
-                scvb::analysis::PipelineConfig config, std::uint32_t generation)
+                scvb::analysis::PipelineConfig config, std::uint32_t generation, std::int64_t hopSamples)
         : juce::Thread("scvb-analysis"), owner_(owner), features_(std::move(features)), config_(config),
-          generation_(generation)
+          generation_(generation), hopSamples_(hopSamples)
     {
     }
 
@@ -2692,8 +2695,17 @@ public:
             // [SL-399] 交出去的**不是** `config_.rangeStartSample/EndSample`(那是**计算**窗,
             // 现在恒为整条时间线),而是这一趟的**写回**窗:`finishAnalysis` →
             // `applyAnalysisSegments` 的 `outsideRange` 与段 diff 都读它。
-            owner_.pendingAnalysis_.rangeStartSample = owner_.analysisApplyStart_;
-            owner_.pendingAnalysis_.rangeEndSample = owner_.analysisApplyEnd_;
+            //
+            // [SL-399 R3] 乘这一下用的是**本作业自己的** `hopSamples_`(构造时从 `startAnalysis`
+            // 带过来的那一把尺子),不是交接时刻重新 `featHopSeconds() * sampleRate_` 现算的 ——
+            // 宿主在分析在途期间改采样率时,后者与构造写回窗时用的不是同一个数(见
+            // `analysisApplyFirstHop_` 的头注)。hop 对原样带走给 vadP 那一侧,那边不做除法。
+            owner_.pendingAnalysis_.rangeStartSample =
+                static_cast<std::int64_t>(owner_.analysisApplyFirstHop_) * hopSamples_;
+            owner_.pendingAnalysis_.rangeEndSample =
+                static_cast<std::int64_t>(owner_.analysisApplyLastHop_) * hopSamples_;
+            owner_.pendingAnalysis_.applyFirstHop = owner_.analysisApplyFirstHop_;
+            owner_.pendingAnalysis_.applyLastHop = owner_.analysisApplyLastHop_;
             owner_.pendingAnalysis_.generation = generation_;
             owner_.pendingAnalysis_.clearManual = owner_.analysisClearManual_;
             owner_.pendingAnalysis_.fullScope = owner_.analysisFullScope_;
@@ -2709,6 +2721,8 @@ private:
     std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features_;
     scvb::analysis::PipelineConfig config_;
     std::uint32_t generation_ = 0;
+    // [SL-399 R3] 本作业起跑时那把尺子(startAnalysis 的局部量),写回窗的样本换算只认它。
+    std::int64_t hopSamples_ = 0;
 };
 
 // 退休作业的回收(定义必须在 AnalysisJob 类之后:unique_ptr 析构与 stopThread 都要完整类型)。
@@ -2756,8 +2770,9 @@ void ScvbOutputAudioProcessor::handleAsyncUpdate()
     {
         return;
     }
-    finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.clearManual,
-                   pending.fullScope, pending.resegmentReason, pending.analyzedTracks);
+    finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.applyFirstHop,
+                   pending.applyLastHop, pending.clearManual, pending.fullScope, pending.resegmentReason,
+                   pending.analyzedTracks);
 }
 
 ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnalysis(std::uint16_t tracksMask,
@@ -2965,6 +2980,20 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     const std::uint64_t lastHop = windows.compute.lastHop;
     const std::size_t numHops = static_cast<std::size_t>(lastHop - firstHop);
 
+    // [SL-399 R4(b)] 分配上限,**与 `analyzeHopWindow` 的 `kMaxHop` 同源**(不再各写一个字面量)。
+    //
+    // 如实记账:**今天这一道是冗余的** —— `analysisWindows()` 已经把 `lastFloor > kMaxHop` 判成
+    // 拒绝态(`windows.rejects` 上面就返回了),而计算窗的 `firstHop` 恒为 0,所以
+    // `numHops == lastHop <= kMaxHop` 恒成立。留着它是因为它守的东西**不是同一件事**:
+    // 那一处守「窗的量级合不合理」,这一处守「下面那几次 `assign(numHops, …)` 会不会在
+    // **消息线程**上抛 `bad_alloc`(这一段没有 try/catch)」。两者将来只改一处就会分叉 ——
+    // 同源常量 + 就地再断一次,是本仓对「静默 UB / 无 try-catch 的分配」那族一贯的写法
+    // (判据与推理的原文见 `AnalyzeScopeMath.h` 的 `kMaxHop`)。
+    if (numHops > static_cast<std::size_t>(scvb::output::kMaxHop))
+    {
+        return a; // 与 analysisWindows 同一档拒绝态;够不着,但这里是唯一能挡住 assign 的地方
+    }
+
     // [SL-399] **计算窗 = 整条已采集时间线**(与「分析(全部)」同形),写回窗 = 上面那个 scope 窗。
     //
     // 为什么:pan/vol 不是逐段独立算出来的 —— `AnalysisPipeline` 在**一次 run 内跨区间**携带
@@ -2981,12 +3010,39 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     //     「相交」会让范围外那半截被静默改写);
     //   · vadP 写回 —— `finishAnalysis` 同样裁到写回窗(vadP 在 CRVS 事务之外,撤销救不回来);
     //   · 冻结清除面 —— 按**写回窗内的覆盖**(`applyCovered`)筛,不再用计算窗的 `anyCovered`。
+    //   · **轨内 pan 锚**(`tc.currentPan` 的段表一侧)—— 按该轨此刻 `participateInAutoPan` 与
+    //     冻结位分两种:**参与且未冻结**取计算窗起点(锚只做连续性种子,与全量同形),
+    //     **不参与**取写回窗起点(锚就是写回值,语义「保持原样」)。R2;判据 = H1 / H4。
     // scope 外的段(含同轨其它手动段)于是一个字节不动 ⇒ 契约 §1.6 的**可观测面零变化**,
     // 与 #255「计算集 ⊋ 写回集」同一条理。确认框那句「只重算选中的这一段」照旧为真。
     // 范围本来就是整条时间线时(`analyze("all")` / 松手重分段),两窗重合 ⇒ 行为零变化。
     //
-    // ⚠ 代价:**窄 scope 的分析现在按整条时间线的量级算**(与 [SL-393 复审⑦] 记的成本口径同向);
-    // 快照内存也按整条时间线算(30s×15 轨 ≈ 180KB,10 分钟量级 ≈ 数 MB)。这是本卡有意换回来的。
+    // ⚠ 代价:**窄 scope 的分析现在按整条时间线的量级算**(与 [SL-393 复审⑦] 记的成本口径同向)。
+    //
+    // [SL-399 R4(c)] **量级表**(deepseek 复审② 点名「只算了内存、没算停顿、也没给长会话那一档」)。
+    // 行宽 = `numHops × 15 轨 × 9 B`(`f.kwMs` 4B + `f.peak` 4B + `f.covered` 1B —— 类型见
+    // `PipelineTrackFeatures`);查找次数 = 每 hop 每轨 3 次(`hasHop` / `kwMs` / `peak`),
+    // 取「15 轨都过预扫」的上界:
+    //
+    //   | 会话 | numHops | 分配(kwMs+peak+covered) | 查找次数上界 |
+    //   | --- | --- | --- | --- |
+    //   | 30 秒 | 3k   | ≈ 405 KB  | ≈ 135k  |
+    //   | 10 分钟 | 60k | ≈ 8 MB    | ≈ 2.7M  |
+    //   | 1 小时 | 360k | ≈ 49 MB   | ≈ 16M   |
+    //
+    // 这一段**全程持 `lifecycleMutex_` 跑在消息线程上**(同一把锁还串着
+    // `get/setStateInformation`(宿主存工程)与 25Hz `timerCallback` —— 本文件那两处头注记的
+    // 正是同族问题被当成 P0 修过)。这两个数以前只有 `analyze("all")` 付得起,现在**每一次**
+    // 段级「恢复自动」、每一次范围档拖滑杆松手的重分段都要付。这是本卡有意换回来的代价
+    // (修的是「只喂一条轨 ⇒ 恒 (0,0)」与「接力断在开头」两件事),不是漏算。
+    //
+    // 还挂着的两条收敛(统筹已另立 **SL-406**,不在本卡):
+    //   · 取样循环按 `coverage_` 区间推进(与 [SL-232] 给 `setVadPosteriorRange` 做的那次同形),
+    //     迭代数与实际数据量同阶,而不是与「会话长度」同阶;
+    //   · 把取样这趟挪出 `lifecycleMutex_`(先取快照句柄再放锁)。
+    // **拒绝的那条路不再付这笔账** —— `a.tracks == 0` 的早退现在挪到了重循环**之前**
+    // (见下面的只读预扫),SL-396 那条提示的常规路径(拖到没采的地方点一下)回到「不花时间
+    // 也不花内存」。`numHops` 另有一道显式上限,不留消息线程上的 `bad_alloc`。
 
     // 取样:把范围内每轨的 kw/peak 拷成线程私有快照(30s × 15 轨 ≈ 180KB,量级可忽略)。
     //
@@ -3025,6 +3081,50 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     std::array<bool, scvb::engine::kNumTracks> applyCovered{};
     std::uint16_t analyzedTracks = 0;
     const std::uint16_t writeMask = tracksMask;
+
+    // [SL-399 R4(a)] **只读预扫** —— 回执与拒绝态在重循环**之前**算完。
+    //
+    // 原先这三条判据(`enabled` / 写回窗内有覆盖 / `inWriteMask`)挤在取样循环里,于是
+    // `a.tracks == 0` 的早退发生在**整条时间线的 `assign(numHops)` 与逐 hop 取样之后**。
+    // 而「scope 内没有采集数据」恰恰是 SL-396 那条提示的**常规**路径:用户拖到没采的地方点
+    // 一下就撞 —— 1 小时工程上那是 15 轨 × 49 MB 在消息线程、持 `lifecycleMutex_` 下分配完就丢。
+    // 预扫只做 `coveredHops`(按覆盖区间求交,代价与**实际数据量**同阶,与 numHops 无关),
+    // 拒绝那条路于是回到「不花时间也不花内存」。
+    //
+    // ⚠ 判据与后面那趟取样**必须同源**:预扫这一趟填出来的 `applyCovered[]` 就是后面
+    // 冻结清除面与指派器口径读的那一份(`features[t].anyCovered` 是计算窗的账,不能替它)。
+    for (int t = 0; t < scvb::engine::kNumTracks; ++t)
+    {
+        if (!runtime_.channels[static_cast<std::size_t>(t)].enabled)
+        {
+            continue;
+        }
+        const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
+        applyCovered[static_cast<std::size_t>(t)] = frames.coveredHops(applyHops) > 0;
+        // [SL-399] 回执与写回集仍按 **scope 窗**(applyHops)判:回执 `affected.tracks` 与拒绝态
+        // 「range ∩ coverage = ∅」说的都是「scope 内有几条轨的段会被改」,计算窗放宽不该让这两个数
+        // 跟着变宽 —— 那会让 §1.6 的回执语义漂掉,而且「选了一段没采集数据的范围」将不再被拒
+        // (SL-396 那条提示也就永远不会弹)。
+        if (!applyCovered[static_cast<std::size_t>(t)] || !scvb::output::inWriteMask(writeMask, t))
+        {
+            continue;
+        }
+        ++a.tracks;
+        // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 范围内有覆盖)——
+        // 与 previewAnalysis 计 tracks/manualKept 的三条判据逐字同款。diff 的 kept
+        // 按这个集合筛轨,两个 {k} 才在同一把尺子上。
+        //
+        // [SL-393] 这里刻意**仍按写回集**统计:回执 `affected.tracks` 与拒绝态
+        // 「range ∩ coverage = ∅」说的都是「有几条轨的段被改了」,计算集变宽不该让
+        // 这两个数跟着变宽 —— 那会让 §1.6 的回执语义漂掉。
+        analyzedTracks = static_cast<std::uint16_t>(analyzedTracks | (1u << t));
+    }
+
+    if (a.tracks == 0)
+    {
+        return a; // 写回集 ∩ 覆盖 = ∅(计算集里可能还有别的轨,但没有轨会被改写)
+    }
+
     // [#256 R10(复审 3-2)] **这三处(取样 / 清冻结 / 写回)走的是同一条轨维度**:上界与上面
     // `features` 的声明同源(`scvb::engine::kNumTracks`)—— 三处一起换。
     // 本卡只收这三处;其余 15 容量容器一律挂账(本次核:`startAnalysis` 里除这三处已无
@@ -3040,11 +3140,9 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
             continue;
         }
         const auto& frames = session_.frameStore().channel(static_cast<scvb::u32>(t + 1));
-        // [SL-399] 写回窗内的覆盖先记下来(下面三处写回面都读它,不再读 `f.anyCovered`)。
-        applyCovered[static_cast<std::size_t>(t)] = frames.coveredHops(applyHops) > 0;
         if (frames.coveredHops(scvb::analysis::HopRange{firstHop, lastHop}) == 0)
         {
-            continue; // 该轨范围内无采集数据
+            continue; // 该轨计算窗内无采集数据(写回集那三个数已由上面的预扫算完)
         }
 
         f.kwMs.assign(numHops, 0.0f);
@@ -3062,27 +3160,6 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
             f.covered[i] = 1u;
             f.anyCovered = true;
         }
-        // [SL-399] 回执与写回集仍按 **scope 窗**(applyHops)判:回执 `affected.tracks` 与拒绝态
-        // 「range ∩ coverage = ∅」说的都是「scope 内有几条轨的段会被改」,计算窗放宽不该让这两个数
-        // 跟着变宽 —— 那会让 §1.6 的回执语义漂掉,而且「选了一段没采集数据的范围」将不再被拒
-        // (SL-396 那条提示也就永远不会弹)。
-        if (f.anyCovered && scvb::output::inWriteMask(writeMask, t) && applyCovered[static_cast<std::size_t>(t)])
-        {
-            ++a.tracks;
-            // [SL-255 复审③] 本轮**真参与分析**的轨(mask ∩ enabled ∩ 范围内有覆盖)——
-            // 与 previewAnalysis 计 tracks/manualKept 的三条判据逐字同款。diff 的 kept
-            // 按这个集合筛轨,两个 {k} 才在同一把尺子上。
-            //
-            // [SL-393] 这里刻意**仍按写回集**统计:回执 `affected.tracks` 与拒绝态
-            // 「range ∩ coverage = ∅」说的都是「有几条轨的段被改了」,计算集变宽不该让
-            // 这两个数跟着变宽 —— 那会让 §1.6 的回执语义漂掉。
-            analyzedTracks = static_cast<std::uint16_t>(analyzedTracks | (1u << t));
-        }
-    }
-
-    if (a.tracks == 0)
-    {
-        return a; // 写回集 ∩ 覆盖 = ∅(计算集里可能还有别的轨,但没有轨会被改写)
     }
 
     // 配置:VAD/分段参数取 runtime state(桥面 setVadParams/setSegmentation 写的那份)。
@@ -3179,6 +3256,11 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         }
     }
 
+    // [SL-399 R2] 写回窗起点(样本)。不参与自动声像的轨按它取段表锚 —— 见下面那段头注。
+    // 与 `cfg.rangeStartSample` **同一个 hopSamples、同一条 hop 栅格**:两者都是
+    // `hop下标 × hopSamples`,不是一个从秒值算、一个从样本算。
+    const std::int64_t applyStartSample = static_cast<std::int64_t>(applyFirstHop) * hopSamples;
+
     for (int t = 0; t < scvb::engine::kNumTracks; ++t)
     {
         const auto& c = runtime_.channels[static_cast<std::size_t>(t)];
@@ -3212,8 +3294,24 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         //     声像;而参数面在从未打印过的工程里恒是 0,拿它当现值等于把每条不参与的轨按到
         //     正中再烘焙进段表(v5.1 实测 P0-B 的放大器)。
         //
-        // 段表一侧取**与本次分析范围起点相交(否则最近)**的那一段,而不是整轨第一段:
-        // 轨内 pan 随时间变化时,首段的值与范围所在处可能毫无关系。
+        // 段表一侧的锚取**哪个窗的起点所在的段**,分两种情形(判据按该轨**此刻**的
+        // `tc.participateInAutoPan` 与冻结位;`clearManual` 刚清过冻结的按清过之后算,
+        // 因为那道清位就在上面几行、写的是同一个 `tc.freeze`):
+        //
+        //   · **参与自动声像且 pan 未冻结** —— 锚只做**连续性种子**(整条时间线那条区间链的
+        //     链首那一格),这一趟的题面与 `analyze("all")` 逐字同形是 b″ 的前提。所以取
+        //     **计算窗**起点,即 `cfg.rangeStartSample`(计算窗恒从 0 起 ⇒ 恒为 0)。
+        //   · **不参与自动声像** —— 这条轨压根不进指派:`AutoAssign` 的 `!participateInAutoPan`
+        //     分支直接写 `currentPan`,锚**就是写回值**,语义是「这条轨保持它原来那一份」。
+        //     它必须取**写回窗**起点所在的段:`analysisApplyFirstHop_` 换算到样本。
+        //     取计算窗起点(恒 0)会把整轨**首段**的 pan 写到用户选中的那一段上 ——
+        //     轨内 pan 随时间变化时,首段的值与写回处可能毫无关系(正是下面这两条
+        //     `sg.t1 <= rangeT0` / `best == nullptr` 分支要防的那种行为;它们在第二种情形
+        //     下**仍然活着**,不是死代码)。
+        //
+        // 反过来说:第一种情形下那两条分支确实退化成「恒取覆盖 0 的那一段 / 首段」,
+        // 但那里锚只喂链首、值由整条时间线解出来,与全量分析**逐字同形**才是要的结果 ——
+        // 这是有意,不是漏改。H1 钉第一种情形,H4 钉第二种。
         const auto* rawPan = handles_.rawPan[static_cast<std::size_t>(versionActive_ - 1)][static_cast<std::size_t>(t)];
         const double rawPanValue =
             rawPan != nullptr ? static_cast<double>(rawPan->load(std::memory_order_relaxed)) : 0.0;
@@ -3227,7 +3325,7 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
                                        .tracks[static_cast<std::size_t>(t)]
                                        .segments;
             tc.currentPan = rawPanValue;
-            const std::int64_t rangeT0 = cfg.rangeStartSample;
+            const std::int64_t rangeT0 = tc.participateInAutoPan ? cfg.rangeStartSample : applyStartSample;
             const scvb::state::Segment* best = nullptr;
             for (const auto& sg : existing)
             {
@@ -3271,14 +3369,18 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     analysisClearManual_ = clearManual;
     analysisFullScope_ = fullScope; // [SL-279] 随作业走
     analysisTracksMask_ = analyzedTracks;
-    // [SL-399] 写回窗随作业走(计算窗已在 cfg 里)。两者分开的理由见 startAnalysis 里那段头注。
-    analysisApplyStart_ = static_cast<std::int64_t>(applyFirstHop) * hopSamples;
-    analysisApplyEnd_ = static_cast<std::int64_t>(applyLastHop) * hopSamples;
+    // [SL-399 R3] 写回窗随作业走的是 **hop 下标**(计算窗已在 cfg 里,是样本面)。
+    // 样本对在**交接处**由 `AnalysisJob::run()` 按本作业自己的 `hopSamples` 乘出来给
+    // `applyAnalysisSegments`(段表面是样本域),vadP 那一侧直接用 hop、不做除法 ——
+    // 原先那对样本成员 + `finishAnalysis` 里的 `llround(featHopSeconds()*sampleRate_)`
+    // 会在宿主于分析在途期间改采样率时算成两个基数(理由见头文件里这段成员的头注)。
+    analysisApplyFirstHop_ = applyFirstHop;
+    analysisApplyLastHop_ = applyLastHop;
     // [SL-255 复审①] 作业真造出来了才把 reason **取走**(取走即清):早退的那几支不消费它,
     // 留给调用方(tickResegmentDebounce 的 !accepted.ok 分支)清。此后 reason 随作业走。
     analysisResegmentReason_ = pendingResegmentReason_;
     pendingResegmentReason_ = AnalysisDoneReason::None;
-    analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen);
+    analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen, hopSamples);
     analysisJob_->startThread();
 
     // [SL-284] 新作业一受理就把回退级清 0 —— **不清零会造出假绿**(#183 复审)。
@@ -3323,17 +3425,21 @@ void ScvbOutputAudioProcessor::cancelAnalysis()
 }
 
 void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
-                                              std::int64_t rangeEndSample, bool clearManual, bool fullScope,
+                                              std::int64_t rangeEndSample, std::uint64_t applyFirstHop,
+                                              std::uint64_t applyLastHop, bool clearManual, bool fullScope,
                                               AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks)
 {
     {
         const juce::ScopedLock lock(lifecycleMutex_);
 
-        // [SL-399] 写回窗(采样)→ hop 的换算基数。`rangeStartSample/EndSample` 就是本趟的
-        // **写回**窗(计算窗另有其人,见 `startAnalysis` 那段头注),而它们是由
-        // `applyHop * hopSamples` 构造出来的 ⇒ 整除无损。vadP 写回的裁剪要用它。
-        const std::int64_t applyHopSamples = std::max<std::int64_t>(
-            1, static_cast<std::int64_t>(std::llround(featHopSeconds() * sampleRate_.load(std::memory_order_relaxed))));
+        // [SL-399 R3] 这里**不再**重算写回窗的 hop 换算基数。原先那行
+        // `llround(featHopSeconds() * sampleRate_)` 与构造 `rangeStartSample/EndSample` 时用的
+        // 那个 `sampleRate_` 可能不是同一个数(`prepareToPlay` 只取锁再 `store`,**不取消**
+        // 在途作业;`cancelAnalysis()` 的唯一调用点是 `releaseResources`),于是
+        // 「由 `applyHop * hopSamples` 构造 ⇒ 整除无损」那句注释会在宿主中途改采样率时变假,
+        // 裁出来的 vadP 窗整体漂掉或是 `hi <= lo` 静默一个 hop 都不写。
+        // 现在写回窗**随作业走 hop**(`applyFirstHop/applyLastHop` 是交接处原样带过来的),
+        // vadP 那一侧直接用 hop 下标 —— 花括号里没有除法,也就没有「除回来」这件事。
 
         if (!result.cancelled)
         {
@@ -3402,10 +3508,10 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                     // 也就覆盖整条;不裁的话「只分析后半段」会把**前半段**的 vadP 一并写掉 ——
                     // 泳道绿线在从没分析过的那半亮起来(HOST 那条 `voicedFront == 0` 实得 36 就是它),
                     // 而 vadP 写回在 CRVS 事务之外,**撤销救不回来**(见下方合并注)。
-                    // 窗的换算:`rangeStartSample/EndSample` 就是这一趟的写回窗,且由
-                    // `applyHop * hopSamples` 构造 ⇒ 整除无损。
-                    const std::uint64_t applyLo = static_cast<std::uint64_t>(rangeStartSample / applyHopSamples);
-                    const std::uint64_t applyHi = static_cast<std::uint64_t>(rangeEndSample / applyHopSamples);
+                    // [SL-399 R3] 窗**直接用 hop 下标**(与 `result.firstHop` 同一域):段表面那一侧
+                    // 才用样本对,这一侧不做任何乘除。
+                    const std::uint64_t applyLo = applyFirstHop;
+                    const std::uint64_t applyHi = applyLastHop;
                     const std::uint64_t lo = std::max(begin, applyLo);
                     const std::uint64_t hi = std::min(begin + static_cast<std::uint64_t>(usable), applyHi);
                     if (hi <= lo)
@@ -3657,6 +3763,13 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             // 裁到窗内之后,窄 scope 写出来的段与首版(计算窗 = scope 窗)时**逐字同形**:
             // 首段 t0 == 窗起点、末段 t1 == 窗终点,pan/vol 仍取整条时间线上下文解出来的值
             // (那才是本卡要的:值来自全量上下文,写回只落选区)。
+            //
+            // [SL-399 R8] **窗边裁剪可能产出短于 `segmentationMinSegmentMs` 的段** —— 这是
+            // 与改造前「分析窗边界处天然出短段」**同形**的老形态,不是新缺陷;不同的是
+            // **频率变高了**:计算窗恒覆盖整条时间线,于是首末两段几乎总要被裁一次,而改造前
+            // 只有「scope 边界恰好落在 VAD 段内部」时才现形。UI 对最短段的展示假设(段块最小
+            // 可点宽度 / 检查器的「起止」可编辑性)此前就是按这个形态成立的,没有新增前提;
+            // 真要为它开一刀(比如裁完把不足下限的残段并进邻段)那是独立的产品语义改动。
             const std::int64_t clippedT0 = std::max(as.t0Samples, rangeStartSample);
             const std::int64_t clippedT1 = std::min(as.t1Samples, rangeEndSample);
             if (clippedT1 <= clippedT0)

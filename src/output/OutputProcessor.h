@@ -495,9 +495,12 @@ private:
     // 计算集比它宽(见 startAnalysis 的头注),掩码外的轨只当上下文,段表一个字节都不许动。
     void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
                                std::int64_t rangeEndSample, bool clearManual, std::uint16_t writeMask);
+    // [SL-399 R3] vadP 写回那一侧要的是**写回窗的 hop 下标**(不再拿采样率除回来 —— 见
+    // `analysisApplyFirstHop_` 的头注)。段表面仍吃上面那对样本数(同一趟作业、同一个 hopSamples)。
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
-                        std::int64_t rangeEndSample, bool clearManual, bool fullScope,
-                        AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks);
+                        std::int64_t rangeEndSample, std::uint64_t applyFirstHop, std::uint64_t applyLastHop,
+                        bool clearManual, bool fullScope, AnalysisDoneReason resegmentReason,
+                        std::uint16_t analyzedTracks);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
     void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
@@ -715,8 +718,14 @@ private:
     struct PendingAnalysis
     {
         scvb::analysis::PipelineResult result;
+        // [SL-399] 写回窗两个口径一起带走:样本对给**段表面**(`applyAnalysisSegments` 的
+        // `outsideRange` 与段 diff 都是样本域),hop 对给 **vadP 写回**(hop 域,不再除回来)。
+        // [SL-399 R3] 样本对在交接处由 `applyFirstHop * hopSamples` 乘出来(hopSamples 随作业走);
+        // 两者**同源**,不是两份账。
         std::int64_t rangeStartSample = 0;
         std::int64_t rangeEndSample = 0;
+        std::uint64_t applyFirstHop = 0;
+        std::uint64_t applyLastHop = 0;
         std::uint32_t generation = 0;
         bool clearManual = false;
         bool valid = false;
@@ -757,13 +766,22 @@ private:
     // 同上,本次作业的触发档与真参与分析的轨集合([M] 写,交接时随结果走)。
     AnalysisDoneReason analysisResegmentReason_ = AnalysisDoneReason::None;
     std::uint16_t analysisTracksMask_ = 0;
-    // [SL-399] **写回窗**(采样),与作业的**计算窗**分开:计算窗一律放到整条已采集时间线
-    // (与「分析(全部)」同形,连续性锚与区间切分才和全量分析一致),而写回仍按 scope 的
-    // [startS,endS] —— `applyAnalysisSegments` 的 `outsideRange` 读的就是这两个数。
+    // [SL-399] **写回窗**(hop 栅格上的半开区间 `[first, last)`),与作业的**计算窗**分开:
+    // 计算窗一律放到整条已采集时间线(与「分析(全部)」同形,连续性锚与区间切分才和全量分析
+    // 一致),而写回仍按 scope 的 [startS,endS] —— `applyAnalysisSegments` 的 `outsideRange`
+    // 读的就是它换算出来的样本对。
     // 不这么分的话,单段「恢复自动」会拿「当前参数值」当首区间锚、且前面没有任何区间,
     // 解出来的 pan/vol 与全量分析对该段给出的值不同(用户 v5.6.13 实测:−20/−0.2 → −60/−0.9)。
-    std::int64_t analysisApplyStart_ = 0;
-    std::int64_t analysisApplyEnd_ = 0;
+    //
+    // [SL-399 R3] **真源是 hop,不是样本**。原先存的是 `applyHop * hopSamples` 乘出来的
+    // 样本对,而 `finishAnalysis` 又拿自己那一刻的 `sampleRate_` 反算回 hop ——
+    // `prepareToPlay` 并不取消在途作业(它只取锁再 `sampleRate_.store(...)`),
+    // 宿主在分析跑着时改采样率,那一乘一除就不是同一个基数,注释里「整除无损」当场变假话,
+    // 裁出来的 vadP 窗整体漂掉(或 `hi <= lo` 静默一个 hop 都不写)。
+    // 改成随作业走 hop 之后,「窗落在 hop 栅格上」是**结构上的事实**:乘一次(交接处,
+    // 用那趟作业自己的 hopSamples)给段表面用,vadP 那一侧直接用 hop 下标,不再有除法。
+    std::uint64_t analysisApplyFirstHop_ = 0;
+    std::uint64_t analysisApplyLastHop_ = 0;
 
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;

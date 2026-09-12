@@ -717,12 +717,9 @@ function makeContext(role, world) {
             for (const entry of frame.channels) {
                 if (reanalysis) {
                     if (writeChannels && !writeChannels.includes(entry.ch)) {
-                        // 上下文轨:段表一个字节不动 —— 帧里回填**既有**那一份(不是生成器
-                        // 刚造的那份),与真桥「计算集里的非写回轨照旧下发」同形。
-                        const cur = model.segByCh.get(entry.ch);
-                        if (cur) {
-                            entry.segments = clone(cur.segments);
-                        }
+                        // 上下文轨:段表一个字节不动。载荷取自 `segByCh`(`segmentsPayload` 按
+                        // ch 现取),所以这里**跳过写入即等价** —— 帧里带的就是它既有那一份,
+                        // 与真桥「计算集里的非写回轨照旧下发」同形。
                         continue;
                     }
                     const merged = mergeReanalyzed(
@@ -742,7 +739,39 @@ function makeContext(role, world) {
                 }
             }
             model.segVersion = version;
-            if (reanalysis) frame.diff.kept = kept;
+            if (reanalysis) {
+                frame.diff.kept = kept;
+                // [R1] 帧轨集恒全量(与真桥同形),但 diff 的**三件套只算写回集**。
+                // 真桥那侧 `emitSegments(…, kAllTracksMask)` 走的是真 diff
+                // (`SegmentDiff::changedAtDisplayPrecision`):上下文轨一个字节没动 ⇒ 一条都不报。
+                // 原先只对齐了「帧轨集」这一半,窄 scope 下每一帧都会为**没被写回**的上下文轨
+                // 报出改动条目,而 `added`/`removed` 是 `total`(帧内段数)的哈希 ⇒ 跟着一起变大。
+                // 那是「preview 与真机同形」修好一半、另一半反向拉大的回归,受影响的是工具栏那个
+                // 「N 处改动」的读数。判据见 `smoke-mock.mjs` 的分析帧一节(删掉本段即红)。
+                if (writeChannels) {
+                    frame.diff.changed = frame.diff.changed.filter((c) =>
+                        writeChannels.includes(c.ch),
+                    );
+                    // `added`/`removed` 拿**只含写回集**的那一趟生成器重算,而不是在这里自己
+                    // 拼一个哈希 —— 那两个数的唯一真源是 `mock-data.js` 里对 `total` 的
+                    // `hash32(0x8201/0x8202, …)`,复刻一份就是第二把尺子。
+                    if (writeChannels.length > 0) {
+                        const writeFrame = makeSegments(
+                            version,
+                            reason,
+                            writeChannels,
+                            { diffFillToCap: model.scenario === "diff-flood" },
+                        );
+                        frame.diff.added = writeFrame.diff.added;
+                        frame.diff.removed = writeFrame.diff.removed;
+                    } else {
+                        // 写回集为空(理论上受理不了,`affectedOf` 空轨即回 {ok:false}):
+                        // 没有轨会被改 ⇒ 三个数都是 0,不发「看不见的改动」。
+                        frame.diff.added = 0;
+                        frame.diff.removed = 0;
+                    }
+                }
+            }
         }
         return frame;
     }

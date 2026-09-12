@@ -151,6 +151,15 @@ struct AnalyzeHopWindow
     bool valid() const { return lastHop > firstHop; }
 };
 
+// 可分析量级的 hop 上界(**单一真源**)。
+//
+// [SL-399 R4(b)] 原先它是 `analyzeHopWindow` 里的一个局部常量,现在提到命名空间作用域:
+// `startAnalysis` 要为 `f.kwMs.assign(numHops, …)` 再断一次同一个数,两处各写一个字面量
+// 就是第二把尺子 —— 而这两把尺子分叉的方向是**消息线程上无 try/catch 的 `bad_alloc`**
+// (本文件下面那段推理的原文)。判据只在 `analyzeHopWindow` 里落一次,`startAnalysis`
+// 读这个常量复核分配量级。
+inline constexpr double kMaxHop = 1.0e7;
+
 inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS)
 {
     AnalyzeHopWindow w;
@@ -179,7 +188,6 @@ inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS
     // 而 1e7 × 1920 = 1.92e10 离 INT64_MAX 还有 8 个量级,`assign(1e7)` 也只有 40MB 级。
     // 判据写成 `lastFloor <= kMaxHop`:它对 `NaN` / `+Inf` 都为假,于是这两种也一并
     // 拒在**转换之前** —— 全程没有越界的 double → uint64。
-    constexpr double kMaxHop = 1.0e7;
     const double firstCeil = std::ceil(std::max(0.0, startS) / hopS - kHopEps);
     const double lastFloor = std::floor(std::max(0.0, endS) / hopS + kHopEps);
     if (!(lastFloor > firstCeil) || !(lastFloor <= kMaxHop))
@@ -208,6 +216,11 @@ inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS
 //
 // 单拎成纯函数的理由与 `analyzeHopWindow` / `inWriteMask` 同源:它是本卡「两窗分离」的
 // 判据点,埋在 `startAnalysis` 里就只能靠 host harness 间接测(而那正是上一版栽的地方)。
+//
+// [SL-399 R4(c)] `kMaxHop` 这道闸现在的**触发源变了**:计算窗恒以 `capturedExtentSeconds()`
+// 为右端,于是越限不再来自「用户选了一个离谱的 scope」,而来自**已采集时间线的长度** ——
+// 失败模式因此是「所有分析一律拒」(而不是只拒那一发)。FrameStore 是有界环,今天够不着
+// (1e7 hop @10ms ≈ 27.8 小时);记账在这里,是因为它是这条上限**唯一**的判据点。
 struct AnalysisWindows
 {
     AnalyzeHopWindow compute{}; // 恒 [0, extentHops)

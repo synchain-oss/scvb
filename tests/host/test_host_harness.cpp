@@ -8065,13 +8065,32 @@ TEST_CASE("HOST SL-399 H1:段级「恢复自动」的值 == 全量分析对该�
     const float xVol = xSeg->volDb;
 
     // ② 用户 A22 的动作:冻结 pan → 手动改 pan 与 vol。
+    //
+    // [R0-1] 手动 pan 取**与全量值相反的一侧**,并把「两侧符号相反」显式断成前置
+    // (④ 那条 `CHECK(std::signbit(...))`)。**如实记账**:统筹原本期望这样能让 D1 红在
+    // `CHECK(rSeg->pan == xPan)` 上(上一版实测是「pan 两边都 −60,只有 volDb 差 1 ULP」,
+    // 当时的假设是「手动值与全量值同侧」)。
+    // **本机复跑 D1 的实得否掉了那个假设**:取反侧之后 pan 仍然是 `−60 == −60`、红仍只在
+    // `volDb` 的 `2.17893f == 2.17894f`;而且把取样点挪到 scope **起点**(锚影响最大的地方)
+    // 复跑,结果逐字相同 —— 也就是说这台上「锚取 80 还是取全量链的解」**不改变这一段的槽位解**,
+    // 差异只体现在平衡那一趟的 u 上(1 ULP)。这条前置于是只守住「夹具确实把锚放在反侧」,
+    // 不再是「pan 格会红」的论据;D1 的牙是那 8 条纯函数断言 + 这条 volDb 逐位断言。
+    // (要造出 pan 级的差异得换一台能让锚改变槽位指派的多轨台,不在本卡。)
+    // `xPan == 0` 时没有「相反一侧」可取:随便取一侧,并把这件事显式打出来(用 `UNSCOPED_INFO`
+    // 而不是 `INFO`,后者的作用域消息在 `return` 时就被弹掉 —— 同文件 `coverageWindow` 那条判例)。
+    const float manualPan = xPan < 0.0f ? 80.0f : -80.0f;
+    if (xPan == 0.0f)
+    {
+        UNSCOPED_INFO("H1 前提:全量解出来的 pan 恰为 0.0 —— 没有『相反一侧』可取,"
+                      "下面那道符号前置会跳过");
+    }
     setFreezeBits(r.out, ch, 1);
     int replaced = 0;
     int replacedLocked = 0;
-    REQUIRE(r.out.setTrackManual(ch, /*isPan=*/true, -80.0f, replaced, replacedLocked));
+    REQUIRE(r.out.setTrackManual(ch, /*isPan=*/true, manualPan, replaced, replacedLocked));
     REQUIRE(r.out.setTrackManual(ch, /*isPan=*/false, -6.0f, replaced, replacedLocked));
     // 前置:手动值真的落上去了。少了这一条,「恢复后 == 全量值」可能只是「压根没变过」。
-    CHECK(paramValueOf(r.out, scvb::params::panId(r.out.versionActive(), ch)) == Catch::Approx(-80.0f).margin(0.01));
+    CHECK(paramValueOf(r.out, scvb::params::panId(r.out.versionActive(), ch)) == Catch::Approx(manualPan).margin(0.01));
     {
         const auto manualSegs = segmentsOfTrack(r.out, ch);
         REQUIRE_FALSE(manualSegs.empty());
@@ -8085,9 +8104,16 @@ TEST_CASE("HOST SL-399 H1:段级「恢复自动」的值 == 全量分析对该�
     const auto restoredSegs = segmentsOfTrack(r.out, ch);
     const auto* rSeg = segmentAt(restoredSegs, xm);
     REQUIRE(rSeg != nullptr);
-    INFO("H1 全量 pan/vol = " << xPan << " / " << xVol << ";恢复后 = " << rSeg->pan << " / " << rSeg->volDb);
-    CHECK(rSeg->pan == xPan); // ← D1(计算窗改回 scope)时这一格红
-    CHECK(rSeg->volDb == xVol); // ← 同上
+    INFO("H1 全量 pan/vol = " << xPan << " / " << xVol << ";手动 pan = " << manualPan << ";恢复后 = " << rSeg->pan
+                              << " / " << rSeg->volDb);
+    // [R0-1] 正证据:手动值与全量值**在相反一侧**(夹具前提,不是判据本身 —— 见 ② 的记账)。
+    // `xPan == 0` 时无「相反一侧」可言,跳过(上面已经 `UNSCOPED_INFO` 记过)。
+    if (xPan != 0.0f)
+    {
+        CHECK(std::signbit(manualPan) != std::signbit(xPan));
+    }
+    CHECK(rSeg->pan == xPan); // ← D1(计算窗改回 scope)时**本机实得照绿**(见 ② 的记账)
+    CHECK(rSeg->volDb == xVol); // ← D1 时这一格红:`2.17893f == 2.17894f`(本机实测原文)
 
     // ⑤ 撤销一步 = 回到手动值那一份(那个值同时也是「用户看见的现状」)。
     REQUIRE(r.out.undo());
@@ -8242,4 +8268,101 @@ TEST_CASE("HOST SL-399 H3:回执按写集 —— 与覆盖不交 ⇒ 拒绝;有�
     CHECK(rejected.tracks == 0);
     CHECK(rejected.intervals == 0);
     CHECK(rejected.manualKept == 0);
+}
+
+// ===========================================================================
+// [SL-399 R2] H4:不参与自动声像的轨 —— 锚取**写回窗**起点所在的段
+//
+// 病根(claude 复审① / deepseek 复审①,H1/H2/H3 与页面级 ⑩ 全没覆盖到的那一格):
+// 「计算窗 = 整条已采集时间线」让 `cfg.rangeStartSample` **恒为 0**,而 `startAnalysis` 里
+// 给 `tc.currentPan` 取段锚的那一段读的正是它 ⇒ 锚恒解析成「整轨首段」。对**参与自动声像**
+// 的轨这是对的(锚只做连续性种子,值由整条时间线解出来,H1 钉着);但对**不参与**的轨,
+// `AutoAssign` 的 `!participateInAutoPan` 分支直接把 `currentPan` 当结果写回(AutoAssign.cpp
+// 的分类段),**锚就是写回值** —— 于是「保持这条轨原来那一份」变成了「保持整轨首段那一份」:
+// 对一条 pan 随时间变化的 `!participate` 轨做中段「恢复自动」,写回去的是首段的 pan。
+//
+// 修法与判据:锚按该轨此刻的 `tc.participateInAutoPan` 与冻结位分两种(冻结那一路取参数面,
+// 与本格无关);不参与 ⇒ 取**写回窗起点**(`analysisApplyFirstHop_` 换算到样本)所在的段。
+//
+// 反向验证 **D6**:把 `rangeT0` 改回恒取 `cfg.rangeStartSample` ⇒ 本格红在
+// `CHECK(after->pan == seg2.pan)`(实得首段的 pan);复原后绿。
+// ===========================================================================
+TEST_CASE("HOST SL-399 H4:!participate 轨的锚取写回窗起点(窄 scope 恢复该段原值,不是首段的)",
+          "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 4.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const int ch = 1;
+    const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
+
+    // 前置①:该轨**不参与自动声像**。两位成对写 —— 只写 `participateAutoPan` 而不置
+    // `participateAutoPanSet`,读方按 [J83] 的默认档仍判「参与」,整格会退化成 H1 的重复。
+    {
+        auto& c = r.out.runtime().channels[static_cast<std::size_t>(ch - 1)];
+        c.participateAutoPanSet = true;
+        c.participateAutoPan = false;
+        REQUIRE_FALSE(c.participatesInAutoPan()); // 前置:设置真的生效
+    }
+
+    // 打底:前半段分两截各分析一次 ⇒ 该轨拿到**多段**表(H2 的既有手法;单次全范围分析在
+    // 本机台上通常只产出一段)。
+    const double mid = win.startS + (win.endS - win.startS) * 0.5;
+    const double aS = win.startS + (mid - win.startS) * 0.5;
+    REQUIRE(r.runAnalysisIn(win.startS, aS, /*clearManual=*/false));
+    REQUIRE(r.runAnalysisIn(aS, mid, /*clearManual=*/false));
+
+    // 两段都写成**手动值**再解锁:`set_values` 的后置是 origin=user_edited ∧ locked=true,
+    // 用 `set_locked` 摘锁 —— 于是两段 pan 必然不同,且都落在 clearManual 的清除面内
+    // (锁定段免疫,不摘锁的话第二段根本不会被本次产出取代,本格就测不到东西)。
+    constexpr float kPanSeg1 = -75.0f;
+    constexpr float kPanSeg2 = 45.0f;
+    {
+        const auto seeded = segmentsOfTrack(r.out, ch);
+        REQUIRE(seeded.size() >= 2); // 前置:真有两段可改(否则下面的 segIdx 会 BadArg)
+        for (int i = 0; i < 2; ++i)
+        {
+            scvb::state::SegmentEditArgs sv;
+            sv.op = scvb::state::SegmentEditOp::SetValues;
+            sv.segIdx = i;
+            sv.hasPan = true;
+            sv.pan = (i == 0) ? kPanSeg1 : kPanSeg2;
+            REQUIRE(r.out.editSegment(ch - 1, sv) == scvb::state::SegmentEditResult::Ok);
+            scvb::state::SegmentEditArgs ul;
+            ul.op = scvb::state::SegmentEditOp::SetLocked;
+            ul.segIdx = i;
+            ul.locked = false;
+            REQUIRE(r.out.editSegment(ch - 1, ul) == scvb::state::SegmentEditResult::Ok);
+        }
+    }
+    const auto segsBefore = segmentsOfTrack(r.out, ch);
+    REQUIRE(segsBefore.size() >= 2);
+    const scvb::state::Segment seg1 = segsBefore[0];
+    const scvb::state::Segment seg2 = segsBefore[1];
+    REQUIRE_FALSE(scvb::state::segmentLocked(seg1.flags)); // 前置:两段都已解锁
+    REQUIRE_FALSE(scvb::state::segmentLocked(seg2.flags));
+    // ★ 正证据:两段 pan 真的不同。没有它,「写回后 == seg2.pan」在「两段同值」时恒真 ——
+    // 而那正是本格要分辨的那件事(锚取首段还是取写回段)。
+    REQUIRE(seg1.pan != seg2.pan);
+
+    // 对**第二段**做窄 scope「恢复自动」:clearManual ⇒ 该段(未锁定、在写回窗内)被本次产出取代。
+    const double s2t0 = static_cast<double>(seg2.t0) / kSr;
+    const double s2t1 = static_cast<double>(seg2.t1) / kSr;
+    REQUIRE(r.runAnalysisMasked(onlyCh, s2t0, s2t1, /*clearManual=*/true));
+
+    // ★ H4:该段 pan 逐位等于**它原来那一份**(不是首段的)。
+    const auto segsAfter = segmentsOfTrack(r.out, ch);
+    const auto* after = segmentAt(segsAfter, (s2t0 + s2t1) * 0.5);
+    // 用 REQUIRE:失败就中止(否则下面解引用空指针,红成崩溃而不是断言)。
+    REQUIRE(after != nullptr);
+    INFO("H4 seg1.pan = " << seg1.pan << " / seg2.pan = " << seg2.pan << ";写回后该段 pan = " << after->pan);
+    CHECK(after->pan == seg2.pan); // ← D6(锚恒取计算窗起点)时这一格红:实得 seg1 那一份
+
+    // 反向对照:首段仍在(它整段落在写回窗外,本次分析碰不到它)。
+    // 少了这一条,「锚取首段」的失效形态可能被读成「首段被删了」。
+    CHECK(segmentAt(segsAfter, static_cast<double>(seg1.t0) / kSr + 0.05) != nullptr);
 }

@@ -775,7 +775,9 @@ TEST_CASE("analyzeHopWindow:范围向内取整,不把窗撑到范围之外", "[o
         CHECK_FALSE(analyzeHopWindow(1.0e12, 1.0e12 + 1.0, kHopS).valid());
 
         // 边界两侧:恰好到上限收,越过一个 hop 就拒 —— 证明这道闸不是「一律拒大数」。
-        constexpr double kMaxHopS = 1.0e7 * 0.010; // kMaxHop × hop = 1e5 s ≈ 27.8 小时
+        // [SL-399 R4(b)] 上限改成读**那个常量**(不再是本行自己的 `1.0e7` 字面量):
+        // `startAnalysis` 现在也为同一道分配上限复核 `kMaxHop`,两处各写一份就是第二把尺子。
+        constexpr double kMaxHopS = scvb::output::kMaxHop * 0.010; // kMaxHop × hop = 1e5 s ≈ 27.8 小时
         const auto atLimit = analyzeHopWindow(0.0, kMaxHopS, kHopS);
         REQUIRE(atLimit.valid());
         CHECK(atLimit.lastHop == 10000000u);

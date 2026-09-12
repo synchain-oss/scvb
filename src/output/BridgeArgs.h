@@ -173,6 +173,17 @@ inline void settleResendLatch(bool sent, bool& pendingFull) noexcept
 // 它是**边沿触发**的(宿主那 600ms 新鲜窗只在起播/停走附近翻转一次)⇒ 一次播放最多多两帧,
 // 不会在 25Hz 上刷屏。
 //
+// ⚠ **「值」的口径**(deepseek 复审④ 点名,留在头注里而不动契约文本):本卡的「值」= **整个
+// `scvb.params` 载荷**,含 §2.2 的 `hostEcho`。§0.4 那句「值未变不发」说的是**载荷**没内容
+// 就不发,不是「`values` 这个对象必须非空」。由此有一条**有意的形状**:只翻回声位的那一帧
+// `values` 是**空对象 `{}`**(稀疏 diff = 「本帧没有 id 变化」,不是非法帧)。
+// 下游逐条核过:`web/output/app.js` 在 `full` 为假那一路做
+// `{...store.params.values, ...(p && p.values)}` —— 展开空对象**不覆盖任何键**,是 no-op;
+// `hostEchoAt` 的写入只看 `p.hostEcho`、不看 `values` 是否非空 —— 所以闩锁确实会被这一帧武装。
+// **谁把空 `values` 当异常帧过滤掉,这条链就断在那里**(页面再也收不到起播 chase)。
+// 契约文本一字未动(字段不增不减、不改名、不改既有字段语义,不触发 §9 的变更流程);
+// 要把它写进 §2.2 的文字,归下一次真的契约变更一起走。
+//
 // 单拎成纯函数:`OutputEditor` 需要真 WebView2,gates 里只在 gate 8 的 pluginval 里编
 // (tests/CMakeLists.txt 头注写着这条边界),所以这条判据落在纯函数上 + 页面级 E3 收用户
 // 可见的那半 —— 与 `selectParamForEmit` / `settleResendLatch` 同一条路。
