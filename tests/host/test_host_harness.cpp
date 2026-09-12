@@ -8282,7 +8282,8 @@ TEST_CASE("HOST SL-399 H3:回执按写集 —— 与覆盖不交 ⇒ 拒绝;有�
 // 对一条 pan 随时间变化的 `!participate` 轨做中段「恢复自动」,写回去的是首段的 pan。
 //
 // 修法与判据:锚按该轨此刻的 `tc.participateInAutoPan` 与冻结位分两种(冻结那一路取参数面,
-// 与本格无关);不参与 ⇒ 取**写回窗起点**(`analysisApplyFirstHop_` 换算到样本)所在的段。
+// 与本格无关);不参与 ⇒ 取**写回窗起点**(`startAnalysis` 的局部量 `applyStartSample` =
+// `applyFirstHop × hopSamples`,该窗随后随作业对象走)所在的段。
 //
 // 反向验证 **D6**:把 `rangeT0` 改回恒取 `cfg.rangeStartSample` ⇒ 本格红在
 // `CHECK(after->pan == seg2.pan)`(实得首段的 pan);复原后绿。

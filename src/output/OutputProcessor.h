@@ -496,7 +496,8 @@ private:
     void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
                                std::int64_t rangeEndSample, bool clearManual, std::uint16_t writeMask);
     // [SL-399 R3] vadP 写回那一侧要的是**写回窗的 hop 下标**(不再拿采样率除回来 —— 见
-    // `analysisApplyFirstHop_` 的头注)。段表面仍吃上面那对样本数(同一趟作业、同一个 hopSamples)。
+    // `AnalysisJob` 里 `applyFirstHop_/applyLastHop_` 的头注)。段表面仍吃上面那对样本数
+    // (同一趟作业、同一个 hopSamples)。
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
                         std::int64_t rangeEndSample, std::uint64_t applyFirstHop, std::uint64_t applyLastHop,
                         bool clearManual, bool fullScope, AnalysisDoneReason resegmentReason,
@@ -759,6 +760,14 @@ private:
     void tickResegmentDebounce(std::int64_t nowMs); // [M] 25Hz;调用方已持 lifecycleMutex_
     static constexpr std::int64_t kResegmentDebounceMs = 300; // 契约 §1.18 逐字
     // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
+    //
+    // ⚠ [SL-399 R9] 这四个**同路**成员(`analysisClearManual_` / `analysisFullScope_` /
+    // `analysisResegmentReason_` / `analysisTracksMask_`)仍留在 processor 上,由 `[M]` 写、
+    // 由 `[W]` 的 `AnalysisJob::run()` 在交接时读 —— 与写回窗同一种形状。本 PR 只把**新引入的
+    // 那两个 hop**(写回窗)收进作业对象(`AnalysisJob` 的 `applyFirstHop_/applyLastHop_`),
+    // 既有这四个**不动**:它们同属一条「作业口径该随作业走」的账,统筹已另立 **SL-408**
+    // (把这四个一并搬进 `AnalysisJob` 构造参数),不在本卡顺手改 —— 一次改五个会让本轮的
+    // 删除式与四格 host 判据的作用面一起漂。
     bool analysisClearManual_ = false;
     // [SL-279] 本轮是不是「分析(全部)」。与 analysisClearManual_ 同款:startAnalysis 受理时写、
     // 随 PendingAnalysis 走到 finishAnalysis。
@@ -766,22 +775,15 @@ private:
     // 同上,本次作业的触发档与真参与分析的轨集合([M] 写,交接时随结果走)。
     AnalysisDoneReason analysisResegmentReason_ = AnalysisDoneReason::None;
     std::uint16_t analysisTracksMask_ = 0;
-    // [SL-399] **写回窗**(hop 栅格上的半开区间 `[first, last)`),与作业的**计算窗**分开:
-    // 计算窗一律放到整条已采集时间线(与「分析(全部)」同形,连续性锚与区间切分才和全量分析
-    // 一致),而写回仍按 scope 的 [startS,endS] —— `applyAnalysisSegments` 的 `outsideRange`
-    // 读的就是它换算出来的样本对。
-    // 不这么分的话,单段「恢复自动」会拿「当前参数值」当首区间锚、且前面没有任何区间,
-    // 解出来的 pan/vol 与全量分析对该段给出的值不同(用户 v5.6.13 实测:−20/−0.2 → −60/−0.9)。
+    // [SL-399 R9] **写回窗从这里搬走了**(原先留在 processor 上的那两个 hop 下标成员已整个删除):
+    // 它现在**只活在作业对象里**(`AnalysisJob` 的两个 hop 成员),与 `hopSamples_` 挨着 ——
+    // 那才是「随作业走」的结构性保证。
     //
-    // [SL-399 R3] **真源是 hop,不是样本**。原先存的是 `applyHop * hopSamples` 乘出来的
-    // 样本对,而 `finishAnalysis` 又拿自己那一刻的 `sampleRate_` 反算回 hop ——
-    // `prepareToPlay` 并不取消在途作业(它只取锁再 `sampleRate_.store(...)`),
-    // 宿主在分析跑着时改采样率,那一乘一除就不是同一个基数,注释里「整除无损」当场变假话,
-    // 裁出来的 vadP 窗整体漂掉(或 `hi <= lo` 静默一个 hop 都不写)。
-    // 改成随作业走 hop 之后,「窗落在 hop 栅格上」是**结构上的事实**:乘一次(交接处,
-    // 用那趟作业自己的 hopSamples)给段表面用,vadP 那一侧直接用 hop 下标,不再有除法。
-    std::uint64_t analysisApplyFirstHop_ = 0;
-    std::uint64_t analysisApplyLastHop_ = 0;
+    // 为什么非搬不可(复审【重要】①):留着的话 `run()` 在 **[W]** 上持 `pendingMutex_` 读它、
+    // 而 `startAnalysis` 在 **[M]** 上持 `lifecycleMutex_` 写它 —— **两把不同的锁**,
+    // 一对非原子 `std::uint64_t` 上的真实竞争(`cancelAnalysis` 不 join 就清
+    // `analysisRunning_`,旧线程可能正卡在 `pendingMutex_` 之前)。今天结果良性靠的是
+    // `generation_` 把那份 pending 判废,那是「值反正会被丢掉」,不是「没有竞争」。
 
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;

@@ -480,6 +480,13 @@ await withSession(
         // 真桥那侧 `emitSegments(…, kAllTracksMask)` 走真 diff(`changedAtDisplayPrecision`),
         // 上下文轨没动 ⇒ 一条都不报。受影响的是工具栏那个「N 处改动」的读数。
         //
+        // ⚠ **只对齐了轨维;范围维没有**(deepseek 复审①,已知 deviation、不做区间过滤):
+        // `changed[]` 仍由 `mock-data.js` 按 `(ch*3+i)%17` 在**整条时间线**上登记 ——
+        // 它根本没有 `startS/endS` 这个概念 ⇒ 窄 scope 下**写回轨落在窗外的段**照样在
+        // `changed[]` 里(真桥那侧窗外段两侧逐字节相同,`diffTrackInto` 天然不产条目)。
+        // 下面这几条断的是**轨维**(谁被点名),不是范围维。影响面仅 preview
+        // (`web-preview/` 不参与构建),故本卡只记账。
+        //
         // 反向验证(D7):把 `regenerateSegments` 里 `writeChannels` 那段过滤整个删掉
         // ⇒ 下面第 4 条(越界点名)与第 5 条(added/removed)当场红,第 1/2/3 条(两条前提 +
         // 正对照)照绿 —— 这正是本格要的形态:红的是「越界点名」,不是「帧里没东西」。

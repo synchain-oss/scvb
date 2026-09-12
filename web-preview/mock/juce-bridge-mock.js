@@ -752,6 +752,14 @@ function makeContext(role, world) {
                     frame.diff.changed = frame.diff.changed.filter((c) =>
                         writeChannels.includes(c.ch),
                     );
+                    // ⚠ **只对齐了轨维;范围维没有**(deepseek 复审①,已知 deviation、不做区间过滤):
+                    // `changed[]` 是 `mock-data.js` 在**整条时间线**上按 `(ch*3+i)%17` 登记的
+                    // (那里没有 `startS/endS` 的概念)⇒ 写回轨落在 scope **窗外**的段照样在
+                    // `changed[]` 里;真桥那侧窗外段两侧逐字节相同,`diffTrackInto` 天然不产条目。
+                    // 上面这两行只保证「被点名的轨都在写回集内」,不保证「被点名的段都在窗内」。
+                    // 影响面仅 preview(`web-preview/` 不参与构建),要真对齐得按段 `t0S/t1S`
+                    // 与 `[startS,endS)` 求交后再过滤(计数断言会跟着动)—— 本卡只记账。
+                    //
                     // `added`/`removed` 拿**只含写回集**的那一趟生成器重算,而不是在这里自己
                     // 拼一个哈希 —— 那两个数的唯一真源是 `mock-data.js` 里对 `total` 的
                     // `hash32(0x8201/0x8202, …)`,复刻一份就是第二把尺子。
@@ -878,6 +886,15 @@ function makeContext(role, world) {
         printedParamsDiff() {
             if (role !== "output") return null;
             if (!isPrinting()) {
+                // ⚠ **已知 deviation(claude 复审③ / pr-agent ①,不补)**:native 的
+                // `planParamsFrame` 在回声位**真→假**时照发一帧(`hostEcho:false`、
+                // `values:{}`),mock 在这里只把记账位归假、**不发那一帧**。
+                // 逐条核过下游:徽标/灰显的唯一消费入口 `hostEchoVisible()`
+                // (`web/shared/host-echo.js`)只看 `hostEchoAt` 时间戳与播放期闩锁,
+                // 而 `web/output/app.js` 的 `hostEchoAt` **只在 true 帧推进**(false 帧不重置)
+                // ⇒ 熄灭靠窗口/闩锁,不靠这一帧。所以这是**保真度**差异、**无页面可见后果**;
+                // 补发一帧反而会在 preview 里造出一条 native 有、页面零消费者的通路
+                // (SL-357 的「时序同形」要的是同形,不是给死帧凑数)。
                 lastHostEchoSent = false;
                 return null;
             }

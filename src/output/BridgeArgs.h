@@ -173,6 +173,20 @@ inline void settleResendLatch(bool sent, bool& pendingFull) noexcept
 // 它是**边沿触发**的(宿主那 600ms 新鲜窗只在起播/停走附近翻转一次)⇒ 一次播放最多多两帧,
 // 不会在 25Hz 上刷屏。
 //
+// ⚠ **边沿触发的边界**(claude 复审② 点名;措辞按代码实情,数取自 `AutomationPrinter.h` 的
+// `kHostEchoFreshMs = 600` 与 `web/shared/host-echo.js` 的 `HOST_ECHO_RELEASE_STOPPED_MS = 900`):
+// 「一次播放最多多两帧」的前提是**回声位在这段播放里真的翻过一次**。它有一个够得着的反例 ——
+// 宿主在**停走态**就连续写(每笔间隔 < 600ms)⇒ `hostEchoActive()` 一直为真、**一次都不翻转**;
+// 若用户在这之后才按播放,本函数不会发任何帧 ⇒ 页面手上 `store.params.hostEchoAt` 还停在
+// 那笔早到的写上(比如 `playbackStartedAt - 1500`)。而 `hostEchoVisible()` 的闩锁①要的是
+// `hostEchoAt >= playbackStartedAt - 900`,接不住;②③又只剩 900ms 窗口 ⇒ **徽标在播放中灭掉**,
+// 而宿主一直在写。这与 A23 是同一族(触发前提换成「回声位在起播前就已经亮着」)。
+// 硬化办法(把走带上升沿也算一条发帧理由,`planParamsFrame` 多收一个走带入参)已另立
+// **SL-409**;本卡只如实记账,不在这里扩签名。
+// 另:`smoke-output-dist-page.mjs` 的 ⑫ 那一格**量不到这一支** —— 它的夹具是
+// `setPlaying(false); sleep(400)` 之后才起播,等于**构造**出一个落在播放期内的干净上升沿。
+// 那一格证明的是「干净上升沿这一支」,不是「起播时徽标一定亮」。
+//
 // ⚠ **「值」的口径**(deepseek 复审④ 点名,留在头注里而不动契约文本):本卡的「值」= **整个
 // `scvb.params` 载荷**,含 §2.2 的 `hostEcho`。§0.4 那句「值未变不发」说的是**载荷**没内容
 // 就不发,不是「`values` 这个对象必须非空」。由此有一条**有意的形状**:只翻回声位的那一帧

@@ -2667,9 +2667,10 @@ class ScvbOutputAudioProcessor::AnalysisJob final : public juce::Thread
 public:
     AnalysisJob(ScvbOutputAudioProcessor& owner,
                 std::array<scvb::analysis::PipelineTrackFeatures, scvb::engine::kNumTracks> features,
-                scvb::analysis::PipelineConfig config, std::uint32_t generation, std::int64_t hopSamples)
+                scvb::analysis::PipelineConfig config, std::uint32_t generation, std::int64_t hopSamples,
+                std::uint64_t applyFirstHop, std::uint64_t applyLastHop)
         : juce::Thread("scvb-analysis"), owner_(owner), features_(std::move(features)), config_(config),
-          generation_(generation), hopSamples_(hopSamples)
+          generation_(generation), hopSamples_(hopSamples), applyFirstHop_(applyFirstHop), applyLastHop_(applyLastHop)
     {
     }
 
@@ -2698,14 +2699,18 @@ public:
             //
             // [SL-399 R3] 乘这一下用的是**本作业自己的** `hopSamples_`(构造时从 `startAnalysis`
             // 带过来的那一把尺子),不是交接时刻重新 `featHopSeconds() * sampleRate_` 现算的 ——
-            // 宿主在分析在途期间改采样率时,后者与构造写回窗时用的不是同一个数(见
-            // `analysisApplyFirstHop_` 的头注)。hop 对原样带走给 vadP 那一侧,那边不做除法。
-            owner_.pendingAnalysis_.rangeStartSample =
-                static_cast<std::int64_t>(owner_.analysisApplyFirstHop_) * hopSamples_;
-            owner_.pendingAnalysis_.rangeEndSample =
-                static_cast<std::int64_t>(owner_.analysisApplyLastHop_) * hopSamples_;
-            owner_.pendingAnalysis_.applyFirstHop = owner_.analysisApplyFirstHop_;
-            owner_.pendingAnalysis_.applyLastHop = owner_.analysisApplyLastHop_;
+            // 宿主在分析在途期间改采样率时,后者与构造写回窗时用的不是同一个数。
+            // hop 对原样带走给 vadP 那一侧,那边不做除法。
+            //
+            // [SL-399 R9] 窗的两个下标也是**本作业自己的成员**(与 `hopSamples_` 挨着),
+            // 不再读 `owner_` 上的成员:那对成员在 `[M]` 上写、这里在 `[W]` 上读,
+            // 中间**不是同一把锁**(`pendingMutex_` vs `lifecycleMutex_`)—— 一对非原子
+            // `std::uint64_t` 上的真实数据竞争。搬进作业对象之后,「写回窗随作业走」
+            // 就是**结构上的事实**,不是靠 `generation_` 判废来兜。
+            owner_.pendingAnalysis_.rangeStartSample = static_cast<std::int64_t>(applyFirstHop_) * hopSamples_;
+            owner_.pendingAnalysis_.rangeEndSample = static_cast<std::int64_t>(applyLastHop_) * hopSamples_;
+            owner_.pendingAnalysis_.applyFirstHop = applyFirstHop_;
+            owner_.pendingAnalysis_.applyLastHop = applyLastHop_;
             owner_.pendingAnalysis_.generation = generation_;
             owner_.pendingAnalysis_.clearManual = owner_.analysisClearManual_;
             owner_.pendingAnalysis_.fullScope = owner_.analysisFullScope_;
@@ -2723,6 +2728,27 @@ private:
     std::uint32_t generation_ = 0;
     // [SL-399 R3] 本作业起跑时那把尺子(startAnalysis 的局部量),写回窗的样本换算只认它。
     std::int64_t hopSamples_ = 0;
+    // [SL-399 R3/R9] **写回窗**(hop 栅格上的半开区间 `[first, last)`),与作业的**计算窗**
+    // 分开:计算窗一律放到整条已采集时间线(与「分析(全部)」同形,连续性锚与区间切分才和
+    // 全量分析一致),而写回仍按 scope 的 [startS,endS] —— `applyAnalysisSegments` 的
+    // `outsideRange` 读的就是按 `hopSamples_` 乘出来的样本对。
+    // 不这么分的话,单段「恢复自动」会拿「当前参数值」当首区间锚、且前面没有任何区间,
+    // 解出来的 pan/vol 与全量分析对该段给出的值不同(用户 v5.6.13 实测:−20/−0.2 → −60/−0.9)。
+    //
+    // **真源是 hop,不是样本**:原先样本对存在 processor 上、由 `finishAnalysis` 拿自己那一刻的
+    // `sampleRate_` 反算回 hop —— `prepareToPlay` 并不取消在途作业(它只取锁再
+    // `sampleRate_.store(...)`),宿主在分析跑着时改采样率,那一乘一除就不是同一个基数,
+    // 「整除无损」当场变假话,裁出来的 vadP 窗整体漂掉(或 `hi <= lo` 静默一个 hop 都不写)。
+    // 现在两个下标随作业走,「窗落在 hop 栅格上」是结构上的事实:乘一次(交接处,用本作业的
+    // `hopSamples_`)给段表面用,vadP 那一侧直接用 hop 下标,不再有除法。
+    //
+    // [SL-399 R9/R12] **边界**(别把上面那两句读成「采样率这一族已经收干净了」):
+    //   · 交接乘出来的那对样本数,与既有段表 `t0Samples/t1Samples` 在「宿主中途改采样率」时
+    //     仍**不同域** —— 与改造前同形、非本卡引入;采样率一变整张段表的样本域就失效是
+    //     更上层的问题,不在这里兜。
+    //   · 本作业对象是 `[W]` 独占的:成员只在构造时写、`run()` 里读,`[M]` 一个字节都不碰。
+    std::uint64_t applyFirstHop_ = 0;
+    std::uint64_t applyLastHop_ = 0;
 };
 
 // 退休作业的回收(定义必须在 AnalysisJob 类之后:unique_ptr 析构与 stopThread 都要完整类型)。
@@ -3303,7 +3329,8 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
         //     **计算窗**起点,即 `cfg.rangeStartSample`(计算窗恒从 0 起 ⇒ 恒为 0)。
         //   · **不参与自动声像** —— 这条轨压根不进指派:`AutoAssign` 的 `!participateInAutoPan`
         //     分支直接写 `currentPan`,锚**就是写回值**,语义是「这条轨保持它原来那一份」。
-        //     它必须取**写回窗**起点所在的段:`analysisApplyFirstHop_` 换算到样本。
+        //     它必须取**写回窗**起点所在的段:本函数里那个局部量 `applyStartSample`(由
+        //     `applyFirstHop × hopSamples` 算出来,随后作为构造参数进作业对象)。
         //     取计算窗起点(恒 0)会把整轨**首段**的 pan 写到用户选中的那一段上 ——
         //     轨内 pan 随时间变化时,首段的值与写回处可能毫无关系(正是下面这两条
         //     `sg.t1 <= rangeT0` / `best == nullptr` 分支要防的那种行为;它们在第二种情形
@@ -3369,18 +3396,22 @@ ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::startAnalysi
     analysisClearManual_ = clearManual;
     analysisFullScope_ = fullScope; // [SL-279] 随作业走
     analysisTracksMask_ = analyzedTracks;
-    // [SL-399 R3] 写回窗随作业走的是 **hop 下标**(计算窗已在 cfg 里,是样本面)。
-    // 样本对在**交接处**由 `AnalysisJob::run()` 按本作业自己的 `hopSamples` 乘出来给
-    // `applyAnalysisSegments`(段表面是样本域),vadP 那一侧直接用 hop、不做除法 ——
-    // 原先那对样本成员 + `finishAnalysis` 里的 `llround(featHopSeconds()*sampleRate_)`
-    // 会在宿主于分析在途期间改采样率时算成两个基数(理由见头文件里这段成员的头注)。
-    analysisApplyFirstHop_ = applyFirstHop;
-    analysisApplyLastHop_ = applyLastHop;
+    // [SL-399 R3/R9] 写回窗**不在这里落任何成员**:它作为构造参数直接进作业对象
+    // (`AnalysisJob` 的 `applyFirstHop_/applyLastHop_`,与 `hopSamples_` 挨着),此后
+    // **只活在作业里** —— `AnalysisJob::run()` 在 `[W]` 上按本作业自己的 `hopSamples_`
+    // 乘出样本对给 `applyAnalysisSegments`(段表面是样本域),vadP 那一侧直接用 hop、不做除法。
+    // 原先那对 processor 成员是 `[M]` 写 / `[W]` 读、**两把不同的锁**,是一处真实竞争;
+    // 而 `finishAnalysis` 里那次 `llround(featHopSeconds()*sampleRate_)` 会在宿主于分析在途
+    // 期间改采样率时算成两个基数(理由见 `AnalysisJob` 里那段成员头注)。
+    // [SL-399 R12] 划边界:交接乘出来的那对样本数与既有段表 `t0Samples/t1Samples` 在
+    // 「宿主中途改采样率」时**仍不同域** —— 与改造前同形、非本卡引入;采样率一变整张段表的
+    // 样本域就失效是更上层的问题,别把上面这句读成「采样率这一族已经收干净了」。
     // [SL-255 复审①] 作业真造出来了才把 reason **取走**(取走即清):早退的那几支不消费它,
     // 留给调用方(tickResegmentDebounce 的 !accepted.ok 分支)清。此后 reason 随作业走。
     analysisResegmentReason_ = pendingResegmentReason_;
     pendingResegmentReason_ = AnalysisDoneReason::None;
-    analysisJob_ = std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen, hopSamples);
+    analysisJob_ =
+        std::make_unique<AnalysisJob>(*this, std::move(features), cfg, gen, hopSamples, applyFirstHop, applyLastHop);
     analysisJob_->startThread();
 
     // [SL-284] 新作业一受理就把回退级清 0 —— **不清零会造出假绿**(#183 复审)。
