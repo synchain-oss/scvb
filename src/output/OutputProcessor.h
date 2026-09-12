@@ -768,6 +768,12 @@ private:
     // 既有这四个**不动**:它们同属一条「作业口径该随作业走」的账,统筹已另立 **SL-408**
     // (把这四个一并搬进 `AnalysisJob` 构造参数),不在本卡顺手改 —— 一次改五个会让本轮的
     // 删除式与四格 host 判据的作用面一起漂。
+    // [SL-399 R20] **它们今天靠什么兜**(别读成「没有竞争,只是没搬」):与写回窗搬走前**同一形状** ——
+    // `[M]` 持 `lifecycleMutex_` 写、`[W]` 在交接时读,**两把不同的锁**;结果良性靠的是
+    // `handleAsyncUpdate` 里那道 `generation_` 比对把不匹配的 pending 整份判废
+    // (`cancelAnalysis` 不 join 就清 `analysisRunning_`,旧线程可能正卡在 `pendingMutex_` 之前)。
+    // 也就是说:今天得到的是「值反正会被丢掉」,**不是**「没有竞争」—— R9 对写回窗做的
+    // 正是把这条论证换成结构性事实;这四个等 SL-408 用同一招收掉。
     bool analysisClearManual_ = false;
     // [SL-279] 本轮是不是「分析(全部)」。与 analysisClearManual_ 同款:startAnalysis 受理时写、
     // 随 PendingAnalysis 走到 finishAnalysis。

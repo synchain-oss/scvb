@@ -356,8 +356,17 @@ bool OutputEditor::emitParams(bool forceFull)
     put(payload, "hostEcho", paramsPlan.hostEcho);
     put(payload, "full", forceFull);
     put(payload, "versionActive", v);
-    // 记账在**构载荷之后**:这一帧接下来要么真发出去、要么因与上一帧逐字相同被丢 ——
-    // 后者意味着页面早就收到过同一个 `hostEcho` 值,账同样是对的。
+    // [SL-399 R19] 记账在**构载荷之后**:这一帧接下来有**三种**结局(与 `emitIfChanged` 的
+    // 三个出口一一对应,`:280-294`)——
+    //   ① `json == lastJson` ⇒ 被丢(页面早就收到过同一份载荷);
+    //   ② **不可见被丢,且不推进 `lastParamsJson_`** —— 这一路 `lastHostEchoSent_` 照样推到了
+    //      `echoNow`,而页面**根本没收到**这一帧。它今天不咬人靠的是**另一条链**:
+    //      本函数返回 `webView().isVisible()` = false ⇒ `settleResendLatch` 保持 `pendingFull`
+    //      ⇒ 恢复可见后有一发 `forceFull=true`,而 `planParamsFrame` 的 `forceFull` 短路让它
+    //      无条件发一帧、且带的是**此刻**的 `hostEcho` ⇒ 账补得回来。
+    //   ③ 真发出去。
+    // ①②之后要么页面手上已有同一份载荷、要么有一发强制全量兜底,所以这里**无条件**推进基线 ——
+    // 与下面那句「可见却没发 = 情形②」是同一条口径的两半(那段注释只覆盖返回值语义)。
     lastHostEchoSent_ = paramsPlan.nextBaseline;
 
     // 返回「C++ 侧观察到这一帧确实下发了」(SL-199 闩锁的清位判据)。

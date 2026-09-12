@@ -237,6 +237,11 @@ inline AnalysisWindows analysisWindows(double startS, double endS, double extent
     w.apply = analyzeHopWindow(startS, endS, hopS);
     // 两窗都必须自洽,且**有交**才受理:`apply` 完全落在 `compute` 左边或右边 = 这一段
     // 一帧都没采到 ⇒ 没有轨会被改写。
+    // [SL-399 R21] 写成对称形式是有意的,但**今天只有右侧那一支有牙**:计算窗左端恒为 0
+    // (`analyzeHopWindow(0.0, …)`),而 `apply.firstHop >= 0`,所以 `apply.valid()` 成立时
+    // `apply.lastHop > w.compute.firstHop` **恒真** —— 左侧那一项留给「计算窗左端将来不恒 0」
+    // (比如只算某段之后的时间线),别读成两条边界各有一格删除式:`tests/core` 的
+    // 「落在时间线外 ⇒ 拒绝」只能从**右**边界进。
     const bool overlap = w.compute.valid() && w.apply.valid() && w.apply.firstHop < w.compute.lastHop &&
                          w.apply.lastHop > w.compute.firstHop;
     w.rejects = !overlap;
