@@ -209,7 +209,11 @@ struct ParamsFramePlan
 {
     bool emit = false; // 要不要构载荷并尝试下发
     bool hostEcho = false; // 载荷里 `hostEcho` 写什么(= 这一帧的实时值)
-    bool nextBaseline = true; // 记账:下一拍拿它比
+    bool nextBaseline = false; // 记账:下一拍拿它比。
+    // [SL-399 R25] 默认值取 **false** = 「这一拍没发过 true 帧」,与真基线
+    // `OutputEditor::lastHostEchoSent_` 的初值(`false`)同向。下面两条 return 都显式赋了值,
+    // 所以今天它到不了;取 false 是为了**将来的提前返回**:若有人插一条不赋值的早退,
+    // 默认 `true` 会把「没发过」记成「发过」,静默吃掉下一次上升沿。
 };
 
 inline ParamsFramePlan planParamsFrame(bool anyValueChanged, bool forceFull, bool echoNow, bool lastEchoSent) noexcept

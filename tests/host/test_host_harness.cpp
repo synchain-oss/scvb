@@ -8547,3 +8547,176 @@ TEST_CASE("HOST SL-399 H5:写回窗内全量分析没有段 ⇒ 窗内陈旧 aut
     // ★ H5b:段表逐字节不变(全量分析在这个窗里本来就没有段 ⇒ b″ 下没有任何东西该动)。
     CHECK(sameSegments(segmentsOfTrack(r.out, ch), t50c));
 }
+
+// ===========================================================================
+// [SL-399 R22] H5c:`clearManual=true` 档下,窗内**未锁定的手编段**会被清、锁定段留下
+//
+// 病根(两家复审第 4 轮【重要】①):R16 那句记账写「用户段/锁定段照旧免疫」,而 `kept` 的判据是
+//   `isUser = isLocked || (!clearManual && origin != Auto)`
+// —— `clearManual=true`(「重新识别(含手动段)」,`tab-wave.js` 的选区重识别与检查器的
+// 「恢复自动」都走这一档)下 `isUser` **退化成 `isLocked`**:只有锁定段免疫。这是 §1.6 的
+// **既有语义**(与本卡无关),但与 R16 新放开的「窗内无产出 ⇒ 窗内清空」叠加之后多出一个
+// 组合:**窗内有未锁定的手编段 + 全量分析在窗内无产出 + `clearManual=true`**
+// ⇒ 手编段被清掉且**无替代**(改造前那一发是 no-op)。H5/H5b 都用 `clearManual=false`,
+// 量不到这一档 —— 本格就是补它,同时把「用户可见文案要准」那半落到 CHANGELOG 上。
+//
+// 素材与选法同 H5;按裁定的 fallback 取 T50 里**相邻两条**都不与 T500 相交的段作 S1/S2
+// (H5 那条 S 在自己的窗内没有邻居,构不出「窗内一条未锁手编段 + 一条锁定段」)。
+//   · S1 → `set_values`(后置 origin=user_edited ∧ locked=true)再 `set_locked(false)`
+//     ⇒ **未锁定的手编段**;
+//   · S2 → `set_values`(locked 保持 true)⇒ **锁定段**。
+// 窗 = [S1.t0, S2.t1),该窗内全量分析(500 档)一个段都没有。
+//
+// 删除式 **D9**:把 `isUser` 改成 `isLocked || segmentOrigin(sg.flags) != Auto`(忽略
+// `clearManual`)⇒ S1 被当用户段保留 ⇒ 本格红在「S1 不在了」那一条。复原后绿;
+// H5/H5b 不受影响(它们跑的是 auto 段那一档)。
+// ===========================================================================
+TEST_CASE("HOST SL-399 H5c:clearManual 档下窗内未锁手编段被清、锁定段逐字节留下", "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 素材:配方同 SL-391 / H5(理由见 H5 头注 —— 默认 `capture()` 三档会并成一段)。
+    r.runBlocks(240, 0.0f);
+    r.out.setCaptureEnabled(true);
+    r.pump(400);
+    r.runBlocks(20, 0.0f);
+    for (const int blocks : {3, 8, 20, 45, 80})
+    {
+        r.runBlocks(blocks, 0.5f);
+        r.runBlocks(60, 0.0f);
+    }
+    r.pump(400);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const int ch = kTestChannel;
+    const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
+
+    const auto analyzeAll = [&r, &win, ch](int minSegmentMs) {
+        r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+        return segmentsOfTrack(r.out, ch);
+    };
+
+    const auto t50 = analyzeAll(50);
+    const auto t500 = analyzeAll(500);
+    REQUIRE(t50.size() >= 2u);
+    REQUIRE_FALSE(t500.empty());
+
+    // 找相邻一对 S1/S2,使**整个窗** [S1.t0, S2.t1) 与 T500 的任何段都不相交
+    // (只要求 S1、S2 各自不相交还不够:两条之间的间隙里可能压着一条 T500 段)。
+    const auto intersects = [](std::int64_t a0, std::int64_t a1, std::int64_t b0, std::int64_t b1) {
+        return a0 < b1 && b0 < a1;
+    };
+    std::size_t pairIdx = t50.size(); // 哨兵:≥ size = 没找到
+    for (std::size_t i = 0; i + 1 < t50.size(); ++i)
+    {
+        bool hit = false;
+        for (const auto& y : t500)
+        {
+            if (intersects(t50[i].t0, t50[i + 1].t1, y.t0, y.t1))
+            {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit)
+        {
+            pairIdx = i;
+            break;
+        }
+    }
+    if (pairIdx >= t50.size())
+    {
+        std::string dump = "T50";
+        for (const auto& x : t50)
+        {
+            dump += " [" + std::to_string(x.t0) + "," + std::to_string(x.t1) + ")";
+        }
+        dump += " | T500";
+        for (const auto& y : t500)
+        {
+            dump += " [" + std::to_string(y.t0) + "," + std::to_string(y.t1) + ")";
+        }
+        UNSCOPED_INFO("H5c 前提:找不到「相邻两条 + 整窗都不与 T500 相交」的一对。" << dump);
+        REQUIRE(pairIdx < t50.size());
+    }
+    const scvb::state::Segment s1 = t50[pairIdx];
+    const scvb::state::Segment s2 = t50[pairIdx + 1];
+    UNSCOPED_INFO("H5c S1 = [" << s1.t0 << "," << s1.t1 << ") 采样,S2 = [" << s2.t0 << "," << s2.t1 << ") 采样;T50 共 "
+                               << t50.size() << " 段 / T500 共 " << t500.size() << " 段");
+
+    // ⚠ 前置:②那一档刚把段表**整个换成了 T500**,而下面要编辑的是 **T50** 的段 ——
+    // 先复位回 50 档并断它逐字节等于 T50,否则 `pairIdx` 指的是另一张表的下标
+    // (第一版漏了这一步:`segmentAt` 在那张 T500 表上找不到 S1)。写法同 H5 的第 ④ 步。
+    const auto t50r = analyzeAll(50);
+    REQUIRE(sameSegments(t50r, t50));
+
+    // 造形态:S1 = 未锁定的手编段;S2 = 锁定段(set_values 的后置已是 locked=true)。
+    {
+        scvb::state::SegmentEditArgs sv;
+        sv.op = scvb::state::SegmentEditOp::SetValues;
+        sv.segIdx = static_cast<int>(pairIdx);
+        sv.hasPan = true;
+        sv.pan = -70.0f;
+        REQUIRE(r.out.editSegment(ch - 1, sv) == scvb::state::SegmentEditResult::Ok);
+        scvb::state::SegmentEditArgs lk;
+        lk.op = scvb::state::SegmentEditOp::SetLocked;
+        lk.segIdx = static_cast<int>(pairIdx);
+        lk.locked = false; // S1:摘锁
+        REQUIRE(r.out.editSegment(ch - 1, lk) == scvb::state::SegmentEditResult::Ok);
+
+        sv.segIdx = static_cast<int>(pairIdx + 1);
+        sv.pan = 70.0f;
+        REQUIRE(r.out.editSegment(ch - 1, sv) == scvb::state::SegmentEditResult::Ok);
+        lk.segIdx = static_cast<int>(pairIdx + 1);
+        lk.locked = true; // S2:显式钉住锁(set_values 已经是 true,这里不靠隐式后置)
+        REQUIRE(r.out.editSegment(ch - 1, lk) == scvb::state::SegmentEditResult::Ok);
+    }
+
+    // 前置:两条段的 origin/locked 形态真如所设(否则本格测的是别的东西)。
+    const auto edited = segmentsOfTrack(r.out, ch);
+    const auto* e1 = segmentAt(edited, static_cast<double>(s1.t0 + s1.t1) * 0.5 / kSr);
+    const auto* e2 = segmentAt(edited, static_cast<double>(s2.t0 + s2.t1) * 0.5 / kSr);
+    REQUIRE(e1 != nullptr);
+    REQUIRE(e2 != nullptr);
+    REQUIRE(scvb::state::segmentOrigin(e1->flags) == scvb::state::SegmentOrigin::UserEdited);
+    REQUIRE_FALSE(scvb::state::segmentLocked(e1->flags));
+    REQUIRE(scvb::state::segmentOrigin(e2->flags) == scvb::state::SegmentOrigin::UserEdited);
+    REQUIRE(scvb::state::segmentLocked(e2->flags));
+    const scvb::state::Segment e2Copy = *e2;
+
+    // ★ H5c:500 档 + 整窗重识别(**clearManual=true** —— 就是「重新识别(含手动段)」那一档)
+    r.out.runtime().segmentationMinSegmentMs = 500;
+    const double w0 = static_cast<double>(s1.t0) / kSr;
+    const double w1 = static_cast<double>(s2.t1) / kSr;
+    REQUIRE(r.runAnalysisMasked(onlyCh, w0, w1, /*clearManual=*/true));
+
+    const auto after = segmentsOfTrack(r.out, ch);
+    const auto* a1 = segmentAt(after, static_cast<double>(s1.t0 + s1.t1) * 0.5 / kSr);
+    const auto* a2 = segmentAt(after, static_cast<double>(s2.t0 + s2.t1) * 0.5 / kSr);
+    UNSCOPED_INFO("H5c 写回后:该轨 " << edited.size() << " 段 → " << after.size() << " 段;S1 处 "
+                                     << (a1 == nullptr ? "无段" : "仍有段") << ",S2 处 "
+                                     << (a2 == nullptr ? "无段" : "仍有段"));
+    // S1(未锁定的手编段)被清掉 —— ← D9 时这一格红
+    CHECK(a1 == nullptr);
+    // S2(锁定段)逐字节留下
+    REQUIRE(a2 != nullptr);
+    CHECK(a2->t0 == e2Copy.t0);
+    CHECK(a2->t1 == e2Copy.t1);
+    CHECK(a2->pan == e2Copy.pan);
+    CHECK(a2->volDb == e2Copy.volDb);
+    CHECK(a2->flags == e2Copy.flags);
+    // 其余段逐字节不变(期望 = 编辑后的表去掉 S1)
+    std::vector<scvb::state::Segment> expected;
+    for (const auto& x : edited)
+    {
+        if (!(x.t0 == s1.t0 && x.t1 == s1.t1))
+        {
+            expected.push_back(x);
+        }
+    }
+    CHECK(sameSegments(after, expected));
+}

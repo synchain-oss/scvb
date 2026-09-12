@@ -877,7 +877,8 @@ function makeContext(role, world) {
          * `scvb.params` 稀疏 diff(`hostEcho:true`,§0.5:UI 只更新显示、绝不回写)。
          *
          * [SL-400] **判据与 native 同一条**:值变了 **或** 回声位翻转 ⇒ 这一帧有内容
-         * (`BridgeArgs.h` 的 `planParamsFrame()`)。原先只看 `values`,于是「宿主在写、
+         * (`BridgeArgs.h` 的 `planParamsFrame()`;**上升沿** —— 真→假那半见下面那条 deviation,
+         * mock 不发)。原先只看 `values`,于是「宿主在写、
          * 但写进去的值与当前相同」这一档(Cubase 起播 chase)在预览里**永远发不出帧** ——
          * 页面那把播放期闩锁也就永远武装不起来,而 E3 要断的正是「起播这一下徽标就该亮」。
          * 回声位在这里等价于「打印态」(native 那 600ms 新鲜窗在 mock 里的替身),所以
