@@ -631,9 +631,11 @@ function makeContext(role, world) {
      *   · 保留 = 受保护(用户段 ∪ 锁定段)**或**完全落在范围外(`t1S <= startS ||
      *     t0S >= endS`,半开区间,与 native 的 `sg.t1 <= rangeStart || sg.t0 >= rangeEnd`
      *     逐字同形);
-     *   · 新段只取**完全落在范围内**的那些。native 的产出天然被 hop 窗夹在范围里
-     *     (AnalysisPipeline 的段 = [firstHop, lastHop) 内的 VAD 段),生成器不知道范围,
-     *     所以这里补一道夹取。**不裁半截段** —— 理由同下面那条重叠处理。
+     *   · 新段只取**完全落在范围内**的那些。[SL-399 后**已知 deviation**] native 现在按**写回窗
+     *     **裁切**跨窗的产出段(`OutputProcessor.cpp` 的 `clippedT0/clippedT1`),而这里只收
+     *     **完全落在范围内**的整段、跨窗的整段丢弃 ⇒ 选区边缘那一小截 preview 与真桥**不同形**
+     *     (preview-only;要同形得在这里也裁,连带 `smoke-mock` 的段数期望一起动,末推不开,
+     *     登记为已知差异)。生成器不知道范围,所以这道夹取仍然必要。
      *   · `kept` 计数只算**与范围相交的受保护段**:§2.8 的 {k} 是「本次保留了几个手动/
      *     锁定段」,范围外的段压根不在本次作用面里,算进去会让预览行的数与事后 diff 对不上
      *     (`affectedOf` 的 `manualKept` 也是按相交算的)。

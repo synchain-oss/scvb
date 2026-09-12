@@ -3753,8 +3753,15 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             // 档下只有锁定段免疫**(`isUser = isLocked || (!clearManual && origin != Auto)`,
             // 见下面的 `kept`;这是 §1.6「重新识别(含手动段)」的既有语义,与本卡无关)。
             // 于是多出一个组合:**窗内有未锁定的手编段 + 全量分析在窗内无产出 + `clearManual=true`**
-            // ⇒ 这些手编段被清掉、**而且没有任何东西替代**(改造前那一发是 no-op)。判据 **H5c**;
-            // 用户可见的那一面写在 `CHANGELOG.md` 的 SL-399 条目里。
+            // ⇒ 这些手编段被清掉、**而且没有任何东西替代**(改造前那一发是 no-op)。判据 **H5c**。
+            // ⚠ [SL-399 R26] 走这条 `clearManual=true` 路的**有两个入口**,别只想到工具条那颗:
+            //   · 选区「重新识别」(`tab-wave.js` 的 `doReidentify` / `analyze(scope,{clearManual:true})`);
+            //   · **段检查器的「恢复自动」**(`tab-wave.js` 的 `segmentRestoreScope` + 同一个
+            //     `clearManual:true`)—— 而它**出钮的充要条件**正是「未锁定的手编段」
+            //     (`renderInspectorRestore`:`origin != auto` ∧ `!seg.locked` ∧ `editable`
+            //     ∧ `!restoreWindowTooShort`),所以上面那个组合在这颗钮上是**主路径**,不是边角。
+            //     同一张卡里 `restoreWindowTooShort` 头注的两处推导也因本卡成了假话,已在那边按实情改。
+            // 用户可见的那一面写在 `CHANGELOG.md` 的 SL-399 条目里(作用面已放宽到两颗钮)。
             //
             // 这是**有意**的产品语义(裁定 b″ 逐字):写回窗内的段表 == 全量分析在该窗内的样子;
             // 全量分析在窗内没有段,窗内就不该留着旧段。改造前的 no-op 是「VAD 在 scope 里没
