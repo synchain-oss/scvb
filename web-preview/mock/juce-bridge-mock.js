@@ -698,6 +698,12 @@ function makeContext(role, world) {
             // segmentation)与版本切换/复制走的就是这一档,行为与修复前逐字相同。
             startS = -Infinity,
             endS = Infinity,
+            // [SL-399] **写回集**(= 请求的 `tracksMask`)。缺省 null = chList 全体都写。
+            // 传了它而某轨不在里面时,该轨**只进帧、不写回**:真桥的 `applyAnalysisSegments`
+            // 按 `inWriteMask` 跳过它,但分析帧仍以 `kAllTracksMask` 全量推
+            // (`OutputEditor.cpp` 的 `emitSegments(…, kAllTracksMask)`),载荷里带的是它
+            // **当时那一份**段表。本参数就是为了让 preview 与那条同形(#256 复审第 6 轮记账)。
+            writeChannels = null,
         } = {},
     ) {
         // [SL-274] `diff-flood` 场景下让 `changed[]` 顶到封顶(200):常态素材只出 29 条,
@@ -710,6 +716,15 @@ function makeContext(role, world) {
             let kept = 0;
             for (const entry of frame.channels) {
                 if (reanalysis) {
+                    if (writeChannels && !writeChannels.includes(entry.ch)) {
+                        // 上下文轨:段表一个字节不动 —— 帧里回填**既有**那一份(不是生成器
+                        // 刚造的那份),与真桥「计算集里的非写回轨照旧下发」同形。
+                        const cur = model.segByCh.get(entry.ch);
+                        if (cur) {
+                            entry.segments = clone(cur.segments);
+                        }
+                        continue;
+                    }
                     const merged = mergeReanalyzed(
                         segmentsOf(entry.ch),
                         clone(entry.segments),
@@ -747,6 +762,10 @@ function makeContext(role, world) {
     function allChannels() {
         return Array.from({ length: CHANNEL_COUNT }, (_, i) => i + 1);
     }
+
+    // [SL-400] 上一次**真的下发出去**的那一帧里 `hostEcho` 是什么(与 native 的
+    // `OutputEditor::lastHostEchoSent_` 同名同义)。判据见 `printedParamsDiff`。
+    let lastHostEchoSent = false;
 
     const ctl = {
         role,
@@ -819,10 +838,20 @@ function makeContext(role, world) {
         /**
          * PRINT 态的引擎打印头 —— 用当前播放位置在段表上取值,回一帧
          * `scvb.params` 稀疏 diff(`hostEcho:true`,§0.5:UI 只更新显示、绝不回写)。
-         * 值未变则返回 null(driver 据此跳过本帧)。
+         *
+         * [SL-400] **判据与 native 同一条**:值变了 **或** 回声位翻转 ⇒ 这一帧有内容
+         * (`BridgeArgs.h` 的 `planParamsFrame()`)。原先只看 `values`,于是「宿主在写、
+         * 但写进去的值与当前相同」这一档(Cubase 起播 chase)在预览里**永远发不出帧** ——
+         * 页面那把播放期闩锁也就永远武装不起来,而 E3 要断的正是「起播这一下徽标就该亮」。
+         * 回声位在这里等价于「打印态」(native 那 600ms 新鲜窗在 mock 里的替身),所以
+         * **离开打印态时归假** —— 否则第二次起播时它不是翻转,而是一直为真。
          */
         printedParamsDiff() {
-            if (role !== "output" || !isPrinting()) return null;
+            if (role !== "output") return null;
+            if (!isPrinting()) {
+                lastHostEchoSent = false;
+                return null;
+            }
             const v = model.snapshot.global.version_active;
             const tS = model.transport.timeS;
             const values = {};
@@ -841,7 +870,10 @@ function makeContext(role, world) {
                     model.params.values[`${p}vol`] = seg.volDb;
                 }
             }
-            if (Object.keys(values).length === 0) return null;
+            // 值一个都没变**且**回声位没翻转 ⇒ 这一帧没内容(去重仍在)。
+            if (Object.keys(values).length === 0 && lastHostEchoSent)
+                return null;
+            lastHostEchoSent = true;
             return { values, hostEcho: true, full: false, versionActive: v };
         },
         /** 停掉所有内部定时器(node 冒烟/页面卸载用)。 */
@@ -1228,10 +1260,16 @@ function buildOutputBackend(ctx) {
                 // 合并档:用户段/锁定段原样保留,只有 auto 未锁定的位置换成重算结果;
                 // `clearManual:true` 让未锁定的用户段 origin 重置后参与重算,locked 仍免疫
                 // (语义与边界见文件头「重分析语义已按 J34 建模」)。
+                // [SL-399] **帧轨集 = 全量,写回集 = 请求 mask** —— 与真桥同形:
+                // `OutputProcessor::startAnalysis` 的计算集是「整条时间线 × 全部 enabled 且
+                // 有覆盖的轨」,而 `applyAnalysisSegments` 只写 `inWriteMask` 内那些;
+                // `OutputEditor` 那一侧则恒以 `kAllTracksMask` 发帧。preview 原先按请求 mask
+                // 推帧,于是单轨请求下这一帧里根本没有「其余轨」可比 —— ⑦ 的逐字段比对集恒空
+                // (#256 复审第 6 轮记账),本卡把它对齐。
                 const frame = regenerateSegments(
                     version,
                     "analyze",
-                    a.channels,
+                    allChannels(),
                     {
                         reanalysis: true,
                         clearManual,
@@ -1239,9 +1277,10 @@ function buildOutputBackend(ctx) {
                         // 逐字节保留(与 native 的 applyAnalysisSegments 同口径)。
                         startS: a.startS,
                         endS: a.endS,
+                        writeChannels: a.channels,
                     },
                 );
-                emitRecomputedSegments("analyze", a.channels, frame);
+                emitRecomputedSegments("analyze", allChannels(), frame);
                 // [SL-279] 一次**全量**分析完成 ⇒ 基线前移到当前档(stale 归假、徽标灭)。
                 // 「全量」两个维度都要满足,与 native 的 `fullScope` 逐条对应:
                 //   · 轨维:scope 不是对象形 ⇒ 全轨(见下);

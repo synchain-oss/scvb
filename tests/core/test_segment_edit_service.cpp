@@ -567,6 +567,81 @@ TEST_CASE("SERVICE-12 大段数工程(2000 段)撤销深度:预算够用 + 封�
 }
 
 // ---------------------------------------------------------------------------
+// [SL-399] analysisWindows —— 一次分析**两个**窗:计算窗 [0, extent)、写回窗 = scope 窗。
+//
+// 定谳(用户 A22):冻结前显示 pan −20 / vol −0.2,手动改之后「恢复自动」变成 −60 / −0.9。
+// 根因是**计算窗只有 scope 那一段**:`AnalysisPipeline` 在一次 run 内跨区间携带上一区间的解
+// (wCont / wSide),而首区间的锚是 `cfg.tracks[t].currentPan`(用户刚手动改过的值)——
+// 于是单段重算解出来的槽位/侧别与全量分析不同。裁定 b″:计算窗 = 整条已采集时间线,
+// 写回窗 = scope × 目标轨。
+//
+// 拒绝判据**只认写回窗**:scope 完全落在已采集时间线之外 ⇒ 写集为空 ⇒ §1.6 拒绝态。
+// 拿计算窗判这一条是错的 —— 计算窗恒为整条时间线,拿它判等于永不拒绝。
+//
+// 反向验证:把 `analysisWindows()` 的 compute 改回 `analyzeHopWindow(startS, endS, hopS)`
+// (两窗合一)⇒「计算窗恒为整条时间线」两格红;把 rejects 改成只看 apply.valid()
+// ⇒「scope 落在时间线之外 ⇒ 拒绝」一格红。
+// ---------------------------------------------------------------------------
+TEST_CASE("analysisWindows:计算窗恒为整条时间线,写回窗 = scope;落在时间线外 ⇒ 拒绝", "[output][analyze][SL399]")
+{
+    using scvb::output::analysisWindows;
+
+    SECTION("计算窗恒 [0, extent),与 scope 无关")
+    {
+        const auto inScope = analysisWindows(4.0, 8.0, 30.0, 0.01);
+        CHECK(inScope.compute.firstHop == 0u);
+        CHECK(inScope.compute.lastHop == 3000u); // 30s / 10ms
+        CHECK(inScope.apply.firstHop == 400u); // 4.0s / 10ms(向内取整)
+        CHECK(inScope.apply.lastHop == 800u);
+        CHECK_FALSE(inScope.rejects);
+
+        // scope 换到尾巴上,计算窗一个 hop 都不动 —— 这正是「恢复自动 == 全量分析对该段的值」
+        // 那条构造性保证的前提。
+        const auto tailScope = analysisWindows(25.0, 30.0, 30.0, 0.01);
+        CHECK(tailScope.compute.firstHop == inScope.compute.firstHop);
+        CHECK(tailScope.compute.lastHop == inScope.compute.lastHop);
+        CHECK(tailScope.apply.firstHop == 2500u);
+        CHECK(tailScope.apply.lastHop == 3000u);
+    }
+
+    SECTION("两窗重合:整条时间线的 scope ⇒ apply == compute")
+    {
+        const auto whole = analysisWindows(0.0, 30.0, 30.0, 0.01);
+        CHECK(whole.apply.firstHop == whole.compute.firstHop);
+        CHECK(whole.apply.lastHop == whole.compute.lastHop);
+        CHECK_FALSE(whole.rejects);
+    }
+
+    SECTION("scope 落在已采集时间线之外 ⇒ rejects(写集为空)")
+    {
+        // 只采了 30s,却要重算 [100s, 200s):窗自身合法(analyzeHopWindow 会给出非空窗),
+        // 但与时间线**无交** ⇒ 写集为空 ⇒ §1.6 拒绝态。
+        const auto outside = analysisWindows(100.0, 200.0, 30.0, 0.01);
+        CHECK(outside.apply.valid()); // 窗本身是合法的 —— 拒绝不是因为窗坏了
+        CHECK(outside.rejects);
+
+        // 贴着右边界之外(起点 == 时间线末端)同样是空交集:半开区间 [30s, 40s) ∩ [0, 30s) = ∅。
+        CHECK(analysisWindows(30.0, 40.0, 30.0, 0.01).rejects);
+        // 左边界之外只差一点也拒。
+        CHECK(analysisWindows(31.0, 32.0, 30.0, 0.01).rejects);
+    }
+
+    SECTION("部分相交仍受理(窗会被后续写回面各自裁)")
+    {
+        const auto partly = analysisWindows(20.0, 45.0, 30.0, 0.01);
+        CHECK_FALSE(partly.rejects);
+        CHECK(partly.apply.lastHop == 4500u); // 写回窗按 scope 给,不预先夹到 extent
+    }
+
+    SECTION("一帧都没采到 / 空 scope ⇒ 一律拒")
+    {
+        CHECK(analysisWindows(0.0, 5.0, 0.0, 0.01).rejects); // extent = 0
+        CHECK(analysisWindows(5.0, 5.0, 30.0, 0.01).rejects); // endS == startS
+        CHECK(analysisWindows(0.0, 5.0, 30.0, 0.0).rejects); // hopS = 0(未 prepare)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [SL-393] inWriteMask —— `tracksMask` 降级成**写回掩码**之后的唯一判据点。
 //
 // 计算集(参与指派的轨)现在比写回集宽:只喂一条轨会让引擎判成「独唱」而按到正中

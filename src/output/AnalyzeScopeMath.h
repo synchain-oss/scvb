@@ -191,6 +191,45 @@ inline AnalyzeHopWindow analyzeHopWindow(double startS, double endS, double hopS
     return w;
 }
 
+// --- [SL-399] 一次分析有**两个**窗:计算窗与写回窗 -------------------------------------
+//
+// 两者**故意分开**,理由与代价见 `OutputProcessor::startAnalysis` 的头注;这里只固化算术:
+//   · 计算窗 = 整条已采集时间线 [0, capturedExtent) —— 与「分析(全部)」同形。于是
+//     「恢复这一段 == 全量分析对该段给出的值」是**构造性**成立的:连续性项(wCont)与跨侧项
+//     (wSide)都按整条时间线那条区间链走,首区间锚 `cfg.tracks[t].currentPan` 也只在
+//     链首用一次(单段计算窗时它恰好是用户刚手动改过的值 —— 那正是 A22 的漂移来源)。
+//   · 写回窗 = scope [startS, endS) 的 hop 窗(向内取整,同 `analyzeHopWindow`)—— 用户要改的
+//     只有这一段,确认文案许诺的就是它。**任何写面都按它裁**:段表新段
+//     (`applyAnalysisSegments`)、vadP 写回(`finishAnalysis`)、冻结清除面(`startAnalysis`)。
+//
+// 拒绝判据**只认写回窗**:`scope ∩ 已采集时间线 = ∅` ⇒ 写集必然为空 ⇒ §1.6 拒绝态
+// `{ok:false, affected:{0,0,0}}`。拿计算窗判这一条是错的 —— 计算窗恒为整条时间线,拿它判
+// 等于永不拒绝(「选了没采过的范围」会变成一次 ok:true 的空转)。
+//
+// 单拎成纯函数的理由与 `analyzeHopWindow` / `inWriteMask` 同源:它是本卡「两窗分离」的
+// 判据点,埋在 `startAnalysis` 里就只能靠 host harness 间接测(而那正是上一版栽的地方)。
+struct AnalysisWindows
+{
+    AnalyzeHopWindow compute{}; // 恒 [0, extentHops)
+    AnalyzeHopWindow apply{}; // scope 的 hop 窗
+    // 写集为空(空窗 / scope 完全落在已采集时间线之外)⇒ 调用方回 §1.6 拒绝态。
+    bool rejects = true;
+    bool valid() const { return !rejects; }
+};
+
+inline AnalysisWindows analysisWindows(double startS, double endS, double extentS, double hopS)
+{
+    AnalysisWindows w;
+    w.compute = analyzeHopWindow(0.0, extentS, hopS);
+    w.apply = analyzeHopWindow(startS, endS, hopS);
+    // 两窗都必须自洽,且**有交**才受理:`apply` 完全落在 `compute` 左边或右边 = 这一段
+    // 一帧都没采到 ⇒ 没有轨会被改写。
+    const bool overlap = w.compute.valid() && w.apply.valid() && w.apply.firstHop < w.compute.lastHop &&
+                         w.apply.lastHop > w.compute.firstHop;
+    w.rejects = !overlap;
+    return w;
+}
+
 // [SL-393] 轨在不在**写回集**里。
 //
 // `tracksMask == 0` 的语义是「全轨」(§1.6 的 `"all"` 与不带 mask 的对象形都落到这里),

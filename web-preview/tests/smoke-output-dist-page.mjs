@@ -3074,6 +3074,94 @@ try {
             assertClean(`SL-372 ${name} 像素沙箱`);
         }
     }
+
+    // ---- ⑫ [SL-400] 起播 chase 写同值 + hostEcho ⇒ 徽标在**播放中**亮起 -------------
+    // 用户 A23:正常播放时「宿主自动化正在写」的小图标不出现,停止那一下才亮 1 秒。
+    // 机理(native):`OutputEditor::emitParams` 的 diff 门只看 `values` —— 宿主 chase 写进去的
+    // 值与当前**相同** ⇒ 这一帧连载荷都不构 ⇒ 页面永远收不到 `hostEcho:true`;而停止那一下
+    // 段值真的变了,于是走的是「有变化」那条路,徽标才亮。修法见 `BridgeArgs.h` 的
+    // `planParamsFrame()`(值变了 **或** 回声位翻转就该发)。
+    //
+    // 这一格断的是**页面看得见的那半**:起播之后必须真有一帧「值一个都没变 + hostEcho:true」
+    // 到达,并且徽标当场亮起 —— 而不是等某个段边界(值变了才发)才亮。
+    // mock 侧同形:`printedParamsDiff()` 的判据与 native 同一条(见那处注释)。
+    // 删除式 D5:把它的判据改回只看 `values` ⇒ 本格红(那一帧永远不来)。
+    newBucket("sl400-hostecho-chase");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+    });
+    check(await waitFor(READY), "⑫ 页面装载并吃到首帧");
+    check(
+        await evaluate(
+            IN(`
+            if (!w.__SCVB_PARAMS_PUSH__) {
+                w.__SCVB_PARAMS_PUSH__ = [];
+                w.__SCVB_MOCK__.addEventListener("scvb.params", (p) => {
+                    w.__SCVB_PARAMS_PUSH__.push({
+                        hostEcho: !!(p && p.hostEcho),
+                        nValues: Object.keys((p && p.values) || {}).length,
+                        at: Date.now(),
+                    });
+                });
+            }
+            w.__SCVB_PARAMS_PUSH__ = [];
+            w.__SCVB_PARAMS_ARMED_AT__ = Date.now();
+            return true;
+        `),
+        ),
+        "⑫ params 帧探针装上",
+    );
+    {
+        const setOut = await evaluate(
+            IN(`const mk = w.__SCVB_MOCK__;
+                if (!mk) return "no-mock";
+                return JSON.stringify(mk.setOutputEnabled(true));`),
+        );
+        check(
+            typeof setOut === "string" && !setOut.includes("no-mock"),
+            `⑫ 打开打印头(引擎权威)被受理(实得 ${JSON.stringify(setOut)})`,
+        );
+    }
+    // 先等**稳态**:安静 ≥700ms ⇒ 参数面与当前播放位置的段值已经对上。这样下面那一帧
+    // 「值一个都没变」是**夹具保证**的,不是碰运气 —— 第一版拿 `sleep(1200)` 赌这一刻,
+    // gate 3e 的并发负载下赌输了(打印头还没把值写进参数面就停了,起播那一帧带着值变化,
+    // 判据于是红在一个与本条无关的原因上)。
+    check(
+        await waitFor(
+            IN(`
+            const p = w.__SCVB_PARAMS_PUSH__ || [];
+            const last = p.length ? p[p.length - 1].at : w.__SCVB_PARAMS_ARMED_AT__;
+            return !!last && Date.now() - last > 700;
+        `),
+            8000,
+        ),
+        "⑫ 前置:打印头进入稳态(≥700ms 没有新帧 ⇒ 参数面与当前段值对齐)",
+    );
+    // 停一下:mock 在非打印态把回声位复位(与 native 那 600ms 新鲜窗同一条语义)。
+    await setPlaying(false);
+    await sleep(400);
+    await evaluate(IN(`w.__SCVB_PARAMS_PUSH__ = []; return true;`));
+    await setPlaying(true);
+    const BADGE400 = `d.querySelector('[data-gb="master-width-hostbadge"]')`;
+    const badgeOn400 = IN(`
+        const n = ${BADGE400};
+        return !!n && n.getAttribute("data-on") === "1";
+    `);
+    check(
+        await waitFor(
+            IN(
+                `return (w.__SCVB_PARAMS_PUSH__ || []).some((p) => p.hostEcho && p.nValues === 0);`,
+            ),
+            6000,
+        ),
+        "⑫ ★ 起播 chase:真有一帧「值一个都没变 + hostEcho:true」到达" +
+            "(少了它,徽标只能等某个段边界值变了才亮)",
+    );
+    check(
+        await waitFor(badgeOn400, 4000),
+        "⑫ ★ 徽标在**播放中**亮起(不是停止那一下才亮)",
+    );
+    assertClean("SL-400 起播 chase 徽标");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

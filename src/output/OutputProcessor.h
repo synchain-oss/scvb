@@ -757,6 +757,13 @@ private:
     // 同上,本次作业的触发档与真参与分析的轨集合([M] 写,交接时随结果走)。
     AnalysisDoneReason analysisResegmentReason_ = AnalysisDoneReason::None;
     std::uint16_t analysisTracksMask_ = 0;
+    // [SL-399] **写回窗**(采样),与作业的**计算窗**分开:计算窗一律放到整条已采集时间线
+    // (与「分析(全部)」同形,连续性锚与区间切分才和全量分析一致),而写回仍按 scope 的
+    // [startS,endS] —— `applyAnalysisSegments` 的 `outsideRange` 读的就是这两个数。
+    // 不这么分的话,单段「恢复自动」会拿「当前参数值」当首区间锚、且前面没有任何区间,
+    // 解出来的 pan/vol 与全量分析对该段给出的值不同(用户 v5.6.13 实测:−20/−0.2 → −60/−0.9)。
+    std::int64_t analysisApplyStart_ = 0;
+    std::int64_t analysisApplyEnd_ = 0;
 
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;

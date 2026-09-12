@@ -161,6 +161,46 @@ inline void settleResendLatch(bool sent, bool& pendingFull) noexcept
     }
 }
 
+// --- [SL-400] 值没变、但 `hostEcho` 翻转:这一帧**也得发** ------------------------------
+//
+// 病根(用户 A23 实测):Cubase 起播会 chase 一遍自动化。宿主写进去的值与当前**相同** ⇒
+// `selectParamForEmit` 逐 id 全判「没变」⇒ `any == false` ⇒ 老写法在构载荷**之前**就
+// `return true` ⇒ 这一帧连载荷都不建 ⇒ 页面永远收不到 `hostEcho:true` ⇒ 播放期那把闩锁
+// 永不武装。用户看到的是「正常播放时『宿主自动化正在写』那个小图标不出现,停止那一下才亮
+// 1 秒」(停止时宿主写入的值**变了**,走的是「有变化」那条路)。
+//
+// 判据:`hostEcho` 也是载荷的一部分(§2.2),它翻转 = 载荷变了 = 依 §0.4「值未变不发」该发。
+// 它是**边沿触发**的(宿主那 600ms 新鲜窗只在起播/停走附近翻转一次)⇒ 一次播放最多多两帧,
+// 不会在 25Hz 上刷屏。
+//
+// 单拎成纯函数:`OutputEditor` 需要真 WebView2,gates 里只在 gate 8 的 pluginval 里编
+// (tests/CMakeLists.txt 头注写着这条边界),所以这条判据落在纯函数上 + 页面级 E3 收用户
+// 可见的那半 —— 与 `selectParamForEmit` / `settleResendLatch` 同一条路。
+//
+// ⚠ 记账语义与 `lastParamsValues_` **同一条口径**:基线跟到**这一帧构出来的载荷**,
+// 不看它最终有没有下发(那一层由 `lastParamsJson_` + resend 闩锁兜,见上)。混用两套口径
+// 会让「隐藏期翻转的回声」永远补不回来 —— 与 [SL-199] 那个洞同形。
+struct ParamsFramePlan
+{
+    bool emit = false; // 要不要构载荷并尝试下发
+    bool hostEcho = false; // 载荷里 `hostEcho` 写什么(= 这一帧的实时值)
+    bool nextBaseline = true; // 记账:下一拍拿它比
+};
+
+inline ParamsFramePlan planParamsFrame(bool anyValueChanged, bool forceFull, bool echoNow, bool lastEchoSent) noexcept
+{
+    ParamsFramePlan p;
+    p.hostEcho = echoNow;
+    p.nextBaseline = lastEchoSent;
+    if (!anyValueChanged && !forceFull && echoNow == lastEchoSent)
+    {
+        return p; // 一个 id 没变、回声位也没翻转:这一帧没内容(去重仍在)
+    }
+    p.emit = true;
+    p.nextBaseline = echoNow;
+    return p;
+}
+
 // scvb.segments 的重发判定(`emitTick` 里那个 if 就是它)。
 //
 // 它与 params 是**同一个洞**:三个触发基线(`lastSegmentsSampleRate_` / `lastCrvsRevision_` /

@@ -334,9 +334,17 @@ bool OutputEditor::emitParams(bool forceFull)
         }
     }
 
-    // 没有任何 id 变化 → 这一帧本来就没内容可发,视为「已处置」(true):否则强制全量那一路
-    // 在「值确实一个都没变」时会让闩锁永远清不掉,25Hz 白构载荷。
-    if (!any && !forceFull)
+    // [SL-400] `hostEcho` 也是载荷的一部分(§2.2),所以它翻转同样算「值变了、该发」——
+    // 这一位必须在下面那道早退**之前**取,并且与上一次**真的下发出去**的那帧比。
+    // 判据本体收在纯函数 `planParamsFrame()`(`BridgeArgs.h`,`scvb_tests` 直接断言):
+    // 这个类要真 WebView2,gates 里只在 gate 8 的 pluginval 里编,所以本文件里的这两行
+    // 是**接线**,判据在那边。病根与边沿性见该函数头注。
+    const bool echoNow = processor_.getPrinter().hostEchoActive();
+    const auto paramsPlan = scvb::output::planParamsFrame(any, forceFull, echoNow, lastHostEchoSent_);
+
+    // 一个 id 都没变 **且回声位也没翻转** → 这一帧本来就没内容可发,视为「已处置」(true):
+    // 否则强制全量那一路在「值确实一个都没变」时会让闩锁永远清不掉,25Hz 白构载荷。
+    if (!paramsPlan.emit)
         return true;
 
     juce::var payload = obj();
@@ -345,9 +353,12 @@ bool OutputEditor::emitParams(bool forceFull)
     // 此前恒 false —— 于是「宿主在 Read 档回写参数、把用户的手动改动盖掉」这件事在 UI 上
     // 完全不可见,用户只看到「调了没反应」(v5.1 实测 P1-D)。优先级本身是设计(J78 的
     // 优先级表),要修的是**看不见**。
-    put(payload, "hostEcho", processor_.getPrinter().hostEchoActive());
+    put(payload, "hostEcho", paramsPlan.hostEcho);
     put(payload, "full", forceFull);
     put(payload, "versionActive", v);
+    // 记账在**构载荷之后**:这一帧接下来要么真发出去、要么因与上一帧逐字相同被丢 ——
+    // 后者意味着页面早就收到过同一个 `hostEcho` 值,账同样是对的。
+    lastHostEchoSent_ = paramsPlan.nextBaseline;
 
     // 返回「C++ 侧观察到这一帧确实下发了」(SL-199 闩锁的清位判据)。
     // emitIfChanged 返回 false 有两种:① 不可见被丢 —— 闩锁必须保持;② json 与上一帧逐字相同 ——
