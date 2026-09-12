@@ -495,9 +495,13 @@ private:
     // 计算集比它宽(见 startAnalysis 的头注),掩码外的轨只当上下文,段表一个字节都不许动。
     void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
                                std::int64_t rangeEndSample, bool clearManual, std::uint16_t writeMask);
+    // [SL-399 R3] vadP 写回那一侧要的是**写回窗的 hop 下标**(不再拿采样率除回来 —— 见
+    // `AnalysisJob` 里 `applyFirstHop_/applyLastHop_` 的头注)。段表面仍吃上面那对样本数
+    // (同一趟作业、同一个 hopSamples)。
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
-                        std::int64_t rangeEndSample, bool clearManual, bool fullScope,
-                        AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks);
+                        std::int64_t rangeEndSample, std::uint64_t applyFirstHop, std::uint64_t applyLastHop,
+                        bool clearManual, bool fullScope, AnalysisDoneReason resegmentReason,
+                        std::uint16_t analyzedTracks);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
     void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
@@ -715,8 +719,14 @@ private:
     struct PendingAnalysis
     {
         scvb::analysis::PipelineResult result;
+        // [SL-399] 写回窗两个口径一起带走:样本对给**段表面**(`applyAnalysisSegments` 的
+        // `outsideRange` 与段 diff 都是样本域),hop 对给 **vadP 写回**(hop 域,不再除回来)。
+        // [SL-399 R3] 样本对在交接处由 `applyFirstHop * hopSamples` 乘出来(hopSamples 随作业走);
+        // 两者**同源**,不是两份账。
         std::int64_t rangeStartSample = 0;
         std::int64_t rangeEndSample = 0;
+        std::uint64_t applyFirstHop = 0;
+        std::uint64_t applyLastHop = 0;
         std::uint32_t generation = 0;
         bool clearManual = false;
         bool valid = false;
@@ -750,6 +760,20 @@ private:
     void tickResegmentDebounce(std::int64_t nowMs); // [M] 25Hz;调用方已持 lifecycleMutex_
     static constexpr std::int64_t kResegmentDebounceMs = 300; // 契约 §1.18 逐字
     // 本次作业是否带 clearManual(§1.6 opts);[M] 写、交接时随结果一起传给 finishAnalysis。
+    //
+    // ⚠ [SL-399 R9] 这四个**同路**成员(`analysisClearManual_` / `analysisFullScope_` /
+    // `analysisResegmentReason_` / `analysisTracksMask_`)仍留在 processor 上,由 `[M]` 写、
+    // 由 `[W]` 的 `AnalysisJob::run()` 在交接时读 —— 与写回窗同一种形状。本 PR 只把**新引入的
+    // 那两个 hop**(写回窗)收进作业对象(`AnalysisJob` 的 `applyFirstHop_/applyLastHop_`),
+    // 既有这四个**不动**:它们同属一条「作业口径该随作业走」的账,统筹已另立 **SL-408**
+    // (把这四个一并搬进 `AnalysisJob` 构造参数),不在本卡顺手改 —— 一次改五个会让本轮的
+    // 删除式与四格 host 判据的作用面一起漂。
+    // [SL-399 R20] **它们今天靠什么兜**(别读成「没有竞争,只是没搬」):与写回窗搬走前**同一形状** ——
+    // `[M]` 持 `lifecycleMutex_` 写、`[W]` 在交接时读,**两把不同的锁**;结果良性靠的是
+    // `handleAsyncUpdate` 里那道 `generation_` 比对把不匹配的 pending 整份判废
+    // (`cancelAnalysis` 不 join 就清 `analysisRunning_`,旧线程可能正卡在 `pendingMutex_` 之前)。
+    // 也就是说:今天得到的是「值反正会被丢掉」,**不是**「没有竞争」—— R9 对写回窗做的
+    // 正是把这条论证换成结构性事实;这四个等 SL-408 用同一招收掉。
     bool analysisClearManual_ = false;
     // [SL-279] 本轮是不是「分析(全部)」。与 analysisClearManual_ 同款:startAnalysis 受理时写、
     // 随 PendingAnalysis 走到 finishAnalysis。
@@ -757,6 +781,15 @@ private:
     // 同上,本次作业的触发档与真参与分析的轨集合([M] 写,交接时随结果走)。
     AnalysisDoneReason analysisResegmentReason_ = AnalysisDoneReason::None;
     std::uint16_t analysisTracksMask_ = 0;
+    // [SL-399 R9] **写回窗从这里搬走了**(原先留在 processor 上的那两个 hop 下标成员已整个删除):
+    // 它现在**只活在作业对象里**(`AnalysisJob` 的两个 hop 成员),与 `hopSamples_` 挨着 ——
+    // 那才是「随作业走」的结构性保证。
+    //
+    // 为什么非搬不可(复审【重要】①):留着的话 `run()` 在 **[W]** 上持 `pendingMutex_` 读它、
+    // 而 `startAnalysis` 在 **[M]** 上持 `lifecycleMutex_` 写它 —— **两把不同的锁**,
+    // 一对非原子 `std::uint64_t` 上的真实竞争(`cancelAnalysis` 不 join 就清
+    // `analysisRunning_`,旧线程可能正卡在 `pendingMutex_` 之前)。今天结果良性靠的是
+    // `generation_` 把那份 pending 判废,那是「值反正会被丢掉」,不是「没有竞争」。
 
     // 广播区上次写出的 config_seq(哨兵 = 从未写过,首次 tick 必写一次让 Input 立刻拿到实况)。
     std::uint32_t lastBroadcastConfigSeq_ = 0xFFFFFFFFu;

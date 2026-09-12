@@ -631,9 +631,11 @@ function makeContext(role, world) {
      *   · 保留 = 受保护(用户段 ∪ 锁定段)**或**完全落在范围外(`t1S <= startS ||
      *     t0S >= endS`,半开区间,与 native 的 `sg.t1 <= rangeStart || sg.t0 >= rangeEnd`
      *     逐字同形);
-     *   · 新段只取**完全落在范围内**的那些。native 的产出天然被 hop 窗夹在范围里
-     *     (AnalysisPipeline 的段 = [firstHop, lastHop) 内的 VAD 段),生成器不知道范围,
-     *     所以这里补一道夹取。**不裁半截段** —— 理由同下面那条重叠处理。
+     *   · 新段只取**完全落在范围内**的那些。[SL-399 后**已知 deviation**] native 现在按**写回窗裁切**
+     *     跨窗的产出段(`OutputProcessor.cpp` 的 `clippedT0/clippedT1`),而这里只收
+     *     **完全落在范围内**的整段、跨窗的整段丢弃 ⇒ 选区边缘那一小截 preview 与真桥**不同形**
+     *     (preview-only;要同形得在这里也裁,连带 `smoke-mock` 的段数期望一起动,末推不开,
+     *     登记为已知差异)。生成器不知道范围,所以这道夹取仍然必要。
      *   · `kept` 计数只算**与范围相交的受保护段**:§2.8 的 {k} 是「本次保留了几个手动/
      *     锁定段」,范围外的段压根不在本次作用面里,算进去会让预览行的数与事后 diff 对不上
      *     (`affectedOf` 的 `manualKept` 也是按相交算的)。
@@ -698,6 +700,12 @@ function makeContext(role, world) {
             // segmentation)与版本切换/复制走的就是这一档,行为与修复前逐字相同。
             startS = -Infinity,
             endS = Infinity,
+            // [SL-399] **写回集**(= 请求的 `tracksMask`)。缺省 null = chList 全体都写。
+            // 传了它而某轨不在里面时,该轨**只进帧、不写回**:真桥的 `applyAnalysisSegments`
+            // 按 `inWriteMask` 跳过它,但分析帧仍以 `kAllTracksMask` 全量推
+            // (`OutputEditor.cpp` 的 `emitSegments(…, kAllTracksMask)`),载荷里带的是它
+            // **当时那一份**段表。本参数就是为了让 preview 与那条同形(#256 复审第 6 轮记账)。
+            writeChannels = null,
         } = {},
     ) {
         // [SL-274] `diff-flood` 场景下让 `changed[]` 顶到封顶(200):常态素材只出 29 条,
@@ -710,6 +718,12 @@ function makeContext(role, world) {
             let kept = 0;
             for (const entry of frame.channels) {
                 if (reanalysis) {
+                    if (writeChannels && !writeChannels.includes(entry.ch)) {
+                        // 上下文轨:段表一个字节不动。载荷取自 `segByCh`(`segmentsPayload` 按
+                        // ch 现取),所以这里**跳过写入即等价** —— 帧里带的就是它既有那一份,
+                        // 与真桥「计算集里的非写回轨照旧下发」同形。
+                        continue;
+                    }
                     const merged = mergeReanalyzed(
                         segmentsOf(entry.ch),
                         clone(entry.segments),
@@ -727,7 +741,47 @@ function makeContext(role, world) {
                 }
             }
             model.segVersion = version;
-            if (reanalysis) frame.diff.kept = kept;
+            if (reanalysis) {
+                frame.diff.kept = kept;
+                // [R1] 帧轨集恒全量(与真桥同形),但 diff 的**三件套只算写回集**。
+                // 真桥那侧 `emitSegments(…, kAllTracksMask)` 走的是真 diff
+                // (`SegmentDiff::changedAtDisplayPrecision`):上下文轨一个字节没动 ⇒ 一条都不报。
+                // 原先只对齐了「帧轨集」这一半,窄 scope 下每一帧都会为**没被写回**的上下文轨
+                // 报出改动条目,而 `added`/`removed` 是 `total`(帧内段数)的哈希 ⇒ 跟着一起变大。
+                // 那是「preview 与真机同形」修好一半、另一半反向拉大的回归,受影响的是工具栏那个
+                // 「N 处改动」的读数。判据见 `smoke-mock.mjs` 的分析帧一节(删掉本段即红)。
+                if (writeChannels) {
+                    frame.diff.changed = frame.diff.changed.filter((c) =>
+                        writeChannels.includes(c.ch),
+                    );
+                    // ⚠ **只对齐了轨维;范围维没有**(deepseek 复审①,已知 deviation、不做区间过滤):
+                    // `changed[]` 是 `mock-data.js` 在**整条时间线**上按 `(ch*3+i)%17` 登记的
+                    // (那里没有 `startS/endS` 的概念)⇒ 写回轨落在 scope **窗外**的段照样在
+                    // `changed[]` 里;真桥那侧窗外段两侧逐字节相同,`diffTrackInto` 天然不产条目。
+                    // 上面这两行只保证「被点名的轨都在写回集内」,不保证「被点名的段都在窗内」。
+                    // 影响面仅 preview(`web-preview/` 不参与构建),要真对齐得按段 `t0S/t1S`
+                    // 与 `[startS,endS)` 求交后再过滤(计数断言会跟着动)—— 本卡只记账。
+                    //
+                    // `added`/`removed` 拿**只含写回集**的那一趟生成器重算,而不是在这里自己
+                    // 拼一个哈希 —— 那两个数的唯一真源是 `mock-data.js` 里对 `total` 的
+                    // `hash32(0x8201/0x8202, …)`,复刻一份就是第二把尺子。
+                    if (writeChannels.length > 0) {
+                        const writeFrame = makeSegments(
+                            version,
+                            reason,
+                            writeChannels,
+                            { diffFillToCap: model.scenario === "diff-flood" },
+                        );
+                        frame.diff.added = writeFrame.diff.added;
+                        frame.diff.removed = writeFrame.diff.removed;
+                    } else {
+                        // 写回集为空(理论上受理不了,`affectedOf` 空轨即回 {ok:false}):
+                        // 没有轨会被改 ⇒ 三个数都是 0,不发「看不见的改动」。
+                        frame.diff.added = 0;
+                        frame.diff.removed = 0;
+                    }
+                }
+            }
         }
         return frame;
     }
@@ -747,6 +801,10 @@ function makeContext(role, world) {
     function allChannels() {
         return Array.from({ length: CHANNEL_COUNT }, (_, i) => i + 1);
     }
+
+    // [SL-400] 上一次**真的下发出去**的那一帧里 `hostEcho` 是什么(与 native 的
+    // `OutputEditor::lastHostEchoSent_` 同名同义)。判据见 `printedParamsDiff`。
+    let lastHostEchoSent = false;
 
     const ctl = {
         role,
@@ -819,10 +877,30 @@ function makeContext(role, world) {
         /**
          * PRINT 态的引擎打印头 —— 用当前播放位置在段表上取值,回一帧
          * `scvb.params` 稀疏 diff(`hostEcho:true`,§0.5:UI 只更新显示、绝不回写)。
-         * 值未变则返回 null(driver 据此跳过本帧)。
+         *
+         * [SL-400] **判据与 native 同一条**:值变了 **或** 回声位翻转 ⇒ 这一帧有内容
+         * (`BridgeArgs.h` 的 `planParamsFrame()`;**上升沿** —— 真→假那半见下面那条 deviation,
+         * mock 不发)。原先只看 `values`,于是「宿主在写、
+         * 但写进去的值与当前相同」这一档(Cubase 起播 chase)在预览里**永远发不出帧** ——
+         * 页面那把播放期闩锁也就永远武装不起来,而 E3 要断的正是「起播这一下徽标就该亮」。
+         * 回声位在这里等价于「打印态」(native 那 600ms 新鲜窗在 mock 里的替身),所以
+         * **离开打印态时归假** —— 否则第二次起播时它不是翻转,而是一直为真。
          */
         printedParamsDiff() {
-            if (role !== "output" || !isPrinting()) return null;
+            if (role !== "output") return null;
+            if (!isPrinting()) {
+                // ⚠ **已知 deviation(claude 复审③ / pr-agent ①,不补)**:native 的
+                // `planParamsFrame` 在回声位**真→假**时照发一帧(`hostEcho:false`、
+                // `values:{}`),mock 在这里只把记账位归假、**不发那一帧**。
+                // 逐条核过下游:徽标/灰显的唯一消费入口 `hostEchoVisible()`
+                // (`web/shared/host-echo.js`)只看 `hostEchoAt` 时间戳与播放期闩锁,
+                // 而 `web/output/app.js` 的 `hostEchoAt` **只在 true 帧推进**(false 帧不重置)
+                // ⇒ 熄灭靠窗口/闩锁,不靠这一帧。所以这是**保真度**差异、**无页面可见后果**;
+                // 补发一帧反而会在 preview 里造出一条 native 有、页面零消费者的通路
+                // (SL-357 的「时序同形」要的是同形,不是给死帧凑数)。
+                lastHostEchoSent = false;
+                return null;
+            }
             const v = model.snapshot.global.version_active;
             const tS = model.transport.timeS;
             const values = {};
@@ -841,7 +919,10 @@ function makeContext(role, world) {
                     model.params.values[`${p}vol`] = seg.volDb;
                 }
             }
-            if (Object.keys(values).length === 0) return null;
+            // 值一个都没变**且**回声位没翻转 ⇒ 这一帧没内容(去重仍在)。
+            if (Object.keys(values).length === 0 && lastHostEchoSent)
+                return null;
+            lastHostEchoSent = true;
             return { values, hostEcho: true, full: false, versionActive: v };
         },
         /** 停掉所有内部定时器(node 冒烟/页面卸载用)。 */
@@ -1228,10 +1309,16 @@ function buildOutputBackend(ctx) {
                 // 合并档:用户段/锁定段原样保留,只有 auto 未锁定的位置换成重算结果;
                 // `clearManual:true` 让未锁定的用户段 origin 重置后参与重算,locked 仍免疫
                 // (语义与边界见文件头「重分析语义已按 J34 建模」)。
+                // [SL-399] **帧轨集 = 全量,写回集 = 请求 mask** —— 与真桥同形:
+                // `OutputProcessor::startAnalysis` 的计算集是「整条时间线 × 全部 enabled 且
+                // 有覆盖的轨」,而 `applyAnalysisSegments` 只写 `inWriteMask` 内那些;
+                // `OutputEditor` 那一侧则恒以 `kAllTracksMask` 发帧。preview 原先按请求 mask
+                // 推帧,于是单轨请求下这一帧里根本没有「其余轨」可比 —— ⑦ 的逐字段比对集恒空
+                // (#256 复审第 6 轮记账),本卡把它对齐。
                 const frame = regenerateSegments(
                     version,
                     "analyze",
-                    a.channels,
+                    allChannels(),
                     {
                         reanalysis: true,
                         clearManual,
@@ -1239,9 +1326,10 @@ function buildOutputBackend(ctx) {
                         // 逐字节保留(与 native 的 applyAnalysisSegments 同口径)。
                         startS: a.startS,
                         endS: a.endS,
+                        writeChannels: a.channels,
                     },
                 );
-                emitRecomputedSegments("analyze", a.channels, frame);
+                emitRecomputedSegments("analyze", allChannels(), frame);
                 // [SL-279] 一次**全量**分析完成 ⇒ 基线前移到当前档(stale 归假、徽标灭)。
                 // 「全量」两个维度都要满足,与 native 的 `fullScope` 逐条对应:
                 //   · 轨维:scope 不是对象形 ⇒ 全轨(见下);

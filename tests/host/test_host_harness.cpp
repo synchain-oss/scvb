@@ -7969,3 +7969,754 @@ TEST_CASE("HOST SL391:改 min_segment_ms 重分析 → 段数随之变(钉 start
     CHECK(n50 > n120);
     CHECK(n120 > n500);
 }
+
+// ===========================================================================
+// [SL-399] 三层判据之 host 层 —— H1 值一致 / H2 写面只在写回窗 / H3 回执按写集
+//
+// 定谳(用户 A22):冻结前显示 pan −20 / vol −0.2,手动改之后「恢复自动」变成 −60 / −0.9。
+// 根因与裁定见 `OutputProcessor::startAnalysis` 的头注与 `AnalyzeScopeMath.h` 的
+// `analysisWindows()`:计算窗 = 整条已采集时间线,写回窗 = scope × 目标轨。
+//
+// 这三格是**本卡的主判据**(纯函数那层只钉窗口算术,页面级那层只钉用户可见读数):
+//   H1 ← 计算窗的语义(D1 把计算窗改回 scope ⇒ 本格红);
+//   H2 ← 写回面的边界(D2 去掉 vadP 的写回窗裁剪 ⇒ 本格红);
+//   H3 ← 回执按写回集(与计算集无关)。
+// ===========================================================================
+
+namespace
+{
+
+// 覆盖时刻 `tSec` 的那一段(找不到回 nullptr —— 调用处 REQUIRE 住,免得后续解引用空指针)。
+// ⚠ `Segment::t0/t1` 的单位是**样本**,不是秒(本文件栽过一次:拿秒值去比样本值,
+// 比出来恒假而红在「前置不成立」上)。
+const scvb::state::Segment* segmentAt(const std::vector<scvb::state::Segment>& segs, double tSec)
+{
+    for (const auto& sg : segs)
+    {
+        const double t0 = static_cast<double>(sg.t0) / kSr;
+        const double t1 = static_cast<double>(sg.t1) / kSr;
+        if (t0 <= tSec && tSec < t1)
+        {
+            return &sg;
+        }
+    }
+    return nullptr;
+}
+
+// 秒 → 该轨段表用的**样本**数(与 `analyzeHopWindow` 同一条 hop 栅格)。
+std::int64_t secondsToSamplesOnHopGrid(double tSec)
+{
+    const double hopS = ScvbOutputAudioProcessor::featHopSeconds();
+    const std::int64_t hopSamples = static_cast<std::int64_t>(std::llround(hopS * kSr));
+    return static_cast<std::int64_t>(tSec / hopS) * hopSamples;
+}
+
+// 某一轨在 [a, b) 上的 vad 列(0/1)—— vadP 写回的**窗外对照**用它。
+std::vector<int> vadColumnsOf(ScvbOutputAudioProcessor& out, int ch, double a, double b, int n)
+{
+    const auto tile = out.waveformOf(ch, a, b, n);
+    std::vector<int> v;
+    v.reserve(tile.vad.size());
+    for (const auto& x : tile.vad)
+    {
+        v.push_back(x ? 1 : 0);
+    }
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("HOST SL-399 H1:段级「恢复自动」的值 == 全量分析对该段给出的值", "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 4.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const int ch = 1;
+    const std::uint16_t onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
+    const auto waitDone = [&r]() {
+        for (int waited = 0; waited < 20000; waited += 50)
+        {
+            MonoMultiRig::pump(50);
+            if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // ① 全量分析(基线):记下取样点 X 所在那一段的 pan/vol。X 取中段 —— 首区间带着
+    //    `currentPan` 这个锚(用户刚手动改过的值),拿首区间比会把「锚不同」误读成「实现不对」。
+    REQUIRE(r.out.startAnalysis(0, win.startS, win.endS, /*clearManual=*/false, /*fullScope=*/true).ok);
+    REQUIRE(waitDone());
+    const double span = win.endS - win.startS;
+    const double xm = win.startS + span * 0.5; // 取样点
+    const double x0 = win.startS + span * 0.40; // scope 窗(把 X 包在里面)
+    const double x1 = win.startS + span * 0.60;
+    const auto fullSegs = segmentsOfTrack(r.out, ch);
+    const auto* xSeg = segmentAt(fullSegs, xm);
+    // 前置用 REQUIRE:失败就中止本用例(否则下面解引用空指针,红成崩溃而不是断言)。
+    REQUIRE(xSeg != nullptr);
+    const float xPan = xSeg->pan;
+    const float xVol = xSeg->volDb;
+
+    // ② 用户 A22 的动作:冻结 pan → 手动改 pan 与 vol。
+    //
+    // [R0-1] 手动 pan 取**与全量值相反的一侧**,并把「两侧符号相反」显式断成前置
+    // (④ 那条 `CHECK(std::signbit(...))`)。**如实记账**:统筹原本期望这样能让 D1 红在
+    // `CHECK(rSeg->pan == xPan)` 上(上一版实测是「pan 两边都 −60,只有 volDb 差 1 ULP」,
+    // 当时的假设是「手动值与全量值同侧」)。
+    // **本机复跑 D1 的实得否掉了那个假设**:取反侧之后 pan 仍然是 `−60 == −60`、红仍只在
+    // `volDb` 的 `2.17893f == 2.17894f`;而且把取样点挪到 scope **起点**(锚影响最大的地方)
+    // 复跑,结果逐字相同 —— 也就是说这台上「锚取 80 还是取全量链的解」**不改变这一段的槽位解**,
+    // 差异只体现在平衡那一趟的 u 上(1 ULP)。这条前置于是只守住「夹具确实把锚放在反侧」,
+    // 不再是「pan 格会红」的论据;D1 的牙是那 8 条纯函数断言 + 这条 volDb 逐位断言。
+    // (要造出 pan 级的差异得换一台能让锚改变槽位指派的多轨台,不在本卡。)
+    // `xPan == 0` 时没有「相反一侧」可取:随便取一侧,并把这件事显式打出来(用 `UNSCOPED_INFO`
+    // 而不是 `INFO`,后者的作用域消息在 `return` 时就被弹掉 —— 同文件 `coverageWindow` 那条判例)。
+    const float manualPan = xPan < 0.0f ? 80.0f : -80.0f;
+    if (xPan == 0.0f)
+    {
+        UNSCOPED_INFO("H1 前提:全量解出来的 pan 恰为 0.0 —— 没有『相反一侧』可取,"
+                      "下面那道符号前置会跳过");
+    }
+    setFreezeBits(r.out, ch, 1);
+    int replaced = 0;
+    int replacedLocked = 0;
+    REQUIRE(r.out.setTrackManual(ch, /*isPan=*/true, manualPan, replaced, replacedLocked));
+    REQUIRE(r.out.setTrackManual(ch, /*isPan=*/false, -6.0f, replaced, replacedLocked));
+    // 前置:手动值真的落上去了。少了这一条,「恢复后 == 全量值」可能只是「压根没变过」。
+    CHECK(paramValueOf(r.out, scvb::params::panId(r.out.versionActive(), ch)) == Catch::Approx(manualPan).margin(0.01));
+    {
+        const auto manualSegs = segmentsOfTrack(r.out, ch);
+        REQUIRE_FALSE(manualSegs.empty());
+        CHECK(manualSegs.front().volDb == Catch::Approx(-6.0f).margin(0.01));
+    }
+
+    // ③ 段级「恢复自动」:scope = X × 目标轨,clearManual = true(§1.6 的重新识别分支)。
+    REQUIRE(r.runAnalysisMasked(onlyCh, x0, x1, /*clearManual=*/true));
+
+    // ④ ★ H1:与全量分析对该段给出的值**逐位相等**。
+    const auto restoredSegs = segmentsOfTrack(r.out, ch);
+    const auto* rSeg = segmentAt(restoredSegs, xm);
+    REQUIRE(rSeg != nullptr);
+    INFO("H1 全量 pan/vol = " << xPan << " / " << xVol << ";手动 pan = " << manualPan << ";恢复后 = " << rSeg->pan
+                              << " / " << rSeg->volDb);
+    // [R0-1] 正证据:手动值与全量值**在相反一侧**(夹具前提,不是判据本身 —— 见 ② 的记账)。
+    // `xPan == 0` 时无「相反一侧」可言,跳过(上面已经 `UNSCOPED_INFO` 记过)。
+    if (xPan != 0.0f)
+    {
+        CHECK(std::signbit(manualPan) != std::signbit(xPan));
+    }
+    CHECK(rSeg->pan == xPan); // ← D1(计算窗改回 scope)时**本机实得照绿**(见 ② 的记账)
+    CHECK(rSeg->volDb == xVol); // ← D1 时这一格红:`2.17893f == 2.17894f`(本机实测原文)
+
+    // ⑤ 撤销一步 = 回到手动值那一份(那个值同时也是「用户看见的现状」)。
+    REQUIRE(r.out.undo());
+    const auto undone = segmentsOfTrack(r.out, ch);
+    REQUIRE_FALSE(undone.empty());
+    CHECK(undone.front().volDb == Catch::Approx(-6.0f).margin(0.01));
+}
+
+TEST_CASE("HOST SL-399 H2:写面只在写回窗(其它轨 / 窗外段 / 窗外 vadP 逐字节不动)", "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 4.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+    const double mid = win.startS + (win.endS - win.startS) * 0.5;
+    const double aS = win.startS + (mid - win.startS) * 0.5; // 前半的中分点
+    const double q0 = win.startS + (mid - win.startS) * 0.60; // 写回窗(落在 [aS, mid) 里)
+    const double q1 = win.startS + (mid - win.startS) * 0.80;
+
+    // 打底:前半段分两截各分析一次 ⇒ 目标轨拿到**多段** auto 表(单次全范围分析在
+    // 本机台上通常只产出一段,R6/SL-188 的既有手法);**后半段一次都不分析** —— 它是
+    // vadP 的「窗外对照」:此刻应当一个 1 都没有。
+    REQUIRE(r.runAnalysisIn(win.startS, aS, /*clearManual=*/false));
+    REQUIRE(r.runAnalysisIn(aS, mid, /*clearManual=*/false));
+
+    const auto before1 = segmentsOfTrack(r.out, 1);
+    const auto before2 = segmentsOfTrack(r.out, 2);
+    const auto before3 = segmentsOfTrack(r.out, 3);
+    REQUIRE_FALSE(before1.empty());
+    // 窗外(后半段)的 vad 列:此刻**全 0**(从没分析过)。这是 D2 的靶子 ——
+    // vadP 写回不裁的话,整条时间线的后验会把这半也写亮。
+    const auto vadBack1 = vadColumnsOf(r.out, 1, mid, win.endS, 16);
+    const auto vadBack2 = vadColumnsOf(r.out, 2, mid, win.endS, 16);
+    const auto vadBack3 = vadColumnsOf(r.out, 3, mid, win.endS, 16);
+    REQUIRE_FALSE(vadBack1.empty());
+    const auto allZero = [](const std::vector<int>& v) {
+        for (const int x : v)
+        {
+            if (x != 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    REQUIRE(allZero(vadBack1)); // 前置:窗外那半确实还没被写过(否则「不变」证明不了什么)
+
+    // 局部重分析:只对 ch1 的 [q0, q1](掩码一位)—— 计算窗仍是整条时间线。
+    REQUIRE(r.runAnalysisMasked(static_cast<std::uint16_t>(1u << 0), q0, q1, /*clearManual=*/false));
+
+    // ★ 写回窗**之外**三件事:
+    // ① 掩码外的轨:整表逐字节不变;
+    CHECK(sameSegments(segmentsOfTrack(r.out, 2), before2));
+    CHECK(sameSegments(segmentsOfTrack(r.out, 3), before3));
+    // ② 目标轨窗外的段(写回窗**之前**那些,即 [startS, aS])逐字节不变;
+    {
+        const std::int64_t aSamples = secondsToSamplesOnHopGrid(aS);
+        std::vector<scvb::state::Segment> outsideBefore;
+        for (const auto& sg : before1)
+        {
+            if (sg.t1 <= aSamples)
+            {
+                outsideBefore.push_back(sg);
+            }
+        }
+        std::vector<scvb::state::Segment> outsideAfter;
+        for (const auto& sg : segmentsOfTrack(r.out, 1))
+        {
+            if (sg.t1 <= aSamples)
+            {
+                outsideAfter.push_back(sg);
+            }
+        }
+        CHECK_FALSE(outsideBefore.empty()); // 前置:窗外真有一段可比(否则下一条恒真)
+        CHECK(sameSegments(outsideAfter, outsideBefore));
+    }
+    // ③ 全轨 vadP 窗外 hop(后半段那半,一个都还没被写过)仍是 0
+    //    —— ← D2(vadP 写回去掉写回窗裁剪)时这三格红。
+    CHECK(vadColumnsOf(r.out, 1, mid, win.endS, 16) == vadBack1);
+    CHECK(vadColumnsOf(r.out, 2, mid, win.endS, 16) == vadBack2);
+    CHECK(vadColumnsOf(r.out, 3, mid, win.endS, 16) == vadBack3);
+    CHECK(allZero(vadColumnsOf(r.out, 1, mid, win.endS, 16)));
+
+    // 撤销一步:目标轨回到这一趟之前那一份,掩码外的轨照旧不动。
+    REQUIRE(r.out.undo());
+    CHECK(sameSegments(segmentsOfTrack(r.out, 1), before1));
+    CHECK(sameSegments(segmentsOfTrack(r.out, 2), before2));
+    CHECK(sameSegments(segmentsOfTrack(r.out, 3), before3));
+}
+
+TEST_CASE("HOST SL-399 H3:回执按写集 —— 与覆盖不交 ⇒ 拒绝;有交 ⇒ 只数写回窗内的轨", "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    r.out.setCaptureEnabled(true);
+    MonoMultiRig::pump(400);
+
+    // 前半段三轨齐喂,后半段**只喂 ch1** ⇒ 尾部那段只有一条轨有覆盖,而计算集
+    // (整条时间线)里三条轨都活跃。回执若按计算集数,这一格会回 3。
+    for (int burst = 0; burst < 4; ++burst)
+    {
+        r.runBlocks(60, 0.5f);
+        r.runBlocks(40, 0.0f);
+    }
+    for (int b = 0; b < 110; ++b)
+    {
+        r.outBuf.clear();
+        Rig::fillSine(r.inBuf, 0.5f, r.ph.timeSamples);
+        r.ins[0]->processBlock(r.inBuf, r.midi);
+        r.out.processBlock(r.outBuf, r.midi);
+        if (r.ph.playing)
+        {
+            r.ph.timeSamples += kBlock;
+        }
+        if ((b % 4) == 3)
+        {
+            MonoMultiRig::pump(8);
+        }
+    }
+    MonoMultiRig::pump(400);
+
+    const auto win1 = r.coverageWindow(1);
+    const auto win2 = r.coverageWindow(2);
+    REQUIRE(win1.endS > win1.startS);
+    // 前置:确实造出了「尾部只有 ch1 有覆盖」的形状(否则下面那条断言没有区分力)。
+    REQUIRE(win2.endS < win1.endS - 0.5);
+
+    const double tail = win2.endS + (win1.endS - win2.endS) * 0.5;
+
+    // ① 有交,但写回窗内只有 ch1 有覆盖 ⇒ affected.tracks == 1(而不是计算集的 3)。
+    const auto accepted = r.out.startAnalysis(/*tracksMask=*/0, tail - 0.2, tail + 0.2);
+    CHECK(accepted.ok);
+    CHECK(accepted.tracks == 1); // ← 回执按写集;按计算集数会得 3
+    // 等在途作业跑完再发下一发(否则下面那次会被 busy 挡回,红在无关的地方)。
+    for (int waited = 0; waited < 20000; waited += 50)
+    {
+        MonoMultiRig::pump(50);
+        if (!r.out.analysisRunning() && !r.out.runtime().analysisRunning)
+        {
+            break;
+        }
+    }
+    REQUIRE_FALSE(r.out.analysisRunning());
+
+    // ② 与覆盖完全不交 ⇒ §1.6 拒绝态 {ok:false, affected:{0,0,0}}。
+    const double beyond = win1.endS + 5.0;
+    const auto rejected = r.out.startAnalysis(0, beyond, beyond + 2.0);
+    CHECK_FALSE(rejected.ok);
+    CHECK(rejected.tracks == 0);
+    CHECK(rejected.intervals == 0);
+    CHECK(rejected.manualKept == 0);
+}
+
+// ===========================================================================
+// [SL-399 R2] H4:不参与自动声像的轨 —— 锚取**写回窗**起点所在的段
+//
+// 病根(claude 复审① / deepseek 复审①,H1/H2/H3 与页面级 ⑩ 全没覆盖到的那一格):
+// 「计算窗 = 整条已采集时间线」让 `cfg.rangeStartSample` **恒为 0**,而 `startAnalysis` 里
+// 给 `tc.currentPan` 取段锚的那一段读的正是它 ⇒ 锚恒解析成「整轨首段」。对**参与自动声像**
+// 的轨这是对的(锚只做连续性种子,值由整条时间线解出来,H1 钉着);但对**不参与**的轨,
+// `AutoAssign` 的 `!participateInAutoPan` 分支直接把 `currentPan` 当结果写回(AutoAssign.cpp
+// 的分类段),**锚就是写回值** —— 于是「保持这条轨原来那一份」变成了「保持整轨首段那一份」:
+// 对一条 pan 随时间变化的 `!participate` 轨做中段「恢复自动」,写回去的是首段的 pan。
+//
+// 修法与判据:锚按该轨此刻的 `tc.participateInAutoPan` 与冻结位分两种(冻结那一路取参数面,
+// 与本格无关);不参与 ⇒ 取**写回窗起点**(`startAnalysis` 的局部量 `applyStartSample` =
+// `applyFirstHop × hopSamples`,该窗随后随作业对象走)所在的段。
+//
+// 反向验证 **D6**:把 `rangeT0` 改回恒取 `cfg.rangeStartSample` ⇒ 本格红在
+// `CHECK(after->pan == seg2.pan)`(实得首段的 pan);复原后绿。
+// ===========================================================================
+TEST_CASE("HOST SL-399 H4:!participate 轨的锚取写回窗起点(窄 scope 恢复该段原值,不是首段的)",
+          "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+    REQUIRE(r.capture() > 4.0);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const int ch = 1;
+    const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
+
+    // 前置①:该轨**不参与自动声像**。两位成对写 —— 只写 `participateAutoPan` 而不置
+    // `participateAutoPanSet`,读方按 [J83] 的默认档仍判「参与」,整格会退化成 H1 的重复。
+    {
+        auto& c = r.out.runtime().channels[static_cast<std::size_t>(ch - 1)];
+        c.participateAutoPanSet = true;
+        c.participateAutoPan = false;
+        REQUIRE_FALSE(c.participatesInAutoPan()); // 前置:设置真的生效
+    }
+
+    // 打底:前半段分两截各分析一次 ⇒ 该轨拿到**多段**表(H2 的既有手法;单次全范围分析在
+    // 本机台上通常只产出一段)。
+    const double mid = win.startS + (win.endS - win.startS) * 0.5;
+    const double aS = win.startS + (mid - win.startS) * 0.5;
+    REQUIRE(r.runAnalysisIn(win.startS, aS, /*clearManual=*/false));
+    REQUIRE(r.runAnalysisIn(aS, mid, /*clearManual=*/false));
+
+    // 两段都写成**手动值**再解锁:`set_values` 的后置是 origin=user_edited ∧ locked=true,
+    // 用 `set_locked` 摘锁 —— 于是两段 pan 必然不同,且都落在 clearManual 的清除面内
+    // (锁定段免疫,不摘锁的话第二段根本不会被本次产出取代,本格就测不到东西)。
+    constexpr float kPanSeg1 = -75.0f;
+    constexpr float kPanSeg2 = 45.0f;
+    {
+        const auto seeded = segmentsOfTrack(r.out, ch);
+        REQUIRE(seeded.size() >= 2); // 前置:真有两段可改(否则下面的 segIdx 会 BadArg)
+        for (int i = 0; i < 2; ++i)
+        {
+            scvb::state::SegmentEditArgs sv;
+            sv.op = scvb::state::SegmentEditOp::SetValues;
+            sv.segIdx = i;
+            sv.hasPan = true;
+            sv.pan = (i == 0) ? kPanSeg1 : kPanSeg2;
+            REQUIRE(r.out.editSegment(ch - 1, sv) == scvb::state::SegmentEditResult::Ok);
+            scvb::state::SegmentEditArgs ul;
+            ul.op = scvb::state::SegmentEditOp::SetLocked;
+            ul.segIdx = i;
+            ul.locked = false;
+            REQUIRE(r.out.editSegment(ch - 1, ul) == scvb::state::SegmentEditResult::Ok);
+        }
+    }
+    const auto segsBefore = segmentsOfTrack(r.out, ch);
+    REQUIRE(segsBefore.size() >= 2);
+    const scvb::state::Segment seg1 = segsBefore[0];
+    const scvb::state::Segment seg2 = segsBefore[1];
+    REQUIRE_FALSE(scvb::state::segmentLocked(seg1.flags)); // 前置:两段都已解锁
+    REQUIRE_FALSE(scvb::state::segmentLocked(seg2.flags));
+    // ★ 正证据:两段 pan 真的不同。没有它,「写回后 == seg2.pan」在「两段同值」时恒真 ——
+    // 而那正是本格要分辨的那件事(锚取首段还是取写回段)。
+    REQUIRE(seg1.pan != seg2.pan);
+
+    // 对**第二段**做窄 scope「恢复自动」:clearManual ⇒ 该段(未锁定、在写回窗内)被本次产出取代。
+    const double s2t0 = static_cast<double>(seg2.t0) / kSr;
+    const double s2t1 = static_cast<double>(seg2.t1) / kSr;
+    REQUIRE(r.runAnalysisMasked(onlyCh, s2t0, s2t1, /*clearManual=*/true));
+
+    // ★ H4:该段 pan 逐位等于**它原来那一份**(不是首段的)。
+    const auto segsAfter = segmentsOfTrack(r.out, ch);
+    const auto* after = segmentAt(segsAfter, (s2t0 + s2t1) * 0.5);
+    // 用 REQUIRE:失败就中止(否则下面解引用空指针,红成崩溃而不是断言)。
+    REQUIRE(after != nullptr);
+    INFO("H4 seg1.pan = " << seg1.pan << " / seg2.pan = " << seg2.pan << ";写回后该段 pan = " << after->pan);
+    CHECK(after->pan == seg2.pan); // ← D6(锚恒取计算窗起点)时这一格红:实得 seg1 那一份
+
+    // 反向对照:首段仍在(它整段落在写回窗外,本次分析碰不到它)。
+    // 少了这一条,「锚取首段」的失效形态可能被读成「首段被删了」。
+    CHECK(segmentAt(segsAfter, static_cast<double>(seg1.t0) / kSr + 0.05) != nullptr);
+}
+
+// ===========================================================================
+// [SL-399 R16] H5 / H5b:写回窗内的段表 == **全量分析在该窗内的样子**(裁定 b″ 逐字)
+//
+// 病根(deepseek 复审第 3 轮【重要】①):`applyAnalysisSegments` 开头那道
+// `if (src.empty()) continue;` 是改造前「scope 内无产出 ⇒ 该轨一个字节不动」的逃生口。
+// 计算窗放宽到整条时间线之后,`src` 覆盖整条 ⇒ 只要该轨在**别处**有一句人声它就非空 ⇒
+// 这道 continue 走不到:与写回窗相交的既有 auto 段被 `kept` 排除、而窗内又没有产出要补
+// ⇒ **净效果是删除**。改造前那一发是 no-op。
+//
+// 裁定:**b″ 逐字** —— 窗内的段表就该等于全量分析在该窗内的样子;全量分析在窗内没有段,
+// 窗内就不该留着旧段。所以代码**不改**(那是行为错的反面:改造前的 no-op 才是「按钮写着
+// 重新识别、却什么都不做」),本卡补的是「记账 + 判据」这两半:
+//   · `:3746` 那句注释改成实情(它今天只挡「整条时间线零段」的轨)+ 指路 H5/H5b 与 SL-410;
+//   · **H5**(本用例):窗内无产出 ⇒ 该段被清、**其余段逐字节不变**(后半句同时钉
+//     「写回只落选区」这一条本卡主判据);
+//   · **H5b**:窗落在那两段之间的**精确静音间隙**上(全量分析在窗内本来就没有段)
+//     ⇒ 段表逐字节不变 —— 对照格,证明 H5 的红是「窗内无产出」造成的,不是「随便什么
+//     窄 scope 都会删段」。
+//
+// 反向验证 **D8**:把「裁完窗内无产出 ⇒ continue」的守卫注进裁剪循环**之前** ⇒ H5 红在
+// `CHECK(stillThere.empty())`(S 仍在);H5b 照绿(它那一路本来就不该有产出)。复原后绿。
+//
+// ⚠ 素材**必须**用 SL-391 那套分级爆发,不能用机台默认 `capture()`:后者的 427ms 间隙经
+// padding(120+200)只剩 107ms < mergeGap(150),三档 min_segment 都会被并成一段 ⇒
+// T50 与 T500 逐字节相同 ⇒ 第 ③ 步找不到 S,只能 `REQUIRE(false)`(这是从 SL-391 头注的
+// 实测推出来的,本用例没有跑过默认素材那一版)。分级爆发才有「T50 有、T500 没有」的段。素材
+// 配方与理由逐字见
+// `HOST SL391` 的头注,这里只抄配方(不抄论证)。
+// ===========================================================================
+TEST_CASE("HOST SL-399 H5:写回窗内全量分析没有段 ⇒ 窗内陈旧 auto 段被清掉(只动选区)", "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // ---- 分级爆发素材(配方同 SL-391;理由见本用例头注)------------------------
+    r.runBlocks(240, 0.0f); // 采集**关闭**下空跑:衰掉 IIR / hop 累加器里的残余能量(判例同 SL-391)
+    r.out.setCaptureEnabled(true);
+    r.pump(400);
+    r.runBlocks(20, 0.0f);
+    for (const int blocks : {3, 8, 20, 45, 80})
+    {
+        r.runBlocks(blocks, 0.5f);
+        r.runBlocks(60, 0.0f);
+    }
+    r.pump(400);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const int ch = kTestChannel;
+    const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
+
+    // 全量重分析一趟,同时把 min_segment 档写进 runtime(写法同 SL-391 的 countAt:
+    // 这里钉的是 `startAnalysis` 读不读这个字段,不走桥)。
+    const auto analyzeAll = [&r, &win, ch](int minSegmentMs) {
+        r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+        return segmentsOfTrack(r.out, ch);
+    };
+
+    // ①② 两档全量:50ms 切得细、500ms 只留长句
+    const auto t50 = analyzeAll(50);
+    const auto t500 = analyzeAll(500);
+    UNSCOPED_INFO("H5 段数:50ms = " << t50.size() << ";500ms = " << t500.size());
+    REQUIRE(t50.size() >= 2u); // 前提:至少两段,否则第 ③ 步无从谈起
+    REQUIRE_FALSE(t500.empty());
+
+    // ③ 找 S:T50 里一条 **auto 未锁定**段,T500 中**没有任何段**与它相交
+    //    (auto 未锁定 = clearManual:false 档下会被本次产出取代的那一类;用户段/锁定段免疫)。
+    const auto intersects = [](const scvb::state::Segment& a, const scvb::state::Segment& b) {
+        return a.t0 < b.t1 && b.t0 < a.t1;
+    };
+    bool found = false;
+    scvb::state::Segment sSeg;
+    for (const auto& x : t50)
+    {
+        if (scvb::state::segmentOrigin(x.flags) != scvb::state::SegmentOrigin::Auto ||
+            scvb::state::segmentLocked(x.flags))
+        {
+            continue;
+        }
+        bool hit = false;
+        for (const auto& y : t500)
+        {
+            if (intersects(x, y))
+            {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit)
+        {
+            sSeg = x;
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+    {
+        // 红的时候要能读出「为什么没找到」,而不是只有一句 REQUIRE(false)。
+        std::string dump = "T50";
+        for (const auto& x : t50)
+        {
+            dump += " [" + std::to_string(x.t0) + "," + std::to_string(x.t1) + ")";
+        }
+        dump += " | T500";
+        for (const auto& y : t500)
+        {
+            dump += " [" + std::to_string(y.t0) + "," + std::to_string(y.t1) + ")";
+        }
+        UNSCOPED_INFO("H5 前提:找不到「T50 有、T500 无」的 auto 段。" << dump);
+        REQUIRE(found);
+    }
+    UNSCOPED_INFO("H5 选中 S = [" << sSeg.t0 << "," << sSeg.t1 << ") 采样;T50 共 " << t50.size() << " 段");
+
+    // ④ 复位:50 档再全量一次 ⇒ 段表必须逐字节回到 T50
+    //    (否则第 ⑥ 步的「其余段不变」就没有基准可比 —— 那是前置,不是判据)。
+    const auto t50b = analyzeAll(50);
+    REQUIRE(sameSegments(t50b, t50));
+
+    // ⑤ 回到 500 档,对 S 的区间做窄 scope 重识别(clearManual:false ⇒ 只碰 auto 未锁定段)
+    r.out.runtime().segmentationMinSegmentMs = 500;
+    const double s0 = static_cast<double>(sSeg.t0) / kSr;
+    const double s1 = static_cast<double>(sSeg.t1) / kSr;
+    REQUIRE(r.runAnalysisMasked(onlyCh, s0, s1, /*clearManual=*/false));
+
+    // ⑥ ★ H5:窗内没有段了(S 被清掉),且**只**少了 S
+    const auto after = segmentsOfTrack(r.out, ch);
+    std::vector<scvb::state::Segment> stillThere;
+    for (const auto& x : after)
+    {
+        if (intersects(x, sSeg))
+        {
+            stillThere.push_back(x);
+        }
+    }
+    UNSCOPED_INFO("H5 写回后:窗内段数 = " << stillThere.size() << ";该轨 " << t50.size() << " 段 → " << after.size()
+                                          << " 段");
+    CHECK(stillThere.empty()); // ← D8(裁完窗内无产出 ⇒ continue)时这一格红:S 仍在
+
+    // 其余段逐字节不变(T50 去掉 S 就是期望表)—— 这一条同时钉本卡主判据「写回只落选区」。
+    std::vector<scvb::state::Segment> expected;
+    for (const auto& x : t50)
+    {
+        if (!(x.t0 == sSeg.t0 && x.t1 == sSeg.t1))
+        {
+            expected.push_back(x);
+        }
+    }
+    CHECK(sameSegments(after, expected));
+
+    // ---- H5b:对照格 —— 窗落在**精确静音间隙**上 ⇒ 段表逐字节不变 ---------------
+    // 复位到 50 档、重算一次(上一次写回已经改过段表),再挑相邻两段之间的真间隙。
+    const auto t50c = analyzeAll(50);
+    REQUIRE(t50c.size() >= 2u);
+    double gap0 = 0.0;
+    double gap1 = 0.0;
+    bool gapFound = false;
+    for (std::size_t i = 0; i + 1 < t50c.size(); ++i)
+    {
+        if (t50c[i + 1].t0 > t50c[i].t1)
+        {
+            gap0 = static_cast<double>(t50c[i].t1) / kSr;
+            gap1 = static_cast<double>(t50c[i + 1].t0) / kSr;
+            // 窄于两个 hop 的间隙会被 `analyzeHopWindow` 判空窗(向内取整)⇒ 那一发是拒绝态,
+            // 落不到本格要测的路径上 —— 挑一个宽得够的(本素材的间隙 ≈ 320ms)。
+            gapFound = (gap1 - gap0) >= 0.020;
+            if (gapFound)
+            {
+                break;
+            }
+        }
+    }
+    UNSCOPED_INFO("H5b 选中的静音间隙 = [" << gap0 << ", " << gap1 << ") 秒");
+    REQUIRE(gapFound);
+    REQUIRE(r.runAnalysisMasked(onlyCh, gap0, gap1, /*clearManual=*/false));
+    // ★ H5b:段表逐字节不变(全量分析在这个窗里本来就没有段 ⇒ b″ 下没有任何东西该动)。
+    CHECK(sameSegments(segmentsOfTrack(r.out, ch), t50c));
+}
+
+// ===========================================================================
+// [SL-399 R22] H5c:`clearManual=true` 档下,窗内**未锁定的手编段**会被清、锁定段留下
+//
+// 病根(两家复审第 4 轮【重要】①):R16 那句记账写「用户段/锁定段照旧免疫」,而 `kept` 的判据是
+//   `isUser = isLocked || (!clearManual && origin != Auto)`
+// —— `clearManual=true`(「重新识别(含手动段)」,`tab-wave.js` 的选区重识别与检查器的
+// 「恢复自动」都走这一档)下 `isUser` **退化成 `isLocked`**:只有锁定段免疫。这是 §1.6 的
+// **既有语义**(与本卡无关),但与 R16 新放开的「窗内无产出 ⇒ 窗内清空」叠加之后多出一个
+// 组合:**窗内有未锁定的手编段 + 全量分析在窗内无产出 + `clearManual=true`**
+// ⇒ 手编段被清掉且**无替代**(改造前那一发是 no-op)。H5/H5b 都用 `clearManual=false`,
+// 量不到这一档 —— 本格就是补它,同时把「用户可见文案要准」那半落到 CHANGELOG 上。
+//
+// 素材与选法同 H5;按裁定的 fallback 取 T50 里**相邻两条**都不与 T500 相交的段作 S1/S2
+// (H5 那条 S 在自己的窗内没有邻居,构不出「窗内一条未锁手编段 + 一条锁定段」)。
+//   · S1 → `set_values`(后置 origin=user_edited ∧ locked=true)再 `set_locked(false)`
+//     ⇒ **未锁定的手编段**;
+//   · S2 → `set_values`(locked 保持 true)⇒ **锁定段**。
+// 窗 = [S1.t0, S2.t1),该窗内全量分析(500 档)一个段都没有。
+//
+// 删除式 **D9**:把 `isUser` 改成 `isLocked || segmentOrigin(sg.flags) != Auto`(忽略
+// `clearManual`)⇒ S1 被当用户段保留 ⇒ 本格红在「S1 不在了」那一条。复原后绿;
+// H5/H5b 不受影响(它们跑的是 auto 段那一档)。
+// ===========================================================================
+TEST_CASE("HOST SL-399 H5c:clearManual 档下窗内未锁手编段被清、锁定段逐字节留下", "[host][t37][analyze][SL399]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // 素材:配方同 SL-391 / H5(理由见 H5 头注 —— 默认 `capture()` 三档会并成一段)。
+    r.runBlocks(240, 0.0f);
+    r.out.setCaptureEnabled(true);
+    r.pump(400);
+    r.runBlocks(20, 0.0f);
+    for (const int blocks : {3, 8, 20, 45, 80})
+    {
+        r.runBlocks(blocks, 0.5f);
+        r.runBlocks(60, 0.0f);
+    }
+    r.pump(400);
+    const auto win = r.coverageWindow();
+    REQUIRE(win.endS > win.startS);
+
+    const int ch = kTestChannel;
+    const auto onlyCh = static_cast<std::uint16_t>(1u << (ch - 1));
+
+    const auto analyzeAll = [&r, &win, ch](int minSegmentMs) {
+        r.out.runtime().segmentationMinSegmentMs = minSegmentMs;
+        REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+        return segmentsOfTrack(r.out, ch);
+    };
+
+    const auto t50 = analyzeAll(50);
+    const auto t500 = analyzeAll(500);
+    REQUIRE(t50.size() >= 2u);
+    REQUIRE_FALSE(t500.empty());
+
+    // 找相邻一对 S1/S2,使**整个窗** [S1.t0, S2.t1) 与 T500 的任何段都不相交
+    // (只要求 S1、S2 各自不相交还不够:两条之间的间隙里可能压着一条 T500 段)。
+    const auto intersects = [](std::int64_t a0, std::int64_t a1, std::int64_t b0, std::int64_t b1) {
+        return a0 < b1 && b0 < a1;
+    };
+    std::size_t pairIdx = t50.size(); // 哨兵:≥ size = 没找到
+    for (std::size_t i = 0; i + 1 < t50.size(); ++i)
+    {
+        bool hit = false;
+        for (const auto& y : t500)
+        {
+            if (intersects(t50[i].t0, t50[i + 1].t1, y.t0, y.t1))
+            {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit)
+        {
+            pairIdx = i;
+            break;
+        }
+    }
+    if (pairIdx >= t50.size())
+    {
+        std::string dump = "T50";
+        for (const auto& x : t50)
+        {
+            dump += " [" + std::to_string(x.t0) + "," + std::to_string(x.t1) + ")";
+        }
+        dump += " | T500";
+        for (const auto& y : t500)
+        {
+            dump += " [" + std::to_string(y.t0) + "," + std::to_string(y.t1) + ")";
+        }
+        UNSCOPED_INFO("H5c 前提:找不到「相邻两条 + 整窗都不与 T500 相交」的一对。" << dump);
+        REQUIRE(pairIdx < t50.size());
+    }
+    const scvb::state::Segment s1 = t50[pairIdx];
+    const scvb::state::Segment s2 = t50[pairIdx + 1];
+    UNSCOPED_INFO("H5c S1 = [" << s1.t0 << "," << s1.t1 << ") 采样,S2 = [" << s2.t0 << "," << s2.t1 << ") 采样;T50 共 "
+                               << t50.size() << " 段 / T500 共 " << t500.size() << " 段");
+
+    // ⚠ 前置:②那一档刚把段表**整个换成了 T500**,而下面要编辑的是 **T50** 的段 ——
+    // 先复位回 50 档并断它逐字节等于 T50,否则 `pairIdx` 指的是另一张表的下标
+    // (第一版漏了这一步:`segmentAt` 在那张 T500 表上找不到 S1)。写法同 H5 的第 ④ 步。
+    const auto t50r = analyzeAll(50);
+    REQUIRE(sameSegments(t50r, t50));
+
+    // 造形态:S1 = 未锁定的手编段;S2 = 锁定段(set_values 的后置已是 locked=true)。
+    {
+        scvb::state::SegmentEditArgs sv;
+        sv.op = scvb::state::SegmentEditOp::SetValues;
+        sv.segIdx = static_cast<int>(pairIdx);
+        sv.hasPan = true;
+        sv.pan = -70.0f;
+        REQUIRE(r.out.editSegment(ch - 1, sv) == scvb::state::SegmentEditResult::Ok);
+        scvb::state::SegmentEditArgs lk;
+        lk.op = scvb::state::SegmentEditOp::SetLocked;
+        lk.segIdx = static_cast<int>(pairIdx);
+        lk.locked = false; // S1:摘锁
+        REQUIRE(r.out.editSegment(ch - 1, lk) == scvb::state::SegmentEditResult::Ok);
+
+        sv.segIdx = static_cast<int>(pairIdx + 1);
+        sv.pan = 70.0f;
+        REQUIRE(r.out.editSegment(ch - 1, sv) == scvb::state::SegmentEditResult::Ok);
+        lk.segIdx = static_cast<int>(pairIdx + 1);
+        lk.locked = true; // S2:显式钉住锁(set_values 已经是 true,这里不靠隐式后置)
+        REQUIRE(r.out.editSegment(ch - 1, lk) == scvb::state::SegmentEditResult::Ok);
+    }
+
+    // 前置:两条段的 origin/locked 形态真如所设(否则本格测的是别的东西)。
+    const auto edited = segmentsOfTrack(r.out, ch);
+    const auto* e1 = segmentAt(edited, static_cast<double>(s1.t0 + s1.t1) * 0.5 / kSr);
+    const auto* e2 = segmentAt(edited, static_cast<double>(s2.t0 + s2.t1) * 0.5 / kSr);
+    REQUIRE(e1 != nullptr);
+    REQUIRE(e2 != nullptr);
+    REQUIRE(scvb::state::segmentOrigin(e1->flags) == scvb::state::SegmentOrigin::UserEdited);
+    REQUIRE_FALSE(scvb::state::segmentLocked(e1->flags));
+    REQUIRE(scvb::state::segmentOrigin(e2->flags) == scvb::state::SegmentOrigin::UserEdited);
+    REQUIRE(scvb::state::segmentLocked(e2->flags));
+    const scvb::state::Segment e2Copy = *e2;
+
+    // ★ H5c:500 档 + 整窗重识别(**clearManual=true** —— 就是「重新识别(含手动段)」那一档)
+    r.out.runtime().segmentationMinSegmentMs = 500;
+    const double w0 = static_cast<double>(s1.t0) / kSr;
+    const double w1 = static_cast<double>(s2.t1) / kSr;
+    REQUIRE(r.runAnalysisMasked(onlyCh, w0, w1, /*clearManual=*/true));
+
+    const auto after = segmentsOfTrack(r.out, ch);
+    const auto* a1 = segmentAt(after, static_cast<double>(s1.t0 + s1.t1) * 0.5 / kSr);
+    const auto* a2 = segmentAt(after, static_cast<double>(s2.t0 + s2.t1) * 0.5 / kSr);
+    UNSCOPED_INFO("H5c 写回后:该轨 " << edited.size() << " 段 → " << after.size() << " 段;S1 处 "
+                                     << (a1 == nullptr ? "无段" : "仍有段") << ",S2 处 "
+                                     << (a2 == nullptr ? "无段" : "仍有段"));
+    // S1(未锁定的手编段)被清掉 —— ← D9 时这一格红
+    CHECK(a1 == nullptr);
+    // S2(锁定段)逐字节留下
+    REQUIRE(a2 != nullptr);
+    CHECK(a2->t0 == e2Copy.t0);
+    CHECK(a2->t1 == e2Copy.t1);
+    CHECK(a2->pan == e2Copy.pan);
+    CHECK(a2->volDb == e2Copy.volDb);
+    CHECK(a2->flags == e2Copy.flags);
+    // 其余段逐字节不变(期望 = 编辑后的表去掉 S1)
+    std::vector<scvb::state::Segment> expected;
+    for (const auto& x : edited)
+    {
+        if (!(x.t0 == s1.t0 && x.t1 == s1.t1))
+        {
+            expected.push_back(x);
+        }
+    }
+    CHECK(sameSegments(after, expected));
+}

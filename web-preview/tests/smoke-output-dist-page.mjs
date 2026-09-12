@@ -1579,8 +1579,8 @@ try {
         // ---- 量法:从**徽标亮起那一刻**量到它熄灭,而不是从「我发了指令」那一刻量。
         //
         // 这一条是本节能不能算数的关键。闩锁量的是「距最后一帧 hostEcho:true 多久」,
-        // 而那一帧什么时候来我们并不知道 —— mock 的打印头是「值变了才发」,实测两帧之间
-        // 能隔两三秒。从指令时刻起算的话,测出来的间隔里混着一段未知的「上一帧有多旧」,
+        // 而那一帧什么时候来我们并不知道 —— mock 的打印头是「值变了**或**回声位**上升沿**才发」,
+        // 实测两帧之间能隔两三秒。从指令时刻起算的话,测出来的间隔里混着一段未知的「上一帧有多旧」,
         // 只能给上界、给不出下界。[SL-394] 「播放档确实更宽」这半条已随播放档一起作废,
         // 但**量法本身照旧要紧**:(b) 量的停走档仍靠它才有下界(本仓记过
         // 「按帧率/节奏判红」的假红,这里是同一个坑的另一面)。
@@ -2109,7 +2109,7 @@ try {
             };
             return new Promise((res) => {
                 // ① 先等一帧**刚到的**宿主写入。为什么不能直接开始:mock 的打印头是
-                //    「值变了才发」,两帧之间实测能隔 3 秒多(本文件 ④(g) 捞到过 3362ms)。
+                //    「值变了**或**回声位**上升沿**才发」,两帧之间实测能隔 3 秒多(本文件 ④(g) 捞到过 3362ms)。
                 //    上来就掐信号 + 定长等待的话,at 有多旧完全看运气 —— 第一版就是这么
                 //    写的,实测 ageAtStop=2513ms(闩锁其实已经走完播放档),量到的 21ms
                 //    是「本来就该熄了」而不是「停走后及时熄」。
@@ -3074,6 +3074,206 @@ try {
             assertClean(`SL-372 ${name} 像素沙箱`);
         }
     }
+
+    // ---- ⑫ [SL-400] 起播 chase 写同值 + hostEcho ⇒ 徽标在**播放中**亮起 -------------
+    // 用户 A23:正常播放时「宿主自动化正在写」的小图标不出现,停止那一下才亮 1 秒。
+    // 机理(native):`OutputEditor::emitParams` 的 diff 门只看 `values` —— 宿主 chase 写进去的
+    // 值与当前**相同** ⇒ 这一帧连载荷都不构 ⇒ 页面永远收不到 `hostEcho:true`;而停止那一下
+    // 段值真的变了,于是走的是「有变化」那条路,徽标才亮。修法见 `BridgeArgs.h` 的
+    // `planParamsFrame()`(值变了 **或** 回声位翻转就该发)。
+    //
+    // 这一格断的是**页面看得见的那半**:起播之后必须真有一帧「值一个都没变 + hostEcho:true」
+    // 到达,并且徽标当场亮起 —— 而不是等某个段边界(值变了**或**回声位**上升沿**才发)才亮。
+    // mock 侧同形:`printedParamsDiff()` 的判据与 native 同一条(见那处注释)。
+    // 删除式 D5:把它的判据改回只看 `values` ⇒ 本格红(那一帧永远不来)。
+    newBucket("sl400-hostecho-chase");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?scenario=curve-editor&play=1`,
+    });
+    check(await waitFor(READY), "⑫ 页面装载并吃到首帧");
+    check(
+        await evaluate(
+            IN(`
+            if (!w.__SCVB_PARAMS_PUSH__) {
+                w.__SCVB_PARAMS_PUSH__ = [];
+                w.__SCVB_MOCK__.addEventListener("scvb.params", (p) => {
+                    w.__SCVB_PARAMS_PUSH__.push({
+                        hostEcho: !!(p && p.hostEcho),
+                        nValues: Object.keys((p && p.values) || {}).length,
+                        at: Date.now(),
+                    });
+                });
+            }
+            w.__SCVB_PARAMS_PUSH__ = [];
+            w.__SCVB_PARAMS_ARMED_AT__ = Date.now();
+            return true;
+        `),
+        ),
+        "⑫ params 帧探针装上",
+    );
+    {
+        const setOut = await evaluate(
+            IN(`const mk = w.__SCVB_MOCK__;
+                if (!mk) return "no-mock";
+                return JSON.stringify(mk.setOutputEnabled(true));`),
+        );
+        check(
+            typeof setOut === "string" && !setOut.includes("no-mock"),
+            `⑫ 打开打印头(引擎权威)被受理(实得 ${JSON.stringify(setOut)})`,
+        );
+    }
+    // 先等**稳态**:安静 ≥700ms ⇒ 参数面与当前播放位置的段值已经对上。这样下面那一帧
+    // 「值一个都没变」是**夹具保证**的,不是碰运气 —— 第一版拿 `sleep(1200)` 赌这一刻,
+    // gate 3e 的并发负载下赌输了(打印头还没把值写进参数面就停了,起播那一帧带着值变化,
+    // 判据于是红在一个与本条无关的原因上)。
+    check(
+        await waitFor(
+            IN(`
+            const p = w.__SCVB_PARAMS_PUSH__ || [];
+            const last = p.length ? p[p.length - 1].at : w.__SCVB_PARAMS_ARMED_AT__;
+            return !!last && Date.now() - last > 700;
+        `),
+            8000,
+        ),
+        "⑫ 前置:打印头进入稳态(≥700ms 没有新帧 ⇒ 参数面与当前段值对齐)",
+    );
+    // 停一下:mock 在非打印态把回声位复位(与 native 那 600ms 新鲜窗同一条语义)。
+    await setPlaying(false);
+    await sleep(400);
+    // [R0-5] 再加一道前提:**播放头距「下一次值变化」≥0.5s**。
+    // 稳态那一格断的是「此刻参数面与**当前**位置的段值对齐」,但起播之后播放头会往前走 ——
+    // 若这期间跨过一个「进入新段且值不同」的点,参数面值真的会变,于是「起播后第一帧 values
+    // 为空」不成立,判据红在一个与 SL-400 无关的原因上(第一版 ⑫ 就是在 gate 3e 的并发负载下
+    // 这么红的)。处置:暂停态下读走带位置与各轨段表,不够干净就挪一小步再测,上界 10 次;
+    // 超了红在前提格。段表取 `ctl.model.segByCh`(与 smoke-output-stale-page 同一条读法),
+    // 不用 `__SCVB_MOCK__` —— 后者在 iframe 里,而走带是壳页的东西(`setPlaying` 也是壳页)。
+    //
+    // ⚠ **判据不能钉在「段边界」上**(第一版实测的教训,两个数都是本机量的):
+    //   · 15 条轨的边界合起来是**密**的(该 fixture 下 300s 里 1106 个边界,平均间距 0.27s),
+    //     「任一轨的下一段边界 ≥0.5s」的位置占比只有 **0.194** —— 第一版按它判,本机实跑
+    //     十步之后 gap 仍是 0.206,前提格当场红(那就是第一版的实际失败形态);
+    //   · 而真正决定「起播那一帧带不带值」的是 **`printedParamsDiff` 的判据**(进入新段时
+    //     `pan`/`volDb` 与参数面现值不同)—— 相邻两段值相同的边界跨过去**不会**产生帧。
+    //     同一把尺子量出来是 0.409。所以这里按**值变化点**算,不按边界算。
+    // 后视 0.2s 那一半:停走前最后一次 25Hz 同步(≤40ms)之后跨过的变化会让参数面留着旧值,
+    // 起播那一帧照样带出来。目标位取「某个值变化点 + 0.21s」(后视窗刚好走完)。
+    const SAFE_SPOT = `(() => {
+        const s = window.__SCVB_PREVIEW__;
+        if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.segByCh) return null;
+        const tracks = [];
+        let dur = 0;
+        for (const entry of s.ctl.model.segByCh.values()) {
+            const segs = (entry.segments || []).slice().sort((a, b) => a.t0S - b.t0S);
+            if (segs.length) tracks.push(segs);
+            for (const x of segs) if (x.t1S > dur) dur = x.t1S;
+        }
+        if (!tracks.length || !(dur > 1)) return null;
+        const segAt = (a, t) => {
+            for (const x of a) if (t >= x.t0S && t < x.t1S) return x;
+            return null;
+        };
+        // 值变化点 = 某轨的段起点,且它与该轨在这一刻之前的值不同(没有上一段 ⇒ 也算变:
+        // 参数面留着的是更早那一段的值)。
+        const risky = [];
+        for (const segs of tracks) {
+            for (const x of segs) {
+                const prev = segAt(segs, x.t0S - 0.001);
+                if (!prev || prev.pan !== x.pan || prev.volDb !== x.volDb) risky.push(x.t0S);
+            }
+        }
+        risky.sort((a, b) => a - b);
+        const firstIn = (a, b) => {
+            for (const v of risky) if (v > a && v < b) return v;
+            return Infinity;
+        };
+        const safeAt = (t) => firstIn(t - 0.2, t + 0.5) === Infinity;
+        const tS = s.ctl.model.transport.timeS;
+        const next = firstIn(tS, Infinity);
+        // ⚠ 返回值必须是**有限数**:CDP 的 returnByValue 序列化遇到 Infinity 会报
+        // 「couldn't be returned by value」而把整次 evaluate 打红。-1 = 「之后再也没有值变化」。
+        const gap = next === Infinity ? -1 : next - tS;
+        if (safeAt(tS)) return { tS, gap, safe: true, advance: 0 };
+        // 前视窗本来就干净、只是被后视窗判死(刚跨过一个变化点)⇒ 往前挪一点点就够。
+        if (firstIn(tS, tS + 0.5) === Infinity) return { tS, gap, safe: false, advance: 0.25 };
+        for (const v of risky) {
+            const c = v + 0.21;
+            if (c <= tS + 0.01 || c > dur - 0.6) continue;
+            if (safeAt(c)) return { tS, gap, safe: false, advance: Math.min(2.5, c - tS) };
+        }
+        // 时间线尾段找不到:继续往前挪,走带会在 durationS 处回绕(驱动自己的 wrap 语义)。
+        return { tS, gap, safe: false, advance: 2.5 };
+    })()`;
+    let gapNow = NaN;
+    let gapOk = false;
+    let moves = 0;
+    for (let i = 0; i < 10; i++) {
+        const st = await evaluate(SAFE_SPOT);
+        if (!st) break;
+        gapNow = st.gap;
+        if (st.safe) {
+            gapOk = true;
+            break;
+        }
+        const adv =
+            Number.isFinite(st.advance) && st.advance > 0 ? st.advance : 2.5;
+        moves++;
+        // 走带**没有 seek 口**:驱动的 `tS` 是它自己的局部量,`ctl.setTransport` 只是收
+        // 「宿主这一帧的位置」,下一帧就被它盖回去 —— 所以挪位只能靠**真起播再停**。
+        await setPlaying(true);
+        await sleep(Math.round((adv + 0.05) * 1000));
+        await setPlaying(false);
+        await sleep(160);
+    }
+    check(
+        gapOk,
+        `⑫ 前置:播放头距下一次**值变化** ≥0.5s(起播那一帧的 values 才保证为空;` +
+            `实得 gap=${gapNow === -1 ? "∞(之后不再变)" : gapNow},挪位 ${moves} 次,上界 10)`,
+    );
+    await evaluate(IN(`w.__SCVB_PARAMS_PUSH__ = []; return true;`));
+    await setPlaying(true);
+    const BADGE400 = `d.querySelector('[data-gb="master-width-hostbadge"]')`;
+    const badgeOn400 = IN(`
+        const n = ${BADGE400};
+        return !!n && n.getAttribute("data-on") === "1";
+    `);
+    check(
+        await waitFor(
+            IN(
+                `return (w.__SCVB_PARAMS_PUSH__ || []).some((p) => p.hostEcho && p.nValues === 0);`,
+            ),
+            6000,
+        ),
+        "⑫ ★ 起播 chase:真有一帧「值一个都没变 + hostEcho:true」到达" +
+            "(少了它,徽标只能等某个段边界值变了才亮)",
+    );
+    // [R0-5] 单独一格:**起播后第一帧** `values` 为空。
+    // 与上面那格不是同一件事 —— 上面那格只要**某一帧**是「值没变 + 回声亮」就行(晚到的
+    // 那一帧也算),这一格钉的是「起播那一刻值面本来就没有变化」,也就是上面那道
+    // 「距下一段边界 ≥0.5s」前提真的兑现了。少了它,边界前提被拆掉时这一格就是唯一的哨兵。
+    check(
+        await waitFor(
+            IN(`return (w.__SCVB_PARAMS_PUSH__ || []).length > 0;`),
+            6000,
+        ),
+        "⑫ 前提:起播后真有 params 帧到达(否则下一格无从判断)",
+    );
+    {
+        const firstFrame = await evaluate(
+            IN(
+                `const p = w.__SCVB_PARAMS_PUSH__ || []; return p.length ? p[0] : null;`,
+            ),
+        );
+        check(
+            firstFrame !== null && firstFrame.nValues === 0,
+            `⑫ 起播后**第一帧** \`values\` 为空(距下一段边界 ≥0.5s ⇒ 那一刻值没变;` +
+                `实得 ${JSON.stringify(firstFrame)})`,
+        );
+    }
+    check(
+        await waitFor(badgeOn400, 4000),
+        "⑫ ★ 徽标在**播放中**亮起(不是停止那一下才亮)",
+    );
+    assertClean("SL-400 起播 chase 徽标");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

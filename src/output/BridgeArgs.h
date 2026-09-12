@@ -161,6 +161,75 @@ inline void settleResendLatch(bool sent, bool& pendingFull) noexcept
     }
 }
 
+// --- [SL-400] 值没变、但 `hostEcho` 翻转:这一帧**也得发** ------------------------------
+//
+// 病根(用户 A23 实测):Cubase 起播会 chase 一遍自动化。宿主写进去的值与当前**相同** ⇒
+// `selectParamForEmit` 逐 id 全判「没变」⇒ `any == false` ⇒ 老写法在构载荷**之前**就
+// `return true` ⇒ 这一帧连载荷都不建 ⇒ 页面永远收不到 `hostEcho:true` ⇒ 播放期那把闩锁
+// 永不武装。用户看到的是「正常播放时『宿主自动化正在写』那个小图标不出现,停止那一下才亮
+// 1 秒」(停止时宿主写入的值**变了**,走的是「有变化」那条路)。
+//
+// 判据:`hostEcho` 也是载荷的一部分(§2.2),它翻转 = 载荷变了 = 依 §0.4「值未变不发」该发。
+// 它是**边沿触发**的(宿主那 600ms 新鲜窗只在起播/停走附近翻转一次)⇒ 一次播放最多多两帧,
+// 不会在 25Hz 上刷屏。
+//
+// ⚠ **边沿触发的边界**(claude 复审② 点名;措辞按代码实情,数取自 `AutomationPrinter.h` 的
+// `kHostEchoFreshMs = 600` 与 `web/shared/host-echo.js` 的 `HOST_ECHO_RELEASE_STOPPED_MS = 900`):
+// 「一次播放最多多两帧」的前提是**回声位在这段播放里真的翻过一次**。它有一个够得着的反例 ——
+// 宿主在**停走态**就连续写(每笔间隔 < 600ms)⇒ `hostEchoActive()` 一直为真、**一次都不翻转**;
+// 若用户在这之后才按播放,本函数不会发任何帧 ⇒ 页面手上 `store.params.hostEchoAt` 还停在
+// 那笔早到的写上(比如 `playbackStartedAt - 1500`)。而 `hostEchoVisible()` 的闩锁①要的是
+// `hostEchoAt >= playbackStartedAt - 900`,接不住;②③又只剩 900ms 窗口 ⇒ **徽标在播放中灭掉**,
+// 而宿主一直在写。这与 A23 是同一族(触发前提换成「回声位在起播前就已经亮着」)。
+// 硬化办法(把走带上升沿也算一条发帧理由,`planParamsFrame` 多收一个走带入参)已另立
+// **SL-409**;本卡只如实记账,不在这里扩签名。
+// 另:`smoke-output-dist-page.mjs` 的 ⑫ 那一格**量不到这一支** —— 它的夹具是
+// `setPlaying(false); sleep(400)` 之后才起播,等于**构造**出一个落在播放期内的干净上升沿。
+// 那一格证明的是「干净上升沿这一支」,不是「起播时徽标一定亮」。
+//
+// ⚠ **「值」的口径**(deepseek 复审④ 点名,留在头注里而不动契约文本):本卡的「值」= **整个
+// `scvb.params` 载荷**,含 §2.2 的 `hostEcho`。§0.4 那句「值未变不发」说的是**载荷**没内容
+// 就不发,不是「`values` 这个对象必须非空」。由此有一条**有意的形状**:只翻回声位的那一帧
+// `values` 是**空对象 `{}`**(稀疏 diff = 「本帧没有 id 变化」,不是非法帧)。
+// 下游逐条核过:`web/output/app.js` 在 `full` 为假那一路做
+// `{...store.params.values, ...(p && p.values)}` —— 展开空对象**不覆盖任何键**,是 no-op;
+// `hostEchoAt` 的写入只看 `p.hostEcho`、不看 `values` 是否非空 —— 所以闩锁确实会被这一帧武装。
+// **谁把空 `values` 当异常帧过滤掉,这条链就断在那里**(页面再也收不到起播 chase)。
+// 契约文本一字未动(字段不增不减、不改名、不改既有字段语义,不触发 §9 的变更流程);
+// 要把它写进 §2.2 的文字,归下一次真的契约变更一起走。
+//
+// 单拎成纯函数:`OutputEditor` 需要真 WebView2,gates 里只在 gate 8 的 pluginval 里编
+// (tests/CMakeLists.txt 头注写着这条边界),所以这条判据落在纯函数上 + 页面级 E3 收用户
+// 可见的那半 —— 与 `selectParamForEmit` / `settleResendLatch` 同一条路。
+//
+// ⚠ 记账语义与 `lastParamsValues_` **同一条口径**:基线跟到**这一帧构出来的载荷**,
+// 不看它最终有没有下发(那一层由 `lastParamsJson_` + resend 闩锁兜,见上)。混用两套口径
+// 会让「隐藏期翻转的回声」永远补不回来 —— 与 [SL-199] 那个洞同形。
+struct ParamsFramePlan
+{
+    bool emit = false; // 要不要构载荷并尝试下发
+    bool hostEcho = false; // 载荷里 `hostEcho` 写什么(= 这一帧的实时值)
+    bool nextBaseline = false; // 记账:下一拍拿它比。
+    // [SL-399 R25] 默认值取 **false** = 「这一拍没发过 true 帧」,与真基线
+    // `OutputEditor::lastHostEchoSent_` 的初值(`false`)同向。下面两条 return 都显式赋了值,
+    // 所以今天它到不了;取 false 是为了**将来的提前返回**:若有人插一条不赋值的早退,
+    // 默认 `true` 会把「没发过」记成「发过」,静默吃掉下一次上升沿。
+};
+
+inline ParamsFramePlan planParamsFrame(bool anyValueChanged, bool forceFull, bool echoNow, bool lastEchoSent) noexcept
+{
+    ParamsFramePlan p;
+    p.hostEcho = echoNow;
+    p.nextBaseline = lastEchoSent;
+    if (!anyValueChanged && !forceFull && echoNow == lastEchoSent)
+    {
+        return p; // 一个 id 没变、回声位也没翻转:这一帧没内容(去重仍在)
+    }
+    p.emit = true;
+    p.nextBaseline = echoNow;
+    return p;
+}
+
 // scvb.segments 的重发判定(`emitTick` 里那个 if 就是它)。
 //
 // 它与 params 是**同一个洞**:三个触发基线(`lastSegmentsSampleRate_` / `lastCrvsRevision_` /

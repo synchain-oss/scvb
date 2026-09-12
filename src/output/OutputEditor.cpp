@@ -334,9 +334,17 @@ bool OutputEditor::emitParams(bool forceFull)
         }
     }
 
-    // 没有任何 id 变化 → 这一帧本来就没内容可发,视为「已处置」(true):否则强制全量那一路
-    // 在「值确实一个都没变」时会让闩锁永远清不掉,25Hz 白构载荷。
-    if (!any && !forceFull)
+    // [SL-400] `hostEcho` 也是载荷的一部分(§2.2),所以它翻转同样算「值变了、该发」——
+    // 这一位必须在下面那道早退**之前**取,并且与上一次**真的下发出去**的那帧比。
+    // 判据本体收在纯函数 `planParamsFrame()`(`BridgeArgs.h`,`scvb_tests` 直接断言):
+    // 这个类要真 WebView2,gates 里只在 gate 8 的 pluginval 里编,所以本文件里的这两行
+    // 是**接线**,判据在那边。病根与边沿性见该函数头注。
+    const bool echoNow = processor_.getPrinter().hostEchoActive();
+    const auto paramsPlan = scvb::output::planParamsFrame(any, forceFull, echoNow, lastHostEchoSent_);
+
+    // 一个 id 都没变 **且回声位也没翻转** → 这一帧本来就没内容可发,视为「已处置」(true):
+    // 否则强制全量那一路在「值确实一个都没变」时会让闩锁永远清不掉,25Hz 白构载荷。
+    if (!paramsPlan.emit)
         return true;
 
     juce::var payload = obj();
@@ -345,9 +353,24 @@ bool OutputEditor::emitParams(bool forceFull)
     // 此前恒 false —— 于是「宿主在 Read 档回写参数、把用户的手动改动盖掉」这件事在 UI 上
     // 完全不可见,用户只看到「调了没反应」(v5.1 实测 P1-D)。优先级本身是设计(J78 的
     // 优先级表),要修的是**看不见**。
-    put(payload, "hostEcho", processor_.getPrinter().hostEchoActive());
+    put(payload, "hostEcho", paramsPlan.hostEcho);
     put(payload, "full", forceFull);
     put(payload, "versionActive", v);
+    // [SL-399 R19] 记账在**构载荷之后**:这一帧接下来有**三种**结局(与 `emitIfChanged` 的
+    // 三个出口一一对应,`:280-294`)——
+    //   ① `json == lastJson` ⇒ 被丢(页面早就收到过同一份载荷);
+    //   ② **不可见被丢,且不推进 `lastParamsJson_`** —— 这一路 `lastHostEchoSent_` 照样推到了
+    //      `echoNow`,而页面**根本没收到**这一帧。它今天不咬人靠的是**另一条链**:
+    //      本函数返回 `webView().isVisible()` = false ⇒ `settleResendLatch` 保持 `pendingFull`
+    //      ⇒ 恢复可见后有一发 `forceFull=true`,而 `planParamsFrame` 的 `forceFull` 短路让它
+    //      无条件发一帧、且带的是**此刻**的 `hostEcho` ⇒ 账补得回来。
+    //   ③ 真发出去。
+    // ①②之后要么页面手上已有同一份载荷、要么有一发强制全量兜底,所以这里**无条件**推进基线 ——
+    // [SL-399 R23] 与下面那句「可见却没发 = 载荷与上一帧逐字相同」是同一条口径的两半
+    // (那段注释只覆盖返回值语义)。
+    // 为什么不写「情形②」:两段相邻、共述同一个 `emitIfChanged`,而两段的编号**正好相反**
+    // (本段 ② = 不可见被丢,下面那段的 ② = json 相同)⇒ 引序号会自相矛盾,只引语义。
+    lastHostEchoSent_ = paramsPlan.nextBaseline;
 
     // 返回「C++ 侧观察到这一帧确实下发了」(SL-199 闩锁的清位判据)。
     // emitIfChanged 返回 false 有两种:① 不可见被丢 —— 闩锁必须保持;② json 与上一帧逐字相同 ——

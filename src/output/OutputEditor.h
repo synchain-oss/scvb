@@ -170,6 +170,14 @@ private:
     std::uint8_t lastGroupsOnline_ = 0;
     bool groupsEverSent_ = false; // scvb.groups 首帧必发(§0.4;独立于位图值)
     std::map<juce::String, float> lastParamsValues_; // scvb.params 稀疏 diff 缓存
+    // [SL-400] 上一次**真的下发出去**的那一帧里 `hostEcho` 是什么。diff 门原来只盯 `values`
+    // (见 emitParams 里那句 `if (!any && !forceFull) return true;`),于是「宿主在写、但写进去
+    // 的值与当前相同」这一档一个帧都发不出去 —— 页面侧按帧武装的播放期闩锁永远点不亮,
+    // 用户看到的就是「正常播放时小图标不出现,停止那一下才亮」。把这一位并进 diff 判据即可:
+    // 载荷里本来就有 `hostEcho`(§2.2),它翻转 = 载荷变了 = 依 §0.4「值未变不发」该发。
+    // 它是**边沿触发**的(宿主那 600ms 新鲜窗只在起播/停走附近翻转一次),所以一次播放最多
+    // 多两帧,不会在 25Hz 上刷屏。
+    bool lastHostEchoSent_ = false;
     std::array<float, 15> lastMeterDb_{}; // meters 0.3dB 阈值(§0.4)
     std::array<float, 15> lastMeterPeak_{};
     float lastBusL_ = -1000.0f;

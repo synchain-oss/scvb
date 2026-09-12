@@ -398,3 +398,57 @@ TEST_CASE("BRIDGEARGS-SL199-5 隐藏期段表变化 → 恢复可见 snapshot �
     // ⑥ 补发后回稳态:不再重复发。
     CHECK_FALSE(tick(false, true, false).emitted);
 }
+
+// ---------------------------------------------------------------------------
+// [SL-400] 值没变、但 `hostEcho` 翻转 ⇒ 这一帧也得发。
+//
+// 定谳(用户 A23):正常播放时「宿主自动化正在写」那个小图标不出现,停止那一下才亮 1 秒。
+// Cubase 起播会 chase 一遍自动化,写进去的值与当前**相同** ⇒ 逐 id 全判「没变」⇒ 老写法在
+// 构载荷之前就 return ⇒ 页面永远收不到 `hostEcho:true` ⇒ 播放期闩锁不武装。
+//
+// 这条判据在纯函数里(`planParamsFrame`),因为 `OutputEditor` 要真 WebView2、只在 gate 8 的
+// pluginval 里编 —— 与 `selectParamForEmit` / `settleResendLatch` 同一条路;用户可见的那半
+// 由页面级 E3(`smoke-seg-main`…见 web-preview 那套)收。
+//
+// 反向验证:把 `echoNow != lastEchoSent` 这一项从判据里去掉(D5)⇒「值不变 + 回声翻真」与
+// 「值不变 + 回声翻假」两格红,其余格照绿。
+// ---------------------------------------------------------------------------
+TEST_CASE("planParamsFrame:hostEcho 翻转也算载荷变了(值未变不再早退)", "[output][bridge][SL400]")
+{
+    using scvb::output::planParamsFrame;
+
+    SECTION("E1 值不变 + 回声翻真 ⇒ 发,且载荷带新回声")
+    {
+        const auto p = planParamsFrame(/*anyValueChanged=*/false, /*forceFull=*/false, /*echoNow=*/true,
+                                       /*lastEchoSent=*/false);
+        CHECK(p.emit);
+        CHECK(p.hostEcho); // ★ 帧带的是**新**值(用户看到的图标靠这一位点亮)
+        CHECK(p.nextBaseline); // 记账跟到这一帧
+    }
+
+    SECTION("E1b 值不变 + 回声翻假 ⇒ 同样发(图标该灭也得灭)")
+    {
+        const auto p = planParamsFrame(false, false, /*echoNow=*/false, /*lastEchoSent=*/true);
+        CHECK(p.emit);
+        CHECK_FALSE(p.hostEcho);
+        CHECK_FALSE(p.nextBaseline);
+    }
+
+    SECTION("E2 值不变 + 回声不变 ⇒ 不发(去重仍在)")
+    {
+        const auto steadyOn = planParamsFrame(false, false, true, true);
+        CHECK_FALSE(steadyOn.emit);
+        const auto steadyOff = planParamsFrame(false, false, false, false);
+        CHECK_FALSE(steadyOff.emit);
+    }
+
+    SECTION("两条原有出口不回归:值变了 / 强制全量 ⇒ 照发")
+    {
+        const auto byValue = planParamsFrame(/*anyValueChanged=*/true, false, false, false);
+        CHECK(byValue.emit);
+        const auto byForce = planParamsFrame(false, /*forceFull=*/true, false, false);
+        CHECK(byForce.emit);
+        // 强制全量 + 回声翻转:两条理由各自成立,结果一致。
+        CHECK(planParamsFrame(false, true, true, false).emit);
+    }
+}

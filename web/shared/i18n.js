@@ -1005,11 +1005,16 @@ export const T = {
         "wave.restoreSegHint": "本段由手动值驱动",
         "wave.restoreSegConfirm":
             "将把选中的这一段恢复成自动识别结果、只重算该段;其他段(相邻段与已锁定段)保持不变。若该轨处于冻结状态,冻结会被一并解除,是否继续?",
-        // [#161 复审【重要】②] 段短于最小分段时长时,引擎在这一窗里产不出任何段
-        // (EnergyVad 的「丢短」先于 padding),段表逐字节不动 —— 钮点下去零变化、
-        // 零提示。与锁定段同一处理:说清楚 + 给出路,不给一枚点了没反应的钮。
+        // [SL-399 R31] **产品口径**(旧理由已作废):原注释写「段短于最小分段时长时引擎在这一窗里
+        // 产不出任何段(EnergyVad 的「丢短」先于 padding)⇒ 段表逐字节不动 ⇒ 钮点下去零变化、
+        // 零提示」—— SL-399 之后「丢短」跑在**整条时间线**上,窗窄不再让整轨产出为空:
+        // 窗落在更长的人声里时旧段会被一条**裁到窗内的短段取代**,窗内是静音时才**被清掉**。
+        // 这条闸现在的口径与理由都换了:[SL-399 R34] **VAD 那一级有最小长度闸(「丢短」),
+        // 而写回裁剪没有**(`OutputProcessor.cpp` 的 R8),所以给这么短的段点「恢复自动」
+        // **最多只留下一条裁到段内的残段**(窗内静音时则是被清掉、什么都不留)⇒ 不给入口。
+        // 与锁定段同一处理:说清楚 + 给出路。
         "wave.restoreSegTooShort":
-            "本段短于最小分段时长({n} ms);恢复自动在这一段里得不到新段。请先与相邻段合并,或把「最小分段」调小。",
+            "这一段短于最小分段时长 {n} ms,不提供「恢复自动」:重算只会写回这一段的范围,最多留下一条同样短的残段;请把「最小分段」调小,或先合并相邻段。",
         "wave.clearCoverageConfirm":
             "将删除选中轨×选区的采集特征数据,是否继续?",
         // ---- T33 Wave 2 交互反馈件(05 §2.3 行 300-313 / 契约 §5.5;
@@ -1861,7 +1866,7 @@ export const T = {
         "wave.restoreSegConfirm":
             "This restores the selected segment to the automatic result and re-analyses that segment only; every other segment — neighbours and locked segments alike — stays unchanged. If this track is frozen, the freeze is lifted as well. Continue?",
         "wave.restoreSegTooShort":
-            "This segment is shorter than the minimum segment length ({n} ms), so restoring it produces no new segment. Merge it with a neighbour first, or lower “Min segment”.",
+            "This segment is shorter than the minimum segment length ({n} ms), so Restore automatic is not offered: re-analysis only writes back within this segment and would leave at most an equally short fragment. Lower “Min segment”, or merge it with a neighbour first.",
         "wave.clearCoverageConfirm":
             "This deletes the captured feature data for the selected tracks × selection. Continue?",
         // ---- T33 Wave 2 interaction feedback (05 §2.3 / contract §5.5; U17 review pending) ----
@@ -2720,7 +2725,7 @@ export const T = {
         "wave.restoreSegConfirm":
             "Le segment sélectionné sera rétabli sur le résultat automatique et lui seul sera recalculé ; tous les autres segments — voisins comme verrouillés — restent inchangés. Si cette piste est gelée, le gel sera également levé. Continuer ?",
         "wave.restoreSegTooShort":
-            "Ce segment est plus court que la durée minimale de segment ({n} ms) : le rétablissement ne produira aucun nouveau segment. Fusionnez-le d’abord avec un voisin, ou réduisez « Segment min ».",
+            "Ce segment est plus court que la durée minimale de segment ({n} ms) : le rétablissement automatique n’est pas proposé, car le recalcul n’écrirait que dans ce segment et ne laisserait au mieux qu’un fragment tout aussi court. Réduisez « Segment min » ou fusionnez-le d’abord avec un voisin.",
         "wave.clearCoverageConfirm":
             "Supprime les données de caractéristiques capturées pour les pistes sélectionnées × la sélection. Continuer ?",
         // ---- Retours d'interaction T33 Wave 2(05 §2.3 / contrat §5.5;relecture U17 en attente)----

@@ -30,6 +30,7 @@
 //      (其前置「另一条轨按手动 pan=77」排在 ③ 之前跑);
 //   ⑧ [SL-396] analyze 拒回执必须有提示(页面级:refused / busy 逐字上屏,
 //      受理成功 1.5s 内不出);
+//   ⑩ [SL-399] 手动改后再「恢复自动」⇒ 检查器 PAN / VOL 读数逐字回到改之前那一份;
 //   ⑨ 全程零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-seg-restore-page.mjs [仓库根绝对路径]
@@ -831,13 +832,13 @@ check(scope.endS - scope.startS < 3600, "④ 范围是一个段的量级,不是�
 // ⚠ 轴选的是「**段值有没有变**」,不是「这一帧点名了哪几条轨」。后者是 **mock 独有**的
 // 语义:真桥的分析帧恒以 `kAllTracksMask` 全量推(`OutputEditor.cpp:266`),按「只点名
 // 选中轨」去断,真桥这一侧永远为假 —— 那样的判据只证明 mock 长什么样,证明不了产品。
-// ⚠ **preview 侧的覆盖边界**(#256 复审第 6 轮点名,如实记):mock 的分析帧轨集是由**请求 mask**
-// 机械推出的(`affectedOf()` → `channelsOfMask(scope.tracksMask)` → `emitRecomputedSegments` →
-// `segmentsPayload()` 只映射那份 chList),单轨请求下这一帧里根本没有「其余轨」可比 ⇒ 本格在
-// preview 上**只覆盖「请求变宽」这一支**(`drifted` 在正常路径恒为空,下面那条逐字段比对此时
-// 是空集上的真);「请求窄、后端把同范围别的轨一并重写」那一支由 host 侧 SL-393 的 ①/② 用例
-// 覆盖。把 mock 的帧轨集对齐真桥(全量 / 计算集)归 SL-399 的 mock 同步项,届时本格才真正
-// 量得到写回集。
+// [SL-399] **preview 侧原先的覆盖边界(现已收掉)**:mock 的分析帧轨集原本由**请求 mask**
+// 机械推出(`affectedOf()` → `channelsOfMask(scope.tracksMask)` → `emitRecomputedSegments` →
+// `segmentsPayload()` 只映射那份 chList),单轨请求下这一帧里根本没有「其余轨」可比 ⇒ 本格
+// 在 preview 上只覆盖「请求变宽」这一支,比对集恒空。本卡把 mock 改成与真桥同形:**帧轨集
+// 恒全量、写回集才是请求 mask**(`regenerateSegments` 的 `writeChannels`),并给本格补了
+// 上面那条「至少还有一条轨可比」的前提守卫 —— 谁把帧轨集改回按请求 mask 推,守卫当场红。
+// host 侧同一条不变量的另一半仍由 SL-393 的 ①/② 用例覆盖(那边断的是真实现)。
 //
 // 为什么值得单钉:SL-393 的 native 修法把**计算集**放宽成了「范围内所有有覆盖的轨」
 // (只喂一条轨会被引擎判成「独唱」而按到正中,那正是本卡的病根)。计算集一宽,
@@ -864,6 +865,15 @@ if (analyzePush.length >= 1) {
         for (const [ch, segs] of Object.entries(p.byCh || {})) base[ch] = segs;
     }
     const after = analyzePush[analyzePush.length - 1].byCh || {};
+
+    // [SL-399] **前提守卫:这一帧里除选中轨外至少还有一条轨可比。**
+    // mock 的分析帧轨集原先由**请求 mask** 机械推出(单轨请求 ⇒ 帧里只有那一轨)⇒ 下面那条
+    // 「其余轨逐字段相同」是**空集上的真**,恒绿。本卡把 mock 对齐真桥(帧恒全量推、写回仍
+    // 只改 scope 段),这条守卫把它钉住:谁把帧轨集改回按请求 mask 推,这里当场红。
+    check(
+        Object.keys(after).length > 1,
+        `⑦ 前提:这一帧里除选中轨外至少还有一条轨可比(否则下一条恒真;实得 ${Object.keys(after).length} 条)`,
+    );
 
     // ⚠ 先断**取到的字段真有值**,再谈「逐字段相同」。
     // 键名写错时(本轮就写错过一个:桥面是 `volDb`,`vol_db` 只是 CSV 导出的列名)
@@ -1115,6 +1125,134 @@ check(
 );
 
 await evaluate(FORCE_ANALYZE(null)); // 复原:后面还有别的断言在跑
+
+// ---- ⑩ [SL-399] 段级「恢复自动」的读数回到**冻结前那一份**(用户 A22 的页面级影子)----
+// 定谳(用户 A22):冻结前显示 pan −20 / vol −0.2,手动改完之后点「恢复自动」变成 −60 / −0.9。
+// 机理:计算窗只有 scope 那一段时,`AnalysisPipeline` 的连续性项(wCont/wSide)与首区间锚
+// (`currentPan` = 用户刚改过的值)都与全量分析不同 ⇒ 解出来的槽位/侧别跟着不同。裁定 b″:
+// **计算窗 = 整条已采集时间线,写回窗 = scope × 目标轨**(native 侧见 `analysisWindows()`)。
+//
+// 这一格走**用户看得见的那条路** —— 检查器输入框里写着的数(逐字文本):
+//   ① 冻结前读数 = 选中段时 PAN / VOL 两个框里的值;
+//   ② 手动改 = 检查器自己的输入框提交(§5.4 后置:user_edited + locked),读数必须跟着变;
+//   ③ 解锁(clearManual 对 locked 免疫,§1.6)后点「恢复自动 → 继续」;
+//   ④ 判据:再选中同一位置,两个框里的数**逐字**回到 ① 那一份。
+// mock 那一侧的同形性由生成器保证:`makeSegments()` 的 pan/vol 只依赖 (version, ch, 段序),
+// 与请求的范围**无关** —— 也就是「返回值来自全时间线上下文」这条语义在 preview 里的替身;
+// 写回仍只改 scope 段(`mergeReanalyzed` 的 startS/endS)。D4 注入把这半破坏掉即红。
+const READ_INSPECTOR_VALUES = IN(`
+    const p = gb("inspector-pan-input");
+    const v = gb("inspector-vol-input");
+    if (!p || !v) return null;
+    return { pan: p.value, vol: v.value };
+`);
+const COMMIT_VOL = IN(`
+    const inp = gb("inspector-vol-input");
+    if (!inp) return false;
+    const cur = parseFloat(inp.value);
+    inp.value = String(Number.isFinite(cur) ? Math.round((cur + 3) * 10) / 10 : -6);
+    inp.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return true;
+`);
+{
+    // ① 选一个段,记下检查器读数(「冻结前」那一份)。
+    let beforePick = null;
+    outer2: for (const ch of [1, 2, 3, 4, 5]) {
+        for (const frac of [0.12, 0.22, 0.32, 0.42, 0.52, 0.62, 0.72, 0.82]) {
+            await evaluate(CLICK(ch, frac));
+            await sleep(160);
+            const s = await evaluate(INSPECT);
+            const vals = await evaluate(READ_INSPECTOR_VALUES);
+            if (
+                s &&
+                s.selected &&
+                Number.isFinite(parseTimeMs(s.startTxt)) &&
+                vals &&
+                vals.pan !== "" &&
+                vals.vol !== ""
+            ) {
+                beforePick = {
+                    ch,
+                    frac,
+                    startTxt: s.startTxt,
+                    endTxt: s.endTxt,
+                    ...vals,
+                };
+                break outer2;
+            }
+        }
+    }
+    check(
+        !!beforePick,
+        `⑩ 选中一个段并读到检查器 PAN / VOL 读数(实得 ${JSON.stringify(beforePick)})`,
+    );
+    if (beforePick) {
+        // ② 手动改:检查器的 PAN(+7)与 VOL(+3)各提交一次。
+        check(await evaluate(PAN_COMMIT), "⑩ 检查器 PAN 框提交一次");
+        check(await evaluate(COMMIT_VOL), "⑩ 检查器 VOL 框提交一次");
+        await sleep(400);
+        await evaluate(CLICK(beforePick.ch, beforePick.frac));
+        await sleep(200);
+        const manual = await evaluate(READ_INSPECTOR_VALUES);
+        check(
+            !!manual &&
+                (manual.pan !== beforePick.pan ||
+                    manual.vol !== beforePick.vol),
+            `⑩ 正证据:读数真的变了(前 ${JSON.stringify(beforePick)} / 手动后 ${JSON.stringify(manual)})`,
+        );
+        // ③ 解锁后走「恢复自动 → 继续」(clearManual 对 locked 免疫)。
+        check(
+            await evaluate(
+                IN(
+                    `const t = gb("inspector-locked-toggle"); if (!t) return false; t.click(); return true;`,
+                ),
+            ),
+            "⑩ 点锁定开关解锁(否则 clearManual 被 locked 挡住)",
+        );
+        await sleep(300);
+        const pushed0 = await evaluate(
+            IN(`return (w.__SCVB_SEG_PUSH__ || []).length;`),
+        );
+        check(
+            await evaluate(
+                IN(
+                    `const b = gb("inspector-restore-btn"); if (!b) return false; b.click(); return true;`,
+                ),
+            ),
+            "⑩ 点「恢复自动」",
+        );
+        await sleep(250);
+        check(
+            await evaluate(
+                IN(
+                    `const b = gb("inspector-restore-ok"); if (!b) return false; b.click(); return true;`,
+                ),
+            ),
+            "⑩ 点「继续」(真发一次 analyze)",
+        );
+        // 等重算那一帧回来(与 ⑦ 同一手法:轮询 push 计数,不赌固定睡眠)。
+        check(
+            await waitFor(
+                IN(`return (w.__SCVB_SEG_PUSH__ || []).length > ${pushed0};`),
+                6000,
+            ),
+            "⑩ 重算帧在 6s 内回来",
+        );
+        // ④ ★ 判据:再选中同一位置,读数**逐字**回到 ① 那一份。
+        await evaluate(CLICK(beforePick.ch, beforePick.frac));
+        await sleep(200);
+        const restored = await evaluate(READ_INSPECTOR_VALUES);
+        check(
+            !!restored &&
+                restored.pan === beforePick.pan &&
+                restored.vol === beforePick.vol,
+            `⑩ 恢复自动后检查器读数逐字回到冻结前那一份` +
+                `(前 ${JSON.stringify(beforePick.pan)} / ${JSON.stringify(beforePick.vol)};` +
+                `后 ${JSON.stringify((restored || {}).pan)} / ${JSON.stringify((restored || {}).vol)})` +
+                ` —— 计算窗收到 scope 那一版(D1/D4)在这里红`,
+        );
+    }
+}
 
 // ---- ⑨ 零异常 -------------------------------------------------------------
 check(
