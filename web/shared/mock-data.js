@@ -554,7 +554,8 @@ export function makeOutputState(overrides = {}) {
             segmentation: {
                 mode: "valley",
                 // [SL-251 同批] 单位照 **02-dsp-spec §0.3 常量表**(sensitivity 0..100、
-                // min_segment_ms 50..500),与 native 上线的那一份逐字同刻度。
+                // min_segment_ms 50..2000;[SL-398] 上限 500 → 2000),与 native 上线的那一份
+                // 逐字同刻度。
                 // ⚠ 这里留旧的 0.62/420 会让 preview 一开窗就把灵敏度显示成接近 0、
                 // 把手贴左端 —— 与本卡要修的「刚开窗那一小段咬人」是同一个形状的新缺陷,
                 // 只是搬到了 preview(CLAUDE.md §10:mock 桥与真桥必须同契约,两侧同改)。

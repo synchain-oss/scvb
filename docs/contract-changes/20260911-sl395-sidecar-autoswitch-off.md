@@ -1,8 +1,8 @@
 # 契约变更说明 —— 20260911-sl395-sidecar-autoswitch-off
 
-> **状态:草案,待统筹批准。** 用户 2026-09-11 已表态「>8MB 自动转 sidecar 先暂时不上,没测试过
-> 不知道稳定性,实际也很难碰到 8MB」(统筹同日转达);本文档是该意向的契约面草案,
-> 批准后随实现 PR 一起落地并挂 `status/frozen-contract`。
+> **状态:已批(统筹 2026-09-13;用户 2026-09-11 A20 / B23 / B25 裁定)。** 用户 2026-09-11 已表态
+> 「>8MB 自动转 sidecar 先暂时不上,没测试过不知道稳定性,实际也很难碰到 8MB」(统筹转达);
+> 本文档是该意向的契约面记录,随实现 PR 一起落地并挂 `status/frozen-contract`。
 
 ## 变更了哪个冻结契约
 
@@ -66,9 +66,9 @@
 | 文件 | 行 | 改什么 |
 | --- | --- | --- |
 | `src/core/state/SidecarStore.h` | `:18`(`kSidecarThresholdBytes` 旁) | **新增**单点开关常量(建议名 `kSidecarAutoSwitch`,值 `false`),注释写清「出厂关;打开即回到 ADR-007 原文行为」 |
-| `src/core/state/SidecarStore.cpp` | `:545`(`return gzBytes > kSidecarThresholdBytes;`) | 前面加开关判定;函数名/签名不动 |
-| `web/output/tab-settings.js` | `:63`(`FEATURES_EXTERNAL_BYTES = 8 * 1024 * 1024`) | 保留常量;「存储状态」区改成只渲染内嵌一态(外置分支保留在代码里,由开关驱动) |
-| `tests/core/test_state_features_roundtrip.cpp` | `:420`(FEAT-SIDECAR-1 的 `REQUIRE(gz.size() > kSidecarThresholdBytes)` 前置)、`:527`(`kB8`) | **改期望**:同一份 >8MB 载荷在开关关闭时断言 `embedded=1` 且无 sidecar 目录;原「转 sidecar」断言改挂到「开关打开」这一支(用例保留,不删) |
+| `src/core/state/SidecarStore.cpp` | `:552`(`return gzBytes > kSidecarThresholdBytes;`) | 前面加开关判定;函数名/签名不动 |
+| `web/output/tab-settings.js` | `:69`(`FEATURES_EXTERNAL_BYTES = 8 * 1024 * 1024`) | 保留常量;「存储状态」区改成只渲染内嵌一态(外置分支保留在代码里,由开关驱动) |
+| `tests/core/test_state_features_roundtrip.cpp` | `:423`(FEAT-SIDECAR-1 的 `REQUIRE(gz.size() > kSidecarThresholdBytes)` 前置)、`:570`(`kB8`) | **改期望**:同一份 >8MB 载荷在开关关闭时断言 `embedded=1` 且无 sidecar 目录;原「转 sidecar」断言改挂到「开关打开」这一支(用例保留,不删) |
 
 ### 文档
 
@@ -98,5 +98,4 @@
 
 ## 审批
 
-<!-- 待统筹批准后:挂 status/frozen-contract 标签;用户明确「批」后随实现 PR 落地。
-     落地时 docs/constitution/ 若需同步,一律从 masterPlan 真源同步,不就地编辑。 -->
+已批:统筹 2026-09-13(用户 2026-09-11 A20 裁定「先暂时不上」;B23 / B25 两格按本文档「机检 / 清单」那一节的口径标「v1 不可达,机检覆盖」);随实现 PR 落地并挂 `status/frozen-contract`。

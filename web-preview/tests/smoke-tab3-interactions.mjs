@@ -1030,13 +1030,14 @@ log("=== ② 布局常量(设计稿几何:158 / 34 / 262 / 44 …)===");
     // 默认值行程比与设计稿 2070-2074 逐一相符(值域反推的自证)
     const P = TW.SLIDERS.map((s) => Math.round(TW.sliderPercent(s, s.def)));
     // [SL-251 同批] 后两杆的 p 值随值域一起变了:sensitivity 0..1/0.62(62%)→ 0..100/50
-    // (50%);min_segment_ms 0..1500/420(28%)→ 50..500/120(16%)。
+    // (50%);min_segment_ms 0..1500/420(28%)→ 50..2000/120(**4%**;[SL-398] 上限 500 → 2000,
+    // 行程比随之从 16% 缩到 4%)。
     // 设计稿 2070-2074 那两个 p 值是**照着 UI 那套无出处的值域**画的,而 02-dsp-spec §0.3
     // 常量表才是真源(统筹已查证原文:sensitivity「50 | 0..100」、min_segment_ms
-    // 「120 | 50..500」)。规格 > 设计稿,故此处按规格更新;前五杆一字未动。
+    // 「120 | 50..2000」)。规格 > 设计稿,故此处按规格更新;前五杆一字未动。
     eq(
         P,
-        [44, 30, 36, 24, 40, 50, 16],
+        [44, 30, 36, 24, 40, 50, 4],
         "七杆默认行程比 = 值域反推(后两杆照 02-dsp-spec)",
     );
     // J23:padding 默认 120/200;§1.18 五字段整包缓存底账与滑杆默认一致
@@ -4533,14 +4534,20 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                 !F({ t0S: 1, t1S: 1.2 }, 0) && !F({ t0S: 1, t1S: 1.2 }, NaN),
                 "(b16i)min_segment_ms 不可用时不拦(拿不到判据就别挡路)",
             );
-            // [#161 复审四轮] 入参要镜像真桥的 jlimit(50,500):web 滑杆 0..1500、
-            // 缓存初值 420、native 默认 120,三个数互不相同,不夹就在 state 回推前分叉。
+            // [#161 复审四轮] 入参要镜像真桥的 jlimit(50,2000)([SL-398] 上限 500 → 2000)。
+            // 滑杆行程与夹取范围现在同值,夹取对**滑杆产出**恒等;它挡的是越界的缓存 / state 值
+            // (缓存初值 420、native 默认 120 都在域内),以及将来两侧再次分叉。
             {
                 const C = TW.clampMinSegMs;
                 eq(
+                    C(3000),
+                    2000,
+                    "(b16k)超上限夹到 2000(同 OutputEditor 的 jlimit)",
+                );
+                eq(
                     C(1500),
-                    500,
-                    "(b16k)超上限夹到 500(同 OutputEditor 的 jlimit)",
+                    1500,
+                    "(b16k)新值域内的 1500 原样(上限抬到 2000 后不再是死行程)",
                 );
                 eq(C(0), 50, "(b16k)低于下限夹到 50");
                 eq(C(120), 120, "(b16k)native 默认 120 原样");
@@ -4553,10 +4560,15 @@ log("=== ⑬ R4:SL-227 裸 Alt 抑制 / SL-228 词条改名 / SL-230 检查器�
                     ),
                     "(b16l)短段闸用的是夹取后的 min_segment_ms",
                 );
-                // 反例:滑杆拧到 1500 而 state 未回推时,900ms 的段真跑做得成 ⇒ 不该被挡
+                // 反例:缓存里是越界的 3000 时,判据必须按夹取后的 2000 算 —— 2500ms 的段
+                // (窗 250 hop)在 200 hop 的闸下放行;不夹就成了 300 hop ⇒ 误挡。
                 check(
-                    !F({ t0S: 1, t1S: 1.9 }, C(1500)),
-                    "(b16m)900ms 段在 minSeg=1500(夹到 500)下放行 —— 不夹会误挡",
+                    !F({ t0S: 1, t1S: 3.5 }, C(3000)),
+                    "(b16m)2500ms 段在 minSeg=3000(夹到 2000)下放行 —— 不夹会误挡",
+                );
+                check(
+                    F({ t0S: 1, t1S: 3.5 }, 3000),
+                    "(b16n)同一段不夹(3000)⇒ 拦 —— 证明这条夹取真的在起作用",
                 );
             }
             // [#161 复审三轮] 不写 `eq(TW.FEAT_HOP_S, 0.01)` —— 那是**自证式**断言:
@@ -4664,7 +4676,8 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
         eq(
             [minseg.min, minseg.max],
             [Number(cppMs[1]), Number(cppMs[2])],
-            "(c) ★ UI 行程 == native 夹取(50..500)—— 退回 0..1500 则 500 以上是死行程",
+            "(c) ★ UI 行程 == native 夹取(50..2000;[SL-398] 上限 500 → 2000)——" +
+                "退回 500 则 500 以上是死行程",
         );
         eq(
             minseg.def,
@@ -4715,11 +4728,16 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
             snapSeg.sensitivity > 1,
         `(d) ★ mock 快照的 sensitivity 用 native 刻度 0..100(实得 ${snapSeg.sensitivity};留 0.62 即红)`,
     );
+    // 上下界与 native 同源,不写第二份字面量:`cppMs` 就是上面 ③ 从 `OutputEditor.cpp`
+    // 的 `jlimit` 里抠出来的那两个数([SL-398] 上限 500 → 2000)。将来再放宽值域,
+    // 只改 native 那一处,这一格自己跟上;两侧漂开就红。
+    const msLo = cppMs ? Number(cppMs[1]) : 50;
+    const msHi = cppMs ? Number(cppMs[2]) : 2000;
     check(
         Number.isFinite(snapSeg.min_segment_ms) &&
-            snapSeg.min_segment_ms >= 50 &&
-            snapSeg.min_segment_ms <= 500,
-        `(d) mock 快照的 min_segment_ms 落在规格夹取内(实得 ${snapSeg.min_segment_ms})`,
+            snapSeg.min_segment_ms >= msLo &&
+            snapSeg.min_segment_ms <= msHi,
+        `(d) mock 快照的 min_segment_ms 落在规格夹取 ${msLo}..${msHi} 内(实得 ${snapSeg.min_segment_ms})`,
     );
 }
 

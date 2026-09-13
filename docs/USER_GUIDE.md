@@ -98,7 +98,7 @@ The first time you open an Output you get, in order: the language card, then the
 ## Analysis
 
 - **VAD**: dual-threshold energy detection with hysteresis, hangover, and padding either side; the default configuration is on the conservative side. Thresholds and sensitivity can be dragged with live preview.
-- **Segmentation**: energy-valley detection plus a minimum segment length and a breath tolerance.
+- **Segmentation**: energy-valley detection plus a minimum segment length (the wave page's **MIN SEG** slider, **50–2000 ms**, default 120 ms) and a breath tolerance. Raising it drops shorter segments and merges phrases into longer ones. **Version compatibility**: values above 500 ms are understood by new builds only — a 1000 ms project saved by a new build is silently clamped to 500 ms by an older one, whose range stops at 500 ms.
 - **Segment loudness basis**: Settings offers **K-weighted segment integration (default) / RMS / peak dBFS**; changing it requires a re-analysis.
 - **Centre-slot policy**: the fallback rule for when several tracks compete for the centre position — **priority queue (default) / lead exclusive / evenly nudged apart**, also a "re-analyse after changing" setting.
 - **Dragging thresholds never touches segments you edited**: 300 ms after you release, only segments that are `origin=auto` and unlocked get rewritten; hand-edited or locked segments stay byte-for-byte identical, and the first line of the diff tells you how many were preserved.
@@ -162,8 +162,8 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 ## Sessions and files
 
 - **Segments, ranges, and 2 versions of curves plus configuration** (a few hundred KB) live in the Output's state and travel with the project.
-- The **feature stream** is compressed and embedded in state by default; **above 8 MB it automatically moves to a sidecar file** in the system application-data directory, tied to the state by `sessionGUID`. The "Storage status" panel in Settings tells you which of the two you are on.
-- Saving the project elsewhere or copying it to another machine does not carry the sidecar along. The plugin then says plainly that the feature file is missing, rather than pretending the data is still there.
+- The **feature stream** is compressed and **embedded in state** (v1 does not auto-switch to a sidecar file, regardless of the 8 MB mark). The "Storage status" panel in Settings tells you which of the two you are on; on v1 it always reads "embedded".
+- Saving the project elsewhere or copying it to another machine does not carry the sidecar along. When you open a project that has a sidecar (written by an earlier version, or sent by someone else) and that file is missing, the plugin says plainly that the feature file is missing rather than pretending the data is still there.
 - The Input's state holds only a channel id plus UI preferences; **the single source of truth for configuration is always the Output**.
 
 ## Troubleshooting

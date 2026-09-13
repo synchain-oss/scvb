@@ -98,6 +98,13 @@ export function versionString(snapshot) {
 
 /**
  * 存储状态行模型(契约 §1.1 features:{embedded,bytes})。
+ *
+ * [SL-395] `external` **只认 `embedded` 这一位**,不再叠加本地的 8MB 阈值:
+ * native 出厂关掉自动切换之后恒发 `embedded=1`(压缩流一律内嵌),而**字节数仍可能 >8MB**
+ * (`FEATURES_EXTERNAL_BYTES` 是**压缩后**的阈值,内嵌的特征体照样能超过它)——
+ * 若这里继续按 `bytes > 阈值` 判外置,设置页会对一个完全内嵌的工程显示「外置」。
+ * 数据源只有一个:native 的 `embedded` 位。常量与「外置」文案**保留**(开关打开即用)。
+ *
  * @returns {{embedded:boolean, bytes:number, external:boolean}}
  */
 export function storageOf(state) {
@@ -107,7 +114,7 @@ export function storageOf(state) {
     return {
         embedded,
         bytes,
-        external: !embedded || bytes > FEATURES_EXTERNAL_BYTES,
+        external: !embedded,
     };
 }
 

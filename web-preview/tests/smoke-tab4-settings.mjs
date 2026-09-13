@@ -123,10 +123,17 @@ log("=== ② 纯函数 ===");
         { embedded: true, bytes: 3145728, external: false },
         "内嵌态",
     );
+    // [SL-395] 判据只有 embedded 这一位:**内嵌但 >8MB** 仍是内嵌(按字节数判外置会误报;
+    // 8MB 是「压缩后」的阈值,内嵌的特征体照样能超过它)。
+    eq(
+        TS.storageOf({ features: { embedded: true, bytes: 9000000 } }),
+        { embedded: true, bytes: 9000000, external: false },
+        "内嵌且 >8MB ⇒ 仍内嵌(不再按字节数误判)",
+    );
     eq(
         TS.storageOf({ features: { embedded: false, bytes: 9000000 } }),
         { embedded: false, bytes: 9000000, external: true },
-        "外置态(>8MB)",
+        "外置态(v1 不可达:开关关,恒 embedded=1)",
     );
     eq(
         TS.analysisConfigOf({ analysis: {} }),

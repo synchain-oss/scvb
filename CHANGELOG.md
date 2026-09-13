@@ -363,6 +363,20 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
 ⚠ 别拿它当「号写错了」的挡箭牌:号本身错(例如引了个从未合并的 PR)要去改号,不是放行。
 - (当前没有需要放行的号)
 
+⚠️ 契约变更
+- **特征流不再自动转存外部文件**:「压缩后 >8MB 自动转 sidecar」加了**单点开关**,
+  v1 出厂值 = **关** ⇒ 压缩后的特征流**一律内嵌**(`embedded=1`),不再产生
+  `sessions/<GUID>/` 目录;把工程发给他人时,不会再有「特征体不在工程里」的坑。
+  **只关写、不关读**:`embedded=0` + 合法引用的老工程照常载入,文件缺失照常明确报
+  「特征文件缺失」。容器布局、FEAT 节编码、桥面载荷字段**零变化**(abi 不升、段名不升 v2);
+  sidecar 的读写代码、8MB/6MB 回滞、事件与文案**全部保留** —— 开关是双向的,打开即逐字回到
+  ADR-007 原文行为(变更文档 `docs/contract-changes/20260911-sl395-sidecar-autoswitch-off.md`)(pending #SL395)
+- **最短段长上限 500ms → 2000ms**(`segmentation.min_segment_ms`;下限 50ms、默认 120ms 不变,
+  ParamID / index / 顺序 / versionHint 与 state 编码都不动,abi 不升)。**用户可感知**:长句素材上
+  段数变少、每段更长,波形页 MIN SEG 滑杆的行程随之变宽。**降级方向**:新版本存下的 >500ms 值在
+  旧版本里会被静默夹到 500ms(旧构建的值域上界就是 500ms)
+  (变更文档 `docs/contract-changes/20260911-sl398-min-segment-2000.md`)(pending #SL398)
+
 修复
 - 选了中文后,切换页面或点「开始使用」语言变回英文;首启标记不落盘导致引导反复弹出(pending #83 —— **PR #83 已 CLOSED、从未合并**,主线没有任何 subject 带 `(#83)`;留在这里
   是对的,机检因此天然绿。它同时是 `check-changelog-drafts.mjs --self-test` 里「从未合并的号

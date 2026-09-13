@@ -412,18 +412,56 @@ TEST_CASE("FEAT-SHA256-1 已知向量", "[state][features]")
 // SidecarStore:8MB 阈值 / 缺失 / copy-on-write / owner.lock / 回滞
 // ============================================================================
 
-TEST_CASE("FEAT-SIDECAR-1 >8MB 自动转 sidecar 且回读成功", "[state][features][sidecar]")
+// [SL-395] 「>8MB 自动转 sidecar」在 v1 出厂态由单点开关 `kSidecarAutoSwitch` 关掉(恒内嵌),
+// 但**只关写不关读**。本用例把两件事一起钉住:①写路径由开关单点决定(下称 D1 锚点);
+// ②盘上带 sidecar 的老工程(embedded=0 + 合法引用)在开关关着时照样载入。
+TEST_CASE("FEAT-SIDECAR-1 >8MB:v1 写路径恒内嵌,且仍能读回 embedded=0 的老工程", "[state][features][sidecar]")
 {
     const FeaturesData huge = makeHugeIncompressibleFixture();
     const auto gz = scvb::state::encodeFeatures(huge);
     REQUIRE_FALSE(gz.empty());
     REQUIRE(gz.size() > scvb::state::kSidecarThresholdBytes); // 前提:确实 >8MB
-    REQUIRE(SidecarStore::shouldUseSidecar(gz.size(), false)); // 自动转 sidecar
 
     TempDir tmp;
     SidecarStore store(tmp.path);
     const auto digest = scvb::state::sha256(gz.data(), gz.size());
-    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, makeIdentity(1111, "A")));
+    const ProcessIdentity self = makeIdentity(1111, "A");
+
+    // ---- ① 写路径:复刻 OutputProcessor 装 FEAT chunk 的那一段(唯一判据 = shouldUseSidecar)。----
+    // 出厂态(开关关)⇒ 恒内嵌:装进去的是**内嵌载荷**,盘上不产生 `sessions/<GUID>/`。
+    // ⚠ 下面两条断言是删除式验证 D1 的锚点:把 `kSidecarAutoSwitch` 改成 true,它们立刻红
+    //    (那时 `toSidecar` 为真:装的是引用式 payload、目录也真被写出来)。
+    const bool toSidecar = SidecarStore::shouldUseSidecar(gz.size(), /*currentlySidecar=*/false);
+    REQUIRE_FALSE(toSidecar); // 开关关 ⇒ 不自动转(与字节数无关)
+
+    std::vector<std::uint8_t> featChunk;
+    if (toSidecar) // 开关打开时这一支就是本卡之前「>8MB 自动转 sidecar」的原文行为
+    {
+        REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
+        SidecarRef written;
+        written.sessionGuid = kGuid;
+        written.sha256 = digest;
+        written.sidecarBytes = gz.size();
+        featChunk = scvb::state::encodeReference(written, 48000, 10, 1);
+    }
+    else
+    {
+        featChunk = gz;
+    }
+
+    REQUIRE_FALSE(std::filesystem::exists(store.sessionDir(kGuid))); // 写路径没落 sidecar 目录
+    const FeatDecode wrote = scvb::state::decodeFeatures(featChunk.data(), featChunk.size());
+    REQUIRE(wrote.ok);
+    REQUIRE(wrote.embedded); // FEAT 节 bit0 embedded = 1
+
+    const LoadOutcome roundtrip = loadFeatures(featChunk, store);
+    REQUIRE(roundtrip.ok);
+    REQUIRE_FALSE(roundtrip.featuresMissing);
+    REQUIRE(scvb::state::encodeFeatures(roundtrip.features) == gz); // 落盘载荷回读后重编码逐字节一致
+
+    // ---- ② 读路径:手工摆一份「老工程」形态(盘上有 sidecar 文件 + embedded=0 的引用式 payload)。----
+    // 开关关着也必须载入成功 —— 删掉 SidecarStore 会让这条与本变更无关的路径一起死,所以它在这里。
+    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
 
     SidecarRef ref;
     ref.sessionGuid = kGuid;
@@ -441,6 +479,8 @@ TEST_CASE("FEAT-SIDECAR-1 >8MB 自动转 sidecar 且回读成功", "[state][feat
     REQUIRE(gz2 == gz); // 回读后重编码逐字节一致
 }
 
+// 读路径用例,**与 `kSidecarAutoSwitch` 无关**(SL-395 只关写不关读):盘上有其余文件但特征文件
+// 缺失 → 按缺失处理。
 TEST_CASE("FEAT-SIDECAR-2 删除 sidecar 后特征缺失(曲线/配置不受影响)", "[state][features][sidecar]")
 {
     const auto gz = scvb::state::encodeFeatures(makeSmallFixture());
@@ -522,19 +562,35 @@ TEST_CASE("FEAT-SIDECAR-4 owner.lock 判活与过期", "[state][features][sideca
     REQUIRE_FALSE(store.copyOnWriteIfNeeded(kGuid, makeIdentity(999, "C"), now, unused));
 }
 
-TEST_CASE("FEAT-SIDECAR-5 回滞 8MB/6MB", "[state][features][sidecar]")
+// [SL-395] 回滞的期望随出厂态改口径:开关关时**根本不存在回滞**(判定与字节数、当前态全无关,
+// 恒 false);开关打开时逐字回到 ADR-007 / 04 §5.3 的 8MB/6MB 原文 —— 那几行原样留在下面
+// 的 `if constexpr` 支里(用例保留,不删)。
+TEST_CASE("FEAT-SIDECAR-5 回滞 8MB/6MB(出厂态开关关)", "[state][features][sidecar]")
 {
     const std::uint64_t kB8 = scvb::state::kSidecarThresholdBytes;
     const std::uint64_t kB6 = scvb::state::kReembedThresholdBytes;
 
-    // 未走 sidecar:>8MB 才转。
-    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8, false)); // ==8MB 仍内嵌
-    REQUIRE(SidecarStore::shouldUseSidecar(kB8 + 1, false)); // >8MB 转
+    // v1 出厂态 · 开关关:恒不转 —— 未走 sidecar 时不转,已走 sidecar 时也收回,一切看开关。
+    // ⚠ 这几行与 FEAT-SIDECAR-1 的 D1 锚点同源:开关一改成 true 就红。
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(0, false));
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8, false)); // 恰好 8MB 也不转
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8 + 1, false)); // >8MB 也不转
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB6 - 1, true)); // 已在外置态也收回内嵌
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8 - 1, true));
 
-    // 已走 sidecar:<6MB 收回,>=6MB 保持(回滞)。
-    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB6 - 1, true)); // <6MB 收回内嵌
-    REQUIRE(SidecarStore::shouldUseSidecar(kB6, true)); // ==6MB 保持
-    REQUIRE(SidecarStore::shouldUseSidecar(kB8 - 1, true)); // 6..8MB 保持(不再横跳)
+    // 开关打开时逐字生效的原文口径。用 `if constexpr` 而不是运行期 if:出厂态这段编译期就被丢掉,
+    // 不会有「常量条件」的噪音;开关一翻它立刻活过来。
+    if constexpr (scvb::state::kSidecarAutoSwitch)
+    {
+        // 未走 sidecar:>8MB 才转。
+        REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8, false)); // ==8MB 仍内嵌
+        REQUIRE(SidecarStore::shouldUseSidecar(kB8 + 1, false)); // >8MB 转
+
+        // 已走 sidecar:<6MB 收回,>=6MB 保持(回滞)。
+        REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB6 - 1, true)); // <6MB 收回内嵌
+        REQUIRE(SidecarStore::shouldUseSidecar(kB6, true)); // ==6MB 保持
+        REQUIRE(SidecarStore::shouldUseSidecar(kB8 - 1, true)); // 6..8MB 保持(不再横跳)
+    }
 }
 
 TEST_CASE("FEAT-SIDECAR-6 PID 复用竞态与路径穿越防护", "[state][features][sidecar]")

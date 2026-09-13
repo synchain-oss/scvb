@@ -290,18 +290,19 @@ export function restoreWindowTooShort(seg, minSegmentMs) {
 /**
  * [SL-242] 把 `min_segment_ms` 夹成真桥收下的那个值(纯函数,node 侧可断言)。
  *
- * 真源 = `src/output/OutputEditor.cpp` 的 `juce::jlimit(50, 500, …)`(02-dsp-spec §0.3
- * 常量表)。web 侧的滑杆值域是 0..1500,超出 [50,500] 的那一段真桥根本收不下,所以
- * **预测判据必须按真桥夹取后的值算**,否则闸的口径在 state 回推之前与真跑分叉。
+ * 真源 = `src/output/OutputEditor.cpp` 的 `juce::jlimit(50, 2000, …)`(02-dsp-spec §0.3
+ * 常量表;上限 [SL-398] 500 → 2000)。**预测判据必须按真桥夹取后的值算**,否则闸的口径
+ * 在 state 回推之前与真跑分叉。滑杆行程([SL-398] 起 50..2000)与夹取范围今天同值,所以对
+ * 滑杆产出这一层是恒等的;它挡的是**越界的缓存 / state 值**(本地缓存不是真源,真源在 native),
+ * 以及将来两侧再次分叉 —— 照真源夹一次的成本是一行,分叉的代价是闸算错。
  *
- * 它修的**只是滑杆越界那一格**。`local` 缓存初值 420 与 native runtime 默认 120 之间
- * 那一格**不在夹取的射程内**(两个数都落在 [50,500] 内,夹取恒等)—— 那是一条独立缺口,
- * 与另外两条一起登记在 `restoreWindowTooShort` 的头注里。
+ * 它**不管**「`local` 缓存初值 420 与 native runtime 默认 120 之间那一格」—— 两个数都落在
+ * 值域内,夹取恒等,那是一条独立缺口,与另外两条一起登记在 `restoreWindowTooShort` 的头注里。
  */
 export function clampMinSegMs(v) {
     const n = Number(v);
     if (!Number.isFinite(n)) return 0; // 拿不到判据 ⇒ 交给调用方按「不拦」处理
-    return Math.min(500, Math.max(50, n));
+    return Math.min(2000, Math.max(50, n));
 }
 
 /**
@@ -423,7 +424,7 @@ export const SLIDERS = Object.freeze(
         // prettier-ignore
         { key: "sensitivity", field: "sensitivity", api: "seg", gb: "wave-seg-sensitivity", t: "wave.sldSensitivity", tip: "wave.tipSensitivity", min: 0, max: 100, def: 50, unit: "", dp: 0 },
         // prettier-ignore
-        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", tip: "wave.tipMinSeg", min: 50, max: 500, def: 120, unit: "ms", dp: 0 },
+        { key: "minseg", field: "min_segment_ms", api: "seg", gb: "wave-seg-minlen", t: "wave.sldMinSeg", tip: "wave.tipMinSeg", min: 50, max: 2000, def: 120, unit: "ms", dp: 0 },
     ].map(Object.freeze),
 );
 
@@ -451,7 +452,8 @@ export const DEFAULT_SEGMENTATION = Object.freeze({
     mode: "valley",
     // [SL-251 同批] 三个字段一律照 **02-dsp-spec** 的常量表,不再自造一套 UI 刻度:
     //   · sensitivity → §0.3「50 | 0..100 | state」(§384:s∈0..100 映射 minDepth);
-    //   · min_segment_ms → §0.3「120 | 50..500 | state」(与 PipelineConfig 默认同值)。
+    //   · min_segment_ms → §0.3「120 | 50..2000 | state」(与 PipelineConfig 默认同值;
+    //     上限 [SL-398] 500 → 2000)。
     // 原先 UI 用的 0..1/0.62 与 0..1500/420 **在规格里没有出处**,而 native 一直按规格
     // 夹取 —— 于是 0.62 被存成「百分之 0.62」≈ 最低灵敏度,500ms 以上是死行程。
     sensitivity: 50,
@@ -4336,12 +4338,12 @@ export function createTabWave(opts) {
         // 处理口径与上面的锁定段逐字一致:说清楚 + 给出路(合并相邻段,或把「最小分段」
         // 调小),不给一枚点了会留下一条残段的钮。
         // 入参**照 native 的夹取来**(#161 复审四轮):`local.segmentation` 是本地缓存,
-        // 滑杆值域 0..1500,而真桥收进来时 `OutputEditor.cpp` 夹成 [50,500]。不夹的话
-        // 拧到 1500 而 state 回显未到时,`minHops = 150` ⇒ 900ms 的段被判「太短」而整行
-        // 消失,可真跑(夹到 500)做得成。方向是**多挡**且 `syncParamGroup` 回推后自愈,
-        // 但本卡的立论是「web 的预测判据必须与真跑同源」,注释既然引了那个夹取,判据就
-        // 得照着算。
-        // ⚠ 夹取**只修上界这一格**:缓存初值 420 vs native 默认 120 那一格它是恒等的
+        // 真桥收进来时 `OutputEditor.cpp` 夹成 [50,2000]([SL-398] 上限 500 → 2000)。
+        // 滑杆行程与夹取范围今起同值,所以这一层对滑杆产出恒等 —— 它挡的是**越界的缓存值**
+        // (缓存不是真源、state 可能来自别的构建)与将来两侧再次分叉。不夹的话,一个越界缓存
+        // 会让 `minHops` 按没被 native 收下的值算,闸的方向就是**多挡**(`syncParamGroup`
+        // 回推后自愈),而本卡的立论是「web 的预测判据必须与真跑同源」。
+        // ⚠ 夹取**只修越界这一格**:缓存初值 420 vs native 默认 120 那一格它是恒等的
         // (`clampMinSegMs(420) === 420`),那是另一条缺口,登记在 restoreWindowTooShort
         // 的头注里(#161 复审六轮:这半句原先算在夹取名下,是错的)。
         const minSegMs = clampMinSegMs(local.segmentation.min_segment_ms);

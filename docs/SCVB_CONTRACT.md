@@ -506,7 +506,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 |---|---|
 | 频率 | **25 Hz**(节流;**值未变不发**) |
 | 载荷 | `{ values:{ "<ParamID>": <f32 工程值>, ... }, hostEcho:bool, full:bool, versionActive:1..2 }` |
-| 字段纪律 | `values`(容器键为 **T25 定名**,§9.2)= **稀疏 diff**(只含本帧变化的 id,05 §1.4「`{id→value}` 稀疏 diff」);参数总数 **123**(声明;宿主可见 124,J59/J65),本事件覆盖面 = 全局三件 + **当前激活版本 60 个**(15 轨 × pan/vol/width/freeze)= 最多 63 个 id。**非激活版本参数不进本事件**;切版本后 C++ **全量重发**(`full:true`,`versionActive` 为新版本)。`hostEcho:true` = 本批来自宿主回吐/引擎打印(ARMED/PRINT),UI 灰显且**绝不回写**(§0.5)。工程值单位与 params-v0「范围」列一致(非归一化)。 |
+| 字段纪律 | `values`(容器键为 **T25 定名**,§9.2)= **稀疏 diff**(只含本帧变化的 id,05 §1.4「`{id→value}` 稀疏 diff」);参数总数 **123**(声明;宿主可见 124,J59/J65),本事件覆盖面 = 全局三件 + **当前激活版本 60 个**(15 轨 × pan/vol/width/freeze)= 最多 63 个 id。**非激活版本参数不进本事件**;切版本后 C++ **全量重发**(`full:true`,`versionActive` 为新版本)。`hostEcho:true` = 本批来自宿主回吐/引擎打印(ARMED/PRINT),UI 灰显且**绝不回写**(§0.5)。工程值单位与 params-v0「范围」列一致(非归一化)。**`hostEcho` 也是载荷的一部分 ⇒ 它翻转同样算「载荷变了、该发」**(变更记录:`docs/contract-changes/20260913-sl400-params-echo-doc.md`),因此**只翻回声位的那一帧 `values` 可以是空对象 `{}`** —— 那是合法的稀疏 diff(= 本帧没有 id 变化),**不是非法帧,下游不得按异常帧过滤**(过滤掉就连「起播 chase」一起断掉:页面再也收不到 `hostEcho:true`)。**载荷字段不增不减、不改名、不改既有字段语义**,不触发 §9 的变更流程。 |
 | UI 消费 | Tab2 pan/width/vol/冻结的 follow 态、Tab1 Width/MS Balance/Lead Select、声像/音量分布图的唯一数据源 |
 | 真源 | 05 §1.4(03 §3.5 移交);`full`/`versionActive` 为 T25 定名(§9.2) |
 
@@ -726,7 +726,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | `sidecarMissing` | 外部特征文件缺失或校验失败 | — | `{path?:string}` | 琥珀横幅⑤「采集数据缺失/过期,请重新采集」 | 04 §5.3 |
 | `noTimeline` | 宿主未提供时间线(无 `timeInSamples`) | — | `{}` | 琥珀横幅⑥「宿主未提供时间线」+ 采集/输出开关 disabled | 04 §2.6 |
 | `projectCopy` | 检测到工程副本(sessionGUID 不匹配)→ 已建独立采集数据副本 | — | `{sessionGuid:string}` | toast①「检测到工程副本,已创建独立采集数据副本」 | 04 §5.6 |
-| `sidecarSwitched` | 采集数据超 **8MB** 自动转存外部文件 | — | `{bytes:u64}` | toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」 | 04 §5.4 / ADR-007 |
+| `sidecarSwitched` | 采集数据超 **8MB** 自动转存外部文件(**v1 出厂态不可达**:自动切换关闭 ⇒ 恒内嵌;枚举与文案保留) | — | `{bytes:u64}` | toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」 | 04 §5.4 / ADR-007 |
 | `lowSample` | 该轨采集后**有效唱段 <1.5s** | 必填 | `{voicedS:f32}` | Tab2 状态灯旁 + Tab3 轨头黄标「样本不足,结果可能不稳」 | 04 §7 步7 |
 
 **降级纪律**:①UI **不静默**任何 code——未知 code 原样显示并入 Tab4 诊断区;②持续性条件(横幅①-⑥)不可手动关闭,条件消失(`active:false`)才撤下;一次性提示(toast)可关闭;③参数错误(`reason:"badArg"`)**不占用**本枚举,由函数返回值承载。

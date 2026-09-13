@@ -540,6 +540,13 @@ bool SidecarStore::copyOnWriteIfNeeded(const std::string& guid, const ProcessIde
 
 bool SidecarStore::shouldUseSidecar(std::uint64_t gzBytes, bool currentlySidecar)
 {
+    // [SL-395] 自动切换的**唯一**判据点:`kSidecarAutoSwitch == false`(v1 出厂态)⇒ 恒不转,
+    // 压缩后的特征流一律内嵌。`currentlySidecar` 那条回滞分支**刻意留在开关之后**:
+    // 开关关掉时它同样不该生效(否则一个带 sidecar 的老工程会在保存时"半途"保持外置),
+    // 而开关打开时两条分支逐字回到 ADR-007 / 04 §5.3。
+    // ⚠ 读路径不经过这里:载入 `embedded=0` 的工程走 SidecarStore 的读函数,与本判定无关。
+    if (!kSidecarAutoSwitch)
+        return false; // 出厂态:一律内嵌(函数名/签名不动,这是本卡唯一的行为改动)
     if (currentlySidecar)
         return gzBytes >= kReembedThresholdBytes; // 一旦转 sidecar,<6MB 才收回内嵌(04 §5.3)
     return gzBytes > kSidecarThresholdBytes; // 压缩后 >8MB 转 sidecar(ADR-007)
