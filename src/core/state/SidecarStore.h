@@ -138,7 +138,9 @@ public:
                              std::string& newGuid);
 
     // 回滞判定(04 §5.3):当前是否走 sidecar。
-    //   未走 sidecar:gz > 8MB → sidecar;已走 sidecar:gz < 6MB → 收回内嵌。
+    //   **出厂态恒 `false`**:`kSidecarAutoSwitch == false` ⇒ 一律内嵌,返回值与字节数无关。
+    //   开关是**双向**的:打开即逐字回到下面这条原文;8MB/6MB 两个阈值**只在开关打开时生效**。
+    //   开关打开时 —— 未走 sidecar:gz > 8MB → sidecar;已走 sidecar:gz < 6MB → 收回内嵌。
     static bool shouldUseSidecar(std::uint64_t gzBytes, bool currentlySidecar);
 
 private:

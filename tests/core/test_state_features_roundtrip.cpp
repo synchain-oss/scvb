@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_state_features_roundtrip —— T21 特征持久化:FeaturesCodec + gzip + SidecarStore。
-// 覆盖:embedded 逐字节往返(vadPresent 存/省)、sidecar 引用往返、>8MB 自动转 sidecar 且回读、
-// 删除 sidecar 后特征缺失、双开同 GUID copy-on-write、owner.lock 判活与 [SL-233] 10s 续租、8MB/6MB 回滞、
+// 覆盖:embedded 逐字节往返(vadPresent 存/省)、sidecar 引用往返、[SL-395] v1 写路径恒内嵌
+// (开关关)+ 读回 embedded=0 的老工程、老工程保存一次即收回内嵌并回收外部目录、
+// 删除 sidecar 后特征缺失、双开同 GUID copy-on-write、owner.lock 判活与 [SL-233] 10s 续租、
+// 8MB/6MB 回滞(开关打开时的原文口径)、
 // gzip 5min/15轨 ≤2.25MB、sha256 已知向量、压缩炸弹防护、不可信字节校验。
 // 纯 C++17,无 JUCE(ADR-011)。
 
@@ -846,4 +848,89 @@ TEST_CASE("FEAT-SIDECAR-10 心跳的 epoch 与 ISO8601 同源", "[state][feature
     REQUIRE(lock.heartbeatIso8601 == scvb::state::iso8601UtcFromEpochMs(kFixedEpochMs));
     // 反向验证:它确实不是「刷新那一刻的真实墙钟」(否则本条断言恒真,证明不了同源)。
     REQUIRE(lock.heartbeatIso8601 != scvb::state::iso8601UtcNow());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-395 R2] **打开带 sidecar 的老工程、保存一次 ⇒ 特征收回内嵌 + 外部目录被回收**。
+//
+// 这条语义此前只活在 `OutputProcessor.cpp` 装 FEAT chunk 那一跳的两个 `if` 里
+// (`wasSidecar && !refWasUnresolved` 才 `store.remove()`),**没有任何用例**;它是开关关掉之后
+// 唯一会**不可逆地动用户磁盘**的后果(工程体积随之变大),所以单独立一格。
+//
+// core 层够不到 `OutputProcessor`(它要 JUCE),照 FEAT-SIDECAR-1 ① 的同一手法**复刻判据**:
+//   起点 = 老工程形态(`embedded=0` 的引用式 payload + 盘上合法 sidecar);
+//   保存 = 取 `shouldUseSidecar(gz, /*currentlySidecar=*/true)` 那一支。
+// 真实的 `featuresSidecar_` / `featRefUnresolved_` 与这里的 `wasSidecar` / `refWasUnresolved`
+// 一一对应(后者由 loadFeatures 的结果给出:引用解开 ⇒ false)。
+//
+// 编号说明:提案里写的是 `-6`,但 6 已被「PID 复用竞态与路径穿越防护」占用,故顺延为 **-11**。
+//
+// 删除式 **D4**:把 `kSidecarAutoSwitch` 翻 true ⇒ 走「已在外置态且 ≥6MB ⇒ 保持外置」那一支
+// ⇒ 下面**三条 CHECK 同时红**(装的还是引用式 payload、目录也还在)。
+// ---------------------------------------------------------------------------
+TEST_CASE("FEAT-SIDECAR-11 老工程(embedded=0)保存一次 ⇒ 收回内嵌 + 外部目录回收", "[state][features][sidecar]")
+{
+    const FeaturesData huge = makeHugeIncompressibleFixture();
+    const auto gz = scvb::state::encodeFeatures(huge);
+    REQUIRE_FALSE(gz.empty());
+
+    TempDir tmp;
+    SidecarStore store(tmp.path);
+    const auto digest = scvb::state::sha256(gz.data(), gz.size());
+    const ProcessIdentity self = makeIdentity(1111, "A");
+
+    // ---- 起点:老工程形态(盘上有 sidecar + embedded=0 的引用式 payload)----
+    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
+    SidecarRef ref;
+    ref.sessionGuid = kGuid;
+    ref.sha256 = digest;
+    ref.sidecarBytes = gz.size();
+    const auto payload = scvb::state::encodeReference(ref, 48000, 10, 1);
+    REQUIRE_FALSE(payload.empty());
+
+    const LoadOutcome loaded = loadFeatures(payload, store);
+    REQUIRE(loaded.ok);
+    REQUIRE_FALSE(loaded.featuresMissing); // 引用解开了(sha256 过)⇒ `refWasUnresolved` 为假
+    REQUIRE(std::filesystem::exists(store.sessionDir(kGuid)));
+
+    // ---- 保存一次:复刻 OutputProcessor 的装 chunk 分支 ----
+    // ⚠ 这两个布尔**由加载结果导出,不写字面量**:① 它们在生产里就是加载的产物
+    // (`featuresSidecar_` / `featRefUnresolved_`);② 写成 `const bool x = true;` 会让
+    // 下面那句 `if (wasSidecar && !refWasUnresolved)` 成为**常量条件**,MSVC /W4 直接报
+    // C4127(实测:gate 5 因此红过一次)。从函数结果推出来的值不是常量表达式,判据一样硬。
+    const bool wasSidecar = loaded.ok; // 引用式 payload 载入成功 ⇒ 载入时走 sidecar 态
+    const bool refWasUnresolved = loaded.featuresMissing; // 上面 REQUIRE_FALSE 过 ⇒ 恒 false
+    const bool toSidecar = SidecarStore::shouldUseSidecar(gz.size(), wasSidecar);
+
+    std::vector<std::uint8_t> savedChunk;
+    if (toSidecar)
+    {
+        REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
+        SidecarRef again;
+        again.sessionGuid = kGuid;
+        again.sha256 = digest;
+        again.sidecarBytes = gz.size();
+        savedChunk = scvb::state::encodeReference(again, 48000, 10, 1);
+    }
+    else
+    {
+        savedChunk = gz; // 收回内嵌
+        if (wasSidecar && !refWasUnresolved)
+        {
+            store.remove(kGuid); // 防双源分叉(04 §5.3):外部副本随工程内嵌一起回收
+        }
+    }
+
+    // ★ D4 锚点:开关翻 true ⇒ 以下三条同时红(用 CHECK 而非 REQUIRE,一次把三条都照出来)
+    CHECK_FALSE(toSidecar);
+    const FeatDecode saved = scvb::state::decodeFeatures(savedChunk.data(), savedChunk.size());
+    REQUIRE(saved.ok);
+    CHECK(saved.embedded); // FEAT 节 bit0 = 1(内嵌)
+    CHECK_FALSE(std::filesystem::exists(store.sessionDir(kGuid))); // 外部目录已回收
+
+    // 回收之后这份工程**自足**:不碰外部目录也能载入,且逐字节回读一致。
+    const LoadOutcome after = loadFeatures(savedChunk, store);
+    REQUIRE(after.ok);
+    REQUIRE_FALSE(after.featuresMissing);
+    REQUIRE(scvb::state::encodeFeatures(after.features) == gz);
 }

@@ -4698,8 +4698,18 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
             const i = html.indexOf(`data-gb="${def.gb}"`);
             check(i >= 0, `(e) HTML 里找得到 ${def.gb}`);
             if (i < 0) continue;
-            // 从该滑杆容器起往后取一段,覆盖它自己的 role="slider" 那一块。
-            const block = html.slice(i, i + 1400);
+            // 从该滑杆容器起往后取一段,**到下一根滑杆的容器为止** —— 原先写死 1400 字符,
+            // 而静态 HTML 缩进很深:一根滑杆的标记块实测 ≈2.1k 字符,`--p` 恰好落在窗口外
+            // (`aria-valuenow` 在窗口内、`--p` 不在),于是 [SL-398 R5] 那条 `--p` 断言
+            // 七根全取到 NaN。按「下一根滑杆的 `class="wave-slider"`」收口。
+            // ⚠ 别改用 `data-gb="wave-`:滑杆自己内部的 `*-val` / `*-fill` 也长这样,
+            // 那样会在 aria 块**之前**就截断(实测:aria 三值全 null,反而多红 7 格)。
+            const start = i + `data-gb="${def.gb}"`.length;
+            const nextSlider = html.indexOf('class="wave-slider"', start);
+            const block = html.slice(
+                i,
+                nextSlider > start ? nextSlider : start + 4000,
+            );
             const gi = (re) => {
                 const m = re.exec(block);
                 return m ? Number(m[1]) : NaN;
@@ -4712,6 +4722,15 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
                 ],
                 [def.min, def.max, def.def],
                 `(e) ★ ${def.gb} 的 aria 值域/初值 == SLIDERS 定义(静态标记,运行期没人改)`,
+            );
+            // [SL-398 R5] 同一个 `block` 里的静态 `--p`(CSS 变量 = 行程百分数)也得跟着值域走 ——
+            // 值域 500 → 2000 之后默认位的行程比从 16% 变 4%,只改 `max` 不改 `--p` 的话,
+            // 开窗那一帧把手会停错位置,而 aria 三值与 SLIDERS 全绿。它与上面那三值是**同一类**
+            // 静态标记(运行期由 JS 覆写,所以错在首帧)。
+            eq(
+                gi(/--p:\s*([-\d.]+)/),
+                Math.round(TW.sliderPercent(def, def.def)),
+                `(e) ★ ${def.gb} 的静态 --p == SLIDERS 的默认行程比(16 → 4 就是这一格)`,
             );
         }
     }
@@ -4731,8 +4750,10 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
     // 上下界与 native 同源,不写第二份字面量:`cppMs` 就是上面 ③ 从 `OutputEditor.cpp`
     // 的 `jlimit` 里抠出来的那两个数([SL-398] 上限 500 → 2000)。将来再放宽值域,
     // 只改 native 那一处,这一格自己跟上;两侧漂开就红。
-    const msLo = cppMs ? Number(cppMs[1]) : 50;
-    const msHi = cppMs ? Number(cppMs[2]) : 2000;
+    // ⚠ [R6] 取不到 `cppMs`(正则失配 / 那一行被改写)时 **fallback 是 NaN,不是字面量** ——
+    // 字面量兜底会让这一格「拿不到判据也照绿」;NaN 让下面的比较恒 false ⇒ 当场红。
+    const msLo = cppMs ? Number(cppMs[1]) : NaN;
+    const msHi = cppMs ? Number(cppMs[2]) : NaN;
     check(
         Number.isFinite(snapSeg.min_segment_ms) &&
             snapSeg.min_segment_ms >= msLo &&

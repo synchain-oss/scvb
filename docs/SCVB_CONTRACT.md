@@ -504,7 +504,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 | 项 | 定义 |
 |---|---|
-| 频率 | **25 Hz**(节流;**值未变不发**) |
+| 频率 | **25 Hz**(节流;**载荷未变不发**——`values` 与 `hostEcho` 任一变化都算「载荷变了」,见下行) |
 | 载荷 | `{ values:{ "<ParamID>": <f32 工程值>, ... }, hostEcho:bool, full:bool, versionActive:1..2 }` |
 | 字段纪律 | `values`(容器键为 **T25 定名**,§9.2)= **稀疏 diff**(只含本帧变化的 id,05 §1.4「`{id→value}` 稀疏 diff」);参数总数 **123**(声明;宿主可见 124,J59/J65),本事件覆盖面 = 全局三件 + **当前激活版本 60 个**(15 轨 × pan/vol/width/freeze)= 最多 63 个 id。**非激活版本参数不进本事件**;切版本后 C++ **全量重发**(`full:true`,`versionActive` 为新版本)。`hostEcho:true` = 本批来自宿主回吐/引擎打印(ARMED/PRINT),UI 灰显且**绝不回写**(§0.5)。工程值单位与 params-v0「范围」列一致(非归一化)。**`hostEcho` 也是载荷的一部分 ⇒ 它翻转同样算「载荷变了、该发」**(变更记录:`docs/contract-changes/20260913-sl400-params-echo-doc.md`),因此**只翻回声位的那一帧 `values` 可以是空对象 `{}`** —— 那是合法的稀疏 diff(= 本帧没有 id 变化),**不是非法帧,下游不得按异常帧过滤**(过滤掉就连「起播 chase」一起断掉:页面再也收不到 `hostEcho:true`)。**载荷字段不增不减、不改名、不改既有字段语义**,不触发 §9 的变更流程。 |
 | UI 消费 | Tab2 pan/width/vol/冻结的 follow 态、Tab1 Width/MS Balance/Lead Select、声像/音量分布图的唯一数据源 |

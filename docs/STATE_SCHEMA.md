@@ -195,6 +195,10 @@ FeatSection(压缩前布局):
 > (`embedded=1`),不产生 sidecar 目录,下面第 ③ 步恒走内嵌那一支;本节余下的切换与回滞逻辑
 > **在开关打开时逐字有效**(开关是双向的,不是只能前进的迁移)。变更文档:
 > `docs/contract-changes/20260911-sl395-sidecar-autoswitch-off.md`。
+>
+> ⚠ **打开一份带 sidecar 的老工程、再保存一次 ⇒ 特征收回内嵌、`sessions/<GUID>/` 整目录被回收**
+> (下面第 ③ 步那句「若存在旧 sidecar → 删除」就是它)。**这一步不可逆**,工程体积随之变大;
+> 判据 = `FEAT-SIDECAR-11`(`tests/core/test_state_features_roundtrip.cpp`)。
 
 - 阈值判定用**压缩后字节数**;加**回滞**防止在 8MB 附近反复横跳:**一旦转为 sidecar,压缩后 <6MB 才收回内嵌**。
 - `getStateInformation()`:① 容器序列化配置/曲线各节 → ② `FeaturesCodec::encode()` → zlib 压缩 → gz → ③ gz ≤ 8MB:embedded=1 内嵌(若存在旧 sidecar → 删除,数据已随工程,防双源分叉);gz > 8MB:走 §4.3 sidecar 流程,节内只写 GUID+sha256+size。

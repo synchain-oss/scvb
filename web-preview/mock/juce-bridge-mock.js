@@ -19,6 +19,9 @@
 //     故非法 g 走夹取而不是 badArg)。
 //   • **写函数回推状态**:写入 → 改内部 state → emit 增量事件,让单向渲染链路可预演;
 //     但**不实现算法**(analyze 只在 800ms 后用生成器重算段表,不做真分析)。
+//   • **不夹参数值域**([SL-398] 记账):`setSegmentation` **不夹取** `min_segment_ms`
+//     (只查有限性),而真桥夹 `[50, 2000]`(`OutputEditor.cpp`)。这条 deviation 今天够不着 ——
+//     UI 侧 `clampMinSegMs` 先夹过一道,mock 收不到越界值;别据此以为 mock 也夹。
 //   • **`mBridgeReady` 门控**(§0.6):`requestInitialState()` 之前 emit 一律丢弃。
 //   • **range.mode 三值枚举**(J04):`follow | daw_loop | manual`,默认 follow;
 //     v0 的「全曲 = 起止哨兵」约定已废除,本文件不得残留任何哨兵式全曲判断。

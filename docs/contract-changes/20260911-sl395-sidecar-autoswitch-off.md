@@ -6,7 +6,8 @@
 
 ## 变更了哪个冻结契约
 
-- [ ] docs/PARAMETERS.md(自动化参数)—— 不动
+- [x] docs/PARAMETERS.md —— **仅 state 镜像注释一行**(`:74` 的 `embedded` 注释,**口径一致**,
+      引用指向 `STATE_SCHEMA.md §4.2`);自动化参数面**不动**
 - [ ] docs/IPC_CONTRACT.md(共享内存段名/布局)—— 不动
 - [x] docs/STATE_SCHEMA.md(state schema)—— **§4.2「8MB↔sidecar 切换与回滞」整节的口径**。
       容器布局、FEAT 节编码、`u16 flags` 的 `bit0: embedded` 语义**一个字节不动**
@@ -47,6 +48,11 @@
   「特征体不在工程里」的坑(原 toast② 说的那件事在 v1 上不会发生)。
 - **读方向必须保持**:`embedded=0` + 合法 sidecar 引用仍要能正常载入(老工程 / 未来打开开关
   之后写出的工程)。**本变更只关写不关读** —— 这一点是机检要钉住的。
+- **老工程保存一次即收回内嵌(要写明)**:打开一份 `embedded=0` 的老工程、**保存一次** ⇒
+  写路径走内嵌那一支,同时把外部副本 `store.remove()` 回收(`OutputProcessor.cpp` 的
+  `wasSidecar && !refWasUnresolved` 两支)。**不可逆,工程体积随之变大**;这是开关关掉的
+  直接后果,不是新增行为。判据 = `FEAT-SIDECAR-11`(起点 `embedded=0` + 合法 sidecar 目录 ⇒
+  开关关时保存一次 ⇒ `embedded=1` **且目录已删**;开关翻 true ⇒ 该格红)。
 - **降级方向**:若将来把开关打开,行为与今天完全一致(§4.2 原文逐字有效)。
 - **旧版本读新工程**:v1 写出的工程恒 `embedded=1`,任何版本都能读,无降级问题。
 - **不影响任何自动化参数 / IPC 布局 / 桥面载荷字段**。
@@ -74,6 +80,7 @@
 
 | 文件 | 位置 | 改什么 |
 | --- | --- | --- |
+| `docs/PARAMETERS.md` | `:74`(`embedded: bool # 超 8MB 转 sidecar`) | state 镜像注释同步成与 `STATE_SCHEMA.md :52` **口径一致**(引用写 `见 STATE_SCHEMA.md §4.2` —— PARAMETERS.md 自己的 §四是「命名与兼容规则」,裸 `§4.2` 在那边指不到 state 视图);**只此一行**,自动化参数面不动 |
 | `docs/STATE_SCHEMA.md` | §4.2(`:192-195` 那一节) | 节首加一句「**v1 出厂态:自动切换关闭**(单点开关),下列回滞与切换逻辑在开关打开时逐字有效」;§四 `:173` 的 `bit0: embedded` 说明补一句「v1 恒 1」 |
 | `docs/STATE_SCHEMA.md` | `:52`(`embedded: bool # 超 8MB 转 sidecar`) | 注释改成「超 8MB 转 sidecar(**v1 默认关,恒内嵌**)」 |
 | `docs/SCVB_CONTRACT.md` | `:729`(`sidecarSwitched` 行) | 「语义」列补「v1 出厂态不可达(自动切换关闭);枚举与文案保留」;**载荷字段列不动** |
