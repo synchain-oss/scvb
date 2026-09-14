@@ -82,17 +82,23 @@
         #e3d2e0 64%,
         #fde8ed 100%
     );
+    /* ⚠ [SL-402] 本条同时是「开窗占位渐变」的**真源**:C++ 侧 PlatformWebView.h 的
+     kShellBackdropStops(经 shellBackdropGradient / shellBackdropMid 消费)与三份
+     index.html <head> 内联的 linear-gradient 字面量,都与本条**逐字同色标**。
+     判据 = web-preview/tests/smoke-embedded-resources.mjs:⑥ 钉「内联 == C++ 色标数组」、
+     ⑥c 钉「C++ 色标数组 == 本条」—— 改任何一处不同批改其余两处即红。 */
     /* **外圈色** —— 外壳圆角之外那一圈(base.css 的 body 底,也是外壳投影落的那个面)。
      [SL-377] 用户裁定改回设计稿 body 16 行的深色 #191820。
 
-     ⚠ **本条与「开窗预绘底色」是两个角色,取值不同,不要再合成一个。**
+     ⚠ **本条与「开窗预绘底」是两个角色,取值不同,不要再合成一个。**
      SL-253→SL-370 期间两者一直同值,注释里也写着「三处同源」;SL-377 把它们拆开了:
-       · **占位色** = 遮挡闸期间铺满窗口的那块底(C++ 的 kShellBackdropArgb + 三份
-         index.html <head> 内联的 html 底),必须与成品外壳渐变的中点色一致才不跳阶,
-         现值 #d9cadb —— **不是本条**;
+       · **占位** = 遮挡闸期间铺满窗口的那块底(C++ 的 kShellBackdropStops 渐变
+         ([SL-402] 起是色标数组,此前是单色 kShellBackdropArgb)+ 三份
+         index.html <head> 内联的根元素底),必须与成品外壳渐变同形(--page-gradient
+         同一组色标;[SL-370] 当时取的是本渐变的中点色 #d9cadb)—— **不是本条**;
        · **外圈色** = 本条,只在外壳圆角之外那一圈可见,深色让窗口四角收边。
-     判据 = web-preview/tests/smoke-embedded-resources.mjs:⑥/⑥c 钉占位色那一族,
-     ⑥b 钉本条(对拍 docs/design 设计稿的 body 底,并断言它**不等于**占位色 ——
+     判据 = web-preview/tests/smoke-embedded-resources.mjs:⑥/⑥c 钉占位那一族,
+     ⑥b 钉本条(对拍 docs/design 设计稿的 body 底,并断言它**不等于**占位那一族 ——
      两个角色一旦又被写成同值就红)。 */
     --page-backdrop: #191820;
     --shell-border: rgba(255, 255, 255, 0.42);

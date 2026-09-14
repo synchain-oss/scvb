@@ -392,6 +392,8 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
   是对的,机检因此天然绿。它同时是 `check-changelog-drafts.mjs --self-test` 里「从未合并的号
   必须恒绿」那条用例的**真夹具** —— 要把它搬走或删掉之前,先另挑一个从未合并的 PR 号写进
   该脚本的 `FIXTURE_UNMERGED_PR` 并在本块里给它留一条预写条目,**别直接删断言**)
+- **Input 右下角帮助钮不再是一块浮在浅底上的白**:改成深墨 chip(--acc-ink 底 + --txt-dark-1 问号,全是既有 token,没有新色值),smoke-ui-layout-page 新增的 A8 判据钉「问号 vs 钮面」「钮面 vs 所在底」两处 WCAG 对比度 ≥3:1,把旧的白玻璃样式注回即红(pending #SL403)
+- **开窗占位有深浅了**:加载占位从单色 #d9cadb 升级为与成品外壳同形的渐变(tokens.css `--page-gradient` 同一组色标;C++ 色标数组 + 三份页面内联三处同源,改任何一处都会被 ⑥/⑥c 逮住),WebView2 那层只收纯色的底改取渐变中点色,FallbackPanel 面板底拆成自己的常量(pending #SL402)
 
 尚未开 PR 的在途卡(开 PR 时按上面 ②③ 的格式,先在本块里补一条预写条目)
 - T41 建议表 + CSV 导出

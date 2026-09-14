@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "FallbackPanel.h"
 
-#include "PlatformWebView.h"
-
 #include <utility>
+// [SL-402] 此前这里 include PlatformWebView.h 只为 shellBackdrop();面板底改用自己的
+// kFallbackPanelArgb(FallbackPanel.h)之后不再需要 —— 别为图省事把 include 加回来。
 
 namespace scvb::webview
 {
 namespace
 {
-// [SL-370] 面板底 = shellBackdrop(),它在 SL-370 之后是**浅色** ⇒ 三行标签必须是深墨,
+// [SL-370] 面板底 = kFallbackPanelArgb(浅色 #d9cadb)⇒ 三行标签必须是深墨,
 // 否则这块「WebView2 起不来时唯一能告诉用户发生了什么」的面板会白字浅底、一个字看不见。
 // 取值取自 SL-370 当时 web/shared/tokens.css 的 --txt-1 / --txt-2(浅色面上的一级/正文色阶);
-// **这不是跨文件真源**,tokens 改了这里不会红。这里唯一的硬约束是「与 shellBackdrop() 的
+// **这不是跨文件真源**,tokens 改了这里不会红。这里唯一的硬约束是「与面板底的
 // 对比度 ≥ 4.5」,判据 = tests/webview/test_plugin_common.cpp 的
-// "FallbackPanel label colours stay readable on shellBackdrop()"。
+// "FallbackPanel label colours stay readable …"(底 = kFallbackPanelArgb)。
 // 正文与诊断行同色是**对比度下限逼出来的**,不是漏改:在现在这个底色亮度上,再淡一档
 // (如 --txt-3 #6a6a74)只有 3.4:1,过不了那条断言;层级改由字号与等宽字面承担。
 constexpr juce::uint32 kTitleTextArgb = 0xff21212a;
@@ -72,12 +72,16 @@ FallbackPanel::~FallbackPanel() = default;
 
 void FallbackPanel::paint(juce::Graphics& g)
 {
-    // [SL-253] 收编到 `PlatformWebView.h` 的单一真源:此前这里是自己的字面量
-    // 0xff18161d,与外层那层差一点点 —— WebView2 挂掉那一瞬会看见一次色阶跳变。
+    // [SL-253] 收编到单一真源:此前这里是自己的字面量 0xff18161d,与外层那层差一点点
+    // —— WebView2 挂掉那一瞬会看见一次色阶跳变。
     // [SL-370] 那个真源换成浅色之后本面板跟着变浅,标签色见文件顶部 kTitleTextArgb /
     // kBodyTextArgb;继续共用同一个真源(而不是给本面板留一个自己的深底)是为了保住
     // SL-253 收编的那条性质:兜底面板与外层永远同色,切过来不跳阶。
-    g.fillAll(scvb::webview::shellBackdrop());
+    // [SL-402] **上面的「共用真源」到此为止**:占位升成渐变(kShellBackdropStops),纯色的
+    // 本面板不再可能「与外层永远同色」,于是改用本文件自己的 kFallbackPanelArgb
+    // (= SL-402 当时占位渐变的中点色,切过来仍不跳阶;此后两边各改各的,不再互相牵动)。
+    // 头注真源见 FallbackPanel.h 的 kFallbackPanelArgb。
+    g.fillAll(juce::Colour(kFallbackPanelArgb));
 }
 
 void FallbackPanel::resized()

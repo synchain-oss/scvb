@@ -7,7 +7,7 @@
 #include <type_traits>
 #include <utility>
 
-// [SL-271] 品红探针。开成 1 后 HostWebView::paint 铺品红而不是 shellBackdrop —— 真机上一眼
+// [SL-271] 品红探针。开成 1 后 HostWebView::paint 铺品红而不是占位渐变 —— 真机上一眼
 // 能分出「白闪没了是因为我们这层 paint 真的在跑」还是「WebView2 这次恰好起得快」。
 // 默认关,只经 -DSCVB_PROBE_MAGENTA=1 临时开;交付构建里它必须是 0。
 #ifndef SCVB_PROBE_MAGENTA
@@ -121,7 +121,7 @@ public:
     // (juce_WebBrowserComponent_windows.cpp:492)。白的来源就是它。
     //
     // 修法:**先调基类,再把自己的底盖上去**。两次 fillAll 落在同一个 Graphics、同一次
-    // paint 里,先白后 shellBackdrop(),中间不上屏 —— Windows 侧两条渲染路都是整帧画完才出:软件渲染
+    // paint 里,先白后占位渐变,中间不上屏 —— Windows 侧两条渲染路都是整帧画完才出:软件渲染
     // 画进 offscreenImage 再 blit(juce_Windowing_windows.cpp:4907),Direct2D 走
     // startFrame/endFrame 成对包住整次 paint(同文件 :5144-5145)。上屏的只有后盖的那一层。
     // WebViewHost::paint 保留不动:兜底面板路径下 webView_ 被 setVisible(false),
@@ -168,10 +168,12 @@ public:
     //     detail::PluginUtilities::getDesktopFlags 只可能给出 0 或
     //     windowRequiresSynchronousCoreGraphicsRendering,两者都不含 windowHasTitleBar;
     //   • (SL-355 当时)我方三层底色都是 shellBackdrop() = kShellBackdropArgb,那时它是暗色,
-    //     画不出浅灰。⚠ [SL-370] **这第三条证据已经不成立**:kShellBackdropArgb 现在是浅色
-    //     #d9cadb,和「浅灰」在肉眼上分不开。前两条(hbrBackground 为 0、WM_ERASEBKGND 不走)
-    //     不依赖取值,仍然成立,所以结论没变;但从今往后**不能再拿颜色去区分**第一段是宿主的
-    //     还是我方的 —— 而那正是本卡想要的结果(两边都浅 ⇒ 用户看不出交接)。
+    //     画不出浅灰。⚠ [SL-370] **这第三条证据已经不成立**:kShellBackdropArgb 当时改成了浅色
+    //     #d9cadb,和「浅灰」在肉眼上分不开([SL-402] 起该单色常量又被占位渐变的
+    //     kShellBackdropStops 取代,同为浅色族 —— 「和浅灰分不开」这条只与明暗有关,仍然成立)。
+    //     前两条(hbrBackground 为 0、WM_ERASEBKGND 不走)不依赖取值,仍然成立,所以结论没变;
+    //     但从今往后**不能再拿颜色去区分**第一段是宿主的还是我方的 —— 而那正是本卡想要的结果
+    //     (两边都浅 ⇒ 用户看不出交接)。
     //   ⇒ 浅灰只可能来自**宿主自己的插件窗容器** —— 它在我们的 HWND 上屏之前就在那儿。
     //   插件侧无从覆盖。**这一条只有真机能最终确认**(各 DAW 的容器底色不同)。
     //
@@ -179,7 +181,8 @@ public:
     //   ①-a 控制器建起来**之前** —— 就是本函数上面讲的那一层(JUCE 的 fallbackPaint
     //        每帧无条件 fillAll(Colours::white)),由本 override 先调基类再整块盖住。
     //   ①-b 控制器建好、文档还没提交 —— WebView2 的 DefaultBackgroundColor,由
-    //        PlatformWebView::makeWebViewOptions 的 withBackgroundColour(shellBackdrop())
+    //        PlatformWebView::makeWebViewOptions 的 withBackgroundColour(占位纯色,
+    //        [SL-402] 起 = shellBackdropMid())
     //        铺上([SL-253];判据在 tests/webview/test_plugin_common.cpp)。
     //        ⚠ **这一层可能整层不在**:JUCE 是
     //        `webViewController->QueryInterface(controller2...)` 后 `if (controller2 != nullptr)`
@@ -195,9 +198,10 @@ public:
     //   ①-c 文档已提交、外链 css 还没到 —— 页面自己没有任何底色,露的是 ①-b
     //        (①-b 缺席时就是白)。tokens.css 与 base.css 各要经一次 ResourceProvider 的
     //        WebResourceRequested 回到消息线程才拿得到。[SL-355] 因此在三份 index.html 的
-    //        <head> 里内联一条 `html { background-color: … }`,排在两条
+    //        <head> 里内联一条根元素底色声明,排在两条
     //        <link rel="stylesheet"> 之前;判据 = web-preview/tests/smoke-embedded-resources.mjs
-    //        的 ⑥。
+    //        的 ⑥。⚠ [SL-402] 内联值从单色 `html { background-color: … }` 升成与占位同色标的
+    //        `html { background: linear-gradient(…) }` 字面量(⑥ 随之改钉色标数组)。
     //        ⚠ **「排在外链之前」是排序事实,不是时序保证** —— 别把它读成「已经堵住」。
     //        Chromium 对 <head> 里的 <link rel="stylesheet"> 是**渲染阻塞**的:外链的 CSSOM
     //        就绪之前文档整体不进正常绘制路径,那一段屏上仍然是视图的 base background color
@@ -206,7 +210,8 @@ public:
     //            本仓栽过三次的「web 资源没进包 ⇒ 空白窗口」正是这一类;
     //          · 外链到达之后稳态零差异(所以它无副作用)。⚠ [SL-377] **理由变了**:
     //            SL-355 当时的理由是「与 base.css 的 body 底色同值」,而现在两者是两个角色、
-    //            **取值不同**(内联的 html 底 = 占位色 #d9cadb;body 底 = 外圈色 #191820)。
+    //            **取值不同**(内联的 html 底 = 占位渐变(浅色族,[SL-402] 起是
+    //            --page-gradient 同一组色标的 linear-gradient);body 底 = 外圈色 #191820)。
     //            现在成立的理由是**覆盖**而不是同值:base.css 的 `html, body { height: 100% }`
     //            让 body 盒铺满视口,深色 body 底整块盖在 html 画布底之上,稳态看不见接缝。
     //            (`--page-backdrop` 全仓只有 base.css 的 body 一个消费者。)
@@ -230,12 +235,13 @@ public:
     // 【三段各自的归因】
     //   · 白(第一段)= 同上面【灰】那一节:宿主自己的插件窗容器,在我方 HWND 上屏之前。
     //     插件侧无从覆盖;v5.6.7 用户读成「灰」、v5.6.8 读成「白」,都是这一节(各 DAW/主题不同)。
-    //   · 黑(第二段)= 我方 ①-a/①-b/①-c 三层预绘底色,取值 kShellBackdropArgb。
+    //   · 黑(第二段)= 我方 ①-a/①-b/①-c 三层预绘底色,SL-370 当时取值 kShellBackdropArgb。
     //     **这是一条排除法结论,不是猜**:开窗路径上我方只有这一个深色值 —— JUCE 的
     //     fallbackPaint 画白、外壳与 body 稳态都走浅色渐变、宿主容器是浅的,窗口里能出现
     //     一整块黑的来源只剩它。(全仓求证:预绘底色的全部落点 = ⑥ 与 ⑥c 读的那几个路径,
     //     见 web-preview/tests/smoke-embedded-resources.mjs;[SL-377] 起 ⑥b 读的是外圈色,
-    //     不在这条链上。)
+    //     不在这条链上。)⚠ [SL-402] 排除法仍然只靠明暗:预绘那一族如今是浅色**渐变**
+    //     (kShellBackdropStops),与「深色」互斥的结论照旧。
     //   · 白(第三段)= 我方三层**盖不到**的那一节,即上面已登记的两条:①-b 缺席时
     //     (JUCE 用 QueryInterface 取 ICoreWebView2Controller2,取不到就静默跳过)露出的
     //     WebView2 默认白,以及 runtime 自己那个宿主 HWND 首帧之前的那一段。
@@ -247,13 +253,14 @@ public:
     //
     // 【SL-370 的修法 · 第一段:颜色(兜底)】把预绘底色(tokens.css 的 --page-backdrop /
     //   三份 index.html 的 <head> 内联 / 本文件用的 kShellBackdropArgb,SL-370 当时这三处同源)
-    //   **整体换成浅色**:取 `--page-gradient` 的渐变轴中点色,现值 #d9cadb(本渐变四段斜率
-    //   几乎一致,取整后它与「沿轴等权均值」同为 #d9cadb;⑥c 判的是**中点色**这一条,不判均值)。
+    //   **整体换成浅色**:取 `--page-gradient` 的渐变轴中点色,当时值 #d9cadb(本渐变四段斜率
+    //   几乎一致,取整后它与「沿轴等权均值」同为 #d9cadb;⑥c 当时判的就是**中点色**这一条)。
     //   黑那一段就此彻底拿掉。
-    //   ⚠ 连带面:kShellBackdropArgb 同时是 FallbackPanel 的面板底色,三行标签因此从浅字
-    //   改成深墨(判据 = tests/webview/test_plugin_common.cpp 的对比度断言)。
+    //   ⚠ 连带面:kShellBackdropArgb 当时同时是 FallbackPanel 的面板底色,三行标签因此从浅字
+    //   改成深墨(判据 = tests/webview/test_plugin_common.cpp 的对比度断言;[SL-402] 起面板底
+    //   改用面板自己的 kFallbackPanelArgb,不再随占位走,见下)。
     //   ⚠ [SL-377] **上面那个「三处同源」已经拆成两个角色**:用户裁定窗口四角
-    //   (= --page-backdrop,外壳圆角之外那一圈)**改回深色 #191820**,而占位色
+    //   (= --page-backdrop,外壳圆角之外那一圈)**改回深色 #191820**,而占位那一族
     //   (kShellBackdropArgb + 三份 index.html 内联)保持浅色不动。SL-370 时四角跟着变浅是
     //   顺带效果、当时留给用户终验,终验结论就是这一条。
     //   机检:⑥ 保证占位色那几处彼此同值,⑥c 从 --page-gradient 现算现对「和成品可见底色
@@ -265,7 +272,8 @@ public:
     //   看得见白 ⇒ 那几帧白不由我方任何一层底色决定,而是 WebView2 自己那个宿主 HWND 在合成
     //   首帧之前画的,插件侧没有 API 管得到它的颜色。
     //   于是改成管**它在不在屏上**:导航开始 → 页面「首帧已绘」之间,把 WebView 子窗口整块
-    //   挪到宿主客户区之外,那块地方由 WebViewHost::paint 铺 shellBackdrop() 当占位;
+    //   挪到宿主客户区之外,那块地方由 WebViewHost::paint 铺占位渐变(shellBackdropGradient,
+    //   [SL-402] 起与成品外壳渐变同形;SL-370 当时是单色中点)当占位;
     //   SL-370 当时是三条放行路(前端 __scvb__firstFrame / pageFinishedLoading / 3s 超时)
     //   谁先到算谁。判定收在 WebViewRevealGate.h(纯逻辑、有单测),**为什么是「挪走」而不是
     //   setVisible(false) 或零尺寸、为什么必须等到导航开始**,只写在那份头注一处,别在这里复述。
@@ -288,6 +296,26 @@ public:
     //   指标(放行原因里出现 `timeout`)与出路写在 WebViewRevealGate.h 头注那一节,这里不复述。
     //   `kRevealSettleMs`(32 ms)同理:它是「一个 60Hz 合成帧再加约一帧余量」的**下界近似**,
     //   **不是**对「已经上屏」的观测 —— 观测在真机,本机量不到。
+    // -------------------------------------------------------------------------
+    //
+    // -------------------------------------------------------------------------
+    // [SL-402] v5.6.15 用户反馈:「加载中占位没有深浅,与打开后的背景有别」—— SL-370 换上
+    //   的单色中点占位,与开窗后可见的成品底(--page-gradient 的**渐变**)在明暗上仍差一段:
+    //   渐变从 #b5acc9 走到 #fde8ed,单色的 #d9cadb 只在轴中点附近与它贴合。
+    //   修法 = 占位从单色升成**同一组色标的线性渐变**(tokens.css 的 --page-gradient 是真源):
+    //     · C++:本文件两处 paint 走 PlatformWebView.h 的 shellBackdropGradient(getLocalBounds()
+    //       .toFloat())—— kShellBackdropArgb 单色常量被色标数组 kShellBackdropStops 取代;
+    //     · web:三份 index.html 的 <head> 内联改成 `html { background: linear-gradient(…) }`
+    //       字面量(仍是字面量、仍排在外链之前 —— ①-c 的两条确定兜路不变);
+    //     · ①-b(DefaultBackgroundColor)只收纯色,取 shellBackdropMid()(= 色标数组沿轴
+    //       50% 插值,与 ⑥b/⑥c 的中点公式同一条),与渐变占位不跳阶;
+    //     · FallbackPanel 的面板底改用面板自己的 kFallbackPanelArgb(仍取本卡当时的渐变
+    //       中点色 #d9cadb,但从此**不再与占位同源**,tokens 渐变再改它不跟也不红 ——
+    //       面板可读性由它自己的对比度断言独立把守)。
+    //   机检:⑥ 钉「内联渐变 == C++ 色标数组」、⑥c 钉「C++ 色标数组 == tokens 渐变」,
+    //   ⑥b 继续钉外圈色并断言它与占位那一族不等 —— 三处同源改任何一处都会红。
+    //   放行时序一字未动:WebViewRevealGate 的「等首帧 + 32 ms 下界」与本卡无关
+    //   (第五代只换占位**画什么**,不换占位**什么时候让位**)。
     // -------------------------------------------------------------------------
     //
     // 【SL-355 评估过、当时没做的那条】「控制器建好 / 首帧到达之前先 setVisible(false)」。
@@ -318,10 +346,16 @@ public:
         // 这一句**必须在前**:它画的白由下面整块盖掉,而泵要的是「每帧都被调到」。
         juce::WebBrowserComponent::paint(g);
 
+        // [SL-402] 盖上去的是**占位渐变**(不再是一块单色):与成品外壳 .sc-shell 的
+        // --page-gradient 同一组色标、同一角度的线性渐变(几何复刻在 shellBackdropGradient
+        // 的头注),开窗那几帧「占位 → 内容」不再有明暗跳变。坐标系 = 本组件的本地 bounds,
+        // 与 .sc-shell 铺满设计盒时的几何同形。
 #if SCVB_PROBE_MAGENTA
         g.fillAll(juce::Colours::magenta); // 真机探针:见文件顶部宏注释,交付构建里不会走到
 #else
-        g.fillAll(scvb::webview::shellBackdrop());
+        const auto area = getLocalBounds().toFloat();
+        g.setFillType(juce::FillType(scvb::webview::shellBackdropGradient(area)));
+        g.fillRect(area);
 #endif
     }
 
@@ -514,15 +548,19 @@ void WebViewHost::paint(juce::Graphics& g)
     // 剔掉),控制器建好之前那一段由 HostWebView::paint 接住。本函数真正会画的有两条路:
     //   • 兜底面板路径 —— 那时 webView_ 被 setVisible(false);
     //   • [SL-370] 遮挡期 —— webView_ 被挪到可视区之外(见 WebViewRevealGate.h),
-    //     整个窗口这时露的就是这一层。**它就是用户在「内容出来之前」看到的那块占位底色**,
-    //     取值 = shellBackdrop() = 成品外壳渐变的中点色,所以从占位切到内容不跳阶。
-    g.fillAll(scvb::webview::shellBackdrop());
+    //     整个窗口这时露的就是这一层。**它就是用户在「内容出来之前」看到的那块占位底**,
+    //     [SL-402] 起画的是与成品外壳渐变(.sc-shell 的 --page-gradient)同一组色标的
+    //     占位渐变(SL-370 当时是单色中点),所以从占位切到内容不跳阶、明暗走向也一致。
+    const auto area = getLocalBounds().toFloat();
+    g.setFillType(juce::FillType(scvb::webview::shellBackdropGradient(area)));
+    g.fillRect(area);
 }
 
 void WebViewHost::resized()
 {
     // [SL-370] WebView 的落点由遮挡闸决定:遮挡期间整块挪到可视区之外(尺寸不变),
-    // 那块地方由上面的 paint 铺 shellBackdrop() 当占位。几何与理由见 WebViewRevealGate.h。
+    // 那块地方由上面的 paint 铺占位渐变([SL-402] 起;SL-370 当时是单色)当占位。
+    // 几何与理由见 WebViewRevealGate.h。
     if (webView_ != nullptr)
         webView_->setBounds(revealGate_.parked() ? parkedBounds(getLocalBounds()) : getLocalBounds());
     if (fallback_ != nullptr)
@@ -559,8 +597,8 @@ void WebViewHost::logBackgroundColourSupport() const
     using Support = PlatformWebView::BackgroundColourSupport;
     const auto support = PlatformWebView::backgroundColourSupport(runtime_);
     const juce::String version = runtime_.version.isNotEmpty() ? runtime_.version : juce::String("unknown");
-    const juce::String argb =
-        juce::String::toHexString(static_cast<int>(scvb::webview::kShellBackdropArgb)).paddedLeft('0', 8);
+    const juce::String argb = juce::String::toHexString(static_cast<int>(scvb::webview::shellBackdropMid().getARGB()))
+                                  .paddedLeft('0', 8); // [SL-402] DefaultBackgroundColor 仍收纯色:占位渐变的轴中点色
 
     const juce::String floor = juce::String(PlatformWebView::kBackgroundColourMinRuntimeMajor);
     if (support == Support::available)

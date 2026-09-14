@@ -25,6 +25,10 @@
 //         被截掉的半句只剩 title 这一条通路(悬停 / 读屏)。三语各验一次 —— 语言一切,
 //         renderPill() 会把两者一起重写,验的正是「两者没有漂开」;
 //         删掉 app.js renderPill() 里那行 setAttribute("title", …) 即红。
+//      A8 [SL-403] 帮助钮可读性:问号图标色 vs 钮底、钮底 vs 所在面底,两处 WCAG 对比度
+//         都 ≥ 3:1(getComputedStyle 取真值 + WCAG sRGB 线性化;渐变面底按 CSS 几何在
+//         钮中心点取色 —— 不钉排版、不断色值字面量,判据与取真值纪律见 CONTRAST_PROBE
+//         头注)。把 .ipt-help 的旧样式注回 ⇒ **A8b 当场红**(旧组合 ≈ 1.1:1)。
 //   B. `output.html` Tab3 建议表视图:
 //      B1 视图内每个 <p> 的上下 margin 都是 0(删掉 `.suggest-view p{margin:0}` 即红);
 //      B2 标题区高度 = 标题 + gap + 说明句(±2px),不含任何隐形外边距;
@@ -598,6 +602,93 @@ const INPUT_PROBE = IN(`
     };
 `);
 
+// ---- A8 [SL-403] 帮助钮可读性:两处 WCAG 对比度(在 A 的三语循环里跑)----------
+// 「太白太亮、问号看不清」的机器形态 = ①问号图标色 vs 钮底、②钮底 vs 它所在的面底,
+// 两处都要 ≥ 3:1(WCAG 对图形对象 / 界面组件的口径;正文 4.5:1 那一档是给大段文字的)。
+// 取真值的纪律(**别钉排版、别断色值字面量**):
+//   · 全部经 getComputedStyle —— 钮底若带 alpha,就按它**实际叠在面底上**的合成色算,
+//     「写了个白玻璃底但因为下面是深底所以看得清」这种把戏过不了;
+//   · 「所在面底」沿祖先链找到第一层**不透明的底**:背景色直接取;背景图是渐变时,
+//     按 CSS 规范的 linear-gradient 几何(方向 (sinθ,−cosθ)、线过盒心、
+//     线长 = |W·sinθ|+|H·cosθ|、点投影插值)在**钮中心点**取真值 —— 渐变是空间函数,
+//     「面底是什么颜色」取决于钮落在渐变的哪个位置,不取点就没法算对比度;
+//   · 相对亮度按 WCAG 的 sRGB 线性化公式在页内现算,node 侧只做比值与阈值。
+const CONTRAST_PROBE = IN(`
+    const help = gb("input.header.help");
+    if (!help) return null;
+    const cs = w.getComputedStyle(help);
+    const parseC = (s) => {
+        const m = /rgba?\\(([^)]+)\\)/.exec(s || "");
+        if (!m) return null;
+        const p = m[1].split(",").map((x) => parseFloat(x));
+        return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+    };
+    const ch = (c) => c.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    const lumOf = (c) => { const l = ch([c.r, c.g, c.b]); return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2]; };
+    const over = (top, bottom) => ({
+        r: top.r * top.a + bottom.r * (1 - top.a),
+        g: top.g * top.a + bottom.g * (1 - top.a),
+        b: top.b * top.a + bottom.b * (1 - top.a),
+    });
+    const gradAt = (el, image, x, y) => {
+        const m = /^linear-gradient\\(\\s*([\\d.]+)deg\\s*,\\s*([\\s\\S]*)\\)\\s*$/i.exec(image);
+        if (!m) return null;
+        const stops = [];
+        const re = /rgba?\\(([^)]+)\\)\\s+([\\d.]+)%/g;
+        let sm;
+        while ((sm = re.exec(m[2]))) {
+            const p = sm[1].split(",").map((v) => parseFloat(v));
+            stops.push({ p: parseFloat(sm[2]) / 100, r: p[0], g: p[1], b: p[2] });
+        }
+        if (stops.length < 2) return null;
+        const box = el.getBoundingClientRect();
+        const rad = (parseFloat(m[1]) * Math.PI) / 180;
+        const dx = Math.sin(rad), dy = -Math.cos(rad);
+        const L = Math.abs(box.width * dx) + Math.abs(box.height * dy);
+        const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+        const t = 0.5 + ((x - cx) * dx + (y - cy) * dy) / L;
+        if (t <= stops[0].p) return stops[0];
+        for (let i = 0; i + 1 < stops.length; i++) {
+            const a = stops[i], b = stops[i + 1];
+            if (t <= b.p) {
+                const k = (t - a.p) / (b.p - a.p);
+                return { r: a.r + k * (b.r - a.r), g: a.g + k * (b.g - a.g), b: a.b + k * (b.b - a.b) };
+            }
+        }
+        return stops[stops.length - 1];
+    };
+    const br = help.getBoundingClientRect();
+    const bx = br.left + br.width / 2, by = br.top + br.height / 2;
+    let surface = null;
+    let surfaceVia = null;
+    let el = help.parentElement;
+    while (el) {
+        const st = w.getComputedStyle(el);
+        const img = st.backgroundImage;
+        const bgc = parseC(st.backgroundColor);
+        if (img && img !== "none" && img.indexOf("gradient(") >= 0) {
+            const c = gradAt(el, img, bx, by);
+            if (c) { surface = c; surfaceVia = "gradient"; break; }
+        }
+        if (bgc && bgc.a >= 1) { surface = bgc; surfaceVia = "solid"; break; }
+        el = el.parentElement;
+    }
+    if (!surface) return null;
+    const btnBg = parseC(cs.backgroundColor);
+    const icon = parseC(cs.color);
+    if (!btnBg || !icon) return null;
+    const btnOnSurface = btnBg.a >= 1 ? btnBg : over(btnBg, surface);
+    const iconOnBtn = icon.a >= 1 ? icon : over(icon, btnOnSurface);
+    return {
+        iconRgb: cs.color,
+        btnBgRgb: cs.backgroundColor,
+        surfaceVia: surfaceVia,
+        lumIcon: lumOf(iconOnBtn),
+        lumBtn: lumOf(btnOnSurface),
+        lumSurface: lumOf(surface),
+    };
+`);
+
 // ---- E. mini tour 末步的「?」自指(SL-272② 挪了 spotlight 锚点)
 const TOUR_PROBE = IN(`
     const help = q('[data-tour="help"]');
@@ -1006,6 +1097,30 @@ try {
             typeof p.subTitle === "string" && p.subTitle.trim() === p.text,
             `${lang}:pillSub 的 title 与正文逐字一致(title=${JSON.stringify(p.subTitle)} / 正文=${JSON.stringify(p.text)})`,
         );
+        // A8 [SL-403] 帮助钮可读性:两处 WCAG 对比度 ≥ 3:1(判据与取真值纪律见探针头注)。
+        // 删除式:把 .ipt-help 的旧样式注回(sc-btn 白玻璃底 + --txt-2 问号)⇒
+        // **A8b(钮底 vs 所在面底)当场红** —— 旧组合实测 ≈ 1.1:1;A8a(图标 vs 钮底)
+        // 旧组合本来就 ≥ 3:1,保持绿是**本格的设计**,红必须红在 A8b 那条断言上。
+        const cp = await evaluate(CONTRAST_PROBE);
+        if (check(cp, `${lang}:对比度探针取到帮助钮与所在面`)) {
+            const ratio = (a, b) =>
+                (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+            const rIcon = ratio(cp.lumIcon, cp.lumBtn);
+            const rSurface = ratio(cp.lumBtn, cp.lumSurface);
+            ge(
+                rIcon,
+                3,
+                `${lang}:A8a 问号图标色 vs 钮底对比度 ≥ 3:1(实得 ${rIcon.toFixed(2)}:1)`,
+            );
+            ge(
+                rSurface,
+                3,
+                `${lang}:A8b 钮底 vs 所在面底(${cp.surfaceVia})对比度 ≥ 3:1(实得 ${rSurface.toFixed(2)}:1)`,
+            );
+            log(
+                `  A8 [${lang}] icon/btn=${rIcon.toFixed(2)}:1  btn/surface(${cp.surfaceVia})=${rSurface.toFixed(2)}:1`,
+            );
+        }
         assertClean(`input/${lang}`);
     }
 

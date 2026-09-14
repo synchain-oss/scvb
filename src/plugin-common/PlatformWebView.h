@@ -3,6 +3,9 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <cmath>
+#include <cstddef>
+
 namespace scvb::webview
 {
 // [SL-253] 开窗底色的**唯一真源**。用户实测:插件窗口一开有一瞬间全白,然后才画出 UI。
@@ -13,35 +16,116 @@ namespace scvb::webview
 // 「仅防露白」,只是它来得太晚;当时仓里这个底色有**两个**字面量(tokens 与 FallbackPanel
 // 各写一个),收成本常量之后 C++ 侧不再各写各的。
 // ⚠ [SL-377] **「与 --page-backdrop 对齐」这句已经不成立**:那个变量现在是**外圈色**
-// (外壳圆角之外那一圈,用户裁定改回深色 #191820),而本常量是**占位色**,两个角色取值不同。
-// 别再拿它俩互相对拍 —— 判据也已按两角色重写(⑥/⑥c 钉占位色,⑥b 钉外圈色并断言两者不等)。
+// (外壳圆角之外那一圈,用户裁定改回深色 #191820),而本文件这组常量是**占位**,两个角色
+// 取值不同。别再拿它俩互相对拍 —— 判据也已按两角色重写(⑥/⑥c 钉占位那一族,⑥b 钉外圈色
+// 并断言它与占位那一族不等)。
 // **别在这里记「现在共有几处」**:记在注释里的数一定会漂(SL-355 就又添了一批,见下条)。
 // 要找全落点就读 web-preview/tests/smoke-embedded-resources.mjs 的 **⑥ 与 ⑥c** —— 那两格逐处
-// 对拍,它们读哪几个路径,占位底色就落在哪几处([SL-377] 起 ⑥b 读的是**外圈色**那条,
-// 不是本常量的落点)。
-// ⚠ 必须**完全不透明**:JUCE 的 withBackgroundColour 只接受全不透明或全透明(见其头注断言)。
+// 对拍,它们读哪几个路径,占位底就落在哪几处([SL-377] 起 ⑥b 读的是**外圈色**那条,
+// 不是本文件这组常量的落点)。
 //
-// [SL-355] 更正上面「HTML 的底色藏在两个外链 css 里」那半句:现在三份 index.html 的
-// <head> 里各内联了一条 `html { background-color: … }`,排在两条 <link rel="stylesheet">
-// 之前,取值与本常量的低 24 位逐字相同(判据 = web-preview/tests/smoke-embedded-resources.mjs
-// 的 ⑥,改一边不改另一边即红)。为什么必须写字面量而不是 var(--page-backdrop),以及
-// 开窗那几段各自的来源与证据,只写在 src/plugin-common/WebViewHost.cpp 的
-// HostWebView::paint 头注一处。
+// [SL-355] 更正上面「HTML 的底色藏在两个外链 css 里」那半句:三份 index.html 的 <head> 里
+// 各内联了一条根元素底色声明,排在两条 <link rel="stylesheet"> 之前。为什么必须写字面量
+// 而不是 var(--page-backdrop),以及开窗那几段各自的来源与证据,只写在
+// src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注一处。
 //
 // [SL-370] 取值由深色 #191820 改成**浅色** —— SL-253/355 一路把这一层当「防露白的暗底」,
 // 而成品首屏真正铺满窗口的是 .sc-shell 的浅色渐变(tokens.css 的 --page-gradient),于是
-// 预绘的暗底自己变成了用户看见的那段黑(v5.6.8 实测「白→黑→白→内容」)。现在的取值 =
-// --page-gradient 的渐变轴中点色,由上面那个 smoke 的 ⑥c 从渐变现算现对(⑥ 只对拍
-// 几处彼此同值,对拍不出「和成品差了一整个明暗」)。
-// ⚠ 本常量同时是 FallbackPanel 的面板底色:换浅色之后那三行标签必须是**深墨**才看得见,
-// 判据 = tests/webview/test_plugin_common.cpp 的对比度断言。
+// 预绘的暗底自己变成了用户看见的那段黑(v5.6.8 实测「白→黑→白→内容」)。当时的取值 =
+// --page-gradient 的渐变轴中点色,由那个 smoke 的 ⑥c 从渐变现算现对(⑥ 只对拍几处彼此
+// 同值,对拍不出「和成品差了一整个明暗」)。
+// ⚠ 本常量当时同时是 FallbackPanel 的面板底色:换浅色之后那三行标签必须是**深墨**才看得见。
 //
-// [SL-377] 本常量**不动**(仍是浅色占位),动的是 tokens.css 的 --page-backdrop:
+// [SL-377] 占位那一份**不动**(仍是浅色),动的是 tokens.css 的 --page-backdrop:
 // 用户裁定窗口四角(外壳圆角之外那一圈)改回深色。两者从此是两个角色,见上面 ⚠。
-inline constexpr juce::uint32 kShellBackdropArgb = 0xffd9cadb;
-inline juce::Colour shellBackdrop() noexcept
+//
+// [SL-402] **占位从单色升级为渐变**(第五代):单色占位与开窗后可见的成品底
+// (.sc-shell 的 --page-gradient 渐变)在明暗上仍有一段差 —— 用户报「加载中占位没有深浅,
+// 与打开后的背景有别」。修法 = 占位改画**同一组色标的线性渐变**(tokens.css 的
+// --page-gradient 是真源):C++ 侧本文件的 kShellBackdropStops(下面 shellBackdropGradient()
+// 按 CSS linear-gradient 的几何复刻)、三份 index.html 的 <head> 内联(现在是 linear-gradient
+// 字面量,判据 ⑥)与 tokens.css 三处逐字对拍,改任一处即红。两个连带:
+//   · WebView2 的 DefaultBackgroundColor 只收**纯色**(①-b 层,可能整层缺席),它取
+//     shellBackdropMid()(= 色标数组沿轴 50% 的插值色,现值 #d9cadb),与渐变占位不跳阶;
+//   · FallbackPanel 的面板底**从此不再与本文件同源**(SL-253 收编的那条性质由 SL-402 拆开):
+//     占位已是渐变,面板底仍是一块纯色,取值留在 FallbackPanel.h 自己的 kFallbackPanelArgb
+//     (注释写明它是 SL-402 当时的中点色记录,不是跨文件真源)。
+//
+// ⚠ 全部色标必须**完全不透明**:JUCE 的 withBackgroundColour 只接受全不透明或全透明
+// (见其头注断言);ColourGradient 的停靠点同理取自同一组全不透明常量。
+struct ShellBackdropStop
 {
-    return juce::Colour(kShellBackdropArgb);
+    float pos; // 沿渐变轴的比例 0..1(CSS 停靠点写的 n% / 100)
+    juce::uint32 argb; // 全不透明(0xAARRGGBB)
+};
+
+// [SL-402] 占位渐变的**色标数组**(C++ 侧单一真源)—— 逐字照抄 tokens.css
+// `--page-gradient` 的四个停靠点(157deg;改 tokens 一处,这里与三份 index.html 的内联
+// 必须同批改,⑥/⑥c 会对拍出漏改的那一处)。pos 用 0..1 的小数(CSS 的 n% / 100)。
+inline constexpr ShellBackdropStop kShellBackdropStops[] = {
+    {0.00f, 0xffb5acc9}, // #b5acc9   0% ← tokens.css --page-gradient 第 1 停靠点
+    {0.32f, 0xffccbfd5}, // #ccbfd5  32%
+    {0.64f, 0xffe3d2e0}, // #e3d2e0  64%
+    {1.00f, 0xfffde8ed}, // #fde8ed 100%
+};
+
+// 占位渐变(在 `area` 上复刻 CSS `linear-gradient(157deg, …)` 的几何):
+//   · 0deg 指向上、顺时针,方向向量(x 右,y 下)= (sin θ, −cos θ);
+//   · 渐变线过矩形中心,线长 = |W·sinθ| + |H·cosθ|,首末停靠点各落在线的两端。
+// 这三条是 CSS 规范对 linear-gradient 的定义,不是近似;JUCE 的 ColourGradient 沿 p1→p2
+// 插值、两端外侧延展首末色,与 CSS 的行为同形。smoke 的 ⑥/⑥c 只对拍**色标**本身
+// (色值与位置),几何两侧各自照规范实现,不互相对拍。
+inline juce::ColourGradient shellBackdropGradient(juce::Rectangle<float> area)
+{
+    constexpr auto kAngleDeg = 157.0f;
+    const auto rad = juce::degreesToRadians(kAngleDeg);
+    const auto sinA = std::sin(rad);
+    const auto cosA = std::cos(rad);
+    const auto len = std::abs(area.getWidth() * sinA) + std::abs(area.getHeight() * cosA);
+    const auto centre = area.getCentre();
+    const juce::Point<float> dir{sinA, -cosA};
+    const auto start = centre - dir * (len * 0.5f);
+    const auto end = centre + dir * (len * 0.5f);
+
+    constexpr auto count = sizeof(kShellBackdropStops) / sizeof(kShellBackdropStops[0]);
+    juce::ColourGradient gradient{juce::Colour(kShellBackdropStops[0].argb),
+                                  start.x,
+                                  start.y,
+                                  juce::Colour(kShellBackdropStops[count - 1].argb),
+                                  end.x,
+                                  end.y,
+                                  false};
+    for (std::size_t i = 1; i + 1 < count; ++i)
+        gradient.addColour(kShellBackdropStops[i].pos, juce::Colour(kShellBackdropStops[i].argb));
+    return gradient;
+}
+
+// [SL-402] 占位渐变沿轴 **50% 处的插值色**(现值 #d9cadb)—— 只喂给收**纯色**的两处:
+// WebView2 的 DefaultBackgroundColor(①-b 层,PlatformWebView::makeWebViewOptions)与
+// 诊断行。与 smoke ⑥b/⑥c 的中点公式同一条(50% 落在 [pos_i, pos_{i+1}] 段内线性插值)。
+// FallbackPanel **不**走这里(见上,SL-402 起面板底不再与占位同源)。
+inline juce::Colour shellBackdropMid()
+{
+    constexpr auto count = sizeof(kShellBackdropStops) / sizeof(kShellBackdropStops[0]);
+    for (std::size_t i = 0; i + 1 < count; ++i)
+    {
+        const auto& a = kShellBackdropStops[i];
+        const auto& b = kShellBackdropStops[i + 1];
+        if (a.pos <= 0.5f && 0.5f <= b.pos)
+        {
+            const float t = (0.5f - a.pos) / (b.pos - a.pos);
+            const auto mix = [t](juce::uint32 ca, juce::uint32 cb, int shift) -> juce::uint8 {
+                const auto va = static_cast<float>((ca >> shift) & 0xffu);
+                const auto vb = static_cast<float>((cb >> shift) & 0xffu);
+                return static_cast<juce::uint8>(juce::roundToInt(va + t * (vb - va)));
+            };
+            // ⚠ juce::Colour 四参构造是 (red, green, blue, alpha) —— alpha 在**最后**;
+            // alpha 通道同样插值:四个停靠点全不透明 ⇒ 结果恒 0xff,顺带守住「全不透明」前提。
+            return juce::Colour(mix(a.argb, b.argb, 16), mix(a.argb, b.argb, 8), mix(a.argb, b.argb, 0),
+                                mix(a.argb, b.argb, 24));
+        }
+    }
+    return juce::Colour(kShellBackdropStops[0].argb); // 解析不出段时 fail-closed 取首色
 }
 
 // PlatformWebView —— 平台 WebView 分支集中地(01 §9;01 §6.1 机制 1/2 与机制 3 前半)。
@@ -129,7 +213,7 @@ public:
     // -------------------------------------------------------------------------
     // [SL-376 / SL-364] `DefaultBackgroundColor` 这一层到底在不在。
     //
-    // 【为什么需要判】makeWebViewOptions 里的 withBackgroundColour(shellBackdrop()) 最终落到
+    // 【为什么需要判】makeWebViewOptions 里的 withBackgroundColour(shellBackdropMid()) 最终落到
     // JUCE 的 `WebView2::setWebViewPreferences`:它先
     // `webViewController->QueryInterface(ICoreWebView2Controller2)`,**取不到就静默跳过**
     // put_DefaultBackgroundColor(juce_WebBrowserComponent_windows.cpp,读实现核过 ——

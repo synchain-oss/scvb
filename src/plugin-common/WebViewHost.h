@@ -38,7 +38,9 @@ public:
     ~WebViewHost() override;
 
     void resized() override;
-    // 铺满 shellBackdrop()。[SL-271] 更正 SL-253 时的说法:本函数**挡不住**开窗白闪。
+    // 铺满占位渐变([SL-402] 起 = 与成品外壳渐变同组色标的 shellBackdropGradient;
+    // SL-253→SL-377 期间是单色 shellBackdrop)。[SL-271] 更正 SL-253 时的说法:本函数
+    // **挡不住**开窗白闪。
     // webView_ 落在本组件里时它铺满本组件且 setOpaque(true),JUCE 会把它的矩形从父组件的
     // 裁剪区里剔掉,本 paint 净效果为 0(那一段由 HostWebView::paint 管,见 .cpp)。
     // 它会真的画出来的有两条路:兜底面板路径(webView_ 被 setVisible(false)),以及
