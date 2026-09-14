@@ -851,22 +851,23 @@ TEST_CASE("FEAT-SIDECAR-10 心跳的 epoch 与 ISO8601 同源", "[state][feature
 }
 
 // ---------------------------------------------------------------------------
-// [SL-395 R2] **打开带 sidecar 的老工程、保存一次 ⇒ 特征收回内嵌 + 外部目录被回收**。
+// [SL-395 R2] 老工程(`embedded=0`)保存一次 ⇒ 收回内嵌 + 外部目录回收 —— **同形复刻**。
 //
-// 这条语义此前只活在 `OutputProcessor.cpp` 装 FEAT chunk 那一跳的两个 `if` 里
-// (`wasSidecar && !refWasUnresolved` 才 `store.remove()`),**没有任何用例**;它是开关关掉之后
-// 唯一会**不可逆地动用户磁盘**的后果(工程体积随之变大),所以单独立一格。
+// ⚠ **判据不是这一格**:本用例把 `OutputProcessor.cpp:1545-1571` 那一跳**复刻**了一遍,
+// `store.remove(kGuid)` 是用例自己调的 —— 把生产里那句 `store.remove(sessionGuid_.toStdString())`
+// 整行删掉,本用例**照样全绿**(gates 复审第 2 轮的 inline 指出)。真正钉生产那一跳的是
+// **`HOST SL395`**(`tests/host/test_host_harness.cpp`,走真 `setStateInformation`/`getStateInformation`),
+// 删除式 **D6** 就是注掉生产那行、看它红在「目录仍在」。
+// 本格留下是因为它是**纯 core 层**的同形复刻:不依赖 JUCE,断言面更窄、失败定位更快。
 //
-// core 层够不到 `OutputProcessor`(它要 JUCE),照 FEAT-SIDECAR-1 ① 的同一手法**复刻判据**:
-//   起点 = 老工程形态(`embedded=0` 的引用式 payload + 盘上合法 sidecar);
-//   保存 = 取 `shouldUseSidecar(gz, /*currentlySidecar=*/true)` 那一支。
-// 真实的 `featuresSidecar_` / `featRefUnresolved_` 与这里的 `wasSidecar` / `refWasUnresolved`
-// 一一对应(后者由 loadFeatures 的结果给出:引用解开 ⇒ false)。
+// 复刻的是**前两道闸**:`wasSidecar && !refWasUnresolved`。生产还有第三道 `!heldByOther`
+// (他人活锁判定,`OutputProcessor.cpp:1558-1568`)—— 本场景里锁归本进程(或压根没有锁),
+// 第三道恒真,故未复刻;别把这一格读成「三道闸都钉住了」。
 //
 // 编号说明:提案里写的是 `-6`,但 6 已被「PID 复用竞态与路径穿越防护」占用,故顺延为 **-11**。
 //
 // 删除式 **D4**:把 `kSidecarAutoSwitch` 翻 true ⇒ 走「已在外置态且 ≥6MB ⇒ 保持外置」那一支
-// ⇒ 下面**三条 CHECK 同时红**(装的还是引用式 payload、目录也还在)。
+// ⇒ 下面**三条 CHECK 同时红**(装的还是引用式 payload、目录也还在)。它钉的是**开关**,不是 remove。
 // ---------------------------------------------------------------------------
 TEST_CASE("FEAT-SIDECAR-11 老工程(embedded=0)保存一次 ⇒ 收回内嵌 + 外部目录回收", "[state][features][sidecar]")
 {
@@ -894,11 +895,14 @@ TEST_CASE("FEAT-SIDECAR-11 老工程(embedded=0)保存一次 ⇒ 收回内嵌 + 
     REQUIRE(std::filesystem::exists(store.sessionDir(kGuid)));
 
     // ---- 保存一次:复刻 OutputProcessor 的装 chunk 分支 ----
-    // ⚠ 这两个布尔**由加载结果导出,不写字面量**:① 它们在生产里就是加载的产物
-    // (`featuresSidecar_` / `featRefUnresolved_`);② 写成 `const bool x = true;` 会让
-    // 下面那句 `if (wasSidecar && !refWasUnresolved)` 成为**常量条件**,MSVC /W4 直接报
-    // C4127(实测:gate 5 因此红过一次)。从函数结果推出来的值不是常量表达式,判据一样硬。
-    const bool wasSidecar = loaded.ok; // 引用式 payload 载入成功 ⇒ 载入时走 sidecar 态
+    // ⚠ 这两个布尔**由夹具本身的形态导出,不写字面量**:
+    //   ① `wasSidecar` 取「喂进去的 payload 是不是引用式」—— **不能**用 `loaded.ok`:内嵌 payload
+    //      载入后 `ok` 同样为 true,夹具哪天换成内嵌形态,`wasSidecar` 会静默取真、用例照绿,
+    //      而它声称覆盖的场景已经不在了(inline 复审第 2 轮指出);
+    //   ② 写成 `const bool x = true;` 会让下面那句 `if (wasSidecar && !refWasUnresolved)` 成为
+    //      **常量条件**,MSVC /W4 直接报 C4127(实测:gate 5 因此红过一次)。上面那个写法
+    //      (`decodeFeatures` 的结果)同样不是常量表达式 —— 避警告不必牺牲语义。
+    const bool wasSidecar = !scvb::state::decodeFeatures(payload.data(), payload.size()).embedded;
     const bool refWasUnresolved = loaded.featuresMissing; // 上面 REQUIRE_FALSE 过 ⇒ 恒 false
     const bool toSidecar = SidecarStore::shouldUseSidecar(gz.size(), wasSidecar);
 

@@ -6045,6 +6045,67 @@ TEST_CASE("HOST SL-233:sidecar 模式下 25Hz tick 周期刷新 owner.lock", "[h
 }
 
 // ===========================================================================
+// [SL-395 R10] **老工程(embedded=0)保存一次 ⇒ 特征收回内嵌 + 外部目录回收** —— 钉**生产那一跳**。
+//
+// 为什么不能只靠 core 的 `FEAT-SIDECAR-11`:那一格把 `OutputProcessor.cpp:1545-1571` 的分支
+// **复刻**了一遍(`store.remove` 是用例自己调的),把生产里那句
+// `store.remove(sessionGuid_.toStdString())`(`OutputProcessor.cpp:1569`)整行删掉,它**照样全绿** ——
+// 而那一段注释防的正是「工程里一份、sidecar 里另一份」的双源分叉(gates 复审第 2 轮的 inline 指出)。
+// 本用例走**真** `setStateInformation` / `getStateInformation`:删掉生产那行会红在「目录仍在」
+// (删除式 **D6**)。core 那一格降为「同形复刻」:不依赖 JUCE、断言面窄、失败定位快。
+//
+// 夹具全部是现成的:`TempSidecarRoot`(`:5819`)/ `makeTinyFeatures` / `blobWithSidecarRef`(`:5863`),
+// 与上面 `HOST SL-233` 的 ② 段同一条链(那份已经在做「加载一份走 sidecar 的工程」)。
+// ===========================================================================
+TEST_CASE("HOST SL395:老工程(embedded=0)保存一次 ⇒ 特征收回内嵌 + 外部目录回收", "[host][v56][SL395]")
+{
+    TempSidecarRoot root;
+    scvb::state::SidecarStore store(root.path);
+    const auto data = makeTinyFeatures();
+    const auto gz = scvb::state::encodeFeatures(data);
+    REQUIRE_FALSE(gz.empty());
+
+    const auto self = scvb::state::currentProcessIdentity();
+    REQUIRE(self.pid != 0u); // 前置:Windows 上拿得到进程身份(与 HOST SL-233 同;否则第三道闸行为不同)
+
+    std::string guid;
+    juce::MemoryBlock baseBlob;
+    {
+        ScvbOutputAudioProcessor seed;
+        guid = seed.sessionGuid().toStdString();
+        seed.getStateInformation(baseBlob);
+    }
+    REQUIRE(store.write(guid, gz.data(), gz.size(), static_cast<std::uint32_t>(data.channels.size()),
+                        scvb::state::kFeatCodecVer, self));
+    const std::vector<std::uint8_t> sidecarBlob = blobWithSidecarRef(baseBlob, guid, gz, data);
+    REQUIRE(std::filesystem::exists(store.sessionDir(guid)));
+
+    Rig r;
+    // ---- ① 读路径:老工程载入 ⇒ 特征来自外部文件(设置页此刻显示「外置」)----
+    r.out.setStateInformation(sidecarBlob.data(), static_cast<int>(sidecarBlob.size()));
+    REQUIRE(r.out.sessionGuid().toStdString() == guid);
+    REQUIRE(r.out.featuresInSidecar()); // 前置:引用节解开了(sha256 过)
+    REQUIRE(std::filesystem::exists(store.sessionDir(guid)));
+
+    // ---- ② 保存一次 ⇒ 装内嵌载荷 + 回收外部副本(生产:`writeFeaturesChunk` 的 `wasSidecar` 支)----
+    juce::MemoryBlock saved;
+    r.out.getStateInformation(saved);
+    // ★ D6 锚点:注掉生产 `OutputProcessor.cpp:1569` 的 `store.remove(...)` ⇒ 下面两条同红
+    //   (用 CHECK 而非 REQUIRE,一次把两条都照出来)
+    CHECK_FALSE(r.out.featuresInSidecar()); // 收回内嵌
+    CHECK_FALSE(std::filesystem::exists(store.sessionDir(guid))); // 外部目录已回收
+
+    // ---- ③ 存下来的这一份**自足**:再开一次、不碰外部目录也拿得到特征 ----
+    {
+        Rig r2;
+        r2.out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        CHECK(r2.out.sessionGuid().toStdString() == guid);
+        CHECK_FALSE(r2.out.featuresInSidecar());
+        CHECK(r2.out.featureBytes() > 0); // 特征体来自工程内嵌那一节,不是空载荷
+    }
+}
+
+// ===========================================================================
 // [SL-234] CFGS 的 ui.scale 在**加载期**也要夹取。
 //
 // §7.3:setStateInformation 处理的是用户工程文件里的不可信字节,范围字段必须先校验再用。

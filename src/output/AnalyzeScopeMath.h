@@ -138,7 +138,7 @@ inline AnalyzeRange analyzeScopeRange(unsigned int tracksMask, bool hasStartS, d
 // 反过来,窄于一个 hop 的范围会退成空窗 → §1.6 拒绝态 `{ok:false, affected:{0,0,0}}`;
 // 段短于 10ms 时段级「恢复自动」于是不受理 —— 够不着:最小分段(native 默认 120ms,
 // `OutputProcessor.h` 的 `segmentationMinSegmentMs`;桥面入参还被 `OutputEditor.cpp`
-// 夹在 [50,500])的下界 50ms 也比一个 hop 大五倍。
+// 夹在 [50,2000],[SL-398] 上限 500 → 2000)的下界 50ms 也比一个 hop 大五倍。
 //
 // `kHopEps`:秒值是「样本 ÷ 采样率」算出来的,再除以 hopS 会带浮点残差。1e-6 hop
 // = 10ns @10ms hop,比一个采样(48k 下 ~20.8µs)小三个量级 —— 只吃残差,吃不到真数据。

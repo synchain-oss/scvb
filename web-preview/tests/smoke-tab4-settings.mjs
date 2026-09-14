@@ -133,7 +133,7 @@ log("=== ② 纯函数 ===");
     eq(
         TS.storageOf({ features: { embedded: false, bytes: 9000000 } }),
         { embedded: false, bytes: 9000000, external: true },
-        "外置态(v1 不可达:开关关,恒 embedded=1)",
+        "外置态(读路径:打开带 sidecar 的老工程会走到这里,保存一次后消失)",
     );
     eq(
         TS.analysisConfigOf({ analysis: {} }),

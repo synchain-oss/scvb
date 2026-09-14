@@ -35,7 +35,7 @@
 | §4.2 回滞 | 「一旦转 sidecar,压缩后 <6MB 才收回内嵌」 | **保留原文**,但自动切换关闭时这条不可达(v1 出厂态);开关打开即按原文生效 |
 | `sidecarSwitched` 事件 | 转存时发 `{bytes}` + toast② | v1 出厂态**不可达**(新工程不会产生 sidecar);**枚举与文案保留** |
 | `sidecarMissing` 事件 | 外部文件缺失/校验失败时发 | 可达性不变(读路径保留:老工程若带 `embedded=0` 仍要能读、能报缺失) |
-| 设置页「存储状态」区 | 内嵌 / 外置(9MB 外置样例)两态 | 只显示**内嵌**一态;`FEATURES_EXTERNAL_BYTES` 常量与「外置」分支**保留**(开关打开即用) |
+| 设置页「存储状态」区 | 内嵌 / 外置(9MB 外置样例)两态 | **写入侧**只显示**内嵌**一态;**读路径例外**:打开带 sidecar 的老工程显示「外置」,保存一次后变回内嵌。`FEATURES_EXTERNAL_BYTES` **已删**(web/ + web-preview/ 零引用,阈值真源 = native `kSidecarThresholdBytes`);「外置」文案**保留** |
 
 **为什么是单点开关而不是删代码**:用户要的是「**先暂时不上**」,不是「不要这个功能」。
 删掉 `SidecarStore` 会让「读一个别人发来的、带 sidecar 的老工程」这条路径一起死,
@@ -51,8 +51,11 @@
 - **老工程保存一次即收回内嵌(要写明)**:打开一份 `embedded=0` 的老工程、**保存一次** ⇒
   写路径走内嵌那一支,同时把外部副本 `store.remove()` 回收(`OutputProcessor.cpp` 的
   `wasSidecar && !refWasUnresolved` 两支)。**不可逆,工程体积随之变大**;这是开关关掉的
-  直接后果,不是新增行为。判据 = `FEAT-SIDECAR-11`(起点 `embedded=0` + 合法 sidecar 目录 ⇒
-  开关关时保存一次 ⇒ `embedded=1` **且目录已删**;开关翻 true ⇒ 该格红)。
+  直接后果,不是新增行为。
+  判据 = **`HOST SL395`**(起点 `embedded=0` + 合法 sidecar 目录 ⇒ 真 `setStateInformation`
+  载入 ⇒ 真 `getStateInformation` 保存一次 ⇒ `featuresInSidecar()` 变假 **且目录已删**);
+  core 的 `FEAT-SIDECAR-11` 是**同形复刻**(删除式 **D4** 钉开关;**D6** 注掉生产那句
+  `store.remove` ⇒ host 那格红在「目录仍在」)。
 - **降级方向**:若将来把开关打开,行为与今天完全一致(§4.2 原文逐字有效)。
 - **旧版本读新工程**:v1 写出的工程恒 `embedded=1`,任何版本都能读,无降级问题。
 - **不影响任何自动化参数 / IPC 布局 / 桥面载荷字段**。
@@ -61,9 +64,11 @@
 
 1. 「>8MB 转 sidecar」在 v1 是**已实现但默认不启用**的机制,ADR-007 与 §4.2 的文字仍然成立,
    只是出厂默认关。**不要**把 §4.2 写成「已废弃」。
-2. 设置页不再出现「外置」态,`toast.sidecarSwitched` 文案保留但 v1 不可达 ——
-   若 UI 上有「可跳过,机检覆盖」类的自测条目(清单 B23/B25 那一族),口径要同步改成
-   「v1 不可达,机检覆盖」。
+2. 设置页的「存储状态」**写入侧**只有「内嵌」一态;**读路径例外**(gates 复审第 2 轮更正):
+   打开一份带 sidecar 的老工程时会显示「外置」(native 读到引用节即置 `featuresSidecar_`,
+   `scvb.state` 发 `embedded:false`),**保存一次之后变回「内嵌」** —— 别再写「v1 恒为内嵌」。
+   `toast.sidecarSwitched` 文案保留但 v1 不可达 —— 若 UI 上有「可跳过,机检覆盖」类的自测条目
+   (清单 B23/B25 那一族),口径要同步改成「v1 不可达,机检覆盖」。
 
 ## 要改的文件与行(只列,不改)
 
@@ -73,8 +78,9 @@
 | --- | --- | --- |
 | `src/core/state/SidecarStore.h` | `:18`(`kSidecarThresholdBytes` 旁) | **新增**单点开关常量(建议名 `kSidecarAutoSwitch`,值 `false`),注释写清「出厂关;打开即回到 ADR-007 原文行为」 |
 | `src/core/state/SidecarStore.cpp` | `:552`(`return gzBytes > kSidecarThresholdBytes;`) | 前面加开关判定;函数名/签名不动 |
-| `web/output/tab-settings.js` | `:69`(`FEATURES_EXTERNAL_BYTES = 8 * 1024 * 1024`) | 保留常量;「存储状态」区改成只渲染内嵌一态(外置分支保留在代码里,由开关驱动) |
-| `tests/core/test_state_features_roundtrip.cpp` | `:423`(FEAT-SIDECAR-1 的 `REQUIRE(gz.size() > kSidecarThresholdBytes)` 前置)、`:570`(`kB8`) | **改期望**:同一份 >8MB 载荷在开关关闭时断言 `embedded=1` 且无 sidecar 目录;原「转 sidecar」断言改挂到「开关打开」这一支(用例保留,不删) |
+| `web/output/tab-settings.js` | `:68-69`(`FEATURES_EXTERNAL_BYTES = 8 * 1024 * 1024`) | **删掉该常量**(开关关掉后 web/ + web-preview/ 零引用,留着就是死常量);`storageOf()` 的 `external` 改由 `embedded` 驱动;「外置」文案保留(读路径仍走得到) |
+| `tests/core/test_state_features_roundtrip.cpp` | `:423`(FEAT-SIDECAR-1 的 `REQUIRE(gz.size() > kSidecarThresholdBytes)` 前置)、`:570`(`kB8`)、新增 `FEAT-SIDECAR-11` | **改期望**:同一份 >8MB 载荷在开关关闭时断言 `embedded=1` 且无 sidecar 目录;原「转 sidecar」断言改挂到「开关打开」这一支(用例保留,不删);新增的 `-11` 是 host `HOST SL395` 的**同形复刻** |
+| `tests/host/test_host_harness.cpp` | 新增 `HOST SL395` | 「老工程保存一次 ⇒ 收回内嵌 + 外部目录回收」的**真判据**(走真 `setStateInformation` / `getStateInformation`);删除式 **D6** |
 
 ### 文档
 

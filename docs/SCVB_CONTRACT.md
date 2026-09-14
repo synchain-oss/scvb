@@ -37,7 +37,7 @@
 
 ### 0.4 节流与 diff-then-emit(01 §6.1/§6.4)
 
-1. 事件推送统一走 **diff-then-emit 模式**(承 01 §6.1 的 Bridge 25Hz Timer 机制,「SCVB 事件类别更多,**每类独立节流**」):**值未变不发**;**每一类事件的实际频率以 §2/§4 各条目标注的数值为准**(逐字照 05 §1.4:`scvb.params` 25Hz、`scvb.meters`/`scvb.playhead` 30Hz、`scvb.conn` ~4Hz、`scvb.captureProgress` 播放中 2Hz、`scvb.groups` 1Hz)。**基准 Timer 频率不在桥面契约内**:native 侧须选一个能整除上述各类别频率的基准(或按类别用多个 Timer),桥面只约束「每类的推送频率上限 + 值未变不发」。**注**:01 §6.1 的「25Hz 单 Timer」与 05 §1.4 的 30Hz meters/playhead 无公因子节拍——**统筹裁定 A-28 定案:各事件频率以 05 §1.4 逐类标注为准;基准 Timer/分频方式为 native 实现细节,不入桥面契约。若 native 评审认为 30Hz 实现代价过高,按 §9.0 流程回改 05 的对应档**。
+1. 事件推送统一走 **diff-then-emit 模式**(承 01 §6.1 的 Bridge 25Hz Timer 机制,「SCVB 事件类别更多,**每类独立节流**」):**载荷未变不发**(判的是**整个载荷**有没有内容,不是某个字段必须非空 —— §2.2 的 `scvb.params` 就是这条的一个实例:只翻回声位的那一帧 `values` 可为 `{}`);**每一类事件的实际频率以 §2/§4 各条目标注的数值为准**(逐字照 05 §1.4:`scvb.params` 25Hz、`scvb.meters`/`scvb.playhead` 30Hz、`scvb.conn` ~4Hz、`scvb.captureProgress` 播放中 2Hz、`scvb.groups` 1Hz)。**基准 Timer 频率不在桥面契约内**:native 侧须选一个能整除上述各类别频率的基准(或按类别用多个 Timer),桥面只约束「每类的推送频率上限 + 载荷未变不发」。**注**:01 §6.1 的「25Hz 单 Timer」与 05 §1.4 的 30Hz meters/playhead 无公因子节拍——**统筹裁定 A-28 定案:各事件频率以 05 §1.4 逐类标注为准;基准 Timer/分频方式为 native 实现细节,不入桥面契约。若 native 评审认为 30Hz 实现代价过高,按 §9.0 流程回改 05 的对应档**。
 2. 电平/失准等高频数据带阈值(电平 0.3 dB 阈值,镜像 Bridge)。
 3. `scvb.groups`、`scvb.config` 为「按频率探测/轮询、**变化才发**」;`mBridgeReady` 后的**首帧必发**按事件类别分三档,保证 UI 不停在空态:
    - **状态类**(`scvb.state` / `scvb.params` / `scvb.conn` / `scvb.config` / `scvb.groups` / `scvb.meters` / `scvb.playhead` / `scvb.segments`)—— **首帧各必发一次**(`scvb.segments` 以 `reason:"snapshot"` 发全部轨全量段表,§2.8);

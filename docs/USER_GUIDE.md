@@ -162,7 +162,7 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 ## Sessions and files
 
 - **Segments, ranges, and 2 versions of curves plus configuration** (a few hundred KB) live in the Output's state and travel with the project.
-- The **feature stream** is compressed and **embedded in state** (v1 does not auto-switch to a sidecar file, regardless of the 8 MB mark). The "Storage status" panel in Settings tells you which of the two you are on; on v1 it always reads "embedded".
+- The **feature stream** is compressed and **embedded in state** (v1 does not auto-switch to a sidecar file, regardless of the 8 MB mark). The "Storage status" panel in Settings tells you which of the two you are on: **opening an older project that has a sidecar first reads "external"** (that is the legacy form being read in), and it **turns back to "embedded" once you save**.
 - Saving the project elsewhere or copying it to another machine does not carry the sidecar along. When you open a project that has a sidecar (written by an earlier version, or sent by someone else) and that file is missing, the plugin says plainly that the feature file is missing rather than pretending the data is still there.
 - **Opening an older project that has a sidecar and saving it once pulls the features back into the project and reclaims the external directory** — this step is **irreversible**, and the project file grows accordingly (on v1 the external features are read-only legacy: nothing is ever written into `sessions/` again).
 - The Input's state holds only a channel id plus UI preferences; **the single source of truth for configuration is always the Output**.
