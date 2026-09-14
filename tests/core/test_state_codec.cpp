@@ -226,7 +226,7 @@ TEST_CASE("STATE-ABI-1 abi>当前 拒载 + preservedOriginal 原样保留", "[st
 {
     std::vector<std::uint8_t> enc;
     REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), enc));
-    enc[4] = static_cast<std::uint8_t>(scvb::state::kCurrentAbi + 1); // abi 在 offset 4(当前 2 → 3)
+    enc[4] = static_cast<std::uint8_t>(scvb::state::kCurrentAbi + 1); // abi 在 offset 4(当前 4 → 5)
     StateChunks out;
     StateLoadResult res = scvb::state::loadState(enc.data(), enc.size(), out);
     REQUIRE(res.status == StateLoadStatus::RejectedNewer);
@@ -395,7 +395,7 @@ TEST_CASE("STATE-CRVS-VALIDATE-4 nameBytes 超上限 → 拒解", "[state][crvs]
 // golden:abi1.bin 兼容 + 格式锁
 // ============================================================================
 
-TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2 迁移 + abi3.bin 格式锁", "[state][golden]")
+TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2/abi3 迁移 + abi4.bin 格式锁", "[state][golden]")
 {
     // abi1.bin:历史 abi=1,经 no-op migrate_1_to_2 迁移后字段语义正确(CRVS 不丢字段)。
     {
@@ -406,7 +406,7 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2 迁移 + abi3.bin 格式锁", "
 
         StateChunks chunks;
         StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
-        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=1 → 2
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=1 → 4(三级 no-op 链)
         REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
 
         const Chunk* crvs = chunks.find(scvb::state::kFourccCrvs);
@@ -432,13 +432,33 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2 迁移 + abi3.bin 格式锁", "
 
         StateChunks chunks;
         StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
-        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=2 → 3
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=2 → 4
         REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
     }
 
-    // abi3.bin:当前 abi=3 格式锁。
+    // abi3.bin:[SL-411] abi 升到 4 之后,它同样从「格式锁」降为**第三条迁移基线**
+    // (接的是上一版 abi2.bin 的位置),abi1/abi2/abi3 三份并存,一份都不许动。
     {
         std::ifstream in(goldenPath("abi3.bin"), std::ios::binary);
+        REQUIRE(in.good());
+        std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        REQUIRE_FALSE(fileBytes.empty());
+
+        StateChunks chunks;
+        StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=3 → 4
+        REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
+    }
+
+    // abi4.bin:当前 abi=4 格式锁。
+    // ⚠ 它锁的是**容器头**(magic / abi / flags / chunkCount / TLV 框),夹具的 CFGS 载荷是
+    // `opaque("CONFIG")` 字面量、根本不是 `encodeOutputState` 的产物 —— 所以 abi4.bin 与
+    // abi3.bin 只差 abi 那一个字节是**必然**而非巧合,[SL-411] 那 12 个字节它一次都没见过。
+    // CFGS 载荷的 wire 布局由 `test_output_session.cpp` 的长度断言(54u / 24u+5u+28u)与
+    // [SL-411] 那几格(往返 / 三默认 / 一级回退 / 越界回落计数 / 半截拒载)承担 ——
+    // 改 segmentation 的编码顺序**不会**让本格红,别来金样这里找原因。
+    {
+        std::ifstream in(goldenPath("abi4.bin"), std::ios::binary);
         REQUIRE(in.good());
         std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         REQUIRE_FALSE(fileBytes.empty());
@@ -448,7 +468,7 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2 迁移 + abi3.bin 格式锁", "
         REQUIRE(res.status == StateLoadStatus::Ok);
         REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
 
-        // 格式锁:当前 codec 重编码同一夹具必须与提交的 abi3.bin 逐字节一致(改 wire 格式即红)。
+        // 格式锁:当前 codec 重编码同一夹具必须与提交的 abi4.bin 逐字节一致(改 wire 格式即红)。
         std::vector<std::uint8_t> reencoded;
         REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), reencoded));
         REQUIRE(reencoded == fileBytes);

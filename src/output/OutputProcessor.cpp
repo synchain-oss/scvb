@@ -1340,6 +1340,14 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // [SL-279] 「上次全量分析所用」那一份也落盘 —— stale 派生式的另一半。
     s.appliedLoudnessMode = runtime_.appliedLoudnessMode.toStdString();
     s.appliedCenterSlotPolicy = runtime_.appliedCenterSlotPolicy.toStdString();
+    // [SL-411] analysis.segmentation 三项随工程落盘 —— 规格 02 §0.3 与 STATE_SCHEMA §一 一直把它们
+    // 列在 state 里,而此前只有 `runtime_` 这一份内存真身:重开工程一律回默认 120/50/valley,
+    // 用户拖到 1000ms 存盘再打开,滑杆又跳回 120 —— 而**分析确实按 120 跑**,所以「我设的值没生效」
+    // 与「我的设置没被记住」在界面上长得一模一样(SL-411 用户实测)。
+    // 三项都是**纯配置**,与采集态([J91])不同:没有任何理由不随工程走。
+    s.segmentationMode = runtime_.segmentationMode.toStdString();
+    s.segmentationSensitivity = runtime_.segmentationSensitivity;
+    s.segmentationMinSegmentMs = static_cast<std::uint32_t>(runtime_.segmentationMinSegmentMs);
     s.unknownTail = preservedCfgsTail_; // 未来小版本追加字段原样回写(防静默丢字段)
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
@@ -1895,6 +1903,21 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         juce::String::fromUTF8(s.appliedLoudnessMode.c_str(), static_cast<int>(s.appliedLoudnessMode.size()));
     runtime_.appliedCenterSlotPolicy =
         juce::String::fromUTF8(s.appliedCenterSlotPolicy.c_str(), static_cast<int>(s.appliedCenterSlotPolicy.size()));
+    // [SL-411] segmentation 三项:codec 已做值域校验(在席且越界 → 回落默认并计数;缺席的 abi≤3
+    // 旧工程 → 规格默认且不计),所以这里**不再叠第二道夹取** —— decode 的出口只有「规格内」与
+    // 「规格默认」两种,再来一次 jlimit 是永不开火的守卫(那种守卫比没有更坏:它看着像在防什么)。
+    // 越界值不会静默:上面 report 的三个计数器在这里落成 DBG 行。
+    runtime_.segmentationMode =
+        juce::String::fromUTF8(s.segmentationMode.c_str(), static_cast<int>(s.segmentationMode.size()));
+    runtime_.segmentationSensitivity = s.segmentationSensitivity;
+    runtime_.segmentationMinSegmentMs = static_cast<int>(s.segmentationMinSegmentMs);
+    if (report.segmentationModeFallbacks > 0 || report.segmentationSensitivityFallbacks > 0 ||
+        report.segmentationMinSegmentMsFallbacks > 0)
+    {
+        DBG("SCVB Output: analysis.segmentation 值越界回落默认(mode="
+            << report.segmentationModeFallbacks << ", sensitivity=" << report.segmentationSensitivityFallbacks
+            << ", min_segment_ms=" << report.segmentationMinSegmentMsFallbacks << ")");
+    }
     if (report.appliedLoudnessModeFallbacks > 0 || report.appliedCenterSlotPolicyFallbacks > 0)
     {
         DBG("SCVB Output: analysis.applied 枚举未知值回落默认(loudness_mode="

@@ -17,7 +17,9 @@
 // 断言 = 页面真发出去的 analyze scope 必须与它逐毫秒对上。任何一环选错段,
 // 这两个数就对不上 —— 这是本套存在的全部理由。
 //
-// 跑什么(全程只用真 DOM 事件,不调页面内部函数):
+// 跑什么(全程只用真 DOM 事件,不调页面内部函数;唯一例外是 ⑪ —— 它要造「打开一份存着 1000ms
+// 的工程」这一幕,而那是**宿主侧**的动作,走壳页上的预览会话 `__SCVB_PREVIEW__` 补发一帧全量
+// `scvb.state`,仍然一个页面内部函数都没碰):
 //   ① 在泳道上真点一下选中一个段 → 检查器出「起 / 止」;
 //   ② 用检查器自己的锁定开关把段解锁(手动段默认 locked=true,而 clearManual
 //      对 locked 免疫,§1.6)⇒「恢复自动」两态入口出现;
@@ -31,6 +33,9 @@
 //   ⑧ [SL-396] analyze 拒回执必须有提示(页面级:refused / busy 逐字上屏,
 //      受理成功 1.5s 内不出);
 //   ⑩ [SL-399] 手动改后再「恢复自动」⇒ 检查器 PAN / VOL 读数逐字回到改之前那一份;
+//   ⑪ [SL-411] 工程 state 里的 `min_segment_ms=1000` 真的上屏:滑杆 `aria-valuenow` 与读数
+//      文本都变成 1000(「分段参数随工程保存」在用户眼里那一半;D3 = 删掉 render 里那句
+//      `syncParamGroup(local.segmentation, …)` ⇒ 本格红);
 //   ⑨ 全程零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-seg-restore-page.mjs [仓库根绝对路径]
@@ -1252,6 +1257,92 @@ const COMMIT_VOL = IN(`
                 ` —— 计算窗收到 scope 那一版(D1/D4)在这里红`,
         );
     }
+}
+
+// ---- [SL-411] 分段三参数随工程保存 ⇒ 重开后滑杆显示的是**持久值** -------------
+//
+// 为什么必须有这一格:SL-411 的另一半(CFGS 尾扩三字段、abi 3→4、迁移链)在 C++ 侧有 core 单测
+// 与 `HOST SL411` 守着,但那两条都答不出**用户看得见的那一件事** —— 他把 MIN SEG 拖到 1000ms
+// 存盘、关工程、再打开,滑杆上写的是不是 1000。这一跳(工程 state → `scvb.state` 回声 →
+// `syncParamGroup(local.segmentation, …)` → 滑杆 `aria-valuenow` + 读数文本)整条在页面里,
+// 只有让真页面真渲染一次才测得出来 —— 本仓「三层机检全绿、窗口是白的」栽过三次。
+//
+// 判据取**滑杆自己那一对值**(`aria-valuenow` 与读数文本),不取 `local.segmentation`:
+// 后者是页面内部缓存,而屏幕读数是用户唯一能看见的量;拿缓存断言等于把「算得对」当成
+// 「显示得对」。
+//
+// 夹具走 **mock 侧**(壳页上的 `__SCVB_PREVIEW__`,不走 `IN()`):
+//   ① 直接改 `ctl.model.snapshot.analysis.segmentation`,再补发一帧**全量** `scvb.state`
+//      —— 真桥在 `setStateInformation`(重开工程)之后发的就是这一帧。不调 `setSegmentation`:
+//      那是一次**写**,会顺带触发防抖重分析,而本格测的是「读回来的值上不上屏」。
+//   ② 先读一次**载入前**的值当对照:mock 夹具的 min_segment_ms 不是 120(它是 420),
+//      所以「变成 1000」这句话只有在与它不等时才有判别力。
+//
+// 删除式(D3):把 `tab-wave.js` render 里那句 `syncParamGroup(local.segmentation, ana.segmentation);`
+// 删掉(或让它不读 segmentation)⇒ 滑杆停在夹具值 420 ⇒ 本格红。那条 line 是「UI 初始化读 state」
+// 的**唯一**落点,本格就是它的判据。
+{
+    log("=== [SL-411] 工程 state 里的 min_segment_ms ⇒ 滑杆真的显示它 ===");
+    // ⚠ 取 `aria-valuenow` 的那条路**必须与生产逐字相同**:`data-gb="wave-seg-minlen"` 挂在
+    // `.wave-slider` **容器**上,而 `aria-valuenow` 在内层 `.wave-slider__track` 上
+    // (`tab-wave.js` 的 `els.sliders` 就是这么取的:`track: box.querySelector(".wave-slider__track")`)。
+    // 第一版直接对容器取属性 ⇒ 恒 `null`(实测:实得 `{"now":null,"text":"420 ms"}`),
+    // 那不是「值没上屏」,是探针指错了节点 —— 这一格因此红在「取不到滑杆」上,而不是判据上。
+    const SLIDER = IN(`
+        const box = gb("wave-seg-minlen");
+        const track = box ? box.querySelector(".wave-slider__track") : null;
+        const val = gb("wave-seg-minlen-val");
+        return JSON.stringify({
+            now: track ? track.getAttribute("aria-valuenow") : null,
+            text: val ? val.textContent.trim() : null,
+        });
+    `);
+    const before = JSON.parse((await evaluate(SLIDER)) || "{}");
+    check(
+        typeof before.now === "string" && typeof before.text === "string",
+        `[SL-411] 取到 MIN SEG 滑杆节点与读数节点(实得 ${JSON.stringify(before)})—— ` +
+            "取不到时先红在这一条,免得下面几条变成空过",
+    );
+    check(
+        before.now !== "1000",
+        `[SL-411] 前置:载入这一份工程**之前**滑杆不是 1000(实得 ${JSON.stringify(before)})—— ` +
+            "否则下面的断言是空过",
+    );
+
+    const pushed = await evaluate(`(() => {
+        const s = window.__SCVB_PREVIEW__;
+        if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.snapshot) return null;
+        const ana = s.ctl.model.snapshot.analysis || {};
+        ana.segmentation = { mode: "vad_only", sensitivity: 37.5, min_segment_ms: 1000 };
+        s.ctl.model.snapshot.analysis = ana;
+        s.ctl.emit("scvb.state", s.ctl.fullStatePayload());
+        return s.ctl.model.snapshot.analysis.segmentation.min_segment_ms;
+    })()`);
+    check(
+        pushed === 1000,
+        `[SL-411] 夹具生效:state 快照里的 min_segment_ms 已被写成 1000(实得 ${pushed})`,
+    );
+
+    const ok = await waitFor(
+        IN(`
+            const box = gb("wave-seg-minlen");
+            const track = box ? box.querySelector(".wave-slider__track") : null;
+            return !!track && track.getAttribute("aria-valuenow") === "1000";
+        `),
+        3000,
+    );
+    const after = JSON.parse((await evaluate(SLIDER)) || "{}");
+    check(
+        ok,
+        `[SL-411] ★ 载入带 1000 的工程 state ⇒ 滑杆 aria-valuenow 变成 1000` +
+            `(实得 ${JSON.stringify(after)})—— 删掉 render 里那句 ` +
+            "`syncParamGroup(local.segmentation, …)` 时本格红(D3)",
+    );
+    eq(
+        after.text,
+        "1000 ms",
+        "[SL-411] ★ 滑杆读数文本也跟着写的是 1000 ms(不是只有 aria 变了)",
+    );
 }
 
 // ---- ⑨ 零异常 -------------------------------------------------------------

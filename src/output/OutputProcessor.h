@@ -42,7 +42,8 @@ class OutputEditor; // 桥编辑器(T29),createEditor 实例化。
 // Output 桥面的运行时 state(T29;除下面标注的两个首启已读位外,**消息线程独占** ——
 // [M] 写 / OutputEditor::emitTick 读)。
 // 与 CFGS(OutputStateCodec)承载的持久化子集互补:此处字段是「桥面可写、未必持久化」的运行时态,
-// 持久化扩展归后续任务;CRVS 段真身单独以 crvsData_ 承载(段/pan_curve/版本名)。
+// 持久化扩展归后续任务(**例外**:`segmentation*` 三项自 [SL-411] 起随工程保存,见其声明处);
+// CRVS 段真身单独以 crvsData_ 承载(段/pan_curve/版本名)。
 struct OutputRuntimeState
 {
     // range(§1.8;0=follow 1=daw_loop 2=manual)
@@ -56,6 +57,10 @@ struct OutputRuntimeState
     int vadHangoverMs = 200;
     int vadPaddingPreMs = 120;
     int vadPaddingPostMs = 200;
+    // [SL-411] 分段三项**随工程保存**(CFGS 第三档,abi=4):`getStateInformation` 写盘、
+    // `setStateInformation` 恢复,值域由 codec 校验(valley|vad_only / 0..100 / 50..2000)。
+    // 此前它们只活在这里 —— 重开工程一律回默认,而**分析同样按默认跑**
+    // (消费方见 `OutputProcessor.cpp` 的 `cfg.vad.minSegmentMs` / `cfg.segmentation.*`)。
     juce::String segmentationMode = "valley"; // 02-dsp-spec §362:valley(默认)/ vad_only
     float segmentationSensitivity = 50.0f;
     int segmentationMinSegmentMs = 120;

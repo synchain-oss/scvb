@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 
 namespace scvb::state
 {
@@ -13,6 +14,13 @@ constexpr std::size_t kHeaderBytes = 24; // 6 个 u32
 constexpr std::size_t kEnumBytes = 8; // 2 个 u32(loudness_mode + center_slot_policy)
 // [SL-279] 第二级尾扩:applied.{loudness_mode,center_slot_policy}(abi 2→3)。
 constexpr std::size_t kAppliedBytes = 8; // 2 个 u32
+// [SL-411] 第三级尾扩:analysis.segmentation.{mode,sensitivity,min_segment_ms}(abi 3→4)。
+// **这一档是 12 字节而不是 8**:三个字段里有一个是 f32(灵敏度是 0..100 的连续刻度,
+// 压成 u32 只会平白丢精度),而 u32+f32+u32 一起构成**一个整档** —— 档内不许半截,
+// 见下面的长度回退。
+constexpr std::size_t kSegmentationBytes = 12;
+
+static_assert(sizeof(float) == 4, "f32 尾字段依赖 IEEE-754 单精度(4 字节)");
 
 void putU32(std::vector<std::uint8_t>& out, std::uint32_t v)
 {
@@ -30,6 +38,27 @@ bool readU32(const std::uint8_t* p, std::size_t size, std::uint32_t& out)
     }
     out = static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
           (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
+    return true;
+}
+
+// f32 走**位模式**而不是 reinterpret_cast<float*>:既避开严格别名(UB),也保证写盘字节
+// 与机器浮点寄存器宽度/对齐无关 —— 先 memcpy 出 IEEE-754 位模式,再按 u32 的小端规则落盘,
+// 读侧反过来。于是本 codec 的字节序纪律只有一条(全 u32),f32 不再单开一套。
+void putF32(std::vector<std::uint8_t>& out, float v)
+{
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &v, sizeof(bits));
+    putU32(out, bits);
+}
+
+bool readF32(const std::uint8_t* p, std::size_t size, float& out)
+{
+    std::uint32_t bits = 0;
+    if (!readU32(p, size, bits))
+    {
+        return false;
+    }
+    std::memcpy(&out, &bits, sizeof(out));
     return true;
 }
 
@@ -80,6 +109,21 @@ std::uint32_t centerSlotPolicyOrdinal(const std::string& s)
         return 2;
     return 0; // "priority_queue" 或未知 → 默认
 }
+
+// ---- [SL-411] segmentation.mode ↔ 序号(02-dsp-spec §362 只认这两档)----
+
+const char* segModeString(std::uint32_t ordinal)
+{
+    return ordinal == 1 ? "vad_only" : "valley"; // 0 与越界都归 valley
+}
+
+std::uint32_t segModeOrdinal(const std::string& s)
+{
+    // 真源白名单与 `BridgeArgs.h::isSegmentationMode` 逐字一致 —— 那边不认的串这里也不许落盘,
+    // 否则一份手改过的工程能把 UI 送进「本地有、native 不认」的第三档(mode 是**整包**下发的,
+    // 一个坏串会让整个 setSegmentation badArg,三个字段谁都进不去)。
+    return s == "vad_only" ? 1 : 0;
+}
 } // namespace
 
 bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
@@ -88,7 +132,7 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     const std::size_t langBytes = std::min<std::size_t>(s.uiLanguage.size(), kOutputLanguageMaxBytes);
     try
     {
-        out.reserve(kHeaderBytes + langBytes + kEnumBytes + kAppliedBytes + s.unknownTail.size());
+        out.reserve(kHeaderBytes + langBytes + kEnumBytes + kAppliedBytes + kSegmentationBytes + s.unknownTail.size());
     }
     catch (...)
     {
@@ -105,6 +149,11 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     putU32(out, centerSlotPolicyOrdinal(s.centerSlotPolicy));
     putU32(out, loudnessModeOrdinal(s.appliedLoudnessMode)); // [SL-279]
     putU32(out, centerSlotPolicyOrdinal(s.appliedCenterSlotPolicy)); // [SL-278/SL-279]
+    // [SL-411] 恒写这一整档(12 字节):编码侧不做值域校验 —— encode 的入参是**本进程自己的**
+    // runtime_(桥面已夹过),值域校验是 decode 的职责(不可信字节在磁盘上,不在内存里)。
+    putU32(out, segModeOrdinal(s.segmentationMode));
+    putF32(out, s.segmentationSensitivity);
+    putU32(out, s.segmentationMinSegmentMs);
     out.insert(out.end(), s.unknownTail.begin(), s.unknownTail.end()); // 未知尾部原样回写
     return true;
 }
@@ -159,6 +208,14 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     if (hasEnums && remaining > kEnumBytes && !hasApplied)
     {
         return false; // 8 < remaining < 16:applied 字段被截断 → 拒载(不可信字节)
+    }
+    // [SL-411] 第三级:segmentation 三字段(u32 + f32 + u32 = 12 字节)**整档**要么齐、要么全没有。
+    // 半截(16 < remaining < 28)同样拒载 —— 一整档里的三个字段是同一个 commit 写下去的,
+    // 「只有前两个」这种形态不可能是任何真实构建的产物。
+    const bool hasSegmentation = (remaining >= kEnumBytes + kAppliedBytes + kSegmentationBytes);
+    if (hasApplied && remaining > kEnumBytes + kAppliedBytes && !hasSegmentation)
+    {
+        return false; // 16 < remaining < 28:segmentation 字段被截断 → 拒载(不可信字节)
     }
 
     // 兼容:旧版(abi=1)payload 无末两个 u32 → 两字段回落默认,不计未知回落。
@@ -232,10 +289,57 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     parsed.appliedLoudnessMode = loudnessModeString(appliedLoudnessOrdinal);
     parsed.appliedCenterSlotPolicy = centerSlotPolicyString(appliedCenterOrdinal);
 
-    if (hasApplied && remaining > kEnumBytes + kAppliedBytes)
+    // [SL-411] segmentation 三项:**缺席时回落规格默认且不计回落**(abi≤3 的旧工程「当年没存过」,
+    // 不是「存的值不可信」—— 那个区别正是这三个计数器存在的意义)。在席时逐个值域校验,
+    // 越界 → 回落该字段默认 + 计一次回落(理由写在头注那段「唯一一处值越界 → 回落默认」)。
+    std::uint32_t segMode = kOutputSegModeDefault;
+    float segSensitivity = kOutputSegSensitivityDefault;
+    std::uint32_t segMinMs = kOutputSegMinSegmentMsDefault;
+    if (hasSegmentation)
+    {
+        const std::size_t segOff = kEnumBytes + kAppliedBytes;
+        const std::size_t segAvail = remaining - segOff;
+        if (!readU32(data + base + segOff, segAvail, segMode) ||
+            !readF32(data + base + segOff + 4, segAvail - 4, segSensitivity) ||
+            !readU32(data + base + segOff + 8, segAvail - 8, segMinMs))
+        {
+            return false;
+        }
+        if (segMode > kOutputSegModeMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->segmentationModeFallbacks;
+            }
+            segMode = kOutputSegModeDefault;
+        }
+        // NaN 与 ±Inf 都走这一支:`x < lo || x > hi` 对 NaN **恒假**,只写范围比较会把它放进去,
+        // 而 NaN 一旦进了 runtime_ → PipelineConfig 的灵敏度,下游所有比较都是假 —— 那种坏法是静默的。
+        if (!(segSensitivity >= kOutputSegSensitivityMin && segSensitivity <= kOutputSegSensitivityMax))
+        {
+            if (report != nullptr)
+            {
+                ++report->segmentationSensitivityFallbacks;
+            }
+            segSensitivity = kOutputSegSensitivityDefault;
+        }
+        if (segMinMs < kOutputSegMinSegmentMsMin || segMinMs > kOutputSegMinSegmentMsMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->segmentationMinSegmentMsFallbacks;
+            }
+            segMinMs = kOutputSegMinSegmentMsDefault;
+        }
+    }
+    parsed.segmentationMode = segModeString(segMode);
+    parsed.segmentationSensitivity = segSensitivity;
+    parsed.segmentationMinSegmentMs = segMinMs;
+
+    if (hasSegmentation && remaining > kEnumBytes + kAppliedBytes + kSegmentationBytes)
     {
         // 未知尾部(未来小版本追加字段)保留,编码时原样回写,防静默丢字段。
-        parsed.unknownTail.assign(data + base + kEnumBytes + kAppliedBytes, data + size);
+        parsed.unknownTail.assign(data + base + kEnumBytes + kAppliedBytes + kSegmentationBytes, data + size);
     }
 
     out = std::move(parsed);

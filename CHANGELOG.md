@@ -32,9 +32,17 @@
   (变更文档 `docs/contract-changes/20260911-sl395-sidecar-autoswitch-off.md`)(#258)
 - **最短段长上限 500ms → 2000ms**(`segmentation.min_segment_ms`;下限 50ms、默认 120ms 不变,
   ParamID / index / 顺序 / versionHint 与 state 编码都不动,abi 不升)。**用户可感知**:长句素材上
-  段数变少、每段更长,波形页 MIN SEG 滑杆的行程随之变宽。**它不随工程保存**:重开工程回到默认
-  120ms(分段三项参数的落盘另立 SL-411)⇒ **不存在**「旧版本读到 >500ms」的降级问题
+  段数变少、每段更长,波形页 MIN SEG 滑杆的行程随之变宽。本卡落地时该值**不随工程保存**、
+  重开工程回到默认 120ms —— **这一句已由 SL-411 取代**:自 abi=4 起分段三项随工程保存
+  (见下面「分段三项参数随工程保存」那条);值域 50..2000 本身没有变
   (变更文档 `docs/contract-changes/20260911-sl398-min-segment-2000.md`)(#258)
+- **分段三项参数随工程保存**(`analysis.segmentation.{mode, sensitivity, min_segment_ms}`;
+  state 容器 abi 3→4,`CFGS` 尾扩一整档 12 字节,旧工程经 no-op `migrate_3_to_4` 自动迁移并取
+  规格默认 valley / 50 / 120)。**用户可感知**:MIN SEG 拖到 1000ms、分析、存盘、重开工程,
+  滑杆与读数还是 1000ms,分析也按它跑 —— 修复前一律跳回 120ms(而分析同样按 120 跑,
+  于是「设置没生效」与「设置没被记住」在界面上长得一模一样)。参数面零变化:三项都不是
+  自动化参数,ParamID / index / 顺序 / versionHint 一个字节未动
+  (变更文档 `docs/contract-changes/20260914-sl411-segmentation-persist.md`)(#259)
 
 ### 新增
 

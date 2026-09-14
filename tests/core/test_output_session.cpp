@@ -431,7 +431,7 @@ TEST_CASE("OutputStateCodec:[J69/U24] 未知序号回落默认并计数", "[outp
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 42u); // 24 头 + "en" 2 + 4×u32([SL-279] 当前 2 + applied 2)
+    REQUIRE(b.size() == 54u); // 24 头 + "en" 2 + 7×u32([SL-279] 当前 2 + applied 2;[SL-411] segmentation 3)
     auto put = [&](std::size_t off, std::uint32_t v) {
         b[off] = static_cast<std::uint8_t>(v & 0xFF);
         b[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
@@ -454,9 +454,10 @@ TEST_CASE("OutputStateCodec:旧版 payload(无枚举字段)回落默认且不计
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    // [SL-279] 砍 16 而不是 8:尾部现在是**两级**(当前 2×u32 + applied 2×u32),
-    // 「abi=1 的旧版」= 两级都没有。只砍 8 得到的是 abi=2,那是下面另一格。
-    b.resize(b.size() - 16); // 去掉末尾 4 个 u32 → 旧版 24+langBytes
+    // [SL-279] 砍 16 而不是 8:尾部现在是**多级**(当前 2×u32 + applied 2×u32 + [SL-411] segmentation),
+    // 「abi=1 的旧版」= 一档都没有。只砍 8 得到的是 abi=2、只砍 20 得到的是 abi=3,那是下面另两格。
+    // [SL-411] 起总尾长 28 字节,故这里砍 28(= 4+4+12)。
+    b.resize(b.size() - 28); // 去掉末尾整条尾巴 → 旧版 24+langBytes
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -486,8 +487,10 @@ TEST_CASE("OutputStateCodec:枚举字段截断(0<remaining<8)→ 拒载", "[outp
 {
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
-    REQUIRE(scvb::state::encodeOutputState(s, b)); // 42 字节 = 24 头 + "en" 2 + 4×u32([SL-279] 两级尾部)
-    b.resize(b.size() - 9); // 砍到 remaining = 7,落在 (0,8) → 拒载
+    REQUIRE(scvb::state::encodeOutputState(s, b)); // 54 字节 = 24 头 + "en" 2 + 7×u32(三级尾部)
+    // [SL-411] 按 **base+7** 显式截,而不是「砍掉一个固定字节数」——尾部级数还会再长,
+    // 而本格要的形态逐字是「第一档只剩 7 字节」,不写清就迟早砍到别的档上去。
+    b.resize(24u + 2u + 7u); // remaining = 7,落在 (0,8) → 拒载
     scvb::state::OutputState d;
     REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
 }
@@ -525,7 +528,9 @@ TEST_CASE("OutputStateCodec:[SL-279] abi=2 旧 payload ⇒ applied := 当前值(
     s.centerSlotPolicy = "even_spread";
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    b.resize(b.size() - 8); // 只砍 applied 那两个 u32 → abi=2 形态
+    // [SL-411] 砍 20 = applied 那两个 u32(8)+ segmentation 那一整档(12);「abi=2 的形态」=
+    // 尾部到「当前」那两个 u32 为止。
+    b.resize(b.size() - 20); // → abi=2 形态
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -542,7 +547,7 @@ TEST_CASE("OutputStateCodec:[SL-279] applied 字段截断(8<remaining<16)→ 拒
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    b.pop_back(); // remaining = 15,落在 (8,16) → 半截 applied,拒载
+    b.resize(24u + 2u + 15u); // remaining = 15,落在 (8,16) → 半截 applied,拒载
     scvb::state::OutputState d;
     REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
 }
@@ -552,8 +557,9 @@ TEST_CASE("OutputStateCodec:[SL-279] applied 越界序号回落默认并**单独
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    // 末 8 字节 = applied 两个 u32;把它们改成越界序号 9。
-    const std::size_t appliedAt = b.size() - 8;
+    // applied 两个 u32 在 base+8 / base+12([SL-411] 起它们后面还跟着 segmentation 一整档,
+    // 所以**不能再从尾巴倒着数** —— 那是这份测试在这次升格前最脆的一处)。
+    const std::size_t appliedAt = 24u + 2u + 8u;
     b[appliedAt] = 9;
     b[appliedAt + 4] = 9;
     scvb::state::OutputState d;
@@ -568,6 +574,165 @@ TEST_CASE("OutputStateCodec:[SL-279] applied 越界序号回落默认并**单独
     REQUIRE(r.centerSlotPolicyFallbacks == 0);
 }
 
+// ============================================================================
+// [SL-411] analysis.segmentation 三项随工程落盘(CFGS 尾扩 12 字节,abi 3→4)
+//
+// 契约面:docs/STATE_SCHEMA.md §一/§三、docs/contract-changes/20260914-sl411-segmentation-persist.md。
+// 本组四格把**搬运层**钉死(值往返 / 旧档缺席 / 越界回落 / 半截拒载);「保存路径真的把 runtime_
+// 写进去了」与「加载路径真的恢复了」这两跳在 tests/host 的 `HOST SL411`(编辑器那一跳离线不可达,
+// 缺口登记在那条用例的头注里)。
+// ============================================================================
+
+TEST_CASE("OutputStateCodec:[SL-411] segmentation 三项往返 + 与前面几档互不串", "[output][state][sl411]")
+{
+    scvb::state::OutputState s;
+    s.segmentationMode = "vad_only";
+    s.segmentationSensitivity = 37.5f;
+    s.segmentationMinSegmentMs = 1000u;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    REQUIRE(b.size() == 24u + 2u + 28u); // 24 头 + "en" 2 + 7×u32(当前 2 + applied 2 + seg 3*)
+
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.segmentationMode == "vad_only");
+    REQUIRE(d.segmentationSensitivity == 37.5f);
+    REQUIRE(d.segmentationMinSegmentMs == 1000u);
+    // 三项之外的字段一个都不许被这一档搅动(写反顺序 / 共用一个槽,这几条里至少一条会红)。
+    REQUIRE(d.loudnessMode == "kw_integrated");
+    REQUIRE(d.centerSlotPolicy == "priority_queue");
+    REQUIRE(d.appliedLoudnessMode == "kw_integrated");
+    REQUIRE(d.appliedCenterSlotPolicy == "priority_queue");
+    REQUIRE(r.segmentationModeFallbacks == 0);
+    REQUIRE(r.segmentationSensitivityFallbacks == 0);
+    REQUIRE(r.segmentationMinSegmentMsFallbacks == 0);
+
+    std::vector<std::uint8_t> b2;
+    REQUIRE(scvb::state::encodeOutputState(d, b2));
+    REQUIRE(b == b2); // 逐字节往返(f32 走位模式落盘,所以 37.5 必须一位不差地回来)
+}
+
+TEST_CASE("OutputStateCodec:[SL-411] abi=3 旧 payload(无 seg 档)⇒ 三默认且不计回落", "[output][state][sl411]")
+{
+    // 这一格钉的是与 [SL-279] `applied := 当前值` **相反**的那个取舍:segmentation 的语义是
+    // 「当前设置」本身,旧工程确实没存过 → 取规格默认(valley/50/120,也正是旧构建 runtime_ 的初值),
+    // 且**不计回落** —— 缺席不是「值不可信」,把它记成回落会让诊断行凭空多出三行噪声。
+    scvb::state::OutputState s;
+    s.segmentationMode = "vad_only"; // 先写成非默认,好证明下面读到的默认不是「本来就没写」
+    s.segmentationSensitivity = 12.5f;
+    s.segmentationMinSegmentMs = 900u;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    b.resize(b.size() - 12); // 砍掉 segmentation 那一整档 → abi=3 形态(尾长 16)
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.segmentationMode == "valley");
+    REQUIRE(d.segmentationSensitivity == 50.0f);
+    REQUIRE(d.segmentationMinSegmentMs == 120u);
+    REQUIRE(r.segmentationModeFallbacks == 0); // 缺席不算回落
+    REQUIRE(r.segmentationSensitivityFallbacks == 0);
+    REQUIRE(r.segmentationMinSegmentMsFallbacks == 0);
+}
+
+TEST_CASE("OutputStateCodec:[SL-411] segmentation 越界 ⇒ 各字段**单独**回落默认并计数", "[output][state][sl411]")
+{
+    // 三个字段各自越界一次,计数器必须**分别**加一(合并计数会让诊断行说「segmentation 回落了 1 次」
+    // 而实际三个字段全回落了 —— 与 [SL-279] applied 那两个不合并是同一条理由)。
+    const auto putU32At = [](std::vector<std::uint8_t>& v, std::size_t off, std::uint32_t x) {
+        v[off] = static_cast<std::uint8_t>(x & 0xFF);
+        v[off + 1] = static_cast<std::uint8_t>((x >> 8) & 0xFF);
+        v[off + 2] = static_cast<std::uint8_t>((x >> 16) & 0xFF);
+        v[off + 3] = static_cast<std::uint8_t>((x >> 24) & 0xFF);
+    };
+    // 先钉「在场且合法」的那一版,避免下面几条实际上打在缺席档上(那样它们会因别的原因变绿)。
+    {
+        scvb::state::OutputState s;
+        s.segmentationMode = "vad_only";
+        s.segmentationSensitivity = 100.0f; // 上界本身合法
+        s.segmentationMinSegmentMs = 2000u; // 上界本身合法
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        REQUIRE(d.segmentationMode == "vad_only");
+        REQUIRE(d.segmentationSensitivity == 100.0f);
+        REQUIRE(d.segmentationMinSegmentMs == 2000u);
+        REQUIRE(r.segmentationModeFallbacks == 0);
+        REQUIRE(r.segmentationSensitivityFallbacks == 0);
+        REQUIRE(r.segmentationMinSegmentMsFallbacks == 0);
+    }
+    // ① mode 越界(序号 7 不是白名单里的两档)→ valley + 计一次
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        putU32At(b, 42u, 7u); // base(26) + 16 = segmentationMode
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        REQUIRE(d.segmentationMode == "valley");
+        REQUIRE(r.segmentationModeFallbacks == 1);
+        REQUIRE(r.segmentationSensitivityFallbacks == 0);
+        REQUIRE(r.segmentationMinSegmentMsFallbacks == 0);
+    }
+    // ② 灵敏度 **NaN** → 50 + 计一次。NaN 是这一档唯一必须单独守的形态:`x < lo || x > hi`
+    //    对 NaN 恒假,只写范围比较的实现在这里会**静默放行**,而 NaN 一旦进了 PipelineConfig
+    //    的灵敏度,下游所有比较都是假 —— 那种坏法不报错、只是结果不对。
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        putU32At(b, 46u, 0x7FC00000u); // base(26) + 20 = segmentationSensitivity(quiet NaN)
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        REQUIRE(d.segmentationSensitivity == 50.0f);
+        REQUIRE(r.segmentationSensitivityFallbacks == 1);
+        REQUIRE(r.segmentationModeFallbacks == 0);
+    }
+    // ③ 灵敏度 1e9(有限但越界)→ 同样回落默认,**不夹到 100**
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        putU32At(b, 46u, 0x4E6E6B28u); // 1.0e9f 的 IEEE-754 位模式
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        REQUIRE(d.segmentationSensitivity == 50.0f); // ← 夹到 100 的实现会让这条红(口径见头注)
+        REQUIRE(r.segmentationSensitivityFallbacks == 1);
+    }
+    // ④ min_segment_ms 越界(下限 49 / 上限 2001 / 0 哨兵)三个值都要回落 120
+    for (const std::uint32_t bad : {0u, 49u, 2001u, 0xFFFFFFFFu})
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        putU32At(b, 50u, bad); // base(26) + 24 = segmentationMinSegmentMs
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        INFO("bad min_segment_ms = " << bad);
+        REQUIRE(d.segmentationMinSegmentMs == 120u);
+        REQUIRE(r.segmentationMinSegmentMsFallbacks == 1);
+        REQUIRE(r.segmentationSensitivityFallbacks == 0);
+    }
+}
+
+TEST_CASE("OutputStateCodec:[SL-411] segmentation 半截(16<remaining<28)→ 拒载", "[output][state][sl411]")
+{
+    // 一整档 12 字节是同一个 commit 写下去的,「只有前 8 个字节」不可能是任何真实构建的产物。
+    scvb::state::OutputState s;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    b.resize(24u + 2u + 16u + 8u); // remaining = 24,落在 (16,28) → 拒载
+    scvb::state::OutputState d;
+    REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+}
+
 TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[output][state]")
 {
     scvb::state::OutputState s;
@@ -576,6 +741,8 @@ TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[ou
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
     // 模拟未来小版本追加:已知字段之后追加 4 字节未知尾部。
+    // [SL-411] 起「已知字段」到 segmentation 那一档为止(尾长 28),所以这 4 个字节是**第四档**的
+    // 未知尾部 —— 这正是 unknownTail 该生效的形态。
     b.push_back(0xDE);
     b.push_back(0xAD);
     b.push_back(0xBE);
@@ -598,7 +765,7 @@ TEST_CASE("OutputStateCodec:非 en 的 uiLanguage 偏移(base=24+langBytes)推�
     s.centerSlotPolicy = "lead_exclusive";
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 24u + 5u + 16u); // 24 头 + 5 语言 + 4×u32([SL-279] 当前 2 + applied 2)
+    REQUIRE(b.size() == 24u + 5u + 28u); // 24 头 + 5 语言 + 7×u32(当前 2 + applied 2 + [SL-411] seg 3*)
     scvb::state::OutputState d;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d));
     REQUIRE(d.uiLanguage == "zh-CN");
@@ -613,7 +780,7 @@ TEST_CASE("Output state 容器:旧版读新 CFGS(高 abi)→ RejectedNewer + 原
 {
     // 复评重要②:旧版(abi=1)读到含 loudness_mode/center_slot_policy 的新(abi=2)blob → RejectedNewer
     // + preservedOriginal 原样回写,绝不把用户 CFGS 覆盖成默认(CLAUDE.md §7.3 / STATE_SCHEMA)。
-    // 模拟「旧版读新」:当前 kCurrentAbi=2,把容器 abi 抬到 kCurrentAbi+1 代表未来/更高版本。
+    // 模拟「旧版读新」:当前 kCurrentAbi=4,把容器 abi 抬到 kCurrentAbi+1 代表未来/更高版本。
     scvb::state::OutputState s;
     s.groupId = 5;
     s.loudnessMode = "peak_dbfs";

@@ -8059,6 +8059,118 @@ TEST_CASE("HOST SL391:改 min_segment_ms 重分析 → 段数随之变(钉 start
 }
 
 // ===========================================================================
+// [SL-411] 分段三参数**随工程保存** —— 存 → 重开 → 三项一致,且重开后的分析真的按持久值跑
+//
+// 用户 v5.6.13 实测:把 MIN SEG 拖到 1000ms、分析、存盘、关工程、再打开 —— 滑杆跳回 120ms。
+// 定谳:`analysis.segmentation.{mode,sensitivity,min_segment_ms}` 只活在 `runtime_` 里,CFGS 不写
+// (规格 02 §0.3 与 STATE_SCHEMA §一 却一直把它们列在 state 里);实现补齐,规格不动。
+//
+// 本用例钉的是**生产那两跳**(它们是这一卡的全部内容):
+//   · 保存侧 —— `getStateInformation` 把 `runtime_` 三项写进 CFGS(删掉那三行 ⇒ 本条红);
+//   · 加载侧 —— `setStateInformation` 把它们恢复回 `runtime_`(删掉那三行 ⇒ 本条红,
+//     且段数会退回 120 档那一份)。
+// 搬运层(单档往返 / 旧档缺席 / 越界回落 / 半截拒载)在 `tests/core/test_output_session.cpp`
+// 的 [SL-411] 四格;这里补的正是那种「零件守得住、那一跳守不住」的差(判例:`HOST SL263` 头注)。
+//
+// ⚠ **桥面 → runtime 那一跳依旧离线不可达,本卡没有改变这一点**:`OutputEditor.cpp` 的
+// `p.getProperty("min_segment_ms")` → `rt.segmentationMinSegmentMs` 依赖 WebView2,不在 host 套件的
+// TU 清单里(理由逐字见上面 `HOST SL391` 的头注)。所以下面写的是 `runtime()` 而不是「模拟一次
+// 编辑器调用」—— 别把这一格读成「桥面那一跳有人守着了」。同理,`scvb.state` 回声里那三项
+// (`OutputEditor.cpp` 的 put)也编不进来,页面级那一格走 mock 侧
+// (`web-preview/tests/smoke-seg-restore-page.mjs` 的 [SL-411] 一节)。
+//
+// 素材与 `HOST SL391` 同一份(为什么必须自造、为什么最后那个 220 block 的爆发不能删,逐字见那条
+// 用例的头注,这里不抄第二份)。本用例在**同一份素材**上跑三档:120 与 1000 两档 **mode/sensitivity
+// 完全相同**(只有 min_segment_ms 一个变量,段数差才只能归因于它),第三档是**存盘那一档**
+//(vad_only / 37.5 / 1000,三项都非默认)—— 重开后的段数与它对拍,而不是与 1000 那一档对拍:
+// mode/sensitivity 同样进 VAD,拿变量不同的两档断言相等,等于埋一个真断链也可能绿的判据。
+// ===========================================================================
+TEST_CASE("HOST SL411:分段三参数随工程保存 —— 重开后三项一致且分析按持久值跑", "[host][state][segmentation][SL411]")
+{
+    juce::MemoryBlock blob;
+    double winStartS = 0.0;
+    double winEndS = 0.0;
+    std::size_t n120 = 0;
+    std::size_t n1000 = 0;
+    std::size_t nSaved = 0;
+
+    {
+        MonoMultiRig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+
+        // 自造分级爆发素材(与 HOST SL391 逐字同源);先空跑衰掉残余能量再开采集。
+        r.runBlocks(240, 0.0f);
+        r.out.setCaptureEnabled(true);
+        r.pump(400);
+        r.runBlocks(20, 0.0f);
+        for (const int blocks : {3, 8, 20, 45, 80, 220})
+        {
+            r.runBlocks(blocks, 0.5f);
+            r.runBlocks(60, 0.0f);
+        }
+        r.pump(400);
+
+        const auto win = r.coverageWindow();
+        REQUIRE(win.endS > win.startS);
+        winStartS = win.startS;
+        winEndS = win.endS;
+
+        const auto analyzeWith = [&r, &win](const char* mode, float sens, int minMs) {
+            r.out.runtime().segmentationMode = mode;
+            r.out.runtime().segmentationSensitivity = sens;
+            r.out.runtime().segmentationMinSegmentMs = minMs;
+            REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+            return segmentsOfTrack(r.out, kTestChannel).size();
+        };
+
+        // ① 两档只差 min_segment_ms(mode/sensitivity 两档同值):段数差只能归因于它。
+        n120 = analyzeWith("valley", 50.0f, 120);
+        n1000 = analyzeWith("valley", 50.0f, 1000);
+        UNSCOPED_INFO("SL411-COUNTS 段数 120/1000 = " << n120 << " / " << n1000);
+        REQUIRE(n120 > 1u); // 前提:最松那档真的切出多段,否则下面的递减/不等都是空过
+        REQUIRE(n120 > n1000); // 前提:1000 档确实比 120 档少(同一素材、同一 mode/sens)
+
+        // ② 存盘前把三项设成**都非默认**的一份,并按**这一份**再分析一次拿基准段数:
+        //    三项各自都要有判别力 —— mode 非默认证明它没被 valley 覆盖,sensitivity 非默认证明
+        //    f32 真的过了 wire,min 1000 是用户报的那一档。
+        //    ⚠ `nSaved` 必须用**与存盘完全相同的三项**测出来:mode/sensitivity 同样进 VAD
+        //    (`cfg.vad.*` 与 `cfg.segmentation.sensitivity`),拿 ① 里 valley/50 那一档的段数
+        //    当基准,就成了「变了两个变量再断言相等」—— 那种断言在真断链时也可能绿。
+        nSaved = analyzeWith("vad_only", 37.5f, 1000);
+        UNSCOPED_INFO("SL411-COUNTS 存盘那一档(vad_only/37.5/1000)= " << nSaved);
+        CHECK(nSaved != n120); // 前提:这一档的产出与 120 档不同,否则 ③ 的相等是空过
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // 作用域退出 = 实例连同内存里的 runtime_ 一起没了(等价于关工程再打开)
+
+    MonoMultiRig r2;
+    // 前置:新实例的三项是**默认值**,否则下面的断言证明不了「载入真的改了它们」。
+    REQUIRE(r2.out.runtime().segmentationMode == "valley");
+    REQUIRE(r2.out.runtime().segmentationSensitivity == 50.0f);
+    REQUIRE(r2.out.runtime().segmentationMinSegmentMs == 120);
+
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    r2.pump(200);
+
+    // ★ 重开后三项必须逐项回到存盘前那一份。删掉保存侧那三行 ⇒ 三项全是默认,这三条红;
+    //   删掉加载侧那三行 ⇒ 同样是默认,这三条也红 —— 两侧各自都有判据,不是只守一头。
+    CHECK(r2.out.runtime().segmentationMode == "vad_only");
+    CHECK(r2.out.runtime().segmentationSensitivity == 37.5f);
+    CHECK(r2.out.runtime().segmentationMinSegmentMs == 1000);
+
+    // ★★ 而且**分析真的按持久值跑**,不只是「字段值对了」—— 这一条是 SL-411 的正题:
+    //    用户报的是「滑杆跳回 120」,但他真正失去的是「我设的 1000 没生效」。
+    //    加载侧没恢复时,这里跑的是默认的 valley/50/120 ⇒ 段数退回 `n120` 那一份,本行红。
+    REQUIRE(r2.runAnalysisIn(winStartS, winEndS, /*clearManual=*/true));
+    const std::size_t nAfterLoad = segmentsOfTrack(r2.out, kTestChannel).size();
+    UNSCOPED_INFO("SL411-COUNTS 重开后段数 = " << nAfterLoad << "(120 档 " << n120 << " / 1000 档 " << n1000
+                                               << " / 存盘档 " << nSaved << ")");
+    CHECK(nAfterLoad == nSaved);
+    CHECK(nAfterLoad != n120);
+}
+
+// ===========================================================================
 // [SL-399] 三层判据之 host 层 —— H1 值一致 / H2 写面只在写回窗 / H3 回执按写集
 //
 // 定谳(用户 A22):冻结前显示 pan −20 / vol −0.2,手动改之后「恢复自动」变成 −60 / −0.9。
