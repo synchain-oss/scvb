@@ -1533,7 +1533,10 @@ void ScvbOutputAudioProcessor::writeFeaturesChunk(scvb::state::StateChunks& chun
         featRefUnresolved_ = false;
         featCodecNewer_ = false;
         // 留底也一并松手:这一节已经被我们自己的真数据换掉了,再留着既无意义,
-        // 又让一份最大 8MB 的副本白占内存。
+        // 又白占一份内存。
+        // [SL-395] 这里原先写的是「最大 8MB 的副本」—— 那个 8MB 上界原本靠「>8MB 转 sidecar」
+        // **间接**保证;开关关掉之后**内嵌 FEAT 块没有上界**(长素材 × 多轨的 state 会变大),
+        // 这是本卡有意接受的代价。
         preservedFeatChunk_.clear();
     };
 

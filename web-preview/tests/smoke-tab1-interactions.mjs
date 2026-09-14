@@ -898,6 +898,8 @@ log("=== ④ 词条(T31 Wave 2 新增 + 05 §5 禁词)===");
     const NEW_KEYS = [
         "banner.misaligned",
         "banner.srMismatch",
+        // [SL-395] sidecar 两条词条**保留**:读路径(打开别人发来的、带 sidecar 的老工程)
+        // 仍会用 banner.sidecarMissing;toast.sidecarSwitched 在 v1 出厂态(自动切换关)不可达。
         "banner.sidecarMissing",
         "banner.noTimeline",
         "master.versionArmedConfirm",
@@ -1107,6 +1109,7 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
         /data-gb="toast-sidecarSwitched"[\s\S]{0,400}data-t="toast\.sidecarSwitched"/.test(
             html,
         ),
+        // [SL-395] v1 出厂态不可达(不开自动切换 ⇒ 不产生 sidecar);接线保留,开关打开即用。
         "toast② 走词条 toast.sidecarSwitched",
     );
     // 从 DOM 那一处起算(CSS 里也有 [data-gb="scale-confirm"] 选择器,不能作锚点)

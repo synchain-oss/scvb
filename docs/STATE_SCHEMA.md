@@ -49,7 +49,7 @@ versions[2]:                   # [J59] 4→2;name: string(J05,默认 "V1"/"V2");
   pan_curve:                   # pan 角度域增益曲线(EQ 式)
     points[]: {angle: -100..100, gain_db, shape: bell|shelf|cut, q, side: out|left|right}   # J07
 features:                      # 采集特征(ADR-007);编码见 §四
-  embedded: bool               # 超 8MB 转 sidecar
+  embedded: bool               # 超 8MB 转 sidecar(v1 默认关,恒内嵌;见 §4.2)
   per_channel[]: {hop_ms: 10, kw_mean_square[], peak[], vad_posterior[], coverage_ranges[]}
 ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang_chosen}   # J50/J62/J75/J81
 ```
@@ -170,7 +170,7 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
 FeatSection(压缩前布局):
   u32 tag = 'FEAT'
   u16 codecVer = 1                  # 节内独立版本,硬失效判据之一
-  u16 flags                         # bit0: embedded(1=特征体随节内嵌,0=引用 sidecar);bit1: vadPresent([J06] 可选缓存)
+  u16 flags                         # bit0: embedded(1=特征体随节内嵌,0=引用 sidecar;v1 写出恒 1,读入仍可能为 0——老工程);bit1: vadPresent([J06] 可选缓存)
   u32 sampleRate                    # 采集时采样率
   u32 hopMs = 10
   u8  channelCount
@@ -190,6 +190,17 @@ FeatSection(压缩前布局):
 - 加载:codecVer 高于当前 → 该节按空处理 + 提示升级(容器级 abi 规则归 §三);低版本 → 迁移函数。
 
 ### 4.2 8MB↔sidecar 切换与回滞
+
+> **v1 出厂态:自动切换关闭**(单点开关 `kSidecarAutoSwitch` = `false`)—— 压缩后的特征流**一律内嵌**
+> (`embedded=1`),不产生 sidecar 目录,下面第 ③ 步恒走内嵌那一支;本节余下的切换与回滞逻辑
+> **在开关打开时逐字有效**(开关是双向的,不是只能前进的迁移)。变更文档:
+> `docs/contract-changes/20260911-sl395-sidecar-autoswitch-off.md`。
+>
+> ⚠ **打开一份带 sidecar 的老工程、再保存一次 ⇒ 特征收回内嵌、`sessions/<GUID>/` 整目录被回收**
+> (下面第 ③ 步那句「若存在旧 sidecar → 删除」就是它)。**这一步不可逆**,工程体积随之变大;
+> 判据 = **`HOST SL395`**(`tests/host/test_host_harness.cpp`,走真 `setStateInformation` /
+> `getStateInformation`;core 的 `FEAT-SIDECAR-11` 是**同形复刻**,定位快但不钉生产那一次
+> `store.remove`)。
 
 - 阈值判定用**压缩后字节数**;加**回滞**防止在 8MB 附近反复横跳:**一旦转为 sidecar,压缩后 <6MB 才收回内嵌**。
 - `getStateInformation()`:① 容器序列化配置/曲线各节 → ② `FeaturesCodec::encode()` → zlib 压缩 → gz → ③ gz ≤ 8MB:embedded=1 内嵌(若存在旧 sidecar → 删除,数据已随工程,防双源分叉);gz > 8MB:走 §4.3 sidecar 流程,节内只写 GUID+sha256+size。

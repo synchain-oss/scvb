@@ -1794,11 +1794,12 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    // sensitivity 0..100、min_segment_ms 50..500(02-dsp-spec §0.3 常量表),越界 clamp。
+    // sensitivity 0..100、min_segment_ms 50..2000(02-dsp-spec §0.3 常量表;上限 [SL-398] 500 → 2000),
+    // 越界 clamp。
     const float sens =
         juce::jlimit(0.0f, 100.0f, static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity)));
     const int mms =
-        juce::jlimit(50, 500, static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs)));
+        juce::jlimit(50, 2000, static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs)));
 
     const bool changed =
         mode != rt.segmentationMode || sens != rt.segmentationSensitivity || mms != rt.segmentationMinSegmentMs;

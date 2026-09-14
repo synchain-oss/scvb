@@ -37,7 +37,7 @@
 
 ### 0.4 节流与 diff-then-emit(01 §6.1/§6.4)
 
-1. 事件推送统一走 **diff-then-emit 模式**(承 01 §6.1 的 Bridge 25Hz Timer 机制,「SCVB 事件类别更多,**每类独立节流**」):**值未变不发**;**每一类事件的实际频率以 §2/§4 各条目标注的数值为准**(逐字照 05 §1.4:`scvb.params` 25Hz、`scvb.meters`/`scvb.playhead` 30Hz、`scvb.conn` ~4Hz、`scvb.captureProgress` 播放中 2Hz、`scvb.groups` 1Hz)。**基准 Timer 频率不在桥面契约内**:native 侧须选一个能整除上述各类别频率的基准(或按类别用多个 Timer),桥面只约束「每类的推送频率上限 + 值未变不发」。**注**:01 §6.1 的「25Hz 单 Timer」与 05 §1.4 的 30Hz meters/playhead 无公因子节拍——**统筹裁定 A-28 定案:各事件频率以 05 §1.4 逐类标注为准;基准 Timer/分频方式为 native 实现细节,不入桥面契约。若 native 评审认为 30Hz 实现代价过高,按 §9.0 流程回改 05 的对应档**。
+1. 事件推送统一走 **diff-then-emit 模式**(承 01 §6.1 的 Bridge 25Hz Timer 机制,「SCVB 事件类别更多,**每类独立节流**」):**载荷未变不发**(判的是**整个载荷**有没有内容,不是某个字段必须非空 —— §2.2 的 `scvb.params` 就是这条的一个实例:只翻回声位的那一帧 `values` 可为 `{}`);**每一类事件的实际频率以 §2/§4 各条目标注的数值为准**(逐字照 05 §1.4:`scvb.params` 25Hz、`scvb.meters`/`scvb.playhead` 30Hz、`scvb.conn` ~4Hz、`scvb.captureProgress` 播放中 2Hz、`scvb.groups` 1Hz)。**基准 Timer 频率不在桥面契约内**:native 侧须选一个能整除上述各类别频率的基准(或按类别用多个 Timer),桥面只约束「每类的推送频率上限 + 载荷未变不发」。**注**:01 §6.1 的「25Hz 单 Timer」与 05 §1.4 的 30Hz meters/playhead 无公因子节拍——**统筹裁定 A-28 定案:各事件频率以 05 §1.4 逐类标注为准;基准 Timer/分频方式为 native 实现细节,不入桥面契约。若 native 评审认为 30Hz 实现代价过高,按 §9.0 流程回改 05 的对应档**。
 2. 电平/失准等高频数据带阈值(电平 0.3 dB 阈值,镜像 Bridge)。
 3. `scvb.groups`、`scvb.config` 为「按频率探测/轮询、**变化才发**」;`mBridgeReady` 后的**首帧必发**按事件类别分三档,保证 UI 不停在空态:
    - **状态类**(`scvb.state` / `scvb.params` / `scvb.conn` / `scvb.config` / `scvb.groups` / `scvb.meters` / `scvb.playhead` / `scvb.segments`)—— **首帧各必发一次**(`scvb.segments` 以 `reason:"snapshot"` 发全部轨全量段表,§2.8);
@@ -504,9 +504,9 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 
 | 项 | 定义 |
 |---|---|
-| 频率 | **25 Hz**(节流;**值未变不发**) |
+| 频率 | **25 Hz**(节流;**载荷未变不发**——`values` 与 `hostEcho` 任一变化都算「载荷变了」,见下行) |
 | 载荷 | `{ values:{ "<ParamID>": <f32 工程值>, ... }, hostEcho:bool, full:bool, versionActive:1..2 }` |
-| 字段纪律 | `values`(容器键为 **T25 定名**,§9.2)= **稀疏 diff**(只含本帧变化的 id,05 §1.4「`{id→value}` 稀疏 diff」);参数总数 **123**(声明;宿主可见 124,J59/J65),本事件覆盖面 = 全局三件 + **当前激活版本 60 个**(15 轨 × pan/vol/width/freeze)= 最多 63 个 id。**非激活版本参数不进本事件**;切版本后 C++ **全量重发**(`full:true`,`versionActive` 为新版本)。`hostEcho:true` = 本批来自宿主回吐/引擎打印(ARMED/PRINT),UI 灰显且**绝不回写**(§0.5)。工程值单位与 params-v0「范围」列一致(非归一化)。 |
+| 字段纪律 | `values`(容器键为 **T25 定名**,§9.2)= **稀疏 diff**(只含本帧变化的 id,05 §1.4「`{id→value}` 稀疏 diff」);参数总数 **123**(声明;宿主可见 124,J59/J65),本事件覆盖面 = 全局三件 + **当前激活版本 60 个**(15 轨 × pan/vol/width/freeze)= 最多 63 个 id。**非激活版本参数不进本事件**;切版本后 C++ **全量重发**(`full:true`,`versionActive` 为新版本)。`hostEcho:true` = 本批来自宿主回吐/引擎打印(ARMED/PRINT),UI 灰显且**绝不回写**(§0.5)。工程值单位与 params-v0「范围」列一致(非归一化)。**`hostEcho` 也是载荷的一部分 ⇒ 它翻转同样算「载荷变了、该发」**(变更记录:`docs/contract-changes/20260913-sl400-params-echo-doc.md`),因此**只翻回声位的那一帧 `values` 可以是空对象 `{}`** —— 那是合法的稀疏 diff(= 本帧没有 id 变化),**不是非法帧,下游不得按异常帧过滤**(过滤掉就连「起播 chase」一起断掉:页面再也收不到 `hostEcho:true`)。**载荷字段不增不减、不改名、不改既有字段语义**,不触发 §9 的变更流程。 |
 | UI 消费 | Tab2 pan/width/vol/冻结的 follow 态、Tab1 Width/MS Balance/Lead Select、声像/音量分布图的唯一数据源 |
 | 真源 | 05 §1.4(03 §3.5 移交);`full`/`versionActive` 为 T25 定名(§9.2) |
 
@@ -726,7 +726,7 @@ UI 在 WebView 内捕获 `Ctrl+Z` / `Ctrl+Shift+Z` 映射到 `undo()` / `redo()`
 | `sidecarMissing` | 外部特征文件缺失或校验失败 | — | `{path?:string}` | 琥珀横幅⑤「采集数据缺失/过期,请重新采集」 | 04 §5.3 |
 | `noTimeline` | 宿主未提供时间线(无 `timeInSamples`) | — | `{}` | 琥珀横幅⑥「宿主未提供时间线」+ 采集/输出开关 disabled | 04 §2.6 |
 | `projectCopy` | 检测到工程副本(sessionGUID 不匹配)→ 已建独立采集数据副本 | — | `{sessionGuid:string}` | toast①「检测到工程副本,已创建独立采集数据副本」 | 04 §5.6 |
-| `sidecarSwitched` | 采集数据超 **8MB** 自动转存外部文件 | — | `{bytes:u64}` | toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」 | 04 §5.4 / ADR-007 |
+| `sidecarSwitched` | 采集数据超 **8MB** 自动转存外部文件(**v1 出厂态不可达**:自动切换关闭 ⇒ 恒内嵌;枚举与文案保留) | — | `{bytes:u64}` | toast②「采集数据已超过 8MB,已转存外部文件——发给他人需重新采集」 | 04 §5.4 / ADR-007 |
 | `lowSample` | 该轨采集后**有效唱段 <1.5s** | 必填 | `{voicedS:f32}` | Tab2 状态灯旁 + Tab3 轨头黄标「样本不足,结果可能不稳」 | 04 §7 步7 |
 
 **降级纪律**:①UI **不静默**任何 code——未知 code 原样显示并入 Tab4 诊断区;②持续性条件(横幅①-⑥)不可手动关闭,条件消失(`active:false`)才撤下;一次性提示(toast)可关闭;③参数错误(`reason:"badArg"`)**不占用**本枚举,由函数返回值承载。

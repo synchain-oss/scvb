@@ -71,7 +71,7 @@ versions[2]:                   # [J59] 4→2;name: string(J05,默认 "V1"/"V2");
   pan_curve:                   # pan 角度域增益曲线(EQ 式)
     points[]: {angle: -100..100, gain_db, shape: bell|shelf|cut, q, side: out|left|right}   # J07
 features:                      # 采集特征(ADR-007)
-  embedded: bool               # 超 8MB 转 sidecar
+  embedded: bool               # 超 8MB 转 sidecar(v1 默认关,恒内嵌;见 STATE_SCHEMA.md §4.2)
   per_channel[]: {hop_ms: 10, kw_mean_square[], peak[], vad_posterior[], coverage_ranges[]}
 ui: {scale, language, active_tab, guide_seen, tour_seen}   # J50/J62
 ```

@@ -18,6 +18,20 @@ namespace scvb::state
 inline constexpr std::uint64_t kSidecarThresholdBytes = 8ull * 1024u * 1024u; // >8MB → sidecar
 inline constexpr std::uint64_t kReembedThresholdBytes = 6ull * 1024u * 1024u; // <6MB → 收回内嵌
 
+// [SL-395] 「>8MB 自动转 sidecar」的**单点开关**,v1 出厂值 = **关**。
+//
+// 关掉之后压缩后的特征流**一律内嵌**(FEAT 节 `embedded=1`),`sessions/<GUID>/` 目录不再产生;
+// sidecar 的**读写代码、回滞、事件与用例全部保留** —— 打开这一位即逐字回到 ADR-007 /
+// STATE_SCHEMA §4.2 的原文行为(它是**双向**的,不是一个只能前进的迁移)。
+//
+// 为什么是开关而不是删代码:用户 2026-09-11 的裁定是「先暂时不上」(v5.6.13 回验 A20:
+// 没测试过稳定性、真工程也难到 8MB),不是「不要这个功能」。删掉 `SidecarStore` 会让
+// 「读一个别人发来的、带 sidecar 的工程」这条**与本变更无关**的路径一起死,而读路径必须保留。
+//
+// ⚠ 本开关**只关写、不关读**:`embedded=0` + 合法引用仍要能载入、缺失仍要报 `sidecarMissing`。
+// 变更文档:`docs/contract-changes/20260911-sl395-sidecar-autoswitch-off.md`。
+inline constexpr bool kSidecarAutoSwitch = false;
+
 // owner.lock 判活(04 §5.5):pid 存在 ∧ 心跳 < 30s。
 inline constexpr std::int64_t kOwnerLockAliveHeartbeatMs = 30000;
 
@@ -124,7 +138,9 @@ public:
                              std::string& newGuid);
 
     // 回滞判定(04 §5.3):当前是否走 sidecar。
-    //   未走 sidecar:gz > 8MB → sidecar;已走 sidecar:gz < 6MB → 收回内嵌。
+    //   **出厂态恒 `false`**:`kSidecarAutoSwitch == false` ⇒ 一律内嵌,返回值与字节数无关。
+    //   开关是**双向**的:打开即逐字回到下面这条原文;8MB/6MB 两个阈值**只在开关打开时生效**。
+    //   开关打开时 —— 未走 sidecar:gz > 8MB → sidecar;已走 sidecar:gz < 6MB → 收回内嵌。
     static bool shouldUseSidecar(std::uint64_t gzBytes, bool currentlySidecar);
 
 private:

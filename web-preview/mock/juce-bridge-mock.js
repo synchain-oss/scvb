@@ -19,6 +19,9 @@
 //     故非法 g 走夹取而不是 badArg)。
 //   • **写函数回推状态**:写入 → 改内部 state → emit 增量事件,让单向渲染链路可预演;
 //     但**不实现算法**(analyze 只在 800ms 后用生成器重算段表,不做真分析)。
+//   • **不夹参数值域**([SL-398] 记账):`setSegmentation` **不夹取** `min_segment_ms`
+//     (只查有限性),而真桥夹 `[50, 2000]`(`OutputEditor.cpp`)。这条 deviation 今天够不着 ——
+//     UI 侧 `clampMinSegMs` 先夹过一道,mock 收不到越界值;别据此以为 mock 也夹。
 //   • **`mBridgeReady` 门控**(§0.6):`requestInitialState()` 之前 emit 一律丢弃。
 //   • **range.mode 三值枚举**(J04):`follow | daw_loop | manual`,默认 follow;
 //     v0 的「全曲 = 起止哨兵」约定已废除,本文件不得残留任何哨兵式全曲判断。
@@ -1031,8 +1034,9 @@ function buildOutputBackend(ctx) {
         // [SL-242 复审【建议】⑤] 同一族再登记一条:**mock 不建模 hop 量化**。真桥的
         // `analyzeHopWindow` 把范围向内取整到 10ms 的 hop 网格,窄于一个 hop 的范围判空窗
         // ⇒ `{ok:false, affected:{0,0,0}}`;这里只按秒值 `overlapsRanges` 判有没有覆盖,
-        // 窄范围照样受理。当前够不着(最小分段入参被 `OutputEditor.cpp` 夹在 [50,500],
-        // 下界 50ms 也比一个 hop 大五倍),但那个夹取一旦放宽,冒烟就会重演「预览绿、真跑拒」。
+        // 窄范围照样受理。当前够不着(最小分段入参被 `OutputEditor.cpp` 夹在 [50,2000],
+        // 下界 50ms 也比一个 hop 大五倍),但那个夹取一旦再放宽(下界那一侧),冒烟就会重演
+        // 「预览绿、真跑拒」。
         // **不在 mock 里实现量化**是有意的:hop 网格是分析引擎的几何(kFeatHopMs),不是
         // 桥面契约的一部分,把这个 native 常量搬进来是本文件的第一处几何泄漏;而它能藏住的
         // 只有两端各 <10ms 的边角,藏不住作用域回归(那一层由 outsideRange 的建模守着)。

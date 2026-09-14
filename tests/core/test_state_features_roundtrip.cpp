@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // test_state_features_roundtrip —— T21 特征持久化:FeaturesCodec + gzip + SidecarStore。
-// 覆盖:embedded 逐字节往返(vadPresent 存/省)、sidecar 引用往返、>8MB 自动转 sidecar 且回读、
-// 删除 sidecar 后特征缺失、双开同 GUID copy-on-write、owner.lock 判活与 [SL-233] 10s 续租、8MB/6MB 回滞、
+// 覆盖:embedded 逐字节往返(vadPresent 存/省)、sidecar 引用往返、[SL-395] v1 写路径恒内嵌
+// (开关关)+ 读回 embedded=0 的老工程、老工程保存一次即收回内嵌并回收外部目录、
+// 删除 sidecar 后特征缺失、双开同 GUID copy-on-write、owner.lock 判活与 [SL-233] 10s 续租、
+// 8MB/6MB 回滞(开关打开时的原文口径)、
 // gzip 5min/15轨 ≤2.25MB、sha256 已知向量、压缩炸弹防护、不可信字节校验。
 // 纯 C++17,无 JUCE(ADR-011)。
 
@@ -412,18 +414,56 @@ TEST_CASE("FEAT-SHA256-1 已知向量", "[state][features]")
 // SidecarStore:8MB 阈值 / 缺失 / copy-on-write / owner.lock / 回滞
 // ============================================================================
 
-TEST_CASE("FEAT-SIDECAR-1 >8MB 自动转 sidecar 且回读成功", "[state][features][sidecar]")
+// [SL-395] 「>8MB 自动转 sidecar」在 v1 出厂态由单点开关 `kSidecarAutoSwitch` 关掉(恒内嵌),
+// 但**只关写不关读**。本用例把两件事一起钉住:①写路径由开关单点决定(下称 D1 锚点);
+// ②盘上带 sidecar 的老工程(embedded=0 + 合法引用)在开关关着时照样载入。
+TEST_CASE("FEAT-SIDECAR-1 >8MB:v1 写路径恒内嵌,且仍能读回 embedded=0 的老工程", "[state][features][sidecar]")
 {
     const FeaturesData huge = makeHugeIncompressibleFixture();
     const auto gz = scvb::state::encodeFeatures(huge);
     REQUIRE_FALSE(gz.empty());
     REQUIRE(gz.size() > scvb::state::kSidecarThresholdBytes); // 前提:确实 >8MB
-    REQUIRE(SidecarStore::shouldUseSidecar(gz.size(), false)); // 自动转 sidecar
 
     TempDir tmp;
     SidecarStore store(tmp.path);
     const auto digest = scvb::state::sha256(gz.data(), gz.size());
-    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, makeIdentity(1111, "A")));
+    const ProcessIdentity self = makeIdentity(1111, "A");
+
+    // ---- ① 写路径:复刻 OutputProcessor 装 FEAT chunk 的那一段(唯一判据 = shouldUseSidecar)。----
+    // 出厂态(开关关)⇒ 恒内嵌:装进去的是**内嵌载荷**,盘上不产生 `sessions/<GUID>/`。
+    // ⚠ 下面两条断言是删除式验证 D1 的锚点:把 `kSidecarAutoSwitch` 改成 true,它们立刻红
+    //    (那时 `toSidecar` 为真:装的是引用式 payload、目录也真被写出来)。
+    const bool toSidecar = SidecarStore::shouldUseSidecar(gz.size(), /*currentlySidecar=*/false);
+    REQUIRE_FALSE(toSidecar); // 开关关 ⇒ 不自动转(与字节数无关)
+
+    std::vector<std::uint8_t> featChunk;
+    if (toSidecar) // 开关打开时这一支就是本卡之前「>8MB 自动转 sidecar」的原文行为
+    {
+        REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
+        SidecarRef written;
+        written.sessionGuid = kGuid;
+        written.sha256 = digest;
+        written.sidecarBytes = gz.size();
+        featChunk = scvb::state::encodeReference(written, 48000, 10, 1);
+    }
+    else
+    {
+        featChunk = gz;
+    }
+
+    REQUIRE_FALSE(std::filesystem::exists(store.sessionDir(kGuid))); // 写路径没落 sidecar 目录
+    const FeatDecode wrote = scvb::state::decodeFeatures(featChunk.data(), featChunk.size());
+    REQUIRE(wrote.ok);
+    REQUIRE(wrote.embedded); // FEAT 节 bit0 embedded = 1
+
+    const LoadOutcome roundtrip = loadFeatures(featChunk, store);
+    REQUIRE(roundtrip.ok);
+    REQUIRE_FALSE(roundtrip.featuresMissing);
+    REQUIRE(scvb::state::encodeFeatures(roundtrip.features) == gz); // 落盘载荷回读后重编码逐字节一致
+
+    // ---- ② 读路径:手工摆一份「老工程」形态(盘上有 sidecar 文件 + embedded=0 的引用式 payload)。----
+    // 开关关着也必须载入成功 —— 删掉 SidecarStore 会让这条与本变更无关的路径一起死,所以它在这里。
+    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
 
     SidecarRef ref;
     ref.sessionGuid = kGuid;
@@ -441,6 +481,8 @@ TEST_CASE("FEAT-SIDECAR-1 >8MB 自动转 sidecar 且回读成功", "[state][feat
     REQUIRE(gz2 == gz); // 回读后重编码逐字节一致
 }
 
+// 读路径用例,**与 `kSidecarAutoSwitch` 无关**(SL-395 只关写不关读):盘上有其余文件但特征文件
+// 缺失 → 按缺失处理。
 TEST_CASE("FEAT-SIDECAR-2 删除 sidecar 后特征缺失(曲线/配置不受影响)", "[state][features][sidecar]")
 {
     const auto gz = scvb::state::encodeFeatures(makeSmallFixture());
@@ -522,19 +564,35 @@ TEST_CASE("FEAT-SIDECAR-4 owner.lock 判活与过期", "[state][features][sideca
     REQUIRE_FALSE(store.copyOnWriteIfNeeded(kGuid, makeIdentity(999, "C"), now, unused));
 }
 
-TEST_CASE("FEAT-SIDECAR-5 回滞 8MB/6MB", "[state][features][sidecar]")
+// [SL-395] 回滞的期望随出厂态改口径:开关关时**根本不存在回滞**(判定与字节数、当前态全无关,
+// 恒 false);开关打开时逐字回到 ADR-007 / 04 §5.3 的 8MB/6MB 原文 —— 那几行原样留在下面
+// 的 `if constexpr` 支里(用例保留,不删)。
+TEST_CASE("FEAT-SIDECAR-5 回滞 8MB/6MB(出厂态开关关)", "[state][features][sidecar]")
 {
     const std::uint64_t kB8 = scvb::state::kSidecarThresholdBytes;
     const std::uint64_t kB6 = scvb::state::kReembedThresholdBytes;
 
-    // 未走 sidecar:>8MB 才转。
-    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8, false)); // ==8MB 仍内嵌
-    REQUIRE(SidecarStore::shouldUseSidecar(kB8 + 1, false)); // >8MB 转
+    // v1 出厂态 · 开关关:恒不转 —— 未走 sidecar 时不转,已走 sidecar 时也收回,一切看开关。
+    // ⚠ 这几行与 FEAT-SIDECAR-1 的 D1 锚点同源:开关一改成 true 就红。
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(0, false));
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8, false)); // 恰好 8MB 也不转
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8 + 1, false)); // >8MB 也不转
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB6 - 1, true)); // 已在外置态也收回内嵌
+    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8 - 1, true));
 
-    // 已走 sidecar:<6MB 收回,>=6MB 保持(回滞)。
-    REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB6 - 1, true)); // <6MB 收回内嵌
-    REQUIRE(SidecarStore::shouldUseSidecar(kB6, true)); // ==6MB 保持
-    REQUIRE(SidecarStore::shouldUseSidecar(kB8 - 1, true)); // 6..8MB 保持(不再横跳)
+    // 开关打开时逐字生效的原文口径。用 `if constexpr` 而不是运行期 if:出厂态这段编译期就被丢掉,
+    // 不会有「常量条件」的噪音;开关一翻它立刻活过来。
+    if constexpr (scvb::state::kSidecarAutoSwitch)
+    {
+        // 未走 sidecar:>8MB 才转。
+        REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB8, false)); // ==8MB 仍内嵌
+        REQUIRE(SidecarStore::shouldUseSidecar(kB8 + 1, false)); // >8MB 转
+
+        // 已走 sidecar:<6MB 收回,>=6MB 保持(回滞)。
+        REQUIRE_FALSE(SidecarStore::shouldUseSidecar(kB6 - 1, true)); // <6MB 收回内嵌
+        REQUIRE(SidecarStore::shouldUseSidecar(kB6, true)); // ==6MB 保持
+        REQUIRE(SidecarStore::shouldUseSidecar(kB8 - 1, true)); // 6..8MB 保持(不再横跳)
+    }
 }
 
 TEST_CASE("FEAT-SIDECAR-6 PID 复用竞态与路径穿越防护", "[state][features][sidecar]")
@@ -790,4 +848,93 @@ TEST_CASE("FEAT-SIDECAR-10 心跳的 epoch 与 ISO8601 同源", "[state][feature
     REQUIRE(lock.heartbeatIso8601 == scvb::state::iso8601UtcFromEpochMs(kFixedEpochMs));
     // 反向验证:它确实不是「刷新那一刻的真实墙钟」(否则本条断言恒真,证明不了同源)。
     REQUIRE(lock.heartbeatIso8601 != scvb::state::iso8601UtcNow());
+}
+
+// ---------------------------------------------------------------------------
+// [SL-395 R2] 老工程(`embedded=0`)保存一次 ⇒ 收回内嵌 + 外部目录回收 —— **同形复刻**。
+//
+// ⚠ **判据不是这一格**:本用例把 `OutputProcessor.cpp:1545-1571` 那一跳**复刻**了一遍,
+// `store.remove(kGuid)` 是用例自己调的 —— 把生产里那句 `store.remove(sessionGuid_.toStdString())`
+// 整行删掉,本用例**照样全绿**(gates 复审第 2 轮的 inline 指出)。真正钉生产那一跳的是
+// **`HOST SL395`**(`tests/host/test_host_harness.cpp`,走真 `setStateInformation`/`getStateInformation`),
+// 删除式 **D6** 就是注掉生产那行、看它红在「目录仍在」。
+// 本格留下是因为它是**纯 core 层**的同形复刻:不依赖 JUCE,断言面更窄、失败定位更快。
+//
+// 复刻的是**前两道闸**:`wasSidecar && !refWasUnresolved`。生产还有第三道 `!heldByOther`
+// (他人活锁判定,`OutputProcessor.cpp:1558-1568`)—— 本场景里锁归本进程(或压根没有锁),
+// 第三道恒真,故未复刻;别把这一格读成「三道闸都钉住了」。
+//
+// 编号说明:提案里写的是 `-6`,但 6 已被「PID 复用竞态与路径穿越防护」占用,故顺延为 **-11**。
+//
+// 删除式 **D4**:把 `kSidecarAutoSwitch` 翻 true ⇒ 走「已在外置态且 ≥6MB ⇒ 保持外置」那一支
+// ⇒ 下面**三条 CHECK 同时红**(装的还是引用式 payload、目录也还在)。它钉的是**开关**,不是 remove。
+// ---------------------------------------------------------------------------
+TEST_CASE("FEAT-SIDECAR-11 老工程(embedded=0)保存一次 ⇒ 收回内嵌 + 外部目录回收", "[state][features][sidecar]")
+{
+    const FeaturesData huge = makeHugeIncompressibleFixture();
+    const auto gz = scvb::state::encodeFeatures(huge);
+    REQUIRE_FALSE(gz.empty());
+
+    TempDir tmp;
+    SidecarStore store(tmp.path);
+    const auto digest = scvb::state::sha256(gz.data(), gz.size());
+    const ProcessIdentity self = makeIdentity(1111, "A");
+
+    // ---- 起点:老工程形态(盘上有 sidecar + embedded=0 的引用式 payload)----
+    REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
+    SidecarRef ref;
+    ref.sessionGuid = kGuid;
+    ref.sha256 = digest;
+    ref.sidecarBytes = gz.size();
+    const auto payload = scvb::state::encodeReference(ref, 48000, 10, 1);
+    REQUIRE_FALSE(payload.empty());
+
+    const LoadOutcome loaded = loadFeatures(payload, store);
+    REQUIRE(loaded.ok);
+    REQUIRE_FALSE(loaded.featuresMissing); // 引用解开了(sha256 过)⇒ `refWasUnresolved` 为假
+    REQUIRE(std::filesystem::exists(store.sessionDir(kGuid)));
+
+    // ---- 保存一次:复刻 OutputProcessor 的装 chunk 分支 ----
+    // ⚠ 这两个布尔**由夹具本身的形态导出,不写字面量**:
+    //   ① `wasSidecar` 取「喂进去的 payload 是不是引用式」—— **不能**用 `loaded.ok`:内嵌 payload
+    //      载入后 `ok` 同样为 true,夹具哪天换成内嵌形态,`wasSidecar` 会静默取真、用例照绿,
+    //      而它声称覆盖的场景已经不在了(inline 复审第 2 轮指出);
+    //   ② 写成 `const bool x = true;` 会让下面那句 `if (wasSidecar && !refWasUnresolved)` 成为
+    //      **常量条件**,MSVC /W4 直接报 C4127(实测:gate 5 因此红过一次)。上面那个写法
+    //      (`decodeFeatures` 的结果)同样不是常量表达式 —— 避警告不必牺牲语义。
+    const bool wasSidecar = !scvb::state::decodeFeatures(payload.data(), payload.size()).embedded;
+    const bool refWasUnresolved = loaded.featuresMissing; // 上面 REQUIRE_FALSE 过 ⇒ 恒 false
+    const bool toSidecar = SidecarStore::shouldUseSidecar(gz.size(), wasSidecar);
+
+    std::vector<std::uint8_t> savedChunk;
+    if (toSidecar)
+    {
+        REQUIRE(store.write(kGuid, gz.data(), gz.size(), 1, scvb::state::kFeatCodecVer, self));
+        SidecarRef again;
+        again.sessionGuid = kGuid;
+        again.sha256 = digest;
+        again.sidecarBytes = gz.size();
+        savedChunk = scvb::state::encodeReference(again, 48000, 10, 1);
+    }
+    else
+    {
+        savedChunk = gz; // 收回内嵌
+        if (wasSidecar && !refWasUnresolved)
+        {
+            store.remove(kGuid); // 防双源分叉(04 §5.3):外部副本随工程内嵌一起回收
+        }
+    }
+
+    // ★ D4 锚点:开关翻 true ⇒ 以下三条同时红(用 CHECK 而非 REQUIRE,一次把三条都照出来)
+    CHECK_FALSE(toSidecar);
+    const FeatDecode saved = scvb::state::decodeFeatures(savedChunk.data(), savedChunk.size());
+    REQUIRE(saved.ok);
+    CHECK(saved.embedded); // FEAT 节 bit0 = 1(内嵌)
+    CHECK_FALSE(std::filesystem::exists(store.sessionDir(kGuid))); // 外部目录已回收
+
+    // 回收之后这份工程**自足**:不碰外部目录也能载入,且逐字节回读一致。
+    const LoadOutcome after = loadFeatures(savedChunk, store);
+    REQUIRE(after.ok);
+    REQUIRE_FALSE(after.featuresMissing);
+    REQUIRE(scvb::state::encodeFeatures(after.features) == gz);
 }

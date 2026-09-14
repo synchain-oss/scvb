@@ -783,18 +783,24 @@ TEST_CASE("[SL382] 流水线:谷切分收到的是 dB 域包络,故 noNaturalCut
 // 与灵敏度那条相反,这一项是**真的会改段数**的:P1 丢掉的是整个 core 段,活跃集合随之
 // 变化,§3.4 步骤 4 就没得合并了。所以本条断的是**段数**本身,不是警告。
 //
-// 素材:30 / 80 / 200 / 450 / 800ms 五个爆发。三档门限各自吃掉前几个:
-//   50ms  → 只丢 30ms 那个
-//   120ms → 再丢 80ms 那个
-//   500ms → 只剩 800ms 那个
-// 断言写成**严格递减**:非严格的话「三档全丢光只剩 1 段」也满足,那种绿是假的。
+// 素材:30 / 80 / 200 / 450 / 800ms 五个爆发。五档门限各自吃掉前几个:
+//   50ms   → 只丢 30ms 那个
+//   120ms  → 再丢 80ms 那个
+//   500ms  → 只剩 800ms 那个
+//   1000ms → 800ms 那个也丢(素材里没有更长的爆发)⇒ 0 段
+//   2000ms → 同上([SL-398] 新上限;这一段素材里已无可丢,故两档相等)
+// 断言的**方向**分两种:50/120/500 三档严格递减(非严格的话「三档全丢光只剩 1 段」也满足,
+// 那种绿是假的);1000/2000 两档落在素材的空白地带,只能断**单调不增** ——
+// 这条钉的是「门限再抬不会把段数抬回去」,不是「段数一定明显变少」(那要素材里真有
+// 500–2000ms 的短段;见变更文档 `20260911-sl398-min-segment-2000` 的行为面说明)。
 //
 // 删除式:去掉 `EnergyVad.cpp` P1 的 `if (c.endHop - c.startHop >= minHops)` 判据
-// ⇒ 三档段数立刻相等 ⇒ 必红。(注:删 `OutputProcessor.cpp` 里
+// ⇒ 五档段数立刻相等 ⇒ 必红。(注:删 `OutputProcessor.cpp` 里
 // `cfg.vad.minSegmentMs = runtime_.segmentationMinSegmentMs` 那一跳**不会**让本条红 ——
 // 本条测的是流水线入参;那一跳属于 host 面。)
 // ---------------------------------------------------------------------------
-TEST_CASE("[SL382] 流水线:min_segment_ms 50/120/500 → 段数严格递减", "[analysis][pipeline][segmentation][SL382]")
+TEST_CASE("[SL382] 流水线:min_segment_ms 50/120/500/1000/2000 → 段数单调不增",
+          "[analysis][pipeline][segmentation][SL382]")
 {
     const std::vector<int> loud{3, 8, 20, 45, 80}; // 30/80/200/450/800ms
     std::array<PipelineTrackFeatures, kPipelineTracks> proto;
@@ -816,17 +822,29 @@ TEST_CASE("[SL382] 流水线:min_segment_ms 50/120/500 → 段数严格递减", 
     const auto a = countAt(50);
     const auto b = countAt(120);
     const auto c = countAt(500);
+    const auto d = countAt(1000);
+    const auto e = countAt(2000); // [SL-398] 值域上限
 
-    INFO("intervals 50/120/500 = " << a.first << "/" << b.first << "/" << c.first);
-    INFO("segments[0] 50/120/500 = " << a.second << "/" << b.second << "/" << c.second);
+    INFO("intervals 50/120/500/1000/2000 = " << a.first << "/" << b.first << "/" << c.first << "/" << d.first << "/"
+                                             << e.first);
+    INFO("segments[0] 50/120/500/1000/2000 = " << a.second << "/" << b.second << "/" << c.second << "/" << d.second
+                                               << "/" << e.second);
 
     // 前提:最松那档真的收到了多个段,否则下面的递减是「从 1 递减」的空过。
     REQUIRE(a.second > 1u);
 
+    // 50/120/500:三档各自吃掉一批爆发 ⇒ **严格**递减。
     CHECK(a.first > b.first);
     CHECK(b.first > c.first);
     CHECK(a.second > b.second);
     CHECK(b.second > c.second);
+
+    // [SL-398] 1000ms 档把 800ms 那个也丢了(证明这一段不是「一直没变」的空过),
+    // 2000ms 档不再有变化 —— 方向判据到此为止只能是非严格。
+    CHECK(c.first > d.first);
+    CHECK(c.second > d.second);
+    CHECK(d.first >= e.first);
+    CHECK(d.second >= e.second);
 }
 
 // ===========================================================================

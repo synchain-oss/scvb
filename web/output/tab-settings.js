@@ -65,8 +65,11 @@ export const GUIDE_RULE_KEYS = Object.freeze(
     Array.from({ length: 9 }, (_, i) => "guide.rule" + (i + 1)),
 );
 
-/** 特征存储外置阈值(ADR-007:>8MB 自动转外部文件;契约 §1.1 features.bytes)。 */
-export const FEATURES_EXTERNAL_BYTES = 8 * 1024 * 1024;
+// [SL-395] 这里原有 `export const FEATURES_EXTERNAL_BYTES = 8 * 1024 * 1024`(ADR-007 的
+// 「>8MB 转外部文件」阈值)。出厂态关掉自动切换之后它**在 web/ + web-preview/ 里零引用**
+// (`storageOf()` 的 `external` 只认 `embedded` 位),留着就是一个「看起来还在判外置」的死常量,
+// 故连同指向它的注释一并删掉。**将来开关打开要恢复按字节数判定时,阈值真源是 native 的
+// `SidecarStore.h::kSidecarThresholdBytes`,不要再在这里抄第二份。**
 
 /** 心跳年龄「无数据」哨兵(契约 §2.3:slotState=0/从未心跳 → 0xFFFFFFFF)。 */
 export const HEARTBEAT_AGE_NONE = 0xffffffff;
@@ -98,6 +101,16 @@ export function versionString(snapshot) {
 
 /**
  * 存储状态行模型(契约 §1.1 features:{embedded,bytes})。
+ *
+ * [SL-395] `external` **只认 `embedded` 这一位**,不再叠加本地的 8MB 阈值:
+ * native 出厂关掉自动切换之后写入恒 `embedded=1`(压缩流一律内嵌),而**字节数仍可能 >8MB**
+ * (8MB 是**压缩后**的阈值,内嵌的特征体照样能超过它)—— 若这里继续按 `bytes > 阈值` 判外置,
+ * 设置页会对一个完全内嵌的工程显示「外置」。
+ * 数据源只有一个:native 的 `embedded` 位,**按字节数判的那个常量已删**(它是死常量;
+ * 阈值真源在 native 的 `SidecarStore.h::kSidecarThresholdBytes`)。
+ * 「外置」文案保留:读路径仍会走到它 —— 打开带 sidecar 的老工程时 `embedded=false`,
+ * 保存一次之后变回内嵌(判据 `HOST SL395`)。
+ *
  * @returns {{embedded:boolean, bytes:number, external:boolean}}
  */
 export function storageOf(state) {
@@ -107,7 +120,7 @@ export function storageOf(state) {
     return {
         embedded,
         bytes,
-        external: !embedded || bytes > FEATURES_EXTERNAL_BYTES,
+        external: !embedded,
     };
 }
 

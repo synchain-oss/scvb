@@ -231,6 +231,9 @@ VadResult runEnergyVad(const float* kwMs, std::size_t n, int64_t firstHop, const
 
     // 后处理顺序固定(02 §2.3,顺序即语义):
     // P1 丢短(先于 padding!)。
+    // [SL-398] min_segment_ms 值域上限 500 → 2000(02 §0.3「120 | 50..2000」)⇒ 这里最多丢
+    // 200 hops(= 2s @10ms hop)。**不新增上界、不改复杂度**:minHops 只出现在下面这一处
+    // 「段长 ≥ minHops」的比较里,cores/segs 仍是同阶的一次线性扫描。
     const int64_t minHops = p.minSegmentMs / 10;
     std::vector<VadSegment> segs;
     segs.reserve(cores.size());
