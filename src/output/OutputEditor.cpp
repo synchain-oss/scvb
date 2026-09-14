@@ -1805,11 +1805,13 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     // 真源 = `src/core/state/OutputStateCodec.h`(C++ 侧只此一份);web 侧 `tab-wave.js` 的滑杆
     // min/max/def 由 `smoke-tab3-interactions.mjs` 的 (b)/(c)/(d) 格与那里逐值对拍,漂开即红。
     //
-    // [SL-411 R4 / R12] `juce::jlimit` 的实现是 `v < lo ? lo : (hi < v ? hi : v)`,**NaN 时两个比较
-    // 都为假 ⇒ 原值透出**;而 `static_cast<int>(非有限 double)` 在 C++ 里是 **UB**(MSVC 实际落
-    // `INT_MIN`,随后被夹成下限 50 —— 一个「看着像用户设的、其实不是」的落点)。两条路都会把坏值写进
-    // `runtime_`,再被 encode 原样写进工程、下次载入被 codec 判越界静默回落。所以**两个字段对称地**
-    // 先判有限、非有限一律**保留 rt 原值**,绝不落进 runtime_。
+    // [SL-411 R4 / R12 / R16] `juce::jlimit` 的实现是 `v < lo ? lo : (hi < v ? hi : v)`,**NaN 时两个
+    // 比较都为假 ⇒ 原值透出**;而把**非有限、或有限但超出目标类型值域**的 double `static_cast` 成
+    // int/float 在 C++ 里都是 **UB**(MSVC 上前者落 `INT_MIN` 再被夹成下限 50 —— 一个「看着像用户设的、
+    // 其实不是」的落点)。所以两个字段**先在 double 域夹到规格值域再窄化**:窄化前的值必然落在
+    // int/float 可表示范围内,任何路径都不再触碰 UB;非有限一律**保留 rt 原值**,绝不落进 `runtime_`。
+    // (R4 只挡了「非有限」那一档,R12 补了对称性,R16 补的正是「有限但超值域」这一档 —— `1e300`
+    // 过得了 `isfinite` 却过不了 `static_cast<int>`。)
     // 归因(第一版写错过,这里改正):`isFiniteNumber` **只存在于浏览器预览的 mock**
     // (`web-preview/mock/juce-bridge-mock.js`),真桥是 native function + `juce::JSON`,根本不经过它 ——
     // 拿它论证生产路径安全是错的。JSON 本身没有 `NaN` 字面量,但 **±Inf 造得出来**:
@@ -1820,15 +1822,18 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     //
     // ⚠ 非有限时**不**回 `badArgResp()`(复审建议过):这是**整包**下发,回 badArg 会让同一次调用里
     // 另外两个**合法**字段也一起进不去;保留该项原值、其余照收,与下面 `changed` 的语义一致。
-    const float sensIn = static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity));
-    const float sens = std::isfinite(sensIn) ? juce::jlimit(scvb::state::kOutputSegSensitivityMin,
-                                                            scvb::state::kOutputSegSensitivityMax, sensIn)
-                                             : rt.segmentationSensitivity;
+    const double sensIn = static_cast<double>(p.getProperty("sensitivity", rt.segmentationSensitivity));
+    const float sens =
+        std::isfinite(sensIn)
+            ? static_cast<float>(juce::jlimit(static_cast<double>(scvb::state::kOutputSegSensitivityMin),
+                                              static_cast<double>(scvb::state::kOutputSegSensitivityMax), sensIn))
+            : rt.segmentationSensitivity;
     const double mmsIn = static_cast<double>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs));
-    const int mms = std::isfinite(mmsIn) ? juce::jlimit(static_cast<int>(scvb::state::kOutputSegMinSegmentMsMin),
-                                                        static_cast<int>(scvb::state::kOutputSegMinSegmentMsMax),
-                                                        static_cast<int>(mmsIn))
-                                         : rt.segmentationMinSegmentMs;
+    const int mms =
+        std::isfinite(mmsIn)
+            ? static_cast<int>(juce::jlimit(static_cast<double>(scvb::state::kOutputSegMinSegmentMsMin),
+                                            static_cast<double>(scvb::state::kOutputSegMinSegmentMsMax), mmsIn))
+            : rt.segmentationMinSegmentMs;
 
     const bool changed =
         mode != rt.segmentationMode || sens != rt.segmentationSensitivity || mms != rt.segmentationMinSegmentMs;

@@ -136,7 +136,7 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
   这条纪律——R8 收敛了措辞,原来的「追加必须整档」比实际严格)
 - `src/core/state/StateCodec.h`(`kCurrentAbi` 3→4;容器头注与真源指针同步)
 - `src/core/state/StateMigration.{h,cpp}`(`migrate_3_to_4` no-op;`kMigrators` 三项)
-- `src/core/state/OutputProcessor.cpp`(保存侧写三项 / 加载侧恢复三项 + 回落计数的 DBG 行)
+- `src/output/OutputProcessor.cpp`(保存侧写三项 / 加载侧恢复三项 + 回落计数的 DBG 行)
 - `src/output/OutputProcessor.h`(三项的声明处:值域与默认值的**注释**说明 + [R14] 两个默认值改引用
   codec 常量;`"valley"` 留字面量并指向 `segModeString()`)
 - `src/output/OutputEditor.cpp`(第 1 推 R2/R4/R12:两处 `jlimit` 改引用 codec 常量、两个字段各自的
