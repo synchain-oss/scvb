@@ -150,7 +150,10 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     putU32(out, loudnessModeOrdinal(s.appliedLoudnessMode)); // [SL-279]
     putU32(out, centerSlotPolicyOrdinal(s.appliedCenterSlotPolicy)); // [SL-278/SL-279]
     // [SL-411] 恒写这一整档(12 字节):编码侧不做值域校验 —— encode 的入参是**本进程自己的**
-    // runtime_(桥面已夹过),值域校验是 decode 的职责(不可信字节在磁盘上,不在内存里)。
+    // runtime_(桥面已按 `kOutputSeg*` 常量夹过,值域真源见本文件头注;非有限值由桥面的
+    // `std::isfinite` 守卫挡在 runtime_ 之外),值域校验是 decode 的职责(不可信字节在磁盘上,
+    // 不在内存里)。两侧是**同一条规则的两端**,不是重复实现:encode 侧挡的是「本进程造出来的值」,
+    // decode 侧挡的是「磁盘上来的值」—— 后者再兜一次才能保证 decode 出口只有「规格内」与「规格默认」。
     putU32(out, segModeOrdinal(s.segmentationMode));
     putF32(out, s.segmentationSensitivity);
     putU32(out, s.segmentationMinSegmentMs);
@@ -315,6 +318,11 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
         }
         // NaN 与 ±Inf 都走这一支:`x < lo || x > hi` 对 NaN **恒假**,只写范围比较会把它放进去,
         // 而 NaN 一旦进了 runtime_ → PipelineConfig 的灵敏度,下游所有比较都是假 —— 那种坏法是静默的。
+        // ⚠ `!(x >= lo && x <= hi)` 是这里**唯一**正确的写法,而它成立有个前提:编译器没把 NaN 语义
+        // 优化掉。已核:全仓 `CMakeLists.txt` / `cmake/` / 源码里没有任何 `/fp:fast` 或 `-ffast-math`
+        // (MSVC 默认 `/fp:precise`),所以这个判定不会被当成恒假删掉。**换一次浮点编译选项就会让它
+        // 静默失效** —— 加那类开关的人要连着这一行一起想([SL-411 R4] 复审指出,记在这里免得下一个人
+        // 以为这是「随便写写都对」)。
         if (!(segSensitivity >= kOutputSegSensitivityMin && segSensitivity <= kOutputSegSensitivityMax))
         {
             if (report != nullptr)

@@ -16,6 +16,7 @@
 #include "UiDefaultsStore.h"
 #include "engine/CurveEvaluator.h"
 #include "state/SegmentEdit.h"
+#include "state/OutputStateCodec.h" // [SL-411 R2] 分段值域常量(kOutputSeg*):C++ 侧唯一真源
 #include "state/StateCodec.h"
 
 namespace scvb::output
@@ -1796,10 +1797,25 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     }
     // sensitivity 0..100、min_segment_ms 50..2000(02-dsp-spec §0.3 常量表;上限 [SL-398] 500 → 2000),
     // 越界 clamp。
-    const float sens =
-        juce::jlimit(0.0f, 100.0f, static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity)));
-    const int mms =
-        juce::jlimit(50, 2000, static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs)));
+    //
+    // [SL-411 R2] 两个值域**取 codec 的常量**,不再在这里写第二份字面量。SL-398 那次「上限 500 → 2000」
+    // 要在桥面与 web 两处同改;codec 加入之后真源变成三处,而三者互不引用 —— 下一次放宽若只改桥面与
+    // web,会得到「UI 收下 3000 → `encodeOutputState` 原样落盘(编码侧按设计不校验)→ 重开被 codec 判
+    // 越界、**静默**回落 120」,现象与 SL-411 修之前逐字相同(滑杆跳回 120、分析按 120 跑)。
+    // 真源 = `src/core/state/OutputStateCodec.h`(C++ 侧只此一份);web 侧 `tab-wave.js` 的滑杆
+    // min/max/def 由 `smoke-tab3-interactions.mjs` 的 (b)/(c)/(d) 格与那里逐值对拍,漂开即红。
+    //
+    // [SL-411 R4] `juce::jlimit` 的实现是 `v < lo ? lo : (hi < v ? hi : v)`,**NaN 时两个比较都为假
+    // ⇒ 原值透出**。而 NaN 一旦进了 `runtime_` 就会被 encode 原样写进工程,下次载入再被 codec 判越界
+    // 静默回落 50 —— 用户的设置被无声改掉。所以非有限值一律**保留原值**,绝不写进 runtime_。
+    // 本格没有用例:JSON 层造不出 NaN(`isFiniteNumber` 那一层就挡住了),这条是兜底不是主路径。
+    const float sensIn = static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity));
+    const float sens = std::isfinite(sensIn) ? juce::jlimit(scvb::state::kOutputSegSensitivityMin,
+                                                            scvb::state::kOutputSegSensitivityMax, sensIn)
+                                             : rt.segmentationSensitivity;
+    const int mms = juce::jlimit(static_cast<int>(scvb::state::kOutputSegMinSegmentMsMin),
+                                 static_cast<int>(scvb::state::kOutputSegMinSegmentMsMax),
+                                 static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs)));
 
     const bool changed =
         mode != rt.segmentationMode || sens != rt.segmentationSensitivity || mms != rt.segmentationMinSegmentMs;

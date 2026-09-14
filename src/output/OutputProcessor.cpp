@@ -1906,7 +1906,10 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
     // [SL-411] segmentation 三项:codec 已做值域校验(在席且越界 → 回落默认并计数;缺席的 abi≤3
     // 旧工程 → 规格默认且不计),所以这里**不再叠第二道夹取** —— decode 的出口只有「规格内」与
     // 「规格默认」两种,再来一次 jlimit 是永不开火的守卫(那种守卫比没有更坏:它看着像在防什么)。
-    // 越界值不会静默:上面 report 的三个计数器在这里落成 DBG 行。
+    // [SL-411 R3] 上面 report 的三个计数器**只**在这里落成 `DBG` 行 —— 而 JUCE 的 `DBG` 在 Release
+    // 构建里是**空语句**:发行版用户零信号,只有 Debug/Debugger 下看得见。今天这条路只有损坏的工程
+    // 走得到(更高 abi 在容器层就 `RejectedNewer` 了,只有手改过的值才可能越界),所以不是当场可见的
+    // 缺陷;但**别把这句读成「用户会被通知到」**:UI 警告通路尚未接线,登记 SL-412。
     runtime_.segmentationMode =
         juce::String::fromUTF8(s.segmentationMode.c_str(), static_cast<int>(s.segmentationMode.size()));
     runtime_.segmentationSensitivity = s.segmentationSensitivity;

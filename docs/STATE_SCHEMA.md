@@ -8,7 +8,7 @@
 
 仲裁规则:`docs/constitution/` 只读副本是**修订源**(改动须走修宪流程);本文件是**实现/审查基准**(06 §3.4 review bot 比对对象)。两者分歧时,以已冻结实现代码与 `tests/golden/` 快照为准。
 
-本文件是 state 冻结契约的仓内转正文档(06 §3.4 review bot prompt 明文要读的比对基准之一)。state chunk 带 `abi` 字段:读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格(不得静默丢数据)。`setStateInformation` 处理的是用户工程文件里的不可信字节,长度/范围字段必须先校验再用于分配或索引。
+本文件是 state 冻结契约的仓内转正文档(06 §3.4 review bot prompt 明文要读的比对基准之一)。state chunk 带 `abi` 字段:读到高版本 → **整块拒载 + `preservedOriginal` 原样回写**(⚠ **升级提示的 UI 通路尚未接线**:Debug 仅 `DBG`,用户看不到解释 —— 登记 **SL-412**);读到低版本 → 迁移函数升格(不得静默丢数据)。`setStateInformation` 处理的是用户工程文件里的不可信字节,长度/范围字段必须先校验再用于分配或索引。
 
 ## 一、Output state
 
@@ -153,15 +153,15 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
   字段本身**保留在 `CFGS` 布局里、不删不挪**(**那次改动不升 abi** —— 写「仍为 2」会随后来的升格变成假话,[SL-279] 已把它升到 3):老工程照常解码;新工程在老构建里读到 0,与「用户存前主动关掉采集」不可区分,两个方向都无异常。
   **副作用记账 `recaptureAutoEnabledCapture` 仍然保留** —— 它现在只服务于 §1.23 裁定③ 的「撤防恢复布防前原值」,与持久化无关。
   变更文档:`docs/contract-changes/20260830-j91-capture-not-persisted.md`。
-- **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + UI 横幅提示升级;`preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据);③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
+- **迁移函数框架**:`StateLoadStatus { Ok, Migrated, RejectedNewer, Corrupt }`。load 流程:① 校验 magic/长度 → Corrupt(拒载,保持默认态,UI 报错);② abi > 当前 → RejectedNewer(以默认状态运行 + `preservedOriginal` 保留整个 blob,getStateInformation 原样回写,**绝不**让旧插件重写毁掉新版数据。⚠ **[SL-411 R1] 升级提示的 UI 通路尚未接线**:`hasStateAbiMismatch()` / `stateAbiSeen()` 零调用方、`scvb.error` 的 `newerState` 码没有生产者(消费端早已就绪),旧构建读高 abi 工程只落一行 `DBG`,而 `DBG` 在 Release 里是空语句 —— 用户看到的是一份没有任何解释的空工程。登记 **SL-412**);③ abi < 当前 → 依次执行迁移函数升格 → Migrated;④ 逐 TLV 解析,未知 fourcc 存入 unknownChunks(save 时回写)。
 - **当前迁移链**:`kMigrators = [migrate_1_to_2, migrate_2_to_3, migrate_3_to_4]`(abi 1→2、2→3、3→4),**三个都是 no-op** —— 三级都靠 `OutputStateCodec::decodeOutputState` 的「长度回退」,无需重写 payload:
   - `migrate_1_to_2`:abi=1 的 CFGS 无 loudness_mode/center_slot_policy 两个尾字段 → **回落默认**(kw_integrated / priority_queue);
   - `migrate_2_to_3`([SL-279]):abi=2 的 CFGS 无 applied.\* 两个尾字段 → **applied := 当前值,不是回落默认**。语义是「这份旧工程视为已经按它存着的那档分析过」;取默认会让一个存了非默认档的旧工程一打开就误报「需重新分析」,那正是 SL-279 要修的误报。
   - `migrate_3_to_4`([SL-411]):abi=3 的 CFGS 无 analysis.segmentation 那一整档 → **回落规格默认**(valley / 50 / 120)且**不计回落**。与上一级取舍不同是有意的:applied 的语义是「上次分析所用的那一档」,缺席时取当前值才不误报;segmentation 的语义就是「当前设置」本身,旧工程确实没存过,取规格默认(也正是旧构建 `runtime_` 的初值)才是真话。
   - 旧版读新 blob(abi 更高)一律走 RejectedNewer → `preservedOriginal` 原样回写(绝不静默降级)。
-  - **尾部长度是分级校验的**:remaining 只接受 0(abi=1)/ 8(abi=2)/ 16(abi=3)/ 28 及 28+(abi=4 起,超出部分是未知尾部),落在 (0,8)、(8,16)、(16,28) **一律整块拒载** —— 一整档是同一个构建写下去的,半截不可能是任何真实产物。
+  - **尾部长度是分档校验的**(准确措辞见 `OutputStateCodec.h` 头注,SL-411 R8 收敛过):remaining 只接受 0(abi=1)/ 8(abi=2)/ 16(abi=3)/ 28 及 28+;**档内少一个字节**(落在 (0,8)、(8,16)、(16,28))一律整块拒载 —— 一整档是同一个构建写下去的,半截不可能是任何真实产物;而 **≥28 之后多出来的尾巴任意长度都收**,由 `unknownTail` 原样保留回写。别把它读成「追加必须整档」:尾部加字段不必升 abi,只有**在已知档之间**插字段才必须走迁移链。
   详见 `docs/contract-changes/20260825-cfgs-persistence.md`(abi 1→2)、`docs/contract-changes/20260905-sl279-applied-analysis-settings.md`(abi 2→3)与 `docs/contract-changes/20260914-sl411-segmentation-persist.md`(abi 3→4)。
-- **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 提示升级」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。
+- **同 abi 但 CRVS minor 更高(>kCrvsMinorVersion)→ 等同拒载**:`decodeCrvs` 只拒解本块,容器级 loadState 仍返回 Ok,但 Output 接线层必须按「等同拒载 + `preservedOriginal` 原样回写 + 升级提示(**同上:UI 通路待接线**,SL-412)」处理,**不得让旧插件抹掉新版曲线真身**(StateCodec.h 挂账)。
 - **Input 插件 state 同用此容器**(与 Output 共用同一容器 abi,kCurrentAbi=4),只含 `PRMS`(无参数,仅 ui)+ `CFGS`(group_id + channel_id + **`uiGuideSeen` 尾扩**,[J81]/J80)。
 
 ## 四、FEAT 节编码与 sidecar 契约(转正项)
@@ -189,7 +189,7 @@ FeatSection(压缩前布局):
 ```
 
 - 列式(SoA)+ 0.01dB 量化是压缩友好排列;压缩算法选 **miniz,zlib 格式 RFC 1950**(`window_bits=15`;**不是** gzip RFC 1952、**不是** JUCE 内置;零新依赖,ADR-011 栈内)。
-- 加载:codecVer 高于当前 → 该节按空处理 + 提示升级(容器级 abi 规则归 §三);低版本 → 迁移函数。
+- 加载:codecVer 高于当前 → 该节按空处理 + 提示升级(**同上:UI 通路待接线**,SL-412;容器级 abi 规则归 §三);低版本 → 迁移函数。
 
 ### 4.2 8MB↔sidecar 切换与回滞
 

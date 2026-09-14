@@ -39,18 +39,19 @@
 //     applied 的语义是「上次分析所用的那一档」,缺席时取当前值是唯一说得通的解释(否则误报
 //     「需重新分析」);而 segmentation 的语义就是「当前设置」本身,旧工程确实没有存过它,
 //     取规格默认(也正是旧构建里 runtime_ 的默认值)才是真话。migrate_3_to_4 同样是 no-op。
-// ⚠ [SL-279 复审 / SL-411] **逐级回退把 `unknownTail` 的前向兼容粒度收窄了**,记在这里免得下一个人
-//   踩到自己写的门上:尾部长度只接受 0 / 8 / 16 / 28 / 28+ 五档,**落在 (0,8)、(8,16) 或 (16,28)
-//   一律整块拒载**。也就是「未来小版本追加字段」只能按**整档**追加 —— 前两档各是两个 u32(8 字节),
-//   [SL-411] 这一档是 u32 + f32 + u32(12 字节);想只尾扩一个 u32 而不升 abi 是做不到的,那份 blob
-//   会被自己拒掉。上面那句「解码保留、编码原样回写、防静默丢字段」说的是**尾字段齐了之后**的未知尾部,
-//   不是「任意长度都容忍」。
+// ⚠ [SL-279 复审 / SL-411 R8] 尾部长度纪律的准确措辞是「**档内不许半截**」,别写成「追加必须整档」——
+//   后者会让人以为尾部被完整地按档校验过,而实际语义是:**三个档内空洞** `(0,8)` / `(8,16)` / `(16,28)`
+//   一律整块拒载,而**偏移 28 之后任意长度的尾巴都被接受**,由 `unknownTail` 收下并原样回写
+//   (`tests/core/test_output_session.cpp` 那条 unknownTail 用例追的正是 4 字节,remaining = 32)。
+//   于是「未来小版本追加字段」有两条路:在**已知档之间**插字段必须升 abi 走迁移链;在**尾部**(≥28)
+//   追加任意长度都不必升 abi,靠 `unknownTail` 原样带走。上面那句「解码保留、编码原样回写、防静默
+//   丢字段」说的就是后一条路。
 // ⚠ [SL-411] **尾字段的失败态是本 codec 里唯一一处「值越界 → 回落默认」的地方**(区别于头 five 字段的
 //   「越界即整块拒载」,也区别于 `ui.scale` 的「原样透出、由上层夹取」):项目文件里的越界值只可能来自
 //   损坏或更高版本,本构建无法兑现它 → 回落该字段的规格默认并**计一次回落**(`OutputDecodeReport`)。
 //   **不做边界夹取**:夹取会把「这个值我没法兑现」伪装成「已经按它办了」,而宽值域的正确出路是升 abi
-//   走迁移链(同一个道理写在上面那段「整档追加」里)。回落**单个字段**而非整块拒载,是因为这三个字段
-//   彼此独立、且老工程里它们本来就整档缺席 —— 一格坏值不该让整份工程的段表读不出来。
+//   走迁移链(同一个道理写在上面那段「档内不许半截」里)。回落**单个字段**而非整块拒载,是因为这三个
+//   字段彼此独立、且老工程里它们本来就整档缺席 —— 一格坏值不该让整份工程的段表读不出来。
 // **不可就地追加字段破坏既有偏移** —— 24B 定长 header(6×u32)之后才允许经长度回退追加尾部;
 // 要加字段:① 升容器 abi 走迁移链(本次 [J69/U24] 即 abi=1→2),或
 // ② 放 PRMS 的 ValueTree(天生容忍字段增删,STATE_SCHEMA §三 的 ui 组即登记在 PRMS 名下)。
@@ -80,7 +81,14 @@ inline constexpr std::uint32_t kOutputLoudnessModeMax = 2; // [J69/U24①] 序�
 inline constexpr std::uint32_t kOutputCenterSlotPolicyMax = 2; // [J69/U24④] 序号 0..2
 // [SL-411] analysis.segmentation 三字段的规格值域(真源:02-dsp-spec §0.3 / §362,与
 // `web/output/tab-wave.js` 的 `DEFAULT_SEGMENTATION`、`OutputEditor` 桥面夹取、`PipelineConfig`
-// 的默认值同口径)。**只在这里写一份数字**:codec 的回落判据、单测的值域断言都取自这些常量。
+// 的默认值同口径)。
+// **C++ 侧只此一份**:`OutputEditor.cpp` 的桥面夹取引用这里的常量(`juce::jlimit(kOutputSeg…Min,
+// …Max, …)`),`OutputProcessor.cpp` / 单测的断言同样取自它们 —— 谁都不许再抄一份字面量。
+// ⚠ **web 侧仍是字面量**(`web/output/tab-wave.js` 的滑杆 `min`/`max`/`def`)。它与本处的对拍由
+// `web-preview/tests/smoke-tab3-interactions.mjs` 的 (b)/(c)/(d) 三格承担:**从本文件的定义行抠数**
+// (`kOutputSegSensitivity{Min,Max}` / `kOutputSegMinSegmentMs{Min,Max}`),抠不到就是 NaN ⇒ 当场红。
+// 改这里的值时,web 那两处会被那三格逼着同改;反过来只改 web 也会红。文档里的镜像句(§0.3 引文)
+// 不在机检面内,得人眼跟。
 inline constexpr std::uint32_t kOutputSegModeMax = 1; // 0=valley(默认),1=vad_only
 inline constexpr std::uint32_t kOutputSegModeDefault = 0; // valley
 inline constexpr float kOutputSegSensitivityMin = 0.0f; // 无单位刻度

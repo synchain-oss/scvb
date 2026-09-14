@@ -51,7 +51,7 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
 是**整块拒载**,`ui.scale` 是**原样透出、由上层夹取**,而这三项越界 → **回落该字段的规格默认并计数**。
 理由是它们彼此独立、且老工程里本来就整档缺席:一格坏值不该让整份工程的段表读不出来。
 **不做边界夹取** —— 夹取会把「这个值我没兑现」伪装成「已经按它办了」;宽值域的正确出路是升 abi
-走迁移链(同一个道理写在 `OutputStateCodec.h` 那段「整档追加」里)。三个字段各有一个计数器,
+走迁移链(同一个道理写在 `OutputStateCodec.h` 那段「档内不许半截」里)。三个字段各有一个计数器,
 **不合并**(合并之后诊断行会说「segmentation 回落了 1 次」,而实际是哪个字段,读日志的人分不出来);
 `mode` 非 0/1 → valley;`sensitivity` 为 NaN/±Inf 或落在 [0,100] 外 → 50;`min_segment_ms` 落在
 [50,2000] 外(含 0 与 u32 极值)→ 120。灵敏度那一格的 NaN 分支必须单独守:`x < lo || x > hi`
@@ -74,14 +74,26 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
   CFGS 按**长度回退**补齐 —— 三项缺席 ⇒ 规格默认 valley / 50 / 120,**不计回落**。
   abi=1/2 的工程照旧:先经它们各自那一级的回退,再落到这一级。
 - **旧版本读新工程(abi=4)**:`hdr.abi > kCurrentAbi` 的既有分支照旧 —— **整块** `RejectedNewer`
-  + `preservedOriginal` 原样回写 + UI 提示升级(CLAUDE.md §7.3),**绝不静默降级**。
-  也就是说 v5.6.13 及更早的构建读一份 v5.6.14 的工程,不会「把 1000 悄悄夹成 500」——
-  它根本不载入这份 state(段表/曲线同样按拒载处理,与本 PR 之前每一次升 abi 的行为逐字相同)。
+  + `preservedOriginal` 原样回写(CLAUDE.md §7.3),**绝不静默降级**。
+  ⚠ **[SL-411 R1] 升级提示的 UI 通路尚未接线**:`hasStateAbiMismatch()` / `stateAbiSeen()` 目前
+  **零调用方**,`scvb.error` 的 `newerState` 码**没有生产者**(消费端 `web/output/app.js` 早就就绪),
+  旧构建读 abi=4 只落一行 `DBG` —— 而 JUCE 的 `DBG` 在 Release 里是空语句,**用户看不到任何解释**
+  (他看到的是一份「段表/曲线/组号全默认」的空工程)。该缺口**不是本 PR 引入的**(abi 1→2、2→3 时
+  同样存在),本 PR 也没接线,只把它照实记账:登记 **SL-412**(接 `scvb.error newerState`,Output/Input
+  两侧)。也就是说 v5.6.13 及更早的构建读一份 v5.6.14 的工程,不会「把 1000 悄悄夹成 500」——
+  它根本不载入这份 state(段表/曲线同样按拒载处理,与本 PR 之前每一次升 abi 的行为逐字相同),
+  但**它也不会告诉用户为什么**。
   这条路径**只在 v1 未发布期间成立**,也正因如此它不构成发布后的用户风险:一个 >500ms 的值
   只会出现在本构建(或更新)写出的工程里。
 - **Input 侧连带**:Input 与 Output **共用容器 abi**,本 PR 之后新 Input 保存 state 一并写 abi=4;
-  旧 Input 读新 Input state 整块 `RejectedNewer`(原样回写 + 提示升级);新 Input 读旧工程经
-  三个 no-op 迁移不受影响(Input CFGS 未变)。
+  旧 Input 读新 Input state 整块 `RejectedNewer`(原样回写;**同上,升级提示同样待接线**,SL-412);
+  新 Input 读旧工程经三个 no-op 迁移不受影响(Input CFGS 未变)。
+- **Monitor 侧连带**:Monitor 也写 state 容器,共用同一份 `kCurrentAbi`
+  (`MonitorProcessor.cpp` 的 `chunks.abi = scvb::state::kCurrentAbi`),所以本 PR 之后它保存的 state
+  一并写 abi=4。它读高版本 blob 时走 `decideInputStateAbi(...) == RejectNewer` 那一支:**拒载、不回写**
+  (源码里那句注释写得很清楚:「Monitor 是只读观察器……无需 `preservedOriginal` 回写 —— 丢的只是一个
+  视图偏好,不是用户数据」,落点只有一行 `DBG`)。所以连带面比 Input 还小:旧 Monitor 读新工程丢的是
+  「看哪一组 / 缩放 / 语言」,碰不到用户的段表与曲线。
 - **参数面**:零影响 —— 三项都不是自动化参数,ParamID / index / 顺序 / versionHint / 参数值域
   (`OutputEditor` 的 `jlimit`)全部不动。
 - **行为面**:唯一的行为变化就是本卡要的那一条 —— 重开工程后 `analysis.segmentation` 三项
@@ -104,10 +116,16 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
 前者由 `smoke-tab3-interactions.mjs` 的源码级对拍 + 它自己的删除式兜住,后者由上面那一格页面级
 冒烟兜住(走 mock 侧);「桥面 → runtime」这一跳仍是**缺口不是覆盖**(与 `HOST SL391` 头注同一笔账)。
 
+⚠ **[SL-411 R1] 同族句子还有两处不在本 PR 的改动面内**,别以为全仓都收干净了:
+`docs/PARAMETERS.md` 的规则摘要行(冻结文档,本 PR 的契约面声明是「PARAMETERS 不动」)与
+`docs/CONTRIBUTOR_ONBOARDING.md` 里那一句 —— 后者说的是 **IPC abi**(`Registry::kAbiMismatch`),
+那条通路**是接了的**,不是同一件事,留着不改。前者的措辞随 **SL-412** 接线时一并收。
+
 ## 变更文件
 
 - `src/core/state/OutputStateCodec.{h,cpp}`(尾扩一整档 12 字节、长度回退第三级、f32 位模式编解码、
-  三个独立回落计数器、头注的布局与「整档追加」纪律)
+  三个独立回落计数器、头注的布局与「**档内不许半截** / 偏移 28 之后任意长度尾巴由 `unknownTail` 收下」
+  这条纪律——R8 收敛了措辞,原来的「追加必须整档」比实际严格)
 - `src/core/state/StateCodec.h`(`kCurrentAbi` 3→4;容器头注与真源指针同步)
 - `src/core/state/StateMigration.{h,cpp}`(`migrate_3_to_4` no-op;`kMigrators` 三项)
 - `src/output/OutputProcessor.cpp`(保存侧写三项 / 加载侧恢复三项 + 回落计数的 DBG 行)

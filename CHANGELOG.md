@@ -39,8 +39,10 @@
 - **分段三项参数随工程保存**(`analysis.segmentation.{mode, sensitivity, min_segment_ms}`;
   state 容器 abi 3→4,`CFGS` 尾扩一整档 12 字节,旧工程经 no-op `migrate_3_to_4` 自动迁移并取
   规格默认 valley / 50 / 120)。**用户可感知**:MIN SEG 拖到 1000ms、分析、存盘、重开工程,
-  滑杆与读数还是 1000ms,分析也按它跑 —— 修复前一律跳回 120ms(而分析同样按 120 跑,
-  于是「设置没生效」与「设置没被记住」在界面上长得一模一样)。参数面零变化:三项都不是
+  滑杆与读数还是 1000ms,**最短段长与灵敏度按它跑** —— 修复前一律跳回 120ms(而分析同样按 120 跑,
+  于是「设置没生效」与「设置没被记住」在界面上长得一模一样)。
+  ⚠ **分段方式(`mode`)今天只回到原位**:引擎侧尚无消费方(`SegmentationParams` 里没有 `mode`),
+  落盘只保证它不丢,不影响分析结果 —— 登记 SL-413。参数面零变化:三项都不是
   自动化参数,ParamID / index / 顺序 / versionHint 一个字节未动
   (变更文档 `docs/contract-changes/20260914-sl411-segmentation-persist.md`)(#259)
 
