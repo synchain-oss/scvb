@@ -4624,10 +4624,18 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
 // SL-255 定谳时顺带挖出来的:那两条滑杆即便把流水线接上,大半个行程仍然是没反应的。
 // 三条各自独立,合在一起才让「拖了没效果」这句话彻底站不住。
 {
-    const cppSrc = readFileSync(
-        join(ROOT, "src/output/OutputEditor.cpp"),
+    // [SL-411 R2] 值域的真源搬到 codec:桥面不再写 `juce::jlimit(50, 2000, …)` 这一类字面量,
+    // 而是引用 `OutputStateCodec.h` 的 `kOutputSeg*` 常量。所以本节的「对拍另一端」从
+    // `OutputEditor.cpp` 的 `jlimit` 改成 **codec 的定义行** —— 抠不到仍然是 NaN(fallback 不写
+    // 字面量:字面量兜底会让这一格「拿不到判据也照绿」,NaN 让比较恒 false ⇒ 当场红)。
+    const codecSrc = readFileSync(
+        join(ROOT, "src/core/state/OutputStateCodec.h"),
         "utf8",
     );
+    const codecNum = (name) => {
+        const m = new RegExp(`${name}\\s*=\\s*([\\d.]+)`).exec(codecSrc);
+        return m ? Number(m[1]) : NaN;
+    };
     const argsSrc = readFileSync(join(ROOT, "src/output/BridgeArgs.h"), "utf8");
     const waveSrc = readFileSync(join(ROOT, "web/output/tab-wave.js"), "utf8");
 
@@ -4647,18 +4655,24 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
 
     // ---- ② sensitivity:UI 值域/默认值必须与 native 夹取同刻度(不是换算,是对齐)
     const sens = TW.SLIDERS.find((s) => s.field === "sensitivity");
-    const cppSens = /jlimit\(0\.0f,\s*([\d.]+)f,[\s\S]{0,80}?sensitivity/.exec(
-        cppSrc,
+    const sensLo = codecNum("kOutputSegSensitivityMin");
+    const sensHi = codecNum("kOutputSegSensitivityMax");
+    check(
+        !!sens && Number.isFinite(sensLo) && Number.isFinite(sensHi),
+        `(b) 取到两侧的 sensitivity 定义(codec 常量实得 ${sensLo}..${sensHi})`,
     );
-    check(!!sens && !!cppSens, "(b) 取到两侧的 sensitivity 定义");
-    if (sens && cppSens) {
+    if (sens && Number.isFinite(sensLo) && Number.isFinite(sensHi)) {
         eq(
             [sens.min, sens.max],
-            [0, Number(cppSens[1])],
-            "(b) ★ UI 值域 == native 夹取(0..100,02-dsp-spec §0.3)——" +
+            [sensLo, sensHi],
+            "(b) ★ UI 值域 == codec 的规格值域(0..100,02-dsp-spec §0.3;桥面夹取也引用同一对常量)——" +
                 "退回 0..1 则 0.62 会被 native 当成「百分之 0.62」存下,滑杆整个行程都是错的",
         );
-        eq(sens.def, 50, "(b) 默认值 = 规格的 50(§0.3 常量表 / §384 待定项⑥)");
+        eq(
+            sens.def,
+            codecNum("kOutputSegSensitivityDefault"),
+            "(b) 默认值 = 规格的 50(§0.3 常量表 / §384 待定项⑥;取自 codec 的 Default 定义行)",
+        );
         eq(sens.dp, 0, "(b) 0..100 是整数档,不再显示两位小数");
     }
     check(
@@ -4668,22 +4682,61 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
 
     // ---- ③ min_segment_ms:同上,值域与默认值都照规格
     const minseg = TW.SLIDERS.find((s) => s.field === "min_segment_ms");
-    const cppMs = /jlimit\((\d+),\s*(\d+),[\s\S]{0,80}?min_segment_ms/.exec(
-        cppSrc,
+    const msLo = codecNum("kOutputSegMinSegmentMsMin");
+    const msHi = codecNum("kOutputSegMinSegmentMsMax");
+    check(
+        !!minseg && Number.isFinite(msLo) && Number.isFinite(msHi),
+        `(c) 取到两侧的 min_segment_ms 定义(codec 常量实得 ${msLo}..${msHi})`,
     );
-    check(!!minseg && !!cppMs, "(c) 取到两侧的 min_segment_ms 定义");
-    if (minseg && cppMs) {
+    if (minseg && Number.isFinite(msLo) && Number.isFinite(msHi)) {
         eq(
             [minseg.min, minseg.max],
-            [Number(cppMs[1]), Number(cppMs[2])],
-            "(c) ★ UI 行程 == native 夹取(50..2000;[SL-398] 上限 500 → 2000)——" +
+            [msLo, msHi],
+            "(c) ★ UI 行程 == codec 的规格值域(50..2000;[SL-398] 上限 500 → 2000;桥面夹取引用同一对常量)——" +
                 "退回 500 则 500 以上是死行程",
         );
         eq(
             minseg.def,
-            120,
-            "(c) 默认值 = 规格/PipelineConfig 的 120(不再是 420)",
+            codecNum("kOutputSegMinSegmentMsDefault"),
+            "(c) 默认值 = 规格/PipelineConfig 的 120(不再是 420;取自 codec 的 Default 定义行)",
         );
+    }
+
+    // ---- (f) [SL-411 R11] 桥面**真的在用**那对常量(这一段是新增判据面)
+    //
+    // 为什么必须单独一格:值域真源搬到 codec 之后,(b)/(c)/(d) 三格只与 `OutputStateCodec.h` 对拍,
+    // 「桥面夹取是否引用常量」只剩**编译**保证 —— 谁把那两行改回 `juce::jlimit(50, 500, …)`
+    // (合并冲突、revert、或「看着眼熟顺手写死」),(b)/(c)/(d) 与 web 会**全绿**,唯独真正夹取
+    // 用户输入的那一处偷偷收窄;此后「UI 收下 3000 → encode 原样落盘 → decode 判越界 → 静默回落
+    // 120」这条路重新打开,而它**就是 SL-411 的原始现象**。D2a(改 codec 的 Max ⇒ (c) 红)验的是
+    // codec↔web 那条边,验不到桥面这条边。
+    //
+    // 删除式 **D2b**:把 `handleSetSegmentation` 里任意一处改回 `juce::jlimit(50, 2000, …)`
+    // ⇒ 本格两条断言**都**红(常量名不再出现 + 出现裸数字 `jlimit`),而 (b)/(c)/(d) 仍绿。
+    {
+        const editorSrc = readFileSync(
+            join(ROOT, "src/output/OutputEditor.cpp"),
+            "utf8",
+        );
+        const setSeg =
+            /void OutputEditor::handleSetSegmentation[\s\S]*?\n}/.exec(
+                editorSrc,
+            );
+        check(!!setSeg, "(f) 取到 handleSetSegmentation 的函数体");
+        if (setSeg) {
+            const body = setSeg[0];
+            check(
+                /kOutputSegSensitivityMin/.test(body) &&
+                    /kOutputSegSensitivityMax/.test(body) &&
+                    /kOutputSegMinSegmentMsMin/.test(body) &&
+                    /kOutputSegMinSegmentMsMax/.test(body),
+                "(f) ★ 桥面夹取引用 codec 的四个 kOutputSeg* 常量(改回字面量即红)",
+            );
+            check(
+                !/jlimit\(\s*[\d.]/.test(body),
+                "(f) ★ 桥面夹取里没有裸数字 jlimit —— 值域真源只此一份(codec)",
+            );
+        }
     }
 
     // ---- ⑤ HTML 静态标记 == SLIDERS(跨源)
@@ -4747,13 +4800,10 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
             snapSeg.sensitivity > 1,
         `(d) ★ mock 快照的 sensitivity 用 native 刻度 0..100(实得 ${snapSeg.sensitivity};留 0.62 即红)`,
     );
-    // 上下界与 native 同源,不写第二份字面量:`cppMs` 就是上面 ③ 从 `OutputEditor.cpp`
-    // 的 `jlimit` 里抠出来的那两个数([SL-398] 上限 500 → 2000)。将来再放宽值域,
-    // 只改 native 那一处,这一格自己跟上;两侧漂开就红。
-    // ⚠ [R6] 取不到 `cppMs`(正则失配 / 那一行被改写)时 **fallback 是 NaN,不是字面量** ——
-    // 字面量兜底会让这一格「拿不到判据也照绿」;NaN 让下面的比较恒 false ⇒ 当场红。
-    const msLo = cppMs ? Number(cppMs[1]) : NaN;
-    const msHi = cppMs ? Number(cppMs[2]) : NaN;
+    // 上下界与 native 同源,不写第二份字面量:`msLo`/`msHi` 就是上面 ③ 从 **codec 定义行**抠出来的
+    // 那两个数([SL-411 R2] 起真源在 `OutputStateCodec.h`;此前抠的是 `OutputEditor.cpp` 的 `jlimit`)。
+    // 将来再放宽值域,只改 codec 那一处,这一格自己跟上;两侧漂开就红。
+    // ⚠ 取不到时 fallback 是 NaN(见上面 `codecNum`):比较恒 false ⇒ 当场红,不写字面量兜底。
     check(
         Number.isFinite(snapSeg.min_segment_ms) &&
             snapSeg.min_segment_ms >= msLo &&

@@ -16,6 +16,7 @@
 #include "UiDefaultsStore.h"
 #include "engine/CurveEvaluator.h"
 #include "state/SegmentEdit.h"
+#include "state/OutputStateCodec.h" // [SL-411 R2] 分段值域常量(kOutputSeg*):C++ 侧唯一真源
 #include "state/StateCodec.h"
 
 namespace scvb::output
@@ -1796,10 +1797,43 @@ void OutputEditor::handleSetSegmentation(const ArgList& a, Completion c)
     }
     // sensitivity 0..100、min_segment_ms 50..2000(02-dsp-spec §0.3 常量表;上限 [SL-398] 500 → 2000),
     // 越界 clamp。
+    //
+    // [SL-411 R2] 两个值域**取 codec 的常量**,不再在这里写第二份字面量。SL-398 那次「上限 500 → 2000」
+    // 要在桥面与 web 两处同改;codec 加入之后真源变成三处,而三者互不引用 —— 下一次放宽若只改桥面与
+    // web,会得到「UI 收下 3000 → `encodeOutputState` 原样落盘(编码侧按设计不校验)→ 重开被 codec 判
+    // 越界、**静默**回落 120」,现象与 SL-411 修之前逐字相同(滑杆跳回 120、分析按 120 跑)。
+    // 真源 = `src/core/state/OutputStateCodec.h`(C++ 侧只此一份);web 侧 `tab-wave.js` 的滑杆
+    // min/max/def 由 `smoke-tab3-interactions.mjs` 的 (b)/(c)/(d) 格与那里逐值对拍,漂开即红。
+    //
+    // [SL-411 R4 / R12 / R16] `juce::jlimit` 的实现是 `v < lo ? lo : (hi < v ? hi : v)`,**NaN 时两个
+    // 比较都为假 ⇒ 原值透出**;而把**非有限、或有限但超出目标类型值域**的 double `static_cast` 成
+    // int/float 在 C++ 里都是 **UB**(MSVC 上前者落 `INT_MIN` 再被夹成下限 50 —— 一个「看着像用户设的、
+    // 其实不是」的落点)。所以两个字段**先在 double 域夹到规格值域再窄化**:窄化前的值必然落在
+    // int/float 可表示范围内,任何路径都不再触碰 UB;非有限一律**保留 rt 原值**,绝不落进 `runtime_`。
+    // (R4 只挡了「非有限」那一档,R12 补了对称性,R16 补的正是「有限但超值域」这一档 —— `1e300`
+    // 过得了 `isfinite` 却过不了 `static_cast<int>`。)
+    // 归因(第一版写错过,这里改正):`isFiniteNumber` **只存在于浏览器预览的 mock**
+    // (`web-preview/mock/juce-bridge-mock.js`),真桥是 native function + `juce::JSON`,根本不经过它 ——
+    // 拿它论证生产路径安全是错的。JSON 本身没有 `NaN` 字面量,但 **±Inf 造得出来**:
+    // `{"sensitivity": 1e400}` 解析时经 `strtod` 溢出成 `HUGE_VAL`。也就是说这道守卫**有真实入口**,
+    // 不是纯理论兜底(我们自己的 web 侧不会发 —— JS 的 `JSON.stringify(Infinity)` 出 `null`)。
+    // 仍无用例:`handleSetSegmentation` 全仓没有直接调用它的测试(桥面 → runtime 这一跳是**已登记的
+    // 缺口**,见 `tests/host/test_host_harness.cpp` 那笔账)。
+    //
+    // ⚠ 非有限时**不**回 `badArgResp()`(复审建议过):这是**整包**下发,回 badArg 会让同一次调用里
+    // 另外两个**合法**字段也一起进不去;保留该项原值、其余照收,与下面 `changed` 的语义一致。
+    const double sensIn = static_cast<double>(p.getProperty("sensitivity", rt.segmentationSensitivity));
     const float sens =
-        juce::jlimit(0.0f, 100.0f, static_cast<float>(p.getProperty("sensitivity", rt.segmentationSensitivity)));
+        std::isfinite(sensIn)
+            ? static_cast<float>(juce::jlimit(static_cast<double>(scvb::state::kOutputSegSensitivityMin),
+                                              static_cast<double>(scvb::state::kOutputSegSensitivityMax), sensIn))
+            : rt.segmentationSensitivity;
+    const double mmsIn = static_cast<double>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs));
     const int mms =
-        juce::jlimit(50, 2000, static_cast<int>(p.getProperty("min_segment_ms", rt.segmentationMinSegmentMs)));
+        std::isfinite(mmsIn)
+            ? static_cast<int>(juce::jlimit(static_cast<double>(scvb::state::kOutputSegMinSegmentMsMin),
+                                            static_cast<double>(scvb::state::kOutputSegMinSegmentMsMax), mmsIn))
+            : rt.segmentationMinSegmentMs;
 
     const bool changed =
         mode != rt.segmentationMode || sens != rt.segmentationSensitivity || mms != rt.segmentationMinSegmentMs;

@@ -27,6 +27,21 @@ bool migrate_2_to_3(StateChunks& chunks) noexcept
     return true;
 }
 
+// abi 3→4:[SL-411] CFGS 尾扩 analysis.segmentation.{mode,sensitivity,min_segment_ms}。同样 no-op ——
+// abi=3 的 CFGS 只有到 applied.* 为止的尾部,而 decodeOutputState 按「长度回退」把缺席的
+// segmentation 三项回落**规格默认**(valley / 50.0 / 120)且**不计回落**:旧工程确实没存过它们,
+// 不是「存了一个不可信的值」。取规格默认也正是旧构建里 `runtime_.segmentation*` 的初值 ——
+// 于是「旧工程打开后的行为与它保存时逐字相同」。
+// ⚠ 与上一级(applied := 当前值)的取舍不同是**有意的**,别照抄那一级的理由:applied 的语义是
+// 「上次分析所用的那一档」,缺席时取当前值才不误报「需重新分析」;而 segmentation 的语义就是
+// 「当前设置」本身,旧工程没有「当过一次的设置」这回事。
+// 旧版读到新(abi=4)blob 仍走 RejectedNewer → preservedOriginal 原样回写,绝不静默降级。
+bool migrate_3_to_4(StateChunks& chunks) noexcept
+{
+    (void)chunks;
+    return true;
+}
+
 StateLoadResult loadState(const std::uint8_t* data, std::size_t size, StateChunks& out)
 {
     StateLoadResult res;

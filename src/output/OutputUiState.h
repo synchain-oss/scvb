@@ -8,7 +8,10 @@
 // `session_guid`([SL-215])。这条不依赖任何版本假设,是本模块的真正依据。
 // (限 Output 侧:Input 的 `ui.guide_seen` 是**另一个**位 —— 契约上归 Input state 的 CFGS 尾扩
 // (STATE_SCHEMA §三 Input 条,[J81]/J80),但**编码落点尚未落地**:当前 `InputStateCodec` 的
-// payload 只到语言字节为止,且是 `kHeaderBytes + langBytes != size` 的严格等长、连尾部都不容忍。
+// payload 只到语言字节为止(4×u32 头 + langBytes),且是 `kHeaderBytes + langBytes != size` 的
+// 严格等长、连尾部都不容忍。[SL-411 R5] 顺手核过:该断言在 `InputStateCodec.cpp` 的
+// `decodeInputState` 里逐字成立(那一行今天仍在),**本 PR 把容器 abi 推到 4 之后它也没变** ——
+// Input 侧没有新的 CFGS 尾档,别把「共用容器 abi」与「两边布局同形」混成一件事。
 // 别拿那一行来推翻这里,也别照它去 InputStateCodec 里找字段。)
 // 别拿 `ui.scale` / `ui.language` 举证:那两个在 PRMS 与 CFGS 两行**都**登记着,证不出该放哪边。
 //
@@ -20,9 +23,16 @@
 // 尾部/属性增删 —— 这条机制差已经不构成区分度,留着只当历史记录看。
 //
 // 当前长度纪律(CFGS):24 字节 header(6×u32)+ langBytes 语言字节是严格长度(`base > size`
-// 即拒载),header 那 6 个 u32 的偏移至今冻结、不许就地插字段;其后 8 字节枚举尾**少了**才拒载
-// (`0 < remaining < 8`),整段缺失(旧 abi=1 payload)回落默认,而**多出来**的字节走 unknownTail
-// 保留回写、并不拒载。
+// 即拒载),header 那 6 个 u32 的偏移至今冻结、不许就地插字段;其后是**三级尾档**
+// ([SL-411 R5] 更新:abi=1 时是「8 字节枚举尾少了才拒载」,SL-279 推到 16、SL-411 推到 28,
+// 下面这句才是今天的口径)——
+//   · 尾长 0(= 旧 abi=1 payload,整段缺失)→ 全部尾字段回落默认;
+//   · 尾长 8(`loudness_mode` + `center_slot_policy`)/ 16(再 + `applied.*`)/ 28(再 + `segmentation.*`)
+//     —— 各档**内**少一个字节即拒载:`(0,8)` / `(8,16)` / `(16,28)` 三个空洞一律整块拒载
+//     ([SL-279 复审] 起的纪律,SL-411 R8 把措辞收敛成「档内不许半截」);
+//   · **≥ 28 之后**多出来的字节走 unknownTail 保留回写、并不拒载(任意长度都收)。
+// 真源 = `src/core/state/OutputStateCodec.h` 头注与 `tests/core/test_output_session.cpp` 的
+// 长度断言(54u / 24u+5u+28u);这里只记「它已经不是 8 字节那版口径」这件事,别再按 8 字节推理。
 //
 // 背景(与字段该放哪一节无关):跨 abi 是**整块**拒载 —— `loadState` 的 abi 判读排在
 // `decodeContainer` 之前就 return,pre-J69 构建(kCurrentAbi=1)读到 abi=2 的工程走 RejectedNewer,

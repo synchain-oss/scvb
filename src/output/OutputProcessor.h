@@ -42,7 +42,8 @@ class OutputEditor; // 桥编辑器(T29),createEditor 实例化。
 // Output 桥面的运行时 state(T29;除下面标注的两个首启已读位外,**消息线程独占** ——
 // [M] 写 / OutputEditor::emitTick 读)。
 // 与 CFGS(OutputStateCodec)承载的持久化子集互补:此处字段是「桥面可写、未必持久化」的运行时态,
-// 持久化扩展归后续任务;CRVS 段真身单独以 crvsData_ 承载(段/pan_curve/版本名)。
+// 持久化扩展归后续任务(**例外**:`segmentation*` 三项自 [SL-411] 起随工程保存,见其声明处);
+// CRVS 段真身单独以 crvsData_ 承载(段/pan_curve/版本名)。
 struct OutputRuntimeState
 {
     // range(§1.8;0=follow 1=daw_loop 2=manual)
@@ -56,9 +57,19 @@ struct OutputRuntimeState
     int vadHangoverMs = 200;
     int vadPaddingPreMs = 120;
     int vadPaddingPostMs = 200;
+    // [SL-411] 分段三项**随工程保存**(CFGS 第三档,abi=4):`getStateInformation` 写盘、
+    // `setStateInformation` 恢复,值域由 codec 校验(valley|vad_only / 0..100 / 50..2000)。
+    // 此前它们只活在这里 —— 重开工程一律回默认,而**分析同样按默认跑**
+    // (消费方见 `OutputProcessor.cpp` 的 `cfg.vad.minSegmentMs` / `cfg.segmentation.*`)。
+    //
+    // [SL-411 R14] 两个默认值**引用 codec 的常量**(值域与默认值的单一真源 = `OutputStateCodec.h`),
+    // 别再在这里写第二份 50.0f / 120 —— 那种「默认值散在几处」正是本卡修的漂移面。
+    // `"valley"` 仍是字面量:codec 用**字符串**承载这一档、序号↔串的映射在 `segModeString()`
+    // (`OutputStateCodec.cpp`),没有可引用的字符串常量;改 mode 的拼写要连着桥面白名单
+    // (`BridgeArgs.h::isSegmentationMode`)一起改。
     juce::String segmentationMode = "valley"; // 02-dsp-spec §362:valley(默认)/ vad_only
-    float segmentationSensitivity = 50.0f;
-    int segmentationMinSegmentMs = 120;
+    float segmentationSensitivity = scvb::state::kOutputSegSensitivityDefault;
+    int segmentationMinSegmentMs = static_cast<int>(scvb::state::kOutputSegMinSegmentMsDefault);
     float transitionRampMs = 80.0f;
     juce::String loudnessMode = "kw_integrated";
     juce::String centerSlotPolicy = "priority_queue";
