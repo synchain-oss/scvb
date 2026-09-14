@@ -6090,8 +6090,9 @@ TEST_CASE("HOST SL395:老工程(embedded=0)保存一次 ⇒ 特征收回内嵌 +
     // ---- ② 保存一次 ⇒ 装内嵌载荷 + 回收外部副本(生产:`writeFeaturesChunk` 的 `wasSidecar` 支)----
     juce::MemoryBlock saved;
     r.out.getStateInformation(saved);
-    // ★ D6 锚点:注掉生产 `OutputProcessor.cpp:1569` 的 `store.remove(...)` ⇒ 下面两条同红
-    //   (用 CHECK 而非 REQUIRE,一次把两条都照出来)
+    // ★ D6 锚点:注掉生产 `OutputProcessor.cpp:1569` 的 `store.remove(...)` ⇒ **下面第二条**红
+    //   (第一条不受影响:`featuresSidecar_` 由 `:1548` 的 installFeat 置假,在三道闸之前)。
+    //   两条都用 CHECK 而非 REQUIRE:一次把「收回内嵌」与「目录回收」的实得都照出来。
     CHECK_FALSE(r.out.featuresInSidecar()); // 收回内嵌
     CHECK_FALSE(std::filesystem::exists(store.sessionDir(guid))); // 外部目录已回收
 
