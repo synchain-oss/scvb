@@ -4668,7 +4668,11 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
             "(b) ★ UI 值域 == codec 的规格值域(0..100,02-dsp-spec §0.3;桥面夹取也引用同一对常量)——" +
                 "退回 0..1 则 0.62 会被 native 当成「百分之 0.62」存下,滑杆整个行程都是错的",
         );
-        eq(sens.def, 50, "(b) 默认值 = 规格的 50(§0.3 常量表 / §384 待定项⑥)");
+        eq(
+            sens.def,
+            codecNum("kOutputSegSensitivityDefault"),
+            "(b) 默认值 = 规格的 50(§0.3 常量表 / §384 待定项⑥;取自 codec 的 Default 定义行)",
+        );
         eq(sens.dp, 0, "(b) 0..100 是整数档,不再显示两位小数");
     }
     check(
@@ -4693,9 +4697,46 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
         );
         eq(
             minseg.def,
-            120,
-            "(c) 默认值 = 规格/PipelineConfig 的 120(不再是 420)",
+            codecNum("kOutputSegMinSegmentMsDefault"),
+            "(c) 默认值 = 规格/PipelineConfig 的 120(不再是 420;取自 codec 的 Default 定义行)",
         );
+    }
+
+    // ---- (f) [SL-411 R11] 桥面**真的在用**那对常量(这一段是新增判据面)
+    //
+    // 为什么必须单独一格:值域真源搬到 codec 之后,(b)/(c)/(d) 三格只与 `OutputStateCodec.h` 对拍,
+    // 「桥面夹取是否引用常量」只剩**编译**保证 —— 谁把那两行改回 `juce::jlimit(50, 500, …)`
+    // (合并冲突、revert、或「看着眼熟顺手写死」),(b)/(c)/(d) 与 web 会**全绿**,唯独真正夹取
+    // 用户输入的那一处偷偷收窄;此后「UI 收下 3000 → encode 原样落盘 → decode 判越界 → 静默回落
+    // 120」这条路重新打开,而它**就是 SL-411 的原始现象**。D2a(改 codec 的 Max ⇒ (c) 红)验的是
+    // codec↔web 那条边,验不到桥面这条边。
+    //
+    // 删除式 **D2b**:把 `handleSetSegmentation` 里任意一处改回 `juce::jlimit(50, 2000, …)`
+    // ⇒ 本格两条断言**都**红(常量名不再出现 + 出现裸数字 `jlimit`),而 (b)/(c)/(d) 仍绿。
+    {
+        const editorSrc = readFileSync(
+            join(ROOT, "src/output/OutputEditor.cpp"),
+            "utf8",
+        );
+        const setSeg =
+            /void OutputEditor::handleSetSegmentation[\s\S]*?\n}/.exec(
+                editorSrc,
+            );
+        check(!!setSeg, "(f) 取到 handleSetSegmentation 的函数体");
+        if (setSeg) {
+            const body = setSeg[0];
+            check(
+                /kOutputSegSensitivityMin/.test(body) &&
+                    /kOutputSegSensitivityMax/.test(body) &&
+                    /kOutputSegMinSegmentMsMin/.test(body) &&
+                    /kOutputSegMinSegmentMsMax/.test(body),
+                "(f) ★ 桥面夹取引用 codec 的四个 kOutputSeg* 常量(改回字面量即红)",
+            );
+            check(
+                !/jlimit\(\s*[\d.]/.test(body),
+                "(f) ★ 桥面夹取里没有裸数字 jlimit —— 值域真源只此一份(codec)",
+            );
+        }
     }
 
     // ---- ⑤ HTML 静态标记 == SLIDERS(跨源)

@@ -32,7 +32,7 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
 
 | 面 | 改前 | 改后 |
 | --- | --- | --- |
-| CFGS 尾部 | 28 字节头 + uiLanguage + `loudness_mode`/`center_slot_policy`(2×u32)+ `applied.*`(2×u32)= 尾长 16 | 再追加 `segMode`(u32)+ `segSensitivity`(f32)+ `segMinSegmentMs`(u32)= **尾长 28** |
+| CFGS 尾部 | 24 字节头 + uiLanguage + `loudness_mode`/`center_slot_policy`(2×u32)+ `applied.*`(2×u32)= 尾长 16 | 再追加 `segMode`(u32)+ `segSensitivity`(f32)+ `segMinSegmentMs`(u32)= **尾长 28** |
 | 接受的尾长 | 0 / 8 / 16 / 16+ | 0 / 8 / 16 / **28 / 28+**;落在 (0,8)、(8,16)、(**16,28**)一律整块拒载 |
 | `kCurrentAbi` | 3 | **4** |
 | 迁移链 | `[migrate_1_to_2, migrate_2_to_3]` | `[… , migrate_3_to_4]`(三个都是 no-op,靠 codec 的长度回退) |
@@ -94,8 +94,8 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
   (源码里那句注释写得很清楚:「Monitor 是只读观察器……无需 `preservedOriginal` 回写 —— 丢的只是一个
   视图偏好,不是用户数据」,落点只有一行 `DBG`)。所以连带面比 Input 还小:旧 Monitor 读新工程丢的是
   「看哪一组 / 缩放 / 语言」,碰不到用户的段表与曲线。
-- **参数面**:零影响 —— 三项都不是自动化参数,ParamID / index / 顺序 / versionHint / 参数值域
-  (`OutputEditor` 的 `jlimit`)全部不动。
+- **参数面**:零影响 —— 三项都不是自动化参数,ParamID / index / 顺序 / versionHint 全部不动;
+  **值域数值也不动**,只是桥面那两处 `jlimit` 的实参从字面量换成 codec 常量(第 1 推 R2)。
 - **行为面**:唯一的行为变化就是本卡要的那一条 —— 重开工程后 `analysis.segmentation` 三项
   保持上次保存的值。三项的**语义**、默认值、值域、消费方(`cfg.vad.minSegmentMs` /
   `cfg.segmentation.*`)一个字都没改。
@@ -108,18 +108,26 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
 | core 容器 | `tests/core/test_state_codec.cpp` `STATE-GOLDEN StateAbiCompat` | abi1/abi2/abi3 三份旧金样仍 `Migrated` 到当前 abi;**abi4.bin 格式锁**(重编码逐字节相等) |
 | 生产两跳 | `tests/host/test_host_harness.cpp` `HOST SL411` | 存(`getStateInformation` 写 runtime_ 三项)→ 新实例载(`setStateInformation` 恢复)→ 三项逐项一致,**且重开后的分析真的按持久值跑**(段数与 120 档不同、与存盘那一档相同) |
 | 页面级 | `web-preview/tests/smoke-seg-restore-page.mjs` 的 `[SL-411]` 一节 | 工程 state 里 `min_segment_ms=1000` ⇒ MIN SEG 滑杆的 `aria-valuenow` 与读数文本**真的变成 1000**(用户看得见的那一半) |
+| 值域对拍 | `web-preview/tests/smoke-tab3-interactions.mjs` 的 (b)/(c)/(d) 三格 | UI 滑杆的 `min`/`max`/`def` 与 **codec 定义行**(`kOutputSegSensitivity{Min,Max,Default}` / `kOutputSegMinSegmentMs{Min,Max,Default}`)逐值相等 —— 对拍的另一端是 **codec**,不再是桥面的 `jlimit` 源码 |
+| 桥面引用 | 同上,**(f)** 一格(第 1 推 R11 新增) | `OutputEditor::handleSetSegmentation` 的函数体里**出现那四个 codec 常量名**、且**没有裸数字 `jlimit(`** —— 把桥面改回字面量时,(b)/(c)/(d) 全绿而这一格红 |
 | 旧档语料 | `tests/golden/state/abi1.bin` / `abi2.bin` / `abi3.bin` | 三份**保留不动**;迁移用例跑在**真的旧文件**上,不是现造一个「假装是旧版」的字节串 |
 
 ⚠ **离线不可达、本卡没有改变的那一跳**(照实登记,别读成已覆盖):`OutputEditor.cpp` 的
 `p.getProperty("min_segment_ms")` → `rt.segmentationMinSegmentMs`(桥面 → runtime)与
 `scvb.state` 回声里那三行的**装配**都在 `OutputEditor`,它依赖 WebView2、不在 host 套件的 TU 清单里。
-前者由 `smoke-tab3-interactions.mjs` 的源码级对拍 + 它自己的删除式兜住,后者由上面那一格页面级
+前者由 `smoke-tab3-interactions.mjs` 的源码级对拍兜住((b)/(c)/(d) 对拍**值域**(对手方 = codec 定义行)、
+**(f)** 对拍「桥面确实引用那对常量」)+ 它自己的删除式(D2a / D2b),后者由上面那一格页面级
 冒烟兜住(走 mock 侧);「桥面 → runtime」这一跳仍是**缺口不是覆盖**(与 `HOST SL391` 头注同一笔账)。
 
-⚠ **[SL-411 R1] 同族句子还有两处不在本 PR 的改动面内**,别以为全仓都收干净了:
-`docs/PARAMETERS.md` 的规则摘要行(冻结文档,本 PR 的契约面声明是「PARAMETERS 不动」)与
-`docs/CONTRIBUTOR_ONBOARDING.md` 里那一句 —— 后者说的是 **IPC abi**(`Registry::kAbiMismatch`),
-那条通路**是接了的**,不是同一件事,留着不改。前者的措辞随 **SL-412** 接线时一并收。
+⚠ **[SL-411 R1] 同族句子还有四处不在本 PR 的改动面内**,别以为全仓都收干净了:
+
+- `docs/PARAMETERS.md` 的规则摘要行(**冻结文档**,本 PR 的契约面声明是「PARAMETERS 不动」)——
+  它的措辞随 **SL-412** 接线时一并收;
+- `docs/CONTRIBUTOR_ONBOARDING.md` 里那一句 —— 说的是 **IPC abi**(`Registry::kAbiMismatch`),
+  那条通路**是接了的**,不是同一件事,留着不改;
+- `CLAUDE.md` §7.3 与 `docs/constitution/params-v0.md` 的规则原文 —— **规范文本,不计**:它们陈述的是
+  「读到高版本要拒载并提示升级」这条**要求**(`params-v0.md` 是只读副本,按纪律不得就地编辑),
+  不是「某条通路已接线」的事实断言。真源口径已经在 §0.1 与变更文档里改成实话,规范文本不动。
 
 ## 变更文件
 
@@ -128,9 +136,18 @@ state 容器 abi 3→4,新增 no-op `migrate_3_to_4`。
   这条纪律——R8 收敛了措辞,原来的「追加必须整档」比实际严格)
 - `src/core/state/StateCodec.h`(`kCurrentAbi` 3→4;容器头注与真源指针同步)
 - `src/core/state/StateMigration.{h,cpp}`(`migrate_3_to_4` no-op;`kMigrators` 三项)
-- `src/output/OutputProcessor.cpp`(保存侧写三项 / 加载侧恢复三项 + 回落计数的 DBG 行)
-- `docs/STATE_SCHEMA.md`(abi 3→4、§一 三项改为已落盘、§三 CFGS 行与尾长分级、迁移链三条)
-- `docs/USER_GUIDE.zh-CN.md` + `docs/USER_GUIDE.md`(分段那一段的「不随工程保存」反向收掉)
+- `src/core/state/OutputProcessor.cpp`(保存侧写三项 / 加载侧恢复三项 + 回落计数的 DBG 行)
+- `src/output/OutputProcessor.h`(三项的声明处:值域与默认值的**注释**说明 + [R14] 两个默认值改引用
+  codec 常量;`"valley"` 留字面量并指向 `segModeString()`)
+- `src/output/OutputEditor.cpp`(第 1 推 R2/R4/R12:两处 `jlimit` 改引用 codec 常量、两个字段各自的
+  `std::isfinite` 守卫与归因注释)
+- `src/output/OutputUiState.h`(第 1 推 R5:CFGS 长度纪律更新到三级 28 字节;Input codec 那句核实)
+- `web-preview/tests/smoke-tab3-interactions.mjs`(值域对拍源改为 codec 定义行;**新增 (f)** 一格钉住
+  「桥面确实引用常量」;`.def` 断言改用 codec 的 `Default` 定义行)
+- `docs/STATE_SCHEMA.md`(abi 3→4、§一 三项改为已落盘、§三 CFGS 行与尾长分级、迁移链三条、
+  「提示升级」四处口径改实)
+- `docs/USER_GUIDE.zh-CN.md` + `docs/USER_GUIDE.md`(分段那一段的「不随工程保存」反向收掉;
+  R6:「最短段长与灵敏度按它跑,分段方式今天只回到原位」)
 - `CHANGELOG.md`(契约变更小节 + SL-398 那条的值域句)
 - `docs/contract-changes/20260911-sl398-min-segment-2000.md`(兼容性两段:该卡写下的
   「无降级路径」已被本卡取代,照实标注)

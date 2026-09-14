@@ -61,9 +61,15 @@ struct OutputRuntimeState
     // `setStateInformation` 恢复,值域由 codec 校验(valley|vad_only / 0..100 / 50..2000)。
     // 此前它们只活在这里 —— 重开工程一律回默认,而**分析同样按默认跑**
     // (消费方见 `OutputProcessor.cpp` 的 `cfg.vad.minSegmentMs` / `cfg.segmentation.*`)。
+    //
+    // [SL-411 R14] 两个默认值**引用 codec 的常量**(值域与默认值的单一真源 = `OutputStateCodec.h`),
+    // 别再在这里写第二份 50.0f / 120 —— 那种「默认值散在几处」正是本卡修的漂移面。
+    // `"valley"` 仍是字面量:codec 用**字符串**承载这一档、序号↔串的映射在 `segModeString()`
+    // (`OutputStateCodec.cpp`),没有可引用的字符串常量;改 mode 的拼写要连着桥面白名单
+    // (`BridgeArgs.h::isSegmentationMode`)一起改。
     juce::String segmentationMode = "valley"; // 02-dsp-spec §362:valley(默认)/ vad_only
-    float segmentationSensitivity = 50.0f;
-    int segmentationMinSegmentMs = 120;
+    float segmentationSensitivity = scvb::state::kOutputSegSensitivityDefault;
+    int segmentationMinSegmentMs = static_cast<int>(scvb::state::kOutputSegMinSegmentMsDefault);
     float transitionRampMs = 80.0f;
     juce::String loudnessMode = "kw_integrated";
     juce::String centerSlotPolicy = "priority_queue";

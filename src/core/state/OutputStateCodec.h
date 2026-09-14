@@ -83,11 +83,18 @@ inline constexpr std::uint32_t kOutputCenterSlotPolicyMax = 2; // [J69/U24④] �
 // `web/output/tab-wave.js` 的 `DEFAULT_SEGMENTATION`、`OutputEditor` 桥面夹取、`PipelineConfig`
 // 的默认值同口径)。
 // **C++ 侧只此一份**:`OutputEditor.cpp` 的桥面夹取引用这里的常量(`juce::jlimit(kOutputSeg…Min,
-// …Max, …)`),`OutputProcessor.cpp` / 单测的断言同样取自它们 —— 谁都不许再抄一份字面量。
+// …Max, …)`),那是全仓唯一的消费方 —— 谁都不许再抄一份字面量。
+// 两处**有意不引用**,别去「统一」它们:
+//   · `OutputProcessor.cpp` —— 它按设计**不做第二道夹取**(decode 的出口只有「规格内」与「规格默认」
+//     两种),这里一个 `kOutputSeg*` 都没有;
+//   · `tests/core/test_output_session.cpp` —— 断言**故意**写字面量(100.0f / 2000u / 120u / 0u…):
+//     断言取自被测常量会变成恒真,字面量才把规格值独立钉住一遍。
 // ⚠ **web 侧仍是字面量**(`web/output/tab-wave.js` 的滑杆 `min`/`max`/`def`)。它与本处的对拍由
 // `web-preview/tests/smoke-tab3-interactions.mjs` 的 (b)/(c)/(d) 三格承担:**从本文件的定义行抠数**
-// (`kOutputSegSensitivity{Min,Max}` / `kOutputSegMinSegmentMs{Min,Max}`),抠不到就是 NaN ⇒ 当场红。
-// 改这里的值时,web 那两处会被那三格逼着同改;反过来只改 web 也会红。文档里的镜像句(§0.3 引文)
+// (`kOutputSegSensitivity{Min,Max,Default}` / `kOutputSegMinSegmentMs{Min,Max,Default}`),
+// 抠不到就是 NaN ⇒ 当场红;而「桥面确实在用这对常量」由同一套的 **(f)** 格钉住
+// (源码级断言 `handleSetSegmentation` 的函数体里出现那四个常量名、且没有裸数字 `jlimit`)。
+// 改这里的值时,web 那两处会被那几格逼着同改;反过来只改 web 也会红。文档里的镜像句(§0.3 引文)
 // 不在机检面内,得人眼跟。
 inline constexpr std::uint32_t kOutputSegModeMax = 1; // 0=valley(默认),1=vad_only
 inline constexpr std::uint32_t kOutputSegModeDefault = 0; // valley
