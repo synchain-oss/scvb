@@ -673,8 +673,11 @@ void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, const double
         //   · 否则后一段存在、是 auto、且后一段 t0 == 本段 t1 ⇒ 并入后一段(提前其 t0);
         //   · 两侧都不相接 ⇒ 原地保留 —— 「相邻」不等于「相接」:表内相邻但时间上隔着
         //     该轨不活跃的区间(静音间隙、或被 clash 过滤丢掉的段留下的空档)时,并进去
-        //     会把间隙盖进前一段/后一段,段表凭空多出一段不存在的覆盖。孤立短段只来自
-        //     写回窗边裁剪,归 [SL-399 R8] 那条账。
+        //     会把间隙盖进前一段/后一段,段表凭空多出一段不存在的覆盖。**孤段有两条来路**
+        //     (与 `:649-651` / `Segmentation.h:152-155` 同口径):① 写回窗边裁剪 —— 长段被窗
+        //     裁出来的残段,归 [SL-399 R8] 那条账;② **邻段因与用户段/锁定段 clash 而整条
+        //     落选**,它留下的空档让相邻那条短产出两侧都不相接 —— 这条与写回窗无关,
+        //     **整条时间线重分析(裁剪恒等)时同样会出**。
         // 值取被并入的那一段(survivor 的 pan/vol 原样保留)。
         const bool prevTouching = i > 0 && segments[i - 1].t1Samples == s.t0Samples;
         const bool nextTouching = i + 1 < segments.size() && segments[i + 1].t0Samples == s.t1Samples;

@@ -54,6 +54,29 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 > 本次实跑 **拉丁 153 / CJK 767 / 合计 920**;2026-09-02 那段记的是**当次读数** 772 / 925,
 > 差值来自两次扫描之间 `web/` 文案的增删。**本文件只记当次实跑,以每次 gate 3h 为准。**
 
+> **[SL-414] 2026-09-15 原地重跑**(#261 第 3 推:`wave.tipMinSeg` 的 zh 词条补「时间相接的
+> 相邻段」并把全称句收窄成带条件那句,带进原子集没有的字形 —— gate 3h 当场报缺 `孤` U+5B64):
+> `python scripts/fetch_fonts.py` 重生成 **`NotoSansSC.woff2` 258392** / **`ScvbSans.woff2`
+> 20652** / **`ScvbMono.woff2` 12232** 字节(`SpaceGrotesk.woff2` 未变,**没有手改 woff2**);
+> 本次实跑 **拉丁 153 / CJK 767 / 合计 920**。
+>
+> **字节走向与所需字符集的增量看着对不上**(zh 只增字,`NotoSansSC` 反而小 60 B;拉丁所需集
+> 一字未变,`ScvbMono` −4 B / `ScvbSans` +28 B)—— 所以逐款读了 `name` 表的版本段,与 HEAD
+> 那一版对拍(命令:`python build-v5615/p4-fontver.py`,读 nameID 1/3/5/7 并 `git show HEAD:`
+> 取旧版字节):
+>
+> | 文件 | nameID 5(版本)旧 → 新 | nameID 3(唯一 ID) |
+> | --- | --- | --- |
+> | `SpaceGrotesk.woff2` | `Version 2.000` → `Version 2.000` **未动** | `2.000;FK;SpaceGrotesk-SemiBold` **未动** |
+> | `ScvbSans.woff2` | `Version 3.201` → `Version 3.201` **未动** | `3.201;Synchain;ScvbSans-Regular` **未动** |
+> | `ScvbMono.woff2` | `Version 2.3` → `Version 2.3` **未动** | `2.3;Synchain;ScvbMono-Regular` **未动** |
+> | `NotoSansSC.woff2` | `Version 2.004-H2;hotconv 1.0.118;makeotfexe 2.5.65603` → 同串 **未动** | `2.004;ADBO;NotoSansSC-Thin;ADOBE` **未动** |
+>
+> ⇒ **四款的版本段逐条未动**,字节差**不是上游版本漂移**:CJK 侧是「所需集 +1 字、产物 −60 B」
+> 的子集重压缩浮动,拉丁两侧 ±几字节同源(两条路线每次都会重新拉一遍上游字节,产物非逐位可复现)。
+> 上游版本**不该**靠这一次字节差去推 —— 要问版本请读上表(它现在是本目录的当次记录)。
+> **`fetch_fonts.py` 该不该钉上游版本不在本卡**,统筹已另立 **SL-418** 封存;本推未动该脚本。
+
 > **拉丁那一栏的 152 → 153 不是本批新增的字**,是把上一版写岔的计数补正回来。
 > 上一版正文写「拉丁 152 / 合计 920」,而拿同一份 `fetch_fonts.py`(本批未改动它)
 > 对上一版的 `web/` 实跑 `build_charsets()`,拉丁集**当时就已经是 153**(合计 921)。
