@@ -62,9 +62,16 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 >
 > **added / removed 逐字比对**(照下面 SL-396 那段的先例;本次读数与 SL-396 那次**总数逐字相同**,
 > 而 `孤` 确实是**新**带进来的 ⇒ 必然挤掉了一个字,故必须列出):拿**同一份** `scripts/fetch_fonts.py`
-> 的 `build_charsets()` 对 **base(`76ffb04`)的 `web/`** 与**当前 `web/`** 各跑一次(两棵树各带一份
-> 脚本,ROOT 由脚本自身路径推出;`git archive --format=tar 76ffb04 web web-preview | tar -x -C <临时树>`
-> 导出 base,**不联网、不写 .git**)⇒
+> 的 `build_charsets()` 对 **base(`76ffb04`)的 `web/`** 与**当前 `web/`** 各跑一次。导出 base 用
+>
+> ```bash
+> git archive --format=tar 76ffb04 web web-preview scripts/fetch_fonts.py | tar -x -C <临时树>
+> ```
+>
+> —— ⚠ **`scripts/fetch_fonts.py` 必须一起导**:`build_charsets()` 的 `ROOT` 由**脚本自身路径**推出
+> (上一级),只导 `web`/`web-preview` 的话 base 那棵树**没有量具**,下面片段的 `base = load(...)`
+> 会直接 `FileNotFoundError`(PR #261 第 5 轮复审实测)。本 PR 未改该脚本,两棵树的量具逐字节相同
+> ⇒ 这正是「同一把尺子量两次」。**不写 .git、不联网**。⇒
 > **拉丁侧 added / removed 双向皆空**;**CJK 侧 added = `孤`(U+5B64)一个、removed = `弃`(U+5F03)一个**
 > —— 进的是新口径句的「孤段 / 孤立短段」,出的是 zh 词条里被改写掉的那个词:base 的值是
 > 「短于此长度的段会被直接**丢弃**(在前后留白之前判定)…」,本版改成「短于它的自动段会被**丢掉**…」,
@@ -77,28 +84,35 @@ WebView UI 用的字体,**离线打包**进 VST3(DAW 联网敏感,运行期绝�
 >     s = importlib.util.spec_from_file_location(tag, path); m = importlib.util.module_from_spec(s)
 >     s.loader.exec_module(m); return m
 > cur  = load('cur',  r'<本仓>\scripts\fetch_fonts.py')
-> base = load('base', r'<base 临时树>\scripts\fetch_fonts.py')
+> base = load('base', r'<base 临时树>\scripts\fetch_fonts.py')   # 临时树里要有这份量具(见上)
 > lc, cc, _ = cur.build_charsets();  lb, cb, _ = base.build_charsets()
 > print('LATIN added/removed:', sorted(set(lc)-set(lb)), sorted(set(lb)-set(lc)))
 > print('CJK   added/removed:', sorted(set(cc)-set(cb)), sorted(set(cb)-set(cc)))
 > ```
 >
 > **字节走向与所需字符集的增量看着对不上**(zh 只增字,`NotoSansSC` 反而小 60 B;拉丁所需集
-> 一字未变,`ScvbMono` −4 B / `ScvbSans` +28 B)—— 所以逐款读了 `name` 表的版本段,与 `HEAD`
-> 那一版对拍。**读数出处**:当次实跑用的是一次性脚本(不在仓内,`build-*/` 被 `.gitignore` 挡着);
-> 复现请照下面这段内联片段,旧版字节走 `git show HEAD:web/fonts/<文件>`:
+> 一字未变,`ScvbMono` −4 B / `ScvbSans` +28 B)—— 所以逐款读了 `name` 表的版本段,与**重生成前
+> 那一版**对拍。**读数出处**:当次实跑用的是一次性脚本(不在仓内,`build-*/` 被 `.gitignore` 挡着);
+> 复现请照下面这段内联片段 —— ⚠ 旧版字节**不能**用 `git show HEAD:`,那三个 woff2 是在 **`2a7dfec`**
+> 落地的,`HEAD` 读到的已经是**新**字节,拿它当「旧版」这段就退化成恒真句(PR #261 第 5 轮复审实测);
+> 钉**重生成前那个 commit**(`2a7dfec^`,`git cat-file -s` 可验:`ScvbSans` 20624 / `ScvbMono` 12236 /
+> `NotoSansSC` 258452 / `SpaceGrotesk` 12848):
 >
 > ```python
 > import io, subprocess
 > from fontTools.ttLib import TTFont
+> OLD = '2a7dfec^'   # 重生成前那一版;别用 HEAD(见上)
 > for rel in ('web/fonts/SpaceGrotesk.woff2', 'web/fonts/ScvbSans.woff2',
 >             'web/fonts/ScvbMono.woff2', 'web/fonts/NotoSansSC.woff2'):
 >     new = TTFont(rel, lazy=True)['name'].getDebugName(5)
->     old = TTFont(io.BytesIO(subprocess.run(['git', 'show', 'HEAD:' + rel],
+>     old = TTFont(io.BytesIO(subprocess.run(['git', 'show', OLD + ':' + rel],
 >                                            capture_output=True, check=True).stdout),
 >                  lazy=True)['name'].getDebugName(5)
 >     print(rel, '|', old, '->', new, '|', '未动' if old == new else '**变了**')
 > ```
+>
+> (这段的「未动」是**有信息量**的:两侧字节确实不同,版本段却逐字相同 —— 这正是「字节差不是上游
+> 版本漂移」那句话的证据。)
 >
 > | 文件 | nameID 5(版本)旧 → 新 | nameID 3(唯一 ID) |
 > | --- | --- | --- |
