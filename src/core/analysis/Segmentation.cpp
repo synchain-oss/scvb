@@ -634,7 +634,7 @@ std::vector<AnalysisSegment> mergeTrackSegments(const std::vector<AnalysisSegmen
 }
 
 // [SL-414] 短自动段兜底并入 —— 语义与不改写范围见 Segmentation.h 本函数头注(真源口径:
-// 统筹裁定「候选 D」,段级每轨独立;实现落在回写层同值合并之后,AnalysisPipeline.cpp)。
+// masterPlan 02 §3.4 步骤 5,commit 8829bf4 起「时间相接」并定落点 applyAnalysisSegments)。
 void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, const double minSegmentMs, const double sampleRate)
 {
     if (segments.size() < 2 || minSegmentMs <= 0.0 || sampleRate <= 0.0)
@@ -665,10 +665,18 @@ void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, const double
             continue;
         }
 
-        // 短 auto 段:优先并入前一段(前一段存在且是 auto),否则并入后一段。
+        // 短 auto 段:并入同轨**时间相接**的段(02 §3.4 步骤 5 的「相接」口径):
+        //   · 前一段存在、是 auto、且前一段 t1 == 本段 t0 ⇒ 并入前一段(延长其 t1);
+        //   · 否则后一段存在、是 auto、且后一段 t0 == 本段 t1 ⇒ 并入后一段(提前其 t0);
+        //   · 两侧都不相接 ⇒ 原地保留 —— 「相邻」不等于「相接」:表内相邻但时间上隔着
+        //     该轨不活跃的区间(静音间隙、或被 clash 过滤丢掉的段留下的空档)时,并进去
+        //     会把间隙盖进前一段/后一段,段表凭空多出一段不存在的覆盖。孤立短段只来自
+        //     写回窗边裁剪,归 [SL-399 R8] 那条账。
         // 值取被并入的那一段(survivor 的 pan/vol 原样保留)。
-        const bool hasAutoPrev = i > 0 && !segments[i - 1].isUserSegment();
-        const bool hasNextAuto = i + 1 < segments.size() && !segments[i + 1].isUserSegment();
+        const bool prevTouching = i > 0 && segments[i - 1].t1Samples == s.t0Samples;
+        const bool nextTouching = i + 1 < segments.size() && segments[i + 1].t0Samples == s.t1Samples;
+        const bool hasAutoPrev = prevTouching && !segments[i - 1].isUserSegment();
+        const bool hasNextAuto = !hasAutoPrev && nextTouching && !segments[i + 1].isUserSegment();
         if (hasAutoPrev)
         {
             segments[i - 1].t1Samples = s.t1Samples; // 延长前一段的 t1
@@ -685,7 +693,7 @@ void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, const double
         }
         else
         {
-            // 两侧都不是可并入的 auto 段(纯函数层防御分支,见头注):原地保留,继续扫。
+            // 两侧都不相接(或相邻的是用户段):原地保留,继续扫。
             ++i;
         }
     }

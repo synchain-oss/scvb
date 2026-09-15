@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// test_sl414_min_segment —— [SL-414] MIN SEG 对段表的兜底(统筹裁定「候选 D」:段级、
-// 每轨独立,不动区间图)。
+// test_sl414_min_segment —— [SL-414] MIN SEG 对段表的兜底(统筹裁定「候选 D」+ #261 首轮改
+// 「时间相接」、落点定 OutputProcessor::applyAnalysisSegments)。
 //
 // 定谳(scvb-sl414 工作树 build-sl414\sl414-verdict.md,不在仓内;四问结论已复制进 PR 描述):
 //   min_segment_ms 只在 S0(VAD core 丢短)与 S1(谷切分)被消费;S2 全局区间划分与
 //   回写层零消费 —— 用户看到的 0.21s 段 = 两轨 VAD 段交叠 210ms(> minGlobalInterval
 //   150ms)被切成独立区间,回写层按区间给每轨落了一段。
 //
-// 修法(裁定 D):回写层「区间 × 活跃轨 → 段表」之后、相邻同值合并之后,加
-// mergeShortAutoSegments(纯函数,Segmentation.h/.cpp):短 auto 段并入同轨相邻段
-// (优先前一段,值取被并入段),循环至无;整轨只剩一段保留;用户段/锁定段永不参与;
-// 不跨轨、不改区间图、不碰 §5 指派。
+// 修法真源 = masterPlan 02 §3.4 步骤 5(commit 8829bf4):兜底**不在管线里**,落点 =
+// OutputProcessor::applyAnalysisSegments 对新段做完 clash 过滤之后、写回窗裁剪之前,对该轨
+// 幸存新段跑 mergeShortAutoSegments(相接口径;用户段/锁定段永不参与;被 clash 丢掉的段
+// 留下的空档由「相接」兜住 —— 用户段天然是屏障,#261 首轮 Claude-A【重要】②)。
 //
-// 本文件收编定谳夹具的复现格与三个对照格(断言按修后行为改写)+ 纯函数直测格。
-// 夹具口径:VAD padding 置 0,让「交叠 = A 终点 − B 起点」恰好落在整 hop 上
-// (210ms = 21 hop);真机默认 padding(120/200ms)只会放大跨轨交叠,不影响方向。
+// 本文件:纯函数直测(相接/间隙/相等边界/用户段)+ 管线区间产物上的显式兜底格
+// (生产落点在 applyAnalysisSegments,真 startAnalysis 路径由 tests/host 的
+// HOST SL414 两格走)。夹具口径:VAD padding 置 0,让「交叠 = A 终点 − B 起点」
+// 恰好落在整 hop 上(210ms = 21 hop);真机默认 padding 只会放大跨轨交叠,不影响方向。
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -53,6 +54,16 @@ PipelineTrackFeatures trackWithLoud(int startHop, int endHop, int totalHops)
     f.covered.assign(f.kwMs.size(), 1u);
     f.anyCovered = true;
     return f;
+}
+
+// 在既有轨素材上追加一段有声区(与已有段间隔 ≥ mergeGap ⇒ VAD 出两个独立段)。
+void addLoud(PipelineTrackFeatures& f, int startHop, int endHop)
+{
+    for (int i = startHop; i < endHop; ++i)
+    {
+        f.kwMs[static_cast<std::size_t>(i)] = 0.05f;
+        f.peak[static_cast<std::size_t>(i)] = std::sqrt(0.05f);
+    }
 }
 
 PipelineConfig sl414Config(std::size_t numHops, int activeTracks, int minSegmentMs)
@@ -113,7 +124,7 @@ std::int64_t minSegmentLength(const std::vector<AnalysisSegment>& segs)
     {
         if (m < 0 || s.length() < m)
         {
-            m = m < 0 ? s.length() : std::min(m, s.length());
+            m = s.length();
         }
     }
     return m;
@@ -135,15 +146,18 @@ AnalysisSegment segAt(std::int64_t t0Samples, std::int64_t t1Samples, double pan
 } // namespace
 
 // ===========================================================================
-// ① 修后复现:两轨交叠 210ms + MIN SEG=2000 → 段表无 < MIN SEG 的 auto 段
+// ① 管线区间产物 + 显式兜底:两轨交叠 210ms + MIN SEG=2000 → 段表无 < MIN SEG 的段
 // ===========================================================================
 // 几何与定谳 §2.2 逐字同形:轨 0 有声 [0,800) hop、轨 1 有声 [780,1579) hop;core 终点
 // 多一 hop(§2.2 预平滑)⇒ 交叠 = [780,801) = 21 hop = 210ms,切出独立区间,回写后
-// 两轨各有一段 210ms。修前该段在场(定谳复现);修后:轨 0 的短段并入前一段
-// ⇒ [0,8.010) pan 0;轨 1 的短段无前段 ⇒ 并入后一段 ⇒ [7.800,15.790) pan 0。
-// **删除式**:去掉 AnalysisPipeline.cpp 末尾那一步 mergeShortAutoSegments 调用 ⇒
-// 本格红在「没有 < min 的 auto 段」两条 CHECK_FALSE 上(210ms 段原样回来)。
-TEST_CASE("[SL414] 修后:两轨交叠 210ms + MIN SEG=2000 → 段表无 < MIN SEG 的 auto 段", "[analysis][pipeline][SL414]")
+// 两轨各有一段 210ms。**生产落点在 applyAnalysisSegments(clash 过滤后、裁剪前)**,
+// 管线本身不做 —— 本格对管线输出显式调 mergeShortAutoSegments 断言兜底语义;
+// 真 startAnalysis 路径由 tests/host 的 HOST SL414 两格走。
+// 轨 0:短段与前段**相接**(prev.t1 == 780 == t0)⇒ 并入前一段 ⇒ [0,8.010) pan 0;
+// 轨 1:短段无前段 ⇒ 并入后一段(next.t0 == 801 == t1)⇒ [7.800,15.790) pan 0。
+// **删除式**(生产侧):去掉 applyAnalysisSegments 里的调用 ⇒ HOST SL414 (a) 红;
+// 本格的显式调用不经过那条路,删除生产调用时本格照绿 —— 红在 HOST 格,别在这里找。
+TEST_CASE("[SL414] 管线产物显式兜底:两轨交叠 210ms → 段表无 < MIN SEG 的 auto 段", "[analysis][pipeline][SL414]")
 {
     constexpr int kTotalHops = 1579;
     std::array<PipelineTrackFeatures, kPipelineTracks> features;
@@ -151,27 +165,35 @@ TEST_CASE("[SL414] 修后:两轨交叠 210ms + MIN SEG=2000 → 段表无 < MIN 
     features[1] = trackWithLoud(780, 1579, kTotalHops);
 
     const auto res = runAnalysisPipeline(features, sl414Config(kTotalHops, 2, 2000));
-    dumpPipelineTables("overlap210-fixed", res);
+    dumpPipelineTables("overlap210-raw", res);
 
     // 区间图不动:兜底只收敛段表,不为指派重新造区间(裁定 D 的边界)。
     REQUIRE(res.tracksTouched == 2);
     REQUIRE(res.intervals == 3);
 
-    const auto& s0 = res.segments[static_cast<std::size_t>(0)];
-    const auto& s1 = res.segments[static_cast<std::size_t>(1)];
+    auto s0 = res.segments[static_cast<std::size_t>(0)];
+    auto s1 = res.segments[static_cast<std::size_t>(1)];
+    // 前提(修前复现态):管线输出里两轨各有一条 210ms 短段。
+    REQUIRE(s0.size() == 2);
+    REQUIRE(s1.size() == 2);
+    CHECK(hasSegmentShorterThan(s0, 2000 * 48));
+    CHECK(hasSegmentShorterThan(s1, 2000 * 48));
 
-    // 核心判据(**删除式落点**,放在最前:注入时红在这里,不被后面的数量断言挡住):
-    // 段表里没有 < 2000ms 的 auto 段。
+    mergeShortAutoSegments(s0, 2000.0, kSr);
+    mergeShortAutoSegments(s1, 2000.0, kSr);
+    dumpPipelineTables("overlap210-merged", res);
+
+    // 核心判据:兜底后段表里没有 < 2000ms 的 auto 段。
     CHECK_FALSE(hasSegmentShorterThan(s0, 2000 * 48));
     CHECK_FALSE(hasSegmentShorterThan(s1, 2000 * 48));
 
-    // 轨 0:短段并入前一段 ⇒ 恰一段 [0, 8.010s),值取前段(pan 0)。
+    // 轨 0:短段并入前一段(相接)⇒ 恰一段 [0, 8.010s),值取前段(pan 0)。
     REQUIRE(s0.size() == 1);
     CHECK(s0[0].t0Samples == 0);
     CHECK(s0[0].t1Samples == 801 * kHopSamples);
     CHECK(s0[0].pan == Catch::Approx(0.0).margin(1e-9));
 
-    // 轨 1:短段无前段 ⇒ 并入后一段 ⇒ 恰一段 [7.800s, 15.790s),值取后一段(pan 0)。
+    // 轨 1:短段无前段 ⇒ 并入后一段(相接)⇒ 恰一段 [7.800s, 15.790s),值取后一段(pan 0)。
     REQUIRE(s1.size() == 1);
     CHECK(s1[0].t0Samples == 780 * kHopSamples);
     CHECK(s1[0].t1Samples == 1579 * kHopSamples);
@@ -179,7 +201,50 @@ TEST_CASE("[SL414] 修后:两轨交叠 210ms + MIN SEG=2000 → 段表无 < MIN 
 }
 
 // ===========================================================================
-// ② 对照:交叠 0ms → 无短段(短段成因 = 跨轨交叠切出的独立区间)
+// ② 三轨间隙几何(裁定 1 的「相接」主格):短段与前段**不相接**、与后段相接
+// ===========================================================================
+// A(轨 0)有声 [0,1000) 与 [5980,6500);B(轨 1)有声 [1000,6000)。区间切分:
+//   [0,1000){A} + [1000,1001){A,B}(10ms < 150ms → 步骤 3 吸收,平局并入前侧)
+//   ⇒ [0,1001){A};[1001,5980){B};[5980,6001){A,B}(210ms ≥ 150 → 独立区间);
+//   [6001,6501){A}。
+// A 的管线产物:[0,1001) + [5980,6001)(210ms 短)+ [6001,6501)。短段的
+//   prev.t1 = 1001 ≠ 5980(**不相接** —— 中间是 A 不活跃的 49.79s 静音间隙);
+//   next.t0 = 6001 == t1(**相接**)⇒ 并入**后**段。
+// ⇒ A 兜底后 = [0,1001) + [5980,6501),**首段 t1 不变**(仍 10.01s)。
+// **删除式**(裁定 1):去掉相接判据(改回「有前段就并前段」)⇒ 短段被并进前段,
+//   首段 t1 变成 6001 hop ⇒ 本格红在「首段 t1 == 1001 hop」那条断言上,
+//   且 A 的表会把 49.79s 的静音间隙盖成一段不存在的覆盖。
+TEST_CASE("[SL414] 相接:三轨间隙几何,短段与前段不相接 ⇒ 并入后段,首段 t1 不变", "[analysis][pipeline][SL414]")
+{
+    constexpr int kTotalHops = 6501;
+    std::array<PipelineTrackFeatures, kPipelineTracks> features;
+    features[0] = trackWithLoud(0, 1000, kTotalHops);
+    addLoud(features[0], 5980, 6500); // A 的第二段:与第一段隔 ~49.8s 静音
+    features[1] = trackWithLoud(1000, 6000, kTotalHops);
+
+    const auto res = runAnalysisPipeline(features, sl414Config(kTotalHops, 2, 2000));
+    dumpPipelineTables("gap3-raw", res);
+
+    REQUIRE(res.tracksTouched == 2);
+    auto s0 = res.segments[static_cast<std::size_t>(0)];
+    REQUIRE(s0.size() == 3); // 前提:[0,1001) + [5980,6001)(210ms 短)+ [6001,6501)
+    CHECK(hasSegmentShorterThan(s0, 2000 * 48));
+
+    mergeShortAutoSegments(s0, 2000.0, kSr);
+    dumpPipelineTables("gap3-merged", res);
+
+    REQUIRE(s0.size() == 2);
+    // 首段 t1 不变(相接判据挡住了「隔着间隙并进前段」)—— 删除式落点。
+    CHECK(s0[0].t0Samples == 0);
+    CHECK(s0[0].t1Samples == 1001 * kHopSamples);
+    // 短段并入后段:后段 t0 提前到短段起点,t1 不动。
+    CHECK(s0[1].t0Samples == 5980 * kHopSamples);
+    CHECK(s0[1].t1Samples == 6501 * kHopSamples);
+    CHECK_FALSE(hasSegmentShorterThan(s0, 2000 * 48));
+}
+
+// ===========================================================================
+// ③ 对照:交叠 0ms → 无短段(短段成因 = 跨轨交叠切出的独立区间)
 // ===========================================================================
 TEST_CASE("[SL414] 对照:交叠 0ms → 无短段(短段成因 = 跨轨交叠切出的独立区间)", "[analysis][pipeline][SL414]")
 {
@@ -200,7 +265,7 @@ TEST_CASE("[SL414] 对照:交叠 0ms → 无短段(短段成因 = 跨轨交叠�
 }
 
 // ===========================================================================
-// ② 对照:交叠 2500ms → 区间照切(3 条),段长 ≥ MIN SEG(兜底无可并对象)
+// ③ 对照:交叠 2500ms → 区间照切(3 条),段长 ≥ MIN SEG(兜底无可并对象)
 // ===========================================================================
 TEST_CASE("[SL414] 对照:交叠 2500ms → 照样切区间,段长 ≥ MIN SEG(是否违限只取决于交叠长)", "[analysis][pipeline][SL414]")
 {
@@ -223,7 +288,7 @@ TEST_CASE("[SL414] 对照:交叠 2500ms → 照样切区间,段长 ≥ MIN SEG(�
 }
 
 // ===========================================================================
-// ② 对照:交叠 130ms(< minGlobalInterval=150ms)→ 被步骤 3 吸收,无短段
+// ③ 对照:交叠 130ms(< minGlobalInterval=150ms)→ 被步骤 3 吸收,无短段
 // ===========================================================================
 // 钉住:S2 唯一的短段门槛是 150ms 常量(02 §0.3 minGlobalInterval),与 min_segment_ms 无关;
 // 吸收方保留自己的活跃集合(现行机制),被吸收交叠里**另一轨**的表覆盖悄悄短了一截。
@@ -246,48 +311,53 @@ TEST_CASE("[SL414] 对照:交叠 130ms < minGlobalInterval → 被步骤 3 吸�
 }
 
 // ===========================================================================
-// ③ 参数到达段表:同一几何,MIN SEG=50 保留 220ms 段、MIN SEG=2000 并掉
+// ④ 参数到达段表:同一张管线产物,MIN SEG=50 保留 220ms 段、MIN SEG=2000 并掉
 // ===========================================================================
 // 定谳时代(修前)本格断的是「50 与 2000 段表逐字节相同」(区间/回写层零消费的证据);
-// 修后这条等式**有意反转**:210/220ms 的段在 MIN SEG=50 下合法(≥ 50,兜底不并),
-// 在 MIN SEG=2000 下被并掉 —— 同一几何、两档参数、两张不同的段表,参数真正到达段表。
-TEST_CASE("[SL414] 修后:同一几何 MIN SEG=50 保留短段、2000 并掉(参数到达段表)", "[analysis][pipeline][SL414]")
+// 兜底落 applyAnalysisSegments 之后,管线上这一点对**两张档位的输入完全相同**(管线仍
+// 零消费 min_segment_ms),分歧由兜底产生:220ms 在 50 档合法保留、在 2000 档被并掉。
+TEST_CASE("[SL414] 同一管线产物:MIN SEG=50 保留短段、2000 并掉(参数在兜底层到达段表)", "[analysis][pipeline][SL414]")
 {
     constexpr int kTotalHops = 1579;
     std::array<PipelineTrackFeatures, kPipelineTracks> features;
     features[0] = trackWithLoud(0, 800, kTotalHops);
     features[1] = trackWithLoud(779, 1579, kTotalHops); // 交叠 [779,801) = 220ms
 
-    const auto lo = runAnalysisPipeline(features, sl414Config(kTotalHops, 2, 50));
-    const auto hi = runAnalysisPipeline(features, sl414Config(kTotalHops, 2, 2000));
-    dumpPipelineTables("minseg50", lo);
-    dumpPipelineTables("minseg2000", hi);
+    const auto res = runAnalysisPipeline(features, sl414Config(kTotalHops, 2, 50));
+    dumpPipelineTables("minseg-raw", res);
 
     for (const int t : {0, 1})
     {
-        const auto& a = lo.segments[static_cast<std::size_t>(t)];
-        const auto& b = hi.segments[static_cast<std::size_t>(t)];
+        auto lo = res.segments[static_cast<std::size_t>(t)];
+        auto hi = res.segments[static_cast<std::size_t>(t)];
+        // 前提:管线产物(两档同源)里有 220ms 短段。
+        REQUIRE(lo.size() == 2);
+        CHECK(hasSegmentShorterThan(lo, 2000 * 48));
+
+        mergeShortAutoSegments(lo, 50.0, kSr);
+        mergeShortAutoSegments(hi, 2000.0, kSr);
+
         // MIN SEG=50:220ms 段合法保留(两段,含 220ms 那条)。
-        REQUIRE(a.size() == 2);
-        CHECK_FALSE(hasSegmentShorterThan(a, 50 * 48));
-        CHECK(hasSegmentShorterThan(a, 2000 * 48)); // 220ms < 2000ms:它在,而且合法
-        // MIN SEG=2000:并入后恰一段,无 < 2000ms 的段(核心判据放最前,理由同复现格)。
-        CHECK_FALSE(hasSegmentShorterThan(b, 2000 * 48));
-        REQUIRE(b.size() == 1);
+        REQUIRE(lo.size() == 2);
+        CHECK_FALSE(hasSegmentShorterThan(lo, 50 * 48));
+        CHECK(hasSegmentShorterThan(lo, 2000 * 48)); // 220ms < 2000ms:它在,而且合法
+        // MIN SEG=2000:并入后恰一段,无 < 2000ms 的段。
+        CHECK_FALSE(hasSegmentShorterThan(hi, 2000 * 48));
+        REQUIRE(hi.size() == 1);
     }
 }
 
 // ===========================================================================
-// ④ 纯函数直测(mergeShortAutoSegments,Segmentation.h/.cpp)
+// ⑤ 纯函数直测(mergeShortAutoSegments,Segmentation.h/.cpp)
 // ===========================================================================
 
-// 无前段 ⇒ 并入后一段(提前后一段 t0),**值取被并入的那一段**(后一段的 pan/vol 保留,
-// 短段自己的 pan/vol 被丢弃 —— 交叠区间里解出的分槽值不做二次平衡)。
-TEST_CASE("[SL414] 纯函数:首段并入后一段,值取后一段", "[analysis][pipeline][SL414]")
+// 无前段 ⇒ 并入**相接**的后一段(提前后一段 t0),**值取被并入的那一段**(后一段的
+// pan/vol 保留,短段自己的 pan/vol 被丢弃 —— 交叠区间里解出的分槽值不做二次平衡)。
+TEST_CASE("[SL414] 纯函数:首段并入相接的后一段,值取后一段", "[analysis][pipeline][SL414]")
 {
     std::vector<AnalysisSegment> segs;
     segs.push_back(segAt(0, 480, -60.0, 2.0)); // 10ms,短
-    segs.push_back(segAt(480, 96000, 0.0, -3.5)); // 2000ms
+    segs.push_back(segAt(480, 96000, 0.0, -3.5)); // 2000ms,相接(next.t0 == 480 == t1)
 
     mergeShortAutoSegments(segs, 2000.0, kSr);
 
@@ -298,13 +368,13 @@ TEST_CASE("[SL414] 纯函数:首段并入后一段,值取后一段", "[analysis]
     CHECK(segs[0].volDb == Catch::Approx(-3.5));
 }
 
-// 优先并入前一段(延长前一段 t1);连续短段在同一轮里逐个被吸进前侧。
-TEST_CASE("[SL414] 纯函数:短段并入前一段,连续短段循环并入", "[analysis][pipeline][SL414]")
+// 优先并入**相接**的前一段(延长前一段 t1);连续短段在同一轮里逐个被吸进前侧。
+TEST_CASE("[SL414] 纯函数:短段并入相接的前一段,连续短段循环并入", "[analysis][pipeline][SL414]")
 {
     std::vector<AnalysisSegment> segs;
     segs.push_back(segAt(0, 96000, 1.0, -1.0)); // 2000ms
-    segs.push_back(segAt(96000, 97000, -60.0, 2.0)); // 10ms,短
-    segs.push_back(segAt(97000, 97500, 60.0, 3.0)); // 5ms,短(连续)
+    segs.push_back(segAt(96000, 97000, -60.0, 2.0)); // 10ms,短,相接
+    segs.push_back(segAt(97000, 97500, 60.0, 3.0)); // 5ms,短,相接(连续)
     segs.push_back(segAt(97500, 288000, -1.0, -2.0)); // 2000ms+
 
     mergeShortAutoSegments(segs, 2000.0, kSr);
@@ -317,6 +387,39 @@ TEST_CASE("[SL414] 纯函数:短段并入前一段,连续短段循环并入", "[
     CHECK(segs[1].t0Samples == 97500);
     CHECK(segs[1].t1Samples == 288000);
     CHECK(segs[1].pan == Catch::Approx(-1.0));
+}
+
+// [第 1 推·裁定 1] **带间隙不并**:短段与相邻段时间上不相接(隔着静音间隙)⇒ 原地保留。
+// 「表内相邻」不等于「相接」—— 并进去会把静音间隙盖成一段不存在的覆盖。
+TEST_CASE("[SL414] 纯函数:带间隙(不相接)⇒ 原地保留", "[analysis][pipeline][SL414]")
+{
+    std::vector<AnalysisSegment> segs;
+    segs.push_back(segAt(0, 48000, 1.0, -1.0)); // 1000ms,短(< 2000ms)
+    segs.push_back(segAt(96000, 97000, -60.0, 2.0)); // 10ms,短;与前者隔 1s 间隙
+    // 间隙之后再来一条长段,钉住「后段也不吸收不相接的短段」。
+    segs.push_back(segAt(192000, 288000, -1.0, -2.0)); // 2000ms,与短段隔 2s 间隙
+
+    mergeShortAutoSegments(segs, 2000.0, kSr);
+
+    REQUIRE(segs.size() == 3); // 三段原地保留:两条短段都没有相接的邻居
+    CHECK(segs[0].t1Samples == 48000); // 首段 t1 不被拉长
+    CHECK(segs[1].t0Samples == 96000);
+    CHECK(segs[1].t1Samples == 97000);
+    CHECK(segs[2].t0Samples == 192000);
+}
+
+// [第 1 推·裁定 1] **恰好等于 MIN SEG 保留**:「< minSegmentMs」是严格小于,等于不算短。
+TEST_CASE("[SL414] 纯函数:恰好等于 MIN SEG 的段保留", "[analysis][pipeline][SL414]")
+{
+    std::vector<AnalysisSegment> segs;
+    segs.push_back(segAt(0, 96000, 1.0, -1.0)); // 恰好 2000ms
+    segs.push_back(segAt(96000, 192000, -1.0, -2.0)); // 恰好 2000ms,相接
+
+    mergeShortAutoSegments(segs, 2000.0, kSr);
+
+    REQUIRE(segs.size() == 2); // 两段都 = MIN SEG ⇒ 都保留,不并
+    CHECK(segs[0].t1Samples == 96000);
+    CHECK(segs[1].t0Samples == 96000);
 }
 
 // 整轨只剩一段时保留(S0 已保证 core ≥ min;孤段只会来自窗边裁剪,[SL-399 R8] 那条账)。
@@ -332,14 +435,13 @@ TEST_CASE("[SL414] 纯函数:整轨只剩一段时保留", "[analysis][pipeline]
     CHECK(segs[0].t1Samples == 960);
 }
 
-// 用户段(origin != Auto)/锁定段永不参与:短用户段自己不被并;
-// 两侧都不是 auto 的短 auto 段原地保留(防御分支,见 Segmentation.h 头注)。
+// 用户段(origin != Auto)/锁定段永不参与:短用户段自己不被并;用户段也不吸收别人。
 TEST_CASE("[SL414] 纯函数:用户段 / 锁定段永不参与", "[analysis][pipeline][SL414]")
 {
     // 短用户段:不并,邻段也不动。
     std::vector<AnalysisSegment> user;
     user.push_back(segAt(0, 480, 5.0, 0.0, Origin::UserEdited)); // 10ms,用户段
-    user.push_back(segAt(480, 96000, 0.0)); // 2000ms auto
+    user.push_back(segAt(480, 96000, 0.0)); // 2000ms auto,相接
     mergeShortAutoSegments(user, 2000.0, kSr);
     REQUIRE(user.size() == 2);
     CHECK(user[0].t0Samples == 0);
@@ -356,7 +458,8 @@ TEST_CASE("[SL414] 纯函数:用户段 / 锁定段永不参与", "[analysis][pip
     CHECK(lockedCase[0].t0Samples == 0);
     CHECK(lockedCase[0].t1Samples == 480);
 
-    // 短 auto 段夹在两条用户段之间:没有可并入的 auto 邻段 ⇒ 原地保留。
+    // 短 auto 段夹在两条用户段之间:时间上相接但两侧都不是 auto ⇒ 原地保留
+    // (用户段屏障;与生产侧「clash 过滤丢掉与用户段重叠的新段」留下的空档同形)。
     std::vector<AnalysisSegment> sandwich;
     sandwich.push_back(segAt(0, 96000, 0.0, 0.0, Origin::UserCreated)); // 用户段
     sandwich.push_back(segAt(96000, 96480, -60.0)); // 10ms,短 auto,两侧都是用户段

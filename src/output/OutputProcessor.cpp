@@ -3845,8 +3845,23 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             }
         }
 
-        std::vector<scvb::state::Segment> next;
-        next.reserve(src.size() + kept.size());
+        // ---- [SL-414 第 1 推] 三段式:clash 过滤 → 段表兜底并入 → 裁剪落笔 --------------
+        // 顺序的真源 = masterPlan 02 §3.4 步骤 5(commit 8829bf4):兜底在新段做完 clash
+        // 过滤**之后**、写回窗裁剪**之前**,对该轨「幸存新段」跑。
+        //
+        // **为什么兜底必须在 clash 过滤之后**(#261 首轮 Claude-A【重要】②):并入后的长段
+        // 可能与既有用户段 clash —— 若在管线里并、到这里再过滤,「与用户段重叠的 210ms 短段」
+        // 会把并出来的整条长段一起拖进 clash,从「丢 210ms 那条」升级成「丢整条」。先过滤:
+        // 与用户段重叠的新段整条落选,留下的空档由兜底的「相接」判据兜住(幸存新段在空档
+        // 两侧不相接 ⇒ 不并),用户段天然是屏障,长段不再跨用户段。
+        //
+        // **裁剪为什么留在最后**:整条时间线重分析(range = 全覆盖)时裁剪是恒等变换,兜底
+        // 看到的就是管线区间产物原样;选区/范围档重分析时,裁剪在兜底**之后**才发生 ⇒ 窗边
+        // 裁出的残段([SL-399 R8] 那条账)在兜底眼里不存在,照旧按 R8 的口径留在段表里
+        // (spec 8829bf4 的语序)。实现上 clash 判据用**裁剪后**的几何(与改造前逐字同形,
+        // 否则全量产出的新段会与窗外 kept auto 段在 raw 域假性相交、把整条产出错杀)。
+        std::vector<scvb::analysis::AnalysisSegment> survivors;
+        survivors.reserve(src.size());
         for (const auto& as : src)
         {
             // [SL-399] **新段按写回窗裁剪**(不是「相交就整段写」)。计算窗放宽到整条时间线之后,
@@ -3866,24 +3881,18 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             // **频率变高了**:计算窗恒覆盖整条时间线,于是首末两段几乎总要被裁一次,而改造前
             // 只有「scope 边界恰好落在 VAD 段内部」时才现形。UI 对最短段的展示假设(段块最小
             // 可点宽度 / 检查器的「起止」可编辑性)此前就是按这个形态成立的,没有新增前提;
-            // 真要为它开一刀(比如裁完把不足下限的残段并进邻段)那是独立的产品语义改动。
+            // 兜底(下一段)在本步**之后**才跑,窗边残段在兜底眼里不存在 ⇒ R8 的账不动。
             const std::int64_t clippedT0 = std::max(as.t0Samples, rangeStartSample);
             const std::int64_t clippedT1 = std::min(as.t1Samples, rangeEndSample);
             if (clippedT1 <= clippedT0)
             {
                 continue; // 完全在窗外的产出:丢掉(它的信息属于窗外,不该在这里落笔)
             }
-            scvb::state::Segment seg;
-            seg.t0 = clippedT0;
-            seg.t1 = clippedT1;
-            seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
-            seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
-            seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
             // 与保留段重叠则让位(用户段优先;范围外 auto 段本就不该与范围内产出重叠)。
             bool clash = false;
             for (const auto& k : kept)
             {
-                if (seg.t0 < k.t1 && k.t0 < seg.t1)
+                if (clippedT0 < k.t1 && k.t0 < clippedT1)
                 {
                     clash = true;
                     break;
@@ -3891,8 +3900,33 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             }
             if (!clash)
             {
-                next.push_back(seg);
+                scvb::analysis::AnalysisSegment s;
+                s.t0Samples = clippedT0;
+                s.t1Samples = clippedT1;
+                s.pan = as.pan;
+                s.volDb = as.volDb;
+                s.origin = scvb::analysis::Origin::Auto;
+                survivors.push_back(s);
             }
+        }
+
+        // [SL-414] 段表兜底(相接口径与「值取被并入段」见 Segmentation.h 头注):对幸存新段
+        // 跑,users/locked 不在幸存列表里(它们在 kept)且相接判据保证绝不并过被 clash 丢掉
+        // 的空档 —— 两侧语义在此会合。
+        mergeShortAutoSegments(survivors, static_cast<double>(runtime_.segmentationMinSegmentMs),
+                               sampleRate_.load(std::memory_order_relaxed));
+
+        std::vector<scvb::state::Segment> next;
+        next.reserve(survivors.size() + kept.size());
+        for (const auto& s : survivors)
+        {
+            scvb::state::Segment seg;
+            seg.t0 = s.t0Samples;
+            seg.t1 = s.t1Samples;
+            seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(s.pan));
+            seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(s.volDb));
+            seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+            next.push_back(seg);
         }
         next.insert(next.end(), kept.begin(), kept.end());
         std::sort(next.begin(), next.end(),
