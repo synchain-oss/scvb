@@ -329,6 +329,19 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         }
     }
 
+    // [SL-414] 段表兜底(统筹裁定「候选 D」:段级、每轨独立,不动区间图)。
+    // §3.4 的区间切分/合并与这里的回写都不消费 min_segment_ms:两轨 core 段各自 ≥ MIN SEG,
+    // 但交叠 ≥ 150ms 时切出的**区间**可以比 MIN SEG 短,回写按区间落段 ⇒ 段表出现 < MIN SEG
+    // 的段(用户 A20 回验:MIN SEG=2000 下仍有 0.21s 的段)。在这里把每轨短于 minSegmentMs
+    // 的 auto 段并入同轨相邻段(优先前一段,值取被并入段;用户段/锁定段不参与)。
+    // 语义、不改写范围与「整轨只剩一段保留」的口径逐字见 mergeShortAutoSegments 头注
+    // (Segmentation.h);区间图(result.intervals)与 §5 指派的输入一个字节没动 —— 本步只
+    // 收敛**段表**,不为指派重新造区间。
+    for (int t = 0; t < kPipelineTracks; ++t)
+    {
+        mergeShortAutoSegments(result.segments[static_cast<std::size_t>(t)], cfg.segmentation.minSegmentMs, sr);
+    }
+
     report(onProgress, 1.0f);
     return result;
 }

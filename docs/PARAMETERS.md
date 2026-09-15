@@ -52,6 +52,9 @@ global:
 analysis:
   vad: {threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}   # 默认宁多勿少(J23 拆分,默认 120/200)
   segmentation: {mode, sensitivity, min_segment_ms}
+  # min_segment_ms = 每轨最短**自动**段长,两层生效([SL-414]):① VAD 核心丢短(02 §2.3 P1,
+  # 在前后留白之前判定);② 段表兜底 —— 回写层成形的段表里短于它的 auto 段并入同轨相邻段
+  # (优先前一段,值取被并入段;用户段/锁定段不参与)。手动段不受影响。
   transition_ramp_ms: 80
   loudness_mode: "kw_integrated"|"rms"|"peak_dbfs"            # [J69/U24①] 第二响度指标口径,默认 "kw_integrated"
   center_slot_policy: "priority_queue"|"lead_exclusive"|"even_spread"   # [J69/U24④] 中心槽策略,默认 "priority_queue"

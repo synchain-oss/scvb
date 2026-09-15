@@ -633,4 +633,62 @@ std::vector<AnalysisSegment> mergeTrackSegments(const std::vector<AnalysisSegmen
     return out;
 }
 
+// [SL-414] 短自动段兜底并入 —— 语义与不改写范围见 Segmentation.h 本函数头注(真源口径:
+// 统筹裁定「候选 D」,段级每轨独立;实现落在回写层同值合并之后,AnalysisPipeline.cpp)。
+void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, const double minSegmentMs, const double sampleRate)
+{
+    if (segments.size() < 2 || minSegmentMs <= 0.0 || sampleRate <= 0.0)
+    {
+        return;
+    }
+    const double minSamples = minSegmentMs * sampleRate / 1000.0;
+
+    std::size_t i = 0;
+    while (i < segments.size())
+    {
+        // 整轨只剩一段:保留(S0 保证 core ≥ min;孤段只会来自窗边裁剪,[SL-399 R8] 那条账)。
+        if (segments.size() == 1)
+        {
+            break;
+        }
+
+        const AnalysisSegment& s = segments[i];
+        // 用户段 / 锁定段永不参与(既不被并、也不吸收)—— 它们本来就不经分析重切。
+        if (s.isUserSegment())
+        {
+            ++i;
+            continue;
+        }
+        if (static_cast<double>(s.length()) >= minSamples)
+        {
+            ++i;
+            continue;
+        }
+
+        // 短 auto 段:优先并入前一段(前一段存在且是 auto),否则并入后一段。
+        // 值取被并入的那一段(survivor 的 pan/vol 原样保留)。
+        const bool hasAutoPrev = i > 0 && !segments[i - 1].isUserSegment();
+        const bool hasNextAuto = i + 1 < segments.size() && !segments[i + 1].isUserSegment();
+        if (hasAutoPrev)
+        {
+            segments[i - 1].t1Samples = s.t1Samples; // 延长前一段的 t1
+            segments.erase(segments.begin() + static_cast<std::ptrdiff_t>(i));
+            // i 不动:吸收方变长后不会变短,下一位(新落位到 i 的段)接着查 —— 连续短段
+            // 在同一轮里被逐个吸进前侧。
+        }
+        else if (hasNextAuto)
+        {
+            segments[i + 1].t0Samples = s.t0Samples; // 提前后一段的 t0
+            segments.erase(segments.begin() + static_cast<std::ptrdiff_t>(i));
+            // erase 之后原「后一段」落在 i 上:它被拉长了,但也可能仍然短(极端素材),
+            // 不前进、下一轮重查它。
+        }
+        else
+        {
+            // 两侧都不是可并入的 auto 段(纯函数层防御分支,见头注):原地保留,继续扫。
+            ++i;
+        }
+    }
+}
+
 } // namespace scvb::analysis

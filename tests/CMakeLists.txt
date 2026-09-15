@@ -47,6 +47,7 @@ add_executable(scvb_tests
   core/analysis_coverage_test.cpp
   core/test_segment_diff.cpp
   core/test_analysis_pipeline.cpp
+  core/test_sl414_min_segment.cpp
   core/test_design_box.cpp
   core/test_state_codec.cpp
   core/test_state_features_roundtrip.cpp

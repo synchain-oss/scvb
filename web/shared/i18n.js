@@ -931,7 +931,7 @@ export const T = {
         // 02 §2.3 后处理 P1 逐字:「core 段长 < minSegmentMs → **丢弃**」,且在
         // padding 之前判定。**不是**并进邻段(合并是内部常量 mergeGap,不暴露)。
         "wave.tipMinSeg":
-            "最短段长:短于此长度的段会被直接丢弃(在前后留白之前判定),用于过滤杂音,但也会丢掉短促的 ad-lib 与单字和声(默认 {d})",
+            "最短段长:短于它的自动段会被丢掉或并入相邻段(在前后留白之前判定),用于过滤杂音,但也会丢掉短促的 ad-lib 与单字和声;手动段不受影响(默认 {d})",
         // 泳道空态(05 §2.3 行 318 逐字;A-17)
         "wave.emptyMain": "尚无采集数据——开启采集开关并播放",
         "wave.emptyCta": "去 Tab1 打开采集",
@@ -1818,7 +1818,7 @@ export const T = {
         "wave.tipSensitivity":
             "Segmentation sensitivity: higher splits more readily at energy valleys. Only applies to segments longer than 8 s, so short phrases will not change (default {d})",
         "wave.tipMinSeg":
-            "Minimum segment length: shorter segments are discarded (judged before padding) to filter noise, but it also drops brief ad-libs and single-note harmonies (default {d})",
+            "Minimum segment length: automatic segments shorter than it are dropped or merged into a neighbour (judged before padding) to filter noise, but it also drops brief ad-libs and single-note harmonies; manually edited segments are unaffected (default {d})",
         "wave.emptyMain":
             "No captured data yet — turn on the capture switch and play",
         "wave.emptyCta": "Open capture in Tab 1",
@@ -2676,7 +2676,7 @@ export const T = {
         "wave.tipSensitivity":
             "Sensibilité de segmentation : plus elle est haute, plus on coupe aux creux d\u2019énergie. N\u2019agit que sur les segments de plus de 8 s, donc sans effet sur les phrases courtes (défaut {d})",
         "wave.tipMinSeg":
-            "Longueur minimale de segment : les segments plus courts sont supprimés (jugé avant les marges) pour filtrer le bruit, mais cela supprime aussi les ad-libs brefs et les harmonies d'une note (défaut {d})",
+            "Longueur minimale de segment : les segments automatiques plus courts sont supprimés ou fusionnés avec un segment voisin (jugé avant les marges) pour filtrer le bruit, mais cela supprime aussi les ad-libs brefs et les harmonies d'une note ; les segments manuels ne sont pas affectés (défaut {d})",
         "wave.emptyMain":
             "Aucune donnée capturée — activez l'interrupteur de capture puis lancez la lecture",
         "wave.emptyCta": "Ouvrir la capture dans l'onglet 1",
