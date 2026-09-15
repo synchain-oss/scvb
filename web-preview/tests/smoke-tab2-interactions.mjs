@@ -395,6 +395,63 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
                 /AnalysisDoneReason pendingAnalyzedReason_/.test(oeh),
             "[SL-255] 闩锁存的是 reason 枚举,不是 bool(退回 bool 会丢松手档的 reason)",
         );
+        // ------------------------------------------------------------------
+        // [SL-412] `scvb.error{newerState}` 的**调用点钉子**。
+        //
+        // 为什么一颗 C++ 钉子又落在这里:与上面 [SL-199] 那一组同一条理由 ——
+        // `OutputEditor.cpp` 编不进任何 C++ 测试目标(要真 WebView2;`scvb_host_tests`
+        // 连 `createEditor` 都是桩),于是 `BRIDGEARGS-SL412` 那组纯函数用例只守得住
+        // `planNewerStateEmit` **本身**,守不到「`emitTick` 还在调它」「载荷真的按 §2.9
+        // 的信封发出去」「闩锁真的按 plan 回填」这三跳。退化改法(把调用挪进
+        // `if (tickCount_ % 25 == 0)`、或干脆把 `emitNewerStateError()` 那行删掉、
+        // 或记账写成无条件推进)在 C++ 单测里**全绿**而缺陷原样回归。
+        //
+        // ⚠ 负向/正向都带**行形态**约束,理由同上面那段:`src()` 读整个文件、不区分代码与
+        // 注释,而 `BridgeArgs.h` 与 `OutputEditor.cpp` 的注释里就逐字写着这些名字
+        // (本卡刚写的那几段头注里全都有)—— 不约束行形态的话,钉子在**没有任何行为退化**
+        // 的情况下就会被注释喂饱而恒真。
+        check(
+            /^[ \t]*emitNewerStateError\(\);[ \t]*$/m.test(oe),
+            "[SL-412] emitTick 真的调了 emitNewerStateError(不是只定义了没人调)",
+        );
+        check(
+            /scvb::output::planNewerStateEmit\(processor_\.hasStateAbiMismatch\(\), processor_\.stateAbiSeen\(\),/.test(
+                oe,
+            ),
+            "[SL-412] 现场三个值取自 processor 的两个 getter + webView 可见性,判定走纯函数",
+        );
+        check(
+            /emitError\("newerState", 0, detail, plan\.active\);/.test(oe),
+            "[SL-412] 载荷按 §2.9 信封发出(不带 ch:这一条是页级条件)",
+        );
+        check(
+            /put\(detail, "localAbi", static_cast<int>\(scvb::state::kCurrentAbi\)\);/.test(
+                oe,
+            ) &&
+                /put\(detail, "projectAbi", static_cast<int>\(processor_\.stateAbiSeen\(\)\)\);/.test(
+                    oe,
+                ),
+            "[SL-412] detail 的两个数与 §5.1 表逐字同形(localAbi / projectAbi)",
+        );
+        // ⚠ 这三条**必须带行形态锚**(`^[ \t]*…[ \t]*$` + `m`),理由同上:`src()` 读整个文件、
+        // 不区分代码与注释。第一版这三条写的是裸 `test()`,实测把
+        // `std::uint32_t newerStateShownAbi_ = 0;` **整行注释掉**之后照样全绿 ——
+        // 注释里那串字面把钉子喂饱了,而它自称断的正是「这一位还在」。删除式 D4c 抓到的
+        // 就是这个洞(与 #261 那次「回扫自己给自己发合格证」同一个形态)。
+        check(
+            /^[ \t]*newerStateShown_ = plan\.nextShown;[ \t]*$/m.test(oe) &&
+                /^[ \t]*newerStateShownAbi_ = plan\.nextShownAbi;[ \t]*$/m.test(
+                    oe,
+                ),
+            "[SL-412] 闩锁按 plan 回填(无条件推进会让不可见期那一份变化被永久吞掉)",
+        );
+        check(
+            /^[ \t]*bool newerStateShown_ = false;[ \t]*$/m.test(oeh) &&
+                /^[ \t]*std::uint32_t newerStateShownAbi_ = 0;[ \t]*$/m.test(
+                    oeh,
+                ),
+            "[SL-412] 闩锁是「屏上有没有 + 写的是哪个 abi」两位,不是单个 bool",
+        );
         // [SL-255 复审②] `armResegment` 必须落在 `if (changed)` **之外**。
         //
         // 为什么只能在源码形态上钉:这两个 handler 属 `OutputEditor.cpp`,只编进插件目标,

@@ -1,7 +1,7 @@
 # PARAMETERS —— SCVB 自动化参数表(冻结契约)
 
 > 状态: 冻结
-> 最后更新: 2026-08-25(J81 修宪转正;内容依据 `docs/constitution/params-v0.md` **v2.3**——**123 参数表逐字未改**)
+> 最后更新: 2026-09-15([SL-413] `analysis.segmentation.mode` 标注为 **v1 保留位** —— UI 不露出、引擎不消费、恒写 0=valley;§四 命名与兼容规则那条「读到高版本 → 拒载并提示升级」补上 [SL-412] 的接线实况。**123 参数表逐字未改**、ParamID / index / 顺序 / versionHint 一个字节未动,详见 `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`);上一次更新 2026-08-25(J81 修宪转正;内容依据 `docs/constitution/params-v0.md` **v2.3**——**123 参数表逐字未改**)
 > 真源: 本文件(由 `docs/constitution/params-v0.md` 蒸馏转正)
 
 > ⛔ **本文件是冻结契约。** 修改前必读 `CONTRIBUTING.md` §8 与 `CLAUDE.md` §7。未经批准的改动 PR 会被直接关闭。
@@ -52,6 +52,10 @@ global:
 analysis:
   vad: {threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}   # 默认宁多勿少(J23 拆分,默认 120/200)
   segmentation: {mode, sensitivity, min_segment_ms}
+  # mode = **v1 保留位**([SL-413],用户 2026-09-14 裁 ②;真源 02 §0.3):UI 不露出
+  # (全仓没有对应控件)、引擎不消费(`SegmentationParams` 里没有 `mode`,恒按 valley 走 S1),
+  # 生产路径恒写 0=valley;`vad_only` 的语义留待接线那张卡启用。**CFGS 布局与 abi 不动**
+  # (abi 仍为 4),读侧仍按原样往返 —— 「恒写 0」是生产路径的实况,不是编解码的不变量。
   # min_segment_ms = 每轨最短**自动**段长,两层生效([SL-414]):① VAD 核心丢短(02 §2.3 P1,
   # 在前后留白之前判定);② 段表兜底 —— 回写层成形的段表里短于它的 auto 段并入同轨**时间相接**
   # 的相邻段(值取被并入段;用户段/锁定段不参与)。手动段不受影响。整条时间线重新分析后,段表里
@@ -96,5 +100,5 @@ ui: {scale, language}
 ## 四、命名与兼容规则
 
 - ParamID 字符串与 index 双冻结;VST3 参数 ID 由 JUCE 从 ParamID hash——**首个 release 后不可改 ParamID**
-- state chunk 带 `abi` 字段;读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格
+- state chunk 带 `abi` 字段;读到高版本 → 拒载并提示升级;读到低版本 → 迁移函数升格(**本条是要求,不是「已接线」的事实断言**:[SL-412] 起 **Output 侧**已按 §2.9 发 `scvb.error{newerState}` 到红横幅④,**Input 侧同一通路仍未接线**,CRVS minor 那一支也未接线 —— 实况口径见 `docs/STATE_SCHEMA.md` §三)
 - 显示名可在 UI/i18n 层变化,ParamID/index 不动
