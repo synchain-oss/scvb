@@ -4846,10 +4846,18 @@ log("=== ⑮ SL-416:VAD 五杆 + 过渡 ramp 的刻度/默认值与 native 逐�
         const hi = codecNum(`${prefix}Max`);
         const def = codecNum(`${prefix}Default`);
         check(
-            !!s && Number.isFinite(lo) && Number.isFinite(hi) && Number.isFinite(def),
+            !!s &&
+                Number.isFinite(lo) &&
+                Number.isFinite(hi) &&
+                Number.isFinite(def),
             `(a) 取到 ${field} 两侧的定义(codec 实得 ${lo}..${hi} / def ${def})`,
         );
-        if (s && Number.isFinite(lo) && Number.isFinite(hi) && Number.isFinite(def)) {
+        if (
+            s &&
+            Number.isFinite(lo) &&
+            Number.isFinite(hi) &&
+            Number.isFinite(def)
+        ) {
             eq(
                 [s.min, s.max],
                 [lo, hi],
@@ -4890,8 +4898,9 @@ log("=== ⑮ SL-416:VAD 五杆 + 过渡 ramp 的刻度/默认值与 native 逐�
     // ⇒ 本格两条断言都红,而 (a)/(b)/(c) 仍绿。
     {
         const editorSrc = src("src/output/OutputEditor.cpp");
-        const setVad =
-            /void OutputEditor::handleSetVadParams[\s\S]*?\n}/.exec(editorSrc);
+        const setVad = /void OutputEditor::handleSetVadParams[\s\S]*?\n}/.exec(
+            editorSrc,
+        );
         check(!!setVad, "(f) 取到 handleSetVadParams 的函数体");
         if (setVad) {
             const body = setVad[0];
