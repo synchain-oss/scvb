@@ -633,4 +633,76 @@ std::vector<AnalysisSegment> mergeTrackSegments(const std::vector<AnalysisSegmen
     return out;
 }
 
+// [SL-414] 短自动段兜底并入 —— 语义与不改写范围见 Segmentation.h 本函数头注(真源口径:
+// masterPlan 02 §3.4 步骤 5,commit 8829bf4 起「时间相接」并定落点 applyAnalysisSegments)。
+void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, const double minSegmentMs, const double sampleRate)
+{
+    if (segments.size() < 2 || minSegmentMs <= 0.0 || sampleRate <= 0.0)
+    {
+        return;
+    }
+    const double minSamples = minSegmentMs * sampleRate / 1000.0;
+
+    std::size_t i = 0;
+    while (i < segments.size())
+    {
+        // 整轨只剩一段:保留 —— S0 只保证 **core** ≥ min,这一段仍可能短于 minSegmentMs:
+        // 它可能是写回窗边裁出来的([SL-399 R8]),也可能是「邻段因与用户段/锁定段 clash 而
+        // 整条落选」后剩下的孤段(与裁剪无关,整条时间线重分析时同样会出)。没有可并入的对象
+        // ⇒ 原样保留(与「两侧都不相接」同一档)。
+        if (segments.size() == 1)
+        {
+            break;
+        }
+
+        const AnalysisSegment& s = segments[i];
+        // 用户段 / 锁定段永不参与(既不被并、也不吸收)—— 它们本来就不经分析重切。
+        if (s.isUserSegment())
+        {
+            ++i;
+            continue;
+        }
+        if (static_cast<double>(s.length()) >= minSamples)
+        {
+            ++i;
+            continue;
+        }
+
+        // 短 auto 段:并入同轨**时间相接**的段(02 §3.4 步骤 5 的「相接」口径):
+        //   · 前一段存在、是 auto、且前一段 t1 == 本段 t0 ⇒ 并入前一段(延长其 t1);
+        //   · 否则后一段存在、是 auto、且后一段 t0 == 本段 t1 ⇒ 并入后一段(提前其 t0);
+        //   · 两侧都不相接 ⇒ 原地保留 —— 「相邻」不等于「相接」:表内相邻但时间上隔着
+        //     该轨不活跃的区间(静音间隙、或被 clash 过滤丢掉的段留下的空档)时,并进去
+        //     会把间隙盖进前一段/后一段,段表凭空多出一段不存在的覆盖。**孤段有两条来路**
+        //     (与 `:649-651` / `Segmentation.h:152-155` 同口径):① 写回窗边裁剪 —— 长段被窗
+        //     裁出来的残段,归 [SL-399 R8] 那条账;② **邻段因与用户段/锁定段 clash 而整条
+        //     落选**,它留下的空档让相邻那条短产出两侧都不相接 —— 这条与写回窗无关,
+        //     **整条时间线重分析(裁剪恒等)时同样会出**。
+        // 值取被并入的那一段(survivor 的 pan/vol 原样保留)。
+        const bool prevTouching = i > 0 && segments[i - 1].t1Samples == s.t0Samples;
+        const bool nextTouching = i + 1 < segments.size() && segments[i + 1].t0Samples == s.t1Samples;
+        const bool hasAutoPrev = prevTouching && !segments[i - 1].isUserSegment();
+        const bool hasNextAuto = !hasAutoPrev && nextTouching && !segments[i + 1].isUserSegment();
+        if (hasAutoPrev)
+        {
+            segments[i - 1].t1Samples = s.t1Samples; // 延长前一段的 t1
+            segments.erase(segments.begin() + static_cast<std::ptrdiff_t>(i));
+            // i 不动:吸收方变长后不会变短,下一位(新落位到 i 的段)接着查 —— 连续短段
+            // 在同一轮里被逐个吸进前侧。
+        }
+        else if (hasNextAuto)
+        {
+            segments[i + 1].t0Samples = s.t0Samples; // 提前后一段的 t0
+            segments.erase(segments.begin() + static_cast<std::ptrdiff_t>(i));
+            // erase 之后原「后一段」落在 i 上:它被拉长了,但也可能仍然短(极端素材),
+            // 不前进、下一轮重查它。
+        }
+        else
+        {
+            // 两侧都不相接(或相邻的是用户段):原地保留,继续扫。
+            ++i;
+        }
+    }
+}
+
 } // namespace scvb::analysis

@@ -2745,6 +2745,11 @@ public:
             owner_.pendingAnalysis_.fullScope = owner_.analysisFullScope_;
             owner_.pendingAnalysis_.resegmentReason = owner_.analysisResegmentReason_;
             owner_.pendingAnalysis_.analyzedTracks = owner_.analysisTracksMask_;
+            // [SL-414 第 2 推] 段表兜底的两个入参同样**随作业走**(R3/R9 同款):值 = 本作业
+            // `config_.segmentation.minSegmentMs` / `config_.sampleRate`(startAnalysis 装配),
+            // 写回时刻不在 `runtime_`/`sampleRate_` 上重取。
+            owner_.pendingAnalysis_.minSegmentMs = config_.segmentation.minSegmentMs;
+            owner_.pendingAnalysis_.sampleRate = config_.sampleRate;
             owner_.pendingAnalysis_.valid = true;
         }
         owner_.triggerAsyncUpdate();
@@ -2827,7 +2832,7 @@ void ScvbOutputAudioProcessor::handleAsyncUpdate()
     }
     finishAnalysis(std::move(pending.result), pending.rangeStartSample, pending.rangeEndSample, pending.applyFirstHop,
                    pending.applyLastHop, pending.clearManual, pending.fullScope, pending.resegmentReason,
-                   pending.analyzedTracks);
+                   pending.analyzedTracks, pending.minSegmentMs, pending.sampleRate);
 }
 
 ScvbOutputAudioProcessor::AnalyzeAccepted ScvbOutputAudioProcessor::previewAnalysis(std::uint16_t tracksMask,
@@ -3487,7 +3492,8 @@ void ScvbOutputAudioProcessor::cancelAnalysis()
 void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
                                               std::int64_t rangeEndSample, std::uint64_t applyFirstHop,
                                               std::uint64_t applyLastHop, bool clearManual, bool fullScope,
-                                              AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks)
+                                              AnalysisDoneReason resegmentReason, std::uint16_t analyzedTracks,
+                                              double minSegmentMs, double sampleRate)
 {
     {
         const juce::ScopedLock lock(lifecycleMutex_);
@@ -3640,7 +3646,8 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
             // (整个函数唯一的赋值目标),所以「应用 → 还原 → 在事务里重放」与「直接在
             // 事务里跑一次」逐字节等价;代价是多跑一遍纯内存的合并循环,相对整条流水线
             // 可忽略。
-            applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual, analyzedTracks);
+            applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual, analyzedTracks, minSegmentMs,
+                                  sampleRate);
 
             // 判据从「有没有产出」升级成「段表到底变没变」([SL-255] 复审②的连带)。
             //
@@ -3694,7 +3701,8 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
                 scvb::output::commitCrvsTransaction(
                     authority_.undoManager(), crvsData_, txnName,
                     [&] {
-                        applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual, analyzedTracks);
+                        applyAnalysisSegments(result, rangeStartSample, rangeEndSample, clearManual, analyzedTracks,
+                                              minSegmentMs, sampleRate);
                     },
                     [this] { rebuildAllCurves(); });
                 // [SL-279] **同一条撤销步**:commitCrvsTransaction 内部刚 beginNewTransaction 过,
@@ -3757,7 +3765,8 @@ void ScvbOutputAudioProcessor::finishAnalysis(scvb::analysis::PipelineResult res
 // commitCrvsTransaction 的 mutator)。调用方须已持 lifecycleMutex_。
 void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::PipelineResult& result,
                                                      std::int64_t rangeStartSample, std::int64_t rangeEndSample,
-                                                     bool clearManual, std::uint16_t writeMask)
+                                                     bool clearManual, std::uint16_t writeMask, double minSegmentMs,
+                                                     double sampleRate)
 {
     auto& version = crvsData_.versions[static_cast<std::size_t>(versionActive_ - 1)];
 
@@ -3845,8 +3854,39 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             }
         }
 
-        std::vector<scvb::state::Segment> next;
-        next.reserve(src.size() + kept.size());
+        // ---- [SL-414 第 2 推] 三段式:clash 过滤 → 段表兜底并入 → 裁剪落笔 ---------------
+        // 顺序的真源 = masterPlan 02 §3.4 步骤 5(commit 8829bf4):兜底在新段做完 clash
+        // 过滤**之后**、写回窗裁剪**之前**,对该轨「幸存新段」跑。
+        //
+        // **为什么兜底必须在 clash 过滤之后**(#261 首轮 Claude-A【重要】②):并入后的长段
+        // 可能与既有用户段 clash —— 若在管线里并、到这里再过滤,「与用户段重叠的 210ms 短段」
+        // 会把并出来的整条长段一起拖进 clash,从「丢 210ms 那条」升级成「丢整条」。先过滤:
+        // 与用户段重叠的新段整条落选,留下的空档由兜底的「相接」判据兜住(幸存新段在空档
+        // 两侧不相接 ⇒ 不并),用户段天然是屏障,长段不再跨用户段。
+        //
+        // **裁剪为什么留在最后**:整条时间线重分析(range = 全覆盖)时裁剪是恒等变换,兜底
+        // 看到的就是管线区间产物原样;选区/范围档重分析时,裁剪在兜底**之后**才发生 ⇒ 窗边
+        // 裁出的残段([SL-399 R8] 那条账)在兜底眼里不存在,照旧按 R8 的口径留在段表里
+        // (spec 8829bf4 的语序)。
+        //
+        // ⚠ 落到实现上,「裁剪在兜底之后」靠的是**两个几何各归其位**([SL-414 第 2 推] 裁定 1):
+        //   · clash 判据用**裁剪后**的几何(与改造前逐字同形,否则全量产出的新段会与窗外
+        //     kept auto 段在 raw 域假性相交、把整条产出错杀);`clippedT1 <= clippedT0` 的整段
+        //     丢弃同理(那一段在窗内没有任何落笔面);
+        //   · `survivors` 里存的是**原始几何**(`as.t0Samples` / `as.t1Samples`,逐字抄),
+        //     裁剪挪到下面组 `next` 的循环里**落笔那一步**才发生。
+        // 反过来(把裁剪后的几何存进 `survivors`)语序就变成「裁剪 → clash → 兜底」:选区重
+        // 分析时一条被窗裁到 < MIN SEG 的残段会被并进邻段、**改用邻段的 pan/vol**,SL-399 的
+        // 不变量「写回窗内段表 == 全量分析在该窗内的样子」被静默动一处。**HOST SL414 (c)** 钉
+        // 的就是这一格(写回窗左端切进首段内部、裁出 1000ms 的窗边残段 ⇒ 它照旧留在表里、
+        // pan/vol 仍是它自己的)。
+        //
+        // [SL-399 R3/R9] **兜底的两个入参随作业走**:`minSegmentMs` / `sampleRate` 是本作业
+        // `config_.segmentation.minSegmentMs` / `config_.sampleRate`(交接处随 `PendingAnalysis`
+        // 一起带过来),**不在写回时刻从 `runtime_` / `sampleRate_` 重取** —— 分析在途时拖
+        // MIN SEG、或 `prepareToPlay` 换 SR(它不取消在途作业)都不会把别的基数混进这一趟。
+        std::vector<scvb::analysis::AnalysisSegment> survivors;
+        survivors.reserve(src.size());
         for (const auto& as : src)
         {
             // [SL-399] **新段按写回窗裁剪**(不是「相交就整段写」)。计算窗放宽到整条时间线之后,
@@ -3866,24 +3906,28 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             // **频率变高了**:计算窗恒覆盖整条时间线,于是首末两段几乎总要被裁一次,而改造前
             // 只有「scope 边界恰好落在 VAD 段内部」时才现形。UI 对最短段的展示假设(段块最小
             // 可点宽度 / 检查器的「起止」可编辑性)此前就是按这个形态成立的,没有新增前提;
-            // 真要为它开一刀(比如裁完把不足下限的残段并进邻段)那是独立的产品语义改动。
+            // 兜底跑在裁剪**之前**(见本段头注的三段式),窗边残段在兜底眼里不存在 ⇒ R8 的账不动。
+            // ⚠ 这句**有前提**([SL-414 第 4 推] 补,pr-agent 的反例):它指的是**长段被窗裁出来的**
+            // 残段 —— 那种段的原始几何 ≥ MIN SEG,兜底看不见它的短。若某条产物**自身**就短于
+            // MIN SEG、而它相接的邻段整条落在窗外,兜底仍会把它并进**窗内**那一侧(窗外那条已经
+            // 不在 `survivors` 里),而全量分析会把它并进**窗外**那条 ⇒ 这一档与全量分析不同形,
+            // 见 **SL-417**(行为面另立封存,不在本卡;要真对齐得让兜底看见窗外的相接邻段,
+            // 那是 [SL-399] 的设计面改动)。
+            //
+            // ⚠ [SL-414 第 2 推] 上面这对 `clippedT0/clippedT1` **只喂 clash 判据**,不进
+            // `survivors`(见本段头注的三段式):兜底必须看见**原始几何**,否则窗边残段会被
+            // 并进邻段。
             const std::int64_t clippedT0 = std::max(as.t0Samples, rangeStartSample);
             const std::int64_t clippedT1 = std::min(as.t1Samples, rangeEndSample);
             if (clippedT1 <= clippedT0)
             {
                 continue; // 完全在窗外的产出:丢掉(它的信息属于窗外,不该在这里落笔)
             }
-            scvb::state::Segment seg;
-            seg.t0 = clippedT0;
-            seg.t1 = clippedT1;
-            seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(as.pan));
-            seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(as.volDb));
-            seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
             // 与保留段重叠则让位(用户段优先;范围外 auto 段本就不该与范围内产出重叠)。
             bool clash = false;
             for (const auto& k : kept)
             {
-                if (seg.t0 < k.t1 && k.t0 < seg.t1)
+                if (clippedT0 < k.t1 && k.t0 < clippedT1)
                 {
                     clash = true;
                     break;
@@ -3891,8 +3935,45 @@ void ScvbOutputAudioProcessor::applyAnalysisSegments(const scvb::analysis::Pipel
             }
             if (!clash)
             {
-                next.push_back(seg);
+                scvb::analysis::AnalysisSegment s;
+                // **原始几何**(逐字抄管线产出):裁剪留到组 `next` 那一步。
+                s.t0Samples = as.t0Samples;
+                s.t1Samples = as.t1Samples;
+                s.pan = as.pan;
+                s.volDb = as.volDb;
+                s.origin = scvb::analysis::Origin::Auto;
+                survivors.push_back(s);
             }
+        }
+
+        // [SL-414] 段表兜底(相接口径与「值取被并入段」见 Segmentation.h 头注):对幸存新段
+        // 跑,users/locked 不在幸存列表里(它们在 kept)且相接判据保证绝不并过被 clash 丢掉
+        // 的空档 —— 两侧语义在此会合。入参随作业走(R3/R9),见本段头注。
+        scvb::analysis::mergeShortAutoSegments(survivors, minSegmentMs, sampleRate);
+
+        std::vector<scvb::state::Segment> next;
+        next.reserve(survivors.size() + kept.size());
+        for (const auto& s : survivors)
+        {
+            // [SL-414 第 2 推] **裁剪落笔在这一步**:上面喂给 clash / 兜底的是原始几何,
+            // 到这里才夹进写回窗(表达式与上面那对逐字同形,只是晚了半步)。于是窗边残段在
+            // 兜底眼里是「一条原始长段」⇒ 不并 ⇒ 裁完照旧留下([SL-399 R8] 的账)。
+            const std::int64_t t0 = std::max(s.t0Samples, rangeStartSample);
+            const std::int64_t t1 = std::min(s.t1Samples, rangeEndSample);
+            // ⚠ `t1 <= t0` 今天**到不了**:上面那道 `clippedT1 <= clippedT0` 已保证每条幸存段
+            // 与窗有正长度交集,而兜底只会把几何往外延。留着是落笔点的形状守卫 —— 零长/反向段
+            // 写进段表是既有判据里的坏形态,将来若有人换掉对齐判据,这里不会默默写出一条。
+            if (t1 <= t0)
+            {
+                continue;
+            }
+            scvb::state::Segment seg;
+            seg.t0 = t0;
+            seg.t1 = t1;
+            seg.pan = juce::jlimit(-100.0f, 100.0f, static_cast<float>(s.pan));
+            seg.volDb = juce::jlimit(-24.0f, 12.0f, static_cast<float>(s.volDb));
+            seg.flags = scvb::state::makeSegmentFlags(scvb::state::SegmentOrigin::Auto, false);
+            next.push_back(seg);
         }
         next.insert(next.end(), kept.begin(), kept.end());
         std::sort(next.begin(), next.end(),

@@ -136,4 +136,27 @@ std::vector<AnalysisSegment> mergeTrackSegments(const std::vector<AnalysisSegmen
                                                 const std::vector<ExcludedRange>& excludedRanges, int64_t rPlus0,
                                                 int64_t rPlus1, const MergeParams& p);
 
+// ============================================================================
+// 段表兜底(SL-414,统筹裁定「候选 D」:段级、每轨独立,不动区间图)
+// ============================================================================
+
+// [SL-414] 短自动段兜底并入(纯函数,就地改写)。真源 = masterPlan 02 §3.4 步骤 5
+// (commit 8829bf4 起:**「时间相接」口径 + 落点 OutputProcessor::applyAnalysisSegments** ——
+// 对新段做完与既有用户段/锁定段/窗外段的 clash 过滤之后、写回窗裁剪之前,对该轨幸存新段
+// 调用本函数;管线 runAnalysisPipeline 本身不做)。该轨 **auto** 段中长度 < minSegmentMs 的段
+// ⇒ 并入同轨**时间相接**的段:**「相接」= 前一段 t1 == 本段 t0(并入前一段,延长其 t1);
+// 否则后一段 t0 == 本段 t1(并入后一段,提前其 t0);两侧都不相接 ⇒ 原地保留** ——
+// 「表内相邻」不等于「相接」,时间上隔着该轨不活跃区间(静音间隙、或被 clash 过滤丢掉的
+// 段留下的空档)时并进去会把间隙盖成一段不存在的覆盖(被丢段留下的空档同时是用户段的
+// 屏障:相接判据保证绝不并过它)。**值取被并入的那一段**(survivor 的 pan/vol 原样保留,
+// 不重算)。循环直到该轨没有**可并入(存在时间相接的 auto 邻段)的**短 auto 段;两侧都不相接
+// 的孤段、以及整轨仅剩一段的情形,均**原样保留** —— 后者**不是**「不该出现」:除了写回窗边裁剪
+// ([SL-399 R8]),「邻段因与用户段/锁定段 clash 而整条落选」也会留下它,而那条路**整条时间线
+// 重分析时同样会出**(窗 = 整条覆盖区时只有裁剪是恒等变换,clash 与裁剪无关)。origin != Auto
+// 或 locked 的段 **永不参与**(既不被并、也不吸收)。
+// 不跨轨、不改区间图、不碰 §5 指派 —— 只丢掉交叠区间里解出的那一小段双轨分槽值,两轨的
+// 覆盖都保住(统筹为什么不选区间层并入:规则 A/C 会级联吞掉邻轨整段,定谳报告 §4.2)。
+// minSegmentMs <= 0 或 sampleRate <= 0 时原样返回(等价关闭)。
+void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, double minSegmentMs, double sampleRate);
+
 } // namespace scvb::analysis

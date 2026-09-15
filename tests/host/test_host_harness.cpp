@@ -8920,3 +8920,400 @@ TEST_CASE("HOST SL-399 H5c:clearManual 档下窗内未锁手编段被清、锁�
     }
     CHECK(sameSegments(after, expected));
 }
+
+// ---------------------------------------------------------------------------
+// [SL-414] HOST:MIN SEG 兜底落 `applyAnalysisSegments`(真 startAnalysis 路径)。
+//
+// 定谳(见 tests/core/test_sl414_min_segment.cpp 头注;真源 = masterPlan 02 §3.4 步骤 5,
+// commit 8829bf4):跨轨交叠(> minGlobalInterval 150ms)切出的独立区间让段表出现
+// < MIN SEG 的段;兜底在 `applyAnalysisSegments` 的 clash 过滤之后、写回窗裁剪之前,
+// 对幸存新段按「时间相接」并入。
+//
+// 素材(rig 三轨同步馈入管不了逐轨起停,这里自写馈入循环,只喂 ch1/ch2,ch3 静音保活):
+//   · A(ch1)先独响 ~8.0s;
+//   · 双响 ~224ms(21 块 × 10.67ms —— 交叠区;块栅 + IIR 残余 ⇒ 与理想 210ms 差 ±1 hop,
+//     断言不钉这个数,只钉「交叠 ≥ 150ms 切得出独立区间」的后果);
+//   · B(ch2)再独响 ~44.8s。
+// 交叠区独立区间让 A、B 各得一条 < 2000ms 的段 —— 修前段表形态;兜底后:
+//   A 的短段与前段相接 ⇒ 并入前段;B 的短段与后段相接 ⇒ 并入后段。
+//
+// 删除式(裁定 ②):去掉 `applyAnalysisSegments` 里的 `mergeShortAutoSegments` 调用
+//   ⇒ (a) 红在「无 < 2000ms 的 auto 段」两条 CHECK_FALSE 上(210ms 段原样写回)。
+TEST_CASE("HOST SL414:两轨交叠 210ms + MIN SEG=2000 重分析 → 段表无 < 2000ms 的 auto 段",
+          "[host][analyze][segmentation][SL414]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // SL391 同款:冲 K 加权 IIR / hop 累加器的残余能量,再开采集(理由逐字见其头注)。
+    r.runBlocks(240, 0.0f);
+    r.out.setCaptureEnabled(true);
+    r.pump(400);
+    r.runBlocks(20, 0.0f);
+
+    // 双轨异步馈入:ch1 = A、ch2 = B、ch3 静音保活(心跳靠 processBlock 恒跑)。
+    const auto feedPair = [&](bool aOn, bool bOn, int blocks) {
+        for (int b = 0; b < blocks; ++b)
+        {
+            r.outBuf.clear();
+            Rig::fillSine(r.inBuf, aOn ? 0.5f : 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(0)]->processBlock(r.inBuf, r.midi);
+            Rig::fillSine(r.inBuf, bOn ? 0.5f : 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(1)]->processBlock(r.inBuf, r.midi);
+            Rig::fillSine(r.inBuf, 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(2)]->processBlock(r.inBuf, r.midi);
+            r.out.processBlock(r.outBuf, r.midi);
+            if (r.ph.playing)
+            {
+                r.ph.timeSamples += kBlock;
+            }
+            if ((b % 4) == 3)
+            {
+                MonoMultiRig::pump(8);
+            }
+        }
+    };
+
+    feedPair(true, false, 750); // A 独响 ~8.0s
+    feedPair(true, true, 21); // 双响 ~224ms:交叠区
+    feedPair(false, true, 4200); // B 独响 ~44.8s
+    r.pump(400);
+
+    // 窗取 **ch2(B)** 的覆盖区:B 比 A 晚结束,窗口必须盖住两轨的素材
+    // (coverageWindow 的头注:某轨单独起停时要显式传 ch,别默认 ch1 还成立)。
+    const auto win = r.coverageWindow(2);
+    REQUIRE(win.endS > win.startS);
+
+    r.out.runtime().segmentationMinSegmentMs = 2000;
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+
+    const auto segsA = segmentsOfTrack(r.out, 1);
+    const auto segsB = segmentsOfTrack(r.out, 2);
+    REQUIRE_FALSE(segsA.empty());
+    REQUIRE_FALSE(segsB.empty());
+    // [SL-414 第 2 推] 裁定 4(a):这一格只钉 **auto** 段 —— 手动段(段表里的 E/C 角标 =
+    // `user_edited` / `user_created` / `locked`)不参与兜底,它短是合法的。A20 的前提逐字
+    // 就是「带 E/C 角标的手动段不算」;不过滤的话,一条合法的短手动段会被读成兜底失效。
+    const auto isAuto = [](const scvb::state::Segment& s) {
+        return scvb::state::segmentOrigin(s.flags) == scvb::state::SegmentOrigin::Auto;
+    };
+    const auto minLenMsOf = [&](const std::vector<scvb::state::Segment>& segs) {
+        std::int64_t m = -1;
+        for (const auto& s : segs)
+        {
+            if (!isAuto(s))
+            {
+                continue;
+            }
+            if (m < 0 || s.t1 - s.t0 < m)
+            {
+                m = s.t1 - s.t0;
+            }
+        }
+        return m < 0 ? -1.0 : static_cast<double>(m) / kSr * 1000.0;
+    };
+    const auto autoCountOf = [&](const std::vector<scvb::state::Segment>& segs) {
+        int n = 0;
+        for (const auto& s : segs)
+        {
+            n += isAuto(s) ? 1 : 0;
+        }
+        return n;
+    };
+    UNSCOPED_INFO("SL414-A 段数 " << segsA.size() << "(auto " << autoCountOf(segsA) << "),最短 auto "
+                                  << minLenMsOf(segsA) << "ms;SL414-B 段数 " << segsB.size() << "(auto "
+                                  << autoCountOf(segsB) << "),最短 auto " << minLenMsOf(segsB) << "ms");
+    // 前提:过滤之后还剩 auto 段 —— 否则下面两个循环一条断言都不跑,本格退化成恒绿。
+    REQUIRE(autoCountOf(segsA) > 0);
+    REQUIRE(autoCountOf(segsB) > 0);
+    const std::int64_t minLenSamples = static_cast<std::int64_t>(2000.0 * kSr / 1000.0);
+    for (const auto& s : segsA)
+    {
+        if (!isAuto(s))
+        {
+            continue;
+        }
+        CHECK(s.t1 - s.t0 >= minLenSamples); // ← 删除式落点:去掉 applyAnalysisSegments 的调用即红
+    }
+    for (const auto& s : segsB)
+    {
+        if (!isAuto(s))
+        {
+            continue;
+        }
+        CHECK(s.t1 - s.t0 >= minLenSamples);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [SL-414] HOST (b):交叠区里预置**用户段** ⇒ 重分析后该轨长 auto 段仍在、用户段原样。
+//
+// 钉的是落点顺序(clash 过滤 → 兜底):与用户段重叠的短新段先被 clash 过滤整条落选,
+// 留下的空档让两侧幸存段**不相接** ⇒ 兜底不并 ⇒ 并出来的长段根本不存在,也就不会
+// 拖着用户段一起被丢(#261 首轮 Claude-A【重要】②:若在管线里先并,修前「丢 210ms
+// 那条」会升级成「丢并出来的整条」)。预置手法:先按 MIN SEG=50 跑一遍(210ms 段在
+// 50 档合法在场),对那条短 auto 段做两次 MoveBoundary 把它收成中段 —— 编辑置
+// origin=user_edited+locked(SegmentEdit.cpp:103),且 MoveBoundary 会把**相邻**段
+// 收缩(相接),所以收完就是「长 auto 段 + 用户段」两张相邻表。
+TEST_CASE("HOST SL414 (b):交叠区预置用户段 → 重分析后长 auto 段仍在、用户段原样",
+          "[host][analyze][segmentation][SL414]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    r.runBlocks(240, 0.0f);
+    r.out.setCaptureEnabled(true);
+    r.pump(400);
+    r.runBlocks(20, 0.0f);
+
+    const auto feedPair = [&](bool aOn, bool bOn, int blocks) {
+        for (int b = 0; b < blocks; ++b)
+        {
+            r.outBuf.clear();
+            Rig::fillSine(r.inBuf, aOn ? 0.5f : 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(0)]->processBlock(r.inBuf, r.midi);
+            Rig::fillSine(r.inBuf, bOn ? 0.5f : 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(1)]->processBlock(r.inBuf, r.midi);
+            Rig::fillSine(r.inBuf, 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(2)]->processBlock(r.inBuf, r.midi);
+            r.out.processBlock(r.outBuf, r.midi);
+            if (r.ph.playing)
+            {
+                r.ph.timeSamples += kBlock;
+            }
+            if ((b % 4) == 3)
+            {
+                MonoMultiRig::pump(8);
+            }
+        }
+    };
+
+    feedPair(true, false, 750);
+    feedPair(true, true, 21);
+    feedPair(false, true, 4200);
+    r.pump(400);
+
+    const auto win = r.coverageWindow(2);
+    REQUIRE(win.endS > win.startS);
+
+    // 第一遍 MIN SEG=50:交叠区短段合法在场,拿它改形成用户段。
+    r.out.runtime().segmentationMinSegmentMs = 50;
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+    auto segsA = segmentsOfTrack(r.out, 1);
+    REQUIRE(segsA.size() >= 2);
+    int shortIdx = -1;
+    for (int i = 0; i < static_cast<int>(segsA.size()); ++i)
+    {
+        if (segsA[static_cast<std::size_t>(i)].t1 - segsA[static_cast<std::size_t>(i)].t0 <
+            static_cast<std::int64_t>(2000.0 * kSr / 1000.0))
+        {
+            shortIdx = i;
+            break;
+        }
+    }
+    REQUIRE(shortIdx >= 0); // 前提:交叠区短段在场(不然素材/窗口就错了)
+
+    // 两次 MoveBoundary 把短段收成中段(origin → user_edited+locked):各收 1/4 长度。
+    const auto shortSeg = segsA[static_cast<std::size_t>(shortIdx)];
+    const std::int64_t quarter = (shortSeg.t1 - shortSeg.t0) / 4;
+    {
+        scvb::state::SegmentEditArgs args;
+        args.op = scvb::state::SegmentEditOp::MoveBoundary;
+        args.segIdx = shortIdx;
+        args.edgeIsT0 = true;
+        args.tSamples = shortSeg.t0 + quarter;
+        REQUIRE(r.out.editSegment(0, args) == scvb::state::SegmentEditResult::Ok);
+    }
+    {
+        scvb::state::SegmentEditArgs args;
+        args.op = scvb::state::SegmentEditOp::MoveBoundary;
+        args.segIdx = shortIdx;
+        args.edgeIsT0 = false;
+        args.tSamples = shortSeg.t1 - quarter;
+        REQUIRE(r.out.editSegment(0, args) == scvb::state::SegmentEditResult::Ok);
+    }
+    segsA = segmentsOfTrack(r.out, 1);
+    const auto userSeg = segsA[static_cast<std::size_t>(shortIdx)];
+    REQUIRE(scvb::state::segmentOrigin(userSeg.flags) == scvb::state::SegmentOrigin::UserEdited);
+
+    // 第二遍:MIN SEG=2000 重分析(clearManual=false —— 用户段免疫)。
+    r.out.runtime().segmentationMinSegmentMs = 2000;
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/false));
+
+    const auto after = segmentsOfTrack(r.out, 1);
+    // 用户段原样(逐字节)。
+    bool userIntact = false;
+    for (const auto& s : after)
+    {
+        if (s.t0 == userSeg.t0 && s.t1 == userSeg.t1 && s.flags == userSeg.flags)
+        {
+            userIntact = true;
+        }
+    }
+    CHECK(userIntact);
+    // 长 auto 段仍在:表里至少一条 auto 段、且长度 ≥ 2000ms。
+    // ← 删除式(顺序面):若把兜底挪回 clash 过滤**之前**(管线里先并),长段会拖着
+    //   用户段一起 clash 整条落选,本格红在「无 auto 段」上。
+    bool hasLongAuto = false;
+    const std::int64_t longLenSamples = static_cast<std::int64_t>(2000.0 * kSr / 1000.0);
+    for (const auto& s : after)
+    {
+        if (scvb::state::segmentOrigin(s.flags) == scvb::state::SegmentOrigin::Auto && s.t1 - s.t0 >= longLenSamples)
+        {
+            hasLongAuto = true;
+            // ★ 边界钉死([SL-414 第 2 推] 裁定 4(b)):「有长 auto 段」太松 —— 长段若被兜底
+            // **并过用户段**(t1 被改写越过 `userSeg.t0`,或 t0 被提前越过 `userSeg.t1`),
+            // 上面那条照样绿。长 auto 段必须整体落在用户段的**一侧**。
+            // 本 rig 的 ch1 是「A 独响 → 交叠 → 静默」,长段恒在用户段**左侧** ⇒ 判据取
+            // `t1 <= userSeg.t0`(用户段的屏障语义见 Segmentation.h 头注)。
+            UNSCOPED_INFO("SL414-(b) 长 auto 段 [" << s.t0 << "," << s.t1 << ") 采样;用户段 [" << userSeg.t0 << ","
+                                                   << userSeg.t1 << ") 采样");
+            CHECK(s.t1 <= userSeg.t0);
+        }
+    }
+    CHECK(hasLongAuto);
+}
+
+// ---------------------------------------------------------------------------
+// [SL-414] HOST (c):**带写回窗**的形态 —— 窗边残段照旧留下,值仍是它自己的。
+//
+// 为什么必须补这一格(#261 第 2 轮两家共同指出「没有一格覆盖带写回窗的形态」):(a)(b) 的
+// 写回窗都等于**整条覆盖区**,裁剪是恒等变换 ⇒ 「兜底跑在裁剪**之前**」这条语序在两格里
+// 照不出来。裁定 1 改的正是这一处(真源 = masterPlan 02 §3.4 步骤 5,commit 8829bf4):
+// `survivors` 存**原始几何**、裁剪挪到组 `next` 落笔那一步,clash 判据继续用裁剪几何。
+// 反过来(存裁剪几何)语序就成了「裁剪 → clash → 兜底」:窗边残段会被并进相接的邻段并
+// **改用邻段的 pan/vol** —— SL-399 的不变量「写回窗内段表 == 全量分析在该窗内的样子」
+// 被静默动一处。
+//
+// 素材(同 (a):rig 的三轨是同步馈入的,管不了逐轨起停 —— 自写馈入循环,只喂 ch1/ch2,
+// ch3 静音保活):
+//   · A(ch1)独响 ~30s;
+//   · A+B 双响 ~30s —— 交叠区被 §3.4 步骤 3/4 切成独立区间 ⇒ ch1 那张表是**两条相接、
+//     pan/vol 不同**(独唱段居中 vs 双轨分槽)的段;
+//   · 覆盖区 ≈ [0, 60s)。
+//
+// 两趟分析(都用真 startAnalysis 路径):
+//   ① MIN SEG=50 + **整条覆盖区**(裁剪恒等)⇒ 段表 = 管线产物原样,拿它定第二趟的窗;
+//   ② 窗 = [首段 t1 − 1000ms, 覆盖区右端)、MIN SEG=2000。
+// 断言:段表是**两段** ——
+//   · [窗起点, 首段 t1):1000ms 的窗边残段**保留**(SL-399 R8 那条账),pan/vol 仍是
+//     **首段自己的**(不是第二段那一段的);
+//   · [首段 t1, 覆盖区右端):与第一趟逐字节同形。
+//
+// ⚠ 几何数值按 rig 实际能造出的形状取值(窗起点走 `analyzeHopWindow` 的**向内取整**,
+// 残段因此是 ~1000ms 而不是恰好 48000 采样),但两条前提必须成立:残段 **< MIN SEG**
+// 且与窗内下一段**相接** —— 否则兜底根本不会碰它,本格就照不出语序。
+//
+// ⚠ **隐含前提(第 3 轮补注)**:`a2->*` 那四条是**跨两趟、跨 MIN SEG 档**(50 → 2000)的逐字节
+// 相等,它成立靠的是「本素材下分段几何与指派值不随 MIN SEG 变化」—— 本素材是**纯正弦、无能量谷**
+// ⇒ 谷切分(S1)不介入、区间产物只有 §3.4 的跨轨交叠那两刀,而 ~30s 的两块都远长于 2000ms
+// ⇒ MIN SEG 在两档上对这两块的几何与 pan/vol 都没有作用面(VAD 核心那一层也只对 < MIN SEG 的
+// core 段生效,这里没有)。这几条断言**不降级**:逐字节相等正是「窗内下一段没被这一趟动到」的
+// 证据;将来谷切分口径一动,它们红是**该红**的 —— 红在这里就先看这句前提。
+//
+// 删除式(裁定 2,必跑):把 `survivors.push_back` 前那两行改回存**裁剪几何**
+// (`s.t0Samples = clippedT0; s.t1Samples = clippedT1;`)⇒ 兜底看见的是 1000ms 短段、且与
+// 下一段相接 ⇒ 并成一段、值取下一段 ⇒ 本格红在「两段」与「残段 pan/vol 不变」上。
+// 注入与复原都要把源文件 mtime 顶到当前,否则 MSBuild 判 up-to-date 拿旧二进制(假绿假红)。
+TEST_CASE("HOST SL414 (c):写回窗裁出 1000ms 残段 + MIN SEG=2000 → 残段保留、值不变、表里两段",
+          "[host][analyze][segmentation][SL414]")
+{
+    MonoMultiRig r;
+    r.ph.playing = true;
+    REQUIRE(r.waitUntilInjected());
+
+    // SL391 同款:冲 K 加权 IIR / hop 累加器的残余能量,再开采集(理由逐字见其头注)。
+    r.runBlocks(240, 0.0f);
+    r.out.setCaptureEnabled(true);
+    r.pump(400);
+    r.runBlocks(20, 0.0f);
+
+    const auto feedPair = [&](bool aOn, bool bOn, int blocks) {
+        for (int b = 0; b < blocks; ++b)
+        {
+            r.outBuf.clear();
+            Rig::fillSine(r.inBuf, aOn ? 0.5f : 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(0)]->processBlock(r.inBuf, r.midi);
+            Rig::fillSine(r.inBuf, bOn ? 0.5f : 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(1)]->processBlock(r.inBuf, r.midi);
+            Rig::fillSine(r.inBuf, 0.0f, r.ph.timeSamples);
+            r.ins[static_cast<std::size_t>(2)]->processBlock(r.inBuf, r.midi);
+            r.out.processBlock(r.outBuf, r.midi);
+            if (r.ph.playing)
+            {
+                r.ph.timeSamples += kBlock;
+            }
+            if ((b % 4) == 3)
+            {
+                MonoMultiRig::pump(8);
+            }
+        }
+    };
+
+    feedPair(true, false, 2812); // A 独响 ~30.0s(2812 × 512 = 1_439_744 采样 @48k)
+    feedPair(true, true, 2812); // A+B 双响 ~30.0s:交叠区
+    r.pump(400);
+
+    const auto win = r.coverageWindow(1); // 该轨(A)的覆盖区
+    REQUIRE(win.endS > win.startS);
+
+    const auto dumpOf = [](const std::vector<scvb::state::Segment>& segs) {
+        std::string line = "(" + std::to_string(segs.size()) + " 段)";
+        for (const auto& s : segs)
+        {
+            line += " [" + std::to_string(s.t0) + "," + std::to_string(s.t1) +
+                    "|len=" + std::to_string(static_cast<double>(s.t1 - s.t0) / kSr * 1000.0) +
+                    "ms|pan=" + std::to_string(static_cast<double>(s.pan)) +
+                    ",vol=" + std::to_string(static_cast<double>(s.volDb)) + "]";
+        }
+        return line;
+    };
+
+    // ---- 第一趟:MIN SEG=50 + 整条覆盖区(裁剪恒等)---------------------------------
+    r.out.runtime().segmentationMinSegmentMs = 50;
+    REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+    const auto base = segmentsOfTrack(r.out, 1);
+    UNSCOPED_INFO("SL414-(c) 第一趟 ch1 = " << dumpOf(base));
+    // 前提:正是要的形态 —— 两段、相接、pan/vol 不同(否则本格测的不是「残段 vs 邻段」)。
+    REQUIRE(base.size() == 2);
+    REQUIRE(base[0].t1 == base[1].t0);
+    REQUIRE((base[0].pan != base[1].pan || base[0].volDb != base[1].volDb));
+
+    // ---- 第二趟:窗左端切在首段内部 ⇒ 残段 ~1000ms < MIN SEG 2000 -------------------
+    const std::int64_t stubSamples = static_cast<std::int64_t>(1000.0 * kSr / 1000.0);
+    REQUIRE(base[0].t1 > stubSamples);
+    const double cutS = static_cast<double>(base[0].t1 - stubSamples) / kSr; // 向内取整后会略短
+    const std::int64_t hopSamples =
+        static_cast<std::int64_t>(std::llround(ScvbOutputAudioProcessor::featHopSeconds() * kSr));
+
+    r.out.runtime().segmentationMinSegmentMs = 2000;
+    REQUIRE(r.runAnalysisIn(cutS, win.endS, /*clearManual=*/false));
+    const auto after = segmentsOfTrack(r.out, 1);
+    UNSCOPED_INFO("SL414-(c) 第二趟 ch1 = " << dumpOf(after) << ";窗起点 " << cutS << "s,首段 t1 "
+                                            << static_cast<double>(base[0].t1) / kSr << "s");
+
+    const double stubMidS = (cutS + static_cast<double>(base[0].t1) / kSr) * 0.5;
+    const double nextMidS = static_cast<double>(base[1].t0 + base[1].t1) * 0.5 / kSr;
+    const auto* a1 = segmentAt(after, stubMidS);
+    const auto* a2 = segmentAt(after, nextMidS);
+    REQUIRE(a1 != nullptr);
+    REQUIRE(a2 != nullptr);
+
+    // ★ 两段:残段**没有**被并进相接的下一段。← 删除式落点(存裁剪几何 ⇒ 只剩一段)
+    CHECK(after.size() == 2);
+    // ★ 残段的值仍是**它自己的**(不是下一段那一段的)。← 删除式落点(并了就变成下一段的值)
+    CHECK(a1->pan == base[0].pan);
+    CHECK(a1->volDb == base[0].volDb);
+    // 残段几何:确实是「首段被窗裁掉左边一截」,且裁完仍短于 MIN SEG。
+    CHECK(a1->t1 == base[0].t1);
+    CHECK(a1->t0 > base[0].t0);
+    CHECK(a1->t1 - a1->t0 < static_cast<std::int64_t>(2000.0 * kSr / 1000.0));
+    CHECK(a1->t1 - a1->t0 >= stubSamples - 2 * hopSamples); // 不是被裁成一条毫厘级的碎渣
+    // 窗内下一段逐字节与第一趟同形(它本来就不该被这一趟动到)。
+    CHECK(a2->t0 == base[1].t0);
+    CHECK(a2->t1 == base[1].t1);
+    CHECK(a2->pan == base[1].pan);
+    CHECK(a2->volDb == base[1].volDb);
+}

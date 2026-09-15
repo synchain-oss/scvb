@@ -329,6 +329,14 @@ PipelineResult runAnalysisPipeline(const std::array<PipelineTrackFeatures, kPipe
         }
     }
 
+    // [SL-414] 段表兜底**不在管线里**:落点定在 OutputProcessor::applyAnalysisSegments
+    // (masterPlan 02 §3.4 步骤 5,commit 8829bf4)——对新段做完与既有用户段/锁定段/窗外段
+    // 的 clash 过滤之后、写回窗裁剪之前,对该轨幸存新段跑 mergeShortAutoSegments。
+    // 为什么不在管线:并入后的长段可能与既有用户段 clash,在管线里并、到 applyAnalysisSegments
+    // 再过滤,会从「丢 210ms 那条」升级成「丢并出来的整条」(#261 首轮 Claude-A【重要】②);
+    // 在 clash 过滤**之后**并,被丢段留下的空档由「相接」判据兜住,用户段天然是屏障。
+    // 管线输出因此保持区间产物原样 —— result.intervals / §5 指派的输入一个字节没动。
+
     report(onProgress, 1.0f);
     return result;
 }

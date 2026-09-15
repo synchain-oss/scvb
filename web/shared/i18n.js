@@ -928,10 +928,16 @@ export const T = {
         //   >8s 的段上会看到变化,而在「S1 边界是否活到曲线里」定谳之前那是假的。三语一组改。
         "wave.tipSensitivity":
             "分段灵敏度:越高越容易在能量谷处切段。仅对长于 8 秒的段生效,短乐句上不会有变化(默认 {d})",
-        // 02 §2.3 后处理 P1 逐字:「core 段长 < minSegmentMs → **丢弃**」,且在
-        // padding 之前判定。**不是**并进邻段(合并是内部常量 mergeGap,不暴露)。
+        // 02 §2.3 后处理 P1 逐字:「core 段长 < minSegmentMs → **丢弃**」,且在 padding 之前
+        // 判定;[SL-414] 起两层并列 —— ① P1 丢弃(padding 之前);② 回写层兜底:段表里短于
+        // 它的自动段并入同轨**时间相接**的邻段(在 padding 之后,applyAnalysisSegments)。
+        // 三语括注「在前后留白之前判定」只挂「丢掉」那一半,不盖「并入」(并入发生在 padding
+        // 之后,挂在一起就是假句)。[#261 第 3 轮] 全称承诺收窄成**带条件的**那句:「整条时间线
+        // 重分析后不再有短于它、**且存在相接自动邻段**的自动段」—— 两侧都不相接的孤段原地保留
+        // (窗边裁剪 [SL-399 R8],或邻段因与手动段 clash 整条落选;后者整条时间线重分析时同样会出),
+        // 三语同义,zh 的「并入相邻段」补上 en/fr 早就有的「相接」(touching / contigu)。
         "wave.tipMinSeg":
-            "最短段长:短于此长度的段会被直接丢弃(在前后留白之前判定),用于过滤杂音,但也会丢掉短促的 ad-lib 与单字和声(默认 {d})",
+            "最短段长:短于它的自动段会被丢掉(在前后留白之前判定)或并入时间相接的相邻段,用于过滤杂音,但也会丢掉短促的 ad-lib 与单字和声;手动段不受影响。整条时间线重新分析后,段表里不再有「短于它、且存在相接自动邻段」的自动段;两侧都不相接的孤立短段按设计保留(选区或范围档重分析在窗边裁出的残段,或邻段因与手动段冲突而整条落选后剩下的孤段)(默认 {d})",
         // 泳道空态(05 §2.3 行 318 逐字;A-17)
         "wave.emptyMain": "尚无采集数据——开启采集开关并播放",
         "wave.emptyCta": "去 Tab1 打开采集",
@@ -1818,7 +1824,7 @@ export const T = {
         "wave.tipSensitivity":
             "Segmentation sensitivity: higher splits more readily at energy valleys. Only applies to segments longer than 8 s, so short phrases will not change (default {d})",
         "wave.tipMinSeg":
-            "Minimum segment length: shorter segments are discarded (judged before padding) to filter noise, but it also drops brief ad-libs and single-note harmonies (default {d})",
+            "Minimum segment length: automatic segments shorter than it are dropped (judged before padding) or merged into a touching neighbour to filter noise, but it also drops brief ad-libs and single-note harmonies; manually edited segments are unaffected. After a full-timeline re-analysis the segment table no longer contains automatic segments that are shorter than it and have a touching automatic neighbour; isolated short segments with no touching neighbour on either side are kept by design (stubs cut at the window edge by a scope or range re-analysis, or the leftover of a neighbour dropped wholesale because it clashed with a manual segment) (default {d})",
         "wave.emptyMain":
             "No captured data yet — turn on the capture switch and play",
         "wave.emptyCta": "Open capture in Tab 1",
@@ -2676,7 +2682,7 @@ export const T = {
         "wave.tipSensitivity":
             "Sensibilité de segmentation : plus elle est haute, plus on coupe aux creux d\u2019énergie. N\u2019agit que sur les segments de plus de 8 s, donc sans effet sur les phrases courtes (défaut {d})",
         "wave.tipMinSeg":
-            "Longueur minimale de segment : les segments plus courts sont supprimés (jugé avant les marges) pour filtrer le bruit, mais cela supprime aussi les ad-libs brefs et les harmonies d'une note (défaut {d})",
+            "Longueur minimale de segment : les segments automatiques plus courts sont supprimés (jugé avant les marges) ou fusionnés avec un segment voisin contigu pour filtrer le bruit, mais cela supprime aussi les ad-libs brefs et les harmonies d'une note ; les segments manuels ne sont pas affectés. Après une réanalyse de toute la chronologie, la table de segments ne contient plus de segments automatiques plus courts et ayant un voisin automatique contigu ; les segments courts isolés sans voisin contigu d'un côté comme de l'autre sont conservés par conception (résidus coupés au bord de la fenêtre lors d'une réanalyse par sélection ou par plage, ou reste d'un voisin écarté en bloc parce qu'il entrait en conflit avec un segment manuel) (défaut {d})",
         "wave.emptyMain":
             "Aucune donnée capturée — activez l'interrupteur de capture puis lancez la lecture",
         "wave.emptyCta": "Ouvrir la capture dans l'onglet 1",

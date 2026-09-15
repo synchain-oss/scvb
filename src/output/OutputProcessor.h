@@ -504,15 +504,19 @@ private:
     // [SL-209] 分析产物合入段表(finishAnalysis 的 mutator;须持 lifecycleMutex_)。
     // [SL-393] `writeMask` = **写回集**(mask ∩ enabled ∩ 范围内有覆盖,即 analyzedTracks):
     // 计算集比它宽(见 startAnalysis 的头注),掩码外的轨只当上下文,段表一个字节都不许动。
+    // [SL-414 第 2 推] `minSegmentMs` / `sampleRate` = **本作业自己的**两个兜底入参
+    // (`config_.segmentation.minSegmentMs` / `config_.sampleRate`,随 PendingAnalysis 交接),
+    // 不在写回时刻从 `runtime_`/`sampleRate_` 重取 —— [SL-399 R3/R9]「口径随作业走」。
     void applyAnalysisSegments(const scvb::analysis::PipelineResult& result, std::int64_t rangeStartSample,
-                               std::int64_t rangeEndSample, bool clearManual, std::uint16_t writeMask);
+                               std::int64_t rangeEndSample, bool clearManual, std::uint16_t writeMask,
+                               double minSegmentMs, double sampleRate);
     // [SL-399 R3] vadP 写回那一侧要的是**写回窗的 hop 下标**(不再拿采样率除回来 —— 见
     // `AnalysisJob` 里 `applyFirstHop_/applyLastHop_` 的头注)。段表面仍吃上面那对样本数
     // (同一趟作业、同一个 hopSamples)。
     void finishAnalysis(scvb::analysis::PipelineResult result, std::int64_t rangeStartSample,
                         std::int64_t rangeEndSample, std::uint64_t applyFirstHop, std::uint64_t applyLastHop,
                         bool clearManual, bool fullScope, AnalysisDoneReason resegmentReason,
-                        std::uint16_t analyzedTracks);
+                        std::uint16_t analyzedTracks, double minSegmentMs, double sampleRate);
     // 线程 → 消息线程的交接:AsyncUpdater 而不是裸 callAsync(见 handleAsyncUpdate 头注)。
     void handleAsyncUpdate() override;
     // [M] 把 runtime 配置镜像进 ctrl 广播区(§4.3);config_seq 未变则不写。
@@ -741,6 +745,13 @@ private:
         std::uint32_t generation = 0;
         bool clearManual = false;
         bool valid = false;
+        // [SL-414 第 2 推] 段表兜底的两个入参,**随作业走**([SL-399 R3/R9] 同一条纪律):
+        // 值 = 本作业 `config_.segmentation.minSegmentMs` / `config_.sampleRate`(startAnalysis
+        // 装配、交接处从作业的 `config_` 抄过来),写回时刻不在 `runtime_`/`sampleRate_` 上重取
+        // —— 分析在途时拖 MIN SEG 或 `prepareToPlay` 换 SR(#2768 头注:不取消在途作业)都不
+        // 会把别的基数混进这一趟的段表。
+        double minSegmentMs = 0.0;
+        double sampleRate = 0.0;
         // [SL-255 复审①] 本轮是不是松手档触发的,以及**真参与分析**的轨集合。
         // 这两样跟着结果走(而不是留在成员里),取消那条路才能把它们一起丢掉 ——
         // 见 pendingResegmentReason_ 的头注。
