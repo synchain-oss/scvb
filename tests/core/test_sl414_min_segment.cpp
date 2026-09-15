@@ -14,7 +14,7 @@
 //
 // 本文件:纯函数直测(相接/间隙/相等边界/用户段)+ 管线区间产物上的显式兜底格
 // (生产落点在 applyAnalysisSegments,真 startAnalysis 路径由 tests/host 的
-// HOST SL414 两格走)。夹具口径:VAD padding 置 0,让「交叠 = A 终点 − B 起点」
+// HOST SL414 三格走)。夹具口径:VAD padding 置 0,让「交叠 = A 终点 − B 起点」
 // 恰好落在整 hop 上(210ms = 21 hop);真机默认 padding 只会放大跨轨交叠,不影响方向。
 
 #include <catch2/catch_approx.hpp>
@@ -152,7 +152,7 @@ AnalysisSegment segAt(std::int64_t t0Samples, std::int64_t t1Samples, double pan
 // 多一 hop(§2.2 预平滑)⇒ 交叠 = [780,801) = 21 hop = 210ms,切出独立区间,回写后
 // 两轨各有一段 210ms。**生产落点在 applyAnalysisSegments(clash 过滤后、裁剪前)**,
 // 管线本身不做 —— 本格对管线输出显式调 mergeShortAutoSegments 断言兜底语义;
-// 真 startAnalysis 路径由 tests/host 的 HOST SL414 两格走。
+// 真 startAnalysis 路径由 tests/host 的 HOST SL414 三格走。
 // 轨 0:短段与前段**相接**(prev.t1 == 780 == t0)⇒ 并入前一段 ⇒ [0,8.010) pan 0;
 // 轨 1:短段无前段 ⇒ 并入后一段(next.t0 == 801 == t1)⇒ [7.800,15.790) pan 0。
 // **删除式**(生产侧):去掉 applyAnalysisSegments 里的调用 ⇒ HOST SL414 (a) 红;
@@ -422,7 +422,9 @@ TEST_CASE("[SL414] 纯函数:恰好等于 MIN SEG 的段保留", "[analysis][pip
     CHECK(segs[1].t0Samples == 96000);
 }
 
-// 整轨只剩一段时保留(S0 已保证 core ≥ min;孤段只会来自窗边裁剪,[SL-399 R8] 那条账)。
+// 整轨只剩一段时保留 —— S0 只保证 **core** ≥ min,这一段仍可能短:窗边裁剪([SL-399 R8]),
+// 或「邻段因与用户段/锁定段 clash 而整条落选」后剩下的孤段(后者与裁剪无关,**整条时间线
+// 重分析时同样会出**)。没有可并入的对象 ⇒ 与「两侧都不相接」同一档,原样保留。
 TEST_CASE("[SL414] 纯函数:整轨只剩一段时保留", "[analysis][pipeline][SL414]")
 {
     std::vector<AnalysisSegment> segs;

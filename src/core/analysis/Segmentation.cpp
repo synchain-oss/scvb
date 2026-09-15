@@ -646,7 +646,10 @@ void mergeShortAutoSegments(std::vector<AnalysisSegment>& segments, const double
     std::size_t i = 0;
     while (i < segments.size())
     {
-        // 整轨只剩一段:保留(S0 保证 core ≥ min;孤段只会来自窗边裁剪,[SL-399 R8] 那条账)。
+        // 整轨只剩一段:保留 —— S0 只保证 **core** ≥ min,这一段仍可能短于 minSegmentMs:
+        // 它可能是写回窗边裁出来的([SL-399 R8]),也可能是「邻段因与用户段/锁定段 clash 而
+        // 整条落选」后剩下的孤段(与裁剪无关,整条时间线重分析时同样会出)。没有可并入的对象
+        // ⇒ 原样保留(与「两侧都不相接」同一档)。
         if (segments.size() == 1)
         {
             break;

@@ -54,8 +54,10 @@ analysis:
   segmentation: {mode, sensitivity, min_segment_ms}
   # min_segment_ms = 每轨最短**自动**段长,两层生效([SL-414]):① VAD 核心丢短(02 §2.3 P1,
   # 在前后留白之前判定);② 段表兜底 —— 回写层成形的段表里短于它的 auto 段并入同轨**时间相接**
-  # 的相邻段(值取被并入段;用户段/锁定段不参与)。手动段不受影响。整条时间线重新分析后段表
-  # 里不再有短于它的自动段;选区或范围档重分析在窗边可能留下更短的残段([SL-399 R8])。
+  # 的相邻段(值取被并入段;用户段/锁定段不参与)。手动段不受影响。整条时间线重新分析后,段表里
+  # 不再有「短于它、且存在相接自动邻段」的自动段;两侧都不相接的孤立短段按设计保留 —— 两条路:
+  # 选区/范围档重分析在窗边裁出的残段([SL-399 R8]),或邻段因与手动段冲突而整条落选后剩下的
+  # 孤段(与裁剪无关,整条时间线重分析时同样会出)。
   transition_ramp_ms: 80
   loudness_mode: "kw_integrated"|"rms"|"peak_dbfs"            # [J69/U24①] 第二响度指标口径,默认 "kw_integrated"
   center_slot_policy: "priority_queue"|"lead_exclusive"|"even_spread"   # [J69/U24④] 中心槽策略,默认 "priority_queue"
