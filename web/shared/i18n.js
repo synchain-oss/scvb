@@ -353,7 +353,7 @@ export const T = {
             "这五个滑杆决定「哪里算人声、哪里算静音」,是分段的基础:THRESHOLD 响度门限——比它响才算在唱;HYSTERESIS 回滞——关门比开门低一档,防止门限附近抖动把句子切碎;HOLD 静音保持——短暂停顿仍算在唱,避免字与字之间被断句;PAD PRE / PAD POST 前后留白——不咬掉起音与尾音。",
         "tour.step36.title": "本页:设置",
         "tour.step36.body":
-            "说明、响度口径、中心槽策略、缩放、语言、存储、诊断;末步的「重看引导」也在这页。",
+            "说明、响度口径、中心槽策略、缩放、语言、诊断;末步的「重看引导」也在这页。",
         "tour.step2.title": "工作流程与优先级",
         "tour.step2.body":
             "一次完整的工作流程:采集 → 分析 → 微调/冻结 → 写入自动化 → 手动调自动化。优先级:宿主自动化 > 冻结的手动值 > 手动微调 > 引擎分析曲线。之后随时可在设置页「查看工作流程」里回看。",
@@ -1366,7 +1366,7 @@ export const T = {
             "These five sliders decide what counts as voice versus silence — the basis of segmentation: THRESHOLD is the loudness gate — only louder than it counts as singing; HYSTERESIS closes the gate a step lower than it opens, so flutter near the threshold doesn't chop sentences; HOLD keeps short pauses counting as singing, so word-to-word gaps aren't split; PAD PRE / PAD POST add head and tail padding — so attacks and tails aren't clipped.",
         "tour.step36.title": "This page: Settings",
         "tour.step36.body":
-            'Usage notes, loudness metric, center slot policy, scale, language, storage, diagnostics; the final "Show guide again" is also here.',
+            'Usage notes, loudness metric, center slot policy, scale, language, diagnostics; the final "Show guide again" is also here.',
         "tour.step2.title": "Workflow and priority",
         "tour.step2.body":
             'A full workflow: capture → analyze → tweak/freeze → write automation → adjust automation manually. Priority: host automation > frozen manual value > manual tweak > engine analysis curve. You can review it anytime via the "View workflow" button in Settings.',
@@ -2206,7 +2206,7 @@ export const T = {
             "Ces cinq curseurs décident ce qui compte comme voix ou silence — la base de la segmentation : THRESHOLD est le seuil de niveau — seul ce qui est plus fort compte comme chant ; HYSTERESIS ferme la porte un cran plus bas qu'elle ne l'ouvre, pour éviter que le flottement près du seuil ne hache les phrases ; HOLD garde les pauses courtes comme chant, pour ne pas couper entre les mots ; PAD PRE / PAD POST ajoutent une marge avant/après — pour ne pas tronquer l'attaque ni la chute.",
         "tour.step36.title": "Cette page : Réglages",
         "tour.step36.body":
-            "Mode d'emploi, indicateur de loudness, stratégie de créneau central, échelle, langue, stockage, diagnostic ; le bouton « Revoir le guide » de la dernière étape se trouve aussi ici.",
+            "Mode d'emploi, indicateur de loudness, stratégie de créneau central, échelle, langue, diagnostic ; le bouton « Revoir le guide » de la dernière étape se trouve aussi ici.",
         "tour.step2.title": "Flux de travail et priorité",
         "tour.step2.body":
             "Un flux complet : capture → analyse → ajuster/geler → écrire l'automation → ajuster l'automation manuellement. Priorité : automation de l'hôte > valeur manuelle gelée > ajustement manuel > courbe d'analyse du moteur. Vous pouvez le revoir à tout moment via le bouton « Voir le workflow » dans Réglages.",

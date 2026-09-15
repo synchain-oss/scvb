@@ -23,8 +23,8 @@
 // =============================================================================
 
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
 // [SL-354] 源码级判据**必须先剥注释**:否则作者在实现里逐字引一遍旧写法,判据就被
 // 喂饱了(本卡实测过一次:代码改了、这一格照绿)。用 SL-330b 那个共享的字符级扫描器,
 // 不在这里再手写一份 —— 手写的那种只丢弃整行注释,块注释中间那几行漏得干干净净。
@@ -908,6 +908,103 @@ log(
             /from "\.\.\/shared\/context-menu\.js"/.test(tw),
             "SL-205 tab-wave 从 shared 引 isEditableTarget",
         );
+    }
+}
+
+// =============================================================================
+log(
+    "=== [SL-415] sidecar 三处 UI 收起:node 侧负向判据 + 「无生产者」事实守卫 ===",
+);
+// 用户 2026-09-14 裁定「sidecar 不上了」,统筹按最小改动落:**只收 UI,不删代码**
+// (变更文档 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。
+//
+// 这里补的是**页面级判据(often SKIP)之外的、不随浏览器缺席而消失的那一半**。
+// 页面级 G 节量的是真实布局盒,但 CLAUDE.md §6 的纪律写着浏览器缺席(exit 2)/ 这一次没起来
+// (exit 3)都不判红 —— 所以「三处不产生布局盒」这件事在 CI 上有概率一次都断不到;
+// 下面两格是**不可跳过**的那一层。
+{
+    // ---- (1)「不要给它加 show()」那句注释,今天有牙齿了 ----------------------
+    // `tab-settings.js` 的 `renderStorage()` 头注写着「本函数照旧填文本,但一个字都不许让它
+    // 重新可见」。在本次之前,那句话**没有任何机器拦得住** —— 唯一的守卫是会 SKIP 的页面级
+    // 那一格(第 2 轮复审【建议】4)。
+    //
+    // ⚠ **必须先剥注释再找**:本卡的注释里逐字写着 `show(el.storageCard, …)` 这些形态,
+    // 拿裸源码找的话判据会被作者自己的话喂饱(本仓栽过同款;写法与
+    // `smoke-tab1-interactions.mjs` 那两格逐字同源)。
+    {
+        const code = stripComments(src("web/output/tab-settings.js"));
+        check(
+            code.length > 0,
+            "(1) 剥注释后取到 tab-settings.js 正文(取不到就说明下面两格在空跑)",
+        );
+        // ← 在 tab-settings.js 里加一句 `show($("settings-storage"), true)` / `el.storageCard.hidden = false`,
+        //   本格红。**这是本卡唯一的 node 侧牙齿**,别删。
+        check(
+            !/["']settings-storage["']/.test(code),
+            "(1) ★ 剥注释后 tab-settings.js 里**没有任何**对「存储状态」卡锚点的引用" +
+                "(settings-storage 是那张卡自己的 data-gb;它只该出现在 index.html 与页面级判据里)",
+        );
+        check(
+            !/storage[A-Za-z]*\.hidden\s*=\s*false/i.test(code),
+            "(1) ★ 剥注释后 tab-settings.js 里没有 `…storage….hidden = false`" +
+                "(收起只由 index.html 的 `hidden` 承担,JS 侧不再开合)",
+        );
+    }
+
+    // ---- (2) 裁定 1 立论的那条事实:sidecarMissing 在 src/ 里没有生产者 -------
+    // 冻结契约六处(SCVB_CONTRACT §1.1/§5.1×2/§9、STATE_SCHEMA §4.2/§4.3)本次改成「v1 无出口,
+    // **因为该 code 在 `src/` 里没有生产者**」。这句话是本变更文档的立论基础,
+    // **写进文档就得有人守着** —— 否则哪天有人接了线、而 UI 仍静默,没有任何东西会红。
+    //
+    // ⚠ **接线那天这一格会红,这是设计好的**:届时必须**同时恢复横幅⑤**,并把这一格改成
+    // 「有生产者」的形态(而不是把断言放宽或删掉)。
+    {
+        const files = [];
+        (function walk(dir) {
+            for (const ent of readdirSync(dir, { withFileTypes: true })) {
+                const p = join(dir, ent.name);
+                if (ent.isDirectory()) walk(p);
+                else if (ent.isFile()) files.push(p);
+            }
+        })(join(ROOT, "src"));
+        check(
+            files.length > 0,
+            "(2) 扫到 src/ 下的文件(扫不到就说明下面两格在空跑 —— 路径或 cwd 变了)",
+        );
+        const hits = [];
+        for (const f of files) {
+            const lines = readFileSync(f, "utf8").split(/\r?\n/);
+            lines.forEach((line, i) => {
+                if (line.includes("sidecarMissing")) {
+                    hits.push({
+                        where: relative(ROOT, f).split("\\").join("/"),
+                        line: i + 1,
+                        text: line.trim(),
+                    });
+                }
+            });
+        }
+        log(
+            `  [SL-415] src/ 下 sidecarMissing 命中 ${hits.length} 处` +
+                (hits.length
+                    ? `:${hits.map((h) => ` ${h.where}:${h.line}`).join("")}`
+                    : ""),
+        );
+        // ← 在 src/ 里任何一处**发出** sidecarMissing(哪怕只多一行字符串字面量),本格红。
+        //   那正是「接线了」的信号,必须连同横幅⑤ 一起恢复。
+        eq(
+            hits.length,
+            1,
+            "(2) ★ src/ 下 sidecarMissing 的命中数恰为 1(接线那天本格会红,见注释)",
+        );
+        if (hits.length === 1) {
+            // 唯一那一处**必须是注释**(`SidecarStore.h` 的待接线意向),不是发送点。
+            check(
+                /^(\/\/|\*|\/\*)/.test(hits[0].text),
+                `(2) ★ 且那一处是注释、不是发送点(实得 ${hits[0].where}:${hits[0].line} ` +
+                    `= ${JSON.stringify(hits[0].text.slice(0, 80))})`,
+            );
+        }
     }
 }
 

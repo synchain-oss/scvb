@@ -3093,13 +3093,24 @@ try {
                 "if (i >= 0) arr[i] = err; else arr.push(err); } " +
                 's.ctl.emit("scvb.error", err); return "ok"; })()',
         );
-    // 等两帧再量 —— 不写死 sleep:`scvb.error` 的 handler 走 requestRender(),
-    // 判据只依赖「那一拍渲染已经落过 DOM」。
-    const TWO_FRAMES = IN(`
-        return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))));
+    // 四处布局盒**一次读全** —— 两条 sidecar 真判据 + 两条对照。裁定 4(G2 的两条对照
+    // 此前与真判据分两次读,与第 3 推 G3 修好的那条缝同源,别只修一半):同一次读出来,
+    // 「对照点亮」才真正证明**这一帧**渲染过,`=== 0` 也就不可能是「还没渲染」。
+    const G2_PROBE = IN(`
+        const box = (n) => {
+            const el = gb(n);
+            if (!el) return -1;
+            return el.getClientRects().length;
+        };
+        return JSON.stringify({
+            banner: box("banner-sidecarMissing"),
+            toast: box("toast-sidecarSwitched"),
+            ctrlBanner: box("banner-srMismatch"),
+            ctrlToast: box("toast-projectCopy"),
+        });
     `);
 
-    // ---- G1 对照:同类 code 真能点亮(证明探针与页面都活着)--------------------
+    // ---- G1 夹具:两条同类 code(对照的触发条件)-------------------------------
     check(
         (await pushErr("srMismatch", {
             ch: 1,
@@ -3114,21 +3125,8 @@ try {
         })) === "ok",
         "G 夹具:推进 projectCopy(toast①,仍在用的同类 code)",
     );
-    await evaluate(TWO_FRAMES);
-    check(
-        await waitFor(
-            IN(`
-                const b = gb("banner-srMismatch");
-                const t = gb("toast-projectCopy");
-                return !!b && b.getClientRects().length > 0 &&
-                       !!t && t.getClientRects().length > 0;
-            `),
-            6000,
-        ),
-        "G 对照:✱ 推进的 error 真的点亮了同类横幅与 toast(少了它,下面两格是空过)",
-    );
 
-    // ---- G2 推 sidecar 那两条 code,量两处布局盒 -----------------------------
+    // ---- G2 推 sidecar 那两条 code -------------------------------------------
     check(
         (await pushErr("sidecarMissing", {
             path: "SCVB/demo-session.scvbfeat",
@@ -3139,34 +3137,35 @@ try {
         (await pushErr("sidecarSwitched", { bytes: 8912896 })) === "ok",
         "G 夹具:推进 sidecarSwitched(toast② 的触发条件)",
     );
-    await evaluate(TWO_FRAMES);
-    const bannerToast = JSON.parse(
-        (await evaluate(
-            IN(`
-                const box = (n) => {
-                    const el = gb(n);
-                    if (!el) return -1;
-                    return el.getClientRects().length;
-                };
-                return JSON.stringify({
-                    banner: box("banner-sidecarMissing"),
-                    toast: box("toast-sidecarSwitched"),
-                });
-            `),
-        )) || "{}",
-    );
+
+    // 轮询到**对照点亮**这个稳态,再拿**同一次读**去断四格。退出条件就是「页面已经按
+    // `scvb.error` 渲染过至少一帧」;上界 60 × 250ms,耗尽时下面第一条自己会红,
+    // 而且日志里带着四条读数(不需要再猜是真判据红还是时序)。
+    let g2 = {};
+    for (let i = 0; i < 60; i++) {
+        g2 = JSON.parse((await evaluate(G2_PROBE)) || "{}");
+        if (g2.ctrlBanner > 0 && g2.ctrlToast > 0) break;
+        await sleep(250);
+    }
     log(
-        `  [SL-415] 触发条件成立后的布局盒:banner-sidecarMissing=${bannerToast.banner} / ` +
-            `toast-sidecarSwitched=${bannerToast.toast}`,
+        `  [SL-415] 同一次读出的布局盒:banner-sidecarMissing=${g2.banner} / ` +
+            `toast-sidecarSwitched=${g2.toast} / 对照 banner-srMismatch=${g2.ctrlBanner} / ` +
+            `toast-projectCopy=${g2.ctrlToast}`,
     );
     check(
-        bannerToast.banner === 0,
-        `[SL-415] ★ 横幅 ⑤ 在 sidecarMissing 到达后仍零布局盒(实得 ${bannerToast.banner};` +
+        g2.ctrlBanner > 0 && g2.ctrlToast > 0,
+        `[SL-415] 对照(同一次读):同类 error 真的点亮了横幅与 toast(实得 ` +
+            `srMismatch=${g2.ctrlBanner} / projectCopy=${g2.ctrlToast})—— ` +
+            "少了它,下面两条 `=== 0` 分不清「真没有」与「还没渲染」",
+    );
+    check(
+        g2.banner === 0,
+        `[SL-415] ★ 横幅 ⑤ 在 sidecarMissing 到达后仍零布局盒(实得 ${g2.banner};` +
             "-1 = 节点被删,也算红)",
     );
     check(
-        bannerToast.toast === 0,
-        `[SL-415] ★ toast② 在 sidecarSwitched 到达后仍零布局盒(实得 ${bannerToast.toast};` +
+        g2.toast === 0,
+        `[SL-415] ★ toast② 在 sidecarSwitched 到达后仍零布局盒(实得 ${g2.toast};` +
             "-1 = 节点被删,也算红)",
     );
 
