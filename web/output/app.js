@@ -1455,7 +1455,18 @@ function renderBanners() {
     }
 
     // ⑤ 采集数据缺失/过期  ⑥ 宿主未提供时间线(后者同时 disable 采集/输出开关)
-    show($("banner-sidecarMissing"), err.has("sidecarMissing"));
+    //
+    // [SL-415] **⑤ 的 `show()` 已摘掉** —— 用户 2026-09-14 裁定「sidecar 不上了」(B23/B25),
+    // 统筹按最小改动落:**只收 UI,不删代码**。此处原为
+    //     show($("banner-sidecarMissing"), err.has("sidecarMissing"));
+    // 现在横幅在 `index.html` 里恒挂 `hidden`,这里不再把它翻上来 —— 所以
+    // `scvb.error{code:"sidecarMissing"}` 到达也**不产生布局盒**(页面级判据:
+    // `smoke-ui-layout-page.mjs` G 节)。
+    // ⚠ **只摘了这一句,没有摘别的**:`sidecarMissing` 仍在下面 `KNOWN_CODES` 里(它仍是
+    // §5.1 九码之一,native 侧读路径照旧会发),store.errors 也照旧收下它 —— 只是本版
+    // 没有渲染出口。顺带记一条**本卡已知的用户可见后果**:打开一份靠外部特征文件的老工程
+    // 而那份文件不在时,此前唯一的那句提示就是这条横幅;收起之后用户看不到任何解释
+    // (特征为空、曲线与分段不受影响)。要恢复提示,把上面那行接回来即可。
     vs.noTimeline = err.has("noTimeline");
     show($("banner-noTimeline"), vs.noTimeline);
 
@@ -1550,7 +1561,11 @@ function renderBanners() {
 
     // toast:一次性提示(§5.1 降级纪律②:可关闭)
     show($("toast-projectCopy"), err.has("projectCopy"));
-    show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
+    // [SL-415] **toast② 的 `show()` 已摘掉** —— 同横幅 ⑤(用户 2026-09-14 裁定
+    // 「sidecar 不上了」)。此处原为
+    //     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
+    // toast 本体与词条 `toast.sidecarSwitched` 都留着(`index.html` 里恒挂 `hidden`),
+    // 开关真打开时把这一行接回来即可。`sidecarSwitched` 同样仍在 `KNOWN_CODES` 里。
 
     // 未知 code:原样显示并入 Tab4 诊断区(ADR-002 / ipc §5,UI 不静默)
     const diag = $("settings-diagnostics-list");

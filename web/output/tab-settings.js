@@ -11,6 +11,8 @@ import { analyzeRefusalNote } from "../shared/analyze-note.js";
 // 职责边界:
 //   • 本文件只管 **Tab4**(缩放 / 语言 / 版本 / 说明块 / 存储状态 / 诊断 + J69 两设置块)。
 //     外壳(header / 横幅 / footer / 缩放状态机 / 引导页 / tab 路由)在 web/output/app.js。
+//     [SL-415] 「存储状态」这一块自 2026-09-14 起**已收起**(DOM 留 + `hidden`,
+//     见 `renderStorage` 头注) —— 本节列的是职责范围,不再等于「屏幕上都能看到」。
 //   • 两段导出:**纯函数**(无 DOM,node 可直接 import 断言,见
 //     web-preview/tests/smoke-tab4-settings.mjs)+ createTabSettings()(DOM 接线)。
 //     模块顶层零副作用、零 document 触碰,否则 check-i18n / 冒烟脚本导入即炸。
@@ -110,6 +112,11 @@ export function versionString(snapshot) {
  * 阈值真源在 native 的 `SidecarStore.h::kSidecarThresholdBytes`)。
  * 「外置」文案保留:读路径仍会走到它 —— 打开带 sidecar 的老工程时 `embedded=false`,
  * 保存一次之后变回内嵌(判据 `HOST SL395`)。
+ *
+ * [SL-415] 用户 2026-09-14 裁定「sidecar 不上了」:上面这条**读路径一个字节没动**
+ * (本函数就是它的消费端),但**界面不再显示这一行** —— 承载它的卡片恒 `hidden`
+ * (见 `renderStorage` 头注)。所以「外置」这个词今天只在 store 里成立、不在屏幕上成立;
+ * 别因为「页面上看不到」就把 `external` 这一支删掉。
  *
  * @returns {{embedded:boolean, bytes:number, external:boolean}}
  */
@@ -289,6 +296,8 @@ export function createTabSettings(opts) {
         viewWorkflow: $("settings-viewworkflow"),
         docs: $("settings-docs"), // [SL-214] 此前**从未接线**(见 index.html 那段行注)
         versionValue: $("settings-version-value"),
+        // [SL-415] 这两件所在的卡片已收起(见 renderStorage 头注);取元素照旧 ——
+        // renderStorage 仍往它们里面写文本,只是那张卡恒 `hidden`。
         storageValue: $("settings-storage-value"),
         storageGuid: $("settings-storage-guid"),
         diagBody: $("settings-diagnostics-body"),
@@ -1278,6 +1287,17 @@ export function createTabSettings(opts) {
             text(el.versionValue, versionString(st && st.snapshot));
     }
 
+    /**
+     * [SL-415] 「存储状态」行**已收起**(用户 2026-09-14 裁定「sidecar 不上了」,B23/B25)。
+     *
+     * ⚠ **本函数照旧填文本,但一个字都不许让它重新可见。** 收起落在两处,各自独立:
+     *   · `index.html` 的 `data-gb="settings-storage"` 卡片上恒挂 `hidden`;
+     *   · 本文件**没有**、也不要给它加 `show(el.storageCard, …)` —— 那正是 #251(SL-382
+     *     藏灵敏度杆)的同款形态:DOM 留、属性挂上、JS 侧不再开合。
+     * 所以这里读 `storageOf()` 只是把文本照常写进去(隐藏 ≠ 删除;`storageOf()` 的纯函数
+     * 判据在 `smoke-tab4-settings.mjs` 照旧绿),**不是**「值变了就该显出来」。
+     * 页面级判据 = `smoke-ui-layout-page.mjs` G 节:切到 Tab4 之后这张卡仍零布局盒。
+     */
     function renderStorage(t, st) {
         const s = storageOf((st && st.state) || {});
         if (el.storageValue) {

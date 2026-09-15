@@ -74,7 +74,7 @@ Set the DAW's automation mode to **Write** or **Latch** and play through once mo
 | **Overview** | The capture / analyse / output switches, engine Range, group selection, version chip, global Width and MS Balance, Lead Select, pan and level distribution charts |
 | **Tracks** | The 15-row track table: per-track pan / vol / width readouts and controls, levels, lead lock, level exemption, auto-pan participation, freeze, ST marker |
 | **Waveform** | Timeline lanes: VAD colouring, segments, the segment inspector (edit pan/vol on a selected segment), selections and partial recapture / re-analysis |
-| **Settings** | Usage notes (including the nine hard rules), loudness basis, centre-slot policy, UI scale, language, version number, storage status, diagnostics |
+| **Settings** | Usage notes (including the nine hard rules), loudness basis, centre-slot policy, UI scale, language, version number, diagnostics |
 
 ### The Input single page
 
@@ -162,9 +162,8 @@ For stereo sources, width is the **spread** in the dual-pan model (pan being the
 ## Sessions and files
 
 - **Segments, ranges, and 2 versions of curves plus configuration** (a few hundred KB) live in the Output's state and travel with the project.
-- The **feature stream** is compressed and **embedded in state** (v1 does not auto-switch to a sidecar file, regardless of the 8 MB mark). The "Storage status" panel in Settings tells you which of the two you are on: **opening an older project that has a sidecar first reads "external"** (that is the legacy form being read in), and it **turns back to "embedded" once you save**.
-- Saving the project elsewhere or copying it to another machine does not carry the sidecar along. When you open a project that has a sidecar (written by an earlier version, or sent by someone else) and that file is missing, the plugin says plainly that the feature file is missing rather than pretending the data is still there.
-- **Opening an older project that has a sidecar and saving it once pulls the features back into the project and reclaims the external directory** — this step is **irreversible**, and the project file grows accordingly (on v1 the external features are read-only legacy: **no feature body** is ever written into `sessions/` again; opening such a project still writes an `owner.lock` ownership marker in that directory).
+- The **feature stream** is compressed and **embedded in state**. This version **does not offer external storage**: features are never written to a directory outside the project, and Settings no longer shows a "Storage status" row (the shipped behaviour is always embedded, regardless of the 8 MB mark).
+- Saving the project elsewhere or copying it to another machine carries the features along. A project written by an earlier version that kept its features in an external directory still opens and reads back as before (that read path is retained — opening one still writes an `owner.lock` ownership marker there), and **saving it once pulls the features back into the project and reclaims the external directory** — that step is **irreversible** and the project file grows accordingly; if that external file is gone, the features cannot be recovered (segments and curves are unaffected) — just capture again.
 - The Input's state holds only a channel id plus UI preferences; **the single source of truth for configuration is always the Output**.
 
 ## Troubleshooting

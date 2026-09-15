@@ -253,7 +253,8 @@ export const T = {
         "tour-in.step5.body":
             "分析、平衡、写自动化这些完整控制都在总线上的 SCVB Output 里；Input 这一页只管认领通道和看状态。想再看一遍这段引导，随时点这个「？」。",
 
-        // tour 全参数导览 44 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
+        // tour 全参数导览 43 步(终稿 v2,以 drafts/tour-zh-copy-final-2026-08-24.md 为准;05 §2.6 待统筹勘误)。
+        // [SL-415] 2026-09-14 用户裁定 sidecar 不上了 ⇒ 原第 42 步「存储状态」删除,44 → 43 步。
         "tour.step1.title": "欢迎使用 SCVB",
         "tour.step1.body":
             "SCVB 是 Synchain 的开源多轨人声平衡工具。先花一分钟来了解一下界面吧。已注入 15 轨演示数据,结束后还原。",
@@ -369,16 +370,17 @@ export const T = {
         "tour.step40.body": "缩放整个界面UI大小;与顶部栏(header)缩放联动。",
         "tour.step41.title": "语言",
         "tour.step41.body": "中文 / English / Français 三语即时切换。",
-        "tour.step42.title": "存储状态",
-        "tour.step42.body":
-            "特征数据可以内嵌在工程里,也可以存到外部;占用大小可在这里查看。",
-        "tour.step43.title": "诊断",
-        "tour.step43.body": "可复制每轨心跳与失准计数,用于排查连接问题。",
+        // [SL-415] 用户 2026-09-14 裁定「sidecar 不上了」⇒ tour 的「存储状态」那一步整步移除
+        // (web/output/tour.js 步骤表),**后面两步整体前移一格** —— 文本按序号取词条,
+        // 所以原 43(诊断)→ 42、原 44(重看引导)→ 43,原 42(存储状态)两条删除。
+        // 漏改的后果是诊断那一步显示存储状态的说明(见 tour.js 步骤表头注)。
+        "tour.step42.title": "诊断",
+        "tour.step42.body": "可复制每轨心跳与失准计数,用于排查连接问题。",
         "tour.step3.title": "版本与复制",
         "tour.step3.body":
             "右上角是版本区:V1 / V2 两套平衡方案可随时切换,「复制」按钮可把当前版本整套复制到另一个版本;插件版本号显示在右下角,遇到问题时请连同诊断信息一起反馈。",
-        "tour.step44.title": "以后在这里可以再看一次",
-        "tour.step44.body": "引导随时可以重看,红字九条也在同一块里展开。",
+        "tour.step43.title": "以后在这里可以再看一次",
+        "tour.step43.body": "引导随时可以重看,红字九条也在同一块里展开。",
 
         // 工作流程图(tour 步 35;节点 + 优先级行,三语)。
         "workflow.capture": "采集",
@@ -1262,7 +1264,8 @@ export const T = {
         "tour-in.step5.body":
             "Analysis, balancing and automation writing all live in the SCVB Output on the bus; this page only claims a channel and shows status. To walk through this again, click this “?” any time.",
 
-        // tour full-parameter 44 steps (final copy; EN self-translated, pending U17 review).
+        // tour full-parameter 43 steps (final copy; EN self-translated, pending U17 review).
+        // [SL-415] The old step 42 "storage status" is gone (user ruling 2026-09-14).
         "tour.step1.title": "Welcome to SCVB",
         "tour.step1.body":
             "SCVB is Synchain's open-source multitrack vocal balancing tool. Take a minute to get to know the interface. A 15-track demo set is loaded and is cleared when the tour ends.",
@@ -1382,17 +1385,16 @@ export const T = {
         "tour.step41.title": "Language",
         "tour.step41.body":
             "Switch instantly between 中文 / English / Français.",
-        "tour.step42.title": "Storage status",
+        // [SL-415] Same renumbering as zh: the "storage status" tour step is gone
+        // (user ruling 2026-09-14), so the two steps after it move up by one.
+        "tour.step42.title": "Diagnostics",
         "tour.step42.body":
-            "Features can be embedded in the project or stored externally; the size used is shown here.",
-        "tour.step43.title": "Diagnostics",
-        "tour.step43.body":
             "Copy per-track heartbeat and misalignment counts to troubleshoot connections.",
         "tour.step3.title": "Version & Copy",
         "tour.step3.body":
             "The top-right is the version area: two balance versions V1 / V2 can be switched anytime; the Copy button copies the current version to the other. The plug-in version number is shown at the bottom-right — send it together with diagnostics when you need help.",
-        "tour.step44.title": "You can replay this tour here",
-        "tour.step44.body":
+        "tour.step43.title": "You can replay this tour here",
+        "tour.step43.body":
             "The tour can be replayed at any time, and the nine hard rules open in the same block.",
 
         // Workflow diagram (tour step 35; nodes + priority row).
@@ -2101,7 +2103,8 @@ export const T = {
         "tour-in.step5.body":
             "L’analyse, l’équilibrage et l’écriture d’automation se trouvent tous dans le SCVB Output du bus ; cette page ne sert qu’à revendiquer un canal et à afficher l’état. Pour revoir ce guide, cliquez sur ce « ? » à tout moment.",
 
-        // tour complet 44 étapes (copie finale ; FR auto-traduite, à relire).
+        // tour complet 43 étapes (copie finale ; FR auto-traduite, à relire).
+        // [SL-415] L'ancienne étape 42 « état du stockage » est supprimée (décision 2026-09-14).
         "tour.step1.title": "Bienvenue dans SCVB",
         "tour.step1.body":
             "SCVB est l'outil open-source de Synchain pour équilibrer les voix multipistes. Prenez une minute pour découvrir l'interface. Un jeu de démonstration de 15 pistes est chargé, puis retiré à la fin.",
@@ -2222,17 +2225,16 @@ export const T = {
         "tour.step41.title": "Langue",
         "tour.step41.body":
             "Basculez instantanément entre 中文 / English / Français.",
-        "tour.step42.title": "État du stockage",
+        // [SL-415] Même renumérotation que zh : l'étape « état du stockage » est
+        // supprimée (décision utilisateur 2026-09-14), les deux suivantes remontent d'un cran.
+        "tour.step42.title": "Diagnostic",
         "tour.step42.body":
-            "Les caractéristiques peuvent être intégrées au projet ou stockées à l'extérieur ; la taille utilisée s'affiche ici.",
-        "tour.step43.title": "Diagnostic",
-        "tour.step43.body":
             "Copiez le heartbeat et les compteurs de désalignement par piste pour diagnostiquer les connexions.",
         "tour.step3.title": "Versions et copie",
         "tour.step3.body":
             "En haut à droite se trouve la zone des versions : deux versions V1 / V2 commutables à tout moment ; le bouton Copier copie la version actuelle vers l'autre. Le numéro de version du plug-in s'affiche en bas à droite — envoyez-le avec les diagnostics si vous demandez de l'aide.",
-        "tour.step44.title": "Vous pourrez revoir cette visite ici",
-        "tour.step44.body":
+        "tour.step43.title": "Vous pourrez revoir cette visite ici",
+        "tour.step43.body":
             "La visite peut être rejouée à tout moment, et les neuf règles strictes s'ouvrent dans le même bloc.",
 
         // Diagramme de flux (étape 35 ; nœuds + ligne de priorité).

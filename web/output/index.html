@@ -5441,7 +5441,15 @@
                             {a} / 工程 abi {b})</span
                         >
                     </div>
-                    <!-- ⑤ 采集数据缺失/过期 -->
+                    <!-- ⑤ 采集数据缺失/过期
+                         [SL-415] **本横幅已收起** —— 用户 2026-09-14 裁定「sidecar 不上了」
+                         (B23/B25),统筹按最小改动落:**只收 UI,不删代码**。DOM 留 + `hidden`
+                         恒挂,`app.js` 不再对它调 `show()`(见 renderBanners 那一处注释),
+                         所以 `scvb.error{code:"sidecarMissing"}` 到达也不产生布局盒。
+                         读路径(native 侧 `SidecarStore` / `featuresMissing` / 错误码本身)
+                         一个字节没动,`FEAT-SIDECAR-*` 照旧绿。
+                         ⚠ 别把 `hidden` 当成「暂时没触发」而顺手删掉:页面级判据
+                         (`smoke-ui-layout-page.mjs` G 节)断的就是它恒零布局盒。 -->
                     <div
                         class="sc-banner"
                         data-gb="banner-sidecarMissing"
@@ -8776,10 +8784,22 @@
                                     ></span>
                                 </div>
 
+                                <!-- [SL-415] 「存储状态」行**已收起** —— 用户 2026-09-14 裁定
+                                     「sidecar 不上了」(B23/B25),本版不提供外置存储、特征恒内嵌,
+                                     再显示「内嵌 / 外置」这一行就是一句没有指涉的承诺。
+                                     统筹按最小改动落:DOM 留 + `hidden` 恒挂,
+                                     `tab-settings.js` 的 `renderStorage()` **照旧填文本但不再
+                                     对它调 `show()`**(见那一处注释)。
+                                     `data-tour="storage"` 属性一并留着(隐藏 ≠ 删除),但
+                                     **tour 里那一步已经整步移除** —— 锚点藏着还留着 spotlight
+                                     步骤会指到空处(见 `tour.js` 步骤表那一处注释)。
+                                     ⚠ 别顺手把 `hidden` 删掉:页面级判据
+                                     (`smoke-ui-layout-page.mjs` G 节)断的就是它恒零布局盒。 -->
                                 <div
                                     class="sc-card"
                                     data-gb="settings-storage"
                                     data-tour="storage"
+                                    hidden
                                 >
                                     <span
                                         class="sc-eyebrow"
@@ -8954,6 +8974,10 @@
                             >检测到工程副本,已创建独立采集数据副本</span
                         >
                     </div>
+                    <!-- [SL-415] **本 toast 已收起** —— 同横幅 ⑤:用户 2026-09-14 裁定
+                         「sidecar 不上了」,DOM 留 + `hidden` 恒挂,`app.js` 不再对它调
+                         `show()`(见 renderBanners 那一处注释)。词条与 toast 本体都保留,
+                         开关真打开时把那一行 `show` 接回去即可。 -->
                     <div
                         class="sc-toast"
                         data-gb="toast-sidecarSwitched"

@@ -3025,6 +3025,174 @@ try {
         }
     }
     assertClean("sl374-layout");
+
+    // =========================================================== G. SL-415
+    // 「sidecar 三处 UI 收起」的**页面级**判据(用户 2026-09-14 裁定「sidecar 不上了」;
+    // 统筹按最小改动落:**只收 UI,不删代码** —— `SidecarStore` 与整条读路径一个字节没动)。
+    //
+    // ★ 为什么必须页面级:这一条的全部内容就是**布局引擎给不给盒**。node 侧那两套
+    //   (`smoke-tab1-interactions.mjs` 的横幅 ⑤ / toast② 两格、`smoke-tab4-settings.mjs`
+    //   的 `storageOf()` 三格)断的是源码事实与纯函数,`getClientRects()` 在无 DOM 环境里
+    //   根本不存在。而收起的机制恰恰是「属性挂上了、样式真生效」—— 只断 `el.hidden === true`
+    //   会在「属性挂上了但不产生布局盒之外的效果」时全绿:`.sc-banner` / `.sc-toast` /
+    //   `.sc-card` 各自都设了 display,本页能藏住靠的是 `index.html` 那条作者层
+    //   `[hidden]{display:none !important}` 兜底(UA 表压不过它们)。
+    //   所以量的是**真实布局盒** `getClientRects().length`,三档取值各有含义:
+    //   `-1` = 节点不在(隐藏 ≠ 删除,这种要红)、`0` = 不产生布局盒(正确)、`> 0` = 还在渲染。
+    //
+    // ★ 三处一起断,而且**每一处都配一条对照** —— 这是本节唯一的假绿防线,别删:
+    //   · 横幅 ⑤ / toast② 的触发条件是 `scvb.error`。要是探针没把事件真送进页面
+    //     (壳页 API 改名、`ctl.emit` 不在、页面还没 ready),那两条**天然**是 0 布局盒
+    //     —— 一个什么都没做的探针也能全绿。所以先推两条**同类但仍在用**的 code
+    //     (`srMismatch` 横幅 ③ / `projectCopy` toast①),断它们**真有**布局盒。
+    //   · 「存储状态」卡在 Tab4:不切页的话整个面板都不产生盒,那个 0 是白来的。
+    //     所以先切到 Tab4,断同一批设置卡里的诊断卡**真有**布局盒。
+    //
+    // ★ 删除式(三条各去掉一处「收起」,每条都点名红在本节):
+    //   · `app.js` 里把那句 `show($("banner-sidecarMissing"), err.has("sidecarMissing"))`
+    //     接回去 ⇒ 横幅量到 > 0(注意**只接 show、`hidden` 不动** —— 那正是「JS 不再
+    //     unhide」那一半的判据;只删 `hidden` 而不接 show 是另一条,两条互补);
+    //   · 同句接回 `toast-sidecarSwitched` ⇒ toast 量到 > 0;
+    //   · 去掉 `index.html` 上 `data-gb="settings-storage"` 那个 `hidden` ⇒ 存储状态卡 > 0。
+    log("G. SL-415 sidecar 三处 UI 收起:触发条件成立也不产生布局盒");
+    newBucket("sl415-sidecar-collapsed");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?fixture=fifteen-tracks`,
+    });
+    check(
+        await waitFor(IN(`const n = gb("banner-sidecarMissing"); return !!n;`)),
+        "G 页面装载(Output)",
+    );
+    await dismissOverlays();
+    check(
+        !!(await evaluate(
+            "(() => { const s = window.__SCVB_PREVIEW__; " +
+                'return !!(s && s.ctl && typeof s.ctl.emit === "function"); })()',
+        )),
+        "G 壳页预览会话可用(__SCVB_PREVIEW__.ctl.emit)—— 取不到时先红在这一条",
+    );
+
+    // 把一条 §2.9 `scvb.error` 真推进页面。两处都写:`ctl.emit` 喂 UI,`ctl.model.errors`
+    // 是 `pendingErrors()` 的数据源(mock 自己对 secondOutput 就是这么处置的)——
+    // 只发事件不改它,「世界的事实」就存了两份且对不上。
+    const pushErr = (code, detail) =>
+        evaluate(
+            "(() => {" +
+                "const s = window.__SCVB_PREVIEW__; " +
+                'if (!s || !s.ctl || typeof s.ctl.emit !== "function") return "no-shell-api"; ' +
+                "const err = { code: " +
+                JSON.stringify(code) +
+                ", detail: " +
+                JSON.stringify(detail) +
+                " }; " +
+                "const arr = s.ctl.model && s.ctl.model.errors; " +
+                "if (Array.isArray(arr)) { " +
+                "const i = arr.findIndex((e) => e && e.code === err.code); " +
+                "if (i >= 0) arr[i] = err; else arr.push(err); } " +
+                's.ctl.emit("scvb.error", err); return "ok"; })()',
+        );
+    // 等两帧再量 —— 不写死 sleep:`scvb.error` 的 handler 走 requestRender(),
+    // 判据只依赖「那一拍渲染已经落过 DOM」。
+    const TWO_FRAMES = IN(`
+        return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))));
+    `);
+
+    // ---- G1 对照:同类 code 真能点亮(证明探针与页面都活着)--------------------
+    check(
+        (await pushErr("srMismatch", {
+            ch: 1,
+            inputSr: 44100,
+            outputSr: 48000,
+        })) === "ok",
+        "G 夹具:推进 srMismatch(横幅 ③,仍在用的同类 code)",
+    );
+    check(
+        (await pushErr("projectCopy", {
+            sessionGuid: "00000000-0000-0000-0000-000000000000",
+        })) === "ok",
+        "G 夹具:推进 projectCopy(toast①,仍在用的同类 code)",
+    );
+    await evaluate(TWO_FRAMES);
+    check(
+        await waitFor(
+            IN(`
+                const b = gb("banner-srMismatch");
+                const t = gb("toast-projectCopy");
+                return !!b && b.getClientRects().length > 0 &&
+                       !!t && t.getClientRects().length > 0;
+            `),
+            6000,
+        ),
+        "G 对照:✱ 推进的 error 真的点亮了同类横幅与 toast(少了它,下面两格是空过)",
+    );
+
+    // ---- G2 推 sidecar 那两条 code,量两处布局盒 -----------------------------
+    check(
+        (await pushErr("sidecarMissing", {
+            path: "SCVB/demo-session.scvbfeat",
+        })) === "ok",
+        "G 夹具:推进 sidecarMissing(横幅 ⑤ 的触发条件)",
+    );
+    check(
+        (await pushErr("sidecarSwitched", { bytes: 8912896 })) === "ok",
+        "G 夹具:推进 sidecarSwitched(toast② 的触发条件)",
+    );
+    await evaluate(TWO_FRAMES);
+    const bannerToast = JSON.parse(
+        (await evaluate(
+            IN(`
+                const box = (n) => {
+                    const el = gb(n);
+                    if (!el) return -1;
+                    return el.getClientRects().length;
+                };
+                return JSON.stringify({
+                    banner: box("banner-sidecarMissing"),
+                    toast: box("toast-sidecarSwitched"),
+                });
+            `),
+        )) || "{}",
+    );
+    log(
+        `  [SL-415] 触发条件成立后的布局盒:banner-sidecarMissing=${bannerToast.banner} / ` +
+            `toast-sidecarSwitched=${bannerToast.toast}`,
+    );
+    check(
+        bannerToast.banner === 0,
+        `[SL-415] ★ 横幅 ⑤ 在 sidecarMissing 到达后仍零布局盒(实得 ${bannerToast.banner};` +
+            "-1 = 节点被删,也算红)",
+    );
+    check(
+        bannerToast.toast === 0,
+        `[SL-415] ★ toast② 在 sidecarSwitched 到达后仍零布局盒(实得 ${bannerToast.toast};` +
+            "-1 = 节点被删,也算红)",
+    );
+
+    // ---- G3 Tab4「存储状态」卡 ----------------------------------------------
+    check(await click("tabnav-settings"), "G 切到 Tab4");
+    check(
+        await waitFor(
+            IN(`
+                const d = gb("settings-diagnostics");
+                return !!d && d.getClientRects().length > 0;
+            `),
+            6000,
+        ),
+        "G 对照:Tab4 真的渲染出来了(同批设置卡里的诊断卡有布局盒)",
+    );
+    const storageBox = await evaluate(
+        IN(`
+            const el = gb("settings-storage");
+            if (!el) return -1;
+            return el.getClientRects().length;
+        `),
+    );
+    log(`  [SL-415] Tab4「存储状态」卡布局盒 = ${storageBox}`);
+    check(
+        storageBox === 0,
+        `[SL-415] ★ 「存储状态」卡在 Tab4 上零布局盒(实得 ${storageBox};-1 = 节点被删,也算红)`,
+    );
+    assertClean("sl415-sidecar-collapsed");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟自身抛错:${e && e.stack ? e.stack : e}`);
