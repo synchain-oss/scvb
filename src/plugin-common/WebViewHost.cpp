@@ -167,8 +167,8 @@ public:
     //     ⇒ 无标题栏的窗口连默认擦除都不走,而 VST3 编辑器正是这一类:
     //     detail::PluginUtilities::getDesktopFlags 只可能给出 0 或
     //     windowRequiresSynchronousCoreGraphicsRendering,两者都不含 windowHasTitleBar;
-    //   • (SL-355 当时)我方三层底色都是 shellBackdrop() = kShellBackdropArgb,那时它是暗色,
-    //     画不出浅灰。⚠ [SL-370] **这第三条证据已经不成立**:kShellBackdropArgb 当时改成了浅色
+    //   • (SL-355 当时)我方三层底色都取同一份单色真源,那时它是暗色,
+    //     画不出浅灰。⚠ [SL-370] **这第三条证据已经不成立**:那份单色真源当时改成了浅色
     //     #d9cadb,和「浅灰」在肉眼上分不开([SL-402] 起该单色常量又被占位渐变的
     //     kShellBackdropStops 取代,同为浅色族 —— 「和浅灰分不开」这条只与明暗有关,仍然成立)。
     //     前两条(hbrBackground 为 0、WM_ERASEBKGND 不走)不依赖取值,仍然成立,所以结论没变;
@@ -235,7 +235,7 @@ public:
     // 【三段各自的归因】
     //   · 白(第一段)= 同上面【灰】那一节:宿主自己的插件窗容器,在我方 HWND 上屏之前。
     //     插件侧无从覆盖;v5.6.7 用户读成「灰」、v5.6.8 读成「白」,都是这一节(各 DAW/主题不同)。
-    //   · 黑(第二段)= 我方 ①-a/①-b/①-c 三层预绘底色,SL-370 当时取值 kShellBackdropArgb。
+    //   · 黑(第二段)= 我方 ①-a/①-b/①-c 三层预绘底色,SL-370 当时取值 = 单色真源(#d9cadb)。
     //     **这是一条排除法结论,不是猜**:开窗路径上我方只有这一个深色值 —— JUCE 的
     //     fallbackPaint 画白、外壳与 body 稳态都走浅色渐变、宿主容器是浅的,窗口里能出现
     //     一整块黑的来源只剩它。(全仓求证:预绘底色的全部落点 = ⑥ 与 ⑥c 读的那几个路径,
@@ -252,16 +252,16 @@ public:
     //     **插件侧没有 API 能盖它**,SL-370 也没有新增手段 —— 只有真机能判。
     //
     // 【SL-370 的修法 · 第一段:颜色(兜底)】把预绘底色(tokens.css 的 --page-backdrop /
-    //   三份 index.html 的 <head> 内联 / 本文件用的 kShellBackdropArgb,SL-370 当时这三处同源)
+    //   三份 index.html 的 <head> 内联 / 本文件用的单色真源,SL-370 当时这三处同源)
     //   **整体换成浅色**:取 `--page-gradient` 的渐变轴中点色,当时值 #d9cadb(本渐变四段斜率
     //   几乎一致,取整后它与「沿轴等权均值」同为 #d9cadb;⑥c 当时判的就是**中点色**这一条)。
     //   黑那一段就此彻底拿掉。
-    //   ⚠ 连带面:kShellBackdropArgb 当时同时是 FallbackPanel 的面板底色,三行标签因此从浅字
+    //   ⚠ 连带面:那份单色真源当时同时是 FallbackPanel 的面板底色,三行标签因此从浅字
     //   改成深墨(判据 = tests/webview/test_plugin_common.cpp 的对比度断言;[SL-402] 起面板底
     //   改用面板自己的 kFallbackPanelArgb,不再随占位走,见下)。
     //   ⚠ [SL-377] **上面那个「三处同源」已经拆成两个角色**:用户裁定窗口四角
     //   (= --page-backdrop,外壳圆角之外那一圈)**改回深色 #191820**,而占位那一族
-    //   (kShellBackdropArgb + 三份 index.html 内联)保持浅色不动。SL-370 时四角跟着变浅是
+    //   (单色真源 + 三份 index.html 内联)保持浅色不动。SL-370 时四角跟着变浅是
     //   顺带效果、当时留给用户终验,终验结论就是这一条。
     //   机检:⑥ 保证占位色那几处彼此同值,⑥c 从 --page-gradient 现算现对「和成品可见底色
     //   是不是一个明暗」,⑥b 单独钉外圈色(对拍设计稿 body 底,并断言它 != 占位色)。
@@ -304,7 +304,7 @@ public:
     //   渐变从 #b5acc9 走到 #fde8ed,单色的 #d9cadb 只在轴中点附近与它贴合。
     //   修法 = 占位从单色升成**同一组色标的线性渐变**(tokens.css 的 --page-gradient 是真源):
     //     · C++:本文件两处 paint 走 PlatformWebView.h 的 shellBackdropGradient(getLocalBounds()
-    //       .toFloat())—— kShellBackdropArgb 单色常量被色标数组 kShellBackdropStops 取代;
+    //       .toFloat())—— SL-370 时期的单色常量被色标数组 kShellBackdropStops 取代;
     //     · web:三份 index.html 的 <head> 内联改成 `html { background: linear-gradient(…) }`
     //       字面量(仍是字面量、仍排在外链之前 —— ①-c 的两条确定兜路不变);
     //     · ①-b(DefaultBackgroundColor)只收纯色,取 shellBackdropMid()(= 色标数组沿轴

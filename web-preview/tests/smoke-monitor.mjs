@@ -1975,12 +1975,15 @@ log("=== ⑦ 只读不变式与页面纪律 ===");
     // 的那一段正是它要盖的,写成 var(--page-backdrop) 就又回到「等外链」。
     // [SL-402] 豁免面从「单色 #rrggbb」扩成「单色**或** linear-gradient 字面量」:占位升成
     // 与 tokens 同色标的渐变字面量,四个色标 hex 都在这条规则里,不扩面的话它们会被下面
-    // 那行当成四个新的裸 hex 一起逮住。豁免面只有这一条规则本身,同块里的其它 hex 照样被
-    // 逮;渐变的**色标表**对不对由 smoke-embedded-resources.mjs 的 ⑥/⑥c 管,这里不重复。
-    // `background(?:-color)?` 与 ⑥ 同口径:只认长写法的话,改成简写会让 ⑥ 绿而这里红出
-    // 两句指不到真因的文案(「声明没了」+「多了个裸 hex」)。
+    // 那行当成四个新的裸 hex 一起逮住。渐变的**色标表**对不对由 smoke-embedded-resources.mjs
+    // 的 ⑥/⑥c 管,这里不重复。`background(?:-color)?` 与 ⑥ 同口径:只认长写法的话,改成
+    // 简写会让 ⑥ 绿而这里红出两句指不到真因的文案(「声明没了」+「多了个裸 hex」)。
+    // [第 1 推] 块里再允许**其它不含 `#` 的声明**(内联补了 `min-height: 100%` 与
+    // `background-attachment: fixed` 两行,见裁定 1):每段声明体用 `[^;#{}]*` ——
+    // **不是**一刀 `[^}]*`:块内任何一段再出现裸 hex,整块豁免当场失效,那条 hex 照旧
+    // 被下面的全局扫描逮住(豁免面不变成藏污口)。
     const backdropRule =
-        /html\s*\{\s*background(?:-color)?:\s*(?:linear-gradient\([^;]*\)|#[0-9a-fA-F]{3,8});?\s*\}/g;
+        /html\s*\{\s*background(?:-color)?:\s*(?:linear-gradient\([^;]*\)|#[0-9a-fA-F]{3,8})\s*;(?:[^;#{}]*;)*\s*\}/g;
     // 自我删除断言跑在**剥掉 HTML 注释**之后:`mon` 是原文,把整个 <style> 块包进注释时
     // 「还在」会照绿,而那正是 ⑥ 的删除式第 5 格所验的形态 —— 断言不能比它做到的说得多。
     const live = mon.replace(/<!--[\s\S]*?-->/g, "").match(backdropRule) || [];

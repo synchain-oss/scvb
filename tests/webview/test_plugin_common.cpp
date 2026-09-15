@@ -223,7 +223,8 @@ double contrastRatio(juce::Colour a, juce::Colour b)
 }
 } // namespace
 
-// [SL-370] shellBackdrop() 从深色改成浅色之后,兜底面板的三行标签必须跟着变深墨。
+// [SL-370] 占位底从深色改成浅色(现为浅色**渐变**,C++ 真源 = kShellBackdropStops /
+// shellBackdropMid(),PlatformWebView.h)之后,兜底面板的三行标签必须跟着变深墨。
 // 这块面板是 WebView2 起不来时**唯一**还能告诉用户发生了什么的东西:配色一旦同明暗,
 // 用户看到的就是一块什么都没有的浅色板,而这正是本卡改底色带出来的风险面。
 // 判据钉的是**对比度**,不是某个具体色值 —— 底色或字色任一侧改了都由它兜住,
@@ -691,7 +692,7 @@ TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFold
     CHECK_FALSE(bg == juce::Colour()); // ★ 反向哨兵:退回默认构造(全透明)即红
     // [SL-402] 已知值锚:色标数组(tokens 渐变的逐字拷贝)沿轴 50% 的插值色 = #d9cadb。
     // tokens 的 --page-gradient 改动时,kShellBackdropStops(⑥c 会红)与本格**同批**改 ——
-    // 与旧版 kShellBackdropArgb 单色常量的维护方式一致:一处真源、两处判据。
+    // 与旧版单色常量时期的维护方式一致:一处真源、两处判据。
     CHECK(scvb::webview::shellBackdropMid() == juce::Colour(0xffd9cadb));
     CHECK(in1.getFileName() == "SCVBInputWV2");
 

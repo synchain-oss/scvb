@@ -1121,6 +1121,20 @@ try {
                 `  A8 [${lang}] icon/btn=${rIcon.toFixed(2)}:1  btn/surface(${cp.surfaceVia})=${rSurface.toFixed(2)}:1`,
             );
         }
+        // A9 [SL-402 · 第 1 推] 内联占位渐变的 **applied cascade**:根元素的
+        // backgroundAttachment 必须解析为 fixed —— 内联里那条 `background-attachment: fixed`
+        // 真的生效了(base.css 没有覆盖这个属性,统筹 grep 核过)。⑥(e) 的同块在场钉管的是
+        // **源码层**,本格管**渲染层**:cascade 被更高优先级规则盖掉时只有这里红。
+        // 删除式:把内联里那行注掉 ⇒ 本格三语红(实得 "scroll")。
+        const att = await evaluate(
+            IN(
+                `return w.getComputedStyle(d.documentElement).backgroundAttachment;`,
+            ),
+        );
+        check(
+            att === "fixed",
+            `${lang}:A9 html 的 backgroundAttachment 解析为 fixed(实得 ${JSON.stringify(att)})`,
+        );
         assertClean(`input/${lang}`);
     }
 

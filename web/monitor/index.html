@@ -47,6 +47,11 @@
           C++ 真源 = src/plugin-common/PlatformWebView.h 的 kShellBackdropStops,由
           web-preview/tests/smoke-embedded-resources.mjs 的 ⑥ 与 C++ 色标数组逐字对拍
           (改一边不改另一边即红),故此处仍是本页「零裸 hex」纪律的**唯一**例外。
+          [第 1 推] `min-height: 100%` 与 `background-attachment: fixed` 两行是兜路的一半:
+          background 简写会把 background-color 重置成 transparent,根元素的背景**图**按
+          根元素自身盒定尺寸 —— 外链 base.css(带 height:100%)缺席时,没有这两行的话
+          图的尺寸会塌成内容高、甚至不绘制,兜路反而露白。⑥ 逐字钉这两条声明与
+          background 同块在场,页面级 A9 钉 applied cascade(backgroundAttachment=fixed)。
         -->
         <style>
             html {
@@ -57,6 +62,8 @@
                     #e3d2e0 64%,
                     #fde8ed 100%
                 );
+                min-height: 100%;
+                background-attachment: fixed;
             }
         </style>
 

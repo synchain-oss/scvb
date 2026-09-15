@@ -59,9 +59,16 @@ struct ShellBackdropStop
     juce::uint32 argb; // 全不透明(0xAARRGGBB)
 };
 
+// [SL-402 · 第 1 推] 渐变角度(度)—— 与色标数组并列的**命名空间级常量**。CSS
+// linear-gradient 的 0deg = 向上、顺时针;tokens.css 的 --page-gradient 与三份 index.html
+// 内联写的角度都要与本常量逐字对拍(⑥/⑥c 各有一条角度断言):「与成品同形」这条性质
+// 包括**走向** —— 只对拍色标表时,角度漂了(157 写成 156)判据照绿,第 1 推把这个缺口钉上。
+inline constexpr float kShellBackdropAngleDeg = 157.0f;
+
 // [SL-402] 占位渐变的**色标数组**(C++ 侧单一真源)—— 逐字照抄 tokens.css
-// `--page-gradient` 的四个停靠点(157deg;改 tokens 一处,这里与三份 index.html 的内联
-// 必须同批改,⑥/⑥c 会对拍出漏改的那一处)。pos 用 0..1 的小数(CSS 的 n% / 100)。
+// `--page-gradient` 的四个停靠点(角度见上面的 kShellBackdropAngleDeg;改 tokens 一处,
+// 这里与三份 index.html 的内联必须同批改,⑥/⑥c 会对拍出漏改的那一处)。
+// pos 用 0..1 的小数(CSS 的 n% / 100)。
 inline constexpr ShellBackdropStop kShellBackdropStops[] = {
     {0.00f, 0xffb5acc9}, // #b5acc9   0% ← tokens.css --page-gradient 第 1 停靠点
     {0.32f, 0xffccbfd5}, // #ccbfd5  32%
@@ -69,16 +76,59 @@ inline constexpr ShellBackdropStop kShellBackdropStops[] = {
     {1.00f, 0xfffde8ed}, // #fde8ed 100%
 };
 
-// 占位渐变(在 `area` 上复刻 CSS `linear-gradient(157deg, …)` 的几何):
+// [SL-402] 占位渐变沿轴 **50% 处的插值色**(现值 #d9cadb)—— 只喂给收**纯色**的两处:
+// WebView2 的 DefaultBackgroundColor(①-b 层,PlatformWebView::makeWebViewOptions)与
+// 诊断行;也是 shellBackdropGradient() 空矩形守卫的落点(见下)。与 smoke ⑥b/⑥c 的
+// 中点公式同一条(50% 落在 [pos_i, pos_{i+1}] 段内线性插值)。
+// FallbackPanel **不**走这里(见上,SL-402 起面板底不再与占位同源)。
+// ⚠ 定义必须在 shellBackdropGradient() **之前**(它的空矩形守卫要调本函数)。
+inline juce::Colour shellBackdropMid()
+{
+    constexpr auto count = sizeof(kShellBackdropStops) / sizeof(kShellBackdropStops[0]);
+    for (std::size_t i = 0; i + 1 < count; ++i)
+    {
+        const auto& a = kShellBackdropStops[i];
+        const auto& b = kShellBackdropStops[i + 1];
+        // [第 1 推] 命中条件带 `b.pos > a.pos`:相邻停靠点写成同一 pos(CSS 里合法的硬边界
+        // 写法)时,b.pos - a.pos == 0 ⇒ t 为 inf/NaN。宁可落到末尾的 fail-closed 首色,
+        // 也不算出一个 NaN(裁定:两句守卫之一,不加判据、不改现值)。
+        if (a.pos <= 0.5f && 0.5f <= b.pos && b.pos > a.pos)
+        {
+            const float t = (0.5f - a.pos) / (b.pos - a.pos);
+            const auto mix = [t](juce::uint32 ca, juce::uint32 cb, int shift) -> juce::uint8 {
+                const auto va = static_cast<float>((ca >> shift) & 0xffu);
+                const auto vb = static_cast<float>((cb >> shift) & 0xffu);
+                return static_cast<juce::uint8>(juce::roundToInt(va + t * (vb - va)));
+            };
+            // ⚠ juce::Colour 四参构造是 (red, green, blue, alpha) —— alpha 在**最后**;
+            // alpha 通道同样插值:四个停靠点全不透明 ⇒ 结果恒 0xff,顺带守住「全不透明」前提。
+            return juce::Colour(mix(a.argb, b.argb, 16), mix(a.argb, b.argb, 8), mix(a.argb, b.argb, 0),
+                                mix(a.argb, b.argb, 24));
+        }
+    }
+    return juce::Colour(kShellBackdropStops[0].argb); // 解析不出段时 fail-closed 取首色
+}
+
+// 占位渐变(在 `area` 上复刻 CSS `linear-gradient(157deg, …)` 的几何;角度真源 =
+// 上面的 kShellBackdropAngleDeg):
 //   · 0deg 指向上、顺时针,方向向量(x 右,y 下)= (sin θ, −cos θ);
 //   · 渐变线过矩形中心,线长 = |W·sinθ| + |H·cosθ|,首末停靠点各落在线的两端。
 // 这三条是 CSS 规范对 linear-gradient 的定义,不是近似;JUCE 的 ColourGradient 沿 p1→p2
-// 插值、两端外侧延展首末色,与 CSS 的行为同形。smoke 的 ⑥/⑥c 只对拍**色标**本身
-// (色值与位置),几何两侧各自照规范实现,不互相对拍。
+// 插值、两端外侧延展首末色,与 CSS 的行为同形。smoke 的 ⑥/⑥c 只对拍**色标表与角度**,
+// 几何两侧各自照规范实现,不互相对拍。
 inline juce::ColourGradient shellBackdropGradient(juce::Rectangle<float> area)
 {
-    constexpr auto kAngleDeg = 157.0f;
-    const auto rad = juce::degreesToRadians(kAngleDeg);
+    if (area.isEmpty())
+    {
+        // [第 1 推] 空矩形:len == 0 ⇒ 渐变线两端重合,ColourGradient 在 p1==p2 上是
+        // 未定义行为面。走中点色的一像素垂直渐变(两端同色 ⇒ 视觉等同单色)。现行两个
+        // 调用点都来自 paint() 的 getLocalBounds(),不会是空盒 —— 纯防御面(裁定:不加
+        // 判据、不改现值)。⚠ 本仓 JUCE(.juce-version)的 vertical() 工厂签名是
+        // (colour1, y1, colour2, y2) 四参,读 juce_ColourGradient.h:106 核过。
+        const auto mid = shellBackdropMid();
+        return juce::ColourGradient::vertical(mid, 0.0f, mid, 1.0f);
+    }
+    const auto rad = juce::degreesToRadians(kShellBackdropAngleDeg);
     const auto sinA = std::sin(rad);
     const auto cosA = std::cos(rad);
     const auto len = std::abs(area.getWidth() * sinA) + std::abs(area.getHeight() * cosA);
@@ -98,34 +148,6 @@ inline juce::ColourGradient shellBackdropGradient(juce::Rectangle<float> area)
     for (std::size_t i = 1; i + 1 < count; ++i)
         gradient.addColour(kShellBackdropStops[i].pos, juce::Colour(kShellBackdropStops[i].argb));
     return gradient;
-}
-
-// [SL-402] 占位渐变沿轴 **50% 处的插值色**(现值 #d9cadb)—— 只喂给收**纯色**的两处:
-// WebView2 的 DefaultBackgroundColor(①-b 层,PlatformWebView::makeWebViewOptions)与
-// 诊断行。与 smoke ⑥b/⑥c 的中点公式同一条(50% 落在 [pos_i, pos_{i+1}] 段内线性插值)。
-// FallbackPanel **不**走这里(见上,SL-402 起面板底不再与占位同源)。
-inline juce::Colour shellBackdropMid()
-{
-    constexpr auto count = sizeof(kShellBackdropStops) / sizeof(kShellBackdropStops[0]);
-    for (std::size_t i = 0; i + 1 < count; ++i)
-    {
-        const auto& a = kShellBackdropStops[i];
-        const auto& b = kShellBackdropStops[i + 1];
-        if (a.pos <= 0.5f && 0.5f <= b.pos)
-        {
-            const float t = (0.5f - a.pos) / (b.pos - a.pos);
-            const auto mix = [t](juce::uint32 ca, juce::uint32 cb, int shift) -> juce::uint8 {
-                const auto va = static_cast<float>((ca >> shift) & 0xffu);
-                const auto vb = static_cast<float>((cb >> shift) & 0xffu);
-                return static_cast<juce::uint8>(juce::roundToInt(va + t * (vb - va)));
-            };
-            // ⚠ juce::Colour 四参构造是 (red, green, blue, alpha) —— alpha 在**最后**;
-            // alpha 通道同样插值:四个停靠点全不透明 ⇒ 结果恒 0xff,顺带守住「全不透明」前提。
-            return juce::Colour(mix(a.argb, b.argb, 16), mix(a.argb, b.argb, 8), mix(a.argb, b.argb, 0),
-                                mix(a.argb, b.argb, 24));
-        }
-    }
-    return juce::Colour(kShellBackdropStops[0].argb); // 解析不出段时 fail-closed 取首色
 }
 
 // PlatformWebView —— 平台 WebView 分支集中地(01 §9;01 §6.1 机制 1/2 与机制 3 前半)。

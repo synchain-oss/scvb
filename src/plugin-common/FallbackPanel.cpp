@@ -2,7 +2,7 @@
 #include "FallbackPanel.h"
 
 #include <utility>
-// [SL-402] 此前这里 include PlatformWebView.h 只为 shellBackdrop();面板底改用自己的
+// [SL-402] 此前这里 include PlatformWebView.h 只为那份单色占位真源;面板底改用自己的
 // kFallbackPanelArgb(FallbackPanel.h)之后不再需要 —— 别为图省事把 include 加回来。
 
 namespace scvb::webview

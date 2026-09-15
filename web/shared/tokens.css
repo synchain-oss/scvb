@@ -93,7 +93,7 @@
      ⚠ **本条与「开窗预绘底」是两个角色,取值不同,不要再合成一个。**
      SL-253→SL-370 期间两者一直同值,注释里也写着「三处同源」;SL-377 把它们拆开了:
        · **占位** = 遮挡闸期间铺满窗口的那块底(C++ 的 kShellBackdropStops 渐变
-         ([SL-402] 起是色标数组,此前是单色 kShellBackdropArgb)+ 三份
+         ([SL-402] 起是色标数组,此前是单色常量)+ 三份
          index.html <head> 内联的根元素底),必须与成品外壳渐变同形(--page-gradient
          同一组色标;[SL-370] 当时取的是本渐变的中点色 #d9cadb)—— **不是本条**;
        · **外圈色** = 本条,只在外壳圆角之外那一圈可见,深色让窗口四角收边。
@@ -136,7 +136,11 @@
     --acc-cta: #b9aedc; /* 主按钮底(设计稿 156/282/1042/1121/1148 行) */
     --acc-cta-shadow: rgba(150, 130, 200, 0.35); /* 主按钮小号投影 */
     --acc-cta-shadow-lg: rgba(150, 130, 200, 0.4); /* 模态主按钮投影 */
-    --acc-ink: #241f2e; /* CTA 上的文字色 / 深色底原生 select 底色 */
+    /* --acc-ink:CTA 上的文字色 + **深墨 chip 的填充色**。[第 1 推登记] fill 角色的现行
+     消费者 = Input 帮助钮 .ipt-help(web/input/index.html,SL-403)—— 此前 tokens 注释
+     写过的「深色底原生 select 底色」在全仓没有任何消费点(grep 核过,DeepSeek 首轮指出),
+     那半句已删;fill 角色从本卡起正式记在本条。可读性判据 = smoke-ui-layout-page 的 A8。 */
+    --acc-ink: #241f2e;
     --acc-slider: #9b93c4; /* input[type=range] accent-color(05 §2.1 明文) */
     --acc-slider-fill: rgba(155, 147, 196, 0.85); /* 自绘滑杆已走过部分 */
     --acc-link: #b9aedc;
