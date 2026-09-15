@@ -223,12 +223,13 @@ double contrastRatio(juce::Colour a, juce::Colour b)
 }
 } // namespace
 
-// [SL-370] shellBackdrop() 从深色改成浅色之后,兜底面板的三行标签必须跟着变深墨。
+// [SL-370] 占位底从深色改成浅色(现为浅色**渐变**,C++ 真源 = kShellBackdropStops /
+// shellBackdropMid(),PlatformWebView.h)之后,兜底面板的三行标签必须跟着变深墨。
 // 这块面板是 WebView2 起不来时**唯一**还能告诉用户发生了什么的东西:配色一旦同明暗,
 // 用户看到的就是一块什么都没有的浅色板,而这正是本卡改底色带出来的风险面。
 // 判据钉的是**对比度**,不是某个具体色值 —— 底色或字色任一侧改了都由它兜住,
 // 且不会因为换一个同样可读的色号就假红。
-TEST_CASE("FallbackPanel label colours stay readable on shellBackdrop()")
+TEST_CASE("FallbackPanel label colours stay readable on the fallback panel background")
 {
     juce::ScopedJuceInitialiser_GUI gui;
     scvb::webview::FallbackPanel::Options options;
@@ -237,9 +238,12 @@ TEST_CASE("FallbackPanel label colours stay readable on shellBackdrop()")
     options.details = "waited 15003 ms  |  no nav";
 
     scvb::webview::FallbackPanel panel(std::move(options));
-    const auto bg = scvb::webview::shellBackdrop();
+    // [SL-402] 面板底不再与开窗占位同源:占位升成渐变后,面板用的是自己的
+    // kFallbackPanelArgb(FallbackPanel.h)。判据照旧钉**对比度**,钉住「底换谁都不许把
+    // 标签变成白字浅底」这一件事。
+    const auto bg = juce::Colour(scvb::webview::kFallbackPanelArgb);
 
-    // 三行标签都画在 FallbackPanel::paint 的 fillAll(shellBackdrop()) 上。
+    // 三行标签都画在 FallbackPanel::paint 的 fillAll(kFallbackPanelArgb) 上。
     // 4.5:1 = WCAG AA 正文档;诊断行 11px 比正文更小,同样按 4.5 判(不放宽到 3:1)。
     for (const auto* id : {"fallback.title", "fallback.message", "fallback.details"})
     {
@@ -673,17 +677,23 @@ TEST_CASE("makeWebViewOptions selects WebView2 backend + per-plugin userDataFold
     CHECK(o1.getBackend() == WBC::Options::Backend::webview2); // 机制 1:显式选 WebView2
     CHECK(o1.getWinWebView2BackendOptions().getUserDataFolder() == in1);
 
-    // [SL-253] WebView2 在所有 web 内容**之下**铺的那一层必须是**不透明**的 shellBackdrop()。
+    // [SL-253] WebView2 在所有 web 内容**之下**铺的那一层必须是**不透明**的占位底色。
     // [SL-370] 原话是「不透明暗色」——「暗」已经不对了(那正是用户看见的那段黑),
-    // 现在这一层与成品外壳同明暗;本断言从来只钉「等于 shellBackdrop() 且不透明」,取值本身
-    // 由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c 对着 --page-gradient 判。
+    // 现在这一层与成品外壳同明暗;[SL-402] 起占位是**渐变**(kShellBackdropStops),
+    // 而 DefaultBackgroundColor 只收纯色 ⇒ 取占位渐变沿轴 50% 的插值色 shellBackdropMid()。
+    // 本断言只钉「等于 shellBackdropMid() 且不透明」;「中点色确属 tokens 渐变」这一条
+    // 由 web-preview/tests/smoke-embedded-resources.mjs 的 ⑥c 对色标数组判,这里不重复。
     // 不设的话它是默认构造的 juce::Colour = ARGB 0x00000000(全透明),JUCE 会把这个值
     // 原样 put 进 put_DefaultBackgroundColor —— 于是从控制器建好到 tokens.css/base.css
     // 解析完为止这一层什么都不挡,露的是窗口的白(用户实测「开窗一瞬全白」)。
     const auto bg = o1.getWinWebView2BackendOptions().getBackgroundColour();
-    CHECK(bg == scvb::webview::shellBackdrop());
+    CHECK(bg == scvb::webview::shellBackdropMid());
     CHECK(bg.isOpaque()); // JUCE 只接受全不透明或全透明;半透明会在其内部断言
     CHECK_FALSE(bg == juce::Colour()); // ★ 反向哨兵:退回默认构造(全透明)即红
+    // [SL-402] 已知值锚:色标数组(tokens 渐变的逐字拷贝)沿轴 50% 的插值色 = #d9cadb。
+    // tokens 的 --page-gradient 改动时,kShellBackdropStops(⑥c 会红)与本格**同批**改 ——
+    // 与旧版单色常量时期的维护方式一致:一处真源、两处判据。
+    CHECK(scvb::webview::shellBackdropMid() == juce::Colour(0xffd9cadb));
     CHECK(in1.getFileName() == "SCVBInputWV2");
 
     // 目录名里不许再出现 PID / 实例序号:那正是「每实例一个目录」的残留特征。

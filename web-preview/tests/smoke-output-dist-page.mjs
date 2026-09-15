@@ -603,6 +603,20 @@ try {
         );
         check(named, "壳页工具条认出了场景名(不是 scenario=unknown)");
 
+        // [SL-402 · 第 2 推] 内联占位渐变的 **applied cascade**(渲染层):真源文档
+        // (iframe 内)的 html 的 backgroundAttachment 必须解析为 fixed —— 内联里那条
+        // `background-attachment: fixed` 真的生效(base.css 不覆盖该属性)。源码层由
+        // smoke-embedded-resources.mjs 的 ⑥(e) 同块 + 顺序钉管,这里管渲染层。
+        eq(
+            await evaluate(
+                IN(
+                    `return w.getComputedStyle(d.documentElement).backgroundAttachment;`,
+                ),
+            ),
+            "fixed",
+            "html 的 backgroundAttachment 解析为 fixed(占位渐变渲染层生效)",
+        );
+
         // **把数据面驱动起来 —— 走真实用户路径**:`setTrackManual(ch,"pan",v)` 就是用户把某轨
         // 声像设成手动值时 UI 发的那一个上行调用(契约 §1.16)。mock 收到后同拍补一帧
         // `scvb.params`,于是 render → renderDist → push,补间器拿到新的 pan。

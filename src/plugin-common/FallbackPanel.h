@@ -7,6 +7,16 @@
 
 namespace scvb::webview
 {
+// [SL-402] 兜底面板的底色 —— **独立的常量,不再与开窗占位同源**(SL-253 收编、SL-370 沿用
+// 的「面板底 = 占位色」那条性质由本卡拆开:占位在 SL-402 已是 tokens.css --page-gradient
+// 同一组色标的**渐变**(PlatformWebView.h 的 kShellBackdropStops),而本面板的底只能是一块
+// 纯色)。取值 = SL-402 当时占位渐变沿轴 50% 的中点色 #d9cadb(开窗切到兜底面板时与那块
+// 渐变的中间亮度不跳阶),但那只是**当时的取值记录,不是跨文件真源**:tokens 的渐变日后
+// 改了,这里既不会跟着变、也不会有判据红 —— 面板可读性由
+// tests/webview/test_plugin_common.cpp 的 "FallbackPanel label colours stay readable …"
+// 对比度断言独立把守(它读的就是本常量,不是占位那一族)。
+inline constexpr juce::uint32 kFallbackPanelArgb = 0xffd9cadb;
+
 // FallbackPanel —— WebView2 运行时缺失/过旧、看门狗超时、前端 boot 失败时的原生兜底面板
 // (01 §6.1 机制 3 后半;平台无关)。
 // 固定像素布局,不随 uiScale 缩放;切兜底时宿主(WebViewHost)负责把窗口放大到 ≥ 设计盒,

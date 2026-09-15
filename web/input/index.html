@@ -24,15 +24,29 @@
           src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注。别在这里复述。
           这一条**必须是字面量**:自定义属性一律定义在 tokens.css 里,写成 var() 就又回到
           「等外链」那条路上。⚠ [SL-377] 尤其不要写成 var(--page-backdrop):那个变量已改作
-          **外圈色**(外壳圆角之外那一圈,深色),与本条的**占位色**是两个角色、取值不同。
-          取值 = src/plugin-common/PlatformWebView.h 的
-          kShellBackdropArgb 低 24 位,由 web-preview/tests/smoke-embedded-resources.mjs
-          的 ⑥ 与 C++ 真源逐字对拍(改一边不改另一边即红),
-          故此处是本页「零裸 hex」纪律的**唯一**例外。
+          **外圈色**(外壳圆角之外那一圈,深色),与本条的**占位**是两个角色、取值不同。
+          ⚠ [SL-402] 取值从单色升成**渐变**字面量:与 tokens.css `--page-gradient` 同一组
+          色标(157deg),让「加载中的占位」与「打开后的底」同形、开窗切内容不再有明暗差。
+          C++ 真源 = src/plugin-common/PlatformWebView.h 的 kShellBackdropStops,由
+          web-preview/tests/smoke-embedded-resources.mjs 的 ⑥ 与 C++ 色标数组逐字对拍
+          (改一边不改另一边即红),故此处仍是本页「零裸 hex」纪律的**唯一**例外。
+          [第 1 推] `min-height: 100%` 与 `background-attachment: fixed` 两行是兜路的一半:
+          background 简写会把 background-color 重置成 transparent,根元素的背景**图**按
+          根元素自身盒定尺寸 —— 外链 base.css(带 height:100%)缺席时,没有这两行的话
+          图的尺寸会塌成内容高、甚至不绘制,兜路反而露白。⑥ 逐字钉这两条声明与
+          background 同块在场,页面级 A9 钉 applied cascade(backgroundAttachment=fixed)。
         -->
         <style>
             html {
-                background-color: #d9cadb;
+                background: linear-gradient(
+                    157deg,
+                    #b5acc9 0%,
+                    #ccbfd5 32%,
+                    #e3d2e0 64%,
+                    #fde8ed 100%
+                );
+                min-height: 100%;
+                background-attachment: fixed;
             }
         </style>
         <!--
@@ -263,6 +277,13 @@
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
+            /* [SL-403] 帮助钮原先沿用 .sc-btn 的白玻璃底(rgba(wh,.3))叠在渐变最亮的一段
+               上,钮面与所在面几乎同明暗(实测对比度 ≈ 1.1:1),整颗钮浮成一块白、
+               问号跟着看不清。改成**深墨 chip**:底 = --acc-ink(tokens 既有的深墨;
+               fill 角色由本钮首次消费,已在 tokens.css 该条注释登记),图标 = --txt-dark-1
+               (深底一级反相色阶),形状/描边沿用 .sc-btn 本身(1px 白 .5 描边、圆形、22px)。
+               三件全是既有 token,没有发明第三套配色;机检 = smoke-ui-layout-page.mjs 的
+               A8(两处 WCAG 对比度 ≥ 3:1,把旧样式注回即红)。 */
             .ipt-help {
                 flex: none;
                 width: 22px;
@@ -275,7 +296,8 @@
                 font-family: var(--ff-mono);
                 font-size: var(--fs-105);
                 line-height: 1;
-                color: var(--txt-2);
+                background: var(--acc-ink);
+                color: var(--txt-dark-1);
             }
             /* 组 badge(J71③:独立「组 {X}」badge,不是 pill 后缀;空/未连接态同样常显) */
             .ipt-group-badge {

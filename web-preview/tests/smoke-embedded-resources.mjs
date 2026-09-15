@@ -17,14 +17,18 @@
 //   ③ 同一个文件不会被两个不同的服务 URL 取到(ES module 按 URL 定身份,会被实例化两次);
 //   ④ index.html 里的 boot 守卫存在,且事件名与 C++ 侧 kBootErrorEventId 逐字一致;
 //   ⑤ 该 boot 守卫是 ES5、且落在非 module 的 <script> 里(解析期错误才接得住)。
-//   ⑥ [SL-355] index.html 里**恰好一条**根元素底色、内联、排在外链 css 之前,取值与 C++ 侧
-//      kShellBackdropArgb 逐字一致(开窗白闪的第三段)。这一族是**占位色**:遮挡闸期间
-//      铺满整个窗口的那块底。
+//   ⑥ [SL-355] index.html 里**恰好一条**根元素底色、内联、排在外链 css 之前;[SL-402] 起
+//      它是「linear-gradient(<deg>, #rrggbb <n>% …)」的字面量,且与 C++ 侧
+//      kShellBackdropStops 色标数组逐项相同(开窗白闪的第三段)。这一族是**占位**:
+//      遮挡闸期间铺满整个窗口的那块底。
 //   ⑥b [SL-377] tokens.css 的 `--page-backdrop` 是**外圈色**(外壳圆角之外那一圈),
-//      与占位色**是两个角色**:钉它 == 设计稿 body 底色,且 **!=** 占位色。
-//      (SL-355→SL-370 期间这一格对拍的是「两者同值」,SL-377 用户裁定拆开后已整格重写。)
-//   ⑥c [SL-370] 占位色的 C++ 真源本身 == tokens.css 的 --page-gradient 渐变轴中点色
-//      —— ⑥ 只管占位色那几处彼此同值,同时写成深色时照样全绿,而那就是用户看见的那段黑。
+//      与占位**是两个角色**:钉它 == 设计稿 body 底色,且 **!=** 占位那一族(任何一个
+//      停靠点、以及占位渐变的轴中点色都不行)。
+//      (SL-355→SL-370 期间这一格对拍的是「两者同值」,SL-377 用户裁定拆开后已整格重写;
+//      [SL-402] 占位升成渐变后「!=」一支随之改形。)
+//   ⑥c [SL-370→SL-402] 占位的 C++ 真源 == tokens.css 的 --page-gradient —— SL-370 当时
+//      对拍的是「单色常量 == 渐变轴中点色」,[SL-402] 占位本身升成渐变,本格随之升级为
+//      **整张色标表逐项对拍**(真源方向不变:tokens 是真源,C++ 数组与三份内联逐字照抄它)。
 //   ⑦ [SL-370] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的 kFirstFrameEventId
 //      逐字一致、武装是**嵌套两层** requestAnimationFrame、且挂在 DOMContentLoaded 之后。
 //
@@ -273,25 +277,118 @@ function checkRole(role) {
 }
 
 /**
- * 开窗底色的 C++ 真源(`#rrggbb`;读不到返回 null)。
+ * 开窗占位渐变的 C++ 真源(`kShellBackdropStops` 色标数组;解析不出返回 null)。
  *
- * **锚到定义行**(`inline constexpr …`),不是全文件第一处命中:`kShellBackdropArgb`
- * 这个标识符在同文件的注释里出现好几次,哪天有人在定义**之前**的注释里写一句示例赋值,
- * 不锚定的正则就会拿注释当真源。
+ * [SL-402] 占位从单色升级为渐变后,真源是 PlatformWebView.h 里那个色标数组
+ * (ShellBackdropStop { pos, argb })。**锚到定义块**(`inline constexpr … = { … };`,
+ * 以 `\n};` 收尾):`kShellBackdropStops` 这个标识符在同文件注释里出现好几次,不锚块
+ * 就会拿注释里的举例当真源。数组元素一律 `{ <float>f, 0xAARRGGBB }`,注释随写都行 ——
+ * 正则只认花括号初始化器本身;解析不出 / 少于 2 个停靠点按「解析不出」处理(fail-closed)。
  */
-function shellBackdropHex() {
+function shellBackdropStops() {
     const hdr = readFileSync(
         join(ROOT, "src/plugin-common/PlatformWebView.h"),
         "utf8",
     );
     const m = hdr.match(
-        /inline\s+constexpr[^;=]*\bkShellBackdropArgb\s*=\s*0x([0-9a-fA-F]{8})/,
+        /inline\s+constexpr\s+ShellBackdropStop\s+kShellBackdropStops\s*\[\s*\]\s*=\s*\{([\s\S]*?)\n\};/,
     );
-    return m ? "#" + m[1].toLowerCase().slice(2) : null; // 低 24 位 = css 的 #rrggbb
+    if (!m) return null;
+    const stops = [
+        ...m[1].matchAll(/\{\s*(\d(?:\.\d+)?)f\s*,\s*0x([0-9a-fA-F]{8})\s*\}/g),
+    ].map((mm) => ({
+        pos: parseFloat(mm[1]),
+        hex: "#" + mm[2].slice(2).toLowerCase(), // 低 24 位 = css 的 #rrggbb
+    }));
+    return stops.length >= 2 ? stops : null;
 }
 
 /**
- * ⑥ [SL-355] 开窗底色内联在外链 css 之前,且与 C++ 真源同值。
+ * C++ 渐变**角度**常量(度;读不到返回 null)。
+ * [第 1 推] `kShellBackdropAngleDeg` 与色标数组并列的命名空间级常量;锚同一形态的定义行。
+ */
+function shellBackdropAngleDeg() {
+    const hdr = readFileSync(
+        join(ROOT, "src/plugin-common/PlatformWebView.h"),
+        "utf8",
+    );
+    const m = hdr.match(
+        /inline\s+constexpr\s+float\s+kShellBackdropAngleDeg\s*=\s*(\d+(?:\.\d+)?)f/,
+    );
+    return m ? parseFloat(m[1]) : null;
+}
+
+/** 色标表的人话格式(报错里用):`#b5acc9@0% → …`。pos 统一存 0..1,显示按 % 折回。 */
+const stopsFmt = (stops) =>
+    stops.map((s) => `${s.hex}@${Math.round(s.pos * 100)}%`).join(" → ");
+
+/**
+ * 解析一段 CSS `linear-gradient(<deg>, <stop>…)` 的**停靠点表**(解析不出返回 null)。
+ *
+ * [SL-402] 占位的三个落点(C++ 数组 / 三份 index.html 内联 / tokens.css)都必须是
+ * 「角度 + `#rrggbb <n>%` 停靠点」的完整形态,所以解析器**fail-closed**:
+ *   · 必须显式写 deg 角度(CSS 允许省方向,省了就无法与 C++ 的几何对齐,宁可红);
+ *   · 每个停靠点必须 `#rrggbb <n>%`(`rgb()` / `#fff` / 缺百分号都算没认出来);
+ *   · 按顶层逗号切开实参逐段数(见 splitTopLevel):任何一段没被认成停靠点 ⇒ null,
+ *     不静默丢弃 —— 静默丢一段算出来的仍是「少一段的渐变」,对拍会红在别处、指错真因;
+ *   · 首尾必须 0% / 100%,中间严格递增。
+ */
+function parseLinearGradient(value) {
+    const m = /^\s*linear-gradient\(\s*([\d.]+)deg\s*,([\s\S]*)\)\s*$/i.exec(
+        value,
+    );
+    if (!m) return null;
+    const stops = [
+        ...m[2].matchAll(/#([0-9a-fA-F]{6})\s+(\d+(?:\.\d+)?)\s*%/g),
+    ].map((mm) => ({
+        pos: parseFloat(mm[2]) / 100, // **统一存 0..1**(与 C++ 数组同单位;CSS 写的 n% / 100)
+        hex: "#" + mm[1].toLowerCase(),
+    }));
+    if (stops.length < 2) return null;
+    if (splitTopLevel(m[2]).length !== stops.length) return null;
+    if (stops[0].pos !== 0 || stops[stops.length - 1].pos !== 1) return null;
+    for (let i = 0; i + 1 < stops.length; i++)
+        if (stops[i + 1].pos <= stops[i].pos) return null;
+    return { deg: parseFloat(m[1]), stops };
+}
+
+/** 两张色标表是否逐项相同(位置用数值等号,色值逐字节)。 */
+function stopsEqual(a, b) {
+    return (
+        a.length === b.length &&
+        a.every(
+            (s, i) => Math.abs(s.pos - b[i].pos) < 1e-9 && s.hex === b[i].hex,
+        )
+    );
+}
+
+/**
+ * 色标表沿轴 **50% 处的插值色**(`#rrggbb`;解析不出返回 null)。
+ * 与 C++ `shellBackdropMid()` 同一条公式(50% 落在 [pos_i, pos_{i+1}] 段内线性插值);
+ * ⑥b 拿它与外圈色对拍 —— 外圈色与「占位渐变的中点」同值时,两个角色又被焊死了。
+ */
+function gradientMidHex(stops) {
+    for (let i = 0; i + 1 < stops.length; i++) {
+        const a = stops[i];
+        const b = stops[i + 1];
+        if (a.pos <= 0.5 && 0.5 <= b.pos) {
+            const t = (0.5 - a.pos) / (b.pos - a.pos);
+            const rgb = [0, 2, 4].map((k) => {
+                const av = parseInt(a.hex.slice(1 + k, 3 + k), 16);
+                const bv = parseInt(b.hex.slice(1 + k, 3 + k), 16);
+                return Math.round(av + t * (bv - av));
+            });
+            return (
+                "#" + rgb.map((v) => v.toString(16).padStart(2, "0")).join("")
+            );
+        }
+    }
+    return null;
+}
+
+/**
+ * ⑥ [SL-355] 开窗底色内联在外链 css 之前;[SL-402] 起它是**渐变字面量**、且与 C++ 色标数组
+ * 逐项相同。
  *
  * 守的是「开窗先灰、再全白、才出内容」里的**白**那一段最后一节:文档已经提交、
  * `../shared/tokens.css` 与 `../shared/base.css` 还没经 ResourceProvider 取回来时,
@@ -299,27 +396,35 @@ function shellBackdropHex() {
  * **可能整层不在** —— JUCE 是 QueryInterface 取 ICoreWebView2Controller2、取不到就静默
  * 跳过(juce 的 WebView2::setWebViewPreferences),取不到时露的就是白。
  * 分层全貌与各段证据只写在 src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注 ——
- * **包括「排在外链之前」只是排序事实、不是时序保证**那一条,别从本函数的 (c) 反推出
+ * **包括「排在外链之前」只是排序事实、不是时序保证**那一条,别从本函数的 (d) 反推出
  * 「白闪已经堵住」。
  *
- * 三条断言各自独立,报错文案互不相同(拆任一条都只红它自己那句):
+ * 四条断言各自独立,报错文案互不相同(拆任一条都只红它自己那句):
  *   (a) **恰好一条**作用在根元素上的 background / background-color。要求「恰好一条」而不是
  *       「至少一条」,是因为 smoke-monitor.mjs 的「零裸 hex」豁免按同一形态**全局**剥除:
  *       多出来的第二条会被那边一并剥掉,又不是这里取的 hits[0],两道门就都看不见它;
- *   (b) 取值是**字面量**且等于 kShellBackdropArgb 的低 24 位 —— 写成 var(--page-backdrop)
- *       单列一句,因为自定义属性定义在 tokens.css 里,那等于又回到「等外链」;
- *       [SL-377] 起那个变量还**换了角色**(它是外圈色,不再是占位色),所以写成 var() 现在
- *       连颜色都是错的 —— 但报错文案仍只说「等外链」那一条,因为那是它更根本的毛病;
- *   (c) 它排在第一个 <link rel="stylesheet"> **之前**(纪律:这条声明的**生效**不依赖任何
- *       外链请求的结果)。
+ *   (b) 取值是**字面量** —— 写成 var() 单列一句:自定义属性定义在 tokens.css 里,那等于
+ *       又回到「等外链」;[SL-377] 起写成 var(--page-backdrop) 还**连颜色都是错的**
+ *       (那是外圈色,不再是占位);
+ *   (c) 取值能按「linear-gradient(<deg>, #rrggbb <n>% …)」完整解析([SL-402]:占位是
+ *       渐变,单色字面量同样红 —— 那是 SL-402 修掉的「占位没有深浅」回归);
+ *   (d) 停靠点与 C++ 真源 kShellBackdropStops **逐项相同** —— 两边同表才谈得上「盖住的
+ *       和露出来的是同一张渐变」;改一边不改另一边即红;
+ *   (e) [第 1 推] `min-height: 100%` 与 `background-attachment: fixed` 两条声明与 background
+ *       **同块**在场(兜路的一半:background 简写把 background-color 重置成 transparent、
+ *       根元素背景图按根元素自身盒定尺寸;缺任一条,外链缺席那一段不铺满甚至露白);
+ *       渲染层的 applied cascade 由 smoke-ui-layout-page.mjs 的 A9 单独钉;
+ *   (f) [第 1 推] 角度与 C++ 真源 kShellBackdropAngleDeg 逐字相同(「同形」包括走向)。
+ *   另有一条老规矩不变:这条声明排在第一个 <link rel="stylesheet"> **之前**(它的**生效**
+ *   不依赖任何外链请求的结果)。
  * 颜色**不透明**这一条不在这里重复:tests/webview/test_plugin_common.cpp 已经
  * CHECK(bg.isOpaque()),同一件事只留一份判据。
  */
 function checkShellBackdropInline(role, entry) {
-    const expect = shellBackdropHex();
-    if (expect === null) {
+    const cppStops = shellBackdropStops();
+    if (cppStops === null) {
         bad(
-            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗底色的 C++ 真源)",
+            "PlatformWebView.h 里找不到 kShellBackdropStops 的 inline constexpr 定义(开窗占位渐变的 C++ 真源)",
         );
         return;
     }
@@ -339,7 +444,7 @@ function checkShellBackdropInline(role, entry) {
     ].filter((h) => /background(?:-color)?\s*:/.test(h[1]));
     if (hits.length === 0) {
         bad(
-            `${role}:index.html 里没有作用在根元素上的内联底色(html { background-color: … })` +
+            `${role}:index.html 里没有作用在根元素上的内联底色(html { background: … })` +
                 ` —— 外链 css 到达之前这一页没有任何底色,开窗会露白`,
         );
         return;
@@ -352,24 +457,88 @@ function checkShellBackdropInline(role, entry) {
         return;
     }
     const hit = hits[0];
-    const val = /background(?:-color)?\s*:\s*([^;}]+)/
-        .exec(hit[1])[1]
-        .trim()
-        .toLowerCase();
+    const val = /background(?:-color)?\s*:\s*([^;}]+)/.exec(hit[1])[1].trim();
 
     if (val.includes("var(")) {
         bad(
             `${role}:内联底色写成了 ${val} —— 自定义属性定义在 web/shared/tokens.css 里,` +
-                `用 var() 等于又回到「等外链」那条路上,本声明就白写了`,
+                `用 var() 等于又回到「等外链」那条路上,本声明就白写了` +
+                `([SL-377] 起 var(--page-backdrop) 还**连颜色都是错的**:那是外圈色)`,
         );
-    } else if (val !== expect) {
+    } else if (parseLinearGradient(val) === null) {
         bad(
-            `${role}:内联底色 ${val} 与 C++ 真源 kShellBackdropArgb 的 ${expect} 不一致` +
-                `(两边同值才谈得上「盖住的和露出来的是同一个颜色」)`,
+            `${role}:内联根元素底不是「linear-gradient(<deg>, #rrggbb <n>% …)」的完整字面量` +
+                `(实得 ${val})—— [SL-402] 占位是**渐变**:写成单色是退回「占位没有深浅」的旧病,` +
+                `缺角度 / 缺百分号 / 写成 rgb() 都无法与 C++ 色标数组对拍,一律判负`,
         );
     } else {
-        console.log(
-            `  开窗底色内联在场:html{background-color:${val}} = C++ 真源`,
+        const inline = parseLinearGradient(val);
+        if (!stopsEqual(inline.stops, cppStops)) {
+            bad(
+                `${role}:内联渐变停靠点(${stopsFmt(inline.stops)})与 C++ 真源 ` +
+                    `kShellBackdropStops(${stopsFmt(cppStops)})不一致 —— 两边同表才谈得上` +
+                    `「盖住的和露出来的是同一张渐变」(改一边不改另一边即红)`,
+            );
+        }
+        // (f) [第 1 推] 角度逐字对拍:「与成品同形」包括**走向**。C++ 常量被改(比如 156)
+        // 或内联把 157deg 写成别的值,这里当场红 —— 只对拍色标表时这条漂移是静默的。
+        const cppDeg = shellBackdropAngleDeg();
+        if (cppDeg === null) {
+            bad(
+                "PlatformWebView.h 里找不到 kShellBackdropAngleDeg 的 inline constexpr 定义(占位渐变角度的 C++ 真源)",
+            );
+        } else if (inline.deg !== cppDeg) {
+            bad(
+                `${role}:内联渐变角度 ${inline.deg}deg 与 C++ 真源 kShellBackdropAngleDeg` +
+                    `(${cppDeg}deg)不一致 —— 「与成品同形」包括走向,角度漂了占位与内容的` +
+                    `明暗走向就岔开`,
+            );
+        }
+        if (
+            stopsEqual(inline.stops, cppStops) &&
+            cppDeg !== null &&
+            inline.deg === cppDeg
+        ) {
+            console.log(
+                `  开窗占位渐变内联在场:html{background:…} = C++ 色标数组(${cppStops.length} 停靠点)@ ${cppDeg}deg`,
+            );
+        }
+    }
+
+    // (e) [第 1 推] 兜路两行必须与 background **同块**在场(fail-closed,缺一条即红、
+    // 写在别的块不算 —— hit[1] 就是含根元素 background 的那一个块的整个声明体):
+    //   · `min-height: 100%` —— background 简写把 background-color 重置成 transparent,
+    //     根元素背景**图**按根元素自身盒定尺寸;外链 base.css(带 height:100%)缺席时
+    //     没有这行,图的尺寸塌成内容高、甚至不绘制,兜路反而露白;
+    //   · `background-attachment: fixed` —— 图按视口铺、不随内容平铺成色带。
+    // 渲染层(cascade 真的生效)由 smoke-ui-layout-page.mjs 的 A9 钉,这里管源码层。
+    // **先剥块内 CSS 注释再测**:删式注入或谁在块里写句说明,都不许用「注释里提了一句」
+    // 顶替真声明(本仓 #188 同族的教训)。
+    const blockBody = hit[1].replace(/\/\*[\s\S]*?\*\//g, "");
+    if (!/min-height\s*:\s*100%/.test(blockBody)) {
+        bad(
+            `${role}:内联占位块里没有 min-height: 100% —— background 简写已把 background-color` +
+                ` 重置成 transparent,根元素背景图按根元素自身盒定尺寸,外链缺席时图会塌成内容高` +
+                `甚至不绘制,兜路反而露白(必须与 background 同块,写在别的块不算)`,
+        );
+    }
+    if (!/background-attachment\s*:\s*fixed/.test(blockBody)) {
+        bad(
+            `${role}:内联占位块里没有 background-attachment: fixed —— 没有它,背景图随内容` +
+                `平铺成色带,兜路那一段铺出来的不是整张渐变(必须与 background 同块)`,
+        );
+    }
+    // (e2) [第 2 推] **顺序钉**:`background-attachment: fixed` 必须排在 `background` 简写
+    // **之后** —— 简写会把 attachment 重置回 scroll,排在简写前面的 fixed 在渲染层被覆盖
+    // (A9/monitor-page 那类渲染层格会红,但 output 侧没有渲染层兜底格,源码层必须钉死)。
+    // 下标取自剥过 CSS 注释的块体,`background\s*:` 不会误命中 `background-attachment:`
+    // (后者 "background" 后面跟的是 "-",不是冒号)。
+    const bgIdx = blockBody.search(/background\s*:\s*linear-gradient/);
+    const attIdx = blockBody.search(/background-attachment\s*:\s*fixed/);
+    if (bgIdx >= 0 && attIdx >= 0 && attIdx < bgIdx) {
+        bad(
+            `${role}:background-attachment: fixed 排在 background 简写之前 —— 简写会把 ` +
+                `attachment 重置回 scroll,渲染层拿到的不是 fixed(必须排在 background 之后)`,
         );
     }
 
@@ -405,21 +574,26 @@ function designBodyBackgroundHex() {
 }
 
 /**
- * ⑥b [SL-377] `tokens.css` 的 `--page-backdrop` = **外圈色**,与占位色各钉各的。
+ * ⑥b [SL-377] `tokens.css` 的 `--page-backdrop` = **外圈色**,与占位那一族各钉各的。
  *
- * 【为什么这一格被整个重写】SL-355→SL-370 期间 `--page-backdrop` 与开窗预绘底色是同一个值,
- * 本格当时对拍的就是「它 == C++ 真源 kShellBackdropArgb」。SL-377 用户裁定把两者拆成两个
+ * 【为什么这一格被整个重写】SL-355→SL-370 期间 `--page-backdrop` 与开窗预绘底是同一个值,
+ * 本格当时对拍的就是「它 == C++ 真源(当时的单色常量)」。SL-377 用户裁定把两者拆成两个
  * 角色(窗口四角改回深色、占位仍是粉),那条等式**从此是错的** —— 继续留着它就是把两个角色
  * 焊死,谁也改不动其中一个。
  *
+ * [SL-402] 占位从单色升成**渐变**后,「与占位不同值」的判据随之改形:外圈色不得等于占位
+ * 渐变的**任何一个停靠点**,也不得等于占位渐变的**轴中点色**(= C++ shellBackdropMid() 取
+ * 的那块纯色;DefaultBackgroundColor 与 FallbackPanel 的中点锚都在这条边界之外)。只查
+ * 中点不够 —— 渐变是四个停靠点,只对中点时把某个停靠点写成 #191820 不会红。
+ *
  * 两个角色现在各有各的边:
- *   · **占位色**(kShellBackdropArgb + 三份 index.html <head> 内联)由 ⑥ 钉彼此同源、
- *     由 ⑥c 钉它等于外壳渐变中点色;
+ *   · **占位**(kShellBackdropStops + 三份 index.html <head> 内联)由 ⑥ 钉彼此同表、
+ *     由 ⑥c 钉它等于 tokens 的 --page-gradient;
  *   · **外圈色**(本格)钉两条,**都不能少**:
  *     (a) == 设计稿 `body` 的底色 —— 没有这一条,`--page-backdrop` 就成了一个谁都能随手改的
  *         自由值,(b) 那条 `!=` 照样绿;
- *     (b) != 占位色 —— 没有这一条,「两个角色」这件事就没有任何东西守着:把 tokens 与占位色
- *         一起改回同值时 (a) 会红,但只把**占位色**改成 #191820 时 (a) 是绿的,而那正是
+ *     (b) != 占位那一族 —— 没有这一条,「两个角色」这件事就没有任何东西守着:把 tokens 与
+ *         占位一起改回同值时 (a) 会红,但只把**占位**改成 #191820 时 (a) 是绿的,而那正是
  *         SL-377 要治的「四角与占位分不开」。
  * 只跑一次(不进 checkRole 的角色循环)—— 它与角色无关。
  */
@@ -449,30 +623,31 @@ function checkTokensBackdrop() {
         );
     }
 
-    const placeholder = shellBackdropHex();
-    if (placeholder === null) {
+    const cppStops = shellBackdropStops();
+    if (cppStops === null) {
         bad(
-            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗占位底色的 C++ 真源)",
+            "PlatformWebView.h 里找不到 kShellBackdropStops 的 inline constexpr 定义(开窗占位渐变的 C++ 真源)",
         );
         return;
     }
-    if (ring === placeholder) {
+    const mid = gradientMidHex(cppStops);
+    if (ring === mid || cppStops.some((s) => s.hex === ring)) {
         bad(
-            `tokens.css 的 --page-backdrop 与开窗占位底色 kShellBackdropArgb 又变成同一个值 ${ring} ——` +
-                ` [SL-377] 起这是**两个角色**:占位色铺满整窗、必须贴着外壳渐变中点色(⑥/⑥c),` +
-                ` 外圈色只在外壳圆角之外那一圈可见、照设计稿取深色。两者同值 = 四角跟着占位色跑,` +
-                ` 用户裁掉的正是这个`,
+            `tokens.css 的 --page-backdrop(${ring})又落进了开窗占位那一族` +
+                `(占位渐变 = ${stopsFmt(cppStops)},轴中点 = ${mid})—— [SL-377] 起这是**两个角色**:` +
+                ` 占位铺满整窗、必须与成品外壳渐变同形(⑥/⑥c),外圈色只在外壳圆角之外那一圈可见、` +
+                ` 照设计稿取深色。两者同值 = 四角跟着占位跑,用户裁掉的正是这个`,
         );
         return;
     }
     console.log(
-        `  --page-backdrop ${ring} = 设计稿 body 底色, != 占位色 ${placeholder}`,
+        `  --page-backdrop ${ring} = 设计稿 body 底色, != 占位那一族(${stopsFmt(cppStops)})`,
     );
 }
 
 /**
  * 按**顶层**逗号切开一段 CSS 实参列表(括号内的逗号不算)。
- * 只为 pageGradientMidHex() 数「渐变里到底写了几个停靠点」用 —— 不做别的 CSS 解析。
+ * 只为 parseLinearGradient 数「渐变里到底写了几个停靠点」用 —— 不做别的 CSS 解析。
  */
 function splitTopLevel(text) {
     const out = [];
@@ -493,94 +668,86 @@ function splitTopLevel(text) {
 }
 
 /**
- * `--page-gradient` 的**渐变轴中点色**(`#rrggbb`;解析不出返回 null)。
+ * `--page-gradient` 的**停靠点表**(解析不出返回 null,fail-closed)。
  *
- * 这是「成品首屏真正可见的底色」在 tokens.css 里唯一算得出来的锚:`--page-gradient` 是
- * `.sc-shell` 的底(web/shared/base.css 是它的唯一消费者),而外壳几乎铺满整个插件窗口。
- * 单色盖不住渐变,取中点色是**明确选定的**代表值(本渐变四段斜率几乎一致,它与沿轴等权
- * 均值取整后同为一个值);⑥c 判的就是这一条,不判均值。
- *
- * **解析不出就 fail-closed**(返回 null ⇒ ⑥c 判负),不悄悄跳过:一条「算不出来所以不判」
- * 的判据和没有这条判据是一回事,而它还会顶着「有判据」的名义。要求每个停靠点都带百分号
- * 也是同一个取舍 —— 现值四个停靠点全都带,少写一个宁可红。
+ * [SL-402] 这是「成品首屏真正可见的底」的完整形态:--page-gradient 是 .sc-shell 的底
+ * (web/shared/base.css 是它的唯一消费者),而外壳几乎铺满整个插件窗口。⑥c 拿它与 C++ 的
+ * kShellBackdropStops **逐项对拍**(色值 + 位置)—— 对拍整张表,不再只对中点:
+ * 中点相同而走向不同(比如把首末对调)的两张渐变,占位与成品照样对不上。
+ * **解析不出就 fail-closed**,不悄悄跳过:一条「算不出来所以不判」的判据和没有这条判据
+ * 是一回事,而它还会顶着「有判据」的名义。
  */
-function pageGradientMidHex() {
+function pageGradientStops() {
     const tok = readFileSync(join(ROOT, "web/shared/tokens.css"), "utf8");
-    // 不钉排版:`[\s\S]*?` 跨行,prettier 把 linear-gradient 折成几行都命中。
-    const decl = tok.match(/--page-gradient:\s*linear-gradient\(([\s\S]*?)\);/);
+    // 不钉排版:`[^;]+` 跨行,prettier 把 linear-gradient 折成几行都命中。
+    const decl = tok.match(/--page-gradient:\s*([^;]+);/);
     if (!decl) return null;
-    const stops = [
-        ...decl[1].matchAll(/#([0-9a-fA-F]{6})\s+(\d+(?:\.\d+)?)%/g),
-    ].map((m) => ({
-        rgb: [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)),
-        pos: parseFloat(m[2]),
-    }));
-    if (stops.length < 2) return null;
-    // **认全 vs 认一部分**([#241 复审]):上面那条正则只收 `#rrggbb <n>%`。中间某个停靠点
-    // 换成 `rgb()` / `#fff` / 漏了 `%` 时,它是**静默丢弃**而不是判负 —— 函数照样算得出
-    // 「少了一段的那条渐变」的中点,报出来是一句「与中点色 X 不一致」,把读者引去改
-    // kShellBackdropArgb(改完就真错了)。所以这里再数一次:按**顶层**逗号切开
-    // `linear-gradient(...)` 的实参,首段是角度/方向,其余每一段应当恰好对应一个被认出来的
-    // 停靠点。对不上 = 有一段没被认出来 ⇒ 与「解析不出」同一个出口(fail-closed)。
-    // 首段必须是角度:CSS 允许省略方向,省了就会数不上 —— 那同样走 fail-closed,
-    // 宁可红也不去猜。
-    const segs = splitTopLevel(decl[1]);
-    if (segs.length - 1 !== stops.length) return null;
-    if (stops[0].pos !== 0 || stops[stops.length - 1].pos !== 100) return null;
-    for (let i = 0; i < stops.length - 1; i++) {
-        const a = stops[i];
-        const b = stops[i + 1];
-        if (b.pos <= a.pos) return null;
-        if (a.pos <= 50 && 50 <= b.pos) {
-            const t = (50 - a.pos) / (b.pos - a.pos);
-            const mid = a.rgb.map((v, k) => Math.round(v + t * (b.rgb[k] - v)));
-            return (
-                "#" + mid.map((v) => v.toString(16).padStart(2, "0")).join("")
-            );
-        }
-    }
-    return null;
+    return parseLinearGradient(decl[1]); // { deg, stops }
 }
 
 /**
- * ⑥c [SL-370] 占位色必须与**成品首屏真正可见的底色**是同一个,而不只是几处彼此同值。
+ * ⑥c [SL-370] 占位必须与**成品首屏真正可见的底**是同一个,而不只是几处彼此同值。
  *
- * ⑥ 对拍的是「占位色那几处彼此一致」—— 它们一起写成深色时照样全绿,而用户看到的
- * 正是这一段黑(v5.6.8:「先白然后黑然后再白,最后内容」)。少的那一条就是本格:把占位色
+ * ⑥ 对拍的是「占位那一族彼此一致」—— 它们一起写成深色时照样全绿,而用户看到的
+ * 正是这一段黑(v5.6.8:「先白然后黑然后再白,最后内容」)。少的那一条就是本格:把占位
  * 钉到**外壳渐变**上,让「占位 ≠ 成品」这件事有东西会红。
  *
- * 对拍对象是 C++ 真源 kShellBackdropArgb(⑥ 已把三份 index.html 的内联钉到它),
- * 所以本格只需要一条边:C++ 真源 == --page-gradient 的中点色。
+ * [SL-370] 当时对拍的是「C++ 单色常量 == --page-gradient 的轴中点色」;[SL-402] 占位本身
+ * 升成了渐变,本格随之升级为**整张色标表的对拍**:C++ 真源 kShellBackdropStops ==
+ * tokens.css 的 --page-gradient(逐项:停靠点色值 + 位置 + 顺序)。配合 ⑥ 的
+ * 「内联 == C++ 数组」,三条边合成一张完整的同源链:
+ *   tokens(真源) == C++ 色标数组 == 三份 index.html 内联 —— 改任何一处不同批改其余即红。
  * ⚠ [SL-377] `--page-backdrop` **不在**本格的对拍链上了 —— 它现在是外圈色,由 ⑥b 单独钉。
  */
 function checkBackdropMatchesShell() {
-    console.log("\n--- 开窗占位底色 vs 外壳渐变(⑥c)---");
-    const backdrop = shellBackdropHex();
-    if (backdrop === null) {
+    console.log("\n--- 开窗占位渐变 vs 外壳渐变(⑥c)---");
+    const cppStops = shellBackdropStops();
+    if (cppStops === null) {
         bad(
-            "PlatformWebView.h 里找不到 kShellBackdropArgb 的 inline constexpr 定义(开窗底色的 C++ 真源)",
+            "PlatformWebView.h 里找不到 kShellBackdropStops 的 inline constexpr 定义(开窗占位渐变的 C++ 真源)",
         );
         return;
     }
-    const mid = pageGradientMidHex();
-    if (mid === null) {
+    const tok = pageGradientStops();
+    if (tok === null) {
         bad(
-            "web/shared/tokens.css 的 --page-gradient 解析不出「#rrggbb <n>% × ≥2,首尾 0%/100%」的停靠点表" +
-                "(改了渐变写法就把 pageGradientMidHex() 一起改;这里宁可红也不跳过)",
+            "web/shared/tokens.css 的 --page-gradient 解析不出「linear-gradient(<deg>, #rrggbb <n>% × ≥2,首尾 0%/100%」的停靠点表" +
+                "(改了渐变写法就把 parseLinearGradient()/pageGradientStops() 一起改;这里宁可红也不跳过)",
         );
         return;
     }
-    if (backdrop !== mid) {
+    if (!stopsEqual(cppStops, tok.stops)) {
         bad(
-            `开窗占位底色 ${backdrop} 与外壳渐变中点色 ${mid} 不一致 —— 成品首屏铺满窗口的是 ` +
-                `.sc-shell 的 --page-gradient,占位与它差一个明暗,用户开窗就会看见多出来的一段` +
-                `(SL-370:「白 → 黑 → 白 → 内容」)。把 kShellBackdropArgb 改成 0xff${mid.slice(1)},` +
-                `并同步三份 index.html 的 <head> 内联(⑥ 会跟着核)。` +
-                `**不要**顺手去改 tokens.css 的 --page-backdrop:[SL-377] 起那是外圈色,另一个角色`,
+            `开窗占位渐变(${stopsFmt(cppStops)})与成品外壳渐变 --page-gradient ` +
+                `(${stopsFmt(tok.stops)})的色标不一致 —— 成品首屏铺满窗口的是 .sc-shell 的 ` +
+                `--page-gradient,占位与它差一个明暗走向,用户开窗就会看见多出来的一段` +
+                `(SL-370:「白 → 黑 → 白 → 内容」;SL-402:「占位没有深浅」)。` +
+                `把 kShellBackdropStops 改成与 tokens 同表,并同步三份 index.html 的 <head> 内联` +
+                `(⑥ 会跟着核)。**不要**顺手去改 tokens.css 的 --page-backdrop:` +
+                `[SL-377] 起那是外圈色,另一个角色`,
         );
         return;
     }
-    console.log(`  ${backdrop} = --page-gradient 中点色`);
+    // [第 1 推] 角度对拍:「同形」包括**走向**。tokens 的角度 == C++ 的
+    // kShellBackdropAngleDeg(内联那一条在 ⑥(f) 里钉,C++↔tokens 在这里钉)。
+    const cppDeg = shellBackdropAngleDeg();
+    if (cppDeg === null) {
+        bad(
+            "PlatformWebView.h 里找不到 kShellBackdropAngleDeg 的 inline constexpr 定义(占位渐变角度的 C++ 真源)",
+        );
+        return;
+    }
+    if (tok.deg !== cppDeg) {
+        bad(
+            `tokens.css --page-gradient 的角度 ${tok.deg}deg 与 C++ 真源 kShellBackdropAngleDeg` +
+                `(${cppDeg}deg)不一致 —— 「与成品同形」包括走向,角度漂了占位与内容的明暗走向就岔开` +
+                `(内联那一条由 ⑥(f) 核)`,
+        );
+        return;
+    }
+    console.log(
+        `  C++ 色标数组 = --page-gradient(${stopsFmt(tok.stops)}) @ ${cppDeg}deg`,
+    );
 }
 
 /**

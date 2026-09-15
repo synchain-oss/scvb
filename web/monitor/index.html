@@ -41,15 +41,29 @@
           src/plugin-common/WebViewHost.cpp 的 HostWebView::paint 头注。别在这里复述。
           这一条**必须是字面量**:自定义属性一律定义在 tokens.css 里,写成 var() 就又回到
           「等外链」那条路上。⚠ [SL-377] 尤其不要写成 var(--page-backdrop):那个变量已改作
-          **外圈色**(外壳圆角之外那一圈,深色),与本条的**占位色**是两个角色、取值不同。
-          取值 = src/plugin-common/PlatformWebView.h 的
-          kShellBackdropArgb 低 24 位,由 web-preview/tests/smoke-embedded-resources.mjs
-          的 ⑥ 与 C++ 真源逐字对拍(改一边不改另一边即红),
-          故此处是本页「零裸 hex」纪律的**唯一**例外。
+          **外圈色**(外壳圆角之外那一圈,深色),与本条的**占位**是两个角色、取值不同。
+          ⚠ [SL-402] 取值从单色升成**渐变**字面量:与 tokens.css `--page-gradient` 同一组
+          色标(157deg),让「加载中的占位」与「打开后的底」同形、开窗切内容不再有明暗差。
+          C++ 真源 = src/plugin-common/PlatformWebView.h 的 kShellBackdropStops,由
+          web-preview/tests/smoke-embedded-resources.mjs 的 ⑥ 与 C++ 色标数组逐字对拍
+          (改一边不改另一边即红),故此处仍是本页「零裸 hex」纪律的**唯一**例外。
+          [第 1 推] `min-height: 100%` 与 `background-attachment: fixed` 两行是兜路的一半:
+          background 简写会把 background-color 重置成 transparent,根元素的背景**图**按
+          根元素自身盒定尺寸 —— 外链 base.css(带 height:100%)缺席时,没有这两行的话
+          图的尺寸会塌成内容高、甚至不绘制,兜路反而露白。⑥ 逐字钉这两条声明与
+          background 同块在场,页面级 A9 钉 applied cascade(backgroundAttachment=fixed)。
         -->
         <style>
             html {
-                background-color: #d9cadb;
+                background: linear-gradient(
+                    157deg,
+                    #b5acc9 0%,
+                    #ccbfd5 32%,
+                    #e3d2e0 64%,
+                    #fde8ed 100%
+                );
+                min-height: 100%;
+                background-attachment: fixed;
             }
         </style>
 

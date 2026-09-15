@@ -16,7 +16,8 @@ namespace scvb::webview
 // 「白 → 黑 → 白 → 内容」。也就是说白的那几帧根本不由我方任何一层底色决定 —— WebView2 的
 // 宿主 HWND 一旦上屏,它自己在合成首帧之前画什么,插件侧没有任何 API 管得到。
 // 于是改成**根本不让它上屏**:导航开始到「页面首帧已绘」之间,把 WebView 子窗口挪到宿主
-// 客户区之外,那块地方由 WebViewHost::paint 用 shellBackdrop()(成品外壳中点色)铺占位。
+// 客户区之外,那块地方由 WebViewHost::paint 铺占位([SL-402] 起 = 与成品外壳渐变同组色标的
+// shellBackdropGradient 渐变;SL-370 当时是单色成品外壳中点色)。
 //
 // 【为什么挪走而不是 setVisible(false) / 零尺寸】三条,缺一不可:
 //   • `setVisible(false)` 会走 JUCE 的 componentVisibilityChanged → checkWindowAssociation
@@ -70,7 +71,8 @@ namespace scvb::webview
 // 再 `Navigate`(juce_WebBrowserComponent_windows.cpp 的 createWebView,读实现核过),
 // 而泵的条件正是
 // `if (! hasBrowserBeenCreated())` —— 控制器建好之后它本来就是空调用。所以「控制器建好之前
-// 一直可见」既保住了泵,又没有放过任何一帧白:那一段屏上是我方 paint 的 shellBackdrop()。
+// 一直可见」既保住了泵,又没有放过任何一帧白:那一段屏上是我方 paint 铺的占位渐变
+// ([SL-402] 起;SL-370 当时是单色 shellBackdrop)。
 //
 // 【[SL-376] 只认首帧 —— 放行路从三条减到两条】
 // v5.6.10 真机(用户)是「粉色占位 → **白一瞬** → 内容」:黑没了(SL-370 的颜色那一段生效),

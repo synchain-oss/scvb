@@ -613,6 +613,20 @@ try {
         eq(probe.groupDots, [1, 2, 5], "绿点亮在 A/B/E(键名读错就全灭)");
         eq(probe.abiBanner, false, "无红横幅");
         eq(probe.stalledBanner, false, "无琥珀横幅");
+
+        // [SL-402 · 第 2 推] 内联占位渐变的 **applied cascade**(渲染层):真源文档
+        // (iframe 内)的 html 的 backgroundAttachment 必须解析为 fixed —— 内联里那条
+        // `background-attachment: fixed` 真的生效(base.css 不覆盖该属性)。源码层由
+        // smoke-embedded-resources.mjs 的 ⑥(e) 同块 + 顺序钉管,这里管渲染层。
+        eq(
+            await evaluate(
+                IN(
+                    `return w.getComputedStyle(d.documentElement).backgroundAttachment;`,
+                ),
+            ),
+            "fixed",
+            "html 的 backgroundAttachment 解析为 fixed(占位渐变渲染层生效)",
+        );
         eq(probe.emptyPanelDisplay, "none", "空态面板被 CSS 收起");
         check(probe.trajCardDisplay !== "none", "轨迹图卡可见");
         check(probe.distCardDisplay !== "none", "分布图卡可见");
