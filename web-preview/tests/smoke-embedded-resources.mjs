@@ -528,6 +528,19 @@ function checkShellBackdropInline(role, entry) {
                 `平铺成色带,兜路那一段铺出来的不是整张渐变(必须与 background 同块)`,
         );
     }
+    // (e2) [第 2 推] **顺序钉**:`background-attachment: fixed` 必须排在 `background` 简写
+    // **之后** —— 简写会把 attachment 重置回 scroll,排在简写前面的 fixed 在渲染层被覆盖
+    // (A9/monitor-page 那类渲染层格会红,但 output 侧没有渲染层兜底格,源码层必须钉死)。
+    // 下标取自剥过 CSS 注释的块体,`background\s*:` 不会误命中 `background-attachment:`
+    // (后者 "background" 后面跟的是 "-",不是冒号)。
+    const bgIdx = blockBody.search(/background\s*:\s*linear-gradient/);
+    const attIdx = blockBody.search(/background-attachment\s*:\s*fixed/);
+    if (bgIdx >= 0 && attIdx >= 0 && attIdx < bgIdx) {
+        bad(
+            `${role}:background-attachment: fixed 排在 background 简写之前 —— 简写会把 ` +
+                `attachment 重置回 scroll,渲染层拿到的不是 fixed(必须排在 background 之后)`,
+        );
+    }
 
     const firstLink = html.search(/<link\b[^>]*\brel="stylesheet"/i);
     if (firstLink >= 0 && hit.index > firstLink) {

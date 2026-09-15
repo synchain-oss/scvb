@@ -200,7 +200,8 @@ public:
     //        WebResourceRequested 回到消息线程才拿得到。[SL-355] 因此在三份 index.html 的
     //        <head> 里内联一条根元素底色声明,排在两条
     //        <link rel="stylesheet"> 之前;判据 = web-preview/tests/smoke-embedded-resources.mjs
-    //        的 ⑥。⚠ [SL-402] 内联值从单色 `html { background-color: … }` 升成与占位同色标的
+    //        的 ⑥(色标表 + 角度 + (e) 兜路两声明同块与顺序)。⚠ [SL-402] 内联值从单色
+    //        `html { background-color: … }` 升成与占位同色标的
     //        `html { background: linear-gradient(…) }` 字面量(⑥ 随之改钉色标数组)。
     //        ⚠ **「排在外链之前」是排序事实,不是时序保证** —— 别把它读成「已经堵住」。
     //        Chromium 对 <head> 里的 <link rel="stylesheet"> 是**渲染阻塞**的:外链的 CSSOM
@@ -312,8 +313,10 @@ public:
     //     · FallbackPanel 的面板底改用面板自己的 kFallbackPanelArgb(仍取本卡当时的渐变
     //       中点色 #d9cadb,但从此**不再与占位同源**,tokens 渐变再改它不跟也不红 ——
     //       面板可读性由它自己的对比度断言独立把守)。
-    //   机检:⑥ 钉「内联渐变 == C++ 色标数组」、⑥c 钉「C++ 色标数组 == tokens 渐变」,
-    //   ⑥b 继续钉外圈色并断言它与占位那一族不等 —— 三处同源改任何一处都会红。
+    //   机检:⑥ 钉「内联渐变 == C++ 色标数组(整表 + 角度)+ (e) 兜路两声明与 background
+    //   同块且 background-attachment 排在简写之后」、⑥c 钉「C++ 色标数组 == tokens 渐变
+    //   (整表 + 角度)」,⑥b 继续钉外圈色并断言它与占位那一族不等 —— 三处同源改任何
+    //   一处、或内联的两条兜路声明缺一条/顺序翻转,都会红。
     //   放行时序一字未动:WebViewRevealGate 的「等首帧 + 32 ms 下界」与本卡无关
     //   (第五代只换占位**画什么**,不换占位**什么时候让位**)。
     // -------------------------------------------------------------------------

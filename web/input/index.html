@@ -279,11 +279,11 @@
             }
             /* [SL-403] 帮助钮原先沿用 .sc-btn 的白玻璃底(rgba(wh,.3))叠在渐变最亮的一段
                上,钮面与所在面几乎同明暗(实测对比度 ≈ 1.1:1),整颗钮浮成一块白、
-               问号跟着看不清。改成**深墨 chip**:底 = --acc-ink(tokens 既有的深墨,
-               原生 select 深底同款,不是新色值),图标 = --txt-dark-1(深底一级反相色阶),
-               形状/描边沿用 .sc-btn 本身(1px 白 .5 描边、圆形、22px)。三件全是既有 token,
-               没有发明第三套配色;机检 = smoke-ui-layout-page.mjs 的 A8(两处 WCAG
-               对比度 ≥ 3:1,把旧样式注回即红)。 */
+               问号跟着看不清。改成**深墨 chip**:底 = --acc-ink(tokens 既有的深墨;
+               fill 角色由本钮首次消费,已在 tokens.css 该条注释登记),图标 = --txt-dark-1
+               (深底一级反相色阶),形状/描边沿用 .sc-btn 本身(1px 白 .5 描边、圆形、22px)。
+               三件全是既有 token,没有发明第三套配色;机检 = smoke-ui-layout-page.mjs 的
+               A8(两处 WCAG 对比度 ≥ 3:1,把旧样式注回即红)。 */
             .ipt-help {
                 flex: none;
                 width: 22px;
