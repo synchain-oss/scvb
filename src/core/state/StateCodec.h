@@ -31,7 +31,7 @@
 //    仍返回 Ok —— Output 接线卡必须把「同 abi 但 CRVS minor 更高」按「等同拒载 + preservedOriginal
 //    原样回写 + 提示升级」处理,不得让旧插件抹掉新版曲线数据。
 // 3. docs/STATE_SCHEMA.md 目前是 T39a 占位空壳;本 codec 是 wire-format 先行真源,T39a 回填时以本
-//    头 + tests/golden/state/abi{N}.bin 为准交叉校验(abi=1/2/3 是历史迁移基线,**abi=4 是当前格式锁**)。
+//    头 + tests/golden/state/abi{N}.bin 为准交叉校验(abi=1/2/3/4 是历史迁移基线,**abi=5 是当前格式锁**)。
 namespace scvb::state
 {
 
@@ -40,8 +40,10 @@ namespace scvb::state
 // 0x42564353):小端写盘后前 4 字节字面拼出 "SCVB",与 tests/golden/ipc-layout.txt 的 magic 0x42564353 一致。
 inline constexpr std::uint32_t kStateMagic = 0x42564353u; // 'SCVB'(小端内存序,与 SegmentLayout.h 同源)
 inline constexpr std::uint32_t kCurrentAbi =
-    4u; // abi 3→4:[SL-411] CFGS 再尾扩 analysis.segmentation.{mode,sensitivity,min_segment_ms}
-        // (见 migrate_3_to_4)。上一级 abi 2→3 是 [SL-279] 的 applied.{loudness_mode,center_slot_policy}。
+    5u; // abi 4→5:[SL-416] CFGS 再尾扩 analysis.vad 五字段 + analysis.transition_ramp_ms
+        // (见 migrate_4_to_5)。上一级 abi 3→4 是 [SL-411] 的 analysis.segmentation
+        // {mode,sensitivity,min_segment_ms};再上一级 abi 2→3 是 [SL-279] 的
+        // applied.{loudness_mode,center_slot_policy}。
 
 inline constexpr std::uint32_t kFourccPrms = 0x534D5250u; // 'PRMS'
 inline constexpr std::uint32_t kFourccCfgs = 0x53474643u; // 'CFGS'

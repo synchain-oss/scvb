@@ -1348,6 +1348,18 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.segmentationMode = runtime_.segmentationMode.toStdString();
     s.segmentationSensitivity = runtime_.segmentationSensitivity;
     s.segmentationMinSegmentMs = static_cast<std::uint32_t>(runtime_.segmentationMinSegmentMs);
+    // [SL-416] analysis.vad 五字段 + analysis.transition_ramp_ms 随工程落盘 —— 02 §0.3 与
+    // STATE_SCHEMA §一 一直把它们列在 state 里,而此前只有 `runtime_` 这一份内存真身:
+    // A24 实测「MIN SEG 回来了,但 THRESHOLD / HYSTERESIS / HOLD / PAD PRE / PAD POST 全部回默认」。
+    // 六项都是**纯配置**,与采集态([J91])不同:没有任何理由不随工程走。
+    // `transitionRampMs` 在 runtime_ 里是 float(§1.20 的 UI 也是连续刻度),落盘按规格值域窄化成 u32
+    // —— 桥面 `handleSetTransitionRampMs` 已令它落在 20..300 的整数值上,窄化无损。
+    s.vadThresholdDb = runtime_.vadThresholdDb;
+    s.vadHysteresisDb = runtime_.vadHysteresisDb;
+    s.vadHangoverMs = static_cast<std::uint32_t>(runtime_.vadHangoverMs);
+    s.vadPaddingPreMs = static_cast<std::uint32_t>(runtime_.vadPaddingPreMs);
+    s.vadPaddingPostMs = static_cast<std::uint32_t>(runtime_.vadPaddingPostMs);
+    s.transitionRampMs = static_cast<std::uint32_t>(runtime_.transitionRampMs);
     s.unknownTail = preservedCfgsTail_; // 未来小版本追加字段原样回写(防静默丢字段)
     std::vector<std::uint8_t> cfg;
     if (!scvb::state::encodeOutputState(s, cfg))
@@ -1914,6 +1926,25 @@ void ScvbOutputAudioProcessor::setStateInformation(const void* data, int sizeInB
         juce::String::fromUTF8(s.segmentationMode.c_str(), static_cast<int>(s.segmentationMode.size()));
     runtime_.segmentationSensitivity = s.segmentationSensitivity;
     runtime_.segmentationMinSegmentMs = static_cast<int>(s.segmentationMinSegmentMs);
+    // [SL-416] vad 五字段 + transition_ramp_ms:同一条纪律 —— codec 已做值域校验(**在席且越界**
+    // → 回落该字段默认并计数;缺席的 abi≤4 旧工程 → 规格默认且不计),所以这里**不再叠第二道夹取**:
+    // decode 的出口只有「规格内」与「规格默认」两种,再来一次 jlimit 是永不开火的守卫。
+    runtime_.vadThresholdDb = s.vadThresholdDb;
+    runtime_.vadHysteresisDb = s.vadHysteresisDb;
+    runtime_.vadHangoverMs = static_cast<int>(s.vadHangoverMs);
+    runtime_.vadPaddingPreMs = static_cast<int>(s.vadPaddingPreMs);
+    runtime_.vadPaddingPostMs = static_cast<int>(s.vadPaddingPostMs);
+    runtime_.transitionRampMs = static_cast<float>(s.transitionRampMs);
+    if (report.vadThresholdDbFallbacks > 0 || report.vadHysteresisDbFallbacks > 0 ||
+        report.vadHangoverMsFallbacks > 0 || report.vadPaddingPreMsFallbacks > 0 ||
+        report.vadPaddingPostMsFallbacks > 0 || report.transitionRampMsFallbacks > 0)
+    {
+        DBG("SCVB Output: analysis.vad/transition_ramp_ms 值越界回落默认(threshold="
+            << report.vadThresholdDbFallbacks << ", hysteresis=" << report.vadHysteresisDbFallbacks
+            << ", hangover=" << report.vadHangoverMsFallbacks << ", pad_pre=" << report.vadPaddingPreMsFallbacks
+            << ", pad_post=" << report.vadPaddingPostMsFallbacks << ", ramp=" << report.transitionRampMsFallbacks
+            << ")");
+    }
     if (report.segmentationModeFallbacks > 0 || report.segmentationSensitivityFallbacks > 0 ||
         report.segmentationMinSegmentMsFallbacks > 0)
     {
@@ -2642,7 +2673,10 @@ void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::
 bool ScvbOutputAudioProcessor::setTransitionRamp(float ms)
 {
     const juce::ScopedLock lock(lifecycleMutex_);
-    const float clamped = juce::jlimit(20.0f, 300.0f, ms);
+    // [SL-416] 值域取 codec 常量(§1.20:20..300)—— 本处此前是 `jlimit(20.0f, 300.0f, ...)` 字面量,
+    // 与桥面 `handleSetTransitionRamp` 里那个 `80.0f`、web 滑杆各写一份,本卡收成一处。
+    const float clamped = juce::jlimit(static_cast<float>(scvb::state::kOutputTransitionRampMsMin),
+                                       static_cast<float>(scvb::state::kOutputTransitionRampMsMax), ms);
     if (runtime_.transitionRampMs == clamped)
         return false; // 未变,不重建
 

@@ -132,6 +132,26 @@ const char* sideName(scvb::PanCurveSide s)
     }
 }
 
+// [SL-416 R16] 桥面数值字段的统一守卫(**先取 double → isfinite → double 域夹到规格值域 → 由调用方窄化**)。
+// 为什么不能直接 `static_cast<float>(var)` / `static_cast<int>(var)`:
+//   · `juce::jlimit` 的实现是 `v < lo ? lo : (hi < v ? hi : v)` —— **NaN 时两个比较都为假 ⇒ 原值透出**;
+//   · 把**非有限、或有限但超出目标类型值域**(如 `1e300`)的 double `static_cast` 成 int/float 都是 **UB**
+//     (MSVC 上前者落 `INT_MIN`、再被夹成下限 —— 一个「看着像用户设的、其实不是」的落点)。
+// 所以这里一次做对:非数值 / 非有限 ⇒ 返回 `keep`(调用方传**当前 runtime_ 值**,即「当它没说过」,
+// 而不是替用户选一个默认值);有限 ⇒ 在 **double 域**夹到 `[lo, hi]`,窄化前必然落在目标类型的可表示
+// 范围内,任何路径都不再触碰 UB。调用方负责 `static_cast` 窄化。
+// JSON 里造得出 `±Inf`(`{"x": 1e400}` 经 `strtod` 溢出成 `HUGE_VAL`),所以这道守卫**有真实入口**,
+// 不是纯理论兜底(我们自己的 web 侧不会发 —— JS 的 `JSON.stringify(Infinity)` 出 `null`)。
+double specClamp(const juce::var& v, double lo, double hi, double keep)
+{
+    if (!v.isDouble() && !v.isInt() && !v.isInt64())
+    {
+        return keep; // 非数值(字符串/对象/数组/void):当它没说过
+    }
+    const double d = static_cast<double>(v);
+    return std::isfinite(d) ? juce::jlimit(lo, hi, d) : keep;
+}
+
 } // namespace
 
 // ============================================================================
@@ -1735,11 +1755,34 @@ void OutputEditor::handleSetVadParams(const ArgList& a, Completion c)
     }
     const juce::var p = a[0];
     auto& rt = processor_.runtime();
-    const float t = static_cast<float>(p.getProperty("threshold_db", rt.vadThresholdDb));
-    const float h = static_cast<float>(p.getProperty("hysteresis_db", rt.vadHysteresisDb));
-    const int hm = static_cast<int>(p.getProperty("hangover_ms", rt.vadHangoverMs));
-    const int pp = static_cast<int>(p.getProperty("padding_pre_ms", rt.vadPaddingPreMs));
-    const int po = static_cast<int>(p.getProperty("padding_post_ms", rt.vadPaddingPostMs));
+    // [SL-416] R16 守卫(与 `handleSetSegmentation` 那一段**同形**,逐条理由见 `specClamp` 的头注):
+    // 五个字段各自**先取 double → `std::isfinite` → double 域夹到规格值域 → 再窄化**。
+    //   · 非有限(JSON 里 `1e400` 经 `strtod` 溢出成 `HUGE_VAL`)⇒ **保留 rt 原值**,绝不落进 runtime_;
+    //   · 有限但超界(`1e300` 过得了 `isfinite` 却过不了 `static_cast<int>`)⇒ 先在 double 域夹到规格
+    //     值域、再窄化,任何路径都不触碰 UB;
+    //   · 非数值(字符串/对象/数组)⇒ 同样保留 rt 原值 —— 这里**不回 badArg**:整包下发,回 badArg 会
+    //     让同一次调用里另外四个合法字段也一起进不去。
+    // 值域常量与默认值的单一真源 = `src/core/state/OutputStateCodec.h` 的 `kOutputVad*`;
+    // web 侧滑杆 min/max/def 由 `smoke-tab3-interactions.mjs` 的 VAD 那一组逐值对拍,漂开即红。
+    // ⚠ 仍无用例(与 `handleSetSegmentation` 同一个已登记缺口):`handleSetVadParams` 全仓没有直接调用
+    //   它的测试 —— 桥面 → runtime 这一跳的缺口账见 `tests/host/test_host_harness.cpp`。
+    const float t = static_cast<float>(specClamp(
+        p.getProperty("threshold_db", rt.vadThresholdDb), static_cast<double>(scvb::state::kOutputVadThresholdDbMin),
+        static_cast<double>(scvb::state::kOutputVadThresholdDbMax), static_cast<double>(rt.vadThresholdDb)));
+    const float h = static_cast<float>(specClamp(
+        p.getProperty("hysteresis_db", rt.vadHysteresisDb), static_cast<double>(scvb::state::kOutputVadHysteresisDbMin),
+        static_cast<double>(scvb::state::kOutputVadHysteresisDbMax), static_cast<double>(rt.vadHysteresisDb)));
+    const int hm = static_cast<int>(specClamp(
+        p.getProperty("hangover_ms", rt.vadHangoverMs), static_cast<double>(scvb::state::kOutputVadHangoverMsMin),
+        static_cast<double>(scvb::state::kOutputVadHangoverMsMax), static_cast<double>(rt.vadHangoverMs)));
+    const int pp = static_cast<int>(specClamp(p.getProperty("padding_pre_ms", rt.vadPaddingPreMs),
+                                              static_cast<double>(scvb::state::kOutputVadPaddingPreMsMin),
+                                              static_cast<double>(scvb::state::kOutputVadPaddingPreMsMax),
+                                              static_cast<double>(rt.vadPaddingPreMs)));
+    const int po = static_cast<int>(specClamp(p.getProperty("padding_post_ms", rt.vadPaddingPostMs),
+                                              static_cast<double>(scvb::state::kOutputVadPaddingPostMsMin),
+                                              static_cast<double>(scvb::state::kOutputVadPaddingPostMsMax),
+                                              static_cast<double>(rt.vadPaddingPostMs)));
     const bool changed = t != rt.vadThresholdDb || h != rt.vadHysteresisDb || hm != rt.vadHangoverMs ||
                          pp != rt.vadPaddingPreMs || po != rt.vadPaddingPostMs;
     rt.vadThresholdDb = t;
@@ -1862,10 +1905,20 @@ void OutputEditor::handleSetTransitionRamp(const ArgList& a, Completion c)
         c(badArgResp());
         return;
     }
-    const float ms = a.size() > 0 ? static_cast<float>(a[0]) : 80.0f;
+    // [SL-416] 与 `handleSetVadParams` / `handleSetSegmentation` 同一道 R16 守卫:先取 double →
+    // isfinite → double 域 jlimit 到规格值域(§1.20:20..300)→ 再窄化;非有限/非数值 ⇒ 保留
+    // `runtime_` 原值。值域与默认值的单一真源 = `OutputStateCodec.h` 的 `kOutputTransitionRampMs*`
+    // —— 本处此前是裸 `static_cast<float>(a[0])`(+ 缺省 `80.0f` 字面量),与
+    // `OutputProcessor::setTransitionRamp` 的 `jlimit(20.0f, 300.0f, …)` 各写一份(第三份在 web
+    // 滑杆 `tab-master.js` 的 `RAMP_MS`),(SL-416) 收成一处。
+    auto& rt = processor_.runtime();
+    const juce::var rampVar = a.size() > 0 ? a[0] : juce::var(rt.transitionRampMs);
+    const float ms = static_cast<float>(specClamp(rampVar, static_cast<double>(scvb::state::kOutputTransitionRampMsMin),
+                                                  static_cast<double>(scvb::state::kOutputTransitionRampMsMax),
+                                                  static_cast<double>(rt.transitionRampMs)));
     // 持锁 + 变化才重建全部曲线(transitionRampSec 烘焙进 CurveEvaluator,PR#55 第5轮缺陷2)。
     if (processor_.setTransitionRamp(ms))
-        ++processor_.runtime().configSeq; // 变化才 bump(PR#55 缺陷4)
+        ++rt.configSeq; // 变化才 bump(PR#55 缺陷4)
     c(okResp());
 }
 

@@ -402,16 +402,22 @@ export const MAX_DURATION_S = 24 * 60 * 60;
  */
 export const SLIDERS = Object.freeze(
     [
+        // [SL-416] VAD 五杆的 min/max/def 与 `OutputStateCodec.h` 的 `kOutputVad*` **逐值同源**
+        // (真源 = masterPlan 02 §0.3 常量表,经 U24 收敛;threshold 按 UI 绝对门限 dB 口径
+        //  −60..−10/默认 −38,换算锚 = `OutputProcessor.cpp` 的 `kVadUiRefDb`)。
+        // 对拍 = `web-preview/tests/smoke-tab3-interactions.mjs` 的 [SL-416] 那一组(从 codec 定义行抠数);
+        // 本卡同时把**引擎初值**与这里的 def 收到同一处 —— 改前它们互不相同(引擎 −45/3/200 vs
+        // 滑杆 −38/6/180),A24 里用户念的「默认」正是引擎那一组。
         // prettier-ignore
         { key: "threshold", field: "threshold_db", api: "vad", gb: "wave-vad-threshold", t: "wave.sldThreshold", tip: "wave.tipThreshold", min: -60, max: -10, def: -38, unit: "dB", dp: 0 },
         // prettier-ignore
-        { key: "hysteresis", field: "hysteresis_db", api: "vad", gb: "wave-vad-hysteresis", t: "wave.sldHysteresis", tip: "wave.tipHysteresis", min: 0, max: 20, def: 6, unit: "dB", dp: 0 },
+        { key: "hysteresis", field: "hysteresis_db", api: "vad", gb: "wave-vad-hysteresis", t: "wave.sldHysteresis", tip: "wave.tipHysteresis", min: 3, max: 12, def: 6, unit: "dB", dp: 0 },
         // prettier-ignore
-        { key: "hangover", field: "hangover_ms", api: "vad", gb: "wave-vad-hangover", t: "wave.sldHangover", tip: "wave.tipHold", min: 0, max: 500, def: 180, unit: "ms", dp: 0 },
+        { key: "hangover", field: "hangover_ms", api: "vad", gb: "wave-vad-hangover", t: "wave.sldHangover", tip: "wave.tipHold", min: 100, max: 600, def: 250, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "paddingpre", field: "padding_pre_ms", api: "vad", gb: "wave-vad-paddingpre", t: "wave.sldPadPre", tip: "wave.tipPadPre", min: 0, max: 500, def: 120, unit: "ms", dp: 0 },
+        { key: "paddingpre", field: "padding_pre_ms", api: "vad", gb: "wave-vad-paddingpre", t: "wave.sldPadPre", tip: "wave.tipPadPre", min: 20, max: 400, def: 120, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 0, max: 500, def: 200, unit: "ms", dp: 0 },
+        { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 50, max: 400, def: 200, unit: "ms", dp: 0 },
         // [SL-382] 用户裁定(2026-09-10):**分段灵敏度这个功能暂时不做**,控件已在
         // `web/output/index.html` 那个 `data-gb="wave-seg-sensitivity"` 的 div 上挂 `hidden`
         // 藏起来(为什么藏、v1.1 待裁什么,写在那条 HTML 注释里,这里不抄第二份)。
@@ -432,11 +438,14 @@ export const SLIDERS = Object.freeze(
  * VAD 参数缓存初值(**五字段整包**下发纪律的 UI 侧底账,契约 §1.18;brief §0.4)。
  * [Wave 2] 拖任何一杆都以「当前整组缓存 + 本杆新值」整包调 setVadParams,
  * 绝不只发变动字段;state 回推后整组覆盖。
+ * [SL-416] 与 `SLIDERS` 的 `def`、`OutputStateCodec.h` 的 `kOutputVad*Default` **同值**
+ * (真源 = masterPlan 02 §0.3);本卡把这组缓存从 180 收到 250 —— 改前它与引擎初值(200)、
+ * 与 codec 规格默认(250)三处互不相同。
  */
 export const DEFAULT_VAD_PARAMS = Object.freeze({
     threshold_db: -38,
     hysteresis_db: 6,
-    hangover_ms: 180,
+    hangover_ms: 250,
     padding_pre_ms: 120,
     padding_post_ms: 200,
 });
