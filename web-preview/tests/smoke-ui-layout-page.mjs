@@ -3193,51 +3193,56 @@ try {
         forcedTab === "settings",
         `G 夹具:state 里的 ui.active_tab 置成 settings(实得 ${JSON.stringify(forcedTab)})`,
     );
-    check(
-        await waitFor(
-            IN(`
-                const d = gb("settings-diagnostics");
-                return !!d && d.getClientRects().length > 0;
-            `),
-            8000,
-        ),
-        "G 对照:Tab4 真的渲染出来了(同批设置卡里的诊断卡有布局盒)",
-    );
     // 探针一次读全(红了也看得见真因):tab 落在哪、设置面板自己的 display、
     // 两张卡各自的**布局盒**与**计算 display**。
-    const TAB4_PROBE = JSON.parse(
-        (await evaluate(
-            IN(`
-                const c = q("#content");
-                const sec = q('section[data-tab-panel="settings"]');
-                const disp = (n) => {
-                    const e = gb(n);
-                    return e ? w.getComputedStyle(e).display : "(无节点)";
-                };
-                const rects = (n) => {
-                    const e = gb(n);
-                    return e ? e.getClientRects().length : -1;
-                };
-                return JSON.stringify({
-                    tab: c ? c.getAttribute("data-tab") : "(无 #content)",
-                    sec: sec ? w.getComputedStyle(sec).display : "(无 section)",
-                    diagRects: rects("settings-diagnostics"),
-                    diagDisplay: disp("settings-diagnostics"),
-                    storeRects: rects("settings-storage"),
-                    storeDisplay: disp("settings-storage"),
-                });
-            `),
-        )) || "{}",
-    );
+    //
+    // ⚠ **轮询的就是下面要断的那一份读数本身**,不另起一条 `waitFor`。理由是本节的 CI 实测:
+    // 首版写成「先 `waitFor(诊断卡有盒)` 8 秒、再取探针」,结果那 8 秒里条件恒假、预算刚过
+    // 探针就量到 `诊断卡 rects=1`(两次 CI 都是「差一点点」);而探针**同一行**里还写着
+    // `存储卡 rects=0` —— 差一步就会变成「控制条红、真判据被当空气」。合成一个循环之后,
+    // 控制条与真判据读的是**同一帧**的同一份值,不再有「谁先谁后」的窗口。
+    const TAB4_PROBE_JS = IN(`
+        const c = q("#content");
+        const sec = q('section[data-tab-panel="settings"]');
+        const disp = (n) => {
+            const e = gb(n);
+            return e ? w.getComputedStyle(e).display : "(无节点)";
+        };
+        const rects = (n) => {
+            const e = gb(n);
+            return e ? e.getClientRects().length : -1;
+        };
+        return JSON.stringify({
+            tab: c ? c.getAttribute("data-tab") : "(无 #content)",
+            sec: sec ? w.getComputedStyle(sec).display : "(无 section)",
+            diagRects: rects("settings-diagnostics"),
+            diagDisplay: disp("settings-diagnostics"),
+            storeRects: rects("settings-storage"),
+            storeDisplay: disp("settings-storage"),
+        });
+    `);
+    let TAB4_PROBE = {};
+    for (let i = 0; i < 80; i++) {
+        TAB4_PROBE = JSON.parse((await evaluate(TAB4_PROBE_JS)) || "{}");
+        // 停在 Tab4 **且**设置面板真的渲染出来了 —— 两条都是后面要断的前提。
+        if (TAB4_PROBE.tab === "settings" && TAB4_PROBE.diagRects > 0) break;
+        await sleep(250);
+    }
     log(
         `  [SL-415] Tab4 探针:#content[data-tab]=${TAB4_PROBE.tab} / 设置面板 display=${TAB4_PROBE.sec} / ` +
             `诊断卡 rects=${TAB4_PROBE.diagRects} display=${TAB4_PROBE.diagDisplay} / ` +
             `存储卡 rects=${TAB4_PROBE.storeRects} display=${TAB4_PROBE.storeDisplay}`,
     );
     check(
-        TAB4_PROBE.tab === "settings",
-        `[SL-415] 前提:#content[data-tab] 真的是 settings(实得 ${JSON.stringify(TAB4_PROBE.tab)})—— ` +
-            "少了这一格,下面那条布局盒断言会因为「整个面板都没渲染」而白绿",
+        TAB4_PROBE.tab === "settings" && TAB4_PROBE.sec === "flex",
+        `[SL-415] 前提:页面真的停在 Tab4(实得 tab=${JSON.stringify(TAB4_PROBE.tab)} / ` +
+            `面板 display=${JSON.stringify(TAB4_PROBE.sec)})—— 少了这一格,下面那两条布局盒断言` +
+            "会因为「整个面板都没渲染」而白绿",
+    );
+    check(
+        TAB4_PROBE.diagRects > 0,
+        `[SL-415] 对照:同一批设置卡里的诊断卡有布局盒(实得 ${TAB4_PROBE.diagRects})—— ` +
+            "它证明「量到 0」不是「整页没渲染」",
     );
     check(
         TAB4_PROBE.storeRects === 0,
