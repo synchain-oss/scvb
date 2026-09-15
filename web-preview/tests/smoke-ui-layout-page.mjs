@@ -3053,7 +3053,9 @@ try {
     //     接回去 ⇒ 横幅量到 > 0(注意**只接 show、`hidden` 不动** —— 那正是「JS 不再
     //     unhide」那一半的判据;只删 `hidden` 而不接 show 是另一条,两条互补);
     //   · 同句接回 `toast-sidecarSwitched` ⇒ toast 量到 > 0;
-    //   · 去掉 `index.html` 上 `data-gb="settings-storage"` 那个 `hidden` ⇒ 存储状态卡 > 0。
+    //   · 去掉 `index.html` 上 `data-gb="settings-storage"` 那个 `hidden` ⇒ 存储状态卡
+    //     量到 > 0,**并且**它的计算 `display` 不再是 `none`(两条同批红 —— 后者不依赖
+    //     面板当前在哪一页,是这一处唯一不会被「整页都没渲染」蒙绿的判据)。
     log("G. SL-415 sidecar 三处 UI 收起:触发条件成立也不产生布局盒");
     newBucket("sl415-sidecar-collapsed");
     await cdp.send("Page.navigate", {
@@ -3169,28 +3171,91 @@ try {
     );
 
     // ---- G3 Tab4「存储状态」卡 ----------------------------------------------
-    check(await click("tabnav-settings"), "G 切到 Tab4");
+    // ⚠ **切 Tab4 走 state,不点 tab 条。** 本节的 CI 首跑实测:`click("tabnav-settings")`
+    // 之后 6 秒内设置面板一次都没渲染出来(`settings-diagnostics` 恒零布局盒),而
+    // `#content[data-tab]` 的真源是 **state** —— `app.js` 的 `syncUiFromState()` 在**每一帧**
+    // `scvb.state` 上把 `ui.active_tab` 回推到 `#content[data-tab]`
+    // (`if (ui.active_tab && content.getAttribute("data-tab") !== ui.active_tab) activateTab(…)`)。
+    // 所以「点一下」与「之后到的任意一帧 state」是**两条会互相翻面的写路径**,而本节的判据
+    // 要求这一格**稳定地**在 Tab4 上。改成直接置 `ctl.model.snapshot.ui.active_tab` 再补发
+    // 一帧全量 state —— 与 [SL-411] ⑪ 同一条形态([SL-411] 用它造「打开一份存着 1000ms 的
+    // 工程」,这里用它造「页面停在 Tab4」),确定性来自「真源被改了」而不是「某一次点击赢没赢」。
+    const forcedTab = await evaluate(`(() => {
+        const s = window.__SCVB_PREVIEW__;
+        if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.snapshot) return null;
+        const ui = s.ctl.model.snapshot.ui || {};
+        ui.active_tab = "settings";
+        s.ctl.model.snapshot.ui = ui;
+        s.ctl.emit("scvb.state", s.ctl.fullStatePayload());
+        return ui.active_tab;
+    })()`);
+    check(
+        forcedTab === "settings",
+        `G 夹具:state 里的 ui.active_tab 置成 settings(实得 ${JSON.stringify(forcedTab)})`,
+    );
     check(
         await waitFor(
             IN(`
                 const d = gb("settings-diagnostics");
                 return !!d && d.getClientRects().length > 0;
             `),
-            6000,
+            8000,
         ),
         "G 对照:Tab4 真的渲染出来了(同批设置卡里的诊断卡有布局盒)",
     );
-    const storageBox = await evaluate(
-        IN(`
-            const el = gb("settings-storage");
-            if (!el) return -1;
-            return el.getClientRects().length;
-        `),
+    // 探针一次读全(红了也看得见真因):tab 落在哪、设置面板自己的 display、
+    // 两张卡各自的**布局盒**与**计算 display**。
+    const TAB4_PROBE = JSON.parse(
+        (await evaluate(
+            IN(`
+                const c = q("#content");
+                const sec = q('section[data-tab-panel="settings"]');
+                const disp = (n) => {
+                    const e = gb(n);
+                    return e ? w.getComputedStyle(e).display : "(无节点)";
+                };
+                const rects = (n) => {
+                    const e = gb(n);
+                    return e ? e.getClientRects().length : -1;
+                };
+                return JSON.stringify({
+                    tab: c ? c.getAttribute("data-tab") : "(无 #content)",
+                    sec: sec ? w.getComputedStyle(sec).display : "(无 section)",
+                    diagRects: rects("settings-diagnostics"),
+                    diagDisplay: disp("settings-diagnostics"),
+                    storeRects: rects("settings-storage"),
+                    storeDisplay: disp("settings-storage"),
+                });
+            `),
+        )) || "{}",
     );
-    log(`  [SL-415] Tab4「存储状态」卡布局盒 = ${storageBox}`);
+    log(
+        `  [SL-415] Tab4 探针:#content[data-tab]=${TAB4_PROBE.tab} / 设置面板 display=${TAB4_PROBE.sec} / ` +
+            `诊断卡 rects=${TAB4_PROBE.diagRects} display=${TAB4_PROBE.diagDisplay} / ` +
+            `存储卡 rects=${TAB4_PROBE.storeRects} display=${TAB4_PROBE.storeDisplay}`,
+    );
     check(
-        storageBox === 0,
-        `[SL-415] ★ 「存储状态」卡在 Tab4 上零布局盒(实得 ${storageBox};-1 = 节点被删,也算红)`,
+        TAB4_PROBE.tab === "settings",
+        `[SL-415] 前提:#content[data-tab] 真的是 settings(实得 ${JSON.stringify(TAB4_PROBE.tab)})—— ` +
+            "少了这一格,下面那条布局盒断言会因为「整个面板都没渲染」而白绿",
+    );
+    check(
+        TAB4_PROBE.storeRects === 0,
+        `[SL-415] ★ 「存储状态」卡在 Tab4 上零布局盒(实得 ${TAB4_PROBE.storeRects};` +
+            "-1 = 节点被删,也算红)",
+    );
+    // 与「量布局盒」并排的第二条,**不依赖面板当前是不是 Tab4**:`display` 是**非继承**属性,
+    // 祖先 `display:none` 不会改掉这张卡自己的计算值,所以这一格读到的恒是「`hidden` 兜底
+    // 对它生效了没有」。它正是 #251 那个坑的同一条判据:`.wave-slider` 当年靠自己的
+    // `display:flex` 压过了 UA 表的 `[hidden]{display:none}`,而本页能藏住靠的是
+    // `index.html` 那条作者层 `[hidden]{display:none !important}`。
+    check(
+        TAB4_PROBE.storeDisplay === "none",
+        `[SL-415] ★ 「存储状态」卡的计算 display 是 none(实得 ${JSON.stringify(TAB4_PROBE.storeDisplay)})`,
+    );
+    check(
+        TAB4_PROBE.diagDisplay !== "none",
+        `[SL-415] 对照:同一批设置卡里的诊断卡 display 不是 none(实得 ${JSON.stringify(TAB4_PROBE.diagDisplay)})`,
     );
     assertClean("sl415-sidecar-collapsed");
 } catch (e) {
