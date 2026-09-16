@@ -817,6 +817,10 @@ try {
         };
     `);
 
+    // ⚠ 那两个数(`4` / `5`)是**任意的载荷数据**,不是「真 abi」—— 本格断的是**透传**
+    // (词条的两个占位符被 `detail` 的两个字段填上),与 `scvb::state::kCurrentAbi` 当时是几
+    // 无关。真 abi 见 `src/core/state/StateCodec.h` 的 `kCurrentAbi`,随版本升(写这段时
+    // 它是 5,由 #263/[SL-416] 从 4 升上来)。**别照这两个数去核对真 abi。**
     check(
         await evaluate(emitNewerState(4, 5, true)),
         "⑥ 从 mock 推一帧 scvb.error{newerState, localAbi:4, projectAbi:5, active:true}",

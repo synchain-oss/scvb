@@ -25,9 +25,15 @@
 //   40+languageBytes  u32 segmentationMode([SL-411] 0=valley,1=vad_only)
 //   44+languageBytes  f32 segmentationSensitivity([SL-411] 0..100,默认 50)
 //   48+languageBytes  u32 segmentationMinSegmentMs([SL-411] 50..2000,默认 120)
-//   52+languageBytes.. 未知尾部(未来小版本追加字段;解码保留、编码原样回写,防静默丢字段)
+//   52+languageBytes  f32 vadThresholdDb([SL-416] −60..−10,默认 −38)
+//   56+languageBytes  f32 vadHysteresisDb([SL-416] 3..12,默认 6)
+//   60+languageBytes  u32 vadHangoverMs([SL-416] 100..600,默认 250)
+//   64+languageBytes  u32 vadPaddingPreMs([SL-416] 20..400,默认 120)
+//   68+languageBytes  u32 vadPaddingPostMs([SL-416] 50..400,默认 200)
+//   72+languageBytes  u32 transitionRampMs([SL-416] 20..300,默认 80)
+//   76+languageBytes.. 未知尾部(未来小版本追加字段;解码保留、编码原样回写,防静默丢字段)
 //
-// 兼容:**三级长度回退**,各对应一次 abi 升格 ——
+// 兼容:**四级长度回退**,各对应一次 abi 升格 ——
 //   · 旧版(abi=1)payload 无「当前」那两个 u32(24+languageBytes 即止)→ 两字段回落默认
 //     且不计未知回落(经 migrate_1_to_2 no-op + 本 codec 长度回退);
 //   · 旧版(abi=2)payload 有「当前」、无 applied 那两个 u32 → [SL-279] **applied := 当前值**,
@@ -39,18 +45,32 @@
 //     applied 的语义是「上次分析所用的那一档」,缺席时取当前值是唯一说得通的解释(否则误报
 //     「需重新分析」);而 segmentation 的语义就是「当前设置」本身,旧工程确实没有存过它,
 //     取规格默认(也正是旧构建里 runtime_ 的默认值)才是真话。migrate_3_to_4 同样是 no-op。
+//   · 旧版(abi=4)payload 有 segmentation、无 vad 五字段与 transition_ramp_ms → [SL-416]
+//     **六字段同样回落规格默认且不计回落**(同一档语义:它们就是「当前设置」本身,
+//     A24 实测「存盘重开全回默认」正是这条缺席的后果)。migrate_4_to_5 同样是 no-op。
+// ⚠ [SL-416] **本档起,「规格默认」不再是「旧构建里 runtime_ 的默认值」** —— 那两组值此前不一致
+//   (`OutputProcessor.h` 是 T29 遗留的 −45/3/200,而 02 §0.3 / U24 的出厂推荐值是 −38/6/250),
+//   本卡把**唯一真源收到本文件的 `kOutputVad*Default`**:`OutputProcessor.h` 的初值、
+//   web 滑杆的 `def`、decode 的缺席/越界回落,三处都引用它。于是旧工程(abi≤4)打开后的 VAD 档
+//   从 −45/3/200 变成 −38/6/250 —— 这是 02 §0.3「宁多勿少」的出厂档,也是本卡**有意**的行为面
+//   变化之一(实跑 core / host 全量套件**零回归**,读数见 PR 描述;见变更文档「兼容性影响」)。
+//   ⚠ 分家的不是引擎侧:`src/core/analysis/EnergyVad.h:19-20` 的引擎默认**本来就是 6 / 250**,
+//   本卡收的是**桥面 / `runtime_` 那一份**(`OutputProcessor.h` 的 T29 遗留 −45/3/200)。
 // ⚠ [SL-279 复审 / SL-411 R8] 尾部长度纪律的准确措辞是「**档内不许半截**」,别写成「追加必须整档」——
-//   后者会让人以为尾部被完整地按档校验过,而实际语义是:**三个档内空洞** `(0,8)` / `(8,16)` / `(16,28)`
-//   一律整块拒载,而**偏移 28 之后任意长度的尾巴都被接受**,由 `unknownTail` 收下并原样回写
-//   (`tests/core/test_output_session.cpp` 那条 unknownTail 用例追的正是 4 字节,remaining = 32)。
-//   于是「未来小版本追加字段」有两条路:在**已知档之间**插字段必须升 abi 走迁移链;在**尾部**(≥28)
+//   后者会让人以为尾部被完整地按档校验过,而实际语义是:**四个档内空洞** `(0,8)` / `(8,16)` /
+//   `(16,28)` / `(28,52)` 一律整块拒载,而**偏移 52 之后任意长度的尾巴都被接受**,由 `unknownTail`
+//   收下并原样回写(`tests/core/test_output_session.cpp` 那条 unknownTail 用例追的正是 4 字节,
+//   remaining = 56)。
+//   于是「未来小版本追加字段」有两条路:在**已知档之间**插字段必须升 abi 走迁移链;在**尾部**(≥52)
 //   追加任意长度都不必升 abi,靠 `unknownTail` 原样带走。上面那句「解码保留、编码原样回写、防静默
 //   丢字段」说的就是后一条路。
-// ⚠ [SL-411] **尾字段的失败态是本 codec 里唯一一处「值越界 → 回落默认」的地方**(区别于头 five 字段的
+// ⚠ [SL-411] **尾字段的失败态是本 codec 里「值越界 → 回落默认」的唯一一族**(区别于头 five 字段的
 //   「越界即整块拒载」,也区别于 `ui.scale` 的「原样透出、由上层夹取」):项目文件里的越界值只可能来自
 //   损坏或更高版本,本构建无法兑现它 → 回落该字段的规格默认并**计一次回落**(`OutputDecodeReport`)。
+//   [SL-416] 起**四个尾档都在这一族里**(segmentation 三项 / vad 五项 / transition_ramp_ms 同理),
+//   判据与计数方式逐字段独立 —— 别把它读成「只有某一个字段这样」。
 //   **不做边界夹取**:夹取会把「这个值我没法兑现」伪装成「已经按它办了」,而宽值域的正确出路是升 abi
-//   走迁移链(同一个道理写在上面那段「档内不许半截」里)。回落**单个字段**而非整块拒载,是因为这三个
+//   走迁移链(同一个道理写在上面那段「档内不许半截」里)。回落**单个字段**而非整块拒载,是因为这些
 //   字段彼此独立、且老工程里它们本来就整档缺席 —— 一格坏值不该让整份工程的段表读不出来。
 // **不可就地追加字段破坏既有偏移** —— 24B 定长 header(6×u32)之后才允许经长度回退追加尾部;
 // 要加字段:① 升容器 abi 走迁移链(本次 [J69/U24] 即 abi=1→2),或
@@ -104,6 +124,43 @@ inline constexpr float kOutputSegSensitivityDefault = 50.0f;
 inline constexpr std::uint32_t kOutputSegMinSegmentMsMin = 50;
 inline constexpr std::uint32_t kOutputSegMinSegmentMsMax = 2000;
 inline constexpr std::uint32_t kOutputSegMinSegmentMsDefault = 120;
+// [SL-416] analysis.vad 五字段 + analysis.transition_ramp_ms 的规格值域与出厂默认。
+// 真源 = masterPlan 02 §0.3 常量表(U24 收敛的出厂推荐值;该表两行已补 [SL-416] 落盘裁定注),
+// 与 docs/STATE_SCHEMA.md §一 / §三、`docs/SCVB_CONTRACT.md` §1.18 / §1.20 同口径。
+// **C++ 侧只此一份**:`OutputEditor.cpp` 的桥面夹取、`OutputProcessor.h` 的 runtime 初值、
+// decode 的缺席/越界回落三处都引用这里;谁都不许再抄一份字面量。
+// ⚠ `threshold_db` 按 **UI/state 的绝对门限 dB 口径**(滑杆 −60..−10、默认 −38),不是 02 §0.3
+//   表里那一行的 `onDepth` 刻度(30 / 15..45)—— 同一档的两个刻度,换算式 = `kVadUiRefDb − ui`
+//   (`OutputProcessor.cpp` 的 `cfg.vad.thresholdDb` 那一行),ui=−38 ⇔ depth=30。
+// ⚠ 本档把**旧构建里那组不一致的初值**(−45/3/200,T29 遗留)收编到规格默认:三处引用点
+//   (runtime 初值 / web 滑杆 def / decode 回落)因此同值,旧工程打开后的 VAD 档即 02 §0.3 的
+//   出厂档。见头注那条 ⚠ 与变更文档「兼容性影响」。
+// ⚠ **web 侧滑杆的 `min`/`max`/`def` 是本处唯一的镜像面**(`web/output/tab-wave.js` 的 `SLIDERS`
+//   与 `DEFAULT_VAD_PARAMS`),由 `web-preview/tests/smoke-tab3-interactions.mjs` 的 VAD 那一组
+//   (**从本文件的定义行抠数**)逐值对拍:抠不到就是 NaN ⇒ 当场红;「桥面确实在用这些常量」由同组的
+//   (f) 格钉住(源码级断言 `handleSetVad` 函数体里出现常量名、且没有裸数字 `jlimit`)。
+inline constexpr float kOutputVadThresholdDbMin = -60.0f;
+inline constexpr float kOutputVadThresholdDbMax = -10.0f;
+inline constexpr float kOutputVadThresholdDbDefault = -38.0f;
+inline constexpr float kOutputVadHysteresisDbMin = 3.0f;
+inline constexpr float kOutputVadHysteresisDbMax = 12.0f;
+inline constexpr float kOutputVadHysteresisDbDefault = 6.0f;
+inline constexpr std::uint32_t kOutputVadHangoverMsMin = 100;
+inline constexpr std::uint32_t kOutputVadHangoverMsMax = 600;
+inline constexpr std::uint32_t kOutputVadHangoverMsDefault = 250;
+inline constexpr std::uint32_t kOutputVadPaddingPreMsMin = 20;
+inline constexpr std::uint32_t kOutputVadPaddingPreMsMax = 400;
+inline constexpr std::uint32_t kOutputVadPaddingPreMsDefault = 120;
+inline constexpr std::uint32_t kOutputVadPaddingPostMsMin = 50;
+inline constexpr std::uint32_t kOutputVadPaddingPostMsMax = 400;
+inline constexpr std::uint32_t kOutputVadPaddingPostMsDefault = 200;
+// [SL-416] analysis.transition_ramp_ms —— 02 §0.3「默认 80,范围 20..300」(§8.2 的 T_eff 钳制
+// 基于这个上界);契约 §1.20 同一口径,`web/output/tab-master.js` 的滑杆与 mock 的夹取同源。
+// 上一级([SL-411])只落 segmentation 三项,这一级与 vad 五字段**同批落盘**(统筹裁:一起落,
+// 省一次 abi)。
+inline constexpr std::uint32_t kOutputTransitionRampMsMin = 20;
+inline constexpr std::uint32_t kOutputTransitionRampMsMax = 300;
+inline constexpr std::uint32_t kOutputTransitionRampMsDefault = 80;
 // [J75] T43:ui.master_chart_mode 独立 UICF chunk 载荷(u32,0/1);未知值解码回落 distribution。
 inline constexpr std::uint32_t kMasterChartModeDistribution = 0; // 默认档
 inline constexpr std::uint32_t kMasterChartModeTrajectory = 1;
@@ -131,6 +188,16 @@ struct OutputState
     std::string segmentationMode = "valley"; // 0=valley(默认)/1=vad_only
     float segmentationSensitivity = kOutputSegSensitivityDefault; // 0..100
     std::uint32_t segmentationMinSegmentMs = kOutputSegMinSegmentMsDefault; // 50..2000
+    // [SL-416] analysis.vad 五字段 + analysis.transition_ramp_ms —— **自本版起随工程落盘**
+    // (此前只活在 `OutputProcessor` 的 `runtime_` 里,而 STATE_SCHEMA §一 与 02 §0.3 一直把它们
+    // 列在 state 里:A24 实测「存盘重开后 MIN SEG 回来了,但 THRESHOLD/HYSTERESIS/HOLD/PAD 全回默认」)。
+    // 六项都是**纯配置**,与采集态([J91])不同:没有任何理由不随工程走。
+    float vadThresholdDb = kOutputVadThresholdDbDefault; // −60..−10(绝对门限 dB)
+    float vadHysteresisDb = kOutputVadHysteresisDbDefault; // 3..12
+    std::uint32_t vadHangoverMs = kOutputVadHangoverMsDefault; // 100..600
+    std::uint32_t vadPaddingPreMs = kOutputVadPaddingPreMsDefault; // 20..400
+    std::uint32_t vadPaddingPostMs = kOutputVadPaddingPostMsDefault; // 50..400
+    std::uint32_t transitionRampMs = kOutputTransitionRampMsDefault; // 20..300
     std::vector<std::uint8_t> unknownTail; // 已知字段之后的未知尾部(未来小版本追加;解码保留、编码回写)
     // masterChartMode 不属 CFGS:由独立 UICF chunk(kFourccUiConfig)承载,见 encodeUiConfig/decodeUiConfig。
 };
@@ -150,6 +217,15 @@ struct OutputDecodeReport
     std::uint32_t segmentationModeFallbacks = 0;
     std::uint32_t segmentationSensitivityFallbacks = 0;
     std::uint32_t segmentationMinSegmentMsFallbacks = 0;
+    // [SL-416] vad 五字段 + transition_ramp_ms 各自计数(同一纪律:合并之后诊断行说
+    // 「vad 回落了 1 次」,而实际回落的是阈值、滞回还是 hangover,读日志的人分不出来)。
+    // 缺席(abi≤4 的旧工程)同样**不算回落**:那是「当年没存过」,不是「存的值不可信」。
+    std::uint32_t vadThresholdDbFallbacks = 0;
+    std::uint32_t vadHysteresisDbFallbacks = 0;
+    std::uint32_t vadHangoverMsFallbacks = 0;
+    std::uint32_t vadPaddingPreMsFallbacks = 0;
+    std::uint32_t vadPaddingPostMsFallbacks = 0;
+    std::uint32_t transitionRampMsFallbacks = 0;
 };
 
 // 编码;语言超长截断(≤kOutputLanguageMaxBytes)。返回 false = 无法分配。

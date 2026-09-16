@@ -52,11 +52,16 @@ struct OutputRuntimeState
     double rangeEndS = 0.0;
 
     // analysis(§1.18/§1.19/§1.20/§1.21)
-    float vadThresholdDb = -45.0f;
-    float vadHysteresisDb = 3.0f;
-    int vadHangoverMs = 200;
-    int vadPaddingPreMs = 120;
-    int vadPaddingPostMs = 200;
+    // [SL-416] vad 五字段 + transition_ramp_ms(下面那一行)**随工程保存**(CFGS 第四档,abi=5):
+    // 初值引用 codec 的规格默认(值域与默认值的单一真源 = `OutputStateCodec.h` 的 `kOutputVad*` /
+    // `kOutputTransitionRampMs*`),别在这里写第二份字面量。**本卡动手前这三处本来就互不相同**
+    // (引擎初值 −45/3/200 vs web 滑杆 def −38/6/180 vs 02 §0.3 的出厂档 −38/6/250)——
+    // A24 里用户念的「默认」正是引擎那一组;本卡把它们收到**一处**。
+    float vadThresholdDb = scvb::state::kOutputVadThresholdDbDefault;
+    float vadHysteresisDb = scvb::state::kOutputVadHysteresisDbDefault;
+    int vadHangoverMs = static_cast<int>(scvb::state::kOutputVadHangoverMsDefault);
+    int vadPaddingPreMs = static_cast<int>(scvb::state::kOutputVadPaddingPreMsDefault);
+    int vadPaddingPostMs = static_cast<int>(scvb::state::kOutputVadPaddingPostMsDefault);
     // [SL-411] 分段三项**随工程保存**(CFGS 第三档,abi=4):`getStateInformation` 写盘、
     // `setStateInformation` 恢复,值域由 codec 校验(valley|vad_only / 0..100 / 50..2000)。
     // 此前它们只活在这里 —— 重开工程一律回默认,而**分析同样按默认跑**
@@ -70,7 +75,9 @@ struct OutputRuntimeState
     juce::String segmentationMode = "valley"; // 02-dsp-spec §362:valley(默认)/ vad_only
     float segmentationSensitivity = scvb::state::kOutputSegSensitivityDefault;
     int segmentationMinSegmentMs = static_cast<int>(scvb::state::kOutputSegMinSegmentMsDefault);
-    float transitionRampMs = 80.0f;
+    // [SL-416] 同一条纪律:初值引用 codec 的规格默认(§1.20:20..300,默认 80);桥面
+    // `handleSetTransitionRampMs` 也按同一对常量夹取。
+    float transitionRampMs = static_cast<float>(scvb::state::kOutputTransitionRampMsDefault);
     juce::String loudnessMode = "kw_integrated";
     juce::String centerSlotPolicy = "priority_queue";
     // [SL-279] 上次**全量分析**所用的那一档(03 §6.3 stale 派生式的另一半)。

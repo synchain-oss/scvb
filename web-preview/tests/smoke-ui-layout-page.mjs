@@ -3025,6 +3025,243 @@ try {
         }
     }
     assertClean("sl374-layout");
+
+    // =========================================================== G. SL-415
+    // 「sidecar 三处 UI 收起」的**页面级**判据(用户 2026-09-14 裁定「sidecar 不上了」;
+    // 统筹按最小改动落:**只收 UI,不删代码** —— `SidecarStore` 与整条读路径一个字节没动)。
+    //
+    // ★ 为什么必须页面级:这一条的全部内容就是**布局引擎给不给盒**。node 侧那两套
+    //   (`smoke-tab1-interactions.mjs` 的横幅 ⑤ / toast② 两格、`smoke-tab4-settings.mjs`
+    //   的 `storageOf()` 三格)断的是源码事实与纯函数,`getClientRects()` 在无 DOM 环境里
+    //   根本不存在。而收起的机制恰恰是「属性挂上了、样式真生效」—— 只断 `el.hidden === true`
+    //   会在「属性挂上了但不产生布局盒之外的效果」时全绿:`.sc-banner` / `.sc-toast` /
+    //   `.sc-card` 各自都设了 display,本页能藏住靠的是 `index.html` 那条作者层
+    //   `[hidden]{display:none !important}` 兜底(UA 表压不过它们)。
+    //   所以量的是**真实布局盒** `getClientRects().length`,三档取值各有含义:
+    //   `-1` = 节点不在(隐藏 ≠ 删除,这种要红)、`0` = 不产生布局盒(正确)、`> 0` = 还在渲染。
+    //
+    // ★ 三处一起断,而且**每一处都配一条对照** —— 这是本节唯一的假绿防线,别删:
+    //   · 横幅 ⑤ / toast② 的触发条件是 `scvb.error`。要是探针没把事件真送进页面
+    //     (壳页 API 改名、`ctl.emit` 不在、页面还没 ready),那两条**天然**是 0 布局盒
+    //     —— 一个什么都没做的探针也能全绿。所以先推两条**同类但仍在用**的 code
+    //     (`srMismatch` 横幅 ③ / `projectCopy` toast①),断它们**真有**布局盒。
+    //   · 「存储状态」卡在 Tab4:不切页的话整个面板都不产生盒,那个 0 是白来的。
+    //     所以先切到 Tab4,断同一批设置卡里的诊断卡**真有**布局盒。
+    //
+    // ★ 删除式(三条各去掉一处「收起」,每条都点名红在本节):
+    //   · `app.js` 里把那句 `show($("banner-sidecarMissing"), err.has("sidecarMissing"))`
+    //     接回去 ⇒ 横幅量到 > 0(注意**只接 show、`hidden` 不动** —— 那正是「JS 不再
+    //     unhide」那一半的判据;只删 `hidden` 而不接 show 是另一条,两条互补);
+    //   · 同句接回 `toast-sidecarSwitched` ⇒ toast 量到 > 0;
+    //   · 去掉 `index.html` 上 `data-gb="settings-storage"` 那个 `hidden` ⇒ 存储状态卡
+    //     量到 > 0,**并且**它的计算 `display` 不再是 `none`(两条同批红 —— 后者不依赖
+    //     面板当前在哪一页,是这一处唯一不会被「整页都没渲染」蒙绿的判据)。
+    log("G. SL-415 sidecar 三处 UI 收起:触发条件成立也不产生布局盒");
+    newBucket("sl415-sidecar-collapsed");
+    await cdp.send("Page.navigate", {
+        url: `${base}/web-preview/output.html?fixture=fifteen-tracks`,
+    });
+    check(
+        await waitFor(IN(`const n = gb("banner-sidecarMissing"); return !!n;`)),
+        "G 页面装载(Output)",
+    );
+    await dismissOverlays();
+    check(
+        !!(await evaluate(
+            "(() => { const s = window.__SCVB_PREVIEW__; " +
+                'return !!(s && s.ctl && typeof s.ctl.emit === "function"); })()',
+        )),
+        "G 壳页预览会话可用(__SCVB_PREVIEW__.ctl.emit)—— 取不到时先红在这一条",
+    );
+
+    // 把一条 §2.9 `scvb.error` 真推进页面。两处都写:`ctl.emit` 喂 UI,`ctl.model.errors`
+    // 是 `pendingErrors()` 的数据源(mock 自己对 secondOutput 就是这么处置的)——
+    // 只发事件不改它,「世界的事实」就存了两份且对不上。
+    const pushErr = (code, detail) =>
+        evaluate(
+            "(() => {" +
+                "const s = window.__SCVB_PREVIEW__; " +
+                'if (!s || !s.ctl || typeof s.ctl.emit !== "function") return "no-shell-api"; ' +
+                "const err = { code: " +
+                JSON.stringify(code) +
+                ", detail: " +
+                JSON.stringify(detail) +
+                " }; " +
+                "const arr = s.ctl.model && s.ctl.model.errors; " +
+                "if (Array.isArray(arr)) { " +
+                "const i = arr.findIndex((e) => e && e.code === err.code); " +
+                "if (i >= 0) arr[i] = err; else arr.push(err); } " +
+                's.ctl.emit("scvb.error", err); return "ok"; })()',
+        );
+    // 四处布局盒**一次读全** —— 两条 sidecar 真判据 + 两条对照。裁定 4(G2 的两条对照
+    // 此前与真判据分两次读,与第 3 推 G3 修好的那条缝同源,别只修一半):同一次读出来,
+    // 「对照点亮」才真正证明**这一帧**渲染过,`=== 0` 也就不可能是「还没渲染」。
+    const G2_PROBE = IN(`
+        const box = (n) => {
+            const el = gb(n);
+            if (!el) return -1;
+            return el.getClientRects().length;
+        };
+        return JSON.stringify({
+            banner: box("banner-sidecarMissing"),
+            toast: box("toast-sidecarSwitched"),
+            ctrlBanner: box("banner-srMismatch"),
+            ctrlToast: box("toast-projectCopy"),
+        });
+    `);
+
+    // ---- G1 夹具:两条同类 code(对照的触发条件)-------------------------------
+    check(
+        (await pushErr("srMismatch", {
+            ch: 1,
+            inputSr: 44100,
+            outputSr: 48000,
+        })) === "ok",
+        "G 夹具:推进 srMismatch(横幅 ③,仍在用的同类 code)",
+    );
+    check(
+        (await pushErr("projectCopy", {
+            sessionGuid: "00000000-0000-0000-0000-000000000000",
+        })) === "ok",
+        "G 夹具:推进 projectCopy(toast①,仍在用的同类 code)",
+    );
+
+    // ---- G2 推 sidecar 那两条 code -------------------------------------------
+    check(
+        (await pushErr("sidecarMissing", {
+            path: "SCVB/demo-session.scvbfeat",
+        })) === "ok",
+        "G 夹具:推进 sidecarMissing(横幅 ⑤ 的触发条件)",
+    );
+    check(
+        (await pushErr("sidecarSwitched", { bytes: 8912896 })) === "ok",
+        "G 夹具:推进 sidecarSwitched(toast② 的触发条件)",
+    );
+
+    // 轮询到**对照点亮**这个稳态,再拿**同一次读**去断四格。退出条件就是「页面已经按
+    // `scvb.error` 渲染过至少一帧」;上界 60 × 250ms,耗尽时下面第一条自己会红,
+    // 而且日志里带着四条读数(不需要再猜是真判据红还是时序)。
+    let g2 = {};
+    for (let i = 0; i < 60; i++) {
+        g2 = JSON.parse((await evaluate(G2_PROBE)) || "{}");
+        if (g2.ctrlBanner > 0 && g2.ctrlToast > 0) break;
+        await sleep(250);
+    }
+    log(
+        `  [SL-415] 同一次读出的布局盒:banner-sidecarMissing=${g2.banner} / ` +
+            `toast-sidecarSwitched=${g2.toast} / 对照 banner-srMismatch=${g2.ctrlBanner} / ` +
+            `toast-projectCopy=${g2.ctrlToast}`,
+    );
+    check(
+        g2.ctrlBanner > 0 && g2.ctrlToast > 0,
+        `[SL-415] 对照(同一次读):同类 error 真的点亮了横幅与 toast(实得 ` +
+            `srMismatch=${g2.ctrlBanner} / projectCopy=${g2.ctrlToast})—— ` +
+            "少了它,下面两条 `=== 0` 分不清「真没有」与「还没渲染」",
+    );
+    check(
+        g2.banner === 0,
+        `[SL-415] ★ 横幅 ⑤ 在 sidecarMissing 到达后仍零布局盒(实得 ${g2.banner};` +
+            "-1 = 节点被删,也算红)",
+    );
+    check(
+        g2.toast === 0,
+        `[SL-415] ★ toast② 在 sidecarSwitched 到达后仍零布局盒(实得 ${g2.toast};` +
+            "-1 = 节点被删,也算红)",
+    );
+
+    // ---- G3 Tab4「存储状态」卡 ----------------------------------------------
+    // ⚠ **切 Tab4 走 state,不点 tab 条。** 本节的 CI 首跑实测:`click("tabnav-settings")`
+    // 之后 6 秒内设置面板一次都没渲染出来(`settings-diagnostics` 恒零布局盒),而
+    // `#content[data-tab]` 的真源是 **state** —— `app.js` 的 `syncUiFromState()` 在**每一帧**
+    // `scvb.state` 上把 `ui.active_tab` 回推到 `#content[data-tab]`
+    // (`if (ui.active_tab && content.getAttribute("data-tab") !== ui.active_tab) activateTab(…)`)。
+    // 所以「点一下」与「之后到的任意一帧 state」是**两条会互相翻面的写路径**,而本节的判据
+    // 要求这一格**稳定地**在 Tab4 上。改成直接置 `ctl.model.snapshot.ui.active_tab` 再补发
+    // 一帧全量 state —— 与 [SL-411] ⑪ 同一条形态([SL-411] 用它造「打开一份存着 1000ms 的
+    // 工程」,这里用它造「页面停在 Tab4」),确定性来自「真源被改了」而不是「某一次点击赢没赢」。
+    const forcedTab = await evaluate(`(() => {
+        const s = window.__SCVB_PREVIEW__;
+        if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.snapshot) return null;
+        const ui = s.ctl.model.snapshot.ui || {};
+        ui.active_tab = "settings";
+        s.ctl.model.snapshot.ui = ui;
+        s.ctl.emit("scvb.state", s.ctl.fullStatePayload());
+        return ui.active_tab;
+    })()`);
+    check(
+        forcedTab === "settings",
+        `G 夹具:state 里的 ui.active_tab 置成 settings(实得 ${JSON.stringify(forcedTab)})`,
+    );
+    // 探针一次读全(红了也看得见真因):tab 落在哪、设置面板自己的 display、
+    // 两张卡各自的**布局盒**与**计算 display**。
+    //
+    // ⚠ **轮询的就是下面要断的那一份读数本身**,不另起一条 `waitFor`。理由是本节的 CI 实测:
+    // 首版写成「先 `waitFor(诊断卡有盒)` 8 秒、再取探针」,结果那 8 秒里条件恒假、预算刚过
+    // 探针就量到 `诊断卡 rects=1`(两次 CI 都是「差一点点」);而探针**同一行**里还写着
+    // `存储卡 rects=0` —— 差一步就会变成「控制条红、真判据被当空气」。合成一个循环之后,
+    // 控制条与真判据读的是**同一帧**的同一份值,不再有「谁先谁后」的窗口。
+    const TAB4_PROBE_JS = IN(`
+        const c = q("#content");
+        const sec = q('section[data-tab-panel="settings"]');
+        const disp = (n) => {
+            const e = gb(n);
+            return e ? w.getComputedStyle(e).display : "(无节点)";
+        };
+        const rects = (n) => {
+            const e = gb(n);
+            return e ? e.getClientRects().length : -1;
+        };
+        return JSON.stringify({
+            tab: c ? c.getAttribute("data-tab") : "(无 #content)",
+            sec: sec ? w.getComputedStyle(sec).display : "(无 section)",
+            diagRects: rects("settings-diagnostics"),
+            diagDisplay: disp("settings-diagnostics"),
+            storeRects: rects("settings-storage"),
+            storeDisplay: disp("settings-storage"),
+        });
+    `);
+    let TAB4_PROBE = {};
+    for (let i = 0; i < 80; i++) {
+        TAB4_PROBE = JSON.parse((await evaluate(TAB4_PROBE_JS)) || "{}");
+        // 停在 Tab4 **且**设置面板真的渲染出来了 —— 两条都是后面要断的前提。
+        if (TAB4_PROBE.tab === "settings" && TAB4_PROBE.diagRects > 0) break;
+        await sleep(250);
+    }
+    log(
+        `  [SL-415] Tab4 探针:#content[data-tab]=${TAB4_PROBE.tab} / 设置面板 display=${TAB4_PROBE.sec} / ` +
+            `诊断卡 rects=${TAB4_PROBE.diagRects} display=${TAB4_PROBE.diagDisplay} / ` +
+            `存储卡 rects=${TAB4_PROBE.storeRects} display=${TAB4_PROBE.storeDisplay}`,
+    );
+    check(
+        TAB4_PROBE.tab === "settings" && TAB4_PROBE.sec === "flex",
+        `[SL-415] 前提:页面真的停在 Tab4(实得 tab=${JSON.stringify(TAB4_PROBE.tab)} / ` +
+            `面板 display=${JSON.stringify(TAB4_PROBE.sec)})—— 少了这一格,下面那两条布局盒断言` +
+            "会因为「整个面板都没渲染」而白绿",
+    );
+    check(
+        TAB4_PROBE.diagRects > 0,
+        `[SL-415] 对照:同一批设置卡里的诊断卡有布局盒(实得 ${TAB4_PROBE.diagRects})—— ` +
+            "它证明「量到 0」不是「整页没渲染」",
+    );
+    check(
+        TAB4_PROBE.storeRects === 0,
+        `[SL-415] ★ 「存储状态」卡在 Tab4 上零布局盒(实得 ${TAB4_PROBE.storeRects};` +
+            "-1 = 节点被删,也算红)",
+    );
+    // 与「量布局盒」并排的第二条,**不依赖面板当前是不是 Tab4**:`display` 是**非继承**属性,
+    // 祖先 `display:none` 不会改掉这张卡自己的计算值,所以这一格读到的恒是「`hidden` 兜底
+    // 对它生效了没有」。它正是 #251 那个坑的同一条判据:`.wave-slider` 当年靠自己的
+    // `display:flex` 压过了 UA 表的 `[hidden]{display:none}`,而本页能藏住靠的是
+    // `index.html` 那条作者层 `[hidden]{display:none !important}`。
+    check(
+        TAB4_PROBE.storeDisplay === "none",
+        `[SL-415] ★ 「存储状态」卡的计算 display 是 none(实得 ${JSON.stringify(TAB4_PROBE.storeDisplay)})`,
+    );
+    check(
+        TAB4_PROBE.diagDisplay !== "none",
+        `[SL-415] 对照:同一批设置卡里的诊断卡 display 不是 none(实得 ${JSON.stringify(TAB4_PROBE.diagDisplay)})`,
+    );
+    assertClean("sl415-sidecar-collapsed");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟自身抛错:${e && e.stack ? e.stack : e}`);

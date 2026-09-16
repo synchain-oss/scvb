@@ -1105,13 +1105,44 @@ log("=== ⑤ 评审修订(对抗校验 findings)的源码级不变式 ===");
         ),
         "toast① 走词条 toast.projectCopy",
     );
-    check(
-        /data-gb="toast-sidecarSwitched"[\s\S]{0,400}data-t="toast\.sidecarSwitched"/.test(
-            html,
-        ),
-        // [SL-395] v1 出厂态不可达(不开自动切换 ⇒ 不产生 sidecar);接线保留,开关打开即用。
-        "toast② 走词条 toast.sidecarSwitched",
-    );
+    // [SL-415] 用户 2026-09-14 裁定「sidecar 不上了」⇒ **toast② 收起**
+    // (原判据只断「词条接线在」;口子改成「即便触发条件成立也不产生布局盒」)。
+    //
+    // ⚠ 本套**无 DOM**(文件头:仓内零 node_modules、无 jsdom),`getClientRects()` 在这
+    // 根本不存在 —— **真实布局盒**那一格在页面级 `smoke-ui-layout-page.mjs` G 节:它把
+    // `scvb.error{code:"sidecarSwitched"}` 真推进页面,再量 `toast-sidecarSwitched` 的
+    // `getClientRects().length === 0`(与同页 `toast-projectCopy` 的对照一起断)。
+    // 这里留的是**不随无头浏览器一起 SKIP** 的那一半(node 侧前提),三条缺一不可:
+    //   ① 锚点与词条接线还在(**隐藏 ≠ 删除**:将来开关打开,把 `show()` 接回去即用);
+    //   ② 模板里恒挂 `hidden`;
+    //   ③ `app.js` 里那句 `show($("toast-sidecarSwitched"), …)` **已经不在了**。
+    // ⚠ ③ **必须先剥注释再找**:本卡把原句逐字留在 app.js 那处注释里当记录,
+    // 不剥的话这条负向判据会被自己写的注释喂饱(本仓栽过同款)。
+    {
+        const { stripJsComments: stripApp } = await import(
+            u("scripts/lib/strip-comments.mjs")
+        );
+        const appCode = stripApp(appJs, "web/output/app.js");
+        check(
+            /data-gb="toast-sidecarSwitched"[\s\S]{0,400}data-t="toast\.sidecarSwitched"/.test(
+                html,
+            ),
+            // [SL-395] v1 出厂态不可达(不开自动切换 ⇒ 不产生 sidecar);接线保留,开关打开即用。
+            "toast② 走词条 toast.sidecarSwitched(锚点与词条都留着)",
+        );
+        const toastTag =
+            /<div\b[^>]*data-gb="toast-sidecarSwitched"[^>]*>/.exec(html);
+        check(
+            !!toastTag && /(^|\s)hidden(\s|$)/.test(toastTag[0]),
+            `toast② 模板里恒挂 hidden(实得 ${JSON.stringify(toastTag && toastTag[0])})—— ` +
+                "页面级 G 节断的就是它零布局盒",
+        );
+        check(
+            !/show\(\s*\$\("toast-sidecarSwitched"\)/.test(appCode),
+            "★ toast② 的 show() 已摘掉:sidecarSwitched 到达也不再把它翻上来(SL-415;" +
+                "接回那一行 ⇒ 页面级 G 节红)",
+        );
+    }
     // 从 DOM 那一处起算(CSS 里也有 [data-gb="scale-confirm"] 选择器,不能作锚点)
     const scaleBlock =
         /<div class="sc-scrim" data-gb="scale-confirm"[\s\S]*?data-gb="scale-confirm-keep"[\s\S]{0,200}?<\/button>/.exec(
@@ -2024,6 +2055,33 @@ log("=== ⑧ SL-251/J93:hostEcho 闪烁(灭侧迟滞)+ 图表卡摘出 + 参数�
                 !flat.includes(`showDismissible("${gb}"`) &&
                     !html.includes(`data-gb="${gb}-dismiss"`),
                 `(a21) ${gb} **没有** ✕(§5.1 降级纪律②:持续性条件不可手动关闭)`,
+            );
+        }
+        // [SL-415] ⑤ `banner-sidecarMissing` **收起**(用户 2026-09-14 裁定「sidecar 不上了」)。
+        // 上面那个循环保留了它**契约面**的两条(横幅还在 / 不给 ✕),这里补**收起面**:
+        // 口子从「词条接线在」改成「即便触发条件成立也不产生布局盒」。
+        //
+        // ⚠ 本套无 DOM ⇒ 真实布局盒那一格在页面级 `smoke-ui-layout-page.mjs` G 节
+        // (把 `scvb.error{code:"sidecarMissing"}` 真推进页面再量 `getClientRects()`),
+        // 与 toast② 那一处同款分工。这里断的是三条 node 侧前提:
+        //   ① 横幅锚点还在(隐藏 ≠ 删除;循环里那条已覆盖,这里只在 ②③ 之外再说一次);
+        //   ② 模板里恒挂 `hidden`;
+        //   ③ `app.js` 里那句 `show($("banner-sidecarMissing"), …)` **已经不在了**。
+        // ⚠ ③ 用的是 `appCode`(**已剥注释**)—— 本卡把原句逐字留在 app.js 注释里当记录,
+        // 拿裸源码找的话这条负向判据会被自己写的注释喂饱。
+        {
+            const tag = /<div\b[^>]*data-gb="banner-sidecarMissing"[^>]*>/.exec(
+                html,
+            );
+            check(
+                !!tag && /(^|\s)hidden(\s|$)/.test(tag[0]),
+                `(a21) banner-sidecarMissing 模板里恒挂 hidden(实得 ${JSON.stringify(tag && tag[0])})—— ` +
+                    "页面级 G 节断的就是它零布局盒",
+            );
+            check(
+                !/show\(\s*\$\("banner-sidecarMissing"\)/.test(appCode),
+                "(a21) ★ ⑤ 的 show() 已摘掉:sidecarMissing 到达也不再把它翻上来" +
+                    "(SL-415;接回那一行 ⇒ 页面级 G 节红)",
             );
         }
         // 「关过没有」这道查表真的在显隐上生效(不是只记了个 Map 没人读)。

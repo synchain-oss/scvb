@@ -8232,6 +8232,139 @@ TEST_CASE("HOST SL412:旧构建读更高 abi 的工程 —— 拒载态置位、
 }
 
 // ===========================================================================
+// [SL-416] analysis.vad 五字段 + analysis.transition_ramp_ms **随工程保存** —— 存 → 重开 → 六项一致,
+//          且重开后的分析真的按持久值跑
+//
+// 用户 v5.6.15 回验 A24:「存盘重开后 MIN SEG 回来了,但 THRESHOLD −45 dB / HYSTERESIS 3 dB /
+// HOLD 200 ms / PAD PRE 120 ms / PAD POST 全部回默认」。定谳:这六项只活在 `runtime_` 里,CFGS 不写
+// (STATE_SCHEMA §一 与 02 §0.3 却一直把它们列在 state 里);实现补齐,规格不动。
+// 本用例与 `HOST SL411` **同形**(同一条纪律、同一份素材、同一种「作用域退出 = 关工程再打开」),
+// 差别只在旋钮从 segmentation 三项换成 vad 五字段 + ramp:
+//   · 保存侧 —— `getStateInformation` 把 `runtime_` 六项写进 CFGS(删掉那六行 ⇒ 本条红);
+//   · 加载侧 —— `setStateInformation` 把它们恢复回 `runtime_`(删掉那六行 ⇒ 本条红,且段数退回默认档)。
+// 搬运层(往返 / abi≤4 旧档六默认不计回落 / 越界回落逐字段计数 / 半截拒载)在
+// `tests/core/test_output_session.cpp` 的 [SL-416] 四格;abi5 格式锁在 `test_state_codec.cpp`。
+//
+// ⚠ **桥面 → runtime 那一跳依旧离线不可达**(理由逐字见 `HOST SL391` / `HOST SL411` 的头注):
+// `OutputEditor.cpp` 的 `handleSetVadParams` 依赖 WebView2,不在 host 套件的 TU 清单里。所以下面写的是
+// `runtime()` 而不是「模拟一次编辑器调用」;页面级那一格走 mock 侧
+// (`web-preview/tests/smoke-seg-restore-page.mjs` 的 [SL-416] 一节 + `smoke-tab3-interactions.mjs`
+// 的 VAD 常量对拍组)。
+//
+// 素材与 `HOST SL391` 同一份(为什么必须自造、为什么最后那个 220 block 的爆发不能删,逐字见那条用例
+// 的头注)。判别档用**阈值两端 (−60 最灵敏 / −20 最保守)+ hold/pad 同向拉满**:两组只差 VAD 参数,
+// 段数差才只能归因于它们。
+// ===========================================================================
+TEST_CASE("HOST SL416:VAD 五参数 + ramp 随工程保存 —— 重开后六项一致且分析按持久值跑",
+          "[host][state][segmentation][SL416]")
+{
+    juce::MemoryBlock blob;
+    double winStartS = 0.0;
+    double winEndS = 0.0;
+    std::size_t nDefault = 0;
+    std::size_t nLoose = 0;
+    std::size_t nTight = 0;
+    std::size_t nSaved = 0;
+
+    {
+        MonoMultiRig r;
+        r.ph.playing = true;
+        REQUIRE(r.waitUntilInjected());
+
+        r.runBlocks(240, 0.0f);
+        r.out.setCaptureEnabled(true);
+        r.pump(400);
+        r.runBlocks(20, 0.0f);
+        for (const int blocks : {3, 8, 20, 45, 80, 220})
+        {
+            r.runBlocks(blocks, 0.5f);
+            r.runBlocks(60, 0.0f);
+        }
+        r.pump(400);
+
+        const auto win = r.coverageWindow();
+        REQUIRE(win.endS > win.startS);
+        winStartS = win.startS;
+        winEndS = win.endS;
+
+        // ① 三档:规格默认 / 最灵敏 / 最保守。段数差只能归因于 VAD 参数(segmentation 三项全程默认)。
+        //    ⚠ `nDefault` 是**行为断言的判别基准**:③ 的「重开后段数 == 存盘档」只有在存盘档的段数
+        //    ≠ 默认档的段数时才有判别力 —— 加载侧漏恢复时那一趟跑的正是默认六项。第一版把存盘档
+        //    取成「段数恰好 = 默认档 4」的一组,D1 注入时那条行为断言**照绿**(只有六条值断言红),
+        //    所以这一版把默认档也量出来并把它断成前提。
+        const auto analyzeWith = [&r, &win](float thr, float hyst, int hold, int pre, int post) {
+            auto& rt = r.out.runtime();
+            rt.vadThresholdDb = thr;
+            rt.vadHysteresisDb = hyst;
+            rt.vadHangoverMs = hold;
+            rt.vadPaddingPreMs = pre;
+            rt.vadPaddingPostMs = post;
+            REQUIRE(r.runAnalysisIn(win.startS, win.endS, /*clearManual=*/true));
+            return segmentsOfTrack(r.out, kTestChannel).size();
+        };
+
+        nDefault = analyzeWith(scvb::state::kOutputVadThresholdDbDefault, scvb::state::kOutputVadHysteresisDbDefault,
+                               static_cast<int>(scvb::state::kOutputVadHangoverMsDefault),
+                               static_cast<int>(scvb::state::kOutputVadPaddingPreMsDefault),
+                               static_cast<int>(scvb::state::kOutputVadPaddingPostMsDefault));
+        nLoose = analyzeWith(-60.0f, 3.0f, 100, 20, 50); // 最灵敏 + 最短 hold/pad
+        nTight = analyzeWith(-20.0f, 12.0f, 600, 400, 400); // 最保守 + 最长 hold/pad
+        UNSCOPED_INFO("SL416-COUNTS 段数 默认 = " << nDefault << " / loose(-60/3/100/20/50) = " << nLoose
+                                                  << " / tight(-20/12/600/400/400) = " << nTight);
+        REQUIRE(nLoose > 0u); // 前提:灵敏档真的切出段(否则下面几条是空过)
+        REQUIRE(nLoose != nTight); // 前提:VAD 参数确实改变产出
+        REQUIRE(nLoose != nDefault); // 前提:存盘档(下面用 loose 那五个值)与默认档段数不同 ⇒ ③ 有判别力
+
+        // ② 存盘那一档:六个字段**各自都非默认** —— 五个 VAD 值取 ① 的 loose 集合,ramp 取 140
+        //    (非默认 80;ramp 只烘焙进曲线、不进 VAD,故段数与 loose 相同)。这样「保存侧漏写某一项」
+        //    会直接体现在 ③ 的值断言上,而「加载侧漏恢复」还会额外让段数退回 `nDefault`。
+        r.out.runtime().vadThresholdDb = -60.0f;
+        r.out.runtime().vadHysteresisDb = 3.0f;
+        r.out.runtime().vadHangoverMs = 100;
+        r.out.runtime().vadPaddingPreMs = 20;
+        r.out.runtime().vadPaddingPostMs = 50;
+        r.out.runtime().transitionRampMs = 140.0f;
+        REQUIRE(r.runAnalysisIn(winStartS, winEndS, /*clearManual=*/true));
+        nSaved = segmentsOfTrack(r.out, kTestChannel).size();
+        UNSCOPED_INFO("SL416-COUNTS 存盘那一档(-60/3/100/20/50/ramp140)= " << nSaved);
+        CHECK(nSaved != nDefault); // 前提:存盘档与默认档段数不同(否则 ③ 的行为断言是空过)
+        r.out.getStateInformation(blob);
+        REQUIRE(blob.getSize() > 0);
+    } // 作用域退出 = 实例连同内存里的 runtime_ 一起没了(等价于关工程再打开)
+
+    MonoMultiRig r2;
+    // 前置:新实例的六项是**规格默认**(真源 02 §0.3),否则下面的断言证明不了「载入真的改了它们」。
+    REQUIRE(r2.out.runtime().vadThresholdDb == -38.0f);
+    REQUIRE(r2.out.runtime().vadHysteresisDb == 6.0f);
+    REQUIRE(r2.out.runtime().vadHangoverMs == 250);
+    REQUIRE(r2.out.runtime().vadPaddingPreMs == 120);
+    REQUIRE(r2.out.runtime().vadPaddingPostMs == 200);
+    REQUIRE(r2.out.runtime().transitionRampMs == 80.0f);
+
+    r2.out.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+    r2.pump(200);
+
+    // ★ 重开后六项必须逐项回到存盘前那一份。删掉保存侧那六行 ⇒ 六项全是默认,这六条红;
+    //   删掉加载侧那六行 ⇒ 同样是默认,这六条也红 —— 两侧各自都有判据,不是只守一头。
+    CHECK(r2.out.runtime().vadThresholdDb == -60.0f);
+    CHECK(r2.out.runtime().vadHysteresisDb == 3.0f);
+    CHECK(r2.out.runtime().vadHangoverMs == 100);
+    CHECK(r2.out.runtime().vadPaddingPreMs == 20);
+    CHECK(r2.out.runtime().vadPaddingPostMs == 50);
+    CHECK(r2.out.runtime().transitionRampMs == 140.0f);
+
+    // ★★ 而且**分析真的按持久值跑**,不只是「字段值对了」—— 这一条是 SL-416 的正题(A24 里用户失去的
+    //    是「我设的那一档没生效」)。加载侧没恢复时,这里跑的是规格默认那六项 ⇒ 段数退回 `nDefault`
+    //    (D1/D2 两个注入都实测过:本行与上面六条一起红)。
+    REQUIRE(r2.runAnalysisIn(winStartS, winEndS, /*clearManual=*/true));
+    const std::size_t nAfterLoad = segmentsOfTrack(r2.out, kTestChannel).size();
+    UNSCOPED_INFO("SL416-COUNTS 重开后段数 = " << nAfterLoad << "(默认 " << nDefault << " / loose " << nLoose
+                                               << " / tight " << nTight << " / 存盘档 " << nSaved << ")");
+    CHECK(nAfterLoad == nSaved);
+    CHECK(nAfterLoad != nDefault);
+}
+
+// ===========================================================================
 // [SL-399] 三层判据之 host 层 —— H1 值一致 / H2 写面只在写回窗 / H3 回执按写集
 //
 // 定谳(用户 A22):冻结前显示 pan −20 / vol −0.2,手动改之后「恢复自动」变成 −60 / −0.9。

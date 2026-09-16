@@ -1035,10 +1035,14 @@ log("=== ② 布局常量(设计稿几何:158 / 34 / 262 / 44 …)===");
     // 设计稿 2070-2074 那两个 p 值是**照着 UI 那套无出处的值域**画的,而 02-dsp-spec §0.3
     // 常量表才是真源(统筹已查证原文:sensitivity「50 | 0..100」、min_segment_ms
     // 「120 | 50..2000」)。规格 > 设计稿,故此处按规格更新;前五杆一字未动。
+    // [SL-416] 前五杆里除 threshold 之外的**四杆值域/默认**也按 §0.3 收正(见 ⑮ 那一组):
+    // hysteresis 0..20/6 → 3..12/6(30% → 33%)、hangover 0..500/180 → 100..600/250(36% → 30%)、
+    // pad_pre 0..500/120 → 20..400/120(24% → 26%)、pad_post 0..500/200 → 50..400/200(40% → 43%);
+    // threshold 与后两杆一字未动。
     eq(
         P,
-        [44, 30, 36, 24, 40, 50, 4],
-        "七杆默认行程比 = 值域反推(后两杆照 02-dsp-spec)",
+        [44, 33, 30, 26, 43, 50, 4],
+        "七杆默认行程比 = 值域反推(前五杆照 02 §0.3,后两杆照 02-dsp-spec)",
     );
     // J23:padding 默认 120/200;§1.18 五字段整包缓存底账与滑杆默认一致
     eq(TW.DEFAULT_VAD_PARAMS.padding_pre_ms, 120, "J23 前留白 120");
@@ -4810,6 +4814,184 @@ log("=== ⑭ SL-251 同批:分段两条滑杆的刻度/行程/mode 与 native �
             snapSeg.min_segment_ms <= msHi,
         `(d) mock 快照的 min_segment_ms 落在规格夹取 ${msLo}..${msHi} 内(实得 ${snapSeg.min_segment_ms})`,
     );
+}
+
+// =============================================================================
+log("=== ⑮ SL-416:VAD 五杆 + 过渡 ramp 的刻度/默认值与 native 逐值对齐 ===");
+//
+// 与 ⑭ 同一套手法(SL-411 立的先例),对象换成 [SL-416] 落盘的那六项:
+//   真源 = masterPlan 02 §0.3 常量表 → C++ 侧单一真源 = `OutputStateCodec.h` 的 `kOutputVad*` /
+//   `kOutputTransitionRampMs*`;镜像面 = `web/output/tab-wave.js` 的 `SLIDERS` / `DEFAULT_VAD_PARAMS`
+//   与 `web/output/tab-master.js` 的 `RAMP_MS`。
+// 为什么这些数字必须同源:滑杆是**唯一**能产生这六个值的地方,而它们现在会**落盘**
+// (`encodeOutputState` 按设计不校验值域 ⇒ UI 收下一个越界值会被原样写进工程,重开时被 codec
+// 判越界、**静默**回落默认 —— 现象与 A24 用户报的「我设的值没记住」逐字相同)。
+// 删除式 **D2a**:把 codec 的任一个 `...Max` 改窄 ⇒ 本组对应那条 eq 红;D2b(桥面改回字面量)见 (f)。
+{
+    const codecSrc = src("src/core/state/OutputStateCodec.h");
+    const codecNum = (name) => {
+        const m = new RegExp(`${name}\\s*=\\s*([-\\d.]+)`).exec(codecSrc);
+        return m ? Number(m[1]) : NaN;
+    };
+    const vadFields = [
+        ["threshold_db", "kOutputVadThresholdDb"],
+        ["hysteresis_db", "kOutputVadHysteresisDb"],
+        ["hangover_ms", "kOutputVadHangoverMs"],
+        ["padding_pre_ms", "kOutputVadPaddingPreMs"],
+        ["padding_post_ms", "kOutputVadPaddingPostMs"],
+    ];
+    for (const [field, prefix] of vadFields) {
+        const s = TW.SLIDERS.find((x) => x.field === field);
+        const lo = codecNum(`${prefix}Min`);
+        const hi = codecNum(`${prefix}Max`);
+        const def = codecNum(`${prefix}Default`);
+        check(
+            !!s &&
+                Number.isFinite(lo) &&
+                Number.isFinite(hi) &&
+                Number.isFinite(def),
+            `(a) 取到 ${field} 两侧的定义(codec 实得 ${lo}..${hi} / def ${def})`,
+        );
+        if (
+            s &&
+            Number.isFinite(lo) &&
+            Number.isFinite(hi) &&
+            Number.isFinite(def)
+        ) {
+            eq(
+                [s.min, s.max],
+                [lo, hi],
+                `(a) ★ ${field} 的 UI 行程 == codec 的规格值域(02 §0.3;桥面 handleSetVadParams 引用同一对常量)`,
+            );
+            eq(
+                s.def,
+                def,
+                `(a) ★ ${field} 的滑杆 def == codec 的规格默认 —— 引擎初值 / 滑杆 def / decode 回落三处同值` +
+                    `(改前它们互不相同:A24 里用户念的「默认」就是那个差)`,
+            );
+            eq(
+                TW.DEFAULT_VAD_PARAMS[field],
+                def,
+                `(b) ★ ${field} 的整包缓存初值(DEFAULT_VAD_PARAMS)也 == 规格默认`,
+            );
+        }
+    }
+    // (c) 过渡 ramp:滑杆/几何真源在 tab-master.js 的 RAMP_MS(契约 §1.20:20..300,默认 80)。
+    const TM = await import(u("web/output/tab-master.js"));
+    const rLo = codecNum("kOutputTransitionRampMsMin");
+    const rHi = codecNum("kOutputTransitionRampMsMax");
+    const rDef = codecNum("kOutputTransitionRampMsDefault");
+    check(
+        Number.isFinite(rLo) && Number.isFinite(rHi) && Number.isFinite(rDef),
+        `(c) 取到两侧的 transition_ramp_ms 定义(codec 实得 ${rLo}..${rHi} / def ${rDef})`,
+    );
+    if (Number.isFinite(rLo) && Number.isFinite(rHi) && Number.isFinite(rDef)) {
+        eq(
+            [TM.RAMP_MS.min, TM.RAMP_MS.max, TM.RAMP_MS.def],
+            [rLo, rHi, rDef],
+            "(c) ★ tab-master 的 RAMP_MS == codec 的规格值域与默认(§1.20:20..300,默认 80)",
+        );
+    }
+    // (d) [SL-416 第 2 推] mock 的 **state 初始快照**也必须与规格默认逐值相等。
+    //     为什么单列一格:(a)/(b) 只对拍 `SLIDERS` / `DEFAULT_VAD_PARAMS`,而页面级那一格
+    //     (`smoke-seg-restore-page.mjs` 的 [SL-416])显式**整组覆写** `ana.vad` —— 第 1 轮复审
+    //     实测这两条路都绕开了 `web/shared/mock-data.js` 的初值,于是 `hangover_ms: 180` 活着:
+    //     preview 一开窗 HOLD 停在 180 ms,而正上方 tooltip(取 `SLIDERS.def.def`)写着 250 ms。
+    //     这正是 CLAUDE.md §10「mock 桥必须与真桥同契约」要挡的差 —— 只改数不补格,下次收默认值还会漂。
+    // 删除式 **D2c**:把 `web/shared/mock-data.js` 的任一项改回旧值 ⇒ 本格对应那条 eq 红。
+    {
+        const initAna = MD.makeOutputState().analysis;
+        check(
+            !!initAna && !!initAna.vad,
+            `(d) 取到 mock 的 state 初始快照 analysis.vad(实得 ${JSON.stringify(initAna && initAna.vad)})`,
+        );
+        if (initAna && initAna.vad) {
+            for (const [field, prefix] of vadFields) {
+                eq(
+                    initAna.vad[field],
+                    codecNum(`${prefix}Default`),
+                    `(d) ★ mock 初始快照 analysis.vad.${field} == codec 的规格默认(02 §0.3)`,
+                );
+            }
+            eq(
+                initAna.transition_ramp_ms,
+                codecNum("kOutputTransitionRampMsDefault"),
+                "(d) ★ mock 初始快照 analysis.transition_ramp_ms == codec 的规格默认(§1.20)",
+            );
+        }
+    }
+    // (f) 桥面**真的在用**这些常量(与 ⑭(f) 同一条理由:值域真源搬走之后,「桥面引用常量」
+    //     只剩编译保证;改回字面量时 (a)/(b)/(c)/(d) 与 web 会全绿,唯独真正夹用户输入的那一处偷偷收窄)。
+    // 删除式 **D2b**:把 `handleSetVadParams` 里任一处改回 `juce::jlimit(-60.0f, -10.0f, …)`
+    // ⇒ 本格两条断言都红,而 (a)/(b)/(c)/(d) 仍绿。
+    // ⚠ 取函数体的写法定型(第 1 轮复审⑧):**别退回** `/…[\s\S]*?\n}/` —— 那个写法只靠
+    //   「闭合花括号在第 0 列」,函数被搬进 namespace 或整体缩进时会**静默吞到下一个函数**
+    //   (`check(!!setVad)` 抓不到:取到的是**别人**的函数体,后面几条断言只是变宽)。这里两件事一起做:
+    //   ① 结尾锚 `\n}\n`;② 抓到的正文里**不许再出现** `void OutputEditor::`(吞过头必然出现第二个
+    //   函数定义 ⇒ 当场红,而不是静默变宽)。
+    {
+        const editorSrc = src("src/output/OutputEditor.cpp");
+        const fnBody = (name) => {
+            const m = new RegExp(
+                `void OutputEditor::${name}\\([\\s\\S]*?\\n\\}\\n`,
+            ).exec(editorSrc);
+            if (!m) return null;
+            return m[0].split("void OutputEditor::").length === 2 ? m[0] : null;
+        };
+        const setVad = fnBody("handleSetVadParams");
+        check(
+            !!setVad,
+            "(f) 取到 handleSetVadParams 的函数体(结尾锚 \\n}\\n,且没吞到下一个函数)",
+        );
+        if (setVad) {
+            const body = setVad;
+            check(
+                vadFields.every(([, prefix]) => {
+                    for (const suffix of ["Min", "Max"]) {
+                        if (!new RegExp(`${prefix}${suffix}`).test(body)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }),
+                "(f) ★ 桥面夹取引用 codec 的十对 kOutputVad* 常量(改回字面量即红)",
+            );
+            check(
+                !/jlimit\(\s*[-\d.]/.test(body),
+                "(f) ★ 桥面夹取里没有裸数字 jlimit —— 值域真源只此一份(codec)",
+            );
+        }
+        const setRamp = fnBody("handleSetTransitionRamp");
+        check(!!setRamp, "(f) 取到 handleSetTransitionRamp 的函数体");
+        if (setRamp) {
+            check(
+                /kOutputTransitionRampMsMin/.test(setRamp) &&
+                    /kOutputTransitionRampMsMax/.test(setRamp),
+                "(f) ★ transition ramp 的桥面夹取同样引用 codec 常量(此前是 80.0f + jlimit(20,300) 字面量)",
+            );
+        }
+        // (g) [SL-416 第 2 推] `handleSetSegmentation` 也走**同一道** `specClamp`(裁定 3 收编)。
+        //     为什么必须钉:它此前是自写一份 `isfinite + jlimit`,对**非数值** var 的处置与 `specClamp`
+        //     **不等价** —— `static_cast<double>(juce::var)` 对字符串走 `String::getDoubleValue()`,
+        //     `{"sensitivity":"abc"}` 得 `0.0`、过得了 `isfinite`,于是被夹到**下限 0**(`min_segment_ms`
+        //     同理被夹到 50);而 `specClamp` 的口径是「当它没说过、保留 `rt` 原值」。上面那个函数
+        //     (`handleSetVadParams`)的注释写着两处「**同形**」,本仓把注释当真源读 —— 所以收编实现,
+        //     而不是把注释改软。
+        // 删除式 **D4**:把这两处改回自写版(`isfinite + juce::jlimit` 字面量)⇒ 本格两条都红。
+        const setSeg = fnBody("handleSetSegmentation");
+        check(!!setSeg, "(g) 取到 handleSetSegmentation 的函数体");
+        if (setSeg) {
+            eq(
+                (setSeg.match(/specClamp\(/g) || []).length,
+                2,
+                "(g) ★ segmentation 的 sensitivity / min_segment_ms 两处都走 specClamp(非数值 ⇒ 保留 rt 原值)",
+            );
+            check(
+                !/juce::jlimit\(/.test(setSeg),
+                "(g) ★ 函数体里不再有第二份自写的值域夹取(值域真源只此一份:codec 的 kOutputSeg*)",
+            );
+        }
+    }
 }
 
 // =============================================================================

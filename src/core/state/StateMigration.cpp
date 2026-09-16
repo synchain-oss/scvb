@@ -42,6 +42,20 @@ bool migrate_3_to_4(StateChunks& chunks) noexcept
     return true;
 }
 
+// abi 4→5:[SL-416] CFGS 尾扩 analysis.vad.{threshold_db,hysteresis_db,hangover_ms,padding_pre_ms,
+// padding_post_ms} 与 analysis.transition_ramp_ms(一整档 24 字节)。同样 no-op —— abi=4 的 CFGS 只有
+// 到 segmentation 为止的尾部,而 decodeOutputState 按「长度回退」把缺席的六项回落**规格默认**
+// (−38 / 6 / 250 / 120 / 200 / 80,真源 = 02 §0.3 常量表)且**不计回落**:旧工程确实没存过它们,
+// 不是「存了一个不可信的值」—— 那六个计数器只在**在席且越界**时才动,与上一级同一条取舍。
+// ⚠ 与 abi=1→2 那两级不同(那两级的缺席是「取当前值/回落默认」各有理由),这一级与 3→4 同类:
+// 字段语义就是「当前设置」本身,旧工程没有「当过一次的设置」这回事。
+// 旧版读到新(abi=5)blob 仍走 RejectedNewer → preservedOriginal 原样回写,绝不静默降级。
+bool migrate_4_to_5(StateChunks& chunks) noexcept
+{
+    (void)chunks;
+    return true;
+}
+
 StateLoadResult loadState(const std::uint8_t* data, std::size_t size, StateChunks& out)
 {
     StateLoadResult res;

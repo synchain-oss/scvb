@@ -6,7 +6,10 @@
 // DOM 侧(蒙版/亮区/说明框定位、点击推进、跨 tab 翻页)归浏览器手测 / Playwright 截图。
 //
 // 跑什么:
-//   ① 步骤清单:全参数导览 44 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
+//   ① 步骤清单:全参数导览 43 步、步号连续、首步无 spotlight、末步=review、锚点与 tab 目标逐条对拍;
+//      [SL-415] 并向**反方向**断一条:步骤表里不再含 `storage` 锚点(用户 2026-09-14 裁定
+//      「sidecar 不上了」⇒ 那一步整步移除)。单靠「锚点数组逐条对拍」挡不住它回来 ——
+//      把 storage 插回表里、再照抄进那份期望数组,两处一起改就是全绿;这条负向断言才是牙齿。
 //   ② shouldShowTourAsk 四种组合(J50a 镜像)+ 兜底直弹的「本会话已答」闸(T37 bug A-2);
 //   ③ buildDemoStore 形状 + 不就地改写深冻结的 FIFTEEN_TRACKS;
 //   ④ mock 端到端:first-run-tour 场景(guide 已过、tour_seen=false)+ setTourSeen(true,true)
@@ -52,9 +55,13 @@ const eq = (a, b, msg) =>
     );
 
 // =============================================================================
-log("=== ① 步骤清单(全参数导览 44 步)===");
+log("=== ① 步骤清单(全参数导览 43 步)===");
 {
-    eq(TOUR.TOUR_STEPS.length, 44, "步数 == 44");
+    eq(
+        TOUR.TOUR_STEPS.length,
+        43,
+        "步数 == 43(原 44;SL-415 移除了 storage 那一步)",
+    );
     eq(
         TOUR.TOUR_ANCHORS,
         [
@@ -99,11 +106,10 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "centerslot",
             "scale",
             "lang",
-            "storage",
             "diagnostic",
             "review",
         ],
-        "44 锚点(含步 1/2 两个居中卡 null),末步=review",
+        "43 锚点(含步 1/2 两个居中卡 null),末步=review",
     );
     eq(
         TOUR.TOUR_STEPS[0].anchor,
@@ -162,15 +168,29 @@ log("=== ① 步骤清单(全参数导览 44 步)===");
             "settings",
             "settings",
             "settings",
-            "settings",
         ],
-        "跨 tab 翻页目标逐条对拍(15 master / 12 tracks / 8 wave / 9 settings)",
+        "跨 tab 翻页目标逐条对拍(15 master / 12 tracks / 8 wave / 8 settings;" +
+            "settings 由 9 降为 8 —— SL-415 移除了 storage 那一步)",
     );
     eq(
-        TOUR.TOUR_STEPS[43].anchor,
+        TOUR.TOUR_STEPS[42].anchor,
         "review",
         "末步固定 = 设置页「重看引导」入口",
     );
+    // [SL-415] 负向那一条:步骤表里不再含 `storage` 锚点(用户 2026-09-14 裁定
+    // 「sidecar 不上了」⇒ 设置页「存储状态」那一步整步移除,44 → 43)。
+    // ⚠ 为什么不能只靠上面那份数组对拍:把 `{anchor:"storage"}` 插回表里、再顺手把
+    // "storage" 抄回期望数组,**两处一起改照样全绿** —— 而 DOM 里那张卡恒 `hidden`,
+    // 那一步的 spotlight 会挖出一个空处。这条断言是唯一挡得住「悄悄加回来」的东西。
+    // 删除式:把 `{ anchor: "storage", tab: "settings" }` 插回 tour.js 步骤表
+    // (原第 42 位)⇒ 本格红(而上面那份对拍只要不改期望数组,反而会先红在步数上 ——
+    // 所以这条补的是「两处一起改」那条路)。
+    check(
+        !TOUR.TOUR_ANCHORS.includes("storage"),
+        "★ 步骤表里不再含 storage 锚点(原第 42 步已被 SL-415 整步移除)",
+    );
+    // 反面对照「DOM 里那个锚点还在」在 §⑥ 那一节断(那里才读得到 index.html 的源码,
+    // 见 `staticAnchors` 那一段的 `data-tour=storage` 那一格)。
     eq(TOUR.TOUR_STEPS[5].anchor, "an", "第 6 步 = 三件套「02 分析」段");
     eq(TOUR.TOUR_STEPS[31].action, "zoomLanes", "步 32 泳道区自动放大泳道");
     eq(
@@ -432,7 +452,11 @@ log("=== ⑤ 词条:tour.* 三语 ===");
         "done",
         "demoBadge",
     ];
-    for (let i = 1; i <= 44; i++) {
+    // [SL-415] 43 步,不是 44 —— 步数必须与 `TOUR.TOUR_STEPS.length` 对得上,否则
+    // 「末尾那一步的词条缺了」这件事会被这个写死的上界盖住(44 时它只到 43,不报错)。
+    // 上界直接取整表长度,别再写一个会漂的字面量。
+    eq(TOUR.TOUR_STEPS.length, 43, "步数 == 43(下面那份词条清单按它铺开)");
+    for (let i = 1; i <= TOUR.TOUR_STEPS.length; i++) {
         KEYS.push("step" + i + ".title", "step" + i + ".body");
     }
     for (const k of KEYS) {
@@ -538,6 +562,12 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
     );
 
     // data-tour 锚点:index.html 静态锚 + tab-tracks.js 首行动态锚(dt() 助手)
+    //
+    // ⚠ 这份名单 = 「**步骤表要用的**锚点」,不是「DOM 里存在的锚点」。`storage` 已从
+    // 两处一起下榜:步骤表里整步移除(SL-415),index.html 里那个属性按「隐藏 ≠ 删除」
+    // **仍然留着** —— 所以它不在这份「步骤要用的锚点」名单里,而是单独一格断
+    // 「属性还在」(见下面 storage 那一格)。混在一起的话,删掉属性会红在一条
+    // 读起来像「步骤表缺锚点」的断言上,而真正的原因恰好相反。
     const staticAnchors = [
         "tab1",
         "tab2",
@@ -567,7 +597,6 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
         "centerslot",
         "scale",
         "lang",
-        "storage",
         "diagnostic",
         "version",
     ];
@@ -577,6 +606,30 @@ log("=== ⑥ 源码级:零 Audio / 唯一桥调用 / a11y / 六锚点 ===");
             "index.html data-tour=" + a,
         );
     }
+    // [SL-415] `storage` 的**反向**那一格:步骤表里没有这一步了,但 DOM 里那个锚点
+    // 必须还在(用户裁定是「收起 UI」,不是「删掉 DOM」;那张卡片自己恒挂 `hidden`)。
+    //
+    // ⚠ **必须切到那个标签里面再找**(与下面 (a21) 的 `listSrc` 同款理由,第一版就栽在这):
+    // 拿 `html.includes('data-tour="storage"')` 全文件找的话,**本卡自己写在那张卡片上方
+    // 的注释里就逐字引了一遍这个属性名** —— 判据被作者自己的话喂饱,把属性真删掉也照绿
+    // (实测:删掉属性,那一格仍然 exit 0)。改成先在标签上取到那段文本再断。
+    // 删除式:把 `data-tour="storage"` 属性从 index.html 删掉 ⇒ 本格红
+    // (而上面那份「步骤要用的锚点」名单里已经没有它,所以那条路不会替它红)。
+    const storageCardTag = /<div\b[^>]*data-gb="settings-storage"[^>]*>/.exec(
+        html,
+    );
+    check(
+        !!storageCardTag &&
+            /(^|\s)data-tour="storage"(\s|$)/.test(storageCardTag[0]),
+        "index.html 仍留 data-tour=storage 锚点(对照:DOM 留,只是不再有步骤指它)",
+    );
+    // 同一条卡片的第二半:它自己恒挂 `hidden`。这里只断**属性在**(布局面归页面级
+    // `smoke-ui-layout-page.mjs` G 节)—— 少了这一格,「隐藏 ≠ 删除」这句就只剩删除那一半
+    // 有判据。
+    check(
+        !!storageCardTag && /(^|\s)hidden(\s|$)/.test(storageCardTag[0]),
+        "对照:「存储状态」卡模板里恒挂 hidden",
+    );
     const trackAnchors = [
         "trackrow",
         "pan",

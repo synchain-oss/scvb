@@ -40,7 +40,7 @@ v1 保留位** —— 落盘字段保留、恒写 `0`=valley、`vad_only` 留待
 | `docs/PARAMETERS.md` | `segmentation: {mode, sensitivity, min_segment_ms}` 无定义句 | `mode` 加三行注释(保留位 / 恒写 0 / 布局与 abi 不动 / 读侧原样往返) |
 | `docs/USER_GUIDE.zh-CN.md` + `docs/USER_GUIDE.md` | 「分段方式 `mode` 今天只回到原位 —— 引擎侧尚无消费方」 | 改成事实:「界面上**从来没有**这个下拉(不是这一版藏起来的),引擎也不消费它,落盘只保证它不丢」 |
 | `web/output/index.html` / `web/output/tab-wave.js` / `web/shared/i18n.js` | — | **零改动**(见下面「用户界面这一半为什么没有改动」) |
-| `CFGS` 布局 / 容器 abi / golden / 迁移链 | — | **零改动**(abi 仍为 4) |
+| `CFGS` 布局 / 容器 abi / golden / 迁移链 | — | **零改动**(**本条不升 abi** —— 基线 `b06d37a` 上为 4,同窗口的 [SL-416]/#263 已把它升到 5:那是另一条、与本条互不相交) |
 
 **为什么是「摘掉」而不是「接线」**:bot 建议(deepseek 第 1 轮建议③)给的两条出路是「接线
 (`vad_only` ⇒ 跳过谷切分)+ core 格 + 删除式」或「从规格/UI 摘掉」。用户裁 ② 选了后者。
@@ -66,9 +66,10 @@ v1 保留位** —— 落盘字段保留、恒写 `0`=valley、`vad_only` 留待
 
 ## 兼容性影响
 
-- **零布局、零 abi、零迁移**:`CFGS` 尾部 28 字节里 `segMode` 那一个 u32 照旧在
-  (`OutputStateCodec` 一个字节未改),容器 abi 仍为 4,`kMigrators` 仍是三条,`tests/golden/state/`
-  四份金样逐字节未改。**新版本读旧工程 / 旧版本读新工程的行为与本 PR 之前逐字相同。**
+- **零布局、零 abi、零迁移**:`CFGS` 尾部那一档里 `segMode`(`segmentationMode`)那一个 u32 照旧在
+  (`OutputStateCodec` 一个字节未改),容器 `kCurrentAbi` **本条不升**(基线 `b06d37a` 上为 4;
+  同窗口的 [SL-416]/#263 已把它升到 5,与本条互不相交),`kMigrators` 本条不加,`tests/golden/state/`
+  金样本 PR 一份未动。**新版本读旧工程 / 旧版本读新工程的行为与本 PR 之前逐字相同。**
 - **用户可见面:什么都不会变。** 这一条是**把规格追认成事实**,不是新增或移除一项行为 ——
   界面上没有那个下拉已经很久了(实际上从来没有)。此前 CHANGELOG 与用户指南里那句
   「分段方式今天只回到原位」读起来像一个「你找得到、按了却没用」的控件,现在改成实话。
@@ -145,7 +146,7 @@ v1 保留位** —— 落盘字段保留、恒写 `0`=valley、`vad_only` 留待
 - `web-preview/tests/smoke-seg-restore-page.mjs`(页级 `[SL-413]` 负空间一节 + 文件头同步)
 
 **没有动的**(逐一核过,免得读的人以为漏了):`src/core/state/OutputStateCodec.{h,cpp}`、
-`src/core/state/StateMigration.{h,cpp}`、`src/core/state/StateCodec.h`(`kCurrentAbi` 仍为 4)、
+`src/core/state/StateMigration.{h,cpp}`、`src/core/state/StateCodec.h`(本条**不碰** `kCurrentAbi`)、
 `src/output/OutputProcessor.{h,cpp}`、`tests/golden/state/*.bin`、
 `tests/core/test_output_session.cpp`、`web/output/index.html`、`web/output/tab-wave.js`、
 `web/shared/i18n.js`、`web/shared/mock-data.js`。

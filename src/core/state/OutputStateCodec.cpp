@@ -19,6 +19,12 @@ constexpr std::size_t kAppliedBytes = 8; // 2 个 u32
 // 压成 u32 只会平白丢精度),而 u32+f32+u32 一起构成**一个整档** —— 档内不许半截,
 // 见下面的长度回退。
 constexpr std::size_t kSegmentationBytes = 12;
+// [SL-416] 第四级尾扩:analysis.vad.{threshold_db,hysteresis_db,hangover_ms,padding_pre_ms,
+// padding_post_ms} + analysis.transition_ramp_ms(abi 4→5)。
+// **这一档是 24 字节**:两个 dB 类字段是 f32(连续刻度,压成 u32 只会平白丢精度)、四个 ms 类字段是
+// u32(`hangover_ms` / `padding_*_ms` / `transition_ramp_ms` 都是整数毫秒),u32+f32+f32+u32×4
+// 一起构成**一个整档** —— 档内不许半截,见下面的长度回退。
+constexpr std::size_t kVadBytes = 24;
 
 static_assert(sizeof(float) == 4, "f32 尾字段依赖 IEEE-754 单精度(4 字节)");
 
@@ -132,7 +138,8 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     const std::size_t langBytes = std::min<std::size_t>(s.uiLanguage.size(), kOutputLanguageMaxBytes);
     try
     {
-        out.reserve(kHeaderBytes + langBytes + kEnumBytes + kAppliedBytes + kSegmentationBytes + s.unknownTail.size());
+        out.reserve(kHeaderBytes + langBytes + kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes +
+                    s.unknownTail.size());
     }
     catch (...)
     {
@@ -157,6 +164,17 @@ bool encodeOutputState(const OutputState& s, std::vector<std::uint8_t>& out)
     putU32(out, segModeOrdinal(s.segmentationMode));
     putF32(out, s.segmentationSensitivity);
     putU32(out, s.segmentationMinSegmentMs);
+    // [SL-416] 同样**恒写这一整档**(24 字节),理由与上一档逐字相同:encode 的入参是本进程自己的
+    // runtime_(桥面 `handleSetVad` / `handleSetTransitionRampMs` 已按 `kOutputVad*` /
+    // `kOutputTransitionRampMs*` 常量在 **double 域**夹过并把非有限值挡在 runtime_ 之外),值域校验
+    // 是 decode 的职责。`transitionRampMs` 在 runtime_ 里是 float(契约 §1.20 的 UI 也是连续刻度),
+    // 落盘时按规格值域窄化成 u32 —— 桥面已令它落在 20..300 的整数值上,窄化无损。
+    putF32(out, s.vadThresholdDb);
+    putF32(out, s.vadHysteresisDb);
+    putU32(out, s.vadHangoverMs);
+    putU32(out, s.vadPaddingPreMs);
+    putU32(out, s.vadPaddingPostMs);
+    putU32(out, s.transitionRampMs);
     out.insert(out.end(), s.unknownTail.begin(), s.unknownTail.end()); // 未知尾部原样回写
     return true;
 }
@@ -219,6 +237,14 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     if (hasApplied && remaining > kEnumBytes + kAppliedBytes && !hasSegmentation)
     {
         return false; // 16 < remaining < 28:segmentation 字段被截断 → 拒载(不可信字节)
+    }
+    // [SL-416] 第四级:vad 五字段 + transition_ramp_ms(2×f32 + 4×u32 = 24 字节)**整档**要么齐、
+    // 要么全没有。半截(28 < remaining < 52)同样拒载 —— 一整档里的六个字段是同一个 commit 写下去的,
+    // 「只有前几个」这种形态不可能是任何真实构建的产物。
+    const bool hasVad = (remaining >= kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes);
+    if (hasSegmentation && remaining > kEnumBytes + kAppliedBytes + kSegmentationBytes && !hasVad)
+    {
+        return false; // 28 < remaining < 52:vad/ramp 字段被截断 → 拒载(不可信字节)
     }
 
     // 兼容:旧版(abi=1)payload 无末两个 u32 → 两字段回落默认,不计未知回落。
@@ -344,10 +370,90 @@ bool decodeOutputState(const std::uint8_t* data, std::size_t size, OutputState& 
     parsed.segmentationSensitivity = segSensitivity;
     parsed.segmentationMinSegmentMs = segMinMs;
 
-    if (hasSegmentation && remaining > kEnumBytes + kAppliedBytes + kSegmentationBytes)
+    // [SL-416] vad 五字段 + transition_ramp_ms:**缺席时回落规格默认且不计回落**(与上一档同一条
+    // 取舍 —— abi≤4 的旧工程「当年没存过」,不是「存的值不可信」)。在席时逐个做值域校验,
+    // 越界 → 回落该字段默认 + 计一次回落。浮点字段用 `!(x >= lo && x <= hi)`(NaN/±Inf 同支,
+    // 理由与上文 segmentSensitivity 那一段逐字相同 —— 同一个 `/fp:precise` 前提)。
+    float vadThresholdDb = kOutputVadThresholdDbDefault;
+    float vadHysteresisDb = kOutputVadHysteresisDbDefault;
+    std::uint32_t vadHangoverMs = kOutputVadHangoverMsDefault;
+    std::uint32_t vadPaddingPreMs = kOutputVadPaddingPreMsDefault;
+    std::uint32_t vadPaddingPostMs = kOutputVadPaddingPostMsDefault;
+    std::uint32_t transitionRampMs = kOutputTransitionRampMsDefault;
+    if (hasVad)
+    {
+        const std::size_t vadOff = kEnumBytes + kAppliedBytes + kSegmentationBytes;
+        const std::size_t vadAvail = remaining - vadOff;
+        if (!readF32(data + base + vadOff, vadAvail, vadThresholdDb) ||
+            !readF32(data + base + vadOff + 4, vadAvail - 4, vadHysteresisDb) ||
+            !readU32(data + base + vadOff + 8, vadAvail - 8, vadHangoverMs) ||
+            !readU32(data + base + vadOff + 12, vadAvail - 12, vadPaddingPreMs) ||
+            !readU32(data + base + vadOff + 16, vadAvail - 16, vadPaddingPostMs) ||
+            !readU32(data + base + vadOff + 20, vadAvail - 20, transitionRampMs))
+        {
+            return false;
+        }
+        if (!(vadThresholdDb >= kOutputVadThresholdDbMin && vadThresholdDb <= kOutputVadThresholdDbMax))
+        {
+            if (report != nullptr)
+            {
+                ++report->vadThresholdDbFallbacks;
+            }
+            vadThresholdDb = kOutputVadThresholdDbDefault;
+        }
+        if (!(vadHysteresisDb >= kOutputVadHysteresisDbMin && vadHysteresisDb <= kOutputVadHysteresisDbMax))
+        {
+            if (report != nullptr)
+            {
+                ++report->vadHysteresisDbFallbacks;
+            }
+            vadHysteresisDb = kOutputVadHysteresisDbDefault;
+        }
+        if (vadHangoverMs < kOutputVadHangoverMsMin || vadHangoverMs > kOutputVadHangoverMsMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->vadHangoverMsFallbacks;
+            }
+            vadHangoverMs = kOutputVadHangoverMsDefault;
+        }
+        if (vadPaddingPreMs < kOutputVadPaddingPreMsMin || vadPaddingPreMs > kOutputVadPaddingPreMsMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->vadPaddingPreMsFallbacks;
+            }
+            vadPaddingPreMs = kOutputVadPaddingPreMsDefault;
+        }
+        if (vadPaddingPostMs < kOutputVadPaddingPostMsMin || vadPaddingPostMs > kOutputVadPaddingPostMsMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->vadPaddingPostMsFallbacks;
+            }
+            vadPaddingPostMs = kOutputVadPaddingPostMsDefault;
+        }
+        if (transitionRampMs < kOutputTransitionRampMsMin || transitionRampMs > kOutputTransitionRampMsMax)
+        {
+            if (report != nullptr)
+            {
+                ++report->transitionRampMsFallbacks;
+            }
+            transitionRampMs = kOutputTransitionRampMsDefault;
+        }
+    }
+    parsed.vadThresholdDb = vadThresholdDb;
+    parsed.vadHysteresisDb = vadHysteresisDb;
+    parsed.vadHangoverMs = vadHangoverMs;
+    parsed.vadPaddingPreMs = vadPaddingPreMs;
+    parsed.vadPaddingPostMs = vadPaddingPostMs;
+    parsed.transitionRampMs = transitionRampMs;
+
+    if (hasVad && remaining > kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes)
     {
         // 未知尾部(未来小版本追加字段)保留,编码时原样回写,防静默丢字段。
-        parsed.unknownTail.assign(data + base + kEnumBytes + kAppliedBytes + kSegmentationBytes, data + size);
+        parsed.unknownTail.assign(data + base + kEnumBytes + kAppliedBytes + kSegmentationBytes + kVadBytes,
+                                  data + size);
     }
 
     out = std::move(parsed);
