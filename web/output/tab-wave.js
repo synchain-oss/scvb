@@ -396,9 +396,16 @@ export const MAX_DURATION_S = 24 * 60 * 60;
 
 /**
  * 7 滑杆定义(顺序不可重排 —— 05 §2.3 行 298-299 的 §1.18 五字段 + §1.19 两字段)。
- * 值域由设计稿默认值与行程比反推(p = (def-min)/(max-min) 与稿内 2070-2074 逐一相符):
- * -38dB→.44 / 6dB→.30 / 180ms→.36 / 120ms→.24(J23)/ 200ms→.40(J23)/
- * .62→.62 / 420ms→.28。`gb` = 灰模既有锚点(appendix B),`t` = 短标词条(A-19)。
+ * **值域真源 = masterPlan 02 §0.3 常量表**(经 U24 收敛),**不是设计稿**:前五杆的 min/max/def 与
+ * C++ 侧 `OutputStateCodec.h` 的 `kOutputVad*` 逐值同源,由 `smoke-tab3-interactions.mjs` ⑮(a)(b)(d)
+ * 从 codec 定义行抠数对拍。**规格 > 设计稿** —— 设计稿 `SCVB 设计稿.dc.html:2070-2074` 那一行仍画着
+ * `180 ms / p=.36` 的旧档,而 [SL-416] 把 HOLD 的规格默认收成 **250 ms**;设计稿不改(本卡是有意
+ * 离开它的),先例 = ⑭ 组为 [SL-251] 后两杆立的那条。
+ * 默认档的**行程比** p = (def−min)/(max−min),**实测** `44 / 33 / 30 / 26 / 43 / 50 / 4`:
+ * threshold −38→.44 / hysteresis 6→.33(改前 .30)/ hangover 250→.30(改前 180→.36)/
+ * pad_pre 120→.26(J23;改前 .24)/ pad_post 200→.43(J23;改前 .40)/
+ * sensitivity 50→.50 / min_segment_ms 120→.04(后两杆的行程比见 ⑦ 组那一格的注释)。
+ * `gb` = 灰模既有锚点(appendix B),`t` = 短标词条(A-19)。
  */
 export const SLIDERS = Object.freeze(
     [

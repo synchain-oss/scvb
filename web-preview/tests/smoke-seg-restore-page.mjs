@@ -1354,7 +1354,7 @@ const COMMIT_VOL = IN(`
 // 其余四项与 ramp 的搬运层由 core 四格 + `HOST SL416` 守;滑杆刻度与 codec 常量的对拍在
 // `smoke-tab3-interactions.mjs` ⑮。
 //
-// 删除式(D3):把 `tab-wave.js` render 里那句 `syncParamGroup(local.vad, ana.vad);` 删掉
+// 删除式(D3):把 `tab-wave.js` render 里那句 `syncParamGroup(local.vadParams, ana.vad);` 删掉
 // (或让它不读 vad)⇒ 滑杆停在夹具值 −38 ⇒ 本格红。那条 line 是「UI 初始化读 state」的唯一落点。
 {
     log("=== [SL-416] 工程 state 里的 vad.threshold_db ⇒ 滑杆真的显示它 ===");
@@ -1407,7 +1407,7 @@ const COMMIT_VOL = IN(`
         okVad,
         `[SL-416] ★ 载入带 −30 的工程 state ⇒ 滑杆 aria-valuenow 变成 −30` +
             `(实得 ${JSON.stringify(afterVad)})—— 删掉 render 里那句 ` +
-            "`syncParamGroup(local.vad, …)` 时本格红(D3)",
+            "`syncParamGroup(local.vadParams, …)` 时本格红(D3)",
     );
     eq(
         afterVad.text,

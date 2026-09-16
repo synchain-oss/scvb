@@ -93,14 +93,17 @@ HOLD 200 ms / PAD PRE 120 ms / PAD POST 全部回默认」。与 [SL-411] 同一
   补齐 —— 六项缺席 ⇒ 规格默认,**不计回落**。abi=1/2/3 的工程照旧:先经它们各自那一级的回退,再落到这一级。
 - **⚠ 行为面(本卡有意的一处连带)**:六项的**引擎初值**此前是 T29 遗留的 `−45 / 3 / 200`(与 02 §0.3
   的出厂档、与 web 滑杆的 `def` 都不一致);本卡把**引擎初值 / 滑杆 def / decode 缺席与越界回落**三处
-  收到**同一个真源**(codec 的 `kOutputVad*Default` = §0.3 的 **−38 / 6 / 250**)。因此:
+  收到**同一个真源**(codec 的 `kOutputVad*Default` = §0.3 的 **−38 / 6 / 250**)。**分家的不是引擎侧**:
+  `src/core/analysis/EnergyVad.h:19-20`(分析引擎自己那一份默认)**本来就是 6 / 250**,与 02 §0.3 一致;
+  本卡收的是**桥面 / `runtime_` 那一份**(`OutputProcessor.h` 的 `−45 / 3 / 200`)。因此:
   - 旧工程(abi≤4)打开后这六项是 §0.3 的出厂档,而**不再是**旧构建 `runtime_` 的那一组;
   - web 滑杆的**行程**按 §0.3 收正:hysteresis `0..20` → `3..12`、hangover `0..500` → `100..600`、
     pad_pre `0..500` → `20..400`、pad_post `0..500` → `50..400`(threshold 与 ramp 一字未动);
   - 依据:§0.3 表是 U24 收敛的**出厂推荐值**(「宁多勿少」),而 [SL-411] 的先例也是「回落规格默认
     (也正是旧构建 `runtime_` 的初值)」—— 这里两组值不一致,本卡选**规格**那一侧,并把不一致本身收掉。
-  - 实跑复核(防「静默改调音」):core `~[ipc],~[.]` **515 格 962777 断言全绿**、host **132 格 12074
-    断言全绿**,零回归 —— 默认值对齐没有动到任何既有判据的产出。
+  - 实跑复核(防「静默改调音」):core `~[ipc],~[.]` 与 host 全量套件**零回归** —— 具体格数/断言数
+    **见 PR 描述的「本机读数」一节**(由统筹在沙箱外实跑补入;本文档第 1 稿里的那几个数取自不同次的
+    实跑、彼此对不上,已按统筹裁定撤下,只留「零回归」这个结论)。
 - **旧版本读新工程(abi=5)**:`hdr.abi > kCurrentAbi` 的既有分支照旧 —— **整块** `RejectedNewer`
   + `preservedOriginal` 原样回写(CLAUDE.md §7.3),**绝不静默降级**。
   ⚠ **[SL-411 R1] 升级提示的 UI 通路仍未接线**(`hasStateAbiMismatch()` / `stateAbiSeen()` 零调用方、
@@ -122,10 +125,10 @@ HOLD 200 ms / PAD PRE 120 ms / PAD POST 全部回默认」。与 [SL-411] 同一
 | --- | --- | --- |
 | core 搬运 | `tests/core/test_output_session.cpp` `[SL-416]` 四格 | 六项往返(含两个 f32 位模式逐字节)/ abi=4 旧档 ⇒ 六默认且不计回落 / 越界**逐字段**回落 + 独立计数(含 NaN 与 +Inf)/ 半截(28<remaining<52)拒载 + 边界 28 与 52 可解 |
 | core 容器 | `tests/core/test_state_codec.cpp` `STATE-GOLDEN StateAbiCompat` | abi1/abi2/abi3/abi4 四份旧金样仍 `Migrated` 到当前 abi;**abi5.bin 格式锁**(重编码逐字节相等) |
-| 生产两跳 | `tests/host/test_host_harness.cpp` `HOST SL416` | 存(`getStateInformation` 写 runtime_ 六项)→ 新实例载(`setStateInformation` 恢复)→ 六项逐项一致,**且重开后的分析真的按持久值跑**(判别档 loose 5 段 / tight 1 段 / 存盘档 4 段;重开后 4 段) |
+| 生产两跳 | `tests/host/test_host_harness.cpp` `HOST SL416` | 存(`getStateInformation` 写 runtime_ 六项)→ 新实例载(`setStateInformation` 恢复)→ 六项逐项一致,**且重开后的分析真的按持久值跑**(判别档 loose 5 段 / tight 1 段 / 存盘档 **5 段 = loose 那一组**;重开后 **5 段**。`nDefault` 那一档量出来是 4 段,`CHECK(nSaved != nDefault)` 正是这条判据的前提 —— 若写成「存盘档 4 段」,它自己就会红) |
 | 页面级 | `web-preview/tests/smoke-seg-restore-page.mjs` 的 `[SL-416]` 一节 | 工程 state 里 `vad.threshold_db=-30` ⇒ THRESHOLD 滑杆的 `aria-valuenow` 与读数文本**真的变成 −30 / −30 dB**(用户看得见的那一半) |
-| 值域对拍 | `web-preview/tests/smoke-tab3-interactions.mjs` 的 ⑮ (a)/(b)/(c) 三组 | 五杆的 `min`/`max`/`def` 与 `DEFAULT_VAD_PARAMS`、以及 `tab-master.js` 的 `RAMP_MS`,与 **codec 定义行**(`kOutputVad*{Min,Max,Default}` / `kOutputTransitionRampMs*`)逐值相等 |
-| 桥面引用 | 同上 ⑮ 的 **(f)** | `handleSetVadParams` 的函数体里**出现那十对 codec 常量名**、且**没有裸数字 `jlimit(`**;`handleSetTransitionRamp` 同钉 —— 把桥面改回字面量时 (a)/(b)/(c) 全绿而这一格红 |
+| 值域对拍 | `web-preview/tests/smoke-tab3-interactions.mjs` 的 ⑮ (a)/(b)/(c)/(d) 四组 | 五杆的 `min`/`max`/`def` 与 `DEFAULT_VAD_PARAMS`、`tab-master.js` 的 `RAMP_MS`、以及 **mock 的 state 初始快照**(`web/shared/mock-data.js` 的 `analysis.vad` / `analysis.transition_ramp_ms`),与 **codec 定义行**(`kOutputVad*{Min,Max,Default}` / `kOutputTransitionRampMs*`)逐值相等 |
+| 桥面引用 | 同上 ⑮ 的 **(f)** / **(g)** | `handleSetVadParams` 的函数体里**出现那十对 codec 常量名**、且**没有裸数字 `jlimit(`**;`handleSetTransitionRamp` 同钉;`handleSetSegmentation` 两处**都用 `specClamp`** 且函数体内没有第二份自写夹取 —— 把桥面改回字面量 / 改回自写版时 (a)–(d) 全绿而这一格红 |
 | 旧档语料 | `tests/golden/state/abi1..abi4.bin` | 四份**保留不动**;迁移用例跑在**真的旧文件**上,不是现造一个「假装是旧版」的字节串 |
 
 ⚠ **离线不可达、本卡没有改变的那一跳**(照实登记,别读成已覆盖):`OutputEditor.cpp` 的
@@ -136,6 +139,10 @@ HOLD 200 ms / PAD PRE 120 ms / PAD POST 全部回默认」。与 [SL-411] 同一
 
 ## 变更文件
 
+> 本清单按 `git diff --name-only origin/feature/v1...HEAD` **逐条核过**(第 1 轮复审教训:
+> `git ls-files --error-unmatch` 只验「文件在库里存在」、**不验它真的被改了** —— 第 1 稿把
+> `web/output/tab-master.js` 列进来,而它零命中,已删)。
+
 - `src/core/state/OutputStateCodec.{h,cpp}`(尾扩一整档 24 字节、长度回退第四级、六个独立回落计数器、
   六项的值域/默认常量、头注的布局与「**档内不许半截** / 偏移 52 之后任意长度尾巴由 `unknownTail` 收下」)
 - `src/core/state/StateCodec.h`(`kCurrentAbi` 4→5;容器头注与真源指针同步)
@@ -143,13 +150,15 @@ HOLD 200 ms / PAD PRE 120 ms / PAD POST 全部回默认」。与 [SL-411] 同一
 - `src/output/OutputProcessor.{h,cpp}`(保存侧写六项 / 加载侧恢复六项 + 回落计数的 DBG 行;runtime 初值
   与 `setTransitionRamp` 的夹取改引用 codec 常量)
 - `src/output/OutputEditor.cpp`(`specClamp` 统一守卫 + `handleSetVadParams` 五个字段逐项夹取 /
-  `handleSetTransitionRamp` 改走同一道守卫)
+  `handleSetTransitionRamp` 改走同一道守卫 / `handleSetSegmentation` **收编**到同一道守卫 —— 非数值实参
+  改为「保留 rt 原值」)
 - `src/output/OutputUiState.h`(CFGS 长度纪律更新到四级 52 字节)
-- `web/output/tab-wave.js`(五杆 `min`/`max`/`def` 与 `DEFAULT_VAD_PARAMS` 按 §0.3 收正)
+- `web/output/tab-wave.js`(五杆 `min`/`max`/`def` 与 `DEFAULT_VAD_PARAMS` 按 §0.3 收正;`SLIDERS` 头注的
+  真源与行程比改成实测值)
 - `web/output/index.html`(五杆的静态 `aria-valuemin/max/now` 与 `--p` 行程比同步)
-- `web/output/tab-master.js`(`RAMP_MS` 的注释指向 codec 常量;数值本已同源,未改数值)
-- `web-preview/tests/smoke-tab3-interactions.mjs`(新增 ⑮ 组:五杆 + ramp 的值域/默认对拍 +
-  「桥面确实引用常量」一格;七杆行程比按新值域更新)
+- `web/shared/mock-data.js`(state 初始快照的 `hangover_ms` 180 → 250,与 codec 的规格默认同值)
+- `web-preview/tests/smoke-tab3-interactions.mjs`(新增 ⑮ 组:五杆 + ramp 的值域/默认对拍、(d) mock
+  初始快照对拍、(f)/(g) 桥面源码级对拍;七杆行程比按新值域更新)
 - `web-preview/tests/smoke-seg-restore-page.mjs`(新增 [SL-416] 页面级一格)
 - `docs/STATE_SCHEMA.md`(abi 4→5、§一 六项改为已落盘、§三 CFGS 行与尾长分级、迁移链四条)
 - `docs/PARAMETERS.md`(`vad` / `transition_ramp_ms` 两行的定义句补「自本版起随工程落盘」)

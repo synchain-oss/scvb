@@ -917,6 +917,17 @@ TEST_CASE("OutputStateCodec:[SL-416] vad/ramp 越界 ⇒ 各字段**单独**回�
         REQUIRE(d.vadPaddingPreMs == (t.off == 66u ? t.expected : 120u));
         REQUIRE(d.vadPaddingPostMs == (t.off == 70u ? t.expected : 200u));
         REQUIRE(d.transitionRampMs == (t.off == 74u ? t.expected : 80u));
+        // 计数器**逐字段独立**:被点中的那个 == 1、其余五个 == 0(与 ① ② 两组同款)。
+        // 第 1 轮复审②:这段断言此前缺失 —— 标题写了「各字段单独回落默认并计数」,而 `r` 只被
+        // `decodeOutputState` 填、一次都没被读,于是「把某个 `++…Fallbacks` 误写成别的字段」这种
+        // 改法整套一条都不红(六个计数器的唯一消费方是 `OutputProcessor.cpp` 那条诊断 `DBG`,
+        // 没有第二处兜得住)。补上之后,这类误写由本格直接照出来。
+        REQUIRE(r.vadHangoverMsFallbacks == (t.off == 62u ? 1u : 0u));
+        REQUIRE(r.vadPaddingPreMsFallbacks == (t.off == 66u ? 1u : 0u));
+        REQUIRE(r.vadPaddingPostMsFallbacks == (t.off == 70u ? 1u : 0u));
+        REQUIRE(r.transitionRampMsFallbacks == (t.off == 74u ? 1u : 0u));
+        REQUIRE(r.vadThresholdDbFallbacks == 0u); // 两个 f32 字段不受 u32 越界影响
+        REQUIRE(r.vadHysteresisDbFallbacks == 0u);
     }
 }
 

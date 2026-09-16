@@ -1352,8 +1352,15 @@ void ScvbOutputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     // STATE_SCHEMA §一 一直把它们列在 state 里,而此前只有 `runtime_` 这一份内存真身:
     // A24 实测「MIN SEG 回来了,但 THRESHOLD / HYSTERESIS / HOLD / PAD PRE / PAD POST 全部回默认」。
     // 六项都是**纯配置**,与采集态([J91])不同:没有任何理由不随工程走。
-    // `transitionRampMs` 在 runtime_ 里是 float(§1.20 的 UI 也是连续刻度),落盘按规格值域窄化成 u32
-    // —— 桥面 `handleSetTransitionRampMs` 已令它落在 20..300 的整数值上,窄化无损。
+    // `transitionRampMs` 在 runtime_ 里是 float(§1.20 的 UI 也是连续刻度),落盘按规格值域窄化成 u32。
+    // ⚠ **窄化不是无损的**(第 1 轮复审④,原文写「桥面已令它落在整数值上,窄化无损」,不成立):
+    // 桥面 `handleSetTransitionRamp` 只做 `specClamp`(`isfinite` + double 域夹取),**不取整** ——
+    // 入参 `140.5` 会让 `runtime_.transitionRampMs == 140.5f`,下面这行 `static_cast<std::uint32_t>` 是
+    // **向零截断** ⇒ 存盘写 140、重开读回 140.0f。今天生产路径碰不到,只因唯一的调用方是 web 滑杆,
+    // 而它的 `valueAt` 恰好用了 `Math.round`(`web/output/tab-master.js`)—— 那是**调用方的巧合,
+    // 不是桥面的保证**:预设加载 / Input 远端同步 / 脚本化调用下发小数时,会在存盘那一刻静默掉小数位
+    // (正是本卡在修的那类「我设的值没被记住」的微缩版)。要让它真的无损,得在这里先 `juce::roundToInt`
+    // (与 web 的 `Math.round` 同口径)—— 本卡未改语义,只把注释改成实情。
     s.vadThresholdDb = runtime_.vadThresholdDb;
     s.vadHysteresisDb = runtime_.vadHysteresisDb;
     s.vadHangoverMs = static_cast<std::uint32_t>(runtime_.vadHangoverMs);
