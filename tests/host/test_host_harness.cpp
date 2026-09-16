@@ -8174,10 +8174,14 @@ TEST_CASE("HOST SL411:分段三参数随工程保存 —— 重开后三项一�
 // [SL-412] 旧构建读到更高 abi 的工程 —— 拒载态**真的被置起来**(提示那一半的前提)
 //
 // 判据分两层,本格守的是**下面那层**:
-//   · **host(本格)**:真 `setStateInformation` 喂一份 abi=5 的合成 blob ⇒
-//     `hasStateAbiMismatch() == true` 且 `stateAbiSeen() == 5`;`getStateInformation`
-//     **原样回写**宿主那串字节(§7.3「绝不静默降级」的另一半);再喂一份本机读得懂的
-//     abi=4 blob ⇒ 两位退回「无拒载」(横幅④ 的 `active:false` 撤销帧走的正是这一跳)。
+//   · **host(本格)**:真 `setStateInformation` 喂一份 **abi 比本机高的合成 blob** ⇒
+//     `hasStateAbiMismatch() == true` 且 `stateAbiSeen() == 那个抬上去的数`;`getStateInformation`
+//     **原样回写**宿主那串字节(§7.3「绝不静默降级」的另一半);再喂一份**本机读得懂的**
+//     blob ⇒ 两位退回「无拒载」(横幅④ 的 `active:false` 撤销帧走的正是这一跳)。
+//     ⚠ **本格的 abi 一律是相对量**(`localAbi = scvb::state::kCurrentAbi`、
+//     `projectAbi = localAbi + 1`),**用例里没有写死任何 abi 数** —— 所以 [SL-416]/#263 把
+//     `kCurrentAbi` 由 4 升到 5 之后本格照旧成立(实测确实照旧)。这一行以前写成「abi=5 / abi=4」,
+//     那是**写死的数字**,merge 之后就成了对这棵树的假话(#264 第 2 轮补充裁定 4)。
 //   · **发送面**(`OutputEditor::emitNewerStateError` 真的调了 `emitError`):`OutputEditor`
 //     要真 WebView2、**编不进任何 C++ 测试目标**(`tests/CMakeLists.txt` 的
 //     `scvb_monitor_tests` 头注写着这条边界),故落在三处:纯函数 `planNewerStateEmit`
@@ -8205,7 +8209,7 @@ TEST_CASE("HOST SL412:旧构建读更高 abi 的工程 —— 拒载态置位、
 
     std::vector<std::uint8_t> newer(static_cast<const std::uint8_t*>(saved.getData()),
                                     static_cast<const std::uint8_t*>(saved.getData()) + saved.getSize());
-    newer[4] = static_cast<std::uint8_t>(localAbi + 1); // abi 在 offset 4(当前 4 → 5)
+    newer[4] = static_cast<std::uint8_t>(localAbi + 1); // abi 在 offset 4:抬到「本机 + 1」(相对量,不写死数)
 
     // ---- ① 拒载态置位 ------------------------------------------------------
     out.setStateInformation(newer.data(), static_cast<int>(newer.size()));

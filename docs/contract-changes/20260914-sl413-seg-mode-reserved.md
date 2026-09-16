@@ -11,16 +11,22 @@
   补上 [SL-412] 的接线实况。**123 参数表逐字未改**,ParamID / index / 顺序 / versionHint /
   skew 一个字节未动(三项本来就不是自动化参数,是 state-only)。
 - [ ] docs/IPC_CONTRACT.md(共享内存段名/布局)—— **不动**:与跨进程共享内存无关。
-- [x] docs/STATE_SCHEMA.md(state schema)—— **只动文本,零布局 / 零 abi / 零迁移**:
+- [x] docs/STATE_SCHEMA.md(state schema)—— **只动文本,零布局 / 零迁移**:
   §一 `analysis.segmentation.mode` 标 v1 保留位、§三 `CFGS` 那一档与 §三 新增一条说明、
-  §三「迁移函数框架」与 CRVS minor 两条的「UI 通路待接线」口径改实(`CFGS` 布局、abi=4、
-  `kMigrators` 三条、golden,**一个字节未动**)。
+  §三「迁移函数框架」与 CRVS minor 两条的「UI 通路待接线」口径改实。
+  ⚠ **数数要按本分支的实况说**(本 PR 的 merge `2948201` 把 `origin/feature/v1` @ `e2da56a`
+  带了进来,**已含 #263/[SL-416]**):容器 `kCurrentAbi` **= 5**、`kMigrators` **四条**、
+  golden **五份**(`abi1..abi5.bin`)。**这些都不是本 PR 改的** —— 本 PR 与 [SL-416] 两处
+  改动**互不相交**:本条一个字节都没碰 `CFGS` 布局 / abi / 迁移链 / golden)
+  ⇒ 准确的说法是「**本 PR 对 `CFGS` 布局、`kCurrentAbi`、`kMigrators`、golden 各零改动**」,
+  而不是把基线 `b06d37a` 上的旧数字(abi=4 / 三条 / 四份)当成现在的实况写在这里。
 - [ ] docs/SCVB_CONTRACT.md(桥面契约)—— **不动**:`newerState` 的 code / 载荷形状
   (`{localAbi:u32, projectAbi:u32}`)/ UI 落点(红横幅④)**早就在 §5.1 九码表里定义好了**
   (真源 03 §6.2 / J40),§2.9 的 envelope(`code` / `ch?` / `detail` / `active`)也一字不改。
   [SL-412] 补的是**生产者**(native 侧此前零调用方),不是契约面 —— 载荷字段**只增不改**
   这条铁律在本 PR 上一次都没有被用到。
-- [ ] tests/golden/(golden 快照)—— **不动**:`abi1..abi4.bin` 四份逐字节未改。
+- [ ] tests/golden/(golden 快照)—— **不动**:`abi1..abi5.bin` **五份**逐字节未改
+  (其中 `abi5.bin` 是 #263/[SL-416] 新增的,与本条无关)。
   ⚠ 金样锁的是**容器头**(magic / abi / flags / chunkCount / TLV 框),它看不见 `CFGS` 载荷,
   所以「`mode` 现在是保留位」这件事**不会**、也**不该**让任何一份金样红。
 
@@ -109,7 +115,7 @@ v1 保留位** —— 落盘字段保留、恒写 `0`=valley、`vad_only` 留待
 | 层 | 位置 | 钉什么 |
 | --- | --- | --- |
 | 纯函数 | `tests/core/test_bridge_args.cpp` `BRIDGEARGS-SL412`(7 格) | `planNewerStateEmit` 的四态:首次发 `active:true` / 同一份不重复发 / 换工程 abi 要重发 / 条件解除发 `active:false`;外加「屏上本来没有就不发空撤销帧」与**不可见时不发也不记账**(三支一起断) |
-| host 真路径 | `tests/host/test_host_harness.cpp` `HOST SL412` | 真 `setStateInformation` 喂 abi=5 的合成 blob ⇒ `hasStateAbiMismatch()==true` 且 `stateAbiSeen()==5`;`getStateInformation` **原样回写**宿主那串字节;再喂 abi=4 ⇒ 拒载态复位 |
+| host 真路径 | `tests/host/test_host_harness.cpp` `HOST SL412` | 真 `setStateInformation` 喂一份 **abi 比本机高的合成 blob**(**相对量**:`localAbi = scvb::state::kCurrentAbi`,`projectAbi = kCurrentAbi + 1` —— 用例里**没有写死任何 abi 数**,所以 abi 再升一格它照样成立)⇒ `hasStateAbiMismatch()==true` 且 `stateAbiSeen()==projectAbi`;`getStateInformation` **原样回写**宿主那串字节;再喂一份**本机读得懂的**工程 ⇒ 拒载态复位 |
 | 调用点(离线不可达的那一跳) | `web-preview/tests/smoke-tab2-interactions.mjs` `[SL-412]` 六条源码钉子 | `emitTick` 真的调了 `emitNewerStateError()` / 判定走纯函数 / 载荷按 §2.9 信封发(**不带 `ch`**)/ `detail` 两个字段名逐字对 §5.1 / 闩锁按 plan 回填 / 闩锁是「两位」不是单 bool |
 | 页面级(消费端) | `web-preview/tests/smoke-group-lock-page.mjs` `[SL-412]` 一节 | mock 推 `newerState{localAbi:4, projectAbi:5}` ⇒ 红横幅④ 可见、文案**逐字**等于词条 `banner.versionMismatch` 填上那两个数;再推 `active:false` ⇒ 横幅撤下 |
 | 页面级(负空间) | `web-preview/tests/smoke-seg-restore-page.mjs` `[SL-413]` 一节 | 分段工具条组里可见滑杆恰 1 根 / `<select>` 0 个 / `data-gb` 含 `mode` 的节点 0 个 |

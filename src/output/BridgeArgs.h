@@ -347,4 +347,27 @@ inline NewerStateEmitPlan planNewerStateEmit(bool mismatch, std::uint32_t projec
     return p;
 }
 
+// -----------------------------------------------------------------------------
+// [SL-412] `newerState.detail` 里那两个 abi 数**落 JSON 的口径**。
+//
+// 病灶:`stateAbiSeen_` 直接来自**工程文件里的不可信字节**(`OutputProcessor.cpp` 里那句
+// `parseHeader(...) ? hdr.abi : 0u`,`hdr.abi` 是 u32),而它**没有任何上界校验** ——
+// 一份手改过的 / 来自未来版本的工程可以让它是 `0xFFFFFFFF`。`static_cast<int>(u32)`
+// 在 C++17 下当值超 `INT_MAX` 时是**实现定义行为**(MSVC 上回绕成负数),于是横幅④ 会
+// 对着用户显示一个**负数 abi**,而那句话是读给他看的。
+//
+// 口径:**换成容得下的类型,不夹取** —— 与 `OutputEditor.cpp` 里三处既有先例逐字同款
+// (`:877` 的 `featureBytes` / `:925` 的 `heartbeatAgeMs` / `:948` 的 `generation`,
+// 都是 `static_cast<juce::int64>`)。`juce::int64` 精确装下 u32 全域,而且**显示的是真值**;
+// 夹取会把「工程 abi 4294967295」悄悄改写成「2147483647」—— 那是一句关于当前工程的假话,
+// 比不显示更坏。JSON 侧只有一个 number 类型,故这不改 §5.1 载荷字段的语义(仍是
+// 非负整数,仍在 u32 域内)。
+//
+// 抽成纯函数是为了**能被离线断言**:`emitNewerStateError` 那一跳要真 WebView2,
+// 编不进任何 C++ 测试目标(见上面 `planNewerStateEmit` 那段同一笔账)。
+inline juce::int64 abiForJson(std::uint32_t abi) noexcept
+{
+    return static_cast<juce::int64>(abi);
+}
+
 } // namespace scvb::output

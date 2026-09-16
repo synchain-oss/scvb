@@ -561,4 +561,31 @@ TEST_CASE("planNewerStateEmit:newerState 的边沿/撤销/去重/丢弃四态", 
         // 真正的不变量(`RejectedNewer ⇒ hdr.abi ≥ 1`)由 `HOST SL412` 在真
         // `setStateInformation` 上断,不靠这里。
     }
+
+    SECTION("S8 abi 落 JSON:u32 全域都非负、精确、可读(不写死 cast 成 int)")
+    {
+        using scvb::output::abiForJson;
+
+        // [SL-412 / #264 第 2 轮补充裁定 5] `projectAbi` 来自**工程文件里的不可信字节**
+        // (u32、**无上界校验**),而 `static_cast<int>(u32)` 在值超 `INT_MAX` 时是
+        // **实现定义行为**(MSVC 回绕成负数)⇒ 横幅④ 会对着用户显示一个负数 abi。
+        // 删除式:把 `abiForJson` 的返回改成 `static_cast<int>`(或 `static_cast<juce::int64>(
+        // static_cast<int>(abi))`)⇒ 下面第一、三条当场红 —— 那正是修复前的形态。
+        constexpr std::uint32_t kWorst = 0xFFFFFFFFu; // 手改过的工程能给到的最大值
+        CHECK(abiForJson(kWorst) == 4294967295LL); // ★ 精确,没有回绕成 -1
+        CHECK(abiForJson(kWorst) >= 0); // ★ 非负 —— 横幅上的两个数都必须是正的
+        CHECK(abiForJson(0u) == 0LL);
+        CHECK(abiForJson(1u) == 1LL);
+        CHECK(abiForJson(static_cast<std::uint32_t>(scvb::state::kCurrentAbi)) ==
+              static_cast<juce::int64>(scvb::state::kCurrentAbi)); // 本机 abi 原样透出
+
+        // 「可读」这半:落进 `juce::var` 之后**渲染成十进制整数字面**,不是负数、不是 e 记法、
+        // 不是浮点尾巴。这一条钉的是「用户真的能在横幅上读出那个数」。
+        const juce::var v(abiForJson(kWorst));
+        // ⚠ Catch2 的 `CHECK` **不接受** `||`(它要做表达式分解)—— 拆成两条,别合并。
+        CHECK(v.isInt64());
+        CHECK(v.toString() == juce::String("4294967295"));
+        const juce::var vLocal(abiForJson(static_cast<std::uint32_t>(scvb::state::kCurrentAbi)));
+        CHECK(vLocal.toString() == juce::String(static_cast<int>(scvb::state::kCurrentAbi)));
+    }
 }

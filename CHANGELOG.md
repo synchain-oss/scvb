@@ -397,7 +397,8 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
 - **`analysis.segmentation.mode` 标注为 v1 保留位**(契约文本口径变更,**零布局 / 零 abi / 零迁移**:
   `CFGS` 尾部那一档里 `segmentationMode` 那一个 u32 照旧在(载荷偏移 `40 + languageBytes`,
   随 `uiLanguage` 长度浮动),容器 `abi` **本 PR 不升**(基线 `b06d37a` 上为 4;[SL-416] 已在 #263
-  把它升到 5 —— 两处改动互不相交,本条一个字节都没碰 abi),`kMigrators` 仍是三条,
+  把它升到 5 —— 两处改动互不相交,本条一个字节都没碰 abi),`kMigrators` **本条不加**
+  (现为四条,第四条的 `migrate_4_to_5` 来自 [SL-416]),
   `tests/golden/state/*.bin` 本 PR 一份未动)。`mode` 的两档 `valley` / `vad_only` 只活在规格里:
   **UI 全仓没有对应控件**
   (`web/output/index.html` 里 `valley` / `vad_only` / `分段方式` 三个字面全 0 命中;`valley` 在

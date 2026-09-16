@@ -83,7 +83,7 @@ ui: {scale, language, active_tab, master_chart_mode, guide_seen, tour_seen, lang
 ## 二、Input state
 
 ```yaml
-abi: 4                          # 当前 abi(kCurrentAbi=4);Input 与 Output 共用容器 abi
+abi: 5                          # 当前 abi(kCurrentAbi=5);Input 与 Output 共用容器 abi(#263/[SL-416] 把它由 4 升到 5,与 §三 那条一致)
 group_id: 1..8               # [J66] 本轨所属组(默认 1);同一人声轨只能属一组
 channel_id: 0..15             # 本轨绑定的 channel;0=未分配(J01);[J59] 上限 15
 ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false

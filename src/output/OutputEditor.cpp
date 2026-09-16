@@ -733,9 +733,12 @@ void OutputEditor::emitNewerStateError()
     // envelope 逐字照 §2.9:code + detail + active(**不带 ch** —— 这一条是页级条件,
     // 不是轨级;§5.1 表里它的 `ch` 列就是「—」)。`detail` 的两个数就是 §5.1 表里
     // `{localAbi:u32, projectAbi:u32}` 那一格,横幅④ 的文案拿它们填 {a}/{b}。
+    // ⚠ 两个数都经 `abiForJson` 落 JSON(**不是** `static_cast<int>`):`projectAbi` 直接来自
+    // 工程文件里的不可信字节(u32、无上界),超 `INT_MAX` 转 `int` 是实现定义行为,
+    // 会把横幅④ 变成一个负数。口径与理由写在 `BridgeArgs.h` 那个纯函数上。
     juce::var detail = obj();
-    put(detail, "localAbi", static_cast<int>(scvb::state::kCurrentAbi));
-    put(detail, "projectAbi", static_cast<int>(processor_.stateAbiSeen()));
+    put(detail, "localAbi", scvb::output::abiForJson(scvb::state::kCurrentAbi));
+    put(detail, "projectAbi", scvb::output::abiForJson(processor_.stateAbiSeen()));
     emitError("newerState", 0, detail, plan.active);
 
     // ⚠ 只在**真发了**之后才推进(§5.1 降级纪律②的两态对称:撤下那一帧同样要记账,

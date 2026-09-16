@@ -860,6 +860,54 @@ try {
         ),
         "⑥ 横幅④ 在 6s 内撤下(active:false ⇒ 条件解除)",
     );
+
+    // ---- ⑥b [SL-412 / #264 第 2 轮补充裁定 5] 极端 abi:**可读**,不是负数、不是 undefined ----
+    // 病灶在 C++ 侧(`static_cast<int>(u32)` 超 `INT_MAX` 是实现定义行为),
+    // 纯函数那半边由 `BRIDGEARGS-SL412` 的 S8 断;这一格断的是**消费端**:
+    // 就算真把 `0xFFFFFFFF` 送到页面上,横幅也得把它渲染成一个读得出来的十进制数。
+    const WORST_ABI = 4294967295; // = 0xFFFFFFFF,手改过的工程能给到的最大值
+    check(
+        await evaluate(emitNewerState(WORST_ABI, WORST_ABI, true)),
+        `⑥b 推一帧 detail 两个数都是 ${WORST_ABI}(0xFFFFFFFF)`,
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-versionMismatch"); return !!n && !n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥b 横幅④ 在 6s 内上屏",
+    );
+    {
+        const w = await evaluate(VERSION_BANNER);
+        const txt = w.text || "";
+        // 「可读」= 词条两个占位符都填上了、且填进去的是那个十进制数本身。
+        check(
+            !/\{[ab]\}|undefined|NaN|-1\b/.test(txt),
+            `⑥b 横幅④ 文案里没有占位符残留 / undefined / 负数(实得「${txt}」)`,
+        );
+        eq(
+            txt,
+            String(T.zh["banner.versionMismatch"])
+                .replace("{a}", String(WORST_ABI))
+                .replace("{b}", String(WORST_ABI)),
+            "⑥b 横幅④ 把 4294967295 原样读出来(没有回绕、没有 e 记法、没有浮点尾巴)",
+        );
+    }
+    check(
+        await evaluate(emitNewerState(WORST_ABI, WORST_ABI, false)),
+        "⑥b 撤下极端值那一帧",
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-versionMismatch"); return !n || n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥b 横幅④ 在 6s 内撤下",
+    );
     assertClean("⑥ newerState 横幅");
 } catch (e) {
     fail++;
