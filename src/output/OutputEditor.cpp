@@ -270,7 +270,18 @@ void OutputEditor::emitTick()
             pendingAnalyzedReason_ = ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     }
 
-    // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
+    // scvb.error:仅条件成立时发(§2.9)。
+    //
+    // [SL-412] `newerState` 是本编辑器的**第一个** error 生产者(此前 `emitError` 零调用方,
+    // 上一版这句注释写的「T29 无触发面」说的就是这件事)。两条路都收在这一拍里,不必新增
+    // processor→editor 的回调通路:
+    //   ① 编辑器打开**之前**宿主就已 `setStateInformation` 拒载过(打开一份更高 abi 的工程)
+    //      —— `stateAbiMismatch_` 早置着,`emitTick` 在 `bridgeReady_` 之后的**第一拍**就看见它;
+    //   ② 编辑器已经开着、宿主此时才载入 —— 下一拍(≤40ms)看见。
+    // 本拍由基类 `WebViewHost::timerCallback` 门在 `bridgeReady_` 上(`WebViewHost.cpp:1080`),
+    // 所以「页面还没就绪 ⇒ emit 被 evaluateJavascript 丢掉」这一态到不了这里;剩下只有
+    // **可见性**那一关,由 plan 的 `visibleNow` 管(载荷不可见即丢,且不推进闩锁)。
+    emitNewerStateError();
 }
 
 // ============================================================================
@@ -686,6 +697,31 @@ void OutputEditor::emitError(const juce::String& code, int ch, const juce::var& 
     put(payload, "detail", detail);
     put(payload, "active", active);
     webView().emitEventIfBrowserIsVisible(Event::Error, payload);
+}
+
+// [SL-412] §2.9 `scvb.error` 的 `newerState` 一档。
+// 判定/记账的真身是 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数 —— 本 TU 要真 WebView2,
+// 编不进任何 C++ 测试目标,理由与做法见那份头注)。这里只做三件事:取现场值、按 plan 造载荷、
+// 用 plan 回填闩锁。
+void OutputEditor::emitNewerStateError()
+{
+    const auto plan = scvb::output::planNewerStateEmit(processor_.hasStateAbiMismatch(), processor_.stateAbiSeen(),
+                                                       webView().isVisible(), newerStateShown_, newerStateShownAbi_);
+    if (!plan.send)
+        return;
+
+    // envelope 逐字照 §2.9:code + detail + active(**不带 ch** —— 这一条是页级条件,
+    // 不是轨级;§5.1 表里它的 `ch` 列就是「—」)。`detail` 的两个数就是 §5.1 表里
+    // `{localAbi:u32, projectAbi:u32}` 那一格,横幅④ 的文案拿它们填 {a}/{b}。
+    juce::var detail = obj();
+    put(detail, "localAbi", static_cast<int>(scvb::state::kCurrentAbi));
+    put(detail, "projectAbi", static_cast<int>(processor_.stateAbiSeen()));
+    emitError("newerState", 0, detail, plan.active);
+
+    // ⚠ 只在**真发了**之后才推进(§5.1 降级纪律②的两态对称:撤下那一帧同样要记账,
+    // 否则条件再成立时会因为「以为屏上还挂着」而永远不再发)。
+    newerStateShown_ = plan.nextShown;
+    newerStateShownAbi_ = plan.nextShownAbi;
 }
 
 // ============================================================================

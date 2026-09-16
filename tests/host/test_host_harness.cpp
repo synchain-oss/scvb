@@ -8171,6 +8171,67 @@ TEST_CASE("HOST SL411:分段三参数随工程保存 —— 重开后三项一�
 }
 
 // ===========================================================================
+// [SL-412] 旧构建读到更高 abi 的工程 —— 拒载态**真的被置起来**(提示那一半的前提)
+//
+// 判据分两层,本格守的是**下面那层**:
+//   · **host(本格)**:真 `setStateInformation` 喂一份 abi=5 的合成 blob ⇒
+//     `hasStateAbiMismatch() == true` 且 `stateAbiSeen() == 5`;`getStateInformation`
+//     **原样回写**宿主那串字节(§7.3「绝不静默降级」的另一半);再喂一份本机读得懂的
+//     abi=4 blob ⇒ 两位退回「无拒载」(横幅④ 的 `active:false` 撤销帧走的正是这一跳)。
+//   · **发送面**(`OutputEditor::emitNewerStateError` 真的调了 `emitError`):`OutputEditor`
+//     要真 WebView2、**编不进任何 C++ 测试目标**(`tests/CMakeLists.txt` 的
+//     `scvb_monitor_tests` 头注写着这条边界),故落在三处:纯函数 `planNewerStateEmit`
+//     的 `BRIDGEARGS-SL412` 那一组 + `web-preview/tests/smoke-tab2-interactions.mjs` 的
+//     源码钉子 + `smoke-group-lock-page.mjs` 的横幅④ 页面级一格。
+//     **这是缺口不是覆盖** —— 与 `HOST SL391` / `HOST SL411` 头注同一笔账。
+//
+// 素材造法照 `tests/core/test_state_codec.cpp` 的 `STATE-ABI-1`:先编一份**真容器**,
+// 只把 offset 4 那个 abi 字节抬上去,其余一个字节不动 ⇒ 它是一份格式完全合法、
+// 只是「来自未来」的 state,不是随便一串坏字节。
+// ===========================================================================
+TEST_CASE("HOST SL412:旧构建读更高 abi 的工程 —— 拒载态置位、原样回写、解除可复位", "[host][state][SL412]")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    ScvbOutputAudioProcessor out;
+
+    // 前置:干净实例两位都是「无拒载」,否则下面的断言证明不了是**这一次载入**改的。
+    REQUIRE_FALSE(out.hasStateAbiMismatch());
+    const auto localAbi = static_cast<std::uint32_t>(scvb::state::kCurrentAbi);
+
+    // 一份本机读得懂的工程(abi = kCurrentAbi),留给 ③ 当「解除」那一档用。
+    juce::MemoryBlock saved;
+    out.getStateInformation(saved);
+    REQUIRE(saved.getSize() > 16); // 至少要装得下 16 字节容器头,否则下面改 offset 4 越界
+
+    std::vector<std::uint8_t> newer(static_cast<const std::uint8_t*>(saved.getData()),
+                                    static_cast<const std::uint8_t*>(saved.getData()) + saved.getSize());
+    newer[4] = static_cast<std::uint8_t>(localAbi + 1); // abi 在 offset 4(当前 4 → 5)
+
+    // ---- ① 拒载态置位 ------------------------------------------------------
+    out.setStateInformation(newer.data(), static_cast<int>(newer.size()));
+
+    // ★ 正题:`hasStateAbiMismatch()` 就是 `emitNewerStateError` 的输入。它恒假的话,
+    //   提示那一半就算接上线也一个字都发不出去 —— 本格是那个前提的唯一判据。
+    CHECK(out.hasStateAbiMismatch());
+    // ★★ 数值也要对:横幅④ 的文案是「本机 abi {a} / 工程 abi {b}」,{b} 就是这个数。
+    //     只断「拒载了」,等于把「横幅上写着 abi 0」也放过去。
+    CHECK(out.stateAbiSeen() == localAbi + 1u);
+
+    // ---- ② 拒载的另一半:原样回写(§7.3 绝不静默降级)--------------------
+    {
+        juce::MemoryBlock roundTrip;
+        out.getStateInformation(roundTrip);
+        CHECK(roundTrip == juce::MemoryBlock(newer.data(), newer.size()));
+    }
+
+    // ---- ③ 解除:再载一份本机读得懂的工程 ⇒ 拒载态复位 ---------------------
+    // 删除式:把 `setStateInformation` 里那句 `stateAbiMismatch_ = false;` 去掉 ⇒
+    // 本行红(而 ①② 照绿 —— 它们不经过这一支);横幅④ 也就永远撤不下来。
+    out.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+    CHECK_FALSE(out.hasStateAbiMismatch());
+}
+
+// ===========================================================================
 // [SL-399] 三层判据之 host 层 —— H1 值一致 / H2 写面只在写回窗 / H3 回执按写集
 //
 // 定谳(用户 A22):冻结前显示 pan −20 / vol −0.2,手动改之后「恢复自动」变成 −60 / −0.9。

@@ -56,6 +56,10 @@ private:
     // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
     bool emitSegments(const juce::String& reason, std::uint16_t tracksMask); // 同上
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
+    // [SL-412] §2.9 的 `newerState` 一档(CLAUDE.md §7.3「拒载**并提示升级**」里那半句提示)。
+    // 判定与记账全在 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数,离线可断言);
+    // 这里只负责取三个现场值、按 plan 载荷下发、推进闩锁。
+    void emitNewerStateError();
 
     // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
     struct AnalyzeScope
@@ -157,6 +161,13 @@ private:
         ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     // reason 枚举 → §2.8 的 reason 串(None 落 "snapshot")。
     static const char* segmentsReasonOf(ScvbOutputAudioProcessor::AnalysisDoneReason r);
+    // [SL-412] `scvb.error{newerState}` 的闩锁(消息线程独占)。
+    // 不逐拍比 json:**这一条是持续态** —— 拒载态会一直挂在 processor 上到下一次成功载入,
+    // 逐拍比会把同一件事发 25 次/秒。故记「屏上有没有这一条 + 那一条写的是哪个工程 abi」,
+    // 换工程(abi 变了)要重发,条件解除要发 active:false 撤横幅。
+    // ⚠ 与 `emitIfChanged` 同一条纪律:webview 不可见时**不推进**这两个位(载荷会被丢)。
+    bool newerStateShown_ = false;
+    std::uint32_t newerStateShownAbi_ = 0;
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)
