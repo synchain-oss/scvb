@@ -436,14 +436,27 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
             ),
             "[SL-412] 载荷按 §2.9 信封发出(不带 ch:这一条是页级条件)",
         );
+        // 钉的语义:**这两个键名必须逐字落进 `detail`**,且**值走 `abiForJson` 落 JSON**
+        // (§5.1 表的 `{localAbi, projectAbi}` 那一格)。
+        //
+        // ⚠ 这一条在 `15ee270` 上被 `abiForJson` 改动作废过(第 2 轮补充裁定 5 把
+        // `static_cast<int>(…)` 换成它)—— 而**钉子的值那一半有意钉死成真实字面形态**,
+        // 不是放宽成通配:这条钉子是**这半条接线唯一的守卫**(`emitNewerStateError` 编不进
+        // 任何 C++ 测试目标),放宽等于把守卫拆掉。改实现时它红一次、逼作者显式更新钉子,
+        // 是设计好的代价,别用 `.*` 之类的通配消红。
+        // 数值行为(u32 全域非负、精确、可读)另由 `BRIDGEARGS-SL412` 的 S8 在纯函数上钉:
+        // 这里管**契约形态 + 装配**,那里管**数值行为**。
+        //
+        // 行形态锚**保留**(`^…$` + `m`,第 1 轮裁定 1 立的规矩):`src()` 不区分代码与注释,
+        // 注释掉整行 ⇒ 行首多出 `//` ⇒ 不匹配。D4f / D7 是这条钉子的删除式。
         check(
-            /^[ \t]*put\(detail, "localAbi", static_cast<int>\(scvb::state::kCurrentAbi\)\);[ \t]*$/m.test(
+            /^[ \t]*put\(detail, "localAbi", scvb::output::abiForJson\(scvb::state::kCurrentAbi\)\);[ \t]*$/m.test(
                 oe,
             ) &&
-                /^[ \t]*put\(detail, "projectAbi", static_cast<int>\(processor_\.stateAbiSeen\(\)\)\);[ \t]*$/m.test(
+                /^[ \t]*put\(detail, "projectAbi", scvb::output::abiForJson\(processor_\.stateAbiSeen\(\)\)\);[ \t]*$/m.test(
                     oe,
                 ),
-            "[SL-412] detail 的两个数与 §5.1 表逐字同形(localAbi / projectAbi)",
+            "[SL-412] detail 的两个数与 §5.1 表逐字同形(localAbi / projectAbi),且都经 abiForJson 落 JSON",
         );
         // ⚠ 闩锁这三条正则(两条 check)**必须带行形态锚**,理由同上。第一版它们是裸 `test()`,
         // 实测把 `std::uint32_t newerStateShownAbi_ = 0;` **整行注释掉**之后照样全绿 ——

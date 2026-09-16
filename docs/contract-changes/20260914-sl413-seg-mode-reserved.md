@@ -114,10 +114,10 @@ v1 保留位** —— 落盘字段保留、恒写 `0`=valley、`vad_only` 留待
 
 | 层 | 位置 | 钉什么 |
 | --- | --- | --- |
-| 纯函数 | `tests/core/test_bridge_args.cpp` `BRIDGEARGS-SL412`(7 格) | `planNewerStateEmit` 的四态:首次发 `active:true` / 同一份不重复发 / 换工程 abi 要重发 / 条件解除发 `active:false`;外加「屏上本来没有就不发空撤销帧」与**不可见时不发也不记账**(三支一起断) |
+| 纯函数 | `tests/core/test_bridge_args.cpp` `BRIDGEARGS-SL412`(**S1–S8 八格**) | **S1–S7**:`planNewerStateEmit` 的四态(首次发 `active:true` / 同一份不重复发 / 换工程 abi 要重发 / 条件解除发 `active:false`)+「屏上本来没有就不发空撤销帧」+「不可见时不发也不记账」(三支一起断)+ 不变量 `projectAbi ≥ 1`;**S8**(第 2 轮补充裁定 5):`abiForJson` 对 u32 全域**非负、精确、可读** —— `abiForJson(0xFFFFFFFF)` 精确等于 4294967295(修复前的 `static_cast<int>` 会回绕成 −1)、落 `juce::var` 后 `toString()` 读得出十进制原值 |
 | host 真路径 | `tests/host/test_host_harness.cpp` `HOST SL412` | 真 `setStateInformation` 喂一份 **abi 比本机高的合成 blob**(**相对量**:`localAbi = scvb::state::kCurrentAbi`,`projectAbi = kCurrentAbi + 1` —— 用例里**没有写死任何 abi 数**,所以 abi 再升一格它照样成立)⇒ `hasStateAbiMismatch()==true` 且 `stateAbiSeen()==projectAbi`;`getStateInformation` **原样回写**宿主那串字节;再喂一份**本机读得懂的**工程 ⇒ 拒载态复位 |
-| 调用点(离线不可达的那一跳) | `web-preview/tests/smoke-tab2-interactions.mjs` `[SL-412]` 六条源码钉子 | `emitTick` 真的调了 `emitNewerStateError()` / 判定走纯函数 / 载荷按 §2.9 信封发(**不带 `ch`**)/ `detail` 两个字段名逐字对 §5.1 / 闩锁按 plan 回填 / 闩锁是「两位」不是单 bool |
-| 页面级(消费端) | `web-preview/tests/smoke-group-lock-page.mjs` `[SL-412]` 一节 | mock 推 `newerState{localAbi:4, projectAbi:5}` ⇒ 红横幅④ 可见、文案**逐字**等于词条 `banner.versionMismatch` 填上那两个数;再推 `active:false` ⇒ 横幅撤下 |
+| 调用点(离线不可达的那一跳) | `web-preview/tests/smoke-tab2-interactions.mjs` `[SL-412]` 六条源码钉子 | `emitTick` 真的调了 `emitNewerStateError()` / 判定走纯函数 / 载荷按 §2.9 信封发(**不带 `ch`**)/ `detail` 两个字段名逐字对 §5.1(**只钉键名,值那一半有意放宽** —— 值在本 PR 里就变过一次 `static_cast<int>` → `abiForJson`;值的正确性归上面 S8)/ 闩锁按 plan 回填 / 闩锁是「两位」不是单 bool |
+| 页面级(消费端) | `web-preview/tests/smoke-group-lock-page.mjs` `[SL-412]` 一节 | mock 推 `newerState{localAbi:4, projectAbi:5}` ⇒ 红横幅④ 可见、文案**逐字**等于词条 `banner.versionMismatch` 填上那两个数;再推 `active:false` ⇒ 横幅撤下;**⑥b** = 同上但推 `4294967295`(`0xFFFFFFFF`)⇒ 横幅把该数**原样读出来**,文案里没有占位符残留 / `undefined` / 负数 |
 | 页面级(负空间) | `web-preview/tests/smoke-seg-restore-page.mjs` `[SL-413]` 一节 | 分段工具条组里可见滑杆恰 1 根 / `<select>` 0 个 / `data-gb` 含 `mode` 的节点 0 个 |
 | 词条面 | `node scripts/check-i18n.mjs` | 569 key × 3 语(本 PR **零新增词条** —— 横幅④ 的文案 `banner.versionMismatch` 早就在三语里了,所以**不触发**字体覆盖检查) |
 | 真源对拍 | `node scripts/gen-hard-rules.mjs --check` | 硬约束九条 6 个落地面逐字节一致(本 PR 只动「分段」那一条 bullet,与硬约束无关) |
@@ -145,7 +145,8 @@ v1 保留位** —— 落盘字段保留、恒写 `0`=valley、`vad_only` 留待
 - `src/output/BridgeArgs.h`(`NewerStateEmitPlan` + `planNewerStateEmit`,纯函数)
 - `src/output/OutputEditor.h`(`emitNewerStateError()` 声明 + 两位闩锁)
 - `src/output/OutputEditor.cpp`(实现 + `emitTick` 里的调用点,替掉那句「T29 无触发面」)
-- `tests/core/test_bridge_args.cpp`(`BRIDGEARGS-SL412` 七格)
+- `tests/core/test_bridge_args.cpp`(`BRIDGEARGS-SL412` **S1–S8 八格** —— S1–S7 是 `planNewerStateEmit`
+  的四态与三条边界,S8 是 `abiForJson` 的 u32 全域非负/精确/可读)
 - `tests/host/test_host_harness.cpp`(`HOST SL412`)
 - `web-preview/tests/smoke-tab2-interactions.mjs`(`[SL-412]` 六条源码钉子)
 - `web-preview/tests/smoke-group-lock-page.mjs`(页级 `[SL-412]` 一节 + 文件头「跑什么」同步)
