@@ -112,3 +112,42 @@
 ## 审批
 
 已批:统筹 2026-09-13(用户 2026-09-11 A20 裁定「先暂时不上」;B23 / B25 两格按本文档「机检 / 清单」那一节的口径标「v1 不可达,机检覆盖」);随实现 PR 落地并挂 `status/frozen-contract`。
+
+## 追记:2026-09-14 用户裁定「sidecar 不上」⇒ UI 收起,读路径保留(SL-415)
+
+> 本节**不改动**上面任何一行 —— 上面记录的是 2026-09-11/13 那次「关掉自动切换开关」的
+> 契约面,照实保留。本次是用户在同一方向上又走了一步,故**只追记**。
+
+用户 2026-09-14(B23 / B25)裁定:「我们说过直接不上了,不要 sidecar 了」。统筹按**最小改动**
+理解并派工(**只收 UI,不删代码**),落地形态如下:
+
+- **收起的是界面**(三处 + 一处导览):
+  - 设置页「存储状态」行(`web/output/index.html` 的 `data-gb="settings-storage"` 卡片);
+  - 横幅 ⑤「采集数据缺失/过期」(`banner-sidecarMissing`);
+  - toast②「已转存外部文件」(`toast-sidecarSwitched`);
+  - 引导导览里讲「存储状态」的那一步**整步移除**(`web/output/tour.js`;44 → 43 步,
+    `web/shared/i18n.js` 的 `tour.step42/43/44.*` 三语随之重编号 —— 文本按步号取词条,
+    不重编号会让「诊断」那一步显示存储状态的说明)。
+  - 共同形态:**DOM 留 + `hidden` 恒挂 + `app.js` / `tab-settings.js` 不再对它们调 `show()`**
+    (照 [SL-382] / #251 藏灵敏度杆的先例)。判据 = 页面级 `smoke-ui-layout-page.mjs` G 节,
+    在**触发条件成立**下量三处 `getClientRects().length === 0`(各配一条对照,免空过)。
+- **保留的是能力,一个字节没动**:`SidecarStore`(读写 / `owner.lock` / copy-on-write /
+  8MB↔6MB 回滞)、本文档上文那套 `STATE_SCHEMA §4.3` 口径、四份冻结契约里的字段与枚举
+  (§7 manifest 的 `sidecarSwitched` 枚举照样在)、`tests/core/test_state_features_roundtrip.cpp`
+  的 `FEAT-SIDECAR-*`、`HOST SL395`、以及 `tab-settings.js` 的 `storageOf()` 三格。
+  **打开早期版本写的外部特征工程仍照常读回**(`embedded=0` 的读路径依然可达),
+  只是屏幕上不再有这一行、也不再有那句提示。
+- **契约布局零变化,但冻结文档的描述分家了 ⇒ 走 (b)**:追记这一节第 1 推写的是「本 PR
+  **不挂** `status/frozen-contract`、**不新增**变更文档」,**那句已被 2026-09-15 统筹裁定取代** ——
+  六处(第 5 推起为**七处**)冻结文档描述的行为在 v1 上不存在,属**行为面**的契约变更,
+  「不动布局所以不用走 §5 流程」站不住。现改为:**已补变更文档
+  `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md` 并挂 `status/frozen-contract`**
+  (本文档记录的那次契约变更没有被推翻,被用户进一步裁定的是它的**界面出口**)。
+- **横幅 ⑤ 与那句提示(按事实改,勿照旧读)**:第 1 推这一节曾写「横幅 ⑤ 此前是『打开一份外部
+  特征文件已丢失的老工程』时**唯一**的提示出口」。2026-09-15 统筹 grep 更正:`sidecarMissing`
+  在 `src/` 里**没有任何生产者**(只有 `SidecarStore.h` 一条待接线注释),`sidecarSwitched`
+  一条都没有 —— 所以**这个口子在本卡之前也从未被填上过**,收起横幅并没有夺走一条活着的提示;
+  本卡做的是让契约文档与实现一致,并给「接线时必须同时恢复横幅⑤」装上判据
+  (`smoke-tab4-settings.mjs` 的「`src/` 非注释命中数 == 0」)。要恢复提示,把
+  `web/output/app.js` 里那一行 `show($("banner-sidecarMissing"), …)` 接回来即可
+  —— 原句逐字留在该处注释里。

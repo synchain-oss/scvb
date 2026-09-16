@@ -208,15 +208,15 @@ FeatSection(压缩前布局):
 
 - 阈值判定用**压缩后字节数**;加**回滞**防止在 8MB 附近反复横跳:**一旦转为 sidecar,压缩后 <6MB 才收回内嵌**。
 - `getStateInformation()`:① 容器序列化配置/曲线各节 → ② `FeaturesCodec::encode()` → zlib 压缩 → gz → ③ gz ≤ 8MB:embedded=1 内嵌(若存在旧 sidecar → 删除,数据已随工程,防双源分叉);gz > 8MB:走 §4.3 sidecar 流程,节内只写 GUID+sha256+size。
-- `setStateInformation()`:embedded=1 → 解码入 FrameStore(重建 CoverageMap);embedded=0 → 按 §4.3 定位 sidecar → sha256 校验 → 通过则解码,失败/缺失 → FrameStore 置空 + UI 横幅「采集数据缺失/过期,请重新采集」。**分段/曲线/配置正常加载不受影响**(sidecar 是缓存不是真相)。
+- `setStateInformation()`:embedded=1 → 解码入 FrameStore(重建 CoverageMap);embedded=0 → 按 §4.3 定位 sidecar → sha256 校验 → 通过则解码,失败/缺失 → FrameStore 置空。**该分支的 UI 横幅⑤「采集数据缺失/过期,请重新采集」在 v1 无出口**:`sidecarMissing` 这条 code 在 `src/` 里没有生产者(只有一条待接线注释),且用户 2026-09-14 裁定「sidecar 不上了」后横幅已收起 —— 接线那天必须同时恢复横幅⑤(见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。**分段/曲线/配置正常加载不受影响**(sidecar 是缓存不是真相)。
 
 ### 4.3 sidecar 目录契约
 
-- **session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,见下 copy-on-write 条,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。生成时机提前到构造期是为了让**设置页在首次存盘前就显示真值** —— 否则「存储状态」行在用户第一次保存工程之前恒是废话。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。**PRMS 值不一定是加载期终值**:工程内 FEAT 走 sidecar 引用节时,引用节的 GUID **经校验通过后**再压过 PRMS 值(`readFeaturesChunk` 排在 PRMS 之后;两者因 CoW 换过 GUID 而不一致时以引用节为准,否则删不掉旧 sidecar 目录、留下孤儿)。落盘面见 §三 `PRMS`。
+- **session_guid**:Output **实例构造期**由 `juce::Uuid().toDashedString()` 自生成(**Output 侧的 `juce::Uuid()` 生成点唯一** = `ScvbOutputAudioProcessor` 构造函数;**不是**「本字段的值只可能来自那一处」—— 保存期 copy-on-write 会经 `SidecarStore::generateSessionGuid()` 换成新 GUID 并随本次 PRMS 落盘,见下 copy-on-write 条,加载期还会被 PRMS 存值与**校验通过的** FEAT 引用节 GUID 覆盖),永久随 state(VST3 无工程路径 API,这是唯一可靠方案);Input 不持有 GUID。生成时机提前到构造期**是既有行为,保留不动**(它当初的理由是「让设置页在首次存盘前就显示真值,否则『存储状态』行在用户第一次保存工程之前恒是废话」—— 用户 2026-09-14 裁定 sidecar 不上之后**那一行已收起,该理由因此失去指涉**;提前构造本身与本次 UI 收起无关,不随之改动。见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。加载工程时 `setStateInformation` 读到形状合法的旧值即覆盖它(**工程 > 新生成**);缺失(老工程)或形状非法时保留构造期这一个,下次保存写回。**PRMS 值不一定是加载期终值**:工程内 FEAT 走 sidecar 引用节时,引用节的 GUID **经校验通过后**再压过 PRMS 值(`readFeaturesChunk` 排在 PRMS 之后;两者因 CoW 换过 GUID 而不一致时以引用节为准,否则删不掉旧 sidecar 目录、留下孤儿)。落盘面见 §三 `PRMS`。
 - **路径**:`File::getSpecialLocation(userApplicationDataDirectory)` → Windows `%APPDATA%\Synchain\SCVB\sessions\<GUID>\`(macOS 后续 `~/Library/Application Support/...` 同构)。
 - **目录内容**:`manifest.json`、`features.bin.gz`(扩展名沿用 .gz,内容为 zlib RFC 1950)、`owner.lock`。
   - `manifest.json`:{schemaVersion, codecVer, createdAt, savedAt, sha256, bytes, channelCount, hostName}
   - 原子写:`features.bin.gz.tmp` 写完 → rename 为 `features.bin.gz`(单文件含全部 channel,布局同 §4.1 embedded 体)
   - `owner.lock`:{pid, processStartTime, heartbeatIso8601},sidecar 模式下 Output 每 10s 由消息线程刷新;判活 = pid 存在 ∧ 心跳 < 30s
-- **copy-on-write**:工程复制且两份同时打开 → 后开者检测到 owner.lock 活且 pid 非己 → 生成 newGUID、复制 sidecar 目录、本实例改用 newGUID;先后打开 → 共享同一 sidecar,任一方重采集保存后另一方 sha256 不匹配 → 按「缺失」处理(曲线无损,提示重采集)。
+- **copy-on-write**:工程复制且两份同时打开 → 后开者检测到 owner.lock 活且 pid 非己 → 生成 newGUID、复制 sidecar 目录、本实例改用 newGUID;先后打开 → 共享同一 sidecar,任一方重采集保存后另一方 sha256 不匹配 → 按「缺失」处理(**曲线无损**;那一句「提示重采集」在 v1 **无出口** —— `sidecarMissing` 在 `src/` 里没有生产者且横幅⑤ 已随用户 2026-09-14 裁定收起,接线那天一并恢复,见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。
 - **孤儿会话清理**(设置页「清理 30 天未访问会话」)推 v1.1;v1 在文档写明手动路径。

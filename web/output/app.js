@@ -1455,7 +1455,22 @@ function renderBanners() {
     }
 
     // ⑤ 采集数据缺失/过期  ⑥ 宿主未提供时间线(后者同时 disable 采集/输出开关)
-    show($("banner-sidecarMissing"), err.has("sidecarMissing"));
+    //
+    // [SL-415] **⑤ 的 `show()` 已摘掉** —— 用户 2026-09-14 裁定「sidecar 不上了」(B23/B25),
+    // 统筹按最小改动落:**只收 UI,不删代码**。此处原为
+    //     show($("banner-sidecarMissing"), err.has("sidecarMissing"));
+    // 现在横幅在 `index.html` 里恒挂 `hidden`,这里不再把它翻上来 —— 所以
+    // `scvb.error{code:"sidecarMissing"}` 到达也**不产生布局盒**(页面级判据:
+    // `smoke-ui-layout-page.mjs` G 节)。
+    // ⚠ **只摘了这一句,没有摘别的**:`sidecarMissing` 仍在下面 `KNOWN_CODES` 里(它仍是
+    // §5.1 九码之一),store.errors 也照旧收下它 —— 只是本版没有渲染出口。
+    // **按事实读,别照本卡第 1 推那句旧话读**:统筹 2026-09-15 grep 更正 —— 这条 code 在
+    // `src/` 里**没有任何生产者**(只有 `SidecarStore.h` 一条待接线注释),也就是说
+    // **横幅⑤ 在本次之前也从来没有亮过**,不是「本来会提示、被我们收掉了」。将来谁在 `src/`
+    // 里发出它,必须连同上面那行一起接回来(`smoke-tab4-settings.mjs` 的
+    // 「`src/` 非注释命中数 == 0」那一格届时会红,那是设计好的)。
+    // 契约面口径见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md` 与
+    // `docs/SCVB_CONTRACT.md` §5.1 的 UI 落点列 / 降级纪律①。
     vs.noTimeline = err.has("noTimeline");
     show($("banner-noTimeline"), vs.noTimeline);
 
@@ -1550,7 +1565,11 @@ function renderBanners() {
 
     // toast:一次性提示(§5.1 降级纪律②:可关闭)
     show($("toast-projectCopy"), err.has("projectCopy"));
-    show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
+    // [SL-415] **toast② 的 `show()` 已摘掉** —— 同横幅 ⑤(用户 2026-09-14 裁定
+    // 「sidecar 不上了」)。此处原为
+    //     show($("toast-sidecarSwitched"), err.has("sidecarSwitched"));
+    // toast 本体与词条 `toast.sidecarSwitched` 都留着(`index.html` 里恒挂 `hidden`),
+    // 开关真打开时把这一行接回来即可。`sidecarSwitched` 同样仍在 `KNOWN_CODES` 里。
 
     // 未知 code:原样显示并入 Tab4 诊断区(ADR-002 / ipc §5,UI 不静默)
     const diag = $("settings-diagnostics-list");
