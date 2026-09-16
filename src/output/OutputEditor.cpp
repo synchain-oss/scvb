@@ -290,7 +290,18 @@ void OutputEditor::emitTick()
             pendingAnalyzedReason_ = ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     }
 
-    // scvb.error:仅条件成立时发(§2.9),T29 无触发面。
+    // scvb.error:仅条件成立时发(§2.9)。
+    //
+    // [SL-412] `newerState` 是本编辑器的**第一个** error 生产者(此前 `emitError` 零调用方,
+    // 上一版这句注释写的「T29 无触发面」说的就是这件事)。两条路都收在这一拍里,不必新增
+    // processor→editor 的回调通路:
+    //   ① 编辑器打开**之前**宿主就已 `setStateInformation` 拒载过(打开一份更高 abi 的工程)
+    //      —— `stateAbiMismatch_` 早置着,`emitTick` 在 `bridgeReady_` 之后的**第一拍**就看见它;
+    //   ② 编辑器已经开着、宿主此时才载入 —— 下一拍(≤40ms)看见。
+    // 本拍由基类 `WebViewHost::timerCallback` 门在 `bridgeReady_` 上(`WebViewHost.cpp:1080`),
+    // 所以「页面还没就绪 ⇒ emit 被 evaluateJavascript 丢掉」这一态到不了这里;剩下只有
+    // **可见性**那一关,由 plan 的 `visibleNow` 管(载荷不可见即丢,且不推进闩锁)。
+    emitNewerStateError();
 }
 
 // ============================================================================
@@ -706,6 +717,49 @@ void OutputEditor::emitError(const juce::String& code, int ch, const juce::var& 
     put(payload, "detail", detail);
     put(payload, "active", active);
     webView().emitEventIfBrowserIsVisible(Event::Error, payload);
+}
+
+// [SL-412] §2.9 `scvb.error` 的 `newerState` 一档。
+// 判定/记账的真身是 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数 —— 本 TU 要真 WebView2,
+// 编不进任何 C++ 测试目标,理由与做法见那份头注)。这里只做三件事:取现场值、按 plan 造载荷、
+// 用 plan 回填闩锁。
+void OutputEditor::emitNewerStateError()
+{
+    const auto plan = scvb::output::planNewerStateEmit(processor_.hasStateAbiMismatch(), processor_.stateAbiSeen(),
+                                                       webView().isVisible(), newerStateShown_, newerStateShownAbi_);
+    if (!plan.send)
+        return;
+
+    // envelope 逐字照 §2.9:code + detail + active(**不带 ch** —— 这一条是页级条件,
+    // 不是轨级;§5.1 表里它的 `ch` 列就是「—」)。`detail` 的两个数就是 §5.1 表里
+    // `{localAbi:u32, projectAbi:u32}` 那一格,横幅④ 的文案拿它们填 {a}/{b}。
+    // ⚠ 两个数都经 `abiForJson` 落 JSON(**不是** `static_cast<int>`):`projectAbi` 直接来自
+    // 工程文件里的不可信字节(u32、无上界),超 `INT_MAX` 转 `int` 是实现定义行为,
+    // 会把横幅④ 变成一个负数。口径与理由写在 `BridgeArgs.h` 那个纯函数上。
+    juce::var detail = obj();
+    put(detail, "localAbi", scvb::output::abiForJson(scvb::state::kCurrentAbi));
+    put(detail, "projectAbi", scvb::output::abiForJson(processor_.stateAbiSeen()));
+    emitError("newerState", 0, detail, plan.active);
+
+    // ⚠ 只在**真发了**之后才推进(§5.1 降级纪律②的两态对称:撤下那一帧同样要记账,
+    // 否则条件再成立时会因为「以为屏上还挂着」而永远不再发)。
+    //
+    // ⚠⚠ **记账口径与同拍里 params / segments 那两路不同源,这是有意的,不要"对齐"**
+    // ([#264 第 1 轮统筹裁定 7]:采纳「写明理由」那一边,不改代码、不改签名):
+    // 那两路是 `settleResendLatch(sent, …)` —— 按 `emitSegments` / `emitParams` 的**回调
+    // 返回值**清位;而这一路按 **`plan` 已经采到的可见性**清位(`emitError` 返回 `void`,
+    // 是既有形态,为这一处改签名会扩面)。两者不是同一个判据,因为两者要防的不是同一件事:
+    //   · params / segments 的 `sent` 防的是**「载荷构好了但这一帧被吞」**——它们有第二层
+    //     基线在「发之前」就推进,吞一帧就永久丢一份变化,所以必须等回执、靠闩锁补发;
+    //   · 这一路 plan 的语义本身就是**边沿 + 撤销**(`!visibleNow` 直接不发**且不记账**),
+    //     条件只要还在,下一拍照样满足「该发」,不需要补发闩锁。
+    // 两次可见性取样都在**同一个同步调用栈**上(plan 一次、`emitEventIfBrowserIsVisible`
+    // 内部一次),消息线程不会在中间被插入一次可见性翻转,故「两次取样分家」不可达。
+    // 这条能力边界就是 `BridgeArgs.h` 那一段(`emitEventIfBrowserIsVisible` 在不可见时
+    // 丢弃载荷)写明的那个;**真要把这一路也改成回执制,先动 `emitError` 的签名**,
+    // 那是一次跨调用点的扩面改动,不塞在本卡里。
+    newerStateShown_ = plan.nextShown;
+    newerStateShownAbi_ = plan.nextShownAbi;
 }
 
 // ============================================================================

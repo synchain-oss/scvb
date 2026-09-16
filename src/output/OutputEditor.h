@@ -56,6 +56,10 @@ private:
     // tracksMask = u16 位图(bit0=ch1…bit14=ch15),kAllTracksMask=全轨;增量事件只含掩码内轨(PR#55 第11轮缺陷2)。
     bool emitSegments(const juce::String& reason, std::uint16_t tracksMask); // 同上
     void emitError(const juce::String& code, int ch, const juce::var& detail, bool active);
+    // [SL-412] §2.9 的 `newerState` 一档(CLAUDE.md §7.3「拒载**并提示升级**」里那半句提示)。
+    // 判定与记账全在 `BridgeArgs.h` 的 `planNewerStateEmit`(纯函数,离线可断言);
+    // 这里只负责取三个现场值、按 plan 载荷下发、推进闩锁。
+    void emitNewerStateError();
 
     // analyze/previewAnalyze 的作用域参数(§1.5/§1.6)。
     struct AnalyzeScope
@@ -145,6 +149,8 @@ private:
     // scvb.segments 全量快照** —— 两者的第二层基线(lastParamsValues_ / lastSegments* 三件)
     // 都在「发之前」就推进了,隐藏期被 emitEventIfBrowserIsVisible 丢掉的那一帧因此永不重发。
     // 初值 false:首帧本来就走全量,边沿不会多发一帧。
+    // ⚠ 这两位与下面 `newerStateShown_` 吃**同一条前提**(「`bridgeReady_` 是单向的」)——
+    // 前提、可达性链条与「破了之后要连带复位谁」写在那一处,不在这里抄第二份。
     bool wasVisible_ = false;
     bool wasSegVisible_ = false; // 同上,segments 一路独立记账(两条路的 settle 时机不同)
     bool pendingParamsFull_ = false; // 闩锁:置位后每拍强制全量,直到确认发出去才清
@@ -157,6 +163,32 @@ private:
         ScvbOutputAudioProcessor::AnalysisDoneReason::None;
     // reason 枚举 → §2.8 的 reason 串(None 落 "snapshot")。
     static const char* segmentsReasonOf(ScvbOutputAudioProcessor::AnalysisDoneReason r);
+    // [SL-412] `scvb.error{newerState}` 的闩锁(消息线程独占)。
+    // 不逐拍比 json:**这一条是持续态** —— 拒载态会一直挂在 processor 上到下一次成功载入,
+    // 逐拍比会把同一件事发 25 次/秒。故记「屏上有没有这一条 + 那一条写的是哪个工程 abi」,
+    // 换工程(abi 变了)要重发,条件解除要发 active:false 撤横幅。
+    // ⚠ 与 `emitIfChanged` 同一条纪律:webview 不可见时**不推进**这两个位(载荷会被丢)。
+    //
+    // ⚠⚠ **没写下来的前提:「`bridgeReady_` 是单向的」**([#264 第 1 轮统筹裁定 6],不开卡)。
+    // 这两个位只在「发出去过」之后才推进,而「发出去」的判据是 `webView().isVisible()`;
+    // 一旦 `bridgeReady_` 在**就绪之后**翻回 false(页面被换掉 / 重载),基线就陈旧 ——
+    // 新页面再也收不到这一帧,而记账说「已经发过了」。**今天到不了**,链条三条,缺一不可:
+    //   ① `emitTick` 只由基类 `WebViewHost::timerCallback` 在 `bridgeReady_` 为真时调用
+    //      (`WebViewHost.cpp:1080-1083`);
+    //   ② `bridgeReady_` 全类**只有一处**写 false —— `WebViewHost::beginLoadAttempt()`
+    //      (`WebViewHost.cpp:465`);
+    //   ③ 而 `beginLoadAttempt()` 只有两个调用者:构造期那次(`:457`)与 `retryWebView()`
+    //      (`:839`);`retryWebView()` 只能从**兜底面板**的 Retry 点出来(`:817-822`),
+    //      兜底面板又只在「尚未就绪 + 预算耗尽」(`:1074-1078`)或「尚未就绪时的 boot 失败」
+    //      (`:925-927`)两条路上出现 ⇒ **就绪过之后,没有任何一条路回到未就绪**。
+    //      (另:导航错误 `handleNavigationError`(`:890`)**刻意**不重置 `bridgeReady_`、
+    //       也不切兜底面板 —— 那份注释里的「重试自锁」与本条前提互为因果,别只改一边。)
+    // 条件一旦破了(将来给重载 / 重连加一条**不经兜底面板**的通路),这两位必须跟着
+    // `bridgeReady_` 的下降沿一起复位 —— 否则症状与 [SL-199] 那条洞逐字同形:条件成立、
+    // 屏上什么都没有,而记账说「已经发过了」。**同形态也压在上面 `wasVisible_` /
+    // `wasSegVisible_` 两位上**(`firstFrame_` 与各路 `last*Json_` 基线同理)。
+    bool newerStateShown_ = false;
+    std::uint32_t newerStateShownAbi_ = 0;
     int tickCount_ = 0; // 25Hz 计数器(分频 conn ~4Hz / groups 1Hz / captureProgress 2Hz)
     double lastSegmentsSampleRate_ = 0.0; // 段表快照上次换算所用 sampleRate(变化即重发,PR#55 第7轮缺陷1)
     std::uint32_t lastCrvsRevision_ = 0; // CRVS 修订号检测(加载工程/预设后重发段表,PR#55 第8轮缺陷1)

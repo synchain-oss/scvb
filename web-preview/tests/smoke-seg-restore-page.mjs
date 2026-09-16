@@ -36,6 +36,9 @@
 //   ⑪ [SL-411] 工程 state 里的 `min_segment_ms=1000` 真的上屏:滑杆 `aria-valuenow` 与读数
 //      文本都变成 1000(「分段参数随工程保存」在用户眼里那一半;D3 = 删掉 render 里那句
 //      `syncParamGroup(local.segmentation, …)` ⇒ 本格红);
+//   ⑫ [SL-413] 分段方式在 v1 是保留位 ⇒ 分段工具条组里**没有第三种控件**(负空间判据:
+//      可见滑杆恰 1 根 / `<select>` 0 个 / `data-gb` 含 mode 的节点 0 个)。裁定原文
+//      「下拉从 UI 摘掉」在实现侧**无对象**(从来就没有那个下拉),详见那一段的头注;
 //   ⑨ 全程零未捕获异常、零 console.error。
 //
 // 用法:node web-preview/tests/smoke-seg-restore-page.mjs [仓库根绝对路径]
@@ -587,6 +590,72 @@ const SLIDER_WIDTHS = IN(`
             max - min <= 1.0,
             `[SL-392] 六根可见滑杆逐像素等宽(极差 ${Math.round((max - min) * 100) / 100}px,` +
                 `上界 1px;修前 MIN SEG 228.58 / VAD 106.28,极差 122.3px)`,
+        );
+    }
+}
+
+// ---- [SL-413] 分段方式在 v1 是保留位:UI 不露出(**全仓没有对应控件**)---------
+//
+// 用户裁 ②(2026-09-14「把『分段方式』从 UI/规格摘掉」)在**实现侧没有对象** —— 这**不是**
+// 「把那个下拉藏起来」,而是**从来没有过那个下拉**:`web/output/index.html` 里
+// `valley` / `vad_only` / `分段方式` 三个字面**全 0 命中**,`git log -S` 也追不到任何一版有它;
+// 全仓唯一的 `<select>` 是设置页的缩放档位(`settings-scale-select`)。**同族判例 #251** 对
+// 「若界面有分段模式选择器一并隐藏」那句报过**同一句**结论(见那份 PR 描述:「无对象」)。
+//
+// 所以这一格**不是**「断言那个下拉不产生布局盒」—— 没有对象可量,那种格恒绿,而本仓的判例是
+// **恒真的格比没有格更坏**(它还在报绿)。这里把裁定真正承诺的东西钉成**负空间判据**:
+// **分段工具条组里除了那两根滑杆,不许再长出第三种控件。**
+// 量的是**真实布局盒与标签名**,三条各自有含义:
+//   · `sliders` = 组内 `[role="slider"]` 里**真在渲染**的根数(今天恒 **1**:MIN SEG;
+//     灵敏度那根被 [SL-382] 藏着)⇒ 谁往组里加第三根杆,当场红;
+//   · `selects` = 组内 `<select>` 根数(今天恒 **0**)⇒ 谁把「分段方式」做成下拉加回来,当场红;
+//   · `modeish` = 组内 `[data-gb]` 里含 `mode` 的节点数(今天恒 **0**)⇒ 换个**别的名字**
+//     加回来也接得住。
+// 与 [SL-392] 那条「可见滑杆恰为 6 根」是同一个手法:先断**根数**,再谈别的 —— 只断
+// 「没有 mode 控件」的话,把整个组删掉也照样绿。
+//
+// 真要放它出来(接线那张卡落地)时,请连同 `docs/contract-changes/20260914-sl413-seg-mode-reserved.md`
+// 一起改:把本格换成「下拉存在且渲染」,而不是删掉它。
+const SEG_GROUP_CONTROLS = IN(`
+    const g = gb("wave-seg-group");
+    if (!g) return null;
+    const rendered = (el) => el.getClientRects().length > 0;
+    const sliders = Array.prototype.filter.call(
+        g.querySelectorAll('[role="slider"]'),
+        rendered,
+    ).length;
+    const selects = g.querySelectorAll("select").length;
+    let modeish = 0;
+    for (const el of g.querySelectorAll("[data-gb]")) {
+        if (/mode/i.test(el.getAttribute("data-gb") || "")) modeish++;
+    }
+    return JSON.stringify({ sliders: sliders, selects: selects, modeish: modeish });
+`);
+{
+    const raw = await evaluate(SEG_GROUP_CONTROLS);
+    const c = JSON.parse(raw || "null");
+    check(
+        c !== null,
+        "[SL-413] 分段工具条组在模板里(锚点 data-gb=wave-seg-group 没漂)",
+    );
+    if (c) {
+        log(
+            `  [SL-413] 分段组控件:visible-sliders=${c.sliders} / selects=${c.selects} / modeish=${c.modeish}`,
+        );
+        eq(
+            c.sliders,
+            1,
+            "[SL-413] 分段组里**真在渲染**的滑杆恰 1 根(只有 MIN SEG;灵敏度那根归 [SL-382])",
+        );
+        eq(
+            c.selects,
+            0,
+            "[SL-413] 分段组里没有 <select>(「分段方式」下拉在 v1 不存在)",
+        );
+        eq(
+            c.modeish,
+            0,
+            "[SL-413] 分段组里没有 data-gb 含 mode 的节点(换个名字加回来也接得住)",
         );
     }
 }

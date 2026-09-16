@@ -14,7 +14,9 @@
 // 这一课来自本仓「显形那半边也会连环」:文案 × 落点 × 下游过滤三个自由度耦合,
 // 每修一次就挪个地方。
 //
-// 跑什么(四段,前三段是同一个页面里连续走完的一条用户路径):
+// 跑什么(①②③④ 是同一个页面里连续走完的一条用户路径;⑤ 是**横切**在每一段之后的
+// 「零 console.error、零未捕获异常」检查 —— 它不是一个独立的段,所以下文代码里没有
+// `=== ⑤ ===` 那一行;⑥ 是 [SL-412] 另加的一节,跑在 ④ 之后、同一条会话上):
 //   ① `?fixture=second-output`(只读观察态):横幅② 在、**组卡 `data-disabled="0"`**、
 //      `.group-pills` 的 computed `pointer-events` 不是 none;而**其余锁面照旧** ——
 //      采集开关 / 输出开关 / header 撤销重做仍是 `data-disabled="1"`(互不串台);
@@ -28,6 +30,12 @@
 //      输出 ON + 走带在 range 内 ⇒ 组卡 `data-disabled="1"`、`pointer-events: none`、
 //      tooltip 是「打印中不可切组」、点胶囊**不**展开确认条;
 //   ⑤ 每段零 console.error、零未捕获异常。
+//   ⑥ [SL-412] `scvb.error{newerState}` 推一帧 ⇒ 红横幅④ 上屏且文案**逐字**等于词条
+//      `banner.versionMismatch` 填上 `{a}=本机 abi`/`{b}=工程 abi`;再推 `active:false`
+//      ⇒ 横幅撤下。断的是**消费端**(早就就绪,一直缺生产者);生产者那一半离线不可达,
+//      判定/记账在 `BRIDGEARGS-SL412`、拒载态置位在 `HOST SL412`、调用点在
+//      `smoke-tab2-interactions.mjs` 的源码钉子。搭本套的车是因为 ① 已经在同一个页面、
+//      同一条路径上断「error 码 → 屏上那条横幅」(横幅②),④ 与 ② 是同一类判据。
 //
 // 用法:node web-preview/tests/smoke-group-lock-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -754,6 +762,153 @@ try {
     eq(p4b.pending, [], "PRINT 态:没有胶囊被预亮");
     eq(p4b.pressed, ["E"], "PRINT 态:当前组没变");
     assertClean("④ PRINT 态");
+
+    // =========================================================================
+    // [SL-412] ⑥ `scvb.error{newerState}` ⇒ 红横幅④(§5.1 九码里这一码的提示面)
+    //
+    // 为什么搭本套的车:① 已经在**同一个页面、同一条路径**上断「error 码 → 屏上那条横幅」
+    // (横幅② 的显隐 + 占位符替换),而 CDP/无头 Chrome 那段脚手架是全套里最贵的部分;
+    // ④ 与 ② 是同一类判据,合并不新增门禁面(gate 3e 本来就跑这一套)。
+    //
+    // 本格断的是**消费端**(`web/output/app.js` 的 renderBanners ④ 那一支)—— 它早就就绪,
+    // 缺的一直是**生产者**(`OutputEditor::emitNewerStateError`,本卡接线)。生产者那一半
+    // 离线不可达(`OutputEditor` 要真 WebView2),所以四处合起来才是完整的网:
+    //   · 判定/记账      → `BRIDGEARGS-SL412`(纯函数,scvb_params_tests)
+    //   · 拒载态置位/复位 → `HOST SL412`(真 setStateInformation)
+    //   · 调用点 + 信封   → `smoke-tab2-interactions.mjs` 的源码钉子
+    //   · **本格**        → 这一帧到屏上之后,用户真的看得见那两个数
+    //
+    // 文案**逐字**对词条(不是 `includes("4")` 这种松断言):把 detail 的两个字段名写错
+    // (`{local_abi, project_abi}` 之类)时,横幅会渲染成「本机 abi undefined / 工程 abi
+    // undefined」—— 「横幅出现了」照样绿,而这句话唯一有信息量的部分没了。
+    log(
+        "=== ⑥ [SL-412] scvb.error{newerState} ⇒ 红横幅④(§5.1 九码的提示面)===",
+    );
+    // ⚠ **不能用 `w.__SCVB_MOCK__.emit`** —— `__SCVB_MOCK__` 是 `createBridge` 的
+    // `mockBackend`,上面**只有桥面那些上行函数 + `addEventListener`**,**没有 `emit`**
+    // (第一版就是那么写的,实测 `typeof m.emit !== "function"` ⇒ 本格当场红,连带后面
+    // 四条一起红)。事件的下行口在**壳页**的 driver 会话上:
+    // `window.__SCVB_PREVIEW__.ctl.emit(name, payload)` —— `shell.js` 把会话挂在壳页
+    // window 上给页面级冒烟用,[SL-270] 的走带开关([SL-380] 的帧流开关)走的是同一条路;
+    // `web-preview/` 不进插件包(ResourceProvider 嵌的是 `web/`),真源页面一个字节没改。
+    // 所以这一格**必须求值在壳页上下文**,不能包进 `IN()`(那个 helper 是切进 iframe 的)。
+    const emitNewerState = (localAbi, projectAbi, active) =>
+        `(() => {
+            const s = window.__SCVB_PREVIEW__ || window.__SCVB_PREVIEW_SESSION__;
+            if (!s || !s.ctl || typeof s.ctl.emit !== "function") return false;
+            s.ctl.emit("scvb.error", {
+                code: "newerState",
+                detail: { localAbi: ${localAbi}, projectAbi: ${projectAbi} },
+                active: ${active ? "true" : "false"},
+            });
+            return true;
+        })()`;
+    // ⚠ 本文件的 `IN()` **只注入 `f` / `w` / `d` / `q` / `gb` 五个** —— `vis` 是 `PROBE`
+    // 自己在模板里定义的局部函数,不在这里的注入面内。用它会让页内求值抛
+    // `ReferenceError`,而那个错会被外层 try 收成「冒烟过程抛错」把**整套**打红。
+    // 故这里按同一口径就地写 `!n.hidden`(与 PROBE 的 `vis` 逐字同义)。
+    const VERSION_BANNER = IN(`
+        const n = gb("banner-versionMismatch");
+        const t = n ? n.querySelector("[data-t]") : null;
+        return {
+            node: !!n,
+            shown: !!n && !n.hidden,
+            text: t ? t.textContent.trim() : null,
+        };
+    `);
+
+    // ⚠ 那两个数(`4` / `5`)是**任意的载荷数据**,不是「真 abi」—— 本格断的是**透传**
+    // (词条的两个占位符被 `detail` 的两个字段填上),与 `scvb::state::kCurrentAbi` 当时是几
+    // 无关。真 abi 见 `src/core/state/StateCodec.h` 的 `kCurrentAbi`,随版本升(写这段时
+    // 它是 5,由 #263/[SL-416] 从 4 升上来)。**别照这两个数去核对真 abi。**
+    check(
+        await evaluate(emitNewerState(4, 5, true)),
+        "⑥ 从 mock 推一帧 scvb.error{newerState, localAbi:4, projectAbi:5, active:true}",
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-versionMismatch"); return !!n && !n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥ 横幅④ 在 6s 内上屏(条件成立 ⇒ active:true)",
+    );
+    const v1 = await evaluate(VERSION_BANNER);
+    check(v1.node, "⑥ 横幅④ 的节点在(锚点名没漂)");
+    check(v1.shown, "⑥ 横幅④ 可见(§5.1 表里 newerState 的 UI 落点)");
+    eq(
+        v1.text,
+        String(T.zh["banner.versionMismatch"])
+            .replace("{a}", "4")
+            .replace("{b}", "5"),
+        "⑥ 横幅④ 文案逐字等于词条 banner.versionMismatch 填上那两个数",
+    );
+    log(`  [SL-412] 横幅④ 文案 = 「${v1.text}」`);
+    // 撤下那一半(§5.1 降级纪律②:持续性条件**只能**靠 active:false 撤下,没有 ✕)——
+    // 与 `planNewerStateEmit` 的 S4/S5 两格是同一条语义的两端。
+    check(
+        await evaluate(emitNewerState(4, 5, false)),
+        "⑥ 再推一帧 active:false 撤销帧",
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-versionMismatch"); return !n || n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥ 横幅④ 在 6s 内撤下(active:false ⇒ 条件解除)",
+    );
+
+    // ---- ⑥b [SL-412 / #264 第 2 轮补充裁定 5] 极端 abi:**可读**,不是负数、不是 undefined ----
+    // 病灶在 C++ 侧(`static_cast<int>(u32)` 超 `INT_MAX` 是实现定义行为),
+    // 纯函数那半边由 `BRIDGEARGS-SL412` 的 S8 断;这一格断的是**消费端**:
+    // 就算真把 `0xFFFFFFFF` 送到页面上,横幅也得把它渲染成一个读得出来的十进制数。
+    const WORST_ABI = 4294967295; // = 0xFFFFFFFF,手改过的工程能给到的最大值
+    check(
+        await evaluate(emitNewerState(WORST_ABI, WORST_ABI, true)),
+        `⑥b 推一帧 detail 两个数都是 ${WORST_ABI}(0xFFFFFFFF)`,
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-versionMismatch"); return !!n && !n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥b 横幅④ 在 6s 内上屏",
+    );
+    {
+        const w = await evaluate(VERSION_BANNER);
+        const txt = w.text || "";
+        // 「可读」= 词条两个占位符都填上了、且填进去的是那个十进制数本身。
+        check(
+            !/\{[ab]\}|undefined|NaN|-1\b/.test(txt),
+            `⑥b 横幅④ 文案里没有占位符残留 / undefined / 负数(实得「${txt}」)`,
+        );
+        eq(
+            txt,
+            String(T.zh["banner.versionMismatch"])
+                .replace("{a}", String(WORST_ABI))
+                .replace("{b}", String(WORST_ABI)),
+            "⑥b 横幅④ 把 4294967295 原样读出来(没有回绕、没有 e 记法、没有浮点尾巴)",
+        );
+    }
+    check(
+        await evaluate(emitNewerState(WORST_ABI, WORST_ABI, false)),
+        "⑥b 撤下极端值那一帧",
+    );
+    check(
+        await waitFor(
+            IN(
+                `const n = gb("banner-versionMismatch"); return !n || n.hidden;`,
+            ),
+            6000,
+        ),
+        "⑥b 横幅④ 在 6s 内撤下",
+    );
+    assertClean("⑥ newerState 横幅");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

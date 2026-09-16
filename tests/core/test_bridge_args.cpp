@@ -452,3 +452,140 @@ TEST_CASE("planParamsFrame:hostEcho 翻转也算载荷变了(值未变不再早�
         CHECK(planParamsFrame(false, true, true, false).emit);
     }
 }
+
+// ---------------------------------------------------------------------------
+// [SL-412] `scvb.error{newerState}` 的**发送面判定**。
+//
+// 定谳:#259 bot 第 1 轮 claude 重要①(2026-09-14)—— `hasStateAbiMismatch()` /
+// `stateAbiSeen()` 零调用方、`scvb.error` 的 `newerState` 码没有生产者,而消费端
+// (`web/output/app.js` 的横幅④)与 mock 夹具早已就绪。CLAUDE.md §7.3「拒载**并提示升级**」
+// 的后半句没接线 ⇒ 旧构建打开高 abi 工程只落一行 `DBG`(Release 里是空语句),
+// 用户看到的是一份没有任何解释的空工程。
+//
+// 这条判据落在纯函数里(`planNewerStateEmit`),因为 `OutputEditor` 要真 WebView2、
+// 只在 gate 8 的 pluginval 里编(**`tests/CMakeLists.txt` 的 `scvb_monitor_tests` 头注写着
+// 这条边界**)—— 与上面 `planParamsFrame` / `selectParamForEmit` 同一条路。
+// 「调用点还在调它」由 `web-preview/tests/smoke-tab2-interactions.mjs` 的源码钉子锁住;
+// 「拒载态真的被置起来」由 `HOST SL412` 在真 `setStateInformation` 上断。
+//
+// 反向验证(删除式,见 PR 描述):把 `!mismatch` 那一支的 `alreadyShown` 判断删掉 ⇒
+// 「条件解除但屏上没挂过 ⇒ 不发」翻成发;把 `shownAbi == projectAbi` 那一句删掉 ⇒
+// 「同一份拒载态不重复发」红;把 `!visibleNow` 那一句删掉 ⇒「不可见时不发也不记账」两格红。
+// ---------------------------------------------------------------------------
+TEST_CASE("planNewerStateEmit:newerState 的边沿/撤销/去重/丢弃四态", "[output][bridge][SL412]")
+{
+    using scvb::output::planNewerStateEmit;
+
+    constexpr std::uint32_t kHigher = 5;
+    constexpr std::uint32_t kEvenHigher = 6;
+
+    SECTION("S1 条件成立 + 屏上还没有 ⇒ 发 active:true,并记账")
+    {
+        const auto p = planNewerStateEmit(/*mismatch=*/true, kHigher, /*visibleNow=*/true,
+                                          /*alreadyShown=*/false, /*shownAbi=*/0);
+        CHECK(p.send);
+        CHECK(p.active); // §5.1 降级纪律②:持续性条件靠这条横幅亮起
+        CHECK(p.nextShown);
+        CHECK(p.nextShownAbi == kHigher); // ★ 记账跟到**这一份工程的 abi**,不是布尔
+    }
+
+    SECTION("S2 同一份拒载态逐拍重复 ⇒ 不发(§2.9 是「仅条件成立时发」,不是 25Hz 心跳)")
+    {
+        const auto p = planNewerStateEmit(true, kHigher, true, /*alreadyShown=*/true, /*shownAbi=*/kHigher);
+        CHECK_FALSE(p.send);
+        // 记账原地不动(没发就不改)。
+        CHECK(p.nextShown);
+        CHECK(p.nextShownAbi == kHigher);
+    }
+
+    SECTION("S3 换了一份 abi 不同的工程 ⇒ 再发一次(横幅上那两个数是读给用户看的)")
+    {
+        const auto p = planNewerStateEmit(true, kEvenHigher, true, true, kHigher);
+        CHECK(p.send);
+        CHECK(p.active);
+        CHECK(p.nextShownAbi == kEvenHigher);
+    }
+
+    SECTION("S4 条件解除且屏上挂着 ⇒ 发 active:false 撤横幅,记账清干净")
+    {
+        const auto p = planNewerStateEmit(/*mismatch=*/false, /*projectAbi=*/0, true, true, kHigher);
+        CHECK(p.send);
+        CHECK_FALSE(p.active); // ★ 撤下那一帧 —— 与 ⑨ 那一类「条件消失才撤」同一条纪律
+        CHECK_FALSE(p.nextShown);
+        CHECK(p.nextShownAbi == 0u);
+    }
+
+    SECTION("S5 条件解除但屏上本来就没有 ⇒ 不发(不发空撤销帧)")
+    {
+        const auto p = planNewerStateEmit(false, 0, true, false, 0);
+        CHECK_FALSE(p.send);
+        CHECK_FALSE(p.nextShown);
+    }
+
+    SECTION("S6 不可见 ⇒ 一律不发,**且不推进记账**")
+    {
+        // 这一格是 [SL-199] 那条洞的同一个形态:`emitEventIfBrowserIsVisible` 在不可见时
+        // **丢弃**载荷,若这里照样记账,恢复可见后 条件==记账 ⇒ 横幅再也不会出现。
+        // 三种现场一起断,免得只堵住其中一支。
+        const auto fresh = planNewerStateEmit(true, kHigher, /*visibleNow=*/false, false, 0);
+        CHECK_FALSE(fresh.send);
+        CHECK_FALSE(fresh.nextShown); // ★ 没发就不许记账
+        CHECK(fresh.nextShownAbi == 0u);
+
+        const auto steady = planNewerStateEmit(true, kHigher, false, true, kHigher);
+        CHECK_FALSE(steady.send);
+        CHECK(steady.nextShown); // 原地不动:上一拍发的那个状态还挂在屏上
+        CHECK(steady.nextShownAbi == kHigher);
+
+        const auto retract = planNewerStateEmit(false, 0, false, true, kHigher);
+        CHECK_FALSE(retract.send);
+        CHECK(retract.nextShown); // 同上:撤销帧没发出去,条件解除没兑现,不许当成已撤
+        CHECK(retract.nextShownAbi == kHigher);
+    }
+
+    SECTION("S7 不变量:条件成立 ⇒ projectAbi ≥ 1(0 那一档到不了)")
+    {
+        // `RejectedNewer` 只在 `StateMigration.cpp` 的 `hdr.abi > kCurrentAbi` 分支产生,
+        // 而那一行前面已经过 parseHeader + magic 校验 ⇒ `OutputProcessor` 里
+        // `parseHeader(...) ? hdr.abi : 0u` 的 `0u` 兜底在这一支不可达。
+        // 这一格把「**不必**为 0 单开一档」钉成可执行事实:真传 0 进来它照样发,
+        // 而不是被某条 `if (projectAbi == 0) return;` 静默吞掉(那种守卫看着更稳,
+        // 实际是把「解析不出 abi」变成「连提示都没有」—— 正是本卡要消灭的形态)。
+        const auto p = planNewerStateEmit(true, /*projectAbi=*/0, true, false, 0);
+        CHECK(p.send);
+        CHECK(p.nextShownAbi == 0u);
+        // ⚠ 这里原先还有一条 `CHECK(kLocal != 0u)` —— **恒真断言,已删**(#264 第 1 轮统筹
+        // 裁定 4):`kLocal` 是本文件手写的 `constexpr … = 4`,不是 `scvb::state::kCurrentAbi`,
+        // 所以它「从来就没量过任何东西」(判例 `indistinguishable-is-not-unneeded` 的反面)。
+        // 上面那两条 CHECK 才是本格有判别力的部分 —— 它们能红在「有人给 0 单开一档」上。
+        // 真正的不变量(`RejectedNewer ⇒ hdr.abi ≥ 1`)由 `HOST SL412` 在真
+        // `setStateInformation` 上断,不靠这里。
+    }
+
+    SECTION("S8 abi 落 JSON:u32 全域都非负、精确、可读(不写死 cast 成 int)")
+    {
+        using scvb::output::abiForJson;
+
+        // [SL-412 / #264 第 2 轮补充裁定 5] `projectAbi` 来自**工程文件里的不可信字节**
+        // (u32、**无上界校验**),而 `static_cast<int>(u32)` 在值超 `INT_MAX` 时是
+        // **实现定义行为**(MSVC 回绕成负数)⇒ 横幅④ 会对着用户显示一个负数 abi。
+        // 删除式:把 `abiForJson` 的返回改成 `static_cast<int>`(或 `static_cast<juce::int64>(
+        // static_cast<int>(abi))`)⇒ 下面第一、三条当场红 —— 那正是修复前的形态。
+        constexpr std::uint32_t kWorst = 0xFFFFFFFFu; // 手改过的工程能给到的最大值
+        CHECK(abiForJson(kWorst) == 4294967295LL); // ★ 精确,没有回绕成 -1
+        CHECK(abiForJson(kWorst) >= 0); // ★ 非负 —— 横幅上的两个数都必须是正的
+        CHECK(abiForJson(0u) == 0LL);
+        CHECK(abiForJson(1u) == 1LL);
+        CHECK(abiForJson(static_cast<std::uint32_t>(scvb::state::kCurrentAbi)) ==
+              static_cast<juce::int64>(scvb::state::kCurrentAbi)); // 本机 abi 原样透出
+
+        // 「可读」这半:落进 `juce::var` 之后**渲染成十进制整数字面**,不是负数、不是 e 记法、
+        // 不是浮点尾巴。这一条钉的是「用户真的能在横幅上读出那个数」。
+        const juce::var v(abiForJson(kWorst));
+        // ⚠ Catch2 的 `CHECK` **不接受** `||`(它要做表达式分解)—— 拆成两条,别合并。
+        CHECK(v.isInt64());
+        CHECK(v.toString() == juce::String("4294967295"));
+        const juce::var vLocal(abiForJson(static_cast<std::uint32_t>(scvb::state::kCurrentAbi)));
+        CHECK(vLocal.toString() == juce::String(static_cast<int>(scvb::state::kCurrentAbi)));
+    }
+}

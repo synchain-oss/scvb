@@ -395,6 +395,87 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
                 /AnalysisDoneReason pendingAnalyzedReason_/.test(oeh),
             "[SL-255] 闩锁存的是 reason 枚举,不是 bool(退回 bool 会丢松手档的 reason)",
         );
+        // ------------------------------------------------------------------
+        // [SL-412] `scvb.error{newerState}` 的**调用点钉子**。
+        //
+        // 为什么一颗 C++ 钉子又落在这里:与上面 [SL-199] 那一组同一条理由 ——
+        // `OutputEditor.cpp` 编不进任何 C++ 测试目标(要真 WebView2;`scvb_host_tests`
+        // 连 `createEditor` 都是桩),于是 `BRIDGEARGS-SL412` 那组纯函数用例只守得住
+        // `planNewerStateEmit` **本身**,守不到「`emitTick` 还在调它」「载荷真的按 §2.9
+        // 的信封发出去」「闩锁真的按 plan 回填」这三跳。退化改法(把调用挪进
+        // `if (tickCount_ % 25 == 0)`、或干脆把 `emitNewerStateError()` 那行删掉、
+        // 或记账写成无条件推进)在 C++ 单测里**全绿**而缺陷原样回归。
+        //
+        // ⚠ **六条一律带行形态锚**,理由同上面那段:`src()` 读整个文件、不区分代码与注释,
+        // 而 `BridgeArgs.h` 与 `OutputEditor.cpp` 的注释里就逐字写着这些名字(本卡刚写的那几段
+        // 头注里全都有)—— 不约束行形态的话,钉子在**没有任何行为退化**的情况下就会被注释喂饱
+        // 而恒真。
+        //
+        // ⚠ **第一版只锚了三条,另三条是裸 `test()`**([#264 第 1 轮统筹裁定 1,两家 bot 同指]):
+        // 把 `emitError("newerState", 0, detail, plan.active);` **整行注释掉** ⇒ 六条钉子全绿、
+        // 纯函数用例全绿、页级消费侧全绿,而红横幅④ 再也发不出去 —— 而这一行在 C++ 侧
+        // 没有任何可执行落点,**当时全仓没有一道门禁看得见这个退化**。这与 D4c 抓到的是
+        // 同一形态(那时只修了三条闩锁钉子)。删除式 D4d/D4e/D4f 三条就是冲这三条新锚来的。
+        //
+        // 锚法:**语句起始**锚在行首(`^[ \t]*…`),不要求整条语句在一行内 ——
+        // `planNewerStateEmit(...)` 那条跨越两行(实参换行),用「整行 + `$`」锚不上;
+        // 而注释掉它时行首会多出 `//`,行首锚照样失效。
+        check(
+            /^[ \t]*emitNewerStateError\(\);[ \t]*$/m.test(oe),
+            "[SL-412] emitTick 真的调了 emitNewerStateError(不是只定义了没人调)",
+        );
+        check(
+            /^[ \t]*const auto plan = scvb::output::planNewerStateEmit\(/m.test(
+                oe,
+            ),
+            "[SL-412] 现场三个值取自 processor 的两个 getter + webView 可见性,判定走纯函数",
+        );
+        check(
+            /^[ \t]*emitError\("newerState", 0, detail, plan\.active\);[ \t]*$/m.test(
+                oe,
+            ),
+            "[SL-412] 载荷按 §2.9 信封发出(不带 ch:这一条是页级条件)",
+        );
+        // 钉的语义:**这两个键名必须逐字落进 `detail`**,且**值走 `abiForJson` 落 JSON**
+        // (§5.1 表的 `{localAbi, projectAbi}` 那一格)。
+        //
+        // ⚠ 这一条在 `15ee270` 上被 `abiForJson` 改动作废过(第 2 轮补充裁定 5 把
+        // `static_cast<int>(…)` 换成它)—— 而**钉子的值那一半有意钉死成真实字面形态**,
+        // 不是放宽成通配:这条钉子是**这半条接线唯一的守卫**(`emitNewerStateError` 编不进
+        // 任何 C++ 测试目标),放宽等于把守卫拆掉。改实现时它红一次、逼作者显式更新钉子,
+        // 是设计好的代价,别用 `.*` 之类的通配消红。
+        // 数值行为(u32 全域非负、精确、可读)另由 `BRIDGEARGS-SL412` 的 S8 在纯函数上钉:
+        // 这里管**契约形态 + 装配**,那里管**数值行为**。
+        //
+        // 行形态锚**保留**(`^…$` + `m`,第 1 轮裁定 1 立的规矩):`src()` 不区分代码与注释,
+        // 注释掉整行 ⇒ 行首多出 `//` ⇒ 不匹配。D4f / D7 是这条钉子的删除式。
+        check(
+            /^[ \t]*put\(detail, "localAbi", scvb::output::abiForJson\(scvb::state::kCurrentAbi\)\);[ \t]*$/m.test(
+                oe,
+            ) &&
+                /^[ \t]*put\(detail, "projectAbi", scvb::output::abiForJson\(processor_\.stateAbiSeen\(\)\)\);[ \t]*$/m.test(
+                    oe,
+                ),
+            "[SL-412] detail 的两个数与 §5.1 表逐字同形(localAbi / projectAbi),且都经 abiForJson 落 JSON",
+        );
+        // ⚠ 闩锁这三条正则(两条 check)**必须带行形态锚**,理由同上。第一版它们是裸 `test()`,
+        // 实测把 `std::uint32_t newerStateShownAbi_ = 0;` **整行注释掉**之后照样全绿 ——
+        // 注释里那串字面把钉子喂饱了,而它自称断的正是「这一位还在」。删除式 D4c 抓到的
+        // 就是这个洞(与 #261 那次「回扫自己给自己发合格证」同一个形态)。
+        check(
+            /^[ \t]*newerStateShown_ = plan\.nextShown;[ \t]*$/m.test(oe) &&
+                /^[ \t]*newerStateShownAbi_ = plan\.nextShownAbi;[ \t]*$/m.test(
+                    oe,
+                ),
+            "[SL-412] 闩锁按 plan 回填(无条件推进会让不可见期那一份变化被永久吞掉)",
+        );
+        check(
+            /^[ \t]*bool newerStateShown_ = false;[ \t]*$/m.test(oeh) &&
+                /^[ \t]*std::uint32_t newerStateShownAbi_ = 0;[ \t]*$/m.test(
+                    oeh,
+                ),
+            "[SL-412] 闩锁是「屏上有没有 + 写的是哪个 abi」两位,不是单个 bool",
+        );
         // [SL-255 复审②] `armResegment` 必须落在 `if (changed)` **之外**。
         //
         // 为什么只能在源码形态上钉:这两个 handler 属 `OutputEditor.cpp`,只编进插件目标,

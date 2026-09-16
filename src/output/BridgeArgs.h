@@ -271,4 +271,103 @@ inline bool selectParamForEmit(std::map<juce::String, float>& baseline, const ju
     return true;
 }
 
+// -----------------------------------------------------------------------------
+// [SL-412] `scvb.error` 的 `newerState` 一档:这一拍发不发、发哪一态。
+//
+// **正题**:CLAUDE.md §7.3 / STATE_SCHEMA 的「读到高版本 → **拒载并提示升级**」里,
+// 「拒载」那一半一直是好的(`OutputProcessor::setStateInformation` 的 `RejectedNewer`
+// 分支置 `stateAbiMismatch_` + `preservedStateBlob_` 原样回写),**「提示」那一半没接线**:
+// `hasStateAbiMismatch()` / `stateAbiSeen()` 零调用方,`scvb.error` 的 `newerState` 码
+// **没有生产者**,而消费端(`web/output/app.js` 的横幅④)与 mock 夹具早就就绪。
+// 旧构建打开一份更高 abi 的工程,只落一行 `DBG` —— 而 `DBG` 在 Release 里是空语句,
+// 用户看到的是一份「段表/曲线/组号全默认」的空工程,没有任何解释。
+//
+// **为什么抽成纯函数**:`OutputEditor` 要真 WebView2,编不进任何 C++ 测试目标
+// (tests/CMakeLists.txt 的 `scvb_monitor_tests` 头注写着这条边界:三个 Editor「留待 gate 8
+// 的真机 GUI pluginval」)。所以判定落在这里离线断言,调用点由
+// `web-preview/tests/smoke-tab2-interactions.mjs` 的源码钉子锁住 —— 与 `planParamsFrame`
+// ([SL-400])、`selectParamForEmit` / `settleResendLatch`([SL-199])同一条路,不新开门禁面。
+//
+// **形态是「边沿 + 撤销」,不是「逐拍比对」**(§2.9 频率列 = **即时**,§5.1 降级纪律②:
+// 持续性条件横幅不可手动关闭,**条件消失(`active:false`)才撤下**):
+//   · 条件成立且屏上还没这一条 ⇒ 发 `active:true`(带 `{localAbi, projectAbi}`);
+//   · 条件成立、屏上已有、且**工程 abi 没变** ⇒ 不发 —— 拒载态会一直挂在 processor 上
+//     到下一次成功载入,逐拍比 json 会把它发 25 次/秒;
+//   · 条件成立但**换了一份不同 abi 的工程** ⇒ 再发一次:横幅上那两个数是**读给用户看的**,
+//     停在旧数字上就是一句假话;
+//   · 条件**解除**(宿主随后载入了一份本机读得懂的工程,`setStateInformation` 会清
+//     `stateAbiMismatch_`)⇒ 发 `active:false` 把横幅撤下。
+struct NewerStateEmitPlan
+{
+    bool send = false; // 这一拍要不要调 emitError
+    bool active = true; // 载荷的 active 位(true = 条件成立;false = 条件解除,撤横幅)
+    // 记账:下一拍拿它比。**只在 `send` 为真时**才允许推进 —— 见下面 !visibleNow 那一支。
+    bool nextShown = false;
+    std::uint32_t nextShownAbi = 0;
+};
+
+// `visibleNow` 传 `webView().isVisible()`(`emitEventIfBrowserIsVisible` 在不可见时**丢弃**载荷)。
+// ⚠ 不可见时**一律不发、也不推进记账** —— 推进了就等于把这一份变化永久吞掉:恢复可见后
+// 条件与记账相等,横幅再也不会出现。这与 `emitIfChanged` / `raiseResendLatch` 是同一条口径
+// (`BridgeArgs.h:117` 那一段写着它的来处)。
+//
+// ⚠ **不变量**:`mismatch == true` ⇒ `projectAbi >= 1`。`RejectedNewer` 只在
+// `StateMigration.cpp:56` 的 `hdr.abi > kCurrentAbi` 分支产生,而那一行**前面**已经过
+// `parseHeader` 成功 + magic 校验,所以 `OutputProcessor` 里那句
+// `parseHeader(...) ? hdr.abi : 0u` 的 `0u` 兜底在这一支到不了。故这里不必为 0 单开一档。
+inline NewerStateEmitPlan planNewerStateEmit(bool mismatch, std::uint32_t projectAbi, bool visibleNow,
+                                             bool alreadyShown, std::uint32_t shownAbi) noexcept
+{
+    NewerStateEmitPlan p;
+    p.nextShown = alreadyShown;
+    p.nextShownAbi = shownAbi;
+
+    if (!visibleNow)
+        return p; // 丢弃态:不发也不记账(改了记账就等于把这一份变化吞掉)
+
+    if (!mismatch)
+    {
+        // 条件解除:只有屏上真的挂着那一条时才需要发撤销帧(§5.1 降级纪律②)。
+        if (!alreadyShown)
+            return p;
+        p.send = true;
+        p.active = false;
+        p.nextShown = false;
+        p.nextShownAbi = 0;
+        return p;
+    }
+
+    if (alreadyShown && shownAbi == projectAbi)
+        return p; // 同一份拒载态:屏上已经是这个数,不重复发
+
+    p.send = true;
+    p.active = true;
+    p.nextShown = true;
+    p.nextShownAbi = projectAbi;
+    return p;
+}
+
+// -----------------------------------------------------------------------------
+// [SL-412] `newerState.detail` 里那两个 abi 数**落 JSON 的口径**。
+//
+// 病灶:`stateAbiSeen_` 直接来自**工程文件里的不可信字节**(`OutputProcessor.cpp` 里那句
+// `parseHeader(...) ? hdr.abi : 0u`,`hdr.abi` 是 u32),而它**没有任何上界校验** ——
+// 一份手改过的 / 来自未来版本的工程可以让它是 `0xFFFFFFFF`。`static_cast<int>(u32)`
+// 在 C++17 下当值超 `INT_MAX` 时是**实现定义行为**(MSVC 上回绕成负数),于是横幅④ 会
+// 对着用户显示一个**负数 abi**,而那句话是读给他看的。
+//
+// 口径:**换成容得下的类型,不夹取** —— 与 `OutputEditor.cpp` 里三处既有先例逐字同款
+// (`:877` 的 `featureBytes` / `:925` 的 `heartbeatAgeMs` / `:948` 的 `generation`,
+// 都是 `static_cast<juce::int64>`)。`juce::int64` 精确装下 u32 全域,而且**显示的是真值**;
+// 夹取会把「工程 abi 4294967295」悄悄改写成「2147483647」—— 那是一句关于当前工程的假话,
+// 比不显示更坏。JSON 侧只有一个 number 类型,故这不改 §5.1 载荷字段的语义(仍是
+// 非负整数,仍在 u32 域内)。
+//
+// 抽成纯函数是为了**能被离线断言**:`emitNewerStateError` 那一跳要真 WebView2,
+// 编不进任何 C++ 测试目标(见上面 `planNewerStateEmit` 那段同一笔账)。
+inline juce::int64 abiForJson(std::uint32_t abi) noexcept
+{
+    return static_cast<juce::int64>(abi);
+}
+
 } // namespace scvb::output
