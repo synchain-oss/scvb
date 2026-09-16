@@ -395,7 +395,7 @@ TEST_CASE("STATE-CRVS-VALIDATE-4 nameBytes 超上限 → 拒解", "[state][crvs]
 // golden:abi1.bin 兼容 + 格式锁
 // ============================================================================
 
-TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2/abi3 迁移 + abi4.bin 格式锁", "[state][golden]")
+TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2/abi3/abi4 迁移 + abi5.bin 格式锁", "[state][golden]")
 {
     // abi1.bin:历史 abi=1,经 no-op migrate_1_to_2 迁移后字段语义正确(CRVS 不丢字段)。
     {
@@ -446,19 +446,33 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2/abi3 迁移 + abi4.bin 格式�
 
         StateChunks chunks;
         StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
-        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=3 → 4
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=3 → 5
         REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
     }
 
-    // abi4.bin:当前 abi=4 格式锁。
-    // ⚠ 它锁的是**容器头**(magic / abi / flags / chunkCount / TLV 框),夹具的 CFGS 载荷是
-    // `opaque("CONFIG")` 字面量、根本不是 `encodeOutputState` 的产物 —— 所以 abi4.bin 与
-    // abi3.bin 只差 abi 那一个字节是**必然**而非巧合,[SL-411] 那 12 个字节它一次都没见过。
-    // CFGS 载荷的 wire 布局由 `test_output_session.cpp` 的长度断言(54u / 24u+5u+28u)与
-    // [SL-411] 那几格(往返 / 三默认 / 一级回退 / 越界回落计数 / 半截拒载)承担 ——
-    // 改 segmentation 的编码顺序**不会**让本格红,别来金样这里找原因。
+    // abi4.bin:[SL-416] abi 升到 5 之后,它从「格式锁」降为**第四条迁移基线**(同 abi3 的待遇):
+    // 迁移用例要跑在**真的旧文件**上,而不是拿当前 codec 现造一个「假装是旧版」的字节串。
     {
         std::ifstream in(goldenPath("abi4.bin"), std::ios::binary);
+        REQUIRE(in.good());
+        std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        REQUIRE_FALSE(fileBytes.empty());
+
+        StateChunks chunks;
+        StateLoadResult res = scvb::state::loadState(fileBytes.data(), fileBytes.size(), chunks);
+        REQUIRE(res.status == StateLoadStatus::Migrated); // abi=4 → 5
+        REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
+    }
+
+    // abi5.bin:当前 abi=5 格式锁。
+    // ⚠ 它锁的是**容器头**(magic / abi / flags / chunkCount / TLV 框),夹具的 CFGS 载荷是
+    // `opaque("CONFIG")` 字面量、根本不是 `encodeOutputState` 的产物 —— 所以 abi5.bin 与
+    // abi4.bin 只差 abi 那一个字节(offset 4)是**必然**而非巧合,[SL-416] 那 24 个字节它一次都没见过。
+    // CFGS 载荷的 wire 布局由 `test_output_session.cpp` 的长度断言(78u / 24u+5u+52u)与
+    // [SL-416] 那几格(往返 / abi4 旧档六默认不计回落 / 越界回落计数 / 半截拒载)承担 ——
+    // 改 vad/ramp 的编码顺序**不会**让本格红,别来金样这里找原因。
+    {
+        std::ifstream in(goldenPath("abi5.bin"), std::ios::binary);
         REQUIRE(in.good());
         std::vector<std::uint8_t> fileBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         REQUIRE_FALSE(fileBytes.empty());
@@ -468,7 +482,7 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2/abi3 迁移 + abi4.bin 格式�
         REQUIRE(res.status == StateLoadStatus::Ok);
         REQUIRE(chunks.abi == scvb::state::kCurrentAbi);
 
-        // 格式锁:当前 codec 重编码同一夹具必须与提交的 abi4.bin 逐字节一致(改 wire 格式即红)。
+        // 格式锁:当前 codec 重编码同一夹具必须与提交的 abi5.bin 逐字节一致(改 wire 格式即红)。
         std::vector<std::uint8_t> reencoded;
         REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), reencoded));
         REQUIRE(reencoded == fileBytes);

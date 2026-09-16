@@ -1345,6 +1345,77 @@ const COMMIT_VOL = IN(`
     );
 }
 
+// ---- [SL-416] VAD 五参数 + ramp 随工程保存 ⇒ 重开后滑杆显示的是**持久值** -------------
+//
+// 与上面 [SL-411] 那一格**同形、同一跳**(工程 state → `scvb.state` 回声 → `syncParamGroup(local…, …)`
+// → 滑杆 `aria-valuenow` + 读数文本),对象换成 [SL-416] 落盘的六项之一:THRESHOLD。
+// 为什么用 THRESHOLD 当代表:它是 A24 用户逐字念到的第一项(−45 dB),也是六个字段里**唯一**
+// 还要跨一层刻度换算的(`cfg.vad.thresholdDb = kVadUiRefDb − ui`),值上不上屏最容易被写错。
+// 其余四项与 ramp 的搬运层由 core 四格 + `HOST SL416` 守;滑杆刻度与 codec 常量的对拍在
+// `smoke-tab3-interactions.mjs` ⑮。
+//
+// 删除式(D3):把 `tab-wave.js` render 里那句 `syncParamGroup(local.vadParams, ana.vad);` 删掉
+// (或让它不读 vad)⇒ 滑杆停在夹具值 −38 ⇒ 本格红。那条 line 是「UI 初始化读 state」的唯一落点。
+{
+    log("=== [SL-416] 工程 state 里的 vad.threshold_db ⇒ 滑杆真的显示它 ===");
+    const SLIDER_VAD = IN(`
+        const box = gb("wave-vad-threshold");
+        const track = box ? box.querySelector(".wave-slider__track") : null;
+        const val = gb("wave-vad-threshold-val");
+        return JSON.stringify({
+            now: track ? track.getAttribute("aria-valuenow") : null,
+            text: val ? val.textContent.trim() : null,
+        });
+    `);
+    const beforeVad = JSON.parse((await evaluate(SLIDER_VAD)) || "{}");
+    check(
+        typeof beforeVad.now === "string" && typeof beforeVad.text === "string",
+        `[SL-416] 取到 THRESHOLD 滑杆节点与读数节点(实得 ${JSON.stringify(beforeVad)})—— ` +
+            "取不到时先红在这一条,免得下面几条变成空过",
+    );
+    check(
+        beforeVad.now !== "-30",
+        `[SL-416] 前置:载入这一份工程**之前**滑杆不是 −30(实得 ${JSON.stringify(beforeVad)})—— ` +
+            "否则下面的断言是空过",
+    );
+
+    const pushedVad = await evaluate(`(() => {
+        const s = window.__SCVB_PREVIEW__;
+        if (!s || !s.ctl || !s.ctl.model || !s.ctl.model.snapshot) return null;
+        const ana = s.ctl.model.snapshot.analysis || {};
+        ana.vad = { threshold_db: -30, hysteresis_db: 8, hangover_ms: 420, padding_pre_ms: 90, padding_post_ms: 310 };
+        ana.transition_ramp_ms = 140;
+        s.ctl.model.snapshot.analysis = ana;
+        s.ctl.emit("scvb.state", s.ctl.fullStatePayload());
+        return s.ctl.model.snapshot.analysis.vad.threshold_db;
+    })()`);
+    check(
+        pushedVad === -30,
+        `[SL-416] 夹具生效:state 快照里的 vad.threshold_db 已被写成 −30(实得 ${pushedVad})`,
+    );
+
+    const okVad = await waitFor(
+        IN(`
+            const box = gb("wave-vad-threshold");
+            const track = box ? box.querySelector(".wave-slider__track") : null;
+            return !!track && track.getAttribute("aria-valuenow") === "-30";
+        `),
+        3000,
+    );
+    const afterVad = JSON.parse((await evaluate(SLIDER_VAD)) || "{}");
+    check(
+        okVad,
+        `[SL-416] ★ 载入带 −30 的工程 state ⇒ 滑杆 aria-valuenow 变成 −30` +
+            `(实得 ${JSON.stringify(afterVad)})—— 删掉 render 里那句 ` +
+            "`syncParamGroup(local.vadParams, …)` 时本格红(D3)",
+    );
+    eq(
+        afterVad.text,
+        "-30 dB",
+        "[SL-416] ★ 滑杆读数文本也跟着写的是 −30 dB(不是只有 aria 变了)",
+    );
+}
+
 // ---- ⑨ 零异常 -------------------------------------------------------------
 check(
     exceptions.length === 0,

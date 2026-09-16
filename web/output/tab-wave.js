@@ -396,22 +396,35 @@ export const MAX_DURATION_S = 24 * 60 * 60;
 
 /**
  * 7 滑杆定义(顺序不可重排 —— 05 §2.3 行 298-299 的 §1.18 五字段 + §1.19 两字段)。
- * 值域由设计稿默认值与行程比反推(p = (def-min)/(max-min) 与稿内 2070-2074 逐一相符):
- * -38dB→.44 / 6dB→.30 / 180ms→.36 / 120ms→.24(J23)/ 200ms→.40(J23)/
- * .62→.62 / 420ms→.28。`gb` = 灰模既有锚点(appendix B),`t` = 短标词条(A-19)。
+ * **值域真源 = masterPlan 02 §0.3 常量表**(经 U24 收敛),**不是设计稿**:前五杆的 min/max/def 与
+ * C++ 侧 `OutputStateCodec.h` 的 `kOutputVad*` 逐值同源,由 `smoke-tab3-interactions.mjs` ⑮(a)(b)(d)
+ * 从 codec 定义行抠数对拍。**规格 > 设计稿** —— 设计稿 `SCVB 设计稿.dc.html:2070-2074` 那一行仍画着
+ * `180 ms / p=.36` 的旧档,而 [SL-416] 把 HOLD 的规格默认收成 **250 ms**;设计稿不改(本卡是有意
+ * 离开它的),先例 = ⑭ 组为 [SL-251] 后两杆立的那条。
+ * 默认档的**行程比** p = (def−min)/(max−min),**实测** `44 / 33 / 30 / 26 / 43 / 50 / 4`:
+ * threshold −38→.44 / hysteresis 6→.33(改前 .30)/ hangover 250→.30(改前 180→.36)/
+ * pad_pre 120→.26(J23;改前 .24)/ pad_post 200→.43(J23;改前 .40)/
+ * sensitivity 50→.50 / min_segment_ms 120→.04(后两杆的行程比见 ⑦ 组那一格的注释)。
+ * `gb` = 灰模既有锚点(appendix B),`t` = 短标词条(A-19)。
  */
 export const SLIDERS = Object.freeze(
     [
+        // [SL-416] VAD 五杆的 min/max/def 与 `OutputStateCodec.h` 的 `kOutputVad*` **逐值同源**
+        // (真源 = masterPlan 02 §0.3 常量表,经 U24 收敛;threshold 按 UI 绝对门限 dB 口径
+        //  −60..−10/默认 −38,换算锚 = `OutputProcessor.cpp` 的 `kVadUiRefDb`)。
+        // 对拍 = `web-preview/tests/smoke-tab3-interactions.mjs` 的 [SL-416] 那一组(从 codec 定义行抠数);
+        // 本卡同时把**引擎初值**与这里的 def 收到同一处 —— 改前它们互不相同(引擎 −45/3/200 vs
+        // 滑杆 −38/6/180),A24 里用户念的「默认」正是引擎那一组。
         // prettier-ignore
         { key: "threshold", field: "threshold_db", api: "vad", gb: "wave-vad-threshold", t: "wave.sldThreshold", tip: "wave.tipThreshold", min: -60, max: -10, def: -38, unit: "dB", dp: 0 },
         // prettier-ignore
-        { key: "hysteresis", field: "hysteresis_db", api: "vad", gb: "wave-vad-hysteresis", t: "wave.sldHysteresis", tip: "wave.tipHysteresis", min: 0, max: 20, def: 6, unit: "dB", dp: 0 },
+        { key: "hysteresis", field: "hysteresis_db", api: "vad", gb: "wave-vad-hysteresis", t: "wave.sldHysteresis", tip: "wave.tipHysteresis", min: 3, max: 12, def: 6, unit: "dB", dp: 0 },
         // prettier-ignore
-        { key: "hangover", field: "hangover_ms", api: "vad", gb: "wave-vad-hangover", t: "wave.sldHangover", tip: "wave.tipHold", min: 0, max: 500, def: 180, unit: "ms", dp: 0 },
+        { key: "hangover", field: "hangover_ms", api: "vad", gb: "wave-vad-hangover", t: "wave.sldHangover", tip: "wave.tipHold", min: 100, max: 600, def: 250, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "paddingpre", field: "padding_pre_ms", api: "vad", gb: "wave-vad-paddingpre", t: "wave.sldPadPre", tip: "wave.tipPadPre", min: 0, max: 500, def: 120, unit: "ms", dp: 0 },
+        { key: "paddingpre", field: "padding_pre_ms", api: "vad", gb: "wave-vad-paddingpre", t: "wave.sldPadPre", tip: "wave.tipPadPre", min: 20, max: 400, def: 120, unit: "ms", dp: 0 },
         // prettier-ignore
-        { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 0, max: 500, def: 200, unit: "ms", dp: 0 },
+        { key: "paddingpost", field: "padding_post_ms", api: "vad", gb: "wave-vad-paddingpost", t: "wave.sldPadPost", tip: "wave.tipPadPost", min: 50, max: 400, def: 200, unit: "ms", dp: 0 },
         // [SL-382] 用户裁定(2026-09-10):**分段灵敏度这个功能暂时不做**,控件已在
         // `web/output/index.html` 那个 `data-gb="wave-seg-sensitivity"` 的 div 上挂 `hidden`
         // 藏起来(为什么藏、v1.1 待裁什么,写在那条 HTML 注释里,这里不抄第二份)。
@@ -432,11 +445,14 @@ export const SLIDERS = Object.freeze(
  * VAD 参数缓存初值(**五字段整包**下发纪律的 UI 侧底账,契约 §1.18;brief §0.4)。
  * [Wave 2] 拖任何一杆都以「当前整组缓存 + 本杆新值」整包调 setVadParams,
  * 绝不只发变动字段;state 回推后整组覆盖。
+ * [SL-416] 与 `SLIDERS` 的 `def`、`OutputStateCodec.h` 的 `kOutputVad*Default` **同值**
+ * (真源 = masterPlan 02 §0.3);本卡把这组缓存从 180 收到 250 —— 改前它与引擎初值(200)、
+ * 与 codec 规格默认(250)三处互不相同。
  */
 export const DEFAULT_VAD_PARAMS = Object.freeze({
     threshold_db: -38,
     hysteresis_db: 6,
-    hangover_ms: 180,
+    hangover_ms: 250,
     padding_pre_ms: 120,
     padding_post_ms: 200,
 });

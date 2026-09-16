@@ -431,7 +431,7 @@ TEST_CASE("OutputStateCodec:[J69/U24] 未知序号回落默认并计数", "[outp
     scvb::state::OutputState s;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 54u); // 24 头 + "en" 2 + 7×u32([SL-279] 当前 2 + applied 2;[SL-411] segmentation 3)
+    REQUIRE(b.size() == 78u); // 24 头 + "en" 2 + 13×u32(当前 2 + applied 2 + [SL-411] seg 3* + [SL-416] vad/ramp 6*)
     auto put = [&](std::size_t off, std::uint32_t v) {
         b[off] = static_cast<std::uint8_t>(v & 0xFF);
         b[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
@@ -456,8 +456,8 @@ TEST_CASE("OutputStateCodec:旧版 payload(无枚举字段)回落默认且不计
     REQUIRE(scvb::state::encodeOutputState(s, b));
     // [SL-279] 砍 16 而不是 8:尾部现在是**多级**(当前 2×u32 + applied 2×u32 + [SL-411] segmentation),
     // 「abi=1 的旧版」= 一档都没有。只砍 8 得到的是 abi=2、只砍 20 得到的是 abi=3,那是下面另两格。
-    // [SL-411] 起总尾长 28 字节,故这里砍 28(= 4+4+12)。
-    b.resize(b.size() - 28); // 去掉末尾整条尾巴 → 旧版 24+langBytes
+    // [SL-411] 起总尾长 28 字节,[SL-416] 起 52 字节(28 + vad/ramp 那一整档 24),故这里砍 52。
+    b.resize(b.size() - 52); // 去掉末尾整条尾巴 → 旧版 24+langBytes
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -529,8 +529,8 @@ TEST_CASE("OutputStateCodec:[SL-279] abi=2 旧 payload ⇒ applied := 当前值(
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
     // [SL-411] 砍 20 = applied 那两个 u32(8)+ segmentation 那一整档(12);「abi=2 的形态」=
-    // 尾部到「当前」那两个 u32 为止。
-    b.resize(b.size() - 20); // → abi=2 形态
+    // 尾部到「当前」那两个 u32 为止。[SL-416] 起还要再砍 vad/ramp 那一整档(24)⇒ 共 44。
+    b.resize(b.size() - 44); // → abi=2 形态
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -591,7 +591,7 @@ TEST_CASE("OutputStateCodec:[SL-411] segmentation 三项往返 + 与前面几档
     s.segmentationMinSegmentMs = 1000u;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 24u + 2u + 28u); // 24 头 + "en" 2 + 7×u32(当前 2 + applied 2 + seg 3*)
+    REQUIRE(b.size() == 24u + 2u + 52u); // 24 头 + "en" 2 + 13×u32(当前 2 + applied 2 + seg 3* + vad/ramp 6*)
 
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
@@ -624,7 +624,7 @@ TEST_CASE("OutputStateCodec:[SL-411] abi=3 旧 payload(无 seg 档)⇒ 三默认
     s.segmentationMinSegmentMs = 900u;
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    b.resize(b.size() - 12); // 砍掉 segmentation 那一整档 → abi=3 形态(尾长 16)
+    b.resize(b.size() - 36); // 砍掉 segmentation(12)+ vad/ramp(24)两整档 → abi=3 形态(尾长 16)
     scvb::state::OutputState d;
     scvb::state::OutputDecodeReport r;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
@@ -733,6 +733,228 @@ TEST_CASE("OutputStateCodec:[SL-411] segmentation 半截(16<remaining<28)→ 拒
     REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
 }
 
+// ============================================================================
+// [SL-416] analysis.vad 五字段 + analysis.transition_ramp_ms 随工程落盘(CFGS 尾扩 24 字节,abi 4→5)
+//
+// 契约面:docs/STATE_SCHEMA.md §一/§三、docs/contract-changes/20260914-sl416-vad-persist.md;
+// 值域与默认值的真源 = masterPlan 02 §0.3 常量表(经 U24 收敛),C++ 侧单一真源 =
+// `OutputStateCodec.h` 的 `kOutputVad*` / `kOutputTransitionRampMs*`。
+// 本组四格把**搬运层**钉死(往返 / abi≤4 旧档六默认不计回落 / 越界回落**逐字段**计数 / 半截拒载);
+// 「保存路径真的把 runtime_ 写进去了」与「加载路径真的恢复了、且重开后的 VAD 真按持久值跑」这两跳
+// 在 tests/host 的 `HOST SL416`(编辑器那一跳离线不可达,缺口登记在那条用例的头注里)。
+// ⚠ 本组**故意用字面量**钉规格值(−38/6/250/120/200/80、3..12、100..600…):断言取自被测常量会变成
+// 恒真,字面量才把规格独立钉住一遍(与 SL-411 那一组同一条纪律)。
+// ============================================================================
+
+TEST_CASE("OutputStateCodec:[SL-416] vad 五字段 + ramp 往返 + 与前面几档互不串", "[output][state][sl416]")
+{
+    scvb::state::OutputState s;
+    s.vadThresholdDb = -52.5f;
+    s.vadHysteresisDb = 9.0f;
+    s.vadHangoverMs = 330u;
+    s.vadPaddingPreMs = 55u;
+    s.vadPaddingPostMs = 260u;
+    s.transitionRampMs = 140u;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    REQUIRE(b.size() == 24u + 2u + 52u); // 24 头 + "en" 2 + 13×u32(13×4 = 52)
+
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.vadThresholdDb == -52.5f); // f32 走位模式落盘,一位不差地回来
+    REQUIRE(d.vadHysteresisDb == 9.0f);
+    REQUIRE(d.vadHangoverMs == 330u);
+    REQUIRE(d.vadPaddingPreMs == 55u);
+    REQUIRE(d.vadPaddingPostMs == 260u);
+    REQUIRE(d.transitionRampMs == 140u);
+    // 六项之外的字段一个都不许被这一档搅动(写反顺序 / 共用一个槽,这几条里至少一条会红)。
+    REQUIRE(d.loudnessMode == "kw_integrated");
+    REQUIRE(d.centerSlotPolicy == "priority_queue");
+    REQUIRE(d.appliedLoudnessMode == "kw_integrated");
+    REQUIRE(d.appliedCenterSlotPolicy == "priority_queue");
+    REQUIRE(d.segmentationMode == "valley");
+    REQUIRE(d.segmentationSensitivity == 50.0f);
+    REQUIRE(d.segmentationMinSegmentMs == 120u);
+    REQUIRE(r.vadThresholdDbFallbacks == 0);
+    REQUIRE(r.vadHysteresisDbFallbacks == 0);
+    REQUIRE(r.vadHangoverMsFallbacks == 0);
+    REQUIRE(r.vadPaddingPreMsFallbacks == 0);
+    REQUIRE(r.vadPaddingPostMsFallbacks == 0);
+    REQUIRE(r.transitionRampMsFallbacks == 0);
+
+    std::vector<std::uint8_t> b2;
+    REQUIRE(scvb::state::encodeOutputState(d, b2));
+    REQUIRE(b == b2); // 逐字节往返
+}
+
+TEST_CASE("OutputStateCodec:[SL-416] abi=4 旧 payload(无 vad/ramp 档)⇒ 六默认且不计回落", "[output][state][sl416]")
+{
+    // 这一格钉的是与 [SL-411] 同一条取舍(与 [SL-279] `applied := 当前值` **相反**):vad/ramp 六项的
+    // 语义就是「当前设置」本身,旧工程确实没存过 → 取规格默认(−38/6/250/120/200/80,真源 02 §0.3),
+    // 且**不计回落** —— 缺席不是「值不可信」,记成回落会让诊断行凭空多出六行噪声。
+    // 这一格也是 A24 的机检形态:修前用户存盘重开读到的就是这一组默认。
+    scvb::state::OutputState s;
+    s.vadThresholdDb = -52.0f; // 先写成非默认,好证明下面读到的默认不是「本来就没写」
+    s.vadHysteresisDb = 11.0f;
+    s.vadHangoverMs = 500u;
+    s.vadPaddingPreMs = 300u;
+    s.vadPaddingPostMs = 380u;
+    s.transitionRampMs = 200u;
+    std::vector<std::uint8_t> b;
+    REQUIRE(scvb::state::encodeOutputState(s, b));
+    b.resize(b.size() - 24); // 砍掉 vad/ramp 那一整档 → abi=4 形态(尾长 28)
+    scvb::state::OutputState d;
+    scvb::state::OutputDecodeReport r;
+    REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+    REQUIRE(d.vadThresholdDb == -38.0f);
+    REQUIRE(d.vadHysteresisDb == 6.0f);
+    REQUIRE(d.vadHangoverMs == 250u);
+    REQUIRE(d.vadPaddingPreMs == 120u);
+    REQUIRE(d.vadPaddingPostMs == 200u);
+    REQUIRE(d.transitionRampMs == 80u);
+    REQUIRE(r.vadThresholdDbFallbacks == 0); // 缺席不算回落
+    REQUIRE(r.vadHysteresisDbFallbacks == 0);
+    REQUIRE(r.vadHangoverMsFallbacks == 0);
+    REQUIRE(r.vadPaddingPreMsFallbacks == 0);
+    REQUIRE(r.vadPaddingPostMsFallbacks == 0);
+    REQUIRE(r.transitionRampMsFallbacks == 0);
+}
+
+TEST_CASE("OutputStateCodec:[SL-416] vad/ramp 越界 ⇒ 各字段**单独**回落默认并计数", "[output][state][sl416]")
+{
+    // 六个字段各自越界一次,计数器必须**分别**加一(合并计数会让诊断行说「vad 回落了 1 次」而实际六个
+    // 字段全回落了 —— 与 [SL-279]/[SL-411] 那两组不合并是同一条理由)。
+    const auto putU32At = [](std::vector<std::uint8_t>& v, std::size_t off, std::uint32_t x) {
+        v[off] = static_cast<std::uint8_t>(x & 0xFF);
+        v[off + 1] = static_cast<std::uint8_t>((x >> 8) & 0xFF);
+        v[off + 2] = static_cast<std::uint8_t>((x >> 16) & 0xFF);
+        v[off + 3] = static_cast<std::uint8_t>((x >> 24) & 0xFF);
+    };
+    // 先钉「在场且合法」的那一版(含两个边界值本身合法),避免下面几条实际上打在缺席档上。
+    {
+        scvb::state::OutputState s;
+        s.vadThresholdDb = -10.0f; // 上界本身合法(且是「最不保守」的那一端)
+        s.vadHysteresisDb = 12.0f; // 上界
+        s.vadHangoverMs = 600u; // 上界
+        s.vadPaddingPreMs = 20u; // 下界
+        s.vadPaddingPostMs = 400u; // 上界
+        s.transitionRampMs = 300u; // 上界
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        REQUIRE(d.vadThresholdDb == -10.0f);
+        REQUIRE(d.vadHysteresisDb == 12.0f);
+        REQUIRE(d.vadHangoverMs == 600u);
+        REQUIRE(d.vadPaddingPreMs == 20u);
+        REQUIRE(d.vadPaddingPostMs == 400u);
+        REQUIRE(d.transitionRampMs == 300u);
+        REQUIRE(r.vadThresholdDbFallbacks == 0);
+        REQUIRE(r.transitionRampMsFallbacks == 0);
+    }
+    // ① threshold 两个越界方向 + **NaN**:NaN 是这一档必须单独守的形态(`x < lo || x > hi` 对 NaN
+    //    恒假,只写范围比较的实现会**静默放行**,而 NaN 一旦进了 runtime_ → `cfg.vad.thresholdDb`,
+    //    下游所有比较都是假 —— 那种坏法是静默的)。NaN 与 ±Inf 都走 `!(x >= lo && x <= hi)` 同一支。
+    for (const std::uint32_t bad :
+         {0xC2F00000u /* -120.0f */, 0x00000000u /* 0.0f */, 0x7FC00000u /* NaN */, 0x7F800000u /* +Inf */})
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        putU32At(b, 54u, bad); // base(26) + 28 = vadThresholdDb
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        INFO("bad threshold_db bits = " << bad);
+        REQUIRE(d.vadThresholdDb == -38.0f); // ← 夹取到 −60 的实现会让这条红(口径:回落默认,不夹取)
+        REQUIRE(r.vadThresholdDbFallbacks == 1);
+        REQUIRE(r.vadHysteresisDbFallbacks == 0); // 不合并计数
+    }
+    // ② hysteresis 越界(下限 2.9 侧:用位模式钉 2.5f)+ 有限但超界的大值
+    for (const std::uint32_t bad : {0x40200000u /* 2.5f */, 0x4E6E6B28u /* 1.0e9f */})
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        putU32At(b, 58u, bad); // base(26) + 32 = vadHysteresisDb
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        INFO("bad hysteresis_db bits = " << bad);
+        REQUIRE(d.vadHysteresisDb == 6.0f);
+        REQUIRE(r.vadHysteresisDbFallbacks == 1);
+        REQUIRE(r.vadThresholdDbFallbacks == 0);
+    }
+    // ③ 四个 u32 字段:各自的上/下越界值(含 0 哨兵与 0xFFFFFFFF)
+    struct BadU32
+    {
+        std::size_t off;
+        std::uint32_t value;
+        std::uint32_t expected;
+    };
+    const BadU32 badU32[] = {
+        {62u, 99u, 250u}, // hangover < 100
+        {62u, 601u, 250u}, // hangover > 600
+        {66u, 0u, 120u}, // pad_pre < 20
+        {70u, 401u, 200u}, // pad_post > 400
+        {70u, 0xFFFFFFFFu, 200u}, // pad_post 哨兵
+        {74u, 19u, 80u}, // ramp < 20
+        {74u, 301u, 80u}, // ramp > 300
+    };
+    for (const auto& t : badU32)
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        putU32At(b, t.off, t.value);
+        scvb::state::OutputState d;
+        scvb::state::OutputDecodeReport r;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d, &r));
+        INFO("bad u32 at off " << t.off << " = " << t.value);
+        REQUIRE(d.vadHangoverMs == (t.off == 62u ? t.expected : 250u));
+        REQUIRE(d.vadPaddingPreMs == (t.off == 66u ? t.expected : 120u));
+        REQUIRE(d.vadPaddingPostMs == (t.off == 70u ? t.expected : 200u));
+        REQUIRE(d.transitionRampMs == (t.off == 74u ? t.expected : 80u));
+        // 计数器**逐字段独立**:被点中的那个 == 1、其余五个 == 0(与 ① ② 两组同款)。
+        // 第 1 轮复审②:这段断言此前缺失 —— 标题写了「各字段单独回落默认并计数」,而 `r` 只被
+        // `decodeOutputState` 填、一次都没被读,于是「把某个 `++…Fallbacks` 误写成别的字段」这种
+        // 改法整套一条都不红(六个计数器的唯一消费方是 `OutputProcessor.cpp` 那条诊断 `DBG`,
+        // 没有第二处兜得住)。补上之后,这类误写由本格直接照出来。
+        REQUIRE(r.vadHangoverMsFallbacks == (t.off == 62u ? 1u : 0u));
+        REQUIRE(r.vadPaddingPreMsFallbacks == (t.off == 66u ? 1u : 0u));
+        REQUIRE(r.vadPaddingPostMsFallbacks == (t.off == 70u ? 1u : 0u));
+        REQUIRE(r.transitionRampMsFallbacks == (t.off == 74u ? 1u : 0u));
+        REQUIRE(r.vadThresholdDbFallbacks == 0u); // 两个 f32 字段不受 u32 越界影响
+        REQUIRE(r.vadHysteresisDbFallbacks == 0u);
+    }
+}
+
+TEST_CASE("OutputStateCodec:[SL-416] vad/ramp 半截(28<remaining<52)→ 拒载", "[output][state][sl416]")
+{
+    // 一整档 24 字节是同一个 commit 写下去的,「只有前 8 / 20 个字节」不可能是任何真实构建的产物。
+    for (const std::size_t extra : {8u, 20u})
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        b.resize(24u + 2u + 28u + extra); // remaining = 36 / 48,都落在 (28,52)
+        scvb::state::OutputState d;
+        INFO("truncated extra = " << extra);
+        REQUIRE_FALSE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+    }
+    // 边界本身合法:remaining = 28(abi=4 形态)与 52(完整档)都必须能解。
+    {
+        scvb::state::OutputState s;
+        std::vector<std::uint8_t> b;
+        REQUIRE(scvb::state::encodeOutputState(s, b));
+        b.resize(24u + 2u + 28u); // 恰好 abi=4 的形态
+        scvb::state::OutputState d;
+        REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d));
+    }
+}
+
 TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[output][state]")
 {
     scvb::state::OutputState s;
@@ -741,8 +963,8 @@ TEST_CASE("OutputStateCodec:unknownTail 解码保留 + 编码原样回写", "[ou
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
     // 模拟未来小版本追加:已知字段之后追加 4 字节未知尾部。
-    // [SL-411] 起「已知字段」到 segmentation 那一档为止(尾长 28),所以这 4 个字节是**第四档**的
-    // 未知尾部 —— 这正是 unknownTail 该生效的形态。
+    // [SL-411] 起「已知字段」到 segmentation 那一档为止(尾长 28),[SL-416] 起推到 vad/ramp 那一档
+    // (尾长 52),所以这 4 个字节是**第五档**的未知尾部 —— 这正是 unknownTail 该生效的形态。
     b.push_back(0xDE);
     b.push_back(0xAD);
     b.push_back(0xBE);
@@ -765,7 +987,7 @@ TEST_CASE("OutputStateCodec:非 en 的 uiLanguage 偏移(base=24+langBytes)推�
     s.centerSlotPolicy = "lead_exclusive";
     std::vector<std::uint8_t> b;
     REQUIRE(scvb::state::encodeOutputState(s, b));
-    REQUIRE(b.size() == 24u + 5u + 28u); // 24 头 + 5 语言 + 7×u32(当前 2 + applied 2 + [SL-411] seg 3*)
+    REQUIRE(b.size() == 24u + 5u + 52u); // 24 头 + 5 语言 + 13×u32(当前 2 + applied 2 + seg 3* + vad/ramp 6*)
     scvb::state::OutputState d;
     REQUIRE(scvb::state::decodeOutputState(b.data(), b.size(), d));
     REQUIRE(d.uiLanguage == "zh-CN");

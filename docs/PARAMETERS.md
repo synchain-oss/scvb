@@ -50,7 +50,7 @@ global:
   version_active: 1..2         # 当前版本(非自动化,防 write 自录;J59 4→2)
   range: {mode: follow|daw_loop|manual, start_s, end_s}   # 作用区间(J04:默认 follow)
 analysis:
-  vad: {threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}   # 默认宁多勿少(J23 拆分,默认 120/200)
+  vad: {threshold_db, hysteresis_db, hangover_ms, padding_pre_ms, padding_post_ms}   # 默认宁多勿少(J23 拆分,默认 120/200);[SL-416] 五项**自本版起随工程落盘**(值域/默认真源 = 02 §0.3:−60..−10/默认 −38、3..12/6、100..600/250、20..400/120、50..400/200)
   segmentation: {mode, sensitivity, min_segment_ms}
   # min_segment_ms = 每轨最短**自动**段长,两层生效([SL-414]):① VAD 核心丢短(02 §2.3 P1,
   # 在前后留白之前判定);② 段表兜底 —— 回写层成形的段表里短于它的 auto 段并入同轨**时间相接**
@@ -58,7 +58,7 @@ analysis:
   # 不再有「短于它、且存在相接自动邻段」的自动段;两侧都不相接的孤立短段按设计保留 —— 两条路:
   # 选区/范围档重分析在窗边裁出的残段([SL-399 R8]),或邻段因与手动段冲突而整条落选后剩下的
   # 孤段(与裁剪无关,整条时间线重分析时同样会出)。
-  transition_ramp_ms: 80
+  transition_ramp_ms: 80                          # [SL-416] **自本版起随工程落盘**(§1.20:20..300,默认 80)
   loudness_mode: "kw_integrated"|"rms"|"peak_dbfs"            # [J69/U24①] 第二响度指标口径,默认 "kw_integrated"
   center_slot_policy: "priority_queue"|"lead_exclusive"|"even_spread"   # [J69/U24④] 中心槽策略,默认 "priority_queue"
 channels[15]:                  # 配置唯一真源在 Output(ADR-004);[J59] 10→15

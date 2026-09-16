@@ -544,10 +544,17 @@ export function makeOutputState(overrides = {}) {
             // (threshold −60..−10 dB、sensitivity 0..1;J23 的 pre/post = 120/200)。
             // 02 §2.1 旧默认(threshold 30 正值 / sensitivity 50)与 05 的 UI 值域
             // 相悖,mock 是 UI 消费面 —— 取 05,登记 deviations 供 02 复核。
+            // [SL-416] 五项的数值**不是自由值**:真源 = 02 §0.3 常量表 → C++ 侧
+            // `OutputStateCodec.h` 的 `kOutputVad*Default`(引擎初值 / 滑杆 def / decode 回落同源)。
+            // 这一份是 mock 的 **state 初始快照**,preview 一开窗就经
+            // `syncParamGroup(local.vadParams, ana.vad)` 覆盖本地缓存 —— 所以它必须与规格默认逐值相等:
+            // 第 1 轮复审抓到 `hangover_ms: 180`(规格 250)时,HOLD 读数停在 180 而 tooltip 写 250,
+            // 且 ⑮(a)/(b)(只对拍 SLIDERS / DEFAULT_VAD_PARAMS)与页面级那一格(显式整组覆写 ana.vad)
+            // **两条路都绕开了这里**。现由 `smoke-tab3-interactions.mjs` ⑮(d) 逐值对拍,漂开即红。
             vad: {
                 threshold_db: -38,
                 hysteresis_db: 6,
-                hangover_ms: 180,
+                hangover_ms: 250,
                 padding_pre_ms: 120,
                 padding_post_ms: 200,
             },
@@ -562,7 +569,7 @@ export function makeOutputState(overrides = {}) {
                 sensitivity: 62,
                 min_segment_ms: 420,
             },
-            transition_ramp_ms: 80,
+            transition_ramp_ms: 80, // [SL-416] == codec 的 `kOutputTransitionRampMsDefault`(⑮(d) 对拍)
             loudness_mode: "kw_integrated", // §1.21 默认档
             center_slot_policy: "priority_queue", // §1.21 默认档
             // [SL-279] 「上次全量分析所用」那一份。默认与当前值相同 = 「这份工程已经按它
