@@ -1463,10 +1463,14 @@ function renderBanners() {
     // `scvb.error{code:"sidecarMissing"}` 到达也**不产生布局盒**(页面级判据:
     // `smoke-ui-layout-page.mjs` G 节)。
     // ⚠ **只摘了这一句,没有摘别的**:`sidecarMissing` 仍在下面 `KNOWN_CODES` 里(它仍是
-    // §5.1 九码之一,native 侧读路径照旧会发),store.errors 也照旧收下它 —— 只是本版
-    // 没有渲染出口。顺带记一条**本卡已知的用户可见后果**:打开一份靠外部特征文件的老工程
-    // 而那份文件不在时,此前唯一的那句提示就是这条横幅;收起之后用户看不到任何解释
-    // (特征为空、曲线与分段不受影响)。要恢复提示,把上面那行接回来即可。
+    // §5.1 九码之一),store.errors 也照旧收下它 —— 只是本版没有渲染出口。
+    // **按事实读,别照本卡第 1 推那句旧话读**:统筹 2026-09-15 grep 更正 —— 这条 code 在
+    // `src/` 里**没有任何生产者**(只有 `SidecarStore.h` 一条待接线注释),也就是说
+    // **横幅⑤ 在本次之前也从来没有亮过**,不是「本来会提示、被我们收掉了」。将来谁在 `src/`
+    // 里发出它,必须连同上面那行一起接回来(`smoke-tab4-settings.mjs` 的
+    // 「`src/` 非注释命中数 == 0」那一格届时会红,那是设计好的)。
+    // 契约面口径见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md` 与
+    // `docs/SCVB_CONTRACT.md` §5.1 的 UI 落点列 / 降级纪律①。
     vs.noTimeline = err.has("noTimeline");
     show($("banner-noTimeline"), vs.noTimeline);
 

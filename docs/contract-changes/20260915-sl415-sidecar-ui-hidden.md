@@ -12,7 +12,7 @@
       不是共享内存段布局的一部分;段名前缀与 header 前两字段无关。
 - [x] docs/STATE_SCHEMA.md(state schema)—— **两处描述改实**,容器布局 / abi / 迁移链**零变化**:
       §4.2 `setStateInformation()` 失败分支的 UI 落点句(`:209`)、§4.3 `session_guid` 提前构造的
-      **理由句**(`:213`)。
+      **理由句**(`:213`)、§4.3 copy-on-write 条尾的「提示重采集」(`:219`)。
 - [x] docs/SCVB_CONTRACT.md(桥面契约)—— **四处描述改实**,函数名 / 签名形态 / 事件名 /
       **载荷字段零变化**:§1.1 语义行的 `features.bytes` 句(`:95`)、§5.1 `sidecarMissing` 的
       「UI 落点」列(`:726`)、§5.1 表下的降级纪律①(`:732`)、§9 补白表的
@@ -26,7 +26,7 @@
 
 **一句话**:用户 2026-09-14 裁定「sidecar 不上了」之后,设置页「存储状态」行、横幅⑤、toast②
 三处 UI **收起**(DOM 留 + `hidden` 恒挂 + JS 不再 `show()`),首启导览里讲「存储状态」的那一步
-整步移除(44 → 43 步);六处冻结文档据此改成事实。
+整步移除(44 → 43 步);**七处**冻结文档据此改成事实。
 
 ### 先更正一条事实(两家复审共同依据的那条是错的)
 
@@ -47,21 +47,22 @@ $ grep -rn "sidecarSwitched" src/
 `src/input/InputEditor.cpp` 一带有真实发送边沿,那才是活的。
 
 ⇒ 所以**不给它留「非静默出口」**:给一条没有生产者的 code 留横幅,是留一块永远不会亮的死 UI,
-既不解决任何用户可见问题,又与用户裁定相反。走的是**补本文档 + 把六处描述改实**这一边。
+既不解决任何用户可见问题,又与用户裁定相反。走的是**补本文档 + 把七处描述改实**这一边。
 
-**但【红旗】的结论成立**,只是理由换了:那六处描述的行为今天不存在,本 PR 让它更不存在 ——
+**但【红旗】的结论成立**,只是理由换了:那七处描述的行为今天不存在,本 PR 让它更不存在 ——
 这属于**行为面**的契约变更,「不动布局所以不用走 §5 流程」站不住。
 
-### 六处逐条改法
+### 七处逐条改法
 
 | # | 文件:行 | 改前 | 改后 |
 | --- | --- | --- | --- |
 | ① | `SCVB_CONTRACT.md:726` | `sidecarMissing` 的 UI 落点列写「琥珀横幅⑤『采集数据缺失/过期,请重新采集』」 | 「**v1 无出口**:sidecar 不随 v1 出厂,且该 code 在 `src/` 里**没有任何生产者**(grep 证据见本文档)。**接线那天必须同时恢复横幅⑤**——锚点与三语词条都还在」 |
-| ② | `SCVB_CONTRACT.md:732` | 降级纪律①「UI **不静默**任何 code」 | 补例外并点名两条 code;**例外的判据写成「在 `src/` 里没有生产者」而不是「已隐藏」** —— 写成「已隐藏」的话,下次有人加了生产者会照着例外继续静默。同处写明「接线那天必须同时恢复横幅⑤ / toast②」,并指向那条会变红的判据 |
+| ② | `SCVB_CONTRACT.md:732` | 降级纪律①「UI **不静默**任何 code」 | 补例外并点名两条 code。**第 2 轮裁定 1 把例外句收窄过**:两条的处境不一样,不能合并读 —— `sidecarMissing` 的落点列已改为「v1 无出口」(判据是它在 `src/` 里**没有生产者**);`sidecarSwitched` 的落点列**保留**(toast②),受它自己那行「v1 出厂态不可达 ⇒ 恒内嵌;枚举与文案保留」的注记约束(开关打开即恢复,所以**不**改成「无出口」);**两者都不进诊断区**。同处写明「接线那天必须同时恢复横幅⑤ / toast②」,并指向那条会变红的判据 |
 | ③ | `SCVB_CONTRACT.md:95` | `features.bytes` = 特征数据字节数(**Tab4 存储状态显示**,04 §5.4/ADR-007) | 同字段、同语义,**UI 消费面改实**:「本版已收起,故无 UI 消费面;字段仍在事件里照常下发」 |
 | ④ | `SCVB_CONTRACT.md:1016` | 补白表该行的「说明」列写「特征数据字节数」 | 同上一格的「v1 收起」句,保留字段仍下发这一半 |
 | ⑤ | `STATE_SCHEMA.md:209` | 失败/缺失分支写「FrameStore 置空 **+ UI 横幅『采集数据缺失/过期,请重新采集』**」 | 「FrameStore 置空」保留;**UI 那半改实**:该分支的横幅⑤在 v1 无出口(无生产者 + 用户裁定后已收起),接线那天必须同时恢复 |
 | ⑥ | `STATE_SCHEMA.md:213` | `session_guid` 提前构造的理由写「让设置页在首次存盘前就显示真值 —— 否则『存储状态』行在用户第一次保存工程之前恒是废话」 | 理由句**失去指涉,改实**(那一行已收起);**「提前到构造期」这件事本身保留不动** —— 它是既有行为,与本次 UI 收起无关 |
+| ⑦ | `STATE_SCHEMA.md:219` | §4.3 **copy-on-write** 条尾写「…按『缺失』处理(曲线无损,**提示重采集**)」 | 「曲线无损」保留;**「提示重采集」那半改实**:它在 v1 无出口(同一族:无生产者 + 横幅⑤ 已收起),接线那天一并恢复。**同一节的 `:220`(「清理 30 天未访问会话」推 v1.1)不动** —— 那是 v1.1 的事 |
 
 > ⚠ ⑥ 是本次唯一容易改过头的格子:**要改的是理由,不是行为**。`juce::Uuid()` 仍在
 > `ScvbOutputAudioProcessor` 构造函数里生成,`session_guid` 仍随 state 落盘。
@@ -86,7 +87,7 @@ $ grep -rn "sidecarSwitched" src/
 | --- | --- | --- |
 | 页面级(真执行) | `web-preview/tests/smoke-ui-layout-page.mjs` G 节 | 三处**触发条件成立**下的真实布局盒:`banner-sidecarMissing` / `toast-sidecarSwitched` 的 `getClientRects().length === 0`;Tab4 上 `settings-storage` 同样 `=== 0`,且其**计算 `display === "none"`**(非继承属性,不依赖面板当前在第几页)。四处对照(`banner-srMismatch` / `toast-projectCopy` / 诊断卡 / `#content[data-tab]`)与真判据**同一次读出**,免空过 |
 | node 侧负向 | `web-preview/tests/smoke-tab4-settings.mjs` | **剥注释后** `tab-settings.js` 里不含针对 `settings-storage` 卡的 `show(...)` / `hidden = false` —— 把「不要给它加 show()」那句注释变成牙齿 |
-| **事实守卫** | `web-preview/tests/smoke-tab4-settings.mjs` | **`src/` 下 `sidecarMissing` 的命中数恰为 1,且那一处是注释** —— 这是本变更文档立论的那条 grep 事实。⚠ **接线那天这一格会红,是设计好的**:届时必须同时恢复横幅⑤ 并把这一格改成「有生产者」的形态,不许把断言放宽 |
+| **事实守卫** | `web-preview/tests/smoke-tab4-settings.mjs` | **`src/` 下 `sidecarMissing` 的「非注释」命中数为 0**(第 2 轮裁定 2 从「命中数恰为 1 且那处是注释」收紧成这个形态:旧写法对同族**注释**过敏,而失败话术会把人带向「放宽到 `<= 2`」)。另有一条反向对照:那条「待接线」注释今天**必须**还在(`hits.length > 0`)。⚠ **接线那天这一格会红,是设计好的**:届时必须同时恢复横幅⑤,并把这一格改成「有生产者」的形态,不许把断言放宽 |
 | node 侧负向 | `web-preview/tests/smoke-tab1-interactions.mjs` | 剥注释后 `app.js` 里不再有 `show($("banner-sidecarMissing"))` / `show($("toast-sidecarSwitched"))`,且模板里两处恒挂 `hidden` |
 | 导览 | `web-preview/tests/smoke-tour.mjs` | 步数 43;步骤表**不再含 `storage` 锚点**(负向);`index.html` 里 `data-tour="storage"` 属性仍在(DOM 留) |
 | 既有回归 | `tests/core/test_state_features_roundtrip.cpp` / `tests/host/test_host_harness.cpp` | `FEAT-SIDECAR-1..11` 与 `HOST SL395` **零改动**,执行读数由统筹在沙箱外跑并回填 PR 描述 |

@@ -984,27 +984,42 @@ log(
                 }
             });
         }
+        // 注释行 = 「提到」,非注释行 = 「可能发出」。判据只看后者。
+        //
+        // [SL-415 第 2 轮裁定 2] **改成「非注释命中数 == 0」,不再是「命中数恰为 1」**。
+        // 理由:旧写法对**同族注释**过敏 —— 以后谁在 `src/` 里顺手再写一句提到这个 code 的
+        // 注释(完全无害),那一格就会红,而失败话术写的是「接线那天会红」,把人往
+        // 「我去把断言放宽到 <= 2 吧」那一侧带 —— 那正是本格要防的路。放宽到 `<= 2` 等于
+        // 把牙齿拔掉;收紧成「非注释 == 0」则**对生产者方向的牙齿一分不减**(真的发出它,
+        // 必然是某一行**非注释**代码里出现这个字面量)。
+        const isComment = (t) => /^(\/\/|\*|\/\*)/.test(t);
+        const codeHits = hits.filter((h) => !isComment(h.text));
         log(
             `  [SL-415] src/ 下 sidecarMissing 命中 ${hits.length} 处` +
+                `(其中非注释 ${codeHits.length} 处)` +
                 (hits.length
-                    ? `:${hits.map((h) => ` ${h.where}:${h.line}`).join("")}`
+                    ? `:${hits.map((h) => ` ${h.where}:${h.line}${isComment(h.text) ? "(注释)" : "(★代码)"}`).join("")}`
                     : ""),
         );
-        // ← 在 src/ 里任何一处**发出** sidecarMissing(哪怕只多一行字符串字面量),本格红。
-        //   那正是「接线了」的信号,必须连同横幅⑤ 一起恢复。
+        // ← 在 src/ 里任何一处**非注释**代码里写上 sidecarMissing(哪怕只多一行字符串字面量),
+        //   本格红。那正是「接线了」的信号,必须连同横幅⑤ 一起恢复。
         eq(
-            hits.length,
-            1,
-            "(2) ★ src/ 下 sidecarMissing 的命中数恰为 1(接线那天本格会红,见注释)",
+            codeHits.length,
+            0,
+            "(2) ★ src/ 下 sidecarMissing 的**非注释**命中数为 0(接线那天本格会红,见注释;" +
+                `实得 ${codeHits.length}` +
+                (codeHits.length
+                    ? `:${codeHits.map((h) => ` ${h.where}:${h.line}`).join("")}`
+                    : "") +
+                ")",
         );
-        if (hits.length === 1) {
-            // 唯一那一处**必须是注释**(`SidecarStore.h` 的待接线意向),不是发送点。
-            check(
-                /^(\/\/|\*|\/\*)/.test(hits[0].text),
-                `(2) ★ 且那一处是注释、不是发送点(实得 ${hits[0].where}:${hits[0].line} ` +
-                    `= ${JSON.stringify(hits[0].text.slice(0, 80))})`,
-            );
-        }
+        // 反向那一半:今天**必须**至少还有那条待接线注释(sidecarSwitched 一条都没有,
+        // 所以这里只钉 sidecarMissing)。删掉它还留着「无生产者」这句话就会变成没人守的断言。
+        check(
+            hits.length > 0,
+            "(2) 对照:src/ 里仍留着那条「待接线」注释(`SidecarStore.h`)—— 它消失时本格红," +
+                "免得「非注释命中 == 0」在「连注释都没了」时静默为真",
+        );
     }
 }
 

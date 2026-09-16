@@ -216,5 +216,5 @@ FeatSection(压缩前布局):
   - `manifest.json`:{schemaVersion, codecVer, createdAt, savedAt, sha256, bytes, channelCount, hostName}
   - 原子写:`features.bin.gz.tmp` 写完 → rename 为 `features.bin.gz`(单文件含全部 channel,布局同 §4.1 embedded 体)
   - `owner.lock`:{pid, processStartTime, heartbeatIso8601},sidecar 模式下 Output 每 10s 由消息线程刷新;判活 = pid 存在 ∧ 心跳 < 30s
-- **copy-on-write**:工程复制且两份同时打开 → 后开者检测到 owner.lock 活且 pid 非己 → 生成 newGUID、复制 sidecar 目录、本实例改用 newGUID;先后打开 → 共享同一 sidecar,任一方重采集保存后另一方 sha256 不匹配 → 按「缺失」处理(曲线无损,提示重采集)。
+- **copy-on-write**:工程复制且两份同时打开 → 后开者检测到 owner.lock 活且 pid 非己 → 生成 newGUID、复制 sidecar 目录、本实例改用 newGUID;先后打开 → 共享同一 sidecar,任一方重采集保存后另一方 sha256 不匹配 → 按「缺失」处理(**曲线无损**;那一句「提示重采集」在 v1 **无出口** —— `sidecarMissing` 在 `src/` 里没有生产者且横幅⑤ 已随用户 2026-09-14 裁定收起,接线那天一并恢复,见 `docs/contract-changes/20260915-sl415-sidecar-ui-hidden.md`)。
 - **孤儿会话清理**(设置页「清理 30 天未访问会话」)推 v1.1;v1 在文档写明手动路径。
