@@ -157,7 +157,9 @@ ui: {scale, language, guide_seen}   # [J80/J81] guide_seen 默认 false
   同族判例 #251 对「分段灵敏度滑杆」也报过同一句),
   引擎侧 `SegmentationParams` 里也没有 `mode`(恒按 `valley` 走 S1)。所以
   **生产路径没有任何一处把这一档写成 `vad_only`,落盘值恒为 `0`=valley**;`vad_only` 的语义
-  留待接线那张卡启用。**布局与 abi 一律不动**(`CFGS` 第 25–28 字节照旧是它,abi 4 不升)——
+  留待接线那张卡启用。**布局与 abi 一律不动**(`CFGS` 尾部那一档里 `segmentationMode` 那一个 u32
+  照旧是它 —— 它的载荷偏移是 `40 + languageBytes`,随 `uiLanguage` 长度浮动,**别写死字节号**;
+  abi 4 不升)——
   [SL-411] 刚落盘、立刻再升一次 abi 只会让更多旧工程进拒载态。
   ⚠ **这句「恒写 0」是生产路径的实况,不是编解码的不变量**:`segModeOrdinal` / `segModeString`
   仍按**原样往返**(一份手写成 `1` 的 abi=4 blob 读进来仍是 `vad_only`、再存回去仍是 `1`)。

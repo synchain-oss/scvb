@@ -476,7 +476,6 @@ TEST_CASE("planNewerStateEmit:newerState 的边沿/撤销/去重/丢弃四态", 
 {
     using scvb::output::planNewerStateEmit;
 
-    constexpr std::uint32_t kLocal = 4;
     constexpr std::uint32_t kHigher = 5;
     constexpr std::uint32_t kEvenHigher = 6;
 
@@ -555,7 +554,11 @@ TEST_CASE("planNewerStateEmit:newerState 的边沿/撤销/去重/丢弃四态", 
         const auto p = planNewerStateEmit(true, /*projectAbi=*/0, true, false, 0);
         CHECK(p.send);
         CHECK(p.nextShownAbi == 0u);
-        // 前提:本机 abi 不是 0,所以「0 ⇒ 拒载成立」这条不变量在今天就成立。
-        CHECK(kLocal != 0u);
+        // ⚠ 这里原先还有一条 `CHECK(kLocal != 0u)` —— **恒真断言,已删**(#264 第 1 轮统筹
+        // 裁定 4):`kLocal` 是本文件手写的 `constexpr … = 4`,不是 `scvb::state::kCurrentAbi`,
+        // 所以它「从来就没量过任何东西」(判例 `indistinguishable-is-not-unneeded` 的反面)。
+        // 上面那两条 CHECK 才是本格有判别力的部分 —— 它们能红在「有人给 0 单开一档」上。
+        // 真正的不变量(`RejectedNewer ⇒ hdr.abi ≥ 1`)由 `HOST SL412` 在真
+        // `setStateInformation` 上断,不靠这里。
     }
 }

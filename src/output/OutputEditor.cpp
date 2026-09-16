@@ -720,6 +720,21 @@ void OutputEditor::emitNewerStateError()
 
     // ⚠ 只在**真发了**之后才推进(§5.1 降级纪律②的两态对称:撤下那一帧同样要记账,
     // 否则条件再成立时会因为「以为屏上还挂着」而永远不再发)。
+    //
+    // ⚠⚠ **记账口径与同拍里 params / segments 那两路不同源,这是有意的,不要"对齐"**
+    // ([#264 第 1 轮统筹裁定 7]:采纳「写明理由」那一边,不改代码、不改签名):
+    // 那两路是 `settleResendLatch(sent, …)` —— 按 `emitSegments` / `emitParams` 的**回调
+    // 返回值**清位;而这一路按 **`plan` 已经采到的可见性**清位(`emitError` 返回 `void`,
+    // 是既有形态,为这一处改签名会扩面)。两者不是同一个判据,因为两者要防的不是同一件事:
+    //   · params / segments 的 `sent` 防的是**「载荷构好了但这一帧被吞」**——它们有第二层
+    //     基线在「发之前」就推进,吞一帧就永久丢一份变化,所以必须等回执、靠闩锁补发;
+    //   · 这一路 plan 的语义本身就是**边沿 + 撤销**(`!visibleNow` 直接不发**且不记账**),
+    //     条件只要还在,下一拍照样满足「该发」,不需要补发闩锁。
+    // 两次可见性取样都在**同一个同步调用栈**上(plan 一次、`emitEventIfBrowserIsVisible`
+    // 内部一次),消息线程不会在中间被插入一次可见性翻转,故「两次取样分家」不可达。
+    // 这条能力边界就是 `BridgeArgs.h` 那一段(`emitEventIfBrowserIsVisible` 在不可见时
+    // 丢弃载荷)写明的那个;**真要把这一路也改成回执制,先动 `emitError` 的签名**,
+    // 那是一次跨调用点的扩面改动,不塞在本卡里。
     newerStateShown_ = plan.nextShown;
     newerStateShownAbi_ = plan.nextShownAbi;
 }

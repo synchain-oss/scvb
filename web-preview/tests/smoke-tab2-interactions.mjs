@@ -406,36 +406,47 @@ log("=== ③ setTrackManual 首次确认的三形态(05 §2.2 R3,无条件)===")
         // `if (tickCount_ % 25 == 0)`、或干脆把 `emitNewerStateError()` 那行删掉、
         // 或记账写成无条件推进)在 C++ 单测里**全绿**而缺陷原样回归。
         //
-        // ⚠ 负向/正向都带**行形态**约束,理由同上面那段:`src()` 读整个文件、不区分代码与
-        // 注释,而 `BridgeArgs.h` 与 `OutputEditor.cpp` 的注释里就逐字写着这些名字
-        // (本卡刚写的那几段头注里全都有)—— 不约束行形态的话,钉子在**没有任何行为退化**
-        // 的情况下就会被注释喂饱而恒真。
+        // ⚠ **六条一律带行形态锚**,理由同上面那段:`src()` 读整个文件、不区分代码与注释,
+        // 而 `BridgeArgs.h` 与 `OutputEditor.cpp` 的注释里就逐字写着这些名字(本卡刚写的那几段
+        // 头注里全都有)—— 不约束行形态的话,钉子在**没有任何行为退化**的情况下就会被注释喂饱
+        // 而恒真。
+        //
+        // ⚠ **第一版只锚了三条,另三条是裸 `test()`**([#264 第 1 轮统筹裁定 1,两家 bot 同指]):
+        // 把 `emitError("newerState", 0, detail, plan.active);` **整行注释掉** ⇒ 六条钉子全绿、
+        // 纯函数用例全绿、页级消费侧全绿,而红横幅④ 再也发不出去 —— 而这一行在 C++ 侧
+        // 没有任何可执行落点,**当时全仓没有一道门禁看得见这个退化**。这与 D4c 抓到的是
+        // 同一形态(那时只修了三条闩锁钉子)。删除式 D4d/D4e/D4f 三条就是冲这三条新锚来的。
+        //
+        // 锚法:**语句起始**锚在行首(`^[ \t]*…`),不要求整条语句在一行内 ——
+        // `planNewerStateEmit(...)` 那条跨越两行(实参换行),用「整行 + `$`」锚不上;
+        // 而注释掉它时行首会多出 `//`,行首锚照样失效。
         check(
             /^[ \t]*emitNewerStateError\(\);[ \t]*$/m.test(oe),
             "[SL-412] emitTick 真的调了 emitNewerStateError(不是只定义了没人调)",
         );
         check(
-            /scvb::output::planNewerStateEmit\(processor_\.hasStateAbiMismatch\(\), processor_\.stateAbiSeen\(\),/.test(
+            /^[ \t]*const auto plan = scvb::output::planNewerStateEmit\(/m.test(
                 oe,
             ),
             "[SL-412] 现场三个值取自 processor 的两个 getter + webView 可见性,判定走纯函数",
         );
         check(
-            /emitError\("newerState", 0, detail, plan\.active\);/.test(oe),
+            /^[ \t]*emitError\("newerState", 0, detail, plan\.active\);[ \t]*$/m.test(
+                oe,
+            ),
             "[SL-412] 载荷按 §2.9 信封发出(不带 ch:这一条是页级条件)",
         );
         check(
-            /put\(detail, "localAbi", static_cast<int>\(scvb::state::kCurrentAbi\)\);/.test(
+            /^[ \t]*put\(detail, "localAbi", static_cast<int>\(scvb::state::kCurrentAbi\)\);[ \t]*$/m.test(
                 oe,
             ) &&
-                /put\(detail, "projectAbi", static_cast<int>\(processor_\.stateAbiSeen\(\)\)\);/.test(
+                /^[ \t]*put\(detail, "projectAbi", static_cast<int>\(processor_\.stateAbiSeen\(\)\)\);[ \t]*$/m.test(
                     oe,
                 ),
             "[SL-412] detail 的两个数与 §5.1 表逐字同形(localAbi / projectAbi)",
         );
-        // ⚠ 这三条**必须带行形态锚**(`^[ \t]*…[ \t]*$` + `m`),理由同上:`src()` 读整个文件、
-        // 不区分代码与注释。第一版这三条写的是裸 `test()`,实测把
-        // `std::uint32_t newerStateShownAbi_ = 0;` **整行注释掉**之后照样全绿 ——
+        // ⚠ 闩锁这三条正则(两条 check)**必须带行形态锚**,理由同上。第一版它们是裸 `test()`,
+        // 实测把 `std::uint32_t newerStateShownAbi_ = 0;` **整行注释掉**之后照样全绿 ——
         // 注释里那串字面把钉子喂饱了,而它自称断的正是「这一位还在」。删除式 D4c 抓到的
         // 就是这个洞(与 #261 那次「回扫自己给自己发合格证」同一个形态)。
         check(

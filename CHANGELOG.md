@@ -393,7 +393,8 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
 
 ⚠️ 契约变更
 - **`analysis.segmentation.mode` 标注为 v1 保留位**(契约文本口径变更,**零布局 / 零 abi / 零迁移**:
-  `CFGS` 第 25–28 字节照旧是它,容器 abi 仍为 4,`kMigrators` 仍是三条,`tests/golden/state/*.bin`
+  `CFGS` 尾部那一档里 `segmentationMode` 那一个 u32 照旧在(载荷偏移 `40 + languageBytes`,
+  随 `uiLanguage` 长度浮动),容器 abi 仍为 4,`kMigrators` 仍是三条,`tests/golden/state/*.bin`
   一个字节未动)。`mode` 的两档 `valley` / `vad_only` 只活在规格里:**UI 全仓没有对应控件**
   (`web/output/index.html` 里 `valley` / `vad_only` / `分段方式` 三个字面全 0 命中;`valley` 在
   `tab-wave.js` 只作注释与契约 §1.19 整包缓存的初值),引擎侧 `SegmentationParams` 里也没有 `mode`
