@@ -136,11 +136,27 @@
     --acc-cta: #b9aedc; /* 主按钮底(设计稿 156/282/1042/1121/1148 行) */
     --acc-cta-shadow: rgba(150, 130, 200, 0.35); /* 主按钮小号投影 */
     --acc-cta-shadow-lg: rgba(150, 130, 200, 0.4); /* 模态主按钮投影 */
-    /* --acc-ink:CTA 上的文字色 + **深墨 chip 的填充色**。[第 1 推登记] fill 角色的现行
-     消费者 = Input 帮助钮 .ipt-help(web/input/index.html,SL-403)—— 此前 tokens 注释
-     写过的「深色底原生 select 底色」在全仓没有任何消费点(grep 核过,DeepSeek 首轮指出),
-     那半句已删;fill 角色从本卡起正式记在本条。可读性判据 = smoke-ui-layout-page 的 A8。 */
+    /* --acc-ink:CTA 上的文字色,**只有文字角色**。SL-403 曾把它兼作「深墨 chip 的填充
+     色」并在此登记 fill 角色,SL-422 用户回验判「太黑、与整窗粉紫不同族」,那个唯一的
+     fill 消费者(Input 帮助钮 .ipt-help)已改用 --acc-ink-violet ⇒ **fill 角色在全仓
+     重新回到零消费点**(grep `var(--acc-ink)` 核过,余下全是 color: 声明),故那半句
+     一并删掉,不留「登记了但没人用」的空账。 */
     --acc-ink: #241f2e;
+    /* [SL-422] 深紫 chip 的**填充色**。用户 2026-09-17 拍板:帮助钮保留「实心底 + 白问号」
+     的形态,只把黑换成「界面紫系里深的那一档」,取值 #4a4060(用户给的参考值,逐字照用)。
+     ⚠ 它**不是**本文件里最深的紫(--sem-violet-title #362e5e 更深)—— 取值以用户给的为准,
+     别为了凑一句「最深」去改它。
+     为什么**新增**而不是复用既有紫(改动面最小的做法本该是复用,先查过再新增):
+       · --sem-violet-ink #4c4478 / --sem-violet-title #362e5e —— 最近的两档,但都是
+         --sem-violet 提示卡族的**字色**,拿来当别处的底色会把 Input 页眉和提示卡的
+         配色绑在一起(改提示卡字色会静默改掉这颗钮),正是 SL-403 登记角色时要避开的耦合;
+         色值上 #4c4478 也比本条蓝 24 档(B 通道),是另一个色相档位。
+       · --acc-ink-on-glass #5b5075 是浅薰衣草 chip 上的**字色**,同样是字色角色且更浅。
+       · --acc-cta #b9aedc 是浅紫,本条要的是深档。
+     现行消费者 = Input 帮助钮 .ipt-help(web/input/index.html)。
+     可读性判据 = smoke-ui-layout-page 的 A8(问号 vs 钮底、钮底 vs 所在渐变面,
+     两处 WCAG ≥ 3:1,取 getComputedStyle 真值现算,**不钉本条的色值字面量**)。 */
+    --acc-ink-violet: #4a4060;
     --acc-slider: #9b93c4; /* input[type=range] accent-color(05 §2.1 明文) */
     --acc-slider-fill: rgba(155, 147, 196, 0.85); /* 自绘滑杆已走过部分 */
     --acc-link: #b9aedc;
