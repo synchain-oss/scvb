@@ -653,7 +653,14 @@ input[type="range"] {
     scale: 1;
 }
 
-/* CTA:唯一使用实心紫底的控件,一屏最多一枚主行动。 */
+/* CTA:主行动按钮 —— 浅紫实心底(--acc-cta)上压深字(--acc-ink),一屏最多一枚。
+   [SL-422] 这里**原先写着一句「唯一使用实心紫底的控件」的全称断言,已整句删掉**,
+   不再换一个更窄的说法续写:它先被 Input 帮助钮 .ipt-help 打翻(实心紫底、深档),
+   收窄成「唯一的浅紫实心主行动」后又被 web/output/index.html 的 .wave-empty__cta
+   打翻(同 --acc-cta 底 + --acc-ink 字,自起几何、不走本类)。这类断言要维持为真
+   需要全仓穷举,而**没有任何门禁守着它** —— 下一个加按钮的人不会回来改这行。
+   要知道还有谁用这枚底色,现查:`grep 'var(--acc-cta)' web/`;别在这里维护清单,
+   指路不会过期,枚举会。 */
 .sc-btn--cta {
     background: var(--acc-cta);
     border-color: transparent;
