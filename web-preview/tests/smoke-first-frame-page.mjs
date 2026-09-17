@@ -540,8 +540,10 @@ for (const role of ["input", "output", "monitor"]) {
     // (「比对轴会静默变空」那一族)。用 >= 0 判,不用真值判 —— 0 是合法帧计数。
     check(
         probe.paintFrames >= 0 && probe.paintMs >= 0,
-        `${role}:first-paint 记录取到了(帧计数 ${probe.paintFrames} / ` +
-            `${Math.round(probe.paintMs)}ms)`,
+        `${role}:first-paint 记录取到了(实得帧计数 ${probe.paintFrames} / ` +
+            `${Math.round(probe.paintMs)}ms;**两个 −1 = 信号已经发了、页面却还没画过任何一帧**,` +
+            `这不是探针缺陷 —— 它与下面 Δms 为负是同一件事的两种形态,` +
+            `本卡把触发改回 DOMContentLoaded 时 input / output 就落在这一格)`,
     );
     if (ff.length !== 1 || probe.paintFrames < 0) continue;
 

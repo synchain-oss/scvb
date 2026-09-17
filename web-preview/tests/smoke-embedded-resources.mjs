@@ -790,9 +790,20 @@ function checkFirstFrameSignal(role, entry) {
     );
 
     // 只在**含该事件名的那个 <script> 块**里判形态:整页扫会把别处的 rAF 算进来。
-    const block = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    const rawBlock = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((mm) => mm[1])
         .find((body) => body.includes('"' + eventId + '"'));
+    // ⚠ [SL-429] 上面剥的是 **HTML** 注释,**JS 注释还在**。块里那几行 `// buffered:true ——`
+    // 之类的说明逐字写着下面要断言的关键词,不剥的话注释自己就给实现发了合格证 ——
+    // 本卡的删除式实测:去掉 `buffered: true` 这个**实参**,判据照样全绿(#188 同族,
+    // 这是第四次)。只剥**整行** `//` 注释与 `/* */` 块注释,不动行尾的 `//`
+    // (`https://` 这类会被行尾规则误伤,而本块里的说明本来就都是整行)。
+    const block =
+        rawBlock === undefined
+            ? undefined
+            : rawBlock
+                  .replace(/\/\*[\s\S]*?\*\//g, "")
+                  .replace(/^[ \t]*\/\/.*$/gm, "");
     if (block === undefined) {
         bad(
             `${role}:index.html 里没有发 ${eventId} 的内联脚本 —— 开窗遮挡闸就只剩` +
