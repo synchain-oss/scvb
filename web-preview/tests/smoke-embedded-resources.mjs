@@ -29,8 +29,9 @@
 //   ⑥c [SL-370→SL-402] 占位的 C++ 真源 == tokens.css 的 --page-gradient —— SL-370 当时
 //      对拍的是「单色常量 == 渐变轴中点色」,[SL-402] 占位本身升成渐变,本格随之升级为
 //      **整张色标表逐项对拍**(真源方向不变:tokens 是真源,C++ 数组与三份内联逐字照抄它)。
-//   ⑦ [SL-370] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的 kFirstFrameEventId
-//      逐字一致、武装是**嵌套两层** requestAnimationFrame、且挂在 DOMContentLoaded 之后。
+//   ⑦ [SL-370 / SL-429] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
+//      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且由
+//      **paint 记录**触发(不是 DOMContentLoaded),并带回落路与保险定时器。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -751,22 +752,23 @@ function checkBackdropMatchesShell() {
 }
 
 /**
- * ⑦ [SL-370] 「首帧已绘」上行信号在场且形态正确。
+ * ⑦ [SL-370 / SL-429] 「首帧已绘」上行信号在场且形态正确。
  *
  * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
  * 靠这条信号放回来(**[SL-376] 起它是唯一的正常放行路**;pageFinishedLoading 不再放行,
  * 只剩 3s 超时兜底)。机理只写在
- * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守三条形态:
+ * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守四条形态:
  *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
- *       本帧提交**之前**,信号会早于首帧,C++ 放回来的仍是一块没画上东西的 WebView,
- *       正是本卡要治的病;
- *   (c) 武装挂在 DOMContentLoaded / readyState 之后(**两个关键词都要在场**,理由见该处),
- *       不在文档还在解析时就发。
+ *       本帧提交**之前**,比嵌套两层更早,信号更不可能落在已绘之后;
+ *   (c) [SL-429] 武装由 **paint 记录**触发(PerformanceObserver + type:"paint" + buffered),
+ *       **不是** DOMContentLoaded —— 两层 rAF 并不保证页面已经画过任何一帧,见该处;
+ *   (d) [SL-429] 回落路(readyState + DOMContentLoaded)与保险定时器都在场:paint 记录
+ *       不到达时这条信号不许变成永不发出。
  *
- * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名与 requestAnimationFrame,
- * 不剥的话注释自己就能把三条断言全顶替掉(#188 同族,连撞过三次)。
- * 三条报错文案互不相同,拆任一条只红它自己那句。
+ * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名、requestAnimationFrame 与
+ * PerformanceObserver,不剥的话注释自己就能把四条断言全顶替掉(#188 同族,连撞过三次)。
+ * 四条报错文案互不相同,拆任一条只红它自己那句。
  */
 function checkFirstFrameSignal(role, entry) {
     const header = readFileSync(
@@ -811,26 +813,46 @@ function checkFirstFrameSignal(role, entry) {
                 `C++ 放回来的仍是一块没画上东西的 WebView`,
         );
 
-    // (c) 文档还在解析时就发同样早于首帧。**两个关键词都必须在场**(读 readyState + 监听
-    // DOMContentLoaded)——这比 (c) 要守的语义严一格:纯 readyState 轮询、纯 DOMContentLoaded
-    // 监听各自都满足「不在解析期发」,却会被这一格判负。**有意如此**,统筹裁定(#241
-    // 2026-09-06 15:03 ②)取「改注释对齐实现」而不是放宽实现:三份页面此刻是同一种写法,
-    // 先把它钉住;真要收敛成单写法,由那张卡连同本注释一起改。
-    if (!/DOMContentLoaded/.test(block) || !/readyState/.test(block))
+    // (c) [SL-429] 武装的触发条件必须是「**已经画过一帧**」—— 观察 paint 记录,而不是
+    // DOMContentLoaded。SL-370 当时按 DCL 触发,本机实测 input 页上信号比真正的 first-paint
+    // **早 203 ms**(Output 页反而晚 38 ms,而真机上恰恰只有 Output 没有那段白)。
+    // 三个片段都要在场:构造 PerformanceObserver、observe 的 type 是 paint、buffered 打开
+    // (paint 记录可能早于本脚本产生,不开 buffered 就永远收不到,于是只剩保险定时器在放行,
+    // 等于这一格白装)。
+    const paintGated =
+        /new\s+PerformanceObserver\s*\(/.test(block) &&
+        /type\s*:\s*"paint"/.test(block) &&
+        /buffered\s*:\s*true/.test(block);
+    if (!paintGated)
         bad(
-            `${role}:${eventId} 的武装没挂在 DOMContentLoaded / readyState 之后` +
-                `(文档还在解析时发出的信号早于首帧)`,
+            `${role}:${eventId} 的武装不是由 paint 记录触发 ——` +
+                ` 需要 new PerformanceObserver + observe({type:"paint", buffered:true}) 三者同时在场;` +
+                ` 按 DOMContentLoaded 触发时两层 rAF 并不保证页面画过任何一帧,` +
+                `C++ 放回来的仍是一块没画上东西的 WebView([SL-429] 的第二段白)`,
         );
 
-    // PASS 行的条件必须与上面两处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
+    // (d) 回落路与保险仍要在场:paint 那条路一旦在某个浏览器上不成立,信号**不许**变成
+    // 永不发出 —— 那会把每次开窗都拖到 C++ 的 3s 超时兜底,放行原因从 firstFrame 变成
+    // timeout,真机验收指标「开 N 次窗就有 N 行 first-frame signal」随之失效。
+    // 三个片段都要在:readyState / DOMContentLoaded 的回落路,加一个 setTimeout 保险。
+    const hasFallback =
+        /DOMContentLoaded/.test(block) &&
+        /readyState/.test(block) &&
+        /setTimeout\s*\(/.test(block);
+    if (!hasFallback)
+        bad(
+            `${role}:${eventId} 少了回落 / 保险 ——` +
+                ` 需要 readyState + DOMContentLoaded 的回落路与一个 setTimeout 保险都在场,` +
+                `否则 paint 记录不到达时这条信号会永不发出`,
+        );
+
+    // PASS 行的条件必须与上面三处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
     // 断言已经判负,而这行还在写「在场且形态正确」。(#241 复审:收紧 (c) 时漏了 readyState;
     // A/B 实测 —— 把 output 页收敛成纯 DOMContentLoaded 之后,修前打 3 行「在场」、修后打 2 行。)
-    if (
-        nested.test(block) &&
-        /DOMContentLoaded/.test(block) &&
-        /readyState/.test(block)
-    )
-        console.log(`  ${eventId} 在场:DOMContentLoaded 后嵌套两层 rAF 才发`);
+    if (nested.test(block) && paintGated && hasFallback)
+        console.log(
+            `  ${eventId} 在场:paint 记录到达后再嵌套两层 rAF 才发(带回落 + 保险)`,
+        );
 }
 
 function checkBootGuard(role, entry) {

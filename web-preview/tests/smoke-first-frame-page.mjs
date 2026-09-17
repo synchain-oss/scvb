@@ -443,6 +443,12 @@ cdp.on((m) => {
 // ---------------------------------------------------------------- 桩(文档创建之前)
 // JUCE 是在文档创建前注入 `window.__JUCE__` 的,`addScriptToEvaluateOnNewDocument`
 // 是 CDP 侧同一个时机 —— 页面 <head> 里那段内联脚本一定跑在它之后。
+// ⚠ [SL-429] 这个桩自己那条 `tick` 的 rAF 循环**会把帧驱起来**,所以它量到的
+//   「帧计数」只说明 rAF 回调跑过几次,**不说明页面画过没画过**。SL-370 那版判据的基线
+//   取的是 DOMContentLoaded 的帧计数 —— 于是「信号早于真正的 first-paint」这件事
+//   在它眼里完全看不见。改成拿 **paint 记录**当基线:`__scvbPaintFrames` / `__scvbPaintMs`
+//   由一个**注册在页面之前**的 PerformanceObserver 落下(本桩先跑 ⇒ 回调也先于页面那个),
+//   `first-paint` 才是「这一帧真的画上去了」的可观测证据。
 const PROBE = `
     window.__scvbFrames = 0;
     (function tick() {
@@ -453,58 +459,115 @@ const PROBE = `
     document.addEventListener("DOMContentLoaded", function () {
         window.__scvbDclFrames = window.__scvbFrames;
     });
+    window.__scvbPaintFrames = -1;
+    window.__scvbPaintMs = -1;
+    try {
+        var __po = new PerformanceObserver(function (list) {
+            if (window.__scvbPaintFrames >= 0) return;
+            var e = list.getEntries()[0];
+            if (!e) return;
+            window.__scvbPaintFrames = window.__scvbFrames;
+            window.__scvbPaintMs = e.startTime;
+        });
+        __po.observe({ type: "paint", buffered: true });
+    } catch (e) {}
     window.__scvbSignals = [];
     window.__JUCE__ = {
         postMessage: function (s) {
-            window.__scvbSignals.push({ raw: String(s), frames: window.__scvbFrames });
+            window.__scvbSignals.push({
+                raw: String(s),
+                frames: window.__scvbFrames,
+                ms: performance.now(),
+            });
         },
     };
 `;
 await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE });
 
-log("A. SL-370 「首帧已绘」信号发在首帧之后");
-await cdp.send("Page.navigate", { url: `${base}/web/output/index.html` });
+// [SL-429] **三页都跑**。SL-370 那版只跑 output —— 而 output 恰好是三页里唯一
+// first-paint 天然早于信号的那个(页面重、画得早),所以它是**唯一测不出本缺陷的页面**。
+// 用户真机上「Output 永远没有第二段白、Input/Monitor 都有」正是同一件事的另一面。
+// 本机实测(修前,带本桩的 rAF 循环):input first-paint@316ms / 信号@105ms = **早 211 ms**;
+// monitor 80/86 = 早不到一帧;output 92/124 = 晚 32 ms。⇒ 把触发改回 DOMContentLoaded 时
+// **input 页必红**(余量两个数量级),monitor 页靠帧计数那一格红,output 页不红。
+log("A. [SL-370 / SL-429] 「首帧已绘」信号发在页面**真的画过一帧**之后");
+for (const role of ["input", "output", "monitor"]) {
+    await cdp.send("Page.navigate", { url: `${base}/web/${role}/index.html` });
 
-// 等信号到位。上界给足:渲染阻塞的两条外链 css 要先到,页面才会出第一帧。
-const arrived = await waitFor(
-    `(() => (window.__scvbSignals || []).some(
-        (m) => m.raw.indexOf("__scvb__firstFrame") >= 0) &&
-        window.__scvbDclFrames >= 0)()`,
-    20000,
-);
-check(arrived, "页面发出了 __scvb__firstFrame(20s 内)");
+    // 等信号到位。上界给足:渲染阻塞的两条外链 css 要先到,页面才会出第一帧。
+    // ⚠ 三页连跑:`Page.navigate` 只保证导航**开始**。不把 pathname 一起判,这一轮会
+    // 撞上**上一页还没换掉**的文档 —— 它的 __scvbSignals 早就满足条件,于是量到的是上一页
+    // 的数,而判据名字一点没变(「比对轴会静默变空」那一族的邻居)。
+    const arrived = await waitFor(
+        `(() => location.pathname.indexOf("/web/${role}/") >= 0 &&
+            (window.__scvbSignals || []).some(
+                (m) => m.raw.indexOf("__scvb__firstFrame") >= 0) &&
+            window.__scvbDclFrames >= 0)()`,
+        20000,
+    );
+    check(arrived, `${role}:页面发出了 __scvb__firstFrame(20s 内)`);
 
-const probe = await evaluate(`(() => ({
-    signals: (window.__scvbSignals || []).map((m) => ({
-        id: (JSON.parse(m.raw) || {}).eventId,
-        frames: m.frames,
-    })),
-    dcl: window.__scvbDclFrames,
-    frames: window.__scvbFrames,
-}))()`);
+    const probe = await evaluate(`(() => ({
+        path: location.pathname,
+        signals: (window.__scvbSignals || []).map((m) => ({
+            id: (JSON.parse(m.raw) || {}).eventId,
+            frames: m.frames,
+            ms: m.ms,
+        })),
+        dcl: window.__scvbDclFrames,
+        paintFrames: window.__scvbPaintFrames,
+        paintMs: window.__scvbPaintMs,
+        frames: window.__scvbFrames,
+    }))()`);
 
-if (check(probe && Array.isArray(probe.signals), "取到桩里的信号记录")) {
+    if (
+        !check(
+            probe &&
+                Array.isArray(probe.signals) &&
+                String(probe.path).indexOf(`/web/${role}/`) >= 0,
+            `${role}:取到的是**本页**桩里的信号记录(实得 path=${probe && probe.path})`,
+        )
+    )
+        continue;
+
     const ff = probe.signals.filter((m) => m.id === "__scvb__firstFrame");
     check(
         ff.length === 1,
-        `__scvb__firstFrame 恰好发一次(实得 ${ff.length} 条,全部信号 ` +
-            `${JSON.stringify(probe.signals)})`,
+        `${role}:__scvb__firstFrame 恰好发一次(实得 ${ff.length} 条,全部信号 ` +
+            `${JSON.stringify(probe.signals.map((m) => m.id))})`,
     );
-    check(probe.dcl >= 0, `DOMContentLoaded 的帧计数取到了(实得 ${probe.dcl})`);
-    if (ff.length === 1 && probe.dcl >= 0) {
-        const delta = ff[0].frames - probe.dcl;
-        // 把实测值打出来:红/绿之外还要能读到「差值到底是几」——
-        // 删除式跑出来的那个 1 与正常的 2,只有这一行能直接对上。
-        log(
-            `  帧计数:DCL=${probe.dcl} / 信号=${ff[0].frames} / 现在=${probe.frames} ⇒ Δ=${delta}`,
-        );
-        check(
-            delta >= 2,
-            `信号发在 DOMContentLoaded 之后的**第二帧或更晚**(实得 Δ=${delta};` +
-                `Δ=1 就是单层 rAF —— 回调跑在本帧提交之前,信号早于首帧,` +
-                `C++ 放回来的仍是一块没画上东西的 WebView)`,
-        );
-    }
+    // paint 记录必须真的取到:取不到时下面两格的差值会恒为正/恒可比,判据静默变空
+    // (「比对轴会静默变空」那一族)。用 >= 0 判,不用真值判 —— 0 是合法帧计数。
+    check(
+        probe.paintFrames >= 0 && probe.paintMs >= 0,
+        `${role}:first-paint 记录取到了(帧计数 ${probe.paintFrames} / ` +
+            `${Math.round(probe.paintMs)}ms)`,
+    );
+    if (ff.length !== 1 || probe.paintFrames < 0) continue;
+
+    // 把实测值打出来:红/绿之外还要能读到「差了多少」——
+    // 删除式跑出来的负数与正常的正数,只有这一行能直接对上。
+    const dFrames = ff[0].frames - probe.paintFrames;
+    const dMs = ff[0].ms - probe.paintMs;
+    log(
+        `  ${role}:first-paint=${Math.round(probe.paintMs)}ms(第 ${probe.paintFrames} 帧)/ ` +
+            `信号=${Math.round(ff[0].ms)}ms(第 ${ff[0].frames} 帧)⇒ ` +
+            `Δ帧=${dFrames}、Δms=${Math.round(dMs)};DCL 帧计数=${probe.dcl}`,
+    );
+    // (A1) 时刻:信号必须**晚于** first-paint。这一格钉的是「按 paint 触发」本身。
+    check(
+        dMs > 0,
+        `${role}:信号发在 first-paint **之后**(实得 Δms=${Math.round(dMs)};` +
+            `负值 = 页面一帧都还没画就报了「首帧已绘」,C++ 放回来的是一块没画上东西的 ` +
+            `WebView —— [SL-429] 的第二段白)`,
+    );
+    // (A2) 帧数:再等两层 rAF。这一格钉的是「嵌套两层」,与 (A1) 各守一件事:
+    // 只改触发点、不改 rAF 层数时 (A2) 仍会红(paint 与信号同帧 ⇒ Δ帧=0/1)。
+    check(
+        dFrames >= 2,
+        `${role}:信号发在 first-paint 之后的**第二帧或更晚**(实得 Δ帧=${dFrames};` +
+            `Δ帧<2 说明少了一层 rAF —— 已绘的那一帧还没提交给合成器)`,
+    );
 }
 
 // 页面自己的运行期噪声只报不判:这一套没有 mock 后端,app.js 拿不到桥是预期内的,

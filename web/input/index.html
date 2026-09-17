@@ -117,9 +117,12 @@
           一处,别在这里复述。
           通道与上面的 boot 守卫同一条(JUCE 内建 __JUCE__.postMessage,不经 bridge.js、
           不占契约 §7 名表);事件名真源 = src/plugin-common/WebViewHost.h 的 kFirstFrameEventId。
-          **必须嵌套两层 requestAnimationFrame**:第一层的回调跑在这一帧提交**之前**,只有在
-          它里面再要一帧,回调触发时前一帧才确实已经合成过。单层 rAF 发出的信号早于首帧,
-          放回来的会是一块还没画上东西的 WebView —— 那正是本卡要治的病。判据 = ⑦。
+          武装的触发条件是「**页面真的画过一帧**」(paint 记录到达),不是 DOMContentLoaded:
+          [SL-429] 实测两层 rAF **并不**保证已经画过 —— input 页上这条信号比真正的 first-paint
+          早 203 ms,Output 页上反过来晚 38 ms,而用户真机上恰恰只有 Output 没有那段白。
+          两层 rAF 仍然保留(再等一拍,让已画的那一帧提交给合成器)。完整定谳、三页数表与
+          回落/保险两条路只写在 src/plugin-common/WebViewRevealGate.h 一处,别在这里复述。
+          判据 = 节点侧 ⑦(源码形态)+ 页面级 smoke-first-frame-page(信号晚于 first-paint)。
           浏览器预览下没有 __JUCE__,静默返回。
         -->
         <script>
@@ -151,9 +154,39 @@
                         window.requestAnimationFrame(signal);
                     });
                 }
-                if (document.readyState === "loading")
-                    document.addEventListener("DOMContentLoaded", arm);
-                else arm();
+                // [SL-429] 触发条件 = 「已经画过一帧」,不是 DOMContentLoaded。理由见上面的
+                // HTML 注释与 src/plugin-common/WebViewRevealGate.h。
+                var armed = false;
+                var guard = null;
+                function armOnce() {
+                    if (armed) return;
+                    armed = true;
+                    if (guard !== null) {
+                        clearTimeout(guard);
+                        guard = null;
+                    }
+                    arm();
+                }
+                try {
+                    var po = new PerformanceObserver(function (list) {
+                        if (list.getEntries().length === 0) return;
+                        try {
+                            po.disconnect();
+                        } catch (e) {}
+                        armOnce();
+                    });
+                    // buffered:true —— paint 记录可能在本脚本跑之前就产生了。
+                    po.observe({ type: "paint", buffered: true });
+                    // 保险:paint 记录永不到达(或浏览器不认这个 type)时也必须放行,且要赶在
+                    // C++ 的 3s 超时兜底之前 —— 否则「开 N 次窗就有 N 行 first-frame signal」
+                    // 这条真机验收指标会静默失效,而放行原因会从 firstFrame 变成 timeout。
+                    guard = setTimeout(armOnce, 2500);
+                } catch (e) {
+                    // 没有 PerformanceObserver:回落 [SL-370] 的旧触发,不许变成永不放行。
+                    if (document.readyState === "loading")
+                        document.addEventListener("DOMContentLoaded", armOnce);
+                    else armOnce();
+                }
             })();
         </script>
         <link rel="stylesheet" href="../shared/tokens.css" />

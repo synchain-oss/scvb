@@ -86,10 +86,35 @@ namespace scvb::webview
 // 修法是把这条路整个拿掉,而不是去调它的胜负。用户机上白每次都在,只说明那台机器上
 // navFinished 稳定赢;**这一点本机复现不了,也不需要复现**。
 // ⇒ `navFinished` **不再放行**,只记账(`navigationFinishedSeen()`,进超时那一行诊断);
-//   放行只认 `firstFrame`(前端在 DOMContentLoaded 后嵌套两层 rAF 才发,⇒ 前一帧确已合成),
+//   放行只认 `firstFrame`([SL-429] 起 = 前端等到 **paint 记录**到达后再嵌套两层 rAF 才发),
 //   外加 `timeout` 兜底与 `fallback` 顶替。
 //
-// 【为什么首帧信号到了还要再等一拍】两层 rAF 保证的是「前一帧已经**提交**给合成器」,
+// 【[SL-429] 「两层 rAF ⇒ 已绘」是假的 —— 第二段白的根因】
+// SL-370 在三份 index.html 与本文件里都写过「嵌套两层 rAF ⇒ 前一帧确已合成」。**这句是错的**:
+// rAF 回调跑在事件循环的渲染步里,而 Chromium 在导航后的 paint-holding 期间**照样跑渲染步、
+// 却不提交任何一帧**。于是「两层 rAF 都回调过了」与「页面画过一帧」是两件事。
+// 本机 headless Chrome 实测(CDP 桩记信号时刻 + `performance.getEntriesByType('paint')`,
+// 4/4 次跑数一致),按 DOMContentLoaded 触发时:
+//     页面      first-paint   firstFrame 信号   信号 − first-paint   用户真机第二段白
+//     input       324 ms          121 ms          **−203 ms**            有
+//     monitor      88 ms           87 ms          **−1 ms**              有
+//     output      104 ms          142 ms          **+38 ms**            **没有**
+// 符号就是判别式:**负 ⇒ 闪,正 ⇒ 不闪**,与用户 2026-09-17 给的三比一完全对齐。
+// 机理:信号早于首帧 ⇒ 闸门在页面**一个像素都还没画过**的时候就把 WebView 挪回可视区,
+// 露出来的是 Chromium 那个 widget 在自己首帧之前铺的底(白),它盖在 ①-b
+// (`put_DefaultBackgroundColor`)**上面** —— 所以把 ①-b 换成什么颜色都救不了这一段。
+// Output 唯一免疫,只因为它的页面重(index.html 约 490 KB,input 47 / monitor 64),
+// first-paint 反而抢在信号之前;这是**碰巧**,不是设计。
+// ⇒ 三页的武装触发条件改成「PerformanceObserver 收到 paint 记录」再走原来的两层 rAF。
+//   回落(不支持 PerformanceObserver ⇒ 退回 DOMContentLoaded)与保险定时器(paint 记录
+//   永不到达时仍然放行,且赶在下面 kRevealFallbackMs 的 3s 之前)都在页内,理由写在那里。
+// 判据两格,各守一件事:web-preview/tests/smoke-embedded-resources.mjs ⑦(源码形态)与
+//   smoke-first-frame-page.mjs A(**三页都跑**,量 `信号时刻 − first-paint 时刻` 的符号
+//   与帧差)。⚠ 后者以前只跑 output —— 而 output 正是三页里唯一测不出本缺陷的那个。
+// ⚠ 这一段是**本机 headless Chrome 的实测 + 对真机现象的解释**,不是对 WebView2 宿主窗口的
+//   直接观测(本机做不了像素级观测)。真机终验指标仍是「开窗时看不见那段白」。
+//
+// 【为什么首帧信号到了还要再等一拍】两层 rAF 保证的是「已绘的那一帧已经**提交**给合成器」,
 // 从提交到**上屏**还差一拍(合成器要拿到帧、Windows 要把那块位图推到桌面)。信号一到就立刻
 // 挪回来,仍然可能在这一拍里露出 WebView2 的底 —— 那正是用户看到的「白一瞬」。
 // 所以 `onFirstFrame()` 只**武装**,真正放行落在后面的 25Hz tick 上。

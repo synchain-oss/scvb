@@ -318,7 +318,8 @@ TEST_CASE("[SL-376] RevealGate never reveals on navigation finished, it only rec
 
 // [SL-376] 首帧信号到达后要再压一拍才放行 —— **tick 数**那一半。
 //
-// 两层 rAF 保证的是「帧已提交给合成器」,提交到上屏还差一拍 —— 信号一到就挪回来,
+// 两层 rAF 保证的是「**已绘的**那一帧已提交给合成器」([SL-429] 起「已绘」由页内的 paint
+// 记录保证,两层 rAF 自己并不保证这件事),提交到上屏还差一拍 —— 信号一到就挪回来,
 // 露出的仍是 WebView2 的底(用户看到的那一瞬白)。
 // 删除式:让 onFirstFrame() 直接 reveal("firstFrame"),第一条 CHECK 立刻红。
 TEST_CASE("[SL-376] RevealGate holds at least one more tick after the first-frame signal")
