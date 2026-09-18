@@ -825,8 +825,9 @@ function checkFirstFrameSignal(role, entry) {
         );
 
     // (c) [SL-429] 武装的触发条件必须是「**已经画过一帧**」—— 观察 paint 记录,而不是
-    // DOMContentLoaded。SL-370 当时按 DCL 触发,本机实测 input 页上信号比真正的 first-paint
-    // **早 203 ms**(Output 页反而晚 38 ms,而真机上恰恰只有 Output 没有那段白)。
+    // DOMContentLoaded。SL-370 当时按 DCL 触发,信号时刻 ≈ DCL + 两个 rAF,**与 first-paint
+    // 之间没有任何约束**(本机 12 轮实测 input 页上早 200~370 ms;完整数表与「哪一页被解释了、
+    // 哪一页没有」的三档结论在 src/plugin-common/WebViewRevealGate.h)。
     // 三个片段都要在场:构造 PerformanceObserver、observe 的 type 是 paint、buffered 打开
     // (paint 记录可能早于本脚本产生,不开 buffered 就永远收不到,于是只剩保险定时器在放行,
     // 等于这一格白装)。

@@ -118,8 +118,8 @@
           通道与上面的 boot 守卫同一条(JUCE 内建 __JUCE__.postMessage,不经 bridge.js、
           不占契约 §7 名表);事件名真源 = src/plugin-common/WebViewHost.h 的 kFirstFrameEventId。
           武装的触发条件是「**页面真的画过一帧**」(paint 记录到达),不是 DOMContentLoaded:
-          [SL-429] 实测两层 rAF **并不**保证已经画过 —— input 页上这条信号比真正的 first-paint
-          早 203 ms,Output 页上反过来晚 38 ms,而用户真机上恰恰只有 Output 没有那段白。
+          [SL-429] 实测两层 rAF **并不**保证已经画过 —— 按 DCL 触发时信号时刻 ≈ DCL + 两个
+          rAF,与 first-paint 之间没有任何约束(本机实测 input 页上早到 −369 ms)。
           两层 rAF 仍然保留(再等一拍,让已画的那一帧提交给合成器)。完整定谳、三页数表与
           回落/保险两条路只写在 src/plugin-common/WebViewRevealGate.h 一处,别在这里复述。
           判据 = 节点侧 ⑦(源码形态)+ 页面级 smoke-first-frame-page(信号晚于 first-paint)。

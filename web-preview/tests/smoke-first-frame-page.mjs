@@ -486,10 +486,15 @@ await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE });
 
 // [SL-429] **三页都跑**。SL-370 那版只跑 output —— 而 output 恰好是三页里唯一
 // first-paint 天然早于信号的那个(页面重、画得早),所以它是**唯一测不出本缺陷的页面**。
-// 用户真机上「Output 永远没有第二段白、Input/Monitor 都有」正是同一件事的另一面。
-// 本机实测(修前,带本桩的 rAF 循环):input first-paint@316ms / 信号@105ms = **早 211 ms**;
-// monitor 80/86 = 早不到一帧;output 92/124 = 晚 32 ms。⇒ 把触发改回 DOMContentLoaded 时
-// **input 页必红**(余量两个数量级),monitor 页靠帧计数那一格红,output 页不红。
+// ⚠ **别把这三页读成「符号 = 用户真机那三比一的判别式」**:本机 12 轮复测里 monitor 修前的
+// `信号 − first-paint` 是 −8 .. +73 ms(十有八九为正、且整段落在 C++ 那 32 ms 放行余量的
+// 量级里),按该模型它根本不该闪,可用户真机上它稳定闪 —— **monitor 的白没有被这条链解释**。
+// 三档结论(input 机制已定 / output 天然免疫的对照组 / monitor 未被解释)写在
+// src/plugin-common/WebViewRevealGate.h 一处。本套要守的是那条**结构性质**本身:
+// 信号必须发在页面真的画过一帧之后。
+// ⇒ 把触发改回 DOMContentLoaded 时本套会红,但**哪一页红在哪一格不是常数**(随 first-paint
+// 与 DCL 的相对快慢而变,本机就量到过同一页两种形态)。实跑到的形态见 PR 描述的删除式数表,
+// 别照抄一个固定答案。
 log("A. [SL-370 / SL-429] 「首帧已绘」信号发在页面**真的画过一帧**之后");
 for (const role of ["input", "output", "monitor"]) {
     await cdp.send("Page.navigate", { url: `${base}/web/${role}/index.html` });

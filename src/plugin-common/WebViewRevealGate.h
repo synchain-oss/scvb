@@ -93,26 +93,45 @@ namespace scvb::webview
 // SL-370 在三份 index.html 与本文件里都写过「嵌套两层 rAF ⇒ 前一帧确已合成」。**这句是错的**:
 // rAF 回调跑在事件循环的渲染步里,而 Chromium 在导航后的 paint-holding 期间**照样跑渲染步、
 // 却不提交任何一帧**。于是「两层 rAF 都回调过了」与「页面画过一帧」是两件事。
-// 本机 headless Chrome 实测(CDP 桩记信号时刻 + `performance.getEntriesByType('paint')`,
-// 4/4 次跑数一致),按 DOMContentLoaded 触发时:
-//     页面      first-paint   firstFrame 信号   信号 − first-paint   用户真机第二段白
-//     input       324 ms          121 ms          **−203 ms**            有
-//     monitor      88 ms           87 ms          **−1 ms**              有
-//     output      104 ms          142 ms          **+38 ms**            **没有**
-// 符号就是判别式:**负 ⇒ 闪,正 ⇒ 不闪**,与用户 2026-09-17 给的三比一完全对齐。
+// 按 DOMContentLoaded 触发时,信号时刻 ≈ DCL + 两个 rAF,**与 first-paint 之间没有任何
+// 约束** —— 谁先谁后随页面与机器状态而变。
+//
+// 本机 headless Chrome 实测(CDP 桩记信号时刻 + PerformanceObserver 的 paint 记录;
+// 修前树 = 3a759a7 的 web/,修后树 = 本卡,各跑 12 轮。下表取「加载顺畅」的那些轮
+// —— 本机 12 轮里有几轮页面自己就慢到 3~8 秒,那种轮次 first-paint 与 DCL 挤在一起,
+// 不反映正常开窗;全量数表与两种口径都在 PR 描述里),`信号 − first-paint`:
+//     页面      修前(中位数 / 区间)         修后(中位数 / 区间)
+//     input     −277 ms / −369 .. −3 ms      +16 ms / +15 .. +81 ms
+//     monitor     +6 ms /   −8 .. +73 ms     +17 ms / +15 .. +19 ms
+//     output     +59 ms /  +35 .. +66 ms     +90 ms / +48 .. +153 ms
+// ⚠ **不要把符号读成判别式**。本文件第一版写过「负 ⇒ 闪、正 ⇒ 不闪,与用户 2026-09-17
+//   给的三比一完全对齐」——12 轮复测把它证伪:monitor 修前**十有八九是正的**(全量 12 轮里
+//   只有 2 轮为负),整个区间 −8 .. +73 ms 与下面 `kRevealSettleMs` 的 32 ms 同量级甚至更小,
+//   而放行还要再压满那 32 ms ⇒ **按本模型 monitor 根本不该闪**,可用户真机上它稳定闪。
+//   ⇒ **monitor 的第二段白本卡没有解释**;这一修对它是净正向(信号只会更晚),但成因不明,
+//   与观测相容 ≠ 被解释。站得住的只有 input 那一档:早 **200~370 ms**,比那 32 ms 的余量
+//   大一个数量级,是机制性的。output 是三页里唯一天然免疫的(index.html 约 490 KB,
+//   input 47 / monitor 64,first-paint 稳定抢在信号之前),**碰巧**而非设计 ——
+//   也正因如此,只跑 output 的页面级判据测不出本缺陷。
 // 机理:信号早于首帧 ⇒ 闸门在页面**一个像素都还没画过**的时候就把 WebView 挪回可视区,
 // 露出来的是 Chromium 那个 widget 在自己首帧之前铺的底(白),它盖在 ①-b
 // (`put_DefaultBackgroundColor`)**上面** —— 所以把 ①-b 换成什么颜色都救不了这一段。
-// Output 唯一免疫,只因为它的页面重(index.html 约 490 KB,input 47 / monitor 64),
-// first-paint 反而抢在信号之前;这是**碰巧**,不是设计。
 // ⇒ 三页的武装触发条件改成「PerformanceObserver 收到 paint 记录」再走原来的两层 rAF。
+//   **走 paint 这条路时「信号晚于 first-paint」是结构保证,不是实测巧合**:paint 记录是在
+//   那一帧画过之后才创建的,而观察者回调必然在记录入队之后的另一个任务里跑(本机 72 个
+//   样本无一例外:回调时刻比记录的 startTime 晚 2.5~109 ms,中位数 6 ms)。所以上表修后
+//   那几个 +ms 只是「回调延迟 + 两层 rAF」的大小,**它们的数值不再是判据** ——
+//   monitor 那 +17 贴不贴零也就不要紧了。⚠ 这条保证**只覆盖 paint 那条路**:走下面的
+//   回落或保险定时器时它不成立(那两条路本来就是为「paint 记录不来」准备的)。
 //   回落(不支持 PerformanceObserver ⇒ 退回 DOMContentLoaded)与保险定时器(paint 记录
 //   永不到达时仍然放行,且赶在下面 kRevealFallbackMs 的 3s 之前)都在页内,理由写在那里。
 // 判据两格,各守一件事:web-preview/tests/smoke-embedded-resources.mjs ⑦(源码形态)与
 //   smoke-first-frame-page.mjs A(**三页都跑**,量 `信号时刻 − first-paint 时刻` 的符号
 //   与帧差)。⚠ 后者以前只跑 output —— 而 output 正是三页里唯一测不出本缺陷的那个。
 // ⚠ 这一段是**本机 headless Chrome 的实测 + 对真机现象的解释**,不是对 WebView2 宿主窗口的
-//   直接观测(本机做不了像素级观测)。真机终验指标仍是「开窗时看不见那段白」。
+//   直接观测(本机做不了像素级观测)。**真机上的 first-paint 从来没有被量过** ——
+//   抓取包只记信号时刻与放行时刻,没有 paint 时间戳(同族的诊断缺口见 SL-426)。
+//   真机终验指标仍是「开窗时看不见那段白」。
 //
 // 【为什么首帧信号到了还要再等一拍】两层 rAF 保证的是「已绘的那一帧已经**提交**给合成器」,
 // 从提交到**上屏**还差一拍(合成器要拿到帧、Windows 要把那块位图推到桌面)。信号一到就立刻
