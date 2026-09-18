@@ -143,7 +143,21 @@
                 // [SL-430 前半] paint 记录到达时把它的 startTime 记下来,信号发出时算差值。
                 // −1 = 这一次没有 paint 记录(走了回落路或保险路)。
                 var paintStartMs = -1;
+                // [SL-429 第 3 轮] `sent` 与「撤网」都落在 signal() 里,不在 armOnce() 里。
+                // 上一版在 armOnce() 里先 clearTimeout 再把事交给 arm() 的两层 rAF ——
+                // **网撤在「信号还没发出去」之前**,而撤网后剩下的那一段恰恰就是
+                // BeginFrame 停摆那一档下不回调的东西:paint 到达 → 撤网 → 排 rAF →
+                // 此刻窗口被最小化 / 被完全遮挡 / DAW 弹模态框把合成停了 ⇒ 两层 rAF 永不回调,
+                // 而保险已经没了 ⇒ 仍旧掉进 C++ 的超时兜底。现在网**只在信号真发出去的那一刻**
+                // 才撤,`sent` 兼做去重(保险与 rAF 都可能跑到这里)。
+                var sent = false;
                 function signal() {
+                    if (sent) return;
+                    sent = true;
+                    if (guard !== null) {
+                        clearTimeout(guard);
+                        guard = null;
+                    }
                     try {
                         var juce = window.__JUCE__;
                         if (!juce || typeof juce.postMessage !== "function")
@@ -192,12 +206,27 @@
                 function armOnce() {
                     if (armed) return;
                     armed = true;
-                    if (guard !== null) {
-                        clearTimeout(guard);
-                        guard = null;
-                    }
                     arm();
                 }
+                // [SL-429 第 3 轮] 保险**排在 try 之前**,不在 try 里面。
+                // 上一版把它排在 `po.observe()` 之后 ⇒ `new PerformanceObserver` 抛错时
+                // 直接跳进 catch,**这一行根本没执行过** ⇒ 回落路(只有 DCL + 两层 rAF)
+                // 压根没有保险,BeginFrame 停摆那一档下同样永不发出。而 ⑦ 的 (d) 当时
+                // 正在为「paint 记录不到达时这条信号不许变成永不发出」发合格证 ——
+                // 那句话对回落路是假的。排在这里之后,**三条路(paint / 回落 / 保险自己)
+                // 都被同一张网兜住**,而且这张网不由 BeginFrame 驱动(setTimeout 不是 rAF)。
+                // ⚠ 它与 C++ 的 kRevealFallbackMs(3000ms)**不共享时间原点**:后者从
+                // onNavigationStarted 起算,本行从**这段内联脚本执行**起算,中间隔着
+                // 「导航开始 → 文档送达 → <head> 解析」。真实余量是
+                // `500ms − (导航开始 → 本脚本执行)`,**不是 500ms**;那一段一旦超过 500ms
+                // (冷起、机器吃紧),保险就跑输 C++ 兜底,放行原因还是掉成 timeout。
+                // 而且**这件事从抓取包里看不出来**(`navigation started` 那行不带时间戳)——
+                // 那是 SL-430 的后半,仍封存。
+                // 回调只写一句 signal():**不绕 arm() 的两层 rAF**,理由同上(BeginFrame 停了
+                // rAF 也不回调,绕过去等于这条保险不存在)。去重与撤网都在 signal() 里。
+                guard = setTimeout(function () {
+                    signal();
+                }, 2500);
                 try {
                     var po = new PerformanceObserver(function (list) {
                         if (list.getEntries().length === 0) return;
@@ -209,28 +238,6 @@
                     });
                     // buffered:true —— paint 记录可能在本脚本跑之前就产生了。
                     po.observe({ type: "paint", buffered: true });
-                    // 保险:paint 记录永不到达时也必须放行。
-                    // ⚠ [SL-429 第 2 轮] 这里**直接 signal(),不走 arm() 的两层 rAF**。
-                    // 保险存在的唯一理由就是「paint 记录不来」,而那一档最可能的成因是
-                    // Chromium 对不可见 widget 停 BeginFrame —— **BeginFrame 停了 rAF 也不回调**,
-                    // 绕 arm() 等于把绳子拴在同一根断掉的柱子上:到点排下去的那两层 rAF 永不触发,
-                    // 信号照样发不出去,仍旧掉进 C++ 的超时兜底,而 ⑦ 的「回落/保险在场」那一格
-                    // 还在为「信号不许变成永不发出」发合格证。帧还在产出的那一档,2.5s 里页面
-                    // 早画过很多帧了,那两拍也买不到任何东西 —— 两档都不该绕。
-                    // ⚠ 这条保险与 C++ 的 kRevealFallbackMs(3000ms)**不共享时间原点**:
-                    // 后者从 onNavigationStarted 起算,本行从**这段内联脚本执行**起算,中间隔着
-                    // 「导航开始 → 文档送达 → <head> 解析」。所以真实余量是
-                    // `500ms − (导航开始 → 本脚本执行)`,**不是 500ms**;那一段一旦超过 500ms
-                    // (冷起、机器吃紧),保险就跑输 C++ 兜底,放行原因还是掉成 timeout。
-                    // ⚠ 而且**这件事从抓取包里看不出来**:诊断行的 `after N ms` 从
-                    // beginLoadAttempt 起算,`navigation started` 那行不带时间戳 ⇒ 没人能从
-                    // 用户的日志里反推那一段有多长。已登记 SL-430(与 SL-426 同族)。
-                    guard = setTimeout(function () {
-                        if (armed) return;
-                        armed = true;
-                        guard = null;
-                        signal();
-                    }, 2500);
                 } catch (e) {
                     // 没有 PerformanceObserver:回落 [SL-370] 的旧触发,不许变成永不放行。
                     // ⚠ 这个 catch **只覆盖「压根没有 PerformanceObserver」**(以及只认

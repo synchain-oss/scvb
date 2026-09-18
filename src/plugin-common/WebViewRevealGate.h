@@ -135,9 +135,16 @@ namespace scvb::webview
 //   `paintDeltaMs`,`first-frame signal` 那行尾部会打 `(signal-firstPaint +N ms)` 或
 //   `(no paint record)`(见 WebViewHost::handleFirstFrame)⇒ 用户机上的余量**可以直接读了**,
 //   不用再像上面那张表一样从 A/B 差值反推;`navigation started` 补时间戳那**后半仍封存**。
-//   ⚠ 保险的回调**直接发信号、不绕两层 rAF**:保险存在的唯一理由就是「paint 记录不来」,
-//   而那一档最可能的成因正是上面点名的 BeginFrame 停摆 —— 停了 rAF 也不回调,绕 arm()
-//   等于把绳子拴在同一根断掉的柱子上。判据 = ⑦ 的 (d)。
+//   ⚠ 那条保险要成立,**三件事缺一不可**(本卡为它连栽三轮,每一轮都是上一轮补丁的副作用):
+//     · 回调**直接发信号、不绕两层 rAF** —— 保险存在的唯一理由就是「paint 记录不来」,
+//       而那一档最可能的成因正是上面点名的 BeginFrame 停摆,停了 rAF 也不回调;
+//     · 它**排在 try 之前** —— 排在 `po.observe()` 之后的话,`new PerformanceObserver`
+//       抛错时那一行根本没执行过,**回落路压根没有保险**;
+//     · **撤网落在 signal() 里**,不在武装处 —— 否则网撤在「信号还没发出去」之前,
+//       而撤网后剩下的正是 BeginFrame 停摆下不回调的那两拍。
+//   ⚠ 判据 = ⑦ 的 (d),但它**只守得住第一件**;后两件今天**没有判据**(统筹裁定不再往这一族
+//   加正则,整族转 SL-431)。所以**别把这里读成「信号不会永不发出」** —— 那句话要三件都在
+//   才成立,而只有一件被机器守着。
 // 判据两格,各守一件事:web-preview/tests/smoke-embedded-resources.mjs ⑦(源码形态)与
 //   smoke-first-frame-page.mjs A(**三页都跑**,量 `信号时刻 − first-paint 时刻` 的符号
 //   与帧差)。⚠ 后者以前只跑 output —— 而 output 正是三页里唯一测不出本缺陷的那个。
