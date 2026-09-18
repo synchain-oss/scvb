@@ -930,9 +930,31 @@ void WebViewHost::handleBootError(const juce::var& payload)
 
 // [SL-370] 前端「首帧已绘」上报。通道与 kBootErrorEventId 同一条(JUCE 内建
 // __JUCE__.postMessage,不经 bridge.js、不占契约 §7 名表),理由见 handleBootError 的注释。
-// 载荷不看:这条信号只有「到了」这一个信息量,前端也只发一次。
-void WebViewHost::handleFirstFrame()
+// [SL-430 前半] 载荷从「不看」改成**只看一个诊断字段**:`paintDeltaMs` = 页面那一侧量到的
+// `信号时刻 − first-paint 时刻`。它**只进日志,不参与任何放行判定** —— 判定仍全在 revealGate_ 里。
+//
+// 【为什么要它】用户机上的这个余量**从来没有被量过**:抓取包只记信号时刻与放行时刻,
+// 于是「他那台上信号到底早于还是晚于首帧、差多少」只能从 A/B 差值反推(SL-429 PR 的表 3)。
+// 有了这一格,用户下次抓一份日志就能**直接读出来**,而不是继续猜。
+//
+// 【为什么送差值而不是 paint 的绝对时刻】页面的 `performance` 时间轴与这里的 `startMs_`
+// **不共享原点**,送绝对值过来无法与任何东西相减 —— 与 SL-429 第 2 轮复审抓到的
+// 「页内 2500ms 与 kRevealFallbackMs 的 3000ms 不同源」是同一个坑,那一课原样用在这里。
+//
+// 【没有 paint 记录的那两条路要分辨得开】走回落路(没有 PerformanceObserver)或保险定时器时
+// 页面不带这个字段 ⇒ 这里打 `(no paint record)`,而不是打一个看不出来路的数。
+void WebViewHost::handleFirstFrame(const juce::var& payload)
 {
+    // 日志文案一律 ASCII:中文**字符串字面量**会触发 MSVC C4819(本机 gate 5 红、CI 隐形),
+    // 中文注释不会。判例 cp936-chinese-source-c4819。
+    juce::String paintNote(" (no paint record)");
+    const auto delta = payload.getProperty("paintDeltaMs", juce::var());
+    if (delta.isInt() || delta.isInt64() || delta.isDouble())
+    {
+        const auto n = static_cast<int>(delta);
+        paintNote = juce::String(" (signal-firstPaint ") + (n >= 0 ? "+" : "") + juce::String(n) + " ms)";
+    }
+
     // [SL-370] **先记「信号到了」,再谈放行** —— 这是两件必须分开数的事:信号可能在 3s 兜底
     // 或兜底面板之后才姗姗来迟,那时 noteRevealed() 一个字都不写;只看放行原因就会把
     // 「信号来晚了」误读成「信号没来」,而后者正是本卡唯一那条静默降级
@@ -940,7 +962,7 @@ void WebViewHost::handleFirstFrame()
     // 真机验收数的就是这一行与下面那行放行行的**条数比**。
     logDiag(juce::String("first-frame signal after ") +
             juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms" +
-            (revealGate_.parked() ? " (still parked)" : " (already revealed)"));
+            (revealGate_.parked() ? " (still parked)" : " (already revealed)") + paintNote);
     // [SL-376] onFirstFrame() **只武装,不放行** —— 真正挪回可视区在后面的 25Hz tick 上
     // (kRevealSettleTicks ∧ kRevealSettleMs,理由见 WebViewRevealGate.h 头注)。所以下面两句
     // 在**正常那条路**上是空调用,留着是为了「闸门状态一变就落地」这条不变式只有
@@ -993,7 +1015,7 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
 
     // [SL-370] 时序面(非契约):前端「首帧已绘」上行 —— 遮挡闸的第一条放行路。
     options = options.withEventListener(juce::Identifier(kFirstFrameEventId),
-                                        [this](const juce::var&) { handleFirstFrame(); });
+                                        [this](const juce::var& payload) { handleFirstFrame(payload); });
 
     if (config_.augmentOptions)
         config_.augmentOptions(options);

@@ -13,19 +13,22 @@
 // 本仓「三层机检全绿、窗口是白的」栽过三次,这条链不许只有正则看着。
 //
 // 怎么量(全程不碰页面内部函数):
-//   ① 用 `Page.addScriptToEvaluateOnNewDocument` 在**文档创建之前**装两个桩 ——
+//   ① 用 `Page.addScriptToEvaluateOnNewDocument` 在**文档创建之前**装几个桩 ——
 //      这正是 JUCE 注入 `window.__JUCE__` 的同一个时机;
 //      · 一个自增的 rAF 计数器(注册最早 ⇒ 每一帧里它都排在页面自己的回调之前);
-//      · 一个假的 `window.__JUCE__.postMessage`,收信号时把当时的帧计数记下来;
-//      · 一个 DOMContentLoaded 监听(注册最早 ⇒ 早于页面那个),记下 DCL 当时的帧计数。
-//   ② 导航到**真页面** web/output/index.html(不是预览壳页:壳页的 iframe 会让
-//      addScriptToEvaluateOnNewDocument 的注入面与真机不一致);
-//   ③ 断言:收到且**只收到一次** `__scvb__firstFrame`,且
-//      `帧计数(信号时) - 帧计数(DCL 时) >= 2`。
-//      这个 2 就是「嵌套两层 rAF」的可观测形态:外层回调在 DCL 之后的**下一帧**跑
-//      (计数 +1),内层再等一帧(计数 +2)。写成单层 rAF ⇒ 差值恰好是 1 ⇒ 本套变红
-//      (删除式实测见 PR 描述)。判据钉的是**差值**不是绝对帧号:首帧在 DCL 之前还是之后
-//      随渲染阻塞而变,绝对帧号会假红。
+//      · 一个假的 `window.__JUCE__.postMessage`,收信号时把当时的帧计数与时刻记下来;
+//      · 一个 DOMContentLoaded 监听(注册最早 ⇒ 早于页面那个),记下 DCL 当时的帧计数;
+//      · [SL-429] 一个**注册在页面之前**的 PerformanceObserver,记下 first-paint 的
+//        帧计数与时刻 —— **基线是它,不是 DCL**(理由见下面 for 循环上方那段)。
+//   ② 导航到**三个真页面**(input / output / monitor,不是预览壳页:壳页的 iframe 会让
+//      addScriptToEvaluateOnNewDocument 的注入面与真机不一致)。[SL-429] 之前只跑 output,
+//      而 output 恰是三页里唯一测不出本缺陷的那个;这一条同时关掉 SL-423。
+//   ③ 断言:收到且**只收到一次** `__scvb__firstFrame`;first-paint 记录真的取到了;
+//      `信号时刻 − first-paint 时刻 > 0`(A1);`帧计数(信号) − 帧计数(first-paint) >= 2`(A2);
+//      [SL-430 前半] 载荷里的 `paintDeltaMs` 取到了、且与本套独立量到的 Δms 一致(A3)。
+//      A2 那个 2 就是「嵌套两层 rAF」的可观测形态:外层回调在**下一帧**跑(+1),内层再等
+//      一帧(+2)。写成单层 rAF ⇒ 差值 1 ⇒ 本套变红(删除式实测见 PR 描述)。
+//      判据钉的是**差值**不是绝对帧号:绝对帧号随渲染阻塞而变,会假红。
 //
 // 用法:node web-preview/tests/smoke-first-frame-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -518,6 +521,11 @@ for (const role of ["input", "output", "monitor"]) {
             id: (JSON.parse(m.raw) || {}).eventId,
             frames: m.frames,
             ms: m.ms,
+            // [SL-430 前半] 页面自己在载荷里报的「信号 − first-paint」差值。
+            // 用 ?? null 显式落成 null:字段缺席与「差值恰好是 0」必须分得开
+            // (0 是合法值,拿真值判会把它读成缺席 —— 判例 comparison-axis-can-be-silently-hollow)。
+            paintDeltaMs:
+                ((JSON.parse(m.raw) || {}).payload || {}).paintDeltaMs ?? null,
         })),
         dcl: window.__scvbDclFrames,
         paintFrames: window.__scvbPaintFrames,
@@ -575,6 +583,33 @@ for (const role of ["input", "output", "monitor"]) {
         `${role}:信号发在 first-paint 之后的**第二帧或更晚**(实得 Δ帧=${dFrames};` +
             `Δ帧<2 说明少了一层 rAF —— 已绘的那一帧还没提交给合成器)`,
     );
+    // (A3) [SL-430 前半] 载荷里那个 `paintDeltaMs` 诊断字段 —— **两格,缺一不可**。
+    //
+    // 它的用途是让用户机的一份日志能直接读出「信号 − first-paint」,而不是像 SL-429 那样
+    // 从 A/B 差值反推。所以它必须**真的是那个量**,不能只是「有个数在那儿」:
+    //   · 先断**取到了**(用 `typeof number` + isFinite,**不用真值判** —— 差值恰好是 0
+    //     是完全合法的读数,拿真值判会把它误读成缺席;判例同上面那条注释);
+    //   · 再断**它与本套独立量到的 Δms 对得上**(±20 ms)。两边是两条独立的路:页面用它
+    //     自己那个 PerformanceObserver 的 startTime,本套用**注册得更早的**桩里那个。
+    //     只断在场、不断一致的话,把页面那行算式写错(比如漏个减号、或拿 DCL 当基线)
+    //     照样全绿 —— 而那正是这一格存在的全部意义。
+    // C++ 那一侧(读载荷 + 拼日志)**没有任何判据**:WebViewHost.cpp 不进任何测试目标,
+    // 这是本仓既有的空白,不是本卡新开的口子 —— 照实说,别假装它被守着。
+    const reported = ff[0].paintDeltaMs;
+    const reportedOk =
+        typeof reported === "number" && Number.isFinite(reported);
+    check(
+        reportedOk,
+        `${role}:信号载荷里带了 paintDeltaMs(实得 ${JSON.stringify(reported)};` +
+            `缺席 = 用户机上那份日志会打 "(no paint record)",拿不到余量读数)`,
+    );
+    if (reportedOk)
+        near(
+            reported,
+            dMs,
+            20,
+            `${role}:载荷里报的 paintDeltaMs 与本套独立量到的 Δms 一致`,
+        );
 }
 
 // 页面自己的运行期噪声只报不判:这一套没有 mock 后端,app.js 拿不到桥是预期内的,

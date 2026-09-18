@@ -162,7 +162,10 @@ private:
     void onNavigationFinished(const juce::String& url);
     void onNavigationError(const juce::String& errorInfo);
     void handleBootError(const juce::var& payload); // 前端 boot 失败上报(非契约面,见 .cpp)
-    void handleFirstFrame(); // [SL-370] 前端「首帧已绘」上报(非契约面,同上)
+    // [SL-370] 前端「首帧已绘」上报(非契约面,同上)。
+    // [SL-430 前半] 载荷从「整个丢掉」改成「读一个诊断字段」:paintDeltaMs = 页面那一侧量到的
+    // `信号时刻 − first-paint 时刻`。**只进日志,不参与任何放行判定**(判定仍全在 revealGate_)。
+    void handleFirstFrame(const juce::var& payload);
 
     // [SL-370] 遮挡闸的两个动作面。判定全在 revealGate_ 里(纯逻辑、可单测),
     // 这两个函数只负责把判定落到组件几何上并写诊断行。

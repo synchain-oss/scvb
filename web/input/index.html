@@ -128,15 +128,33 @@
         -->
         <script>
             (function () {
+                // [SL-430 前半] paint 记录到达时把它的 startTime 记下来,信号发出时算差值。
+                // −1 = 这一次没有 paint 记录(走了回落路或保险路)。
+                var paintStartMs = -1;
                 function signal() {
                     try {
                         var juce = window.__JUCE__;
                         if (!juce || typeof juce.postMessage !== "function")
                             return;
+                        // [SL-430 前半] 载荷里带上「信号时刻 − first-paint 时刻」这个**差值**。
+                        // ⚠ **送差值,不送 paint 的绝对时刻** —— 页面的 performance 时间轴与
+                        // C++ 的 startMs_ **不共享原点**,送绝对值那一端根本没法算,只会得到
+                        // 一个看着像时刻、其实无法与任何东西相减的数。这正是本卡第 2 轮复审
+                        // 在「2500 vs 3000 不同源」上教的那一课,原样用在这里。
+                        // 用途:用户机上的 `signal − first-paint` 余量此前**从来没被量过**,
+                        // 只能从 A/B 差值反推;有了这一格,一份日志就能直接读出来。
+                        // 走回落路 / 保险路时没有 paint 记录 ⇒ **不带这个字段**,C++ 那行会打
+                        // `(no paint record)`,与正常路分辨得开(否则日志里会出现一个
+                        // 看不出来路的数)。
+                        var p = {};
+                        if (paintStartMs >= 0)
+                            p.paintDeltaMs = Math.round(
+                                performance.now() - paintStartMs,
+                            );
                         juce.postMessage(
                             JSON.stringify({
                                 eventId: "__scvb__firstFrame",
-                                payload: {},
+                                payload: p,
                             }),
                         );
                     } catch (e) {
@@ -171,6 +189,7 @@
                 try {
                     var po = new PerformanceObserver(function (list) {
                         if (list.getEntries().length === 0) return;
+                        paintStartMs = list.getEntries()[0].startTime;
                         try {
                             po.disconnect();
                         } catch (e) {}
