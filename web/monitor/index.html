@@ -135,22 +135,61 @@
           一处,别在这里复述。
           通道与上面的 boot 守卫同一条(JUCE 内建 __JUCE__.postMessage,不经 bridge.js、
           不占契约 §7 名表);事件名真源 = src/plugin-common/WebViewHost.h 的 kFirstFrameEventId。
-          **必须嵌套两层 requestAnimationFrame**:第一层的回调跑在这一帧提交**之前**,只有在
-          它里面再要一帧,回调触发时前一帧才确实已经合成过。单层 rAF 发出的信号早于首帧,
-          放回来的会是一块还没画上东西的 WebView —— 那正是本卡要治的病。判据 = ⑦。
+          武装的触发条件是「**页面真的画过一帧**」(paint 记录到达),不是 DOMContentLoaded:
+          [SL-429] 实测两层 rAF **并不**保证已经画过 —— 按 DCL 触发时信号时刻 ≈ DCL + 两个
+          rAF,与 first-paint 之间没有任何约束(本机实测 input 页上早到 −369 ms)。
+          两层 rAF 仍然保留(再等一拍,让已画的那一帧提交给合成器)。完整定谳与三页数表只写在
+          src/plugin-common/WebViewRevealGate.h 一处,别在这里复述;回落与保险两条路的理由
+          (尤其保险为什么**不能**绕两层 rAF)写在下面它们各自那里。
+          判据 = 节点侧 ⑦(源码形态)+ 页面级 smoke-first-frame-page(信号晚于 first-paint)。
           浏览器预览下没有 __JUCE__,静默返回。
         -->
         <script>
             (function () {
+                // [SL-430 前半] paint 记录到达时把它的 startTime 记下来,信号发出时算差值。
+                // −1 = 这一次没有 paint 记录(走了回落路或保险路)。
+                var paintStartMs = -1;
+                // [SL-429 第 3 轮] `sent` 与「撤网」都落在 signal() 里,不在 armOnce() 里。
+                // 上一版在 armOnce() 里先 clearTimeout 再把事交给 arm() 的两层 rAF ——
+                // **网撤在「信号还没发出去」之前**,而撤网后剩下的那一段恰恰就是
+                // BeginFrame 停摆那一档下不回调的东西:paint 到达 → 撤网 → 排 rAF →
+                // 此刻窗口被最小化 / 被完全遮挡 / DAW 弹模态框把合成停了 ⇒ 两层 rAF 永不回调,
+                // 而保险已经没了 ⇒ 仍旧掉进 C++ 的超时兜底。现在网**只在信号真发出去的那一刻**
+                // 才撤,`sent` 兼做去重(保险与 rAF 都可能跑到这里)。
+                var sent = false;
                 function signal() {
+                    if (sent) return;
+                    sent = true;
+                    if (guard !== null) {
+                        clearTimeout(guard);
+                        guard = null;
+                    }
                     try {
                         var juce = window.__JUCE__;
                         if (!juce || typeof juce.postMessage !== "function")
                             return;
+                        // [SL-430 前半] 载荷里带上「信号时刻 − first-paint 时刻」这个**差值**。
+                        // ⚠ **送差值,不送 paint 的绝对时刻** —— 页面的 performance 时间轴与
+                        // C++ 的 startMs_ **不共享原点**,送绝对值那一端根本没法算,只会得到
+                        // 一个看着像时刻、其实无法与任何东西相减的数。这正是本卡第 2 轮复审
+                        // 在「2500 vs 3000 不同源」上教的那一课,原样用在这里。
+                        // 用途:用户机上的 `signal − first-paint` 余量此前**从来没被量过**,
+                        // 只能从 A/B 差值反推;有了这一格,一份日志就能直接读出来。
+                        // 没有 paint 记录时**不带这个字段**,C++ 那行会打 `(no paint record)`。
+                        // ⚠ [SL-429 第 4 轮] **反过来读不成立**:上一轮把去重挪进本函数之后,
+                        // 保险的回调不再查 `armed` ⇒ 「paint 已到、两层 rAF 还没跑完就到 2.5s」
+                        // 这一路会**带着一个真实的差值**由保险发出。所以「有这个字段」
+                        // **≠**「走的是 paint 路」;**判保险路要看诊断行 `after N ms` 的量级
+                        // (≈2500),不是看这个字段在不在**。那个数本身仍是真读数,不是脏数。
+                        var p = {};
+                        if (paintStartMs >= 0)
+                            p.paintDeltaMs = Math.round(
+                                performance.now() - paintStartMs,
+                            );
                         juce.postMessage(
                             JSON.stringify({
                                 eventId: "__scvb__firstFrame",
-                                payload: {},
+                                payload: p,
                             }),
                         );
                     } catch (e) {
@@ -169,9 +208,55 @@
                         window.requestAnimationFrame(signal);
                     });
                 }
-                if (document.readyState === "loading")
-                    document.addEventListener("DOMContentLoaded", arm);
-                else arm();
+                // [SL-429] 触发条件 = 「已经画过一帧」,不是 DOMContentLoaded。理由见上面的
+                // HTML 注释与 src/plugin-common/WebViewRevealGate.h。
+                var armed = false;
+                var guard = null;
+                function armOnce() {
+                    if (armed) return;
+                    armed = true;
+                    arm();
+                }
+                // [SL-429 第 3 轮] 保险**排在 try 之前**,不在 try 里面。
+                // 上一版把它排在 `po.observe()` 之后 ⇒ `new PerformanceObserver` 抛错时
+                // 直接跳进 catch,**这一行根本没执行过** ⇒ 回落路(只有 DCL + 两层 rAF)
+                // 压根没有保险,BeginFrame 停摆那一档下同样永不发出。而 ⑦ 的 (d) 当时
+                // 正在为「paint 记录不到达时这条信号不许变成永不发出」发合格证 ——
+                // 那句话对回落路是假的。排在这里之后,**三条路(paint / 回落 / 保险自己)
+                // 都被同一张网兜住**,而且这张网不由 BeginFrame 驱动(setTimeout 不是 rAF)。
+                // ⚠ 它与 C++ 的 kRevealFallbackMs(3000ms)**不共享时间原点**:后者从
+                // onNavigationStarted 起算,本行从**这段内联脚本执行**起算,中间隔着
+                // 「导航开始 → 文档送达 → <head> 解析」。真实余量是
+                // `500ms − (导航开始 → 本脚本执行)`,**不是 500ms**;那一段一旦超过 500ms
+                // (冷起、机器吃紧),保险就跑输 C++ 兜底,放行原因还是掉成 timeout。
+                // 而且**这件事从抓取包里看不出来**(`navigation started` 那行不带时间戳)——
+                // 那是 SL-430 的后半,仍封存。
+                // 回调只写一句 signal():**不绕 arm() 的两层 rAF**,理由同上(BeginFrame 停了
+                // rAF 也不回调,绕过去等于这条保险不存在)。去重与撤网都在 signal() 里。
+                guard = setTimeout(function () {
+                    signal();
+                }, 2500);
+                try {
+                    var po = new PerformanceObserver(function (list) {
+                        if (list.getEntries().length === 0) return;
+                        paintStartMs = list.getEntries()[0].startTime;
+                        try {
+                            po.disconnect();
+                        } catch (e) {}
+                        armOnce();
+                    });
+                    // buffered:true —— paint 记录可能在本脚本跑之前就产生了。
+                    po.observe({ type: "paint", buffered: true });
+                } catch (e) {
+                    // 没有 PerformanceObserver:回落 [SL-370] 的旧触发,不许变成永不放行。
+                    // ⚠ 这个 catch **只覆盖「压根没有 PerformanceObserver」**(以及只认
+                    // entryTypes 的史前实现)。「有 PerformanceObserver、但它不报 paint 记录」
+                    // **不会抛异常** —— 规范要求未知 type 直接 abort + 控制台 warning。那一档
+                    // 落在上面那条保险上:代价是「多等 2.5s 占位」,不是「永不放行」。
+                    if (document.readyState === "loading")
+                        document.addEventListener("DOMContentLoaded", armOnce);
+                    else armOnce();
+                }
             })();
         </script>
         <link rel="stylesheet" href="../shared/tokens.css" />

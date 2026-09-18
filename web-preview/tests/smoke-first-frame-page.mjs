@@ -13,19 +13,22 @@
 // 本仓「三层机检全绿、窗口是白的」栽过三次,这条链不许只有正则看着。
 //
 // 怎么量(全程不碰页面内部函数):
-//   ① 用 `Page.addScriptToEvaluateOnNewDocument` 在**文档创建之前**装两个桩 ——
+//   ① 用 `Page.addScriptToEvaluateOnNewDocument` 在**文档创建之前**装几个桩 ——
 //      这正是 JUCE 注入 `window.__JUCE__` 的同一个时机;
 //      · 一个自增的 rAF 计数器(注册最早 ⇒ 每一帧里它都排在页面自己的回调之前);
-//      · 一个假的 `window.__JUCE__.postMessage`,收信号时把当时的帧计数记下来;
-//      · 一个 DOMContentLoaded 监听(注册最早 ⇒ 早于页面那个),记下 DCL 当时的帧计数。
-//   ② 导航到**真页面** web/output/index.html(不是预览壳页:壳页的 iframe 会让
-//      addScriptToEvaluateOnNewDocument 的注入面与真机不一致);
-//   ③ 断言:收到且**只收到一次** `__scvb__firstFrame`,且
-//      `帧计数(信号时) - 帧计数(DCL 时) >= 2`。
-//      这个 2 就是「嵌套两层 rAF」的可观测形态:外层回调在 DCL 之后的**下一帧**跑
-//      (计数 +1),内层再等一帧(计数 +2)。写成单层 rAF ⇒ 差值恰好是 1 ⇒ 本套变红
-//      (删除式实测见 PR 描述)。判据钉的是**差值**不是绝对帧号:首帧在 DCL 之前还是之后
-//      随渲染阻塞而变,绝对帧号会假红。
+//      · 一个假的 `window.__JUCE__.postMessage`,收信号时把当时的帧计数与时刻记下来;
+//      · 一个 DOMContentLoaded 监听(注册最早 ⇒ 早于页面那个),记下 DCL 当时的帧计数;
+//      · [SL-429] 一个**注册在页面之前**的 PerformanceObserver,记下 first-paint 的
+//        帧计数与时刻 —— **基线是它,不是 DCL**(理由见下面 for 循环上方那段)。
+//   ② 导航到**三个真页面**(input / output / monitor,不是预览壳页:壳页的 iframe 会让
+//      addScriptToEvaluateOnNewDocument 的注入面与真机不一致)。[SL-429] 之前只跑 output,
+//      而 output 恰是三页里唯一测不出本缺陷的那个;这一条同时关掉 SL-423。
+//   ③ 断言:收到且**只收到一次** `__scvb__firstFrame`;first-paint 记录真的取到了;
+//      `信号时刻 − first-paint 时刻 > 0`(A1);`帧计数(信号) − 帧计数(first-paint) >= 2`(A2);
+//      [SL-430 前半] 载荷里的 `paintDeltaMs` 取到了、且与本套独立量到的 Δms 一致(A3)。
+//      A2 那个 2 就是「嵌套两层 rAF」的可观测形态:外层回调在**下一帧**跑(+1),内层再等
+//      一帧(+2)。写成单层 rAF ⇒ 差值 1 ⇒ 本套变红(删除式实测见 PR 描述)。
+//      判据钉的是**差值**不是绝对帧号:绝对帧号随渲染阻塞而变,会假红。
 //
 // 用法:node web-preview/tests/smoke-first-frame-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -443,6 +446,12 @@ cdp.on((m) => {
 // ---------------------------------------------------------------- 桩(文档创建之前)
 // JUCE 是在文档创建前注入 `window.__JUCE__` 的,`addScriptToEvaluateOnNewDocument`
 // 是 CDP 侧同一个时机 —— 页面 <head> 里那段内联脚本一定跑在它之后。
+// ⚠ [SL-429] 这个桩自己那条 `tick` 的 rAF 循环**会把帧驱起来**,所以它量到的
+//   「帧计数」只说明 rAF 回调跑过几次,**不说明页面画过没画过**。SL-370 那版判据的基线
+//   取的是 DOMContentLoaded 的帧计数 —— 于是「信号早于真正的 first-paint」这件事
+//   在它眼里完全看不见。改成拿 **paint 记录**当基线:`__scvbPaintFrames` / `__scvbPaintMs`
+//   由一个**注册在页面之前**的 PerformanceObserver 落下(本桩先跑 ⇒ 回调也先于页面那个),
+//   `first-paint` 才是「这一帧真的画上去了」的可观测证据。
 const PROBE = `
     window.__scvbFrames = 0;
     (function tick() {
@@ -453,56 +462,170 @@ const PROBE = `
     document.addEventListener("DOMContentLoaded", function () {
         window.__scvbDclFrames = window.__scvbFrames;
     });
+    window.__scvbPaintFrames = -1;
+    window.__scvbPaintMs = -1;
+    try {
+        var __po = new PerformanceObserver(function (list) {
+            if (window.__scvbPaintFrames >= 0) return;
+            var e = list.getEntries()[0];
+            if (!e) return;
+            window.__scvbPaintFrames = window.__scvbFrames;
+            window.__scvbPaintMs = e.startTime;
+        });
+        __po.observe({ type: "paint", buffered: true });
+    } catch (e) {}
     window.__scvbSignals = [];
     window.__JUCE__ = {
         postMessage: function (s) {
-            window.__scvbSignals.push({ raw: String(s), frames: window.__scvbFrames });
+            window.__scvbSignals.push({
+                raw: String(s),
+                frames: window.__scvbFrames,
+                ms: performance.now(),
+            });
         },
     };
 `;
 await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE });
 
-log("A. SL-370 「首帧已绘」信号发在首帧之后");
-await cdp.send("Page.navigate", { url: `${base}/web/output/index.html` });
+// [SL-429] **三页都跑**。SL-370 那版只跑 output —— 而 output 恰好是三页里唯一
+// first-paint 天然早于信号的那个(页面重、画得早),所以它是**唯一测不出本缺陷的页面**。
+// ⚠ **别把这三页读成「符号 = 用户真机那三比一的判别式」**:本机 12 轮复测里 monitor 修前的
+// `信号 − first-paint` 是 −8 .. +73 ms(十有八九为正、且整段落在 C++ 那 32 ms 放行余量的
+// 量级里),按该模型它根本不该闪,可用户真机上它稳定闪 —— **monitor 的白没有被这条链解释**。
+// 三档结论(input 机制已定 / output 天然免疫的对照组 / monitor 未被解释)写在
+// src/plugin-common/WebViewRevealGate.h 一处。本套要守的是那条**结构性质**本身:
+// 信号必须发在页面真的画过一帧之后。
+// ⇒ 把触发改回 DOMContentLoaded 时本套会红,但**哪一页红在哪一格不是常数**(随 first-paint
+// 与 DCL 的相对快慢而变,本机就量到过同一页两种形态)。实跑到的形态见 PR 描述的删除式数表,
+// 别照抄一个固定答案。
+log("A. [SL-370 / SL-429] 「首帧已绘」信号发在页面**真的画过一帧**之后");
+for (const role of ["input", "output", "monitor"]) {
+    await cdp.send("Page.navigate", { url: `${base}/web/${role}/index.html` });
 
-// 等信号到位。上界给足:渲染阻塞的两条外链 css 要先到,页面才会出第一帧。
-const arrived = await waitFor(
-    `(() => (window.__scvbSignals || []).some(
-        (m) => m.raw.indexOf("__scvb__firstFrame") >= 0) &&
-        window.__scvbDclFrames >= 0)()`,
-    20000,
-);
-check(arrived, "页面发出了 __scvb__firstFrame(20s 内)");
+    // 等信号到位。上界给足:渲染阻塞的两条外链 css 要先到,页面才会出第一帧。
+    // ⚠ 三页连跑:`Page.navigate` 只保证导航**开始**。不把 pathname 一起判,这一轮会
+    // 撞上**上一页还没换掉**的文档 —— 它的 __scvbSignals 早就满足条件,于是量到的是上一页
+    // 的数,而判据名字一点没变(「比对轴会静默变空」那一族的邻居)。
+    const arrived = await waitFor(
+        `(() => location.pathname.indexOf("/web/${role}/") >= 0 &&
+            (window.__scvbSignals || []).some(
+                (m) => m.raw.indexOf("__scvb__firstFrame") >= 0) &&
+            window.__scvbDclFrames >= 0)()`,
+        20000,
+    );
+    check(arrived, `${role}:页面发出了 __scvb__firstFrame(20s 内)`);
 
-const probe = await evaluate(`(() => ({
-    signals: (window.__scvbSignals || []).map((m) => ({
-        id: (JSON.parse(m.raw) || {}).eventId,
-        frames: m.frames,
-    })),
-    dcl: window.__scvbDclFrames,
-    frames: window.__scvbFrames,
-}))()`);
+    const probe = await evaluate(`(() => ({
+        path: location.pathname,
+        signals: (window.__scvbSignals || []).map((m) => ({
+            id: (JSON.parse(m.raw) || {}).eventId,
+            frames: m.frames,
+            ms: m.ms,
+            // [SL-430 前半] 页面自己在载荷里报的「信号 − first-paint」差值。
+            // 用 ?? null 显式落成 null:字段缺席与「差值恰好是 0」必须分得开
+            // (0 是合法值,拿真值判会把它读成缺席 —— 判例 comparison-axis-can-be-silently-hollow)。
+            paintDeltaMs:
+                ((JSON.parse(m.raw) || {}).payload || {}).paintDeltaMs ?? null,
+        })),
+        dcl: window.__scvbDclFrames,
+        paintFrames: window.__scvbPaintFrames,
+        paintMs: window.__scvbPaintMs,
+        frames: window.__scvbFrames,
+    }))()`);
 
-if (check(probe && Array.isArray(probe.signals), "取到桩里的信号记录")) {
+    if (
+        !check(
+            probe &&
+                Array.isArray(probe.signals) &&
+                String(probe.path).indexOf(`/web/${role}/`) >= 0,
+            `${role}:取到的是**本页**桩里的信号记录(实得 path=${probe && probe.path})`,
+        )
+    )
+        continue;
+
     const ff = probe.signals.filter((m) => m.id === "__scvb__firstFrame");
     check(
         ff.length === 1,
-        `__scvb__firstFrame 恰好发一次(实得 ${ff.length} 条,全部信号 ` +
-            `${JSON.stringify(probe.signals)})`,
+        `${role}:__scvb__firstFrame 恰好发一次(实得 ${ff.length} 条,全部信号 ` +
+            `${JSON.stringify(probe.signals.map((m) => m.id))})`,
     );
-    check(probe.dcl >= 0, `DOMContentLoaded 的帧计数取到了(实得 ${probe.dcl})`);
-    if (ff.length === 1 && probe.dcl >= 0) {
-        const delta = ff[0].frames - probe.dcl;
-        // 把实测值打出来:红/绿之外还要能读到「差值到底是几」——
-        // 删除式跑出来的那个 1 与正常的 2,只有这一行能直接对上。
-        log(
-            `  帧计数:DCL=${probe.dcl} / 信号=${ff[0].frames} / 现在=${probe.frames} ⇒ Δ=${delta}`,
-        );
+    // paint 记录必须真的取到:取不到时下面两格的差值会恒为正/恒可比,判据静默变空
+    // (「比对轴会静默变空」那一族)。用 >= 0 判,不用真值判 —— 0 是合法帧计数。
+    check(
+        probe.paintFrames >= 0 && probe.paintMs >= 0,
+        `${role}:first-paint 记录取到了(实得帧计数 ${probe.paintFrames} / ` +
+            `${Math.round(probe.paintMs)}ms;**两个 −1 = 信号已经发了、页面却还没画过任何一帧**,` +
+            `这不是探针缺陷 —— 它与下面 Δms 为负是同一件事的两种形态,` +
+            `本卡把触发改回 DOMContentLoaded 时 input / output 就落在这一格)`,
+    );
+    if (ff.length !== 1 || probe.paintFrames < 0) continue;
+
+    // 把实测值打出来:红/绿之外还要能读到「差了多少」——
+    // 删除式跑出来的负数与正常的正数,只有这一行能直接对上。
+    const dFrames = ff[0].frames - probe.paintFrames;
+    const dMs = ff[0].ms - probe.paintMs;
+    log(
+        `  ${role}:first-paint=${Math.round(probe.paintMs)}ms(第 ${probe.paintFrames} 帧)/ ` +
+            `信号=${Math.round(ff[0].ms)}ms(第 ${ff[0].frames} 帧)⇒ ` +
+            `Δ帧=${dFrames}、Δms=${Math.round(dMs)};DCL 帧计数=${probe.dcl};` +
+            `载荷 paintDeltaMs=${JSON.stringify(ff[0].paintDeltaMs)}`,
+    );
+    // (A1) 时刻:信号必须**晚于** first-paint。这一格钉的是「按 paint 触发」本身。
+    check(
+        dMs > 0,
+        `${role}:信号发在 first-paint **之后**(实得 Δms=${Math.round(dMs)};` +
+            `负值 = 页面一帧都还没画就报了「首帧已绘」,C++ 放回来的是一块没画上东西的 ` +
+            `WebView —— [SL-429] 的第二段白)`,
+    );
+    // (A2) 帧数:再等两层 rAF。这一格钉的是「嵌套两层」,与 (A1) 各守一件事:
+    // 只改触发点、不改 rAF 层数时 (A2) 仍会红(paint 与信号同帧 ⇒ Δ帧=0/1)。
+    check(
+        dFrames >= 2,
+        `${role}:信号发在 first-paint 之后的**第二帧或更晚**(实得 Δ帧=${dFrames};` +
+            `Δ帧<2 说明少了一层 rAF —— 已绘的那一帧还没提交给合成器)`,
+    );
+    // (A3) [SL-430 前半] 载荷里那个 `paintDeltaMs` 诊断字段 —— **三格,缺一不可**。
+    //
+    // 它的用途是让用户机的一份日志能直接读出「信号 − first-paint」,而不是像 SL-429 那样
+    // 从 A/B 差值反推。所以它必须**真的是那个量**,不能只是「有个数在那儿」:
+    //   · 先断**取到了**(用 `typeof number` + isFinite,**不用真值判** —— 差值恰好是 0
+    //     是完全合法的读数,拿真值判会把它误读成缺席;判例同上面那条注释);
+    //   · 再断**符号为正**。这一格是**结构性的、不吃机器快慢**:信号在 paint 之后隔了两层
+    //     rAF 才发,差值只可能为正;减号写反(或拿 DCL 当基线)在**任何**机器上当场红。
+    //   · 最后断**它与本套独立量到的 Δms 对得上**。两边是两条独立的路:页面用它自己那个
+    //     PerformanceObserver 的 startTime,本套用**注册得更早的**桩里那个。
+    //
+    // ⚠ [SL-429 第 4 轮] 容差从 ±20 ms 收到 ±5 ms,**而且符号那一格是新加的** —— 复审指出
+    // 原来那条立论(「漏个减号照样全绿 ⇒ 所以要断一致」)是**数据凑出来的**:±20 比它要量的
+    // 那个量还大,`|−10 − 10| = 20 ≤ 20` ⇒ 换台快机器(Δms 掉到 10 ms 以内)这一格就变绿。
+    // 两个读数取自**同一个同步任务**(页面在 postMessage 前一行取 performance.now(),桩在
+    // postMessage 里取),差值本该亚毫秒级,`Math.round` 再加 ±0.5 ⇒ 5 ms 是宽松上界。
+    //
+    // C++ 那一侧(读载荷 + 拼日志)**没有任何判据**:WebViewHost.cpp 不进任何测试目标,
+    // 这是本仓既有的空白,不是本卡新开的口子 —— 照实说,别假装它被守着。
+    // 但**字段名**那一侧有:⑦ 的 (e) 从 WebViewHost.h 抓 `kFirstFramePaintDeltaKey` 与三页
+    // 逐字对拍,而且那一套不需要浏览器、永远会跑(本套在无浏览器时会整套 [SKIP])。
+    const reported = ff[0].paintDeltaMs;
+    const reportedOk =
+        typeof reported === "number" && Number.isFinite(reported);
+    check(
+        reportedOk,
+        `${role}:信号载荷里带了 paintDeltaMs(实得 ${JSON.stringify(reported)};` +
+            `缺席 = 用户机上那份日志会打 "(no paint record)",拿不到余量读数。` +
+            `⚠ 别只往「赋值被删了」上想:**走 2.5s 保险路时页面也可能不带它** ——` +
+            `判别式是信号时刻 ≈ 2500ms,本轮实得 ${Math.round(ff[0].ms)}ms)`,
+    );
+    if (reportedOk) {
         check(
-            delta >= 2,
-            `信号发在 DOMContentLoaded 之后的**第二帧或更晚**(实得 Δ=${delta};` +
-                `Δ=1 就是单层 rAF —— 回调跑在本帧提交之前,信号早于首帧,` +
-                `C++ 放回来的仍是一块没画上东西的 WebView)`,
+            reported > 0,
+            `${role}:载荷里的 paintDeltaMs 必须为正(实得 ${reported};` +
+                `负值 / 零 = 页面那行算式的减号写反了,或基线取的根本不是 first-paint)`,
+        );
+        near(
+            reported,
+            dMs,
+            5,
+            `${role}:载荷里报的 paintDeltaMs 与本套独立量到的 Δms 一致`,
         );
     }
 }

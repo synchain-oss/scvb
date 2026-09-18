@@ -29,8 +29,11 @@
 //   ⑥c [SL-370→SL-402] 占位的 C++ 真源 == tokens.css 的 --page-gradient —— SL-370 当时
 //      对拍的是「单色常量 == 渐变轴中点色」,[SL-402] 占位本身升成渐变,本格随之升级为
 //      **整张色标表逐项对拍**(真源方向不变:tokens 是真源,C++ 数组与三份内联逐字照抄它)。
-//   ⑦ [SL-370] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的 kFirstFrameEventId
-//      逐字一致、武装是**嵌套两层** requestAnimationFrame、且挂在 DOMContentLoaded 之后。
+//   ⑦ [SL-370 / SL-429] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
+//      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且**确实由
+//      paint 记录接线过来**(断的是生效不是在场,见 checkFirstFrameSignal 的 (c));
+//      回落路与保险定时器都在,**且保险的回调直接发信号、不绕两层 rAF**(见 (d));
+//      [SL-430 前半] 载荷里那个诊断字段的**字段名与 C++ 真源逐字一致、算式真的接上了**(见 (e))。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -751,22 +754,28 @@ function checkBackdropMatchesShell() {
 }
 
 /**
- * ⑦ [SL-370] 「首帧已绘」上行信号在场且形态正确。
+ * ⑦ [SL-370 / SL-429] 「首帧已绘」上行信号在场且形态正确。
  *
  * C++ 侧在导航开始后把 WebView 子窗口挪出宿主可视区、由 WebViewHost::paint 铺占位底色,
  * 靠这条信号放回来(**[SL-376] 起它是唯一的正常放行路**;pageFinishedLoading 不再放行,
  * 只剩 3s 超时兜底)。机理只写在
- * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守三条形态:
+ * src/plugin-common/WebViewRevealGate.h 一处,这里不复述,只守四条形态:
  *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
- *       本帧提交**之前**,信号会早于首帧,C++ 放回来的仍是一块没画上东西的 WebView,
- *       正是本卡要治的病;
- *   (c) 武装挂在 DOMContentLoaded / readyState 之后(**两个关键词都要在场**,理由见该处),
- *       不在文档还在解析时就发。
+ *       本帧提交**之前**,比嵌套两层更早,信号更不可能落在已绘之后;
+ *   (c) [SL-429] 武装**确实由 paint 记录接线过来**(PerformanceObserver 在场、buffered 落在
+ *       `.observe({...})` 的实参里、paint 回调体里真的调 armOnce、DOMContentLoaded 全块
+ *       只出现一次且在 catch 里)—— 断的是**生效**不是在场,理由见该处;
+ *   (d) [SL-429] 回落路(readyState + DOMContentLoaded)与保险定时器都在场,**且保险的回调
+ *       直接发信号、不绕两层 rAF**。⚠ 它**不**断「保险排在 try 之前」与「撤网落在 signal()
+ *       里」—— 那两件事才是「信号不会永不发出」的前提,而这一格守不到,见该处。
+ *   (e) [SL-430 前半] 载荷里的诊断字段**接上了**:字段名与 C++ 真源
+ *       `kFirstFramePaintDeltaKey` 逐字一致(与 (a) 同一个 shape),且算式真的是
+ *       `Math.round(performance.now() - paintStartMs)`、基线取自 paint 记录的 startTime。
  *
- * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名与 requestAnimationFrame,
- * 不剥的话注释自己就能把三条断言全顶替掉(#188 同族,连撞过三次)。
- * 三条报错文案互不相同,拆任一条只红它自己那句。
+ * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名、requestAnimationFrame 与
+ * PerformanceObserver,不剥的话注释自己就能把这几条断言全顶替掉(#188 同族,连撞过三次)。
+ * 各条报错文案互不相同,拆任一条只红它自己那句。
  */
 function checkFirstFrameSignal(role, entry) {
     const header = readFileSync(
@@ -781,6 +790,15 @@ function checkFirstFrameSignal(role, entry) {
         return;
     }
     const eventId = idMatch[1];
+    // (e) [SL-430 前半] 载荷字段名的真源同样在 WebViewHost.h,取法与上面的事件名**逐字同源**。
+    const keyMatch = header.match(/kFirstFramePaintDeltaKey\s*=\s*"([^"]+)"/);
+    if (!keyMatch) {
+        bad(
+            "WebViewHost.h 里找不到 kFirstFramePaintDeltaKey([SL-430 前半] 载荷字段名的 C++ 真源)",
+        );
+        return;
+    }
+    const paintDeltaKey = keyMatch[1];
 
     const html = readFileSync(join(ROOT, entry), "utf8").replace(
         /<!--[\s\S]*?-->/g,
@@ -788,9 +806,31 @@ function checkFirstFrameSignal(role, entry) {
     );
 
     // 只在**含该事件名的那个 <script> 块**里判形态:整页扫会把别处的 rAF 算进来。
-    const block = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    const rawBlock = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((mm) => mm[1])
         .find((body) => body.includes('"' + eventId + '"'));
+    // ⚠ [SL-429] 上面剥的是 **HTML** 注释,**JS 注释还在**。块里那几行 `// buffered:true ——`
+    // 之类的说明逐字写着下面要断言的关键词,不剥的话注释自己就给实现发了合格证 ——
+    // 本卡的删除式实测:去掉 `buffered: true` 这个**实参**,判据照样全绿(#188 同族)。
+    // ⚠ [SL-429 第 2 轮] 第一版只剥**整行** `//`,留着行尾 `//` 不动(怕误伤 `https://`)——
+    // 复审当场指出那个洞还在:`po.observe({ type: "paint" }); // buffered: true` 同样能顶替
+    // 下面的 buffered 断言,只是从「整行注释」挪到了「行尾注释」那一侧。现在行尾也剥,
+    // `https://` 一族由模式本身避开 —— **确切条件看下面那条正则,别照这句话去改它**
+    // ([SL-429 第 3 轮] 上一版在这里写了一句「靠『`//` 前一个字符不是 `:`』」,而实现里
+    // 那个字符是**必须存在**的一个字符,行首就是 `//` 的那种根本匹配不到、靠上一条兜住 ——
+    // 结果对、说法偏,按「消歧优先删句」把那半句删掉,只留指路)。
+    // ⚠ 这条规则的已知边界(写明,不假装没有):字符串字面量里的裸 `//`(如 `"a//b"`)
+    // 会被误剥。本块里没有这种写法,而且真要有,后果是**判据更严**(把实现文本剥掉 ⇒ 判负),
+    // 不是更松 —— fail-closed 这一侧可以接受。
+    // 光剥注释还不够,所以下面 (c) 的 buffered 断言**同时**改成了「必须落在 `.observe({...})`
+    // 的实参对象里」的结构形态:两道各自独立,任一道单独失效都不会让那一格空过。
+    const block =
+        rawBlock === undefined
+            ? undefined
+            : rawBlock
+                  .replace(/\/\*[\s\S]*?\*\//g, "")
+                  .replace(/^[ \t]*\/\/.*$/gm, "")
+                  .replace(/([^:])\/\/.*$/gm, "$1");
     if (block === undefined) {
         bad(
             `${role}:index.html 里没有发 ${eventId} 的内联脚本 —— 开窗遮挡闸就只剩` +
@@ -811,26 +851,132 @@ function checkFirstFrameSignal(role, entry) {
                 `C++ 放回来的仍是一块没画上东西的 WebView`,
         );
 
-    // (c) 文档还在解析时就发同样早于首帧。**两个关键词都必须在场**(读 readyState + 监听
-    // DOMContentLoaded)——这比 (c) 要守的语义严一格:纯 readyState 轮询、纯 DOMContentLoaded
-    // 监听各自都满足「不在解析期发」,却会被这一格判负。**有意如此**,统筹裁定(#241
-    // 2026-09-06 15:03 ②)取「改注释对齐实现」而不是放宽实现:三份页面此刻是同一种写法,
-    // 先把它钉住;真要收敛成单写法,由那张卡连同本注释一起改。
-    if (!/DOMContentLoaded/.test(block) || !/readyState/.test(block))
+    // (c) [SL-429] 武装的触发条件必须是「**已经画过一帧**」—— 观察 paint 记录,而不是
+    // DOMContentLoaded。SL-370 当时按 DCL 触发,信号时刻 ≈ DCL + 两个 rAF,**与 first-paint
+    // 之间没有任何约束**(本机 12 轮实测 input 页上早 200~370 ms;完整数表与「哪一页被解释了、
+    // 哪一页没有」的三档结论在 src/plugin-common/WebViewRevealGate.h)。
+    // ⚠ [SL-429 第 2 轮] 第一版这一格断的是「三个片段**在场**」,而不是「**生效的**是 paint
+    // 那条路」—— 复审给出的绕法很自然:**把武装改回 DOMContentLoaded、同时把这段
+    // PerformanceObserver 留成死代码**(「怕某些浏览器不报 paint 记录,两边都挂上」),
+    // 三个片段全在 ⇒ 全绿。而页面级 A 兜不住它:output 在 DCL 触发下 Δms ≈ +99 ms、Δ帧 ≥ 2
+    // 本来就是绿的(它是三页里唯一天然免疫的那页),monitor 十有八九也绿 ⇒ **那两页上唯一
+    // 的网就是这一格**。所以现在断的是**接线**,不是在场:
+    //   · `new PerformanceObserver` 在场;
+    //   · `buffered: true` 必须落在 `.observe({...})` 的**实参对象**里(不是块里任意位置 ——
+    //     行尾注释那个洞见上面剥注释那段);
+    //   · **paint 回调体里真的调了 `armOnce`**(死代码那条路就是死在这一条上);
+    //   · `DOMContentLoaded` 在整块里**恰好出现一次,且在 catch 里** —— 多出来的那一次
+    //     正是「把武装改回 DCL」的形态,回落路只许待在 catch 那条兜底路上。
+    // 判据名与它守的东西现在对得上了。删除式见 PR 描述的 D5(保留 PO、武装改回 DCL ⇒ 必红)。
+    const observeCallHasBuffered =
+        /\.observe\s*\(\s*\{[^}]*type\s*:\s*"paint"[^}]*buffered\s*:\s*true[^}]*\}\s*\)/.test(
+            block,
+        );
+    const paintCallbackArms =
+        /new\s+PerformanceObserver\s*\(\s*function[\s\S]{0,400}?armOnce\s*\(/.test(
+            block,
+        );
+    const dclOnlyInCatch =
+        (block.match(/DOMContentLoaded/g) || []).length === 1 &&
+        /catch\s*\([^)]*\)\s*\{[^}]*DOMContentLoaded/.test(block);
+    const paintGated =
+        /new\s+PerformanceObserver\s*\(/.test(block) &&
+        observeCallHasBuffered &&
+        paintCallbackArms &&
+        dclOnlyInCatch;
+    if (!paintGated)
         bad(
-            `${role}:${eventId} 的武装没挂在 DOMContentLoaded / readyState 之后` +
-                `(文档还在解析时发出的信号早于首帧)`,
+            `${role}:${eventId} 的武装不是**由 paint 记录接线过来**的 ——` +
+                ` 需要 new PerformanceObserver + observe({type:"paint", buffered:true})(buffered 必须在` +
+                ` observe 的实参对象里)+ paint 回调体里真的调 armOnce +` +
+                ` DOMContentLoaded 全块只出现一次且在 catch 里;` +
+                ` 实得 observe(buffered)=${observeCallHasBuffered}、回调接线=${paintCallbackArms}、` +
+                `DCL 只在 catch=${dclOnlyInCatch}。` +
+                ` 「三个片段都在场、但生效的是 DOMContentLoaded」同样会让两层 rAF 早于首帧发信号,` +
+                `C++ 放回来的仍是一块没画上东西的 WebView([SL-429] 的第二段白)`,
         );
 
-    // PASS 行的条件必须与上面两处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
+    // (d) 回落路与保险在场,且保险的回调**直接发信号**。
+    //
+    // ⚠ [SL-429 第 3 轮] **这一格守得住什么、守不住什么,按字面读,别读成更强的句子。**
+    // 本卡在这句话上连栽两轮,两次都是「注释宣称的保证,代码给不到」:
+    //   · 第 1 轮写的是 `setTimeout(armOnce, 2500)` ⇒ 保险到点还要过两层 rAF,而保险存在的
+    //     唯一理由就是「paint 记录不来」,那一档最可能的成因正是 BeginFrame 停摆 ——
+    //     **停了 rAF 也不回调** ⇒ 保险在它自己的头号场景里等于不存在;
+    //   · 第 2 轮修了回调体,却**把保险排在 `try` 里、`po.observe()` 之后** ⇒
+    //     `new PerformanceObserver` 抛错时那一行根本没执行过,**回落路压根没有保险**。
+    //   两次这四条断言都是全绿的。
+    //
+    // 【现在这一格确实守得住】`readyState` / `DOMContentLoaded` 的回落路在场;有一个
+    //   `setTimeout` 保险;**它的回调直接 `signal()`,不绕 `arm()`/`armOnce()`**。
+    // 【它守不住、今天靠代码自己对的】(写明,不留一句听起来更强的话):
+    //   · **保险排在 `try` 之前**(⇒ 回落路也被兜住)—— 位置关系这里**没有断言**;
+    //   · **撤网(`clearTimeout`)落在 `signal()` 里、不在 `armOnce()` 里**(⇒ 网只在信号
+    //     真发出去时才撤)—— 这里也**没有断言**。
+    //   两条都是 [SL-429 第 3 轮] 的修法本体,删掉它们这四条照样全绿。**这是一次明知的取舍**:
+    //   统筹裁定本轮不再往这一族加正则(同一处连出三轮 ⇒ 整族转卡,见 SL-431),
+    //   所以宁可把缺口写在这里,也不写一句「信号不会永不发出」这种给不到的保证。
+    const guardSendsDirectly =
+        /setTimeout\s*\(\s*function[\s\S]{0,300}?signal\s*\(\s*\)/.test(
+            block,
+        ) && !/setTimeout\s*\(\s*(arm|armOnce)\s*[,)]/.test(block);
+    const hasFallback =
+        /DOMContentLoaded/.test(block) &&
+        /readyState/.test(block) &&
+        /setTimeout\s*\(/.test(block) &&
+        guardSendsDirectly;
+    if (!hasFallback)
+        bad(
+            `${role}:${eventId} 少了回落 / 保险,或保险绕了 rAF ——` +
+                ` 需要 readyState + DOMContentLoaded 的回落路、一个 setTimeout 保险,` +
+                `且保险的回调**直接发信号**(实得 直接发=${guardSendsDirectly});` +
+                ` 绕 arm() 的两层 rAF 时,BeginFrame 停摆那一档下 rAF 根本不回调,` +
+                `保险等于不存在,信号仍会永不发出`,
+        );
+
+    // (e) [SL-430 前半] 载荷里那个诊断字段:**字段名与 C++ 真源逐字一致 + 算式真的接上了**。
+    //
+    // 为什么非要在**这一套**里钉(它不需要浏览器、永远会跑):这一格此前的**唯一**判据是
+    // 页面级 A3,而 A3 在没有浏览器时记 `[SKIP]`、CI 上 rc=3 只打 `::warning::` ——
+    // 按本仓既定政策,那一层**被允许静默消失**(判例 skip-swallows-the-guard)。
+    // 而字段名一旦漂,失败形态是 C++ 打 `(no paint record)`,**与「页面确实走了回落路」在
+    // 用户日志里逐字同形** ⇒ 我们分不出是哪一种,SL-430 前半整件事就失去意义。
+    // 所以这里照 (a) 给事件名做对拍的**同一个 shape**:从 WebViewHost.h 抓常量再与页面比。
+    //
+    // 两条各守一件:①`p.<字段名> = Math.round(performance.now() - paintStartMs)` 的算式形态
+    //   (顺带把「减号写反 / 拿别的当基线」变成源码可判);② 基线真的取自 paint 记录的
+    //   `startTime`。都落在**剥完注释**的 block 上,注释顶替不了。
+    const carriesPaintDelta = new RegExp(
+        "p\\." +
+            paintDeltaKey +
+            "\\s*=\\s*Math\\.round\\(\\s*performance\\.now\\(\\)\\s*-\\s*paintStartMs",
+    ).test(block);
+    const paintBaselineWired =
+        /paintStartMs\s*=\s*list\.getEntries\(\)\[0\]\.startTime/.test(block);
+    if (!carriesPaintDelta || !paintBaselineWired)
+        bad(
+            `${role}:[SL-430 前半] 载荷里的 ${paintDeltaKey} 没接上 ——` +
+                ` 需要 p.${paintDeltaKey} = Math.round(performance.now() - paintStartMs)` +
+                `(字段名取自 WebViewHost.h 的 kFirstFramePaintDeltaKey,逐字一致)` +
+                ` 与 paintStartMs = list.getEntries()[0].startTime 两者都在;` +
+                ` 实得 算式=${carriesPaintDelta}、基线接线=${paintBaselineWired}。` +
+                ` 字段名两侧任一边打错一个字母,C++ 会打 (no paint record) ——` +
+                `**那与「页面确实走了回落路」在日志里逐字同形**,用户那份日志就分不出是哪一种`,
+        );
+
+    // PASS 行的条件必须与上面几处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
     // 断言已经判负,而这行还在写「在场且形态正确」。(#241 复审:收紧 (c) 时漏了 readyState;
     // A/B 实测 —— 把 output 页收敛成纯 DOMContentLoaded 之后,修前打 3 行「在场」、修后打 2 行。)
     if (
         nested.test(block) &&
-        /DOMContentLoaded/.test(block) &&
-        /readyState/.test(block)
+        paintGated &&
+        hasFallback &&
+        carriesPaintDelta &&
+        paintBaselineWired
     )
-        console.log(`  ${eventId} 在场:DOMContentLoaded 后嵌套两层 rAF 才发`);
+        console.log(
+            `  ${eventId} 在场:paint 记录到达后再嵌套两层 rAF 才发(带回落 + 保险)`,
+        );
 }
 
 function checkBootGuard(role, entry) {

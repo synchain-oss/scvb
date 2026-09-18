@@ -4,6 +4,7 @@
 #include "BridgeBase.h"
 #include "PlatformWebView.h"
 
+#include <cmath> // std::isfinite —— [SL-416 R16] 那条守卫要用
 #include <type_traits>
 #include <utility>
 
@@ -339,7 +340,8 @@ public:
     //     晚于 WebView2 的首帧,拿它当开关反而把「还没出内容」那一段拉长。
     //   ⇒ 拿开窗路径上的死锁风险去换一个观感问题不划算,SL-355 因此只做了 ①-c。
     //   [SL-370] 第三条(「JUCE 根本没有首帧信号」)已经不成立:本卡在三份 index.html 的
-    //   boot 脚本里补了一条 __scvb__firstFrame 上行信号(嵌套两层 rAF ⇒ 前一帧确已合成),
+    //   boot 脚本里补了一条 __scvb__firstFrame 上行信号([SL-429] 起 = 等 paint 记录到达
+    //   再嵌套两层 rAF 才发;「两层 rAF ⇒ 已绘」这句是假的,定谳见 WebViewRevealGate.h),
     //   走的是与 kBootErrorEventId 同一条 JUCE 内建通道。前两条(泵、死锁)仍成立,
     //   本卡正是靠「挪 bounds + 等导航开始」绕开它们的。
     // -------------------------------------------------------------------------
@@ -929,9 +931,46 @@ void WebViewHost::handleBootError(const juce::var& payload)
 
 // [SL-370] 前端「首帧已绘」上报。通道与 kBootErrorEventId 同一条(JUCE 内建
 // __JUCE__.postMessage,不经 bridge.js、不占契约 §7 名表),理由见 handleBootError 的注释。
-// 载荷不看:这条信号只有「到了」这一个信息量,前端也只发一次。
-void WebViewHost::handleFirstFrame()
+// [SL-430 前半] 载荷从「不看」改成**只看一个诊断字段**:`paintDeltaMs` = 页面那一侧量到的
+// `信号时刻 − first-paint 时刻`。它**只进日志,不参与任何放行判定** —— 判定仍全在 revealGate_ 里。
+//
+// 【为什么要它】用户机上的这个余量**从来没有被量过**:抓取包只记信号时刻与放行时刻,
+// 于是「他那台上信号到底早于还是晚于首帧、差多少」只能从 A/B 差值反推(SL-429 PR 的表 3)。
+// 有了这一格,用户下次抓一份日志就能**直接读出来**,而不是继续猜。
+//
+// 【为什么送差值而不是 paint 的绝对时刻】页面的 `performance` 时间轴与这里的 `startMs_`
+// **不共享原点**,送绝对值过来无法与任何东西相减 —— 与 SL-429 第 2 轮复审抓到的
+// 「页内 2500ms 与 kRevealFallbackMs 的 3000ms 不同源」是同一个坑,那一课原样用在这里。
+//
+// 【`(no paint record)` 怎么读 —— 按字面读,别读成「走了兜底路」】
+// 它只说明**这一次的载荷里没有这个字段**。页面在没有 paint 记录时不带它,所以
+// 「没有 paint 记录 ⇒ 打这一行」成立;**反过来不成立**:[SL-429 第 3 轮] 把去重挪进页面的
+// `signal()` 之后,保险定时器的回调不再查 `armed` ⇒ 「paint 已到、两层 rAF 还没跑完就到
+// 2.5s」这一路会**带着一个真实的差值**由保险发出。⇒ **判「走的是不是保险路」要看
+// `after N ms` 的量级(≈2500),不是看这个字段在不在。**
+// 字段名的真源是 WebViewHost.h 的 kFirstFramePaintDeltaKey,三份 index.html 逐字引用,
+// 由 ⑦ 逐字对拍(理由见该常量的注释:打错字母的失败形态与合法回落路在日志里同形)。
+void WebViewHost::handleFirstFrame(const juce::var& payload)
 {
+    // 日志文案一律 ASCII:中文**字符串字面量**会触发 MSVC C4819(本机 gate 5 红、CI 隐形),
+    // 中文注释不会。判例 cp936-chinese-source-c4819。
+    juce::String paintNote(" (no paint record)");
+    const auto delta = payload.getProperty(kFirstFramePaintDeltaKey, juce::var());
+    // [SL-416 R16] 的形态照搬:**非有限、或有限但超出目标类型值域**的 double 直接
+    // `static_cast` 成 int 是 **UB**,所以先在 double 域夹,再由这里窄化。
+    // 入口是真的:JSON 里造得出 ±Inf(`{"x": 1e400}` 经 strtod 溢出成 HUGE_VAL);
+    // 我们自己的 web 侧发不出(JS 的 JSON.stringify(Infinity) 出 null),但这条载荷毕竟跨了
+    // web → C++ 这道边界,本仓对同类边界的口径是「先校验再用」,不按落点轻重打折。
+    const auto usable =
+        delta.isInt() || delta.isInt64() || (delta.isDouble() && std::isfinite(static_cast<double>(delta)));
+    if (usable)
+    {
+        // 夹到 ±60 s:这是「信号 − 首帧」的毫秒差值,再大也没有诊断意义,而夹完必然落在
+        // int 的可表示范围内 ⇒ 下面这次窄化不再触碰 UB。
+        const auto n = static_cast<int>(juce::jlimit(-60000.0, 60000.0, static_cast<double>(delta)));
+        paintNote = juce::String(" (signal-firstPaint ") + (n >= 0 ? "+" : "") + juce::String(n) + " ms)";
+    }
+
     // [SL-370] **先记「信号到了」,再谈放行** —— 这是两件必须分开数的事:信号可能在 3s 兜底
     // 或兜底面板之后才姗姗来迟,那时 noteRevealed() 一个字都不写;只看放行原因就会把
     // 「信号来晚了」误读成「信号没来」,而后者正是本卡唯一那条静默降级
@@ -939,7 +978,7 @@ void WebViewHost::handleFirstFrame()
     // 真机验收数的就是这一行与下面那行放行行的**条数比**。
     logDiag(juce::String("first-frame signal after ") +
             juce::String(static_cast<int>(juce::Time::getMillisecondCounter() - startMs_)) + " ms" +
-            (revealGate_.parked() ? " (still parked)" : " (already revealed)"));
+            (revealGate_.parked() ? " (still parked)" : " (already revealed)") + paintNote);
     // [SL-376] onFirstFrame() **只武装,不放行** —— 真正挪回可视区在后面的 25Hz tick 上
     // (kRevealSettleTicks ∧ kRevealSettleMs,理由见 WebViewRevealGate.h 头注)。所以下面两句
     // 在**正常那条路**上是空调用,留着是为了「闸门状态一变就落地」这条不变式只有
@@ -992,7 +1031,7 @@ juce::WebBrowserComponent::Options WebViewHost::makeOptions()
 
     // [SL-370] 时序面(非契约):前端「首帧已绘」上行 —— 遮挡闸的第一条放行路。
     options = options.withEventListener(juce::Identifier(kFirstFrameEventId),
-                                        [this](const juce::var&) { handleFirstFrame(); });
+                                        [this](const juce::var& payload) { handleFirstFrame(payload); });
 
     if (config_.augmentOptions)
         config_.augmentOptions(options);
