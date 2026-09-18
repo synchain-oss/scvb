@@ -32,7 +32,8 @@
 //   ⑦ [SL-370 / SL-429] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
 //      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且**确实由
 //      paint 记录接线过来**(断的是生效不是在场,见 checkFirstFrameSignal 的 (c));
-//      回落路与保险定时器都在,**且保险的回调直接发信号、不绕两层 rAF**(见 (d))。
+//      回落路与保险定时器都在,**且保险的回调直接发信号、不绕两层 rAF**(见 (d));
+//      [SL-430 前半] 载荷里那个诊断字段的**字段名与 C++ 真源逐字一致、算式真的接上了**(见 (e))。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -768,10 +769,13 @@ function checkBackdropMatchesShell() {
  *   (d) [SL-429] 回落路(readyState + DOMContentLoaded)与保险定时器都在场,**且保险的回调
  *       直接发信号、不绕两层 rAF**。⚠ 它**不**断「保险排在 try 之前」与「撤网落在 signal()
  *       里」—— 那两件事才是「信号不会永不发出」的前提,而这一格守不到,见该处。
+ *   (e) [SL-430 前半] 载荷里的诊断字段**接上了**:字段名与 C++ 真源
+ *       `kFirstFramePaintDeltaKey` 逐字一致(与 (a) 同一个 shape),且算式真的是
+ *       `Math.round(performance.now() - paintStartMs)`、基线取自 paint 记录的 startTime。
  *
  * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名、requestAnimationFrame 与
- * PerformanceObserver,不剥的话注释自己就能把四条断言全顶替掉(#188 同族,连撞过三次)。
- * 四条报错文案互不相同,拆任一条只红它自己那句。
+ * PerformanceObserver,不剥的话注释自己就能把这几条断言全顶替掉(#188 同族,连撞过三次)。
+ * 各条报错文案互不相同,拆任一条只红它自己那句。
  */
 function checkFirstFrameSignal(role, entry) {
     const header = readFileSync(
@@ -786,6 +790,15 @@ function checkFirstFrameSignal(role, entry) {
         return;
     }
     const eventId = idMatch[1];
+    // (e) [SL-430 前半] 载荷字段名的真源同样在 WebViewHost.h,取法与上面的事件名**逐字同源**。
+    const keyMatch = header.match(/kFirstFramePaintDeltaKey\s*=\s*"([^"]+)"/);
+    if (!keyMatch) {
+        bad(
+            "WebViewHost.h 里找不到 kFirstFramePaintDeltaKey([SL-430 前半] 载荷字段名的 C++ 真源)",
+        );
+        return;
+    }
+    const paintDeltaKey = keyMatch[1];
 
     const html = readFileSync(join(ROOT, entry), "utf8").replace(
         /<!--[\s\S]*?-->/g,
@@ -921,10 +934,46 @@ function checkFirstFrameSignal(role, entry) {
                 `保险等于不存在,信号仍会永不发出`,
         );
 
-    // PASS 行的条件必须与上面三处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
+    // (e) [SL-430 前半] 载荷里那个诊断字段:**字段名与 C++ 真源逐字一致 + 算式真的接上了**。
+    //
+    // 为什么非要在**这一套**里钉(它不需要浏览器、永远会跑):这一格此前的**唯一**判据是
+    // 页面级 A3,而 A3 在没有浏览器时记 `[SKIP]`、CI 上 rc=3 只打 `::warning::` ——
+    // 按本仓既定政策,那一层**被允许静默消失**(判例 skip-swallows-the-guard)。
+    // 而字段名一旦漂,失败形态是 C++ 打 `(no paint record)`,**与「页面确实走了回落路」在
+    // 用户日志里逐字同形** ⇒ 我们分不出是哪一种,SL-430 前半整件事就失去意义。
+    // 所以这里照 (a) 给事件名做对拍的**同一个 shape**:从 WebViewHost.h 抓常量再与页面比。
+    //
+    // 两条各守一件:①`p.<字段名> = Math.round(performance.now() - paintStartMs)` 的算式形态
+    //   (顺带把「减号写反 / 拿别的当基线」变成源码可判);② 基线真的取自 paint 记录的
+    //   `startTime`。都落在**剥完注释**的 block 上,注释顶替不了。
+    const carriesPaintDelta = new RegExp(
+        "p\\." +
+            paintDeltaKey +
+            "\\s*=\\s*Math\\.round\\(\\s*performance\\.now\\(\\)\\s*-\\s*paintStartMs",
+    ).test(block);
+    const paintBaselineWired =
+        /paintStartMs\s*=\s*list\.getEntries\(\)\[0\]\.startTime/.test(block);
+    if (!carriesPaintDelta || !paintBaselineWired)
+        bad(
+            `${role}:[SL-430 前半] 载荷里的 ${paintDeltaKey} 没接上 ——` +
+                ` 需要 p.${paintDeltaKey} = Math.round(performance.now() - paintStartMs)` +
+                `(字段名取自 WebViewHost.h 的 kFirstFramePaintDeltaKey,逐字一致)` +
+                ` 与 paintStartMs = list.getEntries()[0].startTime 两者都在;` +
+                ` 实得 算式=${carriesPaintDelta}、基线接线=${paintBaselineWired}。` +
+                ` 字段名两侧任一边打错一个字母,C++ 会打 (no paint record) ——` +
+                `**那与「页面确实走了回落路」在日志里逐字同形**,用户那份日志就分不出是哪一种`,
+        );
+
+    // PASS 行的条件必须与上面几处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——
     // 断言已经判负,而这行还在写「在场且形态正确」。(#241 复审:收紧 (c) 时漏了 readyState;
     // A/B 实测 —— 把 output 页收敛成纯 DOMContentLoaded 之后,修前打 3 行「在场」、修后打 2 行。)
-    if (nested.test(block) && paintGated && hasFallback)
+    if (
+        nested.test(block) &&
+        paintGated &&
+        hasFallback &&
+        carriesPaintDelta &&
+        paintBaselineWired
+    )
         console.log(
             `  ${eventId} 在场:paint 记录到达后再嵌套两层 rAF 才发(带回落 + 保险)`,
         );

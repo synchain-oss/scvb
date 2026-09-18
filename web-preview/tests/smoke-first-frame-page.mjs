@@ -567,7 +567,8 @@ for (const role of ["input", "output", "monitor"]) {
     log(
         `  ${role}:first-paint=${Math.round(probe.paintMs)}ms(第 ${probe.paintFrames} 帧)/ ` +
             `信号=${Math.round(ff[0].ms)}ms(第 ${ff[0].frames} 帧)⇒ ` +
-            `Δ帧=${dFrames}、Δms=${Math.round(dMs)};DCL 帧计数=${probe.dcl}`,
+            `Δ帧=${dFrames}、Δms=${Math.round(dMs)};DCL 帧计数=${probe.dcl};` +
+            `载荷 paintDeltaMs=${JSON.stringify(ff[0].paintDeltaMs)}`,
     );
     // (A1) 时刻:信号必须**晚于** first-paint。这一格钉的是「按 paint 触发」本身。
     check(
@@ -583,33 +584,50 @@ for (const role of ["input", "output", "monitor"]) {
         `${role}:信号发在 first-paint 之后的**第二帧或更晚**(实得 Δ帧=${dFrames};` +
             `Δ帧<2 说明少了一层 rAF —— 已绘的那一帧还没提交给合成器)`,
     );
-    // (A3) [SL-430 前半] 载荷里那个 `paintDeltaMs` 诊断字段 —— **两格,缺一不可**。
+    // (A3) [SL-430 前半] 载荷里那个 `paintDeltaMs` 诊断字段 —— **三格,缺一不可**。
     //
     // 它的用途是让用户机的一份日志能直接读出「信号 − first-paint」,而不是像 SL-429 那样
     // 从 A/B 差值反推。所以它必须**真的是那个量**,不能只是「有个数在那儿」:
     //   · 先断**取到了**(用 `typeof number` + isFinite,**不用真值判** —— 差值恰好是 0
     //     是完全合法的读数,拿真值判会把它误读成缺席;判例同上面那条注释);
-    //   · 再断**它与本套独立量到的 Δms 对得上**(±20 ms)。两边是两条独立的路:页面用它
-    //     自己那个 PerformanceObserver 的 startTime,本套用**注册得更早的**桩里那个。
-    //     只断在场、不断一致的话,把页面那行算式写错(比如漏个减号、或拿 DCL 当基线)
-    //     照样全绿 —— 而那正是这一格存在的全部意义。
+    //   · 再断**符号为正**。这一格是**结构性的、不吃机器快慢**:信号在 paint 之后隔了两层
+    //     rAF 才发,差值只可能为正;减号写反(或拿 DCL 当基线)在**任何**机器上当场红。
+    //   · 最后断**它与本套独立量到的 Δms 对得上**。两边是两条独立的路:页面用它自己那个
+    //     PerformanceObserver 的 startTime,本套用**注册得更早的**桩里那个。
+    //
+    // ⚠ [SL-429 第 4 轮] 容差从 ±20 ms 收到 ±5 ms,**而且符号那一格是新加的** —— 复审指出
+    // 原来那条立论(「漏个减号照样全绿 ⇒ 所以要断一致」)是**数据凑出来的**:±20 比它要量的
+    // 那个量还大,`|−10 − 10| = 20 ≤ 20` ⇒ 换台快机器(Δms 掉到 10 ms 以内)这一格就变绿。
+    // 两个读数取自**同一个同步任务**(页面在 postMessage 前一行取 performance.now(),桩在
+    // postMessage 里取),差值本该亚毫秒级,`Math.round` 再加 ±0.5 ⇒ 5 ms 是宽松上界。
+    //
     // C++ 那一侧(读载荷 + 拼日志)**没有任何判据**:WebViewHost.cpp 不进任何测试目标,
     // 这是本仓既有的空白,不是本卡新开的口子 —— 照实说,别假装它被守着。
+    // 但**字段名**那一侧有:⑦ 的 (e) 从 WebViewHost.h 抓 `kFirstFramePaintDeltaKey` 与三页
+    // 逐字对拍,而且那一套不需要浏览器、永远会跑(本套在无浏览器时会整套 [SKIP])。
     const reported = ff[0].paintDeltaMs;
     const reportedOk =
         typeof reported === "number" && Number.isFinite(reported);
     check(
         reportedOk,
         `${role}:信号载荷里带了 paintDeltaMs(实得 ${JSON.stringify(reported)};` +
-            `缺席 = 用户机上那份日志会打 "(no paint record)",拿不到余量读数)`,
+            `缺席 = 用户机上那份日志会打 "(no paint record)",拿不到余量读数。` +
+            `⚠ 别只往「赋值被删了」上想:**走 2.5s 保险路时页面也可能不带它** ——` +
+            `判别式是信号时刻 ≈ 2500ms,本轮实得 ${Math.round(ff[0].ms)}ms)`,
     );
-    if (reportedOk)
+    if (reportedOk) {
+        check(
+            reported > 0,
+            `${role}:载荷里的 paintDeltaMs 必须为正(实得 ${reported};` +
+                `负值 / 零 = 页面那行算式的减号写反了,或基线取的根本不是 first-paint)`,
+        );
         near(
             reported,
             dMs,
-            20,
+            5,
             `${role}:载荷里报的 paintDeltaMs 与本套独立量到的 Δms 一致`,
         );
+    }
 }
 
 // 页面自己的运行期噪声只报不判:这一套没有 mock 后端,app.js 拿不到桥是预期内的,

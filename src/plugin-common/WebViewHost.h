@@ -107,6 +107,16 @@ public:
     // 它守的是什么、为什么不能改成 setVisible(false)/零尺寸,只写在 WebViewRevealGate.h 一处。
     static constexpr const char* kFirstFrameEventId = "__scvb__firstFrame";
 
+    // [SL-430 前半] 上面那条信号载荷里**唯一**被读的字段名:页面量到的
+    // `信号时刻 − first-paint 时刻`(毫秒差值,只进日志)。
+    // ⚠ 它**必须与 kFirstFrameEventId 同一档纪律**:真源在此,三份 index.html 逐字引用。
+    // 为什么单独立常量而不是就地写字面量([SL-429] 第 4 轮复审):这个名字跨了 web → C++
+    // 两侧,任一侧打错一个字母的失败形态是 **C++ 打 `(no paint record)`** ——
+    // 而那与「页面确实走了回落路」在日志里**逐字同形**,用户抓回来的日志分不出是哪一种,
+    // 于是 SL-430 前半整件事失去意义(它存在的理由就是「这个量从来没人量过」)。
+    // 立成常量之后,⑦ 就能照 kFirstFrameEventId 那一格的同一个 shape 做逐字对拍。
+    static constexpr const char* kFirstFramePaintDeltaKey = "paintDeltaMs";
+
 protected:
     // 子类覆写以落盘全局默认(宿主侧持久化由插件 Processor 实现;默认空实现)。
     virtual void persistUiScaleAsDefault();

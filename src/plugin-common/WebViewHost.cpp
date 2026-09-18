@@ -4,6 +4,7 @@
 #include "BridgeBase.h"
 #include "PlatformWebView.h"
 
+#include <cmath> // std::isfinite —— [SL-416 R16] 那条守卫要用
 #include <type_traits>
 #include <utility>
 
@@ -941,17 +942,32 @@ void WebViewHost::handleBootError(const juce::var& payload)
 // **不共享原点**,送绝对值过来无法与任何东西相减 —— 与 SL-429 第 2 轮复审抓到的
 // 「页内 2500ms 与 kRevealFallbackMs 的 3000ms 不同源」是同一个坑,那一课原样用在这里。
 //
-// 【没有 paint 记录的那两条路要分辨得开】走回落路(没有 PerformanceObserver)或保险定时器时
-// 页面不带这个字段 ⇒ 这里打 `(no paint record)`,而不是打一个看不出来路的数。
+// 【`(no paint record)` 怎么读 —— 按字面读,别读成「走了兜底路」】
+// 它只说明**这一次的载荷里没有这个字段**。页面在没有 paint 记录时不带它,所以
+// 「没有 paint 记录 ⇒ 打这一行」成立;**反过来不成立**:[SL-429 第 3 轮] 把去重挪进页面的
+// `signal()` 之后,保险定时器的回调不再查 `armed` ⇒ 「paint 已到、两层 rAF 还没跑完就到
+// 2.5s」这一路会**带着一个真实的差值**由保险发出。⇒ **判「走的是不是保险路」要看
+// `after N ms` 的量级(≈2500),不是看这个字段在不在。**
+// 字段名的真源是 WebViewHost.h 的 kFirstFramePaintDeltaKey,三份 index.html 逐字引用,
+// 由 ⑦ 逐字对拍(理由见该常量的注释:打错字母的失败形态与合法回落路在日志里同形)。
 void WebViewHost::handleFirstFrame(const juce::var& payload)
 {
     // 日志文案一律 ASCII:中文**字符串字面量**会触发 MSVC C4819(本机 gate 5 红、CI 隐形),
     // 中文注释不会。判例 cp936-chinese-source-c4819。
     juce::String paintNote(" (no paint record)");
-    const auto delta = payload.getProperty("paintDeltaMs", juce::var());
-    if (delta.isInt() || delta.isInt64() || delta.isDouble())
+    const auto delta = payload.getProperty(kFirstFramePaintDeltaKey, juce::var());
+    // [SL-416 R16] 的形态照搬:**非有限、或有限但超出目标类型值域**的 double 直接
+    // `static_cast` 成 int 是 **UB**,所以先在 double 域夹,再由这里窄化。
+    // 入口是真的:JSON 里造得出 ±Inf(`{"x": 1e400}` 经 strtod 溢出成 HUGE_VAL);
+    // 我们自己的 web 侧发不出(JS 的 JSON.stringify(Infinity) 出 null),但这条载荷毕竟跨了
+    // web → C++ 这道边界,本仓对同类边界的口径是「先校验再用」,不按落点轻重打折。
+    const auto usable =
+        delta.isInt() || delta.isInt64() || (delta.isDouble() && std::isfinite(static_cast<double>(delta)));
+    if (usable)
     {
-        const auto n = static_cast<int>(delta);
+        // 夹到 ±60 s:这是「信号 − 首帧」的毫秒差值,再大也没有诊断意义,而夹完必然落在
+        // int 的可表示范围内 ⇒ 下面这次窄化不再触碰 UB。
+        const auto n = static_cast<int>(juce::jlimit(-60000.0, 60000.0, static_cast<double>(delta)));
         paintNote = juce::String(" (signal-firstPaint ") + (n >= 0 ? "+" : "") + juce::String(n) + " ms)";
     }
 
