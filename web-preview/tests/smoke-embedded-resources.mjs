@@ -30,8 +30,9 @@
 //      对拍的是「单色常量 == 渐变轴中点色」,[SL-402] 占位本身升成渐变,本格随之升级为
 //      **整张色标表逐项对拍**(真源方向不变:tokens 是真源,C++ 数组与三份内联逐字照抄它)。
 //   ⑦ [SL-370 / SL-429] index.html 里「首帧已绘」上行信号在场:事件名与 C++ 的
-//      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且由
-//      **paint 记录**触发(不是 DOMContentLoaded),并带回落路与保险定时器。
+//      kFirstFrameEventId 逐字一致、武装是**嵌套两层** requestAnimationFrame、且**确实由
+//      paint 记录接线过来**(断的是生效不是在场,见 checkFirstFrameSignal 的 (c));
+//      回落路与保险定时器都在,**且保险的回调直接发信号、不绕两层 rAF**(见 (d))。
 //
 // 用法:node web-preview/tests/smoke-embedded-resources.mjs [仓库根绝对路径]
 // 退出码:0 = 全绿;1 = 有失败项。
@@ -761,10 +762,11 @@ function checkBackdropMatchesShell() {
  *   (a) 事件名与 C++ 真源 WebViewHost.h 的 kFirstFrameEventId 逐字一致;
  *   (b) 那句 postMessage 的武装是**嵌套两层** requestAnimationFrame —— 单层 rAF 的回调跑在
  *       本帧提交**之前**,比嵌套两层更早,信号更不可能落在已绘之后;
- *   (c) [SL-429] 武装由 **paint 记录**触发(PerformanceObserver + type:"paint" + buffered),
- *       **不是** DOMContentLoaded —— 两层 rAF 并不保证页面已经画过任何一帧,见该处;
- *   (d) [SL-429] 回落路(readyState + DOMContentLoaded)与保险定时器都在场:paint 记录
- *       不到达时这条信号不许变成永不发出。
+ *   (c) [SL-429] 武装**确实由 paint 记录接线过来**(PerformanceObserver 在场、buffered 落在
+ *       `.observe({...})` 的实参里、paint 回调体里真的调 armOnce、DOMContentLoaded 全块
+ *       只出现一次且在 catch 里)—— 断的是**生效**不是在场,理由见该处;
+ *   (d) [SL-429] 回落路(readyState + DOMContentLoaded)与保险定时器都在场,**且保险的回调
+ *       直接发信号、不绕两层 rAF**:paint 记录不到达时这条信号不许变成永不发出。
  *
  * 扫描面**先剥 HTML 注释**:紧邻上方那段说明里逐字写着事件名、requestAnimationFrame 与
  * PerformanceObserver,不剥的话注释自己就能把四条断言全顶替掉(#188 同族,连撞过三次)。
@@ -795,15 +797,23 @@ function checkFirstFrameSignal(role, entry) {
         .find((body) => body.includes('"' + eventId + '"'));
     // ⚠ [SL-429] 上面剥的是 **HTML** 注释,**JS 注释还在**。块里那几行 `// buffered:true ——`
     // 之类的说明逐字写着下面要断言的关键词,不剥的话注释自己就给实现发了合格证 ——
-    // 本卡的删除式实测:去掉 `buffered: true` 这个**实参**,判据照样全绿(#188 同族,
-    // 这是第四次)。只剥**整行** `//` 注释与 `/* */` 块注释,不动行尾的 `//`
-    // (`https://` 这类会被行尾规则误伤,而本块里的说明本来就都是整行)。
+    // 本卡的删除式实测:去掉 `buffered: true` 这个**实参**,判据照样全绿(#188 同族)。
+    // ⚠ [SL-429 第 2 轮] 第一版只剥**整行** `//`,留着行尾 `//` 不动(怕误伤 `https://`)——
+    // 复审当场指出那个洞还在:`po.observe({ type: "paint" }); // buffered: true` 同样能顶替
+    // 下面的 buffered 断言,只是从「整行注释」挪到了「行尾注释」那一侧。现在行尾也剥,
+    // 靠「`//` 前一个字符不是 `:`」放过 `https://` 一族。
+    // ⚠ 这条规则的已知边界(写明,不假装没有):字符串字面量里的裸 `//`(如 `"a//b"`)
+    // 会被误剥。本块里没有这种写法,而且真要有,后果是**判据更严**(把实现文本剥掉 ⇒ 判负),
+    // 不是更松 —— fail-closed 这一侧可以接受。
+    // 光剥注释还不够,所以下面 (c) 的 buffered 断言**同时**改成了「必须落在 `.observe({...})`
+    // 的实参对象里」的结构形态:两道各自独立,任一道单独失效都不会让那一格空过。
     const block =
         rawBlock === undefined
             ? undefined
             : rawBlock
                   .replace(/\/\*[\s\S]*?\*\//g, "")
-                  .replace(/^[ \t]*\/\/.*$/gm, "");
+                  .replace(/^[ \t]*\/\/.*$/gm, "")
+                  .replace(/([^:])\/\/.*$/gm, "$1");
     if (block === undefined) {
         bad(
             `${role}:index.html 里没有发 ${eventId} 的内联脚本 —— 开窗遮挡闸就只剩` +
@@ -828,18 +838,44 @@ function checkFirstFrameSignal(role, entry) {
     // DOMContentLoaded。SL-370 当时按 DCL 触发,信号时刻 ≈ DCL + 两个 rAF,**与 first-paint
     // 之间没有任何约束**(本机 12 轮实测 input 页上早 200~370 ms;完整数表与「哪一页被解释了、
     // 哪一页没有」的三档结论在 src/plugin-common/WebViewRevealGate.h)。
-    // 三个片段都要在场:构造 PerformanceObserver、observe 的 type 是 paint、buffered 打开
-    // (paint 记录可能早于本脚本产生,不开 buffered 就永远收不到,于是只剩保险定时器在放行,
-    // 等于这一格白装)。
+    // ⚠ [SL-429 第 2 轮] 第一版这一格断的是「三个片段**在场**」,而不是「**生效的**是 paint
+    // 那条路」—— 复审给出的绕法很自然:**把武装改回 DOMContentLoaded、同时把这段
+    // PerformanceObserver 留成死代码**(「怕某些浏览器不报 paint 记录,两边都挂上」),
+    // 三个片段全在 ⇒ 全绿。而页面级 A 兜不住它:output 在 DCL 触发下 Δms ≈ +99 ms、Δ帧 ≥ 2
+    // 本来就是绿的(它是三页里唯一天然免疫的那页),monitor 十有八九也绿 ⇒ **那两页上唯一
+    // 的网就是这一格**。所以现在断的是**接线**,不是在场:
+    //   · `new PerformanceObserver` 在场;
+    //   · `buffered: true` 必须落在 `.observe({...})` 的**实参对象**里(不是块里任意位置 ——
+    //     行尾注释那个洞见上面剥注释那段);
+    //   · **paint 回调体里真的调了 `armOnce`**(死代码那条路就是死在这一条上);
+    //   · `DOMContentLoaded` 在整块里**恰好出现一次,且在 catch 里** —— 多出来的那一次
+    //     正是「把武装改回 DCL」的形态,回落路只许待在 catch 那条兜底路上。
+    // 判据名与它守的东西现在对得上了。删除式见 PR 描述的 D5(保留 PO、武装改回 DCL ⇒ 必红)。
+    const observeCallHasBuffered =
+        /\.observe\s*\(\s*\{[^}]*type\s*:\s*"paint"[^}]*buffered\s*:\s*true[^}]*\}\s*\)/.test(
+            block,
+        );
+    const paintCallbackArms =
+        /new\s+PerformanceObserver\s*\(\s*function[\s\S]{0,400}?armOnce\s*\(/.test(
+            block,
+        );
+    const dclOnlyInCatch =
+        (block.match(/DOMContentLoaded/g) || []).length === 1 &&
+        /catch\s*\([^)]*\)\s*\{[^}]*DOMContentLoaded/.test(block);
     const paintGated =
         /new\s+PerformanceObserver\s*\(/.test(block) &&
-        /type\s*:\s*"paint"/.test(block) &&
-        /buffered\s*:\s*true/.test(block);
+        observeCallHasBuffered &&
+        paintCallbackArms &&
+        dclOnlyInCatch;
     if (!paintGated)
         bad(
-            `${role}:${eventId} 的武装不是由 paint 记录触发 ——` +
-                ` 需要 new PerformanceObserver + observe({type:"paint", buffered:true}) 三者同时在场;` +
-                ` 按 DOMContentLoaded 触发时两层 rAF 并不保证页面画过任何一帧,` +
+            `${role}:${eventId} 的武装不是**由 paint 记录接线过来**的 ——` +
+                ` 需要 new PerformanceObserver + observe({type:"paint", buffered:true})(buffered 必须在` +
+                ` observe 的实参对象里)+ paint 回调体里真的调 armOnce +` +
+                ` DOMContentLoaded 全块只出现一次且在 catch 里;` +
+                ` 实得 observe(buffered)=${observeCallHasBuffered}、回调接线=${paintCallbackArms}、` +
+                `DCL 只在 catch=${dclOnlyInCatch}。` +
+                ` 「三个片段都在场、但生效的是 DOMContentLoaded」同样会让两层 rAF 早于首帧发信号,` +
                 `C++ 放回来的仍是一块没画上东西的 WebView([SL-429] 的第二段白)`,
         );
 
@@ -847,15 +883,29 @@ function checkFirstFrameSignal(role, entry) {
     // 永不发出 —— 那会把每次开窗都拖到 C++ 的 3s 超时兜底,放行原因从 firstFrame 变成
     // timeout,真机验收指标「开 N 次窗就有 N 行 first-frame signal」随之失效。
     // 三个片段都要在:readyState / DOMContentLoaded 的回落路,加一个 setTimeout 保险。
+    //
+    // ⚠ [SL-429 第 2 轮] 第四条是新加的,而且它是这一格**名副其实的前提**:保险的回调必须
+    // **直接调 `signal()`**,不许绕 `arm()` / `armOnce()` 的两层 rAF。第一版写的是
+    // `setTimeout(armOnce, 2500)` —— 而保险存在的唯一理由就是「paint 记录不来」,那一档最可能
+    // 的成因是 Chromium 对不可见 widget 停 BeginFrame,**BeginFrame 停了 rAF 也不回调** ⇒
+    // 到点排下去的两层 rAF 永不触发,信号照样发不出去。也就是说上面那三条在它**最主要的
+    // 目标场景里**全绿,却在为一条不成立的保证发合格证。理由的完整版写在三份 index.html 里。
+    const guardSendsDirectly =
+        /setTimeout\s*\(\s*function[\s\S]{0,300}?signal\s*\(\s*\)/.test(
+            block,
+        ) && !/setTimeout\s*\(\s*(arm|armOnce)\s*[,)]/.test(block);
     const hasFallback =
         /DOMContentLoaded/.test(block) &&
         /readyState/.test(block) &&
-        /setTimeout\s*\(/.test(block);
+        /setTimeout\s*\(/.test(block) &&
+        guardSendsDirectly;
     if (!hasFallback)
         bad(
-            `${role}:${eventId} 少了回落 / 保险 ——` +
-                ` 需要 readyState + DOMContentLoaded 的回落路与一个 setTimeout 保险都在场,` +
-                `否则 paint 记录不到达时这条信号会永不发出`,
+            `${role}:${eventId} 少了回落 / 保险,或保险绕了 rAF ——` +
+                ` 需要 readyState + DOMContentLoaded 的回落路、一个 setTimeout 保险,` +
+                `且保险的回调**直接发信号**(实得 直接发=${guardSendsDirectly});` +
+                ` 绕 arm() 的两层 rAF 时,BeginFrame 停摆那一档下 rAF 根本不回调,` +
+                `保险等于不存在,信号仍会永不发出`,
         );
 
     // PASS 行的条件必须与上面三处判负**逐项同源**:少一项就会出现「同一套里既红又绿」——

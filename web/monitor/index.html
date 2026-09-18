@@ -138,8 +138,9 @@
           武装的触发条件是「**页面真的画过一帧**」(paint 记录到达),不是 DOMContentLoaded:
           [SL-429] 实测两层 rAF **并不**保证已经画过 —— 按 DCL 触发时信号时刻 ≈ DCL + 两个
           rAF,与 first-paint 之间没有任何约束(本机实测 input 页上早到 −369 ms)。
-          两层 rAF 仍然保留(再等一拍,让已画的那一帧提交给合成器)。完整定谳、三页数表与
-          回落/保险两条路只写在 src/plugin-common/WebViewRevealGate.h 一处,别在这里复述。
+          两层 rAF 仍然保留(再等一拍,让已画的那一帧提交给合成器)。完整定谳与三页数表只写在
+          src/plugin-common/WebViewRevealGate.h 一处,别在这里复述;回落与保险两条路的理由
+          (尤其保险为什么**不能**绕两层 rAF)写在下面它们各自那里。
           判据 = 节点侧 ⑦(源码形态)+ 页面级 smoke-first-frame-page(信号晚于 first-paint)。
           浏览器预览下没有 __JUCE__,静默返回。
         -->
@@ -195,12 +196,34 @@
                     });
                     // buffered:true —— paint 记录可能在本脚本跑之前就产生了。
                     po.observe({ type: "paint", buffered: true });
-                    // 保险:paint 记录永不到达(或浏览器不认这个 type)时也必须放行,且要赶在
-                    // C++ 的 3s 超时兜底之前 —— 否则「开 N 次窗就有 N 行 first-frame signal」
-                    // 这条真机验收指标会静默失效,而放行原因会从 firstFrame 变成 timeout。
-                    guard = setTimeout(armOnce, 2500);
+                    // 保险:paint 记录永不到达时也必须放行。
+                    // ⚠ [SL-429 第 2 轮] 这里**直接 signal(),不走 arm() 的两层 rAF**。
+                    // 保险存在的唯一理由就是「paint 记录不来」,而那一档最可能的成因是
+                    // Chromium 对不可见 widget 停 BeginFrame —— **BeginFrame 停了 rAF 也不回调**,
+                    // 绕 arm() 等于把绳子拴在同一根断掉的柱子上:到点排下去的那两层 rAF 永不触发,
+                    // 信号照样发不出去,仍旧掉进 C++ 的超时兜底,而 ⑦ 的「回落/保险在场」那一格
+                    // 还在为「信号不许变成永不发出」发合格证。帧还在产出的那一档,2.5s 里页面
+                    // 早画过很多帧了,那两拍也买不到任何东西 —— 两档都不该绕。
+                    // ⚠ 这条保险与 C++ 的 kRevealFallbackMs(3000ms)**不共享时间原点**:
+                    // 后者从 onNavigationStarted 起算,本行从**这段内联脚本执行**起算,中间隔着
+                    // 「导航开始 → 文档送达 → <head> 解析」。所以真实余量是
+                    // `500ms − (导航开始 → 本脚本执行)`,**不是 500ms**;那一段一旦超过 500ms
+                    // (冷起、机器吃紧),保险就跑输 C++ 兜底,放行原因还是掉成 timeout。
+                    // ⚠ 而且**这件事从抓取包里看不出来**:诊断行的 `after N ms` 从
+                    // beginLoadAttempt 起算,`navigation started` 那行不带时间戳 ⇒ 没人能从
+                    // 用户的日志里反推那一段有多长。已登记 SL-430(与 SL-426 同族)。
+                    guard = setTimeout(function () {
+                        if (armed) return;
+                        armed = true;
+                        guard = null;
+                        signal();
+                    }, 2500);
                 } catch (e) {
                     // 没有 PerformanceObserver:回落 [SL-370] 的旧触发,不许变成永不放行。
+                    // ⚠ 这个 catch **只覆盖「压根没有 PerformanceObserver」**(以及只认
+                    // entryTypes 的史前实现)。「有 PerformanceObserver、但它不报 paint 记录」
+                    // **不会抛异常** —— 规范要求未知 type 直接 abort + 控制台 warning。那一档
+                    // 落在上面那条保险上:代价是「多等 2.5s 占位」,不是「永不放行」。
                     if (document.readyState === "loading")
                         document.addEventListener("DOMContentLoaded", armOnce);
                     else armOnce();

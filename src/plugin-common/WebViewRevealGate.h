@@ -125,7 +125,16 @@ namespace scvb::webview
 //   monitor 那 +17 贴不贴零也就不要紧了。⚠ 这条保证**只覆盖 paint 那条路**:走下面的
 //   回落或保险定时器时它不成立(那两条路本来就是为「paint 记录不来」准备的)。
 //   回落(不支持 PerformanceObserver ⇒ 退回 DOMContentLoaded)与保险定时器(paint 记录
-//   永不到达时仍然放行,且赶在下面 kRevealFallbackMs 的 3s 之前)都在页内,理由写在那里。
+//   永不到达时仍然放行)都在页内,理由写在那里。
+//   ⚠ [SL-429 第 2 轮] **别再写「2.5s 保险赶在这里的 3s 之前」** —— 两者**不共享时间原点**:
+//   下面的 kRevealFallbackMs 从 onNavigationStarted(parkedAtMs_)起算,页内那 2500 ms 从
+//   **那段内联脚本执行**起算,中间隔着「导航开始 → 文档送达 → <head> 解析」。真实余量是
+//   `500ms − 那一段`;那一段够长时保险反而跑输,放行原因照样掉成 timeout。而且**这件事
+//   从抓取包里看不出来**(`navigation started` 那行不带时间戳)⇒ 已登记 SL-430,与 SL-426
+//   (日志里读不出插件版本号)同族。
+//   ⚠ 保险的回调**直接发信号、不绕两层 rAF**:保险存在的唯一理由就是「paint 记录不来」,
+//   而那一档最可能的成因正是上面点名的 BeginFrame 停摆 —— 停了 rAF 也不回调,绕 arm()
+//   等于把绳子拴在同一根断掉的柱子上。判据 = ⑦ 的 (d)。
 // 判据两格,各守一件事:web-preview/tests/smoke-embedded-resources.mjs ⑦(源码形态)与
 //   smoke-first-frame-page.mjs A(**三页都跑**,量 `信号时刻 − first-paint 时刻` 的符号
 //   与帧差)。⚠ 后者以前只跑 output —— 而 output 正是三页里唯一测不出本缺陷的那个。
