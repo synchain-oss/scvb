@@ -16,10 +16,14 @@
 //   这件事 ——「源码正则/纯函数断言 ≠ 可执行」,必须起真页面走一次首启入口。
 //
 //   [SL-35] `endTour()` 对 `card.children` **无条件** `removeAttribute("inert")`,
-//   不判断该子节点的 inert 是不是本次 `start()` 自己置上的。`card.children` 是
-//   **live** 集合:tour 激活期间如果有别的逻辑往 `#card` 里插入了一个自带 `inert`
-//   的新节点(与 tour 无关,`start()` 从没碰过它,因为它当时还不存在),`endTour()`
-//   的这一次盲扫会把它的 `inert` 也一并摘掉。
+//   不判断该子节点的 inert 是不是本次 `start()` 自己置上的。缺陷有两种触发时刻,
+//   两种都要各有判据:
+//     · tour **中途**插入的、与 tour 无关的新节点(`card.children` 是 live 集合,
+//       `start()` 从没碰过它,因为它当时还不存在);
+//     · tour **开始前**就已经带 `inert` 的节点(第一版修复只堵了前一种——
+//       `inertedChildren` 记的是「`start()` 当时碰过的」而不是「`start()` 自己
+//       置上的」,于是这一种照样被收进名单、被 `endTour` 误清;复审【重要】①
+//       点名的正是这一半)。
 //
 // 跑什么(同一条会话上连续走完):
 //   ① `?fixture=empty` 首帧:`header-conn-count` = "0/15"(真实数据,0 轨连接);
@@ -28,12 +32,15 @@
 //      不需要经红字九条页,curTab 全程停在默认的 "master" ——这正是①能复现
 //      SL-33 的关键:`start()` 时 was===name(master===master),activateTab 自己
 //      不会顺手排一次 render。
-//   ② 点「tour-ask-start」进入 tour:蒙版可见;`header-conn-count` 在几秒内变成
+//   ② 先轮询到 `#card` 子树的渲染观测安静下来(mock 驱动的一次性差分已落定,
+//      理由见调用点注释),再插一个 tour **开始前**就带 `inert` 的节点,然后点
+//      「tour-ask-start」进入 tour:蒙版可见;`header-conn-count` 在几秒内变成
 //      "15/15"(demo 的 FIFTEEN_TRACKS 15 轨全部健康在线)—— 这一位只能来自
 //      **真的跑过一次 render()**,不是"isActive() 已经是 true"就有的副作用。
-//   ③ tour 激活期间,往 `#card` 里插一个与 tour 无关、自带 `inert` 的新节点
-//      (模拟"另一处逻辑独立置的 inert"),再点 Skip 结束 tour;断言:
-//      · 这个新节点的 `inert` **仍然在**(endTour 不该动它);
+//   ③ tour 激活期间,再往 `#card` 里插一个 tour **中途**插入、与 tour 无关、
+//      自带 `inert` 的新节点,然后点 Skip 结束 tour;断言:
+//      · ②插的「开始前」节点与③插的「中途」节点,`inert` **都仍然在**
+//        (endTour 两种情形都不该动它们);
 //      · `start()` 自己置过 inert 的原生子节点(header)**已经**被正常释放
 //        (回归检查:收窄范围没有把真正该清的那一半也弄丢);
 //      · `header-conn-count` 变回 "0/15"(viewStore() 切回真实 store)。
@@ -42,8 +49,10 @@
 // 删除式(未提交,人工核过):
 //   · 去掉 `tour.js` `start()` 里新增的那句 `requestRender()`,②段必须转红(卡在
 //     "15/15" 等不到,取到的还是 "0/15");
+//   · 把 `start()` 里的 `!child.hasAttribute("inert")` 判断去掉(退回「当时碰到的
+//     全收」半修复),③段「开始前」那个节点的 `inert` 仍在断言必须转红;
 //   · 把 `endTour()` 的清 inert 循环改回 `for (const child of card.children)
-//     child.removeAttribute("inert")`,③段"新节点 inert 仍在"那条必须转红。
+//     child.removeAttribute("inert")`,③段两个节点的 `inert` 仍在断言必须转红。
 //
 // 用法:node web-preview/tests/smoke-tour-demo-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -456,15 +465,70 @@ try {
 
     // =========================================================================
     log("=== ② 点「开始」进 tour ⇒ demo 数据必须真的上屏(SL-33) ===");
-    // ⚠ 点「开始」前先让 mock 驱动的周期帧(scvb.conn/scvb.groups 的
-    // `emitIfChanged`)把它们**唯一一次**"从空基线到真实载荷"的差分发完并稳定下来。
-    // 这一次性差分本身会触发一次不相干的 `requestRender()`(`bridge.on("scvb.conn")`
-    // 之类的 handler 无条件排渲染),如果它恰好落在点击**之后**,会在没有 SL-33 那个
-    // 修复的情况下把画面"顺带"刷成 demo 数据——headless Chrome 对后台/无焦点标签页的
-    // 定时器有节流,这一次性差分的真实到达时刻会抖(实测跨一次导航可以从 <300ms 飘到
-    // >3s),不等到它稳定就点「开始」,这一格判据会随机变成假阳性(实测复现过)。
-    // 等满这个窗口后,点击之后的任何画面变化就只能来自 tour 自己的渲染路径。
-    await sleep(4000);
+    // [复审【重要】×2] 点「开始」前必须让 mock 驱动的周期帧(scvb.conn/scvb.groups
+    // 的 `emitIfChanged`)把它们**唯一一次**"从空基线到真实载荷"的差分发完并稳定
+    // 下来 —— 那次差分会触发一次不相干的 `requestRender()`,如果它落在点击**之后**,
+    // 没有 SL-33 那个修复也会把画面"顺带"刷成 demo 数据(假绿,本仓最反对的方向)。
+    // 旧版在这里写死 `sleep(4000)`,与 CLAUDE.md §10「别写死 sleep,要轮询」冲突,
+    // 而且是**经验常数**:headless Chrome 对后台/无焦点标签页的定时器有节流,实测
+    // 跨导航能把这次差分的到达时刻从 <300ms 飘到 >3s,机器更慢一档或 mock 的周期
+    // 常数一改,这个常数会重新变回随机假阳性;机器快时又白等,而这一段是持锁的
+    // (`Local\SCVB-ipc-tests`),白等的时间记在全机预算里。
+    // 改成轮询一个**只由那次差分驱动**的可观测量:往 `#card` 子树挂
+    // MutationObserver,`renderHeader()` 每次 render() 都无条件重写
+    // `header-conn-count.textContent`(即便值不变,`textContent` 赋值本身就是一次
+    // childList 变更)⇒ 观察到的每条 mutation 都对应一次真实 render() —— 轮询到
+    // "最近一次 mutation 之后已经安静了 SETTLE_MS"再点「开始」,语义与旧注释一模
+    // 一样(等一次性差分落定),但换成了自适应条件:快机器几百毫秒就点,慢机器/
+    // 节流更狠也照样等得到,不再拿一个固定墙钟时长去赌。
+    const SETTLE_MS = 700;
+    check(
+        await evaluate(
+            IN(`const c = gb("card");
+                if (!c) return false;
+                window.__sl33Mut = { count: 0, lastAt: performance.now() };
+                new (w.MutationObserver)(() => {
+                    window.__sl33Mut.count++;
+                    window.__sl33Mut.lastAt = performance.now();
+                }).observe(c, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true,
+                    attributes: true,
+                });
+                return true;`),
+        ),
+        "在 #card 子树挂好渲染观测(点「开始」前)",
+    );
+    check(
+        await waitFor(
+            IN(`const s = window.__sl33Mut;
+                return !!s && performance.now() - s.lastAt > ${SETTLE_MS};`),
+            12000,
+        ),
+        `渲染在 ${SETTLE_MS}ms 内安静下来(一次性差分已落定;12s 内没安静判超时,` +
+            "不当作通过)",
+    );
+    // [复审【重要】① 的另一半] SL-35 的缺陷有两种触发时刻:「tour 中途插入」(下面
+    // ③ 段已经在验)与「tour 开始前就已经带 inert」——两种都要被 start() 跳过、
+    // 不计入 inertedChildren,endTour 才不会误清。这里在点「开始」**之前**先插一个
+    // 自带 inert 的节点,验的是后一种(旧代码把 `card.children` 当时碰到的全收进
+    // inertedChildren,不管它本来带没带 inert,于是这一种同样会被误清)。
+    check(
+        await evaluate(
+            IN(`const marker = d.createElement("div");
+                marker.setAttribute(
+                    "data-gb",
+                    "sl35-pre-existing-inert-marker",
+                );
+                marker.setAttribute("inert", "");
+                const card = gb("card");
+                if (!card) return false;
+                card.appendChild(marker);
+                return true;`),
+        ),
+        "在点「开始」前插了一个自带 inert 的节点(模拟 tour 开始前就已置位的那一种)",
+    );
     check(
         await evaluate(
             IN(
@@ -536,15 +600,26 @@ try {
         ),
         "tour 蒙版已收起(endTour 跑完)",
     );
-    // ---- SL-35 的核心两位 ----
+    // ---- SL-35 的核心三位(两种触发时刻各一位 + header 回归一位)----
     eq(
         await evaluate(
             IN(`const m = gb("sl35-unrelated-inert-marker");
                 return m ? m.getAttribute("inert") : null;`),
         ),
         "",
-        "无关节点的 inert **仍然在**(endTour 不该盲扫 card.children 把它也摘掉;" +
-            "旧代码这里会变成 null —— getAttribute 在属性不存在时才回 null,直接判等即可)",
+        "无关节点(tour 中途插入那一种)的 inert **仍然在**(endTour 不该盲扫 " +
+            "card.children 把它也摘掉;旧代码这里会变成 null —— getAttribute 在属性" +
+            "不存在时才回 null,直接判等即可)",
+    );
+    eq(
+        await evaluate(
+            IN(`const m = gb("sl35-pre-existing-inert-marker");
+                return m ? m.getAttribute("inert") : null;`),
+        ),
+        "",
+        "无关节点(tour 开始前就已置位那一种)的 inert **仍然在**(复审【重要】① 指出" +
+            "的那一半:start() 不该把「当时碰到的」全收进 inertedChildren,只该收" +
+            "「自己从无到有置上的」;旧的半修复这里会变成 null)",
     );
     eq(
         await evaluate(

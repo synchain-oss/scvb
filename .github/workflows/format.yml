@@ -385,6 +385,14 @@ jobs:
         # 也没有 gates 档位跑它,死链照样能进绿 CI,而下一个改文档的人不会知道要手工跑。
         # 排除项:docs/constitution 与 docs/design 是字节级只读归档(改一个字节就破坏
         # sha256 同步/设计稿比对),third_party 是 vendored 上游。
+        #
+        # [SL-441] ⚠ 逐文件调用,不把整份文件列表一次性传给 CLI —— `markdown-link-check`
+        # 的 CLI 一次性收到多个文件参数时,遇到**第一个**含死链的文件就整体退出,
+        # **不会继续检查后面的文件**;不报错、退出码非零,读起来跟"认真查完只有这
+        # 一条"一模一样,与本仓「SKIP 会吞掉判据」是同一族陷阱。SL-73 把两条私有期
+        # 豁免删掉后,这条 CI 的全部意义就是"让全仓的死链暴露"——传全量参数会让它
+        # 只暴露排在最前面的那一条,后面 89 个文件的检查静默消失,整改的收益被这一
+        # 步截掉一大截。本地复现时踩过一次,发现即改。
         run: |
           set -o pipefail
           files=$(git ls-files '*.md' \
@@ -392,4 +400,13 @@ jobs:
             | grep -v '^docs/design/' \
             | grep -v '^third_party/')
           test -n "$files" || { echo "::error::no markdown files found"; exit 1; }
-          npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q $files
+          fail=0
+          while IFS= read -r f; do
+            if ! npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q "$f"; then
+              fail=1
+            fi
+          done <<< "$files"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::dead link(s) found (see per-file output above)"
+            exit 1
+          fi

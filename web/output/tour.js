@@ -539,9 +539,14 @@ export function createTour(opts) {
         step = 1;
         overlay.hidden = false;
         // a11y:蒙版激活期把背景卡其余内容设 inert,避免 Tab 逃出蒙版触发真实桥调用(Enter 误触 setCaptureEnabled 等)。
+        // [SL-35 复审① ] `inertedChildren` 记的必须是「本次 start() 自己置上的」,不是
+        // 「start() 当时碰过的」——两者的差别正是本卡要根除的那个缺陷本身:进入 tour
+        // 前就已经带 inert 的子节点(例如别处逻辑独立置上的)不该被记进这份名单,
+        // 否则 endTour() 照样会把它摘掉,只是触发时刻从「tour 中途插入」挪到了
+        // 「tour 开始前就存在」——缺陷换了个触发路径,没有被消灭。
         inertedChildren = [];
         for (const child of card.children) {
-            if (child !== overlay) {
+            if (child !== overlay && !child.hasAttribute("inert")) {
                 child.setAttribute("inert", "");
                 inertedChildren.push(child);
             }
@@ -573,7 +578,9 @@ export function createTour(opts) {
         demoStore = null;
         overlay.hidden = true;
         // [SL-35] 只释放本次 start() 自己置上的那一份,别无条件扫 card.children ——
-        // 无条件清会把不是本次置上的 inert(例如别处逻辑刚好也置了同一子节点)一并清掉。
+        // `inertedChildren` 在 start() 里已经只收了「本次真的由它置上 inert」的子节点
+        // (进入 tour 前已经带 inert 的一律不收),所以这里按这份名单清,不会误清
+        // 不是本次置上的 inert(例如别处逻辑独立置在同一子节点上的那一份)。
         for (const child of inertedChildren) {
             child.removeAttribute("inert");
         }

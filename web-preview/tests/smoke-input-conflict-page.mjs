@@ -18,7 +18,13 @@
 //      不经过 claimChannel,先确认确认条真的能开、给后面的③ 一个「本该被清掉」的初始态);
 //   ③ 点通道卡 ch=3(占用位默认全置)⇒ 触发 `claimChannel(3)` → 冲突分支:
 //      · 红 toast 出现,文案逐字等于词条 `ch.occupied` 填上 {n:3,g:"A"};
-//      · 卡片 3 在动画结束前拿到 `data-shake="1"`;
+//      · 卡片 3 曾经拿到过 `data-shake="1"`(点击**前**先挂 MutationObserver 闩住
+//        这一位,读闩锁不读此刻的属性值 —— `shake()` 在 `animationend`
+//        [--dur-shake:.45s] 就把属性摘掉,点击后要经过 toast 的 `waitFor`
+//        [120ms 轮询] + 两次取值往返才读到这一格,累计往返随时可能超过 450ms,
+//        直接读现值会把"读的时机不巧"误判成"shake() 没跑",在 web-smoke 这个
+//        required check 上偶发假红;闩锁与动画时长、机器快慢解耦,复审【重要】
+//        指出的正是这一点);
 //      · 释放确认条被**关掉**——`claimChannel` 顶部已把 `pendingRelease` 置回 false,
 //        但只有跑到最后那句 `render()`(→ `renderChannels()` 的 `show(release, …)`)
 //        confirm 条才会真的从屏幕上消失;异常挡在 render() 之前的旧代码,这一位
@@ -450,6 +456,33 @@ try {
 
     // =========================================================================
     log("=== ③ 点通道卡 ch=3(占用位已置)⇒ SL-19 冲突反馈 ===");
+    // [复审【重要】] `shake()` 在 `animationend` 就把 `data-shake` 摘掉
+    // (`--dur-shake` = .45s),而点击之后要经过「toast 的 waitFor(120ms 轮询)+
+    // 两次取值 evaluate」才读到这一位 —— 累计往返超过 450ms 就会把「读的时机不巧」
+    // 误判成「shake() 没跑」,一次假红就能卡住 web-smoke 这个 required check。
+    // 改成点击**之前**先在页面里挂一个 MutationObserver 闩住「data-shake 曾经被置
+    // 成 1」,读的是**闩锁**、不是**此刻的属性值**,与动画时长、与机器快慢解耦。
+    check(
+        await evaluate(
+            IN(`const c = card(3);
+                if (!c) return false;
+                window.__sl19Shaken = false;
+                new (w.MutationObserver)((muts) => {
+                    for (const m of muts) {
+                        if (
+                            m.type === "attributes" &&
+                            c.getAttribute("data-shake") === "1"
+                        )
+                            window.__sl19Shaken = true;
+                    }
+                }).observe(c, {
+                    attributes: true,
+                    attributeFilter: ["data-shake"],
+                });
+                return true;`),
+        ),
+        "在通道卡 3 上挂好 data-shake 闩锁(点击前)",
+    );
     check(
         await evaluate(
             IN(
@@ -477,16 +510,10 @@ try {
         .replace("{g}", "A");
     eq(toastText, wantToast, "toast 文案逐字等于词条 ch.occupied(n=3, g=A)");
 
-    // ---- 卡片抖动:在 --dur-shake(.45s)结束前必须已经带上 data-shake="1" ----
-    const shaking = await evaluate(
-        IN(
-            `const c = card(3); return c ? c.getAttribute("data-shake") : null;`,
-        ),
-    );
-    eq(
-        shaking,
-        "1",
-        "通道卡 3 拿到 data-shake=1(旧代码这里永远是 null:异常挡在 shake() 之前)",
+    // ---- 卡片抖动:闩锁曾经合过一次,不读此刻的属性值(见上方挂闩锁的注释) ----
+    check(
+        await waitFor(IN(`return window.__sl19Shaken === true;`), 6000),
+        "通道卡 3 曾经拿到过 data-shake=1(旧代码这里永远等不到:异常挡在 shake() 之前)",
     );
 
     // ---- render 确实跑了:释放确认条(①②那份"本该被清掉"的初始态)必须已经隐藏。
