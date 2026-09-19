@@ -152,12 +152,24 @@ function eq(got, want, msg) {
 //
 // 用 `toString()` 把这个函数原样注入页面(见下方调用点),保证节点侧轮询与这里的
 // 自测跑的是**同一段代码**,不会两处各写一份、漂出分歧。
+//
+// [复审【重要】第 4 轮] 上一版是 `return settled || floorPassed`——`floorPassed`
+// 在 t>4000 无条件成立,会把"已经看到过 mutation、但还没安静"这个状态在 4s 处
+// 自己翻成放行。假绿路径是实的:mock 那次"一次性差分"其实是两个独立定时器各自
+// 的首发(`conn4Hz` 250ms / `groups1Hz` 1000ms,天然差 ~1s)——conn 的被节流到
+// 3.5s 落地,FLOOR 在 4.0s 无条件放行,点击之后 groups 的才落地,它排的那次
+// render 把 demoStore 投成 15/15,没有 SL-33 的修复也绿。改成 `count > 0` 时
+// **只走安静分支**,FLOOR 收窄回它真正该管的那一格(一次都没观察到);看到过就
+// 老实等安静,等不到就让调用点的 12s `waitFor` 判红(宁红不假绿)。
 function sl33Settled({ count, lastAt, installedAt, now }) {
     const SETTLE_MS = 1200;
     const FLOOR_MS = 4000;
-    const settled = count > 0 && now - lastAt > SETTLE_MS;
-    const floorPassed = now - installedAt > FLOOR_MS;
-    return settled || floorPassed;
+    // FLOOR 只是"一次 mutation 都没观察到"时的兜底出口:一旦观察到过,就必须
+    // 等满 SETTLE_MS 的安静期,不能再被 FLOOR 短路——否则 conn4Hz 的差分被节流
+    // 到 FLOOR 附近落地时,groups1Hz 那条(晚 ~1s)会落到点击之后,回到假绿。
+    // 观察到过、却一直不安静 ⇒ 让调用点的 12s waitFor 判红,不放行。
+    if (count > 0) return now - lastAt > SETTLE_MS;
+    return now - installedAt > FLOOR_MS;
 }
 
 // 删除式(钉住"下界"这一格,不依赖真实浏览器时序运气——直接对纯函数注入
@@ -195,7 +207,29 @@ function sl33Settled({ count, lastAt, installedAt, now }) {
         true,
         "自测 sl33Settled:差分落地后安静满 SETTLE_MS ⇒ 放行",
     );
+    // [复审【重要】第 4 轮] 钉死"看到过 mutation 就不许被 FLOOR 短路"这条新不
+    // 变量。⚠ 复审给的例子 `{lastAt:3500, now:5000}`(距上次 mutation 1500ms)
+    // 代入两版都是 true——1500 已经过了 SETTLE_MS(1200),旧版的 `settled` 分支
+    // 自己就成立,新旧结果相同,钉不住这处改动(同「找不到新旧结果不同的输入 =
+    // 这格没钉住改动」那条判例,已用 node -e 实际算过两版结果,不是照抄）。改用
+    // mutation 发生得晚、且已经过了 FLOOR_MS 的一点:`lastAt=4500`(late,尚未
+    // 安静满 1200)、`now=4600`(已过 FLOOR_MS=4000)——旧版 `floorPassed` 无条件
+    // 成立 ⇒ true(错,应继续等);新版只看 `count>0` 分支 ⇒ 100ms<1200 ⇒ false
+    // (对,继续等)。退回 `settled || floorPassed` 会让这一格转红(已反注验证)。
+    eq(
+        sl33Settled({ count: 1, lastAt: 4500, installedAt: 0, now: 4600 }),
+        false,
+        "自测 sl33Settled:已观察到 mutation(即便已过 FLOOR_MS)、尚未安静满 " +
+            "SETTLE_MS 时,FLOOR 不得短路放行(退回 settled || floorPassed 会让这一格转红)",
+    );
 })();
+// 纯函数自测不依赖浏览器:在下方任何可能走 rc=2/3(没装 Chrome / 连不上)的退出
+// 路径之前就结账,别让「没装 Chrome」的 SKIP 把这道判据一起吞掉([复审【建议】]
+// 这一族本来就不该受浏览器有无影响)。
+if (fail > 0) {
+    console.log(`\n❌ sl33Settled 自测 ${fail} 条断言失败`);
+    process.exit(1);
+}
 
 // ---------------------------------------------------------------- 静态服务
 const MIME = {

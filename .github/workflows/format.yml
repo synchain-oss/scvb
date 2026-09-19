@@ -414,7 +414,12 @@ jobs:
           failed_files=""
           while IFS= read -r f; do
             echo "::group::$f"
-            if ! npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q "$f"; then
+            # [复审【建议】] </dev/null:循环的 stdin 就是这份文件清单本身,循环体里
+            # 跑的进程默认继承它——`markdown-link-check` 不给文件参数时会转去读
+            # stdin,一旦某次调用意外解析成"无文件参数"形态,就会把 stdin(=剩余
+            # 待检查的文件名)当输入吞掉,后面的文件从清单里静默消失,退化成这个
+            # PR 正要根除的那种"静默少检"。隔断 stdin,零成本。
+            if ! npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q "$f" </dev/null; then
               fail=1
               failed_files="$failed_files $f"
               echo "::error file=$f::dead link(s) found in $f"
