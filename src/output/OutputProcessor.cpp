@@ -692,6 +692,9 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     for (int i = 0; i < n; ++i)
     {
         const auto tv = authority_.nextSample();
+        // [SL-442] 本样本的 G 查表视图(含换表 30ms 交叉淡入)。必须在 nextSample 之后取 ——
+        // 它推进淡入计数器,取早了会拿到上一个样本的权重。
+        const auto panCurve = authority_.arbiter().panCurveXfade();
         const float gw = globalWidthSmoother_.getNextValue();
         const float gM = gMSmoother_.getNextValue();
         const float gS = gSSmoother_.getNextValue();
@@ -709,14 +712,14 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
             if (nch[static_cast<std::size_t>(ch)] == 1)
             {
                 scvb::output::mixMonoSample(trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(i)], t.pan,
-                                            t.volDb, gw, fade, l, r);
+                                            t.volDb, gw, fade, panCurve, l, r);
             }
             else
             {
                 scvb::output::mixStereoSample(
                     trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(2 * i)],
                     trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(2 * i + 1)], t.pan, t.volDb,
-                    t.width, gw, fade, l, r);
+                    t.width, gw, fade, panCurve, l, r);
             }
         }
         scvb::output::applyMsGains(gM, gS, l, r); // 总线级 M/S 音量比(求和之后、替换之前,[J58])

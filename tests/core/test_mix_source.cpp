@@ -18,6 +18,10 @@ using scvb::AudioRingHeader;
 using scvb::kScvbAbi;
 using scvb::kScvbMagic;
 using scvb::u32;
+
+// [SL-442] 「没有 pan 曲线」的 G 视图:两个表都为 null ⇒ panCurveGainDb 恒回 0 dB。
+// 既有这四条断言的期望值一个都没改 —— 那正是「老工程零影响」的直接证据。
+static const scvb::PanCurveXfade kNoCurve{};
 using scvb::u64;
 using scvb::output::ShmRingMixSource;
 
@@ -222,13 +226,13 @@ TEST_CASE("MixMath mono equal-power pan", "[mix][math]")
 {
     float l = 0.0f;
     float r = 0.0f;
-    scvb::output::mixMonoSample(1.0f, 0.0f, 0.0f, 100.0f, 1.0f, l, r);
+    scvb::output::mixMonoSample(1.0f, 0.0f, 0.0f, 100.0f, 1.0f, kNoCurve, l, r);
     CHECK(l == Catch::Approx(0.70710678f).margin(1e-5));
     CHECK(r == Catch::Approx(0.70710678f).margin(1e-5));
 
     float hl = 0.0f;
     float hr = 0.0f;
-    scvb::output::mixMonoSample(1.0f, -100.0f, 0.0f, 100.0f, 1.0f, hl, hr); // 硬左
+    scvb::output::mixMonoSample(1.0f, -100.0f, 0.0f, 100.0f, 1.0f, kNoCurve, hl, hr); // 硬左
     CHECK(hl == Catch::Approx(1.0f).margin(1e-5));
     CHECK(hr == Catch::Approx(0.0f).margin(1e-5));
 }
@@ -238,14 +242,14 @@ TEST_CASE("MixMath stereo dual-pan + width", "[mix][math]")
     // width=100、pan=0 → L 源 → L、R 源 → R(源宽度原样,不互换)。
     float l = 0.0f;
     float r = 0.0f;
-    scvb::output::mixStereoSample(1.0f, 0.5f, 0.0f, 0.0f, 100.0f, 100.0f, 1.0f, l, r);
+    scvb::output::mixStereoSample(1.0f, 0.5f, 0.0f, 0.0f, 100.0f, 100.0f, 1.0f, kNoCurve, l, r);
     CHECK(l == Catch::Approx(1.0f).margin(1e-5)); // 子声像 P_L=-100:gL_L=1、gL_R=0
     CHECK(r == Catch::Approx(0.5f).margin(1e-5)); // 子声像 P_R=+100:gR_L=0、gR_R=1
 
     // width=0 → 双子声像重合(塌成 mono)。
     float ml = 0.0f;
     float mr = 0.0f;
-    scvb::output::mixStereoSample(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 100.0f, 1.0f, ml, mr);
+    scvb::output::mixStereoSample(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 100.0f, 1.0f, kNoCurve, ml, mr);
     CHECK(ml == Catch::Approx(0.70710678f).margin(1e-5));
     CHECK(mr == Catch::Approx(0.70710678f).margin(1e-5));
 }
@@ -395,4 +399,168 @@ TEST_CASE("MeterShot:seqlock 往返 + 静音发布回地板(T37 三轮 B 族)", 
     CHECK_FALSE(shot.read(rx));
     shot.seq.fetch_add(1, std::memory_order_release);
     CHECK(shot.read(rx));
+}
+
+// =============================================================================
+// [SL-442] pan 角度域曲线 G 进实时链(02 §8.1 步骤 5)—— 施加环节的判据。
+// 主判据是 §7 那句原话:「UI 与 DSP 共用本实现……杜绝『画的和听的不一致』」。
+// 接上 G 之前这句只成立一半(前端有、DSP 没有),下面钉的就是缺的那一半。
+// =============================================================================
+
+namespace
+{
+
+// bell A=-9, P0=+30, Q=6(Δ=100/6≈16.67)。三个选择都是为了让判据钉得住:
+//   A=-9   —— 深槽,「施加 / 不施加」的差别远大于任何容差;
+//   P0=+30 —— 不在中心,「查名义角」与「查有效角」才会落到曲线上差很多的两处;
+//   Q=6    —— 钟够窄。Q=3(Δ=33.33)时名义角 +60 与有效角 +30 只差 3.87 dB,
+//             我第一版就栽在这儿:差值不够大,「这个输入能否分辨两种实现」的前置断言当场红。
+//             Q=6 时这个差拉到 8 dB。
+std::vector<scvb::PanCurvePoint> sl442Curve()
+{
+    scvb::PanCurvePoint p;
+    p.angle = 30.0f;
+    p.gainDb = -9.0f;
+    p.shape = scvb::PanCurveShape::bell;
+    p.q = 6.0f;
+    p.side = scvb::PanCurveSide::out;
+    return {p};
+}
+
+void monoPair(float pan, float volDb, float globalWidth, const scvb::PanCurveXfade& curve, float& l, float& r)
+{
+    l = 0.0f;
+    r = 0.0f;
+    scvb::output::mixMonoSample(1.0f, pan, volDb, globalWidth, 1.0f, curve, l, r);
+}
+
+// 实时链实际施加的 dB = 有曲线 / 无曲线 的**能量**比。
+// ⚠ 不能只拿单个通道做分母:equal-power 下 pan=+100 时 gL = cos(π/2),float 里是 -0.0f,
+// 比值当场没意义(第一版我就是这么写的,被 `bare > 0` 那条前置断言拦下)。
+// 而 gL²+gR² ≡ 1(ADR-010),所以能量比恰好就是增益比,与 pan 落在哪儿无关。
+double monoAppliedDb(float pan, float globalWidth, const scvb::PanCurveXfade& curve)
+{
+    float l = 0.0f;
+    float r = 0.0f;
+    float bl = 0.0f;
+    float br = 0.0f;
+    monoPair(pan, 0.0f, globalWidth, curve, l, r);
+    monoPair(pan, 0.0f, globalWidth, kNoCurve, bl, br);
+    const double withG = std::sqrt(static_cast<double>(l) * l + static_cast<double>(r) * r);
+    const double bare = std::sqrt(static_cast<double>(bl) * bl + static_cast<double>(br) * br);
+    return 20.0 * std::log10(withG / bare);
+}
+
+// stereo:**只喂一路源**(另一路给 0),于是输出里只剩那一个子声像的贡献,
+// 比值恰好等于该子声像各自的 G 增益。两路一起喂的话,单个输出通道里混着两个子声像,
+// 比值是两者的加权和 —— 钉不住「每个子声像各查各的」(第一版我就是这么写的,推理太松)。
+double stereoSubImageAppliedDb(bool useLeftSource, float pan, float trkWidth, float globalWidth,
+                               const scvb::PanCurveXfade& curve)
+{
+    const float sL = useLeftSource ? 1.0f : 0.0f;
+    const float sR = useLeftSource ? 0.0f : 1.0f;
+    float l = 0.0f;
+    float r = 0.0f;
+    scvb::output::mixStereoSample(sL, sR, pan, 0.0f, trkWidth, globalWidth, 1.0f, curve, l, r);
+    float bl = 0.0f;
+    float br = 0.0f;
+    scvb::output::mixStereoSample(sL, sR, pan, 0.0f, trkWidth, globalWidth, 1.0f, kNoCurve, bl, br);
+    // 取两个输出通道的能量比,免得挑到 equal-power 增益恰为 0 的那一端。
+    const double withG = std::sqrt(static_cast<double>(l) * l + static_cast<double>(r) * r);
+    const double bare = std::sqrt(static_cast<double>(bl) * bl + static_cast<double>(br) * br);
+    return 20.0 * std::log10(withG / bare);
+}
+
+} // namespace
+
+TEST_CASE("SL442-MIX-1 空曲线 / 未接线时实时链逐位不变(老工程零影响)", "[mix][math][pancurve]")
+{
+    // 空点列表烘出来的表,和「压根没有表」必须走到同一个结果 —— 而且是**逐位**,不是近似:
+    // 增益 = 10^(G/20),G 恰为 0 时因子恰为 1.0f,乘法按位恒等。
+    scvb::PanCurveLut empty;
+    empty.rebuild({});
+    const scvb::PanCurveXfade withEmpty{&empty, nullptr, 1.0f};
+
+    for (const float pan : {-100.0f, -37.5f, 0.0f, 30.0f, 100.0f})
+    {
+        for (const float vol : {-12.0f, 0.0f, 6.0f})
+        {
+            for (const float gw : {0.0f, 50.0f, 100.0f, 150.0f})
+            {
+                float bl = 0.0f;
+                float br = 0.0f;
+                float cl = 0.0f;
+                float cr = 0.0f;
+                monoPair(pan, vol, gw, kNoCurve, bl, br);
+                monoPair(pan, vol, gw, withEmpty, cl, cr);
+                REQUIRE(cl == bl); // 逐位,无容差
+                REQUIRE(cr == br);
+            }
+        }
+    }
+
+    // stereo 同理 —— 它的求和式结构最容易在重构里被拆成 a*c+b*c 而丢掉按位恒等。
+    for (const float w : {0.0f, 35.0f, 100.0f})
+    {
+        float bl = 0.0f;
+        float br = 0.0f;
+        scvb::output::mixStereoSample(0.75f, -0.3f, 20.0f, -4.0f, w, 80.0f, 1.0f, kNoCurve, bl, br);
+        float cl = 0.0f;
+        float cr = 0.0f;
+        scvb::output::mixStereoSample(0.75f, -0.3f, 20.0f, -4.0f, w, 80.0f, 1.0f, withEmpty, cl, cr);
+        REQUIRE(cl == bl);
+        REQUIRE(cr == br);
+    }
+}
+
+TEST_CASE("SL442-MIX-2 画的就是听的:实时链施加的增益 == UI 那条曲线", "[mix][math][pancurve]")
+{
+    const auto points = sl442Curve();
+    scvb::PanCurveLut lut;
+    lut.rebuild(points);
+    const scvb::PanCurveXfade curve{&lut, nullptr, 1.0f};
+
+    // 全局 width=100 ⇒ P_eff == P,此时「实时链施加的 dB」可以直接和解析式对。
+    for (const double pan : {-100.0, -30.0, 0.0, 30.0, 63.33, 100.0})
+    {
+        // 容差 0.05 dB:LUT 插值上限 0.03(02 §7.3 CURVE-4)+ float 往返余量。
+        // 被测量跨 -9..0 dB,谷底 -9 dB 是容差的 180 倍 —— 「同值」不可能靠容差蒙到。
+        REQUIRE(monoAppliedDb(static_cast<float>(pan), 100.0f, curve)
+                == Catch::Approx(scvb::evalCurve(points, pan)).margin(0.05));
+    }
+    // 判别量:曲线底部确实压下去了 9 dB,不是压了个 0(全 0 的实现会让上面那圈全绿)。
+    REQUIRE(monoAppliedDb(30.0f, 100.0f, curve) == Catch::Approx(-9.0).margin(0.05));
+}
+
+TEST_CASE("SL442-MIX-3 G 查在 P_eff 上,不是名义角(width≠100 才分得出)", "[mix][math][pancurve]")
+{
+    const auto points = sl442Curve(); // 谷底在 P=+30
+    scvb::PanCurveLut lut;
+    lut.rebuild(points);
+    const scvb::PanCurveXfade curve{&lut, nullptr, 1.0f};
+
+    // ---- mono:全局 width=50 ⇒ P_eff = P/2。取名义 P=+60 ⇒ P_eff=+30 = 谷底 ----
+    // 查有效角 → 施加 -9 dB(谷底);查名义角 → 施加 evalCurve(+60) ≈ -1 dB。
+    const double atNominal = scvb::evalCurve(points, 60.0);
+    const double atEffective = scvb::evalCurve(points, 30.0);
+    REQUIRE(std::fabs(atNominal - atEffective) > 5.0); // 先确认这个输入真的能分辨两种实现
+
+    const double appliedDb = monoAppliedDb(60.0f, 50.0f, curve);
+    REQUIRE(appliedDb == Catch::Approx(atEffective).margin(0.05)); // 是有效角
+    REQUIRE(appliedDb != Catch::Approx(atNominal).margin(0.05)); // 且确实不是名义角
+
+    // ---- stereo:两个子声像各查各的 ----
+    // pan=0、w_t=60、全局 width=50 ⇒ 名义子声像 (-60,+60) → 缩放后 (-30,+30)。
+    // 右子声像正落谷底(-9 dB),左子声像几乎不受影响(≈0 dB)。
+    const double dLeftSub = stereoSubImageAppliedDb(true, 0.0f, 60.0f, 50.0f, curve);
+    const double dRightSub = stereoSubImageAppliedDb(false, 0.0f, 60.0f, 50.0f, curve);
+    REQUIRE(dLeftSub == Catch::Approx(scvb::evalCurve(points, -30.0)).margin(0.05));
+    REQUIRE(dRightSub == Catch::Approx(scvb::evalCurve(points, 30.0)).margin(0.05));
+
+    // 可分辨性:拿弧中心查一次再共用的实现,两个子声像会得到**同一个**增益。
+    // 这条要求两者差得够开 —— 差不开的话上面两条对那种实现也可能同时成立。
+    REQUIRE(std::fabs(dLeftSub - dRightSub) > 5.0);
+    // 而共用弧中心的实现会给出 evalCurve(P_eff=0),两边都是这个值 —— 与上面两条都不符。
+    const double atArcCentre = scvb::evalCurve(points, 0.0);
+    REQUIRE(std::fabs(dRightSub - atArcCentre) > 5.0);
 }

@@ -321,3 +321,48 @@ TEST_CASE("AUTH-PARAMS-8 pan 曲线 per-version 隔离,换版本换表", "[autho
     (void)f.auth.processBlock(true, 0.0);
     REQUIRE(f.auth.arbiter().panCurveLut() == nullptr);
 }
+
+TEST_CASE("AUTH-PARAMS-9 换版本走同一条淡入路径(不为版本切换另写一份)", "[authority][params][pancurve][xfade]")
+{
+    AuthorityParamsFixture f;
+
+    // v1 与 v2 各一条曲线,且在探针点差得很开(0 dB vs -12 dB)。
+    auto mk = [](float db) {
+        scvb::PanCurvePoint p;
+        p.angle = 0.0f;
+        p.gainDb = db;
+        p.shape = scvb::PanCurveShape::bell;
+        p.q = 1.5f;
+        p.side = scvb::PanCurveSide::out;
+        return std::vector<scvb::PanCurvePoint>{p};
+    };
+    f.auth.setPanCurve(1, mk(0.0f));
+    f.auth.setPanCurve(2, mk(-12.0f));
+
+    (void)f.auth.processBlock(true, 0.0);
+    for (int i = 0; i < 4096; ++i)
+        (void)f.auth.nextSample(); // 淡入窗口走完,回到稳态
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() == 0);
+
+    // 换版本 —— 快照里的 LUT 指针变了 ⇒ 必须开窗。
+    // 曲线编辑和版本切换是**同一条**代码路径(都只是「LUT 对象换了」),这一格钉的就是
+    // 版本切换确实落在那条路径上,而不是另写了一份、或者干脆没接。
+    f.auth.setVersionActive(2);
+    (void)f.auth.processBlock(true, 0.0);
+    REQUIRE(f.auth.arbiter().panCurveXfadeRemaining() > 0);
+
+    (void)f.auth.nextSample();
+    const auto x = f.auth.arbiter().panCurveXfade();
+    REQUIRE(x.previous != nullptr); // 旧版本那张还在,正在淡出
+    REQUIRE(x.target == f.auth.activePanCurveLut().get()); // 淡向 v2 那张
+
+    // 第一个样本仍贴着 v1(0 dB):没有淡入的话这里直接是 -12,与上一样本差 12 dB。
+    REQUIRE(std::fabs(static_cast<double>(scvb::panCurveGainDb(x, 0.0f))) < 0.5);
+
+    // 走完窗口:落到 v2 且旧表撤下。
+    for (int i = 0; i < 4096; ++i)
+        (void)f.auth.nextSample();
+    REQUIRE(f.auth.arbiter().panCurveXfade().previous == nullptr);
+    REQUIRE(static_cast<double>(scvb::panCurveGainDb(f.auth.arbiter().panCurveXfade(), 0.0f))
+            == Approx(-12.0).margin(0.01));
+}
