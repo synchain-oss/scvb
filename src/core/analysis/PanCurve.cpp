@@ -165,13 +165,18 @@ void PanCurveLut::rebuild(const std::vector<PanCurvePoint>& points)
 
 float PanCurveLut::gainDb(float pan) const
 {
+    // ⚠ [SL-442] **`std::clamp` 挡不住 NaN**:`v < lo` 与 `hi < v` 对 NaN 都是 false,
+    //   于是 NaN 被原样返回。读到这一行的人会以为 `clamped`(以及下面的 `x`)从此有界 ——
+    //   **它没有。** 这与本文件 `clampDb` 是**同一个坑,在同一个文件里的第二次**。
     const float clamped = std::clamp(pan, -100.0f, 100.0f);
     const float x =
         clamped * static_cast<float>(kPanCurveLutSize - 1) / 200.0f + static_cast<float>(kPanCurveLutSize - 1) / 2.0f;
+    // ⚠ NaN 输入下 `x` 是 NaN,`static_cast<int>(NaN)` 是 UB(产出一个垃圾 int)。
+    //   下面 `i0` 的钳制把它收回合法区间 ⇒ **不会越界访问**;输出经 `frac` 退化为 NaN。
+    //   —— 危害等级是「输出 NaN」,不是「内存损坏」。
     // [SL-442] `pan` 的来源:音频线程侧来自 DspArbiter 的 pan 平滑器(曲线值 / host 参数,
-    // 再经 scaleByGlobalWidth),**不来自 pan_curve 的点数据** —— 点数据只决定表的内容,
-    // 不决定索引。记下这条来源,是因为 `std::clamp` 对 NaN 透传、`static_cast<int>(NaN)` 是 UB,
-    // 而「这里取不到 NaN」整个建立在上面那句来源上;来源一变,这一行要重新看。
+    //   再经 scaleByGlobalWidth),**不来自 pan_curve 的点数据** —— 点数据只决定表的内容,
+    //   不决定索引。「这里取不到 NaN」整个建立在这条来源上;来源一变,这几行要重新看。
     const int i = static_cast<int>(x);
     const float frac = x - static_cast<float>(i);
     const int i0 = std::max(0, std::min(i, kPanCurveLutSize - 1));
