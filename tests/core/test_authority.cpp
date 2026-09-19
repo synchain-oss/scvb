@@ -1046,7 +1046,8 @@ TEST_CASE("AUTH-XFADE-4 pan 平滑与 LUT 淡入同时在跑:无阶跃", "[autho
     REQUIRE(maxStep(both) < 0.12);
 
     // 窗口关上那一刻不许有台阶 —— 淡入结束时旧表被置 null,最容易在这儿掉一块。
-    const double atClose = std::fabs(both[static_cast<std::size_t>(window)] - both[static_cast<std::size_t>(window) - 1]);
+    const double atClose =
+        std::fabs(both[static_cast<std::size_t>(window)] - both[static_cast<std::size_t>(window) - 1]);
     REQUIRE(atClose < 0.12);
 
     // 收敛:窗口之后停在「新表 @ 新 pan」上。

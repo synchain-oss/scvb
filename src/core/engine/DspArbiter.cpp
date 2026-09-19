@@ -28,8 +28,7 @@ void DspArbiter::prepare(double sampleRate, const DspArbiterConfig& cfg)
     m_xfadeRemaining = 0;
     // 换表淡入窗口的总长,按 30ms 切换档算定(与 pan/vol/width 用的是同一个数,不另立)。
     // 至少 1 样本:采样率低到 30ms 不满一个样本时也不能算成 0 —— 0 会让「窗口开得了」恒假。
-    m_xfadeSamples =
-        (m_sampleRate > 0.0) ? std::max(1, static_cast<int>(m_cfg.switchRampSec * m_sampleRate + 0.5)) : 0;
+    m_xfadeSamples = (m_sampleRate > 0.0) ? std::max(1, static_cast<int>(m_cfg.switchRampSec * m_sampleRate + 0.5)) : 0;
     m_prevEngineAuthority = false;
     m_prevLeadSelect = 0;
     m_prevFrz.fill(0);

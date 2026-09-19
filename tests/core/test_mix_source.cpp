@@ -525,8 +525,8 @@ TEST_CASE("SL442-MIX-2 画的就是听的:实时链施加的增益 == UI 那条�
     {
         // 容差 0.05 dB:LUT 插值上限 0.03(02 §7.3 CURVE-4)+ float 往返余量。
         // 被测量跨 -9..0 dB,谷底 -9 dB 是容差的 180 倍 —— 「同值」不可能靠容差蒙到。
-        REQUIRE(monoAppliedDb(static_cast<float>(pan), 100.0f, curve)
-                == Catch::Approx(scvb::evalCurve(points, pan)).margin(0.05));
+        REQUIRE(monoAppliedDb(static_cast<float>(pan), 100.0f, curve) ==
+                Catch::Approx(scvb::evalCurve(points, pan)).margin(0.05));
     }
     // 判别量:曲线底部确实压下去了 9 dB,不是压了个 0(全 0 的实现会让上面那圈全绿)。
     REQUIRE(monoAppliedDb(30.0f, 100.0f, curve) == Catch::Approx(-9.0).margin(0.05));

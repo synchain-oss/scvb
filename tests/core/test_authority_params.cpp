@@ -248,8 +248,8 @@ TEST_CASE("AUTH-PARAMS-6 pan 曲线 G 经快照送达音频线程,且与解析�
     REQUIRE(lut != nullptr);
     for (const double pan : {-95.0, -45.0, 5.0, -100.0, 0.0, 100.0, 37.5})
     {
-        REQUIRE(static_cast<double>(lut->gainDb(static_cast<float>(pan)))
-                == Approx(scvb::evalCurve(points, pan)).margin(0.03));
+        REQUIRE(static_cast<double>(lut->gainDb(static_cast<float>(pan))) ==
+                Approx(scvb::evalCurve(points, pan)).margin(0.03));
     }
     // 被测量本身远大于容差 —— 否则「同值」是靠容差蒙的,不是靠同源。
     REQUIRE(std::fabs(static_cast<double>(lut->gainDb(-95.0f))) > 5.0);
@@ -291,8 +291,8 @@ TEST_CASE("AUTH-PARAMS-7 点列表没变则 LUT 对象不重建(换表判据的�
     // (第一版我取 P=-95、q 只动到 2.5,两条曲线在那儿仅差 0.068 dB —— 钉不住)。
     constexpr double kProbe = -56.6;
     REQUIRE(std::fabs(scvb::evalCurve(moved, kProbe) - scvb::evalCurve(points, kProbe)) > 1.0);
-    REQUIRE(static_cast<double>(f.auth.activePanCurveLut()->gainDb(static_cast<float>(kProbe)))
-            == Approx(scvb::evalCurve(moved, kProbe)).margin(0.03));
+    REQUIRE(static_cast<double>(f.auth.activePanCurveLut()->gainDb(static_cast<float>(kProbe))) ==
+            Approx(scvb::evalCurve(moved, kProbe)).margin(0.03));
 }
 
 TEST_CASE("AUTH-PARAMS-8 pan 曲线 per-version 隔离,换版本换表", "[authority][params][pancurve]")
@@ -363,6 +363,6 @@ TEST_CASE("AUTH-PARAMS-9 换版本走同一条淡入路径(不为版本切换另
     for (int i = 0; i < 4096; ++i)
         (void)f.auth.nextSample();
     REQUIRE(f.auth.arbiter().panCurveXfade().previous == nullptr);
-    REQUIRE(static_cast<double>(scvb::panCurveGainDb(f.auth.arbiter().panCurveXfade(), 0.0f))
-            == Approx(-12.0).margin(0.01));
+    REQUIRE(static_cast<double>(scvb::panCurveGainDb(f.auth.arbiter().panCurveXfade(), 0.0f)) ==
+            Approx(-12.0).margin(0.01));
 }
