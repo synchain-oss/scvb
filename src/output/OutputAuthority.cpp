@@ -147,6 +147,12 @@ void OutputAuthority::setPanCurve(int version, const std::vector<scvb::PanCurveP
     // 而 pan_curve 绝大多数时候没动 —— 无谓重建会让 LUT 指针每次都变,把「这次到底换表没有」
     // 这个判据抖成恒真。用逐字段而不是 memcmp:结构体有 enum 成员与可能的填充字节,memcmp 会
     // 被填充里的垃圾骗成「不同」,no-op 这条路就永远走不到。
+    //
+    // ⚠ 用 `==` 比较 float 在这里是安全的,**前提是上面那道有限性守卫排在它前面**:
+    //   NaN 的 `==` 恒假 ⇒ NaN 若能走到这儿,守卫会恒判「点变了」、每次重烘一张表。
+    //   守卫已经把 NaN 拦在外面,这条比较永远看不到 NaN。**别调换这两段的顺序。**
+    // ⚠ 失败方向也是安全的:浮点精确相等判错只会「多重建一次」(无害),
+    //   不会「漏掉一次真改动」(有害)。反过来写(给容差)才危险。
     const auto samePoint = [](const scvb::PanCurvePoint& a, const scvb::PanCurvePoint& b) {
         return a.angle == b.angle && a.gainDb == b.gainDb && a.shape == b.shape && a.q == b.q && a.side == b.side;
     };

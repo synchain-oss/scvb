@@ -68,7 +68,15 @@ inline void applyMsBalance(float msBalance, float& l, float& r) noexcept
 // 口径与本文件 `applyMsGains` 的 g_M==g_S==1 短路一致:恒等变换必须按位透传。
 //
 // 顺带:G≡0 时走的是 `db == 0.0f` 那条早退,**不调 std::pow** —— 这是音频线程的逐样本
-// 逐轨内循环,没画曲线的工程(绝大多数)因此只多付一次 LUT 查表。
+// 逐轨内循环。没画曲线的工程(绝大多数)因此只多付查表那一下:
+// **mono 每样本每轨 1 次、stereo 2 次**(两个子声像各查各的);淡入窗口内各再多一次。
+//
+// 实测(15 轨 × 20 秒音频,/O2,占一颗核):
+//   mono   无曲线 0.446% → 只查表不 pow 0.534% → 查表+pow 0.988% → 窗口内 1.186%
+//   stereo 无曲线 1.034% → 只查表不 pow 1.156% → 查表+pow 2.087% → 窗口内 2.422%
+// ⇒ 画了曲线时新增约 1 个百分点的一颗核,其中 **约 84% 是 std::pow,查表只占约 16%**。
+// ⚠ 别为此把 `dbToLinear` 的 pow 换成 exp2 近似:那会同时改变**基线路径**的舍入,
+//    而「空曲线逐位不变」(SL442-MIX-1,无容差)正是靠基线路径逐字不变成立的。
 inline float panCurveLinearGain(const scvb::PanCurveXfade& curve, float panEff) noexcept
 {
     const float db = panCurveGainDb(curve, panEff);
