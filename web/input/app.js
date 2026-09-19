@@ -88,6 +88,21 @@ function $all(gb) {
     return document.querySelectorAll('[data-gb="' + gb + '"]');
 }
 
+/**
+ * [SL-19] 通道卡按 data-ch 精确定位(data-gb="input.channels.card" 是所有 16 张卡
+ * 共用的同一个值,不能靠 $() 唯一命中)。之前在调用点里把复合选择器字符串
+ * ('input.channels.card[data-ch="5"]') 当 gb 传给 $(),套进 $() 自己的模板后变成
+ * `[data-gb="input.channels.card[data-ch="5"]"]` —— 引号嵌套的非法 CSS,
+ * querySelector 直接抛 SyntaxError,而调用点(claimChannel)没有 try/catch,冲突
+ * 反馈(抖动/红 toast/render)全部执行不到。这里单开一个专用取卡函数,别让 $()
+ * 身兼两种选择器语义。
+ */
+function channelCardEl(ch) {
+    return document.querySelector(
+        '[data-gb="input.channels.card"][data-ch="' + ch + '"]',
+    );
+}
+
 /** 占位符模板:{x} → vals.x;缺失占位符原样保留(不静默丢字)。 */
 function format(tpl, vals) {
     return String(tpl).replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, k) =>
@@ -384,7 +399,7 @@ async function claimChannel(ch) {
     // 契约 §3.2:claim 本组 InputSlot[n-1];已被心跳新鲜实例占 → {conflict:true}
     const res = await call("setChannelId", ch);
     if (res && res.conflict === true) {
-        const card = $('input.channels.card[data-ch="' + ch + '"]');
+        const card = channelCardEl(ch);
         shake(card);
         showOccupiedToast(ch, store.state.group_id || 1);
     }
