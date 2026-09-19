@@ -99,6 +99,31 @@ double cutValue(const PanCurvePoint& point, double pan)
 
 } // namespace
 
+bool isPanCurvePointUsable(const PanCurvePoint& point)
+{
+    // 顺序有意:**先 isfinite,再比大小**。反过来没用 —— NaN 的所有比较都是 false,
+    // 范围判定会把它当成「在范围内」放行(桥面原有的那三条比较正是这么漏的)。
+    if (!std::isfinite(point.angle) || !std::isfinite(point.gainDb) || !std::isfinite(point.q))
+        return false;
+    if (point.angle < kPanCurvePointAngleMin || point.angle > kPanCurvePointAngleMax)
+        return false;
+    if (!(point.q > 0.0f)) // 写成 !(>0) 而非 <=0:对 NaN 两者不等价(上面已挡,这里是第二道)
+        return false;
+    // gainDb 只要求有限(宪法未声明每点值域,理由见头文件)。有限的极端值不会产出 NaN:
+    // 大 |A| 经 clampDb 收进 [-24,+12],小 |A| 无害 —— 由 SL442-NAN-3 的极端有限值用例钉住。
+    return true;
+}
+
+bool arePanCurvePointsUsable(const std::vector<PanCurvePoint>& points)
+{
+    for (const PanCurvePoint& p : points)
+    {
+        if (!isPanCurvePointUsable(p))
+            return false;
+    }
+    return true;
+}
+
 double panCurveHalfWidth(float q)
 {
     return 100.0 / static_cast<double>(q);

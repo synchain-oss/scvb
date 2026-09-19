@@ -880,7 +880,7 @@ TEST_CASE("AUTH-XFADE-1 换表开窗:第一个样本仍≈旧表,不是瞬间跳
     advance(f.arbiter, 64);
 
     // 窗口未开时:只查一张表,prev 为 null。
-    REQUIRE(f.arbiter.panCurveXfade().previous == nullptr);
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading); // 窗口判据是 fading,不是 previous 是否为 null
     REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0);
     REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f) == Approx(0.0).margin(1e-6));
 
@@ -927,14 +927,17 @@ TEST_CASE("AUTH-XFADE-2 窗口有界:走完 30ms 必关,此后只查一张表", 
     REQUIRE(window == static_cast<int>(0.030 * kFs + 0.5)); // 30ms 切换档,不是另立的数
 
     advance(f.arbiter, window); // 正好走完
-    REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0);
 
-    // 再走一个样本:旧表指针必须被置 null —— 这一步是「窗口关得上」的实体。
-    (void)f.arbiter.nextSample();
+    // [SL-442 第2轮] 窗口在**递减到 0 的那一格**就关上,不留到下一格 —— 所以这里不再需要
+    // 「再走一个样本」。第一版留到下一格,于是窗口最后一个样本处在 `mix==1.0f 但 previous
+    // 仍非 null`,走的是 `before + (now-before)*1.0f`:数学上等于 now,**浮点上不保证逐位等于**。
+    // 而那一格恰好就是「窗口关得上」要断言的那一格。
+    REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0);
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
     REQUIRE(f.arbiter.panCurveXfade().previous == nullptr);
     REQUIRE(f.arbiter.panCurveXfade().target == lutB.get());
 
-    // 且此后**逐位**等于单表查表(窗口外不残留任何淡入成分)。
+    // 窗口最后那一格就**逐位**等于单表查表(窗口外不残留任何淡入成分)。
     for (const float pan : {-100.0f, -42.0f, 0.0f, 55.0f, 100.0f})
     {
         REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), pan) == lutB->gainDb(pan));
@@ -943,7 +946,7 @@ TEST_CASE("AUTH-XFADE-2 窗口有界:走完 30ms 必关,此后只查一张表", 
     // 再走很久也不会自己重开(窗口不是周期性的)。
     advance(f.arbiter, 4096);
     REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0);
-    REQUIRE(f.arbiter.panCurveXfade().previous == nullptr);
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
 }
 
 TEST_CASE("AUTH-XFADE-3 段编辑造新快照但不换表 ⇒ 不开窗", "[authority][pancurve][xfade]")
@@ -962,7 +965,7 @@ TEST_CASE("AUTH-XFADE-3 段编辑造新快照但不换表 ⇒ 不开窗", "[auth
         f.bind(lut); // 同一张表,新快照
         (void)f.arbiter.processBlock(true, 0.0);
         REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0); // 一次都不该开窗
-        REQUIRE(f.arbiter.panCurveXfade().previous == nullptr);
+        REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
         advance(f.arbiter, 8);
     }
 }
@@ -1052,4 +1055,54 @@ TEST_CASE("AUTH-XFADE-4 pan 平滑与 LUT 淡入同时在跑:无阶跃", "[autho
 
     // 收敛:窗口之后停在「新表 @ 新 pan」上。
     REQUIRE(both.back() == Approx(static_cast<double>(lutB->gainDb(60.0f))).margin(0.01));
+}
+
+TEST_CASE("AUTH-XFADE-5 第一次画曲线(null → 有表)同样淡入", "[authority][pancurve][xfade]")
+{
+    // 这一格钉的是第 2 轮 bot 找到的缺陷:第一版拿 `previous == nullptr` 兼作「窗口关着」,
+    // 而 null 同时是「从没画过曲线」的状态 ⇒ **用户第一次画曲线恰好走了不淡入的分支**,
+    // 花整轮避免的 12 dB 硬跳原样留在最常见的入口上。
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+
+    f.bind(nullptr); // 从没画过曲线:快照里没有表
+    (void)f.arbiter.processBlock(true, 0.0);
+    advance(f.arbiter, 64);
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
+    REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f) == 0.0f); // G≡0
+
+    const auto lut = bellPeakAtCentre(-12.0f); // 第一次画:探针点直接 -12 dB
+    f.bind(lut);
+    (void)f.arbiter.processBlock(true, 0.0);
+    REQUIRE(f.arbiter.panCurveXfadeRemaining() > 0); // 窗口开了
+    REQUIRE(f.arbiter.panCurveXfade().fading);
+    REQUIRE(f.arbiter.panCurveXfade().previous == nullptr); // 旧表确实是 null(从 G≡0 淡入)
+
+    (void)f.arbiter.nextSample();
+    const float first = scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f);
+    // 第一个样本必须还贴着 0 dB。不修的话这里直接是 -12 —— 与上一个样本差 12 dB。
+    REQUIRE(std::fabs(static_cast<double>(first)) < 0.5);
+    REQUIRE(std::fabs(static_cast<double>(first) + 12.0) > 10.0);
+
+    // 逐样本单调下行、单步远小于整跳。
+    float prev = first;
+    float maxStep = 0.0f;
+    const int n = f.arbiter.panCurveXfadeRemaining();
+    for (int i = 0; i < n; ++i)
+    {
+        (void)f.arbiter.nextSample();
+        const float now = scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f);
+        REQUIRE(now <= prev + 1e-5f);
+        maxStep = std::max(maxStep, std::fabs(now - prev));
+        prev = now;
+    }
+    REQUIRE(maxStep < 0.05f);
+    REQUIRE(prev == Approx(-12.0).margin(0.01));
+
+    // 窗口关上那一格就逐位等于单表查表(第 2 轮【建议】④ 的落点)。
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
+    for (const float pan : {-100.0f, -30.0f, 0.0f, 77.0f, 100.0f})
+    {
+        REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), pan) == lut->gainDb(pan));
+    }
 }

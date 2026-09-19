@@ -103,6 +103,11 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
     // 换表 → 开 30ms 交叉淡入窗口(曲线编辑与版本切换共用这一条路径,不为版本切换另写一份)。
     // 判的是 **LUT 对象指针**:段编辑会造一堆新快照但不换表,那时这里不触发(见头文件的注)。
     // m_initialized 之前不淡入:首块本来就没有「上一张表」可淡。
+    //
+    // ⚠ **null → 有表也要淡**(= 用户第一次画曲线)。`nullptr != ptr` 本来就成立,所以这一条
+    //    从来都会触发;第一版的缺陷不在这儿,在求值处 —— 当时 `panCurveGainDb` 拿
+    //    `previous == nullptr` 兼作「窗口关着」而直接返回新表值,于是**最常见的那个入口**
+    //    (从没画过 → 第一次画)恰好走了不淡入的分支。现在窗口开关由 `fading` 单独表达。
     if (m_initialized && lutNow != m_panCurveLut && m_xfadeSamples > 0)
     {
         // 窗口内再次换表:拿当时正在淡向的那张当新的旧表并重启窗口。残留不连续 ≤ 本次残差,
@@ -184,17 +189,24 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
 
 std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::nextSample()
 {
-    // 换表淡入:整数递减,到 0 就**把旧表指针置 null**——此后 panCurveGainDb 只查一张表,
-    // 与不做淡入时逐位相同。窗口有界由这一句负责,删了它窗口就永远开着(有删除式钉)。
+    // 换表淡入:整数递减。窗口有界由这一句负责,删了它窗口就永远开着(有删除式钉)。
+    //
+    // [SL-442 第2轮] 递减到 0 的**那一格就把窗口关上**(置 null + mix=1),不留到下一格。
+    // 第一版留到下一格,于是窗口最后一个样本处于 `mix == 1.0f 但 previous 仍非 null`,
+    // 走的是 `before + (now - before) * 1.0f` —— 数学上等于 now,**浮点上不保证逐位等于 now**。
+    // 那一格因此不按位等于单表查表,而它恰好是「窗口关上」判据要断言的那一格。
     if (m_xfadeRemaining > 0)
     {
         --m_xfadeRemaining;
-        m_panCurveMix = 1.0f - static_cast<float>(m_xfadeRemaining) / static_cast<float>(m_xfadeSamples);
-    }
-    else if (m_prevPanCurveLut != nullptr)
-    {
-        m_prevPanCurveLut = nullptr;
-        m_panCurveMix = 1.0f;
+        if (m_xfadeRemaining == 0)
+        {
+            m_prevPanCurveLut = nullptr; // 窗口就在这一格关上
+            m_panCurveMix = 1.0f;
+        }
+        else
+        {
+            m_panCurveMix = 1.0f - static_cast<float>(m_xfadeRemaining) / static_cast<float>(m_xfadeSamples);
+        }
     }
 
     std::array<TrackValues, kNumTracks> out{};

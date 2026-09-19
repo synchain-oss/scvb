@@ -408,6 +408,11 @@ bool decodeCrvs(const std::uint8_t* data, std::size_t size, CrvsData& out)
                 return false;
             p.shape = static_cast<PanCurveShape>(shape);
             p.side = static_cast<PanCurveSide>(side);
+            // [SL-442 第2轮] 这三个 float 是**不可信字节**(损坏文件 / 别的写入方),而自 SL-442
+            // 起 pan_curve 会进实时音频链 —— 一个 NaN 就是灌进宿主母线的 NaN。整份 state 拒载,
+            // 与本函数其余「字节不可信即 return false」同口径(不做静默修正)。
+            if (!isPanCurvePointUsable(p))
+                return false;
             v.panCurve.push_back(p);
         }
     }

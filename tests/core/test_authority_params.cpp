@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 
 #include "OutputAuthority.h"
 #include "OutputParams.h"
@@ -365,4 +366,50 @@ TEST_CASE("AUTH-PARAMS-9 换版本走同一条淡入路径(不为版本切换另
     REQUIRE(f.auth.arbiter().panCurveXfade().previous == nullptr);
     REQUIRE(static_cast<double>(scvb::panCurveGainDb(f.auth.arbiter().panCurveXfade(), 0.0f)) ==
             Approx(-12.0).margin(0.01));
+}
+
+TEST_CASE("AUTH-PARAMS-10 坏点在进表之前被挡住(接线格,不是零件格)", "[authority][params][pancurve][nan]")
+{
+    // SL442-NAN-* 测的是守卫**函数**;这一格测的是守卫**被调用了** —— 把 setPanCurve 里那句
+    // arePanCurvePointsUsable 摘掉,函数级那几格照样全绿,只有这一格会红。
+    AuthorityParamsFixture f;
+
+    scvb::PanCurvePoint good;
+    good.angle = 0.0f;
+    good.gainDb = -9.0f;
+    good.shape = scvb::PanCurveShape::bell;
+    good.q = 1.5f;
+    good.side = scvb::PanCurveSide::out;
+    f.auth.setPanCurve(1, {good});
+    const auto* baseline = f.auth.activePanCurveLut().get();
+    REQUIRE(baseline != nullptr);
+    REQUIRE(static_cast<double>(f.auth.activePanCurveLut()->gainDb(0.0f)) == Approx(-9.0).margin(0.03));
+
+    // 一个 NaN 点混进来(模拟损坏 state / 别的写入方)。
+    scvb::PanCurvePoint poisoned = good;
+    poisoned.gainDb = std::numeric_limits<float>::quiet_NaN();
+    f.auth.setPanCurve(1, {good, poisoned});
+
+    // ① 表没被换掉 —— 保留上一张,而不是烘一张带 NaN 的出来。
+    REQUIRE(f.auth.activePanCurveLut().get() == baseline);
+    // ② 表里仍然处处有限(真正要守的东西)。
+    for (const float pan : {-100.0f, -33.0f, 0.0f, 51.0f, 100.0f})
+    {
+        REQUIRE(std::isfinite(f.auth.activePanCurveLut()->gainDb(pan)));
+    }
+    // ③ 音频线程那一侧拿到的也有限 —— 一路到实时链出口都不是 NaN。
+    (void)f.auth.processBlock(true, 0.0);
+    (void)f.auth.nextSample();
+    const auto x = f.auth.arbiter().panCurveXfade();
+    for (const float pan : {-100.0f, 0.0f, 100.0f})
+    {
+        REQUIRE(std::isfinite(scvb::panCurveGainDb(x, pan)));
+    }
+
+    // 对照:合法的新点列表照样换得动(守卫没有把正常路径也挡死)。
+    scvb::PanCurvePoint other = good;
+    other.gainDb = -3.0f;
+    f.auth.setPanCurve(1, {other});
+    REQUIRE(f.auth.activePanCurveLut().get() != baseline);
+    REQUIRE(static_cast<double>(f.auth.activePanCurveLut()->gainDb(0.0f)) == Approx(-3.0).margin(0.03));
 }

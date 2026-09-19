@@ -1781,7 +1781,11 @@ void OutputEditor::handleSetPanCurve(const ArgList& a, Completion c)
                 c(badArgResp());
                 return;
             }
-            if (p.q <= 0.0f || p.angle < -100.0f || p.angle > 100.0f)
+            // [SL-442 第2轮] 原先是 `p.q <= 0.0f || p.angle < -100.0f || p.angle > 100.0f`。
+            // 那三条**挡不住 NaN**:`NaN <= 0`、`NaN < -100`、`NaN > 100` 全为 false,NaN 从每
+            // 一条里穿过去;而 `gain_db` 当时一条都没查。曲线进实时链之后,那就是母线上的 NaN。
+            // 换成共用守卫(显式 isfinite 在先、值域在后)—— 两条入口只此一份,不会各写各的漂。
+            if (!scvb::isPanCurvePointUsable(p))
             {
                 c(badArgResp());
                 return;

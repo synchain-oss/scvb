@@ -89,10 +89,12 @@ public:
 
     // 音频线程:本**样本**生效的 G 查表视图(含换表交叉淡入)。须在 nextSample() 之后读 ——
     // 它与那次 nextSample 返回的 TrackValues 说的是同一个样本。
-    // 窗口外 previous==null ⇒ panCurveGainDb 退化成单表查表,与不做淡入时逐位相同。
+    // 窗口外 fading==false ⇒ panCurveGainDb 退化成单表查表,与不做淡入时逐位相同。
+    // ⚠ 窗口判据是 `m_xfadeRemaining > 0`,**不是** `m_prevPanCurveLut != nullptr` ——
+    //    旧表为 null 也可能正在淡入(「第一次画曲线」= 从 G≡0 淡到新表)。
     scvb::PanCurveXfade panCurveXfade() const noexcept
     {
-        return scvb::PanCurveXfade{m_panCurveLut, m_prevPanCurveLut, m_panCurveMix};
+        return scvb::PanCurveXfade{m_panCurveLut, m_prevPanCurveLut, m_panCurveMix, m_xfadeRemaining > 0};
     }
 
     // 剩余淡入样本数(单测用;0 = 窗口已关)。判据靠它钉「窗口不会永久开着」。

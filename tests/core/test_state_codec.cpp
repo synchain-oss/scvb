@@ -12,6 +12,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <limits>
 #include <vector>
 
 #include "state/StateCodec.h"
@@ -487,4 +488,59 @@ TEST_CASE("STATE-GOLDEN StateAbiCompat:abi1/abi2/abi3/abi4 迁移 + abi5.bin 格
         REQUIRE(scvb::state::encodeContainer(makeGoldenChunks(), reencoded));
         REQUIRE(reencoded == fileBytes);
     }
+}
+
+TEST_CASE("STATE-CRVS-4b pan_curve 的非有限 float 拒载(接线格)", "[state][crvs][nan]")
+{
+    // [SL-442 第2轮] 自本卡起 pan_curve 进实时音频链 —— 解码路的三个 float 是不可信字节,
+    // 一个 NaN 就是灌进宿主母线的 NaN。这一格测的是**解码里那句校验被调用了**,
+    // 不是校验函数本身(那在 SL442-NAN-*):摘掉 decodeCrvs 里那一句,只有这一格红。
+    //
+    // 构造:先用合法点编码(encode 不设防,它写的是内存里的值),再把内存里的那个点改成
+    // 非有限值重新编码 —— 于是字节流里躺着一个 NaN,正是损坏文件/别的写入方会产出的形状。
+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                            -std::numeric_limits<float>::infinity()})
+    {
+        SECTION("angle 非有限")
+        {
+            CrvsData d;
+            d.versions[0].panCurve.push_back(
+                scvb::PanCurvePoint{bad, 6.0f, scvb::PanCurveShape::bell, 2.0f, scvb::PanCurveSide::out});
+            std::vector<std::uint8_t> enc;
+            REQUIRE(scvb::state::encodeCrvs(d, enc));
+            CrvsData out;
+            REQUIRE_FALSE(scvb::state::decodeCrvs(enc.data(), enc.size(), out));
+        }
+        SECTION("gain_db 非有限")
+        {
+            CrvsData d;
+            d.versions[0].panCurve.push_back(
+                scvb::PanCurvePoint{-50.0f, bad, scvb::PanCurveShape::bell, 2.0f, scvb::PanCurveSide::out});
+            std::vector<std::uint8_t> enc;
+            REQUIRE(scvb::state::encodeCrvs(d, enc));
+            CrvsData out;
+            REQUIRE_FALSE(scvb::state::decodeCrvs(enc.data(), enc.size(), out));
+        }
+        SECTION("q 非有限")
+        {
+            CrvsData d;
+            d.versions[0].panCurve.push_back(
+                scvb::PanCurvePoint{-50.0f, 6.0f, scvb::PanCurveShape::bell, bad, scvb::PanCurveSide::out});
+            std::vector<std::uint8_t> enc;
+            REQUIRE(scvb::state::encodeCrvs(d, enc));
+            CrvsData out;
+            REQUIRE_FALSE(scvb::state::decodeCrvs(enc.data(), enc.size(), out));
+        }
+    }
+
+    // 对照:合法点照常往返(守卫没有把正常工程也拒了)—— 少了这条,
+    // 一个「decodeCrvs 恒回 false」的实现也能让上面全绿。
+    CrvsData ok;
+    ok.versions[0].panCurve.push_back(
+        scvb::PanCurvePoint{-50.0f, 6.0f, scvb::PanCurveShape::bell, 2.0f, scvb::PanCurveSide::out});
+    std::vector<std::uint8_t> enc;
+    REQUIRE(scvb::state::encodeCrvs(ok, enc));
+    CrvsData out;
+    REQUIRE(scvb::state::decodeCrvs(enc.data(), enc.size(), out));
+    REQUIRE(out.versions[0].panCurve.size() == 1u);
 }

@@ -133,6 +133,13 @@ void OutputAuthority::setPanCurve(int version, const std::vector<scvb::PanCurveP
     if (version < 1 || version > kNumVersions)
         return; // 越界拒绝(与 setVersionActive 的钳制不同:这里没有「合理的邻近值」可退)
 
+    // [SL-442 第2轮] **进表之前**挡住不可用的点 —— 这是「数据进实时链」的最后一道闸。
+    // 两条入口(桥面 / 解码)各自也挡了,这里是**兜底**:将来任何新入口(复制版本、脚本、
+    // preset 导入……)接上来时,不必记得去补校验 —— 烘表这一步一定会走到。
+    // 不在音频线程里逐样本判有限性:那是热路径,而且那时已经晚了(表已经被污染)。
+    if (!scvb::arePanCurvePointsUsable(points))
+        return; // 整表拒绝,保留上一张表 —— 宁可曲线不更新,也不让母线收到 NaN
+
     auto& baked = m_panCurvePoints[static_cast<std::size_t>(version - 1)];
 
     // 逐字段比对上次烘过的点列表;相同 ⇒ 整个调用 no-op(不重建、不重发、LUT 对象指针不变)。

@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -280,4 +281,117 @@ TEST_CASE("CURVE-8 empty point list is exactly 0 dB (unity gain) everywhere", "[
     {
         REQUIRE(dirty.gainDb(pan) == 0.0f);
     }
+}
+
+// ============================================================================
+// [SL-442 第2轮【红旗】] 点的有限性守卫。
+//
+// 为什么这组用例在 SL-442 才出现:接进实时链之前,坏数据的后果是「分析不对 / 画歪」;
+// 接进之后,同一份坏数据是**灌进宿主母线的 NaN**。数据从非实时路搬进实时路时,
+// 它的信任要求必须跟着搬。
+// ============================================================================
+
+TEST_CASE("SL442-NAN-1 NaN 会穿过范围比较 —— 所以必须显式 isfinite", "[pancurve][nan]")
+{
+    // 这一条先把**根因**钉住,再钉守卫。桥面原有的写法是
+    //   p.q <= 0.0f || p.angle < -100.0f || p.angle > 100.0f   → badArg
+    // 读起来像覆盖了 angle 与 q,实际三个比较对 NaN **全为 false**。
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE_FALSE(nan <= 0.0f);
+    REQUIRE_FALSE(nan < -100.0f);
+    REQUIRE_FALSE(nan > 100.0f);
+    // ⇒ 「看起来挡住了」比「没挡」更危险:范围判定会把 NaN 当成「在范围内」放行。
+    REQUIRE_FALSE(std::isfinite(nan)); // 唯一挡得住的形态
+}
+
+TEST_CASE("SL442-NAN-2 三个字段任一非有限 ⇒ 整表拒绝", "[pancurve][nan]")
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    const PanCurvePoint good = point(30.0f, -6.0f, PanCurveShape::bell, 1.5f, PanCurveSide::out);
+    REQUIRE(scvb::isPanCurvePointUsable(good));
+    REQUIRE(scvb::arePanCurvePointsUsable({good, good}));
+
+    // 三个字段**各自**一格 —— 只测一个字段的话,漏查另外两个不会红。
+    for (const float bad : {nan, inf, -inf})
+    {
+        PanCurvePoint a = good;
+        a.angle = bad;
+        REQUIRE_FALSE(scvb::isPanCurvePointUsable(a));
+
+        PanCurvePoint g = good;
+        g.gainDb = bad;
+        REQUIRE_FALSE(scvb::isPanCurvePointUsable(g));
+
+        PanCurvePoint q = good;
+        q.q = bad;
+        REQUIRE_FALSE(scvb::isPanCurvePointUsable(q));
+
+        // 整表:一个坏点就拒整表(不逐点丢弃)。
+        REQUIRE_FALSE(scvb::arePanCurvePointsUsable({good, a, good}));
+    }
+
+    // 值域(真源见头文件):angle 超界、q 非正 ⇒ 拒。
+    PanCurvePoint far = good;
+    far.angle = 100.5f;
+    REQUIRE_FALSE(scvb::isPanCurvePointUsable(far));
+    PanCurvePoint zq = good;
+    zq.q = 0.0f;
+    REQUIRE_FALSE(scvb::isPanCurvePointUsable(zq));
+    PanCurvePoint nq = good;
+    nq.q = -1.0f;
+    REQUIRE_FALSE(scvb::isPanCurvePointUsable(nq));
+
+    // 边界本身合法(闭区间)—— 少了这两条,把判据写成开区间也不会红。
+    PanCurvePoint lo = good;
+    lo.angle = scvb::kPanCurvePointAngleMin;
+    REQUIRE(scvb::isPanCurvePointUsable(lo));
+    PanCurvePoint hi = good;
+    hi.angle = scvb::kPanCurvePointAngleMax;
+    REQUIRE(scvb::isPanCurvePointUsable(hi));
+}
+
+TEST_CASE("SL442-NAN-3 挡住之后:LUT 每一格与求值都有限", "[pancurve][nan]")
+{
+    // 守卫放行的**极端但有限**的值不得产出 NaN/Inf —— 这是「gainDb 只查有限性、不发明
+    // 宪法里没有的 ±12」这个决定的支撑证据,不是推断。
+    std::vector<PanCurvePoint> extreme;
+    extreme.push_back(point(-100.0f, -1.0e30f, PanCurveShape::bell, 1.0e-30f, PanCurveSide::out));
+    extreme.push_back(point(100.0f, 1.0e30f, PanCurveShape::bell, 1.0e30f, PanCurveSide::out));
+    extreme.push_back(point(0.0f, -1.0e30f, PanCurveShape::shelf, 1.0e-30f, PanCurveSide::left));
+    extreme.push_back(point(-5.0f, -1.0e30f, PanCurveShape::cut, 1.0e30f, PanCurveSide::right));
+    extreme.push_back(point(5.0f, -3.0f, PanCurveShape::cut, 1.0e-30f, PanCurveSide::out));
+    for (const auto& p : extreme)
+    {
+        REQUIRE(scvb::isPanCurvePointUsable(p)); // 守卫放行(它们都是有限的)
+    }
+
+    scvb::PanCurveLut lut;
+    lut.rebuild(extreme);
+    for (int i = 0; i < scvb::kPanCurveLutSize; ++i)
+    {
+        REQUIRE(std::isfinite(lut.data()[i]));
+    }
+    for (const double pan : {-100.0, -50.0, -1.0, 0.0, 1.0, 50.0, 100.0})
+    {
+        REQUIRE(std::isfinite(scvb::evalCurve(extreme, pan)));
+        REQUIRE(std::isfinite(lut.gainDb(static_cast<float>(pan))));
+    }
+}
+
+TEST_CASE("SL442-NAN-4 若 NaN 混进表,clampDb 挡不住它 —— 反证守卫必须在入口", "[pancurve][nan]")
+{
+    // 为什么守卫必须在**进表之前**而不是靠求值端兜底:clampDb 对 NaN 是透明的。
+    // `NaN < min` 与 `NaN > max` 都是 false ⇒ 原样返回 ⇒ 进 LUT ⇒ 乘进样本 ⇒ 母线 NaN。
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    std::vector<PanCurvePoint> poisoned;
+    poisoned.push_back(point(0.0f, nan, PanCurveShape::bell, 1.5f, PanCurveSide::out));
+    REQUIRE_FALSE(scvb::arePanCurvePointsUsable(poisoned)); // 守卫确实会拦下它
+
+    // 绕过守卫直接烘(模拟「守卫被摘掉」)⇒ 表里真的出现 NaN。
+    scvb::PanCurveLut poisonedLut;
+    poisonedLut.rebuild(poisoned);
+    REQUIRE(std::isnan(poisonedLut.gainDb(0.0f)));
+    REQUIRE(std::isnan(static_cast<float>(scvb::evalCurve(poisoned, 0.0))));
 }
