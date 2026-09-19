@@ -109,7 +109,15 @@ private:
     scvb::engine::VersionStore m_versions;
     juce::UndoManager m_undoManager;
     bool m_prepared = false;
-    // 快照池:进程寿命保活已发布的快照,绝不释放(音频线程可能仍在读旧快照;快照小、数量少)。
+    // 快照池:进程寿命保活已发布的快照,绝不释放(音频线程可能仍在读旧快照)。
+    //
+    // ⚠ [SL-442 → SL-445] 自 SL-442 起每条快照多钉住一份 `PanCurveLut`。实测 `sizeof`:
+    //   Snapshot = 744 B、PanCurveLut = 131,076 B(128.0 KiB),比值 176×。
+    //   LUT 是**每张不同曲线一份**(快照持 shared_ptr,复制只加引用计数);池不回收
+    //   ⇒ 每次「真编辑」(点列表确有变化)留下的那 128 KiB 此后一直在。
+    //   产出速率实测:拖点松手 1 份;Q 滑杆 140 ms 防抖 ⇒ 约 7 份/秒;撤销、重做各 1 份。
+    //   池本身在 SL-442 之前就不回收(`rebuildAllCurves` 一次经 setCurve 发 15 条 = 11,160 B)。
+    //   回收机制转 SL-445。
     std::vector<std::unique_ptr<scvb::engine::DspArbiter::Snapshot>> m_snapshotPool;
     // 每版本一张 G 查表(pan_curve 是 per-version,不是 per-track)+ 烘它时用的点列表。
     // 留着点列表是为了 setPanCurve 的 no-op 判定 —— 见该函数注释。

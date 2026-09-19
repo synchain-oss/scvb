@@ -332,16 +332,11 @@ TEST_CASE("SL442-NAN-2 三个字段任一非有限 ⇒ 整表拒绝", "[pancurve
         REQUIRE_FALSE(scvb::arePanCurvePointsUsable({good, a, good}));
     }
 
-    // 值域(真源见头文件):angle 超界、q 非正 ⇒ 拒。
+    // angle 值域(真源见头文件)。q 的值域**单独一格**(SL442-NAN-5)——
+    // 它与有限性是两条独立的入口,合在一起就分不出是哪条挡住的。
     PanCurvePoint far = good;
     far.angle = 100.5f;
     REQUIRE_FALSE(scvb::isPanCurvePointUsable(far));
-    PanCurvePoint zq = good;
-    zq.q = 0.0f;
-    REQUIRE_FALSE(scvb::isPanCurvePointUsable(zq));
-    PanCurvePoint nq = good;
-    nq.q = -1.0f;
-    REQUIRE_FALSE(scvb::isPanCurvePointUsable(nq));
 
     // 边界本身合法(闭区间)—— 少了这两条,把判据写成开区间也不会红。
     PanCurvePoint lo = good;
@@ -394,4 +389,40 @@ TEST_CASE("SL442-NAN-4 若 NaN 混进表,clampDb 挡不住它 —— 反证守�
     poisonedLut.rebuild(poisoned);
     REQUIRE(std::isnan(poisonedLut.gainDb(0.0f)));
     REQUIRE(std::isnan(static_cast<float>(scvb::evalCurve(poisoned, 0.0))));
+}
+
+TEST_CASE("SL442-NAN-5 q 必须判值域 —— 有限性挡不住它", "[pancurve][nan]")
+{
+    // ⚠ **这一格与 SL442-NAN-2 不可合并**:q=0 是**有限值**,isfinite 放行它。
+    // 挡住它的是 `q > 0`,不是有限性。合成一格之后,把 `q > 0` 删掉仍会因为 NaN 那半而红,
+    // 于是「q 的值域判据没了」这件事就被别的断言兜住、永远照不出来。
+    const PanCurvePoint good = point(30.0f, -6.0f, PanCurveShape::bell, 1.5f, PanCurveSide::out);
+
+    PanCurvePoint zq = good;
+    zq.q = 0.0f;
+    REQUIRE(std::isfinite(zq.q)); // 先把前提摆明:它是有限的,isfinite 这一关放行
+    REQUIRE_FALSE(scvb::isPanCurvePointUsable(zq)); // 仍必须被挡住 ⇒ 靠的是 q>0
+
+    PanCurvePoint nq = good;
+    nq.q = -1.0f;
+    REQUIRE(std::isfinite(nq.q));
+    REQUIRE_FALSE(scvb::isPanCurvePointUsable(nq));
+
+    // 机制证据:放它进去会出什么。半宽 Δ = 100/q,q=0 ⇒ 除零。
+    // 这不是「大概会有问题」,是这一行直接产出非有限值。
+    REQUIRE_FALSE(std::isfinite(scvb::panCurveHalfWidth(0.0f)));
+
+    // 而 q 取极大的**有限**值不需要挡(上界没有机制要求):Δ 极小,求值仍有限。
+    // 少了这条,把判据写成 [0.5, 10] 的区间也能让上面全绿 —— 而那会拒掉本仓自己
+    // 在 PanCurve.h 头注里用的 cut slope s=24(合法的 q 值,远在 10 之外)。
+    PanCurvePoint slope24 = good;
+    slope24.shape = PanCurveShape::cut;
+    slope24.gainDb = -3.0f;
+    slope24.q = 24.0f;
+    REQUIRE(scvb::isPanCurvePointUsable(slope24));
+    REQUIRE(std::isfinite(scvb::evalCurve({slope24}, -50.0)));
+    PanCurvePoint tinyQ = good;
+    tinyQ.q = 0.25f; // < 0.5,bell 的 UI 下限之外,但机制上无害
+    REQUIRE(scvb::isPanCurvePointUsable(tinyQ));
+    REQUIRE(std::isfinite(scvb::evalCurve({tinyQ}, 0.0)));
 }
