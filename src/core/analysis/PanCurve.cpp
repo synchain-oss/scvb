@@ -168,6 +168,10 @@ float PanCurveLut::gainDb(float pan) const
     const float clamped = std::clamp(pan, -100.0f, 100.0f);
     const float x =
         clamped * static_cast<float>(kPanCurveLutSize - 1) / 200.0f + static_cast<float>(kPanCurveLutSize - 1) / 2.0f;
+    // [SL-442] `pan` 的来源:音频线程侧来自 DspArbiter 的 pan 平滑器(曲线值 / host 参数,
+    // 再经 scaleByGlobalWidth),**不来自 pan_curve 的点数据** —— 点数据只决定表的内容,
+    // 不决定索引。记下这条来源,是因为 `std::clamp` 对 NaN 透传、`static_cast<int>(NaN)` 是 UB,
+    // 而「这里取不到 NaN」整个建立在上面那句来源上;来源一变,这一行要重新看。
     const int i = static_cast<int>(x);
     const float frac = x - static_cast<float>(i);
     const int i0 = std::max(0, std::min(i, kPanCurveLutSize - 1));
