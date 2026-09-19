@@ -171,9 +171,8 @@ float PanCurveLut::gainDb(float pan) const
     const float clamped = std::clamp(pan, -100.0f, 100.0f);
     const float x =
         clamped * static_cast<float>(kPanCurveLutSize - 1) / 200.0f + static_cast<float>(kPanCurveLutSize - 1) / 2.0f;
-    // ⚠ NaN 输入下 `x` 是 NaN,`static_cast<int>(NaN)` 是 UB(产出一个垃圾 int)。
-    //   下面 `i0` 的钳制把它收回合法区间 ⇒ **不会越界访问**;输出经 `frac` 退化为 NaN。
-    //   —— 危害等级是「输出 NaN」,不是「内存损坏」。
+    // ⚠ NaN 输入下 `x` 为 NaN,`static_cast<int>(NaN)` 是 UB(产出一个不确定的 int)。
+    //   随后 `i0` 把它钳到 `[0, kPanCurveLutSize-1]`、`i1` 同理;`frac` 为 NaN。
     // [SL-442] `pan` 的来源:音频线程侧来自 DspArbiter 的 pan 平滑器(曲线值 / host 参数,
     //   再经 scaleByGlobalWidth),**不来自 pan_curve 的点数据** —— 点数据只决定表的内容,
     //   不决定索引。「这里取不到 NaN」整个建立在这条来源上;来源一变,这几行要重新看。
