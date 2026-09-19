@@ -241,3 +241,43 @@ TEST_CASE("CURVE-7 cut slope LUT worst-case <= 0.015 dB", "[pancurve]")
               << ", s=" << worstPt.q << ", side=" << static_cast<int>(worstPt.side) << ", pan=" << worstPan << "\n";
     REQUIRE(worst <= 0.015);
 }
+
+// [SL-442] 空点列表 = 「从没画过曲线」的工程。G 接进实时链(02 §8.1 步骤 5)之后,
+// 这条决定了老工程声音变不变 —— 此前它只是一句注释(AutoAssign.h「空 → G≡0(c≡1)」),
+// 全仓没有任何用例钉住它。缺它的后果不是「少测一点」:把 evalCurve 的起始值从 0 改成
+// 别的、或让 rebuild 对空点列表写进未初始化内容,都不会有任何东西红。
+TEST_CASE("CURVE-8 empty point list is exactly 0 dB (unity gain) everywhere", "[pancurve]")
+{
+    const std::vector<PanCurvePoint> none;
+
+    // ① 解析式:必须**恰好** 0,不是「约等于 0」—— 增益 = 10^(G/20),G=0 ⇔ 增益恰为 1,
+    //    老工程「一个字节都不变」靠的正是这个精确等号,给容差就等于放过了 1e-9 的漂移。
+    for (const double pan : {-100.0, -73.4, -5.0, 0.0, 5.0, 61.7, 100.0})
+    {
+        REQUIRE(scvb::evalCurve(none, pan) == 0.0);
+    }
+
+    // ② 默认构造的 LUT(还没 rebuild 过)每一格都是 0 —— 快照里 LUT 为 null 时的退化路径
+    //    与这条同语义,音频线程两条路都得到 G≡0。
+    scvb::PanCurveLut lut;
+    for (int i = 0; i < scvb::kPanCurveLutSize; ++i)
+    {
+        REQUIRE(lut.data()[i] == 0.0f);
+    }
+
+    // ③ 用空点列表 rebuild 之后仍然全 0(不是「保持默认值没被碰过」—— 先写脏再 rebuild,
+    //    否则 rebuild 整个不写盘也能让上一条全绿)。
+    scvb::PanCurveLut dirty;
+    dirty.rebuild({point(0.0f, -12.0f, PanCurveShape::bell, 1.5f, PanCurveSide::out)});
+    REQUIRE(dirty.gainDb(0.0f) < -11.0f); // 先确认真被写脏了,否则下一条不成立也测不出
+    dirty.rebuild(none);
+    for (int i = 0; i < scvb::kPanCurveLutSize; ++i)
+    {
+        REQUIRE(dirty.data()[i] == 0.0f);
+    }
+    // 插值路径同样恰好 0(gainDb 会在两格之间做 lerp,两端都是 0 才恒 0)。
+    for (const float pan : {-100.0f, -33.33f, 0.0f, 12.5f, 100.0f})
+    {
+        REQUIRE(dirty.gainDb(pan) == 0.0f);
+    }
+}
