@@ -22,6 +22,7 @@ void DspArbiter::prepare(double sampleRate, const DspArbiterConfig& cfg)
 
     m_initialized = false;
     m_prevSnapshot = nullptr;
+    m_panCurveLut = nullptr; // 下个 processBlock 会从快照重新锁定;此处与其余音频线程独占态同批清
     m_prevEngineAuthority = false;
     m_prevLeadSelect = 0;
     m_prevFrz.fill(0);
@@ -90,6 +91,8 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
     const Snapshot* snap = m_snapshot.load(std::memory_order_acquire);
     const auto& sources = (snap != nullptr) ? snap->sources : emptySources();
     const std::atomic<float>* rawLead = (snap != nullptr) ? snap->rawLeadSelect : nullptr;
+    // G 的查表与本块 TrackValues 取自**同一份** snap —— 分两次 load 就可能一半旧一半新。
+    m_panCurveLut = (snap != nullptr) ? snap->panCurveLut.get() : nullptr;
 
     const bool authorityChanged = engineAuthority != m_prevEngineAuthority;
     const int lead = readLeadSelect(rawLead);

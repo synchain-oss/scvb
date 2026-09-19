@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "OutputAuthority.h"
 
+#include <algorithm>
 #include <functional>
 
 #include "SegmentEditService.h" // configureCrvsUndoBudget:CRVS 撤销预算的唯一真源
@@ -127,6 +128,36 @@ void OutputAuthority::setCurve(int version, int track, const scvb::CurveEvaluato
         rebindSources();
 }
 
+void OutputAuthority::setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
+{
+    if (version < 1 || version > kNumVersions)
+        return; // 越界拒绝(与 setVersionActive 的钳制不同:这里没有「合理的邻近值」可退)
+
+    auto& baked = m_panCurvePoints[static_cast<std::size_t>(version - 1)];
+
+    // 逐字段比对上次烘过的点列表;相同 ⇒ 整个调用 no-op(不重建、不重发、LUT 对象指针不变)。
+    // 这条不只是省 CPU:`rebuildAllCurves` 在**每次**段编辑 / 改 ramp / 撤销重做时都会跑到这儿,
+    // 而 pan_curve 绝大多数时候没动 —— 无谓重建会让 LUT 指针每次都变,把「这次到底换表没有」
+    // 这个判据抖成恒真。用逐字段而不是 memcmp:结构体有 enum 成员与可能的填充字节,memcmp 会
+    // 被填充里的垃圾骗成「不同」,no-op 这条路就永远走不到。
+    const auto samePoint = [](const scvb::PanCurvePoint& a, const scvb::PanCurvePoint& b) {
+        return a.angle == b.angle && a.gainDb == b.gainDb && a.shape == b.shape && a.q == b.q && a.side == b.side;
+    };
+    if (baked.size() == points.size() && std::equal(baked.begin(), baked.end(), points.begin(), samePoint))
+        return;
+
+    // 不可变契约(与 setCurve 同一套):新建一张表、烘满之后才让任何人看见,
+    // 绝不原地重建已经发布出去的那张 —— 音频线程可能正在读它。
+    auto lut = std::make_shared<scvb::PanCurveLut>();
+    lut->rebuild(points); // 点列表为空 → 全 0 dB ⇒ G≡0 ⇒ 增益恒 1
+    m_panCurveLut[static_cast<std::size_t>(version - 1)] = std::move(lut);
+    baked = points;
+
+    // 非活动版本:只更新本地那张,不发快照;换到该版本时 rebindSources 自会取走。
+    if (version == m_versions.versionActive() && m_prepared)
+        rebindSources();
+}
+
 scvb::engine::CopyVersionResult OutputAuthority::copyVersion(int src, int dst, scvb::engine::AuthorityMode mode)
 {
     // 前置校验(§5.3):PRINT 拒绝 / 越界 / src==dst;不满足 → UI 拒绝,不动 state、不进 undo。
@@ -214,6 +245,11 @@ std::array<const scvb::CurveEvaluator*, OutputAuthority::kNumTracks> OutputAutho
     return out;
 }
 
+std::shared_ptr<const scvb::PanCurveLut> OutputAuthority::activePanCurveLut() const
+{
+    return m_panCurveLut[static_cast<std::size_t>(m_versions.versionActive() - 1)];
+}
+
 std::array<scvb::engine::DspArbiter::TrackValues, OutputAuthority::kNumTracks>
 OutputAuthority::processBlock(bool engineAuthority, double tSec)
 {
@@ -242,6 +278,8 @@ void OutputAuthority::rebindSources()
         s.curve = curves[static_cast<std::size_t>(t)]; // shared_ptr 保活曲线(不可变契约)
     }
     snap->rawLeadSelect = m_handles.rawLeadSelect;
+    // 活动版本的 G 查表(02 §8.1 步骤 5)。从没设过 pan_curve 的版本这里是 null ⇒ 音频线程按 G≡0 走。
+    snap->panCurveLut = m_panCurveLut[static_cast<std::size_t>(v)];
 
     m_arbiter.publish(snap.get()); // release-store
     m_snapshotPool.push_back(std::move(snap)); // 进程寿命保活

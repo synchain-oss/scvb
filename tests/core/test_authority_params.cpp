@@ -206,3 +206,118 @@ TEST_CASE("AUTH-PARAMS-5 raw 值是去归一化单位(非 0..1)—— 值域契�
     *f.handles.leadSelect = 3;
     REQUIRE(*f.handles.rawLeadSelect == Approx(3.0f).margin(1e-4));
 }
+
+// ---------------------------------------------------------------------------
+// [SL-442] pan 角度域曲线 G 进实时链(02 §8.1 步骤 5)—— 消息线程侧的三格。
+// 施加环节(MixMath)的判据在 test_mix_source.cpp / test_output_stage.cpp,这里只钉
+// 「点列表 → LUT → 快照 → 音频线程拿得到」这条链,以及 no-op 守卫的指针稳定性。
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// CURVE-2 的点(02 §7.3):shelf A=-6, P0=-45, Q=2, side=out ⇒ G(-45)=-3、G(-95)=-5.8921、G(+5)=-0.1079。
+// 挑它是因为三个期望值彼此相距 ≥2.9 dB,远大于 LUT 插值容差 0.03 dB —— 容差不会大过被测量。
+std::vector<scvb::PanCurvePoint> curve2Points()
+{
+    scvb::PanCurvePoint p;
+    p.angle = -45.0f;
+    p.gainDb = -6.0f;
+    p.shape = scvb::PanCurveShape::shelf;
+    p.q = 2.0f;
+    p.side = scvb::PanCurveSide::out;
+    return {p};
+}
+
+} // namespace
+
+TEST_CASE("AUTH-PARAMS-6 pan 曲线 G 经快照送达音频线程,且与解析式同源", "[authority][params][pancurve]")
+{
+    AuthorityParamsFixture f;
+
+    // 没设过 pan_curve:LUT 不存在 ⇒ 音频线程按 G≡0 走(老工程零影响的前半)。
+    (void)f.auth.processBlock(true, 0.0);
+    REQUIRE(f.auth.activePanCurveLut() == nullptr);
+    REQUIRE(f.auth.arbiter().panCurveLut() == nullptr);
+
+    const auto points = curve2Points();
+    f.auth.setPanCurve(1, points);
+
+    // ① 消息线程侧:发布出来的 LUT 与 evalCurve 同源(§7「UI 与 DSP 共用本实现」)。
+    const auto lut = f.auth.activePanCurveLut();
+    REQUIRE(lut != nullptr);
+    for (const double pan : {-95.0, -45.0, 5.0, -100.0, 0.0, 100.0, 37.5})
+    {
+        REQUIRE(static_cast<double>(lut->gainDb(static_cast<float>(pan)))
+                == Approx(scvb::evalCurve(points, pan)).margin(0.03));
+    }
+    // 被测量本身远大于容差 —— 否则「同值」是靠容差蒙的,不是靠同源。
+    REQUIRE(std::fabs(static_cast<double>(lut->gainDb(-95.0f))) > 5.0);
+    REQUIRE(static_cast<double>(lut->gainDb(-45.0f)) == Approx(-3.0).margin(0.03));
+
+    // ② 接线格:processBlock 之后音频线程侧拿到的必须**就是**发布出去的那张,不是另一张。
+    //    只断「非 null」不够 —— 那样接错版本 / 接到旧表都能蒙混过去。
+    (void)f.auth.processBlock(true, 0.0);
+    REQUIRE(f.auth.arbiter().panCurveLut() == lut.get());
+}
+
+TEST_CASE("AUTH-PARAMS-7 点列表没变则 LUT 对象不重建(换表判据的前提)", "[authority][params][pancurve]")
+{
+    AuthorityParamsFixture f;
+
+    const auto points = curve2Points();
+    f.auth.setPanCurve(1, points);
+    const auto* first = f.auth.activePanCurveLut().get();
+    REQUIRE(first != nullptr);
+
+    // 逐字段相同的另一份 vector(不是同一个对象)⇒ 仍应 no-op,指针不变。
+    // `rebuildAllCurves` 每次段编辑都会走到这儿,这条不成立的话「换表了没有」恒真。
+    f.auth.setPanCurve(1, curve2Points());
+    REQUIRE(f.auth.activePanCurveLut().get() == first);
+
+    // 只改一个字段(q 2.0 → 5.0,半宽 Δ=100/Q 由 50 收到 20)⇒ 必须换新表。
+    // 这是上面那条的可分辨对照:少了它,一个「永远 no-op」的实现也能让上一条全绿。
+    auto moved = points;
+    moved[0].q = 5.0f;
+    f.auth.setPanCurve(1, moved);
+    const auto* second = f.auth.activePanCurveLut().get();
+    REQUIRE(second != first);
+
+    // 且新表真的换了内容,不只是换了个地址。
+    // 探针取 P=-56.6:实测两条曲线在此处相差 1.16 dB(32769 格上扫出的最大差点附近),
+    // 是 LUT 插值容差 0.03 dB 的约 39 倍 —— 「取到新值」不可能靠容差蒙混。
+    // 反向看:若 setPanCurve 漏了重建,这里读到的还是旧曲线的值,与 moved 差 1.16 dB,
+    // 下面那条 margin(0.03) 必红。探针选在差值大处,正是为了让它红得动
+    // (第一版我取 P=-95、q 只动到 2.5,两条曲线在那儿仅差 0.068 dB —— 钉不住)。
+    constexpr double kProbe = -56.6;
+    REQUIRE(std::fabs(scvb::evalCurve(moved, kProbe) - scvb::evalCurve(points, kProbe)) > 1.0);
+    REQUIRE(static_cast<double>(f.auth.activePanCurveLut()->gainDb(static_cast<float>(kProbe)))
+            == Approx(scvb::evalCurve(moved, kProbe)).margin(0.03));
+}
+
+TEST_CASE("AUTH-PARAMS-8 pan 曲线 per-version 隔离,换版本换表", "[authority][params][pancurve]")
+{
+    AuthorityParamsFixture f;
+
+    const auto points = curve2Points();
+
+    // 给非活动版本 2 设曲线:活动版本 1 不受影响(pan_curve 是 per-version)。
+    f.auth.setPanCurve(2, points);
+    REQUIRE(f.auth.versionActive() == 1);
+    REQUIRE(f.auth.activePanCurveLut() == nullptr);
+    (void)f.auth.processBlock(true, 0.0);
+    REQUIRE(f.auth.arbiter().panCurveLut() == nullptr); // v1 没曲线 ⇒ 仍 G≡0
+
+    // 切到版本 2:快照要带上 v2 的表。
+    f.auth.setVersionActive(2);
+    const auto lut2 = f.auth.activePanCurveLut();
+    REQUIRE(lut2 != nullptr);
+    (void)f.auth.processBlock(true, 0.0);
+    REQUIRE(f.auth.arbiter().panCurveLut() == lut2.get());
+    REQUIRE(static_cast<double>(lut2->gainDb(-45.0f)) == Approx(-3.0).margin(0.03));
+
+    // 切回版本 1:表要跟着回到 null,不能把 v2 的表留在实时链上。
+    f.auth.setVersionActive(1);
+    (void)f.auth.processBlock(true, 0.0);
+    REQUIRE(f.auth.arbiter().panCurveLut() == nullptr);
+}
