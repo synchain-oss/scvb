@@ -301,6 +301,10 @@ export function createTour(opts) {
     let step = 1; // 1..N
     let preTourTab = "master"; // 进入 tour 前的 tab(Skip 还原用)
     let demoStore = null;
+    // [SL-35] start() 自己置上 inert 的那些子节点(不是「card.children 当时的全部」)——
+    // endTour 只清这一份,不要无条件清 card.children:届时子节点集合可能已经变化,
+    // 或某个子节点的 inert 是外部另一处逻辑置上的,不该被这里连带清掉。
+    let inertedChildren = [];
 
     // ---------------------------------------------------------------- 组件样式
     // 全部颜色走 tokens(零裸 hex);--r-callout / --dark-modal / --dark-solid 同族于
@@ -535,8 +539,12 @@ export function createTour(opts) {
         step = 1;
         overlay.hidden = false;
         // a11y:蒙版激活期把背景卡其余内容设 inert,避免 Tab 逃出蒙版触发真实桥调用(Enter 误触 setCaptureEnabled 等)。
+        inertedChildren = [];
         for (const child of card.children) {
-            if (child !== overlay) child.setAttribute("inert", "");
+            if (child !== overlay) {
+                child.setAttribute("inert", "");
+                inertedChildren.push(child);
+            }
         }
         if (badge) {
             badge.hidden = false;
@@ -546,6 +554,13 @@ export function createTour(opts) {
         }
         if (callout) callout.focus({ preventScroll: true });
         showStep(1);
+        // [SL-33] showStep()/activateTab() 只在**切换了 tab** 时才顺带排一次
+        // requestRender(app.js activateTab():`if (was !== name) requestRender()`)。
+        // 步 1..15 的 tab 全是 "master" —— 恰好是进入 tour 前默认已激活的那个 tab,
+        // 于是 was === name,那条件永远不成立,页面上一帧渲染的仍是**真实 store**
+        // (isActive() 已经是 true,但从没有一次 render() 真正跑过、去读 demoStore())。
+        // 显式补一次,保证「demoStore 建好」与「用它重绘一次」在同一步完成。
+        requestRender();
     }
 
     function endTour(completed) {
@@ -557,10 +572,12 @@ export function createTour(opts) {
         active = false;
         demoStore = null;
         overlay.hidden = true;
-        // 释放背景 inert。
-        for (const child of card.children) {
+        // [SL-35] 只释放本次 start() 自己置上的那一份,别无条件扫 card.children ——
+        // 无条件清会把不是本次置上的 inert(例如别处逻辑刚好也置了同一子节点)一并清掉。
+        for (const child of inertedChildren) {
             child.removeAttribute("inert");
         }
+        inertedChildren = [];
         if (badge) {
             badge.hidden = true;
             badge.style.position = "";

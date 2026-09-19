@@ -8,7 +8,7 @@
 
 ## [Unreleased]
 
-> v0.1.0 是一个只能构建、不能用的空壳骨架。下面这一节因此是 SCVB 作为一件**产品**的第一份变更记录 —— 它描述的是从零到可用的全过程,而不是相对某个能用的旧版本的增量。
+> v0.1.0 是一个只能构建、不能用的空壳骨架。下面这一节因此是 SCVB 作为一件**产品**的第一份变更记录 —— 它描述的是从零到可用的全过程,而不是相对某个能用的旧版本的增量。**v0.1.0 从未打过 git tag、也没有发过 Release**(仓库公开后 [SL-73] 核实两个链接均 404 才发现),下面 `## [0.1.0]` 小节因此不再挂 Release 链接,`## [Unreleased]` 的比较区间也改成从首个 commit 起算(见文末链接)。
 
 ### ⚠️ 契约变更
 
@@ -462,5 +462,4 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
 
 - 首 commit:SCVB 仓库骨架(ADR-012 目录 + 开源必备八件套 + 空壳可构建双插件)。直接提交,无 PR:[`ae61f5f`](https://github.com/synchain-oss/scvb/commit/ae61f5f)
 
-[Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/synchain-oss/scvb/releases/tag/v0.1.0
+[Unreleased]: https://github.com/synchain-oss/scvb/compare/ae61f5f...HEAD
