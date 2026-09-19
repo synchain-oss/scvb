@@ -37,10 +37,12 @@
 //   2.5s 保险(`guard` 那个 setTimeout)本该在网还没撤时再补一次机会,可它已经被清空,
 //   永远不会再触发。本格纯黑盒:不读页面内部的 `sent`/`guard` 变量(与本文件其余判据
 //   同一条红线),只看**外部可观测的结果**——`__JUCE__` 迟到时,信号最终有没有送到。
-//   只跑 monitor 一页:这一段代码在三份 index.html 里逐字相同,不像 A 段那样依赖
-//   各页不同的 first-paint 时序,一页足够钉住这处时序缺陷。
-//   删除式:把 `sent = true` / `clearTimeout(guard)` 挪回 `postMessage` 调用之前,
-//   本格必须由绿转红(见 PR 描述的删除式记录)。
+//   ⚠ **三页都跑,不是挑一份代表**:这段逻辑是三份 index.html 各自独立写错的同一处
+//   顺序(复制粘贴出来的三份,不是共享代码),只测一页测不出另外两页各自被单独改回错误
+//   顺序 —— 判例「测接线不只测零件」+「删除式粒度要配得上判据粒度」。
+//   删除式:把某一份 index.html 的 `sent = true` / `clearTimeout(guard)` 挪回
+//   `postMessage` 调用之前,**只有那一页对应的这一格**必须由绿转红,另外两页仍应全绿
+//   (证明三页判据互不串台;见 PR 描述的删除式记录,三份逐一注入过)。
 //
 // 用法:node web-preview/tests/smoke-first-frame-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -647,66 +649,77 @@ for (const role of ["input", "output", "monitor"]) {
 log(
     "\nB. [SL-437] __JUCE__ 迟到时,信号必须靠 2.5s 保险补发,不能被提前撤掉的网吞掉",
 );
-// 只对**这一次导航**生效:追加一段在文档创建时删掉 `window.__JUCE__` 的脚本 ——
-// 上面 PROBE 已经把它注册在文档创建前,这一段注册得更晚,同一时机里跑在 PROBE **之后**,
-// 净效果是「先装 → 再拆」,把「守卫检查会失败」这个前提做成黑盒可控的。
+// ⚠ **三份 index.html 都跑**,不是挑一份代表:SL-437 的缺陷是「三份文件各自独立写错了
+// 同一段逻辑」(复制粘贴出来的三份撤网顺序),不是「一处共享代码错了」。只测一页测不出
+// 另外两页各自被单独改回错误顺序 —— 判例「测接线不只测零件」+「删除式粒度要配得上判据
+// 粒度」,PR 描述里对三份文件各自做过删除式(改一份、只有那一份对应的这一格转红)。
+// 追加一段在文档创建时删掉 `window.__JUCE__` 的脚本 —— 上面 PROBE 已经把它注册在
+// 文档创建前,这一段注册得更晚,同一时机里跑在 PROBE **之后**,净效果是「先装 → 再拆」,
+// 把「守卫检查会失败」这个前提做成黑盒可控的。只需注册一次,对三次导航都生效。
 await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `delete window.__JUCE__;`,
 });
-await cdp.send("Page.navigate", {
-    url: `${base}/web/monitor/index.html`,
-});
-const paintedNoJuce = await waitFor(
-    `(() => location.pathname.indexOf("/web/monitor/") >= 0 &&
-        window.__scvbPaintFrames >= 0)()`,
-    20000,
-);
-check(paintedNoJuce, "B:__JUCE__ 缺席时页面仍然画出了首帧(first-paint 记录取到了)");
-// 留出双层 rAF 的时间,让 armOnce() 的正常路径真的尝试过 signal()(此刻必然因为
-// `__JUCE__` 缺席而提前 return)。这一步只是把前提做实,还不是判据本身。
-await sleep(300);
-const beforeInject = await evaluate(
-    `(() => (window.__scvbSignals || []).length)()`,
-);
-check(
-    beforeInject === 0,
-    `B:__JUCE__ 缺席期间没有任何信号被记录(实得 ${beforeInject} 条;` +
-        "这一步只是确认前提成立,不是本格的判据本身)",
-);
-// 补上一个能用的 __JUCE__ —— 模拟「controller 建好、__JUCE__ 真正就位」比两层 rAF 晚到达
-// 的那种时序。之后**不再**主动调用页面里的任何函数,只等 guard 的 2.5s setTimeout 自己触发。
-await evaluate(`(() => {
-    window.__JUCE__ = {
-        postMessage: function (s) {
-            window.__scvbSignals.push({
-                raw: String(s),
-                frames: window.__scvbFrames,
-                ms: performance.now(),
-            });
-        },
-    };
-})()`);
-// guard 是 2500ms;给够余量等它触发,同时别把上界拉到会拖慢 CI 的地步。
-const delivered = await waitFor(
-    `(() => (window.__scvbSignals || []).length > 0)()`,
-    4000,
-);
-check(
-    delivered,
-    "B:`__JUCE__` 迟到之后,2.5s 保险最终还是把信号送出去了(实得:" +
-        "delivered=" +
-        delivered +
-        ";红 = 撤网提前发生,保险已经空转,信号永远发不出去了 —— 正是 SL-437 那个缺陷)",
-);
-if (delivered) {
-    const afterInject = await evaluate(
-        `(() => (window.__scvbSignals || []).map((m) => (JSON.parse(m.raw) || {}).eventId))()`,
+for (const role of ["input", "output", "monitor"]) {
+    await cdp.send("Page.navigate", {
+        url: `${base}/web/${role}/index.html`,
+    });
+    const paintedNoJuce = await waitFor(
+        `(() => location.pathname.indexOf("/web/${role}/") >= 0 &&
+            window.__scvbPaintFrames >= 0)()`,
+        20000,
     );
-    eq(
-        afterInject,
-        ["__scvb__firstFrame"],
-        "B:补发的信号**恰好一条**、且是 __scvb__firstFrame(不是重复发送,也不是别的事件)",
+    check(
+        paintedNoJuce,
+        `${role}:B:__JUCE__ 缺席时页面仍然画出了首帧(first-paint 记录取到了)`,
     );
+    // 留出双层 rAF 的时间,让 armOnce() 的正常路径真的尝试过 signal()(此刻必然因为
+    // `__JUCE__` 缺席而提前 return)。这一步只是把前提做实,还不是判据本身。
+    await sleep(300);
+    const beforeInject = await evaluate(
+        `(() => (window.__scvbSignals || []).length)()`,
+    );
+    check(
+        beforeInject === 0,
+        `${role}:B:__JUCE__ 缺席期间没有任何信号被记录(实得 ${beforeInject} 条;` +
+            "这一步只是确认前提成立,不是本格的判据本身)",
+    );
+    // 补上一个能用的 __JUCE__ —— 模拟「controller 建好、__JUCE__ 真正就位」比两层 rAF
+    // 晚到达的那种时序。之后**不再**主动调用页面里的任何函数,只等 guard 的 2.5s
+    // setTimeout 自己触发。
+    await evaluate(`(() => {
+        window.__JUCE__ = {
+            postMessage: function (s) {
+                window.__scvbSignals.push({
+                    raw: String(s),
+                    frames: window.__scvbFrames,
+                    ms: performance.now(),
+                });
+            },
+        };
+    })()`);
+    // guard 是 2500ms;给够余量等它触发,同时别把上界拉到会拖慢 CI 的地步。
+    const delivered = await waitFor(
+        `(() => (window.__scvbSignals || []).length > 0)()`,
+        4000,
+    );
+    check(
+        delivered,
+        `${role}:B:__JUCE__ 迟到之后,2.5s 保险最终还是把信号送出去了(实得:` +
+            "delivered=" +
+            delivered +
+            ";红 = 撤网提前发生,保险已经空转,信号永远发不出去了 —— 正是 SL-437 那个缺陷)",
+    );
+    if (delivered) {
+        const afterInject = await evaluate(
+            `(() => (window.__scvbSignals || []).map((m) => (JSON.parse(m.raw) || {}).eventId))()`,
+        );
+        eq(
+            afterInject,
+            ["__scvb__firstFrame"],
+            `${role}:B:补发的信号**恰好一条**、且是 __scvb__firstFrame(不是重复发送,` +
+                "也不是别的事件)",
+        );
+    }
 }
 
 // 页面自己的运行期噪声只报不判:这一套没有 mock 后端,app.js 拿不到桥是预期内的,
