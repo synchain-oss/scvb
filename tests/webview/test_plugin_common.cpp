@@ -381,8 +381,8 @@ TEST_CASE("[SL-376] RevealGate holds the first-frame settle for a millisecond fl
 // 反向注入跑出来是绿的才发现)。
 // 删除式:把 msDone 改成加法式
 //   nowMs >= settleAtMs_ + (uint32)kRevealSettleMs
-// —— 那时 settleAtMs_ + 32 溢出成一个极小的数,下面「信号后 1 ms 就来一个 tick」那一格
-// 会当场放行 ⇒ 红。
+// —— 那时 settleAtMs_ + kRevealSettleMs 溢出成一个极小的数,下面「信号后 1 ms 就来一个 tick」
+// 那一格会当场放行 ⇒ 红。
 TEST_CASE("[SL-376] RevealGate settle floor survives the millisecond counter wrapping around")
 {
     using Gate = scvb::webview::RevealGate;
@@ -395,7 +395,7 @@ TEST_CASE("[SL-376] RevealGate settle floor survives the millisecond counter wra
     gate.onFirstFrame(nearWrap);
 
     // 信号后 1 ms 就来一个 tick:真差值是 1,远不到下界 ⇒ **不许放**。
-    // 加法式在这里会算成「早就够了」,因为 settleAtMs_ + 32 已经溢出回绕。
+    // 加法式在这里会算成「早就够了」,因为 settleAtMs_ + kRevealSettleMs 已经溢出回绕。
     gate.onTick(nearWrap + 1);
     CHECK(gate.parked());
 

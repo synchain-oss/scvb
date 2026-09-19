@@ -156,14 +156,14 @@
                 // 此刻窗口被最小化 / 被完全遮挡 / DAW 弹模态框把合成停了 ⇒ 两层 rAF 永不回调,
                 // 而保险已经没了 ⇒ 仍旧掉进 C++ 的超时兜底。现在网**只在信号真发出去的那一刻**
                 // 才撤,`sent` 兼做去重(保险与 rAF 都可能跑到这里)。
+                // ⚠ [SL-437] 上面这句当时只搬对了「哪个函数」,没搬对「函数里的哪一行」——
+                // `sent = true` 与 `clearTimeout(guard)` 曾经紧跟在 `signal()` 入口,排在
+                // `__JUCE__` 存在性检查**之前**:守卫不满足时两行照样执行,撤网即成立、
+                // 但 `postMessage` 从未被调用过,保险因此空转。现在这两行移到 `postMessage`
+                // **调用之后**,见 signal() 内部注释。
                 var sent = false;
                 function signal() {
                     if (sent) return;
-                    sent = true;
-                    if (guard !== null) {
-                        clearTimeout(guard);
-                        guard = null;
-                    }
                     try {
                         var juce = window.__JUCE__;
                         if (!juce || typeof juce.postMessage !== "function")
@@ -192,6 +192,14 @@
                                 payload: p,
                             }),
                         );
+                        // [SL-437] 撤网必须落在 postMessage **之后**:撤在它之前的话,
+                        // __JUCE__ 缺席 / postMessage 不是函数时上面两个 `return` 会在
+                        // 网已经撤了、信号却从没真的发出去的状态下退出 —— 保险彻底空转。
+                        sent = true;
+                        if (guard !== null) {
+                            clearTimeout(guard);
+                            guard = null;
+                        }
                     } catch (e) {
                         // 发不出去也不许卡住:C++ 侧还有 3s 超时兜底。
                         // ⚠ [SL-376] 起兜底只剩这一条(pageFinishedLoading 不再放行,
