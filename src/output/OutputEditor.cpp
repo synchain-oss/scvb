@@ -1781,7 +1781,16 @@ void OutputEditor::handleSetPanCurve(const ArgList& a, Completion c)
                 c(badArgResp());
                 return;
             }
-            if (p.q <= 0.0f || p.angle < -100.0f || p.angle > 100.0f)
+            // [SL-442 第2轮] 原先是 `p.q <= 0.0f || p.angle < -100.0f || p.angle > 100.0f`。
+            // 那三条**挡不住 NaN**:`NaN <= 0`、`NaN < -100`、`NaN > 100` 全为 false,NaN 从每
+            // 一条里穿过去;而 `gain_db` 当时一条都没查。曲线进实时链之后,那就是母线上的 NaN。
+            // 换成共用守卫(显式 isfinite 在先、值域在后)—— 三条入口只此一份,不会各写各的漂。
+            //
+            // ⚠ **这一处守卫没有机检覆盖。** 全仓没有任何测试目标编译 `OutputEditor.cpp`
+            //   (它依赖真 WebView2,属 gate 8 的真机 GUI 面),所以解码侧与烘表侧那两处
+            //   各自有删除式用例守着、改坏了会红,而**这一处改坏了不会有任何东西说话**。
+            //   动它之后只能人工复核,别指望 CI 替你发现。
+            if (!scvb::isPanCurvePointUsable(p))
             {
                 c(badArgResp());
                 return;

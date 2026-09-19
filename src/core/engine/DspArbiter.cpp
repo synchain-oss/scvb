@@ -22,6 +22,13 @@ void DspArbiter::prepare(double sampleRate, const DspArbiterConfig& cfg)
 
     m_initialized = false;
     m_prevSnapshot = nullptr;
+    m_panCurveLut = nullptr; // 下个 processBlock 会从快照重新锁定;此处与其余音频线程独占态同批清
+    m_prevPanCurveLut = nullptr;
+    m_panCurveMix = 1.0f;
+    m_xfadeRemaining = 0;
+    // 换表淡入窗口的总长,按 30ms 切换档算定(与 pan/vol/width 用的是同一个数,不另立)。
+    // 至少 1 样本:采样率低到 30ms 不满一个样本时也不能算成 0 —— 0 会让「窗口开得了」恒假。
+    m_xfadeSamples = (m_sampleRate > 0.0) ? std::max(1, static_cast<int>(m_cfg.switchRampSec * m_sampleRate + 0.5)) : 0;
     m_prevEngineAuthority = false;
     m_prevLeadSelect = 0;
     m_prevFrz.fill(0);
@@ -90,6 +97,26 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
     const Snapshot* snap = m_snapshot.load(std::memory_order_acquire);
     const auto& sources = (snap != nullptr) ? snap->sources : emptySources();
     const std::atomic<float>* rawLead = (snap != nullptr) ? snap->rawLeadSelect : nullptr;
+    // G 的查表与本块 TrackValues 取自**同一份** snap —— 分两次 load 就可能一半旧一半新。
+    const scvb::PanCurveLut* const lutNow = (snap != nullptr) ? snap->panCurveLut.get() : nullptr;
+
+    // 换表 → 开 30ms 交叉淡入窗口(曲线编辑与版本切换共用这一条路径,不为版本切换另写一份)。
+    // 判的是 **LUT 对象指针**:段编辑会造一堆新快照但不换表,那时这里不触发(见头文件的注)。
+    // m_initialized 之前不淡入:首块本来就没有「上一张表」可淡。
+    //
+    // ⚠ **null → 有表也要淡**(= 用户第一次画曲线)。`nullptr != ptr` 本来就成立,所以这一条
+    //    从来都会触发;第一版的缺陷不在这儿,在求值处 —— 当时 `panCurveGainDb` 拿
+    //    `previous == nullptr` 兼作「窗口关着」而直接返回新表值,于是**最常见的那个入口**
+    //    (从没画过 → 第一次画)恰好走了不淡入的分支。现在窗口开关由 `fading` 单独表达。
+    if (m_initialized && lutNow != m_panCurveLut && m_xfadeSamples > 0)
+    {
+        // 窗口内再次换表:拿当时正在淡向的那张当新的旧表并重启窗口。残留不连续 ≤ 本次残差,
+        // 远小于完全不淡入时的整跳;真要消掉它得在音频线程合成一张中间表(禁止分配),不做。
+        m_prevPanCurveLut = m_panCurveLut;
+        m_xfadeRemaining = m_xfadeSamples;
+        m_panCurveMix = 0.0f;
+    }
+    m_panCurveLut = lutNow;
 
     const bool authorityChanged = engineAuthority != m_prevEngineAuthority;
     const int lead = readLeadSelect(rawLead);
@@ -162,6 +189,26 @@ std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::processB
 
 std::array<DspArbiter::TrackValues, DspArbiter::kNumTracks> DspArbiter::nextSample()
 {
+    // 换表淡入:整数递减。窗口有界由这一句负责,删了它窗口就永远开着(有删除式钉)。
+    //
+    // [SL-442 第2轮] 递减到 0 的**那一格就把窗口关上**(置 null + mix=1),不留到下一格。
+    // 第一版留到下一格,于是窗口最后一个样本处于 `mix == 1.0f 但 previous 仍非 null`,
+    // 走的是 `before + (now - before) * 1.0f` —— 数学上等于 now,**浮点上不保证逐位等于 now**。
+    // 那一格因此不按位等于单表查表,而它恰好是「窗口关上」判据要断言的那一格。
+    if (m_xfadeRemaining > 0)
+    {
+        --m_xfadeRemaining;
+        if (m_xfadeRemaining == 0)
+        {
+            m_prevPanCurveLut = nullptr; // 窗口就在这一格关上
+            m_panCurveMix = 1.0f;
+        }
+        else
+        {
+            m_panCurveMix = 1.0f - static_cast<float>(m_xfadeRemaining) / static_cast<float>(m_xfadeSamples);
+        }
+    }
+
     std::array<TrackValues, kNumTracks> out{};
     for (int t = 0; t < kNumTracks; ++t)
     {
