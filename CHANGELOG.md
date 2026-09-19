@@ -8,7 +8,7 @@
 
 ## [Unreleased]
 
-> v0.1.0 是一个只能构建、不能用的空壳骨架。下面这一节因此是 SCVB 作为一件**产品**的第一份变更记录 —— 它描述的是从零到可用的全过程,而不是相对某个能用的旧版本的增量。
+> v0.1.0 是一个只能构建、不能用的空壳骨架。下面这一节因此是 SCVB 作为一件**产品**的第一份变更记录 —— 它描述的是从零到可用的全过程,而不是相对某个能用的旧版本的增量。**v0.1.0 从未打过 git tag、也没有发过 Release**(仓库公开后 [SL-73] 核实两个链接均 404 才发现),下面 `## [0.1.0]` 小节因此不再挂 Release 链接,`## [Unreleased]` 的比较区间也改成从首个 commit 起算(见文末链接)。
 
 ### ⚠️ 契约变更
 
@@ -448,6 +448,12 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
   是对的,机检因此天然绿。它同时是 `check-changelog-drafts.mjs --self-test` 里「从未合并的号
   必须恒绿」那条用例的**真夹具** —— 要把它搬走或删掉之前,先另挑一个从未合并的 PR 号写进
   该脚本的 `FIXTURE_UNMERGED_PR` 并在本块里给它留一条预写条目,**别直接删断言**)
+- Input 通道被占用时点击冲突通道毫无反应:冲突反馈选择器构造错误导致 `querySelector`
+  抛未捕获异常,卡片不抖、红 toast 不出、界面也不重绘(pending #269)
+- Output 首启交互式导览开始后一段时间内仍显示用户真实工程数据,而旁边的说明词在讲解一份
+  演示轨道(pending #269)
+- Output 首启导览结束后,可能误清掉与导览无关、由别处逻辑独立置上的 `inert` 属性
+  (pending #269)
 
 尚未开 PR 的在途卡(开 PR 时按上面 ②③ 的格式,先在本块里补一条预写条目)
 - T41 建议表 + CSV 导出
@@ -462,5 +468,4 @@ merge commit、也不往 subject 里加 `(#N)`,那个号从此不出现在任何
 
 - 首 commit:SCVB 仓库骨架(ADR-012 目录 + 开源必备八件套 + 空壳可构建双插件)。直接提交,无 PR:[`ae61f5f`](https://github.com/synchain-oss/scvb/commit/ae61f5f)
 
-[Unreleased]: https://github.com/synchain-oss/scvb/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/synchain-oss/scvb/releases/tag/v0.1.0
+[Unreleased]: https://github.com/synchain-oss/scvb/compare/ae61f5f...HEAD
