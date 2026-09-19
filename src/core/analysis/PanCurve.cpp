@@ -99,6 +99,31 @@ double cutValue(const PanCurvePoint& point, double pan)
 
 } // namespace
 
+bool isPanCurvePointUsable(const PanCurvePoint& point)
+{
+    // 顺序有意:**先 isfinite,再比大小**。反过来没用 —— NaN 的所有比较都是 false,
+    // 范围判定会把它当成「在范围内」放行(桥面原有的那三条比较正是这么漏的)。
+    if (!std::isfinite(point.angle) || !std::isfinite(point.gainDb) || !std::isfinite(point.q))
+        return false;
+    if (point.angle < kPanCurvePointAngleMin || point.angle > kPanCurvePointAngleMax)
+        return false;
+    if (!(point.q > 0.0f)) // 写成 !(>0) 而非 <=0:对 NaN 两者不等价(上面已挡,这里是第二道)
+        return false;
+    // gainDb 只要求有限(宪法未声明每点值域,理由见头文件)。有限的极端值不会产出 NaN:
+    // 大 |A| 经 clampDb 收进 [-24,+12],小 |A| 无害 —— 由 SL442-NAN-3 的极端有限值用例钉住。
+    return true;
+}
+
+bool arePanCurvePointsUsable(const std::vector<PanCurvePoint>& points)
+{
+    for (const PanCurvePoint& p : points)
+    {
+        if (!isPanCurvePointUsable(p))
+            return false;
+    }
+    return true;
+}
+
 double panCurveHalfWidth(float q)
 {
     return 100.0 / static_cast<double>(q);
@@ -140,9 +165,17 @@ void PanCurveLut::rebuild(const std::vector<PanCurvePoint>& points)
 
 float PanCurveLut::gainDb(float pan) const
 {
+    // ⚠ [SL-442] **`std::clamp` 挡不住 NaN**:`v < lo` 与 `hi < v` 对 NaN 都是 false,
+    //   于是 NaN 被原样返回。读到这一行的人会以为 `clamped`(以及下面的 `x`)从此有界 ——
+    //   **它没有。** 这与本文件 `clampDb` 是**同一个坑,在同一个文件里的第二次**。
     const float clamped = std::clamp(pan, -100.0f, 100.0f);
     const float x =
         clamped * static_cast<float>(kPanCurveLutSize - 1) / 200.0f + static_cast<float>(kPanCurveLutSize - 1) / 2.0f;
+    // ⚠ NaN 输入下 `x` 为 NaN,`static_cast<int>(NaN)` 是 UB(产出一个不确定的 int)。
+    //   随后 `i0` 把它钳到 `[0, kPanCurveLutSize-1]`、`i1` 同理;`frac` 为 NaN。
+    // [SL-442] `pan` 的来源:音频线程侧来自 DspArbiter 的 pan 平滑器(曲线值 / host 参数,
+    //   再经 scaleByGlobalWidth),**不来自 pan_curve 的点数据** —— 点数据只决定表的内容,
+    //   不决定索引。「这里取不到 NaN」整个建立在这条来源上;来源一变,这几行要重新看。
     const int i = static_cast<int>(x);
     const float frac = x - static_cast<float>(i);
     const int i0 = std::max(0, std::min(i, kPanCurveLutSize - 1));

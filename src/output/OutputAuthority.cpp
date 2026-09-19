@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "OutputAuthority.h"
 
+#include <algorithm>
 #include <functional>
 
 #include "SegmentEditService.h" // configureCrvsUndoBudget:CRVS 撤销预算的唯一真源
@@ -127,6 +128,59 @@ void OutputAuthority::setCurve(int version, int track, const scvb::CurveEvaluato
         rebindSources();
 }
 
+void OutputAuthority::setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points)
+{
+    if (version < 1 || version > kNumVersions)
+        return; // 越界拒绝(与 setVersionActive 的钳制不同:这里没有「合理的邻近值」可退)
+
+    // [SL-442 第2轮] **进表之前**挡住不可用的点 —— 这是「数据进实时链」的最后一道闸。
+    // 两条入口(桥面 / 解码)各自也挡了,这里是**兜底**:将来任何新入口(复制版本、脚本、
+    // preset 导入……)接上来时,不必记得去补校验 —— 烘表这一步一定会走到。
+    // 不在音频线程里逐样本判有限性:那是热路径,而且那时已经晚了(表已经被污染)。
+    //
+    // ⚠ **这条兜底是静默的**:没有返回值、没有计数器、没有日志。走到它的时候
+    //   `crvsData_.versions[v].panCurve` 已被事务写成新点列表 ⇒ **界面画的是新曲线、
+    //   存盘存的是新曲线,而音频线程仍在用上一张表**,没有任何东西会说出这件事。
+    // ⚠ 它**今天走不到**,靠的是上游两道守卫先各自挡住:
+    //     · 桥面 `OutputEditor::handleSetPanCurve` —— 坏点 → badArg,整次提交被拒;
+    //     · 解码 `scvb::state::decodeCrvs` —— 坏点 → 整份 state 拒载。
+    // ⚠ **上游任意一道放宽,这里就变成「画的和听的不一致」且无人知晓。**
+    //   「今天不可达」这种断言会自己过期,而过期时没有任何东西会红 —— 所以这里记的是
+    //   它**依赖谁**,不是它安不安全。放宽上游的人请连这一处一起看。
+    if (!scvb::arePanCurvePointsUsable(points))
+        return; // 整表拒绝,保留上一张表 —— 宁可曲线不更新,也不让母线收到 NaN
+
+    auto& baked = m_panCurvePoints[static_cast<std::size_t>(version - 1)];
+
+    // 逐字段比对上次烘过的点列表;相同 ⇒ 整个调用 no-op(不重建、不重发、LUT 对象指针不变)。
+    // 这条不只是省 CPU:`rebuildAllCurves` 在**每次**段编辑 / 改 ramp / 撤销重做时都会跑到这儿,
+    // 而 pan_curve 绝大多数时候没动 —— 无谓重建会让 LUT 指针每次都变,把「这次到底换表没有」
+    // 这个判据抖成恒真。用逐字段而不是 memcmp:结构体有 enum 成员与可能的填充字节,memcmp 会
+    // 被填充里的垃圾骗成「不同」,no-op 这条路就永远走不到。
+    //
+    // ⚠ 用 `==` 比较 float 在这里是安全的,**前提是上面那道有限性守卫排在它前面**:
+    //   NaN 的 `==` 恒假 ⇒ NaN 若能走到这儿,守卫会恒判「点变了」、每次重烘一张表。
+    //   守卫已经把 NaN 拦在外面,这条比较永远看不到 NaN。**别调换这两段的顺序。**
+    // ⚠ 失败方向也是安全的:浮点精确相等判错只会「多重建一次」(无害),
+    //   不会「漏掉一次真改动」(有害)。反过来写(给容差)才危险。
+    const auto samePoint = [](const scvb::PanCurvePoint& a, const scvb::PanCurvePoint& b) {
+        return a.angle == b.angle && a.gainDb == b.gainDb && a.shape == b.shape && a.q == b.q && a.side == b.side;
+    };
+    if (baked.size() == points.size() && std::equal(baked.begin(), baked.end(), points.begin(), samePoint))
+        return;
+
+    // 不可变契约(与 setCurve 同一套):新建一张表、烘满之后才让任何人看见,
+    // 绝不原地重建已经发布出去的那张 —— 音频线程可能正在读它。
+    auto lut = std::make_shared<scvb::PanCurveLut>();
+    lut->rebuild(points); // 点列表为空 → 全 0 dB ⇒ G≡0 ⇒ 增益恒 1
+    m_panCurveLut[static_cast<std::size_t>(version - 1)] = std::move(lut);
+    baked = points;
+
+    // 非活动版本:只更新本地那张,不发快照;换到该版本时 rebindSources 自会取走。
+    if (version == m_versions.versionActive() && m_prepared)
+        rebindSources();
+}
+
 scvb::engine::CopyVersionResult OutputAuthority::copyVersion(int src, int dst, scvb::engine::AuthorityMode mode)
 {
     // 前置校验(§5.3):PRINT 拒绝 / 越界 / src==dst;不满足 → UI 拒绝,不动 state、不进 undo。
@@ -214,6 +268,11 @@ std::array<const scvb::CurveEvaluator*, OutputAuthority::kNumTracks> OutputAutho
     return out;
 }
 
+std::shared_ptr<const scvb::PanCurveLut> OutputAuthority::activePanCurveLut() const
+{
+    return m_panCurveLut[static_cast<std::size_t>(m_versions.versionActive() - 1)];
+}
+
 std::array<scvb::engine::DspArbiter::TrackValues, OutputAuthority::kNumTracks>
 OutputAuthority::processBlock(bool engineAuthority, double tSec)
 {
@@ -242,6 +301,8 @@ void OutputAuthority::rebindSources()
         s.curve = curves[static_cast<std::size_t>(t)]; // shared_ptr 保活曲线(不可变契约)
     }
     snap->rawLeadSelect = m_handles.rawLeadSelect;
+    // 活动版本的 G 查表(02 §8.1 步骤 5)。从没设过 pan_curve 的版本这里是 null ⇒ 音频线程按 G≡0 走。
+    snap->panCurveLut = m_panCurveLut[static_cast<std::size_t>(v)];
 
     m_arbiter.publish(snap.get()); // release-store
     m_snapshotPool.push_back(std::move(snap)); // 进程寿命保活

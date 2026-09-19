@@ -9,6 +9,7 @@
 #include <juce_data_structures/juce_data_structures.h>
 
 #include "OutputParams.h"
+#include "analysis/PanCurve.h"
 #include "engine/DspArbiter.h"
 #include "engine/VersionStore.h"
 #include "state/StateCodec.h" // [#256 复审⑥] scvb::state::kNumTracks(下面那条 static_assert)
@@ -62,6 +63,13 @@ public:
     // ---- 曲线注入(消息线程;不可变契约见类注释)----
     void setCurve(int version, int track, const scvb::CurveEvaluator* curve);
 
+    // ---- pan 角度域曲线 G 注入(消息线程;02 §7 / §8.1 步骤 5)----
+    // 把该版本的点列表烘成 PanCurveLut 并(若是活动版本)重发快照,音频线程即刻按新表施加 G。
+    // 点列表与上次烘的**逐字段相同则整个调用是 no-op**:不重建、不重发。这不只是省 CPU ——
+    // LUT 对象指针的稳定性是下游判「这次换表了没有」的依据,无谓重建会把它抖掉。
+    // 点列表为空 → LUT 全 0 dB → 增益恒 1(从没画过曲线的工程声音一个字节不变)。
+    void setPanCurve(int version, const std::vector<scvb::PanCurvePoint>& points);
+
     // ---- 版本复制 §5.3(消息线程;纯 state 深拷贝,零 gesture、零参数写入;单条撤销)----
     scvb::engine::CopyVersionResult copyVersion(int src, int dst, scvb::engine::AuthorityMode mode);
 
@@ -78,6 +86,9 @@ public:
 
     // 活动版本各轨曲线裸指针(消息线程;供 T29 打印器重绑,曲线对象由 VersionStore 保活)。
     std::array<const scvb::CurveEvaluator*, kNumTracks> activeCurves() const;
+
+    // 活动版本的 G 查表(消息线程;供单测与 UI 对拍「画的 == 听的」)。从没设过 → null。
+    std::shared_ptr<const scvb::PanCurveLut> activePanCurveLut() const;
 
     int warningCount() const;
     bool isPrepared() const { return m_prepared; }
@@ -98,8 +109,20 @@ private:
     scvb::engine::VersionStore m_versions;
     juce::UndoManager m_undoManager;
     bool m_prepared = false;
-    // 快照池:进程寿命保活已发布的快照,绝不释放(音频线程可能仍在读旧快照;快照小、数量少)。
+    // 快照池:进程寿命保活已发布的快照,绝不释放(音频线程可能仍在读旧快照)。
+    //
+    // ⚠ [SL-442 → SL-445] 自 SL-442 起每条快照多钉住一份 `PanCurveLut`。实测 `sizeof`:
+    //   Snapshot = 744 B、PanCurveLut = 131,076 B(128.0 KiB),比值 176×。
+    //   LUT 是**每张不同曲线一份**(快照持 shared_ptr,复制只加引用计数);池不回收
+    //   ⇒ 每次「真编辑」(点列表确有变化)留下的那 128 KiB 此后一直在。
+    //   产出速率实测:拖点松手 1 份;Q 滑杆 140 ms 防抖 ⇒ 约 7 份/秒;撤销、重做各 1 份。
+    //   池本身在 SL-442 之前就不回收(`rebuildAllCurves` 一次经 setCurve 发 15 条 = 11,160 B)。
+    //   回收机制转 SL-445。
     std::vector<std::unique_ptr<scvb::engine::DspArbiter::Snapshot>> m_snapshotPool;
+    // 每版本一张 G 查表(pan_curve 是 per-version,不是 per-track)+ 烘它时用的点列表。
+    // 留着点列表是为了 setPanCurve 的 no-op 判定 —— 见该函数注释。
+    std::array<std::shared_ptr<const scvb::PanCurveLut>, kNumVersions> m_panCurveLut{};
+    std::array<std::vector<scvb::PanCurvePoint>, kNumVersions> m_panCurvePoints{};
 };
 
 } // namespace scvb::output

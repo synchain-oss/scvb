@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <iostream>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -65,9 +66,11 @@ struct ArbiterFixture
         rawLeadSelect.store(0.0f);
     }
 
-    void bind()
+    // lut 缺省 null = 没有 pan 曲线(G≡0);既有调用点的行为一字不变。
+    void bind(std::shared_ptr<const scvb::PanCurveLut> lut = nullptr)
     {
         auto snap = std::make_unique<DspArbiter::Snapshot>();
+        snap->panCurveLut = std::move(lut);
         for (int t = 0; t < DspArbiter::kNumTracks; ++t)
         {
             snap->sources[static_cast<std::size_t>(t)].rawPan = &rawPan[static_cast<std::size_t>(t)];
@@ -832,4 +835,274 @@ TEST_CASE("AUTH-SMOKE-1 原子快照并发发布/读取不撕裂", "[authority][
     reader.join();
 
     REQUIRE_FALSE(torn.load());
+}
+
+// ============================================================================
+// [SL-442] 换表交叉淡入(02 §8.1 步骤 5 + 03 §2.4 的 30ms 切换档)。
+//
+// 为什么要淡入:G 是 P 的静态映射,pan 动时 G 跟着连续变;但**曲线本身被改**(或换版本)
+// 时同一个 P 上的增益会瞬时跳。实测单次 setPanCurve 提交的跳变上界 12 dB,最温和的手势
+// (滚轮一格)也有 ~1 dB —— 没有「小到不可闻」那一档。
+//
+// 两格互为反向,钉的是「开得了**也**关得上」,不是只钉一头:
+//   XFADE-1 删掉窗口初值 ⇒ 窗口永不开 ⇒ 第 1 样本直接等于新表值 ⇒ 必红;
+//   XFADE-2 删掉每样本递减 ⇒ 窗口永不关 ⇒ 窗口后仍在混旧表 ⇒ 必红。
+// ============================================================================
+
+namespace
+{
+
+// 峰值落在 P=0 的 bell,**峰值处**恰为 db。整条表并不是恒定 db —— 下面的断言因此
+// 要么把探针固定在 P=0(取到的就是 db),要么拿 lut->gainDb(pan) 自比,不假设平坦。
+std::shared_ptr<scvb::PanCurveLut> bellPeakAtCentre(float db)
+{
+    auto lut = std::make_shared<scvb::PanCurveLut>();
+    scvb::PanCurvePoint p;
+    p.angle = 0.0f;
+    p.gainDb = db;
+    p.shape = scvb::PanCurveShape::bell;
+    p.q = 1.5f;
+    p.side = scvb::PanCurveSide::out;
+    lut->rebuild({p});
+    return lut;
+}
+
+} // namespace
+
+TEST_CASE("AUTH-XFADE-1 换表开窗:第一个样本仍≈旧表,不是瞬间跳到新表", "[authority][pancurve][xfade]")
+{
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs); // 30ms @48k = 1440 样本
+    const auto lutA = bellPeakAtCentre(0.0f); // 探针点 0 dB
+    const auto lutB = bellPeakAtCentre(-12.0f); // 探针点 -12 dB:一次提交能打满的那个量级
+    f.bind(lutA);
+    (void)f.arbiter.processBlock(true, 0.0);
+    advance(f.arbiter, 64);
+
+    // 窗口未开时:只查一张表,prev 为 null。
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading); // 窗口判据是 fading,不是 previous 是否为 null
+    REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0);
+    REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f) == Approx(0.0).margin(1e-6));
+
+    // 换表 → 开窗。
+    f.bind(lutB);
+    (void)f.arbiter.processBlock(true, 0.0);
+    REQUIRE(f.arbiter.panCurveXfadeRemaining() > 0); // 窗口真的开了
+
+    (void)f.arbiter.nextSample();
+    const float first = scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f);
+    // 第一个样本必须还贴着**旧**表:不做淡入的话这里直接是 -12,与上一个样本差 12 dB。
+    REQUIRE(std::fabs(static_cast<double>(first)) < 0.5);
+    REQUIRE(std::fabs(static_cast<double>(first) + 12.0) > 10.0); // 且确实不是新表值
+
+    // 逐样本单调下行、每步增量远小于一次跳变(这才是「不咔哒」的可验证形态)。
+    float prev = first;
+    float maxStep = 0.0f;
+    const int n = f.arbiter.panCurveXfadeRemaining();
+    for (int i = 0; i < n; ++i)
+    {
+        (void)f.arbiter.nextSample();
+        const float now = scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f);
+        REQUIRE(now <= prev + 1e-5f); // 单调(0 → -12)
+        maxStep = std::max(maxStep, std::fabs(now - prev));
+        prev = now;
+    }
+    REQUIRE(maxStep < 0.05f); // 单步 ≤0.05 dB,比整跳的 12 dB 小两个数量级
+    REQUIRE(prev == Approx(-12.0).margin(0.01)); // 窗口末尾落到新表
+}
+
+TEST_CASE("AUTH-XFADE-2 窗口有界:走完 30ms 必关,此后只查一张表", "[authority][pancurve][xfade]")
+{
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+    const auto lutA = bellPeakAtCentre(0.0f);
+    const auto lutB = bellPeakAtCentre(-12.0f);
+    f.bind(lutA);
+    (void)f.arbiter.processBlock(true, 0.0);
+    advance(f.arbiter, 16);
+
+    f.bind(lutB);
+    (void)f.arbiter.processBlock(true, 0.0);
+    const int window = f.arbiter.panCurveXfadeRemaining();
+    REQUIRE(window == static_cast<int>(0.030 * kFs + 0.5)); // 30ms 切换档,不是另立的数
+
+    advance(f.arbiter, window); // 正好走完
+
+    // [SL-442 第2轮] 窗口在**递减到 0 的那一格**就关上,不留到下一格 —— 所以这里不再需要
+    // 「再走一个样本」。第一版留到下一格,于是窗口最后一个样本处在 `mix==1.0f 但 previous
+    // 仍非 null`,走的是 `before + (now-before)*1.0f`:数学上等于 now,**浮点上不保证逐位等于**。
+    // 而那一格恰好就是「窗口关得上」要断言的那一格。
+    REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0);
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
+    REQUIRE(f.arbiter.panCurveXfade().previous == nullptr);
+    REQUIRE(f.arbiter.panCurveXfade().target == lutB.get());
+
+    // 窗口最后那一格就**逐位**等于单表查表(窗口外不残留任何淡入成分)。
+    for (const float pan : {-100.0f, -42.0f, 0.0f, 55.0f, 100.0f})
+    {
+        REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), pan) == lutB->gainDb(pan));
+    }
+
+    // 再走很久也不会自己重开(窗口不是周期性的)。
+    advance(f.arbiter, 4096);
+    REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0);
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
+}
+
+TEST_CASE("AUTH-XFADE-3 段编辑造新快照但不换表 ⇒ 不开窗", "[authority][pancurve][xfade]")
+{
+    // rebuildAllCurves 一次会发 15 个新快照(每轨 setCurve 各一次)。若按「快照变没变」判,
+    // 每次段编辑都会触发 30ms 淡入 —— 一个本该罕见的窗口会变成常态。
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+    const auto lut = bellPeakAtCentre(-6.0f);
+    f.bind(lut);
+    (void)f.arbiter.processBlock(true, 0.0);
+    advance(f.arbiter, 64);
+
+    for (int i = 0; i < 15; ++i) // 模拟一次 rebuildAllCurves 的 15 次重发
+    {
+        f.bind(lut); // 同一张表,新快照
+        (void)f.arbiter.processBlock(true, 0.0);
+        REQUIRE(f.arbiter.panCurveXfadeRemaining() == 0); // 一次都不该开窗
+        REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
+        advance(f.arbiter, 8);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// [SL-442] 版本切换时 **pan 在 30ms 平滑、LUT 也在 30ms 交叉淡入** —— G(P) 的两个输入
+// 同时在动。各自收敛没问题,合起来的增益轨迹要量,不能推。
+// ----------------------------------------------------------------------------
+namespace
+{
+
+// 把一次「换 pan 目标 + 换表」跑完,返回逐样本的 G(dB) 轨迹。
+// samePan / sameLut 用来做对照组:单独只动一个输入时的轨迹长什么样。
+std::vector<double> sweepGainTrace(double panFrom, double panTo, const std::shared_ptr<scvb::PanCurveLut>& lutFrom,
+                                   const std::shared_ptr<scvb::PanCurveLut>& lutTo, int samples)
+{
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(panFrom, 0.0));
+    f.bind(lutFrom);
+    (void)f.arbiter.processBlock(true, 0.0);
+    advance(f.arbiter, 4096); // 先让 pan 平滑器彻底落在 panFrom 上
+
+    f.curves[0] = std::make_shared<scvb::CurveEvaluator>(constCurve(panTo, 0.0));
+    f.bind(lutTo);
+    (void)f.arbiter.processBlock(true, 0.0); // 同时 arm:pan 30ms 切换档 + LUT 30ms 淡入
+
+    std::vector<double> trace;
+    trace.reserve(static_cast<std::size_t>(samples));
+    for (int i = 0; i < samples; ++i)
+    {
+        const auto tv = f.arbiter.nextSample();
+        trace.push_back(static_cast<double>(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), tv[0].pan)));
+    }
+    return trace;
+}
+
+double maxStep(const std::vector<double>& v)
+{
+    double m = 0.0;
+    for (std::size_t i = 1; i < v.size(); ++i)
+        m = std::max(m, std::fabs(v[i] - v[i - 1]));
+    return m;
+}
+
+} // namespace
+
+TEST_CASE("AUTH-XFADE-4 pan 平滑与 LUT 淡入同时在跑:无阶跃", "[authority][pancurve][xfade]")
+{
+    // A:谷底 -12 dB 落在 pan 路径的正中(P=0);B:谷底挪到 +90(路径末端之外)。
+    // 这样两个输入都在动,且 A 在路径中段有强特征 —— 最容易把问题照出来的构造。
+    auto lutA = std::make_shared<scvb::PanCurveLut>();
+    lutA->rebuild({scvb::PanCurvePoint{0.0f, -12.0f, scvb::PanCurveShape::bell, 3.0f, scvb::PanCurveSide::out}});
+    auto lutB = std::make_shared<scvb::PanCurveLut>();
+    lutB->rebuild({scvb::PanCurvePoint{90.0f, -12.0f, scvb::PanCurveShape::bell, 3.0f, scvb::PanCurveSide::out}});
+
+    const int window = static_cast<int>(0.030 * kFs + 0.5);
+    const int n = window * 3; // 覆盖窗口内 + 窗口关上之后
+
+    const auto both = sweepGainTrace(-60.0, 60.0, lutA, lutB, n); // 两个输入一起动
+    const auto lutOnly = sweepGainTrace(-60.0, -60.0, lutA, lutB, n); // 只换表
+    const auto panOnly = sweepGainTrace(-60.0, 60.0, lutA, lutA, n); // 只动 pan
+
+    std::cout << "  [SL-442] maxStep(dB/sample):both=" << maxStep(both) << " lutOnly=" << maxStep(lutOnly)
+              << " panOnly=" << maxStep(panOnly) << std::endl;
+
+    // 判据 = **逐样本阶跃**,不是「有没有起伏」。起伏是正常的:pan 扫过曲线上的特征时
+    // G 本来就该跟着变(那正是 G 的作用)。会咔哒的是不连续,不是幅度 —— 拿「不许超出两端值
+    // 围成的区间」当判据会把**正确**行为判成错:pan 从 -60 扫到 +60 途中经过 A 表 P=0 的
+    // -12 dB 谷底,中段本来就该比两端都低。
+    //
+    // 实测(48k,上面那行 stdout 会打出来):
+    //   both = 0.0254 dB/sample、lutOnly = 0.00088、panOnly = 0.0214
+    // ⇒ 两个输入一起动只比「单动 pan」陡 1.18 倍;主导项是 pan 扫过曲线特征(既有行为),
+    //   LUT 淡入自身只贡献 0.00088 dB/sample。合起来没有引入新的陡变。
+    // 1.5 这个上界是**先于测量**定的(取「不得明显比更陡的那个单输入更陡」),不是照着
+    // 1.18 凑的;留 27% 余量。
+    REQUIRE(maxStep(both) <= std::max(maxStep(lutOnly), maxStep(panOnly)) * 1.5 + 1e-9);
+
+    // 绝对上界:整跳是 12 dB,逐样本阶跃必须比它小两个数量级以上。
+    REQUIRE(maxStep(both) < 0.12);
+
+    // 窗口关上那一刻不许有台阶 —— 淡入结束时旧表被置 null,最容易在这儿掉一块。
+    const double atClose =
+        std::fabs(both[static_cast<std::size_t>(window)] - both[static_cast<std::size_t>(window) - 1]);
+    REQUIRE(atClose < 0.12);
+
+    // 收敛:窗口之后停在「新表 @ 新 pan」上。
+    REQUIRE(both.back() == Approx(static_cast<double>(lutB->gainDb(60.0f))).margin(0.01));
+}
+
+TEST_CASE("AUTH-XFADE-5 第一次画曲线(null → 有表)同样淡入", "[authority][pancurve][xfade]")
+{
+    // 这一格钉的是第 2 轮 bot 找到的缺陷:第一版拿 `previous == nullptr` 兼作「窗口关着」,
+    // 而 null 同时是「从没画过曲线」的状态 ⇒ **用户第一次画曲线恰好走了不淡入的分支**,
+    // 花整轮避免的 12 dB 硬跳原样留在最常见的入口上。
+    ArbiterFixture f;
+    f.arbiter.prepare(kFs);
+
+    f.bind(nullptr); // 从没画过曲线:快照里没有表
+    (void)f.arbiter.processBlock(true, 0.0);
+    advance(f.arbiter, 64);
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
+    REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f) == 0.0f); // G≡0
+
+    const auto lut = bellPeakAtCentre(-12.0f); // 第一次画:探针点直接 -12 dB
+    f.bind(lut);
+    (void)f.arbiter.processBlock(true, 0.0);
+    REQUIRE(f.arbiter.panCurveXfadeRemaining() > 0); // 窗口开了
+    REQUIRE(f.arbiter.panCurveXfade().fading);
+    REQUIRE(f.arbiter.panCurveXfade().previous == nullptr); // 旧表确实是 null(从 G≡0 淡入)
+
+    (void)f.arbiter.nextSample();
+    const float first = scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f);
+    // 第一个样本必须还贴着 0 dB。不修的话这里直接是 -12 —— 与上一个样本差 12 dB。
+    REQUIRE(std::fabs(static_cast<double>(first)) < 0.5);
+    REQUIRE(std::fabs(static_cast<double>(first) + 12.0) > 10.0);
+
+    // 逐样本单调下行、单步远小于整跳。
+    float prev = first;
+    float maxStep = 0.0f;
+    const int n = f.arbiter.panCurveXfadeRemaining();
+    for (int i = 0; i < n; ++i)
+    {
+        (void)f.arbiter.nextSample();
+        const float now = scvb::panCurveGainDb(f.arbiter.panCurveXfade(), 0.0f);
+        REQUIRE(now <= prev + 1e-5f);
+        maxStep = std::max(maxStep, std::fabs(now - prev));
+        prev = now;
+    }
+    REQUIRE(maxStep < 0.05f);
+    REQUIRE(prev == Approx(-12.0).margin(0.01));
+
+    // 窗口关上那一格就逐位等于单表查表(第 2 轮【建议】④ 的落点)。
+    REQUIRE_FALSE(f.arbiter.panCurveXfade().fading);
+    for (const float pan : {-100.0f, -30.0f, 0.0f, 77.0f, 100.0f})
+    {
+        REQUIRE(scvb::panCurveGainDb(f.arbiter.panCurveXfade(), pan) == lut->gainDb(pan));
+    }
 }

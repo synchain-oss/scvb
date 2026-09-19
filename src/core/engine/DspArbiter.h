@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 
+#include "analysis/PanCurve.h"
 #include "dsp/ParamSmoother.h"
 #include "engine/CurveEvaluator.h"
 
@@ -54,6 +55,12 @@ public:
     {
         std::array<TrackSources, kNumTracks> sources{};
         const std::atomic<float>* rawLeadSelect = nullptr; // lead_select(0..15,去归一化)
+        // pan 角度域增益曲线 G 的 LUT(02 §7 / §8.1 步骤 5)。**全曲一份,不是 per-track** ——
+        // pan_curve 存在 `CrvsData.versions[]` 上,per-version 而非 per-track。活动版本的那张
+        // 在 rebindSources 里塞进来;null → G≡0(等价于点列表为空,PanCurveLut 默认全 0)。
+        // 与 TrackSources::curve 同一套不可变契约:LUT 对象发布后绝不原地重建,改曲线 = 新建
+        // 一张再发新快照,旧张由快照池保活 —— 音频线程换表那一瞬间读到的必是某张完整的表。
+        std::shared_ptr<const scvb::PanCurveLut> panCurveLut;
     };
 
     struct TrackValues
@@ -74,6 +81,24 @@ public:
 
     // 音频线程:每样本前进一格平滑器。
     std::array<TrackValues, kNumTracks> nextSample();
+
+    // 音频线程:本 block 生效的 G 查表。processBlock 已从**同一份** acquire-load 的快照里锁定它,
+    // 与本块的 TrackValues 同源同块;整块逐样本复用,期间不再触碰原子。
+    // 返回 null → G≡0(未接线 / 未发布过快照)。裸指针的存活由快照池的 shared_ptr 兜底(进程寿命)。
+    const scvb::PanCurveLut* panCurveLut() const noexcept { return m_panCurveLut; }
+
+    // 音频线程:本**样本**生效的 G 查表视图(含换表交叉淡入)。须在 nextSample() 之后读 ——
+    // 它与那次 nextSample 返回的 TrackValues 说的是同一个样本。
+    // 窗口外 fading==false ⇒ panCurveGainDb 退化成单表查表,与不做淡入时逐位相同。
+    // ⚠ 窗口判据是 `m_xfadeRemaining > 0`,**不是** `m_prevPanCurveLut != nullptr` ——
+    //    旧表为 null 也可能正在淡入(「第一次画曲线」= 从 G≡0 淡到新表)。
+    scvb::PanCurveXfade panCurveXfade() const noexcept
+    {
+        return scvb::PanCurveXfade{m_panCurveLut, m_prevPanCurveLut, m_panCurveMix, m_xfadeRemaining > 0};
+    }
+
+    // 剩余淡入样本数(单测用;0 = 窗口已关)。判据靠它钉「窗口不会永久开着」。
+    int panCurveXfadeRemaining() const noexcept { return m_xfadeRemaining; }
 
     const std::array<TrackValues, kNumTracks>& lastTargets() const { return m_targets; }
     bool lastBlockWasSwitch() const { return m_lastAnySwitch; }
@@ -106,6 +131,16 @@ private:
 
     // 以下全部为音频线程独占状态(仅 processBlock/nextSample 访问,不跨线程):
     const Snapshot* m_prevSnapshot = nullptr; // 上块快照指针(用于检测版本切换)
+    // —— 换表交叉淡入(02 §8.1 步骤 5;窗口时长 = §2.4 的 30ms 切换档)——
+    // ⚠ 触发判据是 **LUT 对象指针**变没变,**不是**快照变没变:`rebuildAllCurves` 跑一次就会
+    // 造 15 个新快照(每轨 setCurve 各发一次),按快照判会让**每次段编辑**都触发淡入 ——
+    // 一个本该罕见的窗口会变成常态。前提是消息线程侧点没变时不重建(OutputAuthority::setPanCurve
+    // 的 no-op 守卫),否则这个指针恒变、判据恒真。
+    const scvb::PanCurveLut* m_panCurveLut = nullptr; // 本块生效的新表(processBlock 锁定)
+    const scvb::PanCurveLut* m_prevPanCurveLut = nullptr; // 窗口内的旧表;窗口关上即置 null
+    int m_xfadeSamples = 0; // 窗口总长(样本);prepare 时按 switchRampSec 算定
+    int m_xfadeRemaining = 0; // 剩余样本;整数递减到 0 即关,不做浮点比较、不等收敛
+    float m_panCurveMix = 1.0f; // 本样本的 previous→target 权重
     std::array<scvb::dsp::LinearSmoother, kNumTracks> m_panSmoother{};
     std::array<scvb::dsp::LinearSmoother, kNumTracks> m_volSmoother{};
     std::array<scvb::dsp::LinearSmoother, kNumTracks> m_widthSmoother{};

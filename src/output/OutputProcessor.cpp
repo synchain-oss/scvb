@@ -692,6 +692,9 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     for (int i = 0; i < n; ++i)
     {
         const auto tv = authority_.nextSample();
+        // [SL-442] 本样本的 G 查表视图(含换表 30ms 交叉淡入)。必须在 nextSample 之后取 ——
+        // 它推进淡入计数器,取早了会拿到上一个样本的权重。
+        const auto panCurve = authority_.arbiter().panCurveXfade();
         const float gw = globalWidthSmoother_.getNextValue();
         const float gM = gMSmoother_.getNextValue();
         const float gS = gSSmoother_.getNextValue();
@@ -709,14 +712,14 @@ void ScvbOutputAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
             if (nch[static_cast<std::size_t>(ch)] == 1)
             {
                 scvb::output::mixMonoSample(trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(i)], t.pan,
-                                            t.volDb, gw, fade, l, r);
+                                            t.volDb, gw, fade, panCurve, l, r);
             }
             else
             {
                 scvb::output::mixStereoSample(
                     trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(2 * i)],
                     trackBuf_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(2 * i + 1)], t.pan, t.volDb,
-                    t.width, gw, fade, l, r);
+                    t.width, gw, fade, panCurve, l, r);
             }
         }
         scvb::output::applyMsGains(gM, gS, l, r); // 总线级 M/S 音量比(求和之后、替换之前,[J58])
@@ -2441,6 +2444,11 @@ void ScvbOutputAudioProcessor::rebuildAllCurves()
 
     for (int v = 1; v <= scvb::state::kNumVersions; ++v)
     {
+        // pan 角度域曲线 G 也从这里下发(02 §8.1 步骤 5):挂在同一个「覆盖全部改曲线路径」的
+        // 钩子上,setPanCurve 的撤销/重做、复制版本、加载工程就都不必各记一笔。
+        // 点没变时 OutputAuthority::setPanCurve 整个 no-op,段编辑不会白烘一张 32769 点的表。
+        authority_.setPanCurve(v, crvsData_.versions[static_cast<std::size_t>(v - 1)].panCurve);
+
         for (int t = 0; t < scvb::state::kNumTracks; ++t)
         {
             const auto& src =
@@ -2674,7 +2682,12 @@ void ScvbOutputAudioProcessor::setPanCurve(int version, const std::vector<scvb::
     scvb::output::commitCrvsTransaction(
         authority_.undoManager(), crvsData_, "Set pan curve",
         [&] { crvsData_.versions[static_cast<std::size_t>(version - 1)].panCurve = points; },
-        [] {}); // pan_curve 不参与 CurveEvaluator,不 rebuild
+        // pan_curve 确实不参与 CurveEvaluator(它不是时间线上的段,是 P→dB 的静态映射),但它
+        // **要进实时链**(02 §8.1 步骤 5)。所以这里要 rebuild:`rebuildAllCurves` 里的
+        // `authority_.setPanCurve` 会把新点列表烘成 LUT 并发快照。
+        // 走这个回调而不是直接调 setPanCurve,是为了**撤销/重做**也走同一条路 ——
+        // commitCrvsTransaction 的 onChanged 在 undo/redo 时同样会被调用。
+        [this] { rebuildAllCurves(); });
 }
 
 bool ScvbOutputAudioProcessor::setTransitionRamp(float ms)
