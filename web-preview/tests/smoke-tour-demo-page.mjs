@@ -32,11 +32,11 @@
 //      不需要经红字九条页,curTab 全程停在默认的 "master" ——这正是①能复现
 //      SL-33 的关键:`start()` 时 was===name(master===master),activateTab 自己
 //      不会顺手排一次 render。
-//   ② 先轮询到 `#card` 子树的渲染观测安静下来(mock 驱动的一次性差分已落定,
-//      理由见调用点注释),再插一个 tour **开始前**就带 `inert` 的节点,然后点
-//      「tour-ask-start」进入 tour:蒙版可见;`header-conn-count` 在几秒内变成
-//      "15/15"(demo 的 FIFTEEN_TRACKS 15 轨全部健康在线)—— 这一位只能来自
-//      **真的跑过一次 render()**,不是"isActive() 已经是 true"就有的副作用。
+//   ② 先轮询 `sl33Settled()`(定义见文件顶部,连同下界一起判定 mock 驱动的一次性
+//      差分是否已经落定或已过安全网下界),再插一个 tour **开始前**就带 `inert`
+//      的节点,然后点「tour-ask-start」进入 tour:蒙版可见;`header-conn-count`
+//      在几秒内变成 "15/15"(demo 的 FIFTEEN_TRACKS 15 轨全部健康在线)—— 这一位
+//      只能来自**真的跑过一次 render()**,不是"isActive() 已经是 true"就有的副作用。
 //   ③ tour 激活期间,再往 `#card` 里插一个 tour **中途**插入、与 tour 无关、
 //      自带 `inert` 的新节点,然后点 Skip 结束 tour;断言:
 //      · ②插的「开始前」节点与③插的「中途」节点,`inert` **都仍然在**
@@ -46,13 +46,19 @@
 //      · `header-conn-count` 变回 "0/15"(viewStore() 切回真实 store)。
 //   ④ 每段零 console.error、零未捕获异常。
 //
-// 删除式(未提交,人工核过):
-//   · 去掉 `tour.js` `start()` 里新增的那句 `requestRender()`,②段必须转红(卡在
-//     "15/15" 等不到,取到的还是 "0/15");
+// 删除式:
+//   · `sl33Settled()` 的下界(每次跑本文件都会执行,不依赖真实浏览器时序运气):
+//     文件顶部 `selfTestSl33Settled()` 直接对这个纯函数注入"差分延迟到阈值之后
+//     才落地"的时间序列,钉住"下界=0"与"一见 mutation 就放行"两种更粗糙的写法,
+//     退回其中任一种都会让对应的自测用例转红(未提交,人工核过)。
+//   · 去掉 `tour.js` `start()` 里新增的那句 `requestRender()`(未提交,人工核过),
+//     ②段必须转红(卡在 "15/15" 等不到,取到的还是 "0/15");
 //   · 把 `start()` 里的 `!child.hasAttribute("inert")` 判断去掉(退回「当时碰到的
-//     全收」半修复),③段「开始前」那个节点的 `inert` 仍在断言必须转红;
+//     全收」半修复,未提交,人工核过),③段「开始前」那个节点的 `inert` 仍在断言
+//     必须转红;
 //   · 把 `endTour()` 的清 inert 循环改回 `for (const child of card.children)
-//     child.removeAttribute("inert")`,③段两个节点的 `inert` 仍在断言必须转红。
+//     child.removeAttribute("inert")`(未提交,人工核过),③段两个节点的 `inert`
+//     仍在断言必须转红。
 //
 // 用法:node web-preview/tests/smoke-tour-demo-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
@@ -126,6 +132,70 @@ function eq(got, want, msg) {
     console.log(`  [FAIL] ${msg}\n         实得 ${a}\n         应为 ${b}`);
     return false;
 }
+
+// ---------------------------------------------------------------- SL-33 等待谓词
+// [复审【重要】] 「安静 SETTLE_MS」这种"没有变化"的观测量,下界结构上是 0——挂上
+// 观察器那一刻,`count===0` 时只要等满 SETTLE_MS 就会判定"安静",而这并不能推出
+// "mock 那次一次性差分已经落地":它可能压根还没发生。实测这次差分的到达时刻能
+// 从 <300ms 飘到 >3s(headless 对后台标签页的定时器节流),纯粹的"安静"判据会在
+// 差分真正发生**之前**放行,点击之后差分才落地 ⇒ 没有 SL-33 修复也会把画面刷成
+// demo(假绿)。
+// 本该优先找一个正向的、确定的目标态直接等(它天然有下界:目标没出现就不会放行)。
+// 但这次差分在设计上就不产生任何可观测的值变化 —— mock 只是把内部 undefined 基线
+// 与真实载荷做一次 diff,fixture=empty 下 conn/groups 的值在差分前后逐字相同,找不到
+// 一个只由它产出的正向信号。因此退回有界版本,把残留面写实:FLOOR_MS 是安全网,
+// 与被替换的 `sleep(4000)` 同量级下界(覆盖实测最坏 >3s 的节流场景),不是"已经不
+// 赌墙钟"那么干净 —— 只是把赌注从"唯一出口"降成"兜底出口"。SETTLE_MS 本身也
+// 主动抬到 > mock 最慢的周期发射器 `groups1Hz`(1000ms),让"安静"在正常(不节流)
+// 路径下真的能推出"两个周期发射器都已经不再产出新变化",而不是碰巧只跨过了
+// `conn4Hz`(250ms)一档。
+//
+// 用 `toString()` 把这个函数原样注入页面(见下方调用点),保证节点侧轮询与这里的
+// 自测跑的是**同一段代码**,不会两处各写一份、漂出分歧。
+function sl33Settled({ count, lastAt, installedAt, now }) {
+    const SETTLE_MS = 1200;
+    const FLOOR_MS = 4000;
+    const settled = count > 0 && now - lastAt > SETTLE_MS;
+    const floorPassed = now - installedAt > FLOOR_MS;
+    return settled || floorPassed;
+}
+
+// 删除式(钉住"下界"这一格,不依赖真实浏览器时序运气——直接对纯函数注入
+// "差分延迟到阈值之后才落地"的时间序列):
+(function selfTestSl33Settled() {
+    eq(
+        sl33Settled({ count: 0, lastAt: 0, installedAt: 0, now: 0 }),
+        false,
+        "自测 sl33Settled:刚挂上观察器、零 mutation ⇒ 不该立刻放行" +
+            "(钉住「下界=0」那个旧缺陷——bot 4054093079 指出的正是这一格)",
+    );
+    eq(
+        sl33Settled({ count: 0, lastAt: 0, installedAt: 0, now: 3999 }),
+        false,
+        "自测 sl33Settled:零 mutation、飘到实测最坏区间(3999ms)仍未到 FLOOR_MS ⇒ 仍不该放行",
+    );
+    eq(
+        sl33Settled({ count: 0, lastAt: 0, installedAt: 0, now: 4001 }),
+        true,
+        "自测 sl33Settled:零 mutation 但已过 FLOOR_MS ⇒ 兜底放行(与旧 sleep(4000) 同量级下界)",
+    );
+    eq(
+        sl33Settled({ count: 1, lastAt: 3500, installedAt: 0, now: 3501 }),
+        false,
+        "自测 sl33Settled:差分刚落地(t=3500,落在实测最坏区间内)、还没安静满 " +
+            "SETTLE_MS ⇒ 不该立刻放行(这一格钉的是「一见 mutation 就放行」那个更粗糙的写法)",
+    );
+    eq(
+        sl33Settled({
+            count: 1,
+            lastAt: 3500,
+            installedAt: 0,
+            now: 3500 + 1200 + 1,
+        }),
+        true,
+        "自测 sl33Settled:差分落地后安静满 SETTLE_MS ⇒ 放行",
+    );
+})();
 
 // ---------------------------------------------------------------- 静态服务
 const MIME = {
@@ -465,49 +535,52 @@ try {
 
     // =========================================================================
     log("=== ② 点「开始」进 tour ⇒ demo 数据必须真的上屏(SL-33) ===");
-    // [复审【重要】×2] 点「开始」前必须让 mock 驱动的周期帧(scvb.conn/scvb.groups
-    // 的 `emitIfChanged`)把它们**唯一一次**"从空基线到真实载荷"的差分发完并稳定
-    // 下来 —— 那次差分会触发一次不相干的 `requestRender()`,如果它落在点击**之后**,
+    // [复审【重要】] 点「开始」前必须让 mock 驱动的周期帧(scvb.conn/scvb.groups 的
+    // `emitIfChanged`)把它们**唯一一次**"从空基线到真实载荷"的差分发完并稳定下来
+    // —— 那次差分会触发一次不相干的 `requestRender()`,如果它落在点击**之后**,
     // 没有 SL-33 那个修复也会把画面"顺带"刷成 demo 数据(假绿,本仓最反对的方向)。
-    // 旧版在这里写死 `sleep(4000)`,与 CLAUDE.md §10「别写死 sleep,要轮询」冲突,
-    // 而且是**经验常数**:headless Chrome 对后台/无焦点标签页的定时器有节流,实测
-    // 跨导航能把这次差分的到达时刻从 <300ms 飘到 >3s,机器更慢一档或 mock 的周期
-    // 常数一改,这个常数会重新变回随机假阳性;机器快时又白等,而这一段是持锁的
-    // (`Local\SCVB-ipc-tests`),白等的时间记在全机预算里。
-    // 改成轮询一个**只由那次差分驱动**的可观测量:往 `#card` 子树挂
-    // MutationObserver,`renderHeader()` 每次 render() 都无条件重写
-    // `header-conn-count.textContent`(即便值不变,`textContent` 赋值本身就是一次
-    // childList 变更)⇒ 观察到的每条 mutation 都对应一次真实 render() —— 轮询到
-    // "最近一次 mutation 之后已经安静了 SETTLE_MS"再点「开始」,语义与旧注释一模
-    // 一样(等一次性差分落定),但换成了自适应条件:快机器几百毫秒就点,慢机器/
-    // 节流更狠也照样等得到,不再拿一个固定墙钟时长去赌。
-    const SETTLE_MS = 700;
+    // 旧版在这里写死 `sleep(4000)`,与 CLAUDE.md §10「别写死 sleep,要轮询」冲突;
+    // 第一版改成"轮询到 #card 安静 700ms",但那个谓词的下界是 0——挂上观察器那一刻
+    // 若一次 mutation 都没见到,700ms 后照样判"安静",推不出"差分已经落地",而实测
+    // 这次差分能飘到 >3s。判据形状与残留面见上方 `sl33Settled()` 的头注(那份函数
+    // 原样注入到这里,保证节点侧轮询与自测跑的是同一段代码)。
+    // 观察面也收窄到 `header-conn-count` 一个节点、只看 `childList`/`characterData`
+    // —— 论证只用到「`renderHeader()` 无条件重写这一格 `textContent`」这一条信号,
+    // `attributes` 与 `#card` 整棵子树都是论证之外的面:今天 idle 期没有别的东西在
+    // 动(meters 有 T33 空闲零 rAF 自停、playhead 有 `samePlayhead` 过滤、conn/groups
+    // 走 `emitIfChanged`),但那是**当前实现的性质,不是不变量**——哪天 idle 期多一处
+    // 逐帧直写属性的东西,原来那份宽观察面会把这一格从"偶发"变成 12s 超时假红。
     check(
         await evaluate(
-            IN(`const c = gb("card");
-                if (!c) return false;
-                window.__sl33Mut = { count: 0, lastAt: performance.now() };
+            IN(`const n = gb("header-conn-count");
+                if (!n) return false;
+                window.__sl33Mut = {
+                    count: 0,
+                    lastAt: performance.now(),
+                    installedAt: performance.now(),
+                };
                 new (w.MutationObserver)(() => {
                     window.__sl33Mut.count++;
                     window.__sl33Mut.lastAt = performance.now();
-                }).observe(c, {
-                    childList: true,
-                    subtree: true,
-                    characterData: true,
-                    attributes: true,
-                });
+                }).observe(n, { childList: true, characterData: true });
                 return true;`),
         ),
-        "在 #card 子树挂好渲染观测(点「开始」前)",
+        "在 header-conn-count 上挂好渲染观测(点「开始」前)",
     );
     check(
         await waitFor(
             IN(`const s = window.__sl33Mut;
-                return !!s && performance.now() - s.lastAt > ${SETTLE_MS};`),
+                if (!s) return false;
+                const settledFn = ${sl33Settled.toString()};
+                return settledFn({
+                    count: s.count,
+                    lastAt: s.lastAt,
+                    installedAt: s.installedAt,
+                    now: performance.now(),
+                });`),
             12000,
         ),
-        `渲染在 ${SETTLE_MS}ms 内安静下来(一次性差分已落定;12s 内没安静判超时,` +
-            "不当作通过)",
+        "一次性差分已落定或已过安全网下界(见 sl33Settled 头注;12s 内都没成立才判超时)",
     );
     // [复审【重要】① 的另一半] SL-35 的缺陷有两种触发时刻:「tour 中途插入」(下面
     // ③ 段已经在验)与「tour 开始前就已经带 inert」——两种都要被 start() 跳过、

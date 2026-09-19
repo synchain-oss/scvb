@@ -393,6 +393,16 @@ jobs:
         # 豁免删掉后,这条 CI 的全部意义就是"让全仓的死链暴露"——传全量参数会让它
         # 只暴露排在最前面的那一条,后面 89 个文件的检查静默消失,整改的收益被这一
         # 步截掉一大截。本地复现时踩过一次,发现即改。
+        #
+        # [复审【建议】] 「失败要有 file= 标注」采纳:末尾那句 `::error::` 原来写着
+        # "see per-file output above",而 `-q` 会不会一起压掉每个文件的边界取决于
+        # `markdown-link-check` 的版本行为 —— 那句话本身可能是假的。改成每个文件
+        # 显式包一层 `::group::`/`::endgroup::`(日志按文件折叠)、命中死链就单独打一条
+        # 带 `file=` 的 `::error::`,并把失败文件名收进 `failed_files`、结尾一次性列全,
+        # 不再依赖 CLI 输出格式的隐含假设。
+        # 【不采纳】另一条"预装一次 markdown-link-check 省 89 次 npx 解析"的建议:
+        # 纯性能,不触及行为错/判据失效/文档误导三条判据,而预装全局包会新引入一个
+        # 失败面(npm 全局安装本身可能失败),不划算,详见 PR thread。
         run: |
           set -o pipefail
           files=$(git ls-files '*.md' \
@@ -401,12 +411,17 @@ jobs:
             | grep -v '^third_party/')
           test -n "$files" || { echo "::error::no markdown files found"; exit 1; }
           fail=0
+          failed_files=""
           while IFS= read -r f; do
+            echo "::group::$f"
             if ! npx --yes markdown-link-check@3.15.0 --config .markdown-link-check.json -q "$f"; then
               fail=1
+              failed_files="$failed_files $f"
+              echo "::error file=$f::dead link(s) found in $f"
             fi
+            echo "::endgroup::"
           done <<< "$files"
           if [ "$fail" -ne 0 ]; then
-            echo "::error::dead link(s) found (see per-file output above)"
+            echo "::error::dead link(s) found in:$failed_files"
             exit 1
           fi
