@@ -20,7 +20,9 @@
 //      `runHistory` 在写调用之前中止在飞的曲线编辑,`abortEdit()` 的四件事与
 //      `render()` 的版本闸都在。**行为面不在本套** —— 豁免矩阵与「松手不再提交
 //      陈旧抄本」要真 DOM / 真焦点 / 真 pointer capture,归
-//      `smoke-undo-scope-page.mjs`(页面级);
+//      `smoke-undo-scope-page.mjs`(页面级)。本段的删除式(注入未提交,实跑过):
+//      把 `isEditableTextTarget(a)` 换回 `a.tagName === "INPUT"` ⇒ 前两格转红;
+//      把 `EDITABLE_SELECTOR` 改成不由 `EDITABLE_TEXT_SELECTOR` 派生 ⇒ 单一真源那格转红;
 //   ④ 词条:`header.*` 五条三语齐备、非空、05 §5 禁词零命中。
 //
 // 用法:node web-preview/tests/smoke-undo-redo.mjs [仓库根绝对路径]
