@@ -141,6 +141,44 @@ TEST_CASE("J66② 改组后新组同 channel 被占 → I2 冲突态(不持有 s
     REQUIRE_FALSE(s.audioRing().bound());
 }
 
+TEST_CASE("SL-19 复发①:换 channel 冲突时补偿式回滚 —— 会话留在旧 channel,不掉未分配", "[input][session]")
+{
+    // ⚠ 本用例只覆盖 prepare() 的单 channel 切换路径(setChannelId 场景),不是 changeGroup()——
+    // 上一条用例(J66②)钉的是「改组冲突 → 不持有任何 slot」,这条与之刻意不同,不是矛盾:
+    // 补偿式回滚只在「组不变、纯换 channel」这个口径下生效,理由见 InputSession.h prepare() 头注。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 先在 channel 3 上站稳。
+    InputSession s(backend, 1001);
+    s.setChannelId(3);
+    REQUIRE(s.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+    REQUIRE(s.boundChannel() == 3);
+
+    // 另一实例占住 channel 5(心跳新鲜,构成真冲突)。
+    InputSession other(backend, 2001);
+    other.setChannelId(5);
+    REQUIRE(other.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+    other.heartbeat(100);
+
+    // s 尝试切到 5:CAS 失败,补偿式回滚应该把 3 抢回来。
+    s.setChannelId(5);
+    REQUIRE(s.prepare(48000, 512, 1, 200) == InputClaimState::kConflict); // 报给调用方:这次请求被拒
+    REQUIRE(s.state() == InputClaimState::kActive); // 但会话本身仍然活跃(留在旧 channel 上)
+    REQUIRE(s.boundChannel() == 3); // 回滚到了旧 channel,不是掉到未分配(这是本卡要修的缺陷本体)
+    REQUIRE(s.channelId() == 3); // 内部字段也一致收敛回旧值,供下一次 prepare() 的快路径判断
+
+    // registry 层面同样确认:旧槽真的被重新持有,不是靠内存里的数字充数。
+    scvb::Registry probe(backend, 1);
+    REQUIRE(probe.open() == scvb::Registry::ClaimResult::kClaimed);
+    REQUIRE(probe.inputSlot(3)->state.load() == kSlotActive);
+    REQUIRE(probe.inputSlot(3)->pid == 1001);
+
+    // 音频/特征段也确认真的重建了(不是只有 registry 数字对、段没跟上)。
+    REQUIRE(s.audioRing().bound());
+    REQUIRE(s.featRing().bound());
+}
+
 TEST_CASE("健康判定:无 Output → false;Output 活跃 + mask → true", "[input][session]")
 {
     scvb::SegmentBackendInProcess::resetAll();

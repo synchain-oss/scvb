@@ -674,6 +674,60 @@ TEST_CASE("HOST I3:本组无 Output 广播时,mono 轨 participate 不被误报�
     lone.releaseResources();
 }
 
+TEST_CASE("SL-446(集成,真 Processor):冲突后 bridgeTickSnapshot/getStateInformation 回填真实"
+          "持有的 channel",
+          "[host][input][sl446]")
+{
+    // ⚠ 这是**真判据**,不是 tests/core/test_input_bridge_ipc.cpp 里那种"复刻"测试——
+    // 那边受限于 ScvbInputAudioProcessor 依赖 WebView2,在 scvb_tests/scvb_input_bridge_tests
+    // 里离线编不进去,只能用 InputSession + 编解码函数逐段复刻;而本目标(scvb_host_tests)
+    // 恰恰**不编 *PluginEntry.cpp**(那里才是 createEditor() 真正拉 WebView2 的地方),只编
+    // *Processor.cpp,createEditor() 由本文件顶部的桩实现顶替(见文件头「不编 *PluginEntry.cpp」
+    // 那段注释)——`setChannelId`/`bridgeTickSnapshot`/`getStateInformation` 三个都是**真实
+    // 生产代码**,直接调用、直接断言,不绕过 InputProcessor.cpp 一行代码。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor a;
+    a.setGroupId(kTestGroup);
+    a.setPlayHead(&ph);
+    a.prepareToPlay(kSr, kBlock);
+
+    ScvbInputAudioProcessor b;
+    b.setGroupId(kTestGroup);
+    b.setPlayHead(&ph);
+    b.prepareToPlay(kSr, kBlock);
+
+    // a 先在 kTestChannel 上站稳。
+    REQUIRE(a.setChannelId(kTestChannel) == scvb::input::InputClaimState::kActive);
+    // b 占住另一个 channel(心跳随 claim 即写,足够新鲜,构成真冲突)。
+    REQUIRE(b.setChannelId(5) == scvb::input::InputClaimState::kActive);
+
+    // a 试图切到 b 占着的 5:CAS 失败,补偿式回滚应该让 a 留在 kTestChannel。
+    REQUIRE(a.setChannelId(5) == scvb::input::InputClaimState::kConflict);
+
+    // ① 广播源:bridgeTickSnapshot().channelId 必须是真实持有的 kTestChannel,
+    // 不是抢失败的目标 5(这是 SL-446 的 UI 那一半:界面显示"转移成功了"的直接来源)。
+    CHECK(a.bridgeTickSnapshot().channelId == kTestChannel);
+
+    // ② 存档:getStateInformation() 写出来的 channel 号同样必须是 kTestChannel,不是 5
+    // (这是 SL-446 后果最重的一半:下次打开工程才发作,当次运行看不出来)。
+    juce::MemoryBlock blob;
+    a.getStateInformation(blob);
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(blob.getData()), blob.getSize(), chunks) ==
+            scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfg != nullptr);
+    scvb::state::InputState loaded;
+    REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
+    CHECK(loaded.channelId == kTestChannel);
+    CHECK(loaded.channelId != 5);
+
+    a.releaseResources();
+    b.releaseResources();
+}
+
 TEST_CASE("HOST I4:换组后不继承上一组的采集覆盖", "[host][t37][changegroup]")
 {
     Rig r;

@@ -8,6 +8,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <cstddef>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 #include "input/InputSession.h"
@@ -518,6 +522,164 @@ TEST_CASE("T37 Processor 回归(deepseek):srMismatch 读对组 —— changeGrou
     scvb::CtrlPlane probe1(backend, 1);
     REQUIRE(probe1.open() == InitResult::kOk);
     CHECK(probe1.readGlobalInfo().output_sample_rate == 44100);
+}
+
+// ---------------------------------------------------------------------------
+// SL-446(SL-19 复发):Input 通道冲突时 UI 未回滚 + 存档写错通道号。
+// 真机路径在 ScvbInputAudioProcessor::setChannelId/bridgeTickSnapshot/getStateInformation
+// (依赖 WebView2,不可离线编入单测,同上 T37 那条注释的限制)——下面②③用 InputSession +
+// InputStateCodec 逐段复刻该编排,与 T37 系列同一个惯例(§436 起那条已有先例)。
+// 根因(已在 InputProcessor.cpp 修掉):`channelId_` 这个镜像字段此前在 CAS 结果出来**之前**
+// 就被写成请求值,而它正是 bridgeTickSnapshot(广播给 UI)与 getStateInformation(工程存档)
+// 的直接数据源;修法是把镜像字段的赋值挪到 session_.prepare() **之后**,读
+// session_.boundChannel()(真正持有的 channel)。②③ 两格分别对应这两个不同的出口——
+// ②绿不代表③绿,两条各自独立断言。
+// ⚠ **复审当场指出的一个洞,写清楚不要含糊**:②③里的 `channelIdMirror` 是测试自己按新
+// 公式算出来的本地变量,**不是从 InputProcessor.cpp 读出来的**——如果有人把
+// `setChannelId()` 改回旧版那种「prepare() 之前就把 channelId_ 写成请求值」,②③**不会变红**
+// (判例原文:「缺陷是『没被调用/没传下去』时,纯函数用例全绿」,这两格正是这个形态)。
+// ②③ 证明的是"这套算法本身是对的",不证明"生产代码真的在用这套算法"——后者靠下面
+// 新增的源码级顺序判据(不依赖浏览器/WebView2 那条判例的同款做法:剥注释、fail-closed、
+// 不钉排版,配删除式)。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SL-19 复发②(Processor 回归复刻):冲突后广播源读会话真实持有的 channel,不读请求值", "[input][bridge]")
+{
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    // 1) 等价 InputProcessor 构造后首次 claim channel 3。
+    InputSession session(backend, 1001);
+    session.setChannelId(3);
+    REQUIRE(session.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+
+    // 2) 另一实例占住 channel 5(心跳新鲜,构成真冲突)。
+    InputSession other(backend, 2001);
+    other.setChannelId(5);
+    REQUIRE(other.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+    other.heartbeat(100);
+
+    // 3) 等价修好后的 InputProcessor::setChannelId(5):先 session.setChannelId + prepare(),
+    //    再用 boundChannel() 回填镜像字段——不是像旧版那样在 prepare() 之前就把镜像字段
+    //    写成请求值(那正是本卡修的抢跑)。`channelIdMirror` 等价 Processor 的 channelId_。
+    session.setChannelId(5);
+    const auto requestResult = session.prepare(48000, 512, 1, 200);
+    const int channelIdMirror = static_cast<int>(session.boundChannel());
+
+    CHECK(requestResult == InputClaimState::kConflict); // UI 侧仍然会看到冲突提示(抖动+红 toast)
+    CHECK(channelIdMirror == 3); // 广播源读到的是真实持有的 3,不是抢失败的目标 5
+}
+
+TEST_CASE("SL-19 复发③(Processor 回归复刻):冲突后存档不记录抢失败的 channel", "[input][bridge]")
+{
+    // ⚠ 这一格与②各自独立断言——②绿不代表这格绿,两者读的是 InputProcessor 里两个不同的
+    // 出口(bridgeTickSnapshot vs getStateInformation),复审明确要求分开钉。
+    scvb::SegmentBackendInProcess::resetAll();
+    scvb::SegmentBackendInProcess backend;
+
+    InputSession session(backend, 1001);
+    session.setChannelId(3);
+    REQUIRE(session.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+
+    InputSession other(backend, 2001);
+    other.setChannelId(5);
+    REQUIRE(other.prepare(48000, 512, 1, 0) == InputClaimState::kActive);
+    other.heartbeat(100);
+
+    session.setChannelId(5);
+    REQUIRE(session.prepare(48000, 512, 1, 200) == InputClaimState::kConflict);
+    const int channelIdMirror = static_cast<int>(session.boundChannel()); // 等价修好后的 channelId_
+
+    // 等价 InputProcessor::getStateInformation():用镜像字段(不是失败的请求值)填 InputState
+    // 再编解码一遍,复刻工程存档的完整往返。
+    scvb::state::InputState st;
+    st.channelId = static_cast<std::uint32_t>(channelIdMirror);
+    st.groupId = session.groupId();
+    st.uiScale = 100;
+    st.uiLanguage = "en";
+    std::vector<std::uint8_t> payload;
+    REQUIRE(scvb::state::encodeInputState(st, payload));
+
+    scvb::state::InputState loaded;
+    REQUIRE(scvb::state::decodeInputState(payload.data(), payload.size(), loaded));
+
+    CHECK(loaded.channelId == 3); // 存档记的是真正 claim 到的 channel
+    CHECK(loaded.channelId != 5); // 不是那个抢失败的目标——这是本卡后果最重的一条(用户下次打开工程才发作)
+}
+
+TEST_CASE("SL-19 复发②的补丁:源码级顺序判据 —— setChannelId() 里 channelId_ 的赋值排在 "
+          "prepare() 之后",
+          "[input][bridge]")
+{
+    // 上面②③是"复刻"测试,证明不了 InputProcessor.cpp 真的在用这套算法(见上面头注那段
+    // 复审指出的洞)。这一格改成直接读 InputProcessor.cpp 的源码文本判序,补上②证明不了的
+    // 那一半——与 SL-437 那次给 web/*/index.html 加的源码级判据同一条纪律:先剥注释、
+    // fail-closed(串找不到判负,不是放过)、不钉排版(只认关键字与相对顺序,不认换行/空格)。
+    const std::string path = std::string(SCVB_SOURCE_DIR) + "/src/input/InputProcessor.cpp";
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // 剥注释(行注释 + 块注释):不剥的话,本文件自己写的说明文字里就出现过
+    // "channelId_ = ..." 与 "session_.prepare(" 这两个关键词,注释会把断言顶替掉
+    // (判例见上面②③头注引用的那条"源码正则 ≠ 可执行"同族坑)。
+    std::string stripped;
+    stripped.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();)
+    {
+        if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '/')
+        {
+            while (i < raw.size() && raw[i] != '\n')
+            {
+                ++i;
+            }
+        }
+        else if (i + 1 < raw.size() && raw[i] == '/' && raw[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < raw.size() && !(raw[i] == '*' && raw[i + 1] == '/'))
+            {
+                ++i;
+            }
+            i = (i + 1 < raw.size()) ? i + 2 : raw.size();
+        }
+        else
+        {
+            stripped.push_back(raw[i]);
+            ++i;
+        }
+    }
+
+    // 只在 setChannelId() 这一个函数体内判序——prepareToPlay()/setStateInformation() 里也各
+    // 有一次同模式的 "channelId_ = .../session_.prepare(",不隔离会把别的函数的顺序混进来
+    // (那两处目前**没有**判据,是本卡明确留白的一半,见 PR 描述,不在这一格里冒充覆盖)。
+    const std::string beginMarker = "ScvbInputAudioProcessor::setChannelId(int channelId)";
+    const auto beginPos = stripped.find(beginMarker);
+    REQUIRE(beginPos != std::string::npos); // fail-closed:函数改名/挪走也要判负,不是跳过
+    const std::string endMarker = "ScvbInputAudioProcessor::setGroupId(int groupId)";
+    const auto endPos = stripped.find(endMarker, beginPos);
+    REQUIRE(endPos != std::string::npos);
+    const std::string body = stripped.substr(beginPos, endPos - beginPos);
+
+    const auto prepareIdx = body.find("session_.prepare(");
+    REQUIRE(prepareIdx != std::string::npos);
+
+    // 扫描函数体里全部 "channelId_ =" 赋值位置——不钉右手边具体写法(那是排版细节,比如
+    // static_cast 的换行方式),只钉"这个函数体里,任何一次给 channelId_ 赋值都不能发生在
+    // prepare() 调用之前"。这正是本卡要防的那处抢跑:旧版是 `channelId_ = channelId;` 排在
+    // `session_.prepare(...)` **之前**。
+    std::vector<std::size_t> assignPositions;
+    for (std::size_t pos = body.find("channelId_ ="); pos != std::string::npos;
+         pos = body.find("channelId_ =", pos + 1))
+    {
+        assignPositions.push_back(pos);
+    }
+    REQUIRE_FALSE(assignPositions.empty()); // fail-closed:一次都找不到也判负,不是放过
+
+    for (const auto pos : assignPositions)
+    {
+        CHECK(pos > prepareIdx);
+    }
 }
 
 // ---------------------------------------------------------------------------

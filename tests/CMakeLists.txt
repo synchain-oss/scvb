@@ -72,6 +72,9 @@ add_executable(scvb_tests
 target_link_libraries(scvb_tests PRIVATE scvb_core Catch2::Catch2WithMain)
 target_include_directories(scvb_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/tests)
 target_compile_definitions(scvb_tests PRIVATE SCVB_TEST_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
+# [SL-446] 源码级顺序判据要读 InputProcessor.cpp 的原文本(ScvbInputAudioProcessor 依赖
+# WebView2、离线编不进任何测试目标,断言只能靠读文本,不能靠调用);给它一个仓根路径。
+target_compile_definitions(scvb_tests PRIVATE SCVB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 if(SCVB_TESTS_WITH_EBUR128)
   target_compile_definitions(scvb_tests PRIVATE SCVB_TESTS_WITH_EBUR128)

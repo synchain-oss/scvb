@@ -52,6 +52,13 @@ void ScvbInputAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     const auto now = scvb::steadyNowMs();
     session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                      static_cast<scvb::u32>(srcChannels_), now);
+    // [SL-19 复发/UI 未回滚] 同一类同步:这是工程加载后的**首次**真实 claim 尝试(setStateInformation
+    // 那次因 !prepared_ 而跳过,注释见那里),channelId_ 此前来自存档、还没经真实 claim 验证过——
+    // claim 失败(含补偿式回滚)时同样要把 channelId_ 收敛成 session_ 真正持有的那个号。
+    // ⚠ **这一处没有判据**(复审 SL-446 明确点过):setChannelId() 那处有源码级顺序判据
+    // (tests/core/test_input_bridge_ipc.cpp),这里同模式的同步没有配对判据,只靠代码审读——
+    // 别把它读成"和 setChannelId() 一样有机检守着"。
+    channelId_ = static_cast<int>(session_.boundChannel());
     rampSwitcher_.prepare(sampleRate_);
 
     // claim 未就绪(I6 未分配 / I2 冲突 / I0 / I1)→ 输出走直通档(人声不消失)。
@@ -508,6 +515,10 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+        // [SL-19 复发/UI 未回滚] 同一类同步:channelId_ 刚从存档字节写入(未经真实 claim 验证),
+        // 这次 re-claim 失败(含补偿式回滚)时同样要收敛成 session_ 真正持有的那个号。
+        // ⚠ **这一处同样没有判据**(见 prepareToPlay() 那句同款说明),只靠代码审读。
+        channelId_ = static_cast<int>(session_.boundChannel());
         if (session_.state() != scvb::input::InputClaimState::kActive)
         {
             stageMachine_.forcePassthrough();
@@ -519,19 +530,31 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
 {
     channelId = juce::jlimit(0, kChannelIdMax, channelId);
     const juce::ScopedLock lock(lifecycleMutex_);
-    channelId_ = channelId;
+    // ⚠ [SL-19 复发/UI 未回滚] 这里**曾经**在 CAS 结果出来之前就把 channelId_ 写成请求值——
+    // CAS 是否成功由下面的 session_.prepare() 决定,而 channelId_ 是 bridgeTickSnapshot()
+    // (广播给 UI 的 scvb.state)与 getStateInformation()(工程存档)的直接数据源:不管冲不冲突,
+    // 下一次周期广播 / 下一次存档都会把"刚才想要的那个号"发出去或写进工程文件——UI 显示
+    // "转移成功了"、存档记的是一个从未 claim 到的通道号,都是这一处抢跑的直接后果。
+    // 现在改成:先让 session 走完整个 claim(含 InputSession::prepare() 的补偿式回滚),
+    // 再用 session_.boundChannel()(会话真正持有的那个 channel,回滚成功时是旧 channel、
+    // 彻底失败时是 0)回填 channelId_ —— 广播与存档因此**只能**读到真实持有的号。
     session_.setChannelId(static_cast<scvb::u32>(channelId));
     if (channelId == 0)
     {
         ctrl_.release(); // channel_id=0 不 claim 任何段(T23 口径):命令环段随释放(PR#54 R9)
     }
-    session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
-                     static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+    // 这次请求本身成不成功,由 prepare() 的返回值决定——不能事后再问 session_.state():
+    // 补偿式回滚成功时 state() 会是 kActive(会话确实还活跃,只是回到了旧 channel),
+    // 但**这次请求**依然是被拒绝的,UI 的冲突提示(抖动 + 红 toast)要认这个返回值,不认 state()。
+    const auto requestResult =
+        session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
+                         static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
+    channelId_ = static_cast<int>(session_.boundChannel());
     if (session_.state() != scvb::input::InputClaimState::kActive)
     {
         stageMachine_.forcePassthrough();
     }
-    return session_.state(); // T30 桥:{conflict:true} ⇔ kConflict,其余 {ok:true}
+    return requestResult; // T30 桥:{conflict:true} ⇔ kConflict,其余 {ok:true}
 }
 
 scvb::input::InputClaimState ScvbInputAudioProcessor::setGroupId(int groupId)

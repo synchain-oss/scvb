@@ -51,8 +51,8 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
     }
 
     // 已 active 且同 channel+group:仅当 SR/声道布局变化才重建环头(epoch+1)+ 重备 extractor。
-    if (registry_.isOpen() && claimedChannel_.load(std::memory_order_relaxed) == channelId_ &&
-        registry_.group() == groupId_)
+    const bool sameGroup = registry_.isOpen() && registry_.group() == groupId_;
+    if (sameGroup && claimedChannel_.load(std::memory_order_relaxed) == channelId_)
     {
         registry_.updateOwnedInputSlot(channelId_, pid_, sampleRate, maxBlock);
         // 纯块长变化不触碰几何/提取器(避免与音频线程并发重置;SR/布局变化属宿主停止音频的重配置)。
@@ -67,12 +67,42 @@ InputClaimState InputSession::prepare(u32 sampleRate, u32 maxBlock, u32 channels
         return state_;
     }
 
+    // [SL-19 复发/UI 未回滚] 换 channel 前先记住"换之前真正持有的那个 channel"——下面失败时
+    // 补偿式回滚要用。只在**组没变**的前提下才有意义:组同时也在变属于理论上可能、但
+    // InputProcessor 的实际调用面从不这样用(setChannelId 只改 channel;换组走 changeGroup()
+    // 那条独立路径,行为由它自己的测试钉着,本卡不碰)。两者同时变时按原样处理(失败即未分配),
+    // 不引入一个只覆盖一半场景的补偿。
+    const u32 previousChannel = sameGroup ? claimedChannel_.load(std::memory_order_relaxed) : 0;
+
     // 首次/换 channel/换 group:释放旧资源 → 新 claim → 建段。
     releaseSlot();
     releaseSegments();
     state_ = InputClaimState::kUnassigned;
     if (!openAndClaim(sampleRate, maxBlock, channels, nowMs))
     {
+        const InputClaimState failure = state_; // 这次请求本身的失败原因,回滚成不成功都要报它
+
+        // [SL-19 复发/UI 未回滚] 补偿式回滚:CAS 新槽失败时,尝试把刚释放的旧槽抢回来,
+        // 让会话继续在旧 channel 上正常工作,不把"转移失败"变成"连旧的也丢了"。
+        // ⚠ 不是保证:回滚本身也是一次 openAndClaim,失败窗口只有两次 CAS 之间那几微秒,
+        // 理论上仍可能被另一实例抢先——那种情况下退化成"确实未分配",如实反映现状,
+        // 不假装拿到了什么没拿到的东西。
+        if (previousChannel != 0 && previousChannel != channelId_)
+        {
+            const u32 requestedChannel = channelId_;
+            channelId_ = previousChannel; // 临时改回旧目标,复用同一条 claim 路径重新抢
+            const bool rolledBack = openAndClaim(sampleRate, maxBlock, channels, nowMs);
+            if (rolledBack)
+            {
+                // 会话确实还活着(只是回到了旧 channel):心跳/采集布防等内部逻辑都该按
+                // "活跃"走;但这次用户请求的那个新 channel 本身没有拿到,报给调用方的
+                // 仍然是 failure,UI 的冲突提示(抖动 + 红 toast)不受回滚影响。
+                state_ = InputClaimState::kActive;
+                return failure;
+            }
+            channelId_ = requestedChannel; // 回滚也没抢到:别留着一个我们其实没握住的号
+        }
+        state_ = failure;
         return state_;
     }
     state_ = InputClaimState::kActive;
