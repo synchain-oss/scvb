@@ -37,14 +37,19 @@
 //      整表写进 V2;
 //   ⑥ 每段零 console.error、零未捕获异常。
 //
-// 删除式(未提交,人工核过;每格都实跑过一次):
-//   · 把 ② 的白名单改回含 `input[type="range"]` / `input[type="checkbox"]` /
-//     `select` ⇒ ②③ 对应格转红;
-//   · 把 ③ 的判据换回 `a.tagName === "INPUT"` ⇒ range/checkbox 两格转红,
-//     `contenteditable="false"` 一格转红;
-//   · 摘掉 `runHistory()` 里那句 `curveEditor.abortEdit()` ⇒ ④ 实验臂 commits +1 转红;
-//   · 摘掉 `render()` 里那道版本闸 ⇒ ⑤ 转红;
-//   · `abortEdit()` 里只留 `dragPoints = null`、去掉 `dragging = false` ⇒ ④ 转红。
+// 删除式网格(**注入未提交**,逐格实跑过;15 格全部按设计转红,且红在设计接住它的
+// 那条断言上 —— 不是「红了就算」)。被注入的是**产品代码**,不是本文件:
+//   白名单本体(8 格,红在 ②③):range / checkbox / select 各自放回文本族白名单;
+//     删掉 `input:not([type])` / `input[type=number]` / `input[type=text]` 三条回归项;
+//     contenteditable 三条换成裸 `[contenteditable]`(`="false"` 被放行);
+//     `EDITABLE_SELECTOR` 丢掉 `, select`(拆分把右键那不该动的一半也动了)。
+//   Ctrl+Z 闸接线(1 格,红在 ③):判据换回 `a.tagName === "INPUT"` 旧形态。
+//   abortEdit 的四件事 + 两条触发路径(6 格,红在 ④④b⑤):摘掉 runHistory 里的
+//     `abortEdit()`;`abortEdit()` 里逐条去掉 `dragging=false` / `clearTimeout` /
+//     `releasePointerCapture` / `dragPoints=null`;摘掉 `render()` 里的版本闸。
+// ⚠ 一条实测教训写在这里:`lostpointercapture` 是**排任务**派发的,不在
+//   `releasePointerCapture()` 那一行同步发出 —— (d8b) 起初写成即刻读,结果被一个
+//   与捕获毫无关系的注入(去掉 `dragPoints=null`)带红。现在是有界 waitFor。
 //
 // 用法:node web-preview/tests/smoke-undo-scope-page.mjs [仓库根绝对路径]
 //   --chrome=<路径>  显式指定浏览器
