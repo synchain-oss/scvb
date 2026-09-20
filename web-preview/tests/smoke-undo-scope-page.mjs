@@ -32,9 +32,12 @@
 //      会静默变成假绿),读 `defaultPrevented` 判「拦没拦」;
 //   ④ **拖动中 Ctrl+Z**:对照臂(不按 ⇒ commits +1)+ 实验臂(按 ⇒ commits 不变、
 //      aborts +1、dragging=false);
-//   ⑤ **拖动中换版本**:同一个 `abortEdit()` 的第二条触发路径 —— §1.17 的
-//      `setPanCurve` 写「当前激活版本」、载荷不带版本号,不中止就是把 V1 的抄本
-//      整表写进 V2;
+//   ⑤ **拖动中换版本**:同一个 `abortEdit()` 的第二条触发路径,但**失效面不同** ——
+//      §1.17 的 `setPanCurve` 写「当前激活版本」、载荷不带版本号,不中止就是把 V1 的
+//      抄本**整表写进 V2**,用户丢的是 V2 的曲线。故这一段除计数外还断**数据**:
+//      V1 按住 -> 切 V2 -> 松手,V2 的点集指纹必须一字不变。
+//      ⚠ 夹具要先 copyVersion 把 V2 填成 6 点:空 V2 上 `onPointerUp` 的
+//      `idx >= cur.length` 早退会**替版本闸兜住**提交,只看计数的判据分辨不出闸在不在;
 //   ⑥ 每段零 console.error、零未捕获异常。
 //
 // 删除式网格(**注入未提交**,逐格实跑过;15 格全部按设计转红,且红在设计接住它的
@@ -46,7 +49,8 @@
 //   Ctrl+Z 闸接线(1 格,红在 ③):判据换回 `a.tagName === "INPUT"` 旧形态。
 //   abortEdit 的四件事 + 两条触发路径(6 格,红在 ④④b⑤):摘掉 runHistory 里的
 //     `abortEdit()`;`abortEdit()` 里逐条去掉 `dragging=false` / `clearTimeout` /
-//     `releasePointerCapture` / `dragPoints=null`;摘掉 `render()` 里的版本闸。
+//     `releasePointerCapture` / `dragPoints=null`;摘掉 `render()` 里的版本闸
+//     (⇒ ⑤ 的数据面 (e10) 转红:V2 的指纹被 V1 的抄本覆盖)。
 // ⚠ 一条实测教训写在这里:`lostpointercapture` 是**排任务**派发的,不在
 //   `releasePointerCapture()` 那一行同步发出 —— (d8b) 起初写成即刻读,结果被一个
 //   与捕获毫无关系的注入(去掉 `dragPoints=null`)带红。现在是有界 waitFor。
@@ -520,11 +524,15 @@ try {
                 "checkbox **拦截**(本卡新增行为)",
             ],
             ["select", {}, false, "select **拦截**(下拉无文本撤销语义)"],
+            // ⚠ 这一格是**预防格**:`web/output` 全仓今天**零 contenteditable**
+            // (grep 零命中),所以它守的不是某个现存元素,而是**将来**有人加一块
+            // `contenteditable="false"` 时别被裸 `[contenteditable]` 属性选择器放行。
+            // 别把它读成「页面上有这么个区域」。
             [
                 "div",
                 { contenteditable: "false", tabindex: "0" },
                 false,
-                'contenteditable="false" 拦截(显式声明不可编辑)',
+                'contenteditable="false" 拦截(预防格:今天页面上没有这种元素)',
             ],
         ];
         const got = await evaluate(
@@ -881,9 +889,75 @@ try {
     assertClean("④b Q 滑杆防抖");
 
     // =========================================================================
-    log("=== ⑤ 拖动中换版本 ⇒ 同样中止(否则把 V1 的抄本写进 V2)===");
+    log("=== ⑤ 拖动中换版本 ⇒ V2 的点集一个字节都不许变 ===");
     newBucket("拖动中换版本");
     {
+        // ---- 夹具前置:先把 V1 复制进 V2,让 V2 有 6 个点 --------------------
+        // ⚠ **不这么做这一段测不出东西**:demo 快照里 V2 是空版本(0 点),而
+        // `onPointerUp` 有一道 `idx >= cur.length` 早退 —— 目标版本点数不足时,
+        // 陈旧抄本的提交会被那道早退顺手挡掉,**版本闸在不在都不会提交**。
+        // 实测过:摘掉 render() 里的版本闸,空 V2 上「松手零提交」那格照样绿。
+        // 那是本仓「判据不可分辨」的典型形态 —— 另一条路径在兜底,而判据名字不变。
+        // 复制之后 V2 有 6 点、下标在范围内,漏掉的提交才真的会把 V1 的抄本写进 V2。
+        check(
+            await evaluate(
+                IN(`const b = gb("header-version-copy");
+                    if (!b || b.getAttribute("data-disabled") === "1") return false;
+                    b.click();
+                    const ok = gb("header-version-copy-ok");
+                    if (!ok) return false;
+                    ok.click();
+                    return true;`),
+            ),
+            "(e-pre1)触发了 copyVersion(V1 -> V2)",
+        );
+        // 切到 V2 读它此刻的指纹(这就是「本次操作之后必须一字不变」的基准)。
+        check(
+            await evaluate(
+                IN(`const c2 = gb("header-version-chip-2");
+                    if (!c2 || c2.getAttribute("data-disabled") === "1") return false;
+                    c2.click();
+                    return true;`),
+            ),
+            "(e-pre2)切到 V2",
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 2;`),
+                6000,
+            ),
+            "(e-pre3)激活版本 = V2",
+        );
+        const sigV2Before = (await curveDiag()).curveSig;
+        // 先断基准**非空**:V2 还是空版本的话,这一整段恒绿而什么都没测到
+        // (正是上面注释里说的那种不可分辨)。数点数不数字符串 —— 指纹用 | 分隔。
+        check(
+            typeof sigV2Before === "string" &&
+                sigV2Before.split("|").filter(Boolean).length === 6,
+            `(e-pre4)V2 基准指纹有 6 个点(实得 ${
+                typeof sigV2Before === "string"
+                    ? sigV2Before.split("|").filter(Boolean).length
+                    : JSON.stringify(sigV2Before)
+            } 个)—— 空 V2 会让本段恒绿`,
+        );
+        // 切回 V1 再开始拖。
+        check(
+            await evaluate(
+                IN(`const c1 = gb("header-version-chip-1");
+                    if (!c1 || c1.getAttribute("data-disabled") === "1") return false;
+                    c1.click();
+                    return true;`),
+            ),
+            "(e-pre5)切回 V1",
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`),
+                6000,
+            ),
+            "(e-pre6)激活版本 = V1",
+        );
+
         const where3 = await evaluate(
             IN_ASYNC(`
             const m = await import("${base}/web/output/canvas/curve-editor.js");
@@ -947,12 +1021,18 @@ try {
 
         const mid2 = afterSwitch.commits;
         await mouse("mouseReleased", where3.x + 20, where3.y - 10);
-        await sleep(200);
+        // 给「若真发生了提交」把回声走完的时间(mock 的 §2.1 回声是异步的,SL-357)。
+        await sleep(1000);
         const after2 = await curveDiag();
+        eq(after2.commits - mid2, 0, "(e8)换版本后那一记松手零提交(计数面)");
+        // ---- 数据面:这才是这一段真正要守的东西 -----------------------------
+        // 与 (e8) 是**不同的失效面**:计数说的是「有没有发起提交」,这一条说的是
+        // 「V2 的数据有没有被改掉」。用户丢的是 V2 的曲线,不是一次计数。
+        eq(after2.activeVersion, 2, "(e9)读指纹时仍停在 V2(读对了版本)");
         eq(
-            after2.commits - mid2,
-            0,
-            "(e8)**换版本后那一记松手零提交** —— V1 的抄本没有被写进 V2",
+            after2.curveSig,
+            sigV2Before,
+            "(e10)**V2 的点集一个字节都没变** —— V1 的抄本没有被整表写进 V2",
         );
     }
     assertClean("⑤ 拖动中换版本");

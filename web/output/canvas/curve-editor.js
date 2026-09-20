@@ -402,6 +402,7 @@ export function createCurveEditor(opts) {
                 hasPreview: false,
                 dragVersion: 0,
                 activeVersion: 0,
+                curveSig: "",
                 commits: 0,
                 aborts: 0,
             }),
@@ -1336,6 +1337,16 @@ export function createCurveEditor(opts) {
             hasPreview: local.dragPoints !== null,
             dragVersion: local.dragVersion,
             activeVersion: activeVersion(),
+            // [SL-450] **当前激活版本**点集的指纹。计数(commits)只说得出「有没有
+            // 发起提交」,说不出「那一版的数据有没有被改掉」—— 而「拖到一半换版本」
+            // 的真实后果是后者(V1 的抄本整表落进 V2)。两者是**不同的失效面**:
+            // onPointerUp 里 `idx >= cur.length` 那道早退会在目标版本点数不足时
+            // 顺手挡掉提交,于是只看计数的判据在那种夹具上**根本分辨不出**版本闸在不在。
+            curveSig: points()
+                .map((p) =>
+                    [p.angle, p.gain_db, p.shape, p.q, p.side].join(":"),
+                )
+                .join("|"),
             commits: local.commits,
             aborts: local.aborts,
         }),
