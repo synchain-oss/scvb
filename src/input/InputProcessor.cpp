@@ -431,7 +431,11 @@ void ScvbInputAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     }
 
     scvb::state::InputState s;
-    s.channelId = static_cast<scvb::u32>(channelId_);
+    // [SL-446 第 5 轮] 存档记的是 savedChannelId_(工程原值/用户主动配置值),不是 channelId_
+    // (配置/请求值镜像)——这不是契约变更:CFGS 的字节布局与 abi 都没动,只是内存里换了一个
+    // 成员去填同一个字段。两者绝大多数时候相等,只在"加载工程时这次触发的重新认领撞了车"
+    // 这一个场景下会分叉,分叉时该记的是工程文件原本写的号,不是这次认领折腾出来的中间结果。
+    s.channelId = static_cast<scvb::u32>(savedChannelId_);
     s.groupId = static_cast<scvb::u32>(groupId_);
     s.uiScale = static_cast<scvb::u32>(uiScale_);
     s.uiLanguage = uiLanguage_.toStdString();
@@ -494,6 +498,11 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
 
     const int oldGroupId = groupId_;
     channelId_ = static_cast<int>(s.channelId);
+    // [SL-446 第 5 轮] 同一时刻两个都写、值相同,但落点不同:channelId_ 供寻址/scvb.error/
+    // ensureCtrlOpen 等"配置"用途(下面 prepared_ 分支里 prepare() 之后还会被重新同步,可能
+    // 变成别的值,见那边的头注);savedChannelId_ 专记"工程文件这次写的号",本函数往后不再
+    // 碰它,直到用户下一次主动 setChannelId() 才会更新。
+    savedChannelId_ = static_cast<int>(s.channelId);
     groupId_ = static_cast<int>(s.groupId);
     // [SL-234] 加载期同样夹取:STATE_SCHEMA §三 明写 `ui.scale` 在 CFGS 解码器里「不作范围校验
     // (原样透出,**由上层处理**)」—— 上层就是这里;工程文件是不可信字节(CLAUDE.md §7 铁律 3),
@@ -530,18 +539,31 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
-        // [SL-446 第 4 轮:回退第 3 轮的删除,已知缺陷单独立卡] 第 3 轮曾删掉这里的重新同步,
-        // 理由是"加载工程不该被回滚改写存的号"——但复审证明这个删除打破了一条更要紧的不变式:
+        // ⚠ [SL-446 第 3/4/5 轮] 这一行**必须留着**,别再删第二次——第 3 轮删过一次,删的理由
+        // 是"加载工程不该被回滚改写存的号",但删掉之后打破了一条更要紧的不变式:
         // `session_.state() == kActive ⟹ channelId_ == session_.boundChannel()`。
         // `drainFpReports()`/`bridgeRemoteSetPriority()`/`timerCallback()` 采集布防三处都按
         // channelId_ 去寻址跨进程共享资源(命令环、广播数组),隐含假设"活跃就是真持有这个号"。
-        // 删掉重新同步后,已绑定实例载入不同工程、补偿式回滚成功的场景下,channelId_(配置=5)
-        // 会与 boundChannel()(实际=3)分叉、而 state() 仍是 kActive——上面三处会把 ch5(别的
-        // 实例正占着的号)当成自己的号去用,构成跨进程 SPSC 环双生产者竞写、跨实例串扰、采集
-        // 布防跟错开关。这是实时路上的未定义行为,严重度高于"加载期撞车存档号被改写"这个罕见、
-        // 可恢复、主线既有的轻缺陷——两害相权,加回这行重新同步。"加载工程不改变存的号"这个
-        // 结论转为已知缺陷单独立卡(SL-454),不在本卡解决;对应判据见
-        // tests/host/test_host_harness.cpp 里那条用例的头注,已改成钉住当前真实行为。
+        // 删掉这行后,已绑定实例载入不同工程、补偿式回滚成功的场景下,channelId_(配置=5)会与
+        // boundChannel()(实际=3)分叉、而 state() 仍是 kActive——上面三处会把 ch5(别的实例
+        // 正占着的号)当成自己的号去用,构成跨进程 SPSC 环双生产者竞写、跨实例串扰、采集布防
+        // 跟错开关。第 4 轮把删除回退回来,但当时误判"存档号被改写"是主线既有的轻缺陷、把它
+        // 转卡搁置了——复核 base 后证实那其实是本卡(第 2 轮加的重新同步)自己引入的回归,
+        // 不能搁置。第 5 轮的正确修法不是"删掉这一行",是"把这一行要同步的东西(配置/寻址
+        // 用途)与存档要记的东西(工程原值)拆成两个成员"——channelId_ 继续无条件跟着
+        // session_.channelId() 走,不再兼任存档职责;存档改记 savedChannelId_(见
+        // getStateInformation()/上面解码处的头注),这一行本身**永远不能因为存档问题被删**,
+        // 它保的是实时路那条不变式,不是存档语义。
+        // ⚠ [复审 4058116263,main 既有,不阻断] 上面那条不变式要收窄成条件命题——它只在
+        // "这一行已经跑过"(即 prepared_==true、prepare() 已被这个函数调用过)之后才成立。
+        // prepared_==false 时,setStateInformation() 只在 :509 调 session_.setChannelId(纯
+        // setter,不释放已持有的 slot、不重新 CAS),不会走到这一行;若用户在首次 prepareToPlay()
+        // 之前已经交互式 setChannelId()/setGroupId() 过(会话因此已是 kActive),这时载入一份
+        // 不同 channel 的工程,会短暂出现 channelId_(配置)与 boundChannel()(实际)分叉、
+        // 而 state() 仍是 kActive 的窗口——bridgeRemoteSetPriority() 在这个窗口里可能把优先级
+        // 投给别人正占着的命令环。这条窗口在 main 上就成立,不是本卡引入的回归,触发面比第 3
+        // 轮那次窄得多(drainFpReports()/timerCallback() 此时都还没启动,窗口在下一次
+        // prepareToPlay() 的重新同步处自行关闭),不在本卡修——另立卡跟踪。
         channelId_ = static_cast<int>(session_.channelId());
         if (session_.state() != scvb::input::InputClaimState::kActive)
         {
@@ -561,9 +583,12 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
     // 加载期撞车这种"配置了但没绑定"的场景,回填成 boundChannel()=0 会把用户存的 5**永久
     // 擦掉**(下次保存工程就真的丢了),这与本卡要修的"存档写入抢失败的号"同族反向。
     // 现在这个镜像字段固定读 session_.channelId()(配置,见 prepareToPlay() 头注的完整对照
-    // 表),取代 boundChannel()——getStateInformation()(存档)与 ensureCtrlOpen()/
-    // setGroupId() 的「channel_id=0 不建段」判断都靠它。**广播单独直接读
-    // session_.boundChannel()**,不经这个镜像,见 bridgeTickSnapshot() 那行注释。
+    // 表),取代 boundChannel()——ensureCtrlOpen()/setGroupId() 的「channel_id=0 不建段」
+    // 判断都靠它。**广播单独直接读 session_.boundChannel()**,不经这个镜像,见
+    // bridgeTickSnapshot() 那行注释。[SL-446 第 5 轮] 存档不再直接读这个镜像——用户主动调
+    // 这个函数,是"用户主动改配置"的场景,下面在镜像同步之后会把 savedChannelId_ 也一起
+    // 更新(两个源头都是这次同步后的 channelId_,值相同,但落点分开是为了不让"加载工程"
+    // 那条路(setStateInformation())的重新认领意外污染存档,见那边的头注)。
     session_.setChannelId(static_cast<scvb::u32>(channelId));
     if (channelId == 0)
     {
@@ -576,6 +601,7 @@ scvb::input::InputClaimState ScvbInputAudioProcessor::setChannelId(int channelId
         session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
     channelId_ = static_cast<int>(session_.channelId());
+    savedChannelId_ = channelId_; // 用户主动改配置:存档跟着这次同步后的值走
     if (session_.state() != scvb::input::InputClaimState::kActive)
     {
         stageMachine_.forcePassthrough();

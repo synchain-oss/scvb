@@ -172,6 +172,13 @@ private:
 
     // state(持久化经 T19 StateCodec + InputStateCodec;params-v0 §三)。
     int channelId_ = 0;
+    // [SL-446 第 5 轮] 工程存档里"channel_id 那个字段"该记的值——与 channelId_(配置/请求值
+    // 镜像,供寻址与 scvb.error 用)是两件事,只在"已绑定实例载入不同工程、这次加载触发的
+    // 重新认领撞了车"这一个场景下会分叉(见 getStateInformation()/setStateInformation() 的
+    // 头注)。⚠ 与 channelId_ 同初值(0),保证一个从未载入过工程、也没点过通道的全新实例,
+    // 存档字节与改动前逐字节相同——这不是随手定的默认值,是为了不在最常见的路径(新建轨道)
+    // 上引入静默的行为变化。
+    int savedChannelId_ = 0;
     int groupId_ = 1;
     int uiScale_ = 100;
     juce::String uiLanguage_ = "en";

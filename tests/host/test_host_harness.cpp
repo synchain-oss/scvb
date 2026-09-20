@@ -843,30 +843,27 @@ TEST_CASE("SL-446(第 2 轮,集成,真 Processor):setGroupId/ensureCtrlOpen —�
     victim.releaseResources();
 }
 
-TEST_CASE("SL-446(第 4 轮,已知缺陷,集成,真 Processor):已绑定实例载入不同工程、加载期冲突"
-          "回滚——存档号被改写成回滚抢回来的旧号(SL-454)",
+TEST_CASE("SL-446(第 5 轮,集成,真 Processor):已绑定实例载入不同工程、加载期冲突回滚——"
+          "存档记工程原值,寻址镜像另有落点,SL-454 就地关闭",
           "[host][input][sl446]")
 {
     // ⚠ 复审 4057661131 抓到的场景:宿主复用一个已经 prepared_ 的实例(切 preset / 复制轨道后
     // load state 都走这条路),该实例这时已经 bind 在某个通道上(与即将载入的工程无关),载入
     // 的工程字节说的是另一个号。若加载触发的 prepare() 撞了冲突、补偿式回滚抢回了实例原来
-    // 那个号,理想行为是存档保留工程里原本的号——第 3 轮曾这样修过。
+    // 那个号,存档必须保留工程里原本的号——第 3 轮曾试图删掉 prepare() 后的重新同步来做到
+    // 这一点,但那样会打破 `state()==kActive ⟹ channelId_==boundChannel()` 这条不变式(见
+    // InputProcessor.cpp :557 那行的头注),第 4 轮因此回退了删除、把这条已知缺陷转卡搁置
+    // (SL-454)。复核 base 后发现这个判断本身是错的:载入撞车会改写存档号**不是主线既有
+    // 缺陷,是本卡(第 2 轮加的重新同步)自己引入的回归**——不能带着新回归发版,SL-454
+    // 不能只是搁置。
     //
-    // ⚠ [SL-446 第 4 轮] 但那个修法(删掉 prepare() 后重新同步 channelId_)被复审证明会打破
-    // `state()==kActive ⟹ channelId_==boundChannel()` 这条不变式,进而让 drainFpReports()/
-    // bridgeRemoteSetPriority()/timerCallback() 采集布防三处按 channelId_ 寻址共享资源时,把
-    // 别的实例正占着的号当成自己的号去用——构成跨进程 SPSC 环双生产者竞写、跨实例串扰、采集
-    // 布防跟错开关。这是实时路 UB,严重度高于本用例要防的"存档号被改写"(罕见、可恢复、主线
-    // 既有),两害相权,第 4 轮把那个修法回退了。
-    //
-    // ⇒ 这条用例现在钉的是**当前真实行为**(存档号确实被改成了回滚后的旧号 3),不是期望行为。
-    // 三件事写清楚,别漏:
-    //   1. 这是已知缺陷 SL-454 的现状,不是期望行为;
-    //   2. 这条判据存在的唯一目的是"防止它悄悄变化"(比如变成擦成 0,或写入完全无关的第三个
-    //      号)——不是宣称这个行为是对的;
-    //   3. ⚠ 将来真修好这个缺陷时(在不打破下面那条不变式的前提下让存档记 5),这一格**会红**
-    //      —— 到时候该改的是这一格的期望值,不是把 SL-454 的修法退回去、也不是把这一格删掉。
-    //      看到这一格红了,先去确认是不是 SL-454 真的被修好了,而不是默认自己改错了。
+    // 第 5 轮的正确修法:`channelId_` 不用改语义(它已经在正确地跟踪配置/寻址用途,`prepare()`
+    // 后的重新同步必须留着,理由不变),真正缺的是**给"工程原值"单开一个落点**——新增
+    // `savedChannelId_` 成员,只在 `setStateInformation()` 解码时、以及 `setChannelId()` 用户
+    // 主动改配置时写入,`prepare()` 触发的重新认领(不管成功失败)都不碰它。
+    // `getStateInformation()` 改读它,不再读 `channelId_`。**这不是契约变更**——CFGS 的字节
+    // 布局与 abi 都没动,只是内存里换了个成员去填同一个字段;改的是"这一个 bug 场景下取哪个
+    // 值",不是数据格式。SL-454 在本 PR 就地关闭,不再需要单独立卡。
     juce::ScopedJuceInitialiser_GUI juceInit;
     FakePlayHead ph;
 
@@ -902,11 +899,7 @@ TEST_CASE("SL-446(第 4 轮,已知缺陷,集成,真 Processor):已绑定实例�
     // prepareToPlay())——真实撞上 occupant 占的 5,补偿式回滚抢回 victim 释放前那个 3。
     victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
 
-    // 存档:已知缺陷的当前真实行为——记的是回滚抢回来的旧号 3,不是工程里原本写的 5。
-    // ⚠ 别把这两条 CHECK 的方向读反:这不是在断言"这样是对的",是在钉住"现在就是这样",
-    // 防止这个已知缺陷未来悄悄变形(比如变成擦成 0)而没人发现。真正的期望行为(存档应保留
-    // 工程里原本的号)留给 SL-454 那张新卡去修——那张卡要解决的正是"怎么在不打破
-    // `kActive ⟹ channelId_==boundChannel()` 这条不变式的前提下,让存档正确"。
+    // 存档:第 5 轮修好之后的正确行为——记工程里原本写的 5,不是回滚抢回来的旧号 3。
     juce::MemoryBlock stateBlob;
     victim.getStateInformation(stateBlob);
     scvb::state::StateChunks chunks;
@@ -916,24 +909,84 @@ TEST_CASE("SL-446(第 4 轮,已知缺陷,集成,真 Processor):已绑定实例�
     REQUIRE(cfg != nullptr);
     scvb::state::InputState loaded;
     REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
-    CHECK(loaded.channelId == 3); // 已知缺陷:被改写成了回滚抢回来的旧号,不是工程里的 5
-    CHECK(loaded.channelId != 5); // 不是工程里原本的号(这正是缺陷所在,不是期望)
-    CHECK(loaded.channelId != 0); // 也没有被擦成未分配(那是另一族更早的缺陷,已在别处修掉)
+    CHECK(loaded.channelId == 5); // 工程里原本的号,原样留着(savedChannelId_ 不受这次重新认领影响)
+    CHECK(loaded.channelId != 3); // 不是回滚抢回来的旧号
+    CHECK(loaded.channelId != 0); // 也没有被擦成未分配
 
-    // 广播/实际持有仍然正确:victim 真的活跃在 3 上,不变式在这条路径上成立。
+    // 广播/实际持有仍然正确:victim 真的活跃在 3 上。
     CHECK(victim.bridgeTickSnapshot().channelId == 3);
 
-    // ⚠ [SL-446 第 4 轮] 这才是本轮回退真正要钉住的东西——不是"存档记哪个号"这个已知缺陷本身,
-    // 是"活跃时镜像必须等于实际持有"这条不变式,drainFpReports()/bridgeRemoteSetPriority()/
-    // timerCallback() 采集布防三处的正确性都建立在它上面。这条不变式**只在 state()==kActive
-    // 时才有意义**——硬失败那条路(state()==kConflict,没有旧 channel 可回滚)前件为假,不受
-    // 这条不变式约束,那条路 channelId_ 合法地保留请求值、boundChannel()==0,两者不相等是
-    // 设计如此,不是违反了这条不变式(见 InputSession.h prepare() 头注的不变式完整说明)。
-    REQUIRE(victim.bridgeTickSnapshot().claimState == scvb::input::InputClaimState::kActive);
-    CHECK(static_cast<int>(loaded.channelId) == victim.bridgeTickSnapshot().channelId); // 不变式:活跃 ⟹ 镜像==实际持有
+    // 不变式(直接断言快照,不经存档这个中间人——存档现在读的是 savedChannelId_,不再是
+    // channelId_,拿存档值去核这条不变式在语义上已经不对了):`state()==kActive` 时
+    // `configuredChannelId`(=channelId_,寻址/配置用途)必须等于 `channelId`(=boundChannel(),
+    // 实际持有)。这条不变式**只在 state()==kActive 时才有意义**——硬失败那条路
+    // (state()==kConflict,没有旧 channel 可回滚)前件为假,不受这条不变式约束,那条路
+    // channelId_ 合法地保留请求值、boundChannel()==0,两者不相等是设计如此,不是违反了这条
+    // 不变式(见 InputSession.h prepare() 头注的不变式完整说明)。
+    const auto snap = victim.bridgeTickSnapshot();
+    REQUIRE(snap.claimState == scvb::input::InputClaimState::kActive);
+    CHECK(snap.configuredChannelId == snap.channelId); // 不变式本身:活跃 ⟹ 配置镜像==实际持有
 
     occupant.releaseResources();
     victim.releaseResources();
+}
+
+TEST_CASE("SL-446(第 5 轮):全新实例(不载入 state、不调 setChannelId)的存档不受"
+          "savedChannelId_ 新增影响",
+          "[host][input][sl446]")
+{
+    // ⚠ savedChannelId_ 的初值必须与 channelId_ 相同(都是 0)——否则最常见的路径(新建轨道、
+    // 从没配置过通道)存档会悄悄变成一个不同的数,这是本卡改动里最该被判据钉住、也最容易被
+    // 漏掉的一格(它不在任何一条"撞车"用例的路径上)。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor fresh;
+    fresh.setGroupId(kTestGroup);
+    fresh.setPlayHead(&ph);
+    fresh.prepareToPlay(kSr, kBlock);
+    // 故意不调 setChannelId()、不调 setStateInformation()——纯新建实例。
+
+    juce::MemoryBlock stateBlob;
+    fresh.getStateInformation(stateBlob);
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()), stateBlob.getSize(),
+                                         chunks) == scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfg != nullptr);
+    scvb::state::InputState loaded;
+    REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
+    CHECK(loaded.channelId == 0); // 未配置实例的存档必须是 0,与改动前逐字节相同
+
+    fresh.releaseResources();
+}
+
+TEST_CASE("SL-446(第 5 轮):用户主动 setChannelId() 成功后,存档跟着这次配置走", "[host][input][sl446]")
+{
+    // ⚠ 新增了两个写 savedChannelId_ 的点(setStateInformation 解码处、setChannelId 里),
+    // 判据不能只钉一个——上一格钉的是 setStateInformation 那条路,这一格钉 setChannelId
+    // 那条路,两者独立,任何一处漏接线都不该被另一处掩盖。
+    juce::ScopedJuceInitialiser_GUI juceInit;
+    FakePlayHead ph;
+
+    ScvbInputAudioProcessor p;
+    p.setGroupId(kTestGroup);
+    p.setPlayHead(&ph);
+    p.prepareToPlay(kSr, kBlock);
+    REQUIRE(p.setChannelId(7) == scvb::input::InputClaimState::kActive);
+
+    juce::MemoryBlock stateBlob;
+    p.getStateInformation(stateBlob);
+    scvb::state::StateChunks chunks;
+    REQUIRE(scvb::state::decodeContainer(static_cast<const std::uint8_t*>(stateBlob.getData()), stateBlob.getSize(),
+                                         chunks) == scvb::state::DecodeStatus::Ok);
+    const scvb::state::Chunk* cfg = chunks.find(scvb::state::kFourccCfgs);
+    REQUIRE(cfg != nullptr);
+    scvb::state::InputState loaded;
+    REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
+    CHECK(loaded.channelId == 7); // 用户主动配置的号,存档必须跟着走(不是停留在初值 0)
+
+    p.releaseResources();
 }
 
 TEST_CASE("HOST I4:换组后不继承上一组的采集覆盖", "[host][t37][changegroup]")
