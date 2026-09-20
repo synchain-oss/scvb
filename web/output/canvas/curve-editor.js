@@ -387,7 +387,25 @@ export function createCurveEditor(opts) {
         typeof o.onLocalChange === "function" ? o.onLocalChange : () => {};
 
     if (!canvas || typeof canvas.getContext !== "function") {
-        return { mount() {}, render() {}, draw() {}, push() {} };
+        // [SL-450] 这份空壳也要有 abortEdit / diag:app.js 的 runHistory() 无条件调
+        // abortEdit(),画布缺席时少一个方法就是 Ctrl+Z 当场抛 TypeError。
+        return {
+            mount() {},
+            render() {},
+            draw() {},
+            push() {},
+            abortEdit() {
+                return false;
+            },
+            diag: () => ({
+                dragging: false,
+                hasPreview: false,
+                dragVersion: 0,
+                activeVersion: 0,
+                commits: 0,
+                aborts: 0,
+            }),
+        };
     }
 
     const ctx = canvas.getContext("2d");
@@ -403,16 +421,31 @@ export function createCurveEditor(opts) {
         dragging: false,
         dragIndex: -1,
         dragPoints: null,
+        // [SL-450] pointerdown 时记下的 pointerId 与**当时的激活版本**。前者是
+        // releasePointerCapture 的唯一实参来源(捕获是按 pointerId 发的),后者是
+        // 「拖到一半版本被换掉」的判据(见 render() 里那道闸)。
+        dragPointerId: null,
+        dragVersion: 0,
         shift: false,
         commitTimer: 0,
         hintTimer: 0,
         lutCache: { key: "", lut: null },
+        // [SL-450] 只读诊断计数。页面级冒烟要断的是「那一次提交**没有发生**」——
+        // 观测计数,不观测画面:曲线画成什么样还受 store 回显影响,分辨不出
+        // 「没提交」与「提交了但回显还没到」。零写入口,与 __SCVB_OUTPUT__ 同口径。
+        commits: 0,
+        aborts: 0,
     };
+
+    /** 当前激活版本号(§1.17:setPanCurve 写的就是它,载荷里不带版本号)。 */
+    function activeVersion() {
+        const s = getStore().state || {};
+        return (s.global && s.global.version_active) || 1;
+    }
 
     function points() {
         const s = getStore().state || {};
-        const v = (s.global && s.global.version_active) || 1;
-        const version = (s.versions || [])[v - 1];
+        const version = (s.versions || [])[activeVersion() - 1];
         return (version && version.pan_curve && version.pan_curve.points) || [];
     }
 
@@ -615,6 +648,9 @@ export function createCurveEditor(opts) {
 
     // ---- 上行提交(契约 §1.17:pointerup/工具条变更后整表提交)---------------
     async function commit(next) {
+        // [SL-450] 计数排在最前面:连「桥没接上」那条早退也算一次**提交尝试**。
+        // 判据要的是「abortEdit 之后那一次提交压根没发起」,不是「发起了但没成功」。
+        local.commits++;
         if (!bridge || typeof bridge.setPanCurve !== "function") {
             local.dragPoints = null;
             return;
@@ -734,6 +770,53 @@ export function createCurveEditor(opts) {
         draw();
     }
 
+    // ---- 中止在飞编辑([SL-450])--------------------------------------------
+    /**
+     * 丢掉一切**尚未提交**的本地编辑态,让下一帧 draw()/render() 直接退回 store。
+     *
+     * 为什么非有不可:pointerdown 把点集抄进 `local.dragPoints`,pointerup 提交的是
+     * **那份抄本**。于是「按住不放 → Ctrl+Z → 松手」会走成:undo 把上一笔编辑撤了,
+     * 紧接着那一记 pointerup 又把陈旧抄本整表写回去 —— **撤销当场被抹掉**。
+     * 拖动期本来就没有声音变化,所以这件事在界面上察觉不到。
+     * ⚠ 这一层**只能落在 web 侧**:C++ 不知道有人正按着鼠标。
+     *
+     * 三件事缺一不可:
+     *   ① `clearTimeout(commitTimer)` —— `dragPoints` 不只被拖动写:Q 滑杆与键盘微调
+     *      也写它,并挂 140ms 防抖提交。只把 `dragPoints` 置空、不停表,那个定时器
+     *      照样会拿着**闭包里捕获的** next 提交(它不读 `local.dragPoints`),
+     *      于是「拨完 Q 滑杆 140ms 内按 Ctrl+Z」原样复现同一个缺陷;
+     *   ② `releasePointerCapture` —— 捕获不放掉,指针事件会一直被这块 canvas 吃住;
+     *   ③ `dragging=false` —— 随后那记 pointerup 由它挡住(onPointerUp 首行早退),
+     *      这才是「不再提交那份陈旧抄本」的落点。
+     *
+     * @returns {boolean} 本次是否真的中止了一段在飞拖动(纯诊断用,生产路径不看)。
+     */
+    function abortEdit() {
+        const wasDragging = local.dragging;
+        clearTimeout(local.commitTimer); // ①
+        local.commitTimer = 0;
+        if (
+            local.dragPointerId !== null &&
+            canvas.releasePointerCapture &&
+            canvas.hasPointerCapture &&
+            canvas.hasPointerCapture(local.dragPointerId)
+        ) {
+            // ② 捕获可能已被浏览器隐式释放(pointercancel / 元素离开文档),
+            // 那时再放一次会抛 NotFoundError —— 先问 hasPointerCapture。
+            canvas.releasePointerCapture(local.dragPointerId);
+        }
+        local.dragging = false; // ③
+        local.dragIndex = -1;
+        local.dragPointerId = null;
+        local.dragVersion = 0;
+        local.dragPoints = null;
+        if (local.selected >= points().length) local.selected = -1;
+        if (wasDragging) local.aborts++;
+        syncToolbar();
+        draw();
+        return wasDragging;
+    }
+
     // ---- 拖拽 -------------------------------------------------------------
     function onPointerDown(e) {
         const i = hitTest(e);
@@ -741,6 +824,12 @@ export function createCurveEditor(opts) {
             local.dragging = true;
             local.dragIndex = i;
             local.dragPoints = points().slice();
+            // [SL-450] 抄本属于**哪个版本**要一起记下来:§1.17 的 setPanCurve 写的是
+            // 「当前激活版本」、载荷里不带版本号,拖到一半换了版本再提交 = 把 V1 的
+            // 点集整表写进 V2。判据在 render() 里(换版本不一定由本地点击发起 ——
+            // `version_active` 也会经 §2.1 `scvb.state` 推过来)。
+            local.dragPointerId = e.pointerId;
+            local.dragVersion = activeVersion();
             select(i);
             if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
             e.preventDefault();
@@ -764,10 +853,14 @@ export function createCurveEditor(opts) {
     }
 
     function onPointerUp() {
+        // [SL-450] 这一行同时是「在飞拖动已被 abortEdit() 中止」的落点:中止后
+        // `dragging` 已是 false,这记松手就不会再把陈旧抄本提交上去。
         if (!local.dragging) return;
         local.dragging = false;
         const idx = local.dragIndex;
         local.dragIndex = -1;
+        local.dragPointerId = null;
+        local.dragVersion = 0;
         const cur = points();
         if (idx < 0 || idx >= cur.length) {
             local.dragPoints = null;
@@ -1171,6 +1264,17 @@ export function createCurveEditor(opts) {
 
     // ---- 对外 render(app.js 每次 render() 时调;读 store 后重绘)-------------
     function render() {
+        // [SL-450] 拖到一半激活版本被换掉 ⇒ 中止在飞拖动。
+        // 这比 Ctrl+Z 那条更严重:§1.17 的 setPanCurve 写「当前激活版本」、载荷里
+        // **不带版本号**(C++ 侧 `setPanCurve(versionActive(), points)`),所以在 V1 上
+        // 按住不放、切到 V2、再松手,会把 V1 的抄本整表写进 **V2**。
+        // ⚠ 判据落在 render() 而不是 app.js 的 switchVersion():`version_active` 未必由
+        // 本地点 chip 改 —— ARMED 轻确认那条路径、以及 §2.1 `scvb.state` 下行推过来的
+        // 增量,都从这一个口进来。一个钩子盖住全部触发路径,不在调用侧撒第二处。
+        // (`copyVersion` **不在此列**:它写的是**非激活**槽、且不改 `version_active`,
+        //  在飞拖动仍归属同一个版本,松手提交照旧正确。)
+        if (local.dragging && local.dragVersion !== activeVersion())
+            abortEdit();
         const cur = points();
         if (local.selected >= cur.length) {
             local.selected = -1;
@@ -1219,5 +1323,21 @@ export function createCurveEditor(opts) {
         }
     }
 
-    return { mount, render, draw, push() {} };
+    return {
+        mount,
+        render,
+        draw,
+        push() {},
+        // [SL-450] app.js 的 runHistory() 在发 undo/redo **之前**调它。
+        abortEdit,
+        /** 只读诊断快照(页面级冒烟用;零写入口,与 `__SCVB_OUTPUT__` 同口径)。 */
+        diag: () => ({
+            dragging: local.dragging,
+            hasPreview: local.dragPoints !== null,
+            dragVersion: local.dragVersion,
+            activeVersion: activeVersion(),
+            commits: local.commits,
+            aborts: local.aborts,
+        }),
+    };
 }
