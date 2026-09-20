@@ -497,11 +497,32 @@ log("=== ③ 源码不变式(DOM 侧退化都是一行改动,用文本不变式�
         // ⚠ 先把空白压平再查:prettier 会按行宽决定这一句断不断行(它当前就断在
         // `activeVersion())` 之后),把换行写进模式等于把判据钉在**排版**上 ——
         // 下一次行宽一变它就红,而代码一个字都没改。
+        const ceFlat = ce.replace(/\s+/g, " ");
         check(
-            /if \(local\.dragging && local\.dragVersion !== activeVersion\(\)\) abortEdit\(\);/.test(
-                ce.replace(/\s+/g, " "),
+            /if \(hasPendingEdit\(\) && local\.pendingVersion !== activeVersion\(\)\) abortEdit\(\);/.test(
+                ceFlat,
             ),
-            "render() 里有版本闸:拖到一半换版本同样中止(§1.17 写的是当前激活版本)",
+            "render() 有版本闸,且条件是 hasPendingEdit()(不是只看 dragging —— 那漏掉两条防抖路径)",
+        );
+        // [SL-450 复审轮 1] 本地那一路在**源头**关死:switchVersion 发出切换**之前**中止。
+        // 按下标比顺序,不比「紧挨着」——中间将来插注释/日志都不该误伤。
+        {
+            const app = appJs.slice(
+                appJs.indexOf("async function switchVersion("),
+            );
+            const iAbort = app.indexOf("curveEditor.abortEdit();");
+            const iCall = app.indexOf('await call("setVersionActive", v)');
+            check(
+                iAbort >= 0 && iCall >= 0 && iAbort < iCall,
+                'switchVersion 在 call("setVersionActive") **之前**中止在飞编辑(本地那一路关在源头)',
+            );
+        }
+        // 三类写者都要在推出抄本那一刻记 pendingVersion —— 少一处,render 的闸就认不出它。
+        check(
+            (ceFlat.match(/local\.pendingVersion = /g) || []).length >= 3,
+            "拖动 / 滚轮 / Q 滑杆三类写者都写了 pendingVersion(实得 " +
+                (ceFlat.match(/local\.pendingVersion = /g) || []).length +
+                " 处赋值)",
         );
     }
 }

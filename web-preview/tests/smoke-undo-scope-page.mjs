@@ -50,7 +50,14 @@
 //   abortEdit 的四件事 + 两条触发路径(6 格,红在 ④④b⑤):摘掉 runHistory 里的
 //     `abortEdit()`;`abortEdit()` 里逐条去掉 `dragging=false` / `clearTimeout` /
 //     `releasePointerCapture` / `dragPoints=null`;摘掉 `render()` 里的版本闸
-//     (⇒ ⑤ 的数据面 (e10) 转红:V2 的指纹被 V1 的抄本覆盖)。
+//     (⇒ ⑦ 的 (h6)(h7)(h9) 转红);摘掉 `switchVersion()` 发前的 abortEdit
+//     (⇒ ⑥ 两臂转红);滚轮 / Q 滑杆各自不记 `pendingVersion`(⇒ 各自的**对照臂**
+//     (g6c) / (f1) 转红 —— 单写者注入只红对应那一格)。
+//   ⚠ **有一格钉不住,写在这里而不是省略**:把 `render()` 闸的条件退回只看
+//     `dragging`(删除式 C8)**不会有任何用例变红**。那半边造不出确定性输入 ——
+//     两条防抖路径的 140ms 比 `scvb.state` 回声(约 250ms)先到,远端切换时它们
+//     在闸能看见之前就已开火,属契约层残余(§1.17 的 setPanCurve 不带版本号)。
+//     放宽仍保留:它与 abortEdit() 的早退必须共用同一组条件。
 // ⚠ 一条实测教训写在这里:`lostpointercapture` 是**排任务**派发的,不在
 //   `releasePointerCapture()` 那一行同步发出 —— (d8b) 起初写成即刻读,结果被一个
 //   与捕获毫无关系的注入(去掉 `dragPoints=null`)带红。现在是有界 waitFor。
