@@ -1460,6 +1460,132 @@ try {
         );
     }
     assertClean("⑦ 远端换版本");
+
+    // =========================================================================
+    log("=== ⑧ commit 在途窗:松手后**不换版本**时,版本闸不许开火 ===");
+    newBucket("在途窗不误中止");
+    {
+        // ⚠⚠ **这一格今天的 mock 钉不住,必须先把尺子造出来。**
+        // `web/shared/bridge.js` 的 mock 路径是
+        //     const call = (name) => async (...args) => mock[name](...args);
+        // —— **纯微任务解析**,await 回来不跨宏任务、rAF 排不进去 ⇒「commit 已发出、
+        // 回显还没到」这一窗在 mock 里几乎不存在,整套网格与冒烟都看不见它。
+        // 真桥走 getNativeFunction() 跨进程,**必然跨帧**。这与 SL-357「同步 mock 让
+        // 产品代码永远绿、到真桥才炸」是同一形态。
+        // ⇒ 就地把 mock 的 setPanCurve 包成**跨宏任务**(setTimeout),让在途窗真的存在。
+        const WINDOW_MS = 600;
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    if (!mk || typeof mk.setPanCurve !== "function") return false;
+                    if (!mk.__origSetPanCurve) mk.__origSetPanCurve = mk.setPanCurve;
+                    mk.setPanCurve = async (...a) => {
+                        await new Promise((r) => setTimeout(r, ${WINDOW_MS}));
+                        return mk.__origSetPanCurve(...a);
+                    };
+                    return true;`),
+            ),
+            "(k0)已把 mock 的 setPanCurve 包成跨宏任务(制造真实的在途窗)",
+        );
+
+        // 回到 V1(它有 6 个点),挑一个上面几段没动过的点
+        check(
+            await evaluate(
+                IN(`const c1 = gb("header-version-chip-1");
+                    if (!c1 || c1.getAttribute("data-disabled") === "1") return false;
+                    c1.click();
+                    return true;`),
+            ),
+            "(k1)切回 V1",
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`),
+                6000,
+            ),
+            "(k2)激活版本 = V1",
+        );
+        const kXY = await evaluate(
+            IN_ASYNC(`
+            const m = await import("${base}/web/output/canvas/curve-editor.js");
+            const c = gb("master-pancurve-canvas");
+            const r = c.getBoundingClientRect();
+            const fr = f.getBoundingClientRect();
+            const p = { angle: -72, gain_db: -2.5 };
+            return {
+                x: fr.left + r.left + (m.angleToX(p.angle) / m.PLOT_W) * r.width,
+                y: fr.top + r.top + (m.dbToY(p.gain_db) / m.PLOT_H) * r.height,
+            };
+        `),
+        );
+
+        // ---- 正向:松手后**不换版本**,在途窗里闸不许开火 ----
+        const k0 = await curveDiag();
+        await mouse("mousePressed", kXY.x, kXY.y);
+        check((await curveDiag()).dragging === true, "(k3)进了拖动态");
+        await mouse("mouseMoved", kXY.x + 18, kXY.y - 9);
+        await mouse("mouseReleased", kXY.x + 18, kXY.y - 9);
+        // ⚠ 先断**在途窗真的存在**:抄本还挂着 = commit 已发出、回显没到。
+        // 这一断言不成立的话,下面那条 `aborts === 0` 就是空的(什么都没发生也等于 0)。
+        check(
+            await evaluate(
+                IN(`return w.__SCVB_OUTPUT__.curve().hasPreview === true;`),
+            ),
+            "(k4)**在途窗确实存在**(抄本仍挂着,commit 已发出、回显未到)",
+        );
+        await sleep(WINDOW_MS + 400); // 走完整个在途窗 + 回显
+        const k1 = await curveDiag();
+        eq(k1.hasPreview, false, "(k5)在途窗已结束(回显到位,抄本清掉)");
+        eq(
+            k1.aborts - k0.aborts,
+            0,
+            "(k6)**松手后不换版本 ⇒ 版本闸零开火**(把 onPointerUp 里那行 pendingVersion=0 加回去这里就红)",
+        );
+
+        // ---- 反向对照:在途窗里**真的换一次版本** ⇒ 闸必须照常开火 ----
+        // ⚠ 没有这一臂,上面那条可以靠「把闸修成永不开火」作弊通过。
+        const k2 = await curveDiag();
+        await mouse("mousePressed", kXY.x + 18, kXY.y - 9);
+        check((await curveDiag()).dragging === true, "(k7)反向臂:进了拖动态");
+        await mouse("mouseMoved", kXY.x + 30, kXY.y - 16);
+        await mouse("mouseReleased", kXY.x + 30, kXY.y - 16);
+        check(
+            await evaluate(
+                IN(`return w.__SCVB_OUTPUT__.curve().hasPreview === true;`),
+            ),
+            "(k8)反向臂:在途窗存在",
+        );
+        // 在途窗里远端换版本(绕过 UI 的 switchVersion,免得它在源头就掐了)
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    mk.setVersionActive(2);
+                    return true;`),
+            ),
+            "(k9)反向臂:在途窗里远端切到 V2",
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().aborts > ${k2.aborts};`),
+                6000,
+            ),
+            "(k10)**在途窗里真换版本 ⇒ 闸照常开火**(证明 (k6) 不是靠把闸修死换来的)",
+        );
+
+        // 还原 mock,别把跨宏任务留给后面的段
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    if (mk.__origSetPanCurve) {
+                        mk.setPanCurve = mk.__origSetPanCurve;
+                        delete mk.__origSetPanCurve;
+                    }
+                    return typeof mk.setPanCurve === "function";`),
+            ),
+            "(k11)已还原 mock 的 setPanCurve",
+        );
+    }
+    assertClean("⑧ 在途窗不误中止");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);

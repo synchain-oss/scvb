@@ -718,12 +718,16 @@ export function createCurveEditor(opts) {
             local.crossVersionDrops++;
             // 抄本已过期(它属于别的版本),丢掉。引用守卫同下面的 finally:
             // 只清「仍是当前这批」,免得把之后新起的一批误清。
-            if (local.dragPoints === next) local.dragPoints = null;
+            if (local.dragPoints === next) {
+                local.dragPoints = null;
+                local.pendingVersion = 0;
+            }
             draw();
             return;
         }
         if (!bridge || typeof bridge.setPanCurve !== "function") {
             local.dragPoints = null;
+            local.pendingVersion = 0;
             return;
         }
         try {
@@ -735,7 +739,13 @@ export function createCurveEditor(opts) {
         } finally {
             // echo 之后才清本地待提交态:避免 commit 与回显之间的窗口里
             // render()/draw() 退回旧 store 造成「曲线一跳一跳」。只清「仍是当前这批」。
-            if (local.dragPoints === next) local.dragPoints = null;
+            // [SL-450 复审轮 3] pendingVersion 与 dragPoints **同生共死**,一起清:
+            // 早清(原先在 onPointerUp 里)会让哨兵 0 在在途窗里把版本闸点着,
+            // 亲手打开这句注释要防的那个洞。
+            if (local.dragPoints === next) {
+                local.dragPoints = null;
+                local.pendingVersion = 0;
+            }
         }
     }
 
@@ -943,10 +953,17 @@ export function createCurveEditor(opts) {
         const idx = local.dragIndex;
         local.dragIndex = -1;
         local.dragPointerId = null;
-        local.pendingVersion = 0;
+        // [SL-450 复审轮 3【红旗】] 这里**不能**清 pendingVersion —— 它必须与
+        // `dragPoints` **同生共死**。原先在此清成哨兵 0,而 commit() 在途期间
+        // `dragPoints` 仍非空 ⇒ hasPendingEdit() 为真、且 `0 !== activeVersion()`
+        // (后者恒 >= 1)**恒真** ⇒ render() 的版本闸在**每一次松手后的在途窗**里开火,
+        // 版本一个字都没变。后果正是 commit() 的 finally 那句注释要防的那件事:
+        // 曲线先弹回旧形状、约一拍后再跳成新的。改为在 commit() 的**三条退出路径**上
+        // 与 dragPoints 一起清。
         const cur = points();
         if (idx < 0 || idx >= cur.length) {
             local.dragPoints = null;
+            local.pendingVersion = 0; // 这条路不会走到 commit(),就地清
             draw();
             return;
         }
