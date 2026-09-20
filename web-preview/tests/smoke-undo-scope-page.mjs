@@ -1087,6 +1087,7 @@ try {
         // ---- 写者 B:滚轮 140ms 防抖 --------------------------------------
         {
             const b0 = await curveDiag();
+            void b0;
             // 滚轮要先有选中点:点一下(pointerdown+up 会提交一次,计入基线之后再取)
             await mouse("mousePressed", pXY.x, pXY.y);
             await mouse("mouseReleased", pXY.x, pXY.y);
@@ -1129,6 +1130,39 @@ try {
                 `(g5b)滚轮臂:abortEdit 认领了这一次(aborts 实得 +${b2.aborts - b1.aborts})`,
             );
             eq(b2.curveSig, sigV2, "(g6)**滚轮臂:V2 的点集一个字节都没变**");
+        }
+
+        // ---- 写者 B 的**对照臂**:同样滚一下,**不换版本** ⇒ 必须照常提交 -----
+        // ⚠ 没有这一臂,「滚轮推表时记 pendingVersion」那一行删掉不会有任何用例变红:
+        // 它的作用之一是**别让上一次编辑留下的陈旧 pendingVersion 触发误中止**,
+        // 而那只有在「本该正常提交的一发」上才看得出来(Q 滑杆侧由 ④b 的 (f1) 担这个角色)。
+        {
+            check(await armSwitchBack(1), "(g6a)滚轮对照臂:回到 V1");
+            check(
+                await waitFor(
+                    IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`),
+                    6000,
+                ),
+                "(g6b)滚轮对照臂:激活版本 = V1",
+            );
+            await mouse("mousePressed", pXY.x, pXY.y);
+            await mouse("mouseReleased", pXY.x, pXY.y);
+            await sleep(400);
+            const k0 = await curveDiag();
+            await cdp.send("Input.dispatchMouseEvent", {
+                type: "mouseWheel",
+                x: pXY.x,
+                y: pXY.y,
+                deltaX: 0,
+                deltaY: -120,
+            });
+            await sleep(600); // 走完 140ms 防抖窗
+            const k1 = await curveDiag();
+            eq(
+                k1.commits - k0.commits,
+                1,
+                "(g6c)**滚轮对照臂:不换版本时那一发防抖提交照常发生**(证明没有被误中止)",
+            );
         }
 
         // ---- 写者 C:Q 滑杆 140ms 防抖 ------------------------------------
@@ -1207,6 +1241,105 @@ try {
         }
     }
     assertClean("⑥ 跨版本守卫逐写者");
+
+    // =========================================================================
+    log("=== ⑦ **远端**换版本(不经 UI)⇒ render() 的闸必须在回声那一刻中止 ===");
+    newBucket("远端换版本");
+    {
+        // ⚠ 为什么必须有这一段:⑥ 的两臂点的是 header 的 chip,走 `switchVersion()`,
+        // 而那条路已经在**发出切换之前**就 abortEdit 了 —— 于是 `render()` 里那道闸
+        // 在 ⑥ 里**一次都没被执行到**。实测证据:摘掉那道闸、或把它的条件退回
+        // 只看 `dragging`,⑥ 全绿(删除式 C6/C8 当场未红)。
+        // 远端切换(ARMED 轻确认 / 另一侧实例 / §2.1 增量)掐不到源头,只能靠这道闸。
+        //
+        // 造法:直接调 mock 后端的 `setVersionActive` —— **绕过 UI 的 switchVersion**,
+        // 引擎当场换版本、UI 只能等 `scvb.state` 回声知道。这正是远端切换的形状。
+        // armSwitchBack 定义在 ⑥ 的块作用域里,这里不复用它(跨块引用会 ReferenceError,
+        // 实测踩过一次),就地点 chip。
+        check(
+            await evaluate(
+                IN(`const c1 = gb("header-version-chip-1");
+                    if (!c1 || c1.getAttribute("data-disabled") === "1") return false;
+                    c1.click();
+                    return true;`),
+            ),
+            "(h0)回到 V1",
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 1;`),
+                6000,
+            ),
+            "(h1)激活版本 = V1",
+        );
+        const hXY = await evaluate(
+            IN_ASYNC(`
+            const m = await import("${base}/web/output/canvas/curve-editor.js");
+            const c = gb("master-pancurve-canvas");
+            const r = c.getBoundingClientRect();
+            const fr = f.getBoundingClientRect();
+            const p = { angle: 72, gain_db: -2.2 };
+            return {
+                x: fr.left + r.left + (m.angleToX(p.angle) / m.PLOT_W) * r.width,
+                y: fr.top + r.top + (m.dbToY(p.gain_db) / m.PLOT_H) * r.height,
+            };
+        `),
+        );
+        const h0 = await curveDiag();
+        await mouse("mousePressed", hXY.x, hXY.y);
+        const hDrag = await curveDiag();
+        check(
+            hDrag.dragging === true,
+            `(h2)pointerdown 后进了拖动态(实得 ${JSON.stringify(hDrag.dragging)})`,
+        );
+        eq(hDrag.pendingVersion, 1, "(h3)在飞编辑记下了它属于 V1");
+        await mouse("mouseMoved", hXY.x - 25, hXY.y - 12);
+
+        // **远端**换版本:直接打 mock 后端,UI 完全不知情
+        check(
+            await evaluate(
+                IN(`const mk = w.__SCVB_MOCK__;
+                    if (!mk || typeof mk.setVersionActive !== "function") return false;
+                    mk.setVersionActive(2);
+                    return true;`),
+            ),
+            "(h4)远端把激活版本切到 V2(绕过 UI 的 switchVersion)",
+        );
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().activeVersion === 2;`),
+                6000,
+            ),
+            "(h5)回声到达,UI 侧也看到 V2 了",
+        );
+        // 闸落在 rAF 合帧的 render() 里,等**效果**并给上界(闸被删就超时转红)
+        check(
+            await waitFor(
+                IN(`return w.__SCVB_OUTPUT__.curve().dragging === false;`),
+                6000,
+            ),
+            "(h6)**远端换版本 ⇒ render() 的闸中止了在飞拖动**(上界 6s)",
+        );
+        const hAfter = await curveDiag();
+        eq(hAfter.hasPreview, false, "(h7)远端换版本 ⇒ 本地预览抄本被丢弃");
+        check(
+            hAfter.aborts - h0.aborts >= 1,
+            `(h8)远端换版本 ⇒ abortEdit 认领了这一次(实得 +${hAfter.aborts - h0.aborts})`,
+        );
+        const sigV2h = hAfter.curveSig;
+        const midH = hAfter.commits;
+        await mouse("mouseReleased", hXY.x - 25, hXY.y - 12);
+        await sleep(1000);
+        const hEnd = await curveDiag();
+        eq(hEnd.commits - midH, 0, "(h9)远端换版本后那一记松手零提交");
+        eq(hEnd.activeVersion, 2, "(h10)读指纹时仍停在 V2");
+        eq(
+            hEnd.curveSig,
+            sigV2h,
+            "(h11)**V2 的点集一个字节都没变** —— V1 的抄本没有被写进 V2",
+        );
+    }
+    assertClean("⑦ 远端换版本");
 } catch (e) {
     fail++;
     console.log(`  [FAIL] 冒烟过程抛错:${e && e.message ? e.message : e}`);
