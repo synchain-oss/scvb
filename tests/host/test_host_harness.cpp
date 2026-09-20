@@ -843,14 +843,30 @@ TEST_CASE("SL-446(第 2 轮,集成,真 Processor):setGroupId/ensureCtrlOpen —�
     victim.releaseResources();
 }
 
-TEST_CASE("SL-446(第 2 轮补充,集成,真 Processor):已绑定实例载入不同工程、加载期冲突回滚——"
-          "存档号是工程里原本的号,不是回滚抢回来的旧号",
+TEST_CASE("SL-446(第 4 轮,已知缺陷,集成,真 Processor):已绑定实例载入不同工程、加载期冲突"
+          "回滚——存档号被改写成回滚抢回来的旧号(SL-454)",
           "[host][input][sl446]")
 {
     // ⚠ 复审 4057661131 抓到的场景:宿主复用一个已经 prepared_ 的实例(切 preset / 复制轨道后
     // load state 都走这条路),该实例这时已经 bind 在某个通道上(与即将载入的工程无关),载入
     // 的工程字节说的是另一个号。若加载触发的 prepare() 撞了冲突、补偿式回滚抢回了实例原来
-    // 那个号,存档绝不能把工程里的号悄悄改写成这个"抢回来的旧号"——工程文件本身没有变过。
+    // 那个号,理想行为是存档保留工程里原本的号——第 3 轮曾这样修过。
+    //
+    // ⚠ [SL-446 第 4 轮] 但那个修法(删掉 prepare() 后重新同步 channelId_)被复审证明会打破
+    // `state()==kActive ⟹ channelId_==boundChannel()` 这条不变式,进而让 drainFpReports()/
+    // bridgeRemoteSetPriority()/timerCallback() 采集布防三处按 channelId_ 寻址共享资源时,把
+    // 别的实例正占着的号当成自己的号去用——构成跨进程 SPSC 环双生产者竞写、跨实例串扰、采集
+    // 布防跟错开关。这是实时路 UB,严重度高于本用例要防的"存档号被改写"(罕见、可恢复、主线
+    // 既有),两害相权,第 4 轮把那个修法回退了。
+    //
+    // ⇒ 这条用例现在钉的是**当前真实行为**(存档号确实被改成了回滚后的旧号 3),不是期望行为。
+    // 三件事写清楚,别漏:
+    //   1. 这是已知缺陷 SL-454 的现状,不是期望行为;
+    //   2. 这条判据存在的唯一目的是"防止它悄悄变化"(比如变成擦成 0,或写入完全无关的第三个
+    //      号)——不是宣称这个行为是对的;
+    //   3. ⚠ 将来真修好这个缺陷时(在不打破下面那条不变式的前提下让存档记 5),这一格**会红**
+    //      —— 到时候该改的是这一格的期望值,不是把 SL-454 的修法退回去、也不是把这一格删掉。
+    //      看到这一格红了,先去确认是不是 SL-454 真的被修好了,而不是默认自己改错了。
     juce::ScopedJuceInitialiser_GUI juceInit;
     FakePlayHead ph;
 
@@ -886,7 +902,11 @@ TEST_CASE("SL-446(第 2 轮补充,集成,真 Processor):已绑定实例载入不
     // prepareToPlay())——真实撞上 occupant 占的 5,补偿式回滚抢回 victim 释放前那个 3。
     victim.setStateInformation(blob.data(), static_cast<int>(blob.size()));
 
-    // 存档:必须是工程里原本写的 5,不是回滚抢回来的 3、也不是 0。
+    // 存档:已知缺陷的当前真实行为——记的是回滚抢回来的旧号 3,不是工程里原本写的 5。
+    // ⚠ 别把这两条 CHECK 的方向读反:这不是在断言"这样是对的",是在钉住"现在就是这样",
+    // 防止这个已知缺陷未来悄悄变形(比如变成擦成 0)而没人发现。真正的期望行为(存档应保留
+    // 工程里原本的号)留给 SL-454 那张新卡去修——那张卡要解决的正是"怎么在不打破
+    // `kActive ⟹ channelId_==boundChannel()` 这条不变式的前提下,让存档正确"。
     juce::MemoryBlock stateBlob;
     victim.getStateInformation(stateBlob);
     scvb::state::StateChunks chunks;
@@ -896,9 +916,21 @@ TEST_CASE("SL-446(第 2 轮补充,集成,真 Processor):已绑定实例载入不
     REQUIRE(cfg != nullptr);
     scvb::state::InputState loaded;
     REQUIRE(scvb::state::decodeInputState(cfg->payload.data(), cfg->payload.size(), loaded));
-    CHECK(loaded.channelId == 5); // 工程里原本的号,原样留着
-    CHECK(loaded.channelId != 3); // 不是回滚抢回来的旧号
-    CHECK(loaded.channelId != 0); // 也不是被擦成未分配
+    CHECK(loaded.channelId == 3); // 已知缺陷:被改写成了回滚抢回来的旧号,不是工程里的 5
+    CHECK(loaded.channelId != 5); // 不是工程里原本的号(这正是缺陷所在,不是期望)
+    CHECK(loaded.channelId != 0); // 也没有被擦成未分配(那是另一族更早的缺陷,已在别处修掉)
+
+    // 广播/实际持有仍然正确:victim 真的活跃在 3 上,不变式在这条路径上成立。
+    CHECK(victim.bridgeTickSnapshot().channelId == 3);
+
+    // ⚠ [SL-446 第 4 轮] 这才是本轮回退真正要钉住的东西——不是"存档记哪个号"这个已知缺陷本身,
+    // 是"活跃时镜像必须等于实际持有"这条不变式,drainFpReports()/bridgeRemoteSetPriority()/
+    // timerCallback() 采集布防三处的正确性都建立在它上面。这条不变式**只在 state()==kActive
+    // 时才有意义**——硬失败那条路(state()==kConflict,没有旧 channel 可回滚)前件为假,不受
+    // 这条不变式约束,那条路 channelId_ 合法地保留请求值、boundChannel()==0,两者不相等是
+    // 设计如此,不是违反了这条不变式(见 InputSession.h prepare() 头注的不变式完整说明)。
+    REQUIRE(victim.bridgeTickSnapshot().claimState == scvb::input::InputClaimState::kActive);
+    CHECK(static_cast<int>(loaded.channelId) == victim.bridgeTickSnapshot().channelId); // 不变式:活跃 ⟹ 镜像==实际持有
 
     occupant.releaseResources();
     victim.releaseResources();

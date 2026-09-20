@@ -530,23 +530,19 @@ void ScvbInputAudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         session_.prepare(static_cast<scvb::u32>(sampleRate_), static_cast<scvb::u32>(preparedMaxBlock_),
                          static_cast<scvb::u32>(srcChannels_), scvb::steadyNowMs());
-        // [SL-446 第 2 轮补充] ⚠ 这里**故意不**照 prepareToPlay()/setChannelId() 的样子在 prepare()
-        // 之后把 channelId_ 重新同步成 session_.channelId()——那两处的重新同步是对的,这里是错的,
-        // 差别不是"这行代码本身有问题",是**两类调用者对"配置"这个字段的期望不一样**:
-        //   · setChannelId():配置 = "用户这次想要哪个号"。请求 5 没抢到、补偿式回滚留在旧号 3,
-        //     "配置"收敛成 3 是对的——用户确实还在用 3,存档存 3 反映的是真实情况。
-        //   · 这里(加载工程):配置 = "工程文件里存的是哪个号"。工程写着 5,这次载入撞了冲突,
-        //     不管回滚抢没抢到、抢到了哪个号,工程文件本身没有变过——它仍然是那份写着 5 的文件。
-        //     `session_.channelId()` 在补偿式回滚**成功**那条支上会收敛成旧 channel(见
-        //     InputSession.h prepare() 头注),对 setChannelId() 是对的,对这里会把刚从工程字节
-        //     解出来的 5 悄悄改写成旧号,下次保存就把用户工程里的配置真的改掉了(SL-446 第 2 轮
-        //     bot 抓到的红旗,同族反向:第 1 轮是"擦成 0",这条是"改成不相关的旧号")。
-        // channelId_ 在本函数一开始(decodeInputState 之后)已经赋成 s.channelId 那份"工程里的
-        // 号",这里不再触碰它,让它在本函数生命周期里只被赋值这一次——这样"加载工程不改变
-        // 存的号"是结构性成立的,不依赖 session_ 内部哪条分支恰好没被走到。
-        // ⚠ 反过来也要记住:prepareToPlay()/setChannelId() 里那两处 `channelId_ =
-        // session_.channelId()` 是**有意保留**的,不是这次漏改的"同一个缺陷的另一实例"——
-        // 复审已经把这两类调用者的语义差异确认过一遍,别再顺手"统一"改掉。
+        // [SL-446 第 4 轮:回退第 3 轮的删除,已知缺陷单独立卡] 第 3 轮曾删掉这里的重新同步,
+        // 理由是"加载工程不该被回滚改写存的号"——但复审证明这个删除打破了一条更要紧的不变式:
+        // `session_.state() == kActive ⟹ channelId_ == session_.boundChannel()`。
+        // `drainFpReports()`/`bridgeRemoteSetPriority()`/`timerCallback()` 采集布防三处都按
+        // channelId_ 去寻址跨进程共享资源(命令环、广播数组),隐含假设"活跃就是真持有这个号"。
+        // 删掉重新同步后,已绑定实例载入不同工程、补偿式回滚成功的场景下,channelId_(配置=5)
+        // 会与 boundChannel()(实际=3)分叉、而 state() 仍是 kActive——上面三处会把 ch5(别的
+        // 实例正占着的号)当成自己的号去用,构成跨进程 SPSC 环双生产者竞写、跨实例串扰、采集
+        // 布防跟错开关。这是实时路上的未定义行为,严重度高于"加载期撞车存档号被改写"这个罕见、
+        // 可恢复、主线既有的轻缺陷——两害相权,加回这行重新同步。"加载工程不改变存的号"这个
+        // 结论转为已知缺陷单独立卡(SL-454),不在本卡解决;对应判据见
+        // tests/host/test_host_harness.cpp 里那条用例的头注,已改成钉住当前真实行为。
+        channelId_ = static_cast<int>(session_.channelId());
         if (session_.state() != scvb::input::InputClaimState::kActive)
         {
             stageMachine_.forcePassthrough();

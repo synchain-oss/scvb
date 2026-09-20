@@ -2260,7 +2260,17 @@ function buildInputBackend(ctx) {
                 ((model.caps.occupiedMask >>> (next - 1)) & 1) === 1 &&
                 next !== model.snapshot.channel_id;
             if (occupiedByOthers) {
-                patchState({ claim: "conflict" });
+                // [SL-446 第 2 轮 mock 补齐] 真桥的补偿式回滚:已经绑定着某个通道时,转移被拒
+                // 不会把会话打回"未分配"——它会把原通道抢回来,claim 如实报**实际状态**(通常
+                // 是 active),不是冻结在 "conflict" 上。只有从未绑定过(channel_id 当前是 0,
+                // 没有旧通道可回滚)才会真的停在 "conflict"。这与 scvb.state.channel_id 广播的
+                // 是"实际持有"、scvb.error.ch 报的是"这次请求的号"两条口径必须一致(§4.1/§4.5),
+                // 否则 preview 演示的就是本卡修复前的旧行为(复审 PRRT_kwDOT3yh9c6kLvyf)。
+                const hadPreviousChannel = model.snapshot.channel_id > 0;
+                const claim = hadPreviousChannel
+                    ? claimStateFor(model.snapshot.channel_id)
+                    : "conflict";
+                patchState({ claim });
                 emit(
                     "scvb.error",
                     makeError("channelConflict", {
