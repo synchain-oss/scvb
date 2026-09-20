@@ -944,6 +944,13 @@ async function switchVersion(v) {
     // 在源头掐掉,这一路(用户点 chip,最常见)就根本不存在那个窗口。
     // ⚠ 远端推来的切换掐不到源头 —— 那一路由 curve-editor 的 render() 闸在回声
     // 到达的那一刻兜;两者合起来仍留一档残余,见 curve-editor.js 里 commit() 的注释。
+    //
+    // ⚠ **这一步会丢掉用户的一次真实编辑**,说清楚而不是含糊过去:若此刻正有一发
+    // Q 滑杆 / 滚轮的 140ms 防抖提交在飞,它会被**直接丢弃**,不会补发。
+    // 取舍是有意的 —— 宁可丢一次 Q 微调(用户看得见滑杆弹回、可以再拨一次),
+    // 也不让它写进**错误的版本**(那是另一版整条曲线被覆盖,且不在这一步的撤销范围里)。
+    // 「先冲刷再切」(把在飞的那一发按**旧版本**提交完再发切换)是可行的,
+    // 只是需要让 switchVersion 等一次上行往返 —— **留作后续**,不在本卡范围内。
     curveEditor.abortEdit();
     const res = await call("setVersionActive", v);
     if (res && res.rejected === "printing") noteRejectedPrinting();

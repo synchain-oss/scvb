@@ -1003,6 +1003,11 @@ export function createCurveEditor(opts) {
         local.pendingVersion = srcVersion;
         clearTimeout(local.commitTimer);
         local.commitTimer = setTimeout(() => {
+            // [SL-450 复审轮 2] 开火即清零。setTimeout 返回正整数,不清的话
+            // `!!local.commitTimer` 从第一次防抖提交起**恒真** => hasPendingEdit()
+            // 永久为真 => abortEdit() 的早退再也挡不住空跑,aborts 变成「按了几次
+            // undo」而不是「中止了几次」。这是轮 1 补丁(早退 + render 闸)的副作用。
+            local.commitTimer = 0;
             commit(next, srcVersion);
         }, 140);
     }
@@ -1193,6 +1198,8 @@ export function createCurveEditor(opts) {
             local.pendingVersion = srcVersion;
             clearTimeout(local.commitTimer);
             local.commitTimer = setTimeout(() => {
+                // [SL-450 复审轮 2] 开火即清零,同滚轮那处(见它的注释)。
+                local.commitTimer = 0;
                 commit(next, srcVersion);
             }, 140);
         });

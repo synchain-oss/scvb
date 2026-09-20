@@ -896,6 +896,63 @@ try {
     assertClean("④b Q 滑杆防抖");
 
     // =========================================================================
+    log(
+        "=== ④c 防抖**已经落地**之后按 Ctrl+Z ⇒ abortEdit 必须空跑(aborts 不涨)===",
+    );
+    newBucket("防抖落地后的空跑");
+    {
+        // [复审轮 2【重要】] `setTimeout` 返回正整数,回调里不清零的话
+        // `!!local.commitTimer` 从第一次防抖提交起**恒真** ⇒ hasPendingEdit() 永久为真
+        // ⇒ abortEdit() 的早退再也挡不住空跑,`aborts` 退化成「按了几次 undo」。
+        // 那会让 (g5b)/(g12b)/(h8) 的 `>= 1` **恒真、失去分辨力** —— 判据还在,牙没了。
+        // 这一格钉的就是「**什么都没在飞的时候,abortEdit 必须什么都不做**」。
+        const ready = await evaluate(
+            IN(`const qs = q('[data-curve-q]');
+                const wrap = q('.curve-toolbar__q');
+                return qs && wrap && !wrap.hidden ? "ok" : "不可用";`),
+        );
+        check(ready === "ok", `(i0)Q 滑杆此刻可用(实得 ${ready})`);
+        if (ready === "ok") {
+            const i0 = await curveDiag();
+            await evaluate(
+                IN(`const qs = q('[data-curve-q]');
+                    qs.value = "5.5";
+                    qs.dispatchEvent(new w.Event("input", { bubbles: true }));
+                    return true;`),
+            );
+            // ⚠ 等那一发**真的落地**(不是只等 140ms):commits 涨了才算落地,
+            // 否则下面断的就成了「防抖还在飞时按 Ctrl+Z」——那是 ④b 已经测过的另一件事。
+            check(
+                await waitFor(
+                    IN(
+                        `return w.__SCVB_OUTPUT__.curve().commits > ${i0.commits};`,
+                    ),
+                    5000,
+                ),
+                "(i1)那一发防抖提交确实落地了(commits 涨过)",
+            );
+            check(
+                await waitFor(
+                    IN(
+                        `return w.__SCVB_OUTPUT__.curve().hasPreview === false;`,
+                    ),
+                    5000,
+                ),
+                "(i2)回显到位,本地抄本已清 —— 此刻**什么都没在飞**",
+            );
+            const i1 = await curveDiag();
+            await pressCtrlZ();
+            const i2 = await curveDiag();
+            eq(
+                i2.aborts - i1.aborts,
+                0,
+                "(i3)**什么都没在飞时按 Ctrl+Z,abortEdit 空跑、aborts 不涨**(少那行 commitTimer=0 这里就红)",
+            );
+        }
+    }
+    assertClean("④c 防抖落地后的空跑");
+
+    // =========================================================================
     log("=== ⑤ 拖动中换版本 ⇒ V2 的点集一个字节都不许变 ===");
     newBucket("拖动中换版本");
     {
